@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -15,11 +16,13 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"uuid"
@@ -2162,5 +2165,1056 @@ func TestCrash_AfterAck(t *testing.T) {
 	_, data, err := store2.GetObject("b", "k")
 	if err != nil || string(data) != "acked-data" {
 		t.Fatalf("expected data committed before ack to survive regardless of a crash right after: data=%q err=%v", data, err)
+	}
+}
+
+// =============================================================================
+// M2: Bucket tests -- ListBuckets, HeadBucket, DeleteBucket
+// =============================================================================
+
+func doDeleteBucket(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket string) *http.Response {
+	t.Helper()
+	return doSignedRequest(t, client, baseURL, signer, http.MethodDelete, "/"+bucket, nil, nil)
+}
+
+func doHeadBucket(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket string) *http.Response {
+	t.Helper()
+	return doSignedRequest(t, client, baseURL, signer, http.MethodHead, "/"+bucket, nil, nil)
+}
+
+func TestListBuckets_EmptyNonEmptyOrder(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for ListBuckets on an empty store, got %d", resp.StatusCode)
+	}
+	var empty listAllMyBucketsResult
+	if err := xml.NewDecoder(resp.Body).Decode(&empty); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(empty.Buckets) != 0 {
+		t.Fatalf("expected no buckets, got %+v", empty.Buckets)
+	}
+
+	for _, name := range []string{"zzz-bucket", "aaa-bucket", "mmm-bucket"} {
+		if err := doCreateBucket(t, client, ts.URL, signer, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp2 := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/", nil, nil)
+	var result listAllMyBucketsResult
+	if err := xml.NewDecoder(resp2.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if len(result.Buckets) != 3 {
+		t.Fatalf("expected 3 buckets, got %d: %+v", len(result.Buckets), result.Buckets)
+	}
+	want := []string{"aaa-bucket", "mmm-bucket", "zzz-bucket"}
+	for i, b := range result.Buckets {
+		if b.Name != want[i] {
+			t.Fatalf("expected deterministic sorted order %v, got %+v", want, result.Buckets)
+		}
+		if b.CreationDate == "" {
+			t.Fatalf("expected a non-empty CreationDate for bucket %q", b.Name)
+		}
+	}
+}
+
+func TestHeadBucket_PresentMissing(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	if err := doCreateBucket(t, client, ts.URL, signer, "present"); err != nil {
+		t.Fatal(err)
+	}
+	resp := doHeadBucket(t, client, ts.URL, signer, "present")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for an existing bucket, got %d", resp.StatusCode)
+	}
+	if len(body) != 0 {
+		t.Fatalf("expected no body on a HEAD response, got %q", body)
+	}
+
+	resp2 := doHeadBucket(t, client, ts.URL, signer, "missing-bucket")
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for a missing bucket, got %d", resp2.StatusCode)
+	}
+	if len(body2) != 0 {
+		t.Fatalf("expected no XML body on a HEAD failure, got %q", body2)
+	}
+}
+
+func TestDeleteBucket_EmptySucceeds(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	if err := doCreateBucket(t, client, ts.URL, signer, "gone"); err != nil {
+		t.Fatal(err)
+	}
+	resp := doDeleteBucket(t, client, ts.URL, signer, "gone")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 for deleting an empty bucket, got %d", resp.StatusCode)
+	}
+	if len(body) != 0 {
+		t.Fatalf("expected no body on a 204, got %q", body)
+	}
+	head := doHeadBucket(t, client, ts.URL, signer, "gone")
+	head.Body.Close()
+	if head.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected the bucket to be gone, got %d", head.StatusCode)
+	}
+}
+
+func TestDeleteBucket_MissingIsNoSuchBucket(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doDeleteBucket(t, client, ts.URL, signer, "never-existed")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", resp.StatusCode, body)
+	}
+	var errBody s3ErrorBody
+	if err := xml.Unmarshal(body, &errBody); err != nil {
+		t.Fatal(err)
+	}
+	if errBody.Code != "NoSuchBucket" {
+		t.Fatalf("expected NoSuchBucket, got %q", errBody.Code)
+	}
+}
+
+func TestDeleteBucket_NonEmptyFails(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	if err := doCreateBucket(t, client, ts.URL, signer, "full"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/full/key", []byte("x"), nil)
+	put.Body.Close()
+	if put.StatusCode != http.StatusOK {
+		t.Fatalf("PUT failed: %d", put.StatusCode)
+	}
+
+	resp := doDeleteBucket(t, client, ts.URL, signer, "full")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected a conflict status for a non-empty bucket, got %d: %s", resp.StatusCode, body)
+	}
+	var errBody s3ErrorBody
+	if err := xml.Unmarshal(body, &errBody); err != nil {
+		t.Fatal(err)
+	}
+	if errBody.Code != "BucketNotEmpty" {
+		t.Fatalf("expected BucketNotEmpty, got %q", errBody.Code)
+	}
+	head := doHeadBucket(t, client, ts.URL, signer, "full")
+	head.Body.Close()
+	if head.StatusCode != http.StatusOK {
+		t.Fatalf("expected the bucket to still exist, got %d", head.StatusCode)
+	}
+}
+
+func TestDeleteBucket_SurvivesRestartAndRecreate(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustOK(t, s.CreateBucket("b"))
+	mustOK(t, s.DeleteBucket("b"))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.HeadBucket("b"); !errors.Is(err, errNoSuchBucket) {
+		t.Fatalf("expected the bucket to remain absent after restart, got %v", err)
+	}
+
+	// A deleted bucket name can only ever be recreated empty: DeleteBucket
+	// refuses a non-empty bucket, so there is no prior-object vestige a
+	// recreate could resurrect.
+	mustOK(t, s2.CreateBucket("b"))
+	if err := s2.HeadBucket("b"); err != nil {
+		t.Fatalf("expected the recreated bucket to exist: %v", err)
+	}
+	page, err := s2.ListObjectsV2("b", "", "", "", 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.contents) != 0 {
+		t.Fatalf("expected the recreated bucket to start empty, got %d objects", len(page.contents))
+	}
+	s2.Close()
+}
+
+// =============================================================================
+// M2: Object tests -- HeadObject, DeleteObject, metadata/Content-Type
+// =============================================================================
+
+func doHeadObject(t *testing.T, client *http.Client, baseURL string, signer testSigner, path string) *http.Response {
+	t.Helper()
+	return doSignedRequest(t, client, baseURL, signer, http.MethodHead, path, nil, nil)
+}
+
+func doDeleteObject(t *testing.T, client *http.Client, baseURL string, signer testSigner, path string) *http.Response {
+	t.Helper()
+	return doSignedRequest(t, client, baseURL, signer, http.MethodDelete, path, nil, nil)
+}
+
+func TestHeadObject_HeadersNoBody(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte("head me")
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", body, map[string]string{
+		"Content-Type":     "text/plain; charset=utf-8",
+		"x-amz-meta-owner": "alice",
+	})
+	put.Body.Close()
+	if put.StatusCode != http.StatusOK {
+		t.Fatalf("PUT failed: %d", put.StatusCode)
+	}
+
+	resp := doHeadObject(t, client, ts.URL, signer, "/b/k")
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected no body on HEAD, got %q", got)
+	}
+	if resp.Header.Get("Content-Length") != strconv.Itoa(len(body)) {
+		t.Fatalf("unexpected Content-Length: %q", resp.Header.Get("Content-Length"))
+	}
+	if resp.Header.Get("Content-Type") != "text/plain; charset=utf-8" {
+		t.Fatalf("unexpected Content-Type: %q", resp.Header.Get("Content-Type"))
+	}
+	if resp.Header.Get("ETag") == "" {
+		t.Fatalf("expected an ETag header")
+	}
+	if resp.Header.Get("x-amz-meta-owner") != "alice" {
+		t.Fatalf("expected x-amz-meta-owner to round-trip, got %q", resp.Header.Get("x-amz-meta-owner"))
+	}
+}
+
+func TestHeadObject_Missing(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := doHeadObject(t, client, ts.URL, signer, "/b/nope")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for a missing key, got %d", resp.StatusCode)
+	}
+	if len(body) != 0 {
+		t.Fatalf("expected no body, got %q", body)
+	}
+
+	resp2 := doHeadObject(t, client, ts.URL, signer, "/missing-bucket/nope")
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for a missing bucket, got %d", resp2.StatusCode)
+	}
+	if len(body2) != 0 {
+		t.Fatalf("expected no body, got %q", body2)
+	}
+}
+
+func TestGetObject_MetadataAndContentTypeRoundTrip(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", []byte("payload"), map[string]string{
+		"Content-Type":       "application/json",
+		"x-amz-meta-project": "zeros3",
+		"x-amz-meta-Stage":   "m2",
+	})
+	put.Body.Close()
+	if put.StatusCode != http.StatusOK {
+		t.Fatalf("PUT failed: %d", put.StatusCode)
+	}
+
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, nil)
+	data, _ := io.ReadAll(get.Body)
+	get.Body.Close()
+	if get.StatusCode != http.StatusOK {
+		t.Fatalf("GET failed: %d", get.StatusCode)
+	}
+	if string(data) != "payload" {
+		t.Fatalf("unexpected body: %q", data)
+	}
+	if get.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("unexpected Content-Type: %q", get.Header.Get("Content-Type"))
+	}
+	if get.Header.Get("x-amz-meta-project") != "zeros3" {
+		t.Fatalf("expected x-amz-meta-project to round trip, got %q", get.Header.Get("x-amz-meta-project"))
+	}
+	// HTTP header names are case-insensitive; metadata keys are lowercased
+	// on PUT (matching how x-amz-meta-* headers are parsed), so this must
+	// still be retrievable under its lowercase form.
+	if get.Header.Get("x-amz-meta-stage") != "m2" {
+		t.Fatalf("expected x-amz-meta-stage to round trip, got %q", get.Header.Get("x-amz-meta-stage"))
+	}
+}
+
+func TestDeleteObject_ExistingThenMissingIdempotent(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", []byte("x"), nil)
+	put.Body.Close()
+	if put.StatusCode != http.StatusOK {
+		t.Fatalf("PUT failed: %d", put.StatusCode)
+	}
+
+	del := doDeleteObject(t, client, ts.URL, signer, "/b/k")
+	del.Body.Close()
+	if del.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", del.StatusCode)
+	}
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, nil)
+	get.Body.Close()
+	if get.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected the object to be gone, got %d", get.StatusCode)
+	}
+
+	del2 := doDeleteObject(t, client, ts.URL, signer, "/b/k")
+	del2.Body.Close()
+	if del2.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected idempotent 204 for an already-deleted key, got %d", del2.StatusCode)
+	}
+
+	del3 := doDeleteObject(t, client, ts.URL, signer, "/b/never-existed")
+	del3.Body.Close()
+	if del3.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 for a never-existed key, got %d", del3.StatusCode)
+	}
+}
+
+func TestDeleteObject_MissingBucketErrors(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doDeleteObject(t, client, ts.URL, signer, "/nope/key")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected NoSuchBucket 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestDeleteObject_SurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustOK(t, s.CreateBucket("b"))
+	if _, err := s.PutObject("b", "k", []byte("v"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	mustOK(t, s.DeleteObject("b", "k"))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if _, _, err := s2.GetObject("b", "k"); !errors.Is(err, errNoSuchKey) {
+		t.Fatalf("expected the key to remain absent after restart, got %v", err)
+	}
+}
+
+func TestDeleteObject_SharedChunksRemainReadableThroughAnotherObject(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	mustOK(t, s.CreateBucket("b"))
+	payload := genRandomBytes(4242, 200*1024) // large enough to span several CDC chunks
+	if _, err := s.PutObject("b", "one", payload, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "two", payload, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	mustOK(t, s.DeleteObject("b", "one"))
+	if _, _, err := s.GetObject("b", "one"); !errors.Is(err, errNoSuchKey) {
+		t.Fatalf("expected 'one' to be gone, got %v", err)
+	}
+	_, data, err := s.GetObject("b", "two")
+	if err != nil {
+		t.Fatalf("expected 'two' to remain readable through its shared chunks: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Fatalf("data for 'two' was corrupted by deleting 'one'")
+	}
+}
+
+// =============================================================================
+// M2: ListObjectsV2 tests
+// =============================================================================
+
+func doListObjectsV2(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket, query string) *listBucketResult {
+	t.Helper()
+	path := "/" + bucket + "?list-type=2"
+	if query != "" {
+		path += "&" + query
+	}
+	resp := doSignedRequest(t, client, baseURL, signer, http.MethodGet, path, nil, nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ListObjectsV2 %s failed: %d: %s", path, resp.StatusCode, body)
+	}
+	var result listBucketResult
+	if err := xml.Unmarshal(body, &result); err != nil {
+		t.Fatalf("failed to parse ListObjectsV2 XML: %v\nbody: %s", err, body)
+	}
+	return &result
+}
+
+func TestListObjectsV2_Empty(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "empty"); err != nil {
+		t.Fatal(err)
+	}
+
+	result := doListObjectsV2(t, client, ts.URL, signer, "empty", "")
+	if result.KeyCount != 0 || result.IsTruncated || len(result.Contents) != 0 {
+		t.Fatalf("expected an empty listing, got %+v", result)
+	}
+	if result.Name != "empty" {
+		t.Fatalf("expected Name to echo the bucket, got %q", result.Name)
+	}
+	if result.MaxKeys != 1000 {
+		t.Fatalf("expected default MaxKeys of 1000, got %d", result.MaxKeys)
+	}
+}
+
+func TestListObjectsV2_LexicalOrderingAndUnicode(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "ord"); err != nil {
+		t.Fatal(err)
+	}
+
+	keys := []string{"banana", "Apple", "apple", "zebra", "résumé", "日本語", "a b c", "10", "2"}
+	for _, k := range keys {
+		resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/ord/"+url.PathEscape(k), []byte("v"), nil)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT %q failed: %d", k, resp.StatusCode)
+		}
+	}
+	want := append([]string{}, keys...)
+	sort.Strings(want)
+
+	result := doListObjectsV2(t, client, ts.URL, signer, "ord", "")
+	if len(result.Contents) != len(want) {
+		t.Fatalf("expected %d keys, got %d: %+v", len(want), len(result.Contents), result.Contents)
+	}
+	for i, c := range result.Contents {
+		if c.Key != want[i] {
+			t.Fatalf("expected UTF-8 byte lexical order at index %d: got %q want %q", i, c.Key, want[i])
+		}
+	}
+}
+
+func TestListObjectsV2_XMLEscaping(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "esc"); err != nil {
+		t.Fatal(err)
+	}
+
+	key := `weird&key<with>some"xml'chars`
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/esc/"+url.PathEscape(key), []byte("v"), nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT failed: %d", resp.StatusCode)
+	}
+
+	result := doListObjectsV2(t, client, ts.URL, signer, "esc", "")
+	if len(result.Contents) != 1 || result.Contents[0].Key != key {
+		t.Fatalf("expected an XML-special key to round trip exactly, got %+v", result.Contents)
+	}
+}
+
+func TestListObjectsV2_PrefixDelimiterCommonPrefixes(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "tree"); err != nil {
+		t.Fatal(err)
+	}
+
+	keys := []string{
+		"photos/2021/a.jpg",
+		"photos/2021/b.jpg",
+		"photos/2022/c.jpg",
+		"photos/index.html",
+		"videos/a.mp4",
+		"readme.txt",
+	}
+	for _, k := range keys {
+		resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/tree/"+k, []byte("v"), nil)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT %q failed: %d", k, resp.StatusCode)
+		}
+	}
+
+	result := doListObjectsV2(t, client, ts.URL, signer, "tree", "prefix=photos%2F&delimiter=%2F")
+	if len(result.Contents) != 1 || result.Contents[0].Key != "photos/index.html" {
+		t.Fatalf("expected exactly photos/index.html as a direct Content entry, got %+v", result.Contents)
+	}
+	if len(result.CommonPrefixes) != 2 {
+		t.Fatalf("expected two common prefixes, got %+v", result.CommonPrefixes)
+	}
+	gotCP := []string{result.CommonPrefixes[0].Prefix, result.CommonPrefixes[1].Prefix}
+	sort.Strings(gotCP)
+	want := []string{"photos/2021/", "photos/2022/"}
+	for i := range want {
+		if gotCP[i] != want[i] {
+			t.Fatalf("expected common prefixes %v, got %v", want, gotCP)
+		}
+	}
+	if result.KeyCount != 3 {
+		t.Fatalf("expected KeyCount 3 (1 content + 2 common prefixes), got %d", result.KeyCount)
+	}
+	if result.Prefix != "photos/" || result.Delimiter != "/" {
+		t.Fatalf("expected Prefix/Delimiter to be echoed, got Prefix=%q Delimiter=%q", result.Prefix, result.Delimiter)
+	}
+}
+
+func TestListObjectsV2_MaxKeysZero(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "mk0"); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"a", "b", "c"} {
+		resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/mk0/"+k, []byte("v"), nil)
+		resp.Body.Close()
+	}
+	result := doListObjectsV2(t, client, ts.URL, signer, "mk0", "max-keys=0")
+	if result.KeyCount != 0 || result.IsTruncated || len(result.Contents) != 0 {
+		t.Fatalf("expected an empty, non-truncated result for max-keys=0, got %+v", result)
+	}
+	if result.MaxKeys != 0 {
+		t.Fatalf("expected MaxKeys echoed as 0, got %d", result.MaxKeys)
+	}
+}
+
+func TestListObjectsV2_MaxKeysOnePagination(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "mk1"); err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{"a", "b", "c", "d", "e"}
+	for _, k := range keys {
+		resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/mk1/"+k, []byte("v"), nil)
+		resp.Body.Close()
+	}
+
+	var seen []string
+	token := ""
+	for i := 0; i < len(keys)+1; i++ {
+		q := "max-keys=1"
+		if token != "" {
+			q += "&continuation-token=" + url.QueryEscape(token)
+		}
+		result := doListObjectsV2(t, client, ts.URL, signer, "mk1", q)
+		if len(result.Contents) > 1 {
+			t.Fatalf("expected at most one Content per page, got %+v", result.Contents)
+		}
+		for _, c := range result.Contents {
+			seen = append(seen, c.Key)
+		}
+		if !result.IsTruncated {
+			break
+		}
+		if result.NextContinuationToken == "" {
+			t.Fatalf("expected a NextContinuationToken while truncated")
+		}
+		token = result.NextContinuationToken
+	}
+	if len(seen) != len(keys) {
+		t.Fatalf("expected to see all %d keys across pages exactly once, got %v", len(keys), seen)
+	}
+	for i, k := range keys {
+		if seen[i] != k {
+			t.Fatalf("expected page order %v, got %v", keys, seen)
+		}
+	}
+}
+
+func TestListObjectsV2_DefaultAndLargeMaxKeysClamped(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "big"); err != nil {
+		t.Fatal(err)
+	}
+
+	resultDefault := doListObjectsV2(t, client, ts.URL, signer, "big", "")
+	if resultDefault.MaxKeys != 1000 {
+		t.Fatalf("expected default MaxKeys of 1000, got %d", resultDefault.MaxKeys)
+	}
+	resultLarge := doListObjectsV2(t, client, ts.URL, signer, "big", "max-keys=5000")
+	if resultLarge.MaxKeys != 1000 {
+		t.Fatalf("expected max-keys to be clamped to 1000, got %d", resultLarge.MaxKeys)
+	}
+}
+
+func TestListObjectsV2_InvalidContinuationToken(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "bad-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/bad-token?list-type=2&continuation-token=not-valid-base64%21%21", nil, nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("expected an invalid continuation token to be rejected, got 200: %s", body)
+	}
+	var errBody s3ErrorBody
+	if err := xml.Unmarshal(body, &errBody); err != nil {
+		t.Fatalf("expected an S3-shaped error body: %v", err)
+	}
+	if errBody.Code != "InvalidArgument" {
+		t.Fatalf("expected InvalidArgument, got %q", errBody.Code)
+	}
+}
+
+func TestListObjectsV2_PaginationNoDuplicateOrSkipWithDelimiter(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "pg"); err != nil {
+		t.Fatal(err)
+	}
+
+	keys := []string{"a", "dir1/1", "dir1/2", "dir1/3", "dir2/1", "dir2/2", "z"}
+	for _, k := range keys {
+		resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/pg/"+k, []byte("v"), nil)
+		resp.Body.Close()
+	}
+
+	var allKeys, allPrefixes []string
+	token := ""
+	for i := 0; i < 20; i++ {
+		q := "delimiter=%2F&max-keys=1"
+		if token != "" {
+			q += "&continuation-token=" + url.QueryEscape(token)
+		}
+		result := doListObjectsV2(t, client, ts.URL, signer, "pg", q)
+		for _, c := range result.Contents {
+			allKeys = append(allKeys, c.Key)
+		}
+		for _, cp := range result.CommonPrefixes {
+			allPrefixes = append(allPrefixes, cp.Prefix)
+		}
+		if !result.IsTruncated {
+			break
+		}
+		token = result.NextContinuationToken
+	}
+	wantKeys := []string{"a", "z"}
+	wantPrefixes := []string{"dir1/", "dir2/"}
+	if len(allKeys) != len(wantKeys) {
+		t.Fatalf("expected keys %v, got %v", wantKeys, allKeys)
+	}
+	for i := range wantKeys {
+		if allKeys[i] != wantKeys[i] {
+			t.Fatalf("expected keys %v, got %v", wantKeys, allKeys)
+		}
+	}
+	if len(allPrefixes) != len(wantPrefixes) {
+		t.Fatalf("expected prefixes %v, got %v", wantPrefixes, allPrefixes)
+	}
+	for i := range wantPrefixes {
+		if allPrefixes[i] != wantPrefixes[i] {
+			t.Fatalf("expected prefixes %v, got %v", wantPrefixes, allPrefixes)
+		}
+	}
+}
+
+// =============================================================================
+// M2: Journal tests -- delete-object-root / delete-bucket replay
+// =============================================================================
+
+func TestJournal_DeleteObjectRootReplay(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustOK(t, s.CreateBucket("b"))
+	if _, err := s.PutObject("b", "k", []byte("v"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	mustOK(t, s.DeleteObject("b", "k"))
+	s.Close()
+
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if _, _, err := s2.GetObject("b", "k"); !errors.Is(err, errNoSuchKey) {
+		t.Fatalf("expected delete-object-root to replay correctly, got %v", err)
+	}
+}
+
+func TestJournal_DeleteBucketReplay(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustOK(t, s.CreateBucket("b"))
+	mustOK(t, s.DeleteBucket("b"))
+	s.Close()
+
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if err := s2.HeadBucket("b"); !errors.Is(err, errNoSuchBucket) {
+		t.Fatalf("expected delete-bucket to replay correctly, got %v", err)
+	}
+}
+
+func TestJournal_MixedCreatePutDeleteRecreateSequence(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustOK(t, s.CreateBucket("b"))
+	if _, err := s.PutObject("b", "k1", []byte("v1"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	mustOK(t, s.DeleteObject("b", "k1"))
+	if _, err := s.PutObject("b", "k1", []byte("v1-again"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k2", []byte("v2"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	mustOK(t, s.DeleteObject("b", "k2"))
+	mustOK(t, s.DeleteObject("b", "k1"))
+	mustOK(t, s.DeleteBucket("b"))
+	mustOK(t, s.CreateBucket("b"))
+	if _, err := s.PutObject("b", "k3", []byte("fresh"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if _, _, err := s2.GetObject("b", "k1"); !errors.Is(err, errNoSuchKey) {
+		t.Fatalf("expected k1 to be absent, got %v", err)
+	}
+	if _, _, err := s2.GetObject("b", "k2"); !errors.Is(err, errNoSuchKey) {
+		t.Fatalf("expected k2 to be absent, got %v", err)
+	}
+	_, data, err := s2.GetObject("b", "k3")
+	if err != nil || string(data) != "fresh" {
+		t.Fatalf("expected k3 to survive the mixed sequence and restart, got %q err=%v", data, err)
+	}
+}
+
+// =============================================================================
+// M2: Concurrency tests
+//
+// Concurrency policy (also recorded in STATUS.md): Store.mu is the single
+// writer lock for the visible bucket/object namespace. Every mutation that
+// changes what's visible -- CreateBucket, DeleteBucket, DeleteObject, and
+// the final journal-append+namespace-apply step of PutObject -- holds
+// Store.mu across both its journal append and its namespace update, so the
+// two always happen atomically together and journal sequence order always
+// matches namespace-apply order. The slow, CPU/IO-heavy part of PutObject
+// (CDC chunking, CAS writes, manifest publication) runs *without* holding
+// Store.mu, so multiple PUTs can prepare their data in parallel; only the
+// brief final commit is serialized, and it re-checks bucket existence
+// under the same lock (see PutObject) so a DeleteBucket racing a PutObject
+// can never leave a nil bucket entry half-written into. Readers
+// (GetObject/HeadObject/ListObjectsV2) take Store.mu only for their
+// namespace lookup/snapshot, then read immutable manifest/chunk data
+// afterward without holding it -- safe because manifests and chunks are
+// never mutated in place, only ever superseded by a new root that a
+// concurrent writer publishes under its own fresh UUID/digest.
+//
+// Required invariant, exercised below: a reader observes a complete old
+// object or a complete new object for a given key, never a mix of the two.
+// =============================================================================
+
+func TestConcurrency_SameKeyPutPutSerializesToOneCompleteVersion(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "race"); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 20
+	versions := make([][]byte, n)
+	for i := range versions {
+		versions[i] = bytes.Repeat([]byte{byte('A' + i)}, 50000+i)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/race/key", versions[i], nil)
+			resp.Body.Close()
+		}(i)
+	}
+	wg.Wait()
+
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/race/key", nil, nil)
+	data, _ := io.ReadAll(get.Body)
+	get.Body.Close()
+	if get.StatusCode != http.StatusOK {
+		t.Fatalf("expected the final GET to succeed, got %d", get.StatusCode)
+	}
+	matched := false
+	for _, v := range versions {
+		if bytes.Equal(v, data) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Fatalf("expected the final object to be exactly one complete written version, got %d bytes matching none", len(data))
+	}
+}
+
+func TestConcurrency_SameKeyPutVsDeleteNeverMixed(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "race2"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte("initial-version-full-object")
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/race2/key", body, nil)
+	put.Body.Close()
+	if put.StatusCode != http.StatusOK {
+		t.Fatalf("initial PUT failed: %d", put.StatusCode)
+	}
+
+	newBody := bytes.Repeat([]byte("X"), 60000)
+	const n = 20
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/race2/key", newBody, nil)
+			resp.Body.Close()
+		}()
+		go func() {
+			defer wg.Done()
+			resp := doDeleteObject(t, client, ts.URL, signer, "/race2/key")
+			resp.Body.Close()
+		}()
+	}
+	wg.Wait()
+
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/race2/key", nil, nil)
+	data, _ := io.ReadAll(get.Body)
+	get.Body.Close()
+	switch get.StatusCode {
+	case http.StatusOK:
+		if !bytes.Equal(data, newBody) && !bytes.Equal(data, body) {
+			t.Fatalf("expected a complete old or complete new object, got %d unrecognized bytes", len(data))
+		}
+	case http.StatusNotFound:
+		// Also coherent: DELETE was the last winning mutation.
+	default:
+		t.Fatalf("expected a coherent object or NoSuchKey, got status %d", get.StatusCode)
+	}
+}
+
+func TestConcurrency_GetDuringOverwriteSeesCompleteObject(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "race3"); err != nil {
+		t.Fatal(err)
+	}
+
+	v1 := bytes.Repeat([]byte("1"), 80000)
+	v2 := bytes.Repeat([]byte("2"), 90000)
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/race3/key", v1, nil)
+	put.Body.Close()
+	if put.StatusCode != http.StatusOK {
+		t.Fatalf("initial PUT failed: %d", put.StatusCode)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/race3/key", v2, nil)
+			resp.Body.Close()
+		}
+	}()
+
+	for i := 0; i < 50; i++ {
+		get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/race3/key", nil, nil)
+		data, _ := io.ReadAll(get.Body)
+		get.Body.Close()
+		if get.StatusCode != http.StatusOK {
+			t.Fatalf("expected GET to succeed during a concurrent overwrite, got %d", get.StatusCode)
+		}
+		if !bytes.Equal(data, v1) && !bytes.Equal(data, v2) {
+			t.Fatalf("observed a torn/mixed object during a concurrent overwrite: %d bytes", len(data))
+		}
+	}
+	close(stop)
+	wg.Wait()
+}
+
+func TestConcurrency_DeleteBucketVsPutObjectResolvesCoherently(t *testing.T) {
+	for trial := 0; trial < 20; trial++ {
+		srv, signer := newTestServerAndSigner(t)
+		ts := httptest.NewServer(srv)
+		client := ts.Client()
+		if err := doCreateBucket(t, client, ts.URL, signer, "racebucket"); err != nil {
+			t.Fatal(err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/racebucket/k", []byte("v"), nil)
+			resp.Body.Close()
+		}()
+		go func() {
+			defer wg.Done()
+			resp := doDeleteBucket(t, client, ts.URL, signer, "racebucket")
+			resp.Body.Close()
+		}()
+		wg.Wait()
+
+		// Whichever operation won, the store must land in one coherent
+		// state: either the bucket is gone (DeleteBucket won; the racing
+		// PUT must have failed with NoSuchBucket rather than corrupting
+		// the namespace map), or the bucket exists with its object
+		// visible (PutObject won; DeleteBucket must have failed with
+		// BucketNotEmpty rather than leaving a bucket without its
+		// object).
+		head := doHeadBucket(t, client, ts.URL, signer, "racebucket")
+		head.Body.Close()
+		switch head.StatusCode {
+		case http.StatusNotFound:
+			// DeleteBucket won; nothing further to check.
+		case http.StatusOK:
+			get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/racebucket/k", nil, nil)
+			get.Body.Close()
+			if get.StatusCode != http.StatusOK {
+				t.Fatalf("bucket exists but its object is missing: status %d", get.StatusCode)
+			}
+		default:
+			t.Fatalf("unexpected HeadBucket status %d", head.StatusCode)
+		}
+		ts.Close()
 	}
 }
