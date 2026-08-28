@@ -73,13 +73,13 @@ const (
 	journalHeaderSize   = 4 + 2 + 1 + 1 + 8 + 4 // magic+ver+type+flags+seq+len
 	maxJournalPayload   = 8 * 1024 * 1024
 
-	// Journal record type numbers (frozen storage format v1). Only
-	// create-bucket and put-object-root are implemented in M1.
-	recordTypeCreateBucket  = byte(1)
-	recordTypePutObjectRoot = byte(2)
-	// Reserved for future milestones; not implemented in M1.
-	recordTypeDeleteObjectRoot = byte(3) //nolint:unused // reserved format v1 slot
-	recordTypeDeleteBucket     = byte(4) //nolint:unused // reserved format v1 slot
+	// Journal record type numbers (frozen storage format v1). All four
+	// are implemented as of M2; the numbers themselves were fixed in M1
+	// and never changed.
+	recordTypeCreateBucket     = byte(1)
+	recordTypePutObjectRoot    = byte(2)
+	recordTypeDeleteObjectRoot = byte(3)
+	recordTypeDeleteBucket     = byte(4)
 
 	maxRequestBodySize = 256 * 1024 * 1024
 
@@ -101,6 +101,7 @@ var (
 	errNoSuchBucket        = errors.New("no such bucket")
 	errNoSuchKey           = errors.New("no such key")
 	errManifestUnavailable = errors.New("manifest unavailable or corrupt")
+	errBucketNotEmpty      = errors.New("bucket not empty")
 )
 
 // decodeHexSHA256 parses a lowercase-hex SHA-256 digest as stored in
@@ -571,6 +572,27 @@ type journalPutPayload struct {
 	VersionID      string `json:"version_id"`
 }
 
+// journalDeleteObjectPayload is the record-type-3 payload: it removes one
+// key's visible root from a bucket's namespace. It does not reference (and
+// therefore cannot invalidate) the manifest/chunks the deleted root used to
+// point at -- those remain on disk, immutable and readable by any other
+// root that still references them, until a later GC pass (not part of M2)
+// proves them unreachable.
+type journalDeleteObjectPayload struct {
+	Bucket string `json:"bucket"`
+	Key    string `json:"key"`
+}
+
+// journalDeleteBucketPayload is the record-type-4 payload: it removes a
+// bucket from the visible namespace. Live code (Store.DeleteBucket) only
+// ever appends this record for a bucket that was, at that instant under
+// Store.mu, present and empty, so replay can safely treat it the same way
+// applyRecord treats put-object-root against an unknown bucket: a
+// mismatch is store corruption, not a normal condition to tolerate.
+type journalDeleteBucketPayload struct {
+	Bucket string `json:"bucket"`
+}
+
 // Journal owns the on-disk visibility.log file and the strictly
 // sequential append cursor into it.
 type Journal struct {
@@ -690,7 +712,10 @@ func replayJournal(f *os.File) (validEnd int64, lastSeq uint64, records []journa
 			return 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: unsupported frame version %d", offset, ver)
 		}
 		recType := header[6]
-		if recType != recordTypeCreateBucket && recType != recordTypePutObjectRoot {
+		switch recType {
+		case recordTypeCreateBucket, recordTypePutObjectRoot, recordTypeDeleteObjectRoot, recordTypeDeleteBucket:
+			// known record type
+		default:
 			return 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: unknown record type %d", offset, recType)
 		}
 		seq := binary.BigEndian.Uint64(header[8:16])
@@ -773,8 +798,9 @@ type objectEntry struct {
 }
 
 type bucketEntry struct {
-	name    string
-	objects map[string]*objectEntry
+	name      string
+	createdAt time.Time
+	objects   map[string]*objectEntry
 }
 
 type Store struct {
@@ -876,7 +902,7 @@ func (s *Store) applyRecord(rec journalRecord) error {
 			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
 		if _, exists := s.buckets[p.Bucket]; !exists {
-			s.buckets[p.Bucket] = &bucketEntry{name: p.Bucket, objects: map[string]*objectEntry{}}
+			s.buckets[p.Bucket] = &bucketEntry{name: p.Bucket, createdAt: p.CreatedAt, objects: map[string]*objectEntry{}}
 		}
 	case recordTypePutObjectRoot:
 		var p journalPutPayload
@@ -899,6 +925,25 @@ func (s *Store) applyRecord(rec journalRecord) error {
 			contentType:    p.ContentType,
 			seq:            rec.seq,
 		}
+	case recordTypeDeleteObjectRoot:
+		var p journalDeleteObjectPayload
+		if err := json.Unmarshal(rec.payload, &p); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		b, ok := s.buckets[p.Bucket]
+		if !ok {
+			return fmt.Errorf("seq %d: delete-object-root for unknown bucket %q", rec.seq, p.Bucket)
+		}
+		delete(b.objects, p.Key)
+	case recordTypeDeleteBucket:
+		var p journalDeleteBucketPayload
+		if err := json.Unmarshal(rec.payload, &p); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		if _, ok := s.buckets[p.Bucket]; !ok {
+			return fmt.Errorf("seq %d: delete-bucket for unknown bucket %q", rec.seq, p.Bucket)
+		}
+		delete(s.buckets, p.Bucket)
 	default:
 		return fmt.Errorf("seq %d: unknown record type %d", rec.seq, rec.recType)
 	}
@@ -922,14 +967,94 @@ func (s *Store) CreateBucket(name string) error {
 	if _, exists := s.buckets[name]; exists {
 		return nil
 	}
-	payload, err := json.Marshal(journalCreateBucketPayload{Bucket: name, CreatedAt: time.Now().UTC()})
+	createdAt := time.Now().UTC()
+	payload, err := json.Marshal(journalCreateBucketPayload{Bucket: name, CreatedAt: createdAt})
 	if err != nil {
 		return err
 	}
 	if _, err := s.journal.appendFrame(recordTypeCreateBucket, payload); err != nil {
 		return err
 	}
-	s.buckets[name] = &bucketEntry{name: name, objects: map[string]*objectEntry{}}
+	s.buckets[name] = &bucketEntry{name: name, createdAt: createdAt, objects: map[string]*objectEntry{}}
+	return nil
+}
+
+// ListBuckets returns the names of every currently visible bucket, sorted
+// for deterministic ordering, along with their creation times.
+func (s *Store) ListBuckets() []bucketEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]bucketEntry, 0, len(s.buckets))
+	for _, b := range s.buckets {
+		out = append(out, bucketEntry{name: b.name, createdAt: b.createdAt})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out
+}
+
+// HeadBucket reports whether name is currently a visible bucket.
+func (s *Store) HeadBucket(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.buckets[name]; !ok {
+		return errNoSuchBucket
+	}
+	return nil
+}
+
+// DeleteBucket removes an empty, currently visible bucket from the
+// namespace. It is journal-backed (record type 4) and durable: the bucket
+// is only removed from the in-memory namespace after the journal frame
+// recording its deletion has been appended and synced. Deletion changes
+// namespace reachability only -- it never touches any chunk or manifest
+// file, since those may still (or may again, after a future PutObject)
+// be referenced by other roots.
+func (s *Store) DeleteBucket(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.buckets[name]
+	if !ok {
+		return errNoSuchBucket
+	}
+	if len(b.objects) > 0 {
+		return errBucketNotEmpty
+	}
+	payload, err := json.Marshal(journalDeleteBucketPayload{Bucket: name})
+	if err != nil {
+		return err
+	}
+	if _, err := s.journal.appendFrame(recordTypeDeleteBucket, payload); err != nil {
+		return err
+	}
+	delete(s.buckets, name)
+	return nil
+}
+
+// DeleteObject removes key's visible root from bucket. Deleting a key that
+// does not currently exist is idempotent success (no journal record is
+// appended, matching CreateBucket's existing idempotent-recreate policy),
+// matching the non-versioned DELETE semantics ZeroS3 supports. As with
+// DeleteBucket, this changes namespace reachability only: the manifest and
+// chunks the deleted root pointed at are left on disk, immutable, for a
+// later GC pass and for any other root that still references them.
+func (s *Store) DeleteObject(bucket, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.buckets[bucket]
+	if !ok {
+		return errNoSuchBucket
+	}
+	if _, exists := b.objects[key]; !exists {
+		return nil
+	}
+	payload, err := json.Marshal(journalDeleteObjectPayload{Bucket: bucket, Key: key})
+	if err != nil {
+		return err
+	}
+	if _, err := s.journal.appendFrame(recordTypeDeleteObjectRoot, payload); err != nil {
+		return err
+	}
+	delete(b.objects, key)
 	return nil
 }
 
@@ -987,6 +1112,20 @@ func (s *Store) PutObject(bucket, key string, body []byte, contentType string, m
 	}
 
 	s.mu.Lock()
+	// Re-check bucket existence here, at the actual commit point, not just
+	// at entry to this function: PutObject's CDC/CAS/manifest work above
+	// runs without holding s.mu (by design -- it's slow and doesn't touch
+	// the mutable namespace), which leaves a window for a concurrent
+	// DeleteBucket to remove this bucket before the commit critical
+	// section below runs. Journal record ordering is what decides which
+	// operation "won"; committing a put-object-root against a namespace
+	// that no longer has the bucket would both corrupt the in-memory map
+	// (s.buckets[bucket] is nil) and produce a journal that fails replay
+	// (applyRecord requires the bucket to exist for a put-object-root).
+	if _, ok := s.buckets[bucket]; !ok {
+		s.mu.Unlock()
+		return nil, errNoSuchBucket
+	}
 	seq, err := s.journal.appendFrame(recordTypePutObjectRoot, payload)
 	if err != nil {
 		s.mu.Unlock()
@@ -1013,24 +1152,14 @@ func (s *Store) PutObject(bucket, key string, body []byte, contentType string, m
 // Every layer re-verifies content against its own hash, so a corrupted
 // manifest or chunk is reported as an error rather than served silently.
 func (s *Store) GetObject(bucket, key string) (*objectEntry, []byte, error) {
-	s.mu.Lock()
-	b, ok := s.buckets[bucket]
-	if !ok {
-		s.mu.Unlock()
-		return nil, nil, errNoSuchBucket
-	}
-	obj, ok := b.objects[key]
-	s.mu.Unlock()
-	if !ok {
-		return nil, nil, errNoSuchKey
+	obj, err := s.lookupObject(bucket, key)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	man, manBytes, err := s.readManifest(obj.manifestUUID)
+	man, err := s.readVerifiedManifest(obj.manifestUUID, obj.manifestSHA256)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", errManifestUnavailable, err)
-	}
-	if gotSum := sha256.Sum256(manBytes); gotSum != obj.manifestSHA256 {
-		return nil, nil, fmt.Errorf("%w: manifest %s hash mismatch", errManifestUnavailable, obj.manifestUUID)
+		return nil, nil, err
 	}
 
 	buf := make([]byte, 0, man.TotalLength)
@@ -1052,6 +1181,164 @@ func (s *Store) GetObject(bucket, key string) (*objectEntry, []byte, error) {
 		return nil, nil, fmt.Errorf("reconstructed object length mismatch for %s/%s", bucket, key)
 	}
 	return obj, buf, nil
+}
+
+// lookupObject resolves bucket/key against the journal-derived namespace
+// without reading the manifest or any chunk data.
+func (s *Store) lookupObject(bucket, key string) (*objectEntry, error) {
+	s.mu.Lock()
+	b, ok := s.buckets[bucket]
+	if !ok {
+		s.mu.Unlock()
+		return nil, errNoSuchBucket
+	}
+	obj, ok := b.objects[key]
+	s.mu.Unlock()
+	if !ok {
+		return nil, errNoSuchKey
+	}
+	return obj, nil
+}
+
+// readVerifiedManifest reads the manifest named by id and confirms its
+// exact bytes hash to wantSHA (the hash the journal recorded when this
+// root was committed), so a corrupted or substituted manifest file is
+// detected here rather than trusted blindly.
+func (s *Store) readVerifiedManifest(id string, wantSHA [32]byte) (manifestV1, error) {
+	man, manBytes, err := s.readManifest(id)
+	if err != nil {
+		return manifestV1{}, fmt.Errorf("%w: %v", errManifestUnavailable, err)
+	}
+	if gotSum := sha256.Sum256(manBytes); gotSum != wantSHA {
+		return manifestV1{}, fmt.Errorf("%w: manifest %s hash mismatch", errManifestUnavailable, id)
+	}
+	return man, nil
+}
+
+// HeadObject resolves bucket/key and returns its cached namespace entry
+// (size/ETag/Content-Type, all cheap to keep in memory) plus its manifest
+// (read once, for user metadata and the creation timestamp) -- but never
+// touches chunk data, since a HEAD response never has a body.
+func (s *Store) HeadObject(bucket, key string) (*objectEntry, manifestV1, error) {
+	obj, err := s.lookupObject(bucket, key)
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+	man, err := s.readVerifiedManifest(obj.manifestUUID, obj.manifestSHA256)
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+	return obj, man, nil
+}
+
+// =============================================================================
+// 7b. ListObjectsV2
+//
+// Concurrency policy: ListObjectsV2 takes a private, consistent snapshot
+// of the bucket's current key set (a plain copy made while holding s.mu)
+// at the start of each individual call, then does all filtering/sorting/
+// grouping/pagination against that snapshot without holding the lock.
+// This guarantees each *single* call sees one coherent, non-torn view of
+// the namespace -- never a key whose objectEntry pointer was concurrently
+// replaced mid-scan.
+//
+// Across separate calls in a paginated sequence (a ContinuationToken
+// chain), ZeroS3 makes no cross-call snapshot/isolation guarantee, the
+// same as real S3: if a PUT or DELETE lands between two page requests,
+// the next page reflects the namespace as it exists at that later call,
+// which may shift where the "resume after this key" cursor lands (a key
+// added before the cursor won't retroactively appear; one added after it
+// will). What pagination never does, even under concurrent mutation, is
+// duplicate or corrupt a result: each page is computed fresh from
+// whatever snapshot exists at that moment, using ordinary immutable Go
+// values (strings, copied structs), never a pointer into a namespace
+// that could change under the caller's feet.
+// =============================================================================
+
+// listedObject is one Contents entry ZeroS3 has decided to return, paired
+// with the namespace entry needed to render it.
+type listedObject struct {
+	key   string
+	entry *objectEntry
+}
+
+// listObjectsV2Page is one page of ListObjectsV2 results.
+type listObjectsV2Page struct {
+	contents       []listedObject
+	commonPrefixes []string
+	truncated      bool
+	// lastConsumedKey is the last input key (from the sorted, prefix
+	// filtered candidate list) that this page fully accounted for, used
+	// to build NextContinuationToken. It is only meaningful when
+	// truncated is true.
+	lastConsumedKey string
+}
+
+// ListObjectsV2 implements the planned ESSENTIAL subset: prefix,
+// delimiter/CommonPrefixes, max-keys, and continuation via startAfterKey
+// (the key decoded from a client-supplied ContinuationToken). Keys are
+// ordered by plain Go string comparison, which is exactly UTF-8 byte
+// lexical order since Go strings are byte sequences.
+func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, maxKeys int) (listObjectsV2Page, error) {
+	s.mu.Lock()
+	b, ok := s.buckets[bucket]
+	if !ok {
+		s.mu.Unlock()
+		return listObjectsV2Page{}, errNoSuchBucket
+	}
+	keys := make([]string, 0, len(b.objects))
+	entries := make(map[string]*objectEntry, len(b.objects))
+	for k, e := range b.objects {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		keys = append(keys, k)
+		entries[k] = e
+	}
+	s.mu.Unlock()
+	sort.Strings(keys)
+
+	var page listObjectsV2Page
+	if maxKeys <= 0 {
+		return page, nil
+	}
+
+	var lastGroupPrefix string
+	haveGroup := false
+	for _, k := range keys {
+		if startAfterKey != "" && k <= startAfterKey {
+			continue
+		}
+		remainder := k[len(prefix):]
+		if delimiter != "" {
+			if idx := strings.Index(remainder, delimiter); idx >= 0 {
+				cp := prefix + remainder[:idx+len(delimiter)]
+				if haveGroup && cp == lastGroupPrefix {
+					// Another key folding into the common prefix group
+					// we already emitted: it doesn't add a new result
+					// unit, but it does advance how far this page reaches.
+					page.lastConsumedKey = k
+					continue
+				}
+				if len(page.contents)+len(page.commonPrefixes) >= maxKeys {
+					page.truncated = true
+					break
+				}
+				page.commonPrefixes = append(page.commonPrefixes, cp)
+				lastGroupPrefix = cp
+				haveGroup = true
+				page.lastConsumedKey = k
+				continue
+			}
+		}
+		if len(page.contents)+len(page.commonPrefixes) >= maxKeys {
+			page.truncated = true
+			break
+		}
+		page.contents = append(page.contents, listedObject{key: k, entry: entries[k]})
+		page.lastConsumedKey = k
+	}
+	return page, nil
 }
 
 // =============================================================================
@@ -1458,6 +1745,10 @@ func s3ErrorStatus(code string) int {
 	case "InvalidAccessKeyId", "SignatureDoesNotMatch", "AccessDenied", "RequestTimeTooSkewed",
 		"AuthorizationHeaderMalformed", "XAmzContentSHA256Mismatch":
 		return http.StatusForbidden
+	case "BucketNotEmpty":
+		return http.StatusConflict
+	case "MethodNotAllowed":
+		return http.StatusMethodNotAllowed
 	default:
 		return http.StatusBadRequest
 	}
@@ -1466,7 +1757,103 @@ func s3ErrorStatus(code string) int {
 func writeS3Error(w http.ResponseWriter, code, message, resource string) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(s3ErrorStatus(code))
+	_, _ = io.WriteString(w, xml.Header)
 	_ = xml.NewEncoder(w).Encode(s3ErrorBody{Code: code, Message: message, Resource: resource})
+}
+
+// writeS3ErrorStatusOnly reports an S3-style error via status code alone,
+// with no XML body. HEAD responses must never carry a body -- a client
+// reading Content-Length off a HEAD's headers would otherwise try to read
+// a body that both violates HTTP HEAD semantics and was never intended to
+// describe the (nonexistent) resource.
+func writeS3ErrorStatusOnly(w http.ResponseWriter, code string) {
+	w.WriteHeader(s3ErrorStatus(code))
+}
+
+// =============================================================================
+// 9b. ListBuckets / ListObjectsV2 XML response types and continuation tokens
+// =============================================================================
+
+type xmlBucket struct {
+	Name         string `xml:"Name"`
+	CreationDate string `xml:"CreationDate"`
+}
+
+type listAllMyBucketsResult struct {
+	XMLName xml.Name    `xml:"ListAllMyBucketsResult"`
+	Buckets []xmlBucket `xml:"Buckets>Bucket"`
+}
+
+type xmlContent struct {
+	Key          string `xml:"Key"`
+	LastModified string `xml:"LastModified"`
+	ETag         string `xml:"ETag"`
+	Size         int64  `xml:"Size"`
+	StorageClass string `xml:"StorageClass"`
+}
+
+type xmlCommonPrefix struct {
+	Prefix string `xml:"Prefix"`
+}
+
+type listBucketResult struct {
+	XMLName               xml.Name          `xml:"ListBucketResult"`
+	Name                  string            `xml:"Name"`
+	Prefix                string            `xml:"Prefix"`
+	Delimiter             string            `xml:"Delimiter,omitempty"`
+	MaxKeys               int               `xml:"MaxKeys"`
+	KeyCount              int               `xml:"KeyCount"`
+	IsTruncated           bool              `xml:"IsTruncated"`
+	ContinuationToken     string            `xml:"ContinuationToken,omitempty"`
+	NextContinuationToken string            `xml:"NextContinuationToken,omitempty"`
+	Contents              []xmlContent      `xml:"Contents"`
+	CommonPrefixes        []xmlCommonPrefix `xml:"CommonPrefixes,omitempty"`
+}
+
+// iso8601 renders t the way S3 renders timestamps in XML response bodies:
+// UTC, millisecond precision, a literal "Z" offset.
+func iso8601(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+func writeXML(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, xml.Header)
+	_ = xml.NewEncoder(w).Encode(v)
+}
+
+// continuationTokenVersion prefixes every ZeroS3 continuation token. It
+// exists so a future token format change can be detected and rejected
+// explicitly rather than silently misparsed.
+const continuationTokenVersion = "zs3ct1:"
+
+// encodeContinuationToken produces an opaque ContinuationToken/
+// NextContinuationToken value for lastKey (the last input key the current
+// page fully accounted for). The token is base64 of a small versioned
+// string; it never contains a filesystem path, chunk hash, or manifest
+// UUID -- only the caller-supplied object key that a client already knows
+// exists, encoded only to keep the token opaque and to leave room for a
+// version tag.
+func encodeContinuationToken(lastKey string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(continuationTokenVersion + lastKey))
+}
+
+// decodeContinuationToken recovers the "resume after this key" cursor from
+// a client-supplied ContinuationToken. Any malformed, non-base64, or
+// wrong-version token is reported as an error so the caller can return an
+// S3-shaped InvalidArgument response rather than silently starting over or
+// panicking on a malformed index.
+func decodeContinuationToken(tok string) (string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(tok)
+	if err != nil {
+		return "", fmt.Errorf("invalid continuation token")
+	}
+	s := string(raw)
+	if !strings.HasPrefix(s, continuationTokenVersion) {
+		return "", fmt.Errorf("unsupported or corrupt continuation token")
+	}
+	return strings.TrimPrefix(s, continuationTokenVersion), nil
 }
 
 // =============================================================================
@@ -1577,6 +1964,18 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The bucket-less root path ("GET /") is ListBuckets: it has no
+	// bucket/key to parse, so it's handled before splitBucketKey, which
+	// requires (and every other operation needs) a non-empty bucket name.
+	if rawPath == "/" || rawPath == "" {
+		if r.Method == http.MethodGet {
+			srv.handleListBuckets(w)
+			return
+		}
+		writeS3Error(w, "MethodNotAllowed", "unsupported operation for this path", rawPath)
+		return
+	}
+
 	bucket, key, err := splitBucketKey(rawPath)
 	if err != nil {
 		writeS3Error(w, "InvalidURI", err.Error(), rawPath)
@@ -1588,8 +1987,18 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		srv.handleCreateBucket(w, bucket)
 	case r.Method == http.MethodPut:
 		srv.handlePutObject(w, r, bucket, key, body)
-	case r.Method == http.MethodGet && key != "":
+	case r.Method == http.MethodGet && key == "":
+		srv.handleListObjectsV2(w, bucket, rawQuery)
+	case r.Method == http.MethodGet:
 		srv.handleGetObject(w, bucket, key)
+	case r.Method == http.MethodHead && key == "":
+		srv.handleHeadBucket(w, bucket)
+	case r.Method == http.MethodHead:
+		srv.handleHeadObject(w, bucket, key)
+	case r.Method == http.MethodDelete && key == "":
+		srv.handleDeleteBucket(w, bucket)
+	case r.Method == http.MethodDelete:
+		srv.handleDeleteObject(w, bucket, key)
 	default:
 		writeS3Error(w, "MethodNotAllowed", "unsupported operation for this path", rawPath)
 	}
@@ -1603,6 +2012,38 @@ func (srv *Server) handleCreateBucket(w http.ResponseWriter, bucket string) {
 	w.Header().Set("Location", "/"+bucket)
 	w.WriteHeader(http.StatusOK)
 	fireTestHook(hookAfterAck)
+}
+
+func (srv *Server) handleListBuckets(w http.ResponseWriter) {
+	buckets := srv.store.ListBuckets()
+	result := listAllMyBucketsResult{Buckets: make([]xmlBucket, len(buckets))}
+	for i, b := range buckets {
+		result.Buckets[i] = xmlBucket{Name: b.name, CreationDate: iso8601(b.createdAt)}
+	}
+	writeXML(w, http.StatusOK, result)
+}
+
+func (srv *Server) handleHeadBucket(w http.ResponseWriter, bucket string) {
+	if err := srv.store.HeadBucket(bucket); err != nil {
+		writeS3ErrorStatusOnly(w, "NoSuchBucket")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (srv *Server) handleDeleteBucket(w http.ResponseWriter, bucket string) {
+	err := srv.store.DeleteBucket(bucket)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+		fireTestHook(hookAfterAck)
+	case errors.Is(err, errNoSuchBucket):
+		writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", "/"+bucket)
+	case errors.Is(err, errBucketNotEmpty):
+		writeS3Error(w, "BucketNotEmpty", "the bucket you tried to delete is not empty", "/"+bucket)
+	default:
+		writeS3Error(w, "InternalError", err.Error(), "/"+bucket)
+	}
 }
 
 func (srv *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket, key string, body []byte) {
@@ -1632,6 +2073,21 @@ func (srv *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucke
 	fireTestHook(hookAfterAck)
 }
 
+// writeObjectHeaders sets every header a GET/HEAD response shares: cached
+// namespace fields (Content-Type/ETag/Content-Length) plus the metadata
+// and creation time carried in the object's manifest.
+func writeObjectHeaders(w http.ResponseWriter, entry *objectEntry, man manifestV1) {
+	if entry.contentType != "" {
+		w.Header().Set("Content-Type", entry.contentType)
+	}
+	w.Header().Set("ETag", `"`+entry.etag+`"`)
+	w.Header().Set("Content-Length", strconv.FormatInt(entry.size, 10))
+	w.Header().Set("Last-Modified", man.CreatedAt.UTC().Format(http.TimeFormat))
+	for _, kv := range man.Metadata {
+		w.Header().Set("x-amz-meta-"+kv.Key, kv.Value)
+	}
+}
+
 func (srv *Server) handleGetObject(w http.ResponseWriter, bucket, key string) {
 	entry, data, err := srv.store.GetObject(bucket, key)
 	if err != nil {
@@ -1646,13 +2102,142 @@ func (srv *Server) handleGetObject(w http.ResponseWriter, bucket, key string) {
 		writeS3Error(w, "InternalError", err.Error(), "/"+bucket+"/"+key)
 		return
 	}
-	if entry.contentType != "" {
-		w.Header().Set("Content-Type", entry.contentType)
+	// GetObject already read and hash-verified this exact manifest once
+	// (to get the chunk list); reading it again here to render metadata
+	// headers is a small amount of duplicate I/O in exchange for keeping
+	// GetObject's return signature -- and every existing caller of it --
+	// unchanged.
+	man, err := srv.store.readVerifiedManifest(entry.manifestUUID, entry.manifestSHA256)
+	if err != nil {
+		writeS3Error(w, "InternalError", err.Error(), "/"+bucket+"/"+key)
+		return
 	}
-	w.Header().Set("ETag", `"`+entry.etag+`"`)
+	writeObjectHeaders(w, entry, man)
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+func (srv *Server) handleHeadObject(w http.ResponseWriter, bucket, key string) {
+	entry, man, err := srv.store.HeadObject(bucket, key)
+	if err != nil {
+		switch {
+		case errors.Is(err, errNoSuchBucket):
+			writeS3ErrorStatusOnly(w, "NoSuchBucket")
+		case errors.Is(err, errNoSuchKey):
+			writeS3ErrorStatusOnly(w, "NoSuchKey")
+		default:
+			writeS3ErrorStatusOnly(w, "InternalError")
+		}
+		return
+	}
+	writeObjectHeaders(w, entry, man)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (srv *Server) handleDeleteObject(w http.ResponseWriter, bucket, key string) {
+	err := srv.store.DeleteObject(bucket, key)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+		fireTestHook(hookAfterAck)
+	case errors.Is(err, errNoSuchBucket):
+		writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", "/"+bucket+"/"+key)
+	default:
+		writeS3Error(w, "InternalError", err.Error(), "/"+bucket+"/"+key)
+	}
+}
+
+// parseListObjectsV2Query extracts the ESSENTIAL ListObjectsV2 query
+// parameters. max-keys defaults to (and is clamped to) 1000, matching
+// real S3's default/maximum page size.
+func parseListObjectsV2Query(rawQuery string) (listType, prefix, delimiter, continuationToken string, maxKeys int, err error) {
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return "", "", "", "", 0, fmt.Errorf("malformed query string")
+	}
+	listType = values.Get("list-type")
+	prefix = values.Get("prefix")
+	delimiter = values.Get("delimiter")
+	continuationToken = values.Get("continuation-token")
+
+	maxKeys = 1000
+	if raw := values.Get("max-keys"); raw != "" {
+		n, convErr := strconv.Atoi(raw)
+		if convErr != nil || n < 0 {
+			return "", "", "", "", 0, fmt.Errorf("invalid max-keys %q", raw)
+		}
+		maxKeys = n
+	}
+	if maxKeys > 1000 {
+		maxKeys = 1000
+	}
+	return listType, prefix, delimiter, continuationToken, maxKeys, nil
+}
+
+func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery string) {
+	listType, prefix, delimiter, continuationToken, maxKeys, err := parseListObjectsV2Query(rawQuery)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), "/"+bucket)
+		return
+	}
+	// ZeroS3 implements only the V2 listing API; the legacy V1 GET-bucket
+	// listing shape (no list-type param) is out of scope for M2 and is
+	// rejected explicitly rather than silently misinterpreted as V2.
+	if listType != "2" {
+		writeS3Error(w, "InvalidArgument", "only list-type=2 (ListObjectsV2) is supported", "/"+bucket)
+		return
+	}
+
+	var startAfterKey string
+	if continuationToken != "" {
+		startAfterKey, err = decodeContinuationToken(continuationToken)
+		if err != nil {
+			writeS3Error(w, "InvalidArgument", "invalid continuation token", "/"+bucket)
+			return
+		}
+	}
+
+	page, err := srv.store.ListObjectsV2(bucket, prefix, delimiter, startAfterKey, maxKeys)
+	if err != nil {
+		if errors.Is(err, errNoSuchBucket) {
+			writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", "/"+bucket)
+			return
+		}
+		writeS3Error(w, "InternalError", err.Error(), "/"+bucket)
+		return
+	}
+
+	result := listBucketResult{
+		Name:              bucket,
+		Prefix:            prefix,
+		Delimiter:         delimiter,
+		MaxKeys:           maxKeys,
+		KeyCount:          len(page.contents) + len(page.commonPrefixes),
+		IsTruncated:       page.truncated,
+		ContinuationToken: continuationToken,
+	}
+	if page.truncated {
+		result.NextContinuationToken = encodeContinuationToken(page.lastConsumedKey)
+	}
+	for _, obj := range page.contents {
+		man, merr := srv.store.readVerifiedManifest(obj.entry.manifestUUID, obj.entry.manifestSHA256)
+		if merr != nil {
+			writeS3Error(w, "InternalError", merr.Error(), "/"+bucket)
+			return
+		}
+		result.Contents = append(result.Contents, xmlContent{
+			Key:          obj.key,
+			LastModified: iso8601(man.CreatedAt),
+			ETag:         `"` + obj.entry.etag + `"`,
+			Size:         obj.entry.size,
+			StorageClass: "STANDARD",
+		})
+	}
+	for _, cp := range page.commonPrefixes {
+		result.CommonPrefixes = append(result.CommonPrefixes, xmlCommonPrefix{Prefix: cp})
+	}
+	writeXML(w, http.StatusOK, result)
 }
 
 // =============================================================================
