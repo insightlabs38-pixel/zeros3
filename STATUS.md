@@ -1,4 +1,261 @@
-# ZeroS3 — M1 Status
+# ZeroS3 — M1/M2 Status
+
+## M2 status
+
+**COMPLETE.**
+
+All M2 exit-contract requirements are implemented and covered by passing
+tests (`go test`, `go test -race`, `go vet` all clean), plus a pinned,
+external AWS SDK for Go v2 canonical workflow run outside the repository.
+M3+ work was not started (see "M3 NOT STARTED" below).
+
+### Added
+
+S3 operations, on top of M1's CreateBucket/PutObject/GetObject:
+
+- **ListBuckets** (`GET /`): S3-shaped `ListAllMyBucketsResult` XML,
+  buckets sorted by name for deterministic ordering, `CreationDate` taken
+  from the bucket's own CreateBucket journal record.
+- **HeadBucket** (`HEAD /bucket`): 200 with no body for a visible bucket,
+  404 with no body (not even an XML error) for a missing one.
+- **DeleteBucket** (`DELETE /bucket`): succeeds only for a currently
+  visible, empty bucket (204 No Content); `NoSuchBucket` for a missing
+  bucket, `BucketNotEmpty` for a non-empty one. Journal-backed via the
+  M1-reserved record type `4`; only removes the bucket from the
+  journal-derived namespace, never touches chunk/manifest files.
+- **HeadObject** (`HEAD /bucket/key`): the same headers GetObject sends
+  (Content-Length, Content-Type, ETag, Last-Modified, every
+  `x-amz-meta-*` key) with no body; missing bucket/key returns 404 with
+  no body. Reads the cached namespace entry for size/ETag/Content-Type
+  and the object's manifest (once) for metadata/timestamp -- never reads
+  chunk data, since a HEAD response never has a body.
+- **DeleteObject** (`DELETE /bucket/key`): removes the key's visible root
+  (204 No Content); deleting an already-absent or never-existed key is
+  idempotent success, matching the supported non-versioned subset.
+  Journal-backed via the M1-reserved record type `3`. No delete markers,
+  no versioning.
+- **ListObjectsV2** (`GET /bucket?list-type=2...`): the planned ESSENTIAL
+  subset -- `prefix`, `delimiter`/`CommonPrefixes`, `max-keys` (default
+  and hard cap 1000, `max-keys=0` returns an empty non-truncated page),
+  `continuation-token`/`NextContinuationToken`, `KeyCount`, `IsTruncated`,
+  UTF-8 byte lexical key ordering (plain Go string comparison, which is
+  exactly byte-lexical since Go strings are byte sequences), XML escaping
+  via stdlib `encoding/xml`. Continuation tokens are opaque, versioned,
+  base64 values encoding only the last consumed *key* (never a
+  filesystem path, chunk hash, or manifest UUID); an unsupported version
+  or unparseable token is rejected as `InvalidArgument`. The legacy V1
+  listing shape (no `list-type=2`) is explicitly rejected rather than
+  silently misinterpreted.
+- **Object metadata/Content-Type round-trip fix**: M1's manifest already
+  stored `Content-Type` and `x-amz-meta-*`, but `GetObject`'s HTTP
+  handler never surfaced metadata headers back to the client. GET/HEAD
+  now both read the verified manifest and emit every `x-amz-meta-*`
+  header plus `Last-Modified` (from the manifest's `created_at`).
+
+### Concurrency model
+
+**Store.mu is the single writer lock for the visible bucket/object
+namespace.** Every mutation that changes what's visible --
+`CreateBucket`, `DeleteBucket`, `DeleteObject`, and the final
+journal-append + namespace-apply step of `PutObject` -- holds `Store.mu`
+across both its journal append and its namespace update, so the two
+always happen atomically together and journal sequence order always
+matches namespace-apply order.
+
+`PutObject`'s slow, CPU/IO-heavy work (CDC chunking, CAS chunk writes,
+manifest publication) deliberately runs *without* holding `Store.mu`, so
+multiple concurrent PUTs can prepare their immutable data in parallel;
+only the brief final commit (journal append + `s.buckets[...].objects[...]`
+update) is serialized. This is inherited from M1 unchanged.
+
+**M2 correctness fix (found while adding DeleteBucket):** `PutObject`'s
+final commit now re-checks that its target bucket still exists *inside*
+the same locked section that appends the journal frame, not just once at
+entry. Before this fix, a `DeleteBucket` racing a slow `PutObject` to the
+same (now-empty) bucket could remove the bucket between `PutObject`'s
+initial existence check and its final commit, causing a nil-map write
+(`s.buckets[bucket]` is nil) and a journal frame that would fail replay
+(`applyRecord` requires the bucket to exist for a put-object-root). The
+fix closes the race with no new locks: whichever operation's commit
+critical section runs first under `Store.mu` wins, and the loser gets a
+normal, coherent error (`NoSuchBucket` for the PUT, `BucketNotEmpty` for
+the DeleteBucket) instead of corrupting anything. Covered by
+`TestConcurrency_DeleteBucketVsPutObjectResolvesCoherently` (20 trials
+under `-race`).
+
+Readers (`GetObject`/`HeadObject`/`ListObjectsV2`) take `Store.mu` only
+for their namespace lookup/snapshot, then read immutable manifest/chunk
+data afterward without holding it -- safe because manifests and chunks
+are never mutated in place, only ever superseded by a new root a
+concurrent writer publishes under its own fresh UUID/digest. **Required
+invariant, tested under `-race`:** a reader observes a complete old
+object or a complete new object for a given key, never a mix of the two
+(`TestConcurrency_SameKeyPutPutSerializesToOneCompleteVersion`,
+`TestConcurrency_SameKeyPutVsDeleteNeverMixed`,
+`TestConcurrency_GetDuringOverwriteSeesCompleteObject`).
+
+**ListObjectsV2 concurrent-mutation policy** (documented in code next to
+`Store.ListObjectsV2`): each call takes a private, consistent snapshot of
+the bucket's key set under `Store.mu` at the start of that one call, then
+does all filtering/sorting/grouping/pagination against that snapshot
+without holding the lock -- so a single call never sees a torn view.
+Across separate calls in a paginated `ContinuationToken` sequence, ZeroS3
+makes no cross-call isolation guarantee, matching real S3: a PUT/DELETE
+landing between two page requests is reflected in the next page as of
+that later call. What pagination never does, even under concurrent
+mutation, is duplicate or corrupt a result within a stable-state
+sequence (no mutations between calls) -- covered by
+`TestListObjectsV2_MaxKeysOnePagination` and
+`TestListObjectsV2_PaginationNoDuplicateOrSkipWithDelimiter`.
+
+### Canonical interoperability
+
+External, ephemeral harness (`/tmp/zeros3-sdk-harness`, not part of this
+repository, not a ZeroS3 runtime dependency) exercising a real
+`zeros3-bin` server built from this repo as a black-box S3 endpoint:
+
+- **Pinned module versions** (from the harness's own `go.mod`, never
+  copied into this repo):
+  - `github.com/aws/aws-sdk-go-v2 v1.45.1`
+  - `github.com/aws/aws-sdk-go-v2/config v1.33.1`
+  - `github.com/aws/aws-sdk-go-v2/credentials v1.20.1`
+  - `github.com/aws/aws-sdk-go-v2/service/s3 v1.109.1`
+  - `github.com/aws/smithy-go v1.28.1`
+  - (plus their own transitive `sso`/`ssooidc`/`sts`/`signin`/`imds`
+    dependencies, all `// indirect` and irrelevant to the S3 wire
+    protocol exercised here)
+- **Endpoint/addressing:** `s3.Options.BaseEndpoint` set to the running
+  `zeros3-bin`'s local `http://127.0.0.1:<port>`, `UsePathStyle: true`.
+  Credentials via `credentials.NewStaticCredentialsProvider` with
+  ZeroS3's default keypair; config loaded through the ordinary
+  `config.LoadDefaultConfig` path (not a hand-built `aws.Config{}`
+  literal), which is what actually resolves the SDK's default
+  integrity-behavior knobs.
+- **Actual default wire behavior, inspected before assuming anything**
+  (see "investigation" below): the pinned SDK's default
+  `RequestChecksumCalculation` resolves to `WhenSupported`, and for an
+  ordinary `PutObject` with a seekable `bytes.Reader` body it sends a
+  **plain header**, `X-Amz-Checksum-Crc32: <base64 CRC32>` -- included in
+  `SignedHeaders`, computed over the literal request payload, sent
+  alongside a literal (non-`UNSIGNED-PAYLOAD`) `X-Amz-Content-Sha256`.
+  **No `aws-chunked` framing, no streaming trailer, no
+  `x-amz-sdk-checksum-algorithm` header appeared.** This is exactly the
+  ordinary header-form CRC32 path ZeroS3 M1 already implemented
+  (`validateCRC32Header`), so **no new protocol/framing/checksum support
+  was required or added for M2** -- no compatibility behavior was
+  promoted from T3. `ResponseChecksumValidation` also defaults to
+  `WhenSupported`, but the SDK only *validates* a response checksum if
+  the server actually sends one; ZeroS3 doesn't (M1/M2 scope), and the
+  SDK degrades to a harmless `WARN: Response has no supported checksum.
+  Not validating response payload.` rather than failing the request --
+  confirmed empirically against the running server, not just by reading
+  SDK source.
+  - Investigation note: an *older* pinned `config` module
+    (`v1.28.6`, current at M1 kickoff) predates the resolver that
+    defaults `RequestChecksumCalculation`/`ResponseChecksumValidation` to
+    `WhenSupported` at all -- with that version, `config.LoadDefaultConfig`
+    leaves both `Unset`, and the SDK sends **no checksum at all** by
+    default. The harness's pinned versions above (`config v1.33.1`) are
+    the ones that actually reproduce "modern default SDK behavior"; this
+    was confirmed by diffing raw requests (via a header-dumping stand-in
+    HTTP server) between the two `config` versions before picking the
+    pin, per the "inspect exact wire behavior first" failure policy.
+- **Exact canonical workflow passed** (41/41 checks,
+  `/tmp/zeros3-sdk-harness` `go run .`): ListBuckets on an empty store →
+  CreateBucket → HeadBucket → PutObject (default checksum behavior,
+  Content-Type + 2 metadata keys) → HeadObject (Content-Length/
+  Content-Type/metadata verified) → GetObject (exact byte equality +
+  Content-Type + metadata verified) → 5 more PutObjects under a shared
+  prefix → ListObjectsV2 (no params: KeyCount 6; `prefix`+`delimiter`:
+  sees all 5 `logs/` entries; `max-keys=2` paginated across 3 pages,
+  covering all 6 keys with no duplicates/skips) → DeleteObject + confirm
+  `HeadObject` now errors → DeleteBucket (after clearing remaining
+  objects) + confirm `HeadBucket` now errors → a separate
+  restart-persistence run (CreateBucket → PutObject a 400,000-byte
+  object → kill the `zeros3-bin` process → start a fresh `zeros3-bin`
+  against the same store directory → GetObject returns byte-identical
+  data).
+- No compatibility behavior needed promotion from T3 to M2/T0 (see
+  above); the SigV4 raw-path adversarial suite was re-run unmodified and
+  is green (see "Tests" below).
+
+### Tests
+
+`go test ./...`, `go test -race ./...`, and `go vet ./...` all pass, 0
+failures. All M1 suites listed in the M1 status section remain green
+unmodified (crash/recovery, journal framing/corruption, SigV4
+adversarial/raw-path, CRC32, CDC/CAS/manifest). M2 adds:
+
+- **Buckets**: ListBuckets empty/non-empty/deterministic order,
+  HeadBucket present/missing, DeleteBucket empty-succeeds/
+  missing-is-NoSuchBucket/non-empty-fails, DeleteBucket survives restart,
+  recreate-after-delete starts empty.
+- **Objects**: HeadObject headers-with-no-body and missing-bucket/key,
+  GetObject metadata + Content-Type round trip (including a
+  header-case-insensitivity check), DeleteObject existing/idempotent-
+  missing/never-existed/missing-bucket, DeleteObject survives restart,
+  shared CAS chunks stay readable through a second object after deleting
+  the first.
+- **ListObjectsV2**: empty bucket, UTF-8 byte lexical ordering
+  (including Unicode and space-containing keys), XML-special-character
+  key round trip, prefix + delimiter + CommonPrefixes counting,
+  `max-keys=0`, `max-keys=1` full pagination with no duplicate/skip,
+  default and clamped-to-1000 `max-keys`, invalid continuation token
+  rejected as `InvalidArgument`, no-duplicate/no-skip pagination across a
+  mixed direct-key/common-prefix sequence.
+- **Journal**: delete-object-root replay, delete-bucket replay, a mixed
+  create/put/delete/delete/recreate/put sequence surviving restart with
+  exactly the expected keys present/absent.
+- **Concurrency** (all run under `go test -race`): same-key PUT-vs-PUT
+  (20 concurrent writers, final GET matches exactly one complete written
+  version), same-key PUT-vs-DELETE (interleaved, final state is always a
+  complete old object, complete new object, or cleanly absent -- never
+  mixed/corrupt), GET-during-overwrite (50 GETs racing a tight PUT loop,
+  every GET returns one of the two complete versions), DeleteBucket-vs-
+  PutObject (20 trials, always resolves to one coherent outcome with no
+  panic).
+- **Interoperability**: the external AWS SDK Go v2 harness described
+  above; not duplicated into `zeros3_test.go` and not a repository
+  dependency.
+
+### Persistent-format impact
+
+**No frozen v1 format changed.** `store_format_version`,
+`cdc_format_version`, `manifest_format_version` are all still `1`; the
+journal magic (`ZSJ1`), frame version, header layout, CRC32C checksum,
+and sequence semantics are byte-for-byte unchanged; CDC parameters,
+gear-table derivation, CAS layout, and manifest field set are unchanged.
+The only journal-level change is *activating* the two record types M1
+explicitly reserved for this: `3 = DeleteObjectRoot` and
+`4 = DeleteBucket`, exactly as planned -- no new record type numbers, no
+repurposed ones.
+
+### Known limitations
+
+- ListObjectsV2's `StorageClass` field is a hardcoded `"STANDARD"`
+  literal (no real storage classes exist in ZeroS3); harmless but not a
+  meaningful signal.
+- `encoding-type=url` is not implemented (not required by the canonical
+  client or the M2 essential subset; XML escaping alone was sufficient
+  for every tested key, including XML-special characters).
+- ListObjectsV2 reads one manifest file per *listed* Contents entry (to
+  get `LastModified`), bounded by page size (≤1000), not by total object
+  count; acceptable at M2 scope, a possible optimization target later.
+- Deleted buckets/objects' chunks and manifests are never reclaimed (by
+  design -- GC is explicitly out of scope for M2); a long-running store
+  with many deletes will accumulate unreachable chunk/manifest files
+  until a future GC milestone.
+- The M1 known-issues list (full in-memory request body buffering,
+  non-power-loss-tested directory fsync, the "can't prove pre-sync
+  absence" durability caveat) is unchanged and still applies.
+
+## M3 NOT STARTED
+
+Confirmed: no work was begun on CopyObject, Range GET, exact stats
+semantics, a `verify` command, GC, presigned URLs, multipart upload,
+versioning, rclone integration, s3rver/Package Killer integration,
+Windows/macOS CI, sync/delta-transfer features, or benchmarks/polish
+beyond what M2 needed.
 
 ## M1 status
 
@@ -263,12 +520,11 @@ plan:
   itself against further mutation the moment journal I/O becomes
   uncertain.
 
-## M2 NOT STARTED
+## M2 status (superseded notice)
 
-Confirmed: no work was begun on ListObjectsV2, ListBuckets, HeadBucket,
-HeadObject, DeleteBucket, DeleteObject, CopyObject, Range GET, presigned
-URLs, multipart upload, versioning, GC, stats, a verify command, rclone
-integration, an AWS SDK Go v2 test harness, s3rver/Package Killer
-integration, Windows/macOS CI, sync/delta-transfer features, or
-benchmarks/polish beyond what M1 needed. Journal record types 3 and 4 are
-reserved as constants only, with no behavior attached.
+M2 is now complete -- see the "M2 status" section at the top of this
+file. This section is kept only as a historical record of the M1
+snapshot: at that point ListObjectsV2, ListBuckets, HeadBucket,
+HeadObject, DeleteBucket, and DeleteObject had not been started, and
+journal record types 3/4 were reserved constants with no behavior
+attached.
