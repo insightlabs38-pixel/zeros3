@@ -1885,13 +1885,17 @@ func TestCrash_DuringPartialJournalFrame(t *testing.T) {
 // crash in that gap is not reproducible in-process: once WriteAt returns,
 // the bytes sit in the same page cache a fresh *os.File in this same
 // process would read right back, sync or no sync -- fsync only matters
-// for surviving a real power loss, which nothing here can simulate.
-// What IS both real and testable is that a failed sync must never be
-// treated as a commit: this test makes the sync itself fail (by closing
-// the journal's fd out from under it right before Sync() runs) and
-// checks that PutObject reports failure and the append cursor does not
-// advance, so a retry cannot skip a sequence number or believe an
-// unsynced frame is durable.
+// for surviving a real power loss, which nothing here can simulate (see
+// TestCrash_SyncFailureRecoveryIsHonest for what IS honestly testable
+// about that gap on restart).
+//
+// What this test covers is the in-process consequence of a failed sync:
+// it must never be treated as a commit (PutObject reports failure, the
+// append cursor does not advance so a later append can't skip a sequence
+// number or write at a stale offset), and the journal must be poisoned so
+// this same process can't paper over the uncertainty by just trying
+// again -- a further mutation must be rejected outright, without ever
+// touching the file, until the store is reopened.
 func TestCrash_AfterJournalWriteBeforeSync(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenStore(dir)
@@ -1918,6 +1922,167 @@ func TestCrash_AfterJournalWriteBeforeSync(t *testing.T) {
 	if store.journal.writeOffset != offsetBefore || store.journal.nextSeq != seqBefore {
 		t.Fatalf("journal append cursor advanced despite a failed sync: offset %d->%d seq %d->%d",
 			offsetBefore, store.journal.writeOffset, seqBefore, store.journal.nextSeq)
+	}
+
+	store.journal.mu.Lock()
+	poisoned := store.journal.poisoned
+	store.journal.mu.Unlock()
+	if poisoned == nil {
+		t.Fatalf("expected the journal to be poisoned after a sync failure")
+	}
+
+	// The poisoned journal must reject further mutations in this process
+	// without appending another record or moving the cursor, even for an
+	// otherwise-unrelated bucket.
+	if err := store.CreateBucket("after-sync-failure"); err == nil {
+		t.Fatalf("expected a mutation after a sync failure to be rejected by the poisoned journal")
+	}
+	if store.journal.writeOffset != offsetBefore || store.journal.nextSeq != seqBefore {
+		t.Fatalf("journal append cursor moved on a mutation that should have been rejected outright")
+	}
+}
+
+// TestJournal_PoisonedAfterWriteFailure covers the write-failure half of
+// the same contract: if the raw WriteAt() itself fails (not just the
+// later Sync()), the journal must poison the same way.
+func TestJournal_PoisonedAfterWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutObject("b", "k1", []byte("prior-committed"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	offsetBefore := store.journal.writeOffset
+	seqBefore := store.journal.nextSeq
+
+	// Close the journal's file out from under it so the next WriteAt
+	// itself fails (not merely the subsequent Sync).
+	if err := store.journal.f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.PutObject("b", "k2", []byte("never committed"), "text/plain", nil)
+	if err == nil {
+		t.Fatalf("expected PutObject to fail when the journal write fails")
+	}
+
+	store.journal.mu.Lock()
+	poisoned := store.journal.poisoned
+	store.journal.mu.Unlock()
+	if poisoned == nil {
+		t.Fatalf("expected the journal to be poisoned after a write failure")
+	}
+	if store.journal.writeOffset != offsetBefore || store.journal.nextSeq != seqBefore {
+		t.Fatalf("journal append cursor advanced despite a failed write: offset %d->%d seq %d->%d",
+			offsetBefore, store.journal.writeOffset, seqBefore, store.journal.nextSeq)
+	}
+
+	// A further mutation, even to a different bucket, must be rejected
+	// without appending another record or advancing sequence/offset.
+	if err := store.CreateBucket("after-write-failure"); err == nil {
+		t.Fatalf("expected a mutation after a write failure to be rejected by the poisoned journal")
+	}
+	if store.journal.writeOffset != offsetBefore || store.journal.nextSeq != seqBefore {
+		t.Fatalf("journal append cursor moved on a mutation that should have been rejected outright")
+	}
+
+	// Reopening (the only sanctioned way out of the poisoned state) must
+	// show exactly the prior committed state and nothing from either
+	// failed/rejected attempt: no partial state, and no k2/after-write-failure.
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+	if _, ok := store2.buckets["after-write-failure"]; ok {
+		t.Fatalf("bucket from a rejected, poisoned-journal mutation must not exist after reopen")
+	}
+	if _, _, err := store2.GetObject("b", "k1"); err != nil {
+		t.Fatalf("expected the prior committed object to survive: %v", err)
+	}
+	if _, _, err := store2.GetObject("b", "k2"); err == nil {
+		t.Fatalf("k2 must not be visible: its journal write failed")
+	}
+}
+
+// TestCrash_SyncFailureRecoveryIsHonest exercises the real, documented
+// durability contract for the write-succeeded-but-sync-failed gap: a
+// crash/failure there leaves durability genuinely indeterminate, so a
+// fresh open of the store afterward may legitimately observe EITHER the
+// previous complete state or the new complete state (whichever bytes
+// actually made it to durable storage) -- but never anything partial or
+// mixed. This test deliberately does NOT assert that the unsynced write
+// vanishes, because nothing in-process can prove that one way or the
+// other (see the comment on TestCrash_AfterJournalWriteBeforeSync).
+func TestCrash_SyncFailureRecoveryIsHonest(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutObject("b", "k1", []byte("prior-committed"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	withTestHook(t, func(point string) {
+		if point == hookAfterJournalWriteBeforeSync {
+			store.journal.f.Close()
+		}
+	})
+	_, err = store.PutObject("b", "k2", []byte("uncertain-durability"), "text/plain", nil)
+	testHook = nil
+	if err == nil {
+		t.Fatalf("a mutation whose journal sync fails must never be acknowledged as successful")
+	}
+
+	// This process must refuse to continue mutating against the now-
+	// uncertain journal state.
+	if err := store.CreateBucket("after-failure"); err == nil {
+		t.Fatalf("expected the poisoned journal to reject further mutations in this process")
+	}
+
+	// A fresh open (standing in for a real restart) replays whatever is
+	// actually, durably on disk. Per the corrected contract, either
+	// outcome below is legitimate.
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatalf("replay must not fail outright over an unsynced-but-possibly-complete frame: %v", err)
+	}
+	defer store2.Close()
+
+	_, k1Data, err := store2.GetObject("b", "k1")
+	if err != nil {
+		t.Fatalf("the previously committed object must always survive: %v", err)
+	}
+	if string(k1Data) != "prior-committed" {
+		t.Fatalf("k1 content corrupted: %q", k1Data)
+	}
+
+	_, k2Data, err := store2.GetObject("b", "k2")
+	switch {
+	case err != nil:
+		// Legitimate: the unsynced frame did not survive, so only the
+		// old state is visible. This must be an ordinary "not found",
+		// not some other corruption-shaped error.
+		if !errors.Is(err, errNoSuchKey) {
+			t.Fatalf("expected a clean not-found for k2 if it didn't survive, got: %v", err)
+		}
+	case err == nil:
+		// Also legitimate: the frame happened to reach durable storage
+		// anyway. If so, it must be the COMPLETE object, never a
+		// partial or corrupted one.
+		if string(k2Data) != "uncertain-durability" {
+			t.Fatalf("k2 survived but with wrong/partial content: %q", k2Data)
+		}
 	}
 }
 

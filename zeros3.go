@@ -527,10 +527,26 @@ func newUUIDv7() string {
 //	N bytes  UTF-8 JSON payload
 //	4 bytes  CRC32C (Castagnoli) over every preceding byte of the frame
 //
-// A frame is durable only once its bytes are written AND fsynced; the
-// in-memory namespace is updated only after that sync succeeds, and only
-// then does a PUT/CreateBucket get acknowledged. A crash before a frame's
-// sync completes must never make its object visible after restart.
+// Durability contract:
+//
+//   - A mutation is committed once its frame's bytes are written AND
+//     fsynced. The in-memory namespace is updated only after that sync
+//     succeeds, and only then does a PUT/CreateBucket get acknowledged
+//     over HTTP. So: acknowledged ⇒ durable, per this contract.
+//   - The converse does NOT hold: a crash between a frame's Write and a
+//     successful Sync leaves that frame's durability genuinely
+//     indeterminate, not "guaranteed absent". Depending on what the OS
+//     and disk actually flushed before the crash, replay on restart may
+//     legally observe either the previous complete state or the new
+//     complete state -- both are acceptable outcomes of an unacknowledged
+//     mutation. What replay must NEVER produce, under any circumstance,
+//     is a partial or mixed state: a visible manifest that references
+//     incomplete/missing chunks, or object bytes that blend two versions.
+//     Every frame replay accepts is validated as a complete, CRC-checked
+//     unit (see replayJournal), which is what makes that guarantee hold
+//     even though the write/sync timing guarantee does not.
+//   - A write or sync failure is treated as terminal for that Journal:
+//     see the "poisoned" field below.
 // =============================================================================
 
 type journalRecord struct {
@@ -562,20 +578,48 @@ type Journal struct {
 	mu          sync.Mutex
 	writeOffset int64
 	nextSeq     uint64
+
+	// poisoned holds the first write/sync failure this Journal ever hit,
+	// if any. Once set (under mu), every future appendFrame call fails
+	// immediately without touching the file: a write or sync failure
+	// leaves durability genuinely uncertain (the frame's bytes may or may
+	// not have reached disk), and continuing to append on top of that
+	// uncertainty risks writing at a stale offset or reusing a sequence
+	// number that a not-quite-failed write already claimed. The only way
+	// out is a fresh Journal from a fresh openJournal call (i.e. closing
+	// and reopening the store), which re-derives writeOffset/nextSeq from
+	// whatever is actually, durably on disk.
+	poisoned error
 }
 
 // appendFrame durably appends one journal frame and returns its sequence
 // number. It writes the frame, fires the write-before-sync test hook,
 // fsyncs, fires the after-sync test hook, and only then advances the
-// append cursor -- so a failure or simulated crash between write and sync
-// leaves the journal's logical length unchanged from the reader's
-// perspective (replay will see it as a torn tail and discard it).
+// append cursor -- so the cursor only ever reflects frames this process
+// knows, for certain, were fully written and synced.
+//
+// If the Journal is already poisoned (a prior write or sync failed), this
+// fails immediately without touching the file at all. If the write or
+// sync in THIS call fails, the Journal is poisoned before returning: a
+// write/sync failure means the frame's actual on-disk state is unknown
+// (WriteAt can fail after writing some, all, or none of its bytes), so
+// writeOffset/nextSeq are deliberately left unmoved and no further
+// appends are allowed in this process -- appending on top of an uncertain
+// tail could write over live bytes, reuse a sequence number, or produce a
+// journal that looks fine to replay but silently drops what came before
+// the failure. The caller (Store) must be reopened (fresh openJournal,
+// which replays whatever is truly durable) before mutations can resume;
+// reads are unaffected, since they never touch the journal.
 func (j *Journal) appendFrame(recType byte, payload []byte) (uint64, error) {
 	if len(payload) > maxJournalPayload {
 		return 0, fmt.Errorf("journal: payload of %d bytes exceeds max %d", len(payload), maxJournalPayload)
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+
+	if j.poisoned != nil {
+		return 0, fmt.Errorf("journal: poisoned by a prior durability failure, refusing further mutations until the store is reopened: %w", j.poisoned)
+	}
 
 	seq := j.nextSeq
 	header := make([]byte, journalHeaderSize)
@@ -595,11 +639,15 @@ func (j *Journal) appendFrame(recType byte, payload []byte) (uint64, error) {
 	frame = append(frame, crcBytes...)
 
 	if _, err := j.f.WriteAt(frame, j.writeOffset); err != nil {
-		return 0, fmt.Errorf("journal: write failed: %w", err)
+		wrapped := fmt.Errorf("journal: write failed: %w", err)
+		j.poisoned = wrapped
+		return 0, wrapped
 	}
 	fireTestHook(hookAfterJournalWriteBeforeSync)
 	if err := j.f.Sync(); err != nil {
-		return 0, fmt.Errorf("journal: sync failed: %w", err)
+		wrapped := fmt.Errorf("journal: sync failed: %w", err)
+		j.poisoned = wrapped
+		return 0, wrapped
 	}
 	fireTestHook(hookAfterJournalSync)
 
@@ -890,7 +938,10 @@ func (s *Store) CreateBucket(name string) error {
 // publication, and finally an append+sync of the visibility journal. Only
 // after the journal sync succeeds is the in-memory namespace updated;
 // only after that does this function return, so a caller can safely
-// acknowledge success the moment it returns.
+// acknowledge success the moment it returns. If the journal append fails
+// (see Journal.appendFrame), that failure poisons the journal and this
+// error propagates to the caller, who must not acknowledge success; any
+// chunks/manifest already published are orphaned but harmless.
 func (s *Store) PutObject(bucket, key string, body []byte, contentType string, metadata map[string]string) (*objectEntry, error) {
 	s.mu.Lock()
 	_, ok := s.buckets[bucket]
