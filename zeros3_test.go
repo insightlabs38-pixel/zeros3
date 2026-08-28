@@ -3218,3 +3218,1411 @@ func TestConcurrency_DeleteBucketVsPutObjectResolvesCoherently(t *testing.T) {
 		ts.Close()
 	}
 }
+
+// =============================================================================
+// M3: CDC/dedup evidence (Store + stats level)
+//
+// Frozen CDC v1 parameters are unchanged; these tests exercise the full
+// Store+stats pipeline with real PutObject calls to produce concrete,
+// measured dedup evidence -- every asserted value is read back from
+// computeStats, never an invented number, and every measured value is
+// also logged via t.Logf for a readable trail.
+// =============================================================================
+
+func TestDedup_IdenticalObjectReuseAcrossKeys(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	body := genRandomBytes(9001, 6*1024*1024) // several MB: many CDC chunks
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.PutObject("b", "first", body, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	after1, err := s.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.PutObject("b", "second", body, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	after2, err := s.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("after 1 copy:  logical=%d refs=%d(%d bytes) unique=%d(%d bytes) chunk-file-bytes=%d",
+		after1.LogicalCurrentBytes, after1.LogicalChunkReferenceCount, after1.LogicalChunkReferenceBytes,
+		after1.ScopeUniqueChunkCount, after1.ScopeUniqueChunkBytes, after1.ChunkStoreFileBytes)
+	t.Logf("after 2 copies: logical=%d refs=%d(%d bytes) unique=%d(%d bytes) chunk-file-bytes=%d dedup_avoided=%d reduction=%.1f%%",
+		after2.LogicalCurrentBytes, after2.LogicalChunkReferenceCount, after2.LogicalChunkReferenceBytes,
+		after2.ScopeUniqueChunkCount, after2.ScopeUniqueChunkBytes, after2.ChunkStoreFileBytes,
+		after2.DedupAvoidedBytes, after2.DedupReduction*100)
+
+	if after2.LogicalCurrentBytes != 2*after1.LogicalCurrentBytes {
+		t.Fatalf("expected logical current bytes to double, got %d vs %d", after2.LogicalCurrentBytes, after1.LogicalCurrentBytes)
+	}
+	if after2.LogicalChunkReferenceCount != 2*after1.LogicalChunkReferenceCount {
+		t.Fatalf("expected chunk reference count to double, got %d vs %d", after2.LogicalChunkReferenceCount, after1.LogicalChunkReferenceCount)
+	}
+	if after2.LogicalChunkReferenceBytes != 2*after1.LogicalChunkReferenceBytes {
+		t.Fatalf("expected chunk reference bytes to double, got %d vs %d", after2.LogicalChunkReferenceBytes, after1.LogicalChunkReferenceBytes)
+	}
+	if after2.ScopeUniqueChunkBytes != after1.ScopeUniqueChunkBytes {
+		t.Fatalf("expected unique chunk payload bytes unchanged after an identical second copy, got %d vs %d", after2.ScopeUniqueChunkBytes, after1.ScopeUniqueChunkBytes)
+	}
+	if after2.ScopeUniqueChunkCount != after1.ScopeUniqueChunkCount {
+		t.Fatalf("expected unique chunk count unchanged, got %d vs %d", after2.ScopeUniqueChunkCount, after1.ScopeUniqueChunkCount)
+	}
+	if after2.ChunkStoreFileBytes != after1.ChunkStoreFileBytes {
+		t.Fatalf("expected actual CAS chunk file bytes on disk unchanged (chunks rewritten/duplicated), got %d vs %d", after2.ChunkStoreFileBytes, after1.ChunkStoreFileBytes)
+	}
+	if after2.DedupAvoidedBytes <= 0 {
+		t.Fatalf("expected a positive dedup_avoided_bytes for a duplicate upload, got %d", after2.DedupAvoidedBytes)
+	}
+}
+
+func TestDedup_IdenticalObjectReuseAcrossBuckets(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	body := genRandomBytes(4242, 3*1024*1024)
+	if err := s.CreateBucket("b1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b1", "obj", body, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	storeAfterOne, err := s.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.PutObject("b2", "obj", body, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	storeAfterTwo, err := s.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b1Scope, err := s.computeStats(statsScope{bucket: "b1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2Scope, err := s.computeStats(statsScope{bucket: "b2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("store-wide unique bytes: 1 bucket=%d, 2 buckets=%d", storeAfterOne.ScopeUniqueChunkBytes, storeAfterTwo.ScopeUniqueChunkBytes)
+	t.Logf("bucket b1: unique=%d exclusive=%d shared=%d", b1Scope.ScopeUniqueChunkBytes, b1Scope.ScopeExclusiveChunkBytes, b1Scope.ScopeSharedChunkBytes)
+	t.Logf("bucket b2: unique=%d exclusive=%d shared=%d", b2Scope.ScopeUniqueChunkBytes, b2Scope.ScopeExclusiveChunkBytes, b2Scope.ScopeSharedChunkBytes)
+
+	if storeAfterTwo.ScopeUniqueChunkBytes != storeAfterOne.ScopeUniqueChunkBytes {
+		t.Fatalf("store-wide unique chunk bytes must not grow when identical content is uploaded to a second bucket, got %d vs %d",
+			storeAfterTwo.ScopeUniqueChunkBytes, storeAfterOne.ScopeUniqueChunkBytes)
+	}
+	if b1Scope.ScopeExclusiveChunkBytes != 0 {
+		t.Fatalf("expected bucket b1's chunks to be entirely shared with b2 (0 exclusive), got %d exclusive", b1Scope.ScopeExclusiveChunkBytes)
+	}
+	if b1Scope.ScopeSharedChunkBytes != b1Scope.ScopeUniqueChunkBytes {
+		t.Fatalf("expected all of b1's unique bytes to be shared with b2, got shared=%d unique=%d", b1Scope.ScopeSharedChunkBytes, b1Scope.ScopeUniqueChunkBytes)
+	}
+	if b2Scope.ScopeUniqueChunkBytes != b1Scope.ScopeUniqueChunkBytes {
+		t.Fatalf("expected both buckets to reference the identical unique byte total, got b1=%d b2=%d", b1Scope.ScopeUniqueChunkBytes, b2Scope.ScopeUniqueChunkBytes)
+	}
+}
+
+func TestDedup_EditedObjectReuseBeatsFixedSizeChunking(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	original := genRandomBytes(777, 2*1024*1024)
+	// Insert 4001 bytes near the *start* of the file (not the middle):
+	// everything before the edit trivially "reuses" for any chunker,
+	// fixed-size included, since it's simply unchanged bytes a
+	// deterministic chunker walks in the same order -- that is not a
+	// meaningful comparison. Editing near the start instead means the
+	// overwhelming majority of the file's bytes sit *downstream* of the
+	// edit, which is exactly where fixed-size chunking fails (every
+	// absolute chunk boundary after the edit shifts by the insertion
+	// length, so no downstream chunk matches its old content) while CDC
+	// resynchronizes within about one chunk of the edit.
+	const editOffset = 50000
+	insertion := genRandomBytes(778, 4001)
+	edited := append(append(append([]byte{}, original[:editOffset]...), insertion...), original[editOffset:]...)
+
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "original", original, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "edited", edited, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	full, err := s.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	editedOnly, err := s.computeStats(statsScope{bucket: "b", key: "edited"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reusedBytes := editedOnly.ScopeSharedChunkBytes // bytes of "edited" that live in chunks also referenced by "original"
+	reuseFraction := float64(reusedBytes) / float64(editedOnly.LogicalCurrentBytes)
+
+	// Fixed-64KiB-chunking comparison over the exact same two byte
+	// strings, computed independently of the Store/CAS, to show what a
+	// non-content-defined chunker would have achieved.
+	fixedOriginal := fixedSizeChunks(original, 64*1024)
+	fixedEdited := fixedSizeChunks(edited, 64*1024)
+	fixedOriginalSet := map[[32]byte]bool{}
+	for _, c := range fixedOriginal {
+		fixedOriginalSet[sha256.Sum256(c)] = true
+	}
+	var fixedReusedBytes int
+	for _, c := range fixedEdited {
+		if fixedOriginalSet[sha256.Sum256(c)] {
+			fixedReusedBytes += len(c)
+		}
+	}
+	fixedReuseFraction := float64(fixedReusedBytes) / float64(len(edited))
+
+	t.Logf("original logical bytes:   %d", len(original))
+	t.Logf("edited logical bytes:     %d", len(edited))
+	t.Logf("store total chunk refs:   %d (%d bytes)", full.LogicalChunkReferenceCount, full.LogicalChunkReferenceBytes)
+	t.Logf("store unique chunks:      %d (%d bytes)", full.ScopeUniqueChunkCount, full.ScopeUniqueChunkBytes)
+	t.Logf("edited object: exclusive=%d bytes, reused(shared w/ original)=%d bytes (%.1f%% of edited object)",
+		editedOnly.ScopeExclusiveChunkBytes, reusedBytes, reuseFraction*100)
+	t.Logf("store dedup_avoided_bytes=%d dedup_reduction=%.1f%%", full.DedupAvoidedBytes, full.DedupReduction*100)
+	t.Logf("fixed-64KiB-chunk comparison: reused=%d bytes (%.1f%% of edited object)", fixedReusedBytes, fixedReuseFraction*100)
+
+	if reuseFraction < 0.90 {
+		t.Fatalf("expected CDC to reuse the large majority of the edited object's bytes from the original upload, got %.1f%% reused", reuseFraction*100)
+	}
+	if fixedReuseFraction > 0.05 {
+		t.Fatalf("expected fixed-size 64KiB chunking to reuse almost nothing after a mid-file insertion (edit locality is the point of this comparison), got %.1f%%", fixedReuseFraction*100)
+	}
+	if reuseFraction <= fixedReuseFraction {
+		t.Fatalf("expected CDC reuse fraction (%.3f) to clearly beat fixed-size reuse fraction (%.3f)", reuseFraction, fixedReuseFraction)
+	}
+}
+
+// =============================================================================
+// M3: stats
+// =============================================================================
+
+// buildManualManifest and putManualObject construct an object from
+// exact, hand-chosen chunk boundaries, bypassing CDC entirely, so stats/
+// verify tests can assert exact arithmetic on a known chunk-sharing
+// arrangement rather than depending on CDC's content-determined
+// boundaries. ETag/ObjectSHA256 are placeholders: neither stats nor
+// verify (Section 12/13) checks them against reconstructed content.
+func buildManualManifest(chunks [][]byte, contentType string, metadata map[string]string) manifestV1 {
+	id := newUUIDv7()
+	refs := make([]chunkRef, len(chunks))
+	var total int64
+	for i, c := range chunks {
+		sum := sha256.Sum256(c)
+		refs[i] = chunkRef{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(c))}
+		total += int64(len(c))
+	}
+	return manifestV1{
+		ManifestFormatVersion: manifestFormatVersion,
+		CDCFormatVersion:      cdcFormatVersion,
+		HashAlgorithm:         "sha256",
+		ManifestUUID:          id,
+		TotalLength:           total,
+		Chunks:                refs,
+		ObjectSHA256:          strings.Repeat("0", 64),
+		ETag:                  "manualtestetag0000000000000000",
+		ContentType:           contentType,
+		Metadata:              sortedMetadataKV(metadata),
+		CreatedAt:             time.Now().UTC(),
+		VersionID:             id,
+	}
+}
+
+func putManualObject(t *testing.T, s *Store, bucket, key string, chunks [][]byte) *objectEntry {
+	t.Helper()
+	for _, c := range chunks {
+		if _, err := s.casWrite(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	man := buildManualManifest(chunks, "application/octet-stream", nil)
+	manUUID, manSHA, err := s.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := s.commitObjectRoot(bucket, key, manUUID, manSHA, man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entry
+}
+
+// TestStats_ExactSharingArrangement manually constructs:
+//
+//	chunk A = 1000 bytes, chunk B = 2000 bytes, chunk C = 3000 bytes
+//	bucket "b":  x = [A,B] (3000B)   y = [B,C] (5000B)
+//	bucket "b2": z = [C]   (3000B)
+//
+// and proves every STATS_SPEC.md field by hand-computed arithmetic.
+func TestStats_ExactSharingArrangement(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	chunkA := bytes.Repeat([]byte{0xA1}, 1000)
+	chunkB := bytes.Repeat([]byte{0xB2}, 2000)
+	chunkC := bytes.Repeat([]byte{0xC3}, 3000)
+
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b2"); err != nil {
+		t.Fatal(err)
+	}
+	putManualObject(t, s, "b", "x", [][]byte{chunkA, chunkB})
+	putManualObject(t, s, "b", "y", [][]byte{chunkB, chunkC})
+	putManualObject(t, s, "b2", "z", [][]byte{chunkC})
+
+	whole, err := s.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole.BucketCount != 2 {
+		t.Fatalf("bucket_count: got %d want 2", whole.BucketCount)
+	}
+	if whole.CurrentObjectCount != 3 {
+		t.Fatalf("current_object_count: got %d want 3", whole.CurrentObjectCount)
+	}
+	if whole.LogicalCurrentBytes != 11000 {
+		t.Fatalf("logical_current_bytes: got %d want 11000", whole.LogicalCurrentBytes)
+	}
+	if whole.LogicalChunkReferenceCount != 5 {
+		t.Fatalf("logical_chunk_reference_count: got %d want 5", whole.LogicalChunkReferenceCount)
+	}
+	if whole.LogicalChunkReferenceBytes != 11000 {
+		t.Fatalf("logical_chunk_reference_bytes: got %d want 11000", whole.LogicalChunkReferenceBytes)
+	}
+	if whole.ScopeUniqueChunkCount != 3 {
+		t.Fatalf("scope_unique_chunk_count (whole store): got %d want 3", whole.ScopeUniqueChunkCount)
+	}
+	if whole.ScopeUniqueChunkBytes != 6000 {
+		t.Fatalf("scope_unique_chunk_bytes (whole store): got %d want 6000", whole.ScopeUniqueChunkBytes)
+	}
+	if whole.ScopeExclusiveChunkBytes != 6000 || whole.ScopeSharedChunkBytes != 0 {
+		t.Fatalf("whole-store scope must be entirely exclusive: exclusive=%d shared=%d", whole.ScopeExclusiveChunkBytes, whole.ScopeSharedChunkBytes)
+	}
+	if whole.UniqueReachableChunkBytes != 6000 {
+		t.Fatalf("unique_reachable_chunk_bytes: got %d want 6000", whole.UniqueReachableChunkBytes)
+	}
+	if whole.ChunkStoreFileBytes != 6000 {
+		t.Fatalf("chunk_store_file_bytes: got %d want 6000 (each of A/B/C published exactly once)", whole.ChunkStoreFileBytes)
+	}
+	if whole.DedupAvoidedBytes != 5000 {
+		t.Fatalf("dedup_avoided_bytes: got %d want 5000", whole.DedupAvoidedBytes)
+	}
+	if wantReduction := 5000.0 / 11000.0; whole.DedupReduction < wantReduction-1e-9 || whole.DedupReduction > wantReduction+1e-9 {
+		t.Fatalf("dedup_reduction: got %v want %v", whole.DedupReduction, wantReduction)
+	}
+
+	bScope, err := s.computeStats(statsScope{bucket: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bScope.CurrentObjectCount != 2 || bScope.LogicalCurrentBytes != 8000 {
+		t.Fatalf("bucket b scope: objects=%d bytes=%d, want 2/8000", bScope.CurrentObjectCount, bScope.LogicalCurrentBytes)
+	}
+	if bScope.LogicalChunkReferenceCount != 4 || bScope.LogicalChunkReferenceBytes != 8000 {
+		t.Fatalf("bucket b chunk refs: count=%d bytes=%d, want 4/8000", bScope.LogicalChunkReferenceCount, bScope.LogicalChunkReferenceBytes)
+	}
+	if bScope.ScopeUniqueChunkCount != 3 || bScope.ScopeUniqueChunkBytes != 6000 {
+		t.Fatalf("bucket b unique chunks: count=%d bytes=%d, want 3/6000", bScope.ScopeUniqueChunkCount, bScope.ScopeUniqueChunkBytes)
+	}
+	if bScope.ScopeExclusiveChunkBytes != 3000 {
+		t.Fatalf("bucket b exclusive bytes (A+B): got %d want 3000", bScope.ScopeExclusiveChunkBytes)
+	}
+	if bScope.ScopeSharedChunkBytes != 3000 {
+		t.Fatalf("bucket b shared bytes (C, also referenced by b2): got %d want 3000", bScope.ScopeSharedChunkBytes)
+	}
+	if bScope.DedupAvoidedBytes != 2000 {
+		t.Fatalf("bucket b dedup_avoided_bytes (B referenced twice within scope): got %d want 2000", bScope.DedupAvoidedBytes)
+	}
+
+	b2Scope, err := s.computeStats(statsScope{bucket: "b2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b2Scope.CurrentObjectCount != 1 || b2Scope.LogicalCurrentBytes != 3000 {
+		t.Fatalf("bucket b2 scope: objects=%d bytes=%d, want 1/3000", b2Scope.CurrentObjectCount, b2Scope.LogicalCurrentBytes)
+	}
+	if b2Scope.ScopeExclusiveChunkBytes != 0 || b2Scope.ScopeSharedChunkBytes != 3000 {
+		t.Fatalf("bucket b2's only chunk (C) must be entirely shared: exclusive=%d shared=%d", b2Scope.ScopeExclusiveChunkBytes, b2Scope.ScopeSharedChunkBytes)
+	}
+
+	yScope, err := s.computeStats(statsScope{bucket: "b", key: "y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if yScope.CurrentObjectCount != 1 || yScope.LogicalCurrentBytes != 5000 {
+		t.Fatalf("object y scope: objects=%d bytes=%d, want 1/5000", yScope.CurrentObjectCount, yScope.LogicalCurrentBytes)
+	}
+	if yScope.ScopeExclusiveChunkBytes != 0 {
+		t.Fatalf("object y has no chunk exclusive to it (both B and C are used elsewhere): got exclusive=%d", yScope.ScopeExclusiveChunkBytes)
+	}
+	if yScope.ScopeSharedChunkBytes != 5000 {
+		t.Fatalf("object y: expected all 5000 unique bytes to be shared with other objects, got %d", yScope.ScopeSharedChunkBytes)
+	}
+}
+
+func TestStats_ReclaimableAfterDelete(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	chunkA := bytes.Repeat([]byte{0xA1}, 1000)
+	chunkB := bytes.Repeat([]byte{0xB2}, 2000)
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	putManualObject(t, s, "b", "x", [][]byte{chunkA})
+	entryY := putManualObject(t, s, "b", "y", [][]byte{chunkA, chunkB})
+	yManInfo, err := os.Stat(filepath.Join(dir, "manifests", entryY.manifestUUID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := s.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.ReclaimableBytes != 0 {
+		t.Fatalf("expected nothing reclaimable before any delete, got %d", before.ReclaimableBytes)
+	}
+
+	if err := s.DeleteObject("b", "y"); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := s.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// B is only referenced by the now-deleted y, so it becomes reclaimable;
+	// A is still referenced by x and remains reachable. y's own manifest
+	// file also becomes unreachable (no current root points at it any
+	// more), which is real reclaimable bytes too -- deletion changes
+	// roots, not chunks *or* the manifest that named them.
+	if after.UniqueReachableChunkBytes != 1000 {
+		t.Fatalf("unique_reachable_chunk_bytes after delete: got %d want 1000 (only A remains reachable)", after.UniqueReachableChunkBytes)
+	}
+	if after.ChunkStoreFileBytes != 3000 {
+		t.Fatalf("chunk_store_file_bytes must be unchanged by a DELETE (deletion changes roots, not chunks): got %d want 3000", after.ChunkStoreFileBytes)
+	}
+	wantReclaimable := int64(2000) + yManInfo.Size()
+	if after.ReclaimableBytes != wantReclaimable {
+		t.Fatalf("reclaimable_bytes after deleting y: got %d want %d (chunk B's bytes + y's own now-unreachable manifest file)", after.ReclaimableBytes, wantReclaimable)
+	}
+
+	verifyRes, err := s.Verify(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verifyRes.OK() {
+		t.Fatalf("unreachable garbage must not be reported as an integrity failure: %+v", verifyRes)
+	}
+	if verifyRes.UnreachableChunks != 1 || verifyRes.UnreachableManifests != 1 || verifyRes.ReclaimableBytes != wantReclaimable {
+		t.Fatalf("verify reclaimable accounting: unreachable_chunks=%d unreachable_manifests=%d reclaimable_bytes=%d, want 1/1/%d",
+			verifyRes.UnreachableChunks, verifyRes.UnreachableManifests, verifyRes.ReclaimableBytes, wantReclaimable)
+	}
+}
+
+func TestStats_JSONFieldNamesMatchSpec(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	res, err := s.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, field := range []string{
+		"bucket_count", "current_object_count", "version_count",
+		"logical_current_bytes", "logical_version_bytes",
+		"logical_chunk_reference_bytes", "logical_chunk_reference_count",
+		"scope_unique_chunk_bytes", "scope_unique_chunk_count",
+		"scope_exclusive_chunk_bytes", "scope_shared_chunk_bytes",
+		"unique_reachable_chunk_bytes", "chunk_store_file_bytes",
+		"manifest_file_bytes", "journal_file_bytes", "temporary_file_bytes",
+		"reclaimable_bytes", "actual_store_file_bytes",
+		"dedup_avoided_bytes", "dedup_reduction", "unique_to_logical_ratio",
+	} {
+		if !strings.Contains(js, `"`+field+`"`) {
+			t.Fatalf("expected stable JSON field name %q in stats output, got: %s", field, js)
+		}
+	}
+}
+
+// =============================================================================
+// M3: verify
+// =============================================================================
+
+func TestVerify_CleanStoreOK(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k1", genRandomBytes(10, 300*1024), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k2", genRandomBytes(11, 5000), "text/plain", map[string]string{"x": "y"}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, deep := range []bool{false, true} {
+		res, err := s.Verify(deep)
+		if err != nil {
+			t.Fatalf("Verify(deep=%v): %v", deep, err)
+		}
+		if !res.OK() {
+			t.Fatalf("Verify(deep=%v) on a clean store must be OK, got %+v", deep, res)
+		}
+		if res.ManifestsChecked != 2 {
+			t.Fatalf("Verify(deep=%v) manifests_checked: got %d want 2", deep, res.ManifestsChecked)
+		}
+		if res.ChunksChecked == 0 {
+			t.Fatalf("Verify(deep=%v) chunks_checked must be nonzero", deep)
+		}
+		if !res.JournalOK {
+			t.Fatalf("Verify(deep=%v) journal_ok must be true", deep)
+		}
+	}
+}
+
+func TestVerify_DetectsMissingChunk(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := s.PutObject("b", "k", genRandomBytes(20, 300*1024), "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	man, err := s.readVerifiedManifest(entry.manifestUUID, entry.manifestSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := decodeHexSHA256(man.Chunks[0].SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(s.chunkPath(sum)); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.Verify(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK() {
+		t.Fatalf("expected a missing chunk to fail verify")
+	}
+	if res.Missing == 0 {
+		t.Fatalf("expected the missing chunk to be counted, got %+v", res)
+	}
+}
+
+func TestVerify_DetectsCorruptChunkOnlyUnderDeep(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := s.PutObject("b", "k", genRandomBytes(21, 300*1024), "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	man, err := s.readVerifiedManifest(entry.manifestUUID, entry.manifestSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := man.Chunks[0]
+	sum, err := decodeHexSHA256(c.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := bytes.Repeat([]byte{0x99}, int(c.Length)) // same length, different content
+	if err := os.WriteFile(s.chunkPath(sum), tampered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	basic, err := s.Verify(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !basic.OK() {
+		t.Fatalf("basic verify only checks file length, not content; a same-length corruption must not be flagged: %+v", basic)
+	}
+
+	deep, err := s.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deep.OK() {
+		t.Fatalf("deep verify must detect content corruption that preserves file length")
+	}
+	if deep.Corrupt == 0 {
+		t.Fatalf("expected the corrupted chunk to be counted as corrupt, got %+v", deep)
+	}
+}
+
+func TestVerify_DetectsCorruptManifestHashMismatch(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := s.PutObject("b", "k", []byte("small object for manifest corruption test"), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manPath := filepath.Join(dir, "manifests", entry.manifestUUID+".json")
+	orig, err := os.ReadFile(manPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := append([]byte{}, orig...)
+	tampered[0] ^= 0xFF // flip a byte inside the JSON: breaks the recorded manifest-file SHA256
+	if err := os.WriteFile(manPath, tampered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.Verify(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK() {
+		t.Fatalf("expected a manifest whose bytes no longer match the journal-recorded SHA256 to fail verify")
+	}
+	if res.Corrupt == 0 {
+		t.Fatalf("expected the manifest hash mismatch to be counted as corrupt, got %+v", res)
+	}
+}
+
+func TestVerify_DetectsUnparsableManifestJSON(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	garbage := []byte("this is not valid manifest json")
+	manUUID := newUUIDv7()
+	manPath := filepath.Join(dir, "manifests", manUUID+".json")
+	if err := os.WriteFile(manPath, garbage, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manSHA := sha256.Sum256(garbage)
+
+	// Commit a root pointing at this deliberately-invalid manifest,
+	// bypassing the normal PutObject pipeline (which would never publish
+	// invalid JSON), so verify's "manifest JSON does not parse" branch is
+	// exercised directly, isolated from the hash-mismatch check above.
+	if _, err := s.commitObjectRoot("b", "badmanifest", manUUID, manSHA, manifestV1{TotalLength: 0, ETag: "x", ContentType: "text/plain"}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.Verify(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK() {
+		t.Fatalf("expected an unparsable manifest to fail verify")
+	}
+	if res.Invalid == 0 {
+		t.Fatalf("expected the unparsable manifest to be counted as invalid, got %+v", res)
+	}
+}
+
+func TestVerify_DetectsChunkLengthMismatch(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	chunkBytes := []byte("some chunk content of a certain fixed length")
+	sum, err := s.casWrite(chunkBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badLength := int64(len(chunkBytes)) + 100 // does not match the real file size
+	man := manifestV1{
+		ManifestFormatVersion: manifestFormatVersion,
+		CDCFormatVersion:      cdcFormatVersion,
+		HashAlgorithm:         "sha256",
+		ManifestUUID:          newUUIDv7(),
+		TotalLength:           badLength, // matches the (wrong) declared chunk length, isolating this test to the chunk-file-vs-manifest check
+		Chunks:                []chunkRef{{SHA256: hex.EncodeToString(sum[:]), Length: badLength}},
+		ObjectSHA256:          strings.Repeat("0", 64),
+		ETag:                  "deadbeef00000000000000000000000",
+		ContentType:           "application/octet-stream",
+		CreatedAt:             time.Now().UTC(),
+	}
+	man.VersionID = man.ManifestUUID
+	manUUID, manSHA, err := s.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.commitObjectRoot("b", "badlen", manUUID, manSHA, man); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.Verify(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK() {
+		t.Fatalf("expected a chunk file whose actual size disagrees with its manifest-declared length to fail verify")
+	}
+	if res.Corrupt == 0 {
+		t.Fatalf("expected the length mismatch to be reported as corrupt, got %+v", res)
+	}
+}
+
+func TestVerify_DetectsManifestLengthSumMismatch(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	chunkBytes := []byte("chunk content whose length is correct on disk")
+	sum, err := s.casWrite(chunkBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	man := manifestV1{
+		ManifestFormatVersion: manifestFormatVersion,
+		CDCFormatVersion:      cdcFormatVersion,
+		HashAlgorithm:         "sha256",
+		ManifestUUID:          newUUIDv7(),
+		TotalLength:           int64(len(chunkBytes)) + 999, // deliberately inconsistent with the chunk list
+		Chunks:                []chunkRef{{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(chunkBytes))}},
+		ObjectSHA256:          strings.Repeat("0", 64),
+		ETag:                  "deadbeef00000000000000000000001",
+		ContentType:           "application/octet-stream",
+		CreatedAt:             time.Now().UTC(),
+	}
+	man.VersionID = man.ManifestUUID
+	manUUID, manSHA, err := s.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.commitObjectRoot("b", "badsum", manUUID, manSHA, man); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.Verify(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK() {
+		t.Fatalf("expected a manifest whose chunk lengths don't sum to total_length to fail verify")
+	}
+	if res.Invalid == 0 {
+		t.Fatalf("expected the sum mismatch to be reported as invalid, got %+v", res)
+	}
+	if res.Corrupt != 0 {
+		t.Fatalf("the chunk itself is not corrupt (its file matches its own declared length); only the manifest's declared total is wrong, got corrupt=%d", res.Corrupt)
+	}
+}
+
+func TestConcurrency_StatsDuringWrites(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			key := fmt.Sprintf("k%d", i%20)
+			if _, err := s.PutObject("b", key, genRandomBytes(int64(i), 2000), "application/octet-stream", nil); err != nil {
+				t.Errorf("PutObject: %v", err)
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 50; i++ {
+		if _, err := s.computeStats(statsScope{}); err != nil {
+			t.Fatalf("stats during concurrent writes: %v", err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+}
+
+func TestConcurrency_VerifyDuringWrites(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			key := fmt.Sprintf("k%d", i%20)
+			if _, err := s.PutObject("b", key, genRandomBytes(int64(i), 2000), "application/octet-stream", nil); err != nil {
+				t.Errorf("PutObject: %v", err)
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 50; i++ {
+		res, err := s.Verify(false)
+		if err != nil {
+			t.Fatalf("verify during concurrent writes: %v", err)
+		}
+		if res.Missing > 0 || res.Corrupt > 0 || res.Invalid > 0 {
+			t.Fatalf("verify spuriously reported integrity failures during concurrent writes: %+v", res)
+		}
+	}
+	close(stop)
+	wg.Wait()
+}
+
+// =============================================================================
+// M3: CopyObject
+// =============================================================================
+
+func TestCopyObject_SameBucketZeroNewPayloadBytes(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "bucket1"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := genRandomBytes(55, 3*1024*1024)
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/bucket1/src", body, nil)
+	put.Body.Close()
+	if put.StatusCode != http.StatusOK {
+		t.Fatalf("PutObject failed: %d", put.StatusCode)
+	}
+
+	before, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	copyResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/bucket1/dst", nil, map[string]string{
+		"X-Amz-Copy-Source": "/bucket1/src",
+	})
+	defer copyResp.Body.Close()
+	if copyResp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(copyResp.Body)
+		t.Fatalf("CopyObject failed: %d: %s", copyResp.StatusCode, data)
+	}
+	var result copyObjectResult
+	if err := xml.NewDecoder(copyResp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ETag == "" {
+		t.Fatalf("expected a non-empty ETag in CopyObjectResult")
+	}
+
+	after, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if after.ChunkStoreFileBytes != before.ChunkStoreFileBytes {
+		t.Fatalf("CopyObject wrote new CAS chunk payload bytes: before=%d after=%d", before.ChunkStoreFileBytes, after.ChunkStoreFileBytes)
+	}
+	if after.ManifestFileBytes != before.ManifestFileBytes {
+		t.Fatalf("CopyObject under the default COPY directive should reuse the source manifest, not publish a new one: before=%d after=%d", before.ManifestFileBytes, after.ManifestFileBytes)
+	}
+	if after.LogicalCurrentBytes != before.LogicalCurrentBytes+int64(len(body)) {
+		t.Fatalf("expected the destination object's logical bytes to be counted, got before=%d after=%d body=%d", before.LogicalCurrentBytes, after.LogicalCurrentBytes, len(body))
+	}
+
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/bucket1/dst", nil, nil)
+	defer get.Body.Close()
+	gotBody, _ := io.ReadAll(get.Body)
+	if !bytes.Equal(gotBody, body) {
+		t.Fatalf("copied object bytes do not match source")
+	}
+}
+
+func TestCopyObject_CrossBucket(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "src-bucket"); err != nil {
+		t.Fatal(err)
+	}
+	if err := doCreateBucket(t, client, ts.URL, signer, "dst-bucket"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte("cross-bucket copy payload")
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/src-bucket/key", body, nil)
+	put.Body.Close()
+
+	copyResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/dst-bucket/key2", nil, map[string]string{"X-Amz-Copy-Source": "/src-bucket/key"})
+	copyResp.Body.Close()
+	if copyResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", copyResp.StatusCode)
+	}
+
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/dst-bucket/key2", nil, nil)
+	defer get.Body.Close()
+	got, _ := io.ReadAll(get.Body)
+	if !bytes.Equal(got, body) {
+		t.Fatalf("cross-bucket copy did not round trip bytes")
+	}
+}
+
+func TestCopyObject_OverwritesExistingDestination(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	oldDst := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst", []byte("stale destination content"), nil)
+	oldDst.Body.Close()
+	srcBody := []byte("fresh source content")
+	src := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/src", srcBody, nil)
+	src.Body.Close()
+
+	copyResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst", nil, map[string]string{"X-Amz-Copy-Source": "/b/src"})
+	copyResp.Body.Close()
+	if copyResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", copyResp.StatusCode)
+	}
+
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/dst", nil, nil)
+	defer get.Body.Close()
+	got, _ := io.ReadAll(get.Body)
+	if !bytes.Equal(got, srcBody) {
+		t.Fatalf("expected CopyObject to overwrite the existing destination, got %q", got)
+	}
+}
+
+func TestCopyObject_MissingSource(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	copyResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst", nil, map[string]string{"X-Amz-Copy-Source": "/b/does-not-exist"})
+	defer copyResp.Body.Close()
+	if copyResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for a missing copy source, got %d", copyResp.StatusCode)
+	}
+}
+
+func TestCopyObject_MissingDestinationBucket(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "src-bucket"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/src-bucket/key", []byte("x"), nil)
+	put.Body.Close()
+
+	copyResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/no-such-bucket/dst", nil, map[string]string{"X-Amz-Copy-Source": "/src-bucket/key"})
+	defer copyResp.Body.Close()
+	if copyResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for a missing destination bucket, got %d", copyResp.StatusCode)
+	}
+}
+
+func TestCopyObject_MetadataDirectiveCopyPreservesSourceMetadata(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/src", []byte("payload"), map[string]string{
+		"Content-Type":      "application/json",
+		"x-amz-meta-origin": "source",
+	})
+	put.Body.Close()
+
+	// No X-Amz-Metadata-Directive header: default is COPY.
+	copyResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst", nil, map[string]string{"X-Amz-Copy-Source": "/b/src"})
+	copyResp.Body.Close()
+	if copyResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", copyResp.StatusCode)
+	}
+
+	head := doHeadObject(t, client, ts.URL, signer, "/b/dst")
+	defer head.Body.Close()
+	if head.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("expected COPY directive to preserve Content-Type, got %q", head.Header.Get("Content-Type"))
+	}
+	if head.Header.Get("x-amz-meta-origin") != "source" {
+		t.Fatalf("expected COPY directive to preserve source metadata, got %q", head.Header.Get("x-amz-meta-origin"))
+	}
+}
+
+func TestCopyObject_MetadataDirectiveReplaceUsesNewMetadataZeroNewChunkBytes(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := genRandomBytes(66, 200*1024)
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/src", body, map[string]string{
+		"Content-Type":      "application/octet-stream",
+		"x-amz-meta-origin": "source",
+	})
+	put.Body.Close()
+
+	before, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	copyResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst", nil, map[string]string{
+		"X-Amz-Copy-Source":        "/b/src",
+		"X-Amz-Metadata-Directive": "REPLACE",
+		"Content-Type":             "text/replaced",
+		"x-amz-meta-origin":        "replaced",
+	})
+	copyResp.Body.Close()
+	if copyResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", copyResp.StatusCode)
+	}
+
+	after, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ChunkStoreFileBytes != before.ChunkStoreFileBytes {
+		t.Fatalf("REPLACE metadata directive must not touch chunk payload bytes: before=%d after=%d", before.ChunkStoreFileBytes, after.ChunkStoreFileBytes)
+	}
+
+	head := doHeadObject(t, client, ts.URL, signer, "/b/dst")
+	defer head.Body.Close()
+	if head.Header.Get("Content-Type") != "text/replaced" {
+		t.Fatalf("expected REPLACE directive to use the new Content-Type, got %q", head.Header.Get("Content-Type"))
+	}
+	if head.Header.Get("x-amz-meta-origin") != "replaced" {
+		t.Fatalf("expected REPLACE directive to use the new metadata, got %q", head.Header.Get("x-amz-meta-origin"))
+	}
+
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/dst", nil, nil)
+	defer get.Body.Close()
+	gotBody, _ := io.ReadAll(get.Body)
+	if !bytes.Equal(gotBody, body) {
+		t.Fatalf("REPLACE directive must still copy the exact source bytes")
+	}
+}
+
+func TestCrash_CopyObjectReplaceBeforeJournalLeavesOldState(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	srcBody := genRandomBytes(41, 50*1024)
+	if _, err := store.PutObject("b", "src", srcBody, "text/plain", map[string]string{"a": "1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	withTestHook(t, func(point string) {
+		if point == hookAfterManifestPublished {
+			panic(simulatedCrash{point: point})
+		}
+	})
+	runExpectingSimulatedCrash(t, func() {
+		_, _, _ = store.CopyObject(CopyObjectRequest{
+			SrcBucket: "b", SrcKey: "src", DstBucket: "b", DstKey: "dst",
+			Directive: metadataDirectiveReplace, ContentType: "text/other", Metadata: map[string]string{"b": "2"},
+		})
+	})
+	testHook = nil
+	store.Close()
+
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+	if _, _, err := store2.GetObject("b", "dst"); err == nil {
+		t.Fatalf("copy destination must not be visible after a crash before its journal commit")
+	}
+	_, gotSrc, err := store2.GetObject("b", "src")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotSrc, srcBody) {
+		t.Fatalf("source object must be unaffected by a crashed copy")
+	}
+}
+
+func TestCrash_CopyObjectAfterJournalSyncIsDurable(t *testing.T) {
+	for _, directive := range []metadataDirective{metadataDirectiveCopy, metadataDirectiveReplace} {
+		t.Run(fmt.Sprintf("directive=%d", directive), func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateBucket("b"); err != nil {
+				t.Fatal(err)
+			}
+			srcBody := genRandomBytes(42, 50*1024)
+			if _, err := store.PutObject("b", "src", srcBody, "text/plain", nil); err != nil {
+				t.Fatal(err)
+			}
+
+			withTestHook(t, func(point string) {
+				if point == hookAfterJournalSync {
+					panic(simulatedCrash{point: point})
+				}
+			})
+			req := CopyObjectRequest{SrcBucket: "b", SrcKey: "src", DstBucket: "b", DstKey: "dst", Directive: directive}
+			if directive == metadataDirectiveReplace {
+				req.ContentType = "text/replaced"
+			}
+			runExpectingSimulatedCrash(t, func() {
+				_, _, _ = store.CopyObject(req)
+			})
+			testHook = nil
+			store.Close()
+
+			store2, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store2.Close()
+			_, gotDst, err := store2.GetObject("b", "dst")
+			if err != nil {
+				t.Fatalf("copy destination must be visible after restart: its journal frame was synced before the simulated crash: %v", err)
+			}
+			if !bytes.Equal(gotDst, srcBody) {
+				t.Fatalf("copy destination bytes must match source after restart")
+			}
+		})
+	}
+}
+
+// =============================================================================
+// M3: single-range GET
+// =============================================================================
+
+func TestRange_VariousForms(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := genRandomBytes(321, 500*1024) // spans several CDC chunks
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/obj", body, nil)
+	put.Body.Close()
+	if put.StatusCode != http.StatusOK {
+		t.Fatalf("PUT failed: %d", put.StatusCode)
+	}
+	size := int64(len(body))
+
+	cases := []struct {
+		name               string
+		rangeHeader        string
+		wantStart, wantEnd int64
+	}{
+		{"one byte at start", "bytes=0-0", 0, 0},
+		{"one byte in middle", fmt.Sprintf("bytes=%d-%d", size/2, size/2), size / 2, size / 2},
+		{"one byte at end", fmt.Sprintf("bytes=%d-%d", size-1, size-1), size - 1, size - 1},
+		{"explicit start/end", "bytes=100-199", 100, 199},
+		{"open-ended start", fmt.Sprintf("bytes=%d-", size-500), size - 500, size - 1},
+		{"suffix range", "bytes=-1000", size - 1000, size - 1},
+		{"near a chunk boundary region", fmt.Sprintf("bytes=%d-%d", cdcMaxChunkSize-100, cdcMaxChunkSize+100), int64(cdcMaxChunkSize - 100), int64(cdcMaxChunkSize + 100)},
+		{"clamp end beyond length", fmt.Sprintf("bytes=%d-%d", size-10, size+100000), size - 10, size - 1},
+		{"whole object as an explicit range", fmt.Sprintf("bytes=0-%d", size-1), 0, size - 1},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/obj", nil, map[string]string{"Range": c.rangeHeader})
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusPartialContent {
+				t.Fatalf("expected 206, got %d", resp.StatusCode)
+			}
+			wantLen := c.wantEnd - c.wantStart + 1
+			wantContentRange := fmt.Sprintf("bytes %d-%d/%d", c.wantStart, c.wantEnd, size)
+			if got := resp.Header.Get("Content-Range"); got != wantContentRange {
+				t.Fatalf("Content-Range: got %q want %q", got, wantContentRange)
+			}
+			if got := resp.Header.Get("Content-Length"); got != strconv.FormatInt(wantLen, 10) {
+				t.Fatalf("Content-Length: got %q want %d", got, wantLen)
+			}
+			if got := resp.Header.Get("Accept-Ranges"); got != "bytes" {
+				t.Fatalf("expected Accept-Ranges: bytes, got %q", got)
+			}
+			data, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if int64(len(data)) != wantLen {
+				t.Fatalf("body length: got %d want %d", len(data), wantLen)
+			}
+			want := body[c.wantStart : c.wantEnd+1]
+			if !bytes.Equal(data, want) {
+				t.Fatalf("range body mismatch for %s", c.name)
+			}
+		})
+	}
+}
+
+func TestRange_Unsatisfiable(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("short body")
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/obj", body, nil)
+	put.Body.Close()
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/obj", nil, map[string]string{
+		"Range": fmt.Sprintf("bytes=%d-%d", len(body)+10, len(body)+20),
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("expected 416, got %d", resp.StatusCode)
+	}
+	wantCR := fmt.Sprintf("bytes */%d", len(body))
+	if got := resp.Header.Get("Content-Range"); got != wantCR {
+		t.Fatalf("Content-Range: got %q want %q", got, wantCR)
+	}
+}
+
+func TestRange_EmptyObjectUnsatisfiable(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/empty", []byte{}, nil)
+	put.Body.Close()
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/empty", nil, map[string]string{"Range": "bytes=0-0"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("expected 416 for a range on an empty object, got %d", resp.StatusCode)
+	}
+}
+
+func TestRange_MalformedHeaderIgnoredServesFullObject(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("hello range world")
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/obj", body, nil)
+	put.Body.Close()
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/obj", nil, map[string]string{"Range": "bytes=abc-def"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected a malformed Range header to be ignored (200), got %d", resp.StatusCode)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(data, body) {
+		t.Fatalf("expected the full body when Range is malformed")
+	}
+}
+
+func TestRange_MultiRangeUnsupportedIgnoredServesFullObject(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("hello multi range world")
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/obj", body, nil)
+	put.Body.Close()
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/obj", nil, map[string]string{"Range": "bytes=0-1,3-4"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected an unsupported multi-range header to be ignored (200), got %d", resp.StatusCode)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(data, body) {
+		t.Fatalf("expected the full body when Range specifies multiple ranges")
+	}
+}
+
+// TestRange_ReadsOnlyOverlappingChunks is a white-box test over a
+// manually constructed 3-chunk object with known, exact boundaries: it
+// proves readManifestRange reconstructs precisely the requested interval
+// (here, straddling the A/B boundary) rather than the whole object.
+func TestRange_ReadsOnlyOverlappingChunks(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	chunkA := bytes.Repeat([]byte{0xAA}, 1000)
+	chunkB := bytes.Repeat([]byte{0xBB}, 2000)
+	chunkC := bytes.Repeat([]byte{0xCC}, 3000)
+	entry := putManualObject(t, s, "b", "obj", [][]byte{chunkA, chunkB, chunkC})
+	man, err := s.readVerifiedManifest(entry.manifestUUID, entry.manifestSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.readManifestRange(man, byteRange{start: 999, end: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]byte{}, chunkA[999:]...), chunkB[:1]...)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("range straddling the A/B boundary: got %v want %v", got, want)
+	}
+
+	got2, err := s.readManifestRange(man, byteRange{start: 3000, end: 3000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got2, chunkC[:1]) {
+		t.Fatalf("range at the exact start of chunk C: got %v want %v", got2, chunkC[:1])
+	}
+}
