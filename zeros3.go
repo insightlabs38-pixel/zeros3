@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/md5"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -40,6 +39,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 )
 
 // =============================================================================
@@ -434,10 +434,7 @@ type manifestV1 struct {
 // Metadata is sorted by key so that two builds of the same logical
 // metadata always serialize identically.
 func buildManifestV1(pieces []chunkPiece, fullBody []byte, contentType string, metadata map[string]string) (manifestV1, error) {
-	id, err := newUUIDv7()
-	if err != nil {
-		return manifestV1{}, err
-	}
+	id := newUUIDv7()
 	chunks := make([]chunkRef, len(pieces))
 	for i, p := range pieces {
 		chunks[i] = chunkRef{SHA256: hex.EncodeToString(p.sha[:]), Length: int64(len(p.data))}
@@ -504,24 +501,15 @@ func (s *Store) readManifest(id string) (manifestV1, []byte, error) {
 	return m, data, nil
 }
 
-// newUUIDv7 generates a version-7 (time-ordered, random-tailed) UUID
-// using only crypto/rand and time, since the standard library has no
-// dedicated UUID type.
-func newUUIDv7() (string, error) {
-	var b [16]byte
-	ms := uint64(time.Now().UnixMilli())
-	b[0] = byte(ms >> 40)
-	b[1] = byte(ms >> 32)
-	b[2] = byte(ms >> 24)
-	b[3] = byte(ms >> 16)
-	b[4] = byte(ms >> 8)
-	b[5] = byte(ms)
-	if _, err := rand.Read(b[6:]); err != nil {
-		return "", err
-	}
-	b[6] = (b[6] & 0x0F) | 0x70 // version 7
-	b[8] = (b[8] & 0x3F) | 0x80 // RFC 4122 variant
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+// newUUIDv7 returns a fresh, time-ordered UUID version 7 identifier in its
+// canonical 8-4-4-4-12 lowercase hex string form (e.g.
+// "018f4d2e-6b1a-7c3d-9e2f-1a2b3c4d5e6f"), used as both manifest UUIDs and
+// the store identifier. This is produced by the Go standard library's
+// "uuid" package (added in Go 1.27); it is exactly the string format a
+// hand-rolled generator would also need to produce, so this swap does not
+// change the on-disk manifest/FORMAT.json representation at all.
+func newUUIDv7() string {
+	return uuid.NewV7().String()
 }
 
 // =============================================================================
@@ -811,15 +799,11 @@ func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
 		return storeFormat{}, err
 	}
 
-	id, err := newUUIDv7()
-	if err != nil {
-		return storeFormat{}, err
-	}
 	format := storeFormat{
 		StoreFormatVersion: storeFormatVersion,
 		CDCFormatVersion:   cdcFormatVersion,
 		HashAlgorithm:      "sha256",
-		StoreID:            id,
+		StoreID:            newUUIDv7(),
 	}
 	data, err = json.MarshalIndent(format, "", "  ")
 	if err != nil {

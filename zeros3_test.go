@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 )
 
 // =============================================================================
@@ -468,6 +469,138 @@ func TestCAS_CorruptExistingChunkDetected(t *testing.T) {
 	}
 	if _, err := s.casRead(sum); err == nil {
 		t.Fatalf("expected corrupted chunk content to be detected on read, not trusted blindly")
+	}
+}
+
+// =============================================================================
+// UUID tests
+//
+// newUUIDv7 is a thin wrapper over the Go standard library's "uuid"
+// package (uuid.NewV7().String()), added in Go 1.27. These tests prove
+// the wrapper produces valid, correctly-versioned UUIDv7 values in the
+// canonical string form the manifest/FORMAT.json on-disk representation
+// has always expected, and that manifest/store-ID generation still works
+// end to end -- i.e. no hand-rolled random UUID implementation is needed
+// anymore.
+// =============================================================================
+
+// isCanonicalUUIDString reports whether s is 36 characters in the
+// canonical 8-4-4-4-12 lowercase-hex-and-dash form, e.g.
+// "018f4d2e-6b1a-7c3d-9e2f-1a2b3c4d5e6f".
+func isCanonicalUUIDString(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func TestUUID_CanonicalStringForm(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		id := newUUIDv7()
+		if !isCanonicalUUIDString(id) {
+			t.Fatalf("newUUIDv7() = %q is not in canonical 8-4-4-4-12 lowercase hex form", id)
+		}
+	}
+}
+
+func TestUUID_IsVersion7Variant10(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		id := newUUIDv7()
+		// Per RFC 9562, the version nibble is the first hex digit of the
+		// third group, and the variant's top two bits sit in the first
+		// hex digit of the fourth group ("8", "9", "a", or "b" for the
+		// standard variant).
+		versionNibble := id[14]
+		variantNibble := id[19]
+		if versionNibble != '7' {
+			t.Fatalf("newUUIDv7() = %q does not have version nibble 7 (got %q)", id, versionNibble)
+		}
+		switch variantNibble {
+		case '8', '9', 'a', 'b':
+		default:
+			t.Fatalf("newUUIDv7() = %q does not have a standard RFC 9562 variant nibble (got %q)", id, variantNibble)
+		}
+	}
+}
+
+func TestUUID_RoundTripsThroughStdlibParse(t *testing.T) {
+	id := newUUIDv7()
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		t.Fatalf("stdlib uuid.Parse rejected newUUIDv7()'s own output %q: %v", id, err)
+	}
+	if parsed.String() != id {
+		t.Fatalf("round trip through uuid.Parse/String changed the value: %q -> %q", id, parsed.String())
+	}
+}
+
+func TestUUID_Unique(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 1000; i++ {
+		id := newUUIDv7()
+		if seen[id] {
+			t.Fatalf("newUUIDv7() produced a duplicate: %q", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestUUID_SuitableAsManifestAndVersionID(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := s.PutObject("b", "k", []byte("uuid-suitability-check"), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isCanonicalUUIDString(entry.manifestUUID) {
+		t.Fatalf("manifest UUID %q is not in canonical form", entry.manifestUUID)
+	}
+	man, _, err := s.readManifest(entry.manifestUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if man.ManifestUUID != entry.manifestUUID {
+		t.Fatalf("manifest's own recorded UUID %q does not match its filename UUID %q", man.ManifestUUID, entry.manifestUUID)
+	}
+	if !isCanonicalUUIDString(man.VersionID) {
+		t.Fatalf("version ID %q is not in canonical UUID form", man.VersionID)
+	}
+	if man.VersionID != man.ManifestUUID {
+		t.Fatalf("expected version ID to equal the manifest UUID for a single-version object, got %q vs %q", man.VersionID, man.ManifestUUID)
+	}
+
+	// FORMAT.json's store_id must also be a canonical UUID produced the
+	// same way.
+	data, err := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f storeFormat
+	if err := json.Unmarshal(data, &f); err != nil {
+		t.Fatal(err)
+	}
+	if !isCanonicalUUIDString(f.StoreID) {
+		t.Fatalf("store_id %q is not in canonical UUID form", f.StoreID)
 	}
 }
 
