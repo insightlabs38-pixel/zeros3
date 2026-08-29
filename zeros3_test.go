@@ -5631,6 +5631,49 @@ func doListMultipartUploads(t *testing.T, client *http.Client, baseURL string, s
 	return result, resp.StatusCode
 }
 
+// doListPartsQuery is doListParts with an extra raw query string (e.g.
+// "max-parts=2&part-number-marker=1") appended, for exercising ListParts
+// pagination. An empty extraQuery behaves exactly like doListParts.
+func doListPartsQuery(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket, key, uploadID, extraQuery string) (listPartsResult, int) {
+	t.Helper()
+	path := fmt.Sprintf("/%s/%s?uploadId=%s", bucket, key, uploadID)
+	if extraQuery != "" {
+		path += "&" + extraQuery
+	}
+	resp := doSignedRequest(t, client, baseURL, signer, http.MethodGet, path, nil, nil)
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var result listPartsResult
+	if resp.StatusCode == http.StatusOK {
+		if err := xml.Unmarshal(data, &result); err != nil {
+			t.Fatalf("failed to parse ListPartsResult: %v", err)
+		}
+	}
+	return result, resp.StatusCode
+}
+
+// doListMultipartUploadsQuery is doListMultipartUploads with an extra raw
+// query string (e.g. "max-uploads=2&key-marker=foo") appended, for
+// exercising ListMultipartUploads pagination. An empty extraQuery behaves
+// exactly like doListMultipartUploads.
+func doListMultipartUploadsQuery(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket, extraQuery string) (listMultipartUploadsResult, int) {
+	t.Helper()
+	path := "/" + bucket + "?uploads"
+	if extraQuery != "" {
+		path += "&" + extraQuery
+	}
+	resp := doSignedRequest(t, client, baseURL, signer, http.MethodGet, path, nil, nil)
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var result listMultipartUploadsResult
+	if resp.StatusCode == http.StatusOK {
+		if err := xml.Unmarshal(data, &result); err != nil {
+			t.Fatalf("failed to parse ListMultipartUploadsResult: %v", err)
+		}
+	}
+	return result, resp.StatusCode
+}
+
 func doCompleteMultipartUpload(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket, key, uploadID string, parts []completedPartXML) (*completeMultipartUploadResult, int, []byte) {
 	t.Helper()
 	reqXML := completeMultipartUploadXML{Part: parts}
@@ -9671,5 +9714,605 @@ func TestCLI_VersionsRestoreGCDoctor_Smoke(t *testing.T) {
 	}
 	if string(body) != "version one" {
 		t.Fatalf("expected the restored object to remain v1's exact bytes after doctor/gc, got %q", body)
+	}
+}
+
+// =============================================================================
+// M5-D: ListParts / ListMultipartUploads pagination
+// =============================================================================
+
+// mpuKV is a (key, uploadID) pair used by the ListMultipartUploads
+// pagination tests to state an expected page independently of creation
+// order -- upload IDs are UUIDv7, and this suite deliberately does not
+// assume anything about UUIDv7 generation being monotonic within the same
+// process tick; it always computes the expected order itself.
+type mpuKV struct{ key, id string }
+
+func assertUploadOrder(t *testing.T, got []uploadXML, want []mpuKV) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d uploads, want %d\ngot:  %+v\nwant: %+v", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i].Key != want[i].key || got[i].UploadId != want[i].id {
+			t.Fatalf("upload[%d] = (%q,%q), want (%q,%q)", i, got[i].Key, got[i].UploadId, want[i].key, want[i].id)
+		}
+	}
+}
+
+func TestListParts_Pagination(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("zero-parts", func(t *testing.T) {
+		uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "empty")
+		lp, status := doListPartsQuery(t, client, ts.URL, signer, "b", "empty", uploadID, "")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		if len(lp.Part) != 0 || lp.IsTruncated || lp.NextPartNumberMarker != 0 ||
+			lp.PartNumberMarker != 0 || lp.MaxParts != defaultMaxParts {
+			t.Fatalf("unexpected zero-parts result: %+v", lp)
+		}
+	})
+
+	t.Run("one-part", func(t *testing.T) {
+		uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "one")
+		if _, status, _ := doUploadPart(t, client, ts.URL, signer, "b", "one", uploadID, 1, []byte("hello")); status != http.StatusOK {
+			t.Fatalf("upload part failed: %d", status)
+		}
+		lp, status := doListPartsQuery(t, client, ts.URL, signer, "b", "one", uploadID, "")
+		if status != http.StatusOK || len(lp.Part) != 1 || lp.Part[0].PartNumber != 1 || lp.IsTruncated {
+			t.Fatalf("unexpected one-part result: status=%d %+v", status, lp)
+		}
+	})
+
+	// Shared upload with parts 1..5 for the marker/max-parts matrix below.
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "multi")
+	for i := 1; i <= 5; i++ {
+		body := []byte(fmt.Sprintf("part-%d-body", i))
+		if _, status, _ := doUploadPart(t, client, ts.URL, signer, "b", "multi", uploadID, i, body); status != http.StatusOK {
+			t.Fatalf("upload part %d failed: %d", i, status)
+		}
+	}
+
+	matrix := []struct {
+		name           string
+		query          string
+		wantParts      []int
+		wantTruncated  bool
+		wantNextMarker int
+		wantPartMarker int
+		wantMaxParts   int
+	}{
+		{"fewer-than-max", "max-parts=10", []int{1, 2, 3, 4, 5}, false, 0, 0, 10},
+		{"exactly-max", "max-parts=5", []int{1, 2, 3, 4, 5}, false, 0, 0, 5},
+		{"max-plus-one", "max-parts=4", []int{1, 2, 3, 4}, true, 4, 0, 4},
+		{"marker-at-beginning", "part-number-marker=0", []int{1, 2, 3, 4, 5}, false, 0, 0, defaultMaxParts},
+		{"marker-in-middle", "part-number-marker=3", []int{4, 5}, false, 0, 3, defaultMaxParts},
+		{"marker-at-end", "part-number-marker=5", nil, false, 0, 5, defaultMaxParts},
+		{"marker-beyond-highest", "part-number-marker=100", nil, false, 0, 100, defaultMaxParts},
+		{"default-max-parts", "", []int{1, 2, 3, 4, 5}, false, 0, 0, defaultMaxParts},
+		{"explicit-small-max-parts", "max-parts=2", []int{1, 2}, true, 2, 0, 2},
+		{"max-parts-clamped-to-1000", "max-parts=999999", []int{1, 2, 3, 4, 5}, false, 0, 0, defaultMaxParts},
+	}
+	for _, tc := range matrix {
+		t.Run(tc.name, func(t *testing.T) {
+			lp, status := doListPartsQuery(t, client, ts.URL, signer, "b", "multi", uploadID, tc.query)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d", status)
+			}
+			var got []int
+			for _, p := range lp.Part {
+				got = append(got, p.PartNumber)
+			}
+			if len(got) != len(tc.wantParts) {
+				t.Fatalf("parts = %v, want %v", got, tc.wantParts)
+			}
+			for i := range got {
+				if got[i] != tc.wantParts[i] {
+					t.Fatalf("parts = %v, want %v", got, tc.wantParts)
+				}
+			}
+			if lp.IsTruncated != tc.wantTruncated {
+				t.Fatalf("IsTruncated = %v, want %v", lp.IsTruncated, tc.wantTruncated)
+			}
+			if lp.NextPartNumberMarker != tc.wantNextMarker {
+				t.Fatalf("NextPartNumberMarker = %d, want %d", lp.NextPartNumberMarker, tc.wantNextMarker)
+			}
+			if lp.PartNumberMarker != tc.wantPartMarker {
+				t.Fatalf("PartNumberMarker = %d, want %d", lp.PartNumberMarker, tc.wantPartMarker)
+			}
+			if lp.MaxParts != tc.wantMaxParts {
+				t.Fatalf("MaxParts = %d, want %d", lp.MaxParts, tc.wantMaxParts)
+			}
+		})
+	}
+
+	t.Run("multiple-pages", func(t *testing.T) {
+		var all []int
+		marker := 0
+		for i := 0; i < 10; i++ {
+			lp, status := doListPartsQuery(t, client, ts.URL, signer, "b", "multi", uploadID,
+				fmt.Sprintf("max-parts=2&part-number-marker=%d", marker))
+			if status != http.StatusOK {
+				t.Fatalf("status = %d", status)
+			}
+			for _, p := range lp.Part {
+				all = append(all, p.PartNumber)
+			}
+			if !lp.IsTruncated {
+				break
+			}
+			marker = lp.NextPartNumberMarker
+		}
+		want := []int{1, 2, 3, 4, 5}
+		if len(all) != len(want) {
+			t.Fatalf("paginated parts = %v, want %v", all, want)
+		}
+		for i := range want {
+			if all[i] != want[i] {
+				t.Fatalf("paginated parts = %v, want %v", all, want)
+			}
+		}
+	})
+}
+
+func TestListParts_Pagination_InvalidQueryValues(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "k")
+
+	for _, q := range []string{
+		"part-number-marker=abc",
+		"part-number-marker=-1",
+		"max-parts=abc",
+		"max-parts=-1",
+	} {
+		t.Run(q, func(t *testing.T) {
+			_, status := doListPartsQuery(t, client, ts.URL, signer, "b", "k", uploadID, q)
+			if status != http.StatusBadRequest {
+				t.Fatalf("query %q: status = %d, want 400", q, status)
+			}
+		})
+	}
+
+	// max-parts=0 is a valid boundary (mirrors ListObjectsV2's own
+	// max-keys=0 behavior): an empty, non-truncated page, not an error.
+	t.Run("max-parts=0-is-a-valid-empty-page", func(t *testing.T) {
+		lp, status := doListPartsQuery(t, client, ts.URL, signer, "b", "k", uploadID, "max-parts=0")
+		if status != http.StatusOK || len(lp.Part) != 0 || lp.IsTruncated {
+			t.Fatalf("max-parts=0: status=%d result=%+v", status, lp)
+		}
+	})
+}
+
+func TestListParts_Pagination_RestartThenPaginate(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 5; i++ {
+		if _, err := store.UploadPart("b", "k", uploadID, i, []byte(fmt.Sprintf("part-%d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.Close() // simulated restart: no crash injection needed, this is an orderly stop mid-lifecycle
+
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+
+	var all []int
+	marker := 0
+	for i := 0; i < 10; i++ {
+		page, err := store2.ListPartsPage("b", "k", uploadID, marker, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range page.parts {
+			all = append(all, p.partNumber)
+		}
+		if !page.truncated {
+			break
+		}
+		marker = page.nextPartNumberMarker
+	}
+	want := []int{1, 2, 3, 4, 5}
+	if len(all) != len(want) {
+		t.Fatalf("post-restart paginated parts = %v, want %v", all, want)
+	}
+	for i := range want {
+		if all[i] != want[i] {
+			t.Fatalf("post-restart paginated parts = %v, want %v", all, want)
+		}
+	}
+}
+
+func TestListParts_Pagination_OverwrittenPartNoDuplicate(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "k")
+	for i := 1; i <= 3; i++ {
+		if _, status, _ := doUploadPart(t, client, ts.URL, signer, "b", "k", uploadID, i, []byte(fmt.Sprintf("orig-%d", i))); status != http.StatusOK {
+			t.Fatalf("initial upload of part %d failed: %d", i, status)
+		}
+	}
+	newETag, status, _ := doUploadPart(t, client, ts.URL, signer, "b", "k", uploadID, 2, []byte("replaced-part-2-body"))
+	if status != http.StatusOK {
+		t.Fatalf("re-upload of part 2 failed: %d", status)
+	}
+
+	var all []partXML
+	marker := 0
+	for i := 0; i < 10; i++ {
+		lp, status := doListPartsQuery(t, client, ts.URL, signer, "b", "k", uploadID,
+			fmt.Sprintf("max-parts=1&part-number-marker=%d", marker))
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		all = append(all, lp.Part...)
+		if !lp.IsTruncated {
+			break
+		}
+		marker = lp.NextPartNumberMarker
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected exactly 3 parts after overwrite (no duplicate part 2), got %d: %+v", len(all), all)
+	}
+	if all[1].PartNumber != 2 || strings.Trim(all[1].ETag, `"`) != newETag {
+		t.Fatalf("expected part 2 to reflect the overwritten ETag %q, got %+v", newETag, all[1])
+	}
+}
+
+func TestListMultipartUploads_Pagination_NoUploads(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, "b", "")
+	if status != http.StatusOK || len(lmu.Upload) != 0 || lmu.IsTruncated {
+		t.Fatalf("status=%d result=%+v", status, lmu)
+	}
+}
+
+func TestListMultipartUploads_Pagination_OneUpload(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	id := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "solo")
+	lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, "b", "")
+	if status != http.StatusOK || len(lmu.Upload) != 1 || lmu.Upload[0].Key != "solo" || lmu.Upload[0].UploadId != id || lmu.IsTruncated {
+		t.Fatalf("status=%d result=%+v", status, lmu)
+	}
+}
+
+// TestListMultipartUploads_Pagination_Matrix covers multiple keys, multiple
+// uploads for the same key, max-uploads bounds, multi-page iteration, and
+// key-marker/upload-id-marker resume semantics (including the documented
+// AWS rule that upload-id-marker is ignored unless key-marker is also
+// given) against one fixed set of 5 active uploads across 4 keys.
+func TestListMultipartUploads_Pagination_Matrix(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-matrix"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+
+	idAlpha := doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "alpha")
+	idBravo1 := doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "bravo")
+	idBravo2 := doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "bravo")
+	idCharlie := doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "charlie")
+	idDelta := doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "delta")
+
+	entries := []mpuKV{
+		{"alpha", idAlpha}, {"bravo", idBravo1}, {"bravo", idBravo2},
+		{"charlie", idCharlie}, {"delta", idDelta},
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].key != entries[j].key {
+			return entries[i].key < entries[j].key
+		}
+		return entries[i].id < entries[j].id
+	})
+	var bravoEntries []mpuKV
+	for _, e := range entries {
+		if e.key == "bravo" {
+			bravoEntries = append(bravoEntries, e)
+		}
+	}
+	if len(bravoEntries) != 2 {
+		t.Fatalf("expected exactly 2 bravo entries, got %d: %+v", len(bravoEntries), bravoEntries)
+	}
+
+	t.Run("fewer-than-max", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "max-uploads=10")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		assertUploadOrder(t, lmu.Upload, entries)
+		if lmu.IsTruncated {
+			t.Fatalf("expected not truncated")
+		}
+		if lmu.MaxUploads != 10 {
+			t.Fatalf("MaxUploads = %d, want 10", lmu.MaxUploads)
+		}
+	})
+
+	t.Run("exactly-max", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "max-uploads=5")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		assertUploadOrder(t, lmu.Upload, entries)
+		if lmu.IsTruncated {
+			t.Fatalf("expected not truncated")
+		}
+	})
+
+	t.Run("max-plus-one", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "max-uploads=4")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		assertUploadOrder(t, lmu.Upload, entries[:4])
+		if !lmu.IsTruncated {
+			t.Fatalf("expected truncated")
+		}
+		if lmu.NextKeyMarker != entries[3].key || lmu.NextUploadIdMarker != entries[3].id {
+			t.Fatalf("next marker = (%q,%q), want (%q,%q)", lmu.NextKeyMarker, lmu.NextUploadIdMarker, entries[3].key, entries[3].id)
+		}
+	})
+
+	t.Run("default-max-uploads", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		assertUploadOrder(t, lmu.Upload, entries)
+		if lmu.MaxUploads != defaultMaxUploads {
+			t.Fatalf("MaxUploads = %d, want %d", lmu.MaxUploads, defaultMaxUploads)
+		}
+	})
+
+	t.Run("max-uploads-clamped-to-1000", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "max-uploads=999999")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		if lmu.MaxUploads != defaultMaxUploads {
+			t.Fatalf("MaxUploads = %d, want %d", lmu.MaxUploads, defaultMaxUploads)
+		}
+	})
+
+	t.Run("multiple-pages", func(t *testing.T) {
+		var all []mpuKV
+		keyMarker, uploadIDMarker := "", ""
+		for i := 0; i < 10; i++ {
+			q := fmt.Sprintf("max-uploads=2&key-marker=%s&upload-id-marker=%s",
+				url.QueryEscape(keyMarker), url.QueryEscape(uploadIDMarker))
+			lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d", status)
+			}
+			for _, u := range lmu.Upload {
+				all = append(all, mpuKV{u.Key, u.UploadId})
+			}
+			if !lmu.IsTruncated {
+				break
+			}
+			keyMarker, uploadIDMarker = lmu.NextKeyMarker, lmu.NextUploadIdMarker
+		}
+		if len(all) != len(entries) {
+			t.Fatalf("paginated uploads = %+v, want %+v", all, entries)
+		}
+		for i := range entries {
+			if all[i] != entries[i] {
+				t.Fatalf("paginated uploads = %+v, want %+v", all, entries)
+			}
+		}
+	})
+
+	t.Run("resume-between-keys", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "key-marker="+url.QueryEscape("alpha"))
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		assertUploadOrder(t, lmu.Upload, entries[1:])
+	})
+
+	t.Run("resume-within-same-key-multiple-uploads", func(t *testing.T) {
+		q := "key-marker=" + url.QueryEscape("bravo") + "&upload-id-marker=" + url.QueryEscape(bravoEntries[0].id)
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		var want []mpuKV
+		for _, e := range entries {
+			if e.key > "bravo" || (e.key == "bravo" && e.id > bravoEntries[0].id) {
+				want = append(want, e)
+			}
+		}
+		assertUploadOrder(t, lmu.Upload, want)
+	})
+
+	t.Run("marker-at-end", func(t *testing.T) {
+		last := entries[len(entries)-1]
+		q := "key-marker=" + url.QueryEscape(last.key) + "&upload-id-marker=" + url.QueryEscape(last.id)
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q)
+		if status != http.StatusOK || len(lmu.Upload) != 0 || lmu.IsTruncated {
+			t.Fatalf("marker-at-end: status=%d result=%+v", status, lmu)
+		}
+	})
+
+	t.Run("marker-beyond-existing", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "key-marker=zzzzzzzz")
+		if status != http.StatusOK || len(lmu.Upload) != 0 || lmu.IsTruncated {
+			t.Fatalf("marker-beyond-existing: status=%d result=%+v", status, lmu)
+		}
+	})
+
+	t.Run("upload-id-marker-ignored-without-key-marker", func(t *testing.T) {
+		q := "upload-id-marker=" + url.QueryEscape(bravoEntries[0].id)
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		assertUploadOrder(t, lmu.Upload, entries)
+	})
+
+	t.Run("invalid-max-uploads", func(t *testing.T) {
+		for _, bad := range []string{"abc", "-1"} {
+			t.Run(bad, func(t *testing.T) {
+				_, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "max-uploads="+bad)
+				if status != http.StatusBadRequest {
+					t.Fatalf("status = %d, want 400", status)
+				}
+			})
+		}
+	})
+
+	// max-uploads=0 is a valid boundary, matching max-keys=0/max-parts=0.
+	t.Run("max-uploads=0-is-a-valid-empty-page", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "max-uploads=0")
+		if status != http.StatusOK || len(lmu.Upload) != 0 || lmu.IsTruncated {
+			t.Fatalf("max-uploads=0: status=%d result=%+v", status, lmu)
+		}
+	})
+
+	for _, e := range entries {
+		doAbortMultipartUpload(t, client, ts.URL, signer, bucket, e.key, e.id)
+	}
+}
+
+func TestListMultipartUploads_Pagination_RestartStableOrdering(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"a", "b", "c"} {
+		if _, err := store.CreateMultipartUpload("b", k, "application/octet-stream", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.Close() // simulated restart: no crash injection needed, this is an orderly stop mid-lifecycle
+
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+
+	page, err := store2.ListMultipartUploads("b", "", "", defaultMaxUploads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.uploads) != 3 {
+		t.Fatalf("expected 3 uploads post-restart, got %d", len(page.uploads))
+	}
+	for i := 1; i < len(page.uploads); i++ {
+		prev, cur := page.uploads[i-1], page.uploads[i]
+		if prev.key > cur.key || (prev.key == cur.key && prev.uploadID >= cur.uploadID) {
+			t.Fatalf("post-restart ordering not strictly ascending: %+v", page.uploads)
+		}
+	}
+
+	var allKeys []string
+	keyMarker, uploadIDMarker := "", ""
+	for i := 0; i < 10; i++ {
+		p, err := store2.ListMultipartUploads("b", keyMarker, uploadIDMarker, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, u := range p.uploads {
+			allKeys = append(allKeys, u.key)
+		}
+		if !p.truncated {
+			break
+		}
+		keyMarker, uploadIDMarker = p.nextKeyMarker, p.nextUploadIDMarker
+	}
+	want := []string{"a", "b", "c"}
+	if len(allKeys) != len(want) {
+		t.Fatalf("paginated post-restart keys = %v, want %v", allKeys, want)
+	}
+	for i := range want {
+		if allKeys[i] != want[i] {
+			t.Fatalf("paginated post-restart keys = %v, want %v", allKeys, want)
+		}
+	}
+}
+
+func TestListMultipartUploads_Pagination_CompletedAndAbortedAreAbsent(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "lifecycle"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+
+	activeID := doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "active-key")
+
+	completeID := doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "complete-key")
+	etag, status, _ := doUploadPart(t, client, ts.URL, signer, bucket, "complete-key", completeID, 1, []byte("only part, so no min-size rule applies"))
+	if status != http.StatusOK {
+		t.Fatalf("upload part failed: %d", status)
+	}
+	if _, status, _ := doCompleteMultipartUpload(t, client, ts.URL, signer, bucket, "complete-key", completeID, []completedPartXML{{PartNumber: 1, ETag: etag}}); status != http.StatusOK {
+		t.Fatalf("complete failed: %d", status)
+	}
+
+	abortID := doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "abort-key")
+	if status := doAbortMultipartUpload(t, client, ts.URL, signer, bucket, "abort-key", abortID); status != http.StatusNoContent {
+		t.Fatalf("abort failed: %d", status)
+	}
+
+	lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if len(lmu.Upload) != 1 || lmu.Upload[0].Key != "active-key" || lmu.Upload[0].UploadId != activeID {
+		t.Fatalf("expected only the active upload to remain, got %+v", lmu.Upload)
 	}
 }
