@@ -1,5 +1,470 @@
 # ZeroS3 — M1/M2/M3/M4 Status
 
+## M5-B — Large-object S3 interoperability: multipart, payload modes, streaming HMAC, crash recovery
+
+**COMPLETE.** A tightly bounded pass, exactly per its own scope:
+formalized SigV4 payload-mode handling, header-auth `UNSIGNED-PAYLOAD`,
+persistent S3 multipart upload integrated with the existing CDC/CAS/
+journal architecture, aggressive crash/restart/concurrency testing of the
+multipart lifecycle, and real AWS SDK for Go v2 + rclone (1 GiB) external
+proof. No internal versions/restore, GC, sync, replication, pack files,
+compression, compaction, Merkle structures, advanced indexing, or
+unrelated S3 API expansion was started.
+
+- **Starting state:** `zeros3` branch `claude/zeros3-m5b-large-object-jfnvkb`
+  was confirmed identical-tree to `main` at
+  `ae5574957f62396a9aa8ed772501bb8e6df2f454` before any edit; `zeros3-testing`'s
+  same-named branch was confirmed identical-tree to its own `main` at
+  `db9451e0d502cbbe194791d9935958c266e2cfd8`. Both were fetched fresh from
+  `origin` (a prior same-named branch in each repository had already been
+  deleted upstream, confirming it had been squash-merged, not abandoned
+  mid-work). The Linux regression baseline (`go test`, `go test -race`,
+  `go vet`, `gofmt -l`) was green with 182 passing test cases before any
+  change.
+- **Resulting state:** this commit, on the same branch (`git log -1` names
+  the exact SHA); `zeros3-testing`'s matching commit on its own same-named
+  branch adds `harness/m5b/multipart/main.go` and two results files on top
+  of the same starting point.
+
+### Phase A — SigV4 payload-mode architecture
+
+One explicit interpretation layer, `classifySigV4Payload` (`zeros3.go`
+section 8, next to the rest of the SigV4/auth code — no scattered literal
+comparisons through the handlers), replaces the previous bare
+`len(header) != 64` check. It returns one of five `sigv4PayloadKind`
+values from the literal `X-Amz-Content-Sha256` header value: fixed
+SHA-256 (a lowercase-or-uppercase 64-hex digest, lowered for comparison —
+this single mode covers both an ordinary body and the empty-string
+SHA-256 for a zero-length body; the empty body was never a separate
+protocol mode), the fixed `UNSIGNED-PAYLOAD` sentinel, the two eligible
+streaming-HMAC modes (recognized but not decoded — see Phase K below), and
+one `sigv4PayloadUnsupported` bucket for every permanently-excluded AWS
+sentinel (`STREAMING-UNSIGNED-PAYLOAD-TRAILER`,
+`STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD[-TRAILER]`). Every sentinel is
+matched case-sensitively, exactly as AWS defines it — a lowercase or
+misspelled variant is not treated as that sentinel and (not also being a
+valid hex digest) is rejected as `AccessDenied`, never silently accepted
+under some other mode. `authenticateHeader` uses the classified kind to
+pick the canonical request's `HashedPayload` value and to decide whether
+the post-signature exact-body-hash cross-check runs at all (fixed SHA-256:
+yes, exactly as before this pass; `UNSIGNED-PAYLOAD`: never — SigV4 places
+no constraint on the body in that mode, by design). Presigned/query-string
+auth (`authenticateQuery`) is completely untouched: it already used the
+fixed `UNSIGNED-PAYLOAD` sentinel unconditionally and never calls
+`classifySigV4Payload` at all.
+
+- **Fixed SHA-256 mode:** preserved behavior, not rewritten, per this
+  pass's own instruction to keep whatever was already correct. 16 new
+  tests explicitly cover: correct digest+body; wrong digest+body; the
+  SHA-256-of-empty-string digest against an empty body (accepted); that
+  same empty-body digest against a non-empty body (rejected,
+  `XAmzContentSHA256Mismatch`); malformed digest (non-hex characters);
+  invalid length (63/65 chars); and a `classifySigV4Payload` unit-level
+  table test covering all of the above plus every sentinel.
+- **`UNSIGNED-PAYLOAD` (header-auth, new):** a validly-signed PUT using it
+  is accepted; a tampered `Authorization` header is rejected
+  (`SignatureDoesNotMatch`); a body substituted **after** signing does
+  **not** invalidate the signature (proving SigV4 places no constraint on
+  body content in this mode); the same substitution **does** still fail
+  independent `Content-MD5`/CRC32 checks when those headers are present
+  and wrong (proving those checks are genuinely independent of SigV4);
+  lowercase/misspelled sentinel variants reject as `AccessDenied`; the
+  three permanently-excluded sentinels reject as `NotImplemented`; M5-A's
+  presigned-URL behavior is unaffected (a dedicated regression test proves
+  a full presigned GET still works after this pass's payload-mode
+  refactor).
+- **Explicitly unsupported/excluded, by design (hard exclusions, per this
+  task's own scope):** `STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD[-TRAILER]`
+  (SigV4A/ECDSA — not implemented) and `STREAMING-UNSIGNED-PAYLOAD-TRAILER`
+  — all three recognized cleanly and rejected with `NotImplemented`
+  (HTTP 501), never misclassified as a malformed digest.
+- **Conditional (eligible, not implemented this pass):**
+  `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` — see "Phase K" below for
+  why.
+
+### Phase B-F — persistent multipart upload
+
+**Architecture: no parallel object-storage backend.** Multipart reuses
+every existing primitive: `UploadPart` CDC-chunks its body with the exact
+same `chunkData`/`casWrite` PutObject already uses (so an uploaded part's
+bytes are durable, deduped, content-addressed CAS chunks from the moment
+the request is acknowledged); `CompleteMultipartUpload` produces an
+ordinary object via the exact same commit discipline `commitObjectRoot`
+already uses (bucket existence re-checked at the actual commit point,
+one journal append+sync as the sole durability boundary, in-memory
+namespace updated only after that succeeds). The one new architectural
+piece is four new journal record types (5-8:
+`recordTypeCreateMultipartUpload`/`UploadPart`/`AbortMultipartUpload`/
+`CompleteMultipartUpload`) added to the *existing* visibility journal —
+**no new on-disk file/directory structure was introduced for multipart
+state at all**. `Store.uploads map[string]*multipartUpload` is the
+in-memory namespace these records replay into, guarded by the same
+`Store.mu` as the bucket/object namespace, and is completely separate from
+`Store.buckets[*].objects` — an incomplete upload is structurally
+incapable of appearing in `ListObjectsV2` or being reached by ordinary
+GET/HEAD, because nothing ever writes it into that map before completion.
+
+`recordTypeCompleteMultipartUpload`'s payload is deliberately shaped like
+an ordinary `journalPutPayload` plus an `UploadID`: **one journal frame
+both publishes the finished object as an ordinary root AND retires the
+upload session**, so the two effects share the exact same write+sync
+durability boundary — there is no window where one happened and not the
+other (see Phase G below).
+
+**The one genuinely new algorithm: correct CDC re-chunking across part
+boundaries.** `CompleteMultipartUpload` does **not** concatenate each
+part's independently-computed chunk list into the final manifest — each
+part was CDC-chunked starting fresh at its own first byte, so treating a
+part boundary as if it were already a content-defined chunk boundary would
+silently produce different, non-canonical chunk boundaries near every seam
+than chunking the true logical concatenation would. Instead, completion
+streams the full logical concatenation through one fresh CDC pass exactly
+as if the whole object had arrived as a single `PutObject` body:
+`multipartReader` presents the ordered concatenation of parts' already-
+durable CAS chunk bytes as one `io.Reader` (reconstructing at most one
+chunk, ≤256KiB, at a time — never the whole object), and
+`chunkAndStoreStream` (a streaming generalization of PutObject's
+chunk+CAS-write loop) feeds it through the ordinary CDC chunker, durably
+publishing each newly-produced chunk into the same CAS an ordinary PUT
+would use and accumulating only the small chunk-reference list plus a
+running whole-object SHA-256 — never buffering the full reconstructed
+object. `TestMultipart_CompletedObjectDedupsAgainstOrdinaryPutOfSameBytes`
+proves this measurably: the same logical bytes uploaded once via ordinary
+PUT and once via a two-part multipart upload (split at an arbitrary,
+off-center byte offset chosen specifically to stress a chunk-boundary
+reuse) show store-wide unique bytes growing by far less than the object's
+own size after the multipart completion, i.e. real CAS reuse across the
+two paths despite the different chunking history.
+
+- **Multipart API implemented:** `CreateMultipartUpload` (`POST
+  /bucket/key?uploads`), `UploadPart` (`PUT
+  /bucket/key?partNumber=N&uploadId=ID`), `ListParts` (`GET
+  /bucket/key?uploadId=ID`), `CompleteMultipartUpload` (`POST
+  /bucket/key?uploadId=ID` with an XML `<CompleteMultipartUpload>` body),
+  `AbortMultipartUpload` (`DELETE /bucket/key?uploadId=ID`),
+  `ListMultipartUploads` (`GET /bucket?uploads`). Routing is decided purely
+  by query parameters ahead of the ordinary bucket/object dispatch in
+  `ServeHTTP` — the same pattern `handlePutObject` already uses to
+  distinguish `x-amz-copy-source` PUTs from ordinary ones.
+- **ETag semantics (Phase E), a genuinely different rule from single-PUT:**
+  `multipartETag` implements `MD5(binary_MD5(part1) || binary_MD5(part2) ||
+  ...) + "-" + part_count` — the conventional S3 multipart formula, applied
+  only to completed multipart objects. `TestMultipart_ETag_
+  DiffersFromOrdinarySinglePutETag` proves the same bytes uploaded via
+  ordinary PUT and via a one-part multipart upload get **different** ETags,
+  so the single-PUT MD5-of-body rule (unchanged, still applies to every
+  ordinary PUT/CopyObject) is never accidentally reused for a multipart
+  completion. Verified independently over the real wire in the rclone
+  large-object proof (`M5B_RCLONE_LARGE_OBJECT_RESULTS.md`): a genuine
+  1 GiB/205-part upload's `HeadObject` ETag is
+  `"b30575cd9e0c41bd4c1df0e8294bfea2-205"`.
+- **Validation (Phase F):** nonexistent upload ID, upload ID for the wrong
+  bucket/key (both report `NoSuchUpload` — real S3 does not distinguish
+  these either, to avoid leaking cross-key namespace information),
+  invalid part number (outside 1..10000, non-numeric, negative — table
+  test), empty completion part list (`MalformedXML`), a part referenced in
+  completion that was never uploaded or duplicated
+  (`InvalidPart`/rejected), an out-of-order completion list
+  (`InvalidPartOrder`), a wrong or malformed ETag in the completion
+  request (`InvalidPart`), a non-final part below the 5MiB minimum
+  (`EntityTooSmall`, matching AWS's own "all but the last part" rule),
+  malformed completion XML (`MalformedXML`), `UploadPart`/repeat-
+  `Complete`/repeat-`Abort` after the upload is already retired (all
+  `NoSuchUpload` — not idempotent, matching real S3's behavior for a
+  repeat completion/abort rather than treating it as a silent no-op), and
+  `DeleteBucket` refused (`BucketNotEmpty`) while a multipart upload
+  targeting it is still open.
+
+### Phase G — crash/restart durability
+
+All five required scenarios proven, at the `Store` level (direct
+crash-injection via the existing `testHook`/`simulatedCrash` seam plus a
+fresh `OpenStore` on the same directory to simulate a restart — the same
+pattern every M1-M4 crash test already uses) and end-to-end over real HTTP
+via the AWS SDK harness:
+
+- **G1** (initiate → upload 2 parts → restart → `ListParts` → upload a 3rd
+  part → complete → restart → `GetObject` → exact SHA-256 match):
+  `TestMultipart_Crash_G1_RestartMidUploadThenResumeAndComplete` (Store
+  level) and the `harness/m5b/multipart` AWS SDK harness (real HTTP,
+  including a real process restart).
+- **G2** (initiate → upload part 1 → replace part 1 → restart → complete →
+  exact expected bytes): `TestMultipart_Crash_G2_
+  ReplacePartThenRestartThenComplete`.
+- **G3** (initiate → upload parts → abort → restart → upload ID remains
+  invalid → no ordinary object visible): `TestMultipart_Crash_G3_
+  AbortThenRestartUploadIDStaysInvalid`.
+- **G4** (initiate → upload → complete → restart → ordinary object
+  visible → incomplete session not resurrected): `TestMultipart_Crash_G4_
+  CompleteThenRestartObjectVisibleSessionGone`.
+- **G5** (crash during final publication → never a partially visible
+  completed object): split into two tests proving both halves of the
+  invariant. `TestMultipart_Crash_G5_
+  CrashBeforeJournalCommitLeavesOldStateResumable` injects a crash at
+  every durability boundary **before** the completion journal frame
+  (chunk staging, after chunks published, after manifest published) and
+  confirms the object is never visible and the upload stays resumable;
+  `TestMultipart_Crash_G5_CrashAfterJournalCommitLeavesFullyCommittedObject`
+  injects a crash **after** the journal sync genuinely succeeds (and
+  again after the in-memory apply, before the response is even sent) and
+  confirms the object is fully, durably visible and the session is
+  retired — together proving there is no window with a partially visible
+  completed object. (The gap between a journal frame's `Write` and its
+  `Sync` is deliberately not simulated via an in-process restart here, for
+  the same documented reason `TestCrash_AfterJournalWriteBeforeSync`
+  already gives: once `WriteAt` returns, the bytes sit in the same page
+  cache a fresh `*os.File` in this same process would read right back, so
+  an in-process restart cannot honestly simulate a true crash in that
+  specific instant — only real power loss can.)
+
+### Phase H — concurrency/adversarial multipart tests
+
+All run under `go test -race`, stress-repeated `-count=8` with zero
+flakes: two `UploadPart` calls for the same part number (deterministic:
+exactly one part survives, race-free); concurrent different part numbers
+(all survive); `Complete` racing `UploadPart` (race-free; the object ends
+up existing **xor** the upload stays resumable, never both); `Abort`
+racing `UploadPart` (race-free, one deterministic outcome); two concurrent
+`Complete` calls (exactly one succeeds, confirmed via a result channel —
+not merely "no crash"); two concurrent `Abort` calls (exactly one
+succeeds). Every one of these mutations goes through the same commit-time
+re-validation pattern `commitObjectRoot` already established (heavy work
+unlocked, re-check-and-commit under `Store.mu`), so the same architecture
+that makes ordinary PUT/DeleteBucket races safe makes these safe too — no
+new locking model was introduced.
+
+### Phase I — real AWS SDK for Go v2 multipart proof
+
+New harness, `zeros3-testing/harness/m5b/multipart` (same pinned SDK
+versions as every prior milestone): **43/43 passed.** Full detail:
+`zeros3-testing/results/M5B_MULTIPART_RESULTS.md`. Covers: create bucket;
+initiate; upload 2 parts; `ListParts`; **kill and restart the zeros3
+process against the same store directory** mid-lifecycle; `ListParts`
+again (parts survived); upload a 3rd part; complete; `HeadObject`;
+`GetObject` with exact SHA-256 equality; Range GET straddling a part
+boundary; `CopyObject` of the completed object; a **second** restart plus
+re-verified SHA-256; abort scenario (upload+abort+`ListParts`
+rejected+`HeadObject` rejected); negative scenarios (nonexistent upload
+ID, wrong ETag, empty part list); `ListMultipartUploads`. No internal
+ZeroS3 API was used — every call is an ordinary SDK S3 client call.
+
+### Phase J — real rclone multipart proof (1 GiB)
+
+**PASS.** rclone `v1.75.0` (downloaded directly from
+`downloads.rclone.org`, same pin as the earlier rclone pass), a genuine
+**1 GiB (1073741824-byte)** random file, rclone's own default upload
+cutoff/chunk size (200MiB/5MiB — not overridden, so multipart triggered
+exactly the way it would for any real user, not by contriving a smaller
+chunk size). Full detail: `zeros3-testing/results/
+M5B_RCLONE_LARGE_OBJECT_RESULTS.md`.
+
+- **Multipart genuinely triggered, measured directly:** the completed
+  object's `HeadObject` ETag is `"b30575cd9e0c41bd4c1df0e8294bfea2-205"` —
+  the `-205` suffix is ZeroS3's multipart ETag formula and matches
+  1GiB÷5MiB rounded up to 205 parts exactly; a single-PUT object never
+  produces this ETag shape.
+- **Restart:** the zeros3 process was killed and restarted (same store
+  directory, fresh port) immediately after upload; `HeadObject` against
+  the restarted process reported the identical ETag/size.
+- **Hash equality:** `sha256sum` of the original uploaded file and of a
+  fresh `rclone copy` download (into an empty directory, to force a real
+  transfer rather than rclone's same-file skip heuristic) after the
+  restart are **identical**
+  (`207fa80173baad31239c6a7d4cfb23939f1701474c1654b93499ea9c5417c7fe`).
+- **This also resolves a previously-documented interoperability
+  limitation:** the post-M4 pass recorded that rclone's own ordinary
+  upload command could not complete against ZeroS3 at all, because
+  rclone's generic transfer path wraps every upload body in a non-seekable
+  reader and therefore requires `UNSIGNED-PAYLOAD`. Phase A2's
+  `UNSIGNED-PAYLOAD` support directly closes this gap — confirmed here for
+  both a small object and this 1 GiB multipart object, with **zero**
+  server-side errors logged across the entire run
+  (`RCLONE_RESULTS.md` is annotated with a pointer to this finding rather
+  than being rewritten).
+- **Largest black-box object tested this pass:** 1 GiB, SHA-256 exact
+  match, as above.
+
+### Phase K — conditional HMAC streaming: not required, not implemented
+
+Neither eligible mode (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]`) was
+observed from either real client exercised in this pass. The AWS SDK for
+Go v2's `UploadPart`/`CreateMultipartUpload`/`CompleteMultipartUpload`
+calls all used ordinary fixed `x-amz-content-sha256` (a literal digest);
+rclone's generic transfer path used `UNSIGNED-PAYLOAD`, per its own
+already-documented non-seekable-body behavior. Both harnesses' full server
+logs contain zero `NotImplemented` rejections
+(`grep -i error` over each is empty), confirming this is not merely an
+absence of the harness trying hard enough — a completely ordinary,
+unmodified client workflow for both tools never needed either streaming
+mode. Per this task's own completion gate, HMAC streaming is therefore
+correctly left **conditional and undone**: implementing it now would be
+speculative work outside this pass's evidence, not something either real
+client's normal operation actually requires.
+
+### Phase L — large-object memory behavior
+
+`CompleteMultipartUpload` never buffers the reconstructed object:
+`multipartReader` reconstructs at most one CAS chunk (≤256KiB) at a time
+from the ordered part list, and `chunkAndStoreStream` streams that through
+the CDC chunker and CAS writer, accumulating only small chunk references
+(sha256+length, not chunk bytes) plus a running SHA-256 hash state. The
+1 GiB rclone proof (Phase J) exercises this path directly: at no point
+does completing that object require holding anywhere near 1 GiB in a
+single buffer, unlike an ordinary ~1 GiB single-shot `PutObject` would
+(which still buffers its whole body — see "Known limitations" below,
+carried over unchanged from M1-M4; fixing that path was explicitly out of
+this pass's bounded scope, since multipart's whole purpose is to avoid
+needing it for large objects in the first place). Individual `UploadPart`
+requests still use the existing per-request body buffering (bounded by
+`maxRequestBodySize`, 256MiB) — unchanged, and adequate for the ordinary
+part sizes both real clients used (5-6MiB) in this pass's proofs.
+
+### Phase M — dedup/CAS verification
+
+`TestMultipart_DeepVerifyAfterCompletion` runs `Store.Verify(true)`
+(structural + whole-object-digest re-hash) against a freshly-completed
+multipart object and confirms it is fully clean — a completed multipart
+object is indistinguishable from an ordinary PutObject object to `verify`,
+`stats`, Range GET, and CopyObject (all exercised end-to-end in
+`TestMultipart_HappyPath_TwoParts_GetHeadRangeCopy` and the AWS SDK
+harness). `TestMultipart_CompletedObjectDedupsAgainstOrdinaryPutOfSameBytes`
+(described under Phase B-F above) measures real CAS chunk reuse between a
+multipart-completed object and an ordinary-PUT object sharing the same
+logical bytes. **Actual chunk layout is not claimed identical** between
+the two paths — completion re-chunks the true concatenation from scratch
+(Phase B-F), so its chunk boundaries need not exactly match an ordinary
+single-PUT's chunking of the same bytes chunk-for-chunk (both are valid,
+deterministic outputs of the same CDC algorithm over the same bytes; CDC's
+locality property is what still gives them most of their content in
+common, which is exactly what the dedup test measures) — this is stated
+accurately here rather than overclaimed.
+
+### Phase N — regression validation
+
+`gofmt -l .` clean; `go vet ./...` clean; `go test ./...` and
+`go test -race ./...` both green; `go test -count=3 ./...` green (no
+flakes); `go test -race -run 'TestMultipart_Concurrency|TestMultipart_
+Crash' -count=8 -v ./...` green, no flakes across 8 repeated runs of every
+new concurrency/crash test. **223 passing test cases** (`go test -v`
+`--- PASS` lines, counting subtests), up from 182 at this pass's starting
+snapshot (16 new payload-mode tests bring that to 197; the rest — 26 new
+top-level multipart tests, several with subtests — bring it to 223).
+Every M1-M5-A suite (SigV4 header/query auth, CRC32/Content-MD5,
+CDC/CAS/manifest/journal, crash/recovery, concurrency, ListObjectsV2,
+CopyObject, Range GET, presigning, virtual-host addressing) remains green,
+unmodified in behavior.
+
+**External regression, same pinned AWS SDK for Go v2 versions as every
+prior milestone, rerun against this pass's binary:** M2 canonical workflow
+**41/41**, M3 CopyObject **46/46**, M3 Range GET **27/27**, M3 dedup
+evidence **7/7**, M5-A presign **47/47** — all unchanged, confirming
+multipart's new journal record types/routing/payload-mode refactor
+regressed nothing in the existing header-auth/path-style/presigned
+surface. **Package Killer (`s3rver`) was not rerun this pass** — it
+requires installing an additional npm package into a scratch environment
+purely for comparison purposes, this pass's changes are already covered
+end-to-end by the M2/M3/M5-A reruns plus the two new multipart harnesses
+above (all of which exercise the identical header-auth code path Package
+Killer's frozen test logic also uses), and the task's own guidance is
+explicit that refreshing this unrelated presentation evidence must never
+be allowed to threaten completing multipart itself. Its last recorded
+result (`PACKAGE_KILLER_RESULTS.md`, unaffected by anything in this pass)
+stands; a full rerun remains a reasonable candidate whenever a submission
+freeze wants that evidence refreshed.
+
+**Dependency proof:** regenerated (`deps-proof.txt`); `go list -deps .`
+produces the exact same non-stdlib package set as before this pass (the
+toolchain's own internally-vendored `golang.org/x/...`/
+`crypto/internal/entropy` packages, the stdlib `uuid` package, and
+`zeros3` itself) — multipart's new code uses only already-imported stdlib
+packages (`bytes`, `crypto/md5`, `crypto/sha256`, `encoding/hex`,
+`encoding/json`, `encoding/xml`, `strconv`, `strings`, `sort`, `time`),
+confirmed by an actual first-path-segment-dot check (none found), not
+merely re-asserted. `go.mod` still has no `require` block.
+
+**Source-file invariant:** `zeros3.go` remains the sole implementation
+file; `zeros3_test.go` remains test-only. No new `.go` file was added to
+the ZeroS3 module (the new harness lives entirely under
+`zeros3-testing/harness/m5b/multipart`, outside the ZeroS3 module).
+
+**Reproducible build hash (refreshed, since `zeros3.go` changed):**
+
+```
+SHA-256 (copy A): 9e637369284cfcbfd333b74305c3852fd151f4b266f16355d93baeba9043d31a
+SHA-256 (copy B): 9e637369284cfcbfd333b74305c3852fd151f4b266f16355d93baeba9043d31a
+```
+
+Confirmed byte-identical across two independently-copied source trees via
+`scripts/reproducible_build.sh`, on `go1.27.0 linux/amd64`. Intentionally
+different from the prior pass's hash (the source changed); that earlier
+hash is stale evidence of the pre-M5-B binary, not a discrepancy.
+
+### Persistent-format impact
+
+**Journal record type space extended; every frozen v1 value unchanged.**
+`store_format_version`, `cdc_format_version`, `manifest_format_version`
+are all still `1`; the journal magic (`ZSJ1`), frame layout, CRC32C
+checksum, and CDC/manifest parameters are byte-for-byte unchanged from
+M1. What's new: four additional journal record type numbers (5-8) for
+multipart upload session state, added the same additive way the original
+four were defined — no existing record type was repurposed, and no new
+top-level on-disk file/directory was introduced (multipart state lives
+entirely inside the existing journal; part payload bytes live entirely
+inside the existing CAS chunk store). **Forward-compatibility
+consequence, by design:** an M1-M5-A binary opening a store whose journal
+contains any of these new record types fails replay via the existing
+"unknown record type" check in `replayJournal`, exactly like any other
+genuinely unknown record type — it refuses to silently misinterpret
+multipart state rather than risk corrupting or misreporting it. A store
+that has never used multipart upload is byte-for-byte unaffected and
+remains fully readable by an older binary.
+
+### Known limitations
+
+- `ListParts`/`ListMultipartUploads` do not implement pagination
+  (`max-parts`/`part-number-marker`, `max-uploads`/`key-marker`/
+  `upload-id-marker`) — every call returns the complete result in one
+  page (`IsTruncated` always `false`). Not exercised as a gap by either
+  real-client proof in this pass (a client that pages by following
+  `NextPartNumberMarker` etc. simply receives everything on the first
+  page and pages no further); a real limitation to fix if a future
+  milestone needs to prove behavior with a very large part/upload count.
+- `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` remain unimplemented,
+  conditionally, per Phase K above — not required by anything exercised
+  this pass, and per this task's own completion gate not required for
+  M5-B to be COMPLETE.
+- `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and SigV4A/ECDSA streaming
+  (`STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD[-TRAILER]`) are permanently
+  out of scope, per this task's own hard exclusions — recognized and
+  rejected cleanly (`NotImplemented`), never implemented.
+- Multipart part sizing enforces AWS's own "every part but the last must
+  be ≥5MiB" rule; there is no configurable override.
+- An ordinary single-shot `PutObject`'s body is still fully buffered in
+  memory (bounded, 256MiB) — unchanged from M1-M4, and explicitly out of
+  this pass's bounded scope (Phase L): multipart exists precisely so a
+  large object need not go through that path at all, and this pass proved
+  a 1 GiB object completing without a correspondingly large buffer via
+  multipart specifically.
+- Package Killer (`s3rver`) regression was not rerun this pass (see
+  "Phase N" above); its last recorded result predates this pass and is
+  unaffected by it.
+- All limitations recorded in the "M5-A" and earlier sections below
+  remain current and unchanged by this pass, except where this pass's
+  own Phase J explicitly resolves one (rclone's ordinary-upload
+  `UNSIGNED-PAYLOAD` requirement — see `RCLONE_RESULTS.md`'s pointer note
+  and `M5B_RCLONE_LARGE_OBJECT_RESULTS.md`).
+
+### Exact next milestone
+
+Remaining M5/T2 optional-tier work by score/hour priority (internal
+versions/restore, safe GC) if pursued at all, per `MILESTONES.md`'s
+demotion rule; M6 delta sync remains untouched and out of scope until
+T0-T2 stability is otherwise secure. `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`
+support remains a well-scoped, low-risk candidate to promote later if a
+specific real client is found to require it, but is not itself the
+recommended next milestone given neither client exercised in this pass
+needed it.
+
 ## M5-A — SigV4 query authentication, presigning, virtual-hosted addressing
 
 **COMPLETE.** A tightly bounded pass, exactly per its own scope: SigV4

@@ -94,16 +94,32 @@ presign get|put -bucket B -key K -expires 5m ...` or by any standard SDK's
 own presigner, and verified by the same signing core header auth uses —
 proven end to end against real AWS SDK for Go v2 `PresignGetObject`/
 `PresignPutObject` output (`zeros3-testing/harness/m5a/presign`, 47/47).
-Virtual-hosted-style addressing (`http://bucket.<domain>/key`) is opt-in
-via `zeros3 serve -vhost-base <domain>`; path-style keeps working
-unconditionally either way. `zeros3 stats` (human/`-json`) and `zeros3
-verify` (structural, and `-deep` for full content re-hashing plus a
-whole-object SHA-256 check) round out the CLI.
+Header-auth requests may also use the fixed `UNSIGNED-PAYLOAD`
+`x-amz-content-sha256` sentinel instead of a computed digest (Authorization
+signature validation remains mandatory either way) — this is what let a
+real, unpatched `rclone`'s ordinary upload path complete against ZeroS3 for
+the first time, including a genuine 1 GiB/205-part multipart upload
+(`zeros3-testing/results/M5B_RCLONE_LARGE_OBJECT_RESULTS.md`).
+Persistent multipart upload (`CreateMultipartUpload`/`UploadPart`/
+`ListParts`/`CompleteMultipartUpload`/`AbortMultipartUpload`/
+`ListMultipartUploads`) is built entirely on the existing CDC/CAS/journal
+machinery — no second storage backend — survives a real process restart
+mid-upload, and re-chunks the true logical concatenation on completion
+rather than treating part boundaries as chunk boundaries; proven against a
+real AWS SDK for Go v2 client (`zeros3-testing/harness/m5b/multipart`,
+43/43) and the 1 GiB rclone upload, above. Virtual-hosted-style addressing
+(`http://bucket.<domain>/key`) is opt-in via `zeros3 serve -vhost-base
+<domain>`; path-style keeps working unconditionally either way. `zeros3
+stats` (human/`-json`) and `zeros3 verify` (structural, and `-deep` for
+full content re-hashing plus a whole-object SHA-256 check) round out the
+CLI.
 
 Not implemented (see `S3_COMPAT.md`/`STATUS.md` for the full deviation
-list): versioning, multipart upload, object-lock/ACL/policy/IAM,
-conditional-copy headers, self-copy rejection, `X-Amz-Security-Token`, and
-`aws-chunked` streaming checksum trailers.
+list): versioning, object-lock/ACL/policy/IAM, conditional-copy headers,
+self-copy rejection, `X-Amz-Security-Token`, `STREAMING-AWS4-HMAC-SHA256-
+PAYLOAD[-TRAILER]` (conditional — not yet required by any real client
+exercised), and `aws-chunked`'s unsigned/SigV4A streaming trailer modes
+(permanently out of scope).
 
 ## Architecture
 
@@ -233,15 +249,21 @@ repository:
   `net/http.Client`, negative/tamper/expiry cases correctly rejected with
   no object mutation, `zeros3 presign`-CLI-generated URLs, and a full
   virtual-hosted-style round trip.
-- **rclone T1 secondary client** (`harness/rclone`) — **19/19 passed**,
-  plus 2 honestly-documented, root-caused known limitations (rclone's
-  ordinary upload path needs `UNSIGNED-PAYLOAD` for header auth, which
-  ZeroS3 deliberately doesn't support there — note that query-string/
-  presigned auth's own fixed `UNSIGNED-PAYLOAD` handling, above, is a
-  different, already-supported code path; this rclone limitation was not
-  rerun in this pass and is unaffected by it). Bucket/object lifecycle,
-  listing, download, hash equality, overwrite, and restart persistence are
-  all proven through the real `rclone` v1.75.0 binary.
+- **Persistent multipart upload** (`harness/m5b/multipart`) — **43/43
+  passed**: full lifecycle including a real process restart mid-upload,
+  resume, completion, Range GET/CopyObject of the completed object, a
+  second restart, an abort scenario, and negative/validation cases — all
+  through ordinary AWS SDK for Go v2 S3 client calls, no internal ZeroS3
+  API.
+- **rclone T1 secondary client + M5-B large-object proof** (`harness/rclone`,
+  and a standalone 1 GiB run) — the original small-object suite:
+  **19/19 passed**; separately, a genuine **1 GiB / 205-part** multipart
+  upload via rclone's ordinary (unpatched) upload path now **completes
+  end to end**, restart-persists, and downloads with exact SHA-256
+  equality — M5-B's header-auth `UNSIGNED-PAYLOAD` support resolves the
+  small-object suite's previously-documented "rclone's ordinary upload
+  path cannot complete" limitation. See
+  `results/M5B_RCLONE_LARGE_OBJECT_RESULTS.md`.
 
 See that repository's `results/` directory for the exact recorded runs,
 pinned SDK/rclone versions, and reproduction commands.
@@ -274,8 +296,8 @@ different absolute paths, on `go1.27.0 linux/amd64` — produce
 byte-identical output:
 
 ```
-SHA-256 (copy A): 770bb0eae8a659d92a1fd38dc7916c2ccb41cc142170bf3377a323e241ae0d53
-SHA-256 (copy B): 770bb0eae8a659d92a1fd38dc7916c2ccb41cc142170bf3377a323e241ae0d53
+SHA-256 (copy A): 9e637369284cfcbfd333b74305c3852fd151f4b266f16355d93baeba9043d31a
+SHA-256 (copy B): 9e637369284cfcbfd333b74305c3852fd151f4b266f16355d93baeba9043d31a
 ```
 
 Reproduce this with [`scripts/reproducible_build.sh`](./scripts/reproducible_build.sh)
@@ -287,7 +309,13 @@ arguments needed).
 Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
 
 - Single writer process per store; no distributed/HA operation.
-- No versioning, restore, garbage collection, or multipart upload.
+- No versioning, restore, or garbage collection.
+- `ListParts`/`ListMultipartUploads` have no pagination (single page
+  only); every part but the last must be ≥5MiB, matching AWS's rule.
+- `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` are eligible but not yet
+  implemented (no real client exercised needs them);
+  `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and SigV4A/ECDSA streaming modes
+  are permanently out of scope.
 - Presigned URLs sign only `host`; `X-Amz-Security-Token` is rejected
   outright (no session/STS credential model exists to validate it).
 - No IAM/STS/KMS/ACL/policy engine; one static credential pair.

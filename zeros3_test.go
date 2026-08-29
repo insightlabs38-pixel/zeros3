@@ -1636,16 +1636,339 @@ func TestContentMD5_ValidPUTOverRealHTTPSucceedsAndETagUnaffected(t *testing.T) 
 }
 
 // =============================================================================
+// SigV4 payload-mode tests (Phase A)
+// =============================================================================
+
+func TestPayloadMode_ClassifySigV4Payload(t *testing.T) {
+	sha256OfEmpty := testHexSHA256(nil)
+	cases := []struct {
+		name       string
+		raw        string
+		wantKind   sigv4PayloadKind
+		wantDigest string
+		wantErr    bool
+	}{
+		{"ordinary-digest", testHexSHA256([]byte("hello")), sigv4PayloadFixedSHA256, testHexSHA256([]byte("hello")), false},
+		{"empty-body-digest", sha256OfEmpty, sigv4PayloadFixedSHA256, sha256OfEmpty, false},
+		{"uppercase-digest-accepted-lowered", strings.ToUpper(testHexSHA256([]byte("hi"))), sigv4PayloadFixedSHA256, testHexSHA256([]byte("hi")), false},
+		{"unsigned-payload", "UNSIGNED-PAYLOAD", sigv4PayloadUnsignedFixed, "", false},
+		{"streaming-hmac", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD", sigv4PayloadStreamingHMAC, "", false},
+		{"streaming-hmac-trailer", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER", sigv4PayloadStreamingHMACTrailer, "", false},
+		{"streaming-unsigned-trailer-excluded", "STREAMING-UNSIGNED-PAYLOAD-TRAILER", sigv4PayloadUnsupported, "", false},
+		{"streaming-ecdsa-excluded", "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD", sigv4PayloadUnsupported, "", false},
+		{"streaming-ecdsa-trailer-excluded", "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER", sigv4PayloadUnsupported, "", false},
+		{"lowercase-unsigned-payload-rejected", "unsigned-payload", 0, "", true},
+		{"misspelled-sentinel-rejected", "UNSIGNED_PAYLOAD", 0, "", true},
+		{"malformed-not-hex", strings.Repeat("z", 64), 0, "", true},
+		{"invalid-hex-chars", strings.Repeat("g", 64), 0, "", true},
+		{"too-short", strings.Repeat("a", 63), 0, "", true},
+		{"too-long", strings.Repeat("a", 65), 0, "", true},
+		{"empty-string", "", 0, "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			kind, digest, err := classifySigV4Payload(c.raw)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("classifySigV4Payload(%q): expected an error, got kind=%v digest=%q", c.raw, kind, digest)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("classifySigV4Payload(%q): unexpected error: %v", c.raw, err)
+			}
+			if kind != c.wantKind {
+				t.Fatalf("classifySigV4Payload(%q): kind = %v, want %v", c.raw, kind, c.wantKind)
+			}
+			if digest != c.wantDigest {
+				t.Fatalf("classifySigV4Payload(%q): digest = %q, want %q", c.raw, digest, c.wantDigest)
+			}
+		})
+	}
+}
+
+func TestPayloadMode_FixedSHA256_CorrectDigestAndBodyAccepted(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	body := []byte("ordinary fixed-payload body")
+	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
+	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), nil)
+	if err := srv.authenticate(req, rawPath, rawQuery, body); err != nil {
+		t.Fatalf("expected a correct fixed-SHA256 payload to be accepted: %v", err)
+	}
+}
+
+func TestPayloadMode_FixedSHA256_WrongDigestRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	body := []byte("some body")
+	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
+	// signTestRequest signs whatever X-Amz-Content-Sha256 opts.badPayloadHash
+	// carries, so the Authorization signature itself is internally
+	// consistent (a real client could produce this); what must fail is the
+	// *cross-check* against the body actually received.
+	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: testHexSHA256([]byte("a completely different body"))})
+	var ae *authError
+	err := srv.authenticate(req, rawPath, rawQuery, body)
+	if !errors.As(err, &ae) || ae.code != "XAmzContentSHA256Mismatch" {
+		t.Fatalf("expected XAmzContentSHA256Mismatch, got %v", err)
+	}
+}
+
+func TestPayloadMode_FixedSHA256_EmptyBodyCorrectDigestAccepted(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	body := []byte{}
+	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
+	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), nil)
+	if err := srv.authenticate(req, rawPath, rawQuery, body); err != nil {
+		t.Fatalf("expected the SHA-256-of-empty-string digest applied to a zero-length body to be accepted: %v", err)
+	}
+}
+
+func TestPayloadMode_FixedSHA256_EmptyBodyDigestWithNonEmptyBodyRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	realBody := []byte("not actually empty")
+	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", realBody)
+	signTestRequest(t, req, signer, rawPath, rawQuery, realBody, time.Now(), &signOpts{badPayloadHash: testHexSHA256(nil)})
+	var ae *authError
+	err := srv.authenticate(req, rawPath, rawQuery, realBody)
+	if !errors.As(err, &ae) || ae.code != "XAmzContentSHA256Mismatch" {
+		t.Fatalf("expected the empty-body digest against a non-empty body to be rejected as XAmzContentSHA256Mismatch, got %v", err)
+	}
+}
+
+func TestPayloadMode_MalformedDigestVariantsRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	cases := map[string]string{
+		"invalid-hex":    strings.Repeat("g", 64),
+		"invalid-length": strings.Repeat("a", 63),
+		"too-long":       strings.Repeat("a", 65),
+		"empty-value":    "",
+	}
+	for name, badHash := range cases {
+		t.Run(name, func(t *testing.T) {
+			body := []byte("payload")
+			req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
+			opts := &signOpts{badPayloadHash: badHash}
+			if badHash == "" {
+				// A genuinely empty header value can't be "signed" in any
+				// meaningful sense; exercise the missing-header path
+				// directly instead of asking the signer to sign an empty
+				// string into the canonical request.
+				req.Header.Del("X-Amz-Content-Sha256")
+				signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), nil)
+				req.Header.Del("X-Amz-Content-Sha256")
+			} else {
+				signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), opts)
+			}
+			var ae *authError
+			err := srv.authenticate(req, rawPath, rawQuery, body)
+			if !errors.As(err, &ae) || ae.code != "AccessDenied" {
+				t.Fatalf("expected a malformed x-amz-content-sha256 to be rejected as AccessDenied, got %v", err)
+			}
+		})
+	}
+}
+
+func TestPayloadMode_UnsignedPayload_ValidSignedPUTAccepted(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	body := []byte("unsigned payload body")
+	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
+	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: "UNSIGNED-PAYLOAD"})
+	if err := srv.authenticate(req, rawPath, rawQuery, body); err != nil {
+		t.Fatalf("expected a validly signed UNSIGNED-PAYLOAD request to be accepted: %v", err)
+	}
+}
+
+func TestPayloadMode_UnsignedPayload_TamperedAuthorizationRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	body := []byte("unsigned payload body")
+	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
+	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: "UNSIGNED-PAYLOAD"})
+	auth := req.Header.Get("Authorization")
+	req.Header.Set("Authorization", strings.Replace(auth, "Signature=", "Signature=00", 1))
+	var ae *authError
+	err := srv.authenticate(req, rawPath, rawQuery, body)
+	if !errors.As(err, &ae) || ae.code != "SignatureDoesNotMatch" {
+		t.Fatalf("expected a tampered Authorization header to be rejected, got %v", err)
+	}
+}
+
+// TestPayloadMode_UnsignedPayload_ModifiedBodyAloneDoesNotInvalidateSignature
+// is the core UNSIGNED-PAYLOAD contract: the literal sentinel string, not
+// any function of the body, is what the signature covers, so a body
+// substituted after signing still passes SigV4 -- exactly the case
+// independent Content-MD5/CRC32 checks exist to still catch.
+func TestPayloadMode_UnsignedPayload_ModifiedBodyAloneDoesNotInvalidateSignature(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	signedBody := []byte("the body that was actually signed")
+	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", signedBody)
+	signTestRequest(t, req, signer, rawPath, rawQuery, signedBody, time.Now(), &signOpts{badPayloadHash: "UNSIGNED-PAYLOAD"})
+
+	differentBody := []byte("a totally different body substituted after signing")
+	if err := srv.authenticate(req, rawPath, rawQuery, differentBody); err != nil {
+		t.Fatalf("expected UNSIGNED-PAYLOAD to place no constraint on body content: %v", err)
+	}
+}
+
+func TestPayloadMode_UnsignedPayload_ValidSigButWrongContentMD5Fails(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "bucket1"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte("unsigned payload body for content-md5 cross-check")
+	req := mustSignedRequestWithOpts(t, signer, http.MethodPut, ts.URL+"/bucket1/key", body, &signOpts{badPayloadHash: "UNSIGNED-PAYLOAD"})
+	wrongSum := md5.Sum([]byte("not the real body")) //nolint:gosec // test-only.
+	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(wrongSum[:]))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("expected an incorrect Content-MD5 under UNSIGNED-PAYLOAD to still fail, got 200")
+	}
+}
+
+func TestPayloadMode_UnsignedPayload_ValidSigButWrongCRC32Fails(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "bucket1"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte("unsigned payload body for crc32 cross-check")
+	req := mustSignedRequestWithOpts(t, signer, http.MethodPut, ts.URL+"/bucket1/key", body, &signOpts{badPayloadHash: "UNSIGNED-PAYLOAD"})
+	bad := make([]byte, 4)
+	binary.BigEndian.PutUint32(bad, crc32.ChecksumIEEE(body)+1)
+	req.Header.Set("x-amz-checksum-crc32", base64.StdEncoding.EncodeToString(bad))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("expected an incorrect crc32 under UNSIGNED-PAYLOAD to still fail, got 200")
+	}
+}
+
+func TestPayloadMode_ExcludedModesRejectCleanly(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	cases := []string{
+		"STREAMING-UNSIGNED-PAYLOAD-TRAILER",
+		"STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD",
+		"STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER",
+	}
+	for _, mode := range cases {
+		t.Run(mode, func(t *testing.T) {
+			body := []byte("excluded mode body")
+			req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
+			signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: mode})
+			var ae *authError
+			err := srv.authenticate(req, rawPath, rawQuery, body)
+			if !errors.As(err, &ae) || ae.code != "NotImplemented" {
+				t.Fatalf("expected excluded mode %q to be rejected as NotImplemented, got %v", mode, err)
+			}
+		})
+	}
+}
+
+func TestPayloadMode_StreamingHMACModesRejectedUntilImplemented(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	cases := []string{
+		"STREAMING-AWS4-HMAC-SHA256-PAYLOAD",
+		"STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER",
+	}
+	for _, mode := range cases {
+		t.Run(mode, func(t *testing.T) {
+			body := []byte("streaming mode body")
+			req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
+			signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: mode})
+			var ae *authError
+			err := srv.authenticate(req, rawPath, rawQuery, body)
+			if !errors.As(err, &ae) || ae.code != "NotImplemented" {
+				t.Fatalf("expected conditional streaming mode %q, not yet implemented, to be rejected as NotImplemented, got %v", mode, err)
+			}
+		})
+	}
+}
+
+func TestPayloadMode_LowercaseOrMisspelledSentinelsRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	cases := []string{"unsigned-payload", "Unsigned-Payload", "UNSIGNED_PAYLOAD", "streaming-aws4-hmac-sha256-payload"}
+	for _, mode := range cases {
+		t.Run(mode, func(t *testing.T) {
+			body := []byte("body")
+			req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
+			signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: mode})
+			var ae *authError
+			err := srv.authenticate(req, rawPath, rawQuery, body)
+			if !errors.As(err, &ae) || ae.code != "AccessDenied" {
+				t.Fatalf("expected lowercase/misspelled mode %q to be rejected as AccessDenied (not silently accepted under some other mode), got %v", mode, err)
+			}
+		})
+	}
+}
+
+// TestPayloadMode_PresignedBehaviorUnchanged confirms formalizing header-auth
+// payload modes did not touch query-string (presigned) auth, which always
+// uses the fixed UNSIGNED-PAYLOAD sentinel by a completely separate code
+// path (authenticateQuery) that never calls classifySigV4Payload at all.
+func TestPayloadMode_PresignedBehaviorUnchanged(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "bucket1"); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("presigned put body")
+	putResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/bucket1/pkey", body, nil)
+	putResp.Body.Close()
+	if putResp.StatusCode != http.StatusOK {
+		t.Fatalf("setup PUT failed: %d", putResp.StatusCode)
+	}
+
+	url, err := GeneratePresignedURL(
+		Credentials{AccessKeyID: signer.accessKey, SecretAccessKey: signer.secretKey},
+		signer.region,
+		PresignRequest{Method: http.MethodGet, Endpoint: ts.URL, Bucket: "bucket1", Key: "pkey", Expires: 15 * time.Minute},
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !bytes.Equal(got, body) {
+		t.Fatalf("expected presigned GET to still work unchanged, got status %d body %q", resp.StatusCode, got)
+	}
+}
+
+// =============================================================================
 // End-to-end HTTP tests
 // =============================================================================
 
 func mustSignedRequest(t *testing.T, signer testSigner, method, rawURL string, body []byte) *http.Request {
 	t.Helper()
+	return mustSignedRequestWithOpts(t, signer, method, rawURL, body, nil)
+}
+
+func mustSignedRequestWithOpts(t *testing.T, signer testSigner, method, rawURL string, body []byte, opts *signOpts) *http.Request {
+	t.Helper()
 	req, err := http.NewRequest(method, rawURL, bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
-	signTestRequest(t, req, signer, req.URL.Path, req.URL.RawQuery, body, time.Now(), nil)
+	signTestRequest(t, req, signer, req.URL.Path, req.URL.RawQuery, body, time.Now(), opts)
 	return req
 }
 
@@ -5228,6 +5551,1241 @@ func TestRange_ReadsOnlyOverlappingChunks(t *testing.T) {
 	}
 	if !bytes.Equal(got2, chunkC[:1]) {
 		t.Fatalf("range at the exact start of chunk C: got %v want %v", got2, chunkC[:1])
+	}
+}
+
+// =============================================================================
+// M5-B: Multipart upload tests
+//
+// Helpers below drive the real HTTP multipart API (CreateMultipartUpload/
+// UploadPart/ListParts/CompleteMultipartUpload/AbortMultipartUpload/
+// ListMultipartUploads) exactly the way a real client would -- query
+// parameters on ordinary bucket/object paths, real SigV4-signed requests --
+// so these tests exercise the same routing/handler code a real AWS SDK or
+// rclone request would.
+// =============================================================================
+
+func doCreateMultipartUpload(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket, key string) string {
+	t.Helper()
+	resp := doSignedRequest(t, client, baseURL, signer, http.MethodPost, "/"+bucket+"/"+key+"?uploads", nil, nil)
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CreateMultipartUpload failed: %d %s", resp.StatusCode, data)
+	}
+	var result initiateMultipartUploadResult
+	if err := xml.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to parse InitiateMultipartUploadResult: %v", err)
+	}
+	if result.UploadId == "" {
+		t.Fatalf("empty UploadId in InitiateMultipartUploadResult")
+	}
+	return result.UploadId
+}
+
+func doUploadPart(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket, key, uploadID string, partNumber int, body []byte) (etag string, status int, respBody []byte) {
+	t.Helper()
+	path := fmt.Sprintf("/%s/%s?partNumber=%d&uploadId=%s", bucket, key, partNumber, uploadID)
+	resp := doSignedRequest(t, client, baseURL, signer, http.MethodPut, path, body, nil)
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return strings.Trim(resp.Header.Get("ETag"), `"`), resp.StatusCode, data
+}
+
+func doListParts(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket, key, uploadID string) (listPartsResult, int) {
+	t.Helper()
+	path := fmt.Sprintf("/%s/%s?uploadId=%s", bucket, key, uploadID)
+	resp := doSignedRequest(t, client, baseURL, signer, http.MethodGet, path, nil, nil)
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var result listPartsResult
+	if resp.StatusCode == http.StatusOK {
+		if err := xml.Unmarshal(data, &result); err != nil {
+			t.Fatalf("failed to parse ListPartsResult: %v", err)
+		}
+	}
+	return result, resp.StatusCode
+}
+
+func doListMultipartUploads(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket string) (listMultipartUploadsResult, int) {
+	t.Helper()
+	resp := doSignedRequest(t, client, baseURL, signer, http.MethodGet, "/"+bucket+"?uploads", nil, nil)
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var result listMultipartUploadsResult
+	if resp.StatusCode == http.StatusOK {
+		if err := xml.Unmarshal(data, &result); err != nil {
+			t.Fatalf("failed to parse ListMultipartUploadsResult: %v", err)
+		}
+	}
+	return result, resp.StatusCode
+}
+
+func doCompleteMultipartUpload(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket, key, uploadID string, parts []completedPartXML) (*completeMultipartUploadResult, int, []byte) {
+	t.Helper()
+	reqXML := completeMultipartUploadXML{Part: parts}
+	data, err := xml.Marshal(reqXML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := fmt.Sprintf("/%s/%s?uploadId=%s", bucket, key, uploadID)
+	resp := doSignedRequest(t, client, baseURL, signer, http.MethodPost, path, data, nil)
+	respData, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var result *completeMultipartUploadResult
+	if resp.StatusCode == http.StatusOK {
+		result = &completeMultipartUploadResult{}
+		if err := xml.Unmarshal(respData, result); err != nil {
+			t.Fatalf("failed to parse CompleteMultipartUploadResult: %v", err)
+		}
+	}
+	return result, resp.StatusCode, respData
+}
+
+func doAbortMultipartUpload(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket, key, uploadID string) int {
+	t.Helper()
+	path := fmt.Sprintf("/%s/%s?uploadId=%s", bucket, key, uploadID)
+	resp := doSignedRequest(t, client, baseURL, signer, http.MethodDelete, path, nil, nil)
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck // test-only body drain.
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// manualMultipartETag computes the S3 multipart ETag formula independently
+// of multipartETag itself, so tests actually prove the formula, not just
+// that the implementation agrees with itself.
+func manualMultipartETag(parts [][]byte) string {
+	h := md5.New() //nolint:gosec // test-only, matching the S3-compatible construction under test.
+	for _, p := range parts {
+		sum := md5.Sum(p) //nolint:gosec // test-only.
+		h.Write(sum[:])
+	}
+	return hex.EncodeToString(h.Sum(nil)) + "-" + strconv.Itoa(len(parts))
+}
+
+func TestMultipart_HappyPath_TwoParts_GetHeadRangeCopy(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	part1 := genRandomBytes(9001, 5*1024*1024)
+	part2 := genRandomBytes(9002, 3*1024*1024)
+	whole := append(append([]byte{}, part1...), part2...)
+
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "mpkey")
+	etag1, status1, _ := doUploadPart(t, client, ts.URL, signer, "b", "mpkey", uploadID, 1, part1)
+	if status1 != http.StatusOK {
+		t.Fatalf("UploadPart 1 failed: %d", status1)
+	}
+	etag2, status2, _ := doUploadPart(t, client, ts.URL, signer, "b", "mpkey", uploadID, 2, part2)
+	if status2 != http.StatusOK {
+		t.Fatalf("UploadPart 2 failed: %d", status2)
+	}
+
+	lp, lpStatus := doListParts(t, client, ts.URL, signer, "b", "mpkey", uploadID)
+	if lpStatus != http.StatusOK || len(lp.Part) != 2 {
+		t.Fatalf("ListParts: status=%d parts=%d", lpStatus, len(lp.Part))
+	}
+	if lp.Part[0].PartNumber != 1 || lp.Part[1].PartNumber != 2 {
+		t.Fatalf("ListParts: unexpected part order: %+v", lp.Part)
+	}
+
+	result, cStatus, cBody := doCompleteMultipartUpload(t, client, ts.URL, signer, "b", "mpkey", uploadID,
+		[]completedPartXML{{PartNumber: 1, ETag: etag1}, {PartNumber: 2, ETag: etag2}})
+	if cStatus != http.StatusOK {
+		t.Fatalf("CompleteMultipartUpload failed: %d %s", cStatus, cBody)
+	}
+	wantETag := `"` + manualMultipartETag([][]byte{part1, part2}) + `"`
+	if result.ETag != wantETag {
+		t.Fatalf("completed object ETag = %s, want %s", result.ETag, wantETag)
+	}
+
+	// The upload ID must now be invalid (completion retires it).
+	if _, status := doListParts(t, client, ts.URL, signer, "b", "mpkey", uploadID); status != http.StatusNotFound {
+		t.Fatalf("expected ListParts on a completed upload ID to 404, got %d", status)
+	}
+
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/mpkey", nil, nil)
+	got, _ := io.ReadAll(get.Body)
+	get.Body.Close()
+	if get.StatusCode != http.StatusOK || !bytes.Equal(got, whole) {
+		t.Fatalf("GET of completed multipart object: status=%d, exact byte match=%v", get.StatusCode, bytes.Equal(got, whole))
+	}
+	if get.Header.Get("ETag") != wantETag {
+		t.Fatalf("GET ETag = %s, want %s", get.Header.Get("ETag"), wantETag)
+	}
+
+	head := doSignedRequest(t, client, ts.URL, signer, http.MethodHead, "/b/mpkey", nil, nil)
+	head.Body.Close()
+	if head.StatusCode != http.StatusOK || head.Header.Get("Content-Length") != strconv.Itoa(len(whole)) {
+		t.Fatalf("HEAD of completed multipart object: status=%d content-length=%s", head.StatusCode, head.Header.Get("Content-Length"))
+	}
+
+	rangeStart, rangeEnd := len(part1)-100, len(part1)+100
+	rangeResp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/mpkey", nil, map[string]string{
+		"Range": fmt.Sprintf("bytes=%d-%d", rangeStart, rangeEnd),
+	})
+	rangeGot, _ := io.ReadAll(rangeResp.Body)
+	rangeResp.Body.Close()
+	if rangeResp.StatusCode != http.StatusPartialContent || !bytes.Equal(rangeGot, whole[rangeStart:rangeEnd+1]) {
+		t.Fatalf("Range GET straddling the part boundary: status=%d exact match=%v", rangeResp.StatusCode, bytes.Equal(rangeGot, whole[rangeStart:rangeEnd+1]))
+	}
+
+	copyResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/mpkey-copy", nil, map[string]string{
+		"X-Amz-Copy-Source": "b/mpkey",
+	})
+	copyResp.Body.Close()
+	if copyResp.StatusCode != http.StatusOK {
+		t.Fatalf("CopyObject of a completed multipart object failed: %d", copyResp.StatusCode)
+	}
+	copyGet := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/mpkey-copy", nil, nil)
+	copyGot, _ := io.ReadAll(copyGet.Body)
+	copyGet.Body.Close()
+	if !bytes.Equal(copyGot, whole) {
+		t.Fatalf("CopyObject of a completed multipart object did not round-trip bytes")
+	}
+}
+
+func TestMultipart_SinglePart(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	body := genRandomBytes(1, 20000) // below the 5MiB minimum, but it's the only (=last) part
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "onepart")
+	etag, status, _ := doUploadPart(t, client, ts.URL, signer, "b", "onepart", uploadID, 1, body)
+	if status != http.StatusOK {
+		t.Fatalf("UploadPart failed: %d", status)
+	}
+	result, cStatus, cBody := doCompleteMultipartUpload(t, client, ts.URL, signer, "b", "onepart", uploadID, []completedPartXML{{PartNumber: 1, ETag: etag}})
+	if cStatus != http.StatusOK {
+		t.Fatalf("single-part completion failed: %d %s", cStatus, cBody)
+	}
+	wantETag := `"` + manualMultipartETag([][]byte{body}) + `"`
+	if result.ETag != wantETag {
+		t.Fatalf("single-part multipart ETag = %s, want %s", result.ETag, wantETag)
+	}
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/onepart", nil, nil)
+	got, _ := io.ReadAll(get.Body)
+	get.Body.Close()
+	if !bytes.Equal(got, body) {
+		t.Fatalf("single-part multipart object did not round-trip bytes")
+	}
+}
+
+func TestMultipart_ETag_DiffersFromOrdinarySinglePutETag(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	body := genRandomBytes(2, 50000)
+
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/plain", body, nil)
+	put.Body.Close()
+	ordinaryETag := put.Header.Get("ETag")
+	plainMD5 := md5.Sum(body) //nolint:gosec // test-only.
+	if ordinaryETag != `"`+hex.EncodeToString(plainMD5[:])+`"` {
+		t.Fatalf("ordinary single-PUT ETag changed unexpectedly: %s", ordinaryETag)
+	}
+
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "mp")
+	etag, status, _ := doUploadPart(t, client, ts.URL, signer, "b", "mp", uploadID, 1, body)
+	if status != http.StatusOK {
+		t.Fatal("upload part failed")
+	}
+	result, cStatus, _ := doCompleteMultipartUpload(t, client, ts.URL, signer, "b", "mp", uploadID, []completedPartXML{{PartNumber: 1, ETag: etag}})
+	if cStatus != http.StatusOK {
+		t.Fatal("complete failed")
+	}
+	// Same bytes, but a multipart completion's ETag formula must never
+	// collapse to the ordinary single-PUT MD5-of-body rule.
+	if result.ETag == ordinaryETag {
+		t.Fatalf("expected the multipart ETag (%s) to differ from the ordinary single-PUT ETag (%s) for identical bytes", result.ETag, ordinaryETag)
+	}
+}
+
+func TestMultipart_ReplacedPartUsesLatestUpload(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "k")
+	part1a := genRandomBytes(10, 20000)
+	if _, status, _ := doUploadPart(t, client, ts.URL, signer, "b", "k", uploadID, 1, part1a); status != http.StatusOK {
+		t.Fatal("first upload of part 1 failed")
+	}
+	part1b := genRandomBytes(11, 20000) // different bytes, same part number: a retry/replace
+	etag1b, status, _ := doUploadPart(t, client, ts.URL, signer, "b", "k", uploadID, 1, part1b)
+	if status != http.StatusOK {
+		t.Fatal("replacement upload of part 1 failed")
+	}
+	result, cStatus, _ := doCompleteMultipartUpload(t, client, ts.URL, signer, "b", "k", uploadID, []completedPartXML{{PartNumber: 1, ETag: etag1b}})
+	if cStatus != http.StatusOK {
+		t.Fatal("complete failed")
+	}
+	if result.ETag != `"`+manualMultipartETag([][]byte{part1b})+`"` {
+		t.Fatalf("expected the completed object to reflect the replacement part's ETag, got %s", result.ETag)
+	}
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, nil)
+	got, _ := io.ReadAll(get.Body)
+	get.Body.Close()
+	if !bytes.Equal(got, part1b) {
+		t.Fatalf("expected the completed object to contain the replacement part's bytes, not the original")
+	}
+}
+
+func TestMultipart_ListMultipartUploads(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	u1 := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "alpha")
+	u2 := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "beta")
+
+	list, status := doListMultipartUploads(t, client, ts.URL, signer, "b")
+	if status != http.StatusOK || len(list.Upload) != 2 {
+		t.Fatalf("ListMultipartUploads: status=%d count=%d", status, len(list.Upload))
+	}
+	if list.Upload[0].Key != "alpha" || list.Upload[1].Key != "beta" {
+		t.Fatalf("expected uploads ordered by key: %+v", list.Upload)
+	}
+	if list.Upload[0].UploadId != u1 || list.Upload[1].UploadId != u2 {
+		t.Fatalf("unexpected upload IDs in listing: %+v", list.Upload)
+	}
+}
+
+func TestMultipart_IncompleteUploadInvisibleToOrdinaryOperations(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "invisible")
+	if _, status, _ := doUploadPart(t, client, ts.URL, signer, "b", "invisible", uploadID, 1, genRandomBytes(1, 10000)); status != http.StatusOK {
+		t.Fatal("upload part failed")
+	}
+
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/invisible", nil, nil)
+	get.Body.Close()
+	if get.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected an incomplete multipart upload to be invisible to GET, got %d", get.StatusCode)
+	}
+	head := doSignedRequest(t, client, ts.URL, signer, http.MethodHead, "/b/invisible", nil, nil)
+	head.Body.Close()
+	if head.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected an incomplete multipart upload to be invisible to HEAD, got %d", head.StatusCode)
+	}
+	list := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b?list-type=2", nil, nil)
+	listBody, _ := io.ReadAll(list.Body)
+	list.Body.Close()
+	if strings.Contains(string(listBody), "invisible") {
+		t.Fatalf("expected an incomplete multipart upload key to never appear in ListObjectsV2: %s", listBody)
+	}
+}
+
+// --- Validation (Phase F) ---
+
+func TestMultipart_NonexistentUploadIDRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	fakeID := newUUIDv7()
+	if _, status, _ := doUploadPart(t, client, ts.URL, signer, "b", "k", fakeID, 1, []byte("x")); status != http.StatusNotFound {
+		t.Fatalf("expected UploadPart against a nonexistent upload ID to 404, got %d", status)
+	}
+	if status := doAbortMultipartUpload(t, client, ts.URL, signer, "b", "k", fakeID); status != http.StatusNotFound {
+		t.Fatalf("expected AbortMultipartUpload against a nonexistent upload ID to 404, got %d", status)
+	}
+	if _, status, _ := doCompleteMultipartUpload(t, client, ts.URL, signer, "b", "k", fakeID, []completedPartXML{{PartNumber: 1, ETag: "x"}}); status != http.StatusNotFound {
+		t.Fatalf("expected CompleteMultipartUpload against a nonexistent upload ID to 404, got %d", status)
+	}
+}
+
+func TestMultipart_UploadIDForWrongBucketOrKeyRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := doCreateBucket(t, client, ts.URL, signer, "b2"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b1", "realkey")
+
+	if _, status, _ := doUploadPart(t, client, ts.URL, signer, "b2", "realkey", uploadID, 1, []byte("x")); status != http.StatusNotFound {
+		t.Fatalf("expected an upload ID used against the wrong bucket to 404, got %d", status)
+	}
+	if _, status, _ := doUploadPart(t, client, ts.URL, signer, "b1", "wrongkey", uploadID, 1, []byte("x")); status != http.StatusNotFound {
+		t.Fatalf("expected an upload ID used against the wrong key to 404, got %d", status)
+	}
+}
+
+func TestMultipart_InvalidPartNumberRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "k")
+	for _, bad := range []string{"0", "-1", "10001", "abc", ""} {
+		t.Run(bad, func(t *testing.T) {
+			path := fmt.Sprintf("/b/k?partNumber=%s&uploadId=%s", bad, uploadID)
+			resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, path, []byte("x"), nil)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				t.Fatalf("expected part number %q to be rejected", bad)
+			}
+		})
+	}
+}
+
+func TestMultipart_CompletionValidation(t *testing.T) {
+	newUpload := func(t *testing.T) (client *http.Client, baseURL string, signer testSigner, uploadID string, etag1, etag2 string) {
+		t.Helper()
+		var srv *Server
+		srv, signer = newTestServerAndSigner(t)
+		ts := httptest.NewServer(srv)
+		t.Cleanup(ts.Close)
+		client = ts.Client()
+		baseURL = ts.URL
+		if err := doCreateBucket(t, client, baseURL, signer, "b"); err != nil {
+			t.Fatal(err)
+		}
+		uploadID = doCreateMultipartUpload(t, client, baseURL, signer, "b", "k")
+		etag1, s1, _ := doUploadPart(t, client, baseURL, signer, "b", "k", uploadID, 1, genRandomBytes(1, 5*1024*1024))
+		etag2, s2, _ := doUploadPart(t, client, baseURL, signer, "b", "k", uploadID, 2, genRandomBytes(2, 1024))
+		if s1 != http.StatusOK || s2 != http.StatusOK {
+			t.Fatal("setup upload parts failed")
+		}
+		return client, baseURL, signer, uploadID, etag1, etag2
+	}
+
+	t.Run("empty-completion-list", func(t *testing.T) {
+		client, baseURL, signer, uploadID, _, _ := newUpload(t)
+		if _, status, _ := doCompleteMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID, nil); status == http.StatusOK {
+			t.Fatalf("expected an empty completion part list to be rejected")
+		}
+	})
+	t.Run("missing-part-never-uploaded", func(t *testing.T) {
+		client, baseURL, signer, uploadID, etag1, _ := newUpload(t)
+		if _, status, _ := doCompleteMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID,
+			[]completedPartXML{{PartNumber: 1, ETag: etag1}, {PartNumber: 3, ETag: "irrelevant"}}); status == http.StatusOK {
+			t.Fatalf("expected completion referencing an unuploaded part to be rejected")
+		}
+	})
+	t.Run("wrong-etag", func(t *testing.T) {
+		client, baseURL, signer, uploadID, _, etag2 := newUpload(t)
+		if _, status, _ := doCompleteMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID,
+			[]completedPartXML{{PartNumber: 1, ETag: "0000000000000000000000000000000"}, {PartNumber: 2, ETag: etag2}}); status == http.StatusOK {
+			t.Fatalf("expected completion with a wrong ETag to be rejected")
+		}
+	})
+	t.Run("malformed-etag", func(t *testing.T) {
+		client, baseURL, signer, uploadID, _, etag2 := newUpload(t)
+		if _, status, _ := doCompleteMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID,
+			[]completedPartXML{{PartNumber: 1, ETag: "not-a-valid-etag"}, {PartNumber: 2, ETag: etag2}}); status == http.StatusOK {
+			t.Fatalf("expected completion with a malformed ETag to be rejected")
+		}
+	})
+	t.Run("duplicate-part-reference", func(t *testing.T) {
+		client, baseURL, signer, uploadID, etag1, _ := newUpload(t)
+		if _, status, _ := doCompleteMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID,
+			[]completedPartXML{{PartNumber: 1, ETag: etag1}, {PartNumber: 1, ETag: etag1}}); status == http.StatusOK {
+			t.Fatalf("expected a duplicate part reference to be rejected")
+		}
+	})
+	t.Run("out-of-order-completion", func(t *testing.T) {
+		client, baseURL, signer, uploadID, etag1, etag2 := newUpload(t)
+		if _, status, _ := doCompleteMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID,
+			[]completedPartXML{{PartNumber: 2, ETag: etag2}, {PartNumber: 1, ETag: etag1}}); status == http.StatusOK {
+			t.Fatalf("expected an out-of-order completion list to be rejected")
+		}
+	})
+	t.Run("malformed-completion-xml", func(t *testing.T) {
+		client, baseURL, signer, uploadID, _, _ := newUpload(t)
+		path := fmt.Sprintf("/b/k?uploadId=%s", uploadID)
+		resp := doSignedRequest(t, client, baseURL, signer, http.MethodPost, path, []byte("<not valid xml"), nil)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			t.Fatalf("expected malformed completion XML to be rejected")
+		}
+	})
+	t.Run("entity-too-small-non-last-part", func(t *testing.T) {
+		client, baseURL, signer, uploadID, _, etag2 := newUpload(t)
+		// Part 1 in newUpload is 5MiB (>= the minimum), but re-upload a
+		// smaller part 1 to specifically exercise "non-last part below the
+		// minimum" (part 2, the last, may be any size).
+		smallETag, s, _ := doUploadPart(t, client, baseURL, signer, "b", "k", uploadID, 1, genRandomBytes(99, 1000))
+		if s != http.StatusOK {
+			t.Fatal("re-upload of part 1 failed")
+		}
+		if _, status, _ := doCompleteMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID,
+			[]completedPartXML{{PartNumber: 1, ETag: smallETag}, {PartNumber: 2, ETag: etag2}}); status == http.StatusOK {
+			t.Fatalf("expected a non-final part below the minimum multipart part size to be rejected")
+		}
+	})
+	t.Run("valid-completion-still-succeeds", func(t *testing.T) {
+		client, baseURL, signer, uploadID, etag1, etag2 := newUpload(t)
+		if _, status, body := doCompleteMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID,
+			[]completedPartXML{{PartNumber: 1, ETag: etag1}, {PartNumber: 2, ETag: etag2}}); status != http.StatusOK {
+			t.Fatalf("expected a correctly-formed completion to succeed: %d %s", status, body)
+		}
+	})
+}
+
+func TestMultipart_LifecycleAfterAbortOrComplete(t *testing.T) {
+	setup := func(t *testing.T) (client *http.Client, baseURL string, signer testSigner, uploadID, etag1 string) {
+		t.Helper()
+		var srv *Server
+		srv, signer = newTestServerAndSigner(t)
+		ts := httptest.NewServer(srv)
+		t.Cleanup(ts.Close)
+		client = ts.Client()
+		baseURL = ts.URL
+		if err := doCreateBucket(t, client, baseURL, signer, "b"); err != nil {
+			t.Fatal(err)
+		}
+		uploadID = doCreateMultipartUpload(t, client, baseURL, signer, "b", "k")
+		var status int
+		etag1, status, _ = doUploadPart(t, client, baseURL, signer, "b", "k", uploadID, 1, genRandomBytes(1, 10000))
+		if status != http.StatusOK {
+			t.Fatal("setup upload part failed")
+		}
+		return
+	}
+
+	t.Run("upload-part-after-abort", func(t *testing.T) {
+		client, baseURL, signer, uploadID, _ := setup(t)
+		if status := doAbortMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID); status != http.StatusNoContent {
+			t.Fatalf("abort failed: %d", status)
+		}
+		if _, status, _ := doUploadPart(t, client, baseURL, signer, "b", "k", uploadID, 2, []byte("x")); status != http.StatusNotFound {
+			t.Fatalf("expected UploadPart after abort to 404, got %d", status)
+		}
+	})
+	t.Run("repeat-abort", func(t *testing.T) {
+		client, baseURL, signer, uploadID, _ := setup(t)
+		if status := doAbortMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID); status != http.StatusNoContent {
+			t.Fatalf("first abort failed: %d", status)
+		}
+		if status := doAbortMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID); status != http.StatusNotFound {
+			t.Fatalf("expected repeat abort to 404 (not silently succeed again), got %d", status)
+		}
+	})
+	t.Run("upload-part-after-complete", func(t *testing.T) {
+		client, baseURL, signer, uploadID, etag1 := setup(t)
+		if _, status, body := doCompleteMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID, []completedPartXML{{PartNumber: 1, ETag: etag1}}); status != http.StatusOK {
+			t.Fatalf("complete failed: %d %s", status, body)
+		}
+		if _, status, _ := doUploadPart(t, client, baseURL, signer, "b", "k", uploadID, 2, []byte("x")); status != http.StatusNotFound {
+			t.Fatalf("expected UploadPart after completion to 404, got %d", status)
+		}
+	})
+	t.Run("repeat-complete", func(t *testing.T) {
+		client, baseURL, signer, uploadID, etag1 := setup(t)
+		if _, status, body := doCompleteMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID, []completedPartXML{{PartNumber: 1, ETag: etag1}}); status != http.StatusOK {
+			t.Fatalf("first complete failed: %d %s", status, body)
+		}
+		if _, status, _ := doCompleteMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID, []completedPartXML{{PartNumber: 1, ETag: etag1}}); status != http.StatusNotFound {
+			t.Fatalf("expected repeat completion to 404 (not silently re-apply), got %d", status)
+		}
+	})
+	t.Run("abort-after-complete", func(t *testing.T) {
+		client, baseURL, signer, uploadID, etag1 := setup(t)
+		if _, status, body := doCompleteMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID, []completedPartXML{{PartNumber: 1, ETag: etag1}}); status != http.StatusOK {
+			t.Fatalf("complete failed: %d %s", status, body)
+		}
+		if status := doAbortMultipartUpload(t, client, baseURL, signer, "b", "k", uploadID); status != http.StatusNotFound {
+			t.Fatalf("expected abort after completion to 404, got %d", status)
+		}
+	})
+}
+
+func TestMultipart_DeleteBucketRefusedWithActiveUpload(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	doCreateMultipartUpload(t, client, ts.URL, signer, "b", "k")
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodDelete, "/b", nil, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected DeleteBucket with an active multipart upload to be refused (BucketNotEmpty), got %d", resp.StatusCode)
+	}
+}
+
+// --- Crash / restart durability (Phase G) ---
+
+func TestMultipart_Crash_G1_RestartMidUploadThenResumeAndComplete(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part1 := genRandomBytes(1, 5*1024*1024)
+	part2 := genRandomBytes(2, 5*1024*1024)
+	etag1, err := store.UploadPart("b", "k", uploadID, 1, part1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	etag2, err := store.UploadPart("b", "k", uploadID, 2, part2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close() // simulated restart: no crash injection needed, this is an orderly stop mid-lifecycle
+
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+
+	parts, err := store2.ListParts("b", "k", uploadID)
+	if err != nil || len(parts) != 2 {
+		t.Fatalf("expected both parts to survive restart: err=%v parts=%d", err, len(parts))
+	}
+
+	part3 := genRandomBytes(3, 2*1024*1024)
+	etag3, err := store2.UploadPart("b", "k", uploadID, 3, part3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, _, err := store2.CompleteMultipartUpload("b", "k", uploadID, []completedPart{
+		{PartNumber: 1, ETag: etag1}, {PartNumber: 2, ETag: etag2}, {PartNumber: 3, ETag: etag3},
+	})
+	if err != nil {
+		t.Fatalf("complete after resume failed: %v", err)
+	}
+	store2.Close()
+
+	store3, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store3.Close()
+	_, got, err := store3.GetObject("b", "k")
+	if err != nil {
+		t.Fatalf("expected the completed object to survive a further restart: %v", err)
+	}
+	want := append(append(append([]byte{}, part1...), part2...), part3...)
+	gotSum, wantSum := sha256.Sum256(got), sha256.Sum256(want)
+	if gotSum != wantSum {
+		t.Fatalf("SHA-256 mismatch after resume+complete+restart: got %x want %x", gotSum, wantSum)
+	}
+	if entry.size != int64(len(want)) {
+		t.Fatalf("entry size = %d, want %d", entry.size, len(want))
+	}
+}
+
+func TestMultipart_Crash_G2_ReplacePartThenRestartThenComplete(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UploadPart("b", "k", uploadID, 1, genRandomBytes(1, 6*1024*1024)); err != nil {
+		t.Fatal(err)
+	}
+	replacement := genRandomBytes(2, 6*1024*1024)
+	etagReplacement, err := store.UploadPart("b", "k", uploadID, 1, replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+	parts, err := store2.ListParts("b", "k", uploadID)
+	if err != nil || len(parts) != 1 {
+		t.Fatalf("expected exactly one (replaced) part to survive restart: err=%v parts=%d", err, len(parts))
+	}
+	if parts[0].etag != etagReplacement {
+		t.Fatalf("expected the replacement part's ETag to survive restart, not the original")
+	}
+	_, _, err = store2.CompleteMultipartUpload("b", "k", uploadID, []completedPart{{PartNumber: 1, ETag: etagReplacement}})
+	if err != nil {
+		t.Fatalf("complete after restart failed: %v", err)
+	}
+	_, got, err := store2.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, replacement) {
+		t.Fatalf("expected the completed object to contain exactly the replacement part's bytes")
+	}
+}
+
+func TestMultipart_Crash_G3_AbortThenRestartUploadIDStaysInvalid(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UploadPart("b", "k", uploadID, 1, genRandomBytes(1, 10000)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AbortMultipartUpload("b", "k", uploadID); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+	if _, err := store2.ListParts("b", "k", uploadID); !errors.Is(err, errNoSuchUpload) {
+		t.Fatalf("expected the aborted upload ID to remain invalid after restart, got %v", err)
+	}
+	if _, _, err := store2.GetObject("b", "k"); err == nil {
+		t.Fatalf("expected no ordinary object to exist after an aborted-then-restarted upload")
+	}
+}
+
+func TestMultipart_Crash_G4_CompleteThenRestartObjectVisibleSessionGone(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := genRandomBytes(1, 10000)
+	etag, err := store.UploadPart("b", "k", uploadID, 1, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.CompleteMultipartUpload("b", "k", uploadID, []completedPart{{PartNumber: 1, ETag: etag}}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+	_, got, err := store2.GetObject("b", "k")
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("expected the completed object to survive restart intact: err=%v", err)
+	}
+	if _, err := store2.ListParts("b", "k", uploadID); !errors.Is(err, errNoSuchUpload) {
+		t.Fatalf("expected the completed upload session to not be resurrected after restart, got %v", err)
+	}
+}
+
+// TestMultipart_Crash_G5_CrashBeforeJournalCommitLeavesOldStateResumable
+// injects a simulated crash at each durability boundary inside
+// CompleteMultipartUpload that runs BEFORE the completion's one journal
+// frame is appended (chunk staging, after chunks published, after manifest
+// published) and confirms every one of them leaves the pre-completion
+// state completely intact: no new object, and the upload session still
+// resumable. The gap between the journal frame's Write and its Sync is
+// deliberately not simulated via an in-process restart here, for the same
+// reason TestCrash_AfterJournalWriteBeforeSync documents: once WriteAt
+// returns, the bytes already sit in the same page cache a fresh *os.File
+// in this same process would read right back, so reopening the store
+// in-process cannot honestly simulate a real crash in that specific
+// instant -- only a genuine power loss can. What IS honestly testable
+// about that gap is the in-process synchronous failure path, covered by
+// TestCrash_AfterJournalWriteBeforeSync itself (not duplicated per
+// operation here) and by the "commit truly succeeded" half of Phase G5
+// below.
+func TestMultipart_Crash_G5_CrashBeforeJournalCommitLeavesOldStateResumable(t *testing.T) {
+	points := []string{hookBeforeChunkWrite, hookAfterChunksPublished, hookAfterManifestPublished}
+	for _, point := range points {
+		t.Run(point, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateBucket("b"); err != nil {
+				t.Fatal(err)
+			}
+			uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := genRandomBytes(1, 30000)
+			etag, err := store.UploadPart("b", "k", uploadID, 1, body)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			withTestHook(t, func(p string) {
+				if p == point {
+					panic(simulatedCrash{point: p})
+				}
+			})
+			runExpectingSimulatedCrash(t, func() {
+				_, _, _ = store.CompleteMultipartUpload("b", "k", uploadID, []completedPart{{PartNumber: 1, ETag: etag}})
+			})
+			testHook = nil
+			store.Close()
+
+			store2, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store2.Close()
+			_, _, getErr := store2.GetObject("b", "k")
+			if getErr == nil {
+				t.Fatalf("crash at %s: object must not be visible before the completion journal frame commits", point)
+			}
+			// The upload session itself must still be resumable -- the
+			// crash happened before the one atomic completion frame, so
+			// nothing should have retired it.
+			if _, err := store2.ListParts("b", "k", uploadID); err != nil {
+				t.Fatalf("crash at %s: expected the upload session to remain resumable, got %v", point, err)
+			}
+		})
+	}
+}
+
+// TestMultipart_Crash_G5_CrashAfterJournalCommitLeavesFullyCommittedObject
+// is Phase G5's other half: once the completion's journal frame has
+// genuinely synced, the object must be fully, durably visible on restart
+// (and the upload session gone) even if the process crashes immediately
+// afterward, before the client ever saw a response -- proving there is no
+// window where the new object is only partially visible.
+func TestMultipart_Crash_G5_CrashAfterJournalCommitLeavesFullyCommittedObject(t *testing.T) {
+	points := []string{hookAfterJournalSync, hookAfterApplyBeforeResponse}
+	for _, point := range points {
+		t.Run(point, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateBucket("b"); err != nil {
+				t.Fatal(err)
+			}
+			uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := genRandomBytes(1, 30000)
+			etag, err := store.UploadPart("b", "k", uploadID, 1, body)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			withTestHook(t, func(p string) {
+				if p == point {
+					panic(simulatedCrash{point: p})
+				}
+			})
+			runExpectingSimulatedCrash(t, func() {
+				_, _, _ = store.CompleteMultipartUpload("b", "k", uploadID, []completedPart{{PartNumber: 1, ETag: etag}})
+			})
+			testHook = nil
+			store.Close()
+
+			store2, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store2.Close()
+			_, got, getErr := store2.GetObject("b", "k")
+			if getErr != nil || !bytes.Equal(got, body) {
+				t.Fatalf("crash at %s: expected the object to be fully, durably visible once the journal sync truly succeeded: %v", point, getErr)
+			}
+			if _, err := store2.ListParts("b", "k", uploadID); !errors.Is(err, errNoSuchUpload) {
+				t.Fatalf("crash at %s: expected the upload session to be retired once completion truly committed, got %v", point, err)
+			}
+		})
+	}
+}
+
+// --- Concurrency / adversarial (Phase H) ---
+
+func TestMultipart_Concurrency_SamePartNumberRaceIsDeterministicAndRaceFree(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 10
+	candidates := make([][]byte, n)
+	for i := range candidates {
+		candidates[i] = genRandomBytes(int64(i), 5*1024*1024+i)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _ = store.UploadPart("b", "k", uploadID, 1, candidates[i])
+		}(i)
+	}
+	wg.Wait()
+
+	parts, err := store.ListParts("b", "k", uploadID)
+	if err != nil || len(parts) != 1 {
+		t.Fatalf("expected exactly one surviving part 1 after the race, got %d (err=%v)", len(parts), err)
+	}
+	matched := false
+	for _, c := range candidates {
+		if int64(len(c)) == parts[0].size {
+			matched = true
+		}
+	}
+	if !matched {
+		t.Fatalf("surviving part size %d does not match any candidate upload", parts[0].size)
+	}
+}
+
+func TestMultipart_Concurrency_DifferentPartNumbersAllSurvive(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 8
+	var wg sync.WaitGroup
+	for i := 1; i <= n; i++ {
+		wg.Add(1)
+		go func(partNum int) {
+			defer wg.Done()
+			_, _ = store.UploadPart("b", "k", uploadID, partNum, genRandomBytes(int64(partNum), 6*1024*1024))
+		}(i)
+	}
+	wg.Wait()
+	parts, err := store.ListParts("b", "k", uploadID)
+	if err != nil || len(parts) != n {
+		t.Fatalf("expected all %d distinct part numbers to survive concurrent upload, got %d (err=%v)", n, len(parts), err)
+	}
+}
+
+func TestMultipart_Concurrency_CompleteRacingUploadPartIsRaceFree(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	etag1, err := store.UploadPart("b", "k", uploadID, 1, genRandomBytes(1, 5*1024*1024))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _, _ = store.CompleteMultipartUpload("b", "k", uploadID, []completedPart{{PartNumber: 1, ETag: etag1}})
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = store.UploadPart("b", "k", uploadID, 2, genRandomBytes(2, 5*1024*1024))
+	}()
+	wg.Wait()
+	// No assertion on which "won" -- only that neither call corrupted
+	// state (checked by -race) and the store is left in a coherent state
+	// either way (an object exists xor the upload is still resumable).
+	_, getErr := storeHasObject(store, "b", "k")
+	_, listErr := store.ListParts("b", "k", uploadID)
+	if getErr == nil && listErr == nil {
+		t.Fatalf("expected the object to exist XOR the upload session to remain resumable, never both")
+	}
+}
+
+func storeHasObject(s *Store, bucket, key string) (bool, error) {
+	_, _, err := s.GetObject(bucket, key)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func TestMultipart_Concurrency_AbortRacingUploadPartIsRaceFree(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = store.AbortMultipartUpload("b", "k", uploadID)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = store.UploadPart("b", "k", uploadID, 1, genRandomBytes(1, 10000))
+	}()
+	wg.Wait()
+	// Whichever won, the upload must end up in exactly one deterministic
+	// state: either gone (abort won, or won after the part) or present
+	// with the one part (part committed before abort ran). No -race
+	// failure and no panic is the primary assertion here.
+	_, err = store.ListParts("b", "k", uploadID)
+	_ = err // either NoSuchUpload or success with 0/1 parts are all coherent outcomes.
+}
+
+func TestMultipart_Concurrency_TwoCompleteCallsOnlyOneWins(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	etag1, err := store.UploadPart("b", "k", uploadID, 1, genRandomBytes(1, 10000))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := store.CompleteMultipartUpload("b", "k", uploadID, []completedPart{{PartNumber: 1, ETag: etag1}})
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected exactly one of two concurrent Complete calls to succeed, got %d", successes)
+	}
+	if _, _, err := store.GetObject("b", "k"); err != nil {
+		t.Fatalf("expected the object to be visible after exactly one Complete won: %v", err)
+	}
+}
+
+func TestMultipart_Concurrency_TwoAbortCallsOnlyOneWins(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := store.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- store.AbortMultipartUpload("b", "k", uploadID)
+		}()
+	}
+	wg.Wait()
+	close(results)
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected exactly one of two concurrent Abort calls to succeed, got %d", successes)
+	}
+}
+
+// --- Dedup/CAS integration (Phase M) ---
+
+func TestMultipart_CompletedObjectDedupsAgainstOrdinaryPutOfSameBytes(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	body := genRandomBytes(777, 8*1024*1024)
+
+	// Ordinary PUT first.
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/ordinary", body, nil)
+	put.Body.Close()
+	if put.StatusCode != http.StatusOK {
+		t.Fatal("ordinary PUT failed")
+	}
+	statsBefore, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The same logical bytes via a two-part multipart upload (an
+	// arbitrary, off-center split -- CDC re-chunks the true concatenation
+	// from scratch on completion, so the resulting chunk boundaries need
+	// not match the ordinary PUT's chunk-by-chunk, and the split point is
+	// exactly the case that would misbehave if part boundaries were ever
+	// mistaken for CDC boundaries).
+	split := 5*1024*1024 + 12345 // part 1 clears the non-final-part minimum; part 2 (the last) need not
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "multipart")
+	etag1, s1, _ := doUploadPart(t, client, ts.URL, signer, "b", "multipart", uploadID, 1, body[:split])
+	etag2, s2, _ := doUploadPart(t, client, ts.URL, signer, "b", "multipart", uploadID, 2, body[split:])
+	if s1 != http.StatusOK || s2 != http.StatusOK {
+		t.Fatal("multipart upload parts failed")
+	}
+	if _, status, respBody := doCompleteMultipartUpload(t, client, ts.URL, signer, "b", "multipart", uploadID,
+		[]completedPartXML{{PartNumber: 1, ETag: etag1}, {PartNumber: 2, ETag: etag2}}); status != http.StatusOK {
+		t.Fatalf("complete failed: %d %s", status, respBody)
+	}
+
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/multipart", nil, nil)
+	got, _ := io.ReadAll(get.Body)
+	get.Body.Close()
+	if !bytes.Equal(got, body) {
+		t.Fatalf("multipart-completed object bytes do not match the ordinary PUT's bytes")
+	}
+
+	statsAfter, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The two objects reference identical logical bytes chunked by the
+	// exact same CDC algorithm from the exact same content, so the
+	// completed multipart object's chunks must be (at least mostly)
+	// reused from the ordinary PUT's already-published chunks -- assert
+	// this the same measured way the existing dedup evidence tests do:
+	// unique store-wide bytes grow by much less than the object's own
+	// logical size.
+	grew := statsAfter.ScopeUniqueChunkBytes - statsBefore.ScopeUniqueChunkBytes
+	if grew >= int64(len(body)) {
+		t.Fatalf("expected substantial CAS reuse between the multipart-completed object and its ordinary-PUT twin, but unique bytes grew by %d (>= object size %d)", grew, len(body))
+	}
+}
+
+func TestMultipart_DeepVerifyAfterCompletion(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	part1 := genRandomBytes(1, 5*1024*1024)
+	part2 := genRandomBytes(2, 2*1024*1024)
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "k")
+	etag1, s1, _ := doUploadPart(t, client, ts.URL, signer, "b", "k", uploadID, 1, part1)
+	etag2, s2, _ := doUploadPart(t, client, ts.URL, signer, "b", "k", uploadID, 2, part2)
+	if s1 != http.StatusOK || s2 != http.StatusOK {
+		t.Fatal("upload parts failed")
+	}
+	if _, status, body := doCompleteMultipartUpload(t, client, ts.URL, signer, "b", "k", uploadID,
+		[]completedPartXML{{PartNumber: 1, ETag: etag1}, {PartNumber: 2, ETag: etag2}}); status != http.StatusOK {
+		t.Fatalf("complete failed: %d %s", status, body)
+	}
+	res, err := srv.store.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK() {
+		t.Fatalf("expected deep verify to pass for a completed multipart object: %+v", res.Issues)
 	}
 }
 

@@ -29,11 +29,17 @@ parity.
 | `HeadObject` | `HEAD /bucket/key` | same headers as GetObject, no body |
 | `DeleteObject` | `DELETE /bucket/key` | idempotent non-versioned delete, 204 |
 | `ListObjectsV2` | `GET /bucket?list-type=2...` | `prefix`, `delimiter`/`CommonPrefixes`, `max-keys` (default/clamped to 1000), `continuation-token`, UTF-8 byte-lexical key order, XML escaping |
-| `CopyObject` | `PUT /bucket/key` + `x-amz-copy-source` | `COPY`/`REPLACE` metadata directives, same/cross-bucket, zero new CAS payload bytes |
-| single-range `GetObject` | `GET` + `Range: bytes=...` | `start-end`, `start-`, `-suffix`; 416 with `Content-Range: bytes */<size>` for an unsatisfiable range |
+| `CopyObject` | `PUT /bucket/key` + `x-amz-copy-source` | `COPY`/`REPLACE` metadata directives, same/cross-bucket, zero new CAS payload bytes; works identically for a completed multipart object |
+| single-range `GetObject` | `GET` + `Range: bytes=...` | `start-end`, `start-`, `-suffix`; 416 with `Content-Range: bytes */<size>` for an unsatisfiable range; works across a completed multipart object's part boundaries |
+| `CreateMultipartUpload` | `POST /bucket/key?uploads` | persistent upload session, journal-backed |
+| `UploadPart` | `PUT /bucket/key?partNumber=N&uploadId=ID` | CDC-chunked into the ordinary CAS; replacing a part number overwrites it |
+| `ListParts` | `GET /bucket/key?uploadId=ID` | no pagination (single page, `IsTruncated` always false) |
+| `CompleteMultipartUpload` | `POST /bucket/key?uploadId=ID` + XML body | validates strict ascending part order, ETags, ≥5MiB non-final parts; re-chunks the true logical concatenation via a fresh CDC pass (never treats a part boundary as a chunk boundary); publishes an ordinary object |
+| `AbortMultipartUpload` | `DELETE /bucket/key?uploadId=ID` | not idempotent — a repeat abort 404s, matching real S3 |
+| `ListMultipartUploads` | `GET /bucket?uploads` | no pagination (single page) |
 | ordinary request checksum | `x-amz-checksum-crc32` header | validated over the logical request payload before any chunking begins |
 | `Content-MD5` | `Content-MD5` header | validated over the logical request payload; malformed digest input (bad base64, wrong decoded length) reported as `InvalidDigest`, a well-formed digest that doesn't match reported as `BadDigest` |
-| SigV4 auth (header) | `Authorization` header, `AWS4-HMAC-SHA256` | raw request-target signing (no `ServeMux` path cleaning before verification) |
+| SigV4 auth (header) | `Authorization` header, `AWS4-HMAC-SHA256` | raw request-target signing (no `ServeMux` path cleaning before verification); `X-Amz-Content-Sha256` supports both the fixed SHA-256 digest mode (including the empty-body case) and the fixed `UNSIGNED-PAYLOAD` sentinel — see "SigV4 payload modes" below |
 | SigV4 auth (query / presigned URLs) | `X-Amz-Algorithm`/`X-Amz-Credential`/`X-Amz-Date`/`X-Amz-Expires`/`X-Amz-SignedHeaders`/`X-Amz-Signature` query parameters | GET and PUT; shares the same canonicalization/signing core as header auth (`sigv4VerifyCore`); fixed `UNSIGNED-PAYLOAD` payload hash, `host` is the only signed header a generated URL uses; expiry bounded to 1..604800s |
 | `zeros3 presign get\|put` CLI | stdlib `flag`-based subcommand | generates a query-auth URL using the exact same signing primitives the server verifies with; never echoes the secret key |
 | virtual-hosted-style addressing | `http://bucket.<vhost-base>[:port]/key` | opt-in via `zeros3 serve -vhost-base <domain>`; bucket/key resolution happens strictly after SigV4 verification, from the unmodified `Host` header, so it never changes what was signed; path-style remains available unconditionally, on the same server, even when a vhost base is configured |
@@ -50,7 +56,11 @@ These are not planned for this project, at any tier:
 - IAM/STS/KMS/ACL/bucket-policy engine.
 - Bucket/object encryption, storage classes, object-lock/retention.
 - CORS, static website hosting, event notifications.
-- SigV4a (multi-region signing).
+- SigV4a (multi-region signing), including the
+  `STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD[-TRAILER]` payload modes.
+- `STREAMING-UNSIGNED-PAYLOAD-TRAILER` (unsigned streaming request bodies
+  with a trailer-based checksum) — recognized and rejected cleanly
+  (`NotImplemented`), never implemented.
 - Full AWS versioning (delete markers, version-scoped GET/HEAD/DELETE).
 - Multi-writer/distributed/HA operation (single writer process per store).
 - FUSE, dashboards, Kubernetes/Lambda integration.
@@ -62,10 +72,13 @@ not begun in this pass, and not claimed as shipped:
 
 - Internal object versions/restore — T2.
 - Garbage collection of unreachable chunks/manifests — T2.
-- Multipart upload (initiate/upload-part/complete/abort) — T3.
-- `aws-chunked` streaming request bodies and trailer-based checksums — T3;
-  no current external harness client requires this mode, so it was never
-  promoted (see "Modern SDK checksum behavior" below).
+- `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` (`aws-chunked` streaming
+  request bodies with per-chunk SigV4 signatures) — eligible but
+  conditional; not implemented, since neither the pinned AWS SDK for Go v2
+  nor rclone required either mode to complete a full multipart workflow
+  (see `STATUS.md`'s M5-B "Phase K"). `STREAMING-UNSIGNED-PAYLOAD-TRAILER`
+  and SigV4A/ECDSA streaming payload modes are permanently out of scope
+  (see "Deliberately unsupported" below), not merely deferred.
 - Benchmark/doctor CLI subcommands — T3.
 - Delta/directory sync — T4.
 
@@ -111,6 +124,45 @@ documented AWS S3 behavior, rather than simply "not implemented":
   base domain (`-vhost-base`) maps `bucket.<base>` to a bucket; there is no
   wildcard-TLS or multi-domain routing, and this is request-addressing
   support only (no DNS automation).
+- **`ListParts`/`ListMultipartUploads` have no pagination.** Every call
+  returns the complete result in a single page (`IsTruncated` always
+  `false`); `max-parts`/`part-number-marker`/`max-uploads`/`key-marker`/
+  `upload-id-marker` are not read.
+- **`AbortMultipartUpload` is not idempotent.** A second abort of an
+  already-aborted (or already-completed) upload ID reports `NoSuchUpload`,
+  matching real S3's own behavior here — unlike `DeleteObject`/
+  `CreateBucket`, which ZeroS3 does treat as idempotent.
+- **Multipart part-size minimum is fixed at 5MiB** (every part except the
+  last), matching AWS's own documented rule, with no configurable
+  override.
+
+## SigV4 payload modes (header-auth `X-Amz-Content-Sha256`)
+
+One explicit interpretation layer (`classifySigV4Payload`) covers every
+value this header can carry:
+
+| Mode | Value | Behavior |
+|---|---|---|
+| Fixed SHA-256 | lowercase or uppercase 64-hex digest | signed; the exact digest must match the actual body received (`XAmzContentSHA256Mismatch` on tamper). Covers both an ordinary body and a zero-length body (the SHA-256 of the empty string) — the empty-body case is this same mode, not a separate one. |
+| Fixed unsigned | the literal string `UNSIGNED-PAYLOAD` | signed (the literal string itself is part of the canonical request), but SigV4 places no constraint on the body — `Content-MD5`/CRC32 remain independently enforced if the client sends them. |
+| Streaming HMAC (conditional) | `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` | recognized, not implemented — rejected `NotImplemented`. Eligible for a future pass if a real client is shown to require it (see `STATUS.md`'s M5-B "Phase K"); not required by the AWS SDK for Go v2 or rclone. |
+| Excluded | `STREAMING-UNSIGNED-PAYLOAD-TRAILER`, `STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD[-TRAILER]` | recognized, permanently unsupported — rejected `NotImplemented`. |
+| Anything else | any other string | rejected `AccessDenied` (not a valid digest and not a recognized sentinel — including a lowercase/misspelled sentinel variant, which is never silently accepted under some other mode). |
+
+Query-string (presigned URL) auth is unaffected by any of this: it always
+uses the fixed `UNSIGNED-PAYLOAD` sentinel unconditionally, via a
+completely separate code path (`authenticateQuery`) that never calls
+`classifySigV4Payload`.
+
+## Multipart upload ETag semantics
+
+A completed multipart object's ETag is **not** the ordinary single-PUT
+rule (plain MD5 of the object body). It follows the conventional S3
+multipart formula: `MD5(binary_MD5(part1) || binary_MD5(part2) || ...) +
+"-" + part_count`, computed over the parts exactly as named in the
+`CompleteMultipartUpload` request. The two rules are kept strictly
+separate in the implementation and are proven to actually differ for the
+same underlying bytes (see `STATUS.md`'s M5-B section).
 
 ## Hash/checksum taxonomy (kept deliberately distinct)
 
@@ -118,7 +170,8 @@ documented AWS S3 behavior, rather than simply "not implemented":
 |---|---|---|---|
 | CAS chunk identity | SHA-256 | content-addressed dedup/integrity namespace | every chunk file name |
 | object-level digest | SHA-256 | whole-object integrity, checked by `verify -deep` | manifest `object_sha256` |
-| S3 ETag | MD5 (single-part only) | S3 compatibility/cache-condition contract | manifest `etag`, `ETag` header |
+| S3 ETag (single-part) | MD5 of the object body | S3 compatibility/cache-condition contract | manifest `etag`, `ETag` header |
+| S3 ETag (multipart) | MD5 of concatenated per-part MD5s, `-N` suffix | S3 compatibility contract, genuinely different formula from single-part | manifest `etag` for a completed multipart object, `ETag` header |
 | SigV4 payload hash | SHA-256 (`x-amz-content-sha256`) | request authentication | Authorization header / signed value |
 | `x-amz-checksum-crc32` | CRC32 (IEEE), base64 | client-requested transport integrity | `validateCRC32Header` |
 | `Content-MD5` | MD5, base64 | client-requested transport integrity, independent of CRC32 | `validateContentMD5Header` |
@@ -140,7 +193,18 @@ is validated the same way when a client sends it (rclone's ordinary
 single-part upload path does; see `zeros3-testing/results/` for the pinned
 version and recorded run). Neither request-integrity check requires or
 implies `aws-chunked` support, which stays unimplemented per "Optional /
-later-tier behavior" above.
+later-tier behavior" above. The same SDK's `UploadPart`/
+`CreateMultipartUpload`/`CompleteMultipartUpload` calls likewise send an
+ordinary fixed `x-amz-content-sha256` digest, never a streaming payload
+mode — confirmed directly for a real multipart workflow in M5-B (see
+`zeros3-testing/results/M5B_MULTIPART_RESULTS.md`), which is why
+`STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` remains unimplemented (see
+"SigV4 payload modes" above): a real, unmodified SDK simply never asks for
+it. rclone's own multipart uploads use `UNSIGNED-PAYLOAD` for the same
+reason its ordinary single-part uploads do (a non-seekable
+progress-accounting body reader) — see
+`zeros3-testing/results/M5B_RCLONE_LARGE_OBJECT_RESULTS.md` for a genuine
+1 GiB/205-part proof.
 
 ## Path/addressing
 
