@@ -1,9 +1,356 @@
 # ZeroS3 — Status
 
-Milestone-by-milestone status, newest first. M1-M7 are all complete,
-tested, and release-hardened (frozen unless a demonstrated regression or
-correctness bug requires a minimal fix); M8A (remote-to-remote delta
-replication) is the current pass -- see its section immediately below.
+Milestone-by-milestone status, newest first. M1-M7 and M8A are all
+complete, tested, and release-hardened (frozen unless a demonstrated
+regression or correctness bug requires a minimal fix); M8B
+(peer-assisted repair) is the current pass -- see its section
+immediately below.
+
+## M8B — Peer-assisted corruption repair (`zeros3 repair`)
+
+**Goal:** exploit the architecture M1-M8A already built (deep verify ->
+expected SHA-256 chunk identity -> authenticated peer chunk retrieval ->
+independent re-hash -> safe local CAS replacement -> deep verify again)
+to let ZeroS3 restore missing or corrupt *physical* content from another
+explicitly-trusted ZeroS3 peer, at chunk granularity, without touching
+any manifest, journal record, object identity, version, ETag, or
+metadata. No M8C prefix/bucket replication, Merkle trees, compression,
+packs, indexing, or compaction were started.
+
+### Baseline (before any M8B change)
+
+- Branch: `claude/zeros3-m8b-peer-repair-snoumt`, based on `main` at
+  `ab592b7239dd40c23abdb4c6bcc95e461404b8bd` (M8A's own accepted merge
+  commit -- tip of `main` after M8A fully shipped).
+- `go test ./...`: **374 top-level tests**, 0 FAIL, 0 SKIP (matches
+  M8A's own recorded count exactly: 341 pre-M8A + 33 M8A).
+  `go test -race ./...`: clean. `go vet ./...`: clean. `gofmt -l .`:
+  clean.
+- Implementation: 8120 lines (`zeros3.go`). Tests: 14451 lines
+  (`zeros3_test.go`).
+- Reproducible build (two independent copies, `scripts/
+  reproducible_build.sh`): SHA-256
+  `efc0cb0956b39fc05fd11eb42422298f6d0aa776d5a70e41c94c87aad180e3fc`,
+  matching M8A's own recorded hash exactly.
+- Every `zeros3-testing` external harness green at its M8A-recorded
+  baseline (404 passed/0 failed/4 informational/1 documented known
+  limitation, plus M8A's own 34/0/4 -- see
+  `zeros3-testing/results/M8_RELEASE_CANDIDATE_RESULTS.md`).
+
+Baseline confirmed green before any repair code was written, per the
+milestone's own "do not begin repair implementation unless the baseline
+is green" gate.
+
+### Architecture: reuse, not a second scanner or a second client
+
+M8B deliberately adds one new section (`zeros3.go` "15e. Peer-assisted
+corruption repair"), reusing every hard piece M1-M8A already built rather
+than re-implementing any of it:
+
+- **Detection** reuses `Store.computeReachability`'s existing deep scan
+  (section 12a) -- the *exact* scan `Store.Verify(true)`/`verify -deep`
+  already run -- unmodified. The new function, `Store.repairFindings`,
+  does nothing but reduce that scan's own `ReferencedChunks`/
+  `ValidChunks`/`ChunkLength` maps to the deduplicated set of reachable
+  digests that are missing or corrupt (`RepairFinding{SHA256, Length,
+  Kind, AffectedObjects}`). Because `ReferencedChunks` is already
+  *exactly* "every digest some live root (current object, retained
+  historical version, or active multipart part) claims" and nothing
+  else, repair structurally cannot act on unreachable/orphaned
+  corruption -- that digest is simply never in the set repair iterates,
+  not filtered out by some extra check that could have a gap (B6).
+  `Store.annotateAffectedObjects` is a separate, best-effort second read
+  pass (via the existing `readVerifiedManifest`) that only fills in
+  which live roots reference each bad digest, for operator-visible
+  reporting -- it is never consulted to decide what to repair, so a
+  manifest it can't re-read simply contributes no affected-object entry,
+  never a missed repair.
+- **Peer chunk retrieval** reuses M8A's exact authenticated endpoint
+  (`GET /_zeros3/v1/chunks/<sha256-hex>`, `handleSyncChunkDownload`,
+  unmodified) and signing primitive (`signSigV4Request`, unmodified). The
+  one new client function, `fetchRepairChunk`, exists because M8A's own
+  `fetchSourceChunk` reads its response via `signAndDo`'s unbounded
+  `io.ReadAll` -- fine for M8A, where every other endpoint's response is
+  either small JSON or legitimately unbounded by design (object
+  descriptors), but exactly the gap A4 requires closing for a peer that
+  is trusted for candidate bytes, never for integrity: `fetchRepairChunk`
+  bounds the read via `io.LimitReader(resp.Body, maxRepairChunkBytes+1)`
+  (`maxRepairChunkBytes` = `cdcMaxChunkSize`, so no legitimate chunk can
+  ever be rejected by this bound), then independently re-verifies the
+  received bytes' SHA-256 against the exact digest requested -- exactly
+  like `fetchSourceChunk` already does, just response-size-bounded first.
+- **Publication** reuses the exact durable-write primitives
+  (`writeFileDurable`, `syncDir`) ordinary CAS publication (`casWrite`)
+  already uses. The one new primitive, `Store.casRepairPublish`, exists
+  because `casWrite`'s existence check (`if the path already exists,
+  skip writing`) is precisely wrong for repair's corrupt-*existing*-chunk
+  case (A6) -- `casRepairPublish` always writes (temp-file, fsync,
+  atomic rename, parent-directory fsync), so a corrupt chunk is actually
+  replaced rather than left alone because its pathname happened to
+  already exist. `os.Rename` on this platform atomically replaces any
+  existing destination file, so a concurrent reader (`casRead`) can only
+  ever observe the old, fully-valid bytes or the new, fully-valid bytes
+  -- never a torn write (B5). After every publish, `repairFromPeer`
+  independently re-opens and re-hashes the just-written chunk via
+  `casRead` before counting it repaired -- never trusting the write
+  path's own reported success (A6.7).
+- **Orchestration** (`Store.repairFromPeer`) is the only genuinely new
+  control-flow piece: run `repairFindings` -> for each finding, fetch +
+  verify + publish + re-verify -> run `Store.Verify(true)` again ->
+  report `repairStats`. A wholesale-unreachable/incompatible peer fails
+  fast with one clear error (reusing `discoverZeroS3Sync`, unmodified);
+  a per-digest failure (peer lacks it, wrong/truncated bytes, length
+  mismatch) is recorded in `Failures` and the loop continues -- one bad
+  digest never aborts repair of the rest (B1).
+- **CLI** (`runRepair`, `zeros3 repair -store DIR -from PEER [-access-key
+  ...] [-secret-key ...] [-region ...] [-json]`) takes the store's
+  ordinary shared lock (`acquireStoreLock(dir, false)`, exactly like
+  `serve`) -- not the exclusive lock `gc -apply` requires -- so repair
+  can run safely alongside an already-running `zeros3 serve` process
+  against the same store (both hold a shared lock), while still refusing
+  cleanly, not racing, against an exclusive `gc -apply` in progress.
+
+**Persistent-format impact: NONE.** Repair never calls
+`buildManifestV1FromRefs`/`publishManifest`/`commitObjectRootChecked` or
+writes a journal record of any kind; the only mutation anywhere in this
+milestone's new code is `casRepairPublish` overwriting one CAS chunk
+file's bytes for a digest an already-published, already-authoritative
+manifest already claims. A repaired store is byte-for-byte
+indistinguishable, to every other subsystem (GET/HEAD/ListObjectsV2/
+versions/`verify -deep`/GC/restart), from a store that was never
+corrupted. Proven directly by `TestRepair_VersionsMetadataAndETagUnchanged`
+(manifest UUID and ETag identical before/after repair) and every
+end-to-end test's own post-repair `GetObject`/`Verify(true)` checks.
+
+### M8B-C: optional one-command detect->repair->reverify
+
+`zeros3 verify -deep -repair-from PEER_ENDPOINT` (an addition to the
+*existing* `runVerify`, gated entirely behind the new, empty-by-default
+`-repair-from` flag) calls the exact same `Store.repairFromPeer` `zeros3
+repair` calls -- `repair` remains the one underlying primitive either
+way, per the milestone's own instruction. Because the flag defaults to
+`""` and every branch of the new code is inside `if *repairFrom != ""`,
+an invocation that never passes it (every pre-M8B caller and test) is
+byte-for-byte unaffected --
+`TestCLI_VerifyRepairFrom_UnsetPreservesOrdinaryVerifyBehavior` proves
+this directly. This is the "self-healing" wording's only honest home:
+one command detects and repairs corruption when explicitly invoked with
+an explicitly-trusted peer; nothing runs automatically, and no background
+daemon or automatic peer discovery exists anywhere in this codebase.
+
+### Partial repair, resume, and concurrency (M8B-B)
+
+- **Partial repair (B1)** is explicit and honest, never silently
+  swallowed: if the peer lacks some needed chunks (or returns wrong/
+  truncated/oversized bytes for them), those digests land in
+  `repairStats.Failures` with a specific reason, `Unresolved` is nonzero,
+  the CLI exits nonzero, and every chunk that *was* successfully repaired
+  stays repaired -- proven by
+  `TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly` (which
+  also proves the successfully-repaired chunk is never rolled back merely
+  because a sibling failed) and `TestCLI_Repair_ExitCodeNonzeroWhenUnresolved`.
+- **Resume (B2/B3)** needs no durable repair-session state anywhere, for
+  the same structural reason M8A's `replicate` needs none: rerunning
+  repair from scratch re-runs `repairFindings`, which is sourced fresh
+  from `computeReachability` every time, so already-repaired chunks
+  simply pass `ValidChunks` and are silently excluded from the next run's
+  finding set. Proven three ways:
+  `TestRepair_ResumeAfterPartialRunOnlyFetchesRemaining` (a second
+  in-process run's own `BadChunks` count drops to exactly the still-
+  broken digest), `TestRepair_LocalRestartResumesNaturally` (a real
+  store close+reopen between runs), and
+  `TestCLI_Repair_RealProcessKillThenResume` (a **real OS process,
+  `SIGKILL`ed mid-repair** via `os/exec`, then correctly resumed by a
+  second real invocation -- mirroring M8A's own
+  `TestReplicate_ResumeAcrossRealProcessInterruption` proof technique
+  exactly).
+- **Peer restart/unavailability (B4)** is a clear, single error when the
+  peer is unreachable (`TestRepair_PeerRestartBetweenAttempts` closes the
+  peer's server, confirms a clear failure, then reopens it and confirms a
+  fresh attempt succeeds cleanly) -- no bespoke retry/session machinery
+  was added, matching M8A's own sequential-transfer, no-special-retry
+  precedent.
+- **Concurrency (B5)**: no new locking was introduced beyond the existing
+  store-level shared/exclusive flock (repair vs. `gc -apply`). Chunk
+  replacement safety comes entirely from `os.Rename`'s atomicity (a
+  concurrent reader observes the old or the new bytes, never a torn
+  write) -- proven directly by
+  `TestRepair_ConcurrentGetOnUnrelatedObjectDuringRepair` (a goroutine
+  hammering `GetObject` on a healthy, unrelated object throughout an
+  in-flight repair of a different, fully-corrupted object) and by
+  `go test -race ./...` staying clean across the entire M8B suite. Two
+  concurrent repairs of the same digest are naturally idempotent (both
+  independently verify the same hash and publish byte-identical content),
+  so no additional mutex was needed.
+- **GC interaction (B6)**: unreachable orphan corruption can never trigger
+  a network fetch -- `repairFindings` only ever iterates
+  `computeReachability`'s own `ReferencedChunks`, which by construction
+  excludes anything not claimed by a live root. Proven directly by
+  `TestRepair_UnreachableOrphanChunkNeverTriggersRepair` (a corrupted,
+  deliberately unreferenced CAS chunk produces zero findings).
+- **Retained versions (B7) and in-progress multipart parts (B8)** are
+  covered for free, with no special-casing anywhere in the new code,
+  because `computeReachability` already treats retained historical
+  versions and active multipart parts as live roots exactly like current
+  objects (section 12a, M5-C). Proven directly by
+  `TestRepair_RetainedHistoricalVersionChunkRepaired` and
+  `TestRepair_MultipartInProgressPartChunkRepaired`.
+- **Multiple peers (B9)** was cut, per the milestone's own explicit
+  "optional... cut this first if it adds complexity" guidance -- single
+  explicit peer only, documented as a known limitation.
+
+### Hostile M8B review
+
+Every question the milestone prompt poses was worked through and either
+disproven by a specific test or answered by a structural argument:
+
+- **Can a peer send wrong content under the requested SHA?** No --
+  `fetchRepairChunk` independently re-hashes every response against the
+  exact digest requested, rejecting a mismatch before the bytes are ever
+  passed to `casRepairPublish`
+  (`TestFetchRepairChunk_WrongBytesRejectedBeforePublication`,
+  `TestFetchRepairChunk_TruncatedBytesRejected`, and the external
+  harness's Phase 6, which uses a real, independently-written malicious
+  `net/http` peer that answers discovery truthfully but returns wrong
+  chunk bytes).
+- **Can a corrupt local file survive while repair reports success?** No
+  -- a digest only counts as `Repaired` after `casRepairPublish` succeeds
+  *and* the subsequent independent `casRead` re-hash succeeds; any
+  failure at either step lands in `Failures`, not a silent success
+  (`TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly`).
+- **Can post-repair verify be skipped accidentally?** No -- `Store.
+  Verify(true)` runs unconditionally at the end of `repairFromPeer`,
+  including the zero-findings (already-healthy) path, so
+  `repairStats.PostRepairOK`/`PostRepairResult` are always populated and
+  the CLI's exit code always reflects them.
+- **Can repair overwrite a healthy chunk?** No -- `casRepairPublish` is
+  only ever called for digests `repairFindings` returned, which is
+  exactly `ReferencedChunks` minus `ValidChunks`; a healthy chunk is
+  never in that set by construction, proven directly by
+  `TestRepair_HealthyChunkNeverRewritten` (asserts the healthy sibling
+  chunk never even appears in `repairFindings`, plus an mtime/size
+  belt-and-suspenders check after a real repair run).
+- **Can unreachable garbage trigger network repair?** No -- see B6
+  above.
+- **Can an attacker choose an arbitrary local path, or a malformed digest
+  escape the CAS path?** No -- the only path repair ever writes to is
+  `Store.chunkPath(sum)`, computed solely from a `[32]byte` that already
+  passed `decodeHexSHA256`'s strict syntax validation (32 bytes of hex,
+  nothing else); there is no code path from a caller-supplied string to a
+  filesystem path anywhere in this milestone
+  (`TestFetchRepairChunk_MalformedDigestRejected` covers the client
+  side; the server-side digest validation is M8A's own
+  `handleSyncChunkDownload`, unmodified and already exhaustively tested).
+- **Crash safety** (temp write / temp fsync / before rename / after
+  rename / before parent-dir fsync): identical to ordinary CAS
+  publication's own existing durability model (`writeFileDurable`/
+  `syncDir`, unmodified) -- no new crash window was introduced, and
+  `TestCLI_Repair_RealProcessKillThenResume`'s real `SIGKILL` exercises
+  exactly this window against a real process.
+- **Concurrency** (GET during replacement, GC during repair, two repairs
+  of the same digest): see B5/B6 above.
+- **Resume**: does a rerun refetch already-repaired chunks unnecessarily?
+  No -- `TestRepair_ResumeAfterPartialRunOnlyFetchesRemaining` proves the
+  second run's own `BadChunks` count directly.
+- **Claims**: is "self-healing" used only where behavior actually
+  detects+repairs? Yes -- README/S3_COMPAT reserve that word for the
+  explicit, one-command `-repair-from` mode, and every other reference
+  says "peer-assisted repair." Are affected-object counts honest?
+  `annotateAffectedObjects` only ever counts a root it could actually
+  re-read and confirm references the digest, never estimates or
+  double-counts a digest repeated within one manifest
+  (`TestRepair_SharedCorruptDigestAffectsAllReferencingObjects`,
+  `TestRepair_StatsExactAccounting`). Are bytes fetched actual network
+  payload? `PayloadFetched` accumulates `len(data)` from each successful
+  `fetchRepairChunk` call, never a manifest-declared or logical size
+  (`TestRepair_StatsExactAccounting` asserts the exact byte count).
+
+### M8B tests and evidence
+
+- **31 new internal M8B-A/B tests** plus **2 new M8B-C tests** (33 total,
+  `zeros3_test.go`, "M8B" section): detection (healthy/missing/corrupt/
+  wrong-length/multiple/shared-digest-deduplication), peer fetch (valid/
+  missing/malformed-digest/wrong-bytes/truncated/oversized/auth-failure/
+  incompatible-peer), publication (missing restored, corrupt atomically
+  replaced, healthy chunk never rewritten), post-repair proof (restart,
+  versions/metadata/ETag unchanged, exact stats), partial repair, resume
+  (in-process, real restart, **real process kill**), peer restart,
+  concurrency, GC/orphan/version/multipart reachability scope, a full CLI
+  smoke test, a CLI nonzero-exit-on-unresolved test, a real-process-kill
+  CLI resume test, and the M8B-C one-command flag (both its new behavior
+  and its no-op-when-unset guarantee).
+- **Full internal suite: 407 top-level tests** (374 + 33 new), 0 FAIL, 0
+  SKIP, repeated runs with no flakiness (including the timing-sensitive
+  concurrency and real-process-kill tests, each rerun independently).
+  `go test -race ./...`: clean. `go vet ./...`: clean. `gofmt -l .`:
+  clean.
+- **External harness** (`zeros3-testing/harness/m8b/repair`): a real
+  two-server (`zeros3 serve` x2, separate stores/ports) black-box proof,
+  fixtures written entirely via the AWS SDK v2, direct filesystem
+  modification used only to corrupt/delete an already-validly-published
+  CAS chunk (the milestone's own permitted exception), covering all 8
+  required phases (healthy baseline, missing chunk, corrupt chunk, shared
+  chunk, peer-missing-data, a real independently-written malicious peer,
+  a real interrupted-and-resumed repair process, and a restart proof
+  folded into the missing-chunk phase). See
+  `zeros3-testing/results/M8B_REPAIR_RESULTS.md` for the exact recorded
+  run.
+
+### Release proof (M8B)
+
+- **Reproducible build:** two independent source copies, byte-identical:
+  SHA-256 `c8099469225764357ebab159b40989d8d6274f1193f0db06fabdfb3f3a55f4f2`
+  (`scripts/reproducible_build.sh`, unchanged).
+- **Dependency audit:** `go.mod` still has zero `require` directives; no
+  `go.sum`; no `vendor/`. `go list -deps .`'s package list is byte-for-byte
+  identical to the M8A-recorded proof (`deps-proof.txt`) -- M8B's one new
+  stdlib use (`io.LimitReader`, in a new role: bounding an outbound
+  client's own response read rather than an inbound request body) is the
+  same `io` package every prior milestone already imported, so zero new
+  packages were linked in. No `golang.org/x/...` direct import; no
+  `os/exec` anywhere in `zeros3.go`. Sole implementation source file
+  remains `zeros3.go` (8555 lines, +435 from the M8A baseline); sole
+  first-party test file remains `zeros3_test.go` (15677 lines, +1226).
+
+### Known limitations (M8B)
+
+- Single explicit peer per invocation -- no multi-peer fallback list, no
+  automatic peer discovery, no cluster membership (B9 cut by design, per
+  the milestone's own explicit guidance).
+- Repair fetches are sequential, one digest at a time, matching `sync`/
+  `replicate`'s own existing sequential-transfer limitation.
+- No background/continuous/scheduled healing daemon; nothing runs unless
+  `zeros3 repair` or `zeros3 verify -deep -repair-from` is explicitly
+  invoked.
+- Repair restores only from another ZeroS3 peer (reusing the M8A chunk
+  endpoint and SigV4 auth) -- there is no generic-AWS-S3 repair source,
+  matching `replicate`'s own no-generic-fallback design.
+- Repair's scope is exactly `verify -deep`'s own authoritative
+  reachability scope (current objects, retained historical versions,
+  active multipart parts) -- content outside that scope (e.g. already-
+  reclaimed/GC'd data) is, correctly, not something repair can or should
+  restore.
+- A peer that itself lacks a needed chunk is reported as an honest
+  partial failure, never retried against a fallback source (there is
+  none, per B9 above).
+
+### Final assessment
+
+**M8B ACCEPTED** — peer-assisted repair works end to end (33 internal
+tests + a real two-server, real-malicious-peer, real-process-kill
+external harness, all green), every previous guarantee still works (the
+full recorded `zeros3-testing` external suite plus the full internal
+M1-M8A suite, zero regressions from the M8A baseline), the feature is
+small because the hard pieces already existed (one new orchestration
+function, one new bounded-fetch client function, one new
+always-overwrite CAS publish primitive, a CLI verb, and tests -- no
+broad refactor, no second verification engine, no second replication
+protocol), persistent format is provably unchanged, and reproducibility
+is intact. Peer-assisted repair restores exactly the content-addressed
+bytes a manifest already authoritatively claims, from an explicitly-
+trusted peer, with every recovered chunk independently re-verified by
+SHA-256 before publication -- never a second storage model, never an
+autonomous peer relationship.
 
 ## M8 — Benchmark baseline + M8A remote-to-remote delta + release regression
 

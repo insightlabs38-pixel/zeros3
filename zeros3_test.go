@@ -14449,3 +14449,1328 @@ func TestReplicate_OrdinaryS3AndM6SyncUnaffected(t *testing.T) {
 		t.Fatalf("M6 sync GET mismatch after M8A refactor")
 	}
 }
+
+// =============================================================================
+// M8B: peer-assisted corruption repair (`zeros3 repair`)
+//
+// These tests exercise repairFindings/annotateAffectedObjects/
+// casRepairPublish/fetchRepairChunk/repairFromPeer/runRepair -- M8B's
+// genuinely new pieces (see zeros3.go section 15e's doc comment for the
+// full list of what's reused unmodified from M1-M8A: computeReachability,
+// signSigV4Request, zeros3SyncChunksPrefix/handleSyncChunkDownload,
+// discoverZeroS3Sync, writeFileDurable/syncDir, humanBytes). They reuse
+// the exact same test infrastructure M6/M8A's own tests already
+// established (newSyncTestServer, buildZeros3Binary, runZeros3CLI,
+// freeTCPAddr, waitForZeros3Serve, doSignedRequest, testSigner) rather
+// than inventing a parallel harness.
+// =============================================================================
+
+func mustCreateLocalStore(t *testing.T) (dir string, store *Store) {
+	t.Helper()
+	dir = t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return dir, store
+}
+
+func mustPutObject(t *testing.T, store *Store, bucket, key string, body []byte, contentType string, metadata map[string]string) *objectEntry {
+	t.Helper()
+	entry, err := store.PutObject(bucket, key, body, contentType, metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entry
+}
+
+func mustManifestFor(t *testing.T, store *Store, entry *objectEntry) manifestV1 {
+	t.Helper()
+	man, err := store.readVerifiedManifest(entry.manifestUUID, entry.manifestSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return man
+}
+
+func corruptChunkOnDisk(t *testing.T, store *Store, hexDigest string) {
+	t.Helper()
+	sum, err := decodeHexSHA256(hexDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.chunkPath(sum), []byte("deliberately corrupted bytes that do not match this digest"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func truncateChunkOnDisk(t *testing.T, store *Store, hexDigest string, newLen int) {
+	t.Helper()
+	sum, err := decodeHexSHA256(hexDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(store.chunkPath(sum))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newLen > len(data) {
+		newLen = len(data)
+	}
+	if err := os.WriteFile(store.chunkPath(sum), data[:newLen], 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func deleteChunkOnDisk(t *testing.T, store *Store, hexDigest string) {
+	t.Helper()
+	sum, err := decodeHexSHA256(hexDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(store.chunkPath(sum)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustPeerConfig(peerTS *httptest.Server, creds Credentials, region string) syncClientConfig {
+	return syncClientConfig{Endpoint: peerTS.URL, Creds: creds, Region: region, HTTPClient: peerTS.Client()}
+}
+
+// primePeerWithObject puts the same bucket/key/body/contentType/metadata
+// on the peer server, so the peer's CAS ends up holding byte-identical
+// chunks (same content -> same SHA-256 -> same CDC v1 chunk boundaries,
+// which are deterministic) to whatever the local store references --
+// letting repair fetch real, correct bytes from it.
+func primePeerWithObject(t *testing.T, peerSrv *Server, bucket, key string, body []byte, contentType string, metadata map[string]string) {
+	t.Helper()
+	if err := peerSrv.store.CreateBucket(bucket); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peerSrv.store.PutObject(bucket, key, body, contentType, metadata); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// =============================================================================
+// M8B A1/A3: detection (repairFindings)
+// =============================================================================
+
+func TestRepair_HealthyStoreNoFindings(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, store, "b", "k", genRandomBytes(20001, 300_000), "application/octet-stream", nil)
+
+	findings, err := store.repairFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("healthy store: findings = %+v, want none", findings)
+	}
+}
+
+func TestRepair_MissingChunkDetected(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	entry := mustPutObject(t, store, "b", "k", genRandomBytes(20002, 500_000), "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+	target := man.Chunks[0]
+	deleteChunkOnDisk(t, store, target.SHA256)
+
+	findings, err := store.repairFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 || findings[0].SHA256 != target.SHA256 || findings[0].Kind != "missing" {
+		t.Fatalf("findings = %+v, want exactly one missing finding for %s", findings, target.SHA256)
+	}
+	if findings[0].Length != target.Length {
+		t.Fatalf("Length = %d, want %d", findings[0].Length, target.Length)
+	}
+	if len(findings[0].AffectedObjects) != 1 || findings[0].AffectedObjects[0] != "b/k" {
+		t.Fatalf("AffectedObjects = %v, want [\"b/k\"]", findings[0].AffectedObjects)
+	}
+}
+
+func TestRepair_CorruptChunkContentMismatchDetected(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	entry := mustPutObject(t, store, "b", "k", genRandomBytes(20003, 500_000), "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+	target := man.Chunks[0].SHA256
+	corruptChunkOnDisk(t, store, target)
+
+	findings, err := store.repairFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 || findings[0].SHA256 != target || findings[0].Kind != "corrupt" {
+		t.Fatalf("findings = %+v, want exactly one corrupt finding for %s", findings, target)
+	}
+}
+
+func TestRepair_WrongLengthChunkDetectedAsCorrupt(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	entry := mustPutObject(t, store, "b", "k", genRandomBytes(20004, 500_000), "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+	target := man.Chunks[0]
+	truncateChunkOnDisk(t, store, target.SHA256, int(target.Length)/2)
+
+	findings, err := store.repairFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 || findings[0].SHA256 != target.SHA256 || findings[0].Kind != "corrupt" {
+		t.Fatalf("findings = %+v, want exactly one corrupt (wrong-length) finding for %s", findings, target.SHA256)
+	}
+}
+
+func TestRepair_MultipleCorruptChunksDetected(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	entry := mustPutObject(t, store, "b", "k", genRandomBytes(20005, 2_000_000), "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+	if len(man.Chunks) < 3 {
+		t.Fatalf("need at least 3 chunks to test, got %d", len(man.Chunks))
+	}
+	corruptChunkOnDisk(t, store, man.Chunks[0].SHA256)
+	deleteChunkOnDisk(t, store, man.Chunks[1].SHA256)
+
+	findings, err := store.repairFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("findings = %+v, want exactly 2", findings)
+	}
+}
+
+func TestRepair_SharedCorruptDigestAffectsAllReferencingObjects(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	body := genRandomBytes(20006, 400_000)
+	e1 := mustPutObject(t, store, "b", "k1", body, "application/octet-stream", nil)
+	mustPutObject(t, store, "b", "k2", body, "application/octet-stream", nil)
+	man := mustManifestFor(t, store, e1)
+	target := man.Chunks[0].SHA256
+	corruptChunkOnDisk(t, store, target)
+
+	findings, err := store.repairFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v, want exactly one deduplicated finding (fetch/repair once, not per-object)", findings)
+	}
+	got := map[string]bool{}
+	for _, o := range findings[0].AffectedObjects {
+		got[o] = true
+	}
+	if !got["b/k1"] || !got["b/k2"] || len(findings[0].AffectedObjects) != 2 {
+		t.Fatalf("AffectedObjects = %v, want exactly [b/k1 b/k2]", findings[0].AffectedObjects)
+	}
+}
+
+// =============================================================================
+// M8B A4: peer fetch (fetchRepairChunk)
+// =============================================================================
+
+func TestFetchRepairChunk_PeerHasChunkSucceeds(t *testing.T) {
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	body := genRandomBytes(20010, 20_000)
+	sum, err := peerSrv.store.casWrite(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := fetchRepairChunk(mustPeerConfig(peerTS, creds, region), hex.EncodeToString(sum[:]))
+	if err != nil {
+		t.Fatalf("fetchRepairChunk: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("fetched bytes mismatch")
+	}
+}
+
+func TestFetchRepairChunk_PeerMissingChunkFailsClearly(t *testing.T) {
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	fakeDigest := strings.Repeat("ab", 32)
+	if _, err := fetchRepairChunk(mustPeerConfig(peerTS, creds, region), fakeDigest); err == nil {
+		t.Fatalf("expected an error for a chunk the peer does not have")
+	}
+}
+
+func TestFetchRepairChunk_MalformedDigestRejected(t *testing.T) {
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	if _, err := fetchRepairChunk(mustPeerConfig(peerTS, creds, region), "not-a-valid-hex-digest"); err == nil {
+		t.Fatalf("expected an error for a malformed digest")
+	}
+}
+
+func TestFetchRepairChunk_WrongBytesRejectedBeforePublication(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("these are definitely the wrong bytes"))
+	}))
+	defer fake.Close()
+	realDigest := sha256.Sum256([]byte("the real expected content, never actually sent by the fake peer"))
+	cfg := syncClientConfig{Endpoint: fake.URL, HTTPClient: fake.Client()}
+	if _, err := fetchRepairChunk(cfg, hex.EncodeToString(realDigest[:])); err == nil {
+		t.Fatalf("expected a digest-mismatch error")
+	}
+}
+
+func TestFetchRepairChunk_TruncatedBytesRejected(t *testing.T) {
+	real := genRandomBytes(20011, 50_000)
+	realSum := sha256.Sum256(real)
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(real[:len(real)/2]) // truncated: half the real bytes
+	}))
+	defer fake.Close()
+	cfg := syncClientConfig{Endpoint: fake.URL, HTTPClient: fake.Client()}
+	if _, err := fetchRepairChunk(cfg, hex.EncodeToString(realSum[:])); err == nil {
+		t.Fatalf("expected an error for truncated peer bytes")
+	}
+}
+
+func TestFetchRepairChunk_OversizedResponseRejected(t *testing.T) {
+	oversized := bytes.Repeat([]byte("x"), maxRepairChunkBytes+4096)
+	sum := sha256.Sum256(oversized)
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(oversized)
+	}))
+	defer fake.Close()
+	cfg := syncClientConfig{Endpoint: fake.URL, HTTPClient: fake.Client()}
+	_, err := fetchRepairChunk(cfg, hex.EncodeToString(sum[:]))
+	if err == nil {
+		t.Fatalf("expected an oversized-response error")
+	}
+	if !strings.Contains(err.Error(), "exceeds the maximum chunk size") {
+		t.Fatalf("err = %v, want an explicit oversized-response error", err)
+	}
+}
+
+func TestFetchRepairChunk_AuthFailureRejected(t *testing.T) {
+	_, peerSrv, _, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	body := genRandomBytes(20012, 10_000)
+	sum, err := peerSrv.store.casWrite(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongCreds := Credentials{AccessKeyID: "WRONGKEY", SecretAccessKey: "totally-wrong-secret-key-value-here-0"}
+	cfg := syncClientConfig{Endpoint: peerTS.URL, Creds: wrongCreds, Region: region, HTTPClient: peerTS.Client()}
+	if _, err := fetchRepairChunk(cfg, hex.EncodeToString(sum[:])); err == nil {
+		t.Fatalf("expected an auth failure error")
+	}
+}
+
+func TestRepairFromPeer_IncompatiblePeerFailsClearly(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	entry := mustPutObject(t, store, "b", "k", genRandomBytes(20013, 100_000), "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+	deleteChunkOnDisk(t, store, man.Chunks[0].SHA256)
+
+	notZeroS3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not a zeros3 endpoint"))
+	}))
+	defer notZeroS3.Close()
+
+	cfg := repairConfig{Peer: syncClientConfig{Endpoint: notZeroS3.URL, HTTPClient: notZeroS3.Client()}}
+	_, err := store.repairFromPeer(cfg)
+	if err == nil || !strings.Contains(err.Error(), "peer capability discovery failed") {
+		t.Fatalf("err = %v, want a clear peer capability discovery failure", err)
+	}
+}
+
+// =============================================================================
+// M8B A5/A6/A7: publication and end-to-end repair
+// =============================================================================
+
+func TestRepair_MissingChunkRestoredEndToEnd(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	body := genRandomBytes(20020, 600_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", map[string]string{"x": "y"})
+	man := mustManifestFor(t, store, entry)
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", map[string]string{"x": "y"})
+
+	deleteChunkOnDisk(t, store, man.Chunks[0].SHA256)
+
+	pre, err := store.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pre.OK() {
+		t.Fatalf("expected pre-repair deep verify to fail")
+	}
+
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)})
+	if err != nil {
+		t.Fatalf("repairFromPeer: %v", err)
+	}
+	if stats.BadChunks != 1 || stats.Repaired != 1 || stats.Unresolved != 0 || !stats.PostRepairOK {
+		t.Fatalf("stats = %+v, want 1 bad/1 repaired/0 unresolved/OK", stats)
+	}
+
+	post, err := store.Verify(true)
+	if err != nil || !post.OK() {
+		t.Fatalf("post-repair verify: res=%+v err=%v", post, err)
+	}
+	_, gotBody, err := store.GetObject("b", "k")
+	if err != nil || !bytes.Equal(gotBody, body) {
+		t.Fatalf("GetObject after repair: err=%v", err)
+	}
+}
+
+func TestRepair_CorruptExistingChunkAtomicallyReplaced(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	body := genRandomBytes(20021, 600_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
+
+	corruptChunkOnDisk(t, store, man.Chunks[0].SHA256)
+
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)})
+	if err != nil {
+		t.Fatalf("repairFromPeer: %v", err)
+	}
+	if stats.Repaired != 1 || !stats.PostRepairOK {
+		t.Fatalf("stats = %+v", stats)
+	}
+	_, gotBody, err := store.GetObject("b", "k")
+	if err != nil || !bytes.Equal(gotBody, body) {
+		t.Fatalf("GetObject after repair: err=%v", err)
+	}
+}
+
+func TestRepair_HealthyChunkNeverRewritten(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	body := genRandomBytes(20022, 600_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+	if len(man.Chunks) < 2 {
+		t.Fatalf("need at least 2 chunks")
+	}
+	healthySum, _ := decodeHexSHA256(man.Chunks[1].SHA256)
+	healthyPath := store.chunkPath(healthySum)
+	before, err := os.Stat(healthyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
+
+	corruptChunkOnDisk(t, store, man.Chunks[0].SHA256)
+
+	findings, err := store.repairFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range findings {
+		if f.SHA256 == man.Chunks[1].SHA256 {
+			t.Fatalf("a healthy chunk incorrectly appeared in repair findings: %+v", f)
+		}
+	}
+
+	if _, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)}); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.Stat(healthyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) || before.Size() != after.Size() {
+		t.Fatalf("a healthy chunk file was rewritten: before=%v/%d after=%v/%d", before.ModTime(), before.Size(), after.ModTime(), after.Size())
+	}
+}
+
+// =============================================================================
+// M8B A7/A8: post-repair proof (restart, versions/metadata, exact stats)
+// =============================================================================
+
+func TestRepair_RestartThenGetExact(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	body := genRandomBytes(20023, 700_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
+
+	deleteChunkOnDisk(t, store, man.Chunks[0].SHA256)
+	if _, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+	_, gotBody, err := store2.GetObject("b", "k")
+	if err != nil || !bytes.Equal(gotBody, body) {
+		t.Fatalf("GetObject after restart: err=%v", err)
+	}
+	post, err := store2.Verify(true)
+	if err != nil || !post.OK() {
+		t.Fatalf("post-restart deep verify: res=%+v err=%v", post, err)
+	}
+}
+
+func TestRepair_VersionsMetadataAndETagUnchanged(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	body := genRandomBytes(20024, 500_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", map[string]string{"a": "b"})
+	man := mustManifestFor(t, store, entry)
+	beforeETag := entry.etag
+	beforeManifestUUID := entry.manifestUUID
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", map[string]string{"a": "b"})
+
+	corruptChunkOnDisk(t, store, man.Chunks[0].SHA256)
+	if _, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)}); err != nil {
+		t.Fatal(err)
+	}
+
+	after, _, err := store.HeadObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.etag != beforeETag {
+		t.Fatalf("ETag changed: before=%s after=%s", beforeETag, after.etag)
+	}
+	if after.manifestUUID != beforeManifestUUID {
+		t.Fatalf("manifest UUID changed: before=%s after=%s -- repair must never rewrite manifests", beforeManifestUUID, after.manifestUUID)
+	}
+}
+
+func TestRepair_StatsExactAccounting(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	body := genRandomBytes(20025, 500_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+	if len(man.Chunks) < 2 {
+		t.Fatalf("need >= 2 chunks")
+	}
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
+
+	corruptChunkOnDisk(t, store, man.Chunks[0].SHA256)
+	deleteChunkOnDisk(t, store, man.Chunks[1].SHA256)
+
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBytes := man.Chunks[0].Length + man.Chunks[1].Length
+	if stats.BadChunks != 2 || stats.Repaired != 2 || stats.Unresolved != 0 {
+		t.Fatalf("stats = %+v, want 2/2/0", stats)
+	}
+	if stats.PayloadFetched != wantBytes {
+		t.Fatalf("PayloadFetched = %d, want %d (actual peer payload, never e.g. logical object size)", stats.PayloadFetched, wantBytes)
+	}
+	if stats.AffectedObjects != 1 {
+		t.Fatalf("AffectedObjects = %d, want 1", stats.AffectedObjects)
+	}
+	if !stats.PostRepairOK {
+		t.Fatalf("PostRepairOK = false, want true")
+	}
+}
+
+// =============================================================================
+// M8B B1: partial repair
+// =============================================================================
+
+func TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	body := genRandomBytes(20030, 700_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+	if len(man.Chunks) < 2 {
+		t.Fatalf("need >= 2 chunks")
+	}
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+
+	sum0, _ := decodeHexSHA256(man.Chunks[0].SHA256)
+	orig0, err := store.casRead(sum0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The peer only has the FIRST chunk's correct bytes -- it genuinely
+	// lacks the rest, standing in for "the peer itself is missing some
+	// needed data."
+	if _, err := peerSrv.store.casWrite(orig0); err != nil {
+		t.Fatal(err)
+	}
+
+	corruptChunkOnDisk(t, store, man.Chunks[0].SHA256)
+	deleteChunkOnDisk(t, store, man.Chunks[1].SHA256)
+
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)})
+	if err != nil {
+		t.Fatalf("repairFromPeer should not itself error on a partial peer: %v", err)
+	}
+	if stats.BadChunks != 2 || stats.Repaired != 1 || stats.Unresolved != 1 {
+		t.Fatalf("stats = %+v, want 2 bad/1 repaired/1 unresolved", stats)
+	}
+	if len(stats.Failures) != 1 || stats.Failures[0].SHA256 != man.Chunks[1].SHA256 {
+		t.Fatalf("Failures = %+v, want exactly one failure for %s", stats.Failures, man.Chunks[1].SHA256)
+	}
+	if stats.PostRepairOK {
+		t.Fatalf("PostRepairOK = true, want false (one chunk remains genuinely broken)")
+	}
+
+	// The chunk that WAS successfully fixed must remain fixed, not rolled
+	// back merely because a sibling chunk's repair failed.
+	if _, err := store.casRead(sum0); err != nil {
+		t.Fatalf("the successfully-repaired chunk was rolled back: %v", err)
+	}
+}
+
+// =============================================================================
+// M8B B2/B3: resume (no durable repair-session state)
+// =============================================================================
+
+func TestRepair_ResumeAfterPartialRunOnlyFetchesRemaining(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	body := genRandomBytes(20031, 700_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+	if len(man.Chunks) < 2 {
+		t.Fatalf("need >= 2 chunks")
+	}
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+
+	sum0, _ := decodeHexSHA256(man.Chunks[0].SHA256)
+	sum1, _ := decodeHexSHA256(man.Chunks[1].SHA256)
+	orig0, err := store.casRead(sum0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig1, err := store.casRead(sum1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	corruptChunkOnDisk(t, store, man.Chunks[0].SHA256)
+	deleteChunkOnDisk(t, store, man.Chunks[1].SHA256)
+
+	// First run: the peer only has chunk 0's bytes -- standing in for "the
+	// process died after fixing some, but not all, of the bad chunks."
+	if _, err := peerSrv.store.casWrite(orig0); err != nil {
+		t.Fatal(err)
+	}
+	stats1, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats1.Repaired != 1 || stats1.Unresolved != 1 {
+		t.Fatalf("first run stats = %+v", stats1)
+	}
+
+	// Second run: now the peer also has chunk 1's bytes. No durable
+	// repair-session state exists anywhere -- repairFindings must
+	// independently rediscover that only chunk 1 is still broken (BadChunks
+	// == 1, not 2), proving the already-fixed chunk is never re-fetched.
+	if _, err := peerSrv.store.casWrite(orig1); err != nil {
+		t.Fatal(err)
+	}
+	stats2, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats2.BadChunks != 1 || stats2.Repaired != 1 || stats2.Unresolved != 0 {
+		t.Fatalf("second run stats = %+v, want BadChunks=1 (only the still-broken chunk rediscovered)", stats2)
+	}
+	if !stats2.PostRepairOK {
+		t.Fatalf("expected the store to be fully healthy after the second run")
+	}
+}
+
+func TestRepair_LocalRestartResumesNaturally(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	body := genRandomBytes(20032, 700_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+	if len(man.Chunks) < 2 {
+		t.Fatalf("need >= 2 chunks")
+	}
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
+
+	corruptChunkOnDisk(t, store, man.Chunks[0].SHA256)
+	deleteChunkOnDisk(t, store, man.Chunks[1].SHA256)
+
+	// Simulate "some repair completed, then the local server restarted" by
+	// repairing only chunk 0 directly, then closing and reopening the
+	// store as a brand-new *Store (a real restart-equivalent, matching
+	// every other M6/M8A restart-proof test's own pattern).
+	sum0, _ := decodeHexSHA256(man.Chunks[0].SHA256)
+	data0, err := peerSrv.store.casRead(sum0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.casRepairPublish(sum0, data0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+
+	stats, err := store2.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.BadChunks != 1 || stats.Repaired != 1 || !stats.PostRepairOK {
+		t.Fatalf("post-restart resume stats = %+v, want BadChunks=1 (only chunk 1)", stats)
+	}
+	_, gotBody, err := store2.GetObject("b", "k")
+	if err != nil || !bytes.Equal(gotBody, body) {
+		t.Fatalf("GetObject after restart+resume: err=%v", err)
+	}
+}
+
+// =============================================================================
+// M8B B4: peer restart / unavailability
+// =============================================================================
+
+func TestRepair_PeerRestartBetweenAttempts(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	body := genRandomBytes(20033, 400_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+
+	peerDir, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
+
+	deleteChunkOnDisk(t, store, man.Chunks[0].SHA256)
+
+	// The peer is unavailable (like a stopped process) for the first
+	// attempt.
+	peerTS.Close()
+	if err := peerSrv.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.repairFromPeer(repairConfig{Peer: syncClientConfig{Endpoint: peerTS.URL, Creds: creds, Region: region}}); err == nil {
+		t.Fatalf("expected a clear error when the peer is unreachable")
+	}
+
+	// "Restart" the peer -- reopen its store and serve again -- and prove
+	// a fresh repair attempt now succeeds cleanly, with no leftover state
+	// from the failed attempt to clean up.
+	peerStore2, err := OpenStore(peerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peerStore2.Close()
+	peerSrv2 := NewServer(peerStore2, creds, region)
+	peerTS2 := httptest.NewServer(peerSrv2)
+	defer peerTS2.Close()
+
+	stats, err := store.repairFromPeer(repairConfig{Peer: syncClientConfig{Endpoint: peerTS2.URL, Creds: creds, Region: region, HTTPClient: peerTS2.Client()}})
+	if err != nil {
+		t.Fatalf("repair after peer restart: %v", err)
+	}
+	if !stats.PostRepairOK || stats.Repaired != 1 {
+		t.Fatalf("stats after peer restart = %+v", stats)
+	}
+}
+
+// =============================================================================
+// M8B B5: concurrency
+// =============================================================================
+
+func TestRepair_ConcurrentGetOnUnrelatedObjectDuringRepair(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	bodyA := genRandomBytes(20040, 3_000_000)
+	bodyB := genRandomBytes(20041, 50_000)
+	entryA := mustPutObject(t, store, "b", "a", bodyA, "application/octet-stream", nil)
+	mustPutObject(t, store, "b", "b", bodyB, "application/octet-stream", nil)
+	manA := mustManifestFor(t, store, entryA)
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	primePeerWithObject(t, peerSrv, "b", "a", bodyA, "application/octet-stream", nil)
+
+	for _, c := range manA.Chunks {
+		corruptChunkOnDisk(t, store, c.SHA256)
+	}
+
+	stop := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				errCh <- nil
+				return
+			default:
+			}
+			_, gotB, err := store.GetObject("b", "b")
+			if err != nil || !bytes.Equal(gotB, bodyB) {
+				errCh <- fmt.Errorf("concurrent GetObject(b/b) failed during repair of an unrelated object: err=%v", err)
+				return
+			}
+		}
+	}()
+
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)})
+	close(stop)
+	if gerr := <-errCh; gerr != nil {
+		t.Fatal(gerr)
+	}
+	if err != nil {
+		t.Fatalf("repairFromPeer: %v", err)
+	}
+	if !stats.PostRepairOK {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+// =============================================================================
+// M8B B6/B7/B8: reachability scope (never repair garbage; versions;
+// multipart)
+// =============================================================================
+
+func TestRepair_UnreachableOrphanChunkNeverTriggersRepair(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	mustPutObject(t, store, "b", "k", genRandomBytes(20050, 100_000), "application/octet-stream", nil)
+
+	// An orphan chunk: written directly to CAS, never referenced by any
+	// manifest -- exactly the kind of garbage GC (never repair) is meant
+	// to reclaim.
+	orphan := genRandomBytes(20051, 30_000)
+	orphanSum, err := store.casWrite(orphan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.chunkPath(orphanSum), []byte("corrupt orphan bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := store.repairFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range findings {
+		if f.SHA256 == hex.EncodeToString(orphanSum[:]) {
+			t.Fatalf("repair findings must never include unreachable orphan garbage, found: %+v", f)
+		}
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings = %+v, want none (the only broken chunk is unreachable garbage)", findings)
+	}
+}
+
+func TestRepair_RetainedHistoricalVersionChunkRepaired(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	v1Body := genRandomBytes(20060, 300_000)
+	mustPutObject(t, store, "b", "k", v1Body, "application/octet-stream", nil)
+	v2Body := genRandomBytes(20061, 300_000)
+	mustPutObject(t, store, "b", "k", v2Body, "application/octet-stream", nil) // archives v1 into history
+
+	hist, _, err := store.ListVersions("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 1 {
+		t.Fatalf("expected exactly one retained historical version, got %d", len(hist))
+	}
+	v1Man, err := store.readVerifiedManifest(hist[0].manifestUUID, hist[0].manifestSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	for _, c := range v1Man.Chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		data, err := store.casRead(sum)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := peerSrv.store.casWrite(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	corruptChunkOnDisk(t, store, v1Man.Chunks[0].SHA256)
+
+	findings, err := store.repairFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.SHA256 != v1Man.Chunks[0].SHA256 {
+			continue
+		}
+		found = true
+		hasHistSubject := false
+		for _, o := range f.AffectedObjects {
+			if strings.HasPrefix(o, "history:b/k@") {
+				hasHistSubject = true
+			}
+		}
+		if !hasHistSubject {
+			t.Fatalf("AffectedObjects = %v, want a history: subject", f.AffectedObjects)
+		}
+	}
+	if !found {
+		t.Fatalf("findings did not include the retained historical version's corrupt chunk: %+v", findings)
+	}
+
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stats.PostRepairOK {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestRepair_MultipartInProgressPartChunkRepaired(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	uploadID, err := store.CreateMultipartUpload("b", "mp-key", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partBody := genRandomBytes(20070, 500_000)
+	if _, err := store.UploadPart("b", "mp-key", uploadID, 1, partBody); err != nil {
+		t.Fatal(err)
+	}
+
+	var partChunks []chunkRef
+	for _, up := range store.snapshotUploads() {
+		if up.uploadID == uploadID {
+			partChunks = up.parts[1].chunks
+		}
+	}
+	if len(partChunks) == 0 {
+		t.Fatalf("expected the uploaded part to have published chunks")
+	}
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	for _, c := range partChunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		data, err := store.casRead(sum)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := peerSrv.store.casWrite(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	corruptChunkOnDisk(t, store, partChunks[0].SHA256)
+
+	findings, err := store.repairFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.SHA256 == partChunks[0].SHA256 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("findings did not include the in-progress multipart part's corrupt chunk: %+v", findings)
+	}
+
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stats.PostRepairOK {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+// =============================================================================
+// M8B CLI (`zeros3 repair`)
+// =============================================================================
+
+func TestCLI_Repair_EndToEndSmoke(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	localDir := t.TempDir()
+	localStore, err := OpenStore(localDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := localStore.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	body := genRandomBytes(20080, 500_000)
+	entry, err := localStore.PutObject("b", "k", body, "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	man, err := localStore.readVerifiedManifest(entry.manifestUUID, entry.manifestSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, _ := decodeHexSHA256(man.Chunks[0].SHA256)
+	if err := os.Remove(localStore.chunkPath(sum)); err != nil {
+		t.Fatal(err)
+	}
+	if err := localStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	peerAddr := freeTCPAddr(t)
+	peerDir := t.TempDir()
+	peerCmd := exec.Command(bin, "serve", "-store", peerDir, "-addr", peerAddr)
+	if err := peerCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { peerCmd.Process.Kill(); peerCmd.Wait() }()
+	waitForZeros3Serve(t, peerAddr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	if resp := doSignedRequest(t, client, "http://"+peerAddr, signer, http.MethodPut, "/b", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("create peer bucket: status %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	if resp := doSignedRequest(t, client, "http://"+peerAddr, signer, http.MethodPut, "/b/k", body, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("populate peer object: status %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+
+	out, stderr, code := runZeros3CLI(t, bin, "repair", "-store", localDir, "-from", "http://"+peerAddr)
+	if code != 0 {
+		t.Fatalf("repair CLI failed (code %d): stdout=%s stderr=%s", code, out, stderr)
+	}
+	if !strings.Contains(out, "Bad chunks:          1") || !strings.Contains(out, "Repaired:            1") || !strings.Contains(out, "Post-repair verify:  OK") {
+		t.Fatalf("unexpected repair output:\n%s", out)
+	}
+
+	store2, err := OpenStore(localDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+	_, gotBody, err := store2.GetObject("b", "k")
+	if err != nil || !bytes.Equal(gotBody, body) {
+		t.Fatalf("GetObject after CLI repair: err=%v", err)
+	}
+}
+
+func TestCLI_Repair_ExitCodeNonzeroWhenUnresolved(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	localDir := t.TempDir()
+	localStore, err := OpenStore(localDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := localStore.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := localStore.PutObject("b", "k", genRandomBytes(20081, 100_000), "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	man, err := localStore.readVerifiedManifest(entry.manifestUUID, entry.manifestSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, _ := decodeHexSHA256(man.Chunks[0].SHA256)
+	if err := os.Remove(localStore.chunkPath(sum)); err != nil {
+		t.Fatal(err)
+	}
+	if err := localStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	peerAddr := freeTCPAddr(t)
+	peerDir := t.TempDir()
+	peerCmd := exec.Command(bin, "serve", "-store", peerDir, "-addr", peerAddr)
+	if err := peerCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { peerCmd.Process.Kill(); peerCmd.Wait() }()
+	waitForZeros3Serve(t, peerAddr)
+	// The peer never receives the object -- it genuinely lacks the chunk.
+
+	out, _, code := runZeros3CLI(t, bin, "repair", "-store", localDir, "-from", "http://"+peerAddr)
+	if code == 0 {
+		t.Fatalf("expected a nonzero exit code when repair cannot resolve every finding, stdout=%s", out)
+	}
+	if !strings.Contains(out, "Unresolved:          1") || !strings.Contains(out, "Post-repair verify:  FAILED") {
+		t.Fatalf("unexpected output for a genuinely unresolved repair:\n%s", out)
+	}
+}
+
+// =============================================================================
+// M8B-C: optional one-command detect->repair->reverify
+// (`zeros3 verify -deep -repair-from PEER`)
+// =============================================================================
+
+func TestCLI_VerifyRepairFrom_OneCommandDetectRepairReverify(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	localDir := t.TempDir()
+	localStore, err := OpenStore(localDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := localStore.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	body := genRandomBytes(20100, 500_000)
+	entry, err := localStore.PutObject("b", "k", body, "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	man, err := localStore.readVerifiedManifest(entry.manifestUUID, entry.manifestSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, _ := decodeHexSHA256(man.Chunks[0].SHA256)
+	if err := os.Remove(localStore.chunkPath(sum)); err != nil {
+		t.Fatal(err)
+	}
+	if err := localStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	peerAddr := freeTCPAddr(t)
+	peerDir := t.TempDir()
+	peerCmd := exec.Command(bin, "serve", "-store", peerDir, "-addr", peerAddr)
+	if err := peerCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { peerCmd.Process.Kill(); peerCmd.Wait() }()
+	waitForZeros3Serve(t, peerAddr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	if resp := doSignedRequest(t, client, "http://"+peerAddr, signer, http.MethodPut, "/b", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("create peer bucket: status %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	if resp := doSignedRequest(t, client, "http://"+peerAddr, signer, http.MethodPut, "/b/k", body, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("populate peer object: status %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+
+	out, stderr, code := runZeros3CLI(t, bin, "verify", "-store", localDir, "-deep", "-repair-from", "http://"+peerAddr)
+	if code != 0 {
+		t.Fatalf("verify -repair-from failed (code %d): stdout=%s stderr=%s", code, out, stderr)
+	}
+	if !strings.Contains(out, "Repaired:            1") || !strings.Contains(out, "Post-repair verify:  OK") {
+		t.Fatalf("unexpected verify -repair-from output:\n%s", out)
+	}
+
+	store2, err := OpenStore(localDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+	_, gotBody, err := store2.GetObject("b", "k")
+	if err != nil || !bytes.Equal(gotBody, body) {
+		t.Fatalf("GetObject after verify -repair-from: err=%v", err)
+	}
+}
+
+func TestCLI_VerifyRepairFrom_UnsetPreservesOrdinaryVerifyBehavior(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	localDir := t.TempDir()
+	localStore, err := OpenStore(localDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := localStore.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := localStore.PutObject("b", "k", []byte("hello"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := localStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, code := runZeros3CLI(t, bin, "verify", "-store", localDir, "-deep")
+	if code != 0 {
+		t.Fatalf("ordinary verify (no -repair-from) failed: %s", out)
+	}
+	if !strings.Contains(out, "ZeroS3 verify (deep)") || !strings.Contains(out, "result           OK") {
+		t.Fatalf("ordinary verify output changed by M8B-C's addition: %s", out)
+	}
+}
+
+func TestCLI_Repair_RealProcessKillThenResume(t *testing.T) {
+	bin := buildZeros3Binary(t)
+
+	localDir := t.TempDir()
+	localStore, err := OpenStore(localDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := localStore.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	body := genRandomBytes(20090, 20_000_000)
+	entry, err := localStore.PutObject("b", "k", body, "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	man, err := localStore.readVerifiedManifest(entry.manifestUUID, entry.manifestSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt every chunk -- a real, large, multi-chunk repair job, so a
+	// real process kill partway through has plenty of room to land
+	// mid-loop, matching M8A's own
+	// TestReplicate_ResumeAcrossRealProcessInterruption approach.
+	for _, c := range man.Chunks {
+		corruptChunkOnDisk(t, localStore, c.SHA256)
+	}
+	if err := localStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	peerAddr := freeTCPAddr(t)
+	peerDir := t.TempDir()
+	peerCmd := exec.Command(bin, "serve", "-store", peerDir, "-addr", peerAddr)
+	if err := peerCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { peerCmd.Process.Kill(); peerCmd.Wait() }()
+	waitForZeros3Serve(t, peerAddr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	if resp := doSignedRequest(t, client, "http://"+peerAddr, signer, http.MethodPut, "/b", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("create peer bucket: status %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	if resp := doSignedRequest(t, client, "http://"+peerAddr, signer, http.MethodPut, "/b/k", body, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("populate peer object: status %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+
+	repairArgs := []string{"repair", "-store", localDir, "-from", "http://" + peerAddr}
+
+	firstAttempt := exec.Command(bin, repairArgs...)
+	if err := firstAttempt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	firstAttempt.Process.Kill()
+	firstAttempt.Wait()
+
+	midStore, err := OpenStore(localDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	midFindings, err := midStore.repairFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	midStore.Close()
+	if len(midFindings) == 0 {
+		t.Skip("the killed attempt happened to finish before the timer fired -- nothing left to resume")
+	}
+
+	secondOut, secondErr, code := runZeros3CLI(t, bin, repairArgs...)
+	if code != 0 {
+		t.Fatalf("resumed repair failed (code %d): stdout=%s stderr=%s", code, secondOut, secondErr)
+	}
+	if !strings.Contains(secondOut, "Post-repair verify:  OK") {
+		t.Fatalf("resumed repair did not report clean: %s", secondOut)
+	}
+
+	finalStore, err := OpenStore(localDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finalStore.Close()
+	_, gotBody, err := finalStore.GetObject("b", "k")
+	if err != nil || !bytes.Equal(gotBody, body) {
+		t.Fatalf("GetObject after interrupted-then-resumed repair: err=%v", err)
+	}
+	post, err := finalStore.Verify(true)
+	if err != nil || !post.OK() {
+		t.Fatalf("final deep verify: res=%+v err=%v", post, err)
+	}
+}

@@ -86,7 +86,7 @@ request:
 | `/_zeros3/v1/info` | `GET` | capability discovery (`protocol`/`cdc`/`hash`/`delta_sync`/batch and size limits, JSON) |
 | `/_zeros3/v1/object?bucket=&key=` | `GET` | object chunk descriptor (M8A — ordered chunks/size/ETag/content-type/metadata, JSON) |
 | `/_zeros3/v1/negotiate` | `POST` | bounded missing-chunk query (JSON in/out) |
-| `/_zeros3/v1/chunks/<sha256-hex>` | `GET` | chunk download (M8A — raw bytes) |
+| `/_zeros3/v1/chunks/<sha256-hex>` | `GET` | chunk download (M8A — raw bytes; also M8B `repair`'s only network call) |
 | `/_zeros3/v1/chunks/<sha256-hex>` | `PUT` | idempotent chunk upload (raw bytes) |
 | `/_zeros3/v1/commit` | `POST` | atomic ordinary object commit (JSON in/out) |
 
@@ -144,6 +144,32 @@ for a non-ZeroS3 destination). See `STATUS.md`'s "M8A" section for the
 full protocol/consistency/conflict/resume semantics and `README.md` for
 CLI usage.
 
+**Peer-assisted corruption repair (`zeros3 repair -store DIR -from
+PEER_ENDPOINT`, M8B) is a ZeroS3-specific maintenance extension, not an S3
+API and not a new wire protocol.** It sends zero new endpoints: repair's
+only network call is an authenticated GET against the exact same
+`GET /chunks/<sha256-hex>` endpoint `replicate` (M8A) already uses,
+addressed only by content digest. Detection reuses the store's existing
+deep-verify reachability scan (`Store.Verify`'s own machinery) rather than
+a second integrity checker, so repair can only ever act on digests that
+scan already treats as live/reachable — unreachable or orphaned corruption
+is never fetched over the network by this command; that remains `gc`'s
+job. Every peer-supplied chunk is independently re-hashed against the
+exact digest requested before it is ever written to local storage — the
+peer is trusted as a source of candidate bytes, never for integrity, so a
+wrong, truncated, or oversized response is rejected outright. Repair never
+publishes a manifest, journal record, or namespace change: it only ever
+replaces one CAS chunk file's bytes with independently-verified bytes for
+a digest an already-published, already-authoritative manifest already
+claims, so a repaired object is indistinguishable, to GET/HEAD/
+ListObjectsV2/versions/`verify -deep`/GC, from one that was never
+corrupted. Like `replicate`, this is a client-orchestrated operation with
+no server-to-server protocol: the peer never learns anything beyond
+answering an ordinary authenticated chunk-fetch request it would already
+answer for `replicate`. See `STATUS.md`'s "M8B" section for the full
+detection/fetch/publication/partial-repair/resume/concurrency semantics
+and `README.md` for CLI usage.
+
 ## Deliberately unsupported (explicit non-goals)
 
 These are not planned for this project, at any tier:
@@ -177,14 +203,17 @@ not begun in this pass, and not claimed as shipped:
   (see `STATUS.md`'s M5-B "Phase K"). `STREAMING-UNSIGNED-PAYLOAD-TRAILER`
   and SigV4A/ECDSA streaming payload modes are permanently out of scope
   (see "Deliberately unsupported" below), not merely deferred.
-- Online/background/scheduled GC, automatic version expiry/retention
-  policies, and a repair/undelete engine beyond explicit `restore` —
-  internal versions/restore and offline exclusive GC shipped in M5-C;
-  these specific extensions remain out of scope by design, not merely
-  unstarted.
+- Online/background/scheduled GC and automatic version expiry/retention
+  policies — internal versions/restore and offline exclusive GC shipped
+  in M5-C; these specific extensions remain out of scope by design, not
+  merely unstarted. (Peer-assisted physical-chunk repair beyond explicit
+  `restore` shipped in M8B, see above — an *autonomous, continuously
+  running* healing daemon with automatic peer discovery remains an
+  explicit non-goal, not merely unstarted.)
 
-Delta sync (M6A/M6B) and recursive directory sync (M6C) both shipped —
-see "ZeroS3 extensions (not S3 APIs)" above.
+Delta sync (M6A/M6B), recursive directory sync (M6C), remote-to-remote
+delta replication (M8A), and peer-assisted corruption repair (M8B) all
+shipped — see "ZeroS3 extensions (not S3 APIs)" above.
 
 ## Compatibility deviations (differs from real AWS S3)
 

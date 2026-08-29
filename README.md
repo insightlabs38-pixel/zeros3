@@ -382,6 +382,73 @@ time transfer the second time) without any bespoke retry/session
 machinery. See `STATUS.md`'s "M8A" section for the full protocol,
 consistency, conflict, and resume semantics, each with its own tests.
 
+## Peer-assisted repair (`zeros3 repair`)
+
+`zeros3 repair -store DIR -from PEER_ENDPOINT` is a **ZeroS3-specific
+extension** (M8B): restore missing or corrupt *physical* chunk bytes in
+the local store from another explicitly-trusted ZeroS3 peer, at chunk
+granularity, without touching any manifest, journal record, object
+identity, version, ETag, or metadata. This is **peer-assisted repair**,
+not autonomous self-healing — the peer is always supplied explicitly by
+the operator; this store never discovers or contacts any peer on its own.
+
+```sh
+./zeros3 verify -deep -store ./zeros3-data       # find out what's broken
+./zeros3 repair -store ./zeros3-data -from http://127.0.0.1:9001
+```
+
+```
+Repair source:       http://127.0.0.1:9001
+Bad chunks:          3
+Repaired:            3
+Unresolved:          0
+Payload fetched:     181.00 KiB
+Affected objects:    7
+
+Post-repair verify:  OK
+```
+
+The pipeline is exactly the architecture this feature is built on: a
+`verify -deep`-equivalent scan (reusing the *exact* reachability scan
+`Store.Verify` already runs — no second integrity checker) finds the
+deduplicated set of reachable digests that are missing or corrupt
+(unreachable/orphaned corruption is never repaired — that's what `gc`
+is for, and repair structurally cannot even see it, since it only ever
+consults the same live-root set `verify`/`gc` already treat as
+authoritative); each bad digest is fetched *once*, however many objects
+or retained versions reference it, from the peer's existing M8A chunk
+endpoint (`GET /_zeros3/v1/chunks/<sha256-hex>`) using the same SigV4
+authentication every other request already uses; the client
+**independently re-verifies every byte's SHA-256 against the digest it
+asked for** before it is ever written to disk — a peer is trusted as a
+*source of candidate bytes*, never for integrity, so a wrong, truncated,
+or oversized response is rejected outright, never published. A corrupt
+*existing* chunk is atomically replaced (temp-write, fsync, rename,
+fsync-directory — the same durable-publish primitive ordinary CAS writes
+already use), never overwritten by a naive existence-check write that
+would (wrongly) treat the already-present pathname as already correct.
+
+There is no durable repair-session state anywhere: an interrupted or
+killed `repair` process is simply re-run, and the next run's own fresh
+`verify -deep`-equivalent scan reports only the chunks still genuinely
+broken — already-repaired chunks are silently excluded, with no bespoke
+resume/session machinery needed. A peer that itself lacks some of the
+needed chunks is reported as a partial, honest failure (nonzero exit,
+`Unresolved: N`, a `FAILED:` list) rather than a false success, and every
+chunk that *was* successfully repaired stays repaired regardless. Repair
+takes the same shared store lock `serve` does, so it can run safely
+alongside an already-running server, while still refusing cleanly (never
+racing) against an exclusive `gc -apply`.
+
+For a one-command detect→repair→reverify workflow, `zeros3 verify -deep
+-repair-from PEER_ENDPOINT` runs the same pipeline and prints the same
+repair statistics — `repair` remains the underlying primitive either way.
+
+See `STATUS.md`'s "M8B" section for the full detection/fetch/publication/
+partial-repair/resume/concurrency semantics, each with its own tests, and
+`zeros3-testing/results/M8B_REPAIR_RESULTS.md` for the external, real-
+two-server, real-AWS-SDK-verified proof.
+
 ## Durability model
 
 - Immutable CAS chunks and the immutable manifest are always fully
@@ -407,7 +474,9 @@ crash-point-by-crash-point recovery guarantees and their tests.
 ## Verification and stats
 
 `zeros3 verify` never repairs or deletes anything — it only reports, and
-exits nonzero on any integrity failure:
+exits nonzero on any integrity failure. (The one opt-in exception is
+`-repair-from PEER`, M8B-C — see "Peer-assisted repair" above — which is
+never enabled unless that flag is explicitly passed.)
 
 - **Structural:** journal replay validity; every reachable root's
   manifest file exists and its bytes' SHA-256 matches *that root's own*
@@ -534,11 +603,26 @@ Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
   non-destructive with no `--delete`/mirror mode, so a locally-removed
   file's previously-synced remote object is left untouched.
 - `zeros3 replicate` (M8A) replicates exactly one object per invocation
-  — no prefix/bucket recursion, no continuous/scheduled replication, no
-  peer-to-peer repair or healing between servers. Both endpoints must be
-  ZeroS3 servers that pass capability discovery; there is no
-  generic-AWS-S3-source-or-destination fallback the way `zeros3 sync`
-  falls back to a plain `PutObject` for a non-ZeroS3 destination.
+  — no prefix/bucket recursion, no continuous/scheduled replication. Both
+  endpoints must be ZeroS3 servers that pass capability discovery; there
+  is no generic-AWS-S3-source-or-destination fallback the way
+  `zeros3 sync` falls back to a plain `PutObject` for a non-ZeroS3
+  destination.
+- `zeros3 repair` (M8B) is peer-assisted, not autonomous: the peer is
+  always explicitly supplied (`-from`), never discovered, and nothing
+  repairs unless the command (or `verify -deep -repair-from`) is
+  actually invoked — no background healing daemon, no continuous/
+  scheduled repair, no automatic peer discovery or cluster membership.
+  Only one peer is supported per invocation (no multi-peer fallback
+  list); a peer that itself lacks a needed chunk is reported as an
+  honest partial failure, not retried against another source. Repair
+  fetches are sequential, one digest at a time, matching `sync`/
+  `replicate`'s own sequential-transfer limitation. It repairs only
+  reachable content already in `verify -deep`'s own scope (current
+  objects, retained historical versions, active multipart parts) —
+  unreachable/orphaned corruption is never fetched over the network; use
+  `gc` for that. Repair never restores from generic AWS S3, only from
+  another ZeroS3 peer.
 - `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` are eligible but not yet
   implemented (no real client exercised needs them);
   `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and SigV4A/ECDSA streaming modes
