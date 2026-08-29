@@ -150,8 +150,8 @@ mechanism), object-lock/ACL/policy/IAM, conditional-copy headers,
 self-copy rejection, `X-Amz-Security-Token`, `STREAMING-AWS4-HMAC-SHA256-
 PAYLOAD[-TRAILER]` (conditional — not yet required by any real client
 exercised), `aws-chunked`'s unsigned/SigV4A streaming trailer modes
-(permanently out of scope), `ListParts`/`ListMultipartUploads` pagination
-(deferred; see `STATUS.md`), and online/background/scheduled GC (offline
+(permanently out of scope), ListMultipartUploads does not yet support 
+prefix/delimiter/CommonPrefixes and online/background/scheduled GC (offline
 and exclusive-only, by design, this milestone).
 
 ## Architecture
