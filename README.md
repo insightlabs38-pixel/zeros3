@@ -205,6 +205,64 @@ bytes (distinct content anywhere in the store), *exclusive*/*shared*
 bytes (whether other objects also reference a chunk), and `*_file_bytes`
 (actual on-disk measurements) — never conflating "shared" with "owned."
 
+## Delta sync (`zeros3 sync`)
+
+`zeros3 sync LOCAL_FILE s3://bucket/key` is an optional, **ZeroS3-
+specific** extension (M6): a way to *ingest* a file using far less
+network transfer than a naive full upload when the store already holds
+most of the relevant bytes, via the exact same content-defined chunking
+this project already uses for dedup. It is not part of the S3 wire
+protocol — ordinary S3 remains ordinary S3, unaffected and untouched by
+this being present. See `S3_COMPAT.md`.
+
+```sh
+./zeros3 sync ./big-file.bin s3://my-bucket/big-file.bin
+```
+
+What actually happens, in order: capability discovery against a reserved
+`/_zeros3/v1/info` endpoint (falling back to one ordinary `PutObject`,
+and never sending a proprietary request, if the target isn't ZeroS3 at
+all); the local file is content-defined-chunked with the *identical* CDC
+v1 chunker ordinary `PutObject` uses; a bounded (≤1024 descriptors per
+batch) query asks which chunks the server is already missing; only those
+chunks are uploaded, each independently re-hashed server-side before
+publication; and the object is committed through the exact same
+immutable-manifest + visibility-journal path an ordinary `PutObject`
+uses — so a synced object is byte-for-byte, format-for-format
+indistinguishable from one written any other way. A safe-mode conflict
+check (based on the destination's actual current ETag, observed via an
+ordinary HEAD before the transfer began) rejects the commit outright
+rather than silently overwriting a destination that changed underneath
+it.
+
+One measured example (`TestSync_M6ADemonstrationFixture`): an 8MB file is
+synced, then a small 4KiB insertion is made in the middle and the result
+is synced again —
+
+```
+Logical scanned:     7.63 MiB
+Chunks:              110
+Chunks reused:       109
+Uploaded payload:    80.54 KiB (1 unique chunks)
+Transfer avoided:    7.55 MiB
+Reuse:               99.0%
+```
+
+only the chunks actually touched by the edit (and CDC's normal boundary
+churn immediately around it) cross the wire; everything else is recognized
+as already present. This is a measurement of one edit shape, not a
+universal guarantee — different edits reuse different amounts, exactly
+like the dedup numbers above.
+
+`zeros3 sync` never trades away safety for throughput: chunk digests are
+always independently re-verified server-side, a local file that changes
+mid-operation aborts rather than committing a mixed revision, and resume
+after an interrupted transfer or a server restart falls naturally out of
+CAS's own content-addressed durability — no bespoke session state is
+ever written to disk for it. See `STATUS.md`'s "M6" section for the full
+protocol, conflict, resume, and mutation-detection semantics, each with
+its own tests.
+
 ## Durability model
 
 - Immutable CAS chunks and the immutable manifest are always fully

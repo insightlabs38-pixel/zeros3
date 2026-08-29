@@ -1,5 +1,417 @@
 # ZeroS3 — M1/M2/M3/M4 Status
 
+## M6 — Optional delta transfer (`zeros3 sync`)
+
+**M6A and M6B COMPLETE.** M6C (directory sync) was **not started** —
+M6A/M6B were not "boringly green" until this pass's own budget was
+already spent proving them properly (49 new tests, race-clean, restart-
+proven), and the milestone spec is explicit that directory sync is
+optional-inside-optional and must never be built at the expense of
+correctness on the tiers below it. See "M6C" below.
+
+M6 adds exactly one new capability: `zeros3 sync LOCAL_FILE
+s3://bucket/key`, a bounded, resumable, conflict-safe way to *ingest* an
+object using far less network transfer than a naive full upload when the
+destination (or the store in general, via ordinary CDC/CAS dedup) already
+holds most of the relevant bytes. **It is not a second storage engine.**
+A synced object is produced by, and is in every way indistinguishable
+from, the exact same CDC v1 → SHA-256 CAS → immutable manifest →
+visibility-journal commit pipeline every ordinary `PutObject` already
+uses (`buildManifestV1FromRefs`, `publishManifest`,
+`commitObjectRootChecked` — zero new persistent-format types). Ordinary
+S3 `GetObject`, `HeadObject`, `verify -deep`, versions/GC/multipart/
+current-root logic, and a full server restart all treat a synced object
+exactly like any other object, because after commit it *is* any other
+object — no ZeroS3-sync-specific state exists anywhere on disk.
+
+### Protocol (version 1, reserved `/_zeros3/` namespace)
+
+Four endpoints, all authenticated by the *exact same* SigV4 header
+verification (`srv.authenticate`) every ordinary S3 request already goes
+through — there is no separate auth story for sync, and no fake/overloaded
+AWS operation name or path shape:
+
+- `GET  /_zeros3/v1/info` — capability discovery: `{protocol, cdc, hash,
+  delta_sync, max_hashes_per_batch, max_batch_bytes, max_chunk_bytes}`
+  as JSON. Version 1 is deliberately small, per `SYNC_PROTOCOL.md`.
+- `POST /_zeros3/v1/negotiate` — bounded missing-chunk query: up to 1024
+  `{sha256,length}` descriptors (`maxSyncBatchDescriptors`) and up to
+  256KiB of encoded request body (`maxSyncBatchBytes`), both hard,
+  independent ceilings; a pure read (`os.Stat` only, never
+  `casRead`/`casWrite`), so it never mutates authoritative state and is
+  always safe to retry, re-run, or run speculatively. Response: the
+  normalized, de-duplicated list of digests not present in CAS.
+- `PUT  /_zeros3/v1/chunks/<sha256-hex>` — idempotent chunk upload: the
+  server independently computes SHA-256 of the body it actually received
+  (never trusting the URL's declared digest) and rejects a mismatch;
+  publication goes through the exact same `casWrite` an ordinary PUT's
+  chunking loop uses, so a retried upload of an already-published chunk
+  is a no-op by construction — there is no separate idempotency
+  mechanism to build.
+- `POST /_zeros3/v1/commit` — atomic ordinary object commit: the client's
+  complete ordered chunk list (occurrences, not de-duplicated — a chunk
+  that legitimately repeats within one file repeats in its manifest,
+  exactly as ordinary `PutObject` chunking would produce) plus ordinary
+  object metadata and an optional safe-mode conflict precondition. Only
+  bounded by the same `maxRequestBodySize` (256MiB) every other request
+  body already is — unlike `/negotiate`, a commit's chunk list
+  legitimately grows with object size (a multi-GiB file has far more than
+  1024 chunks), so it is never capped at the negotiation batch size.
+
+`/negotiate` and chunk upload are store-wide (CAS is not per-bucket), so
+neither needs a bucket/key; `/commit` carries them in its JSON body, not
+the URL — none of the four endpoints is reachable via path-style or
+virtual-hosted-style bucket/key resolution, and `ServeHTTP` checks for the
+`/_zeros3/` prefix before any of that parsing runs.
+
+### CDC reuse (A2)
+
+There is exactly one CDC v1 implementation in this binary
+(`newCDCChunker`/`findCDCBoundary`, section 3), used identically by
+ordinary `PutObject` (`chunkData`), multipart completion
+(`chunkAndStoreStream`), and the sync client's local scan
+(`scanLocalFileForSync`). `TestSync_CDCEquivalenceWithOrdinaryPut` proves
+directly, on the same 2.5MB random fixture, that the sync client's scan
+and `chunkData`'s ordinary-PUT path produce byte-identical boundaries,
+lengths, and SHA-256 identities, chunk-by-chunk.
+
+### Missing-chunk negotiation (A4)
+
+The sync client (`negotiateSyncMissing`) de-duplicates the local file's
+chunk occurrences to unique digests, splits them into batches no larger
+than the server's declared `max_hashes_per_batch` (clamped to this
+build's own 1024-descriptor ceiling, so a misbehaving/compromised server
+declaring an oversized batch can't induce an oversized client request),
+and issues one `/negotiate` call per batch.
+`TestSyncNegotiate_BatchSizeBoundary` proves exactly 1023 and 1024
+descriptors succeed in one request and 1025 is rejected outright (not
+silently truncated); `TestSyncNegotiate_MultiBatchViaClient` proves the
+real client function correctly splits 2500 synthetic descriptors across
+multiple `/negotiate` calls with no loss or duplication at the batch
+seam. Zero/one/all/mixed-missing and duplicated-digest cases are each
+directly tested (`TestSyncNegotiate_{ZeroMissing,OneMissingAmongMany,
+AllMissing,SomeMissing,DuplicatedDigestsReportedOnce}`), as are invalid
+digest encoding, invalid/out-of-bounds length, unknown protocol/CDC/hash
+version (501), an oversized encoded request (400), and malformed JSON
+(400). `TestSyncNegotiate_NeverMutatesStore` proves negotiation leaves
+on-disk chunk/manifest byte totals unchanged.
+
+### Chunk publication validation (A5)
+
+`handleSyncChunkUpload` never trusts a client-declared digest merely
+because it arrived via the sync protocol: it independently hashes the
+body it received and rejects a mismatch (`TestSyncChunkUpload_
+DigestMismatchRejected` proves a mismatched chunk is never published
+under the claimed digest), bounds the body to the frozen CDC v1 envelope
+maximum (`TestSyncChunkUpload_OversizedBodyRejected`), and publishes
+through the exact same `casWrite` primitive ordinary PUT chunking uses —
+so idempotent retry (`TestSyncChunkUpload_IdempotentRetry`) is a property
+of CAS itself, not a bespoke mechanism.
+
+### Atomic commit / manifest+journal reuse (A6)
+
+`handleSyncCommit` builds a manifest via `buildManifestV1FromRefs` (the
+same primitive `CompleteMultipartUpload`'s stream-completion path already
+uses) and publishes it via `publishManifest` +
+`commitObjectRootChecked` — the same primitives ordinary `PutObject`/
+`CopyObject` already use (see "Manifest/journal reuse and the
+precondition refactor" below). Every referenced chunk is read back via
+`casRead`, which independently re-verifies content against its own digest
+before anything is published — so a missing chunk
+(`TestSyncCommit_MissingChunkRejected`), a declared-vs-actual length
+mismatch (`TestSyncCommit_WrongLengthRejected`), or a chunk corrupted on
+disk since upload (`TestSyncCommit_CorruptChunkRejected`, which flips a
+byte directly in the chunk file to prove `casRead`'s own hash
+re-verification — not a second, duplicated integrity check — is what
+catches it) is rejected before publication, and the destination key is
+proven to remain absent (404) after each rejection. The same read pass
+streams each chunk's already-verified bytes through two running hashes
+(whole-object SHA-256, single-part-style MD5 ETag) one chunk at a time —
+bounded memory regardless of object size, matching `chunkAndStoreStream`'s
+own discipline. Unknown protocol/CDC/hash version (501), malformed JSON
+(400), and a missing bucket/key or unknown bucket (400/404) are each
+directly tested.
+
+**`TestSync_CriticalAcceptanceProof`** is M6A's central architectural
+claim, proven directly: sync a 3MB file, `GetObject` returns exact bytes,
+`HeadObject` reports the correct `Content-Length`, then the store is
+closed and reopened as a brand-new `Store`/`Server` (a real restart, no
+state threaded across it) and `GetObject` on the new server still returns
+exact bytes, and `store.Verify(true)` (deep verify) reports no issues.
+
+### Manifest/journal reuse and the precondition refactor
+
+`commitObjectRoot` (used by `PutObject`/`CopyObject`) is now a thin
+wrapper around a new `commitObjectRootChecked(..., check func(cur
+*objectEntry, exists bool) error)`, extracted with `check == nil`
+producing byte-for-byte the same behavior as the prior `commitObjectRoot`
+body (no existing caller's behavior changed — the full pre-M6 regression
+suite is unchanged and still green). `check`, when non-nil, runs *inside*
+the exact same locked critical section as the commit itself, immediately
+after re-confirming bucket existence and reading the current root, before
+anything is written — there is no unlock between the precondition check
+and the commit, so a concurrent writer can never slip past a
+now-stale precondition (the TOCTOU an unlock-then-relock version of this
+would have). This is the one new mechanism M6 needed in the pre-existing
+commit path, and it is composition (one new parameter, no new commit
+path), not a second implementation.
+
+### Resume semantics (B1)
+
+No durable server-side sync-session state exists anywhere; resume is a
+direct consequence of CAS's own content-addressed durability.
+`TestSync_ResumeAfterPartialPriorUpload` primes one chunk via a direct
+upload (standing in for "the client died after uploading only this
+much"), then runs a fresh `syncFile` end-to-end and proves it uploads
+strictly less than the full logical size and still produces the correct
+object. `TestSync_ServerRestartAfterPartialUploadThenResume` does the
+same but closes and reopens the `Store`/`Server` in between (a real
+process-equivalent restart) before the resumed run. `TestSyncChunkUpload_
+IdempotentRetry` and `TestSync_RepeatedFullSyncOfIdenticalContentUploads
+Nothing` cover repeated chunk upload and a fully-resumed re-sync
+uploading zero bytes. `TestSync_RepeatedCommitFailsCleanlyRather
+ThanDuplicating` establishes the exact commit-retry guarantee: a literal
+retry of an already-succeeded `expect_absent=true` commit is rejected
+with 412 (not silently accepted, and never a second object version) —
+this is the documented, deliberately conservative answer to "commit
+retry must not create inconsistent duplicate object versions": a retry
+whose precondition has gone stale because its *own* prior attempt already
+landed fails safely rather than being magically recognized as
+"the same request"; the caller's correct response (matching
+`TestSync_ConflictRetryAfterConflictSucceeds`) is to re-run sync, which
+re-observes reality via a fresh HEAD and proceeds correctly.
+
+### Conflict semantics (B2)
+
+Every sync captures the destination's current identity via an *ordinary*
+S3 HEAD (never a ZeroS3-specific call) before negotiating: absent, or the
+current ETag. Commit carries that as `expect_absent`/`expected_etag`,
+checked atomically inside `commitObjectRootChecked`'s locked section (see
+above). `TestSync_Conflict{AbsentDestinationStaysAbsentUntilCommit,
+UnchangedDestinationCommitsCleanly,ConcurrentPUTDuringSyncCausesCommit
+Conflict,TwoConcurrentSyncsToSameKeySecondFails,RetryAfterConflict
+Succeeds}` cover: destination absent until commit; an unchanged
+destination (including the demonstration fixture's own "sync a modified
+file back to the same key" pattern) commits cleanly; an ordinary
+concurrent `PutObject` between a sync's HEAD and its commit is detected
+and rejected (412); two syncs racing to the same never-before-existing
+key resolve deterministically (first commit wins, second is rejected,
+destination holds exactly the winner's bytes); and re-running sync after
+a conflict succeeds, because it re-observes the real destination fresh.
+This is real S3's own `PreconditionFailed` (412) semantics, not an
+invented status code.
+
+### Local mutation semantics (B3)
+
+A practical, honestly-documented, stdlib-only guarantee: `syncFile`
+records the local file's size and modification time (`os.Stat`) before
+scanning, and compares against a fresh `os.Stat` taken immediately before
+commit (plus an independent re-hash of each chunk re-read for upload,
+which doubles as an earlier, cheaper signal). If either differs, the
+operation aborts (`errSyncLocalMutation`) without ever sending a commit
+request. **What this does not, and cannot, claim:** it is not a
+filesystem snapshot — an in-place rewrite that happens to preserve both
+size and modification time exactly (to the granularity the filesystem
+records) is not detected. `TestSync_LocalMutationDuringOperationAborts`
+proves the abort path via a test-only hook
+(`syncTestHookBeforeMutationCheck`, mirroring the pre-existing
+`testHook`/`fireTestHook` pattern used for crash-injection tests) that
+deterministically mutates the file between upload and the check, and
+proves the destination key remains absent afterward;
+`TestSync_UnmodifiedFileCommitsNormally` proves the check never
+false-positives on an untouched file.
+
+### Non-ZeroS3 endpoint behavior (B5)
+
+`syncFile` performs capability discovery first, always; a
+proprietary `/negotiate`/chunk-upload/`/commit` request is never sent
+without a successful, protocol-compatible discovery response. On
+discovery failure (network error, non-200, unparseable body, or an
+unrecognized protocol/cdc/hash), it falls back to one ordinary,
+whole-file `PutObject` — the simplest, safest, least-surprising choice,
+and the only one every stdlib-only client can always perform.
+`TestSync_NonZeroS3Endpoint_FallsBackToPlainPut` runs a fake HTTP server
+(404 on every `/_zeros3/*` path, an ordinary 200 on `PUT`, auth
+unchecked — standing in for a real non-ZeroS3 S3-compatible endpoint) and
+proves both that the fallback PUT carries the exact file bytes *and* that
+no `/negotiate`/chunk-upload/`/commit` request was ever sent to it.
+
+### Transfer statistics (A7)
+
+Entirely operation-local (`syncStats`); nothing is persisted, and no
+persistent journal/manifest field changed to support this. Reported:
+logical bytes scanned, total chunks, chunks reused (occurrences already
+present in CAS at negotiation time), missing chunk occurrences, unique
+chunks actually uploaded, uploaded payload bytes, bytes avoided, and a
+reuse percentage — printed in the planning doc's own example style via
+`printSyncStats`/`humanBytes`. `TestSyncStats_FirstSyncAllNew` proves a
+brand-new object reports zero reuse; `TestSyncStats_
+ResyncIdenticalContentToNewKeyIsFullyReused` proves re-syncing identical
+content to a fresh key reports 100% reuse and zero uploaded bytes.
+
+**`TestSync_M6ADemonstrationFixture`** is the required M6A fixture: an
+8MB random file is synced, then a small (4KiB) insertion is made at its
+midpoint and the mutated file is synced to a new key. Because CDC v1 only
+reshuffles chunk boundaries local to an edit, the second sync's own
+observed reuse is asserted to be **≥80%** of logical bytes (an actual
+run logs **99.0%** reuse — 80.5KiB uploaded of 7.63MiB logical — see
+"External interoperability" below for an independent confirmation, via a
+real AWS SDK client and a separately-sized fixture, of the same effect)
+and strictly less than the
+first (full) sync's upload, with an ordinary `GetObject` on the mutated
+key proving exact byte correctness. Both the 80% assertion and the
+"strictly less than the first sync" assertion are real, checked
+conditions — not merely logged numbers — matching the "do not choose
+unrealistic data solely to manufacture a misleading percentage" and
+"don't weaken expected behavior just to turn a red test green" instructions.
+
+### M6C — directory sync
+
+**Not started**, per this milestone's explicit gate ("only begin if M6A
+and M6B are boringly green" and "do not implement directory sync just
+because time remains"). M6A/M6B needed their own full, honest test and
+documentation pass — including the adversarial review below — to *become*
+boringly green within this pass's scope; extending into a second transfer
+path was correctly out of scope once that was true. M6B alone is
+documented (per `MILESTONES.md`) as a valid, complete M6 submission on
+its own. If picked up later: reuse the single-file M6A/M6B primitive
+directly (never a second transfer path), default to "upload changed/new
+files" with no remote deletion, and treat `--delete` as a separate,
+never-implicit, explicitly-designed addition — see `SYNC_PROTOCOL.md`.
+
+### Adversarial review
+
+Explicitly attempted and found already handled by the design/tests above,
+not merely asserted:
+
+- **Replay/retry of a stale commit** — `TestSync_
+  RepeatedCommitFailsCleanlyRatherThanDuplicating` (412, not a duplicate).
+- **Malformed/duplicate descriptors, boundary batches** — `TestSyncNegotiate_
+  {InvalidDigest,InvalidLength,DuplicatedDigestsReportedOnce,
+  BatchSizeBoundary}`.
+- **Unknown protocol/CDC/hash version** — rejected (501) at both
+  `/negotiate` and `/commit` (`TestSyncNegotiate_
+  UnsupportedProtocolCDCHash`, `TestSyncCommit_UnsupportedProtocolCDCHash`).
+- **Unauthorized calls** — every one of the four endpoints individually
+  proven to reject an unsigned request (`TestSync_
+  AllEndpointsRejectUnauthenticatedRequests`).
+- **A referenced chunk disappears / wrong digest / bad length / CAS
+  already exists** — `TestSyncCommit_{MissingChunkRejected,
+  CorruptChunkRejected,WrongLengthRejected}`;
+  `TestSyncChunkUpload_IdempotentRetry` for "CAS already exists".
+- **Commit fails after chunks are uploaded** — every `TestSyncCommit_*`
+  rejection case leaves the previously-uploaded (now-unreachable-until-GC)
+  chunks in place and the destination key untouched, matching the
+  documented "interrupted uploads may leave unreachable valid CAS chunks;
+  this is acceptable under the existing storage model" guarantee (M5-C
+  GC already reclaims these — no new reclamation path was needed).
+- **Server restart at awkward points** — `TestSync_
+  ServerRestartAfterPartialUploadThenResume` (mid-transfer) and
+  `TestSync_CriticalAcceptanceProof` (post-commit).
+- **Normal PUT during sync, two syncs to the same key, destination
+  changes before commit** — the full `TestSync_Conflict*` suite above.
+- **Race detector** — `go test -race ./...` is clean with this pass's
+  additions, including the concurrency-specific `TestSync_
+  ConcurrentNormalPutAndSyncDifferentKeys`/`TestSync_
+  TwoConcurrentSyncsToDifferentKeysBothSucceed`.
+- **Source changes during scan/upload, source disappears, interrupted
+  transfer, repeated run, non-ZeroS3 server** — `TestSync_
+  LocalMutationDuringOperationAborts` (changes during operation; a
+  disappeared source surfaces as an ordinary `os.Stat`/read error through
+  the same `errSyncLocalMutation` path), the B1 resume tests (interrupted
+  transfer/repeated run), `TestSync_NonZeroS3Endpoint_FallsBackToPlainPut`.
+
+### Internal test results
+
+`gofmt -l .`, `go vet ./...`: clean. `go test ./...`: **312 top-level test
+functions / 501 `--- PASS` lines (including subtests), 0 failing** — up
+from the pre-M6 baseline of 263/452, entirely from this pass's 49 new
+`TestSync*`/`TestSyncNegotiate*`/`TestSyncCommit*`/`TestSyncStats*`
+functions (`go test -run 'TestSync' -v` isolates exactly these). `go test
+-race ./...`: clean. No pre-existing test was modified, weakened, or
+skipped.
+
+### External interoperability (`zeros3-testing`)
+
+New harness `zeros3-testing/harness/m6/sync` — unlike every earlier
+harness in that repository, this one drives `zeros3 sync` itself as a
+real external subprocess (`os/exec` against the built binary, never a Go
+package call into ZeroS3 internals), while the AWS SDK for Go v2 (the
+same pinned versions every other harness in that repo already uses) acts
+as a fully independent S3 client. **33 passed, 0 failed, 2 informational**
+— see `zeros3-testing/results/M6_SYNC_RESULTS.md` for the complete
+transcript. It proves: an AWS-SDK-created bucket + `zeros3 sync` (a
+brand-new 5.72MiB/83-chunk object) + AWS SDK `GetObject`/`HeadObject`
+round-trip exact bytes; the same holds across a real process restart and
+after `zeros3 verify -deep` (`result OK`); a small edit re-synced to a
+new key measured **98.8%** real reuse (71.18KiB uploaded of 5.73MiB) in
+that run, independently confirming the internal demonstration fixture's
+own 99.0%; a `zeros3 sync` subprocess SIGKILLed ~150ms into a 19MB
+transfer never leaves a partial/visible object, and a rerun resumes and
+completes with exact bytes; the safe-mode conflict precondition
+interoperates correctly with an object a real AWS SDK client wrote
+(a deterministic case); and a best-effort timing race between `zeros3
+sync` and a concurrent AWS SDK `PutObject` resolved, in that run, to the
+AWS SDK write winning and `zeros3 sync` correctly detecting the conflict
+and exiting non-zero — with the final object holding exactly one
+writer's content, never a mix, which is the only invariant that run's
+race section actually asserts (its outcome is expected to vary
+run-to-run; see the results file's own caveat section). The pre-existing
+`m2`/`m3/copy`/`m3/range`/`m3/dedup`/`m5a/presign`/`m5b/multipart`/
+`m5d/pagination` harnesses were re-run unmodified against the same build
+this M6 harness used: every one matched its previously recorded count
+exactly (41/46/27/7/47/43/43), confirming no regression.
+
+### Dependency / source-file audit
+
+`zeros3.go` remains the sole implementation source file (now with a new,
+explicitly-labeled "17. Optional ZeroS3 Delta Sync (M6)" /
+"17b. `zeros3 sync` client" section rather than scattered protocol code);
+`zeros3_test.go` remains the only test file; `go.mod` still carries zero
+`require` directives; no vendoring; no subprocess/shell-out (the sync
+client is `net/http`'s ordinary `http.Client`, already an existing
+stdlib import, used here as a genuine HTTP *client* for the first time in
+this codebase — every other CLI verb operates directly on a `-store DIR`
+— see `STDLIB.md`). Single File eligibility and reproducible-build
+properties are unaffected (no new build tags, no new external state
+read at build time).
+
+### Persistent-format impact
+
+**None.** `storeFormatVersion`/`cdcFormatVersion`/`manifestFormatVersion`
+are unchanged; the journal record type set is unchanged (no new record
+type was added — sync produces the exact same `recordTypePutObjectRootV2`
+frame an ordinary `PutObject` does); the manifest JSON shape is
+unchanged. A store written partly via `zeros3 sync` and partly via
+ordinary `PutObject` is byte-for-byte indistinguishable, on disk, from one
+written entirely by one or the other.
+
+### Known limitations (honestly scoped, not silently dropped)
+
+- **M6C (directory sync) is not implemented** — see above.
+- **Sequential, bounded chunk upload only** — no client-side parallelism.
+  Spec explicitly frames concurrency as optional ("Correct sequential/
+  bounded behavior outranks maximum throughput... do not add concurrency
+  merely for benchmark numbers"); this pass chose not to add it, keeping
+  the client's error handling and cancellation semantics simple and
+  race-free by construction rather than introducing bounded-worker-pool
+  machinery this milestone doesn't require.
+- **Local mutation detection is size+mtime-based, not a filesystem
+  snapshot** — documented exactly above; an in-place rewrite preserving
+  both is not detected. No stdlib-only mechanism on Linux can make a
+  stronger claim without a real snapshot filesystem underneath it.
+  `zeros3 sync` never claims to make one.
+- **A literal retry of an already-succeeded commit is a safe rejection,
+  not a transparently-idempotent success** — documented exactly above
+  under "Resume semantics"; the caller's correct recovery is to re-run
+  sync (which re-observes reality), which is itself tested and green.
+- **`zeros3 sync` has no `-force`/unsafe-overwrite flag** — every commit
+  goes through the safe-mode precondition; this was a deliberate scope
+  decision (not required by any M6A/M6B test), not an oversight, since
+  the normal re-sync-to-the-same-key case (no concurrent third-party
+  writer) already succeeds under the safe precondition on its own — see
+  `TestSync_ConflictUnchangedDestinationCommitsCleanly`.
+
 ## M5-D — Multipart pagination micro-pass: `ListParts`/`ListMultipartUploads`
 
 **COMPLETE.** A tightly bounded pass with exactly one purpose: close the
