@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
@@ -102,6 +103,12 @@ var (
 	errNoSuchKey           = errors.New("no such key")
 	errManifestUnavailable = errors.New("manifest unavailable or corrupt")
 	errBucketNotEmpty      = errors.New("bucket not empty")
+	// errNoSuchDestinationBucket is CopyObject-specific: it lets the HTTP
+	// handler tell a missing *destination* bucket apart from a missing
+	// *source* bucket/key (both of which use errNoSuchBucket/errNoSuchKey
+	// from the ordinary lookup path), so each gets its own S3 error
+	// pointing at the right resource.
+	errNoSuchDestinationBucket = errors.New("no such destination bucket")
 )
 
 // decodeHexSHA256 parses a lowercase-hex SHA-256 digest as stored in
@@ -431,15 +438,11 @@ type manifestV1 struct {
 	VersionID             string       `json:"version_id"`
 }
 
-// buildManifestV1 assembles an immutable manifest for one object version.
-// Metadata is sorted by key so that two builds of the same logical
-// metadata always serialize identically.
-func buildManifestV1(pieces []chunkPiece, fullBody []byte, contentType string, metadata map[string]string) (manifestV1, error) {
-	id := newUUIDv7()
-	chunks := make([]chunkRef, len(pieces))
-	for i, p := range pieces {
-		chunks[i] = chunkRef{SHA256: hex.EncodeToString(p.sha[:]), Length: int64(len(p.data))}
-	}
+// sortedMetadataKV converts a metadata map into the manifest's
+// deterministic sorted-by-key representation, so two builds of the same
+// logical metadata always serialize identically. Shared by buildManifestV1
+// and CopyObject's metadata-REPLACE path.
+func sortedMetadataKV(metadata map[string]string) []metadataKV {
 	keys := make([]string, 0, len(metadata))
 	for k := range metadata {
 		keys = append(keys, k)
@@ -449,6 +452,19 @@ func buildManifestV1(pieces []chunkPiece, fullBody []byte, contentType string, m
 	for _, k := range keys {
 		md = append(md, metadataKV{Key: k, Value: metadata[k]})
 	}
+	return md
+}
+
+// buildManifestV1 assembles an immutable manifest for one object version.
+// Metadata is sorted by key so that two builds of the same logical
+// metadata always serialize identically.
+func buildManifestV1(pieces []chunkPiece, fullBody []byte, contentType string, metadata map[string]string) (manifestV1, error) {
+	id := newUUIDv7()
+	chunks := make([]chunkRef, len(pieces))
+	for i, p := range pieces {
+		chunks[i] = chunkRef{SHA256: hex.EncodeToString(p.sha[:]), Length: int64(len(p.data))}
+	}
+	md := sortedMetadataKV(metadata)
 	objSum := sha256.Sum256(fullBody)
 	etagSum := md5.Sum(fullBody) //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5.
 	return manifestV1{
@@ -1097,6 +1113,18 @@ func (s *Store) PutObject(bucket, key string, body []byte, contentType string, m
 	}
 	fireTestHook(hookAfterManifestPublished)
 
+	return s.commitObjectRoot(bucket, key, manUUID, manSHA, man)
+}
+
+// commitObjectRoot appends the visibility-journal record that makes
+// (bucket,key) point at manUUID/manSHA/man and applies it to the
+// in-memory namespace. This is PutObject's original commit tail, factored
+// out so CopyObject can share the exact same tested crash-safety
+// discipline instead of a second, subtly different implementation of it:
+// bucket existence is re-checked at the actual commit point (not just at
+// the caller's entry), the journal append+sync is the sole durability
+// boundary, and the in-memory map is updated only after that succeeds.
+func (s *Store) commitObjectRoot(bucket, key, manUUID string, manSHA [32]byte, man manifestV1) (*objectEntry, error) {
 	payload, err := json.Marshal(journalPutPayload{
 		Bucket:         bucket,
 		Key:            key,
@@ -1113,9 +1141,9 @@ func (s *Store) PutObject(bucket, key string, body []byte, contentType string, m
 
 	s.mu.Lock()
 	// Re-check bucket existence here, at the actual commit point, not just
-	// at entry to this function: PutObject's CDC/CAS/manifest work above
-	// runs without holding s.mu (by design -- it's slow and doesn't touch
-	// the mutable namespace), which leaves a window for a concurrent
+	// at entry to the caller: the CDC/CAS/manifest work leading up to this
+	// call runs without holding s.mu (by design -- it's slow and doesn't
+	// touch the mutable namespace), which leaves a window for a concurrent
 	// DeleteBucket to remove this bucket before the commit critical
 	// section below runs. Journal record ordering is what decides which
 	// operation "won"; committing a put-object-root against a namespace
@@ -1749,6 +1777,8 @@ func s3ErrorStatus(code string) int {
 		return http.StatusConflict
 	case "MethodNotAllowed":
 		return http.StatusMethodNotAllowed
+	case "InvalidRange":
+		return http.StatusRequestedRangeNotSatisfiable
 	default:
 		return http.StatusBadRequest
 	}
@@ -1990,7 +2020,7 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && key == "":
 		srv.handleListObjectsV2(w, bucket, rawQuery)
 	case r.Method == http.MethodGet:
-		srv.handleGetObject(w, bucket, key)
+		srv.handleGetObject(w, r, bucket, key)
 	case r.Method == http.MethodHead && key == "":
 		srv.handleHeadBucket(w, bucket)
 	case r.Method == http.MethodHead:
@@ -2047,6 +2077,14 @@ func (srv *Server) handleDeleteBucket(w http.ResponseWriter, bucket string) {
 }
 
 func (srv *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket, key string, body []byte) {
+	// A PUT carrying x-amz-copy-source is CopyObject, not an ordinary body
+	// upload -- same HTTP verb, different S3 operation, exactly as real S3
+	// distinguishes them.
+	if copySource := r.Header.Get("X-Amz-Copy-Source"); copySource != "" {
+		srv.handleCopyObject(w, r, bucket, key, copySource)
+		return
+	}
+
 	contentType := r.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/octet-stream"
@@ -2083,23 +2121,75 @@ func writeObjectHeaders(w http.ResponseWriter, entry *objectEntry, man manifestV
 	w.Header().Set("ETag", `"`+entry.etag+`"`)
 	w.Header().Set("Content-Length", strconv.FormatInt(entry.size, 10))
 	w.Header().Set("Last-Modified", man.CreatedAt.UTC().Format(http.TimeFormat))
+	w.Header().Set("Accept-Ranges", "bytes")
 	for _, kv := range man.Metadata {
 		w.Header().Set("x-amz-meta-"+kv.Key, kv.Value)
 	}
 }
 
-func (srv *Server) handleGetObject(w http.ResponseWriter, bucket, key string) {
+// writeGetObjectError renders the S3-shaped error for a GetObject/
+// GetObjectRange failure, shared by both the full-object and Range paths.
+func writeGetObjectError(w http.ResponseWriter, bucket, key string, err error) {
+	switch {
+	case errors.Is(err, errNoSuchBucket):
+		writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", "/"+bucket+"/"+key)
+	case errors.Is(err, errNoSuchKey):
+		writeS3Error(w, "NoSuchKey", "the specified key does not exist", "/"+bucket+"/"+key)
+	default:
+		writeS3Error(w, "InternalError", err.Error(), "/"+bucket+"/"+key)
+	}
+}
+
+// handleGetObject dispatches to a full-object 200 response, unless the
+// request carries a satisfiable single-range Range header, in which case
+// it serves a manifest-driven 206 (see Section 15). A Range header this
+// build doesn't understand (multi-range, malformed syntax) is ignored,
+// matching RFC 7233's allowance to serve the full entity instead of
+// rejecting the request; a syntactically valid but unsatisfiable range
+// (e.g. starting past the object's end) is answered with 416.
+func (srv *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
+	rangeHeader := r.Header.Get("Range")
+	if rangeHeader == "" {
+		srv.handleGetObjectFull(w, bucket, key)
+		return
+	}
+
+	// Interpreting a Range header (clamping "end", resolving a suffix
+	// range) needs the object's size, so resolve it once via HeadObject
+	// -- no chunk I/O -- before deciding whether this is a 200, 206, or
+	// 416 response.
+	entry, man, err := srv.store.HeadObject(bucket, key)
+	if err != nil {
+		writeGetObjectError(w, bucket, key, err)
+		return
+	}
+	rng, present, satisfiable := parseRangeSpec(rangeHeader, entry.size)
+	if !present {
+		srv.handleGetObjectFull(w, bucket, key)
+		return
+	}
+	if !satisfiable {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", entry.size))
+		writeS3Error(w, "InvalidRange", "the requested range is not satisfiable", "/"+bucket+"/"+key)
+		return
+	}
+
+	_, _, data, err := srv.store.GetObjectRange(bucket, key, rng)
+	if err != nil {
+		writeGetObjectError(w, bucket, key, err)
+		return
+	}
+	writeObjectHeaders(w, entry, man)
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rng.start, rng.end, entry.size))
+	w.Header().Set("Content-Length", strconv.FormatInt(rng.end-rng.start+1, 10))
+	w.WriteHeader(http.StatusPartialContent)
+	_, _ = w.Write(data)
+}
+
+func (srv *Server) handleGetObjectFull(w http.ResponseWriter, bucket, key string) {
 	entry, data, err := srv.store.GetObject(bucket, key)
 	if err != nil {
-		if errors.Is(err, errNoSuchBucket) {
-			writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", "/"+bucket+"/"+key)
-			return
-		}
-		if errors.Is(err, errNoSuchKey) {
-			writeS3Error(w, "NoSuchKey", "the specified key does not exist", "/"+bucket+"/"+key)
-			return
-		}
-		writeS3Error(w, "InternalError", err.Error(), "/"+bucket+"/"+key)
+		writeGetObjectError(w, bucket, key, err)
 		return
 	}
 	// GetObject already read and hash-verified this exact manifest once
@@ -2241,13 +2331,910 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 }
 
 // =============================================================================
-// 11. Lifecycle / main
+// 11b. CopyObject
+//
+// CopyObject is the payoff of the manifest+CAS design: copying an object
+// never re-chunks, re-reads, or re-uploads its payload. Under the default
+// COPY metadata directive, the destination root reuses the exact same
+// manifest file the source root already uses -- literally zero new bytes
+// of any kind, not just zero chunk payload. Under REPLACE, a small new
+// manifest is published (metadata/content-type differ), but it still
+// references the identical chunk list cloned from the source manifest, so
+// even REPLACE never touches a single CAS chunk file.
 // =============================================================================
 
-func main() {
-	storeDir := flag.String("store", "./zeros3-data", "path to the store directory")
-	addr := flag.String("addr", "127.0.0.1:9000", "listen address")
-	flag.Parse()
+type metadataDirective int
+
+const (
+	metadataDirectiveCopy metadataDirective = iota
+	metadataDirectiveReplace
+)
+
+// CopyObjectRequest describes one validated CopyObject call.
+type CopyObjectRequest struct {
+	SrcBucket, SrcKey string
+	DstBucket, DstKey string
+	Directive         metadataDirective
+	ContentType       string            // used only when Directive == metadataDirectiveReplace
+	Metadata          map[string]string // used only when Directive == metadataDirectiveReplace
+}
+
+// CopyObject publishes a new root at (DstBucket,DstKey) that reconstructs
+// to exactly the source object's bytes. Before committing, it validates
+// that every chunk the source manifest references is actually present (a
+// cheap Stat, not a re-hash -- deep corruption detection is verify's job,
+// not every copy's), matching the crash-safety rule that a new root is
+// only published after its referenced chunks are confirmed available.
+func (s *Store) CopyObject(req CopyObjectRequest) (*objectEntry, manifestV1, error) {
+	srcObj, err := s.lookupObject(req.SrcBucket, req.SrcKey)
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+	srcMan, err := s.readVerifiedManifest(srcObj.manifestUUID, srcObj.manifestSHA256)
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+	for _, c := range srcMan.Chunks {
+		sum, herr := decodeHexSHA256(c.SHA256)
+		if herr != nil {
+			return nil, manifestV1{}, fmt.Errorf("copy: source manifest has a malformed chunk reference: %w", herr)
+		}
+		if _, serr := os.Stat(s.chunkPath(sum)); serr != nil {
+			return nil, manifestV1{}, fmt.Errorf("copy: source chunk %s is not available: %w", c.SHA256, serr)
+		}
+	}
+
+	s.mu.Lock()
+	_, dstBucketExists := s.buckets[req.DstBucket]
+	s.mu.Unlock()
+	if !dstBucketExists {
+		return nil, manifestV1{}, errNoSuchDestinationBucket
+	}
+
+	if req.Directive == metadataDirectiveCopy {
+		// Zero new bytes of any kind: the destination root points at the
+		// exact same manifest the source root already uses.
+		entry, err := s.commitObjectRoot(req.DstBucket, req.DstKey, srcObj.manifestUUID, srcObj.manifestSHA256, srcMan)
+		return entry, srcMan, err
+	}
+
+	// REPLACE: the object's bytes/chunks/ETag/object-digest are
+	// byte-for-byte identical to the source (only metadata/content-type
+	// differ), so the destination manifest is built by cloning the
+	// source's fields -- including its Chunks slice, which is immutable
+	// and never mutated in place, so sharing its backing array is safe --
+	// rather than reading a single byte of chunk payload.
+	dstMan := srcMan
+	dstMan.ManifestUUID = newUUIDv7()
+	dstMan.VersionID = dstMan.ManifestUUID
+	dstMan.CreatedAt = time.Now().UTC()
+	dstMan.ContentType = req.ContentType
+	dstMan.Metadata = sortedMetadataKV(req.Metadata)
+
+	manUUID, manSHA, err := s.publishManifest(dstMan)
+	if err != nil {
+		return nil, manifestV1{}, fmt.Errorf("copy: manifest publish failed: %w", err)
+	}
+	fireTestHook(hookAfterManifestPublished)
+	entry, err := s.commitObjectRoot(req.DstBucket, req.DstKey, manUUID, manSHA, dstMan)
+	return entry, dstMan, err
+}
+
+type copyObjectResult struct {
+	XMLName      xml.Name `xml:"CopyObjectResult"`
+	ETag         string   `xml:"ETag"`
+	LastModified string   `xml:"LastModified"`
+}
+
+// parseCopySource parses an x-amz-copy-source header value into a
+// bucket/key pair. AWS accepts both "/bucket/key" and "bucket/key" (an
+// optional leading slash); a "?versionId=..." suffix is rejected, since
+// ZeroS3 does not implement versioning.
+func parseCopySource(raw string) (bucket, key string, err error) {
+	raw = strings.TrimPrefix(raw, "/")
+	if idx := strings.IndexByte(raw, '?'); idx >= 0 {
+		if strings.Contains(raw[idx:], "versionId=") {
+			return "", "", fmt.Errorf("versioned copy source is not supported")
+		}
+		raw = raw[:idx]
+	}
+	return splitBucketKey("/" + raw)
+}
+
+func (srv *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBucket, dstKey, copySource string) {
+	srcBucket, srcKey, err := parseCopySource(copySource)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", "invalid x-amz-copy-source: "+err.Error(), "/"+dstBucket+"/"+dstKey)
+		return
+	}
+
+	directive := metadataDirectiveCopy
+	switch strings.ToUpper(r.Header.Get("X-Amz-Metadata-Directive")) {
+	case "", "COPY":
+		directive = metadataDirectiveCopy
+	case "REPLACE":
+		directive = metadataDirectiveReplace
+	default:
+		writeS3Error(w, "InvalidArgument", "unsupported x-amz-metadata-directive", "/"+dstBucket+"/"+dstKey)
+		return
+	}
+
+	req := CopyObjectRequest{SrcBucket: srcBucket, SrcKey: srcKey, DstBucket: dstBucket, DstKey: dstKey, Directive: directive}
+	if directive == metadataDirectiveReplace {
+		contentType := r.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		req.ContentType = contentType
+		req.Metadata = map[string]string{}
+		for name, vals := range r.Header {
+			lower := strings.ToLower(name)
+			if strings.HasPrefix(lower, "x-amz-meta-") && len(vals) > 0 {
+				req.Metadata[strings.TrimPrefix(lower, "x-amz-meta-")] = vals[0]
+			}
+		}
+	}
+
+	entry, man, err := srv.store.CopyObject(req)
+	if err != nil {
+		switch {
+		case errors.Is(err, errNoSuchDestinationBucket):
+			writeS3Error(w, "NoSuchBucket", "the specified destination bucket does not exist", "/"+dstBucket+"/"+dstKey)
+		case errors.Is(err, errNoSuchBucket), errors.Is(err, errNoSuchKey):
+			writeS3Error(w, "NoSuchKey", "the specified source key does not exist", "/"+srcBucket+"/"+srcKey)
+		default:
+			writeS3Error(w, "InternalError", err.Error(), "/"+dstBucket+"/"+dstKey)
+		}
+		return
+	}
+	writeXML(w, http.StatusOK, copyObjectResult{ETag: `"` + entry.etag + `"`, LastModified: iso8601(man.CreatedAt)})
+}
+
+// =============================================================================
+// 12. Stats and reachability scanning
+//
+// Every field below has exactly the meaning STATS_SPEC.md gives it, and
+// two kinds of number are never conflated:
+//
+//   - "logical"/"reference"/"unique"/"exclusive"/"shared" fields are
+//     derived from the journal-derived namespace and the manifests it
+//     reaches -- what a scope refers to, not what is physically stored.
+//     A chunk shared between two buckets is never reported as "physical
+//     bytes owned by" either one.
+//   - "*_file_bytes" fields are exact filesystem measurements (os.Stat
+//     over the store's managed directories) -- what is physically on
+//     disk, independent of whether anything still references it.
+//
+// All of it is computed by direct scan on each call, never a persisted
+// counter, per STORAGE_MODEL.md's "prefer exact scans over transactional
+// counters" rule.
+// =============================================================================
+
+// statsScope selects which part of the namespace a stats/verify call
+// reports on. The zero value (every field empty) means the whole store.
+type statsScope struct {
+	bucket string // "" = every bucket
+	prefix string // key prefix filter within bucket; "" = no filter
+	key    string // exact key (object scope); takes precedence over prefix
+}
+
+func (sel statsScope) matches(bucket, key string) bool {
+	if sel.bucket == "" {
+		return true
+	}
+	if bucket != sel.bucket {
+		return false
+	}
+	if sel.key != "" {
+		return key == sel.key
+	}
+	return strings.HasPrefix(key, sel.prefix)
+}
+
+// namespaceObject is one flattened (bucket, key, entry) triple from a
+// point-in-time snapshot of the store's visible namespace.
+type namespaceObject struct {
+	bucket string
+	key    string
+	entry  *objectEntry
+}
+
+// snapshotNamespace takes a private, consistent copy of every bucket's
+// current key set under Store.mu, then returns it for the caller to walk
+// without holding the lock -- the same policy ListObjectsV2 already uses.
+// objectEntry values are never mutated in place after construction (a
+// PUT/DELETE always replaces the map entry with a fresh pointer or
+// removes it), so sharing these pointers out of the lock is safe: a
+// concurrent write can only ever add a new entry or swap/remove one this
+// snapshot already captured, never rewrite the fields this snapshot is
+// currently reading.
+func (s *Store) snapshotNamespace() []namespaceObject {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []namespaceObject
+	for bname, b := range s.buckets {
+		for key, e := range b.objects {
+			out = append(out, namespaceObject{bucket: bname, key: key, entry: e})
+		}
+	}
+	return out
+}
+
+// bucketNames returns every currently visible bucket name.
+func (s *Store) bucketNames() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.buckets))
+	for name := range s.buckets {
+		out = append(out, name)
+	}
+	return out
+}
+
+// chunkObservation accumulates what a stats scan learns about one
+// distinct chunk digest while walking every reachable manifest.
+type chunkObservation struct {
+	length     int64
+	inScope    bool
+	outOfScope bool
+}
+
+// fileScanTotals is one directory's exact byte/file-count totals, split
+// into everything present versus the subset not in a supplied reachable
+// set. Shared by stats (chunk_store_file_bytes/manifest_file_bytes) and
+// verify (unreachable counts/reclaimable_bytes).
+type fileScanTotals struct {
+	totalBytes       int64
+	totalCount       int
+	unreachableBytes int64
+	unreachableCount int
+}
+
+func walkFileBytes(root string, isUnreachable func(name string) bool) (fileScanTotals, error) {
+	var t fileScanTotals
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		t.totalBytes += info.Size()
+		t.totalCount++
+		if isUnreachable(d.Name()) {
+			t.unreachableBytes += info.Size()
+			t.unreachableCount++
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return fileScanTotals{}, err
+	}
+	return t, nil
+}
+
+// scanChunkFiles walks store/chunks and classifies every published chunk
+// file's bytes as reachable or not, using the digest that names the file
+// (chunk files are never named by anything else).
+func (s *Store) scanChunkFiles(reachable map[string]bool) (fileScanTotals, error) {
+	return walkFileBytes(filepath.Join(s.root, "chunks"), func(name string) bool { return !reachable[name] })
+}
+
+// scanManifestFiles walks store/manifests and classifies every published
+// manifest file's bytes as reachable or not, by its UUID filename.
+func (s *Store) scanManifestFiles(reachable map[string]bool) (fileScanTotals, error) {
+	return walkFileBytes(filepath.Join(s.root, "manifests"), func(name string) bool {
+		return !reachable[strings.TrimSuffix(name, ".json")]
+	})
+}
+
+func dirSizeBytes(root string) (int64, error) {
+	t, err := walkFileBytes(root, func(string) bool { return false })
+	return t.totalBytes, err
+}
+
+func fileSizeOrZero(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
+// StatsResult is the exact set of fields STATS_SPEC.md defines for one
+// scan, human-readable field names doubling as stable JSON field names.
+type StatsResult struct {
+	ScopeBucket string `json:"scope_bucket,omitempty"`
+	ScopePrefix string `json:"scope_prefix,omitempty"`
+	ScopeKey    string `json:"scope_key,omitempty"`
+
+	BucketCount         int   `json:"bucket_count"`
+	CurrentObjectCount  int   `json:"current_object_count"`
+	VersionCount        int   `json:"version_count"`
+	LogicalCurrentBytes int64 `json:"logical_current_bytes"`
+	LogicalVersionBytes int64 `json:"logical_version_bytes"`
+
+	LogicalChunkReferenceBytes int64 `json:"logical_chunk_reference_bytes"`
+	LogicalChunkReferenceCount int64 `json:"logical_chunk_reference_count"`
+	ScopeUniqueChunkBytes      int64 `json:"scope_unique_chunk_bytes"`
+	ScopeUniqueChunkCount      int64 `json:"scope_unique_chunk_count"`
+	ScopeExclusiveChunkBytes   int64 `json:"scope_exclusive_chunk_bytes"`
+	ScopeSharedChunkBytes      int64 `json:"scope_shared_chunk_bytes"`
+
+	UniqueReachableChunkBytes int64 `json:"unique_reachable_chunk_bytes"`
+
+	ChunkStoreFileBytes  int64 `json:"chunk_store_file_bytes"`
+	ManifestFileBytes    int64 `json:"manifest_file_bytes"`
+	JournalFileBytes     int64 `json:"journal_file_bytes"`
+	TemporaryFileBytes   int64 `json:"temporary_file_bytes"`
+	ActualStoreFileBytes int64 `json:"actual_store_file_bytes"`
+	ReclaimableBytes     int64 `json:"reclaimable_bytes"`
+
+	DedupAvoidedBytes    int64   `json:"dedup_avoided_bytes"`
+	DedupReduction       float64 `json:"dedup_reduction"`
+	UniqueToLogicalRatio float64 `json:"unique_to_logical_ratio"`
+}
+
+// computeStats performs one exact scan/derivation pass over the store's
+// current namespace and on-disk files for the given scope. It never
+// consults or updates any persisted counter -- every field is derived
+// fresh from the journal-reconstructed namespace and a filesystem walk,
+// per STORAGE_MODEL.md's stats/index guidance.
+func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
+	all := s.snapshotNamespace()
+	bucketSet := map[string]bool{}
+	for _, o := range all {
+		bucketSet[o.bucket] = true
+	}
+	// A bucket can be visible with zero objects; make sure it still
+	// counts toward bucket_count even though it contributes no
+	// namespaceObject rows above.
+	for _, name := range s.bucketNames() {
+		bucketSet[name] = true
+	}
+
+	res := StatsResult{ScopeBucket: sel.bucket, ScopePrefix: sel.prefix, ScopeKey: sel.key}
+	if sel.bucket == "" {
+		res.BucketCount = len(bucketSet)
+	} else if bucketSet[sel.bucket] {
+		res.BucketCount = 1
+	}
+
+	manifestCache := map[string]manifestV1{}
+	loadManifest := func(o namespaceObject) (manifestV1, error) {
+		if m, ok := manifestCache[o.entry.manifestUUID]; ok {
+			return m, nil
+		}
+		m, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256)
+		if err != nil {
+			return manifestV1{}, err
+		}
+		manifestCache[o.entry.manifestUUID] = m
+		return m, nil
+	}
+
+	chunkObs := map[string]*chunkObservation{} // hex sha256 -> observation, store-wide
+	for _, o := range all {
+		inScope := sel.matches(o.bucket, o.key)
+		if inScope {
+			res.CurrentObjectCount++
+			res.LogicalCurrentBytes += o.entry.size
+		}
+		man, err := loadManifest(o)
+		if err != nil {
+			return StatsResult{}, fmt.Errorf("stats: reading manifest for %s/%s: %w", o.bucket, o.key, err)
+		}
+		for _, c := range man.Chunks {
+			ob, ok := chunkObs[c.SHA256]
+			if !ok {
+				ob = &chunkObservation{length: c.Length}
+				chunkObs[c.SHA256] = ob
+			}
+			if inScope {
+				ob.inScope = true
+				res.LogicalChunkReferenceBytes += c.Length
+				res.LogicalChunkReferenceCount++
+			} else {
+				ob.outOfScope = true
+			}
+		}
+	}
+	// No version retention exists under current (M1-M3) semantics -- every
+	// PUT replaces its key's one visible root, and DELETE simply removes
+	// it -- so the only "retained committed version" for any key is its
+	// current one. version_count/logical_version_bytes are therefore
+	// identical to current_object_count/logical_current_bytes; this
+	// becomes a genuinely separate figure only if a future milestone adds
+	// retained-version semantics.
+	res.VersionCount = res.CurrentObjectCount
+	res.LogicalVersionBytes = res.LogicalCurrentBytes
+
+	var uniqueReachableAll int64
+	for _, ob := range chunkObs {
+		uniqueReachableAll += ob.length
+		if ob.inScope {
+			res.ScopeUniqueChunkBytes += ob.length
+			res.ScopeUniqueChunkCount++
+			if ob.outOfScope {
+				res.ScopeSharedChunkBytes += ob.length
+			} else {
+				res.ScopeExclusiveChunkBytes += ob.length
+			}
+		}
+	}
+	res.UniqueReachableChunkBytes = uniqueReachableAll
+
+	if res.LogicalChunkReferenceBytes > 0 {
+		res.DedupAvoidedBytes = res.LogicalChunkReferenceBytes - res.ScopeUniqueChunkBytes
+		res.DedupReduction = float64(res.DedupAvoidedBytes) / float64(res.LogicalChunkReferenceBytes)
+		res.UniqueToLogicalRatio = float64(res.ScopeUniqueChunkBytes) / float64(res.LogicalChunkReferenceBytes)
+	}
+
+	reachableManifests := make(map[string]bool, len(manifestCache))
+	for uuid := range manifestCache {
+		reachableManifests[uuid] = true
+	}
+	reachableChunks := make(map[string]bool, len(chunkObs))
+	for sha := range chunkObs {
+		reachableChunks[sha] = true
+	}
+
+	chunkScan, err := s.scanChunkFiles(reachableChunks)
+	if err != nil {
+		return StatsResult{}, fmt.Errorf("stats: scanning chunks: %w", err)
+	}
+	manifestScan, err := s.scanManifestFiles(reachableManifests)
+	if err != nil {
+		return StatsResult{}, fmt.Errorf("stats: scanning manifests: %w", err)
+	}
+	journalBytes, err := fileSizeOrZero(filepath.Join(s.root, "journal", "visibility.log"))
+	if err != nil {
+		return StatsResult{}, fmt.Errorf("stats: scanning journal: %w", err)
+	}
+	tmpBytes, err := dirSizeBytes(filepath.Join(s.root, "tmp"))
+	if err != nil {
+		return StatsResult{}, fmt.Errorf("stats: scanning tmp: %w", err)
+	}
+	formatBytes, err := fileSizeOrZero(filepath.Join(s.root, "FORMAT.json"))
+	if err != nil {
+		return StatsResult{}, fmt.Errorf("stats: scanning FORMAT.json: %w", err)
+	}
+
+	res.ChunkStoreFileBytes = chunkScan.totalBytes
+	res.ManifestFileBytes = manifestScan.totalBytes
+	res.JournalFileBytes = journalBytes
+	res.TemporaryFileBytes = tmpBytes
+	res.ActualStoreFileBytes = chunkScan.totalBytes + manifestScan.totalBytes + journalBytes + tmpBytes + formatBytes
+	// Every extra chunk/manifest byte here is exactly classified: it
+	// belongs to a file whose digest/UUID is not in the reachable set
+	// computed above, not a naive "store bytes minus unique bytes"
+	// subtraction (STATS_SPEC.md's explicit warning against that
+	// shortcut). tmp/ is always reclaimable: it is same-store staging
+	// space only, never referenced by any committed manifest/journal
+	// record (see STORAGE_MODEL.md's publication model).
+	res.ReclaimableBytes = chunkScan.unreachableBytes + manifestScan.unreachableBytes + tmpBytes
+
+	return res, nil
+}
+
+// =============================================================================
+// 13. Verify
+//
+// verify never repairs or deletes anything -- it only reports. It runs
+// against a private snapshot of the namespace (snapshotNamespace), the
+// same concurrency policy already proven for ListObjectsV2 and stats, so
+// a concurrent PUT/DELETE cannot make verify observe a torn view of what
+// it is checking. Default (non-deep) verification checks structure,
+// references, and lengths cheaply; deep verification additionally
+// re-hashes every reachable chunk's actual bytes.
+// =============================================================================
+
+type VerifyIssue struct {
+	Kind    string `json:"kind"` // "missing" | "corrupt" | "invalid"
+	Subject string `json:"subject"`
+	Detail  string `json:"detail"`
+}
+
+type VerifyResult struct {
+	Deep bool `json:"deep"`
+
+	JournalFramesChecked int  `json:"journal_frames_checked"`
+	JournalOK            bool `json:"journal_ok"`
+
+	ManifestsChecked int `json:"manifests_checked"`
+	ChunksChecked    int `json:"chunks_checked"`
+
+	Missing int `json:"missing"`
+	Corrupt int `json:"corrupt"`
+	Invalid int `json:"invalid"`
+
+	UnreachableManifests int   `json:"unreachable_manifests"`
+	UnreachableChunks    int   `json:"unreachable_chunks"`
+	ReclaimableBytes     int64 `json:"reclaimable_bytes"`
+
+	Issues []VerifyIssue `json:"issues"`
+}
+
+// OK reports whether verify found zero integrity failures. Unreachable/
+// reclaimable garbage is not by itself a failure -- it is expected under
+// the "deletion changes roots, not chunks" model -- so it never affects
+// OK(); only Missing/Corrupt/Invalid and journal replay do.
+func (r VerifyResult) OK() bool {
+	return r.Missing == 0 && r.Corrupt == 0 && r.Invalid == 0 && r.JournalOK
+}
+
+func (r *VerifyResult) addIssue(kind, subject, detail string) {
+	switch kind {
+	case "missing":
+		r.Missing++
+	case "corrupt":
+		r.Corrupt++
+	case "invalid":
+		r.Invalid++
+	}
+	r.Issues = append(r.Issues, VerifyIssue{Kind: kind, Subject: subject, Detail: detail})
+}
+
+// Verify runs the essential verify contract: store/journal structural
+// checks, per-reachable-manifest checks, and chunk checks (basic by
+// default, byte-for-byte re-hashed when deep is true). It returns a
+// non-nil error only for a fatal scan failure (e.g. the journal file
+// can't be opened at all); ordinary integrity problems are reported as
+// Issues in the result, which the caller inspects via VerifyResult.OK().
+func (s *Store) Verify(deep bool) (VerifyResult, error) {
+	res := VerifyResult{Deep: deep}
+
+	// --- Store / journal ---
+	if s.format.StoreFormatVersion != storeFormatVersion ||
+		s.format.CDCFormatVersion != cdcFormatVersion ||
+		s.format.HashAlgorithm != "sha256" {
+		res.addIssue("invalid", "FORMAT.json", "unsupported store/CDC format version or hash algorithm")
+	}
+	jf, err := os.Open(filepath.Join(s.root, "journal", "visibility.log"))
+	if err != nil {
+		return res, fmt.Errorf("verify: opening journal: %w", err)
+	}
+	_, _, records, jerr := replayJournal(jf)
+	jf.Close()
+	if jerr != nil {
+		res.addIssue("corrupt", "journal/visibility.log", jerr.Error())
+	} else {
+		res.JournalOK = true
+	}
+	res.JournalFramesChecked = len(records)
+
+	// --- Namespace snapshot: exactly what "reachable" means today (no
+	// version retention yet, so the only reachable roots are current
+	// ones -- see the identical note in computeStats). ---
+	all := s.snapshotNamespace()
+	reachableManifests := map[string]bool{}
+	reachableChunks := map[string]bool{}
+	manifestCache := map[string]manifestV1{}
+
+	for _, o := range all {
+		subject := o.bucket + "/" + o.key
+		man, ok := manifestCache[o.entry.manifestUUID]
+		if !ok {
+			path := filepath.Join(s.root, "manifests", o.entry.manifestUUID+".json")
+			data, rerr := os.ReadFile(path)
+			if rerr != nil {
+				if os.IsNotExist(rerr) {
+					res.addIssue("missing", subject, "manifest file "+o.entry.manifestUUID+".json does not exist")
+				} else {
+					res.addIssue("invalid", subject, rerr.Error())
+				}
+				continue
+			}
+			gotSum := sha256.Sum256(data)
+			if gotSum != o.entry.manifestSHA256 {
+				res.addIssue("corrupt", subject, "manifest file sha256 does not match the journal reference")
+				continue
+			}
+			if uerr := json.Unmarshal(data, &man); uerr != nil {
+				res.addIssue("invalid", subject, "manifest json does not parse: "+uerr.Error())
+				continue
+			}
+			if man.ManifestFormatVersion != manifestFormatVersion || man.CDCFormatVersion != cdcFormatVersion || man.HashAlgorithm != "sha256" {
+				res.addIssue("invalid", subject, "manifest declares an unsupported format/CDC/hash version")
+				continue
+			}
+			var sum int64
+			validRefs := true
+			for _, c := range man.Chunks {
+				if _, herr := decodeHexSHA256(c.SHA256); herr != nil {
+					res.addIssue("invalid", subject, "manifest chunk reference has malformed sha256: "+c.SHA256)
+					validRefs = false
+					continue
+				}
+				if c.Length < 0 {
+					res.addIssue("invalid", subject, "manifest chunk reference has a negative length")
+					validRefs = false
+					continue
+				}
+				sum += c.Length
+			}
+			if validRefs && sum != man.TotalLength {
+				res.addIssue("invalid", subject, fmt.Sprintf("manifest chunk lengths sum to %d, want total_length %d", sum, man.TotalLength))
+			}
+			manifestCache[o.entry.manifestUUID] = man
+			res.ManifestsChecked++
+		}
+		reachableManifests[o.entry.manifestUUID] = true
+		for _, c := range man.Chunks {
+			reachableChunks[c.SHA256] = true
+		}
+	}
+
+	// --- Chunks referenced by every reachable manifest ---
+	checkedChunk := map[string]bool{}
+	for _, man := range manifestCache {
+		for _, c := range man.Chunks {
+			if checkedChunk[c.SHA256] {
+				continue
+			}
+			checkedChunk[c.SHA256] = true
+			res.ChunksChecked++
+			sum, herr := decodeHexSHA256(c.SHA256)
+			if herr != nil {
+				res.addIssue("invalid", "chunk "+c.SHA256, herr.Error())
+				continue
+			}
+			path := s.chunkPath(sum)
+			info, serr := os.Stat(path)
+			if serr != nil {
+				if os.IsNotExist(serr) {
+					res.addIssue("missing", "chunk "+c.SHA256, "chunk file does not exist")
+				} else {
+					res.addIssue("invalid", "chunk "+c.SHA256, serr.Error())
+				}
+				continue
+			}
+			if info.Size() != c.Length {
+				res.addIssue("corrupt", "chunk "+c.SHA256, fmt.Sprintf("file length %d does not match manifest length %d", info.Size(), c.Length))
+				continue
+			}
+			if deep {
+				data, rerr := os.ReadFile(path)
+				if rerr != nil {
+					res.addIssue("missing", "chunk "+c.SHA256, rerr.Error())
+					continue
+				}
+				if got := sha256.Sum256(data); got != sum {
+					res.addIssue("corrupt", "chunk "+c.SHA256, "content hash does not match its content-addressed name")
+				}
+			}
+		}
+	}
+
+	// --- Unreachable/reclaimable accounting (informational, not a failure) ---
+	chunkScan, serr := s.scanChunkFiles(reachableChunks)
+	if serr != nil {
+		return res, fmt.Errorf("verify: scanning chunks: %w", serr)
+	}
+	manifestScan, merr := s.scanManifestFiles(reachableManifests)
+	if merr != nil {
+		return res, fmt.Errorf("verify: scanning manifests: %w", merr)
+	}
+	tmpBytes, terr := dirSizeBytes(filepath.Join(s.root, "tmp"))
+	if terr != nil {
+		return res, fmt.Errorf("verify: scanning tmp: %w", terr)
+	}
+	res.UnreachableManifests = manifestScan.unreachableCount
+	res.UnreachableChunks = chunkScan.unreachableCount
+	res.ReclaimableBytes = chunkScan.unreachableBytes + manifestScan.unreachableBytes + tmpBytes
+
+	return res, nil
+}
+
+// =============================================================================
+// 14. Single-range GET
+//
+// A Range request is answered by walking the manifest's chunk length
+// list to find exactly the CAS chunks that overlap the requested logical
+// interval, and reading only those -- never reconstructing the whole
+// object first and slicing it, so memory/IO for a range read is bounded
+// by the range size (plus at most the two boundary chunks), not by
+// object size.
+// =============================================================================
+
+// byteRange is an inclusive, 0-based logical byte interval.
+type byteRange struct{ start, end int64 }
+
+// parseRangeSpec parses a single "bytes=..." Range header value against
+// an object of the given size. Multi-range requests (a comma-separated
+// spec) are intentionally unsupported in M3 and are treated exactly like
+// a header that doesn't parse: ok=false with satisfiable=false, which
+// tells the caller to ignore Range entirely and serve the full object --
+// RFC 7233 explicitly allows a server to do this for range forms it
+// doesn't support, rather than rejecting the request outright. A range
+// that parses fine but shares no bytes with the object (e.g. start at or
+// past size, or a zero-length suffix) reports ok=true, satisfiable=false,
+// which the caller must answer with 416.
+func parseRangeSpec(header string, size int64) (rng byteRange, ok, satisfiable bool) {
+	const prefix = "bytes="
+	if !strings.HasPrefix(header, prefix) {
+		return byteRange{}, false, false
+	}
+	spec := strings.TrimPrefix(header, prefix)
+	if strings.Contains(spec, ",") {
+		return byteRange{}, false, false // multi-range: unsupported, ignore
+	}
+	dash := strings.IndexByte(spec, '-')
+	if dash < 0 {
+		return byteRange{}, false, false
+	}
+	startStr, endStr := spec[:dash], spec[dash+1:]
+
+	if startStr == "" {
+		// Suffix range: "bytes=-N" means the last N bytes.
+		n, err := strconv.ParseInt(endStr, 10, 64)
+		if err != nil || n < 0 {
+			return byteRange{}, false, false
+		}
+		if n == 0 || size == 0 {
+			return byteRange{}, true, false
+		}
+		start := size - n
+		if start < 0 {
+			start = 0
+		}
+		return byteRange{start: start, end: size - 1}, true, true
+	}
+
+	start, err := strconv.ParseInt(startStr, 10, 64)
+	if err != nil || start < 0 {
+		return byteRange{}, false, false
+	}
+	if size == 0 || start >= size {
+		return byteRange{}, true, false
+	}
+	if endStr == "" {
+		return byteRange{start: start, end: size - 1}, true, true
+	}
+	end, err := strconv.ParseInt(endStr, 10, 64)
+	if err != nil || end < start {
+		return byteRange{}, false, false
+	}
+	if end >= size { // clamp end to the object's actual length
+		end = size - 1
+	}
+	return byteRange{start: start, end: end}, true, true
+}
+
+// readManifestRange reconstructs exactly [rng.start, rng.end] (inclusive)
+// of the object man describes, reading only the CAS chunks that overlap
+// that interval.
+func (s *Store) readManifestRange(man manifestV1, rng byteRange) ([]byte, error) {
+	out := make([]byte, 0, rng.end-rng.start+1)
+	var offset int64
+	for _, c := range man.Chunks {
+		chunkStart := offset
+		chunkEnd := offset + c.Length - 1 // inclusive
+		offset += c.Length
+		if chunkEnd < rng.start {
+			continue
+		}
+		if chunkStart > rng.end {
+			break
+		}
+		sum, err := decodeHexSHA256(c.SHA256)
+		if err != nil {
+			return nil, err
+		}
+		data, err := s.casRead(sum)
+		if err != nil {
+			return nil, fmt.Errorf("chunk read failed: %w", err)
+		}
+		if int64(len(data)) != c.Length {
+			return nil, fmt.Errorf("chunk %s: length mismatch", c.SHA256)
+		}
+		lo := int64(0)
+		if rng.start > chunkStart {
+			lo = rng.start - chunkStart
+		}
+		hi := c.Length
+		if rng.end < chunkEnd {
+			hi = rng.end - chunkStart + 1
+		}
+		out = append(out, data[lo:hi]...)
+	}
+	if int64(len(out)) != rng.end-rng.start+1 {
+		return nil, fmt.Errorf("range reconstruction length mismatch")
+	}
+	return out, nil
+}
+
+// GetObjectRange resolves bucket/key and reconstructs only the requested
+// byte range, never the whole object.
+func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry, manifestV1, []byte, error) {
+	obj, err := s.lookupObject(bucket, key)
+	if err != nil {
+		return nil, manifestV1{}, nil, err
+	}
+	man, err := s.readVerifiedManifest(obj.manifestUUID, obj.manifestSHA256)
+	if err != nil {
+		return nil, manifestV1{}, nil, err
+	}
+	data, err := s.readManifestRange(man, rng)
+	if err != nil {
+		return nil, manifestV1{}, nil, err
+	}
+	return obj, man, data, nil
+}
+
+// =============================================================================
+// 15. CLI: stats / verify
+//
+// Compact verbs; stdout carries the requested result/data, stderr carries
+// diagnostics, and a nonzero exit reports incomplete/failed work -- per
+// CLI_SPEC.md. `serve` is both the default command (so the existing
+// `zeros3 -store DIR -addr ADDR` invocation form keeps working unchanged)
+// and an explicit one (`zeros3 serve -store DIR -addr ADDR`).
+// =============================================================================
+
+func printStatsHuman(w io.Writer, r StatsResult) {
+	scope := "(whole store)"
+	switch {
+	case r.ScopeKey != "":
+		scope = r.ScopeBucket + "/" + r.ScopeKey
+	case r.ScopePrefix != "":
+		scope = r.ScopeBucket + "/" + r.ScopePrefix + "*"
+	case r.ScopeBucket != "":
+		scope = r.ScopeBucket
+	}
+	fmt.Fprintf(w, "ZeroS3 stats\n")
+	fmt.Fprintf(w, "scope            %s\n", scope)
+	fmt.Fprintf(w, "buckets          %d\n", r.BucketCount)
+	fmt.Fprintf(w, "objects          %d current | %d versions\n", r.CurrentObjectCount, r.VersionCount)
+	fmt.Fprintf(w, "logical          %d bytes current | %d bytes versions\n", r.LogicalCurrentBytes, r.LogicalVersionBytes)
+	fmt.Fprintf(w, "chunk refs       %d refs (%d bytes) | %d unique (%d bytes)\n",
+		r.LogicalChunkReferenceCount, r.LogicalChunkReferenceBytes, r.ScopeUniqueChunkCount, r.ScopeUniqueChunkBytes)
+	fmt.Fprintf(w, "sharing          %d bytes exclusive | %d bytes shared outside scope\n", r.ScopeExclusiveChunkBytes, r.ScopeSharedChunkBytes)
+	fmt.Fprintf(w, "dedup            %d bytes avoided | %.1f%% reduction | %.3f unique/logical\n",
+		r.DedupAvoidedBytes, r.DedupReduction*100, r.UniqueToLogicalRatio)
+	fmt.Fprintf(w, "unique reachable %d bytes (store-global)\n", r.UniqueReachableChunkBytes)
+	fmt.Fprintf(w, "store files      %d bytes chunks | %d bytes manifests | %d bytes journal | %d bytes temp\n",
+		r.ChunkStoreFileBytes, r.ManifestFileBytes, r.JournalFileBytes, r.TemporaryFileBytes)
+	fmt.Fprintf(w, "actual/reclaim   %d bytes actual | %d bytes reclaimable\n", r.ActualStoreFileBytes, r.ReclaimableBytes)
+}
+
+func printVerifyHuman(w io.Writer, r VerifyResult) {
+	mode := "basic"
+	if r.Deep {
+		mode = "deep"
+	}
+	fmt.Fprintf(w, "ZeroS3 verify (%s)\n", mode)
+	fmt.Fprintf(w, "journal          %d frames checked | ok=%v\n", r.JournalFramesChecked, r.JournalOK)
+	fmt.Fprintf(w, "manifests        %d checked\n", r.ManifestsChecked)
+	fmt.Fprintf(w, "chunks           %d checked\n", r.ChunksChecked)
+	fmt.Fprintf(w, "integrity        %d missing | %d corrupt | %d invalid\n", r.Missing, r.Corrupt, r.Invalid)
+	fmt.Fprintf(w, "reclaimable      %d unreachable manifests | %d unreachable chunks | %d bytes\n",
+		r.UnreachableManifests, r.UnreachableChunks, r.ReclaimableBytes)
+	for _, iss := range r.Issues {
+		fmt.Fprintf(w, "  %s: %s: %s\n", iss.Kind, iss.Subject, iss.Detail)
+	}
+	if r.OK() {
+		fmt.Fprintln(w, "result           OK")
+	} else {
+		fmt.Fprintln(w, "result           FAILED")
+	}
+}
+
+func runServe(args []string) {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	addr := fs.String("addr", "127.0.0.1:9000", "listen address")
+	fs.Parse(args)
 
 	store, err := OpenStore(*storeDir)
 	if err != nil {
@@ -2263,4 +3250,98 @@ func main() {
 	httpServer := &http.Server{Addr: *addr, Handler: srv}
 	log.Printf("zeros3: listening on %s (store=%s)", *addr, *storeDir)
 	log.Fatal(httpServer.ListenAndServe())
+}
+
+func runStats(args []string) {
+	fs := flag.NewFlagSet("stats", flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	bucket := fs.String("bucket", "", "limit to one bucket")
+	prefix := fs.String("prefix", "", "limit to keys under this prefix (requires -bucket)")
+	key := fs.String("key", "", "limit to one exact object key (requires -bucket)")
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	fs.Parse(args)
+
+	if (*prefix != "" || *key != "") && *bucket == "" {
+		fmt.Fprintln(os.Stderr, "zeros3: -prefix/-key require -bucket")
+		os.Exit(2)
+	}
+
+	store, err := OpenStore(*storeDir)
+	if err != nil {
+		log.Fatalf("zeros3: failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	res, err := store.computeStats(statsScope{bucket: *bucket, prefix: *prefix, key: *key})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: stats failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			log.Fatalf("zeros3: %v", err)
+		}
+		return
+	}
+	printStatsHuman(os.Stdout, res)
+}
+
+func runVerify(args []string) {
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	deep := fs.Bool("deep", false, "re-hash every reachable chunk's actual bytes")
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	fs.Parse(args)
+
+	store, err := OpenStore(*storeDir)
+	if err != nil {
+		log.Fatalf("zeros3: failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	res, err := store.Verify(*deep)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: verify failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			log.Fatalf("zeros3: %v", err)
+		}
+	} else {
+		printVerifyHuman(os.Stdout, res)
+	}
+	if !res.OK() {
+		os.Exit(1)
+	}
+}
+
+// =============================================================================
+// 16. Lifecycle / main
+// =============================================================================
+
+func main() {
+	args := os.Args[1:]
+	cmd := "serve"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		cmd = args[0]
+		args = args[1:]
+	}
+	switch cmd {
+	case "serve":
+		runServe(args)
+	case "stats":
+		runStats(args)
+	case "verify":
+		runVerify(args)
+	default:
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, or verify)\n", cmd)
+		os.Exit(2)
+	}
 }
