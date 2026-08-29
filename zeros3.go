@@ -1760,6 +1760,38 @@ func validateCRC32Header(r *http.Request, body []byte) error {
 	return nil
 }
 
+// validateContentMD5Header checks the ordinary (non-chunked) Content-MD5
+// request header, if present, against the logical request payload bytes. A
+// missing header is not an error -- like x-amz-checksum-crc32, Content-MD5
+// validation is opt-in per request. This is deliberately a separate check
+// from validateCRC32Header: Content-MD5 is a distinct client-integrity
+// mechanism (independent of CRC32, SigV4's x-amz-content-sha256 payload
+// hash, CAS chunk SHA-256, object_sha256, and the MD5-based single-part
+// ETag), and a request may legally carry either header, both, or neither.
+// A malformed value (not valid base64, or valid base64 that doesn't decode
+// to exactly 16 bytes -- MD5's digest length) is reported as InvalidDigest,
+// distinct from BadDigest for a well-formed digest that simply doesn't
+// match, matching real S3's error-code split between the two failure
+// modes.
+func validateContentMD5Header(r *http.Request, body []byte) error {
+	h := r.Header.Get("Content-MD5")
+	if h == "" {
+		return nil
+	}
+	declared, err := base64.StdEncoding.DecodeString(h)
+	if err != nil {
+		return &authError{code: "InvalidDigest", msg: "the Content-MD5 you specified is not valid base64"}
+	}
+	if len(declared) != md5.Size {
+		return &authError{code: "InvalidDigest", msg: "the Content-MD5 you specified is not a valid MD5 digest"}
+	}
+	got := md5.Sum(body) //nolint:gosec // S3-compatible request integrity check, not a security use of MD5.
+	if !bytes.Equal(got[:], declared) {
+		return &authError{code: "BadDigest", msg: "the Content-MD5 you specified did not match what we received"}
+	}
+	return nil
+}
+
 type s3ErrorBody struct {
 	XMLName  xml.Name `xml:"Error"`
 	Code     string   `xml:"Code"`
@@ -1986,6 +2018,16 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := validateCRC32Header(r, body); err != nil {
+		var ae *authError
+		if errors.As(err, &ae) {
+			writeS3Error(w, ae.code, ae.msg, rawPath)
+		} else {
+			writeS3Error(w, "InvalidRequest", err.Error(), rawPath)
+		}
+		return
+	}
+
+	if err := validateContentMD5Header(r, body); err != nil {
 		var ae *authError
 		if errors.As(err, &ae) {
 			writeS3Error(w, ae.code, ae.msg, rawPath)

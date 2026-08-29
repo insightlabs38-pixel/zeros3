@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -1496,6 +1497,141 @@ func TestCRC32_FailedChecksumLeavesNoVisibleObject(t *testing.T) {
 	getResp.Body.Close()
 	if getResp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected the object to not exist after a failed checksum, got status %d", getResp.StatusCode)
+	}
+}
+
+// =============================================================================
+// Content-MD5 tests
+// =============================================================================
+
+func TestContentMD5_ValidAccepted(t *testing.T) {
+	body := []byte("content-md5 test payload")
+	sum := md5.Sum(body) //nolint:gosec // test-only use, matching the request-integrity role under test.
+	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
+	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(sum[:]))
+	if err := validateContentMD5Header(req, body); err != nil {
+		t.Fatalf("expected a valid Content-MD5 to be accepted: %v", err)
+	}
+}
+
+func TestContentMD5_MissingHeaderUnchangedBehavior(t *testing.T) {
+	body := []byte("no content-md5 header at all")
+	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
+	if err := validateContentMD5Header(req, body); err != nil {
+		t.Fatalf("expected ordinary PUTs without Content-MD5 to remain unaffected: %v", err)
+	}
+}
+
+func TestContentMD5_MismatchedRejectedAsBadDigest(t *testing.T) {
+	body := []byte("content-md5 test payload")
+	wrong := md5.Sum([]byte("a completely different payload")) //nolint:gosec // test-only.
+	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
+	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(wrong[:]))
+	err := validateContentMD5Header(req, body)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "BadDigest" {
+		t.Fatalf("expected a well-formed but mismatched Content-MD5 to be rejected as BadDigest, got %v", err)
+	}
+}
+
+func TestContentMD5_MalformedBase64RejectedAsInvalidDigest(t *testing.T) {
+	body := []byte("content-md5 test payload")
+	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
+	req.Header.Set("Content-MD5", "not-valid-base64!!!")
+	err := validateContentMD5Header(req, body)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "InvalidDigest" {
+		t.Fatalf("expected malformed base64 to be rejected as InvalidDigest, got %v", err)
+	}
+}
+
+func TestContentMD5_WrongLengthDecodedDigestRejectedAsInvalidDigest(t *testing.T) {
+	body := []byte("content-md5 test payload")
+	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
+	// Valid base64, but it decodes to far fewer than the 16 bytes an MD5
+	// digest requires -- must be distinguished from a well-formed digest
+	// that simply doesn't match.
+	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString([]byte("short")))
+	err := validateContentMD5Header(req, body)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "InvalidDigest" {
+		t.Fatalf("expected a wrong-length decoded digest to be rejected as InvalidDigest, got %v", err)
+	}
+}
+
+func TestContentMD5_CoexistsWithValidCRC32(t *testing.T) {
+	body := []byte("both checksums present and correct")
+	sum := md5.Sum(body) //nolint:gosec // test-only.
+	crcBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(crcBytes, crc32.ChecksumIEEE(body))
+	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
+	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(sum[:]))
+	req.Header.Set("x-amz-checksum-crc32", base64.StdEncoding.EncodeToString(crcBytes))
+	if err := validateCRC32Header(req, body); err != nil {
+		t.Fatalf("expected valid crc32 to still pass alongside Content-MD5: %v", err)
+	}
+	if err := validateContentMD5Header(req, body); err != nil {
+		t.Fatalf("expected valid Content-MD5 to still pass alongside crc32: %v", err)
+	}
+}
+
+func TestContentMD5_FailedDigestLeavesNoVisibleObjectOverRealHTTP(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	if err := doCreateBucket(t, client, ts.URL, signer, "bucket1"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte("this will fail its content-md5 check")
+	wrong := md5.Sum([]byte("mismatched payload")) //nolint:gosec // test-only.
+
+	req := mustSignedRequest(t, signer, http.MethodPut, ts.URL+"/bucket1/mdkey", body)
+	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(wrong[:]))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("expected a Content-MD5 mismatch to be rejected, got 200")
+	}
+
+	getResp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/bucket1/mdkey", nil, nil)
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected the object to not exist after a failed Content-MD5 check, got status %d", getResp.StatusCode)
+	}
+}
+
+func TestContentMD5_ValidPUTOverRealHTTPSucceedsAndETagUnaffected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	if err := doCreateBucket(t, client, ts.URL, signer, "bucket1"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte("ordinary single-part object body for etag comparison")
+	sum := md5.Sum(body) //nolint:gosec // test-only.
+
+	req := mustSignedRequest(t, signer, http.MethodPut, ts.URL+"/bucket1/etagkey", body)
+	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(sum[:]))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected a valid Content-MD5 PUT to succeed, got status %d", resp.StatusCode)
+	}
+	wantETag := fmt.Sprintf("%q", hex.EncodeToString(sum[:]))
+	if got := resp.Header.Get("ETag"); got != wantETag {
+		t.Fatalf("expected ordinary single-part ETag behavior to be unaffected by Content-MD5, got %q want %q", got, wantETag)
 	}
 }
 
