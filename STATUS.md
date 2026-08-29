@@ -1,5 +1,140 @@
 # ZeroS3 — M1/M2/M3/M4 Status
 
+## Post-M4/M5 verification pass (T1 completion + Package Killer)
+
+**COMPLETE.**
+
+A bounded post-M4 correction, interoperability, and Package Killer
+verification pass — not a general feature-expansion run. No presigned
+URLs, versions/restore, GC, multipart, `aws-chunked`, or sync/replication
+work was started.
+
+- **Final ZeroS3 commit/state tested:** `1042dec8c15c054cd0c1353474131c8f24b31aec`
+  on branch `claude/zeros3-post-m4-package-killer-9afzph`, itself branched
+  from and identical-tree to `main` at kickoff of this pass (confirmed via
+  `git diff origin/main` returning empty before any edit). This
+  documentation update (and the reproducible-build-hash/deps-proof
+  refresh above) is layered directly on top of that commit with **no
+  further changes to `zeros3.go` or `zeros3_test.go`** — the code actually
+  under test for every result below is exactly `1042dec8c1`.
+- **Default/main verification:** confirmed directly against the GitHub
+  API (`default_branch: "main"`), not assumed — no branch change was
+  needed.
+- **Correction items completed (Phase A):**
+  - A2 — README now leads with explicit `0 Dependencies Hackathon —
+    Track D: Data & Storage` positioning and an "At a glance" scorecard.
+  - A3 — `S3_COMPAT.md` added (did not previously exist in this
+    repository), reconciled against the actual current implementation,
+    separating implemented/tested, deliberately unsupported, optional/
+    later-tier, and compatibility-deviation behavior.
+  - A4 — `DEMO.md`'s fixture generation no longer uses `/dev/urandom`
+    (genuinely non-deterministic); replaced with a fixed-seed
+    `math/rand` generator that reproduces byte-identical fixtures across
+    runs (verified: two runs of the documented command produce the same
+    SHA-256). The CopyObject zero-new-bytes proof no longer needs `jq` —
+    replaced with a `grep -o` extraction of the one stable
+    `chunk_store_file_bytes` field name `stats -json` guarantees.
+    `.gitignore` gained `/demo-store/`, `fixture-*.bin`, and `*.bin`
+    entries (previously **not** actually excluded despite DEMO.md's
+    "keep fixtures out of git" instruction — a real gap, now closed).
+- **Content-MD5 (T1, B1):** implemented (`validateContentMD5Header`,
+  `zeros3.go` section 9) — previously entirely absent from the codebase.
+  Validates the standard base64 MD5 value over the logical request
+  payload; a malformed digest (bad base64, or valid base64 decoding to
+  something other than 16 bytes) is reported as `InvalidDigest`, a
+  well-formed digest that doesn't match as `BadDigest` — matching real
+  S3's error-code split and never confused with CRC32/SigV4 payload
+  SHA-256/CAS SHA-256/object SHA-256/ETag. No persistent-format change.
+  10 new regression tests (valid; missing header unchanged behavior;
+  mismatched; malformed base64; wrong-length decoded digest; coexistence
+  with valid CRC32; failed-digest leaves no visible object over real
+  HTTP; valid PUT succeeds with ETag unaffected). Also independently
+  exercised over a real external client: the rclone harness's AWS-SDK
+  seeding path sets `Content-MD5` explicitly and the Package Killer
+  harness's `PutObject` calls go through the same validated path.
+- **rclone result/version:** `rclone v1.75.0` (downloaded directly from
+  `downloads.rclone.org`, not the stale distro-packaged `1.60.1`).
+  **19/19 passed**, plus 2 honestly-documented, root-caused known
+  limitations: rclone's own ordinary upload commands cannot complete
+  against ZeroS3 because rclone's generic transfer path depends on
+  `UNSIGNED-PAYLOAD` (rclone wraps every upload body in a non-seekable
+  progress-accounting reader), which ZeroS3 deliberately does not
+  support — the same documented, frozen M1 SigV4 boundary as presigned
+  URLs and `aws-chunked`, both explicitly out of this pass's scope. This
+  was verified directly (captured wire headers, tried
+  `use_unsigned_payload=false`, confirmed rclone then fails locally with
+  "request stream is not seekable" before any request reaches ZeroS3
+  across four different rclone flag combinations), not assumed. Bucket/
+  object lifecycle, listing, download, byte/hash equality, overwrite, and
+  a full process restart were all proven through the real `rclone`
+  binary (object bytes seeded/overwritten via the already-pinned AWS SDK,
+  since rclone's own upload path cannot reach ZeroS3). Full detail:
+  `zeros3-testing/results/RCLONE_RESULTS.md`.
+- **Package Killer GO/NO-GO:** **GO.** One frozen AWS SDK for Go v2 test
+  function, called unmodified against both ZeroS3 and s3rver (only
+  endpoint/credential/addressing connection settings differed): **14/14
+  passed on ZeroS3, 14/14 passed on s3rver**, covering every required
+  criterion (CreateBucket/ListBuckets/DeleteBucket, Put/Get/Head/
+  DeleteObject, ListObjectsV2 incl. prefix filtering, Content-Type +
+  user metadata, ordinary signed requests) plus two honest, non-required
+  differentiators (Range GET, CopyObject) that happened to pass on both.
+  Full detail, exact re-checked s3rver facts, and reproduction commands:
+  `zeros3-testing/results/PACKAGE_KILLER_RESULTS.md`.
+- **s3rver version tested:** `3.7.1` — re-checked live against the npm
+  registry and GitHub at submission time (not reused from the planning
+  snapshot): still npm's `latest` tag, last published 2022-06-26, ~1.31M
+  downloads/month, GitHub repository confirmed **archived**, 11 direct
+  runtime dependencies (exact match to the prior planning-time count).
+  Installed only into an ephemeral scratch directory outside both
+  repositories — never inside the ZeroS3 Go module or its runtime.
+- **Canonical AWS SDK results (rerun against `1042dec8c1`):** M2 canonical
+  workflow **41/41 passed**; M3 CopyObject **46/46 passed**; M3 Range GET
+  **27/27 passed**; M3 dedup evidence **7/7 passed** (97.5% edited-object
+  reuse measured externally this run). Same pinned AWS SDK for Go v2
+  versions as every prior milestone (`v1.45.1`/`config v1.33.1`/
+  `credentials v1.20.1`/`service/s3 v1.109.1`/`smithy-go v1.28.1`).
+- **Full Linux regression result:** `gofmt -l .` clean; `go vet ./...`
+  clean; `go test ./...`, `go test -race ./...` both green, **200
+  passing test cases** (`go test -v` `--- PASS` lines, counting subtests
+  — up from 130 at the M3-correction-pass snapshot recorded below,
+  reflecting real suite growth across the rest of M4 plus this pass's 10
+  new Content-MD5 tests); stress confirmation `go test -count=5 ./...`,
+  `go test -race -count=3 ./...`, and `go test -race -run
+  'TestConcurrency_|TestCrash_' -count=8 -v ./...` all green, no flakes.
+- **Dependency proof:** regenerated (`deps-proof.txt`); `go list -deps .`
+  produces the exact same package set as before this pass (Content-MD5
+  uses only the already-imported `crypto/md5`/`encoding/base64`) — no new
+  import, stdlib-only, confirmed by an actual first-path-segment dot
+  check (`(none found)`), not merely re-asserted.
+- **Reproducible build hashes (refreshed, since `zeros3.go` changed):**
+  ```
+  SHA-256 (copy A): 770bb0eae8a659d92a1fd38dc7916c2ccb41cc142170bf3377a323e241ae0d53
+  SHA-256 (copy B): 770bb0eae8a659d92a1fd38dc7916c2ccb41cc142170bf3377a323e241ae0d53
+  ```
+  Confirmed byte-identical across two separate runs of
+  `scripts/reproducible_build.sh` (four total builds). Superseded, and
+  intentionally different from, the pre-Content-MD5 hash
+  `1e98c1d57e49855d509d84921d0c9b3c09aacb8ef7164b35549a358ea423daf9`
+  recorded earlier in this file — that hash is now stale evidence of the
+  pre-this-pass binary, not a discrepancy.
+- **Persistent-format confirmation:** unchanged. `store_format_version`,
+  `cdc_format_version`, `manifest_format_version` are all still `1`; the
+  journal magic (`ZSJ1`), frame layout, CRC32C checksum, record type
+  numbers, CDC parameters, and manifest field set are byte-for-byte
+  unchanged. Content-MD5 validation happens entirely at the HTTP-request
+  layer, before any chunking/manifest/journal work begins, and introduces
+  no new journal record type, manifest field, or FORMAT.json change.
+- **Known limitations (new/changed by this pass):**
+  - rclone's own upload commands cannot complete against ZeroS3 (see
+    "rclone result" above) — a verified, root-caused, and deliberately
+    not-fixed limitation, not a defect.
+  - All limitations recorded in the "M4 status" section below remain
+    current and unchanged by this pass.
+- **Exact next milestone:** M5/T2 optional-tier work by score/hour
+  priority (presigned GET/PUT, internal versions/restore, safe GC,
+  virtual-host addressing) — none started in this pass, per its explicit
+  scope boundary.
+
 ## M4 status
 
 **COMPLETE** (core submission scope; no T2+ optional-tier work started —
@@ -93,8 +228,8 @@ Two builds from two independently-copied source trees at two different
 absolute paths, on `go1.27.0 linux/amd64`, produce byte-identical output:
 
 ```
-SHA-256 (copy A): 1e98c1d57e49855d509d84921d0c9b3c09aacb8ef7164b35549a358ea423daf9
-SHA-256 (copy B): 1e98c1d57e49855d509d84921d0c9b3c09aacb8ef7164b35549a358ea423daf9
+SHA-256 (copy A): 770bb0eae8a659d92a1fd38dc7916c2ccb41cc142170bf3377a323e241ae0d53
+SHA-256 (copy B): 770bb0eae8a659d92a1fd38dc7916c2ccb41cc142170bf3377a323e241ae0d53
 ```
 
 Reproducible via `scripts/reproducible_build.sh` (no arguments; builds

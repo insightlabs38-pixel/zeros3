@@ -219,9 +219,33 @@ repository:
   destination `Last-Modified`, and encoded/tricky source keys.
 - **Range GET** (`harness/m3/range`) — **27/27 passed**.
 - **Dedup evidence** (`harness/m3/dedup`) — **7/7 passed**.
+- **rclone T1 secondary client** (`harness/rclone`) — **19/19 passed**,
+  plus 2 honestly-documented, root-caused known limitations (rclone's
+  ordinary upload path needs `UNSIGNED-PAYLOAD`, which ZeroS3 deliberately
+  doesn't support — grouped with presigned URLs/`aws-chunked`, both out of
+  this pass's scope). Bucket/object lifecycle, listing, download, hash
+  equality, overwrite, and restart persistence are all proven through the
+  real `rclone` v1.75.0 binary.
 
 See that repository's `results/` directory for the exact recorded runs,
-pinned SDK versions, and reproduction commands.
+pinned SDK/rclone versions, and reproduction commands.
+
+## Package Killer bonus
+
+**GO.** ZeroS3 reimplements the principal standalone use case of
+[`s3rver`](https://www.npmjs.com/package/s3rver): a local S3-compatible
+server for development and testing. The same ordinary S3 client workflow
+can be pointed at ZeroS3 by changing endpoint/connection settings. ZeroS3
+ships as one Go implementation file with zero third-party runtime
+dependencies; it does not replace s3rver's Node.js embedding API.
+
+One frozen AWS SDK for Go v2 test function, run unmodified against both
+targets (only endpoint/credential/addressing connection settings
+differed): **14/14 passed on ZeroS3, 14/14 passed on s3rver 3.7.1** —
+bucket/object CRUD, `ListObjectsV2`, Content-Type + metadata, and ordinary
+signed requests. Full per-operation table, exact re-checked s3rver
+version/dependency facts, and reproduction commands:
+`zeros3-testing/results/PACKAGE_KILLER_RESULTS.md`.
 
 ## Reproducible build
 
@@ -234,8 +258,8 @@ different absolute paths, on `go1.27.0 linux/amd64` — produce
 byte-identical output:
 
 ```
-SHA-256 (copy A): 1e98c1d57e49855d509d84921d0c9b3c09aacb8ef7164b35549a358ea423daf9
-SHA-256 (copy B): 1e98c1d57e49855d509d84921d0c9b3c09aacb8ef7164b35549a358ea423daf9
+SHA-256 (copy A): 770bb0eae8a659d92a1fd38dc7916c2ccb41cc142170bf3377a323e241ae0d53
+SHA-256 (copy B): 770bb0eae8a659d92a1fd38dc7916c2ccb41cc142170bf3377a323e241ae0d53
 ```
 
 Reproduce this with [`scripts/reproducible_build.sh`](./scripts/reproducible_build.sh)
