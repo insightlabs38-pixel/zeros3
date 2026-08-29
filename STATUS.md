@@ -17,6 +17,10 @@ replication work was started.
   `origin` rather than trusting a prior session's summary. The Linux
   regression baseline (`go test`, `go test -race`, `go vet`, `gofmt -l`) was
   green with 138 passing test cases before any change.
+- **Resulting state:** this commit, on the same branch (`git log -1` names
+  the exact SHA); `zeros3-testing`'s matching commit on its own
+  same-named branch adds `harness/m5a/presign/main.go` and
+  `results/M5A_PRESIGN_RESULTS.md` on top of the same starting point.
 - **Architecture — one shared signing/verifying core.** `zeros3.go` section
   8 previously had a single `authenticate` doing Authorization-header
   SigV4 end to end. It is now `authenticate` (a two-line dispatcher),
