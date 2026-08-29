@@ -77,11 +77,22 @@ const (
 
 	// Journal record type numbers (frozen storage format v1). These
 	// numbers are part of the on-disk format: a new record kind gets a
-	// new number, and none of these four is ever repurposed.
-	recordTypeCreateBucket     = byte(1)
-	recordTypePutObjectRoot    = byte(2)
-	recordTypeDeleteObjectRoot = byte(3)
-	recordTypeDeleteBucket     = byte(4)
+	// new number, and none of these is ever repurposed. Types 5-8 were
+	// added in M5-B to persist multipart upload session state in the same
+	// journal, under the same durability contract, as the original four --
+	// no parallel on-disk structure was introduced for it. An M1-M5-A
+	// binary opening a store whose journal contains one of these record
+	// types fails replay via replayJournal's "unknown record type" check
+	// (see below) rather than silently misinterpreting it, exactly like any
+	// other genuinely unknown record type.
+	recordTypeCreateBucket            = byte(1)
+	recordTypePutObjectRoot           = byte(2)
+	recordTypeDeleteObjectRoot        = byte(3)
+	recordTypeDeleteBucket            = byte(4)
+	recordTypeCreateMultipartUpload   = byte(5)
+	recordTypeUploadPart              = byte(6)
+	recordTypeAbortMultipartUpload    = byte(7)
+	recordTypeCompleteMultipartUpload = byte(8)
 
 	maxRequestBodySize = 256 * 1024 * 1024
 
@@ -115,6 +126,25 @@ const (
 	// payload, matching real S3 presigned GET/PUT and the AWS SDK for Go
 	// v2's own presigner.
 	presignUnsignedPayload = "UNSIGNED-PAYLOAD"
+
+	// Header-auth x-amz-content-sha256 payload-mode sentinels (see
+	// classifySigV4Payload, section 8). These are matched case-sensitively,
+	// exactly as AWS defines them -- a lowercase or otherwise misspelled
+	// variant is not a sentinel at all.
+	sigv4SentinelUnsignedPayload          = "UNSIGNED-PAYLOAD"
+	sigv4SentinelStreamingHMAC            = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+	sigv4SentinelStreamingHMACTrailer     = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"
+	sigv4SentinelStreamingUnsignedTrailer = "STREAMING-UNSIGNED-PAYLOAD-TRAILER"
+	sigv4SentinelStreamingECDSA           = "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD"
+	sigv4SentinelStreamingECDSATrailer    = "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER"
+
+	// Multipart upload limits (ZeroS3 policy, matching AWS's own documented
+	// bounds where one exists): part numbers are 1..maxPartNumber, and
+	// every completed part except the last must be at least
+	// minMultipartPartSize bytes -- the same "all but the last part" rule
+	// real S3 enforces.
+	maxPartNumber        = 10000
+	minMultipartPartSize = 5 * 1024 * 1024
 )
 
 var castagnoliTable = crc32.MakeTable(crc32.Castagnoli)
@@ -134,6 +164,18 @@ var (
 	// from the ordinary lookup path), so each gets its own S3 error
 	// pointing at the right resource.
 	errNoSuchDestinationBucket = errors.New("no such destination bucket")
+
+	// Multipart upload sentinel errors (section 11b). errNoSuchUpload
+	// covers both a genuinely unknown upload ID and one that does not
+	// belong to the requested bucket/key -- real S3 does not distinguish
+	// these either, since revealing that an upload ID exists under a
+	// *different* key would leak namespace information to a caller who
+	// only proved they can address the one they asked about.
+	errNoSuchUpload            = errors.New("no such upload")
+	errEmptyCompletionPartList = errors.New("completion request lists no parts")
+	errPartsNotAscending       = errors.New("completion request parts are not in strictly ascending PartNumber order")
+	errInvalidPart             = errors.New("invalid part")
+	errEntityTooSmall          = errors.New("part is smaller than the minimum multipart part size")
 )
 
 // decodeHexSHA256 parses a lowercase-hex SHA-256 digest as stored in
@@ -634,6 +676,66 @@ type journalDeleteBucketPayload struct {
 	Bucket string `json:"bucket"`
 }
 
+// journalCreateMultipartPayload is the record-type-5 payload: it starts a
+// new persistent multipart upload session. See section 11b for the
+// in-memory multipartUpload/multipartPart types this and the following
+// three record types replay into.
+type journalCreateMultipartPayload struct {
+	UploadID    string       `json:"upload_id"`
+	Bucket      string       `json:"bucket"`
+	Key         string       `json:"key"`
+	ContentType string       `json:"content_type"`
+	Metadata    []metadataKV `json:"metadata"`
+	CreatedAt   time.Time    `json:"created_at"`
+}
+
+// journalUploadPartPayload is the record-type-6 payload: it durably records
+// one part's chunk list (already published into the ordinary CAS, exactly
+// like an object PUT's chunks) plus the ordinary bookkeeping ListParts and
+// CompleteMultipartUpload need. Replaying a second record for the same
+// (UploadID, PartNumber) pair overwrites the first in the in-memory
+// namespace, which is exactly "replace this part" / "retry this part"
+// semantics -- the journal is a log of mutations, not of every historical
+// value.
+type journalUploadPartPayload struct {
+	UploadID   string     `json:"upload_id"`
+	PartNumber int        `json:"part_number"`
+	Size       int64      `json:"size"`
+	ETag       string     `json:"etag"`
+	Chunks     []chunkRef `json:"chunks"`
+	UploadedAt time.Time  `json:"uploaded_at"`
+}
+
+// journalAbortMultipartPayload is the record-type-7 payload: it removes an
+// upload session from the visible multipart namespace. Like
+// journalDeleteObjectPayload, it does not (and cannot) invalidate the
+// chunks its parts already published to CAS -- those become ordinary
+// unreferenced, reclaimable content, exactly like a deleted object's former
+// chunks.
+type journalAbortMultipartPayload struct {
+	UploadID string `json:"upload_id"`
+}
+
+// journalCompleteMultipartPayload is the record-type-8 payload. It is
+// deliberately shaped just like journalPutPayload plus an UploadID: one
+// journal frame both publishes the finished object as an ordinary root
+// AND removes the upload session, so the two effects share the exact same
+// write+sync durability boundary. A crash before this frame's sync leaves
+// the upload session resumable and no new object visible; a crash after
+// leaves the object visible and the session gone -- never a state with one
+// effect but not the other (see Phase G in STATUS.md).
+type journalCompleteMultipartPayload struct {
+	UploadID       string `json:"upload_id"`
+	Bucket         string `json:"bucket"`
+	Key            string `json:"key"`
+	ManifestUUID   string `json:"manifest_uuid"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	Size           int64  `json:"size"`
+	ETag           string `json:"etag"`
+	ContentType    string `json:"content_type"`
+	VersionID      string `json:"version_id"`
+}
+
 // Journal owns the on-disk visibility.log file and the strictly
 // sequential append cursor into it.
 type Journal struct {
@@ -754,7 +856,8 @@ func replayJournal(f *os.File) (validEnd int64, lastSeq uint64, records []journa
 		}
 		recType := header[6]
 		switch recType {
-		case recordTypeCreateBucket, recordTypePutObjectRoot, recordTypeDeleteObjectRoot, recordTypeDeleteBucket:
+		case recordTypeCreateBucket, recordTypePutObjectRoot, recordTypeDeleteObjectRoot, recordTypeDeleteBucket,
+			recordTypeCreateMultipartUpload, recordTypeUploadPart, recordTypeAbortMultipartUpload, recordTypeCompleteMultipartUpload:
 			// known record type
 		default:
 			return 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: unknown record type %d", offset, recType)
@@ -844,6 +947,34 @@ type bucketEntry struct {
 	objects   map[string]*objectEntry
 }
 
+// multipartPart is one durably-uploaded part of an in-progress multipart
+// upload. Like objectEntry, it is never mutated in place after
+// construction -- UploadPart always replaces the map entry for its part
+// number with a fresh pointer -- so sharing these pointers out of s.mu
+// (e.g. a ListParts snapshot) is safe. See section 11b.
+type multipartPart struct {
+	partNumber int
+	size       int64
+	etag       string // hex MD5 of this part's bytes, unquoted
+	chunks     []chunkRef
+	uploadedAt time.Time
+}
+
+// multipartUpload is one in-progress (persistent, journal-backed) multipart
+// upload session. It is deliberately NOT part of the bucket/object
+// namespace: an incomplete upload must never appear in ListObjectsV2 or be
+// reachable via ordinary GET/HEAD, and Store.uploads is a completely
+// separate map from Store.buckets[*].objects for exactly that reason.
+type multipartUpload struct {
+	uploadID    string
+	bucket      string
+	key         string
+	contentType string
+	metadata    map[string]string
+	createdAt   time.Time
+	parts       map[int]*multipartPart
+}
+
 type Store struct {
 	root    string
 	format  storeFormat
@@ -851,6 +982,12 @@ type Store struct {
 
 	mu      sync.Mutex
 	buckets map[string]*bucketEntry
+	// uploads holds every currently in-progress multipart upload session,
+	// keyed by upload ID, guarded by the same mu as buckets -- multipart's
+	// namespace is small and cheap to protect this way, and a single lock
+	// domain avoids a whole second class of cross-namespace race to reason
+	// about (e.g. a bucket delete racing an upload's completion).
+	uploads map[string]*multipartUpload
 }
 
 // OpenStore opens the store rooted at root, initializing it (writing
@@ -882,6 +1019,7 @@ func OpenStore(root string) (*Store, error) {
 		format:  format,
 		journal: j,
 		buckets: map[string]*bucketEntry{},
+		uploads: map[string]*multipartUpload{},
 	}
 	for _, rec := range records {
 		if err := s.applyRecord(rec); err != nil {
@@ -985,6 +1123,66 @@ func (s *Store) applyRecord(rec journalRecord) error {
 			return fmt.Errorf("seq %d: delete-bucket for unknown bucket %q", rec.seq, p.Bucket)
 		}
 		delete(s.buckets, p.Bucket)
+	case recordTypeCreateMultipartUpload:
+		var p journalCreateMultipartPayload
+		if err := json.Unmarshal(rec.payload, &p); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		metadata := map[string]string{}
+		for _, kv := range p.Metadata {
+			metadata[kv.Key] = kv.Value
+		}
+		s.uploads[p.UploadID] = &multipartUpload{
+			uploadID: p.UploadID, bucket: p.Bucket, key: p.Key,
+			contentType: p.ContentType, metadata: metadata, createdAt: p.CreatedAt,
+			parts: map[int]*multipartPart{},
+		}
+	case recordTypeUploadPart:
+		var p journalUploadPartPayload
+		if err := json.Unmarshal(rec.payload, &p); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		up, ok := s.uploads[p.UploadID]
+		if !ok {
+			return fmt.Errorf("seq %d: upload-part for unknown upload %q", rec.seq, p.UploadID)
+		}
+		up.parts[p.PartNumber] = &multipartPart{
+			partNumber: p.PartNumber, size: p.Size, etag: p.ETag, chunks: p.Chunks, uploadedAt: p.UploadedAt,
+		}
+	case recordTypeAbortMultipartUpload:
+		var p journalAbortMultipartPayload
+		if err := json.Unmarshal(rec.payload, &p); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		if _, ok := s.uploads[p.UploadID]; !ok {
+			return fmt.Errorf("seq %d: abort-multipart-upload for unknown upload %q", rec.seq, p.UploadID)
+		}
+		delete(s.uploads, p.UploadID)
+	case recordTypeCompleteMultipartUpload:
+		var p journalCompleteMultipartPayload
+		if err := json.Unmarshal(rec.payload, &p); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		b, ok := s.buckets[p.Bucket]
+		if !ok {
+			return fmt.Errorf("seq %d: complete-multipart-upload for unknown bucket %q", rec.seq, p.Bucket)
+		}
+		if _, ok := s.uploads[p.UploadID]; !ok {
+			return fmt.Errorf("seq %d: complete-multipart-upload for unknown upload %q", rec.seq, p.UploadID)
+		}
+		sum, err := decodeHexSHA256(p.ManifestSHA256)
+		if err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		b.objects[p.Key] = &objectEntry{
+			manifestUUID:   p.ManifestUUID,
+			manifestSHA256: sum,
+			size:           p.Size,
+			etag:           p.ETag,
+			contentType:    p.ContentType,
+			seq:            rec.seq,
+		}
+		delete(s.uploads, p.UploadID)
 	default:
 		return fmt.Errorf("seq %d: unknown record type %d", rec.seq, rec.recType)
 	}
@@ -1059,6 +1257,18 @@ func (s *Store) DeleteBucket(name string) error {
 	}
 	if len(b.objects) > 0 {
 		return errBucketNotEmpty
+	}
+	// An in-progress multipart upload targeting this bucket is not yet an
+	// ordinary object, but real S3 still refuses to delete a bucket with
+	// one outstanding -- letting the bucket disappear out from under an
+	// active upload would mean CompleteMultipartUpload has no bucket left
+	// to publish into (commitObjectRoot's own re-check would then simply
+	// fail the eventual Complete call, but refusing the delete up front is
+	// both more honest and matches real S3's behavior).
+	for _, up := range s.uploads {
+		if up.bucket == name {
+			return errBucketNotEmpty
+		}
 	}
 	payload, err := json.Marshal(journalDeleteBucketPayload{Bucket: name})
 	if err != nil {
@@ -1421,6 +1631,88 @@ type authError struct {
 
 func (e *authError) Error() string { return e.msg }
 
+// sigv4PayloadKind is the one explicit interpretation of a header-auth
+// request's x-amz-content-sha256 value that every caller uses, instead of
+// scattering literal-string comparisons through the authentication code.
+// See classifySigV4Payload.
+type sigv4PayloadKind int
+
+const (
+	// sigv4PayloadFixedSHA256 is the ordinary, always-supported case: the
+	// header carries a lowercase 64-hex SHA-256 digest of the exact
+	// request body. This is a single mode covering both an ordinary
+	// non-empty body and the empty-string SHA-256 for a zero-length body
+	// -- the empty body is not a separate protocol mode, just this mode
+	// applied to zero bytes.
+	sigv4PayloadFixedSHA256 sigv4PayloadKind = iota
+	// sigv4PayloadUnsignedFixed is the literal UNSIGNED-PAYLOAD sentinel:
+	// the string itself participates in the canonical request, but SigV4
+	// does not bind the request body to any digest. Content-MD5/CRC32
+	// checks, being independent of SigV4 entirely, are unaffected.
+	sigv4PayloadUnsignedFixed
+	// sigv4PayloadStreamingHMAC and sigv4PayloadStreamingHMACTrailer are
+	// AWS's chunked/streaming request-signing modes. They are recognized
+	// here so a request using them gets a clear, correct classification
+	// rather than falling through to "malformed digest" -- but decoding
+	// the chunk-signature framing itself is implemented only if Phase K's
+	// real-client investigation shows it is actually required; until then
+	// authenticateHeader rejects both cleanly as not-yet-implemented.
+	sigv4PayloadStreamingHMAC
+	sigv4PayloadStreamingHMACTrailer
+	// sigv4PayloadUnsupported covers every AWS payload-mode sentinel this
+	// build has permanently excluded from scope: SigV4A/ECDSA streaming
+	// and the unsigned streaming trailer mode. These are recognized
+	// (case-sensitively, exactly as AWS defines the literal strings) so
+	// they get one clear, documented rejection rather than being
+	// misclassified as a malformed digest.
+	sigv4PayloadUnsupported
+)
+
+// isHexDigestSHA256 reports whether s is exactly 64 hex digits (upper or
+// lower case -- see classifySigV4Payload's comment on why case is still
+// accepted here for the digest form specifically).
+func isHexDigestSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// classifySigV4Payload is the single source of truth for interpreting a
+// header-auth request's literal x-amz-content-sha256 value into one of the
+// explicit payload modes SigV4 defines: a fixed signed digest, the fixed
+// UNSIGNED-PAYLOAD sentinel, one of the two eligible streaming-HMAC modes,
+// or a permanently excluded/unsupported sentinel. Every AWS sentinel string
+// is matched case-sensitively, exactly as AWS defines it -- a lowercase or
+// otherwise misspelled variant is not treated as that sentinel, and (not
+// also being a valid 64-hex digest) is reported as an error instead of
+// silently being accepted under some other mode. A digest is returned
+// lowercased for the exact-body-hash comparison it is later checked
+// against; accepting an uppercase-hex digest case-insensitively is
+// existing, preserved behavior from before this pass, not new leniency.
+func classifySigV4Payload(raw string) (kind sigv4PayloadKind, fixedDigest string, err error) {
+	switch raw {
+	case sigv4SentinelUnsignedPayload:
+		return sigv4PayloadUnsignedFixed, "", nil
+	case sigv4SentinelStreamingHMAC:
+		return sigv4PayloadStreamingHMAC, "", nil
+	case sigv4SentinelStreamingHMACTrailer:
+		return sigv4PayloadStreamingHMACTrailer, "", nil
+	case sigv4SentinelStreamingUnsignedTrailer, sigv4SentinelStreamingECDSA, sigv4SentinelStreamingECDSATrailer:
+		return sigv4PayloadUnsupported, "", nil
+	}
+	if isHexDigestSHA256(raw) {
+		return sigv4PayloadFixedSHA256, strings.ToLower(raw), nil
+	}
+	return 0, "", fmt.Errorf("unrecognized x-amz-content-sha256 value")
+}
+
 func isUnreservedByte(b byte) bool {
 	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') ||
 		b == '-' || b == '_' || b == '.' || b == '~'
@@ -1765,10 +2057,14 @@ func (srv *Server) sigv4VerifyCore(r *http.Request, rawPath, canonicalQuery stri
 
 // authenticateHeader validates a request's Authorization header against
 // srv.creds/srv.region, reconstructing the canonical request from the
-// original raw path/query rather than r.URL. On success it also confirms
-// the signed X-Amz-Content-Sha256 value matches the actual body bytes
-// received, catching tampering that changes the body but replays an
-// old, still-signed content-hash header.
+// original raw path/query rather than r.URL. Its X-Amz-Content-Sha256
+// value is interpreted by classifySigV4Payload: in the ordinary fixed
+// SHA-256 mode (which also covers the empty-body case -- the SHA-256 of
+// zero bytes is just an ordinary digest, not a separate mode), success
+// also confirms the signed digest matches the actual body bytes received,
+// catching tampering that changes the body but replays an old,
+// still-signed content-hash header; in UNSIGNED-PAYLOAD mode, SigV4
+// deliberately places no constraint on the body at all.
 func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string, body []byte) error {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
@@ -1794,9 +2090,21 @@ func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string,
 		return &authError{code: "RequestTimeTooSkewed", msg: "request timestamp outside allowed window"}
 	}
 
-	payloadHashHeader := strings.ToLower(r.Header.Get("X-Amz-Content-Sha256"))
-	if len(payloadHashHeader) != 64 {
+	rawPayloadHeader := r.Header.Get("X-Amz-Content-Sha256")
+	if rawPayloadHeader == "" {
 		return &authError{code: "AccessDenied", msg: "missing or invalid X-Amz-Content-Sha256"}
+	}
+	payloadKind, fixedDigest, payloadErr := classifySigV4Payload(rawPayloadHeader)
+	if payloadErr != nil {
+		return &authError{code: "AccessDenied", msg: "missing or invalid X-Amz-Content-Sha256"}
+	}
+	switch payloadKind {
+	case sigv4PayloadUnsupported:
+		return &authError{code: "NotImplemented", msg: fmt.Sprintf("x-amz-content-sha256 value %q is not supported by ZeroS3", rawPayloadHeader)}
+	case sigv4PayloadStreamingHMAC, sigv4PayloadStreamingHMACTrailer:
+		// Eligible-but-conditional modes (see Phase K in STATUS.md): not
+		// implemented unless/until a real client is shown to require one.
+		return &authError{code: "NotImplemented", msg: fmt.Sprintf("x-amz-content-sha256 value %q is not yet implemented by ZeroS3", rawPayloadHeader)}
 	}
 	var hasContentSha, hasHost bool
 	for _, h := range auth.signedHeaders {
@@ -1819,13 +2127,34 @@ func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string,
 		return &authError{code: "InvalidURI", msg: err.Error()}
 	}
 
-	if err := srv.sigv4VerifyCore(r, rawPath, canonicalQuery, auth, amzDate, payloadHashHeader, "AuthorizationHeaderMalformed"); err != nil {
+	// hashedPayload is the literal value that goes into the canonical
+	// request's HashedPayload slot: the digest itself for the fixed-SHA256
+	// mode, or the exact sentinel string for UNSIGNED-PAYLOAD -- the raw
+	// header value already equals the sentinel here (classifySigV4Payload
+	// only returns sigv4PayloadUnsignedFixed for an exact, case-sensitive
+	// match), so using rawPayloadHeader is equivalent to using the sentinel
+	// constant directly.
+	hashedPayload := fixedDigest
+	if payloadKind == sigv4PayloadUnsignedFixed {
+		hashedPayload = rawPayloadHeader
+	}
+
+	if err := srv.sigv4VerifyCore(r, rawPath, canonicalQuery, auth, amzDate, hashedPayload, "AuthorizationHeaderMalformed"); err != nil {
 		return err
 	}
 
-	actualHash := sha256.Sum256(body)
-	if hex.EncodeToString(actualHash[:]) != payloadHashHeader {
-		return &authError{code: "XAmzContentSHA256Mismatch", msg: "declared payload hash does not match body received"}
+	// Fixed SHA-256 mode independently binds the signed digest to the
+	// actual body bytes received, catching tampering that changes the body
+	// but replays an old, still-signed content-hash header. UNSIGNED-
+	// PAYLOAD deliberately does not: the literal sentinel string is what
+	// was signed, not any function of the body, so SigV4 places no
+	// constraint on body content here at all -- Content-MD5/CRC32 remain
+	// independently enforced, unaffected by this.
+	if payloadKind == sigv4PayloadFixedSHA256 {
+		actualHash := sha256.Sum256(body)
+		if hex.EncodeToString(actualHash[:]) != fixedDigest {
+			return &authError{code: "XAmzContentSHA256Mismatch", msg: "declared payload hash does not match body received"}
+		}
 	}
 	return nil
 }
@@ -2142,12 +2471,16 @@ func s3ErrorStatus(code string) int {
 	case "InvalidAccessKeyId", "SignatureDoesNotMatch", "AccessDenied", "RequestTimeTooSkewed",
 		"AuthorizationHeaderMalformed", "XAmzContentSHA256Mismatch":
 		return http.StatusForbidden
+	case "NoSuchUpload":
+		return http.StatusNotFound
 	case "BucketNotEmpty":
 		return http.StatusConflict
 	case "MethodNotAllowed":
 		return http.StatusMethodNotAllowed
 	case "InvalidRange":
 		return http.StatusRequestedRangeNotSatisfiable
+	case "NotImplemented":
+		return http.StatusNotImplemented
 	default:
 		return http.StatusBadRequest
 	}
@@ -2456,7 +2789,30 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Multipart operations are distinguished from ordinary bucket/object
+	// operations purely by query parameters ("uploads", "uploadId",
+	// "partNumber"), on the same paths and (mostly) the same HTTP methods
+	// real S3 uses -- so they are checked first, ahead of the ordinary
+	// dispatch below, exactly the same way handlePutObject already checks
+	// for x-amz-copy-source before falling through to an ordinary PUT.
+	mpQuery, _ := url.ParseQuery(rawQuery)
+	_, hasUploads := mpQuery["uploads"]
+	uploadID := mpQuery.Get("uploadId")
+	_, hasUploadID := mpQuery["uploadId"]
+
 	switch {
+	case key != "" && r.Method == http.MethodPost && hasUploads:
+		srv.handleCreateMultipartUpload(w, r, bucket, key)
+	case key != "" && r.Method == http.MethodPut && hasUploadID:
+		srv.handleUploadPart(w, bucket, key, uploadID, mpQuery.Get("partNumber"), body)
+	case key != "" && r.Method == http.MethodGet && hasUploadID:
+		srv.handleListParts(w, bucket, key, uploadID)
+	case key != "" && r.Method == http.MethodPost && hasUploadID:
+		srv.handleCompleteMultipartUpload(w, bucket, key, uploadID, body)
+	case key != "" && r.Method == http.MethodDelete && hasUploadID:
+		srv.handleAbortMultipartUpload(w, bucket, key, uploadID)
+	case key == "" && r.Method == http.MethodGet && hasUploads:
+		srv.handleListMultipartUploads(w, bucket)
 	case r.Method == http.MethodPut && key == "":
 		srv.handleCreateBucket(w, bucket)
 	case r.Method == http.MethodPut:
@@ -3020,6 +3376,641 @@ func (srv *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, dstB
 		return
 	}
 	writeXML(w, http.StatusOK, copyObjectResult{ETag: `"` + entry.etag + `"`, LastModified: iso8601(man.CreatedAt)})
+}
+
+// =============================================================================
+// 11b. Multipart upload (persistent, CDC/CAS-integrated)
+//
+// Multipart upload is built entirely out of the same primitives ordinary
+// PutObject already uses -- CDC chunking, CAS publication, manifest
+// publication, and the visibility journal -- plus one small addition to
+// the journal's namespace (record types 5-8, above) for the upload
+// sessions themselves. There is deliberately no second object-storage
+// architecture here: an uploaded part's bytes are CDC-chunked and written
+// into the exact same content-addressed chunk store an ordinary PUT would
+// use, and a completed upload becomes an ordinary object via the exact
+// same commit path (a single journal frame, write+sync as the sole
+// durability boundary) that PutObject/CopyObject already use.
+//
+// The one genuinely new piece of logic is what CompleteMultipartUpload
+// does with the parts it has: it does NOT simply concatenate each part's
+// independently-computed chunk list into the final manifest, because each
+// part was CDC-chunked starting fresh at its own first byte -- treating a
+// part boundary as if it were already a content-defined chunk boundary
+// would silently produce different (and non-canonical) chunk boundaries
+// near every seam than chunking the true logical concatenation would, which
+// would both misrepresent what CDC v1 actually guarantees and quietly hurt
+// cross-object dedup at every part seam. So completion instead streams the
+// full logical concatenation -- part 1's bytes, then part 2's, and so on,
+// each reconstructed chunk-by-chunk from CAS -- through one fresh CDC pass
+// (multipartReader + chunkAndStoreStream), exactly as if the whole object
+// had arrived as a single PutObject body, while never buffering more than
+// one chunk (at most cdcMaxChunkSize bytes) of that concatenation in memory
+// at a time.
+// =============================================================================
+
+// completedPart is one <Part> entry from a validated CompleteMultipartUpload
+// request, in the order the client listed it (which is required to already
+// be strictly ascending by PartNumber -- see CompleteMultipartUpload).
+type completedPart struct {
+	PartNumber int
+	ETag       string // as received, possibly quoted; compared case-insensitively after trimming quotes
+}
+
+// CreateMultipartUpload starts a new persistent upload session for
+// (bucket, key). Like CreateBucket/DeleteBucket, this is cheap enough that
+// the journal append happens while still holding s.mu -- there is no heavy
+// CAS/chunking work to keep off the lock here.
+func (s *Store) CreateMultipartUpload(bucket, key, contentType string, metadata map[string]string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.buckets[bucket]; !ok {
+		return "", errNoSuchBucket
+	}
+	uploadID := newUUIDv7()
+	createdAt := time.Now().UTC()
+	md := sortedMetadataKV(metadata)
+	payload, err := json.Marshal(journalCreateMultipartPayload{
+		UploadID: uploadID, Bucket: bucket, Key: key,
+		ContentType: contentType, Metadata: md, CreatedAt: createdAt,
+	})
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.journal.appendFrame(recordTypeCreateMultipartUpload, payload); err != nil {
+		return "", err
+	}
+	flatMetadata := map[string]string{}
+	for _, kv := range md {
+		flatMetadata[kv.Key] = kv.Value
+	}
+	s.uploads[uploadID] = &multipartUpload{
+		uploadID: uploadID, bucket: bucket, key: key,
+		contentType: contentType, metadata: flatMetadata, createdAt: createdAt,
+		parts: map[int]*multipartPart{},
+	}
+	return uploadID, nil
+}
+
+// lookupUploadLocked resolves uploadID against bucket/key under s.mu,
+// which every multipart operation below needs at both its validation step
+// and (after any unlocked heavy work) its commit step -- the exact
+// re-check pattern commitObjectRoot already uses for ordinary PutObject.
+func (s *Store) lookupUploadLocked(bucket, key, uploadID string) (*multipartUpload, error) {
+	up, ok := s.uploads[uploadID]
+	if !ok || up.bucket != bucket || up.key != key {
+		return nil, errNoSuchUpload
+	}
+	return up, nil
+}
+
+// UploadPart durably stores one part's bytes: CDC-chunked into the ordinary
+// CAS (outside s.mu, like PutObject's own chunking work), then committed by
+// one journal frame recording the part's chunk list/size/ETag, under a
+// re-validated upload session exactly like commitObjectRoot re-validates
+// its bucket.
+func (s *Store) UploadPart(bucket, key, uploadID string, partNumber int, body []byte) (string, error) {
+	s.mu.Lock()
+	if _, err := s.lookupUploadLocked(bucket, key, uploadID); err != nil {
+		s.mu.Unlock()
+		return "", err
+	}
+	s.mu.Unlock()
+
+	pieces, err := chunkData(bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("chunking failed: %w", err)
+	}
+	for _, p := range pieces {
+		fireTestHook(hookBeforeChunkWrite)
+		if _, err := s.casWrite(p.data); err != nil {
+			return "", fmt.Errorf("cas write failed: %w", err)
+		}
+	}
+	fireTestHook(hookAfterChunksPublished)
+	chunks := make([]chunkRef, len(pieces))
+	for i, p := range pieces {
+		chunks[i] = chunkRef{SHA256: hex.EncodeToString(p.sha[:]), Length: int64(len(p.data))}
+	}
+	etagSum := md5.Sum(body) //nolint:gosec // S3-compatible multipart part ETag, not a security use of MD5.
+	etag := hex.EncodeToString(etagSum[:])
+	uploadedAt := time.Now().UTC()
+
+	payload, err := json.Marshal(journalUploadPartPayload{
+		UploadID: uploadID, PartNumber: partNumber, Size: int64(len(body)),
+		ETag: etag, Chunks: chunks, UploadedAt: uploadedAt,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	up, err := s.lookupUploadLocked(bucket, key, uploadID)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.journal.appendFrame(recordTypeUploadPart, payload); err != nil {
+		return "", err
+	}
+	up.parts[partNumber] = &multipartPart{
+		partNumber: partNumber, size: int64(len(body)), etag: etag, chunks: chunks, uploadedAt: uploadedAt,
+	}
+	fireTestHook(hookAfterApplyBeforeResponse)
+	return etag, nil
+}
+
+// ListParts returns every currently-uploaded part of uploadID, ordered by
+// part number.
+func (s *Store) ListParts(bucket, key, uploadID string) ([]*multipartPart, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	up, err := s.lookupUploadLocked(bucket, key, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	nums := make([]int, 0, len(up.parts))
+	for n := range up.parts {
+		nums = append(nums, n)
+	}
+	sort.Ints(nums)
+	out := make([]*multipartPart, len(nums))
+	for i, n := range nums {
+		out[i] = up.parts[n]
+	}
+	return out, nil
+}
+
+// AbortMultipartUpload permanently invalidates uploadID. Its already-
+// published part chunks are not deleted -- like a deleted object's former
+// chunks, they simply become ordinary unreferenced, reclaimable CAS
+// content, harmless and immutable, for a future GC pass (not implemented)
+// to eventually reclaim. Aborting an already-aborted or already-completed
+// upload ID reports errNoSuchUpload, matching real S3 rather than treating
+// repeat-abort as an idempotent no-op.
+func (s *Store) AbortMultipartUpload(bucket, key, uploadID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.lookupUploadLocked(bucket, key, uploadID); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(journalAbortMultipartPayload{UploadID: uploadID})
+	if err != nil {
+		return err
+	}
+	if _, err := s.journal.appendFrame(recordTypeAbortMultipartUpload, payload); err != nil {
+		return err
+	}
+	delete(s.uploads, uploadID)
+	return nil
+}
+
+// ListMultipartUploads returns every currently in-progress upload targeting
+// bucket, ordered by key then upload ID (S3's own documented ordering).
+func (s *Store) ListMultipartUploads(bucket string) ([]*multipartUpload, error) {
+	s.mu.Lock()
+	if _, ok := s.buckets[bucket]; !ok {
+		s.mu.Unlock()
+		return nil, errNoSuchBucket
+	}
+	var out []*multipartUpload
+	for _, up := range s.uploads {
+		if up.bucket == bucket {
+			out = append(out, up)
+		}
+	}
+	s.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].key != out[j].key {
+			return out[i].key < out[j].key
+		}
+		return out[i].uploadID < out[j].uploadID
+	})
+	return out, nil
+}
+
+// multipartETag implements S3's conventional multipart ETag: MD5 of the
+// concatenation of every part's own *binary* MD5 digest (not its hex
+// string), followed by "-" and the part count. This is a deliberately
+// different construction from an ordinary single-PUT ETag (plain MD5 of
+// the object bytes) -- multipart objects are never given a single-PUT-style
+// ETag, and single-PUT objects are entirely unaffected by this function.
+func multipartETag(parts []*multipartPart) (string, error) {
+	h := md5.New() //nolint:gosec // S3-compatible multipart ETag construction, not a security use of MD5.
+	for _, p := range parts {
+		raw, err := hex.DecodeString(p.etag)
+		if err != nil || len(raw) != md5.Size {
+			return "", fmt.Errorf("multipart: part %d has a malformed stored etag", p.partNumber)
+		}
+		h.Write(raw)
+	}
+	return hex.EncodeToString(h.Sum(nil)) + "-" + strconv.Itoa(len(parts)), nil
+}
+
+// multipartReader presents the logical concatenation of parts' already-
+// durable chunk bytes, in order, as a single io.Reader -- reconstructing at
+// most one chunk (at most cdcMaxChunkSize bytes) at a time, never the whole
+// object. This is what lets CompleteMultipartUpload re-run a genuine,
+// continuous CDC pass across part boundaries without ever buffering more
+// than that.
+type multipartReader struct {
+	s        *Store
+	parts    []*multipartPart
+	partIdx  int
+	chunkIdx int
+	cur      []byte
+}
+
+func (m *multipartReader) Read(p []byte) (int, error) {
+	for len(m.cur) == 0 {
+		if m.partIdx >= len(m.parts) {
+			return 0, io.EOF
+		}
+		part := m.parts[m.partIdx]
+		if m.chunkIdx >= len(part.chunks) {
+			m.partIdx++
+			m.chunkIdx = 0
+			continue
+		}
+		ref := part.chunks[m.chunkIdx]
+		m.chunkIdx++
+		sum, err := decodeHexSHA256(ref.SHA256)
+		if err != nil {
+			return 0, err
+		}
+		data, err := m.s.casRead(sum)
+		if err != nil {
+			return 0, fmt.Errorf("multipart: reading part %d chunk: %w", part.partNumber, err)
+		}
+		if int64(len(data)) != ref.Length {
+			return 0, fmt.Errorf("multipart: part %d chunk length mismatch", part.partNumber)
+		}
+		m.cur = data
+	}
+	n := copy(p, m.cur)
+	m.cur = m.cur[n:]
+	return n, nil
+}
+
+// chunkAndStoreStream is PutObject's chunk+CAS-write loop, generalized to
+// never hold more than one chunk's bytes in memory: it streams r through
+// the ordinary CDC chunker, durably publishes each chunk into CAS as it is
+// produced, and accumulates only the small chunk-reference list (sha256 +
+// length, not the chunk bytes themselves) plus a running whole-object
+// SHA-256 -- everything a manifest needs, without ever buffering the full
+// logical object the way an ordinary PutObject's []byte body already does.
+// This is what lets CompleteMultipartUpload finalize even a very large
+// object without a correspondingly large memory spike.
+func (s *Store) chunkAndStoreStream(r io.Reader) ([]chunkRef, int64, [32]byte, error) {
+	c := newCDCChunker(r)
+	var refs []chunkRef
+	var total int64
+	h := sha256.New()
+	for {
+		chunk, err := c.next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, 0, [32]byte{}, err
+		}
+		fireTestHook(hookBeforeChunkWrite)
+		sum, werr := s.casWrite(chunk)
+		if werr != nil {
+			return nil, 0, [32]byte{}, werr
+		}
+		refs = append(refs, chunkRef{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(chunk))})
+		h.Write(chunk)
+		total += int64(len(chunk))
+	}
+	fireTestHook(hookAfterChunksPublished)
+	var sum [32]byte
+	copy(sum[:], h.Sum(nil))
+	return refs, total, sum, nil
+}
+
+// buildManifestV1FromRefs is buildManifestV1's counterpart for a manifest
+// built from an already-streamed chunk list rather than an in-memory whole
+// body: everything is supplied directly (chunk refs, total length,
+// whole-object SHA-256, and a caller-computed ETag -- multipart's ETag
+// formula, never the single-PUT MD5-of-body rule) instead of derived from a
+// []byte.
+func buildManifestV1FromRefs(refs []chunkRef, total int64, objSHA [32]byte, etag, contentType string, metadata map[string]string) manifestV1 {
+	id := newUUIDv7()
+	return manifestV1{
+		ManifestFormatVersion: manifestFormatVersion,
+		CDCFormatVersion:      cdcFormatVersion,
+		HashAlgorithm:         "sha256",
+		ManifestUUID:          id,
+		TotalLength:           total,
+		Chunks:                refs,
+		ObjectSHA256:          hex.EncodeToString(objSHA[:]),
+		ETag:                  etag,
+		ContentType:           contentType,
+		Metadata:              sortedMetadataKV(metadata),
+		CreatedAt:             time.Now().UTC(),
+		VersionID:             id,
+	}
+}
+
+// CompleteMultipartUpload validates requested (the client's ordered <Part>
+// list), reassembles the logical object via a fresh CDC pass across every
+// named part's already-durable bytes, publishes it as an ordinary object
+// using the ordinary commit path, and atomically retires the upload
+// session -- see commitObjectRoot and the section-11b doc comment above for
+// why this never re-chunks by naively concatenating each part's own,
+// independently-computed chunk list.
+func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested []completedPart) (*objectEntry, manifestV1, error) {
+	if len(requested) == 0 {
+		return nil, manifestV1{}, errEmptyCompletionPartList
+	}
+	for i := 1; i < len(requested); i++ {
+		if requested[i].PartNumber <= requested[i-1].PartNumber {
+			return nil, manifestV1{}, errPartsNotAscending
+		}
+	}
+
+	s.mu.Lock()
+	up, err := s.lookupUploadLocked(bucket, key, uploadID)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, manifestV1{}, err
+	}
+	// Snapshot exactly the validated, ordered multipartPart pointers this
+	// completion needs. Like objectEntry, a multipartPart is only ever
+	// wholesale replaced in its map (UploadPart's re-upload/replace path),
+	// never mutated in place, so holding these pointers after unlocking is
+	// safe -- the same pattern snapshotNamespace already relies on.
+	parts := make([]*multipartPart, len(requested))
+	for i, rp := range requested {
+		mp, exists := up.parts[rp.PartNumber]
+		if !exists {
+			s.mu.Unlock()
+			return nil, manifestV1{}, fmt.Errorf("%w: part %d was never uploaded", errInvalidPart, rp.PartNumber)
+		}
+		wantETag := strings.Trim(rp.ETag, `"`)
+		if wantETag == "" || !strings.EqualFold(wantETag, mp.etag) {
+			s.mu.Unlock()
+			return nil, manifestV1{}, fmt.Errorf("%w: part %d etag does not match the uploaded part", errInvalidPart, rp.PartNumber)
+		}
+		parts[i] = mp
+	}
+	for i, p := range parts {
+		if i < len(parts)-1 && p.size < minMultipartPartSize {
+			s.mu.Unlock()
+			return nil, manifestV1{}, fmt.Errorf("%w: part %d (%d bytes) is smaller than the %d-byte minimum for a non-final part", errEntityTooSmall, p.partNumber, p.size, minMultipartPartSize)
+		}
+	}
+	contentType := up.contentType
+	metadata := up.metadata
+	s.mu.Unlock()
+
+	// Heavy work, deliberately outside s.mu: a fresh, continuous CDC pass
+	// across every part's already-durable bytes in completion order (see
+	// multipartReader/chunkAndStoreStream), never buffering the whole
+	// reconstructed object.
+	mr := &multipartReader{s: s, parts: parts}
+	refs, total, objSHA, err := s.chunkAndStoreStream(mr)
+	if err != nil {
+		return nil, manifestV1{}, fmt.Errorf("multipart: assembling final object failed: %w", err)
+	}
+	etag, err := multipartETag(parts)
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+	man := buildManifestV1FromRefs(refs, total, objSHA, etag, contentType, metadata)
+	manUUID, manSHA, err := s.publishManifest(man)
+	if err != nil {
+		return nil, manifestV1{}, fmt.Errorf("multipart: manifest publish failed: %w", err)
+	}
+	fireTestHook(hookAfterManifestPublished)
+
+	payload, err := json.Marshal(journalCompleteMultipartPayload{
+		UploadID: uploadID, Bucket: bucket, Key: key,
+		ManifestUUID: manUUID, ManifestSHA256: hex.EncodeToString(manSHA[:]),
+		Size: man.TotalLength, ETag: man.ETag, ContentType: man.ContentType, VersionID: man.VersionID,
+	})
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Re-validate at the actual commit point, exactly like
+	// commitObjectRoot re-checks bucket existence: a concurrent Abort or a
+	// second, racing Complete may have already retired this upload while
+	// the (unlocked) re-chunking work above was running.
+	if _, err := s.lookupUploadLocked(bucket, key, uploadID); err != nil {
+		return nil, manifestV1{}, err
+	}
+	if _, ok := s.buckets[bucket]; !ok {
+		return nil, manifestV1{}, errNoSuchBucket
+	}
+	seq, err := s.journal.appendFrame(recordTypeCompleteMultipartUpload, payload)
+	if err != nil {
+		return nil, manifestV1{}, fmt.Errorf("journal append failed: %w", err)
+	}
+	entry := &objectEntry{
+		manifestUUID: manUUID, manifestSHA256: manSHA,
+		size: man.TotalLength, etag: man.ETag, contentType: man.ContentType, seq: seq,
+	}
+	s.buckets[bucket].objects[key] = entry
+	delete(s.uploads, uploadID)
+	fireTestHook(hookAfterApplyBeforeResponse)
+	return entry, man, nil
+}
+
+// --- HTTP: multipart XML request/response types ---
+
+type initiateMultipartUploadResult struct {
+	XMLName  xml.Name `xml:"InitiateMultipartUploadResult"`
+	Bucket   string   `xml:"Bucket"`
+	Key      string   `xml:"Key"`
+	UploadId string   `xml:"UploadId"`
+}
+
+type completedPartXML struct {
+	PartNumber int    `xml:"PartNumber"`
+	ETag       string `xml:"ETag"`
+}
+
+type completeMultipartUploadXML struct {
+	XMLName xml.Name           `xml:"CompleteMultipartUpload"`
+	Part    []completedPartXML `xml:"Part"`
+}
+
+type completeMultipartUploadResult struct {
+	XMLName  xml.Name `xml:"CompleteMultipartUploadResult"`
+	Location string   `xml:"Location"`
+	Bucket   string   `xml:"Bucket"`
+	Key      string   `xml:"Key"`
+	ETag     string   `xml:"ETag"`
+}
+
+type partXML struct {
+	PartNumber   int    `xml:"PartNumber"`
+	LastModified string `xml:"LastModified"`
+	ETag         string `xml:"ETag"`
+	Size         int64  `xml:"Size"`
+}
+
+type listPartsResult struct {
+	XMLName     xml.Name  `xml:"ListPartsResult"`
+	Bucket      string    `xml:"Bucket"`
+	Key         string    `xml:"Key"`
+	UploadId    string    `xml:"UploadId"`
+	MaxParts    int       `xml:"MaxParts"`
+	IsTruncated bool      `xml:"IsTruncated"`
+	Part        []partXML `xml:"Part"`
+}
+
+type uploadXML struct {
+	Key       string `xml:"Key"`
+	UploadId  string `xml:"UploadId"`
+	Initiated string `xml:"Initiated"`
+}
+
+type listMultipartUploadsResult struct {
+	XMLName     xml.Name    `xml:"ListMultipartUploadsResult"`
+	Bucket      string      `xml:"Bucket"`
+	IsTruncated bool        `xml:"IsTruncated"`
+	Upload      []uploadXML `xml:"Upload"`
+}
+
+// --- HTTP: multipart handlers ---
+
+// writeMultipartError renders the S3-shaped error common to every
+// multipart operation below: a missing/mismatched upload ID is always
+// NoSuchUpload, a missing bucket is NoSuchBucket, anything else is
+// InternalError -- multipart-specific validation errors (bad part list,
+// bad ETag, etc.) are mapped by their own callers, which know which
+// resource string is right for their operation.
+func writeMultipartError(w http.ResponseWriter, err error, resource string) {
+	switch {
+	case errors.Is(err, errNoSuchUpload):
+		writeS3Error(w, "NoSuchUpload", "the specified multipart upload does not exist", resource)
+	case errors.Is(err, errNoSuchBucket):
+		writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", resource)
+	default:
+		writeS3Error(w, "InternalError", err.Error(), resource)
+	}
+}
+
+func (srv *Server) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request, bucket, key string) {
+	contentType := r.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	metadata := map[string]string{}
+	for name, vals := range r.Header {
+		lower := strings.ToLower(name)
+		if strings.HasPrefix(lower, "x-amz-meta-") && len(vals) > 0 {
+			metadata[strings.TrimPrefix(lower, "x-amz-meta-")] = vals[0]
+		}
+	}
+	uploadID, err := srv.store.CreateMultipartUpload(bucket, key, contentType, metadata)
+	if err != nil {
+		writeMultipartError(w, err, "/"+bucket+"/"+key)
+		return
+	}
+	writeXML(w, http.StatusOK, initiateMultipartUploadResult{Bucket: bucket, Key: key, UploadId: uploadID})
+}
+
+func parsePartNumber(raw string) (int, error) {
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > maxPartNumber {
+		return 0, fmt.Errorf("part number must be an integer between 1 and %d", maxPartNumber)
+	}
+	return n, nil
+}
+
+func (srv *Server) handleUploadPart(w http.ResponseWriter, bucket, key, uploadID, partNumberRaw string, body []byte) {
+	partNumber, err := parsePartNumber(partNumberRaw)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), "/"+bucket+"/"+key)
+		return
+	}
+	etag, err := srv.store.UploadPart(bucket, key, uploadID, partNumber, body)
+	if err != nil {
+		writeMultipartError(w, err, "/"+bucket+"/"+key)
+		return
+	}
+	w.Header().Set("ETag", `"`+etag+`"`)
+	w.WriteHeader(http.StatusOK)
+	fireTestHook(hookAfterAck)
+}
+
+func (srv *Server) handleListParts(w http.ResponseWriter, bucket, key, uploadID string) {
+	parts, err := srv.store.ListParts(bucket, key, uploadID)
+	if err != nil {
+		writeMultipartError(w, err, "/"+bucket+"/"+key)
+		return
+	}
+	result := listPartsResult{Bucket: bucket, Key: key, UploadId: uploadID, MaxParts: maxPartNumber}
+	for _, p := range parts {
+		result.Part = append(result.Part, partXML{
+			PartNumber: p.partNumber, LastModified: iso8601(p.uploadedAt),
+			ETag: `"` + p.etag + `"`, Size: p.size,
+		})
+	}
+	writeXML(w, http.StatusOK, result)
+}
+
+func (srv *Server) handleAbortMultipartUpload(w http.ResponseWriter, bucket, key, uploadID string) {
+	if err := srv.store.AbortMultipartUpload(bucket, key, uploadID); err != nil {
+		writeMultipartError(w, err, "/"+bucket+"/"+key)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+	fireTestHook(hookAfterAck)
+}
+
+func (srv *Server) handleListMultipartUploads(w http.ResponseWriter, bucket string) {
+	uploads, err := srv.store.ListMultipartUploads(bucket)
+	if err != nil {
+		writeBucketOrInternalError(w, err, "/"+bucket)
+		return
+	}
+	result := listMultipartUploadsResult{Bucket: bucket}
+	for _, up := range uploads {
+		result.Upload = append(result.Upload, uploadXML{Key: up.key, UploadId: up.uploadID, Initiated: iso8601(up.createdAt)})
+	}
+	writeXML(w, http.StatusOK, result)
+}
+
+func (srv *Server) handleCompleteMultipartUpload(w http.ResponseWriter, bucket, key, uploadID string, body []byte) {
+	var reqXML completeMultipartUploadXML
+	if err := xml.Unmarshal(body, &reqXML); err != nil {
+		writeS3Error(w, "MalformedXML", "the CompleteMultipartUpload request body could not be parsed", "/"+bucket+"/"+key)
+		return
+	}
+	parts := make([]completedPart, len(reqXML.Part))
+	for i, p := range reqXML.Part {
+		parts[i] = completedPart{PartNumber: p.PartNumber, ETag: p.ETag}
+	}
+	entry, _, err := srv.store.CompleteMultipartUpload(bucket, key, uploadID, parts)
+	if err != nil {
+		switch {
+		case errors.Is(err, errNoSuchUpload):
+			writeS3Error(w, "NoSuchUpload", "the specified multipart upload does not exist", "/"+bucket+"/"+key)
+		case errors.Is(err, errNoSuchBucket):
+			writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", "/"+bucket+"/"+key)
+		case errors.Is(err, errEmptyCompletionPartList):
+			writeS3Error(w, "MalformedXML", "the CompleteMultipartUpload request must list at least one part", "/"+bucket+"/"+key)
+		case errors.Is(err, errPartsNotAscending):
+			writeS3Error(w, "InvalidPartOrder", "the parts list must be specified in strictly ascending PartNumber order with no duplicates", "/"+bucket+"/"+key)
+		case errors.Is(err, errInvalidPart):
+			writeS3Error(w, "InvalidPart", err.Error(), "/"+bucket+"/"+key)
+		case errors.Is(err, errEntityTooSmall):
+			writeS3Error(w, "EntityTooSmall", err.Error(), "/"+bucket+"/"+key)
+		default:
+			writeS3Error(w, "InternalError", err.Error(), "/"+bucket+"/"+key)
+		}
+		return
+	}
+	writeXML(w, http.StatusOK, completeMultipartUploadResult{
+		Location: "/" + bucket + "/" + key, Bucket: bucket, Key: key, ETag: `"` + entry.etag + `"`,
+	})
 }
 
 // =============================================================================

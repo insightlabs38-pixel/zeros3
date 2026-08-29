@@ -1,7 +1,7 @@
 ZeroS3 zero-dependency proof
 ============================
 
-Generated: 2026-08-29T03:41:30Z
+Generated: 2026-08-29T06:31:46Z
 Go toolchain: go version go1.27.0 linux/amd64
 GOOS/GOARCH: linux/amd64
 
@@ -134,10 +134,18 @@ flag
 hash/crc32
 log/internal
 log
+context
+vendor/golang.org/x/net/dns/dnsmessage
+internal/nettrace
+internal/singleflight
+weak
+unique
+net/netip
+runtime/cgo
+net
 compress/flate
 compress/gzip
 container/list
-context
 crypto/aes
 crypto/des
 crypto/internal/fips140/nistec/fiat
@@ -154,7 +162,6 @@ crypto/elliptic
 crypto/internal/boring/bbig
 crypto/internal/fips140/bigmod
 crypto/internal/fips140/ecdsa
-weak
 crypto/internal/fips140cache
 crypto/sha512
 internal/saferio
@@ -189,13 +196,6 @@ crypto/dsa
 crypto/x509/pkix
 encoding/pem
 maps
-vendor/golang.org/x/net/dns/dnsmessage
-internal/nettrace
-internal/singleflight
-unique
-net/netip
-runtime/cgo
-net
 net/url
 path/filepath
 crypto/x509
