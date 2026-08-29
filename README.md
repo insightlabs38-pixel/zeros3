@@ -301,6 +301,87 @@ never followed/opened. See `STATUS.md`'s "M6C" section for the complete
 semantics (traversal order, prefix mapping, partial-failure reporting,
 aggregate stats) and adversarial-review notes.
 
+## Remote-to-remote delta replication (`zeros3 replicate`)
+
+`zeros3 replicate SOURCE_URI DEST_URI --from SRC_ENDPOINT --to
+DST_ENDPOINT` is a **ZeroS3-specific extension** (M8A): replicate one
+existing object from a source ZeroS3 server to a destination ZeroS3
+server, transferring only the chunks the destination doesn't already
+have. This is **not** a generic AWS S3-to-S3 replication feature —
+both endpoints must be ZeroS3 servers that pass capability discovery, or
+the command fails clearly rather than guessing. See `S3_COMPAT.md`.
+
+```sh
+./zeros3 replicate s3://source-bucket/object s3://dest-bucket/object \
+  --from http://127.0.0.1:9000 \
+  --to   http://127.0.0.1:9001
+```
+
+Architecturally this is a **client-orchestrated relay**, not a server-to-
+server protocol: the `zeros3` CLI process talks independently to both
+servers and relays only the missing chunk bytes between them
+(`source → CLI → destination`), one chunk at a time, entirely in memory.
+Neither server ever makes an outbound request of its own, stores the
+other's credentials, or learns the other exists — this is a deliberate
+choice to introduce **zero new server-side SSRF surface** rather than,
+say, having the destination pull from an arbitrary source URL. Use
+`-from-access-key`/`-from-secret-key` and `-to-access-key`/
+`-to-secret-key` for independent source/destination credentials when
+they differ.
+
+Under the hood, `replicate` reuses M6's protocol almost without
+exception: capability discovery against both endpoints, the *same*
+bounded missing-chunk negotiation, the *same* idempotent chunk-upload
+endpoint, and the *same* checked commit path a local `zeros3 sync` uses.
+Only two things are genuinely new: an authenticated endpoint that
+returns a source object's ordered chunk list (`GET /_zeros3/v1/object`),
+and one to download a chunk by digest (`GET /_zeros3/v1/chunks/<sha256-
+hex>`) — both bounded, both digest-validated, both exposing nothing
+beyond what an ordinary authenticated HEAD/GET already would. The
+client independently re-verifies every chunk's SHA-256 itself before
+forwarding it, trusting neither server blindly. The result is an
+entirely ordinary destination object — indistinguishable from one
+written by `PutObject`, `CopyObject`, or `zeros3 sync` — to GET, HEAD,
+ListObjectsV2, `verify -deep`, and GC alike.
+
+One measured example (`TestReplicate_M8ADemonstrationFixture`): store B
+already holds a 15MB object sharing most of its content with store A's
+target object (a small localized edit apart); replicating A's object
+into B —
+
+```
+Logical object:          15.27 MiB
+Chunks:                  221
+Already at destination:  220
+Transferred chunks:      1
+Transferred payload:     107.02 KiB
+Transfer avoided:        15.16 MiB
+Reuse:                   99.3%
+```
+
+Only the chunks touched by the edit crossed the wire between the two
+independent servers; everything else was recognized as already present
+at the destination via the same negotiation `zeros3 sync` already uses.
+This is a measurement of one edit shape on one test environment, not a
+universal guarantee — see `zeros3-testing/results/
+M8A_REMOTE_DELTA_RESULTS.md` for the external, real-two-server, real-
+AWS-SDK-verified proof.
+
+A source object's manifest is immutable once published, so `replicate`
+operates on the exact revision it captured when it first read the
+source's object descriptor — if the source key is overwritten while a
+replication is in flight, that replication still completes correctly
+with the revision it originally captured, never a mixed one. The
+destination side keeps M6B's exact safe-mode conflict protection: if the
+destination changes after `replicate` observed it, the commit is
+rejected rather than silently overwritten. There is no durable
+replication-session state anywhere — an interrupted or killed
+`replicate` process is simply re-run, and CAS content-addressing makes
+the resume correct (only the chunks that genuinely didn't land the first
+time transfer the second time) without any bespoke retry/session
+machinery. See `STATUS.md`'s "M8A" section for the full protocol,
+consistency, conflict, and resume semantics, each with its own tests.
+
 ## Durability model
 
 - Immutable CAS chunks and the immutable manifest are always fully
@@ -425,8 +506,8 @@ different absolute paths, on `go1.27.0 linux/amd64` — produce
 byte-identical output:
 
 ```
-SHA-256 (copy A): e952fa60166a2935adf629e6dd92084e34f84ba0165c6145699aaf3c9250f3b3
-SHA-256 (copy B): e952fa60166a2935adf629e6dd92084e34f84ba0165c6145699aaf3c9250f3b3
+SHA-256 (copy A): efc0cb0956b39fc05fd11eb42422298f6d0aa776d5a70e41c94c87aad180e3fc
+SHA-256 (copy B): efc0cb0956b39fc05fd11eb42422298f6d0aa776d5a70e41c94c87aad180e3fc
 ```
 
 Reproduce this with [`scripts/reproducible_build.sh`](./scripts/reproducible_build.sh)
@@ -452,6 +533,12 @@ Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
   batch at a time — no concurrent transfer; directory sync (M6C) is
   non-destructive with no `--delete`/mirror mode, so a locally-removed
   file's previously-synced remote object is left untouched.
+- `zeros3 replicate` (M8A) replicates exactly one object per invocation
+  — no prefix/bucket recursion, no continuous/scheduled replication, no
+  peer-to-peer repair or healing between servers. Both endpoints must be
+  ZeroS3 servers that pass capability discovery; there is no
+  generic-AWS-S3-source-or-destination fallback the way `zeros3 sync`
+  falls back to a plain `PutObject` for a non-ZeroS3 destination.
 - `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` are eligible but not yet
   implemented (no real client exercised needs them);
   `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and SigV4A/ECDSA streaming modes

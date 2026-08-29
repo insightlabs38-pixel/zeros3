@@ -97,6 +97,18 @@ aspirational.
   used for manifests/`FORMAT.json`/journal payloads/`-json` CLI output
   (table row 7), applied here to a genuinely new role (an HTTP
   request/response wire format, not just on-disk/CLI encoding).
+- **Remote-to-remote delta replication (M8A, `zeros3 replicate`):**
+  `net/url`'s `url.Values` for encoding the object-descriptor endpoint's
+  `bucket`/`key` query parameters — a genuinely new role for a package
+  already in use (row 5's `x-amz-copy-source` percent-decoding): letting
+  `net/url` build the query string sidesteps the exact raw-path-
+  concatenation bug class the M7 hostile review found and fixed in
+  `zeros3 sync`'s own client (a `%`/`#`/`?` in a *path segment* needs
+  hand-rolled escaping; the same bytes in a *query value* are simply
+  `url.Values.Encode()`'s job). No new HTTP client, signer, or JSON
+  library was needed — `replicateObject` (section 15d) reuses
+  `signAndDo`/`discoverZeroS3Sync`/`negotiateSyncMissing`/`putSyncChunk`/
+  `commitSyncObject` unmodified.
 - **Recursive directory traversal (M6C, `zeros3 sync LOCAL_DIRECTORY ...`):**
   `path/filepath`'s `WalkDir`, used here for the first time in this
   codebase to walk a client-side source tree rather than a single named
@@ -173,7 +185,10 @@ authored logic in `zeros3.go`:
   file mutated mid-operation aborts, and resuming after an interrupted
   transfer or server restart falls out of CAS's own content-addressed
   durability (re-running `sync` naturally re-negotiates only the chunks
-  still missing) rather than any bespoke retry/session state.
+  still missing) rather than any bespoke retry/session state. `zeros3
+  replicate` (M8A) inherits exactly the same story: no replication-
+  session database anywhere, so an interrupted or killed `replicate`
+  process is simply re-run, and CAS makes the resume correct on its own.
 - **No online/concurrent GC** — `zeros3 gc` requires exclusive ownership
   of the store (via `syscall.Flock`, row 11 above) and refuses to run
   while `zeros3 serve` (or another `gc`) holds it; a scheduler for

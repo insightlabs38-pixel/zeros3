@@ -84,7 +84,9 @@ request:
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/_zeros3/v1/info` | `GET` | capability discovery (`protocol`/`cdc`/`hash`/`delta_sync`/batch and size limits, JSON) |
+| `/_zeros3/v1/object?bucket=&key=` | `GET` | object chunk descriptor (M8A — ordered chunks/size/ETag/content-type/metadata, JSON) |
 | `/_zeros3/v1/negotiate` | `POST` | bounded missing-chunk query (JSON in/out) |
+| `/_zeros3/v1/chunks/<sha256-hex>` | `GET` | chunk download (M8A — raw bytes) |
 | `/_zeros3/v1/chunks/<sha256-hex>` | `PUT` | idempotent chunk upload (raw bytes) |
 | `/_zeros3/v1/commit` | `POST` | atomic ordinary object commit (JSON in/out) |
 
@@ -115,6 +117,32 @@ untouched — there is no delete mode) and every file still goes through
 M6B's own safe-mode conflict precondition, so one file's remote conflict
 can never silently overwrite or corrupt another. See `STATUS.md`'s "M6C"
 section for full semantics and `README.md` for CLI usage.
+
+**Remote-to-remote delta replication (`zeros3 replicate SOURCE DESTINATION
+--from SRC_ENDPOINT --to DST_ENDPOINT`, M8A) is proprietary ZeroS3
+functionality layered on this same extension, not a generic AWS
+S3-to-S3 replication feature and not part of the S3 wire protocol.**
+It replicates one existing object from a source ZeroS3 server to a
+destination ZeroS3 server, transferring only the chunks the destination
+doesn't already have — the two new endpoints in the table above
+(`GET /object`, `GET /chunks/<sha256-hex>`) exist solely to make a
+source's chunk list and payload bytes reachable to this client; every
+other step (capability discovery, negotiate, chunk upload, commit) reuses
+the exact same M6 endpoints and client primitives unmodified. The
+architecture is a **client-orchestrated relay**: the `zeros3` CLI process
+talks independently to both servers and relays only the missing bytes
+between them in memory — neither server ever makes an outbound request of
+its own, stores the other's credentials, or learns the other exists.
+This is a deliberate choice to avoid introducing any server-side SSRF
+surface. A successful replication produces an ordinary destination
+object, indistinguishable from one written by `PutObject`, `CopyObject`,
+or `zeros3 sync` — no new persistent format, no "replica object" concept.
+`replicate` requires both endpoints to be ZeroS3 servers that pass
+capability discovery; there is no generic-S3-source or generic-S3-
+destination fallback (unlike `zeros3 sync`'s plain-`PutObject` fallback
+for a non-ZeroS3 destination). See `STATUS.md`'s "M8A" section for the
+full protocol/consistency/conflict/resume semantics and `README.md` for
+CLI usage.
 
 ## Deliberately unsupported (explicit non-goals)
 
