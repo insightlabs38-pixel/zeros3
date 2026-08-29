@@ -209,11 +209,11 @@ var (
 	// cases for multipart upload IDs.
 	errNoSuchVersion = errors.New("no such version")
 
-	// errGCStoreInUse (section 16b) is returned when GC cannot acquire
+	// errGCStoreInUse (section 13b) is returned when GC cannot acquire
 	// exclusive ownership of the store because another process (typically
 	// "zeros3 serve") currently holds it open.
 	errGCStoreInUse = errors.New("store is currently in use by another process")
-	// errGCUnsafe (section 16b) is returned by a destructive GC run when
+	// errGCUnsafe (section 13b) is returned by a destructive GC run when
 	// the authoritative live root set is not fully valid: proceeding would
 	// risk treating reachable-but-corrupt data as garbage.
 	errGCUnsafe = errors.New("authoritative live root set is corrupt or incomplete; refusing to delete anything")
@@ -1653,7 +1653,7 @@ func (s *Store) commitObjectRoot(bucket, key, manUUID string, manSHA [32]byte, m
 }
 
 // commitObjectRootChecked is commitObjectRoot's precondition-aware core
-// (section 17 (M6) adds the one caller that passes a non-nil check, for
+// (section 15 (M6) adds the one caller that passes a non-nil check, for
 // sync's safe-mode conflict precondition). If check is non-nil, it runs
 // inside the exact same locked critical section as the commit itself,
 // immediately after re-confirming bucket existence and reading the
@@ -3193,7 +3193,7 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The ZeroS3 delta-sync extension (section 17, M6) lives entirely under
+	// The ZeroS3 delta-sync extension (section 15, M6) lives entirely under
 	// its own reserved path namespace, checked before any bucket/key
 	// parsing -- it never overloads a real S3 operation or path shape, and
 	// bucket/key for it (when relevant) travel in the JSON body, not the
@@ -4985,7 +4985,7 @@ type reachabilityResult struct {
 // live root's manifest reads/parses/hash-checks cleanly and every chunk it
 // references is present with the right length (and, if this scan was
 // deep, the right content hash). This is the fail-closed gate destructive
-// GC checks before deleting anything (section 16b) -- unreachable/
+// GC checks before deleting anything (section 13b) -- unreachable/
 // reclaimable garbage is not itself a failure, so it never affects OK();
 // only broken *live* data and journal replay do.
 func (r reachabilityResult) OK() bool {
@@ -5191,12 +5191,11 @@ type StatsResult struct {
 	ScopeSharedChunkBytes      int64 `json:"scope_shared_chunk_bytes"`
 
 	// HistoricalVersionCount/HistoricalVersionLogicalBytes and
-	// ActiveMultipartUploadCount/ActiveMultipartLogicalBytes (M5-C) are
-	// scoped exactly like CurrentObjectCount/LogicalCurrentBytes (same
-	// sel.matches(bucket,key) rule). VersionCount/LogicalVersionBytes now
-	// genuinely differ from CurrentObjectCount/LogicalCurrentBytes: they
-	// are the total of current-plus-historical, per the "future milestone"
-	// this comment used to point at -- this is that milestone.
+	// ActiveMultipartUploadCount/ActiveMultipartLogicalBytes are scoped
+	// exactly like CurrentObjectCount/LogicalCurrentBytes (same
+	// sel.matches(bucket,key) rule). VersionCount/LogicalVersionBytes are
+	// the total of current-plus-historical, genuinely differing from
+	// CurrentObjectCount/LogicalCurrentBytes.
 	HistoricalVersionCount        int64 `json:"historical_version_count"`
 	HistoricalVersionLogicalBytes int64 `json:"historical_version_logical_bytes"`
 	ActiveMultipartUploadCount    int64 `json:"active_multipart_upload_count"`
@@ -5910,7 +5909,7 @@ func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry,
 }
 
 // =============================================================================
-// 17. Optional ZeroS3 Delta Sync (M6)
+// 15. Optional ZeroS3 Delta Sync (M6)
 //
 // M6 is not a second storage engine: it is an optimized ingestion path
 // for producing an ordinary object. A file synced through this protocol
@@ -6026,7 +6025,7 @@ type syncChunkUploadResponse struct {
 // not de-duplicated -- a chunk that repeats within one file legitimately
 // repeats in its manifest, exactly as an ordinary PutObject's chunkData
 // output would) plus ordinary object metadata and an optional safe-mode
-// conflict precondition (section 17's ExpectAbsent/ExpectedETag -- see
+// conflict precondition (section 15's ExpectAbsent/ExpectedETag -- see
 // commitObjectRootChecked).
 type syncCommitRequest struct {
 	Protocol     int                   `json:"protocol"`
@@ -6337,7 +6336,7 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 var errSyncConflict = errors.New("sync: destination changed since sync began (safe-mode conflict)")
 
 // =============================================================================
-// 17b. `zeros3 sync` client
+// 15b. `zeros3 sync` client
 //
 // Unlike every other CLI verb, sync is a real HTTP client of a running
 // zeros3 server: it never opens a store directory directly. It signs its
@@ -6350,7 +6349,7 @@ var errSyncConflict = errors.New("sync: destination changed since sync began (sa
 var (
 	// errSyncLocalMutation/errSyncRemoteConflict are returned by syncFile
 	// for the two safety aborts M6B requires: the local source changed
-	// during the operation (section 17b's mutation check), or the
+	// during the operation (section 15b's mutation check), or the
 	// destination changed since the client observed it (the server's
 	// PreconditionFailed, translated here).
 	errSyncLocalMutation  = errors.New("sync: local file changed during the sync operation; aborting without committing")
@@ -6910,7 +6909,7 @@ func syncFile(cfg syncClientConfig) (syncStats, error) {
 // parseS3URI parses the "s3://bucket/key" destination form single-file
 // `zeros3 sync` takes, deliberately not a general URI parser -- only the
 // one shape this CLI needs. A directory destination uses parseS3DirURI
-// instead (section 17c, below): a single-file destination must name one
+// instead (section 15c, below): a single-file destination must name one
 // object (key non-empty), while a directory destination's prefix may be
 // empty because each file's own relative path supplies the rest of the
 // key.
@@ -6928,7 +6927,7 @@ func parseS3URI(raw string) (bucket, key string, err error) {
 }
 
 // =============================================================================
-// 17c. `zeros3 sync` directory (recursive) client (M6C)
+// 15c. `zeros3 sync` directory (recursive) client (M6C)
 //
 // Directory sync is orchestration over the unmodified M6A/M6B single-file
 // primitive (syncFile, above) -- never a second transfer engine, CDC
@@ -7226,7 +7225,7 @@ func runSync(args []string) {
 }
 
 // =============================================================================
-// 15. CLI: stats / verify / versions / restore / gc
+// 16. CLI: stats / verify / versions / restore / gc
 //
 // Compact verbs; stdout carries the requested result/data, stderr carries
 // diagnostics, and a nonzero exit reports incomplete/failed work -- per
@@ -7299,7 +7298,7 @@ func runServe(args []string) {
 	defer store.Close()
 
 	// A running server holds a SHARED advisory lock on the store for its
-	// whole lifetime -- see section 16a -- so that destructive `gc -apply`
+	// whole lifetime -- see section 13b -- so that destructive `gc -apply`
 	// (which requires EXCLUSIVE ownership) refuses safely instead of
 	// racing a live writer, rather than the server refusing to start
 	// merely because some other ordinary reader has the store open.
@@ -7582,7 +7581,7 @@ func printGCHuman(w io.Writer, r GCResult) {
 
 // runGC implements "zeros3 gc -store DIR [-apply] [-json]": dry-run by
 // default (never deletes anything); -apply is required to actually remove
-// unreachable CAS/manifest files. See section 16b.
+// unreachable CAS/manifest files. See section 13b.
 func runGC(args []string) {
 	fs := flag.NewFlagSet("gc", flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
@@ -7616,7 +7615,7 @@ func runGC(args []string) {
 
 // runDoctor implements "zeros3 doctor -store DIR [-deep] [-json]": a
 // read-only lifecycle diagnostic that is deliberately just Verify's
-// existing output under a name operators reach for first (section 16c).
+// existing output (section 13) under a name operators reach for first.
 // It never mutates the store.
 func runDoctor(args []string) {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
@@ -7652,7 +7651,7 @@ func runDoctor(args []string) {
 }
 
 // =============================================================================
-// 16. Lifecycle / main
+// 17. Lifecycle / main
 // =============================================================================
 
 func main() {

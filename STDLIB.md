@@ -46,7 +46,7 @@ aspirational.
 | 5 | Embedded metadata DB (e.g. `bbolt`) for tracking what exists | `os`, `io`, `hash/crc32` | An append-only, CRC32C-framed, replay-based "visibility journal" (section 6) that is the sole source of truth for the bucket/object namespace | A real engineering tradeoff: no transactions/indexes/queries for free — replay-on-open and an in-memory map are hand-built. |
 | 6 | XML codec (e.g. `fast-xml-parser`) | `encoding/xml` | S3 response/error XML shapes (`listBucketResult`, `copyObjectResult`, S3 error envelope) | Stdlib's `encoding/xml` handles escaping/marshaling directly; no gap to fill. |
 | 7 | JSON codec/CLI reporting library | `encoding/json` | Manifest/`FORMAT.json`/journal-payload encoding, `stats -json`/`verify -json` output | None; stdlib JSON is a complete fit. |
-| 8 | CLI framework (e.g. Cobra, `commander`) | `flag`, `os.Args` | Subcommand dispatch (`serve` default, `stats`, `verify`, `presign`, and — M5-C — `versions`, `restore`, `gc`, `doctor`), usage/exit-status contract (section 15/16) | `flag` has no subcommand concept built in; ZeroS3 dispatches on `os.Args[1]` itself and gives each subcommand its own `flag.FlagSet`. |
+| 8 | CLI framework (e.g. Cobra, `commander`) | `flag`, `os.Args` | Subcommand dispatch (`serve` default, `stats`, `verify`, `presign`, and — M5-C — `versions`, `restore`, `gc`, `doctor`), usage/exit-status contract (section 16/17) | `flag` has no subcommand concept built in; ZeroS3 dispatches on `os.Args[1]` itself and gives each subcommand its own `flag.FlagSet`. |
 | 11 | Advisory file locking (e.g. `gofrs/flock`) | `syscall` (`syscall.Flock`, `LOCK_EX`/`LOCK_SH`/`LOCK_NB`/`LOCK_UN`) | Exclusive-ownership enforcement for `zeros3 gc` (section 13b): a shared lock for an ordinary store user (`zeros3 serve`), an exclusive, non-blocking lock GC must win before it may delete anything | `syscall.Flock` is Unix-specific (fine: Linux amd64 is the sole release-blocking platform per section 1 above); no third-party lock library was needed. |
 | 9 | Checksum/integrity library | `hash/crc32` (with the Castagnoli table), `encoding/base64` | Ordinary `x-amz-checksum-crc32` request validation, journal frame CRC32C | Both uses share `hash/crc32`; nothing third-party was ever needed here. |
 | 10 | S3-compatible single-part ETag (MD5-based) | `crypto/md5` | `buildManifestV1`'s ETag computation | MD5 here is explicitly *not* a security use — it exists solely to match S3's documented single-part ETag convention (`//nolint:gosec` marks this deliberately). |
@@ -88,7 +88,7 @@ aspirational.
   first time in this codebase — every other CLI verb (`stats`/`verify`/
   `versions`/`restore`/`gc`/`doctor`) operates directly on a `-store DIR`,
   never over the network. No third-party HTTP client (`resty`,
-  `req`, etc.) was needed; `signSigV4Request` (section 17b) reuses the
+  `req`, etc.) was needed; `signSigV4Request` (section 15b) reuses the
   server's own SigV4 canonicalization primitives (`sigv4CanonicalURI`/
   `sigv4CanonicalQuery`/`sigv4CanonicalHeaders`/`sigv4SigningKey`) rather
   than a second signing implementation.

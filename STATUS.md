@@ -942,7 +942,7 @@ state" to keep (`TestVersions_FirstPutCreatesNoHistory`).
 ### Phase C — version history CLI
 
 `zeros3 versions -bucket B -key K [-store DIR] [-json]`
-(`runVersions`/`Store.ListVersions`, `zeros3.go` section 15): lists the
+(`runVersions`/`Store.ListVersions`, `zeros3.go` section 16): lists the
 current root (if any, `status: "current"`) followed by every retained
 historical version, newest-first, each row carrying version ID, logical
 size, ETag, content type, an RFC3339Nano archival timestamp, and a
