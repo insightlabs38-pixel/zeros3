@@ -1,5 +1,143 @@
 # ZeroS3 — M1/M2/M3/M4 Status
 
+## M5-D — Multipart pagination micro-pass: `ListParts`/`ListMultipartUploads`
+
+**COMPLETE.** A tightly bounded pass with exactly one purpose: close the
+`ListParts`/`ListMultipartUploads` pagination gap M5-C inspected and
+explicitly deferred (see the M5-C "Phase A" section below). No M6 delta
+sync, directory sync, replication, new authentication modes, internal
+version/GC changes, pack files, compression, compaction, indexing, Merkle
+structures, or unrelated S3 features were started.
+
+- **Starting state:** `zeros3` branch
+  `claude/zeros3-m5d-multipart-pagination-gzlhq8` was confirmed
+  identical-tree to `origin/main` at
+  `6ef28fd042d57a56e1eeb5c914b4b274d5b36894` (the M5-C merge) before any
+  edit; `zeros3-testing`'s same-named branch was confirmed identical-tree
+  to its own `origin/main` at `8fb6bbd50e0fca063140f5d4efbeefa595e97ee6`
+  (also the M5-C merge). Both were fetched fresh from `origin` rather than
+  trusting a prior session's summary. The regression baseline (`go test`,
+  `go test -race`, `go vet`, `gofmt -l`) was green before any change: **223
+  top-level test functions / 452 `--- PASS` lines (including subtests), 0
+  failing**, matching the M5-C end-state.
+- **Resulting state:** this commit, on the same branch (`git log -1` names
+  the exact SHA); `zeros3-testing`'s matching commit on its own same-named
+  branch carries this pass's external-regression evidence.
+
+### Pagination operations completed
+
+- **`ListParts`** (`Store.ListPartsPage`, `handleListParts`,
+  `parseListPartsQuery`): `part-number-marker` (parts with part number
+  strictly greater than the marker), `max-parts` (default/hard cap 1000,
+  matching `ListObjectsV2`'s own `max-keys` convention and AWS's
+  documented "1,000 is also the default value" ceiling for this
+  operation), `IsTruncated`, `NextPartNumberMarker`. Stable ascending
+  part-number order, computed at response time from the existing
+  `map[int]*multipartPart` (no new persistent index — a replaced part
+  number simply never appears twice, since `UploadPart` already overwrites
+  the map entry in place). The pre-existing `Store.ListParts` (returns
+  every part, used by several crash/restart tests) is untouched; the new
+  paginated path is a separate method used only by the HTTP handler, so no
+  existing test call site needed to change.
+- **`ListMultipartUploads`** (`Store.ListMultipartUploads` — its own
+  signature gained the three pagination parameters directly, since it had
+  no callers besides the HTTP handler to preserve — `handleListMultipartUploads`,
+  `parseListMultipartUploadsQuery`, `afterMultipartMarker`): `key-marker`,
+  `upload-id-marker`, `max-uploads` (same default/cap-1000 convention),
+  `IsTruncated`, `NextKeyMarker`, `NextUploadIdMarker`. Ordering is key
+  ascending, then upload ID ascending as the tie-break (unchanged from
+  M5-B) — upload IDs are UUIDv7, so this reproduces AWS's own documented
+  "same key, ascending initiation time" secondary order without needing a
+  second sort key. `upload-id-marker` is ignored unless `key-marker` is
+  also given, matching AWS's documented rule exactly (verified against
+  `docs.aws.amazon.com/AmazonS3/latest/API/API_ListMultipartUploads.html`
+  before implementing, not guessed) — this required the marker comparator
+  to special-case an absent `upload-id-marker` rather than treating it as
+  an ordinary empty-string tuple compare (an earlier version of this
+  comparator wrongly re-admitted `key-marker`'s own uploads, caught by
+  this pass's own `resume-between-keys` test before being fixed).
+
+### XML/validation
+
+- `listPartsResult` gained `PartNumberMarker`/`NextPartNumberMarker`
+  (always rendered, including `0` when not truncated — there is no
+  verified AWS-compatible omission rule for these two, unlike
+  `ListObjectsV2`'s opaque `NextContinuationToken`, which this codebase
+  does omit when not truncated; every AWS SDK drives pagination off
+  `IsTruncated`, not field presence, so this is compatible in practice).
+  `listMultipartUploadsResult` gained `KeyMarker`/`UploadIdMarker`/
+  `NextKeyMarker`/`NextUploadIdMarker` (always rendered, empty when not
+  applicable — AWS's own published example response shows exactly this
+  present-but-empty shape for a non-truncated `ListMultipartUploads`).
+- Malformed query values are rejected as `InvalidArgument`, matching
+  `ListObjectsV2`'s own convention: non-integer or negative
+  `part-number-marker`/`max-parts`/`max-uploads` reject; `0` is accepted
+  as a valid boundary (an empty, non-truncated page — mirrors
+  `ListObjectsV2`'s own verified `max-keys=0` behavior); any value above
+  1000 is silently clamped to 1000 rather than rejected (matches AWS's own
+  documented ceiling framing, "1,000 is also the default value", for both
+  operations). `upload-id-marker` without `key-marker` is documented AWS
+  behavior to *ignore*, not reject — implemented as ignore, not an error.
+
+### Internal test result
+
+`go test ./...`, `go test ./... -race`, `go vet ./...`, `gofmt -l .`: all
+clean. **263 top-level test functions / 452 `--- PASS` lines (including
+subtests), 0 failing** — up from the 223/many-fewer-subtests baseline
+above, entirely from this pass's new tests (42 `--- PASS` lines under
+`TestListParts_Pagination*`/`TestListMultipartUploads_Pagination*`
+covering: zero/one/fewer/exactly/max+1 parts or uploads, multi-page
+iteration, marker at the beginning/middle/end/beyond the highest value,
+default and explicit small and clamped page sizes, invalid marker/max
+syntax, restart-then-paginate determinism (`Store`-level, mirroring the
+existing crash-test pattern), an overwritten part never duplicating in a
+paginated listing, multiple keys, multiple uploads for the same key with
+marker resume within that key, and completed/aborted uploads never
+appearing). No existing test was modified; the pre-M5-D multipart
+regression suite is unchanged and still green.
+
+### External SDK result
+
+New harness `zeros3-testing/harness/m5d/pagination` (AWS SDK for Go v2,
+`s3.Client`, low-level calls only): 7 tiny parts paginated with
+deliberately small `MaxParts=2`, and 6 active uploads across 5 keys (one
+key with 2 concurrent uploads) paginated with deliberately small
+`MaxUploads=2`, each following the real `Next*Marker` response fields into
+the next request. **43/43 passed** — see
+`zeros3-testing/results/M5D_PAGINATION_RESULTS.md`. The pre-existing M5-B
+multipart harness (`harness/m5b/multipart`) was re-run unmodified against
+the same build as a regression check: **43/43 passed**, unchanged.
+
+### Known limitations
+
+- `ListMultipartUploads`'s `delimiter`/`prefix`/`CommonPrefixes` grouping
+  remains unimplemented (out of scope for this pagination-only pass;
+  `S3_COMPAT.md` records it as a compatibility deviation).
+- AWS's exact XML rendering of `NextPartNumberMarker` for a *non-truncated*
+  `ListParts` response was not independently verifiable (no published AWS
+  example covers that specific case); ZeroS3 always renders it (documented
+  in `S3_COMPAT.md`), an evidence-informed choice consistent with the
+  verified `ListMultipartUploads` behavior, not a guess made from nothing.
+- `max-parts=0`/`max-uploads=0` are treated as a valid empty, non-truncated
+  page (mirroring `ListObjectsV2`'s own verified `max-keys=0` behavior)
+  rather than rejected, even though AWS's `max-uploads` documentation
+  phrases its valid range as "1 to 1,000"; this was a deliberate,
+  documented consistency choice under this pass's budget, not independently
+  verified against real AWS for the `max-uploads=0` case specifically.
+
+### Dependency/source-file audit
+
+Zero-dependency/single-file constraints intact: `zeros3.go` remains the
+only non-test source file in the `zeros3` module (`zeros3_test.go` the
+only test file), `go.mod` still has no `require` directives, and no
+persistent on-disk format changed — pagination is computed entirely at
+response time from the existing in-memory `Store.uploads`/`up.parts`
+state, with no new journal record type, no new field written to disk, and
+no change to CDC/CAS/manifest/journal encoding. `zeros3-testing`'s
+dependency direction is unchanged (`zeros3-testing --(HTTP/S3 API)-->
+zeros3`, never the reverse); the new harness reuses the same pinned AWS
+SDK for Go v2 versions already recorded above, adding no new dependency.
+
 ## M5-C — Internal versions, restore, authoritative reachability, safe GC, doctor/stats
 
 **COMPLETE.** A bounded storage-lifecycle pass, exactly per its own scope:

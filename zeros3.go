@@ -163,6 +163,13 @@ const (
 	// real S3 enforces.
 	maxPartNumber        = 10000
 	minMultipartPartSize = 5 * 1024 * 1024
+
+	// defaultMaxParts/defaultMaxUploads are both the default page size and
+	// the hard per-page cap for ListParts/ListMultipartUploads, matching
+	// real S3's own documented "1,000 is also the default value... maximum
+	// number that can be returned" behavior for both operations.
+	defaultMaxParts   = 1000
+	defaultMaxUploads = 1000
 )
 
 var castagnoliTable = crc32.MakeTable(crc32.Castagnoli)
@@ -3219,13 +3226,13 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case key != "" && r.Method == http.MethodPut && hasUploadID:
 		srv.handleUploadPart(w, bucket, key, uploadID, mpQuery.Get("partNumber"), body)
 	case key != "" && r.Method == http.MethodGet && hasUploadID:
-		srv.handleListParts(w, bucket, key, uploadID)
+		srv.handleListParts(w, bucket, key, uploadID, rawQuery)
 	case key != "" && r.Method == http.MethodPost && hasUploadID:
 		srv.handleCompleteMultipartUpload(w, bucket, key, uploadID, body)
 	case key != "" && r.Method == http.MethodDelete && hasUploadID:
 		srv.handleAbortMultipartUpload(w, bucket, key, uploadID)
 	case key == "" && r.Method == http.MethodGet && hasUploads:
-		srv.handleListMultipartUploads(w, bucket)
+		srv.handleListMultipartUploads(w, bucket, rawQuery)
 	case r.Method == http.MethodPut && key == "":
 		srv.handleCreateBucket(w, bucket)
 	case r.Method == http.MethodPut:
@@ -3485,6 +3492,70 @@ func parseListObjectsV2Query(rawQuery string) (listType, prefix, delimiter, cont
 		maxKeys = 1000
 	}
 	return listType, prefix, delimiter, continuationToken, maxKeys, nil
+}
+
+// parseListPartsQuery parses ListParts' two pagination query parameters.
+// part-number-marker must be a non-negative integer (0 means "from the
+// start", matching an omitted marker) -- part numbers themselves start at
+// 1, so a negative marker can never be legitimate. max-parts follows
+// ListObjectsV2's own max-keys convention: missing defaults to
+// defaultMaxParts, 0 is accepted (an empty, non-truncated page, matching
+// real S3's own max-keys=0 behavior), negative is rejected, and anything
+// above defaultMaxParts is silently capped rather than rejected -- real S3
+// documents "1,000 is also the default value" as the hard ceiling, not an
+// error condition.
+func parseListPartsQuery(rawQuery string) (partNumberMarker, maxParts int, err error) {
+	values, perr := url.ParseQuery(rawQuery)
+	if perr != nil {
+		return 0, 0, fmt.Errorf("malformed query string")
+	}
+	if raw := values.Get("part-number-marker"); raw != "" {
+		n, convErr := strconv.Atoi(raw)
+		if convErr != nil || n < 0 {
+			return 0, 0, fmt.Errorf("part-number-marker must be a non-negative integer")
+		}
+		partNumberMarker = n
+	}
+	maxParts = defaultMaxParts
+	if raw := values.Get("max-parts"); raw != "" {
+		n, convErr := strconv.Atoi(raw)
+		if convErr != nil || n < 0 {
+			return 0, 0, fmt.Errorf("max-parts must be a non-negative integer")
+		}
+		maxParts = n
+	}
+	if maxParts > defaultMaxParts {
+		maxParts = defaultMaxParts
+	}
+	return partNumberMarker, maxParts, nil
+}
+
+// parseListMultipartUploadsQuery parses ListMultipartUploads' three
+// pagination query parameters. key-marker and upload-id-marker are opaque
+// S3 identifiers (an object key and an upload ID) with no syntax to
+// validate -- any string is accepted, exactly like ListObjectsV2's own
+// continuation-token/prefix handling. max-uploads follows the same
+// default/cap/reject-negative convention as parseListPartsQuery's
+// max-parts, mirroring max-keys.
+func parseListMultipartUploadsQuery(rawQuery string) (keyMarker, uploadIDMarker string, maxUploads int, err error) {
+	values, perr := url.ParseQuery(rawQuery)
+	if perr != nil {
+		return "", "", 0, fmt.Errorf("malformed query string")
+	}
+	keyMarker = values.Get("key-marker")
+	uploadIDMarker = values.Get("upload-id-marker")
+	maxUploads = defaultMaxUploads
+	if raw := values.Get("max-uploads"); raw != "" {
+		n, convErr := strconv.Atoi(raw)
+		if convErr != nil || n < 0 {
+			return "", "", 0, fmt.Errorf("max-uploads must be a non-negative integer")
+		}
+		maxUploads = n
+	}
+	if maxUploads > defaultMaxUploads {
+		maxUploads = defaultMaxUploads
+	}
+	return keyMarker, uploadIDMarker, maxUploads, nil
 }
 
 func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery string) {
@@ -3954,6 +4025,55 @@ func (s *Store) ListParts(bucket, key, uploadID string) ([]*multipartPart, error
 	return out, nil
 }
 
+// listPartsPage is one page of ListParts results, as needed to render the
+// ListPartsResult XML's pagination fields.
+type listPartsPage struct {
+	parts                []*multipartPart
+	truncated            bool
+	nextPartNumberMarker int
+}
+
+// ListPartsPage returns the page of uploadID's parts with part number
+// strictly greater than partNumberMarker, in ascending part-number order,
+// capped at maxParts entries. It re-sorts up.parts (a plain map) on every
+// call rather than maintaining a separate index -- parts-per-upload is
+// bounded by maxPartNumber (10000) and this mirrors the ordering approach
+// ListParts and ListMultipartUploads already use, so a page is always
+// correct even immediately after a part is replaced (UploadPart overwrites
+// the map entry in place, so a replaced part number never appears twice).
+func (s *Store) ListPartsPage(bucket, key, uploadID string, partNumberMarker, maxParts int) (listPartsPage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	up, err := s.lookupUploadLocked(bucket, key, uploadID)
+	if err != nil {
+		return listPartsPage{}, err
+	}
+	if maxParts <= 0 {
+		return listPartsPage{}, nil
+	}
+	nums := make([]int, 0, len(up.parts))
+	for n := range up.parts {
+		if n > partNumberMarker {
+			nums = append(nums, n)
+		}
+	}
+	sort.Ints(nums)
+
+	var page listPartsPage
+	if len(nums) > maxParts {
+		page.truncated = true
+		nums = nums[:maxParts]
+	}
+	page.parts = make([]*multipartPart, len(nums))
+	for i, n := range nums {
+		page.parts[i] = up.parts[n]
+	}
+	if page.truncated {
+		page.nextPartNumberMarker = nums[len(nums)-1]
+	}
+	return page, nil
+}
+
 // AbortMultipartUpload permanently invalidates uploadID. Its already-
 // published part chunks are not deleted -- like a deleted object's former
 // chunks, they simply become ordinary unreferenced, reclaimable CAS
@@ -3978,13 +4098,52 @@ func (s *Store) AbortMultipartUpload(bucket, key, uploadID string) error {
 	return nil
 }
 
-// ListMultipartUploads returns every currently in-progress upload targeting
-// bucket, ordered by key then upload ID (S3's own documented ordering).
-func (s *Store) ListMultipartUploads(bucket string) ([]*multipartUpload, error) {
+// listMultipartUploadsPage is one page of ListMultipartUploads results, as
+// needed to render the ListMultipartUploadsResult XML's pagination fields.
+type listMultipartUploadsPage struct {
+	uploads            []*multipartUpload
+	truncated          bool
+	nextKeyMarker      string
+	nextUploadIDMarker string
+}
+
+// afterMultipartMarker reports whether (key, uploadID) sorts strictly after
+// the compound (keyMarker, uploadIDMarker) cursor, under the same key-then-
+// upload-ID order ListMultipartUploads itself uses. Real S3 documents this
+// exact compound-marker rule: with a key-marker but no upload-id-marker,
+// only keys lexicographically greater than key-marker qualify -- uploads
+// for key-marker itself are excluded entirely, which is why an empty
+// uploadIDMarker gets its own branch below rather than falling into the
+// tuple compare (an ordinary tuple compare would treat "greater than the
+// empty string" as true for every real, non-empty upload ID, wrongly
+// re-admitting key-marker's own uploads). With both markers set, an upload
+// for the same key additionally qualifies once its upload ID is
+// lexicographically greater than upload-id-marker. Callers must clear
+// uploadIDMarker to "" whenever keyMarker is "" first -- real S3 documents
+// upload-id-marker as ignored unless key-marker is also given -- which then
+// takes the same empty-marker branch and correctly selects everything
+// (every real key is non-empty, so key > "" is always true).
+func afterMultipartMarker(key, uploadID, keyMarker, uploadIDMarker string) bool {
+	if uploadIDMarker == "" {
+		return key > keyMarker
+	}
+	if key != keyMarker {
+		return key > keyMarker
+	}
+	return uploadID > uploadIDMarker
+}
+
+// ListMultipartUploads returns the page of bucket's in-progress uploads
+// sorting strictly after the (keyMarker, uploadIDMarker) cursor, ordered by
+// key then upload ID (S3's own documented ordering -- upload IDs are
+// UUIDv7, so this tie-break also happens to reproduce S3's own "same key,
+// ascending initiation time" secondary order), capped at maxUploads
+// entries.
+func (s *Store) ListMultipartUploads(bucket, keyMarker, uploadIDMarker string, maxUploads int) (listMultipartUploadsPage, error) {
 	s.mu.Lock()
 	if _, ok := s.buckets[bucket]; !ok {
 		s.mu.Unlock()
-		return nil, errNoSuchBucket
+		return listMultipartUploadsPage{}, errNoSuchBucket
 	}
 	var out []*multipartUpload
 	for _, up := range s.uploads {
@@ -3999,7 +4158,32 @@ func (s *Store) ListMultipartUploads(bucket string) ([]*multipartUpload, error) 
 		}
 		return out[i].uploadID < out[j].uploadID
 	})
-	return out, nil
+
+	if maxUploads <= 0 {
+		return listMultipartUploadsPage{}, nil
+	}
+	if keyMarker == "" {
+		uploadIDMarker = ""
+	}
+	candidates := out[:0]
+	for _, up := range out {
+		if afterMultipartMarker(up.key, up.uploadID, keyMarker, uploadIDMarker) {
+			candidates = append(candidates, up)
+		}
+	}
+
+	var page listMultipartUploadsPage
+	if len(candidates) > maxUploads {
+		page.truncated = true
+		candidates = candidates[:maxUploads]
+	}
+	page.uploads = candidates
+	if page.truncated {
+		last := candidates[len(candidates)-1]
+		page.nextKeyMarker = last.key
+		page.nextUploadIDMarker = last.uploadID
+	}
+	return page, nil
 }
 
 // multipartETag implements S3's conventional multipart ETag: MD5 of the
@@ -4280,14 +4464,24 @@ type partXML struct {
 	Size         int64  `xml:"Size"`
 }
 
+// listPartsResult mirrors AWS's own ListPartsResult field order and typing
+// exactly: PartNumberMarker/NextPartNumberMarker are always rendered (never
+// omitted), including when they are 0 -- there is no verified AWS-compatible
+// omission rule for these two (unlike ListObjectsV2's opaque
+// NextContinuationToken, which this codebase does omit when not truncated),
+// and 0 is never a valid part number, so a bare 0 is unambiguous to any
+// client that (like the AWS SDKs) drives pagination off IsTruncated rather
+// than off whether a Next* field is present.
 type listPartsResult struct {
-	XMLName     xml.Name  `xml:"ListPartsResult"`
-	Bucket      string    `xml:"Bucket"`
-	Key         string    `xml:"Key"`
-	UploadId    string    `xml:"UploadId"`
-	MaxParts    int       `xml:"MaxParts"`
-	IsTruncated bool      `xml:"IsTruncated"`
-	Part        []partXML `xml:"Part"`
+	XMLName              xml.Name  `xml:"ListPartsResult"`
+	Bucket               string    `xml:"Bucket"`
+	Key                  string    `xml:"Key"`
+	UploadId             string    `xml:"UploadId"`
+	PartNumberMarker     int       `xml:"PartNumberMarker"`
+	NextPartNumberMarker int       `xml:"NextPartNumberMarker"`
+	MaxParts             int       `xml:"MaxParts"`
+	IsTruncated          bool      `xml:"IsTruncated"`
+	Part                 []partXML `xml:"Part"`
 }
 
 type uploadXML struct {
@@ -4296,11 +4490,23 @@ type uploadXML struct {
 	Initiated string `xml:"Initiated"`
 }
 
+// listMultipartUploadsResult mirrors AWS's own ListMultipartUploadsResult
+// field order and typing. KeyMarker/UploadIdMarker/NextKeyMarker/
+// NextUploadIdMarker are always rendered, empty when not applicable --
+// AWS's own documented example response (a non-truncated ListMultipartUploads
+// with a delimiter) shows these as present-but-empty elements even when
+// IsTruncated is false, so omitting them entirely would be a guess this
+// codebase's fetched AWS docs directly contradict.
 type listMultipartUploadsResult struct {
-	XMLName     xml.Name    `xml:"ListMultipartUploadsResult"`
-	Bucket      string      `xml:"Bucket"`
-	IsTruncated bool        `xml:"IsTruncated"`
-	Upload      []uploadXML `xml:"Upload"`
+	XMLName            xml.Name    `xml:"ListMultipartUploadsResult"`
+	Bucket             string      `xml:"Bucket"`
+	KeyMarker          string      `xml:"KeyMarker"`
+	UploadIdMarker     string      `xml:"UploadIdMarker"`
+	NextKeyMarker      string      `xml:"NextKeyMarker"`
+	NextUploadIdMarker string      `xml:"NextUploadIdMarker"`
+	MaxUploads         int         `xml:"MaxUploads"`
+	IsTruncated        bool        `xml:"IsTruncated"`
+	Upload             []uploadXML `xml:"Upload"`
 }
 
 // --- HTTP: multipart handlers ---
@@ -4366,14 +4572,25 @@ func (srv *Server) handleUploadPart(w http.ResponseWriter, bucket, key, uploadID
 	fireTestHook(hookAfterAck)
 }
 
-func (srv *Server) handleListParts(w http.ResponseWriter, bucket, key, uploadID string) {
-	parts, err := srv.store.ListParts(bucket, key, uploadID)
+func (srv *Server) handleListParts(w http.ResponseWriter, bucket, key, uploadID, rawQuery string) {
+	partNumberMarker, maxParts, err := parseListPartsQuery(rawQuery)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), "/"+bucket+"/"+key)
+		return
+	}
+	page, err := srv.store.ListPartsPage(bucket, key, uploadID, partNumberMarker, maxParts)
 	if err != nil {
 		writeMultipartError(w, err, "/"+bucket+"/"+key)
 		return
 	}
-	result := listPartsResult{Bucket: bucket, Key: key, UploadId: uploadID, MaxParts: maxPartNumber}
-	for _, p := range parts {
+	result := listPartsResult{
+		Bucket: bucket, Key: key, UploadId: uploadID,
+		PartNumberMarker:     partNumberMarker,
+		NextPartNumberMarker: page.nextPartNumberMarker,
+		MaxParts:             maxParts,
+		IsTruncated:          page.truncated,
+	}
+	for _, p := range page.parts {
 		result.Part = append(result.Part, partXML{
 			PartNumber: p.partNumber, LastModified: iso8601(p.uploadedAt),
 			ETag: `"` + p.etag + `"`, Size: p.size,
@@ -4391,14 +4608,23 @@ func (srv *Server) handleAbortMultipartUpload(w http.ResponseWriter, bucket, key
 	fireTestHook(hookAfterAck)
 }
 
-func (srv *Server) handleListMultipartUploads(w http.ResponseWriter, bucket string) {
-	uploads, err := srv.store.ListMultipartUploads(bucket)
+func (srv *Server) handleListMultipartUploads(w http.ResponseWriter, bucket, rawQuery string) {
+	keyMarker, uploadIDMarker, maxUploads, err := parseListMultipartUploadsQuery(rawQuery)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), "/"+bucket)
+		return
+	}
+	page, err := srv.store.ListMultipartUploads(bucket, keyMarker, uploadIDMarker, maxUploads)
 	if err != nil {
 		writeBucketOrInternalError(w, err, "/"+bucket)
 		return
 	}
-	result := listMultipartUploadsResult{Bucket: bucket}
-	for _, up := range uploads {
+	result := listMultipartUploadsResult{
+		Bucket: bucket, KeyMarker: keyMarker, UploadIdMarker: uploadIDMarker,
+		NextKeyMarker: page.nextKeyMarker, NextUploadIdMarker: page.nextUploadIDMarker,
+		MaxUploads: maxUploads, IsTruncated: page.truncated,
+	}
+	for _, up := range page.uploads {
 		result.Upload = append(result.Upload, uploadXML{Key: up.key, UploadId: up.uploadID, Initiated: iso8601(up.createdAt)})
 	}
 	writeXML(w, http.StatusOK, result)

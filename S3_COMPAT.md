@@ -33,10 +33,10 @@ parity.
 | single-range `GetObject` | `GET` + `Range: bytes=...` | `start-end`, `start-`, `-suffix`; 416 with `Content-Range: bytes */<size>` for an unsatisfiable range; works across a completed multipart object's part boundaries |
 | `CreateMultipartUpload` | `POST /bucket/key?uploads` | persistent upload session, journal-backed |
 | `UploadPart` | `PUT /bucket/key?partNumber=N&uploadId=ID` | CDC-chunked into the ordinary CAS; replacing a part number overwrites it |
-| `ListParts` | `GET /bucket/key?uploadId=ID` | no pagination (single page, `IsTruncated` always false) |
+| `ListParts` | `GET /bucket/key?uploadId=ID` | paginated: `part-number-marker`/`max-parts` (default/clamped to 1000), `IsTruncated`/`NextPartNumberMarker`, stable ascending part-number order, replaced parts never duplicate |
 | `CompleteMultipartUpload` | `POST /bucket/key?uploadId=ID` + XML body | validates strict ascending part order, ETags, ≥5MiB non-final parts; re-chunks the true logical concatenation via a fresh CDC pass (never treats a part boundary as a chunk boundary); publishes an ordinary object |
 | `AbortMultipartUpload` | `DELETE /bucket/key?uploadId=ID` | not idempotent — a repeat abort 404s, matching real S3 |
-| `ListMultipartUploads` | `GET /bucket?uploads` | no pagination (single page) |
+| `ListMultipartUploads` | `GET /bucket?uploads` | paginated: `key-marker`/`upload-id-marker`/`max-uploads` (default/clamped to 1000), `IsTruncated`/`NextKeyMarker`/`NextUploadIdMarker`, ordered by key then upload ID (upload IDs are UUIDv7, so this reproduces real S3's own "same key, ascending initiation time" order); `upload-id-marker` is ignored unless `key-marker` is also given, matching real S3 |
 | ordinary request checksum | `x-amz-checksum-crc32` header | validated over the logical request payload before any chunking begins |
 | `Content-MD5` | `Content-MD5` header | validated over the logical request payload; malformed digest input (bad base64, wrong decoded length) reported as `InvalidDigest`, a well-formed digest that doesn't match reported as `BadDigest` |
 | SigV4 auth (header) | `Authorization` header, `AWS4-HMAC-SHA256` | raw request-target signing (no `ServeMux` path cleaning before verification); `X-Amz-Content-Sha256` supports both the fixed SHA-256 digest mode (including the empty-body case) and the fixed `UNSIGNED-PAYLOAD` sentinel — see "SigV4 payload modes" below |
@@ -105,10 +105,6 @@ not begun in this pass, and not claimed as shipped:
   (see `STATUS.md`'s M5-B "Phase K"). `STREAMING-UNSIGNED-PAYLOAD-TRAILER`
   and SigV4A/ECDSA streaming payload modes are permanently out of scope
   (see "Deliberately unsupported" below), not merely deferred.
-- `ListParts`/`ListMultipartUploads` pagination (`max-parts`/
-  `part-number-marker`, `max-uploads`/`key-marker`/`upload-id-marker`) —
-  deferred at the start of M5-C to keep that pass's budget on versions/GC;
-  candidate for the start of M6 compatibility cleanup.
 - Online/background/scheduled GC, automatic version expiry/retention
   policies, and a repair/undelete engine beyond explicit `restore` —
   internal versions/restore and offline exclusive GC shipped in M5-C;
@@ -158,10 +154,18 @@ documented AWS S3 behavior, rather than simply "not implemented":
   base domain (`-vhost-base`) maps `bucket.<base>` to a bucket; there is no
   wildcard-TLS or multi-domain routing, and this is request-addressing
   support only (no DNS automation).
-- **`ListParts`/`ListMultipartUploads` have no pagination.** Every call
-  returns the complete result in a single page (`IsTruncated` always
-  `false`); `max-parts`/`part-number-marker`/`max-uploads`/`key-marker`/
-  `upload-id-marker` are not read.
+- **`ListMultipartUploads` has no `delimiter`/`prefix`/`CommonPrefixes`
+  support.** Only the pagination parameters (`key-marker`, `upload-id-
+  marker`, `max-uploads`) are implemented; `delimiter` and `prefix` (and
+  the resulting `CommonPrefixes` grouping) are out of scope for this pass,
+  matching `ListObjectsV2`'s own lack of `encoding-type=url` above.
+- **`NextPartNumberMarker`/`NextKeyMarker`/`NextUploadIdMarker` are always
+  rendered, including when not truncated** (0 / empty, matching AWS's own
+  documented example response for `ListMultipartUploads`, which shows
+  present-but-empty marker elements even when `IsTruncated` is `false`);
+  every AWS SDK drives pagination off `IsTruncated`, not off whether a
+  `Next*` field is present, so this is compatible in practice even though
+  it was not independently verified for the non-truncated `ListParts` case.
 - **`AbortMultipartUpload` is not idempotent.** A second abort of an
   already-aborted (or already-completed) upload ID reports `NoSuchUpload`,
   matching real S3's own behavior here — unlike `DeleteObject`/
