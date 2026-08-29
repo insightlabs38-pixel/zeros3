@@ -1,4 +1,289 @@
-# ZeroS3 — M1/M2 Status
+# ZeroS3 — M1/M2/M3 Status
+
+## M3 status
+
+**COMPLETE.**
+
+M3's goal was to make the content-addressed CDC/CAS/manifest
+architecture visibly, measurably pay off: dedup evidence, exact stats,
+`verify`, then (T1) CopyObject and single-range GET. All of it landed
+without changing any frozen v1 persistent-format value and without
+regressing M1/M2.
+
+### Repository structure
+
+- `main` was created pointing at `d46e1dece63c8368e84e0b4afe429c903e5fb4cf`
+  — the merge of the completed `claude/zeros3-m2-j83lvl` branch into the
+  (then-default) `claude/zeros3-m0-m1-bootstrap-xvzbbm` branch. That merge
+  commit's tree is byte-identical to `claude/zeros3-m2-j83lvl`'s tip, and
+  `go test`/`go test -race`/`go vet` were re-run and confirmed green on it
+  before `main` was cut. No milestone history was rewritten, squashed,
+  rebased, or force-updated; `main` is a new ref onto existing history.
+- M3 itself was implemented on a new branch,
+  `claude/zeros3-m3-implementation-liru6u`, branched from `main` — not
+  by adding commits to the old M2 branch.
+- **GitHub default branch:** this environment has no authenticated way to
+  call the GitHub API's repository-settings endpoint (no `gh` CLI, no
+  generic REST tool). `main` exists and is pushed, but a human must still
+  change the repository's default branch from
+  `claude/zeros3-m0-m1-bootstrap-xvzbbm` to `main` in GitHub's settings
+  (Settings → Branches → Default branch).
+
+### Stats (`STATS_SPEC.md`)
+
+Implemented as an exact scan/derivation pass (`Store.computeStats`,
+zeros3.go section 12) over the journal-reconstructed namespace and a
+filesystem walk — never a persisted counter, per `STORAGE_MODEL.md`'s
+"prefer exact scans" rule. Fields and formulas follow `STATS_SPEC.md`'s
+exact terminology:
+
+- `bucket_count`, `current_object_count`, `version_count`,
+  `logical_current_bytes`, `logical_version_bytes`,
+  `logical_chunk_reference_bytes`, `logical_chunk_reference_count`,
+  `scope_unique_chunk_bytes`, `scope_unique_chunk_count`,
+  `scope_exclusive_chunk_bytes`, `scope_shared_chunk_bytes`,
+  `unique_reachable_chunk_bytes`, `chunk_store_file_bytes`,
+  `manifest_file_bytes`, `journal_file_bytes`, `temporary_file_bytes`,
+  `reclaimable_bytes`, `actual_store_file_bytes`, `dedup_avoided_bytes`,
+  `dedup_reduction`, `unique_to_logical_ratio`.
+- `version_count`/`logical_version_bytes` are currently identical to
+  `current_object_count`/`logical_current_bytes`: no version retention
+  exists yet (PUT replaces a key's one visible root; DELETE removes it),
+  so the only "retained committed version" for any key is its current
+  one. This becomes a genuinely separate figure only if a future
+  milestone adds retained-version semantics.
+- Scope selection: whole store, one bucket, a bucket+prefix, or a single
+  object (`statsScope`). Exclusive/shared is computed by checking, for
+  every distinct chunk referenced in-scope, whether *any* object anywhere
+  else in the store also references it — never inferred from a naive
+  "store bytes minus unique bytes" subtraction.
+- `*_file_bytes` fields are independent `os.Stat`/directory-walk
+  measurements over `chunks/`, `manifests/`, `journal/`, `tmp/`, and
+  `FORMAT.json` — deliberately never conflated with the logical/
+  reference/unique fields above.
+- JSON output (`stats -json`) with the field names above as stable keys;
+  human-readable output uses the same underlying numbers with honest
+  labels (never calling a shared chunk "physical bytes owned by" a
+  bucket).
+- Tested by hand-constructing an exact chunk-sharing arrangement (three
+  chunks of known sizes shared across two buckets and three objects) and
+  asserting every field's arithmetic by hand computation
+  (`TestStats_ExactSharingArrangement`), plus a delete/reclaimable
+  scenario (`TestStats_ReclaimableAfterDelete`) and a JSON stable-field-
+  name check (`TestStats_JSONFieldNamesMatchSpec`).
+
+### Verify
+
+`Store.Verify` (zeros3.go section 13) never repairs or deletes anything;
+it only reports, and returns a nonzero CLI exit status on any failure.
+
+- **Store/journal:** `FORMAT.json`'s format/CDC/hash-algorithm versions;
+  a fresh `replayJournal` pass over the journal file (magic/version/type/
+  sequence/CRC32C), counting frames checked.
+- **Manifests**, for every currently-reachable root: manifest file
+  exists; its exact bytes' SHA-256 matches the journal-recorded
+  reference; it parses as JSON; its declared format/CDC/hash-algorithm
+  versions are supported; its chunk references have well-formed SHA-256
+  hex and non-negative lengths; those lengths sum to the manifest's
+  declared `total_length`.
+- **Chunks**, referenced by every reachable manifest: basic verification
+  checks the chunk file exists and its on-disk size matches the
+  manifest's declared length (no content read); `-deep` additionally
+  re-hashes the actual bytes and confirms they match the digest that
+  names the file.
+- Reports counts (manifests/chunks checked, missing/corrupt/invalid,
+  unreachable manifests/chunks, reclaimable bytes) and a per-issue list.
+  Unreachable/reclaimable garbage is never treated as a failure — that is
+  the expected result of "deletion changes roots, not chunks."
+- Runs against the same private-snapshot concurrency policy already
+  proven for `ListObjectsV2`/stats (`snapshotNamespace`, taken briefly
+  under `Store.mu`, then read without holding the lock), so it is safe
+  to run alongside writers: manifests/chunks are immutable and only ever
+  superseded, never mutated in place.
+- Tested: clean-store OK (both basic and deep); missing chunk detected;
+  a same-length-but-corrupted chunk detected only under `-deep` (proving
+  basic verification genuinely doesn't read content); a manifest whose
+  bytes no longer match its journal-recorded SHA-256; an unparsable
+  manifest JSON; a chunk file whose actual size disagrees with its
+  manifest-declared length; a manifest whose chunk lengths don't sum to
+  its declared total; `stats`/`verify` running concurrently with a
+  writer loop under `-race` (`TestConcurrency_StatsDuringWrites`,
+  `TestConcurrency_VerifyDuringWrites`).
+
+### CopyObject (T1)
+
+`Store.CopyObject` (zeros3.go section 11b) never re-chunks, re-reads, or
+re-uploads the source object's payload:
+
+- Default `COPY` metadata directive: the destination root is committed
+  pointing at the *exact same* manifest UUID/SHA-256 the source root
+  already uses — zero new bytes of any kind, not just zero chunk
+  payload, since no new manifest file is even published.
+- `REPLACE` metadata directive: the destination manifest is built by
+  cloning the source manifest's chunk list/ETag/object-digest fields
+  (all byte-for-byte identical, since only metadata/content-type
+  changed) and publishing a new manifest UUID with the new fields — a
+  small new manifest file, but still zero new CAS chunk bytes.
+- Both paths share `PutObject`'s exact commit discipline via a new
+  `commitObjectRoot` helper (extracted from `PutObject`'s former inline
+  tail): bucket existence re-checked at the actual commit point, journal
+  append+sync as the sole durability boundary, in-memory apply only
+  after that succeeds.
+- Before committing, every source chunk is confirmed present (a cheap
+  `Stat`, not a re-hash — deep corruption detection stays `verify`'s
+  job) so a copy is never rooted on a chunk that has gone missing.
+- HTTP: `PUT` with `x-amz-copy-source` (leading slash optional,
+  `?versionId=` rejected since ZeroS3 has no versioning),
+  `x-amz-metadata-directive: COPY|REPLACE`, an S3-shaped
+  `CopyObjectResult` (ETag + LastModified) on success. Missing source →
+  `NoSuchKey`; missing destination bucket → `NoSuchBucket` (kept
+  distinct from a missing source via a dedicated `errNoSuchDestinationBucket`
+  sentinel so the handler always names the right resource).
+- **Zero-new-payload claim, measured, not assumed:** `TestCopyObject_
+  SameBucketZeroNewPayloadBytes` snapshots `stats` before/after a
+  same-bucket copy of a 3MiB object and asserts `chunk_store_file_bytes`
+  *and* `manifest_file_bytes` are byte-for-byte unchanged (the COPY
+  directive reuses even the source's manifest file);
+  `TestCopyObject_MetadataDirectiveReplaceUsesNewMetadataZeroNewChunkBytes`
+  does the same for REPLACE and confirms only chunk bytes stay
+  unchanged (a new manifest is expected there). The external
+  `zeros3-testing` AWS SDK Go v2 harness (`harness/m3/copy`, 24/24
+  passed) independently proves the same/cross-bucket/overwrite/missing-
+  source/missing-destination/both-directive behavior over the real S3
+  wire protocol.
+- Crash/recovery coverage for this new commit path: a simulated crash
+  after the REPLACE directive's manifest publish but before the journal
+  commit leaves the destination invisible and the source untouched
+  (`TestCrash_CopyObjectReplaceBeforeJournalLeavesOldState`); a
+  simulated crash right after the journal sync (for both directives)
+  is durable on restart (`TestCrash_CopyObjectAfterJournalSyncIsDurable`).
+
+### Single-range GET (T1)
+
+Implemented only after stats/verify/CopyObject were green, per the
+required order.
+
+- Supports `bytes=start-end`, `bytes=start-`, and `bytes=-suffix`; end is
+  clamped to the object's actual length; a syntactically valid but
+  unsatisfiable range (start at/past the object's end, a zero-length
+  suffix, any range on a zero-length object) returns 416 with
+  `Content-Range: bytes */<size>`; a malformed or multi-range header is
+  ignored and the full object is served with 200, per RFC 7233's
+  allowance for range forms a server doesn't support.
+- `Store.readManifestRange` (zeros3.go section 14) walks the manifest's
+  chunk-length list and reads only the CAS chunks overlapping the
+  requested interval — never reconstructing the whole object first. A
+  satisfiable request returns 206 with an exact `Content-Range`,
+  `Content-Length`, and `Accept-Ranges: bytes` (also now sent on
+  ordinary 200 GET/HEAD responses, advertising range support).
+- Multi-range (`bytes=0-1,3-4`) is explicitly unsupported in M3, per
+  plan; a request containing one is treated as "ignore Range."
+- Tested: every supported range form (single byte at start/middle/end,
+  open-ended, suffix, a region spanning a chunk-boundary-dense area,
+  end-clamping, and the whole object expressed as an explicit range)
+  against a 500KiB multi-chunk object with exact byte comparison; 416
+  for an out-of-bounds range and for any range on an empty object;
+  malformed and multi-range headers falling back to a full 200; a
+  white-box test proving `readManifestRange` reconstructs exactly a
+  requested interval straddling a known chunk boundary
+  (`TestRange_ReadsOnlyOverlappingChunks`). The external
+  `zeros3-testing` harness (`harness/m3/range`, 27/27 passed)
+  independently proves the same forms plus a 416 case over the real S3
+  wire protocol via the AWS SDK's own `Range` field.
+
+### CDC / dedup evidence
+
+Frozen CDC v1 parameters (16KiB min / 64KiB target / 256KiB max,
+two-region Gear masks, deterministic table derivation) are unchanged —
+no evidence of a correctness defect was found, so nothing was touched.
+
+- **Identical-object reuse**, measured via real `PutObject` calls and
+  `computeStats` (not invented numbers): uploading the same 6MiB object
+  to a second key doubles `logical_current_bytes`/
+  `logical_chunk_reference_{bytes,count}` while leaving
+  `scope_unique_chunk_{bytes,count}` and `chunk_store_file_bytes`
+  completely unchanged (`TestDedup_IdenticalObjectReuseAcrossKeys`);
+  uploading the same content to a second *bucket* leaves the store-wide
+  unique-byte total unchanged and makes every one of that content's
+  chunks fully shared (zero exclusive bytes) in both buckets'
+  scoped stats (`TestDedup_IdenticalObjectReuseAcrossBuckets`).
+- **Edited-object reuse**, measured the same way: a 2MiB object edited
+  with a 4001-byte insertion 50000 bytes from the start (deliberately
+  *not* centered, so most of the file sits downstream of the edit,
+  where fixed-size chunking fails hardest) showed CDC reusing **96.6%**
+  of the edited object's bytes from the original upload, versus **0%**
+  reuse for an independently-computed fixed-64KiB-chunk comparison over
+  the exact same two byte strings (`TestDedup_
+  EditedObjectReuseBeatsFixedSizeChunking`). The external
+  `zeros3-testing` dedup demo (`harness/m3/dedup`) independently
+  measured **97.5%** reuse for a similarly-shaped edit via the real S3
+  API plus `stats -json` — a slightly different figure than the
+  in-process Go test because the two use different random/deterministic
+  corpora and edit offsets, not because either result is wrong.
+- CAS missing/corruption detection remains green (unchanged M1 tests
+  plus the new `verify`-based detection tests above).
+
+### CLI
+
+`zeros3 stats` and `zeros3 verify` (zeros3.go sections 15-16), stdlib
+`flag`-based, human-readable by default with `-json` for stable-field
+JSON. `stdout` carries the requested data; diagnostics go to `stderr`;
+`verify` exits nonzero on any integrity failure. `zeros3 -store DIR
+-addr ADDR` (no subcommand) keeps working exactly as before — it's
+still the `serve` command by default — so the existing external harness
+invocation form (`exec.Command(binPath, "-store", storeDir, "-addr",
+addr)`) needed no changes.
+
+### Tests
+
+`go test ./...`, `go test -race ./...`, and `go vet ./...` all pass, 0
+failures — **122 passing test cases** (`go test -v` `--- PASS` lines,
+counting subtests) across the full M1+M2+M3 suite, all in
+`zeros3_test.go`. All M1/M2 suites listed in earlier sections remain
+green unmodified. `gofmt -l` reports nothing to format.
+
+### Persistent-format impact
+
+**No frozen v1 format changed.** `store_format_version`,
+`cdc_format_version`, `manifest_format_version` are all still `1`; the
+journal magic (`ZSJ1`), frame version, header layout, CRC32C checksum,
+sequence semantics, and the four existing record type numbers are
+byte-for-byte unchanged; CDC parameters, gear-table derivation, CAS
+layout, and the manifest field set are unchanged. CopyObject's REPLACE
+directive publishes manifests using the existing, unmodified manifest
+v1 shape; no new journal record type was introduced (CopyObject commits
+through the existing `recordTypePutObjectRoot`, exactly like an
+ordinary PUT).
+
+### Known limitations
+
+- `version_count`/`logical_version_bytes` are not yet a distinct figure
+  from `current_object_count`/`logical_current_bytes` (see "Stats"
+  above) — expected, since no version-retention feature has shipped.
+- `verify` does not currently re-derive/check `object_sha256` against
+  reconstructed object bytes (only per-chunk SHA-256 is deep-verified);
+  each chunk's own digest is checked, which is what actually protects
+  reconstruction, but the manifest's whole-object digest field itself
+  isn't independently re-verified.
+- CopyObject does not implement conditional-copy headers (`x-amz-copy-
+  source-if-*`) or self-copy rejection; a same-key COPY-directive copy
+  is accepted as a harmless no-op re-commit rather than being rejected
+  the way real S3 rejects certain same-key copies. Neither was in the
+  M3 MUST scope.
+- Range GET does not implement multipart/multi-range responses (`bytes=
+  0-1,3-4`); such a header is treated as unsupported and the full object
+  is served, per plan.
+- The M1/M2 known-issues list (full in-memory request body buffering,
+  non-power-loss-tested directory fsync, the "can't prove pre-sync
+  absence" durability caveat) is unchanged and still applies.
+
+### M4 NOT STARTED
+
+Confirmed: no work was begun on reproducible-build finalization, final
+dependency proof polish beyond what M3's own audit already covers,
+README/demo production, Windows/macOS/arm CI, presigned URLs, versioning/
+restore, destructive GC, multipart upload, `s3rver` Package Killer work,
+sync/delta-transfer, or any other T2+/M4+ feature.
 
 ## M2 status
 
@@ -248,14 +533,6 @@ repurposed ones.
 - The M1 known-issues list (full in-memory request body buffering,
   non-power-loss-tested directory fsync, the "can't prove pre-sync
   absence" durability caveat) is unchanged and still applies.
-
-## M3 NOT STARTED
-
-Confirmed: no work was begun on CopyObject, Range GET, exact stats
-semantics, a `verify` command, GC, presigned URLs, multipart upload,
-versioning, rclone integration, s3rver/Package Killer integration,
-Windows/macOS CI, sync/delta-transfer features, or benchmarks/polish
-beyond what M2 needed.
 
 ## M1 status
 
