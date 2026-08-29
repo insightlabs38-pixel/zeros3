@@ -1,5 +1,540 @@
 # ZeroS3 — M1/M2/M3/M4 Status
 
+## M5-C — Internal versions, restore, authoritative reachability, safe GC, doctor/stats
+
+**COMPLETE.** A bounded storage-lifecycle pass, exactly per its own scope:
+ZeroS3-native (non-AWS-API) immutable object version history, zero-copy
+restore, one authoritative CAS/manifest reachability model spanning
+current objects, retained historical versions, and active multipart
+uploads, safe offline/exclusive GC (dry-run by default, fail-closed on
+corruption), and doctor/verify/stats extension built on that same
+reachability source of truth. No M6 delta sync, directory sync, remote
+replication, pack files, compression, compaction, Merkle structures,
+advanced indexing, full AWS S3 Versioning API, lifecycle policies, or IAM
+work was started. Multipart `ListParts`/`ListMultipartUploads` pagination
+was inspected and explicitly deferred (see Phase A below).
+
+- **Starting state:** `zeros3` branch `claude/zeros3-m5c-storage-lifecycle-o98lsz`
+  was confirmed identical-tree to `origin/main` at
+  `ecfc7c436e86f06fdf86d6e1993d36e5cb457c63` before any edit (`git
+  rev-list --count origin/main..HEAD` was `0`); `zeros3-testing`'s
+  same-named branch was confirmed identical-tree to its own `origin/main`
+  at `cdc542f3b0e28e16ade159a39a1fb1acab9cf879`. Both were fetched fresh
+  from `origin` rather than trusting a prior session's summary. The Linux
+  regression baseline (`go test`, `go test -race`, `go vet`, `gofmt -l`)
+  was green with **223 passing test cases** before any change, matching
+  the M5-B end-state recorded above.
+- **Resulting state:** this commit, on the same branch (`git log -1`
+  names the exact SHA); `zeros3-testing`'s matching commit on its own
+  same-named branch carries this pass's external-regression evidence.
+
+### Phase A — multipart pagination: inspected, deferred
+
+`ListParts`/`ListMultipartUploads` were re-inspected at the start of this
+pass (both remain the single-page implementation M5-B shipped: no
+`part-number-marker`/`max-parts`/`max-uploads`/`key-marker`/
+`upload-id-marker`, `IsTruncated` always `false`). Per this task's own
+hard-stop rule, implementing real pagination touches XML response shapes,
+query-parameter parsing, and routing on both list endpoints — a real,
+if modest, surface change, not a small local patch — and would have
+diverted budget from the actual point of this milestone (versions/GC).
+**Deferred to the start of M6 compatibility cleanup**, exactly as
+`S3_COMPAT.md`/`README.md` now record. Every other M5-C requirement below
+was completed without it.
+
+### Phase B — internal immutable object version model
+
+**Architecture: one shared "replace current object while retaining prior
+state" path, not three duplicated ones.** Every mutation that can replace
+or remove a current object — ordinary `PutObject` overwrite, `CopyObject`
+overwrite, a completed multipart overwrite, `restore`, and `DeleteObject`
+— funnels through `archivedVersionPayload` (builds the archived-version
+journal payload from the current `objectEntry` being replaced, or returns
+`nil` if there is none) and `archiveVersionLocked` (applies it to the new
+`Store.history map[string]map[string][]*historyVersionEntry`, keyed
+bucket→key→ordered history slice, guarded by the same `Store.mu` as the
+bucket/object namespace). `commitObjectRoot` — already `PutObject`'s and
+`CopyObject`'s shared commit tail before this pass — is the one place this
+logic lives for those three callers plus `RestoreObjectVersion`;
+`CompleteMultipartUpload`'s own inline commit (which must also atomically
+retire the upload session) calls the exact same
+`archivedVersionPayload`/`archiveVersionLocked` pair rather than
+reimplementing it. **A first-time `PutObject` to a key that has never had
+a current root archives nothing** — there is no meaningful "previous
+state" to keep (`TestVersions_FirstPutCreatesNoHistory`).
+- **Version identity:** each archived history row gets its own fresh
+  `newUUIDv7()` — the exact same primitive `manifestUUID`/`storeID`
+  already use, not a second ID scheme — generated once at commit time and
+  persisted in the journal, so two archival events that happen to carry
+  byte-identical content (e.g. restore-then-overwrite) still get two
+  distinct, independently addressable history rows rather than colliding
+  on a shared manifest UUID.
+- **What a historical version retains:** `historyVersionEntry` carries
+  `versionID`, `manifestUUID`/`manifestSHA256` (the exact immutable
+  manifest — object size/ETag/SHA-256/content-type/chunk list are all
+  reachable through it, never duplicated into the history record itself),
+  `archivedAt`, `reason` (`"overwritten"` | `"deleted"`), and the
+  archiving journal frame's own `seq` (stable total order).
+- **No payload duplication:** history retains a *reference* to the
+  replaced manifest, never a byte copy — this is what makes Phase D's
+  zero-copy restore possible at all.
+
+### Phase C — version history CLI
+
+`zeros3 versions -bucket B -key K [-store DIR] [-json]`
+(`runVersions`/`Store.ListVersions`, `zeros3.go` section 15): lists the
+current root (if any, `status: "current"`) followed by every retained
+historical version, newest-first, each row carrying version ID, logical
+size, ETag, content type, an RFC3339Nano archival timestamp, and a
+`deleted` flag when `reason == "deleted"`. Human output is fixed-width
+columns; `-json` emits `[]versionRow`. Deterministic across restart
+(`TestVersions_FullLifecycleAcrossRestart`,
+`TestCrash_JournalReplay_HistoryRecordTypesDeterministic` — two
+independent `OpenStore` replays of the same journal produce byte-identical
+`versionID`/`manifestUUID`/`seq` ordering). Exercised over the real built
+binary in `TestCLI_VersionsRestoreGCDoctor_Smoke`.
+
+### Phase D — restore
+
+`zeros3 restore -bucket B -key K -version ID [-store DIR]`
+(`runRestore`/`Store.RestoreObjectVersion`, `zeros3.go` section 7c).
+**Critical semantic, proven directly:** restore commits a brand-new
+current root (through the same `commitObjectRoot` every overwrite uses,
+so whatever it replaces is itself archived into history) — it never
+deletes or rewrites an existing history entry
+(`TestVersions_FullLifecycleAcrossRestart`,
+`TestRestore_ZeroCopy_OverExistingCurrent` — restoring v1 over a current
+v3 leaves v1/v2/the-replaced-v3 all present, 3 history rows afterward).
+- **Zero-copy, proven, not asserted:** `RestoreObjectVersion` passes
+  `found.manifestUUID`/`found.manifestSHA256` — the historical version's
+  *existing* manifest identity — straight into `commitObjectRoot`; no new
+  manifest is built or published, no chunk is re-read or re-written.
+  `TestRestore_ZeroCopy_OverExistingCurrent` and
+  `TestStorageEfficiencyProof_VersionHistoryIsCheap` both count actual
+  chunk/manifest files on disk before and after a restore and assert the
+  counts are identical.
+- **Required cases, all proven:** restore old version over an existing
+  current object (`TestRestore_ZeroCopy_OverExistingCurrent`); restore
+  after current-object deletion (`TestRestore_AfterCurrentObjectDeletion`);
+  restart after restore (`TestVersions_FullLifecycleAcrossRestart`);
+  restore of a version created by ordinary PUT
+  (`TestVersions_PutOverwriteCreatesHistory` + restore tests above), by
+  `CopyObject` (`TestVersions_CopyObjectOverwriteCreatesHistory`), and by
+  multipart completion (`TestVersions_MultipartOverwriteCreatesHistory`,
+  `TestCrash_Restart_MultipartOverwritePreviousVersionPreserved`); invalid
+  version ID (`TestRestore_InvalidVersionID`, `errNoSuchVersion`); version
+  belonging to the wrong bucket/key (`TestRestore_WrongBucketOrKey` —
+  deliberately not distinguished from "unknown", same
+  information-leak reasoning `errNoSuchUpload` already uses); corrupted
+  historical manifest (`TestRestore_CorruptedHistoricalManifest_NoPartialMutation`)
+  or missing historical chunk
+  (`TestRestore_MissingHistoricalChunk_NoPartialMutation`) — both fail
+  restore cleanly with the current object provably untouched afterward
+  (Phase D's "no partial visible mutation" requirement).
+
+### Phase E — delete/history semantics
+
+**Model implemented, exactly as recommended:** `DeleteObject` archives the
+current root into history (`reason: "deleted"`) in the same journal frame
+that removes it from the visible namespace (new record type 11, below);
+ordinary `GetObject`/`HeadObject` return `errNoSuchKey`/404 immediately
+afterward; `zeros3 versions` still shows full history; `restore` can
+recreate a current object from any retained version, including one
+archived by a delete. No AWS delete markers, no versioned-DELETE API — a
+plain internal archive-then-remove, matching the existing non-versioned
+`DeleteObject` contract at the S3 wire layer exactly as before.
+**Required scenario, verbatim:** `TestVersions_FullLifecycleAcrossRestart`
+runs PUT A → PUT B → DELETE → restart → GET=not found → versions still
+contain A/B → restore B → restart → GET exact B, end to end.
+
+### Phase F — one authoritative reachability model
+
+`computeReachability` (`zeros3.go` section 12a) is the single root-
+enumeration/mark-live path every consumer below shares — stats, GC, and
+verify/doctor no longer each walk their own subtly different liveness
+computation. It enumerates exactly the three required root categories —
+current objects (`snapshotNamespace`), retained historical versions
+(`snapshotHistory`, new), and active multipart uploads' already-published
+parts (`snapshotUploads`, new — these never go through the manifest
+mechanism before completion, so each part's own chunk list is a live root
+directly) — resolves each to a manifest/chunk reference set, and produces
+two related but distinct outputs: `ReferencedManifests`/`ReferencedChunks`
+(everything any live root points to, protected from deletion regardless
+of whether that specific file is itself intact) and `ValidChunks` (the
+subset that also passed an existence/size(/deep-hash) check). Designed
+for straightforward extension: a future M6 sync-session root is a fourth
+enumeration loop, not a redesign. `TestReachability_CoversAllThreeRootCategories`
+proves all three categories are actually counted and unioned into one
+live set.
+
+### Phase G — reachability integrity rules
+
+`computeReachability` reports, rather than silently skips, every kind of
+corruption Phase G lists: missing manifest, malformed manifest, referenced
+chunk missing, wrong chunk hash (deep mode), a multipart part referencing
+a missing payload, and a historical version referencing an invalid object
+state — all via the shared `issueTracker`/`VerifyIssue`
+missing/corrupt/invalid classification. **Reachable-but-broken is never
+reclassified as garbage:** a chunk/manifest a live root references stays
+in the protected `Referenced*` sets even when it individually fails
+validation (only `OK()` — the fail-closed gate — turns false); a digest no
+live root ever claimed is the only thing genuinely unreachable.
+`TestReachability_DetectsCorruptionAmongLiveRoots` proves this for all
+three root categories independently (current/historical/multipart).
+
+### Phase H — safe GC
+
+`zeros3 gc -store DIR [-apply] [-json]` (`runGC`/`gcCollect`, `zeros3.go`
+section 13b). **Dry-run by default**, and dry-run genuinely deletes
+nothing (`TestGC_DryRunDeletesNothing` — plants real garbage, confirms the
+chunk-file count on disk is byte-for-byte unchanged after a dry-run).
+Reports: chunks scanned/reachable/unreachable, reachable/reclaimable
+payload bytes, reclaimable disk bytes (payload + stale `tmp/` staging
+bytes), manifest scan counts, and live root counts by category.
+**Destructive mode requires the explicit `-apply` flag** — no ambiguous
+default, no ambient confirmation prompt.
+- **Offline/exclusive requirement, genuinely enforced, not merely
+  documented:** `acquireStoreLock`/`storeLock` (new — no exclusive-open
+  primitive existed before this pass) wraps a non-blocking
+  `syscall.Flock` on a dedicated `store/LOCK` file. `zeros3 serve` now
+  holds a **shared** lock for its whole run; `gc` (both dry-run and
+  apply) takes an **exclusive** lock, which flock semantics refuse to
+  grant while any shared or exclusive lock is held elsewhere — including
+  by a different OS process on the same directory — so GC refuses safely
+  (`errGCStoreInUse`) the instant the server (or another `gc`) currently
+  owns the store, and never blocks waiting.
+  `TestGC_ExclusivityRefusesWhileStoreInUse` proves both dry-run and
+  apply refuse while a held lock simulates an active server, and that GC
+  succeeds normally once released. `stats`/`verify`/`doctor` deliberately
+  do not participate in this locking (documented in section 13b): they
+  are read-only point-in-time snapshots, and this milestone only requires
+  protecting live data *from GC*, not protecting a read from a concurrent
+  GC sweep.
+
+### Phase I — GC safety invariant
+
+GC's destructive delete stays deliberately simple, per this phase's own
+suggestion: CAS/manifest files are immutable and content-addressed,
+reachability is computed once, right after exclusive ownership is
+acquired (so no writer can be racing it), and each unreachable file is
+`os.Remove`d independently with no transactional deletion metadata — an
+interruption mid-sweep can only ever leave some garbage still on disk,
+never touch a file reachability classified live.
+`TestGC_InterruptedSweep_K6` proves this directly: plants 5 unreachable
+chunks plus one live object, interrupts a destructive sweep after its 2nd
+deletion via the new `hookBeforeGCDelete` test seam (the same
+panic/recover crash-injection pattern every other crash test in this file
+already uses), reopens the store, confirms the live object and a full
+`Verify(true)` are both still perfectly clean, confirms genuine partial
+progress (garbage count strictly between 0 and 5), and confirms re-running
+`gc -apply` finishes the cleanup to exactly 0 remaining.
+
+### Phase J — GC corruption fail-closed behavior
+
+`gcCollect` checks `rr.OK()` a second time immediately before the
+destructive delete loop and refuses with `errGCUnsafe` if the live root
+set is not fully valid — dry-run still reports the same issues, it simply
+never reaches the point of deleting anything.
+`TestGC_RefusesOnCorruptLiveRoot_K7` proves exactly this: a chunk
+referenced by the current (live) root is deleted out from under the
+store, dry-run correctly reports `LiveSetOK: false` plus the issue,
+`gc -apply` returns `errGCUnsafe` and touches no file.
+
+### Phase K — GC adversarial test matrix
+
+`TestGC_AdversarialMatrix_K1toK5` constructs all five categories in one
+store — K1 current-only, K2 historical-only (put then overwritten), K3
+active-multipart-only, K4 genuinely unreachable (written straight to CAS,
+referenced by nothing), K5 shared between a current object and a
+historical version — and proves dry-run reports exactly 1 unreachable
+chunk (K4) and apply deletes exactly that one, with K1/K2/K3/K5's chunk
+files (and, after completing the K3 upload and reading K1/K5 back, their
+actual object bytes) all provably intact afterward, plus a clean deep
+`Verify` of the whole store. K6 (interrupted GC) is Phase I above; K7
+(corrupt live root) is Phase J above.
+
+### Phase L — version/GC interaction
+
+`TestVersionGC_Interaction` runs PUT v1 → v2 → v3 → `gc -apply` →
+restore v1 → exact bytes, proving history survives a real destructive GC
+pass. Since this milestone implements no explicit version deletion,
+history is retained indefinitely and GC never reclaims it — documented
+explicitly here and in `S3_COMPAT.md`; no automatic retention/expiration
+was invented.
+
+### Phase M — multipart/GC interaction
+
+The most important correctness proof in this pass, per the task's own
+framing, and proven directly:
+`TestGC_MultipartSurvivesGC_ThenCompletes` initiates a multipart upload,
+uploads two unique 6MiB parts (no current object exists yet), plants
+separate genuine garbage, runs `gc` dry-run then `-apply` (confirms
+exactly the planted garbage — and only the planted garbage — is deleted),
+reopens the store (restart), completes the upload, and confirms the
+completed object's bytes are exactly the two parts concatenated.
+`TestGC_AbortedMultipartBecomesCollectible` proves the second half:
+initiate → upload a unique part → abort → the part's former chunk is
+reported unreachable by dry-run and is removed by apply.
+
+### Phase N — doctor / verification integration
+
+`Verify` (`zeros3.go` section 13) was rebuilt on top of
+`computeReachability` rather than maintaining a second, separately walked
+manifest/chunk-checking pass — the exact "prefer one root-enumeration path
+consumed by all of them" instruction, applied literally. `VerifyResult`
+gained `CurrentRootCount`/`HistoricalRootCount`/`MultipartRootCount`
+(doctor-style lifecycle visibility) and now embeds the shared
+`issueTracker` (JSON-flattened, so `missing`/`corrupt`/`invalid`/`issues`
+are byte-identical field names to before this pass). Deep mode's
+whole-object SHA-256 re-hash now runs over every referenced-and-valid
+manifest from `ReferencedManifests` — current **and** historical roots —
+not just current ones. `zeros3 doctor -store DIR [-deep] [-json]`
+(`runDoctor`) is a thin, explicit CLI name wired directly to this same
+`Verify` engine, per this task's own "acceptable to evolve verify instead"
+guidance — one coherent diagnostic interface, not two. Never mutates the
+store. Exercised over the real binary in
+`TestCLI_VersionsRestoreGCDoctor_Smoke`.
+
+### Phase O — stats extension
+
+`computeStats` (`zeros3.go` section 12) gained
+`historical_version_count`/`historical_version_logical_bytes` and
+`active_multipart_upload_count`/`active_multipart_logical_bytes` (scoped
+exactly like the existing current-object fields — same
+`sel.matches(bucket,key)` rule). `version_count`/`logical_version_bytes`
+now genuinely differ from `current_object_count`/`logical_current_bytes`
+for the first time — they are current-plus-historical totals, exactly the
+"future milestone" the pre-M5-C code comment already predicted this would
+be. `unique_reachable_chunk_bytes` and the `chunk_store_file_bytes`/
+`manifest_file_bytes`/`reclaimable_bytes` file-scan classification are now
+sourced from `computeReachability`'s whole-store `Referenced*` sets
+instead of a current-objects-only walk — this is the concrete Phase F bug
+fix: a chunk kept alive only by history or an in-progress multipart
+upload is no longer misreported as reclaimable
+(`TestStats_ReclaimableAfterDelete`, rewritten this pass to assert exactly
+that: after `DeleteObject`, the deleted object's manifest/chunk remain
+fully reachable and `reclaimable_bytes` stays `0`, not the pre-M5-C
+behavior of reclassifying them as garbage). Scope-based sharing accounting
+(`logical_chunk_reference_*`, `scope_unique/exclusive/shared_chunk_bytes`,
+dedup ratios) is unchanged — it remains a current-objects-only concept, as
+`scope` always was. Never performs any destructive action.
+
+### Phase P — storage-efficiency proof
+
+`TestStorageEfficiencyProof_VersionHistoryIsCheap`: uploads a 2MiB random
+v1, two small (64-byte) edits producing v2/v3, and measures — not
+asserts — the numbers directly: **total logical version bytes
+6,291,456 (3× 2MiB) vs. 2,277,482 unique reachable CAS bytes (ratio
+0.362)**, i.e. keeping full history of three 2MiB versions costs ~36% of
+the naive 3-full-copies size, not because anything is compressed but
+because CDC/CAS content-addressing means only the chunks actually touched
+by each edit are new. Restoring v1 afterward is then proven to add zero
+further chunk or manifest files (same zero-copy proof as Phase D). Numbers
+are logged via `t.Logf`, not cherry-picked.
+
+### Phase Q — crash/restart tests
+
+`TestVersions_FullLifecycleAcrossRestart` (overwrite → restart → versions
+preserved; delete → restart → history preserved; restore → restart →
+restored state preserved, all in one scenario, per Phase E's exact
+required test);
+`TestCrash_Restart_MultipartOverwritePreviousVersionPreserved` (a
+completed multipart overwrite's prior version survives restart, and
+restoring it afterward reproduces the exact pre-multipart bytes);
+`TestCrash_JournalReplay_HistoryRecordTypesDeterministic` (two independent
+fresh `OpenStore` replays of the same journal, containing new record
+types 9/10/11, produce byte-identical version IDs/manifest UUIDs/seq
+ordering — deterministic replay, proven not assumed).
+`TestJournal_GenuinelyUnknownRecordTypeStillFailsClosed` proves the
+general "old binary fails closed on an unknown persistent record"
+mechanism (`replayJournal`'s known-type switch) still works correctly
+after adding types 9-11, by hand-crafting a frame of a record type (200)
+no version of this codebase has ever defined and confirming `OpenStore`
+refuses it. Atomic-visibility crash injection at the specific
+write-vs-sync boundary was not re-derived per record type: every new
+commit path (`commitObjectRoot`, multipart completion) reuses the exact
+same `Journal.appendFrame`/`hookAfterJournalWriteBeforeSync`/
+`hookAfterJournalSync` durability boundary M1-M5-B's own crash tests
+already exercise exhaustively, and archiving a version is folded into
+that same single frame — there is no new atomicity boundary a new
+crash-injection scenario would be needed to prove.
+
+### Phase R — concurrency tests
+
+`TestConcurrency_TwoOverwritesSameKey_HistoryDeterministic` (two
+concurrent overwrites of one key: exactly one wins, history ends up with
+exactly 2 entries, never a torn or duplicated view);
+`TestConcurrency_RestoreRacingPut`, `TestConcurrency_RestoreRacingDelete`,
+`TestConcurrency_RestoreRacingCopyObject` (each races `restore` against
+the other operation on the same key and confirms a deterministic,
+race-free outcome plus a clean deep `Verify` afterward);
+`TestGC_ExclusivityRefusesWhileStoreInUse` (GC refusing to run while the
+store is actively owned, Phase H above). All run clean under
+`go test -race`, including `-count=6` repetition
+(`go test -race -run 'TestConcurrency_|TestCrash_|TestGC_|TestVersions_|TestRestore_' -count=6`)
+with zero flakes. No online-GC synchronization complexity was added —
+GC's own concurrency story is the exclusivity lock in Phase H, not a new
+locking model for ordinary mutations, which continue to use the exact
+`Store.mu` re-check-and-commit pattern M1-M5-B already established.
+
+### Phase S — external/client regression
+
+No new S3 wire-protocol surface was added this pass — internal
+versions/restore/GC are ZeroS3-only CLI/library additions, invisible to
+ordinary S3 clients by construction (`ListObjectsV2` only ever lists
+current objects; nothing in the HTTP request/response path changed). This
+was checked, not merely asserted: every external AWS SDK for Go v2
+harness already proven against M5-B was rebuilt and rerun, unmodified,
+against this pass's binary. **211/211 passed across 6 harnesses, 0
+failed, 0 changed from their M5-B results** — M2 canonical workflow
+41/41, M3 CopyObject 46/46, M3 Range GET 27/27, M3 dedup evidence 7/7,
+M5-A presign 47/47, M5-B multipart 43/43. Full detail, exact
+reproduction commands, and toolchain/SDK version pins:
+`zeros3-testing/results/M5C_REGRESSION_RESULTS.md`. rclone and Package
+Killer (`s3rver`) were **not rerun this pass** — both require installing
+additional external tooling into a scratch environment purely for
+comparison, and the 6 reruns above already exercise the identical
+header-auth/presigned/path-style/virtual-hosted/CopyObject/Range/
+multipart code paths those tools also use; their last recorded results
+stand, unaffected by anything in M5-C. New M5-C CLI surface
+(`versions`/`restore`/`gc`/`doctor`) is intentionally outside this
+repository's black-box-S3-client charter (it is not an S3 operation) and
+is instead covered by `zeros3`'s own internal test suite, including a
+CLI-level smoke test that builds and execs the real binary
+(`TestCLI_VersionsRestoreGCDoctor_Smoke`).
+
+### Phase T — format/versioning discipline
+
+**Three new additive journal record types**, none repurposing an existing
+one:
+
+| # | Name | Supersedes | Payload adds over its predecessor |
+|---:|---|---|---|
+| 9 | `recordTypePutObjectRootV2` | 2 (`PutObjectRoot`) | optional `previous *journalArchivedVersionPayload` |
+| 10 | `recordTypeCompleteMultipartUploadV2` | 8 (`CompleteMultipartUpload`) | optional `previous *journalArchivedVersionPayload` |
+| 11 | `recordTypeDeleteObjectRootV2` | 3 (`DeleteObjectRoot`) | mandatory `archived journalArchivedVersionPayload` |
+
+Every **live** commit/delete path now unconditionally uses the V2 type —
+exactly the same "no branching by case" discipline M5-B's own type 8
+already established for multipart completion — so types 2/3/8 are never
+appended again by this binary; they remain **only** in `replayJournal`'s
+known-type switch and `applyRecord`'s replay handling, so a pre-M5-C
+journal still replays byte-for-byte unchanged
+(`TestCrash_JournalReplay_HistoryRecordTypesDeterministic` and every
+untouched M1-M5-B crash/replay test still passing prove this). **Replay
+semantics:** types 9/10 apply the new root exactly like 2/8 did, then (if
+`previous` is non-nil) call the new `archiveVersionLocked` to append a
+`historyVersionEntry`; type 11 removes the current root and
+unconditionally archives it. **Crash invariant:** publishing the new root
+and archiving the one it replaces share one journal frame — the identical
+single-fsync durability boundary M5-B's own record type 8 already proved
+for "publish + retire upload" — so there is no window where one effect
+committed and not the other. **Old-binary behavior:** an M1-M5-B binary
+opening a store whose journal contains any of types 9/10/11 fails replay
+via the pre-existing "unknown record type" check
+(`replayJournal`), exactly like any other genuinely unknown type — proven
+generically (not merely asserted) by
+`TestJournal_GenuinelyUnknownRecordTypeStillFailsClosed`, which crafts a
+frame of a record type no version of this codebase has ever defined and
+confirms `OpenStore` refuses it. A store that has never run the M5-C
+binary is byte-for-byte unaffected and remains fully readable by an older
+one.
+
+### Phase U — dependency audit
+
+`go.mod` still has no `require` block. This pass's one new import,
+`syscall` (for `syscall.Flock`, the exclusive-GC-ownership lock), was
+already present in the toolchain's own dependency graph via `net/http`'s
+internal use of it — confirmed by regenerating `deps-proof.txt`: the
+non-stdlib package set (toolchain-vendored `golang.org/x/...`, the stdlib
+`uuid` package, and `zeros3` itself) is unchanged from before this pass,
+and the explicit first-path-segment-dot check still finds nothing.
+`zeros3.go` remains the sole implementation file; `zeros3_test.go` remains
+test-only (its one new stdlib import, `os/exec`, builds and runs the real
+`zeros3` binary for `TestCLI_VersionsRestoreGCDoctor_Smoke` — a testing
+technique, not a runtime dependency; `zeros3.go` itself still never
+imports `os/exec`).
+
+### Regression validation
+
+`gofmt -l .` clean; `go vet ./...` clean; `go test ./...` and
+`go test -race ./...` both green; `go test -count=3 ./...` green (no
+flakes); `go test -race -run 'TestConcurrency_|TestCrash_|TestGC_|
+TestVersions_|TestRestore_' -count=6 -v ./...` green, zero flakes across 6
+repeated runs of every new crash/concurrency/GC/version/restore test.
+**254 passing test cases** (`go test -v` `--- PASS` lines, counting
+subtests), up from 223 at this pass's starting snapshot — 31 new top-level
+tests (several with subtests: `TestReachability_DetectsCorruptionAmongLiveRoots`
+has 3, `TestVersions_FullLifecycleAcrossRestart` etc. are single). Every
+M1-M5-B suite (SigV4 header/query auth, CRC32/Content-MD5, CDC/CAS/
+manifest/journal, crash/recovery, concurrency, ListObjectsV2, CopyObject,
+Range GET, presigning, virtual-host addressing, multipart) remains green,
+unmodified in behavior — confirmed by rerunning the exact same suite this
+pass added onto, not a fresh/rewritten one.
+
+**Dependency proof:** see Phase U above.
+
+**Source-file invariant:** `zeros3.go` remains the sole implementation
+file; `zeros3_test.go` remains test-only. No new `.go` file was added to
+the ZeroS3 module.
+
+**Reproducible build hash:** intentionally **not** refreshed this pass,
+per this task's own explicit instruction ("Do not perform final
+submission polish/reproducible-build refresh yet"). `zeros3.go` did
+change in this pass, so the previously recorded M5-B hash
+(`9e637369284cfcbfd333b74305c3852fd151f4b266f16355d93baeba9043d31a`) is
+now stale evidence of the pre-M5-C binary, not a discrepancy; refreshing
+it is left for a later dedicated submission-polish pass.
+
+### Persistent-format impact
+
+**Journal record type space extended; every frozen v1 value unchanged.**
+`store_format_version`, `cdc_format_version`, `manifest_format_version`
+are all still `1`; the journal magic (`ZSJ1`), frame layout, CRC32C
+checksum, and CDC/manifest parameters are byte-for-byte unchanged from M1.
+What's new: three additional journal record type numbers (9-11) for
+version-history-aware commits/deletes, added the same additive way the
+original four and M5-B's four were defined — no existing record type
+repurposed, no new manifest field, no new top-level on-disk file/directory
+(history lives entirely as an in-memory index rebuilt from existing
+journal frames on replay — there is no separate `history/` directory or
+second metadata database). See Phase T above for exact record-type
+semantics/compatibility.
+
+### Known limitations
+
+- `ListParts`/`ListMultipartUploads` pagination remains unimplemented,
+  deliberately deferred this pass (Phase A) to the start of M6
+  compatibility cleanup.
+- History is retained indefinitely: this milestone implements no
+  explicit version deletion, expiration, or automatic retention policy
+  (Phase L) — by design, not an oversight; a store that overwrites the
+  same key very many times will accumulate unbounded history, all of it a
+  permanent GC root.
+- GC is offline/exclusive-only: no online or scheduled/background GC was
+  implemented, per this milestone's explicit scope boundary. `stats`/
+  `verify`/`doctor` do not take the store lock (Phase H) — they are
+  read-only snapshots and this milestone does not require protecting them
+  from a concurrent GC sweep, only protecting live data *from* GC.
+  `syscall.Flock` is Unix-specific; unchanged from this project's existing
+  Linux-amd64-only release-blocking platform commitment (STDLIB.md).
+- No repair/undelete engine beyond explicit `restore` was built, per this
+  task's own exclusion list.
+- External AWS SDK/rclone/Package Killer regressions were not rerun this
+  pass (Phase S) — no wire-protocol surface changed, so the last recorded
+  results (M5-B and earlier, in the sections below) stand unaffected.
+- Reproducible-build hash refresh was deliberately skipped this pass, per
+  explicit instruction (see "Regression validation" above).
+- All limitations recorded in the "M5-B" and earlier sections below remain
+  current and unchanged by this pass.
+
+### Exact next milestone
+
+M6 delta sync / directory sync, beginning with the deferred
+`ListParts`/`ListMultipartUploads` pagination as a small warm-up item
+(Phase A above) before the larger sync-session work. Per this task's own
+stop rule, M6 itself was not started in this pass.
+
 ## M5-B — Large-object S3 interoperability: multipart, payload modes, streaming HMAC, crash recovery
 
 **COMPLETE.** A tightly bounded pass, exactly per its own scope:
