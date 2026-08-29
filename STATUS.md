@@ -382,15 +382,26 @@ locking model for ordinary mutations, which continue to use the exact
 No new S3 wire-protocol surface was added this pass — internal
 versions/restore/GC are ZeroS3-only CLI/library additions, invisible to
 ordinary S3 clients by construction (`ListObjectsV2` only ever lists
-current objects; nothing in the HTTP request/response path changed). The
-full internal Linux regression suite (`go test`, `go test -race`,
-`go vet`, `gofmt -l`) covers every existing SigV4/CopyObject/Range/
-multipart/presign code path unmodified in behavior — see "Regression
-validation" below. Given the zero-wire-surface-change scope, a fresh
-external AWS SDK/rclone/Package Killer rerun was judged unnecessary to
-prove this pass's actual claims and was not repeated this session; see
-`zeros3-testing`'s own M5-C notes for what evidence carries forward
-unchanged from M5-B.
+current objects; nothing in the HTTP request/response path changed). This
+was checked, not merely asserted: every external AWS SDK for Go v2
+harness already proven against M5-B was rebuilt and rerun, unmodified,
+against this pass's binary. **211/211 passed across 6 harnesses, 0
+failed, 0 changed from their M5-B results** — M2 canonical workflow
+41/41, M3 CopyObject 46/46, M3 Range GET 27/27, M3 dedup evidence 7/7,
+M5-A presign 47/47, M5-B multipart 43/43. Full detail, exact
+reproduction commands, and toolchain/SDK version pins:
+`zeros3-testing/results/M5C_REGRESSION_RESULTS.md`. rclone and Package
+Killer (`s3rver`) were **not rerun this pass** — both require installing
+additional external tooling into a scratch environment purely for
+comparison, and the 6 reruns above already exercise the identical
+header-auth/presigned/path-style/virtual-hosted/CopyObject/Range/
+multipart code paths those tools also use; their last recorded results
+stand, unaffected by anything in M5-C. New M5-C CLI surface
+(`versions`/`restore`/`gc`/`doctor`) is intentionally outside this
+repository's black-box-S3-client charter (it is not an S3 operation) and
+is instead covered by `zeros3`'s own internal test suite, including a
+CLI-level smoke test that builds and execs the real binary
+(`TestCLI_VersionsRestoreGCDoctor_Smoke`).
 
 ### Phase T — format/versioning discipline
 
