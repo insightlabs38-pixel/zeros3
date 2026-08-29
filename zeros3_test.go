@@ -13120,3 +13120,1332 @@ func TestCLI_Sync_DirectoryAndSingleFile_Smoke(t *testing.T) {
 		t.Fatalf("single-key mismatch after restart: err=%v body=%q", err, body)
 	}
 }
+
+// =============================================================================
+// M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//
+// M8A reuses M6's protocol almost without exception (see zeros3.go
+// section 15d's doc comment for the exact list of reused primitives:
+// discoverZeroS3Sync, headSyncDestination, buildSyncPlan,
+// negotiateSyncMissing, putSyncChunk, commitSyncObject, syncStats/
+// printSyncStats). Everything those already exhaustively test --
+// negotiate batch-size boundaries (1023/1024/1025), oversized negotiate
+// requests, malformed JSON, an unsupported protocol/cdc/hash version on
+// negotiate/commit -- is NOT re-proven here for a second time against
+// identical, unmodified code; see TestSyncNegotiate_BatchSizeBoundary,
+// TestSyncNegotiate_MultiBatchViaClient, TestSyncNegotiate_
+// OversizedRequestRejected, TestSyncNegotiate_MalformedJSONRejected,
+// TestSyncCommit_UnsupportedProtocolCDCHash, etc., above.
+//
+// These tests focus on what's genuinely new: the two new server
+// endpoints (GET /object, GET /chunks/<sha256-hex> download side),
+// the two new client functions that call them (fetchSourceDescriptor,
+// fetchSourceChunk), and replicateObject's orchestration -- capability
+// discovery across two endpoints, source consistency, destination
+// conflict safety, resume, and exact statistics.
+// =============================================================================
+
+func newReplicateTestServerPair(t *testing.T) (srcDir string, srcSrv *Server, dstDir string, dstSrv *Server, creds Credentials, region string) {
+	t.Helper()
+	srcDir, srcSrv, creds, region = newSyncTestServer(t)
+	dstDir, dstSrv, _, _ = newSyncTestServer(t)
+	return srcDir, srcSrv, dstDir, dstSrv, creds, region
+}
+
+func mustPutSourceObject(t *testing.T, srv *Server, bucket, key string, body []byte, contentType string, metadata map[string]string) *objectEntry {
+	t.Helper()
+	if err := srv.store.CreateBucket(bucket); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := srv.store.PutObject(bucket, key, body, contentType, metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entry
+}
+
+func mustCreateReplicateBucket(t *testing.T, srv *Server, bucket string) {
+	t.Helper()
+	if err := srv.store.CreateBucket(bucket); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// =============================================================================
+// M8A2/M8A: end-to-end happy path
+// =============================================================================
+
+func TestReplicate_EndToEnd_NewDestinationOrdinaryObject(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	body := genRandomBytes(8001, 5_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", map[string]string{"origin": "m8a-test"})
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	if stats.LogicalBytes != int64(len(body)) {
+		t.Fatalf("LogicalBytes = %d, want %d", stats.LogicalBytes, len(body))
+	}
+	if stats.UploadedBytes != int64(len(body)) {
+		t.Fatalf("first replication of a brand-new object should transfer everything: UploadedBytes=%d want=%d", stats.UploadedBytes, len(body))
+	}
+
+	entry, gotBody, err := dstSrv.store.GetObject("dst", "obj.bin")
+	if err != nil {
+		t.Fatalf("GetObject on destination: %v", err)
+	}
+	if !bytes.Equal(gotBody, body) {
+		t.Fatalf("destination object bytes do not match source")
+	}
+	if entry.contentType != "application/octet-stream" {
+		t.Fatalf("content type not preserved: got %q", entry.contentType)
+	}
+}
+
+// =============================================================================
+// M8A1: capability discovery
+// =============================================================================
+
+func TestReplicate_IncompatibleSourceFailsClearly(t *testing.T) {
+	notZeroS3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not a zeros3 endpoint"))
+	}))
+	defer notZeroS3.Close()
+	_, _, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: notZeroS3.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: notZeroS3.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	_, err := replicateObject(cfg)
+	if err == nil || !strings.Contains(err.Error(), "source capability discovery failed") {
+		t.Fatalf("err = %v, want a clear source capability discovery failure", err)
+	}
+	if _, err := dstSrv.store.lookupObject("dst", "obj"); err == nil {
+		t.Fatalf("destination must not have been touched")
+	}
+}
+
+func TestReplicate_IncompatibleDestinationFailsClearly(t *testing.T) {
+	_, srcSrv, _, _, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	mustPutSourceObject(t, srcSrv, "src", "obj", []byte("hello"), "text/plain", nil)
+
+	notZeroS3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not a zeros3 endpoint"))
+	}))
+	defer notZeroS3.Close()
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: notZeroS3.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: notZeroS3.Client()},
+	}
+	_, err := replicateObject(cfg)
+	if err == nil || !strings.Contains(err.Error(), "destination capability discovery failed") {
+		t.Fatalf("err = %v, want a clear destination capability discovery failure", err)
+	}
+}
+
+func TestReplicate_AuthFailureSourceRejected(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustPutSourceObject(t, srcSrv, "src", "obj", []byte("hello"), "text/plain", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	wrongCreds := Credentials{AccessKeyID: "WRONGKEY", SecretAccessKey: "wrong-secret-key-entirely-different"}
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: wrongCreds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	_, err := replicateObject(cfg)
+	if err == nil || !strings.Contains(err.Error(), "source capability discovery failed") {
+		t.Fatalf("err = %v, want a clear source auth/discovery failure", err)
+	}
+}
+
+func TestReplicate_AuthFailureDestinationRejected(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustPutSourceObject(t, srcSrv, "src", "obj", []byte("hello"), "text/plain", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	wrongCreds := Credentials{AccessKeyID: "WRONGKEY", SecretAccessKey: "wrong-secret-key-entirely-different"}
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: wrongCreds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	_, err := replicateObject(cfg)
+	if err == nil || !strings.Contains(err.Error(), "destination capability discovery failed") {
+		t.Fatalf("err = %v, want a clear destination auth/discovery failure", err)
+	}
+}
+
+// =============================================================================
+// M8A2: source object descriptor
+// =============================================================================
+
+func TestReplicate_SourceDescriptor_ObjectExists(t *testing.T) {
+	_, srcSrv, _, _, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	body := genRandomBytes(8002, 300_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj", body, "application/octet-stream", nil)
+
+	cfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	desc, err := fetchSourceDescriptor(cfg)
+	if err != nil {
+		t.Fatalf("fetchSourceDescriptor: %v", err)
+	}
+	if desc.Size != int64(len(body)) {
+		t.Fatalf("Size = %d, want %d", desc.Size, len(body))
+	}
+	if desc.Bucket != "src" || desc.Key != "obj" {
+		t.Fatalf("Bucket/Key = %s/%s, want src/obj", desc.Bucket, desc.Key)
+	}
+	if len(desc.Chunks) == 0 {
+		t.Fatalf("expected at least one chunk descriptor")
+	}
+	var sum int64
+	for _, c := range desc.Chunks {
+		sum += c.Length
+	}
+	if sum != desc.Size {
+		t.Fatalf("sum of chunk lengths %d != declared size %d", sum, desc.Size)
+	}
+}
+
+func TestReplicate_SourceDescriptor_MissingObject(t *testing.T) {
+	_, srcSrv, _, _, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	mustCreateReplicateBucket(t, srcSrv, "src")
+
+	cfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "does-not-exist", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	_, err := fetchSourceDescriptor(cfg)
+	if err == nil {
+		t.Fatalf("expected an error for a missing source object")
+	}
+}
+
+func TestReplicate_SourceDescriptor_MissingBucket(t *testing.T) {
+	_, srcSrv, _, _, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+
+	cfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "no-such-bucket", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	_, err := fetchSourceDescriptor(cfg)
+	if err == nil {
+		t.Fatalf("expected an error for a missing source bucket")
+	}
+}
+
+func TestReplicate_SourceDescriptor_EmptyObjectEndToEnd(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustPutSourceObject(t, srcSrv, "src", "empty", []byte{}, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "empty", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "empty", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	if stats.LogicalBytes != 0 {
+		t.Fatalf("LogicalBytes = %d, want 0", stats.LogicalBytes)
+	}
+	_, body, err := dstSrv.store.GetObject("dst", "empty")
+	if err != nil || len(body) != 0 {
+		t.Fatalf("expected an empty destination object, got err=%v len=%d", err, len(body))
+	}
+}
+
+func TestReplicate_SourceDescriptor_MetadataAndContentTypePreserved(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	meta := map[string]string{"author": "m8a", "purpose": "regression-test"}
+	mustPutSourceObject(t, srcSrv, "src", "obj", []byte("some content for metadata test"), "text/x-custom", meta)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	if _, err := replicateObject(cfg); err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	entry, _, err := dstSrv.store.HeadObject("dst", "obj")
+	if err != nil {
+		t.Fatalf("HeadObject: %v", err)
+	}
+	if entry.contentType != "text/x-custom" {
+		t.Fatalf("content type = %q, want text/x-custom", entry.contentType)
+	}
+	_, man, err := dstSrv.store.HeadObject("dst", "obj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]string)
+	for _, kv := range man.Metadata {
+		got[kv.Key] = kv.Value
+	}
+	for k, v := range meta {
+		if got[k] != v {
+			t.Fatalf("metadata[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+func TestReplicate_SourceDescriptor_WeirdKeyCharacters(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	weirdKeys := []string{
+		"50% off.txt",
+		"a#b.txt",
+		"a?b=c.txt",
+		"has spaces.txt",
+		"nested//double//slash.txt",
+		"unicode-日本語.txt",
+	}
+	for i, key := range weirdKeys {
+		body := genRandomBytes(int64(9000+i), 10_000)
+		mustPutSourceObject(t, srcSrv, "src", key, body, "application/octet-stream", nil)
+		cfg := replicateConfig{
+			Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: key, Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+			Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: key, Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		}
+		if _, err := replicateObject(cfg); err != nil {
+			t.Fatalf("replicateObject(key=%q): %v", key, err)
+		}
+		_, got, err := dstSrv.store.GetObject("dst", key)
+		if err != nil {
+			t.Fatalf("GetObject(key=%q) on destination: %v", key, err)
+		}
+		if !bytes.Equal(got, body) {
+			t.Fatalf("key=%q: destination bytes mismatch", key)
+		}
+	}
+}
+
+func TestReplicate_SourceDescriptor_MissingQueryParamsRejected(t *testing.T) {
+	_, srcSrv, _, _, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+
+	resp := doSignedRequest(t, srcTS.Client(), srcTS.URL, signer, http.MethodGet, zeros3SyncObjectPath+"?bucket=src", nil, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing key param: status = %d, want 400", resp.StatusCode)
+	}
+	resp2 := doSignedRequest(t, srcTS.Client(), srcTS.URL, signer, http.MethodGet, zeros3SyncObjectPath+"?key=obj", nil, nil)
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing bucket param: status = %d, want 400", resp2.StatusCode)
+	}
+}
+
+// =============================================================================
+// M8A4: source chunk retrieval
+// =============================================================================
+
+func TestReplicate_SourceChunkDownload_Valid(t *testing.T) {
+	_, srcSrv, _, _, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	body := genRandomBytes(8003, 50_000)
+	sum, err := srcSrv.store.casWrite(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hexDigest := hex.EncodeToString(sum[:])
+
+	cfg := syncClientConfig{Endpoint: srcTS.URL, Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	got, err := fetchSourceChunk(cfg, hexDigest)
+	if err != nil {
+		t.Fatalf("fetchSourceChunk: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("fetched chunk bytes do not match")
+	}
+}
+
+func TestReplicate_SourceChunkDownload_MissingChunk(t *testing.T) {
+	_, srcSrv, _, _, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+
+	cfg := syncClientConfig{Endpoint: srcTS.URL, Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	fakeDigest := strings.Repeat("ab", 32)
+	if _, err := fetchSourceChunk(cfg, fakeDigest); err == nil {
+		t.Fatalf("expected an error for a missing chunk")
+	}
+}
+
+func TestReplicate_SourceChunkDownload_MalformedDigest(t *testing.T) {
+	_, srcSrv, _, _, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+
+	resp := doSignedRequest(t, srcTS.Client(), srcTS.URL, signer, http.MethodGet, zeros3SyncChunksPrefix+"not-valid-hex", nil, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a malformed digest", resp.StatusCode)
+	}
+}
+
+func TestReplicate_SourceChunkDownload_CorruptChunkOnDiskDetected(t *testing.T) {
+	_, srcSrv, _, _, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	body := genRandomBytes(8004, 20_000)
+	sum, err := srcSrv.store.casWrite(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt the on-disk chunk directly, simulating bit rot: casRead
+	// (which handleSyncChunkDownload calls) must detect the content-hash
+	// mismatch rather than serve corrupted bytes.
+	if err := os.WriteFile(srcSrv.store.chunkPath(sum), []byte("corrupted content, wrong length and hash"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := syncClientConfig{Endpoint: srcTS.URL, Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	if _, err := fetchSourceChunk(cfg, hex.EncodeToString(sum[:])); err == nil {
+		t.Fatalf("expected an error for a corrupt source chunk")
+	}
+}
+
+// errReplicateFakeChunkHandler serves a syntactically valid discovery
+// response but returns wrong bytes for chunk downloads -- simulating a
+// buggy or compromised source, to prove the client's own independent
+// re-hash (M8A4's "MUST independently verify") actually catches it.
+func TestReplicate_ClientRehashDetectsSourceReturningWrongBytes(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == zeros3SyncInfoPath {
+			writeSyncJSON(w, http.StatusOK, syncDiscoveryResponse{
+				Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+				DeltaSync: true, MaxHashesPerBatch: maxSyncBatchDescriptors, MaxChunkBytes: maxSyncChunkBytes,
+			})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("these are definitely not the bytes you asked for"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer fake.Close()
+
+	realDigest := sha256.Sum256([]byte("the real expected content"))
+	cfg := syncClientConfig{Endpoint: fake.URL, HTTPClient: fake.Client()}
+	_, err := fetchSourceChunk(cfg, hex.EncodeToString(realDigest[:]))
+	if !errors.Is(err, errReplicateChunkMismatch) {
+		t.Fatalf("err = %v, want errReplicateChunkMismatch", err)
+	}
+}
+
+// =============================================================================
+// M8A3: destination negotiation (via replicateObject)
+// =============================================================================
+
+func TestReplicate_Negotiate_AllMissing(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	body := genRandomBytes(8005, 2_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	if stats.MissingChunkOccur != stats.TotalChunks {
+		t.Fatalf("MissingChunkOccur = %d, want %d (all missing)", stats.MissingChunkOccur, stats.TotalChunks)
+	}
+	if stats.BytesAvoided != 0 {
+		t.Fatalf("BytesAvoided = %d, want 0 for an entirely fresh destination", stats.BytesAvoided)
+	}
+}
+
+func TestReplicate_Negotiate_ZeroMissingFullReuse(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	body := genRandomBytes(8006, 3_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj", body, "application/octet-stream", nil)
+	// Pre-seed the destination with byte-identical content under a
+	// different key, so every chunk the source describes already exists
+	// in the destination's CAS by content hash before replication starts.
+	mustPutSourceObject(t, dstSrv, "dst", "already-here", body, "application/octet-stream", nil)
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	if stats.UploadedBytes != 0 {
+		t.Fatalf("UploadedBytes = %d, want 0 (every chunk already present)", stats.UploadedBytes)
+	}
+	if stats.BytesAvoided != stats.LogicalBytes {
+		t.Fatalf("BytesAvoided = %d, want %d (full reuse)", stats.BytesAvoided, stats.LogicalBytes)
+	}
+	if stats.ChunksReused != stats.TotalChunks {
+		t.Fatalf("ChunksReused = %d, want %d", stats.ChunksReused, stats.TotalChunks)
+	}
+}
+
+func TestReplicate_Negotiate_MixedPartialReuseExactStats(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	base := genRandomBytes(8007, 4_000_000)
+	// Seed the destination with the unedited base content under a
+	// different key -- it will share most chunks with, but not be
+	// identical to, the edited source object below.
+	mustPutSourceObject(t, dstSrv, "dst", "base-already-here", base, "application/octet-stream", nil)
+
+	mutated := append([]byte{}, base...)
+	copy(mutated[len(mutated)/2:len(mutated)/2+8192], genRandomBytes(8008, 8192))
+	mustPutSourceObject(t, srcSrv, "src", "obj", mutated, "application/octet-stream", nil)
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	if stats.MissingChunkOccur == 0 || stats.MissingChunkOccur == stats.TotalChunks {
+		t.Fatalf("expected a genuinely mixed result, got MissingChunkOccur=%d of TotalChunks=%d", stats.MissingChunkOccur, stats.TotalChunks)
+	}
+	if stats.UploadedBytes+stats.BytesAvoided != stats.LogicalBytes {
+		t.Fatalf("accounting mismatch: uploaded=%d avoided=%d logical=%d", stats.UploadedBytes, stats.BytesAvoided, stats.LogicalBytes)
+	}
+	if stats.BytesAvoided == 0 {
+		t.Fatalf("expected a strong, honest reuse figure, got BytesAvoided=0")
+	}
+	_, gotBody, err := dstSrv.store.GetObject("dst", "obj")
+	if err != nil || !bytes.Equal(gotBody, mutated) {
+		t.Fatalf("destination content mismatch after mixed-reuse replication: err=%v", err)
+	}
+}
+
+func TestReplicate_Stats_DuplicateChunkReferencesNotDoubleCounted(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+	mustCreateReplicateBucket(t, srcSrv, "src")
+
+	// Build a source object whose manifest legitimately repeats the same
+	// chunk twice (a file with a repeated block) by committing directly
+	// through the same primitives handleSyncCommit uses.
+	chunkA := genRandomBytes(8009, 10_000)
+	chunkB := genRandomBytes(8010, 10_000)
+	if _, err := srcSrv.store.casWrite(chunkA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcSrv.store.casWrite(chunkB); err != nil {
+		t.Fatal(err)
+	}
+	sumA := sha256.Sum256(chunkA)
+	sumB := sha256.Sum256(chunkB)
+	refs := []chunkRef{
+		{SHA256: hex.EncodeToString(sumA[:]), Length: int64(len(chunkA))},
+		{SHA256: hex.EncodeToString(sumB[:]), Length: int64(len(chunkB))},
+		{SHA256: hex.EncodeToString(sumA[:]), Length: int64(len(chunkA))}, // repeated occurrence
+	}
+	total := int64(len(chunkA)*2 + len(chunkB))
+	objHash := sha256.New()
+	objHash.Write(chunkA)
+	objHash.Write(chunkB)
+	objHash.Write(chunkA)
+	var objSHA [32]byte
+	copy(objSHA[:], objHash.Sum(nil))
+	man := buildManifestV1FromRefs(refs, total, objSHA, "dupchunktest", "application/octet-stream", nil)
+	manUUID, manSHA, err := srcSrv.store.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcSrv.store.commitObjectRoot("src", "dupobj", manUUID, manSHA, man); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "dupobj", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "dupobj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	if stats.TotalChunks != 3 {
+		t.Fatalf("TotalChunks = %d, want 3 (occurrences)", stats.TotalChunks)
+	}
+	if stats.UniqueChunksUploaded != 2 {
+		t.Fatalf("UniqueChunksUploaded = %d, want 2 (unique digests)", stats.UniqueChunksUploaded)
+	}
+	if stats.UploadedBytes != int64(len(chunkA)+len(chunkB)) {
+		t.Fatalf("UploadedBytes = %d, want %d (each unique chunk counted once, not per-occurrence)", stats.UploadedBytes, len(chunkA)+len(chunkB))
+	}
+	_, gotBody, err := dstSrv.store.GetObject("dst", "dupobj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBody := append(append(append([]byte{}, chunkA...), chunkB...), chunkA...)
+	if !bytes.Equal(gotBody, wantBody) {
+		t.Fatalf("destination object does not correctly repeat chunk A")
+	}
+}
+
+// =============================================================================
+// M8A6/M8A8: commit and destination conflict safety
+// =============================================================================
+
+func TestReplicate_DestinationConflict_ConcurrentWriteDuringReplicationRejectedSafely(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+
+	body := genRandomBytes(8011, 100_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+	if _, err := dstSrv.store.PutObject("dst", "obj", []byte("original destination content"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	srcCfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	dstCfg := syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()}
+
+	// Manually walk replicateObject's own pipeline (mirroring
+	// TestSync_ConflictConcurrentPUTDuringSyncCausesCommitConflict's
+	// pattern) so a concurrent write can be injected between the
+	// destination-identity observation and the eventual commit.
+	desc, err := fetchSourceDescriptor(srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exists, etag, err := headSyncDestination(dstCfg)
+	if err != nil || !exists {
+		t.Fatalf("head: exists=%v err=%v", exists, err)
+	}
+
+	// A concurrent, unrelated write lands on the destination after this
+	// replication observed its identity but before it commits.
+	resp := doSignedRequest(t, dstTS.Client(), dstTS.URL, signer, http.MethodPut, "/dst/obj", []byte("someone else's concurrent write"), nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("concurrent PUT failed: %d", resp.StatusCode)
+	}
+
+	chunks := make([]syncLocalChunk, len(desc.Chunks))
+	for i, c := range desc.Chunks {
+		chunks[i] = syncLocalChunk{SHA256: c.SHA256, Length: c.Length}
+	}
+	plan := buildSyncPlan(chunks, desc.Size)
+	missing, err := negotiateSyncMissing(dstCfg, syncDiscoveryResponse{MaxHashesPerBatch: maxSyncBatchDescriptors}, plan.unique)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range plan.unique {
+		if !missing[d.SHA256] {
+			continue
+		}
+		data, err := fetchSourceChunk(srcCfg, d.SHA256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := putSyncChunk(dstCfg, d.SHA256, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = commitSyncObject(dstCfg, plan, syncPrecondition{expectedETag: etag})
+	if !errors.Is(err, errSyncRemoteConflict) {
+		t.Fatalf("commit err = %v, want errSyncRemoteConflict", err)
+	}
+
+	// The concurrent write must survive untouched -- no silent overwrite.
+	_, gotBody, err := dstSrv.store.GetObject("dst", "obj")
+	if err != nil || string(gotBody) != "someone else's concurrent write" {
+		t.Fatalf("destination content was not safely preserved: err=%v body=%q", err, gotBody)
+	}
+}
+
+func TestReplicate_DestinationConflict_AbsentBecomesPresentDuringReplication(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	body := genRandomBytes(8012, 50_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	srcCfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	dstCfg := syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()}
+
+	desc, err := fetchSourceDescriptor(srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exists, _, err := headSyncDestination(dstCfg)
+	if err != nil || exists {
+		t.Fatalf("expected destination to be observed absent: exists=%v err=%v", exists, err)
+	}
+
+	// Someone else creates the destination key in the meantime.
+	if _, err := dstSrv.store.PutObject("dst", "obj", []byte("a racing writer got there first"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	chunks := make([]syncLocalChunk, len(desc.Chunks))
+	for i, c := range desc.Chunks {
+		chunks[i] = syncLocalChunk{SHA256: c.SHA256, Length: c.Length}
+	}
+	plan := buildSyncPlan(chunks, desc.Size)
+	missing, err := negotiateSyncMissing(dstCfg, syncDiscoveryResponse{MaxHashesPerBatch: maxSyncBatchDescriptors}, plan.unique)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range plan.unique {
+		if !missing[d.SHA256] {
+			continue
+		}
+		data, err := fetchSourceChunk(srcCfg, d.SHA256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := putSyncChunk(dstCfg, d.SHA256, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = commitSyncObject(dstCfg, plan, syncPrecondition{expectAbsent: true})
+	if !errors.Is(err, errSyncRemoteConflict) {
+		t.Fatalf("commit err = %v, want errSyncRemoteConflict", err)
+	}
+	_, gotBody, err := dstSrv.store.GetObject("dst", "obj")
+	if err != nil || string(gotBody) != "a racing writer got there first" {
+		t.Fatalf("racing writer's content was not preserved: err=%v body=%q", err, gotBody)
+	}
+}
+
+// =============================================================================
+// M8A7: source consistency (immutable captured revision)
+// =============================================================================
+
+func TestReplicate_SourceOverwrittenDuringReplicationDoesNotProduceMixedRevision(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	original := genRandomBytes(8013, 500_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj", original, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	srcCfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	dstCfg := syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()}
+
+	// Capture the descriptor -- this is the exact snapshot replicateObject
+	// itself would have captured before doing anything else.
+	desc, err := fetchSourceDescriptor(srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The source key is now overwritten with completely different
+	// content, entirely mid-flight (a real replicateObject call would
+	// never observe this -- it already has desc).
+	replacement := genRandomBytes(8014, 500_000)
+	if _, err := srcSrv.store.PutObject("src", "obj", replacement, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Complete the replication using only the originally-captured desc,
+	// exactly as replicateObject's own code does.
+	chunks := make([]syncLocalChunk, len(desc.Chunks))
+	for i, c := range desc.Chunks {
+		chunks[i] = syncLocalChunk{SHA256: c.SHA256, Length: c.Length}
+	}
+	plan := buildSyncPlan(chunks, desc.Size)
+	missing, err := negotiateSyncMissing(dstCfg, syncDiscoveryResponse{MaxHashesPerBatch: maxSyncBatchDescriptors}, plan.unique)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range plan.unique {
+		if !missing[d.SHA256] {
+			continue
+		}
+		data, err := fetchSourceChunk(srcCfg, d.SHA256)
+		if err != nil {
+			t.Fatalf("fetching originally-captured chunk %s after source overwrite: %v", d.SHA256, err)
+		}
+		if err := putSyncChunk(dstCfg, d.SHA256, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dstCfg.ContentType = desc.ContentType
+	if _, err := commitSyncObject(dstCfg, plan, syncPrecondition{expectAbsent: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, gotBody, err := dstSrv.store.GetObject("dst", "obj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotBody, original) {
+		t.Fatalf("destination must contain the originally-captured revision, not the overwrite or a mix")
+	}
+	if bytes.Equal(gotBody, replacement) {
+		t.Fatalf("destination must NOT contain the overwriting content")
+	}
+
+	// The source's *current* pointer, meanwhile, correctly reflects the
+	// overwrite -- proving this was never a lost write, just a
+	// consciously captured, independent revision.
+	_, curBody, err := srcSrv.store.GetObject("src", "obj")
+	if err != nil || !bytes.Equal(curBody, replacement) {
+		t.Fatalf("source's current object should reflect the overwrite: err=%v", err)
+	}
+}
+
+// =============================================================================
+// M8A9: resume / retry, including a real process interruption
+// =============================================================================
+
+func TestReplicate_ResumeAfterPartialPriorUpload(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	body := genRandomBytes(8015, 3_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	srcCfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	desc, err := fetchSourceDescriptor(srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(desc.Chunks) < 2 {
+		t.Fatalf("fixture too small to exercise partial resume (%d chunks)", len(desc.Chunks))
+	}
+	// Simulate "the CLI died after some chunks reached the destination":
+	// directly PUT the first chunk to the destination's CAS, exactly as
+	// if an earlier, interrupted replicate run had gotten that far.
+	first := desc.Chunks[0]
+	firstData, err := fetchSourceChunk(srcCfg, first.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dstCfg := syncClientConfig{Endpoint: dstTS.URL, Creds: creds, Region: region, HTTPClient: dstTS.Client()}
+	if err := putSyncChunk(dstCfg, first.SHA256, firstData); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := replicateConfig{
+		Source: srcCfg,
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("resumed replicateObject: %v", err)
+	}
+	if stats.UploadedBytes >= stats.LogicalBytes {
+		t.Fatalf("resume should have skipped the already-primed chunk: uploaded=%d logical=%d", stats.UploadedBytes, stats.LogicalBytes)
+	}
+	_, gotBody, err := dstSrv.store.GetObject("dst", "obj")
+	if err != nil || !bytes.Equal(gotBody, body) {
+		t.Fatalf("destination content mismatch after resume: err=%v", err)
+	}
+}
+
+// TestReplicate_ResumeAcrossRealProcessInterruption proves M8A9 with an
+// actual OS process kill (not merely a simulated partial-upload state):
+// a real `zeros3 replicate` subprocess is started against two real
+// server subprocesses (real HTTP, real TCP) and killed partway through,
+// before it can commit anything; a second, uninterrupted run is then
+// required to complete the replication correctly.
+func TestReplicate_ResumeAcrossRealProcessInterruption(t *testing.T) {
+	bin := buildZeros3Binary(t)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	srcAddr := freeTCPAddr(t)
+	dstAddr := freeTCPAddr(t)
+
+	srcCmd := exec.Command(bin, "-store", srcDir, "-addr", srcAddr)
+	if err := srcCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { srcCmd.Process.Kill(); srcCmd.Wait() }()
+	waitForZeros3Serve(t, srcAddr)
+
+	dstCmd := exec.Command(bin, "-store", dstDir, "-addr", dstAddr)
+	if err := dstCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { dstCmd.Process.Kill(); dstCmd.Wait() }()
+	waitForZeros3Serve(t, dstAddr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+
+	// Populate the source over real HTTP against the real running
+	// subprocess -- a real 20MB object gives replication enough genuine
+	// network round trips to interrupt reliably mid-flight below.
+	if resp := doSignedRequest(t, client, "http://"+srcAddr, signer, http.MethodPut, "/src", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("create source bucket: status %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	body := genRandomBytes(8016, 20_000_000)
+	if resp := doSignedRequest(t, client, "http://"+srcAddr, signer, http.MethodPut, "/src/big.bin", body, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("populate source object: status %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	if resp := doSignedRequest(t, client, "http://"+dstAddr, signer, http.MethodPut, "/dst", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("create destination bucket: status %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+
+	replicateArgs := []string{"replicate", "-from", "http://" + srcAddr, "-to", "http://" + dstAddr, "s3://src/big.bin", "s3://dst/big.bin"}
+
+	// First attempt: a real subprocess, killed shortly after it starts --
+	// well before a 20MB transfer across real HTTP round trips could
+	// plausibly finish -- so it never reaches commit.
+	firstAttempt := exec.Command(bin, replicateArgs...)
+	if err := firstAttempt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	firstAttempt.Process.Kill()
+	firstAttempt.Wait()
+
+	if resp := doSignedRequest(t, client, "http://"+dstAddr, signer, http.MethodHead, "/dst/big.bin", nil, nil); resp.StatusCode == http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("the interrupted attempt must not have produced a visible destination object")
+	} else {
+		resp.Body.Close()
+	}
+
+	// Second, uninterrupted attempt must complete the replication
+	// correctly, resuming from whatever the killed attempt already
+	// landed in the destination's CAS.
+	secondOut, secondErr, code := runZeros3CLI(t, bin, replicateArgs...)
+	if code != 0 {
+		t.Fatalf("resumed replicate failed (code %d): stdout=%s stderr=%s", code, secondOut, secondErr)
+	}
+	t.Logf("resumed replicate output:\n%s", secondOut)
+
+	resp := doSignedRequest(t, client, "http://"+dstAddr, signer, http.MethodGet, "/dst/big.bin", nil, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET destination after resumed replicate: status %d", resp.StatusCode)
+	}
+	gotBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotBody, body) {
+		t.Fatalf("destination content incorrect after interrupted-then-resumed replicate")
+	}
+}
+
+func TestReplicate_DestinationServerRestartBetweenAttempts(t *testing.T) {
+	srcDir, srcSrv, dstDir, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	_ = srcDir
+
+	body := genRandomBytes(8017, 3_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	srcCfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	desc, err := fetchSourceDescriptor(srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := desc.Chunks[0]
+	firstData, err := fetchSourceChunk(srcCfg, first.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primeCfg := syncClientConfig{Endpoint: dstTS.URL, Creds: creds, Region: region, HTTPClient: dstTS.Client()}
+	if err := putSyncChunk(primeCfg, first.SHA256, firstData); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restart the destination: no durable replication-session state
+	// exists anywhere, so CAS durability alone must make resume work
+	// across a real process restart.
+	dstTS.Close()
+	if err := dstSrv.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dstStore2, err := OpenStore(dstDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstStore2.Close()
+	dstSrv2 := NewServer(dstStore2, creds, region)
+	dstTS2 := httptest.NewServer(dstSrv2)
+	defer dstTS2.Close()
+
+	cfg := replicateConfig{
+		Source: srcCfg,
+		Dest:   syncClientConfig{Endpoint: dstTS2.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS2.Client()},
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("post-restart replicateObject: %v", err)
+	}
+	if stats.UploadedBytes >= stats.LogicalBytes {
+		t.Fatalf("post-restart resume should have skipped the pre-restart chunk: uploaded=%d logical=%d", stats.UploadedBytes, stats.LogicalBytes)
+	}
+	_, gotBody, err := dstStore2.GetObject("dst", "obj")
+	if err != nil || !bytes.Equal(gotBody, body) {
+		t.Fatalf("destination content mismatch after restart+resume: err=%v", err)
+	}
+}
+
+func TestReplicate_SourceServerRestartBetweenDescriptorAndChunkFetch(t *testing.T) {
+	srcDir, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	body := genRandomBytes(8018, 1_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	srcCfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	desc, err := fetchSourceDescriptor(srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Restart the source server (process-level durability, not an
+	// in-memory cache) between descriptor capture and the rest of
+	// replication.
+	srcTS.Close()
+	if err := srcSrv.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	srcStore2, err := OpenStore(srcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srcStore2.Close()
+	srcSrv2 := NewServer(srcStore2, creds, region)
+	srcTS2 := httptest.NewServer(srcSrv2)
+	defer srcTS2.Close()
+	srcCfg.Endpoint = srcTS2.URL
+	srcCfg.HTTPClient = srcTS2.Client()
+
+	cfg := replicateConfig{
+		Source: srcCfg,
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("replicateObject after source restart: %v", err)
+	}
+	if stats.LogicalBytes != int64(len(body)) {
+		t.Fatalf("LogicalBytes = %d, want %d", stats.LogicalBytes, len(body))
+	}
+	_, gotBody, err := dstSrv.store.GetObject("dst", "obj")
+	if err != nil || !bytes.Equal(gotBody, body) {
+		t.Fatalf("destination content mismatch after source restart: err=%v", err)
+	}
+	_ = desc
+}
+
+// =============================================================================
+// M8A10: statistics
+// =============================================================================
+
+func TestReplicate_StatsExactAccounting(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	base := genRandomBytes(8019, 1_000_000)
+	mustPutSourceObject(t, dstSrv, "dst", "already-here", base, "application/octet-stream", nil)
+	mutated := append([]byte{}, base...)
+	copy(mutated[100_000:104_096], genRandomBytes(8020, 4096))
+	mustPutSourceObject(t, srcSrv, "src", "obj", mutated, "application/octet-stream", nil)
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+
+	if stats.LogicalBytes != int64(len(mutated)) {
+		t.Fatalf("LogicalBytes = %d, want %d", stats.LogicalBytes, len(mutated))
+	}
+	if stats.TotalChunks != len(func() []syncLocalChunk {
+		chunks, _, err := scanBytesForSyncTest(mutated)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return chunks
+	}()) {
+		t.Fatalf("TotalChunks did not match an independent CDC scan of the same bytes")
+	}
+	if stats.ChunksReused+stats.MissingChunkOccur != stats.TotalChunks {
+		t.Fatalf("ChunksReused(%d) + MissingChunkOccur(%d) != TotalChunks(%d)", stats.ChunksReused, stats.MissingChunkOccur, stats.TotalChunks)
+	}
+	if stats.UploadedBytes+stats.BytesAvoided != stats.LogicalBytes {
+		t.Fatalf("UploadedBytes(%d) + BytesAvoided(%d) != LogicalBytes(%d)", stats.UploadedBytes, stats.BytesAvoided, stats.LogicalBytes)
+	}
+	if stats.UploadedBytes == 0 || stats.UploadedBytes >= stats.LogicalBytes {
+		t.Fatalf("expected a genuine partial transfer, got UploadedBytes=%d of LogicalBytes=%d", stats.UploadedBytes, stats.LogicalBytes)
+	}
+	var buf bytes.Buffer
+	printSyncStats(&buf, stats)
+	t.Logf("M8A replication stats:\n%s", buf.String())
+}
+
+// scanBytesForSyncTest runs the exact CDC chunker over in-memory bytes,
+// for independent cross-checking of TotalChunks in the stats test above
+// (writes to a temp file since scanLocalFileForSync operates on a path).
+func scanBytesForSyncTest(data []byte) ([]syncLocalChunk, int64, error) {
+	f, err := os.CreateTemp("", "m8a-scan-*")
+	if err != nil {
+		return nil, 0, err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return nil, 0, err
+	}
+	return scanLocalFileForSync(f.Name())
+}
+
+// =============================================================================
+// Demonstration fixture (M8A demo, honest strong-reuse case)
+// =============================================================================
+
+func TestReplicate_M8ADemonstrationFixture(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	const size = 16_000_000
+	base := genRandomBytes(9999, size)
+	// Store B already contains the base content (under a different key,
+	// e.g. an earlier related object) but NOT the target object itself --
+	// an honest, strong-but-not-manufactured reuse scenario, per the M8A
+	// task's own instruction not to fake an all-zero-transfer demo.
+	mustPutSourceObject(t, dstSrv, "demo-dst", "related-object-already-present", base, "application/octet-stream", nil)
+
+	edited := append([]byte{}, base...)
+	mid := size / 2
+	insertion := genRandomBytes(11111, 8192)
+	edited = append(edited[:mid], append(insertion, edited[mid:]...)...)
+	mustPutSourceObject(t, srcSrv, "demo-src", "target-object", edited, "application/octet-stream", nil)
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "demo-src", Key: "target-object", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "demo-dst", Key: "target-object", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	reuse := float64(stats.BytesAvoided) / float64(stats.LogicalBytes) * 100
+	if reuse < 90.0 {
+		t.Fatalf("expected a strong, honest reuse figure for a localized edit, got %.1f%%", reuse)
+	}
+
+	entry, gotBody, err := dstSrv.store.GetObject("demo-dst", "target-object")
+	if err != nil || !bytes.Equal(gotBody, edited) {
+		t.Fatalf("destination content mismatch: err=%v", err)
+	}
+
+	// Restart destination and re-verify (AWS-SDK-equivalent GET, deep
+	// verify) exactly as the M8A demo/external harness script does.
+	dstTS.Close()
+	if err := dstSrv.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dstStore2, err := OpenStore(dstSrv.store.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstStore2.Close()
+	_, restartedBody, err := dstStore2.GetObject("demo-dst", "target-object")
+	if err != nil || !bytes.Equal(restartedBody, edited) {
+		t.Fatalf("GET after destination restart mismatch: err=%v", err)
+	}
+	verifyRes, err := dstStore2.Verify(true)
+	if err != nil || !verifyRes.OK() {
+		t.Fatalf("deep verify after replication failed: err=%v ok=%v", err, verifyRes.OK())
+	}
+
+	t.Logf("M8A demonstration fixture:")
+	t.Logf("Logical object:          %s", humanBytes(stats.LogicalBytes))
+	t.Logf("Chunks:                  %d", stats.TotalChunks)
+	t.Logf("Already at destination:  %d", stats.ChunksReused)
+	t.Logf("Transferred chunks:      %d", stats.UniqueChunksUploaded)
+	t.Logf("Transferred payload:     %s", humanBytes(stats.UploadedBytes))
+	t.Logf("Transfer avoided:        %s", humanBytes(stats.BytesAvoided))
+	t.Logf("Reuse:                   %.1f%%", reuse)
+	_ = entry
+}
+
+// =============================================================================
+// Regression: new endpoints/CLI verb don't disturb existing behavior
+// =============================================================================
+
+func TestReplicate_NewEndpointsRejectUnauthenticatedRequests(t *testing.T) {
+	_, srcSrv, _, _, _, _ := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+
+	resp, err := http.Get(srcTS.URL + zeros3SyncObjectPath + "?bucket=src&key=obj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("unauthenticated GET /object should be rejected, got 200")
+	}
+
+	resp2, err := http.Get(srcTS.URL + zeros3SyncChunksPrefix + strings.Repeat("00", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode == http.StatusOK {
+		t.Fatalf("unauthenticated GET /chunks/<sha> should be rejected, got 200")
+	}
+}
+
+func TestReplicate_UnknownExtensionPathStillNotBucketParsed(t *testing.T) {
+	_, srcSrv, _, _, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+
+	status, _ := doSyncRequest(t, srcTS.Client(), srcTS.URL, signer, http.MethodGet, "/_zeros3/v1/bogus", nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (unknown ZeroS3 operation, not a bucket lookup)", status)
+	}
+}
+
+func TestReplicate_OrdinaryS3AndM6SyncUnaffected(t *testing.T) {
+	dir, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, srcSrv, "regress")
+
+	// Ordinary S3 PUT/GET must be entirely unaffected by M8A's new routes
+	// and the putSyncChunk refactor.
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	resp := doSignedRequest(t, srcTS.Client(), srcTS.URL, signer, http.MethodPut, "/regress/plain.txt", []byte("ordinary S3 PUT"), nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ordinary PUT status = %d", resp.StatusCode)
+	}
+	got := getSyncObjectBytes(t, srcTS, creds, region, "regress", "plain.txt")
+	if string(got) != "ordinary S3 PUT" {
+		t.Fatalf("ordinary GET returned %q", got)
+	}
+
+	// M6 local sync (which now calls the refactored putSyncChunk) must
+	// still work end to end.
+	body := genRandomBytes(8021, 200_000)
+	path := writeSyncTempFile(t, dir, "m6regress.bin", body)
+	mustCreateReplicateBucket(t, dstSrv, "regress2")
+	stats, err := syncFile(syncClientConfig{LocalPath: path, Endpoint: dstTS.URL, Bucket: "regress2", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()})
+	if err != nil {
+		t.Fatalf("syncFile: %v", err)
+	}
+	if stats.UploadedBytes != int64(len(body)) {
+		t.Fatalf("M6 sync of a brand-new file should upload everything: uploaded=%d want=%d", stats.UploadedBytes, len(body))
+	}
+	gotSync := getSyncObjectBytes(t, dstTS, creds, region, "regress2", "obj")
+	if !bytes.Equal(gotSync, body) {
+		t.Fatalf("M6 sync GET mismatch after M8A refactor")
+	}
+}

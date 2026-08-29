@@ -1,8 +1,309 @@
 # ZeroS3 — Status
 
-Milestone-by-milestone status, newest first. M1-M6C are all complete
-and accepted; M7 (release hardening/submission freeze) is the current
-pass -- see its section immediately below.
+Milestone-by-milestone status, newest first. M1-M7 are all complete,
+tested, and release-hardened (frozen unless a demonstrated regression or
+correctness bug requires a minimal fix); M8A (remote-to-remote delta
+replication) is the current pass -- see its section immediately below.
+
+## M8 — Benchmark baseline + M8A remote-to-remote delta + release regression
+
+**Goal:** (1) benchmark the frozen `m7-gold` baseline honestly, without
+optimizing it; (2) add exactly one new capability -- replicate one
+object from a source ZeroS3 server to a destination ZeroS3 server,
+transferring only the chunks the destination doesn't already have; (3)
+prove the entire M7 release contract still holds on top of it. No peer
+repair, prefix/bucket replication, Merkle structures, compression, pack
+files, indexing/compaction redesign, or M8B work was started.
+
+### Phase 1 — `m7-gold` baseline benchmarks
+
+- Baseline commit: `eaec1adc2a6dd6b6ea26eb7154db94c04d87c6d6` (branch
+  `claude/zeros3-m8a-baseline-inh9hk`, tip of `main` after M7 fully
+  shipped). `go test ./...`: 341 top-level tests, 0 FAIL, 0 SKIP.
+  `go test -race ./...`: clean. `go vet ./...`: clean. `gofmt -l .`:
+  clean. Reproducible build (two independent copies): SHA-256
+  `e952fa60166a2935adf629e6dd92084e34f84ba0165c6145699aaf3c9250f3b3`,
+  matching the README's already-recorded M7 hash.
+- Full benchmark harness (`zeros3-testing/harness/m8_baseline`) and
+  results (`zeros3-testing/results/M8_BASELINE_BENCHMARKS.md`), covering
+  B1-B8 (ordinary PUT/GET at 16/64/256MiB, duplicate-PUT CAS reuse,
+  edited-object CDC reuse, CopyObject, M6 local delta sync, verify
+  basic/deep, startup/replay under 3000 journal records).
+- Headline conclusions (full detail and caveats in the results file):
+  ordinary PUT/GET throughput is adequate on this test environment
+  (14-92 MiB/s depending on size/direction); file-per-chunk CAS is not a
+  measured bottleneck at these sizes (CopyObject, which is CAS-free,
+  completed in 27ms regardless of the 256MiB logical size it described);
+  startup replay is not currently problematic (21ms for 3000 journal
+  records); M6 local delta sync avoided 99.7% of a 64MiB file's bytes on
+  a small localized edit -- this is the number M8A's remote delta had to
+  reproduce across two independent servers (it did: see below).
+- No implementation changes were made based on any benchmark number
+  (the Phase 1 gate).
+
+### M8A architecture (client-orchestrated relay)
+
+`zeros3 replicate SOURCE_URI DEST_URI --from SRC --to DST` (section 15d)
+is a genuine HTTP client of *two* independent, already-authenticated
+ZeroS3 endpoints -- unlike a server-to-server protocol, neither server
+ever learns the other exists, makes an outbound request of its own, or
+stores the other's credentials. A missing chunk flows
+`source -> this CLI process -> destination`, entirely in memory, one
+chunk at a time. This was a deliberate choice to introduce **zero new
+server-side SSRF surface**, per the milestone's own stated preference,
+over a design where the destination pulls from an arbitrary source URL.
+
+Two new endpoints, both under the existing reserved `/_zeros3/v1/...`
+namespace and authenticated by the exact same SigV4 verification every
+other request already goes through:
+
+- `GET /_zeros3/v1/object?bucket=&key=` (`handleSyncDescribeObject`) --
+  the authoritative ordered chunk list (SHA-256 + length), size, ETag,
+  Content-Type, and user metadata for an existing object, sourced from
+  the exact same `HeadObject` lookup ordinary S3 HEAD already uses.
+  `bucket`/`key` travel as `net/url`-encoded query parameters, not path
+  segments -- a query *value* containing `%`/`#`/`?` needs no special
+  escaping the way a path *segment* does, so the M7 hostile-review bug
+  class (`zeros3 sync`'s old raw-path-concatenation defect) cannot occur
+  here by construction, not merely by re-testing the same fix.
+- `GET /_zeros3/v1/chunks/<sha256-hex>` (`handleSyncChunkDownload`) --
+  one chunk's bytes, addressed only by digest (`decodeHexSHA256` syntax
+  validation, so no arbitrary path access), served through `casRead`,
+  which independently re-verifies content against the digest before
+  returning anything (on-disk corruption is a clear error, never served
+  silently).
+
+Everything else -- capability discovery, missing-chunk negotiation, the
+idempotent chunk-upload endpoint, and the checked commit path -- is the
+**exact same M6 code, unmodified**, called from `replicateObject`
+exactly like `syncFile` already calls it: `discoverZeroS3Sync`,
+`headSyncDestination`, `buildSyncPlan`, `negotiateSyncMissing`,
+`putSyncChunk` (a small, behavior-preserving extraction from
+`uploadMissingSyncChunks` so both call sites share one PUT-a-chunk
+primitive instead of a duplicated one), `commitSyncObject`/
+`syncPrecondition`, and `syncStats`/`printSyncStats` (reused as-is for
+M8A's own statistics -- no new stats type was needed).
+
+**Persistent-format impact: NONE.** A replicated object is committed
+through the exact same `buildManifestV1FromRefs` + `publishManifest` +
+`commitObjectRootChecked` primitives `PutObject`/`CopyObject`/`sync`
+already use -- no new manifest version, journal record type, or CAS
+format. It is indistinguishable from any other object to ordinary GET/
+HEAD/ListObjectsV2/versions/`verify -deep`/GC/restart.
+
+### Source consistency (M8A7)
+
+A manifest is immutable once published (section 5) -- `fetchSourceDescriptor`
+returns one specific, unchanging revision (its `VersionID` is that
+revision's own manifest UUID), not a live view. `replicateObject` fetches
+this descriptor exactly once, at the start, and every later step
+(negotiate, chunk fetch, commit) operates strictly off that captured
+chunk list, never a re-scan of the source's *current* bucket/key
+pointer. So a source key overwritten mid-replication cannot produce a
+mixed revision at the destination: the in-flight operation is entirely
+unaffected and completes with the revision it originally captured. This
+is the "operate on the captured immutable revision" choice the milestone
+prompt itself preferred, and the architecture already made it strictly
+simpler than a live re-verification approach. Proven deterministically
+by `TestReplicate_SourceOverwrittenDuringReplicationDoesNotProduceMixedRevision`
+and, against a real race, by the external harness's Phase 7 (`zeros3-
+testing/results/M8A_REMOTE_DELTA_RESULTS.md`).
+
+### Destination conflict safety (M8A8) and resume (M8A9)
+
+Destination conflict safety is exactly M6B's mechanism, unmodified:
+`headSyncDestination` captures the destination's identity (absent, or
+its ETag) before negotiation begins; `commitSyncObject`'s
+`ExpectAbsent`/`ExpectedETag` precondition is checked inside
+`commitObjectRootChecked`'s locked critical section, so a destination
+that changed in between is rejected (`errSyncRemoteConflict`, HTTP 412)
+rather than silently overwritten -- proven by
+`TestReplicate_DestinationConflict_ConcurrentWriteDuringReplicationRejectedSafely`,
+`TestReplicate_DestinationConflict_AbsentBecomesPresentDuringReplication`,
+and the external harness's Phase 6 racing-AWS-SDK-write scenario. No
+`--force` exists or was needed.
+
+Resume needs no durable replication-session state anywhere: commit is
+the one atomic step that makes anything visible, so an interrupted
+`replicate` (process killed, server restarted) simply leaves nothing
+published, and CAS content-addressing means a rerun's negotiation
+correctly reports already-landed chunks as no longer missing. Proven
+three ways: `TestReplicate_ResumeAfterPartialPriorUpload` (a chunk
+pre-landed via direct upload), `TestReplicate_ResumeAcrossRealProcessInterruption`
+(a **real `zeros3 replicate` OS process, killed with SIGKILL mid-
+transfer**, then correctly resumed by a second real invocation),
+`TestReplicate_DestinationServerRestartBetweenAttempts`/
+`TestReplicate_SourceServerRestartBetweenDescriptorAndChunkFetch` (real
+process restart on either side), and the external harness's Phase 5
+(same real-process-kill proof, black-box via the AWS SDK).
+
+### Statistics (M8A10)
+
+`replicateObject` reuses `syncStats` exactly as `syncFile` populates it:
+`LogicalBytes` (source object size), `TotalChunks` (occurrences, with
+duplicates), `ChunksReused`/`MissingChunkOccur` (occurrence-level),
+`UniqueChunksUploaded` (unique digests actually relayed),
+`UploadedBytes` (actual payload relayed -- each unique chunk counted
+once, never per-occurrence), `BytesAvoided` (`LogicalBytes -
+UploadedBytes`). Exact accounting, including the duplicate-reference
+case, is proven by `TestReplicate_Stats_DuplicateChunkReferencesNotDoubleCounted`
+and `TestReplicate_StatsExactAccounting`.
+
+### Hostile M8A review
+
+Every question the milestone prompt poses was worked through and either
+disproven by a specific test or answered by a structural argument (no
+finding required a design change):
+
+- **Source correctness:** malformed descriptors/digests cannot cause
+  arbitrary reads (`decodeHexSHA256`/`normalizedSyncDigest` syntax
+  validation everywhere; chunk paths are derived solely from a validated
+  32-byte digest, never a caller string); a corrupt source chunk is
+  caught twice (server-side `casRead` re-verification, then the
+  client's own independent re-hash --
+  `TestReplicate_SourceChunkDownload_CorruptChunkOnDiskDetected`,
+  `TestReplicate_ClientRehashDetectsSourceReturningWrongBytes`); source
+  overwrite mid-flight cannot produce mixed content (above).
+- **Destination correctness:** commit cannot reference a missing chunk
+  (`handleSyncCommit`'s per-chunk `casRead`, inherited from M6, already
+  exhaustively tested); a conflict cannot silently overwrite (above);
+  repeated replication cannot corrupt or duplicate state (idempotent
+  chunk upload + the same commit precondition); destination CAS
+  presence is never trusted incorrectly (a chunk's on-disk path is
+  always derived from its own content hash at write time --
+  `casWrite` -- never from a caller-supplied digest, so "present" always
+  means "content-correct").
+- **Credentials/security:** `replicateConfig.Source`/`.Dest` are fully
+  independent `syncClientConfig` values; `signAndDo` always signs with
+  its own `cfg`'s `Creds`/`Region` against its own `cfg`'s `Endpoint`,
+  and `replicateObject` never cross-assigns one side's `Creds` onto the
+  other's config (verified by inspection -- there is exactly one
+  assignment of `Creds` per side, both from `runReplicate`'s own
+  `-from-*`/`-to-*` flags). Neither new endpoint makes an outbound
+  request, so the server gained no SSRF primitive. No secret/
+  Authorization value is ever logged or printed by any new code path.
+- **Transfer accounting:** duplicate chunk references are not
+  double-counted (above); "transferred" is exactly the bytes actually
+  fetched-and-uploaded, never source logical size or destination
+  physical size conflated with it.
+- **Existing behavior:** the new routes don't shadow or misroute
+  ordinary S3 (`TestReplicate_UnknownExtensionPathStillNotBucketParsed`,
+  `TestReplicate_NewEndpointsRejectUnauthenticatedRequests`, and every
+  M2/M3/M5* external harness -- none of which touch `/_zeros3/...` --
+  unaffected); the `putSyncChunk` extraction didn't regress M6's weird-
+  key handling (`harness/m6/sync` still 33/0/2 externally, all M6/M6C
+  internal tests still pass, and
+  `TestReplicate_SourceDescriptor_WeirdKeyCharacters`/
+  `TestReplicate_OrdinaryS3AndM6SyncUnaffected` directly re-check it);
+  source descriptor logic uses the same current-root `HeadObject` lookup
+  GET/HEAD already use, never a second resolution path; replicated
+  objects are ordinary to verify/GC/versions (external harness Phase 4
+  deep-verifies a replicated destination store clean).
+
+### M8A tests and evidence
+
+- **33 new internal tests** (`zeros3_test.go`, "M8A" section): capability
+  discovery (compatible/incompatible/auth-failure, both sides), source
+  object descriptor (exists/missing object/missing bucket/empty object/
+  metadata preserved/weird keys/missing query params), source chunk
+  retrieval (valid/missing/malformed digest/corrupt/client rehash),
+  negotiation accounting (all-missing/zero-missing/mixed/duplicate
+  references), commit/conflict (concurrent write, absent-becomes-
+  present), source-overwrite consistency, resume (primed chunk, **a real
+  OS process kill**, destination restart, source restart), exact stats
+  accounting, a demonstration fixture, and regression checks (new
+  endpoints reject unauthenticated requests, unknown extension path
+  still 404s, ordinary S3 + M6 sync unaffected). Negotiate batch-size
+  boundaries (1023/1024/1025), oversized-request rejection, and
+  malformed-JSON/unsupported-protocol handling on negotiate/commit are
+  **not** re-proven a second time here -- that code is unmodified and
+  already exhaustively covered by M6's own suite
+  (`TestSyncNegotiate_BatchSizeBoundary` et al.).
+- **Full internal suite:** 374 top-level tests (341 + 33 new), 0 FAIL,
+  0 SKIP, 3 repeated runs with no flakiness. `go test -race ./...`:
+  clean. `go vet ./...`: clean. `gofmt -l .`: clean.
+- **External harness** (`zeros3-testing/harness/m8a/remote_delta`): a
+  real two-server (`zeros3 serve` × 2, separate stores/ports) black-box
+  proof, fixtures written entirely via the AWS SDK v2, covering the
+  milestone's own required 7 phases (AWS-SDK setup, real `replicate`
+  CLI, independent destination verification, destination restart,
+  resume across a real process kill, a racing-AWS-SDK-write conflict,
+  and a source overwrite mid-flight). Result: **34 passed, 0 failed, 4
+  informational**. Full phase-by-phase detail in `zeros3-testing/
+  results/M8A_REMOTE_DELTA_RESULTS.md`.
+- **Demonstration fixture:** store B already holds a 15.27MiB related
+  object; replicating store A's edited version of it --
+  ```
+  Logical object:          15.27 MiB
+  Chunks:                  221
+  Already at destination:  220
+  Transferred chunks:      1
+  Transferred payload:     107.02 KiB
+  Transfer avoided:        15.16 MiB
+  Reuse:                   99.3%
+  ```
+  a strong, honest reuse figure for a genuinely localized edit, not a
+  manufactured all-zero case, followed by an AWS-SDK-equivalent GET,
+  a destination restart, and `verify -deep` -- all in
+  `TestReplicate_M8ADemonstrationFixture`.
+
+### Full release regression (Phase 3)
+
+Every harness green at the M7 freeze was rerun, **unmodified**, against
+this exact M8A candidate build: **404 passed, 0 failed, 4 informational,
+1 documented known limitation -- byte-for-byte identical to the M7
+baseline's own counts, zero regressions.** Plus the new M8A harness's
+34/0/4. Full per-harness comparison table:
+`zeros3-testing/results/M8_RELEASE_CANDIDATE_RESULTS.md`.
+
+- **Reproducible build:** two independent source copies, byte-identical:
+  SHA-256 `efc0cb0956b39fc05fd11eb42422298f6d0aa776d5a70e41c94c87aad180e3fc`.
+- **Dependency audit:** `go.mod` has zero `require` directives; no
+  `go.sum`; no `vendor/`; `zeros3.go`'s `go list -deps .` package list is
+  byte-for-byte identical to the m7-gold proof (M8A's one new client-side
+  use, `net/url.Values`, is the same `net/url` package sections 8/15b
+  already import -- zero new imports). No `golang.org/x/...`; no
+  `os/exec` anywhere in `zeros3.go`. Sole implementation source file
+  remains `zeros3.go` (8120 lines, +433 from m7-gold); sole first-party
+  test file remains `zeros3_test.go` (14451 lines, +1329).
+- **Docs:** `README.md`/`S3_COMPAT.md`/`STDLIB.md` updated with exactly
+  what M8A requires (a `replicate` example, its extension-not-S3-API
+  status, its two new endpoints, its one new stdlib-usage note) --
+  nothing in the core M1-M7 story was displaced or rewritten.
+
+### Known limitations (M8A)
+
+- One object per `zeros3 replicate` invocation -- no prefix/bucket
+  recursion, no continuous/scheduled replication, no peer-to-peer
+  repair/healing between servers (all explicit M8 non-goals).
+- Both endpoints must be ZeroS3 servers that pass capability discovery;
+  unlike `zeros3 sync`'s plain-`PutObject` fallback for a non-ZeroS3
+  destination, `replicate` has no generic-S3 fallback of any kind (by
+  design -- M8A is specifically ZeroS3-to-ZeroS3).
+- If a source revision's only reference is removed and the source store
+  is garbage-collected (`gc -apply`, which already requires exclusive
+  offline access) before a slow, in-flight replication finishes reading
+  its chunks, chunk fetch fails with a clear "chunk not available" error
+  rather than silently substituting different content -- it does not
+  corrupt or mix anything, but it also isn't retried automatically.
+- Chunks transfer sequentially, one at a time, matching `zeros3 sync`'s
+  own existing sequential-transfer limitation -- no concurrent chunk
+  fetch/upload in this milestone.
+
+### Final assessment
+
+**M8A ACCEPTED** — the feature works (33 internal tests + a real two-
+server external harness, all green), every previous guarantee still
+works (404/0/4/1 unmodified external harnesses + the full internal
+suite, zero regressions from `m7-gold`), source readability remains
+intact (one clearly-named new section, heavy reuse of M6 primitives, no
+broad refactor), documentation is accurate and proportionate, and
+reproducibility is intact (byte-identical build). The feature has a
+clear demo/usefulness story: `zeros3 replicate` moves an object between
+two independent ZeroS3 stores while provably transferring only the
+bytes the destination doesn't already have, with the same safety
+guarantees (conflict detection, resume, integrity re-verification)
+`zeros3 sync` already established for the local case.
 
 ## M7 — Release hardening, proof, and submission freeze
 

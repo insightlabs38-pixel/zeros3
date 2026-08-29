@@ -5928,7 +5928,9 @@ func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry,
 // sync:
 //
 //   GET  /_zeros3/v1/info                  capability discovery
+//   GET  /_zeros3/v1/object?bucket=&key=    object chunk descriptor (M8A)
 //   POST /_zeros3/v1/negotiate              bounded missing-chunk query
+//   GET  /_zeros3/v1/chunks/<sha256-hex>    chunk download (M8A)
 //   PUT  /_zeros3/v1/chunks/<sha256-hex>    idempotent chunk upload
 //   POST /_zeros3/v1/commit                 atomic ordinary object commit
 //
@@ -5939,6 +5941,14 @@ func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry,
 // primitive (newCDCChunker) and SigV4 canonicalization primitives
 // (sigv4CanonicalURI/Query/Headers, sigv4SigningKey) the server itself
 // uses, rather than a second implementation of either.
+//
+// `zeros3 replicate` (M8A, section 15d) is the same kind of HTTP client,
+// speaking this exact protocol to *two* independent servers (source and
+// destination) at once: /object and the new GET /chunks/<sha256-hex> are
+// its only genuinely new endpoints, added here so a remote source's
+// chunk list and payload bytes are reachable at all -- negotiate, PUT
+// chunk upload, and commit are the unmodified M6 endpoints, reused
+// as-is against the destination.
 // =============================================================================
 
 const (
@@ -5974,6 +5984,7 @@ const (
 
 	zeros3SyncPathPrefix    = "/_zeros3/v1/"
 	zeros3SyncInfoPath      = "/_zeros3/v1/info"
+	zeros3SyncObjectPath    = "/_zeros3/v1/object" // M8A: GET-only, bucket/key travel as query parameters (see handleSyncDescribeObject)
 	zeros3SyncNegotiatePath = "/_zeros3/v1/negotiate"
 	zeros3SyncCommitPath    = "/_zeros3/v1/commit"
 	zeros3SyncChunksPrefix  = "/_zeros3/v1/chunks/"
@@ -6019,6 +6030,32 @@ type syncNegotiateResponse struct {
 type syncChunkUploadResponse struct {
 	SHA256 string `json:"sha256"`
 	Length int64  `json:"length"`
+}
+
+// syncObjectDescriptor is GET /_zeros3/v1/object's body (M8A): the
+// complete, ordered, authoritative chunk list plus the ordinary object
+// metadata needed to reproduce it as a destination object -- everything
+// replicateObject's negotiate/fetch/upload/commit pipeline (section 15d)
+// needs, and nothing else (no filesystem paths, no internal manifest
+// fields beyond what's already public via ordinary HEAD/GET). VersionID
+// is the source's manifestUUID at the moment this descriptor was built:
+// since manifests are immutable (section 5), this identifies the exact,
+// unchanging revision Chunks describes, regardless of whether the
+// source's *current* bucket/key pointer is later overwritten (see
+// replicateObject's doc comment for the consistency semantics this
+// enables).
+type syncObjectDescriptor struct {
+	Protocol    int                   `json:"protocol"`
+	CDC         string                `json:"cdc"`
+	Hash        string                `json:"hash"`
+	Bucket      string                `json:"bucket"`
+	Key         string                `json:"key"`
+	VersionID   string                `json:"version_id"`
+	Size        int64                 `json:"size"`
+	ETag        string                `json:"etag"`
+	ContentType string                `json:"content_type"`
+	Metadata    map[string]string     `json:"metadata"`
+	Chunks      []syncChunkDescriptor `json:"chunks"`
 }
 
 // syncCommitRequest carries the complete ordered chunk list (occurrences,
@@ -6115,8 +6152,12 @@ func (srv *Server) handleZeroS3Sync(w http.ResponseWriter, r *http.Request, rawP
 	switch {
 	case rawPath == zeros3SyncInfoPath && r.Method == http.MethodGet:
 		srv.handleSyncDiscovery(w)
+	case rawPath == zeros3SyncObjectPath && r.Method == http.MethodGet:
+		srv.handleSyncDescribeObject(w, r)
 	case rawPath == zeros3SyncNegotiatePath && r.Method == http.MethodPost:
 		srv.handleSyncNegotiate(w, body)
+	case strings.HasPrefix(rawPath, zeros3SyncChunksPrefix) && r.Method == http.MethodGet:
+		srv.handleSyncChunkDownload(w, strings.TrimPrefix(rawPath, zeros3SyncChunksPrefix))
 	case strings.HasPrefix(rawPath, zeros3SyncChunksPrefix) && r.Method == http.MethodPut:
 		srv.handleSyncChunkUpload(w, strings.TrimPrefix(rawPath, zeros3SyncChunksPrefix), body)
 	case rawPath == zeros3SyncCommitPath && r.Method == http.MethodPost:
@@ -6124,6 +6165,88 @@ func (srv *Server) handleZeroS3Sync(w http.ResponseWriter, r *http.Request, rawP
 	default:
 		writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown ZeroS3 sync extension operation")
 	}
+}
+
+// handleSyncDescribeObject answers M8A's source object-descriptor query:
+// the complete ordered chunk list plus ordinary object metadata for an
+// existing bucket/key, reusing the exact same lookup HeadObject already
+// performs for ordinary S3 HEAD (section 10) -- there is no second
+// object-resolution path. bucket/key travel as URL query parameters
+// (net/url-encoded by the client via url.Values, section 15d's
+// fetchSourceDescriptor), not path segments: the M7 hostile-review bug
+// class (raw path concatenation of an unescaped key breaking on `%`/`#`/
+// `?`, see section 15b's syncObjectPath) cannot occur here by
+// construction, since a query *value* containing those bytes needs no
+// special-casing the way a path *segment* does.
+//
+// Only what an ordinary authenticated HEAD/GET already exposes is
+// returned (chunk digests/lengths, size, ETag, content type, user
+// metadata) -- never a filesystem path or any other internal manifest
+// field. This response is unbounded in chunk count, exactly like
+// handleSyncCommit's request body already is (see maxSyncBatchDescriptors'
+// doc comment): a multi-GiB object legitimately has far more than 1024
+// chunks, and that per-batch negotiate limit doesn't apply here.
+func (srv *Server) handleSyncDescribeObject(w http.ResponseWriter, r *http.Request) {
+	bucket := r.URL.Query().Get("bucket")
+	key := r.URL.Query().Get("key")
+	if bucket == "" || key == "" {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "bucket and key query parameters are required")
+		return
+	}
+	entry, man, err := srv.store.HeadObject(bucket, key)
+	if err != nil {
+		switch {
+		case errors.Is(err, errNoSuchBucket):
+			writeSyncError(w, http.StatusNotFound, "NoSuchBucket", "the specified bucket does not exist")
+		case errors.Is(err, errNoSuchKey):
+			writeSyncError(w, http.StatusNotFound, "NoSuchKey", "the specified key does not exist")
+		default:
+			writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		}
+		return
+	}
+	chunks := make([]syncChunkDescriptor, len(man.Chunks))
+	for i, c := range man.Chunks {
+		chunks[i] = syncChunkDescriptor{SHA256: c.SHA256, Length: c.Length}
+	}
+	metadata := make(map[string]string, len(man.Metadata))
+	for _, kv := range man.Metadata {
+		metadata[kv.Key] = kv.Value
+	}
+	writeSyncJSON(w, http.StatusOK, syncObjectDescriptor{
+		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+		Bucket: bucket, Key: key, VersionID: entry.manifestUUID,
+		Size: entry.size, ETag: entry.etag, ContentType: entry.contentType,
+		Metadata: metadata, Chunks: chunks,
+	})
+}
+
+// handleSyncChunkDownload answers M8A's source chunk-retrieval query: the
+// exact bytes of one CAS chunk, addressed only by its own SHA-256 digest
+// -- never a filesystem path, and never any digest that doesn't decode as
+// exactly 32 bytes of hex (decodeHexSHA256, the same syntax validation
+// normalizedSyncDigest already applies to every other digest this
+// protocol accepts). srv.store.casRead independently re-verifies the
+// returned bytes against sum before returning them (section 4), so
+// on-disk corruption is reported as a clear error here rather than
+// silently served -- and the client (fetchSourceChunk, section 15d)
+// independently re-hashes the response again anyway, trusting neither
+// endpoint blindly.
+func (srv *Server) handleSyncChunkDownload(w http.ResponseWriter, hexDigest string) {
+	sum, err := decodeHexSHA256(hexDigest)
+	if err != nil {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "invalid chunk digest")
+		return
+	}
+	data, err := srv.store.casRead(sum)
+	if err != nil {
+		writeSyncError(w, http.StatusNotFound, "NoSuchChunk", fmt.Sprintf("chunk %s is not available or corrupt: %v", hexDigest, err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // handleSyncDiscovery answers capability discovery. It never touches the
@@ -6652,6 +6775,24 @@ func negotiateSyncMissing(cfg syncClientConfig, discovery syncDiscoveryResponse,
 	return missing, nil
 }
 
+// putSyncChunk uploads one chunk's already-verified bytes to cfg's
+// endpoint via the M6 idempotent chunk-upload primitive (PUT
+// /_zeros3/v1/chunks/<sha256-hex>, handleSyncChunkUpload). Shared by
+// uploadMissingSyncChunks (M6, bytes re-read from a local file) and M8A's
+// replicateObject (section 15d, bytes relayed from a source ZeroS3
+// server) -- there is exactly one client-side chunk-upload code path,
+// used by both.
+func putSyncChunk(cfg syncClientConfig, hexDigest string, data []byte) error {
+	resp, body, err := cfg.signAndDo(http.MethodPut, zeros3SyncChunksPrefix+hexDigest, data, nil)
+	if err != nil {
+		return fmt.Errorf("chunk upload failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("chunk upload failed: status %d: %s", resp.StatusCode, body)
+	}
+	return nil
+}
+
 // uploadMissingSyncChunks performs A5's idempotent missing-chunk upload:
 // only chunks negotiate reported missing are ever sent, one PUT per
 // unique digest. Re-reading each chunk's bytes just before sending it
@@ -6671,12 +6812,8 @@ func uploadMissingSyncChunks(cfg syncClientConfig, plan syncPlan, missing map[st
 		if hex.EncodeToString(sum[:]) != d.SHA256 {
 			return uploadedBytes, fmt.Errorf("%w: chunk at offset %d no longer matches its scanned digest", errSyncLocalMutation, plan.offsetBySHA[d.SHA256])
 		}
-		resp, body, err := cfg.signAndDo(http.MethodPut, zeros3SyncChunksPrefix+d.SHA256, data, nil)
-		if err != nil {
-			return uploadedBytes, fmt.Errorf("chunk upload failed: %w", err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			return uploadedBytes, fmt.Errorf("chunk upload failed: status %d: %s", resp.StatusCode, body)
+		if err := putSyncChunk(cfg, d.SHA256, data); err != nil {
+			return uploadedBytes, err
 		}
 		uploadedBytes += d.Length
 	}
@@ -7225,6 +7362,300 @@ func runSync(args []string) {
 }
 
 // =============================================================================
+// 15d. `zeros3 replicate` client (M8A -- remote-to-remote delta
+// replication for one object)
+//
+// M8A adds exactly one new capability: replicate one existing object
+// from a source ZeroS3 server to a destination ZeroS3 server, sending
+// over the wire only the chunks the destination doesn't already have.
+// Architecturally this is a client-orchestrated relay, not a server-to-
+// server protocol: replicateObject is an ordinary HTTP client of *two*
+// independent, already-authenticated ZeroS3 endpoints (source and
+// destination), exactly the way syncFile (section 15b) is already a
+// client of one. Neither server ever learns the other exists, makes an
+// outbound request of its own, or stores the other's credentials --
+// there is no new SSRF surface, no server-side source-trust
+// configuration, and no distributed session state. A chunk missing at
+// the destination flows source -> this CLI process -> destination, in
+// memory, one chunk at a time; it is never durably staged anywhere in
+// between.
+//
+// The result is an entirely ordinary destination object: replicateObject
+// reuses M6's protocol almost without exception --
+//
+//   - discoverZeroS3Sync (M8A1 capability discovery, unmodified, called
+//     against each endpoint independently)
+//   - headSyncDestination (M8A8 destination-conflict precondition
+//     capture, unmodified)
+//   - buildSyncPlan (unmodified: turns an ordered chunk list into the
+//     same ordered/unique/logical-bytes shape negotiate/commit need,
+//     whether that list came from a local CDC scan or, here, a remote
+//     descriptor)
+//   - negotiateSyncMissing (M8A3 destination negotiation, unmodified,
+//     against the destination)
+//   - putSyncChunk (M8A5 destination chunk upload, unmodified -- the
+//     exact primitive uploadMissingSyncChunks already uses)
+//   - commitSyncObject / syncPrecondition (M8A6 destination commit,
+//     unmodified)
+//   - syncStats / printSyncStats (M8A10 statistics, unmodified: a
+//     replication's TotalChunks/ChunksReused/MissingChunkOccur/
+//     UniqueChunksUploaded/UploadedBytes/BytesAvoided mean exactly what
+//     they already mean for a local sync)
+//
+// The only genuinely new pieces are the two new server endpoints (GET
+// /object, GET /chunks/<sha256-hex>, section 15 above) and this file's
+// two new client functions that call them (fetchSourceDescriptor,
+// fetchSourceChunk) plus replicateObject's orchestration across both
+// endpoints -- there is no second negotiation protocol, no second
+// upload/commit path, and no new persistent format: a replicated object
+// is committed through the exact same buildManifestV1FromRefs +
+// publishManifest + commitObjectRootChecked primitives (sections 5/7)
+// PutObject/CopyObject/sync already use, so it is indistinguishable from
+// any other object to GET/HEAD/ListObjects/versions/verify/GC/restart.
+//
+// Source consistency (M8A7): a manifest is immutable once published
+// (section 5) -- fetchSourceDescriptor's response describes one specific,
+// unchanging revision (VersionID is that revision's manifestUUID), not a
+// live view that could shift mid-operation. replicateObject fetches this
+// descriptor exactly once, at the start, and every later step (negotiate,
+// chunk fetch, commit) operates strictly off that captured chunk list --
+// never a re-scan of the source's *current* bucket/key pointer. So if the
+// source key is overwritten while a replication is in flight, the
+// in-flight operation is entirely unaffected: it still completes with
+// the revision it originally captured, correctly, never a mixed one (see
+// TestReplicate_SourceOverwrittenDuringReplicationDoesNotProduceMixedRevision).
+// This is a deliberate choice of "operate on the captured immutable
+// revision" over "re-verify the source's current state," per M8A7's own
+// stated preference -- the architecture already makes the former both
+// simpler and strictly safer. The one caveat this implies (undocumented
+// nowhere else): if the source's *only* reference to an old revision's
+// chunks is removed and the source store is later garbage-collected
+// (`gc -apply`, which already requires exclusive offline access) before
+// a slow replication finishes reading them, chunk fetch fails with a
+// clear "chunk not available" error rather than silently substituting
+// newer content -- it does not corrupt or mix anything.
+// =============================================================================
+
+// fetchSourceDescriptor performs M8A2's object-descriptor query: an
+// authenticated GET against cfg's endpoint for cfg.Bucket/cfg.Key, using
+// url.Values (never raw string concatenation of the key) to build the
+// query string -- see handleSyncDescribeObject's doc comment for why this
+// sidesteps the M7 raw-path-concatenation bug class entirely rather than
+// re-solving it.
+func fetchSourceDescriptor(cfg syncClientConfig) (syncObjectDescriptor, error) {
+	q := url.Values{"bucket": {cfg.Bucket}, "key": {cfg.Key}}
+	resp, body, err := cfg.signAndDo(http.MethodGet, zeros3SyncObjectPath+"?"+q.Encode(), nil, nil)
+	if err != nil {
+		return syncObjectDescriptor{}, fmt.Errorf("source object descriptor request failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return syncObjectDescriptor{}, fmt.Errorf("source object descriptor failed: status %d: %s", resp.StatusCode, body)
+	}
+	var d syncObjectDescriptor
+	if err := json.Unmarshal(body, &d); err != nil {
+		return syncObjectDescriptor{}, fmt.Errorf("source object descriptor response not understood: %w", err)
+	}
+	if err := validateSyncProtocolFields(d.Protocol, d.CDC, d.Hash); err != nil {
+		return syncObjectDescriptor{}, fmt.Errorf("source object descriptor incompatible: %w", err)
+	}
+	return d, nil
+}
+
+// errReplicateChunkMismatch is fetchSourceChunk's error for a source that
+// returned bytes not matching the digest the caller asked for -- the
+// client independently re-hashes every chunk it receives (M8A4's "MUST
+// independently verify SHA-256 ... before forwarding/accepting"
+// requirement) rather than trusting either casRead's own server-side
+// re-verification (section 4) or the source's HTTP 200 status.
+var errReplicateChunkMismatch = errors.New("replicate: source returned chunk content that does not match its requested digest")
+
+// fetchSourceChunk performs M8A4's chunk retrieval: an authenticated GET
+// for one chunk by digest, with the client's own SHA-256 re-verification
+// of exactly what M8A4 requires -- this function never returns bytes it
+// hasn't itself confirmed hash to hexDigest.
+func fetchSourceChunk(cfg syncClientConfig, hexDigest string) ([]byte, error) {
+	resp, body, err := cfg.signAndDo(http.MethodGet, zeros3SyncChunksPrefix+hexDigest, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("source chunk fetch failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("source chunk fetch failed: status %d: %s", resp.StatusCode, body)
+	}
+	sum := sha256.Sum256(body)
+	if hex.EncodeToString(sum[:]) != hexDigest {
+		return nil, errReplicateChunkMismatch
+	}
+	return body, nil
+}
+
+// replicateConfig configures one replicate operation: cfg.Source and
+// cfg.Dest are independent syncClientConfig values (independent
+// Endpoint/Creds/Region, and -- deliberately -- independent Bucket/Key,
+// since the source and destination object identity need not match). Each
+// is exactly the same config type discoverZeroS3Sync/headSyncDestination/
+// negotiateSyncMissing/commitSyncObject already take, applied twice, to
+// two different endpoints, rather than a second, replicate-specific
+// client config shape. Source credentials are never attached to a
+// request sent to Dest, or vice versa: signAndDo (section 15b) always
+// signs with its own cfg's Creds/Region against its own cfg's Endpoint,
+// and replicateObject below never copies one side's Creds onto the
+// other's config.
+type replicateConfig struct {
+	Source syncClientConfig
+	Dest   syncClientConfig
+	Out    io.Writer
+}
+
+// replicateObject is M8A's complete pipeline: discover both endpoints'
+// capabilities (M8A1) -> fetch the source's object descriptor (M8A2) ->
+// capture the destination's current identity for the conflict
+// precondition (M8A8, identical to M6B) -> negotiate against the
+// destination (M8A3) -> fetch+relay only the chunks it reports missing
+// (M8A4/M8A5) -> commit (M8A6). See this section's doc comment above for
+// exactly which pieces are reused unmodified from M6 and which are new.
+//
+// Resume (M8A9): there is no durable replication-session state anywhere
+// -- if this process is interrupted after some chunks have reached the
+// destination but before commit, nothing has been published under
+// Dest.Bucket/Dest.Key yet (commit is the one atomic step that makes
+// anything visible). Rerunning replicateObject from scratch re-fetches
+// the same descriptor, and negotiateSyncMissing correctly reports the
+// already-uploaded chunks as no longer missing (they're already durable
+// in the destination's CAS), so only the genuinely remaining chunks are
+// fetched and uploaded again. This falls directly out of CAS content-
+// addressing and idempotent chunk upload -- no special-cased resume logic
+// exists or is needed.
+func replicateObject(cfg replicateConfig) (syncStats, error) {
+	if _, err := discoverZeroS3Sync(cfg.Source); err != nil {
+		return syncStats{}, fmt.Errorf("replicate: source capability discovery failed: %w", err)
+	}
+	destDiscovery, err := discoverZeroS3Sync(cfg.Dest)
+	if err != nil {
+		return syncStats{}, fmt.Errorf("replicate: destination capability discovery failed: %w", err)
+	}
+
+	desc, err := fetchSourceDescriptor(cfg.Source)
+	if err != nil {
+		return syncStats{}, fmt.Errorf("replicate: %w", err)
+	}
+
+	exists, etag, err := headSyncDestination(cfg.Dest)
+	if err != nil {
+		return syncStats{}, fmt.Errorf("replicate: %w", err)
+	}
+
+	chunks := make([]syncLocalChunk, len(desc.Chunks))
+	for i, c := range desc.Chunks {
+		chunks[i] = syncLocalChunk{SHA256: c.SHA256, Length: c.Length}
+	}
+	plan := buildSyncPlan(chunks, desc.Size)
+
+	missing, err := negotiateSyncMissing(cfg.Dest, destDiscovery, plan.unique)
+	if err != nil {
+		return syncStats{}, fmt.Errorf("replicate: %w", err)
+	}
+
+	var relayedBytes int64
+	for _, d := range plan.unique {
+		if !missing[d.SHA256] {
+			continue
+		}
+		data, err := fetchSourceChunk(cfg.Source, d.SHA256)
+		if err != nil {
+			return syncStats{}, fmt.Errorf("replicate: fetching chunk %s from source: %w", d.SHA256, err)
+		}
+		if int64(len(data)) != d.Length {
+			return syncStats{}, fmt.Errorf("replicate: source chunk %s: declared length %d does not match fetched length %d", d.SHA256, d.Length, len(data))
+		}
+		if err := putSyncChunk(cfg.Dest, d.SHA256, data); err != nil {
+			return syncStats{}, fmt.Errorf("replicate: uploading chunk %s to destination: %w", d.SHA256, err)
+		}
+		relayedBytes += d.Length
+	}
+
+	destCommitCfg := cfg.Dest
+	destCommitCfg.ContentType = desc.ContentType
+	destCommitCfg.Metadata = desc.Metadata
+	pre := syncPrecondition{expectAbsent: !exists, expectedETag: etag}
+	if _, err := commitSyncObject(destCommitCfg, plan, pre); err != nil {
+		return syncStats{}, fmt.Errorf("replicate: %w", err)
+	}
+
+	missingOccur := 0
+	for _, c := range plan.ordered {
+		if missing[c.SHA256] {
+			missingOccur++
+		}
+	}
+	stats := syncStats{
+		LogicalBytes:         desc.Size,
+		TotalChunks:          len(plan.ordered),
+		MissingChunkOccur:    missingOccur,
+		ChunksReused:         len(plan.ordered) - missingOccur,
+		UniqueChunksUploaded: len(missing),
+		UploadedBytes:        relayedBytes,
+		BytesAvoided:         desc.Size - relayedBytes,
+	}
+	if cfg.Out != nil {
+		printSyncStats(cfg.Out, stats)
+	}
+	return stats, nil
+}
+
+// runReplicate implements "zeros3 replicate s3://source-bucket/key
+// s3://dest-bucket/key --from SRC_ENDPOINT --to DST_ENDPOINT", following
+// the same flag.NewFlagSet convention every other CLI verb uses.
+// Source and destination each take independent -from-*/-to-* credential
+// flags (M8A's "clearly separate source credentials/configuration from
+// destination credentials/configuration"), defaulting to the same
+// built-in defaults `sync`/`presign` already use when unset.
+func runReplicate(args []string) {
+	fs := flag.NewFlagSet("replicate", flag.ExitOnError)
+	from := fs.String("from", "http://127.0.0.1:9000", "source ZeroS3 endpoint base URL (scheme://host[:port])")
+	to := fs.String("to", "http://127.0.0.1:9001", "destination ZeroS3 endpoint base URL (scheme://host[:port])")
+	fromAccessKey := fs.String("from-access-key", defaultAccessKeyID, "source access key ID")
+	fromSecretKey := fs.String("from-secret-key", defaultSecretAccessKey, "source secret access key")
+	toAccessKey := fs.String("to-access-key", defaultAccessKeyID, "destination access key ID")
+	toSecretKey := fs.String("to-secret-key", defaultSecretAccessKey, "destination secret access key")
+	region := fs.String("region", defaultRegion, "SigV4 region (both endpoints)")
+	fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) != 2 {
+		fmt.Fprintln(os.Stderr, "zeros3: replicate requires SOURCE s3://bucket/key and DESTINATION s3://bucket/key")
+		os.Exit(2)
+	}
+	srcBucket, srcKey, err := parseS3URI(rest[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: source: %v\n", err)
+		os.Exit(2)
+	}
+	dstBucket, dstKey, err := parseS3URI(rest[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: destination: %v\n", err)
+		os.Exit(2)
+	}
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{
+			Endpoint: *from, Bucket: srcBucket, Key: srcKey,
+			Creds: Credentials{AccessKeyID: *fromAccessKey, SecretAccessKey: *fromSecretKey}, Region: *region,
+		},
+		Dest: syncClientConfig{
+			Endpoint: *to, Bucket: dstBucket, Key: dstKey,
+			Creds: Credentials{AccessKeyID: *toAccessKey, SecretAccessKey: *toSecretKey}, Region: *region,
+		},
+		Out: os.Stdout,
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: replicate failed: %v\n", err)
+		os.Exit(1)
+	}
+	_ = stats
+}
+
+// =============================================================================
 // 16. CLI: stats / verify / versions / restore / gc
 //
 // Compact verbs; stdout carries the requested result/data, stderr carries
@@ -7680,8 +8111,10 @@ func main() {
 		runDoctor(args)
 	case "sync":
 		runSync(args)
+	case "replicate":
+		runReplicate(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, doctor, or sync)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, doctor, sync, or replicate)\n", cmd)
 		os.Exit(2)
 	}
 }
