@@ -99,6 +99,23 @@ successfully) falls back to an ordinary `PutObject` instead of sending
 any of the other three. See `STATUS.md`'s "M6" section for the full
 protocol/conflict/resume semantics and `README.md` for CLI usage.
 
+**Recursive directory sync (`zeros3 sync LOCAL_DIRECTORY s3://bucket/prefix/`,
+M6C) is a client-side feature of this same ZeroS3-specific extension, not
+a new AWS S3 API operation and not a new wire protocol.** It sends zero
+new endpoints or request shapes: for every eligible local file it derives
+a destination key and calls the exact same single-file `zeros3 sync`
+client pipeline described above (capability discovery, `/negotiate`,
+chunk upload, `/commit`), one file at a time. An ordinary S3 SDK talking
+to a ZeroS3 server never observes anything about how a given object was
+produced — a directory-synced object is, on the wire and on disk, the
+same ordinary object a single-file sync or a plain `PutObject` would have
+produced. Directory sync is non-destructive (it only uploads new/changed
+local files; a remote object with no corresponding local file is left
+untouched — there is no delete mode) and every file still goes through
+M6B's own safe-mode conflict precondition, so one file's remote conflict
+can never silently overwrite or corrupt another. See `STATUS.md`'s "M6C"
+section for full semantics and `README.md` for CLI usage.
+
 ## Deliberately unsupported (explicit non-goals)
 
 These are not planned for this project, at any tier:
@@ -137,7 +154,9 @@ not begun in this pass, and not claimed as shipped:
   internal versions/restore and offline exclusive GC shipped in M5-C;
   these specific extensions remain out of scope by design, not merely
   unstarted.
-- Delta/directory sync — T4.
+
+Delta sync (M6A/M6B) and recursive directory sync (M6C) both shipped —
+see "ZeroS3 extensions (not S3 APIs)" above.
 
 ## Compatibility deviations (differs from real AWS S3)
 

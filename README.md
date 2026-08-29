@@ -263,6 +263,44 @@ ever written to disk for it. See `STATUS.md`'s "M6" section for the full
 protocol, conflict, resume, and mutation-detection semantics, each with
 its own tests.
 
+### Recursive directory sync (`zeros3 sync LOCAL_DIRECTORY s3://bucket/prefix/`)
+
+The same command also accepts a local directory (M6C):
+
+```sh
+./zeros3 sync ./photos s3://backup/photos/
+```
+
+This recursively walks `./photos` and, for every regular file it finds,
+calls the exact same single-file delta-sync pipeline above — capability
+discovery, CDC v1, missing-chunk negotiation, chunk upload, and the safe
+conflict-checked commit — once per file. `./photos/2024/beach.jpg`
+becomes `s3://backup/photos/2024/beach.jpg`; `./photos/` and
+`./photos` and `./photos/photos-is-not-here-but-you-get-the-idea/` all map
+identically once the trailing prefix slash is normalized (see `STATUS.md`
+for the exact mapping rules). Each file gets its own per-file delta reuse
+— an unmodified file re-syncs at ~0 bytes uploaded, a locally-edited file
+uploads roughly the size of the edit, exactly like the single-file case
+above.
+
+Two safety properties are load-bearing and deliberate:
+
+- **Remote-only files are never deleted.** Directory sync only uploads
+  new/changed local files into the destination prefix; if a local file is
+  removed, its previously-synced remote object is left completely
+  untouched. There is no `--delete`/mirror mode in this milestone.
+- **Every file keeps M6B's safe-mode conflict protection.** If one
+  destination object changes remotely mid-sync, that one file fails
+  cleanly (its remote content is left exactly as the concurrent writer
+  left it) while every unrelated file in the same run still commits
+  normally — a partial failure is reported with a concise summary and a
+  nonzero exit status, never silently reported as full success.
+
+A symlink or a special file (socket/device/FIFO) is skipped and reported,
+never followed/opened. See `STATUS.md`'s "M6C" section for the complete
+semantics (traversal order, prefix mapping, partial-failure reporting,
+aggregate stats) and adversarial-review notes.
+
 ## Durability model
 
 - Immutable CAS chunks and the immutable manifest are always fully
