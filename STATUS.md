@@ -1,4 +1,166 @@
-# ZeroS3 — M1/M2/M3 Status
+# ZeroS3 — M1/M2/M3/M4 Status
+
+## M4 status
+
+**COMPLETE** (core submission scope; no T2+ optional-tier work started —
+see "Optional tiers" below).
+
+M4 is not a feature-expansion milestone: it exists to maximize
+correctness confidence, zero-dependency proof, code quality,
+reproducibility, documentation, and demo readiness on top of the M3
+correction pass. Nothing in this section changed CopyObject/verify
+behavior itself — see "M3 correction pass" (below) for that; M4 is the
+release-proof/polish layer on top of it.
+
+### M3 correction pass results (summary; full detail in that section)
+
+- **A1 — CopyObject destination identity:** both `COPY` and `REPLACE`
+  now publish a brand-new destination manifest (new UUID/version/
+  `CreatedAt`); the claim is "zero new CAS payload bytes", not "zero
+  bytes of any kind". Proven internally and externally (new
+  `Last-Modified`, unchanged source).
+- **A2 — encoded-copy-source handling:** `x-amz-copy-source` is decoded
+  leniently (`lenientPercentDecode`), matching the pinned AWS SDK Go v2's
+  actual raw (unencoded) wire behavior, confirmed by direct request
+  inspection. No filesystem path cleaning.
+- **A3 — deep object SHA verification:** `verify -deep` streams every
+  reachable manifest's chunks, in order, through one SHA-256 hasher per
+  manifest and checks the result against `object_sha256`/`total_length`.
+- **A4 — per-root manifest hash verification:** `Verify`'s manifest
+  cache no longer lets a second root sharing a manifest UUID skip its
+  own journal-recorded-hash check.
+
+### Toolchain
+
+- `go version go1.27.0 linux/amd64` (resolved automatically via
+  `GOTOOLCHAIN=auto` from `go.mod`'s `go 1.27.0` directive; also
+  available as a pinned side-by-side install for reproducibility work).
+- `CGO_ENABLED=0`; Linux amd64 is the release-blocking, fully crash/
+  concurrency-tested platform.
+
+### Tests
+
+- `go test ./...`, `go test -race ./...`, and `go vet ./...` all pass, 0
+  failures, `gofmt -l .` reports nothing to format.
+- **130 passing test cases** (`go test -v` `--- PASS` lines, counting
+  subtests), up from 122 at the end of M3 — the M3 correction pass added
+  8 new top-level tests (several with subtests) for A1/A2/A3/A4.
+- Repeated-run stress confirmation for M4: `go test -count=5 ./...`,
+  `go test -race -count=3 ./...`, and `go test -race -run
+  'TestConcurrency_|TestCrash_' -count=8 -v ./...` all green with no
+  flakes observed.
+
+### External interoperability
+
+Tested against **zeros3 commit `7931b6d`** (branch
+`claude/zeros3-m3-m4-corrections-62o7ir`) using
+**zeros3-testing commit `ce01a5f0b48edfad413d9107bf91fd09927897eb`**
+(same branch name in that repository), pinned AWS SDK for Go v2
+`v1.45.1` (`service/s3` `v1.109.1`, `config` `v1.33.1`, `credentials`
+`v1.20.1`, `smithy-go` `v1.28.1`):
+
+| Harness | Result |
+|---|---|
+| M2 canonical workflow (`harness/m2`) | **41/41 passed** |
+| M3 CopyObject (`harness/m3/copy`) | **46/46 passed** |
+| M3 Range GET (`harness/m3/range`) | **27/27 passed** |
+| M3 dedup evidence (`harness/m3/dedup`) | **7/7 passed** |
+
+See `zeros3-testing/results/M3_CORRECTION_RESULTS.md` for the full
+per-check output, including the re-run against the pre-correction-pass
+commit that confirms the two new CopyObject assertion kinds are genuine
+regression tests (3 failures there, matching exactly what A1/A2 predict).
+
+### Zero-dependency proof
+
+- `go.mod` has no `require` block; no `go.sum`; no `vendor/`.
+- `CGO_ENABLED=0 go build .` succeeds.
+- `go list -deps .` contains only Go standard-library packages, the
+  toolchain's own internally-vendored `golang.org/x/...` packages (part
+  of `net/http`/`crypto/tls`'s own implementation, not a ZeroS3
+  dependency), the Go 1.27 standard library's own `uuid` package, and
+  `zeros3` itself. Full generated evidence: `deps-proof.txt`.
+- No `os/exec`/subprocess shell-out anywhere in `zeros3.go`.
+- **Result: zero third-party runtime dependencies, confirmed.**
+
+### Reproducible build
+
+```sh
+CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-buildid=" -o zeros3 zeros3.go
+```
+
+Two builds from two independently-copied source trees at two different
+absolute paths, on `go1.27.0 linux/amd64`, produce byte-identical output:
+
+```
+SHA-256 (copy A): 1e98c1d57e49855d509d84921d0c9b3c09aacb8ef7164b35549a358ea423daf9
+SHA-256 (copy B): 1e98c1d57e49855d509d84921d0c9b3c09aacb8ef7164b35549a358ea423daf9
+```
+
+Reproducible via `scripts/reproducible_build.sh` (no arguments; builds
+twice and compares hashes automatically). **Result: reproducible,
+confirmed** on this platform/toolchain pin.
+
+### Persistent format
+
+**Unchanged.** `store_format_version`, `cdc_format_version`,
+`manifest_format_version` are all still `1`; the journal magic (`ZSJ1`),
+frame version, header layout, CRC32C checksum, sequence semantics, and
+the four record type numbers are byte-for-byte unchanged from M1; CDC
+parameters, gear-table derivation, CAS layout, and the manifest field set
+are unchanged. The M3 correction pass changed *when* and *how many*
+manifests CopyObject publishes (always a new one now, for both
+directives) but not the manifest v1 *shape* itself, and introduced no new
+journal record type (CopyObject still commits through the existing
+`recordTypePutObjectRoot`). **No frozen v1 format value has changed at
+any point in this task.**
+
+### Code quality / readability
+
+`zeros3.go`'s existing top-to-bottom numbered-section structure (1–16,
+plus `7b`/`9b` for two additions kept near their natural neighbor) was
+reviewed as a fresh read, not just diffed: the one numbering gap
+(`11b` with no `11`/`11a`) was fixed, six comments that read as
+milestone-diary narration ("out of scope for M2", "not part of M2", "in
+current (M1-M3) semantics") were reworded to state the permanent
+design/invariant instead, and three near-identical repeated S3
+NoSuchBucket-vs-InternalError error-mapping blocks were consolidated into
+one small helper (`writeBucketOrInternalError`) without touching the two
+call sites whose mappings are genuinely different (`DeleteBucket`,
+`CopyObject`). No architectural changes, no new implementation files, no
+persistent-format changes, no replaced locking model — all within Phase
+A/M4's explicit "small helper extraction / behavior-preserving cleanup
+only" bound.
+
+### Known limitations
+
+Current, real, and unchanged from M3 except where the correction pass
+resolved something (noted inline in each relevant section above):
+
+- Single writer process per store; no distributed/HA operation, no
+  versioning/restore, no garbage collection, no multipart upload, no
+  presigned URLs, no IAM/STS/KMS/ACL/policy engine.
+- `CopyObject` does not implement conditional-copy headers or reject a
+  same-key `COPY`-directive copy the way real S3 does in some cases.
+- Range GET does not implement multipart/multi-range responses.
+- The entire request body is buffered in memory (bounded, 256MiB) rather
+  than fully streamed end-to-end.
+- No real power-loss (hardware) testing beyond deterministic in-process
+  crash injection and direct on-disk truncation.
+- `.zero-dep.toml`: not created. Neither the supplied planning bundle nor
+  any official hackathon instruction available in this environment
+  defines its expected schema; per this task's own instruction (document
+  the gap rather than invent fields), this is recorded here instead of
+  fabricated.
+
+### Optional tiers
+
+**Not started, by design.** No T2/T3/T4/T5 work was begun in M4:
+presigned URLs, internal versions/restore, destructive GC, JSON stats
+polish beyond what already shipped in M3, virtual-host addressing,
+`aws-chunked`/trailer checksum modes, multipart upload, the `s3rver`
+Package Killer comparison, benchmark/doctor commands, and delta/sync
+transfer are all untouched. Windows/macOS/arm CI was not set up.
 
 ## M3 status
 
@@ -314,13 +476,16 @@ ordinary PUT).
   non-power-loss-tested directory fsync, the "can't prove pre-sync
   absence" durability caveat) is unchanged and still applies.
 
-### M4 NOT STARTED
+### M4 status (superseded notice)
 
-Confirmed: no work was begun on reproducible-build finalization, final
-dependency proof polish beyond what M3's own audit already covers,
-README/demo production, Windows/macOS/arm CI, presigned URLs, versioning/
-restore, destructive GC, multipart upload, `s3rver` Package Killer work,
-sync/delta-transfer, or any other T2+/M4+ feature.
+M4 is now complete — see the "M4 status" section at the top of this
+file. This note is kept only as a historical record of the M3 snapshot:
+at that point, reproducible-build finalization, the final dependency
+proof, README/STDLIB/demo production, and the M3 correction pass itself
+had not yet been started. T2+/optional-tier work (presigned URLs,
+versioning/restore, destructive GC, multipart upload, `s3rver` Package
+Killer, sync/delta-transfer, Windows/macOS/arm CI) remains not started,
+by design.
 
 ## M3 correction pass
 
