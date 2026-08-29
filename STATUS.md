@@ -1,4 +1,229 @@
-# ZeroS3 — M1/M2/M3/M4 Status
+# ZeroS3 — Status
+
+Milestone-by-milestone status, newest first. M1-M6C are all complete
+and accepted; M7 (release hardening/submission freeze) is the current
+pass -- see its section immediately below.
+
+## M7 — Release hardening, proof, and submission freeze
+
+**Goal:** turn the M1-M6C feature-complete system into a submission-
+ready, judge-ready, reproducible, defensible release candidate. Not a
+feature milestone -- no new S3 APIs, sync flags, or capabilities were
+added; every change below is either a demonstrated-bug fix, a
+verification/reproducibility/documentation improvement, or a
+regression test.
+
+### Baseline (before any M7 change)
+
+- Branch: `claude/zeros3-m7-release-o6wnzj`, based on `main` at
+  `cb87c850c47be8592a7e4152c96586d715a9234a`.
+- `go test ./...`: 338 top-level tests, 527 total PASS (subtests
+  included) across 3 repeated runs, 0 FAIL, 0 SKIP, no flakiness found
+  (the two `time.Sleep` calls in `zeros3_test.go` are a documented
+  clock-advance for a timestamp-uniqueness assertion and a bounded
+  subprocess-readiness poll, not undocumented timing dependence).
+- `go test -race ./...`: clean (0 races, ~45s).
+- `go vet ./...`: clean. `gofmt -l .`: clean.
+- Implementation: 7674 lines (`zeros3.go`). Tests: 12979 lines
+  (`zeros3_test.go`).
+- `go.mod`: `module zeros3`, `go 1.27.0`, zero `require` directives.
+- All 11 external `zeros3-testing` harnesses green at their previously
+  recorded baselines (see "External validation freeze" below).
+
+### Hostile regression review (M7A2)
+
+A hostile-reviewer pass across storage/durability, namespace/
+concurrency, protocol/S3, and M6/M6C found **one real, confirmed bug**,
+fixed with a minimal patch and three new regression tests (no unrelated
+refactor):
+
+- **`zeros3 sync` client built request URLs by raw string concatenation
+  of the object key** (`headSyncDestination`/`doPlainPutFallback`), with
+  no percent-encoding. A key containing a literal `%` (e.g.
+  `"50% off.txt"`) made `url.Parse` (inside `http.NewRequest`) reject
+  the request outright -- the file could never be synced. A key
+  containing `#` (e.g. `"a#b.txt"`) was silently truncated at the URL
+  fragment delimiter, so `doPlainPutFallback` reported
+  `FellBackToPlainPut=true` (success) while actually writing the
+  content under a **different, truncated key** -- a genuine false-
+  success/silent-misroute defect. A key containing `?` broke
+  `headSyncDestination`'s HEAD probe the same way, causing every
+  re-sync of an unchanged destination to hit a false
+  `PreconditionFailed` safe-mode conflict.
+  Fixed by building the path through `url.URL{Path: ...}.EscapedPath()`
+  (`syncObjectPath`) instead of raw concatenation, matching how the
+  server already expects/decodes percent-encoded paths. Regression
+  tests: `TestSync_KeyWithPercentCharacterFallsBackCorrectly`,
+  `TestSync_KeyWithHashCharacterDoesNotMisroute`,
+  `TestSync_KeyWithQuestionMarkResyncsCleanly` -- each independently
+  verified to fail against the pre-fix code and pass against the fix.
+  No test anywhere previously exercised a sync key containing `%`/`#`/
+  `?`; this was a genuine coverage gap, not an already-safe case.
+- Every other category (journal replay/torn-tail handling, GC vs.
+  retained versions/multipart, SigV4 raw-path/canonical-URI handling,
+  CopyObject/PUT/DELETE concurrency via `commitObjectRootChecked`'s
+  check-function pattern) was reviewed and found already correctly
+  handled, consistent with the adversarial-review passes recorded in
+  each milestone's own section above/below.
+
+### Readability/cross-reference audit (M7E)
+
+No broad refactor (existing code already reads as a deliberately
+organized single-file program). Fixed real navigation defects:
+
+- Section 15 ("Optional ZeroS3 Delta Sync (M6)") physically sits before
+  the CLI and Lifecycle/main sections but was numbered **17**, as if it
+  came last. Renumbered to match physical file order (15/15b/15c sync,
+  16 CLI, 17 lifecycle/main) and fixed every internal cross-reference
+  (8 places across `zeros3.go`/`STDLIB.md`/`STATUS.md`, several of
+  which pointed at a "section 16a/16b/16c" that never existed -- the
+  code they described is in section 13b).
+- Removed one confusing self-referential comment ("per the 'future
+  milestone' this comment used to point at -- this is that milestone").
+- Reordered `STDLIB.md`'s substitution table (row 11 physically sat
+  between rows 8 and 9).
+
+### Documentation reconciliation (M7F-H)
+
+Three stale claims found, each contradicted by content already shipped
+and documented elsewhere in the same repository -- fixed to match
+actual, current behavior:
+
+- README's "Known limitations" claimed "no versioning, restore, or
+  garbage collection" and "`ListParts`/`ListMultipartUploads` have no
+  pagination" -- both false since M5-C and M5-D shipped. Replaced with
+  the real current limitations (ZeroS3's internal versioning is not the
+  AWS Versioning API, `gc -apply` requires exclusive offline access,
+  `ListMultipartUploads` lacks `delimiter`/`prefix`, `zeros3 sync` is
+  sequential with no `--delete` for directory sync).
+- `DEMO.md`'s closing line claimed "no versioning, no multipart" --
+  contradicted by M5-B/M5-C.
+- `STDLIB.md`'s "no retry/backoff library" tradeoff justified itself
+  with "ZeroS3 has no client-side sync/transfer feature in this
+  milestone" -- contradicted by M6's own HTTP-client entry a few lines
+  above in the same file.
+
+`S3_COMPAT.md` was independently audited and found already accurate
+(M6/M6C already correctly labeled as ZeroS3 extensions, not S3 APIs;
+every compatibility deviation already itemized).
+
+### Demo rehearsal (M7J)
+
+`DEMO.md` was rewritten and rehearsed end-to-end, twice, from a clean
+demo store, against a real build. Two real problems found during
+rehearsal (not merely reviewed on paper) and fixed:
+
+- The dedup section pointed at the whole-store `stats` view, which
+  reads ~50% `dedup_reduction` for *any* two-object store regardless of
+  edit size (an artifact of "roughly one duplicate's worth of savings"
+  across the whole store) -- not the CDC edit-locality story the demo
+  is supposed to show. Switched to `-bucket`/`-key`-scoped `stats`,
+  which correctly shows ~99.9% of the edited object's own bytes as
+  shared/reused for this fixture shape.
+- Added a `zeros3 sync` (M6) section per this milestone's demo
+  structure, using a *separate* fixture pair from the dedup section's:
+  reusing the same fixtures would make even the *first* sync show 100%
+  reuse (the store already holds those bytes from the dedup section's
+  ordinary PUTs), demonstrating nothing about delta sync's actual
+  value.
+
+Both full rehearsals reproduced identical hashes, reuse percentages,
+and reproducible-build output. Total content: ~4:30, comfortably under
+5 minutes with buffer. See `DEMO.md` for the exact script.
+
+### Reproducible build proof (M7C)
+
+`scripts/reproducible_build.sh` (unchanged from M6C): two independent
+builds, from two separately-copied source trees at two different
+absolute paths, `CGO_ENABLED=0 go build -trimpath -buildvcs=false
+-ldflags="-buildid=" -o zeros3 zeros3.go`, on `go1.27.0 linux/amd64`.
+Run repeatedly across this pass (baseline, mid-pass, and final freeze);
+copy A and copy B hashes matched byte-for-byte every time. Final-freeze
+hash recorded in the M7 completion report / tag notes.
+
+### Dependency proof (M7D)
+
+`deps-proof.txt` independently regenerated and diffed against the
+committed copy: identical. Verified directly against source, not just
+by regenerating the existing artifact: `grep -c "^require" go.mod` = 0;
+`zeros3.go`'s only imports are Go 1.27 standard-library packages plus
+`uuid` (confirmed, by inspecting the actual `go1.27.0` `GOROOT/src/
+uuid/` package doc, to be a genuine stdlib package -- `import "uuid"`,
+`package uuid`, RFC 9562, `uuid.NewV7`); no `golang.org/x/...` import;
+no `os/exec`/subprocess anywhere in `zeros3.go`.
+
+### External validation freeze (M7I)
+
+Every harness in the separate `zeros3-testing` repository run against
+this exact release-candidate build (commit `381db3c0cd32108437d3951917f78d23c0d625ad`
+on `claude/zeros3-m7-release-o6wnzj`): **404 passed, 0 failed, 4
+informational, 1 documented known limitation** -- zero regressions from
+any previously recorded baseline. Full per-harness table and
+reproduction commands: `zeros3-testing/results/
+M7_RELEASE_CANDIDATE_RESULTS.md`. One harness fix was needed, entirely
+on the `zeros3-testing` side (not a `zeros3` regression): the T1
+`harness/rclone` probe still expected rclone's default upload to be
+*rejected*, a pre-M5-B assumption that M5-B's own already-shipped
+`UNSIGNED-PAYLOAD` support made stale, producing 4 false failures on a
+target that isn't actually broken; fixed to expect (and clean up after)
+the now-correctly-succeeding upload, improving that harness's own
+recorded result from 19/0/2 to 20/0/1.
+
+### Claim/evidence matrix (M7K)
+
+| Claim | Evidence |
+|---|---|
+| Zero dependencies | `go.mod`/import audit above; `deps-proof.txt` |
+| Single implementation file | `zeros3.go` (7687 lines after M7) + organizer-approved `zeros3_test.go` (13122 lines); `ls *.go` |
+| Reproducible build | `scripts/reproducible_build.sh`, matching SHA-256 across repeated runs this pass |
+| AWS SDK interoperability | `zeros3-testing/results/M7_RELEASE_CANDIDATE_RESULTS.md` (M2: 41/41; presign: 47/47) |
+| Crash/restart durability | internal crash-injection tests (this file's "Durability contract" section) + external restart-persistence checks in every `zeros3-testing` harness |
+| CDC edit locality | `TestDedup_EditedObjectReuseBeatsFixedSizeChunking` (internal, 96.6%); `zeros3-testing/harness/m3/dedup` (external, 97.5%); `DEMO.md` section 3 (rehearsed, ~99.9% for its fixture shape) |
+| Dedup savings | `zeros3 stats`/`stats -json`, measured not hardcoded (see "Dedup and stats" in README.md) |
+| CopyObject payload reuse | `TestCopyObject_SameBucketZeroNewCASChunkBytes` (internal); `zeros3-testing/harness/m3/copy` (46/46 external) |
+| Integrity detection | `zeros3 verify -deep`; `zeros3-testing` restart/persistence checks |
+| Multipart/pagination | `zeros3-testing/harness/m5b/multipart` (43/43); `harness/m5d/pagination` (43/43) |
+| Delta sync | `zeros3-testing/harness/m6/sync` (33/33 + 2 informational) |
+| Recursive directory sync | `zeros3-testing/harness/m6c/dirsync` (69/69 + 2 informational) |
+| Package Killer (vs. `s3rver`) | `zeros3-testing/harness/package-killer`, 14/14 both targets, GO |
+
+Every major README/demo claim maps to evidence above; nothing was
+softened or removed, since no claim was found stronger than the tests
+prove (the two stale README/DEMO.md claims found were *understating*
+shipped capability, not overstating it -- see "Documentation
+reconciliation" above).
+
+### Limitations audit (M7L)
+
+Reviewed every limitation documented in README.md/`S3_COMPAT.md`
+against this milestone's fine-to-ship / must-fix-before-release
+criteria. **No must-fix limitation was found** -- every item is a
+deliberate, already-documented scope boundary (single-writer-process,
+no IAM/STS/KMS/ACL, sequential sync uploads, no filesystem-snapshot-
+based mutation detection, non-destructive directory sync with no
+`--delete`, bounded in-memory request buffering, no
+`STREAMING-AWS4-HMAC-SHA256-PAYLOAD` support, `ListMultipartUploads`
+without `delimiter`/`prefix`). None of these cause data corruption,
+silent overwrite against documented semantics, false success, broken
+restart, invalid auth behavior, inconsistent persistent state, or
+misleading stats -- the one defect that would have qualified (the sync
+URL-encoding bug above) was found and fixed, not merely documented
+around.
+
+### Persistent-format impact
+
+**None.** Every M7 change was either a comment/documentation edit or a
+client-side URL-construction fix (`syncObjectPath`); no journal record
+type, manifest field, or on-disk layout changed. A pre-M7 store opens
+identically under the M7 release candidate.
+
+### M8/future work noted, not implemented
+
+No M8 work was started (out of scope for M7 by explicit instruction).
+No "would be a cool extra feature" ideas were implemented during this
+pass; none were substantial enough to warrant a written punch list
+beyond what's already in "Known limitations" (README.md) and the
+"Optional / later-tier behavior" section of `S3_COMPAT.md`.
 
 ## M6 — Optional delta transfer (`zeros3 sync`)
 
@@ -942,7 +1167,7 @@ state" to keep (`TestVersions_FirstPutCreatesNoHistory`).
 ### Phase C — version history CLI
 
 `zeros3 versions -bucket B -key K [-store DIR] [-json]`
-(`runVersions`/`Store.ListVersions`, `zeros3.go` section 15): lists the
+(`runVersions`/`Store.ListVersions`, `zeros3.go` section 16): lists the
 current root (if any, `status: "current"`) followed by every retained
 historical version, newest-first, each row carrying version ID, logical
 size, ETag, content type, an RFC3339Nano archival timestamp, and a
