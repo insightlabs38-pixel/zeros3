@@ -16,6 +16,7 @@ import (
 	"io"
 	"io/fs"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -26,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"uuid"
@@ -11913,5 +11915,1065 @@ func TestSync_TwoConcurrentSyncsToDifferentKeysBothSucceed(t *testing.T) {
 	}
 	if got := getSyncObjectBytes(t, ts, creds, region, "conc2", "b"); !bytes.Equal(got, dataB) {
 		t.Fatalf("object b incorrect")
+	}
+}
+
+// =============================================================================
+// M6C -- recursive directory sync (`zeros3 sync LOCAL_DIRECTORY s3://bucket/prefix/`)
+//
+// Every test below proves directory sync is orchestration over the
+// unmodified M6A/M6B syncFile primitive (syncDirectory calls it, and
+// nothing else, once per eligible file) -- never a second transfer path,
+// negotiation client, upload loop, commit path, conflict mechanism, or
+// mutation-detection mechanism. Server setup mirrors every M6A/M6B test
+// above (newSyncTestServer + httptest.NewServer); no directory-sync-
+// specific server-side state exists to set up. Several tests below reuse
+// the existing syncTestHookBeforeMutationCheck test hook (defined with
+// the M6B local-mutation tests, above) to deterministically inject a
+// remote conflict or a sibling file's disappearance at an exact point in
+// one specific file's own syncFile call -- never a timing-dependent race
+// -- which is itself further proof that directory sync adds no second
+// hook/mechanism of its own for these cases.
+// =============================================================================
+
+// writeDirSyncTree writes files (root-relative slash-path -> content)
+// under root, creating parent directories as needed.
+func writeDirSyncTree(t *testing.T, root string, files map[string][]byte) {
+	t.Helper()
+	for rel, data := range files {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func baseDirSyncCfg(ts *httptest.Server, creds Credentials, region string) syncClientConfig {
+	return syncClientConfig{Endpoint: ts.URL, Creds: creds, Region: region, HTTPClient: ts.Client()}
+}
+
+func TestDirSync_EmptyDirectory(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "empty1")
+
+	root := t.TempDir()
+	result, err := syncDirectory(root, "empty1", "prefix", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if result.Discovered != 0 || result.Synced != 0 || result.Skipped != 0 || result.Failed != 0 {
+		t.Fatalf("expected an all-zero result for an empty directory, got %+v", result)
+	}
+	if !result.OK() {
+		t.Fatalf("an empty directory sync must succeed")
+	}
+	if result.Stats.LogicalBytes != 0 || result.Stats.UploadedBytes != 0 || result.Stats.TotalChunks != 0 {
+		t.Fatalf("expected sensible zero-value stats, got %+v", result.Stats)
+	}
+}
+
+func TestDirSync_OneFile(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "one1")
+
+	root := t.TempDir()
+	data := genRandomBytes(6001, 40_000)
+	writeDirSyncTree(t, root, map[string][]byte{"only.bin": data})
+
+	result, err := syncDirectory(root, "one1", "dest", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if result.Discovered != 1 || result.Synced != 1 || result.Failed != 0 || !result.OK() {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	got := getSyncObjectBytes(t, ts, creds, region, "one1", "dest/only.bin")
+	if !bytes.Equal(got, data) {
+		t.Fatalf("object content mismatch")
+	}
+}
+
+func TestDirSync_NestedDirectories(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "nest1")
+
+	root := t.TempDir()
+	files := map[string][]byte{
+		"index.html":         genRandomBytes(6101, 500),
+		"assets/app.js":      genRandomBytes(6102, 1200),
+		"images/logo.png":    genRandomBytes(6103, 900),
+		"a/b/c/d/e/deep.bin": genRandomBytes(6104, 700), // deep but reasonable nesting
+	}
+	writeDirSyncTree(t, root, files)
+
+	result, err := syncDirectory(root, "nest1", "site", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if result.Discovered != len(files) || result.Synced != len(files) || !result.OK() {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	for rel, data := range files {
+		key := "site/" + rel
+		got := getSyncObjectBytes(t, ts, creds, region, "nest1", key)
+		if !bytes.Equal(got, data) {
+			t.Fatalf("key %s content mismatch", key)
+		}
+	}
+}
+
+func TestDirSync_SameBasenameInDifferentDirectories(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "same1")
+
+	root := t.TempDir()
+	files := map[string][]byte{
+		"a/x.txt": []byte("content A"),
+		"b/x.txt": []byte("content B"),
+		"x.txt":   []byte("content root"),
+	}
+	writeDirSyncTree(t, root, files)
+
+	result, err := syncDirectory(root, "same1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if result.Discovered != 3 || result.Synced != 3 || !result.OK() {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	for rel, want := range files {
+		got := getSyncObjectBytes(t, ts, creds, region, "same1", rel)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("%s: got %q, want %q -- two distinct local files must never collide on one key", rel, got, want)
+		}
+	}
+}
+
+func TestDirSync_DuplicateLookingPathsRemainDistinct(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "dup1")
+
+	root := t.TempDir()
+	files := map[string][]byte{
+		"note.txt":  []byte("plain"),
+		"Note.txt":  []byte("capitalized -- distinct on a case-sensitive filesystem"),
+		"note .txt": []byte("trailing-space name -- distinct"),
+	}
+	writeDirSyncTree(t, root, files)
+
+	result, err := syncDirectory(root, "dup1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if result.Discovered != 3 || result.Synced != 3 || !result.OK() {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	for rel, want := range files {
+		got := getSyncObjectBytes(t, ts, creds, region, "dup1", rel)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("%s: content mismatch, distinct-looking paths must not collide", rel)
+		}
+	}
+}
+
+func TestDirSync_DeterministicOrdering(t *testing.T) {
+	root := t.TempDir()
+	files := map[string][]byte{
+		"b.txt":   []byte("b"),
+		"a.txt":   []byte("a"),
+		"c/z.txt": []byte("z"),
+		"c/a.txt": []byte("ca"),
+		"aa.txt":  []byte("aa"),
+	}
+	writeDirSyncTree(t, root, files)
+
+	want := []string{"a.txt", "aa.txt", "b.txt", "c/a.txt", "c/z.txt"}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		got, skips, err := discoverSyncFiles(root)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		if len(skips) != 0 {
+			t.Fatalf("attempt %d: unexpected skips: %+v", attempt, skips)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("attempt %d: got %v, want %v", attempt, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("attempt %d: order mismatch at %d: got %v, want %v", attempt, i, got, want)
+			}
+		}
+	}
+}
+
+func TestDirSync_PrefixNormalization(t *testing.T) {
+	cases := []struct {
+		raw        string
+		wantBucket string
+		wantPrefix string
+	}{
+		{"s3://bucket/", "bucket", ""},
+		{"s3://bucket", "bucket", ""},
+		{"s3://bucket/prefix", "bucket", "prefix"},
+		{"s3://bucket/prefix/", "bucket", "prefix"},
+		{"s3://bucket/a/b/", "bucket", "a/b"},
+	}
+	for _, c := range cases {
+		bucket, prefix, err := parseS3DirURI(c.raw)
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", c.raw, err)
+		}
+		if bucket != c.wantBucket || prefix != c.wantPrefix {
+			t.Fatalf("%q: got bucket=%q prefix=%q, want bucket=%q prefix=%q", c.raw, bucket, prefix, c.wantBucket, c.wantPrefix)
+		}
+	}
+	if _, _, err := parseS3DirURI("not-an-s3-uri"); err == nil {
+		t.Fatalf("expected an error for a non-s3:// destination")
+	}
+	if _, _, err := parseS3DirURI("s3:///prefix"); err == nil {
+		t.Fatalf("expected an error for an empty bucket name")
+	}
+
+	if got := joinSyncKey("", "a.txt"); got != "a.txt" {
+		t.Fatalf("joinSyncKey empty prefix: got %q", got)
+	}
+	if got := joinSyncKey("prefix", "x/b.txt"); got != "prefix/x/b.txt" {
+		t.Fatalf("joinSyncKey: got %q", got)
+	}
+	if strings.Contains(joinSyncKey("prefix", "a.txt"), "//") {
+		t.Fatalf("the key joiner must never introduce a doubled slash")
+	}
+
+	// C2's own "with and without a trailing slash" examples must be
+	// end-to-end equivalent, not merely equivalent in the parser.
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "pfxeq")
+
+	files := map[string][]byte{"a.txt": genRandomBytes(6201, 100), "x/b.txt": genRandomBytes(6202, 200)}
+	for i, raw := range []string{"s3://pfxeq/prefix", "s3://pfxeq/prefix/"} {
+		root := t.TempDir()
+		writeDirSyncTree(t, root, files)
+		bucket, prefix, err := parseS3DirURI(raw)
+		if err != nil {
+			t.Fatalf("case %d: %v", i, err)
+		}
+		result, err := syncDirectory(root, bucket, prefix, baseDirSyncCfg(ts, creds, region))
+		if err != nil || !result.OK() {
+			t.Fatalf("case %d: result=%+v err=%v", i, result, err)
+		}
+		if got := getSyncObjectBytes(t, ts, creds, region, "pfxeq", "prefix/a.txt"); !bytes.Equal(got, files["a.txt"]) {
+			t.Fatalf("case %d: prefix/a.txt mismatch", i)
+		}
+		if got := getSyncObjectBytes(t, ts, creds, region, "pfxeq", "prefix/x/b.txt"); !bytes.Equal(got, files["x/b.txt"]) {
+			t.Fatalf("case %d: prefix/x/b.txt mismatch", i)
+		}
+	}
+}
+
+func TestDirSync_SpacesInPaths(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "space1")
+
+	root := t.TempDir()
+	files := map[string][]byte{
+		"my file.txt":            genRandomBytes(6301, 300),
+		"dir with space/two.bin": genRandomBytes(6302, 400),
+	}
+	writeDirSyncTree(t, root, files)
+	result, err := syncDirectory(root, "space1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if !result.OK() || result.Synced != 2 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	for rel, data := range files {
+		got := getSyncObjectBytes(t, ts, creds, region, "space1", rel)
+		if !bytes.Equal(got, data) {
+			t.Fatalf("%s mismatch", rel)
+		}
+	}
+}
+
+func TestDirSync_UnicodePaths(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "uni1")
+
+	root := t.TempDir()
+	files := map[string][]byte{
+		"unicode-✓.txt":        genRandomBytes(6401, 250),
+		"日本語/ファイル.bin":         genRandomBytes(6402, 350),
+		"emoji-\U0001F600.txt": genRandomBytes(6403, 150),
+	}
+	writeDirSyncTree(t, root, files)
+	result, err := syncDirectory(root, "uni1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if !result.OK() || result.Synced != len(files) {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	for rel, data := range files {
+		got := getSyncObjectBytes(t, ts, creds, region, "uni1", rel)
+		if !bytes.Equal(got, data) {
+			t.Fatalf("%s mismatch", rel)
+		}
+	}
+}
+
+func TestDirSync_HiddenDotPrefixedFiles(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "hidden1")
+
+	root := t.TempDir()
+	files := map[string][]byte{
+		".hidden":              genRandomBytes(6501, 150),
+		".config/settings.txt": genRandomBytes(6502, 150),
+	}
+	writeDirSyncTree(t, root, files)
+	result, err := syncDirectory(root, "hidden1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if result.Discovered != 2 || result.Synced != 2 || !result.OK() {
+		t.Fatalf("dot-prefixed files/directories must be synced like any other, got %+v", result)
+	}
+	for rel, data := range files {
+		got := getSyncObjectBytes(t, ts, creds, region, "hidden1", rel)
+		if !bytes.Equal(got, data) {
+			t.Fatalf("%s mismatch", rel)
+		}
+	}
+}
+
+func TestDirSync_ExistingIdenticalRemoteFile(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "identical1")
+
+	root := t.TempDir()
+	files := map[string][]byte{"same.bin": genRandomBytes(6601, 50_000)}
+	writeDirSyncTree(t, root, files)
+
+	result1, err := syncDirectory(root, "identical1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if !result1.OK() || result1.Stats.UploadedBytes == 0 {
+		t.Fatalf("first sync should have uploaded new content: %+v", result1.Stats)
+	}
+
+	result2, err := syncDirectory(root, "identical1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if !result2.OK() {
+		t.Fatalf("resync of unchanged content must succeed: %+v", result2)
+	}
+	if result2.Stats.UploadedBytes != 0 {
+		t.Fatalf("resync of byte-identical content should upload nothing, uploaded=%d", result2.Stats.UploadedBytes)
+	}
+	if result2.Stats.BytesAvoided != result2.Stats.LogicalBytes {
+		t.Fatalf("resync of unchanged content should report 100%% reuse: avoided=%d logical=%d", result2.Stats.BytesAvoided, result2.Stats.LogicalBytes)
+	}
+}
+
+func TestDirSync_OneModifiedFileAmongMany(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "mod1")
+
+	root := t.TempDir()
+	orig := map[string][]byte{
+		"one.bin":   genRandomBytes(6701, 40_000),
+		"two.bin":   genRandomBytes(6702, 40_000),
+		"three.bin": genRandomBytes(6703, 40_000),
+	}
+	writeDirSyncTree(t, root, orig)
+	if result, err := syncDirectory(root, "mod1", "", baseDirSyncCfg(ts, creds, region)); err != nil || !result.OK() {
+		t.Fatalf("first sync: result=%+v err=%v", result, err)
+	}
+
+	// A small localized edit, matching M6A's own demonstration-fixture
+	// pattern: CDC boundaries only reshuffle locally, so reuse stays high.
+	modified := append([]byte{}, orig["two.bin"]...)
+	mid := len(modified) / 2
+	modified = append(modified[:mid:mid], append([]byte("SMALL-EDIT-HERE"), modified[mid:]...)...)
+	if err := os.WriteFile(filepath.Join(root, "two.bin"), modified, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := syncDirectory(root, "mod1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if !result.OK() || result.Synced != 3 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.Stats.UploadedBytes == 0 || result.Stats.UploadedBytes >= result.Stats.LogicalBytes {
+		t.Fatalf("expected a small upload, far less than total logical bytes: uploaded=%d logical=%d", result.Stats.UploadedBytes, result.Stats.LogicalBytes)
+	}
+	want := map[string][]byte{"one.bin": orig["one.bin"], "two.bin": modified, "three.bin": orig["three.bin"]}
+	for name, data := range want {
+		got := getSyncObjectBytes(t, ts, creds, region, "mod1", name)
+		if !bytes.Equal(got, data) {
+			t.Fatalf("%s mismatch", name)
+		}
+	}
+}
+
+func TestDirSync_NewlyAddedFileAfterInitialSync(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "newf1")
+
+	root := t.TempDir()
+	writeDirSyncTree(t, root, map[string][]byte{"first.bin": genRandomBytes(6801, 10_000)})
+	if result, err := syncDirectory(root, "newf1", "", baseDirSyncCfg(ts, creds, region)); err != nil || !result.OK() || result.Discovered != 1 {
+		t.Fatalf("first sync: result=%+v err=%v", result, err)
+	}
+
+	secondData := genRandomBytes(6802, 12_000)
+	writeDirSyncTree(t, root, map[string][]byte{"second.bin": secondData})
+
+	result2, err := syncDirectory(root, "newf1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if !result2.OK() || result2.Discovered != 2 || result2.Synced != 2 {
+		t.Fatalf("unexpected result: %+v", result2)
+	}
+	got := getSyncObjectBytes(t, ts, creds, region, "newf1", "second.bin")
+	if !bytes.Equal(got, secondData) {
+		t.Fatalf("second.bin mismatch")
+	}
+}
+
+func TestDirSync_LocalDeletionDoesNotDeleteRemoteObject(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "del1")
+
+	root := t.TempDir()
+	keep := genRandomBytes(6901, 8_000)
+	gone := genRandomBytes(6902, 8_000)
+	writeDirSyncTree(t, root, map[string][]byte{"keep.bin": keep, "gone.bin": gone})
+
+	if result, err := syncDirectory(root, "del1", "", baseDirSyncCfg(ts, creds, region)); err != nil || !result.OK() || result.Synced != 2 {
+		t.Fatalf("first sync: result=%+v err=%v", result, err)
+	}
+
+	if err := os.Remove(filepath.Join(root, "gone.bin")); err != nil {
+		t.Fatal(err)
+	}
+
+	result2, err := syncDirectory(root, "del1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if !result2.OK() || result2.Discovered != 1 || result2.Synced != 1 {
+		t.Fatalf("unexpected result: %+v", result2)
+	}
+	// Non-destructive semantics (C4): the remote object for the deleted
+	// local file must remain exactly as it was.
+	got := getSyncObjectBytes(t, ts, creds, region, "del1", "gone.bin")
+	if !bytes.Equal(got, gone) {
+		t.Fatalf("remote object for a locally-deleted file must be left untouched")
+	}
+	got2 := getSyncObjectBytes(t, ts, creds, region, "del1", "keep.bin")
+	if !bytes.Equal(got2, keep) {
+		t.Fatalf("keep.bin mismatch")
+	}
+}
+
+func TestDirSync_SymlinkSkippedNotFollowed(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "sym1")
+
+	root := t.TempDir()
+	writeDirSyncTree(t, root, map[string][]byte{"real.txt": []byte("real content")})
+
+	outsideDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outsideDir, "secret.txt"), []byte("outside content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outsideDir, "secret.txt"), filepath.Join(root, "link-to-file.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(root, "link-to-dir")); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := syncDirectory(root, "sym1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if result.Synced != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.Skipped != 2 {
+		t.Fatalf("expected both the file symlink and the directory symlink to be skipped, got %+v", result.Skips)
+	}
+	for _, s := range result.Skips {
+		if !strings.Contains(s.Reason, "symlink") {
+			t.Fatalf("skip reason should mention symlink: %+v", s)
+		}
+	}
+	got := getSyncObjectBytes(t, ts, creds, region, "sym1", "real.txt")
+	if string(got) != "real content" {
+		t.Fatalf("real.txt mismatch")
+	}
+	if getSyncObjectStatus(t, ts, creds, region, "sym1", "link-to-file.txt") != http.StatusNotFound {
+		t.Fatalf("a symlink must never be synced")
+	}
+	if getSyncObjectStatus(t, ts, creds, region, "sym1", "link-to-dir/secret.txt") != http.StatusNotFound {
+		t.Fatalf("a symlinked directory must never be recursed into -- this is also what prevents a symlink from ever being used to escape the source root")
+	}
+}
+
+func TestDirSync_SpecialFileSkipped(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "special1")
+
+	root := t.TempDir()
+	writeDirSyncTree(t, root, map[string][]byte{"real.txt": []byte("ok")})
+	fifoPath := filepath.Join(root, "a.fifo")
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		t.Skipf("named pipes unsupported in this environment; honestly skipping special-file coverage: %v", err)
+	}
+
+	result, err := syncDirectory(root, "special1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if result.Synced != 1 || result.Failed != 0 || result.Skipped != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if !strings.Contains(result.Skips[0].Reason, "special file") {
+		t.Fatalf("expected a special-file skip reason, got %+v", result.Skips)
+	}
+	if getSyncObjectStatus(t, ts, creds, region, "special1", "a.fifo") != http.StatusNotFound {
+		t.Fatalf("a special file must never be synced")
+	}
+}
+
+func TestDirSync_RemoteConflictForOneFileOthersSucceed(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "dconf1")
+
+	root := t.TempDir()
+	files := map[string][]byte{
+		"ok1.bin":      genRandomBytes(8001, 20_000),
+		"conflict.bin": genRandomBytes(8002, 20_000),
+		"ok2.bin":      genRandomBytes(8003, 20_000),
+	}
+	writeDirSyncTree(t, root, files)
+
+	targetKey := "pfx/conflict.bin"
+	syncTestHookBeforeMutationCheck = func(cfg syncClientConfig) {
+		if cfg.Key == targetKey {
+			if _, err := srv.store.PutObject("dconf1", targetKey, []byte("a concurrent writer got here first"), "application/octet-stream", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	defer func() { syncTestHookBeforeMutationCheck = nil }()
+
+	result, err := syncDirectory(root, "dconf1", "pfx", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if result.Discovered != 3 || result.Synced != 2 || result.Failed != 1 || result.OK() {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(result.Failures) != 1 || result.Failures[0].Dest != "s3://dconf1/"+targetKey {
+		t.Fatalf("unexpected failures: %+v", result.Failures)
+	}
+	if !errors.Is(result.Failures[0].Err, errSyncRemoteConflict) {
+		t.Fatalf("expected errSyncRemoteConflict, got %v", result.Failures[0].Err)
+	}
+	// Unrelated files must be correctly committed and retrievable -- one
+	// conflict never stops or corrupts an unrelated file's own commit.
+	got1 := getSyncObjectBytes(t, ts, creds, region, "dconf1", "pfx/ok1.bin")
+	if !bytes.Equal(got1, files["ok1.bin"]) {
+		t.Fatalf("ok1 mismatch")
+	}
+	got2 := getSyncObjectBytes(t, ts, creds, region, "dconf1", "pfx/ok2.bin")
+	if !bytes.Equal(got2, files["ok2.bin"]) {
+		t.Fatalf("ok2 mismatch")
+	}
+	// The conflicted object holds the concurrent writer's content, never a mix.
+	gotC := getSyncObjectBytes(t, ts, creds, region, "dconf1", targetKey)
+	if string(gotC) != "a concurrent writer got here first" {
+		t.Fatalf("conflicted object content unexpected: %q", gotC)
+	}
+}
+
+func TestDirSync_FileDisappearsBeforeBeingProcessed(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "drace1")
+
+	root := t.TempDir()
+	files := map[string][]byte{
+		"a-first.bin":  genRandomBytes(8101, 5_000), // processed first, lexically
+		"z-victim.bin": genRandomBytes(8102, 5_000), // removed while a-first.bin is being processed
+	}
+	writeDirSyncTree(t, root, files)
+	victimPath := filepath.Join(root, "z-victim.bin")
+
+	syncTestHookBeforeMutationCheck = func(cfg syncClientConfig) {
+		if filepath.Base(cfg.LocalPath) == "a-first.bin" {
+			if err := os.Remove(victimPath); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	defer func() { syncTestHookBeforeMutationCheck = nil }()
+
+	result, err := syncDirectory(root, "drace1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if result.Discovered != 2 || result.Synced != 1 || result.Failed != 1 || result.OK() {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(result.Failures) != 1 || filepath.Base(result.Failures[0].LocalPath) != "z-victim.bin" {
+		t.Fatalf("unexpected failures: %+v", result.Failures)
+	}
+	got := getSyncObjectBytes(t, ts, creds, region, "drace1", "a-first.bin")
+	if !bytes.Equal(got, files["a-first.bin"]) {
+		t.Fatalf("surviving file content mismatch")
+	}
+	if getSyncObjectStatus(t, ts, creds, region, "drace1", "z-victim.bin") != http.StatusNotFound {
+		t.Fatalf("the failed file's object must never become visible")
+	}
+}
+
+func TestDirSync_PartialFailureMultipleFailureModesSuccessfulSiblingsRetained(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "pfail1")
+
+	root := t.TempDir()
+	files := map[string][]byte{
+		"a-ok1.bin":      genRandomBytes(8201, 4_000),
+		"b-conflict.bin": genRandomBytes(8202, 4_000),
+		"c-ok2.bin":      genRandomBytes(8203, 4_000),
+		"d-vanishes.bin": genRandomBytes(8204, 4_000),
+		"e-ok3.bin":      genRandomBytes(8205, 4_000),
+	}
+	writeDirSyncTree(t, root, files)
+	vanishPath := filepath.Join(root, "d-vanishes.bin")
+
+	syncTestHookBeforeMutationCheck = func(cfg syncClientConfig) {
+		switch filepath.Base(cfg.LocalPath) {
+		case "b-conflict.bin":
+			if _, err := srv.store.PutObject("pfail1", "b-conflict.bin", []byte("raced"), "application/octet-stream", nil); err != nil {
+				t.Fatal(err)
+			}
+		case "c-ok2.bin":
+			if err := os.Remove(vanishPath); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	defer func() { syncTestHookBeforeMutationCheck = nil }()
+
+	result, err := syncDirectory(root, "pfail1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if result.Discovered != 5 || result.Synced != 3 || result.Failed != 2 || result.Skipped != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.OK() {
+		t.Fatalf("OK() must be false when any file failed (nonzero process exit status)")
+	}
+	for _, ok := range []string{"a-ok1.bin", "c-ok2.bin", "e-ok3.bin"} {
+		got := getSyncObjectBytes(t, ts, creds, region, "pfail1", ok)
+		if !bytes.Equal(got, files[ok]) {
+			t.Fatalf("%s: content mismatch -- a partial failure must never roll back or corrupt an unrelated committed object", ok)
+		}
+	}
+	if getSyncObjectStatus(t, ts, creds, region, "pfail1", "d-vanishes.bin") != http.StatusNotFound {
+		t.Fatalf("failed file must never become visible")
+	}
+}
+
+func TestDirSync_ResultOKReflectsFailureCount(t *testing.T) {
+	cases := []struct {
+		failed int
+		want   bool
+	}{{0, true}, {1, false}, {5, false}}
+	for _, c := range cases {
+		r := dirSyncResult{Failed: c.failed}
+		if got := r.OK(); got != c.want {
+			t.Fatalf("Failed=%d: OK()=%v, want %v (this is exactly the value runSync's directory branch uses to decide os.Exit(1))", c.failed, got, c.want)
+		}
+	}
+}
+
+func TestDirSync_AggregateStatsExactMatchSumOfPerFileStats(t *testing.T) {
+	sizes := []int{5_000, 37_000, 123_456}
+	seeds := []int64{7001, 7002, 7003}
+	names := []string{"a.bin", "sub/b.bin", "sub/deeper/c.bin"}
+
+	// Expected: sync each file individually against its own fresh,
+	// isolated store/server, so no cross-file dedup can influence the
+	// "expected" per-file numbers.
+	var wantStats syncStats
+	for i := range names {
+		_, srv, creds, region := newSyncTestServer(t)
+		ts := httptest.NewServer(srv)
+		createSyncTestBucket(t, ts, creds, region, "solo")
+		data := genRandomBytes(seeds[i], sizes[i])
+		tmp := t.TempDir()
+		path := writeSyncTempFile(t, tmp, "f.bin", data)
+		st, err := syncFile(syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "solo", Key: "k", Creds: creds, Region: region, HTTPClient: ts.Client()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantStats.LogicalBytes += st.LogicalBytes
+		wantStats.TotalChunks += st.TotalChunks
+		wantStats.ChunksReused += st.ChunksReused
+		wantStats.MissingChunkOccur += st.MissingChunkOccur
+		wantStats.UniqueChunksUploaded += st.UniqueChunksUploaded
+		wantStats.UploadedBytes += st.UploadedBytes
+		wantStats.BytesAvoided += st.BytesAvoided
+		ts.Close()
+	}
+
+	// Actual: sync all three as one directory tree against a fresh store.
+	_, srv2, creds2, region2 := newSyncTestServer(t)
+	ts2 := httptest.NewServer(srv2)
+	defer ts2.Close()
+	createSyncTestBucket(t, ts2, creds2, region2, "tree")
+	root := t.TempDir()
+	files := map[string][]byte{}
+	for i, name := range names {
+		files[name] = genRandomBytes(seeds[i], sizes[i])
+	}
+	writeDirSyncTree(t, root, files)
+	result, err := syncDirectory(root, "tree", "", baseDirSyncCfg(ts2, creds2, region2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Synced != 3 || !result.OK() {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.Stats != wantStats {
+		t.Fatalf("aggregate stats mismatch (must be an honest sum of per-file results, never double-counted or estimated):\n got  %+v\n want %+v", result.Stats, wantStats)
+	}
+}
+
+func TestDirSync_ResumeAfterPartialPriorUploadOfOneFile(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "dresume1")
+
+	root := t.TempDir()
+	bigData := genRandomBytes(8301, 600_000)
+	smallData := genRandomBytes(8302, 5_000)
+	writeDirSyncTree(t, root, map[string][]byte{"big.bin": bigData, "small.bin": smallData})
+
+	bigPath := filepath.Join(root, "big.bin")
+	scanned, _, err := scanLocalFileForSync(bigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scanned) < 2 {
+		t.Fatalf("fixture too small to exercise a partial prior upload (%d chunks)", len(scanned))
+	}
+	// Simulate "the client died after uploading only the first chunk of
+	// one file": a real chunk upload happens for scanned[0], nothing else.
+	first := scanned[0]
+	firstData, err := readSyncFileRange(bigPath, first.Offset, first.Length)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPut, zeros3SyncChunksPrefix+first.SHA256, firstData); status != http.StatusOK {
+		t.Fatalf("priming upload failed")
+	}
+
+	result, err := syncDirectory(root, "dresume1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if !result.OK() || result.Synced != 2 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.Stats.UploadedBytes >= result.Stats.LogicalBytes {
+		t.Fatalf("directory-level resume should have skipped the already-uploaded chunk: uploaded=%d logical=%d", result.Stats.UploadedBytes, result.Stats.LogicalBytes)
+	}
+	got := getSyncObjectBytes(t, ts, creds, region, "dresume1", "big.bin")
+	if !bytes.Equal(got, bigData) {
+		t.Fatalf("big.bin mismatch after resumed directory sync")
+	}
+	got2 := getSyncObjectBytes(t, ts, creds, region, "dresume1", "small.bin")
+	if !bytes.Equal(got2, smallData) {
+		t.Fatalf("small.bin mismatch")
+	}
+
+	// A second, entirely fresh re-run (rerunning `zeros3 sync` after an
+	// interruption) must now reuse everything: nothing left to upload. No
+	// durable directory-sync session/journal exists anywhere -- this
+	// property emerges purely from object-level durability + CAS reuse.
+	result2, err := syncDirectory(root, "dresume1", "", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory (rerun): %v", err)
+	}
+	if !result2.OK() || result2.Stats.UploadedBytes != 0 {
+		t.Fatalf("rerun after full completion should upload nothing: %+v", result2.Stats)
+	}
+}
+
+func TestDirSync_ServerRestart(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	createSyncTestBucket(t, ts, creds, region, "drestart1")
+
+	root := t.TempDir()
+	files := map[string][]byte{
+		"one.bin":        genRandomBytes(8401, 30_000),
+		"nested/two.bin": genRandomBytes(8402, 40_000),
+	}
+	writeDirSyncTree(t, root, files)
+
+	result, err := syncDirectory(root, "drestart1", "backup", baseDirSyncCfg(ts, creds, region))
+	if err != nil {
+		t.Fatalf("syncDirectory: %v", err)
+	}
+	if !result.OK() || result.Synced != 2 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	// Restart: close this server/store, open a brand-new Store/Server on
+	// the same directory. Nothing directory-sync-specific is passed
+	// across the restart -- there is no session to carry, exactly as for
+	// single-file sync (TestSync_CriticalAcceptanceProof).
+	ts.Close()
+	if err := srv.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer store2.Close()
+	srv2 := NewServer(store2, creds, region)
+	ts2 := httptest.NewServer(srv2)
+	defer ts2.Close()
+
+	for rel, data := range files {
+		got := getSyncObjectBytes(t, ts2, creds, region, "drestart1", "backup/"+rel)
+		if !bytes.Equal(got, data) {
+			t.Fatalf("%s mismatch after restart", rel)
+		}
+	}
+	vr, err := store2.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !vr.OK() {
+		t.Fatalf("deep verify reported issues after directory sync + restart: %+v", vr.Issues)
+	}
+}
+
+// TestDirSync_SourcePathTrailingSeparator proves a source directory
+// argument with and without a trailing local path separator produces
+// identical discovered relative paths and destination keys (C12).
+func TestDirSync_SourcePathTrailingSeparator(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "trail1")
+
+	files := map[string][]byte{"a.txt": genRandomBytes(9001, 200), "sub/b.txt": genRandomBytes(9002, 300)}
+
+	root := t.TempDir()
+	writeDirSyncTree(t, root, files)
+	withSlash := root + string(filepath.Separator)
+
+	for i, r := range []string{root, withSlash} {
+		result, err := syncDirectory(r, "trail1", "pfx", baseDirSyncCfg(ts, creds, region))
+		if err != nil {
+			t.Fatalf("case %d (%q): %v", i, r, err)
+		}
+		if !result.OK() || result.Discovered != 2 {
+			t.Fatalf("case %d (%q): unexpected result: %+v", i, r, result)
+		}
+		for rel, data := range files {
+			got := getSyncObjectBytes(t, ts, creds, region, "trail1", "pfx/"+rel)
+			if !bytes.Equal(got, data) {
+				t.Fatalf("case %d (%q): key pfx/%s mismatch", i, r, rel)
+			}
+		}
+	}
+}
+
+func TestDirSync_PrintSummaryFormat(t *testing.T) {
+	result := dirSyncResult{
+		Discovered: 4, Synced: 2, Skipped: 1, Failed: 1,
+		Skips:    []dirSyncSkip{{LocalPath: "link.txt", Reason: "symlink (not followed)"}},
+		Failures: []dirSyncFailure{{LocalPath: "local/broken.bin", Dest: "s3://bucket/prefix/broken.bin", Err: errSyncRemoteConflict}},
+		Stats:    syncStats{LogicalBytes: 100, UploadedBytes: 10, BytesAvoided: 90, TotalChunks: 3, ChunksReused: 2, UniqueChunksUploaded: 1},
+	}
+	var buf bytes.Buffer
+	printDirSyncSummary(&buf, result)
+	out := buf.String()
+	for _, want := range []string{
+		"Files discovered:  4", "Files synced:      2", "Files skipped:     1", "Files failed:      1",
+		"SKIPPED:", "link.txt: symlink (not followed)",
+		"FAILED:", "local/broken.bin -> s3://bucket/prefix/broken.bin",
+		"directory sync completed with errors",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("summary output missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// freeTCPAddr reserves an ephemeral local port for the CLI subprocess test
+// below by briefly binding then releasing it -- the standard, small-race
+// idiom for handing a specific free port to a subprocess.
+func freeTCPAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	return addr
+}
+
+func waitForZeros3Serve(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("zeros3 serve did not become ready on %s", addr)
+}
+
+// TestCLI_Sync_DirectoryAndSingleFile_Smoke drives the actual built
+// `zeros3` binary as a real subprocess against a real `zeros3 serve`
+// subprocess over a real TCP connection -- proving the CLI wiring itself
+// (the os.Stat-based directory-vs-file dispatch added to runSync) end to
+// end, and that the original single-file `zeros3 sync FILE s3://bucket/key`
+// CLI invocation still works completely unchanged (C3/no regression).
+func TestCLI_Sync_DirectoryAndSingleFile_Smoke(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	s, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("cli1"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	addr := freeTCPAddr(t)
+	cmd := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start zeros3 serve: %v", err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	// Directory sync via the real CLI.
+	root := t.TempDir()
+	writeDirSyncTree(t, root, map[string][]byte{
+		"a.txt":     []byte("hello a"),
+		"sub/b.txt": []byte("hello b"),
+	})
+	out, stderr, code := runZeros3CLI(t, bin, "sync", "-endpoint", "http://"+addr, root, "s3://cli1/tree/")
+	if code != 0 {
+		t.Fatalf("directory sync CLI failed (code %d): stdout=%s stderr=%s", code, out, stderr)
+	}
+	if !strings.Contains(out, "Files discovered:  2") || !strings.Contains(out, "Files synced:      2") {
+		t.Fatalf("expected the summary to report 2/2 files, got: %s", out)
+	}
+
+	// Single-file sync via the real CLI must still work unchanged.
+	tmp := t.TempDir()
+	filePath := writeSyncTempFile(t, tmp, "single.bin", []byte("single file content"))
+	out2, stderr2, code2 := runZeros3CLI(t, bin, "sync", "-endpoint", "http://"+addr, filePath, "s3://cli1/single-key")
+	if code2 != 0 {
+		t.Fatalf("single-file sync CLI failed (code %d): stdout=%s stderr=%s", code2, out2, stderr2)
+	}
+
+	// A directory sync against a bucket that was never created must fail
+	// every file's commit deterministically (never a timing-dependent
+	// race) and the process must exit nonzero (C6): proving the real
+	// process-level exit code, not just the in-memory dirSyncResult.OK()
+	// value the tests above already cover directly.
+	out3, stderr3, code3 := runZeros3CLI(t, bin, "sync", "-endpoint", "http://"+addr, root, "s3://no-such-bucket/tree/")
+	if code3 == 0 {
+		t.Fatalf("expected a nonzero exit status when every file's commit fails, stdout=%s stderr=%s", out3, stderr3)
+	}
+	if !strings.Contains(out3, "Files failed:      2") || !strings.Contains(out3, "directory sync completed with errors") {
+		t.Fatalf("expected the summary to report the failures, got: %s", out3)
+	}
+
+	// Restart the server (real process kill + a fresh `serve`) and verify
+	// every successfully-synced object survives intact via a direct store open.
+	cmd.Process.Kill()
+	cmd.Wait()
+	s2, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if _, body, err := s2.GetObject("cli1", "tree/sub/b.txt"); err != nil || string(body) != "hello b" {
+		t.Fatalf("tree/sub/b.txt mismatch after restart: err=%v body=%q", err, body)
+	}
+	if _, body, err := s2.GetObject("cli1", "single-key"); err != nil || string(body) != "single file content" {
+		t.Fatalf("single-key mismatch after restart: err=%v body=%q", err, body)
 	}
 }

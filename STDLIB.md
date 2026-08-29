@@ -97,6 +97,16 @@ aspirational.
   used for manifests/`FORMAT.json`/journal payloads/`-json` CLI output
   (table row 7), applied here to a genuinely new role (an HTTP
   request/response wire format, not just on-disk/CLI encoding).
+- **Recursive directory traversal (M6C, `zeros3 sync LOCAL_DIRECTORY ...`):**
+  `path/filepath`'s `WalkDir`, used here for the first time in this
+  codebase to walk a client-side source tree rather than a single named
+  path. Its documented behavior — each directory's entries are read once
+  and sorted by name before descending — is exactly the deterministic,
+  lexically-stable traversal order C1 requires, so no separate sort step
+  was needed; `fs.DirEntry.Type()` (from the same `readdir`-derived entry,
+  never a followed `Stat`) is what lets a symlink be identified and
+  skipped without ever being dereferenced. No third-party directory-walk
+  or glob library was needed.
 
 ## 6. Developer-tool substitutions
 
