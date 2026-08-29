@@ -3443,11 +3443,14 @@ func buildManualManifest(chunks [][]byte, contentType string, metadata map[strin
 	id := newUUIDv7()
 	refs := make([]chunkRef, len(chunks))
 	var total int64
+	objHash := sha256.New()
 	for i, c := range chunks {
 		sum := sha256.Sum256(c)
 		refs[i] = chunkRef{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(c))}
 		total += int64(len(c))
+		objHash.Write(c)
 	}
+	objSum := objHash.Sum(nil)
 	return manifestV1{
 		ManifestFormatVersion: manifestFormatVersion,
 		CDCFormatVersion:      cdcFormatVersion,
@@ -3455,7 +3458,7 @@ func buildManualManifest(chunks [][]byte, contentType string, metadata map[strin
 		ManifestUUID:          id,
 		TotalLength:           total,
 		Chunks:                refs,
-		ObjectSHA256:          strings.Repeat("0", 64),
+		ObjectSHA256:          hex.EncodeToString(objSum),
 		ETag:                  "manualtestetag0000000000000000",
 		ContentType:           contentType,
 		Metadata:              sortedMetadataKV(metadata),
@@ -4006,6 +4009,262 @@ func TestVerify_DetectsManifestLengthSumMismatch(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// M3 correction pass: deep verify whole-object SHA-256 (A3)
+// =============================================================================
+
+func TestVerify_DeepWholeObjectDigest_EmptyObject(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "empty", nil, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK() {
+		t.Fatalf("deep verify of a correctly-hashed empty object must be OK, got %+v", res)
+	}
+}
+
+func TestVerify_DeepWholeObjectDigest_MultiChunkObject(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	// Large enough to force multiple CDC chunks (see cdcMaxChunkSize), so
+	// the streaming order actually exercises more than one chunk.
+	if _, err := s.PutObject("b", "multi", genRandomBytes(910, 900*1024), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK() {
+		t.Fatalf("deep verify of a correctly-hashed multi-chunk object must be OK, got %+v", res)
+	}
+}
+
+// TestVerify_DeepWholeObjectDigest_MismatchDetected is the direct
+// regression test for A3: a manifest whose object_sha256 has been
+// tampered with, while every individual chunk reference stays valid
+// (correct hash, correct length, correct total_length sum), must be
+// caught only by -deep -- per-chunk checks alone have no way to notice
+// this, since GetObject never checks object_sha256 either.
+func TestVerify_DeepWholeObjectDigest_MismatchDetected(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	chunkA := bytes.Repeat([]byte{0xAA}, 4000)
+	chunkB := bytes.Repeat([]byte{0xBB}, 5000)
+	man := buildManualManifest([][]byte{chunkA, chunkB}, "application/octet-stream", nil)
+	// Tamper the object digest only -- chunk refs/lengths/total_length
+	// are all left correct, isolating this test to A3's new check.
+	man.ObjectSHA256 = strings.Repeat("f", 64)
+	if _, err := s.casWrite(chunkA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.casWrite(chunkB); err != nil {
+		t.Fatal(err)
+	}
+	manUUID, manSHA, err := s.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.commitObjectRoot("b", "tampered-digest", manUUID, manSHA, man); err != nil {
+		t.Fatal(err)
+	}
+
+	basic, err := s.Verify(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !basic.OK() {
+		t.Fatalf("basic (non-deep) verify does not check object_sha256 and must stay OK, got %+v", basic)
+	}
+
+	deep, err := s.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deep.OK() {
+		t.Fatalf("deep verify must detect a manifest object_sha256 that doesn't match its chunks")
+	}
+	if deep.Corrupt == 0 {
+		t.Fatalf("expected the object digest mismatch to be reported as corrupt, got %+v", deep)
+	}
+}
+
+// TestVerify_DeepWholeObjectDigest_MalformedReportedInvalid proves a
+// malformed object_sha256 field is reported, not silently ignored.
+func TestVerify_DeepWholeObjectDigest_MalformedReportedInvalid(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	chunk := []byte("some chunk content for the malformed-digest test")
+	man := buildManualManifest([][]byte{chunk}, "application/octet-stream", nil)
+	man.ObjectSHA256 = "not-a-valid-hex-sha256"
+	if _, err := s.casWrite(chunk); err != nil {
+		t.Fatal(err)
+	}
+	manUUID, manSHA, err := s.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.commitObjectRoot("b", "malformed-digest", manUUID, manSHA, man); err != nil {
+		t.Fatal(err)
+	}
+
+	deep, err := s.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deep.OK() {
+		t.Fatalf("deep verify must reject a malformed object_sha256 rather than silently ignoring it")
+	}
+	if deep.Invalid == 0 {
+		t.Fatalf("expected the malformed object_sha256 to be reported as invalid, got %+v", deep)
+	}
+}
+
+// =============================================================================
+// M3 correction pass: per-root manifest hash verification (A4)
+// =============================================================================
+
+// TestVerify_PerRootManifestHashCheckedEvenWhenUUIDCached is the direct
+// regression test for A4. It constructs an adversarial condition that
+// cannot arise from normal journal-writing code: two roots referencing
+// the SAME manifest UUID, where one root's journal-recorded manifest
+// SHA256 is correct and the other's is deliberately wrong. Verify must
+// still catch the wrong one no matter which root it happens to process
+// first -- Go's map iteration order (Verify walks snapshotNamespace,
+// which is built from map ranges) is intentionally randomized per call
+// and not controlled by this test, so the two subtests below (which only
+// vary which journal frame/map entry is *appended* first, not which one
+// Verify necessarily *visits* first) exist to broaden coverage across
+// runs rather than to pin down a specific visit order; what must hold
+// regardless of order is that caching a manifest's parsed content/hash to
+// avoid re-reading the file never lets a second root silently inherit a
+// "verified" status it hasn't earned.
+func TestVerify_PerRootManifestHashCheckedEvenWhenUUIDCached(t *testing.T) {
+	for _, badRootFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("badRootAppendedFirst=%v", badRootFirst), func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if err := s.CreateBucket("b"); err != nil {
+				t.Fatal(err)
+			}
+
+			entry, err := s.PutObject("b", "good", genRandomBytes(72, 4096), "application/octet-stream", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A second root pointing at the exact same manifest UUID is a
+			// legitimate, supported condition (e.g. two keys copied from
+			// the same source, or -- pre-A1 -- a default-directive copy);
+			// what's adversarial here is only the wrong recorded hash on
+			// one of the two roots, constructed directly since no normal
+			// Store operation ever appends a mismatched hash.
+			wrongSHA := entry.manifestSHA256
+			wrongSHA[0] ^= 0xFF
+			payloadGood, err := json.Marshal(journalPutPayload{
+				Bucket: "b", Key: "good2", ManifestUUID: entry.manifestUUID,
+				ManifestSHA256: hex.EncodeToString(entry.manifestSHA256[:]),
+				Size:           entry.size, ETag: entry.etag, ContentType: entry.contentType, VersionID: entry.manifestUUID,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			payloadBad, err := json.Marshal(journalPutPayload{
+				Bucket: "b", Key: "bad2", ManifestUUID: entry.manifestUUID,
+				ManifestSHA256: hex.EncodeToString(wrongSHA[:]),
+				Size:           entry.size, ETag: entry.etag, ContentType: entry.contentType, VersionID: entry.manifestUUID,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if badRootFirst {
+				if _, err := s.journal.appendFrame(recordTypePutObjectRoot, payloadBad); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.journal.appendFrame(recordTypePutObjectRoot, payloadGood); err != nil {
+					t.Fatal(err)
+				}
+				s.mu.Lock()
+				s.buckets["b"].objects["bad2"] = &objectEntry{manifestUUID: entry.manifestUUID, manifestSHA256: wrongSHA, size: entry.size, etag: entry.etag, contentType: entry.contentType}
+				s.buckets["b"].objects["good2"] = &objectEntry{manifestUUID: entry.manifestUUID, manifestSHA256: entry.manifestSHA256, size: entry.size, etag: entry.etag, contentType: entry.contentType}
+				s.mu.Unlock()
+			} else {
+				if _, err := s.journal.appendFrame(recordTypePutObjectRoot, payloadGood); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.journal.appendFrame(recordTypePutObjectRoot, payloadBad); err != nil {
+					t.Fatal(err)
+				}
+				s.mu.Lock()
+				s.buckets["b"].objects["good2"] = &objectEntry{manifestUUID: entry.manifestUUID, manifestSHA256: entry.manifestSHA256, size: entry.size, etag: entry.etag, contentType: entry.contentType}
+				s.buckets["b"].objects["bad2"] = &objectEntry{manifestUUID: entry.manifestUUID, manifestSHA256: wrongSHA, size: entry.size, etag: entry.etag, contentType: entry.contentType}
+				s.mu.Unlock()
+			}
+
+			res, err := s.Verify(false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.OK() {
+				t.Fatalf("expected the root with a wrong recorded manifest hash to fail verify even though another root warmed the manifest cache first, got %+v", res)
+			}
+			if res.Corrupt == 0 {
+				t.Fatalf("expected the mismatched root to be counted as corrupt, got %+v", res)
+			}
+			// The correctly-hashed root sharing the same UUID must still
+			// verify fine -- this isn't "the manifest is corrupt", it's
+			// "this one root's claim about the manifest is wrong".
+			found := false
+			for _, issue := range res.Issues {
+				if issue.Subject == "b/good2" {
+					found = true
+				}
+			}
+			if found {
+				t.Fatalf("the correctly-hashed root must not be reported as an issue, got %+v", res.Issues)
+			}
+		})
+	}
+}
+
 func TestConcurrency_StatsDuringWrites(t *testing.T) {
 	dir := t.TempDir()
 	s, err := OpenStore(dir)
@@ -4092,7 +4351,7 @@ func TestConcurrency_VerifyDuringWrites(t *testing.T) {
 // M3: CopyObject
 // =============================================================================
 
-func TestCopyObject_SameBucketZeroNewPayloadBytes(t *testing.T) {
+func TestCopyObject_SameBucketZeroNewCASChunkBytes(t *testing.T) {
 	srv, signer := newTestServerAndSigner(t)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
@@ -4134,11 +4393,16 @@ func TestCopyObject_SameBucketZeroNewPayloadBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The measurable claim is zero new CAS *chunk* payload bytes -- not
+	// zero bytes of any kind. Both metadata directives now publish a
+	// fresh destination manifest (new UUID/version/CreatedAt), so
+	// manifest_file_bytes is expected to grow; chunk_store_file_bytes
+	// must not move at all.
 	if after.ChunkStoreFileBytes != before.ChunkStoreFileBytes {
 		t.Fatalf("CopyObject wrote new CAS chunk payload bytes: before=%d after=%d", before.ChunkStoreFileBytes, after.ChunkStoreFileBytes)
 	}
-	if after.ManifestFileBytes != before.ManifestFileBytes {
-		t.Fatalf("CopyObject under the default COPY directive should reuse the source manifest, not publish a new one: before=%d after=%d", before.ManifestFileBytes, after.ManifestFileBytes)
+	if after.ManifestFileBytes <= before.ManifestFileBytes {
+		t.Fatalf("expected CopyObject to publish a new destination manifest file (manifest_file_bytes should grow): before=%d after=%d", before.ManifestFileBytes, after.ManifestFileBytes)
 	}
 	if after.LogicalCurrentBytes != before.LogicalCurrentBytes+int64(len(body)) {
 		t.Fatalf("expected the destination object's logical bytes to be counted, got before=%d after=%d body=%d", before.LogicalCurrentBytes, after.LogicalCurrentBytes, len(body))
@@ -4331,6 +4595,210 @@ func TestCopyObject_MetadataDirectiveReplaceUsesNewMetadataZeroNewChunkBytes(t *
 	gotBody, _ := io.ReadAll(get.Body)
 	if !bytes.Equal(gotBody, body) {
 		t.Fatalf("REPLACE directive must still copy the exact source bytes")
+	}
+}
+
+// TestCopyObject_DestinationGetsNewManifestIdentityAndTimestamp is the
+// direct regression test for the M3 correction pass's CopyObject fix:
+// under BOTH metadata directives, the destination root must publish a
+// brand-new manifest (new UUID, new version ID, new CreatedAt), never
+// reuse the source's -- because the destination's Last-Modified/version
+// identity must represent this copy, not the source object.
+func TestCopyObject_DestinationGetsNewManifestIdentityAndTimestamp(t *testing.T) {
+	for _, directive := range []metadataDirective{metadataDirectiveCopy, metadataDirectiveReplace} {
+		t.Run(fmt.Sprintf("directive=%d", directive), func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if err := s.CreateBucket("b"); err != nil {
+				t.Fatal(err)
+			}
+			srcEntry, err := s.PutObject("b", "src", genRandomBytes(71, 40*1024), "text/plain", map[string]string{"a": "1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			srcManBefore, err := s.readVerifiedManifest(srcEntry.manifestUUID, srcEntry.manifestSHA256)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, srcBytesBefore, err := s.readManifest(srcEntry.manifestUUID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Ensure the clock actually advances between the source PUT
+			// and the copy, so a reused CreatedAt can't accidentally look
+			// "new" by coincidence.
+			time.Sleep(2 * time.Millisecond)
+
+			req := CopyObjectRequest{SrcBucket: "b", SrcKey: "src", DstBucket: "b", DstKey: "dst", Directive: directive}
+			if directive == metadataDirectiveReplace {
+				req.ContentType = "text/replaced"
+				req.Metadata = map[string]string{"b": "2"}
+			}
+			dstEntry, dstMan, err := s.CopyObject(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if dstEntry.manifestUUID == srcEntry.manifestUUID {
+				t.Fatalf("destination must get a new manifest UUID, got the source's: %s", dstEntry.manifestUUID)
+			}
+			if dstMan.VersionID != dstMan.ManifestUUID {
+				t.Fatalf("destination version ID must match its own new manifest UUID, got version=%s uuid=%s", dstMan.VersionID, dstMan.ManifestUUID)
+			}
+			if dstMan.VersionID == srcManBefore.VersionID {
+				t.Fatalf("destination must get a new version ID, got the source's: %s", dstMan.VersionID)
+			}
+			if !dstMan.CreatedAt.After(srcManBefore.CreatedAt) {
+				t.Fatalf("destination CreatedAt (Last-Modified) must be a new, later timestamp: dst=%v src=%v", dstMan.CreatedAt, srcManBefore.CreatedAt)
+			}
+
+			// Payload identity is still byte-for-byte cloned: same chunks,
+			// same object digest, same ETag -- only the manifest's own
+			// identity/time (and, for REPLACE, metadata/content-type) is new.
+			if dstMan.ObjectSHA256 != srcManBefore.ObjectSHA256 {
+				t.Fatalf("copy must preserve the exact object SHA-256")
+			}
+			if dstMan.ETag != srcManBefore.ETag {
+				t.Fatalf("copy must preserve the exact ETag")
+			}
+			if len(dstMan.Chunks) != len(srcManBefore.Chunks) {
+				t.Fatalf("copy must preserve the exact ordered chunk list")
+			}
+			for i := range dstMan.Chunks {
+				if dstMan.Chunks[i] != srcManBefore.Chunks[i] {
+					t.Fatalf("chunk reference %d differs between source and destination manifest", i)
+				}
+			}
+
+			// Source manifest on disk must be completely untouched by the copy.
+			if _, err := s.readVerifiedManifest(srcEntry.manifestUUID, srcEntry.manifestSHA256); err != nil {
+				t.Fatalf("source manifest must remain readable/unchanged after copy: %v", err)
+			}
+			_, srcBytesAfter, err := s.readManifest(srcEntry.manifestUUID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(srcBytesBefore, srcBytesAfter) {
+				t.Fatalf("source manifest file must be byte-for-byte unchanged by CopyObject")
+			}
+		})
+	}
+}
+
+// TestParseCopySource_TrickyKeys is the regression test for the M3
+// correction pass's x-amz-copy-source decoding fix. Inspecting the pinned
+// AWS SDK Go v2's actual wire traffic (a real CopyObject call captured
+// against a raw HTTP server) showed it applies ZERO percent-encoding of
+// its own to CopySource: whatever bytes the caller supplies -- including
+// raw spaces, '%', '+', '?', '#', and Unicode -- are sent completely
+// unescaped. A strict decoder (url.PathUnescape, correct for a request
+// path that the HTTP client library itself guarantees is well-formed)
+// would reject the common raw case outright, since a literal '%' not part
+// of a valid escape is a parse error to it. These cases are exactly the
+// ones exercised over real HTTP by TestCopyObject_TrickySourceKeys below;
+// this table isolates the parser itself.
+func TestParseCopySource_TrickyKeys(t *testing.T) {
+	cases := []struct {
+		name       string
+		raw        string
+		wantBucket string
+		wantKey    string
+		wantErr    bool
+	}{
+		{"plain", "bucket/key.txt", "bucket", "key.txt", false},
+		{"leading slash", "/bucket/key.txt", "bucket", "key.txt", false},
+		{"raw space, unencoded (real SDK wire form)", "bucket/with space.txt", "bucket", "with space.txt", false},
+		{"raw literal percent not part of an escape (real SDK wire form)", "bucket/100%done.txt", "bucket", "100%done.txt", false},
+		{"pre-encoded space", "bucket/already%20encoded.txt", "bucket", "already encoded.txt", false},
+		{"raw unicode, unencoded (real SDK wire form)", "bucket/héllo-世界.txt", "bucket", "héllo-世界.txt", false},
+		{"raw plus stays literal, never becomes a space", "bucket/a+b plus.txt", "bucket", "a+b plus.txt", false},
+		{"slash-containing key preserved", "bucket/dir/sub/key.txt", "bucket", "dir/sub/key.txt", false},
+		{"pre-encoded slash decodes to a literal slash in the key", "bucket/a%2Fb.txt", "bucket", "a/b.txt", false},
+		{"pre-encoded percent decodes to a literal percent", "bucket/percent%25literal.txt", "bucket", "percent%literal.txt", false},
+		{"pre-encoded question mark survives (not confused with query syntax)", "bucket/weird%3Fchars%23here.txt", "bucket", "weird?chars#here.txt", false},
+		{"trailing percent with nothing to decode", "bucket/trailing%", "bucket", "trailing%", false},
+		{"versionId query is rejected", "bucket/key?versionId=abc123", "", "", true},
+		{"versionId query with leading slash is rejected", "/bucket/key?versionId=abc123", "", "", true},
+		{"empty source is rejected", "", "", "", true},
+		{"bucket with no key is rejected", "bucket", "", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			bucket, key, err := parseCopySource(c.raw)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("parseCopySource(%q): expected an error, got bucket=%q key=%q", c.raw, bucket, key)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseCopySource(%q): unexpected error: %v", c.raw, err)
+			}
+			if bucket != c.wantBucket || key != c.wantKey {
+				t.Fatalf("parseCopySource(%q): got bucket=%q key=%q, want bucket=%q key=%q", c.raw, bucket, key, c.wantBucket, c.wantKey)
+			}
+		})
+	}
+}
+
+// TestCopyObject_TrickySourceKeys exercises the same tricky source keys as
+// TestParseCopySource_TrickyKeys, but end-to-end over real signed HTTP
+// requests, with the x-amz-copy-source header set to the exact RAW,
+// unescaped form the pinned AWS SDK Go v2 actually sends on the wire (see
+// the comment on parseCopySource) -- proving the fix works through the
+// full request pipeline, not just in the unit-level parser.
+func TestCopyObject_TrickySourceKeys(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	keys := []string{
+		"with space.txt",
+		"100%done.txt",
+		"a+b plus.txt",
+		"dir/sub/key.txt",
+	}
+	for i, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			body := genRandomBytes(int64(900+i), 2048)
+			// The object key itself goes in the request PATH, which real
+			// HTTP client libraries always properly percent-encode -- so
+			// build it via url.URL like doSignedRequest's callers rely on.
+			putPath := "/b/" + (&url.URL{Path: key}).EscapedPath()
+			put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, putPath, body, nil)
+			put.Body.Close()
+			if put.StatusCode != http.StatusOK {
+				t.Fatalf("PUT %q failed: %d", key, put.StatusCode)
+			}
+
+			// x-amz-copy-source, by contrast, is a raw header VALUE: send
+			// the exact unescaped bytes, matching the real SDK's observed
+			// wire behavior.
+			copyResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst-"+fmt.Sprint(i), nil, map[string]string{
+				"X-Amz-Copy-Source": "b/" + key,
+			})
+			defer copyResp.Body.Close()
+			if copyResp.StatusCode != http.StatusOK {
+				data, _ := io.ReadAll(copyResp.Body)
+				t.Fatalf("CopyObject for source key %q failed: %d: %s", key, copyResp.StatusCode, data)
+			}
+
+			get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/dst-"+fmt.Sprint(i), nil, nil)
+			defer get.Body.Close()
+			got, _ := io.ReadAll(get.Body)
+			if !bytes.Equal(got, body) {
+				t.Fatalf("copy of source key %q did not round-trip bytes", key)
+			}
+		})
 	}
 }
 

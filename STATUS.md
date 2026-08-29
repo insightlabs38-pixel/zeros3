@@ -22,12 +22,9 @@ regressing M1/M2.
 - M3 itself was implemented on a new branch,
   `claude/zeros3-m3-implementation-liru6u`, branched from `main` — not
   by adding commits to the old M2 branch.
-- **GitHub default branch:** this environment has no authenticated way to
-  call the GitHub API's repository-settings endpoint (no `gh` CLI, no
-  generic REST tool). `main` exists and is pushed, but a human must still
-  change the repository's default branch from
-  `claude/zeros3-m0-m1-bootstrap-xvzbbm` to `main` in GitHub's settings
-  (Settings → Branches → Default branch).
+- **GitHub default branch:** `main` is the repository's actual default
+  branch (confirmed directly against GitHub, not inferred). No further
+  action is needed here.
 
 ### Stats (`STATS_SPEC.md`)
 
@@ -80,17 +77,30 @@ it only reports, and returns a nonzero CLI exit status on any failure.
 - **Store/journal:** `FORMAT.json`'s format/CDC/hash-algorithm versions;
   a fresh `replayJournal` pass over the journal file (magic/version/type/
   sequence/CRC32C), counting frames checked.
-- **Manifests**, for every currently-reachable root: manifest file
-  exists; its exact bytes' SHA-256 matches the journal-recorded
-  reference; it parses as JSON; its declared format/CDC/hash-algorithm
-  versions are supported; its chunk references have well-formed SHA-256
-  hex and non-negative lengths; those lengths sum to the manifest's
-  declared `total_length`.
+- **Manifests**, for every currently-reachable root, independently
+  (**corrected by the M3 correction pass, A4** — see below): manifest
+  file exists; its exact bytes' SHA-256 matches *this root's own*
+  journal-recorded reference, checked every time regardless of whether
+  the manifest UUID/bytes were already parsed via another root; it
+  parses as JSON; its declared format/CDC/hash-algorithm versions are
+  supported; its chunk references have well-formed SHA-256 hex and
+  non-negative lengths; those lengths sum to the manifest's declared
+  `total_length`.
 - **Chunks**, referenced by every reachable manifest: basic verification
   checks the chunk file exists and its on-disk size matches the
   manifest's declared length (no content read); `-deep` additionally
   re-hashes the actual bytes and confirms they match the digest that
   names the file.
+- **Whole-object digest, `-deep` only** (**added by the M3 correction
+  pass, A3**): every reachable manifest's chunks are fed, in the
+  manifest's own logical order, into one streaming SHA-256 hasher per
+  manifest — never buffering the reconstructed object — and the result,
+  plus the streamed byte count, is compared against the manifest's own
+  `object_sha256`/`total_length`. A malformed `object_sha256` is
+  reported as invalid rather than silently ignored. This is the one
+  thing per-chunk hashing alone cannot catch: every chunk can be
+  individually intact while the manifest still names the wrong object
+  digest or lists chunks in a corrupted order.
 - Reports counts (manifests/chunks checked, missing/corrupt/invalid,
   unreachable manifests/chunks, reclaimable bytes) and a per-issue list.
   Unreachable/reclaimable garbage is never treated as a failure — that is
@@ -108,25 +118,41 @@ it only reports, and returns a nonzero CLI exit status on any failure.
   manifest-declared length; a manifest whose chunk lengths don't sum to
   its declared total; `stats`/`verify` running concurrently with a
   writer loop under `-race` (`TestConcurrency_StatsDuringWrites`,
-  `TestConcurrency_VerifyDuringWrites`).
+  `TestConcurrency_VerifyDuringWrites`); deep whole-object digest OK for
+  an empty and a multi-chunk object, a tampered `object_sha256` detected
+  only under `-deep`, and a malformed `object_sha256` reported as
+  invalid (`TestVerify_DeepWholeObjectDigest_*`); an adversarial
+  white-box case with two roots sharing one manifest UUID where only one
+  root's recorded hash is wrong, proving the wrong root is still caught
+  regardless of which root the (randomized) map iteration visits first
+  (`TestVerify_PerRootManifestHashCheckedEvenWhenUUIDCached`).
 
 ### CopyObject (T1)
 
-`Store.CopyObject` (zeros3.go section 11b) never re-chunks, re-reads, or
-re-uploads the source object's payload:
+**Corrected by the M3 correction pass** (A1/A2 below) — this subsection
+describes the current, corrected behavior; see "M3 correction pass" for
+what changed and why.
 
-- Default `COPY` metadata directive: the destination root is committed
-  pointing at the *exact same* manifest UUID/SHA-256 the source root
-  already uses — zero new bytes of any kind, not just zero chunk
-  payload, since no new manifest file is even published.
-- `REPLACE` metadata directive: the destination manifest is built by
-  cloning the source manifest's chunk list/ETag/object-digest fields
-  (all byte-for-byte identical, since only metadata/content-type
-  changed) and publishing a new manifest UUID with the new fields — a
-  small new manifest file, but still zero new CAS chunk bytes.
-- Both paths share `PutObject`'s exact commit discipline via a new
-  `commitObjectRoot` helper (extracted from `PutObject`'s former inline
-  tail): bucket existence re-checked at the actual commit point, journal
+`Store.CopyObject` (zeros3.go section 11b) never re-chunks, re-reads,
+re-uploads, or rewrites an existing CAS chunk file:
+
+- Both metadata directives — default `COPY` and `REPLACE` — publish a
+  **brand-new destination manifest**: new UUID, new version ID, new
+  `CreatedAt`. A copy is a genuinely new object version with its own
+  Last-Modified/version identity, even though its payload is
+  byte-for-byte identical to the source's, so neither directive reuses
+  the source's manifest file or timestamp.
+- The chunk list, object SHA-256, and ETag are cloned byte-for-byte from
+  the source manifest in both directives, without reading a single chunk
+  payload byte. `ContentType`/`Metadata` are copied from the source for
+  `COPY` and taken from the request for `REPLACE`.
+- The measurable claim is **CopyObject writes zero new CAS payload
+  bytes** — not "zero bytes of any kind": both directives now publish a
+  small new manifest file, so `manifest_file_bytes` may grow even though
+  `chunk_store_file_bytes` never does.
+- Both paths share `PutObject`'s exact commit discipline via
+  `commitObjectRoot` (extracted from `PutObject`'s former inline tail):
+  bucket existence re-checked at the actual commit point, journal
   append+sync as the sole durability boundary, in-memory apply only
   after that succeeds.
 - Before committing, every source chunk is confirmed present (a cheap
@@ -139,24 +165,35 @@ re-uploads the source object's payload:
   `NoSuchKey`; missing destination bucket → `NoSuchBucket` (kept
   distinct from a missing source via a dedicated `errNoSuchDestinationBucket`
   sentinel so the handler always names the right resource).
-- **Zero-new-payload claim, measured, not assumed:** `TestCopyObject_
-  SameBucketZeroNewPayloadBytes` snapshots `stats` before/after a
-  same-bucket copy of a 3MiB object and asserts `chunk_store_file_bytes`
-  *and* `manifest_file_bytes` are byte-for-byte unchanged (the COPY
-  directive reuses even the source's manifest file);
+- `x-amz-copy-source` is decoded leniently (`parseCopySource`/
+  `lenientPercentDecode`), not with the request path's strict
+  `url.PathUnescape`: the pinned AWS SDK Go v2 sends this header
+  completely raw, with none of its own percent-encoding, so a strict
+  decoder would reject the common case (a literal, non-escaped `%` in a
+  source key). See "M3 correction pass" (A2).
+- **Zero-new-CAS-payload claim, measured, not assumed:**
+  `TestCopyObject_SameBucketZeroNewCASChunkBytes` snapshots `stats`
+  before/after a same-bucket copy of a 3MiB object and asserts
+  `chunk_store_file_bytes` is byte-for-byte unchanged while
+  `manifest_file_bytes` grows (a new destination manifest is always
+  published now);
   `TestCopyObject_MetadataDirectiveReplaceUsesNewMetadataZeroNewChunkBytes`
-  does the same for REPLACE and confirms only chunk bytes stay
-  unchanged (a new manifest is expected there). The external
-  `zeros3-testing` AWS SDK Go v2 harness (`harness/m3/copy`, 24/24
-  passed) independently proves the same/cross-bucket/overwrite/missing-
-  source/missing-destination/both-directive behavior over the real S3
-  wire protocol.
-- Crash/recovery coverage for this new commit path: a simulated crash
-  after the REPLACE directive's manifest publish but before the journal
-  commit leaves the destination invisible and the source untouched
+  does the same for REPLACE. `TestCopyObject_
+  DestinationGetsNewManifestIdentityAndTimestamp` directly asserts, for
+  both directives, that the destination gets a new manifest UUID/version
+  ID and a strictly later `CreatedAt` than the source, that the payload
+  identity (chunks/object SHA-256/ETag) is still cloned exactly, and
+  that the source manifest's file bytes are completely untouched. The
+  external `zeros3-testing` AWS SDK Go v2 harness (`harness/m3/copy`,
+  46/46 passed) independently proves the same/cross-bucket/overwrite/
+  missing-source/missing-destination/both-directive/new-Last-Modified/
+  encoded-source-key behavior over the real S3 wire protocol.
+- Crash/recovery coverage: a simulated crash after the REPLACE
+  directive's manifest publish but before the journal commit leaves the
+  destination invisible and the source untouched
   (`TestCrash_CopyObjectReplaceBeforeJournalLeavesOldState`); a
-  simulated crash right after the journal sync (for both directives)
-  is durable on restart (`TestCrash_CopyObjectAfterJournalSyncIsDurable`).
+  simulated crash right after the journal sync (for both directives) is
+  durable on restart (`TestCrash_CopyObjectAfterJournalSyncIsDurable`).
 
 ### Single-range GET (T1)
 
@@ -260,16 +297,16 @@ ordinary PUT).
 - `version_count`/`logical_version_bytes` are not yet a distinct figure
   from `current_object_count`/`logical_current_bytes` (see "Stats"
   above) — expected, since no version-retention feature has shipped.
-- `verify` does not currently re-derive/check `object_sha256` against
-  reconstructed object bytes (only per-chunk SHA-256 is deep-verified);
-  each chunk's own digest is checked, which is what actually protects
-  reconstruction, but the manifest's whole-object digest field itself
-  isn't independently re-verified.
+- **Resolved by the M3 correction pass (A3):** `verify -deep` now
+  streams every reachable manifest's chunks through SHA-256 in manifest
+  order and checks the result against `object_sha256`/`total_length`;
+  this bullet is kept only as a historical record of the prior gap.
 - CopyObject does not implement conditional-copy headers (`x-amz-copy-
   source-if-*`) or self-copy rejection; a same-key COPY-directive copy
-  is accepted as a harmless no-op re-commit rather than being rejected
-  the way real S3 rejects certain same-key copies. Neither was in the
-  M3 MUST scope.
+  now publishes a genuinely new manifest/version/timestamp for that key
+  (see the M3 correction pass, A1) rather than being rejected the way
+  real S3 rejects certain same-key copies. Neither conditional headers
+  nor self-copy rejection were in the M3 MUST scope.
 - Range GET does not implement multipart/multi-range responses (`bytes=
   0-1,3-4`); such a header is treated as unsupported and the full object
   is served, per plan.
@@ -284,6 +321,107 @@ dependency proof polish beyond what M3's own audit already covers,
 README/demo production, Windows/macOS/arm CI, presigned URLs, versioning/
 restore, destructive GC, multipart upload, `s3rver` Package Killer work,
 sync/delta-transfer, or any other T2+/M4+ feature.
+
+## M3 correction pass
+
+A follow-up, narrowly-scoped correction pass (targeted fixes only, no
+general rewrite) fixed four confirmed issues in the M3 CopyObject/verify
+implementation:
+
+1. **A1 — CopyObject destination identity.** The original default `COPY`
+   directive committed the destination root pointing at the source's own
+   manifest UUID/SHA-256 unchanged, which meant the destination's
+   Last-Modified/version identity was actually the source's — a real
+   correctness defect, since a copy is a genuinely new object version.
+   Both `COPY` and `REPLACE` now always publish a brand-new destination
+   manifest (new UUID, new version ID, new `CreatedAt`), cloning the
+   payload identity (chunk list, object SHA-256, ETag) byte-for-byte
+   from the source without reading a single chunk payload byte. The
+   measurable claim changed from "CopyObject writes zero new bytes of
+   any kind" (COPY only) to the correct, narrower claim that holds for
+   *both* directives: **CopyObject writes zero new CAS payload bytes**.
+   See "CopyObject (T1)" above for full detail; tests:
+   `TestCopyObject_SameBucketZeroNewCASChunkBytes`,
+   `TestCopyObject_DestinationGetsNewManifestIdentityAndTimestamp`.
+   Externally: `zeros3-testing`'s `harness/m3/copy` now asserts the
+   destination's `Last-Modified` is strictly after the source's (and
+   that the source's own `Last-Modified` never moves), over real HTTP.
+2. **A2 — `x-amz-copy-source` decoding.** Direct wire inspection of the
+   pinned AWS SDK Go v2 (a real `CopyObject` call captured against a raw
+   HTTP server) showed it applies **zero percent-encoding of its own**
+   to `CopySource`: raw spaces, `%`, `+`, `?`, `#`, and Unicode are all
+   sent completely unescaped. The original `parseCopySource` reused
+   `splitBucketKey`'s strict `url.PathUnescape` (correct for a request
+   *path*, which the HTTP client library itself guarantees is
+   well-formed) — so a source key with a literal, non-percent-encoded
+   `%` (a routine, real case, not a contrived one) was rejected outright
+   with `InvalidArgument`. `parseCopySource` now decodes leniently via a
+   new `lenientPercentDecode`: well-formed `%XX` escapes are still
+   honored, but a `%` that isn't part of one is kept literal instead of
+   erroring, `+` is never treated as a space, and the bucket/key split
+   still happens on the first *raw* `/` — never `path.Clean`/
+   `filepath.Clean`, so `..`, `//`, and slash-containing keys are
+   preserved exactly. `versionId` stays rejected/unsupported. Tests:
+   `TestParseCopySource_TrickyKeys` (unit-level table),
+   `TestCopyObject_TrickySourceKeys` (end-to-end over real signed HTTP,
+   RAW unencoded header values matching the SDK's actual wire form).
+   Externally: `zeros3-testing`'s `harness/m3/copy` adds the same tricky
+   source keys (space, literal `%`, `+`, a slash-containing key) as
+   black-box `CopyObject` cases.
+3. **A3 — Deep verify whole-object digest.** `verify -deep` re-hashed
+   individual chunks but never independently verified the manifest's own
+   `object_sha256` against the reconstructed object — a manifest could
+   name the wrong object digest, or list otherwise-intact chunks in a
+   corrupted order, and nothing would ever notice (`GetObject` doesn't
+   check `object_sha256` either). `Store.Verify` now streams every
+   reachable manifest's chunks, in the manifest's own order, through one
+   `sha256.New()` hasher per manifest — never buffering the
+   reconstructed object — and compares the result and the streamed byte
+   count against `object_sha256`/`total_length`; a malformed
+   `object_sha256` is reported `invalid` rather than silently ignored.
+   Tests: `TestVerify_DeepWholeObjectDigest_EmptyObject`,
+   `_MultiChunkObject`, `_MismatchDetected`,
+   `_MalformedReportedInvalid`.
+4. **A4 — Per-root manifest hash verification.** `Verify`'s manifest
+   cache (keyed by manifest UUID, to avoid re-reading/re-parsing a
+   manifest file every time a root references it) had a real bug: the
+   journal-recorded-SHA-vs-actual-file-SHA check only ran on a cache
+   *miss*. If manifest UUID `M` was correctly referenced by one root and
+   incorrectly (wrong recorded hash) referenced by a second root, and
+   Verify happened to process the correct root first, the second root's
+   wrong hash was never checked at all — it silently inherited the first
+   root's "verified" status. The cache now stores the manifest's parsed
+   content and its own file-bytes SHA-256 only; the
+   journal-recorded-SHA-vs-cached-SHA comparison runs unconditionally
+   for every root, cache hit or miss. Test:
+   `TestVerify_PerRootManifestHashCheckedEvenWhenUUIDCached` — a
+   white-box adversarial case (two roots sharing one manifest UUID, one
+   with a deliberately wrong recorded hash) confirmed, against the
+   pre-fix code, to fail reliably (the wrong root's mismatch went
+   undetected whenever Verify happened to process the correct root
+   first) and to pass reliably against the fix, across many runs and
+   both processing orders.
+5. **A5 — STATUS accuracy.** The stale note claiming a human still
+   needed to change GitHub's default branch was removed; `main` is
+   confirmed to already be the default branch.
+
+Also completed: a small, behavior-preserving code-quality pass extracted
+`writeBucketOrInternalError` to remove three near-identical repeated
+NoSuchBucket-vs-InternalError S3-error-mapping blocks (`handlePutObject`,
+`handleDeleteObject`, `handleListObjectsV2`); `DeleteBucket` and
+`CopyObject`, whose error mappings are genuinely different (not just the
+resource string), were deliberately left as their own switches rather
+than forced through one generic helper.
+
+No frozen format value changed by this pass: store/CDC/manifest/
+journal-frame versions, the `ZSJ1` magic, record type numbers, CDC
+parameters, and the gear-table derivation are all exactly as before;
+CopyObject still commits through the existing `recordTypePutObjectRoot`,
+no new journal record type was introduced. `go test`, `go test -race`,
+and `go vet` all pass with **130 passing test cases** (up from 122),
+`gofmt -l` reports nothing to format, and all four preserved external
+`zeros3-testing` harnesses (M2: 41/41, M3 copy: 46/46, M3 range: 27/27,
+M3 dedup: 7/7) are green.
 
 ## M2 status
 
