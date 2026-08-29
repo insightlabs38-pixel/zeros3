@@ -14,11 +14,13 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"io/fs"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -4100,21 +4102,27 @@ func TestStats_ReclaimableAfterDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// B is only referenced by the now-deleted y, so it becomes reclaimable;
-	// A is still referenced by x and remains reachable. y's own manifest
-	// file also becomes unreachable (no current root points at it any
-	// more), which is real reclaimable bytes too -- deletion changes
-	// roots, not chunks *or* the manifest that named them.
-	if after.UniqueReachableChunkBytes != 1000 {
-		t.Fatalf("unique_reachable_chunk_bytes after delete: got %d want 1000 (only A remains reachable)", after.UniqueReachableChunkBytes)
+	// M5-C: DELETE archives the deleted root into history rather than
+	// abandoning it, and the authoritative reachability model (section 12a)
+	// treats a retained historical version as a live root exactly like a
+	// current object. So chunk B and y's own manifest remain fully
+	// reachable/live -- NOT reclaimable -- even though y is no longer a
+	// current object: this is precisely what "safe GC must never delete a
+	// retained historical version's payload" (K2) requires.
+	if after.UniqueReachableChunkBytes != 3000 {
+		t.Fatalf("unique_reachable_chunk_bytes after delete: got %d want 3000 (B stays live via history)", after.UniqueReachableChunkBytes)
 	}
 	if after.ChunkStoreFileBytes != 3000 {
 		t.Fatalf("chunk_store_file_bytes must be unchanged by a DELETE (deletion changes roots, not chunks): got %d want 3000", after.ChunkStoreFileBytes)
 	}
-	wantReclaimable := int64(2000) + yManInfo.Size()
-	if after.ReclaimableBytes != wantReclaimable {
-		t.Fatalf("reclaimable_bytes after deleting y: got %d want %d (chunk B's bytes + y's own now-unreachable manifest file)", after.ReclaimableBytes, wantReclaimable)
+	if after.ReclaimableBytes != 0 {
+		t.Fatalf("reclaimable_bytes after deleting y: got %d want 0 (y's manifest/chunks are retained as history, not garbage)", after.ReclaimableBytes)
 	}
+	if after.HistoricalVersionCount != 1 || after.HistoricalVersionLogicalBytes != entryY.size {
+		t.Fatalf("historical version accounting after delete: got count=%d bytes=%d, want 1/%d",
+			after.HistoricalVersionCount, after.HistoricalVersionLogicalBytes, entryY.size)
+	}
+	_ = yManInfo // manifest size no longer expected to become reclaimable; kept for reference only.
 
 	verifyRes, err := s.Verify(false)
 	if err != nil {
@@ -4123,9 +4131,9 @@ func TestStats_ReclaimableAfterDelete(t *testing.T) {
 	if !verifyRes.OK() {
 		t.Fatalf("unreachable garbage must not be reported as an integrity failure: %+v", verifyRes)
 	}
-	if verifyRes.UnreachableChunks != 1 || verifyRes.UnreachableManifests != 1 || verifyRes.ReclaimableBytes != wantReclaimable {
-		t.Fatalf("verify reclaimable accounting: unreachable_chunks=%d unreachable_manifests=%d reclaimable_bytes=%d, want 1/1/%d",
-			verifyRes.UnreachableChunks, verifyRes.UnreachableManifests, verifyRes.ReclaimableBytes, wantReclaimable)
+	if verifyRes.UnreachableChunks != 0 || verifyRes.UnreachableManifests != 0 || verifyRes.ReclaimableBytes != 0 {
+		t.Fatalf("verify reclaimable accounting: unreachable_chunks=%d unreachable_manifests=%d reclaimable_bytes=%d, want 0/0/0 (history keeps y live)",
+			verifyRes.UnreachableChunks, verifyRes.UnreachableManifests, verifyRes.ReclaimableBytes)
 	}
 }
 
@@ -4155,6 +4163,8 @@ func TestStats_JSONFieldNamesMatchSpec(t *testing.T) {
 		"manifest_file_bytes", "journal_file_bytes", "temporary_file_bytes",
 		"reclaimable_bytes", "actual_store_file_bytes",
 		"dedup_avoided_bytes", "dedup_reduction", "unique_to_logical_ratio",
+		"historical_version_count", "historical_version_logical_bytes",
+		"active_multipart_upload_count", "active_multipart_logical_bytes",
 	} {
 		if !strings.Contains(js, `"`+field+`"`) {
 			t.Fatalf("expected stable JSON field name %q in stats output, got: %s", field, js)
@@ -7815,5 +7825,1851 @@ func TestVHost_PresignedURLWithVHostAddressing(t *testing.T) {
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK || string(data) != "vhost presign payload" {
 		t.Fatalf("vhost-addressed presigned GET: status %d body %q", resp.StatusCode, data)
+	}
+}
+
+// =============================================================================
+// M5-C: internal object version history, restore, authoritative
+// reachability, safe GC, doctor/stats extension.
+// =============================================================================
+
+func historyFor(t *testing.T, s *Store, bucket, key string) []*historyVersionEntry {
+	t.Helper()
+	entries, _, err := s.ListVersions(bucket, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+func TestVersions_FirstPutCreatesNoHistory(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("v1"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := historyFor(t, s, "b", "k"); len(got) != 0 {
+		t.Fatalf("first-ever PUT to a key must archive no history, got %d entries", len(got))
+	}
+}
+
+func TestVersions_PutOverwriteCreatesHistory(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	v1, err := s.PutObject("b", "k", []byte("version one"), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2, err := s.PutObject("b", "k", []byte("version two, longer"), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v2.manifestUUID == v1.manifestUUID {
+		t.Fatalf("overwrite must publish a distinct manifest identity")
+	}
+	hist := historyFor(t, s, "b", "k")
+	if len(hist) != 1 {
+		t.Fatalf("expected exactly 1 archived version after one overwrite, got %d", len(hist))
+	}
+	h := hist[0]
+	if h.manifestUUID != v1.manifestUUID || h.manifestSHA256 != v1.manifestSHA256 {
+		t.Fatalf("archived version must reference v1's exact manifest identity")
+	}
+	if h.size != v1.size || h.etag != v1.etag || h.contentType != v1.contentType {
+		t.Fatalf("archived version metadata mismatch: got %+v", h)
+	}
+	if h.reason != historyReasonOverwritten {
+		t.Fatalf("expected reason %q, got %q", historyReasonOverwritten, h.reason)
+	}
+	if h.versionID == "" || h.versionID == h.manifestUUID {
+		t.Fatalf("archived version must have its own distinct version identity, got %q (manifest %q)", h.versionID, h.manifestUUID)
+	}
+
+	// Current GET/HEAD must still see v2, never v1 or a blend.
+	_, body, err := s.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "version two, longer" {
+		t.Fatalf("current object must be v2, got %q", body)
+	}
+}
+
+func TestVersions_CopyObjectOverwriteCreatesHistory(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "src", []byte("source payload"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	dstV1, err := s.PutObject("b", "dst", []byte("original destination"), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = s.CopyObject(CopyObjectRequest{SrcBucket: "b", SrcKey: "src", DstBucket: "b", DstKey: "dst", Directive: metadataDirectiveCopy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hist := historyFor(t, s, "b", "dst")
+	if len(hist) != 1 || hist[0].manifestUUID != dstV1.manifestUUID {
+		t.Fatalf("CopyObject overwrite must archive the prior destination root into history, got %+v", hist)
+	}
+	_, body, err := s.GetObject("b", "dst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "source payload" {
+		t.Fatalf("current dst object must now be the copied source bytes, got %q", body)
+	}
+}
+
+func TestVersions_MultipartOverwriteCreatesHistory(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	v1, err := s.PutObject("b", "k", []byte("original object"), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := s.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partBody := genRandomBytes(1, 6*1024*1024)
+	etag, err := s.UploadPart("b", "k", uploadID, 1, partBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.CompleteMultipartUpload("b", "k", uploadID, []completedPart{{PartNumber: 1, ETag: etag}}); err != nil {
+		t.Fatal(err)
+	}
+	hist := historyFor(t, s, "b", "k")
+	if len(hist) != 1 || hist[0].manifestUUID != v1.manifestUUID {
+		t.Fatalf("completed multipart overwrite must archive the prior root into history, got %+v", hist)
+	}
+}
+
+func TestVersions_DeleteArchivesHistoryGetNotFound(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	vA, err := s.PutObject("b", "k", []byte("A"), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vB, err := s.PutObject("b", "k", []byte("BB"), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteObject("b", "k"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.GetObject("b", "k"); !errors.Is(err, errNoSuchKey) {
+		t.Fatalf("expected errNoSuchKey after delete, got %v", err)
+	}
+	hist := historyFor(t, s, "b", "k")
+	if len(hist) != 2 {
+		t.Fatalf("expected A and B both retained in history after delete, got %d entries", len(hist))
+	}
+	if hist[0].manifestUUID != vA.manifestUUID || hist[0].reason != historyReasonOverwritten {
+		t.Fatalf("history[0] should be A, overwritten by B: %+v", hist[0])
+	}
+	if hist[1].manifestUUID != vB.manifestUUID || hist[1].reason != historyReasonDeleted {
+		t.Fatalf("history[1] should be B, archived by delete: %+v", hist[1])
+	}
+}
+
+// TestVersions_FullLifecycleAcrossRestart is exactly the Phase E required
+// scenario: PUT A -> PUT B -> DELETE -> restart -> GET=not found ->
+// versions still contain A/B -> restore B -> restart -> GET exact B.
+func TestVersions_FullLifecycleAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("AAAA"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("BBBBBB"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteObject("b", "k"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s2.GetObject("b", "k"); !errors.Is(err, errNoSuchKey) {
+		t.Fatalf("expected not found after restart, got %v", err)
+	}
+	hist := historyFor(t, s2, "b", "k")
+	if len(hist) != 2 {
+		t.Fatalf("expected history to survive restart with 2 entries, got %d", len(hist))
+	}
+	bVersion := hist[1].versionID
+	if _, _, err := s2.RestoreObjectVersion("b", "k", bVersion); err != nil {
+		t.Fatal(err)
+	}
+	s2.Close()
+
+	s3, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s3.Close()
+	_, body, err := s3.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "BBBBBB" {
+		t.Fatalf("expected restored B's exact bytes after second restart, got %q", body)
+	}
+	// Restore must not have rewound history: A and B are both still there,
+	// plus a new archived entry for whatever restore replaced (none here,
+	// since delete already removed the current root before restore ran).
+	hist2 := historyFor(t, s3, "b", "k")
+	if len(hist2) != 2 {
+		t.Fatalf("restore must not remove or rewrite existing history entries, got %d entries", len(hist2))
+	}
+}
+
+func countChunkFiles(t *testing.T, storeDir string) int {
+	t.Helper()
+	n := 0
+	err := filepath.WalkDir(filepath.Join(storeDir, "chunks"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if !d.IsDir() {
+			n++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func countManifestFiles(t *testing.T, storeDir string) int {
+	t.Helper()
+	n := 0
+	err := filepath.WalkDir(filepath.Join(storeDir, "manifests"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if !d.IsDir() {
+			n++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestRestore_ZeroCopy_OverExistingCurrent proves the Phase D/zero-copy
+// requirement directly: restoring v1 over an existing current v3 creates
+// no new CAS chunk file and no new manifest file at all -- restore reuses
+// v1's exact existing manifest identity, publishing only a new journal
+// frame.
+func TestRestore_ZeroCopy_OverExistingCurrent(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	v1, err := s.PutObject("b", "k", genRandomBytes(1, 500*1024), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", genRandomBytes(2, 500*1024), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", genRandomBytes(3, 500*1024), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	hist := historyFor(t, s, "b", "k")
+	if len(hist) != 2 {
+		t.Fatalf("expected 2 archived versions before restore, got %d", len(hist))
+	}
+	v1Version := hist[0].versionID
+	if hist[0].manifestUUID != v1.manifestUUID {
+		t.Fatalf("history[0] should be v1")
+	}
+
+	chunksBefore := countChunkFiles(t, dir)
+	manifestsBefore := countManifestFiles(t, dir)
+
+	restored, restoredMan, err := s.RestoreObjectVersion("b", "k", v1Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	chunksAfter := countChunkFiles(t, dir)
+	manifestsAfter := countManifestFiles(t, dir)
+	if chunksAfter != chunksBefore {
+		t.Fatalf("restore must publish zero new CAS chunk files: before=%d after=%d", chunksBefore, chunksAfter)
+	}
+	if manifestsAfter != manifestsBefore {
+		t.Fatalf("restore must publish zero new manifest files (reuses v1's exact manifest): before=%d after=%d", manifestsBefore, manifestsAfter)
+	}
+	if restored.manifestUUID != v1.manifestUUID || restoredMan.ManifestUUID != v1.manifestUUID {
+		t.Fatalf("restored current root must reference v1's exact manifest identity")
+	}
+	_, body, err := s.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, genRandomBytes(1, 500*1024)) {
+		t.Fatalf("restored object bytes do not match v1's original content")
+	}
+	// The v3 root that restore replaced is itself now archived into
+	// history -- restore creates a new current state, it does not rewind.
+	histAfter := historyFor(t, s, "b", "k")
+	if len(histAfter) != 3 {
+		t.Fatalf("expected 3 archived versions after restore (v1, v2, and the replaced v3), got %d", len(histAfter))
+	}
+}
+
+func TestRestore_AfterCurrentObjectDeletion(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("only version"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteObject("b", "k"); err != nil {
+		t.Fatal(err)
+	}
+	hist := historyFor(t, s, "b", "k")
+	if len(hist) != 1 {
+		t.Fatalf("expected 1 archived version, got %d", len(hist))
+	}
+	if _, _, err := s.RestoreObjectVersion("b", "k", hist[0].versionID); err != nil {
+		t.Fatal(err)
+	}
+	_, body, err := s.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "only version" {
+		t.Fatalf("restored bytes mismatch: got %q", body)
+	}
+}
+
+func TestRestore_InvalidVersionID(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("v1"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("v2"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.RestoreObjectVersion("b", "k", "not-a-real-version-id"); !errors.Is(err, errNoSuchVersion) {
+		t.Fatalf("expected errNoSuchVersion, got %v", err)
+	}
+	// A failed restore must leave the current object completely untouched.
+	_, body, err := s.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "v2" {
+		t.Fatalf("current object must be unaffected by a failed restore, got %q", body)
+	}
+}
+
+func TestRestore_WrongBucketOrKey(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("other"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k1", []byte("k1v1"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k1", []byte("k1v2"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	hist := historyFor(t, s, "b", "k1")
+	if len(hist) != 1 {
+		t.Fatalf("setup: expected 1 archived version")
+	}
+	versionID := hist[0].versionID
+
+	if _, err := s.PutObject("b", "k2", []byte("unrelated"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.RestoreObjectVersion("b", "k2", versionID); !errors.Is(err, errNoSuchVersion) {
+		t.Fatalf("restoring k1's version under k2 must fail with errNoSuchVersion, got %v", err)
+	}
+	if err := s.CreateBucket("otherbucket"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.RestoreObjectVersion("otherbucket", "k1", versionID); !errors.Is(err, errNoSuchVersion) {
+		t.Fatalf("restoring b/k1's version under a different bucket must fail with errNoSuchVersion, got %v", err)
+	}
+}
+
+// TestRestore_CorruptedHistoricalManifest_NoPartialMutation proves the
+// Phase D "failed restore/GC validation must not partially mutate visible
+// state" invariant: if the historical version's manifest file has been
+// corrupted on disk, restore must fail cleanly and the current object must
+// remain exactly what it was before the attempt.
+func TestRestore_CorruptedHistoricalManifest_NoPartialMutation(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	v1, err := s.PutObject("b", "k", []byte("version one"), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("version two"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	hist := historyFor(t, s, "b", "k")
+	if len(hist) != 1 {
+		t.Fatalf("setup: expected 1 archived version")
+	}
+
+	// Corrupt v1's manifest file on disk.
+	manPath := filepath.Join(dir, "manifests", v1.manifestUUID+".json")
+	if err := os.WriteFile(manPath, []byte("{not valid json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := s.RestoreObjectVersion("b", "k", hist[0].versionID); err == nil {
+		t.Fatalf("expected restore to fail against a corrupted historical manifest")
+	}
+	_, body, err := s.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "version two" {
+		t.Fatalf("failed restore must not mutate the current object, got %q", body)
+	}
+}
+
+// TestReachability_CoversAllThreeRootCategories proves computeReachability
+// (section 12a) enumerates current objects, retained historical versions,
+// and active multipart uploads all as live roots, and that their union is
+// what "reachable" means -- nothing from any of the three categories is
+// ever reported as garbage.
+func TestReachability_CoversAllThreeRootCategories(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Current-only.
+	if _, err := s.PutObject("b", "current", []byte("current payload"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Historical-only (overwritten, then the overwriting version deleted
+	// too so nothing about "history" is current).
+	if _, err := s.PutObject("b", "hist", []byte("historical payload"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "hist", []byte("overwrite"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Multipart-only.
+	uploadID, err := s.CreateMultipartUpload("b", "mp", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UploadPart("b", "mp", uploadID, 1, genRandomBytes(4, 6*1024*1024)); err != nil {
+		t.Fatal(err)
+	}
+
+	rr, err := s.computeReachability(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rr.OK() {
+		t.Fatalf("expected a fully healthy live root set, got issues: %+v", rr.Issues)
+	}
+	if rr.CurrentRootCount != 2 { // "current" and the current root of "hist"
+		t.Fatalf("current root count: got %d want 2", rr.CurrentRootCount)
+	}
+	if rr.HistoricalRootCount != 1 {
+		t.Fatalf("historical root count: got %d want 1", rr.HistoricalRootCount)
+	}
+	if rr.MultipartRootCount != 1 {
+		t.Fatalf("multipart root count: got %d want 1", rr.MultipartRootCount)
+	}
+	if len(rr.ReferencedChunks) == 0 {
+		t.Fatalf("expected at least some referenced chunks")
+	}
+}
+
+// TestReachability_DetectsCorruptionAmongLiveRoots proves Phase G: a
+// missing chunk referenced by a LIVE root (current, historical, or
+// multipart) is reported as reachable-but-broken (an issue, OK()==false),
+// never silently reclassified as unreachable garbage.
+func TestReachability_DetectsCorruptionAmongLiveRoots(t *testing.T) {
+	t.Run("current", func(t *testing.T) {
+		dir := t.TempDir()
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if err := s.CreateBucket("b"); err != nil {
+			t.Fatal(err)
+		}
+		entry, err := s.PutObject("b", "k", genRandomBytes(5, 300*1024), "text/plain", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		man, _, err := s.readManifest(entry.manifestUUID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum, _ := decodeHexSHA256(man.Chunks[0].SHA256)
+		if err := os.Remove(s.chunkPath(sum)); err != nil {
+			t.Fatal(err)
+		}
+		rr, err := s.computeReachability(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rr.OK() {
+			t.Fatalf("expected a missing chunk referenced by the current root to be detected")
+		}
+		if rr.Missing == 0 {
+			t.Fatalf("expected a missing-chunk issue, got %+v", rr.Issues)
+		}
+	})
+
+	t.Run("historical", func(t *testing.T) {
+		dir := t.TempDir()
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if err := s.CreateBucket("b"); err != nil {
+			t.Fatal(err)
+		}
+		v1, err := s.PutObject("b", "k", genRandomBytes(6, 300*1024), "text/plain", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.PutObject("b", "k", []byte("v2"), "text/plain", nil); err != nil {
+			t.Fatal(err)
+		}
+		man, _, err := s.readManifest(v1.manifestUUID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum, _ := decodeHexSHA256(man.Chunks[0].SHA256)
+		if err := os.Remove(s.chunkPath(sum)); err != nil {
+			t.Fatal(err)
+		}
+		rr, err := s.computeReachability(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rr.OK() {
+			t.Fatalf("expected a missing chunk referenced only by a historical root to be detected")
+		}
+	})
+
+	t.Run("multipart", func(t *testing.T) {
+		dir := t.TempDir()
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if err := s.CreateBucket("b"); err != nil {
+			t.Fatal(err)
+		}
+		uploadID, err := s.CreateMultipartUpload("b", "mp", "application/octet-stream", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := genRandomBytes(7, 6*1024*1024)
+		if _, err := s.UploadPart("b", "mp", uploadID, 1, body); err != nil {
+			t.Fatal(err)
+		}
+		pieces, err := chunkData(bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(s.chunkPath(pieces[0].sha)); err != nil {
+			t.Fatal(err)
+		}
+		rr, err := s.computeReachability(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rr.OK() {
+			t.Fatalf("expected a missing chunk referenced only by an active multipart part to be detected")
+		}
+	})
+}
+
+// =============================================================================
+// M5-C: safe offline GC
+// =============================================================================
+
+// TestGC_DryRunDeletesNothing proves Phase H's default: dry-run never
+// removes any file, even when there is genuine garbage to report.
+func TestGC_DryRunDeletesNothing(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("keep me"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Manually plant a genuinely unreachable chunk (never referenced by
+	// any root at all).
+	garbage := bytes.Repeat([]byte{0x99}, 5000)
+	if _, err := s.casWrite(garbage); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	before := countChunkFiles(t, dir)
+	res, err := gcCollect(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.LiveSetOK {
+		t.Fatalf("expected a healthy live set, got issues: %+v", res.Issues)
+	}
+	if res.ChunksUnreachable != 1 {
+		t.Fatalf("expected dry-run to report exactly 1 unreachable chunk, got %d", res.ChunksUnreachable)
+	}
+	if res.ReclaimablePayloadBytes != 5000 {
+		t.Fatalf("expected 5000 reclaimable payload bytes, got %d", res.ReclaimablePayloadBytes)
+	}
+	after := countChunkFiles(t, dir)
+	if after != before {
+		t.Fatalf("dry-run must delete nothing: chunk file count before=%d after=%d", before, after)
+	}
+	if res.ChunksDeleted != 0 || res.ManifestsDeleted != 0 || res.BytesDeleted != 0 {
+		t.Fatalf("dry-run result must report zero deletions, got %+v", res)
+	}
+}
+
+// TestGC_AdversarialMatrix_K1toK5 constructs, in one store: a current-only
+// payload (K1), a historical-version-only payload (K2), an
+// active-multipart-only payload (K3), a genuinely unreachable payload (K4),
+// and a payload shared between a current object and a historical version
+// (K5). It proves apply removes exactly K4 and nothing else.
+func TestGC_AdversarialMatrix_K1toK5(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	k1 := bytes.Repeat([]byte{0x01}, 4096)
+	k2 := bytes.Repeat([]byte{0x02}, 4096)
+	k3 := genRandomBytes(11, 6*1024*1024) // large enough to be a valid multipart part
+	k4 := bytes.Repeat([]byte{0x04}, 4096)
+	k5 := bytes.Repeat([]byte{0x05}, 4096)
+
+	// K1: current-only.
+	putManualObject(t, s, "b", "k1obj", [][]byte{k1})
+	// K2: historical-only -- put then overwrite so k2 is archived, not current.
+	putManualObject(t, s, "b", "k2obj", [][]byte{k2})
+	putManualObject(t, s, "b", "k2obj", [][]byte{[]byte("overwritten")})
+	// K3: active-multipart-only.
+	uploadID, err := s.CreateMultipartUpload("b", "k3upload", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k3Etag, err := s.UploadPart("b", "k3upload", uploadID, 1, k3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// K4: genuinely unreachable -- write directly to CAS, never referenced.
+	if _, err := s.casWrite(k4); err != nil {
+		t.Fatal(err)
+	}
+	// K5: shared -- referenced by both a current object and (via a second
+	// key's history) a historical version.
+	putManualObject(t, s, "b", "k5current", [][]byte{k5})
+	putManualObject(t, s, "b", "k5hist", [][]byte{k5})
+	putManualObject(t, s, "b", "k5hist", [][]byte{[]byte("overwritten too")})
+
+	sumK1 := sha256.Sum256(k1)
+	sumK2 := sha256.Sum256(k2)
+	sumK4 := sha256.Sum256(k4)
+	sumK5 := sha256.Sum256(k5)
+	pathK1 := s.chunkPath(sumK1)
+	pathK2 := s.chunkPath(sumK2)
+	pathK4 := s.chunkPath(sumK4)
+	pathK5 := s.chunkPath(sumK5)
+	s.Close()
+
+	dry, err := gcCollect(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dry.LiveSetOK {
+		t.Fatalf("expected a healthy live set, got issues: %+v", dry.Issues)
+	}
+	if dry.ChunksUnreachable != 1 {
+		t.Fatalf("expected exactly 1 genuinely unreachable chunk (K4), got %d", dry.ChunksUnreachable)
+	}
+
+	applied, err := gcCollect(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.ChunksDeleted != 1 {
+		t.Fatalf("expected exactly 1 chunk deleted (K4), got %d", applied.ChunksDeleted)
+	}
+
+	for name, p := range map[string]string{"K1 (current)": pathK1, "K2 (historical)": pathK2, "K5 (shared)": pathK5} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("%s must survive GC apply, but its chunk file is gone: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(pathK4); !os.IsNotExist(err) {
+		t.Fatalf("K4 (genuinely unreachable) must be deleted by GC apply, got err=%v", err)
+	}
+
+	// Re-open and confirm every surviving object/version is still exactly
+	// intact and readable.
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if _, body, err := s2.GetObject("b", "k1obj"); err != nil || !bytes.Equal(body, k1) {
+		t.Fatalf("K1 object corrupted or unreadable after GC: err=%v", err)
+	}
+	if _, body, err := s2.GetObject("b", "k5current"); err != nil || !bytes.Equal(body, k5) {
+		t.Fatalf("K5 current object corrupted or unreadable after GC: err=%v", err)
+	}
+	// K3: the still-active multipart upload's part must have survived GC
+	// intact enough to complete correctly.
+	if _, _, err := s2.CompleteMultipartUpload("b", "k3upload", uploadID, []completedPart{{PartNumber: 1, ETag: k3Etag}}); err != nil {
+		t.Fatalf("K3 multipart upload must complete correctly after surviving GC: %v", err)
+	}
+	if _, body, err := s2.GetObject("b", "k3upload"); err != nil || !bytes.Equal(body, k3) {
+		t.Fatalf("K3 completed object bytes mismatch after surviving GC: err=%v", err)
+	}
+	verifyRes, err := s2.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verifyRes.OK() {
+		t.Fatalf("deep verify after GC must be clean, got issues: %+v", verifyRes.Issues)
+	}
+}
+
+// TestGC_RefusesOnCorruptLiveRoot_K7 proves Phase J: destructive apply
+// refuses outright when the live root set is not fully valid, while
+// dry-run still reports the problem.
+func TestGC_RefusesOnCorruptLiveRoot_K7(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := s.PutObject("b", "k", genRandomBytes(8, 300*1024), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	man, _, err := s.readManifest(entry.manifestUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, _ := decodeHexSHA256(man.Chunks[0].SHA256)
+	chunkPath := s.chunkPath(sum)
+	if err := os.Remove(chunkPath); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	dry, err := gcCollect(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.LiveSetOK {
+		t.Fatalf("expected dry-run to detect the corrupt live root")
+	}
+	if len(dry.Issues) == 0 {
+		t.Fatalf("expected dry-run to report the missing-chunk issue")
+	}
+
+	_, err = gcCollect(dir, true)
+	if !errors.Is(err, errGCUnsafe) {
+		t.Fatalf("expected destructive apply to refuse with errGCUnsafe, got %v", err)
+	}
+}
+
+// TestGC_InterruptedSweep_K6 begins a destructive GC apply against a store
+// with several unreachable chunks, interrupts it partway via the
+// hookBeforeGCDelete test seam, reopens, and confirms: all live data is
+// still valid, remaining garbage is still safe (still reported, not
+// corrupted), and re-running GC finishes the cleanup.
+func TestGC_InterruptedSweep_K6(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	liveBody := []byte("this object must survive")
+	if _, err := s.PutObject("b", "k", liveBody, "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	const numGarbage = 5
+	for i := 0; i < numGarbage; i++ {
+		garbage := bytes.Repeat([]byte{byte(0xE0 + i)}, 3000+i)
+		if _, err := s.casWrite(garbage); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+
+	// Interrupt after the 2nd deletion via panic+recover (same
+	// simulated-crash pattern every other crash test in this file uses),
+	// run outside the test goroutine's normal flow via a direct call.
+	calls := 0
+	old := testHook
+	testHook = func(point string) {
+		if point != hookBeforeGCDelete {
+			return
+		}
+		calls++
+		if calls == 3 {
+			panic(simulatedCrash{point: point})
+		}
+	}
+	func() {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatalf("expected the GC sweep to be interrupted by the simulated crash")
+			}
+			if _, ok := r.(simulatedCrash); !ok {
+				panic(r)
+			}
+		}()
+		_, _ = gcCollect(dir, true)
+	}()
+	testHook = old
+
+	// Live object must still be perfectly intact.
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, body, err := s2.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, liveBody) {
+		t.Fatalf("live object corrupted by an interrupted GC sweep: got %q", body)
+	}
+	verifyRes, err := s2.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verifyRes.OK() {
+		t.Fatalf("live data must remain fully valid after an interrupted GC sweep, got issues: %+v", verifyRes.Issues)
+	}
+	s2.Close()
+
+	// Some garbage should remain (fewer than 5, since 2 were deleted
+	// before the simulated interruption), still safely reported.
+	mid, err := gcCollect(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mid.ChunksUnreachable == 0 {
+		t.Fatalf("expected some garbage to remain after an interrupted sweep")
+	}
+	if mid.ChunksUnreachable >= numGarbage {
+		t.Fatalf("expected the interrupted sweep to have made partial progress, got %d of %d still unreachable", mid.ChunksUnreachable, numGarbage)
+	}
+
+	// Re-running GC to completion must finish the cleanup with no errors.
+	final, err := gcCollect(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.ChunksDeleted != mid.ChunksUnreachable {
+		t.Fatalf("expected the re-run to delete every remaining unreachable chunk, deleted=%d want=%d", final.ChunksDeleted, mid.ChunksUnreachable)
+	}
+	afterFinal, err := gcCollect(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterFinal.ChunksUnreachable != 0 {
+		t.Fatalf("expected zero unreachable chunks after the completed re-run, got %d", afterFinal.ChunksUnreachable)
+	}
+}
+
+// TestGC_ExclusivityRefusesWhileStoreInUse proves Phase H's offline/
+// exclusive requirement: GC refuses safely (errGCStoreInUse) while another
+// process (simulated here by directly holding the shared lock the server
+// would hold) currently owns the store.
+func TestGC_ExclusivityRefusesWhileStoreInUse(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	serverLock, err := acquireStoreLock(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverLock.release()
+
+	if _, err := gcCollect(dir, false); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("expected gc dry-run to refuse with errGCStoreInUse while the store is in use, got %v", err)
+	}
+	if _, err := gcCollect(dir, true); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("expected gc apply to refuse with errGCStoreInUse while the store is in use, got %v", err)
+	}
+
+	serverLock.release()
+	// Once released, GC must succeed normally.
+	if _, err := gcCollect(dir, false); err != nil {
+		t.Fatalf("expected gc to succeed once the store is no longer in use: %v", err)
+	}
+}
+
+// TestGC_MultipartSurvivesGC_ThenCompletes is Phase M's primary
+// correctness proof: an active multipart upload's already-published parts
+// must survive both a GC dry-run and a destructive apply, across a
+// restart, and the upload must still complete correctly to the exact
+// expected bytes afterward.
+func TestGC_MultipartSurvivesGC_ThenCompletes(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := s.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part1 := genRandomBytes(21, 6*1024*1024)
+	part2 := genRandomBytes(22, 6*1024*1024)
+	etag1, err := s.UploadPart("b", "k", uploadID, 1, part1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	etag2, err := s.UploadPart("b", "k", uploadID, 2, part2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.GetObject("b", "k"); err == nil {
+		t.Fatalf("no current object should exist before completion")
+	}
+	// Also plant genuine garbage so this proves multipart survival
+	// specifically, not merely "GC found nothing to delete".
+	if _, err := s.casWrite(bytes.Repeat([]byte{0xAA}, 4000)); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	if _, err := gcCollect(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := gcCollect(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.ChunksDeleted != 1 {
+		t.Fatalf("expected exactly the 1 planted garbage chunk deleted, got %d", applied.ChunksDeleted)
+	}
+
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	entry, _, err := s2.CompleteMultipartUpload("b", "k", uploadID, []completedPart{
+		{PartNumber: 1, ETag: etag1}, {PartNumber: 2, ETag: etag2},
+	})
+	if err != nil {
+		t.Fatalf("multipart completion must still succeed after GC ran while it was active: %v", err)
+	}
+	_, body, err := s2.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]byte{}, part1...), part2...)
+	if !bytes.Equal(body, want) {
+		t.Fatalf("completed object bytes mismatch after surviving GC mid-upload")
+	}
+	_ = entry
+}
+
+// TestGC_AbortedMultipartBecomesCollectible is Phase M's second half: once
+// an upload is aborted, its formerly-multipart-only chunks are no longer
+// referenced by any live root and become genuinely collectible (unless
+// some other root still shares them).
+func TestGC_AbortedMultipartBecomesCollectible(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := s.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partBody := genRandomBytes(23, 6*1024*1024)
+	if _, err := s.UploadPart("b", "k", uploadID, 1, partBody); err != nil {
+		t.Fatal(err)
+	}
+	pieces, err := chunkData(bytes.NewReader(partBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pieces) == 0 {
+		t.Fatalf("setup: expected at least one CDC chunk")
+	}
+	examplePath := s.chunkPath(pieces[0].sha)
+	if _, err := os.Stat(examplePath); err != nil {
+		t.Fatalf("setup: expected the part's chunk to exist before abort: %v", err)
+	}
+	if err := s.AbortMultipartUpload("b", "k", uploadID); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	dry, err := gcCollect(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.ChunksUnreachable == 0 {
+		t.Fatalf("expected the aborted upload's former chunks to be reported as unreachable")
+	}
+	if _, err := gcCollect(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(examplePath); !os.IsNotExist(err) {
+		t.Fatalf("expected the aborted upload's chunk to be collected, got err=%v", err)
+	}
+}
+
+// TestVersionGC_Interaction proves Phase L: PUT v1 -> v2 -> v3 -> GC ->
+// restore v1 -> exact bytes. All historical content must remain live
+// across a GC pass, with no explicit version-deletion feature in this
+// milestone to reclaim it.
+func TestVersionGC_Interaction(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	v1Body := genRandomBytes(31, 200*1024)
+	if _, err := s.PutObject("b", "k", v1Body, "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", genRandomBytes(32, 200*1024), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", genRandomBytes(33, 200*1024), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	hist := historyFor(t, s, "b", "k")
+	if len(hist) != 2 {
+		t.Fatalf("setup: expected 2 archived versions")
+	}
+	v1VersionID := hist[0].versionID
+	s.Close()
+
+	if _, err := gcCollect(dir, true); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if _, _, err := s2.RestoreObjectVersion("b", "k", v1VersionID); err != nil {
+		t.Fatalf("restoring v1 after GC must still succeed (history is a live GC root): %v", err)
+	}
+	_, body, err := s2.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, v1Body) {
+		t.Fatalf("restored v1 bytes do not match after surviving a GC pass")
+	}
+}
+
+// TestRestore_MissingHistoricalChunk_NoPartialMutation is the same
+// invariant, exercised via a missing (rather than corrupt-manifest) chunk
+// file referenced by the historical manifest.
+func TestRestore_MissingHistoricalChunk_NoPartialMutation(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	v1Body := genRandomBytes(9, 300*1024)
+	if _, err := s.PutObject("b", "k", v1Body, "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("version two"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	hist := historyFor(t, s, "b", "k")
+	if len(hist) != 1 {
+		t.Fatalf("setup: expected 1 archived version")
+	}
+	man, _, err := s.readManifest(hist[0].manifestUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(man.Chunks) == 0 {
+		t.Fatalf("setup: expected at least one chunk")
+	}
+	sum, err := decodeHexSHA256(man.Chunks[0].SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(s.chunkPath(sum)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := s.RestoreObjectVersion("b", "k", hist[0].versionID); err == nil {
+		t.Fatalf("expected restore to fail when a historical chunk is missing")
+	}
+	_, body, err := s.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "version two" {
+		t.Fatalf("failed restore must not mutate the current object, got %q", body)
+	}
+}
+
+// =============================================================================
+// M5-C: storage-efficiency proof (Phase P)
+// =============================================================================
+
+// TestStorageEfficiencyProof_VersionHistoryIsCheap uploads a large v1, then
+// two small edits (v2, v3), and proves numerically that CDC/CAS makes
+// keeping full version history cheap: total logical version bytes vastly
+// exceed physical unique CAS bytes, and restoring v1 adds zero further CAS
+// payload bytes.
+func TestStorageEfficiencyProof_VersionHistoryIsCheap(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	const size = 2 * 1024 * 1024
+	v1 := genRandomBytes(101, size)
+	if _, err := s.PutObject("b", "k", v1, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Small edit: change 64 bytes near the start.
+	v2 := append([]byte{}, v1...)
+	copy(v2[1000:1064], bytes.Repeat([]byte{0xEE}, 64))
+	if _, err := s.PutObject("b", "k", v2, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Another small edit near the end.
+	v3 := append([]byte{}, v2...)
+	copy(v3[size-2000:size-1936], bytes.Repeat([]byte{0xFF}, 64))
+	if _, err := s.PutObject("b", "k", v3, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	hist := historyFor(t, s, "b", "k")
+	if len(hist) != 2 {
+		t.Fatalf("expected 2 archived versions (v1, v2), got %d", len(hist))
+	}
+	totalLogicalVersionBytes := int64(size) * 3 // v1 (history) + v2 (history) + v3 (current)
+
+	rr, err := s.computeReachability(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var uniqueCASBytes int64
+	for _, length := range rr.ChunkLength {
+		uniqueCASBytes += length
+	}
+	if uniqueCASBytes >= totalLogicalVersionBytes {
+		t.Fatalf("expected unique CAS bytes (%d) to be substantially less than total logical version bytes (%d) after two small edits",
+			uniqueCASBytes, totalLogicalVersionBytes)
+	}
+	t.Logf("storage-efficiency proof: total logical version bytes=%d, unique reachable CAS bytes=%d, ratio=%.4f",
+		totalLogicalVersionBytes, uniqueCASBytes, float64(uniqueCASBytes)/float64(totalLogicalVersionBytes))
+
+	chunksBefore := countChunkFiles(t, dir)
+	manifestsBefore := countManifestFiles(t, dir)
+	if _, _, err := s.RestoreObjectVersion("b", "k", hist[0].versionID); err != nil {
+		t.Fatal(err)
+	}
+	chunksAfter := countChunkFiles(t, dir)
+	manifestsAfter := countManifestFiles(t, dir)
+	if chunksAfter != chunksBefore {
+		t.Fatalf("restoring v1 must add zero new CAS chunk files: before=%d after=%d", chunksBefore, chunksAfter)
+	}
+	if manifestsAfter != manifestsBefore {
+		t.Fatalf("restoring v1 must add zero new manifest files: before=%d after=%d", manifestsBefore, manifestsAfter)
+	}
+	_, body, err := s.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, v1) {
+		t.Fatalf("restored v1 bytes do not match the original upload")
+	}
+}
+
+// =============================================================================
+// M5-C: crash/restart tests
+// =============================================================================
+
+func TestCrash_Restart_MultipartOverwritePreviousVersionPreserved(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	v1, err := s.PutObject("b", "k", []byte("original single-put object"), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := s.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partBody := genRandomBytes(41, 6*1024*1024)
+	etag, err := s.UploadPart("b", "k", uploadID, 1, partBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.CompleteMultipartUpload("b", "k", uploadID, []completedPart{{PartNumber: 1, ETag: etag}}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	hist := historyFor(t, s2, "b", "k")
+	if len(hist) != 1 || hist[0].manifestUUID != v1.manifestUUID {
+		t.Fatalf("expected the pre-multipart version to survive restart in history, got %+v", hist)
+	}
+	if _, _, err := s2.RestoreObjectVersion("b", "k", hist[0].versionID); err != nil {
+		t.Fatal(err)
+	}
+	_, body, err := s2.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "original single-put object" {
+		t.Fatalf("restored pre-multipart version mismatch: got %q", body)
+	}
+}
+
+func TestCrash_JournalReplay_HistoryRecordTypesDeterministic(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := s.PutObject("b", "k", []byte(fmt.Sprintf("version %d", i)), "text/plain", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.DeleteObject("b", "k"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	// Replay the journal twice independently (two fresh OpenStore calls)
+	// and confirm both produce byte-identical history/current state --
+	// deterministic replay of the new record types 9/10/11.
+	s1, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h1 := historyFor(t, s1, "b", "k")
+	s1.Close()
+
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	h2 := historyFor(t, s2, "b", "k")
+
+	if len(h1) != len(h2) || len(h1) != 5 {
+		t.Fatalf("expected 5 archived versions on both replays, got %d and %d", len(h1), len(h2))
+	}
+	for i := range h1 {
+		if h1[i].versionID != h2[i].versionID || h1[i].manifestUUID != h2[i].manifestUUID || h1[i].seq != h2[i].seq {
+			t.Fatalf("replay %d mismatch at index %d: %+v vs %+v", i, i, h1[i], h2[i])
+		}
+	}
+}
+
+// TestJournal_GenuinelyUnknownRecordTypeStillFailsClosed proves the
+// general "old binary fails closed on an unknown persistent record" fabric
+// still functions correctly after adding record types 9-11: a record type
+// this build genuinely does not recognize (as an old M1-M5-B binary would
+// see types 9-11) is rejected by replay, never silently ignored or
+// misinterpreted.
+func TestJournal_GenuinelyUnknownRecordTypeStillFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	journalPath := filepath.Join(dir, "journal", "visibility.log")
+	f, err := os.OpenFile(journalPath, os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hand-craft one well-formed frame of a record type (200) that no
+	// version of this codebase has ever defined.
+	payload := []byte(`{"bogus":true}`)
+	header := make([]byte, journalHeaderSize)
+	copy(header[0:4], journalMagic)
+	binary.BigEndian.PutUint16(header[4:6], journalFrameVersion)
+	header[6] = 200
+	header[7] = 0
+	binary.BigEndian.PutUint64(header[8:16], 2) // next sequence after CreateBucket's seq 1
+	binary.BigEndian.PutUint32(header[16:20], uint32(len(payload)))
+	frame := append(append([]byte{}, header...), payload...)
+	crc := crc32.Checksum(frame, castagnoliTable)
+	crcBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(crcBytes, crc)
+	frame = append(frame, crcBytes...)
+	if _, err := f.WriteAt(frame, info.Size()); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	if _, err := OpenStore(dir); err == nil {
+		t.Fatalf("expected OpenStore to fail closed on a genuinely unknown record type")
+	}
+}
+
+// =============================================================================
+// M5-C: concurrency tests
+// =============================================================================
+
+func TestConcurrency_TwoOverwritesSameKey_HistoryDeterministic(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("base"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			_, _ = s.PutObject("b", "k", []byte(fmt.Sprintf("concurrent-%d", i)), "text/plain", nil)
+		}()
+	}
+	wg.Wait()
+
+	// Deterministic outcome: exactly one of the two concurrent writes is
+	// current, and history has exactly 2 entries (the base PUT and
+	// whichever of the two writes lost the race) -- never a torn or
+	// duplicated view, and never both losing the race.
+	hist := historyFor(t, s, "b", "k")
+	if len(hist) != 2 {
+		t.Fatalf("expected exactly 2 archived versions after 2 concurrent overwrites of a 1-version key, got %d", len(hist))
+	}
+	_, body, err := s.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "concurrent-0" && string(body) != "concurrent-1" {
+		t.Fatalf("expected the current object to be exactly one of the two concurrent writes, got %q", body)
+	}
+}
+
+func TestConcurrency_RestoreRacingDelete(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("v1"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("v2"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	hist := historyFor(t, s, "b", "k")
+	v1ID := hist[0].versionID
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _, _ = s.RestoreObjectVersion("b", "k", v1ID)
+	}()
+	go func() {
+		defer wg.Done()
+		_ = s.DeleteObject("b", "k")
+	}()
+	wg.Wait()
+
+	// Race-free, deterministic result: the store must not panic or
+	// deadlock, and afterward the current object is either fully absent
+	// (delete won, ran after restore or restore ran and then delete
+	// removed it) or fully present as v1 (restore won and ran last) --
+	// never a torn state, and Verify must be clean either way.
+	verifyRes, err := s.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verifyRes.OK() {
+		t.Fatalf("expected a clean deep verify after restore/delete race, got issues: %+v", verifyRes.Issues)
+	}
+	_, body, err := s.GetObject("b", "k")
+	if err != nil {
+		if !errors.Is(err, errNoSuchKey) {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	} else if string(body) != "v1" {
+		t.Fatalf("if the object is present after the race it must be exactly v1, got %q", body)
+	}
+}
+
+func TestConcurrency_RestoreRacingPut(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("v1"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("v2"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	hist := historyFor(t, s, "b", "k")
+	v1ID := hist[0].versionID
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _, _ = s.RestoreObjectVersion("b", "k", v1ID)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = s.PutObject("b", "k", []byte("racing put"), "text/plain", nil)
+	}()
+	wg.Wait()
+
+	_, body, err := s.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "v1" && string(body) != "racing put" {
+		t.Fatalf("expected the current object to be exactly one of the two racing writers' results, got %q", body)
+	}
+	verifyRes, err := s.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verifyRes.OK() {
+		t.Fatalf("expected a clean deep verify after restore/put race, got issues: %+v", verifyRes.Issues)
+	}
+}
+
+func TestConcurrency_RestoreRacingCopyObject(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "src", []byte("copy source"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("v1"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("v2"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	hist := historyFor(t, s, "b", "k")
+	v1ID := hist[0].versionID
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _, _ = s.RestoreObjectVersion("b", "k", v1ID)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _, _ = s.CopyObject(CopyObjectRequest{SrcBucket: "b", SrcKey: "src", DstBucket: "b", DstKey: "k", Directive: metadataDirectiveCopy})
+	}()
+	wg.Wait()
+
+	_, body, err := s.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "v1" && string(body) != "copy source" {
+		t.Fatalf("expected the current object to be exactly one of the two racing writers' results, got %q", body)
+	}
+	verifyRes, err := s.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verifyRes.OK() {
+		t.Fatalf("expected a clean deep verify after restore/copy race, got issues: %+v", verifyRes.Issues)
+	}
+}
+
+// =============================================================================
+// M5-C: CLI smoke test (versions / restore / gc / doctor)
+// =============================================================================
+
+// buildZeros3Binary builds the zeros3 binary once for CLI-level tests and
+// returns its path.
+func buildZeros3Binary(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "zeros3")
+	cmd := exec.Command("go", "build", "-o", binPath, ".")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to build zeros3 binary: %v\n%s", err, out)
+	}
+	return binPath
+}
+
+func runZeros3CLI(t *testing.T, bin string, args ...string) (stdout, stderr string, exitCode int) {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	exitCode = 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		} else {
+			t.Fatalf("failed to run zeros3 %v: %v", args, err)
+		}
+	}
+	return outBuf.String(), errBuf.String(), exitCode
+}
+
+// TestCLI_VersionsRestoreGCDoctor_Smoke exercises the actual CLI surface
+// (Phase C/D/H/N) end to end against a real built binary: `versions`,
+// `restore`, `gc` (dry-run and apply), and `doctor`.
+func TestCLI_VersionsRestoreGCDoctor_Smoke(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+
+	s, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("version one"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "k", []byte("version two, current"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Genuine garbage for gc to find.
+	if _, err := s.casWrite(bytes.Repeat([]byte{0x77}, 4321)); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	// `zeros3 versions -json`
+	out, stderr, code := runZeros3CLI(t, bin, "versions", "-store", storeDir, "-bucket", "b", "-key", "k", "-json")
+	if code != 0 {
+		t.Fatalf("versions CLI failed (code %d): %s", code, stderr)
+	}
+	var rows []versionRow
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatalf("versions -json did not parse: %v\noutput: %s", err, out)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 version rows (1 current + 1 historical), got %d: %+v", len(rows), rows)
+	}
+	var currentRow, histRow versionRow
+	for _, r := range rows {
+		switch r.Status {
+		case "current":
+			currentRow = r
+		case "historical":
+			histRow = r
+		}
+	}
+	if currentRow.VersionID == "" || histRow.VersionID == "" {
+		t.Fatalf("expected both a current and a historical row, got %+v", rows)
+	}
+	if currentRow.Size != int64(len("version two, current")) {
+		t.Fatalf("current row size mismatch: got %d", currentRow.Size)
+	}
+
+	// Also confirm the human-readable form runs without error.
+	if _, stderr, code := runZeros3CLI(t, bin, "versions", "-store", storeDir, "-bucket", "b", "-key", "k"); code != 0 {
+		t.Fatalf("versions (human) CLI failed: %s", stderr)
+	}
+
+	// `zeros3 restore`
+	_, stderr, code = runZeros3CLI(t, bin, "restore", "-store", storeDir, "-bucket", "b", "-key", "k", "-version", histRow.VersionID)
+	if code != 0 {
+		t.Fatalf("restore CLI failed (code %d): %s", code, stderr)
+	}
+	s2, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, body, err := s2.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "version one" {
+		t.Fatalf("expected restore CLI to make v1 current, got %q", body)
+	}
+	s2.Close()
+
+	// `zeros3 restore` with an invalid version ID must fail with a nonzero
+	// exit code and change nothing.
+	if _, _, code := runZeros3CLI(t, bin, "restore", "-store", storeDir, "-bucket", "b", "-key", "k", "-version", "bogus"); code == 0 {
+		t.Fatalf("expected restore CLI to fail for an invalid version ID")
+	}
+
+	// `zeros3 gc -json` (dry-run) must report the planted garbage and
+	// delete nothing.
+	out, stderr, code = runZeros3CLI(t, bin, "gc", "-store", storeDir, "-json")
+	if code != 0 {
+		t.Fatalf("gc dry-run CLI failed (code %d): %s", code, stderr)
+	}
+	var gcRes GCResult
+	if err := json.Unmarshal([]byte(out), &gcRes); err != nil {
+		t.Fatalf("gc -json did not parse: %v\noutput: %s", err, out)
+	}
+	if gcRes.Applied {
+		t.Fatalf("expected dry-run gcRes.Applied=false")
+	}
+	if gcRes.ChunksUnreachable == 0 {
+		t.Fatalf("expected gc dry-run to report at least the planted garbage chunk")
+	}
+	if gcRes.ChunksDeleted != 0 {
+		t.Fatalf("expected gc dry-run to delete nothing, got ChunksDeleted=%d", gcRes.ChunksDeleted)
+	}
+
+	// `zeros3 gc -apply -json`
+	out, stderr, code = runZeros3CLI(t, bin, "gc", "-store", storeDir, "-apply", "-json")
+	if code != 0 {
+		t.Fatalf("gc apply CLI failed (code %d): %s", code, stderr)
+	}
+	var gcApplied GCResult
+	if err := json.Unmarshal([]byte(out), &gcApplied); err != nil {
+		t.Fatalf("gc -apply -json did not parse: %v\noutput: %s", err, out)
+	}
+	if !gcApplied.Applied || gcApplied.ChunksDeleted == 0 {
+		t.Fatalf("expected gc apply to actually delete the planted garbage, got %+v", gcApplied)
+	}
+
+	// `zeros3 doctor -json` -- must report OK and reflect the surviving
+	// object correctly, and must not have mutated the store any further.
+	out, stderr, code = runZeros3CLI(t, bin, "doctor", "-store", storeDir, "-deep", "-json")
+	if code != 0 {
+		t.Fatalf("doctor CLI failed (code %d): %s", code, stderr)
+	}
+	var doctorRes VerifyResult
+	if err := json.Unmarshal([]byte(out), &doctorRes); err != nil {
+		t.Fatalf("doctor -json did not parse: %v\noutput: %s", err, out)
+	}
+	if !doctorRes.OK() {
+		t.Fatalf("expected doctor to report OK after gc apply, got %+v", doctorRes)
+	}
+	if doctorRes.CurrentRootCount != 1 {
+		t.Fatalf("expected doctor to report 1 current root, got %d", doctorRes.CurrentRootCount)
+	}
+
+	s3, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s3.Close()
+	_, body, err = s3.GetObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "version one" {
+		t.Fatalf("expected the restored object to remain v1's exact bytes after doctor/gc, got %q", body)
 	}
 }

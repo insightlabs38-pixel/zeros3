@@ -49,6 +49,29 @@ parity.
 full content + whole-object digest re-hashing) round out the CLI; they are
 ZeroS3-only tooling, not part of the S3 wire protocol.
 
+**M5-C — internal object version history, restore, and safe GC** (ZeroS3-
+only CLI/library surface, not part of the S3 wire protocol and not the AWS
+S3 Versioning API — see the "Full AWS versioning" non-goal below): every
+overwrite (ordinary `PutObject`, `CopyObject`, or a completed multipart
+upload) and every `DeleteObject` of an existing object archives the state
+it replaces into per-key history, retained indefinitely, with a stable
+UUIDv7 version identity per archived state. `zeros3 versions -bucket B
+-key K [-json]` lists a key's current root plus its history, oldest-first.
+`zeros3 restore -bucket B -key K -version ID` makes that version the new
+current object state, zero-copy (reuses the exact existing manifest) and
+non-destructive (creates a new current state; never rewinds or removes
+existing history). `zeros3 gc -store DIR [-apply] [-json]` is dry-run by
+default; `-apply` requires exclusive ownership of the store (a
+`syscall.Flock`-based lock `zeros3 serve` also holds, shared, for its
+whole run) and refuses outright if the authoritative live root set
+(current objects + retained historical versions + active multipart
+uploads, one shared reachability scan — see `STORAGE_MODEL.md`) is not
+fully valid. `zeros3 doctor -store DIR [-deep] [-json]` is a read-only
+lifecycle diagnostic built directly on the `verify` engine, reporting live
+root counts by category alongside the existing integrity/reclaimable
+accounting. Ordinary S3 clients never see any of this: `ListObjectsV2`
+only ever lists current objects, exactly as before this pass.
+
 ## Deliberately unsupported (explicit non-goals)
 
 These are not planned for this project, at any tier:
@@ -61,7 +84,12 @@ These are not planned for this project, at any tier:
 - `STREAMING-UNSIGNED-PAYLOAD-TRAILER` (unsigned streaming request bodies
   with a trailer-based checksum) — recognized and rejected cleanly
   (`NotImplemented`), never implemented.
-- Full AWS versioning (delete markers, version-scoped GET/HEAD/DELETE).
+- Full AWS versioning: the AWS S3 Versioning API specifically —
+  `versionId=` query parameters, bucket-versioning configuration state,
+  delete markers, per-version GET/HEAD/DELETE, S3 version-listing APIs.
+  ZeroS3's own internal, non-AWS-API object version history/restore
+  (`zeros3 versions`/`restore`, M5-C, see "Implemented and tested" above)
+  is a different mechanism and is implemented.
 - Multi-writer/distributed/HA operation (single writer process per store).
 - FUSE, dashboards, Kubernetes/Lambda integration.
 
@@ -70,8 +98,6 @@ These are not planned for this project, at any tier:
 Planned in the project's tiering (`MILESTONES.md`/`RUBRIC_STRATEGY.md`) but
 not begun in this pass, and not claimed as shipped:
 
-- Internal object versions/restore — T2.
-- Garbage collection of unreachable chunks/manifests — T2.
 - `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` (`aws-chunked` streaming
   request bodies with per-chunk SigV4 signatures) — eligible but
   conditional; not implemented, since neither the pinned AWS SDK for Go v2
@@ -79,7 +105,15 @@ not begun in this pass, and not claimed as shipped:
   (see `STATUS.md`'s M5-B "Phase K"). `STREAMING-UNSIGNED-PAYLOAD-TRAILER`
   and SigV4A/ECDSA streaming payload modes are permanently out of scope
   (see "Deliberately unsupported" below), not merely deferred.
-- Benchmark/doctor CLI subcommands — T3.
+- `ListParts`/`ListMultipartUploads` pagination (`max-parts`/
+  `part-number-marker`, `max-uploads`/`key-marker`/`upload-id-marker`) —
+  deferred at the start of M5-C to keep that pass's budget on versions/GC;
+  candidate for the start of M6 compatibility cleanup.
+- Online/background/scheduled GC, automatic version expiry/retention
+  policies, and a repair/undelete engine beyond explicit `restore` —
+  internal versions/restore and offline exclusive GC shipped in M5-C;
+  these specific extensions remain out of scope by design, not merely
+  unstarted.
 - Delta/directory sync — T4.
 
 ## Compatibility deviations (differs from real AWS S3)

@@ -114,12 +114,45 @@ stats` (human/`-json`) and `zeros3 verify` (structural, and `-deep` for
 full content re-hashing plus a whole-object SHA-256 check) round out the
 CLI.
 
+**Internal object version history, restore, and safe GC (M5-C, not the AWS
+S3 Versioning API — no `versionId=`, no bucket-versioning state, no delete
+markers).** Every overwrite (ordinary PUT, `CopyObject`, or a completed
+multipart upload) and every `DELETE` of an existing object archives the
+object state it replaces into per-key history, retained indefinitely and
+transparent to ordinary S3 clients (`ListObjectsV2` never surfaces a
+historical version as a duplicate key). `zeros3 versions -bucket B -key K
+[-json]` lists a key's current root plus every retained historical
+version, oldest-first; `zeros3 restore -bucket B -key K -version ID` makes
+that version the new current object state — zero-copy (it reuses the
+exact existing manifest, never rebuilding one or re-writing a chunk) and
+non-destructive (older history is never rewound or removed). One
+authoritative reachability scan unifies current objects, retained
+historical versions, and active multipart uploads into the single live-
+root/live-chunk model that `stats`, `verify`, and `zeros3 gc` all consume,
+so a chunk is never misclassified as garbage merely because it is only
+history- or multipart-referenced. `zeros3 gc -store DIR [-apply] [-json]`
+is dry-run by default (reports scanned/reachable/unreachable/reclaimable
+counts, deletes nothing); `-apply` is required to actually delete
+anything, requires exclusive ownership of the store (refuses safely while
+`zeros3 serve` is running against the same store), and refuses outright if
+the live root set is not fully valid (a missing/corrupt manifest or chunk
+referenced by any live root) rather than risk treating broken live data as
+garbage. `zeros3 doctor -store DIR [-deep] [-json]` is a read-only
+lifecycle diagnostic (journal/manifest/chunk integrity, live root counts
+by category, reclaimable bytes) built directly on the same `verify`
+engine.
+
 Not implemented (see `S3_COMPAT.md`/`STATUS.md` for the full deviation
-list): versioning, object-lock/ACL/policy/IAM, conditional-copy headers,
+list): the AWS S3 Versioning API (`versionId=` query semantics,
+bucket-versioning configuration, delete markers, per-version DELETE —
+ZeroS3's own internal version history above is a different, non-AWS-API
+mechanism), object-lock/ACL/policy/IAM, conditional-copy headers,
 self-copy rejection, `X-Amz-Security-Token`, `STREAMING-AWS4-HMAC-SHA256-
 PAYLOAD[-TRAILER]` (conditional — not yet required by any real client
-exercised), and `aws-chunked`'s unsigned/SigV4A streaming trailer modes
-(permanently out of scope).
+exercised), `aws-chunked`'s unsigned/SigV4A streaming trailer modes
+(permanently out of scope), `ListParts`/`ListMultipartUploads` pagination
+(deferred; see `STATUS.md`), and online/background/scheduled GC (offline
+and exclusive-only, by design, this milestone).
 
 ## Architecture
 

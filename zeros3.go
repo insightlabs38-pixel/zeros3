@@ -40,6 +40,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"uuid"
 )
@@ -93,6 +94,23 @@ const (
 	recordTypeUploadPart              = byte(6)
 	recordTypeAbortMultipartUpload    = byte(7)
 	recordTypeCompleteMultipartUpload = byte(8)
+
+	// recordTypePutObjectRootV2, recordTypeCompleteMultipartUploadV2, and
+	// recordTypeDeleteObjectRootV2 (M5-C) are the history-aware successors
+	// to record types 2, 8, and 3 respectively: every live commit/delete
+	// path uses these going forward, unconditionally (never branching by
+	// "does history apply this time", exactly like record type 8 already
+	// unconditionally replaced ordinary PutObjectRoot for every multipart
+	// completion). The old types remain forever in this switch/replay ONLY
+	// so a pre-M5-C journal still replays; live code never appends type
+	// 2/3/8 again after this pass. Each V2 payload additionally carries an
+	// optional (2/8) or mandatory (3) archived-version record, so
+	// publishing/retiring the new root and archiving the prior one share
+	// the exact same journal write+sync durability boundary -- there is no
+	// window where one happened and not the other. See section 7c.
+	recordTypePutObjectRootV2           = byte(9)
+	recordTypeCompleteMultipartUploadV2 = byte(10)
+	recordTypeDeleteObjectRootV2        = byte(11)
 
 	maxRequestBodySize = 256 * 1024 * 1024
 
@@ -176,6 +194,22 @@ var (
 	errPartsNotAscending       = errors.New("completion request parts are not in strictly ascending PartNumber order")
 	errInvalidPart             = errors.New("invalid part")
 	errEntityTooSmall          = errors.New("part is smaller than the minimum multipart part size")
+
+	// errNoSuchVersion (section 7c) covers a version ID that does not
+	// exist at all, and one that exists but belongs to a different
+	// bucket/key -- deliberately not distinguished, for the same
+	// namespace-leak reason errNoSuchUpload does not distinguish those two
+	// cases for multipart upload IDs.
+	errNoSuchVersion = errors.New("no such version")
+
+	// errGCStoreInUse (section 16b) is returned when GC cannot acquire
+	// exclusive ownership of the store because another process (typically
+	// "zeros3 serve") currently holds it open.
+	errGCStoreInUse = errors.New("store is currently in use by another process")
+	// errGCUnsafe (section 16b) is returned by a destructive GC run when
+	// the authoritative live root set is not fully valid: proceeding would
+	// risk treating reachable-but-corrupt data as garbage.
+	errGCUnsafe = errors.New("authoritative live root set is corrupt or incomplete; refusing to delete anything")
 )
 
 // decodeHexSHA256 parses a lowercase-hex SHA-256 digest as stored in
@@ -266,6 +300,12 @@ const (
 	hookAfterJournalSync            = "after-journal-sync"
 	hookAfterApplyBeforeResponse    = "after-apply-before-response"
 	hookAfterAck                    = "after-ack"
+	// hookBeforeGCDelete (M5-C) fires immediately before destructive GC
+	// unlinks one unreachable file (chunk or manifest), letting tests
+	// simulate an interruption partway through a sweep (Phase K6) without
+	// any timing-dependent kill(1) trick -- the same pattern every other
+	// crash test in this file already uses.
+	hookBeforeGCDelete = "before-gc-delete"
 )
 
 // simulatedCrash is panicked by test hooks to unwind out of the commit
@@ -736,6 +776,81 @@ type journalCompleteMultipartPayload struct {
 	VersionID      string `json:"version_id"`
 }
 
+// historyReasonOverwritten and historyReasonDeleted are the two ways a
+// current root can be archived into history: replaced by a newer root
+// (ordinary PUT overwrite, CopyObject overwrite, completed multipart
+// overwrite, or restore), or removed outright by DELETE. See section 7c.
+const (
+	historyReasonOverwritten = "overwritten"
+	historyReasonDeleted     = "deleted"
+)
+
+// journalArchivedVersionPayload is the immutable record of one object
+// state being archived into internal version history, embedded in the V2
+// journal payloads below. VersionID is a freshly minted UUIDv7 (the same
+// primitive newUUIDv7 already uses for manifest/store identity, not a
+// second ID scheme) generated once at commit time and persisted here, so
+// the same content archived twice (e.g. restore-then-overwrite of
+// identical bytes) still gets two distinct, independently addressable
+// history rows rather than colliding on one shared manifest UUID.
+type journalArchivedVersionPayload struct {
+	VersionID      string    `json:"version_id"`
+	ManifestUUID   string    `json:"manifest_uuid"`
+	ManifestSHA256 string    `json:"manifest_sha256"`
+	Size           int64     `json:"size"`
+	ETag           string    `json:"etag"`
+	ContentType    string    `json:"content_type"`
+	ArchivedAt     time.Time `json:"archived_at"`
+	Reason         string    `json:"reason"` // historyReasonOverwritten | historyReasonDeleted
+}
+
+// journalPutPayloadV2 is the record-type-9 payload: journalPutPayload's
+// fields plus an optional Previous, populated whenever this commit
+// replaces an existing current root (ordinary PUT overwrite, CopyObject
+// overwrite, or restore over an existing object) so that publishing the
+// new root and archiving the old one commit atomically in one frame.
+// Previous is nil for a first-time PUT to a key that has never had a
+// current root.
+type journalPutPayloadV2 struct {
+	Bucket         string                         `json:"bucket"`
+	Key            string                         `json:"key"`
+	ManifestUUID   string                         `json:"manifest_uuid"`
+	ManifestSHA256 string                         `json:"manifest_sha256"`
+	Size           int64                          `json:"size"`
+	ETag           string                         `json:"etag"`
+	ContentType    string                         `json:"content_type"`
+	VersionID      string                         `json:"version_id"`
+	Previous       *journalArchivedVersionPayload `json:"previous,omitempty"`
+}
+
+// journalCompleteMultipartPayloadV2 is the record-type-10 payload:
+// journalCompleteMultipartPayload's fields plus the same optional Previous
+// journalPutPayloadV2 carries, for a multipart completion that overwrites
+// an existing current object.
+type journalCompleteMultipartPayloadV2 struct {
+	UploadID       string                         `json:"upload_id"`
+	Bucket         string                         `json:"bucket"`
+	Key            string                         `json:"key"`
+	ManifestUUID   string                         `json:"manifest_uuid"`
+	ManifestSHA256 string                         `json:"manifest_sha256"`
+	Size           int64                          `json:"size"`
+	ETag           string                         `json:"etag"`
+	ContentType    string                         `json:"content_type"`
+	VersionID      string                         `json:"version_id"`
+	Previous       *journalArchivedVersionPayload `json:"previous,omitempty"`
+}
+
+// journalDeleteObjectPayloadV2 is the record-type-11 payload:
+// journalDeleteObjectPayload's fields plus Archived, the deleted root's
+// state -- always present, since DeleteObject only ever appends a record
+// (of any type) for a key that currently has a visible root (deleting an
+// absent key remains a no-op that appends nothing at all).
+type journalDeleteObjectPayloadV2 struct {
+	Bucket   string                        `json:"bucket"`
+	Key      string                        `json:"key"`
+	Archived journalArchivedVersionPayload `json:"archived"`
+}
+
 // Journal owns the on-disk visibility.log file and the strictly
 // sequential append cursor into it.
 type Journal struct {
@@ -857,7 +972,8 @@ func replayJournal(f *os.File) (validEnd int64, lastSeq uint64, records []journa
 		recType := header[6]
 		switch recType {
 		case recordTypeCreateBucket, recordTypePutObjectRoot, recordTypeDeleteObjectRoot, recordTypeDeleteBucket,
-			recordTypeCreateMultipartUpload, recordTypeUploadPart, recordTypeAbortMultipartUpload, recordTypeCompleteMultipartUpload:
+			recordTypeCreateMultipartUpload, recordTypeUploadPart, recordTypeAbortMultipartUpload, recordTypeCompleteMultipartUpload,
+			recordTypePutObjectRootV2, recordTypeCompleteMultipartUploadV2, recordTypeDeleteObjectRootV2:
 			// known record type
 		default:
 			return 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: unknown record type %d", offset, recType)
@@ -947,6 +1063,25 @@ type bucketEntry struct {
 	objects   map[string]*objectEntry
 }
 
+// historyVersionEntry is one retained, immutable historical object state
+// (section 7c). Like objectEntry, it is never mutated in place after
+// construction -- archiving always appends a fresh pointer -- so sharing
+// these pointers out of s.mu is safe. versionID is a UUIDv7 minted once,
+// at archive time, distinct from manifestUUID (see
+// journalArchivedVersionPayload), so two history rows can never collide
+// even when they happen to reference byte-identical manifest content.
+type historyVersionEntry struct {
+	versionID      string
+	manifestUUID   string
+	manifestSHA256 [32]byte
+	size           int64
+	etag           string
+	contentType    string
+	archivedAt     time.Time
+	reason         string // historyReasonOverwritten | historyReasonDeleted
+	seq            uint64 // journal seq of the archiving record; stable total order
+}
+
 // multipartPart is one durably-uploaded part of an in-progress multipart
 // upload. Like objectEntry, it is never mutated in place after
 // construction -- UploadPart always replaces the map entry for its part
@@ -988,6 +1123,19 @@ type Store struct {
 	// domain avoids a whole second class of cross-namespace race to reason
 	// about (e.g. a bucket delete racing an upload's completion).
 	uploads map[string]*multipartUpload
+
+	// history holds every retained internal historical version, keyed
+	// first by bucket then by key, ordered oldest-first (append order ==
+	// archival order == journal seq order). Deliberately keyed by name
+	// (never a filesystem path -- same policy as buckets/objects) and
+	// guarded by the same s.mu: history is archived in the exact same
+	// locked critical section, and often the exact same journal frame, as
+	// the commit or delete that produces it (section 7c). A key's history
+	// slice outlives the key's current root (a DeleteBucket that removes
+	// an emptied bucket leaves that bucket's former keys' history rows in
+	// place, addressable by zeros3 versions/restore, until this milestone
+	// -- deliberately -- never expires or deletes them).
+	history map[string]map[string][]*historyVersionEntry
 }
 
 // OpenStore opens the store rooted at root, initializing it (writing
@@ -1020,6 +1168,7 @@ func OpenStore(root string) (*Store, error) {
 		journal: j,
 		buckets: map[string]*bucketEntry{},
 		uploads: map[string]*multipartUpload{},
+		history: map[string]map[string][]*historyVersionEntry{},
 	}
 	for _, rec := range records {
 		if err := s.applyRecord(rec); err != nil {
@@ -1183,9 +1332,105 @@ func (s *Store) applyRecord(rec journalRecord) error {
 			seq:            rec.seq,
 		}
 		delete(s.uploads, p.UploadID)
+	case recordTypePutObjectRootV2:
+		var p journalPutPayloadV2
+		if err := json.Unmarshal(rec.payload, &p); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		b, ok := s.buckets[p.Bucket]
+		if !ok {
+			return fmt.Errorf("seq %d: put-object-root-v2 for unknown bucket %q", rec.seq, p.Bucket)
+		}
+		sum, err := decodeHexSHA256(p.ManifestSHA256)
+		if err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		if p.Previous != nil {
+			if err := s.archiveVersionLocked(p.Bucket, p.Key, rec.seq, *p.Previous); err != nil {
+				return fmt.Errorf("seq %d: %w", rec.seq, err)
+			}
+		}
+		b.objects[p.Key] = &objectEntry{
+			manifestUUID:   p.ManifestUUID,
+			manifestSHA256: sum,
+			size:           p.Size,
+			etag:           p.ETag,
+			contentType:    p.ContentType,
+			seq:            rec.seq,
+		}
+	case recordTypeCompleteMultipartUploadV2:
+		var p journalCompleteMultipartPayloadV2
+		if err := json.Unmarshal(rec.payload, &p); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		b, ok := s.buckets[p.Bucket]
+		if !ok {
+			return fmt.Errorf("seq %d: complete-multipart-upload-v2 for unknown bucket %q", rec.seq, p.Bucket)
+		}
+		if _, ok := s.uploads[p.UploadID]; !ok {
+			return fmt.Errorf("seq %d: complete-multipart-upload-v2 for unknown upload %q", rec.seq, p.UploadID)
+		}
+		sum, err := decodeHexSHA256(p.ManifestSHA256)
+		if err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		if p.Previous != nil {
+			if err := s.archiveVersionLocked(p.Bucket, p.Key, rec.seq, *p.Previous); err != nil {
+				return fmt.Errorf("seq %d: %w", rec.seq, err)
+			}
+		}
+		b.objects[p.Key] = &objectEntry{
+			manifestUUID:   p.ManifestUUID,
+			manifestSHA256: sum,
+			size:           p.Size,
+			etag:           p.ETag,
+			contentType:    p.ContentType,
+			seq:            rec.seq,
+		}
+		delete(s.uploads, p.UploadID)
+	case recordTypeDeleteObjectRootV2:
+		var p journalDeleteObjectPayloadV2
+		if err := json.Unmarshal(rec.payload, &p); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		b, ok := s.buckets[p.Bucket]
+		if !ok {
+			return fmt.Errorf("seq %d: delete-object-root-v2 for unknown bucket %q", rec.seq, p.Bucket)
+		}
+		if err := s.archiveVersionLocked(p.Bucket, p.Key, rec.seq, p.Archived); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		delete(b.objects, p.Key)
 	default:
 		return fmt.Errorf("seq %d: unknown record type %d", rec.seq, rec.recType)
 	}
+	return nil
+}
+
+// archiveVersionLocked appends one archived-version payload (decoded from
+// either a live commit's own critical section or journal replay -- the
+// exact same code path either way, so replay can never diverge from what
+// live traffic recorded) to bucket/key's history slice. Must be called
+// with s.mu held.
+func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalArchivedVersionPayload) error {
+	sum, err := decodeHexSHA256(p.ManifestSHA256)
+	if err != nil {
+		return err
+	}
+	if s.history[bucket] == nil {
+		s.history[bucket] = map[string][]*historyVersionEntry{}
+	}
+	s.history[bucket][key] = append(s.history[bucket][key], &historyVersionEntry{
+		versionID:      p.VersionID,
+		manifestUUID:   p.ManifestUUID,
+		manifestSHA256: sum,
+		size:           p.Size,
+		etag:           p.ETag,
+		contentType:    p.ContentType,
+		archivedAt:     p.ArchivedAt,
+		reason:         p.Reason,
+		seq:            seq,
+	})
 	return nil
 }
 
@@ -1295,17 +1540,26 @@ func (s *Store) DeleteObject(bucket, key string) error {
 	if !ok {
 		return errNoSuchBucket
 	}
-	if _, exists := b.objects[key]; !exists {
+	cur, exists := b.objects[key]
+	if !exists {
 		return nil
 	}
-	payload, err := json.Marshal(journalDeleteObjectPayload{Bucket: bucket, Key: key})
+	archived := archivedVersionPayload(cur, historyReasonDeleted) // non-nil: cur is non-nil here
+	payload, err := json.Marshal(journalDeleteObjectPayloadV2{Bucket: bucket, Key: key, Archived: *archived})
 	if err != nil {
 		return err
 	}
-	if _, err := s.journal.appendFrame(recordTypeDeleteObjectRoot, payload); err != nil {
+	seq, err := s.journal.appendFrame(recordTypeDeleteObjectRootV2, payload)
+	if err != nil {
 		return err
 	}
 	delete(b.objects, key)
+	if err := s.archiveVersionLocked(bucket, key, seq, *archived); err != nil {
+		// archivedVersionPayload always produces a valid hex sha256 from an
+		// already-valid in-memory objectEntry, so this cannot happen in
+		// practice; treated as fatal rather than silently dropping history.
+		return fmt.Errorf("delete: recording history: %w", err)
+	}
 	return nil
 }
 
@@ -1351,29 +1605,43 @@ func (s *Store) PutObject(bucket, key string, body []byte, contentType string, m
 	return s.commitObjectRoot(bucket, key, manUUID, manSHA, man)
 }
 
+// archivedVersionPayload builds the journal record of cur being archived
+// into history for the given reason, or returns nil if cur is nil (nothing
+// to archive -- e.g. a first-time PUT to a key with no current root).
+// VersionID is minted fresh here (newUUIDv7, the same primitive every
+// other version/manifest identity in this codebase already uses), once,
+// so it is stable and unique regardless of how many times this exact
+// manifest content is later archived again (e.g. restore then overwrite).
+func archivedVersionPayload(cur *objectEntry, reason string) *journalArchivedVersionPayload {
+	if cur == nil {
+		return nil
+	}
+	return &journalArchivedVersionPayload{
+		VersionID:      newUUIDv7(),
+		ManifestUUID:   cur.manifestUUID,
+		ManifestSHA256: hex.EncodeToString(cur.manifestSHA256[:]),
+		Size:           cur.size,
+		ETag:           cur.etag,
+		ContentType:    cur.contentType,
+		ArchivedAt:     time.Now().UTC(),
+		Reason:         reason,
+	}
+}
+
 // commitObjectRoot appends the visibility-journal record that makes
 // (bucket,key) point at manUUID/manSHA/man and applies it to the
-// in-memory namespace. This is PutObject's original commit tail, factored
-// out so CopyObject can share the exact same tested crash-safety
-// discipline instead of a second, subtly different implementation of it:
-// bucket existence is re-checked at the actual commit point (not just at
-// the caller's entry), the journal append+sync is the sole durability
-// boundary, and the in-memory map is updated only after that succeeds.
+// in-memory namespace, archiving whatever root previously occupied
+// (bucket,key) into history in the exact same journal frame. This is the
+// one shared "replace current object while retaining prior state" path
+// PutObject, CopyObject, RestoreObjectVersion, and (via its own inline
+// variant reusing archivedVersionPayload -- see CompleteMultipartUpload)
+// multipart completion all funnel through, instead of each duplicating
+// the history-archival logic: bucket existence is re-checked at the
+// actual commit point (not just at the caller's entry), the journal
+// append+sync is the sole durability boundary for both the new root and
+// the archived one, and the in-memory maps are updated only after that
+// succeeds.
 func (s *Store) commitObjectRoot(bucket, key, manUUID string, manSHA [32]byte, man manifestV1) (*objectEntry, error) {
-	payload, err := json.Marshal(journalPutPayload{
-		Bucket:         bucket,
-		Key:            key,
-		ManifestUUID:   manUUID,
-		ManifestSHA256: hex.EncodeToString(manSHA[:]),
-		Size:           man.TotalLength,
-		ETag:           man.ETag,
-		ContentType:    man.ContentType,
-		VersionID:      man.VersionID,
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	s.mu.Lock()
 	// Re-check bucket existence here, at the actual commit point, not just
 	// at entry to the caller: the CDC/CAS/manifest work leading up to this
@@ -1389,7 +1657,26 @@ func (s *Store) commitObjectRoot(bucket, key, manUUID string, manSHA [32]byte, m
 		s.mu.Unlock()
 		return nil, errNoSuchBucket
 	}
-	seq, err := s.journal.appendFrame(recordTypePutObjectRoot, payload)
+	var prevPayload *journalArchivedVersionPayload
+	if prev, exists := s.buckets[bucket].objects[key]; exists {
+		prevPayload = archivedVersionPayload(prev, historyReasonOverwritten)
+	}
+	payload, err := json.Marshal(journalPutPayloadV2{
+		Bucket:         bucket,
+		Key:            key,
+		ManifestUUID:   manUUID,
+		ManifestSHA256: hex.EncodeToString(manSHA[:]),
+		Size:           man.TotalLength,
+		ETag:           man.ETag,
+		ContentType:    man.ContentType,
+		VersionID:      man.VersionID,
+		Previous:       prevPayload,
+	})
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	seq, err := s.journal.appendFrame(recordTypePutObjectRootV2, payload)
 	if err != nil {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("journal append failed: %w", err)
@@ -1403,6 +1690,12 @@ func (s *Store) commitObjectRoot(bucket, key, manUUID string, manSHA [32]byte, m
 		seq:            seq,
 	}
 	s.buckets[bucket].objects[key] = entry
+	if prevPayload != nil {
+		if err := s.archiveVersionLocked(bucket, key, seq, *prevPayload); err != nil {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("commit: recording history: %w", err)
+		}
+	}
 	s.mu.Unlock()
 	fireTestHook(hookAfterApplyBeforeResponse)
 
@@ -1492,6 +1785,126 @@ func (s *Store) HeadObject(bucket, key string) (*objectEntry, manifestV1, error)
 		return nil, manifestV1{}, err
 	}
 	return obj, man, nil
+}
+
+// =============================================================================
+// 7c. Internal object version history and restore
+//
+// This is ZeroS3-native immutable history, not the AWS S3 Versioning API:
+// no versionId= query parameter, no bucket-versioning configuration state,
+// no delete markers, no per-version DELETE. Every successful mutation that
+// replaces or removes an existing current object -- ordinary PUT
+// overwrite, CopyObject overwrite, completed multipart overwrite, restore
+// over an existing object, and DELETE -- archives the object state it
+// replaces into per-key history via commitObjectRoot/DeleteObject/the
+// multipart completion path above, all funneling through
+// archivedVersionPayload + archiveVersionLocked so there is exactly one
+// place this bookkeeping happens. A first-time PUT to a key that has never
+// had a current root archives nothing (there is no meaningful "previous
+// state" to keep). History is retained indefinitely: this milestone
+// implements no explicit version deletion, expiration, or retention
+// policy, so restored/superseded versions remain live GC roots forever
+// (see section 12b).
+// =============================================================================
+
+// historyNamespaceObject is one flattened (bucket, key, historyVersionEntry)
+// triple from a point-in-time snapshot of the store's retained history,
+// mirroring namespaceObject's role for the current-object namespace.
+type historyNamespaceObject struct {
+	bucket string
+	key    string
+	entry  *historyVersionEntry
+}
+
+// snapshotHistory takes a private, consistent copy of every retained
+// historical version under Store.mu, then returns it for the caller to
+// walk without holding the lock -- the same policy snapshotNamespace
+// already uses, and safe for the same reason: historyVersionEntry values
+// are never mutated in place after archiveVersionLocked appends them.
+func (s *Store) snapshotHistory() []historyNamespaceObject {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []historyNamespaceObject
+	for bucket, keys := range s.history {
+		for key, entries := range keys {
+			for _, e := range entries {
+				out = append(out, historyNamespaceObject{bucket: bucket, key: key, entry: e})
+			}
+		}
+	}
+	return out
+}
+
+// ListVersions returns every retained historical version of bucket/key,
+// oldest first (archival/journal-seq order), plus the current root if one
+// exists (nil otherwise). It does not require the bucket to currently
+// exist -- a bucket that was emptied and deleted still leaves its former
+// keys' history addressable, per the package doc above.
+func (s *Store) ListVersions(bucket, key string) ([]*historyVersionEntry, *objectEntry, error) {
+	s.mu.Lock()
+	var cur *objectEntry
+	if b, ok := s.buckets[bucket]; ok {
+		cur = b.objects[key]
+	}
+	entries := append([]*historyVersionEntry(nil), s.history[bucket][key]...)
+	s.mu.Unlock()
+	sort.Slice(entries, func(i, j int) bool { return entries[i].seq < entries[j].seq })
+	return entries, cur, nil
+}
+
+// RestoreObjectVersion makes versionID the new current root of bucket/key.
+// It never builds a new manifest and never re-chunks or rewrites CAS
+// content: the restored current root points at exactly the same
+// manifestUUID/manifestSHA256 the historical version already had, so this
+// is zero-copy at both the chunk and manifest level -- the only new bytes
+// this can ever write are the new journal frame itself (and, when
+// restoring over an existing current object, that same frame's archival of
+// what restore replaces). Restore creates a new current object state; it
+// never rewinds or removes any existing history entry (see
+// commitObjectRoot, which this shares).
+func (s *Store) RestoreObjectVersion(bucket, key, versionID string) (*objectEntry, manifestV1, error) {
+	s.mu.Lock()
+	_, bucketExists := s.buckets[bucket]
+	entries := s.history[bucket][key]
+	s.mu.Unlock()
+	if !bucketExists {
+		return nil, manifestV1{}, errNoSuchBucket
+	}
+	var found *historyVersionEntry
+	for _, e := range entries {
+		if e.versionID == versionID {
+			found = e
+			break
+		}
+	}
+	if found == nil {
+		return nil, manifestV1{}, errNoSuchVersion
+	}
+
+	man, err := s.readVerifiedManifest(found.manifestUUID, found.manifestSHA256)
+	if err != nil {
+		return nil, manifestV1{}, fmt.Errorf("restore: historical manifest unavailable: %w", err)
+	}
+	// Confirm every chunk this manifest references is actually present
+	// before publishing anything -- mirrors CopyObject's identical
+	// pre-commit chunk-availability check -- so a corrupted/missing
+	// historical chunk fails restore cleanly with no visible mutation,
+	// rather than committing a root GetObject can't reconstruct.
+	for _, c := range man.Chunks {
+		sum, herr := decodeHexSHA256(c.SHA256)
+		if herr != nil {
+			return nil, manifestV1{}, fmt.Errorf("restore: historical manifest has a malformed chunk reference: %w", herr)
+		}
+		if _, serr := os.Stat(s.chunkPath(sum)); serr != nil {
+			return nil, manifestV1{}, fmt.Errorf("restore: historical chunk %s is not available: %w", c.SHA256, serr)
+		}
+	}
+
+	entry, err := s.commitObjectRoot(bucket, key, found.manifestUUID, found.manifestSHA256, man)
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+	return entry, man, nil
 }
 
 // =============================================================================
@@ -3785,15 +4198,6 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 	}
 	fireTestHook(hookAfterManifestPublished)
 
-	payload, err := json.Marshal(journalCompleteMultipartPayload{
-		UploadID: uploadID, Bucket: bucket, Key: key,
-		ManifestUUID: manUUID, ManifestSHA256: hex.EncodeToString(manSHA[:]),
-		Size: man.TotalLength, ETag: man.ETag, ContentType: man.ContentType, VersionID: man.VersionID,
-	})
-	if err != nil {
-		return nil, manifestV1{}, err
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Re-validate at the actual commit point, exactly like
@@ -3806,7 +4210,24 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 	if _, ok := s.buckets[bucket]; !ok {
 		return nil, manifestV1{}, errNoSuchBucket
 	}
-	seq, err := s.journal.appendFrame(recordTypeCompleteMultipartUpload, payload)
+	// A completed multipart upload overwrites an existing current object
+	// exactly like an ordinary PUT overwrite does: the prior root (if any)
+	// is archived into history in this same journal frame, via the same
+	// archivedVersionPayload helper commitObjectRoot uses -- see section 7c.
+	var prevPayload *journalArchivedVersionPayload
+	if prev, exists := s.buckets[bucket].objects[key]; exists {
+		prevPayload = archivedVersionPayload(prev, historyReasonOverwritten)
+	}
+	payload, err := json.Marshal(journalCompleteMultipartPayloadV2{
+		UploadID: uploadID, Bucket: bucket, Key: key,
+		ManifestUUID: manUUID, ManifestSHA256: hex.EncodeToString(manSHA[:]),
+		Size: man.TotalLength, ETag: man.ETag, ContentType: man.ContentType, VersionID: man.VersionID,
+		Previous: prevPayload,
+	})
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+	seq, err := s.journal.appendFrame(recordTypeCompleteMultipartUploadV2, payload)
 	if err != nil {
 		return nil, manifestV1{}, fmt.Errorf("journal append failed: %w", err)
 	}
@@ -3816,6 +4237,11 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 	}
 	s.buckets[bucket].objects[key] = entry
 	delete(s.uploads, uploadID)
+	if prevPayload != nil {
+		if err := s.archiveVersionLocked(bucket, key, seq, *prevPayload); err != nil {
+			return nil, manifestV1{}, fmt.Errorf("multipart: recording history: %w", err)
+		}
+	}
 	fireTestHook(hookAfterApplyBeforeResponse)
 	return entry, man, nil
 }
@@ -4094,6 +4520,22 @@ func (s *Store) bucketNames() []string {
 	return out
 }
 
+// snapshotUploads takes a private, consistent copy of every in-progress
+// multipart upload session under Store.mu, then returns it for the caller
+// to walk without holding the lock -- the same policy snapshotNamespace
+// and snapshotHistory already use. multipartUpload/multipartPart values
+// are never mutated in place after construction (see their doc comments
+// in section 7), so sharing these pointers out of the lock is safe.
+func (s *Store) snapshotUploads() []*multipartUpload {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*multipartUpload, 0, len(s.uploads))
+	for _, up := range s.uploads {
+		out = append(out, up)
+	}
+	return out
+}
+
 // chunkObservation accumulates what a stats scan learns about one
 // distinct chunk digest while walking every reachable manifest.
 type chunkObservation struct {
@@ -4174,6 +4616,301 @@ func fileSizeOrZero(path string) (int64, error) {
 	return info.Size(), nil
 }
 
+// =============================================================================
+// 12a. Authoritative reachability (M5-C)
+//
+// One root-enumeration / mark-live path, consumed by stats, GC, and
+// verify/doctor alike -- never three subtly different liveness
+// implementations. computeReachability answers exactly one question:
+// which CAS payloads (and manifests) are live, and therefore must never
+// be deleted? A live root is any of:
+//
+//  1. a current visible object's manifest (snapshotNamespace);
+//  2. a retained historical version's manifest (snapshotHistory);
+//  3. an active multipart upload's already-published parts
+//     (snapshotUploads) -- these do not go through the manifest
+//     mechanism at all before completion, so their chunks are marked
+//     live directly from each part's own chunk list.
+//
+// Future root categories (e.g. an M6 sync-session root) can be added here
+// as a fourth enumeration loop without touching any consumer.
+//
+// Two related but distinct sets come out of this: ReferencedManifests/
+// ReferencedChunks (everything ANY live root points to, whether or not
+// that specific manifest/chunk file is actually intact -- this is the
+// set that must never be deleted, so a corrupt-but-still-referenced chunk
+// file is protected exactly like a healthy one) and ValidChunks (the
+// subset that also passed an existence/size(/deep hash) check -- used for
+// "genuinely reachable and healthy" byte accounting). Missing/Corrupt/
+// Invalid issues are reported, not silently absorbed: a live root that
+// references broken data is reachable-but-broken, never reclassified as
+// garbage, and OK() reports false so a caller (destructive GC, in
+// particular) can refuse to proceed. A digest that is not in
+// ReferencedChunks at all -- never claimed by any live root -- is the
+// only thing genuinely unreachable garbage.
+// =============================================================================
+
+// issueTracker accumulates the shared missing/corrupt/invalid integrity
+// classification and its issue list, embedded (promoted, so JSON output is
+// unchanged) by both reachabilityResult and VerifyResult so this
+// three-way classification is defined in exactly one place.
+type issueTracker struct {
+	Missing int           `json:"missing"`
+	Corrupt int           `json:"corrupt"`
+	Invalid int           `json:"invalid"`
+	Issues  []VerifyIssue `json:"issues"`
+}
+
+func (t *issueTracker) addIssue(kind, subject, detail string) {
+	switch kind {
+	case "missing":
+		t.Missing++
+	case "corrupt":
+		t.Corrupt++
+	case "invalid":
+		t.Invalid++
+	}
+	t.Issues = append(t.Issues, VerifyIssue{Kind: kind, Subject: subject, Detail: detail})
+}
+
+func (t issueTracker) ok() bool {
+	return t.Missing == 0 && t.Corrupt == 0 && t.Invalid == 0
+}
+
+// VerifyIssue describes one integrity problem found by verify/doctor or by
+// the underlying reachability scan (missing/corrupt/invalid), moved ahead
+// of VerifyResult (section 13) since issueTracker/reachabilityResult need
+// it here first.
+type VerifyIssue struct {
+	Kind    string `json:"kind"` // "missing" | "corrupt" | "invalid"
+	Subject string `json:"subject"`
+	Detail  string `json:"detail"`
+}
+
+// verifiedManifestCacheEntry caches one manifest UUID's parsed content and
+// the SHA-256 of its own file bytes, so a manifest file is read/parsed at
+// most once per scan even when several roots (current and historical
+// alike) reference the same UUID. Caching the *content* this way is safe
+// and cheap; caching a verdict is not -- see checkRoot below, which still
+// independently checks every root's own journal-recorded hash claim.
+type verifiedManifestCacheEntry struct {
+	man            manifestV1
+	sha            [32]byte
+	structurallyOK bool
+}
+
+// reachabilityResult is computeReachability's output: the authoritative
+// live-root/live-chunk sets plus every integrity issue found while
+// resolving them. See the section 12a doc comment above for what each set
+// means and why "referenced" and "valid" are kept separate.
+type reachabilityResult struct {
+	issueTracker
+
+	JournalFramesChecked int
+	JournalOK            bool
+
+	CurrentRootCount    int
+	HistoricalRootCount int
+	MultipartRootCount  int
+
+	ManifestsChecked int
+	ChunksChecked    int
+
+	ReferencedManifests map[string]bool  // manifest UUID -> true; every manifest any live root points to
+	ReferencedChunks    map[string]bool  // hex sha256 -> true; every chunk any live, readable manifest/part points to
+	ChunkLength         map[string]int64 // hex sha256 -> best-known length, from the reference (not disk)
+	ValidChunks         map[string]bool  // subset of ReferencedChunks whose file passed integrity checks
+}
+
+// OK reports whether the authoritative live root set is fully valid: every
+// live root's manifest reads/parses/hash-checks cleanly and every chunk it
+// references is present with the right length (and, if this scan was
+// deep, the right content hash). This is the fail-closed gate destructive
+// GC checks before deleting anything (section 16b) -- unreachable/
+// reclaimable garbage is not itself a failure, so it never affects OK();
+// only broken *live* data and journal replay do.
+func (r reachabilityResult) OK() bool {
+	return r.issueTracker.ok() && r.JournalOK
+}
+
+// computeReachability is the one authoritative CAS/manifest liveness scan
+// -- see the section 12a doc comment. It never mutates the store; it only
+// reads the journal, manifests, and (when deep) chunk content.
+func (s *Store) computeReachability(deep bool) (reachabilityResult, error) {
+	res := reachabilityResult{
+		ReferencedManifests: map[string]bool{},
+		ReferencedChunks:    map[string]bool{},
+		ChunkLength:         map[string]int64{},
+		ValidChunks:         map[string]bool{},
+	}
+
+	jf, err := os.Open(filepath.Join(s.root, "journal", "visibility.log"))
+	if err != nil {
+		return res, fmt.Errorf("reachability: opening journal: %w", err)
+	}
+	_, _, records, jerr := replayJournal(jf)
+	jf.Close()
+	res.JournalFramesChecked = len(records)
+	if jerr != nil {
+		res.addIssue("corrupt", "journal/visibility.log", jerr.Error())
+	} else {
+		res.JournalOK = true
+	}
+
+	manifestCache := map[string]verifiedManifestCacheEntry{}
+
+	// checkRoot validates one root's claimed (manifestUUID, manifestSHA256)
+	// pair, reading/parsing/structurally-checking the manifest at most once
+	// per UUID via manifestCache, but independently re-checking THIS root's
+	// own journal-recorded hash claim against it every time -- two roots
+	// (current and historical alike) can legally share one manifest UUID,
+	// and each must independently prove journal-recorded SHA256 == actual
+	// manifest-file SHA256, exactly like Verify always did for current-only
+	// roots. On success, marks the manifest referenced (protected from GC)
+	// and returns its parsed content; on failure, records the issue and
+	// returns ok=false without marking it referenced -- a manifest that
+	// cannot be trusted enough to extract a chunk list from cannot protect
+	// any chunk either, which is safe only because that failure also flips
+	// OK() to false, refusing all destructive action store-wide (section
+	// 16b), not just around this one broken root.
+	checkRoot := func(subject, manifestUUID string, manifestSHA [32]byte) (manifestV1, bool) {
+		cached, ok := manifestCache[manifestUUID]
+		if !ok {
+			path := filepath.Join(s.root, "manifests", manifestUUID+".json")
+			data, rerr := os.ReadFile(path)
+			if rerr != nil {
+				if os.IsNotExist(rerr) {
+					res.addIssue("missing", subject, "manifest file "+manifestUUID+".json does not exist")
+				} else {
+					res.addIssue("invalid", subject, rerr.Error())
+				}
+				manifestCache[manifestUUID] = verifiedManifestCacheEntry{}
+				return manifestV1{}, false
+			}
+			cached.sha = sha256.Sum256(data)
+			cached.structurallyOK = true
+			if uerr := json.Unmarshal(data, &cached.man); uerr != nil {
+				res.addIssue("invalid", subject, "manifest json does not parse: "+uerr.Error())
+				cached.structurallyOK = false
+			} else if cached.man.ManifestFormatVersion != manifestFormatVersion || cached.man.CDCFormatVersion != cdcFormatVersion || cached.man.HashAlgorithm != "sha256" {
+				res.addIssue("invalid", subject, "manifest declares an unsupported format/CDC/hash version")
+				cached.structurallyOK = false
+			} else {
+				var sum int64
+				validRefs := true
+				for _, c := range cached.man.Chunks {
+					if _, herr := decodeHexSHA256(c.SHA256); herr != nil {
+						res.addIssue("invalid", subject, "manifest chunk reference has malformed sha256: "+c.SHA256)
+						validRefs = false
+						continue
+					}
+					if c.Length < 0 {
+						res.addIssue("invalid", subject, "manifest chunk reference has a negative length")
+						validRefs = false
+						continue
+					}
+					sum += c.Length
+				}
+				if !validRefs {
+					cached.structurallyOK = false
+				} else if sum != cached.man.TotalLength {
+					res.addIssue("invalid", subject, fmt.Sprintf("manifest chunk lengths sum to %d, want total_length %d", sum, cached.man.TotalLength))
+					cached.structurallyOK = false
+				}
+			}
+			manifestCache[manifestUUID] = cached
+			res.ManifestsChecked++
+		}
+		if cached.sha != manifestSHA {
+			res.addIssue("corrupt", subject, "manifest file sha256 does not match this root's recorded reference")
+			return manifestV1{}, false
+		}
+		if !cached.structurallyOK {
+			return manifestV1{}, false
+		}
+		res.ReferencedManifests[manifestUUID] = true
+		return cached.man, true
+	}
+
+	wantChunks := map[string]int64{} // hex sha256 -> best-known length, from every readable live manifest/part
+
+	// Root category 1: current visible objects.
+	for _, o := range s.snapshotNamespace() {
+		res.CurrentRootCount++
+		if man, ok := checkRoot(o.bucket+"/"+o.key, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
+			for _, c := range man.Chunks {
+				wantChunks[c.SHA256] = c.Length
+			}
+		}
+	}
+	// Root category 2: retained historical versions.
+	for _, o := range s.snapshotHistory() {
+		res.HistoricalRootCount++
+		subject := fmt.Sprintf("history:%s/%s@%s", o.bucket, o.key, o.entry.versionID)
+		if man, ok := checkRoot(subject, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
+			for _, c := range man.Chunks {
+				wantChunks[c.SHA256] = c.Length
+			}
+		}
+	}
+	// Root category 3: active multipart uploads. These do not go through
+	// the manifest mechanism before completion -- each already-published
+	// part's own chunk list is a live root directly.
+	for _, up := range s.snapshotUploads() {
+		for _, p := range up.parts {
+			res.MultipartRootCount++
+			subject := fmt.Sprintf("multipart:%s/part%d", up.uploadID, p.partNumber)
+			for i, c := range p.chunks {
+				if _, herr := decodeHexSHA256(c.SHA256); herr != nil {
+					res.addIssue("invalid", subject, fmt.Sprintf("part chunk %d has a malformed sha256: %s", i, c.SHA256))
+					continue
+				}
+				wantChunks[c.SHA256] = c.Length
+			}
+		}
+	}
+
+	// One unified chunk existence/integrity pass over every referenced
+	// digest, regardless of which root category claimed it.
+	for sha, length := range wantChunks {
+		res.ReferencedChunks[sha] = true
+		res.ChunkLength[sha] = length
+		sum, herr := decodeHexSHA256(sha) // already validated above when added to wantChunks
+		if herr != nil {
+			continue
+		}
+		res.ChunksChecked++
+		path := s.chunkPath(sum)
+		info, serr := os.Stat(path)
+		if serr != nil {
+			if os.IsNotExist(serr) {
+				res.addIssue("missing", "chunk "+sha, "chunk file does not exist")
+			} else {
+				res.addIssue("invalid", "chunk "+sha, serr.Error())
+			}
+			continue
+		}
+		if info.Size() != length {
+			res.addIssue("corrupt", "chunk "+sha, fmt.Sprintf("file length %d does not match reference length %d", info.Size(), length))
+			continue
+		}
+		if deep {
+			data, rerr := os.ReadFile(path)
+			if rerr != nil {
+				res.addIssue("missing", "chunk "+sha, rerr.Error())
+				continue
+			}
+			if got := sha256.Sum256(data); got != sum {
+				res.addIssue("corrupt", "chunk "+sha, "content hash does not match its content-addressed name")
+				continue
+			}
+		}
+		res.ValidChunks[sha] = true
+	}
+
+	return res, nil
+}
+
 // StatsResult is the exact set of fields STATS_SPEC.md defines for one
 // scan, human-readable field names doubling as stable JSON field names.
 type StatsResult struct {
@@ -4194,6 +4931,23 @@ type StatsResult struct {
 	ScopeExclusiveChunkBytes   int64 `json:"scope_exclusive_chunk_bytes"`
 	ScopeSharedChunkBytes      int64 `json:"scope_shared_chunk_bytes"`
 
+	// HistoricalVersionCount/HistoricalVersionLogicalBytes and
+	// ActiveMultipartUploadCount/ActiveMultipartLogicalBytes (M5-C) are
+	// scoped exactly like CurrentObjectCount/LogicalCurrentBytes (same
+	// sel.matches(bucket,key) rule). VersionCount/LogicalVersionBytes now
+	// genuinely differ from CurrentObjectCount/LogicalCurrentBytes: they
+	// are the total of current-plus-historical, per the "future milestone"
+	// this comment used to point at -- this is that milestone.
+	HistoricalVersionCount        int64 `json:"historical_version_count"`
+	HistoricalVersionLogicalBytes int64 `json:"historical_version_logical_bytes"`
+	ActiveMultipartUploadCount    int64 `json:"active_multipart_upload_count"`
+	ActiveMultipartLogicalBytes   int64 `json:"active_multipart_logical_bytes"`
+
+	// UniqueReachableChunkBytes is store-global (never scope-limited) and,
+	// as of M5-C, authoritative across every live root category -- current
+	// objects, retained historical versions, and active multipart uploads
+	// -- sourced from computeReachability rather than a current-objects-only
+	// walk.
 	UniqueReachableChunkBytes int64 `json:"unique_reachable_chunk_bytes"`
 
 	ChunkStoreFileBytes  int64 `json:"chunk_store_file_bytes"`
@@ -4212,7 +4966,15 @@ type StatsResult struct {
 // current namespace and on-disk files for the given scope. It never
 // consults or updates any persisted counter -- every field is derived
 // fresh from the journal-reconstructed namespace and a filesystem walk,
-// per STORAGE_MODEL.md's stats/index guidance.
+// per STORAGE_MODEL.md's stats/index guidance. Scope-based
+// (current-object) chunk-sharing accounting (LogicalChunkReferenceBytes,
+// ScopeUnique/Exclusive/SharedChunkBytes, dedup ratios) remains its own
+// pass, since "scope" is a bucket/prefix/key concept that only applies to
+// current objects; whole-store liveness/reclaimability accounting is
+// sourced from the one authoritative computeReachability scan (section
+// 12a), which is what closes the historical-version/multipart gap this
+// milestone's Phase F/O requires: a chunk kept alive only by history or an
+// in-progress multipart upload is no longer misreported as reclaimable.
 func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 	all := s.snapshotNamespace()
 	bucketSet := map[string]bool{}
@@ -4246,7 +5008,7 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 		return m, nil
 	}
 
-	chunkObs := map[string]*chunkObservation{} // hex sha256 -> observation, store-wide
+	chunkObs := map[string]*chunkObservation{} // hex sha256 -> observation, current-objects-only (scope accounting)
 	for _, o := range all {
 		inScope := sel.matches(o.bucket, o.key)
 		if inScope {
@@ -4272,19 +5034,26 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 			}
 		}
 	}
-	// No version retention exists -- every PUT replaces its key's one
-	// visible root, and DELETE simply removes it -- so the only
-	// "retained committed version" for any key is its current one.
-	// version_count/logical_version_bytes are therefore
-	// identical to current_object_count/logical_current_bytes; this
-	// becomes a genuinely separate figure only if a future milestone adds
-	// retained-version semantics.
-	res.VersionCount = res.CurrentObjectCount
-	res.LogicalVersionBytes = res.LogicalCurrentBytes
 
-	var uniqueReachableAll int64
+	for _, o := range s.snapshotHistory() {
+		if sel.matches(o.bucket, o.key) {
+			res.HistoricalVersionCount++
+			res.HistoricalVersionLogicalBytes += o.entry.size
+		}
+	}
+	for _, up := range s.snapshotUploads() {
+		if !sel.matches(up.bucket, up.key) {
+			continue
+		}
+		res.ActiveMultipartUploadCount++
+		for _, p := range up.parts {
+			res.ActiveMultipartLogicalBytes += p.size
+		}
+	}
+	res.VersionCount = res.CurrentObjectCount + int(res.HistoricalVersionCount)
+	res.LogicalVersionBytes = res.LogicalCurrentBytes + res.HistoricalVersionLogicalBytes
+
 	for _, ob := range chunkObs {
-		uniqueReachableAll += ob.length
 		if ob.inScope {
 			res.ScopeUniqueChunkBytes += ob.length
 			res.ScopeUniqueChunkCount++
@@ -4295,7 +5064,6 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 			}
 		}
 	}
-	res.UniqueReachableChunkBytes = uniqueReachableAll
 
 	if res.LogicalChunkReferenceBytes > 0 {
 		res.DedupAvoidedBytes = res.LogicalChunkReferenceBytes - res.ScopeUniqueChunkBytes
@@ -4303,20 +5071,19 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 		res.UniqueToLogicalRatio = float64(res.ScopeUniqueChunkBytes) / float64(res.LogicalChunkReferenceBytes)
 	}
 
-	reachableManifests := make(map[string]bool, len(manifestCache))
-	for uuid := range manifestCache {
-		reachableManifests[uuid] = true
+	rr, err := s.computeReachability(false)
+	if err != nil {
+		return StatsResult{}, fmt.Errorf("stats: %w", err)
 	}
-	reachableChunks := make(map[string]bool, len(chunkObs))
-	for sha := range chunkObs {
-		reachableChunks[sha] = true
+	for _, length := range rr.ChunkLength {
+		res.UniqueReachableChunkBytes += length
 	}
 
-	chunkScan, err := s.scanChunkFiles(reachableChunks)
+	chunkScan, err := s.scanChunkFiles(rr.ReferencedChunks)
 	if err != nil {
 		return StatsResult{}, fmt.Errorf("stats: scanning chunks: %w", err)
 	}
-	manifestScan, err := s.scanManifestFiles(reachableManifests)
+	manifestScan, err := s.scanManifestFiles(rr.ReferencedManifests)
 	if err != nil {
 		return StatsResult{}, fmt.Errorf("stats: scanning manifests: %w", err)
 	}
@@ -4362,24 +5129,11 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 // re-hashes every reachable chunk's actual bytes.
 // =============================================================================
 
-type VerifyIssue struct {
-	Kind    string `json:"kind"` // "missing" | "corrupt" | "invalid"
-	Subject string `json:"subject"`
-	Detail  string `json:"detail"`
-}
-
-// verifiedManifestCacheEntry caches one manifest UUID's parsed content and
-// the SHA-256 of its own file bytes, so Verify reads/parses a given
-// manifest file at most once even when several roots reference the same
-// UUID. Caching the *content* this way is safe and cheap; caching a
-// verdict is not -- see the per-root hash check next to this cache's use
-// in Verify, which still runs unconditionally for every root.
-type verifiedManifestCacheEntry struct {
-	man            manifestV1
-	sha            [32]byte
-	structurallyOK bool
-}
-
+// VerifyResult reports the outcome of one verify/doctor scan. It embeds
+// issueTracker (JSON-flattened, so the "missing"/"corrupt"/"invalid"/
+// "issues" fields are unchanged from before this pass) rather than
+// duplicating the missing/corrupt/invalid classification computeReachability
+// already defines.
 type VerifyResult struct {
 	Deep bool `json:"deep"`
 
@@ -4389,15 +5143,18 @@ type VerifyResult struct {
 	ManifestsChecked int `json:"manifests_checked"`
 	ChunksChecked    int `json:"chunks_checked"`
 
-	Missing int `json:"missing"`
-	Corrupt int `json:"corrupt"`
-	Invalid int `json:"invalid"`
+	// Live root counts by category (section 12a) -- doctor-style lifecycle
+	// visibility: how many current objects, retained historical versions,
+	// and active multipart uploads this scan considered.
+	CurrentRootCount    int `json:"current_root_count"`
+	HistoricalRootCount int `json:"historical_root_count"`
+	MultipartRootCount  int `json:"multipart_root_count"`
+
+	issueTracker
 
 	UnreachableManifests int   `json:"unreachable_manifests"`
 	UnreachableChunks    int   `json:"unreachable_chunks"`
 	ReclaimableBytes     int64 `json:"reclaimable_bytes"`
-
-	Issues []VerifyIssue `json:"issues"`
 }
 
 // OK reports whether verify found zero integrity failures. Unreachable/
@@ -4405,209 +5162,79 @@ type VerifyResult struct {
 // the "deletion changes roots, not chunks" model -- so it never affects
 // OK(); only Missing/Corrupt/Invalid and journal replay do.
 func (r VerifyResult) OK() bool {
-	return r.Missing == 0 && r.Corrupt == 0 && r.Invalid == 0 && r.JournalOK
+	return r.issueTracker.ok() && r.JournalOK
 }
 
-func (r *VerifyResult) addIssue(kind, subject, detail string) {
-	switch kind {
-	case "missing":
-		r.Missing++
-	case "corrupt":
-		r.Corrupt++
-	case "invalid":
-		r.Invalid++
-	}
-	r.Issues = append(r.Issues, VerifyIssue{Kind: kind, Subject: subject, Detail: detail})
-}
-
-// Verify runs the essential verify contract: store/journal structural
-// checks, per-reachable-manifest checks, and chunk checks (basic by
-// default, byte-for-byte re-hashed when deep is true). It returns a
-// non-nil error only for a fatal scan failure (e.g. the journal file
-// can't be opened at all); ordinary integrity problems are reported as
-// Issues in the result, which the caller inspects via VerifyResult.OK().
+// Verify runs the essential verify/doctor contract: store/journal
+// structural checks, per-live-root manifest checks across every root
+// category (current objects, retained historical versions, active
+// multipart uploads -- section 12a), and chunk checks (basic by default,
+// byte-for-byte re-hashed when deep is true), all sourced from the one
+// authoritative computeReachability scan rather than a second, separately
+// maintained walk. It returns a non-nil error only for a fatal scan
+// failure (e.g. the journal file can't be opened at all); ordinary
+// integrity problems are reported as Issues in the result, which the
+// caller inspects via VerifyResult.OK().
 func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res := VerifyResult{Deep: deep}
 
-	// --- Store / journal ---
 	if s.format.StoreFormatVersion != storeFormatVersion ||
 		s.format.CDCFormatVersion != cdcFormatVersion ||
 		s.format.HashAlgorithm != "sha256" {
 		res.addIssue("invalid", "FORMAT.json", "unsupported store/CDC format version or hash algorithm")
 	}
-	jf, err := os.Open(filepath.Join(s.root, "journal", "visibility.log"))
+
+	rr, err := s.computeReachability(deep)
 	if err != nil {
-		return res, fmt.Errorf("verify: opening journal: %w", err)
+		return res, fmt.Errorf("verify: %w", err)
 	}
-	_, _, records, jerr := replayJournal(jf)
-	jf.Close()
-	if jerr != nil {
-		res.addIssue("corrupt", "journal/visibility.log", jerr.Error())
-	} else {
-		res.JournalOK = true
-	}
-	res.JournalFramesChecked = len(records)
-
-	// --- Namespace snapshot: exactly what "reachable" means today (no
-	// version retention yet, so the only reachable roots are current
-	// ones -- see the identical note in computeStats). ---
-	all := s.snapshotNamespace()
-	reachableManifests := map[string]bool{}
-	reachableChunks := map[string]bool{}
-	manifestCache := map[string]verifiedManifestCacheEntry{}
-
-	for _, o := range all {
-		subject := o.bucket + "/" + o.key
-		cached, ok := manifestCache[o.entry.manifestUUID]
-		if !ok {
-			path := filepath.Join(s.root, "manifests", o.entry.manifestUUID+".json")
-			data, rerr := os.ReadFile(path)
-			if rerr != nil {
-				if os.IsNotExist(rerr) {
-					res.addIssue("missing", subject, "manifest file "+o.entry.manifestUUID+".json does not exist")
-				} else {
-					res.addIssue("invalid", subject, rerr.Error())
-				}
-				continue
-			}
-			// cached.sha is computed from the manifest file's own bytes,
-			// independent of any specific root -- it is what every root
-			// that references this UUID gets checked against below, on
-			// every iteration, not just this first (cache-filling) one.
-			cached.sha = sha256.Sum256(data)
-			cached.structurallyOK = true
-			if uerr := json.Unmarshal(data, &cached.man); uerr != nil {
-				res.addIssue("invalid", subject, "manifest json does not parse: "+uerr.Error())
-				cached.structurallyOK = false
-			} else if cached.man.ManifestFormatVersion != manifestFormatVersion || cached.man.CDCFormatVersion != cdcFormatVersion || cached.man.HashAlgorithm != "sha256" {
-				res.addIssue("invalid", subject, "manifest declares an unsupported format/CDC/hash version")
-				cached.structurallyOK = false
-			} else {
-				var sum int64
-				validRefs := true
-				for _, c := range cached.man.Chunks {
-					if _, herr := decodeHexSHA256(c.SHA256); herr != nil {
-						res.addIssue("invalid", subject, "manifest chunk reference has malformed sha256: "+c.SHA256)
-						validRefs = false
-						continue
-					}
-					if c.Length < 0 {
-						res.addIssue("invalid", subject, "manifest chunk reference has a negative length")
-						validRefs = false
-						continue
-					}
-					sum += c.Length
-				}
-				if !validRefs {
-					cached.structurallyOK = false
-				} else if sum != cached.man.TotalLength {
-					res.addIssue("invalid", subject, fmt.Sprintf("manifest chunk lengths sum to %d, want total_length %d", sum, cached.man.TotalLength))
-					cached.structurallyOK = false
-				}
-			}
-			manifestCache[o.entry.manifestUUID] = cached
-			res.ManifestsChecked++
-		}
-		// This root's own journal-recorded manifest hash is checked here
-		// on every iteration -- whether this UUID was just parsed above
-		// or was already cached from an earlier root -- because caching
-		// the manifest's parsed content/hash is only a read/parse
-		// optimization; it must never let a second root silently inherit
-		// a "verified" status it hasn't earned. Two roots can legally
-		// share one manifest UUID, but each still carries its own
-		// journal-recorded hash claim, and each must independently prove
-		// journal-recorded SHA256 == actual manifest-file SHA256.
-		if cached.sha != o.entry.manifestSHA256 {
-			res.addIssue("corrupt", subject, "manifest file sha256 does not match this root's journal-recorded reference")
-			continue
-		}
-		if !cached.structurallyOK {
-			continue
-		}
-		reachableManifests[o.entry.manifestUUID] = true
-		for _, c := range cached.man.Chunks {
-			reachableChunks[c.SHA256] = true
-		}
-	}
-
-	// --- Chunks referenced by every reachable manifest ---
-	checkedChunk := map[string]bool{}
-	badChunk := map[string]bool{}
-	for _, cached := range manifestCache {
-		if !cached.structurallyOK {
-			continue
-		}
-		for _, c := range cached.man.Chunks {
-			if checkedChunk[c.SHA256] {
-				continue
-			}
-			checkedChunk[c.SHA256] = true
-			res.ChunksChecked++
-			sum, herr := decodeHexSHA256(c.SHA256)
-			if herr != nil {
-				res.addIssue("invalid", "chunk "+c.SHA256, herr.Error())
-				badChunk[c.SHA256] = true
-				continue
-			}
-			path := s.chunkPath(sum)
-			info, serr := os.Stat(path)
-			if serr != nil {
-				if os.IsNotExist(serr) {
-					res.addIssue("missing", "chunk "+c.SHA256, "chunk file does not exist")
-				} else {
-					res.addIssue("invalid", "chunk "+c.SHA256, serr.Error())
-				}
-				badChunk[c.SHA256] = true
-				continue
-			}
-			if info.Size() != c.Length {
-				res.addIssue("corrupt", "chunk "+c.SHA256, fmt.Sprintf("file length %d does not match manifest length %d", info.Size(), c.Length))
-				badChunk[c.SHA256] = true
-				continue
-			}
-			if deep {
-				data, rerr := os.ReadFile(path)
-				if rerr != nil {
-					res.addIssue("missing", "chunk "+c.SHA256, rerr.Error())
-					badChunk[c.SHA256] = true
-					continue
-				}
-				if got := sha256.Sum256(data); got != sum {
-					res.addIssue("corrupt", "chunk "+c.SHA256, "content hash does not match its content-addressed name")
-					badChunk[c.SHA256] = true
-				}
-			}
-		}
-	}
+	res.JournalFramesChecked = rr.JournalFramesChecked
+	res.JournalOK = rr.JournalOK
+	res.ManifestsChecked = rr.ManifestsChecked
+	res.ChunksChecked = rr.ChunksChecked
+	res.CurrentRootCount = rr.CurrentRootCount
+	res.HistoricalRootCount = rr.HistoricalRootCount
+	res.MultipartRootCount = rr.MultipartRootCount
+	res.Missing = rr.Missing
+	res.Corrupt = rr.Corrupt
+	res.Invalid = rr.Invalid
+	res.Issues = append(res.Issues, rr.Issues...)
 
 	// --- Deep only: whole-object digest ---
 	//
-	// Per-chunk hashing above proves every individual chunk's bytes match
-	// its own content-addressed name, but it cannot catch a manifest that
-	// simply names the wrong object_sha256, or lists otherwise-intact
-	// chunks in a corrupted order -- GetObject doesn't check object_sha256
-	// either, so nothing else in ZeroS3 would ever notice. This closes
-	// that gap by feeding every reachable manifest's chunks, in the
-	// manifest's own logical order, into one streaming SHA-256 hasher per
-	// manifest -- never buffering the reconstructed object -- and
-	// comparing the result (and the streamed byte count, against
-	// total_length) to what the manifest claims. Skipped for a manifest
-	// whose chunks already failed the check above: hashing known-bad
-	// bytes would only add a confusing, redundant issue.
+	// Per-chunk hashing above (inside computeReachability) proves every
+	// individual chunk's bytes match its own content-addressed name, but
+	// it cannot catch a manifest that simply names the wrong
+	// object_sha256, or lists otherwise-intact chunks in a corrupted order
+	// -- GetObject doesn't check object_sha256 either, so nothing else in
+	// ZeroS3 would ever notice. This closes that gap by feeding every
+	// referenced-and-valid manifest's chunks (current and historical
+	// roots alike), in the manifest's own logical order, into one
+	// streaming SHA-256 hasher per manifest -- never buffering the
+	// reconstructed object -- and comparing the result (and the streamed
+	// byte count, against total_length) to what the manifest claims.
+	// Skipped for a manifest with any chunk that already failed
+	// computeReachability's check: hashing known-bad bytes would only add
+	// a confusing, redundant issue.
 	if deep {
-		for uuid, cached := range manifestCache {
-			if !cached.structurallyOK {
+		for uuid := range rr.ReferencedManifests {
+			man, _, rerr := s.readManifest(uuid)
+			if rerr != nil {
+				// Already reported by computeReachability if genuinely
+				// broken; a transient re-read failure here is reported
+				// rather than silently skipped.
+				res.addIssue("invalid", "manifest "+uuid, "could not be re-read for whole-object verification: "+rerr.Error())
 				continue
 			}
 			subject := "manifest " + uuid
-			wantSum, herr := decodeHexSHA256(cached.man.ObjectSHA256)
+			wantSum, herr := decodeHexSHA256(man.ObjectSHA256)
 			if herr != nil {
 				res.addIssue("invalid", subject, "object_sha256 is malformed: "+herr.Error())
 				continue
 			}
 			chunksOK := true
-			for _, c := range cached.man.Chunks {
-				if badChunk[c.SHA256] {
+			for _, c := range man.Chunks {
+				if !rr.ValidChunks[c.SHA256] {
 					chunksOK = false
 					break
 				}
@@ -4618,7 +5245,7 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 			h := sha256.New()
 			var streamed int64
 			readFailed := false
-			for _, c := range cached.man.Chunks {
+			for _, c := range man.Chunks {
 				sum, _ := decodeHexSHA256(c.SHA256) // already validated above
 				data, rerr := s.casRead(sum)
 				if rerr != nil {
@@ -4632,8 +5259,8 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 			if readFailed {
 				continue
 			}
-			if streamed != cached.man.TotalLength {
-				res.addIssue("corrupt", subject, fmt.Sprintf("streamed %d chunk bytes, want total_length %d", streamed, cached.man.TotalLength))
+			if streamed != man.TotalLength {
+				res.addIssue("corrupt", subject, fmt.Sprintf("streamed %d chunk bytes, want total_length %d", streamed, man.TotalLength))
 				continue
 			}
 			if gotSum := [32]byte(h.Sum(nil)); gotSum != wantSum {
@@ -4643,11 +5270,11 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	}
 
 	// --- Unreachable/reclaimable accounting (informational, not a failure) ---
-	chunkScan, serr := s.scanChunkFiles(reachableChunks)
+	chunkScan, serr := s.scanChunkFiles(rr.ReferencedChunks)
 	if serr != nil {
 		return res, fmt.Errorf("verify: scanning chunks: %w", serr)
 	}
-	manifestScan, merr := s.scanManifestFiles(reachableManifests)
+	manifestScan, merr := s.scanManifestFiles(rr.ReferencedManifests)
 	if merr != nil {
 		return res, fmt.Errorf("verify: scanning manifests: %w", merr)
 	}
@@ -4659,6 +5286,231 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res.UnreachableChunks = chunkScan.unreachableCount
 	res.ReclaimableBytes = chunkScan.unreachableBytes + manifestScan.unreachableBytes + tmpBytes
 
+	return res, nil
+}
+
+// =============================================================================
+// 13b. Store locking (exclusive ownership) and safe offline GC (M5-C)
+//
+// storeLock/acquireStoreLock is a thin, non-blocking flock wrapper: an
+// ordinary store user ("zeros3 serve") holds a SHARED lock for its
+// process lifetime; destructive GC requires an EXCLUSIVE lock, which
+// flock semantics refuse to grant while any shared or exclusive lock is
+// held elsewhere -- including by another OS process on the same store
+// directory. This is the "offline/exclusive GC" requirement: GC never
+// runs concurrently with a live server (or another GC), and never blocks
+// waiting for one to finish -- it fails fast and safely instead. Neither
+// `stats` nor `verify`/`doctor` take this lock: they are read-only,
+// point-in-time snapshots, and this milestone does not require protecting
+// them from a concurrent GC sweep -- only from GC deleting anything a live
+// server still needs, which the exclusive/shared split above guarantees.
+//
+// GC itself stays deliberately simple: once exclusive ownership is held,
+// no other process can be mutating the namespace or publishing new
+// chunks/manifests, so the one computeReachability scan GC performs right
+// after opening the store is not racing any writer. Destructive apply
+// refuses outright (errGCUnsafe) if that scan finds ANY live root broken
+// (missing/corrupt manifest, missing/corrupt chunk, malformed reference) --
+// proceeding would risk treating reachable-but-corrupt data as garbage.
+// Deletion of what remains classified genuinely unreachable is simple by
+// construction: CAS/manifest files are immutable and content-addressed,
+// each file is removed independently with no transactional deletion
+// metadata, so an interruption mid-sweep can only ever leave some garbage
+// still on disk -- it can never touch a file reachability classified live.
+// =============================================================================
+
+// storeLock holds one non-blocking flock on a store's dedicated LOCK file
+// for as long as the process wants to be a recognized owner of that store.
+type storeLock struct {
+	f *os.File
+}
+
+// acquireStoreLock takes a non-blocking flock (LOCK_SH for exclusive=false,
+// LOCK_EX for exclusive=true) on root's "LOCK" file. It never blocks: a
+// conflicting lock held elsewhere fails immediately with errGCStoreInUse,
+// so GC fails fast rather than hanging, and a server refusing to start
+// because GC apply currently owns the store fails just as fast.
+func acquireStoreLock(root string, exclusive bool) (*storeLock, error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(root, "LOCK"), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	mode := syscall.LOCK_SH
+	if exclusive {
+		mode = syscall.LOCK_EX
+	}
+	if err := syscall.Flock(int(f.Fd()), mode|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, errGCStoreInUse
+	}
+	return &storeLock{f: f}, nil
+}
+
+// release drops the flock and closes the underlying file descriptor.
+func (l *storeLock) release() {
+	syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
+	l.f.Close()
+}
+
+// GCResult reports one GC dry-run or apply pass: what was found (always),
+// and -- only when Applied is true -- what was actually deleted.
+type GCResult struct {
+	Applied bool `json:"applied"`
+
+	CurrentRootCount    int `json:"current_root_count"`
+	HistoricalRootCount int `json:"historical_root_count"`
+	MultipartRootCount  int `json:"multipart_root_count"`
+
+	LiveSetOK bool          `json:"live_set_ok"`
+	Issues    []VerifyIssue `json:"issues,omitempty"`
+
+	ChunksScanned     int `json:"chunks_scanned"`
+	ChunksReachable   int `json:"chunks_reachable"`
+	ChunksUnreachable int `json:"chunks_unreachable"`
+
+	ManifestsScanned     int `json:"manifests_scanned"`
+	ManifestsUnreachable int `json:"manifests_unreachable"`
+
+	ReachablePayloadBytes   int64 `json:"reachable_payload_bytes"`
+	ReclaimablePayloadBytes int64 `json:"reclaimable_payload_bytes"`
+	ReclaimableDiskBytes    int64 `json:"reclaimable_disk_bytes"`
+
+	ChunksDeleted    int   `json:"chunks_deleted"`
+	ManifestsDeleted int   `json:"manifests_deleted"`
+	BytesDeleted     int64 `json:"bytes_deleted"`
+}
+
+// gcCollect runs one GC pass against the store at storeDir: acquire
+// exclusive ownership, scan for reachability, report, and -- only if apply
+// is true and the live root set is fully valid -- delete every genuinely
+// unreachable chunk/manifest file plus stale tmp/ staging files.
+func gcCollect(storeDir string, apply bool) (GCResult, error) {
+	lock, err := acquireStoreLock(storeDir, true)
+	if err != nil {
+		return GCResult{}, err
+	}
+	defer lock.release()
+
+	store, err := OpenStore(storeDir)
+	if err != nil {
+		return GCResult{}, err
+	}
+	defer store.Close()
+
+	rr, err := store.computeReachability(false)
+	if err != nil {
+		return GCResult{}, err
+	}
+
+	res := GCResult{
+		CurrentRootCount:    rr.CurrentRootCount,
+		HistoricalRootCount: rr.HistoricalRootCount,
+		MultipartRootCount:  rr.MultipartRootCount,
+		LiveSetOK:           rr.OK(),
+		Issues:              rr.Issues,
+	}
+
+	var unreachableChunkPaths, unreachableManifestPaths []string
+	scanErr := filepath.WalkDir(filepath.Join(store.root, "chunks"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		res.ChunksScanned++
+		if rr.ReferencedChunks[d.Name()] {
+			res.ChunksReachable++
+			res.ReachablePayloadBytes += info.Size()
+			return nil
+		}
+		res.ChunksUnreachable++
+		res.ReclaimablePayloadBytes += info.Size()
+		unreachableChunkPaths = append(unreachableChunkPaths, path)
+		return nil
+	})
+	if scanErr != nil && !os.IsNotExist(scanErr) {
+		return res, fmt.Errorf("gc: scanning chunks: %w", scanErr)
+	}
+
+	scanErr = filepath.WalkDir(filepath.Join(store.root, "manifests"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		res.ManifestsScanned++
+		uuid := strings.TrimSuffix(d.Name(), ".json")
+		if rr.ReferencedManifests[uuid] {
+			return nil
+		}
+		res.ManifestsUnreachable++
+		res.ReclaimablePayloadBytes += info.Size()
+		unreachableManifestPaths = append(unreachableManifestPaths, path)
+		return nil
+	})
+	if scanErr != nil && !os.IsNotExist(scanErr) {
+		return res, fmt.Errorf("gc: scanning manifests: %w", scanErr)
+	}
+
+	tmpBytes, err := dirSizeBytes(filepath.Join(store.root, "tmp"))
+	if err != nil {
+		return res, fmt.Errorf("gc: scanning tmp: %w", err)
+	}
+	res.ReclaimableDiskBytes = res.ReclaimablePayloadBytes + tmpBytes
+
+	res.Applied = apply
+	if !apply {
+		return res, nil
+	}
+
+	// Fail-closed: a destructive pass never runs against a live root set
+	// it cannot fully trust. Dry-run (above) already reported the same
+	// issues -- this is the one place apply itself refuses to act on them.
+	if !rr.OK() {
+		return res, errGCUnsafe
+	}
+
+	for _, p := range unreachableChunkPaths {
+		fireTestHook(hookBeforeGCDelete)
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return res, fmt.Errorf("gc: removing chunk %s: %w", p, err)
+		}
+		res.ChunksDeleted++
+	}
+	for _, p := range unreachableManifestPaths {
+		fireTestHook(hookBeforeGCDelete)
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return res, fmt.Errorf("gc: removing manifest %s: %w", p, err)
+		}
+		res.ManifestsDeleted++
+	}
+	// tmp/ staging files are always safe to clear (section 12): never
+	// referenced by any committed manifest/journal record.
+	if tmpEntries, rerr := os.ReadDir(filepath.Join(store.root, "tmp")); rerr == nil {
+		for _, e := range tmpEntries {
+			os.Remove(filepath.Join(store.root, "tmp", e.Name()))
+		}
+	}
+	res.BytesDeleted = res.ReclaimableDiskBytes
 	return res, nil
 }
 
@@ -4799,7 +5651,7 @@ func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry,
 }
 
 // =============================================================================
-// 15. CLI: stats / verify
+// 15. CLI: stats / verify / versions / restore / gc
 //
 // Compact verbs; stdout carries the requested result/data, stderr carries
 // diagnostics, and a nonzero exit reports incomplete/failed work -- per
@@ -4821,8 +5673,9 @@ func printStatsHuman(w io.Writer, r StatsResult) {
 	fmt.Fprintf(w, "ZeroS3 stats\n")
 	fmt.Fprintf(w, "scope            %s\n", scope)
 	fmt.Fprintf(w, "buckets          %d\n", r.BucketCount)
-	fmt.Fprintf(w, "objects          %d current | %d versions\n", r.CurrentObjectCount, r.VersionCount)
-	fmt.Fprintf(w, "logical          %d bytes current | %d bytes versions\n", r.LogicalCurrentBytes, r.LogicalVersionBytes)
+	fmt.Fprintf(w, "objects          %d current | %d versions (%d historical)\n", r.CurrentObjectCount, r.VersionCount, r.HistoricalVersionCount)
+	fmt.Fprintf(w, "logical          %d bytes current | %d bytes versions (%d historical)\n", r.LogicalCurrentBytes, r.LogicalVersionBytes, r.HistoricalVersionLogicalBytes)
+	fmt.Fprintf(w, "multipart        %d active uploads | %d bytes\n", r.ActiveMultipartUploadCount, r.ActiveMultipartLogicalBytes)
 	fmt.Fprintf(w, "chunk refs       %d refs (%d bytes) | %d unique (%d bytes)\n",
 		r.LogicalChunkReferenceCount, r.LogicalChunkReferenceBytes, r.ScopeUniqueChunkCount, r.ScopeUniqueChunkBytes)
 	fmt.Fprintf(w, "sharing          %d bytes exclusive | %d bytes shared outside scope\n", r.ScopeExclusiveChunkBytes, r.ScopeSharedChunkBytes)
@@ -4841,6 +5694,7 @@ func printVerifyHuman(w io.Writer, r VerifyResult) {
 	}
 	fmt.Fprintf(w, "ZeroS3 verify (%s)\n", mode)
 	fmt.Fprintf(w, "journal          %d frames checked | ok=%v\n", r.JournalFramesChecked, r.JournalOK)
+	fmt.Fprintf(w, "roots            %d current | %d historical | %d multipart\n", r.CurrentRootCount, r.HistoricalRootCount, r.MultipartRootCount)
 	fmt.Fprintf(w, "manifests        %d checked\n", r.ManifestsChecked)
 	fmt.Fprintf(w, "chunks           %d checked\n", r.ChunksChecked)
 	fmt.Fprintf(w, "integrity        %d missing | %d corrupt | %d invalid\n", r.Missing, r.Corrupt, r.Invalid)
@@ -4868,6 +5722,17 @@ func runServe(args []string) {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
 	defer store.Close()
+
+	// A running server holds a SHARED advisory lock on the store for its
+	// whole lifetime -- see section 16a -- so that destructive `gc -apply`
+	// (which requires EXCLUSIVE ownership) refuses safely instead of
+	// racing a live writer, rather than the server refusing to start
+	// merely because some other ordinary reader has the store open.
+	lock, err := acquireStoreLock(*storeDir, false)
+	if err != nil {
+		log.Fatalf("zeros3: failed to acquire store lock (a destructive `gc -apply` may currently be running against this store): %v", err)
+	}
+	defer lock.release()
 
 	srv := NewServer(store, Credentials{
 		AccessKeyID:     defaultAccessKeyID,
@@ -5002,6 +5867,215 @@ func runPresign(args []string) {
 	fmt.Println(url)
 }
 
+// versionRow is one line of "zeros3 versions" output, script-friendly
+// (stable, whitespace-separated columns) and human-readable at once, or
+// JSON via -json.
+type versionRow struct {
+	VersionID   string `json:"version_id"`
+	Size        int64  `json:"size"`
+	ETag        string `json:"etag"`
+	ContentType string `json:"content_type"`
+	Timestamp   string `json:"timestamp"`
+	Status      string `json:"status"` // "current" | "historical"
+	Deleted     bool   `json:"deleted,omitempty"`
+}
+
+// runVersions implements "zeros3 versions -bucket B -key K [-store DIR]
+// [-json]": the current root (if any) is listed first, followed by every
+// retained historical version oldest-first. Output is deterministic across
+// restart, since it is derived entirely from the journal-reconstructed
+// namespace/history (section 7c).
+func runVersions(args []string) {
+	fs := flag.NewFlagSet("versions", flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	bucket := fs.String("bucket", "", "bucket name (required)")
+	key := fs.String("key", "", "object key (required)")
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	fs.Parse(args)
+
+	if *bucket == "" || *key == "" {
+		fmt.Fprintln(os.Stderr, "zeros3: versions: -bucket and -key are required")
+		os.Exit(2)
+	}
+
+	store, err := OpenStore(*storeDir)
+	if err != nil {
+		log.Fatalf("zeros3: failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	entries, cur, err := store.ListVersions(*bucket, *key)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: versions failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	var rows []versionRow
+	if cur != nil {
+		rows = append(rows, versionRow{
+			VersionID: cur.manifestUUID, Size: cur.size, ETag: cur.etag,
+			ContentType: cur.contentType, Status: "current",
+		})
+	}
+	// Newest historical version first, so the most likely restore
+	// candidate reads at the top; entries is already oldest-first (seq
+	// order) from ListVersions.
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		rows = append(rows, versionRow{
+			VersionID: e.versionID, Size: e.size, ETag: e.etag,
+			ContentType: e.contentType, Timestamp: e.archivedAt.UTC().Format(time.RFC3339Nano),
+			Status: "historical", Deleted: e.reason == historyReasonDeleted,
+		})
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(rows); err != nil {
+			log.Fatalf("zeros3: %v", err)
+		}
+		return
+	}
+	if len(rows) == 0 {
+		fmt.Println("zeros3: no current or historical versions for this key")
+		return
+	}
+	fmt.Printf("%-38s %-12s %10s %-30s %s\n", "VERSION-ID", "STATUS", "SIZE", "TIMESTAMP", "ETAG")
+	for _, r := range rows {
+		ts := r.Timestamp
+		if ts == "" {
+			ts = "-"
+		}
+		status := r.Status
+		if r.Deleted {
+			status += "(deleted)"
+		}
+		fmt.Printf("%-38s %-12s %10d %-30s %s\n", r.VersionID, status, r.Size, ts, r.ETag)
+	}
+}
+
+// runRestore implements "zeros3 restore -bucket B -key K -version ID
+// [-store DIR]": makes VERSION the new current root of bucket/key,
+// zero-copy (section 7c). Prints the resulting ETag on success.
+func runRestore(args []string) {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	bucket := fs.String("bucket", "", "bucket name (required)")
+	key := fs.String("key", "", "object key (required)")
+	version := fs.String("version", "", "version ID to restore, from `zeros3 versions` (required)")
+	fs.Parse(args)
+
+	if *bucket == "" || *key == "" || *version == "" {
+		fmt.Fprintln(os.Stderr, "zeros3: restore: -bucket, -key, and -version are required")
+		os.Exit(2)
+	}
+
+	store, err := OpenStore(*storeDir)
+	if err != nil {
+		log.Fatalf("zeros3: failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	entry, _, err := store.RestoreObjectVersion(*bucket, *key, *version)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: restore failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("restored %s/%s to version %s (etag %q, %d bytes)\n", *bucket, *key, *version, entry.etag, entry.size)
+}
+
+func printGCHuman(w io.Writer, r GCResult) {
+	mode := "dry-run"
+	if r.Applied {
+		mode = "apply"
+	}
+	fmt.Fprintf(w, "ZeroS3 gc (%s)\n", mode)
+	fmt.Fprintf(w, "roots            %d current | %d historical | %d multipart\n", r.CurrentRootCount, r.HistoricalRootCount, r.MultipartRootCount)
+	fmt.Fprintf(w, "live set         ok=%v\n", r.LiveSetOK)
+	fmt.Fprintf(w, "chunks           %d scanned | %d reachable | %d unreachable\n", r.ChunksScanned, r.ChunksReachable, r.ChunksUnreachable)
+	fmt.Fprintf(w, "manifests        %d scanned | %d unreachable\n", r.ManifestsScanned, r.ManifestsUnreachable)
+	fmt.Fprintf(w, "payload bytes    %d reachable | %d reclaimable\n", r.ReachablePayloadBytes, r.ReclaimablePayloadBytes)
+	fmt.Fprintf(w, "disk bytes       %d reclaimable\n", r.ReclaimableDiskBytes)
+	if r.Applied {
+		fmt.Fprintf(w, "deleted          %d chunks | %d manifests | %d bytes\n", r.ChunksDeleted, r.ManifestsDeleted, r.BytesDeleted)
+	}
+	for _, iss := range r.Issues {
+		fmt.Fprintf(w, "  %s: %s: %s\n", iss.Kind, iss.Subject, iss.Detail)
+	}
+}
+
+// runGC implements "zeros3 gc -store DIR [-apply] [-json]": dry-run by
+// default (never deletes anything); -apply is required to actually remove
+// unreachable CAS/manifest files. See section 16b.
+func runGC(args []string) {
+	fs := flag.NewFlagSet("gc", flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	apply := fs.Bool("apply", false, "actually delete unreachable data (default: dry-run only, deletes nothing)")
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	fs.Parse(args)
+
+	res, err := gcCollect(*storeDir, *apply)
+	if err != nil {
+		switch {
+		case errors.Is(err, errGCStoreInUse):
+			fmt.Fprintf(os.Stderr, "zeros3: gc: %v -- gc requires exclusive access; stop `zeros3 serve`/any other gc against this store first\n", err)
+		case errors.Is(err, errGCUnsafe):
+			fmt.Fprintf(os.Stderr, "zeros3: gc: %v -- run `zeros3 gc` (dry-run) or `zeros3 verify`/`zeros3 doctor` to see what is broken\n", err)
+		default:
+			fmt.Fprintf(os.Stderr, "zeros3: gc failed: %v\n", err)
+		}
+		os.Exit(1)
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			log.Fatalf("zeros3: %v", err)
+		}
+		return
+	}
+	printGCHuman(os.Stdout, res)
+}
+
+// runDoctor implements "zeros3 doctor -store DIR [-deep] [-json]": a
+// read-only lifecycle diagnostic that is deliberately just Verify's
+// existing output under a name operators reach for first (section 16c).
+// It never mutates the store.
+func runDoctor(args []string) {
+	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	deep := fs.Bool("deep", false, "re-hash every reachable chunk's actual bytes")
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	fs.Parse(args)
+
+	store, err := OpenStore(*storeDir)
+	if err != nil {
+		log.Fatalf("zeros3: failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	res, err := store.Verify(*deep)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: doctor failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			log.Fatalf("zeros3: %v", err)
+		}
+	} else {
+		printVerifyHuman(os.Stdout, res)
+	}
+	if !res.OK() {
+		os.Exit(1)
+	}
+}
+
 // =============================================================================
 // 16. Lifecycle / main
 // =============================================================================
@@ -5022,8 +6096,16 @@ func main() {
 		runVerify(args)
 	case "presign":
 		runPresign(args)
+	case "versions":
+		runVersions(args)
+	case "restore":
+		runRestore(args)
+	case "gc":
+		runGC(args)
+	case "doctor":
+		runDoctor(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, or presign)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, or doctor)\n", cmd)
 		os.Exit(2)
 	}
 }

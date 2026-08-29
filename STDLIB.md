@@ -46,7 +46,8 @@ aspirational.
 | 5 | Embedded metadata DB (e.g. `bbolt`) for tracking what exists | `os`, `io`, `hash/crc32` | An append-only, CRC32C-framed, replay-based "visibility journal" (section 6) that is the sole source of truth for the bucket/object namespace | A real engineering tradeoff: no transactions/indexes/queries for free — replay-on-open and an in-memory map are hand-built. |
 | 6 | XML codec (e.g. `fast-xml-parser`) | `encoding/xml` | S3 response/error XML shapes (`listBucketResult`, `copyObjectResult`, S3 error envelope) | Stdlib's `encoding/xml` handles escaping/marshaling directly; no gap to fill. |
 | 7 | JSON codec/CLI reporting library | `encoding/json` | Manifest/`FORMAT.json`/journal-payload encoding, `stats -json`/`verify -json` output | None; stdlib JSON is a complete fit. |
-| 8 | CLI framework (e.g. Cobra, `commander`) | `flag`, `os.Args` | Subcommand dispatch (`serve` default, `stats`, `verify`), usage/exit-status contract (section 15/16) | `flag` has no subcommand concept built in; ZeroS3 dispatches on `os.Args[1]` itself and gives each subcommand its own `flag.FlagSet`. |
+| 8 | CLI framework (e.g. Cobra, `commander`) | `flag`, `os.Args` | Subcommand dispatch (`serve` default, `stats`, `verify`, `presign`, and — M5-C — `versions`, `restore`, `gc`, `doctor`), usage/exit-status contract (section 15/16) | `flag` has no subcommand concept built in; ZeroS3 dispatches on `os.Args[1]` itself and gives each subcommand its own `flag.FlagSet`. |
+| 11 | Advisory file locking (e.g. `gofrs/flock`) | `syscall` (`syscall.Flock`, `LOCK_EX`/`LOCK_SH`/`LOCK_NB`/`LOCK_UN`) | Exclusive-ownership enforcement for `zeros3 gc` (section 13b): a shared lock for an ordinary store user (`zeros3 serve`), an exclusive, non-blocking lock GC must win before it may delete anything | `syscall.Flock` is Unix-specific (fine: Linux amd64 is the sole release-blocking platform per section 1 above); no third-party lock library was needed. |
 | 9 | Checksum/integrity library | `hash/crc32` (with the Castagnoli table), `encoding/base64` | Ordinary `x-amz-checksum-crc32` request validation, journal frame CRC32C | Both uses share `hash/crc32`; nothing third-party was ever needed here. |
 | 10 | S3-compatible single-part ETag (MD5-based) | `crypto/md5` | `buildManifestV1`'s ETag computation | MD5 here is explicitly *not* a security use — it exists solely to match S3's documented single-part ETag convention (`//nolint:gosec` marks this deliberately). |
 
@@ -125,6 +126,13 @@ authored logic in `zeros3.go`:
 - The `stats`/`verify` model: exact-scan dedup accounting (logical vs.
   unique vs. exclusive vs. shared bytes) and the multi-layer integrity
   check `verify` performs (structural → per-chunk → whole-object digest).
+- **M5-C:** internal (non-AWS-API) immutable object version history and
+  zero-copy restore; the one authoritative CAS/manifest reachability scan
+  (`computeReachability`, section 12a) that unifies current objects,
+  retained historical versions, and active multipart uploads into a
+  single live-root/live-chunk model consumed by stats, verify/doctor, and
+  GC alike; and offline, exclusive, dry-run-by-default GC built on top of
+  it.
 
 ## 9. Tradeoffs / limits
 
@@ -138,6 +146,11 @@ authored logic in `zeros3.go`:
   needs — this is a deliberate "didn't need it," not a gap).
 - **No retry/backoff library** — ZeroS3 has no client-side sync/transfer
   feature in this milestone, so nothing needed one.
+- **No online/concurrent GC** — `zeros3 gc` requires exclusive ownership
+  of the store (via `syscall.Flock`, row 11 above) and refuses to run
+  while `zeros3 serve` (or another `gc`) holds it; a scheduler for
+  background/concurrent garbage collection was explicitly out of this
+  milestone's scope, so nothing needed one.
 - **A real embedded database** (e.g. `bbolt`) would give ZeroS3
   transactions, indexes, and range queries for free; the hand-rolled
   journal-replay model trades that convenience for zero dependencies and
