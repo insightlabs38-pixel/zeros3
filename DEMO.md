@@ -83,17 +83,20 @@ not a special "diff" feature.
 ## 6. CopyObject: zero new payload bytes (≈30s)
 
 ```sh
-./zeros3 stats -store demo-store -json > /tmp/before.json
+./zeros3 stats -store demo-store -json | grep -o '"chunk_store_file_bytes":[0-9]*' > /tmp/before.txt
 aws --endpoint-url http://127.0.0.1:9000 s3api copy-object \
     --bucket demo-bucket --key object-copy.bin \
     --copy-source demo-bucket/object.bin
-./zeros3 stats -store demo-store -json > /tmp/after.json
-diff <(jq .chunk_store_file_bytes /tmp/before.json) <(jq .chunk_store_file_bytes /tmp/after.json)
+./zeros3 stats -store demo-store -json | grep -o '"chunk_store_file_bytes":[0-9]*' > /tmp/after.txt
+diff /tmp/before.txt /tmp/after.txt && echo "chunk_store_file_bytes unchanged"
 ```
 
-Identical `chunk_store_file_bytes` before/after — the copy published a
-new manifest (new identity, new `Last-Modified`) without moving a single
-payload byte.
+No external JSON tool required — `grep -o` pulls the one stable field name
+`stats -json` guarantees. Identical `chunk_store_file_bytes` before/after —
+the copy published a new manifest (new identity, new `Last-Modified`)
+without moving a single payload byte. (`zeros3 stats -store demo-store`,
+without `-json`, prints the same figure human-readably if a live read is
+preferred over the diff.)
 
 ## 7. Range GET (≈20s)
 
@@ -146,15 +149,48 @@ substitution-table rows.
 
 ## Fixture generation (deterministic, not checked in)
 
-```sh
-# fixture-v1.bin: 32-128 MiB of structured non-zero data
-head -c 67108864 /dev/urandom > fixture-v1.bin   # or any deterministic generator
+`/dev/urandom` is **not** deterministic — two rehearsals would produce two
+different fixtures with two different expected hashes, which contradicts
+"deterministic" fixture generation. Use a fixed-seed pseudorandom generator
+instead, matching the same seeded approach `zeros3_test.go`'s
+`genRandomBytes` helper uses internally for its own dedup tests. This needs
+only the Go toolchain already required to build ZeroS3 — no extra tool:
 
-# fixture-v2-edited.bin: v1 with a small controlled insertion
-# (see zeros3_test.go's genRandomBytes/editing helpers for the exact
-# deterministic approach used by the internal dedup tests, if a
-# byte-identical rehearsal fixture is wanted)
+```sh
+cat > /tmp/genfixture.go <<'EOF'
+package main
+
+import (
+	"math/rand"
+	"os"
+	"strconv"
+)
+
+// Deterministic: the same seed and size always produce the same bytes.
+func main() {
+	seed, _ := strconv.ParseInt(os.Args[2], 10, 64)
+	size, _ := strconv.Atoi(os.Args[3])
+	buf := make([]byte, size)
+	rand.New(rand.NewSource(seed)).Read(buf)
+	os.WriteFile(os.Args[1], buf, 0o644)
+}
+EOF
+
+# fixture-v1.bin: 64 MiB of structured non-zero data, seed 1
+go run /tmp/genfixture.go fixture-v1.bin 1 67108864
+
+# fixture-v2-edited.bin: v1 with a small controlled insertion 50000 bytes
+# in (deterministic offset/content, matching the shape of
+# TestDedup_EditedObjectReuseBeatsFixedSizeChunking's edit)
+head -c 50000 fixture-v1.bin > fixture-v2-edited.bin
+go run /tmp/genfixture.go /tmp/insertion.bin 2 4001
+cat /tmp/insertion.bin >> fixture-v2-edited.bin
+tail -c +50001 fixture-v1.bin >> fixture-v2-edited.bin
 ```
+
+Re-running the same commands always reproduces byte-identical fixtures (and
+therefore the same expected SHA-256 values) — the actual meaning of
+"deterministic" here.
 
 Do not commit fixtures, logs, or the `demo-store` directory used for
 rehearsal.

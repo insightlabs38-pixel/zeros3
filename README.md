@@ -1,10 +1,25 @@
 # ZeroS3
 
+**0 Dependencies Hackathon — Track D: Data & Storage**
+
 **S3 on the outside, content-addressed storage underneath.**
 
 A local, self-hosted, S3-compatible object store, built with Go 1.27 and
 **zero third-party runtime dependencies** — one implementation file,
 `zeros3.go`, and an organizer-approved `zeros3_test.go`.
+
+## At a glance
+
+| | |
+|---|---|
+| **Track** | Track D — Data & Storage |
+| **Runtime dependencies** | zero — `go.mod` has no `require` block ([`deps-proof.txt`](./deps-proof.txt)) |
+| **Implementation source files** | one — `zeros3.go` (plus organizer-approved `zeros3_test.go`) |
+| **Real external S3 client proof** | pinned AWS SDK for Go v2, black-box, in [`zeros3-testing`](https://github.com/insightlabs38-pixel/zeros3-testing) — see "External interoperability" below |
+| **Persistence / crash model** | append-only, CRC32C-framed visibility journal; acknowledged mutation ⇒ durable (see "Durability model") |
+| **Dedup** | content-defined chunking (CDC) over a SHA-256 CAS; measured, not asserted (see "Dedup and stats") |
+| **Reproducible build** | two independent source copies, byte-identical SHA-256 (see "Reproducible build") |
+| **Bonus claims** | Single File, Reproducible Build, STDLIB Log; Package Killer only if `STATUS.md`'s GO/NO-GO section says GO |
 
 ## Why
 
@@ -70,7 +85,9 @@ unsatisfiable range; a multi-range header falls back to a full 200, per
 RFC 7233). `Content-Type` and `x-amz-meta-*` metadata round-trip on every
 operation that carries them. Ordinary `x-amz-checksum-crc32` request
 integrity is validated (the exact default behavior of a current AWS SDK
-Go v2 client). `zeros3 stats` (human/`-json`) and `zeros3 verify`
+Go v2 client), and `Content-MD5` is validated when a client sends it
+(rclone's ordinary single-part upload path does). `zeros3 stats`
+(human/`-json`) and `zeros3 verify`
 (structural, and `-deep` for full content re-hashing plus a whole-object
 SHA-256 check) round out the CLI.
 
@@ -202,9 +219,33 @@ repository:
   destination `Last-Modified`, and encoded/tricky source keys.
 - **Range GET** (`harness/m3/range`) — **27/27 passed**.
 - **Dedup evidence** (`harness/m3/dedup`) — **7/7 passed**.
+- **rclone T1 secondary client** (`harness/rclone`) — **19/19 passed**,
+  plus 2 honestly-documented, root-caused known limitations (rclone's
+  ordinary upload path needs `UNSIGNED-PAYLOAD`, which ZeroS3 deliberately
+  doesn't support — grouped with presigned URLs/`aws-chunked`, both out of
+  this pass's scope). Bucket/object lifecycle, listing, download, hash
+  equality, overwrite, and restart persistence are all proven through the
+  real `rclone` v1.75.0 binary.
 
 See that repository's `results/` directory for the exact recorded runs,
-pinned SDK versions, and reproduction commands.
+pinned SDK/rclone versions, and reproduction commands.
+
+## Package Killer bonus
+
+**GO.** ZeroS3 reimplements the principal standalone use case of
+[`s3rver`](https://www.npmjs.com/package/s3rver): a local S3-compatible
+server for development and testing. The same ordinary S3 client workflow
+can be pointed at ZeroS3 by changing endpoint/connection settings. ZeroS3
+ships as one Go implementation file with zero third-party runtime
+dependencies; it does not replace s3rver's Node.js embedding API.
+
+One frozen AWS SDK for Go v2 test function, run unmodified against both
+targets (only endpoint/credential/addressing connection settings
+differed): **14/14 passed on ZeroS3, 14/14 passed on s3rver 3.7.1** —
+bucket/object CRUD, `ListObjectsV2`, Content-Type + metadata, and ordinary
+signed requests. Full per-operation table, exact re-checked s3rver
+version/dependency facts, and reproduction commands:
+`zeros3-testing/results/PACKAGE_KILLER_RESULTS.md`.
 
 ## Reproducible build
 
@@ -217,8 +258,8 @@ different absolute paths, on `go1.27.0 linux/amd64` — produce
 byte-identical output:
 
 ```
-SHA-256 (copy A): 1e98c1d57e49855d509d84921d0c9b3c09aacb8ef7164b35549a358ea423daf9
-SHA-256 (copy B): 1e98c1d57e49855d509d84921d0c9b3c09aacb8ef7164b35549a358ea423daf9
+SHA-256 (copy A): 770bb0eae8a659d92a1fd38dc7916c2ccb41cc142170bf3377a323e241ae0d53
+SHA-256 (copy B): 770bb0eae8a659d92a1fd38dc7916c2ccb41cc142170bf3377a323e241ae0d53
 ```
 
 Reproduce this with [`scripts/reproducible_build.sh`](./scripts/reproducible_build.sh)
@@ -250,6 +291,8 @@ zeros3_test.go   the entire test suite (stdlib testing only)
 go.mod           module zeros3, go 1.27.0, no require block
 STATUS.md        milestone-by-milestone status, durability contract, test inventory
 STDLIB.md        every stdlib substitution, mapped to shipped code
+S3_COMPAT.md     exact supported/unsupported/deviating S3 behavior
+DEMO.md          deterministic demo rehearsal script
 deps-proof.txt   generated zero-dependency evidence
 scripts/         reproducible-build verification script
 ```

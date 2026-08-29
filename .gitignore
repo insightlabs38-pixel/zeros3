@@ -2,3 +2,6 @@
 *.test
 /teststore/
 *.store/
+/demo-store/
+fixture-*.bin
+*.bin
