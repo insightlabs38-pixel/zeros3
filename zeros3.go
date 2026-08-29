@@ -74,9 +74,9 @@ const (
 	journalHeaderSize   = 4 + 2 + 1 + 1 + 8 + 4 // magic+ver+type+flags+seq+len
 	maxJournalPayload   = 8 * 1024 * 1024
 
-	// Journal record type numbers (frozen storage format v1). All four
-	// are implemented as of M2; the numbers themselves were fixed in M1
-	// and never changed.
+	// Journal record type numbers (frozen storage format v1). These
+	// numbers are part of the on-disk format: a new record kind gets a
+	// new number, and none of these four is ever repurposed.
 	recordTypeCreateBucket     = byte(1)
 	recordTypePutObjectRoot    = byte(2)
 	recordTypeDeleteObjectRoot = byte(3)
@@ -84,8 +84,9 @@ const (
 
 	maxRequestBodySize = 256 * 1024 * 1024
 
-	// Default M1 credentials/region. There is no credential-management
-	// story in M1; a single static keypair is enough to exercise SigV4.
+	// Default credentials/region. ZeroS3 has no credential-management
+	// story (no IAM/STS/KMS) -- a single static keypair is enough to
+	// exercise SigV4 for its self-hosted, local-development scope.
 	defaultAccessKeyID     = "AKIAZEROS3EXAMPLE01"
 	defaultSecretAccessKey = "zeros3exampleSecretKeyForM1TestingOnly01"
 	defaultRegion          = "us-east-1"
@@ -592,7 +593,7 @@ type journalPutPayload struct {
 // key's visible root from a bucket's namespace. It does not reference (and
 // therefore cannot invalidate) the manifest/chunks the deleted root used to
 // point at -- those remain on disk, immutable and readable by any other
-// root that still references them, until a later GC pass (not part of M2)
+// root that still references them, until a GC pass (not implemented)
 // proves them unreachable.
 type journalDeleteObjectPayload struct {
 	Bucket string `json:"bucket"`
@@ -1378,8 +1379,8 @@ func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, m
 // path-normalization traps -- repeated slashes, "%2F" standing for a
 // literal slash inside a key, "+" vs "%20" for space, trailing slashes --
 // are preserved exactly as the client sent them and exactly as S3 itself
-// signs them. Presigned URLs and aws-chunked/trailer payloads are out of
-// scope for M1.
+// signs them. Presigned URLs and aws-chunked/trailer payloads are not
+// implemented.
 // =============================================================================
 
 type authError struct {
@@ -2061,6 +2062,23 @@ func (srv *Server) handleHeadBucket(w http.ResponseWriter, bucket string) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// writeBucketOrInternalError renders the S3-shaped error for a store call
+// whose only expected failure besides success is a missing bucket --
+// PutObject, DeleteObject, and ListObjectsV2 all share this exact two-way
+// mapping (a missing bucket vs. anything else), so they share this helper
+// instead of each repeating the same errors.Is/writeS3Error pair.
+// DeleteBucket (which also distinguishes BucketNotEmpty) and CopyObject
+// (which maps a missing bucket to a *different* S3 code depending on
+// whether it's the source or destination) have their own, genuinely
+// different mappings and are not forced through this one.
+func writeBucketOrInternalError(w http.ResponseWriter, err error, resource string) {
+	if errors.Is(err, errNoSuchBucket) {
+		writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", resource)
+		return
+	}
+	writeS3Error(w, "InternalError", err.Error(), resource)
+}
+
 func (srv *Server) handleDeleteBucket(w http.ResponseWriter, bucket string) {
 	err := srv.store.DeleteBucket(bucket)
 	switch {
@@ -2099,11 +2117,7 @@ func (srv *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucke
 
 	entry, err := srv.store.PutObject(bucket, key, body, contentType, metadata)
 	if err != nil {
-		if errors.Is(err, errNoSuchBucket) {
-			writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", "/"+bucket+"/"+key)
-			return
-		}
-		writeS3Error(w, "InternalError", err.Error(), "/"+bucket+"/"+key)
+		writeBucketOrInternalError(w, err, "/"+bucket+"/"+key)
 		return
 	}
 	w.Header().Set("ETag", `"`+entry.etag+`"`)
@@ -2226,16 +2240,12 @@ func (srv *Server) handleHeadObject(w http.ResponseWriter, bucket, key string) {
 }
 
 func (srv *Server) handleDeleteObject(w http.ResponseWriter, bucket, key string) {
-	err := srv.store.DeleteObject(bucket, key)
-	switch {
-	case err == nil:
-		w.WriteHeader(http.StatusNoContent)
-		fireTestHook(hookAfterAck)
-	case errors.Is(err, errNoSuchBucket):
-		writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", "/"+bucket+"/"+key)
-	default:
-		writeS3Error(w, "InternalError", err.Error(), "/"+bucket+"/"+key)
+	if err := srv.store.DeleteObject(bucket, key); err != nil {
+		writeBucketOrInternalError(w, err, "/"+bucket+"/"+key)
+		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+	fireTestHook(hookAfterAck)
 }
 
 // parseListObjectsV2Query extracts the ESSENTIAL ListObjectsV2 query
@@ -2272,8 +2282,8 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 		return
 	}
 	// ZeroS3 implements only the V2 listing API; the legacy V1 GET-bucket
-	// listing shape (no list-type param) is out of scope for M2 and is
-	// rejected explicitly rather than silently misinterpreted as V2.
+	// listing shape (no list-type param) is rejected explicitly rather
+	// than silently misinterpreted as V2.
 	if listType != "2" {
 		writeS3Error(w, "InvalidArgument", "only list-type=2 (ListObjectsV2) is supported", "/"+bucket)
 		return
@@ -2290,11 +2300,7 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 
 	page, err := srv.store.ListObjectsV2(bucket, prefix, delimiter, startAfterKey, maxKeys)
 	if err != nil {
-		if errors.Is(err, errNoSuchBucket) {
-			writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", "/"+bucket)
-			return
-		}
-		writeS3Error(w, "InternalError", err.Error(), "/"+bucket)
+		writeBucketOrInternalError(w, err, "/"+bucket)
 		return
 	}
 
@@ -2331,16 +2337,21 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 }
 
 // =============================================================================
-// 11b. CopyObject
+// 11. CopyObject
 //
 // CopyObject is the payoff of the manifest+CAS design: copying an object
-// never re-chunks, re-reads, or re-uploads its payload. Under the default
-// COPY metadata directive, the destination root reuses the exact same
-// manifest file the source root already uses -- literally zero new bytes
-// of any kind, not just zero chunk payload. Under REPLACE, a small new
-// manifest is published (metadata/content-type differ), but it still
-// references the identical chunk list cloned from the source manifest, so
-// even REPLACE never touches a single CAS chunk file.
+// never re-chunks, re-reads, or re-uploads its payload, and never rewrites
+// an existing CAS chunk file. Both metadata directives -- COPY and REPLACE
+// -- publish a brand-new destination manifest (new UUID, new version ID,
+// new CreatedAt): a copy is a genuinely new object version with its own
+// Last-Modified/version identity, even though its payload is byte-for-byte
+// identical to the source's. The chunk list, object SHA-256, and ETag are
+// cloned verbatim from the source manifest; only metadata/Content-Type
+// differ (COPY: copied from the source; REPLACE: taken from the request).
+// The measurable claim is therefore "CopyObject writes zero new CAS
+// payload bytes" -- not "zero bytes of any kind": both directives publish
+// a small new manifest file, so manifest_file_bytes may grow even though
+// chunk_store_file_bytes never does.
 // =============================================================================
 
 type metadataDirective int
@@ -2360,11 +2371,12 @@ type CopyObjectRequest struct {
 }
 
 // CopyObject publishes a new root at (DstBucket,DstKey) that reconstructs
-// to exactly the source object's bytes. Before committing, it validates
-// that every chunk the source manifest references is actually present (a
-// cheap Stat, not a re-hash -- deep corruption detection is verify's job,
-// not every copy's), matching the crash-safety rule that a new root is
-// only published after its referenced chunks are confirmed available.
+// to exactly the source object's bytes, under a fresh manifest identity.
+// Before committing, it validates that every chunk the source manifest
+// references is actually present (a cheap Stat, not a re-hash -- deep
+// corruption detection is verify's job, not every copy's), matching the
+// crash-safety rule that a new root is only published after its
+// referenced chunks are confirmed available.
 func (s *Store) CopyObject(req CopyObjectRequest) (*objectEntry, manifestV1, error) {
 	srcObj, err := s.lookupObject(req.SrcBucket, req.SrcKey)
 	if err != nil {
@@ -2391,25 +2403,22 @@ func (s *Store) CopyObject(req CopyObjectRequest) (*objectEntry, manifestV1, err
 		return nil, manifestV1{}, errNoSuchDestinationBucket
 	}
 
-	if req.Directive == metadataDirectiveCopy {
-		// Zero new bytes of any kind: the destination root points at the
-		// exact same manifest the source root already uses.
-		entry, err := s.commitObjectRoot(req.DstBucket, req.DstKey, srcObj.manifestUUID, srcObj.manifestSHA256, srcMan)
-		return entry, srcMan, err
-	}
-
-	// REPLACE: the object's bytes/chunks/ETag/object-digest are
-	// byte-for-byte identical to the source (only metadata/content-type
-	// differ), so the destination manifest is built by cloning the
-	// source's fields -- including its Chunks slice, which is immutable
-	// and never mutated in place, so sharing its backing array is safe --
-	// rather than reading a single byte of chunk payload.
+	// Both directives clone the source manifest's payload identity
+	// (Chunks -- immutable and never mutated in place, so sharing its
+	// backing array is safe -- ObjectSHA256, ETag, TotalLength) byte-for-
+	// byte, without reading a single chunk payload byte, then stamp a
+	// fresh manifest/version identity and timestamp: the destination is a
+	// new object version, not an alias of the source's. ContentType and
+	// Metadata start out copied from the source (the COPY directive's
+	// contract) and are overwritten below only for REPLACE.
 	dstMan := srcMan
 	dstMan.ManifestUUID = newUUIDv7()
 	dstMan.VersionID = dstMan.ManifestUUID
 	dstMan.CreatedAt = time.Now().UTC()
-	dstMan.ContentType = req.ContentType
-	dstMan.Metadata = sortedMetadataKV(req.Metadata)
+	if req.Directive == metadataDirectiveReplace {
+		dstMan.ContentType = req.ContentType
+		dstMan.Metadata = sortedMetadataKV(req.Metadata)
+	}
 
 	manUUID, manSHA, err := s.publishManifest(dstMan)
 	if err != nil {
@@ -2430,15 +2439,95 @@ type copyObjectResult struct {
 // bucket/key pair. AWS accepts both "/bucket/key" and "bucket/key" (an
 // optional leading slash); a "?versionId=..." suffix is rejected, since
 // ZeroS3 does not implement versioning.
+//
+// This is deliberately NOT splitBucketKey (which strictly url.PathUnescape
+// decodes, correct for a request *path*, which the HTTP client library
+// itself guarantees is well-formed percent-encoding). x-amz-copy-source is
+// an ordinary header VALUE, and inspecting the pinned AWS SDK Go v2's
+// actual wire traffic shows it applies zero percent-encoding of its own:
+// whatever bytes the caller puts in CopySource -- including raw spaces,
+// '%', '+', '?', '#', and Unicode -- are sent completely unescaped. A
+// strict decoder would reject the common case (a raw '%' not part of a
+// valid escape is a parse error to url.PathUnescape) even though the
+// source key is perfectly valid. So the key/bucket components here are
+// decoded leniently via lenientPercentDecode: well-formed %XX escapes are
+// honored (a caller MAY still choose to pre-encode, and AWS's own docs
+// recommend it), but a stray '%' is kept literal instead of erroring, and
+// '+' is never treated as a space (there is no application/
+// x-www-form-urlencoded convention on this header, only literal bytes and
+// optional RFC 3986 escapes). The bucket/key boundary is the first raw,
+// undecoded '/' -- never path.Clean/filepath.Clean, so "..", "//", and
+// slash-containing keys are preserved exactly as received.
 func parseCopySource(raw string) (bucket, key string, err error) {
 	raw = strings.TrimPrefix(raw, "/")
 	if idx := strings.IndexByte(raw, '?'); idx >= 0 {
 		if strings.Contains(raw[idx:], "versionId=") {
 			return "", "", fmt.Errorf("versioned copy source is not supported")
 		}
+		// A raw '?' that isn't "?versionId=..." is still ambiguous with
+		// query syntax (matching AWS's own documented CopySource
+		// contract): a caller who needs a literal '?' in a source key
+		// must send it pre-encoded as %3F, which never reaches this
+		// branch because it contains no raw '?' byte.
 		raw = raw[:idx]
 	}
-	return splitBucketKey("/" + raw)
+	if raw == "" {
+		return "", "", fmt.Errorf("copy source is empty")
+	}
+	bucketEnc, keyEnc := raw, ""
+	if idx := strings.IndexByte(raw, '/'); idx >= 0 {
+		bucketEnc, keyEnc = raw[:idx], raw[idx+1:]
+	}
+	bucket = lenientPercentDecode(bucketEnc)
+	if bucket == "" {
+		return "", "", fmt.Errorf("copy source bucket name required")
+	}
+	key = lenientPercentDecode(keyEnc)
+	if key == "" {
+		return "", "", fmt.Errorf("copy source key required")
+	}
+	return bucket, key, nil
+}
+
+// lenientPercentDecode decodes RFC 3986 %XX escapes in s, tolerating
+// literal bytes that aren't valid escapes instead of rejecting them (see
+// parseCopySource for why this differs from the stdlib's strict
+// url.PathUnescape). A '%' is decoded only when followed by exactly two
+// valid hex digits; any other '%' is copied through unchanged. '+' is
+// always copied through unchanged -- never decoded to a space.
+func lenientPercentDecode(s string) string {
+	if !strings.ContainsRune(s, '%') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			hi, hiOK := hexDigitValue(s[i+1])
+			lo, loOK := hexDigitValue(s[i+2])
+			if hiOK && loOK {
+				b.WriteByte(hi<<4 | lo)
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// hexDigitValue reports the 4-bit value of a single ASCII hex digit.
+func hexDigitValue(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	default:
+		return 0, false
+	}
 }
 
 func (srv *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBucket, dstKey, copySource string) {
@@ -2749,10 +2838,10 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 			}
 		}
 	}
-	// No version retention exists under current (M1-M3) semantics -- every
-	// PUT replaces its key's one visible root, and DELETE simply removes
-	// it -- so the only "retained committed version" for any key is its
-	// current one. version_count/logical_version_bytes are therefore
+	// No version retention exists -- every PUT replaces its key's one
+	// visible root, and DELETE simply removes it -- so the only
+	// "retained committed version" for any key is its current one.
+	// version_count/logical_version_bytes are therefore
 	// identical to current_object_count/logical_current_bytes; this
 	// becomes a genuinely separate figure only if a future milestone adds
 	// retained-version semantics.
@@ -2845,6 +2934,18 @@ type VerifyIssue struct {
 	Detail  string `json:"detail"`
 }
 
+// verifiedManifestCacheEntry caches one manifest UUID's parsed content and
+// the SHA-256 of its own file bytes, so Verify reads/parses a given
+// manifest file at most once even when several roots reference the same
+// UUID. Caching the *content* this way is safe and cheap; caching a
+// verdict is not -- see the per-root hash check next to this cache's use
+// in Verify, which still runs unconditionally for every root.
+type verifiedManifestCacheEntry struct {
+	man            manifestV1
+	sha            [32]byte
+	structurallyOK bool
+}
+
 type VerifyResult struct {
 	Deep bool `json:"deep"`
 
@@ -2919,11 +3020,11 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	all := s.snapshotNamespace()
 	reachableManifests := map[string]bool{}
 	reachableChunks := map[string]bool{}
-	manifestCache := map[string]manifestV1{}
+	manifestCache := map[string]verifiedManifestCacheEntry{}
 
 	for _, o := range all {
 		subject := o.bucket + "/" + o.key
-		man, ok := manifestCache[o.entry.manifestUUID]
+		cached, ok := manifestCache[o.entry.manifestUUID]
 		if !ok {
 			path := filepath.Join(s.root, "manifests", o.entry.manifestUUID+".json")
 			data, rerr := os.ReadFile(path)
@@ -2935,50 +3036,74 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 				}
 				continue
 			}
-			gotSum := sha256.Sum256(data)
-			if gotSum != o.entry.manifestSHA256 {
-				res.addIssue("corrupt", subject, "manifest file sha256 does not match the journal reference")
-				continue
-			}
-			if uerr := json.Unmarshal(data, &man); uerr != nil {
+			// cached.sha is computed from the manifest file's own bytes,
+			// independent of any specific root -- it is what every root
+			// that references this UUID gets checked against below, on
+			// every iteration, not just this first (cache-filling) one.
+			cached.sha = sha256.Sum256(data)
+			cached.structurallyOK = true
+			if uerr := json.Unmarshal(data, &cached.man); uerr != nil {
 				res.addIssue("invalid", subject, "manifest json does not parse: "+uerr.Error())
-				continue
-			}
-			if man.ManifestFormatVersion != manifestFormatVersion || man.CDCFormatVersion != cdcFormatVersion || man.HashAlgorithm != "sha256" {
+				cached.structurallyOK = false
+			} else if cached.man.ManifestFormatVersion != manifestFormatVersion || cached.man.CDCFormatVersion != cdcFormatVersion || cached.man.HashAlgorithm != "sha256" {
 				res.addIssue("invalid", subject, "manifest declares an unsupported format/CDC/hash version")
-				continue
-			}
-			var sum int64
-			validRefs := true
-			for _, c := range man.Chunks {
-				if _, herr := decodeHexSHA256(c.SHA256); herr != nil {
-					res.addIssue("invalid", subject, "manifest chunk reference has malformed sha256: "+c.SHA256)
-					validRefs = false
-					continue
+				cached.structurallyOK = false
+			} else {
+				var sum int64
+				validRefs := true
+				for _, c := range cached.man.Chunks {
+					if _, herr := decodeHexSHA256(c.SHA256); herr != nil {
+						res.addIssue("invalid", subject, "manifest chunk reference has malformed sha256: "+c.SHA256)
+						validRefs = false
+						continue
+					}
+					if c.Length < 0 {
+						res.addIssue("invalid", subject, "manifest chunk reference has a negative length")
+						validRefs = false
+						continue
+					}
+					sum += c.Length
 				}
-				if c.Length < 0 {
-					res.addIssue("invalid", subject, "manifest chunk reference has a negative length")
-					validRefs = false
-					continue
+				if !validRefs {
+					cached.structurallyOK = false
+				} else if sum != cached.man.TotalLength {
+					res.addIssue("invalid", subject, fmt.Sprintf("manifest chunk lengths sum to %d, want total_length %d", sum, cached.man.TotalLength))
+					cached.structurallyOK = false
 				}
-				sum += c.Length
 			}
-			if validRefs && sum != man.TotalLength {
-				res.addIssue("invalid", subject, fmt.Sprintf("manifest chunk lengths sum to %d, want total_length %d", sum, man.TotalLength))
-			}
-			manifestCache[o.entry.manifestUUID] = man
+			manifestCache[o.entry.manifestUUID] = cached
 			res.ManifestsChecked++
 		}
+		// This root's own journal-recorded manifest hash is checked here
+		// on every iteration -- whether this UUID was just parsed above
+		// or was already cached from an earlier root -- because caching
+		// the manifest's parsed content/hash is only a read/parse
+		// optimization; it must never let a second root silently inherit
+		// a "verified" status it hasn't earned. Two roots can legally
+		// share one manifest UUID, but each still carries its own
+		// journal-recorded hash claim, and each must independently prove
+		// journal-recorded SHA256 == actual manifest-file SHA256.
+		if cached.sha != o.entry.manifestSHA256 {
+			res.addIssue("corrupt", subject, "manifest file sha256 does not match this root's journal-recorded reference")
+			continue
+		}
+		if !cached.structurallyOK {
+			continue
+		}
 		reachableManifests[o.entry.manifestUUID] = true
-		for _, c := range man.Chunks {
+		for _, c := range cached.man.Chunks {
 			reachableChunks[c.SHA256] = true
 		}
 	}
 
 	// --- Chunks referenced by every reachable manifest ---
 	checkedChunk := map[string]bool{}
-	for _, man := range manifestCache {
-		for _, c := range man.Chunks {
+	badChunk := map[string]bool{}
+	for _, cached := range manifestCache {
+		if !cached.structurallyOK {
+			continue
+		}
+		for _, c := range cached.man.Chunks {
 			if checkedChunk[c.SHA256] {
 				continue
 			}
@@ -2987,6 +3112,7 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 			sum, herr := decodeHexSHA256(c.SHA256)
 			if herr != nil {
 				res.addIssue("invalid", "chunk "+c.SHA256, herr.Error())
+				badChunk[c.SHA256] = true
 				continue
 			}
 			path := s.chunkPath(sum)
@@ -2997,21 +3123,87 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 				} else {
 					res.addIssue("invalid", "chunk "+c.SHA256, serr.Error())
 				}
+				badChunk[c.SHA256] = true
 				continue
 			}
 			if info.Size() != c.Length {
 				res.addIssue("corrupt", "chunk "+c.SHA256, fmt.Sprintf("file length %d does not match manifest length %d", info.Size(), c.Length))
+				badChunk[c.SHA256] = true
 				continue
 			}
 			if deep {
 				data, rerr := os.ReadFile(path)
 				if rerr != nil {
 					res.addIssue("missing", "chunk "+c.SHA256, rerr.Error())
+					badChunk[c.SHA256] = true
 					continue
 				}
 				if got := sha256.Sum256(data); got != sum {
 					res.addIssue("corrupt", "chunk "+c.SHA256, "content hash does not match its content-addressed name")
+					badChunk[c.SHA256] = true
 				}
+			}
+		}
+	}
+
+	// --- Deep only: whole-object digest ---
+	//
+	// Per-chunk hashing above proves every individual chunk's bytes match
+	// its own content-addressed name, but it cannot catch a manifest that
+	// simply names the wrong object_sha256, or lists otherwise-intact
+	// chunks in a corrupted order -- GetObject doesn't check object_sha256
+	// either, so nothing else in ZeroS3 would ever notice. This closes
+	// that gap by feeding every reachable manifest's chunks, in the
+	// manifest's own logical order, into one streaming SHA-256 hasher per
+	// manifest -- never buffering the reconstructed object -- and
+	// comparing the result (and the streamed byte count, against
+	// total_length) to what the manifest claims. Skipped for a manifest
+	// whose chunks already failed the check above: hashing known-bad
+	// bytes would only add a confusing, redundant issue.
+	if deep {
+		for uuid, cached := range manifestCache {
+			if !cached.structurallyOK {
+				continue
+			}
+			subject := "manifest " + uuid
+			wantSum, herr := decodeHexSHA256(cached.man.ObjectSHA256)
+			if herr != nil {
+				res.addIssue("invalid", subject, "object_sha256 is malformed: "+herr.Error())
+				continue
+			}
+			chunksOK := true
+			for _, c := range cached.man.Chunks {
+				if badChunk[c.SHA256] {
+					chunksOK = false
+					break
+				}
+			}
+			if !chunksOK {
+				continue
+			}
+			h := sha256.New()
+			var streamed int64
+			readFailed := false
+			for _, c := range cached.man.Chunks {
+				sum, _ := decodeHexSHA256(c.SHA256) // already validated above
+				data, rerr := s.casRead(sum)
+				if rerr != nil {
+					res.addIssue("corrupt", subject, "chunk "+c.SHA256+" could not be re-read for whole-object verification: "+rerr.Error())
+					readFailed = true
+					break
+				}
+				h.Write(data)
+				streamed += int64(len(data))
+			}
+			if readFailed {
+				continue
+			}
+			if streamed != cached.man.TotalLength {
+				res.addIssue("corrupt", subject, fmt.Sprintf("streamed %d chunk bytes, want total_length %d", streamed, cached.man.TotalLength))
+				continue
+			}
+			if gotSum := [32]byte(h.Sum(nil)); gotSum != wantSum {
+				res.addIssue("corrupt", subject, "whole-object sha256 does not match manifest object_sha256")
 			}
 		}
 	}
@@ -3052,8 +3244,8 @@ type byteRange struct{ start, end int64 }
 
 // parseRangeSpec parses a single "bytes=..." Range header value against
 // an object of the given size. Multi-range requests (a comma-separated
-// spec) are intentionally unsupported in M3 and are treated exactly like
-// a header that doesn't parse: ok=false with satisfiable=false, which
+// spec) are intentionally unsupported and are treated exactly like a
+// header that doesn't parse: ok=false with satisfiable=false, which
 // tells the caller to ignore Range entirely and serve the full object --
 // RFC 7233 explicitly allows a server to do this for range forms it
 // doesn't support, rather than rejecting the request outright. A range
