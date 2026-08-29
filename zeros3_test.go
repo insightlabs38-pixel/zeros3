@@ -10316,3 +10316,1602 @@ func TestListMultipartUploads_Pagination_CompletedAndAbortedAreAbsent(t *testing
 		t.Fatalf("expected only the active upload to remain, got %+v", lmu.Upload)
 	}
 }
+
+// =============================================================================
+// M6 -- Optional ZeroS3 Delta Sync
+//
+// Covers: capability discovery, CDC-equivalence between ordinary PUT and
+// the sync client's local scan, bounded missing-chunk negotiation,
+// idempotent chunk upload, atomic commit (including restart/deep-verify
+// proof), transfer statistics, resume/retry, safe-mode remote conflict
+// protection, local mutation detection, corrupt/missing chunk rejection
+// at commit, unknown protocol/version rejection, and non-ZeroS3 fallback.
+// =============================================================================
+
+func newSyncTestServer(t *testing.T) (dir string, srv *Server, creds Credentials, region string) {
+	t.Helper()
+	dir = t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	creds = Credentials{AccessKeyID: "AKIASYNCTESTACCESSKEY1", SecretAccessKey: "SyncTestSecretKeyForZeroS3M6Tests0123456"}
+	region = "us-east-1"
+	srv = NewServer(store, creds, region)
+	return dir, srv, creds, region
+}
+
+func writeSyncTempFile(t *testing.T, dir, name string, data []byte) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// doSyncRequest signs and sends one request to a ZeroS3 sync extension
+// endpoint, returning status and raw body -- shared by every direct
+// (non-client-library) protocol test below.
+func doSyncRequest(t *testing.T, client *http.Client, baseURL string, signer testSigner, method, path string, body []byte) (status int, respBody []byte) {
+	t.Helper()
+	resp := doSignedRequest(t, client, baseURL, signer, method, path, body, map[string]string{"Content-Type": "application/json"})
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, b
+}
+
+func syncDescriptorsFor(chunks []syncLocalChunk) []syncChunkDescriptor {
+	out := make([]syncChunkDescriptor, len(chunks))
+	for i, c := range chunks {
+		out[i] = syncChunkDescriptor{SHA256: c.SHA256, Length: c.Length}
+	}
+	return out
+}
+
+// =============================================================================
+// A1: capability discovery
+// =============================================================================
+
+func TestSync_Discovery_Supported(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	status, body := doSyncRequest(t, client, ts.URL, signer, http.MethodGet, zeros3SyncInfoPath, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", status, body)
+	}
+	var d syncDiscoveryResponse
+	if err := json.Unmarshal(body, &d); err != nil {
+		t.Fatalf("unmarshal: %v (body=%s)", err, body)
+	}
+	if d.Protocol != zeros3SyncProtocolVersion || d.CDC != zeros3SyncCDCFormat || d.Hash != zeros3SyncHashAlgorithm {
+		t.Fatalf("unexpected discovery fields: %+v", d)
+	}
+	if !d.DeltaSync {
+		t.Fatalf("delta_sync = false, want true")
+	}
+	if d.MaxHashesPerBatch != maxSyncBatchDescriptors {
+		t.Fatalf("max_hashes_per_batch = %d, want %d", d.MaxHashesPerBatch, maxSyncBatchDescriptors)
+	}
+	if d.MaxChunkBytes != maxSyncChunkBytes {
+		t.Fatalf("max_chunk_bytes = %d, want %d", d.MaxChunkBytes, maxSyncChunkBytes)
+	}
+}
+
+func TestSync_Discovery_UnknownExtensionPathNotBucketParsed(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodGet, "/_zeros3/v1/bogus", nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (unknown ZeroS3 operation, not a bucket lookup)", status)
+	}
+}
+
+func TestSync_Discovery_AuthFailureRejected(t *testing.T) {
+	srv, _ := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+zeros3SyncInfoPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unauthenticated discovery status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestSync_NormalS3RoutesUnaffectedByExtension(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	if err := doCreateBucket(t, client, ts.URL, signer, "regress"); err != nil {
+		t.Fatal(err)
+	}
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/regress/key1", []byte("hello"), nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ordinary PUT status = %d", resp.StatusCode)
+	}
+	getResp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/regress/key1", nil, nil)
+	defer getResp.Body.Close()
+	got, _ := io.ReadAll(getResp.Body)
+	if string(got) != "hello" {
+		t.Fatalf("ordinary GET after adding the sync extension = %q, want %q", got, "hello")
+	}
+}
+
+// =============================================================================
+// A2: CDC reuse/equivalence
+// =============================================================================
+
+func TestSync_CDCEquivalenceWithOrdinaryPut(t *testing.T) {
+	dir := t.TempDir()
+	data := genRandomBytes(42, 2_500_000) // spans many chunk boundaries
+	path := writeSyncTempFile(t, dir, "equiv.bin", data)
+
+	scanned, total, err := scanLocalFileForSync(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != int64(len(data)) {
+		t.Fatalf("scanned total = %d, want %d", total, len(data))
+	}
+
+	pieces, err := chunkData(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pieces) != len(scanned) {
+		t.Fatalf("chunk count differs: ordinary PUT path = %d, sync scan = %d", len(pieces), len(scanned))
+	}
+	for i, p := range pieces {
+		wantSHA := hex.EncodeToString(p.sha[:])
+		if scanned[i].SHA256 != wantSHA || scanned[i].Length != int64(len(p.data)) {
+			t.Fatalf("chunk %d differs: ordinary=(%s,%d) sync=(%s,%d)", i, wantSHA, len(p.data), scanned[i].SHA256, scanned[i].Length)
+		}
+	}
+}
+
+// =============================================================================
+// A4: bounded missing-chunk negotiation
+// =============================================================================
+
+func negotiateOnce(t *testing.T, client *http.Client, baseURL string, signer testSigner, chunks []syncChunkDescriptor) (int, syncNegotiateResponse) {
+	t.Helper()
+	reqBody, err := json.Marshal(syncNegotiateRequest{Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm, Chunks: chunks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body := doSyncRequest(t, client, baseURL, signer, http.MethodPost, zeros3SyncNegotiatePath, reqBody)
+	var nr syncNegotiateResponse
+	if status == http.StatusOK {
+		if err := json.Unmarshal(body, &nr); err != nil {
+			t.Fatalf("unmarshal negotiate response: %v (body=%s)", err, body)
+		}
+	}
+	return status, nr
+}
+
+func TestSyncNegotiate_ZeroMissing(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+
+	data := genRandomBytes(1, 200_000)
+	pieces, err := chunkData(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range pieces {
+		if _, err := srv.store.casWrite(p.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	descs := make([]syncChunkDescriptor, len(pieces))
+	for i, p := range pieces {
+		descs[i] = syncChunkDescriptor{SHA256: hex.EncodeToString(p.sha[:]), Length: int64(len(p.data))}
+	}
+
+	status, nr := negotiateOnce(t, client, ts.URL, signer, descs)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if len(nr.Missing) != 0 {
+		t.Fatalf("missing = %v, want none", nr.Missing)
+	}
+}
+
+func TestSyncNegotiate_OneMissingAmongMany(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+
+	present := []syncChunkDescriptor{}
+	for i := 0; i < 5; i++ {
+		data := genRandomBytes(int64(100+i), 1000)
+		sum, err := srv.store.casWrite(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		present = append(present, syncChunkDescriptor{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(data))})
+	}
+	missingData := genRandomBytes(999, 1000)
+	missingSum := sha256.Sum256(missingData)
+	missingDesc := syncChunkDescriptor{SHA256: hex.EncodeToString(missingSum[:]), Length: int64(len(missingData))}
+
+	status, nr := negotiateOnce(t, client, ts.URL, signer, append(present, missingDesc))
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if len(nr.Missing) != 1 || nr.Missing[0] != missingDesc.SHA256 {
+		t.Fatalf("missing = %v, want exactly [%s]", nr.Missing, missingDesc.SHA256)
+	}
+}
+
+func TestSyncNegotiate_AllMissing(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+
+	var descs []syncChunkDescriptor
+	for i := 0; i < 10; i++ {
+		data := genRandomBytes(int64(2000+i), 500)
+		sum := sha256.Sum256(data)
+		descs = append(descs, syncChunkDescriptor{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(data))})
+	}
+	status, nr := negotiateOnce(t, client, ts.URL, signer, descs)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if len(nr.Missing) != len(descs) {
+		t.Fatalf("missing count = %d, want %d", len(nr.Missing), len(descs))
+	}
+}
+
+func TestSyncNegotiate_SomeMissing(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+
+	var all, wantMissing []string
+	var descs []syncChunkDescriptor
+	for i := 0; i < 20; i++ {
+		data := genRandomBytes(int64(3000+i), 500)
+		sum := sha256.Sum256(data)
+		hexSum := hex.EncodeToString(sum[:])
+		descs = append(descs, syncChunkDescriptor{SHA256: hexSum, Length: int64(len(data))})
+		all = append(all, hexSum)
+		if i%3 == 0 {
+			if _, err := srv.store.casWrite(data); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			wantMissing = append(wantMissing, hexSum)
+		}
+	}
+	status, nr := negotiateOnce(t, client, ts.URL, signer, descs)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if len(nr.Missing) != len(wantMissing) {
+		t.Fatalf("missing count = %d, want %d (missing=%v)", len(nr.Missing), len(wantMissing), nr.Missing)
+	}
+	gotSet := map[string]bool{}
+	for _, s := range nr.Missing {
+		gotSet[s] = true
+	}
+	for _, w := range wantMissing {
+		if !gotSet[w] {
+			t.Fatalf("expected %s to be reported missing", w)
+		}
+	}
+}
+
+func TestSyncNegotiate_DuplicatedDigestsReportedOnce(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	_ = srv
+
+	data := genRandomBytes(7, 1234)
+	sum := sha256.Sum256(data)
+	desc := syncChunkDescriptor{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(data))}
+
+	status, nr := negotiateOnce(t, client, ts.URL, signer, []syncChunkDescriptor{desc, desc, desc})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if len(nr.Missing) != 1 {
+		t.Fatalf("missing = %v, want exactly one entry for a triplicated descriptor", nr.Missing)
+	}
+}
+
+func TestSyncNegotiate_BatchSizeBoundary(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	_ = srv
+
+	build := func(n int) []syncChunkDescriptor {
+		descs := make([]syncChunkDescriptor, n)
+		for i := 0; i < n; i++ {
+			data := genRandomBytes(int64(50000+i), 40)
+			sum := sha256.Sum256(data)
+			descs[i] = syncChunkDescriptor{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(data))}
+		}
+		return descs
+	}
+
+	for _, n := range []int{1023, 1024} {
+		status, nr := negotiateOnce(t, client, ts.URL, signer, build(n))
+		if status != http.StatusOK {
+			t.Fatalf("n=%d: status = %d", n, status)
+		}
+		if len(nr.Missing) != n {
+			t.Fatalf("n=%d: missing count = %d, want %d", n, len(nr.Missing), n)
+		}
+	}
+
+	// 1025 exceeds max_hashes_per_batch and must be rejected outright, not
+	// silently truncated to the first 1024.
+	status, _ := negotiateOnce(t, client, ts.URL, signer, build(1025))
+	if status != http.StatusBadRequest {
+		t.Fatalf("n=1025: status = %d, want 400 (BatchTooLarge)", status)
+	}
+}
+
+func TestSyncNegotiate_MultiBatchViaClient(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	// A synthetic unique-descriptor list larger than one server-declared
+	// batch (1024) forces negotiateSyncMissing (the real client function)
+	// through more than one /negotiate HTTP call. Half the descriptors'
+	// content is pre-published so the result must reflect exactly that
+	// split, proving batching doesn't lose or duplicate entries at the
+	// seam between batches.
+	const n = 2500
+	var uniq []syncChunkDescriptor
+	wantMissing := map[string]bool{}
+	for i := 0; i < n; i++ {
+		data := genRandomBytes(int64(70000+i), 200)
+		sum := sha256.Sum256(data)
+		hexSum := hex.EncodeToString(sum[:])
+		uniq = append(uniq, syncChunkDescriptor{SHA256: hexSum, Length: int64(len(data))})
+		if i%2 == 0 {
+			if _, err := srv.store.casWrite(data); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			wantMissing[hexSum] = true
+		}
+	}
+
+	cfg := syncClientConfig{Endpoint: ts.URL, Creds: creds, Region: region, HTTPClient: ts.Client()}
+	discovery := syncDiscoveryResponse{Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm, DeltaSync: true, MaxHashesPerBatch: 1024, MaxChunkBytes: maxSyncChunkBytes}
+
+	missing, err := negotiateSyncMissing(cfg, discovery, uniq)
+	if err != nil {
+		t.Fatalf("negotiateSyncMissing: %v", err)
+	}
+	if len(missing) != len(wantMissing) {
+		t.Fatalf("missing count = %d, want %d", len(missing), len(wantMissing))
+	}
+	for sha := range wantMissing {
+		if !missing[sha] {
+			t.Fatalf("expected %s to be reported missing across the multi-batch negotiation", sha)
+		}
+	}
+}
+
+func TestSyncNegotiate_InvalidDigest(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	status, _ := negotiateOnce(t, client, ts.URL, signer, []syncChunkDescriptor{{SHA256: "not-hex", Length: 10}})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for invalid digest", status)
+	}
+	status, _ = negotiateOnce(t, client, ts.URL, signer, []syncChunkDescriptor{{SHA256: "aabb", Length: 10}})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for short digest", status)
+	}
+}
+
+func TestSyncNegotiate_InvalidLength(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	validSHA := hex.EncodeToString(sha256.New().Sum(nil))
+	for _, length := range []int64{0, -1, maxSyncChunkBytes + 1} {
+		status, _ := negotiateOnce(t, client, ts.URL, signer, []syncChunkDescriptor{{SHA256: validSHA, Length: length}})
+		if status != http.StatusBadRequest {
+			t.Fatalf("length=%d: status = %d, want 400", length, status)
+		}
+	}
+}
+
+func TestSyncNegotiate_UnsupportedProtocolCDCHash(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	cases := []syncNegotiateRequest{
+		{Protocol: 2, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm},
+		{Protocol: zeros3SyncProtocolVersion, CDC: "gear-v2", Hash: zeros3SyncHashAlgorithm},
+		{Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: "sha512"},
+	}
+	for _, c := range cases {
+		body, _ := json.Marshal(c)
+		status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPost, zeros3SyncNegotiatePath, body)
+		if status != http.StatusNotImplemented {
+			t.Fatalf("case %+v: status = %d, want 501", c, status)
+		}
+	}
+}
+
+func TestSyncNegotiate_OversizedRequestRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	oversized := bytes.Repeat([]byte("x"), maxSyncBatchBytes+1)
+	status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPost, zeros3SyncNegotiatePath, oversized)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for an oversized negotiate request", status)
+	}
+}
+
+func TestSyncNegotiate_MalformedJSONRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPost, zeros3SyncNegotiatePath, []byte("{not json"))
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for malformed JSON", status)
+	}
+}
+
+func TestSyncNegotiate_NeverMutatesStore(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+
+	before, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := genRandomBytes(321, 5000)
+	sum := sha256.Sum256(data)
+	desc := syncChunkDescriptor{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(data))}
+	if status, _ := negotiateOnce(t, client, ts.URL, signer, []syncChunkDescriptor{desc}); status != http.StatusOK {
+		t.Fatalf("negotiate status unexpected")
+	}
+	after, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.ChunkStoreFileBytes != after.ChunkStoreFileBytes || before.ManifestFileBytes != after.ManifestFileBytes {
+		t.Fatalf("negotiate mutated on-disk store state: before=%+v after=%+v", before, after)
+	}
+	_ = dir
+}
+
+// =============================================================================
+// Shared helpers: bucket creation / GET over the real client library
+// =============================================================================
+
+func createSyncTestBucket(t *testing.T, ts *httptest.Server, creds Credentials, region, bucket string) {
+	t.Helper()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	if err := doCreateBucket(t, ts.Client(), ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func getSyncObjectBytes(t *testing.T, ts *httptest.Server, creds Credentials, region, bucket, key string) []byte {
+	t.Helper()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	resp := doSignedRequest(t, ts.Client(), ts.URL, signer, http.MethodGet, "/"+bucket+"/"+key, nil, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s/%s status = %d", bucket, key, resp.StatusCode)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func getSyncObjectStatus(t *testing.T, ts *httptest.Server, creds Credentials, region, bucket, key string) int {
+	t.Helper()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	resp := doSignedRequest(t, ts.Client(), ts.URL, signer, http.MethodGet, "/"+bucket+"/"+key, nil, nil)
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+// =============================================================================
+// A5: idempotent missing-chunk upload
+// =============================================================================
+
+func TestSyncChunkUpload_Success(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+
+	data := genRandomBytes(11, 4096)
+	sum := sha256.Sum256(data)
+	hexSum := hex.EncodeToString(sum[:])
+
+	status, body := doSyncRequest(t, client, ts.URL, signer, http.MethodPut, zeros3SyncChunksPrefix+hexSum, data)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", status, body)
+	}
+	got, err := srv.store.casRead(sum)
+	if err != nil {
+		t.Fatalf("chunk not readable from CAS after upload: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("stored chunk bytes differ from uploaded bytes")
+	}
+}
+
+func TestSyncChunkUpload_IdempotentRetry(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	_ = srv
+
+	data := genRandomBytes(12, 4096)
+	sum := sha256.Sum256(data)
+	hexSum := hex.EncodeToString(sum[:])
+
+	for i := 0; i < 3; i++ {
+		status, body := doSyncRequest(t, client, ts.URL, signer, http.MethodPut, zeros3SyncChunksPrefix+hexSum, data)
+		if status != http.StatusOK {
+			t.Fatalf("retry %d: status = %d, body = %s", i, status, body)
+		}
+	}
+}
+
+func TestSyncChunkUpload_DigestMismatchRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	real := genRandomBytes(13, 2048)
+	wrongClaim := genRandomBytes(14, 2048) // different content, different real digest
+	wrongSum := sha256.Sum256(wrongClaim)
+
+	// Server never trusts the URL's declared digest: uploading `real`
+	// under `wrongClaim`'s digest must fail, not silently publish `real`
+	// under the wrong name.
+	status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPut, zeros3SyncChunksPrefix+hex.EncodeToString(wrongSum[:]), real)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 DigestMismatch", status)
+	}
+	if _, err := srv.store.casRead(wrongSum); err == nil {
+		t.Fatalf("a digest-mismatched chunk must never be published under the claimed digest")
+	}
+}
+
+func TestSyncChunkUpload_InvalidDigestInURLRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPut, zeros3SyncChunksPrefix+"zz-not-hex", []byte("data"))
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", status)
+	}
+}
+
+func TestSyncChunkUpload_OversizedBodyRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	oversized := bytes.Repeat([]byte("y"), maxSyncChunkBytes+1)
+	sum := sha256.Sum256(oversized)
+	status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPut, zeros3SyncChunksPrefix+hex.EncodeToString(sum[:]), oversized)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a chunk larger than max_chunk_bytes", status)
+	}
+}
+
+// =============================================================================
+// A6: atomic commit + critical acceptance proof
+// =============================================================================
+
+// TestSync_CriticalAcceptanceProof is M6A's central architectural claim:
+// after `zeros3 sync`, ordinary S3 GET/HEAD, a full server restart, and
+// deep verify all treat the synced object exactly like any other object
+// -- no custom sync state survives or is required.
+func TestSync_CriticalAcceptanceProof(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	createSyncTestBucket(t, ts, creds, region, "proof")
+
+	data := genRandomBytes(999, 3_000_000)
+	tmpDir := t.TempDir()
+	path := writeSyncTempFile(t, tmpDir, "proof.bin", data)
+
+	stats, err := syncFile(syncClientConfig{
+		LocalPath: path, Endpoint: ts.URL, Bucket: "proof", Key: "object",
+		Creds: creds, Region: region, HTTPClient: ts.Client(), ContentType: "application/octet-stream",
+	})
+	if err != nil {
+		t.Fatalf("syncFile: %v", err)
+	}
+	if stats.TotalChunks == 0 {
+		t.Fatalf("expected at least one chunk for a 3MB file")
+	}
+
+	// Ordinary GET, same running server.
+	got := getSyncObjectBytes(t, ts, creds, region, "proof", "object")
+	if !bytes.Equal(got, data) {
+		t.Fatalf("GET after sync returned different bytes (len got=%d want=%d)", len(got), len(data))
+	}
+
+	// Ordinary HEAD.
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	headResp := doSignedRequest(t, ts.Client(), ts.URL, signer, http.MethodHead, "/proof/object", nil, nil)
+	headResp.Body.Close()
+	if headResp.StatusCode != http.StatusOK {
+		t.Fatalf("HEAD status = %d", headResp.StatusCode)
+	}
+	if cl := headResp.Header.Get("Content-Length"); cl != strconv.Itoa(len(data)) {
+		t.Fatalf("HEAD Content-Length = %s, want %d", cl, len(data))
+	}
+
+	// Restart: close this server/store, open a brand-new Store/Server on
+	// the same directory. Nothing sync-specific is passed across the
+	// restart -- there is no session to carry.
+	ts.Close()
+	if err := srv.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer store2.Close()
+	srv2 := NewServer(store2, creds, region)
+	ts2 := httptest.NewServer(srv2)
+	defer ts2.Close()
+
+	got2 := getSyncObjectBytes(t, ts2, creds, region, "proof", "object")
+	if !bytes.Equal(got2, data) {
+		t.Fatalf("GET after restart returned different bytes")
+	}
+
+	// Deep verify must accept it.
+	vr, err := store2.Verify(true)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !vr.OK() {
+		t.Fatalf("deep verify reported issues after sync+restart: %+v", vr.Issues)
+	}
+}
+
+func TestSyncCommit_MissingChunkRejected(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	createSyncTestBucket(t, ts, creds, region, "b1")
+
+	neverUploaded := genRandomBytes(15, 500)
+	sum := sha256.Sum256(neverUploaded)
+
+	reqBody, _ := json.Marshal(syncCommitRequest{
+		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+		Bucket: "b1", Key: "missing-chunk-object", ExpectAbsent: true,
+		Chunks: []syncChunkDescriptor{{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(neverUploaded))}},
+	})
+	status, body := doSyncRequest(t, client, ts.URL, signer, http.MethodPost, zeros3SyncCommitPath, reqBody)
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 MissingChunk (body=%s)", status, body)
+	}
+	if getSyncObjectStatus(t, ts, creds, region, "b1", "missing-chunk-object") != http.StatusNotFound {
+		t.Fatalf("a rejected commit must never become visible")
+	}
+}
+
+func TestSyncCommit_WrongLengthRejected(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	createSyncTestBucket(t, ts, creds, region, "b2")
+
+	data := genRandomBytes(16, 700)
+	sum := sha256.Sum256(data)
+	hexSum := hex.EncodeToString(sum[:])
+	if status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPut, zeros3SyncChunksPrefix+hexSum, data); status != http.StatusOK {
+		t.Fatalf("chunk upload failed")
+	}
+
+	reqBody, _ := json.Marshal(syncCommitRequest{
+		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+		Bucket: "b2", Key: "wrong-length-object", ExpectAbsent: true,
+		Chunks: []syncChunkDescriptor{{SHA256: hexSum, Length: int64(len(data)) + 1}},
+	})
+	status, body := doSyncRequest(t, client, ts.URL, signer, http.MethodPost, zeros3SyncCommitPath, reqBody)
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 ChunkLengthMismatch (body=%s)", status, body)
+	}
+	if getSyncObjectStatus(t, ts, creds, region, "b2", "wrong-length-object") != http.StatusNotFound {
+		t.Fatalf("a rejected commit must never become visible")
+	}
+}
+
+func TestSyncCommit_CorruptChunkRejected(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	createSyncTestBucket(t, ts, creds, region, "b3")
+
+	data := genRandomBytes(17, 900)
+	sum := sha256.Sum256(data)
+	hexSum := hex.EncodeToString(sum[:])
+	if status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPut, zeros3SyncChunksPrefix+hexSum, data); status != http.StatusOK {
+		t.Fatalf("chunk upload failed")
+	}
+
+	// Corrupt the chunk on disk directly, simulating bit rot/tampering --
+	// casRead must catch this at commit time via its own content-hash
+	// re-verification, exactly as it would for an ordinary GET.
+	chunkPath := srv.store.chunkPath(sum)
+	corrupted := append([]byte{}, data...)
+	corrupted[0] ^= 0xFF
+	if err := os.WriteFile(chunkPath, corrupted, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = dir
+
+	reqBody, _ := json.Marshal(syncCommitRequest{
+		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+		Bucket: "b3", Key: "corrupt-object", ExpectAbsent: true,
+		Chunks: []syncChunkDescriptor{{SHA256: hexSum, Length: int64(len(data))}},
+	})
+	status, body := doSyncRequest(t, client, ts.URL, signer, http.MethodPost, zeros3SyncCommitPath, reqBody)
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 for a corrupt chunk (body=%s)", status, body)
+	}
+	if getSyncObjectStatus(t, ts, creds, region, "b3", "corrupt-object") != http.StatusNotFound {
+		t.Fatalf("a commit referencing a corrupt chunk must never become visible")
+	}
+}
+
+func TestSyncCommit_UnsupportedProtocolCDCHash(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	base := syncCommitRequest{Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm, Bucket: "x", Key: "y", ExpectAbsent: true}
+	cases := []func(*syncCommitRequest){
+		func(r *syncCommitRequest) { r.Protocol = 99 },
+		func(r *syncCommitRequest) { r.CDC = "gear-v9" },
+		func(r *syncCommitRequest) { r.Hash = "blake3" },
+	}
+	for _, mutate := range cases {
+		r := base
+		mutate(&r)
+		body, _ := json.Marshal(r)
+		status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPost, zeros3SyncCommitPath, body)
+		if status != http.StatusNotImplemented {
+			t.Fatalf("case %+v: status = %d, want 501", r, status)
+		}
+	}
+}
+
+func TestSyncCommit_MalformedJSONRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPost, zeros3SyncCommitPath, []byte("not json at all"))
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", status)
+	}
+}
+
+func TestSyncCommit_MissingBucketOrKeyRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	body, _ := json.Marshal(syncCommitRequest{Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm})
+	status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPost, zeros3SyncCommitPath, body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for missing bucket/key", status)
+	}
+}
+
+func TestSyncCommit_UnknownBucketRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	body, _ := json.Marshal(syncCommitRequest{
+		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+		Bucket: "does-not-exist", Key: "k", ExpectAbsent: true,
+	})
+	status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPost, zeros3SyncCommitPath, body)
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 NoSuchBucket", status)
+	}
+}
+
+// =============================================================================
+// A7: transfer statistics
+// =============================================================================
+
+func TestSyncStats_FirstSyncAllNew(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "stats1")
+
+	data := genRandomBytes(2001, 900_000)
+	path := writeSyncTempFile(t, dir, "s1.bin", data)
+
+	stats, err := syncFile(syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "stats1", Key: "k", Creds: creds, Region: region, HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatalf("syncFile: %v", err)
+	}
+	if stats.LogicalBytes != int64(len(data)) {
+		t.Fatalf("LogicalBytes = %d, want %d", stats.LogicalBytes, len(data))
+	}
+	if stats.ChunksReused != 0 {
+		t.Fatalf("ChunksReused = %d, want 0 for brand-new content", stats.ChunksReused)
+	}
+	if stats.MissingChunkOccur != stats.TotalChunks {
+		t.Fatalf("MissingChunkOccur = %d, want %d (all chunks new)", stats.MissingChunkOccur, stats.TotalChunks)
+	}
+	if stats.UploadedBytes != stats.LogicalBytes {
+		t.Fatalf("UploadedBytes = %d, want %d", stats.UploadedBytes, stats.LogicalBytes)
+	}
+	if stats.BytesAvoided != 0 {
+		t.Fatalf("BytesAvoided = %d, want 0", stats.BytesAvoided)
+	}
+}
+
+func TestSyncStats_ResyncIdenticalContentToNewKeyIsFullyReused(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "stats2")
+
+	data := genRandomBytes(2002, 700_000)
+	path := writeSyncTempFile(t, dir, "s2.bin", data)
+	cfg := syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "stats2", Creds: creds, Region: region, HTTPClient: ts.Client()}
+
+	cfg.Key = "first"
+	if _, err := syncFile(cfg); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	cfg.Key = "second"
+	stats, err := syncFile(cfg)
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if stats.ChunksReused != stats.TotalChunks {
+		t.Fatalf("ChunksReused = %d, want all %d chunks reused from the identical first sync", stats.ChunksReused, stats.TotalChunks)
+	}
+	if stats.UploadedBytes != 0 {
+		t.Fatalf("UploadedBytes = %d, want 0 (every chunk already present)", stats.UploadedBytes)
+	}
+	if stats.BytesAvoided != stats.LogicalBytes {
+		t.Fatalf("BytesAvoided = %d, want %d", stats.BytesAvoided, stats.LogicalBytes)
+	}
+}
+
+// TestSync_M6ADemonstrationFixture is the required M6A fixture: sync a
+// reasonably large file, make a small localized mutation, sync the
+// mutated file to a new key, and show only a small fraction of the
+// logical bytes crossed the wire the second time -- CDC v1 visibly paying
+// off, not a manufactured number. It also proves the resulting object is
+// exactly byte-correct via an ordinary GET.
+func TestSync_M6ADemonstrationFixture(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "demo")
+
+	const size = 8_000_000 // 8MB: big enough for CDC's benefit to show, small enough to run fast in CI
+	original := genRandomBytes(4242, size)
+	path := writeSyncTempFile(t, dir, "demo.bin", original)
+
+	cfg := syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "demo", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	cfg.Key = "v1"
+	firstStats, err := syncFile(cfg)
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	// A small, localized mutation well away from either end: insert 4KiB
+	// of new bytes at the midpoint. CDC only reshuffles chunk boundaries
+	// local to the edit; everything before and after should still dedupe.
+	mutated := make([]byte, 0, size+4096)
+	mid := size / 2
+	mutated = append(mutated, original[:mid]...)
+	mutated = append(mutated, genRandomBytes(7777, 4096)...)
+	mutated = append(mutated, original[mid:]...)
+	if err := os.WriteFile(path, mutated, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Key = "v2"
+	secondStats, err := syncFile(cfg)
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	reuseRatio := float64(secondStats.BytesAvoided) / float64(secondStats.LogicalBytes)
+	if reuseRatio < 0.8 {
+		t.Fatalf("expected CDC to visibly outperform a naive full upload after a small localized edit: reuse=%.1f%% (uploaded=%d of %d logical bytes, first-sync uploaded=%d)",
+			reuseRatio*100, secondStats.UploadedBytes, secondStats.LogicalBytes, firstStats.UploadedBytes)
+	}
+	if secondStats.UploadedBytes >= firstStats.UploadedBytes {
+		t.Fatalf("second sync (small edit) should upload far less than the first (full) sync: first=%d second=%d", firstStats.UploadedBytes, secondStats.UploadedBytes)
+	}
+
+	got := getSyncObjectBytes(t, ts, creds, region, "demo", "v2")
+	if !bytes.Equal(got, mutated) {
+		t.Fatalf("GET after the mutated sync did not return exact bytes")
+	}
+	t.Logf("M6A demonstration fixture: logical=%s uploaded(v1)=%s uploaded(v2)=%s reuse(v2)=%.1f%%",
+		humanBytes(secondStats.LogicalBytes), humanBytes(firstStats.UploadedBytes), humanBytes(secondStats.UploadedBytes), reuseRatio*100)
+	var buf bytes.Buffer
+	printSyncStats(&buf, secondStats)
+	t.Logf("second sync's exact printSyncStats output (for README/STATUS):\n%s", buf.String())
+}
+
+// =============================================================================
+// M6B -- B1: resume / retry
+// =============================================================================
+
+func TestSync_ResumeAfterPartialPriorUpload(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	createSyncTestBucket(t, ts, creds, region, "resume1")
+
+	data := genRandomBytes(3001, 600_000)
+	path := writeSyncTempFile(t, dir, "resume1.bin", data)
+
+	scanned, _, err := scanLocalFileForSync(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scanned) < 2 {
+		t.Fatalf("fixture too small to exercise partial upload (%d chunks)", len(scanned))
+	}
+	// Simulate "the client died after uploading only the first chunk": a
+	// real chunk upload happens for scanned[0], nothing else.
+	first := scanned[0]
+	firstData, err := readSyncFileRange(path, first.Offset, first.Length)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPut, zeros3SyncChunksPrefix+first.SHA256, firstData); status != http.StatusOK {
+		t.Fatalf("priming upload failed")
+	}
+
+	// Rerun sync from scratch: renegotiation must see the already-
+	// published chunk and upload only what's left.
+	stats, err := syncFile(syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "resume1", Key: "obj", Creds: creds, Region: region, HTTPClient: client})
+	if err != nil {
+		t.Fatalf("resumed syncFile: %v", err)
+	}
+	if stats.UploadedBytes >= stats.LogicalBytes {
+		t.Fatalf("resume should have skipped the already-uploaded chunk: uploaded=%d logical=%d", stats.UploadedBytes, stats.LogicalBytes)
+	}
+	got := getSyncObjectBytes(t, ts, creds, region, "resume1", "obj")
+	if !bytes.Equal(got, data) {
+		t.Fatalf("GET after resumed sync returned different bytes")
+	}
+}
+
+func TestSync_ServerRestartAfterPartialUploadThenResume(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	createSyncTestBucket(t, ts, creds, region, "resume2")
+
+	data := genRandomBytes(3002, 600_000)
+	path := writeSyncTempFile(t, dir, "resume2.bin", data)
+	scanned, _, err := scanLocalFileForSync(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := scanned[0]
+	firstData, err := readSyncFileRange(path, first.Offset, first.Length)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPut, zeros3SyncChunksPrefix+first.SHA256, firstData); status != http.StatusOK {
+		t.Fatalf("priming upload failed")
+	}
+
+	// Restart: no durable sync-session state exists anywhere -- CAS
+	// durability alone is what lets resume work across a real process
+	// restart, not some in-memory session the crash would have destroyed
+	// anyway.
+	ts.Close()
+	if err := srv.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+	srv2 := NewServer(store2, creds, region)
+	ts2 := httptest.NewServer(srv2)
+	defer ts2.Close()
+
+	stats, err := syncFile(syncClientConfig{LocalPath: path, Endpoint: ts2.URL, Bucket: "resume2", Key: "obj", Creds: creds, Region: region, HTTPClient: ts2.Client()})
+	if err != nil {
+		t.Fatalf("post-restart syncFile: %v", err)
+	}
+	if stats.UploadedBytes >= stats.LogicalBytes {
+		t.Fatalf("post-restart resume should have skipped the pre-restart chunk: uploaded=%d logical=%d", stats.UploadedBytes, stats.LogicalBytes)
+	}
+	got := getSyncObjectBytes(t, ts2, creds, region, "resume2", "obj")
+	if !bytes.Equal(got, data) {
+		t.Fatalf("GET after restart+resume returned different bytes")
+	}
+}
+
+func TestSync_RepeatedFullSyncOfIdenticalContentUploadsNothing(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "repeat1")
+
+	data := genRandomBytes(3003, 300_000)
+	path := writeSyncTempFile(t, dir, "repeat1.bin", data)
+	cfg := syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "repeat1", Creds: creds, Region: region, HTTPClient: ts.Client()}
+
+	cfg.Key = "a"
+	if _, err := syncFile(cfg); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	cfg.Key = "b"
+	second, err := syncFile(cfg)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if second.UploadedBytes != 0 {
+		t.Fatalf("re-syncing identical content to a fresh key uploaded %d bytes, want 0", second.UploadedBytes)
+	}
+}
+
+func TestSync_RepeatedCommitFailsCleanlyRatherThanDuplicating(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	createSyncTestBucket(t, ts, creds, region, "repeat2")
+
+	data := genRandomBytes(3004, 400)
+	sum := sha256.Sum256(data)
+	hexSum := hex.EncodeToString(sum[:])
+	if status, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPut, zeros3SyncChunksPrefix+hexSum, data); status != http.StatusOK {
+		t.Fatalf("chunk upload failed")
+	}
+	commitReq, _ := json.Marshal(syncCommitRequest{
+		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+		Bucket: "repeat2", Key: "k", ExpectAbsent: true,
+		Chunks: []syncChunkDescriptor{{SHA256: hexSum, Length: int64(len(data))}},
+	})
+
+	status1, body1 := doSyncRequest(t, client, ts.URL, signer, http.MethodPost, zeros3SyncCommitPath, commitReq)
+	if status1 != http.StatusOK {
+		t.Fatalf("first commit: status = %d, body = %s", status1, body1)
+	}
+	var first syncCommitResponse
+	if err := json.Unmarshal(body1, &first); err != nil {
+		t.Fatal(err)
+	}
+
+	// A literal retry of the exact same (now-stale) ExpectAbsent=true
+	// request must NOT silently create a second version or corrupt
+	// anything: it must fail cleanly, because the precondition it was
+	// built from is no longer true (this commit's own first attempt
+	// already succeeded).
+	status2, _ := doSyncRequest(t, client, ts.URL, signer, http.MethodPost, zeros3SyncCommitPath, commitReq)
+	if status2 != http.StatusPreconditionFailed {
+		t.Fatalf("retry status = %d, want 412 (safe rejection, not a silent duplicate)", status2)
+	}
+
+	// Exactly one current object, matching the first (and only
+	// successful) commit -- never a second version from the retry.
+	got := getSyncObjectBytes(t, ts, creds, region, "repeat2", "k")
+	if !bytes.Equal(got, data) {
+		t.Fatalf("object bytes differ from the single successful commit")
+	}
+	_, cur, err := srv.store.ListVersions("repeat2", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur == nil || cur.manifestUUID != first.VersionID {
+		t.Fatalf("current object identity changed after the rejected retry")
+	}
+}
+
+// =============================================================================
+// M6B -- B2: remote conflict protection
+// =============================================================================
+
+func TestSync_ConflictAbsentDestinationStaysAbsentUntilCommit(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "conflict1")
+
+	data := genRandomBytes(4001, 50_000)
+	path := writeSyncTempFile(t, dir, "c1.bin", data)
+
+	if getSyncObjectStatus(t, ts, creds, region, "conflict1", "obj") != http.StatusNotFound {
+		t.Fatalf("destination should not exist before sync begins")
+	}
+	if _, err := syncFile(syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "conflict1", Key: "obj", Creds: creds, Region: region, HTTPClient: ts.Client()}); err != nil {
+		t.Fatalf("syncFile: %v", err)
+	}
+	if getSyncObjectStatus(t, ts, creds, region, "conflict1", "obj") != http.StatusOK {
+		t.Fatalf("destination should exist after a successful commit")
+	}
+}
+
+func TestSync_ConflictUnchangedDestinationCommitsCleanly(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "conflict2")
+
+	v1 := genRandomBytes(4002, 40_000)
+	path := writeSyncTempFile(t, dir, "c2.bin", v1)
+	cfg := syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "conflict2", Key: "obj", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	if _, err := syncFile(cfg); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	// Overwrite the same key with a modified version of the same file --
+	// the observed ETag is still accurate (nothing else touched it), so
+	// this must commit cleanly, exactly like the demonstration fixture's
+	// "sync the modified file back to the same key" case.
+	v2 := append(append([]byte{}, v1...), []byte("-appended-tail")...)
+	if err := os.WriteFile(path, v2, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syncFile(cfg); err != nil {
+		t.Fatalf("second sync onto an unchanged destination: %v", err)
+	}
+	got := getSyncObjectBytes(t, ts, creds, region, "conflict2", "obj")
+	if !bytes.Equal(got, v2) {
+		t.Fatalf("object after second sync does not match v2")
+	}
+}
+
+func TestSync_ConflictConcurrentPUTDuringSyncCausesCommitConflict(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	createSyncTestBucket(t, ts, creds, region, "conflict3")
+
+	original := genRandomBytes(4003, 60_000)
+	path := writeSyncTempFile(t, dir, "c3.bin", original)
+	if _, err := srv.store.PutObject("conflict3", "obj", original, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// syncFile observes the current ETag via HEAD, then (simulated here by
+	// calling the pipeline manually up to just before commit) an ordinary
+	// PUT changes the object before the sync's own commit lands.
+	exists, etag, err := headSyncDestination(syncClientConfig{Endpoint: ts.URL, Bucket: "conflict3", Key: "obj", Creds: creds, Region: region, HTTPClient: ts.Client()})
+	if err != nil || !exists {
+		t.Fatalf("head: exists=%v err=%v", exists, err)
+	}
+	resp := doSignedRequest(t, ts.Client(), ts.URL, signer, http.MethodPut, "/conflict3/obj", []byte("someone else's concurrent write"), nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("concurrent PUT failed: %d", resp.StatusCode)
+	}
+
+	chunks, total, err := scanLocalFileForSync(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := buildSyncPlan(chunks, total)
+	cfg := syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "conflict3", Key: "obj", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	missing, err := negotiateSyncMissing(cfg, syncDiscoveryResponse{MaxHashesPerBatch: maxSyncBatchDescriptors}, plan.unique)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := uploadMissingSyncChunks(cfg, plan, missing); err != nil {
+		t.Fatal(err)
+	}
+	_, err = commitSyncObject(cfg, plan, syncPrecondition{expectedETag: etag})
+	if !errors.Is(err, errSyncRemoteConflict) {
+		t.Fatalf("commit err = %v, want errSyncRemoteConflict", err)
+	}
+}
+
+func TestSync_ConflictTwoConcurrentSyncsToSameKeySecondFails(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "conflict4")
+
+	data := genRandomBytes(4004, 30_000)
+	pathA := writeSyncTempFile(t, dir, "c4a.bin", data)
+	pathB := writeSyncTempFile(t, dir, "c4b.bin", append(append([]byte{}, data...), []byte("-variant-b")...))
+
+	cfgA := syncClientConfig{LocalPath: pathA, Endpoint: ts.URL, Bucket: "conflict4", Key: "obj", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	cfgB := syncClientConfig{LocalPath: pathB, Endpoint: ts.URL, Bucket: "conflict4", Key: "obj", Creds: creds, Region: region, HTTPClient: ts.Client()}
+
+	// Both observe "absent" (neither has committed yet), simulating two
+	// syncs racing to the same never-before-existing key: B's precondition
+	// is captured here, before A's commit lands, and carried through B's
+	// own scan/negotiate/upload/commit manually (rather than calling
+	// syncFile(cfgB), which would re-observe reality fresh and simply see
+	// an ordinary sequential overwrite instead of a genuine race).
+	if _, _, err := headSyncDestination(cfgA); err != nil {
+		t.Fatal(err)
+	}
+	existsB, etagB, err := headSyncDestination(cfgB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := syncFile(cfgA); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	chunksB, totalB, err := scanLocalFileForSync(pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planB := buildSyncPlan(chunksB, totalB)
+	missingB, err := negotiateSyncMissing(cfgB, syncDiscoveryResponse{MaxHashesPerBatch: maxSyncBatchDescriptors}, planB.unique)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := uploadMissingSyncChunks(cfgB, planB, missingB); err != nil {
+		t.Fatal(err)
+	}
+	_, errB := commitSyncObject(cfgB, planB, syncPrecondition{expectAbsent: !existsB, expectedETag: etagB})
+	if !errors.Is(errB, errSyncRemoteConflict) {
+		t.Fatalf("second (losing) sync commit err = %v, want errSyncRemoteConflict", errB)
+	}
+
+	// Deterministic safe outcome: the first writer's content, untouched
+	// by the losing sync.
+	got := getSyncObjectBytes(t, ts, creds, region, "conflict4", "obj")
+	if !bytes.Equal(got, data) {
+		t.Fatalf("object bytes were not the first (winning) sync's content")
+	}
+}
+
+func TestSync_ConflictRetryAfterConflictSucceeds(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "conflict5")
+
+	data := genRandomBytes(4005, 20_000)
+	path := writeSyncTempFile(t, dir, "c5.bin", data)
+	cfg := syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "conflict5", Key: "obj", Creds: creds, Region: region, HTTPClient: ts.Client()}
+
+	if _, err := srv.store.PutObject("conflict5", "obj", []byte("someone else got here first"), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	// This client scanned before knowing about the pre-existing object
+	// (simulated by simply calling syncFile without ever having HEADed
+	// it first -- its precondition is the stale "expect absent" default
+	// only in the sense that a fresh run always HEADs first; here we
+	// prove that a fresh run always re-observes reality).
+	if _, err := syncFile(cfg); err != nil {
+		t.Fatalf("sync against a real pre-existing object should observe it via HEAD and succeed: %v", err)
+	}
+	got := getSyncObjectBytes(t, ts, creds, region, "conflict5", "obj")
+	if !bytes.Equal(got, data) {
+		t.Fatalf("retry after observing the real destination did not produce the expected content")
+	}
+}
+
+// =============================================================================
+// M6B -- B3: local file mutation detection
+// =============================================================================
+
+func TestSync_LocalMutationDuringOperationAborts(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "mutate1")
+
+	data := genRandomBytes(5001, 50_000)
+	path := writeSyncTempFile(t, dir, "m1.bin", data)
+
+	t.Cleanup(func() { syncTestHookBeforeMutationCheck = nil })
+	syncTestHookBeforeMutationCheck = func(cfg syncClientConfig) {
+		// Deterministically mutate the file between upload and the
+		// mutation check, standing in for a real concurrent writer.
+		if err := os.WriteFile(cfg.LocalPath, append(append([]byte{}, data...), []byte("mutated-while-syncing")...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, err := syncFile(syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "mutate1", Key: "obj", Creds: creds, Region: region, HTTPClient: ts.Client()})
+	if !errors.Is(err, errSyncLocalMutation) {
+		t.Fatalf("err = %v, want errSyncLocalMutation", err)
+	}
+	if getSyncObjectStatus(t, ts, creds, region, "mutate1", "obj") != http.StatusNotFound {
+		t.Fatalf("a detected local mutation must abort before commit -- object must not exist")
+	}
+	_ = srv
+}
+
+func TestSync_UnmodifiedFileCommitsNormally(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "mutate2")
+
+	data := genRandomBytes(5002, 40_000)
+	path := writeSyncTempFile(t, dir, "m2.bin", data)
+
+	if _, err := syncFile(syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "mutate2", Key: "obj", Creds: creds, Region: region, HTTPClient: ts.Client()}); err != nil {
+		t.Fatalf("unmodified file should sync without triggering the mutation guard: %v", err)
+	}
+	_ = srv
+}
+
+// =============================================================================
+// M6B -- B5: non-ZeroS3 endpoint fallback
+// =============================================================================
+
+// fakeNonZeroS3Server simulates an ordinary S3-compatible endpoint with no
+// ZeroS3 extension: /_zeros3/* 404s, and an ordinary PUT to /bucket/key
+// succeeds (auth is not checked -- this stands in for a real foreign S3
+// implementation, not for ZeroS3's own auth semantics). It records every
+// path it sees so the test can assert no proprietary sync request was
+// ever attempted before the fallback.
+type fakeNonZeroS3Server struct {
+	mu       sync.Mutex
+	paths    []string
+	uploaded []byte
+}
+
+func (f *fakeNonZeroS3Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.paths = append(f.paths, r.Method+" "+r.URL.Path)
+	f.mu.Unlock()
+
+	if strings.HasPrefix(r.URL.Path, "/_zeros3/") {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if r.Method == http.MethodPut {
+		body, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		f.uploaded = body
+		f.mu.Unlock()
+		w.Header().Set("ETag", `"fake-etag"`)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	w.WriteHeader(http.StatusMethodNotAllowed)
+}
+
+func TestSync_NonZeroS3Endpoint_FallsBackToPlainPut(t *testing.T) {
+	fake := &fakeNonZeroS3Server{}
+	ts := httptest.NewServer(fake)
+	defer ts.Close()
+
+	dir := t.TempDir()
+	data := genRandomBytes(6001, 20_000)
+	path := writeSyncTempFile(t, dir, "fb.bin", data)
+
+	stats, err := syncFile(syncClientConfig{
+		LocalPath: path, Endpoint: ts.URL, Bucket: "b", Key: "k",
+		Creds: Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}, Region: defaultRegion,
+		HTTPClient: ts.Client(),
+	})
+	if err != nil {
+		t.Fatalf("syncFile against a non-ZeroS3 endpoint should fall back, not fail: %v", err)
+	}
+	if !stats.FellBackToPlainPut {
+		t.Fatalf("expected FellBackToPlainPut=true")
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if !bytes.Equal(fake.uploaded, data) {
+		t.Fatalf("fallback PUT did not carry the exact file bytes")
+	}
+	for _, p := range fake.paths {
+		if strings.Contains(p, zeros3SyncNegotiatePath) || strings.Contains(p, zeros3SyncChunksPrefix) || strings.Contains(p, zeros3SyncCommitPath) {
+			t.Fatalf("a proprietary sync request (%s) was sent to a non-ZeroS3 endpoint before/without successful discovery", p)
+		}
+	}
+}
+
+// =============================================================================
+// Unauthorized requests against every sync endpoint
+// =============================================================================
+
+func TestSync_AllEndpointsRejectUnauthenticatedRequests(t *testing.T) {
+	srv, _ := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+
+	reqs := []struct {
+		method, path string
+		body         []byte
+	}{
+		{http.MethodGet, zeros3SyncInfoPath, nil},
+		{http.MethodPost, zeros3SyncNegotiatePath, []byte(`{"protocol":1,"cdc":"gear-v1","hash":"sha256","chunks":[]}`)},
+		{http.MethodPut, zeros3SyncChunksPrefix + strings.Repeat("ab", 32), []byte("x")},
+		{http.MethodPost, zeros3SyncCommitPath, []byte(`{"protocol":1,"cdc":"gear-v1","hash":"sha256","bucket":"b","key":"k"}`)},
+	}
+	for _, r := range reqs {
+		req, err := http.NewRequest(r.method, ts.URL+r.path, bytes.NewReader(r.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s %s: unauthenticated status = %d, want 403", r.method, r.path, resp.StatusCode)
+		}
+	}
+}
+
+// =============================================================================
+// Concurrency: normal PUT during sync, two syncs, restart -- under -race
+// =============================================================================
+
+func TestSync_ConcurrentNormalPutAndSyncDifferentKeys(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	createSyncTestBucket(t, ts, creds, region, "conc1")
+
+	data := genRandomBytes(8001, 100_000)
+	path := writeSyncTempFile(t, dir, "conc1.bin", data)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var syncErr error
+	go func() {
+		defer wg.Done()
+		_, syncErr = syncFile(syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "conc1", Key: "synced", Creds: creds, Region: region, HTTPClient: client})
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 20; i++ {
+			resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/conc1/plain", []byte("ordinary put"), nil)
+			resp.Body.Close()
+		}
+	}()
+	wg.Wait()
+	if syncErr != nil {
+		t.Fatalf("syncFile: %v", syncErr)
+	}
+	if got := getSyncObjectBytes(t, ts, creds, region, "conc1", "synced"); !bytes.Equal(got, data) {
+		t.Fatalf("synced object bytes incorrect after concurrent unrelated PUT traffic")
+	}
+}
+
+func TestSync_TwoConcurrentSyncsToDifferentKeysBothSucceed(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	createSyncTestBucket(t, ts, creds, region, "conc2")
+
+	dataA := genRandomBytes(8002, 80_000)
+	dataB := genRandomBytes(8003, 80_000)
+	pathA := writeSyncTempFile(t, dir, "concA.bin", dataA)
+	pathB := writeSyncTempFile(t, dir, "concB.bin", dataB)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, errs[0] = syncFile(syncClientConfig{LocalPath: pathA, Endpoint: ts.URL, Bucket: "conc2", Key: "a", Creds: creds, Region: region, HTTPClient: client})
+	}()
+	go func() {
+		defer wg.Done()
+		_, errs[1] = syncFile(syncClientConfig{LocalPath: pathB, Endpoint: ts.URL, Bucket: "conc2", Key: "b", Creds: creds, Region: region, HTTPClient: client})
+	}()
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("sync %d: %v", i, err)
+		}
+	}
+	if got := getSyncObjectBytes(t, ts, creds, region, "conc2", "a"); !bytes.Equal(got, dataA) {
+		t.Fatalf("object a incorrect")
+	}
+	if got := getSyncObjectBytes(t, ts, creds, region, "conc2", "b"); !bytes.Equal(got, dataB) {
+		t.Fatalf("object b incorrect")
+	}
+}

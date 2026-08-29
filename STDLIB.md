@@ -83,6 +83,20 @@ aspirational.
   manipulation for the S3-shaped GET/HEAD/PUT/DELETE/Range responses;
   `strconv` for the numeric header fields (`Content-Length`,
   `Content-Range`).
+- **HTTP client library (M6, `zeros3 sync`):** `net/http`'s `http.Client`/
+  `http.NewRequest`, used as a genuine outbound HTTP *client* for the
+  first time in this codebase — every other CLI verb (`stats`/`verify`/
+  `versions`/`restore`/`gc`/`doctor`) operates directly on a `-store DIR`,
+  never over the network. No third-party HTTP client (`resty`,
+  `req`, etc.) was needed; `signSigV4Request` (section 17b) reuses the
+  server's own SigV4 canonicalization primitives (`sigv4CanonicalURI`/
+  `sigv4CanonicalQuery`/`sigv4CanonicalHeaders`/`sigv4SigningKey`) rather
+  than a second signing implementation.
+- **ZeroS3 sync extension wire format (M6):** `encoding/json` for the
+  `/_zeros3/v1/...` request/response bodies — the same package already
+  used for manifests/`FORMAT.json`/journal payloads/`-json` CLI output
+  (table row 7), applied here to a genuinely new role (an HTTP
+  request/response wire format, not just on-disk/CLI encoding).
 
 ## 6. Developer-tool substitutions
 

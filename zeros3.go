@@ -1649,6 +1649,20 @@ func archivedVersionPayload(cur *objectEntry, reason string) *journalArchivedVer
 // the archived one, and the in-memory maps are updated only after that
 // succeeds.
 func (s *Store) commitObjectRoot(bucket, key, manUUID string, manSHA [32]byte, man manifestV1) (*objectEntry, error) {
+	return s.commitObjectRootChecked(bucket, key, manUUID, manSHA, man, nil)
+}
+
+// commitObjectRootChecked is commitObjectRoot's precondition-aware core
+// (section 17 (M6) adds the one caller that passes a non-nil check, for
+// sync's safe-mode conflict precondition). If check is non-nil, it runs
+// inside the exact same locked critical section as the commit itself,
+// immediately after re-confirming bucket existence and reading the
+// current root, and before anything is written -- there is no unlock
+// between the check and the commit, so a precondition it evaluates
+// against the current root can never be invalidated by a concurrent
+// writer racing in between. A non-nil error from check aborts the commit
+// without writing anything.
+func (s *Store) commitObjectRootChecked(bucket, key, manUUID string, manSHA [32]byte, man manifestV1, check func(cur *objectEntry, exists bool) error) (*objectEntry, error) {
 	s.mu.Lock()
 	// Re-check bucket existence here, at the actual commit point, not just
 	// at entry to the caller: the CDC/CAS/manifest work leading up to this
@@ -1664,9 +1678,16 @@ func (s *Store) commitObjectRoot(bucket, key, manUUID string, manSHA [32]byte, m
 		s.mu.Unlock()
 		return nil, errNoSuchBucket
 	}
+	cur, exists := s.buckets[bucket].objects[key]
+	if check != nil {
+		if err := check(cur, exists); err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+	}
 	var prevPayload *journalArchivedVersionPayload
-	if prev, exists := s.buckets[bucket].objects[key]; exists {
-		prevPayload = archivedVersionPayload(prev, historyReasonOverwritten)
+	if exists {
+		prevPayload = archivedVersionPayload(cur, historyReasonOverwritten)
 	}
 	payload, err := json.Marshal(journalPutPayloadV2{
 		Bucket:         bucket,
@@ -3169,6 +3190,18 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeS3Error(w, "InvalidRequest", err.Error(), rawPath)
 		}
+		return
+	}
+
+	// The ZeroS3 delta-sync extension (section 17, M6) lives entirely under
+	// its own reserved path namespace, checked before any bucket/key
+	// parsing -- it never overloads a real S3 operation or path shape, and
+	// bucket/key for it (when relevant) travel in the JSON body, not the
+	// URL, so it needs neither path-style nor virtual-hosted-style
+	// resolution. Authentication above already covers it identically to
+	// every ordinary S3 request.
+	if strings.HasPrefix(rawPath, "/_zeros3/") {
+		srv.handleZeroS3Sync(w, r, rawPath, body)
 		return
 	}
 
@@ -5877,6 +5910,1042 @@ func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry,
 }
 
 // =============================================================================
+// 17. Optional ZeroS3 Delta Sync (M6)
+//
+// M6 is not a second storage engine: it is an optimized ingestion path
+// for producing an ordinary object. A file synced through this protocol
+// becomes visible through exactly the same CDC v1 -> SHA-256 CAS ->
+// immutable manifest -> visibility-journal commit that an ordinary PUT
+// uses (buildManifestV1FromRefs, publishManifest, commitObjectRootChecked
+// -- all pre-existing primitives, section 4/5/7). After commit there is
+// no custom sync state left anywhere: ordinary GET/HEAD/verify/restart
+// all work exactly as they do for any other object, because it *is* any
+// other object.
+//
+// Endpoints, all under the reserved "/_zeros3/" namespace (never a real
+// S3 operation name or path shape), all authenticated by the exact same
+// SigV4 header verification (srv.authenticate, section 8) every ordinary
+// S3 request already goes through -- there is no separate auth story for
+// sync:
+//
+//   GET  /_zeros3/v1/info                  capability discovery
+//   POST /_zeros3/v1/negotiate              bounded missing-chunk query
+//   PUT  /_zeros3/v1/chunks/<sha256-hex>    idempotent chunk upload
+//   POST /_zeros3/v1/commit                 atomic ordinary object commit
+//
+// Client: `zeros3 sync LOCAL_FILE s3://bucket/key` (runSync/syncFile,
+// below) is a genuine HTTP client of a *running* zeros3 server -- unlike
+// every other CLI verb (stats/verify/versions/restore/gc/doctor), which
+// operates directly on a `-store DIR`. It reuses the exact same CDC
+// primitive (newCDCChunker) and SigV4 canonicalization primitives
+// (sigv4CanonicalURI/Query/Headers, sigv4SigningKey) the server itself
+// uses, rather than a second implementation of either.
+// =============================================================================
+
+const (
+	// zeros3SyncProtocolVersion/zeros3SyncCDCFormat/zeros3SyncHashAlgorithm
+	// identify this extension's version 1 wire contract. Bumping any of
+	// these is a protocol change, not a storage-format change (see
+	// storeFormatVersion/cdcFormatVersion/manifestFormatVersion, section
+	// 1, which this protocol never touches) -- a synced object's on-disk
+	// representation is indistinguishable from an ordinary PUT's.
+	zeros3SyncProtocolVersion = 1
+	zeros3SyncCDCFormat       = "gear-v1"
+	zeros3SyncHashAlgorithm   = "sha256"
+
+	// maxSyncBatchDescriptors/maxSyncBatchBytes bound one /negotiate
+	// request: 1024 descriptors (the planning default) and a generous but
+	// hard byte ceiling on the encoded JSON body, independent of the
+	// count bound (a batch of exactly 1024 tiny descriptors and a batch of
+	// far fewer, larger ones are each bounded on their own axis). This
+	// applies only to /negotiate -- /commit's chunk list legitimately
+	// grows with object size (a multi-GiB file has far more than 1024
+	// chunks) and is instead bounded by the same maxRequestBodySize every
+	// other request body already is (ServeHTTP's readAllLimited, section
+	// 10), not a second, smaller limit.
+	maxSyncBatchDescriptors = 1024
+	maxSyncBatchBytes       = 256 * 1024
+
+	// maxSyncChunkBytes bounds one uploaded chunk's body, and one
+	// descriptor's declared length, to the frozen CDC v1 envelope's own
+	// maximum chunk size (cdcMaxChunkSize, section 1) -- genuine CDC
+	// output is never larger than this, so a larger claim is malformed by
+	// construction, not merely suspicious.
+	maxSyncChunkBytes = cdcMaxChunkSize
+
+	zeros3SyncPathPrefix    = "/_zeros3/v1/"
+	zeros3SyncInfoPath      = "/_zeros3/v1/info"
+	zeros3SyncNegotiatePath = "/_zeros3/v1/negotiate"
+	zeros3SyncCommitPath    = "/_zeros3/v1/commit"
+	zeros3SyncChunksPrefix  = "/_zeros3/v1/chunks/"
+)
+
+// syncDiscoveryResponse is GET /_zeros3/v1/info's body: the complete
+// version 1 capability set, deliberately small (per SYNC_PROTOCOL.md).
+type syncDiscoveryResponse struct {
+	Protocol          int    `json:"protocol"`
+	CDC               string `json:"cdc"`
+	Hash              string `json:"hash"`
+	DeltaSync         bool   `json:"delta_sync"`
+	MaxHashesPerBatch int    `json:"max_hashes_per_batch"`
+	MaxBatchBytes     int64  `json:"max_batch_bytes"`
+	MaxChunkBytes     int    `json:"max_chunk_bytes"`
+}
+
+// syncChunkDescriptor unambiguously identifies one expected chunk: its
+// CAS digest and its declared length. The protocol/cdc/hash fields that
+// say *how* to interpret SHA256 live one level up, on the request that
+// carries a batch of these (syncNegotiateRequest/syncCommitRequest), not
+// repeated per descriptor.
+type syncChunkDescriptor struct {
+	SHA256 string `json:"sha256"`
+	Length int64  `json:"length"`
+}
+
+type syncNegotiateRequest struct {
+	Protocol int                   `json:"protocol"`
+	CDC      string                `json:"cdc"`
+	Hash     string                `json:"hash"`
+	Chunks   []syncChunkDescriptor `json:"chunks"`
+}
+
+// syncNegotiateResponse.Missing lists the requested digests (normalized
+// lowercase hex, de-duplicated, in first-seen request order) not
+// currently present in CAS. Negotiation is read-only: it never writes to
+// CAS or the namespace, so it is always safe to retry or re-run.
+type syncNegotiateResponse struct {
+	Missing []string `json:"missing"`
+}
+
+type syncChunkUploadResponse struct {
+	SHA256 string `json:"sha256"`
+	Length int64  `json:"length"`
+}
+
+// syncCommitRequest carries the complete ordered chunk list (occurrences,
+// not de-duplicated -- a chunk that repeats within one file legitimately
+// repeats in its manifest, exactly as an ordinary PutObject's chunkData
+// output would) plus ordinary object metadata and an optional safe-mode
+// conflict precondition (section 17's ExpectAbsent/ExpectedETag -- see
+// commitObjectRootChecked).
+type syncCommitRequest struct {
+	Protocol     int                   `json:"protocol"`
+	CDC          string                `json:"cdc"`
+	Hash         string                `json:"hash"`
+	Bucket       string                `json:"bucket"`
+	Key          string                `json:"key"`
+	ContentType  string                `json:"content_type"`
+	Metadata     map[string]string     `json:"metadata"`
+	Chunks       []syncChunkDescriptor `json:"chunks"`
+	ExpectAbsent bool                  `json:"expect_absent"`
+	ExpectedETag string                `json:"expected_etag"`
+}
+
+type syncCommitResponse struct {
+	Bucket    string `json:"bucket"`
+	Key       string `json:"key"`
+	VersionID string `json:"version_id"`
+	ETag      string `json:"etag"`
+	Size      int64  `json:"size"`
+}
+
+// writeSyncJSON/writeSyncError render this extension's JSON responses.
+// Ordinary S3 operations render XML (writeXML/writeS3Error, section 9);
+// this is a deliberately distinct, ZeroS3-specific wire format for a
+// deliberately distinct, ZeroS3-specific namespace -- never an XML S3
+// error shape pretending to be a real AWS error.
+func writeSyncJSON(w http.ResponseWriter, status int, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(data)
+}
+
+type syncErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func writeSyncError(w http.ResponseWriter, status int, code, message string) {
+	writeSyncJSON(w, status, syncErrorBody{Code: code, Message: message})
+}
+
+// validateSyncProtocolFields rejects any request that does not declare
+// exactly this build's version 1 protocol/CDC/hash identifiers. ZeroS3
+// never guesses compatibility across an unknown version -- a client or
+// server that has moved on to a hypothetical protocol 2 must fail this
+// check loudly rather than risk misinterpreting a differently-shaped
+// request.
+func validateSyncProtocolFields(protocol int, cdc, hash string) error {
+	if protocol != zeros3SyncProtocolVersion {
+		return fmt.Errorf("unsupported protocol version %d (want %d)", protocol, zeros3SyncProtocolVersion)
+	}
+	if cdc != zeros3SyncCDCFormat {
+		return fmt.Errorf("unsupported cdc format %q (want %q)", cdc, zeros3SyncCDCFormat)
+	}
+	if hash != zeros3SyncHashAlgorithm {
+		return fmt.Errorf("unsupported hash algorithm %q (want %q)", hash, zeros3SyncHashAlgorithm)
+	}
+	return nil
+}
+
+// normalizedSyncDigest validates and normalizes one descriptor's SHA-256
+// hex encoding and declared length. Every request path below (negotiate,
+// chunk upload, commit) funnels through this one check, so "invalid
+// digest"/"invalid length" are rejected identically everywhere instead of
+// each endpoint growing its own slightly different validation.
+func normalizedSyncDigest(hexDigest string, length int64) ([32]byte, string, error) {
+	sum, err := decodeHexSHA256(hexDigest)
+	if err != nil {
+		return sum, "", fmt.Errorf("invalid chunk digest: %w", err)
+	}
+	if length <= 0 || length > maxSyncChunkBytes {
+		return sum, "", fmt.Errorf("invalid chunk length %d (want 1..%d)", length, maxSyncChunkBytes)
+	}
+	return sum, hex.EncodeToString(sum[:]), nil
+}
+
+// handleZeroS3Sync dispatches every "/_zeros3/..." request. Bucket/key
+// for negotiate and chunk-upload are irrelevant (CAS is store-wide, not
+// per-bucket -- section 4); commit carries them in its JSON body.
+func (srv *Server) handleZeroS3Sync(w http.ResponseWriter, r *http.Request, rawPath string, body []byte) {
+	switch {
+	case rawPath == zeros3SyncInfoPath && r.Method == http.MethodGet:
+		srv.handleSyncDiscovery(w)
+	case rawPath == zeros3SyncNegotiatePath && r.Method == http.MethodPost:
+		srv.handleSyncNegotiate(w, body)
+	case strings.HasPrefix(rawPath, zeros3SyncChunksPrefix) && r.Method == http.MethodPut:
+		srv.handleSyncChunkUpload(w, strings.TrimPrefix(rawPath, zeros3SyncChunksPrefix), body)
+	case rawPath == zeros3SyncCommitPath && r.Method == http.MethodPost:
+		srv.handleSyncCommit(w, body)
+	default:
+		writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown ZeroS3 sync extension operation")
+	}
+}
+
+// handleSyncDiscovery answers capability discovery. It never touches the
+// store: a discovery probe is always safe to send, including against an
+// unauthenticated... no -- it still runs through srv.authenticate like
+// every other request (ServeHTTP calls that before dispatch ever reaches
+// here), so an unauthorized caller never learns even this much.
+func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
+	writeSyncJSON(w, http.StatusOK, syncDiscoveryResponse{
+		Protocol:          zeros3SyncProtocolVersion,
+		CDC:               zeros3SyncCDCFormat,
+		Hash:              zeros3SyncHashAlgorithm,
+		DeltaSync:         true,
+		MaxHashesPerBatch: maxSyncBatchDescriptors,
+		MaxBatchBytes:     maxSyncBatchBytes,
+		MaxChunkBytes:     maxSyncChunkBytes,
+	})
+}
+
+// handleSyncNegotiate answers which requested chunks are missing from
+// CAS. It is a pure read (os.Stat only -- never casRead/casWrite), so
+// negotiation never mutates authoritative state and is always safe to
+// retry, re-run, or run speculatively.
+func (srv *Server) handleSyncNegotiate(w http.ResponseWriter, body []byte) {
+	if int64(len(body)) > maxSyncBatchBytes {
+		writeSyncError(w, http.StatusBadRequest, "RequestTooLarge", fmt.Sprintf("negotiate request exceeds max_batch_bytes (%d)", maxSyncBatchBytes))
+		return
+	}
+	var req syncNegotiateRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeSyncError(w, http.StatusBadRequest, "MalformedRequest", "invalid JSON body")
+		return
+	}
+	if err := validateSyncProtocolFields(req.Protocol, req.CDC, req.Hash); err != nil {
+		writeSyncError(w, http.StatusNotImplemented, "UnsupportedProtocol", err.Error())
+		return
+	}
+	if len(req.Chunks) > maxSyncBatchDescriptors {
+		writeSyncError(w, http.StatusBadRequest, "BatchTooLarge", fmt.Sprintf("batch exceeds max_hashes_per_batch (%d)", maxSyncBatchDescriptors))
+		return
+	}
+
+	seen := make(map[string]bool, len(req.Chunks))
+	missing := make([]string, 0)
+	for _, d := range req.Chunks {
+		sum, norm, err := normalizedSyncDigest(d.SHA256, d.Length)
+		if err != nil {
+			writeSyncError(w, http.StatusBadRequest, "InvalidArgument", err.Error())
+			return
+		}
+		// A digest repeated within one batch (the same chunk occurring
+		// more than once in the file, or the client simply re-listing it)
+		// is reported at most once -- the response is a set, not a
+		// parallel echo of every request occurrence.
+		if seen[norm] {
+			continue
+		}
+		seen[norm] = true
+		if _, err := os.Stat(srv.store.chunkPath(sum)); err != nil {
+			missing = append(missing, norm)
+		}
+	}
+	writeSyncJSON(w, http.StatusOK, syncNegotiateResponse{Missing: missing})
+}
+
+// handleSyncChunkUpload publishes one chunk through the exact same CAS
+// primitive (casWrite, section 4) an ordinary PutObject's chunking loop
+// uses. The client-declared digest in the URL is never trusted merely
+// because it came from the sync protocol: the server independently
+// hashes the body it actually received and rejects a mismatch outright,
+// exactly like classifySigV4Payload's fixed-SHA256 mode already does for
+// ordinary request bodies (section 8) -- this is the same trust boundary,
+// applied to a chunk body instead of a whole request body. casWrite
+// itself is what makes a retried upload of an already-published chunk
+// idempotent (a content-addressed write of identical bytes is a no-op),
+// so there is nothing extra to do here for that guarantee.
+func (srv *Server) handleSyncChunkUpload(w http.ResponseWriter, hexDigest string, body []byte) {
+	sum, norm, err := normalizedSyncDigest(hexDigest, int64(len(body)))
+	if err != nil {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", err.Error())
+		return
+	}
+	got := sha256.Sum256(body)
+	if got != sum {
+		writeSyncError(w, http.StatusBadRequest, "DigestMismatch", "uploaded chunk content does not match the requested digest")
+		return
+	}
+	fireTestHook(hookBeforeChunkWrite)
+	if _, err := srv.store.casWrite(body); err != nil {
+		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	fireTestHook(hookAfterChunksPublished)
+	writeSyncJSON(w, http.StatusOK, syncChunkUploadResponse{SHA256: norm, Length: int64(len(body))})
+}
+
+// handleSyncCommit is the one place a synced file becomes an ordinary
+// object. It builds a manifest from the client's ordered chunk list using
+// buildManifestV1FromRefs (the exact primitive CompleteMultipartUpload's
+// stream-completion path already uses, section 11b) and publishes it
+// through publishManifest + commitObjectRootChecked (the exact primitives
+// PutObject/CopyObject already use, sections 5/7) -- there is no second
+// commit path and no custom "sync manifest" format.
+//
+// Every referenced chunk is read back via casRead, which independently
+// re-verifies its content against its own digest (section 4) -- so a
+// missing chunk, a wrong-length chunk, or a chunk whose on-disk bytes
+// have been corrupted since upload is rejected right here, before
+// anything is published, by the same integrity check GetObject/verify
+// already rely on, not a second, duplicated one. The same pass computes
+// the whole-object SHA-256 and single-part-style MD5 ETag by streaming
+// each chunk's already-verified bytes through two running hashes, one
+// chunk at a time -- bounded memory, matching chunkAndStoreStream's own
+// discipline, regardless of object size.
+func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
+	var req syncCommitRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeSyncError(w, http.StatusBadRequest, "MalformedRequest", "invalid JSON body")
+		return
+	}
+	if err := validateSyncProtocolFields(req.Protocol, req.CDC, req.Hash); err != nil {
+		writeSyncError(w, http.StatusNotImplemented, "UnsupportedProtocol", err.Error())
+		return
+	}
+	if req.Bucket == "" || req.Key == "" {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "bucket and key are required")
+		return
+	}
+
+	refs := make([]chunkRef, len(req.Chunks))
+	objHash := sha256.New()
+	etagHash := md5.New() //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5 -- matches buildManifestV1's own formula.
+	var total int64
+	for i, d := range req.Chunks {
+		sum, norm, err := normalizedSyncDigest(d.SHA256, d.Length)
+		if err != nil {
+			writeSyncError(w, http.StatusBadRequest, "InvalidArgument", err.Error())
+			return
+		}
+		data, err := srv.store.casRead(sum)
+		if err != nil {
+			writeSyncError(w, http.StatusConflict, "MissingChunk", fmt.Sprintf("chunk %s is not available or corrupt: %v", norm, err))
+			return
+		}
+		if int64(len(data)) != d.Length {
+			writeSyncError(w, http.StatusConflict, "ChunkLengthMismatch", fmt.Sprintf("chunk %s: declared length %d does not match stored length %d", norm, d.Length, len(data)))
+			return
+		}
+		objHash.Write(data)
+		etagHash.Write(data)
+		total += d.Length
+		refs[i] = chunkRef{SHA256: norm, Length: d.Length}
+	}
+	var objSHA [32]byte
+	copy(objSHA[:], objHash.Sum(nil))
+	etag := hex.EncodeToString(etagHash.Sum(nil))
+
+	contentType := req.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	man := buildManifestV1FromRefs(refs, total, objSHA, etag, contentType, req.Metadata)
+
+	s3Bucket, s3Key := req.Bucket, req.Key
+	manUUID, manSHA, err := srv.store.publishManifest(man)
+	if err != nil {
+		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	fireTestHook(hookAfterManifestPublished)
+
+	// Safe-mode conflict precondition (M6B): ExpectAbsent/ExpectedETag
+	// describe the destination identity the client observed via an
+	// ordinary HEAD before it began negotiating/uploading. Checked here,
+	// inside commitObjectRootChecked's locked critical section, so a
+	// PUT/CopyObject/other sync racing in between negotiation and this
+	// commit can never slip past a now-stale precondition.
+	expectAbsent, expectedETag := req.ExpectAbsent, req.ExpectedETag
+	entry, err := srv.store.commitObjectRootChecked(s3Bucket, s3Key, manUUID, manSHA, man, func(cur *objectEntry, exists bool) error {
+		if expectAbsent {
+			if exists {
+				return errSyncConflict
+			}
+			return nil
+		}
+		if expectedETag != "" && (!exists || cur.etag != expectedETag) {
+			return errSyncConflict
+		}
+		return nil
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, errNoSuchBucket):
+			writeSyncError(w, http.StatusNotFound, "NoSuchBucket", "the specified bucket does not exist")
+		case errors.Is(err, errSyncConflict):
+			writeSyncError(w, http.StatusPreconditionFailed, "PreconditionFailed", "destination changed since sync began")
+		default:
+			writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		}
+		return
+	}
+	fireTestHook(hookAfterAck)
+	writeSyncJSON(w, http.StatusOK, syncCommitResponse{
+		Bucket: s3Bucket, Key: s3Key, VersionID: entry.manifestUUID, ETag: entry.etag, Size: entry.size,
+	})
+}
+
+// errSyncConflict is commitObjectRootChecked's check-function sentinel
+// for a failed safe-mode sync precondition (see handleSyncCommit above).
+var errSyncConflict = errors.New("sync: destination changed since sync began (safe-mode conflict)")
+
+// =============================================================================
+// 17b. `zeros3 sync` client
+//
+// Unlike every other CLI verb, sync is a real HTTP client of a running
+// zeros3 server: it never opens a store directory directly. It signs its
+// own requests using the exact same SigV4 canonicalization primitives
+// (sigv4CanonicalURI/Query/Headers, sigv4SigningKey, section 8) the
+// server's own verifier uses, so there is exactly one SigV4
+// implementation in this binary, used by both sides.
+// =============================================================================
+
+var (
+	// errSyncLocalMutation/errSyncRemoteConflict are returned by syncFile
+	// for the two safety aborts M6B requires: the local source changed
+	// during the operation (section 17b's mutation check), or the
+	// destination changed since the client observed it (the server's
+	// PreconditionFailed, translated here).
+	errSyncLocalMutation  = errors.New("sync: local file changed during the sync operation; aborting without committing")
+	errSyncRemoteConflict = errors.New("sync: destination changed since sync began (safe-mode conflict); rerun sync to retry against the new state")
+)
+
+// syncTestHookBeforeMutationCheck is test-only failure/mutation injection
+// for syncFile's B3 check (see fireTestHook/testHook above for the
+// established pattern this mirrors). Nil in every real code path.
+var syncTestHookBeforeMutationCheck func(cfg syncClientConfig)
+
+// syncClientConfig configures one sync operation. HTTPClient/Out exist so
+// tests can inject an httptest.Server's client and a captured buffer;
+// CLI use (runSync) leaves them at http.DefaultClient and os.Stdout.
+type syncClientConfig struct {
+	LocalPath   string
+	Endpoint    string
+	Bucket      string
+	Key         string
+	Creds       Credentials
+	Region      string
+	ContentType string
+	Metadata    map[string]string
+	HTTPClient  *http.Client
+	Out         io.Writer
+}
+
+func (cfg syncClientConfig) client() *http.Client {
+	if cfg.HTTPClient != nil {
+		return cfg.HTTPClient
+	}
+	return http.DefaultClient
+}
+
+// signSigV4Request signs r (Method/URL/Header already set; the request
+// body's SHA-256 already computed by the caller into payloadSHA256Hex)
+// header-style, using exactly the canonicalization primitives the
+// server's own verifier (sigv4VerifyCore, section 8) reconstructs -- so a
+// request this client signs is byte-for-byte the same canonical request
+// the server rebuilds. Only header (Authorization) auth is used, never
+// query-string/presigned.
+func signSigV4Request(r *http.Request, creds Credentials, region string, payloadSHA256Hex string, now time.Time) error {
+	amzDate := now.UTC().Format("20060102T150405Z")
+	dateStamp := now.UTC().Format("20060102")
+	r.Header.Set("X-Amz-Date", amzDate)
+	r.Header.Set("X-Amz-Content-Sha256", payloadSHA256Hex)
+	if r.Host == "" {
+		r.Host = r.URL.Host
+	}
+
+	signed := []string{"host", "x-amz-content-sha256", "x-amz-date"}
+	canonicalURI, err := sigv4CanonicalURI(r.URL.EscapedPath())
+	if err != nil {
+		return err
+	}
+	canonicalQuery, err := sigv4CanonicalQuery(r.URL.RawQuery)
+	if err != nil {
+		return err
+	}
+	canonicalHeaders, err := sigv4CanonicalHeaders(r, signed)
+	if err != nil {
+		return err
+	}
+	signedHeadersList := sigv4SignedHeadersList(signed)
+
+	canonicalRequest := strings.Join([]string{
+		r.Method, canonicalURI, canonicalQuery, canonicalHeaders, signedHeadersList, payloadSHA256Hex,
+	}, "\n")
+	crHash := sha256.Sum256([]byte(canonicalRequest))
+	credentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", dateStamp, region, sigv4ServiceName)
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256", amzDate, credentialScope, hex.EncodeToString(crHash[:]),
+	}, "\n")
+	signingKey := sigv4SigningKey(creds.SecretAccessKey, dateStamp, region, sigv4ServiceName)
+	signature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
+
+	r.Header.Set("Authorization", fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s,SignedHeaders=%s,Signature=%s",
+		creds.AccessKeyID, credentialScope, signedHeadersList, signature))
+	return nil
+}
+
+// signAndDo signs and sends one request against cfg.Endpoint, returning
+// the response with its body already fully read (and the original
+// resp.Body closed) -- every caller below only needs status/headers/body,
+// never streaming, so this keeps every call site a two-line affair.
+func (cfg syncClientConfig) signAndDo(method, path string, body []byte, headers map[string]string) (*http.Response, []byte, error) {
+	req, err := http.NewRequest(method, strings.TrimRight(cfg.Endpoint, "/")+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	payloadHash := sha256.Sum256(body)
+	if err := signSigV4Request(req, cfg.Creds, cfg.Region, hex.EncodeToString(payloadHash[:]), time.Now()); err != nil {
+		return nil, nil, err
+	}
+	resp, err := cfg.client().Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	return resp, respBody, nil
+}
+
+// discoverZeroS3Sync performs capability discovery (A1). Any failure --
+// network error, non-200, an unparseable body, or a declared
+// protocol/cdc/hash this build doesn't understand -- is reported as one
+// discovery error; the caller's only correct response to it is to never
+// send a proprietary chunk-upload/negotiate/commit request and instead
+// fall back to an ordinary PutObject (B5), which is exactly what syncFile
+// does.
+func discoverZeroS3Sync(cfg syncClientConfig) (syncDiscoveryResponse, error) {
+	resp, body, err := cfg.signAndDo(http.MethodGet, zeros3SyncInfoPath, nil, nil)
+	if err != nil {
+		return syncDiscoveryResponse{}, fmt.Errorf("discovery request failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return syncDiscoveryResponse{}, fmt.Errorf("discovery returned status %d", resp.StatusCode)
+	}
+	var d syncDiscoveryResponse
+	if err := json.Unmarshal(body, &d); err != nil {
+		return syncDiscoveryResponse{}, fmt.Errorf("discovery response not understood: %w", err)
+	}
+	if !d.DeltaSync {
+		return syncDiscoveryResponse{}, errors.New("endpoint declared delta_sync=false")
+	}
+	if err := validateSyncProtocolFields(d.Protocol, d.CDC, d.Hash); err != nil {
+		return syncDiscoveryResponse{}, fmt.Errorf("endpoint capabilities incompatible: %w", err)
+	}
+	return d, nil
+}
+
+// headSyncDestination captures the destination's current identity (A6's
+// "ordinary object metadata" precondition source, M6B's conflict basis)
+// via an ordinary S3 HEAD -- not a ZeroS3-specific call. A 404 means
+// "absent"; any other non-200 is reported as an error rather than
+// silently treated as absent.
+func headSyncDestination(cfg syncClientConfig) (exists bool, etag string, err error) {
+	resp, _, err := cfg.signAndDo(http.MethodHead, "/"+cfg.Bucket+"/"+cfg.Key, nil, nil)
+	if err != nil {
+		return false, "", fmt.Errorf("HEAD destination failed: %w", err)
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, strings.Trim(resp.Header.Get("ETag"), `"`), nil
+	case http.StatusNotFound:
+		return false, "", nil
+	default:
+		return false, "", fmt.Errorf("HEAD destination returned status %d", resp.StatusCode)
+	}
+}
+
+// syncLocalChunk is one CDC chunk observed during the local scan: its
+// digest/length (what negotiation and commit need) plus its byte offset
+// in the source file (so its bytes can be re-read later, on demand, for
+// upload -- see A3/readSyncFileRange -- without ever holding the whole
+// file, or even every chunk's bytes, in memory at once).
+type syncLocalChunk struct {
+	SHA256 string
+	Length int64
+	Offset int64
+}
+
+// scanLocalFileForSync runs the exact same CDC v1 chunker
+// (newCDCChunker, section 3) an ordinary PutObject/chunkAndStoreStream
+// would use on this same byte stream, so the boundaries, lengths, and
+// SHA-256 identities produced here are byte-for-byte identical to what
+// server-side chunking of the same bytes would produce (A2's required
+// equivalence -- proven directly by TestSync_CDCEquivalence). Memory use
+// is bounded to one chunk (at most cdcMaxChunkSize bytes) at a time.
+func scanLocalFileForSync(path string) (chunks []syncLocalChunk, total int64, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer f.Close()
+	c := newCDCChunker(f)
+	var offset int64
+	for {
+		chunk, err := c.next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		sum := sha256.Sum256(chunk)
+		chunks = append(chunks, syncLocalChunk{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(chunk)), Offset: offset})
+		offset += int64(len(chunk))
+	}
+	return chunks, offset, nil
+}
+
+// readSyncFileRange re-reads exactly one chunk's bytes on demand, by
+// offset/length recorded during scanLocalFileForSync -- the "reread
+// missing chunks without retaining the whole file in memory" A3
+// requires.
+func readSyncFileRange(path string, offset, length int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, length)
+	if _, err := io.ReadFull(f, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// syncPlan is the local scan's result, organized for negotiation/upload:
+// ordered is every chunk occurrence in file order (with duplicates, as
+// the eventual commit needs), unique is the same content de-duplicated to
+// its first occurrence (all negotiation/upload needs -- CAS is
+// content-addressed, so only distinct digests are worth asking about or
+// transferring), and offsetBySHA lets uploadMissingSyncChunks re-read any
+// unique chunk's bytes by digest.
+type syncPlan struct {
+	ordered      []syncLocalChunk
+	unique       []syncChunkDescriptor
+	offsetBySHA  map[string]int64
+	logicalBytes int64
+}
+
+func buildSyncPlan(chunks []syncLocalChunk, total int64) syncPlan {
+	plan := syncPlan{ordered: chunks, offsetBySHA: make(map[string]int64, len(chunks)), logicalBytes: total}
+	seen := make(map[string]bool, len(chunks))
+	for _, c := range chunks {
+		if seen[c.SHA256] {
+			continue
+		}
+		seen[c.SHA256] = true
+		plan.unique = append(plan.unique, syncChunkDescriptor{SHA256: c.SHA256, Length: c.Length})
+		plan.offsetBySHA[c.SHA256] = c.Offset
+	}
+	return plan
+}
+
+// negotiateSyncMissing runs A4's bounded missing-chunk negotiation: the
+// unique digest list is split into batches no larger than the server's
+// declared max_hashes_per_batch (clamped to this build's own
+// maxSyncBatchDescriptors ceiling, so a misbehaving/compromised server
+// declaring an oversized batch size can't induce an oversized request),
+// one /negotiate call per batch.
+func negotiateSyncMissing(cfg syncClientConfig, discovery syncDiscoveryResponse, unique []syncChunkDescriptor) (map[string]bool, error) {
+	batchSize := discovery.MaxHashesPerBatch
+	if batchSize <= 0 || batchSize > maxSyncBatchDescriptors {
+		batchSize = maxSyncBatchDescriptors
+	}
+	missing := make(map[string]bool)
+	for i := 0; i < len(unique); i += batchSize {
+		end := i + batchSize
+		if end > len(unique) {
+			end = len(unique)
+		}
+		reqBody, err := json.Marshal(syncNegotiateRequest{
+			Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+			Chunks: unique[i:end],
+		})
+		if err != nil {
+			return nil, err
+		}
+		resp, body, err := cfg.signAndDo(http.MethodPost, zeros3SyncNegotiatePath, reqBody, map[string]string{"Content-Type": "application/json"})
+		if err != nil {
+			return nil, fmt.Errorf("negotiate request failed: %w", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("negotiate failed: status %d: %s", resp.StatusCode, body)
+		}
+		var nr syncNegotiateResponse
+		if err := json.Unmarshal(body, &nr); err != nil {
+			return nil, fmt.Errorf("negotiate response not understood: %w", err)
+		}
+		for _, sha := range nr.Missing {
+			missing[sha] = true
+		}
+	}
+	return missing, nil
+}
+
+// uploadMissingSyncChunks performs A5's idempotent missing-chunk upload:
+// only chunks negotiate reported missing are ever sent, one PUT per
+// unique digest. Re-reading each chunk's bytes just before sending it
+// (rather than trusting the scan pass's now-possibly-stale bytes) doubles
+// as an early, cheap mutation-detection signal -- see syncFile's own
+// stat-based check for the authoritative one.
+func uploadMissingSyncChunks(cfg syncClientConfig, plan syncPlan, missing map[string]bool) (uploadedBytes int64, err error) {
+	for _, d := range plan.unique {
+		if !missing[d.SHA256] {
+			continue
+		}
+		data, rerr := readSyncFileRange(cfg.LocalPath, plan.offsetBySHA[d.SHA256], d.Length)
+		if rerr != nil {
+			return uploadedBytes, fmt.Errorf("%w: re-reading chunk for upload: %v", errSyncLocalMutation, rerr)
+		}
+		sum := sha256.Sum256(data)
+		if hex.EncodeToString(sum[:]) != d.SHA256 {
+			return uploadedBytes, fmt.Errorf("%w: chunk at offset %d no longer matches its scanned digest", errSyncLocalMutation, plan.offsetBySHA[d.SHA256])
+		}
+		resp, body, err := cfg.signAndDo(http.MethodPut, zeros3SyncChunksPrefix+d.SHA256, data, nil)
+		if err != nil {
+			return uploadedBytes, fmt.Errorf("chunk upload failed: %w", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return uploadedBytes, fmt.Errorf("chunk upload failed: status %d: %s", resp.StatusCode, body)
+		}
+		uploadedBytes += d.Length
+	}
+	return uploadedBytes, nil
+}
+
+// syncPrecondition carries the safe-mode conflict precondition (M6B) from
+// headSyncDestination's observation through to commitSyncObject.
+type syncPrecondition struct {
+	expectAbsent bool
+	expectedETag string
+}
+
+// commitSyncObject performs A6's atomic commit: the complete ordered
+// chunk list plus ordinary object metadata and the conflict precondition.
+// A 412 response is translated to errSyncRemoteConflict; every other
+// non-200 becomes a plain error.
+func commitSyncObject(cfg syncClientConfig, plan syncPlan, pre syncPrecondition) (syncCommitResponse, error) {
+	chunks := make([]syncChunkDescriptor, len(plan.ordered))
+	for i, c := range plan.ordered {
+		chunks[i] = syncChunkDescriptor{SHA256: c.SHA256, Length: c.Length}
+	}
+	contentType := cfg.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	reqBody, err := json.Marshal(syncCommitRequest{
+		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+		Bucket: cfg.Bucket, Key: cfg.Key, ContentType: contentType, Metadata: cfg.Metadata,
+		Chunks: chunks, ExpectAbsent: pre.expectAbsent, ExpectedETag: pre.expectedETag,
+	})
+	if err != nil {
+		return syncCommitResponse{}, err
+	}
+	resp, body, err := cfg.signAndDo(http.MethodPost, zeros3SyncCommitPath, reqBody, map[string]string{"Content-Type": "application/json"})
+	if err != nil {
+		return syncCommitResponse{}, fmt.Errorf("commit request failed: %w", err)
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var cr syncCommitResponse
+		if err := json.Unmarshal(body, &cr); err != nil {
+			return syncCommitResponse{}, fmt.Errorf("commit response not understood: %w", err)
+		}
+		return cr, nil
+	case http.StatusPreconditionFailed:
+		return syncCommitResponse{}, errSyncRemoteConflict
+	default:
+		return syncCommitResponse{}, fmt.Errorf("commit failed: status %d: %s", resp.StatusCode, body)
+	}
+}
+
+// syncStats are the operation-local transfer facts A7 requires. Nothing
+// here is persisted -- these describe one sync run, never a lifetime
+// counter (the persistent journal/manifest format is untouched by this
+// entire section).
+type syncStats struct {
+	LogicalBytes         int64
+	TotalChunks          int
+	ChunksReused         int // occurrences already present in CAS at negotiation time
+	MissingChunkOccur    int // occurrences absent from CAS at negotiation time
+	UniqueChunksUploaded int
+	UploadedBytes        int64
+	BytesAvoided         int64
+	FellBackToPlainPut   bool
+}
+
+func humanBytes(n int64) string {
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB"}
+	f := float64(n)
+	i := 0
+	for f >= 1024 && i < len(units)-1 {
+		f /= 1024
+		i++
+	}
+	if i == 0 {
+		return fmt.Sprintf("%d %s", n, units[i])
+	}
+	return fmt.Sprintf("%.2f %s", f, units[i])
+}
+
+func printSyncStats(w io.Writer, s syncStats) {
+	if s.FellBackToPlainPut {
+		fmt.Fprintf(w, "Logical scanned:     %s\n", humanBytes(s.LogicalBytes))
+		fmt.Fprintf(w, "Uploaded payload:    %s (full PutObject fallback -- non-ZeroS3 or discovery-incompatible endpoint)\n", humanBytes(s.UploadedBytes))
+		return
+	}
+	fmt.Fprintf(w, "Logical scanned:     %s\n", humanBytes(s.LogicalBytes))
+	fmt.Fprintf(w, "Chunks:              %d\n", s.TotalChunks)
+	fmt.Fprintf(w, "Chunks reused:       %d\n", s.ChunksReused)
+	fmt.Fprintf(w, "Uploaded payload:    %s (%d unique chunks)\n", humanBytes(s.UploadedBytes), s.UniqueChunksUploaded)
+	fmt.Fprintf(w, "Transfer avoided:    %s\n", humanBytes(s.BytesAvoided))
+	if s.LogicalBytes > 0 {
+		fmt.Fprintf(w, "Reuse:               %.1f%%\n", float64(s.BytesAvoided)/float64(s.LogicalBytes)*100)
+	}
+}
+
+// doPlainPutFallback is B5's non-ZeroS3 behavior: an ordinary,
+// whole-object PutObject, sent only after discovery has already failed --
+// never a proprietary chunk-upload/negotiate/commit request against an
+// endpoint that never proved it understands them.
+func doPlainPutFallback(cfg syncClientConfig) (syncStats, error) {
+	data, err := os.ReadFile(cfg.LocalPath)
+	if err != nil {
+		return syncStats{}, fmt.Errorf("sync: %w", err)
+	}
+	contentType := cfg.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	req, err := http.NewRequest(http.MethodPut, strings.TrimRight(cfg.Endpoint, "/")+"/"+cfg.Bucket+"/"+cfg.Key, bytes.NewReader(data))
+	if err != nil {
+		return syncStats{}, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	for k, v := range cfg.Metadata {
+		req.Header.Set("x-amz-meta-"+k, v)
+	}
+	sum := sha256.Sum256(data)
+	if err := signSigV4Request(req, cfg.Creds, cfg.Region, hex.EncodeToString(sum[:]), time.Now()); err != nil {
+		return syncStats{}, err
+	}
+	resp, err := cfg.client().Do(req)
+	if err != nil {
+		return syncStats{}, fmt.Errorf("fallback PutObject failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return syncStats{}, fmt.Errorf("fallback PutObject failed: status %d: %s", resp.StatusCode, body)
+	}
+	stats := syncStats{LogicalBytes: int64(len(data)), UploadedBytes: int64(len(data)), FellBackToPlainPut: true}
+	if cfg.Out != nil {
+		printSyncStats(cfg.Out, stats)
+	}
+	return stats, nil
+}
+
+// syncFile is the complete M6A/M6B client pipeline: discover (A1, falling
+// back per B5 on failure) -> HEAD destination for the conflict
+// precondition (B2) -> local CDC scan (A2/A3) -> negotiate (A4) -> upload
+// missing chunks (A5) -> re-verify the local file is unchanged (B3) ->
+// atomic commit (A6/B2). It never buffers the whole local file: only one
+// chunk at a time is ever held in memory, during scanning and again
+// (independently) during upload.
+func syncFile(cfg syncClientConfig) (syncStats, error) {
+	before, err := os.Stat(cfg.LocalPath)
+	if err != nil {
+		return syncStats{}, fmt.Errorf("sync: %w", err)
+	}
+
+	discovery, derr := discoverZeroS3Sync(cfg)
+	if derr != nil {
+		if cfg.Out != nil {
+			fmt.Fprintf(cfg.Out, "zeros3 sync: delta sync unavailable (%v); falling back to a full PutObject\n", derr)
+		}
+		return doPlainPutFallback(cfg)
+	}
+
+	exists, etag, herr := headSyncDestination(cfg)
+	if herr != nil {
+		return syncStats{}, fmt.Errorf("sync: %w", herr)
+	}
+
+	chunks, total, serr := scanLocalFileForSync(cfg.LocalPath)
+	if serr != nil {
+		return syncStats{}, fmt.Errorf("sync: scanning local file: %w", serr)
+	}
+	plan := buildSyncPlan(chunks, total)
+
+	missing, nerr := negotiateSyncMissing(cfg, discovery, plan.unique)
+	if nerr != nil {
+		return syncStats{}, fmt.Errorf("sync: %w", nerr)
+	}
+
+	uploadedBytes, uerr := uploadMissingSyncChunks(cfg, plan, missing)
+	if uerr != nil {
+		return syncStats{}, fmt.Errorf("sync: %w", uerr)
+	}
+
+	// syncTestHookBeforeMutationCheck is nil (a no-op) in every real code
+	// path, exactly like testHook (section: test-only failure injection
+	// seam, above) -- only zeros3_test.go ever assigns it, to
+	// deterministically mutate the local file between upload and the
+	// mutation check below without a timing-dependent race.
+	if syncTestHookBeforeMutationCheck != nil {
+		syncTestHookBeforeMutationCheck(cfg)
+	}
+
+	// B3: local mutation detection. A practical, honestly-documented,
+	// stdlib-only guarantee -- comparing size+modification time observed
+	// before scanning against a fresh stat taken immediately before
+	// commit -- not a filesystem snapshot: an in-place rewrite that
+	// happens to preserve both size and mtime exactly is not detected.
+	// See STATUS.md.
+	after, aerr := os.Stat(cfg.LocalPath)
+	if aerr != nil {
+		return syncStats{}, fmt.Errorf("%w: %v", errSyncLocalMutation, aerr)
+	}
+	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		return syncStats{}, errSyncLocalMutation
+	}
+
+	pre := syncPrecondition{expectAbsent: !exists, expectedETag: etag}
+	if _, cerr := commitSyncObject(cfg, plan, pre); cerr != nil {
+		return syncStats{}, fmt.Errorf("sync: %w", cerr)
+	}
+
+	missingOccur := 0
+	for _, c := range plan.ordered {
+		if missing[c.SHA256] {
+			missingOccur++
+		}
+	}
+	stats := syncStats{
+		LogicalBytes:         total,
+		TotalChunks:          len(plan.ordered),
+		MissingChunkOccur:    missingOccur,
+		ChunksReused:         len(plan.ordered) - missingOccur,
+		UniqueChunksUploaded: len(missing),
+		UploadedBytes:        uploadedBytes,
+		BytesAvoided:         total - uploadedBytes,
+	}
+	if cfg.Out != nil {
+		printSyncStats(cfg.Out, stats)
+	}
+	return stats, nil
+}
+
+// parseS3URI parses the "s3://bucket/key" destination form `zeros3 sync`
+// takes, deliberately not a general URI parser -- only the one shape this
+// CLI needs.
+func parseS3URI(raw string) (bucket, key string, err error) {
+	const prefix = "s3://"
+	if !strings.HasPrefix(raw, prefix) {
+		return "", "", fmt.Errorf("destination must be an s3://bucket/key URI, got %q", raw)
+	}
+	rest := strings.TrimPrefix(raw, prefix)
+	i := strings.IndexByte(rest, '/')
+	if i <= 0 || i == len(rest)-1 {
+		return "", "", fmt.Errorf("destination must be an s3://bucket/key URI, got %q", raw)
+	}
+	return rest[:i], rest[i+1:], nil
+}
+
+// runSync implements "zeros3 sync LOCAL_FILE s3://bucket/key", following
+// the same flag.NewFlagSet convention every other CLI verb uses.
+func runSync(args []string) {
+	fs := flag.NewFlagSet("sync", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "http://127.0.0.1:9000", "S3 endpoint base URL (scheme://host[:port])")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key")
+	region := fs.String("region", defaultRegion, "SigV4 region")
+	contentType := fs.String("content-type", "", "Content-Type for the destination object (default: application/octet-stream)")
+	fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) != 2 {
+		fmt.Fprintln(os.Stderr, "zeros3: sync requires LOCAL_FILE and s3://bucket/key")
+		os.Exit(2)
+	}
+	bucket, key, err := parseS3URI(rest[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: %v\n", err)
+		os.Exit(2)
+	}
+
+	stats, err := syncFile(syncClientConfig{
+		LocalPath: rest[0], Endpoint: *endpoint, Bucket: bucket, Key: key,
+		Creds:       Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey},
+		Region:      *region,
+		ContentType: *contentType,
+		Out:         os.Stdout,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: sync failed: %v\n", err)
+		os.Exit(1)
+	}
+	_ = stats
+}
+
+// =============================================================================
 // 15. CLI: stats / verify / versions / restore / gc
 //
 // Compact verbs; stdout carries the requested result/data, stderr carries
@@ -6330,8 +7399,10 @@ func main() {
 		runGC(args)
 	case "doctor":
 		runDoctor(args)
+	case "sync":
+		runSync(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, or doctor)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, doctor, or sync)\n", cmd)
 		os.Exit(2)
 	}
 }

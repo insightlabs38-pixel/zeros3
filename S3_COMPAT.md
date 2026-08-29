@@ -72,6 +72,33 @@ root counts by category alongside the existing integrity/reclaimable
 accounting. Ordinary S3 clients never see any of this: `ListObjectsV2`
 only ever lists current objects, exactly as before this pass.
 
+## ZeroS3 extensions (not S3 APIs)
+
+`zeros3 sync` (M6, optional delta transfer) is a **ZeroS3-specific
+extension**, not part of the S3 wire protocol and not usable by an
+ordinary S3 SDK. It lives entirely under the reserved `/_zeros3/v1/...`
+path namespace — never a real S3 operation name, method, or path shape —
+so it can never be confused with, or accidentally shadow, an actual S3
+request:
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/_zeros3/v1/info` | `GET` | capability discovery (`protocol`/`cdc`/`hash`/`delta_sync`/batch and size limits, JSON) |
+| `/_zeros3/v1/negotiate` | `POST` | bounded missing-chunk query (JSON in/out) |
+| `/_zeros3/v1/chunks/<sha256-hex>` | `PUT` | idempotent chunk upload (raw bytes) |
+| `/_zeros3/v1/commit` | `POST` | atomic ordinary object commit (JSON in/out) |
+
+All four are authenticated by the exact same SigV4 header verification
+every ordinary S3 request goes through, and all four render JSON, never
+XML — a deliberate visual signal, on the wire, that these are not S3
+responses. A successful `/commit` produces an ordinary object reachable
+through every operation in the table above; the extension endpoints
+themselves are never involved in reading it back. `zeros3 sync` against a
+non-ZeroS3 endpoint (one that doesn't answer `/_zeros3/v1/info`
+successfully) falls back to an ordinary `PutObject` instead of sending
+any of the other three. See `STATUS.md`'s "M6" section for the full
+protocol/conflict/resume semantics and `README.md` for CLI usage.
+
 ## Deliberately unsupported (explicit non-goals)
 
 These are not planned for this project, at any tier:
