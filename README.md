@@ -438,9 +438,20 @@ arguments needed).
 Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
 
 - Single writer process per store; no distributed/HA operation.
-- No versioning, restore, or garbage collection.
-- `ListParts`/`ListMultipartUploads` have no pagination (single page
-  only); every part but the last must be ≥5MiB, matching AWS's rule.
+- Internal object version history/restore/GC (`zeros3 versions`/
+  `restore`/`gc`, above) is a ZeroS3-only mechanism, not the AWS S3
+  Versioning API — no `versionId=` query semantics, bucket-versioning
+  configuration state, or delete markers; `gc -apply` also requires
+  exclusive offline access to the store (no online/background/scheduled
+  GC).
+- `ListMultipartUploads` has no `delimiter`/`prefix`/`CommonPrefixes`
+  support (pagination itself is implemented and tested); every multipart
+  part but the last must be ≥5MiB, matching AWS's rule, with no
+  configurable override.
+- `zeros3 sync` (delta sync, M6) uploads missing chunks sequentially, one
+  batch at a time — no concurrent transfer; directory sync (M6C) is
+  non-destructive with no `--delete`/mirror mode, so a locally-removed
+  file's previously-synced remote object is left untouched.
 - `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` are eligible but not yet
   implemented (no real client exercised needs them);
   `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and SigV4A/ECDSA streaming modes

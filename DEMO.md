@@ -143,9 +143,9 @@ substitution-table rows.
 
 ## 12. Close
 
-> "Known limitations are documented plainly in STATUS.md — no versioning,
-> no multipart, single-writer-process. What's here is tested, measured,
-> and reproducible."
+> "Known limitations are documented plainly in README.md/STATUS.md —
+> single-writer-process, no IAM/ACL, no --delete for directory sync.
+> What's here is tested, measured, and reproducible."
 
 ## Fixture generation (deterministic, not checked in)
 

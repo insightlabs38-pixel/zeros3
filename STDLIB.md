@@ -47,9 +47,9 @@ aspirational.
 | 6 | XML codec (e.g. `fast-xml-parser`) | `encoding/xml` | S3 response/error XML shapes (`listBucketResult`, `copyObjectResult`, S3 error envelope) | Stdlib's `encoding/xml` handles escaping/marshaling directly; no gap to fill. |
 | 7 | JSON codec/CLI reporting library | `encoding/json` | Manifest/`FORMAT.json`/journal-payload encoding, `stats -json`/`verify -json` output | None; stdlib JSON is a complete fit. |
 | 8 | CLI framework (e.g. Cobra, `commander`) | `flag`, `os.Args` | Subcommand dispatch (`serve` default, `stats`, `verify`, `presign`, and — M5-C — `versions`, `restore`, `gc`, `doctor`), usage/exit-status contract (section 16/17) | `flag` has no subcommand concept built in; ZeroS3 dispatches on `os.Args[1]` itself and gives each subcommand its own `flag.FlagSet`. |
-| 11 | Advisory file locking (e.g. `gofrs/flock`) | `syscall` (`syscall.Flock`, `LOCK_EX`/`LOCK_SH`/`LOCK_NB`/`LOCK_UN`) | Exclusive-ownership enforcement for `zeros3 gc` (section 13b): a shared lock for an ordinary store user (`zeros3 serve`), an exclusive, non-blocking lock GC must win before it may delete anything | `syscall.Flock` is Unix-specific (fine: Linux amd64 is the sole release-blocking platform per section 1 above); no third-party lock library was needed. |
 | 9 | Checksum/integrity library | `hash/crc32` (with the Castagnoli table), `encoding/base64` | Ordinary `x-amz-checksum-crc32` request validation, journal frame CRC32C | Both uses share `hash/crc32`; nothing third-party was ever needed here. |
 | 10 | S3-compatible single-part ETag (MD5-based) | `crypto/md5` | `buildManifestV1`'s ETag computation | MD5 here is explicitly *not* a security use — it exists solely to match S3's documented single-part ETag convention (`//nolint:gosec` marks this deliberately). |
+| 11 | Advisory file locking (e.g. `gofrs/flock`) | `syscall` (`syscall.Flock`, `LOCK_EX`/`LOCK_SH`/`LOCK_NB`/`LOCK_UN`) | Exclusive-ownership enforcement for `zeros3 gc` (section 13b): a shared lock for an ordinary store user (`zeros3 serve`), an exclusive, non-blocking lock GC must win before it may delete anything | `syscall.Flock` is Unix-specific (fine: Linux amd64 is the sole release-blocking platform per section 1 above); no third-party lock library was needed. |
 
 ## 4. Storage substitutions
 
@@ -168,8 +168,12 @@ authored logic in `zeros3.go`:
 - **No structured logging library** (`log/slog` was considered but
   plain `log` was sufficient for this project's actual diagnostic
   needs — this is a deliberate "didn't need it," not a gap).
-- **No retry/backoff library** — ZeroS3 has no client-side sync/transfer
-  feature in this milestone, so nothing needed one.
+- **No retry/backoff library** — `zeros3 sync`'s client (M6) makes one
+  attempt per request and reports failure rather than retrying; a local
+  file mutated mid-operation aborts, and resuming after an interrupted
+  transfer or server restart falls out of CAS's own content-addressed
+  durability (re-running `sync` naturally re-negotiates only the chunks
+  still missing) rather than any bespoke retry/session state.
 - **No online/concurrent GC** — `zeros3 gc` requires exclusive ownership
   of the store (via `syscall.Flock`, row 11 above) and refuses to run
   while `zeros3 serve` (or another `gc`) holds it; a scheduler for
