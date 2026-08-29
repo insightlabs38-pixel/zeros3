@@ -120,6 +120,20 @@ aspirational.
   skipped without ever being dereferenced. No third-party directory-walk
   or glob library was needed.
 
+- **Peer-assisted repair (M8B, `zeros3 repair`):** `io.LimitReader`, used
+  here for the first time in a genuinely new role: bounding an *outbound
+  HTTP client's own response* read (`fetchRepairChunk`), rather than its
+  existing role of bounding an *inbound server request* body (row 1's
+  `maxRequestBodySize` check). No new package was needed for this --
+  repair's one new security requirement (never let a peer force an
+  unbounded read into memory) is exactly what the same primitive already
+  does, applied the other direction. Every other piece --
+  `signSigV4Request`, the `/_zeros3/v1/chunks/<sha256-hex>` endpoint,
+  `discoverZeroS3Sync`, `writeFileDurable`/`syncDir` -- is unmodified M6/
+  M8A code; no new stdlib package was needed for detection
+  (`computeReachability`, already `encoding/json`+`crypto/sha256`-based)
+  or publication (already `os`+`path/filepath`-based).
+
 ## 6. Developer-tool substitutions
 
 - **CLI:** see table row 8.

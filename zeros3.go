@@ -7656,6 +7656,439 @@ func runReplicate(args []string) {
 }
 
 // =============================================================================
+// 15e. Peer-assisted corruption repair (M8B): `zeros3 repair --from PEER`
+//
+// M8B restores missing or corrupt *physical* CAS chunk bytes from another
+// explicitly-trusted ZeroS3 peer, at chunk granularity -- exactly the
+// architecture the milestone spec already exists for:
+//
+//	manifest says object needs SHA256 X -> local deep verify finds X
+//	missing/corrupt -> authenticated GET of exactly X from the peer ->
+//	independent local SHA-256 re-hash -> atomic local CAS replacement ->
+//	deep verify again, clean.
+//
+// This is peer-assisted repair, not autonomous self-healing: the peer is
+// always explicitly supplied by the operator (-from), never discovered,
+// and nothing here runs unless this command is invoked.
+//
+// Every non-trivial piece is reused, unmodified, from M1-M8A:
+//
+//   - detection: Store.computeReachability's existing deep scan (section
+//     12a/13, the same one Store.Verify already runs) -- repairFindings
+//     below does not re-implement any integrity check; it only reduces
+//     that scan's own ReferencedChunks/ValidChunks/ChunkLength maps to the
+//     deduplicated set of reachable digests needing repair. Because
+//     ReferencedChunks is already exactly "every digest some live root
+//     claims" (never unreachable/orphan garbage), repair can structurally
+//     never trigger a network fetch for garbage a peer happens to hold
+//     (B6) -- retained historical versions (B7) and active multipart part
+//     chunks (B8) are already included for the same reason, with no
+//     special-casing needed.
+//   - peer chunk retrieval: the exact same signed-request primitive
+//     (signSigV4Request) and endpoint (zeros3SyncChunksPrefix /
+//     handleSyncChunkDownload) M8A's fetchSourceChunk already uses --
+//     fetchRepairChunk below only adds the response-size bound A4
+//     requires (see its own doc comment for why that couldn't just be
+//     fetchSourceChunk verbatim).
+//   - capability discovery: discoverZeroS3Sync, unmodified.
+//   - CAS publication: writeFileDurable/syncDir, the exact same durable
+//     temp-write-fsync-rename-fsync-dir primitives casWrite already uses.
+//
+// The one genuinely new low-level primitive is casRepairPublish (A6): an
+// ordinary casWrite treats an already-existing pathname as already
+// correct and skips writing entirely (its whole point is idempotent
+// dedup of identical content) -- exactly wrong for replacing a corrupt
+// *existing* chunk, which must actually be overwritten. casRepairPublish
+// always writes, reusing the same atomic rename-based publication so a
+// concurrent reader can never observe a torn write (B5).
+//
+// Persistent-format impact: NONE. Repair never publishes a manifest,
+// writes a journal record, or touches any bucket/key/version pointer --
+// it only ever calls casRepairPublish (which writes exactly one
+// content-addressed chunk file) for a digest an already-published,
+// already-authoritative manifest/journal state already claims. A repaired
+// store is byte-for-byte indistinguishable, from every other subsystem's
+// point of view, from a store that was never corrupted.
+//
+// Resume (B2/B3): no durable repair-session state exists anywhere, for
+// the same reason M8A's replicate needs none -- rerunning repair from
+// scratch re-runs repairFindings, which (being sourced fresh from
+// computeReachability) naturally reports only the digests still actually
+// broken; already-repaired chunks now pass ValidChunks and are silently
+// excluded. An interrupted repair (process killed mid-loop, or even
+// mid-chunk-write -- casRepairPublish's rename is atomic) simply leaves
+// some chunks still broken, discovered identically on the next run.
+// =============================================================================
+
+// RepairFinding is one reachable content digest that computeReachability's
+// deep scan found missing or corrupt -- the structured finding repairFindings
+// exposes so repair never has to parse verify's human-readable CLI output.
+type RepairFinding struct {
+	SHA256          string   `json:"sha256"`
+	Length          int64    `json:"length"`
+	Kind            string   `json:"kind"` // "missing" | "corrupt"
+	AffectedObjects []string `json:"affected_objects,omitempty"`
+}
+
+// repairFindings runs the store's existing deep reachability scan --
+// exactly the one Store.Verify(true) already runs, never a second,
+// separately-maintained integrity checker -- and reduces it to the
+// deduplicated set of reachable digests repair needs to act on. Deep is
+// always forced true here regardless of what the caller might otherwise
+// want: a content-mismatch corruption (right length, wrong bytes) is only
+// detectable by computeReachability's own deep hash pass (section 12a),
+// and repair must never silently miss that case. If ten live roots
+// reference the same corrupt digest, it still appears exactly once here
+// (A3) -- computeReachability's ReferencedChunks/ValidChunks are already
+// digest-keyed sets, so this de-duplication falls out for free.
+func (s *Store) repairFindings() ([]RepairFinding, error) {
+	rr, err := s.computeReachability(true)
+	if err != nil {
+		return nil, err
+	}
+	var bad []RepairFinding
+	for sha := range rr.ReferencedChunks {
+		if rr.ValidChunks[sha] {
+			continue
+		}
+		kind := "corrupt"
+		if sum, herr := decodeHexSHA256(sha); herr == nil {
+			if _, statErr := os.Stat(s.chunkPath(sum)); os.IsNotExist(statErr) {
+				kind = "missing"
+			}
+		}
+		bad = append(bad, RepairFinding{SHA256: sha, Length: rr.ChunkLength[sha], Kind: kind})
+	}
+	sort.Slice(bad, func(i, j int) bool { return bad[i].SHA256 < bad[j].SHA256 })
+	s.annotateAffectedObjects(bad)
+	return bad, nil
+}
+
+// annotateAffectedObjects fills in each finding's AffectedObjects: which
+// live roots (current objects, retained historical versions, active
+// multipart parts) reference that digest -- "track how many logical
+// objects are affected" (A3), reported for operator visibility only, never
+// consulted to decide what to repair. A manifest is read at most once per
+// root via readVerifiedManifest (the same verified-read primitive
+// computeStats already uses); a root whose own manifest can't be read
+// verified contributes no affected-object entry here -- computeReachability
+// already reported that as its own issue, and this is a best-effort
+// annotation, never a second correctness check.
+func (s *Store) annotateAffectedObjects(findings []RepairFinding) {
+	if len(findings) == 0 {
+		return
+	}
+	want := make(map[string]*RepairFinding, len(findings))
+	for i := range findings {
+		want[findings[i].SHA256] = &findings[i]
+	}
+	note := func(subject string, chunks []chunkRef) {
+		seen := make(map[string]bool, len(chunks))
+		for _, c := range chunks {
+			if seen[c.SHA256] {
+				continue
+			}
+			seen[c.SHA256] = true
+			if f, ok := want[c.SHA256]; ok {
+				f.AffectedObjects = append(f.AffectedObjects, subject)
+			}
+		}
+	}
+	for _, o := range s.snapshotNamespace() {
+		if man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256); err == nil {
+			note(o.bucket+"/"+o.key, man.Chunks)
+		}
+	}
+	for _, o := range s.snapshotHistory() {
+		if man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256); err == nil {
+			note(fmt.Sprintf("history:%s/%s@%s", o.bucket, o.key, o.entry.versionID), man.Chunks)
+		}
+	}
+	for _, up := range s.snapshotUploads() {
+		for _, p := range up.parts {
+			note(fmt.Sprintf("multipart:%s/part%d", up.uploadID, p.partNumber), p.chunks)
+		}
+	}
+}
+
+// casRepairPublish durably (over)writes a chunk's content-addressed file
+// with data the caller has already independently verified hashes to sum
+// (fetchRepairChunk's contract). Unlike casWrite, it never short-circuits
+// because the pathname already exists -- see this section's doc comment
+// (A6): a corrupt existing chunk must actually be replaced, and casWrite's
+// existence check exists precisely to skip writing in the case this
+// function must not skip. It reuses the exact same durable-write
+// primitives (writeFileDurable: temp-file write, fsync, atomic rename;
+// syncDir: parent-directory fsync) ordinary CAS publication already uses,
+// so the crash-safety envelope is identical: os.Rename atomically
+// replaces any existing file at path on this platform, so a concurrent
+// reader (casRead) can only ever observe the old, fully-valid bytes or the
+// new, fully-valid bytes -- never a torn write (B5).
+func (s *Store) casRepairPublish(sum [32]byte, data []byte) error {
+	path := s.chunkPath(sum)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := writeFileDurable(filepath.Join(s.root, "tmp"), path, data); err != nil {
+		return err
+	}
+	return syncDir(dir)
+}
+
+// maxRepairChunkBytes bounds one peer-fetched repair chunk's response body
+// (A4's "enforce reasonable response-size bounds"). Every legitimate CAS
+// chunk is already <= cdcMaxChunkSize by construction -- CDC v1 never
+// emits a larger chunk (section 3) -- so this bound can never reject a
+// genuine chunk; it exists purely so a malicious or broken peer can't
+// force an unbounded read into this process's memory merely by answering
+// a chunk-fetch request with an oversized body.
+const maxRepairChunkBytes = cdcMaxChunkSize
+
+// fetchRepairChunk performs one authenticated, size-bounded GET for
+// exactly one digest against the trusted repair peer, addressed only by
+// its own SHA-256 hex digest (never a caller-supplied path -- no "../"
+// traversal is possible because the URL is built by simple concatenation
+// of a fixed prefix and this string, and the server independently
+// re-validates the digest via decodeHexSHA256 before ever touching the
+// filesystem, section 15). It reuses M8A's exact signing primitive
+// (signSigV4Request) and endpoint (zeros3SyncChunksPrefix /
+// handleSyncChunkDownload) -- fetchSourceChunk already calls the same
+// endpoint the same way -- but, unlike fetchSourceChunk (which reads via
+// signAndDo's unbounded io.ReadAll, never required to bound its response
+// since M8A's negotiate/descriptor endpoints are legitimately unbounded by
+// design), this function never reads past maxRepairChunkBytes+1: a repair
+// peer is explicitly trusted only as a *source of candidate bytes* (never
+// for integrity), and must not be able to exhaust this client's memory by
+// sending an oversized response under a requested digest. The digest is
+// independently re-verified against the received bytes regardless of
+// HTTP status or peer authentication -- the peer is never trusted merely
+// because it authenticated (A4).
+func fetchRepairChunk(cfg syncClientConfig, hexDigest string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(cfg.Endpoint, "/")+zeros3SyncChunksPrefix+hexDigest, nil)
+	if err != nil {
+		return nil, fmt.Errorf("repair: building peer chunk request: %w", err)
+	}
+	emptyHash := sha256.Sum256(nil)
+	if err := signSigV4Request(req, cfg.Creds, cfg.Region, hex.EncodeToString(emptyHash[:]), time.Now()); err != nil {
+		return nil, fmt.Errorf("repair: signing peer chunk request: %w", err)
+	}
+	resp, err := cfg.client().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("repair: peer chunk fetch failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRepairChunkBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("repair: reading peer chunk response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("repair: peer chunk fetch failed: status %d: %s", resp.StatusCode, body)
+	}
+	if len(body) > maxRepairChunkBytes {
+		return nil, fmt.Errorf("repair: peer response for chunk %s exceeds the maximum chunk size (%d bytes) -- rejected before publication", hexDigest, maxRepairChunkBytes)
+	}
+	sum := sha256.Sum256(body)
+	if hex.EncodeToString(sum[:]) != hexDigest {
+		return nil, fmt.Errorf("repair: peer returned content that does not match the requested digest %s -- rejected before publication", hexDigest)
+	}
+	return body, nil
+}
+
+// repairConfig configures one peer-assisted repair operation against a
+// single, explicitly-supplied trusted peer. Only the peer's chunk-fetch
+// endpoint is ever used -- no descriptor/negotiate/commit call -- because
+// repair never touches a manifest, bucket, or key (Peer.Bucket/Peer.Key
+// are unused and left blank by runRepair).
+type repairConfig struct {
+	Peer syncClientConfig
+	Out  io.Writer
+}
+
+// repairFailure records one digest repair could not resolve (B1: partial
+// repair is honest, not silently swallowed).
+type repairFailure struct {
+	SHA256 string `json:"sha256"`
+	Reason string `json:"reason"`
+}
+
+// repairStats are the operation-local statistics A9 requires. Nothing
+// here is persisted -- like syncStats, this describes one repair run,
+// never a lifetime counter.
+type repairStats struct {
+	Source           string          `json:"source"`
+	BadChunks        int             `json:"bad_chunks"`
+	Repaired         int             `json:"repaired"`
+	Unresolved       int             `json:"unresolved"`
+	PayloadFetched   int64           `json:"payload_fetched_bytes"`
+	AffectedObjects  int             `json:"affected_objects"`
+	Failures         []repairFailure `json:"failures,omitempty"`
+	PostRepairOK     bool            `json:"post_repair_ok"`
+	PostRepairResult VerifyResult    `json:"post_repair_result"`
+}
+
+// repairFromPeer is M8B's complete pipeline: find the deduplicated set of
+// reachable missing/corrupt digests (A1/A3) -> for each, fetch and
+// independently verify exactly that digest from the trusted peer (A4) ->
+// publish it via the store's own atomic CAS-replacement primitive (A5/A6)
+// -> re-open/re-hash what was just published, never trusting the write
+// path's own reported success -> deep-verify the whole store again (A7).
+// A peer that lacks some needed chunk, is unreachable, or returns wrong/
+// truncated bytes for one digest does not abort the whole operation (B1):
+// every other digest is still attempted, and the ones that failed are
+// reported honestly in Failures, never silently dropped or claimed fixed.
+func (s *Store) repairFromPeer(cfg repairConfig) (repairStats, error) {
+	findings, err := s.repairFindings()
+	if err != nil {
+		return repairStats{}, fmt.Errorf("repair: %w", err)
+	}
+
+	stats := repairStats{Source: cfg.Peer.Endpoint, BadChunks: len(findings)}
+	affectedSet := map[string]bool{}
+	for _, f := range findings {
+		for _, obj := range f.AffectedObjects {
+			affectedSet[obj] = true
+		}
+	}
+	stats.AffectedObjects = len(affectedSet)
+
+	if len(findings) > 0 {
+		if _, derr := discoverZeroS3Sync(cfg.Peer); derr != nil {
+			return stats, fmt.Errorf("repair: peer capability discovery failed (not a compatible/reachable ZeroS3 peer?): %w", derr)
+		}
+		for _, f := range findings {
+			data, ferr := fetchRepairChunk(cfg.Peer, f.SHA256)
+			if ferr != nil {
+				stats.Failures = append(stats.Failures, repairFailure{SHA256: f.SHA256, Reason: ferr.Error()})
+				continue
+			}
+			if int64(len(data)) != f.Length {
+				stats.Failures = append(stats.Failures, repairFailure{SHA256: f.SHA256, Reason: fmt.Sprintf("peer chunk length %d does not match the expected length %d", len(data), f.Length)})
+				continue
+			}
+			sum, herr := decodeHexSHA256(f.SHA256)
+			if herr != nil {
+				stats.Failures = append(stats.Failures, repairFailure{SHA256: f.SHA256, Reason: herr.Error()})
+				continue
+			}
+			if perr := s.casRepairPublish(sum, data); perr != nil {
+				stats.Failures = append(stats.Failures, repairFailure{SHA256: f.SHA256, Reason: perr.Error()})
+				continue
+			}
+			if _, rerr := s.casRead(sum); rerr != nil {
+				stats.Failures = append(stats.Failures, repairFailure{SHA256: f.SHA256, Reason: "post-publication re-read/re-hash failed: " + rerr.Error()})
+				continue
+			}
+			stats.Repaired++
+			stats.PayloadFetched += int64(len(data))
+		}
+	}
+	stats.Unresolved = len(findings) - stats.Repaired
+
+	post, verr := s.Verify(true)
+	if verr != nil {
+		return stats, fmt.Errorf("repair: post-repair verify: %w", verr)
+	}
+	stats.PostRepairResult = post
+	stats.PostRepairOK = post.OK()
+
+	if cfg.Out != nil {
+		printRepairStats(cfg.Out, stats)
+	}
+	return stats, nil
+}
+
+// printRepairStats renders A9's required human-readable summary.
+func printRepairStats(w io.Writer, s repairStats) {
+	fmt.Fprintf(w, "Repair source:       %s\n", s.Source)
+	fmt.Fprintf(w, "Bad chunks:          %d\n", s.BadChunks)
+	fmt.Fprintf(w, "Repaired:            %d\n", s.Repaired)
+	fmt.Fprintf(w, "Unresolved:          %d\n", s.Unresolved)
+	fmt.Fprintf(w, "Payload fetched:     %s\n", humanBytes(s.PayloadFetched))
+	fmt.Fprintf(w, "Affected objects:    %d\n", s.AffectedObjects)
+	if len(s.Failures) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "FAILED:")
+		for _, f := range s.Failures {
+			fmt.Fprintf(w, "sha256:%s -- %s\n", f.SHA256, f.Reason)
+		}
+	}
+	fmt.Fprintln(w)
+	if s.PostRepairOK {
+		fmt.Fprintln(w, "Post-repair verify:  OK")
+	} else {
+		fmt.Fprintln(w, "Post-repair verify:  FAILED")
+	}
+}
+
+// runRepair implements "zeros3 repair -store DIR -from PEER_ENDPOINT",
+// following the same flag.NewFlagSet convention every other CLI verb
+// uses. The peer is always explicitly supplied by the operator (-from is
+// required, with no default) -- this store never discovers or contacts
+// any peer on its own (A2). Repair takes the store's ordinary SHARED
+// lock, exactly like `serve` (acquireStoreLock(dir, false)): this lets
+// repair run safely alongside an already-running `zeros3 serve` process
+// against the same store (both hold a shared lock; B5's "GET during
+// repair" requirement), while still refusing cleanly (rather than
+// racing) against an exclusive `gc -apply` in progress.
+func runRepair(args []string) {
+	fs := flag.NewFlagSet("repair", flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	from := fs.String("from", "", "trusted ZeroS3 peer endpoint to repair from (required, scheme://host[:port])")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "peer access key ID")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "peer secret access key")
+	region := fs.String("region", defaultRegion, "SigV4 region")
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	fs.Parse(args)
+
+	if *from == "" {
+		fmt.Fprintln(os.Stderr, "zeros3: repair requires -from PEER_ENDPOINT")
+		os.Exit(2)
+	}
+
+	lock, err := acquireStoreLock(*storeDir, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: repair: %v -- repair requires the store not be exclusively locked (a `gc -apply` may currently be running against it)\n", err)
+		os.Exit(1)
+	}
+	defer lock.release()
+
+	store, err := OpenStore(*storeDir)
+	if err != nil {
+		log.Fatalf("zeros3: failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	cfg := repairConfig{
+		Peer: syncClientConfig{
+			Endpoint: *from,
+			Creds:    Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey},
+			Region:   *region,
+		},
+	}
+	if !*asJSON {
+		cfg.Out = os.Stdout
+	}
+
+	stats, err := store.repairFromPeer(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: repair failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(stats); err != nil {
+			log.Fatalf("zeros3: %v", err)
+		}
+	}
+	if !stats.PostRepairOK {
+		os.Exit(1)
+	}
+}
+
+// =============================================================================
 // 16. CLI: stats / verify / versions / restore / gc
 //
 // Compact verbs; stdout carries the requested result/data, stderr carries
@@ -7794,7 +8227,55 @@ func runVerify(args []string) {
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	deep := fs.Bool("deep", false, "re-hash every reachable chunk's actual bytes")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	repairFrom := fs.String("repair-from", "", "M8B-C: optional one-command detect->repair->reverify against this trusted ZeroS3 peer endpoint (equivalent to `zeros3 repair -from PEER` followed by another verify; empty disables it, the default)")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "peer access key ID (only used with -repair-from)")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "peer secret access key (only used with -repair-from)")
+	region := fs.String("region", defaultRegion, "SigV4 region (only used with -repair-from)")
 	fs.Parse(args)
+
+	// -repair-from is M8B-C's only new behavior: everything below this
+	// block is byte-for-byte the pre-M8B runVerify, so a caller that never
+	// passes -repair-from (every existing caller/test) is completely
+	// unaffected.
+	if *repairFrom != "" {
+		lock, err := acquireStoreLock(*storeDir, false)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "zeros3: verify -repair-from: %v -- repair requires the store not be exclusively locked (a `gc -apply` may currently be running against it)\n", err)
+			os.Exit(1)
+		}
+		defer lock.release()
+
+		store, err := OpenStore(*storeDir)
+		if err != nil {
+			log.Fatalf("zeros3: failed to open store: %v", err)
+		}
+		defer store.Close()
+
+		cfg := repairConfig{Peer: syncClientConfig{
+			Endpoint: *repairFrom,
+			Creds:    Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey},
+			Region:   *region,
+		}}
+		if !*asJSON {
+			cfg.Out = os.Stdout
+		}
+		stats, err := store.repairFromPeer(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "zeros3: verify -repair-from failed: %v\n", err)
+			os.Exit(1)
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(stats); err != nil {
+				log.Fatalf("zeros3: %v", err)
+			}
+		}
+		if !stats.PostRepairOK {
+			os.Exit(1)
+		}
+		return
+	}
 
 	store, err := OpenStore(*storeDir)
 	if err != nil {
@@ -8113,8 +8594,10 @@ func main() {
 		runSync(args)
 	case "replicate":
 		runReplicate(args)
+	case "repair":
+		runRepair(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, doctor, sync, or replicate)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, doctor, sync, replicate, or repair)\n", cmd)
 		os.Exit(2)
 	}
 }
