@@ -1,5 +1,178 @@
 # ZeroS3 — M1/M2/M3/M4 Status
 
+## M5-A — SigV4 query authentication, presigning, virtual-hosted addressing
+
+**COMPLETE.** A tightly bounded pass, exactly per its own scope: SigV4
+query-string authentication, presigned GET/PUT, the `zeros3 presign` CLI,
+virtual-hosted-style addressing, focused adversarial testing, external AWS
+SDK proof, and this evidence update. No multipart, versions/restore, GC,
+stats/doctor changes, conditional requests, `aws-chunked`, or sync/
+replication work was started.
+
+- **Starting state:** `zeros3` branch `claude/zeros3-m5a-sigv4-presign-ejxf9y`
+  was confirmed identical-tree to `main` at `d28d181e66b44d3a28ec1d4fdd0a7cfc4ee231ed`
+  before any edit (`git diff origin/main` empty); `zeros3-testing`'s same-
+  named branch was identical-tree to its own `main` at
+  `4d35b5baefd84585c9fd5f21a2751faac68578ff`. Both were fetched fresh from
+  `origin` rather than trusting a prior session's summary. The Linux
+  regression baseline (`go test`, `go test -race`, `go vet`, `gofmt -l`) was
+  green with 138 passing test cases before any change.
+- **Resulting state:** this commit, on the same branch (`git log -1` names
+  the exact SHA); `zeros3-testing`'s matching commit on its own
+  same-named branch adds `harness/m5a/presign/main.go` and
+  `results/M5A_PRESIGN_RESULTS.md` on top of the same starting point.
+- **Architecture — one shared signing/verifying core.** `zeros3.go` section
+  8 previously had a single `authenticate` doing Authorization-header
+  SigV4 end to end. It is now `authenticate` (a two-line dispatcher),
+  `authenticateHeader` (the original header-auth flow, behavior-preserving),
+  `authenticateQuery` (new: parses `X-Amz-Algorithm`/`Credential`/`Date`/
+  `Expires`/`SignedHeaders`/`Signature` from the raw query), and
+  `sigv4VerifyCore` — the one place credential-scope checking, canonical-
+  URI/header/request construction, HMAC signing-key derivation, and the
+  constant-time signature compare actually happen, called identically by
+  both paths. `zeros3 presign`'s `GeneratePresignedURL` calls the exact
+  same `sigv4CanonicalURI`/`sigv4CanonicalQueryExcluding`/
+  `sigv4SigningKey` primitives the server verifies with — there is one
+  signing implementation, not a CLI-side reimplementation. Canonical query
+  construction gained `sigv4CanonicalQueryExcluding` (the general form of
+  the existing `sigv4CanonicalQuery`, which now delegates to it), used to
+  drop exactly `X-Amz-Signature` from the query-auth canonical request.
+  Query auth's payload hash is the fixed `UNSIGNED-PAYLOAD` sentinel real
+  S3 presigned URLs and the AWS SDK for Go v2 presigner both use; header
+  auth's exact-body-hash requirement is completely untouched. A new
+  `sigv4Now` var (mirroring the existing `testHook` test-injection seam)
+  lets expiry/skew tests set a fixed clock instead of sleeping.
+- **Presigned GET/PUT:** implemented per `SIGV4_NOTES.md`'s frozen
+  contract — `host` is the only signed header a generated URL uses (matching
+  the AWS SDK presigner's own default), `X-Amz-Expires` is bounded to
+  `1..604800` seconds (AWS's documented maximum), a request is valid
+  through and including its exact expiry instant, `X-Amz-Date` more than 15
+  minutes in the future is rejected, and `X-Amz-Security-Token` is
+  explicitly rejected (`AuthorizationQueryParametersError`) rather than
+  silently ignored, since ZeroS3 has no session/STS credential model.
+- **`zeros3 presign get|put`:** a narrow, stdlib-only CLI subcommand
+  (`-bucket`, `-key`, `-expires`, `-access-key`, `-secret-key`, `-region`,
+  `-endpoint`, `-vhost`), following the existing `-flag`-based convention
+  (`stats`'s `-bucket`/`-prefix`/`-key`) rather than inventing an `s3://`
+  URI parser. Prints exactly one line (the URL) on success; never echoes
+  the secret key, including on error. No credentials/profile subsystem was
+  added.
+- **Virtual-hosted-style addressing:** opt-in via `zeros3 serve -vhost-base
+  <domain>` (default unset — path-style only, unchanged from before this
+  pass). `Server.vhostBucketFromHost` extracts the bucket from `Host`
+  *after* `authenticate` has already verified the signature over the
+  original, unmodified `Host` header — bucket/key resolution never runs
+  before authentication and never rewrites `r.Host` or the raw path.
+  A `Host` without the configured suffix (bare IP, `localhost`, an
+  unrelated domain, or the bare base domain alone) falls back to ordinary
+  path-style parsing, unconditionally available on the same server.
+- **Adversarial/regression tests added (44 new, all in `zeros3_test.go`,
+  182 total passing test cases, up from 138):** canonical-query exclusion;
+  valid presigned GET/PUT accepted; tricky paths (space, `+`, `%2F`,
+  repeated `/`, trailing slash, Unicode) accepted; a presigned request with
+  no signature at all falling through to (and correctly failing) the
+  header path; tampered signature; modified path/bucket/Host/signed-query-
+  parameter after generation; an unrelated query parameter appended after
+  generation invalidating the signature (every query parameter is
+  canonicalized, signed-header-related or not); wrong access
+  key/region/service/algorithm; `host` missing from `SignedHeaders`;
+  `X-Amz-Security-Token` rejected; duplicate query parameters rejected;
+  a case-altered auth parameter name never silently authenticating; every
+  required parameter missing (table test); malformed credential scope;
+  malformed timestamp; malformed/negative/zero/over-range `X-Amz-Expires`
+  (table test); the exact expiry boundary accepted and one second past it
+  rejected (via `sigv4Now` injection, no sleeps); a future-dated URL beyond
+  the skew window rejected; a 7-day (604800s) URL still valid one second
+  before expiry; CLI/library-generated URLs passing the server's own
+  verifier for both GET and PUT; expiry/bucket/key validated at generation
+  time; the secret key never appearing in a generated URL; tampered-
+  signature and expired presigned PUTs proven to leave the target object
+  completely invisible over real HTTP; virtual-host bucket extraction
+  (ordinary host, `bucket.base[:port]`, case-insensitivity, bucket names
+  with dots/hyphens, the bare base domain, a bare IP/`localhost`, an
+  unrelated host, a malformed/empty host) as a pure table test; virtual-
+  host disabled-by-default fallback; a full virtual-hosted create-bucket/
+  put/get/list/delete lifecycle over real HTTP; path-style continuing to
+  work unchanged when virtual-host is configured; `ListBuckets` on the bare
+  host still meaning "list buckets," not "bucket root of an empty bucket
+  name"; a presigned URL generated with virtual-host addressing.
+- **Regression:** `gofmt -l .` clean; `go vet ./...` clean; `go test
+  ./...`, `go test -race ./...` both green; `go test -count=3 ./...` and
+  `go test -race -run 'TestPresign|TestVHost|TestSigV4' -count=5 -v ./...`
+  (270 pass, 0 fail) show no flakes in the new time/HTTP-dependent tests.
+  Every existing M1-M4 suite (SigV4 header-auth adversarial matrix, CRC32/
+  Content-MD5, CDC/CAS/manifest/journal, crash/recovery, concurrency,
+  ListObjectsV2, CopyObject, Range GET) remains green, unmodified in
+  behavior.
+- **External AWS SDK for Go v2 proof** (new harness,
+  `zeros3-testing/harness/m5a/presign`, same pinned versions as every prior
+  milestone — `v1.45.1`/`config v1.33.1`/`credentials v1.20.1`/
+  `service/s3 v1.109.1`/`smithy-go v1.28.1`): **47/47 passed.** Real
+  `s3.PresignClient`-generated GET and PUT URLs fetched/uploaded with an
+  ordinary `net/http.Client` carrying no S3-specific signing logic;
+  byte/hash/Content-Type equality proven for both; negative cases (altered
+  path, altered bucket, modified signed query parameter, modified
+  signature, modified Host, expired URL, wrong credential scope/region)
+  all correctly rejected; every negative presigned-PUT case independently
+  confirmed via `HeadObject` to leave the target key completely absent;
+  the `zeros3 presign` CLI binary itself exercised for both path-style and
+  `-vhost` URLs, including a full virtual-hosted-style round trip (ordinary
+  signed PUT/GET plus an SDK-presigned GET) using a redirect-dialing
+  `http.Client` (no real DNS needed for the test domain — the same
+  technique a real deployment would use actual DNS for).
+- **Regression harnesses rerun against this pass's binary** (same pinned
+  SDK versions): **M2 canonical workflow 41/41**, **M3 CopyObject 46/46**,
+  **M3 Range GET 27/27**, **M3 dedup evidence 7/7** — all unchanged from
+  the post-M4 pass recorded below, confirming header-auth path-style
+  interoperability regressed in no way.
+  rclone and Package Killer (`s3rver`) were **not rerun this pass** — both
+  require installing external tooling into a scratch environment, and
+  since this run touches only the authentication/addressing layer (already
+  covered end-to-end by the M2/M3 reruns plus the new presign harness, all
+  of which exercise the identical SigV4 header-auth code path those tools
+  also use), a fresh install added meaningful runtime for no new coverage
+  within this pass's explicit scope. Their prior results (below) are
+  unaffected by anything changed in this pass; a full rerun is a
+  reasonable candidate for the next milestone's regression pass if a
+  submission freeze wants that evidence refreshed.
+- **Dependency proof:** `go list -deps .` after this pass's changes
+  produces the exact same non-stdlib set as before (the toolchain's own
+  internally-vendored `golang.org/x/...`/`crypto/internal/entropy`
+  packages, part of `net/http`/`crypto/tls`'s own implementation, plus the
+  stdlib `uuid` package) — the new code uses only already-imported stdlib
+  packages plus `net` (for `net.SplitHostPort`, used by virtual-host Host
+  parsing). `go.mod` still has no `require` block.
+- **Source-file invariant:** `zeros3.go` remains the sole implementation
+  file; `zeros3_test.go` remains test-only. No new `.go` file was added to
+  either repository's ZeroS3 module (the new harness lives entirely under
+  `zeros3-testing/harness/m5a/presign`, outside the ZeroS3 module).
+- **Persistent-format confirmation:** unchanged. `store_format_version`,
+  `cdc_format_version`, `manifest_format_version` are all still `1`; the
+  journal magic (`ZSJ1`), frame layout, CRC32C checksum, record type
+  numbers, CDC parameters, and manifest field set are byte-for-byte
+  unchanged. Every change in this pass lives entirely in the HTTP-request-
+  layer authentication/addressing/CLI code; nothing in this pass reads or
+  writes the store, journal, manifests, or chunks differently than before.
+- **Known limitations (new/changed by this pass):**
+  - Presigned URLs sign only `host` — no support for signing additional
+    headers (e.g. a presigned PUT that also pins `Content-Type`).
+  - `X-Amz-Security-Token` is rejected outright rather than supported —
+    documented, not a silent gap: ZeroS3 has no session/STS credential
+    model for it to validate against.
+  - Virtual-host addressing is single-domain (`-vhost-base`), opt-in, and
+    request-addressing only — no wildcard-TLS or DNS automation, per this
+    pass's explicit scope.
+  - rclone/Package Killer regressions were not rerun this pass (see above);
+    their last recorded results (below) predate this pass and are
+    unaffected by it.
+  - All limitations recorded in the "M4 status" and "Post-M4/M5
+    verification pass" sections below remain current and unchanged by this
+    pass.
+- **Exact next milestone:** remaining M5/T2 optional-tier work by score/
+  hour priority (internal versions/restore, safe GC) if pursued at all,
+  per `MILESTONES.md`'s demotion rule; M6 delta sync remains untouched and
+  out of scope until T0-T2 stability is otherwise secure.
+
 ## Post-M4/M5 verification pass (T1 completion + Package Killer)
 
 **COMPLETE.**
