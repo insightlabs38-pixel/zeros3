@@ -11809,6 +11809,149 @@ func TestSync_NonZeroS3Endpoint_FallsBackToPlainPut(t *testing.T) {
 }
 
 // =============================================================================
+// M7 hostile-review regression: sync client keys with '%'/'#'/'?' must not
+// be mis-encoded into the request URL (headSyncDestination/
+// doPlainPutFallback previously built URLs by raw string concatenation,
+// which either made http.NewRequest reject a literal '%' outright or
+// silently truncated the path at a literal '#'/'?', misrouting the
+// request to the wrong key without any error).
+// =============================================================================
+
+// TestSync_KeyWithPercentCharacterFallsBackCorrectly covers a sync key
+// containing a literal '%' that does not form a valid percent-escape
+// (e.g. from a real filename like "50% off.txt"): before the fix, this
+// made url.Parse (inside http.NewRequest) reject the HEAD/PUT request
+// outright, so the file could never be synced at all.
+func TestSync_KeyWithPercentCharacterFallsBackCorrectly(t *testing.T) {
+	fake := &fakeNonZeroS3Server{}
+	ts := httptest.NewServer(fake)
+	defer ts.Close()
+
+	dir := t.TempDir()
+	data := genRandomBytes(6002, 5_000)
+	path := writeSyncTempFile(t, dir, "pct.bin", data)
+	const key = "50% off.txt"
+
+	stats, err := syncFile(syncClientConfig{
+		LocalPath: path, Endpoint: ts.URL, Bucket: "b", Key: key,
+		Creds: Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}, Region: defaultRegion,
+		HTTPClient: ts.Client(),
+	})
+	if err != nil {
+		t.Fatalf("syncFile with a literal '%%' in the key should not fail: %v", err)
+	}
+	if !stats.FellBackToPlainPut {
+		t.Fatalf("expected FellBackToPlainPut=true")
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if !bytes.Equal(fake.uploaded, data) {
+		t.Fatalf("fallback PUT did not carry the exact file bytes")
+	}
+	found := false
+	for _, p := range fake.paths {
+		if p == "PUT /b/"+key {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("fallback PUT never reached the correctly decoded key %q, got paths %v", key, fake.paths)
+	}
+}
+
+// TestSync_KeyWithHashCharacterDoesNotMisroute covers a sync key
+// containing a literal '#': before the fix, url.Parse treated everything
+// from '#' onward as a URL fragment (which net/http never sends), so the
+// fallback PUT silently landed on a truncated key while syncFile still
+// reported FellBackToPlainPut=true (a false success writing to the wrong
+// key, not a loud failure).
+func TestSync_KeyWithHashCharacterDoesNotMisroute(t *testing.T) {
+	fake := &fakeNonZeroS3Server{}
+	ts := httptest.NewServer(fake)
+	defer ts.Close()
+
+	dir := t.TempDir()
+	data := genRandomBytes(6003, 5_000)
+	path := writeSyncTempFile(t, dir, "hash.bin", data)
+	const key = "a#b.txt"
+
+	stats, err := syncFile(syncClientConfig{
+		LocalPath: path, Endpoint: ts.URL, Bucket: "b", Key: key,
+		Creds: Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}, Region: defaultRegion,
+		HTTPClient: ts.Client(),
+	})
+	if err != nil {
+		t.Fatalf("syncFile with a literal '#' in the key should not fail: %v", err)
+	}
+	if !stats.FellBackToPlainPut {
+		t.Fatalf("expected FellBackToPlainPut=true")
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	for _, p := range fake.paths {
+		if strings.HasPrefix(p, "PUT ") && p != "PUT /b/"+key {
+			t.Fatalf("fallback PUT was misrouted to %q instead of the full key %q (fragment truncation)", p, key)
+		}
+	}
+	found := false
+	for _, p := range fake.paths {
+		if p == "PUT /b/"+key {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("fallback PUT never reached the full, untruncated key %q, got paths %v", key, fake.paths)
+	}
+}
+
+// TestSync_KeyWithQuestionMarkResyncsCleanly covers a sync key containing
+// a literal '?' against a real ZeroS3 server: before the fix,
+// headSyncDestination's HEAD request had its path truncated at '?' (query
+// string delimiter), so it always observed a nonexistent destination.
+// First sync still committed correctly (the server independently derives
+// bucket/key from the JSON commit body, not the client's mangled HEAD),
+// but every subsequent re-sync of the same unchanged file wrongly sent
+// ExpectAbsent=true and was rejected with a false PreconditionFailed,
+// breaking the documented "re-sync an unchanged destination commits
+// cleanly" guarantee for any key containing '?'.
+func TestSync_KeyWithQuestionMarkResyncsCleanly(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	createSyncTestBucket(t, ts, creds, region, "qmark")
+
+	const key = "notes?draft.txt"
+	v1 := genRandomBytes(6004, 40_000)
+	path := writeSyncTempFile(t, dir, "q.bin", v1)
+	cfg := syncClientConfig{LocalPath: path, Endpoint: ts.URL, Bucket: "qmark", Key: key, Creds: creds, Region: region, HTTPClient: ts.Client()}
+	if _, err := syncFile(cfg); err != nil {
+		t.Fatalf("first sync of a key containing '?': %v", err)
+	}
+
+	// Re-sync the exact same, unchanged bytes -- must commit cleanly, not
+	// hit a false conflict caused by a mis-truncated HEAD probe.
+	if _, err := syncFile(cfg); err != nil {
+		t.Fatalf("re-sync of an unchanged destination with '?' in the key must commit cleanly, got: %v", err)
+	}
+	// getSyncObjectBytes builds its GET path by the same naive
+	// concatenation this test is guarding against, so verify directly
+	// with the (now-fixed) syncObjectPath helper instead.
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+	resp := doSignedRequest(t, ts.Client(), ts.URL, signer, http.MethodGet, syncObjectPath("qmark", key), nil, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET qmark%s status = %d", syncObjectPath("", key), resp.StatusCode)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, v1) {
+		t.Fatalf("object bytes after re-sync do not match the original upload")
+	}
+}
+
+// =============================================================================
 // Unauthorized requests against every sync endpoint
 // =============================================================================
 

@@ -6488,13 +6488,27 @@ func discoverZeroS3Sync(cfg syncClientConfig) (syncDiscoveryResponse, error) {
 	return d, nil
 }
 
+// syncObjectPath returns the request-target path for an ordinary S3
+// object request against bucket/key, correctly percent-encoded via
+// net/url. Raw string concatenation of an unescaped key is unsafe: a
+// literal '%' not forming a valid escape makes url.Parse (inside
+// http.NewRequest) fail outright, and a literal '#' or '?' is
+// interpreted as the start of a URL fragment/query and silently
+// truncates the path -- misrouting the request to the wrong key rather
+// than failing loudly. S3 keys are arbitrary bytes (M6C derives them
+// directly from real filenames on disk), so all three are real inputs.
+func syncObjectPath(bucket, key string) string {
+	u := url.URL{Path: "/" + bucket + "/" + key}
+	return u.EscapedPath()
+}
+
 // headSyncDestination captures the destination's current identity (A6's
 // "ordinary object metadata" precondition source, M6B's conflict basis)
 // via an ordinary S3 HEAD -- not a ZeroS3-specific call. A 404 means
 // "absent"; any other non-200 is reported as an error rather than
 // silently treated as absent.
 func headSyncDestination(cfg syncClientConfig) (exists bool, etag string, err error) {
-	resp, _, err := cfg.signAndDo(http.MethodHead, "/"+cfg.Bucket+"/"+cfg.Key, nil, nil)
+	resp, _, err := cfg.signAndDo(http.MethodHead, syncObjectPath(cfg.Bucket, cfg.Key), nil, nil)
 	if err != nil {
 		return false, "", fmt.Errorf("HEAD destination failed: %w", err)
 	}
@@ -6774,7 +6788,7 @@ func doPlainPutFallback(cfg syncClientConfig) (syncStats, error) {
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	req, err := http.NewRequest(http.MethodPut, strings.TrimRight(cfg.Endpoint, "/")+"/"+cfg.Bucket+"/"+cfg.Key, bytes.NewReader(data))
+	req, err := http.NewRequest(http.MethodPut, strings.TrimRight(cfg.Endpoint, "/")+syncObjectPath(cfg.Bucket, cfg.Key), bytes.NewReader(data))
 	if err != nil {
 		return syncStats{}, err
 	}
