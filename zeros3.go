@@ -31,6 +31,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -91,6 +92,29 @@ const (
 	defaultSecretAccessKey = "zeros3exampleSecretKeyForM1TestingOnly01"
 	defaultRegion          = "us-east-1"
 	sigv4ServiceName       = "s3"
+
+	// requestSkewWindow is the ±tolerance applied to header-auth's
+	// X-Amz-Date and to how far a presigned URL's X-Amz-Date may sit in
+	// the future -- a ZeroS3 policy choice (documented here, not asserted
+	// as exact AWS behavior), not part of the SigV4 algorithm itself.
+	requestSkewWindow = 15 * time.Minute
+
+	// minPresignExpirySeconds/maxPresignExpirySeconds bound X-Amz-Expires.
+	// 604800 (seven days) is AWS's own documented maximum SigV4 presigned
+	// URL lifetime; ZeroS3 enforces the same bound rather than inventing a
+	// more permissive one.
+	minPresignExpirySeconds = 1
+	maxPresignExpirySeconds = 604800
+
+	// sigv4QueryAlgorithm is the only X-Amz-Algorithm value ZeroS3's
+	// presigned-URL verifier accepts.
+	sigv4QueryAlgorithm = "AWS4-HMAC-SHA256"
+	// presignUnsignedPayload is the fixed HashedPayload sentinel every
+	// SigV4 query-string-authenticated (presigned) request uses in place
+	// of an actual body hash -- query-string SigV4 never signs the
+	// payload, matching real S3 presigned GET/PUT and the AWS SDK for Go
+	// v2's own presigner.
+	presignUnsignedPayload = "UNSIGNED-PAYLOAD"
 )
 
 var castagnoliTable = crc32.MakeTable(crc32.Castagnoli)
@@ -1371,7 +1395,8 @@ func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, m
 }
 
 // =============================================================================
-// 8. AWS SigV4 (Authorization header only)
+// 8. AWS SigV4 -- Authorization header and query-string (presigned URL)
+// authentication
 //
 // The canonical request is built from the ORIGINAL request-target bytes
 // (request.RequestURI, split ourselves into raw path and raw query)
@@ -1379,8 +1404,14 @@ func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, m
 // path-normalization traps -- repeated slashes, "%2F" standing for a
 // literal slash inside a key, "+" vs "%20" for space, trailing slashes --
 // are preserved exactly as the client sent them and exactly as S3 itself
-// signs them. Presigned URLs and aws-chunked/trailer payloads are not
-// implemented.
+// signs them. aws-chunked/trailer payloads are not implemented.
+//
+// Header auth (authenticateHeader) and query-string/presigned auth
+// (authenticateQuery) are two different places to *find* a signature and
+// two different payload/expiry policies around it, but from "here is a
+// credential scope and a canonical request" onward they are the exact
+// same signature machinery: both funnel into sigv4VerifyCore, which is
+// the only place the actual HMAC comparison happens.
 // =============================================================================
 
 type authError struct {
@@ -1481,6 +1512,16 @@ type queryPair struct{ k, v string }
 // (rendered as "k="), repeated names are preserved as separate entries,
 // and pairs are sorted by encoded name then encoded value.
 func sigv4CanonicalQuery(rawQuery string) (string, error) {
+	return sigv4CanonicalQueryExcluding(rawQuery, "")
+}
+
+// sigv4CanonicalQueryExcluding is sigv4CanonicalQuery's general form: it
+// drops any pair whose *decoded* name exactly equals excludeKey (pass ""
+// to exclude nothing). Query-string SigV4 requires the canonical query to
+// contain every presigned auth parameter except X-Amz-Signature itself
+// (the signature obviously can't sign over its own value); header auth
+// has no parameter to exclude and goes through sigv4CanonicalQuery above.
+func sigv4CanonicalQueryExcluding(rawQuery, excludeKey string) (string, error) {
 	if rawQuery == "" {
 		return "", nil
 	}
@@ -1497,6 +1538,9 @@ func sigv4CanonicalQuery(rawQuery string) (string, error) {
 		dk, err := percentDecodeToBytes(rawK)
 		if err != nil {
 			return "", err
+		}
+		if excludeKey != "" && string(dk) == excludeKey {
+			continue
 		}
 		dv, err := percentDecodeToBytes(rawV)
 		if err != nil {
@@ -1632,13 +1676,100 @@ func sigv4SigningKey(secret, date, region, service string) []byte {
 	return hmacSHA256(kService, "aws4_request")
 }
 
-// authenticate validates a request's Authorization header against
+// sigv4Now returns the current time for every SigV4 timestamp/expiry
+// check (header-auth skew and presigned-URL expiry alike). It is a var,
+// exactly like testHook above, purely so tests can inject a fixed clock
+// and assert expiry behavior at exact second boundaries without a real
+// sleep; production code never assigns it and it always resolves to
+// time.Now.
+var sigv4Now = time.Now
+
+// authenticate is the single entry point ServeHTTP calls: it looks at the
+// raw query to decide whether this is an ordinary Authorization-header
+// request or a SigV4 query-string-authenticated ("presigned URL") one,
+// then dispatches to whichever verifier applies. A request is never
+// accepted by both paths or by neither silently -- exactly one runs.
+func (srv *Server) authenticate(r *http.Request, rawPath, rawQuery string, body []byte) error {
+	if hasQueryAuth(rawQuery) {
+		return srv.authenticateQuery(r, rawPath, rawQuery)
+	}
+	return srv.authenticateHeader(r, rawPath, rawQuery, body)
+}
+
+// hasQueryAuth cheaply decides whether a request is presigned, before any
+// real parsing happens. A false positive (the literal byte sequence
+// happening to sit inside some unrelated, undecoded query value) only
+// routes the request into authenticateQuery, which then fails closed with
+// a clear "missing required query auth parameter" error -- never a false
+// negative that would let a real presigned request skip verification.
+func hasQueryAuth(rawQuery string) bool {
+	return strings.Contains(rawQuery, "X-Amz-Signature=")
+}
+
+// sigv4VerifyCore is the machinery shared identically by header-auth and
+// query-auth: given a fully-parsed credential/signed-header/signature
+// bundle, the exact string to use as X-Amz-Date in the string-to-sign,
+// and the correct HashedPayload for that mode, it checks the credential
+// scope, rebuilds the canonical request from the ORIGINAL raw path (never
+// r.URL), derives the signing key, and constant-time-compares the
+// signature. It does not know or care whether auth came from a header or
+// a query string, and it performs no timestamp/expiry/payload-hash
+// validation of its own -- callers own that, since the two modes' rules
+// genuinely differ (fixed skew window vs. bounded expiry; exact body hash
+// vs. the fixed UNSIGNED-PAYLOAD sentinel).
+func (srv *Server) sigv4VerifyCore(r *http.Request, rawPath, canonicalQuery string, auth *sigv4Auth, amzDate, hashedPayload, scopeErrCode string) error {
+	if auth.region != srv.region {
+		return &authError{code: scopeErrCode, msg: "region mismatch"}
+	}
+	if auth.service != sigv4ServiceName {
+		return &authError{code: scopeErrCode, msg: "service mismatch"}
+	}
+	if auth.accessKeyID != srv.creds.AccessKeyID {
+		return &authError{code: "InvalidAccessKeyId", msg: "unknown access key"}
+	}
+
+	canonicalURI, err := sigv4CanonicalURI(rawPath)
+	if err != nil {
+		return &authError{code: "InvalidURI", msg: err.Error()}
+	}
+	canonicalHeaders, err := sigv4CanonicalHeaders(r, auth.signedHeaders)
+	if err != nil {
+		return &authError{code: scopeErrCode, msg: err.Error()}
+	}
+	signedHeadersList := sigv4SignedHeadersList(auth.signedHeaders)
+
+	canonicalRequest := strings.Join([]string{
+		r.Method,
+		canonicalURI,
+		canonicalQuery,
+		canonicalHeaders,
+		signedHeadersList,
+		hashedPayload,
+	}, "\n")
+	crHash := sha256.Sum256([]byte(canonicalRequest))
+	credentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", auth.date, auth.region, auth.service)
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256",
+		amzDate,
+		credentialScope,
+		hex.EncodeToString(crHash[:]),
+	}, "\n")
+
+	signingKey := sigv4SigningKey(srv.creds.SecretAccessKey, auth.date, auth.region, auth.service)
+	expectedSig := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
+	if subtle.ConstantTimeCompare([]byte(expectedSig), []byte(strings.ToLower(auth.signature))) != 1 {
+		return &authError{code: "SignatureDoesNotMatch", msg: "signature mismatch"}
+	}
+	return nil
+}
+
+// authenticateHeader validates a request's Authorization header against
 // srv.creds/srv.region, reconstructing the canonical request from the
 // original raw path/query rather than r.URL. On success it also confirms
 // the signed X-Amz-Content-Sha256 value matches the actual body bytes
 // received, catching tampering that changes the body but replays an
 // old, still-signed content-hash header.
-func (srv *Server) authenticate(r *http.Request, rawPath, rawQuery string, body []byte) error {
+func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string, body []byte) error {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		return &authError{code: "AccessDenied", msg: "missing Authorization header"}
@@ -1646,15 +1777,6 @@ func (srv *Server) authenticate(r *http.Request, rawPath, rawQuery string, body 
 	auth, err := parseAuthorizationHeader(authHeader)
 	if err != nil {
 		return &authError{code: "AuthorizationHeaderMalformed", msg: err.Error()}
-	}
-	if auth.accessKeyID != srv.creds.AccessKeyID {
-		return &authError{code: "InvalidAccessKeyId", msg: "unknown access key"}
-	}
-	if auth.region != srv.region {
-		return &authError{code: "AuthorizationHeaderMalformed", msg: "region mismatch"}
-	}
-	if auth.service != sigv4ServiceName {
-		return &authError{code: "AuthorizationHeaderMalformed", msg: "service mismatch"}
 	}
 
 	amzDate := r.Header.Get("X-Amz-Date")
@@ -1668,7 +1790,7 @@ func (srv *Server) authenticate(r *http.Request, rawPath, rawQuery string, body 
 	if t.Format("20060102") != auth.date {
 		return &authError{code: "AccessDenied", msg: "credential date does not match X-Amz-Date"}
 	}
-	if diff := time.Since(t); diff > 15*time.Minute || diff < -15*time.Minute {
+	if diff := sigv4Now().Sub(t); diff > requestSkewWindow || diff < -requestSkewWindow {
 		return &authError{code: "RequestTimeTooSkewed", msg: "request timestamp outside allowed window"}
 	}
 
@@ -1692,41 +1814,13 @@ func (srv *Server) authenticate(r *http.Request, rawPath, rawQuery string, body 
 		return &authError{code: "AccessDenied", msg: "host must be a signed header"}
 	}
 
-	canonicalURI, err := sigv4CanonicalURI(rawPath)
-	if err != nil {
-		return &authError{code: "InvalidURI", msg: err.Error()}
-	}
 	canonicalQuery, err := sigv4CanonicalQuery(rawQuery)
 	if err != nil {
 		return &authError{code: "InvalidURI", msg: err.Error()}
 	}
-	canonicalHeaders, err := sigv4CanonicalHeaders(r, auth.signedHeaders)
-	if err != nil {
-		return &authError{code: "AccessDenied", msg: err.Error()}
-	}
-	signedHeadersList := sigv4SignedHeadersList(auth.signedHeaders)
 
-	canonicalRequest := strings.Join([]string{
-		r.Method,
-		canonicalURI,
-		canonicalQuery,
-		canonicalHeaders,
-		signedHeadersList,
-		payloadHashHeader,
-	}, "\n")
-	crHash := sha256.Sum256([]byte(canonicalRequest))
-	credentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", auth.date, auth.region, auth.service)
-	stringToSign := strings.Join([]string{
-		"AWS4-HMAC-SHA256",
-		amzDate,
-		credentialScope,
-		hex.EncodeToString(crHash[:]),
-	}, "\n")
-
-	signingKey := sigv4SigningKey(srv.creds.SecretAccessKey, auth.date, auth.region, auth.service)
-	expectedSig := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
-	if subtle.ConstantTimeCompare([]byte(expectedSig), []byte(strings.ToLower(auth.signature))) != 1 {
-		return &authError{code: "SignatureDoesNotMatch", msg: "signature mismatch"}
+	if err := srv.sigv4VerifyCore(r, rawPath, canonicalQuery, auth, amzDate, payloadHashHeader, "AuthorizationHeaderMalformed"); err != nil {
+		return err
 	}
 
 	actualHash := sha256.Sum256(body)
@@ -1734,6 +1828,248 @@ func (srv *Server) authenticate(r *http.Request, rawPath, rawQuery string, body 
 		return &authError{code: "XAmzContentSHA256Mismatch", msg: "declared payload hash does not match body received"}
 	}
 	return nil
+}
+
+// parseRawQueryParams decodes a raw query string into a name->value map
+// for presign-parameter lookup. It is deliberately not url.ParseQuery: a
+// query-auth parameter value is percent-decoded byte-for-byte (never
+// treating '+' as space, matching every other SigV4 raw-query handler in
+// this file), and a name repeated more than once is rejected outright --
+// SigV4 presign parameters must each appear exactly once, and silently
+// picking one of several conflicting values would be an unsafe guess a
+// verifier must never make.
+func parseRawQueryParams(rawQuery string) (map[string]string, error) {
+	out := map[string]string{}
+	if rawQuery == "" {
+		return out, nil
+	}
+	for _, p := range strings.Split(rawQuery, "&") {
+		if p == "" {
+			continue
+		}
+		rawK, rawV := p, ""
+		if idx := strings.IndexByte(p, '='); idx >= 0 {
+			rawK, rawV = p[:idx], p[idx+1:]
+		}
+		dk, err := percentDecodeToBytes(rawK)
+		if err != nil {
+			return nil, err
+		}
+		dv, err := percentDecodeToBytes(rawV)
+		if err != nil {
+			return nil, err
+		}
+		key := string(dk)
+		if _, dup := out[key]; dup {
+			return nil, fmt.Errorf("duplicate query parameter %q", key)
+		}
+		out[key] = string(dv)
+	}
+	return out, nil
+}
+
+// authenticateQuery validates a SigV4 query-string-authenticated
+// ("presigned URL") request: Algorithm/Credential/Date/Expires/
+// SignedHeaders/Signature supplied as query parameters instead of an
+// Authorization header, per AWS's presigned-URL scheme. It shares
+// sigv4VerifyCore with authenticateHeader for every canonicalization and
+// signature step; what's genuinely different here is where the auth
+// parameters come from, that the payload hash is always the fixed
+// UNSIGNED-PAYLOAD sentinel (query-string SigV4 never signs the body --
+// see presignUnsignedPayload), that the canonical query must exclude
+// X-Amz-Signature itself, and that the timestamp check is an expiry
+// window (X-Amz-Date .. X-Amz-Date+X-Amz-Expires) rather than a fixed
+// skew around "now".
+func (srv *Server) authenticateQuery(r *http.Request, rawPath, rawQuery string) error {
+	params, err := parseRawQueryParams(rawQuery)
+	if err != nil {
+		return &authError{code: "AuthorizationQueryParametersError", msg: err.Error()}
+	}
+	// ZeroS3 has a single static credential pair and no IAM/STS/session
+	// model, so a security token can never be validated correctly; reject
+	// it explicitly rather than silently ignoring it or inventing
+	// semantics for it.
+	if _, ok := params["X-Amz-Security-Token"]; ok {
+		return &authError{code: "AuthorizationQueryParametersError", msg: "X-Amz-Security-Token is not supported by ZeroS3's credential model"}
+	}
+
+	algorithm := params["X-Amz-Algorithm"]
+	credential := params["X-Amz-Credential"]
+	amzDate := params["X-Amz-Date"]
+	expiresRaw := params["X-Amz-Expires"]
+	signedHeaders := params["X-Amz-SignedHeaders"]
+	signature := params["X-Amz-Signature"]
+	if algorithm == "" || credential == "" || amzDate == "" || expiresRaw == "" || signedHeaders == "" || signature == "" {
+		return &authError{code: "AuthorizationQueryParametersError", msg: "missing required X-Amz-* query authentication parameter"}
+	}
+	if algorithm != sigv4QueryAlgorithm {
+		return &authError{code: "AuthorizationQueryParametersError", msg: "unsupported X-Amz-Algorithm"}
+	}
+	cp := strings.Split(credential, "/")
+	if len(cp) != 5 || cp[4] != "aws4_request" {
+		return &authError{code: "AuthorizationQueryParametersError", msg: fmt.Sprintf("malformed credential scope %q", credential)}
+	}
+	auth := &sigv4Auth{
+		accessKeyID:   cp[0],
+		date:          cp[1],
+		region:        cp[2],
+		service:       cp[3],
+		signedHeaders: strings.Split(signedHeaders, ";"),
+		signature:     signature,
+	}
+
+	t, err := time.Parse("20060102T150405Z", amzDate)
+	if err != nil {
+		return &authError{code: "AuthorizationQueryParametersError", msg: "invalid X-Amz-Date"}
+	}
+	if t.Format("20060102") != auth.date {
+		return &authError{code: "AuthorizationQueryParametersError", msg: "credential date does not match X-Amz-Date"}
+	}
+	expires, convErr := strconv.ParseInt(expiresRaw, 10, 64)
+	if convErr != nil || expires < minPresignExpirySeconds || expires > maxPresignExpirySeconds {
+		return &authError{code: "AuthorizationQueryParametersError", msg: fmt.Sprintf("X-Amz-Expires must be an integer between %d and %d seconds", minPresignExpirySeconds, maxPresignExpirySeconds)}
+	}
+
+	now := sigv4Now()
+	if t.After(now.Add(requestSkewWindow)) {
+		return &authError{code: "AccessDenied", msg: "X-Amz-Date is too far in the future"}
+	}
+	expiresAt := t.Add(time.Duration(expires) * time.Second)
+	if now.After(expiresAt) {
+		return &authError{code: "AccessDenied", msg: "request has expired"}
+	}
+
+	var hasHost bool
+	for _, h := range auth.signedHeaders {
+		if strings.EqualFold(h, "host") {
+			hasHost = true
+		}
+	}
+	if !hasHost {
+		return &authError{code: "AuthorizationQueryParametersError", msg: "host must be a signed header"}
+	}
+
+	canonicalQuery, err := sigv4CanonicalQueryExcluding(rawQuery, "X-Amz-Signature")
+	if err != nil {
+		return &authError{code: "InvalidURI", msg: err.Error()}
+	}
+
+	return srv.sigv4VerifyCore(r, rawPath, canonicalQuery, auth, amzDate, presignUnsignedPayload, "AuthorizationQueryParametersError")
+}
+
+// presignEncodeKeySegments percent-encodes a literal (fully-decoded)
+// bucket name or object key for direct use as request-target bytes,
+// preserving a literal '/' in the input as a path separator rather than
+// escaping it -- exactly the inverse of sigv4CanonicalURI's own
+// decode-then-reencode-per-segment behavior, so a key round-trips through
+// this encoder and back through sigv4CanonicalURI unchanged.
+func presignEncodeKeySegments(s string) string {
+	segs := strings.Split(s, "/")
+	for i, seg := range segs {
+		segs[i] = sigv4EncodeBytes([]byte(seg))
+	}
+	return strings.Join(segs, "/")
+}
+
+// PresignRequest describes a GET or PUT to build a SigV4 query-string
+// ("presigned URL") for. It is intentionally narrow -- object GET/PUT
+// only, one signed header (host), path-style or virtual-host addressing
+// -- matching this task's explicitly bounded presign scope.
+type PresignRequest struct {
+	Method   string // "GET" or "PUT"
+	Endpoint string // scheme://host[:port], no path (e.g. "http://127.0.0.1:9000")
+	Bucket   string
+	Key      string
+	Expires  time.Duration
+	VHost    bool // virtual-hosted-style ("bucket.host") instead of path-style
+}
+
+// GeneratePresignedURL builds a SigV4 query-string-authenticated URL for
+// GET or PUT, signing only the "host" header -- the same minimal signed-
+// header set the AWS SDK for Go v2's own presigner uses by default -- with
+// the fixed UNSIGNED-PAYLOAD hash sentinel query-string SigV4 always uses.
+// It reuses exactly the same canonicalization/signing primitives
+// (sigv4CanonicalURI, sigv4CanonicalQueryExcluding, sigv4SigningKey) as
+// authenticateQuery, so a URL this produces is guaranteed to canonicalize
+// identically to what the server will recompute -- there is exactly one
+// signing/verifying implementation, used in both directions.
+func GeneratePresignedURL(creds Credentials, region string, req PresignRequest, now time.Time) (string, error) {
+	method := strings.ToUpper(req.Method)
+	if method != http.MethodGet && method != http.MethodPut {
+		return "", fmt.Errorf("presign: unsupported method %q (want GET or PUT)", req.Method)
+	}
+	if req.Bucket == "" || req.Key == "" {
+		return "", fmt.Errorf("presign: bucket and key are both required")
+	}
+	expirySeconds := int64(req.Expires / time.Second)
+	if expirySeconds < minPresignExpirySeconds || expirySeconds > maxPresignExpirySeconds {
+		return "", fmt.Errorf("presign: expires must be between %ds and %ds", minPresignExpirySeconds, maxPresignExpirySeconds)
+	}
+
+	endpointURL, err := url.Parse(req.Endpoint)
+	if err != nil || endpointURL.Scheme == "" || endpointURL.Host == "" {
+		return "", fmt.Errorf("presign: invalid endpoint %q (want scheme://host[:port])", req.Endpoint)
+	}
+
+	var host, rawPath string
+	if req.VHost {
+		host = req.Bucket + "." + endpointURL.Host
+		rawPath = "/" + presignEncodeKeySegments(req.Key)
+	} else {
+		host = endpointURL.Host
+		rawPath = "/" + presignEncodeKeySegments(req.Bucket) + "/" + presignEncodeKeySegments(req.Key)
+	}
+	host = strings.ToLower(host)
+
+	amzDate := now.UTC().Format("20060102T150405Z")
+	dateStamp := now.UTC().Format("20060102")
+	credentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", dateStamp, region, sigv4ServiceName)
+
+	rawParams := []queryPair{
+		{k: "X-Amz-Algorithm", v: sigv4QueryAlgorithm},
+		{k: "X-Amz-Credential", v: creds.AccessKeyID + "/" + credentialScope},
+		{k: "X-Amz-Date", v: amzDate},
+		{k: "X-Amz-Expires", v: strconv.FormatInt(expirySeconds, 10)},
+		{k: "X-Amz-SignedHeaders", v: "host"},
+	}
+	encodedParams := make([]string, len(rawParams))
+	for i, p := range rawParams {
+		encodedParams[i] = sigv4EncodeBytes([]byte(p.k)) + "=" + sigv4EncodeBytes([]byte(p.v))
+	}
+	rawQuery := strings.Join(encodedParams, "&")
+
+	canonicalURI, err := sigv4CanonicalURI(rawPath)
+	if err != nil {
+		return "", fmt.Errorf("presign: %w", err)
+	}
+	canonicalQuery, err := sigv4CanonicalQueryExcluding(rawQuery, "X-Amz-Signature")
+	if err != nil {
+		return "", fmt.Errorf("presign: %w", err)
+	}
+	canonicalHeaders := "host:" + host + "\n"
+	const signedHeadersList = "host"
+
+	canonicalRequest := strings.Join([]string{
+		method,
+		canonicalURI,
+		canonicalQuery,
+		canonicalHeaders,
+		signedHeadersList,
+		presignUnsignedPayload,
+	}, "\n")
+	crHash := sha256.Sum256([]byte(canonicalRequest))
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256",
+		amzDate,
+		credentialScope,
+		hex.EncodeToString(crHash[:]),
+	}, "\n")
+
+	signingKey := sigv4SigningKey(creds.SecretAccessKey, dateStamp, region, sigv4ServiceName)
+	signature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
+
+	finalQuery := rawQuery + "&X-Amz-Signature=" + signature
+	return endpointURL.Scheme + "://" + host + rawPath + "?" + finalQuery, nil
 }
 
 // =============================================================================
@@ -1940,10 +2276,56 @@ type Server struct {
 	store  *Store
 	creds  Credentials
 	region string
+	// vhostBase is the configured base domain for virtual-hosted-style
+	// addressing ("bucket.<vhostBase>"); empty (the default) disables it
+	// entirely and every request is parsed path-style, exactly as before
+	// this field existed. It is never used for anything SigV4-related --
+	// the raw, unmodified r.Host is what gets signed/verified either way.
+	vhostBase string
 }
 
 func NewServer(store *Store, creds Credentials, region string) *Server {
 	return &Server{store: store, creds: creds, region: region}
+}
+
+// SetVirtualHostBase enables virtual-hosted-style addressing
+// ("bucket.<base>[:port]") in addition to (never instead of) path-style.
+// Called only from CLI/test setup, never mid-request.
+func (srv *Server) SetVirtualHostBase(base string) {
+	srv.vhostBase = base
+}
+
+// vhostBucketFromHost returns the bucket name for a virtual-hosted-style
+// request, or ("", false) if this Host doesn't carry the configured
+// virtual-host suffix -- a bare IP, "localhost", an unrelated hostname,
+// or a request to the bare base domain itself (no bucket label at all)
+// all report false and fall back to path-style, which stays unconditionally
+// available regardless of vhostBase. Matching is case-insensitive (HTTP
+// hostnames are) and operates only on a lowercased copy for comparison;
+// it has no effect on the raw r.Host that SigV4 already authenticated
+// before this is ever called.
+func (srv *Server) vhostBucketFromHost(host string) (bucket string, ok bool) {
+	if srv.vhostBase == "" {
+		return "", false
+	}
+	h := host
+	if hostOnly, _, err := net.SplitHostPort(host); err == nil {
+		h = hostOnly
+	}
+	h = strings.ToLower(h)
+	base := strings.ToLower(srv.vhostBase)
+	if h == base {
+		return "", false
+	}
+	suffix := "." + base
+	if !strings.HasSuffix(h, suffix) {
+		return "", false
+	}
+	bucket = h[:len(h)-len(suffix)]
+	if bucket == "" {
+		return "", false
+	}
+	return bucket, true
 }
 
 // splitRawRequestURI splits the server-observed, unmodified request
@@ -2037,22 +2419,41 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The bucket-less root path ("GET /") is ListBuckets: it has no
-	// bucket/key to parse, so it's handled before splitBucketKey, which
-	// requires (and every other operation needs) a non-empty bucket name.
-	if rawPath == "/" || rawPath == "" {
-		if r.Method == http.MethodGet {
-			srv.handleListBuckets(w)
+	// Bucket/key resolution happens strictly AFTER authentication, using
+	// the semantic (decoded) path/Host -- never before, and never by
+	// mutating r.Host or rawPath, which would change the bytes SigV4 just
+	// verified. Virtual-hosted-style addressing (bucket encoded in Host)
+	// is checked first; a Host without the configured vhost suffix falls
+	// straight through to ordinary path-style parsing, unconditionally
+	// available regardless of whether virtual-host is configured at all.
+	var bucket, key string
+	if vb, ok := srv.vhostBucketFromHost(r.Host); ok {
+		bucket = vb
+		var kerr error
+		key, kerr = url.PathUnescape(strings.TrimPrefix(rawPath, "/"))
+		if kerr != nil {
+			writeS3Error(w, "InvalidURI", "invalid key encoding", rawPath)
 			return
 		}
-		writeS3Error(w, "MethodNotAllowed", "unsupported operation for this path", rawPath)
-		return
-	}
-
-	bucket, key, err := splitBucketKey(rawPath)
-	if err != nil {
-		writeS3Error(w, "InvalidURI", err.Error(), rawPath)
-		return
+	} else {
+		// The bucket-less root path ("GET /") is ListBuckets: it has no
+		// bucket/key to parse, so it's handled before splitBucketKey, which
+		// requires (and every other path-style operation needs) a
+		// non-empty bucket name.
+		if rawPath == "/" || rawPath == "" {
+			if r.Method == http.MethodGet {
+				srv.handleListBuckets(w)
+				return
+			}
+			writeS3Error(w, "MethodNotAllowed", "unsupported operation for this path", rawPath)
+			return
+		}
+		var err error
+		bucket, key, err = splitBucketKey(rawPath)
+		if err != nil {
+			writeS3Error(w, "InvalidURI", err.Error(), rawPath)
+			return
+		}
 	}
 
 	switch {
@@ -3468,6 +3869,7 @@ func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	addr := fs.String("addr", "127.0.0.1:9000", "listen address")
+	vhostBase := fs.String("vhost-base", "", "base domain for virtual-hosted-style addressing (bucket.<base>); empty disables it and only path-style is served")
 	fs.Parse(args)
 
 	store, err := OpenStore(*storeDir)
@@ -3480,6 +3882,9 @@ func runServe(args []string) {
 		AccessKeyID:     defaultAccessKeyID,
 		SecretAccessKey: defaultSecretAccessKey,
 	}, defaultRegion)
+	if *vhostBase != "" {
+		srv.SetVirtualHostBase(*vhostBase)
+	}
 
 	httpServer := &http.Server{Addr: *addr, Handler: srv}
 	log.Printf("zeros3: listening on %s (store=%s)", *addr, *storeDir)
@@ -3556,6 +3961,56 @@ func runVerify(args []string) {
 	}
 }
 
+// runPresign implements "zeros3 presign get|put -bucket B -key K [...]",
+// following the same flag.NewFlagSet -bucket/-key convention runStats
+// already uses rather than inventing an s3://-URI parser. It prints
+// exactly one line -- the presigned URL -- to stdout on success; secret
+// keys are read from flags/defaults but are never echoed anywhere,
+// including on error.
+func runPresign(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "zeros3: presign requires a method: get or put")
+		os.Exit(2)
+	}
+	method := strings.ToLower(args[0])
+	if method != "get" && method != "put" {
+		fmt.Fprintf(os.Stderr, "zeros3: presign: unknown method %q (want get or put)\n", args[0])
+		os.Exit(2)
+	}
+
+	fs := flag.NewFlagSet("presign "+method, flag.ExitOnError)
+	bucket := fs.String("bucket", "", "bucket name (required)")
+	key := fs.String("key", "", "object key (required)")
+	expires := fs.Duration("expires", 15*time.Minute, "URL validity duration (1s..168h / 604800s)")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key")
+	region := fs.String("region", defaultRegion, "SigV4 region")
+	endpoint := fs.String("endpoint", "http://127.0.0.1:9000", "S3 endpoint base URL (scheme://host[:port])")
+	vhost := fs.Bool("vhost", false, "virtual-hosted-style addressing (bucket.<endpoint host>) instead of path-style")
+	fs.Parse(args[1:])
+
+	if *bucket == "" || *key == "" {
+		fmt.Fprintln(os.Stderr, "zeros3: presign: -bucket and -key are required")
+		os.Exit(2)
+	}
+
+	httpMethod := http.MethodGet
+	if method == "put" {
+		httpMethod = http.MethodPut
+	}
+	url, err := GeneratePresignedURL(
+		Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey},
+		*region,
+		PresignRequest{Method: httpMethod, Endpoint: *endpoint, Bucket: *bucket, Key: *key, Expires: *expires, VHost: *vhost},
+		time.Now(),
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: presign failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(url)
+}
+
 // =============================================================================
 // 16. Lifecycle / main
 // =============================================================================
@@ -3574,8 +4029,10 @@ func main() {
 		runStats(args)
 	case "verify":
 		runVerify(args)
+	case "presign":
+		runPresign(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, or verify)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, or presign)\n", cmd)
 		os.Exit(2)
 	}
 }

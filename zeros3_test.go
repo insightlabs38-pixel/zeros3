@@ -5230,3 +5230,1032 @@ func TestRange_ReadsOnlyOverlappingChunks(t *testing.T) {
 		t.Fatalf("range at the exact start of chunk C: got %v want %v", got2, chunkC[:1])
 	}
 }
+
+// =============================================================================
+// Presigned URL (SigV4 query-string authentication) tests
+//
+// buildTestPresignedQuery is a self-contained, test-only presign signer --
+// independent of GeneratePresignedURL/authenticateQuery in zeros3.go -- so
+// the adversarial tests below exercise the server's query-auth verifier
+// the same "not checking it against itself" way signTestRequest exercises
+// header-auth. Tests that only need to prove an early, pre-signature
+// rejection (malformed Expires, missing parameter, bad algorithm, ...)
+// build the raw query directly instead, since authenticateQuery rejects
+// those before ever computing/comparing a signature.
+// =============================================================================
+
+func tamperHexString(s string) string {
+	b := []byte(s)
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] == '0' {
+			b[i] = '1'
+		} else {
+			b[i] = '0'
+		}
+		return string(b)
+	}
+	return s
+}
+
+func rawPresignQueryFrom(pairs map[string]string) string {
+	keys := make([]string, 0, len(pairs))
+	for k := range pairs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, testCanonicalEncode([]byte(k))+"="+testCanonicalEncode([]byte(pairs[k])))
+	}
+	return strings.Join(parts, "&")
+}
+
+// basePresignParams returns a syntactically well-formed (but not
+// necessarily correctly signed) set of presign query parameters, for
+// tests that only care about a check that runs before signature
+// verification.
+func basePresignParams(signer testSigner, when time.Time) map[string]string {
+	dateStamp := when.UTC().Format("20060102")
+	return map[string]string{
+		"X-Amz-Algorithm":     "AWS4-HMAC-SHA256",
+		"X-Amz-Credential":    signer.accessKey + "/" + dateStamp + "/" + signer.region + "/s3/aws4_request",
+		"X-Amz-Date":          when.UTC().Format("20060102T150405Z"),
+		"X-Amz-Expires":       "900",
+		"X-Amz-SignedHeaders": "host",
+		"X-Amz-Signature":     "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+	}
+}
+
+type presignOpts struct {
+	signedHeaders     string
+	expiresSeconds    int64
+	amzDate           time.Time
+	accessKeyOverride string
+	regionOverride    string
+	serviceOverride   string
+	algorithmOverride string
+	tamperSignature   bool
+}
+
+// buildTestPresignedQuery independently computes a correctly-signed SigV4
+// query-string ("presigned URL") query for rawPath/host, mirroring
+// signTestRequest's independent-implementation approach for header auth.
+func buildTestPresignedQuery(t *testing.T, signer testSigner, method, rawPath, host string, opts presignOpts) string {
+	t.Helper()
+	when := opts.amzDate
+	if when.IsZero() {
+		when = time.Now()
+	}
+	expires := opts.expiresSeconds
+	if expires == 0 {
+		expires = 900
+	}
+	signedHeaders := opts.signedHeaders
+	if signedHeaders == "" {
+		signedHeaders = "host"
+	}
+	algorithm := opts.algorithmOverride
+	if algorithm == "" {
+		algorithm = "AWS4-HMAC-SHA256"
+	}
+	accessKey := opts.accessKeyOverride
+	if accessKey == "" {
+		accessKey = signer.accessKey
+	}
+	region := opts.regionOverride
+	if region == "" {
+		region = signer.region
+	}
+	service := opts.serviceOverride
+	if service == "" {
+		service = "s3"
+	}
+
+	amzDate := when.UTC().Format("20060102T150405Z")
+	dateStamp := when.UTC().Format("20060102")
+	credentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", dateStamp, region, service)
+
+	params := map[string]string{
+		"X-Amz-Algorithm":     algorithm,
+		"X-Amz-Credential":    accessKey + "/" + credentialScope,
+		"X-Amz-Date":          amzDate,
+		"X-Amz-Expires":       strconv.FormatInt(expires, 10),
+		"X-Amz-SignedHeaders": signedHeaders,
+	}
+	rawQuery := rawPresignQueryFrom(params)
+
+	canonicalHeaders := "host:" + host + "\n"
+	canonicalRequest := strings.Join([]string{
+		method,
+		testCanonicalURI(rawPath),
+		testCanonicalQuery(rawQuery),
+		canonicalHeaders,
+		strings.ToLower(signedHeaders),
+		"UNSIGNED-PAYLOAD",
+	}, "\n")
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256", amzDate, credentialScope, testHexSHA256([]byte(canonicalRequest)),
+	}, "\n")
+	kDate := testHMAC([]byte("AWS4"+signer.secretKey), dateStamp)
+	kRegion := testHMAC(kDate, region)
+	kService := testHMAC(kRegion, service)
+	kSigning := testHMAC(kService, "aws4_request")
+	sig := hex.EncodeToString(testHMAC(kSigning, stringToSign))
+	if opts.tamperSignature {
+		sig = tamperHexString(sig)
+	}
+	return rawQuery + "&X-Amz-Signature=" + sig
+}
+
+func newPresignTestRequest(method, rawPath, rawQuery, host string) (req *http.Request, path string) {
+	req = httptest.NewRequest(method, rawPath+"?"+rawQuery, nil)
+	req.Host = host
+	return req, rawPath
+}
+
+func TestSigV4_CanonicalQueryExcludingSignature(t *testing.T) {
+	got, err := sigv4CanonicalQueryExcluding("X-Amz-Signature=abc&X-Amz-Date=20240101T000000Z", "X-Amz-Signature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "X-Amz-Date=20240101T000000Z"; got != want {
+		t.Fatalf("sigv4CanonicalQueryExcluding = %q, want %q", got, want)
+	}
+	// Excluding a key that isn't present changes nothing.
+	got2, err := sigv4CanonicalQueryExcluding("a=1&b=2", "X-Amz-Signature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "a=1&b=2"; got2 != want {
+		t.Fatalf("sigv4CanonicalQueryExcluding(no match) = %q, want %q", got2, want)
+	}
+	// sigv4CanonicalQuery (no exclusion) still behaves exactly as before.
+	got3, err := sigv4CanonicalQuery("X-Amz-Signature=abc&a=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "X-Amz-Signature=abc&a=1"; got3 != want {
+		t.Fatalf("sigv4CanonicalQuery = %q, want %q", got3, want)
+	}
+}
+
+func TestPresignAuth_ValidAccepted(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/mybucket/mykey", host, presignOpts{})
+	req, path := newPresignTestRequest(http.MethodGet, "/mybucket/mykey", rawQuery, host)
+	if err := srv.authenticateQuery(req, path, rawQuery); err != nil {
+		t.Fatalf("expected a validly presigned GET to be accepted: %v", err)
+	}
+}
+
+func TestPresignAuth_ValidPUTAccepted(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodPut, "/mybucket/mykey", host, presignOpts{})
+	req, path := newPresignTestRequest(http.MethodPut, "/mybucket/mykey", rawQuery, host)
+	if err := srv.authenticateQuery(req, path, rawQuery); err != nil {
+		t.Fatalf("expected a validly presigned PUT to be accepted: %v", err)
+	}
+}
+
+func TestPresignAuth_TrickyPathsAccepted(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	targets := []string{
+		"/mybucket/space%20key",
+		"/mybucket/a+b",
+		"/mybucket/enc%2Fslash",
+		"/mybucket//double//slash",
+		"/mybucket/trailing/",
+		"/mybucket/unicode-%C3%A9%C3%A8",
+	}
+	for _, path := range targets {
+		t.Run(path, func(t *testing.T) {
+			rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, path, host, presignOpts{})
+			req, _ := newPresignTestRequest(http.MethodGet, path, rawQuery, host)
+			if err := srv.authenticateQuery(req, path, rawQuery); err != nil {
+				t.Fatalf("expected tricky path %q to be accepted: %v", path, err)
+			}
+		})
+	}
+}
+
+func TestPresignAuth_MissingSignatureFallsThroughToHeaderPathAndFails(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{})
+	// Strip the signature parameter entirely -- hasQueryAuth then reports
+	// false, so this must be handled (and rejected) by the header path,
+	// never silently accepted by either.
+	idx := strings.Index(rawQuery, "&X-Amz-Signature=")
+	stripped := rawQuery[:idx]
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", stripped, host)
+	if err := srv.authenticate(req, path, stripped, nil); err == nil {
+		t.Fatalf("expected a signature-less query-auth-shaped request to be rejected")
+	}
+}
+
+func TestPresignAuth_TamperedSignatureRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{tamperSignature: true})
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	err := srv.authenticateQuery(req, path, rawQuery)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "SignatureDoesNotMatch" {
+		t.Fatalf("expected a tampered presigned signature to be rejected as SignatureDoesNotMatch, got %v", err)
+	}
+}
+
+func TestPresignAuth_ModifiedPathAfterGenerationRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{})
+	tamperedPath := "/b/other-key"
+	req, _ := newPresignTestRequest(http.MethodGet, tamperedPath, rawQuery, host)
+	if err := srv.authenticateQuery(req, tamperedPath, rawQuery); err == nil {
+		t.Fatalf("expected a presigned URL used against a different path to be rejected")
+	}
+}
+
+func TestPresignAuth_ModifiedBucketAfterGenerationRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/bucket1/k", host, presignOpts{})
+	tamperedPath := "/bucket2/k"
+	req, _ := newPresignTestRequest(http.MethodGet, tamperedPath, rawQuery, host)
+	if err := srv.authenticateQuery(req, tamperedPath, rawQuery); err == nil {
+		t.Fatalf("expected a presigned URL used against a different bucket to be rejected")
+	}
+}
+
+func TestPresignAuth_ModifiedHostAfterGenerationRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	signedHost := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", signedHost, presignOpts{})
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, "attacker.example:9000")
+	if err := srv.authenticateQuery(req, path, rawQuery); err == nil {
+		t.Fatalf("expected a presigned URL replayed with a different Host to be rejected")
+	}
+}
+
+func TestPresignAuth_ModifiedSignedQueryParameterRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{expiresSeconds: 900})
+	tampered := strings.Replace(rawQuery, "X-Amz-Expires=900", "X-Amz-Expires=901", 1)
+	if tampered == rawQuery {
+		t.Fatal("test setup: replacement did not change the query")
+	}
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", tampered, host)
+	if err := srv.authenticateQuery(req, path, tampered); err == nil {
+		t.Fatalf("expected a modified signed query parameter (X-Amz-Expires) to invalidate the signature")
+	}
+}
+
+func TestPresignAuth_ExtraUnsignedQueryParamAfterGenerationRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{})
+	withExtra := rawQuery + "&foo=bar"
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", withExtra, host)
+	if err := srv.authenticateQuery(req, path, withExtra); err == nil {
+		t.Fatalf("expected an unrelated query parameter appended after signing to invalidate the signature (all query params are canonicalized, signed or not)")
+	}
+}
+
+func TestPresignAuth_WrongAccessKeyRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	other := signer
+	other.accessKey = "AKIAWRONGACCESSKEY00"
+	rawQuery := buildTestPresignedQuery(t, other, http.MethodGet, "/b/k", host, presignOpts{})
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	err := srv.authenticateQuery(req, path, rawQuery)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "InvalidAccessKeyId" {
+		t.Fatalf("expected wrong access key to be rejected as InvalidAccessKeyId, got %v", err)
+	}
+}
+
+func TestPresignAuth_WrongRegionRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{regionOverride: "eu-west-1"})
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	if err := srv.authenticateQuery(req, path, rawQuery); err == nil {
+		t.Fatalf("expected a presigned URL scoped to the wrong region to be rejected")
+	}
+}
+
+func TestPresignAuth_WrongServiceRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{serviceOverride: "ec2"})
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	if err := srv.authenticateQuery(req, path, rawQuery); err == nil {
+		t.Fatalf("expected a presigned URL scoped to the wrong service to be rejected")
+	}
+}
+
+func TestPresignAuth_UnsupportedAlgorithmRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{algorithmOverride: "AWS4-HMAC-SHA1"})
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	err := srv.authenticateQuery(req, path, rawQuery)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "AuthorizationQueryParametersError" {
+		t.Fatalf("expected an unsupported X-Amz-Algorithm to be rejected as AuthorizationQueryParametersError, got %v", err)
+	}
+}
+
+func TestPresignAuth_HostNotSignedRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	// SignedHeaders deliberately omits "host" -- must never be accepted,
+	// regardless of what the rest of the signature computation says.
+	params := basePresignParams(signer, time.Now())
+	params["X-Amz-SignedHeaders"] = "x-amz-date"
+	rawQuery := rawPresignQueryFrom(params)
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	err := srv.authenticateQuery(req, path, rawQuery)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "AuthorizationQueryParametersError" {
+		t.Fatalf("expected a presign request that doesn't sign 'host' to be rejected, got %v", err)
+	}
+}
+
+func TestPresignAuth_SecurityTokenRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	params := basePresignParams(signer, time.Now())
+	params["X-Amz-Security-Token"] = "FwoGZXIvYXdzEXAMPLE"
+	rawQuery := rawPresignQueryFrom(params)
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	err := srv.authenticateQuery(req, path, rawQuery)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "AuthorizationQueryParametersError" {
+		t.Fatalf("expected X-Amz-Security-Token to be explicitly rejected (unsupported credential model), got %v", err)
+	}
+}
+
+func TestPresignAuth_DuplicateQueryParameterRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{})
+	// Append a second, different X-Amz-Expires -- an ambiguous request
+	// that must never let the verifier silently pick one value.
+	duplicated := rawQuery + "&X-Amz-Expires=1"
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", duplicated, host)
+	err := srv.authenticateQuery(req, path, duplicated)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "AuthorizationQueryParametersError" {
+		t.Fatalf("expected a duplicated query auth parameter to be rejected, got %v", err)
+	}
+}
+
+func TestPresignAuth_CaseChangedParamNameNotAuthenticated(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{})
+	// Lowercase the signature parameter's name: hasQueryAuth's exact-case
+	// probe no longer matches, so this must not be silently authenticated
+	// via either path.
+	lowered := strings.Replace(rawQuery, "X-Amz-Signature=", "x-amz-signature=", 1)
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", lowered, host)
+	if err := srv.authenticate(req, path, lowered, nil); err == nil {
+		t.Fatalf("expected a case-altered auth parameter name to be rejected, not silently authenticated")
+	}
+}
+
+func TestPresignAuth_MissingRequiredParameterRejected(t *testing.T) {
+	for _, omit := range []string{"X-Amz-Algorithm", "X-Amz-Credential", "X-Amz-Date", "X-Amz-Expires", "X-Amz-SignedHeaders"} {
+		t.Run(omit, func(t *testing.T) {
+			srv, signer := newTestServerAndSigner(t)
+			host := "127.0.0.1:9000"
+			params := basePresignParams(signer, time.Now())
+			delete(params, omit)
+			rawQuery := rawPresignQueryFrom(params)
+			req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+			err := srv.authenticateQuery(req, path, rawQuery)
+			var ae *authError
+			if !errors.As(err, &ae) || ae.code != "AuthorizationQueryParametersError" {
+				t.Fatalf("expected missing %s to be rejected as AuthorizationQueryParametersError, got %v", omit, err)
+			}
+		})
+	}
+}
+
+func TestPresignAuth_MalformedCredentialScopeRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	params := basePresignParams(signer, time.Now())
+	params["X-Amz-Credential"] = "onlyaccesskeynoscope"
+	rawQuery := rawPresignQueryFrom(params)
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	err := srv.authenticateQuery(req, path, rawQuery)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "AuthorizationQueryParametersError" {
+		t.Fatalf("expected a malformed credential scope to be rejected, got %v", err)
+	}
+}
+
+func TestPresignAuth_MalformedTimestampRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	params := basePresignParams(signer, time.Now())
+	params["X-Amz-Date"] = "not-a-timestamp"
+	rawQuery := rawPresignQueryFrom(params)
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	err := srv.authenticateQuery(req, path, rawQuery)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "AuthorizationQueryParametersError" {
+		t.Fatalf("expected a malformed X-Amz-Date to be rejected, got %v", err)
+	}
+}
+
+func TestPresignAuth_ExpiresMalformedRejected(t *testing.T) {
+	cases := []string{"abc", "-1", "0", "604801", "99999999999999999999", ""}
+	for _, exp := range cases {
+		t.Run(fmt.Sprintf("expires=%q", exp), func(t *testing.T) {
+			srv, signer := newTestServerAndSigner(t)
+			host := "127.0.0.1:9000"
+			params := basePresignParams(signer, time.Now())
+			params["X-Amz-Expires"] = exp
+			rawQuery := rawPresignQueryFrom(params)
+			req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+			err := srv.authenticateQuery(req, path, rawQuery)
+			if exp == "" {
+				// An empty value round-trips as a missing parameter.
+				var ae *authError
+				if !errors.As(err, &ae) || ae.code != "AuthorizationQueryParametersError" {
+					t.Fatalf("expected empty X-Amz-Expires to be rejected, got %v", err)
+				}
+				return
+			}
+			var ae *authError
+			if !errors.As(err, &ae) || ae.code != "AuthorizationQueryParametersError" {
+				t.Fatalf("expected X-Amz-Expires=%q to be rejected as AuthorizationQueryParametersError, got %v", exp, err)
+			}
+		})
+	}
+}
+
+func TestPresignAuth_ExpiresBoundsAccepted(t *testing.T) {
+	for _, exp := range []int64{1, 604800} {
+		t.Run(fmt.Sprintf("expires=%d", exp), func(t *testing.T) {
+			srv, signer := newTestServerAndSigner(t)
+			host := "127.0.0.1:9000"
+			rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{expiresSeconds: exp})
+			req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+			if err := srv.authenticateQuery(req, path, rawQuery); err != nil {
+				t.Fatalf("expected boundary expires=%d to be accepted: %v", exp, err)
+			}
+		})
+	}
+}
+
+// withFixedSigv4Now overrides sigv4Now for the duration of the test,
+// restoring it afterward -- the "existing/testable time injection" seam
+// used so expiry tests never sleep or depend on wall-clock timing.
+func withFixedSigv4Now(t *testing.T, fixed time.Time) {
+	t.Helper()
+	orig := sigv4Now
+	sigv4Now = func() time.Time { return fixed }
+	t.Cleanup(func() { sigv4Now = orig })
+}
+
+func TestPresignAuth_ExactExpiryBoundaryAccepted(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	signedAt := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{amzDate: signedAt, expiresSeconds: 300})
+	withFixedSigv4Now(t, signedAt.Add(300*time.Second)) // exactly at expiry
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	if err := srv.authenticateQuery(req, path, rawQuery); err != nil {
+		t.Fatalf("expected a request exactly at its expiry instant to still be accepted: %v", err)
+	}
+}
+
+func TestPresignAuth_ImmediatelyPastExpiryRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	signedAt := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{amzDate: signedAt, expiresSeconds: 300})
+	withFixedSigv4Now(t, signedAt.Add(300*time.Second+time.Second))
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	err := srv.authenticateQuery(req, path, rawQuery)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "AccessDenied" {
+		t.Fatalf("expected a request one second past expiry to be rejected, got %v", err)
+	}
+}
+
+func TestPresignAuth_FutureDateBeyondSkewRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	now := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	future := now.Add(requestSkewWindow + time.Minute)
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{amzDate: future, expiresSeconds: 300})
+	withFixedSigv4Now(t, now)
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	err := srv.authenticateQuery(req, path, rawQuery)
+	var ae *authError
+	if !errors.As(err, &ae) || ae.code != "AccessDenied" {
+		t.Fatalf("expected an X-Amz-Date far in the future to be rejected, got %v", err)
+	}
+}
+
+func TestPresignAuth_LongLivedButUnexpiredAccepted(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	host := "127.0.0.1:9000"
+	signedAt := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/b/k", host, presignOpts{amzDate: signedAt, expiresSeconds: 604800})
+	withFixedSigv4Now(t, signedAt.Add(604799*time.Second))
+	req, path := newPresignTestRequest(http.MethodGet, "/b/k", rawQuery, host)
+	if err := srv.authenticateQuery(req, path, rawQuery); err != nil {
+		t.Fatalf("expected a still-unexpired long-lived (7-day) presigned URL to be accepted: %v", err)
+	}
+}
+
+// =============================================================================
+// Presigned URL generation (GeneratePresignedURL / "zeros3 presign") tests
+// =============================================================================
+
+func TestPresign_GeneratedURLPassesServerVerifier(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "bucket1"); err != nil {
+		t.Fatal(err)
+	}
+	creds := Credentials{AccessKeyID: signer.accessKey, SecretAccessKey: signer.secretKey}
+
+	for _, method := range []string{"GET", "PUT"} {
+		t.Run(method, func(t *testing.T) {
+			presignedURL, err := GeneratePresignedURL(creds, signer.region, PresignRequest{
+				Method: method, Endpoint: ts.URL, Bucket: "bucket1", Key: "genkey", Expires: 5 * time.Minute,
+			}, time.Now())
+			if err != nil {
+				t.Fatalf("GeneratePresignedURL: %v", err)
+			}
+			var resp *http.Response
+			if method == "PUT" {
+				resp, err = client.Do(mustPresignedHTTPRequest(t, method, presignedURL, []byte("payload")))
+			} else {
+				// Seed the object first via header auth so the presigned GET has something to read.
+				putResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/bucket1/genkey", []byte("payload"), nil)
+				putResp.Body.Close()
+				resp, err = client.Do(mustPresignedHTTPRequest(t, method, presignedURL, nil))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("expected a CLI/library-generated presigned %s URL to be accepted, got %d: %s", method, resp.StatusCode, b)
+			}
+		})
+	}
+}
+
+func mustPresignedHTTPRequest(t *testing.T, method, rawURL string, body []byte) *http.Request {
+	t.Helper()
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, rawURL, bodyReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return req
+}
+
+func TestPresign_TrickyKeysRoundTripThroughServerVerifier(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "bucket1"); err != nil {
+		t.Fatal(err)
+	}
+	creds := Credentials{AccessKeyID: signer.accessKey, SecretAccessKey: signer.secretKey}
+
+	keys := []string{
+		"space key.txt",
+		"plus+key.txt",
+		"percent%25key.txt",
+		"slash/in/key.txt",
+		"unicode-éè.txt",
+	}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			putURL, err := GeneratePresignedURL(creds, signer.region, PresignRequest{
+				Method: "PUT", Endpoint: ts.URL, Bucket: "bucket1", Key: key, Expires: 5 * time.Minute,
+			}, time.Now())
+			if err != nil {
+				t.Fatalf("GeneratePresignedURL PUT: %v", err)
+			}
+			putResp, err := client.Do(mustPresignedHTTPRequest(t, "PUT", putURL, []byte("tricky-key-payload")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			putResp.Body.Close()
+			if putResp.StatusCode != http.StatusOK {
+				t.Fatalf("PUT for tricky key %q: status %d", key, putResp.StatusCode)
+			}
+
+			getURL, err := GeneratePresignedURL(creds, signer.region, PresignRequest{
+				Method: "GET", Endpoint: ts.URL, Bucket: "bucket1", Key: key, Expires: 5 * time.Minute,
+			}, time.Now())
+			if err != nil {
+				t.Fatalf("GeneratePresignedURL GET: %v", err)
+			}
+			getResp, err := client.Do(mustPresignedHTTPRequest(t, "GET", getURL, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer getResp.Body.Close()
+			data, _ := io.ReadAll(getResp.Body)
+			if getResp.StatusCode != http.StatusOK || string(data) != "tricky-key-payload" {
+				t.Fatalf("GET for tricky key %q: status %d body %q", key, getResp.StatusCode, data)
+			}
+		})
+	}
+}
+
+func TestPresign_ExpiresOutOfRangeRejectedAtGenerationTime(t *testing.T) {
+	creds := Credentials{AccessKeyID: "AK", SecretAccessKey: "SK"}
+	cases := []time.Duration{0, -1 * time.Minute, 8 * 24 * time.Hour}
+	for _, exp := range cases {
+		if _, err := GeneratePresignedURL(creds, "us-east-1", PresignRequest{
+			Method: "GET", Endpoint: "http://127.0.0.1:9000", Bucket: "b", Key: "k", Expires: exp,
+		}, time.Now()); err == nil {
+			t.Fatalf("expected expires=%v to be rejected at generation time", exp)
+		}
+	}
+}
+
+func TestPresign_BucketAndKeyRequired(t *testing.T) {
+	creds := Credentials{AccessKeyID: "AK", SecretAccessKey: "SK"}
+	base := PresignRequest{Method: "GET", Endpoint: "http://127.0.0.1:9000", Expires: 5 * time.Minute}
+	withBucket := base
+	withBucket.Bucket = "b"
+	withKey := base
+	withKey.Key = "k"
+	for _, req := range []PresignRequest{base, withBucket, withKey} {
+		if _, err := GeneratePresignedURL(creds, "us-east-1", req, time.Now()); err == nil {
+			t.Fatalf("expected a missing bucket or key to be rejected: %+v", req)
+		}
+	}
+}
+
+func TestPresign_UnsupportedMethodRejected(t *testing.T) {
+	creds := Credentials{AccessKeyID: "AK", SecretAccessKey: "SK"}
+	if _, err := GeneratePresignedURL(creds, "us-east-1", PresignRequest{
+		Method: "DELETE", Endpoint: "http://127.0.0.1:9000", Bucket: "b", Key: "k", Expires: 5 * time.Minute,
+	}, time.Now()); err == nil {
+		t.Fatalf("expected an unsupported presign method to be rejected")
+	}
+}
+
+func TestPresign_NeverLogsOrEmbedsSecretKey(t *testing.T) {
+	creds := Credentials{AccessKeyID: "AKIAEXAMPLE", SecretAccessKey: "TotallySecretValueThatMustNeverAppear"}
+	url, err := GeneratePresignedURL(creds, "us-east-1", PresignRequest{
+		Method: "GET", Endpoint: "http://127.0.0.1:9000", Bucket: "b", Key: "k", Expires: 5 * time.Minute,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(url, creds.SecretAccessKey) {
+		t.Fatalf("presigned URL must never contain the raw secret access key: %s", url)
+	}
+}
+
+// =============================================================================
+// Presigned PUT/GET mutation-safety and end-to-end tests (real HTTP)
+// =============================================================================
+
+func TestPresignedPUT_TamperedSignatureLeavesNoVisibleObject(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "bucket1"); err != nil {
+		t.Fatal(err)
+	}
+	host := strings.TrimPrefix(ts.URL, "http://")
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodPut, "/bucket1/tamperkey", host, presignOpts{tamperSignature: true})
+	resp, err := client.Do(mustPresignedHTTPRequest(t, "PUT", ts.URL+"/bucket1/tamperkey?"+rawQuery, []byte("should never land")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("expected a tampered-signature presigned PUT to be rejected, got 200")
+	}
+	getResp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/bucket1/tamperkey", nil, nil)
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected no object to be visible after a rejected presigned PUT, got status %d", getResp.StatusCode)
+	}
+}
+
+func TestPresignedPUT_ExpiredURLLeavesNoVisibleObject(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "bucket1"); err != nil {
+		t.Fatal(err)
+	}
+	host := strings.TrimPrefix(ts.URL, "http://")
+	longAgo := time.Now().Add(-2 * time.Hour)
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodPut, "/bucket1/expiredkey", host, presignOpts{amzDate: longAgo, expiresSeconds: 60})
+	resp, err := client.Do(mustPresignedHTTPRequest(t, "PUT", ts.URL+"/bucket1/expiredkey?"+rawQuery, []byte("should never land")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("expected an expired presigned PUT to be rejected, got 200")
+	}
+	getResp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/bucket1/expiredkey", nil, nil)
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected no object to be visible after a rejected expired presigned PUT, got status %d", getResp.StatusCode)
+	}
+}
+
+func TestPresignedPUT_MissingDestinationBucketLeavesNoMutation(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	host := strings.TrimPrefix(ts.URL, "http://")
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodPut, "/no-such-bucket/k", host, presignOpts{})
+	resp, err := client.Do(mustPresignedHTTPRequest(t, "PUT", ts.URL+"/no-such-bucket/k?"+rawQuery, []byte("payload")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("expected a presigned PUT to a nonexistent bucket to fail, got 200")
+	}
+}
+
+func TestPresignedGET_TamperedSignatureRejectedOverRealHTTP(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "bucket1"); err != nil {
+		t.Fatal(err)
+	}
+	putResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/bucket1/k", []byte("secret payload"), nil)
+	putResp.Body.Close()
+
+	host := strings.TrimPrefix(ts.URL, "http://")
+	rawQuery := buildTestPresignedQuery(t, signer, http.MethodGet, "/bucket1/k", host, presignOpts{tamperSignature: true})
+	resp, err := client.Do(mustPresignedHTTPRequest(t, "GET", ts.URL+"/bucket1/k?"+rawQuery, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("expected a tampered-signature presigned GET to be rejected, got 200")
+	}
+}
+
+// =============================================================================
+// Virtual-hosted-style addressing tests
+// =============================================================================
+
+func TestVHost_BucketFromHost(t *testing.T) {
+	srv := &Server{vhostBase: "s3.test.local"}
+	cases := []struct {
+		host       string
+		wantBucket string
+		wantOK     bool
+	}{
+		{"mybucket.s3.test.local", "mybucket", true},
+		{"mybucket.s3.test.local:9000", "mybucket", true},
+		{"MyBucket.S3.Test.Local:9000", "mybucket", true}, // case-insensitive Host
+		{"my.bucket.with.dots.s3.test.local", "my.bucket.with.dots", true},
+		{"my-bucket-with-hyphens.s3.test.local", "my-bucket-with-hyphens", true},
+		{"s3.test.local", "", false},         // base domain alone, no bucket label
+		{"s3.test.local:9000", "", false},    // base domain with port, still no bucket
+		{"127.0.0.1:9000", "", false},        // plain IP -- path style
+		{"localhost:9000", "", false},        // localhost -- path style
+		{"unrelated.example.com", "", false}, // different host entirely
+		{"", "", false},                      // empty/malformed host
+		{".s3.test.local", "", false},        // empty bucket label before the suffix
+	}
+	for _, c := range cases {
+		t.Run(c.host, func(t *testing.T) {
+			bucket, ok := srv.vhostBucketFromHost(c.host)
+			if ok != c.wantOK || bucket != c.wantBucket {
+				t.Fatalf("vhostBucketFromHost(%q) = (%q, %v), want (%q, %v)", c.host, bucket, ok, c.wantBucket, c.wantOK)
+			}
+		})
+	}
+}
+
+func TestVHost_DisabledByDefaultFallsBackToPathStyle(t *testing.T) {
+	srv := &Server{} // vhostBase left empty, as every existing Server (NewServer) is by default
+	bucket, ok := srv.vhostBucketFromHost("mybucket.s3.test.local")
+	if ok || bucket != "" {
+		t.Fatalf("expected virtual-host routing to be disabled when vhostBase is unset, got (%q, %v)", bucket, ok)
+	}
+}
+
+// newVHostTestServer returns a server/signer pair with virtual-host
+// addressing enabled at "s3.test.local", plus a real httptest.NewServer
+// listener to exercise both addressing styles against the same store.
+func newVHostTestServer(t *testing.T) (*httptest.Server, testSigner) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	creds := Credentials{AccessKeyID: "AKIATESTACCESSKEY0001", SecretAccessKey: "TestSecretKeyForZeroS3UnitTests0123456789"}
+	srv := NewServer(store, creds, "us-east-1")
+	srv.SetVirtualHostBase("s3.test.local")
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: "us-east-1"}
+	return httptest.NewServer(srv), signer
+}
+
+// vhostSignedRequest builds a header-authenticated request whose signed
+// "host" is the given virtual-hosted-style Host (not the TCP address the
+// client actually dials) -- exactly how a real client presents a
+// virtual-hosted request, and exactly what SigV4 canonicalization must
+// see unchanged.
+func vhostSignedRequest(t *testing.T, signer testSigner, method, dialURL, host, rawPath string, body []byte) *http.Request {
+	t.Helper()
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, dialURL, bodyReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = host
+	signTestRequest(t, req, signer, rawPath, "", body, time.Now(), nil)
+	return req
+}
+
+func TestVHost_EndToEndCreateBucketPutGetListDelete(t *testing.T) {
+	ts, signer := newVHostTestServer(t)
+	defer ts.Close()
+	client := ts.Client()
+	serverAddr := strings.TrimPrefix(ts.URL, "http://")
+	vhost := "vhbucket.s3.test.local"
+	if idx := strings.LastIndex(serverAddr, ":"); idx >= 0 {
+		vhost = "vhbucket.s3.test.local" + serverAddr[idx:]
+	}
+
+	// CreateBucket via virtual-host addressing (PUT to the bucket root).
+	createReq := vhostSignedRequest(t, signer, http.MethodPut, ts.URL+"/", vhost, "/", nil)
+	resp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("vhost CreateBucket: status %d", resp.StatusCode)
+	}
+
+	// PutObject via virtual-host addressing.
+	body := []byte("virtual-hosted payload")
+	putReq := vhostSignedRequest(t, signer, http.MethodPut, ts.URL+"/greeting.txt", vhost, "/greeting.txt", body)
+	putResp, err := client.Do(putReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putResp.Body.Close()
+	if putResp.StatusCode != http.StatusOK {
+		t.Fatalf("vhost PutObject: status %d", putResp.StatusCode)
+	}
+
+	// GetObject via virtual-host addressing.
+	getReq := vhostSignedRequest(t, signer, http.MethodGet, ts.URL+"/greeting.txt", vhost, "/greeting.txt", nil)
+	getResp, err := client.Do(getReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer getResp.Body.Close()
+	data, _ := io.ReadAll(getResp.Body)
+	if getResp.StatusCode != http.StatusOK || !bytes.Equal(data, body) {
+		t.Fatalf("vhost GetObject: status %d body %q", getResp.StatusCode, data)
+	}
+
+	// The exact same bucket/key must also be reachable path-style, on the
+	// same underlying store, through the same server -- both addressing
+	// modes resolve to one logical namespace.
+	pathResp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/vhbucket/greeting.txt", nil, nil)
+	defer pathResp.Body.Close()
+	pathData, _ := io.ReadAll(pathResp.Body)
+	if pathResp.StatusCode != http.StatusOK || !bytes.Equal(pathData, body) {
+		t.Fatalf("path-style GetObject for a vhost-created object: status %d body %q", pathResp.StatusCode, pathData)
+	}
+
+	// DeleteObject via virtual-host addressing.
+	delReq := vhostSignedRequest(t, signer, http.MethodDelete, ts.URL+"/greeting.txt", vhost, "/greeting.txt", nil)
+	delResp, err := client.Do(delReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("vhost DeleteObject: status %d", delResp.StatusCode)
+	}
+}
+
+func TestVHost_PathStyleStillWorksWhenVHostConfigured(t *testing.T) {
+	ts, signer := newVHostTestServer(t)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "plainbucket"); err != nil {
+		t.Fatal(err)
+	}
+	putResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/plainbucket/k", []byte("path-style payload"), nil)
+	putResp.Body.Close()
+	if putResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected ordinary path-style PUT to keep working when vhost is configured, got %d", putResp.StatusCode)
+	}
+	getResp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/plainbucket/k", nil, nil)
+	defer getResp.Body.Close()
+	data, _ := io.ReadAll(getResp.Body)
+	if getResp.StatusCode != http.StatusOK || string(data) != "path-style payload" {
+		t.Fatalf("path-style GET with vhost configured: status %d body %q", getResp.StatusCode, data)
+	}
+}
+
+func TestVHost_ListBucketsStillWorksOnBareHost(t *testing.T) {
+	ts, signer := newVHostTestServer(t)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "somebucket"); err != nil {
+		t.Fatal(err)
+	}
+	// GET / against the bare server address (no vhost suffix on this
+	// Host) must still mean ListBuckets, not "bucket root of an empty
+	// bucket name".
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/", nil, nil)
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(data), "somebucket") {
+		t.Fatalf("expected ListBuckets on the bare host, got status %d body %q", resp.StatusCode, data)
+	}
+}
+
+func TestVHost_PresignedURLWithVHostAddressing(t *testing.T) {
+	ts, signer := newVHostTestServer(t)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "vhpresign"); err != nil {
+		t.Fatal(err)
+	}
+	putResp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/vhpresign/k", []byte("vhost presign payload"), nil)
+	putResp.Body.Close()
+
+	creds := Credentials{AccessKeyID: signer.accessKey, SecretAccessKey: signer.secretKey}
+	serverAddr := strings.TrimPrefix(ts.URL, "http://")
+	vhostEndpoint := "http://s3.test.local" // srv.vhostBase, per newVHostTestServer
+	if idx := strings.LastIndex(serverAddr, ":"); idx >= 0 {
+		vhostEndpoint += serverAddr[idx:]
+	}
+	getURL, err := GeneratePresignedURL(creds, signer.region, PresignRequest{
+		Method: "GET", Endpoint: vhostEndpoint, Bucket: "vhpresign", Key: "k", Expires: 5 * time.Minute, VHost: true,
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("GeneratePresignedURL (vhost): %v", err)
+	}
+	req := mustPresignedHTTPRequest(t, "GET", getURL, nil)
+	// The signed Host is "vhpresign.<serverAddr>", which isn't a
+	// resolvable DNS name in this test environment. Real virtual-hosted
+	// deployments rely on DNS (or /etc/hosts, or --resolve, as the earlier
+	// manual smoke test used) to point that name at the real server; here
+	// we get the same effect by dialing serverAddr directly while still
+	// sending the signed Host header unchanged -- exactly what SigV4
+	// verification actually depends on, not the DNS resolution around it.
+	req.Host = req.URL.Host
+	req.URL.Host = serverAddr
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(data) != "vhost presign payload" {
+		t.Fatalf("vhost-addressed presigned GET: status %d body %q", resp.StatusCode, data)
+	}
+}
