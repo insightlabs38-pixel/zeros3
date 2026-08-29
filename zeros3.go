@@ -74,9 +74,9 @@ const (
 	journalHeaderSize   = 4 + 2 + 1 + 1 + 8 + 4 // magic+ver+type+flags+seq+len
 	maxJournalPayload   = 8 * 1024 * 1024
 
-	// Journal record type numbers (frozen storage format v1). All four
-	// are implemented as of M2; the numbers themselves were fixed in M1
-	// and never changed.
+	// Journal record type numbers (frozen storage format v1). These
+	// numbers are part of the on-disk format: a new record kind gets a
+	// new number, and none of these four is ever repurposed.
 	recordTypeCreateBucket     = byte(1)
 	recordTypePutObjectRoot    = byte(2)
 	recordTypeDeleteObjectRoot = byte(3)
@@ -84,8 +84,9 @@ const (
 
 	maxRequestBodySize = 256 * 1024 * 1024
 
-	// Default M1 credentials/region. There is no credential-management
-	// story in M1; a single static keypair is enough to exercise SigV4.
+	// Default credentials/region. ZeroS3 has no credential-management
+	// story (no IAM/STS/KMS) -- a single static keypair is enough to
+	// exercise SigV4 for its self-hosted, local-development scope.
 	defaultAccessKeyID     = "AKIAZEROS3EXAMPLE01"
 	defaultSecretAccessKey = "zeros3exampleSecretKeyForM1TestingOnly01"
 	defaultRegion          = "us-east-1"
@@ -592,7 +593,7 @@ type journalPutPayload struct {
 // key's visible root from a bucket's namespace. It does not reference (and
 // therefore cannot invalidate) the manifest/chunks the deleted root used to
 // point at -- those remain on disk, immutable and readable by any other
-// root that still references them, until a later GC pass (not part of M2)
+// root that still references them, until a GC pass (not implemented)
 // proves them unreachable.
 type journalDeleteObjectPayload struct {
 	Bucket string `json:"bucket"`
@@ -1378,8 +1379,8 @@ func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, m
 // path-normalization traps -- repeated slashes, "%2F" standing for a
 // literal slash inside a key, "+" vs "%20" for space, trailing slashes --
 // are preserved exactly as the client sent them and exactly as S3 itself
-// signs them. Presigned URLs and aws-chunked/trailer payloads are out of
-// scope for M1.
+// signs them. Presigned URLs and aws-chunked/trailer payloads are not
+// implemented.
 // =============================================================================
 
 type authError struct {
@@ -2281,8 +2282,8 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 		return
 	}
 	// ZeroS3 implements only the V2 listing API; the legacy V1 GET-bucket
-	// listing shape (no list-type param) is out of scope for M2 and is
-	// rejected explicitly rather than silently misinterpreted as V2.
+	// listing shape (no list-type param) is rejected explicitly rather
+	// than silently misinterpreted as V2.
 	if listType != "2" {
 		writeS3Error(w, "InvalidArgument", "only list-type=2 (ListObjectsV2) is supported", "/"+bucket)
 		return
@@ -2336,7 +2337,7 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 }
 
 // =============================================================================
-// 11b. CopyObject
+// 11. CopyObject
 //
 // CopyObject is the payoff of the manifest+CAS design: copying an object
 // never re-chunks, re-reads, or re-uploads its payload, and never rewrites
@@ -2837,10 +2838,10 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 			}
 		}
 	}
-	// No version retention exists under current (M1-M3) semantics -- every
-	// PUT replaces its key's one visible root, and DELETE simply removes
-	// it -- so the only "retained committed version" for any key is its
-	// current one. version_count/logical_version_bytes are therefore
+	// No version retention exists -- every PUT replaces its key's one
+	// visible root, and DELETE simply removes it -- so the only
+	// "retained committed version" for any key is its current one.
+	// version_count/logical_version_bytes are therefore
 	// identical to current_object_count/logical_current_bytes; this
 	// becomes a genuinely separate figure only if a future milestone adds
 	// retained-version semantics.
@@ -3243,8 +3244,8 @@ type byteRange struct{ start, end int64 }
 
 // parseRangeSpec parses a single "bytes=..." Range header value against
 // an object of the given size. Multi-range requests (a comma-separated
-// spec) are intentionally unsupported in M3 and are treated exactly like
-// a header that doesn't parse: ok=false with satisfiable=false, which
+// spec) are intentionally unsupported and are treated exactly like a
+// header that doesn't parse: ok=false with satisfiable=false, which
 // tells the caller to ignore Range entirely and serve the full object --
 // RFC 7233 explicitly allows a server to do this for range forms it
 // doesn't support, rather than rejecting the request outright. A range

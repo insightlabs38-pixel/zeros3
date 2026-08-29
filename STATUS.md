@@ -133,7 +133,7 @@ it only reports, and returns a nonzero CLI exit status on any failure.
 describes the current, corrected behavior; see "M3 correction pass" for
 what changed and why.
 
-`Store.CopyObject` (zeros3.go section 11b) never re-chunks, re-reads,
+`Store.CopyObject` (zeros3.go section 11) never re-chunks, re-reads,
 re-uploads, or rewrites an existing CAS chunk file:
 
 - Both metadata directives — default `COPY` and `REPLACE` — publish a
