@@ -617,12 +617,34 @@ exactly (41/46/27/7/47/43/43), confirming no regression.
 
 **M6C harness:** a dedicated `zeros3-testing/harness/m6c/dirsync` harness
 (also a real `zeros3 sync` subprocess against a real AWS SDK for Go v2
-client) covers directory-sync-specific interoperability — a nested
-fixture, a modified-tree resync, non-destructive local deletion, a real
-process restart, and a partial-failure/conflict phase. See
-`zeros3-testing/results/M6C_DIRSYNC_RESULTS.md` for the full transcript
-and pass count, and "External interoperability" further below for the
-combined regression confirmation.
+client) covers directory-sync-specific interoperability against a
+deterministic, nested, Unicode-including 5-file fixture tree. **69
+passed, 0 failed, 2 informational** — see
+`zeros3-testing/results/M6C_DIRSYNC_RESULTS.md` for the complete
+transcript. It proves: an AWS-SDK-created bucket + `zeros3 sync ./tree
+s3://.../prefix/` (initial directory sync) + AWS SDK `ListObjectsV2`
+(exactly the 5 expected keys) + `GetObject` on each round-trips exact
+bytes; a second sync after a small localized edit to one file plus one
+brand-new file reports a real, CLI-output-parsed aggregate reuse of
+**96.2%** while an unrelated unchanged file is proven untouched; deleting
+a file locally and re-syncing leaves its remote object completely intact
+— proven via the AWS SDK, not just internally; a real process restart
+(kill + fresh `zeros3 serve` on the same store directory) followed by
+`zeros3 verify -deep` (`result OK`, 66 chunks checked) leaves every one
+of the 6 objects correct; and a partial-failure/conflict phase races a
+real AWS SDK `PutObject` against one file's destination while an
+unrelated file's own edit syncs in the same run — this run the AWS SDK
+write won the race, and the directory sync process correctly reported
+that one file `FAILED` with the exact safe-mode-conflict reason, printed
+`directory sync completed with errors`, and exited non-zero, while the
+unrelated file still committed correctly, proving partial-failure
+isolation through a real external subprocess. Every pre-existing harness
+(`m2`/`m3/copy`/`m3/range`/`m3/dedup`/`m5a/presign`/`m5b/multipart`/
+`m5d/pagination`/`m6/sync`) was re-run unmodified against the same M6C
+build and matched its previously recorded count exactly
+(41/46/27/7/47/43/43/33), confirming M6C introduced no regression
+anywhere, including to the M6A/M6B single-file sync harness it builds
+directly on top of.
 
 ### Dependency / source-file audit
 
