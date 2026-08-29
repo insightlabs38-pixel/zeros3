@@ -425,8 +425,8 @@ different absolute paths, on `go1.27.0 linux/amd64` — produce
 byte-identical output:
 
 ```
-SHA-256 (copy A): 9e637369284cfcbfd333b74305c3852fd151f4b266f16355d93baeba9043d31a
-SHA-256 (copy B): 9e637369284cfcbfd333b74305c3852fd151f4b266f16355d93baeba9043d31a
+SHA-256 (copy A): e952fa60166a2935adf629e6dd92084e34f84ba0165c6145699aaf3c9250f3b3
+SHA-256 (copy B): e952fa60166a2935adf629e6dd92084e34f84ba0165c6145699aaf3c9250f3b3
 ```
 
 Reproduce this with [`scripts/reproducible_build.sh`](./scripts/reproducible_build.sh)
