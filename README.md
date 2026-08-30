@@ -57,6 +57,11 @@ Secret Access Key: zeros3exampleSecretKeyForM1TestingOnly01
 Region:             us-east-1
 ```
 
+Override them with `-access-key`/`-secret-key`/`-region`, or with the
+standard `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`
+environment variables — see "Credentials and environment variables"
+below.
+
 Point any path-style S3 client at it, for example the AWS SDK for Go v2:
 
 ```go
@@ -793,6 +798,68 @@ than silently approximated. See `S3_COMPAT.md` for the exact subset and
 concurrent-writer races, restart/crash behavior, and GC of a failed
 write's speculative CAS payload).
 
+## Operational hardening (P1)
+
+**Credentials and environment variables.** `-access-key`/`-secret-key`/
+`-region` accept fallback from the standard `AWS_ACCESS_KEY_ID`/
+`AWS_SECRET_ACCESS_KEY`/`AWS_REGION` environment variables wherever a
+single set of credentials names one endpoint — `serve`, `presign`,
+`sync`, `repair`, `fork`, `inspect`, `verify -repair-from`, and every
+`snapshot` subcommand. Precedence is always **explicit CLI flag →
+environment variable (if set, even to an empty string) → existing
+built-in default**; an environment variable never silently overrides a
+flag actually supplied on the command line. Two-endpoint commands
+(`replicate`, `diff`) keep explicit `-from-access-key`/`-from-secret-key`/
+`-to-access-key`/`-to-secret-key` flags with no environment fallback for
+credentials — a single `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` pair
+cannot unambiguously name two different endpoints' credentials, and
+guessing risks sending one endpoint's secret to the other — only their
+one shared `-region` flag gets `AWS_REGION` fallback. Secrets are never
+printed: not in logs, errors, `-h` usage text (which shows only the
+fixed placeholder default, never a live environment value), or a
+presigned URL.
+
+**HTTP server hardening.** `zeros3 serve`'s `http.Server` sets a
+conservative `ReadHeaderTimeout` (10s, guards against a stalled client
+that never finishes sending headers), `IdleTimeout` (2m, bounds an
+indefinitely idle keep-alive connection), and `MaxHeaderBytes` (1MiB,
+Go's own default — enough for a SigV4 `Authorization` header plus a full
+set of user-metadata headers). There is deliberately no whole-request
+`ReadTimeout`/`WriteTimeout`: either would impose one deadline across an
+entire request/response body, which would regress large uploads/
+downloads, multipart, replication, and sync — all things ZeroS3
+legitimately supports taking longer than a fixed cutoff.
+
+**Graceful shutdown.** `SIGINT`/`SIGTERM` stop the listener immediately
+(no new connections accepted) and let in-flight requests finish, bounded
+by a 30s grace period; a normal shutdown (`http.ErrServerClosed`) is
+never logged as a fatal error, and exits 0. A second `SIGINT`/`SIGTERM`
+arriving while shutdown is already draining forces an immediate exit
+instead of waiting out the rest of the grace period. If the grace period
+itself expires with a request still active, the process exits
+immediately (nonzero) rather than closing the store out from under a
+handler that might still be writing to it — the interrupted work is
+governed by the same journal/CAS crash-recovery model an abrupt `kill -9`
+already relies on (see "Durability model" below), not a new one. None of
+this changes that model: graceful shutdown is only the clean path taken
+for a normal termination signal.
+
+**Basic TLS (optional).** `zeros3 serve -tls-cert CERT -tls-key KEY`
+serves HTTPS via Go's standard-library `http.Server.ListenAndServeTLS`
+— no ACME, no certificate generation/renewal, no mTLS, no custom
+`crypto/tls.Config`, and never `InsecureSkipVerify` in a production
+default. Neither flag: plain HTTP, unchanged. Exactly one of the two:
+a startup error. SigV4 canonicalization never includes the scheme, so
+HTTPS changes nothing about request signing; a presigned URL built from
+an `https://` endpoint carries the `https://` scheme.
+
+**Platform.** Linux is the supported and tested platform for this
+hackathon build. Other Unix-like systems may work but are not part of
+the validated target; Windows is not currently supported or tested.
+
+See `STATUS.md`'s "P1" section for the exact precedence rules, hardening
+values, shutdown design, and their tests.
+
 ## Durability model
 
 - Immutable CAS chunks and the immutable manifest are always fully
@@ -998,7 +1065,11 @@ Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
   are permanently out of scope.
 - Presigned URLs sign only `host`; `X-Amz-Security-Token` is rejected
   outright (no session/STS credential model exists to validate it).
-- No IAM/STS/KMS/ACL/policy engine; one static credential pair.
+- No IAM/STS/KMS/ACL/policy engine; a single credential pair, settable
+  via CLI flags or the standard `AWS_ACCESS_KEY_ID`/
+  `AWS_SECRET_ACCESS_KEY`/`AWS_REGION` environment variables (P1-A) — no
+  profiles, no shared AWS config files, no per-request/multi-tenant
+  credentials.
 - The entire request body is buffered in memory (bounded, 256MiB max)
   rather than fully streamed end-to-end, since SigV4 payload-hash and
   CRC32 validation both need the complete body before chunking begins.
