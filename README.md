@@ -80,11 +80,15 @@ both Authorization-header and query-string (presigned URL) SigV4:
 `CreateBucket`, `ListBuckets`, `HeadBucket`, `DeleteBucket` (empty
 buckets only), `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`,
 `ListObjectsV2` (`prefix`/`delimiter`/`max-keys`/continuation tokens),
-`CopyObject` (`COPY`/`REPLACE` metadata directives, same/cross-bucket),
-single-range `GET` (`bytes=start-end`, open-ended, suffix; 416 for an
-unsatisfiable range; a multi-range header falls back to a full 200, per
-RFC 7233). `Content-Type` and `x-amz-meta-*` metadata round-trip on every
-operation that carries them. Ordinary `x-amz-checksum-crc32` request
+`CopyObject` (`COPY`/`REPLACE` metadata directives, same/cross-bucket,
+`x-amz-copy-source-if-match`/`x-amz-copy-source-if-none-match` source
+preconditions), single-range `GET` (`bytes=start-end`, open-ended,
+suffix; 416 for an unsatisfiable range; a multi-range header falls back
+to a full 200, per RFC 7233). `PutObject`/`GetObject`/`HeadObject`
+support `If-Match`/`If-None-Match` conditional-write and read
+preconditions — see "Atomic conditional writes" below. `Content-Type`
+and `x-amz-meta-*` metadata round-trip on every operation that carries
+them. Ordinary `x-amz-checksum-crc32` request
 integrity is validated (the exact default behavior of a current AWS SDK
 Go v2 client), and `Content-MD5` is validated when a client sends it
 (rclone's ordinary single-part upload path does).
@@ -146,8 +150,10 @@ Not implemented (see `S3_COMPAT.md`/`STATUS.md` for the full deviation
 list): the AWS S3 Versioning API (`versionId=` query semantics,
 bucket-versioning configuration, delete markers, per-version DELETE —
 ZeroS3's own internal version history above is a different, non-AWS-API
-mechanism), object-lock/ACL/policy/IAM, conditional-copy headers,
-self-copy rejection, `X-Amz-Security-Token`, `STREAMING-AWS4-HMAC-SHA256-
+mechanism), object-lock/ACL/policy/IAM, conditional multipart completion,
+date-based conditional headers (`If-Modified-Since`/`If-Unmodified-Since`),
+comma-separated conditional-header validator lists, self-copy rejection,
+`X-Amz-Security-Token`, `STREAMING-AWS4-HMAC-SHA256-
 PAYLOAD[-TRAILER]` (conditional — not yet required by any real client
 exercised), `aws-chunked`'s unsigned/SigV4A streaming trailer modes
 (permanently out of scope), ListMultipartUploads does not yet support 
@@ -660,6 +666,54 @@ has become unreachable once nothing else references it.
 See `STATUS.md`'s "M8E" section for the full format/atomicity/
 concurrency semantics and their tests.
 
+## Atomic conditional writes (`If-Match` / `If-None-Match`)
+
+Ordinary S3 clients can use `If-None-Match: *` on `PutObject` for
+create-if-absent writes, and `If-Match: "<etag>"` for compare-and-swap
+updates:
+
+```text
+PUT /bucket/key
+If-None-Match: *
+→ succeeds only if the key currently has no visible object
+
+PUT /bucket/key
+If-Match: "<etag>"
+→ succeeds only if the current visible object still has exactly
+  that ETag
+```
+
+The condition is revalidated at ZeroS3's namespace commit boundary —
+the same locked critical section `commitObjectRootChecked` already
+provides for delta sync's own safe-mode conflict precondition — not by
+some earlier, race-prone check before the request body is even read.
+That means concurrent writers racing the same precondition always
+produce exactly one winner: N clients all sending
+`If-None-Match: *` against the same absent key, or N clients all
+sending `If-Match` with the same stale ETag, always end with exactly 1
+success and N-1 `412 Precondition Failed` responses, never two
+acknowledged successes and never a lost update. A failed conditional
+write never publishes anything — the existing object, its metadata,
+and its version history are all left exactly as they were.
+
+`GetObject`/`HeadObject` support the same `If-Match`/`If-None-Match`
+validators as read preconditions: a mismatching `If-Match` returns 412,
+and a matching `If-None-Match` returns `304 Not Modified`, both decided
+before any `Range` processing. `CopyObject` additionally supports
+`x-amz-copy-source-if-match`/`x-amz-copy-source-if-none-match` as
+source-side preconditions, evaluated against the exact source revision
+the copy already captures atomically.
+
+Supported syntax is deliberately narrow: a single quoted or unquoted
+ETag (compared case-insensitively, exactly like every other ETag
+comparison in this codebase), or the literal `*` for
+`If-None-Match` on `PutObject`. Comma-separated validator lists, weak
+(`W/`) validators, and `If-Match: "*"` are rejected outright rather
+than silently approximated. See `S3_COMPAT.md` for the exact subset and
+`STATUS.md`'s "M8F" section for the full atomicity proof (deterministic
+concurrent-writer races, restart/crash behavior, and GC of a failed
+write's speculative CAS payload).
+
 ## Durability model
 
 - Immutable CAS chunks and the immutable manifest are always fully
@@ -870,8 +924,10 @@ Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
 - No power-loss (real `kill -9`/hardware) testing beyond deterministic
   in-process crash injection and direct on-disk truncation — see
   "Durability model" above for exactly what is and isn't claimed.
-- `CopyObject` does not implement conditional-copy headers or reject a
-  same-key `COPY`-directive copy the way real S3 does in some cases.
+- `CopyObject` supports only ETag-based source preconditions
+  (`x-amz-copy-source-if-match`/`-if-none-match`, M8F-C), not
+  date-based ones, and does not reject a same-key `COPY`-directive copy
+  the way real S3 does in some cases.
 
 ## Project layout
 

@@ -24,12 +24,12 @@ parity.
 | `CreateBucket` | `PUT /bucket` | idempotent (see "Compatibility deviations" below) |
 | `HeadBucket` | `HEAD /bucket` | 200 empty body if visible, 404 empty body if missing |
 | `DeleteBucket` | `DELETE /bucket` | empty buckets only; `NoSuchBucket`/`BucketNotEmpty` |
-| `PutObject` | `PUT /bucket/key` | arbitrary binary body, 0-byte objects, `Content-Type`, `x-amz-meta-*`, overwrite-same-key |
-| `GetObject` | `GET /bucket/key` | exact byte reconstruction, ETag, Content-Type, metadata |
-| `HeadObject` | `HEAD /bucket/key` | same headers as GetObject, no body |
+| `PutObject` | `PUT /bucket/key` | arbitrary binary body, 0-byte objects, `Content-Type`, `x-amz-meta-*`, overwrite-same-key; `If-None-Match: *`/`If-Match: "<etag>"` conditional writes (M8F-A) |
+| `GetObject` | `GET /bucket/key` | exact byte reconstruction, ETag, Content-Type, metadata; `If-Match`/`If-None-Match` read preconditions (M8F-B) |
+| `HeadObject` | `HEAD /bucket/key` | same headers as GetObject, no body; `If-Match`/`If-None-Match` read preconditions (M8F-B) |
 | `DeleteObject` | `DELETE /bucket/key` | idempotent non-versioned delete, 204 |
 | `ListObjectsV2` | `GET /bucket?list-type=2...` | `prefix`, `delimiter`/`CommonPrefixes`, `max-keys` (default/clamped to 1000), `continuation-token`, UTF-8 byte-lexical key order, XML escaping |
-| `CopyObject` | `PUT /bucket/key` + `x-amz-copy-source` | `COPY`/`REPLACE` metadata directives, same/cross-bucket, zero new CAS payload bytes; works identically for a completed multipart object |
+| `CopyObject` | `PUT /bucket/key` + `x-amz-copy-source` | `COPY`/`REPLACE` metadata directives, same/cross-bucket, zero new CAS payload bytes; works identically for a completed multipart object; `x-amz-copy-source-if-match`/`-if-none-match` source preconditions (M8F-C) |
 | single-range `GetObject` | `GET` + `Range: bytes=...` | `start-end`, `start-`, `-suffix`; 416 with `Content-Range: bytes */<size>` for an unsatisfiable range; works across a completed multipart object's part boundaries |
 | `CreateMultipartUpload` | `POST /bucket/key?uploads` | persistent upload session, journal-backed |
 | `UploadPart` | `PUT /bucket/key?partNumber=N&uploadId=ID` | CDC-chunked into the ordinary CAS; replacing a part number overwrites it |
@@ -71,6 +71,31 @@ lifecycle diagnostic built directly on the `verify` engine, reporting live
 root counts by category alongside the existing integrity/reclaimable
 accounting. Ordinary S3 clients never see any of this: `ListObjectsV2`
 only ever lists current objects, exactly as before this pass.
+
+**M8F — atomic conditional operations.** `PutObject` accepts
+`If-None-Match: *` (create only if the key currently has no visible
+object) and `If-Match: "<etag>"` (replace only if the current visible
+object still has exactly that ETag), enforced inside
+`commitObjectRootChecked`'s locked commit boundary -- the same
+precondition primitive M6B's safe-mode sync conflict check already
+uses -- so concurrent writers racing the same precondition always
+resolve to exactly one winner, never two acknowledged successes and
+never a lost update. A failed conditional write publishes nothing;
+its already-CDC-chunked speculative CAS payload is ordinary,
+GC-collectible garbage, identical in kind to any other failed commit
+in this codebase. `GetObject`/`HeadObject` accept the same validators
+as read preconditions (`If-Match` mismatch -> 412; `If-None-Match`
+match -> 304, decided before any `Range` processing).
+`CopyObject` accepts `x-amz-copy-source-if-match`/
+`x-amz-copy-source-if-none-match` as source-side preconditions,
+evaluated against the exact source revision `CopyObject` already
+captures atomically (one `lookupObject` call; nothing is re-fetched
+afterward). Supported validator syntax is deliberately narrow: a
+single quoted or unquoted ETag (compared case-insensitively) or the
+literal `*` for `PutObject`'s `If-None-Match`; comma-separated lists,
+weak (`W/`) validators, and `If-Match: "*"` are rejected as
+`InvalidArgument` rather than silently approximated. See `STATUS.md`'s
+"M8F" section for the full atomicity proof.
 
 ## ZeroS3 extensions (not S3 APIs)
 
@@ -321,9 +346,10 @@ documented AWS S3 behavior, rather than simply "not implemented":
   (200) instead of AWS's region/ownership-dependent
   `BucketAlreadyExists`/`BucketAlreadyOwnedByYou` errors. This keeps the M1
   surface small; it was not specified as a MUST behavior either way.
-- **`CopyObject` has no conditional-copy headers.** `x-amz-copy-source-if-*`
-  (match/none-match/modified-since/unmodified-since) are not read or
-  enforced.
+- **`CopyObject` supports only ETag-based source preconditions.**
+  `x-amz-copy-source-if-match`/`x-amz-copy-source-if-none-match` are read
+  and enforced (M8F-C, see "Atomic conditional operations" below);
+  `x-amz-copy-source-if-modified-since`/`-if-unmodified-since` are not.
 - **`CopyObject` does not reject same-key `COPY`-directive self-copies.**
   Real S3 rejects certain same-key copies where the metadata directive is
   `COPY` (no metadata change); ZeroS3 always publishes a new manifest/
