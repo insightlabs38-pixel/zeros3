@@ -388,6 +388,19 @@ time transfer the second time) without any bespoke retry/session
 machinery. See `STATUS.md`'s "M8A" section for the full protocol,
 consistency, conflict, and resume semantics, each with its own tests.
 
+**Bounded parallel delta transfer** (M8H-B) — ZeroS3 pipelines
+independent missing-chunk transfers (`replicate`, `repair`, and `sync`
+alike) while preserving single-object commit semantics: the worker pool
+removes serialized per-chunk round-trip overhead without changing CAS,
+manifests, or journal publication. `-workers N` (default 8, 1..32)
+controls the concurrency; `-workers 1` reproduces the exact old
+sequential behavior. Measured on one benchmark environment (loopback,
+4 vCPU) with a 10ms simulated per-request delay standing in for a real
+network's RTT — 256 MiB missing, 1 worker: 4.36 MiB/s; 16 workers:
+35.70 MiB/s (8.18x). This is one environment's measurement, not a
+universal throughput claim; worker count is configurable, and
+publication remains serialized and safe regardless of it.
+
 ## Peer-assisted repair (`zeros3 repair`)
 
 `zeros3 repair -store DIR -from PEER_ENDPOINT` is a **ZeroS3-specific
@@ -929,10 +942,11 @@ Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
   support (pagination itself is implemented and tested); every multipart
   part but the last must be ≥5MiB, matching AWS's rule, with no
   configurable override.
-- `zeros3 sync` (delta sync, M6) uploads missing chunks sequentially, one
-  batch at a time — no concurrent transfer; directory sync (M6C) is
-  non-destructive with no `--delete`/mirror mode, so a locally-removed
-  file's previously-synced remote object is left untouched.
+- `zeros3 sync` (delta sync, M6) uploads missing chunks with bounded
+  concurrency (`-workers`, default 8, max 32 — M8H-B); directory sync
+  (M6C) is non-destructive with no `--delete`/mirror mode, so a
+  locally-removed file's previously-synced remote object is left
+  untouched.
 - `zeros3 replicate` (M8A) replicates exactly one object per invocation
   — no prefix/bucket recursion, no continuous/scheduled replication. Both
   endpoints must be ZeroS3 servers that pass capability discovery; there
@@ -946,9 +960,9 @@ Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
   scheduled repair, no automatic peer discovery or cluster membership.
   Only one peer is supported per invocation (no multi-peer fallback
   list); a peer that itself lacks a needed chunk is reported as an
-  honest partial failure, not retried against another source. Repair
-  fetches are sequential, one digest at a time, matching `sync`/
-  `replicate`'s own sequential-transfer limitation. It repairs only
+  honest partial failure, not retried against another source (a
+  concurrent batch's other in-flight fetches are unaffected by one
+  peer failure — M8H-B). It repairs only
   reachable content already in `verify -deep`'s own scope (current
   objects, retained historical versions, active multipart parts) —
   unreachable/orphaned corruption is never fetched over the network; use
@@ -958,8 +972,9 @@ Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
   key only — no historical-version replication, no in-progress multipart
   upload session migration, no point-in-time bucket snapshot (each object
   is individually replicated from its own stable captured revision).
-  Objects are processed sequentially, one at a time, matching
-  `sync`/`replicate`/`repair`'s own sequential-transfer limitation. There
+  Objects still commit one at a time, in listing order (only each
+  object's own chunk transport is concurrent — M8H-B; there is no
+  namespace-level concurrent object publication). There
   is no `--delete`/mirror mode — a destination-only object is always left
   untouched. Both endpoints must be ZeroS3 servers, same as single-object
   `replicate` — no generic-AWS-S3 source or destination.
