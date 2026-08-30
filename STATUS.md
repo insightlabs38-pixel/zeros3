@@ -1,10 +1,109 @@
 # ZeroS3 — Status
 
 Milestone-by-milestone status, newest first. M1-M7, M8A, M8B, M8C, M8D,
-M8E, and M8F are all complete, tested, and release-hardened (frozen
+M8E, M8F, and M8G are all complete, tested, and release-hardened (frozen
 unless a demonstrated regression or correctness bug requires a minimal
-fix); M8G (read-only replication planning, structural diff, and CAS
-inspection) is the current pass -- see its section immediately below.
+fix); M8H-A (benchmark-only investigation of sequential chunk transport)
+is the current pass -- see its section immediately below. M8H-A made no
+implementation changes; it exists solely to answer whether M8H
+(bounded parallel chunk transfer) should be built at all.
+
+## M8H-A — Sequential chunk-transfer benchmark and parallelism decision
+(measurement only -- no implementation changes)
+
+**Goal:** answer, with real measurements rather than assumption, whether
+serial chunk HTTP transport (one `fetchSourceChunk`/`putSyncChunk` or
+peer-fetch pair at a time, used identically by M8A replication, M8C
+namespace replication, M6 local sync, and M8B repair) is a large enough
+bottleneck that bounded parallel chunk transfer would be worth building.
+Per the milestone's own mandate, this pass made **zero** changes to
+`zeros3.go` -- no goroutines, no worker-pool flags, no transport
+refactor -- and none were needed to reach a decision.
+
+**Phase 0 baseline:** exact accepted M8G HEAD `432245dc5acb4a68a2ecdd732be7a3addc85ca30`,
+confirmed identical to `origin/main`. `go1.27.0 linux/amd64`. `zeros3.go`:
+12007 lines, `zeros3_test.go`: 23331 lines. `gofmt -l .` clean, `go vet
+./...` clean, `go test ./...`: **651 tests**, ok (93.1s), `go test -race
+./...`: ok (197.2s). Reproducible build SHA-256 (two independent source
+copies, byte-identical):
+`e7c53f313fc76425d272606e621b2b84eb966551c96ecce696f954bd2864bff6`.
+Checkpoint tag `m8g-gold` created at this SHA (kept local only -- this
+environment's push credentials returned HTTP 403 on a tag push; the SHA
+above is the authoritative pointer).
+
+**Method:** a new, ephemeral external harness
+(`zeros3-testing/harness/m8h/bench`) drove real two-server `zeros3`
+subprocesses through `replicate` (single-object and `-recursive`),
+`repair`, `sync`, and `-dry-run` planning, at 64 MiB-256 MiB scale (a
+single ordinary `PutObject` above 256 MiB is rejected by ZeroS3's own
+already-documented `maxRequestBodySize` cap, so the milestone's optional
+1 GiB case-A scenario was not exercised at the single-`PutObject` layer),
+measuring: empty-destination and partial-reuse (25/75/95%) single-object
+replication, two namespace-replication shapes (32x16 MiB, 128x4 MiB),
+local delta sync before/after a localized edit, peer repair at
+1/16/64/256 corrupted chunks, planning-vs-transport timing via M8G's own
+exposed dry-run planner, a controlled 0/1/5/10 ms artificial per-request
+latency injected by a benchmark-only reverse proxy, and CPU-utilization
+sampling across a representative transfer. Full results, tables, and
+methodology: `zeros3-testing/results/M8H_SEQUENTIAL_TRANSFER_BENCHMARKS.md`.
+
+**Result: every criterion for a strong case was independently measured,
+not assumed.** Planning is 0.38-0.40% of total wall time (dry-run vs. the
+real transfer, 256 MiB, 3 runs) -- transport, not discovery, is what
+dominates. CPU sampling across all three processes of a 256 MiB transfer
+showed only ~31% of this machine's 4 cores in use for the whole 16 s
+duration -- substantial idle capacity, ruling out "a single core is
+already pegged doing hashing." A controlled-latency experiment (a tiny
+stdlib reverse proxy, never touching `zeros3.go`) showed wall time
+scaling linearly with `chunks x added-per-request-delay` with zero
+overlap: a 10 ms artificial delay produced a measured 3.3x throughput
+collapse. The same ~14-17 MiB/s ceiling appeared identically across
+single-object replication, namespace replication, and peer repair,
+consistent with one shared unparallelized transport primitive limiting
+every content-moving code path; and throughput measurably *degrades* as
+the reused fraction grows (25% reuse: 15.5 MiB/s; 95% reuse: 4.6 MiB/s)
+because a fixed per-chunk/per-negotiation cost is amortized over
+progressively less real payload -- exactly the regime ZeroS3's own CDC/
+CAS success pushes every future workload toward.
+
+**Decision: M8H IMPLEMENTATION -- STRONG GO.** The results document
+above gives the proposed next-run design (bounded worker pool shared
+between M8A/M8C transfer and M8B repair's identical fetch-verify-publish
+loop, candidate worker counts 1/2/4/8/16, first-error/cancellation/
+memory-bound/retry semantics, and an implementation pitfall to avoid --
+Go's default `http.Transport` caps idle connections per host at 2,
+which would silently bottleneck a naive concurrent implementation
+regardless of configured worker count). **No implementation was written
+in this pass**, per the milestone's mandate: M8H-A is measurement and
+decision only.
+
+### Methodology note (harness-side, not a ZeroS3 finding)
+
+Two bugs were found and fixed in the new M8H-A harness itself during
+this pass, neither of which touched `zeros3.go`:
+
+1. An early draft's synthetic-content generator (a plain power-of-2-
+   modulus linear congruential generator, matching `harness/m8_baseline`'s
+   existing one) produced large accidental cross-seed chunk collisions
+   at multi-hundred-MiB scale -- two LCG orbits sharing the same
+   multiplicative coset become byte-identical, phase-shifted, from their
+   intersection point onward, which fabricated tens of megabytes of
+   false "already-present" chunks in a scenario meant to have a
+   genuinely empty destination. Caught by an unexpectedly large
+   `Transfer avoided` on a nominally-empty destination, confirmed with a
+   standalone collision check, and fixed by switching the harness to a
+   SHA-256-counter-mode generator before any number in the results
+   document was recorded.
+2. The real (non-dry-run) `replicate -recursive` CLI path prints no
+   aggregate stats to stdout (only `-dry-run` does); an early namespace-
+   replication scenario draft assumed otherwise and silently parsed
+   zeroes. Fixed by measuring physical CAS growth via `zeros3 stats
+   -json` before/after each run instead, the same technique M8's own
+   baseline harness already uses.
+
+Recorded here for transparency; per the milestone's own instructions,
+this is a harness defect, not a ZeroS3 correctness bug, so it did not
+halt the run or require a ZeroS3-side fix.
 
 ## M8G — Read-only replication planning, object diff, and CAS inspect
 (`replicate -dry-run`, `zeros3 diff`, `zeros3 inspect`)
