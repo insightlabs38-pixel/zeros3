@@ -15,6 +15,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/md5"
 	"crypto/sha256"
@@ -7308,13 +7309,256 @@ type syncClientConfig struct {
 	Metadata    map[string]string
 	HTTPClient  *http.Client
 	Out         io.Writer
+
+	// Workers bounds how many of this operation's independent missing-
+	// chunk transfers (M8H-B) may run concurrently. Zero means "use
+	// defaultTransferWorkers" -- every caller that predates M8H-B (and
+	// every M8A-M8G test that builds a syncClientConfig/replicateConfig/
+	// repairConfig literal without mentioning Workers) leaves this at its
+	// Go zero value and gets that default rather than an error, so
+	// nothing existing has to change to keep compiling or behaving the
+	// same. An explicit value is validated by validateWorkers (see
+	// resolveTransferWorkers) wherever it is actually used.
+	Workers int
 }
 
 func (cfg syncClientConfig) client() *http.Client {
 	if cfg.HTTPClient != nil {
 		return cfg.HTTPClient
 	}
-	return http.DefaultClient
+	return transferHTTPClient
+}
+
+// =============================================================================
+// 15a-bis. Bounded parallel chunk transfer (M8H-B)
+//
+// M8H-A measured, directly, that every content-moving client code path in
+// this binary (replicate, repair, local sync) shares one bottleneck: a
+// strictly sequential "fetch one chunk -> verify -> publish one chunk"
+// loop, one authenticated HTTP round trip at a time, with no overlap --
+// while the machine it ran on had ~69% of its CPU sitting idle the whole
+// time. This section is the one small, shared primitive M8H-B adds to fix
+// that: bounded worker-pool execution of the exact same per-chunk
+// operation each caller already performs, so independent missing chunks
+// move concurrently instead of one at a time. It deliberately does not
+// become a job system, a queue, or a scheduler (see the package doc
+// comment's M8H-B non-goals) -- runTransferWorkers below is the entire
+// mechanism, and every caller supplies its own fetch/verify/publish
+// closure exactly as it always has.
+//
+// What stays unparallelized, on purpose: object/root-level publication.
+// executeReplicationPlan below still calls commitSyncObject exactly once,
+// only after every worker has succeeded; replicateNamespace/fork/restore
+// still commit one object at a time in listing order (M8H-B's "transport
+// may become concurrent, object publication must not").
+
+// maxTransferWorkers is the hard safety ceiling on a caller-supplied
+// worker count (B1.2): high enough that no worker-count candidate M8H-A
+// itself proposed benchmarking (1/2/4/8/16) is ever anywhere near it, low
+// enough that a hostile or mistaken "-workers 1000000" can never spawn
+// anywhere near that many goroutines or HTTP connections. There is
+// nothing magic about 32 beyond "a small, fixed multiple of the highest
+// benchmarked candidate" -- see transferHTTPTransport below for how the
+// HTTP connection pool is sized directly off this same constant, so the
+// two can never silently drift apart.
+const maxTransferWorkers = 32
+
+// defaultTransferWorkers is used whenever a caller leaves Workers at its
+// Go zero value (every M8A-M8G call site, and any M8H-B caller that
+// doesn't care) instead of naming a count explicitly. This is the
+// pre-benchmark placeholder B1.3 calls for ("preserve a conservative
+// default ... until worker counts are benchmarked"); B4 below measures
+// 1/2/4/8/16 and either confirms or replaces this value, once, as part of
+// that benchmark's own KEEP/REVERT decision -- never adjusted casually
+// afterward.
+const defaultTransferWorkers = 4
+
+// validateWorkers rejects an explicit, out-of-range worker count (B1.2):
+// less than 1 (0 or negative) can never mean anything sensible, and more
+// than maxTransferWorkers is refused outright rather than silently
+// clamped, so "-workers 1000000" fails loudly instead of quietly running
+// at some other number the caller didn't ask for.
+func validateWorkers(n int) error {
+	if n < 1 {
+		return fmt.Errorf("workers must be >= 1, got %d", n)
+	}
+	if n > maxTransferWorkers {
+		return fmt.Errorf("workers must be <= %d, got %d", maxTransferWorkers, n)
+	}
+	return nil
+}
+
+// resolveTransferWorkers turns a syncClientConfig/replicateConfig/
+// repairConfig's Workers field into an actual, validated worker count:
+// zero (every pre-M8H-B caller, and any M8H-B caller that just wants the
+// default) becomes defaultTransferWorkers; anything else is validated by
+// validateWorkers and returned as-is, or rejected. This is the one place
+// "Workers == 0 means default" is decided, so executeReplicationPlan,
+// repairFromPeer, and uploadMissingSyncChunks all interpret the field
+// identically.
+func resolveTransferWorkers(n int) (int, error) {
+	if n == 0 {
+		return defaultTransferWorkers, nil
+	}
+	if err := validateWorkers(n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// transferHTTPTransport is the one long-lived *http.Transport backing
+// every syncClientConfig that doesn't bring its own HTTPClient (tests
+// pointing at an httptest.Server supply their own; every real CLI
+// endpoint -- replicate/repair/sync alike -- shares this one). M8H-A
+// flagged this exact pitfall by name: Go's http.DefaultTransport caps
+// MaxIdleConnsPerHost at 2, so a worker pool naively built on top of it
+// would silently bottleneck at ~2 concurrent connections per peer no
+// matter how many workers were requested. The pool sizes here are a
+// fixed small multiple of maxTransferWorkers -- generous enough that the
+// maximum supported worker count is never connection-starved against a
+// single peer, still a bounded, predictable ceiling rather than
+// unbounded growth -- and this Transport/Client pair is constructed
+// exactly once at package init, never per chunk or per operation, so
+// idle connections are actually kept warm and reused the way
+// keep-alive is supposed to work.
+var transferHTTPTransport = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	MaxIdleConns:          4 * maxTransferWorkers,
+	MaxIdleConnsPerHost:   2 * maxTransferWorkers,
+	MaxConnsPerHost:       2 * maxTransferWorkers,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+}
+
+var transferHTTPClient = &http.Client{Transport: transferHTTPTransport}
+
+// transferWork is one independent chunk-transfer job for
+// runTransferWorkers: SHA256/Length identify the chunk purely for
+// deterministic result reporting (B1.5/B1.8/B1.12) -- runTransferWorkers
+// itself never inspects a chunk's bytes, it only ever calls Do, which is
+// each caller's own operation-specific "fetch from source/peer -> verify
+// -> publish to destination" closure (exactly today's
+// fetchSourceChunk+putSyncChunk pair, or fetchRepairChunk+
+// casRepairPublish, unwrapped into one function value per digest).
+type transferWork struct {
+	SHA256 string
+	Length int64
+	Do     func(ctx context.Context) error
+}
+
+// transferOutcome is one transferWork's result, always placed at the same
+// slice index as its corresponding input item regardless of which
+// goroutine finished it or when (see runTransferWorkers).
+type transferOutcome struct {
+	SHA256 string
+	Length int64
+	Err    error
+}
+
+// runTransferWorkers runs up to `workers` of items' Do closures at once
+// (a simple bounded counting semaphore -- one goroutine per in-flight
+// item, never more than `workers` concurrently, no persistent pool and no
+// background goroutine outlives this call) and returns one transferOutcome
+// per item, at the same index as items, independent of completion order
+// (B1.5's deterministic scheduling and B1.12's order-independent stats
+// both fall out of this directly: a caller that only sums/filters the
+// returned slice, or only inspects it by index, can never observe
+// goroutine-scheduling nondeterminism).
+//
+// cancelOnError selects which of B1.8's two required behaviors this call
+// gets:
+//   - true (replicate/sync's all-or-nothing-before-commit gate): the
+//     first item whose Do returns an error cancels a derived context, so
+//     any item not yet started skips its Do call entirely (still recorded,
+//     with the cancellation error) and any item already running observes
+//     cancellation the next time its own HTTP request checks its context
+//     -- no new work continues once the operation is already doomed, and
+//     nothing here has any reason to commit.
+//   - false (repair's honest partial-success contract, B2.3): every item
+//     is still attempted regardless of another item's outcome; only the
+//     caller-supplied ctx itself (e.g. an operator interrupt) stops new
+//     work early.
+//
+// Every already-started goroutine is always waited on before this
+// function returns, in both modes -- no leaked goroutines, ever (B1.8/
+// B1.11), and the derived context is always canceled on return so nothing
+// it was passed to can outlive this call.
+func runTransferWorkers(ctx context.Context, workers int, items []transferWork, cancelOnError bool) []transferOutcome {
+	results := make([]transferOutcome, len(items))
+	if len(items) == 0 {
+		return results
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// A context already canceled before this call even starts (e.g. the
+	// caller's own ctx) must skip every item deterministically -- without
+	// this fast path, the dispatch loop's select below could still race a
+	// ready sem<-struct{}{} against an already-closed runCtx.Done() and
+	// start some items anyway, which is fine for a cancellation that
+	// arrives *during* dispatch (already-running workers may legitimately
+	// keep going, per B1.8) but not for one that was already in effect
+	// before any work was ever offered.
+	if err := runCtx.Err(); err != nil {
+		for i, item := range items {
+			results[i] = transferOutcome{SHA256: item.SHA256, Length: item.Length, Err: err}
+		}
+		return results
+	}
+
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i, item := range items {
+		select {
+		case <-runCtx.Done():
+			results[i] = transferOutcome{SHA256: item.SHA256, Length: item.Length, Err: runCtx.Err()}
+			continue
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(i int, item transferWork) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			err := item.Do(runCtx)
+			results[i] = transferOutcome{SHA256: item.SHA256, Length: item.Length, Err: err}
+			if err != nil && cancelOnError {
+				cancel()
+			}
+		}(i, item)
+	}
+	wg.Wait()
+	return results
+}
+
+// firstTransferError picks runTransferWorkers' single reported error,
+// deterministically, regardless of which goroutine actually lost the
+// race to fail first (B1.8's "sort deterministically ... not whichever
+// goroutine happened to lose the race"). It scans results in their
+// (input, not completion) order and prefers the first *genuine* failure
+// -- skipping placeholders/propagated cancellations (context.Canceled)
+// caused by some other item's real error -- so the error a caller
+// reports always names the lowest-index chunk that actually failed, not
+// an arbitrary downstream cancellation of a chunk that was never really
+// broken. If nothing genuine is found (every failure is a cancellation --
+// e.g. the caller's own ctx was canceled from outside), it falls back to
+// the first error of any kind, so external cancellation is still
+// reported rather than silently swallowed.
+func firstTransferError(results []transferOutcome) error {
+	var fallback error
+	for _, r := range results {
+		if r.Err == nil {
+			continue
+		}
+		if fallback == nil {
+			fallback = r.Err
+		}
+		if !errors.Is(r.Err, context.Canceled) {
+			return r.Err
+		}
+	}
+	return fallback
 }
 
 // signSigV4Request signs r (Method/URL/Header already set; the request
@@ -7367,9 +7611,16 @@ func signSigV4Request(r *http.Request, creds Credentials, region string, payload
 // signAndDo signs and sends one request against cfg.Endpoint, returning
 // the response with its body already fully read (and the original
 // resp.Body closed) -- every caller below only needs status/headers/body,
-// never streaming, so this keeps every call site a two-line affair.
-func (cfg syncClientConfig) signAndDo(method, path string, body []byte, headers map[string]string) (*http.Response, []byte, error) {
-	req, err := http.NewRequest(method, strings.TrimRight(cfg.Endpoint, "/")+path, bytes.NewReader(body))
+// never streaming, so this keeps every call site a two-line affair. ctx
+// governs the request (M8H-B1.9): every caller that isn't itself part of
+// a bounded worker pool passes context.Background() (unchanged blocking
+// behavior, identical to before ctx existed here); the worker-pool
+// callers (fetchSourceChunk/putSyncChunk/fetchRepairChunk, invoked from
+// inside a transferWork.Do closure) pass the pool's own per-call context,
+// so cancellation actually reaches the in-flight GET/PUT rather than
+// stopping only at the goroutine boundary.
+func (cfg syncClientConfig) signAndDo(ctx context.Context, method, path string, body []byte, headers map[string]string) (*http.Response, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(cfg.Endpoint, "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -7400,7 +7651,7 @@ func (cfg syncClientConfig) signAndDo(method, path string, body []byte, headers 
 // fall back to an ordinary PutObject (B5), which is exactly what syncFile
 // does.
 func discoverZeroS3Sync(cfg syncClientConfig) (syncDiscoveryResponse, error) {
-	resp, body, err := cfg.signAndDo(http.MethodGet, zeros3SyncInfoPath, nil, nil)
+	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3SyncInfoPath, nil, nil)
 	if err != nil {
 		return syncDiscoveryResponse{}, fmt.Errorf("discovery request failed: %w", err)
 	}
@@ -7440,7 +7691,7 @@ func syncObjectPath(bucket, key string) string {
 // "absent"; any other non-200 is reported as an error rather than
 // silently treated as absent.
 func headSyncDestination(cfg syncClientConfig) (exists bool, etag string, err error) {
-	resp, _, err := cfg.signAndDo(http.MethodHead, syncObjectPath(cfg.Bucket, cfg.Key), nil, nil)
+	resp, _, err := cfg.signAndDo(context.Background(), http.MethodHead, syncObjectPath(cfg.Bucket, cfg.Key), nil, nil)
 	if err != nil {
 		return false, "", fmt.Errorf("HEAD destination failed: %w", err)
 	}
@@ -7567,7 +7818,7 @@ func negotiateSyncMissing(cfg syncClientConfig, discovery syncDiscoveryResponse,
 		if err != nil {
 			return nil, err
 		}
-		resp, body, err := cfg.signAndDo(http.MethodPost, zeros3SyncNegotiatePath, reqBody, map[string]string{"Content-Type": "application/json"})
+		resp, body, err := cfg.signAndDo(context.Background(), http.MethodPost, zeros3SyncNegotiatePath, reqBody, map[string]string{"Content-Type": "application/json"})
 		if err != nil {
 			return nil, fmt.Errorf("negotiate request failed: %w", err)
 		}
@@ -7592,8 +7843,8 @@ func negotiateSyncMissing(cfg syncClientConfig, discovery syncDiscoveryResponse,
 // replicateObject (section 15d, bytes relayed from a source ZeroS3
 // server) -- there is exactly one client-side chunk-upload code path,
 // used by both.
-func putSyncChunk(cfg syncClientConfig, hexDigest string, data []byte) error {
-	resp, body, err := cfg.signAndDo(http.MethodPut, zeros3SyncChunksPrefix+hexDigest, data, nil)
+func putSyncChunk(ctx context.Context, cfg syncClientConfig, hexDigest string, data []byte) error {
+	resp, body, err := cfg.signAndDo(ctx, http.MethodPut, zeros3SyncChunksPrefix+hexDigest, data, nil)
 	if err != nil {
 		return fmt.Errorf("chunk upload failed: %w", err)
 	}
@@ -7609,23 +7860,62 @@ func putSyncChunk(cfg syncClientConfig, hexDigest string, data []byte) error {
 // (rather than trusting the scan pass's now-possibly-stale bytes) doubles
 // as an early, cheap mutation-detection signal -- see syncFile's own
 // stat-based check for the authoritative one.
+// M6 parallel transfer: IMPLEMENTED (M8H-B's "if cleanly reusable"
+// decision) -- this loop is structurally identical to
+// executeReplicationPlan's ("read/verify -> publish" per missing unique
+// chunk, all-or-nothing before commit), just reading from a local file
+// range instead of a remote source peer, so it reuses the exact same
+// runTransferWorkers/transferWork primitive rather than a second,
+// sync-specific worker pool. readSyncFileRange opens its own *os.File
+// per call (see its own doc comment), so concurrent workers reading
+// disjoint ranges of the same local file need no extra synchronization.
+//
+// Re-reading each chunk's bytes just before sending it (rather than
+// trusting the scan pass's now-possibly-stale bytes) doubles as an
+// early, cheap mutation-detection signal -- see syncFile's own stat-based
+// check for the authoritative one. Each worker performs its own
+// independent read/hash/verify, so this detection is, if anything,
+// slightly tighter under concurrency (closer in time to each chunk's own
+// upload) than it was sequentially.
 func uploadMissingSyncChunks(cfg syncClientConfig, plan syncPlan, missing map[string]bool) (uploadedBytes int64, err error) {
+	workers, err := resolveTransferWorkers(cfg.Workers)
+	if err != nil {
+		return 0, err
+	}
+
+	items := make([]transferWork, 0, len(plan.unique))
 	for _, d := range plan.unique {
 		if !missing[d.SHA256] {
 			continue
 		}
-		data, rerr := readSyncFileRange(cfg.LocalPath, plan.offsetBySHA[d.SHA256], d.Length)
-		if rerr != nil {
-			return uploadedBytes, fmt.Errorf("%w: re-reading chunk for upload: %v", errSyncLocalMutation, rerr)
-		}
-		sum := sha256.Sum256(data)
-		if hex.EncodeToString(sum[:]) != d.SHA256 {
-			return uploadedBytes, fmt.Errorf("%w: chunk at offset %d no longer matches its scanned digest", errSyncLocalMutation, plan.offsetBySHA[d.SHA256])
-		}
-		if err := putSyncChunk(cfg, d.SHA256, data); err != nil {
-			return uploadedBytes, err
-		}
-		uploadedBytes += d.Length
+		items = append(items, transferWork{
+			SHA256: d.SHA256,
+			Length: d.Length,
+			Do: func(ctx context.Context) error {
+				data, rerr := readSyncFileRange(cfg.LocalPath, plan.offsetBySHA[d.SHA256], d.Length)
+				if rerr != nil {
+					return fmt.Errorf("%w: re-reading chunk for upload: %v", errSyncLocalMutation, rerr)
+				}
+				sum := sha256.Sum256(data)
+				if hex.EncodeToString(sum[:]) != d.SHA256 {
+					return fmt.Errorf("%w: chunk at offset %d no longer matches its scanned digest", errSyncLocalMutation, plan.offsetBySHA[d.SHA256])
+				}
+				return putSyncChunk(ctx, cfg, d.SHA256, data)
+			},
+		})
+	}
+
+	results := runTransferWorkers(context.Background(), workers, items, true)
+	if err := firstTransferError(results); err != nil {
+		return 0, err
+	}
+
+	// Every worker succeeded: sum Length over the exact same items just
+	// transferred -- a pure function of plan/missing, independent of
+	// completion order (B1.12), exactly like executeReplicationPlan's own
+	// relayedBytes.
+	for _, item := range items {
+		uploadedBytes += item.Length
 	}
 	return uploadedBytes, nil
 }
@@ -7658,7 +7948,7 @@ func commitSyncObject(cfg syncClientConfig, plan syncPlan, pre syncPrecondition)
 	if err != nil {
 		return syncCommitResponse{}, err
 	}
-	resp, body, err := cfg.signAndDo(http.MethodPost, zeros3SyncCommitPath, reqBody, map[string]string{"Content-Type": "application/json"})
+	resp, body, err := cfg.signAndDo(context.Background(), http.MethodPost, zeros3SyncCommitPath, reqBody, map[string]string{"Content-Type": "application/json"})
 	if err != nil {
 		return syncCommitResponse{}, fmt.Errorf("commit request failed: %w", err)
 	}
@@ -8116,11 +8406,16 @@ func runSync(args []string) {
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key")
 	region := fs.String("region", defaultRegion, "SigV4 region")
 	contentType := fs.String("content-type", "", "Content-Type for the destination object (default: application/octet-stream); ignored for a directory source")
+	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per file (M8H-B1, bounded 1..32)")
 	fs.Parse(args)
 
 	rest := fs.Args()
 	if len(rest) != 2 {
 		fmt.Fprintln(os.Stderr, "zeros3: sync requires LOCAL_PATH and s3://bucket/key (or s3://bucket/prefix/ for a directory)")
+		os.Exit(2)
+	}
+	if err := validateWorkers(*workers); err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: sync: -workers: %v\n", err)
 		os.Exit(2)
 	}
 	creds := Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey}
@@ -8138,7 +8433,7 @@ func runSync(args []string) {
 			os.Exit(2)
 		}
 		result, derr := syncDirectory(rest[0], bucket, prefix, syncClientConfig{
-			Endpoint: *endpoint, Creds: creds, Region: *region, ContentType: *contentType,
+			Endpoint: *endpoint, Creds: creds, Region: *region, ContentType: *contentType, Workers: *workers,
 		})
 		if derr != nil {
 			fmt.Fprintf(os.Stderr, "zeros3: sync failed: %v\n", derr)
@@ -8163,6 +8458,7 @@ func runSync(args []string) {
 		Region:      *region,
 		ContentType: *contentType,
 		Out:         os.Stdout,
+		Workers:     *workers,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: sync failed: %v\n", err)
@@ -8254,7 +8550,7 @@ func runSync(args []string) {
 // re-solving it.
 func fetchSourceDescriptor(cfg syncClientConfig) (syncObjectDescriptor, error) {
 	q := url.Values{"bucket": {cfg.Bucket}, "key": {cfg.Key}}
-	resp, body, err := cfg.signAndDo(http.MethodGet, zeros3SyncObjectPath+"?"+q.Encode(), nil, nil)
+	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3SyncObjectPath+"?"+q.Encode(), nil, nil)
 	if err != nil {
 		return syncObjectDescriptor{}, fmt.Errorf("source object descriptor request failed: %w", err)
 	}
@@ -8283,8 +8579,8 @@ var errReplicateChunkMismatch = errors.New("replicate: source returned chunk con
 // for one chunk by digest, with the client's own SHA-256 re-verification
 // of exactly what M8A4 requires -- this function never returns bytes it
 // hasn't itself confirmed hash to hexDigest.
-func fetchSourceChunk(cfg syncClientConfig, hexDigest string) ([]byte, error) {
-	resp, body, err := cfg.signAndDo(http.MethodGet, zeros3SyncChunksPrefix+hexDigest, nil, nil)
+func fetchSourceChunk(ctx context.Context, cfg syncClientConfig, hexDigest string) ([]byte, error) {
+	resp, body, err := cfg.signAndDo(ctx, http.MethodGet, zeros3SyncChunksPrefix+hexDigest, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("source chunk fetch failed: %w", err)
 	}
@@ -8337,6 +8633,11 @@ type replicateConfig struct {
 	// commitSyncObject/syncPrecondition/412-conflict machinery in both
 	// modes -- only which precondition gets sent differs.
 	DestMustBeAbsent bool
+
+	// Workers bounds executeReplicationPlan's concurrent missing-chunk
+	// transfers (M8H-B1). Zero (every M8A-M8G caller, unchanged) means
+	// "use defaultTransferWorkers" -- see resolveTransferWorkers.
+	Workers int
 }
 
 // destinationAction classifies what an actual (non-dry-run) replication
@@ -8516,25 +8817,64 @@ func planReplication(cfg replicateConfig) (replicationPlan, error) {
 // and uploaded again. This falls directly out of CAS content-addressing
 // and idempotent chunk upload -- no special-cased resume logic exists or
 // is needed.
+// executeReplicationPlan's chunk-transfer loop is M8H-B1's bounded
+// worker pool: each missing unique chunk becomes one transferWork whose
+// Do closure is exactly the fetch-verify-upload sequence this function
+// ran strictly sequentially before M8H-B (fetchSourceChunk ->
+// length check -> putSyncChunk, unchanged, just now able to run
+// concurrently with up to p.cfg.Workers others). cancelOnError=true: the
+// first genuine chunk failure cancels every not-yet-started/in-flight
+// chunk (B1.8) -- executeReplicationPlan still commits nothing unless
+// every single required chunk actually succeeded (B1.7/B1.8's "if ANY
+// required chunk failed: do NOT commit object"), so partial parallel
+// transfer can never leave a destination object visible with missing
+// content. Chunks already durably uploaded before a later failure are
+// left exactly where they landed (B1.7's "successful chunk uploads may
+// remain in destination CAS ... do not roll them back") -- a rerun's own
+// negotiation sees them as no longer missing, same as before M8H-B.
 func executeReplicationPlan(p replicationPlan) (syncStats, error) {
 	cfg := p.cfg
-	var relayedBytes int64
+	workers, err := resolveTransferWorkers(cfg.Workers)
+	if err != nil {
+		return syncStats{}, fmt.Errorf("replicate: %w", err)
+	}
+
+	items := make([]transferWork, 0, len(p.plan.unique))
 	for _, d := range p.plan.unique {
 		if !p.missing[d.SHA256] {
 			continue
 		}
-		data, err := fetchSourceChunk(cfg.Source, d.SHA256)
-		if err != nil {
-			return syncStats{}, fmt.Errorf("replicate: fetching chunk %s from source: %w", d.SHA256, err)
-		}
-		if int64(len(data)) != d.Length {
-			return syncStats{}, fmt.Errorf("replicate: source chunk %s: declared length %d does not match fetched length %d", d.SHA256, d.Length, len(data))
-		}
-		if err := putSyncChunk(cfg.Dest, d.SHA256, data); err != nil {
-			return syncStats{}, fmt.Errorf("replicate: uploading chunk %s to destination: %w", d.SHA256, err)
-		}
-		relayedBytes += d.Length
+		items = append(items, transferWork{
+			SHA256: d.SHA256,
+			Length: d.Length,
+			Do: func(ctx context.Context) error {
+				data, err := fetchSourceChunk(ctx, cfg.Source, d.SHA256)
+				if err != nil {
+					return fmt.Errorf("replicate: fetching chunk %s from source: %w", d.SHA256, err)
+				}
+				if int64(len(data)) != d.Length {
+					return fmt.Errorf("replicate: source chunk %s: declared length %d does not match fetched length %d", d.SHA256, d.Length, len(data))
+				}
+				if err := putSyncChunk(ctx, cfg.Dest, d.SHA256, data); err != nil {
+					return fmt.Errorf("replicate: uploading chunk %s to destination: %w", d.SHA256, err)
+				}
+				return nil
+			},
+		})
 	}
+
+	results := runTransferWorkers(context.Background(), workers, items, true)
+	if err := firstTransferError(results); err != nil {
+		return syncStats{}, err
+	}
+
+	// Every worker succeeded: relayedBytes is exactly the sum of Length
+	// over the chunks just transferred, which planReplication already
+	// computed once (as wouldTransferBytes, from the identical
+	// plan.unique/missing inputs) -- reusing it here instead of re-summing
+	// per-worker results keeps the total independent of completion order
+	// by construction, not merely by careful synchronization (B1.12).
+	relayedBytes := p.wouldTransferBytes
 
 	destCommitCfg := cfg.Dest
 	destCommitCfg.ContentType = p.desc.ContentType
@@ -8602,11 +8942,16 @@ func runReplicate(args []string) {
 	toAccessKey := fs.String("to-access-key", defaultAccessKeyID, "destination access key ID")
 	toSecretKey := fs.String("to-secret-key", defaultSecretAccessKey, "destination secret access key")
 	region := fs.String("region", defaultRegion, "SigV4 region (both endpoints)")
+	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per object (M8H-B1/B3, bounded 1..32); accepted but irrelevant with -dry-run, which never transfers chunk payload")
 	fs.Parse(args)
 
 	rest := fs.Args()
 	if len(rest) != 2 {
 		fmt.Fprintln(os.Stderr, "zeros3: replicate requires SOURCE and DESTINATION s3:// URIs (s3://bucket/key, or s3://bucket[/prefix][/] with -recursive)")
+		os.Exit(2)
+	}
+	if err := validateWorkers(*workers); err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: replicate: -workers: %v\n", err)
 		os.Exit(2)
 	}
 
@@ -8634,6 +8979,7 @@ func runReplicate(args []string) {
 			},
 			DestPrefix: dstPrefix,
 			Out:        os.Stdout,
+			Workers:    *workers,
 		}
 		if *dryRun {
 			result, err := planReplicationNamespace(cfg)
@@ -8678,7 +9024,8 @@ func runReplicate(args []string) {
 			Endpoint: *to, Bucket: dstBucket, Key: dstKey,
 			Creds: Credentials{AccessKeyID: *toAccessKey, SecretAccessKey: *toSecretKey}, Region: *region,
 		},
-		Out: os.Stdout,
+		Out:     os.Stdout,
+		Workers: *workers,
 	}
 	if *dryRun {
 		p, err := planReplication(cfg)
@@ -9087,8 +9434,8 @@ const maxRepairChunkBytes = cdcMaxChunkSize
 // independently re-verified against the received bytes regardless of
 // HTTP status or peer authentication -- the peer is never trusted merely
 // because it authenticated (A4).
-func fetchRepairChunk(cfg syncClientConfig, hexDigest string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(cfg.Endpoint, "/")+zeros3SyncChunksPrefix+hexDigest, nil)
+func fetchRepairChunk(ctx context.Context, cfg syncClientConfig, hexDigest string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(cfg.Endpoint, "/")+zeros3SyncChunksPrefix+hexDigest, nil)
 	if err != nil {
 		return nil, fmt.Errorf("repair: building peer chunk request: %w", err)
 	}
@@ -9126,6 +9473,11 @@ func fetchRepairChunk(cfg syncClientConfig, hexDigest string) ([]byte, error) {
 type repairConfig struct {
 	Peer syncClientConfig
 	Out  io.Writer
+
+	// Workers bounds repairFromPeer's concurrent peer-chunk transfers
+	// (M8H-B2). Zero (every M8B caller, unchanged) means "use
+	// defaultTransferWorkers" -- see resolveTransferWorkers.
+	Workers int
 }
 
 // repairFailure records one digest repair could not resolve (B1: partial
@@ -9179,31 +9531,64 @@ func (s *Store) repairFromPeer(cfg repairConfig) (repairStats, error) {
 		if _, derr := discoverZeroS3Sync(cfg.Peer); derr != nil {
 			return stats, fmt.Errorf("repair: peer capability discovery failed (not a compatible/reachable ZeroS3 peer?): %w", derr)
 		}
-		for _, f := range findings {
-			data, ferr := fetchRepairChunk(cfg.Peer, f.SHA256)
-			if ferr != nil {
-				stats.Failures = append(stats.Failures, repairFailure{SHA256: f.SHA256, Reason: ferr.Error()})
-				continue
+
+		workers, werr := resolveTransferWorkers(cfg.Workers)
+		if werr != nil {
+			return stats, fmt.Errorf("repair: %w", werr)
+		}
+
+		// M8H-B2: one transferWork per bad digest, run with bounded
+		// concurrency -- but cancelOnError=false (unlike replicate),
+		// because repair's contract (M8B/B2.3) is honest partial success:
+		// one peer failure must never stop the other, independent repairs
+		// already in flight or still queued. Each Do closure reproduces
+		// fetchRepairChunk -> length check -> decodeHexSHA256 ->
+		// casRepairPublish -> casRead exactly as the old sequential loop
+		// did, including each step's exact error text (repairFailure.Reason
+		// below is built straight from result.Err.Error(), so this refactor
+		// changes nothing about what a caller sees per failed digest).
+		items := make([]transferWork, len(findings))
+		for i, f := range findings {
+			f := f
+			items[i] = transferWork{
+				SHA256: f.SHA256,
+				Length: f.Length,
+				Do: func(ctx context.Context) error {
+					data, ferr := fetchRepairChunk(ctx, cfg.Peer, f.SHA256)
+					if ferr != nil {
+						return ferr
+					}
+					if int64(len(data)) != f.Length {
+						return fmt.Errorf("peer chunk length %d does not match the expected length %d", len(data), f.Length)
+					}
+					sum, herr := decodeHexSHA256(f.SHA256)
+					if herr != nil {
+						return herr
+					}
+					if perr := s.casRepairPublish(sum, data); perr != nil {
+						return perr
+					}
+					if _, rerr := s.casRead(sum); rerr != nil {
+						return fmt.Errorf("post-publication re-read/re-hash failed: %w", rerr)
+					}
+					return nil
+				},
 			}
-			if int64(len(data)) != f.Length {
-				stats.Failures = append(stats.Failures, repairFailure{SHA256: f.SHA256, Reason: fmt.Sprintf("peer chunk length %d does not match the expected length %d", len(data), f.Length)})
-				continue
-			}
-			sum, herr := decodeHexSHA256(f.SHA256)
-			if herr != nil {
-				stats.Failures = append(stats.Failures, repairFailure{SHA256: f.SHA256, Reason: herr.Error()})
-				continue
-			}
-			if perr := s.casRepairPublish(sum, data); perr != nil {
-				stats.Failures = append(stats.Failures, repairFailure{SHA256: f.SHA256, Reason: perr.Error()})
-				continue
-			}
-			if _, rerr := s.casRead(sum); rerr != nil {
-				stats.Failures = append(stats.Failures, repairFailure{SHA256: f.SHA256, Reason: "post-publication re-read/re-hash failed: " + rerr.Error()})
+		}
+
+		// Repair never derives its own cancellation from a chunk failure
+		// (cancelOnError=false above), so context.Background() here matches
+		// replicate's own choice: there is no caller-supplied ctx to plumb
+		// through repairConfig/runRepair yet, and every already-dispatched
+		// item still runs to completion regardless of another's outcome.
+		results := runTransferWorkers(context.Background(), workers, items, false)
+		for _, r := range results {
+			if r.Err != nil {
+				stats.Failures = append(stats.Failures, repairFailure{SHA256: r.SHA256, Reason: r.Err.Error()})
 				continue
 			}
 			stats.Repaired++
-			stats.PayloadFetched += int64(len(data))
+			stats.PayloadFetched += r.Length
 		}
 	}
 	stats.Unresolved = len(findings) - stats.Repaired
@@ -9262,10 +9647,15 @@ func runRepair(args []string) {
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "peer secret access key")
 	region := fs.String("region", defaultRegion, "SigV4 region")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent chunk transfers from the peer (M8H-B2, bounded 1..32)")
 	fs.Parse(args)
 
 	if *from == "" {
 		fmt.Fprintln(os.Stderr, "zeros3: repair requires -from PEER_ENDPOINT")
+		os.Exit(2)
+	}
+	if err := validateWorkers(*workers); err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: repair: -workers: %v\n", err)
 		os.Exit(2)
 	}
 
@@ -9288,6 +9678,7 @@ func runRepair(args []string) {
 			Creds:    Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey},
 			Region:   *region,
 		},
+		Workers: *workers,
 	}
 	if !*asJSON {
 		cfg.Out = os.Stdout
@@ -9450,7 +9841,7 @@ func listSourceObjects(cfg syncClientConfig, prefix string) ([]xmlContent, error
 			q.Set("continuation-token", token)
 		}
 		listPath := (&url.URL{Path: "/" + cfg.Bucket}).EscapedPath()
-		resp, body, err := cfg.signAndDo(http.MethodGet, listPath+"?"+q.Encode(), nil, nil)
+		resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, listPath+"?"+q.Encode(), nil, nil)
 		if err != nil {
 			return nil, fmt.Errorf("namespace replicate: listing source failed: %w", err)
 		}
@@ -9522,6 +9913,14 @@ type namespaceReplicateConfig struct {
 	// field of the same name (see its doc comment) -- M8C's own
 	// `replicate -recursive` leaves this false; M8D fork sets it true.
 	DestMustBeAbsent bool
+
+	// Workers is forwarded, per object, to replicateConfig's own field of
+	// the same name (M8H-B1/B3): each object's own chunks transfer with up
+	// to Workers concurrent workers, but objects themselves still commit
+	// strictly one at a time, in listing order -- see replicateNamespace's
+	// own doc comment for why namespace-level object concurrency is
+	// explicitly out of scope for M8H.
+	Workers int
 }
 
 // replicateNamespace is M8C's complete orchestration: enumerate the
@@ -9554,7 +9953,7 @@ func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error)
 			continue
 		}
 
-		objCfg := replicateConfig{Source: cfg.Source, Dest: cfg.Dest, DestMustBeAbsent: cfg.DestMustBeAbsent}
+		objCfg := replicateConfig{Source: cfg.Source, Dest: cfg.Dest, DestMustBeAbsent: cfg.DestMustBeAbsent, Workers: cfg.Workers}
 		objCfg.Source.Key = obj.Key
 		objCfg.Dest.Key = dstKey
 
@@ -10390,7 +10789,7 @@ func createSnapshotRemote(cfg syncClientConfig, bucket, prefix string) (snapshot
 	if err != nil {
 		return snapshotSummary{}, err
 	}
-	resp, respBody, err := cfg.signAndDo(http.MethodPost, zeros3SnapshotCreatePath, body, map[string]string{"Content-Type": "application/json"})
+	resp, respBody, err := cfg.signAndDo(context.Background(), http.MethodPost, zeros3SnapshotCreatePath, body, map[string]string{"Content-Type": "application/json"})
 	if err != nil {
 		return snapshotSummary{}, fmt.Errorf("snapshot create request failed: %w", err)
 	}
@@ -10405,7 +10804,7 @@ func createSnapshotRemote(cfg syncClientConfig, bucket, prefix string) (snapshot
 }
 
 func listSnapshotsRemote(cfg syncClientConfig) ([]snapshotSummary, error) {
-	resp, body, err := cfg.signAndDo(http.MethodGet, zeros3SnapshotListPath, nil, nil)
+	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3SnapshotListPath, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot list request failed: %w", err)
 	}
@@ -10424,7 +10823,7 @@ func showSnapshotRemote(cfg syncClientConfig, id string, withEntries bool) (snap
 	if withEntries {
 		q.Set("entries", "1")
 	}
-	resp, body, err := cfg.signAndDo(http.MethodGet, zeros3SnapshotShowPath+"?"+q.Encode(), nil, nil)
+	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3SnapshotShowPath+"?"+q.Encode(), nil, nil)
 	if err != nil {
 		return snapshotShowResponse{}, fmt.Errorf("snapshot show request failed: %w", err)
 	}
@@ -10440,7 +10839,7 @@ func showSnapshotRemote(cfg syncClientConfig, id string, withEntries bool) (snap
 
 func deleteSnapshotRemote(cfg syncClientConfig, id string) error {
 	q := url.Values{"id": {id}}
-	resp, body, err := cfg.signAndDo(http.MethodDelete, zeros3SnapshotDeletePath+"?"+q.Encode(), nil, nil)
+	resp, body, err := cfg.signAndDo(context.Background(), http.MethodDelete, zeros3SnapshotDeletePath+"?"+q.Encode(), nil, nil)
 	if err != nil {
 		return fmt.Errorf("snapshot delete request failed: %w", err)
 	}
@@ -10719,7 +11118,7 @@ func runSnapshotDelete(args []string) {
 // fetchSourceDescriptor already returns for a live object.
 func fetchSnapshotObjectDescriptor(cfg syncClientConfig, snapshotID, key string) (syncObjectDescriptor, error) {
 	q := url.Values{"id": {snapshotID}, "key": {key}}
-	resp, body, err := cfg.signAndDo(http.MethodGet, zeros3SnapshotObjectPath+"?"+q.Encode(), nil, nil)
+	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3SnapshotObjectPath+"?"+q.Encode(), nil, nil)
 	if err != nil {
 		return syncObjectDescriptor{}, fmt.Errorf("snapshot object descriptor request failed: %w", err)
 	}
@@ -10800,14 +11199,17 @@ func restoreObject(cfg restoreObjectConfig) (syncStats, error) {
 		if !missing[d.SHA256] {
 			continue
 		}
-		data, err := fetchSourceChunk(cfg.Snapshot, d.SHA256)
+		// restoreObject is deliberately left sequential (M8H-B3.3: "do not
+		// parallelize snapshot restoration in M8H") -- context.Background()
+		// here, not a worker-pool context, since there is no worker pool.
+		data, err := fetchSourceChunk(context.Background(), cfg.Snapshot, d.SHA256)
 		if err != nil {
 			return syncStats{}, fmt.Errorf("restore: fetching chunk %s from snapshot store: %w", d.SHA256, err)
 		}
 		if int64(len(data)) != d.Length {
 			return syncStats{}, fmt.Errorf("restore: snapshot chunk %s: declared length %d does not match fetched length %d", d.SHA256, d.Length, len(data))
 		}
-		if err := putSyncChunk(cfg.Dest, d.SHA256, data); err != nil {
+		if err := putSyncChunk(context.Background(), cfg.Dest, d.SHA256, data); err != nil {
 			return syncStats{}, fmt.Errorf("restore: uploading chunk %s to destination: %w", d.SHA256, err)
 		}
 		relayedBytes += d.Length
@@ -11374,7 +11776,7 @@ func inspectObject(cfg syncClientConfig, wantChunks bool) (inspectResult, error)
 // whole store) by handleReachabilityQuery's own construction.
 func fetchReachability(cfg syncClientConfig) (reachabilityQueryResponse, error) {
 	q := url.Values{"bucket": {cfg.Bucket}, "key": {cfg.Key}}
-	resp, body, err := cfg.signAndDo(http.MethodGet, zeros3ReachabilityPath+"?"+q.Encode(), nil, nil)
+	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3ReachabilityPath+"?"+q.Encode(), nil, nil)
 	if err != nil {
 		return reachabilityQueryResponse{}, fmt.Errorf("reachability query failed: %w", err)
 	}
