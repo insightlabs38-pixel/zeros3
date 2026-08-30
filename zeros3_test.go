@@ -16801,3 +16801,1095 @@ func TestCLI_Replicate_NonRecursiveSingleObjectUnaffectedByM8C(t *testing.T) {
 		t.Fatalf("content mismatch: %q", gotBody)
 	}
 }
+
+// =============================================================================
+// M8D: copy-on-write namespace fork (`zeros3 fork SOURCE DEST -endpoint EP`)
+//
+// Fork is pure composition over M8A/M8C's own primitives (section 15g's
+// doc comment has the full architecture rationale): same-store
+// replicateNamespace. Most of the coverage below therefore exercises
+// replicateNamespace directly with source and destination pointed at one
+// shared store/server -- exactly what runFork's CLI wrapper does -- plus
+// a smaller set of real-subprocess CLI tests for overlap rejection,
+// resume-across-a-real-process-kill, and restart.
+// =============================================================================
+
+// newForkTestServer opens one store, creates every named bucket in it,
+// and wraps it in a single httptest server -- the same-store shape every
+// fork test needs (M8D is same-store only). cfgFor returns a
+// syncClientConfig for one bucket, sharing the endpoint/client/creds every
+// other bucket's config uses, so a caller can build Source/Dest configs
+// that literally share one physical CAS.
+func newForkTestServer(t *testing.T, buckets ...string) (srv *Server, storeDir string, cfgFor func(bucket string) syncClientConfig, closeFn func()) {
+	t.Helper()
+	dir, s, creds, region := newSyncTestServer(t)
+	for _, b := range buckets {
+		if err := s.store.CreateBucket(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ts := httptest.NewServer(s)
+	cfgFor = func(bucket string) syncClientConfig {
+		return syncClientConfig{Endpoint: ts.URL, Bucket: bucket, Creds: creds, Region: region, HTTPClient: ts.Client()}
+	}
+	return s, dir, cfgFor, ts.Close
+}
+
+// -----------------------------------------------------------------------
+// M8D overlap safety (forkNamespacesOverlap) -- source/destination
+// namespace mapping edge cases
+// -----------------------------------------------------------------------
+
+func TestForkNamespacesOverlap_WholeBucketSourceAlwaysOverlaps(t *testing.T) {
+	if !forkNamespacesOverlap("", "anything") {
+		t.Fatal("whole-bucket source must overlap any destination prefix in the same bucket")
+	}
+}
+
+func TestForkNamespacesOverlap_WholeBucketDestAlwaysOverlaps(t *testing.T) {
+	if !forkNamespacesOverlap("anything", "") {
+		t.Fatal("whole-bucket destination must overlap any source prefix in the same bucket")
+	}
+}
+
+func TestForkNamespacesOverlap_BothWholeBucketOverlaps(t *testing.T) {
+	if !forkNamespacesOverlap("", "") {
+		t.Fatal("whole bucket vs whole bucket must overlap")
+	}
+}
+
+func TestForkNamespacesOverlap_EqualPrefixesOverlap(t *testing.T) {
+	if !forkNamespacesOverlap("a/b", "a/b") {
+		t.Fatal("identical prefixes must overlap")
+	}
+}
+
+func TestForkNamespacesOverlap_DestNestedInsideSource(t *testing.T) {
+	// src: bucket/a/  dst: bucket/a/fork/  -- the spec's own worked hazard example.
+	if !forkNamespacesOverlap("a", "a/fork") {
+		t.Fatal("destination nested inside source must overlap")
+	}
+}
+
+func TestForkNamespacesOverlap_SourceNestedInsideDest(t *testing.T) {
+	if !forkNamespacesOverlap("a/fork", "a") {
+		t.Fatal("source nested inside destination must overlap")
+	}
+}
+
+func TestForkNamespacesOverlap_SiblingPrefixesDoNotOverlap(t *testing.T) {
+	if forkNamespacesOverlap("prod", "backup") {
+		t.Fatal("disjoint sibling prefixes must not overlap")
+	}
+}
+
+func TestForkNamespacesOverlap_SharedStringPrefixDifferentBoundaryDoesNotOverlap(t *testing.T) {
+	// "images" is a string-prefix of "images-backup" but not a *path*
+	// prefix of it -- must not be a false-positive overlap.
+	if forkNamespacesOverlap("images", "images-backup") {
+		t.Fatal("images vs images-backup must not overlap (no path boundary)")
+	}
+	if forkNamespacesOverlap("images-backup", "images") {
+		t.Fatal("images-backup vs images must not overlap (no path boundary)")
+	}
+}
+
+func TestForkNamespacesOverlap_DeeplyNestedSiblingsDoNotOverlap(t *testing.T) {
+	if forkNamespacesOverlap("a/b/c", "a/b/d") {
+		t.Fatal("a/b/c vs a/b/d must not overlap")
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8D-B/M8D-C: enumeration + mapping reuse, whole bucket / prefix / same
+// bucket different prefix / different bucket
+// -----------------------------------------------------------------------
+
+func TestFork_WholeBucketToWholeBucket_DifferentBuckets(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "prod", "experiment")
+	defer closeFn()
+	putObj(t, srv, "prod", "a.bin", []byte("alpha"))
+	putObj(t, srv, "prod", "sub/b.bin", []byte("beta"))
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("prod"), Dest: cfgFor("experiment"), DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if result.Discovered != 2 || result.Replicated != 2 || !result.OK() {
+		t.Fatalf("result = %+v", result)
+	}
+	for _, key := range []string{"a.bin", "sub/b.bin"} {
+		if _, _, err := srv.store.GetObject("experiment", key); err != nil {
+			t.Fatalf("GetObject(%q): %v", key, err)
+		}
+	}
+}
+
+func TestFork_PrefixToPrefix_SameBucketNonOverlapping(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "b")
+	defer closeFn()
+	putObj(t, srv, "b", "prod/a.bin", []byte("alpha"))
+	putObj(t, srv, "b", "prod/sub/c.bin", []byte("gamma"))
+	putObj(t, srv, "b", "other/not-selected.bin", []byte("x"))
+
+	result, err := replicateNamespace(namespaceReplicateConfig{
+		Source: cfgFor("b"), SourcePrefix: "prod",
+		Dest: cfgFor("b"), DestPrefix: "backup",
+		DestMustBeAbsent: true,
+	})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if result.Discovered != 2 || result.Replicated != 2 || !result.OK() {
+		t.Fatalf("result = %+v", result)
+	}
+	for _, key := range []string{"backup/a.bin", "backup/sub/c.bin"} {
+		if _, _, err := srv.store.GetObject("b", key); err != nil {
+			t.Fatalf("GetObject(%q): %v", key, err)
+		}
+	}
+	if _, _, err := srv.store.GetObject("b", "backup/not-selected.bin"); err == nil {
+		t.Fatal("unselected object leaked into destination")
+	}
+}
+
+func TestFork_EmptySourceNamespace(t *testing.T) {
+	_, _, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: cfgFor("dst"), DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if result.Discovered != 0 || result.Replicated != 0 || result.Failed != 0 || !result.OK() {
+		t.Fatalf("result = %+v, want all-zero for an empty source namespace", result)
+	}
+}
+
+func TestFork_WeirdKeysUnicodePercentHashQuestionSpacesRepeatedSlashesPreserved(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	weird := []string{
+		"space key.txt",
+		"unicode/café/日本語.txt",
+		"percent/100%25.txt",
+		"hash/a#b.txt",
+		"question/a?b.txt",
+		"slashes/a//b.txt",
+	}
+	for _, k := range weird {
+		putObj(t, srv, "src", k, []byte(k))
+	}
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: cfgFor("dst"), DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if result.Discovered != len(weird) || result.Replicated != len(weird) || !result.OK() {
+		t.Fatalf("result = %+v", result)
+	}
+	for _, k := range weird {
+		_, body, err := srv.store.GetObject("dst", k)
+		if err != nil {
+			t.Fatalf("GetObject(%q): %v", k, err)
+		}
+		if string(body) != k {
+			t.Fatalf("GetObject(%q) body = %q, want %q", k, body, k)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8D-D: zero-payload invariant -- the heart of the feature. Proven two
+// independent ways per object set: computeStats' ChunkStoreFileBytes (a
+// derived-from-filesystem scan, section 12) AND countChunkFiles' own raw
+// filepath.WalkDir over the store's chunks/ directory.
+// -----------------------------------------------------------------------
+
+func TestFork_OneObject_ZeroPayload(t *testing.T) {
+	srv, dir, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", genRandomBytes(1, 50_000))
+
+	beforeFiles := countChunkFiles(t, dir)
+	beforeStats, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: cfgFor("dst"), DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if !result.OK() || result.Stats.UploadedBytes != 0 || result.Stats.UniqueChunksUploaded != 0 {
+		t.Fatalf("expected zero-payload fork, got result = %+v", result)
+	}
+
+	afterFiles := countChunkFiles(t, dir)
+	afterStats, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterFiles != beforeFiles {
+		t.Fatalf("countChunkFiles: before=%d after=%d, want unchanged", beforeFiles, afterFiles)
+	}
+	if afterStats.ChunkStoreFileBytes != beforeStats.ChunkStoreFileBytes {
+		t.Fatalf("ChunkStoreFileBytes: before=%d after=%d, want unchanged", beforeStats.ChunkStoreFileBytes, afterStats.ChunkStoreFileBytes)
+	}
+}
+
+func TestFork_SeveralObjectsSharingChunks_ZeroPayload(t *testing.T) {
+	srv, dir, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	shared := genRandomBytes(2, 500_000)
+	putObj(t, srv, "src", "one.bin", shared)
+	putObj(t, srv, "src", "two.bin", shared) // identical content -> same chunks
+	putObj(t, srv, "src", "three.bin", genRandomBytes(3, 90_000))
+
+	beforeFiles := countChunkFiles(t, dir)
+	beforeStats, _ := srv.store.computeStats(statsScope{})
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: cfgFor("dst"), DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if !result.OK() || result.Stats.UploadedBytes != 0 {
+		t.Fatalf("expected zero-payload fork, got result = %+v", result)
+	}
+
+	afterFiles := countChunkFiles(t, dir)
+	afterStats, _ := srv.store.computeStats(statsScope{})
+	if afterFiles != beforeFiles {
+		t.Fatalf("countChunkFiles: before=%d after=%d", beforeFiles, afterFiles)
+	}
+	if afterStats.ChunkStoreFileBytes != beforeStats.ChunkStoreFileBytes {
+		t.Fatalf("ChunkStoreFileBytes: before=%d after=%d", beforeStats.ChunkStoreFileBytes, afterStats.ChunkStoreFileBytes)
+	}
+}
+
+func TestFork_UnrelatedObjects_ZeroPayload(t *testing.T) {
+	srv, dir, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	for i := 0; i < 8; i++ {
+		putObj(t, srv, "src", fmt.Sprintf("obj%d.bin", i), genRandomBytes(int64(1000+i), 20_000+i*1000))
+	}
+	beforeFiles := countChunkFiles(t, dir)
+	beforeStats, _ := srv.store.computeStats(statsScope{})
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: cfgFor("dst"), DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if !result.OK() || result.Discovered != 8 {
+		t.Fatalf("result = %+v", result)
+	}
+	afterFiles := countChunkFiles(t, dir)
+	afterStats, _ := srv.store.computeStats(statsScope{})
+	if afterFiles != beforeFiles || afterStats.ChunkStoreFileBytes != beforeStats.ChunkStoreFileBytes {
+		t.Fatalf("payload moved: files before=%d after=%d bytes before=%d after=%d",
+			beforeFiles, afterFiles, beforeStats.ChunkStoreFileBytes, afterStats.ChunkStoreFileBytes)
+	}
+}
+
+func TestFork_LargeMultiChunkObject_ZeroPayload(t *testing.T) {
+	srv, dir, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	// Well above cdcMaxChunkSize (256KiB) so this genuinely spans many CDC
+	// chunks, not just one.
+	big := genRandomBytes(4, 4_000_000)
+	putObj(t, srv, "src", "big.bin", big)
+
+	beforeFiles := countChunkFiles(t, dir)
+	beforeStats, _ := srv.store.computeStats(statsScope{})
+	if beforeFiles < 5 {
+		t.Fatalf("fixture too small to prove multi-chunk zero-payload: only %d chunk files", beforeFiles)
+	}
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: cfgFor("dst"), DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if !result.OK() || result.Stats.UploadedBytes != 0 {
+		t.Fatalf("expected zero-payload fork of large object, got result = %+v", result)
+	}
+	if result.Stats.LogicalBytes != int64(len(big)) {
+		t.Fatalf("LogicalBytes = %d, want %d", result.Stats.LogicalBytes, len(big))
+	}
+
+	afterFiles := countChunkFiles(t, dir)
+	afterStats, _ := srv.store.computeStats(statsScope{})
+	if afterFiles != beforeFiles {
+		t.Fatalf("countChunkFiles: before=%d after=%d", beforeFiles, afterFiles)
+	}
+	if afterStats.ChunkStoreFileBytes != beforeStats.ChunkStoreFileBytes {
+		t.Fatalf("ChunkStoreFileBytes: before=%d after=%d", beforeStats.ChunkStoreFileBytes, afterStats.ChunkStoreFileBytes)
+	}
+
+	_, gotBody, err := srv.store.GetObject("dst", "big.bin")
+	if err != nil || !bytes.Equal(gotBody, big) {
+		t.Fatalf("GetObject(big.bin) after fork: err=%v, byte-equal=%v", err, bytes.Equal(gotBody, big))
+	}
+}
+
+func TestFork_PaginationBoundary_1500Objects(t *testing.T) {
+	srv, dir, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	const n = 1500
+	for i := 0; i < n; i++ {
+		putObj(t, srv, "src", fmt.Sprintf("k/%04d", i), []byte("x"))
+	}
+	beforeFiles := countChunkFiles(t, dir)
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: cfgFor("dst"), DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if result.Discovered != n || result.Replicated != n || !result.OK() {
+		t.Fatalf("result = %+v", result)
+	}
+	seen := make(map[string]bool, n)
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("k/%04d", i)
+		if seen[key] {
+			t.Fatalf("duplicate destination key %q", key)
+		}
+		seen[key] = true
+		if _, _, err := srv.store.GetObject("dst", key); err != nil {
+			t.Fatalf("GetObject(%q) missing after >1000-object fork: %v", key, err)
+		}
+	}
+	afterFiles := countChunkFiles(t, dir)
+	if afterFiles != beforeFiles {
+		t.Fatalf("countChunkFiles: before=%d after=%d, want unchanged (single shared chunk for identical 1-byte objects)", beforeFiles, afterFiles)
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8D-E: object identity and metadata semantics
+// -----------------------------------------------------------------------
+
+func TestFork_MetadataAndContentTypePreserved(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	if _, err := srv.store.PutObject("src", "k", []byte("payload"), "text/plain; charset=utf-8", map[string]string{"owner": "alice", "purpose": "fork-test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: cfgFor("dst"), DestMustBeAbsent: true}); err != nil {
+		t.Fatal(err)
+	}
+	entry, body, err := srv.store.GetObject("dst", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "payload" {
+		t.Fatalf("body = %q", body)
+	}
+	man := mustManifestFor(t, srv.store, entry)
+	if man.ContentType != "text/plain; charset=utf-8" {
+		t.Fatalf("ContentType = %q", man.ContentType)
+	}
+	metaMap := make(map[string]string, len(man.Metadata))
+	for _, kv := range man.Metadata {
+		metaMap[kv.Key] = kv.Value
+	}
+	if metaMap["owner"] != "alice" || metaMap["purpose"] != "fork-test" {
+		t.Fatalf("Metadata = %+v", man.Metadata)
+	}
+}
+
+func TestFork_ETagContentEqualityAndIndependentLastModified(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	srcEntry, err := srv.store.PutObject("src", "k", []byte("identical content"), "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcMan := mustManifestFor(t, srv.store, srcEntry)
+	time.Sleep(10 * time.Millisecond) // force a distinguishable publication time
+	if _, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: cfgFor("dst"), DestMustBeAbsent: true}); err != nil {
+		t.Fatal(err)
+	}
+	dstEntry, body, err := srv.store.GetObject("dst", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "identical content" {
+		t.Fatalf("body = %q", body)
+	}
+	dstMan := mustManifestFor(t, srv.store, dstEntry)
+	if dstMan.ETag != srcMan.ETag {
+		t.Fatalf("ETag mismatch: src=%q dst=%q, want identical (same content)", srcMan.ETag, dstMan.ETag)
+	}
+	if !dstMan.CreatedAt.After(srcMan.CreatedAt) {
+		t.Fatalf("destination CreatedAt (%v) must reflect its own publication time, not reuse source's (%v)", dstMan.CreatedAt, srcMan.CreatedAt)
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8D-F: destination safety (conflict handling)
+// -----------------------------------------------------------------------
+
+func TestFork_DestinationConflictOneObjectFailsOthersSucceed(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("a"))
+	putObj(t, srv, "src", "conflict.bin", []byte("new content"))
+	putObj(t, srv, "src", "z.bin", []byte("z"))
+	putObj(t, srv, "dst", "conflict.bin", []byte("pre-existing, must not be overwritten"))
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: cfgFor("dst"), DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork top-level: %v", err)
+	}
+	if result.OK() {
+		t.Fatalf("expected a nonzero-failure result, got %+v", result)
+	}
+	if result.Discovered != 3 || result.Replicated != 2 || result.Failed != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	_, body, err := srv.store.GetObject("dst", "conflict.bin")
+	if err != nil || string(body) != "pre-existing, must not be overwritten" {
+		t.Fatalf("pre-existing destination object was overwritten: err=%v body=%q", err, body)
+	}
+	for _, key := range []string{"a.bin", "z.bin"} {
+		if _, _, err := srv.store.GetObject("dst", key); err != nil {
+			t.Fatalf("unrelated object %q should still have forked: %v", key, err)
+		}
+	}
+}
+
+// TestFork_DestinationKeyCreatedConcurrentlyDuringOperationIsNotOverwritten
+// is the hostile-review "destination appears during operation" case
+// (distinct from TestFork_DestinationConflictOneObjectFailsOthersSucceed,
+// where the conflicting object already existed before the run started):
+// the destination key does not exist when this object's own fork attempt
+// begins, but a concurrent writer creates it with different content in
+// the narrow window before this object's atomic commit. The safety
+// condition must be enforced at that actual commit point (never only by
+// a preliminary check), so the racing writer's content must survive
+// untouched, exactly like M8C's own equivalent race proves for
+// replicate -recursive.
+func TestFork_DestinationKeyCreatedConcurrentlyDuringOperationIsNotOverwritten(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("source-a"))
+	putObj(t, srv, "src", "racing.bin", []byte("source-racing"))
+	putObj(t, srv, "src", "z.bin", []byte("source-z"))
+
+	raced := false
+	dstWrapper := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !raced && r.URL.Path == zeros3SyncCommitPath && r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			var req syncCommitRequest
+			if json.Unmarshal(body, &req) == nil && req.Key == "racing.bin" {
+				raced = true
+				if _, err := srv.store.PutObject("dst", "racing.bin", []byte("concurrent writer's content"), "text/plain", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		srv.ServeHTTP(w, r)
+	}))
+	defer dstWrapper.Close()
+	racedDst := cfgFor("dst")
+	racedDst.Endpoint = dstWrapper.URL
+	racedDst.HTTPClient = dstWrapper.Client()
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: racedDst, DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork top-level: %v", err)
+	}
+	if result.Discovered != 3 || result.Replicated != 2 || result.Failed != 1 || result.Failures[0].Key != "racing.bin" {
+		t.Fatalf("result = %+v", result)
+	}
+	_, body, err := srv.store.GetObject("dst", "racing.bin")
+	if err != nil || string(body) != "concurrent writer's content" {
+		t.Fatalf("concurrent writer's content was not safely preserved: err=%v body=%q", err, body)
+	}
+	for _, key := range []string{"a.bin", "z.bin"} {
+		if _, _, err := srv.store.GetObject("dst", key); err != nil {
+			t.Fatalf("unrelated object %q should still have forked: %v", key, err)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8D-G: source stability (each object forks from one captured revision;
+// no mixed content, no namespace-wide snapshot needed)
+// -----------------------------------------------------------------------
+
+func TestFork_SourceObjectChangesAfterListingBeforeFetch_ForksOneCleanRevisionNotMixed(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "aaa.bin", []byte("first"))
+	putObj(t, srv, "src", "changing.bin", []byte("original revision"))
+	putObj(t, srv, "src", "zzz.bin", []byte("last"))
+
+	changed := false
+	wrapper := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !changed && r.URL.Path == zeros3SyncObjectPath && r.URL.Query().Get("key") == "changing.bin" {
+			changed = true
+			if _, err := srv.store.PutObject("src", "changing.bin", []byte("mutated after listing"), "application/octet-stream", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		srv.ServeHTTP(w, r)
+	}))
+	defer wrapper.Close()
+	wrappedSrc := cfgFor("src")
+	wrappedSrc.Endpoint = wrapper.URL
+	wrappedSrc.HTTPClient = wrapper.Client()
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: wrappedSrc, Dest: cfgFor("dst"), DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork top-level: %v", err)
+	}
+	if !result.OK() {
+		t.Fatalf("expected every object to fork cleanly (one captured revision each), got %+v", result)
+	}
+	_, body, err := srv.store.GetObject("dst", "changing.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "original revision" && string(body) != "mutated after listing" {
+		t.Fatalf("destination holds mixed/corrupted content: %q", body)
+	}
+}
+
+func TestFork_SourceObjectDisappearsBetweenListingAndFetch_ReportsFailureContinues(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "aaa.bin", []byte("first"))
+	putObj(t, srv, "src", "gone.bin", []byte("will vanish"))
+	putObj(t, srv, "src", "zzz.bin", []byte("last"))
+
+	deleted := false
+	wrapper := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !deleted && r.URL.Path == zeros3SyncObjectPath && r.URL.Query().Get("key") == "gone.bin" {
+			deleted = true
+			if err := srv.store.DeleteObject("src", "gone.bin"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		srv.ServeHTTP(w, r)
+	}))
+	defer wrapper.Close()
+	wrappedSrc := cfgFor("src")
+	wrappedSrc.Endpoint = wrapper.URL
+	wrappedSrc.HTTPClient = wrapper.Client()
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: wrappedSrc, Dest: cfgFor("dst"), DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork top-level: %v", err)
+	}
+	if result.Discovered != 3 || result.Replicated != 2 || result.Failed != 1 || result.Failures[0].Key != "gone.bin" {
+		t.Fatalf("result = %+v", result)
+	}
+	for _, key := range []string{"aaa.bin", "zzz.bin"} {
+		if _, _, err := srv.store.GetObject("dst", key); err != nil {
+			t.Fatalf("%q should have forked: %v", key, err)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8D-I: independence after fork
+// -----------------------------------------------------------------------
+
+func TestFork_DestinationOnlyObjectSurvives(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "dst", "dest-only.bin", []byte("nobody touches me"))
+	putObj(t, srv, "src", "a.bin", []byte("source content"))
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: cfgFor("dst"), DestMustBeAbsent: true})
+	if err != nil || !result.OK() {
+		t.Fatalf("fork: result=%+v err=%v", result, err)
+	}
+	_, body, err := srv.store.GetObject("dst", "dest-only.bin")
+	if err != nil || !bytes.Equal(body, []byte("nobody touches me")) {
+		t.Fatalf("destination-only object was modified or removed: err=%v body=%q", err, body)
+	}
+}
+
+func TestFork_DestinationEditedAfterFork_SourceUnchanged_OnlyNewChunksAdded(t *testing.T) {
+	srv, dir, cfgFor, closeFn := newForkTestServer(t, "prod", "experiment")
+	defer closeFn()
+	original := genRandomBytes(5, 600_000)
+	putObj(t, srv, "prod", "big.bin", original)
+	if _, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("prod"), Dest: cfgFor("experiment"), DestMustBeAbsent: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	beforeFiles := countChunkFiles(t, dir)
+
+	// Localized edit: same prefix, different suffix -- CDC content-defined
+	// boundaries mean only the changed region's chunks differ.
+	edited := append(append([]byte{}, original[:500_000]...), genRandomBytes(6, 20_000)...)
+	if _, err := srv.store.PutObject("experiment", "big.bin", edited, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	afterFiles := countChunkFiles(t, dir)
+	if afterFiles <= beforeFiles {
+		t.Fatalf("expected new CAS chunk files for the edited region: before=%d after=%d", beforeFiles, afterFiles)
+	}
+
+	_, srcBody, err := srv.store.GetObject("prod", "big.bin")
+	if err != nil || !bytes.Equal(srcBody, original) {
+		t.Fatalf("source must remain byte-for-byte unchanged after editing the fork: err=%v equal=%v", err, bytes.Equal(srcBody, original))
+	}
+	_, dstBody, err := srv.store.GetObject("experiment", "big.bin")
+	if err != nil || !bytes.Equal(dstBody, edited) {
+		t.Fatalf("destination must reflect the edit: err=%v equal=%v", err, bytes.Equal(dstBody, edited))
+	}
+}
+
+func TestFork_SourceEditedAfterFork_DestinationUnchanged(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "prod", "experiment")
+	defer closeFn()
+	putObj(t, srv, "prod", "a.bin", []byte("original"))
+	if _, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("prod"), Dest: cfgFor("experiment"), DestMustBeAbsent: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.PutObject("prod", "a.bin", []byte("changed in source"), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	_, dstBody, err := srv.store.GetObject("experiment", "a.bin")
+	if err != nil || string(dstBody) != "original" {
+		t.Fatalf("destination must remain unchanged after editing the source: err=%v body=%q", err, dstBody)
+	}
+}
+
+func TestFork_SourceDeletedAfterFork_DestinationSurvives(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "prod", "experiment")
+	defer closeFn()
+	putObj(t, srv, "prod", "a.bin", []byte("content"))
+	if _, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("prod"), Dest: cfgFor("experiment"), DestMustBeAbsent: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.DeleteObject("prod", "a.bin"); err != nil {
+		t.Fatal(err)
+	}
+	_, dstBody, err := srv.store.GetObject("experiment", "a.bin")
+	if err != nil || string(dstBody) != "content" {
+		t.Fatalf("destination must remain readable after source deletion: err=%v body=%q", err, dstBody)
+	}
+}
+
+func TestFork_DestinationDeletedAfterFork_SourceSurvives(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "prod", "experiment")
+	defer closeFn()
+	putObj(t, srv, "prod", "a.bin", []byte("content"))
+	if _, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("prod"), Dest: cfgFor("experiment"), DestMustBeAbsent: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.DeleteObject("experiment", "a.bin"); err != nil {
+		t.Fatal(err)
+	}
+	_, srcBody, err := srv.store.GetObject("prod", "a.bin")
+	if err != nil || string(srcBody) != "content" {
+		t.Fatalf("source must remain readable after destination deletion: err=%v body=%q", err, srcBody)
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8D-J: GC / verify composition -- proves the fork is real structural
+// sharing, never a mere alias.
+// -----------------------------------------------------------------------
+
+func TestFork_GCPreservesBothNamespacesAfterDivergence(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("prod"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("experiment"); err != nil {
+		t.Fatal(err)
+	}
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	srv := NewServer(store, creds, defaultRegion)
+	ts := httptest.NewServer(srv)
+	cfgFor := func(bucket string) syncClientConfig {
+		return syncClientConfig{Endpoint: ts.URL, Bucket: bucket, Creds: creds, Region: defaultRegion, HTTPClient: ts.Client()}
+	}
+
+	shared := genRandomBytes(7, 300_000)
+	mustPutObject(t, store, "prod", "shared.bin", shared, "application/octet-stream", nil)
+	mustPutObject(t, store, "prod", "prod-only.bin", genRandomBytes(8, 40_000), "application/octet-stream", nil)
+
+	if _, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("prod"), Dest: cfgFor("experiment"), DestMustBeAbsent: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Diverge: an experiment-only edit.
+	if _, err := store.PutObject("experiment", "shared.bin", genRandomBytes(9, 50_000), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	ts.Close()
+	store.Close()
+
+	gc, err := gcCollect(dir, true)
+	if err != nil {
+		t.Fatalf("gcCollect: %v", err)
+	}
+	if !gc.LiveSetOK {
+		t.Fatalf("expected a healthy live set after fork divergence, got issues: %+v", gc.Issues)
+	}
+
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+
+	_, prodShared, err := reopened.GetObject("prod", "shared.bin")
+	if err != nil || !bytes.Equal(prodShared, shared) {
+		t.Fatalf("prod/shared.bin unreachable or corrupted after GC: err=%v", err)
+	}
+	if _, _, err := reopened.GetObject("prod", "prod-only.bin"); err != nil {
+		t.Fatalf("prod/prod-only.bin unreachable after GC: %v", err)
+	}
+	if _, _, err := reopened.GetObject("experiment", "shared.bin"); err != nil {
+		t.Fatalf("experiment/shared.bin unreachable after GC: %v", err)
+	}
+
+	verify, err := reopened.Verify(true)
+	if err != nil || !verify.OK() {
+		t.Fatalf("deep verify after GC: res=%+v err=%v", verify, err)
+	}
+}
+
+func TestFork_DeepVerifyGreenAfterFork(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "prod", "experiment")
+	defer closeFn()
+	putObj(t, srv, "prod", "a.bin", genRandomBytes(10, 300_000))
+	putObj(t, srv, "prod", "b.bin", genRandomBytes(11, 10_000))
+	if _, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("prod"), Dest: cfgFor("experiment"), DestMustBeAbsent: true}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := srv.store.Verify(true)
+	if err != nil || !res.OK() {
+		t.Fatalf("deep verify after fork: res=%+v err=%v", res, err)
+	}
+}
+
+// TestFork_RepairComposesAcrossSharedCorruptChunk proves M8D composes
+// cleanly with M8B's peer-assisted repair (M8D-J), without changing M8B
+// at all: after a fork, one physical CAS chunk is now reachable from both
+// namespaces. Corrupting it on disk, then repairing from an independent
+// peer holding the same content, must restore both the source and the
+// fork's copy from exactly one repaired digest.
+func TestFork_RepairComposesAcrossSharedCorruptChunk(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("prod"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("experiment"); err != nil {
+		t.Fatal(err)
+	}
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	srv := NewServer(store, creds, defaultRegion)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	cfgFor := func(bucket string) syncClientConfig {
+		return syncClientConfig{Endpoint: ts.URL, Bucket: bucket, Creds: creds, Region: defaultRegion, HTTPClient: ts.Client()}
+	}
+
+	body := genRandomBytes(12, 600_000)
+	entry := mustPutObject(t, store, "prod", "shared.bin", body, "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+
+	if _, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("prod"), Dest: cfgFor("experiment"), DestMustBeAbsent: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, peerSrv, peerCreds, peerRegion := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
+
+	corruptChunkOnDisk(t, store, man.Chunks[0].SHA256)
+
+	pre, err := store.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pre.OK() {
+		t.Fatal("expected pre-repair deep verify to fail after corrupting a shared chunk")
+	}
+
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, peerCreds, peerRegion)})
+	if err != nil {
+		t.Fatalf("repairFromPeer: %v", err)
+	}
+	if stats.Repaired != 1 || !stats.PostRepairOK {
+		t.Fatalf("stats = %+v, want exactly one digest repaired", stats)
+	}
+
+	post, err := store.Verify(true)
+	if err != nil || !post.OK() {
+		t.Fatalf("post-repair verify: res=%+v err=%v", post, err)
+	}
+	_, gotProd, err := store.GetObject("prod", "shared.bin")
+	if err != nil || !bytes.Equal(gotProd, body) {
+		t.Fatalf("prod/shared.bin after repair: err=%v equal=%v", err, bytes.Equal(gotProd, body))
+	}
+	_, gotExp, err := store.GetObject("experiment", "shared.bin")
+	if err != nil || !bytes.Equal(gotExp, body) {
+		t.Fatalf("experiment/shared.bin after repair: err=%v equal=%v", err, bytes.Equal(gotExp, body))
+	}
+}
+
+// -----------------------------------------------------------------------
+// CLI (`zeros3 fork`) -- real binary, real subprocess server(s)
+// -----------------------------------------------------------------------
+
+func TestCLI_Fork_WholeBucketToWholeBucket(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	addr := freeTCPAddr(t)
+
+	cmd := exec.Command(bin, "-store", storeDir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	mustSignedOK := func(method, path string, body []byte) {
+		t.Helper()
+		resp := doSignedRequest(t, client, "http://"+addr, signer, method, path, body, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s %s: status %d", method, path, resp.StatusCode)
+		}
+	}
+	mustSignedOK(http.MethodPut, "/prod", nil)
+	mustSignedOK(http.MethodPut, "/experiment", nil)
+	mustSignedOK(http.MethodPut, "/prod/a.bin", []byte("alpha"))
+	mustSignedOK(http.MethodPut, "/prod/sub/b.bin", []byte("beta"))
+
+	out, errOut, code := runZeros3CLI(t, bin, "fork", "-endpoint", "http://"+addr, "s3://prod/", "s3://experiment/")
+	if code != 0 {
+		t.Fatalf("fork failed (code %d): stdout=%s stderr=%s", code, out, errOut)
+	}
+	if !strings.Contains(out, "Objects forked:            2") {
+		t.Fatalf("unexpected summary output: %s", out)
+	}
+	if !strings.Contains(out, "CAS payload bytes added:   0 B") {
+		t.Fatalf("expected zero new CAS payload in summary: %s", out)
+	}
+
+	resp := doSignedRequest(t, client, "http://"+addr, signer, http.MethodGet, "/experiment/sub/b.bin", nil, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /experiment/sub/b.bin: status %d", resp.StatusCode)
+	}
+	gotBody, _ := io.ReadAll(resp.Body)
+	if string(gotBody) != "beta" {
+		t.Fatalf("content mismatch: %q", gotBody)
+	}
+}
+
+func TestCLI_Fork_OverlapRejectedNonzeroExitNoObjectsTouched(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	addr := freeTCPAddr(t)
+
+	cmd := exec.Command(bin, "-store", storeDir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	resp := doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, "/bucket", nil, nil)
+	resp.Body.Close()
+	resp = doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, "/bucket/a/x.bin", []byte("x"), nil)
+	resp.Body.Close()
+
+	out, errOut, code := runZeros3CLI(t, bin, "fork", "-endpoint", "http://"+addr, "s3://bucket/a/", "s3://bucket/a/fork/")
+	if code == 0 {
+		t.Fatalf("expected nonzero exit for an overlapping fork request: stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(errOut, "overlap") {
+		t.Fatalf("expected an overlap-specific error, got stderr=%s", errOut)
+	}
+	resp = doSignedRequest(t, client, "http://"+addr, signer, http.MethodGet, "/bucket?list-type=2", nil, nil)
+	defer resp.Body.Close()
+	listBody, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(listBody), "a/fork/") {
+		t.Fatalf("overlap rejection must run before any write: found a/fork/ content: %s", listBody)
+	}
+}
+
+func TestCLI_Fork_DestinationConflictNonzeroExit(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	addr := freeTCPAddr(t)
+
+	cmd := exec.Command(bin, "-store", storeDir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	mustSignedOK := func(method, path string, body []byte) {
+		t.Helper()
+		resp := doSignedRequest(t, client, "http://"+addr, signer, method, path, body, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s %s: status %d", method, path, resp.StatusCode)
+		}
+	}
+	mustSignedOK(http.MethodPut, "/prod", nil)
+	mustSignedOK(http.MethodPut, "/experiment", nil)
+	mustSignedOK(http.MethodPut, "/prod/a.bin", []byte("a"))
+	mustSignedOK(http.MethodPut, "/experiment/a.bin", []byte("pre-existing"))
+
+	out, errOut, code := runZeros3CLI(t, bin, "fork", "-endpoint", "http://"+addr, "s3://prod/", "s3://experiment/")
+	if code == 0 {
+		t.Fatalf("expected nonzero exit on destination conflict: stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "a.bin") {
+		t.Fatalf("expected failure report to name a.bin: %s", out)
+	}
+	resp := doSignedRequest(t, client, "http://"+addr, signer, http.MethodGet, "/experiment/a.bin", nil, nil)
+	defer resp.Body.Close()
+	gotBody, _ := io.ReadAll(resp.Body)
+	if string(gotBody) != "pre-existing" {
+		t.Fatalf("pre-existing destination object was overwritten: %q", gotBody)
+	}
+}
+
+// TestCLI_Fork_ResumeAcrossRealProcessKill is M8D-K's real-process-kill
+// resume proof (mirroring M8C's own
+// TestReplicateNamespace_ResumeAcrossRealProcessInterruption): a real
+// `zeros3 fork` OS process is SIGKILLed partway through, then a second,
+// uninterrupted invocation must complete every object correctly with no
+// durable fork-session state anywhere and no duplicated CAS payload.
+func TestCLI_Fork_ResumeAcrossRealProcessKill(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	addr := freeTCPAddr(t)
+
+	srvCmd := exec.Command(bin, "-store", storeDir, "-addr", addr)
+	if err := srvCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { srvCmd.Process.Kill(); srvCmd.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	resp := doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, "/prod", nil, nil)
+	resp.Body.Close()
+	resp = doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, "/experiment", nil, nil)
+	resp.Body.Close()
+
+	bodies := make(map[string][]byte)
+	for i, key := range []string{"ns/one.bin", "ns/two.bin", "ns/three.bin"} {
+		body := genRandomBytes(int64(21000+i), 8_000_000)
+		bodies[key] = body
+		r := doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, "/prod/"+key, body, nil)
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("populate source object %s: status %d", key, r.StatusCode)
+		}
+		r.Body.Close()
+	}
+
+	forkArgs := []string{"fork", "-endpoint", "http://" + addr, "s3://prod/ns/", "s3://experiment/ns/"}
+
+	firstAttempt := exec.Command(bin, forkArgs...)
+	if err := firstAttempt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	firstAttempt.Process.Kill()
+	firstAttempt.Wait()
+
+	secondOut, secondErr, code := runZeros3CLI(t, bin, forkArgs...)
+	if code != 0 {
+		t.Fatalf("resumed fork failed (code %d): stdout=%s stderr=%s", code, secondOut, secondErr)
+	}
+
+	for key, body := range bodies {
+		r := doSignedRequest(t, client, "http://"+addr, signer, http.MethodGet, "/experiment/"+key, nil, nil)
+		gotBody, err := io.ReadAll(r.Body)
+		r.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("GET /experiment/%s after resume: status %d", key, r.StatusCode)
+		}
+		if !bytes.Equal(gotBody, body) {
+			t.Fatalf("destination content mismatch for %s after interrupted-then-resumed fork", key)
+		}
+	}
+}
+
+// TestCLI_Fork_RestartThenDeepVerifyGreen is M8D's restart/verify/GC
+// proof (external harness Phase 9's internal-level counterpart): after a
+// real fork, a full process restart on the same store, followed by
+// `zeros3 verify -deep`, must stay green and AWS-SDK-shaped GET must
+// still round-trip exact bytes for both namespaces.
+func TestCLI_Fork_RestartThenDeepVerifyGreen(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	addr := freeTCPAddr(t)
+
+	cmd := exec.Command(bin, "-store", storeDir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	resp := doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, "/prod", nil, nil)
+	resp.Body.Close()
+	resp = doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, "/experiment", nil, nil)
+	resp.Body.Close()
+	resp = doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, "/prod/a.bin", []byte("hello fork"), nil)
+	resp.Body.Close()
+
+	out, errOut, code := runZeros3CLI(t, bin, "fork", "-endpoint", "http://"+addr, "s3://prod/", "s3://experiment/")
+	if code != 0 {
+		t.Fatalf("fork failed (code %d): stdout=%s stderr=%s", code, out, errOut)
+	}
+
+	cmd.Process.Kill()
+	cmd.Wait()
+
+	cmd2 := exec.Command(bin, "-store", storeDir, "-addr", addr)
+	if err := cmd2.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForZeros3Serve(t, addr)
+
+	resp = doSignedRequest(t, client, "http://"+addr, signer, http.MethodGet, "/experiment/a.bin", nil, nil)
+	gotBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(gotBody) != "hello fork" {
+		t.Fatalf("GET /experiment/a.bin after restart: status=%d body=%q", resp.StatusCode, gotBody)
+	}
+
+	// Stop the server before running `verify` standalone against the
+	// store directory, matching how every other CLI-level verify/GC test
+	// in this file avoids running two processes against one store
+	// concurrently.
+	cmd2.Process.Kill()
+	cmd2.Wait()
+
+	verifyOut, verifyErr, verifyCode := runZeros3CLI(t, bin, "verify", "-store", storeDir, "-deep")
+	if verifyCode != 0 {
+		t.Fatalf("verify -deep after restart failed: code=%d stdout=%s stderr=%s", verifyCode, verifyOut, verifyErr)
+	}
+}

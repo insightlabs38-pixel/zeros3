@@ -7504,6 +7504,29 @@ type replicateConfig struct {
 	Source syncClientConfig
 	Dest   syncClientConfig
 	Out    io.Writer
+
+	// DestMustBeAbsent, when set, switches the destination-conflict
+	// precondition from M8A/M6B's ordinary "matches whatever I last
+	// observed via HEAD" (which treats an unchanged pre-existing
+	// destination object as a legitimate re-sync target -- exactly right
+	// for a tool whose job is bringing a destination up to date with a
+	// source) to create-only: any pre-existing destination object with
+	// *different* content than what this call is about to publish is
+	// rejected as a conflict, full stop, never silently overwritten
+	// (M8D-F). The one carve-out -- needed so a resumed rerun of the same
+	// operation doesn't conflict with its own prior successful commits
+	// (M8D-K) -- is a pre-existing destination object whose ETag already
+	// matches the source's: that is indistinguishable from this exact
+	// call's own already-landed result (or coincidentally identical
+	// content, equally harmless), so it commits as the same
+	// no-op-equivalent M8A/M8C's own resume already relies on (see
+	// replicateObject's implementation and doc comment above). M8A/M8C's
+	// own `replicate`/`replicate -recursive` leave this false, so every
+	// existing caller is byte-for-byte unaffected; M8D fork (section 15g)
+	// is the one caller that sets it. Still the exact same
+	// commitSyncObject/syncPrecondition/412-conflict machinery in both
+	// modes -- only which precondition gets sent differs.
+	DestMustBeAbsent bool
 }
 
 // replicateObject is M8A's complete pipeline: discover both endpoints'
@@ -7539,9 +7562,36 @@ func replicateObject(cfg replicateConfig) (syncStats, error) {
 		return syncStats{}, fmt.Errorf("replicate: %w", err)
 	}
 
-	exists, etag, err := headSyncDestination(cfg.Dest)
-	if err != nil {
-		return syncStats{}, fmt.Errorf("replicate: %w", err)
+	pre := syncPrecondition{expectAbsent: true}
+	if cfg.DestMustBeAbsent {
+		// Create-only, but still resumable (M8D-F and M8D-K both hold):
+		// a destination key that doesn't exist yet is the ordinary case
+		// (expectAbsent stays true, above). One already existing is a
+		// conflict *unless* it already holds exactly the content this
+		// call is about to publish (same ETag as the source descriptor)
+		// -- which means either this is a resumed rerun re-observing its
+		// own prior successful commit, or the destination coincidentally
+		// already had byte-identical content, either way harmless and
+		// indistinguishable from a no-op. That one case reuses the same
+		// expectedETag no-op-equivalent commit M8A/M8C's own resume
+		// already relies on (this function's own doc comment above); any
+		// other existing, differently-identified destination object
+		// falls through to expectAbsent, which the atomic commit rejects
+		// with a 412 exactly like any other pre-existing-and-different
+		// destination (M8D-F).
+		exists, etag, err := headSyncDestination(cfg.Dest)
+		if err != nil {
+			return syncStats{}, fmt.Errorf("replicate: %w", err)
+		}
+		if exists && etag == desc.ETag {
+			pre = syncPrecondition{expectAbsent: false, expectedETag: etag}
+		}
+	} else {
+		exists, etag, err := headSyncDestination(cfg.Dest)
+		if err != nil {
+			return syncStats{}, fmt.Errorf("replicate: %w", err)
+		}
+		pre = syncPrecondition{expectAbsent: !exists, expectedETag: etag}
 	}
 
 	chunks := make([]syncLocalChunk, len(desc.Chunks))
@@ -7576,7 +7626,6 @@ func replicateObject(cfg replicateConfig) (syncStats, error) {
 	destCommitCfg := cfg.Dest
 	destCommitCfg.ContentType = desc.ContentType
 	destCommitCfg.Metadata = desc.Metadata
-	pre := syncPrecondition{expectAbsent: !exists, expectedETag: etag}
 	if _, err := commitSyncObject(destCommitCfg, plan, pre); err != nil {
 		return syncStats{}, fmt.Errorf("replicate: %w", err)
 	}
@@ -8342,6 +8391,11 @@ type namespaceReplicateConfig struct {
 	Dest         syncClientConfig
 	DestPrefix   string
 	Out          io.Writer
+
+	// DestMustBeAbsent is forwarded, per object, to replicateConfig's own
+	// field of the same name (see its doc comment) -- M8C's own
+	// `replicate -recursive` leaves this false; M8D fork sets it true.
+	DestMustBeAbsent bool
 }
 
 // replicateNamespace is M8C's complete orchestration: enumerate the
@@ -8374,7 +8428,7 @@ func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error)
 			continue
 		}
 
-		objCfg := replicateConfig{Source: cfg.Source, Dest: cfg.Dest}
+		objCfg := replicateConfig{Source: cfg.Source, Dest: cfg.Dest, DestMustBeAbsent: cfg.DestMustBeAbsent}
 		objCfg.Source.Key = obj.Key
 		objCfg.Dest.Key = dstKey
 
@@ -8428,6 +8482,213 @@ func printNsReplicateSummary(w io.Writer, r nsReplicateResult) {
 		}
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Replication completed with errors.")
+	}
+}
+
+// =============================================================================
+// 15g. Copy-on-write namespace fork (M8D): `zeros3 fork SOURCE DEST -endpoint EP`
+//
+// M8D clones an entire bucket or prefix into an independent namespace
+// inside the *same* ZeroS3 store while writing zero new CAS payload
+// bytes. It is a composition milestone, not a new storage engine: fork is
+// M8C's own replicateNamespace orchestration (enumerate -> map -> the
+// unmodified M8A single-object publication primitive -> aggregate),
+// called with source and destination pointed at the same endpoint --
+// literally the same running store, therefore the same physical CAS.
+//
+//	source namespace                    destination namespace
+//	       |                                    |
+//	       | listSourceObjects (M8C, unchanged) |
+//	       v                                    |
+//	   enumerated keys -- namespaceDestKey (M8C, unchanged) --> mapped keys
+//	       |                                    |
+//	       +-------- replicateObject (M8A, unchanged) ---------+
+//	                          |
+//	           negotiateSyncMissing asks the SAME store's CAS
+//	           "which of this object's chunks are missing?" --
+//	           since source and destination are one physical CAS,
+//	           every chunk the source manifest names is already
+//	           there, so the answer is always "none" -- zero
+//	           putSyncChunk calls, zero new payload bytes, by
+//	           construction, not by a special case.
+//
+// Why this is the selected strategy (over Option B, orchestrating
+// CopyObject): replicateNamespace already gives M8D everything the spec's
+// selection rule asks for -- atomic per-object publication via
+// commitSyncObject's ExpectAbsent/ExpectedETag precondition (the same
+// M6B/M8A primitive verified safe under concurrent destination writes,
+// section 15f/15d), captured-immutable-source-revision semantics per
+// object (M8D-G), honest partial-failure/resume behavior needing no
+// durable session state (M8D-K), and namespace enumeration/mapping
+// already proven against 1000+ objects, weird keys, and Unicode (M8D-B/
+// M8D-C). Choosing it means M8D's entire implementation is the CLI verb
+// below plus two small additions: forkNamespacesOverlap (a safety check)
+// and replicateConfig.DestMustBeAbsent (a precondition-*mode* switch, not
+// new machinery -- see its own doc comment). No new code touches
+// chunking, CAS, manifests, or the journal.
+//
+// One deliberate behavioral divergence from plain replicate/`replicate
+// -recursive`: M8A/M8C's own precondition is "the destination is exactly
+// what I last observed" -- an *unchanged* pre-existing destination object
+// is a legitimate, non-conflicting re-sync target, which is exactly right
+// for a tool whose job is bringing a destination up to date with a
+// source. M8D-F is stricter: fork must never silently overwrite a
+// pre-existing destination object that holds different content, and has
+// no --force to opt out. replicateConfig.DestMustBeAbsent (set
+// unconditionally by runFork below) switches replicateObject's
+// precondition to create-only -- except a pre-existing destination object
+// whose content already matches exactly what this call is about to
+// publish, which commits as the same no-op-equivalent M8A/M8C's own
+// resume already relies on (needed so a resumed rerun of an interrupted
+// fork, M8D-K, never conflicts with its own already-landed objects). Any
+// other pre-existing destination object is rejected as a conflict, full
+// stop. Still the exact same commitSyncObject/syncPrecondition/412
+// machinery M8A/M8C already use, checked only at the one atomic commit
+// point (never by a race-prone separate HEAD, per M8D-F's own
+// requirement) -- see DestMustBeAbsent's and replicateObject's own doc
+// comments for the exact rule. Every existing M8A/M8C caller leaves this
+// field at its zero value (false) and is byte-for-byte unaffected.
+//
+// Persistent-format impact: NONE. A forked object is an ordinary
+// destination object published through the exact same commit path any
+// other write already uses; nothing here introduces a manifest field,
+// journal record type, refcount, or snapshot concept. Store.Verify,
+// Store.computeReachability, GC, and repair already treat every forked
+// object as nothing more than an object whose manifest happens to name
+// digests another object elsewhere also names -- exactly the same
+// structural chunk sharing two independently-uploaded objects with
+// identical content already produce (M8D-M/M8D-J): the "fork" is a
+// product-level story about *how* that sharing came to exist, not a new
+// mechanism GC/verify/repair need to know about.
+//
+// Overlap hazard (M8D's own "important overlap rule"): could a fork's
+// own newly-written destination objects be rediscovered by its own
+// source enumeration and explode recursively? No -- listSourceObjects
+// (section 15f) already pages ListObjectsV2 to completion into one
+// bounded in-memory slice and returns before replicateNamespace's
+// per-object write loop ever runs, so a fork's enumeration is always
+// a fixed snapshot taken strictly before any destination write happens,
+// regardless of whether source/destination prefixes overlap. Given that
+// structural guarantee, forkNamespacesOverlap below is not preventing an
+// explosion that could otherwise occur; it exists because the spec's own
+// preferred "simpler, safer semantic" is to reject a same-bucket
+// source/destination relationship where one prefix contains, equals, or
+// is contained by the other outright, since such a mapping is confusing
+// and produces no useful namespace even when it cannot misbehave (e.g.
+// "bucket/a/" forking into "bucket/a/fork/" would itself list "fork/..."
+// objects as ordinary source content on a second run). Different
+// destination buckets never trigger this check, even sharing the same
+// store: distinct buckets are always independent namespaces.
+//
+// Same-store only (M8D is explicitly not cross-server): fork takes one
+// -endpoint flag, never -from/-to, so source and destination structurally
+// cannot be different servers.
+//
+// Version scope (M8D-H): only the current, live-pointer object per key is
+// forked (ListObjectsV2's ordinary current-version-only view, reused
+// unmodified) -- no historical version cloning.
+// =============================================================================
+
+// forkNamespacesOverlap reports whether srcPrefix and dstPrefix, within
+// the same bucket, name a hazardous overlapping relationship: equal,
+// or one nested inside the other. "" means the whole bucket, which
+// overlaps every prefix in that bucket. This is a prefix-boundary
+// comparison (never a bare string-prefix check), so "images" and
+// "images-backup" are correctly treated as disjoint.
+func forkNamespacesOverlap(srcPrefix, dstPrefix string) bool {
+	if srcPrefix == "" || dstPrefix == "" {
+		return true
+	}
+	a, b := srcPrefix+"/", dstPrefix+"/"
+	return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
+}
+
+// printForkSummary reports fork's own operation-local statistics (M8D-L),
+// reusing replicateNamespace's honest, per-object-summed nsReplicateResult
+// but with fork's own wording -- "0 B new CAS payload" is the precise,
+// qualified claim this milestone requires, never a bare "0 bytes copied".
+// ExistingChunksReferenced/NewManifests/Elapsed are the spec's suggested
+// optional fields.
+func printForkSummary(w io.Writer, r nsReplicateResult, elapsed time.Duration) {
+	fmt.Fprintf(w, "Objects discovered:        %d\n", r.Discovered)
+	fmt.Fprintf(w, "Objects forked:            %d\n", r.Replicated)
+	fmt.Fprintf(w, "Objects failed:            %d\n", r.Failed)
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Logical bytes cloned:      %s\n", humanBytes(r.Stats.LogicalBytes))
+	fmt.Fprintf(w, "CAS payload bytes added:   %s new CAS payload\n", humanBytes(r.Stats.UploadedBytes))
+	fmt.Fprintf(w, "Payload bytes avoided:     %s\n", humanBytes(r.Stats.BytesAvoided))
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Existing chunks referenced: %d\n", r.Stats.ChunksReused)
+	fmt.Fprintf(w, "New manifests:             %d\n", r.Replicated)
+	fmt.Fprintf(w, "Elapsed time:              %s\n", elapsed.Round(time.Millisecond))
+	if len(r.Failures) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "FAILED:")
+		for _, f := range r.Failures {
+			fmt.Fprintf(w, "  %s -> %v\n", f.Key, f.Err)
+		}
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Fork completed with errors.")
+	}
+}
+
+// runFork implements "zeros3 fork s3://source-bucket/[prefix/]
+// s3://dest-bucket/[prefix/] -endpoint http://host:port" (M8D): a
+// copy-on-write clone of a bucket or prefix into an independent namespace
+// inside the same store. See this section's own doc comment above for
+// the full architecture/safety rationale.
+func runFork(args []string) {
+	fs := flag.NewFlagSet("fork", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "http://127.0.0.1:9000", "ZeroS3 endpoint base URL -- fork is same-store only, so one endpoint serves as both source and destination")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key")
+	region := fs.String("region", defaultRegion, "SigV4 region")
+	fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) != 2 {
+		fmt.Fprintln(os.Stderr, "zeros3: fork requires SOURCE and DESTINATION s3:// namespace URIs (s3://bucket[/prefix][/])")
+		os.Exit(2)
+	}
+
+	srcBucket, srcPrefix, err := parseS3DirURI(rest[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: source: %v\n", err)
+		os.Exit(2)
+	}
+	dstBucket, dstPrefix, err := parseS3DirURI(rest[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: destination: %v\n", err)
+		os.Exit(2)
+	}
+	if srcBucket == dstBucket && forkNamespacesOverlap(srcPrefix, dstPrefix) {
+		fmt.Fprintf(os.Stderr, "zeros3: fork: refusing overlapping source/destination namespaces within bucket %q (%q vs %q)\n", srcBucket, rest[0], rest[1])
+		os.Exit(2)
+	}
+
+	creds := Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey}
+	cfg := namespaceReplicateConfig{
+		Source:       syncClientConfig{Endpoint: *endpoint, Bucket: srcBucket, Creds: creds, Region: *region},
+		SourcePrefix: srcPrefix,
+		Dest:         syncClientConfig{Endpoint: *endpoint, Bucket: dstBucket, Creds: creds, Region: *region},
+		DestPrefix:   dstPrefix,
+		// M8D-F: fork is always create-only at the destination -- no
+		// --force exists, and this milestone deliberately does not add
+		// one (see section 15g's doc comment and the M8D spec's own
+		// non-goals).
+		DestMustBeAbsent: true,
+	}
+
+	start := time.Now()
+	result, err := replicateNamespace(cfg)
+	elapsed := time.Since(start)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: fork failed: %v\n", err)
+		os.Exit(1)
+	}
+	printForkSummary(os.Stdout, result, elapsed)
+	if !result.OK() {
+		os.Exit(1)
 	}
 }
 
@@ -8939,8 +9200,10 @@ func main() {
 		runReplicate(args)
 	case "repair":
 		runRepair(args)
+	case "fork":
+		runFork(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, doctor, sync, replicate, or repair)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, doctor, sync, replicate, repair, or fork)\n", cmd)
 		os.Exit(2)
 	}
 }
