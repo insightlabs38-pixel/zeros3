@@ -592,11 +592,73 @@ namespaces, and one `zeros3 repair` fetch restores every affected object
 across both.
 
 See `STATUS.md`'s "M8D" section for the full mapping/overlap/conflict/
-resume semantics and their tests, and
-`zeros3-testing/results/M8D_FORK_RESULTS.md` for the external,
-real-server, real-AWS-SDK-verified proof (zero-CAS-payload measurement,
-a large logical clone, a post-fork copy-on-write mutation, and M8B repair
-composing cleanly with a forked namespace).
+resume semantics and their tests.
+
+## Durable namespace snapshots (`zeros3 snapshot`)
+
+Capture the current state of a bucket or prefix as immutable metadata
+over existing content-addressed objects. A snapshot survives live
+mutations and deletions of the namespace it was taken from, pins its
+content through garbage collection, and can later be restored — as an
+ordinary, independent live namespace — without duplicating any CAS
+payload.
+
+```sh
+./zeros3 snapshot create -endpoint http://127.0.0.1:9000 s3://production/data/
+```
+
+```
+Snapshot:           019d4a1e-2b35-757d-9cd3-e6cbb347cc7c
+Created:            2026-08-30T04:00:00Z
+Source:             production/data/
+Objects:            1500
+Logical bytes:      24.8 GiB
+```
+
+```sh
+./zeros3 snapshot restore -endpoint http://127.0.0.1:9000 \
+    019d4a1e-2b35-757d-9cd3-e6cbb347cc7c s3://recovery/aug30/
+```
+
+```
+Objects discovered:      1500
+Restored:                1500
+Failed:                  0
+
+Logical bytes restored:  24.8 GiB
+New CAS payload:         0 B
+Payload bytes avoided:   24.8 GiB
+```
+
+A snapshot is a small, versioned, integrity-checked descriptor (CRC32C-
+checked, `store/snapshots/<id>`) naming the manifest that was current for
+each captured key at the moment of capture — never a copy of manifest
+content or CAS payload. It is a thin, additional immutable root: existing
+garbage collection already protects every current object, retained
+historical version, and active multipart upload; a snapshot's captured
+manifests join that same protected set, so `zeros3 gc` never collects
+anything a live snapshot still references, even after the live object
+that originally produced it has been overwritten or deleted:
+
+```text
+Snapshot: 24.8 GiB
+Live source deleted
+GC completed
+Restored: 24.8 GiB
+New CAS payload: 0 B
+```
+
+Snapshots capture current-visible-namespace state only — not historical
+object versions, incomplete multipart uploads, or bucket configuration —
+and restore is same-store only, into an explicit destination, and
+create-only by default: a pre-existing, differently-identified
+destination object is always reported as a conflict rather than silently
+overwritten, and there is no `--force`. `zeros3 snapshot delete` removes
+only the descriptor; ordinary `zeros3 gc` then decides what, if anything,
+has become unreachable once nothing else references it.
+
+See `STATUS.md`'s "M8E" section for the full format/atomicity/
+concurrency semantics and their tests.
 
 ## Durability model
 
@@ -788,6 +850,13 @@ Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
   no `--force` to override a destination conflict. A source/destination
   namespace relationship that could overlap within the same bucket is
   rejected outright rather than allowed.
+- `zeros3 snapshot` (M8E) captures the *current* visible object per key
+  only — no historical-version snapshot, no incomplete-multipart-upload
+  snapshot, and no bucket policy/configuration snapshot. `zeros3 snapshot
+  restore` is same-store only (no cross-server snapshot transfer),
+  requires an explicit destination, and is create-only — no `--force`, no
+  in-place destructive "rewind this bucket" command. There is no snapshot
+  expiration/TTL and no scheduled/automatic snapshot creation.
 - `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` are eligible but not yet
   implemented (no real client exercised needs them);
   `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and SigV4A/ECDSA streaming modes
