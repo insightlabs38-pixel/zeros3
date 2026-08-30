@@ -114,6 +114,7 @@ request:
 | `/_zeros3/v1/chunks/<sha256-hex>` | `GET` | chunk download (M8A — raw bytes; also M8B `repair`'s only network call) |
 | `/_zeros3/v1/chunks/<sha256-hex>` | `PUT` | idempotent chunk upload (raw bytes) |
 | `/_zeros3/v1/commit` | `POST` | atomic ordinary object commit (JSON in/out) |
+| `/_zeros3/v1/reachability?bucket=&key=` | `GET` | per-chunk store-wide reachability query (M8G-C `inspect`'s only new endpoint — JSON out, read-only) |
 
 All four are authenticated by the exact same SigV4 header verification
 every ordinary S3 request goes through, and all four render JSON, never
@@ -290,6 +291,39 @@ removes only the descriptor, never any chunk/manifest directly — ordinary
 nothing else references it. See `STATUS.md`'s "M8E" section for the full
 format/atomicity/concurrency semantics and `README.md` for CLI usage.
 
+**Read-only replication planning, structural diff, and CAS inspect
+(`replicate -dry-run`, `zeros3 diff`, `zeros3 inspect`, M8G) are
+proprietary ZeroS3 functionality, not S3 APIs and not part of the wire
+protocol.** All three are read-only: none of them can publish an object,
+upload a chunk, alter CAS contents, append a journal record, or change
+any namespace/snapshot state, independently proven by hashing every file
+under a store's directory before and after running them and requiring a
+byte-identical tree. `replicate -dry-run` sends **zero** new endpoints:
+it is `replicate`'s own existing discover/describe/negotiate prefix
+(M8A/M8C, above), extracted into a shared planner (`planReplication`)
+that both the dry-run and a real replication call, stopping before the
+one step (`replicate`'s own fetch/upload/commit tail) that could ever
+write anything — so a dry-run's predicted transfer and an immediately-
+following real replication's actual transfer are never two independently
+-computed numbers that could disagree, they are the same computation run
+twice against the same unchanged state. `zeros3 diff` also sends **zero**
+new endpoints: it calls the existing per-object descriptor endpoint
+(`GET /object`, M8A2, above) once per object — the same server or two
+different servers, no special-casing either way — and compares the two
+descriptors' ordered chunk digests/lengths entirely client-side; it never
+fetches an object body or a chunk payload, and never plans or performs a
+transfer of any kind. `zeros3 inspect` sends **one** new endpoint,
+`GET /reachability` (table above): every other field it reports comes
+from the same existing object-descriptor endpoint `diff` uses. The
+reachability endpoint walks the same four authoritative root categories
+`zeros3 gc`/`zeros3 verify` already protect (current objects, retained
+historical versions, active multipart uploads, durable snapshots) fresh
+on every call — there is no persistent index, refcount table, or
+planning cache anywhere, and no persistent-format change of any kind.
+See `STATUS.md`'s "M8G" section for the full accounting semantics
+(directional/logical vs. physical/unique byte definitions, exact-match
+semantics, store-wide sharing definition) and `README.md` for CLI usage.
+
 ## Deliberately unsupported (explicit non-goals)
 
 These are not planned for this project, at any tier:
@@ -334,7 +368,8 @@ not begun in this pass, and not claimed as shipped:
 Delta sync (M6A/M6B), recursive directory sync (M6C), remote-to-remote
 delta replication (M8A), peer-assisted corruption repair (M8B),
 prefix/bucket delta replication (M8C), copy-on-write namespace fork
-(M8D), and durable namespace snapshots + zero-payload restore (M8E) all
+(M8D), durable namespace snapshots + zero-payload restore (M8E), and
+read-only replication planning/structural diff/CAS inspect (M8G) all
 shipped — see "ZeroS3 extensions (not S3 APIs)" above.
 
 ## Compatibility deviations (differs from real AWS S3)
