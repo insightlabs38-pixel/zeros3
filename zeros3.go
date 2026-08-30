@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -7270,6 +7271,72 @@ func writeSnapshotLookupError(w http.ResponseWriter, err error) {
 }
 
 // =============================================================================
+// 15a-quater. Environment-variable credential/region fallback (P1-A)
+//
+// Precedence, for every -access-key/-secret-key/-region flag below (and
+// -region alone on the two-endpoint commands, replicate/diff -- see the
+// next paragraph): an explicitly supplied CLI flag always wins; otherwise
+// AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION is used if *set*
+// (even to an empty string -- P1-A6: unset means no override, set-but-
+// empty participates in whatever validation the resulting value would
+// already have received had it been typed on the command line, which
+// today is none, matching pre-P1 behavior for an explicit empty flag);
+// otherwise the flag's existing built-in default (defaultAccessKeyID/
+// defaultSecretAccessKey/defaultRegion) applies exactly as before P1.
+//
+// Multi-endpoint commands (replicate's -from-access-key/-from-secret-key/
+// -to-access-key/-to-secret-key, diff's equivalents) deliberately do NOT
+// get AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY fallback: a single pair of
+// standard AWS variable names cannot unambiguously supply two different
+// credential pairs, and guessing which endpoint gets them risks silently
+// sending one endpoint's credentials to the other (P1-A5). Only their
+// shared, unambiguous -region flag gets AWS_REGION fallback. This is the
+// documented, deliberately smaller alternative P1-A5 endorses over
+// inventing ZEROS3_FROM_*/ZEROS3_TO_* variables.
+//
+// Nothing here ever logs, prints, or echoes a credential value (P1-A7):
+// envOverride returns a string the caller stores into the same *string
+// a flag.String already populated, and every existing print/log path
+// downstream was already careful never to include it.
+// =============================================================================
+
+const (
+	envAWSAccessKeyID     = "AWS_ACCESS_KEY_ID"
+	envAWSSecretAccessKey = "AWS_SECRET_ACCESS_KEY"
+	envAWSRegion          = "AWS_REGION"
+)
+
+// envOverride implements the one-flag precedence rule described above.
+// fs must already be Parse()d. flagName must name a flag registered on
+// fs; current must be that flag's current (post-Parse) value.
+func envOverride(fs *flag.FlagSet, flagName, envName, current string) string {
+	explicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == flagName {
+			explicit = true
+		}
+	})
+	if explicit {
+		return current
+	}
+	if v, ok := os.LookupEnv(envName); ok {
+		return v
+	}
+	return current
+}
+
+// applyCredentialEnvFallback applies AWS_ACCESS_KEY_ID/
+// AWS_SECRET_ACCESS_KEY/AWS_REGION fallback to a single-endpoint
+// command's -access-key/-secret-key/-region flags, in place, immediately
+// after fs.Parse. Two-endpoint commands (replicate/diff) do not call
+// this -- see the section doc comment above.
+func applyCredentialEnvFallback(fs *flag.FlagSet, accessKey, secretKey, region *string) {
+	*accessKey = envOverride(fs, "access-key", envAWSAccessKeyID, *accessKey)
+	*secretKey = envOverride(fs, "secret-key", envAWSSecretAccessKey, *secretKey)
+	*region = envOverride(fs, "region", envAWSRegion, *region)
+}
+
+// =============================================================================
 // 15b. `zeros3 sync` client
 //
 // Unlike every other CLI verb, sync is a real HTTP client of a running
@@ -8412,12 +8479,13 @@ func printDirSyncSummary(w io.Writer, r dirSyncResult) {
 func runSync(args []string) {
 	fs := flag.NewFlagSet("sync", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "http://127.0.0.1:9000", "S3 endpoint base URL (scheme://host[:port])")
-	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID")
-	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key")
-	region := fs.String("region", defaultRegion, "SigV4 region")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID (default: AWS_ACCESS_KEY_ID)")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key (default: AWS_SECRET_ACCESS_KEY)")
+	region := fs.String("region", defaultRegion, "SigV4 region (default: AWS_REGION)")
 	contentType := fs.String("content-type", "", "Content-Type for the destination object (default: application/octet-stream); ignored for a directory source")
 	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per file (M8H-B1, bounded 1..32)")
 	fs.Parse(args)
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
 	rest := fs.Args()
 	if len(rest) != 2 {
@@ -8951,9 +9019,14 @@ func runReplicate(args []string) {
 	fromSecretKey := fs.String("from-secret-key", defaultSecretAccessKey, "source secret access key")
 	toAccessKey := fs.String("to-access-key", defaultAccessKeyID, "destination access key ID")
 	toSecretKey := fs.String("to-secret-key", defaultSecretAccessKey, "destination secret access key")
-	region := fs.String("region", defaultRegion, "SigV4 region (both endpoints)")
+	region := fs.String("region", defaultRegion, "SigV4 region (both endpoints; default: AWS_REGION)")
 	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per object (M8H-B1/B3, bounded 1..32); accepted but irrelevant with -dry-run, which never transfers chunk payload")
 	fs.Parse(args)
+	// P1-A5: replicate is a two-endpoint command, so -from-access-key/
+	// -from-secret-key/-to-access-key/-to-secret-key deliberately do NOT
+	// get AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY fallback (see section
+	// 15a-quater) -- only the shared, unambiguous -region flag does.
+	*region = envOverride(fs, "region", envAWSRegion, *region)
 
 	rest := fs.Args()
 	if len(rest) != 2 {
@@ -9653,12 +9726,13 @@ func runRepair(args []string) {
 	fs := flag.NewFlagSet("repair", flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	from := fs.String("from", "", "trusted ZeroS3 peer endpoint to repair from (required, scheme://host[:port])")
-	accessKey := fs.String("access-key", defaultAccessKeyID, "peer access key ID")
-	secretKey := fs.String("secret-key", defaultSecretAccessKey, "peer secret access key")
-	region := fs.String("region", defaultRegion, "SigV4 region")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "peer access key ID (default: AWS_ACCESS_KEY_ID)")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "peer secret access key (default: AWS_SECRET_ACCESS_KEY)")
+	region := fs.String("region", defaultRegion, "SigV4 region (default: AWS_REGION)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent chunk transfers from the peer (M8H-B2, bounded 1..32)")
 	fs.Parse(args)
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
 	if *from == "" {
 		fmt.Fprintln(os.Stderr, "zeros3: repair requires -from PEER_ENDPOINT")
@@ -10175,10 +10249,11 @@ func printForkSummary(w io.Writer, r nsReplicateResult, elapsed time.Duration) {
 func runFork(args []string) {
 	fs := flag.NewFlagSet("fork", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "http://127.0.0.1:9000", "ZeroS3 endpoint base URL -- fork is same-store only, so one endpoint serves as both source and destination")
-	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID")
-	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key")
-	region := fs.String("region", defaultRegion, "SigV4 region")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID (default: AWS_ACCESS_KEY_ID)")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key (default: AWS_SECRET_ACCESS_KEY)")
+	region := fs.String("region", defaultRegion, "SigV4 region (default: AWS_REGION)")
 	fs.Parse(args)
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
 	rest := fs.Args()
 	if len(rest) != 2 {
@@ -10918,9 +10993,9 @@ func runSnapshot(args []string) {
 
 func snapshotClientFlags(fs *flag.FlagSet) (endpoint, accessKey, secretKey, region *string) {
 	endpoint = fs.String("endpoint", "http://127.0.0.1:9000", "ZeroS3 endpoint base URL")
-	accessKey = fs.String("access-key", defaultAccessKeyID, "access key ID")
-	secretKey = fs.String("secret-key", defaultSecretAccessKey, "secret access key")
-	region = fs.String("region", defaultRegion, "SigV4 region")
+	accessKey = fs.String("access-key", defaultAccessKeyID, "access key ID (default: AWS_ACCESS_KEY_ID)")
+	secretKey = fs.String("secret-key", defaultSecretAccessKey, "secret access key (default: AWS_SECRET_ACCESS_KEY)")
+	region = fs.String("region", defaultRegion, "SigV4 region (default: AWS_REGION)")
 	return
 }
 
@@ -10931,6 +11006,7 @@ func runSnapshotCreate(args []string) {
 	endpoint, accessKey, secretKey, region := snapshotClientFlags(fs)
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	fs.Parse(args)
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
 	rest := fs.Args()
 	if len(rest) != 1 {
@@ -10963,6 +11039,7 @@ func runSnapshotList(args []string) {
 	endpoint, accessKey, secretKey, region := snapshotClientFlags(fs)
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	fs.Parse(args)
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
 	cfg := syncClientConfig{Endpoint: *endpoint, Creds: Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey}, Region: *region}
 	list, err := listSnapshotsRemote(cfg)
@@ -10987,6 +11064,7 @@ func runSnapshotShow(args []string) {
 	entries := fs.Bool("entries", false, "also list every captured key (A7: never dumped by default)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	fs.Parse(args)
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
 	rest := fs.Args()
 	if len(rest) != 1 {
@@ -11014,6 +11092,7 @@ func runSnapshotDelete(args []string) {
 	fs := flag.NewFlagSet("snapshot delete", flag.ExitOnError)
 	endpoint, accessKey, secretKey, region := snapshotClientFlags(fs)
 	fs.Parse(args)
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
 	rest := fs.Args()
 	if len(rest) != 1 {
@@ -11340,6 +11419,7 @@ func runSnapshotRestore(args []string) {
 	fs := flag.NewFlagSet("snapshot restore", flag.ExitOnError)
 	endpoint, accessKey, secretKey, region := snapshotClientFlags(fs)
 	fs.Parse(args)
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
 	rest := fs.Args()
 	if len(rest) != 2 {
@@ -11616,8 +11696,11 @@ func runDiff(args []string) {
 	fromSecretKey := fs.String("from-secret-key", defaultSecretAccessKey, "object A's secret access key")
 	toAccessKey := fs.String("to-access-key", defaultAccessKeyID, "object B's access key ID")
 	toSecretKey := fs.String("to-secret-key", defaultSecretAccessKey, "object B's secret access key")
-	region := fs.String("region", defaultRegion, "SigV4 region (both endpoints)")
+	region := fs.String("region", defaultRegion, "SigV4 region (both endpoints; default: AWS_REGION)")
 	fs.Parse(args)
+	// P1-A5: diff is a two-endpoint command -- see section 15a-quater;
+	// only the shared -region flag gets AWS_REGION fallback.
+	*region = envOverride(fs, "region", envAWSRegion, *region)
 
 	rest := fs.Args()
 	if len(rest) != 2 {
@@ -11864,12 +11947,13 @@ func printInspectChunks(w io.Writer, rows []inspectChunkRow, limit int, all bool
 func runInspect(args []string) {
 	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "http://127.0.0.1:9000", "ZeroS3 endpoint base URL (scheme://host[:port])")
-	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID")
-	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key")
-	region := fs.String("region", defaultRegion, "SigV4 region")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID (default: AWS_ACCESS_KEY_ID)")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key (default: AWS_SECRET_ACCESS_KEY)")
+	region := fs.String("region", defaultRegion, "SigV4 region (default: AWS_REGION)")
 	showChunks := fs.Bool("chunks", false, "also list every distinct chunk occurrence (offset/length/digest/reachable-root-count); bounded to the first 50 rows unless -chunks-all is set")
 	showAllChunks := fs.Bool("chunks-all", false, "with -chunks, list every chunk occurrence with no truncation")
 	fs.Parse(args)
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
 	rest := fs.Args()
 	if len(rest) != 1 {
@@ -11956,12 +12040,76 @@ func printVerifyHuman(w io.Writer, r VerifyResult) {
 	}
 }
 
+// P1-B2/B5 conservative http.Server hardening/shutdown values. See the
+// doc comments on the corresponding http.Server field assignments (and
+// the shutdown select) in runServe below for what each protects against
+// and why no global ReadTimeout/WriteTimeout exists (P1-B3).
+const (
+	serveReadHeaderTimeout = 10 * time.Second
+	serveIdleTimeout       = 120 * time.Second
+	serveMaxHeaderBytes    = 1 << 20 // 1 MiB, matches http.DefaultMaxHeaderBytes
+	serveShutdownGrace     = 30 * time.Second
+)
+
+// newHardenedHTTPServer builds the http.Server `zeros3 serve` runs,
+// factored out of runServe purely so its exact field values (P1-B2) are
+// independently testable without starting a real listener. No
+// ReadTimeout/WriteTimeout is set (P1-B3, deliberate): either would
+// impose one deadline across an entire request/response, including its
+// body -- which would regress large uploads/downloads, multipart,
+// replication, sync, and any controlled-latency transfer ZeroS3 already
+// legitimately supports. Per-connection idleness is already bounded by
+// IdleTimeout; request-level cancellation remains the client's and
+// request context's responsibility, exactly as before P1.
+func newHardenedHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:    addr,
+		Handler: handler,
+
+		// ReadHeaderTimeout: bounds how long a client may take sending
+		// its request line + headers before the connection is dropped,
+		// closing off the classic slow-loris hazard of an http.Server
+		// with no header deadline at all. 10s is generous for genuine
+		// SigV4 clients (the whole header block is typically a few KB at
+		// most) while still being a real, finite bound.
+		ReadHeaderTimeout: serveReadHeaderTimeout,
+
+		// IdleTimeout: bounds how long a keep-alive connection may sit
+		// between requests before it is closed, so an indefinitely idle
+		// client can't pin a connection (and its goroutine/fd) forever.
+		// It does not touch a connection that is actively
+		// sending/receiving a request body or response.
+		IdleTimeout: serveIdleTimeout,
+
+		// MaxHeaderBytes: bounds total header size per request. 1MiB
+		// (Go's own http.DefaultMaxHeaderBytes) comfortably covers a
+		// SigV4 Authorization header, a full set of user-metadata
+		// headers, and multipart/presign-related headers, while still
+		// being a real, finite bound instead of "none at all".
+		MaxHeaderBytes: serveMaxHeaderBytes,
+	}
+}
+
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	addr := fs.String("addr", "127.0.0.1:9000", "listen address")
 	vhostBase := fs.String("vhost-base", "", "base domain for virtual-hosted-style addressing (bucket.<base>); empty disables it and only path-style is served")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID clients must sign with (default: AWS_ACCESS_KEY_ID)")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key clients must sign with (default: AWS_SECRET_ACCESS_KEY)")
+	region := fs.String("region", defaultRegion, "SigV4 region clients must sign with (default: AWS_REGION)")
+	tlsCert := fs.String("tls-cert", "", "P1-C: TLS certificate file (PEM); requires -tls-key. Neither flag: plain HTTP (default). Both: HTTPS via Go's standard-library TLS server. Exactly one without the other is a startup error.")
+	tlsKey := fs.String("tls-key", "", "P1-C: TLS private key file (PEM); requires -tls-cert. See -tls-cert.")
 	fs.Parse(args)
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
+
+	// P1-C1: -tls-cert/-tls-key are an all-or-nothing pair, checked
+	// before anything else so a bad TLS invocation fails fast without
+	// even opening the store.
+	if (*tlsCert == "") != (*tlsKey == "") {
+		fmt.Fprintln(os.Stderr, "zeros3: serve: -tls-cert and -tls-key must both be supplied together (or neither, for plain HTTP)")
+		os.Exit(2)
+	}
 
 	store, err := OpenStore(*storeDir)
 	if err != nil {
@@ -11981,16 +12129,100 @@ func runServe(args []string) {
 	defer lock.release()
 
 	srv := NewServer(store, Credentials{
-		AccessKeyID:     defaultAccessKeyID,
-		SecretAccessKey: defaultSecretAccessKey,
-	}, defaultRegion)
+		AccessKeyID:     *accessKey,
+		SecretAccessKey: *secretKey,
+	}, *region)
 	if *vhostBase != "" {
 		srv.SetVirtualHostBase(*vhostBase)
 	}
 
-	httpServer := &http.Server{Addr: *addr, Handler: srv}
-	log.Printf("zeros3: listening on %s (store=%s)", *addr, *storeDir)
-	log.Fatal(httpServer.ListenAndServe())
+	httpServer := newHardenedHTTPServer(*addr, srv)
+
+	// P1-B4/B5/B6: graceful shutdown on SIGINT/SIGTERM. sigCh is buffered
+	// so a second signal arriving before it's read is never dropped --
+	// it is what implements B6's "second signal forces immediate exit"
+	// below (signal.Stop only stops relaying to a channel; Go does not
+	// restore the OS's default terminate-on-SIGTERM disposition just
+	// because a channel stops listening, so that behavior has to be
+	// implemented explicitly rather than assumed).
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	serveErr := make(chan error, 1)
+	useTLS := *tlsCert != ""
+	go func() {
+		if useTLS {
+			// P1-C3: ordinary stdlib ListenAndServeTLS -- same handler,
+			// same hardening/shutdown above, no custom crypto/tls.Config,
+			// no ACME/cert generation/renewal/mTLS.
+			serveErr <- httpServer.ListenAndServeTLS(*tlsCert, *tlsKey)
+		} else {
+			serveErr <- httpServer.ListenAndServe()
+		}
+	}()
+
+	log.Printf("zeros3: listening on %s (store=%s, tls=%v)", *addr, *storeDir, useTLS)
+
+	select {
+	case err := <-serveErr:
+		// B11: http.ErrServerClosed here would only mean Shutdown was
+		// already called elsewhere, which never happens on this path --
+		// so any error reaching this branch is a genuine bind/serve
+		// failure, not a normal shutdown, and log.Fatalf (nonzero exit)
+		// is correct.
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("zeros3: serve failed: %v", err)
+		}
+	case sig := <-sigCh:
+		// B5: stop accepting new connections immediately, then let
+		// in-flight handlers finish, bounded by serveShutdownGrace.
+		// Abrupt-kill durability (SIGKILL, power loss) is entirely
+		// unaffected -- this is only the clean path taken for a normal
+		// termination signal; the journal/CAS crash model documented in
+		// STATUS.md's "Durability contract" is the durability guarantee
+		// either way.
+		log.Printf("zeros3: %s received, draining active requests (grace=%s)", sig, serveShutdownGrace)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), serveShutdownGrace)
+		defer cancel()
+
+		shutdownDone := make(chan error, 1)
+		go func() { shutdownDone <- httpServer.Shutdown(shutdownCtx) }()
+
+		select {
+		case err := <-shutdownDone:
+			if err != nil {
+				// B8: the grace period expired with at least one handler
+				// still active. Shutdown has already closed the listener
+				// (no new connections), but does NOT force-close that
+				// handler's connection -- so returning normally here
+				// would run this function's deferred store.Close()/
+				// lock.release() concurrently with whatever that handler
+				// goroutine is still doing to the store, a *new* hazard
+				// P1-B must not introduce (Store.Close only closes the
+				// journal file out from under it). Exiting immediately
+				// instead -- skipping those defers exactly like an
+				// abrupt kill would -- hands the interrupted work to the
+				// existing journal/CAS crash-recovery model (STATUS.md's
+				// "Durability contract"), never a new one. This is one
+				// of the two P1-B paths with a nonzero exit code,
+				// precisely because it did not cleanly finish.
+				log.Printf("zeros3: graceful shutdown grace period expired, exiting immediately: %v", err)
+				os.Exit(1)
+			}
+			log.Printf("zeros3: shutdown complete")
+		case sig2 := <-sigCh:
+			// B6: a second SIGINT/SIGTERM arriving while shutdown is
+			// already in progress forces immediate termination instead
+			// of waiting out the rest of the grace period -- exactly
+			// like the grace-expiry path above, this skips the deferred
+			// store.Close()/lock.release() on purpose (a handler may
+			// still be active) and hands the interrupted work to the
+			// existing crash-recovery model.
+			log.Printf("zeros3: second signal (%s) received during shutdown, forcing immediate exit", sig2)
+			os.Exit(1)
+		}
+	}
 }
 
 func runStats(args []string) {
@@ -12036,10 +12268,11 @@ func runVerify(args []string) {
 	deep := fs.Bool("deep", false, "re-hash every reachable chunk's actual bytes")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	repairFrom := fs.String("repair-from", "", "M8B-C: optional one-command detect->repair->reverify against this trusted ZeroS3 peer endpoint (equivalent to `zeros3 repair -from PEER` followed by another verify; empty disables it, the default)")
-	accessKey := fs.String("access-key", defaultAccessKeyID, "peer access key ID (only used with -repair-from)")
-	secretKey := fs.String("secret-key", defaultSecretAccessKey, "peer secret access key (only used with -repair-from)")
-	region := fs.String("region", defaultRegion, "SigV4 region (only used with -repair-from)")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "peer access key ID (only used with -repair-from; default: AWS_ACCESS_KEY_ID)")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "peer secret access key (only used with -repair-from; default: AWS_SECRET_ACCESS_KEY)")
+	region := fs.String("region", defaultRegion, "SigV4 region (only used with -repair-from; default: AWS_REGION)")
 	fs.Parse(args)
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
 	// -repair-from is M8B-C's only new behavior: everything below this
 	// block is byte-for-byte the pre-M8B runVerify, so a caller that never
@@ -12132,12 +12365,13 @@ func runPresign(args []string) {
 	bucket := fs.String("bucket", "", "bucket name (required)")
 	key := fs.String("key", "", "object key (required)")
 	expires := fs.Duration("expires", 15*time.Minute, "URL validity duration (1s..168h / 604800s)")
-	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID")
-	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key")
-	region := fs.String("region", defaultRegion, "SigV4 region")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID (default: AWS_ACCESS_KEY_ID)")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key (default: AWS_SECRET_ACCESS_KEY)")
+	region := fs.String("region", defaultRegion, "SigV4 region (default: AWS_REGION)")
 	endpoint := fs.String("endpoint", "http://127.0.0.1:9000", "S3 endpoint base URL (scheme://host[:port])")
 	vhost := fs.Bool("vhost", false, "virtual-hosted-style addressing (bucket.<endpoint host>) instead of path-style")
 	fs.Parse(args[1:])
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
 	if *bucket == "" || *key == "" {
 		fmt.Fprintln(os.Stderr, "zeros3: presign: -bucket and -key are required")
