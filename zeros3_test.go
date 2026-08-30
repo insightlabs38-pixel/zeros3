@@ -20799,3 +20799,580 @@ func TestConditionalPut_StaleIfMatchLosesAfterDeleteRecreate(t *testing.T) {
 		t.Fatalf("expected the recreated object to remain current, got %q", body)
 	}
 }
+
+// =============================================================================
+// M8F-B: conditional GET/HEAD -- If-Match / If-None-Match read
+// preconditions (section 10b)
+// =============================================================================
+
+func TestConditionalGetHTTP_IfMatch_MatchSucceeds(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", []byte("v1"), nil)
+	put.Body.Close()
+	etag := put.Header.Get("ETag")
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, map[string]string{"If-Match": etag})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(body) != "v1" {
+		t.Fatalf("expected 200 with body v1, got %d %q", resp.StatusCode, body)
+	}
+}
+
+func TestConditionalGetHTTP_IfMatch_MismatchFailsWith412(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", []byte("v1"), nil)
+	put.Body.Close()
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, map[string]string{"If-Match": `"0123456789abcdef0123456789abcdef"`})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("expected 412, got %d", resp.StatusCode)
+	}
+	var errBody s3ErrorBody
+	if err := xml.Unmarshal(body, &errBody); err != nil {
+		t.Fatalf("expected an S3-shaped error body: %v", err)
+	}
+	if errBody.Code != "PreconditionFailed" {
+		t.Fatalf("expected PreconditionFailed, got %q", errBody.Code)
+	}
+}
+
+func TestConditionalHeadHTTP_IfMatch_MatchAndMismatch(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", []byte("v1"), nil)
+	put.Body.Close()
+	etag := put.Header.Get("ETag")
+
+	ok := doSignedRequest(t, client, ts.URL, signer, http.MethodHead, "/b/k", nil, map[string]string{"If-Match": etag})
+	ok.Body.Close()
+	if ok.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for a matching If-Match HEAD, got %d", ok.StatusCode)
+	}
+
+	mismatch := doSignedRequest(t, client, ts.URL, signer, http.MethodHead, "/b/k", nil, map[string]string{"If-Match": `"0123456789abcdef0123456789abcdef"`})
+	mismatch.Body.Close()
+	if mismatch.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("expected 412 for a mismatching If-Match HEAD, got %d", mismatch.StatusCode)
+	}
+}
+
+func TestConditionalGetHTTP_IfNoneMatch_MatchReturns304(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", []byte("v1"), nil)
+	put.Body.Close()
+	etag := put.Header.Get("ETag")
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, map[string]string{"If-None-Match": etag})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("expected 304, got %d", resp.StatusCode)
+	}
+	if len(body) != 0 {
+		t.Fatalf("expected an empty 304 body, got %d bytes", len(body))
+	}
+	if got := resp.Header.Get("ETag"); got != etag {
+		t.Fatalf("expected the 304 response to still carry the ETag header, got %q want %q", got, etag)
+	}
+}
+
+func TestConditionalGetHTTP_IfNoneMatch_MismatchServesNormally(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", []byte("v1"), nil)
+	put.Body.Close()
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, map[string]string{"If-None-Match": `"0123456789abcdef0123456789abcdef"`})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(body) != "v1" {
+		t.Fatalf("expected a normal 200 GET, got %d %q", resp.StatusCode, body)
+	}
+}
+
+func TestConditionalHeadHTTP_IfNoneMatch_MatchAndMismatch(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", []byte("v1"), nil)
+	put.Body.Close()
+	etag := put.Header.Get("ETag")
+
+	match := doSignedRequest(t, client, ts.URL, signer, http.MethodHead, "/b/k", nil, map[string]string{"If-None-Match": etag})
+	match.Body.Close()
+	if match.StatusCode != http.StatusNotModified {
+		t.Fatalf("expected 304 for a matching If-None-Match HEAD, got %d", match.StatusCode)
+	}
+
+	mismatch := doSignedRequest(t, client, ts.URL, signer, http.MethodHead, "/b/k", nil, map[string]string{"If-None-Match": `"0123456789abcdef0123456789abcdef"`})
+	mismatch.Body.Close()
+	if mismatch.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for a mismatching If-None-Match HEAD, got %d", mismatch.StatusCode)
+	}
+}
+
+func TestConditionalGetHTTP_RangeInteraction(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	body := bytes.Repeat([]byte("0123456789"), 1000) // 10000 bytes
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", body, nil)
+	put.Body.Close()
+	etag := put.Header.Get("ETag")
+
+	t.Run("If-Match passes + Range", func(t *testing.T) {
+		resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, map[string]string{"If-Match": etag, "Range": "bytes=0-99"})
+		got, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusPartialContent {
+			t.Fatalf("expected 206, got %d", resp.StatusCode)
+		}
+		if !bytes.Equal(got, body[:100]) {
+			t.Fatalf("expected the requested range's bytes, got %d bytes", len(got))
+		}
+	})
+
+	t.Run("If-Match fails + Range", func(t *testing.T) {
+		resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, map[string]string{"If-Match": `"0123456789abcdef0123456789abcdef"`, "Range": "bytes=0-99"})
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusPreconditionFailed {
+			t.Fatalf("expected the failed precondition (412) to short-circuit Range processing, got %d", resp.StatusCode)
+		}
+		if resp.Header.Get("Content-Range") != "" {
+			t.Fatalf("expected no Content-Range header on a 412 response, got %q", resp.Header.Get("Content-Range"))
+		}
+	})
+
+	t.Run("If-None-Match matches + Range", func(t *testing.T) {
+		resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, map[string]string{"If-None-Match": etag, "Range": "bytes=0-99"})
+		got, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotModified {
+			t.Fatalf("expected the matched If-None-Match (304) to short-circuit Range processing, got %d", resp.StatusCode)
+		}
+		if len(got) != 0 {
+			t.Fatalf("expected an empty 304 body, got %d bytes", len(got))
+		}
+		if resp.Header.Get("Content-Range") != "" {
+			t.Fatalf("expected no Content-Range header on a 304 response, got %q", resp.Header.Get("Content-Range"))
+		}
+	})
+}
+
+func TestConditionalGetHTTP_MissingObjectIgnoresCondition(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/nosuchkey", nil, map[string]string{"If-Match": `"0123456789abcdef0123456789abcdef"`})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected NoSuchKey (404) regardless of the conditional header, got %d: %s", resp.StatusCode, body)
+	}
+	var errBody s3ErrorBody
+	if err := xml.Unmarshal(body, &errBody); err != nil {
+		t.Fatalf("expected an S3-shaped error body: %v", err)
+	}
+	if errBody.Code != "NoSuchKey" {
+		t.Fatalf("expected NoSuchKey, got %q", errBody.Code)
+	}
+}
+
+func TestConditionalGetHTTP_MultipartCurrentETag(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	uploadID := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "k")
+	part := genRandomBytes(43, 6*1024*1024)
+	partETag, status, _ := doUploadPart(t, client, ts.URL, signer, "b", "k", uploadID, 1, part)
+	if status != http.StatusOK {
+		t.Fatal("upload part failed")
+	}
+	result, cStatus, _ := doCompleteMultipartUpload(t, client, ts.URL, signer, "b", "k", uploadID, []completedPartXML{{PartNumber: 1, ETag: partETag}})
+	if cStatus != http.StatusOK {
+		t.Fatal("complete failed")
+	}
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, map[string]string{"If-Match": result.ETag})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected If-Match against the current multipart ETag to succeed, got %d", resp.StatusCode)
+	}
+}
+
+func TestConditionalGetHTTP_QuotedUnquotedAndCaseInsensitive(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", []byte("v1"), nil)
+	put.Body.Close()
+	etag := strings.Trim(put.Header.Get("ETag"), `"`)
+
+	unquoted := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, map[string]string{"If-Match": etag})
+	unquoted.Body.Close()
+	if unquoted.StatusCode != http.StatusOK {
+		t.Fatalf("expected an unquoted If-Match to be accepted, got %d", unquoted.StatusCode)
+	}
+
+	upper := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, map[string]string{"If-Match": `"` + strings.ToUpper(etag) + `"`})
+	upper.Body.Close()
+	if upper.StatusCode != http.StatusOK {
+		t.Fatalf("expected a quoted, differently-cased If-Match to match case-insensitively, got %d", upper.StatusCode)
+	}
+}
+
+func TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", []byte("v1"), nil)
+	put.Body.Close()
+
+	cases := []struct {
+		name    string
+		headers map[string]string
+	}{
+		{"If-Match unterminated quote", map[string]string{"If-Match": `"abc`}},
+		{"If-Match comma list", map[string]string{"If-Match": `"a","b"`}},
+		{"If-Match weak validator", map[string]string{"If-Match": `W/"abc"`}},
+		{"If-Match star", map[string]string{"If-Match": "*"}},
+		{"If-None-Match star", map[string]string{"If-None-Match": "*"}},
+		{"If-None-Match weak validator", map[string]string{"If-None-Match": `W/"abc"`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, tc.headers)
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400 for %s, got %d: %s", tc.name, resp.StatusCode, body)
+			}
+			var errBody s3ErrorBody
+			if err := xml.Unmarshal(body, &errBody); err != nil {
+				t.Fatalf("expected an S3-shaped error body: %v", err)
+			}
+			if errBody.Code != "InvalidArgument" {
+				t.Fatalf("expected InvalidArgument for %s, got %q", tc.name, errBody.Code)
+			}
+		})
+	}
+}
+
+func TestConditionalGetHTTP_HistoricalETagIsNotCurrentForIfMatch(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	v1 := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", []byte("v1"), nil)
+	v1.Body.Close()
+	etagA := v1.Header.Get("ETag")
+	v2 := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/k", []byte("v2, now current"), nil)
+	v2.Body.Close()
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/k", nil, map[string]string{"If-Match": etagA})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("expected If-Match against a superseded historical ETag to fail with 412, got %d", resp.StatusCode)
+	}
+}
+
+// =============================================================================
+// M8F-C: conditional CopyObject source predicates --
+// x-amz-copy-source-if-match / x-amz-copy-source-if-none-match
+// =============================================================================
+
+func TestCopyObjectHTTP_SourceIfMatch_MatchSucceeds(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/src", []byte("source-bytes"), nil)
+	put.Body.Close()
+	srcETag := put.Header.Get("ETag")
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst", nil, map[string]string{
+		"X-Amz-Copy-Source":          "/b/src",
+		"X-Amz-Copy-Source-If-Match": srcETag,
+	})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected the copy to succeed, got %d: %s", resp.StatusCode, body)
+	}
+
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/dst", nil, nil)
+	got, _ := io.ReadAll(get.Body)
+	get.Body.Close()
+	if string(got) != "source-bytes" {
+		t.Fatalf("expected the destination to hold the source's exact bytes, got %q", got)
+	}
+}
+
+func TestCopyObjectHTTP_SourceIfMatch_MismatchFailsWith412(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/src", []byte("source-bytes"), nil)
+	put.Body.Close()
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst", nil, map[string]string{
+		"X-Amz-Copy-Source":          "/b/src",
+		"X-Amz-Copy-Source-If-Match": `"0123456789abcdef0123456789abcdef"`,
+	})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("expected 412, got %d: %s", resp.StatusCode, body)
+	}
+	var errBody s3ErrorBody
+	if err := xml.Unmarshal(body, &errBody); err != nil {
+		t.Fatalf("expected an S3-shaped error body: %v", err)
+	}
+	if errBody.Code != "PreconditionFailed" {
+		t.Fatalf("expected PreconditionFailed, got %q", errBody.Code)
+	}
+
+	get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/dst", nil, nil)
+	get.Body.Close()
+	if get.StatusCode != http.StatusNotFound {
+		t.Fatalf("a rejected source-conditional copy must not create the destination, got %d", get.StatusCode)
+	}
+}
+
+func TestCopyObjectHTTP_SourceIfNoneMatch_MismatchSucceeds(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/src", []byte("source-bytes"), nil)
+	put.Body.Close()
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst", nil, map[string]string{
+		"X-Amz-Copy-Source":               "/b/src",
+		"X-Amz-Copy-Source-If-None-Match": `"0123456789abcdef0123456789abcdef"`,
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected the copy to succeed against a mismatching If-None-Match, got %d", resp.StatusCode)
+	}
+}
+
+func TestCopyObjectHTTP_SourceIfNoneMatch_MatchFailsWith412(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/src", []byte("source-bytes"), nil)
+	put.Body.Close()
+	srcETag := put.Header.Get("ETag")
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst", nil, map[string]string{
+		"X-Amz-Copy-Source":               "/b/src",
+		"X-Amz-Copy-Source-If-None-Match": srcETag,
+	})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("expected 412 when x-amz-copy-source-if-none-match matches the source's current ETag, got %d: %s", resp.StatusCode, body)
+	}
+}
+
+func TestCopyObjectHTTP_SourceIfMatch_SupersededHistoricalETagFails(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	v1 := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/src", []byte("v1"), nil)
+	v1.Body.Close()
+	etagA := v1.Header.Get("ETag")
+	v2 := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/src", []byte("v2, now current"), nil)
+	v2.Body.Close()
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst", nil, map[string]string{
+		"X-Amz-Copy-Source":          "/b/src",
+		"X-Amz-Copy-Source-If-Match": etagA,
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("expected copy source If-Match against a superseded historical ETag to fail, got %d", resp.StatusCode)
+	}
+}
+
+func TestCopyObjectHTTP_SourceIfMatch_WithMetadataReplaceDirective(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/src", []byte("source-bytes"), map[string]string{"Content-Type": "text/plain"})
+	put.Body.Close()
+	srcETag := put.Header.Get("ETag")
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst", nil, map[string]string{
+		"X-Amz-Copy-Source":          "/b/src",
+		"X-Amz-Copy-Source-If-Match": srcETag,
+		"X-Amz-Metadata-Directive":   "REPLACE",
+		"Content-Type":               "application/json",
+		"x-amz-meta-owner":           "alice",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected the conditional copy with REPLACE metadata to succeed, got %d", resp.StatusCode)
+	}
+
+	head := doHeadObject(t, client, ts.URL, signer, "/b/dst")
+	head.Body.Close()
+	if got := head.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("expected REPLACE'd Content-Type, got %q", got)
+	}
+	if got := head.Header.Get("x-amz-meta-owner"); got != "alice" {
+		t.Fatalf("expected REPLACE'd metadata, got %q", got)
+	}
+}
+
+func TestCopyObjectHTTP_SourceConditionMalformedRejected(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/src", []byte("source-bytes"), nil)
+	put.Body.Close()
+
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/dst", nil, map[string]string{
+		"X-Amz-Copy-Source":          "/b/src",
+		"X-Amz-Copy-Source-If-Match": `"unterminated`,
+	})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a malformed x-amz-copy-source-if-match, got %d: %s", resp.StatusCode, body)
+	}
+	var errBody s3ErrorBody
+	if err := xml.Unmarshal(body, &errBody); err != nil {
+		t.Fatalf("expected an S3-shaped error body: %v", err)
+	}
+	if errBody.Code != "InvalidArgument" {
+		t.Fatalf("expected InvalidArgument, got %q", errBody.Code)
+	}
+}
+
+// TestCopyObject_SourceConditionUsesAtomicallyCapturedRevision proves
+// CopyObject's source precondition (10a's doc comment on CopyObject)
+// cannot observe one source revision and then copy another: the source is
+// captured once via lookupObject, the condition is evaluated against that
+// exact capture, and the manifest/chunks used afterward are the ones that
+// capture already pinned -- never re-fetched. This exercises that
+// end-to-end at the Store level: a copy whose If-Match names the CURRENT
+// revision must copy that revision's exact bytes, even though a second,
+// distinct revision already exists in the source's history by the time the
+// copy runs.
+func TestCopyObject_SourceConditionUsesAtomicallyCapturedRevision(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "src", []byte("v1"), "text/plain", nil); err != nil {
+		t.Fatal(err)
+	}
+	v2, err := s.PutObject("b", "src", []byte("v2-is-current"), "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entry, _, err := s.CopyObject(CopyObjectRequest{
+		SrcBucket: "b", SrcKey: "src", DstBucket: "b", DstKey: "dst",
+		SrcIfMatchETag: v2.etag,
+	})
+	if err != nil {
+		t.Fatalf("expected the copy to succeed against the current revision's ETag, got %v", err)
+	}
+	if entry.etag != v2.etag {
+		t.Fatalf("expected the destination to clone v2's ETag, got %q want %q", entry.etag, v2.etag)
+	}
+	_, body, err := s.GetObject("b", "dst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "v2-is-current" {
+		t.Fatalf("expected the destination to hold v2's exact bytes, got %q", body)
+	}
+}
