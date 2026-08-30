@@ -17893,3 +17893,1373 @@ func TestCLI_Fork_RestartThenDeepVerifyGreen(t *testing.T) {
 		t.Fatalf("verify -deep after restart failed: code=%d stdout=%s stderr=%s", verifyCode, verifyOut, verifyErr)
 	}
 }
+
+// =============================================================================
+// M8E-A: durable namespace snapshots -- format, create, list/show, GC
+// pinning, delete (section 15h). M8E-B (restore, section 15i) has its own
+// test block further below.
+// =============================================================================
+
+func newSnapshotTestServer(t *testing.T, buckets ...string) (srv *Server, storeDir string, cfg syncClientConfig, closeFn func()) {
+	t.Helper()
+	dir, s, creds, region := newSyncTestServer(t)
+	for _, b := range buckets {
+		if err := s.store.CreateBucket(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ts := httptest.NewServer(s)
+	cfg = syncClientConfig{Endpoint: ts.URL, Creds: creds, Region: region, HTTPClient: ts.Client()}
+	return s, dir, cfg, ts.Close
+}
+
+// -----------------------------------------------------------------------
+// Format: encode/decode round-trip and every corruption mode
+// -----------------------------------------------------------------------
+
+func sampleSnapshotDescriptor() snapshotDescriptorV1 {
+	sum := sha256.Sum256([]byte("hello"))
+	return snapshotDescriptorV1{
+		SnapshotFormatVersion: snapshotFormatVersion,
+		SnapshotID:            newUUIDv7(),
+		CreatedAt:             time.Now().UTC(),
+		SourceBucket:          "b",
+		SourcePrefix:          "p",
+		Entries: []snapshotEntryV1{
+			{Key: "a.txt", ManifestUUID: newUUIDv7(), ManifestSHA256: hex.EncodeToString(sum[:]), Size: 5, ETag: "e1", ContentType: "text/plain"},
+			{Key: "b.txt", ManifestUUID: newUUIDv7(), ManifestSHA256: hex.EncodeToString(sum[:]), Size: 5, ETag: "e2", ContentType: "text/plain"},
+		},
+	}
+}
+
+func TestSnapshotFormat_ValidRoundTrip(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	data, err := encodeSnapshotDescriptor(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeSnapshotDescriptor(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.SnapshotID != d.SnapshotID || got.SourceBucket != d.SourceBucket || got.SourcePrefix != d.SourcePrefix {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", got, d)
+	}
+	if len(got.Entries) != 2 || got.Entries[0].Key != "a.txt" || got.Entries[1].Key != "b.txt" {
+		t.Fatalf("entries round-trip mismatch: %+v", got.Entries)
+	}
+}
+
+func TestSnapshotFormat_DeterministicEncode(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	a, err := encodeSnapshotDescriptor(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := encodeSnapshotDescriptor(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Fatal("two encodes of the same descriptor were not byte-identical")
+	}
+}
+
+func TestSnapshotFormat_BadMagic(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	data, _ := encodeSnapshotDescriptor(d)
+	data[0] = 'X'
+	if _, err := decodeSnapshotDescriptor(data); err == nil || !errors.Is(err, errSnapshotCorrupt) {
+		t.Fatalf("bad magic: got err=%v, want errSnapshotCorrupt", err)
+	}
+}
+
+func TestSnapshotFormat_UnsupportedVersion(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	data, _ := encodeSnapshotDescriptor(d)
+	binary.BigEndian.PutUint16(data[4:6], 99)
+	if _, err := decodeSnapshotDescriptor(data); err == nil || !errors.Is(err, errSnapshotCorrupt) {
+		t.Fatalf("unsupported version: got err=%v, want errSnapshotCorrupt", err)
+	}
+}
+
+func TestSnapshotFormat_Truncated(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	data, _ := encodeSnapshotDescriptor(d)
+	for _, n := range []int{0, 1, 5, snapshotHeaderSize, len(data) - 1} {
+		if _, err := decodeSnapshotDescriptor(data[:n]); err == nil || !errors.Is(err, errSnapshotCorrupt) {
+			t.Fatalf("truncated to %d bytes: got err=%v, want errSnapshotCorrupt", n, err)
+		}
+	}
+}
+
+func TestSnapshotFormat_BadCRC(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	data, _ := encodeSnapshotDescriptor(d)
+	data[len(data)-1] ^= 0xFF
+	if _, err := decodeSnapshotDescriptor(data); err == nil || !errors.Is(err, errSnapshotCorrupt) {
+		t.Fatalf("bad crc: got err=%v, want errSnapshotCorrupt", err)
+	}
+}
+
+func TestSnapshotFormat_MalformedLength(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	data, _ := encodeSnapshotDescriptor(d)
+	binary.BigEndian.PutUint32(data[6:10], uint32(len(data)*10))
+	if _, err := decodeSnapshotDescriptor(data); err == nil || !errors.Is(err, errSnapshotCorrupt) {
+		t.Fatalf("malformed length: got err=%v, want errSnapshotCorrupt", err)
+	}
+}
+
+func TestSnapshotFormat_OversizedDeclaredLength(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	data, _ := encodeSnapshotDescriptor(d)
+	binary.BigEndian.PutUint32(data[6:10], uint32(maxSnapshotPayload)+1)
+	if _, err := decodeSnapshotDescriptor(data); err == nil || !errors.Is(err, errSnapshotCorrupt) {
+		t.Fatalf("oversized declared length: got err=%v, want errSnapshotCorrupt", err)
+	}
+}
+
+func TestSnapshotFormat_InvalidSnapshotID(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	d.SnapshotID = "not-a-uuid"
+	data, err := encodeSnapshotDescriptor(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeSnapshotDescriptor(data); err == nil || !errors.Is(err, errInvalidSnapshot) {
+		t.Fatalf("invalid snapshot id: got err=%v, want errInvalidSnapshot", err)
+	}
+}
+
+func TestSnapshotFormat_DuplicateEntryKey(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	d.Entries[1].Key = d.Entries[0].Key
+	data, _ := encodeSnapshotDescriptor(d)
+	if _, err := decodeSnapshotDescriptor(data); err == nil || !errors.Is(err, errSnapshotCorrupt) {
+		t.Fatalf("duplicate entry key: got err=%v, want errSnapshotCorrupt", err)
+	}
+}
+
+func TestSnapshotFormat_UnsortedEntries(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	d.Entries[0], d.Entries[1] = d.Entries[1], d.Entries[0]
+	data, _ := encodeSnapshotDescriptor(d)
+	if _, err := decodeSnapshotDescriptor(data); err == nil || !errors.Is(err, errSnapshotCorrupt) {
+		t.Fatalf("unsorted entries: got err=%v, want errSnapshotCorrupt", err)
+	}
+}
+
+func TestSnapshotFormat_MalformedManifestSHA256(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	d.Entries[0].ManifestSHA256 = "not-hex"
+	data, _ := encodeSnapshotDescriptor(d)
+	if _, err := decodeSnapshotDescriptor(data); err == nil || !errors.Is(err, errSnapshotCorrupt) {
+		t.Fatalf("malformed manifest sha256: got err=%v, want errSnapshotCorrupt", err)
+	}
+}
+
+func TestSnapshotFormat_MalformedManifestUUID(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	d.Entries[0].ManifestUUID = "not-a-uuid"
+	data, _ := encodeSnapshotDescriptor(d)
+	if _, err := decodeSnapshotDescriptor(data); err == nil || !errors.Is(err, errSnapshotCorrupt) {
+		t.Fatalf("malformed manifest uuid: got err=%v, want errSnapshotCorrupt", err)
+	}
+}
+
+func TestSnapshotFormat_EmptyEntriesValid(t *testing.T) {
+	d := sampleSnapshotDescriptor()
+	d.Entries = nil
+	data, err := encodeSnapshotDescriptor(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeSnapshotDescriptor(data)
+	if err != nil {
+		t.Fatalf("empty-entries descriptor should be valid: %v", err)
+	}
+	if len(got.Entries) != 0 {
+		t.Fatalf("want 0 entries, got %d", len(got.Entries))
+	}
+}
+
+func TestValidSnapshotID(t *testing.T) {
+	good := newUUIDv7()
+	if !validSnapshotID(good) {
+		t.Fatalf("newUUIDv7 output %q rejected", good)
+	}
+	bad := []string{"", "short", good + "x", strings.ToUpper(good), "../../etc/passwd", good[:35] + "g", strings.Replace(good, "-", "_", 1)}
+	for _, id := range bad {
+		if validSnapshotID(id) {
+			t.Fatalf("expected %q to be rejected", id)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// Create: server-side capture, entry-count/scale, weird keys
+// -----------------------------------------------------------------------
+
+func TestSnapshotCreate_EmptyPrefix_WholeBucket(t *testing.T) {
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	putObj(t, srv, "b", "x.bin", []byte("hello"))
+	putObj(t, srv, "b", "y.bin", []byte("world"))
+
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ObjectCount != 2 {
+		t.Fatalf("ObjectCount = %d, want 2", summary.ObjectCount)
+	}
+	if summary.LogicalBytes != 10 {
+		t.Fatalf("LogicalBytes = %d, want 10", summary.LogicalBytes)
+	}
+	if summary.SourceBucket != "b" || summary.SourcePrefix != "" {
+		t.Fatalf("summary scope mismatch: %+v", summary)
+	}
+	if !validSnapshotID(summary.SnapshotID) {
+		t.Fatalf("returned snapshot ID %q is not a valid UUID", summary.SnapshotID)
+	}
+}
+
+func TestSnapshotCreate_OneObject(t *testing.T) {
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	putObj(t, srv, "b", "only.bin", genRandomBytes(1, 1234))
+
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ObjectCount != 1 || summary.LogicalBytes != 1234 {
+		t.Fatalf("summary = %+v, want 1 object / 1234 bytes", summary)
+	}
+}
+
+func TestSnapshotCreate_EmptyBucketZeroObjects(t *testing.T) {
+	_, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ObjectCount != 0 || summary.LogicalBytes != 0 {
+		t.Fatalf("summary = %+v, want 0/0", summary)
+	}
+}
+
+func TestSnapshotCreate_ManyObjects(t *testing.T) {
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	const n = 250
+	for i := 0; i < n; i++ {
+		putObj(t, srv, "b", fmt.Sprintf("obj/%04d.bin", i), []byte(fmt.Sprintf("content-%d", i)))
+	}
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ObjectCount != n {
+		t.Fatalf("ObjectCount = %d, want %d", summary.ObjectCount, n)
+	}
+}
+
+func TestSnapshotCreate_OverOneThousandObjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping large-scale snapshot test in -short mode")
+	}
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	const n = 1500
+	for i := 0; i < n; i++ {
+		putObj(t, srv, "b", fmt.Sprintf("k/%05d", i), []byte{byte(i)})
+	}
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ObjectCount != n {
+		t.Fatalf("ObjectCount = %d, want %d", summary.ObjectCount, n)
+	}
+	show, err := showSnapshotRemote(cfg, summary.SnapshotID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(show.Entries) != n {
+		t.Fatalf("show entries = %d, want %d", len(show.Entries), n)
+	}
+	for i, e := range show.Entries {
+		want := fmt.Sprintf("k/%05d", i)
+		if e.Key != want {
+			t.Fatalf("entries[%d].Key = %q, want %q (canonical ordering broken)", i, e.Key, want)
+		}
+	}
+}
+
+func TestSnapshotCreate_WeirdKeys(t *testing.T) {
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	keys := []string{
+		"space key.bin",
+		"percent%20literal.bin",
+		"hash#fragment.bin",
+		"question?mark.bin",
+		"unicode/héllo/wörld/日本語.bin",
+		"a//b///c.bin",
+		"trailing/slash/",
+	}
+	for _, k := range keys {
+		putObj(t, srv, "b", k, []byte("v-"+k))
+	}
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ObjectCount != len(keys) {
+		t.Fatalf("ObjectCount = %d, want %d", summary.ObjectCount, len(keys))
+	}
+	show, err := showSnapshotRemote(cfg, summary.SnapshotID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, e := range show.Entries {
+		got[e.Key] = true
+	}
+	for _, k := range keys {
+		if !got[k] {
+			t.Fatalf("captured entries missing weird key %q; got %+v", k, show.Entries)
+		}
+	}
+}
+
+func TestSnapshotCreate_PrefixScoping(t *testing.T) {
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	putObj(t, srv, "b", "data/a.bin", []byte("a"))
+	putObj(t, srv, "b", "data/b.bin", []byte("b"))
+	putObj(t, srv, "b", "other/c.bin", []byte("c"))
+
+	summary, err := createSnapshotRemote(cfg, "b", "data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ObjectCount != 2 {
+		t.Fatalf("ObjectCount = %d, want 2 (prefix scoping failed)", summary.ObjectCount)
+	}
+	show, err := showSnapshotRemote(cfg, summary.SnapshotID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range show.Entries {
+		if !strings.HasPrefix(e.Key, "data/") {
+			t.Fatalf("captured key %q does not carry expected prefix", e.Key)
+		}
+	}
+}
+
+func TestSnapshotCreate_NoSuchBucket(t *testing.T) {
+	_, _, cfg, closeFn := newSnapshotTestServer(t)
+	defer closeFn()
+	if _, err := createSnapshotRemote(cfg, "nope", ""); err == nil {
+		t.Fatal("expected error creating snapshot of nonexistent bucket")
+	}
+}
+
+func TestSnapshotCreate_CapturedRootsMatchLiveManifest(t *testing.T) {
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	entry := putObjRet(t, srv, "b", "x.bin", []byte("payload"))
+
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	show, err := showSnapshotRemote(cfg, summary.SnapshotID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(show.Entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(show.Entries))
+	}
+	if show.Entries[0].ManifestUUID != entry.manifestUUID {
+		t.Fatalf("captured manifest UUID = %q, want %q", show.Entries[0].ManifestUUID, entry.manifestUUID)
+	}
+}
+
+func putObjRet(t *testing.T, srv *Server, bucket, key string, data []byte) *objectEntry {
+	t.Helper()
+	e, err := srv.store.PutObject(bucket, key, data, "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+// -----------------------------------------------------------------------
+// Consistency: point-in-time capture semantics
+// -----------------------------------------------------------------------
+
+func TestSnapshotCreate_MutationAfterCaptureNotReflected(t *testing.T) {
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	first := putObjRet(t, srv, "b", "x.bin", []byte("version-1"))
+
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Overwrite the live object after the snapshot captured it.
+	if _, err := srv.store.PutObject("b", "x.bin", []byte("version-2-longer"), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	show, err := showSnapshotRemote(cfg, summary.SnapshotID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if show.Entries[0].ManifestUUID != first.manifestUUID {
+		t.Fatalf("snapshot entry changed after live mutation: got %q, want frozen %q", show.Entries[0].ManifestUUID, first.manifestUUID)
+	}
+	if show.Entries[0].Size != int64(len("version-1")) {
+		t.Fatalf("snapshot entry size changed after live mutation: got %d, want %d", show.Entries[0].Size, len("version-1"))
+	}
+}
+
+func TestSnapshotCreate_ObjectAddedAfterCaptureExcluded(t *testing.T) {
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	putObj(t, srv, "b", "before.bin", []byte("x"))
+
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	putObj(t, srv, "b", "after.bin", []byte("y"))
+
+	show, err := showSnapshotRemote(cfg, summary.SnapshotID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(show.Entries) != 1 || show.Entries[0].Key != "before.bin" {
+		t.Fatalf("expected only pre-capture object, got %+v", show.Entries)
+	}
+}
+
+func TestSnapshotCreate_DeletedAfterCaptureStillListedInSnapshot(t *testing.T) {
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	putObj(t, srv, "b", "gone.bin", []byte("data"))
+
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.DeleteObject("b", "gone.bin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := srv.store.GetObject("b", "gone.bin"); err == nil {
+		t.Fatal("expected live object to be gone")
+	}
+
+	show, err := showSnapshotRemote(cfg, summary.SnapshotID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(show.Entries) != 1 || show.Entries[0].Key != "gone.bin" {
+		t.Fatalf("snapshot should still list deleted-live object, got %+v", show.Entries)
+	}
+}
+
+func TestSnapshotCreate_ConcurrentPutsDuringCaptureYieldsCoherentSnapshot(t *testing.T) {
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	for i := 0; i < 40; i++ {
+		putObj(t, srv, "b", fmt.Sprintf("stable/%03d.bin", i), []byte("v1"))
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				srv.store.PutObject("b", fmt.Sprintf("churn/%d.bin", i), []byte("churn"), "application/octet-stream", nil)
+				i++
+			}
+		}
+	}()
+
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	close(stop)
+	wg.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ObjectCount < 40 {
+		t.Fatalf("expected at least the 40 stable objects captured, got %d", summary.ObjectCount)
+	}
+	// Every "stable/*" entry must show manifest v1's content length (2
+	// bytes) -- a torn/mixed-time capture would be internally
+	// inconsistent, not merely "missing some churn objects".
+	show, err := showSnapshotRemote(cfg, summary.SnapshotID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range show.Entries {
+		if strings.HasPrefix(e.Key, "stable/") && e.Size != 2 {
+			t.Fatalf("stable entry %q has size %d, want 2 (torn capture)", e.Key, e.Size)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// List / show
+// -----------------------------------------------------------------------
+
+func TestSnapshotList_MultipleSnapshotsOrderedByID(t *testing.T) {
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	putObj(t, srv, "b", "x.bin", []byte("x"))
+
+	var ids []string
+	for i := 0; i < 3; i++ {
+		s, err := createSnapshotRemote(cfg, "b", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, s.SnapshotID)
+	}
+	list, err := listSnapshotsRemote(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("list length = %d, want 3", len(list))
+	}
+	for i := 1; i < len(list); i++ {
+		if list[i-1].SnapshotID >= list[i].SnapshotID {
+			t.Fatalf("list not ID-ordered: %+v", list)
+		}
+	}
+}
+
+func TestSnapshotList_EmptyStore(t *testing.T) {
+	_, _, cfg, closeFn := newSnapshotTestServer(t)
+	defer closeFn()
+	list, err := listSnapshotsRemote(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("want empty list, got %+v", list)
+	}
+}
+
+func TestSnapshotShow_EntriesOmittedByDefault(t *testing.T) {
+	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	putObj(t, srv, "b", "x.bin", []byte("x"))
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	show, err := showSnapshotRemote(cfg, summary.SnapshotID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if show.Entries != nil {
+		t.Fatalf("entries should be omitted by default, got %+v", show.Entries)
+	}
+	if show.ObjectCount != 1 {
+		t.Fatalf("ObjectCount = %d, want 1", show.ObjectCount)
+	}
+}
+
+func TestSnapshotShow_UnknownID(t *testing.T) {
+	_, _, cfg, closeFn := newSnapshotTestServer(t)
+	defer closeFn()
+	if _, err := showSnapshotRemote(cfg, newUUIDv7(), false); err == nil {
+		t.Fatal("expected error for unknown snapshot ID")
+	}
+}
+
+func TestSnapshotShow_InvalidID(t *testing.T) {
+	_, _, cfg, closeFn := newSnapshotTestServer(t)
+	defer closeFn()
+	for _, bad := range []string{"not-a-uuid", "../../etc/passwd", "'; DROP TABLE", ""} {
+		if _, err := showSnapshotRemote(cfg, bad, false); err == nil {
+			t.Fatalf("expected error for invalid snapshot ID %q", bad)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// Restart durability
+// -----------------------------------------------------------------------
+
+func TestSnapshot_SurvivesRestart(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, store, "b", "x.bin", []byte("hello"), "text/plain", nil)
+	entries, err := store.captureSnapshotEntries("b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := snapshotDescriptorV1{
+		SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(),
+		CreatedAt: time.Now().UTC(), SourceBucket: "b", SourcePrefix: "", Entries: entries,
+	}
+	if err := store.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+
+	got, err := reopened.readSnapshot(desc.SnapshotID)
+	if err != nil {
+		t.Fatalf("snapshot did not survive restart: %v", err)
+	}
+	if len(got.Entries) != 1 || got.Entries[0].Key != "x.bin" {
+		t.Fatalf("restarted snapshot content mismatch: %+v", got)
+	}
+	list, err := reopened.listSnapshots()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list after restart: %+v, err=%v", list, err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// GC: snapshot pinning, sharing, corrupt fail-safe, release-on-delete
+// -----------------------------------------------------------------------
+
+func TestSnapshotGC_PinsOtherwiseUnreachableChunks(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	payload := genRandomBytes(42, 500_000)
+	mustPutObject(t, store, "b", "unique.bin", payload, "application/octet-stream", nil)
+
+	entries, err := store.captureSnapshotEntries("b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: entries}
+	if err := store.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteObject("b", "unique.bin"); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	gc, err := gcCollect(dir, true)
+	if err != nil {
+		t.Fatalf("gcCollect: %v", err)
+	}
+	if !gc.LiveSetOK {
+		t.Fatalf("expected healthy live set, got issues: %+v", gc.Issues)
+	}
+	if gc.SnapshotRootCount != 1 {
+		t.Fatalf("SnapshotRootCount = %d, want 1", gc.SnapshotRootCount)
+	}
+	if gc.ChunksDeleted != 0 {
+		t.Fatalf("expected 0 chunks deleted (snapshot-pinned), got %d deleted", gc.ChunksDeleted)
+	}
+
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	got, err := reopened.readSnapshot(desc.SnapshotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, _ := decodeHexSHA256(got.Entries[0].ManifestSHA256)
+	man, err := reopened.readVerifiedManifest(got.Entries[0].ManifestUUID, sum)
+	if err != nil {
+		t.Fatalf("snapshot-pinned manifest unreadable after GC: %v", err)
+	}
+	for _, c := range man.Chunks {
+		csum, _ := decodeHexSHA256(c.SHA256)
+		if _, err := reopened.casRead(csum); err != nil {
+			t.Fatalf("snapshot-pinned chunk %s missing after GC: %v", c.SHA256, err)
+		}
+	}
+}
+
+func TestSnapshotGC_MultipleSnapshotsSharingChunks_DeleteOneKeepsOther(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	payload := genRandomBytes(43, 300_000)
+	mustPutObject(t, store, "b", "shared.bin", payload, "application/octet-stream", nil)
+
+	makeSnap := func() snapshotDescriptorV1 {
+		entries, err := store.captureSnapshotEntries("b", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: entries}
+		if err := store.publishSnapshot(d); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	snapA := makeSnap()
+	snapB := makeSnap()
+
+	if err := store.DeleteObject("b", "shared.bin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.deleteSnapshot(snapA.SnapshotID); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	gc, err := gcCollect(dir, true)
+	if err != nil {
+		t.Fatalf("gcCollect: %v", err)
+	}
+	if !gc.LiveSetOK || gc.ChunksDeleted != 0 {
+		t.Fatalf("expected content still pinned by snapB, got gc=%+v", gc)
+	}
+
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if _, err := reopened.readSnapshot(snapA.SnapshotID); err == nil {
+		t.Fatal("snapA should be gone")
+	}
+	got, err := reopened.readSnapshot(snapB.SnapshotID)
+	if err != nil || len(got.Entries) != 1 {
+		t.Fatalf("snapB should survive: %+v, err=%v", got, err)
+	}
+}
+
+// publishOrphanSnapshotEntry writes chunks/a manifest directly (casWrite +
+// publishManifest), deliberately never through commitObjectRoot -- so
+// unlike an ordinary PUT/DELETE (which archives into permanent version
+// history, section 7c, and therefore stays a live GC root forever
+// regardless of any snapshot), this content has NO root at all except
+// whatever snapshot entry the caller adds it to. This is the same
+// technique TestGC_AdversarialMatrix_K1toK5's "K4" case uses to construct
+// genuinely-unreachable content; here it isolates "does a snapshot root,
+// specifically, keep this alive" from "does version history already keep
+// everything alive forever" (the latter being true of any ordinary
+// object regardless of snapshots, and not what this test is about).
+func publishOrphanSnapshotEntry(t *testing.T, s *Store, key string, chunks [][]byte) snapshotEntryV1 {
+	t.Helper()
+	for _, c := range chunks {
+		if _, err := s.casWrite(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	man := buildManualManifest(chunks, "application/octet-stream", nil)
+	manUUID, manSHA, err := s.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshotEntryV1{
+		Key: key, ManifestUUID: manUUID, ManifestSHA256: hex.EncodeToString(manSHA[:]),
+		Size: man.TotalLength, ETag: man.ETag, ContentType: man.ContentType,
+	}
+}
+
+func TestSnapshotGC_PinsContentWithNoOtherRoot(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	orphan := genRandomBytes(50, 20_000)
+	entry := publishOrphanSnapshotEntry(t, store, "orphan.bin", [][]byte{orphan})
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: []snapshotEntryV1{entry}}
+	if err := store.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(orphan)
+	chunkPath := store.chunkPath(sum)
+	store.Close()
+
+	// Without any current/historical/multipart root at all, this content
+	// would ordinarily be exactly K4-shaped (genuinely unreachable) --
+	// the snapshot root is the ONLY thing keeping it alive.
+	gc, err := gcCollect(dir, true)
+	if err != nil {
+		t.Fatalf("gcCollect: %v", err)
+	}
+	if !gc.LiveSetOK {
+		t.Fatalf("expected a healthy live set, got issues: %+v", gc.Issues)
+	}
+	if gc.SnapshotRootCount != 1 {
+		t.Fatalf("SnapshotRootCount = %d, want 1", gc.SnapshotRootCount)
+	}
+	if gc.ChunksDeleted != 0 {
+		t.Fatalf("snapshot-only-referenced chunk was deleted: %+v", gc)
+	}
+	if _, err := os.Stat(chunkPath); err != nil {
+		t.Fatalf("snapshot-pinned chunk file missing after GC: %v", err)
+	}
+}
+
+func TestSnapshotGC_CorruptDescriptorRefusesToSweep(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, store, "b", "kept.bin", []byte("kept"), "application/octet-stream", nil)
+	mustPutObject(t, store, "b", "garbage-source.bin", genRandomBytes(44, 10_000), "application/octet-stream", nil)
+
+	entries, err := store.captureSnapshotEntries("b", "kept.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fabricate the entries manually so this snapshot only covers
+	// kept.bin -- garbage-source.bin's chunks are genuinely unreachable
+	// once deleted, which is exactly what we want GC to (refuse to)
+	// sweep despite the corrupt snapshot elsewhere in the catalog.
+	_ = entries
+	kept, err := store.captureSnapshotEntries("b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keptOnly []snapshotEntryV1
+	for _, e := range kept {
+		if e.Key == "kept.bin" {
+			keptOnly = append(keptOnly, e)
+		}
+	}
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: keptOnly}
+	if err := store.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteObject("b", "garbage-source.bin"); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	// Corrupt the published snapshot descriptor at the filesystem level.
+	path := filepath.Join(dir, "snapshots", desc.SnapshotID+".snap")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[len(raw)-1] ^= 0xFF // flip a bit in the trailing CRC32C
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	beforeFiles := countChunkFiles(t, dir)
+
+	// A destructive apply against an untrustworthy live root set fails
+	// closed: gcCollect returns errGCUnsafe (the exact same fail-closed
+	// gate section 13b already uses for a corrupt manifest/chunk, section
+	// 12a) alongside a GCResult that still reports what it found -- see
+	// gcCollect's own "if !rr.OK() { return res, errGCUnsafe }". Nothing
+	// is deleted either way.
+	gc, err := gcCollect(dir, true)
+	if !errors.Is(err, errGCUnsafe) {
+		t.Fatalf("gcCollect apply with a corrupt snapshot present: err=%v, want errGCUnsafe", err)
+	}
+	if gc.LiveSetOK {
+		t.Fatal("expected LiveSetOK=false with a corrupt snapshot descriptor present")
+	}
+	if gc.ChunksDeleted != 0 || gc.ManifestsDeleted != 0 {
+		t.Fatalf("GC must not delete anything when refusing to sweep, got chunks=%d manifests=%d", gc.ChunksDeleted, gc.ManifestsDeleted)
+	}
+	foundCorrupt := false
+	for _, iss := range gc.Issues {
+		if strings.Contains(iss.Subject, "snapshot:"+desc.SnapshotID) {
+			foundCorrupt = true
+		}
+	}
+	if !foundCorrupt {
+		t.Fatalf("expected an issue naming the corrupt snapshot, got %+v", gc.Issues)
+	}
+
+	afterFiles := countChunkFiles(t, dir)
+	if afterFiles != beforeFiles {
+		t.Fatalf("chunk files changed despite refused GC: before=%d after=%d", beforeFiles, afterFiles)
+	}
+
+	// Dry-run must also surface the same issue without needing -apply.
+	dryRun, err := gcCollect(dir, false)
+	if err != nil {
+		t.Fatalf("dry-run gc should not hard-fail: %v", err)
+	}
+	if dryRun.LiveSetOK {
+		t.Fatal("dry-run should also report LiveSetOK=false")
+	}
+}
+
+func TestSnapshotGC_UnexpectedFileNameInSnapshotsDirCausesRefusal(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, store, "b", "x.bin", []byte("x"), "application/octet-stream", nil)
+	store.Close()
+
+	if err := os.WriteFile(filepath.Join(dir, "snapshots", "not-a-real-snapshot.txt"), []byte("junk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	gc, err := gcCollect(dir, true)
+	if !errors.Is(err, errGCUnsafe) {
+		t.Fatalf("gcCollect apply: err=%v, want errGCUnsafe", err)
+	}
+	if gc.LiveSetOK {
+		t.Fatal("expected LiveSetOK=false with an unexpected file in store/snapshots/")
+	}
+}
+
+func TestSnapshotGC_DeleteFinalSnapshotAllowsEventualCollection(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	entry := publishOrphanSnapshotEntry(t, store, "x.bin", [][]byte{genRandomBytes(45, 20_000)})
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: []snapshotEntryV1{entry}}
+	if err := store.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+
+	// While the snapshot exists, GC must preserve the content (its only
+	// root).
+	store.Close()
+	gc1, err := gcCollect(dir, true)
+	if err != nil || !gc1.LiveSetOK || gc1.ChunksDeleted != 0 {
+		t.Fatalf("expected content preserved while snapshot exists: gc=%+v err=%v", gc1, err)
+	}
+
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.deleteSnapshot(desc.SnapshotID); err != nil {
+		t.Fatal(err)
+	}
+	reopened.Close()
+
+	gc2, err := gcCollect(dir, true)
+	if err != nil {
+		t.Fatalf("gcCollect: %v", err)
+	}
+	if !gc2.LiveSetOK {
+		t.Fatalf("expected healthy live set after snapshot deletion, got %+v", gc2.Issues)
+	}
+	if gc2.ChunksDeleted == 0 {
+		t.Fatal("expected the now-unreferenced content to become collectible after the last snapshot was deleted")
+	}
+}
+
+func TestSnapshotGC_NoSnapshotsUnchangedBehavior(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	// A genuinely unreferenced chunk (no object, no manifest, no
+	// snapshot at all -- exactly TestGC_AdversarialMatrix_K1toK5's own
+	// "K4" case) must remain collectible exactly as it always has: M8E
+	// must not change ordinary (snapshot-free) GC behavior at all.
+	orphan := genRandomBytes(46, 10_000)
+	if _, err := store.casWrite(orphan); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	gc, err := gcCollect(dir, true)
+	if err != nil {
+		t.Fatalf("gcCollect: %v", err)
+	}
+	if gc.SnapshotRootCount != 0 {
+		t.Fatalf("SnapshotRootCount = %d, want 0 (no snapshots ever created)", gc.SnapshotRootCount)
+	}
+	if !gc.LiveSetOK || gc.ChunksDeleted == 0 {
+		t.Fatalf("ordinary (snapshot-free) GC behavior changed: %+v", gc)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Delete: durability, crash semantics, concurrency
+// -----------------------------------------------------------------------
+
+func TestSnapshotDelete_RemovesDescriptorOnly(t *testing.T) {
+	srv, dir, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	putObj(t, srv, "b", "x.bin", []byte("x"))
+	summary, err := createSnapshotRemote(cfg, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteSnapshotRemote(cfg, summary.SnapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := showSnapshotRemote(cfg, summary.SnapshotID, false); err == nil {
+		t.Fatal("expected snapshot to be gone after delete")
+	}
+	// Object itself must be completely unaffected.
+	if _, _, err := srv.store.GetObject("b", "x.bin"); err != nil {
+		t.Fatalf("live object affected by unrelated snapshot delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "snapshots")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSnapshotDelete_UnknownID(t *testing.T) {
+	_, _, cfg, closeFn := newSnapshotTestServer(t)
+	defer closeFn()
+	if err := deleteSnapshotRemote(cfg, newUUIDv7()); err == nil {
+		t.Fatal("expected error deleting unknown snapshot")
+	}
+}
+
+func TestSnapshotDelete_InvalidID(t *testing.T) {
+	_, _, cfg, closeFn := newSnapshotTestServer(t)
+	defer closeFn()
+	if err := deleteSnapshotRemote(cfg, "../../../etc/passwd"); err == nil {
+		t.Fatal("expected error deleting with a path-traversal-shaped ID")
+	}
+}
+
+func TestSnapshotDelete_SurvivesRestart(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, store, "b", "x.bin", []byte("x"), "application/octet-stream", nil)
+	entries, err := store.captureSnapshotEntries("b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: entries}
+	if err := store.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.deleteSnapshot(desc.SnapshotID); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if _, err := reopened.readSnapshot(desc.SnapshotID); err == nil {
+		t.Fatal("deleted snapshot reappeared after restart")
+	}
+}
+
+func TestSnapshotDelete_ConcurrentDeletesOneWinsOneGetsCleanError(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	_ = dir
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, store, "b", "x.bin", []byte("x"), "application/octet-stream", nil)
+	entries, err := store.captureSnapshotEntries("b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: entries}
+	if err := store.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	results := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = store.deleteSnapshot(desc.SnapshotID)
+		}(i)
+	}
+	wg.Wait()
+
+	successes, notFounds := 0, 0
+	for _, err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, errNoSuchSnapshot):
+			notFounds++
+		default:
+			t.Fatalf("unexpected concurrent-delete error: %v", err)
+		}
+	}
+	if successes != 1 || notFounds != 1 {
+		t.Fatalf("expected exactly one success and one clean errNoSuchSnapshot, got successes=%d notFounds=%d (results=%v)", successes, notFounds, results)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Crash publication: no partial descriptor is ever treated as valid
+// -----------------------------------------------------------------------
+
+func TestSnapshotCreate_NoStrayTempFilesLeftInSnapshotsDir(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, store, "b", "x.bin", []byte("x"), "application/octet-stream", nil)
+	entries, err := store.captureSnapshotEntries("b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: entries}
+	if err := store.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+
+	ents, err := os.ReadDir(filepath.Join(dir, "snapshots"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 1 || ents[0].Name() != desc.SnapshotID+".snap" {
+		t.Fatalf("store/snapshots/ contains unexpected entries: %+v", ents)
+	}
+}
+
+func TestSnapshotCreate_IncompleteTempFileNeverObservedAsPublished(t *testing.T) {
+	// Simulates a crash mid-publication: an incomplete file staged
+	// directly under store/snapshots/ (bypassing writeFileDurable's
+	// tmp-then-rename path, exactly as an interrupted rename would never
+	// leave anything but either nothing or the complete renamed file)
+	// must never be treated as a valid, complete snapshot.
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	id := newUUIDv7()
+	partial := []byte("ZSS1")[:2] // an obviously-truncated frame
+	if err := os.WriteFile(filepath.Join(dir, "snapshots", id+".snap"), partial, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if _, err := reopened.readSnapshot(id); err == nil {
+		t.Fatal("expected a truncated partial descriptor to be rejected, not treated as valid")
+	}
+	if _, err := reopened.listSnapshots(); err == nil {
+		t.Fatal("expected listSnapshots to fail loudly on a truncated descriptor rather than silently skip it")
+	}
+}
+
+// -----------------------------------------------------------------------
+// doctor/verify integration
+// -----------------------------------------------------------------------
+
+func TestSnapshot_VerifyReportsCorruptSnapshot(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, store, "b", "x.bin", []byte("x"), "application/octet-stream", nil)
+	entries, err := store.captureSnapshotEntries("b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: entries}
+	if err := store.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+
+	verifyOK, err := store.Verify(false)
+	if err != nil || !verifyOK.OK() {
+		t.Fatalf("verify should be clean before corruption: %+v err=%v", verifyOK, err)
+	}
+	if verifyOK.SnapshotRootCount != 1 {
+		t.Fatalf("SnapshotRootCount = %d, want 1", verifyOK.SnapshotRootCount)
+	}
+
+	path := filepath.Join(dir, "snapshots", desc.SnapshotID+".snap")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[len(raw)-1] ^= 0xFF
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	verifyBad, err := store.Verify(false)
+	if err != nil {
+		t.Fatalf("verify should report, not hard-fail: %v", err)
+	}
+	if verifyBad.OK() {
+		t.Fatal("expected verify to report corrupt snapshot as a failure")
+	}
+	found := false
+	for _, iss := range verifyBad.Issues {
+		if strings.Contains(iss.Subject, "snapshot:"+desc.SnapshotID) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("verify issues do not mention the corrupt snapshot: %+v", verifyBad.Issues)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Real-process CLI: full create/list/show/delete lifecycle
+// -----------------------------------------------------------------------
+
+func TestCLI_Snapshot_CreateListShowDelete(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	addr := freeTCPAddr(t)
+
+	cmd := exec.Command(bin, "-store", storeDir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	mustSignedOK := func(method, path string, body []byte) {
+		t.Helper()
+		resp := doSignedRequest(t, client, "http://"+addr, signer, method, path, body, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s %s: status %d", method, path, resp.StatusCode)
+		}
+	}
+	mustSignedOK(http.MethodPut, "/data", nil)
+	mustSignedOK(http.MethodPut, "/data/a.bin", []byte("alpha"))
+	mustSignedOK(http.MethodPut, "/data/b.bin", []byte("beta-longer"))
+
+	createOut, createErr, code := runZeros3CLI(t, bin, "snapshot", "create", "-endpoint", "http://"+addr, "s3://data/")
+	if code != 0 {
+		t.Fatalf("snapshot create failed (code %d): stdout=%s stderr=%s", code, createOut, createErr)
+	}
+	if !strings.Contains(createOut, "Objects:            2") {
+		t.Fatalf("unexpected create summary: %s", createOut)
+	}
+	lines := strings.Split(strings.TrimSpace(createOut), "\n")
+	idLine := lines[0]
+	id := strings.TrimSpace(strings.TrimPrefix(idLine, "Snapshot:"))
+	if !validSnapshotID(id) {
+		t.Fatalf("could not parse snapshot ID from output: %q", createOut)
+	}
+
+	listOut, listErr, code := runZeros3CLI(t, bin, "snapshot", "list", "-endpoint", "http://"+addr)
+	if code != 0 {
+		t.Fatalf("snapshot list failed (code %d): stdout=%s stderr=%s", code, listOut, listErr)
+	}
+	if !strings.Contains(listOut, id) {
+		t.Fatalf("snapshot list did not include %s: %s", id, listOut)
+	}
+
+	showOut, showErr, code := runZeros3CLI(t, bin, "snapshot", "show", "-endpoint", "http://"+addr, "-entries", id)
+	if code != 0 {
+		t.Fatalf("snapshot show failed (code %d): stdout=%s stderr=%s", code, showOut, showErr)
+	}
+	if !strings.Contains(showOut, "a.bin") || !strings.Contains(showOut, "b.bin") {
+		t.Fatalf("snapshot show -entries missing expected keys: %s", showOut)
+	}
+
+	deleteOut, deleteErr, code := runZeros3CLI(t, bin, "snapshot", "delete", "-endpoint", "http://"+addr, id)
+	if code != 0 {
+		t.Fatalf("snapshot delete failed (code %d): stdout=%s stderr=%s", code, deleteOut, deleteErr)
+	}
+
+	_, _, code = runZeros3CLI(t, bin, "snapshot", "show", "-endpoint", "http://"+addr, id)
+	if code == 0 {
+		t.Fatal("expected snapshot show to fail after delete")
+	}
+
+	cmd.Process.Kill()
+	cmd.Wait()
+
+	verifyOut, verifyErr, verifyCode := runZeros3CLI(t, bin, "verify", "-store", storeDir, "-deep")
+	if verifyCode != 0 {
+		t.Fatalf("verify -deep after snapshot lifecycle failed: code=%d stdout=%s stderr=%s", verifyCode, verifyOut, verifyErr)
+	}
+}
+
+func TestCLI_Snapshot_GC_PinsAcrossRestart(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	addr := freeTCPAddr(t)
+
+	cmd := exec.Command(bin, "-store", storeDir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	mustSignedOK := func(method, path string, body []byte) {
+		t.Helper()
+		resp := doSignedRequest(t, client, "http://"+addr, signer, method, path, body, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s %s: status %d", method, path, resp.StatusCode)
+		}
+	}
+	mustSignedOK(http.MethodPut, "/data", nil)
+	mustSignedOK(http.MethodPut, "/data/keep.bin", genRandomBytes(60, 40_000))
+
+	createOut, createErr, code := runZeros3CLI(t, bin, "snapshot", "create", "-endpoint", "http://"+addr, "s3://data/")
+	if code != 0 {
+		t.Fatalf("snapshot create failed (code %d): stdout=%s stderr=%s", code, createOut, createErr)
+	}
+	id := strings.TrimSpace(strings.TrimPrefix(strings.Split(strings.TrimSpace(createOut), "\n")[0], "Snapshot:"))
+
+	cmd.Process.Kill()
+	cmd.Wait()
+
+	gcOut, gcErr, gcCode := runZeros3CLI(t, bin, "gc", "-store", storeDir, "-apply")
+	if gcCode != 0 {
+		t.Fatalf("gc -apply failed: code=%d stdout=%s stderr=%s", gcCode, gcOut, gcErr)
+	}
+
+	cmd2 := exec.Command(bin, "-store", storeDir, "-addr", addr)
+	if err := cmd2.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd2.Process.Kill(); cmd2.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	showOut, showErr, showCode := runZeros3CLI(t, bin, "snapshot", "show", "-endpoint", "http://"+addr, id)
+	if showCode != 0 {
+		t.Fatalf("snapshot show after restart+gc failed: code=%d stdout=%s stderr=%s", showCode, showOut, showErr)
+	}
+	if !strings.Contains(showOut, "Objects:            1") {
+		t.Fatalf("snapshot content changed across restart+gc: %s", showOut)
+	}
+}
