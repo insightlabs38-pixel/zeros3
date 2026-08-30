@@ -7365,13 +7365,23 @@ const maxTransferWorkers = 32
 
 // defaultTransferWorkers is used whenever a caller leaves Workers at its
 // Go zero value (every M8A-M8G call site, and any M8H-B caller that
-// doesn't care) instead of naming a count explicitly. This is the
-// pre-benchmark placeholder B1.3 calls for ("preserve a conservative
-// default ... until worker counts are benchmarked"); B4 below measures
-// 1/2/4/8/16 and either confirms or replaces this value, once, as part of
-// that benchmark's own KEEP/REVERT decision -- never adjusted casually
+// doesn't care) instead of naming a count explicitly.
+//
+// Set to 8 by the M8H-B4 worker-count benchmark
+// (zeros3-testing/results/M8H_PARALLEL_TRANSFER_RESULTS.md), not assumed:
+// across every measured scenario (single-object replication at 64/256
+// MiB and 0/5/10 ms simulated RTT, namespace replication, and repair),
+// workers=8 captured the large majority of the attainable speedup over
+// workers=1 (up to ~6x at 10 ms RTT, where the gain matters most) while
+// workers=16 added only a further ~10-30% in the best case and, in
+// namespace replication and repair specifically, slightly *underperformed*
+// 8 on this benchmark's 4-vCPU machine -- consistent with 8 already
+// saturating the available concurrency/CPU on a small, ordinary machine.
+// 8 also keeps the concurrent-connection count and worst-case in-flight
+// memory (workers x max chunk size) modest. This was a one-time,
+// measurement-driven choice; it is not meant to be adjusted casually
 // afterward.
-const defaultTransferWorkers = 4
+const defaultTransferWorkers = 8
 
 // validateWorkers rejects an explicit, out-of-range worker count (B1.2):
 // less than 1 (0 or negative) can never mean anything sensible, and more
