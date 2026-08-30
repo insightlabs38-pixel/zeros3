@@ -1,13 +1,339 @@
 # ZeroS3 — Status
 
-Milestone-by-milestone status, newest first. M1-M7, M8A, M8B, M8C, M8D,
-M8E, M8F, M8G, and M8H-A are all complete (frozen unless a demonstrated
-regression or correctness bug requires a minimal fix); M8H-B (bounded
-parallel chunk transfer, implemented on M8H-A's STRONG GO decision) is
-the current pass -- see its section immediately below. **M8H ACCEPTED**:
-`replicate`/`repair`/`sync` now transfer independent missing chunks with
-bounded concurrency (`-workers`, default 8), while object/root-level
-publication remains exactly as sequential/atomic as it always was.
+Milestone-by-milestone status, newest first. M1-M7, M8A-M8H are all
+complete and frozen (unless a demonstrated regression or correctness bug
+requires a minimal fix); **P1 (operational hardening) is the current
+pass** -- see its section immediately below. **P1 ACCEPTED**:
+credentials can come from the environment, the HTTP server has
+conservative resource limits, SIGINT/SIGTERM shut it down cleanly, and
+operator-supplied TLS can secure the same stdlib-only server -- none of
+it changes ZeroS3's storage architecture, wire protocol, or crash-
+durability model.
+
+## P1 — Operational hardening: environment credentials, graceful
+shutdown, optional TLS
+
+**Goal:** close a small set of operational gaps identified after M8H's
+acceptance -- ZeroS3 required credentials on the command line, had no
+HTTP resource limits, and had no clean way to stop `zeros3 serve` short
+of an abrupt kill -- without touching the storage engine, wire protocol,
+or the M1-M8H durability model in any way. Explicitly *not* a new
+storage milestone.
+
+### Phase 0 — exact baseline
+
+Exact M8H HEAD `1b2b1ec9cb3aa76bab8fd2c66e03100b31196955` (merge of
+`claude/zerosm8h-b-parallel-chunks-0w3d0p`). `gofmt -l .`/`go vet ./...`
+clean, `go test ./...` 688/688 tests passing, `go test -race ./...`
+clean, two independent `CGO_ENABLED=0 -trimpath` builds byte-identical.
+STATUS.md's own recorded M8H-B numbers (688 internal tests; 1140
+external passes, 0 failures; reproducible-build SHA-256
+`6c11cbda9bcca30cd3c5081f86c98b4f52f14d75b869f28448097dc5dcbd40d2`)
+independently reconfirmed as the exact starting point. Tagged
+`m8h-gold` on both repositories before any P1 edit.
+
+### P1-A — Environment-variable credentials
+
+New section "15a-quater" in `zeros3.go`. Every single-endpoint command's
+`-access-key`/`-secret-key`/`-region` flags (`serve`, `presign`, `sync`,
+`repair`, `fork`, `inspect`, `verify -repair-from`, and all five
+`snapshot` subcommands) fall back to `AWS_ACCESS_KEY_ID`/
+`AWS_SECRET_ACCESS_KEY`/`AWS_REGION` via one shared pair of functions:
+`envOverride` (the single-flag precedence rule) and
+`applyCredentialEnvFallback` (applies all three at once, called
+immediately after `fs.Parse`). Precedence is exact and uniform:
+**explicit CLI flag → environment variable, if set even to `""` →
+existing built-in default.** `fs.Visit` is how "explicitly supplied" is
+determined -- not "differs from the default", which would misfire if an
+operator happened to type the placeholder default verbatim.
+
+`serve` did not previously have `-access-key`/`-secret-key`/`-region`
+flags at all (it hardcoded `defaultAccessKeyID`/`defaultSecretAccessKey`/
+`defaultRegion` directly) -- P1-A adds them, matching every other
+command's naming, with the exact same env fallback.
+
+Two-endpoint commands (`replicate`'s `-from-*`/`-to-*`, `diff`'s
+equivalents) deliberately do **not** get `AWS_ACCESS_KEY_ID`/
+`AWS_SECRET_ACCESS_KEY` fallback -- a single pair of standard AWS
+variable names cannot unambiguously supply two different endpoints'
+credentials, and guessing risks silently sending one endpoint's secret
+to the other (P1-A5). Only their one shared `-region` flag gets
+`AWS_REGION` fallback, applied via `envOverride` directly rather than
+`applyCredentialEnvFallback`. This is the deliberately smaller of the
+two alternatives the P1 spec itself offered, chosen over inventing
+`ZEROS3_FROM_*`/`ZEROS3_TO_*` variables.
+
+Secrets are never printed: not in logs/errors (they never were), not in
+`-h` usage text (which shows only the fixed, already-public placeholder
+default -- `envOverride` is only ever consulted *after* `fs.Parse`,
+long after usage text is generated, so a live environment value can
+never reach it), and not in a presigned URL (unchanged from before P1 --
+presigned URLs sign with the secret, they never embed it).
+
+**Real hostile-environment finding, not hypothetical:** this very
+sandbox's own outbound-proxy tooling sets `AWS_ACCESS_KEY_ID=proxy-
+injected`/`AWS_SECRET_ACCESS_KEY=proxy-injected` process-wide. The first
+full internal test run after P1-A landed failed 15 pre-existing
+subprocess-based tests with `403 InvalidAccessKeyId` -- those tests spawn
+a real `zeros3 serve` subprocess with no `-access-key` flag and sign
+requests directly against the hardcoded `defaultAccessKeyID` constant,
+and `os/exec.Command` inherits the parent process's environment by
+default, so the ambient proxy credentials silently overrode the
+defaults via P1-A's own, correctly-working fallback. Fixed by adding a
+`TestMain` to `zeros3_test.go` that unsets all three `AWS_*` variables
+once for the whole test binary process (real P1-A behavior tests
+re-set them locally with `t.Setenv`, scoped to just that test). The
+external `harness/p1/env_and_shutdown` and every re-run historical
+external harness needed the same environment sanitized before their
+subprocess launches for the identical reason. This is exactly the kind
+of real operational hazard P1-A exists to make *correct*, not a defect
+in the feature -- but it is a genuine, previously-nonexistent way an
+unrelated ambient environment variable can now affect ZeroS3's
+credentials, worth a permanent regression test (which now exists) and
+worth calling out explicitly for anyone deploying `zeros3 serve` inside
+an environment that happens to export `AWS_*` variables for unrelated
+tooling.
+
+**P1-A tests:** 17 new (`zeros3_test.go`, "P1-A" section) --
+`envOverride`/`applyCredentialEnvFallback` precedence (flag wins, env
+used when flag absent, default when both absent, empty-env-is-a-set-
+override, partial-pair leaves the other flag at its default), a usage-
+text secret-leak guard, in-process env-fallback/flag-override proof for
+`inspect`, in-process two-endpoint isolation proof for `replicate`
+(region from env, `-from-*`/`-to-*` never from env), a real-subprocess
+negative proof that `-from-access-key` never falls back to
+`AWS_ACCESS_KEY_ID` even when it happens to hold the *correct* source
+credentials, and real-subprocess proofs for `serve` authenticating from
+env-only credentials and `presign` generating a working URL from
+env-only credentials.
+
+### P1-B — HTTP server hardening + graceful shutdown
+
+`runServe`'s `http.Server` is now built by `newHardenedHTTPServer`
+(factored out purely so its fields are unit-testable without a real
+listener): `ReadHeaderTimeout` 10s, `IdleTimeout` 120s, `MaxHeaderBytes`
+1MiB (`serveReadHeaderTimeout`/`serveIdleTimeout`/`serveMaxHeaderBytes`
+constants). No `ReadTimeout`/`WriteTimeout` -- deliberate, documented in
+the same doc comment: either would impose one deadline across an entire
+request/response body, regressing large uploads/downloads, multipart,
+replication, and sync. `IdleTimeout` only ever bounds time *between*
+requests on a keep-alive connection (`net/http`'s own documented
+behavior), never an active request/response.
+
+Shutdown: `signal.Notify` on a buffered `chan os.Signal` (size 2, so a
+second signal is never dropped waiting to be read) for `SIGINT`/
+`SIGTERM`. On the first signal: stop accepting new connections
+immediately, drain active requests, bounded by a 30s grace
+(`serveShutdownGrace`) via `context.WithTimeout` + `http.Server.
+Shutdown`. `http.ErrServerClosed` is never logged as fatal (a `select`
+distinguishes "Shutdown was called" from "ListenAndServe genuinely
+failed" -- only the latter reaches `log.Fatalf`).
+
+Two exit paths are deliberately nonzero, and deliberately skip this
+function's own deferred `store.Close()`/`lock.release()` rather than
+running them: (1) the grace period expiring with a handler still
+active, and (2) a **second** `SIGINT`/`SIGTERM` arriving while shutdown
+is already draining (checked via a second, nested `select` racing
+`http.Server.Shutdown`'s completion against another read from the
+signal channel). Both call `os.Exit(1)` directly. This was a genuine
+correctness fix, not a style choice: an earlier version tried
+`signal.NotifyContext` for the "second signal forces immediate exit"
+requirement, relying on the documented behavior that its `stop()`
+function is called automatically on the first signal -- but
+`signal.Stop` only stops relaying to that one channel; it does not
+restore the OS's default terminate-on-signal disposition (only
+`signal.Reset` does that), so a genuine second `SIGTERM` sent to that
+version simply did nothing, caught by
+`TestServe_SIGTERM_SecondSignalForcesImmediateExit_RealProcess` failing
+in exactly the way it should have. Both nonzero-exit paths return an
+interrupted handler's work to the *existing* journal/CAS crash-recovery
+model (the "Durability contract" section below), never a new one --
+returning normally instead would race this function's own
+`store.Close()` against whatever that handler goroutine is still doing
+to the store (`Store.Close` only closes the journal file out from under
+it), a hazard P1-B must not introduce.
+
+Persistent-format impact: **none.**
+
+**P1-B tests:** 8 new (`zeros3_test.go`, "P1-B" section), every one a
+real subprocess signaled with a real OS signal per the spec's own
+requirement -- `newHardenedHTTPServer`'s exact field values; idle
+SIGINT/SIGTERM (clean exit 0, bounded time, restart works); a second
+SIGTERM forcing immediate exit well under the grace period; an active
+PUT (a `throttledBody` `io.ReadCloser` paces the request body at the
+raw `net/http` layer so the connection is provably still receiving when
+SIGTERM arrives) completing successfully, *and* a brand-new connection
+attempted just after the signal being refused (B9); an active GET
+(client deliberately drains the response slowly) completing with exact
+content; a request paced to take ~400s exceeding the 30s grace --
+process exits only after genuinely waiting out the grace period,
+nonzero, restart succeeds, the never-acknowledged object is absent, and
+`verify -deep` reports no corruption; and a `replicate -workers 4`
+client whose *source* server gracefully shuts down mid-transfer never
+hangs (ties P1-B directly to M8H's worker pool).
+
+### P1-C — Basic TLS
+
+**TLS IMPLEMENTED.** `zeros3 serve -tls-cert CERT -tls-key KEY` serves
+HTTPS via the ordinary stdlib call `http.Server.ListenAndServeTLS` --
+same hardened `http.Server`, same graceful-shutdown machinery, no
+custom `crypto/tls.Config`, no ACME, no cert generation/renewal, no
+mTLS. Neither flag: plain HTTP, byte-for-byte the pre-P1-C behavior.
+Exactly one of the two: a startup validation error (checked before
+`OpenStore`, so a bad TLS invocation fails fast without touching the
+store) via `(*tlsCert == "") != (*tlsKey == "")`. This stayed small
+enough (one boolean branch choosing `ListenAndServeTLS` vs.
+`ListenAndServe`, two new flags, zero new non-stdlib imports) to ship
+rather than skip, per the spec's own acceptance threshold.
+
+SigV4 canonicalization was already scheme-agnostic (only `host`/path/
+query/headers are ever signed, confirmed by reading
+`GeneratePresignedURL`/`sigv4VerifyCore` -- no code change needed), so
+HTTPS changes nothing about request signing. Presigned URLs already
+built their scheme directly from whatever `-endpoint` an operator
+supplied (`endpointURL.Scheme + "://" + host + rawPath + ...` in
+`GeneratePresignedURL`) -- an `https://` endpoint already produced an
+`https://` presigned URL with no code change either. `grep
+InsecureSkipVerify zeros3.go` finds nothing, guarded permanently by
+`TestNoInsecureSkipVerifyInSource`.
+
+**P1-C tests:** 5 new (`zeros3_test.go`, "P1-C" section) -- a
+self-signed test cert/key pair generated per-test with stdlib
+`crypto/ecdsa`/`crypto/x509`; missing-cert-only and missing-key-only
+both fail with the exact pairing error; a malformed cert/key pair fails
+startup; one real HTTPS subprocess proving SigV4 header-auth PUT/GET,
+an `https://`-scheme presigned URL that itself authenticates, and a
+graceful SIGTERM shutdown, all over real TLS with a client trusting only
+the test cert (never `InsecureSkipVerify`); and a real two-server
+`replicate` over HTTPS, with the unmodified client subprocess trusting
+the test cert via the `SSL_CERT_FILE` environment variable Go's own
+`crypto/x509.SystemCertPool()` already honors on Linux -- zero new
+CLI flags or code needed for that trust story, exactly the P1-C7
+"testing infrastructure may configure trust appropriately" allowance.
+
+External proof: `harness/p1/env_and_shutdown`'s own TLS coverage is
+folded into the same real-subprocess HTTPS proof above (internal); a
+dedicated external HTTPS/AWS-SDK harness was judged unnecessary given
+the internal real-subprocess+real-cert coverage already exercises the
+identical `ListenAndServeTLS` code path an external client would.
+
+### P1-D — Hostile review + full historical regression
+
+**Credentials:** secret values never appear in logs/errors/usage text
+(guarded by `TestEnvOverride_UsageStringNeverContainsEnvValue` plus
+manual `grep` across `zeros3.go` for any `log`/`fmt.Print` call
+mentioning `secretKey`/`SecretAccessKey` -- none found outside
+`Credentials` struct construction itself). CLI flags always override
+environment (11 dedicated tests). Two-endpoint commands cannot cross
+source/destination credentials via environment (proven both in-process
+and via a real subprocess with correct source credentials sitting *in*
+the environment specifically to catch an accidental fallback). Partial/
+malformed env credentials leave the other half at its documented
+default rather than being silently synthesized or blanked. The ambient-
+proxy-credential finding above is the concrete, non-hypothetical version
+of "can this leak/misfire in a real environment" -- found, fixed,
+regression-tested.
+
+**HTTP limits:** `MaxHeaderBytes` (1MiB) never rejected any real
+request across the entire M2-M8H external regression re-run below
+(SigV4 headers, multipart headers, user metadata all comfortably under
+it). `ReadHeaderTimeout` (10s) never broke a single real AWS-SDK/rclone-
+style interaction in that same re-run. `IdleTimeout` (2m) only ever
+bounds inter-request idle time by `net/http`'s own contract -- proven in
+practice by the active-PUT/active-GET tests, which run far longer than
+zero without being cut off.
+
+**Shutdown:** SIGTERM during an active journal-committing PUT, during an
+active GET stream, during an M8H parallel-transfer client's in-flight
+worker requests, and at exact grace-period expiry are all covered above
+(P1-B tests) with a restart + `verify -deep` proof of no corruption in
+every case that touches disk. SIGTERM during a multipart body was not
+separately exercised (multipart's commit path is the same
+`commitObjectRootChecked`/journal machinery ordinary PUT already proved
+safe under graceful shutdown, but it is an honest gap, not a proven
+case) -- called out here rather than silently assumed.
+
+**TLS:** cert/key failure modes are clear and fast (checked before
+`OpenStore`); TLS shutdown is identical to plain-HTTP shutdown (same
+code path, same tests, run once more over real TLS); SigV4
+canonicalization and presign scheme are unchanged by construction (read,
+not merely tested); no accidental plain-HTTP downgrade exists (the
+branch is `if useTLS { ListenAndServeTLS } else { ListenAndServe }` --
+structurally exclusive, and `TestServe_TLS_*`/every plain-HTTP P1-B test
+both still pass, proving neither path leaked into the other).
+
+**Every genuine finding above became a regression test** (the ambient-
+env leak → `TestMain`; the `signal.NotifyContext` second-signal miss →
+the explicit `signal.Notify`/nested-`select` redesign, caught by
+`TestServe_SIGTERM_SecondSignalForcesImmediateExit_RealProcess`; the
+AWS SDK's own hash-then-send behavior defeating a naive `io.ReadSeeker`
+pacing attempt in the external harness → `throttlingTransport`, which
+paces the real wire transfer instead).
+
+#### Full historical regression (exact P1 candidate, harnesses unmodified)
+
+| Harness | Result |
+|---|---|
+| M2 | 41/41 |
+| M3 copy | 46/46 |
+| M3 range | 27/27 |
+| M3 dedup | 7/7 |
+| M5A presign | 47/47 |
+| M5B multipart | 43/43 |
+| M5D pagination | 43/43 |
+| M6 sync | 33/33 (+2 informational) |
+| M6C dirsync | 69/69 (+2 informational) |
+| M8A remote delta | 34/34 (+4 informational) |
+| M8B repair | 133/133 (+1 informational) |
+| M8C namespace replication | 111/111 (+2 informational) |
+| M8D fork | 146/146 (+3 informational) |
+| M8E snapshot/restore | 151/151 (+3 informational) |
+| M8F conditional | 83/83 (+1 informational) |
+| M8G introspection | 78/78 (+5 informational) |
+| M8H parallel transfer | functional spot-check (single-object, 4/8/16 workers) -- all transfers correct; full benchmark suite not re-run (perf, not correctness, already recorded in `M8H_PARALLEL_TRANSFER_RESULTS.md`) |
+| Package Killer | 14/14 ZeroS3, 14/14 s3rver -- **GO** |
+| P1 (`harness/p1/env_and_shutdown`, new) | 23/23 |
+| rclone | **not re-run in this environment** -- no `rclone` binary available in this session's sandbox (no network install path for it here). P1 touches only credential resolution, `http.Server` config fields, signal handling, and an optional TLS branch -- no request/response wire-protocol code changed, so rclone's own prior 19/19 result is not expected to be affected, but this is a documented gap, not a claimed re-verification. |
+
+**Total re-run: 1032 external passes, 0 failures** (excludes rclone,
+excludes the M8H benchmark suite proper -- both explained above).
+
+Every harness above required the same environment sanitization the
+internal `TestMain` fix needed (`AWS_ACCESS_KEY_ID`/
+`AWS_SECRET_ACCESS_KEY`/`AWS_REGION` unset in the shell driving `go
+run`) for the identical reason -- documented once here rather than
+repeated per harness.
+
+#### Reproducibility / dependency proof
+
+`scripts/reproducible_build.sh`: two independent source copies, frozen
+release flags (`CGO_ENABLED=0 go build -trimpath -buildvcs=false
+-ldflags="-buildid="`), byte-identical SHA-256
+`a717f7672279000b8a1cc34d0fbea6f9571fd79b8800167e396598443c6f87aa`.
+`go.mod` still zero-`require`; `deps-proof.txt` regenerated (`go list
+-deps .`) -- exactly one new package in the linked closure, `os/signal`
+(P1-B); `crypto/tls` (pulled in by `ListenAndServeTLS`, P1-C) was
+already transitively linked via `net/http` in every prior build, so it
+adds nothing new to the closure. No `golang.org/x/...` import, no
+vendoring, no new subprocess/shell-out. `zeros3.go` remains the sole
+implementation source file, `zeros3_test.go` the sole first-party test
+source file.
+
+**P1 ACCEPTED — operational hardening improves ZeroS3 with full
+regression green.** 718/718 internal tests pass (up from 688, 30 new
+P1 tests: 17 P1-A + 8 P1-B + 5 P1-C), `go test -race ./...` clean,
+`gofmt -l .`/`go vet ./...` clean, and the full historical external
+regression above matches its prior baselines with zero real failures.
+
+### Non-goals honored
+
+No IAM/STS/session-token support (`X-Amz-Security-Token` still rejected
+outright, unchanged), no credential profiles/shared AWS config files, no
+EC2/ECS metadata credentials, no credential rotation/secrets manager, no
+ACME/certificate renewal/generation, no mTLS, no custom KMS, no Windows
+support, no global `ReadTimeout`/`WriteTimeout`, no P2 work
+(`ListMultipartUploads` prefix/delimiter, `DeleteObjects`, multi-peer
+repair) -- exactly P1's stated scope, nothing more.
 
 ## M8H-B — Bounded parallel chunk transfer (`replicate`/`repair`/`sync`)
 

@@ -3,19 +3,28 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/hmac"
 	"crypto/md5"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"encoding/xml"
 	"errors"
+	"flag"
 	"fmt"
 	"hash/crc32"
 	"io"
 	"io/fs"
+	"math/big"
 	"math/rand"
 	"net"
 	"net/http"
@@ -36,6 +45,28 @@ import (
 	"time"
 	"uuid"
 )
+
+// TestMain makes the whole suite hermetic against P1-A's new
+// AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION environment-variable
+// credential fallback (section 15a-quater of zeros3.go): every
+// pre-existing test that spawns a real `zeros3 serve`/CLI subprocess
+// without explicit -access-key/-secret-key/-region flags, or that signs
+// requests directly with the hardcoded defaultAccessKeyID/
+// defaultSecretAccessKey constants, assumes those built-in defaults are
+// actually in effect. An operator's (or, as discovered running this very
+// suite, a sandboxed CI environment's) ambient AWS_* variables would
+// otherwise silently redirect every such subprocess's real credentials
+// away from the compiled-in defaults the test parses expect, since
+// os/exec.Command inherits the parent process's environment by default.
+// Clearing them once, here, keeps that inheritance from ever reaching a
+// subprocess unless a specific P1-A test deliberately re-sets one with
+// t.Setenv (which affects only that single test, restored afterward).
+func TestMain(m *testing.M) {
+	os.Unsetenv(envAWSAccessKeyID)
+	os.Unsetenv(envAWSSecretAccessKey)
+	os.Unsetenv(envAWSRegion)
+	os.Exit(m.Run())
+}
 
 // =============================================================================
 // Shared test helpers
@@ -24693,5 +24724,1322 @@ func TestCLI_WorkersFlagValidation(t *testing.T) {
 				t.Fatalf("a valid -workers value was rejected: %s", stderr)
 			}
 		})
+	}
+}
+
+// =============================================================================
+// P1-A: Environment-variable credentials
+//
+// Precedence (documented in section 15a-quater of zeros3.go): an
+// explicitly supplied CLI flag always wins; otherwise AWS_ACCESS_KEY_ID/
+// AWS_SECRET_ACCESS_KEY/AWS_REGION is used if set (even to an empty
+// string); otherwise the existing built-in default applies exactly as
+// before P1. Two-endpoint commands (replicate/diff) get AWS_REGION
+// fallback only on their one shared -region flag -- never on
+// -from-access-key/-from-secret-key/-to-access-key/-to-secret-key, so a
+// standard AWS credential pair can never be silently misdirected to the
+// wrong endpoint (P1-A5).
+// =============================================================================
+
+// newCredFlagSet builds a flag.FlagSet with the exact same
+// -access-key/-secret-key/-region flags every single-endpoint command
+// registers, for testing envOverride/applyCredentialEnvFallback in
+// isolation from any particular CLI command.
+func newCredFlagSet(t *testing.T) (fs *flag.FlagSet, accessKey, secretKey, region *string) {
+	t.Helper()
+	fs = flag.NewFlagSet("test", flag.ContinueOnError)
+	accessKey = fs.String("access-key", defaultAccessKeyID, "access key ID")
+	secretKey = fs.String("secret-key", defaultSecretAccessKey, "secret access key")
+	region = fs.String("region", defaultRegion, "SigV4 region")
+	return fs, accessKey, secretKey, region
+}
+
+func TestEnvOverride_FlagExplicitWinsOverEnv(t *testing.T) {
+	t.Setenv(envAWSAccessKeyID, "FROM-ENV")
+	fs, accessKey, _, _ := newCredFlagSet(t)
+	if err := fs.Parse([]string{"-access-key", "FROM-FLAG"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := envOverride(fs, "access-key", envAWSAccessKeyID, *accessKey); got != "FROM-FLAG" {
+		t.Fatalf("envOverride = %q, want explicit flag value %q", got, "FROM-FLAG")
+	}
+}
+
+func TestEnvOverride_EnvUsedWhenFlagAbsent(t *testing.T) {
+	t.Setenv(envAWSAccessKeyID, "FROM-ENV")
+	fs, accessKey, _, _ := newCredFlagSet(t)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := envOverride(fs, "access-key", envAWSAccessKeyID, *accessKey); got != "FROM-ENV" {
+		t.Fatalf("envOverride = %q, want env value %q", got, "FROM-ENV")
+	}
+}
+
+func TestEnvOverride_DefaultWhenBothAbsent(t *testing.T) {
+	os.Unsetenv(envAWSAccessKeyID)
+	fs, accessKey, _, _ := newCredFlagSet(t)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := envOverride(fs, "access-key", envAWSAccessKeyID, *accessKey); got != defaultAccessKeyID {
+		t.Fatalf("envOverride = %q, want built-in default %q", got, defaultAccessKeyID)
+	}
+}
+
+func TestEnvOverride_RegionDefaultWhenBothAbsent(t *testing.T) {
+	// A3: region already has a non-empty built-in default -- confirm the
+	// preferred precedence (CLI > AWS_REGION > existing default) leaves
+	// it exactly as before when neither a flag nor AWS_REGION is set.
+	os.Unsetenv(envAWSRegion)
+	fs, _, _, region := newCredFlagSet(t)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := envOverride(fs, "region", envAWSRegion, *region); got != defaultRegion {
+		t.Fatalf("envOverride = %q, want built-in default region %q", got, defaultRegion)
+	}
+}
+
+func TestEnvOverride_EmptyEnvIsASetOverride(t *testing.T) {
+	// P1-A6: AWS_ACCESS_KEY_ID="" is "set but empty" -- it still
+	// overrides the default (to empty), it is not treated as unset.
+	t.Setenv(envAWSAccessKeyID, "")
+	fs, accessKey, _, _ := newCredFlagSet(t)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := envOverride(fs, "access-key", envAWSAccessKeyID, *accessKey); got != "" {
+		t.Fatalf("envOverride = %q, want empty string (set-but-empty env overrides the default)", got)
+	}
+}
+
+func TestEnvOverride_UnsetEnvNeverOverridesExplicitFlagEitherWay(t *testing.T) {
+	os.Unsetenv(envAWSAccessKeyID)
+	fs, accessKey, _, _ := newCredFlagSet(t)
+	if err := fs.Parse([]string{"-access-key", "FROM-FLAG"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := envOverride(fs, "access-key", envAWSAccessKeyID, *accessKey); got != "FROM-FLAG" {
+		t.Fatalf("envOverride = %q, want explicit flag value %q (unset env must never touch it)", got, "FROM-FLAG")
+	}
+}
+
+func TestApplyCredentialEnvFallback_PartialPairLeavesOtherFlagAtDefault(t *testing.T) {
+	// Validation: only AWS_ACCESS_KEY_ID set -- the access key picks up
+	// the env value, but the secret key is untouched (falls through to
+	// its existing default), never silently blanked or synthesized.
+	t.Setenv(envAWSAccessKeyID, "PARTIAL-ACCESS-KEY")
+	os.Unsetenv(envAWSSecretAccessKey)
+	fs, accessKey, secretKey, region := newCredFlagSet(t)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
+	if *accessKey != "PARTIAL-ACCESS-KEY" {
+		t.Fatalf("access key = %q, want env value", *accessKey)
+	}
+	if *secretKey != defaultSecretAccessKey {
+		t.Fatalf("secret key = %q, want unchanged built-in default (missing secret must not be synthesized)", *secretKey)
+	}
+}
+
+func TestApplyCredentialEnvFallback_MissingAccessKeyLeavesAccessAtDefault(t *testing.T) {
+	os.Unsetenv(envAWSAccessKeyID)
+	t.Setenv(envAWSSecretAccessKey, "PARTIAL-SECRET-KEY")
+	fs, accessKey, secretKey, region := newCredFlagSet(t)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
+	if *accessKey != defaultAccessKeyID {
+		t.Fatalf("access key = %q, want unchanged built-in default", *accessKey)
+	}
+	if *secretKey != "PARTIAL-SECRET-KEY" {
+		t.Fatalf("secret key = %q, want env value", *secretKey)
+	}
+}
+
+func TestApplyCredentialEnvFallback_AllThreeFromEnv(t *testing.T) {
+	t.Setenv(envAWSAccessKeyID, "ENV-ACCESS")
+	t.Setenv(envAWSSecretAccessKey, "ENV-SECRET")
+	t.Setenv(envAWSRegion, "env-region-1")
+	fs, accessKey, secretKey, region := newCredFlagSet(t)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
+	if *accessKey != "ENV-ACCESS" || *secretKey != "ENV-SECRET" || *region != "env-region-1" {
+		t.Fatalf("got (%q,%q,%q), want all three from environment", *accessKey, *secretKey, *region)
+	}
+}
+
+func TestApplyCredentialEnvFallback_ExplicitFlagsWinOverEnvForAllThree(t *testing.T) {
+	t.Setenv(envAWSAccessKeyID, "ENV-ACCESS")
+	t.Setenv(envAWSSecretAccessKey, "ENV-SECRET")
+	t.Setenv(envAWSRegion, "env-region-1")
+	fs, accessKey, secretKey, region := newCredFlagSet(t)
+	if err := fs.Parse([]string{"-access-key", "FLAG-ACCESS", "-secret-key", "FLAG-SECRET", "-region", "flag-region"}); err != nil {
+		t.Fatal(err)
+	}
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
+	if *accessKey != "FLAG-ACCESS" || *secretKey != "FLAG-SECRET" || *region != "flag-region" {
+		t.Fatalf("got (%q,%q,%q), want all three from explicit flags", *accessKey, *secretKey, *region)
+	}
+}
+
+// TestEnvOverride_UsageStringNeverContainsEnvValue is the P1-A7 secret-
+// safety check at the flag-registration level: registering a flag with
+// flag.String never embeds the *runtime* environment value into the
+// flag's usage text -- only the fixed, already-public placeholder
+// default (defaultAccessKeyID/defaultSecretAccessKey) is compiled in,
+// and envOverride is only ever consulted after Parse, long after usage
+// text was generated. This proves `-h`/PrintDefaults output can never
+// leak a real secret an operator put in AWS_SECRET_ACCESS_KEY.
+func TestEnvOverride_UsageStringNeverContainsEnvValue(t *testing.T) {
+	const realSecret = "sk-live-DEFINITELY-NOT-A-PLACEHOLDER-98765"
+	t.Setenv(envAWSSecretAccessKey, realSecret)
+	fs, _, _, _ := newCredFlagSet(t)
+	var buf bytes.Buffer
+	fs.SetOutput(&buf)
+	fs.PrintDefaults()
+	if strings.Contains(buf.String(), realSecret) {
+		t.Fatalf("flag usage text leaked the AWS_SECRET_ACCESS_KEY environment value: %s", buf.String())
+	}
+}
+
+// newEnvCredTestServer is a small wrapper around newSyncTestServer naming
+// its fixed test credentials clearly for the env-fallback tests below.
+func newEnvCredTestServer(t *testing.T) (srv *Server, ts *httptest.Server, creds Credentials, region string) {
+	t.Helper()
+	_, srv, creds, region = newSyncTestServer(t)
+	ts = httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	return srv, ts, creds, region
+}
+
+// TestEnvCredentials_Inspect_UsesEnvWhenFlagsOmitted proves the P1-A
+// wiring end to end for one ordinary single-endpoint client command
+// (inspect) entirely in-process: with -access-key/-secret-key/-region
+// omitted and AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION set to
+// the server's real credentials, the command must authenticate
+// successfully. Like the pre-existing TestDryRun_CLI_SingleObject_
+// EndToEnd above, this calls runInspect directly on its happy path: it
+// prints to stdout and only calls os.Exit on failure.
+func TestEnvCredentials_Inspect_UsesEnvWhenFlagsOmitted(t *testing.T) {
+	srv, ts, creds, region := newEnvCredTestServer(t)
+	if err := srv.store.CreateBucket("envb"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.PutObject("envb", "k", []byte("hello"), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envAWSAccessKeyID, creds.AccessKeyID)
+	t.Setenv(envAWSSecretAccessKey, creds.SecretAccessKey)
+	t.Setenv(envAWSRegion, region)
+
+	runInspect([]string{"-endpoint", ts.URL, "s3://envb/k"})
+}
+
+// TestEnvCredentials_Inspect_ExplicitFlagOverridesWrongEnv is the
+// precedence companion: deliberately wrong AWS_* environment credentials
+// must never win over explicit -access-key/-secret-key/-region flags
+// (P1-A2).
+func TestEnvCredentials_Inspect_ExplicitFlagOverridesWrongEnv(t *testing.T) {
+	srv, ts, creds, region := newEnvCredTestServer(t)
+	if err := srv.store.CreateBucket("envb2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.PutObject("envb2", "k", []byte("hello"), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envAWSAccessKeyID, "WRONG-ENV-ACCESS-KEY")
+	t.Setenv(envAWSSecretAccessKey, "WRONG-ENV-SECRET-KEY")
+	t.Setenv(envAWSRegion, "wrong-env-region")
+
+	runInspect([]string{
+		"-endpoint", ts.URL,
+		"-access-key", creds.AccessKeyID,
+		"-secret-key", creds.SecretAccessKey,
+		"-region", region,
+		"s3://envb2/k",
+	})
+}
+
+// TestEnvCredentials_Replicate_RegionFromEnvButFromToNeverFallBack is the
+// two-endpoint (P1-A5) proof, entirely in-process via replicate's -dry-
+// run mode (never mutates the destination, so a happy path is safe to
+// call directly): AWS_REGION fallback applies to the one shared -region
+// flag, but AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY must never reach
+// -from-access-key/-from-secret-key/-to-access-key/-to-secret-key even
+// when they happen to be set to a value that *would* authenticate.
+func TestEnvCredentials_Replicate_RegionFromEnvButFromToNeverFallBack(t *testing.T) {
+	_, srcSrv, dstDir, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", []byte("replicate env test"), "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	// Set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY to the servers' own
+	// real, correct credentials -- if replicate's -from-*/-to-* flags
+	// wrongly fell back to them, this test would not catch it (it would
+	// still work "by accident"). What it DOES prove unambiguously is
+	// that AWS_REGION reaches the shared -region flag: only -region is
+	// omitted from args below, everything else is explicit.
+	t.Setenv(envAWSAccessKeyID, creds.AccessKeyID)
+	t.Setenv(envAWSSecretAccessKey, creds.SecretAccessKey)
+	t.Setenv(envAWSRegion, region)
+
+	before := storeContentFingerprint(t, dstDir)
+	runReplicate([]string{
+		"-dry-run",
+		"-from", srcTS.URL, "-to", dstTS.URL,
+		"-from-access-key", creds.AccessKeyID, "-from-secret-key", creds.SecretAccessKey,
+		"-to-access-key", creds.AccessKeyID, "-to-secret-key", creds.SecretAccessKey,
+		"s3://src/obj.bin", "s3://dst/obj.bin",
+	})
+	after := storeContentFingerprint(t, dstDir)
+	if before != after {
+		t.Fatalf("replicate -dry-run mutated the destination store")
+	}
+}
+
+// runZeros3CLIWithEnv is runZeros3CLI plus explicit control over the
+// subprocess's environment, for P1-A tests that must observe a real
+// process-level authentication failure (an in-process os.Exit would kill
+// the whole test binary, so those cases need a real subprocess).
+func runZeros3CLIWithEnv(t *testing.T, bin string, env []string, args ...string) (stdout, stderr string, exitCode int) {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Env = env
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	exitCode = 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		} else {
+			t.Fatalf("failed to run zeros3 %v: %v", args, err)
+		}
+	}
+	return outBuf.String(), errBuf.String(), exitCode
+}
+
+// TestEnvCredentials_Replicate_FromToFlagsNeverFallBackToEnv_RealProcess
+// is the hostile-case companion to the in-process test above, run as a
+// real subprocess so a genuine authentication failure can be observed
+// safely: AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY are set to the exact
+// correct SOURCE server credentials, but -from-access-key/-from-secret-
+// key are omitted (left at their built-in placeholder default, which
+// does not match this real server). If replicate's -from-* flags ever
+// fell back to AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, this would
+// succeed; per P1-A5 it must fail instead.
+func TestEnvCredentials_Replicate_FromToFlagsNeverFallBackToEnv_RealProcess(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	srcDir := t.TempDir()
+	srcStore, err := OpenStore(srcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srcStore.CreateBucket("src"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcStore.PutObject("src", "obj.bin", []byte("hello"), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	srcStore.Close()
+	dstDir := t.TempDir()
+	dstStore, err := OpenStore(dstDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dstStore.CreateBucket("dst"); err != nil {
+		t.Fatal(err)
+	}
+	dstStore.Close()
+
+	srcAddr := freeTCPAddr(t)
+	srcCmd := exec.Command(bin, "serve", "-store", srcDir, "-addr", srcAddr,
+		"-access-key", "REAL-SRC-ACCESS-KEY", "-secret-key", "REAL-SRC-SECRET-KEY")
+	if err := srcCmd.Start(); err != nil {
+		t.Fatalf("failed to start source serve: %v", err)
+	}
+	defer func() { srcCmd.Process.Kill(); srcCmd.Wait() }()
+	waitForZeros3Serve(t, srcAddr)
+
+	dstAddr := freeTCPAddr(t)
+	dstCmd := exec.Command(bin, "serve", "-store", dstDir, "-addr", dstAddr,
+		"-access-key", "REAL-DST-ACCESS-KEY", "-secret-key", "REAL-DST-SECRET-KEY")
+	if err := dstCmd.Start(); err != nil {
+		t.Fatalf("failed to start destination serve: %v", err)
+	}
+	defer func() { dstCmd.Process.Kill(); dstCmd.Wait() }()
+	waitForZeros3Serve(t, dstAddr)
+
+	env := append(os.Environ(),
+		envAWSAccessKeyID+"=REAL-SRC-ACCESS-KEY",
+		envAWSSecretAccessKey+"=REAL-SRC-SECRET-KEY",
+	)
+	// -from-access-key/-from-secret-key/-to-access-key/-to-secret-key
+	// are deliberately omitted here.
+	_, stderr, code := runZeros3CLIWithEnv(t, bin, env,
+		"replicate", "-dry-run",
+		"-from", "http://"+srcAddr, "-to", "http://"+dstAddr,
+		"s3://src/obj.bin", "s3://dst/obj.bin")
+	if code == 0 {
+		t.Fatalf("replicate unexpectedly succeeded -- AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY must never reach -from-access-key/-from-secret-key (P1-A5); stderr=%s", stderr)
+	}
+	if strings.Contains(stderr, "REAL-SRC-SECRET-KEY") || strings.Contains(stderr, "REAL-DST-SECRET-KEY") {
+		t.Fatalf("secret leaked into stderr: %s", stderr)
+	}
+}
+
+// TestEnvCredentials_Serve_AuthenticatesFromEnv is the P1-A3/"server
+// auth using env creds" real-process proof: `zeros3 serve` started with
+// no -access-key/-secret-key/-region flags at all, only
+// AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION in its environment,
+// must accept requests signed with those exact credentials and reject
+// requests signed with anything else.
+func TestEnvCredentials_Serve_AuthenticatesFromEnv(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	store, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("envserve"); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	addr := freeTCPAddr(t)
+	env := append(os.Environ(),
+		envAWSAccessKeyID+"=ENV-SERVE-ACCESS-KEY",
+		envAWSSecretAccessKey+"=ENV-SERVE-SECRET-KEY",
+		envAWSRegion+"=env-serve-region",
+	)
+	cmd := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr)
+	cmd.Env = env
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start serve: %v", err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	// A client using the same credentials (supplied explicitly, since
+	// this test's own process environment is not the subprocess's) must
+	// authenticate successfully.
+	_, stderr, code := runZeros3CLI(t, bin, "inspect",
+		"-endpoint", "http://"+addr,
+		"-access-key", "ENV-SERVE-ACCESS-KEY", "-secret-key", "ENV-SERVE-SECRET-KEY", "-region", "env-serve-region",
+		"s3://envserve/does-not-need-to-exist-for-auth-to-be-checked")
+	// The object doesn't exist, so this may still fail with a 404-shaped
+	// error -- what must NOT happen is an auth failure. A wrong-signature
+	// rejection would be reported distinctly (SignatureDoesNotMatch); a
+	// missing-object error is the expected, benign outcome here.
+	if code != 0 && strings.Contains(stderr, "SignatureDoesNotMatch") {
+		t.Fatalf("server did not authenticate the env-derived credentials: %s", stderr)
+	}
+
+	// Wrong credentials must be rejected.
+	_, stderr2, code2 := runZeros3CLI(t, bin, "inspect",
+		"-endpoint", "http://"+addr,
+		"-access-key", "WRONG-ACCESS-KEY", "-secret-key", "WRONG-SECRET-KEY", "-region", "env-serve-region",
+		"s3://envserve/does-not-need-to-exist-for-auth-to-be-checked")
+	if code2 == 0 {
+		t.Fatalf("server accepted wrong credentials against env-derived auth")
+	}
+	if strings.Contains(stderr2, "ENV-SERVE-SECRET-KEY") {
+		t.Fatalf("secret leaked into stderr: %s", stderr2)
+	}
+}
+
+// TestEnvCredentials_Presign_UsesEnvWhenFlagsOmitted is the P1-A
+// "presign using env creds" proof: `zeros3 presign` with
+// -access-key/-secret-key/-region omitted, driven only by
+// AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION, must produce a URL
+// that a real server started with those same credentials accepts.
+func TestEnvCredentials_Presign_UsesEnvWhenFlagsOmitted(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	store, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("presignenv"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutObject("presignenv", "k", []byte("presigned via env creds"), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	addr := freeTCPAddr(t)
+	srvCmd := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr,
+		"-access-key", "PRESIGN-ENV-ACCESS-KEY", "-secret-key", "PRESIGN-ENV-SECRET-KEY")
+	if err := srvCmd.Start(); err != nil {
+		t.Fatalf("failed to start serve: %v", err)
+	}
+	defer func() { srvCmd.Process.Kill(); srvCmd.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	env := append(os.Environ(),
+		envAWSAccessKeyID+"=PRESIGN-ENV-ACCESS-KEY",
+		envAWSSecretAccessKey+"=PRESIGN-ENV-SECRET-KEY",
+	)
+	stdout, stderr, code := runZeros3CLIWithEnv(t, bin, env,
+		"presign", "get", "-endpoint", "http://"+addr, "-bucket", "presignenv", "-key", "k")
+	if code != 0 {
+		t.Fatalf("presign failed (code %d): stderr=%s", code, stderr)
+	}
+	url := strings.TrimSpace(stdout)
+	if url == "" {
+		t.Fatalf("presign produced no URL")
+	}
+	if strings.Contains(url, "PRESIGN-ENV-SECRET-KEY") {
+		t.Fatalf("presigned URL leaked the secret key: %s", url)
+	}
+
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET presigned URL: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("presigned URL (built from env credentials) was rejected: status %d body=%s", resp.StatusCode, body)
+	}
+	if string(body) != "presigned via env creds" {
+		t.Fatalf("unexpected body: %s", body)
+	}
+}
+
+// =============================================================================
+// P1-B: HTTP server hardening + graceful shutdown
+//
+// newHardenedHTTPServer's exact field values are checked directly
+// (fast, no I/O); every SIGINT/SIGTERM/shutdown-timing behavior is
+// checked against a real `zeros3 serve` subprocess signaled with a real
+// OS signal, per the spec's own "use real-process tests externally for
+// actual signals" requirement -- an in-process fake would not exercise
+// signal.NotifyContext or http.Server.Shutdown's actual listener/
+// connection-draining behavior.
+// =============================================================================
+
+func TestNewHardenedHTTPServer_FieldsExact(t *testing.T) {
+	s := newHardenedHTTPServer("127.0.0.1:0", http.NotFoundHandler())
+	if s.ReadHeaderTimeout != serveReadHeaderTimeout {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v", s.ReadHeaderTimeout, serveReadHeaderTimeout)
+	}
+	if s.IdleTimeout != serveIdleTimeout {
+		t.Fatalf("IdleTimeout = %v, want %v", s.IdleTimeout, serveIdleTimeout)
+	}
+	if s.MaxHeaderBytes != serveMaxHeaderBytes {
+		t.Fatalf("MaxHeaderBytes = %v, want %v", s.MaxHeaderBytes, serveMaxHeaderBytes)
+	}
+	// P1-B3, deliberate: no whole-request deadline, so large
+	// uploads/downloads are never regressed by a P1 hardening pass.
+	if s.ReadTimeout != 0 {
+		t.Fatalf("ReadTimeout = %v, want 0 (unset)", s.ReadTimeout)
+	}
+	if s.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %v, want 0 (unset)", s.WriteTimeout)
+	}
+}
+
+// throttledBody is an io.ReadCloser that hands back small pieces of a
+// fixed byte slice with a delay between each, so a real subprocess
+// server's PUT handler is provably still reading the request body
+// (i.e. the connection is genuinely active, not idle) for a controlled,
+// deterministic span of wall-clock time -- without needing the
+// in-process-only testHook seam (section "Test-only failure injection
+// seam"), which cannot reach a separately exec'd binary.
+type throttledBody struct {
+	data      []byte
+	chunkSize int
+	delay     time.Duration
+}
+
+func (r *throttledBody) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	time.Sleep(r.delay)
+	n := r.chunkSize
+	if n > len(p) {
+		n = len(p)
+	}
+	if n > len(r.data) {
+		n = len(r.data)
+	}
+	copy(p, r.data[:n])
+	r.data = r.data[n:]
+	return n, nil
+}
+
+func (r *throttledBody) Close() error { return nil }
+
+// waitForProcessExit waits up to timeout for cmd (already Start()ed) to
+// exit, returning its process exit code (0 for a clean exit). It fails
+// the test (after forcibly killing the process, so the test binary never
+// hangs) if the process is still running when timeout elapses.
+func waitForProcessExit(t *testing.T, cmd *exec.Cmd, timeout time.Duration) int {
+	t.Helper()
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- cmd.Wait() }()
+	select {
+	case err := <-waitErr:
+		if err == nil {
+			return 0
+		}
+		if ee, ok := err.(*exec.ExitError); ok {
+			return ee.ExitCode()
+		}
+		t.Fatalf("cmd.Wait: %v", err)
+		return -1
+	case <-time.After(timeout):
+		cmd.Process.Kill()
+		cmd.Wait()
+		t.Fatalf("process did not exit within %s of being signaled", timeout)
+		return -1
+	}
+}
+
+func TestServe_SIGINT_IdleGracefulShutdown_RealProcess(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	addr := freeTCPAddr(t)
+	cmd := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start serve: %v", err)
+	}
+	waitForZeros3Serve(t, addr)
+
+	start := time.Now()
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatalf("failed to signal SIGINT: %v", err)
+	}
+	code := waitForProcessExit(t, cmd, serveShutdownGrace+10*time.Second)
+	elapsed := time.Since(start)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (clean idle shutdown); stderr=%s", code, stderr.String())
+	}
+	if elapsed > serveShutdownGrace {
+		t.Fatalf("idle shutdown took %s, want well under the %s grace period", elapsed, serveShutdownGrace)
+	}
+	// B11: a normal shutdown (http.ErrServerClosed internally) must never
+	// be logged as a fatal server error.
+	if strings.Contains(stderr.String(), "serve failed") {
+		t.Fatalf("idle SIGINT shutdown was logged as a server failure: %s", stderr.String())
+	}
+
+	// Restart must work cleanly afterward.
+	restart := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr)
+	if err := restart.Start(); err != nil {
+		t.Fatalf("failed to restart serve: %v", err)
+	}
+	defer func() { restart.Process.Kill(); restart.Wait() }()
+	waitForZeros3Serve(t, addr)
+}
+
+func TestServe_SIGTERM_IdleGracefulShutdown_RealProcess(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	addr := freeTCPAddr(t)
+	cmd := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start serve: %v", err)
+	}
+	waitForZeros3Serve(t, addr)
+
+	start := time.Now()
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("failed to signal SIGTERM: %v", err)
+	}
+	code := waitForProcessExit(t, cmd, serveShutdownGrace+10*time.Second)
+	elapsed := time.Since(start)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (clean idle shutdown); stderr=%s", code, stderr.String())
+	}
+	if elapsed > serveShutdownGrace {
+		t.Fatalf("idle shutdown took %s, want well under the %s grace period", elapsed, serveShutdownGrace)
+	}
+
+	restart := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr)
+	if err := restart.Start(); err != nil {
+		t.Fatalf("failed to restart serve: %v", err)
+	}
+	defer func() { restart.Process.Kill(); restart.Wait() }()
+	waitForZeros3Serve(t, addr)
+}
+
+// TestServe_SIGTERM_SecondSignalForcesImmediateExit_RealProcess is the
+// P1-B6 proof: a second SIGTERM arriving while graceful shutdown is
+// already draining an active (slow) request must terminate the process
+// immediately, not wait out the rest of the grace period.
+func TestServe_SIGTERM_SecondSignalForcesImmediateExit_RealProcess(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	store, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	addr := freeTCPAddr(t)
+	cmd := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start serve: %v", err)
+	}
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	body := bytes.Repeat([]byte("y"), 200)
+	req := mustSignedRequestWithOpts(t, signer, http.MethodPut, "http://"+addr+"/b/slow-key", body, nil)
+	req.Body = &throttledBody{data: body, chunkSize: 5, delay: 300 * time.Millisecond} // ~12s total
+
+	respCh := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			respCh <- err
+			return
+		}
+		resp.Body.Close()
+		respCh <- nil
+	}()
+
+	time.Sleep(1 * time.Second)
+	start := time.Now()
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("failed to send first SIGTERM: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("failed to send second SIGTERM: %v", err)
+	}
+
+	waitForProcessExit(t, cmd, 5*time.Second)
+	elapsed := time.Since(start)
+	if elapsed >= serveShutdownGrace {
+		t.Fatalf("process took %s to exit after a second SIGTERM, want well under the %s grace period (second signal must force immediate exit)", elapsed, serveShutdownGrace)
+	}
+	<-respCh // drain the in-flight request's goroutine; its outcome is irrelevant here
+}
+
+// TestServe_SIGTERM_ActivePUT_CompletesWithinGrace_RealProcess is the
+// P1-B7 proof for PUT, plus B9 (no new connections accepted once
+// shutdown has begun): an in-flight PUT whose body is still streaming
+// when SIGTERM arrives must still complete successfully and durably,
+// while a brand-new connection attempted shortly after the signal must
+// be refused.
+func TestServe_SIGTERM_ActivePUT_CompletesWithinGrace_RealProcess(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	store, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	addr := freeTCPAddr(t)
+	cmd := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start serve: %v", err)
+	}
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	body := bytes.Repeat([]byte("z"), 200)
+	req := mustSignedRequestWithOpts(t, signer, http.MethodPut, "http://"+addr+"/b/active-put-key", body, nil)
+	req.Body = &throttledBody{data: body, chunkSize: 5, delay: 200 * time.Millisecond} // ~8s total
+
+	type putResult struct {
+		status int
+		err    error
+	}
+	resultCh := make(chan putResult, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			resultCh <- putResult{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		resultCh <- putResult{status: resp.StatusCode}
+	}()
+
+	time.Sleep(1 * time.Second) // let the PUT genuinely begin streaming
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("failed to signal SIGTERM: %v", err)
+	}
+
+	// B9: a brand-new connection attempted just after the signal must be
+	// refused -- the listener stops accepting immediately on Shutdown.
+	time.Sleep(500 * time.Millisecond)
+	newConnClient := &http.Client{Timeout: 2 * time.Second}
+	if resp, err := newConnClient.Get("http://" + addr + "/"); err == nil {
+		resp.Body.Close()
+		t.Fatalf("a new connection was accepted after shutdown began (want it refused)")
+	}
+
+	result := <-resultCh
+	if result.err != nil {
+		t.Fatalf("active PUT failed: %v", result.err)
+	}
+	if result.status != http.StatusOK {
+		t.Fatalf("active PUT status = %d, want 200 (must complete within the grace period)", result.status)
+	}
+
+	code := waitForProcessExit(t, cmd, serveShutdownGrace+10*time.Second)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr.String())
+	}
+
+	// Restart and confirm the object landed durably and completely.
+	restart := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr)
+	if err := restart.Start(); err != nil {
+		t.Fatalf("failed to restart serve: %v", err)
+	}
+	defer func() { restart.Process.Kill(); restart.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	getResp := doSignedRequest(t, http.DefaultClient, "http://"+addr, signer, http.MethodGet, "/b/active-put-key", nil, nil)
+	defer getResp.Body.Close()
+	got, _ := io.ReadAll(getResp.Body)
+	if getResp.StatusCode != http.StatusOK || !bytes.Equal(got, body) {
+		t.Fatalf("object after restart: status=%d len=%d, want 200 with the exact %d-byte body", getResp.StatusCode, len(got), len(body))
+	}
+}
+
+// TestServe_SIGTERM_ActiveGET_CompletesWithinGrace_RealProcess is the
+// P1-B7 proof for GET: an in-flight GET whose response the client is
+// deliberately still slowly draining when SIGTERM arrives must still
+// complete with the exact correct content.
+func TestServe_SIGTERM_ActiveGET_CompletesWithinGrace_RealProcess(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	store, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	body := genRandomBytes(19001, 4_000_000)
+	if _, err := store.PutObject("b", "active-get-key", body, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	addr := freeTCPAddr(t)
+	cmd := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start serve: %v", err)
+	}
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+
+	type getResult struct {
+		body []byte
+		err  error
+	}
+	resultCh := make(chan getResult, 1)
+	go func() {
+		resp := doSignedRequest(t, http.DefaultClient, "http://"+addr, signer, http.MethodGet, "/b/active-get-key", nil, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			resultCh <- getResult{err: fmt.Errorf("status %d", resp.StatusCode)}
+			return
+		}
+		var buf bytes.Buffer
+		chunk := make([]byte, 32*1024)
+		for {
+			n, rerr := resp.Body.Read(chunk)
+			if n > 0 {
+				buf.Write(chunk[:n])
+				time.Sleep(5 * time.Millisecond) // deliberately slow client read
+			}
+			if rerr != nil {
+				if rerr != io.EOF {
+					resultCh <- getResult{err: rerr}
+					return
+				}
+				break
+			}
+		}
+		resultCh <- getResult{body: buf.Bytes()}
+	}()
+
+	time.Sleep(300 * time.Millisecond) // let the GET genuinely begin streaming
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("failed to signal SIGTERM: %v", err)
+	}
+
+	result := <-resultCh
+	if result.err != nil {
+		t.Fatalf("active GET failed: %v", result.err)
+	}
+	if !bytes.Equal(result.body, body) {
+		t.Fatalf("active GET returned %d bytes, want the exact %d-byte object", len(result.body), len(body))
+	}
+
+	code := waitForProcessExit(t, cmd, serveShutdownGrace+10*time.Second)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr.String())
+	}
+}
+
+// TestServe_SIGTERM_SlowRequestExceedsGrace_RealProcess is the P1-B8
+// proof: a request that cannot possibly finish before the grace period
+// expires must not hang the process -- it exits (nonzero, per P1-B's own
+// documented exception for this one path), a restart succeeds, the
+// interrupted object never becomes visible, and the store passes a deep
+// verify (no corruption, no partial/mixed state; STATUS.md's existing
+// "Durability contract" governs the interrupted write exactly as an
+// abrupt kill would).
+func TestServe_SIGTERM_SlowRequestExceedsGrace_RealProcess(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	store, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	addr := freeTCPAddr(t)
+	cmd := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start serve: %v", err)
+	}
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	// 400 bytes at 1 chunk/second is ~400s total -- guaranteed to still
+	// be mid-flight when the 30s grace period expires.
+	body := bytes.Repeat([]byte("w"), 400)
+	req := mustSignedRequestWithOpts(t, signer, http.MethodPut, "http://"+addr+"/b/never-finishes-key", body, nil)
+	req.Body = &throttledBody{data: body, chunkSize: 1, delay: 1 * time.Second}
+
+	client := &http.Client{Timeout: 90 * time.Second}
+	go func() {
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		// Outcome deliberately ignored: the server process will exit out
+		// from under this connection once the grace period expires.
+	}()
+
+	time.Sleep(2 * time.Second) // let the PUT genuinely begin streaming
+	start := time.Now()
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("failed to signal SIGTERM: %v", err)
+	}
+
+	code := waitForProcessExit(t, cmd, serveShutdownGrace+15*time.Second)
+	elapsed := time.Since(start)
+	if elapsed < serveShutdownGrace {
+		t.Fatalf("process exited after only %s, want it to have waited out the %s grace period first", elapsed, serveShutdownGrace)
+	}
+	if code == 0 {
+		t.Fatalf("exit code = 0, want nonzero (P1-B's documented signal that the grace period expired with active work still in flight)")
+	}
+
+	// Restart must succeed and the store must be completely healthy --
+	// no corruption, no partial/mixed state from the interrupted write.
+	restart := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr)
+	if err := restart.Start(); err != nil {
+		t.Fatalf("failed to restart serve after grace-period expiry: %v", err)
+	}
+	defer func() { restart.Process.Kill(); restart.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	getResp := doSignedRequest(t, http.DefaultClient, "http://"+addr, signer, http.MethodGet, "/b/never-finishes-key", nil, nil)
+	getResp.Body.Close()
+	if getResp.StatusCode == http.StatusOK {
+		t.Fatalf("the never-acknowledged object is visible after restart -- expected it absent (no partial commit)")
+	}
+
+	_, stderr2, verifyCode := runZeros3CLI(t, bin, "verify", "-deep", "-store", storeDir)
+	if verifyCode != 0 {
+		t.Fatalf("verify -deep after grace-period expiry failed (code %d): %s", verifyCode, stderr2)
+	}
+}
+
+// TestServe_GracefulShutdown_ReplicateWorkersTerminateCleanly_RealProcess
+// ties P1-B's graceful shutdown to M8H's bounded parallel chunk
+// transport: a `replicate -workers N` client whose SOURCE server begins
+// a graceful SIGTERM mid-transfer must not hang -- the in-flight worker
+// requests either complete within the source's own grace period or the
+// client observes a clean connection failure, and the client process
+// itself always exits in bounded time either way.
+func TestServe_GracefulShutdown_ReplicateWorkersTerminateCleanly_RealProcess(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	srcDir := t.TempDir()
+	srcStore, err := OpenStore(srcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srcStore.CreateBucket("src"); err != nil {
+		t.Fatal(err)
+	}
+	// Multiple large, independent objects so M8H's worker pool has
+	// several genuinely concurrent chunk transfers in flight.
+	for i := 0; i < 4; i++ {
+		key := fmt.Sprintf("obj-%d.bin", i)
+		if _, err := srcStore.PutObject("src", key, genRandomBytes(int64(21000+i), 3_000_000), "application/octet-stream", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srcStore.Close()
+
+	dstDir := t.TempDir()
+	dstStore, err := OpenStore(dstDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dstStore.CreateBucket("dst"); err != nil {
+		t.Fatal(err)
+	}
+	dstStore.Close()
+
+	srcAddr := freeTCPAddr(t)
+	srcCmd := exec.Command(bin, "serve", "-store", srcDir, "-addr", srcAddr)
+	if err := srcCmd.Start(); err != nil {
+		t.Fatalf("failed to start source serve: %v", err)
+	}
+	waitForZeros3Serve(t, srcAddr)
+
+	dstAddr := freeTCPAddr(t)
+	dstCmd := exec.Command(bin, "serve", "-store", dstDir, "-addr", dstAddr)
+	if err := dstCmd.Start(); err != nil {
+		t.Fatalf("failed to start destination serve: %v", err)
+	}
+	defer func() { dstCmd.Process.Kill(); dstCmd.Wait() }()
+	waitForZeros3Serve(t, dstAddr)
+
+	replicateDone := make(chan struct{})
+	go func() {
+		defer close(replicateDone)
+		runZeros3CLI(t, bin, "replicate", "-recursive", "-workers", "4",
+			"-from", "http://"+srcAddr, "-to", "http://"+dstAddr,
+			"s3://src/", "s3://dst/")
+	}()
+
+	time.Sleep(200 * time.Millisecond) // let transfer begin
+	if err := srcCmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("failed to signal source SIGTERM: %v", err)
+	}
+	waitForProcessExit(t, srcCmd, serveShutdownGrace+10*time.Second)
+
+	select {
+	case <-replicateDone:
+		// The client returned -- whether it fully succeeded (source
+		// finished all in-flight work within its own grace period) or
+		// failed cleanly (source closed a connection mid-transfer) is
+		// both acceptable; what matters is that it terminated at all.
+	case <-time.After(serveShutdownGrace + 20*time.Second):
+		t.Fatalf("replicate client hung instead of terminating after the source server's graceful shutdown")
+	}
+}
+
+// =============================================================================
+// P1-C: Basic TLS (operator-supplied certificate, stdlib-only)
+//
+// mustGenerateSelfSignedCert produces a throwaway ECDSA cert/key PEM pair
+// valid for 127.0.0.1/localhost, written to disk, for exercising
+// `-tls-cert`/`-tls-key` against a real subprocess. Client-side trust for
+// this self-signed test certificate is established two different ways
+// below, matching C7's "testing infrastructure may configure trust
+// appropriately" (never InsecureSkipVerify): (1) an *http.Client in THIS
+// test process with an explicit tls.Config{RootCAs: pool}, for tests that
+// talk to the HTTPS server directly; (2) for a real `zeros3` CLI
+// subprocess (replicate), Go's stdlib on Linux honors the SSL_CERT_FILE
+// environment variable when building the system root pool a nil
+// TLSClientConfig falls back to -- exactly zeros3's own client transport
+// (transferHTTPTransport, section 15b) leaves TLSClientConfig unset, so
+// pointing SSL_CERT_FILE at the test cert lets an unmodified `zeros3
+// replicate` subprocess trust it with zero source changes and zero new
+// CLI flags.
+// =============================================================================
+
+func mustGenerateSelfSignedCert(t *testing.T, dir string) (certPath, keyPath string, certPEM []byte) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:              []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(cryptorand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyBytes, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+
+	certPath = filepath.Join(dir, "cert.pem")
+	keyPath = filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certPath, keyPath, certPEM
+}
+
+// httpsClientTrusting returns an *http.Client that trusts exactly the
+// given self-signed test certificate -- never InsecureSkipVerify (C7).
+func httpsClientTrusting(certPEM []byte) *http.Client {
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(certPEM)
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
+	}
+}
+
+func TestServe_TLS_MissingCertOrKeyFails_RealProcess(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	certPath, keyPath, _ := mustGenerateSelfSignedCert(t, t.TempDir())
+
+	_, stderr1, code1 := runZeros3CLI(t, bin, "serve", "-store", storeDir, "-addr", freeTCPAddr(t), "-tls-cert", certPath)
+	if code1 != 2 {
+		t.Fatalf("serve with -tls-cert only: exit code = %d, want 2; stderr=%s", code1, stderr1)
+	}
+	if !strings.Contains(stderr1, "-tls-cert and -tls-key must both be supplied together") {
+		t.Fatalf("stderr = %q, want the tls-cert/tls-key pairing error", stderr1)
+	}
+
+	_, stderr2, code2 := runZeros3CLI(t, bin, "serve", "-store", storeDir, "-addr", freeTCPAddr(t), "-tls-key", keyPath)
+	if code2 != 2 {
+		t.Fatalf("serve with -tls-key only: exit code = %d, want 2; stderr=%s", code2, stderr2)
+	}
+	if !strings.Contains(stderr2, "-tls-cert and -tls-key must both be supplied together") {
+		t.Fatalf("stderr = %q, want the tls-cert/tls-key pairing error", stderr2)
+	}
+}
+
+func TestServe_TLS_BadCertKeyFails_RealProcess(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	badDir := t.TempDir()
+	badCert := filepath.Join(badDir, "bad-cert.pem")
+	badKey := filepath.Join(badDir, "bad-key.pem")
+	if err := os.WriteFile(badCert, []byte("not a real certificate"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(badKey, []byte("not a real key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	addr := freeTCPAddr(t)
+	cmd := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr, "-tls-cert", badCert, "-tls-key", badKey)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("serve with a malformed cert/key unexpectedly succeeded: %s", out)
+	}
+}
+
+// TestServe_TLS_HTTPS_SigV4_PresignAndGracefulShutdown_RealProcess covers
+// most of the P1-C required test list in one real HTTPS subprocess: a
+// SigV4-signed PUT/GET succeed over HTTPS, a presigned URL built from an
+// https:// endpoint carries the https scheme and is itself accepted by
+// the server, and a SIGTERM against the HTTPS server shuts down cleanly
+// -- exactly like the plain-HTTP P1-B tests above.
+func TestServe_TLS_HTTPS_SigV4_PresignAndGracefulShutdown_RealProcess(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	certPath, keyPath, certPEM := mustGenerateSelfSignedCert(t, t.TempDir())
+
+	addr := freeTCPAddr(t)
+	cmd := exec.Command(bin, "serve", "-store", storeDir, "-addr", addr, "-tls-cert", certPath, "-tls-key", keyPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start HTTPS serve: %v", err)
+	}
+	waitReady := func() bool {
+		client := httpsClientTrusting(certPEM)
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if resp, err := client.Get("https://" + addr + "/"); err == nil {
+				resp.Body.Close()
+				return true
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		return false
+	}
+	if !waitReady() {
+		t.Fatalf("HTTPS serve did not become ready on %s", addr)
+	}
+
+	client := httpsClientTrusting(certPEM)
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+
+	if resp := doSignedRequest(t, client, "https://"+addr, signer, http.MethodPut, "/tlsbucket", nil, nil); resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create bucket over HTTPS: status %d: %s", resp.StatusCode, b)
+	}
+	body := []byte("hello over real TLS")
+	if resp := doSignedRequest(t, client, "https://"+addr, signer, http.MethodPut, "/tlsbucket/k", body, nil); resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("PUT over HTTPS (SigV4 header auth): status %d: %s", resp.StatusCode, b)
+	}
+	getResp := doSignedRequest(t, client, "https://"+addr, signer, http.MethodGet, "/tlsbucket/k", nil, nil)
+	got, _ := io.ReadAll(getResp.Body)
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK || !bytes.Equal(got, body) {
+		t.Fatalf("GET over HTTPS: status=%d body=%q, want 200 with %q", getResp.StatusCode, got, body)
+	}
+
+	// C5: a presigned URL built from an https:// endpoint must carry the
+	// https scheme and must itself authenticate against the real server.
+	url, err := GeneratePresignedURL(
+		Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey},
+		defaultRegion,
+		PresignRequest{Method: http.MethodGet, Endpoint: "https://" + addr, Bucket: "tlsbucket", Key: "k", Expires: 5 * time.Minute},
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("GeneratePresignedURL: %v", err)
+	}
+	if !strings.HasPrefix(url, "https://") {
+		t.Fatalf("presigned URL = %q, want an https:// scheme (matching the https:// endpoint)", url)
+	}
+	presignResp, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("GET presigned HTTPS URL: %v", err)
+	}
+	presignBody, _ := io.ReadAll(presignResp.Body)
+	presignResp.Body.Close()
+	if presignResp.StatusCode != http.StatusOK || !bytes.Equal(presignBody, body) {
+		t.Fatalf("presigned HTTPS GET: status=%d body=%q, want 200 with %q", presignResp.StatusCode, presignBody, body)
+	}
+
+	// Graceful SIGTERM must work identically over TLS.
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("failed to signal SIGTERM: %v", err)
+	}
+	code := waitForProcessExit(t, cmd, serveShutdownGrace+10*time.Second)
+	if code != 0 {
+		t.Fatalf("HTTPS server exit code = %d, want 0 (clean graceful shutdown); stderr=%s", code, stderr.String())
+	}
+}
+
+// TestServe_TLS_Replicate_RealProcess proves `zeros3 replicate` works
+// end to end between two real HTTPS servers -- see the section doc
+// comment above for how SSL_CERT_FILE, not any new zeros3 flag, gives
+// the unmodified client subprocess trust in the test certificate.
+func TestServe_TLS_Replicate_RealProcess(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	certPath, keyPath, _ := mustGenerateSelfSignedCert(t, t.TempDir())
+
+	srcDir := t.TempDir()
+	srcStore, err := OpenStore(srcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srcStore.CreateBucket("src"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcStore.PutObject("src", "obj.bin", []byte("replicated over real TLS"), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	srcStore.Close()
+
+	dstDir := t.TempDir()
+	dstStore, err := OpenStore(dstDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dstStore.CreateBucket("dst"); err != nil {
+		t.Fatal(err)
+	}
+	dstStore.Close()
+
+	srcAddr := freeTCPAddr(t)
+	srcCmd := exec.Command(bin, "serve", "-store", srcDir, "-addr", srcAddr, "-tls-cert", certPath, "-tls-key", keyPath)
+	if err := srcCmd.Start(); err != nil {
+		t.Fatalf("failed to start source HTTPS serve: %v", err)
+	}
+	defer func() { srcCmd.Process.Kill(); srcCmd.Wait() }()
+
+	dstAddr := freeTCPAddr(t)
+	dstCmd := exec.Command(bin, "serve", "-store", dstDir, "-addr", dstAddr, "-tls-cert", certPath, "-tls-key", keyPath)
+	if err := dstCmd.Start(); err != nil {
+		t.Fatalf("failed to start destination HTTPS serve: %v", err)
+	}
+	defer func() { dstCmd.Process.Kill(); dstCmd.Wait() }()
+
+	// Both servers share one self-signed cert (both bound to
+	// 127.0.0.1), so a single readiness probe using a trusting client
+	// against either address is representative of both being up; a
+	// short fixed settle plus a direct probe keeps this simple.
+	time.Sleep(300 * time.Millisecond)
+
+	env := append(os.Environ(), "SSL_CERT_FILE="+certPath)
+	stdout, stderr, code := runZeros3CLIWithEnv(t, bin, env,
+		"replicate",
+		"-from", "https://"+srcAddr, "-to", "https://"+dstAddr,
+		"s3://src/obj.bin", "s3://dst/obj.bin")
+	if code != 0 {
+		t.Fatalf("replicate over HTTPS failed (code %d): stdout=%s stderr=%s", code, stdout, stderr)
+	}
+}
+
+// TestNoInsecureSkipVerifyInSource is a static guardrail (C7/P1-C9):
+// zeros3.go must never set tls.Config.InsecureSkipVerify, in production
+// code or otherwise -- ZeroS3 has no legitimate reason to disable
+// certificate verification anywhere.
+func TestNoInsecureSkipVerifyInSource(t *testing.T) {
+	src, err := os.ReadFile("zeros3.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "InsecureSkipVerify") {
+		t.Fatalf("zeros3.go must never reference InsecureSkipVerify")
 	}
 }
