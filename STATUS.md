@@ -1,10 +1,338 @@
 # ZeroS3 — Status
 
-Milestone-by-milestone status, newest first. M1-M7, M8A, and M8B are all
-complete, tested, and release-hardened (frozen unless a demonstrated
-regression or correctness bug requires a minimal fix); M8C
-(prefix/bucket delta replication) is the current pass -- see its section
+Milestone-by-milestone status, newest first. M1-M7, M8A, M8B, and M8C
+are all complete, tested, and release-hardened (frozen unless a
+demonstrated regression or correctness bug requires a minimal fix); M8D
+(copy-on-write namespace fork) is the current pass -- see its section
 immediately below.
+
+## M8D — Copy-on-write namespace fork (`zeros3 fork`)
+
+**Goal:** clone an entire bucket or prefix into an independent namespace
+inside the *same* ZeroS3 store while writing zero new CAS payload bytes,
+without introducing a second storage engine, a snapshot/clone-specific
+persistent format, or reference-count metadata. Before any implementation
+work: rerun the two external validations unavailable during the M8C
+session (rclone, Package Killer) against the exact merged M8C candidate,
+as a hard preflight gate.
+
+### Phase 0/1 — exact baseline and preflight
+
+- Exact merged M8C commit: `0f9fc3269a9a986a5b3af5aeebbcc4f742a3cc16`
+  (`main`'s merge commit for PR #14, tree-identical to the M8C
+  feature-branch tip `7bc94d4c00e11e5f0e4ea9bf920772d8d201a729` recorded
+  in M8C's own section below -- confirmed via `git diff`, empty).
+- `gofmt -l .`: clean. `go vet ./...`: clean. `go test ./...`: **442
+  tests**, ok (59.0s). `go test -race ./...`: ok.
+- `zeros3.go`: 8946 lines. `zeros3_test.go`: 16803 lines.
+- **Preflight (external, `zeros3-testing/results/M8D_PREFLIGHT_RESULTS.md`):**
+  both validations the M8C session had to skip (rclone/npm tooling
+  unavailable there) were installed fresh and rerun against this exact
+  commit:
+  - **rclone** (v1.75.0): **20 passed, 0 failed, 1 documented known
+    limitation** -- byte-for-byte identical to the count M8C's own
+    session carried forward from the M8B freeze. Additionally, since
+    environment/resource limits permitted it, the 1 GiB rclone multipart
+    proof (ad hoc, matching M5-B's own recorded methodology) was re-run:
+    genuine multi-thread multipart upload (205-part ETag,
+    `ceil(1GiB/5MiB)`), byte-identical SHA-256 download before and after
+    a real process restart.
+  - **Package Killer**: **14/14 passed on both ZeroS3 and s3rver 3.7.1 --
+    GO** -- identical to the count carried forward from the M8B freeze.
+  - No regression found. The `m8c-gold` checkpoint (a branch at this
+    exact commit, since this session's push credentials could create
+    branches but not tags) was pushed before any M8D code was written.
+
+### Architecture: orchestration over M8C, not a second engine
+
+M8D adds exactly one new section (`zeros3.go` "15g. Copy-on-write
+namespace fork") plus two small, additive changes to existing shared
+primitives. The core mechanism:
+
+```
+zeros3 fork SOURCE DEST -endpoint EP
+       |
+       v
+replicateNamespace(cfg)   -- M8C's own orchestration, unmodified --
+  with Source.Endpoint == Dest.Endpoint (one store, one server)
+       |
+       v
+negotiateSyncMissing asks that SAME store's CAS "which chunks are
+missing?" for each object -- since source and destination share one
+physical CAS, every chunk the source manifest names is *already there*,
+so the answer is always "none": zero putSyncChunk calls, zero new
+payload bytes, by construction, not a special case.
+```
+
+**Selection rationale (Option A over Option B):** the spec's own
+selection rule asks for the implementation that reuses the most existing
+correctness machinery, writes zero new payload chunks, preserves atomic
+per-object publication, preserves safe destination-conflict behavior,
+and requires the least new code. `replicateNamespace` (M8C) already
+gives all of that: atomic per-object publication via
+`commitSyncObject`'s precondition mechanism, captured-immutable-source-
+revision semantics per object, partial-failure/resume behavior needing
+no durable session state, and namespace enumeration/mapping already
+proven against 1000+ objects, weird keys, and Unicode. Orchestrating
+`CopyObject` instead (Option B) would have meant re-deriving all of
+that from a different primitive for no benefit, since same-store
+`replicate`'s own machinery already gives the exact right answer for
+free. Choosing Option A means M8D's entire implementation is: the CLI
+verb, one namespace-overlap safety check, and one precondition-*mode*
+switch on an existing config struct -- no new code touches chunking,
+CAS, manifests, or the journal.
+
+- **Enumeration reuse (M8D-B):** `listSourceObjects`, unmodified --
+  exactly M8C's own paginated `ListObjectsV2` walk. No second namespace
+  scanner was written.
+- **Mapping reuse (M8D-C):** `namespaceDestKey`, unmodified -- exactly
+  M8C's own source-prefix-stripped, destination-prefix-joined mapping.
+- **Zero-payload mechanism (M8D-D):** structural, not a special case --
+  see the diagram above. Proven independently two ways in every test
+  that asserts it: `computeStats(statsScope{}).ChunkStoreFileBytes` (a
+  derived-from-filesystem scan) and a raw `filepath.WalkDir` chunk-file
+  count, both internally and externally (the harness additionally sums
+  every chunk file's own `os.Stat` size).
+- **Same-store enforcement:** `fork` takes one `-endpoint` flag, never
+  `-from`/`-to`, so cross-server fork is structurally inexpressible, not
+  merely discouraged.
+- **Overlap safety (the "important overlap rule"):** `forkNamespacesOverlap`
+  rejects a same-bucket source/destination relationship where one prefix
+  contains, equals, or is nested inside the other (a path-boundary
+  comparison, so `images` vs `images-backup` is correctly *not*
+  flagged). This is not preventing a real explosion hazard --
+  `listSourceObjects` already pages to completion into one bounded
+  in-memory slice and returns *before* `replicateNamespace`'s per-object
+  write loop ever runs (unchanged from M8C), so a fork's own newly
+  written destination objects structurally cannot be rediscovered by its
+  own already-completed source enumeration, overlapping or not. The
+  check exists because the milestone's own preferred "simpler, safer
+  semantic" is to reject a confusing same-bucket mapping outright rather
+  than allow it merely because it happens not to misbehave.
+- **Destination safety / conflict semantics (M8D-F) -- the one genuine
+  design divergence from plain `replicate`/`replicate -recursive`:**
+  M8A/M8C's own precondition is "the destination matches whatever I last
+  observed via HEAD," which treats an *unchanged* pre-existing
+  destination object as a legitimate re-sync target -- exactly right for
+  a tool whose job is bringing a destination up to date with a source,
+  and exactly *wrong* for M8D-F's requirement that fork never silently
+  overwrite a pre-existing destination object. **This was caught by the
+  test suite, not by inspection:** the first version of
+  `TestFork_DestinationConflictOneObjectFailsOthersSucceed`, written
+  before this distinction was noticed, failed -- it showed
+  `replicateNamespace` silently overwriting a pre-existing,
+  differently-content destination object, reusing M8A/M8C's precondition
+  verbatim as the spec's Option A suggested. The fix: a new
+  `replicateConfig.DestMustBeAbsent bool` field (and its
+  `namespaceReplicateConfig` counterpart), defaulting false so every
+  M8A/M8C caller is byte-for-byte unaffected. When true (`runFork` always
+  sets it), `replicateObject` skips the last-observed-state HEAD
+  entirely and commits create-only (`expectAbsent: true`) -- *except* a
+  pre-existing destination object whose ETag already matches the source
+  descriptor's, which commits as the same no-op-equivalent M8A/M8C's own
+  resume already relies on (needed so a resumed rerun of an interrupted
+  fork, M8D-K, never conflicts with its own already-landed objects). This
+  fix then surfaced a *second* regression during its own verification:
+  `TestCLI_Fork_ResumeAcrossRealProcessKill` failed with the naive
+  "always `expectAbsent`" version, because a killed-and-resumed fork's
+  second attempt re-observed its own first attempt's successfully
+  committed objects as conflicts. The ETag-matching carve-out fixes both
+  at once -- still the exact same `commitSyncObject`/`syncPrecondition`/
+  412 machinery in both modes, checked only at the one atomic commit
+  point (never a race-prone separate HEAD), just a different
+  precondition sent. `TestFork_DestinationKeyCreatedConcurrentlyDuringOperationIsNotOverwritten`
+  (the hostile-review "destination appears during operation" case, using
+  the same commit-path HTTP wrapper M8C's own equivalent race test uses)
+  additionally proves this is enforced atomically, not by a preliminary
+  check, when a *genuine* concurrent writer beats fork to a key that was
+  observed absent moments earlier.
+- **Source stability (M8D-G):** inherited unmodified from
+  `replicateObject`'s own captured-immutable-revision guarantee -- each
+  object forks from one stable source read, never a mixed one.
+- **Version scope (M8D-H):** only the current, live-pointer object per
+  key is forked (`ListObjectsV2`'s ordinary current-version-only view,
+  unmodified) -- no historical version cloning.
+- **Persistent-format impact: NONE.** A forked object is published
+  through the exact same `commitSyncObject` path any other write already
+  uses. `Store.Verify`, `Store.computeReachability`, GC, and repair
+  already treat a forked object as nothing more than an object whose
+  manifest happens to reference digests another manifest elsewhere also
+  references -- the same structural sharing two independently-uploaded,
+  byte-identical objects already produce. No manifest field, journal
+  record type, refcount, or snapshot concept was added anywhere.
+
+### Internal tests
+
+37 new top-level tests (442 -> 479), covering every category the
+milestone spec requires:
+
+- **Overlap/mapping:** 9 `forkNamespacesOverlap` unit tests (whole-bucket
+  either side, equal prefixes, nested either direction, sibling
+  prefixes, shared-string-prefix-different-boundary, deeply nested
+  siblings) plus whole-bucket/prefix/same-bucket-different-prefix/
+  different-bucket/weird-key (Unicode, `%`, `#`, `?`, spaces, repeated
+  slashes) fork-level tests.
+- **Enumeration:** empty namespace, one object, 1500-object pagination
+  boundary with deterministic ordering and no duplicates.
+- **Zero-payload:** one object, several objects sharing chunks,
+  unrelated objects, a 4MB multi-CDC-chunk object -- each measured both
+  via `computeStats.ChunkStoreFileBytes` and an independent
+  `filepath.WalkDir` chunk-file count.
+- **Metadata:** Content-Type, user metadata, ETag content-equality,
+  independent destination `CreatedAt` (strictly after source's).
+- **Conflict:** pre-existing destination key, destination key created
+  *during* the operation (genuine commit-time race), unrelated objects
+  continuing, nonzero exit.
+- **Source mutation:** source changed after listing (one clean revision,
+  never mixed), source disappeared after listing (that object fails,
+  others continue).
+- **Independence:** destination-only object survives; destination edited
+  after fork (source unchanged, new CAS chunks added only for the
+  changed region); source edited after fork (destination unchanged);
+  source deleted (destination survives); destination deleted (source
+  survives).
+- **GC/verify:** both namespaces survive `gc -apply` after divergence
+  (reopened store, both GET); deep verify green after fork;
+  `TestFork_RepairComposesAcrossSharedCorruptChunk` -- a chunk shared by
+  both namespaces after fork, corrupted, repaired from an independent
+  peer holding the same content, both namespaces' GET exact again (M8B
+  composition, without changing M8B).
+- **Resume:** `TestCLI_Fork_ResumeAcrossRealProcessKill` -- a real
+  `zeros3 fork` OS process SIGKILLed mid-run against three 8MB objects,
+  resumed by a second real invocation with exact final content.
+- **CLI:** whole-bucket fork with exact summary wording (`Objects
+  forked:`, `CAS payload bytes added:   0 B new CAS payload`), overlap
+  rejection (nonzero exit, no destination writes at all -- verified via
+  an independent `ListObjectsV2` after the rejected attempt), destination
+  conflict (nonzero exit, pre-existing content untouched), and a restart
+  + `verify -deep` proof.
+
+`go test ./...`: 479 tests, ok (~63s). `go test -race ./...`: ok.
+`go vet ./...`: clean. `gofmt -l .`: clean. `go.mod`: still zero
+`require` directives, `go 1.27.0` -- no dependency change, no new
+stdlib import (confirmed via `git diff` against the `m8c-gold`
+checkpoint). `zeros3.go` remains the sole implementation file;
+`zeros3_test.go` remains the sole first-party test file.
+
+### External harness (`zeros3-testing/harness/m8d/fork/`)
+
+Real `zeros3 fork` OS-process subprocess against one real `zeros3 serve`
+process per phase (fork is same-store, so unlike every prior M8A/M8B/M8C
+harness's two-server pattern, one store hosts both namespaces; Phase 10
+additionally starts one independent third peer server purely as a repair
+source). All 10 required phases: basic fork; a zero-CAS-payload proof
+measured two independent filesystem ways; a 120 MB five-object logical
+clone with zero new payload; a post-fork copy-on-write mutation (real,
+measured high chunk reuse, not an asserted percentage); source
+divergence (edit and delete); a destination conflict (nonzero exit,
+untouched pre-existing content, unrelated objects still fork); 1500-
+object pagination; a real process-kill/resume; restart + `verify -deep`
++ `gc` dry-run reachability; and an M8B repair-composition proof (one
+physical repair, from an independent peer, fixing both namespaces at
+once).
+
+**Result: 146 passed, 0 failed, 3 informational** (see
+`zeros3-testing/results/M8D_FORK_RESULTS.md`).
+
+### Hostile review
+
+- **Namespace overlap/recursion:** addressed above (structural
+  enumeration-before-write guarantee, plus the overlap-rejection
+  policy). Explicitly tested: `src/` -> `src/fork/`, `bucket/` ->
+  `bucket/fork/`, and their reverses.
+- **Paths:** `%`/`#`/`?`/Unicode/repeated-slash object keys round-trip
+  correctly through fork's unmodified enumeration/mapping (no raw URL
+  concatenation regression -- inherited from M8C's own extensively
+  tested `listSourceObjects`/`namespaceDestKey`).
+- **Conflicts:** both the "already existed before the run" and "created
+  concurrently during the run" cases are tested; both are rejected
+  safely, and the second proves the check is atomic at commit time.
+- **Payload:** no code path in this milestone writes a CAS chunk at all
+  (M8D adds zero new code touching `casWrite`); the zero-payload
+  invariant holds identically for one object, several, shared-chunk, and
+  unrelated-content cases.
+- **GC:** both namespaces' chunks remain reachable through `gc -apply`
+  after divergence; source deletion cannot make fork data unreachable
+  (destination's own manifest still references it).
+- **Identity:** destination manifests are genuinely new (fresh UUID,
+  fresh `CreatedAt`, proven strictly-after source's); source and
+  destination are proven independently mutable in both directions.
+- **One genuine issue found and fixed this pass:** see "Destination
+  safety / conflict semantics" above -- M8A/M8C's precondition machinery,
+  reused verbatim as the spec's Option A initially suggested, silently
+  permitted overwriting a pre-existing, differently-content destination
+  object. Caught by `TestFork_DestinationConflictOneObjectFailsOthersSucceed`
+  failing, fixed with `DestMustBeAbsent` plus its ETag-matching resume
+  carve-out (which itself was needed to fix a second regression the fix
+  introduced, caught by `TestCLI_Fork_ResumeAcrossRealProcessKill`
+  failing). Every M8A/M8C caller is unaffected (field defaults false).
+
+### Full release regression
+
+Every harness recorded at the M8C baseline
+(`results/M8C_NAMESPACE_REPLICATION_RESULTS.md`) was re-run,
+**unmodified**, against this exact M8D build (commit `5052a50`), plus
+the two preflight validations re-confirmed and M8D's own new harness:
+
+| Harness | Result | Matches baseline? |
+|---|---|---|
+| `m2` | 41 passed, 0 failed | yes, identical |
+| `m3/copy` | 46 passed, 0 failed | yes, identical |
+| `m3/range` | 27 passed, 0 failed | yes, identical |
+| `m3/dedup` | 7 passed, 0 failed | yes, identical |
+| `m5a/presign` | 47 passed, 0 failed | yes, identical |
+| `m5b/multipart` | 43 passed, 0 failed | yes, identical |
+| `m5d/pagination` | 43 passed, 0 failed | yes, identical |
+| `m6/sync` | 33 passed, 0 failed, 2 informational | yes, identical |
+| `m6c/dirsync` | 69 passed, 0 failed, 2 informational | yes, identical |
+| `m8a/remote_delta` | 34 passed, 0 failed, 4 informational | yes, identical |
+| `m8b/repair` | 133 passed, 0 failed, 1 informational | yes, identical |
+| `m8c/namespace_replication` | 111 passed, 0 failed, 2 informational | yes, identical |
+| **`m8d/fork` (new)** | **146 passed, 0 failed, 3 informational** | new this pass |
+| `rclone` | 20 passed, 0 failed, 1 documented known limitation | yes, identical |
+| `package-killer` | ZeroS3 14/14, s3rver 14/14 -- GO | yes, identical |
+
+**Totals: 828 passed, 0 failed, 14 informational, 1 documented known
+limitation, across 15 harnesses -- zero regressions anywhere** (see
+`zeros3-testing/results/M8D_RELEASE_REGRESSION_RESULTS.md`).
+
+### Reproducibility / dependency proof
+
+Two independent clean clones of this exact commit, built independently
+(`CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-buildid=" -o zeros3 zeros3.go`):
+byte-identical SHA-256
+(`a99cf57d50fb36f6565681840098e59c61a954918ef276cb6188007631762825`,
+matching the binary tested by both the internal test suite's own build
+and the external harness). `go.mod` unchanged (`module zeros3`,
+`go 1.27.0`, zero `require`); no `golang.org/x/...` import; no
+`vendor/`; `zeros3.go`/`zeros3_test.go` remain the sole implementation/
+first-party-test source files; no new stdlib import (confirmed via
+`git diff` against the `m8c-gold` checkpoint).
+
+### Final assessment
+
+**M8D ACCEPTED.** Every acceptance-gate item holds: preflight rclone and
+Package Killer green (matching their last-recorded counts exactly, no
+regression); whole-bucket and prefix fork both proven, internally and
+externally; zero new CAS payload proven independently (derived-scan
+`ChunkStoreFileBytes` and a raw filesystem chunk-file walk, both
+internally and externally, plus a chunk-file-bytes sum externally);
+destination manifests/objects proven independent (fresh UUID, fresh
+`CreatedAt`, byte-identical ETag for identical content); source and
+destination proven to diverge safely in both directions; source deletion
+proven not to destroy the fork, destination deletion proven not to
+destroy the source; safe `gc -apply` proven to preserve both namespaces
+after divergence; deep verify proven green; M8B repair proven to compose
+across a chunk shared by both namespaces from one physical fix;
+destination conflicts proven safe both for a pre-existing key and for
+one created concurrently during the run; 1000+-object pagination proven
+(1500 objects, both internally and externally); a real process-kill/
+resume proven correct with zero duplicate CAS payload; no persistent-
+format change; no dependency change; Single File rule preserved; race/
+vet/gofmt clean. One genuine design gap was found by the test suite
+itself during this pass (destination-safety conflict semantics, see
+above) and fixed before acceptance, with regression tests covering both
+the original bug and the fix's own second-order resume regression.
 
 ## M8C — Prefix / bucket delta replication (`zeros3 replicate -recursive`)
 

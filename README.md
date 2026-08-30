@@ -537,6 +537,67 @@ external, real-two-server, real-AWS-SDK-verified proof (including a
 destination-prepopulation CAS-reuse demonstration and M8B repair
 composing cleanly with M8C-replicated content).
 
+## Copy-on-write namespace fork (`zeros3 fork`)
+
+Copy-on-write namespace forks — clone a bucket or prefix inside one
+ZeroS3 store without duplicating payload chunks. The fork becomes an
+independent, ordinary S3 namespace; later edits to either copy add only
+newly required CDC chunks, never touching the other side.
+
+```sh
+./zeros3 fork -endpoint http://127.0.0.1:9000 s3://production/ s3://experiment/
+```
+
+```
+Objects discovered:        842
+Objects forked:            842
+Objects failed:              0
+
+Logical bytes cloned:      127.4 GiB
+CAS payload bytes added:   0 B new CAS payload
+Payload bytes avoided:     127.4 GiB
+
+Existing chunks referenced: 2,481,006
+New manifests:              842
+Elapsed time:                4.2s
+```
+
+A fork is same-store orchestration over the exact same primitives
+`replicate -recursive` already uses (enumerate → map → publish →
+aggregate, above) — never a second storage engine. Because both the
+source and destination namespaces live in the same store, every chunk a
+forked object's manifest references is already sitting in that store's
+CAS, so the negotiation step that would otherwise fetch and upload
+missing chunks always finds nothing missing: **zero new CAS payload
+bytes**, by construction, not by a special case. New destination
+manifests and journal records are still written — a fork is ordinary
+namespace publication, not a hardlink — the claim is specifically zero
+new *payload* bytes, never "zero filesystem writes."
+
+Fork's one behavioral difference from `replicate`/`replicate -recursive`
+is destination safety: a pre-existing destination object with different
+content is always rejected as a conflict (never silently overwritten,
+and there is no `--force`), while a rerun of an interrupted fork still
+resumes cleanly against its own already-landed objects. Source and
+destination namespaces that could overlap within the same bucket (e.g.
+`bucket/a/` forking into `bucket/a/fork/`) are rejected outright rather
+than allowed to produce a confusing mapping.
+
+After a fork, the two namespaces are genuinely independent: editing an
+object in one leaves the other byte-for-byte unchanged, deleting an
+object in either leaves the other's copy readable, and `zeros3 verify
+-deep`/`zeros3 gc`/`zeros3 repair` all treat the shared chunks correctly
+— a chunk corrupted after a fork is detected as affecting objects in both
+namespaces, and one `zeros3 repair` fetch restores every affected object
+across both.
+
+See `STATUS.md`'s "M8D" section for the full mapping/overlap/conflict/
+resume semantics and their tests, and
+`zeros3-testing/results/M8D_FORK_RESULTS.md` for the external,
+real-server, real-AWS-SDK-verified proof (zero-CAS-payload measurement,
+a large logical clone, a post-fork copy-on-write mutation, and M8B repair
+composing cleanly with a forked namespace).
+
 ## Durability model
 
 - Immutable CAS chunks and the immutable manifest are always fully
@@ -720,6 +781,13 @@ Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
   is no `--delete`/mirror mode — a destination-only object is always left
   untouched. Both endpoints must be ZeroS3 servers, same as single-object
   `replicate` — no generic-AWS-S3 source or destination.
+- `zeros3 fork` (M8D) is same-store only — it has no `--from`/`--to`, so
+  it cannot fork across two different servers (use `replicate -recursive`
+  for that). It clones only the *current* object per key, same as
+  `replicate -recursive`; there is no point-in-time bucket snapshot and
+  no `--force` to override a destination conflict. A source/destination
+  namespace relationship that could overlap within the same bucket is
+  rejected outright rather than allowed.
 - `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` are eligible but not yet
   implemented (no real client exercised needs them);
   `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and SigV4A/ECDSA streaming modes

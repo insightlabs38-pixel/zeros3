@@ -200,6 +200,38 @@ session is migrated. See `STATUS.md`'s "M8C" section for the full
 mapping/enumeration/partial-failure/resume/statistics semantics and
 `README.md` for CLI usage.
 
+**Copy-on-write namespace fork (`zeros3 fork SOURCE DEST -endpoint
+ENDPOINT`, M8D) is proprietary ZeroS3 functionality layered on
+`replicate -recursive`, not an S3 API and not part of the wire
+protocol.** It sends **zero** new endpoints beyond what `replicate
+-recursive` already uses: fork is same-store `replicateNamespace`
+(M8C's own enumeration/mapping/publication orchestration, above) with
+source and destination pointed at one endpoint, so every source chunk a
+forked object's manifest references is already present in that one
+store's CAS — negotiation always finds nothing missing, so **zero new
+CAS payload bytes** are ever written for a fork, structurally, not as a
+special case. The only fork-specific logic is an overlap-safety check
+(rejecting a same-bucket source/destination relationship where one
+prefix contains, equals, or is nested inside the other) and a stricter
+destination-conflict precondition: unlike `replicate -recursive`, which
+treats an unchanged pre-existing destination object as a legitimate
+re-sync target, `fork` rejects *any* pre-existing destination object
+that differs from what it is about to publish (no `--force`), while
+still resuming cleanly against its own already-landed objects on a
+rerun. A forked object is committed through the exact same persistent-
+format-unchanged path M8A/M8C already use, so it is indistinguishable,
+to GET/HEAD/ListObjectsV2/versions/`verify -deep`/GC/M8B `repair`, from
+any other object — the two namespaces are ordinary, independently
+mutable S3 namespaces from the moment the fork completes, sharing chunks
+only because two manifests happen to reference the same content-
+addressed digests, exactly as any two independently-uploaded
+byte-identical objects already would. M8D is same-store only (no
+`--from`/`--to`); cross-server namespace cloning is `replicate
+-recursive`'s job. Only the current object per key is forked (no
+historical-version cloning); no point-in-time bucket snapshot is taken.
+See `STATUS.md`'s "M8D" section for the full mapping/overlap/conflict/
+resume semantics and `README.md` for CLI usage.
+
 ## Deliberately unsupported (explicit non-goals)
 
 These are not planned for this project, at any tier:
@@ -242,9 +274,9 @@ not begun in this pass, and not claimed as shipped:
   explicit non-goal, not merely unstarted.)
 
 Delta sync (M6A/M6B), recursive directory sync (M6C), remote-to-remote
-delta replication (M8A), peer-assisted corruption repair (M8B), and
-prefix/bucket delta replication (M8C) all shipped — see "ZeroS3
-extensions (not S3 APIs)" above.
+delta replication (M8A), peer-assisted corruption repair (M8B),
+prefix/bucket delta replication (M8C), and copy-on-write namespace fork
+(M8D) all shipped — see "ZeroS3 extensions (not S3 APIs)" above.
 
 ## Compatibility deviations (differs from real AWS S3)
 
