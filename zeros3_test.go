@@ -15774,3 +15774,1030 @@ func TestCLI_Repair_RealProcessKillThenResume(t *testing.T) {
 		t.Fatalf("final deep verify: res=%+v err=%v", post, err)
 	}
 }
+
+// =============================================================================
+// M8C: prefix/bucket namespace replication (`zeros3 replicate -recursive`)
+//
+// M8C generalizes M8A's single-object primitive (replicateObject,
+// unmodified) across a source namespace via replicateNamespace (zeros3.go
+// section 15f): enumerate (listSourceObjects) -> map (namespaceDestKey) ->
+// replicateObject -> aggregate. These tests focus on what's genuinely new
+// -- mapping, enumeration/pagination, namespace-level partial-failure/
+// non-destructive/resume semantics, and aggregate stats -- never
+// re-proving M8A's own already-exhaustive chunk-negotiation/commit/
+// conflict/resume coverage a second time against unmodified code.
+// =============================================================================
+
+// -----------------------------------------------------------------------
+// M8C-A3: source -> destination key mapping (namespaceDestKey)
+// -----------------------------------------------------------------------
+
+func TestNamespaceDestKey_WholeBucket(t *testing.T) {
+	got, err := namespaceDestKey("", "", "a/b.txt")
+	if err != nil || got != "a/b.txt" {
+		t.Fatalf("got %q, err %v", got, err)
+	}
+}
+
+func TestNamespaceDestKey_PrefixToPrefix(t *testing.T) {
+	got, err := namespaceDestKey("images", "backup", "images/a.png")
+	if err != nil || got != "backup/a.png" {
+		t.Fatalf("got %q, err %v", got, err)
+	}
+}
+
+func TestNamespaceDestKey_NestedRelative(t *testing.T) {
+	got, err := namespaceDestKey("images", "backup", "images/sub/a.png")
+	if err != nil || got != "backup/sub/a.png" {
+		t.Fatalf("got %q, err %v", got, err)
+	}
+}
+
+func TestNamespaceDestKey_PrefixSourceWholeBucketDest(t *testing.T) {
+	got, err := namespaceDestKey("datasets", "", "datasets/a.bin")
+	if err != nil || got != "a.bin" {
+		t.Fatalf("got %q, err %v", got, err)
+	}
+}
+
+func TestNamespaceDestKey_WholeBucketSourcePrefixDest(t *testing.T) {
+	got, err := namespaceDestKey("", "archive", "a/b.txt")
+	if err != nil || got != "archive/a/b.txt" {
+		t.Fatalf("got %q, err %v", got, err)
+	}
+}
+
+func TestNamespaceDestKey_WeirdCharactersPassedThroughUnaltered(t *testing.T) {
+	key := "src/uni café/100%25#frag?q=1"
+	got, err := namespaceDestKey("src", "dst", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "dst/uni café/100%25#frag?q=1"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestNamespaceDestKey_SpacesAndUnicodePreserved(t *testing.T) {
+	got, err := namespaceDestKey("src", "dst", "src/日本語/space name.txt")
+	if err != nil || got != "dst/日本語/space name.txt" {
+		t.Fatalf("got %q, err %v", got, err)
+	}
+}
+
+func TestNamespaceDestKey_RepeatedSlashesInRelativeSuffixPreserved(t *testing.T) {
+	got, err := namespaceDestKey("src", "dst", "src/a//b.txt")
+	if err != nil || got != "dst/a//b.txt" {
+		t.Fatalf("got %q, err %v", got, err)
+	}
+}
+
+func TestNamespaceDestKey_KeyExactlyEqualsPrefixMapsToEmptyRelative(t *testing.T) {
+	got, err := namespaceDestKey("images", "backup", "images/")
+	if err != nil || got != "backup/" {
+		t.Fatalf("got %q, err %v", got, err)
+	}
+}
+
+func TestNamespaceDestKey_KeyNotCarryingPrefixRejected(t *testing.T) {
+	if _, err := namespaceDestKey("images", "backup", "other/a.png"); err == nil {
+		t.Fatal("expected an error for a key that doesn't carry the source prefix")
+	}
+}
+
+// TestNamespaceDestKey_TwoDistinctSourceKeysNeverCollide is a direct
+// hostile-review check: can two source keys accidentally map to the same
+// destination key? The stripped prefix has one fixed length for every key
+// in one run, so distinct full keys always yield distinct relative
+// suffixes.
+func TestNamespaceDestKey_TwoDistinctSourceKeysNeverCollide(t *testing.T) {
+	a, err := namespaceDestKey("images", "backup", "images/a.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := namespaceDestKey("images", "backup", "images/aa.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatalf("distinct source keys mapped to the same destination key: %q", a)
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8C-A1/A2: source enumeration and pagination (listSourceObjects)
+// -----------------------------------------------------------------------
+
+func newNsListTestServer(t *testing.T, bucket string) (srv *Server, cfg syncClientConfig, closeFn func()) {
+	t.Helper()
+	_, srv, creds, region := newSyncTestServer(t)
+	if err := srv.store.CreateBucket(bucket); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	cfg = syncClientConfig{Endpoint: ts.URL, Bucket: bucket, Creds: creds, Region: region, HTTPClient: ts.Client()}
+	return srv, cfg, ts.Close
+}
+
+func putObj(t *testing.T, srv *Server, bucket, key string, data []byte) {
+	t.Helper()
+	if _, err := srv.store.PutObject(bucket, key, data, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListSourceObjects_EmptyBucket(t *testing.T) {
+	_, cfg, closeFn := newNsListTestServer(t, "b")
+	defer closeFn()
+	got, err := listSourceObjects(cfg, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d objects, want 0", len(got))
+	}
+}
+
+func TestListSourceObjects_OneObject(t *testing.T) {
+	srv, cfg, closeFn := newNsListTestServer(t, "b")
+	defer closeFn()
+	putObj(t, srv, "b", "only.txt", []byte("hi"))
+	got, err := listSourceObjects(cfg, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Key != "only.txt" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestListSourceObjects_MultipleDeterministicOrder(t *testing.T) {
+	srv, cfg, closeFn := newNsListTestServer(t, "b")
+	defer closeFn()
+	for _, k := range []string{"c.txt", "a.txt", "b.txt"} {
+		putObj(t, srv, "b", k, []byte(k))
+	}
+	got, err := listSourceObjects(cfg, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"a.txt", "b.txt", "c.txt"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d objects, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i].Key != w {
+			t.Fatalf("position %d: got %q, want %q (order not deterministic)", i, got[i].Key, w)
+		}
+	}
+}
+
+func TestListSourceObjects_PrefixFiltering(t *testing.T) {
+	srv, cfg, closeFn := newNsListTestServer(t, "b")
+	defer closeFn()
+	putObj(t, srv, "b", "datasets/a.bin", []byte("a"))
+	putObj(t, srv, "b", "datasets/b.bin", []byte("b"))
+	putObj(t, srv, "b", "other/not-selected.bin", []byte("x"))
+	got, err := listSourceObjects(cfg, "datasets/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d objects, want 2: %+v", len(got), got)
+	}
+	for _, o := range got {
+		if !strings.HasPrefix(o.Key, "datasets/") {
+			t.Fatalf("unexpected key outside prefix: %q", o.Key)
+		}
+	}
+}
+
+func TestListSourceObjects_ExactlyPageLimit(t *testing.T) {
+	srv, cfg, closeFn := newNsListTestServer(t, "b")
+	defer closeFn()
+	const n = 1000
+	for i := 0; i < n; i++ {
+		putObj(t, srv, "b", fmt.Sprintf("k/%04d", i), []byte("x"))
+	}
+	got, err := listSourceObjects(cfg, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != n {
+		t.Fatalf("got %d objects, want %d", len(got), n)
+	}
+}
+
+func TestListSourceObjects_MultiPageOver1000(t *testing.T) {
+	srv, cfg, closeFn := newNsListTestServer(t, "b")
+	defer closeFn()
+	const n = 1500
+	for i := 0; i < n; i++ {
+		putObj(t, srv, "b", fmt.Sprintf("k/%04d", i), []byte("x"))
+	}
+	got, err := listSourceObjects(cfg, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != n {
+		t.Fatalf("got %d objects, want %d", len(got), n)
+	}
+	seen := make(map[string]bool, n)
+	for _, o := range got {
+		if seen[o.Key] {
+			t.Fatalf("duplicate key across pages: %q", o.Key)
+		}
+		seen[o.Key] = true
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Key >= got[i].Key {
+			t.Fatalf("order not strictly increasing at %d: %q >= %q", i, got[i-1].Key, got[i].Key)
+		}
+	}
+}
+
+func TestListSourceObjects_WeirdKeys(t *testing.T) {
+	srv, cfg, closeFn := newNsListTestServer(t, "b")
+	defer closeFn()
+	weird := []string{
+		"space key.txt",
+		"unicode/café/日本語.txt",
+		"percent/100%25.txt",
+		"hash/a#b.txt",
+		"question/a?b.txt",
+		"slashes/a//b.txt",
+	}
+	for _, k := range weird {
+		putObj(t, srv, "b", k, []byte(k))
+	}
+	got, err := listSourceObjects(cfg, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotKeys := make(map[string]bool, len(got))
+	for _, o := range got {
+		gotKeys[o.Key] = true
+	}
+	for _, k := range weird {
+		if !gotKeys[k] {
+			t.Fatalf("weird key %q missing from listing: got %+v", k, got)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8C-B: replicateNamespace end-to-end (reuses replicateObject unmodified)
+// -----------------------------------------------------------------------
+
+func newNsReplicateTestServerPair(t *testing.T, srcBucket, dstBucket string) (srcSrv, dstSrv *Server, srcCfg, dstCfg syncClientConfig, closeFn func()) {
+	t.Helper()
+	_, srcSrv, creds, region := newSyncTestServer(t)
+	_, dstSrv, _, _ = newSyncTestServer(t)
+	if err := srcSrv.store.CreateBucket(srcBucket); err != nil {
+		t.Fatal(err)
+	}
+	if err := dstSrv.store.CreateBucket(dstBucket); err != nil {
+		t.Fatal(err)
+	}
+	srcTS := httptest.NewServer(srcSrv)
+	dstTS := httptest.NewServer(dstSrv)
+	srcCfg = syncClientConfig{Endpoint: srcTS.URL, Bucket: srcBucket, Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	dstCfg = syncClientConfig{Endpoint: dstTS.URL, Bucket: dstBucket, Creds: creds, Region: region, HTTPClient: dstTS.Client()}
+	closeFn = func() { srcTS.Close(); dstTS.Close() }
+	return srcSrv, dstSrv, srcCfg, dstCfg, closeFn
+}
+
+func TestReplicateNamespace_WholeBucketAllChunksMissing(t *testing.T) {
+	srcSrv, dstSrv, srcCfg, dstCfg, closeFn := newNsReplicateTestServerPair(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srcSrv, "src", "a.bin", genRandomBytes(1, 50_000))
+	putObj(t, srcSrv, "src", "b.bin", genRandomBytes(2, 60_000))
+	putObj(t, srcSrv, "src", "sub/c.bin", genRandomBytes(3, 70_000))
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: srcCfg, Dest: dstCfg})
+	if err != nil {
+		t.Fatalf("replicateNamespace: %v", err)
+	}
+	if result.Discovered != 3 || result.Replicated != 3 || result.Failed != 0 || !result.OK() {
+		t.Fatalf("result = %+v", result)
+	}
+	for _, key := range []string{"a.bin", "b.bin", "sub/c.bin"} {
+		if _, _, err := dstSrv.store.GetObject("dst", key); err != nil {
+			t.Fatalf("GetObject(%q): %v", key, err)
+		}
+	}
+}
+
+// TestReplicateNamespace_PrefixMappingEndToEnd reuses the exact tree
+// M8C's own spec gives as its worked example (M8C-A3).
+func TestReplicateNamespace_PrefixMappingEndToEnd(t *testing.T) {
+	srcSrv, dstSrv, srcCfg, dstCfg, closeFn := newNsReplicateTestServerPair(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srcSrv, "src", "datasets/a.bin", []byte("a"))
+	putObj(t, srcSrv, "src", "datasets/b.bin", []byte("b"))
+	putObj(t, srcSrv, "src", "datasets/sub/c.bin", []byte("c"))
+	putObj(t, srcSrv, "src", "datasets/sub/d.txt", []byte("d"))
+	putObj(t, srcSrv, "src", "other/not-selected.bin", []byte("x"))
+
+	result, err := replicateNamespace(namespaceReplicateConfig{
+		Source: srcCfg, SourcePrefix: "datasets",
+		Dest: dstCfg, DestPrefix: "archive",
+	})
+	if err != nil {
+		t.Fatalf("replicateNamespace: %v", err)
+	}
+	if result.Discovered != 4 || result.Replicated != 4 || !result.OK() {
+		t.Fatalf("result = %+v", result)
+	}
+	for _, key := range []string{"archive/a.bin", "archive/b.bin", "archive/sub/c.bin", "archive/sub/d.txt"} {
+		if _, _, err := dstSrv.store.GetObject("dst", key); err != nil {
+			t.Fatalf("GetObject(%q): %v", key, err)
+		}
+	}
+	if _, _, err := dstSrv.store.GetObject("dst", "archive/not-selected.bin"); err == nil {
+		t.Fatal("unselected object leaked into destination")
+	}
+	if _, _, err := dstSrv.store.GetObject("dst", "not-selected.bin"); err == nil {
+		t.Fatal("unselected object leaked into destination")
+	}
+}
+
+func TestReplicateNamespace_DestinationPrepopulatedCASReuse(t *testing.T) {
+	srcSrv, dstSrv, srcCfg, dstCfg, closeFn := newNsReplicateTestServerPair(t, "src", "dst")
+	defer closeFn()
+	base := genRandomBytes(42, 2_000_000)
+	edited := append(append([]byte{}, base[:1_000_000]...), genRandomBytes(99, 10_000)...)
+	edited = append(edited, base[1_000_000:]...)
+
+	// Destination already holds a related object under a different key,
+	// sharing most of its chunks with the source's edited version.
+	putObj(t, dstSrv, "dst", "related/existing.bin", base)
+	putObj(t, srcSrv, "src", "edited/new.bin", edited)
+
+	result, err := replicateNamespace(namespaceReplicateConfig{
+		Source: srcCfg, SourcePrefix: "edited",
+		Dest: dstCfg, DestPrefix: "landed",
+	})
+	if err != nil {
+		t.Fatalf("replicateNamespace: %v", err)
+	}
+	if result.Failed != 0 || result.Replicated != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Stats.UploadedBytes >= result.Stats.LogicalBytes {
+		t.Fatalf("expected substantial CAS reuse from prepopulated related object: uploaded=%d logical=%d", result.Stats.UploadedBytes, result.Stats.LogicalBytes)
+	}
+	if result.Stats.BytesAvoided == 0 {
+		t.Fatal("expected nonzero avoided bytes")
+	}
+	_, gotBody, err := dstSrv.store.GetObject("dst", "landed/new.bin")
+	if err != nil || !bytes.Equal(gotBody, edited) {
+		t.Fatalf("destination content mismatch: err=%v", err)
+	}
+}
+
+// TestReplicateNamespace_SharedChunksAcrossObjectsAccountingExact proves
+// M8C-G's "shared chunk cases don't corrupt accounting" requirement:
+// because objects are processed sequentially and CAS is shared, the
+// second of two byte-identical objects sees every chunk already landed
+// by the first and re-transfers nothing.
+func TestReplicateNamespace_SharedChunksAcrossObjectsAccountingExact(t *testing.T) {
+	srcSrv, dstSrv, srcCfg, dstCfg, closeFn := newNsReplicateTestServerPair(t, "src", "dst")
+	defer closeFn()
+	_ = dstSrv
+	shared := genRandomBytes(7, 500_000)
+	putObj(t, srcSrv, "src", "one.bin", shared)
+	putObj(t, srcSrv, "src", "two.bin", shared)
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: srcCfg, Dest: dstCfg})
+	if err != nil {
+		t.Fatalf("replicateNamespace: %v", err)
+	}
+	if result.Replicated != 2 || result.Failed != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Stats.LogicalBytes != 2*int64(len(shared)) {
+		t.Fatalf("LogicalBytes = %d, want %d", result.Stats.LogicalBytes, 2*len(shared))
+	}
+	if result.Stats.UploadedBytes != int64(len(shared)) {
+		t.Fatalf("UploadedBytes = %d, want exactly one copy's worth (%d) -- shared chunks must not be re-transferred or double counted", result.Stats.UploadedBytes, len(shared))
+	}
+	if result.Stats.BytesAvoided != int64(len(shared)) {
+		t.Fatalf("BytesAvoided = %d, want %d", result.Stats.BytesAvoided, len(shared))
+	}
+}
+
+func TestReplicateNamespace_EmptyObject(t *testing.T) {
+	srcSrv, _, srcCfg, dstCfg, closeFn := newNsReplicateTestServerPair(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srcSrv, "src", "empty.bin", []byte{})
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: srcCfg, Dest: dstCfg})
+	if err != nil {
+		t.Fatalf("replicateNamespace: %v", err)
+	}
+	if result.Replicated != 1 || result.Failed != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Stats.LogicalBytes != 0 {
+		t.Fatalf("LogicalBytes = %d, want 0", result.Stats.LogicalBytes)
+	}
+	var buf bytes.Buffer
+	printNsReplicateSummary(&buf, result)
+	if strings.Contains(buf.String(), "NaN") || strings.Contains(buf.String(), "+Inf") {
+		t.Fatalf("summary output corrupted for zero-byte namespace: %s", buf.String())
+	}
+}
+
+func TestReplicateNamespace_MetadataPreservedPerObject(t *testing.T) {
+	srcSrv, dstSrv, srcCfg, dstCfg, closeFn := newNsReplicateTestServerPair(t, "src", "dst")
+	defer closeFn()
+	if _, err := srcSrv.store.PutObject("src", "a.bin", []byte("hello"), "text/x-custom", map[string]string{"owner": "m8c-test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replicateNamespace(namespaceReplicateConfig{Source: srcCfg, Dest: dstCfg}); err != nil {
+		t.Fatal(err)
+	}
+	entry, man, err := dstSrv.store.HeadObject("dst", "a.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.contentType != "text/x-custom" {
+		t.Fatalf("content type not preserved: got %q", entry.contentType)
+	}
+	got := make(map[string]string)
+	for _, kv := range man.Metadata {
+		got[kv.Key] = kv.Value
+	}
+	if got["owner"] != "m8c-test" {
+		t.Fatalf("metadata not preserved: %+v", got)
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8C-D/M8C-E: per-object failures never abort the run
+// -----------------------------------------------------------------------
+
+// TestReplicateNamespace_DestinationConflictOneObjectFailsOthersSucceed
+// proves M8C-D: a genuine destination conflict (a concurrent write lands
+// on ONE object's destination key between that object's own
+// headSyncDestination capture and its commit -- M6B/M8A's own conflict
+// mechanism, reused unmodified) fails only that object, never the run.
+// An HTTP wrapper around the destination deterministically injects the
+// race by intercepting the sync commit request for the targeted key
+// (which carries bucket/key in its JSON body, unlike negotiate) and
+// performing a direct, unrelated store write immediately before letting
+// the real commit handler run -- exactly the same race
+// TestReplicate_DestinationConflict_ConcurrentWriteDuringReplicationRejectedSafely
+// proves at the single-object level, just injected via interception
+// instead of manually walking the pipeline (necessary here since
+// replicateNamespace drives the pipeline itself).
+func TestReplicateNamespace_DestinationConflictOneObjectFailsOthersSucceed(t *testing.T) {
+	_, srcSrv, creds, region := newSyncTestServer(t)
+	_, dstSrv, _, _ := newSyncTestServer(t)
+	if err := srcSrv.store.CreateBucket("src"); err != nil {
+		t.Fatal(err)
+	}
+	if err := dstSrv.store.CreateBucket("dst"); err != nil {
+		t.Fatal(err)
+	}
+	putObj(t, srcSrv, "src", "a.bin", []byte("source-a"))
+	putObj(t, srcSrv, "src", "b.bin", []byte("source-b"))
+	putObj(t, srcSrv, "src", "c.bin", []byte("source-c"))
+	// b.bin already exists at the destination so its commit precondition
+	// captures a real, current ETag to race against.
+	putObj(t, dstSrv, "dst", "b.bin", []byte("original destination content"))
+
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	raced := false
+	dstWrapper := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !raced && r.URL.Path == zeros3SyncCommitPath && r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			var req syncCommitRequest
+			if json.Unmarshal(body, &req) == nil && req.Key == "b.bin" {
+				raced = true
+				if _, err := dstSrv.store.PutObject("dst", "b.bin", []byte("someone else's concurrent write"), "text/plain", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		dstSrv.ServeHTTP(w, r)
+	}))
+	defer dstWrapper.Close()
+
+	srcCfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	dstCfg := syncClientConfig{Endpoint: dstWrapper.URL, Bucket: "dst", Creds: creds, Region: region, HTTPClient: dstWrapper.Client()}
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: srcCfg, Dest: dstCfg})
+	if err != nil {
+		t.Fatalf("replicateNamespace top-level: %v", err)
+	}
+	if result.Discovered != 3 {
+		t.Fatalf("Discovered = %d, want 3", result.Discovered)
+	}
+	if result.Replicated != 2 || result.Failed != 1 || result.OK() {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(result.Failures) != 1 || result.Failures[0].Key != "b.bin" {
+		t.Fatalf("Failures = %+v", result.Failures)
+	}
+	if _, _, err := dstSrv.store.GetObject("dst", "a.bin"); err != nil {
+		t.Fatalf("a.bin should have replicated: %v", err)
+	}
+	if _, _, err := dstSrv.store.GetObject("dst", "c.bin"); err != nil {
+		t.Fatalf("c.bin should have replicated: %v", err)
+	}
+	// The concurrent write must survive untouched -- no silent overwrite.
+	_, gotBody, err := dstSrv.store.GetObject("dst", "b.bin")
+	if err != nil || !bytes.Equal(gotBody, []byte("someone else's concurrent write")) {
+		t.Fatalf("b.bin destination content was not safely preserved: err=%v body=%q", err, gotBody)
+	}
+}
+
+func TestReplicateNamespace_SourceChunkCorruptOneObjectFailsOthersSucceed(t *testing.T) {
+	srcSrv, dstSrv, srcCfg, dstCfg, closeFn := newNsReplicateTestServerPair(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srcSrv, "src", "healthy.bin", genRandomBytes(11, 30_000))
+	putObj(t, srcSrv, "src", "corrupt.bin", genRandomBytes(12, 30_000))
+
+	_, man, err := srcSrv.store.HeadObject("src", "corrupt.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(man.Chunks) == 0 {
+		t.Fatal("expected at least one chunk")
+	}
+	sumBytes, err := hex.DecodeString(man.Chunks[0].SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sum [32]byte
+	copy(sum[:], sumBytes)
+	if err := os.WriteFile(srcSrv.store.chunkPath(sum), []byte("corrupted, wrong hash"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: srcCfg, Dest: dstCfg})
+	if err != nil {
+		t.Fatalf("replicateNamespace top-level: %v", err)
+	}
+	if result.Replicated != 1 || result.Failed != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Failures[0].Key != "corrupt.bin" {
+		t.Fatalf("Failures = %+v", result.Failures)
+	}
+	if _, _, err := dstSrv.store.GetObject("dst", "healthy.bin"); err != nil {
+		t.Fatalf("healthy.bin should have replicated: %v", err)
+	}
+	if _, _, err := dstSrv.store.GetObject("dst", "corrupt.bin"); err == nil {
+		t.Fatal("corrupt.bin must not have been committed at the destination")
+	}
+}
+
+// TestReplicateNamespace_SourceObjectDisappearsBetweenListingAndFetchReportsFailureContinues
+// simulates M8C-I: a key already observed by enumeration disappears
+// before its own replicateObject call runs. The one affected object must
+// fail cleanly; unrelated objects (lexicographically before and after it)
+// must still replicate.
+func TestReplicateNamespace_SourceObjectDisappearsBetweenListingAndFetchReportsFailureContinues(t *testing.T) {
+	srcSrv, dstSrv, srcCfg, dstCfg, closeFn := newNsReplicateTestServerPair(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srcSrv, "src", "aaa.bin", []byte("first"))
+	putObj(t, srcSrv, "src", "gone.bin", []byte("will vanish"))
+	putObj(t, srcSrv, "src", "zzz.bin", []byte("last"))
+
+	deleted := false
+	wrapper := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !deleted && r.URL.Path == zeros3SyncObjectPath && r.URL.Query().Get("key") == "gone.bin" {
+			deleted = true
+			if err := srcSrv.store.DeleteObject("src", "gone.bin"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		srcSrv.ServeHTTP(w, r)
+	}))
+	defer wrapper.Close()
+	wrappedSrcCfg := srcCfg
+	wrappedSrcCfg.Endpoint = wrapper.URL
+	wrappedSrcCfg.HTTPClient = wrapper.Client()
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: wrappedSrcCfg, Dest: dstCfg})
+	if err != nil {
+		t.Fatalf("replicateNamespace top-level: %v", err)
+	}
+	if result.Discovered != 3 || result.Replicated != 2 || result.Failed != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Failures[0].Key != "gone.bin" {
+		t.Fatalf("Failures = %+v", result.Failures)
+	}
+	if _, _, err := dstSrv.store.GetObject("dst", "aaa.bin"); err != nil {
+		t.Fatalf("aaa.bin should have replicated: %v", err)
+	}
+	if _, _, err := dstSrv.store.GetObject("dst", "zzz.bin"); err != nil {
+		t.Fatalf("zzz.bin should have replicated: %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8C-C: non-destructive semantics
+// -----------------------------------------------------------------------
+
+func TestReplicateNamespace_DestinationOnlyObjectSurvives(t *testing.T) {
+	srcSrv, dstSrv, srcCfg, dstCfg, closeFn := newNsReplicateTestServerPair(t, "src", "dst")
+	defer closeFn()
+	putObj(t, dstSrv, "dst", "dest-only.bin", []byte("nobody touches me"))
+	putObj(t, srcSrv, "src", "a.bin", []byte("source content"))
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: srcCfg, Dest: dstCfg})
+	if err != nil {
+		t.Fatalf("replicateNamespace: %v", err)
+	}
+	if !result.OK() {
+		t.Fatalf("result = %+v", result)
+	}
+	_, body, err := dstSrv.store.GetObject("dst", "dest-only.bin")
+	if err != nil || !bytes.Equal(body, []byte("nobody touches me")) {
+		t.Fatalf("destination-only object was modified or removed: err=%v body=%q", err, body)
+	}
+}
+
+func TestReplicateNamespace_SourceRemovalAfterReplicationDoesNotRemoveDestination(t *testing.T) {
+	srcSrv, dstSrv, srcCfg, dstCfg, closeFn := newNsReplicateTestServerPair(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srcSrv, "src", "a.bin", []byte("keep me"))
+	putObj(t, srcSrv, "src", "b.bin", []byte("delete me from source"))
+
+	if _, err := replicateNamespace(namespaceReplicateConfig{Source: srcCfg, Dest: dstCfg}); err != nil {
+		t.Fatalf("first replicateNamespace: %v", err)
+	}
+	if err := srcSrv.store.DeleteObject("src", "b.bin"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: srcCfg, Dest: dstCfg})
+	if err != nil {
+		t.Fatalf("second replicateNamespace: %v", err)
+	}
+	if result.Discovered != 1 || result.Replicated != 1 || result.Failed != 0 {
+		t.Fatalf("rerun after source deletion: result = %+v", result)
+	}
+	_, body, err := dstSrv.store.GetObject("dst", "b.bin")
+	if err != nil || !bytes.Equal(body, []byte("delete me from source")) {
+		t.Fatalf("previously-replicated destination copy was removed after source deletion: err=%v", err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8C-F: resume (no durable namespace-replication session state)
+// -----------------------------------------------------------------------
+
+func TestReplicateNamespace_DestinationRestartThenRerunIsCleanAndDeepVerifies(t *testing.T) {
+	srcDir, srcSrv, dstDir, dstSrv, creds, region := newReplicateTestServerPair(t)
+	_ = srcDir
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+
+	if err := srcSrv.store.CreateBucket("src"); err != nil {
+		t.Fatal(err)
+	}
+	if err := dstSrv.store.CreateBucket("dst"); err != nil {
+		t.Fatal(err)
+	}
+	putObj(t, srcSrv, "src", "a.bin", genRandomBytes(21, 40_000))
+	putObj(t, srcSrv, "src", "b.bin", genRandomBytes(22, 50_000))
+
+	srcCfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	dstCfg := syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Creds: creds, Region: region, HTTPClient: dstTS.Client()}
+
+	if _, err := replicateNamespace(namespaceReplicateConfig{Source: srcCfg, Dest: dstCfg}); err != nil {
+		t.Fatalf("first replicateNamespace: %v", err)
+	}
+	dstTS.Close()
+	if err := dstSrv.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dstStore2, err := OpenStore(dstDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstStore2.Close()
+	dstSrv2 := NewServer(dstStore2, creds, region)
+	dstTS2 := httptest.NewServer(dstSrv2)
+	defer dstTS2.Close()
+
+	dstCfg2 := syncClientConfig{Endpoint: dstTS2.URL, Bucket: "dst", Creds: creds, Region: region, HTTPClient: dstTS2.Client()}
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: srcCfg, Dest: dstCfg2})
+	if err != nil {
+		t.Fatalf("post-restart replicateNamespace: %v", err)
+	}
+	if !result.OK() || result.Replicated != 2 {
+		t.Fatalf("post-restart rerun result = %+v", result)
+	}
+	if result.Stats.UploadedBytes != 0 {
+		t.Fatalf("post-restart rerun should re-transfer nothing (already committed, byte-identical objects): uploaded=%d", result.Stats.UploadedBytes)
+	}
+	verifyRes, err := dstStore2.Verify(true)
+	if err != nil || !verifyRes.OK() {
+		t.Fatalf("deep verify after restart+rerun: res=%+v err=%v", verifyRes, err)
+	}
+}
+
+func TestReplicateNamespace_ResumeAcrossRealProcessInterruption(t *testing.T) {
+	bin := buildZeros3Binary(t)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	srcAddr := freeTCPAddr(t)
+	dstAddr := freeTCPAddr(t)
+
+	srcCmd := exec.Command(bin, "-store", srcDir, "-addr", srcAddr)
+	if err := srcCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { srcCmd.Process.Kill(); srcCmd.Wait() }()
+	waitForZeros3Serve(t, srcAddr)
+
+	dstCmd := exec.Command(bin, "-store", dstDir, "-addr", dstAddr)
+	if err := dstCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { dstCmd.Process.Kill(); dstCmd.Wait() }()
+	waitForZeros3Serve(t, dstAddr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+
+	if resp := doSignedRequest(t, client, "http://"+srcAddr, signer, http.MethodPut, "/src", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("create source bucket: status %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	bodies := make(map[string][]byte)
+	for i, key := range []string{"ns/one.bin", "ns/two.bin", "ns/three.bin"} {
+		body := genRandomBytes(int64(9000+i), 8_000_000)
+		bodies[key] = body
+		if resp := doSignedRequest(t, client, "http://"+srcAddr, signer, http.MethodPut, "/src/"+key, body, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("populate source object %s: status %d", key, resp.StatusCode)
+		} else {
+			resp.Body.Close()
+		}
+	}
+	if resp := doSignedRequest(t, client, "http://"+dstAddr, signer, http.MethodPut, "/dst", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("create destination bucket: status %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+
+	replicateArgs := []string{"replicate", "-recursive", "-from", "http://" + srcAddr, "-to", "http://" + dstAddr, "s3://src/ns/", "s3://dst/ns/"}
+
+	// First attempt: a real subprocess, killed shortly after it starts,
+	// well before three 8MB transfers across real HTTP round trips could
+	// plausibly all finish -- so at least one object never reaches commit.
+	firstAttempt := exec.Command(bin, replicateArgs...)
+	if err := firstAttempt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(250 * time.Millisecond)
+	firstAttempt.Process.Kill()
+	firstAttempt.Wait()
+
+	// Second, uninterrupted attempt must complete every object correctly,
+	// resuming from whatever the killed attempt already landed in the
+	// destination's CAS -- with no namespace-replication session state
+	// anywhere.
+	secondOut, secondErr, code := runZeros3CLI(t, bin, replicateArgs...)
+	if code != 0 {
+		t.Fatalf("resumed namespace replicate failed (code %d): stdout=%s stderr=%s", code, secondOut, secondErr)
+	}
+	t.Logf("resumed namespace replicate output:\n%s", secondOut)
+
+	for key, body := range bodies {
+		resp := doSignedRequest(t, client, "http://"+dstAddr, signer, http.MethodGet, "/dst/"+key, nil, nil)
+		gotBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /dst/%s after resume: status %d", key, resp.StatusCode)
+		}
+		if !bytes.Equal(gotBody, body) {
+			t.Fatalf("destination content mismatch for %s after interrupted-then-resumed namespace replicate", key)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8C-G: aggregate statistics
+// -----------------------------------------------------------------------
+
+func TestReplicateNamespace_StatsExactAccounting(t *testing.T) {
+	srcSrv, _, srcCfg, dstCfg, closeFn := newNsReplicateTestServerPair(t, "src", "dst")
+	defer closeFn()
+	sizes := []int{10_000, 20_000, 5_000}
+	total := 0
+	for i, sz := range sizes {
+		putObj(t, srcSrv, "src", fmt.Sprintf("obj%d.bin", i), genRandomBytes(int64(100+i), sz))
+		total += sz
+	}
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: srcCfg, Dest: dstCfg})
+	if err != nil {
+		t.Fatalf("replicateNamespace: %v", err)
+	}
+	if result.Discovered != len(sizes) || result.Replicated != len(sizes) || result.Failed != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Stats.LogicalBytes != int64(total) {
+		t.Fatalf("LogicalBytes = %d, want %d", result.Stats.LogicalBytes, total)
+	}
+	if result.Stats.UploadedBytes != int64(total) {
+		t.Fatalf("UploadedBytes = %d, want %d (brand-new, no shared content)", result.Stats.UploadedBytes, total)
+	}
+	if result.Stats.BytesAvoided != 0 {
+		t.Fatalf("BytesAvoided = %d, want 0", result.Stats.BytesAvoided)
+	}
+}
+
+// -----------------------------------------------------------------------
+// CLI (`zeros3 replicate -recursive`) and regression
+// -----------------------------------------------------------------------
+
+func TestCLI_Replicate_RecursiveWholeBucket(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	srcAddr := freeTCPAddr(t)
+	dstAddr := freeTCPAddr(t)
+
+	srcCmd := exec.Command(bin, "-store", srcDir, "-addr", srcAddr)
+	if err := srcCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { srcCmd.Process.Kill(); srcCmd.Wait() }()
+	waitForZeros3Serve(t, srcAddr)
+
+	dstCmd := exec.Command(bin, "-store", dstDir, "-addr", dstAddr)
+	if err := dstCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { dstCmd.Process.Kill(); dstCmd.Wait() }()
+	waitForZeros3Serve(t, dstAddr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	mustSignedOK := func(base, method, path string, body []byte) {
+		t.Helper()
+		resp := doSignedRequest(t, client, base, signer, method, path, body, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s %s: status %d", method, path, resp.StatusCode)
+		}
+	}
+	mustSignedOK("http://"+srcAddr, http.MethodPut, "/src", nil)
+	mustSignedOK("http://"+srcAddr, http.MethodPut, "/src/a.txt", []byte("hello"))
+	mustSignedOK("http://"+dstAddr, http.MethodPut, "/dst", nil)
+
+	// Bare bucket (no trailing slash) must be accepted as whole-bucket
+	// namespace form under -recursive -- parseS3DirURI, unmodified.
+	out, errOut, code := runZeros3CLI(t, bin, "replicate", "-recursive", "-from", "http://"+srcAddr, "-to", "http://"+dstAddr, "s3://src", "s3://dst")
+	if code != 0 {
+		t.Fatalf("recursive replicate failed (code %d): stdout=%s stderr=%s", code, out, errOut)
+	}
+	if !strings.Contains(out, "Objects discovered:      1") {
+		t.Fatalf("unexpected summary output: %s", out)
+	}
+
+	resp := doSignedRequest(t, client, "http://"+dstAddr, signer, http.MethodGet, "/dst/a.txt", nil, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /dst/a.txt: status %d", resp.StatusCode)
+	}
+	gotBody, _ := io.ReadAll(resp.Body)
+	if string(gotBody) != "hello" {
+		t.Fatalf("destination content mismatch: %q", gotBody)
+	}
+}
+
+func TestCLI_Replicate_RecursiveExitCodeNonzeroOnPartialFailure(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	srcAddr := freeTCPAddr(t)
+	dstAddr := freeTCPAddr(t)
+
+	srcCmd := exec.Command(bin, "-store", srcDir, "-addr", srcAddr)
+	if err := srcCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { srcCmd.Process.Kill(); srcCmd.Wait() }()
+	waitForZeros3Serve(t, srcAddr)
+
+	dstCmd := exec.Command(bin, "-store", dstDir, "-addr", dstAddr)
+	if err := dstCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { dstCmd.Process.Kill(); dstCmd.Wait() }()
+	waitForZeros3Serve(t, dstAddr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	mustSignedOK := func(base, method, path string, body []byte) {
+		t.Helper()
+		resp := doSignedRequest(t, client, base, signer, method, path, body, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s %s: status %d", method, path, resp.StatusCode)
+		}
+	}
+	mustSignedOK("http://"+srcAddr, http.MethodPut, "/src", nil)
+	mustSignedOK("http://"+srcAddr, http.MethodPut, "/src/a.txt", []byte("a"))
+	bBody := []byte("b-object-content")
+	mustSignedOK("http://"+srcAddr, http.MethodPut, "/src/b.txt", bBody)
+	mustSignedOK("http://"+dstAddr, http.MethodPut, "/dst", nil)
+
+	// Corrupt b.txt's single source chunk directly on disk (the
+	// milestone's own permitted direct-filesystem exception, simulating
+	// bit rot) so its own replicateObject call fails cleanly while a.txt
+	// is unaffected -- deterministic, unlike a timing-based conflict race
+	// against a real subprocess.
+	sum := sha256.Sum256(bBody)
+	h := hex.EncodeToString(sum[:])
+	chunkPath := filepath.Join(srcDir, "chunks", h[0:2], h[2:4], h)
+	if err := os.WriteFile(chunkPath, []byte("corrupted on disk"), 0o644); err != nil {
+		t.Fatalf("corrupting b.txt's chunk on disk: %v", err)
+	}
+
+	out, errOut, code := runZeros3CLI(t, bin, "replicate", "-recursive", "-from", "http://"+srcAddr, "-to", "http://"+dstAddr, "s3://src/", "s3://dst/")
+	if code == 0 {
+		t.Fatalf("expected nonzero exit code with one conflicting object: stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "b.txt") {
+		t.Fatalf("expected failure report to name b.txt: %s", out)
+	}
+	resp := doSignedRequest(t, client, "http://"+dstAddr, signer, http.MethodGet, "/dst/a.txt", nil, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /dst/a.txt after partial failure: status %d", resp.StatusCode)
+	}
+}
+
+// TestCLI_Replicate_NonRecursiveSingleObjectUnaffectedByM8C is a direct
+// regression proof that -recursive is purely additive: with it omitted,
+// runReplicate's original M8A parsing/behavior must be byte-for-byte
+// unchanged.
+func TestCLI_Replicate_NonRecursiveSingleObjectUnaffectedByM8C(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	srcAddr := freeTCPAddr(t)
+	dstAddr := freeTCPAddr(t)
+
+	srcCmd := exec.Command(bin, "-store", srcDir, "-addr", srcAddr)
+	if err := srcCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { srcCmd.Process.Kill(); srcCmd.Wait() }()
+	waitForZeros3Serve(t, srcAddr)
+
+	dstCmd := exec.Command(bin, "-store", dstDir, "-addr", dstAddr)
+	if err := dstCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { dstCmd.Process.Kill(); dstCmd.Wait() }()
+	waitForZeros3Serve(t, dstAddr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	mustSignedOK := func(base, method, path string, body []byte) {
+		t.Helper()
+		resp := doSignedRequest(t, client, base, signer, method, path, body, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s %s: status %d", method, path, resp.StatusCode)
+		}
+	}
+	mustSignedOK("http://"+srcAddr, http.MethodPut, "/src", nil)
+	mustSignedOK("http://"+srcAddr, http.MethodPut, "/src/obj.bin", []byte("single object content"))
+	mustSignedOK("http://"+dstAddr, http.MethodPut, "/dst", nil)
+
+	out, errOut, code := runZeros3CLI(t, bin, "replicate", "-from", "http://"+srcAddr, "-to", "http://"+dstAddr, "s3://src/obj.bin", "s3://dst/obj.bin")
+	if code != 0 {
+		t.Fatalf("single-object replicate failed (code %d): stdout=%s stderr=%s", code, out, errOut)
+	}
+	resp := doSignedRequest(t, client, "http://"+dstAddr, signer, http.MethodGet, "/dst/obj.bin", nil, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /dst/obj.bin: status %d", resp.StatusCode)
+	}
+	gotBody, _ := io.ReadAll(resp.Body)
+	if string(gotBody) != "single object content" {
+		t.Fatalf("content mismatch: %q", gotBody)
+	}
+}

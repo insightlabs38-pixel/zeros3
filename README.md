@@ -449,6 +449,94 @@ partial-repair/resume/concurrency semantics, each with its own tests, and
 `zeros3-testing/results/M8B_REPAIR_RESULTS.md` for the external, real-
 two-server, real-AWS-SDK-verified proof.
 
+## Prefix / bucket replication (`zeros3 replicate -recursive`)
+
+`zeros3 replicate -recursive SOURCE DEST --from SRC_ENDPOINT --to
+DST_ENDPOINT` is a **ZeroS3-specific extension** (M8C): replicate a whole
+bucket or a prefix between two ZeroS3 servers, transferring only the
+chunks the destination doesn't already have. It is pure orchestration
+over `replicate`'s own single-object primitive (M8A, above), never a
+second replication engine — for every source object it selects,
+`namespaceDestKey` maps it to a destination key and the *exact same*
+`replicateObject` call `zeros3 replicate` already makes runs once against
+it, so every object inherits capability discovery, negotiation, chunk
+fetch/upload, commit, conflict detection, source-consistency, and resume
+behavior unmodified.
+
+```sh
+# whole bucket
+./zeros3 replicate -recursive s3://source-bucket/ s3://dest-bucket/ \
+  --from http://127.0.0.1:9000 --to http://127.0.0.1:9001
+
+# a prefix
+./zeros3 replicate -recursive s3://source-bucket/datasets/ s3://dest-bucket/archive/ \
+  --from http://127.0.0.1:9000 --to http://127.0.0.1:9001
+```
+
+```
+Objects discovered:      317
+Replicated:              315
+Failed:                    2
+
+Logical data:            84.7 GiB
+Source chunks:           1,284,337
+Already at destination:  1,193,991
+Transferred chunks:      90,346
+
+Payload transferred:     5.4 GiB
+Transfer avoided:        79.3 GiB
+Reuse:                   93.6%
+
+FAILED:
+  data/b.bin -> destination changed since replicate began (safe-mode conflict)
+  data/z.bin -> source chunk unavailable
+
+Replication completed with errors.
+```
+
+`-recursive` is the sole switch between the two CLI shapes — it is never
+guessed from a trailing slash (a source key can legally end in `/`, so
+that alone can't disambiguate "one object" from "a prefix"). Without it,
+`SOURCE`/`DEST` are ordinary `s3://bucket/key` single-object arguments,
+completely unchanged from M8A. With it, both are parsed as
+`s3://bucket[/prefix][/]` namespaces (the same bucket/prefix parser M6C's
+directory sync already uses): the matched source prefix is stripped from
+each discovered key and the remaining relative path is appended to the
+destination prefix — `images/sub/a.png` under source prefix `images/`
+replicating into destination prefix `backup/` becomes `backup/sub/a.png`;
+a whole-bucket source/destination uses an empty prefix on either side.
+
+Source enumeration is **ordinary, paginated `ListObjectsV2`** against the
+source endpoint — not a proprietary namespace-index endpoint — so M8C
+discovers the source namespace through the same S3 semantics any client
+would use, and reserves ZeroS3's proprietary delta machinery for content
+transfer only. Keys are processed in the server's own deterministic
+lexicographic order, and pagination is followed to completion regardless
+of size (proven past 1000 objects in the external harness).
+
+Namespace replication is **one-way and non-destructive**: it copies
+selected source objects to the destination but never removes, mirrors, or
+touches a destination-only object — there is no `--delete` and no
+bidirectional reconciliation anywhere in this milestone. It is also
+**not atomic across objects** — one object's destination conflict or
+unavailable/corrupt source chunk fails only that object (M8A's own safety
+mechanisms, reused unmodified); every other object still commits, and the
+command exits non-zero iff at least one object failed. There is no
+durable namespace-replication session state: a rerun after an interrupted
+or killed process simply re-enumerates and re-drives each object through
+`replicateObject` again, and CAS content-addressing plus each object's
+own conflict precondition make the resume correct with no bespoke
+session/journal machinery. Only the *current* object per key is
+replicated (no historical-version replication); no in-progress multipart
+upload session is ever migrated.
+
+See `STATUS.md`'s "M8C" section for the full mapping/enumeration/
+partial-failure/resume/statistics semantics, each with its own tests, and
+`zeros3-testing/results/M8C_NAMESPACE_REPLICATION_RESULTS.md` for the
+external, real-two-server, real-AWS-SDK-verified proof (including a
+destination-prepopulation CAS-reuse demonstration and M8B repair
+composing cleanly with M8C-replicated content).
+
 ## Durability model
 
 - Immutable CAS chunks and the immutable manifest are always fully
@@ -623,6 +711,15 @@ Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
   unreachable/orphaned corruption is never fetched over the network; use
   `gc` for that. Repair never restores from generic AWS S3, only from
   another ZeroS3 peer.
+- `zeros3 replicate -recursive` (M8C) replicates the *current* object per
+  key only — no historical-version replication, no in-progress multipart
+  upload session migration, no point-in-time bucket snapshot (each object
+  is individually replicated from its own stable captured revision).
+  Objects are processed sequentially, one at a time, matching
+  `sync`/`replicate`/`repair`'s own sequential-transfer limitation. There
+  is no `--delete`/mirror mode — a destination-only object is always left
+  untouched. Both endpoints must be ZeroS3 servers, same as single-object
+  `replicate` — no generic-AWS-S3 source or destination.
 - `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` are eligible but not yet
   implemented (no real client exercised needs them);
   `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and SigV4A/ECDSA streaming modes
