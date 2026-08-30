@@ -24118,6 +24118,44 @@ func TestReplicate_FailureLeavesUploadedChunksReusable_RerunTransfersOnlyRemaini
 	}
 }
 
+// TestReplicate_WorkersGreaterThanChunkCount covers B5's "worker count
+// greater than chunk count" edge case: a small object (few chunks) with a
+// worker count far exceeding them must not deadlock, over-allocate, or
+// misbehave -- runTransferWorkers' semaphore is simply never filled.
+func TestReplicate_WorkersGreaterThanChunkCount(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(90500, 10_000) // small: at most a couple of chunks
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	cfg := replicateConfig{
+		Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		Workers: maxTransferWorkers,
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	if stats.TotalChunks >= maxTransferWorkers {
+		t.Fatalf("fixture produced %d chunks, want fewer than maxTransferWorkers (%d) for this edge case to be meaningful", stats.TotalChunks, maxTransferWorkers)
+	}
+	if stats.UploadedBytes != int64(len(body)) {
+		t.Fatalf("UploadedBytes = %d, want %d", stats.UploadedBytes, len(body))
+	}
+	_, gotBody, err := dstSrv.store.GetObject("dst", "obj.bin")
+	if err != nil {
+		t.Fatalf("GetObject: %v", err)
+	}
+	if !bytes.Equal(gotBody, body) {
+		t.Fatalf("content mismatch")
+	}
+}
+
 func TestReplicate_ConcurrentChunkFetchesActuallyOverlap(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
 	body := genRandomBytes(90050, 3_000_000)
