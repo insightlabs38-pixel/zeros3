@@ -17256,6 +17256,62 @@ func TestFork_DestinationConflictOneObjectFailsOthersSucceed(t *testing.T) {
 	}
 }
 
+// TestFork_DestinationKeyCreatedConcurrentlyDuringOperationIsNotOverwritten
+// is the hostile-review "destination appears during operation" case
+// (distinct from TestFork_DestinationConflictOneObjectFailsOthersSucceed,
+// where the conflicting object already existed before the run started):
+// the destination key does not exist when this object's own fork attempt
+// begins, but a concurrent writer creates it with different content in
+// the narrow window before this object's atomic commit. The safety
+// condition must be enforced at that actual commit point (never only by
+// a preliminary check), so the racing writer's content must survive
+// untouched, exactly like M8C's own equivalent race proves for
+// replicate -recursive.
+func TestFork_DestinationKeyCreatedConcurrentlyDuringOperationIsNotOverwritten(t *testing.T) {
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("source-a"))
+	putObj(t, srv, "src", "racing.bin", []byte("source-racing"))
+	putObj(t, srv, "src", "z.bin", []byte("source-z"))
+
+	raced := false
+	dstWrapper := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !raced && r.URL.Path == zeros3SyncCommitPath && r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			var req syncCommitRequest
+			if json.Unmarshal(body, &req) == nil && req.Key == "racing.bin" {
+				raced = true
+				if _, err := srv.store.PutObject("dst", "racing.bin", []byte("concurrent writer's content"), "text/plain", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		srv.ServeHTTP(w, r)
+	}))
+	defer dstWrapper.Close()
+	racedDst := cfgFor("dst")
+	racedDst.Endpoint = dstWrapper.URL
+	racedDst.HTTPClient = dstWrapper.Client()
+
+	result, err := replicateNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: racedDst, DestMustBeAbsent: true})
+	if err != nil {
+		t.Fatalf("fork top-level: %v", err)
+	}
+	if result.Discovered != 3 || result.Replicated != 2 || result.Failed != 1 || result.Failures[0].Key != "racing.bin" {
+		t.Fatalf("result = %+v", result)
+	}
+	_, body, err := srv.store.GetObject("dst", "racing.bin")
+	if err != nil || string(body) != "concurrent writer's content" {
+		t.Fatalf("concurrent writer's content was not safely preserved: err=%v body=%q", err, body)
+	}
+	for _, key := range []string{"a.bin", "z.bin"} {
+		if _, _, err := srv.store.GetObject("dst", key); err != nil {
+			t.Fatalf("unrelated object %q should still have forked: %v", key, err)
+		}
+	}
+}
+
 // -----------------------------------------------------------------------
 // M8D-G: source stability (each object forks from one captured revision;
 // no mixed content, no namespace-wide snapshot needed)
