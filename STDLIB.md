@@ -134,6 +134,20 @@ aspirational.
   (`computeReachability`, already `encoding/json`+`crypto/sha256`-based)
   or publication (already `os`+`path/filepath`-based).
 
+- **Prefix/bucket delta replication (M8C, `zeros3 replicate -recursive`):**
+  no new stdlib package at all — `go list -deps .`'s package list is
+  byte-for-byte identical to the M8B-recorded proof. The one genuinely
+  new *role* is `encoding/xml`'s `xml.Unmarshal` (`listSourceObjects`)
+  decoding an outgoing HTTP *client* response — the server already uses
+  `encoding/xml` twice (`xml.NewEncoder` to write `ListObjectsV2`'s own
+  XML response, table row 9's `handleCompleteMultipartUpload`'s
+  `xml.Unmarshal` to read an *inbound request* body) but M8C is the first
+  place this codebase parses XML it received *as a client of another
+  ZeroS3 server*, reusing the exact same `listBucketResult`/`xmlContent`
+  types the server already declares to encode that same shape. Every
+  other piece — `signAndDo`, `url.Values`/`url.URL.EscapedPath()` for the
+  listing request, `replicateObject` itself — is unmodified M6/M8A code.
+
 ## 6. Developer-tool substitutions
 
 - **CLI:** see table row 8.
@@ -203,6 +217,10 @@ authored logic in `zeros3.go`:
   replicate` (M8A) inherits exactly the same story: no replication-
   session database anywhere, so an interrupted or killed `replicate`
   process is simply re-run, and CAS makes the resume correct on its own.
+  `zeros3 replicate -recursive` (M8C) inherits it a second time, one
+  level up: no namespace-replication session database either, so an
+  interrupted or killed namespace run is simply re-run — its fresh
+  enumeration plus each object's own M8A resume behavior make it correct.
 - **No online/concurrent GC** — `zeros3 gc` requires exclusive ownership
   of the store (via `syscall.Flock`, row 11 above) and refuses to run
   while `zeros3 serve` (or another `gc`) holds it; a scheduler for

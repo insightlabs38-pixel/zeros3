@@ -170,6 +170,36 @@ answer for `replicate`. See `STATUS.md`'s "M8B" section for the full
 detection/fetch/publication/partial-repair/resume/concurrency semantics
 and `README.md` for CLI usage.
 
+**Prefix/bucket delta replication (`zeros3 replicate -recursive SOURCE
+DEST --from SRC_ENDPOINT --to DST_ENDPOINT`, M8C) is proprietary ZeroS3
+functionality layered on `replicate`, not a generic AWS S3-to-S3
+replication feature and not part of the S3 wire protocol.** It sends
+**zero** new endpoints beyond M8A's own two: enumeration uses ordinary,
+already-existing `ListObjectsV2` (the standard S3 listing operation
+itself, not a proprietary namespace-index endpoint) against the source,
+and every selected object is replicated through the *exact same*
+single-object `replicate` pipeline (M8A) unmodified — capability
+discovery, object descriptor, chunk fetch, negotiate, chunk upload,
+commit, conflict precondition, all reused verbatim, once per object. The
+only new client-side logic is enumeration/pagination, source-to-
+destination key mapping, and result aggregation — no second replication
+protocol. `-recursive` is the sole switch between "one object" and "a
+prefix/bucket" CLI forms; it is never guessed from a trailing slash
+(a legal S3 object key may itself end in `/`). Namespace replication is
+one-way and non-destructive: it never deletes, mirrors, or touches a
+destination-only object, and it is not atomic across objects — one
+object's conflict or corrupt/unavailable source chunk fails only that
+object, and the command reports the exact failed set with a non-zero
+exit. Each replicated object is committed through the exact same
+persistent-format-unchanged path M8A's own `replicate` already uses, so
+it is indistinguishable, to GET/HEAD/ListObjectsV2/versions/`verify
+-deep`/GC/M8B `repair`, from one produced by ordinary `PutObject` or
+single-object `replicate`. Only the current object per key is replicated
+(no historical-version replication); no in-progress multipart upload
+session is migrated. See `STATUS.md`'s "M8C" section for the full
+mapping/enumeration/partial-failure/resume/statistics semantics and
+`README.md` for CLI usage.
+
 ## Deliberately unsupported (explicit non-goals)
 
 These are not planned for this project, at any tier:
@@ -212,8 +242,9 @@ not begun in this pass, and not claimed as shipped:
   explicit non-goal, not merely unstarted.)
 
 Delta sync (M6A/M6B), recursive directory sync (M6C), remote-to-remote
-delta replication (M8A), and peer-assisted corruption repair (M8B) all
-shipped — see "ZeroS3 extensions (not S3 APIs)" above.
+delta replication (M8A), peer-assisted corruption repair (M8B), and
+prefix/bucket delta replication (M8C) all shipped — see "ZeroS3
+extensions (not S3 APIs)" above.
 
 ## Compatibility deviations (differs from real AWS S3)
 
