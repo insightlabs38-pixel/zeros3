@@ -9628,7 +9628,7 @@ func printSnapshotShow(w io.Writer, r snapshotShowResponse) {
 // namespace with its own flag conventions.
 func runSnapshot(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "zeros3: snapshot requires a subcommand: create, list, show, or delete")
+		fmt.Fprintln(os.Stderr, "zeros3: snapshot requires a subcommand: create, list, show, delete, or restore")
 		os.Exit(2)
 	}
 	sub, rest := args[0], args[1:]
@@ -9641,8 +9641,10 @@ func runSnapshot(args []string) {
 		runSnapshotShow(rest)
 	case "delete":
 		runSnapshotDelete(rest)
+	case "restore":
+		runSnapshotRestore(rest)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: snapshot: unknown subcommand %q (want create, list, show, or delete)\n", sub)
+		fmt.Fprintf(os.Stderr, "zeros3: snapshot: unknown subcommand %q (want create, list, show, delete, or restore)\n", sub)
 		os.Exit(2)
 	}
 }
@@ -9757,6 +9759,350 @@ func runSnapshotDelete(args []string) {
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stdout, "Snapshot deleted: %s\n", rest[0])
+}
+
+// =============================================================================
+// 15i. Snapshot restore (M8E-B): `zeros3 snapshot restore SNAPSHOT_ID
+// s3://dest-bucket[/prefix][/]`
+//
+// Restore materializes a captured snapshot as ordinary, independent live
+// objects at an explicit destination -- never an implicit in-place
+// "rewind this bucket" (no destructive rollback command exists anywhere
+// in M8E). Architecturally this is the exact same client-orchestrated
+// relay shape M8A/M8D's replicateObject/replicateNamespace already
+// proved (section 15d/15g): discover -> fetch a source descriptor ->
+// negotiate against the destination -> relay only missing chunks ->
+// commit. The only new piece is where the source descriptor comes from:
+//
+//	replicateObject/fork (M8A/M8D):
+//	  fetchSourceDescriptor -> GET /_zeros3/v1/object?bucket=&key=
+//	  (handleSyncDescribeObject) -- describes whatever is LIVE right now
+//
+//	restoreObject (M8E-B):
+//	  fetchSnapshotObjectDescriptor -> GET /_zeros3/v1/snapshot/object?
+//	  id=&key= (handleSnapshotDescribeObject, section 15h) -- describes
+//	  the manifest the snapshot captured, re-read fresh by (UUID, SHA256)
+//	  every time, regardless of whether the live object at that key still
+//	  exists, still matches, or was ever restored to in the first place
+//
+// Every other pipeline stage below -- discoverZeroS3Sync,
+// headSyncDestination, buildSyncPlan, negotiateSyncMissing,
+// fetchSourceChunk, putSyncChunk, commitSyncObject, syncPrecondition --
+// is the exact same M6/M8A primitive replicateObject already uses,
+// completely unmodified. restoreObject is a parallel top-level function
+// (not a thin wrapper around replicateObject) purely because the two
+// differ in the one place a descriptor comes from; deliberately keeping
+// replicateConfig/replicateObject themselves untouched means this
+// milestone cannot regress M8A/M8C/M8D's own frozen, already-accepted
+// behavior no matter what restore does.
+//
+// Same-store only (mirrors M8D fork, section 15g's own rationale):
+// runSnapshotRestore below takes one -endpoint flag, never -from/-to, so
+// cross-server snapshot restore is structurally inexpressible -- a
+// snapshot's chunks/manifests only ever live in the one store that
+// created them (M8E's own documented non-goal: "no remote snapshot
+// transfer"). Because Snapshot and Dest therefore always name the same
+// physical CAS, negotiateSyncMissing always finds every chunk already
+// present (exactly M8D fork's own zero-payload argument, section 15g),
+// so restore writes zero new CAS payload bytes by the same structural
+// argument, not a special case.
+//
+// Mapping (B2): namespaceDestKey (M8C, section 15f) is reused completely
+// unmodified -- a snapshot's captured Key values are already shaped
+// exactly like listSourceObjects' own Contents.Key (captureSnapshotEntries,
+// section 15h), so restoreNamespace's per-entry destination-key mapping is
+// byte-for-byte the same computation fork/replicate -recursive already
+// use.
+//
+// Destination safety (B4): restoreObject's precondition logic is
+// replicateConfig.DestMustBeAbsent's own rule, inlined (not shared via a
+// struct field, to avoid touching replicateConfig/replicateObject at
+// all): create-only, with the one resume-safe carve-out of a pre-existing
+// destination object whose ETag already matches the snapshot's captured
+// ETag exactly (indistinguishable from this exact restore's own prior
+// successful commit, or coincidentally identical content -- either way
+// harmless and treated as a no-op-equivalent commit, the same
+// expectedETag precondition M8A/M8D's own resume already relies on). Any
+// other pre-existing, differently-identified destination object is
+// rejected as a conflict outright -- never silently overwritten, and
+// there is no --force.
+//
+// Independence (B5): a restored object is committed through
+// handleSyncCommit's ordinary buildManifestV1FromRefs + publishManifest +
+// commitObjectRootChecked path (section 15) -- a fresh manifest UUID,
+// referencing the exact same (already-present) CAS chunk digests the
+// snapshot's own manifest names. This is the identical "new manifest,
+// shared chunks" shape M8D fork already established (section 15g's own
+// "Persistent-format impact: NONE" argument) -- so a restored object is,
+// from the moment it commits, an entirely ordinary live object with no
+// pointer back to the snapshot or its manifest: mutating/deleting it
+// never touches the snapshot, and deleting the snapshot afterward never
+// touches it.
+//
+// Resume (B9): identical structural argument to M8A9/M8D-K -- there is no
+// durable restore-session state anywhere. commit is the one atomic step
+// that makes a restored object visible; an interrupted rerun simply
+// re-walks the snapshot's entries and re-negotiates each one, and
+// already-landed objects commit again as the same no-op-equivalent
+// resume case above, never re-transferring or re-conflicting.
+//
+// Destination bucket existence (B13): restoreObject adds no bucket-
+// creation logic of its own -- commitObjectRootChecked's existing
+// errNoSuchBucket path (unmodified) is what a restore into a missing
+// destination bucket surfaces, exactly like an ordinary PUT or
+// replicateObject would.
+// =============================================================================
+
+// fetchSnapshotObjectDescriptor performs B3's per-key descriptor query
+// against a snapshot: an authenticated GET for (snapshotID, key), using
+// url.Values (never raw path concatenation -- see fetchSourceDescriptor's
+// own doc comment for why this matters for keys containing '%'/'#'/'?').
+// The response is the exact same syncObjectDescriptor shape
+// fetchSourceDescriptor already returns for a live object.
+func fetchSnapshotObjectDescriptor(cfg syncClientConfig, snapshotID, key string) (syncObjectDescriptor, error) {
+	q := url.Values{"id": {snapshotID}, "key": {key}}
+	resp, body, err := cfg.signAndDo(http.MethodGet, zeros3SnapshotObjectPath+"?"+q.Encode(), nil, nil)
+	if err != nil {
+		return syncObjectDescriptor{}, fmt.Errorf("snapshot object descriptor request failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return syncObjectDescriptor{}, fmt.Errorf("snapshot object descriptor failed: status %d: %s", resp.StatusCode, body)
+	}
+	var d syncObjectDescriptor
+	if err := json.Unmarshal(body, &d); err != nil {
+		return syncObjectDescriptor{}, fmt.Errorf("snapshot object descriptor response not understood: %w", err)
+	}
+	if err := validateSyncProtocolFields(d.Protocol, d.CDC, d.Hash); err != nil {
+		return syncObjectDescriptor{}, fmt.Errorf("snapshot object descriptor incompatible: %w", err)
+	}
+	return d, nil
+}
+
+// restoreObjectConfig configures restoring one snapshot-captured entry
+// into an explicit destination bucket/key. Snapshot carries only
+// endpoint/credentials (a snapshot has no bucket/key of its own to set --
+// SnapshotID+Key together address one entry); Dest is an ordinary
+// syncClientConfig exactly like replicateConfig.Dest.
+type restoreObjectConfig struct {
+	Snapshot   syncClientConfig
+	SnapshotID string
+	Key        string
+	Dest       syncClientConfig
+}
+
+// restoreObject is M8E-B's per-object pipeline -- see section 15i's own
+// doc comment for exactly which M6/M8A primitives this reuses unmodified
+// and why it is a parallel function rather than a thin wrapper around
+// replicateObject.
+func restoreObject(cfg restoreObjectConfig) (syncStats, error) {
+	if _, err := discoverZeroS3Sync(cfg.Snapshot); err != nil {
+		return syncStats{}, fmt.Errorf("restore: snapshot store capability discovery failed: %w", err)
+	}
+	destDiscovery, err := discoverZeroS3Sync(cfg.Dest)
+	if err != nil {
+		return syncStats{}, fmt.Errorf("restore: destination capability discovery failed: %w", err)
+	}
+
+	desc, err := fetchSnapshotObjectDescriptor(cfg.Snapshot, cfg.SnapshotID, cfg.Key)
+	if err != nil {
+		return syncStats{}, fmt.Errorf("restore: %w", err)
+	}
+
+	// B4: create-only, with the one resume-safe carve-out of a
+	// pre-existing destination object whose content already matches
+	// exactly what this restore is about to publish -- see section 15i's
+	// own doc comment.
+	exists, etag, err := headSyncDestination(cfg.Dest)
+	if err != nil {
+		return syncStats{}, fmt.Errorf("restore: %w", err)
+	}
+	var pre syncPrecondition
+	switch {
+	case !exists:
+		pre = syncPrecondition{expectAbsent: true}
+	case etag == desc.ETag:
+		pre = syncPrecondition{expectAbsent: false, expectedETag: etag}
+	default:
+		return syncStats{}, fmt.Errorf("restore: destination %s/%s already exists with different content (conflict)", cfg.Dest.Bucket, cfg.Dest.Key)
+	}
+
+	chunks := make([]syncLocalChunk, len(desc.Chunks))
+	for i, c := range desc.Chunks {
+		chunks[i] = syncLocalChunk{SHA256: c.SHA256, Length: c.Length}
+	}
+	plan := buildSyncPlan(chunks, desc.Size)
+
+	missing, err := negotiateSyncMissing(cfg.Dest, destDiscovery, plan.unique)
+	if err != nil {
+		return syncStats{}, fmt.Errorf("restore: %w", err)
+	}
+
+	var relayedBytes int64
+	for _, d := range plan.unique {
+		if !missing[d.SHA256] {
+			continue
+		}
+		data, err := fetchSourceChunk(cfg.Snapshot, d.SHA256)
+		if err != nil {
+			return syncStats{}, fmt.Errorf("restore: fetching chunk %s from snapshot store: %w", d.SHA256, err)
+		}
+		if int64(len(data)) != d.Length {
+			return syncStats{}, fmt.Errorf("restore: snapshot chunk %s: declared length %d does not match fetched length %d", d.SHA256, d.Length, len(data))
+		}
+		if err := putSyncChunk(cfg.Dest, d.SHA256, data); err != nil {
+			return syncStats{}, fmt.Errorf("restore: uploading chunk %s to destination: %w", d.SHA256, err)
+		}
+		relayedBytes += d.Length
+	}
+
+	destCommitCfg := cfg.Dest
+	destCommitCfg.ContentType = desc.ContentType
+	destCommitCfg.Metadata = desc.Metadata
+	if _, err := commitSyncObject(destCommitCfg, plan, pre); err != nil {
+		return syncStats{}, fmt.Errorf("restore: %w", err)
+	}
+
+	missingOccur := 0
+	for _, c := range plan.ordered {
+		if missing[c.SHA256] {
+			missingOccur++
+		}
+	}
+	return syncStats{
+		LogicalBytes:         desc.Size,
+		TotalChunks:          len(plan.ordered),
+		MissingChunkOccur:    missingOccur,
+		ChunksReused:         len(plan.ordered) - missingOccur,
+		UniqueChunksUploaded: len(missing),
+		UploadedBytes:        relayedBytes,
+		BytesAvoided:         desc.Size - relayedBytes,
+	}, nil
+}
+
+// restoreNamespaceConfig configures one whole-snapshot restore.
+type restoreNamespaceConfig struct {
+	Snapshot   syncClientConfig
+	SnapshotID string
+	Dest       syncClientConfig
+	DestPrefix string
+	Out        io.Writer
+}
+
+// restoreNamespace is M8E-B's complete orchestration: fetch the
+// snapshot's full entry list once (showSnapshotRemote with entries=1) ->
+// for each entry, map it to a destination key (namespaceDestKey,
+// unmodified) and call restoreObject -> aggregate into the exact same
+// nsReplicateResult/nsReplicateFailure shape replicateNamespace/fork
+// already report through (section 15f/15g), so `snapshot restore`'s
+// partial-failure/OK() semantics are identical: one entry's failure is
+// recorded and the loop continues, never aborting the whole run, and the
+// overall command exits nonzero iff anything failed.
+func restoreNamespace(cfg restoreNamespaceConfig) (nsReplicateResult, error) {
+	show, err := showSnapshotRemote(cfg.Snapshot, cfg.SnapshotID, true)
+	if err != nil {
+		return nsReplicateResult{}, fmt.Errorf("restore: %w", err)
+	}
+
+	result := nsReplicateResult{Discovered: len(show.Entries)}
+	for _, e := range show.Entries {
+		dstKey, err := namespaceDestKey(show.SourcePrefix, cfg.DestPrefix, e.Key)
+		if err != nil {
+			result.Failed++
+			result.Failures = append(result.Failures, nsReplicateFailure{Key: e.Key, Err: err})
+			continue
+		}
+
+		objCfg := restoreObjectConfig{Snapshot: cfg.Snapshot, SnapshotID: cfg.SnapshotID, Key: e.Key, Dest: cfg.Dest}
+		objCfg.Dest.Key = dstKey
+
+		stats, err := restoreObject(objCfg)
+		if err != nil {
+			result.Failed++
+			result.Failures = append(result.Failures, nsReplicateFailure{Key: e.Key, Dest: dstKey, Err: err})
+			continue
+		}
+		result.Replicated++
+		result.Stats.LogicalBytes += stats.LogicalBytes
+		result.Stats.TotalChunks += stats.TotalChunks
+		result.Stats.ChunksReused += stats.ChunksReused
+		result.Stats.MissingChunkOccur += stats.MissingChunkOccur
+		result.Stats.UniqueChunksUploaded += stats.UniqueChunksUploaded
+		result.Stats.UploadedBytes += stats.UploadedBytes
+		result.Stats.BytesAvoided += stats.BytesAvoided
+	}
+
+	if cfg.Out != nil {
+		printRestoreSummary(cfg.Out, result)
+	}
+	return result, nil
+}
+
+// printRestoreSummary reports restore's own operation-local statistics,
+// reusing nsReplicateResult exactly like printForkSummary/
+// printNsReplicateSummary already do (section 15f/15g), with restore's
+// own wording -- "New CAS payload" is the precise, qualified claim B6
+// requires ("Do not say 'zero bytes written'").
+func printRestoreSummary(w io.Writer, r nsReplicateResult) {
+	fmt.Fprintf(w, "Objects discovered:      %d\n", r.Discovered)
+	fmt.Fprintf(w, "Restored:                %d\n", r.Replicated)
+	fmt.Fprintf(w, "Failed:                  %d\n", r.Failed)
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Logical bytes restored:  %s\n", humanBytes(r.Stats.LogicalBytes))
+	fmt.Fprintf(w, "New CAS payload:         %s\n", humanBytes(r.Stats.UploadedBytes))
+	fmt.Fprintf(w, "Payload bytes avoided:   %s\n", humanBytes(r.Stats.BytesAvoided))
+	if len(r.Failures) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "FAILED:")
+		for _, f := range r.Failures {
+			fmt.Fprintf(w, "  %s -> %v\n", f.Key, f.Err)
+		}
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Restore completed with errors.")
+	}
+}
+
+// runSnapshotRestore implements "zeros3 snapshot restore -endpoint EP
+// SNAPSHOT_ID s3://dest-bucket[/prefix][/]" (B1): materializes a
+// snapshot as ordinary live objects at an explicit destination. See
+// section 15i's own doc comment for the full architecture/safety
+// rationale (same-store only, create-only/no --force, independence).
+func runSnapshotRestore(args []string) {
+	fs := flag.NewFlagSet("snapshot restore", flag.ExitOnError)
+	endpoint, accessKey, secretKey, region := snapshotClientFlags(fs)
+	fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) != 2 {
+		fmt.Fprintln(os.Stderr, "zeros3: snapshot restore requires SNAPSHOT_ID and one s3://dest-bucket[/prefix][/] destination URI")
+		os.Exit(2)
+	}
+	id := rest[0]
+	if !validSnapshotID(id) {
+		fmt.Fprintf(os.Stderr, "zeros3: snapshot restore: invalid SNAPSHOT_ID %q\n", id)
+		os.Exit(2)
+	}
+	dstBucket, dstPrefix, err := parseS3DirURI(rest[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: destination: %v\n", err)
+		os.Exit(2)
+	}
+
+	creds := Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey}
+	cfg := restoreNamespaceConfig{
+		Snapshot:   syncClientConfig{Endpoint: *endpoint, Creds: creds, Region: *region},
+		SnapshotID: id,
+		Dest:       syncClientConfig{Endpoint: *endpoint, Bucket: dstBucket, Creds: creds, Region: *region},
+		DestPrefix: dstPrefix,
+		Out:        os.Stdout,
+	}
+	result, err := restoreNamespace(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: snapshot restore failed: %v\n", err)
+		os.Exit(1)
+	}
+	if !result.OK() {
+		os.Exit(1)
+	}
 }
 
 // =============================================================================

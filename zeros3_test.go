@@ -19292,3 +19292,682 @@ func TestCLI_Snapshot_GC_PinsAcrossRestart(t *testing.T) {
 		t.Fatalf("snapshot content changed across restart+gc: %s", showOut)
 	}
 }
+
+// =============================================================================
+// M8E-B: snapshot restore (section 15i)
+// =============================================================================
+
+// newRestoreTestServer wires one server (same-store restore, matching
+// runSnapshotRestore's own single -endpoint model) with the given
+// buckets pre-created, plus a syncClientConfig usable both as the
+// "Snapshot" side (endpoint/creds only) and as a per-bucket "Dest" side.
+func newRestoreTestServer(t *testing.T, buckets ...string) (srv *Server, storeDir string, cfg func(bucket string) syncClientConfig, closeFn func()) {
+	t.Helper()
+	dir, s, creds, region := newSyncTestServer(t)
+	for _, b := range buckets {
+		if err := s.store.CreateBucket(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ts := httptest.NewServer(s)
+	cfg = func(bucket string) syncClientConfig {
+		return syncClientConfig{Endpoint: ts.URL, Bucket: bucket, Creds: creds, Region: region, HTTPClient: ts.Client()}
+	}
+	return s, dir, cfg, ts.Close
+}
+
+// -----------------------------------------------------------------------
+// Basic restore
+// -----------------------------------------------------------------------
+
+func TestSnapshotRestore_OneObject(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("hello restore"))
+
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := restoreNamespace(restoreNamespaceConfig{
+		Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK() || result.Replicated != 1 {
+		t.Fatalf("restore result = %+v", result)
+	}
+	_, body, err := srv.store.GetObject("dst", "a.bin")
+	if err != nil || string(body) != "hello restore" {
+		t.Fatalf("restored object missing/wrong: body=%q err=%v", body, err)
+	}
+}
+
+func TestSnapshotRestore_EmptySnapshot(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	_ = srv
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Discovered != 0 || result.Replicated != 0 || !result.OK() {
+		t.Fatalf("empty snapshot restore result = %+v", result)
+	}
+}
+
+func TestSnapshotRestore_NestedPrefix(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "data/models/a.bin", []byte("model-a"))
+	putObj(t, srv, "src", "data/models/sub/b.bin", []byte("model-b"))
+
+	summary, err := createSnapshotRemote(cfg("src"), "src", "data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := cfg("dst")
+	result, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: dst, DestPrefix: "recovered"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK() || result.Replicated != 2 {
+		t.Fatalf("restore result = %+v", result)
+	}
+	if _, body, err := srv.store.GetObject("dst", "recovered/models/a.bin"); err != nil || string(body) != "model-a" {
+		t.Fatalf("recovered/models/a.bin missing/wrong: body=%q err=%v", body, err)
+	}
+	if _, body, err := srv.store.GetObject("dst", "recovered/models/sub/b.bin"); err != nil || string(body) != "model-b" {
+		t.Fatalf("recovered/models/sub/b.bin missing/wrong: body=%q err=%v", body, err)
+	}
+}
+
+func TestSnapshotRestore_OverOneThousandObjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping large-scale restore test in -short mode")
+	}
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	const n = 1200
+	for i := 0; i < n; i++ {
+		putObj(t, srv, "src", fmt.Sprintf("k/%05d", i), []byte(fmt.Sprintf("v%d", i)))
+	}
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK() || result.Replicated != n {
+		t.Fatalf("restore result = %+v, want %d replicated", result, n)
+	}
+	for i := 0; i < n; i += 137 { // sample rather than checking all 1200 individually
+		key := fmt.Sprintf("k/%05d", i)
+		if _, body, err := srv.store.GetObject("dst", key); err != nil || string(body) != fmt.Sprintf("v%d", i) {
+			t.Fatalf("restored %s wrong/missing: body=%q err=%v", key, body, err)
+		}
+	}
+}
+
+func TestSnapshotRestore_WeirdKeys(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	keys := []string{"space key.bin", "percent%20literal.bin", "hash#fragment.bin", "question?mark.bin", "unicode/héllo/日本語.bin", "a//b///c.bin"}
+	for _, k := range keys {
+		putObj(t, srv, "src", k, []byte("v-"+k))
+	}
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK() || result.Replicated != len(keys) {
+		t.Fatalf("restore result = %+v", result)
+	}
+	for _, k := range keys {
+		if _, body, err := srv.store.GetObject("dst", k); err != nil || string(body) != "v-"+k {
+			t.Fatalf("restored weird key %q wrong/missing: body=%q err=%v", k, body, err)
+		}
+	}
+}
+
+func TestSnapshotRestore_MetadataAndContentTypePreserved(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	if _, err := srv.store.PutObject("src", "a.bin", []byte("data"), "application/x-custom", map[string]string{"owner": "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")}); err != nil {
+		t.Fatal(err)
+	}
+	_, man, err := srv.store.HeadObject("dst", "a.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if man.ContentType != "application/x-custom" {
+		t.Fatalf("ContentType = %q, want application/x-custom", man.ContentType)
+	}
+	found := false
+	for _, kv := range man.Metadata {
+		if kv.Key == "owner" && kv.Value == "alice" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("metadata not preserved: %+v", man.Metadata)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Point-in-time: the defining M8E-B proofs
+// -----------------------------------------------------------------------
+
+func TestSnapshotRestore_SourceMutatedAfterSnapshot_RestoresOldVersion(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("version-A"))
+
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.PutObject("src", "a.bin", []byte("version-B-is-different-and-longer"), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst"), DestPrefix: "recovered"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, liveBody, err := srv.store.GetObject("src", "a.bin")
+	if err != nil || string(liveBody) != "version-B-is-different-and-longer" {
+		t.Fatalf("live source should be version-B: body=%q err=%v", liveBody, err)
+	}
+	_, restoredBody, err := srv.store.GetObject("dst", "recovered/a.bin")
+	if err != nil || string(restoredBody) != "version-A" {
+		t.Fatalf("restored object should be version-A: body=%q err=%v", restoredBody, err)
+	}
+}
+
+func TestSnapshotRestore_SourceDeletedThenGC_StillRestoresExactly(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("src"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateBucket("dst"); err != nil {
+		t.Fatal(err)
+	}
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	srv := NewServer(store, creds, defaultRegion)
+	ts := httptest.NewServer(srv)
+	cfg := func(bucket string) syncClientConfig {
+		return syncClientConfig{Endpoint: ts.URL, Bucket: bucket, Creds: creds, Region: defaultRegion, HTTPClient: ts.Client()}
+	}
+	payload := genRandomBytes(61, 200_000)
+	mustPutObject(t, store, "src", "unique.bin", payload, "application/octet-stream", nil)
+
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteObject("src", "unique.bin"); err != nil {
+		t.Fatal(err)
+	}
+
+	ts.Close()
+	store.Close()
+	gc, err := gcCollect(dir, true)
+	if err != nil || !gc.LiveSetOK {
+		t.Fatalf("gc after source delete: %+v err=%v", gc, err)
+	}
+
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	srv2 := NewServer(reopened, creds, defaultRegion)
+	ts2 := httptest.NewServer(srv2)
+	defer ts2.Close()
+	cfg2 := func(bucket string) syncClientConfig {
+		return syncClientConfig{Endpoint: ts2.URL, Bucket: bucket, Creds: creds, Region: defaultRegion, HTTPClient: ts2.Client()}
+	}
+
+	if _, _, err := reopened.GetObject("src", "unique.bin"); err == nil {
+		t.Fatal("live source object should be gone")
+	}
+	result, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg2("src"), SnapshotID: summary.SnapshotID, Dest: cfg2("dst")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK() || result.Replicated != 1 {
+		t.Fatalf("restore after source-delete+GC: %+v", result)
+	}
+	_, restoredBody, err := reopened.GetObject("dst", "unique.bin")
+	if err != nil || !bytes.Equal(restoredBody, payload) {
+		t.Fatalf("restored content mismatch after source-delete+GC: err=%v", err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Zero-payload restore
+// -----------------------------------------------------------------------
+
+func TestSnapshotRestore_ZeroNewCASPayload(t *testing.T) {
+	srv, dir, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", genRandomBytes(62, 300_000))
+	putObj(t, srv, "src", "b.bin", genRandomBytes(63, 500_000))
+
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	beforeFiles := countChunkFiles(t, dir)
+	beforeStats, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK() || result.Stats.UploadedBytes != 0 || result.Stats.UniqueChunksUploaded != 0 {
+		t.Fatalf("expected zero-payload restore, got %+v", result)
+	}
+
+	afterFiles := countChunkFiles(t, dir)
+	afterStats, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterFiles != beforeFiles {
+		t.Fatalf("chunk file count changed by restore: before=%d after=%d", beforeFiles, afterFiles)
+	}
+	if afterStats.ChunkStoreFileBytes != beforeStats.ChunkStoreFileBytes {
+		t.Fatalf("ChunkStoreFileBytes changed by restore: before=%d after=%d", beforeStats.ChunkStoreFileBytes, afterStats.ChunkStoreFileBytes)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Conflict / resume
+// -----------------------------------------------------------------------
+
+func TestSnapshotRestore_PreexistingDifferentDestinationConflict(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("snapshot-content"))
+	putObj(t, srv, "dst", "a.bin", []byte("unrelated-existing-content"))
+
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OK() || result.Failed != 1 {
+		t.Fatalf("expected conflict failure, got %+v", result)
+	}
+	_, body, err := srv.store.GetObject("dst", "a.bin")
+	if err != nil || string(body) != "unrelated-existing-content" {
+		t.Fatalf("conflicting destination object must be unmodified: body=%q err=%v", body, err)
+	}
+}
+
+func TestSnapshotRestore_ResumeMatchingPriorRestoreIsNoOp(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("content"))
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")})
+	if err != nil || !first.OK() {
+		t.Fatalf("first restore: %+v err=%v", first, err)
+	}
+	second, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.OK() || second.Replicated != 1 {
+		t.Fatalf("resumed restore of already-landed object should succeed as a no-op-equivalent, got %+v", second)
+	}
+}
+
+func TestSnapshotRestore_LaterObjectsContinueAfterOneConflict(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a-conflict.bin", []byte("snapshot-a"))
+	putObj(t, srv, "src", "b-ok.bin", []byte("snapshot-b"))
+	putObj(t, srv, "dst", "a-conflict.bin", []byte("pre-existing-different"))
+
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Failed != 1 || result.Replicated != 1 {
+		t.Fatalf("expected 1 failed + 1 replicated, got %+v", result)
+	}
+	if _, body, err := srv.store.GetObject("dst", "b-ok.bin"); err != nil || string(body) != "snapshot-b" {
+		t.Fatalf("b-ok.bin should have restored despite a-conflict.bin's failure: body=%q err=%v", body, err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Independence
+// -----------------------------------------------------------------------
+
+func TestSnapshotRestore_RestoredMutationDoesNotAffectSnapshot(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("original"))
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.PutObject("dst", "a.bin", []byte("mutated-after-restore"), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	show, err := showSnapshotRemote(cfg("src"), summary.SnapshotID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if show.Entries[0].Size != int64(len("original")) {
+		t.Fatalf("snapshot entry changed after restored-object mutation: %+v", show.Entries[0])
+	}
+}
+
+func TestSnapshotRestore_RestoredDeletionDoesNotAffectSnapshot(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("original"))
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.DeleteObject("dst", "a.bin"); err != nil {
+		t.Fatal(err)
+	}
+	show, err := showSnapshotRemote(cfg("src"), summary.SnapshotID, false)
+	if err != nil {
+		t.Fatalf("snapshot should remain valid after restored-object deletion: %v", err)
+	}
+	if show.ObjectCount != 1 {
+		t.Fatalf("snapshot ObjectCount changed: %+v", show)
+	}
+}
+
+func TestSnapshotRestore_SnapshotDeletionAfterRestoreDoesNotBreakRestoredNamespace(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("original"))
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteSnapshotRemote(cfg("src"), summary.SnapshotID); err != nil {
+		t.Fatal(err)
+	}
+	_, body, err := srv.store.GetObject("dst", "a.bin")
+	if err != nil || string(body) != "original" {
+		t.Fatalf("restored object must survive snapshot deletion: body=%q err=%v", body, err)
+	}
+}
+
+func TestSnapshotRestore_DeleteOriginalNamespaceDoesNotAffectRestoredCopy(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("original"))
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.DeleteObject("src", "a.bin"); err != nil {
+		t.Fatal(err)
+	}
+	_, body, err := srv.store.GetObject("dst", "a.bin")
+	if err != nil || string(body) != "original" {
+		t.Fatalf("restored copy must survive source deletion: body=%q err=%v", body, err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// GC / concurrency during restore
+// -----------------------------------------------------------------------
+
+func TestSnapshotRestore_TwoRestoresFromSameSnapshotToDistinctDestinations(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst1", "dst2")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("shared-content"))
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r1, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst1")})
+	if err != nil || !r1.OK() {
+		t.Fatalf("restore to dst1: %+v err=%v", r1, err)
+	}
+	r2, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst2")})
+	if err != nil || !r2.OK() {
+		t.Fatalf("restore to dst2: %+v err=%v", r2, err)
+	}
+	if _, body, err := srv.store.GetObject("dst1", "a.bin"); err != nil || string(body) != "shared-content" {
+		t.Fatalf("dst1 restore wrong: body=%q err=%v", body, err)
+	}
+	if _, body, err := srv.store.GetObject("dst2", "a.bin"); err != nil || string(body) != "shared-content" {
+		t.Fatalf("dst2 restore wrong: body=%q err=%v", body, err)
+	}
+}
+
+func TestSnapshotRestore_DeepVerifyGreenAfterRestore(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src", "dst")
+	defer closeFn()
+	for i := 0; i < 20; i++ {
+		putObj(t, srv, "src", fmt.Sprintf("k%d.bin", i), genRandomBytes(int64(70+i), 5000))
+	}
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("dst")})
+	if err != nil || !result.OK() {
+		t.Fatalf("restore: %+v err=%v", result, err)
+	}
+	verify, err := srv.store.Verify(true)
+	if err != nil || !verify.OK() {
+		t.Fatalf("deep verify after restore: %+v err=%v", verify, err)
+	}
+}
+
+func TestSnapshotRestore_DestinationBucketMissingFailsClearly(t *testing.T) {
+	srv, _, cfg, closeFn := newRestoreTestServer(t, "src")
+	defer closeFn()
+	putObj(t, srv, "src", "a.bin", []byte("x"))
+	summary, err := createSnapshotRemote(cfg("src"), "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: summary.SnapshotID, Dest: cfg("nope")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OK() || result.Failed != 1 {
+		t.Fatalf("expected restore to a missing destination bucket to fail cleanly per-object, got %+v", result)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Real-process CLI: full restore lifecycle, including interruption/resume
+// -----------------------------------------------------------------------
+
+func TestCLI_SnapshotRestore_EndToEnd(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	addr := freeTCPAddr(t)
+
+	cmd := exec.Command(bin, "-store", storeDir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	mustSignedOK := func(method, path string, body []byte) {
+		t.Helper()
+		resp := doSignedRequest(t, client, "http://"+addr, signer, method, path, body, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s %s: status %d", method, path, resp.StatusCode)
+		}
+	}
+	mustSignedOK(http.MethodPut, "/prod", nil)
+	mustSignedOK(http.MethodPut, "/recovery", nil)
+	mustSignedOK(http.MethodPut, "/prod/data/a.bin", []byte("point-in-time-content"))
+
+	createOut, createErr, code := runZeros3CLI(t, bin, "snapshot", "create", "-endpoint", "http://"+addr, "s3://prod/")
+	if code != 0 {
+		t.Fatalf("snapshot create failed: code=%d stdout=%s stderr=%s", code, createOut, createErr)
+	}
+	id := strings.TrimSpace(strings.TrimPrefix(strings.Split(strings.TrimSpace(createOut), "\n")[0], "Snapshot:"))
+
+	// Mutate the live source after the snapshot -- restore must still
+	// produce the captured point-in-time content.
+	mustSignedOK(http.MethodPut, "/prod/data/a.bin", []byte("overwritten-live-content"))
+
+	restoreOut, restoreErr, code := runZeros3CLI(t, bin, "snapshot", "restore", "-endpoint", "http://"+addr, id, "s3://recovery/aug30/")
+	if code != 0 {
+		t.Fatalf("snapshot restore failed: code=%d stdout=%s stderr=%s", code, restoreOut, restoreErr)
+	}
+	if !strings.Contains(restoreOut, "New CAS payload:         0 B") {
+		t.Fatalf("expected zero new CAS payload in restore summary: %s", restoreOut)
+	}
+
+	resp := doSignedRequest(t, client, "http://"+addr, signer, http.MethodGet, "/recovery/aug30/data/a.bin", nil, nil)
+	gotBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(gotBody) != "point-in-time-content" {
+		t.Fatalf("GET recovered object: status=%d body=%q", resp.StatusCode, gotBody)
+	}
+	resp2 := doSignedRequest(t, client, "http://"+addr, signer, http.MethodGet, "/prod/data/a.bin", nil, nil)
+	liveBody, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if string(liveBody) != "overwritten-live-content" {
+		t.Fatalf("live source should be unaffected: %q", liveBody)
+	}
+
+	cmd.Process.Kill()
+	cmd.Wait()
+	verifyOut, verifyErr, verifyCode := runZeros3CLI(t, bin, "verify", "-store", storeDir, "-deep")
+	if verifyCode != 0 {
+		t.Fatalf("verify -deep after restore failed: code=%d stdout=%s stderr=%s", verifyCode, verifyOut, verifyErr)
+	}
+}
+
+func TestCLI_SnapshotRestore_ResumeAcrossRealProcessKill(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	addr := freeTCPAddr(t)
+
+	cmd := exec.Command(bin, "-store", storeDir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	waitForZeros3Serve(t, addr)
+
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	mustSignedOK := func(method, path string, body []byte) {
+		t.Helper()
+		resp := doSignedRequest(t, client, "http://"+addr, signer, method, path, body, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s %s: status %d", method, path, resp.StatusCode)
+		}
+	}
+	mustSignedOK(http.MethodPut, "/prod", nil)
+	mustSignedOK(http.MethodPut, "/recovery", nil)
+	const n = 60
+	for i := 0; i < n; i++ {
+		mustSignedOK(http.MethodPut, fmt.Sprintf("/prod/obj-%03d.bin", i), []byte(fmt.Sprintf("content-%03d", i)))
+	}
+
+	createOut, createErr, code := runZeros3CLI(t, bin, "snapshot", "create", "-endpoint", "http://"+addr, "s3://prod/")
+	if code != 0 {
+		t.Fatalf("snapshot create failed: code=%d stdout=%s stderr=%s", code, createOut, createErr)
+	}
+	id := strings.TrimSpace(strings.TrimPrefix(strings.Split(strings.TrimSpace(createOut), "\n")[0], "Snapshot:"))
+
+	// Kill the restore CLI process partway through by racing a short
+	// timeout against it -- a real process interruption, not a
+	// simulated in-process hook.
+	restoreCmd := exec.Command(bin, "snapshot", "restore", "-endpoint", "http://"+addr, id, "s3://recovery/")
+	if err := restoreCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	restoreCmd.Process.Kill()
+	restoreCmd.Wait()
+
+	// Rerun to completion.
+	out2, err2, code2 := runZeros3CLI(t, bin, "snapshot", "restore", "-endpoint", "http://"+addr, id, "s3://recovery/")
+	if code2 != 0 {
+		t.Fatalf("resumed snapshot restore failed: code=%d stdout=%s stderr=%s", code2, out2, err2)
+	}
+
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("/recovery/obj-%03d.bin", i)
+		resp := doSignedRequest(t, client, "http://"+addr, signer, http.MethodGet, key, nil, nil)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		want := fmt.Sprintf("content-%03d", i)
+		if resp.StatusCode != http.StatusOK || string(body) != want {
+			t.Fatalf("recovered object %s: status=%d body=%q, want %q", key, resp.StatusCode, body, want)
+		}
+	}
+
+	cmd.Process.Kill()
+	cmd.Wait()
+	verifyOut, verifyErr, verifyCode := runZeros3CLI(t, bin, "verify", "-store", storeDir, "-deep")
+	if verifyCode != 0 {
+		t.Fatalf("verify -deep after interrupted+resumed restore failed: code=%d stdout=%s stderr=%s", verifyCode, verifyOut, verifyErr)
+	}
+}
