@@ -543,6 +543,72 @@ external, real-two-server, real-AWS-SDK-verified proof (including a
 destination-prepopulation CAS-reuse demonstration and M8B repair
 composing cleanly with M8C-replicated content).
 
+## Read-only introspection (`replicate -dry-run`, `zeros3 diff`, `zeros3 inspect`)
+
+Three read-only commands (M8G) expose ZeroS3's content-addressed
+architecture before anything moves, and never publish an object, upload a
+chunk, or otherwise change any store's authoritative state:
+
+- **Replication planning** — `replicate -dry-run` calculates the exact
+  chunk payload the destination currently lacks without modifying either
+  store. It shares its planner with real replication rather than
+  approximating it: `-dry-run` runs the identical discover/describe/
+  negotiate sequence and stops, so its prediction and an immediately-
+  following real run's actual transfer match exactly. Works for both a
+  single object and, with `-recursive`, a whole prefix or bucket.
+
+  ```sh
+  ./zeros3 replicate -dry-run s3://source-bucket/object s3://dest-bucket/object \
+    --from http://127.0.0.1:9000 --to http://127.0.0.1:9001
+  ```
+
+  ```
+  DRY RUN -- no data modified
+
+  Source object:        s3://source-bucket/object
+  Destination object:   s3://dest-bucket/object
+
+  Logical bytes:        1.00 GiB
+  Source chunks:        16,482
+  Chunks already in CAS:16,001
+  Chunks missing:       481
+
+  Would transfer:       29.8 MiB
+  Transfer avoided:     994.2 MiB
+  Reuse potential:      97.1%
+
+  Destination action:   would publish object
+  ```
+
+- **Structural diff** — `zeros3 diff` compares two objects by CDC/CAS
+  identity to see how much payload they structurally share, using only
+  each object's existing descriptor (chunk digests, lengths, ETag) —
+  never downloading either object's body or any chunk payload.
+
+  ```sh
+  ./zeros3 diff s3://bucket/dataset-v1.bin s3://bucket/dataset-v2.bin --from http://127.0.0.1:9000
+  ```
+
+- **Inspect** — `zeros3 inspect` shows one object's manifest/chunk
+  structure and physical CAS representation, including how much of its
+  physical payload is also reachable from some other live root in the
+  store (current objects, retained historical versions, active multipart
+  uploads, and durable snapshots — the same root universe GC already
+  protects), computed on demand with no persistent index or refcount
+  table.
+
+  ```sh
+  ./zeros3 inspect s3://bucket/dataset-v2.bin --endpoint http://127.0.0.1:9000
+  ```
+
+`-dry-run`'s transfer estimate, `diff`'s pairwise reuse percentages, and
+`inspect`'s store-wide sharing figure each answer a different question
+and are never conflated: replication planning is destination-store
+transfer, diff is object-vs-object, inspect is one object's own
+representation. See `STATUS.md`'s "M8G" section for exact accounting
+semantics, the shared-planner proof, and the read-only guarantee's
+independent verification.
+
 ## Copy-on-write namespace fork (`zeros3 fork`)
 
 Copy-on-write namespace forks — clone a bucket or prefix inside one

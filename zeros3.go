@@ -6408,6 +6408,14 @@ const (
 	zeros3SnapshotShowPath   = "/_zeros3/v1/snapshot/show"
 	zeros3SnapshotDeletePath = "/_zeros3/v1/snapshot/delete"
 	zeros3SnapshotObjectPath = "/_zeros3/v1/snapshot/object" // M8E-B (section 15i): per-key descriptor for restore
+
+	// M8G-C (section 15k): the one new server extension `inspect` needs
+	// beyond the existing M8A object descriptor -- store-wide chunk
+	// reachability, which only the server can compute (it requires
+	// walking every authoritative root in the store, not just the one
+	// object's own manifest). Same query-parameter convention as every
+	// other extension above.
+	zeros3ReachabilityPath = "/_zeros3/v1/reachability"
 )
 
 // syncDiscoveryResponse is GET /_zeros3/v1/info's body: the complete
@@ -6592,6 +6600,8 @@ func (srv *Server) handleZeroS3Sync(w http.ResponseWriter, r *http.Request, rawP
 		srv.handleSnapshotDelete(w, r)
 	case rawPath == zeros3SnapshotObjectPath && r.Method == http.MethodGet:
 		srv.handleSnapshotDescribeObject(w, r)
+	case rawPath == zeros3ReachabilityPath && r.Method == http.MethodGet:
+		srv.handleReachabilityQuery(w, r)
 	default:
 		writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown ZeroS3 sync extension operation")
 	}
@@ -6648,6 +6658,182 @@ func (srv *Server) handleSyncDescribeObject(w http.ResponseWriter, r *http.Reque
 		Bucket: bucket, Key: key, VersionID: entry.manifestUUID,
 		Size: entry.size, ETag: entry.etag, ContentType: entry.contentType,
 		Metadata: metadata, Chunks: chunks,
+	})
+}
+
+// rootRef identifies one authoritative GC root -- exactly the same four
+// categories computeReachability already enumerates (current objects,
+// retained historical versions, active multipart uploads, durable
+// snapshots), named the same way checkRoot's own "subject" strings
+// already are. M8G-C's entire store-wide sharing analysis is "does any
+// *other* rootRef also reference this digest" -- there is no fifth root
+// category anywhere else in the codebase this could miss.
+type rootRef struct {
+	kind string
+	id   string
+}
+
+// computeChunkRootMembership walks every authoritative root category
+// computeReachability already knows about and returns, for every
+// distinct chunk digest any of them reference, the complete set of roots
+// referencing it. It reuses readVerifiedManifest -- the same verified-
+// load primitive computeStats already calls per current object -- rather
+// than re-implementing manifest verification, and is computed fresh on
+// every call: nothing here is cached or persisted (M8G-C's "no
+// persistent index/refcount table"). This is O(total reachable
+// manifests/chunks), which C8 explicitly accepts for an explicit
+// diagnostic command; it is never called from any hot path (PUT/GET/
+// negotiate/commit are all untouched).
+//
+// Unlike computeReachability, this makes no attempt to detect or report
+// integrity issues (missing/corrupt/invalid) -- a manifest that fails
+// readVerifiedManifest here is simply skipped (contributes no root
+// membership), exactly as if it weren't live; Verify/GC's own fail-closed
+// integrity gate is still the one place a broken root blocks destructive
+// action, and this diagnostic function has no destructive action to gate.
+func (s *Store) computeChunkRootMembership() map[string]map[rootRef]bool {
+	membership := map[string]map[rootRef]bool{}
+	add := func(root rootRef, sha string) {
+		m, ok := membership[sha]
+		if !ok {
+			m = map[rootRef]bool{}
+			membership[sha] = m
+		}
+		m[root] = true
+	}
+
+	for _, o := range s.snapshotNamespace() {
+		root := rootRef{"current", o.bucket + "/" + o.key}
+		man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256)
+		if err != nil {
+			continue
+		}
+		for _, c := range man.Chunks {
+			add(root, c.SHA256)
+		}
+	}
+	for _, o := range s.snapshotHistory() {
+		root := rootRef{"historical", fmt.Sprintf("%s/%s@%s", o.bucket, o.key, o.entry.versionID)}
+		man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256)
+		if err != nil {
+			continue
+		}
+		for _, c := range man.Chunks {
+			add(root, c.SHA256)
+		}
+	}
+	for _, up := range s.snapshotUploads() {
+		for _, p := range up.parts {
+			root := rootRef{"multipart", fmt.Sprintf("%s/part%d", up.uploadID, p.partNumber)}
+			for _, c := range p.chunks {
+				add(root, c.SHA256)
+			}
+		}
+	}
+	validSnaps, _ := s.scanSnapshots()
+	for _, snap := range validSnaps {
+		for _, se := range snap.Entries {
+			root := rootRef{"snapshot", snap.SnapshotID + ":" + se.Key}
+			sum, err := decodeHexSHA256(se.ManifestSHA256)
+			if err != nil {
+				continue
+			}
+			man, err := s.readVerifiedManifest(se.ManifestUUID, sum)
+			if err != nil {
+				continue
+			}
+			for _, c := range man.Chunks {
+				add(root, c.SHA256)
+			}
+		}
+	}
+	return membership
+}
+
+// chunkReachabilityInfo is one distinct chunk digest's store-wide
+// sharing verdict (M8G-C3): RootCount is the total number of distinct
+// authoritative roots referencing it (always >=1 for a digest the
+// queried object itself references, since that object's own current
+// root always counts), and ReachableElsewhere is true exactly when at
+// least one of those roots is not the queried object's own current root
+// -- "if this object's root disappeared, would this chunk's bytes still
+// be reachable through something else."
+type chunkReachabilityInfo struct {
+	SHA256             string `json:"sha256"`
+	Length             int64  `json:"length"`
+	RootCount          int    `json:"root_count"`
+	ReachableElsewhere bool   `json:"reachable_elsewhere"`
+}
+
+// reachabilityQueryResponse is GET /_zeros3/v1/reachability's body: one
+// row per distinct chunk digest the queried object's current manifest
+// references (bounded by that object's own chunk count, never by total
+// store size), never a filesystem path or any other internal detail.
+type reachabilityQueryResponse struct {
+	Protocol  int                     `json:"protocol"`
+	CDC       string                  `json:"cdc"`
+	Hash      string                  `json:"hash"`
+	Bucket    string                  `json:"bucket"`
+	Key       string                  `json:"key"`
+	VersionID string                  `json:"version_id"`
+	Chunks    []chunkReachabilityInfo `json:"chunks"`
+}
+
+// handleReachabilityQuery answers M8G-C3's store-wide sharing question
+// for one existing object: for every distinct chunk digest its current
+// manifest references, how many authoritative roots (store-wide, not
+// just this bucket/key) reference that same digest, and would it still
+// be reachable if this object's own current root were removed. Read-only
+// throughout: computeChunkRootMembership only reads the journal-
+// reconstructed namespace/history/uploads/snapshots and manifest files,
+// never chunk payload bytes and never anything on a write path.
+func (srv *Server) handleReachabilityQuery(w http.ResponseWriter, r *http.Request) {
+	bucket := r.URL.Query().Get("bucket")
+	key := r.URL.Query().Get("key")
+	if bucket == "" || key == "" {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "bucket and key query parameters are required")
+		return
+	}
+	entry, man, err := srv.store.HeadObject(bucket, key)
+	if err != nil {
+		switch {
+		case errors.Is(err, errNoSuchBucket):
+			writeSyncError(w, http.StatusNotFound, "NoSuchBucket", "the specified bucket does not exist")
+		case errors.Is(err, errNoSuchKey):
+			writeSyncError(w, http.StatusNotFound, "NoSuchKey", "the specified key does not exist")
+		default:
+			writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		}
+		return
+	}
+
+	membership := srv.store.computeChunkRootMembership()
+	currentRoot := rootRef{"current", bucket + "/" + key}
+
+	seen := make(map[string]bool, len(man.Chunks))
+	chunks := make([]chunkReachabilityInfo, 0, len(man.Chunks))
+	for _, c := range man.Chunks {
+		if seen[c.SHA256] {
+			continue
+		}
+		seen[c.SHA256] = true
+		roots := membership[c.SHA256]
+		elsewhere := false
+		for root := range roots {
+			if root != currentRoot {
+				elsewhere = true
+				break
+			}
+		}
+		chunks = append(chunks, chunkReachabilityInfo{
+			SHA256: c.SHA256, Length: c.Length, RootCount: len(roots), ReachableElsewhere: elsewhere,
+		})
+	}
+
+	writeSyncJSON(w, http.StatusOK, reachabilityQueryResponse{
+		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+		Bucket: bucket, Key: key, VersionID: entry.manifestUUID,
+		Chunks: chunks,
 	})
 }
 
@@ -8153,40 +8339,98 @@ type replicateConfig struct {
 	DestMustBeAbsent bool
 }
 
-// replicateObject is M8A's complete pipeline: discover both endpoints'
-// capabilities (M8A1) -> fetch the source's object descriptor (M8A2) ->
-// capture the destination's current identity for the conflict
-// precondition (M8A8, identical to M6B) -> negotiate against the
-// destination (M8A3) -> fetch+relay only the chunks it reports missing
-// (M8A4/M8A5) -> commit (M8A6). See this section's doc comment above for
-// exactly which pieces are reused unmodified from M6 and which are new.
+// destinationAction classifies what an actual (non-dry-run) replication
+// would do to the destination, given the exact source/destination state
+// planReplication observed (M8G-A4/A8). It is advisory, not a guarantee:
+// see replicationPlan's doc comment for why a later execution can still
+// legitimately see different state.
+type destinationAction string
+
+const (
+	destActionPublish    destinationAction = "would publish object"
+	destActionEquivalent destinationAction = "already equivalent"
+	destActionConflict   destinationAction = "CONFLICT"
+)
+
+// replicationPlan is planReplication's complete, read-only output: every
+// fact an actual replication (executeReplicationPlan) needs to finish the
+// job, and every fact a dry-run (M8G-A) needs to report it -- both drawn
+// from exactly one shared discovery/negotiation pass, so the two can never
+// silently diverge in what they consider "missing" or "would transfer".
 //
-// Resume (M8A9): there is no durable replication-session state anywhere
-// -- if this process is interrupted after some chunks have reached the
-// destination but before commit, nothing has been published under
-// Dest.Bucket/Dest.Key yet (commit is the one atomic step that makes
-// anything visible). Rerunning replicateObject from scratch re-fetches
-// the same descriptor, and negotiateSyncMissing correctly reports the
-// already-uploaded chunks as no longer missing (they're already durable
-// in the destination's CAS), so only the genuinely remaining chunks are
-// fetched and uploaded again. This falls directly out of CAS content-
-// addressing and idempotent chunk upload -- no special-cased resume logic
-// exists or is needed.
-func replicateObject(cfg replicateConfig) (syncStats, error) {
+// This is advisory, not a reservation (A2): nothing here is written
+// anywhere, and no chunk digest is held/locked at the destination on this
+// plan's behalf. If the destination's CAS or namespace state changes after
+// planReplication returns, a later executeReplicationPlan call still runs
+// negotiateSyncMissing's result (captured here) against fetch/upload, and
+// commitSyncObject still independently revalidates pre against the
+// destination's *current* state at commit time (unchanged from M8A) --
+// exactly the same conflict detection non-dry-run replication has always
+// had, not weakened by dry-run's existence.
+type replicationPlan struct {
+	cfg           replicateConfig
+	desc          syncObjectDescriptor
+	destDiscovery syncDiscoveryResponse
+	plan          syncPlan
+	missing       map[string]bool
+	pre           syncPrecondition
+
+	destExists bool
+	destETag   string
+	action     destinationAction
+
+	// missingOccur/wouldTransferBytes are computed once, here, from the
+	// exact same plan.ordered/plan.unique/missing values
+	// executeReplicationPlan will use for its own accounting -- this is
+	// what makes A7's prediction-vs-execution proof exact rather than
+	// approximate: on a quiescent store, executeReplicationPlan's
+	// UploadedBytes is computed by the identical summation over the
+	// identical inputs.
+	missingOccur       int
+	wouldTransferBytes int64
+}
+
+// planReplication runs M8A's complete discovery/negotiation prefix --
+// discover both endpoints' capabilities (M8A1) -> fetch the source's
+// object descriptor (M8A2) -> capture the destination's current identity
+// for the conflict precondition (M8A8, identical to M6B) -> negotiate
+// against the destination (M8A3) -- and stops, deliberately, before any
+// mutation: no chunk payload is fetched from the source and no request
+// that could write anything is ever sent to the destination (negotiate is
+// a pure CAS-presence read, per handleSyncNegotiate's own doc comment).
+// This is exactly M8G-A2's "source discovery -> destination discovery ->
+// capture source descriptor -> inspect destination state -> negotiate
+// destination CAS -> STOP" -- the read-only prefix of replicateObject's
+// full pipeline, extracted so both replicateObject (which now just adds
+// executeReplicationPlan) and `replicate -dry-run` share one planner
+// instead of two independently-maintained ideas of "what would transfer."
+func planReplication(cfg replicateConfig) (replicationPlan, error) {
 	if _, err := discoverZeroS3Sync(cfg.Source); err != nil {
-		return syncStats{}, fmt.Errorf("replicate: source capability discovery failed: %w", err)
+		return replicationPlan{}, fmt.Errorf("replicate: source capability discovery failed: %w", err)
 	}
 	destDiscovery, err := discoverZeroS3Sync(cfg.Dest)
 	if err != nil {
-		return syncStats{}, fmt.Errorf("replicate: destination capability discovery failed: %w", err)
+		return replicationPlan{}, fmt.Errorf("replicate: destination capability discovery failed: %w", err)
 	}
 
 	desc, err := fetchSourceDescriptor(cfg.Source)
 	if err != nil {
-		return syncStats{}, fmt.Errorf("replicate: %w", err)
+		return replicationPlan{}, fmt.Errorf("replicate: %w", err)
 	}
 
+	exists, etag, err := headSyncDestination(cfg.Dest)
+	if err != nil {
+		return replicationPlan{}, fmt.Errorf("replicate: %w", err)
+	}
+
+	// pre/action below classify the observed state exactly the way
+	// replicateObject always has (this is unchanged from before
+	// planReplication existed -- see the DestMustBeAbsent field's own
+	// doc comment for why the two modes differ); action is the new,
+	// purely additive M8G-A4/A8 label describing what that precondition
+	// implies an actual commit would do.
 	pre := syncPrecondition{expectAbsent: true}
+	action := destActionPublish
 	if cfg.DestMustBeAbsent {
 		// Create-only, but still resumable (M8D-F and M8D-K both hold):
 		// a destination key that doesn't exist yet is the ordinary case
@@ -8203,19 +8447,17 @@ func replicateObject(cfg replicateConfig) (syncStats, error) {
 		// falls through to expectAbsent, which the atomic commit rejects
 		// with a 412 exactly like any other pre-existing-and-different
 		// destination (M8D-F).
-		exists, etag, err := headSyncDestination(cfg.Dest)
-		if err != nil {
-			return syncStats{}, fmt.Errorf("replicate: %w", err)
-		}
 		if exists && etag == desc.ETag {
 			pre = syncPrecondition{expectAbsent: false, expectedETag: etag}
+			action = destActionEquivalent
+		} else if exists {
+			action = destActionConflict
 		}
 	} else {
-		exists, etag, err := headSyncDestination(cfg.Dest)
-		if err != nil {
-			return syncStats{}, fmt.Errorf("replicate: %w", err)
-		}
 		pre = syncPrecondition{expectAbsent: !exists, expectedETag: etag}
+		if exists && etag == desc.ETag {
+			action = destActionEquivalent
+		}
 	}
 
 	chunks := make([]syncLocalChunk, len(desc.Chunks))
@@ -8226,12 +8468,59 @@ func replicateObject(cfg replicateConfig) (syncStats, error) {
 
 	missing, err := negotiateSyncMissing(cfg.Dest, destDiscovery, plan.unique)
 	if err != nil {
-		return syncStats{}, fmt.Errorf("replicate: %w", err)
+		return replicationPlan{}, fmt.Errorf("replicate: %w", err)
 	}
 
-	var relayedBytes int64
+	// wouldTransferBytes sums plan.unique (already de-duplicated to one
+	// entry per distinct digest by buildSyncPlan) rather than
+	// plan.ordered, so a digest occurring multiple times in the source
+	// manifest is counted exactly once here -- matching the real
+	// protocol's own one-PUT-per-unique-digest behavior (A6).
+	var wouldTransferBytes int64
 	for _, d := range plan.unique {
-		if !missing[d.SHA256] {
+		if missing[d.SHA256] {
+			wouldTransferBytes += d.Length
+		}
+	}
+	missingOccur := 0
+	for _, c := range plan.ordered {
+		if missing[c.SHA256] {
+			missingOccur++
+		}
+	}
+
+	return replicationPlan{
+		cfg: cfg, desc: desc, destDiscovery: destDiscovery, plan: plan, missing: missing, pre: pre,
+		destExists: exists, destETag: etag, action: action,
+		missingOccur: missingOccur, wouldTransferBytes: wouldTransferBytes,
+	}, nil
+}
+
+// executeReplicationPlan finishes what planReplication started: fetch+
+// relay only the chunks negotiation reported missing (M8A4/M8A5), then
+// commit (M8A6). It never re-runs discovery/descriptor-fetch/negotiate --
+// those already happened, once, inside planReplication -- but
+// commitSyncObject below still sends p.pre exactly as captured, and the
+// destination still independently checks it against the *current* state
+// at commit time (unchanged M8A/M8F commit-time revalidation, never
+// weakened by dry-run's existence: see replicationPlan's doc comment).
+//
+// Resume (M8A9): there is no durable replication-session state anywhere
+// -- if this process is interrupted after some chunks have reached the
+// destination but before commit, nothing has been published under
+// Dest.Bucket/Dest.Key yet (commit is the one atomic step that makes
+// anything visible). Rerunning replicateObject from scratch re-plans from
+// scratch, and negotiateSyncMissing correctly reports the already-uploaded
+// chunks as no longer missing (they're already durable in the
+// destination's CAS), so only the genuinely remaining chunks are fetched
+// and uploaded again. This falls directly out of CAS content-addressing
+// and idempotent chunk upload -- no special-cased resume logic exists or
+// is needed.
+func executeReplicationPlan(p replicationPlan) (syncStats, error) {
+	cfg := p.cfg
+	var relayedBytes int64
+	for _, d := range p.plan.unique {
+		if !p.missing[d.SHA256] {
 			continue
 		}
 		data, err := fetchSourceChunk(cfg.Source, d.SHA256)
@@ -8248,31 +8537,41 @@ func replicateObject(cfg replicateConfig) (syncStats, error) {
 	}
 
 	destCommitCfg := cfg.Dest
-	destCommitCfg.ContentType = desc.ContentType
-	destCommitCfg.Metadata = desc.Metadata
-	if _, err := commitSyncObject(destCommitCfg, plan, pre); err != nil {
+	destCommitCfg.ContentType = p.desc.ContentType
+	destCommitCfg.Metadata = p.desc.Metadata
+	if _, err := commitSyncObject(destCommitCfg, p.plan, p.pre); err != nil {
 		return syncStats{}, fmt.Errorf("replicate: %w", err)
 	}
 
-	missingOccur := 0
-	for _, c := range plan.ordered {
-		if missing[c.SHA256] {
-			missingOccur++
-		}
-	}
 	stats := syncStats{
-		LogicalBytes:         desc.Size,
-		TotalChunks:          len(plan.ordered),
-		MissingChunkOccur:    missingOccur,
-		ChunksReused:         len(plan.ordered) - missingOccur,
-		UniqueChunksUploaded: len(missing),
+		LogicalBytes:         p.desc.Size,
+		TotalChunks:          len(p.plan.ordered),
+		MissingChunkOccur:    p.missingOccur,
+		ChunksReused:         len(p.plan.ordered) - p.missingOccur,
+		UniqueChunksUploaded: len(p.missing),
 		UploadedBytes:        relayedBytes,
-		BytesAvoided:         desc.Size - relayedBytes,
+		BytesAvoided:         p.desc.Size - relayedBytes,
 	}
 	if cfg.Out != nil {
 		printSyncStats(cfg.Out, stats)
 	}
 	return stats, nil
+}
+
+// replicateObject is M8A's complete pipeline: planReplication's
+// discover/describe/negotiate prefix, followed immediately by
+// executeReplicationPlan's fetch/upload/commit tail. See both functions'
+// doc comments for the full pipeline description and M8A9's resume
+// contract -- this function's own behavior is byte-for-byte unchanged
+// from before the M8G-A extraction; only the internal shape (one shared
+// planner instead of one monolithic function) is new, so that
+// `replicate -dry-run` (M8G-A) can call planReplication alone and stop.
+func replicateObject(cfg replicateConfig) (syncStats, error) {
+	p, err := planReplication(cfg)
+	if err != nil {
+		return syncStats{}, err
+	}
+	return executeReplicationPlan(p)
 }
 
 // runReplicate implements "zeros3 replicate s3://source-bucket/key
@@ -8295,6 +8594,7 @@ func replicateObject(cfg replicateConfig) (syncStats, error) {
 func runReplicate(args []string) {
 	fs := flag.NewFlagSet("replicate", flag.ExitOnError)
 	recursive := fs.Bool("recursive", false, "replicate every object under a source prefix or whole bucket into the destination prefix/bucket (M8C), instead of a single object")
+	dryRun := fs.Bool("dry-run", false, "perform authenticated discovery/negotiation only and report the exact payload-transfer plan for the observed state, without fetching source chunk payload, uploading, or committing anything (M8G-A)")
 	from := fs.String("from", "http://127.0.0.1:9000", "source ZeroS3 endpoint base URL (scheme://host[:port])")
 	to := fs.String("to", "http://127.0.0.1:9001", "destination ZeroS3 endpoint base URL (scheme://host[:port])")
 	fromAccessKey := fs.String("from-access-key", defaultAccessKeyID, "source access key ID")
@@ -8335,6 +8635,18 @@ func runReplicate(args []string) {
 			DestPrefix: dstPrefix,
 			Out:        os.Stdout,
 		}
+		if *dryRun {
+			result, err := planReplicationNamespace(cfg)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "zeros3: replicate dry-run failed: %v\n", err)
+				os.Exit(1)
+			}
+			printDryRunNamespace(os.Stdout, result)
+			if !result.OK() {
+				os.Exit(1)
+			}
+			return
+		}
 		result, err := replicateNamespace(cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "zeros3: replicate failed: %v\n", err)
@@ -8368,12 +8680,202 @@ func runReplicate(args []string) {
 		},
 		Out: os.Stdout,
 	}
+	if *dryRun {
+		p, err := planReplication(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "zeros3: replicate dry-run failed: %v\n", err)
+			os.Exit(1)
+		}
+		printDryRunSingle(os.Stdout, p)
+		if p.action == destActionConflict {
+			os.Exit(1)
+		}
+		return
+	}
 	stats, err := replicateObject(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: replicate failed: %v\n", err)
 		os.Exit(1)
 	}
 	_ = stats
+}
+
+// printDryRunSingle renders M8G-A4's required single-object dry-run
+// report. Every number here comes straight from the replicationPlan
+// planReplication already computed -- there is no second, CLI-local
+// recomputation of "what would transfer" that could silently drift from
+// what executeReplicationPlan would actually do (A7).
+func printDryRunSingle(w io.Writer, p replicationPlan) {
+	fmt.Fprintln(w, "DRY RUN -- no data modified")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Source object:        s3://%s/%s\n", p.cfg.Source.Bucket, p.cfg.Source.Key)
+	fmt.Fprintf(w, "Destination object:   s3://%s/%s\n", p.cfg.Dest.Bucket, p.cfg.Dest.Key)
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Logical bytes:        %s\n", humanBytes(p.desc.Size))
+	fmt.Fprintf(w, "Source chunks:        %d\n", len(p.plan.ordered))
+	fmt.Fprintf(w, "Chunks already in CAS:%d\n", len(p.plan.ordered)-p.missingOccur)
+	fmt.Fprintf(w, "Chunks missing:       %d\n", p.missingOccur)
+	fmt.Fprintln(w)
+	avoided := p.desc.Size - p.wouldTransferBytes
+	fmt.Fprintf(w, "Would transfer:       %s\n", humanBytes(p.wouldTransferBytes))
+	fmt.Fprintf(w, "Transfer avoided:     %s\n", humanBytes(avoided))
+	if p.desc.Size > 0 {
+		fmt.Fprintf(w, "Reuse potential:      %.1f%%\n", float64(avoided)/float64(p.desc.Size)*100)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Destination action:   %s\n", p.action)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Plan reflects source/destination state observed during this dry run.")
+}
+
+// nsDryRunResult is planReplicationNamespace's aggregate report (M8G-A5):
+// the same object/byte accounting nsReplicateResult reports for an actual
+// namespace replication, plus the destinationAction breakdown a dry-run
+// adds (WouldPublish/AlreadyEquivalent/WouldConflict never overlap --
+// M8G-A5's "do not hide conflicts inside reuse numbers"). LogicalBytes/
+// SourceChunks/ChunksMissing/WouldTransferBytes are summed across every
+// successfully-planned object regardless of its action, so a conflicting
+// object's own logical size/chunk facts are still visible in the totals
+// (not silently dropped) even though WouldConflict already called it out
+// by name -- exactly what a real recursive run would still discover about
+// that object even if the object itself can never be committed.
+type nsDryRunResult struct {
+	Discovered        int
+	WouldPublish      int
+	AlreadyEquivalent int
+	WouldConflict     int
+	Failed            int
+	Failures          []nsReplicateFailure
+
+	LogicalBytes       int64
+	SourceChunks       int
+	ChunksMissing      int
+	WouldTransferBytes int64
+}
+
+// OK reports whether every discovered object could be planned without
+// error. A predicted conflict is not itself a planning failure (it is an
+// honestly reported outcome, exactly like a failed one is reported via
+// Failures) -- but it is still surfaced to the CLI's exit code exactly
+// like nsReplicateResult.OK() already does for a real replication's
+// partial failures, since "some of what you're about to do would not
+// actually happen" deserves a non-zero exit just as much as "some of it
+// failed" does.
+func (r nsDryRunResult) OK() bool { return r.Failed == 0 && r.WouldConflict == 0 }
+
+// planReplicationNamespace is M8G-A5's recursive dry-run: the exact same
+// M8C enumeration/mapping replicateNamespace uses (listSourceObjects,
+// namespaceDestKey, deterministic order), calling planReplication --
+// never replicateObject -- per object, so a recursive dry-run can never
+// fetch a source chunk body or write to the destination. This
+// deliberately duplicates replicateNamespace's short enumeration/mapping
+// loop rather than adding a dry-run branch inside replicateNamespace
+// itself, so M8C's own accepted, unmodified behavior can never be
+// affected by M8G-A's addition.
+//
+// simulatedPresent is what makes the recursive prediction exact rather
+// than merely per-object (A7's "cross-object/store-wide reuse" case): a
+// real replicateNamespace run uploads objects strictly in listing order,
+// so a chunk one object needs is already durably in the destination CAS
+// by the time a *later* object's own negotiation asks about that same
+// digest, even though neither object has actually been replicated yet
+// when this dry-run inspects them. Each object's own planReplication call
+// still negotiates against the real, unchanged destination (never
+// mutated by this function), but a digest already "claimed" earlier in
+// this same loop is credited to whichever object claimed it first and
+// never counted again for a later object in the same run -- exactly
+// mirroring what the real sequential upload would leave for that later
+// object to actually negotiate.
+func planReplicationNamespace(cfg namespaceReplicateConfig) (nsDryRunResult, error) {
+	listPrefix := cfg.SourcePrefix
+	if listPrefix != "" {
+		listPrefix += "/"
+	}
+	objects, err := listSourceObjects(cfg.Source, listPrefix)
+	if err != nil {
+		return nsDryRunResult{}, err
+	}
+
+	result := nsDryRunResult{Discovered: len(objects)}
+	simulatedPresent := map[string]bool{}
+	for _, obj := range objects {
+		dstKey, err := namespaceDestKey(cfg.SourcePrefix, cfg.DestPrefix, obj.Key)
+		if err != nil {
+			result.Failed++
+			result.Failures = append(result.Failures, nsReplicateFailure{Key: obj.Key, Err: err})
+			continue
+		}
+
+		objCfg := replicateConfig{Source: cfg.Source, Dest: cfg.Dest, DestMustBeAbsent: cfg.DestMustBeAbsent}
+		objCfg.Source.Key = obj.Key
+		objCfg.Dest.Key = dstKey
+
+		p, err := planReplication(objCfg)
+		if err != nil {
+			result.Failed++
+			result.Failures = append(result.Failures, nsReplicateFailure{Key: obj.Key, Dest: dstKey, Err: err})
+			continue
+		}
+		switch p.action {
+		case destActionEquivalent:
+			result.AlreadyEquivalent++
+		case destActionConflict:
+			result.WouldConflict++
+		default:
+			result.WouldPublish++
+		}
+		result.LogicalBytes += p.desc.Size
+		result.SourceChunks += len(p.plan.ordered)
+
+		effectiveMissing := map[string]bool{}
+		for _, d := range p.plan.unique {
+			if p.missing[d.SHA256] && !simulatedPresent[d.SHA256] {
+				effectiveMissing[d.SHA256] = true
+				result.WouldTransferBytes += d.Length
+				simulatedPresent[d.SHA256] = true
+			}
+		}
+		for _, c := range p.plan.ordered {
+			if effectiveMissing[c.SHA256] {
+				result.ChunksMissing++
+			}
+		}
+	}
+	return result, nil
+}
+
+// printDryRunNamespace is M8G-A5's recursive dry-run report, deliberately
+// shaped like printNsReplicateSummary so the two read as obviously
+// related, with the added WouldPublish/AlreadyEquivalent/WouldConflict
+// breakdown a dry-run needs and printNsReplicateSummary doesn't.
+func printDryRunNamespace(w io.Writer, r nsDryRunResult) {
+	fmt.Fprintf(w, "Objects discovered:       %d\n", r.Discovered)
+	fmt.Fprintf(w, "Would publish:            %d\n", r.WouldPublish)
+	fmt.Fprintf(w, "Already equivalent:       %d\n", r.AlreadyEquivalent)
+	fmt.Fprintf(w, "Would conflict:           %d\n", r.WouldConflict)
+	if r.Failed > 0 {
+		fmt.Fprintf(w, "Failed to plan:           %d\n", r.Failed)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Logical source:           %s\n", humanBytes(r.LogicalBytes))
+	fmt.Fprintf(w, "Source chunks:            %d\n", r.SourceChunks)
+	fmt.Fprintf(w, "Chunks missing:           %d\n", r.ChunksMissing)
+	fmt.Fprintln(w)
+	avoided := r.LogicalBytes - r.WouldTransferBytes
+	fmt.Fprintf(w, "Would transfer:           %s\n", humanBytes(r.WouldTransferBytes))
+	fmt.Fprintf(w, "Transfer avoided:         %s\n", humanBytes(avoided))
+	if r.LogicalBytes > 0 {
+		fmt.Fprintf(w, "Reuse potential:          %.1f%%\n", float64(avoided)/float64(r.LogicalBytes)*100)
+	}
+	if len(r.Failures) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "FAILED TO PLAN:")
+		for _, f := range r.Failures {
+			fmt.Fprintf(w, "  %s -> %v\n", f.Key, f.Err)
+		}
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "No data modified.")
 }
 
 // =============================================================================
@@ -10462,6 +10964,527 @@ func runSnapshotRestore(args []string) {
 }
 
 // =============================================================================
+// 15j. Structural object diff (M8G-B): `zeros3 diff`
+//
+// `diff` answers a different question than `replicate -dry-run`: not "how
+// much payload would moving this object cost," but "how structurally
+// similar are these two existing objects, at the CDC/CAS level, right
+// now." It compares two ordinary, already-published objects -- on the
+// same server or two different servers -- purely from their descriptors,
+// reusing M8A's exact fetchSourceDescriptor/syncObjectDescriptor
+// machinery (section 15d) with zero new server endpoints, zero object-body
+// downloads, and zero chunk-payload fetches: everything diff reports is
+// already sitting in the ordered (sha256, length) chunk list plus
+// size/ETag/content-type/metadata a HEAD-equivalent query already
+// exposes.
+//
+// Two accounting shapes are kept deliberately distinct (B4): a *physical*
+// count (SharedUniqueChunks/UniqueChunksA/UniqueChunksB) that deduplicates
+// by digest, and a *logical/directional* byte count
+// (APayloadReusableFromB etc.) that walks every chunk *occurrence* in one
+// object and asks only "does B's unique-digest set contain this digest,"
+// so a chunk A repeats internally contributes its length once per
+// occurrence -- exactly how much of A's actual bytes could be
+// reconstructed from B's CAS, not how many distinct chunks overlap.
+// =============================================================================
+
+// objectDiffResult is buildObjectDiff's complete, descriptor-only
+// comparison output (M8G-B3). Nothing here required fetching either
+// object's body or any chunk payload -- A and B are exactly the
+// descriptors fetchSourceDescriptor already returned.
+type objectDiffResult struct {
+	A, B syncObjectDescriptor
+
+	// SharedUniqueChunks/UniqueChunksA/UniqueChunksB are physical counts,
+	// deduplicated by digest (B4's "unique physical identity counts").
+	SharedUniqueChunks int
+	UniqueChunksA      int
+	UniqueChunksB      int
+
+	// APayloadReusableFromB/BPayloadReusableFromA are logical, per-
+	// occurrence byte sums (B4's "logical directional reuse"): every
+	// chunk reference in A (repeats included) that names a digest present
+	// somewhere in B's unique set contributes its own length, regardless
+	// of how many times that same digest already contributed via an
+	// earlier occurrence in A. AOnlyPayload/BOnlyPayload are each
+	// object's own logical size minus its own reusable total, so the two
+	// always partition that object's full Size exactly.
+	APayloadReusableFromB int64
+	AOnlyPayload          int64
+	BPayloadReusableFromA int64
+	BOnlyPayload          int64
+
+	// ContentEqual reuses ZeroS3's own existing object-content identity
+	// semantics (B5): the ETag both objects' manifests already carry is a
+	// whole-body MD5 (buildManifestV1), so it is order-sensitive by
+	// construction -- two objects holding the same chunk set in a
+	// different order, or with different logical content laid out to
+	// coincidentally share every digest, do NOT get ContentEqual==true
+	// unless their actual concatenated bytes are identical. ExactMatch is
+	// currently identical to ContentEqual (ZeroS3 has no broader
+	// "same object" identity than content equality); MetadataEqual is
+	// reported separately and never influences either.
+	ContentEqual  bool
+	MetadataEqual bool
+	ExactMatch    bool
+
+	// HasDivergence/FirstDivergingOffset are B7's optional "first
+	// differing logical region": the ordered chunk lists are walked
+	// together and the logical offset of the first position where they
+	// disagree (a different digest, or one list ending before the other)
+	// is reported -- never a byte-level diff, and never a chunk-body
+	// fetch.
+	HasDivergence        bool
+	FirstDivergingOffset int64
+}
+
+// buildObjectDiff computes every field of objectDiffResult from two
+// already-fetched descriptors. Split out from diffObjects so the pure
+// math (what this section's own tests cross-check independently, per
+// M8G-B's own "cross-check diff metrics against independently computed
+// descriptor math" requirement) needs no HTTP server at all to test.
+func buildObjectDiff(a, b syncObjectDescriptor) objectDiffResult {
+	uniqueA := make(map[string]int64, len(a.Chunks))
+	for _, c := range a.Chunks {
+		uniqueA[c.SHA256] = c.Length
+	}
+	uniqueB := make(map[string]int64, len(b.Chunks))
+	for _, c := range b.Chunks {
+		uniqueB[c.SHA256] = c.Length
+	}
+
+	shared := 0
+	for sha := range uniqueA {
+		if _, ok := uniqueB[sha]; ok {
+			shared++
+		}
+	}
+
+	var aReuse, bReuse int64
+	for _, c := range a.Chunks {
+		if _, ok := uniqueB[c.SHA256]; ok {
+			aReuse += c.Length
+		}
+	}
+	for _, c := range b.Chunks {
+		if _, ok := uniqueA[c.SHA256]; ok {
+			bReuse += c.Length
+		}
+	}
+
+	result := objectDiffResult{
+		A: a, B: b,
+		SharedUniqueChunks:    shared,
+		UniqueChunksA:         len(uniqueA),
+		UniqueChunksB:         len(uniqueB),
+		APayloadReusableFromB: aReuse,
+		AOnlyPayload:          a.Size - aReuse,
+		BPayloadReusableFromA: bReuse,
+		BOnlyPayload:          b.Size - bReuse,
+	}
+	result.ContentEqual = a.ETag == b.ETag
+	result.ExactMatch = result.ContentEqual
+	result.MetadataEqual = a.ContentType == b.ContentType && stringMapsEqual(a.Metadata, b.Metadata)
+
+	n := len(a.Chunks)
+	if len(b.Chunks) < n {
+		n = len(b.Chunks)
+	}
+	var off int64
+	diverged := false
+	for i := 0; i < n; i++ {
+		if a.Chunks[i].SHA256 != b.Chunks[i].SHA256 {
+			diverged = true
+			break
+		}
+		off += a.Chunks[i].Length
+	}
+	if !diverged && len(a.Chunks) != len(b.Chunks) {
+		diverged = true
+	}
+	result.HasDivergence = diverged
+	result.FirstDivergingOffset = off
+	return result
+}
+
+// stringMapsEqual reports whether two string->string maps hold exactly
+// the same keys and values -- used only for diff's MetadataEqual
+// convenience field (B6); it never affects any of diff's chunk-sharing
+// math.
+func stringMapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
+}
+
+// diffObjects performs M8G-B's complete comparison: fetch each object's
+// descriptor (M8A2's existing, unmodified endpoint, called once per
+// object -- against the same server twice if cfgA.Endpoint==cfgB.Endpoint,
+// which needs no special-casing since fetchSourceDescriptor already takes
+// an arbitrary syncClientConfig) and compare them. Either object missing
+// (B8) surfaces as a clear, distinctly-attributed error and never
+// invents replication semantics of any kind -- diff never contacts a
+// third endpoint, never negotiates, and never plans a transfer.
+func diffObjects(cfgA, cfgB syncClientConfig) (objectDiffResult, error) {
+	descA, err := fetchSourceDescriptor(cfgA)
+	if err != nil {
+		return objectDiffResult{}, fmt.Errorf("diff: object A (s3://%s/%s): %w", cfgA.Bucket, cfgA.Key, err)
+	}
+	descB, err := fetchSourceDescriptor(cfgB)
+	if err != nil {
+		return objectDiffResult{}, fmt.Errorf("diff: object B (s3://%s/%s): %w", cfgB.Bucket, cfgB.Key, err)
+	}
+	return buildObjectDiff(descA, descB), nil
+}
+
+// printObjectDiff renders M8G-B3's required report. Every percentage is
+// its own object's own reusable-from-the-other divided by its own Size,
+// so A's and B's reuse percentages are never conflated even when the two
+// objects differ in size (B4).
+func printObjectDiff(w io.Writer, d objectDiffResult) {
+	fmt.Fprintln(w, "Object A")
+	fmt.Fprintf(w, "  Size:              %s\n", humanBytes(d.A.Size))
+	fmt.Fprintf(w, "  Chunks:            %d\n", len(d.A.Chunks))
+	fmt.Fprintf(w, "  ETag:              %s\n", d.A.ETag)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Object B")
+	fmt.Fprintf(w, "  Size:              %s\n", humanBytes(d.B.Size))
+	fmt.Fprintf(w, "  Chunks:            %d\n", len(d.B.Chunks))
+	fmt.Fprintf(w, "  ETag:              %s\n", d.B.ETag)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Structural comparison")
+	fmt.Fprintf(w, "  Shared unique chunk IDs:     %d (A has %d unique, B has %d unique)\n", d.SharedUniqueChunks, d.UniqueChunksA, d.UniqueChunksB)
+	fmt.Fprintf(w, "  A logical bytes reusable from B: %s\n", humanBytes(d.APayloadReusableFromB))
+	fmt.Fprintf(w, "  A-only payload:                  %s\n", humanBytes(d.AOnlyPayload))
+	fmt.Fprintf(w, "  B logical bytes reusable from A: %s\n", humanBytes(d.BPayloadReusableFromA))
+	fmt.Fprintf(w, "  B-only payload:                  %s\n", humanBytes(d.BOnlyPayload))
+	fmt.Fprintln(w)
+	if d.A.Size > 0 {
+		fmt.Fprintf(w, "A reuse from B:       %.1f%%\n", float64(d.APayloadReusableFromB)/float64(d.A.Size)*100)
+	}
+	if d.B.Size > 0 {
+		fmt.Fprintf(w, "B reuse from A:       %.1f%%\n", float64(d.BPayloadReusableFromA)/float64(d.B.Size)*100)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Content equal:        %s\n", yesNo(d.ContentEqual))
+	fmt.Fprintf(w, "Metadata equal:       %s\n", yesNo(d.MetadataEqual))
+	fmt.Fprintf(w, "Exact object match:   %s\n", yesNo(d.ExactMatch))
+	if d.HasDivergence {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "First differing logical region: offset ~%s\n", humanBytes(d.FirstDivergingOffset))
+	}
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
+// runDiff implements "zeros3 diff s3://bucket/keyA s3://bucket/keyB
+// -from EP_A -to EP_B" (M8G-B). -to defaults to -from's value, so
+// same-server operation (B1's "same-server operation must also work")
+// needs no second endpoint flag at all. Source and destination
+// credentials are independent, exactly like `replicate`'s -from-*/-to-*
+// flags (M8G-A9/A already established -- diff reuses the identical flag
+// shape and the identical credential-isolation property: cfgA's
+// credentials are only ever sent to cfgA's endpoint).
+func runDiff(args []string) {
+	fs := flag.NewFlagSet("diff", flag.ExitOnError)
+	from := fs.String("from", "http://127.0.0.1:9000", "object A's ZeroS3 endpoint base URL (scheme://host[:port])")
+	to := fs.String("to", "", "object B's ZeroS3 endpoint base URL (scheme://host[:port]); defaults to -from for same-server comparisons")
+	fromAccessKey := fs.String("from-access-key", defaultAccessKeyID, "object A's access key ID")
+	fromSecretKey := fs.String("from-secret-key", defaultSecretAccessKey, "object A's secret access key")
+	toAccessKey := fs.String("to-access-key", defaultAccessKeyID, "object B's access key ID")
+	toSecretKey := fs.String("to-secret-key", defaultSecretAccessKey, "object B's secret access key")
+	region := fs.String("region", defaultRegion, "SigV4 region (both endpoints)")
+	fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) != 2 {
+		fmt.Fprintln(os.Stderr, "zeros3: diff requires two s3://bucket/key URIs (object A, object B)")
+		os.Exit(2)
+	}
+	toEndpoint := *to
+	if toEndpoint == "" {
+		toEndpoint = *from
+	}
+
+	bucketA, keyA, err := parseS3URI(rest[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: object A: %v\n", err)
+		os.Exit(2)
+	}
+	bucketB, keyB, err := parseS3URI(rest[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: object B: %v\n", err)
+		os.Exit(2)
+	}
+
+	cfgA := syncClientConfig{
+		Endpoint: *from, Bucket: bucketA, Key: keyA,
+		Creds: Credentials{AccessKeyID: *fromAccessKey, SecretAccessKey: *fromSecretKey}, Region: *region,
+	}
+	cfgB := syncClientConfig{
+		Endpoint: toEndpoint, Bucket: bucketB, Key: keyB,
+		Creds: Credentials{AccessKeyID: *toAccessKey, SecretAccessKey: *toSecretKey}, Region: *region,
+	}
+	d, err := diffObjects(cfgA, cfgB)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: %v\n", err)
+		os.Exit(1)
+	}
+	printObjectDiff(os.Stdout, d)
+}
+
+// =============================================================================
+// 15k. Object inspect (M8G-C): `zeros3 inspect`
+//
+// `inspect` makes one object's CDC/CAS representation visible: how many
+// chunk references it has, how many of those are physically distinct,
+// the size distribution of those distinct chunks, and (when the server
+// supports it) how much of that physical payload is also needed by some
+// other authoritative root in the store right now. Basic fields (C2) are
+// computed entirely client-side from the same M8A object descriptor
+// diff already reuses -- no new server support needed for those.
+// Store-wide sharing (C3) is the one piece that genuinely needs
+// server-side knowledge (computeChunkRootMembership, section 15's new
+// GET /_zeros3/v1/reachability extension above) and degrades honestly
+// (SharingAvailable=false) rather than guessing if that query fails.
+// =============================================================================
+
+// inspectChunkRow is one row of the optional -chunks listing (C7):
+// offset is derived client-side from the ordered descriptor (a running
+// sum of preceding chunk lengths), never fetched from the server.
+type inspectChunkRow struct {
+	Offset             int64
+	Length             int64
+	SHA256             string
+	ReachableRootCount int
+}
+
+// inspectResult is inspectObject's complete report. PhysicalUniqueBytes/
+// MinChunkLength/MaxChunkLength/AvgChunkLength are all computed over the
+// *distinct* digests this object references (C4's "deduplicate by chunk
+// digest, use actual chunk length once per physical digest" for physical
+// byte metrics) -- never over the raw occurrence list, which would let a
+// heavily-repeated chunk skew the size distribution and would double
+// count its bytes.
+type inspectResult struct {
+	Bucket, Key, ETag, VersionID string
+	Size                         int64
+
+	ChunkReferences     int
+	UniqueChunks        int
+	MinChunkLength      int64
+	MaxChunkLength      int64
+	AvgChunkLength      float64
+	PhysicalUniqueBytes int64
+
+	// SharingAvailable is false only when the store-wide reachability
+	// query itself failed (old/incompatible server, network error) --
+	// never silently reported as "nothing shared" in that case (C3/C4:
+	// do not fake exclusive/shared accounting).
+	SharingAvailable        bool
+	BytesReachableElsewhere int64
+	BytesSolelyReachable    int64
+
+	// Chunks is populated only when the caller asks for it (-chunks, C7);
+	// printInspect never reads it, keeping the default report concise.
+	Chunks []inspectChunkRow
+}
+
+// inspectObject performs M8G-C's complete analysis: one descriptor fetch
+// (M8A2, unmodified) for every basic field, plus one reachability query
+// (this section's new endpoint) for the store-wide sharing fields --
+// never a chunk-body fetch, and never more than those two requests
+// regardless of how many chunks the object has.
+func inspectObject(cfg syncClientConfig, wantChunks bool) (inspectResult, error) {
+	desc, err := fetchSourceDescriptor(cfg)
+	if err != nil {
+		return inspectResult{}, fmt.Errorf("inspect: %w", err)
+	}
+
+	res := inspectResult{
+		Bucket: desc.Bucket, Key: desc.Key, ETag: desc.ETag, VersionID: desc.VersionID,
+		Size: desc.Size, ChunkReferences: len(desc.Chunks),
+	}
+
+	uniqueLen := make(map[string]int64, len(desc.Chunks))
+	for _, c := range desc.Chunks {
+		uniqueLen[c.SHA256] = c.Length
+	}
+	res.UniqueChunks = len(uniqueLen)
+	first := true
+	var sum int64
+	for _, l := range uniqueLen {
+		sum += l
+		if first || l < res.MinChunkLength {
+			res.MinChunkLength = l
+		}
+		if l > res.MaxChunkLength {
+			res.MaxChunkLength = l
+		}
+		first = false
+	}
+	res.PhysicalUniqueBytes = sum
+	if res.UniqueChunks > 0 {
+		res.AvgChunkLength = float64(sum) / float64(res.UniqueChunks)
+	}
+
+	reach, rerr := fetchReachability(cfg)
+	rootCountBySHA := map[string]int{}
+	if rerr == nil {
+		res.SharingAvailable = true
+		for _, c := range reach.Chunks {
+			rootCountBySHA[c.SHA256] = c.RootCount
+			if c.ReachableElsewhere {
+				res.BytesReachableElsewhere += c.Length
+			} else {
+				res.BytesSolelyReachable += c.Length
+			}
+		}
+	}
+
+	if wantChunks {
+		var offset int64
+		res.Chunks = make([]inspectChunkRow, 0, len(desc.Chunks))
+		for _, c := range desc.Chunks {
+			res.Chunks = append(res.Chunks, inspectChunkRow{
+				Offset: offset, Length: c.Length, SHA256: c.SHA256, ReachableRootCount: rootCountBySHA[c.SHA256],
+			})
+			offset += c.Length
+		}
+	}
+	return res, nil
+}
+
+// fetchReachability performs M8G-C3's store-wide sharing query (GET
+// /_zeros3/v1/reachability?bucket=..&key=..), the one new authenticated
+// read-only extension this milestone adds -- versioned/validated exactly
+// like every other extension response (validateSyncProtocolFields), and
+// bounded to exactly this object's own distinct chunk count (never the
+// whole store) by handleReachabilityQuery's own construction.
+func fetchReachability(cfg syncClientConfig) (reachabilityQueryResponse, error) {
+	q := url.Values{"bucket": {cfg.Bucket}, "key": {cfg.Key}}
+	resp, body, err := cfg.signAndDo(http.MethodGet, zeros3ReachabilityPath+"?"+q.Encode(), nil, nil)
+	if err != nil {
+		return reachabilityQueryResponse{}, fmt.Errorf("reachability query failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return reachabilityQueryResponse{}, fmt.Errorf("reachability query failed: status %d: %s", resp.StatusCode, body)
+	}
+	var r reachabilityQueryResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return reachabilityQueryResponse{}, fmt.Errorf("reachability query response not understood: %w", err)
+	}
+	if err := validateSyncProtocolFields(r.Protocol, r.CDC, r.Hash); err != nil {
+		return reachabilityQueryResponse{}, fmt.Errorf("reachability query response incompatible: %w", err)
+	}
+	return r, nil
+}
+
+// printInspect renders M8G-C2/C3's required report.
+func printInspect(w io.Writer, res inspectResult) {
+	fmt.Fprintln(w, "Object")
+	fmt.Fprintf(w, "  Key:                 %s\n", res.Key)
+	fmt.Fprintf(w, "  Size:                %s\n", humanBytes(res.Size))
+	fmt.Fprintf(w, "  ETag:                %s\n", res.ETag)
+	fmt.Fprintf(w, "  Manifest:            %s\n", res.VersionID)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "CDC / CAS")
+	fmt.Fprintf(w, "  Chunk references:    %d\n", res.ChunkReferences)
+	fmt.Fprintf(w, "  Unique chunk IDs:    %d\n", res.UniqueChunks)
+	if res.UniqueChunks > 0 {
+		fmt.Fprintf(w, "  Min chunk:           %s\n", humanBytes(res.MinChunkLength))
+		fmt.Fprintf(w, "  Average chunk:       %s\n", humanBytes(int64(res.AvgChunkLength)))
+		fmt.Fprintf(w, "  Max chunk:           %s\n", humanBytes(res.MaxChunkLength))
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Physical representation")
+	fmt.Fprintf(w, "  Unique CAS payload represented:  %s\n", humanBytes(res.PhysicalUniqueBytes))
+	if res.SharingAvailable {
+		fmt.Fprintf(w, "  Structurally shared:             %s\n", humanBytes(res.BytesReachableElsewhere))
+		fmt.Fprintf(w, "  Solely reachable:                %s\n", humanBytes(res.BytesSolelyReachable))
+	} else {
+		fmt.Fprintln(w, "  Structurally shared:             unavailable (store-wide reachability query failed)")
+	}
+}
+
+// inspectChunksDefaultLimit bounds the -chunks listing's default output
+// (C7's "do not dump unlimited output accidentally") -- -chunks-all lifts
+// it explicitly.
+const inspectChunksDefaultLimit = 50
+
+// printInspectChunks renders C7's optional per-chunk table, truncated to
+// limit rows unless all is set, always stating so explicitly when it
+// truncates.
+func printInspectChunks(w io.Writer, rows []inspectChunkRow, limit int, all bool) {
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "%-12s%-12s%-18s%s\n", "OFFSET", "LENGTH", "SHA256", "REACHABLE-ROOTS")
+	n := len(rows)
+	truncated := false
+	if !all && limit > 0 && n > limit {
+		n = limit
+		truncated = true
+	}
+	for _, r := range rows[:n] {
+		digest := r.SHA256
+		if len(digest) > 12 {
+			digest = digest[:12] + "..."
+		}
+		fmt.Fprintf(w, "%-12d%-12s%-18s%d\n", r.Offset, humanBytes(r.Length), digest, r.ReachableRootCount)
+	}
+	if truncated {
+		fmt.Fprintf(w, "... truncated: showing %d of %d chunk rows (pass -chunks-all to see every row)\n", n, len(rows))
+	}
+}
+
+// runInspect implements "zeros3 inspect s3://bucket/key -endpoint EP"
+// (M8G-C).
+func runInspect(args []string) {
+	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "http://127.0.0.1:9000", "ZeroS3 endpoint base URL (scheme://host[:port])")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key")
+	region := fs.String("region", defaultRegion, "SigV4 region")
+	showChunks := fs.Bool("chunks", false, "also list every distinct chunk occurrence (offset/length/digest/reachable-root-count); bounded to the first 50 rows unless -chunks-all is set")
+	showAllChunks := fs.Bool("chunks-all", false, "with -chunks, list every chunk occurrence with no truncation")
+	fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fmt.Fprintln(os.Stderr, "zeros3: inspect requires exactly one s3://bucket/key URI")
+		os.Exit(2)
+	}
+	bucket, key, err := parseS3URI(rest[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: %v\n", err)
+		os.Exit(2)
+	}
+	cfg := syncClientConfig{
+		Endpoint: *endpoint, Bucket: bucket, Key: key,
+		Creds: Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey}, Region: *region,
+	}
+	res, err := inspectObject(cfg, *showChunks)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: %v\n", err)
+		os.Exit(1)
+	}
+	printInspect(os.Stdout, res)
+	if *showChunks {
+		printInspectChunks(os.Stdout, res.Chunks, inspectChunksDefaultLimit, *showAllChunks)
+	}
+}
+
+// =============================================================================
 // 16. CLI: stats / verify / versions / restore / gc
 //
 // Compact verbs; stdout carries the requested result/data, stderr carries
@@ -10973,8 +11996,12 @@ func main() {
 		runFork(args)
 	case "snapshot":
 		runSnapshot(args)
+	case "diff":
+		runDiff(args)
+	case "inspect":
+		runInspect(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, doctor, sync, replicate, repair, fork, or snapshot)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, doctor, sync, replicate, repair, fork, snapshot, diff, or inspect)\n", cmd)
 		os.Exit(2)
 	}
 }

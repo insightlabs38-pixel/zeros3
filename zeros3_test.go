@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -21374,5 +21375,1957 @@ func TestCopyObject_SourceConditionUsesAtomicallyCapturedRevision(t *testing.T) 
 	}
 	if string(body) != "v2-is-current" {
 		t.Fatalf("expected the destination to hold v2's exact bytes, got %q", body)
+	}
+}
+
+// =============================================================================
+// M8G-A: `replicate -dry-run` -- read-only replication planning
+// =============================================================================
+
+// storeContentFingerprint hashes every file's relative path, length, and
+// content under dir into one aggregate digest -- an independent,
+// filesystem-level proof that a store's authoritative persistent state
+// (journal, manifests, CAS chunks, snapshots, FORMAT.json) is byte-for-
+// byte unchanged, deliberately not relying on any in-process accounting
+// this milestone's own new code might get wrong. filepath.Walk visits
+// files in lexical order (per its documented contract), so this is stable
+// across two calls against an unchanged tree with no sorting of our own
+// needed.
+func storeContentFingerprint(t *testing.T, dir string) string {
+	t.Helper()
+	h := sha256.New()
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00", filepath.ToSlash(rel), len(data))
+		h.Write(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("storeContentFingerprint(%s): %v", dir, err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// failOnChunkGET wraps a Server so any GET to the chunk-download endpoint
+// fails the test immediately -- an independent, protocol-level proof that
+// dry-run planning (M8G-A3) never fetches source chunk payload, rather
+// than trusting planReplication's own code to simply not call
+// fetchSourceChunk.
+type failOnChunkGET struct {
+	t   *testing.T
+	srv http.Handler
+}
+
+func (f failOnChunkGET) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix) {
+		f.t.Errorf("dry-run must never GET chunk payload, but got %s %s", r.Method, r.URL.Path)
+	}
+	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix) {
+		f.t.Errorf("dry-run must never PUT chunk payload, but got %s %s", r.Method, r.URL.Path)
+	}
+	if r.Method == http.MethodPost && r.URL.Path == zeros3SyncCommitPath {
+		f.t.Errorf("dry-run must never POST commit, but got %s %s", r.Method, r.URL.Path)
+	}
+	f.srv.ServeHTTP(w, r)
+}
+
+func TestDryRun_SingleObject_AllChunksMissing(t *testing.T) {
+	_, srcSrv, dstDir, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(failOnChunkGET{t, srcSrv})
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(failOnChunkGET{t, dstSrv})
+	defer dstTS.Close()
+
+	body := genRandomBytes(90001, 3_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	before := storeContentFingerprint(t, dstDir)
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	p, err := planReplication(cfg)
+	if err != nil {
+		t.Fatalf("planReplication: %v", err)
+	}
+	after := storeContentFingerprint(t, dstDir)
+	if before != after {
+		t.Fatalf("dry-run mutated destination store on disk")
+	}
+
+	if p.action != destActionPublish {
+		t.Fatalf("action = %q, want %q", p.action, destActionPublish)
+	}
+	if p.wouldTransferBytes != int64(len(body)) {
+		t.Fatalf("wouldTransferBytes = %d, want %d (everything missing)", p.wouldTransferBytes, len(body))
+	}
+	if p.missingOccur != len(p.plan.ordered) {
+		t.Fatalf("missingOccur = %d, want all %d occurrences missing", p.missingOccur, len(p.plan.ordered))
+	}
+	if _, err := dstSrv.store.lookupObject("dst", "obj.bin"); err == nil {
+		t.Fatalf("dry-run must not have published the destination object")
+	}
+}
+
+func TestDryRun_SingleObject_AllChunksPresent_AlreadyEquivalent(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+
+	body := genRandomBytes(90002, 500_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "text/plain", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	// Actually replicate first (not part of the dry-run under test), so
+	// the destination already holds the exact content dry-run will be
+	// asked about, through a plain (unwrapped) server -- the wrapped,
+	// GET/PUT/commit-forbidding server below is only stood up afterward,
+	// so seeding itself is never mistaken for a dry-run violation.
+	seedTS := httptest.NewServer(dstSrv)
+	seedCfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: seedTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: seedTS.Client()},
+	}
+	if _, err := replicateObject(seedCfg); err != nil {
+		t.Fatalf("seeding replicateObject: %v", err)
+	}
+	seedTS.Close()
+
+	dstTS := httptest.NewServer(failOnChunkGET{t, dstSrv})
+	defer dstTS.Close()
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	p, err := planReplication(cfg)
+	if err != nil {
+		t.Fatalf("planReplication: %v", err)
+	}
+	if p.action != destActionEquivalent {
+		t.Fatalf("action = %q, want %q", p.action, destActionEquivalent)
+	}
+	if p.wouldTransferBytes != 0 {
+		t.Fatalf("wouldTransferBytes = %d, want 0 (destination already has every chunk)", p.wouldTransferBytes)
+	}
+	if p.missingOccur != 0 {
+		t.Fatalf("missingOccur = %d, want 0", p.missingOccur)
+	}
+}
+
+func TestDryRun_SingleObject_PartialOverlap_ExactAccounting(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, srcSrv, "src")
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	// Two chunks pre-seeded directly into the destination's CAS by exact
+	// digest (so negotiate reports them present regardless of whether any
+	// object references them -- negotiation is a pure CAS-presence check,
+	// per handleSyncNegotiate's own doc comment), one chunk genuinely new.
+	// Chunks are written directly via casWrite rather than through an
+	// ordinary PutObject, deliberately sidestepping CDC's own
+	// content-defined chunk boundaries: PutObject-ing the concatenation
+	// of shared1+shared2 would almost certainly re-chunk it along
+	// different boundaries than these exact, independently-hashed byte
+	// spans, making the "already present" outcome nondeterministic.
+	shared1 := genRandomBytes(90101, 20_000)
+	shared2 := genRandomBytes(90102, 20_000)
+	newOnly := genRandomBytes(90103, 20_000)
+	if _, err := dstSrv.store.casWrite(shared1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dstSrv.store.casWrite(shared2); err != nil {
+		t.Fatal(err)
+	}
+
+	sum1 := sha256.Sum256(shared1)
+	sum2 := sha256.Sum256(shared2)
+	sum3 := sha256.Sum256(newOnly)
+	refs := []chunkRef{
+		{SHA256: hex.EncodeToString(sum1[:]), Length: int64(len(shared1))},
+		{SHA256: hex.EncodeToString(sum2[:]), Length: int64(len(shared2))},
+		{SHA256: hex.EncodeToString(sum3[:]), Length: int64(len(newOnly))},
+	}
+	total := int64(len(shared1) + len(shared2) + len(newOnly))
+	objHash := sha256.New()
+	objHash.Write(shared1)
+	objHash.Write(shared2)
+	objHash.Write(newOnly)
+	var objSHA [32]byte
+	copy(objSHA[:], objHash.Sum(nil))
+	man := buildManifestV1FromRefs(refs, total, objSHA, "partialobj", "application/octet-stream", nil)
+	if _, err := srcSrv.store.casWrite(shared1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcSrv.store.casWrite(shared2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcSrv.store.casWrite(newOnly); err != nil {
+		t.Fatal(err)
+	}
+	manUUID, manSHA, err := srcSrv.store.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcSrv.store.commitObjectRoot("src", "partialobj", manUUID, manSHA, man); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "partialobj", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "partialobj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	p, err := planReplication(cfg)
+	if err != nil {
+		t.Fatalf("planReplication: %v", err)
+	}
+	if p.missingOccur != 1 {
+		t.Fatalf("missingOccur = %d, want 1", p.missingOccur)
+	}
+	if p.wouldTransferBytes != int64(len(newOnly)) {
+		t.Fatalf("wouldTransferBytes = %d, want %d", p.wouldTransferBytes, len(newOnly))
+	}
+	wantAvoided := total - int64(len(newOnly))
+	if got := p.desc.Size - p.wouldTransferBytes; got != wantAvoided {
+		t.Fatalf("avoided = %d, want %d", got, wantAvoided)
+	}
+	if p.action != destActionPublish {
+		t.Fatalf("action = %q, want %q", p.action, destActionPublish)
+	}
+}
+
+func TestDryRun_SingleObject_DestinationConflict(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	mustPutSourceObject(t, srcSrv, "src", "obj", []byte("source content"), "text/plain", nil)
+	mustPutSourceObject(t, dstSrv, "dst", "obj", []byte("unrelated, pre-existing, different content"), "text/plain", nil)
+
+	cfg := replicateConfig{
+		Source:           syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:             syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		DestMustBeAbsent: true,
+	}
+	p, err := planReplication(cfg)
+	if err != nil {
+		t.Fatalf("planReplication: %v", err)
+	}
+	if p.action != destActionConflict {
+		t.Fatalf("action = %q, want %q", p.action, destActionConflict)
+	}
+}
+
+func TestDryRun_SingleObject_EmptyObject(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustPutSourceObject(t, srcSrv, "src", "empty", []byte{}, "text/plain", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "empty", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "empty", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	p, err := planReplication(cfg)
+	if err != nil {
+		t.Fatalf("planReplication: %v", err)
+	}
+	if p.wouldTransferBytes != 0 || p.desc.Size != 0 {
+		t.Fatalf("empty object should predict zero transfer, got wouldTransferBytes=%d size=%d", p.wouldTransferBytes, p.desc.Size)
+	}
+	var buf bytes.Buffer
+	printDryRunSingle(&buf, p)
+	if !strings.Contains(buf.String(), "would publish object") {
+		t.Fatalf("expected empty object to still report a publish action, got:\n%s", buf.String())
+	}
+}
+
+func TestDryRun_SingleObject_DuplicateChunkReferences(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+	mustCreateReplicateBucket(t, srcSrv, "src")
+
+	chunkA := genRandomBytes(90201, 15_000)
+	chunkB := genRandomBytes(90202, 15_000)
+	if _, err := srcSrv.store.casWrite(chunkA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcSrv.store.casWrite(chunkB); err != nil {
+		t.Fatal(err)
+	}
+	sumA := sha256.Sum256(chunkA)
+	sumB := sha256.Sum256(chunkB)
+	refs := []chunkRef{
+		{SHA256: hex.EncodeToString(sumA[:]), Length: int64(len(chunkA))},
+		{SHA256: hex.EncodeToString(sumB[:]), Length: int64(len(chunkB))},
+		{SHA256: hex.EncodeToString(sumA[:]), Length: int64(len(chunkA))},
+		{SHA256: hex.EncodeToString(sumA[:]), Length: int64(len(chunkA))},
+	}
+	total := int64(len(chunkA)*3 + len(chunkB))
+	objHash := sha256.New()
+	objHash.Write(chunkA)
+	objHash.Write(chunkB)
+	objHash.Write(chunkA)
+	objHash.Write(chunkA)
+	var objSHA [32]byte
+	copy(objSHA[:], objHash.Sum(nil))
+	man := buildManifestV1FromRefs(refs, total, objSHA, "dupdryrun", "application/octet-stream", nil)
+	manUUID, manSHA, err := srcSrv.store.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcSrv.store.commitObjectRoot("src", "dupobj", manUUID, manSHA, man); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "dupobj", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "dupobj", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	p, err := planReplication(cfg)
+	if err != nil {
+		t.Fatalf("planReplication: %v", err)
+	}
+	// Everything is missing (fresh destination bucket), but chunk A must
+	// only be counted once toward wouldTransferBytes despite 3 occurrences
+	// (A6's "count its payload transfer once, matching real network
+	// behavior").
+	if p.missingOccur != 4 {
+		t.Fatalf("missingOccur = %d, want 4 (occurrences)", p.missingOccur)
+	}
+	wantTransfer := int64(len(chunkA) + len(chunkB))
+	if p.wouldTransferBytes != wantTransfer {
+		t.Fatalf("wouldTransferBytes = %d, want %d (unique chunks only)", p.wouldTransferBytes, wantTransfer)
+	}
+}
+
+func TestDryRun_SingleObject_WeirdKeys(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	weirdKeys := []string{
+		"a b/c%d#e?f.bin",
+		"unicode/héllo-wörld-日本語.bin",
+		"repeated//slashes///here.bin",
+	}
+	for i, key := range weirdKeys {
+		body := genRandomBytes(int64(90300+i), 4000)
+		mustPutSourceObject(t, srcSrv, "src", key, body, "application/octet-stream", nil)
+
+		cfg := replicateConfig{
+			Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: key, Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+			Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: key, Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		}
+		p, err := planReplication(cfg)
+		if err != nil {
+			t.Fatalf("planReplication key %q: %v", key, err)
+		}
+		if p.wouldTransferBytes != int64(len(body)) {
+			t.Fatalf("key %q: wouldTransferBytes = %d, want %d", key, p.wouldTransferBytes, len(body))
+		}
+		if _, err := dstSrv.store.lookupObject("dst", key); err == nil {
+			t.Fatalf("key %q: dry-run must not have published the destination object", key)
+		}
+	}
+}
+
+func TestDryRun_Recursive_EmptyPrefix(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, srcSrv, "src")
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	cfg := namespaceReplicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	result, err := planReplicationNamespace(cfg)
+	if err != nil {
+		t.Fatalf("planReplicationNamespace: %v", err)
+	}
+	if result.Discovered != 0 || result.WouldTransferBytes != 0 {
+		t.Fatalf("empty prefix should discover nothing, got %+v", result)
+	}
+	if !result.OK() {
+		t.Fatalf("empty prefix dry-run should report OK")
+	}
+}
+
+func TestDryRun_Recursive_SeveralObjectsAndCrossObjectReuse(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, srcSrv, "src")
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	// a.bin and b.bin are byte-identical (so CDC chunks them identically,
+	// deterministically, with no dependence on where any content-defined
+	// boundary happens to fall -- unlike a shared-prefix/different-suffix
+	// construction), giving an exact, hand-computable cross-object CAS
+	// reuse case; c.bin is unrelated, and outside/d.bin sits outside the
+	// replicated prefix entirely.
+	shared := genRandomBytes(90401, 500_000)
+	unique := genRandomBytes(90404, 5000)
+	mustPutSourceObject(t, srcSrv, "src", "prefix/a.bin", shared, "application/octet-stream", nil)
+	mustPutSourceObject(t, srcSrv, "src", "prefix/b.bin", shared, "application/octet-stream", nil)
+	mustPutSourceObject(t, srcSrv, "src", "prefix/c.bin", unique, "application/octet-stream", nil)
+	mustPutSourceObject(t, srcSrv, "src", "outside/d.bin", genRandomBytes(90405, 5000), "application/octet-stream", nil)
+
+	cfg := namespaceReplicateConfig{
+		Source:       syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		SourcePrefix: "prefix",
+		Dest:         syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		DestPrefix:   "prefix",
+	}
+	result, err := planReplicationNamespace(cfg)
+	if err != nil {
+		t.Fatalf("planReplicationNamespace: %v", err)
+	}
+	if result.Discovered != 3 {
+		t.Fatalf("Discovered = %d, want 3 (outside/ excluded)", result.Discovered)
+	}
+	if result.WouldPublish != 3 || result.AlreadyEquivalent != 0 || result.WouldConflict != 0 {
+		t.Fatalf("unexpected action breakdown: %+v", result)
+	}
+	wantLogical := int64(len(shared)*2 + len(unique))
+	if result.LogicalBytes != wantLogical {
+		t.Fatalf("LogicalBytes = %d, want %d", result.LogicalBytes, wantLogical)
+	}
+	// b.bin's chunks are byte-identical to a.bin's, and a real recursive
+	// run would already have uploaded them while replicating a.bin (M8C
+	// processes objects strictly in order) -- so the destination-facing
+	// total must count that content once, not twice, exactly like an
+	// actual replicateNamespace run's aggregate would (A7).
+	wantTransfer := int64(len(shared)) + int64(len(unique))
+	if result.WouldTransferBytes != wantTransfer {
+		t.Fatalf("WouldTransferBytes = %d, want %d (cross-object CAS reuse within one recursive run must not double count a chunk shared by two not-yet-replicated objects)", result.WouldTransferBytes, wantTransfer)
+	}
+	if !result.OK() {
+		t.Fatalf("expected OK, got %+v", result)
+	}
+
+	// Deterministic: running the same plan again against the same
+	// (unchanged) state produces byte-for-byte identical totals.
+	result2, err := planReplicationNamespace(cfg)
+	if err != nil {
+		t.Fatalf("planReplicationNamespace (rerun): %v", err)
+	}
+	if !reflect.DeepEqual(result, result2) {
+		t.Fatalf("dry-run totals not deterministic across reruns:\n%+v\n%+v", result, result2)
+	}
+}
+
+func TestDryRun_Recursive_PartialConflicts(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, srcSrv, "src")
+
+	mustPutSourceObject(t, srcSrv, "src", "a", []byte("source-a"), "text/plain", nil)
+	mustPutSourceObject(t, srcSrv, "src", "b", []byte("source-b"), "text/plain", nil)
+	mustPutSourceObject(t, dstSrv, "dst", "a", []byte("pre-existing-different"), "text/plain", nil)
+
+	cfg := namespaceReplicateConfig{
+		Source:           syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:             syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		DestMustBeAbsent: true,
+	}
+	result, err := planReplicationNamespace(cfg)
+	if err != nil {
+		t.Fatalf("planReplicationNamespace: %v", err)
+	}
+	if result.WouldConflict != 1 {
+		t.Fatalf("WouldConflict = %d, want 1, got %+v", result.WouldConflict, result)
+	}
+	if result.WouldPublish != 1 {
+		t.Fatalf("WouldPublish = %d, want 1, got %+v", result.WouldPublish, result)
+	}
+	if result.OK() {
+		t.Fatalf("a plan containing a conflict must not report OK()")
+	}
+}
+
+// TestDryRun_PredictionMatchesActualExecution is M8G-A7's mandatory proof:
+// on a quiescent, unchanging store, a dry-run's prediction and an
+// immediately-following actual replication's real transfer stats must
+// match exactly, for every reuse shape the spec calls out.
+func TestDryRun_PredictionMatchesActualExecution(t *testing.T) {
+	cases := []struct {
+		name    string
+		seedDst func(t *testing.T, srcSrv, dstSrv *Server)
+	}{
+		{"AllMissing", func(t *testing.T, srcSrv, dstSrv *Server) {
+			mustCreateReplicateBucket(t, dstSrv, "dst")
+		}},
+		{"AllPresent", func(t *testing.T, srcSrv, dstSrv *Server) {
+			// Pre-seed the destination CAS with the exact same content
+			// under a different key, so negotiate reports every digest
+			// already present without the destination object itself
+			// existing yet.
+			body := genRandomBytes(90501, 2_000_000)
+			mustPutSourceObject(t, dstSrv, "dst", "seed-copy", body, "application/octet-stream", nil)
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+			srcTS := httptest.NewServer(srcSrv)
+			defer srcTS.Close()
+			dstTS := httptest.NewServer(dstSrv)
+			defer dstTS.Close()
+
+			var body []byte
+			if tc.name == "AllPresent" {
+				body = genRandomBytes(90501, 2_000_000)
+			} else {
+				body = genRandomBytes(90502, 2_000_000)
+			}
+			mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+			tc.seedDst(t, srcSrv, dstSrv)
+
+			cfg := replicateConfig{
+				Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+				Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+			}
+
+			predicted, err := planReplication(cfg)
+			if err != nil {
+				t.Fatalf("planReplication: %v", err)
+			}
+
+			actual, err := replicateObject(cfg)
+			if err != nil {
+				t.Fatalf("replicateObject: %v", err)
+			}
+
+			if actual.UploadedBytes != predicted.wouldTransferBytes {
+				t.Fatalf("actual UploadedBytes=%d != predicted wouldTransferBytes=%d", actual.UploadedBytes, predicted.wouldTransferBytes)
+			}
+			if actual.MissingChunkOccur != predicted.missingOccur {
+				t.Fatalf("actual MissingChunkOccur=%d != predicted missingOccur=%d", actual.MissingChunkOccur, predicted.missingOccur)
+			}
+			wantAvoided := predicted.desc.Size - predicted.wouldTransferBytes
+			if actual.BytesAvoided != wantAvoided {
+				t.Fatalf("actual BytesAvoided=%d != predicted avoided=%d", actual.BytesAvoided, wantAvoided)
+			}
+		})
+	}
+}
+
+// TestDryRun_PredictionMatchesActualExecution_Recursive is A7's recursive
+// variant: a namespace dry-run's aggregate prediction must match an
+// immediately-following actual `replicate -recursive` run exactly.
+func TestDryRun_PredictionMatchesActualExecution_Recursive(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, srcSrv, "src")
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	shared := genRandomBytes(90601, 25_000)
+	mustPutSourceObject(t, srcSrv, "src", "a.bin", append(append([]byte{}, shared...), genRandomBytes(90602, 8000)...), "application/octet-stream", nil)
+	mustPutSourceObject(t, srcSrv, "src", "b.bin", append(append([]byte{}, shared...), genRandomBytes(90603, 8000)...), "application/octet-stream", nil)
+	mustPutSourceObject(t, srcSrv, "src", "c.bin", genRandomBytes(90604, 6000), "application/octet-stream", nil)
+
+	cfg := namespaceReplicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	predicted, err := planReplicationNamespace(cfg)
+	if err != nil {
+		t.Fatalf("planReplicationNamespace: %v", err)
+	}
+
+	actual, err := replicateNamespace(cfg)
+	if err != nil {
+		t.Fatalf("replicateNamespace: %v", err)
+	}
+	if actual.Stats.UploadedBytes != predicted.WouldTransferBytes {
+		t.Fatalf("actual UploadedBytes=%d != predicted WouldTransferBytes=%d", actual.Stats.UploadedBytes, predicted.WouldTransferBytes)
+	}
+	if actual.Stats.MissingChunkOccur != predicted.ChunksMissing {
+		t.Fatalf("actual MissingChunkOccur=%d != predicted ChunksMissing=%d", actual.Stats.MissingChunkOccur, predicted.ChunksMissing)
+	}
+	if actual.Stats.LogicalBytes != predicted.LogicalBytes {
+		t.Fatalf("actual LogicalBytes=%d != predicted LogicalBytes=%d", actual.Stats.LogicalBytes, predicted.LogicalBytes)
+	}
+}
+
+// TestDryRun_ReadOnly_FullStoreFingerprintUnchanged is M8G's core
+// invariant, proven independently of any in-process stats: hash every
+// file in both the source and destination store directories before and
+// after a single-object dry-run and a recursive dry-run, and require
+// byte-for-byte identical trees.
+func TestDryRun_ReadOnly_FullStoreFingerprintUnchanged(t *testing.T) {
+	srcDir, srcSrv, dstDir, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, srcSrv, "src")
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	mustPutSourceObject(t, srcSrv, "src", "prefix/x.bin", genRandomBytes(90701, 40_000), "application/octet-stream", nil)
+	mustPutSourceObject(t, srcSrv, "src", "prefix/y.bin", genRandomBytes(90702, 40_000), "application/octet-stream", nil)
+	mustPutSourceObject(t, srcSrv, "src", "single.bin", genRandomBytes(90703, 40_000), "application/octet-stream", nil)
+
+	srcBefore := storeContentFingerprint(t, srcDir)
+	dstBefore := storeContentFingerprint(t, dstDir)
+
+	singleCfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "single.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "single.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	if _, err := planReplication(singleCfg); err != nil {
+		t.Fatalf("planReplication: %v", err)
+	}
+
+	nsCfg := namespaceReplicateConfig{
+		Source:       syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		SourcePrefix: "prefix",
+		Dest:         syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		DestPrefix:   "prefix",
+	}
+	if _, err := planReplicationNamespace(nsCfg); err != nil {
+		t.Fatalf("planReplicationNamespace: %v", err)
+	}
+
+	srcAfter := storeContentFingerprint(t, srcDir)
+	dstAfter := storeContentFingerprint(t, dstDir)
+	if srcBefore != srcAfter {
+		t.Fatalf("dry-run mutated the SOURCE store on disk")
+	}
+	if dstBefore != dstAfter {
+		t.Fatalf("dry-run mutated the DESTINATION store on disk")
+	}
+}
+
+func TestDryRun_CLI_SingleObject_EndToEnd(t *testing.T) {
+	_, srcSrv, dstDir, dstSrv, creds, _ := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", genRandomBytes(90801, 100_000), "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	before := storeContentFingerprint(t, dstDir)
+	args := []string{
+		"-dry-run",
+		"-from", srcTS.URL, "-to", dstTS.URL,
+		"-from-access-key", creds.AccessKeyID, "-from-secret-key", creds.SecretAccessKey,
+		"-to-access-key", creds.AccessKeyID, "-to-secret-key", creds.SecretAccessKey,
+		"s3://src/obj.bin", "s3://dst/obj.bin",
+	}
+	// runReplicate talks to os.Stdout and calls os.Exit on failure; since
+	// this is the happy path (absent destination -> "would publish"), it
+	// simply returns.
+	runReplicate(args)
+	after := storeContentFingerprint(t, dstDir)
+	if before != after {
+		t.Fatalf("`replicate -dry-run` CLI mutated the destination store")
+	}
+	if _, err := dstSrv.store.lookupObject("dst", "obj.bin"); err == nil {
+		t.Fatalf("`replicate -dry-run` CLI must not have published the destination object")
+	}
+}
+
+// =============================================================================
+// M8G-B: `zeros3 diff` -- descriptor-only structural object comparison
+// =============================================================================
+
+// fabricatedChunkRef builds a syntactically-valid syncChunkDescriptor from
+// a small integer seed, with no real CAS payload backing it -- diff is
+// descriptor-only (B2) and never reads chunk bodies, so tests exercising
+// its chunk-sharing math directly against syncObjectDescriptor need no
+// real chunk content at all, only syntactically valid, distinguishable
+// digests.
+func fabricatedChunkRef(seed int, length int64) syncChunkDescriptor {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("m8g-diff-fixture-chunk-%d", seed)))
+	return syncChunkDescriptor{SHA256: hex.EncodeToString(sum[:]), Length: length}
+}
+
+func TestObjectDiff_IdenticalObjects_ExactMatch(t *testing.T) {
+	refs := []syncChunkDescriptor{fabricatedChunkRef(1, 1000), fabricatedChunkRef(2, 2000), fabricatedChunkRef(3, 3000)}
+	desc := syncObjectDescriptor{Size: 6000, ETag: "same-etag", ContentType: "text/plain", Chunks: refs}
+	d := buildObjectDiff(desc, desc)
+	if !d.ExactMatch || !d.ContentEqual {
+		t.Fatalf("identical descriptors must report exact/content match, got %+v", d)
+	}
+	if d.SharedUniqueChunks != 3 || d.UniqueChunksA != 3 || d.UniqueChunksB != 3 {
+		t.Fatalf("unexpected chunk counts: %+v", d)
+	}
+	if d.APayloadReusableFromB != 6000 || d.BPayloadReusableFromA != 6000 {
+		t.Fatalf("identical objects must be 100%% reusable both ways, got %+v", d)
+	}
+	if d.AOnlyPayload != 0 || d.BOnlyPayload != 0 {
+		t.Fatalf("identical objects must have zero one-sided payload, got %+v", d)
+	}
+	if d.HasDivergence {
+		t.Fatalf("identical chunk sequences must not report a divergence, got offset %d", d.FirstDivergingOffset)
+	}
+}
+
+func TestObjectDiff_WhollyUnrelatedObjects(t *testing.T) {
+	a := syncObjectDescriptor{Size: 3000, ETag: "etag-a", Chunks: []syncChunkDescriptor{fabricatedChunkRef(10, 1000), fabricatedChunkRef(11, 2000)}}
+	b := syncObjectDescriptor{Size: 4000, ETag: "etag-b", Chunks: []syncChunkDescriptor{fabricatedChunkRef(20, 1500), fabricatedChunkRef(21, 2500)}}
+	d := buildObjectDiff(a, b)
+	if d.SharedUniqueChunks != 0 {
+		t.Fatalf("unrelated objects must share zero chunks, got %d", d.SharedUniqueChunks)
+	}
+	if d.APayloadReusableFromB != 0 || d.BPayloadReusableFromA != 0 {
+		t.Fatalf("unrelated objects must have zero directional reuse, got %+v", d)
+	}
+	if d.AOnlyPayload != a.Size || d.BOnlyPayload != b.Size {
+		t.Fatalf("unrelated objects: all payload is one-sided, got %+v", d)
+	}
+	if d.ExactMatch {
+		t.Fatalf("unrelated objects must not report an exact match")
+	}
+}
+
+func TestObjectDiff_PartialOverlap_ExactAccounting(t *testing.T) {
+	c1, c2, c3, c4 := fabricatedChunkRef(1, 1000), fabricatedChunkRef(2, 2000), fabricatedChunkRef(3, 3000), fabricatedChunkRef(4, 4000)
+	a := syncObjectDescriptor{Size: 6000, ETag: "a", Chunks: []syncChunkDescriptor{c1, c2, c3}}
+	b := syncObjectDescriptor{Size: 7000, ETag: "b", Chunks: []syncChunkDescriptor{c1, c2, c4}}
+	d := buildObjectDiff(a, b)
+	if d.SharedUniqueChunks != 2 {
+		t.Fatalf("SharedUniqueChunks = %d, want 2", d.SharedUniqueChunks)
+	}
+	if d.APayloadReusableFromB != 3000 || d.AOnlyPayload != 3000 {
+		t.Fatalf("A accounting wrong: reusable=%d only=%d", d.APayloadReusableFromB, d.AOnlyPayload)
+	}
+	if d.BPayloadReusableFromA != 3000 || d.BOnlyPayload != 4000 {
+		t.Fatalf("B accounting wrong: reusable=%d only=%d", d.BPayloadReusableFromA, d.BOnlyPayload)
+	}
+}
+
+func TestObjectDiff_LocalizedInsertion(t *testing.T) {
+	c1, c2, c3 := fabricatedChunkRef(1, 1000), fabricatedChunkRef(2, 2000), fabricatedChunkRef(3, 3000)
+	inserted := fabricatedChunkRef(99, 500)
+	a := syncObjectDescriptor{Size: 6000, ETag: "a", Chunks: []syncChunkDescriptor{c1, c2, c3}}
+	b := syncObjectDescriptor{Size: 6500, ETag: "b", Chunks: []syncChunkDescriptor{c1, c2, inserted, c3}}
+	d := buildObjectDiff(a, b)
+	if d.APayloadReusableFromB != 6000 {
+		t.Fatalf("every one of A's chunks still exists somewhere in B, want full reuse, got %d", d.APayloadReusableFromB)
+	}
+	if d.BOnlyPayload != 500 {
+		t.Fatalf("B-only payload should be exactly the inserted chunk, got %d", d.BOnlyPayload)
+	}
+	if !d.HasDivergence || d.FirstDivergingOffset != 3000 {
+		t.Fatalf("expected first positional divergence at offset 3000 (after c1+c2), got diverged=%v offset=%d", d.HasDivergence, d.FirstDivergingOffset)
+	}
+}
+
+func TestObjectDiff_LocalizedDeletion(t *testing.T) {
+	c1, c2, c3 := fabricatedChunkRef(1, 1000), fabricatedChunkRef(2, 2000), fabricatedChunkRef(3, 3000)
+	a := syncObjectDescriptor{Size: 6000, ETag: "a", Chunks: []syncChunkDescriptor{c1, c2, c3}}
+	b := syncObjectDescriptor{Size: 4000, ETag: "b", Chunks: []syncChunkDescriptor{c1, c3}}
+	d := buildObjectDiff(a, b)
+	if d.BPayloadReusableFromA != 4000 {
+		t.Fatalf("all of B still exists in A, want full reuse, got %d", d.BPayloadReusableFromA)
+	}
+	if d.AOnlyPayload != 2000 {
+		t.Fatalf("A-only payload should be exactly the deleted chunk (c2), got %d", d.AOnlyPayload)
+	}
+}
+
+func TestObjectDiff_LocalizedMutation(t *testing.T) {
+	c1, c2, c3 := fabricatedChunkRef(1, 1000), fabricatedChunkRef(2, 2000), fabricatedChunkRef(3, 3000)
+	mutated := fabricatedChunkRef(98, 2000)
+	a := syncObjectDescriptor{Size: 6000, ETag: "a", Chunks: []syncChunkDescriptor{c1, c2, c3}}
+	b := syncObjectDescriptor{Size: 6000, ETag: "b", Chunks: []syncChunkDescriptor{c1, mutated, c3}}
+	d := buildObjectDiff(a, b)
+	if d.SharedUniqueChunks != 2 {
+		t.Fatalf("SharedUniqueChunks = %d, want 2 (c1, c3)", d.SharedUniqueChunks)
+	}
+	if d.APayloadReusableFromB != 4000 || d.AOnlyPayload != 2000 {
+		t.Fatalf("A accounting wrong: reusable=%d only=%d", d.APayloadReusableFromB, d.AOnlyPayload)
+	}
+	if !d.HasDivergence || d.FirstDivergingOffset != 1000 {
+		t.Fatalf("expected divergence at offset 1000 (after c1), got diverged=%v offset=%d", d.HasDivergence, d.FirstDivergingOffset)
+	}
+}
+
+func TestObjectDiff_EmptyObjects(t *testing.T) {
+	a := syncObjectDescriptor{Size: 0, ETag: "empty", Chunks: nil}
+	b := syncObjectDescriptor{Size: 0, ETag: "empty", Chunks: nil}
+	d := buildObjectDiff(a, b)
+	if d.UniqueChunksA != 0 || d.UniqueChunksB != 0 || d.SharedUniqueChunks != 0 {
+		t.Fatalf("empty objects should have zero chunks all around, got %+v", d)
+	}
+	if !d.ExactMatch {
+		t.Fatalf("two empty objects with the same ETag must be an exact match")
+	}
+	if d.HasDivergence {
+		t.Fatalf("two empty chunk lists must not diverge")
+	}
+	var buf bytes.Buffer
+	printObjectDiff(&buf, d)
+	if strings.Contains(buf.String(), "NaN") || strings.Contains(buf.String(), "+Inf") {
+		t.Fatalf("diff output corrupted for empty objects: %s", buf.String())
+	}
+}
+
+func TestObjectDiff_RepeatedIdenticalChunks_DuplicateHandling(t *testing.T) {
+	c1 := fabricatedChunkRef(1, 1000)
+	a := syncObjectDescriptor{Size: 3000, ETag: "a", Chunks: []syncChunkDescriptor{c1, c1, c1}}
+	b := syncObjectDescriptor{Size: 1000, ETag: "b", Chunks: []syncChunkDescriptor{c1}}
+	d := buildObjectDiff(a, b)
+	if d.UniqueChunksA != 1 || d.UniqueChunksB != 1 || d.SharedUniqueChunks != 1 {
+		t.Fatalf("physical unique counts must dedupe by digest, got %+v", d)
+	}
+	// Logical/directional reuse is occurrence-based (B4): all three of A's
+	// occurrences reference a digest present in B, so all 3000 bytes
+	// count, even though B itself is only 1000 bytes of physical content.
+	if d.APayloadReusableFromB != 3000 {
+		t.Fatalf("APayloadReusableFromB = %d, want 3000 (every occurrence counts)", d.APayloadReusableFromB)
+	}
+	if d.BPayloadReusableFromA != 1000 {
+		t.Fatalf("BPayloadReusableFromA = %d, want 1000", d.BPayloadReusableFromA)
+	}
+}
+
+func TestObjectDiff_SameChunkSetDifferentOrder_NotExactMatch(t *testing.T) {
+	c1, c2 := fabricatedChunkRef(1, 1000), fabricatedChunkRef(2, 2000)
+	a := syncObjectDescriptor{Size: 3000, ETag: "order-a", Chunks: []syncChunkDescriptor{c1, c2}}
+	b := syncObjectDescriptor{Size: 3000, ETag: "order-b", Chunks: []syncChunkDescriptor{c2, c1}}
+	d := buildObjectDiff(a, b)
+	if d.SharedUniqueChunks != 2 || d.APayloadReusableFromB != 3000 || d.BPayloadReusableFromA != 3000 {
+		t.Fatalf("reordered chunk sets should still show full chunk-level reuse, got %+v", d)
+	}
+	if d.ExactMatch || d.ContentEqual {
+		t.Fatalf("same chunk set in a different order must NOT be an exact/content match (B5: ordered manifest/object identity matters)")
+	}
+	if !d.HasDivergence || d.FirstDivergingOffset != 0 {
+		t.Fatalf("reordered sequences must diverge immediately at offset 0, got diverged=%v offset=%d", d.HasDivergence, d.FirstDivergingOffset)
+	}
+}
+
+func TestObjectDiff_MetadataOnlyDifference(t *testing.T) {
+	refs := []syncChunkDescriptor{fabricatedChunkRef(1, 1000)}
+	a := syncObjectDescriptor{Size: 1000, ETag: "same", ContentType: "text/plain", Metadata: map[string]string{"k": "v1"}, Chunks: refs}
+	b := syncObjectDescriptor{Size: 1000, ETag: "same", ContentType: "text/plain", Metadata: map[string]string{"k": "v2"}, Chunks: refs}
+	d := buildObjectDiff(a, b)
+	if !d.ContentEqual || !d.ExactMatch {
+		t.Fatalf("metadata-only difference must not affect content/exact-match verdicts, got %+v", d)
+	}
+	if d.MetadataEqual {
+		t.Fatalf("differing metadata must be reported as unequal")
+	}
+	if d.APayloadReusableFromB != 1000 {
+		t.Fatalf("metadata differences must not affect chunk-sharing metrics, got reusable=%d", d.APayloadReusableFromB)
+	}
+}
+
+func TestObjectDiff_SameServer_TwoKeys(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	body := genRandomBytes(91001, 300_000)
+	mustPutSourceObject(t, srv, "b", "v1.bin", body, "application/octet-stream", nil)
+	mustPutSourceObject(t, srv, "b", "v2.bin", body, "application/octet-stream", nil)
+
+	cfgA := syncClientConfig{Endpoint: ts.URL, Bucket: "b", Key: "v1.bin", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	cfgB := syncClientConfig{Endpoint: ts.URL, Bucket: "b", Key: "v2.bin", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	d, err := diffObjects(cfgA, cfgB)
+	if err != nil {
+		t.Fatalf("diffObjects: %v", err)
+	}
+	if !d.ExactMatch {
+		t.Fatalf("byte-identical content under two different keys on the same server must be an exact match")
+	}
+}
+
+func TestObjectDiff_TwoServers(t *testing.T) {
+	_, srvA, _, dstDir, srvB, creds, region := newDiffTwoServerPair(t)
+	_ = dstDir
+	tsA := httptest.NewServer(srvA)
+	defer tsA.Close()
+	tsB := httptest.NewServer(srvB)
+	defer tsB.Close()
+
+	mustPutSourceObject(t, srvA, "b", "obj", []byte("hello world, this is object content"), "text/plain", nil)
+	mustPutSourceObject(t, srvB, "b", "obj", []byte("hello world, this is DIFFERENT content"), "text/plain", nil)
+
+	cfgA := syncClientConfig{Endpoint: tsA.URL, Bucket: "b", Key: "obj", Creds: creds, Region: region, HTTPClient: tsA.Client()}
+	cfgB := syncClientConfig{Endpoint: tsB.URL, Bucket: "b", Key: "obj", Creds: creds, Region: region, HTTPClient: tsB.Client()}
+	d, err := diffObjects(cfgA, cfgB)
+	if err != nil {
+		t.Fatalf("diffObjects: %v", err)
+	}
+	if d.ExactMatch {
+		t.Fatalf("different content across two servers must not be an exact match")
+	}
+}
+
+// newDiffTwoServerPair is a tiny wrapper around newReplicateTestServerPair
+// (two independent stores/servers, shared credentials) so diff's
+// two-server test doesn't need replication-specific naming.
+func newDiffTwoServerPair(t *testing.T) (aDir string, aSrv *Server, bDir string, dstUnused *Server, bSrv *Server, creds Credentials, region string) {
+	t.Helper()
+	aDir, aSrv, bDir, bSrv, creds, region = newReplicateTestServerPair(t)
+	return aDir, aSrv, bDir, nil, bSrv, creds, region
+}
+
+func TestObjectDiff_MissingObjectA(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	mustPutSourceObject(t, srv, "b", "exists", []byte("x"), "text/plain", nil)
+
+	cfgA := syncClientConfig{Endpoint: ts.URL, Bucket: "b", Key: "missing", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	cfgB := syncClientConfig{Endpoint: ts.URL, Bucket: "b", Key: "exists", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	_, err := diffObjects(cfgA, cfgB)
+	if err == nil || !strings.Contains(err.Error(), "object A") {
+		t.Fatalf("expected a clear 'object A' error, got %v", err)
+	}
+}
+
+func TestObjectDiff_MissingObjectB(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	mustPutSourceObject(t, srv, "b", "exists", []byte("x"), "text/plain", nil)
+
+	cfgA := syncClientConfig{Endpoint: ts.URL, Bucket: "b", Key: "exists", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	cfgB := syncClientConfig{Endpoint: ts.URL, Bucket: "b", Key: "missing", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	_, err := diffObjects(cfgA, cfgB)
+	if err == nil || !strings.Contains(err.Error(), "object B") {
+		t.Fatalf("expected a clear 'object B' error, got %v", err)
+	}
+}
+
+func TestObjectDiff_AuthFailure(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	mustPutSourceObject(t, srv, "b", "obj", []byte("x"), "text/plain", nil)
+
+	badCreds := Credentials{AccessKeyID: creds.AccessKeyID, SecretAccessKey: "wrong-secret-key-entirely-incorrect0"}
+	cfgA := syncClientConfig{Endpoint: ts.URL, Bucket: "b", Key: "obj", Creds: badCreds, Region: region, HTTPClient: ts.Client()}
+	cfgB := syncClientConfig{Endpoint: ts.URL, Bucket: "b", Key: "obj", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	_, err := diffObjects(cfgA, cfgB)
+	if err == nil {
+		t.Fatalf("expected an auth failure error")
+	}
+}
+
+func TestObjectDiff_WeirdKeys(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	body := genRandomBytes(91002, 5000)
+	mustPutSourceObject(t, srv, "b", "a b/c%d#e?f.bin", body, "application/octet-stream", nil)
+	mustPutSourceObject(t, srv, "b", "unicode/héllo-wörld-日本語.bin", body, "application/octet-stream", nil)
+
+	cfgA := syncClientConfig{Endpoint: ts.URL, Bucket: "b", Key: "a b/c%d#e?f.bin", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	cfgB := syncClientConfig{Endpoint: ts.URL, Bucket: "b", Key: "unicode/héllo-wörld-日本語.bin", Creds: creds, Region: region, HTTPClient: ts.Client()}
+	d, err := diffObjects(cfgA, cfgB)
+	if err != nil {
+		t.Fatalf("diffObjects: %v", err)
+	}
+	if !d.ExactMatch {
+		t.Fatalf("identical content under weird keys must still be an exact match")
+	}
+}
+
+func TestObjectDiff_CrossCheckAgainstIndependentComputation(t *testing.T) {
+	// Independently recompute every metric from raw descriptors, without
+	// calling buildObjectDiff's own helper functions, and require the two
+	// computations agree -- M8G-B's own "cross-check diff metrics against
+	// independently computed descriptor math" requirement.
+	a := syncObjectDescriptor{Size: 10000, ETag: "a", Chunks: []syncChunkDescriptor{
+		fabricatedChunkRef(1, 2000), fabricatedChunkRef(2, 3000), fabricatedChunkRef(1, 2000), fabricatedChunkRef(3, 3000),
+	}}
+	b := syncObjectDescriptor{Size: 6000, ETag: "b", Chunks: []syncChunkDescriptor{
+		fabricatedChunkRef(2, 3000), fabricatedChunkRef(4, 3000),
+	}}
+	d := buildObjectDiff(a, b)
+
+	bDigests := map[string]bool{}
+	for _, c := range b.Chunks {
+		bDigests[c.SHA256] = true
+	}
+	var wantAReuse int64
+	for _, c := range a.Chunks {
+		if bDigests[c.SHA256] {
+			wantAReuse += c.Length
+		}
+	}
+	aUnique := map[string]bool{}
+	for _, c := range a.Chunks {
+		aUnique[c.SHA256] = true
+	}
+	wantShared := 0
+	for sha := range aUnique {
+		if bDigests[sha] {
+			wantShared++
+		}
+	}
+	if d.APayloadReusableFromB != wantAReuse {
+		t.Fatalf("APayloadReusableFromB = %d, independently computed = %d", d.APayloadReusableFromB, wantAReuse)
+	}
+	if d.SharedUniqueChunks != wantShared {
+		t.Fatalf("SharedUniqueChunks = %d, independently computed = %d", d.SharedUniqueChunks, wantShared)
+	}
+	if d.UniqueChunksA != len(aUnique) {
+		t.Fatalf("UniqueChunksA = %d, want %d", d.UniqueChunksA, len(aUnique))
+	}
+}
+
+func TestDiff_CLI_SameServer_EndToEnd(t *testing.T) {
+	_, srv, creds, _ := newSyncTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	body := genRandomBytes(91003, 50_000)
+	mustPutSourceObject(t, srv, "b", "a.bin", body, "application/octet-stream", nil)
+	mustPutSourceObject(t, srv, "b", "b.bin", body, "application/octet-stream", nil)
+
+	before := storeContentFingerprint(t, srv.store.root)
+	args := []string{
+		"-from", ts.URL,
+		"-from-access-key", creds.AccessKeyID, "-from-secret-key", creds.SecretAccessKey,
+		"-to-access-key", creds.AccessKeyID, "-to-secret-key", creds.SecretAccessKey,
+		"s3://b/a.bin", "s3://b/b.bin",
+	}
+	runDiff(args)
+	after := storeContentFingerprint(t, srv.store.root)
+	if before != after {
+		t.Fatalf("`diff` CLI must never mutate store state")
+	}
+}
+
+// =============================================================================
+// M8G-C: `zeros3 inspect` -- CDC/CAS representation and store-wide sharing
+// =============================================================================
+
+func newInspectTestServer(t *testing.T) (srv *Server, cfgFor func(bucket, key string) syncClientConfig, closeFn func()) {
+	t.Helper()
+	_, srv, creds, region := newSyncTestServer(t)
+	if err := srv.store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	cfgFor = func(bucket, key string) syncClientConfig {
+		return syncClientConfig{Endpoint: ts.URL, Bucket: bucket, Key: key, Creds: creds, Region: region, HTTPClient: ts.Client()}
+	}
+	return srv, cfgFor, ts.Close
+}
+
+func TestInspect_EmptyObject(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	mustPutObject(t, srv.store, "b", "empty.bin", []byte{}, "text/plain", nil)
+
+	res, err := inspectObject(cfgFor("b", "empty.bin"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res.ChunkReferences != 0 || res.UniqueChunks != 0 || res.PhysicalUniqueBytes != 0 {
+		t.Fatalf("empty object should have zero chunks/bytes, got %+v", res)
+	}
+	var buf bytes.Buffer
+	printInspect(&buf, res)
+	if strings.Contains(buf.String(), "NaN") || strings.Contains(buf.String(), "+Inf") {
+		t.Fatalf("inspect output corrupted for empty object: %s", buf.String())
+	}
+}
+
+func TestInspect_OneChunk(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	body := genRandomBytes(92001, 5000)
+	mustPutObject(t, srv.store, "b", "one.bin", body, "application/octet-stream", nil)
+
+	res, err := inspectObject(cfgFor("b", "one.bin"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res.ChunkReferences != 1 || res.UniqueChunks != 1 {
+		t.Fatalf("a %d-byte object (below CDC min chunk size) should be exactly one chunk, got refs=%d unique=%d", len(body), res.ChunkReferences, res.UniqueChunks)
+	}
+	if res.MinChunkLength != int64(len(body)) || res.MaxChunkLength != int64(len(body)) {
+		t.Fatalf("min/max should both equal the object's own size, got min=%d max=%d", res.MinChunkLength, res.MaxChunkLength)
+	}
+	if res.PhysicalUniqueBytes != int64(len(body)) {
+		t.Fatalf("PhysicalUniqueBytes = %d, want %d", res.PhysicalUniqueBytes, len(body))
+	}
+}
+
+func TestInspect_ManyChunks_MinAvgMaxExact(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	body := genRandomBytes(92002, 8_000_000)
+	mustPutObject(t, srv.store, "b", "big.bin", body, "application/octet-stream", nil)
+
+	desc, err := fetchSourceDescriptor(cfgFor("b", "big.bin"))
+	if err != nil {
+		t.Fatalf("fetchSourceDescriptor: %v", err)
+	}
+	if len(desc.Chunks) < 2 {
+		t.Fatalf("expected an 8MB object to produce multiple CDC chunks, got %d", len(desc.Chunks))
+	}
+	wantUnique := map[string]int64{}
+	for _, c := range desc.Chunks {
+		wantUnique[c.SHA256] = c.Length
+	}
+	var wantMin, wantMax, wantSum int64
+	first := true
+	for _, l := range wantUnique {
+		wantSum += l
+		if first || l < wantMin {
+			wantMin = l
+		}
+		if l > wantMax {
+			wantMax = l
+		}
+		first = false
+	}
+
+	res, err := inspectObject(cfgFor("b", "big.bin"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res.UniqueChunks != len(wantUnique) {
+		t.Fatalf("UniqueChunks = %d, want %d", res.UniqueChunks, len(wantUnique))
+	}
+	if res.MinChunkLength != wantMin || res.MaxChunkLength != wantMax {
+		t.Fatalf("min/max = %d/%d, want %d/%d", res.MinChunkLength, res.MaxChunkLength, wantMin, wantMax)
+	}
+	if res.PhysicalUniqueBytes != wantSum {
+		t.Fatalf("PhysicalUniqueBytes = %d, want %d", res.PhysicalUniqueBytes, wantSum)
+	}
+	wantAvg := float64(wantSum) / float64(len(wantUnique))
+	if res.AvgChunkLength != wantAvg {
+		t.Fatalf("AvgChunkLength = %v, want %v", res.AvgChunkLength, wantAvg)
+	}
+}
+
+func TestInspect_RepeatedChunkIDs_ExactDedup(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	if err := srv.store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	c1 := fabricatedChunkRef(1, 1000)
+	c2 := fabricatedChunkRef(2, 2000)
+	refs := []chunkRef{{SHA256: c1.SHA256, Length: c1.Length}, {SHA256: c2.SHA256, Length: c2.Length}, {SHA256: c1.SHA256, Length: c1.Length}, {SHA256: c1.SHA256, Length: c1.Length}}
+	total := int64(1000*3 + 2000)
+	var objSHA [32]byte
+	man := buildManifestV1FromRefs(refs, total, objSHA, "dup-etag", "application/octet-stream", nil)
+	manUUID, manSHA, err := srv.store.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.commitObjectRoot("b", "dup.bin", manUUID, manSHA, man); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := inspectObject(cfgFor("b", "dup.bin"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res.ChunkReferences != 4 {
+		t.Fatalf("ChunkReferences = %d, want 4 (occurrences)", res.ChunkReferences)
+	}
+	if res.UniqueChunks != 2 {
+		t.Fatalf("UniqueChunks = %d, want 2 (distinct digests)", res.UniqueChunks)
+	}
+	if res.PhysicalUniqueBytes != 3000 {
+		t.Fatalf("PhysicalUniqueBytes = %d, want 3000 (1000+2000, c1 counted once)", res.PhysicalUniqueBytes)
+	}
+	if res.MinChunkLength != 1000 || res.MaxChunkLength != 2000 {
+		t.Fatalf("min/max = %d/%d, want 1000/2000", res.MinChunkLength, res.MaxChunkLength)
+	}
+}
+
+func TestInspect_WeirdKeys(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	body := genRandomBytes(92003, 3000)
+	mustPutObject(t, srv.store, "b", "a b/c%d#e?f 日本語.bin", body, "application/octet-stream", nil)
+
+	res, err := inspectObject(cfgFor("b", "a b/c%d#e?f 日本語.bin"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res.PhysicalUniqueBytes != int64(len(body)) {
+		t.Fatalf("PhysicalUniqueBytes = %d, want %d", res.PhysicalUniqueBytes, len(body))
+	}
+}
+
+func TestInspect_CurrentVersionSemantics(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	mustPutObject(t, srv.store, "b", "k", genRandomBytes(92004, 10_000), "text/plain", nil)
+	v2Body := genRandomBytes(92005, 20_000)
+	mustPutObject(t, srv.store, "b", "k", v2Body, "text/plain", nil)
+
+	res, err := inspectObject(cfgFor("b", "k"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res.Size != int64(len(v2Body)) {
+		t.Fatalf("inspect must report the CURRENT version, got Size=%d want %d", res.Size, len(v2Body))
+	}
+}
+
+func TestInspect_ObjectUniqueInStore_SolelyReachable(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	mustPutObject(t, srv.store, "b", "solo.bin", genRandomBytes(92101, 40_000), "application/octet-stream", nil)
+
+	res, err := inspectObject(cfgFor("b", "solo.bin"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if !res.SharingAvailable {
+		t.Fatalf("expected store-wide sharing analysis to be available")
+	}
+	if res.BytesReachableElsewhere != 0 {
+		t.Fatalf("a unique object's chunks must not be reachable elsewhere, got %d", res.BytesReachableElsewhere)
+	}
+	if res.BytesSolelyReachable != res.PhysicalUniqueBytes {
+		t.Fatalf("BytesSolelyReachable = %d, want the object's entire physical payload (%d)", res.BytesSolelyReachable, res.PhysicalUniqueBytes)
+	}
+}
+
+func TestInspect_TwoKeysIdenticalContent_FullySharedElsewhere(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	body := genRandomBytes(92102, 60_000)
+	mustPutObject(t, srv.store, "b", "a.bin", body, "application/octet-stream", nil)
+	mustPutObject(t, srv.store, "b", "b.bin", body, "application/octet-stream", nil)
+
+	res, err := inspectObject(cfgFor("b", "a.bin"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res.BytesReachableElsewhere != res.PhysicalUniqueBytes {
+		t.Fatalf("byte-identical content under a second key should be fully reachable elsewhere: elsewhere=%d physical=%d", res.BytesReachableElsewhere, res.PhysicalUniqueBytes)
+	}
+	if res.BytesSolelyReachable != 0 {
+		t.Fatalf("BytesSolelyReachable = %d, want 0", res.BytesSolelyReachable)
+	}
+}
+
+func TestInspect_PartialChunkSharing_ExactSplit(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	if err := srv.store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	c1 := fabricatedChunkRef(11, 1000)
+	c2 := fabricatedChunkRef(12, 2000)
+	c3 := fabricatedChunkRef(13, 3000)
+
+	commit := func(key string, refs ...syncChunkDescriptor) {
+		chunkRefs := make([]chunkRef, len(refs))
+		var total int64
+		for i, r := range refs {
+			chunkRefs[i] = chunkRef{SHA256: r.SHA256, Length: r.Length}
+			total += r.Length
+		}
+		var objSHA [32]byte
+		man := buildManifestV1FromRefs(chunkRefs, total, objSHA, key+"-etag", "application/octet-stream", nil)
+		manUUID, manSHA, err := srv.store.publishManifest(man)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.store.commitObjectRoot("b", key, manUUID, manSHA, man); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit("a.bin", c1, c2)
+	commit("b.bin", c1, c3)
+
+	res, err := inspectObject(cfgFor("b", "a.bin"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res.BytesReachableElsewhere != c1.Length {
+		t.Fatalf("BytesReachableElsewhere = %d, want %d (only c1 is shared with b.bin)", res.BytesReachableElsewhere, c1.Length)
+	}
+	if res.BytesSolelyReachable != c2.Length {
+		t.Fatalf("BytesSolelyReachable = %d, want %d (c2 is exclusive to a.bin)", res.BytesSolelyReachable, c2.Length)
+	}
+}
+
+func TestInspect_CopyObjectSharing(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	mustPutObject(t, srv.store, "b", "src.bin", genRandomBytes(92103, 30_000), "application/octet-stream", nil)
+	if _, _, err := srv.store.CopyObject(CopyObjectRequest{SrcBucket: "b", SrcKey: "src.bin", DstBucket: "b", DstKey: "copy.bin"}); err != nil {
+		t.Fatalf("CopyObject: %v", err)
+	}
+
+	res, err := inspectObject(cfgFor("b", "src.bin"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res.BytesReachableElsewhere != res.PhysicalUniqueBytes {
+		t.Fatalf("CopyObject's destination is a second live root sharing every chunk: elsewhere=%d physical=%d", res.BytesReachableElsewhere, res.PhysicalUniqueBytes)
+	}
+}
+
+func TestInspect_ForkSharing_BeforeAndAfter(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	if err := srv.store.CreateBucket("prod"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.CreateBucket("fork"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, srv.store, "prod", "shared.bin", genRandomBytes(92104, 80_000), "application/octet-stream", nil)
+
+	before, err := inspectObject(cfgFor("prod", "shared.bin"), false)
+	if err != nil {
+		t.Fatalf("inspectObject (before fork): %v", err)
+	}
+	if before.BytesReachableElsewhere != 0 {
+		t.Fatalf("before forking, expected zero bytes reachable elsewhere, got %d", before.BytesReachableElsewhere)
+	}
+
+	if _, err := replicateNamespace(namespaceReplicateConfig{
+		Source:           syncClientConfig{Endpoint: cfgFor("prod", "").Endpoint, Bucket: "prod", Creds: cfgFor("prod", "").Creds, Region: cfgFor("prod", "").Region, HTTPClient: cfgFor("prod", "").HTTPClient},
+		Dest:             syncClientConfig{Endpoint: cfgFor("fork", "").Endpoint, Bucket: "fork", Creds: cfgFor("fork", "").Creds, Region: cfgFor("fork", "").Region, HTTPClient: cfgFor("fork", "").HTTPClient},
+		DestMustBeAbsent: true,
+	}); err != nil {
+		t.Fatalf("fork (replicateNamespace): %v", err)
+	}
+
+	after, err := inspectObject(cfgFor("prod", "shared.bin"), false)
+	if err != nil {
+		t.Fatalf("inspectObject (after fork): %v", err)
+	}
+	if after.BytesReachableElsewhere != after.PhysicalUniqueBytes {
+		t.Fatalf("after forking, expected every byte reachable elsewhere (via the fork's own root), got elsewhere=%d physical=%d", after.BytesReachableElsewhere, after.PhysicalUniqueBytes)
+	}
+	if after.BytesSolelyReachable != 0 {
+		t.Fatalf("after forking, expected zero solely-reachable bytes, got %d", after.BytesSolelyReachable)
+	}
+}
+
+func TestInspect_ForkThenLocalizedMutation_HistoricalRootStillShares(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	if err := srv.store.CreateBucket("prod"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.CreateBucket("fork"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, srv.store, "prod", "shared.bin", genRandomBytes(92105, 80_000), "application/octet-stream", nil)
+
+	prodCfg := cfgFor("prod", "")
+	forkCfg := cfgFor("fork", "")
+	if _, err := replicateNamespace(namespaceReplicateConfig{
+		Source:           syncClientConfig{Endpoint: prodCfg.Endpoint, Bucket: "prod", Creds: prodCfg.Creds, Region: prodCfg.Region, HTTPClient: prodCfg.HTTPClient},
+		Dest:             syncClientConfig{Endpoint: forkCfg.Endpoint, Bucket: "fork", Creds: forkCfg.Creds, Region: forkCfg.Region, HTTPClient: forkCfg.HTTPClient},
+		DestMustBeAbsent: true,
+	}); err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+
+	// Mutate the forked copy -- its original (source-identical) content is
+	// archived into the fork's own retained history, not discarded, so
+	// prod's chunks are still reachable through that historical root.
+	mustPutObject(t, srv.store, "fork", "shared.bin", genRandomBytes(92106, 90_000), "application/octet-stream", nil)
+
+	res, err := inspectObject(cfgFor("prod", "shared.bin"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res.BytesReachableElsewhere != res.PhysicalUniqueBytes {
+		t.Fatalf("prod's chunks should still be reachable via the fork's retained historical version, got elsewhere=%d physical=%d", res.BytesReachableElsewhere, res.PhysicalUniqueBytes)
+	}
+}
+
+func TestInspect_RetainedVersionSharing(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	body := genRandomBytes(92107, 50_000)
+	mustPutObject(t, srv.store, "b", "k", body, "application/octet-stream", nil)
+	// Overwrite k -- its original content is archived into history, not
+	// destroyed.
+	mustPutObject(t, srv.store, "b", "k", genRandomBytes(92108, 10_000), "application/octet-stream", nil)
+	// A completely separate, unrelated-by-name object with the SAME
+	// content as k's now-historical version.
+	mustPutObject(t, srv.store, "b", "other", body, "application/octet-stream", nil)
+
+	res, err := inspectObject(cfgFor("b", "other"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res.BytesReachableElsewhere != res.PhysicalUniqueBytes {
+		t.Fatalf("'other' shares every chunk with k's retained historical version, expected fully reachable elsewhere: elsewhere=%d physical=%d", res.BytesReachableElsewhere, res.PhysicalUniqueBytes)
+	}
+}
+
+func TestInspect_SnapshotPinnedSharing_SurvivesLiveDeletion(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	body := genRandomBytes(92109, 45_000)
+	mustPutObject(t, srv.store, "b", "k", body, "application/octet-stream", nil)
+
+	kCfg := cfgFor("b", "k")
+	if _, err := createSnapshotRemote(kCfg, "b", ""); err != nil {
+		t.Fatalf("createSnapshotRemote: %v", err)
+	}
+	if err := srv.store.DeleteObject("b", "k"); err != nil {
+		t.Fatalf("DeleteObject: %v", err)
+	}
+	// A separate live object with the same content as the now-deleted (but
+	// snapshot-pinned) k.
+	mustPutObject(t, srv.store, "b", "other", body, "application/octet-stream", nil)
+
+	res, err := inspectObject(cfgFor("b", "other"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res.BytesReachableElsewhere != res.PhysicalUniqueBytes {
+		t.Fatalf("'other' shares every chunk with k, which the snapshot still pins even after live deletion: elsewhere=%d physical=%d", res.BytesReachableElsewhere, res.PhysicalUniqueBytes)
+	}
+}
+
+// TestInspect_DeletionChangesReachabilityCorrectly verifies inspect keeps
+// reporting the TRUE reachability state across a deletion, rather than
+// naively assuming "current root removed" means "no longer reachable
+// elsewhere." ZeroS3's own documented delete semantics (section 7c:
+// "every successful mutation that replaces OR REMOVES an existing
+// current object... archives the object state it replaces into per-key
+// history") mean DeleteObject never actually drops a chunk's
+// reachability by itself -- it converts a "current" root into a
+// "historical" one, and computeChunkRootMembership already walks
+// historical roots exactly like current ones (both are part of the same
+// authoritative universe GC protects). So the correct, non-buggy answer
+// here is that reachability is UNCHANGED by k's deletion -- reporting a
+// drop to zero would be the actual bug (C4: "do not fake exclusive/
+// shared accounting").
+func TestInspect_DeletionChangesReachabilityCorrectly(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	body := genRandomBytes(92110, 35_000)
+	mustPutObject(t, srv.store, "b", "k", body, "application/octet-stream", nil)
+	mustPutObject(t, srv.store, "b", "other", body, "application/octet-stream", nil)
+
+	// With both k and other live, other's chunks are reachable elsewhere.
+	res1, err := inspectObject(cfgFor("b", "other"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res1.BytesReachableElsewhere != res1.PhysicalUniqueBytes {
+		t.Fatalf("expected fully shared before deletion, got elsewhere=%d physical=%d", res1.BytesReachableElsewhere, res1.PhysicalUniqueBytes)
+	}
+
+	if err := srv.store.DeleteObject("b", "k"); err != nil {
+		t.Fatalf("DeleteObject: %v", err)
+	}
+	res2, err := inspectObject(cfgFor("b", "other"), false)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	if res2.BytesReachableElsewhere != res2.PhysicalUniqueBytes {
+		t.Fatalf("k's deletion archives it into history (still a live root), so other's chunks must remain fully reachable elsewhere: elsewhere=%d physical=%d", res2.BytesReachableElsewhere, res2.PhysicalUniqueBytes)
+	}
+	if res2.BytesSolelyReachable != 0 {
+		t.Fatalf("expected zero solely-reachable bytes immediately after a delete that only archives to history, got %d", res2.BytesSolelyReachable)
+	}
+}
+
+func TestInspect_GCDoesNotChangeValidReportedSemantics(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	body := genRandomBytes(92111, 30_000)
+	mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	// Create, then delete, an unrelated object so there is real
+	// unreachable garbage for GC to collect.
+	mustPutObject(t, store, "b", "garbage", genRandomBytes(92112, 20_000), "application/octet-stream", nil)
+	if err := store.DeleteObject("b", "garbage"); err != nil {
+		t.Fatal(err)
+	}
+
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	srv := NewServer(store, creds, defaultRegion)
+	ts := httptest.NewServer(srv)
+	cfg := syncClientConfig{Endpoint: ts.URL, Bucket: "b", Key: "k", Creds: creds, Region: defaultRegion, HTTPClient: ts.Client()}
+	before, err := inspectObject(cfg, false)
+	if err != nil {
+		t.Fatalf("inspectObject (before GC): %v", err)
+	}
+	ts.Close()
+	store.Close()
+
+	if _, err := gcCollect(dir, true); err != nil {
+		t.Fatalf("gcCollect: %v", err)
+	}
+
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	srv2 := NewServer(reopened, creds, defaultRegion)
+	ts2 := httptest.NewServer(srv2)
+	defer ts2.Close()
+	cfg2 := syncClientConfig{Endpoint: ts2.URL, Bucket: "b", Key: "k", Creds: creds, Region: defaultRegion, HTTPClient: ts2.Client()}
+	after, err := inspectObject(cfg2, false)
+	if err != nil {
+		t.Fatalf("inspectObject (after GC): %v", err)
+	}
+	if before.PhysicalUniqueBytes != after.PhysicalUniqueBytes || before.BytesSolelyReachable != after.BytesSolelyReachable || before.BytesReachableElsewhere != after.BytesReachableElsewhere {
+		t.Fatalf("GC of unrelated garbage must not change k's reported inspect semantics: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestInspect_ReadOnly_NoStoreMutation(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	mustPutObject(t, srv.store, "b", "k", genRandomBytes(92113, 25_000), "application/octet-stream", nil)
+	mustPutObject(t, srv.store, "b", "other", genRandomBytes(92114, 15_000), "application/octet-stream", nil)
+
+	before := storeContentFingerprint(t, srv.store.root)
+	if _, err := inspectObject(cfgFor("b", "k"), true); err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	after := storeContentFingerprint(t, srv.store.root)
+	if before != after {
+		t.Fatalf("inspect must never mutate journal/manifest/CAS/snapshot state")
+	}
+}
+
+func TestInspect_ChunksListing_OffsetsAndDigestsExact(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	if err := srv.store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	c1 := fabricatedChunkRef(31, 1000)
+	c2 := fabricatedChunkRef(32, 2000)
+	c3 := fabricatedChunkRef(33, 3000)
+	refs := []chunkRef{{SHA256: c1.SHA256, Length: c1.Length}, {SHA256: c2.SHA256, Length: c2.Length}, {SHA256: c3.SHA256, Length: c3.Length}}
+	var objSHA [32]byte
+	man := buildManifestV1FromRefs(refs, 6000, objSHA, "chunks-etag", "application/octet-stream", nil)
+	manUUID, manSHA, err := srv.store.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.commitObjectRoot("b", "k", manUUID, manSHA, man); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := inspectObject(cfgFor("b", "k"), true)
+	if err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+	wantOffsets := []int64{0, 1000, 3000}
+	wantDigests := []string{c1.SHA256, c2.SHA256, c3.SHA256}
+	if len(res.Chunks) != 3 {
+		t.Fatalf("got %d chunk rows, want 3", len(res.Chunks))
+	}
+	for i, row := range res.Chunks {
+		if row.Offset != wantOffsets[i] {
+			t.Fatalf("chunk %d: offset = %d, want %d", i, row.Offset, wantOffsets[i])
+		}
+		if row.SHA256 != wantDigests[i] {
+			t.Fatalf("chunk %d: digest = %s, want %s", i, row.SHA256, wantDigests[i])
+		}
+	}
+	var buf bytes.Buffer
+	printInspectChunks(&buf, res.Chunks, inspectChunksDefaultLimit, false)
+	if !strings.Contains(buf.String(), "OFFSET") {
+		t.Fatalf("expected a chunk table header, got:\n%s", buf.String())
+	}
+}
+
+func TestInspect_ChunksListing_TruncatedByDefault(t *testing.T) {
+	rows := make([]inspectChunkRow, 200)
+	for i := range rows {
+		rows[i] = inspectChunkRow{Offset: int64(i * 1000), Length: 1000, SHA256: fmt.Sprintf("%064x", i), ReachableRootCount: 1}
+	}
+	var truncatedBuf bytes.Buffer
+	printInspectChunks(&truncatedBuf, rows, 50, false)
+	if strings.Count(truncatedBuf.String(), "\n") > 60 {
+		t.Fatalf("expected truncated output to stay small, got %d lines", strings.Count(truncatedBuf.String(), "\n"))
+	}
+	if !strings.Contains(truncatedBuf.String(), "truncated") {
+		t.Fatalf("expected truncation to be stated explicitly, got:\n%s", truncatedBuf.String())
+	}
+
+	var allBuf bytes.Buffer
+	printInspectChunks(&allBuf, rows, 50, true)
+	if strings.Contains(allBuf.String(), "truncated") {
+		t.Fatalf("-chunks-all must not truncate")
+	}
+	// header + 200 rows.
+	if got := strings.Count(allBuf.String(), "\n"); got < 200 {
+		t.Fatalf("expected all 200 rows with -chunks-all, got %d lines", got)
+	}
+}
+
+func TestInspect_CLI_EndToEnd(t *testing.T) {
+	srv, cfgFor, closeFn := newInspectTestServer(t)
+	defer closeFn()
+	mustPutObject(t, srv.store, "b", "k", genRandomBytes(92115, 30_000), "application/octet-stream", nil)
+
+	before := storeContentFingerprint(t, srv.store.root)
+	c := cfgFor("b", "k")
+	args := []string{
+		"-endpoint", c.Endpoint,
+		"-access-key", c.Creds.AccessKeyID, "-secret-key", c.Creds.SecretAccessKey,
+		"-chunks",
+		"s3://b/k",
+	}
+	runInspect(args)
+	after := storeContentFingerprint(t, srv.store.root)
+	if before != after {
+		t.Fatalf("`inspect` CLI must never mutate store state")
+	}
+}
+
+// =============================================================================
+// M8G-D: hostile read-only audit -- disproving "M8G cannot mutate
+// authoritative storage" across all three commands together.
+// =============================================================================
+
+// noMutatingVerbs wraps a Server so any HTTP method/path combination that
+// could ever mutate authoritative state fails the test immediately,
+// regardless of which M8G command is exercising it. GET is always safe by
+// construction; POST to /negotiate and /reachability are explicitly
+// allowed (both are documented, demonstrably non-mutating reads --
+// handleSyncNegotiate's own doc comment: "a pure read (os.Stat only...)",
+// and handleReachabilityQuery only calls computeChunkRootMembership,
+// itself read-only) even though they use POST/GET respectively; every
+// other historically-mutating endpoint (chunk PUT, commit POST, snapshot
+// create POST/delete DELETE, any DELETE at all) is forbidden outright.
+type noMutatingVerbs struct {
+	t   *testing.T
+	srv http.Handler
+}
+
+func (n noMutatingVerbs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodDelete:
+		n.t.Errorf("M8G command issued a DELETE: %s %s", r.Method, r.URL.Path)
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix):
+		n.t.Errorf("M8G command issued a chunk PUT: %s %s", r.Method, r.URL.Path)
+	case r.Method == http.MethodPost && r.URL.Path == zeros3SyncCommitPath:
+		n.t.Errorf("M8G command issued a commit POST: %s %s", r.Method, r.URL.Path)
+	case r.Method == http.MethodPost && r.URL.Path == zeros3SnapshotCreatePath:
+		n.t.Errorf("M8G command issued a snapshot-create POST: %s %s", r.Method, r.URL.Path)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix):
+		n.t.Errorf("M8G command issued a chunk-payload GET: %s %s", r.Method, r.URL.Path)
+	}
+	n.srv.ServeHTTP(w, r)
+}
+
+// TestM8G_HostileAudit_NoMutatingHTTPMethods runs dry-run (single +
+// recursive), diff, and inspect (with -chunks) together against a shared
+// fixture wrapped in noMutatingVerbs, so any of the three issuing a
+// forbidden request fails the test regardless of which command did it.
+func TestM8G_HostileAudit_NoMutatingHTTPMethods(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(noMutatingVerbs{t, srcSrv})
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(noMutatingVerbs{t, dstSrv})
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, srcSrv, "src")
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	body := genRandomBytes(93001, 40_000)
+	mustPutSourceObject(t, srcSrv, "src", "prefix/a.bin", body, "application/octet-stream", nil)
+	mustPutSourceObject(t, srcSrv, "src", "prefix/b.bin", genRandomBytes(93002, 30_000), "application/octet-stream", nil)
+	mustPutSourceObject(t, srcSrv, "src", "single.bin", genRandomBytes(93003, 20_000), "application/octet-stream", nil)
+
+	singleCfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "single.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "single.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	if _, err := planReplication(singleCfg); err != nil {
+		t.Fatalf("planReplication: %v", err)
+	}
+
+	nsCfg := namespaceReplicateConfig{
+		Source:       syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		SourcePrefix: "prefix",
+		Dest:         syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		DestPrefix:   "prefix",
+	}
+	if _, err := planReplicationNamespace(nsCfg); err != nil {
+		t.Fatalf("planReplicationNamespace: %v", err)
+	}
+
+	diffCfgA := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "prefix/a.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	diffCfgB := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "prefix/b.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	if _, err := diffObjects(diffCfgA, diffCfgB); err != nil {
+		t.Fatalf("diffObjects: %v", err)
+	}
+
+	inspectCfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "single.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	if _, err := inspectObject(inspectCfg, true); err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+}
+
+// TestM8G_HostileAudit_CombinedFingerprint is M8G-D's mandatory
+// independent state fingerprint proof, exercising all three commands
+// together against one shared fixture: hash every file under both
+// stores, run dry-run/diff/inspect, recompute, and require byte-identical
+// authoritative persistent state.
+func TestM8G_HostileAudit_CombinedFingerprint(t *testing.T) {
+	srcDir, srcSrv, dstDir, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	mustCreateReplicateBucket(t, srcSrv, "src")
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	mustPutSourceObject(t, srcSrv, "src", "prefix/a.bin", genRandomBytes(93101, 50_000), "application/octet-stream", nil)
+	mustPutSourceObject(t, srcSrv, "src", "prefix/b.bin", genRandomBytes(93102, 60_000), "application/octet-stream", nil)
+	mustPutSourceObject(t, srcSrv, "src", "single.bin", genRandomBytes(93103, 30_000), "application/octet-stream", nil)
+
+	srcBefore := storeContentFingerprint(t, srcDir)
+	dstBefore := storeContentFingerprint(t, dstDir)
+
+	singleCfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "single.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "single.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+	if _, err := planReplication(singleCfg); err != nil {
+		t.Fatalf("planReplication: %v", err)
+	}
+	nsCfg := namespaceReplicateConfig{
+		Source:       syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		SourcePrefix: "prefix",
+		Dest:         syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		DestPrefix:   "prefix",
+	}
+	if _, err := planReplicationNamespace(nsCfg); err != nil {
+		t.Fatalf("planReplicationNamespace: %v", err)
+	}
+	diffCfgA := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "prefix/a.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	diffCfgB := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "prefix/b.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	if _, err := diffObjects(diffCfgA, diffCfgB); err != nil {
+		t.Fatalf("diffObjects: %v", err)
+	}
+	inspectCfg := syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "single.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()}
+	if _, err := inspectObject(inspectCfg, true); err != nil {
+		t.Fatalf("inspectObject: %v", err)
+	}
+
+	srcAfter := storeContentFingerprint(t, srcDir)
+	dstAfter := storeContentFingerprint(t, dstDir)
+	if srcBefore != srcAfter {
+		t.Fatalf("combined dry-run+diff+inspect run mutated the SOURCE store")
+	}
+	if dstBefore != dstAfter {
+		t.Fatalf("combined dry-run+diff+inspect run mutated the DESTINATION store")
+	}
+}
+
+func TestM8G_HugeNamespace_1500Objects_RecursiveDryRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 1500-object scale test in -short mode")
+	}
+	srv, _, cfgFor, closeFn := newForkTestServer(t, "src", "dst")
+	defer closeFn()
+	const n = 1500
+	for i := 0; i < n; i++ {
+		putObj(t, srv, "src", fmt.Sprintf("k/%04d", i), []byte("x"))
+	}
+
+	start := time.Now()
+	result, err := planReplicationNamespace(namespaceReplicateConfig{Source: cfgFor("src"), Dest: cfgFor("dst")})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("planReplicationNamespace: %v", err)
+	}
+	if result.Discovered != n {
+		t.Fatalf("Discovered = %d, want %d", result.Discovered, n)
+	}
+	if result.WouldPublish != n {
+		t.Fatalf("WouldPublish = %d, want %d", result.WouldPublish, n)
+	}
+	t.Logf("1500-object recursive dry-run took %s", elapsed)
+	if elapsed > 30*time.Second {
+		t.Fatalf("recursive dry-run over 1500 objects took unreasonably long: %s", elapsed)
+	}
+
+	// Bounded output: printDryRunNamespace's report is a fixed handful of
+	// lines regardless of object count, never one line per object.
+	var buf bytes.Buffer
+	printDryRunNamespace(&buf, result)
+	if lines := strings.Count(buf.String(), "\n"); lines > 20 {
+		t.Fatalf("printDryRunNamespace produced %d lines for a 1500-object run, want a small fixed summary", lines)
+	}
+}
+
+// malformedDescriptorServer serves a hand-crafted, syntactically-invalid
+// syncObjectDescriptor (a negative chunk length and a non-hex digest) for
+// GET /_zeros3/v1/object, and a compatible discovery/negotiate response
+// for everything else -- simulating a hostile or badly broken peer, never
+// a real ZeroS3 server's own output (an honest server's manifests are
+// already structurally validated on write and by computeReachability).
+type malformedDescriptorServer struct{}
+
+func (malformedDescriptorServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.URL.Path == zeros3SyncInfoPath:
+		writeSyncJSON(w, http.StatusOK, syncDiscoveryResponse{
+			Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+			DeltaSync: true, MaxHashesPerBatch: 1000, MaxBatchBytes: 1 << 20, MaxChunkBytes: 1 << 20,
+		})
+	case r.URL.Path == zeros3SyncObjectPath:
+		writeSyncJSON(w, http.StatusOK, syncObjectDescriptor{
+			Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+			Bucket: "b", Key: "hostile", Size: -999, ETag: "malicious",
+			Chunks: []syncChunkDescriptor{
+				{SHA256: "not-a-valid-hex-digest-at-all", Length: -1},
+				{SHA256: "", Length: 0},
+			},
+		})
+	case r.URL.Path == zeros3ReachabilityPath:
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{not valid json`))
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// TestM8G_HostileEndpoint_MalformedDescriptorDoesNotPanic feeds
+// diffObjects and inspectObject a deliberately malformed descriptor
+// (negative lengths, non-hex digests) from a simulated hostile peer and
+// requires they degrade to a clear result or error -- never a panic and
+// never a corrupted-looking but silently "successful" report.
+func TestM8G_HostileEndpoint_MalformedDescriptorDoesNotPanic(t *testing.T) {
+	ts := httptest.NewServer(malformedDescriptorServer{})
+	defer ts.Close()
+	cfg := syncClientConfig{Endpoint: ts.URL, Bucket: "b", Key: "hostile", HTTPClient: ts.Client()}
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("diffObjects panicked on a malformed descriptor: %v", r)
+			}
+		}()
+		if _, err := diffObjects(cfg, cfg); err != nil {
+			t.Logf("diffObjects returned an error for a malformed descriptor (acceptable): %v", err)
+		}
+	}()
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("inspectObject panicked on a malformed descriptor: %v", r)
+			}
+		}()
+		res, err := inspectObject(cfg, true)
+		if err != nil {
+			t.Logf("inspectObject returned an error for a malformed descriptor (acceptable): %v", err)
+			return
+		}
+		// The reachability query is also malformed JSON above; inspect
+		// must degrade honestly rather than fabricate a sharing verdict.
+		if res.SharingAvailable {
+			t.Fatalf("expected SharingAvailable=false when the reachability query itself is malformed JSON")
+		}
+	}()
+}
+
+// TestM8G_CredentialSeparation_Diff proves diff never sends object A's
+// credentials to object B's endpoint or vice versa, the same isolation
+// property M8G-A9 already established for replicate -- checked here at
+// the wire level (the Authorization header's Credential= access key) so
+// it doesn't just rely on cfgA/cfgB never being copied into each other in
+// diffObjects' own source.
+func TestM8G_CredentialSeparation_Diff(t *testing.T) {
+	_, srvA, _, srvB, _, region := newReplicateTestServerPair(t)
+	credsA := Credentials{AccessKeyID: "AKIADIFFTESTAAAAAAAAAAA", SecretAccessKey: "diffTestSecretKeyForObjectA0123456789"}
+	credsB := Credentials{AccessKeyID: "AKIADIFFTESTBBBBBBBBBBB", SecretAccessKey: "diffTestSecretKeyForObjectB9876543210"}
+	srvA.creds = credsA
+	srvB.creds = credsB
+
+	var sawOnA, sawOnB []string
+	recordingA := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawOnA = append(sawOnA, r.Header.Get("Authorization"))
+		srvA.ServeHTTP(w, r)
+	})
+	recordingB := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawOnB = append(sawOnB, r.Header.Get("Authorization"))
+		srvB.ServeHTTP(w, r)
+	})
+	tsA := httptest.NewServer(recordingA)
+	defer tsA.Close()
+	tsB := httptest.NewServer(recordingB)
+	defer tsB.Close()
+
+	mustPutSourceObject(t, srvA, "b", "obj", []byte("content on server A"), "text/plain", nil)
+	mustPutSourceObject(t, srvB, "b", "obj", []byte("content on server B"), "text/plain", nil)
+
+	cfgA := syncClientConfig{Endpoint: tsA.URL, Bucket: "b", Key: "obj", Creds: credsA, Region: region, HTTPClient: tsA.Client()}
+	cfgB := syncClientConfig{Endpoint: tsB.URL, Bucket: "b", Key: "obj", Creds: credsB, Region: region, HTTPClient: tsB.Client()}
+	if _, err := diffObjects(cfgA, cfgB); err != nil {
+		t.Fatalf("diffObjects: %v", err)
+	}
+
+	if len(sawOnA) == 0 || len(sawOnB) == 0 {
+		t.Fatalf("expected requests to reach both servers, got A=%d B=%d", len(sawOnA), len(sawOnB))
+	}
+	for _, auth := range sawOnA {
+		if !strings.Contains(auth, credsA.AccessKeyID) || strings.Contains(auth, credsB.AccessKeyID) {
+			t.Fatalf("server A saw an Authorization header not scoped to A's own credentials: %q", auth)
+		}
+	}
+	for _, auth := range sawOnB {
+		if !strings.Contains(auth, credsB.AccessKeyID) || strings.Contains(auth, credsA.AccessKeyID) {
+			t.Fatalf("server B saw an Authorization header not scoped to B's own credentials: %q", auth)
+		}
 	}
 }

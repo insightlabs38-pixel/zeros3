@@ -1,10 +1,263 @@
 # ZeroS3 — Status
 
 Milestone-by-milestone status, newest first. M1-M7, M8A, M8B, M8C, M8D,
-and M8E are all complete, tested, and release-hardened (frozen unless a
-demonstrated regression or correctness bug requires a minimal fix); M8F
-(atomic S3 conditional operations) is the current pass -- see its section
-immediately below.
+M8E, and M8F are all complete, tested, and release-hardened (frozen
+unless a demonstrated regression or correctness bug requires a minimal
+fix); M8G (read-only replication planning, structural diff, and CAS
+inspection) is the current pass -- see its section immediately below.
+
+## M8G — Read-only replication planning, object diff, and CAS inspect
+(`replicate -dry-run`, `zeros3 diff`, `zeros3 inspect`)
+
+**Goal:** expose ZeroS3's content-addressed architecture to an operator
+*before* anything moves -- an exact payload-transfer plan for a
+replication that hasn't run yet, a structural CDC/CAS comparison between
+two existing objects, and a view of how one object's physical
+representation maps onto the rest of the store's live roots -- with an
+independently-proven zero-mutation guarantee across all three commands.
+
+### Phase 0 — exact baseline
+
+- Exact accepted M8F HEAD: `9729f35` (`main`'s merge commit for the
+  M8F PR), confirmed identical to `origin/main` at session start.
+- Go toolchain: go1.27.0 linux/amd64.
+- `zeros3.go`: 10980 lines. `zeros3_test.go`: 21378 lines.
+- `gofmt -l .`: clean. `go vet ./...`: clean. `go test ./...`: **594
+  tests**, ok (84.9s). `go test -race ./...`: ok (215.4s).
+- `go.mod`: zero `require` directives (unchanged from M1).
+- Checkpoint tag `m8f-gold` created at `9729f35` before any M8G work
+  began.
+
+### M8G-A — `replicate -dry-run`: read-only replication planning
+
+**Planner extraction, not a rewrite.** `replicateObject`'s single
+monolithic function is split into `planReplication` (discover source ->
+discover destination -> fetch source descriptor -> HEAD destination ->
+negotiate destination CAS -> stop) and `executeReplicationPlan` (fetch
+missing chunks -> upload -> commit), with `replicateObject` itself now
+just `planReplication` followed immediately by `executeReplicationPlan`.
+This is the one and only planner: `replicate -dry-run` calls
+`planReplication` and stops; ordinary `replicate`/`replicate -recursive`
+call the exact same function and then finish the job. There is no second,
+dry-run-specific estimate of "what would transfer" anywhere in the
+codebase that could silently drift from what an actual replication does.
+
+**No source payload fetch, ever.** `planReplication` never calls
+`fetchSourceChunk` or `putSyncChunk` or `commitSyncObject` -- those three
+calls exist only inside `executeReplicationPlan`. Negotiation
+(`negotiateSyncMissing`, a POST to `/_zeros3/v1/negotiate`) is the one
+non-GET request dry-run issues, and it is documented and independently
+verified to be a pure `os.Stat`-based CAS-presence read
+(`handleSyncNegotiate`'s own doc comment; the M8G-D hostile audit's
+`noMutatingVerbs` wrapper explicitly allow-lists only this one POST path
+and fails the test on anything else).
+
+**Accounting.** `wouldTransferBytes` sums `plan.unique` (already
+deduplicated to one entry per distinct digest by the pre-existing
+`buildSyncPlan`) filtered by the negotiate result, so a chunk occurring
+many times in one object's manifest is counted once, matching real
+network behavior (A6). `missingOccur` counts occurrences for the
+"Chunks missing" line. Recursive dry-run
+(`planReplicationNamespace`) adds one further, genuinely new piece of
+math: `simulatedPresent`, a digest set threaded across objects in listing
+order, crediting a chunk shared by two not-yet-replicated objects to
+whichever object claims it first -- exactly mirroring what a real
+`replicateNamespace` run's strictly-sequential per-object uploads would
+leave for a later object to actually negotiate. Without this, a
+recursive dry-run over two objects sharing content would double-count
+that shared payload; `TestDryRun_Recursive_SeveralObjectsAndCrossObjectReuse`
+proves the corrected math against two byte-identical objects with a
+hand-computable expected total.
+
+**Destination action classification** (`destActionPublish` /
+`destActionEquivalent` / `destActionConflict`) is derived from exactly
+the same `pre`/`exists`/`etag` values `replicateObject` already computed
+before M8G-A existed -- ordinary (non-fork) `replicate` never actually
+conflicts under quiescent conditions (it always overwrites an existing,
+differently-identified destination), so `destActionConflict` is only
+reachable when `DestMustBeAbsent` is set (`zeros3 fork`'s own mode); this
+is documented explicitly rather than fabricated.
+
+**Prediction-vs-execution proof (A7, mandatory).**
+`TestDryRun_PredictionMatchesActualExecution` (all-missing, all-present)
+and `TestDryRun_PredictionMatchesActualExecution_Recursive` call
+`planReplication`/`planReplicationNamespace` for a prediction, then
+immediately call `replicateObject`/`replicateNamespace` fresh against the
+same unchanged store, and assert the actual run's `UploadedBytes`/
+`MissingChunkOccur`/`BytesAvoided`/`LogicalBytes` match the prediction
+exactly. This holds structurally (both paths share `planReplication`),
+not by coincidence.
+
+**Read-only proof.** `storeContentFingerprint` (SHA-256 over every file's
+relative path + content under a store directory, in `filepath.Walk`'s
+documented lexical order) is hashed before and after single-object and
+recursive dry-runs in `TestDryRun_ReadOnly_FullStoreFingerprintUnchanged`,
+for both the source and destination store, and required byte-identical.
+
+### M8G-B — `zeros3 diff`: descriptor-only structural object comparison
+
+**Descriptor-only, zero new server support.** `diffObjects` calls the
+existing, unmodified `fetchSourceDescriptor` (M8A2) against each object's
+own endpoint -- same server or different servers, no special-casing
+either way -- and `buildObjectDiff` computes every metric from the two
+`syncObjectDescriptor` values alone. No chunk body, and no object body,
+is ever fetched.
+
+**Two accounting shapes, kept explicitly separate (B4).**
+`SharedUniqueChunks`/`UniqueChunksA`/`UniqueChunksB` deduplicate by
+digest (physical identity). `APayloadReusableFromB`/`BPayloadReusableFromA`
+walk every chunk *occurrence*, crediting a repeated digest's length once
+per occurrence -- so an object referencing the same chunk three times and
+diffed against an object holding that chunk once reports full reusable
+credit for all three occurrences on the "many" side
+(`TestObjectDiff_RepeatedIdenticalChunks_DuplicateHandling`), never
+silently capped at the physical chunk count.
+
+**Exact-match semantics (B5) reuse ZeroS3's own existing identity
+primitive:** the manifest ETag (`md5.Sum(fullBody)`, order-sensitive by
+construction, identical formula for single-PUT and completed-multipart
+objects -- confirmed by inspection of both call sites). Two objects
+holding the same chunk set in a different order get 100% chunk-level
+reuse both ways but `ExactMatch=false`
+(`TestObjectDiff_SameChunkSetDifferentOrder_NotExactMatch`), because their
+concatenated bytes -- and therefore their ETags -- differ. Metadata
+differences never influence `ContentEqual`/`ExactMatch`/any chunk-sharing
+metric (`TestObjectDiff_MetadataOnlyDifference`).
+
+**Optional first-differing-region (B7)** is a naive, explicitly-documented
+positional walk of the two ordered chunk lists (not an alignment-aware
+diff) -- an insertion or deletion shifts the reported offset to the
+insertion/deletion point itself, which is correct for what it claims to
+be (the first position two ordered sequences disagree) and never claims
+byte-level precision.
+
+Cross-checked in `TestObjectDiff_CrossCheckAgainstIndependentComputation`
+against an independently-written computation of the same metrics from raw
+descriptors, per B's own "cross-check diff metrics" requirement.
+
+### M8G-C — `zeros3 inspect`: object representation + store-wide sharing
+
+**Basic fields (C2) are entirely client-side**, computed from the same
+M8A descriptor diff already reuses -- no new server support needed.
+Min/average/max chunk length and "unique CAS payload represented" are
+all computed over the object's *distinct* digests (C4: "deduplicate by
+chunk digest, use actual chunk length once per physical digest"), never
+over raw occurrences, so a heavily-repeated chunk cannot skew the
+reported size distribution or double-count its bytes
+(`TestInspect_RepeatedChunkIDs_ExactDedup`).
+
+**Store-wide sharing (C3) is the one genuinely new server extension:**
+`GET /_zeros3/v1/reachability?bucket=..&key=..`, backed by
+`Store.computeChunkRootMembership`, a new, from-scratch, read-only
+function that walks the *exact same four root categories*
+`computeReachability` already enumerates for GC/Verify (current objects,
+retained historical versions, active multipart uploads, durable
+snapshots) via `snapshotNamespace`/`snapshotHistory`/`snapshotUploads`/
+`scanSnapshots`, reusing `readVerifiedManifest` (the same verified-load
+primitive `computeStats` already calls) rather than re-implementing
+manifest verification. For every chunk the queried object references, it
+reports the total number of distinct authoritative roots referencing that
+same digest and whether any of them is not the queried object's own
+current root ("reachable elsewhere" -- would this chunk still be
+reachable if this object's current root disappeared). Nothing here is
+cached, indexed, or persisted: it is a fresh, full walk on every call,
+explicitly accepted by C8 as an O(total reachable manifests/chunks)
+diagnostic cost, never run from any hot path.
+
+**No fake exclusive/shared accounting (C4).** Deletion does not, by
+itself, reduce a chunk's reachability in this architecture -- `DeleteObject`
+archives the deleted state into per-key history (section 7c's existing,
+unchanged behavior; ZeroS3 implements no explicit version purge), and
+`computeChunkRootMembership` walks historical roots exactly like current
+ones. `TestInspect_DeletionChangesReachabilityCorrectly` asserts the
+*honest* answer -- reachability elsewhere is unchanged immediately after
+a delete-with-no-purge, not a fabricated drop to zero -- and
+`TestInspect_SnapshotPinnedSharing_SurvivesLiveDeletion`/
+`TestInspect_RetainedVersionSharing`/`TestInspect_ForkThenLocalizedMutation_HistoricalRootStillShares`
+independently exercise the snapshot, historical-version, and fork-then-
+mutate cases the spec calls out by name.
+
+**Optional `-chunks` listing (C7)** is bounded to 50 rows by default
+(`inspectChunksDefaultLimit`), states truncation explicitly, and
+`-chunks-all` lifts the bound; offsets are a client-side running sum over
+the ordered descriptor (never fetched), each row's digest and reachable-
+root-count come from the one reachability query already made.
+
+**Performance:** the 8MB/multi-chunk case
+(`TestInspect_ManyChunks_MinAvgMaxExact`) and the 1500-object namespace
+case (below) both complete in well under a second in this test
+environment; `computeChunkRootMembership`'s cost scales with total store
+size, not with the inspected object's size, exactly as C8 anticipates,
+and is documented as such rather than hidden.
+
+### M8G-D — hostile read-only audit
+
+- **Combined fingerprint proof** (mandatory):
+  `TestM8G_HostileAudit_CombinedFingerprint` runs a single-object dry-run,
+  a recursive dry-run, a diff, and an inspect (with `-chunks`) back to
+  back against one shared source/destination fixture, then requires both
+  stores' `storeContentFingerprint` unchanged.
+- **No-mutating-HTTP-verb proof:** `noMutatingVerbs` wraps both test
+  servers so any DELETE, any chunk PUT, any commit POST, or any
+  snapshot-create POST fails the test outright; the one legitimately
+  read-only POST (`/negotiate`) is explicitly allow-listed with its
+  rationale spelled out in the wrapper's own doc comment, per the spec's
+  "distinguish HTTP verb from state semantics" guidance.
+- **Huge namespace:** `TestM8G_HugeNamespace_1500Objects_RecursiveDryRun`
+  runs a recursive dry-run over 1500 objects (1.78s in this environment)
+  and asserts `printDryRunNamespace`'s output stays a small, fixed-size
+  summary regardless of object count -- never one line per object.
+- **Malicious endpoint:** `malformedDescriptorServer` serves a
+  syntactically-invalid descriptor (negative chunk length, non-hex
+  digest) and malformed JSON from the reachability endpoint;
+  `TestM8G_HostileEndpoint_MalformedDescriptorDoesNotPanic` requires
+  `diffObjects`/`inspectObject` either return a clear error or degrade
+  honestly (`SharingAvailable=false`), never panic and never fabricate a
+  plausible-looking but wrong result.
+- **Credential separation:** `TestM8G_CredentialSeparation_Diff`
+  independently observes the `Authorization` header actually received by
+  each of two differently-credentialed test servers during a `diff` run
+  and confirms neither ever saw the other's access key.
+
+### Full regression
+
+- `gofmt -l .`: clean. `go vet ./...`: clean.
+- `go test ./...`: **651 tests**, ok. `go test -race ./...`: ok.
+- `zeros3.go`: 12007 lines (+1027). `zeros3_test.go`: 23331 lines
+  (+1953).
+- Import block byte-for-byte unchanged from the M8F baseline (diffed
+  directly): M8G added zero new imports. `go.mod` unchanged: zero
+  `require` directives.
+- `scripts/reproducible_build.sh`: two independent builds from two
+  independent source copies produce byte-for-byte identical binaries
+  (SHA-256 `e7c53f31...4bff6`), CGO not required.
+- Every pre-existing M8A/M8C replicate/fork test (`TestReplicate_*`,
+  `TestReplicateNamespace_*`, `TestFork*`) re-run unmodified and green
+  after the `planReplication`/`executeReplicationPlan` extraction --
+  confirming the refactor is behavior-preserving, not just
+  independently-tested-as-new-code.
+- No persistent-format change: no new journal record type, no new
+  manifest field, no new on-disk file kind. The one new wire artifact is
+  a single new HTTP extension endpoint (`GET /_zeros3/v1/reachability`),
+  additive and versioned exactly like every other `/_zeros3/v1/*`
+  extension.
+
+### Final assessment
+
+**M8G ACCEPTED** — read-only planning, structural diff, and CAS
+inspection improve on M8F with full regression green. `replicate
+-dry-run` shares its planner with real replication rather than
+approximating it, and proves its predictions match immediate real
+execution exactly, including the cross-object recursive case; `diff`
+compares two objects by descriptor alone, correctly distinguishes
+physical from logical/directional accounting, and treats ordering as
+part of object identity; `inspect` reports honest physical and
+store-wide-sharing metrics by walking the same root universe GC already
+protects, with no persistent index or refcount table anywhere; every
+command is independently proven to leave authoritative store state
+byte-for-byte unchanged, individually and in combination; the complete
+historical regression is green; the build remains reproducible and
+dependency-free; no persistent-format change was needed.
 
 ## M8F — Atomic S3 conditional operations (`If-None-Match`/`If-Match`
 PutObject, conditional GetObject/HeadObject, conditional CopyObject
