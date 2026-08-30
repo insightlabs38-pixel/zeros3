@@ -18269,6 +18269,35 @@ func TestSnapshotCreate_NoSuchBucket(t *testing.T) {
 	}
 }
 
+func TestSnapshotCreate_WritesZeroNewCASPayload(t *testing.T) {
+	srv, dir, cfg, closeFn := newSnapshotTestServer(t, "b")
+	defer closeFn()
+	putObj(t, srv, "b", "a.bin", genRandomBytes(51, 200_000))
+	putObj(t, srv, "b", "sub/b.bin", genRandomBytes(52, 300_000))
+
+	beforeFiles := countChunkFiles(t, dir)
+	beforeStats, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := createSnapshotRemote(cfg, "b", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	afterFiles := countChunkFiles(t, dir)
+	afterStats, err := srv.store.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterFiles != beforeFiles {
+		t.Fatalf("chunk file count changed by snapshot create: before=%d after=%d", beforeFiles, afterFiles)
+	}
+	if afterStats.ChunkStoreFileBytes != beforeStats.ChunkStoreFileBytes {
+		t.Fatalf("ChunkStoreFileBytes changed by snapshot create: before=%d after=%d", beforeStats.ChunkStoreFileBytes, afterStats.ChunkStoreFileBytes)
+	}
+}
+
 func TestSnapshotCreate_CapturedRootsMatchLiveManifest(t *testing.T) {
 	srv, _, cfg, closeFn := newSnapshotTestServer(t, "b")
 	defer closeFn()
