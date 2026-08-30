@@ -232,6 +232,39 @@ historical-version cloning); no point-in-time bucket snapshot is taken.
 See `STATUS.md`'s "M8D" section for the full mapping/overlap/conflict/
 resume semantics and `README.md` for CLI usage.
 
+**Durable namespace snapshots (`zeros3 snapshot create/list/show/
+delete/restore`, M8E) are proprietary ZeroS3 functionality, not an S3 API
+and not part of the wire protocol.** `snapshot create` captures the
+current, in-memory namespace state under one bucket/prefix (under
+`Store.mu`, so a concurrent writer can never produce a mixed-time
+capture) into a small, versioned, CRC32C-integrity-checked descriptor
+file (`store/snapshots/<id>`) naming each captured key's manifest by
+(UUID, SHA256) — never a copy of manifest content or CAS payload. This is
+a fourth, additional GC root category alongside current objects, retained
+historical versions, and active multipart uploads (section 12a of
+`zeros3.go`): a snapshot's captured manifests/chunks are protected from
+`zeros3 gc` for as long as the snapshot exists, even after the live
+object that produced them has been overwritten or deleted, with no new
+per-chunk reference counting. A snapshot descriptor that fails its own
+integrity check makes `zeros3 gc -apply` refuse to sweep anything at all
+(the same fail-closed policy a corrupt manifest/chunk already triggers),
+never silently treating a snapshot it cannot trust as garbage. `snapshot
+restore` republishes a captured snapshot's entries as ordinary objects at
+an explicit destination, reusing the exact same negotiate/fetch/commit
+pipeline M8A/M8D already use — same-store only, so every chunk a restored
+object's manifest references is already present in that one store's CAS
+and **zero new CAS payload bytes** are ever written, structurally, not as
+a special case. Restore is create-only (no `--force`): a pre-existing,
+differently-identified destination object is always reported as a
+conflict, while a resumed rerun still lands cleanly against its own
+already-restored objects. A snapshot captures only the *current* object
+per key (no historical-version snapshot, no incomplete-multipart-upload
+snapshot, no bucket policy/configuration snapshot); `snapshot delete`
+removes only the descriptor, never any chunk/manifest directly — ordinary
+`zeros3 gc` decides what, if anything, has become unreachable once
+nothing else references it. See `STATUS.md`'s "M8E" section for the full
+format/atomicity/concurrency semantics and `README.md` for CLI usage.
+
 ## Deliberately unsupported (explicit non-goals)
 
 These are not planned for this project, at any tier:
@@ -275,8 +308,9 @@ not begun in this pass, and not claimed as shipped:
 
 Delta sync (M6A/M6B), recursive directory sync (M6C), remote-to-remote
 delta replication (M8A), peer-assisted corruption repair (M8B),
-prefix/bucket delta replication (M8C), and copy-on-write namespace fork
-(M8D) all shipped — see "ZeroS3 extensions (not S3 APIs)" above.
+prefix/bucket delta replication (M8C), copy-on-write namespace fork
+(M8D), and durable namespace snapshots + zero-payload restore (M8E) all
+shipped — see "ZeroS3 extensions (not S3 APIs)" above.
 
 ## Compatibility deviations (differs from real AWS S3)
 

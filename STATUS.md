@@ -1,10 +1,306 @@
 # ZeroS3 — Status
 
-Milestone-by-milestone status, newest first. M1-M7, M8A, M8B, and M8C
-are all complete, tested, and release-hardened (frozen unless a
-demonstrated regression or correctness bug requires a minimal fix); M8D
-(copy-on-write namespace fork) is the current pass -- see its section
-immediately below.
+Milestone-by-milestone status, newest first. M1-M7, M8A, M8B, M8C, and
+M8D are all complete, tested, and release-hardened (frozen unless a
+demonstrated regression or correctness bug requires a minimal fix); M8E
+(durable namespace snapshots + zero-payload restore) is the current pass
+-- see its section immediately below.
+
+## M8E — Durable namespace snapshots + zero-payload restore (`zeros3
+snapshot create/list/show/delete/restore`)
+
+**Goal:** freeze the current visible state of a bucket/prefix as a
+durable, immutable set of content roots that survives the live namespace
+mutating or disappearing entirely, pins its content through garbage
+collection, and can later be restored -- as an ordinary, independent live
+namespace -- without duplicating any CAS payload. Unlike M8D's same-store
+fork (an immediate live-to-live clone), a snapshot is captured once and
+outlives whatever happens to the source afterward.
+
+### Phase 0 — exact baseline
+
+- Exact merged M8D commit: `8943f11207c19dee0af16d7ff7fc4b28ee11e4c9`
+  (`main`'s merge commit for PR #15).
+- Go toolchain: go1.27.0 linux/amd64.
+- `gofmt -l .`: clean. `go vet ./...`: clean.
+  `go test ./...`: **479 tests**, ok (70.3s). `go test -race ./...`: ok
+  (134.4s).
+- `zeros3.go`: 9209 lines. `zeros3_test.go`: 17895 lines.
+- `go.mod`: zero `require` directives (unchanged from M1).
+- Checkpoint branch `m8d-gold` pushed at this exact commit before any
+  M8E code was written.
+
+### Architecture: a thin, additional immutable root-set, not a second
+engine
+
+M8E adds exactly two new `zeros3.go` sections -- "15h. Durable namespace
+snapshots" (format, create, list/show, delete, GC integration) and "15i.
+Snapshot restore" -- plus one small addition each to `Store` (a
+`snapshotMu` lock and `store/snapshots/` in `OpenStore`'s managed
+directory list) and `computeReachability` (a fourth GC root category).
+Nothing about manifests, CAS, the journal, or ordinary namespace
+operations changed.
+
+```
+live namespace (Store.buckets, under Store.mu)
+       |
+       | captureSnapshotEntries: one Store.mu critical section copying
+       | (key, manifestUUID, manifestSHA256, size, etag, content_type)
+       | for every current object under the requested bucket/prefix --
+       | never a manifest body, never a chunk byte
+       v
+snapshotDescriptorV1 (in memory)
+       |
+       | encode (magic+version+length+JSON+CRC32C, mirroring the
+       | journal frame format) -> writeFileDurable (tmp+fsync+rename)
+       | -> syncDir(store/snapshots/) -- the exact same durable-
+       | publication primitive publishManifest already uses
+       v
+store/snapshots/<snapshot-id>.snap  (durable; this file IS the catalog
+       |                              entry -- no separate index)
+       v
+computeReachability's 4th root category: every valid descriptor's
+entries feed the same checkRoot closure current/historical/multipart
+roots already use, so GC protects them automatically, with zero new
+gating logic.
+```
+
+**Snapshot descriptor format (A4/A5):** magic `"ZSS1"` + format version
+(uint16, BE) + payload length (uint32, BE) + canonical JSON payload +
+trailing CRC32C(Castagnoli) over everything preceding it -- structurally
+identical to the journal frame layout (section 6), applied to a one-shot
+immutable file instead of an append-only log. Entries are serialized in
+strictly-ascending-by-key order, which `decodeSnapshotDescriptor` treats
+as a hard validation requirement (proves both "sorted" and "no
+duplicates" in one pass). Snapshot IDs are `newUUIDv7()` -- the exact
+same time-ordered UUID primitive manifest/store IDs already use --
+validated by a hand-rolled 36-byte-position check (`validSnapshotID`)
+before ever being turned into a filesystem path, so a crafted ID can
+never smuggle a path separator or `..` into a filesystem operation.
+Descriptors live at `store/snapshots/<id>.snap`; directory enumeration
+of that one directory *is* the catalog, per the spec's own "avoid a
+second mutable index" preference.
+
+**Atomicity boundary (A3/A11, documented exactly as required):**
+`captureSnapshotEntries` holds `Store.mu` only for the in-memory
+namespace copy (an O(objects-under-prefix) map walk, no I/O) -- never
+across the subsequent encode/write/fsync/rename/dir-fsync. This is safe
+because a live server never deletes a manifest or chunk file on any code
+path (`DeleteObject`/overwrite only remove a journal *pointer*; the old
+files remain until a GC pass proves them unreachable), and destructive
+GC requires `flock` `LOCK_EX` on the store (section 13b), which is
+refused for as long as the running server holds its own `LOCK_SH` for
+its whole process lifetime. So nothing can make the manifests/chunks
+`captureSnapshotEntries` just observed disappear before this snapshot's
+durable publication completes and returns success -- the required
+semantic ("acknowledged create ⇒ durably pinned") holds by construction,
+without serializing the slow I/O behind the namespace lock.
+
+**GC fail-safe (A8/A9, the mandatory hostile-review property):**
+`scanSnapshots` treats every file in `store/snapshots/` as something that
+MUST parse and structurally validate -- bad magic/version/CRC, truncated
+file, malformed length, invalid ID, ID-vs-filename mismatch, duplicate or
+non-canonically-ordered entries, or an unexpected file name are all
+recorded as issues, never silently skipped. `computeReachability` folds
+every such issue into the exact same `issueTracker` current/historical/
+multipart roots already use, so a single corrupt snapshot descriptor
+anywhere in the store flips `reachabilityResult.OK()` to false, which is
+what makes destructive GC's pre-existing fail-closed gate (`errGCUnsafe`,
+section 13b) refuse to delete anything at all -- store-wide, not just
+around the one broken snapshot -- with zero new gating mechanism.
+`Store.Verify`/`zeros3 doctor` report the same issue automatically, since
+both already surface `computeReachability`'s issue list unmodified.
+
+**Concurrency (A13):** `snapshotMu` (a `sync.RWMutex`, distinct from
+`Store.mu`) serializes delete-vs-read (list/show/the restore per-object
+descriptor endpoint) and delete-vs-delete; create needs no lock at all
+(every snapshot gets a freshly minted, never-reused ID, so two concurrent
+creates cannot collide). Restore-vs-GC needs no new synchronization: GC
+already cannot run concurrently with anything that talks to a live
+server (see the atomicity-boundary paragraph above), and restore is
+exactly such a thing.
+
+**List/show semantics (A7):** `list`/`show` scan `store/snapshots/`
+fresh on every call (never cached in memory, matching section 12's
+"prefer exact scans over transactional counters" rule store-wide) and
+turn *any* corrupt entry found anywhere in the catalog into one clear,
+immediate error -- more conservative than GC's own "fold into
+issueTracker and keep scanning" policy, since a human/CLI caller needs a
+trustworthy answer, not a partial best-effort listing. `show` of one
+specific, healthy, already-known ID is intentionally NOT built on the
+whole-catalog scan, so an operator can still show/restore a snapshot they
+know the ID of even while an unrelated snapshot elsewhere is corrupt.
+Entries are never dumped by `show` unless `-entries` is passed.
+
+**Restore (M8E-B, section 15i):** reuses the M8A/M8D client pipeline
+(`discoverZeroS3Sync`, `headSyncDestination`, `buildSyncPlan`,
+`negotiateSyncMissing`, `fetchSourceChunk`, `putSyncChunk`,
+`commitSyncObject`, `syncPrecondition`, `namespaceDestKey`) completely
+unmodified; the only new piece is a new `GET
+/_zeros3/v1/snapshot/object?id=&key=` endpoint that re-reads the
+snapshot-captured manifest by its frozen `(UUID, SHA256)` rather than the
+live bucket/key pointer, returning the exact same `syncObjectDescriptor`
+shape the existing `GET /_zeros3/v1/object` endpoint already returns for
+a live object. `restoreObject` is a parallel function to
+`replicateObject` (not a shared wrapper), so M8A/M8C/M8D's own frozen
+code paths are untouched by this milestone. Same-store only (one
+`-endpoint` flag, mirroring `fork`), so source and destination always
+share physical CAS: `negotiateSyncMissing` always finds every chunk
+already present, giving **zero new CAS payload bytes** by the same
+structural argument M8D fork already established, not a special case.
+Destination is create-only with the same resume-safe matching-ETag
+no-op-equivalent carve-out `replicateConfig.DestMustBeAbsent` already
+established for fork; no `--force` exists. A restored object is
+committed through the exact same `buildManifestV1FromRefs` +
+`publishManifest` + `commitObjectRootChecked` path M8A/M8D already use --
+a fresh manifest UUID, referencing the exact same (already-present) CAS
+chunk digests -- so it is an entirely ordinary, fully independent object
+from the moment it commits: mutating/deleting it never touches the
+snapshot, and deleting the snapshot afterward never touches it.
+
+### M8E-A internal tests (format/create/list/show/GC/delete)
+
+53 new tests added directly to `zeros3_test.go`, covering: the complete
+format corruption matrix (bad magic/version/CRC/length, truncation,
+invalid ID, duplicate/unsorted entries, malformed manifest refs, empty
+descriptor); create against an empty prefix/one object/250 objects/1500
+objects/weird keys (spaces, `%`, `#`, `?`, Unicode, repeated slashes)/
+prefix scoping/a nonexistent bucket; point-in-time consistency (mutation
+after capture not reflected, addition after capture excluded, deletion
+after capture still listed, concurrent PUT churn during capture yields a
+torn-free snapshot); restart durability (snapshot and its deletion both
+survive `OpenStore`); GC pinning (an otherwise-genuinely-unreachable
+manifest+chunks constructed the same way `TestGC_AdversarialMatrix_K1toK5`'s
+own "K4" case does, kept alive by nothing but a snapshot root; multiple
+snapshots sharing chunks, deleting one leaves the other intact; the
+mandatory corrupt-descriptor GC-refuses-to-sweep proof, both dry-run and
+`-apply`; an unexpected file name in `store/snapshots/` triggers the same
+refusal; deleting the last pinning snapshot allows the content to become
+collectible); crash publication (no stray temp files ever land in
+`store/snapshots/`; a hand-truncated partial descriptor is never treated
+as valid, on restart or otherwise); `Store.Verify` surfacing a corrupt
+snapshot; and an explicit zero-new-CAS-payload proof for create (measured
+two independent ways: chunk file count and `ChunkStoreFileBytes`, mirroring
+M8D fork's own methodology). Plus 2 real-process CLI tests: a full
+create/list/show/delete lifecycle against a real `zeros3 serve`
+subprocess, and a snapshot surviving a real process restart plus a real
+`gc -apply` subprocess run. **Hard gate:** all criteria green (point-in-
+time coherence, durability, GC pinning, corrupt fail-safe, restart,
+race/vet/gofmt clean, no dependency changes). Checkpoint `m8e-snapshot-
+gold` pushed.
+
+### M8E-B internal tests (restore)
+
+19 new in-process tests plus 2 real-process CLI tests. Basic restore
+(one object, empty snapshot, nested prefix, 1200+ objects, weird keys,
+metadata/content-type preservation); the two defining point-in-time
+proofs (restore after the live source is overwritten still yields the
+captured old content; restore after the live source is deleted *and* GC
+has run still succeeds with byte-exact content); an explicit zero-new-
+CAS-payload proof (chunk file count and `ChunkStoreFileBytes` unchanged
+across a multi-object restore); conflict/resume semantics (a pre-existing
+differently-identified destination object is rejected and left
+untouched; a resumed rerun of an already-landed object commits as a
+no-op-equivalent; one object's conflict does not block unrelated objects
+from restoring); independence in every direction (mutating or deleting a
+restored object never touches the snapshot; deleting the snapshot after
+a successful restore never touches the restored copy; deleting the
+original source namespace never touches the restored copy); two restores
+of the same snapshot to distinct destinations; a deep `verify` pass
+after restore; and a missing destination bucket failing cleanly per-
+object rather than aborting the whole run. The two real-process CLI
+tests drive a real `zeros3 serve` + real `snapshot create`/`snapshot
+restore` subprocesses end to end (including a live-mutation-after-
+snapshot proof and an asserted `New CAS payload:         0 B` line in the
+CLI's own summary) and a genuine `SIGKILL` of the restore CLI process
+mid-run followed by a second real invocation that completes cleanly with
+every object exact. **Hard gate:** all criteria green (post-mutation and
+post-delete-plus-GC restore, zero-payload proof, conflict/resume,
+independence, restart/verify/GC, race/vet/gofmt clean). `go test -race
+./...`: ok (195.9s). Checkpoint `m8e-restore-gold` pushed.
+
+### External validation (M8E-C)
+
+New harness `harness/m8e/snapshot/` in `zeros3-testing` (one real
+`zeros3 serve` process per phase, matching M8D fork's own same-store
+harness shape; Phase 10 additionally starts one independent peer server
+purely as an M8B repair source). All 10 required phases implemented and
+green: **151 passed, 0 failed, 3 informational.** Phase 1 (create/list/
+show, exact object count/logical bytes via the real CLI against a real
+AWS-SDK-populated namespace); Phase 2 (the point-in-time proof: snapshot
+object A=v1, overwrite to v2, restore, independent AWS SDK reads confirm
+live=v2 and restored=v1); Phase 3 (the mandatory showcase proof: unique
+data, snapshot, delete the live source via the SDK, real `gc -apply`,
+restore still succeeds with an exact AWS SDK `GetObject`); Phase 4 (zero-
+payload restore measured two independent ways -- raw chunk file count and
+total chunk file bytes via direct filesystem walk, never trusting only
+the CLI's own statistic); Phase 5 (1500 objects, snapshot, mutate/delete
+some source objects afterward, restore to a new prefix, exact key set
+via full AWS SDK `ListObjectsV2` pagination, point-in-time content
+verified for both the mutated and the deleted key); Phase 6 (pin/release:
+GC preserves snapshot-only content while the snapshot exists and reports
+it as a snapshot root; after deletion GC no longer counts any snapshot
+root; a separately-live object sharing the same content survives
+throughout -- see the harness's own doc comment for why "content
+physically vanishes" is not an externally-provable claim in this store's
+pre-existing permanent-version-history model, and
+`TestSnapshotGC_DeleteFinalSnapshotAllowsEventualCollection` for the
+internal proof that root-less content genuinely does become collectible);
+Phase 7 (the mandatory corruption proof: a real filesystem bit-flip of a
+snapshot descriptor's trailing CRC32C makes `show`/`restore` fail cleanly
+and `gc -apply` refuse to sweep, while an unrelated live object is
+completely unaffected); Phase 8 (a real `zeros3 snapshot restore` OS
+process `SIGKILL`ed mid-run over 500 objects, then correctly resumed by a
+second real invocation -- every object exact, none partial, zero extra
+CAS payload across the whole sequence); Phase 9 (a full process restart
+with snapshot list/show unchanged, restore still working, and `gc`
+dry-run still recognizing the snapshot root); Phase 10 (M8B composition:
+restoring a snapshot into a second namespace structurally shares CAS with
+the source exactly like an M8D fork would; corrupting one shared chunk
+and running `zeros3 repair` from an independent peer -- completely
+unmodified -- fixes it for both namespaces in one repair).
+
+### Full historical regression
+
+Every pre-existing harness in `zeros3-testing` re-run against this exact
+M8E build, unmodified: **m2 (41/41), m3/copy (46/46), m3/dedup (7/7),
+m3/range (27/27), m5a/presign (47/47), m5b/multipart (43/43),
+m5d/pagination (43/43), m6/sync (33/33), m6c/dirsync (69/69),
+m8a/remote_delta (34/34), m8b/repair (133/133), m8c/namespace_replication
+(111/111), m8d/fork (146/146)** -- every count matches or exceeds the
+prior frozen baseline, zero regressions. **rclone** (v1.75.0): 20 passed,
+0 failed, 1 documented known limitation (unchanged from the M8D
+baseline). **Package Killer**: 14/14 passed on both ZeroS3 and s3rver
+3.7.1 -- GO, unchanged. Internal `zeros3_test.go`: **552 tests**, ok;
+`go test -race ./...`: ok; `gofmt -l .`: clean; `go vet ./...`: clean.
+
+### Reproducibility / dependency proof
+
+`zeros3.go`: 10624 lines (+1415 from the M8D baseline). `zeros3_test.go`:
+19973 lines (+2078). `go.mod`: still zero `require` directives, no new
+non-stdlib imports, no `golang.org/x/...`, no vendoring -- M8E's entire
+implementation uses primitives already imported at the M8D baseline
+(`encoding/binary`, `hash/crc32`, `sort`, `strings`, `sync`, `net/url`,
+all pre-existing). Two independent clean builds from the same working
+tree (`scripts/reproducible_build.sh`) produced byte-identical binaries:
+SHA-256
+`9f87452c07231e3614d98e9a9d6ddcd53ad728e7f6ad1827f5ebf114c04707cd`.
+
+### Final verdict
+
+**M8E ACCEPTED** — durable snapshots and zero-payload restore improve on
+M8D with full regression green. Point-in-time namespace capture is
+coherent; the descriptor format is small, versioned, and integrity
+checked; snapshot create is crash-safe and survives restart; snapshots
+pin historical roots through GC with zero new reference-counting
+machinery; a corrupt snapshot makes GC fail safe; snapshot deletion
+correctly releases roots for later GC; the source namespace may mutate,
+be deleted, and be GC'd, and the captured state still restores exactly;
+restore writes zero new CAS payload; the restored namespace is ordinary
+and fully independent; conflict/resume semantics are safe; 1000+ objects
+and a real process kill both work; M8D fork and M8B repair continue
+composing correctly; and the complete historical regression, internal
+and external, is green.
 
 ## M8D — Copy-on-write namespace fork (`zeros3 fork`)
 

@@ -1,7 +1,7 @@
 ZeroS3 zero-dependency proof
 ============================
 
-Generated: 2026-08-29T22:30:00Z (M8A regeneration -- package list verified byte-identical to the m7-gold proof; M8A added no new import). Re-verified for M8B: `go list -deps .` package list confirmed byte-identical again -- M8B's one new stdlib use, io.LimitReader, is the same "io" package already imported (M8B added no new import).
+Generated: 2026-08-29T22:30:00Z (M8A regeneration -- package list verified byte-identical to the m7-gold proof; M8A added no new import). Re-verified for M8B: `go list -deps .` package list confirmed byte-identical again -- M8B's one new stdlib use, io.LimitReader, is the same "io" package already imported (M8B added no new import). Re-verified for M8E: `go list -deps .` package list confirmed byte-identical again -- M8E's snapshot format/create/GC-integration/restore code uses only already-imported stdlib packages (encoding/binary, hash/crc32, sort, strings, sync, net/url, os, path/filepath, time, fmt, errors, encoding/json, net/http, flag) -- no new import (M8C/M8D added no new import either).
 Go toolchain: go version go1.27.0 linux/amd64
 GOOS/GOARCH: linux/amd64
 
