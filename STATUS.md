@@ -282,8 +282,9 @@ non-stdlib imports, no `golang.org/x/...`, no vendoring -- M8E's entire
 implementation uses primitives already imported at the M8D baseline
 (`encoding/binary`, `hash/crc32`, `sort`, `strings`, `sync`, `net/url`,
 all pre-existing). Two independent clean builds from the same working
-tree produced byte-identical binaries; see the final build SHA-256
-recorded in the completion report / `deps-proof.txt`.
+tree (`scripts/reproducible_build.sh`) produced byte-identical binaries:
+SHA-256
+`9f87452c07231e3614d98e9a9d6ddcd53ad728e7f6ad1827f5ebf114c04707cd`.
 
 ### Final verdict
 
