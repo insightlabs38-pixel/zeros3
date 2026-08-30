@@ -217,6 +217,25 @@ var (
 	// the authoritative live root set is not fully valid: proceeding would
 	// risk treating reachable-but-corrupt data as garbage.
 	errGCUnsafe = errors.New("authoritative live root set is corrupt or incomplete; refusing to delete anything")
+
+	// errPreconditionFailed (M8F-A, section 10a) is commitObjectRootChecked's
+	// check-function sentinel for a failed S3 conditional-write precondition
+	// (If-None-Match: "*" or If-Match: "<etag>"): the current visible object
+	// at the actual commit point -- re-read inside the same locked critical
+	// section that performs the write -- did not satisfy the condition the
+	// caller specified. Distinct from errConditionUnsupported: this is a
+	// runtime CAS failure (412), not a malformed/unsupported request (400).
+	errPreconditionFailed = errors.New("conditional write: precondition failed")
+	// errConditionUnsupported (M8F-A, section 10a) is parsePutCondition's
+	// sentinel for a syntactically-plausible but out-of-scope conditional
+	// header value (see section 10a's doc comment for the exact supported
+	// subset) -- e.g. a comma-separated validator list, a weak (W/) ETag, or
+	// If-Match/If-None-Match both set at once.
+	errConditionUnsupported = errors.New("conditional write: unsupported If-Match/If-None-Match value")
+	// errConditionMalformed (M8F-A, section 10a) is parsePutCondition's
+	// sentinel for a syntactically invalid conditional header value (e.g. an
+	// unterminated quoted ETag, or an empty validator).
+	errConditionMalformed = errors.New("conditional write: malformed If-Match/If-None-Match value")
 )
 
 // decodeHexSHA256 parses a lowercase-hex SHA-256 digest as stored in
@@ -1593,6 +1612,20 @@ func (s *Store) DeleteObject(bucket, key string) error {
 // error propagates to the caller, who must not acknowledge success; any
 // chunks/manifest already published are orphaned but harmless.
 func (s *Store) PutObject(bucket, key string, body []byte, contentType string, metadata map[string]string) (*objectEntry, error) {
+	return s.PutObjectChecked(bucket, key, body, contentType, metadata, putCondition{})
+}
+
+// PutObjectChecked is PutObject's precondition-aware core (M8F-A, section
+// 10a): identical chunk/CAS/manifest pipeline, but the final publication is
+// gated by cond's S3 conditional-write precondition (If-None-Match: "*" /
+// If-Match: "<etag>"), evaluated at the exact same commit-point critical
+// section commitObjectRootChecked already provides for M6B sync's safe-mode
+// conflict precondition -- there is no second concurrency-control path here.
+// A zero-value cond (PutObject's case) is indistinguishable from an
+// unconditional PUT: it skips commitObjectRootChecked's check function
+// entirely, so every pre-M8F caller's behavior, including performance, is
+// unchanged.
+func (s *Store) PutObjectChecked(bucket, key string, body []byte, contentType string, metadata map[string]string, cond putCondition) (*objectEntry, error) {
 	s.mu.Lock()
 	_, ok := s.buckets[bucket]
 	s.mu.Unlock()
@@ -1622,7 +1655,15 @@ func (s *Store) PutObject(bucket, key string, body []byte, contentType string, m
 	}
 	fireTestHook(hookAfterManifestPublished)
 
-	return s.commitObjectRoot(bucket, key, manUUID, manSHA, man)
+	// A failed condition below leaves the chunks/manifest just published
+	// above orphaned on disk -- exactly like any other failed commit in this
+	// codebase (see commitObjectRootChecked's own doc comment, and section
+	// 10a's doc comment on speculative CAS payload). They are harmless,
+	// never become visible, and are ordinary GC-collectible garbage.
+	if cond.isZero() {
+		return s.commitObjectRoot(bucket, key, manUUID, manSHA, man)
+	}
+	return s.commitObjectRootChecked(bucket, key, manUUID, manSHA, man, cond.check)
 }
 
 // archivedVersionPayload builds the journal record of cur being archived
@@ -2935,6 +2976,8 @@ func s3ErrorStatus(code string) int {
 		return http.StatusRequestedRangeNotSatisfiable
 	case "NotImplemented":
 		return http.StatusNotImplemented
+	case "PreconditionFailed":
+		return http.StatusPreconditionFailed
 	default:
 		return http.StatusBadRequest
 	}
@@ -3359,12 +3402,157 @@ func (srv *Server) handleDeleteBucket(w http.ResponseWriter, bucket string) {
 	}
 }
 
+// =============================================================================
+// 10a. S3 conditional-write preconditions (M8F-A): PutObject's
+// If-None-Match / If-Match
+//
+// This exposes, to ordinary S3 clients, the exact concurrency-safety
+// concept ZeroS3 already uses internally for M6B sync's safe-mode conflict
+// precondition (syncPrecondition/commitObjectRootChecked, section 15): a
+// caller-observed expected namespace state, re-validated inside the same
+// locked critical section that performs the write, so a concurrent writer
+// can never slip in between the check and the commit. putCondition is that
+// same "no condition / must be absent / must match ETag X" shape, kept as
+// its own small type (rather than reusing syncPrecondition directly)
+// because it parses public S3 request headers, not the internal sync wire
+// protocol -- but both ultimately drive the identical
+// commitObjectRootChecked check-function mechanism. There is no second
+// concurrency-control system here.
+//
+// Supported subset (deliberately narrow -- see A7/A9 of the M8F-A spec):
+//
+//	If-None-Match: *              -- create only if the key currently has
+//	                                  no visible object. This is the only
+//	                                  value real S3 accepts for
+//	                                  If-None-Match on PutObject.
+//	If-Match: "<etag>" or <etag>  -- replace only if the current visible
+//	                                  object's ETag is exactly this one
+//	                                  (compared case-insensitively after
+//	                                  trimming quotes, exactly like
+//	                                  CompleteMultipartUpload's own
+//	                                  part-ETag comparison in section 11b).
+//
+// Not supported, and rejected outright as errConditionUnsupported rather
+// than silently ignored or approximated: comma-separated validator lists,
+// weak (W/-prefixed) validators, If-Match: "*", and setting both headers on
+// one request at once. None of these are needed for the create-if-absent /
+// compare-and-swap primitive M8F-A exists to provide, and real S3 itself
+// does not define most of them for PutObject either.
+// =============================================================================
+
+// putCondition is PutObjectChecked's parsed conditional-write precondition.
+// The zero value (both fields empty/false) means "no condition" and must
+// remain indistinguishable, in cost and behavior, from calling the
+// unconditional PutObject -- see isZero and PutObjectChecked.
+type putCondition struct {
+	ifNoneMatchStar bool   // If-None-Match: * -- create only if absent
+	ifMatchETag     string // If-Match: <etag> -- replace only if this exact ETag is current; "" means unset
+}
+
+// isZero reports whether cond carries no condition at all, letting
+// PutObjectChecked skip commitObjectRootChecked's check function entirely
+// for an ordinary, unconditional PUT.
+func (cond putCondition) isZero() bool {
+	return !cond.ifNoneMatchStar && cond.ifMatchETag == ""
+}
+
+// check is cond's commitObjectRootChecked check function (section 7): it
+// runs inside s.mu, immediately after re-reading the current root and
+// before anything is written, so cur/exists reflect the actual namespace
+// state at the commit point -- not whatever a caller observed before or
+// during request-body processing. A non-nil result aborts the commit
+// without publishing anything.
+func (cond putCondition) check(cur *objectEntry, exists bool) error {
+	if cond.ifNoneMatchStar {
+		if exists {
+			return errPreconditionFailed
+		}
+		return nil
+	}
+	if cond.ifMatchETag != "" {
+		if !exists || !strings.EqualFold(cur.etag, cond.ifMatchETag) {
+			return errPreconditionFailed
+		}
+		return nil
+	}
+	return nil
+}
+
+// parseSingleETag validates and unwraps one conditional-header ETag
+// validator: optionally double-quoted, never weak (W/-prefixed), never
+// empty once unwrapped, and never a comma-separated list (M8F-A's
+// deliberately narrow supported subset -- see section 10a's doc comment).
+// The returned string is in the same unquoted internal representation
+// objectEntry.etag/entry.etag already use everywhere else in this codebase
+// (e.g. multipart completion's part-ETag comparison, section 11b), so
+// callers can compare it directly with cur.etag.
+func parseSingleETag(raw string) (string, error) {
+	if raw == "*" {
+		// If-Match: * ("must currently exist, whatever its ETag") is valid
+		// HTTP but outside M8F-A's supported subset -- real S3 does not
+		// define it for PutObject either.
+		return "", errConditionUnsupported
+	}
+	if strings.Contains(raw, ",") {
+		return "", errConditionUnsupported
+	}
+	if strings.HasPrefix(raw, "W/") {
+		return "", errConditionUnsupported
+	}
+	switch {
+	case len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"':
+		raw = raw[1 : len(raw)-1]
+	case strings.ContainsRune(raw, '"'):
+		// Any quote that isn't a clean matched wrapper (e.g. one stray
+		// quote, or a quote in the middle) is malformed rather than
+		// silently stripped.
+		return "", errConditionMalformed
+	}
+	if raw == "" {
+		return "", errConditionMalformed
+	}
+	return raw, nil
+}
+
+// parsePutCondition parses PutObject's M8F-A conditional-write headers.
+// Absent headers produce the zero putCondition (no condition). Both
+// headers present at once is rejected outright: If-None-Match: * (create
+// only) and If-Match (replace only) express contradictory admission rules,
+// and M8F-A does not define an AND-of-both-conditions form.
+func parsePutCondition(r *http.Request) (putCondition, error) {
+	inm := strings.TrimSpace(r.Header.Get("If-None-Match"))
+	im := strings.TrimSpace(r.Header.Get("If-Match"))
+	if inm != "" && im != "" {
+		return putCondition{}, errConditionUnsupported
+	}
+	if inm != "" {
+		if inm != "*" {
+			return putCondition{}, errConditionUnsupported
+		}
+		return putCondition{ifNoneMatchStar: true}, nil
+	}
+	if im != "" {
+		etag, err := parseSingleETag(im)
+		if err != nil {
+			return putCondition{}, err
+		}
+		return putCondition{ifMatchETag: etag}, nil
+	}
+	return putCondition{}, nil
+}
+
 func (srv *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket, key string, body []byte) {
 	// A PUT carrying x-amz-copy-source is CopyObject, not an ordinary body
 	// upload -- same HTTP verb, different S3 operation, exactly as real S3
 	// distinguishes them.
 	if copySource := r.Header.Get("X-Amz-Copy-Source"); copySource != "" {
 		srv.handleCopyObject(w, r, bucket, key, copySource)
+		return
+	}
+
+	cond, err := parsePutCondition(r)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), "/"+bucket+"/"+key)
 		return
 	}
 
@@ -3380,8 +3568,12 @@ func (srv *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucke
 		}
 	}
 
-	entry, err := srv.store.PutObject(bucket, key, body, contentType, metadata)
+	entry, err := srv.store.PutObjectChecked(bucket, key, body, contentType, metadata, cond)
 	if err != nil {
+		if errors.Is(err, errPreconditionFailed) {
+			writeS3Error(w, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold", "/"+bucket+"/"+key)
+			return
+		}
 		writeBucketOrInternalError(w, err, "/"+bucket+"/"+key)
 		return
 	}
