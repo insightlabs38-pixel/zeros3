@@ -1,12 +1,145 @@
 # ZeroS3 — Status
 
 Milestone-by-milestone status, newest first. M1-M7, M8A, M8B, M8C, M8D,
-M8E, M8F, and M8G are all complete, tested, and release-hardened (frozen
-unless a demonstrated regression or correctness bug requires a minimal
-fix); M8H-A (benchmark-only investigation of sequential chunk transport)
-is the current pass -- see its section immediately below. M8H-A made no
-implementation changes; it exists solely to answer whether M8H
-(bounded parallel chunk transfer) should be built at all.
+M8E, M8F, M8G, and M8H-A are all complete (frozen unless a demonstrated
+regression or correctness bug requires a minimal fix); M8H-B (bounded
+parallel chunk transfer, implemented on M8H-A's STRONG GO decision) is
+the current pass -- see its section immediately below. **M8H ACCEPTED**:
+`replicate`/`repair`/`sync` now transfer independent missing chunks with
+bounded concurrency (`-workers`, default 8), while object/root-level
+publication remains exactly as sequential/atomic as it always was.
+
+## M8H-B — Bounded parallel chunk transfer (`replicate`/`repair`/`sync`)
+
+**Goal:** implement what M8H-A's STRONG GO decision proposed — parallelize
+independent missing-chunk transport (fetch → verify → publish, one
+digest at a time) with bounded concurrency, while leaving every
+publication-time guarantee (atomic single commit, destination-conflict
+precondition, resumability, repair's honest partial success) exactly as
+it was under M8A/M8B/M6. Transport becomes concurrent; object/root
+publication does not.
+
+### Phase 0 — exact baseline
+
+Re-confirmed identical to M8H-A's own recorded baseline before any
+implementation: exact M8G HEAD `432245dc5acb4a68a2ecdd732be7a3addc85ca30`,
+`zeros3.go`/`zeros3_test.go`/`go.mod` byte-identical to that commit
+(`git diff` empty). `gofmt -l .`/`go vet ./...` clean, `go test ./...`
+651 tests ok, `go test -race ./...` ok, reproducible build SHA-256
+`e7c53f313fc76425d272606e621b2b84eb966551c96ecce696f954bd2864bff6`
+(matches M8H-A exactly). Focused M8A/M8B/M8C/M8G suite (84 tests) green.
+`m8g-gold` tag confirmed.
+
+### The shared primitive
+
+One small addition, section "15a-bis" of `zeros3.go`: `transferWork{SHA256,
+Length, Do func(ctx) error}` plus `runTransferWorkers(ctx, workers, items,
+cancelOnError) []transferOutcome` — a bounded counting-semaphore worker
+pool (no persistent pool, no background goroutine, one goroutine per
+in-flight item, never more than `workers` concurrently). Results are
+written back at the same index as their input item regardless of
+completion order, which is what makes both deterministic scheduling
+(B1.5) and order-independent stats (B1.12) fall out for free rather than
+needing separate synchronization. `cancelOnError=true` (replicate/sync's
+all-or-nothing commit gate) cancels a derived context on the first
+failure — unstarted work is skipped, and in-flight HTTP requests sharing
+that context (via `context.Context` now threaded through `signAndDo`/
+`fetchSourceChunk`/`putSyncChunk`/`fetchRepairChunk`) are aborted, not
+just their goroutines abandoned. `cancelOnError=false` (repair's honest
+partial-success contract, B2.3) runs every item to completion regardless
+of a sibling's outcome. `firstTransferError` reports the lowest-index
+*genuine* failure deterministically, not whichever goroutine happened to
+lose the race, falling back to a plain cancellation error only when
+nothing genuine is found (an externally canceled caller context).
+
+Three call sites converted, all pre-existing "fetch → verify → publish"
+loops unwrapped into one `Do` closure each, with no other behavioral
+change: `executeReplicationPlan` (M8A `replicate`, and therefore
+`replicateNamespace`/M8C and `fork`/M8D transitively, since both call it
+per object unmodified), `repairFromPeer` (M8B), and
+`uploadMissingSyncChunks` (M6 `sync`, including M6C directory sync via
+`syncFile`). `restoreObject` (M8E) stays sequential — an explicit
+non-goal. Namespace/fork object-level commits stay strictly sequential,
+one at a time, in listing order — no namespace-level object concurrency
+was added; only each object's *own* chunks transfer concurrently.
+Dry-run planning (`planReplication`/`planReplicationNamespace`) never
+touches the worker pool at all, since it never fetches chunk payload.
+
+Worker count: `-workers` on `replicate`/`repair`/`sync`, validated
+1..32 (`maxTransferWorkers = 32`, a fixed small multiple of the highest
+benchmarked candidate; `0`/negative/`>32` rejected outright with exit
+code 2, never silently clamped). Zero (every M8A-M8G caller, unchanged)
+resolves to `defaultTransferWorkers = 8`, chosen by the B4 benchmark
+below, replacing a pre-benchmark placeholder of 4.
+
+HTTP transport (B1.10, M8H-A's own flagged pitfall): a single
+package-level, long-lived `transferHTTPTransport`/`transferHTTPClient`
+(`MaxIdleConnsPerHost`/`MaxConnsPerHost` = 64, `MaxIdleConns` = 128,
+sized directly off `maxTransferWorkers`) now backs every
+`syncClientConfig` that doesn't bring its own client, replacing
+`http.DefaultClient`'s `MaxIdleConnsPerHost=2` default that would have
+silently bottlenecked a naive concurrent implementation regardless of
+configured worker count.
+
+Persistent-format impact: **none** — this is a client-side transport
+change only.
+
+### Benchmarks (B4) and verdict
+
+Full tables, methodology, and the default-worker-count reasoning:
+`zeros3-testing/results/M8H_PARALLEL_TRANSFER_RESULTS.md`. Headline
+result — a direct reversal of M8H-A's own B8 finding: the identical
+10ms simulated per-request delay that produced a measured **3.3x
+throughput collapse** under sequential transport now produces up to an
+**8.18x speedup** (16 workers vs. 1, 256 MiB single-object replication)
+because independent chunk round trips overlap instead of paying their
+latency serially. Namespace replication and repair both show workers=8
+essentially plateauing (2.0-2.5x speedup, 16 slightly *worse* on this
+4-vCPU benchmark machine) — the default of 8 was chosen because it
+captures 73-99% of workers=16's throughput across every single-object
+configuration tested while keeping concurrent connections and worst-case
+in-flight memory modest.
+
+**M8H ACCEPTED — bounded parallel chunk transport materially improves
+ZeroS3 with full regression green.** Correctness unchanged: 688/688
+internal tests pass (up from 651, 37 new M8H-B tests), `go test -race
+./...` clean, and all 18 historical external harnesses (M2 through M8G
+introspection, rclone, package-killer) re-run unmodified against the
+M8H-B build match their last-recorded baselines exactly — 1140 passed,
+0 failed. Reproducible build SHA-256
+`6c11cbda9bcca30cd3c5081f86c98b4f52f14d75b869f28448097dc5dcbd40d2`, two
+independent builds, byte-identical. `go.mod` still has zero `require`
+directives; no new non-stdlib import.
+
+### A genuine race, found and fixed in a test — not in `zeros3.go`
+
+`TestReplicateNamespace_ResumeAcrossRealProcessInterruption` (a
+pre-existing M8C test: kill a real `replicate -recursive` subprocess
+mid-transfer, then rerun) started failing intermittently once transport
+became meaningfully faster. Root cause: a killed process's own commit
+request can already be fully accepted by the destination server before
+the `SIGKILL` lands (bytes already handed to the kernel aren't
+un-sent) — a narrow window the test's fixed 250ms kill delay was
+calibrated to avoid precisely *because* sequential transport had been
+slow enough that no attempt could plausibly reach commit that fast. The
+result was never corruption: the resumed second attempt's own commit
+observed a genuinely different destination state and was correctly
+rejected by the same 412 conflict `commitSyncObject` has always
+produced — destination-conflict safety caught and rejected the race
+exactly as designed (confirmed by direct instrumented reproduction), and
+final content was correct in every run. Fixed by tightening the test's
+kill delay (250ms -> 50ms, 15/15 reliable) — a test-timing correction,
+not a `zeros3.go` change. Live, unplanned evidence that B5's
+"destination conflict after transfer" and "process kill" hostile
+scenarios both hold under real concurrency.
+
+### Non-goals honored
+
+No object-level concurrent namespace/fork commits, no parallel snapshot
+restore, no background workers or persistent queues, no retries beyond
+existing semantics, no HTTP hardening/graceful shutdown, no Merkle
+negotiation/compression/packs/indexing/compaction/TLS/`DeleteObjects`/
+multi-peer repair — exactly the milestone's stated scope, nothing more.
 
 ## M8H-A — Sequential chunk-transfer benchmark and parallelism decision
 (measurement only -- no implementation changes)

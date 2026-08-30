@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/md5"
 	"crypto/sha256"
@@ -24,10 +25,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -13498,7 +13501,7 @@ func TestReplicate_SourceChunkDownload_Valid(t *testing.T) {
 	hexDigest := hex.EncodeToString(sum[:])
 
 	cfg := syncClientConfig{Endpoint: srcTS.URL, Creds: creds, Region: region, HTTPClient: srcTS.Client()}
-	got, err := fetchSourceChunk(cfg, hexDigest)
+	got, err := fetchSourceChunk(context.Background(), cfg, hexDigest)
 	if err != nil {
 		t.Fatalf("fetchSourceChunk: %v", err)
 	}
@@ -13514,7 +13517,7 @@ func TestReplicate_SourceChunkDownload_MissingChunk(t *testing.T) {
 
 	cfg := syncClientConfig{Endpoint: srcTS.URL, Creds: creds, Region: region, HTTPClient: srcTS.Client()}
 	fakeDigest := strings.Repeat("ab", 32)
-	if _, err := fetchSourceChunk(cfg, fakeDigest); err == nil {
+	if _, err := fetchSourceChunk(context.Background(), cfg, fakeDigest); err == nil {
 		t.Fatalf("expected an error for a missing chunk")
 	}
 }
@@ -13549,7 +13552,7 @@ func TestReplicate_SourceChunkDownload_CorruptChunkOnDiskDetected(t *testing.T) 
 	}
 
 	cfg := syncClientConfig{Endpoint: srcTS.URL, Creds: creds, Region: region, HTTPClient: srcTS.Client()}
-	if _, err := fetchSourceChunk(cfg, hex.EncodeToString(sum[:])); err == nil {
+	if _, err := fetchSourceChunk(context.Background(), cfg, hex.EncodeToString(sum[:])); err == nil {
 		t.Fatalf("expected an error for a corrupt source chunk")
 	}
 }
@@ -13578,7 +13581,7 @@ func TestReplicate_ClientRehashDetectsSourceReturningWrongBytes(t *testing.T) {
 
 	realDigest := sha256.Sum256([]byte("the real expected content"))
 	cfg := syncClientConfig{Endpoint: fake.URL, HTTPClient: fake.Client()}
-	_, err := fetchSourceChunk(cfg, hex.EncodeToString(realDigest[:]))
+	_, err := fetchSourceChunk(context.Background(), cfg, hex.EncodeToString(realDigest[:]))
 	if !errors.Is(err, errReplicateChunkMismatch) {
 		t.Fatalf("err = %v, want errReplicateChunkMismatch", err)
 	}
@@ -13812,11 +13815,11 @@ func TestReplicate_DestinationConflict_ConcurrentWriteDuringReplicationRejectedS
 		if !missing[d.SHA256] {
 			continue
 		}
-		data, err := fetchSourceChunk(srcCfg, d.SHA256)
+		data, err := fetchSourceChunk(context.Background(), srcCfg, d.SHA256)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := putSyncChunk(dstCfg, d.SHA256, data); err != nil {
+		if err := putSyncChunk(context.Background(), dstCfg, d.SHA256, data); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -13873,11 +13876,11 @@ func TestReplicate_DestinationConflict_AbsentBecomesPresentDuringReplication(t *
 		if !missing[d.SHA256] {
 			continue
 		}
-		data, err := fetchSourceChunk(srcCfg, d.SHA256)
+		data, err := fetchSourceChunk(context.Background(), srcCfg, d.SHA256)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := putSyncChunk(dstCfg, d.SHA256, data); err != nil {
+		if err := putSyncChunk(context.Background(), dstCfg, d.SHA256, data); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -13939,11 +13942,11 @@ func TestReplicate_SourceOverwrittenDuringReplicationDoesNotProduceMixedRevision
 		if !missing[d.SHA256] {
 			continue
 		}
-		data, err := fetchSourceChunk(srcCfg, d.SHA256)
+		data, err := fetchSourceChunk(context.Background(), srcCfg, d.SHA256)
 		if err != nil {
 			t.Fatalf("fetching originally-captured chunk %s after source overwrite: %v", d.SHA256, err)
 		}
-		if err := putSyncChunk(dstCfg, d.SHA256, data); err != nil {
+		if err := putSyncChunk(context.Background(), dstCfg, d.SHA256, data); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -13999,12 +14002,12 @@ func TestReplicate_ResumeAfterPartialPriorUpload(t *testing.T) {
 	// directly PUT the first chunk to the destination's CAS, exactly as
 	// if an earlier, interrupted replicate run had gotten that far.
 	first := desc.Chunks[0]
-	firstData, err := fetchSourceChunk(srcCfg, first.SHA256)
+	firstData, err := fetchSourceChunk(context.Background(), srcCfg, first.SHA256)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dstCfg := syncClientConfig{Endpoint: dstTS.URL, Creds: creds, Region: region, HTTPClient: dstTS.Client()}
-	if err := putSyncChunk(dstCfg, first.SHA256, firstData); err != nil {
+	if err := putSyncChunk(context.Background(), dstCfg, first.SHA256, firstData); err != nil {
 		t.Fatal(err)
 	}
 
@@ -14136,12 +14139,12 @@ func TestReplicate_DestinationServerRestartBetweenAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := desc.Chunks[0]
-	firstData, err := fetchSourceChunk(srcCfg, first.SHA256)
+	firstData, err := fetchSourceChunk(context.Background(), srcCfg, first.SHA256)
 	if err != nil {
 		t.Fatal(err)
 	}
 	primeCfg := syncClientConfig{Endpoint: dstTS.URL, Creds: creds, Region: region, HTTPClient: dstTS.Client()}
-	if err := putSyncChunk(primeCfg, first.SHA256, firstData); err != nil {
+	if err := putSyncChunk(context.Background(), primeCfg, first.SHA256, firstData); err != nil {
 		t.Fatal(err)
 	}
 
@@ -14690,7 +14693,7 @@ func TestFetchRepairChunk_PeerHasChunkSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := fetchRepairChunk(mustPeerConfig(peerTS, creds, region), hex.EncodeToString(sum[:]))
+	got, err := fetchRepairChunk(context.Background(), mustPeerConfig(peerTS, creds, region), hex.EncodeToString(sum[:]))
 	if err != nil {
 		t.Fatalf("fetchRepairChunk: %v", err)
 	}
@@ -14704,7 +14707,7 @@ func TestFetchRepairChunk_PeerMissingChunkFailsClearly(t *testing.T) {
 	peerTS := httptest.NewServer(peerSrv)
 	defer peerTS.Close()
 	fakeDigest := strings.Repeat("ab", 32)
-	if _, err := fetchRepairChunk(mustPeerConfig(peerTS, creds, region), fakeDigest); err == nil {
+	if _, err := fetchRepairChunk(context.Background(), mustPeerConfig(peerTS, creds, region), fakeDigest); err == nil {
 		t.Fatalf("expected an error for a chunk the peer does not have")
 	}
 }
@@ -14713,7 +14716,7 @@ func TestFetchRepairChunk_MalformedDigestRejected(t *testing.T) {
 	_, peerSrv, creds, region := newSyncTestServer(t)
 	peerTS := httptest.NewServer(peerSrv)
 	defer peerTS.Close()
-	if _, err := fetchRepairChunk(mustPeerConfig(peerTS, creds, region), "not-a-valid-hex-digest"); err == nil {
+	if _, err := fetchRepairChunk(context.Background(), mustPeerConfig(peerTS, creds, region), "not-a-valid-hex-digest"); err == nil {
 		t.Fatalf("expected an error for a malformed digest")
 	}
 }
@@ -14726,7 +14729,7 @@ func TestFetchRepairChunk_WrongBytesRejectedBeforePublication(t *testing.T) {
 	defer fake.Close()
 	realDigest := sha256.Sum256([]byte("the real expected content, never actually sent by the fake peer"))
 	cfg := syncClientConfig{Endpoint: fake.URL, HTTPClient: fake.Client()}
-	if _, err := fetchRepairChunk(cfg, hex.EncodeToString(realDigest[:])); err == nil {
+	if _, err := fetchRepairChunk(context.Background(), cfg, hex.EncodeToString(realDigest[:])); err == nil {
 		t.Fatalf("expected a digest-mismatch error")
 	}
 }
@@ -14740,7 +14743,7 @@ func TestFetchRepairChunk_TruncatedBytesRejected(t *testing.T) {
 	}))
 	defer fake.Close()
 	cfg := syncClientConfig{Endpoint: fake.URL, HTTPClient: fake.Client()}
-	if _, err := fetchRepairChunk(cfg, hex.EncodeToString(realSum[:])); err == nil {
+	if _, err := fetchRepairChunk(context.Background(), cfg, hex.EncodeToString(realSum[:])); err == nil {
 		t.Fatalf("expected an error for truncated peer bytes")
 	}
 }
@@ -14754,7 +14757,7 @@ func TestFetchRepairChunk_OversizedResponseRejected(t *testing.T) {
 	}))
 	defer fake.Close()
 	cfg := syncClientConfig{Endpoint: fake.URL, HTTPClient: fake.Client()}
-	_, err := fetchRepairChunk(cfg, hex.EncodeToString(sum[:]))
+	_, err := fetchRepairChunk(context.Background(), cfg, hex.EncodeToString(sum[:]))
 	if err == nil {
 		t.Fatalf("expected an oversized-response error")
 	}
@@ -14774,7 +14777,7 @@ func TestFetchRepairChunk_AuthFailureRejected(t *testing.T) {
 	}
 	wrongCreds := Credentials{AccessKeyID: "WRONGKEY", SecretAccessKey: "totally-wrong-secret-key-value-here-0"}
 	cfg := syncClientConfig{Endpoint: peerTS.URL, Creds: wrongCreds, Region: region, HTTPClient: peerTS.Client()}
-	if _, err := fetchRepairChunk(cfg, hex.EncodeToString(sum[:])); err == nil {
+	if _, err := fetchRepairChunk(context.Background(), cfg, hex.EncodeToString(sum[:])); err == nil {
 		t.Fatalf("expected an auth failure error")
 	}
 }
@@ -16558,14 +16561,26 @@ func TestReplicateNamespace_ResumeAcrossRealProcessInterruption(t *testing.T) {
 
 	replicateArgs := []string{"replicate", "-recursive", "-from", "http://" + srcAddr, "-to", "http://" + dstAddr, "s3://src/ns/", "s3://dst/ns/"}
 
-	// First attempt: a real subprocess, killed shortly after it starts,
-	// well before three 8MB transfers across real HTTP round trips could
-	// plausibly all finish -- so at least one object never reaches commit.
+	// First attempt: a real subprocess, killed shortly after it starts.
+	// M8H-B's bounded worker pool transfers a single object's chunks
+	// concurrently, so the old sequential-transport assumption behind this
+	// delay (long enough to guarantee interruption, short enough to be a
+	// fast test) no longer holds at 250ms -- a parallel transfer of the
+	// first 8MB object can now, some of the time, both finish uploading
+	// its chunks *and* have its commit request already accepted by the
+	// destination server before the kill signal is even delivered (the
+	// process is killed, but a request it already handed to the kernel's
+	// TCP send buffer is not un-sent: the server still processes it).
+	// 50ms keeps this test's actual intent -- interrupt the first attempt
+	// before it can safely be assumed to have finished -- reliable again:
+	// short enough that not even one object's discovery/negotiate/
+	// transfer/commit round trip can complete first, regardless of how
+	// many workers make the transfer itself faster.
 	firstAttempt := exec.Command(bin, replicateArgs...)
 	if err := firstAttempt.Start(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(250 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	firstAttempt.Process.Kill()
 	firstAttempt.Wait()
 
@@ -23327,5 +23342,1356 @@ func TestM8G_CredentialSeparation_Diff(t *testing.T) {
 		if !strings.Contains(auth, credsB.AccessKeyID) || strings.Contains(auth, credsA.AccessKeyID) {
 			t.Fatalf("server B saw an Authorization header not scoped to B's own credentials: %q", auth)
 		}
+	}
+}
+
+// =============================================================================
+// M8H-B1/B2: bounded parallel chunk transfer
+//
+// M8H-A measured that replicate/repair/sync's shared "fetch one chunk ->
+// verify -> publish one chunk" loop was strictly sequential and the
+// dominant cost in every content-moving code path. M8H-B adds
+// runTransferWorkers, a small bounded worker-pool primitive, and reuses it
+// from executeReplicationPlan (M8A/replicate), repairFromPeer (M8B), and
+// uploadMissingSyncChunks (M6/sync) -- unchanged object/root-level
+// publication semantics (planReplication/replicateNamespace/restore all
+// still commit exactly one object at a time, still strictly sequentially),
+// just concurrent chunk transport underneath.
+// =============================================================================
+
+// -----------------------------------------------------------------------
+// runTransferWorkers / firstTransferError: white-box primitive tests
+// -----------------------------------------------------------------------
+
+func TestValidateWorkers_Range(t *testing.T) {
+	cases := []struct {
+		n     int
+		valid bool
+	}{
+		{-1, false}, {0, false}, {1, true}, {2, true}, {4, true}, {8, true},
+		{16, true}, {maxTransferWorkers, true}, {maxTransferWorkers + 1, false},
+		{1_000_000, false},
+	}
+	for _, c := range cases {
+		err := validateWorkers(c.n)
+		if c.valid && err != nil {
+			t.Errorf("validateWorkers(%d) = %v, want nil", c.n, err)
+		}
+		if !c.valid && err == nil {
+			t.Errorf("validateWorkers(%d) = nil, want an error", c.n)
+		}
+	}
+}
+
+func TestResolveTransferWorkers_ZeroMeansDefault(t *testing.T) {
+	if got, err := resolveTransferWorkers(0); err != nil || got != defaultTransferWorkers {
+		t.Fatalf("resolveTransferWorkers(0) = (%d, %v), want (%d, nil)", got, err, defaultTransferWorkers)
+	}
+	if got, err := resolveTransferWorkers(8); err != nil || got != 8 {
+		t.Fatalf("resolveTransferWorkers(8) = (%d, %v), want (8, nil)", got, err)
+	}
+	if _, err := resolveTransferWorkers(-1); err == nil {
+		t.Fatalf("resolveTransferWorkers(-1) should error")
+	}
+	if _, err := resolveTransferWorkers(maxTransferWorkers + 1); err == nil {
+		t.Fatalf("resolveTransferWorkers(above max) should error")
+	}
+}
+
+func TestRunTransferWorkers_ZeroItems(t *testing.T) {
+	results := runTransferWorkers(context.Background(), 4, nil, true)
+	if len(results) != 0 {
+		t.Fatalf("expected no results for zero items, got %d", len(results))
+	}
+}
+
+func TestRunTransferWorkers_ResultsPreserveInputOrderRegardlessOfCompletionOrder(t *testing.T) {
+	const n = 40
+	items := make([]transferWork, n)
+	for i := 0; i < n; i++ {
+		i := i
+		items[i] = transferWork{SHA256: fmt.Sprintf("chunk-%02d", i), Length: int64(i), Do: func(ctx context.Context) error {
+			// Deliberately finish in *reverse* order (later-indexed items
+			// finish first): a pass depending on completion order rather
+			// than input order would misplace results.
+			time.Sleep(time.Duration(n-i) * time.Millisecond)
+			return nil
+		}}
+	}
+	results := runTransferWorkers(context.Background(), 8, items, true)
+	if len(results) != n {
+		t.Fatalf("len(results) = %d, want %d", len(results), n)
+	}
+	for i, r := range results {
+		if r.SHA256 != items[i].SHA256 {
+			t.Fatalf("results[%d].SHA256 = %q, want %q -- result order must match input order regardless of completion order", i, r.SHA256, items[i].SHA256)
+		}
+		if r.Err != nil {
+			t.Fatalf("results[%d].Err = %v, want nil", i, r.Err)
+		}
+	}
+}
+
+func TestRunTransferWorkers_BoundedConcurrency(t *testing.T) {
+	for _, workers := range []int{1, 2, 4, 8} {
+		workers := workers
+		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
+			const n = 30
+			var cur, max int64
+			items := make([]transferWork, n)
+			for i := 0; i < n; i++ {
+				items[i] = transferWork{SHA256: fmt.Sprintf("c%d", i), Do: func(ctx context.Context) error {
+					c := atomic.AddInt64(&cur, 1)
+					for {
+						m := atomic.LoadInt64(&max)
+						if c <= m || atomic.CompareAndSwapInt64(&max, m, c) {
+							break
+						}
+					}
+					time.Sleep(2 * time.Millisecond)
+					atomic.AddInt64(&cur, -1)
+					return nil
+				}}
+			}
+			runTransferWorkers(context.Background(), workers, items, true)
+			if got := atomic.LoadInt64(&max); got > int64(workers) {
+				t.Fatalf("observed %d concurrent Do calls, want <= %d workers -- runTransferWorkers must never exceed the requested bound", got, workers)
+			}
+		})
+	}
+}
+
+func TestRunTransferWorkers_CancelOnErrorStopsUnstartedWork(t *testing.T) {
+	const n = 50
+	var started int64
+	release := make(chan struct{})
+	items := make([]transferWork, n)
+	for i := 0; i < n; i++ {
+		i := i
+		items[i] = transferWork{SHA256: fmt.Sprintf("c%d", i), Do: func(ctx context.Context) error {
+			atomic.AddInt64(&started, 1)
+			if i == 0 {
+				return errors.New("boom")
+			}
+			<-release
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+				return nil
+			}
+		}}
+	}
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		close(release)
+	}()
+	results := runTransferWorkers(context.Background(), 4, items, true)
+	if err := firstTransferError(results); err == nil || err.Error() != "boom" {
+		t.Fatalf("firstTransferError = %v, want boom", err)
+	}
+	if got := atomic.LoadInt64(&started); got >= int64(n) {
+		t.Fatalf("started = %d of %d items, want fewer than all -- a first failure should cancel work that hasn't started yet", got, n)
+	}
+}
+
+func TestRunTransferWorkers_NoCancelOnErrorRunsEveryItem(t *testing.T) {
+	const n = 20
+	items := make([]transferWork, n)
+	for i := 0; i < n; i++ {
+		i := i
+		items[i] = transferWork{SHA256: fmt.Sprintf("c%d", i), Do: func(ctx context.Context) error {
+			if i%3 == 0 {
+				return fmt.Errorf("failure at %d", i)
+			}
+			return nil
+		}}
+	}
+	results := runTransferWorkers(context.Background(), 4, items, false)
+	if len(results) != n {
+		t.Fatalf("len(results) = %d, want %d", len(results), n)
+	}
+	var failed, ok, wantFailed int
+	for i := 0; i < n; i++ {
+		if i%3 == 0 {
+			wantFailed++
+		}
+	}
+	for i, r := range results {
+		if r.SHA256 != items[i].SHA256 {
+			t.Fatalf("result order mismatch at index %d", i)
+		}
+		if r.Err != nil {
+			failed++
+		} else {
+			ok++
+		}
+	}
+	if failed != wantFailed || ok != n-wantFailed {
+		t.Fatalf("failed=%d ok=%d, want failed=%d ok=%d -- every item must still be attempted regardless of another item's failure (cancelOnError=false)", failed, ok, wantFailed, n-wantFailed)
+	}
+}
+
+func TestRunTransferWorkers_ExternalContextCancellationSkipsEveryItem(t *testing.T) {
+	const n = 20
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var started int64
+	items := make([]transferWork, n)
+	for i := 0; i < n; i++ {
+		items[i] = transferWork{SHA256: fmt.Sprintf("c%d", i), Do: func(ctx context.Context) error {
+			atomic.AddInt64(&started, 1)
+			return nil
+		}}
+	}
+	results := runTransferWorkers(ctx, 4, items, false)
+	if len(results) != n {
+		t.Fatalf("len(results) = %d, want %d", len(results), n)
+	}
+	for _, r := range results {
+		if r.Err == nil {
+			t.Fatalf("expected every item to report an error for an already-canceled parent context")
+		}
+	}
+	if got := atomic.LoadInt64(&started); got != 0 {
+		t.Fatalf("started = %d, want 0 -- an already-canceled caller context must skip every item's Do", got)
+	}
+}
+
+func TestFirstTransferError_LowestIndexGenuineErrorWins(t *testing.T) {
+	results := []transferOutcome{
+		{SHA256: "a", Err: context.Canceled},
+		{SHA256: "b", Err: errors.New("real error at b")},
+		{SHA256: "c", Err: errors.New("real error at c")},
+		{SHA256: "d", Err: nil},
+	}
+	err := firstTransferError(results)
+	if err == nil || err.Error() != "real error at b" {
+		t.Fatalf("firstTransferError = %v, want the lowest-index genuine error (b), regardless of which chunk actually triggered cancellation", err)
+	}
+}
+
+func TestFirstTransferError_FallsBackToCancellationWhenNoGenuineError(t *testing.T) {
+	results := []transferOutcome{
+		{SHA256: "a", Err: context.Canceled},
+		{SHA256: "b", Err: context.Canceled},
+	}
+	err := firstTransferError(results)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("firstTransferError = %v, want context.Canceled (external cancellation must still be reported)", err)
+	}
+}
+
+func TestFirstTransferError_NoErrorsReturnsNil(t *testing.T) {
+	results := []transferOutcome{{SHA256: "a"}, {SHA256: "b"}}
+	if err := firstTransferError(results); err != nil {
+		t.Fatalf("firstTransferError = %v, want nil", err)
+	}
+}
+
+func TestTransferHTTPTransport_PoolSizedForMaxWorkers(t *testing.T) {
+	if transferHTTPTransport.MaxIdleConnsPerHost < maxTransferWorkers {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want >= %d (maxTransferWorkers) -- otherwise a full worker pool would bottleneck on Go's default per-host idle cap (M8H-A's own flagged pitfall)", transferHTTPTransport.MaxIdleConnsPerHost, maxTransferWorkers)
+	}
+	if transferHTTPTransport.MaxConnsPerHost != 0 && transferHTTPTransport.MaxConnsPerHost < maxTransferWorkers {
+		t.Fatalf("MaxConnsPerHost = %d, want >= %d or unlimited (0)", transferHTTPTransport.MaxConnsPerHost, maxTransferWorkers)
+	}
+	if transferHTTPTransport.MaxIdleConns < transferHTTPTransport.MaxIdleConnsPerHost {
+		t.Fatalf("MaxIdleConns (%d) must be >= MaxIdleConnsPerHost (%d)", transferHTTPTransport.MaxIdleConns, transferHTTPTransport.MaxIdleConnsPerHost)
+	}
+}
+
+// wrapChunkEndpoint returns a handler that special-cases exactly one
+// GET/PUT /_zeros3/v1/chunks/<hexDigest> request (via intercept) and
+// delegates every other request to srv unmodified -- used to simulate one
+// bad/missing/rejected chunk among many otherwise-healthy concurrent chunk
+// transfers.
+func wrapChunkEndpoint(srv *Server, targetHexDigest string, intercept func(w http.ResponseWriter, r *http.Request) bool) http.HandlerFunc {
+	target := zeros3SyncChunksPrefix + targetHexDigest
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == target && intercept(w, r) {
+			return
+		}
+		srv.ServeHTTP(w, r)
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8H-B1: `replicate` with a bounded worker pool
+// -----------------------------------------------------------------------
+
+func TestReplicate_WorkerCountsProduceByteIdenticalStats(t *testing.T) {
+	var golden syncStats
+	for i, workers := range []int{1, 2, 4, 8, 16, maxTransferWorkers} {
+		workers := workers
+		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
+			_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+			body := genRandomBytes(80020, 2_500_000)
+			mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+			mustCreateReplicateBucket(t, dstSrv, "dst")
+			srcTS := httptest.NewServer(srcSrv)
+			defer srcTS.Close()
+			dstTS := httptest.NewServer(dstSrv)
+			defer dstTS.Close()
+			cfg := replicateConfig{
+				Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+				Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+				Workers: workers,
+			}
+			stats, err := replicateObject(cfg)
+			if err != nil {
+				t.Fatalf("replicateObject: %v", err)
+			}
+			if i == 0 {
+				golden = stats
+			} else if stats != golden {
+				t.Fatalf("workers=%d stats %+v differ from workers=1 golden %+v -- worker count must never change reported totals", workers, stats, golden)
+			}
+		})
+	}
+}
+
+func TestReplicate_PartialAndZeroMissing_WithWorkers(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(80040, 2_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	cfg := replicateConfig{
+		Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		Workers: 8,
+	}
+	// All missing.
+	first, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("first replicateObject: %v", err)
+	}
+	if first.MissingChunkOccur != first.TotalChunks || first.UploadedBytes != int64(len(body)) {
+		t.Fatalf("first run stats = %+v, want everything missing", first)
+	}
+
+	// Zero missing: re-replicating the identical object must transfer
+	// nothing.
+	second, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("second replicateObject: %v", err)
+	}
+	if second.MissingChunkOccur != 0 || second.UploadedBytes != 0 {
+		t.Fatalf("second run stats = %+v, want zero missing / zero uploaded", second)
+	}
+
+	// Partial missing: a related object sharing a real content prefix
+	// with the first (some chunks already present, some genuinely new).
+	edited := append(append([]byte{}, body[:len(body)/2]...), genRandomBytes(80041, len(body)/2)...)
+	mustPutSourceObject(t, srcSrv, "src", "obj2.bin", edited, "application/octet-stream", nil)
+	cfg2 := cfg
+	cfg2.Source.Key = "obj2.bin"
+	cfg2.Dest.Key = "obj2.bin"
+	third, err := replicateObject(cfg2)
+	if err != nil {
+		t.Fatalf("third replicateObject: %v", err)
+	}
+	if third.MissingChunkOccur == 0 || third.MissingChunkOccur == third.TotalChunks {
+		t.Fatalf("third run stats = %+v, want a genuine partial mix of reused/missing chunks", third)
+	}
+}
+
+func TestReplicate_DuplicateDigestReferencesTransferOnce(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	if err := srcSrv.store.CreateBucket("src"); err != nil {
+		t.Fatal(err)
+	}
+	if err := dstSrv.store.CreateBucket("dst"); err != nil {
+		t.Fatal(err)
+	}
+
+	chunkData := genRandomBytes(80030, 40_000)
+	sum, err := srcSrv.store.casWrite(chunkData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hexDigest := hex.EncodeToString(sum[:])
+
+	const occurrences = 15
+	refs := make([]chunkRef, occurrences)
+	for i := range refs {
+		refs[i] = chunkRef{SHA256: hexDigest, Length: int64(len(chunkData))}
+	}
+	total := int64(len(chunkData) * occurrences)
+	objHash := sha256.New()
+	for i := 0; i < occurrences; i++ {
+		objHash.Write(chunkData)
+	}
+	var objSHA [32]byte
+	copy(objSHA[:], objHash.Sum(nil))
+	man := buildManifestV1FromRefs(refs, total, objSHA, "dup-src-etag", "application/octet-stream", nil)
+	manUUID, manSHA, err := srcSrv.store.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcSrv.store.commitObjectRoot("src", "dup.bin", manUUID, manSHA, man); err != nil {
+		t.Fatal(err)
+	}
+
+	var chunkGETs int64
+	srcHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == zeros3SyncChunksPrefix+hexDigest {
+			atomic.AddInt64(&chunkGETs, 1)
+		}
+		srcSrv.ServeHTTP(w, r)
+	})
+	srcTS := httptest.NewServer(srcHandler)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	cfg := replicateConfig{
+		Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "dup.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "dup.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		Workers: 8,
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	if stats.UniqueChunksUploaded != 1 {
+		t.Fatalf("UniqueChunksUploaded = %d, want 1 -- the same digest referenced %d times must be one physical transfer job", stats.UniqueChunksUploaded, occurrences)
+	}
+	if stats.TotalChunks != occurrences {
+		t.Fatalf("TotalChunks = %d, want %d", stats.TotalChunks, occurrences)
+	}
+	if got := atomic.LoadInt64(&chunkGETs); got != 1 {
+		t.Fatalf("source GET /chunks/%s was hit %d times, want exactly 1 -- a duplicated digest must not be independently re-fetched per occurrence", hexDigest, got)
+	}
+	_, gotBody, err := dstSrv.store.GetObject("dst", "dup.bin")
+	if err != nil {
+		t.Fatalf("GetObject: %v", err)
+	}
+	if int64(len(gotBody)) != total {
+		t.Fatalf("destination object size = %d, want %d", len(gotBody), total)
+	}
+}
+
+func TestReplicate_SourceMissingOneChunkAmongMany(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(80050, 3_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	entry, err := srcSrv.store.lookupObject("src", "obj.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	man := mustManifestFor(t, srcSrv.store, entry)
+	if len(man.Chunks) < 10 {
+		t.Fatalf("need >= 10 chunks, got %d", len(man.Chunks))
+	}
+	target := man.Chunks[len(man.Chunks)/2].SHA256
+
+	srcHandler := wrapChunkEndpoint(srcSrv, target, func(w http.ResponseWriter, r *http.Request) bool {
+		w.WriteHeader(http.StatusNotFound)
+		return true
+	})
+	srcTS := httptest.NewServer(srcHandler)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	cfg := replicateConfig{
+		Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		Workers: 8,
+	}
+	if _, err := replicateObject(cfg); err == nil {
+		t.Fatalf("expected replicateObject to fail when the source is missing one chunk among many")
+	}
+	if _, err := dstSrv.store.lookupObject("dst", "obj.bin"); err == nil {
+		t.Fatalf("destination must not have been committed after a chunk fetch failure")
+	}
+}
+
+func TestReplicate_SourceReturnsWrongDigestAmongMany(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(80051, 3_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	entry, err := srcSrv.store.lookupObject("src", "obj.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	man := mustManifestFor(t, srcSrv.store, entry)
+	if len(man.Chunks) < 10 {
+		t.Fatalf("need >= 10 chunks, got %d", len(man.Chunks))
+	}
+	target := man.Chunks[len(man.Chunks)/2].SHA256
+
+	srcHandler := wrapChunkEndpoint(srcSrv, target, func(w http.ResponseWriter, r *http.Request) bool {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("these are not the bytes you're looking for"))
+		return true
+	})
+	srcTS := httptest.NewServer(srcHandler)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	cfg := replicateConfig{
+		Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		Workers: 8,
+	}
+	if _, err := replicateObject(cfg); err == nil || !errors.Is(err, errReplicateChunkMismatch) {
+		t.Fatalf("err = %v, want errReplicateChunkMismatch", err)
+	}
+	if _, err := dstSrv.store.lookupObject("dst", "obj.bin"); err == nil {
+		t.Fatalf("destination must not have been committed after a wrong-digest chunk")
+	}
+}
+
+func TestReplicate_DestinationUploadRejectsAmongMany(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(80052, 3_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	entry, err := srcSrv.store.lookupObject("src", "obj.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	man := mustManifestFor(t, srcSrv.store, entry)
+	if len(man.Chunks) < 10 {
+		t.Fatalf("need >= 10 chunks, got %d", len(man.Chunks))
+	}
+	target := man.Chunks[len(man.Chunks)/2].SHA256
+
+	dstHandler := wrapChunkEndpoint(dstSrv, target, func(w http.ResponseWriter, r *http.Request) bool {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("simulated destination rejection"))
+		return true
+	})
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstHandler)
+	defer dstTS.Close()
+
+	cfg := replicateConfig{
+		Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		Workers: 8,
+	}
+	if _, err := replicateObject(cfg); err == nil {
+		t.Fatalf("expected replicateObject to fail when the destination rejects one chunk upload")
+	}
+	if _, err := dstSrv.store.lookupObject("dst", "obj.bin"); err == nil {
+		t.Fatalf("destination must not have been committed after a rejected chunk upload")
+	}
+}
+
+func TestReplicate_ConnectionResetOnOneChunkIsHandledAsFailure(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(80053, 2_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	entry, err := srcSrv.store.lookupObject("src", "obj.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	man := mustManifestFor(t, srcSrv.store, entry)
+	if len(man.Chunks) < 5 {
+		t.Fatalf("need >= 5 chunks, got %d", len(man.Chunks))
+	}
+	target := man.Chunks[0].SHA256
+
+	srcHandler := wrapChunkEndpoint(srcSrv, target, func(w http.ResponseWriter, r *http.Request) bool {
+		// Simulate a connection reset mid-request: hijack the raw
+		// connection and close it abruptly, without ever writing a valid
+		// HTTP response.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			return false
+		}
+		conn, _, herr := hj.Hijack()
+		if herr != nil {
+			return false
+		}
+		conn.Close()
+		return true
+	})
+	srcTS := httptest.NewServer(srcHandler)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	cfg := replicateConfig{
+		Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		Workers: 4,
+	}
+	if _, err := replicateObject(cfg); err == nil {
+		t.Fatalf("expected replicateObject to fail when the source resets the connection for one chunk")
+	}
+	if _, err := dstSrv.store.lookupObject("dst", "obj.bin"); err == nil {
+		t.Fatalf("destination must not be committed after a connection reset on one chunk")
+	}
+}
+
+func TestReplicate_CancellationStopsUnnecessaryWorkOnFailure(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(80054, 4_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	entry, err := srcSrv.store.lookupObject("src", "obj.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	man := mustManifestFor(t, srcSrv.store, entry)
+	if len(man.Chunks) < 40 {
+		t.Fatalf("need many chunks, got %d", len(man.Chunks))
+	}
+	badDigest := man.Chunks[0].SHA256
+
+	var chunkGETs int64
+	srcHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix) {
+			atomic.AddInt64(&chunkGETs, 1)
+			hexDigest := strings.TrimPrefix(r.URL.Path, zeros3SyncChunksPrefix)
+			if hexDigest == badDigest {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			// Slow down every good chunk fetch so a fast failure has time
+			// to cancel work that has not started yet.
+			time.Sleep(30 * time.Millisecond)
+		}
+		srcSrv.ServeHTTP(w, r)
+	})
+	srcTS := httptest.NewServer(srcHandler)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	cfg := replicateConfig{
+		Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		Workers: 4,
+	}
+	if _, err := replicateObject(cfg); err == nil {
+		t.Fatalf("expected failure")
+	}
+	if got := atomic.LoadInt64(&chunkGETs); got >= int64(len(man.Chunks)) {
+		t.Fatalf("chunk GETs = %d of %d total chunks -- cancellation should have stopped some queued work before every chunk was fetched", got, len(man.Chunks))
+	}
+	if _, err := dstSrv.store.lookupObject("dst", "obj.bin"); err == nil {
+		t.Fatalf("destination must not be committed")
+	}
+}
+
+func TestReplicate_SuccessfulTransferCommitsExactlyOnce(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(80055, 2_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	var commits int64
+	dstHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == zeros3SyncCommitPath {
+			atomic.AddInt64(&commits, 1)
+		}
+		dstSrv.ServeHTTP(w, r)
+	})
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstHandler)
+	defer dstTS.Close()
+
+	cfg := replicateConfig{
+		Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		Workers: 8,
+	}
+	if _, err := replicateObject(cfg); err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	if got := atomic.LoadInt64(&commits); got != 1 {
+		t.Fatalf("commit requests = %d, want exactly 1", got)
+	}
+}
+
+func TestReplicate_FailureLeavesUploadedChunksReusable_RerunTransfersOnlyRemaining(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(80056, 3_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	entry, err := srcSrv.store.lookupObject("src", "obj.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	man := mustManifestFor(t, srcSrv.store, entry)
+	if len(man.Chunks) < 10 {
+		t.Fatalf("need >= 10 chunks, got %d", len(man.Chunks))
+	}
+	// The LAST chunk in dispatch order fails: every other chunk is
+	// already dispatched (and, since runTransferWorkers waits for every
+	// dispatched goroutine before returning, fully finished) by the time
+	// this one fails and cancels -- there is nothing left to cancel.
+	badDigest := man.Chunks[len(man.Chunks)-1].SHA256
+
+	var failEnabled int32 = 1
+	srcHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == zeros3SyncChunksPrefix+badDigest && atomic.LoadInt32(&failEnabled) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		srcSrv.ServeHTTP(w, r)
+	})
+	srcTS := httptest.NewServer(srcHandler)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	cfg := replicateConfig{
+		Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		Workers: 4,
+	}
+	if _, err := replicateObject(cfg); err == nil {
+		t.Fatalf("expected the first attempt to fail")
+	}
+	if _, err := dstSrv.store.lookupObject("dst", "obj.bin"); err == nil {
+		t.Fatalf("destination must not be committed after a transfer failure")
+	}
+
+	// The deliberately-failing chunk can never have landed; a sibling
+	// chunk still genuinely in flight at the moment cancellation fires may
+	// also be aborted (its own HTTP request shares the same worker-pool
+	// context, per B1.9) -- so "everything except the bad chunk landed" is
+	// not guaranteed, only "the bad chunk didn't, and at least some
+	// others did." Whatever didn't land here is exactly what the rerun
+	// below must (and does) pick back up -- nothing is silently lost or
+	// double-counted.
+	landed := 0
+	for _, c := range man.Chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		if _, err := dstSrv.store.casRead(sum); err == nil {
+			landed++
+		}
+	}
+	if landed == 0 {
+		t.Fatalf("landed = 0, want at least some chunks already durable in the destination CAS before the failing one")
+	}
+	if landed == len(man.Chunks) {
+		t.Fatalf("landed = %d (all of them), want the deliberately-failing chunk excluded", landed)
+	}
+	wantStillMissing := len(man.Chunks) - landed
+
+	atomic.StoreInt32(&failEnabled, 0)
+	p, err := planReplication(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.missingOccur != wantStillMissing {
+		t.Fatalf("missingOccur = %d, want %d (exactly whatever didn't land on the failed attempt should still be missing on rerun)", p.missingOccur, wantStillMissing)
+	}
+	stats, err := executeReplicationPlan(p)
+	if err != nil {
+		t.Fatalf("rerun failed: %v", err)
+	}
+	if stats.UniqueChunksUploaded != wantStillMissing {
+		t.Fatalf("UniqueChunksUploaded = %d, want %d on rerun", stats.UniqueChunksUploaded, wantStillMissing)
+	}
+
+	_, gotBody, err := dstSrv.store.GetObject("dst", "obj.bin")
+	if err != nil {
+		t.Fatalf("GetObject: %v", err)
+	}
+	if !bytes.Equal(gotBody, body) {
+		t.Fatalf("destination content mismatch after rerun")
+	}
+}
+
+// TestReplicate_WorkersGreaterThanChunkCount covers B5's "worker count
+// greater than chunk count" edge case: a small object (few chunks) with a
+// worker count far exceeding them must not deadlock, over-allocate, or
+// misbehave -- runTransferWorkers' semaphore is simply never filled.
+func TestReplicate_WorkersGreaterThanChunkCount(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(90500, 10_000) // small: at most a couple of chunks
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	cfg := replicateConfig{
+		Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		Workers: maxTransferWorkers,
+	}
+	stats, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	if stats.TotalChunks >= maxTransferWorkers {
+		t.Fatalf("fixture produced %d chunks, want fewer than maxTransferWorkers (%d) for this edge case to be meaningful", stats.TotalChunks, maxTransferWorkers)
+	}
+	if stats.UploadedBytes != int64(len(body)) {
+		t.Fatalf("UploadedBytes = %d, want %d", stats.UploadedBytes, len(body))
+	}
+	_, gotBody, err := dstSrv.store.GetObject("dst", "obj.bin")
+	if err != nil {
+		t.Fatalf("GetObject: %v", err)
+	}
+	if !bytes.Equal(gotBody, body) {
+		t.Fatalf("content mismatch")
+	}
+}
+
+func TestReplicate_ConcurrentChunkFetchesActuallyOverlap(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(90050, 3_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	var cur, maxConc int64
+	srcHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix) {
+			c := atomic.AddInt64(&cur, 1)
+			for {
+				m := atomic.LoadInt64(&maxConc)
+				if c <= m || atomic.CompareAndSwapInt64(&maxConc, m, c) {
+					break
+				}
+			}
+			time.Sleep(15 * time.Millisecond)
+			atomic.AddInt64(&cur, -1)
+		}
+		srcSrv.ServeHTTP(w, r)
+	})
+	srcTS := httptest.NewServer(srcHandler)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	cfg := replicateConfig{
+		Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+		Workers: 8,
+	}
+	if _, err := replicateObject(cfg); err != nil {
+		t.Fatalf("replicateObject: %v", err)
+	}
+	if got := atomic.LoadInt64(&maxConc); got < 2 {
+		t.Fatalf("observed max concurrent source chunk fetches = %d, want > 1 -- a bounded worker pool should let independent chunk transfers overlap, not serialize", got)
+	}
+}
+
+func TestReplicate_ParallelTransferFasterThanSequentialUnderLatency(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(90200, 1_500_000)
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+
+	const delay = 5 * time.Millisecond
+	delayed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix) {
+			time.Sleep(delay)
+		}
+		srcSrv.ServeHTTP(w, r)
+	})
+	srcTS := httptest.NewServer(delayed)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+
+	baseCfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+	}
+
+	seqCfg := baseCfg
+	seqCfg.Workers = 1
+	start := time.Now()
+	if _, err := replicateObject(seqCfg); err != nil {
+		t.Fatalf("sequential replicateObject: %v", err)
+	}
+	seqElapsed := time.Since(start)
+
+	// A fresh destination for a clean second measurement of the identical
+	// transfer under real concurrency.
+	_, dstSrv2, _, _ := newSyncTestServer(t)
+	if err := dstSrv2.store.CreateBucket("dst2"); err != nil {
+		t.Fatal(err)
+	}
+	dstTS2 := httptest.NewServer(dstSrv2)
+	defer dstTS2.Close()
+
+	parCfg := baseCfg
+	parCfg.Dest = syncClientConfig{Endpoint: dstTS2.URL, Bucket: "dst2", Key: "obj.bin", Creds: creds, Region: region, HTTPClient: dstTS2.Client()}
+	parCfg.Workers = 8
+	start = time.Now()
+	if _, err := replicateObject(parCfg); err != nil {
+		t.Fatalf("parallel replicateObject: %v", err)
+	}
+	parElapsed := time.Since(start)
+
+	t.Logf("sequential(workers=1)=%v parallel(workers=8)=%v", seqElapsed, parElapsed)
+	if parElapsed >= seqElapsed {
+		t.Fatalf("parallel transfer (%v) was not faster than sequential (%v) despite a %v per-chunk artificial delay -- bounded concurrency should overlap independent chunk round trips", parElapsed, seqElapsed, delay)
+	}
+}
+
+func TestReplicate_RepeatedTransfersDoNotLeakGoroutines(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcTS := httptest.NewServer(srcSrv)
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	if err := dstSrv.store.CreateBucket("dst"); err != nil {
+		t.Fatal(err)
+	}
+
+	before := runtime.NumGoroutine()
+	for i := 0; i < 20; i++ {
+		body := genRandomBytes(int64(90100+i), 300_000)
+		key := fmt.Sprintf("obj%d.bin", i)
+		mustPutSourceObject(t, srcSrv, "src", key, body, "application/octet-stream", nil)
+		cfg := replicateConfig{
+			Source:  syncClientConfig{Endpoint: srcTS.URL, Bucket: "src", Key: key, Creds: creds, Region: region, HTTPClient: srcTS.Client()},
+			Dest:    syncClientConfig{Endpoint: dstTS.URL, Bucket: "dst", Key: key, Creds: creds, Region: region, HTTPClient: dstTS.Client()},
+			Workers: 8,
+		}
+		if _, err := replicateObject(cfg); err != nil {
+			t.Fatalf("replicateObject %d: %v", i, err)
+		}
+	}
+	// Idle keep-alive connections legitimately keep their own background
+	// read-loop goroutine alive until the pool decides to close them
+	// (IdleConnTimeout, or eviction) -- that is normal net/http behavior,
+	// not a leak from the worker pool. Close them explicitly so this
+	// check isolates genuinely leaked (worker/transfer) goroutines from
+	// harmless pooled-connection ones.
+	srcTS.Client().Transport.(*http.Transport).CloseIdleConnections()
+	dstTS.Client().Transport.(*http.Transport).CloseIdleConnections()
+
+	after := before
+	for i := 0; i < 30; i++ {
+		after = runtime.NumGoroutine()
+		if after <= before+5 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if after > before+10 {
+		t.Fatalf("goroutine count grew from %d to %d after 20 replications (even after closing idle connections) -- possible leak", before, after)
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8H-B2: `repair` with a bounded worker pool
+// -----------------------------------------------------------------------
+
+func repairManyChunksFixture(t *testing.T) (store *Store, man manifestV1, peerTS *httptest.Server, creds Credentials, region string) {
+	t.Helper()
+	_, store = mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	body := genRandomBytes(90001, 3_000_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	man = mustManifestFor(t, store, entry)
+	if len(man.Chunks) < 20 {
+		t.Fatalf("fixture needs >= 20 chunks for a meaningful concurrency test, got %d", len(man.Chunks))
+	}
+	_, peerSrv, c, r := newSyncTestServer(t)
+	peerTS = httptest.NewServer(peerSrv)
+	t.Cleanup(peerTS.Close)
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
+	return store, man, peerTS, c, r
+}
+
+func TestRepair_ManyCorruptChunks_WorkerCountsProduceIdenticalStats(t *testing.T) {
+	type snap struct {
+		bad, repaired, unresolved int
+		fetched                   int64
+		affected                  int
+		ok                        bool
+	}
+	var golden snap
+	for i, workers := range []int{1, 2, 4, 8, 16} {
+		workers := workers
+		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
+			store, man, peerTS, creds, region := repairManyChunksFixture(t)
+			for _, c := range man.Chunks {
+				corruptChunkOnDisk(t, store, c.SHA256)
+			}
+			stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region), Workers: workers})
+			if err != nil {
+				t.Fatalf("repairFromPeer: %v", err)
+			}
+			got := snap{stats.BadChunks, stats.Repaired, stats.Unresolved, stats.PayloadFetched, stats.AffectedObjects, stats.PostRepairOK}
+			if i == 0 {
+				golden = got
+			} else if got != golden {
+				t.Fatalf("workers=%d result %+v differs from workers=1 golden %+v", workers, got, golden)
+			}
+			if !stats.PostRepairOK || stats.Unresolved != 0 || stats.Repaired != len(man.Chunks) {
+				t.Fatalf("stats = %+v, want every corrupt chunk repaired", stats)
+			}
+		})
+	}
+}
+
+func TestRepair_ManyMissingChunks_Concurrent(t *testing.T) {
+	store, man, peerTS, creds, region := repairManyChunksFixture(t)
+	for i, c := range man.Chunks {
+		if i%2 == 0 {
+			deleteChunkOnDisk(t, store, c.SHA256)
+		}
+	}
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region), Workers: 8})
+	if err != nil {
+		t.Fatalf("repairFromPeer: %v", err)
+	}
+	wantBad := (len(man.Chunks) + 1) / 2
+	if stats.BadChunks != wantBad || stats.Repaired != wantBad || stats.Unresolved != 0 || !stats.PostRepairOK {
+		t.Fatalf("stats = %+v, want %d bad/repaired, 0 unresolved, OK", stats, wantBad)
+	}
+}
+
+func TestRepair_MixedCorruptAndMissing_Concurrent(t *testing.T) {
+	store, man, peerTS, creds, region := repairManyChunksFixture(t)
+	wantBad := 0
+	for i, c := range man.Chunks {
+		switch i % 3 {
+		case 0:
+			corruptChunkOnDisk(t, store, c.SHA256)
+			wantBad++
+		case 1:
+			deleteChunkOnDisk(t, store, c.SHA256)
+			wantBad++
+		}
+	}
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region), Workers: 8})
+	if err != nil {
+		t.Fatalf("repairFromPeer: %v", err)
+	}
+	if stats.BadChunks != wantBad || stats.Repaired != wantBad || stats.Unresolved != 0 || !stats.PostRepairOK {
+		t.Fatalf("stats = %+v, want %d bad/repaired (mixed corrupt+missing)", stats, wantBad)
+	}
+}
+
+func TestRepair_OnePeerFailureAmongManySuccesses_Concurrent(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	body := genRandomBytes(90010, 3_000_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+	if len(man.Chunks) < 20 {
+		t.Fatalf("need >= 20 chunks, got %d", len(man.Chunks))
+	}
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
+	missingDigest := man.Chunks[len(man.Chunks)/2].SHA256
+	missingSum, err := decodeHexSHA256(missingDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(peerSrv.store.chunkPath(missingSum)); err != nil {
+		t.Fatal(err)
+	}
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+
+	for _, c := range man.Chunks {
+		corruptChunkOnDisk(t, store, c.SHA256)
+	}
+
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region), Workers: 8})
+	if err != nil {
+		t.Fatalf("repairFromPeer should not itself error on one bad peer response among many good ones: %v", err)
+	}
+	if stats.BadChunks != len(man.Chunks) {
+		t.Fatalf("BadChunks = %d, want %d", stats.BadChunks, len(man.Chunks))
+	}
+	if stats.Repaired != len(man.Chunks)-1 || stats.Unresolved != 1 {
+		t.Fatalf("stats = %+v, want exactly one unresolved chunk (the peer's genuinely missing one) and every other chunk repaired despite it running concurrently", stats)
+	}
+	if len(stats.Failures) != 1 || stats.Failures[0].SHA256 != missingDigest {
+		t.Fatalf("Failures = %+v, want exactly one failure for %s", stats.Failures, missingDigest)
+	}
+	if stats.PostRepairOK {
+		t.Fatalf("PostRepairOK = true, want false")
+	}
+}
+
+func TestRepair_WrongPeerBytesAmongMany_Concurrent(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	body := genRandomBytes(90020, 3_000_000)
+	entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	man := mustManifestFor(t, store, entry)
+	if len(man.Chunks) < 20 {
+		t.Fatalf("need >= 20 chunks, got %d", len(man.Chunks))
+	}
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
+	wrongDigest := man.Chunks[3].SHA256
+	wrongHandler := wrapChunkEndpoint(peerSrv, wrongDigest, func(w http.ResponseWriter, r *http.Request) bool {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("wrong bytes for this digest"))
+		return true
+	})
+	peerTS := httptest.NewServer(wrongHandler)
+	defer peerTS.Close()
+
+	for _, c := range man.Chunks {
+		corruptChunkOnDisk(t, store, c.SHA256)
+	}
+
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region), Workers: 8})
+	if err != nil {
+		t.Fatalf("repairFromPeer: %v", err)
+	}
+	if stats.Repaired != len(man.Chunks)-1 || stats.Unresolved != 1 {
+		t.Fatalf("stats = %+v, want exactly one unresolved (the wrong-bytes digest)", stats)
+	}
+	if len(stats.Failures) != 1 || stats.Failures[0].SHA256 != wrongDigest {
+		t.Fatalf("Failures = %+v, want exactly one failure for %s", stats.Failures, wrongDigest)
+	}
+	if !strings.Contains(stats.Failures[0].Reason, "does not match the requested digest") {
+		t.Fatalf("Failures[0].Reason = %q, want it to explain the digest mismatch", stats.Failures[0].Reason)
+	}
+}
+
+func TestRepair_SharedDigestSingleRepairJob_Concurrent(t *testing.T) {
+	_, store := mustCreateLocalStore(t)
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	shared := genRandomBytes(90030, 40_000)
+	sum, err := store.casWrite(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hexDigest := hex.EncodeToString(sum[:])
+
+	const numObjects = 12
+	for i := 0; i < numObjects; i++ {
+		refs := []chunkRef{{SHA256: hexDigest, Length: int64(len(shared))}}
+		var objSHA [32]byte
+		copy(objSHA[:], sum[:])
+		man := buildManifestV1FromRefs(refs, int64(len(shared)), objSHA, fmt.Sprintf("etag-%d", i), "application/octet-stream", nil)
+		manUUID, manSHA, err := store.publishManifest(man)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.commitObjectRoot("b", fmt.Sprintf("obj%d.bin", i), manUUID, manSHA, man); err != nil {
+			t.Fatal(err)
+		}
+	}
+	corruptChunkOnDisk(t, store, hexDigest)
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	if _, err := peerSrv.store.casWrite(shared); err != nil {
+		t.Fatal(err)
+	}
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region), Workers: 8})
+	if err != nil {
+		t.Fatalf("repairFromPeer: %v", err)
+	}
+	if stats.BadChunks != 1 || stats.Repaired != 1 {
+		t.Fatalf("stats = %+v, want exactly 1 bad/repaired chunk despite %d objects referencing it", stats, numObjects)
+	}
+	if stats.AffectedObjects != numObjects {
+		t.Fatalf("AffectedObjects = %d, want %d", stats.AffectedObjects, numObjects)
+	}
+	if stats.PayloadFetched != int64(len(shared)) {
+		t.Fatalf("PayloadFetched = %d, want %d -- one physical fetch, not %d", stats.PayloadFetched, len(shared), numObjects)
+	}
+	if !stats.PostRepairOK {
+		t.Fatalf("PostRepairOK = false, want true")
+	}
+}
+
+func TestRepair_HighWorkerCount_RaceAndCorrectness(t *testing.T) {
+	store, man, peerTS, creds, region := repairManyChunksFixture(t)
+	for _, c := range man.Chunks {
+		corruptChunkOnDisk(t, store, c.SHA256)
+	}
+	stats, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region), Workers: maxTransferWorkers})
+	if err != nil {
+		t.Fatalf("repairFromPeer: %v", err)
+	}
+	if !stats.PostRepairOK || stats.Repaired != len(man.Chunks) {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8H-B1: `sync` (M6) with a bounded worker pool
+// -----------------------------------------------------------------------
+
+func TestSync_ParallelChunkUploadWithWorkers(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	if err := srv.store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	tmp := t.TempDir()
+	body := genRandomBytes(90300, 2_000_000)
+	path := writeSyncTempFile(t, tmp, "f.bin", body)
+
+	cfg := syncClientConfig{
+		LocalPath: path, Endpoint: ts.URL, Bucket: "b", Key: "f.bin",
+		Creds: creds, Region: region, HTTPClient: ts.Client(), Workers: 8,
+	}
+	stats, err := syncFile(cfg)
+	if err != nil {
+		t.Fatalf("syncFile: %v", err)
+	}
+	if stats.UploadedBytes != int64(len(body)) {
+		t.Fatalf("UploadedBytes = %d, want %d", stats.UploadedBytes, len(body))
+	}
+	_, gotBody, err := srv.store.GetObject("b", "f.bin")
+	if err != nil {
+		t.Fatalf("GetObject: %v", err)
+	}
+	if !bytes.Equal(gotBody, body) {
+		t.Fatalf("content mismatch")
+	}
+}
+
+func TestSync_WorkersOneMatchesSequentialBaseline(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	if err := srv.store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	tmp := t.TempDir()
+	body := genRandomBytes(90301, 500_000)
+	path := writeSyncTempFile(t, tmp, "f.bin", body)
+	cfg := syncClientConfig{
+		LocalPath: path, Endpoint: ts.URL, Bucket: "b", Key: "f.bin",
+		Creds: creds, Region: region, HTTPClient: ts.Client(), Workers: 1,
+	}
+	stats, err := syncFile(cfg)
+	if err != nil {
+		t.Fatalf("syncFile: %v", err)
+	}
+	if stats.UploadedBytes != int64(len(body)) || stats.FellBackToPlainPut {
+		t.Fatalf("stats = %+v, want a normal delta-sync full upload", stats)
+	}
+}
+
+func TestSync_LocalMutationDuringConcurrentUploadStillDetected(t *testing.T) {
+	_, srv, creds, region := newSyncTestServer(t)
+	if err := srv.store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	tmp := t.TempDir()
+	body := genRandomBytes(90302, 3_000_000)
+	path := writeSyncTempFile(t, tmp, "f.bin", body)
+
+	origHook := syncTestHookBeforeMutationCheck
+	defer func() { syncTestHookBeforeMutationCheck = origHook }()
+	syncTestHookBeforeMutationCheck = func(cfg syncClientConfig) {
+		// Mutate the file's mtime after the concurrent upload has already
+		// happened, simulating an in-flight edit racing the sync.
+		future := time.Now().Add(time.Hour)
+		_ = os.Chtimes(cfg.LocalPath, future, future)
+	}
+
+	cfg := syncClientConfig{
+		LocalPath: path, Endpoint: ts.URL, Bucket: "b", Key: "f.bin",
+		Creds: creds, Region: region, HTTPClient: ts.Client(), Workers: 8,
+	}
+	_, err := syncFile(cfg)
+	if !errors.Is(err, errSyncLocalMutation) {
+		t.Fatalf("err = %v, want errSyncLocalMutation", err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// M8H-B1/B3: CLI -workers flag
+// -----------------------------------------------------------------------
+
+func TestCLI_WorkersFlagValidation(t *testing.T) {
+	bin := buildZeros3Binary(t)
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"replicate", []string{"replicate", "-workers", "WORKERS", "s3://a/b", "s3://c/d"}},
+		{"replicate-recursive", []string{"replicate", "-recursive", "-workers", "WORKERS", "s3://a/b/", "s3://c/d/"}},
+		{"repair", []string{"repair", "-store", "STOREDIR", "-from", "http://127.0.0.1:1", "-workers", "WORKERS"}},
+		{"sync", []string{"sync", "-workers", "WORKERS", "LOCALPATH", "s3://a/b"}},
+	}
+
+	substitute := func(t *testing.T, args []string, workers string) []string {
+		t.Helper()
+		out := make([]string, len(args))
+		copy(out, args)
+		storeDir := t.TempDir()
+		localFile := writeSyncTempFile(t, t.TempDir(), "f.bin", []byte("x"))
+		for i, a := range out {
+			switch a {
+			case "WORKERS":
+				out[i] = workers
+			case "STOREDIR":
+				out[i] = storeDir
+			case "LOCALPATH":
+				out[i] = localFile
+			}
+		}
+		return out
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		for _, w := range []string{"0", "-1", strconv.Itoa(maxTransferWorkers + 1), "1000000"} {
+			w := w
+			t.Run(tc.name+"/workers="+w, func(t *testing.T) {
+				args := substitute(t, tc.args, w)
+				_, stderr, code := runZeros3CLI(t, bin, args...)
+				if code != 2 {
+					t.Fatalf("exit code = %d, want 2 for -workers %s; stderr=%s", code, w, stderr)
+				}
+				if !strings.Contains(stderr, "workers") {
+					t.Fatalf("stderr = %q, want it to mention workers", stderr)
+				}
+			})
+		}
+		t.Run(tc.name+"/workers=valid", func(t *testing.T) {
+			args := substitute(t, tc.args, "8")
+			_, stderr, code := runZeros3CLI(t, bin, args...)
+			if code == 2 && strings.Contains(stderr, "-workers") {
+				t.Fatalf("a valid -workers value was rejected: %s", stderr)
+			}
+		})
 	}
 }
