@@ -1,10 +1,339 @@
 # ZeroS3 — Status
 
-Milestone-by-milestone status, newest first. M1-M7, M8A, M8B, M8C, and
-M8D are all complete, tested, and release-hardened (frozen unless a
-demonstrated regression or correctness bug requires a minimal fix); M8E
-(durable namespace snapshots + zero-payload restore) is the current pass
--- see its section immediately below.
+Milestone-by-milestone status, newest first. M1-M7, M8A, M8B, M8C, M8D,
+and M8E are all complete, tested, and release-hardened (frozen unless a
+demonstrated regression or correctness bug requires a minimal fix); M8F
+(atomic S3 conditional operations) is the current pass -- see its section
+immediately below.
+
+## M8F — Atomic S3 conditional operations (`If-None-Match`/`If-Match`
+PutObject, conditional GetObject/HeadObject, conditional CopyObject
+source predicates)
+
+**Goal:** expose, to ordinary S3 clients, the exact concurrency-safety
+concept ZeroS3 already uses internally for sync/replication/fork/restore
+-- an observed expected namespace state, re-validated inside the same
+locked critical section that performs the write -- as a real S3-level
+compare-and-swap primitive: `PutObject` + `If-None-Match: *` (create only
+if absent) and `PutObject` + `If-Match: "<etag>"` (replace only if the
+current object still has exactly that ETag), with the condition enforced
+at the actual namespace commit/visibility point, not by a preliminary,
+race-prone check before the request body is even read.
+
+### Phase 0 — exact baseline
+
+- Exact merged M8E commit: `feccb186eb2cbcf91a06609f69ca0cd59cc4dba4`
+  (`main`'s merge commit for PR #16).
+- Go toolchain: go1.27.0 linux/amd64.
+- `gofmt -l .`: clean. `go vet ./...`: clean. `go test ./...`: **552
+  tests**, ok (88.0s). `go test -race ./...`: ok (221.8s).
+- `zeros3.go`: 10624 lines. `zeros3_test.go`: 19973 lines.
+- `go.mod`: zero `require` directives (unchanged from M1).
+- Focused regression: `m8d/fork` **146/146** passed, `m8e/snapshot`
+  **151/151** passed, both against a build of this exact commit.
+- Checkpoint branch `m8f-conditional-put-gold` pushed at the exact
+  commit M8F-A landed at, before any M8F-B/M8F-C work began.
+
+### Architecture: the existing checked-commit primitive, exposed to S3
+headers -- not a second concurrency-control system
+
+M8F-A's entire admission-control mechanism is `commitObjectRootChecked`
+(section 7), which already existed for M6B sync's own safe-mode conflict
+precondition (`syncPrecondition`/`ExpectAbsent`/`ExpectedETag`): a
+`check(cur *objectEntry, exists bool) error` callback that runs inside
+`s.mu`, immediately after re-reading the current root and before
+anything is written, so a precondition it evaluates can never be
+invalidated by a concurrent writer racing in between the check and the
+commit. M8F-A adds exactly one new small type built on that same
+callback shape:
+
+```go
+type putCondition struct {
+    ifNoneMatchStar bool
+    ifMatchETag     string
+}
+```
+
+`Store.PutObjectChecked(bucket, key, body, contentType, metadata, cond)`
+runs the identical chunk/CAS/manifest pipeline `PutObject` always has,
+then dispatches on `cond.isZero()`: a zero condition calls the existing
+`commitObjectRoot` (nil check) exactly as before -- so every pre-M8F
+caller, including plain `Store.PutObject` itself (now a one-line
+wrapper), is byte-for-byte unaffected in both behavior and cost; a
+non-zero condition calls `commitObjectRootChecked` with `cond.check` as
+the check function. There is no second lock, no second commit path, and
+no persistent representation of "this write was conditional" -- a
+successful conditional PUT is indistinguishable on disk from an ordinary
+one.
+
+New code lives in one new section, "10a. S3 conditional-write
+preconditions (M8F-A)" (`zeros3.go`, just above `handlePutObject`):
+`putCondition`/`isZero`/`check`, `parseSingleETag` (single quoted/
+unquoted ETag; rejects `*`, `W/`-prefixed weak validators, and
+comma-separated lists as `errConditionUnsupported`; rejects unterminated
+quotes and an empty validator as `errConditionMalformed`), and
+`parsePutCondition` (rejects both `If-Match` and `If-None-Match` set at
+once -- contradictory admission rules, not a supported AND-of-both
+form). `handlePutObject` parses the condition, then calls
+`PutObjectChecked`; a failed condition (`errPreconditionFailed`, a new
+sentinel alongside the parse-time sentinels) maps to
+`412 PreconditionFailed`, added to the centralized `s3ErrorStatus`
+mapping everything else already funnels through.
+
+M8F-B (conditional `GetObject`/`HeadObject`, section "10b") and M8F-C
+(`CopyObject` source preconditions, folded into section 11's existing
+`CopyObject`) both reuse `parseSingleETag` verbatim -- no second ETag-
+validator parser exists anywhere in this codebase. Reads have no commit
+boundary to race (nothing is written), so their condition is simply
+resolved once via the existing `HeadObject` call (already used for
+Range's own size lookup) before deciding 200/206/412/304.
+`CopyObject`'s source precondition is evaluated against the exact
+`objectEntry` its own `lookupObject` call already captures atomically --
+`objectEntry` is immutable once published and is never re-fetched
+afterward, so "check source ETag A, source changes to B, copy B while
+believing A was validated" is structurally impossible, not merely made
+unlikely by timing.
+
+### M8F-A internal tests (If-None-Match/If-Match correctness, races,
+GC safety)
+
+23 new tests: `TestConditionalPut_IfNoneMatchStar_*` (absent-succeeds,
+existing-fails, deleted-then-succeeds, failed-write-leaves-content/
+metadata/versions-unchanged), `TestConditionalPut_IfMatch_*`
+(matching-succeeds, mismatching-fails, absent-fails, historical-ETag-
+does-not-match-current, ABA-same-ETag-after-delete-recreate-succeeds --
+documented as intentional, pure-HTTP-ETag semantics, distinct from
+`syncPrecondition`'s own captured-state identity -- speculative-CAS-
+becomes-GC-collectible-after-failure), plus the HTTP-level surface
+(`TestConditionalPutHTTP_*`: create-then-reject-412, CAS-update-then-
+stale-reject-412, quoted/unquoted/case-insensitive matching, multipart-
+current-ETag matching, whitespace tolerance, a table of 7 malformed/
+unsupported header shapes all rejected `400 InvalidArgument`, and byte-
+for-byte unconditional-PUT regression). Deterministic race proofs use
+`hookAfterManifestPublished` (fired after all CDC/CAS/manifest work,
+immediately before the commit lock) as a synchronization barrier via a
+new `runBarrieredConcurrentPuts` helper -- the same `withTestHook`
+crash-simulation pattern this file already uses, applied to concurrency
+instead of crash injection: `TestConditionalPut_ConcurrentCreateOnly_
+ExactlyOneWinner` (n=8, barriered), `TestConditionalPut_
+ConcurrentIfMatchSameOldETag_ExactlyOneWinner` (n=8, barriered, plus a
+no-lost-update body check), `TestConditionalPutHTTP_
+ConcurrentCreateOnly_ExactlyOneWinnerOverRealHTTP` (n=20, genuine HTTP
+goroutine concurrency, no barrier), `TestConditionalPut_
+StaleIfMatchLosesAfterInterveningOrdinaryPut` and `...AfterDeleteRecreate`
+(the conditional writer is parked at the exact commit-boundary hook
+while an ordinary write or a delete+recreate runs to completion, then
+released -- proving the condition is re-evaluated against post-race
+state, not the state observed before the writer's body/CAS work began).
+All pass under `go test -race`.
+
+### M8F-B internal tests (conditional read semantics)
+
+15 new tests: `TestConditionalGetHTTP_IfMatch_MatchSucceeds`/
+`MismatchFailsWith412`, `TestConditionalHeadHTTP_IfMatch_
+MatchAndMismatch`, `TestConditionalGetHTTP_IfNoneMatch_
+MatchReturns304`/`MismatchServesNormally`, `TestConditionalHeadHTTP_
+IfNoneMatch_MatchAndMismatch`, `TestConditionalGetHTTP_
+RangeInteraction` (3 subtests: If-Match passes+Range -> 206 with exact
+bytes; If-Match fails+Range -> 412, no `Content-Range`; If-None-Match
+matches+Range -> 304, no `Content-Range`, empty body -- the condition
+always short-circuits Range processing, never races it),
+`MissingObjectIgnoresCondition` (404/NoSuchKey regardless of the
+conditional header), `MultipartCurrentETag`, `QuotedUnquotedAndCase
+Insensitive`, a 6-case malformed/unsupported table (`400
+InvalidArgument`), and `HistoricalETagIsNotCurrentForIfMatch`.
+
+### M8F-C internal tests (CopyObject source predicates)
+
+8 new tests: `TestCopyObjectHTTP_SourceIfMatch_MatchSucceeds`/
+`MismatchFailsWith412` (the latter also confirms no destination object
+is created), `SourceIfNoneMatch_MismatchSucceeds`/`MatchFailsWith412`,
+`SourceIfMatch_SupersededHistoricalETagFails`, `SourceIfMatch_
+WithMetadataReplaceDirective` (source condition composes correctly with
+`X-Amz-Metadata-Directive: REPLACE`), `SourceConditionMalformedRejected`,
+and the Store-level `TestCopyObject_SourceConditionUsesAtomically
+CapturedRevision` (an If-Match naming the *current* revision, evaluated
+while an older revision also exists in history, must copy the current
+revision's exact bytes -- the atomic-capture proof).
+
+Internal suite total after M8F: **594 tests** (+42 from the M8E
+baseline), `go test ./...` ok, `go test -race ./...` ok, `gofmt -l .`
+clean, `go vet ./...` clean.
+
+### External validation (`zeros3-testing/harness/m8f/conditional`)
+
+New harness, real AWS SDK for Go v2 client (`PutObjectInput.IfMatch`/
+`IfNoneMatch`, `GetObjectInput`/`HeadObjectInput.IfMatch`/`IfNoneMatch`,
+`CopyObjectInput.CopySourceIfMatch`/`CopySourceIfNoneMatch` -- all
+present in the pinned SDK version, so every condition is a genuine wire
+header a real client sends, never a hand-crafted request), against a
+real `zeros3 serve` subprocess per phase, error codes/status
+distinguished via `smithy.APIError`/`smithyhttp.ResponseError`, not
+string matching:
+
+- **Phase 1 -- create-only:** PUT with `If-None-Match: *` against an
+  absent key succeeds; a repeat fails `412`/`PreconditionFailed`; first
+  bytes remain intact.
+- **Phase 2 -- CAS update:** PUT v1, HEAD ETag A; PUT v2 with
+  `If-Match: A` succeeds, HEAD ETag B; PUT v3 with the now-stale
+  `If-Match: A` fails `412`; GET still returns v2.
+- **Phase 3 -- concurrent create-only:** 12 real, concurrent AWS SDK
+  clients race `If-None-Match: *` with distinct bodies against one
+  absent key: exactly 1 success, 11 `412`s; GET returns exactly the
+  winning body; **a real process restart does not change the winner**.
+- **Phase 4 -- concurrent CAS update:** 12 real, concurrent clients
+  race `If-Match: A` (one shared starting ETag) with distinct bodies:
+  exactly 1 success, 11 `412`s (no lost update); restart-stable winner.
+- **Phase 5 -- GC of a failed write's speculative CAS payload:** a 2 MiB
+  body is CDC-chunked and published to CAS before a deliberately
+  doomed `If-Match` rejects the commit; the kept object is provably
+  unchanged; `zeros3 gc` (dry run) reports the failed write's chunks as
+  unreachable; `zeros3 gc -apply` reclaims them (35 chunks, ~2.1 MB in
+  this run); `zeros3 verify -deep` and a restart both confirm full
+  health afterward.
+- **Phase 6 -- conditional GET/HEAD (M8F-B):** matching `If-Match`
+  succeeds with exact bytes; mismatching `If-Match` fails `412` (GET and
+  HEAD); matching `If-None-Match` surfaces as the SDK's own error for a
+  non-2xx response, carrying HTTP status `304` (GetObject models only
+  2xx responses, so the SDK cannot return a plain success for it --
+  confirmed by direct inspection of the wire status, not assumed);
+  mismatching `If-None-Match` serves normally; a failed `If-Match`
+  combined with `Range` still reports `412`, never `206`/`416`; a
+  missing key still reports `404`/`NoSuchKey` regardless of `If-Match`.
+- **Phase 7 -- CopyObject source predicates (M8F-C):** matching
+  `CopySourceIfMatch` succeeds and clones exact bytes; mismatching
+  `CopySourceIfMatch` fails `412` and creates no destination object; a
+  `CopySourceIfNoneMatch` that matches the source's current ETag also
+  fails `412`.
+
+**Result: 83 passed, 0 failed, 1 informational**, against a
+`CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-buildid="`
+build of the exact commit under test. Reproducible-build proof (below)
+confirms the tested binary is byte-identical to any other clean build of
+the same source.
+
+### Hostile M8F review
+
+- **TOCTOU:** structurally impossible for `PutObject` -- the check
+  function runs inside `commitObjectRootChecked`'s `s.mu` critical
+  section, immediately after re-reading `cur`/`exists` and immediately
+  before the journal append that publishes the new root; there is no
+  unlock between "read current state" and "decide/commit". For
+  `CopyObject`, the source check is evaluated against the one
+  `lookupObject` capture the copy already uses for everything else --
+  see "Architecture" above.
+- **Two creates / two CAS updates:** proven impossible to both succeed
+  by `TestConditionalPut_ConcurrentCreateOnly_ExactlyOneWinner`,
+  `TestConditionalPut_ConcurrentIfMatchSameOldETag_ExactlyOneWinner`
+  (deterministic, barriered), and Phases 3/4 of the external harness
+  (genuine concurrent real-process clients, restart-stable).
+- **Ordinary-writer interaction:** `TestConditionalPut_
+  StaleIfMatchLosesAfterInterveningOrdinaryPut` parks a conditional
+  writer at the exact commit-boundary hook after it has observed ETag
+  A, lets an unconditional writer publish B to completion, then
+  releases the parked writer -- it re-evaluates against B and fails,
+  exactly as the milestone spec requires.
+- **Delete interaction:** `TestConditionalPut_
+  StaleIfMatchLosesAfterDeleteRecreate` proves a parked `If-Match: A`
+  writer fails once the key is deleted and recreated with different
+  content (different ETag); `TestConditionalPut_
+  IfNoneMatchStar_DeletedKeySucceeds` proves `If-None-Match: *` treats a
+  deleted key as absent, per the milestone spec's "current-visible-
+  object semantics" rule.
+- **ABA problem:** deliberately tested and documented, not merely
+  avoided -- `TestConditionalPut_IfMatch_ABASameETagAfterDeleteRecreate
+  Succeeds` confirms that `If-Match: X` succeeds when a delete+recreate
+  cycle produces a *different* object that happens to hash to the same
+  ETag `X`, because ZeroS3's public `If-Match` matches the current
+  representation's ETag, not a hidden generation/version identity --
+  this is correct, unmodified real HTTP/S3 `If-Match` semantics, not a
+  ZeroS3 weakening. `syncPrecondition` (M6B's own internal conflict
+  precondition, `ExpectAbsent`/`ExpectedETag`) remains a separate
+  mechanism and is unaffected either way; M8F does not strengthen or
+  reuse it for public `If-Match`, and does not need to.
+- **Locking:** `putCondition.check`/`evaluateGetCondition`/the
+  `CopyObject` source check are pure comparisons against already-locked-
+  and-passed values -- none acquires any lock, calls back into any
+  other locked path, or changes lock acquisition order anywhere in the
+  codebase. `go test -race ./...` (full suite, including every new
+  concurrency test) is clean.
+- **Resource behavior:** a guaranteed-to-fail condition with a large
+  body (Phase 5, 2 MiB) still completes its speculative chunk/CAS work
+  and is safely GC-collected -- no synchronous rollback machinery was
+  added, matching the milestone spec's explicit guidance. Header
+  parsing (`parseSingleETag`/`parsePutCondition`/`parseGetCondition`) is
+  bounded, allocation-free beyond simple substring/trim operations, and
+  inherits Go's stdlib `net/http` default header-size limits -- no new
+  unbounded parsing was introduced. Duplicate conditional headers
+  resolve to `net/http`'s own first-value `Header.Get` behavior,
+  identical to every other header this codebase already reads that way.
+- **Crash behavior:** a successful conditional PUT durability-commits
+  through the exact same journal-append-then-fsync boundary as an
+  unconditional one (M8F-A adds no new durability primitive); Phase 3/4
+  of the external harness independently confirm a real process restart
+  never changes which conditional write won.
+
+### Full historical regression
+
+Every pre-existing harness in `zeros3-testing` re-run against this exact
+M8F build, unmodified, plus the new `m8f/conditional` harness:
+
+| Harness | Result | Matches baseline? |
+|---|---|---|
+| `m2` | 41 passed, 0 failed | yes, identical |
+| `m3/copy` | 46 passed, 0 failed | yes, identical |
+| `m3/dedup` | 7 passed, 0 failed | yes, identical |
+| `m3/range` | 27 passed, 0 failed | yes, identical |
+| `m5a/presign` | 47 passed, 0 failed | yes, identical |
+| `m5b/multipart` | 43 passed, 0 failed | yes, identical |
+| `m5d/pagination` | 43 passed, 0 failed | yes, identical |
+| `m6/sync` | 33 passed, 0 failed, 2 informational | yes, identical |
+| `m6c/dirsync` | 69 passed, 0 failed, 2 informational | yes, identical |
+| `m8a/remote_delta` | 34 passed, 0 failed, 4 informational | yes, identical |
+| `m8b/repair` | 133 passed, 0 failed, 1 informational | yes, identical |
+| `m8c/namespace_replication` | 111 passed, 0 failed, 2 informational | yes, identical |
+| `m8d/fork` | 146 passed, 0 failed, 3 informational | yes, identical |
+| `m8e/snapshot` | 151 passed, 0 failed, 3 informational | yes, identical |
+| **`m8f/conditional` (new)** | **83 passed, 0 failed, 1 informational** | new this pass |
+| `rclone` | 20 passed, 0 failed, 1 documented known limitation | yes, identical |
+| `package-killer` | ZeroS3 14/14, s3rver 14/14 -- GO | yes, identical |
+
+**Totals: 1062 passed, 0 failed, 18 informational, 1 documented known
+limitation, across 17 harnesses -- zero regressions anywhere.** Internal
+`zeros3_test.go`: **594 tests**, ok; `go test -race ./...`: ok;
+`gofmt -l .`: clean; `go vet ./...`: clean.
+
+### Reproducibility / dependency proof
+
+`zeros3.go`: 10980 lines (+356 from the M8E baseline). `zeros3_test.go`:
+21378 lines (+1405). `go.mod`: still zero `require` directives, no new
+non-stdlib imports, no `golang.org/x/...`, no vendoring -- M8F's entire
+implementation reuses primitives already imported at the M8E baseline
+(`net/http`, `strings`, `errors`). Two independent clean builds from the
+same working tree
+(`CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-buildid=" -o zeros3 zeros3.go`)
+produced byte-identical binaries: SHA-256
+`79766e9cbe4a2c8f4f56ffafd7fad182d78d4123598634cdddc3d9245c050c3b`.
+
+### Final verdict
+
+**M8F ACCEPTED** — atomic S3 conditional operations improve on M8E with
+full regression green. `PutObject If-None-Match: *` and `If-Match`
+create-if-absent/compare-and-swap semantics are correct; the condition
+is checked at `commitObjectRootChecked`'s actual commit point, never by
+a preliminary check; deterministic and real-process concurrent-writer
+races both prove exactly one winner with no lost update; stale writers
+cannot overwrite newer state (ordinary-writer and delete/recreate races
+both verified); current-object/version semantics are correct (historical
+ETags never match; the ABA case matches real HTTP/S3 semantics and is
+explicitly documented); failed writes never become visible; speculative
+CAS from a failed write is safely GC-collectible; normal PUT is
+byte-for-byte unaffected; restart/crash guarantees are unchanged; the
+complete historical regression (internal and external, including
+rclone and Package Killer) is green; the build remains reproducible and
+dependency-free; no persistent-format change was needed. M8F-B
+(conditional GET/HEAD) and M8F-C (CopyObject source predicates) both
+shipped as well, at no cost to M8F-A's required guarantees.
 
 ## M8E — Durable namespace snapshots + zero-payload restore (`zeros3
 snapshot create/list/show/delete/restore`)
