@@ -7547,8 +7547,8 @@ const maxTransferWorkers = 32
 // Go zero value (every M8A-M8G call site, and any M8H-B caller that
 // doesn't care) instead of naming a count explicitly.
 //
-// Set to 8 by the M8H-B4 worker-count benchmark
-// (zeros3-testing/results/M8H_PARALLEL_TRANSFER_RESULTS.md), not assumed:
+// Set to 8 by a dedicated worker-count benchmark, not assumed --
+// see README.md's "Measured results" for the parallel-transfer numbers:
 // across every measured scenario (single-object replication at 64/256
 // MiB and 0/5/10 ms simulated RTT, namespace replication, and repair),
 // workers=8 captured the large majority of the attainable speedup over
@@ -8596,7 +8596,7 @@ func runSync(args []string) {
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key (default: AWS_SECRET_ACCESS_KEY)")
 	region := fs.String("region", defaultRegion, "SigV4 region (default: AWS_REGION)")
 	contentType := fs.String("content-type", "", "Content-Type for the destination object (default: application/octet-stream); ignored for a directory source")
-	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per file (M8H-B1, bounded 1..32)")
+	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per file (bounded 1..32)")
 	fs.Parse(args)
 	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
@@ -9125,8 +9125,8 @@ func replicateObject(cfg replicateConfig) (syncStats, error) {
 // instead of bucket/key objects.
 func runReplicate(args []string) {
 	fs := flag.NewFlagSet("replicate", flag.ExitOnError)
-	recursive := fs.Bool("recursive", false, "replicate every object under a source prefix or whole bucket into the destination prefix/bucket (M8C), instead of a single object")
-	dryRun := fs.Bool("dry-run", false, "perform authenticated discovery/negotiation only and report the exact payload-transfer plan for the observed state, without fetching source chunk payload, uploading, or committing anything (M8G-A)")
+	recursive := fs.Bool("recursive", false, "replicate every object under a source prefix or whole bucket into the destination prefix/bucket, instead of a single object")
+	dryRun := fs.Bool("dry-run", false, "perform authenticated discovery/negotiation only and report the exact payload-transfer plan for the observed state, without fetching source chunk payload, uploading, or committing anything")
 	from := fs.String("from", "http://127.0.0.1:9000", "source ZeroS3 endpoint base URL (scheme://host[:port])")
 	to := fs.String("to", "http://127.0.0.1:9001", "destination ZeroS3 endpoint base URL (scheme://host[:port])")
 	fromAccessKey := fs.String("from-access-key", defaultAccessKeyID, "source access key ID")
@@ -9134,7 +9134,7 @@ func runReplicate(args []string) {
 	toAccessKey := fs.String("to-access-key", defaultAccessKeyID, "destination access key ID")
 	toSecretKey := fs.String("to-secret-key", defaultSecretAccessKey, "destination secret access key")
 	region := fs.String("region", defaultRegion, "SigV4 region (both endpoints; default: AWS_REGION)")
-	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per object (M8H-B1/B3, bounded 1..32); accepted but irrelevant with -dry-run, which never transfers chunk payload")
+	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per object (bounded 1..32); accepted but irrelevant with -dry-run, which never transfers chunk payload")
 	fs.Parse(args)
 	// P1-A5: replicate is a two-endpoint command, so -from-access-key/
 	// -from-secret-key/-to-access-key/-to-secret-key deliberately do NOT
@@ -9844,7 +9844,7 @@ func runRepair(args []string) {
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "peer secret access key (default: AWS_SECRET_ACCESS_KEY)")
 	region := fs.String("region", defaultRegion, "SigV4 region (default: AWS_REGION)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
-	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent chunk transfers from the peer (M8H-B2, bounded 1..32)")
+	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent chunk transfers from the peer (bounded 1..32)")
 	fs.Parse(args)
 	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
@@ -12210,8 +12210,8 @@ func runServe(args []string) {
 	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID clients must sign with (default: AWS_ACCESS_KEY_ID)")
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key clients must sign with (default: AWS_SECRET_ACCESS_KEY)")
 	region := fs.String("region", defaultRegion, "SigV4 region clients must sign with (default: AWS_REGION)")
-	tlsCert := fs.String("tls-cert", "", "P1-C: TLS certificate file (PEM); requires -tls-key. Neither flag: plain HTTP (default). Both: HTTPS via Go's standard-library TLS server. Exactly one without the other is a startup error.")
-	tlsKey := fs.String("tls-key", "", "P1-C: TLS private key file (PEM); requires -tls-cert. See -tls-cert.")
+	tlsCert := fs.String("tls-cert", "", "TLS certificate file (PEM); requires -tls-key. Neither flag: plain HTTP (default). Both: HTTPS via Go's standard-library TLS server. Exactly one without the other is a startup error.")
+	tlsKey := fs.String("tls-key", "", "TLS private key file (PEM); requires -tls-cert. See -tls-cert.")
 	fs.Parse(args)
 	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
@@ -12379,7 +12379,7 @@ func runVerify(args []string) {
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	deep := fs.Bool("deep", false, "re-hash every reachable chunk's actual bytes")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
-	repairFrom := fs.String("repair-from", "", "M8B-C: optional one-command detect->repair->reverify against this trusted ZeroS3 peer endpoint (equivalent to `zeros3 repair -from PEER` followed by another verify; empty disables it, the default)")
+	repairFrom := fs.String("repair-from", "", "optional one-command detect->repair->reverify against this trusted ZeroS3 peer endpoint (equivalent to `zeros3 repair -from PEER` followed by another verify; empty disables it, the default)")
 	accessKey := fs.String("access-key", defaultAccessKeyID, "peer access key ID (only used with -repair-from; default: AWS_ACCESS_KEY_ID)")
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "peer secret access key (only used with -repair-from; default: AWS_SECRET_ACCESS_KEY)")
 	region := fs.String("region", defaultRegion, "SigV4 region (only used with -repair-from; default: AWS_REGION)")

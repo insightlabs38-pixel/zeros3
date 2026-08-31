@@ -1,51 +1,62 @@
 # ZeroS3
 
-**0 Dependencies Hackathon — Track D: Data & Storage**
+**S3 on the outside. Content-addressed storage underneath.**
 
-**S3 on the outside, content-addressed storage underneath.**
+ZeroS3 is a local, self-hosted, S3-compatible object store built with Go
+1.27 and **zero third-party runtime dependencies** — one implementation
+file, `zeros3.go`, plus an organizer-approved `zeros3_test.go`. Ordinary
+S3 clients (the AWS SDK, `rclone`, the AWS CLI) talk to it exactly as
+they would talk to real S3. Underneath that ordinary surface, every
+object is split into content-defined chunks, stored once in a SHA-256
+content-addressed store, described by an immutable manifest, and made
+visible only through a durable, append-only journal.
 
-A local, self-hosted, S3-compatible object store, built with Go 1.27 and
-**zero third-party runtime dependencies** — one implementation file,
-`zeros3.go`, and an organizer-approved `zeros3_test.go`.
+That one storage substrate is what lets a single codebase support
+deduplication, delta transfer, peer-assisted repair, copy-on-write
+forks, and durable snapshots — not as nine unrelated features, but as
+consequences of one architecture: **content-defined chunking → SHA-256
+CAS → immutable manifests → visibility journal.**
 
-## At a glance
+- Ordinary S3 clients: AWS SDK for Go v2, `rclone`, the AWS CLI
+- CDC + SHA-256 CAS deduplication, measured against real uploads
+- Crash-safe immutable manifests + an append-only visibility journal
+- Delta sync and remote-to-remote replication that transfer only missing bytes
+- Peer-assisted chunk repair, verified byte-for-byte before publication
+- Copy-on-write namespace forks and durable, restorable snapshots
+- Atomic conditional writes (`If-Match` / `If-None-Match`)
+- Bounded parallel chunk transfer
+- Zero third-party dependencies, reproducible build
 
-| | |
-|---|---|
-| **Track** | Track D — Data & Storage |
-| **Runtime dependencies** | zero — `go.mod` has no `require` block ([`deps-proof.txt`](./deps-proof.txt)) |
-| **Implementation source files** | one — `zeros3.go` (plus organizer-approved `zeros3_test.go`) |
-| **Real external S3 client proof** | pinned AWS SDK for Go v2, black-box, in [`zeros3-testing`](https://github.com/insightlabs38-pixel/zeros3-testing) — see "External interoperability" below |
-| **Persistence / crash model** | append-only, CRC32C-framed visibility journal; acknowledged mutation ⇒ durable (see "Durability model") |
-| **Dedup** | content-defined chunking (CDC) over a SHA-256 CAS; measured, not asserted (see "Dedup and stats") |
-| **Reproducible build** | two independent source copies, byte-identical SHA-256 (see "Reproducible build") |
-| **Bonus claims** | Single File, Reproducible Build, STDLIB Log; Package Killer only if `STATUS.md`'s GO/NO-GO section says GO |
+ZeroS3 is not trying to compete with MinIO or Ceph on distributed
+cluster scale — no clustering, no IAM, no erasure coding, no multi-node
+HA. Its differentiator is narrower and, we think, more interesting: an
+ordinary S3 surface sitting directly on a content-aware storage engine,
+in the spirit of what Git and Xet-like systems do for structural
+sharing — applied to an S3-shaped object store.
 
-## Why
+## Why ZeroS3
 
 Standing up a local S3-compatible store for development or testing
-normally means pulling in a dependency-heavy server or SDK stack. ZeroS3
-demonstrates the storage and protocol layers directly: incoming objects
-are split into content-defined chunks, stored once by SHA-256 content
-address, described by an immutable manifest, and made visible only
-through an append-only, checksummed journal. That architecture isn't
-incidental — it's what lets `CopyObject` publish a new object version
-without moving a single payload byte, and what lets an edited revision of
-a large file reuse the vast majority of its bytes automatically. Both are
-measured, not claimed — see "Dedup and stats" below.
+normally means pulling in a dependency-heavy server or SDK stack.
+ZeroS3 implements the storage and protocol layers directly instead:
+incoming objects are content-defined-chunked, stored once by SHA-256
+content address, described by an immutable manifest, and made visible
+only through an append-only, checksummed journal. That architecture
+isn't incidental — it's what lets `CopyObject` publish a new object
+version without moving a single payload byte, what lets an edited
+revision of a large file reuse most of its bytes automatically, and what
+lets replication, repair, forking, and snapshots all reuse the same
+negotiate/fetch/commit machinery instead of each needing its own.
 
 ## Quick start
 
 Requires Go **1.27.x** (`go.mod` pins `go 1.27.0`; `GOTOOLCHAIN=auto`
-will fetch it automatically, or install it from
-[go.dev/dl](https://go.dev/dl/)).
+fetches it automatically, or install it from [go.dev/dl](https://go.dev/dl/)).
 
 ```sh
-# Build
 go build -o zeros3 zeros3.go
-
-# Run (defaults: store ./zeros3-data, listen 127.0.0.1:9000)
 ./zeros3 serve
+# defaults: store ./zeros3-data, listen 127.0.0.1:9000
 ```
 
 Default credentials (a single static keypair — there is no IAM/STS/KMS;
@@ -54,15 +65,12 @@ see "Known limitations"):
 ```
 Access Key ID:     AKIAZEROS3EXAMPLE01
 Secret Access Key: zeros3exampleSecretKeyForM1TestingOnly01
-Region:             us-east-1
+Region:            us-east-1
 ```
 
-Override them with `-access-key`/`-secret-key`/`-region`, or with the
-standard `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`
-environment variables — see "Credentials and environment variables"
-below.
-
-Point any path-style S3 client at it, for example the AWS SDK for Go v2:
+Override with `-access-key`/`-secret-key`/`-region`, or the standard
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION` environment
+variables. Point any path-style S3 client at it:
 
 ```go
 cfg, _ := config.LoadDefaultConfig(ctx,
@@ -78,102 +86,32 @@ client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String("my-bucket")})
 client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("my-bucket"), Key: aws.String("hello.txt"), Body: ...})
 ```
 
-## What works
+Or with the AWS CLI:
 
-Supported over path-style (and opt-in virtual-hosted-style) HTTP, with
-both Authorization-header and query-string (presigned URL) SigV4:
-`CreateBucket`, `ListBuckets`, `HeadBucket`, `DeleteBucket` (empty
-buckets only), `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`,
-`ListObjectsV2` (`prefix`/`delimiter`/`max-keys`/continuation tokens),
-`CopyObject` (`COPY`/`REPLACE` metadata directives, same/cross-bucket,
-`x-amz-copy-source-if-match`/`x-amz-copy-source-if-none-match` source
-preconditions), single-range `GET` (`bytes=start-end`, open-ended,
-suffix; 416 for an unsatisfiable range; a multi-range header falls back
-to a full 200, per RFC 7233). `PutObject`/`GetObject`/`HeadObject`
-support `If-Match`/`If-None-Match` conditional-write and read
-preconditions — see "Atomic conditional writes" below. `Content-Type`
-and `x-amz-meta-*` metadata round-trip on every operation that carries
-them. Ordinary `x-amz-checksum-crc32` request
-integrity is validated (the exact default behavior of a current AWS SDK
-Go v2 client), and `Content-MD5` is validated when a client sends it
-(rclone's ordinary single-part upload path does).
-
-Presigned GET/PUT URLs (query-string SigV4) are generated by `zeros3
-presign get|put -bucket B -key K -expires 5m ...` or by any standard SDK's
-own presigner, and verified by the same signing core header auth uses —
-proven end to end against real AWS SDK for Go v2 `PresignGetObject`/
-`PresignPutObject` output (`zeros3-testing/harness/m5a/presign`, 47/47).
-Header-auth requests may also use the fixed `UNSIGNED-PAYLOAD`
-`x-amz-content-sha256` sentinel instead of a computed digest (Authorization
-signature validation remains mandatory either way) — this is what let a
-real, unpatched `rclone`'s ordinary upload path complete against ZeroS3 for
-the first time, including a genuine 1 GiB/205-part multipart upload
-(`zeros3-testing/results/M5B_RCLONE_LARGE_OBJECT_RESULTS.md`).
-Persistent multipart upload (`CreateMultipartUpload`/`UploadPart`/
-`ListParts`/`CompleteMultipartUpload`/`AbortMultipartUpload`/
-`ListMultipartUploads`) is built entirely on the existing CDC/CAS/journal
-machinery — no second storage backend — survives a real process restart
-mid-upload, and re-chunks the true logical concatenation on completion
-rather than treating part boundaries as chunk boundaries; proven against a
-real AWS SDK for Go v2 client (`zeros3-testing/harness/m5b/multipart`,
-43/43) and the 1 GiB rclone upload, above. Virtual-hosted-style addressing
-(`http://bucket.<domain>/key`) is opt-in via `zeros3 serve -vhost-base
-<domain>`; path-style keeps working unconditionally either way. `zeros3
-stats` (human/`-json`) and `zeros3 verify` (structural, and `-deep` for
-full content re-hashing plus a whole-object SHA-256 check) round out the
-CLI.
-
-**Internal object version history, restore, and safe GC (M5-C, not the AWS
-S3 Versioning API — no `versionId=`, no bucket-versioning state, no delete
-markers).** Every overwrite (ordinary PUT, `CopyObject`, or a completed
-multipart upload) and every `DELETE` of an existing object archives the
-object state it replaces into per-key history, retained indefinitely and
-transparent to ordinary S3 clients (`ListObjectsV2` never surfaces a
-historical version as a duplicate key). `zeros3 versions -bucket B -key K
-[-json]` lists a key's current root plus every retained historical
-version, oldest-first; `zeros3 restore -bucket B -key K -version ID` makes
-that version the new current object state — zero-copy (it reuses the
-exact existing manifest, never rebuilding one or re-writing a chunk) and
-non-destructive (older history is never rewound or removed). One
-authoritative reachability scan unifies current objects, retained
-historical versions, and active multipart uploads into the single live-
-root/live-chunk model that `stats`, `verify`, and `zeros3 gc` all consume,
-so a chunk is never misclassified as garbage merely because it is only
-history- or multipart-referenced. `zeros3 gc -store DIR [-apply] [-json]`
-is dry-run by default (reports scanned/reachable/unreachable/reclaimable
-counts, deletes nothing); `-apply` is required to actually delete
-anything, requires exclusive ownership of the store (refuses safely while
-`zeros3 serve` is running against the same store), and refuses outright if
-the live root set is not fully valid (a missing/corrupt manifest or chunk
-referenced by any live root) rather than risk treating broken live data as
-garbage. `zeros3 doctor -store DIR [-deep] [-json]` is a read-only
-lifecycle diagnostic (journal/manifest/chunk integrity, live root counts
-by category, reclaimable bytes) built directly on the same `verify`
-engine.
-
-Not implemented (see `S3_COMPAT.md`/`STATUS.md` for the full deviation
-list): the AWS S3 Versioning API (`versionId=` query semantics,
-bucket-versioning configuration, delete markers, per-version DELETE —
-ZeroS3's own internal version history above is a different, non-AWS-API
-mechanism), object-lock/ACL/policy/IAM, conditional multipart completion,
-date-based conditional headers (`If-Modified-Since`/`If-Unmodified-Since`),
-comma-separated conditional-header validator lists, self-copy rejection,
-`X-Amz-Security-Token`, `STREAMING-AWS4-HMAC-SHA256-
-PAYLOAD[-TRAILER]` (conditional — not yet required by any real client
-exercised), `aws-chunked`'s unsigned/SigV4A streaming trailer modes
-(permanently out of scope), `ListMultipartUploads`' `encoding-type=url`
-(a documented limitation shared with `ListObjectsV2`; `prefix`/
-`delimiter`/`CommonPrefixes` are supported as of P2) and
-online/background/scheduled GC (offline and exclusive-only, by design,
-this milestone).
+```sh
+aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://my-bucket
+aws --endpoint-url http://127.0.0.1:9000 s3 cp ./hello.txt s3://my-bucket/hello.txt
+```
 
 ## Architecture
 
 ```
-HTTP/SigV4  →  CDC  →  SHA-256 CAS  →  immutable manifest  →  visibility journal
+S3 / SigV4
+    |
+    v
+content-defined chunking (CDC)
+    |
+    v
+SHA-256 content-addressed store (CAS)
+    |
+    v
+immutable manifests
+    |
+    v
+visibility journal
 ```
 
-- **HTTP/SigV4** — a custom root `http.Handler` (no `http.ServeMux`)
+- **S3 / SigV4** — a custom root `http.Handler` (no `http.ServeMux`)
   keeps the raw request target intact through authentication, so S3
   path-normalization traps (`//`, `%2F`, `+` vs `%20`) can't be silently
   rewritten before the signature is checked.
@@ -187,795 +125,145 @@ HTTP/SigV4  →  CDC  →  SHA-256 CAS  →  immutable manifest  →  visibility
   chunk list, total length, object SHA-256, ETag, Content-Type, and
   metadata. Manifests are never mutated, only superseded.
 - **Visibility journal** — an append-only, CRC32C-framed binary log is
-  the *sole* authority for which buckets/keys currently exist. A GET
-  replays it (at store-open time) to learn the namespace, then follows
+  the sole authority for which buckets/keys currently exist. A read
+  replays it at store-open time to learn the namespace, then follows
   manifest → chunks to reconstruct bytes.
 
-## Dedup and stats
-
-Measured with `zeros3 stats` (or `stats -json`) against real uploads —
-not asserted, not hardcoded:
-
-- **Identical-object reuse:** uploading the same object twice adds zero
-  new bytes to the chunk store (`chunk_store_file_bytes` unchanged) while
-  `logical_current_bytes` counts both copies — `dedup_reduction` of
-  exactly 50% for one exact duplicate.
-- **Edited-object reuse:** a 4MiB object with a ~4KB insertion near the
-  start reused **97.5%** of its bytes from the original upload in the
-  external `zeros3-testing` black-box demo (`harness/m3/dedup`), and a
-  similarly-shaped internal test measured **96.6%** reuse against **0%**
-  reuse for a fixed-64KiB-chunk comparison over the identical byte
-  strings (`TestDedup_EditedObjectReuseBeatsFixedSizeChunking`) — CDC's
-  whole point. These are measurements of a specific corpus/edit shape,
-  not a universal guarantee; different edits reuse different amounts.
-- **CopyObject writes zero new CAS payload bytes** for both metadata
-  directives — proven internally (`TestCopyObject_
-  SameBucketZeroNewCASChunkBytes`) and externally over the real S3 wire
-  protocol (`zeros3-testing`'s `harness/m3/copy`, 46/46 passed).
-
-`stats` distinguishes *logical* bytes (what a scope refers to), *unique*
-bytes (distinct content anywhere in the store), *exclusive*/*shared*
-bytes (whether other objects also reference a chunk), and `*_file_bytes`
-(actual on-disk measurements) — never conflating "shared" with "owned."
-
-## Delta sync (`zeros3 sync`)
-
-`zeros3 sync LOCAL_FILE s3://bucket/key` is an optional, **ZeroS3-
-specific** extension (M6): a way to *ingest* a file using far less
-network transfer than a naive full upload when the store already holds
-most of the relevant bytes, via the exact same content-defined chunking
-this project already uses for dedup. It is not part of the S3 wire
-protocol — ordinary S3 remains ordinary S3, unaffected and untouched by
-this being present. See `S3_COMPAT.md`.
-
-```sh
-./zeros3 sync ./big-file.bin s3://my-bucket/big-file.bin
-```
-
-What actually happens, in order: capability discovery against a reserved
-`/_zeros3/v1/info` endpoint (falling back to one ordinary `PutObject`,
-and never sending a proprietary request, if the target isn't ZeroS3 at
-all); the local file is content-defined-chunked with the *identical* CDC
-v1 chunker ordinary `PutObject` uses; a bounded (≤1024 descriptors per
-batch) query asks which chunks the server is already missing; only those
-chunks are uploaded, each independently re-hashed server-side before
-publication; and the object is committed through the exact same
-immutable-manifest + visibility-journal path an ordinary `PutObject`
-uses — so a synced object is byte-for-byte, format-for-format
-indistinguishable from one written any other way. A safe-mode conflict
-check (based on the destination's actual current ETag, observed via an
-ordinary HEAD before the transfer began) rejects the commit outright
-rather than silently overwriting a destination that changed underneath
-it.
-
-One measured example (`TestSync_M6ADemonstrationFixture`): an 8MB file is
-synced, then a small 4KiB insertion is made in the middle and the result
-is synced again —
+Every higher-level capability below is orchestration over this one
+substrate, not a parallel implementation:
 
 ```
-Logical scanned:     7.63 MiB
-Chunks:              110
-Chunks reused:       109
-Uploaded payload:    80.54 KiB (1 unique chunks)
-Transfer avoided:    7.55 MiB
-Reuse:               99.0%
+CDC + CAS
+  -> dedup / edit-locality reuse
+  -> delta sync / remote replication
+  -> peer-assisted repair
+  -> copy-on-write fork
+  -> snapshots / restore
+  -> diff / inspect
 ```
 
-only the chunks actually touched by the edit (and CDC's normal boundary
-churn immediately around it) cross the wire; everything else is recognized
-as already present. This is a measurement of one edit shape, not a
-universal guarantee — different edits reuse different amounts, exactly
-like the dedup numbers above.
-
-`zeros3 sync` never trades away safety for throughput: chunk digests are
-always independently re-verified server-side, a local file that changes
-mid-operation aborts rather than committing a mixed revision, and resume
-after an interrupted transfer or a server restart falls naturally out of
-CAS's own content-addressed durability — no bespoke session state is
-ever written to disk for it. See `STATUS.md`'s "M6" section for the full
-protocol, conflict, resume, and mutation-detection semantics, each with
-its own tests.
-
-### Recursive directory sync (`zeros3 sync LOCAL_DIRECTORY s3://bucket/prefix/`)
-
-The same command also accepts a local directory (M6C):
-
-```sh
-./zeros3 sync ./photos s3://backup/photos/
-```
-
-This recursively walks `./photos` and, for every regular file it finds,
-calls the exact same single-file delta-sync pipeline above — capability
-discovery, CDC v1, missing-chunk negotiation, chunk upload, and the safe
-conflict-checked commit — once per file. `./photos/2024/beach.jpg`
-becomes `s3://backup/photos/2024/beach.jpg`; `./photos/` and
-`./photos` and `./photos/photos-is-not-here-but-you-get-the-idea/` all map
-identically once the trailing prefix slash is normalized (see `STATUS.md`
-for the exact mapping rules). Each file gets its own per-file delta reuse
-— an unmodified file re-syncs at ~0 bytes uploaded, a locally-edited file
-uploads roughly the size of the edit, exactly like the single-file case
-above.
-
-Two safety properties are load-bearing and deliberate:
-
-- **Remote-only files are never deleted.** Directory sync only uploads
-  new/changed local files into the destination prefix; if a local file is
-  removed, its previously-synced remote object is left completely
-  untouched. There is no `--delete`/mirror mode in this milestone.
-- **Every file keeps M6B's safe-mode conflict protection.** If one
-  destination object changes remotely mid-sync, that one file fails
-  cleanly (its remote content is left exactly as the concurrent writer
-  left it) while every unrelated file in the same run still commits
-  normally — a partial failure is reported with a concise summary and a
-  nonzero exit status, never silently reported as full success.
-
-A symlink or a special file (socket/device/FIFO) is skipped and reported,
-never followed/opened. See `STATUS.md`'s "M6C" section for the complete
-semantics (traversal order, prefix mapping, partial-failure reporting,
-aggregate stats) and adversarial-review notes.
-
-## Remote-to-remote delta replication (`zeros3 replicate`)
-
-`zeros3 replicate SOURCE_URI DEST_URI --from SRC_ENDPOINT --to
-DST_ENDPOINT` is a **ZeroS3-specific extension** (M8A): replicate one
-existing object from a source ZeroS3 server to a destination ZeroS3
-server, transferring only the chunks the destination doesn't already
-have. This is **not** a generic AWS S3-to-S3 replication feature —
-both endpoints must be ZeroS3 servers that pass capability discovery, or
-the command fails clearly rather than guessing. See `S3_COMPAT.md`.
-
-```sh
-./zeros3 replicate s3://source-bucket/object s3://dest-bucket/object \
-  --from http://127.0.0.1:9000 \
-  --to   http://127.0.0.1:9001
-```
-
-Architecturally this is a **client-orchestrated relay**, not a server-to-
-server protocol: the `zeros3` CLI process talks independently to both
-servers and relays only the missing chunk bytes between them
-(`source → CLI → destination`), one chunk at a time, entirely in memory.
-Neither server ever makes an outbound request of its own, stores the
-other's credentials, or learns the other exists — this is a deliberate
-choice to introduce **zero new server-side SSRF surface** rather than,
-say, having the destination pull from an arbitrary source URL. Use
-`-from-access-key`/`-from-secret-key` and `-to-access-key`/
-`-to-secret-key` for independent source/destination credentials when
-they differ.
-
-Under the hood, `replicate` reuses M6's protocol almost without
-exception: capability discovery against both endpoints, the *same*
-bounded missing-chunk negotiation, the *same* idempotent chunk-upload
-endpoint, and the *same* checked commit path a local `zeros3 sync` uses.
-Only two things are genuinely new: an authenticated endpoint that
-returns a source object's ordered chunk list (`GET /_zeros3/v1/object`),
-and one to download a chunk by digest (`GET /_zeros3/v1/chunks/<sha256-
-hex>`) — both bounded, both digest-validated, both exposing nothing
-beyond what an ordinary authenticated HEAD/GET already would. The
-client independently re-verifies every chunk's SHA-256 itself before
-forwarding it, trusting neither server blindly. The result is an
-entirely ordinary destination object — indistinguishable from one
-written by `PutObject`, `CopyObject`, or `zeros3 sync` — to GET, HEAD,
-ListObjectsV2, `verify -deep`, and GC alike.
-
-One measured example (`TestReplicate_M8ADemonstrationFixture`): store B
-already holds a 15MB object sharing most of its content with store A's
-target object (a small localized edit apart); replicating A's object
-into B —
-
-```
-Logical object:          15.27 MiB
-Chunks:                  221
-Already at destination:  220
-Transferred chunks:      1
-Transferred payload:     107.02 KiB
-Transfer avoided:        15.16 MiB
-Reuse:                   99.3%
-```
-
-Only the chunks touched by the edit crossed the wire between the two
-independent servers; everything else was recognized as already present
-at the destination via the same negotiation `zeros3 sync` already uses.
-This is a measurement of one edit shape on one test environment, not a
-universal guarantee — see `zeros3-testing/results/
-M8A_REMOTE_DELTA_RESULTS.md` for the external, real-two-server, real-
-AWS-SDK-verified proof.
-
-A source object's manifest is immutable once published, so `replicate`
-operates on the exact revision it captured when it first read the
-source's object descriptor — if the source key is overwritten while a
-replication is in flight, that replication still completes correctly
-with the revision it originally captured, never a mixed one. The
-destination side keeps M6B's exact safe-mode conflict protection: if the
-destination changes after `replicate` observed it, the commit is
-rejected rather than silently overwritten. There is no durable
-replication-session state anywhere — an interrupted or killed
-`replicate` process is simply re-run, and CAS content-addressing makes
-the resume correct (only the chunks that genuinely didn't land the first
-time transfer the second time) without any bespoke retry/session
-machinery. See `STATUS.md`'s "M8A" section for the full protocol,
-consistency, conflict, and resume semantics, each with its own tests.
-
-**Bounded parallel delta transfer** (M8H-B) — ZeroS3 pipelines
-independent missing-chunk transfers (`replicate`, `repair`, and `sync`
-alike) while preserving single-object commit semantics: the worker pool
-removes serialized per-chunk round-trip overhead without changing CAS,
-manifests, or journal publication. `-workers N` (default 8, 1..32)
-controls the concurrency; `-workers 1` reproduces the exact old
-sequential behavior. Measured on one benchmark environment (loopback,
-4 vCPU) with a 10ms simulated per-request delay standing in for a real
-network's RTT — 256 MiB missing, 1 worker: 4.36 MiB/s; 16 workers:
-35.70 MiB/s (8.18x). This is one environment's measurement, not a
-universal throughput claim; worker count is configurable, and
-publication remains serialized and safe regardless of it.
-
-## Peer-assisted repair (`zeros3 repair`)
-
-`zeros3 repair -store DIR -from PEER_ENDPOINT` is a **ZeroS3-specific
-extension** (M8B): restore missing or corrupt *physical* chunk bytes in
-the local store from another explicitly-trusted ZeroS3 peer, at chunk
-granularity, without touching any manifest, journal record, object
-identity, version, ETag, or metadata. This is **peer-assisted repair**,
-not autonomous self-healing — the peer is always supplied explicitly by
-the operator; this store never discovers or contacts any peer on its own.
-
-```sh
-./zeros3 verify -deep -store ./zeros3-data       # find out what's broken
-./zeros3 repair -store ./zeros3-data -from http://127.0.0.1:9001
-```
-
-```
-Repair source:       http://127.0.0.1:9001
-Bad chunks:          3
-Repaired:            3
-Unresolved:          0
-Payload fetched:     181.00 KiB
-Affected objects:    7
-
-Post-repair verify:  OK
-```
-
-The pipeline is exactly the architecture this feature is built on: a
-`verify -deep`-equivalent scan (reusing the *exact* reachability scan
-`Store.Verify` already runs — no second integrity checker) finds the
-deduplicated set of reachable digests that are missing or corrupt
-(unreachable/orphaned corruption is never repaired — that's what `gc`
-is for, and repair structurally cannot even see it, since it only ever
-consults the same live-root set `verify`/`gc` already treat as
-authoritative); each bad digest is fetched *once*, however many objects
-or retained versions reference it, from the peer's existing M8A chunk
-endpoint (`GET /_zeros3/v1/chunks/<sha256-hex>`) using the same SigV4
-authentication every other request already uses; the client
-**independently re-verifies every byte's SHA-256 against the digest it
-asked for** before it is ever written to disk — a peer is trusted as a
-*source of candidate bytes*, never for integrity, so a wrong, truncated,
-or oversized response is rejected outright, never published. A corrupt
-*existing* chunk is atomically replaced (temp-write, fsync, rename,
-fsync-directory — the same durable-publish primitive ordinary CAS writes
-already use), never overwritten by a naive existence-check write that
-would (wrongly) treat the already-present pathname as already correct.
-
-There is no durable repair-session state anywhere: an interrupted or
-killed `repair` process is simply re-run, and the next run's own fresh
-`verify -deep`-equivalent scan reports only the chunks still genuinely
-broken — already-repaired chunks are silently excluded, with no bespoke
-resume/session machinery needed. A peer that itself lacks some of the
-needed chunks is reported as a partial, honest failure (nonzero exit,
-`Unresolved: N`, a `FAILED:` list) rather than a false success, and every
-chunk that *was* successfully repaired stays repaired regardless. Repair
-takes the same shared store lock `serve` does, so it can run safely
-alongside an already-running server, while still refusing cleanly (never
-racing) against an exclusive `gc -apply`.
-
-For a one-command detect→repair→reverify workflow, `zeros3 verify -deep
--repair-from PEER_ENDPOINT` runs the same pipeline and prints the same
-repair statistics — `repair` remains the underlying primitive either way.
-
-See `STATUS.md`'s "M8B" section for the full detection/fetch/publication/
-partial-repair/resume/concurrency semantics, each with its own tests, and
-`zeros3-testing/results/M8B_REPAIR_RESULTS.md` for the external, real-
-two-server, real-AWS-SDK-verified proof.
-
-## Prefix / bucket replication (`zeros3 replicate -recursive`)
-
-`zeros3 replicate -recursive SOURCE DEST --from SRC_ENDPOINT --to
-DST_ENDPOINT` is a **ZeroS3-specific extension** (M8C): replicate a whole
-bucket or a prefix between two ZeroS3 servers, transferring only the
-chunks the destination doesn't already have. It is pure orchestration
-over `replicate`'s own single-object primitive (M8A, above), never a
-second replication engine — for every source object it selects,
-`namespaceDestKey` maps it to a destination key and the *exact same*
-`replicateObject` call `zeros3 replicate` already makes runs once against
-it, so every object inherits capability discovery, negotiation, chunk
-fetch/upload, commit, conflict detection, source-consistency, and resume
-behavior unmodified.
-
-```sh
-# whole bucket
-./zeros3 replicate -recursive s3://source-bucket/ s3://dest-bucket/ \
-  --from http://127.0.0.1:9000 --to http://127.0.0.1:9001
-
-# a prefix
-./zeros3 replicate -recursive s3://source-bucket/datasets/ s3://dest-bucket/archive/ \
-  --from http://127.0.0.1:9000 --to http://127.0.0.1:9001
-```
-
-```
-Objects discovered:      317
-Replicated:              315
-Failed:                    2
-
-Logical data:            84.7 GiB
-Source chunks:           1,284,337
-Already at destination:  1,193,991
-Transferred chunks:      90,346
-
-Payload transferred:     5.4 GiB
-Transfer avoided:        79.3 GiB
-Reuse:                   93.6%
-
-FAILED:
-  data/b.bin -> destination changed since replicate began (safe-mode conflict)
-  data/z.bin -> source chunk unavailable
-
-Replication completed with errors.
-```
-
-`-recursive` is the sole switch between the two CLI shapes — it is never
-guessed from a trailing slash (a source key can legally end in `/`, so
-that alone can't disambiguate "one object" from "a prefix"). Without it,
-`SOURCE`/`DEST` are ordinary `s3://bucket/key` single-object arguments,
-completely unchanged from M8A. With it, both are parsed as
-`s3://bucket[/prefix][/]` namespaces (the same bucket/prefix parser M6C's
-directory sync already uses): the matched source prefix is stripped from
-each discovered key and the remaining relative path is appended to the
-destination prefix — `images/sub/a.png` under source prefix `images/`
-replicating into destination prefix `backup/` becomes `backup/sub/a.png`;
-a whole-bucket source/destination uses an empty prefix on either side.
-
-Source enumeration is **ordinary, paginated `ListObjectsV2`** against the
-source endpoint — not a proprietary namespace-index endpoint — so M8C
-discovers the source namespace through the same S3 semantics any client
-would use, and reserves ZeroS3's proprietary delta machinery for content
-transfer only. Keys are processed in the server's own deterministic
-lexicographic order, and pagination is followed to completion regardless
-of size (proven past 1000 objects in the external harness).
-
-Namespace replication is **one-way and non-destructive**: it copies
-selected source objects to the destination but never removes, mirrors, or
-touches a destination-only object — there is no `--delete` and no
-bidirectional reconciliation anywhere in this milestone. It is also
-**not atomic across objects** — one object's destination conflict or
-unavailable/corrupt source chunk fails only that object (M8A's own safety
-mechanisms, reused unmodified); every other object still commits, and the
-command exits non-zero iff at least one object failed. There is no
-durable namespace-replication session state: a rerun after an interrupted
-or killed process simply re-enumerates and re-drives each object through
-`replicateObject` again, and CAS content-addressing plus each object's
-own conflict precondition make the resume correct with no bespoke
-session/journal machinery. Only the *current* object per key is
-replicated (no historical-version replication); no in-progress multipart
-upload session is ever migrated.
-
-See `STATUS.md`'s "M8C" section for the full mapping/enumeration/
-partial-failure/resume/statistics semantics, each with its own tests, and
-`zeros3-testing/results/M8C_NAMESPACE_REPLICATION_RESULTS.md` for the
-external, real-two-server, real-AWS-SDK-verified proof (including a
-destination-prepopulation CAS-reuse demonstration and M8B repair
-composing cleanly with M8C-replicated content).
-
-## Read-only introspection (`replicate -dry-run`, `zeros3 diff`, `zeros3 inspect`)
-
-Three read-only commands (M8G) expose ZeroS3's content-addressed
-architecture before anything moves, and never publish an object, upload a
-chunk, or otherwise change any store's authoritative state:
-
-- **Replication planning** — `replicate -dry-run` calculates the exact
-  chunk payload the destination currently lacks without modifying either
-  store. It shares its planner with real replication rather than
-  approximating it: `-dry-run` runs the identical discover/describe/
-  negotiate sequence and stops, so its prediction and an immediately-
-  following real run's actual transfer match exactly. Works for both a
-  single object and, with `-recursive`, a whole prefix or bucket.
-
-  ```sh
-  ./zeros3 replicate -dry-run s3://source-bucket/object s3://dest-bucket/object \
-    --from http://127.0.0.1:9000 --to http://127.0.0.1:9001
-  ```
-
-  ```
-  DRY RUN -- no data modified
-
-  Source object:        s3://source-bucket/object
-  Destination object:   s3://dest-bucket/object
-
-  Logical bytes:        1.00 GiB
-  Source chunks:        16,482
-  Chunks already in CAS:16,001
-  Chunks missing:       481
-
-  Would transfer:       29.8 MiB
-  Transfer avoided:     994.2 MiB
-  Reuse potential:      97.1%
-
-  Destination action:   would publish object
-  ```
-
-- **Structural diff** — `zeros3 diff` compares two objects by CDC/CAS
-  identity to see how much payload they structurally share, using only
-  each object's existing descriptor (chunk digests, lengths, ETag) —
-  never downloading either object's body or any chunk payload.
-
-  ```sh
-  ./zeros3 diff s3://bucket/dataset-v1.bin s3://bucket/dataset-v2.bin --from http://127.0.0.1:9000
-  ```
-
-- **Inspect** — `zeros3 inspect` shows one object's manifest/chunk
-  structure and physical CAS representation, including how much of its
-  physical payload is also reachable from some other live root in the
-  store (current objects, retained historical versions, active multipart
-  uploads, and durable snapshots — the same root universe GC already
-  protects), computed on demand with no persistent index or refcount
-  table.
-
-  ```sh
-  ./zeros3 inspect s3://bucket/dataset-v2.bin --endpoint http://127.0.0.1:9000
-  ```
-
-`-dry-run`'s transfer estimate, `diff`'s pairwise reuse percentages, and
-`inspect`'s store-wide sharing figure each answer a different question
-and are never conflated: replication planning is destination-store
-transfer, diff is object-vs-object, inspect is one object's own
-representation. See `STATUS.md`'s "M8G" section for exact accounting
-semantics, the shared-planner proof, and the read-only guarantee's
-independent verification.
-
-## Copy-on-write namespace fork (`zeros3 fork`)
-
-Copy-on-write namespace forks — clone a bucket or prefix inside one
-ZeroS3 store without duplicating payload chunks. The fork becomes an
-independent, ordinary S3 namespace; later edits to either copy add only
-newly required CDC chunks, never touching the other side.
-
-```sh
-./zeros3 fork -endpoint http://127.0.0.1:9000 s3://production/ s3://experiment/
-```
-
-```
-Objects discovered:        842
-Objects forked:            842
-Objects failed:              0
-
-Logical bytes cloned:      127.4 GiB
-CAS payload bytes added:   0 B new CAS payload
-Payload bytes avoided:     127.4 GiB
-
-Existing chunks referenced: 2,481,006
-New manifests:              842
-Elapsed time:                4.2s
-```
-
-A fork is same-store orchestration over the exact same primitives
-`replicate -recursive` already uses (enumerate → map → publish →
-aggregate, above) — never a second storage engine. Because both the
-source and destination namespaces live in the same store, every chunk a
-forked object's manifest references is already sitting in that store's
-CAS, so the negotiation step that would otherwise fetch and upload
-missing chunks always finds nothing missing: **zero new CAS payload
-bytes**, by construction, not by a special case. New destination
-manifests and journal records are still written — a fork is ordinary
-namespace publication, not a hardlink — the claim is specifically zero
-new *payload* bytes, never "zero filesystem writes."
-
-Fork's one behavioral difference from `replicate`/`replicate -recursive`
-is destination safety: a pre-existing destination object with different
-content is always rejected as a conflict (never silently overwritten,
-and there is no `--force`), while a rerun of an interrupted fork still
-resumes cleanly against its own already-landed objects. Source and
-destination namespaces that could overlap within the same bucket (e.g.
-`bucket/a/` forking into `bucket/a/fork/`) are rejected outright rather
-than allowed to produce a confusing mapping.
-
-After a fork, the two namespaces are genuinely independent: editing an
-object in one leaves the other byte-for-byte unchanged, deleting an
-object in either leaves the other's copy readable, and `zeros3 verify
--deep`/`zeros3 gc`/`zeros3 repair` all treat the shared chunks correctly
-— a chunk corrupted after a fork is detected as affecting objects in both
-namespaces, and one `zeros3 repair` fetch restores every affected object
-across both.
-
-See `STATUS.md`'s "M8D" section for the full mapping/overlap/conflict/
-resume semantics and their tests.
-
-## Durable namespace snapshots (`zeros3 snapshot`)
-
-Capture the current state of a bucket or prefix as immutable metadata
-over existing content-addressed objects. A snapshot survives live
-mutations and deletions of the namespace it was taken from, pins its
-content through garbage collection, and can later be restored — as an
-ordinary, independent live namespace — without duplicating any CAS
-payload.
-
-```sh
-./zeros3 snapshot create -endpoint http://127.0.0.1:9000 s3://production/data/
-```
-
-```
-Snapshot:           019d4a1e-2b35-757d-9cd3-e6cbb347cc7c
-Created:            2026-08-30T04:00:00Z
-Source:             production/data/
-Objects:            1500
-Logical bytes:      24.8 GiB
-```
-
-```sh
-./zeros3 snapshot restore -endpoint http://127.0.0.1:9000 \
-    019d4a1e-2b35-757d-9cd3-e6cbb347cc7c s3://recovery/aug30/
-```
-
-```
-Objects discovered:      1500
-Restored:                1500
-Failed:                  0
-
-Logical bytes restored:  24.8 GiB
-New CAS payload:         0 B
-Payload bytes avoided:   24.8 GiB
-```
-
-A snapshot is a small, versioned, integrity-checked descriptor (CRC32C-
-checked, `store/snapshots/<id>`) naming the manifest that was current for
-each captured key at the moment of capture — never a copy of manifest
-content or CAS payload. It is a thin, additional immutable root: existing
-garbage collection already protects every current object, retained
-historical version, and active multipart upload; a snapshot's captured
-manifests join that same protected set, so `zeros3 gc` never collects
-anything a live snapshot still references, even after the live object
-that originally produced it has been overwritten or deleted:
-
-```text
-Snapshot: 24.8 GiB
-Live source deleted
-GC completed
-Restored: 24.8 GiB
-New CAS payload: 0 B
-```
-
-Snapshots capture current-visible-namespace state only — not historical
-object versions, incomplete multipart uploads, or bucket configuration —
-and restore is same-store only, into an explicit destination, and
-create-only by default: a pre-existing, differently-identified
-destination object is always reported as a conflict rather than silently
-overwritten, and there is no `--force`. `zeros3 snapshot delete` removes
-only the descriptor; ordinary `zeros3 gc` then decides what, if anything,
-has become unreachable once nothing else references it.
-
-See `STATUS.md`'s "M8E" section for the full format/atomicity/
-concurrency semantics and their tests.
-
-## Atomic conditional writes (`If-Match` / `If-None-Match`)
-
-Ordinary S3 clients can use `If-None-Match: *` on `PutObject` for
-create-if-absent writes, and `If-Match: "<etag>"` for compare-and-swap
-updates:
-
-```text
-PUT /bucket/key
-If-None-Match: *
-→ succeeds only if the key currently has no visible object
-
-PUT /bucket/key
-If-Match: "<etag>"
-→ succeeds only if the current visible object still has exactly
-  that ETag
-```
-
-The condition is revalidated at ZeroS3's namespace commit boundary —
-the same locked critical section `commitObjectRootChecked` already
-provides for delta sync's own safe-mode conflict precondition — not by
-some earlier, race-prone check before the request body is even read.
-That means concurrent writers racing the same precondition always
-produce exactly one winner: N clients all sending
-`If-None-Match: *` against the same absent key, or N clients all
-sending `If-Match` with the same stale ETag, always end with exactly 1
-success and N-1 `412 Precondition Failed` responses, never two
-acknowledged successes and never a lost update. A failed conditional
-write never publishes anything — the existing object, its metadata,
-and its version history are all left exactly as they were.
-
-`GetObject`/`HeadObject` support the same `If-Match`/`If-None-Match`
-validators as read preconditions: a mismatching `If-Match` returns 412,
-and a matching `If-None-Match` returns `304 Not Modified`, both decided
-before any `Range` processing. `CopyObject` additionally supports
-`x-amz-copy-source-if-match`/`x-amz-copy-source-if-none-match` as
-source-side preconditions, evaluated against the exact source revision
-the copy already captures atomically.
-
-Supported syntax is deliberately narrow: a single quoted or unquoted
-ETag (compared case-insensitively, exactly like every other ETag
-comparison in this codebase), or the literal `*` for
-`If-None-Match` on `PutObject`. Comma-separated validator lists, weak
-(`W/`) validators, and `If-Match: "*"` are rejected outright rather
-than silently approximated. See `S3_COMPAT.md` for the exact subset and
-`STATUS.md`'s "M8F" section for the full atomicity proof (deterministic
-concurrent-writer races, restart/crash behavior, and GC of a failed
-write's speculative CAS payload).
-
-## Operational hardening (P1)
-
-**Credentials and environment variables.** `-access-key`/`-secret-key`/
-`-region` accept fallback from the standard `AWS_ACCESS_KEY_ID`/
-`AWS_SECRET_ACCESS_KEY`/`AWS_REGION` environment variables wherever a
-single set of credentials names one endpoint — `serve`, `presign`,
-`sync`, `repair`, `fork`, `inspect`, `verify -repair-from`, and every
-`snapshot` subcommand. Precedence is always **explicit CLI flag →
-environment variable (if set, even to an empty string) → existing
-built-in default**; an environment variable never silently overrides a
-flag actually supplied on the command line. Two-endpoint commands
-(`replicate`, `diff`) keep explicit `-from-access-key`/`-from-secret-key`/
-`-to-access-key`/`-to-secret-key` flags with no environment fallback for
-credentials — a single `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` pair
-cannot unambiguously name two different endpoints' credentials, and
-guessing risks sending one endpoint's secret to the other — only their
-one shared `-region` flag gets `AWS_REGION` fallback. Secrets are never
-printed: not in logs, errors, `-h` usage text (which shows only the
-fixed placeholder default, never a live environment value), or a
-presigned URL.
-
-**HTTP server hardening.** `zeros3 serve`'s `http.Server` sets a
-conservative `ReadHeaderTimeout` (10s, guards against a stalled client
-that never finishes sending headers), `IdleTimeout` (2m, bounds an
-indefinitely idle keep-alive connection), and `MaxHeaderBytes` (1MiB,
-Go's own default — enough for a SigV4 `Authorization` header plus a full
-set of user-metadata headers). There is deliberately no whole-request
-`ReadTimeout`/`WriteTimeout`: either would impose one deadline across an
-entire request/response body, which would regress large uploads/
-downloads, multipart, replication, and sync — all things ZeroS3
-legitimately supports taking longer than a fixed cutoff.
-
-**Graceful shutdown.** `SIGINT`/`SIGTERM` stop the listener immediately
-(no new connections accepted) and let in-flight requests finish, bounded
-by a 30s grace period; a normal shutdown (`http.ErrServerClosed`) is
-never logged as a fatal error, and exits 0. A second `SIGINT`/`SIGTERM`
-arriving while shutdown is already draining forces an immediate exit
-instead of waiting out the rest of the grace period. If the grace period
-itself expires with a request still active, the process exits
-immediately (nonzero) rather than closing the store out from under a
-handler that might still be writing to it — the interrupted work is
-governed by the same journal/CAS crash-recovery model an abrupt `kill -9`
-already relies on (see "Durability model" below), not a new one. None of
-this changes that model: graceful shutdown is only the clean path taken
-for a normal termination signal.
-
-**Basic TLS (optional).** `zeros3 serve -tls-cert CERT -tls-key KEY`
-serves HTTPS via Go's standard-library `http.Server.ListenAndServeTLS`
-— no ACME, no certificate generation/renewal, no mTLS, no custom
-`crypto/tls.Config`, and never `InsecureSkipVerify` in a production
-default. Neither flag: plain HTTP, unchanged. Exactly one of the two:
-a startup error. SigV4 canonicalization never includes the scheme, so
-HTTPS changes nothing about request signing; a presigned URL built from
-an `https://` endpoint carries the `https://` scheme.
-
-**Platform.** Linux is the supported and tested platform for this
-hackathon build. Other Unix-like systems may work but are not part of
-the validated target; Windows is not currently supported or tested.
-
-See `STATUS.md`'s "P1" section for the exact precedence rules, hardening
-values, shutdown design, and their tests.
-
-## Durability model
-
-- Immutable CAS chunks and the immutable manifest are always fully
-  published (written, fsynced, renamed into place) *before* the journal
-  record referencing them is even built.
-- The journal's `fsync` is the acknowledgment threshold: a mutation
-  updates the in-memory namespace, and gets acknowledged over HTTP, only
-  after its journal frame's `Sync()` call returns successfully. So:
-  **acknowledged mutation ⇒ durable**, always.
-- The converse is not claimed: an **unacknowledged** mutation's actual
-  durability is genuinely indeterminate — replay after a crash may
-  legally observe either the previous complete state or the new complete
-  state, whichever the OS actually flushed.
-- What replay may **never** produce, under either outcome, is a partial
-  or mixed state: a manifest referencing incomplete/missing chunks, or
-  object bytes blending two versions. A journal write or sync failure
-  poisons the process against further mutation until the store is
-  reopened, rather than risking a write at an uncertain offset.
-
-See `STATUS.md`'s "Durability contract" for the exact, itemized
-crash-point-by-crash-point recovery guarantees and their tests.
-
-## Verification and stats
-
-`zeros3 verify` never repairs or deletes anything — it only reports, and
-exits nonzero on any integrity failure. (The one opt-in exception is
-`-repair-from PEER`, M8B-C — see "Peer-assisted repair" above — which is
-never enabled unless that flag is explicitly passed.)
-
-- **Structural:** journal replay validity; every reachable root's
-  manifest file exists and its bytes' SHA-256 matches *that root's own*
-  journal-recorded reference (checked independently per root, even when
-  several roots share a manifest UUID); chunk references are well-formed
-  and sum to the declared total length.
-- **Chunks:** existence + declared length always; `-deep` additionally
-  re-hashes actual chunk bytes.
-- **Whole-object digest, `-deep` only:** every reachable manifest's
-  chunks are streamed, in order, through one SHA-256 hasher and compared
-  against the manifest's own `object_sha256` — catching a case per-chunk
-  hashing alone cannot: a manifest naming the wrong object digest, or
-  listing intact chunks in the wrong order.
+## What it can do
+
+**S3 compatibility.** `CreateBucket`, `ListBuckets`, `HeadBucket`,
+`DeleteBucket`, `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`,
+`ListObjectsV2` (prefix/delimiter/pagination), `CopyObject`
+(`COPY`/`REPLACE` directives, same/cross-bucket, source preconditions),
+single-range `GetObject`, and a full persistent multipart upload
+lifecycle (`CreateMultipartUpload`/`UploadPart`/`ListParts`/
+`CompleteMultipartUpload`/`AbortMultipartUpload`/`ListMultipartUploads`,
+survives a real process restart mid-upload) — all over path-style and
+opt-in virtual-hosted-style addressing, with both Authorization-header
+and presigned-URL SigV4. See [`S3_COMPAT.md`](./S3_COMPAT.md) for the
+exact contract.
+
+**Content-aware storage.** Every write goes through the same CDC → CAS →
+manifest → journal pipeline. `CopyObject` publishes a new object version
+without moving a payload byte; an edited revision of a large object
+reuses the vast majority of its bytes automatically; internal object
+version history and zero-copy restore are built on the same immutable
+manifests (`zeros3 versions`/`restore`/`gc`).
+
+**Delta movement.** `zeros3 sync` ingests a local file or directory
+using far less transfer than a full upload when the store already holds
+most of the bytes. `zeros3 replicate` (optionally `-recursive`, for a
+whole bucket or prefix) moves objects between two ZeroS3 servers,
+transferring only the chunks the destination doesn't already have, as a
+client-orchestrated relay — neither server ever contacts the other
+directly. `-workers N` bounds parallel chunk transfer for sync, repair,
+and replication alike.
+
+**Integrity and recovery.** `zeros3 verify` (`-deep` for full content
+re-hashing) checks structural, per-chunk, and whole-object integrity and
+never mutates anything. `zeros3 repair -from PEER` restores missing or
+corrupt chunk bytes from an explicitly-trusted peer, verifying every
+byte's SHA-256 before it's ever written to disk. `zeros3 gc` is
+dry-run by default and refuses to run if the live root set isn't fully
+valid, rather than risk treating broken live data as garbage.
+
+**Structural sharing and history.** `zeros3 fork` clones a bucket or
+prefix inside one store with zero new CAS payload bytes — a true
+copy-on-write namespace. `zeros3 snapshot create/restore` captures
+immutable, restorable point-in-time namespace state that survives
+subsequent mutation or deletion of its source, pinned through garbage
+collection, restored with zero new CAS payload. `zeros3 diff` and
+`zeros3 inspect` are read-only tools for comparing objects and
+inspecting a store's structural sharing.
+
+**Operational hardening.** Environment-variable credentials
+(`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`), conservative
+HTTP server timeouts, graceful `SIGINT`/`SIGTERM` shutdown with a bounded
+drain, and optional HTTPS via Go's standard-library TLS server
+(`-tls-cert`/`-tls-key`). Atomic conditional writes (`If-Match`/
+`If-None-Match`) resolve concurrent writers to exactly one winner, with
+the condition revalidated at ZeroS3's own locked namespace-commit
+boundary rather than a race-prone check before the request body is
+read.
+
+## Measured results
+
+Two measurements that tell the architectural story; both are
+environment/fixture-specific, not universal claims.
+
+**Localized-edit CDC reuse.** A 4MiB object with a ~4KB insertion near
+the start: 96.6% byte reuse from the original upload
+(`TestDedup_EditedObjectReuseBeatsFixedSizeChunking`), against 0% reuse
+for the same edit chunked with a fixed 64KiB window. An 8MB file synced,
+then re-synced after a small 4KiB mid-file insertion, reused 99.0% of
+its bytes and transferred only the touched chunks.
+
+**Bounded parallel delta transfer.** Loopback benchmark, 4 vCPU, a 10ms
+simulated per-request delay standing in for real-network RTT, 256 MiB of
+missing payload:
+
+| Workers | Throughput | Speedup vs. 1 worker |
+|---:|---:|---:|
+| 1 | 4.36 MiB/s | 1.00x |
+| 16 | 35.70 MiB/s | 8.18x |
+
+`-workers` is configurable (1..32, default 8); publication stays
+serialized and safe regardless of worker count.
+
+## Verification
+
+- **Internal test suite:** 738 tests green; `go vet ./...` and
+  `gofmt -l .` clean; `go test -race ./...` clean.
+- **AWS SDK for Go v2 interoperability:** validated black-box against a
+  real `zeros3` process using an ordinary, unmodified SDK client —
+  bucket/object CRUD, `ListObjectsV2`, `CopyObject`, range GET,
+  presigned GET/PUT, and a full persistent multipart lifecycle including
+  a real process restart mid-upload.
+- **`rclone` interoperability:** validated black-box with an unpatched
+  `rclone` client, including a genuine 1 GiB / 205-part multipart
+  upload, restart-persisted and downloaded with exact SHA-256 equality.
+- **Package Killer comparison:** the same frozen AWS SDK test logic, run
+  unmodified against both ZeroS3 and `s3rver` 3.7.1 (changing only
+  endpoint/credential/addressing settings) — 14/14 passed on both
+  targets.
+- **Crash and restart testing:** real process restart mid-multipart-
+  upload, real SIGINT/SIGTERM graceful-shutdown scenarios, and
+  deterministic in-process crash injection against the journal/CAS
+  recovery model.
+- **Concurrency:** deterministic concurrent-conditional-writer races
+  (N clients, exactly one winner), parallel transfer cancellation, and
+  the race detector across the full suite.
+- **Reproducible build:** two independent source copies, built
+  separately, produce byte-identical output — see below.
 
 ## Zero-dependency proof
 
-- `go.mod` has no `require` block; no `go.sum`; no `vendor/`.
-- `go list -deps .` contains only Go standard-library packages (plus
-  `internal/...`/`vendor/golang.org/x/...` entries that are part of the
-  Go toolchain's *own* implementation of `net/http`/`crypto/tls` — not a
-  ZeroS3 dependency) and the Go 1.27 standard library's own `uuid`
-  package.
-- `CGO_ENABLED=0 go build` succeeds — no cgo required.
-- No subprocess/shell-out anywhere in `zeros3.go`.
+- `go.mod` has no `require` block; no `go.sum`; no `vendor/` directory.
+- `go list -deps .` resolves only Go standard-library packages (plus
+  toolchain-internal `internal/...`/`vendor/golang.org/x/...` entries
+  that are part of the Go toolchain's own implementation of
+  `net/http`/`crypto/tls` — not a ZeroS3 dependency) and the Go 1.27
+  standard library's own `uuid` package.
+- `CGO_ENABLED=0 go build` succeeds; no subprocess/shell-out anywhere in
+  `zeros3.go`.
 - Full generated evidence: [`deps-proof.txt`](./deps-proof.txt).
   Substitution-by-substitution detail: [`STDLIB.md`](./STDLIB.md).
-- External test clients (the pinned AWS SDK for Go v2) live entirely in
-  the separate [`zeros3-testing`](https://github.com/insightlabs38-pixel/zeros3-testing)
-  repository — never imported by, linked into, or required by this
-  module.
-
-## External interoperability
-
-All interoperability proof runs a real `zeros3` binary as a black-box S3
-endpoint from the pinned AWS SDK for Go v2, in the separate
-[`zeros3-testing`](https://github.com/insightlabs38-pixel/zeros3-testing)
-repository:
-
-- **M2 canonical workflow** (`harness/m2`) — **41/41 passed**: buckets,
-  objects, `ListObjectsV2`, metadata, restart persistence, default SDK
-  CRC32 checksum behavior.
-- **CopyObject** (`harness/m3/copy`) — **46/46 passed**: same/cross-
-  bucket, overwrite, both metadata directives, a new (not reused)
-  destination `Last-Modified`, and encoded/tricky source keys.
-- **Range GET** (`harness/m3/range`) — **27/27 passed**.
-- **Dedup evidence** (`harness/m3/dedup`) — **7/7 passed**.
-- **Presigned GET/PUT + virtual-host + CLI** (`harness/m5a/presign`) —
-  **47/47 passed**: real SDK-presigned GET/PUT fetched with a plain
-  `net/http.Client`, negative/tamper/expiry cases correctly rejected with
-  no object mutation, `zeros3 presign`-CLI-generated URLs, and a full
-  virtual-hosted-style round trip.
-- **Persistent multipart upload** (`harness/m5b/multipart`) — **43/43
-  passed**: full lifecycle including a real process restart mid-upload,
-  resume, completion, Range GET/CopyObject of the completed object, a
-  second restart, an abort scenario, and negative/validation cases — all
-  through ordinary AWS SDK for Go v2 S3 client calls, no internal ZeroS3
-  API.
-- **rclone T1 secondary client + M5-B large-object proof** (`harness/rclone`,
-  and a standalone 1 GiB run) — the original small-object suite:
-  **19/19 passed**; separately, a genuine **1 GiB / 205-part** multipart
-  upload via rclone's ordinary (unpatched) upload path now **completes
-  end to end**, restart-persists, and downloads with exact SHA-256
-  equality — M5-B's header-auth `UNSIGNED-PAYLOAD` support resolves the
-  small-object suite's previously-documented "rclone's ordinary upload
-  path cannot complete" limitation. See
-  `results/M5B_RCLONE_LARGE_OBJECT_RESULTS.md`.
-
-See that repository's `results/` directory for the exact recorded runs,
-pinned SDK/rclone versions, and reproduction commands.
-
-## Package Killer bonus
-
-**GO.** ZeroS3 reimplements the principal standalone use case of
-[`s3rver`](https://www.npmjs.com/package/s3rver): a local S3-compatible
-server for development and testing. The same ordinary S3 client workflow
-can be pointed at ZeroS3 by changing endpoint/connection settings. ZeroS3
-ships as one Go implementation file with zero third-party runtime
-dependencies; it does not replace s3rver's Node.js embedding API.
-
-One frozen AWS SDK for Go v2 test function, run unmodified against both
-targets (only endpoint/credential/addressing connection settings
-differed): **14/14 passed on ZeroS3, 14/14 passed on s3rver 3.7.1** —
-bucket/object CRUD, `ListObjectsV2`, Content-Type + metadata, and ordinary
-signed requests. Full per-operation table, exact re-checked s3rver
-version/dependency facts, and reproduction commands:
-`zeros3-testing/results/PACKAGE_KILLER_RESULTS.md`.
+- External interoperability validation (the AWS SDK, `rclone`) is
+  performed out-of-process, against a running `zeros3` binary over plain
+  HTTP — never imported by, linked into, or required by this module.
 
 ## Reproducible build
 
@@ -984,105 +272,31 @@ CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-buildid=" -o zeros3 
 ```
 
 Two independent builds — from two separately-copied source trees at two
-different absolute paths, on `go1.27.0 linux/amd64` — produce
-byte-identical output:
-
-```
-SHA-256 (copy A): efc0cb0956b39fc05fd11eb42422298f6d0aa776d5a70e41c94c87aad180e3fc
-SHA-256 (copy B): efc0cb0956b39fc05fd11eb42422298f6d0aa776d5a70e41c94c87aad180e3fc
-```
-
-Reproduce this with [`scripts/reproducible_build.sh`](./scripts/reproducible_build.sh)
-(builds twice from two independent source copies and compares hashes; no
+different absolute paths — produce byte-identical output. Reproduce with
+[`scripts/reproducible_build.sh`](./scripts/reproducible_build.sh) (no
 arguments needed).
+
+## Platform
+
+Linux is the supported and tested platform for the hackathon build.
+Other Unix-like systems may work but were not part of the validated
+target. Windows is not currently supported or tested.
 
 ## Known limitations
 
-Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
+Honest, not exhaustive — see [`S3_COMPAT.md`](./S3_COMPAT.md) for the
+exact API contract:
 
 - Single writer process per store; no distributed/HA operation.
-- Internal object version history/restore/GC (`zeros3 versions`/
-  `restore`/`gc`, above) is a ZeroS3-only mechanism, not the AWS S3
-  Versioning API — no `versionId=` query semantics, bucket-versioning
-  configuration state, or delete markers; `gc -apply` also requires
-  exclusive offline access to the store (no online/background/scheduled
-  GC).
-- `ListMultipartUploads` has no `encoding-type=url` support, matching
-  `ListObjectsV2`'s own lack of it (`prefix`/`delimiter`/`CommonPrefixes`
-  and pagination are all implemented and tested); every multipart part
-  but the last must be ≥5MiB, matching AWS's rule, with no configurable
-  override.
-- `zeros3 sync` (delta sync, M6) uploads missing chunks with bounded
-  concurrency (`-workers`, default 8, max 32 — M8H-B); directory sync
-  (M6C) is non-destructive with no `--delete`/mirror mode, so a
-  locally-removed file's previously-synced remote object is left
-  untouched.
-- `zeros3 replicate` (M8A) replicates exactly one object per invocation
-  — no prefix/bucket recursion, no continuous/scheduled replication. Both
-  endpoints must be ZeroS3 servers that pass capability discovery; there
-  is no generic-AWS-S3-source-or-destination fallback the way
-  `zeros3 sync` falls back to a plain `PutObject` for a non-ZeroS3
-  destination.
-- `zeros3 repair` (M8B) is peer-assisted, not autonomous: the peer is
-  always explicitly supplied (`-from`), never discovered, and nothing
-  repairs unless the command (or `verify -deep -repair-from`) is
-  actually invoked — no background healing daemon, no continuous/
-  scheduled repair, no automatic peer discovery or cluster membership.
-  Only one peer is supported per invocation (no multi-peer fallback
-  list); a peer that itself lacks a needed chunk is reported as an
-  honest partial failure, not retried against another source (a
-  concurrent batch's other in-flight fetches are unaffected by one
-  peer failure — M8H-B). It repairs only
-  reachable content already in `verify -deep`'s own scope (current
-  objects, retained historical versions, active multipart parts) —
-  unreachable/orphaned corruption is never fetched over the network; use
-  `gc` for that. Repair never restores from generic AWS S3, only from
-  another ZeroS3 peer.
-- `zeros3 replicate -recursive` (M8C) replicates the *current* object per
-  key only — no historical-version replication, no in-progress multipart
-  upload session migration, no point-in-time bucket snapshot (each object
-  is individually replicated from its own stable captured revision).
-  Objects still commit one at a time, in listing order (only each
-  object's own chunk transport is concurrent — M8H-B; there is no
-  namespace-level concurrent object publication). There
-  is no `--delete`/mirror mode — a destination-only object is always left
-  untouched. Both endpoints must be ZeroS3 servers, same as single-object
-  `replicate` — no generic-AWS-S3 source or destination.
-- `zeros3 fork` (M8D) is same-store only — it has no `--from`/`--to`, so
-  it cannot fork across two different servers (use `replicate -recursive`
-  for that). It clones only the *current* object per key, same as
-  `replicate -recursive`; there is no point-in-time bucket snapshot and
-  no `--force` to override a destination conflict. A source/destination
-  namespace relationship that could overlap within the same bucket is
-  rejected outright rather than allowed.
-- `zeros3 snapshot` (M8E) captures the *current* visible object per key
-  only — no historical-version snapshot, no incomplete-multipart-upload
-  snapshot, and no bucket policy/configuration snapshot. `zeros3 snapshot
-  restore` is same-store only (no cross-server snapshot transfer),
-  requires an explicit destination, and is create-only — no `--force`, no
-  in-place destructive "rewind this bucket" command. There is no snapshot
-  expiration/TTL and no scheduled/automatic snapshot creation.
-- `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` are eligible but not yet
-  implemented (no real client exercised needs them);
-  `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and SigV4A/ECDSA streaming modes
-  are permanently out of scope.
-- Presigned URLs sign only `host`; `X-Amz-Security-Token` is rejected
-  outright (no session/STS credential model exists to validate it).
-- No IAM/STS/KMS/ACL/policy engine; a single credential pair, settable
-  via CLI flags or the standard `AWS_ACCESS_KEY_ID`/
-  `AWS_SECRET_ACCESS_KEY`/`AWS_REGION` environment variables (P1-A) — no
-  profiles, no shared AWS config files, no per-request/multi-tenant
-  credentials.
-- The entire request body is buffered in memory (bounded, 256MiB max)
-  rather than fully streamed end-to-end, since SigV4 payload-hash and
-  CRC32 validation both need the complete body before chunking begins.
+- Internal object version history (`zeros3 versions`/`restore`) is a
+  ZeroS3-only mechanism, not the AWS S3 Versioning API.
+- No IAM/STS/KMS/ACL/policy engine; a single static credential pair.
+- `replicate`, `repair`, `fork`, and `snapshot` all require ZeroS3 on
+  every server involved — no generic-AWS-S3 source or destination.
+- The request body is buffered in memory (bounded, 256MiB max) rather
+  than fully streamed end-to-end.
 - No power-loss (real `kill -9`/hardware) testing beyond deterministic
-  in-process crash injection and direct on-disk truncation — see
-  "Durability model" above for exactly what is and isn't claimed.
-- `CopyObject` supports only ETag-based source preconditions
-  (`x-amz-copy-source-if-match`/`-if-none-match`, M8F-C), not
-  date-based ones, and does not reject a same-key `COPY`-directive copy
-  the way real S3 does in some cases.
+  in-process crash injection and direct on-disk truncation.
 
 ## Project layout
 
@@ -1090,13 +304,15 @@ Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
 zeros3.go        the entire implementation (stdlib only)
 zeros3_test.go   the entire test suite (stdlib testing only)
 go.mod           module zeros3, go 1.27.0, no require block
-STATUS.md        milestone-by-milestone status, durability contract, test inventory
-STDLIB.md        every stdlib substitution, mapped to shipped code
 S3_COMPAT.md     exact supported/unsupported/deviating S3 behavior
-DEMO.md          deterministic demo rehearsal script
+STDLIB.md        standard-library substitutions, mapped to shipped code
 deps-proof.txt   generated zero-dependency evidence
 scripts/         reproducible-build verification script
 ```
+
+The implementation intentionally remains one Go source file for the
+hackathon's Single File constraint; both `zeros3.go` and
+`zeros3_test.go` open with subsystem maps for navigation.
 
 ## License
 

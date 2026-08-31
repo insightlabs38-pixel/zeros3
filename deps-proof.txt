@@ -1,10 +1,7 @@
 ZeroS3 zero-dependency proof
 ============================
 
-Generated: 2026-08-29T22:30:00Z (M8A regeneration -- package list verified byte-identical to the m7-gold proof; M8A added no new import). Re-verified for M8B: `go list -deps .` package list confirmed byte-identical again -- M8B's one new stdlib use, io.LimitReader, is the same "io" package already imported (M8B added no new import). Re-verified for M8E: `go list -deps .` package list confirmed byte-identical again -- M8E's snapshot format/create/GC-integration/restore code uses only already-imported stdlib packages (encoding/binary, hash/crc32, sort, strings, sync, net/url, os, path/filepath, time, fmt, errors, encoding/json, net/http, flag) -- no new import (M8C/M8D added no new import either).
-Re-verified for M8G: `zeros3.go`'s `import (...)` block diffed byte-for-byte against the M8F baseline (`9729f35`) and found unchanged -- `replicate -dry-run`, `zeros3 diff`, and `zeros3 inspect` (including the one new `/_zeros3/v1/reachability` server endpoint and its `Store.computeChunkRootMembership` implementation) use only already-imported stdlib packages (net/http, net/url, encoding/json, fmt, errors, strings, io, flag, os, crypto/sha256, encoding/hex) -- no new import.
-Re-verified for M8H-B: `go list -deps .` package list confirmed byte-identical to the M8G baseline -- the bounded parallel chunk-transfer worker pool (`runTransferWorkers`) added two new imports to `zeros3.go`, "context" and "sync/atomic" (both Go 1.27 standard library, both already transitively present in this binary via net/http and internal runtime packages before M8H-B), so the *linked package set* is unchanged even though the import list grew. No new import outside the stdlib.
-Re-verified for P1: `zeros3.go` added exactly one new import, "os/signal" (Go 1.27 standard library, used only by P1-B's SIGINT/SIGTERM graceful-shutdown handling in `runServe`). P1-C's `-tls-cert`/`-tls-key` flags call `http.Server.ListenAndServeTLS`, which pulls in `crypto/tls` transitively through `net/http` -- already linked into every previous build via `net/http` itself, not a new dependency. `go list -deps .`'s linked package set below now includes `os/signal` (new) plus `crypto/tls`'s own transitive closure (already present); every other line matches the M8H-B baseline. No new import outside the stdlib; go.mod remains zero-`require`.
+Generated: 2026-08-31T02:21:39Z
 Go toolchain: go version go1.27.0 linux/amd64
 GOOS/GOARCH: linux/amd64
 
@@ -236,9 +233,8 @@ the Go 1.27 standard library's own uuid package. 'zeros3' is this
 module itself.
 (none found -- no non-stdlib, non-vendored-stdlib import exists)
 
-Re-verified for P2: `zeros3.go`'s `import (...)` block diffed byte-for-byte
-against the P1 baseline and found unchanged -- ListMultipartUploads'
-prefix/delimiter/CommonPrefixes support (`strings.HasPrefix`/
-`strings.Index`, `sort.Slice`) uses only already-imported stdlib packages.
-`go list -deps .`'s linked package set is identical to the P1 baseline.
-No new import outside the stdlib; go.mod remains zero-`require`.
+--- Direct imports of zeros3.go / zeros3_test.go ---
+Every import in both files' import blocks is either a Go standard-library
+package or "uuid" (the Go 1.27 standard library's own uuid package).
+Verified directly against each file's import block; no golang.org/x/...
+or other third-party import appears in either file.
