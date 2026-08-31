@@ -1,14 +1,232 @@
 # ZeroS3 — Status
 
-Milestone-by-milestone status, newest first. M1-M7, M8A-M8H are all
+Milestone-by-milestone status, newest first. M1-M7, M8A-M8H, P1 are all
 complete and frozen (unless a demonstrated regression or correctness bug
-requires a minimal fix); **P1 (operational hardening) is the current
-pass** -- see its section immediately below. **P1 ACCEPTED**:
-credentials can come from the environment, the HTTP server has
-conservative resource limits, SIGINT/SIGTERM shut it down cleanly, and
-operator-supplied TLS can secure the same stdlib-only server -- none of
-it changes ZeroS3's storage architecture, wire protocol, or crash-
-durability model.
+requires a minimal fix); **P2 (ListMultipartUploads compatibility
+polish) is the current pass** -- see its section immediately below.
+**P2 ACCEPTED**: `ListMultipartUploads` now supports `prefix`,
+`delimiter`/`CommonPrefixes`, and correct pagination/marker interaction
+across group boundaries -- closing the one explicitly documented S3
+compatibility gap this pass targeted, without any multipart redesign,
+new listing engine, storage-format change, or broader compatibility
+expansion.
+
+## P2 — ListMultipartUploads compatibility polish: prefix, delimiter,
+CommonPrefixes
+
+**Goal:** close ZeroS3's one remaining explicitly documented
+`ListMultipartUploads` compatibility gap -- no `prefix`/`delimiter`/
+`CommonPrefixes` support -- by extending the existing listing/pagination
+pipeline exactly the way `ListObjectsV2` already implements the same
+semantics, with correct marker interaction across CommonPrefix group
+boundaries. Explicitly *not* a multipart redesign, a new listing engine,
+a storage-format change, or a generic S3 compatibility expansion.
+
+### Phase 0 — exact baseline
+
+Exact P1 HEAD `4f7a3b8ed24fdb4bec13182fce391a7e02938fce` (merge of
+`claude/zeros3-p1-hardening-ctctea`). Go 1.27.0. `zeros3.go` 12653 LOC,
+`zeros3_test.go` 26045 LOC. `gofmt -l .`/`go vet ./...` clean, `go test
+./...` 718/718 tests passing (matching STATUS.md's own recorded P1
+number), `go test -race ./...` clean, two independent
+`CGO_ENABLED=0 -trimpath` builds byte-identical. Focused re-runs of
+multipart (`TestMultipart_*`), multipart pagination
+(`TestListMultipartUploads_Pagination_*`, `TestListParts_Pagination*`),
+P1 auth/TLS/shutdown, M8F conditional, and M8H transfer test sections
+all green before any P2 edit. Tagged `p1-gold` on both repositories
+before any P2 edit.
+
+### Existing implementation reused, not redesigned
+
+`ListObjectsV2` (`zeros3.go`, section 7b) already implements exactly the
+target semantics -- prefix `strings.HasPrefix` filtering, delimiter
+`strings.Index`-based first-occurrence grouping into `CommonPrefixes`,
+and a single ordered-namespace pagination loop that treats a
+CommonPrefix group as one result unit. P2 generalizes that identical
+model to `ListMultipartUploads`, whose only structural difference is a
+**compound** `(key, uploadID)` marker instead of `ListObjectsV2`'s
+single-key marker -- multipart uniquely allows several concurrent
+uploads for the same key, which a delimiter group must hide as a single
+logical unit regardless of how many upload IDs live underneath it.
+
+### P2-A — prefix filtering
+
+`Store.ListMultipartUploads` gained a `prefix` parameter (immediately
+after `bucket`, matching `ListObjectsV2`'s own parameter order); the
+bucket-scan loop that builds the candidate upload list now filters with
+`strings.HasPrefix(up.key, prefix)` before sorting -- filtering happens
+before pagination, never after, so `max-uploads`/markers operate only on
+the already-filtered candidate set. `parseListMultipartUploadsQuery`
+parses `prefix` via plain `url.Values.Get`, identical to
+`parseListObjectsV2Query`'s own handling -- no ad hoc string
+concatenation, so spaces/`%`/`#`/`?`/Unicode/repeated slashes in a
+prefix behave exactly like they do for `ListObjectsV2`.
+
+### P2-B — delimiter + CommonPrefixes
+
+Same call site: after the prefix filter, each remaining candidate's
+`remainder := up.key[len(prefix):]` is checked for the first occurrence
+of `delimiter` (`strings.Index`, so delimiter is treated as an arbitrary
+string, not a single byte -- matching `ListObjectsV2`'s own model and
+real S3's actual multi-character-delimiter support despite its docs'
+informal "character" wording). A hit derives
+`cp := prefix + remainder[:idx+len(delimiter)]` and folds the upload
+into that `CommonPrefix` instead of returning it as a direct `Upload`;
+consecutive candidates sharing the same `cp` collapse into the one
+already-open group (a `haveGroup`/`lastGroupPrefix` pair scoped to the
+current page, exactly `ListObjectsV2`'s own dedup mechanism). An absent
+or empty delimiter takes no branch and reproduces the untouched flat
+listing.
+
+### P2-C — pagination and marker interaction (the hard part)
+
+The one genuinely new piece of logic, since `ListMultipartUploads`'
+compound marker doesn't let P2 reuse `ListObjectsV2`'s single
+`lastConsumedKey`/`startAfterKey` cursor unchanged. Real S3 documents
+`CommonPrefixes is filtered out from results if it is not
+lexicographically greater than the key-marker` -- P2 implements that
+literally: a candidate that would fold into `cp` is dropped from the
+page (but still advances the cursor) whenever `cp <= keyMarker`, in
+addition to the ordinary per-item `afterMultipartMarker` cursor check.
+This one extra comparison is provably sufficient (see the doc comment on
+`Store.ListMultipartUploads`): because `cp` is by construction a prefix
+of every candidate key that folds into it, and lexicographic sort groups
+all keys sharing a prefix contiguously, `cp <= keyMarker` can only be
+true when the marker sits inside (or exactly at the boundary of) that
+one still-in-progress group -- never for a fresh, not-yet-emitted group,
+and never as a false positive for a later, unrelated group. `NextKeyMarker`/
+`NextUploadIdMarker` are always the `(key, uploadID)` of the last real
+underlying upload the page accounted for, whether the page ends on a
+direct upload or mid-group -- never a synthetic `CommonPrefix` string --
+so resuming naturally skips every remaining hidden member of an
+already-(partially-)emitted group without special-casing the resume
+request itself. A CommonPrefix consumes exactly one `max-uploads` slot
+regardless of how many upload IDs live under it; a direct (ungrouped)
+key with several upload IDs is *not* collapsed -- each upload ID is its
+own row and its own page slot, matching real S3's own documented
+same-key example.
+
+### P2 tests
+
+20 new top-level tests, several with subtests (`zeros3_test.go`, "P2"
+section, +1119 LOC): prefix
+filtering (exact/zero/one/many matches, a prefix ending midway through
+key text, spaces/`%`/`#`/`?`/Unicode/repeated-slash prefixes, prefix +
+pagination interaction); delimiter/CommonPrefixes (AWS's own documented
+photos/videos fixture reproduced exactly including the `prefix=
+photos/2006/` follow-up, dedup across multiple upload IDs for one
+grouped key, nested-grouping `a/b/c/z` groups under `a/b/` not `a/b/c/`,
+no-match/empty-delimiter flat-listing preservation, a multi-character
+delimiter, Unicode/repeated-slash grouping, deterministic ordering
+across repeated calls); pagination/markers (marker before/inside/after a
+prefix range, the exact
+`max-uploads=2` -> `[a/file1, a/sub/(group)]` then `[a/z]` two-page
+walk plus a `max-uploads=1` three-page walk isolating a page ending on a
+direct upload / ending on a CommonPrefix / the page immediately after
+one, the hostile marker-exactly-equals-CommonPrefix-text and
+just-before/-after-lexically cases, same-key multiple-upload-ID page
+splitting both flat and behind a group, XML-special-character and
+1000-byte-key round-trips, a read-only/no-storage-mutation fingerprint
+proof across 9 hostile queries plus a nonexistent-bucket probe, and a
+1200-upload scale traversal -- 400 direct keys, one key with 200 upload
+IDs, 600 distinct CommonPrefix groups (100 with 2 members) -- run at
+three different page sizes (including an odd 37) with duplicate/omission
+detection, confirming an exact 1200-result logical count every time.
+
+### P2 hard gates
+
+All three passed before proceeding: prefix filtering exact with
+pagination operating on the filtered set (P2-A); CommonPrefixes exact
+with correct first-delimiter grouping, dedup, and mixed ordering (P2-B);
+marker semantics exact with no duplicate/omitted logical results across
+the 1200-upload scale traversal and every CommonPrefix-boundary case
+above (P2-C). `gofmt -l .`/`go vet ./...` clean and `go test -race
+./...` clean after every stage.
+
+#### Full historical regression (exact P2 candidate, harnesses unmodified)
+
+Every harness below needed the exact same environment sanitization
+P1-A's own regression documented (`AWS_ACCESS_KEY_ID`/
+`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`/`AWS_DEFAULT_REGION`/
+`AWS_SESSION_TOKEN` unset in the shell driving `go run`) -- this
+sandbox's outbound-proxy tooling still sets `AWS_ACCESS_KEY_ID=proxy-
+injected`/`AWS_SECRET_ACCESS_KEY=proxy-injected` process-wide, and every
+harness here (old and new) either relies on the server's hardcoded
+default credentials or passes its own explicit `-access-key`/
+`-secret-key` flags -- either way, an inherited ambient credential value
+is wrong and every affected harness fails fast with `403
+InvalidAccessKeyId` (or, for one older harness not written defensively
+against a `nil` response on that first failure, panics on a nil-pointer
+dereference right after) until the environment is cleaned. Documented
+once here rather than repeated per harness, exactly as P1-A's own
+regression did.
+
+| Harness | Result |
+|---|---|
+| M2 | 41/41 |
+| M3 copy | 46/46 |
+| M3 dedup | 7/7 |
+| M3 range | 27/27 |
+| M5A presign | 47/47 |
+| M5B multipart | 43/43 |
+| M5D pagination | 43/43 |
+| M6 sync | 33/33 (+2 informational) |
+| M6C dirsync | 69/69 (+2 informational) |
+| M8A remote delta | 34/34 (+4 informational) |
+| M8B repair | 133/133 (+1 informational) |
+| M8C namespace replication | 111/111 (+2 informational) |
+| M8D fork | 146/146 (+3 informational) |
+| M8E snapshot/restore | 151/151 (+3 informational) |
+| M8F conditional | 83/83 (+1 informational) |
+| M8G introspection | 78/78 (+5 informational) |
+| M8H parallel transfer | functional spot-check (single-object, 1/2/4/8/16 workers, 8MiB) -- all transfers correct; full benchmark suite not re-run (perf, not correctness, already recorded in `M8H_PARALLEL_TRANSFER_RESULTS.md`), matching P1's own precedent |
+| Package Killer | 14/14 ZeroS3, 14/14 s3rver -- **GO** |
+| P1 (`harness/p1/env_and_shutdown`) | 23/23 |
+| P2 (`harness/p2/list_multipart_uploads`, new) | 1571/1571 |
+| rclone | **not re-run in this environment** -- no `rclone` binary available in this session's sandbox (no network install path for it here), identical to the disclosed P1 gap. P2 touches only `ListMultipartUploads`' query parsing, the `Store.ListMultipartUploads` listing/grouping/pagination logic, and its XML response type -- no other wire-protocol surface changed, so rclone's own prior 19/19 result is not expected to be affected, but this is a documented gap, not a claimed re-verification. |
+
+**Total re-run: 2714 external passes, 0 failures** (excludes rclone,
+excludes the M8H benchmark suite proper -- both explained above).
+
+#### Reproducibility / dependency proof
+
+`scripts/reproducible_build.sh`: two independent source copies, frozen
+release flags (`CGO_ENABLED=0 go build -trimpath -buildvcs=false
+-ldflags="-buildid="`), byte-identical SHA-256
+`b085635edac14fba9fad884e77783ce6f90f421b6fe4477ce7968e469e89d1f5`.
+`go.mod` still zero-`require`; `deps-proof.txt` regenerated -- `zeros3.go`'s
+`import (...)` block diffed byte-for-byte against the P1 baseline and
+found completely unchanged (P2 uses only already-imported `strings`/
+`sort`/`net/url`/`fmt`/`strconv`), so `go list -deps .`'s linked package
+set is identical to the P1 baseline. No `golang.org/x/...` import, no
+vendoring, no new subprocess/shell-out. `zeros3.go` remains the sole
+implementation source file, `zeros3_test.go` the sole first-party test
+source file. Persistent-format impact: **none** -- `ListMultipartUploads`
+is a read-only listing API; no journal/CAS/manifest/multipart-metadata
+record shape changed, confirmed both by `deps-proof.txt`'s import diff
+and by `TestListMultipartUploads_ReadOnly_NoStorageMutation`'s on-disk
+fingerprint proof across 9 hostile listing queries.
+
+**P2 ACCEPTED — ListMultipartUploads prefix/delimiter/CommonPrefixes
+compatibility improves on P1 with full regression green.** 738/738
+internal tests pass (counting `--- PASS` lines exactly as P1's own
+718/718 figure did; up from 718, 20 new top-level P2 tests, several with
+subtests), `go test -race
+./...` clean, `gofmt -l .`/`go vet ./...` clean, and the full historical
+external regression above matches its prior baselines with zero real
+failures (rclone remains the one disclosed, unaffected-by-inspection
+gap, unchanged from P1).
+
+### Non-goals honored
+
+No `encoding-type=url` (a pre-existing, still-open, documented
+limitation shared with `ListObjectsV2` -- not reintroduced or expanded
+by P2), no `ListObjects` V1, no multi-range GET, no `aws-chunked`, no
+streaming single PUT, no generic client CLI, no `DeleteObjects`, no
+IAM/policies, no lifecycle, no Object Lock, no TLS/HTTP/credential
+changes, no multi-peer repair, no Merkle trees, no packs, no
+compression/compaction, no new indexes, no source cleanup, no README
+rewrite -- exactly P2's stated scope, nothing more.
 
 ## P1 — Operational hardening: environment credentials, graceful
 shutdown, optional TLS

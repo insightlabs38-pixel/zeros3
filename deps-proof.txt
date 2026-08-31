@@ -235,3 +235,10 @@ net/http, crypto/tls, etc.) -- not a ZeroS3 dependency. 'uuid' is
 the Go 1.27 standard library's own uuid package. 'zeros3' is this
 module itself.
 (none found -- no non-stdlib, non-vendored-stdlib import exists)
+
+Re-verified for P2: `zeros3.go`'s `import (...)` block diffed byte-for-byte
+against the P1 baseline and found unchanged -- ListMultipartUploads'
+prefix/delimiter/CommonPrefixes support (`strings.HasPrefix`/
+`strings.Index`, `sort.Slice`) uses only already-imported stdlib packages.
+`go list -deps .`'s linked package set is identical to the P1 baseline.
+No new import outside the stdlib; go.mod remains zero-`require`.

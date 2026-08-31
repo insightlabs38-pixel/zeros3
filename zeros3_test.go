@@ -10279,7 +10279,7 @@ func TestListMultipartUploads_Pagination_RestartStableOrdering(t *testing.T) {
 	}
 	defer store2.Close()
 
-	page, err := store2.ListMultipartUploads("b", "", "", defaultMaxUploads)
+	page, err := store2.ListMultipartUploads("b", "", "", "", "", defaultMaxUploads)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -10296,7 +10296,7 @@ func TestListMultipartUploads_Pagination_RestartStableOrdering(t *testing.T) {
 	var allKeys []string
 	keyMarker, uploadIDMarker := "", ""
 	for i := 0; i < 10; i++ {
-		p, err := store2.ListMultipartUploads("b", keyMarker, uploadIDMarker, 1)
+		p, err := store2.ListMultipartUploads("b", "", "", keyMarker, uploadIDMarker, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -10351,6 +10351,1125 @@ func TestListMultipartUploads_Pagination_CompletedAndAbortedAreAbsent(t *testing
 	}
 	if len(lmu.Upload) != 1 || lmu.Upload[0].Key != "active-key" || lmu.Upload[0].UploadId != activeID {
 		t.Fatalf("expected only the active upload to remain, got %+v", lmu.Upload)
+	}
+}
+
+// =============================================================================
+// P2 -- ListMultipartUploads prefix/delimiter/CommonPrefixes
+//
+// P1's ListMultipartUploads only ever returned a flat, ungrouped list. P2
+// extends it with the same prefix/delimiter/CommonPrefixes semantics
+// ListObjectsV2 already implements, reusing the identical grouping model
+// (first delimiter occurrence after prefix, contiguous-in-sort-order
+// collapse into one CommonPrefix) generalized to ListMultipartUploads'
+// compound (key, uploadID) marker instead of ListObjectsV2's single-key
+// marker -- multipart uniquely allows several concurrent uploads for the
+// same key, which a delimiter group must hide as a single logical unit
+// regardless of how many upload IDs live underneath it.
+// =============================================================================
+
+// createMPUForKeys creates one active multipart upload per key in keys (in
+// the given order, via the real HTTP CreateMultipartUpload path) and
+// returns the resulting upload IDs in the same order.
+func createMPUForKeys(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket string, keys []string) []string {
+	t.Helper()
+	ids := make([]string, len(keys))
+	for i, k := range keys {
+		ids[i] = doCreateMultipartUpload(t, client, baseURL, signer, bucket, k)
+	}
+	return ids
+}
+
+// doCreateMultipartUploadEscaped is doCreateMultipartUpload but URL-escapes
+// key first via url.URL, exactly like TestCopyObject_TrickySourceKeys does
+// for PUT -- needed for P2 fixtures with raw spaces, '%', '#', '?', or
+// Unicode in the key, none of which round-trip through plain string
+// concatenation into a request path (a literal '#' or '?' would otherwise
+// be parsed as a URL fragment/query separator instead of key content).
+func doCreateMultipartUploadEscaped(t *testing.T, client *http.Client, baseURL string, signer testSigner, bucket, key string) string {
+	t.Helper()
+	path := "/" + bucket + "/" + (&url.URL{Path: key}).EscapedPath() + "?uploads"
+	resp := doSignedRequest(t, client, baseURL, signer, http.MethodPost, path, nil, nil)
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CreateMultipartUpload(%q) failed: %d %s", key, resp.StatusCode, data)
+	}
+	var result initiateMultipartUploadResult
+	if err := xml.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to parse InitiateMultipartUploadResult: %v", err)
+	}
+	if result.UploadId == "" {
+		t.Fatalf("empty UploadId in InitiateMultipartUploadResult")
+	}
+	return result.UploadId
+}
+
+// P2-A: prefix filtering.
+
+func TestListMultipartUploads_Prefix_Basic(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-prefix"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	// The exact fixture from the P2 spec: alpha/a, alpha/b, alpha/sub/c
+	// participate in prefix=alpha/; beta/d must never influence returned
+	// uploads, truncation, markers, or counts.
+	keys := []string{"alpha/a", "alpha/b", "alpha/sub/c", "beta/d"}
+	createMPUForKeys(t, client, ts.URL, signer, bucket, keys)
+
+	t.Run("no-prefix-lists-everything", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "")
+		if status != http.StatusOK || len(lmu.Upload) != 4 {
+			t.Fatalf("status=%d uploads=%+v", status, lmu.Upload)
+		}
+	})
+
+	t.Run("empty-prefix-same-as-no-prefix", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "prefix=")
+		if status != http.StatusOK || len(lmu.Upload) != 4 {
+			t.Fatalf("status=%d uploads=%+v", status, lmu.Upload)
+		}
+	})
+
+	t.Run("prefix-matches-many", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "prefix="+url.QueryEscape("alpha/"))
+		if status != http.StatusOK {
+			t.Fatalf("status=%d", status)
+		}
+		var got []string
+		for _, u := range lmu.Upload {
+			got = append(got, u.Key)
+		}
+		want := []string{"alpha/a", "alpha/b", "alpha/sub/c"}
+		if len(got) != len(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("got %v, want %v", got, want)
+			}
+		}
+		if lmu.Prefix != "alpha/" {
+			t.Fatalf("Prefix echoed = %q, want %q", lmu.Prefix, "alpha/")
+		}
+		if lmu.IsTruncated {
+			t.Fatalf("expected not truncated")
+		}
+	})
+
+	t.Run("prefix-matches-one", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "prefix="+url.QueryEscape("beta/d"))
+		if status != http.StatusOK || len(lmu.Upload) != 1 || lmu.Upload[0].Key != "beta/d" {
+			t.Fatalf("status=%d uploads=%+v", status, lmu.Upload)
+		}
+	})
+
+	t.Run("prefix-matches-zero", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "prefix="+url.QueryEscape("gamma/"))
+		if status != http.StatusOK || len(lmu.Upload) != 0 || lmu.IsTruncated {
+			t.Fatalf("status=%d uploads=%+v", status, lmu.Upload)
+		}
+	})
+
+	t.Run("exact-key-as-prefix", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "prefix="+url.QueryEscape("alpha/a"))
+		if status != http.StatusOK || len(lmu.Upload) != 1 || lmu.Upload[0].Key != "alpha/a" {
+			t.Fatalf("status=%d uploads=%+v", status, lmu.Upload)
+		}
+	})
+}
+
+// TestListMultipartUploads_Prefix_PartialKeyBoundary covers the hostile
+// case of a prefix that ends midway through key text (not at a delimiter
+// boundary): plain HasPrefix semantics must still apply, matching
+// ListObjectsV2's own prefix behavior exactly.
+func TestListMultipartUploads_Prefix_PartialKeyBoundary(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-partial"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	createMPUForKeys(t, client, ts.URL, signer, bucket, []string{"alpha", "alphabet", "alpha/x", "other"})
+
+	t.Run("prefix-alpha-matches-all-three", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "prefix=alpha")
+		if status != http.StatusOK || len(lmu.Upload) != 3 {
+			t.Fatalf("status=%d uploads=%+v", status, lmu.Upload)
+		}
+	})
+
+	t.Run("prefix-alpha-slash-matches-only-nested", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "prefix="+url.QueryEscape("alpha/"))
+		if status != http.StatusOK || len(lmu.Upload) != 1 || lmu.Upload[0].Key != "alpha/x" {
+			t.Fatalf("status=%d uploads=%+v", status, lmu.Upload)
+		}
+	})
+}
+
+// TestListMultipartUploads_Prefix_UnusualCharacters covers prefixes
+// containing spaces, '%', '#', '?', Unicode, and repeated slashes -- proof
+// that reusing url.ParseQuery/raw string HasPrefix (no ad hoc
+// concatenation) never mis-splits or mis-decodes these.
+func TestListMultipartUploads_Prefix_UnusualCharacters(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-weird"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name   string
+		prefix string
+		keys   []string
+		want   []string
+	}{
+		{"space", "a b/", []string{"a b/c", "a b/d", "unrelated-space"}, []string{"a b/c", "a b/d"}},
+		{"percent", "100%/", []string{"100%/x", "unrelated-percent"}, []string{"100%/x"}},
+		{"hash", "#tag/", []string{"#tag/x", "unrelated-hash"}, []string{"#tag/x"}},
+		{"question", "q?/", []string{"q?/x", "unrelated-question"}, []string{"q?/x"}},
+		{"unicode", "日本語/", []string{"日本語/ファイル", "unrelated-unicode"}, []string{"日本語/ファイル"}},
+		{"repeated-slashes", "a//b/", []string{"a//b/c", "a/b/c", "unrelated-slashes"}, []string{"a//b/c"}},
+	}
+
+	var allKeys []string
+	for _, tc := range cases {
+		allKeys = append(allKeys, tc.keys...)
+	}
+	for _, k := range allKeys {
+		doCreateMultipartUploadEscaped(t, client, ts.URL, signer, bucket, k)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := "/" + bucket + "?uploads&prefix=" + url.QueryEscape(tc.prefix)
+			resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, path, nil, nil)
+			data, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s", resp.StatusCode, data)
+			}
+			var lmu listMultipartUploadsResult
+			if err := xml.Unmarshal(data, &lmu); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			var got []string
+			for _, u := range lmu.Upload {
+				got = append(got, u.Key)
+			}
+			sort.Strings(got)
+			want := append([]string(nil), tc.want...)
+			sort.Strings(want)
+			if len(got) != len(want) {
+				t.Fatalf("prefix %q: got %v, want %v", tc.prefix, got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("prefix %q: got %v, want %v", tc.prefix, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestListMultipartUploads_Prefix_WithPagination proves prefix filtering
+// happens before pagination is finalized: max-uploads and markers apply to
+// the already-filtered candidate set, never to the raw, unfiltered bucket.
+func TestListMultipartUploads_Prefix_WithPagination(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-prefix-page"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	// Interleave "out" keys with "in" keys in creation order so a naive
+	// paginate-then-filter implementation would produce a wrong page.
+	createMPUForKeys(t, client, ts.URL, signer, bucket, []string{
+		"out/1", "in/a", "out/2", "in/b", "out/3", "in/c", "in/d", "out/4",
+	})
+
+	var all []string
+	keyMarker := ""
+	for i := 0; i < 10; i++ {
+		q := "prefix=" + url.QueryEscape("in/") + "&max-uploads=1"
+		if keyMarker != "" {
+			q += "&key-marker=" + url.QueryEscape(keyMarker)
+		}
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q)
+		if status != http.StatusOK {
+			t.Fatalf("status=%d", status)
+		}
+		if len(lmu.Upload) > 1 {
+			t.Fatalf("expected at most 1 upload per page, got %+v", lmu.Upload)
+		}
+		for _, u := range lmu.Upload {
+			all = append(all, u.Key)
+			if !strings.HasPrefix(u.Key, "in/") {
+				t.Fatalf("an out/ key leaked into a prefix=in/ page: %q", u.Key)
+			}
+		}
+		if !lmu.IsTruncated {
+			break
+		}
+		keyMarker = lmu.NextKeyMarker
+	}
+	want := []string{"in/a", "in/b", "in/c", "in/d"}
+	if len(all) != len(want) {
+		t.Fatalf("paginated prefix-filtered uploads = %v, want %v", all, want)
+	}
+	for i := range want {
+		if all[i] != want[i] {
+			t.Fatalf("paginated prefix-filtered uploads = %v, want %v", all, want)
+		}
+	}
+}
+
+// P2-B: delimiter + CommonPrefixes.
+
+// TestListMultipartUploads_Delimiter_DocumentedFixture reproduces AWS's own
+// documented ListMultipartUploads delimiter example fixture and expected
+// response shape exactly (photos/videos folders + one top-level key).
+func TestListMultipartUploads_Delimiter_DocumentedFixture(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "example-bucket"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	createMPUForKeys(t, client, ts.URL, signer, bucket, []string{
+		"photos/2006/January/sample.jpg",
+		"photos/2006/February/sample.jpg",
+		"photos/2006/March/sample.jpg",
+		"videos/2006/March/sample.wmv",
+		"sample.jpg",
+	})
+
+	lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "delimiter="+url.QueryEscape("/"))
+	if status != http.StatusOK {
+		t.Fatalf("status=%d", status)
+	}
+	if len(lmu.Upload) != 1 || lmu.Upload[0].Key != "sample.jpg" {
+		t.Fatalf("expected exactly sample.jpg as a direct Upload, got %+v", lmu.Upload)
+	}
+	if len(lmu.CommonPrefixes) != 2 {
+		t.Fatalf("expected 2 CommonPrefixes, got %+v", lmu.CommonPrefixes)
+	}
+	gotCP := []string{lmu.CommonPrefixes[0].Prefix, lmu.CommonPrefixes[1].Prefix}
+	sort.Strings(gotCP)
+	wantCP := []string{"photos/", "videos/"}
+	if gotCP[0] != wantCP[0] || gotCP[1] != wantCP[1] {
+		t.Fatalf("CommonPrefixes = %v, want %v", gotCP, wantCP)
+	}
+	if lmu.Delimiter != "/" {
+		t.Fatalf("Delimiter echoed = %q, want %q", lmu.Delimiter, "/")
+	}
+	if lmu.IsTruncated {
+		t.Fatalf("expected not truncated")
+	}
+
+	// Adding the prefix parameter narrows to just the photos/2006/ subtree,
+	// again matching AWS's own documented second example exactly.
+	lmu2, status2 := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket,
+		"delimiter="+url.QueryEscape("/")+"&prefix="+url.QueryEscape("photos/2006/"))
+	if status2 != http.StatusOK {
+		t.Fatalf("status=%d", status2)
+	}
+	if len(lmu2.Upload) != 0 {
+		t.Fatalf("expected zero direct uploads under photos/2006/, got %+v", lmu2.Upload)
+	}
+	if len(lmu2.CommonPrefixes) != 3 {
+		t.Fatalf("expected 3 CommonPrefixes under photos/2006/, got %+v", lmu2.CommonPrefixes)
+	}
+	gotCP2 := []string{lmu2.CommonPrefixes[0].Prefix, lmu2.CommonPrefixes[1].Prefix, lmu2.CommonPrefixes[2].Prefix}
+	sort.Strings(gotCP2)
+	wantCP2 := []string{"photos/2006/February/", "photos/2006/January/", "photos/2006/March/"}
+	for i := range wantCP2 {
+		if gotCP2[i] != wantCP2[i] {
+			t.Fatalf("CommonPrefixes = %v, want %v", gotCP2, wantCP2)
+		}
+	}
+}
+
+// TestListMultipartUploads_Delimiter_Dedup proves that multiple uploads
+// (including multiple upload IDs for the exact same key) folding into the
+// same CommonPrefix collapse into exactly one CommonPrefix entry, per B7.
+func TestListMultipartUploads_Delimiter_Dedup(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-dedup"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	createMPUForKeys(t, client, ts.URL, signer, bucket, []string{"a/sub/x", "a/sub/y", "a/sub/z"})
+	// A second upload ID for one of the very same keys: the group must
+	// still collapse to a single CommonPrefix, not two.
+	doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "a/sub/x")
+
+	lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "prefix=a/&delimiter="+url.QueryEscape("/"))
+	if status != http.StatusOK {
+		t.Fatalf("status=%d", status)
+	}
+	if len(lmu.Upload) != 0 {
+		t.Fatalf("expected zero direct uploads, got %+v", lmu.Upload)
+	}
+	if len(lmu.CommonPrefixes) != 1 || lmu.CommonPrefixes[0].Prefix != "a/sub/" {
+		t.Fatalf("expected exactly one CommonPrefix a/sub/, got %+v", lmu.CommonPrefixes)
+	}
+}
+
+// TestListMultipartUploads_Delimiter_NestedGrouping covers B8: the first
+// delimiter occurrence AFTER prefix determines grouping, so a/b/c/z groups
+// under a/b/, never a/b/c/.
+func TestListMultipartUploads_Delimiter_NestedGrouping(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-nested"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	createMPUForKeys(t, client, ts.URL, signer, bucket, []string{"a/x", "a/b/y", "a/b/c/z"})
+
+	lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "prefix=a/&delimiter="+url.QueryEscape("/"))
+	if status != http.StatusOK {
+		t.Fatalf("status=%d", status)
+	}
+	if len(lmu.Upload) != 1 || lmu.Upload[0].Key != "a/x" {
+		t.Fatalf("expected exactly a/x as a direct Upload, got %+v", lmu.Upload)
+	}
+	if len(lmu.CommonPrefixes) != 1 || lmu.CommonPrefixes[0].Prefix != "a/b/" {
+		t.Fatalf("expected exactly one CommonPrefix a/b/ (not a/b/c/), got %+v", lmu.CommonPrefixes)
+	}
+}
+
+// TestListMultipartUploads_Delimiter_NoMatch covers a delimiter that never
+// occurs in any candidate key's remainder: every upload stays direct, no
+// CommonPrefixes appear.
+func TestListMultipartUploads_Delimiter_NoMatch(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-nodelim"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	createMPUForKeys(t, client, ts.URL, signer, bucket, []string{"alpha", "bravo", "charlie"})
+
+	lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "delimiter="+url.QueryEscape("/"))
+	if status != http.StatusOK || len(lmu.Upload) != 3 || len(lmu.CommonPrefixes) != 0 {
+		t.Fatalf("status=%d upload=%+v commonPrefixes=%+v", status, lmu.Upload, lmu.CommonPrefixes)
+	}
+}
+
+// TestListMultipartUploads_Delimiter_EmptyPreservesFlatListing covers B5:
+// an absent or empty delimiter must never emit CommonPrefixes.
+func TestListMultipartUploads_Delimiter_EmptyPreservesFlatListing(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-flat"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	createMPUForKeys(t, client, ts.URL, signer, bucket, []string{"a/x", "a/y", "b"})
+
+	for _, q := range []string{"", "delimiter="} {
+		t.Run("query="+q, func(t *testing.T) {
+			lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q)
+			if status != http.StatusOK || len(lmu.Upload) != 3 || len(lmu.CommonPrefixes) != 0 {
+				t.Fatalf("status=%d upload=%+v commonPrefixes=%+v", status, lmu.Upload, lmu.CommonPrefixes)
+			}
+			if lmu.Delimiter != "" {
+				t.Fatalf("Delimiter should be omitted/empty, got %q", lmu.Delimiter)
+			}
+		})
+	}
+}
+
+// TestListMultipartUploads_Delimiter_MultiCharacter covers B4: ZeroS3
+// treats delimiter as an arbitrary string (matching ListObjectsV2's own
+// strings.Index-based grouping), not just a single byte -- real S3's own
+// implementation accepts multi-character delimiters despite its docs
+// informally calling it a "character".
+func TestListMultipartUploads_Delimiter_MultiCharacter(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-multichar"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	createMPUForKeys(t, client, ts.URL, signer, bucket, []string{"a--x", "a--y", "b--z", "c"})
+
+	lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "delimiter="+url.QueryEscape("--"))
+	if status != http.StatusOK {
+		t.Fatalf("status=%d", status)
+	}
+	if len(lmu.Upload) != 1 || lmu.Upload[0].Key != "c" {
+		t.Fatalf("expected exactly key c as a direct Upload, got %+v", lmu.Upload)
+	}
+	if len(lmu.CommonPrefixes) != 2 {
+		t.Fatalf("expected 2 CommonPrefixes, got %+v", lmu.CommonPrefixes)
+	}
+	gotCP := []string{lmu.CommonPrefixes[0].Prefix, lmu.CommonPrefixes[1].Prefix}
+	sort.Strings(gotCP)
+	wantCP := []string{"a--", "b--"}
+	if gotCP[0] != wantCP[0] || gotCP[1] != wantCP[1] {
+		t.Fatalf("CommonPrefixes = %v, want %v", gotCP, wantCP)
+	}
+}
+
+// TestListMultipartUploads_Delimiter_UnicodeAndRepeatedSlashes covers
+// grouping over Unicode key segments and repeated-slash keys.
+func TestListMultipartUploads_Delimiter_UnicodeAndRepeatedSlashes(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-unicode-delim"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{
+		"日本語/a", "日本語/b", // groups under "日本語/"
+		"a//b/c", "a//b/d", // groups under "a//" (first "/" occurs right after "a")
+	}
+	for _, k := range keys {
+		doCreateMultipartUploadEscaped(t, client, ts.URL, signer, bucket, k)
+	}
+
+	lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "delimiter="+url.QueryEscape("/"))
+	if status != http.StatusOK {
+		t.Fatalf("status=%d", status)
+	}
+	if len(lmu.Upload) != 0 {
+		t.Fatalf("expected zero direct uploads, got %+v", lmu.Upload)
+	}
+	if len(lmu.CommonPrefixes) != 2 {
+		t.Fatalf("expected 2 CommonPrefixes, got %+v", lmu.CommonPrefixes)
+	}
+	gotCP := []string{lmu.CommonPrefixes[0].Prefix, lmu.CommonPrefixes[1].Prefix}
+	sort.Strings(gotCP)
+	// UTF-8 byte order: ASCII 'a' (0x61) sorts before the multi-byte
+	// leading byte of "日" (0xE6), so "a/" precedes "日本語/".
+	wantCP := []string{"a/", "日本語/"}
+	if gotCP[0] != wantCP[0] || gotCP[1] != wantCP[1] {
+		t.Fatalf("CommonPrefixes = %v, want %v", gotCP, wantCP)
+	}
+}
+
+// TestListMultipartUploads_Delimiter_DeterministicOrdering proves repeated
+// calls against an unchanged upload set return CommonPrefixes and Upload
+// entries in the exact same order every time (both individually sorted
+// ascending), satisfying B6.
+func TestListMultipartUploads_Delimiter_DeterministicOrdering(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-order"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	createMPUForKeys(t, client, ts.URL, signer, bucket, []string{
+		"m/1", "m/2", "a/1", "z/1", "d-direct", "b-direct",
+	})
+
+	var first listMultipartUploadsResult
+	for i := 0; i < 5; i++ {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "delimiter="+url.QueryEscape("/"))
+		if status != http.StatusOK {
+			t.Fatalf("status=%d", status)
+		}
+		if i == 0 {
+			first = lmu
+			continue
+		}
+		if len(lmu.Upload) != len(first.Upload) || len(lmu.CommonPrefixes) != len(first.CommonPrefixes) {
+			t.Fatalf("call %d: shape changed: %+v vs %+v", i, lmu, first)
+		}
+		for j := range first.Upload {
+			if lmu.Upload[j] != first.Upload[j] {
+				t.Fatalf("call %d: Upload order changed at %d: %+v vs %+v", i, j, lmu.Upload, first.Upload)
+			}
+		}
+		for j := range first.CommonPrefixes {
+			if lmu.CommonPrefixes[j] != first.CommonPrefixes[j] {
+				t.Fatalf("call %d: CommonPrefixes order changed at %d: %+v vs %+v", i, j, lmu.CommonPrefixes, first.CommonPrefixes)
+			}
+		}
+	}
+	wantUploads := []string{"b-direct", "d-direct"}
+	if len(first.Upload) != len(wantUploads) {
+		t.Fatalf("Upload = %+v, want keys %v", first.Upload, wantUploads)
+	}
+	for i, k := range wantUploads {
+		if first.Upload[i].Key != k {
+			t.Fatalf("Upload[%d].Key = %q, want %q", i, first.Upload[i].Key, k)
+		}
+	}
+	wantCP := []string{"a/", "m/", "z/"}
+	if len(first.CommonPrefixes) != len(wantCP) {
+		t.Fatalf("CommonPrefixes = %+v, want %v", first.CommonPrefixes, wantCP)
+	}
+	for i, p := range wantCP {
+		if first.CommonPrefixes[i].Prefix != p {
+			t.Fatalf("CommonPrefixes[%d] = %q, want %q", i, first.CommonPrefixes[i].Prefix, p)
+		}
+	}
+}
+
+// P2-C: pagination and marker interaction with prefix/delimiter.
+
+// TestListMultipartUploads_Pagination_PrefixMarkerPositions covers a
+// key-marker positioned before, inside, and after the prefix-filtered
+// range.
+func TestListMultipartUploads_Pagination_PrefixMarkerPositions(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-prefix-marker"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	createMPUForKeys(t, client, ts.URL, signer, bucket, []string{"in/a", "in/b", "in/c"})
+
+	cases := []struct {
+		name      string
+		keyMarker string
+		want      []string
+	}{
+		{"marker-before-range", "aaa", []string{"in/a", "in/b", "in/c"}},
+		{"marker-inside-range", "in/a", []string{"in/b", "in/c"}},
+		{"marker-after-range", "zzz", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := "prefix=" + url.QueryEscape("in/") + "&key-marker=" + url.QueryEscape(tc.keyMarker)
+			lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q)
+			if status != http.StatusOK {
+				t.Fatalf("status=%d", status)
+			}
+			var got []string
+			for _, u := range lmu.Upload {
+				got = append(got, u.Key)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestListMultipartUploads_Pagination_CommonPrefixBoundary is the C3/C4
+// scenario from the spec: with max-uploads=2 over the logical stream
+// [a/file1, a/sub/ (group), a/z], page 1 must be exactly [a/file1, a/sub/]
+// and page 2 must resume at a/z -- never re-exposing a hidden group member,
+// never skipping a/z. It also separately drives max-uploads=1 to exercise
+// a page ending on a direct upload, a page ending on a CommonPrefix, and
+// the page immediately after a CommonPrefix.
+func TestListMultipartUploads_Pagination_CommonPrefixBoundary(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-cp-boundary"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	subXID := doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "a/sub/x")
+	subYID := doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "a/sub/y")
+	doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "a/file1")
+	doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "a/z")
+	_ = subXID
+
+	q := func(extra string) string { return "prefix=a/&delimiter=" + url.QueryEscape("/") + extra }
+
+	t.Run("max-uploads-2-page-1", func(t *testing.T) {
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q("&max-uploads=2"))
+		if status != http.StatusOK {
+			t.Fatalf("status=%d", status)
+		}
+		if len(lmu.Upload) != 1 || lmu.Upload[0].Key != "a/file1" {
+			t.Fatalf("expected direct upload a/file1, got %+v", lmu.Upload)
+		}
+		if len(lmu.CommonPrefixes) != 1 || lmu.CommonPrefixes[0].Prefix != "a/sub/" {
+			t.Fatalf("expected CommonPrefix a/sub/, got %+v", lmu.CommonPrefixes)
+		}
+		if !lmu.IsTruncated {
+			t.Fatalf("expected truncated (a/z still pending)")
+		}
+		if lmu.NextKeyMarker != "a/sub/y" || lmu.NextUploadIdMarker != subYID {
+			t.Fatalf("next marker = (%q,%q), want (%q,%q)", lmu.NextKeyMarker, lmu.NextUploadIdMarker, "a/sub/y", subYID)
+		}
+
+		t.Run("page-2-resumes-at-a-z-only", func(t *testing.T) {
+			q2 := q("&max-uploads=2&key-marker=" + url.QueryEscape(lmu.NextKeyMarker) + "&upload-id-marker=" + url.QueryEscape(lmu.NextUploadIdMarker))
+			lmu2, status2 := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q2)
+			if status2 != http.StatusOK {
+				t.Fatalf("status=%d", status2)
+			}
+			if len(lmu2.Upload) != 1 || lmu2.Upload[0].Key != "a/z" {
+				t.Fatalf("expected exactly a/z, got upload=%+v commonPrefixes=%+v", lmu2.Upload, lmu2.CommonPrefixes)
+			}
+			if len(lmu2.CommonPrefixes) != 0 {
+				t.Fatalf("a/sub/ must not be re-exposed on page 2, got %+v", lmu2.CommonPrefixes)
+			}
+			if lmu2.IsTruncated {
+				t.Fatalf("expected not truncated")
+			}
+		})
+	})
+
+	t.Run("max-uploads-1-three-page-walk", func(t *testing.T) {
+		// Page 1: ends on the direct upload a/file1.
+		lmu1, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q("&max-uploads=1"))
+		if status != http.StatusOK {
+			t.Fatalf("status=%d", status)
+		}
+		if len(lmu1.Upload) != 1 || lmu1.Upload[0].Key != "a/file1" || len(lmu1.CommonPrefixes) != 0 {
+			t.Fatalf("page 1 = upload=%+v commonPrefixes=%+v, want just a/file1", lmu1.Upload, lmu1.CommonPrefixes)
+		}
+		if !lmu1.IsTruncated {
+			t.Fatalf("page 1: expected truncated")
+		}
+
+		// Page 2: ends on the CommonPrefix a/sub/ (consuming exactly one
+		// slot despite two underlying uploads).
+		q2 := q("&max-uploads=1&key-marker=" + url.QueryEscape(lmu1.NextKeyMarker) + "&upload-id-marker=" + url.QueryEscape(lmu1.NextUploadIdMarker))
+		lmu2, status2 := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q2)
+		if status2 != http.StatusOK {
+			t.Fatalf("status=%d", status2)
+		}
+		if len(lmu2.Upload) != 0 || len(lmu2.CommonPrefixes) != 1 || lmu2.CommonPrefixes[0].Prefix != "a/sub/" {
+			t.Fatalf("page 2 = upload=%+v commonPrefixes=%+v, want just CommonPrefix a/sub/", lmu2.Upload, lmu2.CommonPrefixes)
+		}
+		if !lmu2.IsTruncated {
+			t.Fatalf("page 2: expected truncated (a/z still pending)")
+		}
+		if lmu2.NextKeyMarker != "a/sub/y" || lmu2.NextUploadIdMarker != subYID {
+			t.Fatalf("page 2 next marker = (%q,%q), want (%q,%q)", lmu2.NextKeyMarker, lmu2.NextUploadIdMarker, "a/sub/y", subYID)
+		}
+
+		// Page 3: immediately after the CommonPrefix, exactly a/z.
+		q3 := q("&max-uploads=1&key-marker=" + url.QueryEscape(lmu2.NextKeyMarker) + "&upload-id-marker=" + url.QueryEscape(lmu2.NextUploadIdMarker))
+		lmu3, status3 := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q3)
+		if status3 != http.StatusOK {
+			t.Fatalf("status=%d", status3)
+		}
+		if len(lmu3.Upload) != 1 || lmu3.Upload[0].Key != "a/z" || len(lmu3.CommonPrefixes) != 0 {
+			t.Fatalf("page 3 = upload=%+v commonPrefixes=%+v, want just a/z", lmu3.Upload, lmu3.CommonPrefixes)
+		}
+		if lmu3.IsTruncated {
+			t.Fatalf("page 3: expected not truncated")
+		}
+	})
+}
+
+// TestListMultipartUploads_Pagination_MarkerNearCommonPrefixBoundary
+// exercises the hostile cases of a marker exactly equal to a CommonPrefix's
+// own text, and markers just lexically before/after it.
+func TestListMultipartUploads_Pagination_MarkerNearCommonPrefixBoundary(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-marker-boundary"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	createMPUForKeys(t, client, ts.URL, signer, bucket, []string{"a/sub/1", "a/sub/2", "a/x", "a/z"})
+
+	q := func(marker string) string {
+		return "prefix=a/&delimiter=" + url.QueryEscape("/") + "&key-marker=" + url.QueryEscape(marker)
+	}
+
+	cases := []struct {
+		name          string
+		marker        string
+		wantUploads   []string
+		wantCommonPfx []string
+	}{
+		{"marker-just-before-group", "a/su", []string{"a/x", "a/z"}, []string{"a/sub/"}},
+		{"marker-exactly-equals-group-text", "a/sub/", []string{"a/x", "a/z"}, nil},
+		{"marker-exactly-last-group-member", "a/sub/2", []string{"a/x", "a/z"}, nil},
+		{"marker-just-after-group-text", "a/subz", []string{"a/x", "a/z"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q(tc.marker))
+			if status != http.StatusOK {
+				t.Fatalf("status=%d", status)
+			}
+			var gotU []string
+			for _, u := range lmu.Upload {
+				gotU = append(gotU, u.Key)
+			}
+			if len(gotU) != len(tc.wantUploads) {
+				t.Fatalf("marker %q: uploads = %v, want %v", tc.marker, gotU, tc.wantUploads)
+			}
+			for i := range tc.wantUploads {
+				if gotU[i] != tc.wantUploads[i] {
+					t.Fatalf("marker %q: uploads = %v, want %v", tc.marker, gotU, tc.wantUploads)
+				}
+			}
+			var gotCP []string
+			for _, cp := range lmu.CommonPrefixes {
+				gotCP = append(gotCP, cp.Prefix)
+			}
+			if len(gotCP) != len(tc.wantCommonPfx) {
+				t.Fatalf("marker %q: commonPrefixes = %v, want %v", tc.marker, gotCP, tc.wantCommonPfx)
+			}
+			for i := range tc.wantCommonPfx {
+				if gotCP[i] != tc.wantCommonPfx[i] {
+					t.Fatalf("marker %q: commonPrefixes = %v, want %v", tc.marker, gotCP, tc.wantCommonPfx)
+				}
+			}
+		})
+	}
+}
+
+// TestListMultipartUploads_Pagination_SameKeyMultipleUploadIDs_PageSplit
+// covers C5's flat (no-delimiter) same-key case: several upload IDs for one
+// key, paginated one at a time, with no duplicate/omitted result -- the
+// same invariant TestListMultipartUploads_Pagination_Matrix already proves
+// for a mixed key set, isolated here to a single repeated key.
+func TestListMultipartUploads_Pagination_SameKeyMultipleUploadIDs_PageSplit(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-samekey"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for i := 0; i < 4; i++ {
+		ids = append(ids, doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "dup"))
+	}
+	sort.Strings(ids)
+
+	var allIDs []string
+	keyMarker, uploadIDMarker := "", ""
+	for i := 0; i < 10; i++ {
+		q := fmt.Sprintf("max-uploads=1&key-marker=%s&upload-id-marker=%s", url.QueryEscape(keyMarker), url.QueryEscape(uploadIDMarker))
+		lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, q)
+		if status != http.StatusOK {
+			t.Fatalf("status=%d", status)
+		}
+		if len(lmu.Upload) != 1 || lmu.Upload[0].Key != "dup" {
+			t.Fatalf("expected exactly one dup upload per page, got %+v", lmu.Upload)
+		}
+		allIDs = append(allIDs, lmu.Upload[0].UploadId)
+		if !lmu.IsTruncated {
+			break
+		}
+		keyMarker, uploadIDMarker = lmu.NextKeyMarker, lmu.NextUploadIdMarker
+	}
+	if len(allIDs) != len(ids) {
+		t.Fatalf("paginated upload IDs = %v, want %v", allIDs, ids)
+	}
+	for i := range ids {
+		if allIDs[i] != ids[i] {
+			t.Fatalf("paginated upload IDs = %v, want %v", allIDs, ids)
+		}
+	}
+}
+
+// TestListMultipartUploads_Pagination_SameKeyBehindGroup proves that when a
+// key with several upload IDs itself falls under a CommonPrefix, all of its
+// upload IDs stay hidden behind the single group entry.
+func TestListMultipartUploads_Pagination_SameKeyBehindGroup(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-samekey-group"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "a/sub/dup")
+	}
+	doCreateMultipartUpload(t, client, ts.URL, signer, bucket, "a/file1")
+
+	lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "prefix=a/&delimiter="+url.QueryEscape("/"))
+	if status != http.StatusOK {
+		t.Fatalf("status=%d", status)
+	}
+	if len(lmu.Upload) != 1 || lmu.Upload[0].Key != "a/file1" {
+		t.Fatalf("expected exactly a/file1 as a direct Upload, got %+v", lmu.Upload)
+	}
+	if len(lmu.CommonPrefixes) != 1 || lmu.CommonPrefixes[0].Prefix != "a/sub/" {
+		t.Fatalf("expected exactly one CommonPrefix a/sub/ regardless of 3 underlying upload IDs, got %+v", lmu.CommonPrefixes)
+	}
+}
+
+// TestListMultipartUploads_XMLSpecialCharactersAndLongKeys proves the
+// existing xml.Encoder machinery (never ad hoc string escaping) correctly
+// round-trips keys/prefixes containing XML-sensitive characters, and that
+// very long keys are handled without truncation.
+func TestListMultipartUploads_XMLSpecialCharactersAndLongKeys(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	bucket := "mpu-xml-special"
+	if err := doCreateBucket(t, client, ts.URL, signer, bucket); err != nil {
+		t.Fatal(err)
+	}
+	special := "x/<tag>&'quoted\"/y"
+	longKey := "long/" + strings.Repeat("k", 1000)
+	doCreateMultipartUploadEscaped(t, client, ts.URL, signer, bucket, special)
+	doCreateMultipartUploadEscaped(t, client, ts.URL, signer, bucket, longKey)
+
+	lmu, status := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "")
+	if status != http.StatusOK {
+		t.Fatalf("status=%d", status)
+	}
+	var gotKeys []string
+	for _, u := range lmu.Upload {
+		gotKeys = append(gotKeys, u.Key)
+	}
+	sort.Strings(gotKeys)
+	want := []string{longKey, special}
+	sort.Strings(want)
+	if len(gotKeys) != len(want) || gotKeys[0] != want[0] || gotKeys[1] != want[1] {
+		t.Fatalf("got %v, want %v", gotKeys, want)
+	}
+
+	// Prefix filtering must also work correctly against the XML-sensitive
+	// key.
+	lmu2, status2 := doListMultipartUploadsQuery(t, client, ts.URL, signer, bucket, "prefix="+url.QueryEscape("x/<tag>"))
+	if status2 != http.StatusOK || len(lmu2.Upload) != 1 || lmu2.Upload[0].Key != special {
+		t.Fatalf("status=%d upload=%+v", status2, lmu2.Upload)
+	}
+}
+
+// TestListMultipartUploads_ReadOnly_NoStorageMutation drives a battery of
+// hostile prefix/delimiter/marker listing requests and proves ZeroS3's
+// on-disk store (journal, CAS, manifests, multipart metadata) is
+// byte-identical before and after -- ListMultipartUploads must never
+// mutate sessions.
+func TestListMultipartUploads_ReadOnly_NoStorageMutation(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds := Credentials{AccessKeyID: "AKIATESTACCESSKEY0001", SecretAccessKey: "TestSecretKeyForZeroS3UnitTests0123456789"}
+	srv := NewServer(store, creds, "us-east-1")
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: "us-east-1"}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "ro"); err != nil {
+		t.Fatal(err)
+	}
+	createMPUForKeys(t, client, ts.URL, signer, "ro", []string{"a/x", "a/sub/1", "a/sub/2", "b"})
+	store.Close()
+
+	before := storeContentFingerprint(t, dir)
+
+	store2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+	srv2 := NewServer(store2, creds, "us-east-1")
+	ts2 := httptest.NewServer(srv2)
+	defer ts2.Close()
+	client2 := ts2.Client()
+
+	hostileQueries := []string{
+		"",
+		"prefix=does-not-exist/",
+		"prefix=&delimiter=",
+		"delimiter=" + url.QueryEscape("/"),
+		"prefix=a/&delimiter=" + url.QueryEscape("/"),
+		"prefix=a/&delimiter=" + url.QueryEscape("/") + "&max-uploads=1",
+		"key-marker=" + url.QueryEscape("a/sub/"),
+		"key-marker=zzz&upload-id-marker=zzz",
+		"max-uploads=0",
+	}
+	for _, q := range hostileQueries {
+		_, status := doListMultipartUploadsQuery(t, client2, ts2.URL, signer, "ro", q)
+		if status != http.StatusOK {
+			t.Fatalf("query %q: status=%d", q, status)
+		}
+	}
+	// Also probe a bucket that doesn't exist and an out-of-range bucket
+	// name -- error paths must not mutate storage either.
+	client2.CloseIdleConnections()
+	if resp := doSignedRequest(t, client2, ts2.URL, signer, http.MethodGet, "/no-such-bucket?uploads", nil, nil); resp != nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	store2.Close()
+
+	after := storeContentFingerprint(t, dir)
+	if before != after {
+		t.Fatalf("ListMultipartUploads mutated on-disk store contents")
+	}
+}
+
+// TestListMultipartUploads_Scale_1200Traversal is the P2-C scale
+// requirement: >1000 uploads mixing direct uploads, many distinct
+// CommonPrefix groups (some with multiple underlying upload IDs), and one
+// key with many upload IDs of its own -- traversed completely through
+// small pages, requiring no duplicates, no omissions, deterministic order,
+// and an exact final count. Uses the Store API directly (like
+// TestListMultipartUploads_Pagination_RestartStableOrdering) to keep 1200
+// upload creations fast; ListMultipartUploads itself is exercised exactly
+// as handleListMultipartUploads calls it.
+func TestListMultipartUploads_Scale_1200Traversal(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateBucket("scale"); err != nil {
+		t.Fatal(err)
+	}
+
+	wantDirect := map[string]bool{}
+	wantGroups := map[string]bool{}
+
+	for i := 0; i < 400; i++ {
+		key := fmt.Sprintf("afile%04d", i)
+		if _, err := store.CreateMultipartUpload("scale", key, "application/octet-stream", nil); err != nil {
+			t.Fatal(err)
+		}
+		wantDirect[key] = true
+	}
+	for i := 0; i < 200; i++ {
+		if _, err := store.CreateMultipartUpload("scale", "dupkey", "application/octet-stream", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantDirect["dupkey"] = true // one logical direct-upload key, 200 upload IDs behind it
+	for g := 0; g < 600; g++ {
+		prefix := fmt.Sprintf("group%04d/", g)
+		members := 1
+		if g < 100 {
+			members = 2
+		}
+		for m := 0; m < members; m++ {
+			key := fmt.Sprintf("%sm%d", prefix, m)
+			if _, err := store.CreateMultipartUpload("scale", key, "application/octet-stream", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		wantGroups[prefix] = true
+	}
+
+	// A direct (ungrouped) key with several upload IDs is NOT collapsed --
+	// unlike CommonPrefix grouping, real S3 lists every upload ID for the
+	// same key as its own Upload row (its own documented example shows
+	// exactly this for "my-movie.m2ts" appearing twice), and each row
+	// consumes its own max-uploads slot. So dupkey's 200 upload IDs are
+	// 200 logical direct-upload slots, not one; distinctDirectKeys below
+	// only tracks the exact-count assertion that all 401 distinct direct
+	// keys (400 afile + dupkey) were seen at least once.
+	traverseAndVerify := func(pageSize int) (directRows int, distinctDirectKeys map[string]bool, groups map[string]bool) {
+		seenUploadIDs := map[string]bool{}
+		distinctDirectKeys = map[string]bool{}
+		groups = map[string]bool{}
+		keyMarker, uploadIDMarker := "", ""
+		for page := 0; ; page++ {
+			if page > 2000 {
+				t.Fatalf("traversal did not terminate after 2000 pages")
+			}
+			p, err := store.ListMultipartUploads("scale", "", "/", keyMarker, uploadIDMarker, pageSize)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, up := range p.uploads {
+				if seenUploadIDs[up.uploadID] {
+					t.Fatalf("duplicate upload ID %q (key %q) across pages", up.uploadID, up.key)
+				}
+				seenUploadIDs[up.uploadID] = true
+				distinctDirectKeys[up.key] = true
+				directRows++
+			}
+			for _, cp := range p.commonPrefixes {
+				if groups[cp] {
+					t.Fatalf("duplicate CommonPrefix %q across pages", cp)
+				}
+				groups[cp] = true
+			}
+			if !p.truncated {
+				break
+			}
+			keyMarker, uploadIDMarker = p.nextKeyMarker, p.nextUploadIDMarker
+		}
+		return directRows, distinctDirectKeys, groups
+	}
+
+	// Traverse twice (default-sized pages, then a small odd page size) to
+	// prove both completeness and that the result doesn't depend on page
+	// size, then a third time to prove determinism across repeated calls.
+	for _, trial := range []struct {
+		name     string
+		pageSize int
+	}{
+		{"default-max-uploads", defaultMaxUploads},
+		{"odd-small-page", 37},
+		{"odd-small-page-repeat", 37},
+	} {
+		t.Run(trial.name, func(t *testing.T) {
+			directRows, distinctDirectKeys, groups := traverseAndVerify(trial.pageSize)
+			if directRows != 600 { // 400 afile + 200 dupkey upload IDs
+				t.Fatalf("direct upload rows = %d, want 600", directRows)
+			}
+			if len(distinctDirectKeys) != len(wantDirect) {
+				t.Fatalf("distinct direct keys = %d, want %d", len(distinctDirectKeys), len(wantDirect))
+			}
+			for k := range wantDirect {
+				if !distinctDirectKeys[k] {
+					t.Fatalf("missing expected direct key %q", k)
+				}
+			}
+			if len(groups) != len(wantGroups) {
+				t.Fatalf("CommonPrefix groups = %d, want %d", len(groups), len(wantGroups))
+			}
+			for g := range wantGroups {
+				if !groups[g] {
+					t.Fatalf("missing expected CommonPrefix %q", g)
+				}
+			}
+			totalLogical := directRows + len(groups) // 600 direct rows (400 afile + 200 dupkey IDs) + 600 CommonPrefixes
+			if totalLogical != 1200 {
+				t.Fatalf("total logical results = %d, want 1200", totalLogical)
+			}
+		})
 	}
 }
 
