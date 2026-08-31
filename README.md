@@ -161,9 +161,11 @@ comma-separated conditional-header validator lists, self-copy rejection,
 `X-Amz-Security-Token`, `STREAMING-AWS4-HMAC-SHA256-
 PAYLOAD[-TRAILER]` (conditional — not yet required by any real client
 exercised), `aws-chunked`'s unsigned/SigV4A streaming trailer modes
-(permanently out of scope), ListMultipartUploads does not yet support 
-prefix/delimiter/CommonPrefixes and online/background/scheduled GC (offline
-and exclusive-only, by design, this milestone).
+(permanently out of scope), `ListMultipartUploads`' `encoding-type=url`
+(a documented limitation shared with `ListObjectsV2`; `prefix`/
+`delimiter`/`CommonPrefixes` are supported as of P2) and
+online/background/scheduled GC (offline and exclusive-only, by design,
+this milestone).
 
 ## Architecture
 
@@ -1005,10 +1007,11 @@ Honest, not exhaustive — see `STATUS.md` for the full list per milestone:
   configuration state, or delete markers; `gc -apply` also requires
   exclusive offline access to the store (no online/background/scheduled
   GC).
-- `ListMultipartUploads` has no `delimiter`/`prefix`/`CommonPrefixes`
-  support (pagination itself is implemented and tested); every multipart
-  part but the last must be ≥5MiB, matching AWS's rule, with no
-  configurable override.
+- `ListMultipartUploads` has no `encoding-type=url` support, matching
+  `ListObjectsV2`'s own lack of it (`prefix`/`delimiter`/`CommonPrefixes`
+  and pagination are all implemented and tested); every multipart part
+  but the last must be ≥5MiB, matching AWS's rule, with no configurable
+  override.
 - `zeros3 sync` (delta sync, M6) uploads missing chunks with bounded
   concurrency (`-workers`, default 8, max 32 — M8H-B); directory sync
   (M6C) is non-destructive with no `--delete`/mirror mode, so a

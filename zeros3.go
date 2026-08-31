@@ -3883,32 +3883,37 @@ func parseListPartsQuery(rawQuery string) (partNumberMarker, maxParts int, err e
 	return partNumberMarker, maxParts, nil
 }
 
-// parseListMultipartUploadsQuery parses ListMultipartUploads' three
-// pagination query parameters. key-marker and upload-id-marker are opaque
-// S3 identifiers (an object key and an upload ID) with no syntax to
-// validate -- any string is accepted, exactly like ListObjectsV2's own
-// continuation-token/prefix handling. max-uploads follows the same
-// default/cap/reject-negative convention as parseListPartsQuery's
-// max-parts, mirroring max-keys.
-func parseListMultipartUploadsQuery(rawQuery string) (keyMarker, uploadIDMarker string, maxUploads int, err error) {
+// parseListMultipartUploadsQuery parses ListMultipartUploads' query
+// parameters. key-marker and upload-id-marker are opaque S3 identifiers (an
+// object key and an upload ID) with no syntax to validate -- any string is
+// accepted, exactly like ListObjectsV2's own continuation-token/prefix
+// handling. max-uploads follows the same default/cap/reject-negative
+// convention as parseListPartsQuery's max-parts, mirroring max-keys. prefix
+// and delimiter are parsed exactly like ListObjectsV2's own prefix/
+// delimiter (raw url.Values.Get, no extra validation) -- an absent or empty
+// value of either preserves the flat, unfiltered/ungrouped listing that
+// predates this parameter pair.
+func parseListMultipartUploadsQuery(rawQuery string) (prefix, delimiter, keyMarker, uploadIDMarker string, maxUploads int, err error) {
 	values, perr := url.ParseQuery(rawQuery)
 	if perr != nil {
-		return "", "", 0, fmt.Errorf("malformed query string")
+		return "", "", "", "", 0, fmt.Errorf("malformed query string")
 	}
+	prefix = values.Get("prefix")
+	delimiter = values.Get("delimiter")
 	keyMarker = values.Get("key-marker")
 	uploadIDMarker = values.Get("upload-id-marker")
 	maxUploads = defaultMaxUploads
 	if raw := values.Get("max-uploads"); raw != "" {
 		n, convErr := strconv.Atoi(raw)
 		if convErr != nil || n < 0 {
-			return "", "", 0, fmt.Errorf("max-uploads must be a non-negative integer")
+			return "", "", "", "", 0, fmt.Errorf("max-uploads must be a non-negative integer")
 		}
 		maxUploads = n
 	}
 	if maxUploads > defaultMaxUploads {
 		maxUploads = defaultMaxUploads
 	}
-	return keyMarker, uploadIDMarker, maxUploads, nil
+	return prefix, delimiter, keyMarker, uploadIDMarker, maxUploads, nil
 }
 
 func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery string) {
@@ -4506,6 +4511,7 @@ func (s *Store) AbortMultipartUpload(bucket, key, uploadID string) error {
 // needed to render the ListMultipartUploadsResult XML's pagination fields.
 type listMultipartUploadsPage struct {
 	uploads            []*multipartUpload
+	commonPrefixes     []string
 	truncated          bool
 	nextKeyMarker      string
 	nextUploadIDMarker string
@@ -4538,12 +4544,37 @@ func afterMultipartMarker(key, uploadID, keyMarker, uploadIDMarker string) bool 
 }
 
 // ListMultipartUploads returns the page of bucket's in-progress uploads
-// sorting strictly after the (keyMarker, uploadIDMarker) cursor, ordered by
-// key then upload ID (S3's own documented ordering -- upload IDs are
-// UUIDv7, so this tie-break also happens to reproduce S3's own "same key,
-// ascending initiation time" secondary order), capped at maxUploads
-// entries.
-func (s *Store) ListMultipartUploads(bucket, keyMarker, uploadIDMarker string, maxUploads int) (listMultipartUploadsPage, error) {
+// whose key begins with prefix, sorting strictly after the (keyMarker,
+// uploadIDMarker) cursor, ordered by key then upload ID (S3's own
+// documented ordering -- upload IDs are UUIDv7, so this tie-break also
+// happens to reproduce S3's own "same key, ascending initiation time"
+// secondary order), capped at maxUploads entries.
+//
+// When delimiter is non-empty, uploads are additionally grouped exactly the
+// way ListObjectsV2 groups objects: for each candidate key, examine the
+// remainder after prefix, and if delimiter occurs in it, the key folds into
+// a CommonPrefix (prefix + remainder up to and including the first
+// delimiter) instead of being returned as a direct Upload. All uploads
+// (regardless of upload ID) sharing that same CommonPrefix collapse into
+// one logical result -- consuming exactly one of maxUploads' slots, not
+// one per underlying upload -- and are never returned as direct Upload
+// entries. An empty delimiter disables grouping entirely and reproduces the
+// pre-P2 flat listing.
+//
+// Pagination walks this single ordered logical stream (direct uploads and
+// CommonPrefix groups interleaved in the same key order), so a page can be
+// truncated either on a direct upload or in the middle of a group; either
+// way NextKeyMarker/NextUploadIdMarker are the (key, uploadID) of the last
+// real underlying upload the page accounted for -- never a synthetic
+// CommonPrefix string -- so resuming with those markers naturally skips
+// every remaining member of a group already (partially) emitted. That
+// resume case is handled by the same rule AWS documents for ListObjects'
+// NextMarker: a CommonPrefix is suppressed (its members are skipped but do
+// not consume a slot) whenever the CommonPrefix string itself is not
+// lexicographically greater than keyMarker, which is exactly the condition
+// under which some but not all of that group's members already passed the
+// per-upload keyMarker/uploadIDMarker cursor check below.
+func (s *Store) ListMultipartUploads(bucket, prefix, delimiter, keyMarker, uploadIDMarker string, maxUploads int) (listMultipartUploadsPage, error) {
 	s.mu.Lock()
 	if _, ok := s.buckets[bucket]; !ok {
 		s.mu.Unlock()
@@ -4551,7 +4582,7 @@ func (s *Store) ListMultipartUploads(bucket, keyMarker, uploadIDMarker string, m
 	}
 	var out []*multipartUpload
 	for _, up := range s.uploads {
-		if up.bucket == bucket {
+		if up.bucket == bucket && strings.HasPrefix(up.key, prefix) {
 			out = append(out, up)
 		}
 	}
@@ -4563,29 +4594,60 @@ func (s *Store) ListMultipartUploads(bucket, keyMarker, uploadIDMarker string, m
 		return out[i].uploadID < out[j].uploadID
 	})
 
+	var page listMultipartUploadsPage
 	if maxUploads <= 0 {
-		return listMultipartUploadsPage{}, nil
+		return page, nil
 	}
 	if keyMarker == "" {
 		uploadIDMarker = ""
 	}
-	candidates := out[:0]
-	for _, up := range out {
-		if afterMultipartMarker(up.key, up.uploadID, keyMarker, uploadIDMarker) {
-			candidates = append(candidates, up)
-		}
-	}
 
-	var page listMultipartUploadsPage
-	if len(candidates) > maxUploads {
-		page.truncated = true
-		candidates = candidates[:maxUploads]
+	var lastGroupPrefix string
+	haveGroup := false
+	var lastKey, lastUploadID string
+	haveLast := false
+	for _, up := range out {
+		if !afterMultipartMarker(up.key, up.uploadID, keyMarker, uploadIDMarker) {
+			continue
+		}
+		remainder := up.key[len(prefix):]
+		if delimiter != "" {
+			if idx := strings.Index(remainder, delimiter); idx >= 0 {
+				cp := prefix + remainder[:idx+len(delimiter)]
+				if cp <= keyMarker || (haveGroup && cp == lastGroupPrefix) {
+					// Either already surfaced as this exact CommonPrefix on
+					// an earlier page (cp <= keyMarker: see the doc comment
+					// above), or another member of the group this page has
+					// already emitted (haveGroup): in both cases this
+					// upload adds no new result unit, but it does advance
+					// the cursor past it.
+					lastKey, lastUploadID = up.key, up.uploadID
+					haveLast = true
+					continue
+				}
+				if len(page.uploads)+len(page.commonPrefixes) >= maxUploads {
+					page.truncated = true
+					break
+				}
+				page.commonPrefixes = append(page.commonPrefixes, cp)
+				lastGroupPrefix = cp
+				haveGroup = true
+				lastKey, lastUploadID = up.key, up.uploadID
+				haveLast = true
+				continue
+			}
+		}
+		if len(page.uploads)+len(page.commonPrefixes) >= maxUploads {
+			page.truncated = true
+			break
+		}
+		page.uploads = append(page.uploads, up)
+		lastKey, lastUploadID = up.key, up.uploadID
+		haveLast = true
 	}
-	page.uploads = candidates
-	if page.truncated {
-		last := candidates[len(candidates)-1]
-		page.nextKeyMarker = last.key
-		page.nextUploadIDMarker = last.uploadID
+	if page.truncated && haveLast {
+		page.nextKeyMarker = lastKey
+		page.nextUploadIDMarker = lastUploadID
 	}
 	return page, nil
 }
@@ -4900,17 +4962,24 @@ type uploadXML struct {
 // AWS's own documented example response (a non-truncated ListMultipartUploads
 // with a delimiter) shows these as present-but-empty elements even when
 // IsTruncated is false, so omitting them entirely would be a guess this
-// codebase's fetched AWS docs directly contradict.
+// codebase's fetched AWS docs directly contradict. Prefix is likewise
+// always rendered (matching ListBucketResult's own Prefix field), while
+// Delimiter and CommonPrefixes are omitted entirely when no delimiter was
+// requested, exactly like ListBucketResult -- real S3 documents Delimiter
+// as "absent from the response" when the request didn't specify one.
 type listMultipartUploadsResult struct {
-	XMLName            xml.Name    `xml:"ListMultipartUploadsResult"`
-	Bucket             string      `xml:"Bucket"`
-	KeyMarker          string      `xml:"KeyMarker"`
-	UploadIdMarker     string      `xml:"UploadIdMarker"`
-	NextKeyMarker      string      `xml:"NextKeyMarker"`
-	NextUploadIdMarker string      `xml:"NextUploadIdMarker"`
-	MaxUploads         int         `xml:"MaxUploads"`
-	IsTruncated        bool        `xml:"IsTruncated"`
-	Upload             []uploadXML `xml:"Upload"`
+	XMLName            xml.Name          `xml:"ListMultipartUploadsResult"`
+	Bucket             string            `xml:"Bucket"`
+	KeyMarker          string            `xml:"KeyMarker"`
+	UploadIdMarker     string            `xml:"UploadIdMarker"`
+	NextKeyMarker      string            `xml:"NextKeyMarker"`
+	NextUploadIdMarker string            `xml:"NextUploadIdMarker"`
+	Prefix             string            `xml:"Prefix"`
+	Delimiter          string            `xml:"Delimiter,omitempty"`
+	MaxUploads         int               `xml:"MaxUploads"`
+	IsTruncated        bool              `xml:"IsTruncated"`
+	Upload             []uploadXML       `xml:"Upload"`
+	CommonPrefixes     []xmlCommonPrefix `xml:"CommonPrefixes,omitempty"`
 }
 
 // --- HTTP: multipart handlers ---
@@ -5013,12 +5082,12 @@ func (srv *Server) handleAbortMultipartUpload(w http.ResponseWriter, bucket, key
 }
 
 func (srv *Server) handleListMultipartUploads(w http.ResponseWriter, bucket, rawQuery string) {
-	keyMarker, uploadIDMarker, maxUploads, err := parseListMultipartUploadsQuery(rawQuery)
+	prefix, delimiter, keyMarker, uploadIDMarker, maxUploads, err := parseListMultipartUploadsQuery(rawQuery)
 	if err != nil {
 		writeS3Error(w, "InvalidArgument", err.Error(), "/"+bucket)
 		return
 	}
-	page, err := srv.store.ListMultipartUploads(bucket, keyMarker, uploadIDMarker, maxUploads)
+	page, err := srv.store.ListMultipartUploads(bucket, prefix, delimiter, keyMarker, uploadIDMarker, maxUploads)
 	if err != nil {
 		writeBucketOrInternalError(w, err, "/"+bucket)
 		return
@@ -5026,10 +5095,14 @@ func (srv *Server) handleListMultipartUploads(w http.ResponseWriter, bucket, raw
 	result := listMultipartUploadsResult{
 		Bucket: bucket, KeyMarker: keyMarker, UploadIdMarker: uploadIDMarker,
 		NextKeyMarker: page.nextKeyMarker, NextUploadIdMarker: page.nextUploadIDMarker,
+		Prefix: prefix, Delimiter: delimiter,
 		MaxUploads: maxUploads, IsTruncated: page.truncated,
 	}
 	for _, up := range page.uploads {
 		result.Upload = append(result.Upload, uploadXML{Key: up.key, UploadId: up.uploadID, Initiated: iso8601(up.createdAt)})
+	}
+	for _, cp := range page.commonPrefixes {
+		result.CommonPrefixes = append(result.CommonPrefixes, xmlCommonPrefix{Prefix: cp})
 	}
 	writeXML(w, http.StatusOK, result)
 }
