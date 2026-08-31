@@ -46,7 +46,44 @@ import (
 	"uuid"
 )
 
-// TestMain makes the whole suite hermetic against P1-A's new
+// =============================================================================
+// Test map
+//
+// zeros3_test.go verifies zeros3.go's substrate first (storage engine,
+// journal, SigV4, checksums) and then its emergent capabilities in
+// roughly the same dependency order the implementation's own source map
+// lists them, plus the protocol-compatibility suites (M2/M3/M5) and
+// operational hardening (P1) that sit alongside that progression.
+//
+//   Lines    Area
+//   -----    ----
+//       86    Test helpers, fixtures, and TestMain
+//      120    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//     1136    SigV4 authentication (header and payload-mode)
+//     1522    Checksums: CRC32 and Content-MD5
+//     2033    End-to-end HTTP and crash/recovery tests
+//     2707    M2: bucket/object/listing/journal protocol compatibility
+//     3758    M3: CDC/dedup evidence, stats, verify
+//     4894    M3: CopyObject
+//     5441    M3: single-range GET
+//     5642    M5-B: multipart upload
+//     6920    Presigned URLs and virtual-hosted-style addressing
+//     7949    M5-C: version history, restore, GC, storage-efficiency proof
+//     9795    M5-D/P2: ListParts and ListMultipartUploads pagination
+//    11514    M6: delta sync (`zeros3 sync`)
+//    13256    M6C: recursive directory sync
+//    14316    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    15645    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//    16970    M8C: namespace (prefix/bucket) replication
+//    18009    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    19101    M8E: durable namespace snapshots and restore
+//    21179    M8F: conditional operations (Put/Get/Copy preconditions)
+//    22584    M8G: introspection (dry-run planning, diff, inspect)
+//    24536    M8H: bounded parallel chunk transfer
+//    25887    P1: environment credentials, HTTP hardening/shutdown, TLS
+// =============================================================================
+
+// TestMain makes the whole suite hermetic against the
 // AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION environment-variable
 // credential fallback (section 15a-quater of zeros3.go): every
 // pre-existing test that spawns a real `zeros3 serve`/CLI subprocess
@@ -15452,7 +15489,7 @@ func scanBytesForSyncTest(data []byte) ([]syncLocalChunk, int64, error) {
 }
 
 // =============================================================================
-// Demonstration fixture (M8A demo, honest strong-reuse case)
+// Demonstration fixture (honest strong-reuse case)
 // =============================================================================
 
 func TestReplicate_M8ADemonstrationFixture(t *testing.T) {
@@ -17243,8 +17280,8 @@ func TestReplicateNamespace_WholeBucketAllChunksMissing(t *testing.T) {
 	}
 }
 
-// TestReplicateNamespace_PrefixMappingEndToEnd reuses the exact tree
-// M8C's own spec gives as its worked example (M8C-A3).
+// TestReplicateNamespace_PrefixMappingEndToEnd reuses the exact tree the
+// namespace-replication spec gives as its worked example.
 func TestReplicateNamespace_PrefixMappingEndToEnd(t *testing.T) {
 	srcSrv, dstSrv, srcCfg, dstCfg, closeFn := newNsReplicateTestServerPair(t, "src", "dst")
 	defer closeFn()
@@ -17982,7 +18019,7 @@ func TestCLI_Replicate_NonRecursiveSingleObjectUnaffectedByM8C(t *testing.T) {
 
 // newForkTestServer opens one store, creates every named bucket in it,
 // and wraps it in a single httptest server -- the same-store shape every
-// fork test needs (M8D is same-store only). cfgFor returns a
+// fork test needs (fork is same-store only). cfgFor returns a
 // syncClientConfig for one bucket, sharing the endpoint/client/creds every
 // other bucket's config uses, so a caller can build Source/Dest configs
 // that literally share one physical CAS.
@@ -18738,9 +18775,9 @@ func TestFork_DeepVerifyGreenAfterFork(t *testing.T) {
 	}
 }
 
-// TestFork_RepairComposesAcrossSharedCorruptChunk proves M8D composes
-// cleanly with M8B's peer-assisted repair (M8D-J), without changing M8B
-// at all: after a fork, one physical CAS chunk is now reachable from both
+// TestFork_RepairComposesAcrossSharedCorruptChunk proves fork composes
+// cleanly with peer-assisted repair, without changing repair at all:
+// after a fork, one physical CAS chunk is now reachable from both
 // namespaces. Corrupting it on disk, then repairing from an independent
 // peer holding the same content, must restore both the source and the
 // fork's copy from exactly one repaired digest.
@@ -22586,7 +22623,7 @@ func storeContentFingerprint(t *testing.T, dir string) string {
 
 // failOnChunkGET wraps a Server so any GET to the chunk-download endpoint
 // fails the test immediately -- an independent, protocol-level proof that
-// dry-run planning (M8G-A3) never fetches source chunk payload, rather
+// dry-run planning never fetches source chunk payload, rather
 // than trusting planReplication's own code to simply not call
 // fetchSourceChunk.
 type failOnChunkGET struct {
@@ -24500,10 +24537,10 @@ func TestM8G_CredentialSeparation_Diff(t *testing.T) {
 //
 // M8H-A measured that replicate/repair/sync's shared "fetch one chunk ->
 // verify -> publish one chunk" loop was strictly sequential and the
-// dominant cost in every content-moving code path. M8H-B adds
-// runTransferWorkers, a small bounded worker-pool primitive, and reuses it
-// from executeReplicationPlan (M8A/replicate), repairFromPeer (M8B), and
-// uploadMissingSyncChunks (M6/sync) -- unchanged object/root-level
+// dominant cost in every content-moving code path. runTransferWorkers is
+// a small bounded worker-pool primitive, reused from
+// executeReplicationPlan (replicate), repairFromPeer (repair), and
+// uploadMissingSyncChunks (sync) -- unchanged object/root-level
 // publication semantics (planReplication/replicateNamespace/restore all
 // still commit exactly one object at a time, still strictly sequentially),
 // just concurrent chunk transport underneath.
@@ -25697,7 +25734,7 @@ func TestRepair_HighWorkerCount_RaceAndCorrectness(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
-// M8H-B1: `sync` (M6) with a bounded worker pool
+// `sync` with a bounded worker pool
 // -----------------------------------------------------------------------
 
 func TestSync_ParallelChunkUploadWithWorkers(t *testing.T) {
@@ -25857,7 +25894,7 @@ func TestCLI_WorkersFlagValidation(t *testing.T) {
 // fallback only on their one shared -region flag -- never on
 // -from-access-key/-from-secret-key/-to-access-key/-to-secret-key, so a
 // standard AWS credential pair can never be silently misdirected to the
-// wrong endpoint (P1-A5).
+// wrong endpoint.
 // =============================================================================
 
 // newCredFlagSet builds a flag.FlagSet with the exact same
@@ -26062,8 +26099,7 @@ func TestEnvCredentials_Inspect_UsesEnvWhenFlagsOmitted(t *testing.T) {
 
 // TestEnvCredentials_Inspect_ExplicitFlagOverridesWrongEnv is the
 // precedence companion: deliberately wrong AWS_* environment credentials
-// must never win over explicit -access-key/-secret-key/-region flags
-// (P1-A2).
+// must never win over explicit -access-key/-secret-key/-region flags.
 func TestEnvCredentials_Inspect_ExplicitFlagOverridesWrongEnv(t *testing.T) {
 	srv, ts, creds, region := newEnvCredTestServer(t)
 	if err := srv.store.CreateBucket("envb2"); err != nil {
@@ -26086,8 +26122,8 @@ func TestEnvCredentials_Inspect_ExplicitFlagOverridesWrongEnv(t *testing.T) {
 }
 
 // TestEnvCredentials_Replicate_RegionFromEnvButFromToNeverFallBack is the
-// two-endpoint (P1-A5) proof, entirely in-process via replicate's -dry-
-// run mode (never mutates the destination, so a happy path is safe to
+// two-endpoint proof, entirely in-process via replicate's -dry-run mode
+// (never mutates the destination, so a happy path is safe to
 // call directly): AWS_REGION fallback applies to the one shared -region
 // flag, but AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY must never reach
 // -from-access-key/-from-secret-key/-to-access-key/-to-secret-key even
