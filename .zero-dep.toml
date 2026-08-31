@@ -1,0 +1,2 @@
+track = "D"
+pitch = "An S3-compatible object store with content-defined deduplication, delta transfer, repair, forks, and snapshots—all in one zero-dependency Go file."
