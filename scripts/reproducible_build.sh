@@ -1,6 +1,6 @@
 #!/bin/sh
 # reproducible_build.sh — proves ZeroS3's release build is byte-for-byte
-# reproducible, per REPRODUCIBLE_BUILD.md.
+# reproducible.
 #
 # Builds zeros3.go twice, from two independent copies of the source tree
 # at two different absolute paths, into two different output locations,
