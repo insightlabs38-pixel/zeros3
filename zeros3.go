@@ -48,6 +48,46 @@ import (
 )
 
 // =============================================================================
+// Source map
+//
+// A reviewer's guide to this single file: the S3 protocol surface sits on
+// top of a content-addressed storage substrate (CDC -> CAS -> manifests
+// -> an append-only visibility journal), and every higher-level
+// capability (dedup, versions, GC, sync, replication, repair, fork,
+// snapshots, diff/inspect) is built from that same substrate rather than
+// a parallel implementation of its own.
+//
+//   Lines    Subsystem
+//   -----    ---------
+//        1    Package overview, imports, constants, and shared utilities
+//      386    Content-defined chunking (CDC)
+//      524    Content-addressed chunk storage (CAS)
+//      581    Manifests (immutable, JSON)
+//      708    Visibility journal (append-only, checksummed)
+//     1103    Store: format, namespace, and object CRUD
+//     1915    Version history/restore and ListObjectsV2
+//     2145    SigV4 authentication (header and presigned-URL)
+//     2942    Request checksums and S3-shaped XML error/response types
+//     3131    HTTP routing and S3 operation handlers
+//     3448    Conditional operations (PUT/GET/HEAD preconditions)
+//     4021    CopyObject
+//     4315    Multipart upload
+//     5186    Stats and reachability scanning
+//     5897    Verify
+//     6071    Store locking and safe offline GC
+//     6298    Single-range GET
+//     6434    Delta sync client, credentials, and parallel transfer
+//     8357    Recursive directory sync
+//     8662    Remote replication (`zeros3 replicate`)
+//     9426    Peer-assisted corruption repair (`zeros3 repair`)
+//     9904    Namespace (prefix/bucket) replication
+//    10211    Copy-on-write namespace fork (`zeros3 fork`)
+//    10419    Snapshots and restore
+//    11572    Structural diff and inspect (introspection)
+//    12096    CLI dispatch, HTTP server/startup, and main
+// =============================================================================
+
+// =============================================================================
 // 1. Constants, configuration, and protocol types
 // =============================================================================
 
@@ -98,7 +138,7 @@ const (
 	recordTypeCompleteMultipartUpload = byte(8)
 
 	// recordTypePutObjectRootV2, recordTypeCompleteMultipartUploadV2, and
-	// recordTypeDeleteObjectRootV2 (M5-C) are the history-aware successors
+	// recordTypeDeleteObjectRootV2 are the history-aware successors
 	// to record types 2, 8, and 3 respectively: every live commit/delete
 	// path uses these going forward, unconditionally (never branching by
 	// "does history apply this time", exactly like record type 8 already
@@ -220,7 +260,7 @@ var (
 	// risk treating reachable-but-corrupt data as garbage.
 	errGCUnsafe = errors.New("authoritative live root set is corrupt or incomplete; refusing to delete anything")
 
-	// errPreconditionFailed (M8F-A, section 10a) is commitObjectRootChecked's
+	// errPreconditionFailed (section 10a) is commitObjectRootChecked's
 	// check-function sentinel for a failed S3 conditional-write precondition
 	// (If-None-Match: "*" or If-Match: "<etag>"): the current visible object
 	// at the actual commit point -- re-read inside the same locked critical
@@ -228,13 +268,13 @@ var (
 	// caller specified. Distinct from errConditionUnsupported: this is a
 	// runtime CAS failure (412), not a malformed/unsupported request (400).
 	errPreconditionFailed = errors.New("conditional write: precondition failed")
-	// errConditionUnsupported (M8F-A, section 10a) is parsePutCondition's
+	// errConditionUnsupported (section 10a) is parsePutCondition's
 	// sentinel for a syntactically-plausible but out-of-scope conditional
 	// header value (see section 10a's doc comment for the exact supported
 	// subset) -- e.g. a comma-separated validator list, a weak (W/) ETag, or
 	// If-Match/If-None-Match both set at once.
 	errConditionUnsupported = errors.New("conditional write: unsupported If-Match/If-None-Match value")
-	// errConditionMalformed (M8F-A, section 10a) is parsePutCondition's
+	// errConditionMalformed (section 10a) is parsePutCondition's
 	// sentinel for a syntactically invalid conditional header value (e.g. an
 	// unterminated quoted ETag, or an empty validator).
 	errConditionMalformed = errors.New("conditional write: malformed If-Match/If-None-Match value")
@@ -328,7 +368,7 @@ const (
 	hookAfterJournalSync            = "after-journal-sync"
 	hookAfterApplyBeforeResponse    = "after-apply-before-response"
 	hookAfterAck                    = "after-ack"
-	// hookBeforeGCDelete (M5-C) fires immediately before destructive GC
+	// hookBeforeGCDelete fires immediately before destructive GC
 	// unlinks one unreachable file (chunk or manifest), letting tests
 	// simulate an interruption partway through a sweep (Phase K6) without
 	// any timing-dependent kill(1) trick -- the same pattern every other
@@ -1709,7 +1749,7 @@ func (s *Store) commitObjectRoot(bucket, key, manUUID string, manSHA [32]byte, m
 }
 
 // commitObjectRootChecked is commitObjectRoot's precondition-aware core
-// (section 15 (M6) adds the one caller that passes a non-nil check, for
+// (section 15 adds the one caller that passes a non-nil check, for
 // sync's safe-mode conflict precondition). If check is non-nil, it runs
 // inside the exact same locked critical section as the commit itself,
 // immediately after re-confirming bucket existence and reading the
@@ -3405,7 +3445,7 @@ func (srv *Server) handleDeleteBucket(w http.ResponseWriter, bucket string) {
 }
 
 // =============================================================================
-// 10a. S3 conditional-write preconditions (M8F-A): PutObject's
+// 10a. S3 conditional-write preconditions: PutObject's
 // If-None-Match / If-Match
 //
 // This exposes, to ordinary S3 clients, the exact concurrency-safety
@@ -3614,7 +3654,7 @@ func writeGetObjectError(w http.ResponseWriter, bucket, key string, err error) {
 }
 
 // =============================================================================
-// 10b. Conditional GET/HEAD (M8F-B): If-Match / If-None-Match read
+// 10b. Conditional GET/HEAD: If-Match / If-None-Match read
 // preconditions
 //
 // Read-only, so unlike M8F-A's PutObject conditions there is no commit
@@ -5320,7 +5360,7 @@ func fileSizeOrZero(path string) (int64, error) {
 }
 
 // =============================================================================
-// 12a. Authoritative reachability (M5-C)
+// 12a. Authoritative reachability
 //
 // One root-enumeration / mark-live path, consumed by stats, GC, and
 // verify/doctor alike -- never three subtly different liveness
@@ -5573,7 +5613,7 @@ func (s *Store) computeReachability(deep bool) (reachabilityResult, error) {
 			}
 		}
 	}
-	// Root category 4 (M8E, section 15h): durable namespace snapshots.
+	// Root category 4 (section 15h): durable namespace snapshots.
 	// scanSnapshots reads store/snapshots/ fresh off disk (never cached --
 	// see Store.snapshotMu's doc comment) and reports every parse/
 	// integrity issue it finds via the exact same issueTracker every
@@ -6028,7 +6068,7 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 }
 
 // =============================================================================
-// 13b. Store locking (exclusive ownership) and safe offline GC (M5-C)
+// 13b. Store locking (exclusive ownership) and safe offline GC
 //
 // storeLock/acquireStoreLock is a thin, non-blocking flock wrapper: an
 // ordinary store user ("zeros3 serve") holds a SHARED lock for its
@@ -6391,7 +6431,7 @@ func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry,
 }
 
 // =============================================================================
-// 15. Optional ZeroS3 Delta Sync (M6)
+// 15. Optional ZeroS3 Delta Sync
 //
 // M6 is not a second storage engine: it is an optimized ingestion path
 // for producing an ordinary object. A file synced through this protocol
@@ -6410,9 +6450,9 @@ func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry,
 // sync:
 //
 //   GET  /_zeros3/v1/info                  capability discovery
-//   GET  /_zeros3/v1/object?bucket=&key=    object chunk descriptor (M8A)
+//   GET  /_zeros3/v1/object?bucket=&key=    object chunk descriptor
 //   POST /_zeros3/v1/negotiate              bounded missing-chunk query
-//   GET  /_zeros3/v1/chunks/<sha256-hex>    chunk download (M8A)
+//   GET  /_zeros3/v1/chunks/<sha256-hex>    chunk download
 //   PUT  /_zeros3/v1/chunks/<sha256-hex>    idempotent chunk upload
 //   POST /_zeros3/v1/commit                 atomic ordinary object commit
 //
@@ -6424,7 +6464,7 @@ func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry,
 // (sigv4CanonicalURI/Query/Headers, sigv4SigningKey) the server itself
 // uses, rather than a second implementation of either.
 //
-// `zeros3 replicate` (M8A, section 15d) is the same kind of HTTP client,
+// `zeros3 replicate` (section 15d) is the same kind of HTTP client,
 // speaking this exact protocol to *two* independent servers (source and
 // destination) at once: /object and the new GET /chunks/<sha256-hex> are
 // its only genuinely new endpoints, added here so a remote source's
@@ -6535,7 +6575,7 @@ type syncChunkUploadResponse struct {
 	Length int64  `json:"length"`
 }
 
-// syncObjectDescriptor is GET /_zeros3/v1/object's body (M8A): the
+// syncObjectDescriptor is GET /_zeros3/v1/object's body: the
 // complete, ordered, authoritative chunk list plus the ordinary object
 // metadata needed to reproduce it as a destination object -- everything
 // replicateObject's negotiate/fetch/upload/commit pipeline (section 15d)
@@ -6826,7 +6866,7 @@ func (s *Store) computeChunkRootMembership() map[string]map[rootRef]bool {
 }
 
 // chunkReachabilityInfo is one distinct chunk digest's store-wide
-// sharing verdict (M8G-C3): RootCount is the total number of distinct
+// sharing verdict: RootCount is the total number of distinct
 // authoritative roots referencing it (always >=1 for a digest the
 // queried object itself references, since that object's own current
 // root always counts), and ReachableElsewhere is true exactly when at
@@ -7109,7 +7149,7 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 	}
 	fireTestHook(hookAfterManifestPublished)
 
-	// Safe-mode conflict precondition (M6B): ExpectAbsent/ExpectedETag
+	// Safe-mode conflict precondition: ExpectAbsent/ExpectedETag
 	// describe the destination identity the client observed via an
 	// ordinary HEAD before it began negotiating/uploading. Checked here,
 	// inside commitObjectRootChecked's locked critical section, so a
@@ -7271,7 +7311,7 @@ func (srv *Server) handleSnapshotDelete(w http.ResponseWriter, r *http.Request) 
 // recorded ManifestUUID/ManifestSHA256 (readVerifiedManifest -- the exact
 // same corruption-detecting read every ordinary HEAD/GET already uses,
 // section 7) and returns it in the exact same syncObjectDescriptor shape
-// handleSyncDescribeObject (M8A, section 15) already returns for a live
+// handleSyncDescribeObject (section 15) already returns for a live
 // object -- so restore's client-side pipeline (section 15i) can reuse
 // every negotiate/fetch/commit primitive that pipeline already uses,
 // unmodified. VersionID is set to the snapshot's captured manifest UUID,
@@ -7344,7 +7384,7 @@ func writeSnapshotLookupError(w http.ResponseWriter, err error) {
 }
 
 // =============================================================================
-// 15a-quater. Environment-variable credential/region fallback (P1-A)
+// 15a-quater. Environment-variable credential/region fallback
 //
 // Precedence, for every -access-key/-secret-key/-region flag below (and
 // -region alone on the two-endpoint commands, replicate/diff -- see the
@@ -7362,12 +7402,12 @@ func writeSnapshotLookupError(w http.ResponseWriter, err error) {
 // get AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY fallback: a single pair of
 // standard AWS variable names cannot unambiguously supply two different
 // credential pairs, and guessing which endpoint gets them risks silently
-// sending one endpoint's credentials to the other (P1-A5). Only their
-// shared, unambiguous -region flag gets AWS_REGION fallback. This is the
-// documented, deliberately smaller alternative P1-A5 endorses over
-// inventing ZEROS3_FROM_*/ZEROS3_TO_* variables.
+// sending one endpoint's credentials to the other. Only their shared,
+// unambiguous -region flag gets AWS_REGION fallback. This is the
+// documented, deliberately smaller alternative to inventing
+// ZEROS3_FROM_*/ZEROS3_TO_* variables.
 //
-// Nothing here ever logs, prints, or echoes a credential value (P1-A7):
+// Nothing here ever logs, prints, or echoes a credential value:
 // envOverride returns a string the caller stores into the same *string
 // a flag.String already populated, and every existing print/log path
 // downstream was already careful never to include it.
@@ -7451,7 +7491,7 @@ type syncClientConfig struct {
 	Out         io.Writer
 
 	// Workers bounds how many of this operation's independent missing-
-	// chunk transfers (M8H-B) may run concurrently. Zero means "use
+	// chunk transfers may run concurrently. Zero means "use
 	// defaultTransferWorkers" -- every caller that predates M8H-B (and
 	// every M8A-M8G test that builds a syncClientConfig/replicateConfig/
 	// repairConfig literal without mentioning Workers) leaves this at its
@@ -7470,7 +7510,7 @@ func (cfg syncClientConfig) client() *http.Client {
 }
 
 // =============================================================================
-// 15a-bis. Bounded parallel chunk transfer (M8H-B)
+// 15a-bis. Bounded parallel chunk transfer
 //
 // M8H-A measured, directly, that every content-moving client code path in
 // this binary (replicate, repair, local sync) shares one bottleneck: a
@@ -7762,7 +7802,7 @@ func signSigV4Request(r *http.Request, creds Credentials, region string, payload
 // the response with its body already fully read (and the original
 // resp.Body closed) -- every caller below only needs status/headers/body,
 // never streaming, so this keeps every call site a two-line affair. ctx
-// governs the request (M8H-B1.9): every caller that isn't itself part of
+// governs the request: every caller that isn't itself part of
 // a bounded worker pool passes context.Background() (unchanged blocking
 // behavior, identical to before ctx existed here); the worker-pool
 // callers (fetchSourceChunk/putSyncChunk/fetchRepairChunk, invoked from
@@ -7987,9 +8027,9 @@ func negotiateSyncMissing(cfg syncClientConfig, discovery syncDiscoveryResponse,
 }
 
 // putSyncChunk uploads one chunk's already-verified bytes to cfg's
-// endpoint via the M6 idempotent chunk-upload primitive (PUT
+// endpoint via the idempotent chunk-upload primitive (PUT
 // /_zeros3/v1/chunks/<sha256-hex>, handleSyncChunkUpload). Shared by
-// uploadMissingSyncChunks (M6, bytes re-read from a local file) and M8A's
+// uploadMissingSyncChunks (bytes re-read from a local file) and
 // replicateObject (section 15d, bytes relayed from a source ZeroS3
 // server) -- there is exactly one client-side chunk-upload code path,
 // used by both.
@@ -8070,7 +8110,7 @@ func uploadMissingSyncChunks(cfg syncClientConfig, plan syncPlan, missing map[st
 	return uploadedBytes, nil
 }
 
-// syncPrecondition carries the safe-mode conflict precondition (M6B) from
+// syncPrecondition carries the safe-mode conflict precondition from
 // headSyncDestination's observation through to commitSyncObject.
 type syncPrecondition struct {
 	expectAbsent bool
@@ -8314,7 +8354,7 @@ func parseS3URI(raw string) (bucket, key string, err error) {
 }
 
 // =============================================================================
-// 15c. `zeros3 sync` directory (recursive) client (M6C)
+// 15c. `zeros3 sync` directory (recursive) client
 //
 // Directory sync is orchestration over the unmodified M6A/M6B single-file
 // primitive (syncFile, above) -- never a second transfer engine, CDC
@@ -8544,7 +8584,7 @@ func printDirSyncSummary(w io.Writer, r dirSyncResult) {
 
 // runSync implements "zeros3 sync LOCAL_PATH s3://bucket/key" (a single
 // file, unchanged M6A/M6B behavior) and "zeros3 sync LOCAL_DIRECTORY
-// s3://bucket/prefix/" (M6C), following the same flag.NewFlagSet
+// s3://bucket/prefix/", following the same flag.NewFlagSet
 // convention every other CLI verb uses. Which mode runs is decided
 // solely by stat-ing LOCAL_PATH -- a directory takes the M6C path, and
 // everything else (including a symlink to a regular file) takes the
@@ -8619,8 +8659,8 @@ func runSync(args []string) {
 }
 
 // =============================================================================
-// 15d. `zeros3 replicate` client (M8A -- remote-to-remote delta
-// replication for one object)
+// 15d. `zeros3 replicate` client (remote-to-remote delta replication for
+// one object)
 //
 // M8A adds exactly one new capability: replicate one existing object
 // from a source ZeroS3 server to a destination ZeroS3 server, sending
@@ -8670,7 +8710,7 @@ func runSync(args []string) {
 // PutObject/CopyObject/sync already use, so it is indistinguishable from
 // any other object to GET/HEAD/ListObjects/versions/verify/GC/restart.
 //
-// Source consistency (M8A7): a manifest is immutable once published
+// Source consistency: a manifest is immutable once published
 // (section 5) -- fetchSourceDescriptor's response describes one specific,
 // unchanging revision (VersionID is that revision's manifestUUID), not a
 // live view that could shift mid-operation. replicateObject fetches this
@@ -8763,30 +8803,30 @@ type replicateConfig struct {
 	Out    io.Writer
 
 	// DestMustBeAbsent, when set, switches the destination-conflict
-	// precondition from M8A/M6B's ordinary "matches whatever I last
-	// observed via HEAD" (which treats an unchanged pre-existing
-	// destination object as a legitimate re-sync target -- exactly right
-	// for a tool whose job is bringing a destination up to date with a
-	// source) to create-only: any pre-existing destination object with
-	// *different* content than what this call is about to publish is
-	// rejected as a conflict, full stop, never silently overwritten
-	// (M8D-F). The one carve-out -- needed so a resumed rerun of the same
-	// operation doesn't conflict with its own prior successful commits
-	// (M8D-K) -- is a pre-existing destination object whose ETag already
-	// matches the source's: that is indistinguishable from this exact
-	// call's own already-landed result (or coincidentally identical
-	// content, equally harmless), so it commits as the same
-	// no-op-equivalent M8A/M8C's own resume already relies on (see
-	// replicateObject's implementation and doc comment above). M8A/M8C's
-	// own `replicate`/`replicate -recursive` leave this false, so every
-	// existing caller is byte-for-byte unaffected; M8D fork (section 15g)
-	// is the one caller that sets it. Still the exact same
+	// precondition from the ordinary "matches whatever I last observed
+	// via HEAD" (which treats an unchanged pre-existing destination
+	// object as a legitimate re-sync target -- exactly right for a tool
+	// whose job is bringing a destination up to date with a source) to
+	// create-only: any pre-existing destination object with *different*
+	// content than what this call is about to publish is rejected as a
+	// conflict, full stop, never silently overwritten. The one carve-out
+	// -- needed so a resumed rerun of the same operation doesn't
+	// conflict with its own prior successful commits -- is a
+	// pre-existing destination object whose ETag already matches the
+	// source's: that is indistinguishable from this exact call's own
+	// already-landed result (or coincidentally identical content,
+	// equally harmless), so it commits as the same no-op-equivalent
+	// ordinary replication resume already relies on (see
+	// replicateObject's implementation and doc comment above). Ordinary
+	// `replicate`/`replicate -recursive` leave this false, so every
+	// existing caller is byte-for-byte unaffected; fork (section 15g) is
+	// the one caller that sets it. Still the exact same
 	// commitSyncObject/syncPrecondition/412-conflict machinery in both
 	// modes -- only which precondition gets sent differs.
 	DestMustBeAbsent bool
 
 	// Workers bounds executeReplicationPlan's concurrent missing-chunk
-	// transfers (M8H-B1). Zero (every M8A-M8G caller, unchanged) means
+	// transfers. Zero (every pre-existing caller, unchanged) means
 	// "use defaultTransferWorkers" -- see resolveTransferWorkers.
 	Workers int
 }
@@ -8806,7 +8846,7 @@ const (
 
 // replicationPlan is planReplication's complete, read-only output: every
 // fact an actual replication (executeReplicationPlan) needs to finish the
-// job, and every fact a dry-run (M8G-A) needs to report it -- both drawn
+// job, and every fact a dry-run needs to report it -- both drawn
 // from exactly one shared discovery/negotiation pass, so the two can never
 // silently diverge in what they consider "missing" or "would transfer".
 //
@@ -8843,10 +8883,11 @@ type replicationPlan struct {
 }
 
 // planReplication runs M8A's complete discovery/negotiation prefix --
-// discover both endpoints' capabilities (M8A1) -> fetch the source's
-// object descriptor (M8A2) -> capture the destination's current identity
-// for the conflict precondition (M8A8, identical to M6B) -> negotiate
-// against the destination (M8A3) -- and stops, deliberately, before any
+// discover both endpoints' capabilities -> fetch the source's
+// object descriptor -> capture the destination's current identity
+// for the conflict precondition (the same safe-mode check `zeros3 sync`
+// uses) -> negotiate
+// against the destination -- and stops, deliberately, before any
 // mutation: no chunk payload is fetched from the source and no request
 // that could write anything is ever sent to the destination (negotiate is
 // a pure CAS-presence read, per handleSyncNegotiate's own doc comment).
@@ -8884,7 +8925,7 @@ func planReplication(cfg replicateConfig) (replicationPlan, error) {
 	pre := syncPrecondition{expectAbsent: true}
 	action := destActionPublish
 	if cfg.DestMustBeAbsent {
-		// Create-only, but still resumable (M8D-F and M8D-K both hold):
+		// Create-only, but still resumable:
 		// a destination key that doesn't exist yet is the ordinary case
 		// (expectAbsent stays true, above). One already existing is a
 		// conflict *unless* it already holds exactly the content this
@@ -8898,7 +8939,7 @@ func planReplication(cfg replicateConfig) (replicationPlan, error) {
 		// other existing, differently-identified destination object
 		// falls through to expectAbsent, which the atomic commit rejects
 		// with a 412 exactly like any other pre-existing-and-different
-		// destination (M8D-F).
+		// destination.
 		if exists && etag == desc.ETag {
 			pre = syncPrecondition{expectAbsent: false, expectedETag: etag}
 			action = destActionEquivalent
@@ -8950,14 +8991,14 @@ func planReplication(cfg replicateConfig) (replicationPlan, error) {
 
 // executeReplicationPlan finishes what planReplication started: fetch+
 // relay only the chunks negotiation reported missing (M8A4/M8A5), then
-// commit (M8A6). It never re-runs discovery/descriptor-fetch/negotiate --
+// commit. It never re-runs discovery/descriptor-fetch/negotiate --
 // those already happened, once, inside planReplication -- but
 // commitSyncObject below still sends p.pre exactly as captured, and the
 // destination still independently checks it against the *current* state
 // at commit time (unchanged M8A/M8F commit-time revalidation, never
 // weakened by dry-run's existence: see replicationPlan's doc comment).
 //
-// Resume (M8A9): there is no durable replication-session state anywhere
+// Resume: there is no durable replication-session state anywhere
 // -- if this process is interrupted after some chunks have reached the
 // destination but before commit, nothing has been published under
 // Dest.Bucket/Dest.Key yet (commit is the one atomic step that makes
@@ -9056,7 +9097,7 @@ func executeReplicationPlan(p replicationPlan) (syncStats, error) {
 // contract -- this function's own behavior is byte-for-byte unchanged
 // from before the M8G-A extraction; only the internal shape (one shared
 // planner instead of one monolithic function) is new, so that
-// `replicate -dry-run` (M8G-A) can call planReplication alone and stop.
+// `replicate -dry-run` can call planReplication alone and stop.
 func replicateObject(cfg replicateConfig) (syncStats, error) {
 	p, err := planReplication(cfg)
 	if err != nil {
@@ -9066,22 +9107,22 @@ func replicateObject(cfg replicateConfig) (syncStats, error) {
 }
 
 // runReplicate implements "zeros3 replicate s3://source-bucket/key
-// s3://dest-bucket/key --from SRC_ENDPOINT --to DST_ENDPOINT" (M8A, one
+// s3://dest-bucket/key --from SRC_ENDPOINT --to DST_ENDPOINT" (one
 // object) and, with -recursive, "zeros3 replicate -recursive
 // s3://source-bucket/[prefix/] s3://dest-bucket/[prefix/] --from SRC --to
-// DST" (M8C, every object under a source prefix or whole bucket) --
+// DST" (every object under a source prefix or whole bucket) --
 // following the same flag.NewFlagSet convention every other CLI verb
 // uses. Source and destination each take independent -from-*/-to-*
-// credential flags (M8A's "clearly separate source credentials/
-// configuration from destination credentials/configuration"), defaulting
-// to the same built-in defaults `sync`/`presign` already use when unset,
-// unchanged by -recursive.
+// credential flags (deliberately clearly separate source
+// credentials/configuration from destination credentials/configuration),
+// defaulting to the same built-in defaults `sync`/`presign` already use
+// when unset, unchanged by -recursive.
 //
 // -recursive is the sole namespace-mode switch (see section 15f's doc
 // comment for why a trailing-slash guess would be ambiguous): omitted,
-// this function's original M8A single-object parsing/behavior is
-// completely unchanged; set, both URIs are parsed as bucket[/prefix[/]]
-// namespaces instead of bucket/key objects.
+// this function's original single-object parsing/behavior is completely
+// unchanged; set, both URIs are parsed as bucket[/prefix[/]] namespaces
+// instead of bucket/key objects.
 func runReplicate(args []string) {
 	fs := flag.NewFlagSet("replicate", flag.ExitOnError)
 	recursive := fs.Bool("recursive", false, "replicate every object under a source prefix or whole bucket into the destination prefix/bucket (M8C), instead of a single object")
@@ -9231,7 +9272,7 @@ func printDryRunSingle(w io.Writer, p replicationPlan) {
 	fmt.Fprintln(w, "Plan reflects source/destination state observed during this dry run.")
 }
 
-// nsDryRunResult is planReplicationNamespace's aggregate report (M8G-A5):
+// nsDryRunResult is planReplicationNamespace's aggregate report:
 // the same object/byte accounting nsReplicateResult reports for an actual
 // namespace replication, plus the destinationAction breakdown a dry-run
 // adds (WouldPublish/AlreadyEquivalent/WouldConflict never overlap --
@@ -9382,7 +9423,7 @@ func printDryRunNamespace(w io.Writer, r nsDryRunResult) {
 }
 
 // =============================================================================
-// 15e. Peer-assisted corruption repair (M8B): `zeros3 repair --from PEER`
+// 15e. Peer-assisted corruption repair: `zeros3 repair --from PEER`
 //
 // M8B restores missing or corrupt *physical* CAS chunk bytes from another
 // explicitly-trusted ZeroS3 peer, at chunk granularity -- exactly the
@@ -9631,7 +9672,7 @@ type repairConfig struct {
 	Out  io.Writer
 
 	// Workers bounds repairFromPeer's concurrent peer-chunk transfers
-	// (M8H-B2). Zero (every M8B caller, unchanged) means "use
+	//. Zero (every M8B caller, unchanged) means "use
 	// defaultTransferWorkers" -- see resolveTransferWorkers.
 	Workers int
 }
@@ -9860,7 +9901,7 @@ func runRepair(args []string) {
 }
 
 // =============================================================================
-// 15f. Namespace (prefix/bucket) replication (M8C): `zeros3 replicate
+// 15f. Namespace (prefix/bucket) replication: `zeros3 replicate
 // -recursive SOURCE DEST -from SRC -to DST`
 //
 // M8C generalizes M8A's single-object primitive across a source
@@ -9902,16 +9943,15 @@ func runRepair(args []string) {
 // selected source key -- is never touched, listed, or deleted; there is
 // no delete mode, implicit or explicit, anywhere in this milestone.
 //
-// Partial failure (M8C-E, M8C-D): namespace replication is not one atomic
-// transaction across objects, exactly like M6C directory sync isn't
-// across files. One object's replicateObject failure (source
+// Partial failure: namespace replication is not one atomic transaction
+// across objects, exactly like directory sync isn't across files. One object's replicateObject failure (source
 // disappeared/changed in an incompatible way, destination conflict,
 // corrupt/unavailable source chunk) is recorded in
 // nsReplicateResult.Failures and the loop continues; objects that already
 // committed stay committed, and the overall command exits nonzero iff any
 // object failed.
 //
-// Resume (M8C-F) needs no durable namespace-replication session state,
+// Resume needs no durable namespace-replication session state,
 // for the same structural reason M8A's own resume needs none (section
 // 15d's doc comment): commit is the one atomic step that makes anything
 // visible, so a rerun's fresh enumeration simply re-encounters every
@@ -9923,7 +9963,7 @@ func runRepair(args []string) {
 // re-transferred. No namespace snapshot, journal record, or manifest
 // version was added anywhere to support this.
 //
-// Source mutation during a run (M8C-I): each object retains M8A's own
+// Source mutation during a run: each object retains M8A's own
 // captured-immutable-revision guarantee (section 15d, M8A7) -- a source
 // key that changes after being listed but before its own replicateObject
 // call still replicates one specific, uncorrupted revision, never a mixed
@@ -9932,11 +9972,11 @@ func runRepair(args []string) {
 // 404), without aborting the run. No point-in-time bucket snapshot is
 // taken or needed.
 //
-// Version scope (M8C-J): only the current, live-pointer object per key is
+// Version scope: only the current, live-pointer object per key is
 // enumerated (ListObjectsV2's ordinary, current-version-only view,
 // section 7b) -- no historical version replication in this milestone.
 //
-// Aggregate statistics (M8C-G) are an honest sum of each successful
+// Aggregate statistics are an honest sum of each successful
 // object's own syncStats -- the exact same fields printSyncStats already
 // reports for a single replicate/sync -- so shared chunks across objects
 // are never double-counted as "avoided" or "transferred" beyond what each
@@ -10025,7 +10065,7 @@ func listSourceObjects(cfg syncClientConfig, prefix string) ([]xmlContent, error
 // always attributed to its source key, the destination key it was headed
 // for (empty if mapping itself failed), and the underlying error --
 // mirroring dirSyncFailure's own shape (section 15c) so the summary can
-// name exactly what failed and why (M8C-E).
+// name exactly what failed and why.
 type nsReplicateFailure struct {
 	Key  string
 	Dest string
@@ -10168,7 +10208,7 @@ func printNsReplicateSummary(w io.Writer, r nsReplicateResult) {
 }
 
 // =============================================================================
-// 15g. Copy-on-write namespace fork (M8D): `zeros3 fork SOURCE DEST -endpoint EP`
+// 15g. Copy-on-write namespace fork: `zeros3 fork SOURCE DEST -endpoint EP`
 //
 // M8D clones an entire bucket or prefix into an independent namespace
 // inside the *same* ZeroS3 store while writing zero new CAS payload
@@ -10180,11 +10220,11 @@ func printNsReplicateSummary(w io.Writer, r nsReplicateResult) {
 //
 //	source namespace                    destination namespace
 //	       |                                    |
-//	       | listSourceObjects (M8C, unchanged) |
+//	       | listSourceObjects (unchanged)      |
 //	       v                                    |
-//	   enumerated keys -- namespaceDestKey (M8C, unchanged) --> mapped keys
+//	   enumerated keys -- namespaceDestKey (unchanged) --> mapped keys
 //	       |                                    |
-//	       +-------- replicateObject (M8A, unchanged) ---------+
+//	       +-------- replicateObject (unchanged) -------------+
 //	                          |
 //	           negotiateSyncMissing asks the SAME store's CAS
 //	           "which of this object's chunks are missing?" --
@@ -10200,8 +10240,8 @@ func printNsReplicateSummary(w io.Writer, r nsReplicateResult) {
 // commitSyncObject's ExpectAbsent/ExpectedETag precondition (the same
 // M6B/M8A primitive verified safe under concurrent destination writes,
 // section 15f/15d), captured-immutable-source-revision semantics per
-// object (M8D-G), honest partial-failure/resume behavior needing no
-// durable session state (M8D-K), and namespace enumeration/mapping
+// object, honest partial-failure/resume behavior needing no
+// durable session state, and namespace enumeration/mapping
 // already proven against 1000+ objects, weird keys, and Unicode (M8D-B/
 // M8D-C). Choosing it means M8D's entire implementation is the CLI verb
 // below plus two small additions: forkNamespacesOverlap (a safety check)
@@ -10262,11 +10302,11 @@ func printNsReplicateSummary(w io.Writer, r nsReplicateResult) {
 // destination buckets never trigger this check, even sharing the same
 // store: distinct buckets are always independent namespaces.
 //
-// Same-store only (M8D is explicitly not cross-server): fork takes one
-// -endpoint flag, never -from/-to, so source and destination structurally
-// cannot be different servers.
+// Same-store only, explicitly not cross-server: fork takes one -endpoint
+// flag, never -from/-to, so source and destination structurally cannot
+// be different servers.
 //
-// Version scope (M8D-H): only the current, live-pointer object per key is
+// Version scope: only the current, live-pointer object per key is
 // forked (ListObjectsV2's ordinary current-version-only view, reused
 // unmodified) -- no historical version cloning.
 // =============================================================================
@@ -10285,7 +10325,7 @@ func forkNamespacesOverlap(srcPrefix, dstPrefix string) bool {
 	return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
 }
 
-// printForkSummary reports fork's own operation-local statistics (M8D-L),
+// printForkSummary reports fork's own operation-local statistics,
 // reusing replicateNamespace's honest, per-object-summed nsReplicateResult
 // but with fork's own wording -- "0 B new CAS payload" is the precise,
 // qualified claim this milestone requires, never a bare "0 bytes copied".
@@ -10315,7 +10355,7 @@ func printForkSummary(w io.Writer, r nsReplicateResult, elapsed time.Duration) {
 }
 
 // runFork implements "zeros3 fork s3://source-bucket/[prefix/]
-// s3://dest-bucket/[prefix/] -endpoint http://host:port" (M8D): a
+// s3://dest-bucket/[prefix/] -endpoint http://host:port": a
 // copy-on-write clone of a bucket or prefix into an independent namespace
 // inside the same store. See this section's own doc comment above for
 // the full architecture/safety rationale.
@@ -10376,7 +10416,7 @@ func runFork(args []string) {
 }
 
 // =============================================================================
-// 15h. Durable namespace snapshots (M8E-A): `zeros3 snapshot create/list/
+// 15h. Durable namespace snapshots: `zeros3 snapshot create/list/
 // show/delete`
 //
 // A snapshot freezes the *current, visible* state of one bucket/prefix as
@@ -11181,7 +11221,7 @@ func runSnapshotDelete(args []string) {
 }
 
 // =============================================================================
-// 15i. Snapshot restore (M8E-B): `zeros3 snapshot restore SNAPSHOT_ID
+// 15i. Snapshot restore: `zeros3 snapshot restore SNAPSHOT_ID
 // s3://dest-bucket[/prefix][/]`
 //
 // Restore materializes a captured snapshot as ordinary, independent live
@@ -11197,7 +11237,7 @@ func runSnapshotDelete(args []string) {
 //	  fetchSourceDescriptor -> GET /_zeros3/v1/object?bucket=&key=
 //	  (handleSyncDescribeObject) -- describes whatever is LIVE right now
 //
-//	restoreObject (M8E-B):
+//	restoreObject:
 //	  fetchSnapshotObjectDescriptor -> GET /_zeros3/v1/snapshot/object?
 //	  id=&key= (handleSnapshotDescribeObject, section 15h) -- describes
 //	  the manifest the snapshot captured, re-read fresh by (UUID, SHA256)
@@ -11226,7 +11266,7 @@ func runSnapshotDelete(args []string) {
 // so restore writes zero new CAS payload bytes by the same structural
 // argument, not a special case.
 //
-// Mapping (B2): namespaceDestKey (M8C, section 15f) is reused completely
+// Mapping (B2): namespaceDestKey (section 15f) is reused completely
 // unmodified -- a snapshot's captured Key values are already shaped
 // exactly like listSourceObjects' own Contents.Key (captureSnapshotEntries,
 // section 15h), so restoreNamespace's per-entry destination-key mapping is
@@ -11529,7 +11569,7 @@ func runSnapshotRestore(args []string) {
 }
 
 // =============================================================================
-// 15j. Structural object diff (M8G-B): `zeros3 diff`
+// 15j. Structural object diff: `zeros3 diff`
 //
 // `diff` answers a different question than `replicate -dry-run`: not "how
 // much payload would moving this object cost," but "how structurally
@@ -11554,7 +11594,7 @@ func runSnapshotRestore(args []string) {
 // =============================================================================
 
 // objectDiffResult is buildObjectDiff's complete, descriptor-only
-// comparison output (M8G-B3). Nothing here required fetching either
+// comparison output. Nothing here required fetching either
 // object's body or any chunk payload -- A and B are exactly the
 // descriptors fetchSourceDescriptor already returned.
 type objectDiffResult struct {
@@ -11754,7 +11794,7 @@ func yesNo(b bool) string {
 }
 
 // runDiff implements "zeros3 diff s3://bucket/keyA s3://bucket/keyB
-// -from EP_A -to EP_B" (M8G-B). -to defaults to -from's value, so
+// -from EP_A -to EP_B". -to defaults to -from's value, so
 // same-server operation (B1's "same-server operation must also work")
 // needs no second endpoint flag at all. Source and destination
 // credentials are independent, exactly like `replicate`'s -from-*/-to-*
@@ -11813,7 +11853,7 @@ func runDiff(args []string) {
 }
 
 // =============================================================================
-// 15k. Object inspect (M8G-C): `zeros3 inspect`
+// 15k. Object inspect: `zeros3 inspect`
 //
 // `inspect` makes one object's CDC/CAS representation visible: how many
 // chunk references it has, how many of those are physically distinct,
@@ -11869,8 +11909,8 @@ type inspectResult struct {
 	Chunks []inspectChunkRow
 }
 
-// inspectObject performs M8G-C's complete analysis: one descriptor fetch
-// (M8A2, unmodified) for every basic field, plus one reachability query
+// inspectObject performs a complete analysis: one descriptor fetch
+// (unmodified) for every basic field, plus one reachability query
 // (this section's new endpoint) for the store-wide sharing fields --
 // never a chunk-body fetch, and never more than those two requests
 // regardless of how many chunks the object has.
@@ -12015,8 +12055,7 @@ func printInspectChunks(w io.Writer, rows []inspectChunkRow, limit int, all bool
 	}
 }
 
-// runInspect implements "zeros3 inspect s3://bucket/key -endpoint EP"
-// (M8G-C).
+// runInspect implements "zeros3 inspect s3://bucket/key -endpoint EP".
 func runInspect(args []string) {
 	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "http://127.0.0.1:9000", "ZeroS3 endpoint base URL (scheme://host[:port])")
@@ -12113,10 +12152,10 @@ func printVerifyHuman(w io.Writer, r VerifyResult) {
 	}
 }
 
-// P1-B2/B5 conservative http.Server hardening/shutdown values. See the
-// doc comments on the corresponding http.Server field assignments (and
-// the shutdown select) in runServe below for what each protects against
-// and why no global ReadTimeout/WriteTimeout exists (P1-B3).
+// Conservative http.Server hardening/shutdown values. See the doc
+// comments on the corresponding http.Server field assignments (and the
+// shutdown select) in runServe below for what each protects against and
+// why no global ReadTimeout/WriteTimeout exists.
 const (
 	serveReadHeaderTimeout = 10 * time.Second
 	serveIdleTimeout       = 120 * time.Second
@@ -12125,9 +12164,9 @@ const (
 )
 
 // newHardenedHTTPServer builds the http.Server `zeros3 serve` runs,
-// factored out of runServe purely so its exact field values (P1-B2) are
+// factored out of runServe purely so its exact field values are
 // independently testable without starting a real listener. No
-// ReadTimeout/WriteTimeout is set (P1-B3, deliberate): either would
+// ReadTimeout/WriteTimeout is set (deliberate): either would
 // impose one deadline across an entire request/response, including its
 // body -- which would regress large uploads/downloads, multipart,
 // replication, sync, and any controlled-latency transfer ZeroS3 already
