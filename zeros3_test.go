@@ -27930,9 +27930,20 @@ func TestStreamingPut_InterruptedBodies(t *testing.T) {
 
 	t.Run("client-disconnect", func(t *testing.T) {
 		f := newPutFixture(t)
+		handled := make(chan struct{})
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		abortSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			f.srv.ServeHTTP(w, r)
+			close(handled)
+		})}
+		go abortSrv.Serve(ln)
+		defer abortSrv.Close()
 		req, _ := http.NewRequest(http.MethodPut, f.ts.URL+"/b/cut", nil)
 		signTestRequest(t, req, f.signer, req.URL.Path, req.URL.RawQuery, nil, time.Now(), &signOpts{payloadHash: "UNSIGNED-PAYLOAD"})
-		conn, err := net.Dial("tcp", f.ts.Listener.Addr().String())
+		conn, err := net.Dial("tcp", ln.Addr().String())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -27945,15 +27956,17 @@ func TestStreamingPut_InterruptedBodies(t *testing.T) {
 			t.Fatal(err)
 		}
 		conn.Close()
-		f.ts.Close() // blocks until the aborted request's handler has returned
+		select {
+		case <-handled:
+		case <-time.After(10 * time.Second):
+			t.Fatal("handler did not return after the client disconnected")
+		}
 		if _, err := f.srv.store.lookupObject("b", "cut"); !errors.Is(err, errNoSuchKey) {
 			t.Fatalf("a truncated upload left a visible object: %v", err)
 		}
 		if countChunkFiles(t, f.srv.store.root) == 0 {
 			t.Fatal("expected the truncated upload's already-ingested chunks to be staged")
 		}
-		f.ts = httptest.NewServer(f.srv)
-		t.Cleanup(f.ts.Close)
 		if status, _ := f.put("cut", body, "", nil, nil, false); status != 200 {
 			t.Fatalf("retry after an aborted upload failed: %d", status)
 		}

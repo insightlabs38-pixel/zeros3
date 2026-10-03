@@ -444,7 +444,7 @@ func main() {
 	// =========================================================================
 	bravoModified := append(append([]byte{}, bravoOriginal...), []byte("-phase5-edit")...)
 	check("rewrite nested/bravo.bin with an unrelated small edit", writeFixtureFile(filepath.Join(treeDir, "nested/bravo.bin"), bravoModified))
-	raceContent := randomBytes(301, 15_000_000)
+	raceContent := randomBytes(301, 64_000_000)
 	check("write large racing fixture zzz-race.bin (sorts last, gives the race a window)", writeFixtureFile(filepath.Join(treeDir, "zzz-race.bin"), raceContent))
 	interloper := []byte("written directly by the real AWS SDK, racing the directory sync's own commit of this same key")
 

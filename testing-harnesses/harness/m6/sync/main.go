@@ -348,7 +348,7 @@ func main() {
 	//    the final object is exactly one writer's content, never a corrupted
 	//    mix, and if sync lost the race it reports a non-zero exit.
 	// =========================================================================
-	raceLocal := randomBytes(5, 20_000_000)
+	raceLocal := randomBytes(5, 64_000_000)
 	racePath := scratchDir + "/race.bin"
 	check("write race fixture file", os.WriteFile(racePath, raceLocal, 0o644))
 	interloper := []byte("the AWS SDK's concurrent racing PutObject content")
