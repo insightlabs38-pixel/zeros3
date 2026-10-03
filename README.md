@@ -26,6 +26,7 @@ CAS → immutable manifests → visibility journal.**
 - Atomic conditional writes (`If-Match` / `If-None-Match`)
 - Streaming I/O: uploads and downloads of any size run in bounded memory; signed `aws-chunked` uploads accepted
 - Bounded parallel chunk transfer
+- Immutable packed storage: `zeros3 compact` folds loose chunk files into a few verified packs
 - Zero third-party dependencies, reproducible build
 
 ZeroS3 is not trying to compete with MinIO or Ceph on distributed
@@ -121,7 +122,9 @@ visibility journal
   boundaries, so an edit anywhere in a file only perturbs the chunks
   near that edit.
 - **SHA-256 CAS** — each chunk is stored once, named by its own content
-  hash; a second write of identical bytes is a no-op.
+  hash; a second write of identical bytes is a no-op. A chunk is a loose
+  file when written and can later be moved into an immutable pack
+  (`zeros3 compact`); its identity never changes (see "Packed storage").
 - **Immutable manifest** — one JSON file per object version: its ordered
   chunk list, total length, object SHA-256, ETag, Content-Type, and
   metadata. Manifests are never mutated, only superseded.
@@ -163,6 +166,22 @@ without moving a payload byte; an edited revision of a large object
 reuses the vast majority of its bytes automatically; internal object
 version history and zero-copy restore are built on the same immutable
 manifests (`zeros3 versions`/`restore`/`gc`).
+
+**Packed storage.** New chunks always land as loose files under
+`chunks/`. `zeros3 compact -store DIR` (offline: it takes the store
+exclusively, like `gc -apply`; `-pack-size-mib`, `-dry-run`, `-json`)
+copies the chunks live roots reference into immutable packs of about
+64 MiB, re-hashing every chunk and verifying each pack before publishing
+it, and only then removes the loose files, so an interruption can leave
+redundant copies but never lose the only one. Packs are plain files under
+`packs/` carrying their own index, rebuilt at open — no database. Objects,
+manifests, ETags, history, snapshots, forks and replication are logically
+unchanged, and a store can hold loose chunks, packed chunks, or both; every
+read re-verifies the chunk's SHA-256 and prefers the packed copy, falling
+back to a loose one. `stats` splits loose from packed counts and bytes, and
+`verify` checks pack structure. Run `compact` again to pack newer chunks.
+`gc` never deletes or edits a pack: unreachable packed records are reported
+but not reclaimed yet.
 
 **Delta movement.** `zeros3 sync` ingests a local file or directory
 using far less transfer than a full upload when the store already holds
@@ -232,6 +251,14 @@ RSS at 581 MiB/s, against 2043 MiB at 99 MiB/s for the previous
 whole-object build (288 MiB: 15 MiB at 633 MiB/s vs. 577 MiB at 371
 MiB/s). Single runs, 4 vCPU, loopback.
 
+**Packed storage.** 6 GiB of incompressible data (25 objects, 95,736 chunks)
+compacted into 96 immutable packs: 95,764 store files became 124, physical
+bytes grew 0.14%, `compact` ran at 61 MiB/s with 50 MiB peak RSS. With a
+cold page cache, full GET of a 256 MiB object went from 212 to 326 MiB/s,
+a 1 MiB range GET from 9.4 to 7.4 ms on average, and server open from 19
+to 93 ms (server peak RSS 18 to 28 MiB). A synthetic 1M-record index opens
+in 0.6 s using ~128 MiB of heap. Single runs, 4 vCPU.
+
 **Bounded parallel delta transfer.** Loopback benchmark, 4 vCPU, a 10ms
 simulated per-request delay standing in for real-network RTT, 256 MiB of
 missing payload:
@@ -246,7 +273,7 @@ serialized and safe regardless of worker count.
 
 ## Verification
 
-- **Internal test suite:** 760 tests green; `go vet ./...` and
+- **Internal test suite:** 778 tests green; `go vet ./...` and
   `gofmt -l .` clean; `go test -race ./...` clean.
 - **AWS SDK for Go v2 interoperability:** validated black-box against a
   real `zeros3` process using an ordinary, unmodified SDK client —
@@ -264,6 +291,11 @@ serialized and safe regardless of worker count.
   unmodified against both ZeroS3 and `s3rver` 3.7.1 (changing only
   endpoint/credential/addressing settings) — 14/14 passed on both
   targets.
+- **Packed storage:** loose, packed, and mixed stores read back byte-exact
+  (full, prefix, cross-chunk, and suffix ranges, before and after restart);
+  crash injection at every `compact` publication boundary loses no live
+  chunk; malformed or damaged packs are rejected without panics, large
+  allocations, or corrupt bytes; `gc` leaves packs untouched.
 - **Crash and restart testing:** real process restart mid-multipart-
   upload, real SIGINT/SIGTERM graceful-shutdown scenarios, and
   deterministic in-process crash injection against the journal/CAS
@@ -314,6 +346,11 @@ Honest, not exhaustive — see [`S3_COMPAT.md`](./S3_COMPAT.md) for the
 exact API contract:
 
 - Single writer process per store; no distributed/HA operation.
+- Packed storage is v1: no compression, `gc` cannot yet reclaim unreachable
+  packed records, and `compact` is offline. The first `compact` marks the
+  store format version 2: earlier builds refuse to open it rather than
+  misread it, while a never-compacted store stays version 1 and opens
+  with any build.
 - Internal object version history (`zeros3 versions`/`restore`) is a
   ZeroS3-only mechanism, not the AWS S3 Versioning API.
 - No IAM/STS/KMS/ACL/policy engine; a single static credential pair.
