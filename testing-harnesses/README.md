@@ -49,6 +49,7 @@ harness/
   z2_streaming_put/        >256 MiB streamed PutObject and GET: bounded server RSS, byte-exact readback
   z2_aws_chunked/          minio-go aws-chunked SigV4 uploads via a recording/tampering proxy
   z2_packed_cas/           `zeros3 compact`: loose -> packed -> mixed byte-exact readback, file counts, throughput, open time, RSS
+  z2_pack_compression/     adaptive packed-record compression: raw vs compressed per data family, old raw packs -> mixed packs -> repack, byte-exact GET/range, RSS
   z2_repack/               pack-aware `gc` and `zeros3 repack`: utilization profiles, reclaimed bytes, write amplification, throughput, RSS, GET before/after
   m8g/introspection/       diff / inspect / stats
   m8h/parallel_transfer/   bounded parallel transfer (plus bench/)
@@ -99,7 +100,7 @@ RCLONE_BIN=$(which rclone) go run ./runner -group clients
 | Group | Contents |
 |---|---|
 | `static` | source-map / test-map checker for `zeros3.go` and `zeros3_test.go` |
-| `s3` | SDK interoperability: CRUD, copy, range, presign, multipart, pagination, conditionals, env/shutdown, large streamed PUT/GET, aws-chunked uploads, packed CAS compaction |
+| `s3` | SDK interoperability: CRUD, copy, range, presign, multipart, pagination, conditionals, env/shutdown, large streamed PUT/GET, aws-chunked uploads, packed CAS compaction and compression |
 | `sync` | sync, replication, repair, fork, snapshot, introspection |
 | `clients` | `rclone` (needs `RCLONE_BIN`) and Package Killer (needs `S3RVER_BIN`); skipped when unset |
 | `bench` | throughput benchmarks; not part of `all` |

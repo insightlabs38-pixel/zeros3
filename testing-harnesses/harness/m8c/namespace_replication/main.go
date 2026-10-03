@@ -641,7 +641,19 @@ func main() {
 		if err := interruptCmd.Start(); err != nil {
 			log.Fatalf("Phase7: starting interruptible replicate -recursive: %v", err)
 		}
-		time.Sleep(300 * time.Millisecond)
+		// Interrupt on observed progress, not a timer: once the first object
+		// is committed at the destination the client is provably mid-run, and
+		// the next object's 9 MB transfer is far from finishing, so no
+		// orphaned request can still be in flight toward the rerun.
+		for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(2 * time.Millisecond) {
+			keys, err := listAllKeys(ctx, ts.dstClient, "p7-dst")
+			if err == nil && len(keys) > 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				log.Fatalf("Phase7: no object reached the destination before the deadline (last list error: %v)", err)
+			}
+		}
 		killErr := interruptCmd.Process.Kill()
 		interruptCmd.Wait()
 		check("Phase7: kill zeros3 replicate -recursive mid-run", killErr)

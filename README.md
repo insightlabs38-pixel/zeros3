@@ -26,7 +26,7 @@ CAS → immutable manifests → visibility journal.**
 - Atomic conditional writes (`If-Match` / `If-None-Match`)
 - Streaming I/O: uploads and downloads of any size run in bounded memory; signed `aws-chunked` uploads accepted
 - Bounded parallel chunk transfer
-- Immutable packed storage: `zeros3 compact` folds loose chunk files into a few verified packs; `gc` and `zeros3 repack` reclaim dead packed records by replacing packs
+- Immutable packed storage: `zeros3 compact` folds loose chunk files into a few verified packs, DEFLATE-compressing each record that shrinks; `gc` and `zeros3 repack` reclaim dead packed records by replacing packs
 - Zero third-party dependencies, reproducible build
 
 ZeroS3 is not trying to compete with MinIO or Ceph on distributed
@@ -124,7 +124,8 @@ visibility journal
 - **SHA-256 CAS** — each chunk is stored once, named by its own content
   hash; a second write of identical bytes is a no-op. A chunk is a loose
   file when written and can later be moved into an immutable pack
-  (`zeros3 compact`); its identity never changes (see "Packed storage").
+  (`zeros3 compact`), compressed or not; its identity, the SHA-256 of the
+  uncompressed bytes, never changes (see "Packed storage").
 - **Immutable manifest** — one JSON file per object version: its ordered
   chunk list, total length, object SHA-256, ETag, Content-Type, and
   metadata. Manifests are never mutated, only superseded.
@@ -169,17 +170,39 @@ manifests (`zeros3 versions`/`restore`/`gc`).
 
 **Packed storage.** New chunks always land as loose files under
 `chunks/`. `zeros3 compact -store DIR` (offline: it takes the store
-exclusively, like `gc -apply`; `-pack-size-mib`, `-dry-run`, `-json`)
-copies the chunks live roots reference into immutable packs of about
-64 MiB, re-hashing every chunk and verifying each pack before publishing
-it, and only then removes the loose files, so an interruption can leave
-redundant copies but never lose the only one. Packs are plain files under
+exclusively, like `gc -apply`; `-pack-size-mib`, `-compression`, `-dry-run`,
+`-json`) copies the chunks live roots reference into immutable packs of about
+64 MiB of chunk data, re-hashing every chunk and verifying each pack before
+publishing it, and only then removes the loose files, so an interruption can
+leave redundant copies but never lose the only one. Packs are plain files under
 `packs/` carrying their own index, rebuilt at open — no database. Objects,
 manifests, ETags, history, snapshots, forks and replication are logically
 unchanged, and a store can hold loose chunks, packed chunks, or both; every
 read re-verifies the chunk's SHA-256 and prefers the packed copy, falling
 back to a loose one. `stats` splits loose from packed counts and bytes, and
 `verify` checks pack structure. Run `compact` again to pack newer chunks.
+
+**Packed compression.** Compression is a property of the packed record only,
+applied by `compact` and `repack` (uploads always write raw loose chunks).
+Each chunk is DEFLATE-compressed (standard library, default level) and stored
+compressed only if that saves at least 1/16 of its size; otherwise the record
+stays raw, so packs mix both and incompressible data (encrypted, already
+compressed, random) is never expanded. `-compression off` keeps records raw.
+Chunk identity stays the SHA-256 of the uncompressed bytes, so CDC
+boundaries, manifests, object digests, ETags, history, sync and replication
+are unchanged. A read decodes at most the record's declared length (never
+more than the 256 KiB chunk bound), requires the stream to end exactly there,
+and checks the SHA-256 of the result, so a malformed or tampered record
+fails the read and the next valid copy is tried. `stats` reports
+`packed_raw_records`, `packed_compressed_records`, `packed_logical_bytes`
+(uncompressed), `packed_stored_bytes`, `pack_file_bytes` (physical),
+`pack_compression_saved_bytes` and `pack_compression_ratio`;
+`packed_live_bytes`, `packed_dead_bytes`, utilization and every reclaimable
+figure count stored (physical) bytes, with `packed_live_logical_bytes` for the
+uncompressed size. The first pack containing a compressed record raises
+`FORMAT.json` to store format version 3, so builds that predate compression
+refuse the store; raw-only packed stores stay at version 2 and loose-only
+stores at 1, and this build opens all three.
 
 **Reclaiming packed space.** Packs are never edited. `stats` and `gc` report,
 from the same reachability scan, how many packed records no live root
@@ -190,8 +213,10 @@ record. `zeros3 repack -store DIR` rewrites partly dead packs: it prints
 the packs it would select, the bytes it would read, write and reclaim, and
 changes nothing until `-apply` is given (`-max-live-percent`, default 50,
 selects packs below that live share, so each byte rewritten reclaims at
-least a byte; `-pack-size-mib`; `-json`). Live records are copied in digest
-order into new verified packs, the new packs are published and fsynced, each
+least a byte; `-pack-size-mib`; `-compression`; `-json`). Live records are
+copied in digest order, re-encoded under the current compression policy
+(old raw packs become compressed; `-compression off` rewrites them raw), into
+new verified packs, the new packs are published and fsynced, each
 copied chunk must read back from them, and only then are the old packs
 removed — a crash leaves extra packs or staging files, never a missing
 chunk, and rerunning converges. Both commands are offline (exclusive store
@@ -273,6 +298,23 @@ a 1 MiB range GET from 9.4 to 7.4 ms on average, and server open from 19
 to 93 ms (server peak RSS 18 to 28 MiB). A synthetic 1M-record index opens
 in 0.6 s using ~128 MiB of heap. Single runs, 4 vCPU.
 
+**Packed compression.** 64 MiB per data family compacted raw and adaptive
+(`-compression off` / `auto`), single runs, 4 vCPU: English text saved 70.4%
+(3.4x), JSON 86.5% (7.4x), HTML/CSS/JS-like assets 88.2% (8.5x), half-text
+half-random 34.7%; random, already-deflated and duplicate-heavy data stayed
+raw with pack bytes identical to raw mode. `compact` ran at 27 (text), 43
+(JSON), 48 (web) and 44 (random) MiB/s against 53-62 raw, peak RSS 17-28 MiB.
+With a cold page cache full GET went from 169 to 70 MiB/s (text), 167 to 119
+(JSON), 188 to 140 (web) and was unchanged for incompressible data (168 vs
+165); a 256 KiB range GET took 4.3 to 6.3 ms (text), 3.4 to 4.4 ms (JSON) and
+the same for web; server open stayed 14-32 ms because opening reads only pack
+footers. In a 640 MiB lifecycle store (old raw packs, then adaptive compact,
+then repack of dead records) repack read 512 MiB logical, wrote 274 MiB
+(rewriting the old raw text as compressed) and reclaimed 254 MiB at 35 MiB/s
+with 30 MiB peak RSS; the final store held 3,882 raw and 4,052 compressed
+records at 1.91x. Level choice (BestSpeed vs default): the default saved
+3-15% more on text-like data for under 15% more compact time.
+
 **Reclaiming packed space.** 1 GiB of packed data (32 packs) after an aborted
 upload leaves dead records beside live ones. Default `repack` policy
 (rewrite packs below 50% live): at ~90% live nothing is rewritten; at ~50%
@@ -317,6 +359,11 @@ serialized and safe regardless of worker count.
   unmodified against both ZeroS3 and `s3rver` 3.7.1 (changing only
   endpoint/credential/addressing settings) — 14/14 passed on both
   targets.
+- **Packed compression:** raw, compressed, and mixed-codec packs read back
+  byte-exact (full and ranged) through a real binary; malformed, truncated,
+  oversized or tampered compressed records fail without panics, corrupt
+  bytes or unbounded allocation; `compact` and `repack` crash points leave
+  compressed stores intact.
 - **Packed storage:** loose, packed, and mixed stores read back byte-exact
   (full, prefix, cross-chunk, and suffix ranges, before and after restart);
   crash injection at every `compact` publication boundary loses no live
@@ -373,13 +420,14 @@ Honest, not exhaustive — see [`S3_COMPAT.md`](./S3_COMPAT.md) for the
 exact API contract:
 
 - Single writer process per store; no distributed/HA operation.
-- Packed storage is v1: no compression, and `compact`, `gc -apply` and
-  `repack` are offline. Retained history keeps overwritten and deleted
-  versions live, so packed records only die after upload aborts or when
-  history pruning exists. The first `compact` marks the
-  store format version 2: earlier builds refuse to open it rather than
-  misread it, while a never-compacted store stays version 1 and opens
-  with any build.
+- Packed storage is v1: `compact`, `gc -apply` and `repack` are offline.
+  Retained history keeps overwritten and deleted versions live, so packed
+  records only die after upload aborts or when history pruning exists. The
+  first `compact` marks the store format version 2, and the first compressed
+  record version 3: earlier builds refuse to open such a store rather than
+  misread it, while a never-compacted store stays version 1 and opens with
+  any build. Pack size targets chunk data before compression, so compressed
+  packs come out smaller; compression is DEFLATE only, per chunk.
 - Internal object version history (`zeros3 versions`/`restore`) is a
   ZeroS3-only mechanism, not the AWS S3 Versioning API.
 - No IAM/STS/KMS/ACL/policy engine; a single static credential pair.
