@@ -23,7 +23,7 @@ parity.
 | `CreateBucket` | `PUT /bucket` | idempotent (see "Compatibility deviations" below) |
 | `HeadBucket` | `HEAD /bucket` | 200 empty body if visible, 404 empty body if missing |
 | `DeleteBucket` | `DELETE /bucket` | empty buckets only; `NoSuchBucket`/`BucketNotEmpty` |
-| `PutObject` | `PUT /bucket/key` | arbitrary binary body, 0-byte objects, `Content-Type`, `x-amz-meta-*`, overwrite-same-key; `If-None-Match: *`/`If-Match: "<etag>"` conditional writes |
+| `PutObject` | `PUT /bucket/key` | arbitrary binary body, 0-byte objects, `Content-Type`, `x-amz-meta-*`, overwrite-same-key; `If-None-Match: *`/`If-Match: "<etag>"` conditional writes. The body streams through CDC into the CAS with bounded memory (no whole-body buffering); up to S3's 5 GiB single-request ceiling, `EntityTooLarge` above it |
 | `GetObject` | `GET /bucket/key` | exact byte reconstruction, ETag, Content-Type, metadata; `If-Match`/`If-None-Match` read preconditions |
 | `HeadObject` | `HEAD /bucket/key` | same headers as GetObject, no body; `If-Match`/`If-None-Match` read preconditions |
 | `DeleteObject` | `DELETE /bucket/key` | idempotent non-versioned delete, 204 |
@@ -31,13 +31,13 @@ parity.
 | `CopyObject` | `PUT /bucket/key` + `x-amz-copy-source` | `COPY`/`REPLACE` metadata directives, same/cross-bucket, zero new CAS payload bytes; works identically for a completed multipart object; `x-amz-copy-source-if-match`/`-if-none-match` source preconditions |
 | single-range `GetObject` | `GET` + `Range: bytes=...` | `start-end`, `start-`, `-suffix`; 416 with `Content-Range: bytes */<size>` for an unsatisfiable range; works across a completed multipart object's part boundaries |
 | `CreateMultipartUpload` | `POST /bucket/key?uploads` | persistent upload session, journal-backed |
-| `UploadPart` | `PUT /bucket/key?partNumber=N&uploadId=ID` | CDC-chunked into the ordinary CAS; replacing a part number overwrites it |
+| `UploadPart` | `PUT /bucket/key?partNumber=N&uploadId=ID` | streamed through the same ingest path into the ordinary CAS; replacing a part number overwrites it |
 | `ListParts` | `GET /bucket/key?uploadId=ID` | paginated: `part-number-marker`/`max-parts` (default/clamped to 1000), `IsTruncated`/`NextPartNumberMarker`, stable ascending part-number order, replaced parts never duplicate |
 | `CompleteMultipartUpload` | `POST /bucket/key?uploadId=ID` + XML body | validates strict ascending part order, ETags, ≥5MiB non-final parts; re-chunks the true logical concatenation via a fresh CDC pass (never treats a part boundary as a chunk boundary); publishes an ordinary object |
 | `AbortMultipartUpload` | `DELETE /bucket/key?uploadId=ID` | not idempotent — a repeat abort 404s, matching real S3 |
 | `ListMultipartUploads` | `GET /bucket?uploads` | paginated: `key-marker`/`upload-id-marker`/`max-uploads` (default/clamped to 1000), `IsTruncated`/`NextKeyMarker`/`NextUploadIdMarker`, ordered by key then upload ID (upload IDs are UUIDv7, so this reproduces real S3's own "same key, ascending initiation time" order); `upload-id-marker` is ignored unless `key-marker` is also given, matching real S3; `prefix`, `delimiter`/`CommonPrefixes` (first delimiter occurrence after `prefix`, arbitrary-string delimiter, correct dedup/pagination across group boundaries) |
-| ordinary request checksum | `x-amz-checksum-crc32` header | validated over the logical request payload before any chunking begins |
-| `Content-MD5` | `Content-MD5` header | validated over the logical request payload; malformed digest input (bad base64, wrong decoded length) reported as `InvalidDigest`, a well-formed digest that doesn't match reported as `BadDigest` |
+| ordinary request checksum | `x-amz-checksum-crc32` header | verified against the streamed payload before the manifest is published; a mismatch is `BadDigest` and the object never becomes visible |
+| `Content-MD5` | `Content-MD5` header | verified against the streamed payload at the same point; malformed digest input (bad base64, wrong decoded length) reported as `InvalidDigest`, a well-formed digest that doesn't match reported as `BadDigest` |
 | SigV4 auth (header) | `Authorization` header, `AWS4-HMAC-SHA256` | raw request-target signing (no `ServeMux` path cleaning before verification); `X-Amz-Content-Sha256` supports both the fixed SHA-256 digest mode (including the empty-body case) and the fixed `UNSIGNED-PAYLOAD` sentinel — see "SigV4 payload modes" below |
 | SigV4 auth (query / presigned URLs) | `X-Amz-Algorithm`/`X-Amz-Credential`/`X-Amz-Date`/`X-Amz-Expires`/`X-Amz-SignedHeaders`/`X-Amz-Signature` query parameters | GET and PUT; shares the same canonicalization/signing core as header auth (`sigv4VerifyCore`); fixed `UNSIGNED-PAYLOAD` payload hash, `host` is the only signed header a generated URL uses; expiry bounded to 1..604800s |
 | `zeros3 presign get\|put` CLI | stdlib `flag`-based subcommand | generates a query-auth URL using the exact same signing primitives the server verifies with; never echoes the secret key |
@@ -419,7 +419,7 @@ value this header can carry:
 
 | Mode | Value | Behavior |
 |---|---|---|
-| Fixed SHA-256 | lowercase or uppercase 64-hex digest | signed; the exact digest must match the actual body received (`XAmzContentSHA256Mismatch` on tamper). Covers both an ordinary body and a zero-length body (the SHA-256 of the empty string) — the empty-body case is this same mode, not a separate one. |
+| Fixed SHA-256 | lowercase or uppercase 64-hex digest | signed; the exact digest must match the actual body received (`XAmzContentSHA256Mismatch` on tamper). The signature is verified from headers before the body is read; the body digest is checked once the stream has been ingested and before the object is published. Covers both an ordinary body and a zero-length body (the SHA-256 of the empty string) — the empty-body case is this same mode, not a separate one. |
 | Fixed unsigned | the literal string `UNSIGNED-PAYLOAD` | signed (the literal string itself is part of the canonical request), but SigV4 places no constraint on the body — `Content-MD5`/CRC32 remain independently enforced if the client sends them. |
 | Streaming HMAC (conditional) | `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` | recognized, not implemented — rejected `NotImplemented`. Eligible for a future pass if a real client is shown to require it; not required by the validated AWS SDK for Go v2 client or `rclone`. |
 | Excluded | `STREAMING-UNSIGNED-PAYLOAD-TRAILER`, `STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD[-TRAILER]` | recognized, permanently unsupported — rejected `NotImplemented`. |
@@ -449,8 +449,8 @@ same underlying bytes.
 | S3 ETag (single-part) | MD5 of the object body | S3 compatibility/cache-condition contract | manifest `etag`, `ETag` header |
 | S3 ETag (multipart) | MD5 of concatenated per-part MD5s, `-N` suffix | S3 compatibility contract, genuinely different formula from single-part | manifest `etag` for a completed multipart object, `ETag` header |
 | SigV4 payload hash | SHA-256 (`x-amz-content-sha256`) | request authentication | Authorization header / signed value |
-| `x-amz-checksum-crc32` | CRC32 (IEEE), base64 | client-requested transport integrity | `validateCRC32Header` |
-| `Content-MD5` | MD5, base64 | client-requested transport integrity, independent of CRC32 | `validateContentMD5Header` |
+| `x-amz-checksum-crc32` | CRC32 (IEEE), base64 | client-requested transport integrity | `parsePayloadCheck` / `payloadCheck.verify` |
+| `Content-MD5` | MD5, base64 | client-requested transport integrity, independent of CRC32 | `parsePayloadCheck` / `payloadCheck.verify` |
 | journal frame checksum | CRC32C (Castagnoli) | recovery/torn-frame detection, not authentication | journal frame trailer |
 
 These six concepts never stand in for one another: a chunk's CAS SHA-256 is

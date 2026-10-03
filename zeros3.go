@@ -28,6 +28,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash"
 	"hash/crc32"
 	"io"
 	"io/fs"
@@ -60,31 +61,31 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      386    Content-defined chunking (CDC)
-//      524    Content-addressed chunk storage (CAS)
-//      581    Manifests (immutable, JSON)
-//      708    Visibility journal (append-only, checksummed)
-//     1103    Store: format, namespace, and object CRUD
-//     1915    Version history/restore and ListObjectsV2
-//     2145    SigV4 authentication (header and presigned-URL)
-//     2942    Request checksums and S3-shaped XML error/response types
-//     3131    HTTP routing and S3 operation handlers
-//     3448    Conditional operations (PUT/GET/HEAD preconditions)
-//     4021    CopyObject
-//     4315    Multipart upload
-//     5186    Stats and reachability scanning
-//     5897    Verify
-//     6071    Store locking and safe offline GC
-//     6298    Single-range GET
-//     6434    Delta sync client, credentials, and parallel transfer
-//     8357    Recursive directory sync
-//     8662    Remote replication (`zeros3 replicate`)
-//     9426    Peer-assisted corruption repair (`zeros3 repair`)
-//     9904    Namespace (prefix/bucket) replication
-//    10211    Copy-on-write namespace fork (`zeros3 fork`)
-//    10419    Snapshots and restore
-//    11572    Structural diff and inspect (introspection)
-//    12096    CLI dispatch, HTTP server/startup, and main
+//      392    Content-defined chunking (CDC)
+//      518    Content-addressed chunk storage (CAS)
+//      625    Manifests (immutable, JSON)
+//      724    Visibility journal (append-only, checksummed)
+//     1119    Store: format, namespace, and object CRUD
+//     1889    Version history/restore and ListObjectsV2
+//     2119    SigV4 authentication (header and presigned-URL)
+//     2910    Request payload checksums and S3-shaped XML error/response types
+//     3122    HTTP routing and S3 operation handlers
+//     3510    Conditional operations (PUT/GET/HEAD preconditions)
+//     4093    CopyObject
+//     4387    Multipart upload
+//     5213    Stats and reachability scanning
+//     5924    Verify
+//     6098    Store locking and safe offline GC
+//     6325    Single-range GET
+//     6461    Delta sync client, credentials, and parallel transfer
+//     8384    Recursive directory sync
+//     8689    Remote replication (`zeros3 replicate`)
+//     9453    Peer-assisted corruption repair (`zeros3 repair`)
+//     9931    Namespace (prefix/bucket) replication
+//    10238    Copy-on-write namespace fork (`zeros3 fork`)
+//    10446    Snapshots and restore
+//    11599    Structural diff and inspect (introspection)
+//    12123    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -154,7 +155,12 @@ const (
 	recordTypeCompleteMultipartUploadV2 = byte(10)
 	recordTypeDeleteObjectRootV2        = byte(11)
 
-	maxRequestBodySize = 256 * 1024 * 1024
+	// maxBufferedBodySize bounds the structured (XML/JSON) request bodies
+	// that are read fully into memory. maxStreamedBodySize bounds one
+	// streamed PutObject/UploadPart body at S3's own 5 GiB single-request
+	// ceiling; those bodies are never buffered whole.
+	maxBufferedBodySize = 256 * 1024 * 1024
+	maxStreamedBodySize = 5 << 30
 
 	// Default credentials/region. ZeroS3 has no credential-management
 	// story (no IAM/STS/KMS) -- a single static keypair is enough to
@@ -444,80 +450,68 @@ func findCDCBoundary(data []byte, eof bool) int {
 }
 
 // cdcChunker turns a byte stream into a sequence of content-defined
-// chunks. It buffers at most cdcMaxChunkSize bytes at a time, so memory
-// use is bounded regardless of object size.
+// chunks. Its single 2*cdcMaxChunkSize read buffer bounds memory use
+// regardless of object size or how the source fragments its reads.
 type cdcChunker struct {
-	r   io.Reader
-	buf []byte
-	eof bool
+	r          io.Reader
+	buf        []byte
+	start, end int
+	eof        bool
 }
 
 func newCDCChunker(r io.Reader) *cdcChunker {
-	return &cdcChunker{r: r}
+	return &cdcChunker{r: r, buf: make([]byte, 2*cdcMaxChunkSize)}
 }
 
-// fill tops up c.buf to cdcMaxChunkSize bytes, or until the source is
-// exhausted.
+// fill reads until at least cdcMaxChunkSize unconsumed bytes are buffered
+// or the source is exhausted, compacting only when the tail is too short.
 func (c *cdcChunker) fill() error {
-	for !c.eof && len(c.buf) < cdcMaxChunkSize {
-		need := cdcMaxChunkSize - len(c.buf)
-		tmp := make([]byte, need)
-		n, err := c.r.Read(tmp)
-		if n > 0 {
-			c.buf = append(c.buf, tmp[:n]...)
-		}
-		if err != nil {
-			if err == io.EOF {
-				c.eof = true
-				break
-			}
+	if c.end-c.start >= cdcMaxChunkSize || c.eof {
+		return nil
+	}
+	if len(c.buf)-c.end < cdcMaxChunkSize-(c.end-c.start) {
+		c.end = copy(c.buf, c.buf[c.start:c.end])
+		c.start = 0
+	}
+	for !c.eof && c.end-c.start < cdcMaxChunkSize {
+		n, err := c.r.Read(c.buf[c.end:])
+		c.end += n
+		if err == io.EOF {
+			c.eof = true
+		} else if err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// next returns the next content-defined chunk, or io.EOF once the source
-// is fully consumed and no chunk remains (this is the normal, non-error
-// way a chunk stream ends; an empty object yields zero chunks and an
-// immediate io.EOF).
-func (c *cdcChunker) next() ([]byte, error) {
+// nextView returns the next content-defined chunk as a view into the
+// chunker's buffer, valid only until the following call, or io.EOF once
+// the source is fully consumed (an empty object yields zero chunks).
+func (c *cdcChunker) nextView() ([]byte, error) {
 	if err := c.fill(); err != nil {
 		return nil, err
 	}
-	if len(c.buf) == 0 {
+	if c.end == c.start {
 		return nil, io.EOF
 	}
-	n := findCDCBoundary(c.buf, c.eof)
-	chunk := make([]byte, n)
-	copy(chunk, c.buf[:n])
-	remaining := copy(c.buf, c.buf[n:])
-	c.buf = c.buf[:remaining]
+	window := c.buf[c.start:c.end]
+	if len(window) > cdcMaxChunkSize {
+		window = window[:cdcMaxChunkSize]
+	}
+	n := findCDCBoundary(window, c.eof)
+	chunk := c.buf[c.start : c.start+n : c.start+n]
+	c.start += n
 	return chunk, nil
 }
 
-// chunkPiece is one content-defined chunk plus its CAS identity.
-type chunkPiece struct {
-	data []byte
-	sha  [32]byte
-}
-
-// chunkData splits r into content-defined chunks and computes each
-// chunk's SHA-256 identity.
-func chunkData(r io.Reader) ([]chunkPiece, error) {
-	c := newCDCChunker(r)
-	var pieces []chunkPiece
-	for {
-		chunk, err := c.next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		pieces = append(pieces, chunkPiece{data: chunk, sha: sha256.Sum256(chunk)})
+// next is nextView returning a caller-owned copy.
+func (c *cdcChunker) next() ([]byte, error) {
+	chunk, err := c.nextView()
+	if err != nil {
+		return nil, err
 	}
-	return pieces, nil
+	return append([]byte(nil), chunk...), nil
 }
 
 // =============================================================================
@@ -577,6 +571,56 @@ func (s *Store) casRead(sum [32]byte) ([]byte, error) {
 	return data, nil
 }
 
+// ingestResult is what one streaming pass over an object's bytes yields:
+// everything an immutable manifest needs, with no chunk bytes retained.
+type ingestResult struct {
+	chunks    []chunkRef
+	size      int64
+	objSHA256 [32]byte
+	etagMD5   [md5.Size]byte // set only when ingestStream is asked for it
+}
+
+// ingestStream streams r through CDC, durably publishing each chunk into
+// the CAS as it is produced and accumulating the whole-object SHA-256
+// (and, for single-part ETags, MD5) incrementally. Memory use is bounded
+// by the chunker's buffer regardless of object size. Chunks published
+// before a later failure are unreachable until a manifest names them.
+func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
+	c := newCDCChunker(r)
+	res := ingestResult{chunks: []chunkRef{}}
+	objSum := sha256.New()
+	var etagSum hash.Hash
+	if withMD5 {
+		etagSum = md5.New() //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5.
+	}
+	for {
+		chunk, err := c.nextView()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return ingestResult{}, fmt.Errorf("chunking failed: %w", err)
+		}
+		fireTestHook(hookBeforeChunkWrite)
+		sum, err := s.casWrite(chunk)
+		if err != nil {
+			return ingestResult{}, fmt.Errorf("cas write failed: %w", err)
+		}
+		res.chunks = append(res.chunks, chunkRef{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(chunk))})
+		res.size += int64(len(chunk))
+		objSum.Write(chunk)
+		if etagSum != nil {
+			etagSum.Write(chunk)
+		}
+	}
+	fireTestHook(hookAfterChunksPublished)
+	objSum.Sum(res.objSHA256[:0])
+	if etagSum != nil {
+		etagSum.Sum(res.etagMD5[:0])
+	}
+	return res, nil
+}
+
 // =============================================================================
 // 5. Manifests (v1, immutable JSON)
 //
@@ -615,8 +659,8 @@ type manifestV1 struct {
 
 // sortedMetadataKV converts a metadata map into the manifest's
 // deterministic sorted-by-key representation, so two builds of the same
-// logical metadata always serialize identically. Shared by buildManifestV1
-// and CopyObject's metadata-REPLACE path.
+// logical metadata always serialize identically. Shared by
+// buildManifestV1FromRefs and CopyObject's metadata-REPLACE path.
 func sortedMetadataKV(metadata map[string]string) []metadataKV {
 	keys := make([]string, 0, len(metadata))
 	for k := range metadata {
@@ -628,34 +672,6 @@ func sortedMetadataKV(metadata map[string]string) []metadataKV {
 		md = append(md, metadataKV{Key: k, Value: metadata[k]})
 	}
 	return md
-}
-
-// buildManifestV1 assembles an immutable manifest for one object version.
-// Metadata is sorted by key so that two builds of the same logical
-// metadata always serialize identically.
-func buildManifestV1(pieces []chunkPiece, fullBody []byte, contentType string, metadata map[string]string) (manifestV1, error) {
-	id := newUUIDv7()
-	chunks := make([]chunkRef, len(pieces))
-	for i, p := range pieces {
-		chunks[i] = chunkRef{SHA256: hex.EncodeToString(p.sha[:]), Length: int64(len(p.data))}
-	}
-	md := sortedMetadataKV(metadata)
-	objSum := sha256.Sum256(fullBody)
-	etagSum := md5.Sum(fullBody) //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5.
-	return manifestV1{
-		ManifestFormatVersion: manifestFormatVersion,
-		CDCFormatVersion:      cdcFormatVersion,
-		HashAlgorithm:         "sha256",
-		ManifestUUID:          id,
-		TotalLength:           int64(len(fullBody)),
-		Chunks:                chunks,
-		ObjectSHA256:          hex.EncodeToString(objSum[:]),
-		ETag:                  hex.EncodeToString(etagSum[:]),
-		ContentType:           contentType,
-		Metadata:              md,
-		CreatedAt:             time.Now().UTC(),
-		VersionID:             id,
-	}, nil
 }
 
 // publishManifest durably writes a manifest's canonical JSON encoding and
@@ -1644,64 +1660,22 @@ func (s *Store) DeleteObject(bucket, key string) error {
 	return nil
 }
 
-// PutObject runs the full commit pipeline for one object version: CDC
-// chunking, durable CAS publication of every chunk, durable manifest
-// publication, and finally an append+sync of the visibility journal. Only
-// after the journal sync succeeds is the in-memory namespace updated;
-// only after that does this function return, so a caller can safely
-// acknowledge success the moment it returns. If the journal append fails
-// (see Journal.appendFrame), that failure poisons the journal and this
-// error propagates to the caller, who must not acknowledge success; any
-// chunks/manifest already published are orphaned but harmless.
-func (s *Store) PutObject(bucket, key string, body []byte, contentType string, metadata map[string]string) (*objectEntry, error) {
-	return s.PutObjectChecked(bucket, key, body, contentType, metadata, putCondition{})
-}
-
-// PutObjectChecked is PutObject's precondition-aware core (M8F-A, section
-// 10a): identical chunk/CAS/manifest pipeline, but the final publication is
-// gated by cond's S3 conditional-write precondition (If-None-Match: "*" /
-// If-Match: "<etag>"), evaluated at the exact same commit-point critical
-// section commitObjectRootChecked already provides for M6B sync's safe-mode
-// conflict precondition -- there is no second concurrency-control path here.
-// A zero-value cond (PutObject's case) is indistinguishable from an
-// unconditional PUT: it skips commitObjectRootChecked's check function
-// entirely, so every pre-M8F caller's behavior, including performance, is
-// unchanged.
-func (s *Store) PutObjectChecked(bucket, key string, body []byte, contentType string, metadata map[string]string, cond putCondition) (*objectEntry, error) {
-	s.mu.Lock()
-	_, ok := s.buckets[bucket]
-	s.mu.Unlock()
-	if !ok {
-		return nil, errNoSuchBucket
-	}
-
-	pieces, err := chunkData(bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("chunking failed: %w", err)
-	}
-	for _, p := range pieces {
-		fireTestHook(hookBeforeChunkWrite)
-		if _, err := s.casWrite(p.data); err != nil {
-			return nil, fmt.Errorf("cas write failed: %w", err)
-		}
-	}
-	fireTestHook(hookAfterChunksPublished)
-
-	man, err := buildManifestV1(pieces, body, contentType, metadata)
-	if err != nil {
-		return nil, fmt.Errorf("manifest build failed: %w", err)
-	}
+// commitIngested publishes the manifest for an already-ingested object
+// version and commits it through the visibility journal. Only after the
+// journal sync succeeds is the in-memory namespace updated, so a caller
+// may acknowledge success the moment this returns. If cond is non-zero its
+// If-None-Match / If-Match precondition is evaluated at the commit point
+// itself (commitObjectRootChecked), never earlier, so it cannot race a
+// concurrent writer. A failed commit leaves the chunks and manifest already
+// on disk orphaned: unreachable, immutable, and ordinary GC garbage.
+func (s *Store) commitIngested(bucket, key string, ing ingestResult, contentType string, metadata map[string]string, cond putCondition) (*objectEntry, error) {
+	man := buildManifestV1FromRefs(ing.chunks, ing.size, ing.objSHA256, hex.EncodeToString(ing.etagMD5[:]), contentType, metadata)
 	manUUID, manSHA, err := s.publishManifest(man)
 	if err != nil {
 		return nil, fmt.Errorf("manifest publish failed: %w", err)
 	}
 	fireTestHook(hookAfterManifestPublished)
 
-	// A failed condition below leaves the chunks/manifest just published
-	// above orphaned on disk -- exactly like any other failed commit in this
-	// codebase (see commitObjectRootChecked's own doc comment, and section
-	// 10a's doc comment on speculative CAS payload). They are harmless,
-	// never become visible, and are ordinary GC-collectible garbage.
 	if cond.isZero() {
 		return s.commitObjectRoot(bucket, key, manUUID, manSHA, man)
 	}
@@ -2518,11 +2492,15 @@ var sigv4Now = time.Now
 // request or a SigV4 query-string-authenticated ("presigned URL") one,
 // then dispatches to whichever verifier applies. A request is never
 // accepted by both paths or by neither silently -- exactly one runs.
-func (srv *Server) authenticate(r *http.Request, rawPath, rawQuery string, body []byte) error {
+// It verifies the signature from headers alone, before any body is read;
+// signedBodySHA256 is the lowercase hex digest SigV4 bound the body to
+// (fixed-digest payload mode), which the caller must still confirm against
+// the body it receives, or "" when the body is not bound.
+func (srv *Server) authenticate(r *http.Request, rawPath, rawQuery string) (signedBodySHA256 string, err error) {
 	if hasQueryAuth(rawQuery) {
-		return srv.authenticateQuery(r, rawPath, rawQuery)
+		return "", srv.authenticateQuery(r, rawPath, rawQuery)
 	}
-	return srv.authenticateHeader(r, rawPath, rawQuery, body)
+	return srv.authenticateHeader(r, rawPath, rawQuery)
 }
 
 // hasQueryAuth cheaply decides whether a request is presigned, before any
@@ -2597,51 +2575,51 @@ func (srv *Server) sigv4VerifyCore(r *http.Request, rawPath, canonicalQuery stri
 // original raw path/query rather than r.URL. Its X-Amz-Content-Sha256
 // value is interpreted by classifySigV4Payload: in the ordinary fixed
 // SHA-256 mode (which also covers the empty-body case -- the SHA-256 of
-// zero bytes is just an ordinary digest, not a separate mode), success
-// also confirms the signed digest matches the actual body bytes received,
+// zero bytes is just an ordinary digest, not a separate mode) the signed
+// digest is returned for the caller to bind to the body it receives,
 // catching tampering that changes the body but replays an old,
 // still-signed content-hash header; in UNSIGNED-PAYLOAD mode, SigV4
 // deliberately places no constraint on the body at all.
-func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string, body []byte) error {
+func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string) (string, error) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		return &authError{code: "AccessDenied", msg: "missing Authorization header"}
+		return "", &authError{code: "AccessDenied", msg: "missing Authorization header"}
 	}
 	auth, err := parseAuthorizationHeader(authHeader)
 	if err != nil {
-		return &authError{code: "AuthorizationHeaderMalformed", msg: err.Error()}
+		return "", &authError{code: "AuthorizationHeaderMalformed", msg: err.Error()}
 	}
 
 	amzDate := r.Header.Get("X-Amz-Date")
 	if amzDate == "" {
-		return &authError{code: "AccessDenied", msg: "missing X-Amz-Date header"}
+		return "", &authError{code: "AccessDenied", msg: "missing X-Amz-Date header"}
 	}
 	t, err := time.Parse("20060102T150405Z", amzDate)
 	if err != nil {
-		return &authError{code: "AccessDenied", msg: "invalid X-Amz-Date"}
+		return "", &authError{code: "AccessDenied", msg: "invalid X-Amz-Date"}
 	}
 	if t.Format("20060102") != auth.date {
-		return &authError{code: "AccessDenied", msg: "credential date does not match X-Amz-Date"}
+		return "", &authError{code: "AccessDenied", msg: "credential date does not match X-Amz-Date"}
 	}
 	if diff := sigv4Now().Sub(t); diff > requestSkewWindow || diff < -requestSkewWindow {
-		return &authError{code: "RequestTimeTooSkewed", msg: "request timestamp outside allowed window"}
+		return "", &authError{code: "RequestTimeTooSkewed", msg: "request timestamp outside allowed window"}
 	}
 
 	rawPayloadHeader := r.Header.Get("X-Amz-Content-Sha256")
 	if rawPayloadHeader == "" {
-		return &authError{code: "AccessDenied", msg: "missing or invalid X-Amz-Content-Sha256"}
+		return "", &authError{code: "AccessDenied", msg: "missing or invalid X-Amz-Content-Sha256"}
 	}
 	payloadKind, fixedDigest, payloadErr := classifySigV4Payload(rawPayloadHeader)
 	if payloadErr != nil {
-		return &authError{code: "AccessDenied", msg: "missing or invalid X-Amz-Content-Sha256"}
+		return "", &authError{code: "AccessDenied", msg: "missing or invalid X-Amz-Content-Sha256"}
 	}
 	switch payloadKind {
 	case sigv4PayloadUnsupported:
-		return &authError{code: "NotImplemented", msg: fmt.Sprintf("x-amz-content-sha256 value %q is not supported by ZeroS3", rawPayloadHeader)}
+		return "", &authError{code: "NotImplemented", msg: fmt.Sprintf("x-amz-content-sha256 value %q is not supported by ZeroS3", rawPayloadHeader)}
 	case sigv4PayloadStreamingHMAC, sigv4PayloadStreamingHMACTrailer:
 		// Eligible-but-conditional modes (see Phase K in STATUS.md): not
 		// implemented unless/until a real client is shown to require one.
-		return &authError{code: "NotImplemented", msg: fmt.Sprintf("x-amz-content-sha256 value %q is not yet implemented by ZeroS3", rawPayloadHeader)}
+		return "", &authError{code: "NotImplemented", msg: fmt.Sprintf("x-amz-content-sha256 value %q is not yet implemented by ZeroS3", rawPayloadHeader)}
 	}
 	var hasContentSha, hasHost bool
 	for _, h := range auth.signedHeaders {
@@ -2653,15 +2631,15 @@ func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string,
 		}
 	}
 	if !hasContentSha {
-		return &authError{code: "AccessDenied", msg: "x-amz-content-sha256 must be a signed header"}
+		return "", &authError{code: "AccessDenied", msg: "x-amz-content-sha256 must be a signed header"}
 	}
 	if !hasHost {
-		return &authError{code: "AccessDenied", msg: "host must be a signed header"}
+		return "", &authError{code: "AccessDenied", msg: "host must be a signed header"}
 	}
 
 	canonicalQuery, err := sigv4CanonicalQuery(rawQuery)
 	if err != nil {
-		return &authError{code: "InvalidURI", msg: err.Error()}
+		return "", &authError{code: "InvalidURI", msg: err.Error()}
 	}
 
 	// hashedPayload is the literal value that goes into the canonical
@@ -2677,23 +2655,13 @@ func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string,
 	}
 
 	if err := srv.sigv4VerifyCore(r, rawPath, canonicalQuery, auth, amzDate, hashedPayload, "AuthorizationHeaderMalformed"); err != nil {
-		return err
+		return "", err
 	}
 
-	// Fixed SHA-256 mode independently binds the signed digest to the
-	// actual body bytes received, catching tampering that changes the body
-	// but replays an old, still-signed content-hash header. UNSIGNED-
-	// PAYLOAD deliberately does not: the literal sentinel string is what
-	// was signed, not any function of the body, so SigV4 places no
-	// constraint on body content here at all -- Content-MD5/CRC32 remain
-	// independently enforced, unaffected by this.
 	if payloadKind == sigv4PayloadFixedSHA256 {
-		actualHash := sha256.Sum256(body)
-		if hex.EncodeToString(actualHash[:]) != fixedDigest {
-			return &authError{code: "XAmzContentSHA256Mismatch", msg: "declared payload hash does not match body received"}
-		}
+		return fixedDigest, nil
 	}
-	return nil
+	return "", nil
 }
 
 // parseRawQueryParams decodes a raw query string into a name->value map
@@ -2939,59 +2907,82 @@ func GeneratePresignedURL(creds Credentials, region string, req PresignRequest, 
 }
 
 // =============================================================================
-// 9. Request checksums (CRC32) and S3-shaped XML errors
+// 9. Request payload checksums and S3-shaped XML errors
 // =============================================================================
 
-// validateCRC32Header checks the ordinary (non-chunked) x-amz-checksum-crc32
-// request header, if present, against the logical request payload bytes.
-// A missing header is not an error -- CRC32 validation is opt-in per
-// request, matching real S3's checksum headers.
-func validateCRC32Header(r *http.Request, body []byte) error {
-	h := r.Header.Get("x-amz-checksum-crc32")
-	if h == "" {
-		return nil
+// payloadCheck holds a request's declared body-integrity claims, parsed
+// from headers before the body is read. They are independent mechanisms --
+// SigV4's signed x-amz-content-sha256 digest, x-amz-checksum-crc32, and
+// Content-MD5 (distinct from CRC32, CAS chunk SHA-256, object_sha256, and
+// the MD5-based single-part ETag) -- and a request may carry any
+// combination. Absent claims are not checked, matching real S3's opt-in
+// checksum headers.
+type payloadCheck struct {
+	sha256   string // lowercase hex digest bound by SigV4, or ""
+	crc32    uint32
+	hasCRC32 bool
+	md5      []byte
+}
+
+// parsePayloadCheck validates the checksum headers' syntax. A malformed
+// Content-MD5 (not base64, or not 16 bytes) is InvalidDigest, distinct from
+// BadDigest for a well-formed digest that simply does not match, matching
+// real S3's split between the two failure modes.
+func parsePayloadCheck(r *http.Request, signedSHA256 string) (payloadCheck, error) {
+	c := payloadCheck{sha256: signedSHA256}
+	if h := r.Header.Get("x-amz-checksum-crc32"); h != "" {
+		declared, err := base64.StdEncoding.DecodeString(h)
+		if err != nil || len(declared) != 4 {
+			return payloadCheck{}, &authError{code: "InvalidRequest", msg: "invalid x-amz-checksum-crc32 header"}
+		}
+		c.crc32, c.hasCRC32 = binary.BigEndian.Uint32(declared), true
 	}
-	declared, err := base64.StdEncoding.DecodeString(h)
-	if err != nil || len(declared) != 4 {
-		return &authError{code: "InvalidRequest", msg: "invalid x-amz-checksum-crc32 header"}
+	if h := r.Header.Get("Content-MD5"); h != "" {
+		declared, err := base64.StdEncoding.DecodeString(h)
+		if err != nil {
+			return payloadCheck{}, &authError{code: "InvalidDigest", msg: "the Content-MD5 you specified is not valid base64"}
+		}
+		if len(declared) != md5.Size {
+			return payloadCheck{}, &authError{code: "InvalidDigest", msg: "the Content-MD5 you specified is not a valid MD5 digest"}
+		}
+		c.md5 = declared
 	}
-	want := binary.BigEndian.Uint32(declared)
-	if got := crc32.ChecksumIEEE(body); got != want {
+	return c, nil
+}
+
+// verify compares the declared claims against the digests of the body
+// actually received; digests for undeclared claims are ignored.
+func (c payloadCheck) verify(bodySHA256 [32]byte, bodyMD5 [md5.Size]byte, bodyCRC32 uint32) error {
+	if c.sha256 != "" && hex.EncodeToString(bodySHA256[:]) != c.sha256 {
+		return &authError{code: "XAmzContentSHA256Mismatch", msg: "declared payload hash does not match body received"}
+	}
+	if c.hasCRC32 && bodyCRC32 != c.crc32 {
 		return &authError{code: "BadDigest", msg: "crc32 checksum does not match request payload"}
+	}
+	if c.md5 != nil && !bytes.Equal(bodyMD5[:], c.md5) {
+		return &authError{code: "BadDigest", msg: "the Content-MD5 you specified did not match what we received"}
 	}
 	return nil
 }
 
-// validateContentMD5Header checks the ordinary (non-chunked) Content-MD5
-// request header, if present, against the logical request payload bytes. A
-// missing header is not an error -- like x-amz-checksum-crc32, Content-MD5
-// validation is opt-in per request. This is deliberately a separate check
-// from validateCRC32Header: Content-MD5 is a distinct client-integrity
-// mechanism (independent of CRC32, SigV4's x-amz-content-sha256 payload
-// hash, CAS chunk SHA-256, object_sha256, and the MD5-based single-part
-// ETag), and a request may legally carry either header, both, or neither.
-// A malformed value (not valid base64, or valid base64 that doesn't decode
-// to exactly 16 bytes -- MD5's digest length) is reported as InvalidDigest,
-// distinct from BadDigest for a well-formed digest that simply doesn't
-// match, matching real S3's error-code split between the two failure
-// modes.
-func validateContentMD5Header(r *http.Request, body []byte) error {
-	h := r.Header.Get("Content-MD5")
-	if h == "" {
-		return nil
+// verifyBytes is verify for a fully buffered body, computing only the
+// digests the request declared.
+func (c payloadCheck) verifyBytes(body []byte) error {
+	var (
+		sum [32]byte
+		m   [md5.Size]byte
+		crc uint32
+	)
+	if c.sha256 != "" {
+		sum = sha256.Sum256(body)
 	}
-	declared, err := base64.StdEncoding.DecodeString(h)
-	if err != nil {
-		return &authError{code: "InvalidDigest", msg: "the Content-MD5 you specified is not valid base64"}
+	if c.hasCRC32 {
+		crc = crc32.ChecksumIEEE(body)
 	}
-	if len(declared) != md5.Size {
-		return &authError{code: "InvalidDigest", msg: "the Content-MD5 you specified is not a valid MD5 digest"}
+	if c.md5 != nil {
+		m = md5.Sum(body) //nolint:gosec // S3-compatible request integrity check, not a security use of MD5.
 	}
-	got := md5.Sum(body) //nolint:gosec // S3-compatible request integrity check, not a security use of MD5.
-	if !bytes.Equal(got[:], declared) {
-		return &authError{code: "BadDigest", msg: "the Content-MD5 you specified did not match what we received"}
-	}
-	return nil
+	return c.verify(sum, m, crc)
 }
 
 type s3ErrorBody struct {
@@ -3252,16 +3243,93 @@ func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
 	return data, nil
 }
 
+// readBufferedBody reads and verifies a request body that is small by
+// design (XML/JSON control requests). Object payloads never come through
+// here; they stream via ingestRequestBody.
+func readBufferedBody(w http.ResponseWriter, r *http.Request, rawPath string, check payloadCheck) ([]byte, bool) {
+	body, err := readAllLimited(r.Body, maxBufferedBodySize)
+	if err != nil {
+		writeS3Error(w, "InvalidRequest", "failed to read request body", rawPath)
+		return nil, false
+	}
+	if err := check.verifyBytes(body); err != nil {
+		writeRequestError(w, err, rawPath)
+		return nil, false
+	}
+	return body, true
+}
+
+// bodyReadError marks a failure reading the request body, as opposed to a
+// failure storing it.
+type bodyReadError struct{ err error }
+
+func (e *bodyReadError) Error() string { return "failed to read request body: " + e.err.Error() }
+func (e *bodyReadError) Unwrap() error { return e.err }
+
+type bodyReader struct{ r io.Reader }
+
+func (b bodyReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err != nil && err != io.EOF {
+		err = &bodyReadError{err}
+	}
+	return n, err
+}
+
+// ingestRequestBody streams an object payload (PutObject or UploadPart)
+// through CDC into the CAS without buffering it, then verifies the
+// request's declared checksums against the digests accumulated during
+// that same pass. Verification precedes any manifest or journal write, so
+// a payload that fails it is never visible; its chunks are unreachable.
+func (srv *Server) ingestRequestBody(w http.ResponseWriter, r *http.Request, check payloadCheck) (ingestResult, error) {
+	if r.ContentLength > maxStreamedBodySize {
+		return ingestResult{}, &http.MaxBytesError{Limit: maxStreamedBodySize}
+	}
+	body := io.Reader(bodyReader{http.MaxBytesReader(w, r.Body, maxStreamedBodySize)})
+	var crc hash.Hash32
+	if check.hasCRC32 {
+		crc = crc32.NewIEEE()
+		body = io.TeeReader(body, crc)
+	}
+	ing, err := srv.store.ingestStream(body, true)
+	if err != nil {
+		return ingestResult{}, err
+	}
+	var sum uint32
+	if crc != nil {
+		sum = crc.Sum32()
+	}
+	if err := check.verify(ing.objSHA256, ing.etagMD5, sum); err != nil {
+		return ingestResult{}, err
+	}
+	return ing, nil
+}
+
+// writeRequestError renders the S3-shaped error for a failed body
+// verification or ingest.
+func writeRequestError(w http.ResponseWriter, err error, resource string) {
+	var (
+		ae       *authError
+		tooLarge *http.MaxBytesError
+		readErr  *bodyReadError
+	)
+	switch {
+	case errors.As(err, &ae):
+		writeS3Error(w, ae.code, ae.msg, resource)
+	case errors.As(err, &tooLarge):
+		writeS3Error(w, "EntityTooLarge", "your proposed upload exceeds the maximum allowed size", resource)
+	case errors.As(err, &readErr):
+		writeS3Error(w, "InvalidRequest", "failed to read request body", resource)
+	default:
+		writeS3Error(w, "InternalError", err.Error(), resource)
+	}
+}
+
 func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rawPath, rawQuery := splitRawRequestURI(r.RequestURI)
 
-	body, err := readAllLimited(r.Body, maxRequestBodySize)
+	signedSHA256, err := srv.authenticate(r, rawPath, rawQuery)
 	if err != nil {
-		writeS3Error(w, "InvalidRequest", "failed to read request body", rawPath)
-		return
-	}
-
-	if err := srv.authenticate(r, rawPath, rawQuery, body); err != nil {
 		var ae *authError
 		if errors.As(err, &ae) {
 			writeS3Error(w, ae.code, ae.msg, rawPath)
@@ -3271,23 +3339,9 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := validateCRC32Header(r, body); err != nil {
-		var ae *authError
-		if errors.As(err, &ae) {
-			writeS3Error(w, ae.code, ae.msg, rawPath)
-		} else {
-			writeS3Error(w, "InvalidRequest", err.Error(), rawPath)
-		}
-		return
-	}
-
-	if err := validateContentMD5Header(r, body); err != nil {
-		var ae *authError
-		if errors.As(err, &ae) {
-			writeS3Error(w, ae.code, ae.msg, rawPath)
-		} else {
-			writeS3Error(w, "InvalidRequest", err.Error(), rawPath)
-		}
+	check, err := parsePayloadCheck(r, signedSHA256)
+	if err != nil {
+		writeRequestError(w, err, rawPath)
 		return
 	}
 
@@ -3299,6 +3353,10 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// resolution. Authentication above already covers it identically to
 	// every ordinary S3 request.
 	if strings.HasPrefix(rawPath, "/_zeros3/") {
+		body, ok := readBufferedBody(w, r, rawPath, check)
+		if !ok {
+			return
+		}
 		srv.handleZeroS3Sync(w, r, rawPath, body)
 		return
 	}
@@ -3355,10 +3413,14 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case key != "" && r.Method == http.MethodPost && hasUploads:
 		srv.handleCreateMultipartUpload(w, r, bucket, key)
 	case key != "" && r.Method == http.MethodPut && hasUploadID:
-		srv.handleUploadPart(w, bucket, key, uploadID, mpQuery.Get("partNumber"), body)
+		srv.handleUploadPart(w, r, bucket, key, uploadID, mpQuery.Get("partNumber"), check)
 	case key != "" && r.Method == http.MethodGet && hasUploadID:
 		srv.handleListParts(w, bucket, key, uploadID, rawQuery)
 	case key != "" && r.Method == http.MethodPost && hasUploadID:
+		body, ok := readBufferedBody(w, r, rawPath, check)
+		if !ok {
+			return
+		}
 		srv.handleCompleteMultipartUpload(w, bucket, key, uploadID, body)
 	case key != "" && r.Method == http.MethodDelete && hasUploadID:
 		srv.handleAbortMultipartUpload(w, bucket, key, uploadID)
@@ -3367,7 +3429,7 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && key == "":
 		srv.handleCreateBucket(w, bucket)
 	case r.Method == http.MethodPut:
-		srv.handlePutObject(w, r, bucket, key, body)
+		srv.handlePutObject(w, r, bucket, key, check)
 	case r.Method == http.MethodGet && key == "":
 		srv.handleListObjectsV2(w, bucket, rawQuery)
 	case r.Method == http.MethodGet:
@@ -3482,17 +3544,17 @@ func (srv *Server) handleDeleteBucket(w http.ResponseWriter, bucket string) {
 // does not define most of them for PutObject either.
 // =============================================================================
 
-// putCondition is PutObjectChecked's parsed conditional-write precondition.
-// The zero value (both fields empty/false) means "no condition" and must
-// remain indistinguishable, in cost and behavior, from calling the
-// unconditional PutObject -- see isZero and PutObjectChecked.
+// putCondition is a parsed conditional-write precondition. The zero value
+// (both fields empty/false) means "no condition" and must remain
+// indistinguishable, in cost and behavior, from an unconditional PUT --
+// see isZero and commitIngested.
 type putCondition struct {
 	ifNoneMatchStar bool   // If-None-Match: * -- create only if absent
 	ifMatchETag     string // If-Match: <etag> -- replace only if this exact ETag is current; "" means unset
 }
 
 // isZero reports whether cond carries no condition at all, letting
-// PutObjectChecked skip commitObjectRootChecked's check function entirely
+// commitIngested skip commitObjectRootChecked's check function entirely
 // for an ordinary, unconditional PUT.
 func (cond putCondition) isZero() bool {
 	return !cond.ifNoneMatchStar && cond.ifMatchETag == ""
@@ -3583,7 +3645,7 @@ func parsePutCondition(r *http.Request) (putCondition, error) {
 	return putCondition{}, nil
 }
 
-func (srv *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket, key string, body []byte) {
+func (srv *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket, key string, check payloadCheck) {
 	// A PUT carrying x-amz-copy-source is CopyObject, not an ordinary body
 	// upload -- same HTTP verb, different S3 operation, exactly as real S3
 	// distinguishes them.
@@ -3610,13 +3672,23 @@ func (srv *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucke
 		}
 	}
 
-	entry, err := srv.store.PutObjectChecked(bucket, key, body, contentType, metadata, cond)
+	resource := "/" + bucket + "/" + key
+	if err := srv.store.HeadBucket(bucket); err != nil {
+		writeBucketOrInternalError(w, err, resource)
+		return
+	}
+	ing, err := srv.ingestRequestBody(w, r, check)
+	if err != nil {
+		writeRequestError(w, err, resource)
+		return
+	}
+	entry, err := srv.store.commitIngested(bucket, key, ing, contentType, metadata, cond)
 	if err != nil {
 		if errors.Is(err, errPreconditionFailed) {
-			writeS3Error(w, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold", "/"+bucket+"/"+key)
+			writeS3Error(w, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold", resource)
 			return
 		}
-		writeBucketOrInternalError(w, err, "/"+bucket+"/"+key)
+		writeBucketOrInternalError(w, err, resource)
 		return
 	}
 	w.Header().Set("ETag", `"`+entry.etag+`"`)
@@ -4336,7 +4408,7 @@ func (srv *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, dstB
 // cross-object dedup at every part seam. So completion instead streams the
 // full logical concatenation -- part 1's bytes, then part 2's, and so on,
 // each reconstructed chunk-by-chunk from CAS -- through one fresh CDC pass
-// (multipartReader + chunkAndStoreStream), exactly as if the whole object
+// (multipartReader + ingestStream), exactly as if the whole object
 // had arrived as a single PutObject body, while never buffering more than
 // one chunk (at most cdcMaxChunkSize bytes) of that concatenation in memory
 // at a time.
@@ -4397,41 +4469,25 @@ func (s *Store) lookupUploadLocked(bucket, key, uploadID string) (*multipartUplo
 	return up, nil
 }
 
-// UploadPart durably stores one part's bytes: CDC-chunked into the ordinary
-// CAS (outside s.mu, like PutObject's own chunking work), then committed by
-// one journal frame recording the part's chunk list/size/ETag, under a
-// re-validated upload session exactly like commitObjectRoot re-validates
-// its bucket.
-func (s *Store) UploadPart(bucket, key, uploadID string, partNumber int, body []byte) (string, error) {
+// requireUpload reports whether uploadID is an open upload for bucket/key,
+// letting a caller refuse a body before ingesting it.
+func (s *Store) requireUpload(bucket, key, uploadID string) error {
 	s.mu.Lock()
-	if _, err := s.lookupUploadLocked(bucket, key, uploadID); err != nil {
-		s.mu.Unlock()
-		return "", err
-	}
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	_, err := s.lookupUploadLocked(bucket, key, uploadID)
+	return err
+}
 
-	pieces, err := chunkData(bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("chunking failed: %w", err)
-	}
-	for _, p := range pieces {
-		fireTestHook(hookBeforeChunkWrite)
-		if _, err := s.casWrite(p.data); err != nil {
-			return "", fmt.Errorf("cas write failed: %w", err)
-		}
-	}
-	fireTestHook(hookAfterChunksPublished)
-	chunks := make([]chunkRef, len(pieces))
-	for i, p := range pieces {
-		chunks[i] = chunkRef{SHA256: hex.EncodeToString(p.sha[:]), Length: int64(len(p.data))}
-	}
-	etagSum := md5.Sum(body) //nolint:gosec // S3-compatible multipart part ETag, not a security use of MD5.
-	etag := hex.EncodeToString(etagSum[:])
+// commitPart records an already-ingested part (CDC-chunked into the
+// ordinary CAS outside s.mu, like an ordinary PUT's ingest) with one
+// journal frame carrying its chunk list/size/ETag, under a re-validated
+// upload session exactly like commitObjectRoot re-validates its bucket.
+func (s *Store) commitPart(bucket, key, uploadID string, partNumber int, ing ingestResult) (string, error) {
+	etag := hex.EncodeToString(ing.etagMD5[:])
 	uploadedAt := time.Now().UTC()
-
 	payload, err := json.Marshal(journalUploadPartPayload{
-		UploadID: uploadID, PartNumber: partNumber, Size: int64(len(body)),
-		ETag: etag, Chunks: chunks, UploadedAt: uploadedAt,
+		UploadID: uploadID, PartNumber: partNumber, Size: ing.size,
+		ETag: etag, Chunks: ing.chunks, UploadedAt: uploadedAt,
 	})
 	if err != nil {
 		return "", err
@@ -4447,7 +4503,7 @@ func (s *Store) UploadPart(bucket, key, uploadID string, partNumber int, body []
 		return "", err
 	}
 	up.parts[partNumber] = &multipartPart{
-		partNumber: partNumber, size: int64(len(body)), etag: etag, chunks: chunks, uploadedAt: uploadedAt,
+		partNumber: partNumber, size: ing.size, etag: etag, chunks: ing.chunks, uploadedAt: uploadedAt,
 	}
 	fireTestHook(hookAfterApplyBeforeResponse)
 	return etag, nil
@@ -4755,49 +4811,11 @@ func (m *multipartReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// chunkAndStoreStream is PutObject's chunk+CAS-write loop, generalized to
-// never hold more than one chunk's bytes in memory: it streams r through
-// the ordinary CDC chunker, durably publishes each chunk into CAS as it is
-// produced, and accumulates only the small chunk-reference list (sha256 +
-// length, not the chunk bytes themselves) plus a running whole-object
-// SHA-256 -- everything a manifest needs, without ever buffering the full
-// logical object the way an ordinary PutObject's []byte body already does.
-// This is what lets CompleteMultipartUpload finalize even a very large
-// object without a correspondingly large memory spike.
-func (s *Store) chunkAndStoreStream(r io.Reader) ([]chunkRef, int64, [32]byte, error) {
-	c := newCDCChunker(r)
-	var refs []chunkRef
-	var total int64
-	h := sha256.New()
-	for {
-		chunk, err := c.next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, 0, [32]byte{}, err
-		}
-		fireTestHook(hookBeforeChunkWrite)
-		sum, werr := s.casWrite(chunk)
-		if werr != nil {
-			return nil, 0, [32]byte{}, werr
-		}
-		refs = append(refs, chunkRef{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(chunk))})
-		h.Write(chunk)
-		total += int64(len(chunk))
-	}
-	fireTestHook(hookAfterChunksPublished)
-	var sum [32]byte
-	copy(sum[:], h.Sum(nil))
-	return refs, total, sum, nil
-}
-
-// buildManifestV1FromRefs is buildManifestV1's counterpart for a manifest
-// built from an already-streamed chunk list rather than an in-memory whole
-// body: everything is supplied directly (chunk refs, total length,
-// whole-object SHA-256, and a caller-computed ETag -- multipart's ETag
-// formula, never the single-PUT MD5-of-body rule) instead of derived from a
-// []byte.
+// buildManifestV1FromRefs assembles an immutable manifest for one object
+// version from a streamed chunk list: chunk refs, total length,
+// whole-object SHA-256, and the caller's ETag (single-PUT MD5 or
+// multipart's formula). Metadata is sorted by key so two builds of the
+// same logical metadata serialize identically.
 func buildManifestV1FromRefs(refs []chunkRef, total int64, objSHA [32]byte, etag, contentType string, metadata map[string]string) manifestV1 {
 	id := newUUIDv7()
 	return manifestV1{
@@ -4870,10 +4888,10 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 
 	// Heavy work, deliberately outside s.mu: a fresh, continuous CDC pass
 	// across every part's already-durable bytes in completion order (see
-	// multipartReader/chunkAndStoreStream), never buffering the whole
+	// multipartReader/ingestStream), never buffering the whole
 	// reconstructed object.
 	mr := &multipartReader{s: s, parts: parts}
-	refs, total, objSHA, err := s.chunkAndStoreStream(mr)
+	ing, err := s.ingestStream(mr, false)
 	if err != nil {
 		return nil, manifestV1{}, fmt.Errorf("multipart: assembling final object failed: %w", err)
 	}
@@ -4881,7 +4899,7 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 	if err != nil {
 		return nil, manifestV1{}, err
 	}
-	man := buildManifestV1FromRefs(refs, total, objSHA, etag, contentType, metadata)
+	man := buildManifestV1FromRefs(ing.chunks, ing.size, ing.objSHA256, etag, contentType, metadata)
 	manUUID, manSHA, err := s.publishManifest(man)
 	if err != nil {
 		return nil, manifestV1{}, fmt.Errorf("multipart: manifest publish failed: %w", err)
@@ -5069,13 +5087,22 @@ func parsePartNumber(raw string) (int, error) {
 	return n, nil
 }
 
-func (srv *Server) handleUploadPart(w http.ResponseWriter, bucket, key, uploadID, partNumberRaw string, body []byte) {
+func (srv *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, bucket, key, uploadID, partNumberRaw string, check payloadCheck) {
 	partNumber, err := parsePartNumber(partNumberRaw)
 	if err != nil {
 		writeS3Error(w, "InvalidArgument", err.Error(), "/"+bucket+"/"+key)
 		return
 	}
-	etag, err := srv.store.UploadPart(bucket, key, uploadID, partNumber, body)
+	if err := srv.store.requireUpload(bucket, key, uploadID); err != nil {
+		writeMultipartError(w, err, "/"+bucket+"/"+key)
+		return
+	}
+	ing, err := srv.ingestRequestBody(w, r, check)
+	if err != nil {
+		writeRequestError(w, err, "/"+bucket+"/"+key)
+		return
+	}
+	etag, err := srv.store.commitPart(bucket, key, uploadID, partNumber, ing)
 	if err != nil {
 		writeMultipartError(w, err, "/"+bucket+"/"+key)
 		return
@@ -6491,9 +6518,9 @@ const (
 	// far fewer, larger ones are each bounded on their own axis). This
 	// applies only to /negotiate -- /commit's chunk list legitimately
 	// grows with object size (a multi-GiB file has far more than 1024
-	// chunks) and is instead bounded by the same maxRequestBodySize every
-	// other request body already is (ServeHTTP's readAllLimited, section
-	// 10), not a second, smaller limit.
+	// chunks) and is instead bounded by the same maxBufferedBodySize every
+	// other buffered request body already is (ServeHTTP's readBufferedBody,
+	// section 10), not a second, smaller limit.
 	maxSyncBatchDescriptors = 1024
 	maxSyncBatchBytes       = 256 * 1024
 
@@ -6603,7 +6630,7 @@ type syncObjectDescriptor struct {
 
 // syncCommitRequest carries the complete ordered chunk list (occurrences,
 // not de-duplicated -- a chunk that repeats within one file legitimately
-// repeats in its manifest, exactly as an ordinary PutObject's chunkData
+// repeats in its manifest, exactly as an ordinary PutObject's ingestStream
 // output would) plus ordinary object metadata and an optional safe-mode
 // conflict precondition (section 15's ExpectAbsent/ExpectedETag -- see
 // commitObjectRootChecked).
@@ -7090,7 +7117,7 @@ func (srv *Server) handleSyncChunkUpload(w http.ResponseWriter, hexDigest string
 // already rely on, not a second, duplicated one. The same pass computes
 // the whole-object SHA-256 and single-part-style MD5 ETag by streaming
 // each chunk's already-verified bytes through two running hashes, one
-// chunk at a time -- bounded memory, matching chunkAndStoreStream's own
+// chunk at a time -- bounded memory, matching ingestStream's own
 // discipline, regardless of object size.
 func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 	var req syncCommitRequest
@@ -7109,7 +7136,7 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 
 	refs := make([]chunkRef, len(req.Chunks))
 	objHash := sha256.New()
-	etagHash := md5.New() //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5 -- matches buildManifestV1's own formula.
+	etagHash := md5.New() //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5 -- matches ingestStream's own formula.
 	var total int64
 	for i, d := range req.Chunks {
 		sum, norm, err := normalizedSyncDigest(d.SHA256, d.Length)
@@ -7907,7 +7934,7 @@ type syncLocalChunk struct {
 }
 
 // scanLocalFileForSync runs the exact same CDC v1 chunker
-// (newCDCChunker, section 3) an ordinary PutObject/chunkAndStoreStream
+// (newCDCChunker, section 3) an ordinary PutObject/ingestStream
 // would use on this same byte stream, so the boundaries, lengths, and
 // SHA-256 identities produced here are byte-for-byte identical to what
 // server-side chunking of the same bytes would produce (A2's required
@@ -11621,7 +11648,7 @@ type objectDiffResult struct {
 
 	// ContentEqual reuses ZeroS3's own existing object-content identity
 	// semantics (B5): the ETag both objects' manifests already carry is a
-	// whole-body MD5 (buildManifestV1), so it is order-sensitive by
+	// whole-body MD5 (ingestStream), so it is order-sensitive by
 	// construction -- two objects holding the same chunk set in a
 	// different order, or with different logical content laid out to
 	// coincidentally share every digest, do NOT get ContentEqual==true
