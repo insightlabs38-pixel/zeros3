@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ecdsa"
@@ -42,6 +43,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 	"uuid"
 )
@@ -57,30 +59,31 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//       86    Test helpers, fixtures, and TestMain
-//      120    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//     1136    SigV4 authentication (header and payload-mode)
-//     1522    Checksums: CRC32 and Content-MD5
-//     2033    End-to-end HTTP and crash/recovery tests
-//     2707    M2: bucket/object/listing/journal protocol compatibility
-//     3758    M3: CDC/dedup evidence, stats, verify
-//     4894    M3: CopyObject
-//     5441    M3: single-range GET
-//     5642    M5-B: multipart upload
-//     6920    Presigned URLs and virtual-hosted-style addressing
-//     7949    M5-C: version history, restore, GC, storage-efficiency proof
-//     9795    M5-D/P2: ListParts and ListMultipartUploads pagination
-//    11514    M6: delta sync (`zeros3 sync`)
-//    13256    M6C: recursive directory sync
-//    14316    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//    15645    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    16970    M8C: namespace (prefix/bucket) replication
-//    18009    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    19101    M8E: durable namespace snapshots and restore
-//    21179    M8F: conditional operations (Put/Get/Copy preconditions)
-//    22584    M8G: introspection (dry-run planning, diff, inspect)
-//    24536    M8H: bounded parallel chunk transfer
-//    25887    P1: environment credentials, HTTP hardening/shutdown, TLS
+//       89    Test helpers, fixtures, and TestMain
+//      200    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//     1216    SigV4 authentication (header and payload-mode)
+//     1605    Checksums: CRC32 and Content-MD5
+//     2116    End-to-end HTTP and crash/recovery tests
+//     2790    M2: bucket/object/listing/journal protocol compatibility
+//     3841    M3: CDC/dedup evidence, stats, verify
+//     4977    M3: CopyObject
+//     5524    M3: single-range GET
+//     5725    M5-B: multipart upload
+//     7003    Presigned URLs and virtual-hosted-style addressing
+//     8032    M5-C: version history, restore, GC, storage-efficiency proof
+//     9878    M5-D/P2: ListParts and ListMultipartUploads pagination
+//    11597    M6: delta sync (`zeros3 sync`)
+//    13339    M6C: recursive directory sync
+//    14399    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    15728    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//    17053    M8C: namespace (prefix/bucket) replication
+//    18092    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    19184    M8E: durable namespace snapshots and restore
+//    21262    M8F: conditional operations (Put/Get/Copy preconditions)
+//    22667    M8G: introspection (dry-run planning, diff, inspect)
+//    24619    M8H: bounded parallel chunk transfer
+//    25970    P1: environment credentials, HTTP hardening/shutdown, TLS
+//   27286    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -108,6 +111,83 @@ func TestMain(m *testing.M) {
 // =============================================================================
 // Shared test helpers
 // =============================================================================
+
+// chunkPiece is one content-defined chunk plus its CAS identity.
+type chunkPiece struct {
+	data []byte
+	sha  [32]byte
+}
+
+func chunkData(r io.Reader) ([]chunkPiece, error) {
+	c := newCDCChunker(r)
+	var pieces []chunkPiece
+	for {
+		chunk, err := c.next()
+		if err == io.EOF {
+			return pieces, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		pieces = append(pieces, chunkPiece{data: chunk, sha: sha256.Sum256(chunk)})
+	}
+}
+
+func buildManifestV1(pieces []chunkPiece, fullBody []byte, contentType string, metadata map[string]string) (manifestV1, error) {
+	chunks := make([]chunkRef, len(pieces))
+	for i, p := range pieces {
+		chunks[i] = chunkRef{SHA256: hex.EncodeToString(p.sha[:]), Length: int64(len(p.data))}
+	}
+	etag := md5.Sum(fullBody)
+	return buildManifestV1FromRefs(chunks, int64(len(fullBody)), sha256.Sum256(fullBody), hex.EncodeToString(etag[:]), contentType, metadata), nil
+}
+
+// PutObject and PutObjectChecked store an in-memory body through the same
+// ingest/commit pipeline the HTTP handler streams through.
+func (s *Store) PutObject(bucket, key string, body []byte, contentType string, metadata map[string]string) (*objectEntry, error) {
+	return s.PutObjectChecked(bucket, key, body, contentType, metadata, putCondition{})
+}
+
+func (s *Store) PutObjectChecked(bucket, key string, body []byte, contentType string, metadata map[string]string, cond putCondition) (*objectEntry, error) {
+	if err := s.HeadBucket(bucket); err != nil {
+		return nil, err
+	}
+	ing, err := s.ingestStream(bytes.NewReader(body), true)
+	if err != nil {
+		return nil, err
+	}
+	return s.commitIngested(bucket, key, ing, contentType, metadata, cond)
+}
+
+func (s *Store) UploadPart(bucket, key, uploadID string, partNumber int, body []byte) (string, error) {
+	if err := s.requireUpload(bucket, key, uploadID); err != nil {
+		return "", err
+	}
+	ing, err := s.ingestStream(bytes.NewReader(body), true)
+	if err != nil {
+		return "", err
+	}
+	return s.commitPart(bucket, key, uploadID, partNumber, ing)
+}
+
+// checkPayload applies a request's checksum headers to a fully received body.
+func checkPayload(r *http.Request, body []byte) error {
+	c, err := parsePayloadCheck(r, "")
+	if err != nil {
+		return err
+	}
+	return c.verifyBytes(body)
+}
+
+// authenticateBody is authenticate plus the SigV4 body-digest binding the
+// HTTP path applies to a fully received body.
+func authenticateBody(srv *Server, r *http.Request, rawPath, rawQuery string, body []byte) error {
+	signed, err := srv.authenticate(r, rawPath, rawQuery)
+	if err != nil {
+		return err
+	}
+	return payloadCheck{sha256: signed}.verifyBytes(body)
+}
 
 func genRandomBytes(seed int64, n int) []byte {
 	r := rand.New(rand.NewSource(seed))
@@ -1274,6 +1354,7 @@ type signOpts struct {
 	extraSignedHeaders          []string
 	omitContentSha256FromSigned bool
 	badPayloadHash              string
+	payloadHash                 string // overrides the signed x-amz-content-sha256, e.g. UNSIGNED-PAYLOAD
 }
 
 // signTestRequest computes and sets X-Amz-Date, X-Amz-Content-Sha256, and
@@ -1289,7 +1370,9 @@ func signTestRequest(t *testing.T, req *http.Request, signer testSigner, rawPath
 	payloadHash := testHexSHA256(body)
 
 	req.Header.Set("X-Amz-Date", amzDate)
-	if opts.badPayloadHash != "" {
+	if opts.payloadHash != "" {
+		req.Header.Set("X-Amz-Content-Sha256", opts.payloadHash)
+	} else if opts.badPayloadHash != "" {
 		req.Header.Set("X-Amz-Content-Sha256", opts.badPayloadHash)
 	} else {
 		req.Header.Set("X-Amz-Content-Sha256", payloadHash)
@@ -1389,7 +1472,7 @@ func TestSigV4_ValidSignedRequestsAcrossRawPathShapes(t *testing.T) {
 			body := []byte("payload-" + target)
 			req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, target, body)
 			signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), nil)
-			if err := srv.authenticate(req, rawPath, rawQuery, body); err != nil {
+			if err := authenticateBody(srv, req, rawPath, rawQuery, body); err != nil {
 				t.Fatalf("expected a validly signed request to be accepted: %v", err)
 			}
 		})
@@ -1409,7 +1492,7 @@ func TestSigV4_QueryEdgeCases(t *testing.T) {
 			body := []byte("q")
 			req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, target, body)
 			signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), nil)
-			if err := srv.authenticate(req, rawPath, rawQuery, body); err != nil {
+			if err := authenticateBody(srv, req, rawPath, rawQuery, body); err != nil {
 				t.Fatalf("expected valid signature to be accepted: %v", err)
 			}
 		})
@@ -1425,7 +1508,7 @@ func TestSigV4_IncorrectSecretRejected(t *testing.T) {
 	signTestRequest(t, req, bad, rawPath, rawQuery, body, time.Now(), nil)
 
 	var ae *authError
-	err := srv.authenticate(req, rawPath, rawQuery, body)
+	err := authenticateBody(srv, req, rawPath, rawQuery, body)
 	if err == nil || !errors.As(err, &ae) || ae.code != "SignatureDoesNotMatch" {
 		t.Fatalf("expected SignatureDoesNotMatch, got %v", err)
 	}
@@ -1440,7 +1523,7 @@ func TestSigV4_WrongAccessKeyRejected(t *testing.T) {
 	signTestRequest(t, req, bad, rawPath, rawQuery, body, time.Now(), nil)
 
 	var ae *authError
-	err := srv.authenticate(req, rawPath, rawQuery, body)
+	err := authenticateBody(srv, req, rawPath, rawQuery, body)
 	if err == nil || !errors.As(err, &ae) || ae.code != "InvalidAccessKeyId" {
 		t.Fatalf("expected InvalidAccessKeyId, got %v", err)
 	}
@@ -1458,7 +1541,7 @@ func TestSigV4_WrongRegionServiceScopeRejected(t *testing.T) {
 			bad := signer
 			mutate(&bad)
 			signTestRequest(t, req, bad, rawPath, rawQuery, body, time.Now(), nil)
-			if err := srv.authenticate(req, rawPath, rawQuery, body); err == nil {
+			if err := authenticateBody(srv, req, rawPath, rawQuery, body); err == nil {
 				t.Fatalf("expected mismatched scope to be rejected")
 			}
 		})
@@ -1472,7 +1555,7 @@ func TestSigV4_WrongRegionServiceScopeRejected(t *testing.T) {
 		auth := req.Header.Get("Authorization")
 		auth = strings.Replace(auth, "/s3/aws4_request", "/ec2/aws4_request", 1)
 		req.Header.Set("Authorization", auth)
-		if err := srv.authenticate(req, rawPath, rawQuery, body); err == nil {
+		if err := authenticateBody(srv, req, rawPath, rawQuery, body); err == nil {
 			t.Fatalf("expected wrong service in credential scope to be rejected")
 		}
 	})
@@ -1483,7 +1566,7 @@ func TestSigV4_MissingSignedHeaderRejected(t *testing.T) {
 	body := []byte("x")
 	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
 	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{omitContentSha256FromSigned: true})
-	if err := srv.authenticate(req, rawPath, rawQuery, body); err == nil {
+	if err := authenticateBody(srv, req, rawPath, rawQuery, body); err == nil {
 		t.Fatalf("expected a request missing a required signed header to be rejected")
 	}
 }
@@ -1495,7 +1578,7 @@ func TestSigV4_AlteredPayloadRejected(t *testing.T) {
 	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), nil)
 
 	tampered := []byte("tampered body, different length and content")
-	if err := srv.authenticate(req, rawPath, rawQuery, tampered); err == nil {
+	if err := authenticateBody(srv, req, rawPath, rawQuery, tampered); err == nil {
 		t.Fatalf("expected a request whose body changed after signing to be rejected")
 	}
 }
@@ -1508,12 +1591,12 @@ func TestSigV4_RawPathIsNotCleaned(t *testing.T) {
 
 	cleanedPath := "/b/k"
 	signTestRequest(t, req, signer, cleanedPath, rawQuery, body, time.Now(), nil)
-	if err := srv.authenticate(req, rawPath, rawQuery, body); err == nil {
+	if err := authenticateBody(srv, req, rawPath, rawQuery, body); err == nil {
 		t.Fatalf("expected a signature computed over a cleaned path to be rejected for the real, uncleaned raw path")
 	}
 
 	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), nil)
-	if err := srv.authenticate(req, rawPath, rawQuery, body); err != nil {
+	if err := authenticateBody(srv, req, rawPath, rawQuery, body); err != nil {
 		t.Fatalf("expected a signature computed over the true raw path to be accepted: %v", err)
 	}
 }
@@ -1528,7 +1611,7 @@ func TestCRC32_ValidAccepted(t *testing.T) {
 	binary.BigEndian.PutUint32(b, crc32.ChecksumIEEE(body))
 	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
 	req.Header.Set("x-amz-checksum-crc32", base64.StdEncoding.EncodeToString(b))
-	if err := validateCRC32Header(req, body); err != nil {
+	if err := checkPayload(req, body); err != nil {
 		t.Fatalf("expected a valid crc32 checksum to be accepted: %v", err)
 	}
 }
@@ -1539,7 +1622,7 @@ func TestCRC32_InvalidRejected(t *testing.T) {
 	binary.BigEndian.PutUint32(b, crc32.ChecksumIEEE(body)+1)
 	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
 	req.Header.Set("x-amz-checksum-crc32", base64.StdEncoding.EncodeToString(b))
-	if err := validateCRC32Header(req, body); err == nil {
+	if err := checkPayload(req, body); err == nil {
 		t.Fatalf("expected an incorrect crc32 checksum to be rejected")
 	}
 }
@@ -1585,7 +1668,7 @@ func TestContentMD5_ValidAccepted(t *testing.T) {
 	sum := md5.Sum(body) //nolint:gosec // test-only use, matching the request-integrity role under test.
 	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
 	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(sum[:]))
-	if err := validateContentMD5Header(req, body); err != nil {
+	if err := checkPayload(req, body); err != nil {
 		t.Fatalf("expected a valid Content-MD5 to be accepted: %v", err)
 	}
 }
@@ -1593,7 +1676,7 @@ func TestContentMD5_ValidAccepted(t *testing.T) {
 func TestContentMD5_MissingHeaderUnchangedBehavior(t *testing.T) {
 	body := []byte("no content-md5 header at all")
 	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
-	if err := validateContentMD5Header(req, body); err != nil {
+	if err := checkPayload(req, body); err != nil {
 		t.Fatalf("expected ordinary PUTs without Content-MD5 to remain unaffected: %v", err)
 	}
 }
@@ -1603,7 +1686,7 @@ func TestContentMD5_MismatchedRejectedAsBadDigest(t *testing.T) {
 	wrong := md5.Sum([]byte("a completely different payload")) //nolint:gosec // test-only.
 	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
 	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(wrong[:]))
-	err := validateContentMD5Header(req, body)
+	err := checkPayload(req, body)
 	var ae *authError
 	if !errors.As(err, &ae) || ae.code != "BadDigest" {
 		t.Fatalf("expected a well-formed but mismatched Content-MD5 to be rejected as BadDigest, got %v", err)
@@ -1614,7 +1697,7 @@ func TestContentMD5_MalformedBase64RejectedAsInvalidDigest(t *testing.T) {
 	body := []byte("content-md5 test payload")
 	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
 	req.Header.Set("Content-MD5", "not-valid-base64!!!")
-	err := validateContentMD5Header(req, body)
+	err := checkPayload(req, body)
 	var ae *authError
 	if !errors.As(err, &ae) || ae.code != "InvalidDigest" {
 		t.Fatalf("expected malformed base64 to be rejected as InvalidDigest, got %v", err)
@@ -1628,7 +1711,7 @@ func TestContentMD5_WrongLengthDecodedDigestRejectedAsInvalidDigest(t *testing.T
 	// digest requires -- must be distinguished from a well-formed digest
 	// that simply doesn't match.
 	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString([]byte("short")))
-	err := validateContentMD5Header(req, body)
+	err := checkPayload(req, body)
 	var ae *authError
 	if !errors.As(err, &ae) || ae.code != "InvalidDigest" {
 		t.Fatalf("expected a wrong-length decoded digest to be rejected as InvalidDigest, got %v", err)
@@ -1643,10 +1726,10 @@ func TestContentMD5_CoexistsWithValidCRC32(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/b/k", nil)
 	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(sum[:]))
 	req.Header.Set("x-amz-checksum-crc32", base64.StdEncoding.EncodeToString(crcBytes))
-	if err := validateCRC32Header(req, body); err != nil {
+	if err := checkPayload(req, body); err != nil {
 		t.Fatalf("expected valid crc32 to still pass alongside Content-MD5: %v", err)
 	}
-	if err := validateContentMD5Header(req, body); err != nil {
+	if err := checkPayload(req, body); err != nil {
 		t.Fatalf("expected valid Content-MD5 to still pass alongside crc32: %v", err)
 	}
 }
@@ -1768,7 +1851,7 @@ func TestPayloadMode_FixedSHA256_CorrectDigestAndBodyAccepted(t *testing.T) {
 	body := []byte("ordinary fixed-payload body")
 	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
 	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), nil)
-	if err := srv.authenticate(req, rawPath, rawQuery, body); err != nil {
+	if err := authenticateBody(srv, req, rawPath, rawQuery, body); err != nil {
 		t.Fatalf("expected a correct fixed-SHA256 payload to be accepted: %v", err)
 	}
 }
@@ -1783,7 +1866,7 @@ func TestPayloadMode_FixedSHA256_WrongDigestRejected(t *testing.T) {
 	// *cross-check* against the body actually received.
 	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: testHexSHA256([]byte("a completely different body"))})
 	var ae *authError
-	err := srv.authenticate(req, rawPath, rawQuery, body)
+	err := authenticateBody(srv, req, rawPath, rawQuery, body)
 	if !errors.As(err, &ae) || ae.code != "XAmzContentSHA256Mismatch" {
 		t.Fatalf("expected XAmzContentSHA256Mismatch, got %v", err)
 	}
@@ -1794,7 +1877,7 @@ func TestPayloadMode_FixedSHA256_EmptyBodyCorrectDigestAccepted(t *testing.T) {
 	body := []byte{}
 	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
 	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), nil)
-	if err := srv.authenticate(req, rawPath, rawQuery, body); err != nil {
+	if err := authenticateBody(srv, req, rawPath, rawQuery, body); err != nil {
 		t.Fatalf("expected the SHA-256-of-empty-string digest applied to a zero-length body to be accepted: %v", err)
 	}
 }
@@ -1805,7 +1888,7 @@ func TestPayloadMode_FixedSHA256_EmptyBodyDigestWithNonEmptyBodyRejected(t *test
 	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", realBody)
 	signTestRequest(t, req, signer, rawPath, rawQuery, realBody, time.Now(), &signOpts{badPayloadHash: testHexSHA256(nil)})
 	var ae *authError
-	err := srv.authenticate(req, rawPath, rawQuery, realBody)
+	err := authenticateBody(srv, req, rawPath, rawQuery, realBody)
 	if !errors.As(err, &ae) || ae.code != "XAmzContentSHA256Mismatch" {
 		t.Fatalf("expected the empty-body digest against a non-empty body to be rejected as XAmzContentSHA256Mismatch, got %v", err)
 	}
@@ -1836,7 +1919,7 @@ func TestPayloadMode_MalformedDigestVariantsRejected(t *testing.T) {
 				signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), opts)
 			}
 			var ae *authError
-			err := srv.authenticate(req, rawPath, rawQuery, body)
+			err := authenticateBody(srv, req, rawPath, rawQuery, body)
 			if !errors.As(err, &ae) || ae.code != "AccessDenied" {
 				t.Fatalf("expected a malformed x-amz-content-sha256 to be rejected as AccessDenied, got %v", err)
 			}
@@ -1849,7 +1932,7 @@ func TestPayloadMode_UnsignedPayload_ValidSignedPUTAccepted(t *testing.T) {
 	body := []byte("unsigned payload body")
 	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
 	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: "UNSIGNED-PAYLOAD"})
-	if err := srv.authenticate(req, rawPath, rawQuery, body); err != nil {
+	if err := authenticateBody(srv, req, rawPath, rawQuery, body); err != nil {
 		t.Fatalf("expected a validly signed UNSIGNED-PAYLOAD request to be accepted: %v", err)
 	}
 }
@@ -1862,7 +1945,7 @@ func TestPayloadMode_UnsignedPayload_TamperedAuthorizationRejected(t *testing.T)
 	auth := req.Header.Get("Authorization")
 	req.Header.Set("Authorization", strings.Replace(auth, "Signature=", "Signature=00", 1))
 	var ae *authError
-	err := srv.authenticate(req, rawPath, rawQuery, body)
+	err := authenticateBody(srv, req, rawPath, rawQuery, body)
 	if !errors.As(err, &ae) || ae.code != "SignatureDoesNotMatch" {
 		t.Fatalf("expected a tampered Authorization header to be rejected, got %v", err)
 	}
@@ -1880,7 +1963,7 @@ func TestPayloadMode_UnsignedPayload_ModifiedBodyAloneDoesNotInvalidateSignature
 	signTestRequest(t, req, signer, rawPath, rawQuery, signedBody, time.Now(), &signOpts{badPayloadHash: "UNSIGNED-PAYLOAD"})
 
 	differentBody := []byte("a totally different body substituted after signing")
-	if err := srv.authenticate(req, rawPath, rawQuery, differentBody); err != nil {
+	if err := authenticateBody(srv, req, rawPath, rawQuery, differentBody); err != nil {
 		t.Fatalf("expected UNSIGNED-PAYLOAD to place no constraint on body content: %v", err)
 	}
 }
@@ -1945,7 +2028,7 @@ func TestPayloadMode_ExcludedModesRejectCleanly(t *testing.T) {
 			req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
 			signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: mode})
 			var ae *authError
-			err := srv.authenticate(req, rawPath, rawQuery, body)
+			err := authenticateBody(srv, req, rawPath, rawQuery, body)
 			if !errors.As(err, &ae) || ae.code != "NotImplemented" {
 				t.Fatalf("expected excluded mode %q to be rejected as NotImplemented, got %v", mode, err)
 			}
@@ -1965,7 +2048,7 @@ func TestPayloadMode_StreamingHMACModesRejectedUntilImplemented(t *testing.T) {
 			req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
 			signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: mode})
 			var ae *authError
-			err := srv.authenticate(req, rawPath, rawQuery, body)
+			err := authenticateBody(srv, req, rawPath, rawQuery, body)
 			if !errors.As(err, &ae) || ae.code != "NotImplemented" {
 				t.Fatalf("expected conditional streaming mode %q, not yet implemented, to be rejected as NotImplemented, got %v", mode, err)
 			}
@@ -1982,7 +2065,7 @@ func TestPayloadMode_LowercaseOrMisspelledSentinelsRejected(t *testing.T) {
 			req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
 			signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: mode})
 			var ae *authError
-			err := srv.authenticate(req, rawPath, rawQuery, body)
+			err := authenticateBody(srv, req, rawPath, rawQuery, body)
 			if !errors.As(err, &ae) || ae.code != "AccessDenied" {
 				t.Fatalf("expected lowercase/misspelled mode %q to be rejected as AccessDenied (not silently accepted under some other mode), got %v", mode, err)
 			}
@@ -7136,7 +7219,7 @@ func TestPresignAuth_MissingSignatureFallsThroughToHeaderPathAndFails(t *testing
 	idx := strings.Index(rawQuery, "&X-Amz-Signature=")
 	stripped := rawQuery[:idx]
 	req, path := newPresignTestRequest(http.MethodGet, "/b/k", stripped, host)
-	if err := srv.authenticate(req, path, stripped, nil); err == nil {
+	if err := authenticateBody(srv, req, path, stripped, nil); err == nil {
 		t.Fatalf("expected a signature-less query-auth-shaped request to be rejected")
 	}
 }
@@ -7310,7 +7393,7 @@ func TestPresignAuth_CaseChangedParamNameNotAuthenticated(t *testing.T) {
 	// via either path.
 	lowered := strings.Replace(rawQuery, "X-Amz-Signature=", "x-amz-signature=", 1)
 	req, path := newPresignTestRequest(http.MethodGet, "/b/k", lowered, host)
-	if err := srv.authenticate(req, path, lowered, nil); err == nil {
+	if err := authenticateBody(srv, req, path, lowered, nil); err == nil {
 		t.Fatalf("expected a case-altered auth parameter name to be rejected, not silently authenticated")
 	}
 }
@@ -27197,4 +27280,914 @@ func TestNoInsecureSkipVerifyInSource(t *testing.T) {
 	if strings.Contains(string(src), "InsecureSkipVerify") {
 		t.Fatalf("zeros3.go must never reference InsecureSkipVerify")
 	}
+}
+
+// =============================================================================
+// Streaming ingest: ordinary PutObject / UploadPart bodies stream through
+// CDC into the CAS without whole-body buffering
+// =============================================================================
+
+type readStyle struct {
+	name string
+	wrap func(io.Reader) io.Reader
+}
+
+// irregularReader returns short, uneven reads whose sizes straddle every
+// CDC bound.
+type irregularReader struct {
+	r io.Reader
+	i int
+}
+
+var irregularReadSizes = []int{1, 7, 4096, 3, 65537, 100000, 2, 32768, 262145, 5}
+
+func (ir *irregularReader) Read(p []byte) (int, error) {
+	n := irregularReadSizes[ir.i%len(irregularReadSizes)]
+	ir.i++
+	if n > len(p) {
+		n = len(p)
+	}
+	return ir.r.Read(p[:n])
+}
+
+var readStyles = []readStyle{
+	{"whole", func(r io.Reader) io.Reader { return r }},
+	{"onebyte", iotest.OneByteReader},
+	{"half", iotest.HalfReader},
+	{"irregular", func(r io.Reader) io.Reader { return &irregularReader{r: r} }},
+	{"dataerr", iotest.DataErrReader},
+}
+
+func streamFixture(kind string, n int) []byte {
+	if kind == "random" {
+		return genRandomBytes(int64(n)+7, n)
+	}
+	line := []byte("zeros3-repeat-0123456789abcdef\n")
+	return bytes.Repeat(line, n/len(line)+1)[:n]
+}
+
+// cycleReader streams n bytes of a repeating block without materializing
+// them.
+type cycleReader struct {
+	block []byte
+	pos   int64
+	n     int64
+}
+
+func (c *cycleReader) Read(p []byte) (int, error) {
+	if c.pos >= c.n {
+		return 0, io.EOF
+	}
+	if rest := c.n - c.pos; int64(len(p)) > rest {
+		p = p[:rest]
+	}
+	k := copy(p, c.block[c.pos%int64(len(c.block)):])
+	c.pos += int64(k)
+	return k, nil
+}
+
+func cycleBytes(block []byte, off, n int64) []byte {
+	b, err := io.ReadAll(&cycleReader{block: block, pos: off, n: off + n})
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func chunkDigest(refs []chunkRef) string {
+	h := sha256.New()
+	for _, c := range refs {
+		var l [4]byte
+		binary.BigEndian.PutUint32(l[:], uint32(c.Length))
+		h.Write(l[:])
+		sum, _ := hex.DecodeString(c.SHA256)
+		h.Write(sum)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func newBucketStore(t *testing.T) (*Store, string) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if err := store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	return store, dir
+}
+
+// TestCDC_V1GoldenBoundaries pins CDC v1 output for fixed inputs, recorded
+// from the pre-streaming implementation: identical bytes must keep
+// producing identical chunks however the source fragments its reads.
+func TestCDC_V1GoldenBoundaries(t *testing.T) {
+	rnd := genRandomBytes(42, 8<<20)
+	rep := bytes.Repeat([]byte("ZeroS3 repetitive fixture line 0123456789\n"), (4<<20)/42+1)[:4<<20]
+	mixed := append(append(append([]byte{}, rnd[:1<<20]...), make([]byte, 1<<20)...), rnd[1<<20:2<<20]...)
+	cases := []struct {
+		name   string
+		data   []byte
+		chunks int
+		digest string
+	}{
+		{"random8MiB", rnd, 122, "72ac806f655cceddfcbf5e1a96d06199ca66d40ce48113170b648f066c293d07"},
+		{"repetitive4MiB", rep, 16, "45a3cb231222066793372c3b2e56c73976a5a3133a2a81850a421cf844c67070"},
+		{"mixed3MiB", mixed, 37, "a3aeb2765ecadb2ad8faf758aec96c57a9b8addacb8d19f438dc031210aaa019"},
+	}
+	store, _ := newBucketStore(t)
+	for _, tc := range cases {
+		for _, style := range []readStyle{readStyles[0], readStyles[3]} {
+			t.Run(tc.name+"/"+style.name, func(t *testing.T) {
+				ing, err := store.ingestStream(style.wrap(bytes.NewReader(tc.data)), false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// The golden digest hashes each chunk's length and SHA-256,
+				// as recorded from the pre-streaming implementation.
+				if len(ing.chunks) != tc.chunks || chunkDigest(ing.chunks) != tc.digest {
+					t.Fatalf("CDC v1 output changed: %d chunks, digest %s", len(ing.chunks), chunkDigest(ing.chunks))
+				}
+			})
+		}
+	}
+}
+
+// TestIngest_Matrix crosses object size (every CDC bound), content kind,
+// and read fragmentation through ingest, commit, and readback.
+func TestIngest_Matrix(t *testing.T) {
+	store, _ := newBucketStore(t)
+	sizes := []int{0, 1, cdcMinChunkSize - 1, cdcMinChunkSize, cdcMinChunkSize + 1, cdcTargetChunkSize,
+		cdcMaxChunkSize - 1, cdcMaxChunkSize, cdcMaxChunkSize + 1, 2*cdcMaxChunkSize + 13, 3<<20 + 12345}
+	for _, kind := range []string{"random", "repeat"} {
+		for _, size := range sizes {
+			data := streamFixture(kind, size)
+			pieces, err := chunkData(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantChunks := []chunkRef{}
+			for _, p := range pieces {
+				wantChunks = append(wantChunks, chunkRef{SHA256: hex.EncodeToString(p.sha[:]), Length: int64(len(p.data))})
+			}
+			wantSHA, wantMD5 := sha256.Sum256(data), md5.Sum(data)
+			for _, style := range readStyles {
+				name := fmt.Sprintf("%s/%d/%s", kind, size, style.name)
+				t.Run(name, func(t *testing.T) {
+					ing, err := store.ingestStream(style.wrap(bytes.NewReader(data)), true)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if ing.size != int64(size) || ing.objSHA256 != wantSHA || ing.etagMD5 != wantMD5 || !reflect.DeepEqual(ing.chunks, wantChunks) {
+						t.Fatalf("ingest result diverges from the reference chunking (size %d, %d chunks, want %d)", ing.size, len(ing.chunks), len(wantChunks))
+					}
+					entry, err := store.commitIngested("b", name, ing, "application/octet-stream", nil, putCondition{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					got, body, err := store.GetObject("b", name)
+					if err != nil || !bytes.Equal(body, data) || got.etag != hex.EncodeToString(wantMD5[:]) || entry.etag != got.etag {
+						t.Fatalf("readback mismatch: err=%v etag=%s", err, got.etag)
+					}
+				})
+			}
+		}
+	}
+	res, err := store.Verify(true)
+	if err != nil || !res.OK() {
+		t.Fatalf("verify after matrix: %v %+v", err, res)
+	}
+	man, _, err := store.readManifest(mustManifestUUID(t, store, "b", "random/0/whole"))
+	if err != nil || man.Chunks == nil {
+		t.Fatalf("an empty object's manifest must keep an empty (non-null) chunk list: %v", err)
+	}
+}
+
+func mustManifestUUID(t *testing.T, s *Store, bucket, key string) string {
+	t.Helper()
+	obj, err := s.lookupObject(bucket, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return obj.manifestUUID
+}
+
+// TestIngest_StreamsLazily proves ingest publishes chunks while the body is
+// still being read: when the third chunk is about to be written, at most a
+// buffer's worth of the source has been consumed.
+func TestIngest_StreamsLazily(t *testing.T) {
+	store, _ := newBucketStore(t)
+	data := genRandomBytes(5, 4<<20)
+	var consumed int
+	counting := readerFunc(func(p []byte) (int, error) {
+		n := copy(p, data[consumed:])
+		consumed += n
+		if n == 0 {
+			return 0, io.EOF
+		}
+		return n, nil
+	})
+	var atThirdChunk, writes int
+	withTestHook(t, func(point string) {
+		if point == hookBeforeChunkWrite {
+			if writes++; writes == 3 {
+				atThirdChunk = consumed
+			}
+		}
+	})
+	if _, err := store.ingestStream(counting, true); err != nil {
+		t.Fatal(err)
+	}
+	if atThirdChunk == 0 || atThirdChunk > 2*cdcMaxChunkSize {
+		t.Fatalf("ingest had consumed %d bytes of a %d-byte body before its third chunk write; want at most %d", atThirdChunk, len(data), 2*cdcMaxChunkSize)
+	}
+}
+
+type readerFunc func(p []byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
+// putFixture is one streamed PUT through the real HTTP handler.
+type putFixture struct {
+	t      *testing.T
+	srv    *Server
+	signer testSigner
+	ts     *httptest.Server
+}
+
+func newPutFixture(t *testing.T) *putFixture {
+	t.Helper()
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	if err := doCreateBucket(t, ts.Client(), ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	return &putFixture{t: t, srv: srv, signer: signer, ts: ts}
+}
+
+// put sends body as a PUT whose x-amz-content-sha256 is payloadHash
+// ("" signs the body's real digest). A nil body reader style sends the
+// bytes directly; chunked drops Content-Length.
+func (f *putFixture) put(key string, body []byte, payloadHash string, hdr map[string]string, wrap func(io.Reader) io.Reader, chunked bool) (int, string) {
+	f.t.Helper()
+	req, err := http.NewRequest(http.MethodPut, f.ts.URL+"/b/"+key, nil)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	signTestRequest(f.t, req, f.signer, req.URL.Path, req.URL.RawQuery, body, time.Now(), &signOpts{payloadHash: payloadHash})
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	if len(body) == 0 {
+		req.Body = http.NoBody
+	} else {
+		var r io.Reader = bytes.NewReader(body)
+		if wrap != nil {
+			r = wrap(r)
+		}
+		req.Body = io.NopCloser(r)
+		req.ContentLength = int64(len(body))
+		if chunked {
+			req.ContentLength = -1
+		}
+	}
+	resp, err := f.ts.Client().Do(req)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var e s3ErrorBody
+	_ = xml.Unmarshal(raw, &e)
+	return resp.StatusCode, e.Code
+}
+
+func (f *putFixture) get(key string) (int, []byte) {
+	f.t.Helper()
+	resp := doSignedRequest(f.t, f.ts.Client(), f.ts.URL, f.signer, http.MethodGet, "/b/"+key, nil, nil)
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, b
+}
+
+func crc32Header(b []byte, delta uint32) string {
+	var w [4]byte
+	binary.BigEndian.PutUint32(w[:], crc32.ChecksumIEEE(b)+delta)
+	return base64.StdEncoding.EncodeToString(w[:])
+}
+
+func md5Header(b []byte) string {
+	sum := md5.Sum(b)
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// TestStreamingPut_HTTPMatrix drives PUT through the real handler across
+// the supported SigV4 payload modes, checksum headers (valid, wrong,
+// malformed), body sizes, and client-side fragmentation. Anything that
+// fails verification must leave no visible object.
+func TestStreamingPut_HTTPMatrix(t *testing.T) {
+	f := newPutFixture(t)
+	mid := genRandomBytes(11, 700<<10)
+	other := testHexSHA256([]byte("a different body"))
+	irregular := func(r io.Reader) io.Reader { return &irregularReader{r: r} }
+	cases := []struct {
+		name        string
+		body        []byte
+		payloadHash string
+		hdr         func(b []byte) map[string]string
+		wrap        func(io.Reader) io.Reader
+		chunked     bool
+		wantStatus  int
+		wantCode    string
+	}{
+		{name: "empty/signed", body: nil, wantStatus: 200},
+		{name: "tiny/signed", body: []byte("hello"), wantStatus: 200},
+		{name: "cdc-min/signed", body: genRandomBytes(1, cdcMinChunkSize), wantStatus: 200},
+		{name: "cdc-max+1/signed", body: genRandomBytes(2, cdcMaxChunkSize+1), wantStatus: 200},
+		{name: "mid/signed", body: mid, wantStatus: 200},
+		{name: "repeat/signed", body: streamFixture("repeat", 2<<20), wantStatus: 200},
+		{name: "tiny/unsigned", body: []byte("hello"), payloadHash: "UNSIGNED-PAYLOAD", wantStatus: 200},
+		{name: "mid/unsigned", body: mid, payloadHash: "UNSIGNED-PAYLOAD", wantStatus: 200},
+		{name: "mid/unsigned/irregular-chunked", body: mid, payloadHash: "UNSIGNED-PAYLOAD", wrap: irregular, chunked: true, wantStatus: 200},
+		{name: "mid/signed/irregular", body: mid, wrap: irregular, wantStatus: 200},
+		{name: "mid/signed/onebyte-chunked", body: mid[:3000], wrap: iotest.OneByteReader, chunked: true, payloadHash: "UNSIGNED-PAYLOAD", wantStatus: 200},
+		{name: "mid/signed/tampered-digest", body: mid, payloadHash: other, wantStatus: 403, wantCode: "XAmzContentSHA256Mismatch"},
+		{name: "mid/signed/crc-ok", body: mid, hdr: func(b []byte) map[string]string { return map[string]string{"x-amz-checksum-crc32": crc32Header(b, 0)} }, wantStatus: 200},
+		{name: "mid/signed/crc-wrong", body: mid, hdr: func(b []byte) map[string]string { return map[string]string{"x-amz-checksum-crc32": crc32Header(b, 1)} }, wantStatus: 400, wantCode: "BadDigest"},
+		{name: "mid/unsigned/crc-wrong", body: mid, payloadHash: "UNSIGNED-PAYLOAD", hdr: func(b []byte) map[string]string { return map[string]string{"x-amz-checksum-crc32": crc32Header(b, 1)} }, wantStatus: 400, wantCode: "BadDigest"},
+		{name: "mid/signed/crc-malformed", body: mid, hdr: func([]byte) map[string]string { return map[string]string{"x-amz-checksum-crc32": "!!"} }, wantStatus: 400, wantCode: "InvalidRequest"},
+		{name: "mid/signed/md5-ok", body: mid, hdr: func(b []byte) map[string]string { return map[string]string{"Content-MD5": md5Header(b)} }, wantStatus: 200},
+		{name: "mid/signed/md5-wrong", body: mid, hdr: func([]byte) map[string]string { return map[string]string{"Content-MD5": md5Header([]byte("x"))} }, wantStatus: 400, wantCode: "BadDigest"},
+		{name: "mid/unsigned/md5-wrong", body: mid, payloadHash: "UNSIGNED-PAYLOAD", hdr: func([]byte) map[string]string { return map[string]string{"Content-MD5": md5Header([]byte("x"))} }, wantStatus: 400, wantCode: "BadDigest"},
+		{name: "mid/signed/md5-malformed", body: mid, hdr: func([]byte) map[string]string { return map[string]string{"Content-MD5": "AAAA"} }, wantStatus: 400, wantCode: "InvalidDigest"},
+		{name: "mid/signed/crc-and-md5-ok", body: mid, hdr: func(b []byte) map[string]string {
+			return map[string]string{"x-amz-checksum-crc32": crc32Header(b, 0), "Content-MD5": md5Header(b)}
+		}, wantStatus: 200},
+		{name: "empty/crc-wrong", body: nil, hdr: func([]byte) map[string]string {
+			return map[string]string{"x-amz-checksum-crc32": crc32Header([]byte("x"), 0)}
+		}, wantStatus: 400, wantCode: "BadDigest"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f.t = t
+			var hdr map[string]string
+			if tc.hdr != nil {
+				hdr = tc.hdr(tc.body)
+			}
+			status, code := f.put(tc.name, tc.body, tc.payloadHash, hdr, tc.wrap, tc.chunked)
+			if status != tc.wantStatus || code != tc.wantCode {
+				t.Fatalf("got %d %q, want %d %q", status, code, tc.wantStatus, tc.wantCode)
+			}
+			getStatus, got := f.get(tc.name)
+			if tc.wantStatus == 200 {
+				if getStatus != 200 || !bytes.Equal(got, tc.body) {
+					t.Fatalf("readback mismatch: status %d, %d bytes", getStatus, len(got))
+				}
+				if e, _ := f.srv.store.lookupObject("b", tc.name); e.etag != hex.EncodeToString(md5Sum(tc.body)) {
+					t.Fatalf("ETag %q is not the body's MD5", e.etag)
+				}
+			} else if getStatus != 404 {
+				t.Fatalf("a rejected PUT left a visible object (GET status %d)", getStatus)
+			}
+		})
+	}
+	if res, err := f.srv.store.Verify(true); err != nil || !res.OK() {
+		t.Fatalf("verify after matrix: %v %+v", err, res)
+	}
+}
+
+func md5Sum(b []byte) []byte {
+	s := md5.Sum(b)
+	return s[:]
+}
+
+// TestStreamingPut_RejectedBeforeIngest checks the requests that must be
+// refused from headers alone: no body is ingested, so no chunk is written.
+func TestStreamingPut_RejectedBeforeIngest(t *testing.T) {
+	f := newPutFixture(t)
+	body := genRandomBytes(21, 2<<20)
+	badSigner := f.signer
+	badSigner.secretKey = "not-the-secret"
+	cases := []struct {
+		name        string
+		key         string
+		signer      *testSigner
+		payloadHash string
+		hdr         map[string]string
+		wantStatus  int
+		wantCode    string
+	}{
+		{name: "bad-signature", key: "k", signer: &badSigner, wantStatus: 403, wantCode: "SignatureDoesNotMatch"},
+		{name: "streaming-hmac-unsupported", key: "k", payloadHash: "STREAMING-AWS4-HMAC-SHA256-PAYLOAD", wantStatus: 501, wantCode: "NotImplemented"},
+		{name: "malformed-condition", key: "k", hdr: map[string]string{"If-None-Match": "nope"}, wantStatus: 400, wantCode: "InvalidArgument"},
+		{name: "conflicting-conditions", key: "k", hdr: map[string]string{"If-None-Match": "*", "If-Match": `"x"`}, wantStatus: 400, wantCode: "InvalidArgument"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			signer := f.signer
+			if tc.signer != nil {
+				signer = *tc.signer
+			}
+			req, _ := http.NewRequest(http.MethodPut, f.ts.URL+"/b/"+tc.key, bytes.NewReader(body))
+			signTestRequest(t, req, signer, req.URL.Path, req.URL.RawQuery, body, time.Now(), &signOpts{payloadHash: tc.payloadHash})
+			for k, v := range tc.hdr {
+				req.Header.Set(k, v)
+			}
+			resp, err := f.ts.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			var e s3ErrorBody
+			_ = xml.Unmarshal(raw, &e)
+			if resp.StatusCode != tc.wantStatus || e.Code != tc.wantCode {
+				t.Fatalf("got %d %q, want %d %q", resp.StatusCode, e.Code, tc.wantStatus, tc.wantCode)
+			}
+			if n := countChunkFiles(t, f.srv.store.root); n != 0 {
+				t.Fatalf("a request refused from its headers still wrote %d chunks", n)
+			}
+		})
+	}
+
+	t.Run("missing-bucket", func(t *testing.T) {
+		resp := doSignedRequest(t, f.ts.Client(), f.ts.URL, f.signer, http.MethodPut, "/nobucket/k", body, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != 404 || countChunkFiles(t, f.srv.store.root) != 0 {
+			t.Fatalf("missing bucket: status %d, chunks %d", resp.StatusCode, countChunkFiles(t, f.srv.store.root))
+		}
+	})
+
+	t.Run("declared-length-over-ceiling", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPut, f.ts.URL+"/b/huge", nil)
+		signTestRequest(t, req, f.signer, req.URL.Path, req.URL.RawQuery, nil, time.Now(), &signOpts{payloadHash: "UNSIGNED-PAYLOAD"})
+		conn, err := net.Dial("tcp", f.ts.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		var head bytes.Buffer
+		fmt.Fprintf(&head, "PUT /b/huge HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n", req.URL.Host, int64(maxStreamedBodySize)+1)
+		req.Header.Write(&head)
+		head.WriteString("\r\n")
+		if _, err := conn.Write(head.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		var e s3ErrorBody
+		_ = xml.Unmarshal(raw, &e)
+		if resp.StatusCode != 400 || e.Code != "EntityTooLarge" {
+			t.Fatalf("got %d %q, want 400 EntityTooLarge", resp.StatusCode, e.Code)
+		}
+	})
+}
+
+// TestStreamingPut_ConditionalHistory walks one key through create-only,
+// matching and stale If-Match, and unconditional writes; a refused write
+// must leave the current object untouched and an accepted overwrite must
+// archive the version it replaced.
+func TestStreamingPut_ConditionalHistory(t *testing.T) {
+	f := newPutFixture(t)
+	bodies := [][]byte{genRandomBytes(31, 600<<10), genRandomBytes(32, 700<<10), genRandomBytes(33, 300<<10)}
+	etag := func(b []byte) string { return `"` + hex.EncodeToString(md5Sum(b)) + `"` }
+	steps := []struct {
+		name       string
+		body       int
+		hdr        map[string]string
+		wantStatus int
+		wantLive   int
+	}{
+		{"create-only on absent", 0, map[string]string{"If-None-Match": "*"}, 200, 0},
+		{"create-only on present", 1, map[string]string{"If-None-Match": "*"}, 412, 0},
+		{"if-match current", 1, map[string]string{"If-Match": etag(bodies[0])}, 200, 1},
+		{"if-match stale", 2, map[string]string{"If-Match": etag(bodies[0])}, 412, 1},
+		{"unconditional", 2, nil, 200, 2},
+	}
+	for _, st := range steps {
+		status, _ := f.put("k", bodies[st.body], "", st.hdr, nil, false)
+		if status != st.wantStatus {
+			t.Fatalf("%s: status %d, want %d", st.name, status, st.wantStatus)
+		}
+		if _, got := f.get("k"); !bytes.Equal(got, bodies[st.wantLive]) {
+			t.Fatalf("%s: live object is not body %d", st.name, st.wantLive)
+		}
+	}
+	hist, cur, err := f.srv.store.ListVersions("b", "k")
+	if err != nil || len(hist) != 2 || cur.etag != hex.EncodeToString(md5Sum(bodies[2])) ||
+		hist[0].etag != hex.EncodeToString(md5Sum(bodies[0])) || hist[1].etag != hex.EncodeToString(md5Sum(bodies[1])) {
+		t.Fatalf("history after the sequence is wrong: %v %d", err, len(hist))
+	}
+}
+
+// TestStreamingPut_ConcurrentCreateOnly races full-body create-only PUTs;
+// the precondition is decided at the namespace commit, so exactly one wins
+// even though every body has been fully ingested by then.
+func TestStreamingPut_ConcurrentCreateOnly(t *testing.T) {
+	f := newPutFixture(t)
+	const writers = 8
+	bodies := make([][]byte, writers)
+	for i := range bodies {
+		bodies[i] = genRandomBytes(int64(100+i), 400<<10)
+	}
+	statuses := make([]int, writers)
+	var wg sync.WaitGroup
+	for i := range bodies {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, _ := http.NewRequest(http.MethodPut, f.ts.URL+"/b/race", bytes.NewReader(bodies[i]))
+			signTestRequest(t, req, f.signer, req.URL.Path, req.URL.RawQuery, bodies[i], time.Now(), nil)
+			req.Header.Set("If-None-Match", "*")
+			resp, err := f.ts.Client().Do(req)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			resp.Body.Close()
+			statuses[i] = resp.StatusCode
+		}()
+	}
+	wg.Wait()
+	winner, wins := -1, 0
+	for i, s := range statuses {
+		switch s {
+		case 200:
+			winner, wins = i, wins+1
+		case 412:
+		default:
+			t.Fatalf("writer %d: unexpected status %d", i, s)
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("expected exactly one winner, got %d (%v)", wins, statuses)
+	}
+	if _, got := f.get("race"); !bytes.Equal(got, bodies[winner]) {
+		t.Fatal("live object is not the winner's body")
+	}
+}
+
+// TestIngestCrash_Matrix interrupts a streamed overwrite or create at each
+// publication stage: after the crash the store must show exactly the
+// pre-existing state, verify clean, and have its speculative chunks and
+// manifest reclaimed by GC without disturbing live data.
+func TestIngestCrash_Matrix(t *testing.T) {
+	points := []struct {
+		name  string
+		point string
+		nth   int
+	}{
+		{"mid-stream-chunk", hookBeforeChunkWrite, 3},
+		{"after-chunks", hookAfterChunksPublished, 1},
+		{"after-manifest", hookAfterManifestPublished, 1},
+	}
+	old := genRandomBytes(1, 300<<10)
+	fresh := genRandomBytes(2, 1<<20)
+	for _, pt := range points {
+		for _, overwrite := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/overwrite=%v", pt.name, overwrite), func(t *testing.T) {
+				store, dir := newBucketStore(t)
+				if overwrite {
+					if _, err := store.PutObject("b", "k", old, "text/plain", nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				seen := 0
+				withTestHook(t, func(p string) {
+					if p == pt.point {
+						if seen++; seen == pt.nth {
+							panic(simulatedCrash{point: p})
+						}
+					}
+				})
+				runExpectingSimulatedCrash(t, func() { _, _ = store.PutObject("b", "k", fresh, "text/plain", nil) })
+				testHook = nil
+				store.Close()
+
+				s2, err := OpenStore(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, got, getErr := s2.GetObject("b", "k")
+				hist, _, _ := s2.ListVersions("b", "k")
+				switch {
+				case overwrite && (getErr != nil || !bytes.Equal(got, old) || len(hist) != 0):
+					t.Fatalf("overwrite crash exposed or lost state: %v, %d history entries", getErr, len(hist))
+				case !overwrite && !errors.Is(getErr, errNoSuchKey):
+					t.Fatalf("a crashed create must not be visible, got %v", getErr)
+				}
+				s2.Close()
+
+				res, err := gcCollect(dir, true)
+				if err != nil || !res.LiveSetOK || res.ChunksDeleted == 0 {
+					t.Fatalf("gc after crash: %v %+v", err, res)
+				}
+				if pt.point == hookAfterManifestPublished && res.ManifestsDeleted != 1 {
+					t.Fatalf("expected the orphan manifest to be reclaimed, got %d", res.ManifestsDeleted)
+				}
+				s3, err := OpenStore(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s3.Close()
+				if v, err := s3.Verify(true); err != nil || !v.OK() {
+					t.Fatalf("verify after gc: %v %+v", err, v)
+				}
+				if overwrite {
+					if _, got, err := s3.GetObject("b", "k"); err != nil || !bytes.Equal(got, old) {
+						t.Fatalf("live object damaged by gc: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestStreamingPut_InterruptedBodies covers a body that dies mid-stream:
+// at the store boundary (reader error) and over the wire (client closes the
+// connection early). Neither may publish anything.
+func TestStreamingPut_InterruptedBodies(t *testing.T) {
+	boom := errors.New("boom")
+	body := genRandomBytes(41, 1<<20)
+
+	t.Run("reader-error", func(t *testing.T) {
+		store, _ := newBucketStore(t)
+		_, err := store.ingestStream(io.MultiReader(bytes.NewReader(body[:300<<10]), iotest.ErrReader(boom)), true)
+		if !errors.Is(err, boom) {
+			t.Fatalf("want the reader's error, got %v", err)
+		}
+		if _, e := store.lookupObject("b", "k"); !errors.Is(e, errNoSuchKey) {
+			t.Fatal("interrupted ingest produced an object")
+		}
+	})
+
+	t.Run("client-disconnect", func(t *testing.T) {
+		f := newPutFixture(t)
+		handled := make(chan struct{})
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		abortSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			f.srv.ServeHTTP(w, r)
+			close(handled)
+		})}
+		go abortSrv.Serve(ln)
+		defer abortSrv.Close()
+		req, _ := http.NewRequest(http.MethodPut, f.ts.URL+"/b/cut", nil)
+		signTestRequest(t, req, f.signer, req.URL.Path, req.URL.RawQuery, nil, time.Now(), &signOpts{payloadHash: "UNSIGNED-PAYLOAD"})
+		conn, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var head bytes.Buffer
+		fmt.Fprintf(&head, "PUT /b/cut HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n", req.URL.Host, len(body))
+		req.Header.Write(&head)
+		head.WriteString("\r\n")
+		head.Write(body[:300<<10])
+		if _, err := conn.Write(head.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		conn.Close()
+		select {
+		case <-handled:
+		case <-time.After(10 * time.Second):
+			t.Fatal("handler did not return after the client disconnected")
+		}
+		if _, err := f.srv.store.lookupObject("b", "cut"); !errors.Is(err, errNoSuchKey) {
+			t.Fatalf("a truncated upload left a visible object: %v", err)
+		}
+		if countChunkFiles(t, f.srv.store.root) == 0 {
+			t.Fatal("expected the truncated upload's already-ingested chunks to be staged")
+		}
+		if status, _ := f.put("cut", body, "", nil, nil, false); status != 200 {
+			t.Fatalf("retry after an aborted upload failed: %d", status)
+		}
+		if _, got := f.get("cut"); !bytes.Equal(got, body) {
+			t.Fatal("retry readback mismatch")
+		}
+	})
+}
+
+// TestStreamingPut_RestartCompatibility checks that a streamed PUT yields
+// the manifest the reference chunking implies and that it survives restart.
+func TestStreamingPut_RestartCompatibility(t *testing.T) {
+	f := newPutFixture(t)
+	body := genRandomBytes(51, 3<<20)
+	if status, code := f.put("obj", body, "", map[string]string{"Content-Type": "text/x-test", "x-amz-meta-origin": "stream"}, nil, false); status != 200 {
+		t.Fatalf("put: %d %s", status, code)
+	}
+	root := f.srv.store.root
+	f.srv.store.Close()
+
+	s2, err := OpenStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	entry, got, err := s2.GetObject("b", "obj")
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("readback after restart: %v", err)
+	}
+	man, _, err := s2.readManifest(entry.manifestUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pieces, _ := chunkData(bytes.NewReader(body))
+	want, _ := buildManifestV1(pieces, body, "text/x-test", map[string]string{"origin": "stream"})
+	if man.ManifestFormatVersion != manifestFormatVersion || man.CDCFormatVersion != cdcFormatVersion ||
+		!reflect.DeepEqual(man.Chunks, want.Chunks) || man.ObjectSHA256 != want.ObjectSHA256 || man.ETag != want.ETag ||
+		man.TotalLength != want.TotalLength || !reflect.DeepEqual(man.Metadata, want.Metadata) || man.ContentType != "text/x-test" {
+		t.Fatalf("manifest differs from the reference build:\n got %+v\nwant %+v", man, want)
+	}
+	if v, err := s2.Verify(true); err != nil || !v.OK() {
+		t.Fatalf("verify: %v %+v", err, v)
+	}
+}
+
+// TestStreamingMultipart_UploadPart streams parts through the shared ingest
+// path: checksums are enforced before a part is recorded, and the completed
+// object equals the concatenation.
+func TestStreamingMultipart_UploadPart(t *testing.T) {
+	f := newPutFixture(t)
+	client, signer, base := f.ts.Client(), f.signer, f.ts.URL
+	uploadID := doCreateMultipartUpload(t, client, base, signer, "b", "mp")
+	part1 := genRandomBytes(61, minMultipartPartSize+17)
+	part2 := genRandomBytes(62, 100<<10)
+
+	partURL := func(n int) string { return fmt.Sprintf("/b/mp?partNumber=%d&uploadId=%s", n, uploadID) }
+	send := func(n int, b []byte, hdr map[string]string, wrap func(io.Reader) io.Reader) (int, string, string) {
+		req, _ := http.NewRequest(http.MethodPut, base+partURL(n), nil)
+		signTestRequest(t, req, signer, req.URL.Path, req.URL.RawQuery, b, time.Now(), nil)
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		var r io.Reader = bytes.NewReader(b)
+		if wrap != nil {
+			r = wrap(r)
+		}
+		req.Body, req.ContentLength = io.NopCloser(r), int64(len(b))
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		var e s3ErrorBody
+		_ = xml.Unmarshal(raw, &e)
+		return resp.StatusCode, e.Code, resp.Header.Get("ETag")
+	}
+
+	if status, code, _ := send(2, part2, map[string]string{"Content-MD5": md5Header([]byte("wrong"))}, nil); status != 400 || code != "BadDigest" {
+		t.Fatalf("wrong Content-MD5 on a part: %d %s", status, code)
+	}
+	if status, code, _ := send(2, part2, map[string]string{"x-amz-checksum-crc32": crc32Header(part2, 1)}, nil); status != 400 || code != "BadDigest" {
+		t.Fatalf("wrong CRC32 on a part: %d %s", status, code)
+	}
+	if parts, _ := doListParts(t, client, base, signer, "b", "mp", uploadID); len(parts.Part) != 0 {
+		t.Fatalf("a rejected part was recorded: %+v", parts.Part)
+	}
+	s1, _, etag1 := send(1, part1, nil, func(r io.Reader) io.Reader { return &irregularReader{r: r} })
+	s2, _, etag2 := send(2, part2, map[string]string{"Content-MD5": md5Header(part2)}, nil)
+	if s1 != 200 || s2 != 200 || etag1 != `"`+hex.EncodeToString(md5Sum(part1))+`"` || etag2 != `"`+hex.EncodeToString(md5Sum(part2))+`"` {
+		t.Fatalf("part uploads: %d %d %s %s", s1, s2, etag1, etag2)
+	}
+	if status, _, _ := send(1, part1, nil, nil); status != 200 {
+		t.Fatalf("re-uploading a part: %d", status)
+	}
+	res, status, raw := doCompleteMultipartUpload(t, client, base, signer, "b", "mp", uploadID,
+		[]completedPartXML{{PartNumber: 1, ETag: etag1}, {PartNumber: 2, ETag: etag2}})
+	if status != 200 || res == nil {
+		t.Fatalf("complete: %d %s", status, raw)
+	}
+	whole := append(append([]byte{}, part1...), part2...)
+	if _, got := f.get("mp"); !bytes.Equal(got, whole) {
+		t.Fatal("completed object does not equal the concatenated parts")
+	}
+	if status, _, _ := send(3, part2, nil, nil); status != 404 {
+		t.Fatalf("a part for a completed upload must be refused, got %d", status)
+	}
+}
+
+// TestStreamingPut_LargeObjectBoundedMemory uploads an object well past the
+// former 256 MiB buffering ceiling and shows memory stays bounded while the
+// bytes read back exactly. Content is a repeating random block, so chunks
+// dedup and the test measures streaming rather than disk speed.
+func TestStreamingPut_LargeObjectBoundedMemory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large-object streaming test skipped in -short mode")
+	}
+	const size = 288 << 20
+	block := genRandomBytes(71, 3<<20+12345)
+	f := newPutFixture(t)
+
+	h, c := sha256.New(), crc32.NewIEEE()
+	if _, err := io.Copy(io.MultiWriter(h, c), &cycleReader{block: block, n: size}); err != nil {
+		t.Fatal(err)
+	}
+	var crcBytes [4]byte
+	binary.BigEndian.PutUint32(crcBytes[:], c.Sum32())
+
+	req, _ := http.NewRequest(http.MethodPut, f.ts.URL+"/b/large", nil)
+	signTestRequest(t, req, f.signer, req.URL.Path, req.URL.RawQuery, nil, time.Now(), &signOpts{payloadHash: hex.EncodeToString(h.Sum(nil))})
+	req.Header.Set("x-amz-checksum-crc32", base64.StdEncoding.EncodeToString(crcBytes[:]))
+	req.Body, req.ContentLength = io.NopCloser(&cycleReader{block: block, n: size}), size
+
+	start := time.Now()
+	var status int
+	peak := peakHeapGrowth(func() {
+		resp, err := f.ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		status = resp.StatusCode
+	})
+	if status != 200 {
+		t.Fatalf("large PUT: status %d", status)
+	}
+	t.Logf("uploaded %d MiB in %s; peak heap growth %d MiB", size>>20, time.Since(start).Round(time.Millisecond), peak>>20)
+	if peak > 64<<20 {
+		t.Fatalf("heap grew by %d MiB while streaming a %d MiB object", peak>>20, size>>20)
+	}
+
+	entry, man, err := f.srv.store.HeadObject("b", "large")
+	if err != nil || entry.size != size || man.TotalLength != size {
+		t.Fatalf("head: %v %+v", err, entry)
+	}
+	var refs []chunkRef
+	cc := newCDCChunker(&cycleReader{block: block, n: size})
+	for {
+		ch, err := cc.nextView()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(ch)
+		refs = append(refs, chunkRef{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(ch))})
+	}
+	if chunkDigest(man.Chunks) != chunkDigest(refs) {
+		t.Fatal("streamed manifest chunks differ from chunking the same stream directly")
+	}
+
+	const window = 16 << 20
+	for off := int64(0); off < size; off += window {
+		n := int64(window)
+		if off+n > size {
+			n = size - off
+		}
+		resp := doSignedRequest(t, f.ts.Client(), f.ts.URL, f.signer, http.MethodGet, "/b/large", nil,
+			map[string]string{"Range": fmt.Sprintf("bytes=%d-%d", off, off+n-1)})
+		got, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusPartialContent || !bytes.Equal(got, cycleBytes(block, off, n)) {
+			t.Fatalf("range readback mismatch at offset %d (status %d)", off, resp.StatusCode)
+		}
+	}
+	if v, err := f.srv.store.Verify(true); err != nil || !v.OK() {
+		t.Fatalf("verify: %v %+v", err, v)
+	}
+}
+
+// peakHeapGrowth runs fn while sampling the live heap and returns the peak
+// growth over the pre-run baseline.
+func peakHeapGrowth(fn func()) uint64 {
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+	var peak atomic.Uint64
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
+				if m.HeapAlloc > peak.Load() {
+					peak.Store(m.HeapAlloc)
+				}
+			}
+		}
+	}()
+	fn()
+	close(stop)
+	<-done
+	if p := peak.Load(); p > base.HeapAlloc {
+		return p - base.HeapAlloc
+	}
+	return 0
 }

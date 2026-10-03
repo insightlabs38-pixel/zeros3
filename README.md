@@ -24,6 +24,7 @@ CAS → immutable manifests → visibility journal.**
 - Peer-assisted chunk repair, verified byte-for-byte before publication
 - Copy-on-write namespace forks and durable, restorable snapshots
 - Atomic conditional writes (`If-Match` / `If-None-Match`)
+- Streaming ingest: uploads of any size run in bounded memory
 - Bounded parallel chunk transfer
 - Zero third-party dependencies, reproducible build
 
@@ -211,6 +212,17 @@ for the same edit chunked with a fixed 64KiB window. An 8MB file synced,
 then re-synced after a small 4KiB mid-file insertion, reused 99.0% of
 its bytes and transferred only the touched chunks.
 
+**Streaming ingest.** `PutObject` and `UploadPart` bodies stream from the
+socket through CDC into the CAS; the object SHA-256, ETag, and request
+checksums accumulate in the same pass, and the object becomes visible only
+at the journal commit. A 288 MiB upload (past the former 256 MiB buffering
+ceiling) peaked at 13 MiB of server RSS (1 GiB: 19 MiB), while the
+previous whole-body-buffering build used 582 MiB and rejected it. On
+non-compressible content, side by side on the same machine, ordinary PUT
+rose from 20.8 to 40.5 MiB/s at 256 MiB; chunk counts for the fixed
+fixtures (254 / 1000 / 4029 at 16 / 64 / 256 MiB) are unchanged. Single
+runs, 4 vCPU, loopback.
+
 **Bounded parallel delta transfer.** Loopback benchmark, 4 vCPU, a 10ms
 simulated per-request delay standing in for real-network RTT, 256 MiB of
 missing payload:
@@ -225,7 +237,7 @@ serialized and safe regardless of worker count.
 
 ## Verification
 
-- **Internal test suite:** 738 tests green; `go vet ./...` and
+- **Internal test suite:** 750 tests green; `go vet ./...` and
   `gofmt -l .` clean; `go test -race ./...` clean.
 - **AWS SDK for Go v2 interoperability:** validated black-box against a
   real `zeros3` process using an ordinary, unmodified SDK client —
@@ -261,9 +273,10 @@ serialized and safe regardless of worker count.
   `zeros3.go`.
 - Full generated evidence: [`deps-proof.txt`](./deps-proof.txt).
   Substitution-by-substitution detail: [`STDLIB.md`](./STDLIB.md).
-- External interoperability validation (the AWS SDK, `rclone`) is
-  performed out-of-process, against a running `zeros3` binary over plain
-  HTTP — never imported by, linked into, or required by this module.
+- External interoperability validation (the AWS SDK, `rclone`) lives in
+  [`testing-harnesses/`](./testing-harnesses/), a separate Go module that
+  drives a running `zeros3` binary over plain HTTP — never imported by,
+  linked into, or required by this module.
 
 ## Reproducible build
 
@@ -293,8 +306,8 @@ exact API contract:
 - No IAM/STS/KMS/ACL/policy engine; a single static credential pair.
 - `replicate`, `repair`, `fork`, and `snapshot` all require ZeroS3 on
   every server involved — no generic-AWS-S3 source or destination.
-- The request body is buffered in memory (bounded, 256MiB max) rather
-  than fully streamed end-to-end.
+- `GetObject` reconstructs the full object in memory before responding;
+  uploads stream, downloads of very large objects do not yet.
 - No power-loss (real `kill -9`/hardware) testing beyond deterministic
   in-process crash injection and direct on-disk truncation.
 
@@ -308,6 +321,7 @@ S3_COMPAT.md     exact supported/unsupported/deviating S3 behavior
 STDLIB.md        standard-library substitutions, mapped to shipped code
 deps-proof.txt   generated zero-dependency evidence
 scripts/         reproducible-build verification script
+testing-harnesses/  external black-box validation (separate Go module)
 ```
 
 The implementation intentionally remains one Go source file for the
