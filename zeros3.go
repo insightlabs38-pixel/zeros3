@@ -69,34 +69,35 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      432    Content-defined chunking (CDC)
-//      558    Content-addressed chunk storage (CAS)
-//      717    Packed CAS (immutable packs, DEFLATE records, locator index)
-//     1833    Manifests (immutable, JSON)
-//     1932    Visibility journal (append-only, checksummed)
-//     2327    Store: format, namespace, and object CRUD
-//     3076    Version history/restore and ListObjectsV2
-//     3306    SigV4 authentication (header and presigned-URL)
-//     4261    Request payload checksums and S3-shaped XML error/response types
-//     4477    HTTP routing and S3 operation handlers
-//     4870    Conditional operations (PUT/GET/HEAD preconditions)
-//     5436    CopyObject
-//     5730    Multipart upload
-//     6556    Stats and reachability scanning
-//     7283    Verify
-//     7459    Store locking and safe offline GC
-//     7714    Offline compaction (`zeros3 compact`)
-//     8232    Pack reclamation and repacking (`zeros3 repack`)
-//     8571    Streaming object reads (full and ranged GET)
-//     8696    Delta sync client, credentials, and parallel transfer
-//    10619    Recursive directory sync
-//    10924    Remote replication (`zeros3 replicate`)
-//    11688    Peer-assisted corruption repair (`zeros3 repair`)
-//    12166    Namespace (prefix/bucket) replication
-//    12473    Copy-on-write namespace fork (`zeros3 fork`)
-//    12681    Snapshots and restore
-//    13834    Structural diff and inspect (introspection)
-//    14358    CLI dispatch, HTTP server/startup, and main
+//      433    Content-defined chunking (CDC)
+//      559    Content-addressed chunk storage (CAS)
+//      718    Packed CAS (immutable packs, DEFLATE records, locator index)
+//     1834    Manifests (immutable, JSON)
+//     1933    Visibility journal (append-only, checksummed)
+//     2328    Store: format, namespace, and object CRUD
+//     3077    Version history/restore and ListObjectsV2
+//     3307    SigV4 authentication (header and presigned-URL)
+//     4262    Request payload checksums and S3-shaped XML error/response types
+//     4478    HTTP routing and S3 operation handlers
+//     4878    Conditional operations (PUT/GET/HEAD preconditions)
+//     5444    CopyObject
+//     5738    Multipart upload
+//     6564    Stats and reachability scanning
+//     7291    Verify
+//     7467    Store locking and safe offline GC
+//     7722    Offline compaction (`zeros3 compact`)
+//     8240    Pack reclamation and repacking (`zeros3 repack`)
+//     8579    Streaming object reads (full and ranged GET)
+//     8704    Delta sync client, credentials, and parallel transfer
+//    10649    Bulk logical-chunk transport (v2)
+//    11551    Recursive directory sync
+//    11856    Remote replication (`zeros3 replicate`)
+//    12603    Peer-assisted corruption repair (`zeros3 repair`)
+//    13115    Namespace (prefix/bucket) replication
+//    13422    Copy-on-write namespace fork (`zeros3 fork`)
+//    13630    Snapshots and restore
+//    14777    Structural diff and inspect (introspection)
+//    15301    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -4500,6 +4501,9 @@ type Server struct {
 	// this field existed. It is never used for anything SigV4-related --
 	// the raw, unmodified r.Host is what gets signed/verified either way.
 	vhostBase string
+	// noBulk withholds the v2 bulk-transport capability, making this
+	// server indistinguishable from a build that predates it.
+	noBulk bool
 }
 
 func NewServer(store *Store, creds Credentials, region string) *Server {
@@ -4712,6 +4716,10 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// URL, so it needs neither path-style nor virtual-hosted-style
 	// resolution. Authentication above already covers it identically to
 	// every ordinary S3 request.
+	if strings.HasPrefix(rawPath, zeros3BulkPathPrefix) {
+		srv.handleBulk(w, r, rawPath, check)
+		return
+	}
 	if strings.HasPrefix(rawPath, "/_zeros3/") {
 		body, ok := readBufferedBody(w, r, rawPath, check)
 		if !ok {
@@ -8718,6 +8726,9 @@ func (m *manifestReader) next() ([]byte, error) {
 //   PUT  /_zeros3/v1/chunks/<sha256-hex>    idempotent chunk upload
 //   POST /_zeros3/v1/commit                 atomic ordinary object commit
 //
+// An optional v2 bulk transport for chunk movement (section 15b-ter) is
+// advertised through GET /info and leaves all of the above unchanged.
+//
 // Client: `zeros3 sync LOCAL_FILE s3://bucket/key` (runSync/syncFile,
 // below) is a genuine HTTP client of a *running* zeros3 server -- unlike
 // every other CLI verb (stats/verify/versions/restore/gc/doctor), which
@@ -8805,6 +8816,12 @@ type syncDiscoveryResponse struct {
 	MaxHashesPerBatch int    `json:"max_hashes_per_batch"`
 	MaxBatchBytes     int64  `json:"max_batch_bytes"`
 	MaxChunkBytes     int    `json:"max_chunk_bytes"`
+
+	// Optional bulk transport (section 15b-ter); absent from servers that
+	// predate it, which clients must then treat as v1-only.
+	BulkProtocol  int   `json:"bulk_protocol_version,omitempty"`
+	MaxBulkChunks int   `json:"max_bulk_chunks,omitempty"`
+	MaxBulkBytes  int64 `json:"max_bulk_bytes,omitempty"`
 }
 
 // syncChunkDescriptor unambiguously identifies one expected chunk: its
@@ -9248,7 +9265,7 @@ func (srv *Server) handleSyncChunkDownload(w http.ResponseWriter, hexDigest stri
 // every other request (ServeHTTP calls that before dispatch ever reaches
 // here), so an unauthorized caller never learns even this much.
 func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
-	writeSyncJSON(w, http.StatusOK, syncDiscoveryResponse{
+	d := syncDiscoveryResponse{
 		Protocol:          zeros3SyncProtocolVersion,
 		CDC:               zeros3SyncCDCFormat,
 		Hash:              zeros3SyncHashAlgorithm,
@@ -9256,7 +9273,11 @@ func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
 		MaxHashesPerBatch: maxSyncBatchDescriptors,
 		MaxBatchBytes:     maxSyncBatchBytes,
 		MaxChunkBytes:     maxSyncChunkBytes,
-	})
+	}
+	if !srv.noBulk {
+		d.BulkProtocol, d.MaxBulkChunks, d.MaxBulkBytes = zeros3BulkProtocolVersion, maxBulkRecords, maxBulkBytes
+	}
+	writeSyncJSON(w, http.StatusOK, d)
 }
 
 // handleSyncNegotiate answers which requested chunks are missing from
@@ -10072,18 +10093,7 @@ func signSigV4Request(r *http.Request, creds Credentials, region string, payload
 // so cancellation actually reaches the in-flight GET/PUT rather than
 // stopping only at the goroutine boundary.
 func (cfg syncClientConfig) signAndDo(ctx context.Context, method, path string, body []byte, headers map[string]string) (*http.Response, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(cfg.Endpoint, "/")+path, bytes.NewReader(body))
-	if err != nil {
-		return nil, nil, err
-	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	payloadHash := sha256.Sum256(body)
-	if err := signSigV4Request(req, cfg.Creds, cfg.Region, hex.EncodeToString(payloadHash[:]), time.Now()); err != nil {
-		return nil, nil, err
-	}
-	resp, err := cfg.client().Do(req)
+	resp, err := cfg.signAndDoStream(ctx, method, path, body, headers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -10093,6 +10103,23 @@ func (cfg syncClientConfig) signAndDo(ctx context.Context, method, path string, 
 		return nil, nil, err
 	}
 	return resp, respBody, nil
+}
+
+// signAndDoStream is signAndDo without reading the response: the caller
+// owns resp.Body and must bound every read from it.
+func (cfg syncClientConfig) signAndDoStream(ctx context.Context, method, path string, body []byte, headers map[string]string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(cfg.Endpoint, "/")+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	payloadHash := sha256.Sum256(body)
+	if err := signSigV4Request(req, cfg.Creds, cfg.Region, hex.EncodeToString(payloadHash[:]), time.Now()); err != nil {
+		return nil, err
+	}
+	return cfg.client().Do(req)
 }
 
 // discoverZeroS3Sync performs capability discovery (A1). Any failure --
@@ -10253,6 +10280,9 @@ func buildSyncPlan(chunks []syncLocalChunk, total int64) syncPlan {
 // declaring an oversized batch size can't induce an oversized request),
 // one /negotiate call per batch.
 func negotiateSyncMissing(cfg syncClientConfig, discovery syncDiscoveryResponse, unique []syncChunkDescriptor) (map[string]bool, error) {
+	if caps, ok := bulkCapsOf(discovery); ok {
+		return negotiateBulkMissing(cfg, caps, unique)
+	}
 	batchSize := discovery.MaxHashesPerBatch
 	if batchSize <= 0 || batchSize > maxSyncBatchDescriptors {
 		batchSize = maxSyncBatchDescriptors
@@ -10541,7 +10571,7 @@ func syncFile(cfg syncClientConfig) (syncStats, error) {
 		return syncStats{}, fmt.Errorf("sync: %w", nerr)
 	}
 
-	uploadedBytes, uerr := uploadMissingSyncChunks(cfg, plan, missing)
+	uploadedBytes, uerr := transferMissingSyncChunks(cfg, discovery, plan, missing)
 	if uerr != nil {
 		return syncStats{}, fmt.Errorf("sync: %w", uerr)
 	}
@@ -10613,6 +10643,908 @@ func parseS3URI(raw string) (bucket, key string, err error) {
 		return "", "", fmt.Errorf("destination must be an s3://bucket/key URI, got %q", raw)
 	}
 	return rest[:i], rest[i+1:], nil
+}
+
+// =============================================================================
+// 15b-ter. Bulk logical-chunk transport (protocol extension v2)
+//
+// An optional transport extension that replaces thousands of one-chunk v1
+// requests with a few bounded, framed batches. It is advertised by
+// GET /_zeros3/v1/info (bulk_protocol_version, max_bulk_chunks,
+// max_bulk_bytes) and spoken only to endpoints that advertised it; every v1
+// endpoint is unchanged. It moves chunks and nothing else: the wire unit
+// is one logical chunk (SHA-256, logical length, uncompressed bytes),
+// publication is still casWrite, and objects still commit through the v1
+// /commit. Physical placement (loose or packed, raw or DEFLATE) never
+// appears on the wire.
+//
+//   POST /_zeros3/v2/negotiate       descriptors in, missing descriptors out
+//   POST /_zeros3/v2/chunks/fetch    descriptors in, chunk data frame out
+//   POST /_zeros3/v2/chunks/upload   chunk data frame in, JSON ack out
+//
+// Frame, all integers big-endian:
+//
+//	magic "ZS3B" | version u8 (2) | kind u8 | reserved u16 (0) | count u32 | total u64
+//	descriptor kinds: count x ( sha256[32] | length u32 )
+//	data kinds:       count x ( sha256[32] | length u32 | payload[length] )
+//
+// total is the exact sum of the record lengths. Kinds: 1 negotiate request,
+// 2 missing-descriptor response, 3 fetch request, 4 data (fetch response and
+// upload request). Count and total are bounded independently, every length
+// is 1..maxSyncChunkBytes, and all bounds are checked before any payload is
+// read or allocated. Truncation, trailing bytes, a total that disagrees with
+// the records, duplicate digests (except in negotiate) and one digest with
+// two lengths are all rejected.
+// =============================================================================
+
+const (
+	zeros3BulkProtocolVersion = 2
+	zeros3BulkPathPrefix      = "/_zeros3/v2/"
+	zeros3BulkNegotiatePath   = "/_zeros3/v2/negotiate"
+	zeros3BulkFetchPath       = "/_zeros3/v2/chunks/fetch"
+	zeros3BulkUploadPath      = "/_zeros3/v2/chunks/upload"
+
+	// maxBulkRecords and maxBulkBytes bound one batch on independent axes;
+	// defaultBulkTargetBytes is the client's planning target within them.
+	maxBulkRecords         = 4096
+	maxBulkBytes           = 64 << 20
+	defaultBulkTargetBytes = 8 << 20
+
+	// Concurrent batches are capped independently of -workers: measured at
+	// 10 ms RTT, throughput stops improving beyond 4 in flight (storage
+	// bound), while frame memory grows with every extra batch.
+	// bulkInflightBytes additionally caps the frame bytes they hold.
+	maxBulkWorkers    = 4
+	bulkInflightBytes = 64 << 20
+
+	bulkMagic     = "ZS3B"
+	bulkHeaderLen = 20
+	bulkDescLen   = 36
+
+	bulkKindNegotiate byte = 1
+	bulkKindMissing   byte = 2
+	bulkKindFetch     byte = 3
+	bulkKindData      byte = 4
+
+	bulkMaxControlBytes = bulkHeaderLen + maxBulkRecords*bulkDescLen
+	bulkMaxFrameBytes   = bulkMaxControlBytes + maxBulkBytes
+)
+
+var (
+	errBulkFraming  = errors.New("bulk: malformed frame")
+	errBulkTooLarge = errors.New("bulk: batch exceeds limits")
+	errBulkDigest   = errors.New("bulk: chunk content does not match its digest")
+)
+
+var bulkTargetBytes int64 = defaultBulkTargetBytes
+
+// ZEROS3_BULK_TARGET_MIB overrides the batch target (1..64 MiB); it exists
+// for benchmarking, not as a supported tuning interface.
+func init() {
+	if n, err := strconv.Atoi(os.Getenv("ZEROS3_BULK_TARGET_MIB")); err == nil && n >= 1 && n <= 64 {
+		bulkTargetBytes = int64(n) << 20
+	}
+}
+
+type bulkLimits struct {
+	maxRecords int
+	maxBytes   int64 // zero: no payload-total bound (descriptor-only kinds)
+	allowEmpty bool
+	allowDup   bool
+}
+
+var (
+	bulkNegotiateLimits = bulkLimits{maxRecords: maxBulkRecords, allowDup: true}
+	bulkBatchLimits     = bulkLimits{maxRecords: maxBulkRecords, maxBytes: maxBulkBytes}
+)
+
+func appendBulkHeader(b []byte, kind byte, count int, total int64) []byte {
+	b = append(b, bulkMagic...)
+	b = append(b, zeros3BulkProtocolVersion, kind, 0, 0)
+	b = binary.BigEndian.AppendUint32(b, uint32(count))
+	return binary.BigEndian.AppendUint64(b, uint64(total))
+}
+
+func appendBulkDesc(b []byte, sum [32]byte, length int) []byte {
+	b = append(b, sum[:]...)
+	return binary.BigEndian.AppendUint32(b, uint32(length))
+}
+
+func bulkDescriptorBytes(descs []syncChunkDescriptor) (total int64) {
+	for _, d := range descs {
+		total += d.Length
+	}
+	return total
+}
+
+// bulkFrameSize is the exact encoded size of a frame of the given kind
+// naming descs, which is also what lets fetch set Content-Length and the
+// client bound its reads.
+func bulkFrameSize(kind byte, descs []syncChunkDescriptor) int64 {
+	n := int64(bulkHeaderLen + bulkDescLen*len(descs))
+	if kind == bulkKindData {
+		n += bulkDescriptorBytes(descs)
+	}
+	return n
+}
+
+// encodeBulkDescriptors renders a descriptor-only frame (negotiate or fetch
+// request) from validated descriptors.
+func encodeBulkDescriptors(kind byte, descs []syncChunkDescriptor) ([]byte, error) {
+	b := appendBulkHeader(make([]byte, 0, bulkFrameSize(kind, descs)), kind, len(descs), bulkDescriptorBytes(descs))
+	for _, d := range descs {
+		sum, _, err := normalizedSyncDigest(d.SHA256, d.Length)
+		if err != nil {
+			return nil, err
+		}
+		b = appendBulkDesc(b, sum, int(d.Length))
+	}
+	return b, nil
+}
+
+// bulkReader incrementally parses one frame; payloads are read into the
+// caller's scratch buffer, so memory is one chunk regardless of batch size.
+type bulkReader struct {
+	r          io.Reader
+	lim        bulkLimits
+	data       bool
+	left       uint32
+	total, sum uint64
+	seen       map[[32]byte]uint32
+}
+
+type bulkRecord struct {
+	sum     [32]byte
+	length  int
+	payload []byte
+	dup     bool
+}
+
+func bulkFramingError(format string, args ...any) error {
+	return fmt.Errorf("%w: "+format, append([]any{errBulkFraming}, args...)...)
+}
+
+func newBulkReader(r io.Reader, kind byte, lim bulkLimits) (*bulkReader, error) {
+	var h [bulkHeaderLen]byte
+	if _, err := io.ReadFull(r, h[:]); err != nil {
+		return nil, bulkFramingError("truncated header: %w", err)
+	}
+	switch {
+	case string(h[:4]) != bulkMagic:
+		return nil, bulkFramingError("bad magic")
+	case h[4] != zeros3BulkProtocolVersion:
+		return nil, bulkFramingError("unsupported version %d", h[4])
+	case h[5] != kind:
+		return nil, bulkFramingError("unexpected message kind %d (want %d)", h[5], kind)
+	case h[6] != 0 || h[7] != 0:
+		return nil, bulkFramingError("nonzero reserved field")
+	}
+	count, total := binary.BigEndian.Uint32(h[8:]), binary.BigEndian.Uint64(h[12:])
+	if count > uint32(lim.maxRecords) {
+		return nil, fmt.Errorf("%w: %d records (max %d)", errBulkTooLarge, count, lim.maxRecords)
+	}
+	if count == 0 && (!lim.allowEmpty || total != 0) {
+		return nil, bulkFramingError("empty batch")
+	}
+	if total < uint64(count) || total > uint64(count)*maxSyncChunkBytes {
+		return nil, bulkFramingError("impossible total %d for %d records", total, count)
+	}
+	if lim.maxBytes > 0 && total > uint64(lim.maxBytes) {
+		return nil, fmt.Errorf("%w: %d bytes (max %d)", errBulkTooLarge, total, lim.maxBytes)
+	}
+	return &bulkReader{r: r, lim: lim, data: kind == bulkKindData, left: count, total: total, seen: make(map[[32]byte]uint32, count)}, nil
+}
+
+// next returns io.EOF after the last declared record. For data kinds it
+// reads the payload into scratch (at least maxSyncChunkBytes long) and
+// verifies its SHA-256 before returning it.
+func (b *bulkReader) next(scratch []byte) (bulkRecord, error) {
+	if b.left == 0 {
+		return bulkRecord{}, io.EOF
+	}
+	var d [bulkDescLen]byte
+	if _, err := io.ReadFull(b.r, d[:]); err != nil {
+		return bulkRecord{}, bulkFramingError("truncated descriptor: %w", err)
+	}
+	rec := bulkRecord{length: int(binary.BigEndian.Uint32(d[32:]))}
+	copy(rec.sum[:], d[:32])
+	if rec.length < 1 || rec.length > maxSyncChunkBytes {
+		return bulkRecord{}, bulkFramingError("invalid chunk length %d", binary.BigEndian.Uint32(d[32:]))
+	}
+	if b.sum+uint64(rec.length) > b.total {
+		return bulkRecord{}, bulkFramingError("records exceed the declared total %d", b.total)
+	}
+	if prev, ok := b.seen[rec.sum]; ok {
+		if prev != uint32(rec.length) {
+			return bulkRecord{}, bulkFramingError("chunk %x declared with two lengths", rec.sum)
+		}
+		if !b.lim.allowDup {
+			return bulkRecord{}, bulkFramingError("duplicate chunk %x", rec.sum)
+		}
+		rec.dup = true
+	} else {
+		b.seen[rec.sum] = uint32(rec.length)
+	}
+	if b.data {
+		rec.payload = scratch[:rec.length]
+		if _, err := io.ReadFull(b.r, rec.payload); err != nil {
+			return bulkRecord{}, bulkFramingError("truncated payload: %w", err)
+		}
+		if sha256.Sum256(rec.payload) != rec.sum {
+			return bulkRecord{}, fmt.Errorf("%w: %x", errBulkDigest, rec.sum)
+		}
+	}
+	b.left--
+	b.sum += uint64(rec.length)
+	return rec, nil
+}
+
+// finish requires every record consumed, the declared total to match them,
+// and the stream to end exactly there.
+func (b *bulkReader) finish() error {
+	if b.left != 0 || b.sum != b.total {
+		return bulkFramingError("declared total %d does not match the %d bytes of records", b.total, b.sum)
+	}
+	var one [1]byte
+	switch _, err := io.ReadFull(b.r, one[:]); err {
+	case io.EOF:
+		return nil
+	case nil:
+		return bulkFramingError("trailing data after the last record")
+	default:
+		return bulkFramingError("reading frame end: %w", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Server
+// ---------------------------------------------------------------------------
+
+func writeBulkParseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errBulkTooLarge):
+		writeSyncError(w, http.StatusBadRequest, "BatchTooLarge", err.Error())
+	case errors.Is(err, errBulkDigest):
+		writeSyncError(w, http.StatusBadRequest, "DigestMismatch", err.Error())
+	default:
+		writeSyncError(w, http.StatusBadRequest, "MalformedRequest", err.Error())
+	}
+}
+
+func (srv *Server) handleBulk(w http.ResponseWriter, r *http.Request, rawPath string, check payloadCheck) {
+	if srv.noBulk || r.Method != http.MethodPost {
+		writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown ZeroS3 sync extension operation")
+		return
+	}
+	switch rawPath {
+	case zeros3BulkNegotiatePath:
+		srv.handleBulkNegotiate(w, r, rawPath, check)
+	case zeros3BulkFetchPath:
+		srv.handleBulkFetch(w, r, rawPath, check)
+	case zeros3BulkUploadPath:
+		srv.handleBulkUpload(w, r, rawPath, check)
+	default:
+		writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown ZeroS3 sync extension operation")
+	}
+}
+
+// readBulkDescriptors reads and fully parses one descriptor-only request,
+// whose size is bounded by protocol limits, before anything acts on it.
+func readBulkDescriptors(w http.ResponseWriter, r *http.Request, rawPath string, check payloadCheck, kind byte, lim bulkLimits) ([]bulkRecord, bool) {
+	body, err := readAllLimited(r.Body, bulkMaxControlBytes)
+	if err != nil {
+		writeSyncError(w, http.StatusBadRequest, "BatchTooLarge", err.Error())
+		return nil, false
+	}
+	if err := check.verifyBytes(body); err != nil {
+		writeRequestError(w, err, rawPath)
+		return nil, false
+	}
+	br, err := newBulkReader(bytes.NewReader(body), kind, lim)
+	if err != nil {
+		writeBulkParseError(w, err)
+		return nil, false
+	}
+	var recs []bulkRecord
+	for {
+		rec, err := br.next(nil)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			writeBulkParseError(w, err)
+			return nil, false
+		}
+		recs = append(recs, rec)
+	}
+	if err := br.finish(); err != nil {
+		writeBulkParseError(w, err)
+		return nil, false
+	}
+	return recs, true
+}
+
+// handleBulkNegotiate is v1 negotiate over a frame: a pure casStat read,
+// reporting missing descriptors de-duplicated in first-seen order.
+func (srv *Server) handleBulkNegotiate(w http.ResponseWriter, r *http.Request, rawPath string, check payloadCheck) {
+	recs, ok := readBulkDescriptors(w, r, rawPath, check, bulkKindNegotiate, bulkNegotiateLimits)
+	if !ok {
+		return
+	}
+	missing := make([]bulkRecord, 0)
+	var total int64
+	for _, rec := range recs {
+		if rec.dup {
+			continue
+		}
+		if _, err := srv.store.casStat(rec.sum); err != nil {
+			missing = append(missing, rec)
+			total += int64(rec.length)
+		}
+	}
+	out := appendBulkHeader(make([]byte, 0, bulkHeaderLen+bulkDescLen*len(missing)), bulkKindMissing, len(missing), total)
+	for _, rec := range missing {
+		out = appendBulkDesc(out, rec.sum, rec.length)
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(out)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out)
+}
+
+// handleBulkFetch streams the requested logical chunks, one casRead at a
+// time. Presence and length are checked, and the first chunk is read and
+// verified, before the status line is committed; a later failure aborts the
+// response short of its Content-Length (see streamObject), so corrupt bytes
+// are never sent and the client sees an incomplete frame.
+func (srv *Server) handleBulkFetch(w http.ResponseWriter, r *http.Request, rawPath string, check payloadCheck) {
+	recs, ok := readBulkDescriptors(w, r, rawPath, check, bulkKindFetch, bulkBatchLimits)
+	if !ok {
+		return
+	}
+	var total int64
+	for _, rec := range recs {
+		n, err := srv.store.casStat(rec.sum)
+		if err != nil {
+			writeSyncError(w, http.StatusNotFound, "NoSuchChunk", fmt.Sprintf("chunk %x is not available: %v", rec.sum, err))
+			return
+		}
+		if n != int64(rec.length) {
+			writeSyncError(w, http.StatusConflict, "LengthMismatch", fmt.Sprintf("chunk %x has logical length %d, not %d", rec.sum, n, rec.length))
+			return
+		}
+		total += n
+	}
+	data, err := srv.store.casRead(recs[0].sum)
+	if err != nil {
+		writeSyncError(w, http.StatusNotFound, "NoSuchChunk", fmt.Sprintf("chunk %x is not available or corrupt: %v", recs[0].sum, err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(int64(bulkHeaderLen+bulkDescLen*len(recs))+total, 10))
+	w.WriteHeader(http.StatusOK)
+	var buf [bulkHeaderLen]byte
+	if _, err := w.Write(appendBulkHeader(buf[:0], bulkKindData, len(recs), total)); err != nil {
+		return
+	}
+	for i, rec := range recs {
+		if i > 0 {
+			if data, err = srv.store.casRead(rec.sum); err != nil || len(data) != rec.length {
+				log.Printf("zeros3: bulk fetch aborted mid-stream at chunk %x: %v", rec.sum, err)
+				return
+			}
+		}
+		var d [bulkDescLen]byte
+		if _, err := w.Write(appendBulkDesc(d[:0], rec.sum, rec.length)); err != nil {
+			return
+		}
+		if _, err := w.Write(data); err != nil {
+			return
+		}
+	}
+}
+
+type syncBulkUploadResponse struct {
+	Chunks int   `json:"chunks"`
+	Bytes  int64 `json:"bytes"`
+}
+
+// handleBulkUpload parses and publishes the frame incrementally: one chunk
+// is verified against its digest and written with casWrite before the next
+// is read. Chunks published before a later framing or request-checksum
+// failure stay as ordinary unreachable CAS content (exactly like a failed
+// streaming PUT); success is acknowledged only after the whole signed body
+// has been consumed and its checksums verified.
+func (srv *Server) handleBulkUpload(w http.ResponseWriter, r *http.Request, rawPath string, check payloadCheck) {
+	if r.ContentLength > bulkMaxFrameBytes {
+		writeSyncError(w, http.StatusBadRequest, "BatchTooLarge", "upload exceeds the maximum bulk frame size")
+		return
+	}
+	var (
+		body    io.Reader = io.LimitReader(r.Body, bulkMaxFrameBytes+1)
+		sha     hash.Hash
+		md5h    hash.Hash
+		crc     hash.Hash32
+		writers []io.Writer
+	)
+	if check.sha256 != "" {
+		sha = sha256.New()
+		writers = append(writers, sha)
+	}
+	if check.md5 != nil {
+		md5h = md5.New() //nolint:gosec // S3-compatible request integrity check, not a security use of MD5.
+		writers = append(writers, md5h)
+	}
+	if check.hasCRC32 {
+		crc = crc32.NewIEEE()
+		writers = append(writers, crc)
+	}
+	if len(writers) > 0 {
+		body = io.TeeReader(body, io.MultiWriter(writers...))
+	}
+	br, err := newBulkReader(body, bulkKindData, bulkBatchLimits)
+	if err != nil {
+		writeBulkParseError(w, err)
+		return
+	}
+	scratch := make([]byte, maxSyncChunkBytes)
+	var chunks int
+	for {
+		rec, err := br.next(scratch)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			writeBulkParseError(w, err)
+			return
+		}
+		fireTestHook(hookBeforeChunkWrite)
+		if _, err := srv.store.casWrite(rec.payload); err != nil {
+			writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		fireTestHook(hookAfterChunksPublished)
+		chunks++
+	}
+	if err := br.finish(); err != nil {
+		writeBulkParseError(w, err)
+		return
+	}
+	var (
+		shaSum [32]byte
+		md5Sum [md5.Size]byte
+		crcSum uint32
+	)
+	if sha != nil {
+		sha.Sum(shaSum[:0])
+	}
+	if md5h != nil {
+		md5h.Sum(md5Sum[:0])
+	}
+	if crc != nil {
+		crcSum = crc.Sum32()
+	}
+	if err := check.verify(shaSum, md5Sum, crcSum); err != nil {
+		writeRequestError(w, err, rawPath)
+		return
+	}
+	writeSyncJSON(w, http.StatusOK, syncBulkUploadResponse{Chunks: chunks, Bytes: int64(br.sum)})
+}
+
+// ---------------------------------------------------------------------------
+// Client: capability, batch planning, memory budget
+// ---------------------------------------------------------------------------
+
+// bulkCaps are an endpoint's advertised bulk limits, clamped to this
+// build's own ceilings so a misbehaving server cannot induce an oversized
+// request. A server that omits them is v1-only.
+type bulkCaps struct {
+	maxRecords int
+	maxBytes   int64
+}
+
+func bulkCapsOf(d syncDiscoveryResponse) (bulkCaps, bool) {
+	if d.BulkProtocol != zeros3BulkProtocolVersion || d.MaxBulkChunks < 1 || d.MaxBulkBytes < maxSyncChunkBytes {
+		return bulkCaps{}, false
+	}
+	return bulkCaps{maxRecords: min(d.MaxBulkChunks, maxBulkRecords), maxBytes: min(d.MaxBulkBytes, maxBulkBytes)}, true
+}
+
+// bulkPolicy bounds one planned batch: at most maxRecords chunks and, unless
+// a single chunk alone is larger, targetBytes of logical payload.
+type bulkPolicy struct {
+	maxRecords  int
+	targetBytes int64
+}
+
+func bulkPolicyFor(caps ...bulkCaps) bulkPolicy {
+	p := bulkPolicy{maxRecords: maxBulkRecords, targetBytes: bulkTargetBytes}
+	for _, c := range caps {
+		p.maxRecords = min(p.maxRecords, c.maxRecords)
+		p.targetBytes = min(p.targetBytes, c.maxBytes)
+	}
+	return p
+}
+
+// planBulkBatches splits descs, preserving order, into consecutive batches
+// bounded by logical bytes and record count -- never by physical size.
+func planBulkBatches(descs []syncChunkDescriptor, p bulkPolicy) [][]syncChunkDescriptor {
+	var out [][]syncChunkDescriptor
+	start, bytes := 0, int64(0)
+	for i, d := range descs {
+		if i > start && (i-start >= p.maxRecords || bytes+d.Length > p.targetBytes) {
+			out = append(out, descs[start:i:i])
+			start, bytes = i, 0
+		}
+		bytes += d.Length
+	}
+	if start < len(descs) {
+		out = append(out, descs[start:len(descs):len(descs)])
+	}
+	return out
+}
+
+func bulkWorkers(workers int) int { return min(workers, maxBulkWorkers) }
+
+// bulkFrames is a small free list of fixed-capacity frame buffers: frames
+// are the dominant allocation of a transfer, and recycling a bounded few
+// keeps the heap at the in-flight working set instead of letting garbage
+// frames pile up between collections (a sync.Pool is emptied by every GC,
+// and a growing bytes.Buffer would double a recycled buffer on every
+// slightly larger batch). Capacity covers any batch the planner can build
+// from the current target.
+var bulkFrames struct {
+	sync.Mutex
+	free [][]byte
+}
+
+func bulkFrameCap() int { return int(bulkTargetBytes) + maxSyncChunkBytes + bulkMaxControlBytes }
+
+// getBulkFrame returns an empty buffer with room for size bytes.
+func getBulkFrame(size int64) []byte {
+	var b []byte
+	bulkFrames.Lock()
+	if n := len(bulkFrames.free); n > 0 {
+		b, bulkFrames.free = bulkFrames.free[n-1], bulkFrames.free[:n-1]
+	}
+	bulkFrames.Unlock()
+	if int64(cap(b)) < size {
+		b = make([]byte, 0, max(int64(bulkFrameCap()), size))
+	}
+	return b[:0]
+}
+
+func putBulkFrame(b []byte) {
+	if cap(b) != bulkFrameCap() {
+		return
+	}
+	bulkFrames.Lock()
+	if len(bulkFrames.free) <= maxBulkWorkers {
+		bulkFrames.free = append(bulkFrames.free, b)
+	}
+	bulkFrames.Unlock()
+}
+
+// byteBudget bounds the frame bytes held by in-flight batches across all
+// workers, so peak client memory is a property of the budget rather than of
+// -workers.
+type byteBudget struct {
+	mu    sync.Mutex
+	cond  *sync.Cond
+	avail int64
+	size  int64
+}
+
+func newByteBudget(size int64) *byteBudget {
+	b := &byteBudget{avail: size, size: size}
+	b.cond = sync.NewCond(&b.mu)
+	return b
+}
+
+var bulkBudget = newByteBudget(bulkInflightBytes)
+
+func (b *byteBudget) acquire(ctx context.Context, n int64) (release func(), err error) {
+	n = min(n, b.size)
+	stop := context.AfterFunc(ctx, func() {
+		b.mu.Lock()
+		b.cond.Broadcast()
+		b.mu.Unlock()
+	})
+	defer stop()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for b.avail < n {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		b.cond.Wait()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	b.avail -= n
+	return func() {
+		b.mu.Lock()
+		b.avail += n
+		b.cond.Broadcast()
+		b.mu.Unlock()
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Client: requests
+// ---------------------------------------------------------------------------
+
+func bulkStatusError(what string, resp *http.Response) error {
+	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("%s failed: status %d: %s", what, resp.StatusCode, bytes.TrimSpace(msg))
+}
+
+// negotiateBulkMissing is negotiateSyncMissing over /v2/negotiate. The
+// response is bounded by the request's own record count.
+func negotiateBulkMissing(cfg syncClientConfig, caps bulkCaps, unique []syncChunkDescriptor) (map[string]bool, error) {
+	missing := make(map[string]bool)
+	for i := 0; i < len(unique); i += caps.maxRecords {
+		batch := unique[i:min(i+caps.maxRecords, len(unique))]
+		req, err := encodeBulkDescriptors(bulkKindNegotiate, batch)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := cfg.signAndDoStream(context.Background(), http.MethodPost, zeros3BulkNegotiatePath, req, map[string]string{"Content-Type": "application/octet-stream"})
+		if err != nil {
+			return nil, fmt.Errorf("bulk negotiate request failed: %w", err)
+		}
+		err = func() error {
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				return bulkStatusError("bulk negotiate", resp)
+			}
+			want := make(map[string]int64, len(batch))
+			for _, d := range batch {
+				want[strings.ToLower(d.SHA256)] = d.Length
+			}
+			br, err := newBulkReader(io.LimitReader(resp.Body, bulkFrameSize(bulkKindMissing, batch)+1), bulkKindMissing,
+				bulkLimits{maxRecords: len(batch), allowEmpty: true})
+			if err != nil {
+				return fmt.Errorf("bulk negotiate response: %w", err)
+			}
+			for {
+				rec, err := br.next(nil)
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					return fmt.Errorf("bulk negotiate response: %w", err)
+				}
+				sha := hex.EncodeToString(rec.sum[:])
+				if l, ok := want[sha]; !ok || l != int64(rec.length) {
+					return fmt.Errorf("bulk negotiate response names unrequested chunk %s", sha)
+				}
+				missing[sha] = true
+			}
+			if err := br.finish(); err != nil {
+				return fmt.Errorf("bulk negotiate response: %w", err)
+			}
+			return nil
+		}()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return missing, nil
+}
+
+// fetchBulkChunks requests descs in one batch and independently verifies the
+// response frame: identity, order, length and SHA-256 of every chunk and the
+// exact end of the stream, reading no more than the frame this request
+// implies. emit sees each verified chunk as it arrives (data is valid only
+// during the call), so a stream that dies midway still delivers its verified
+// prefix; when keep is non-nil the whole verified frame is retained in it,
+// ready to forward as an upload body.
+func fetchBulkChunks(ctx context.Context, cfg syncClientConfig, descs []syncChunkDescriptor, emit func(i int, data []byte) error, keep *bytes.Buffer) error {
+	req, err := encodeBulkDescriptors(bulkKindFetch, descs)
+	if err != nil {
+		return err
+	}
+	resp, err := cfg.signAndDoStream(ctx, http.MethodPost, zeros3BulkFetchPath, req, map[string]string{"Content-Type": "application/octet-stream"})
+	if err != nil {
+		return fmt.Errorf("bulk fetch request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return bulkStatusError("bulk fetch", resp)
+	}
+	var body io.Reader = io.LimitReader(resp.Body, bulkFrameSize(bulkKindData, descs)+1)
+	if keep != nil {
+		body = io.TeeReader(body, keep)
+	}
+	br, err := newBulkReader(body, bulkKindData, bulkBatchLimits)
+	if err != nil {
+		return fmt.Errorf("bulk fetch response: %w", err)
+	}
+	if int(br.left) != len(descs) || br.total != uint64(bulkDescriptorBytes(descs)) {
+		return bulkFramingError("bulk fetch response does not describe the requested %d chunks", len(descs))
+	}
+	scratch := make([]byte, maxSyncChunkBytes)
+	for i, d := range descs {
+		rec, err := br.next(scratch)
+		if err != nil {
+			if err == io.EOF {
+				err = bulkFramingError("response ended after %d of %d chunks", i, len(descs))
+			}
+			return fmt.Errorf("bulk fetch response: %w", err)
+		}
+		if hex.EncodeToString(rec.sum[:]) != strings.ToLower(d.SHA256) || int64(rec.length) != d.Length {
+			return bulkFramingError("bulk fetch response record %d is not the requested chunk %s", i, d.SHA256)
+		}
+		if emit != nil {
+			if err := emit(i, rec.payload); err != nil {
+				return err
+			}
+		}
+	}
+	if err := br.finish(); err != nil {
+		return fmt.Errorf("bulk fetch response: %w", err)
+	}
+	return nil
+}
+
+// uploadBulkFrame posts one already-verified data frame.
+func uploadBulkFrame(ctx context.Context, cfg syncClientConfig, frame []byte) error {
+	resp, err := cfg.signAndDoStream(ctx, http.MethodPost, zeros3BulkUploadPath, frame, map[string]string{"Content-Type": "application/octet-stream"})
+	if err != nil {
+		return fmt.Errorf("bulk upload request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return bulkStatusError("bulk upload", resp)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return nil
+}
+
+// relayBulkChunks moves want from src to dst in planned batches, each
+// fetched, verified and uploaded as one transferWork under the shared
+// byte budget. The first failure cancels the rest (all-or-nothing before
+// commit); chunks already published stay valid for a rerun.
+func relayBulkChunks(ctx context.Context, workers int, src, dst syncClientConfig, pol bulkPolicy, want []syncChunkDescriptor, who string) error {
+	var items []transferWork
+	for _, batch := range planBulkBatches(want, pol) {
+		items = append(items, transferWork{
+			SHA256: batch[0].SHA256,
+			Length: bulkDescriptorBytes(batch),
+			Do: func(ctx context.Context) error {
+				size := bulkFrameSize(bulkKindData, batch)
+				release, err := bulkBudget.acquire(ctx, size)
+				if err != nil {
+					return err
+				}
+				defer release()
+				buf := getBulkFrame(size)
+				defer putBulkFrame(buf)
+				frame := bytes.NewBuffer(buf)
+				if err := fetchBulkChunks(ctx, src, batch, nil, frame); err != nil {
+					return fmt.Errorf("%s: fetching %d chunks from source: %w", who, len(batch), err)
+				}
+				if err := uploadBulkFrame(ctx, dst, frame.Bytes()); err != nil {
+					return fmt.Errorf("%s: uploading %d chunks to destination: %w", who, len(batch), err)
+				}
+				return nil
+			},
+		})
+	}
+	return firstTransferError(runTransferWorkers(ctx, bulkWorkers(workers), items, true))
+}
+
+// uploadMissingSyncChunksBulk is uploadMissingSyncChunks over bulk
+// batches. Every chunk of a batch is re-read from the local file and
+// re-hashed against its scanned digest before it enters the frame, so local
+// mutation detection is exactly as strict as the per-chunk path's.
+func uploadMissingSyncChunksBulk(cfg syncClientConfig, pol bulkPolicy, plan syncPlan, missing map[string]bool) (uploadedBytes int64, err error) {
+	workers, err := resolveTransferWorkers(cfg.Workers)
+	if err != nil {
+		return 0, err
+	}
+	var want []syncChunkDescriptor
+	for _, d := range plan.unique {
+		if missing[d.SHA256] {
+			want = append(want, d)
+			uploadedBytes += d.Length
+		}
+	}
+	var items []transferWork
+	for _, batch := range planBulkBatches(want, pol) {
+		items = append(items, transferWork{
+			SHA256: batch[0].SHA256,
+			Length: bulkDescriptorBytes(batch),
+			Do: func(ctx context.Context) error {
+				size := bulkFrameSize(bulkKindData, batch)
+				release, err := bulkBudget.acquire(ctx, size)
+				if err != nil {
+					return err
+				}
+				defer release()
+				f, err := os.Open(cfg.LocalPath)
+				if err != nil {
+					return fmt.Errorf("%w: re-reading chunks for upload: %v", errSyncLocalMutation, err)
+				}
+				defer f.Close()
+				buf := getBulkFrame(size)
+				defer putBulkFrame(buf)
+				frame := appendBulkHeader(buf, bulkKindData, len(batch), bulkDescriptorBytes(batch))
+				for _, d := range batch {
+					sum, _, err := normalizedSyncDigest(d.SHA256, d.Length)
+					if err != nil {
+						return err
+					}
+					frame = appendBulkDesc(frame, sum, int(d.Length))
+					at := len(frame)
+					frame = frame[:at+int(d.Length)]
+					if _, err := f.ReadAt(frame[at:], plan.offsetBySHA[d.SHA256]); err != nil {
+						return fmt.Errorf("%w: re-reading chunk for upload: %v", errSyncLocalMutation, err)
+					}
+					if sha256.Sum256(frame[at:]) != sum {
+						return fmt.Errorf("%w: chunk at offset %d no longer matches its scanned digest", errSyncLocalMutation, plan.offsetBySHA[d.SHA256])
+					}
+				}
+				return uploadBulkFrame(ctx, cfg, frame)
+			},
+		})
+	}
+	if err := firstTransferError(runTransferWorkers(context.Background(), bulkWorkers(workers), items, true)); err != nil {
+		return 0, err
+	}
+	return uploadedBytes, nil
+}
+
+// transferMissingSyncChunks uploads a local sync's missing chunks over bulk
+// when the destination advertised it, and one request per chunk otherwise.
+func transferMissingSyncChunks(cfg syncClientConfig, discovery syncDiscoveryResponse, plan syncPlan, missing map[string]bool) (int64, error) {
+	if caps, ok := bulkCapsOf(discovery); ok {
+		return uploadMissingSyncChunksBulk(cfg, bulkPolicyFor(caps), plan, missing)
+	}
+	return uploadMissingSyncChunks(cfg, plan, missing)
+}
+
+// bulkRelayPolicy reports whether both ends of a relay advertised bulk, and
+// the batch bounds acceptable to both; otherwise the relay stays on v1.
+func bulkRelayPolicy(src, dst syncDiscoveryResponse) (bulkPolicy, bool) {
+	sc, sok := bulkCapsOf(src)
+	dc, dok := bulkCapsOf(dst)
+	if !sok || !dok {
+		return bulkPolicy{}, false
+	}
+	return bulkPolicyFor(sc, dc), true
+}
+
+// relayMissingChunks transfers want from src to dst, in bulk batches when
+// both advertised it and as one transferWork per chunk otherwise. Either
+// way the caller commits only if it returns nil.
+func relayMissingChunks(workers int, src, dst syncClientConfig, srcDisc, dstDisc syncDiscoveryResponse, want []syncChunkDescriptor, who string) error {
+	if pol, ok := bulkRelayPolicy(srcDisc, dstDisc); ok {
+		return relayBulkChunks(context.Background(), workers, src, dst, pol, want, who)
+	}
+	items := make([]transferWork, 0, len(want))
+	for _, d := range want {
+		items = append(items, transferWork{
+			SHA256: d.SHA256,
+			Length: d.Length,
+			Do: func(ctx context.Context) error {
+				data, err := fetchSourceChunk(ctx, src, d.SHA256)
+				if err != nil {
+					return fmt.Errorf("%s: fetching chunk %s from source: %w", who, d.SHA256, err)
+				}
+				if int64(len(data)) != d.Length {
+					return fmt.Errorf("%s: source chunk %s: declared length %d does not match fetched length %d", who, d.SHA256, d.Length, len(data))
+				}
+				if err := putSyncChunk(ctx, dst, d.SHA256, data); err != nil {
+					return fmt.Errorf("%s: uploading chunk %s to destination: %w", who, d.SHA256, err)
+				}
+				return nil
+			},
+		})
+	}
+	return firstTransferError(runTransferWorkers(context.Background(), workers, items, true))
 }
 
 // =============================================================================
@@ -10858,7 +11790,7 @@ func runSync(args []string) {
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key (default: AWS_SECRET_ACCESS_KEY)")
 	region := fs.String("region", defaultRegion, "SigV4 region (default: AWS_REGION)")
 	contentType := fs.String("content-type", "", "Content-Type for the destination object (default: application/octet-stream); ignored for a directory source")
-	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per file (bounded 1..32)")
+	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per file (bounded 1..32; bulk transport runs at most 4 batches at once)")
 	fs.Parse(args)
 	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
@@ -11124,6 +12056,7 @@ const (
 type replicationPlan struct {
 	cfg           replicateConfig
 	desc          syncObjectDescriptor
+	srcDiscovery  syncDiscoveryResponse
 	destDiscovery syncDiscoveryResponse
 	plan          syncPlan
 	missing       map[string]bool
@@ -11160,7 +12093,8 @@ type replicationPlan struct {
 // executeReplicationPlan) and `replicate -dry-run` share one planner
 // instead of two independently-maintained ideas of "what would transfer."
 func planReplication(cfg replicateConfig) (replicationPlan, error) {
-	if _, err := discoverZeroS3Sync(cfg.Source); err != nil {
+	srcDiscovery, err := discoverZeroS3Sync(cfg.Source)
+	if err != nil {
 		return replicationPlan{}, fmt.Errorf("replicate: source capability discovery failed: %w", err)
 	}
 	destDiscovery, err := discoverZeroS3Sync(cfg.Dest)
@@ -11245,7 +12179,7 @@ func planReplication(cfg replicateConfig) (replicationPlan, error) {
 	}
 
 	return replicationPlan{
-		cfg: cfg, desc: desc, destDiscovery: destDiscovery, plan: plan, missing: missing, pre: pre,
+		cfg: cfg, desc: desc, srcDiscovery: srcDiscovery, destDiscovery: destDiscovery, plan: plan, missing: missing, pre: pre,
 		destExists: exists, destETag: etag, action: action,
 		missingOccur: missingOccur, wouldTransferBytes: wouldTransferBytes,
 	}, nil
@@ -11293,32 +12227,13 @@ func executeReplicationPlan(p replicationPlan) (syncStats, error) {
 		return syncStats{}, fmt.Errorf("replicate: %w", err)
 	}
 
-	items := make([]transferWork, 0, len(p.plan.unique))
+	var want []syncChunkDescriptor
 	for _, d := range p.plan.unique {
-		if !p.missing[d.SHA256] {
-			continue
+		if p.missing[d.SHA256] {
+			want = append(want, d)
 		}
-		items = append(items, transferWork{
-			SHA256: d.SHA256,
-			Length: d.Length,
-			Do: func(ctx context.Context) error {
-				data, err := fetchSourceChunk(ctx, cfg.Source, d.SHA256)
-				if err != nil {
-					return fmt.Errorf("replicate: fetching chunk %s from source: %w", d.SHA256, err)
-				}
-				if int64(len(data)) != d.Length {
-					return fmt.Errorf("replicate: source chunk %s: declared length %d does not match fetched length %d", d.SHA256, d.Length, len(data))
-				}
-				if err := putSyncChunk(ctx, cfg.Dest, d.SHA256, data); err != nil {
-					return fmt.Errorf("replicate: uploading chunk %s to destination: %w", d.SHA256, err)
-				}
-				return nil
-			},
-		})
 	}
-
-	results := runTransferWorkers(context.Background(), workers, items, true)
-	if err := firstTransferError(results); err != nil {
+	if err := relayMissingChunks(workers, cfg.Source, cfg.Dest, p.srcDiscovery, p.destDiscovery, want, "replicate"); err != nil {
 		return syncStats{}, err
 	}
 
@@ -11396,7 +12311,7 @@ func runReplicate(args []string) {
 	toAccessKey := fs.String("to-access-key", defaultAccessKeyID, "destination access key ID")
 	toSecretKey := fs.String("to-secret-key", defaultSecretAccessKey, "destination secret access key")
 	region := fs.String("region", defaultRegion, "SigV4 region (both endpoints; default: AWS_REGION)")
-	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per object (bounded 1..32); accepted but irrelevant with -dry-run, which never transfers chunk payload")
+	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per object (bounded 1..32; bulk transport runs at most 4 batches at once); accepted but irrelevant with -dry-run, which never transfers chunk payload")
 	fs.Parse(args)
 	// P1-A5: replicate is a two-endpoint command, so -from-access-key/
 	// -from-secret-key/-to-access-key/-to-secret-key deliberately do NOT
@@ -11987,7 +12902,8 @@ func (s *Store) repairFromPeer(cfg repairConfig) (repairStats, error) {
 	stats.AffectedObjects = len(affectedSet)
 
 	if len(findings) > 0 {
-		if _, derr := discoverZeroS3Sync(cfg.Peer); derr != nil {
+		discovery, derr := discoverZeroS3Sync(cfg.Peer)
+		if derr != nil {
 			return stats, fmt.Errorf("repair: peer capability discovery failed (not a compatible/reachable ZeroS3 peer?): %w", derr)
 		}
 
@@ -11996,58 +12912,91 @@ func (s *Store) repairFromPeer(cfg repairConfig) (repairStats, error) {
 			return stats, fmt.Errorf("repair: %w", werr)
 		}
 
-		// M8H-B2: one transferWork per bad digest, run with bounded
-		// concurrency -- but cancelOnError=false (unlike replicate),
-		// because repair's contract (M8B/B2.3) is honest partial success:
-		// one peer failure must never stop the other, independent repairs
-		// already in flight or still queued. Each Do closure reproduces
-		// fetchRepairChunk -> length check -> decodeHexSHA256 ->
-		// casRepairPublish -> casRead exactly as the old sequential loop
-		// did, including each step's exact error text (repairFailure.Reason
-		// below is built straight from result.Err.Error(), so this refactor
-		// changes nothing about what a caller sees per failed digest).
-		items := make([]transferWork, len(findings))
-		for i, f := range findings {
-			f := f
-			items[i] = transferWork{
-				SHA256: f.SHA256,
-				Length: f.Length,
-				Do: func(ctx context.Context) error {
-					data, ferr := fetchRepairChunk(ctx, cfg.Peer, f.SHA256)
-					if ferr != nil {
-						return ferr
-					}
-					if int64(len(data)) != f.Length {
-						return fmt.Errorf("peer chunk length %d does not match the expected length %d", len(data), f.Length)
-					}
-					sum, herr := decodeHexSHA256(f.SHA256)
-					if herr != nil {
-						return herr
-					}
-					if perr := s.casRepairPublish(sum, data); perr != nil {
-						return perr
-					}
-					if _, rerr := s.casRead(sum); rerr != nil {
-						return fmt.Errorf("post-publication re-read/re-hash failed: %w", rerr)
-					}
-					return nil
-				},
+		// repairChunk is the verified-bytes half of one repair: length
+		// check -> casRepairPublish -> casRead, with each step's exact
+		// error text (repairFailure.Reason is built straight from it).
+		repairChunk := func(f RepairFinding, data []byte) error {
+			if int64(len(data)) != f.Length {
+				return fmt.Errorf("peer chunk length %d does not match the expected length %d", len(data), f.Length)
 			}
+			sum, herr := decodeHexSHA256(f.SHA256)
+			if herr != nil {
+				return herr
+			}
+			if perr := s.casRepairPublish(sum, data); perr != nil {
+				return perr
+			}
+			if _, rerr := s.casRead(sum); rerr != nil {
+				return fmt.Errorf("post-publication re-read/re-hash failed: %w", rerr)
+			}
+			return nil
+		}
+		repairOne := func(ctx context.Context, f RepairFinding) error {
+			data, ferr := fetchRepairChunk(ctx, cfg.Peer, f.SHA256)
+			if ferr != nil {
+				return ferr
+			}
+			return repairChunk(f, data)
 		}
 
-		// Repair never derives its own cancellation from a chunk failure
-		// (cancelOnError=false above), so context.Background() here matches
-		// replicate's own choice: there is no caller-supplied ctx to plumb
-		// through repairConfig/runRepair yet, and every already-dispatched
-		// item still runs to completion regardless of another's outcome.
-		results := runTransferWorkers(context.Background(), workers, items, false)
-		for _, r := range results {
-			if r.Err != nil {
-				stats.Failures = append(stats.Failures, repairFailure{SHA256: r.SHA256, Reason: r.Err.Error()})
+		// Each digest's own outcome, indexed like findings: repair's
+		// contract (M8B/B2.3) is honest partial success, so no item is
+		// ever cancelled by another's failure (cancelOnError=false) and a
+		// bulk batch never reports one opaque result for its chunks.
+		outcomes := make([]error, len(findings))
+		var items []transferWork
+		if caps, ok := bulkCapsOf(discovery); ok {
+			descs := make([]syncChunkDescriptor, len(findings))
+			for i, f := range findings {
+				descs[i] = syncChunkDescriptor{SHA256: f.SHA256, Length: f.Length}
+			}
+			base := 0
+			for _, batch := range planBulkBatches(descs, bulkPolicyFor(caps)) {
+				first := base
+				base += len(batch)
+				items = append(items, transferWork{
+					SHA256: batch[0].SHA256,
+					Length: bulkDescriptorBytes(batch),
+					Do: func(ctx context.Context) error {
+						// A batch that fails (or dies midway) keeps the
+						// chunks it already verified and published; only
+						// the rest are retried one request at a time, so
+						// each still gets its own honest result.
+						done := make([]bool, len(batch))
+						_ = fetchBulkChunks(ctx, cfg.Peer, batch, func(i int, data []byte) error {
+							outcomes[first+i], done[i] = repairChunk(findings[first+i], data), true
+							return nil
+						}, nil)
+						for i := range batch {
+							if !done[i] {
+								outcomes[first+i] = repairOne(ctx, findings[first+i])
+							}
+						}
+						return nil
+					},
+				})
+			}
+		} else {
+			items = make([]transferWork, len(findings))
+			for i, f := range findings {
+				items[i] = transferWork{
+					SHA256: f.SHA256,
+					Length: f.Length,
+					Do:     func(ctx context.Context) error { outcomes[i] = repairOne(ctx, f); return nil },
+				}
+			}
+		}
+		if _, ok := bulkCapsOf(discovery); ok {
+			workers = bulkWorkers(workers)
+		}
+		runTransferWorkers(context.Background(), workers, items, false)
+		for i, f := range findings {
+			if outcomes[i] != nil {
+				stats.Failures = append(stats.Failures, repairFailure{SHA256: f.SHA256, Reason: outcomes[i].Error()})
 				continue
 			}
 			stats.Repaired++
-			stats.PayloadFetched += r.Length
+			stats.PayloadFetched += f.Length
 		}
 	}
 	stats.Unresolved = len(findings) - stats.Repaired
@@ -12106,7 +13055,7 @@ func runRepair(args []string) {
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "peer secret access key (default: AWS_SECRET_ACCESS_KEY)")
 	region := fs.String("region", defaultRegion, "SigV4 region (default: AWS_REGION)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
-	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent chunk transfers from the peer (bounded 1..32)")
+	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent chunk transfers from the peer (bounded 1..32; bulk transport runs at most 4 batches at once)")
 	fs.Parse(args)
 	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
@@ -13616,7 +14565,8 @@ type restoreObjectConfig struct {
 // and why it is a parallel function rather than a thin wrapper around
 // replicateObject.
 func restoreObject(cfg restoreObjectConfig) (syncStats, error) {
-	if _, err := discoverZeroS3Sync(cfg.Snapshot); err != nil {
+	srcDiscovery, err := discoverZeroS3Sync(cfg.Snapshot)
+	if err != nil {
 		return syncStats{}, fmt.Errorf("restore: snapshot store capability discovery failed: %w", err)
 	}
 	destDiscovery, err := discoverZeroS3Sync(cfg.Dest)
@@ -13658,25 +14608,18 @@ func restoreObject(cfg restoreObjectConfig) (syncStats, error) {
 		return syncStats{}, fmt.Errorf("restore: %w", err)
 	}
 
+	// restoreObject is deliberately left sequential (M8H-B3.3: "do not
+	// parallelize snapshot restoration in M8H"): one worker, bulk or not.
 	var relayedBytes int64
+	var want []syncChunkDescriptor
 	for _, d := range plan.unique {
-		if !missing[d.SHA256] {
-			continue
+		if missing[d.SHA256] {
+			want = append(want, d)
+			relayedBytes += d.Length
 		}
-		// restoreObject is deliberately left sequential (M8H-B3.3: "do not
-		// parallelize snapshot restoration in M8H") -- context.Background()
-		// here, not a worker-pool context, since there is no worker pool.
-		data, err := fetchSourceChunk(context.Background(), cfg.Snapshot, d.SHA256)
-		if err != nil {
-			return syncStats{}, fmt.Errorf("restore: fetching chunk %s from snapshot store: %w", d.SHA256, err)
-		}
-		if int64(len(data)) != d.Length {
-			return syncStats{}, fmt.Errorf("restore: snapshot chunk %s: declared length %d does not match fetched length %d", d.SHA256, d.Length, len(data))
-		}
-		if err := putSyncChunk(context.Background(), cfg.Dest, d.SHA256, data); err != nil {
-			return syncStats{}, fmt.Errorf("restore: uploading chunk %s to destination: %w", d.SHA256, err)
-		}
-		relayedBytes += d.Length
+	}
+	if err := relayMissingChunks(1, cfg.Snapshot, cfg.Dest, srcDiscovery, destDiscovery, want, "restore"); err != nil {
+		return syncStats{}, err
 	}
 
 	destCommitCfg := cfg.Dest

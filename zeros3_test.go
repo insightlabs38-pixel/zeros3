@@ -61,36 +61,37 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//       96    Test helpers, fixtures, and TestMain
-//      248    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//     1264    SigV4 authentication (header and payload-mode)
-//     1653    Checksums: CRC32 and Content-MD5
-//     2156    End-to-end HTTP and crash/recovery tests
-//     2830    M2: bucket/object/listing/journal protocol compatibility
-//     3881    M3: CDC/dedup evidence, stats, verify
-//     5017    M3: CopyObject
-//     5564    M3: single-range GET
-//     5765    M5-B: multipart upload
-//     7043    Presigned URLs and virtual-hosted-style addressing
-//     8072    M5-C: version history, restore, GC, storage-efficiency proof
-//     9918    M5-D/P2: ListParts and ListMultipartUploads pagination
-//    11637    M6: delta sync (`zeros3 sync`)
-//    13379    M6C: recursive directory sync
-//    14439    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//    15768    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    17093    M8C: namespace (prefix/bucket) replication
-//    18132    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    19224    M8E: durable namespace snapshots and restore
-//    21302    M8F: conditional operations (Put/Get/Copy preconditions)
-//    22707    M8G: introspection (dry-run planning, diff, inspect)
-//    24659    M8H: bounded parallel chunk transfer
-//    26010    P1: environment credentials, HTTP hardening/shutdown, TLS
-//    27326    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//    28256    Streaming reads and aws-chunked SigV4
-//    29104    Packed CAS: pack format, mixed reads, compaction, crash points
-//    30081    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//    31233    Adaptive pack compression (codec 1, DEFLATE)
-//    32267    Scalable packed-chunk locator (sorted immutable levels)
+//       97    Test helpers, fixtures, and TestMain
+//      249    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//     1265    SigV4 authentication (header and payload-mode)
+//     1654    Checksums: CRC32 and Content-MD5
+//     2157    End-to-end HTTP and crash/recovery tests
+//     2831    M2: bucket/object/listing/journal protocol compatibility
+//     3882    M3: CDC/dedup evidence, stats, verify
+//     5018    M3: CopyObject
+//     5565    M3: single-range GET
+//     5766    M5-B: multipart upload
+//     7044    Presigned URLs and virtual-hosted-style addressing
+//     8073    M5-C: version history, restore, GC, storage-efficiency proof
+//     9919    M5-D/P2: ListParts and ListMultipartUploads pagination
+//    11638    M6: delta sync (`zeros3 sync`)
+//    13380    M6C: recursive directory sync
+//    14440    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    15769    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//    17094    M8C: namespace (prefix/bucket) replication
+//    18133    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    19225    M8E: durable namespace snapshots and restore
+//    21303    M8F: conditional operations (Put/Get/Copy preconditions)
+//    22708    M8G: introspection (dry-run planning, diff, inspect)
+//    24660    M8H: bounded parallel chunk transfer
+//    26021    P1: environment credentials, HTTP hardening/shutdown, TLS
+//    27337    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//    28267    Streaming reads and aws-chunked SigV4
+//    29115    Packed CAS: pack format, mixed reads, compaction, crash points
+//    30092    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//    31244    Adaptive pack compression (codec 1, DEFLATE)
+//    32278    Scalable packed-chunk locator (sorted immutable levels)
+//    32764    Z2-07: bulk logical-chunk transport (v2)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -25013,6 +25014,7 @@ func TestReplicate_PartialAndZeroMissing_WithWorkers(t *testing.T) {
 
 func TestReplicate_DuplicateDigestReferencesTransferOnce(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	if err := srcSrv.store.CreateBucket("src"); err != nil {
 		t.Fatal(err)
 	}
@@ -25089,6 +25091,7 @@ func TestReplicate_DuplicateDigestReferencesTransferOnce(t *testing.T) {
 
 func TestReplicate_SourceMissingOneChunkAmongMany(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(80050, 3_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25127,6 +25130,7 @@ func TestReplicate_SourceMissingOneChunkAmongMany(t *testing.T) {
 
 func TestReplicate_SourceReturnsWrongDigestAmongMany(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(80051, 3_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25166,6 +25170,7 @@ func TestReplicate_SourceReturnsWrongDigestAmongMany(t *testing.T) {
 
 func TestReplicate_DestinationUploadRejectsAmongMany(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(80052, 3_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25205,6 +25210,7 @@ func TestReplicate_DestinationUploadRejectsAmongMany(t *testing.T) {
 
 func TestReplicate_ConnectionResetOnOneChunkIsHandledAsFailure(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(80053, 2_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25254,6 +25260,7 @@ func TestReplicate_ConnectionResetOnOneChunkIsHandledAsFailure(t *testing.T) {
 
 func TestReplicate_CancellationStopsUnnecessaryWorkOnFailure(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(80054, 4_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25337,6 +25344,7 @@ func TestReplicate_SuccessfulTransferCommitsExactlyOnce(t *testing.T) {
 
 func TestReplicate_FailureLeavesUploadedChunksReusable_RerunTransfersOnlyRemaining(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(80056, 3_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25468,6 +25476,7 @@ func TestReplicate_WorkersGreaterThanChunkCount(t *testing.T) {
 
 func TestReplicate_ConcurrentChunkFetchesActuallyOverlap(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(90050, 3_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25507,6 +25516,7 @@ func TestReplicate_ConcurrentChunkFetchesActuallyOverlap(t *testing.T) {
 
 func TestReplicate_ParallelTransferFasterThanSequentialUnderLatency(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcSrv.noBulk, dstSrv.noBulk = true, true // the delay is injected on the v1 per-chunk endpoint
 	body := genRandomBytes(90200, 1_500_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25760,6 +25770,7 @@ func TestRepair_WrongPeerBytesAmongMany_Concurrent(t *testing.T) {
 	}
 
 	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerSrv.noBulk = true // intercepts the v1 per-chunk endpoint
 	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
 	wrongDigest := man.Chunks[3].SHA256
 	wrongHandler := wrapChunkEndpoint(peerSrv, wrongDigest, func(w http.ResponseWriter, r *http.Request) bool {
@@ -32746,5 +32757,1363 @@ func TestLocatorScale(t *testing.T) {
 			n, build.Round(time.Millisecond), float64(heap)/(1<<20), float64(heap)/float64(n),
 			pos.Nanoseconds()/probes, neg.Nanoseconds()/probes, dup.Nanoseconds()/int64(nd), iter.Round(time.Microsecond))
 		runtime.KeepAlive(ps)
+	}
+}
+
+// =============================================================================
+// Z2-07: bulk logical-chunk transport (v2)
+//
+// Framing/parser matrix, v2 negotiate/fetch/upload against v1 and across
+// every physical chunk representation, backwards compatibility and
+// fallback, bulk sync/replicate/restore/repair, interrupted-transfer
+// resume, and the batch planner and in-flight memory budget.
+// =============================================================================
+
+func bulkTestDesc(data []byte) syncChunkDescriptor {
+	s := sha256.Sum256(data)
+	return syncChunkDescriptor{SHA256: hex.EncodeToString(s[:]), Length: int64(len(data))}
+}
+
+func bulkTestFrame(chunks ...[]byte) []byte {
+	var total int64
+	for _, c := range chunks {
+		total += int64(len(c))
+	}
+	b := appendBulkHeader(nil, bulkKindData, len(chunks), total)
+	for _, c := range chunks {
+		b = appendBulkDesc(b, sha256.Sum256(c), len(c))
+		b = append(b, c...)
+	}
+	return b
+}
+
+func parseBulkTestFrame(b []byte, kind byte, lim bulkLimits) (records int, err error) {
+	br, err := newBulkReader(bytes.NewReader(b), kind, lim)
+	if err != nil {
+		return 0, err
+	}
+	scratch := make([]byte, maxSyncChunkBytes)
+	for {
+		if _, err := br.next(scratch); err == io.EOF {
+			break
+		} else if err != nil {
+			return records, err
+		}
+		records++
+	}
+	return records, br.finish()
+}
+
+func TestBulkFraming_RejectsMalformedFrames(t *testing.T) {
+	c1, c2 := genRandomBytes(1, 1000), genRandomBytes(2, 2000)
+	good := bulkTestFrame(c1, c2)
+	edit := func(f func(b []byte)) []byte {
+		b := append([]byte(nil), good...)
+		f(b)
+		return b
+	}
+	header := func(count uint32, total uint64) []byte {
+		b := appendBulkHeader(nil, bulkKindData, 0, 0)
+		binary.BigEndian.PutUint32(b[8:], count)
+		binary.BigEndian.PutUint64(b[12:], total)
+		return b
+	}
+	sum1 := sha256.Sum256(c1)
+	contradictory := appendBulkHeader(nil, bulkKindData, 2, 2000)
+	contradictory = append(append(appendBulkDesc(contradictory, sum1, 1000), c1...), appendBulkDesc(nil, sum1, 999)...)
+	recLen := bulkHeaderLen + 32 // offset of the first record's length field
+	flipped := edit(func(b []byte) { b[bulkHeaderLen+bulkDescLen+10] ^= 1 })
+
+	cases := []struct {
+		name  string
+		frame []byte
+		want  error
+	}{
+		{"wrong magic", edit(func(b []byte) { b[0] = 'X' }), errBulkFraming},
+		{"unsupported version", edit(func(b []byte) { b[4] = 3 }), errBulkFraming},
+		{"unsupported message type", edit(func(b []byte) { b[5] = 9 }), errBulkFraming},
+		{"wrong message type for the endpoint", edit(func(b []byte) { b[5] = bulkKindFetch }), errBulkFraming},
+		{"nonzero reserved", edit(func(b []byte) { b[6] = 1 }), errBulkFraming},
+		{"zero count", header(0, 0), errBulkFraming},
+		{"empty frame", header(0, 5), errBulkFraming},
+		{"oversized count", header(maxBulkRecords+1, maxBulkRecords+1), errBulkTooLarge},
+		{"huge count is refused before allocation", header(0xffffffff, 1<<40), errBulkTooLarge},
+		{"count larger than body", edit(func(b []byte) { binary.BigEndian.PutUint32(b[8:], 3) }), errBulkFraming},
+		{"count smaller than body", edit(func(b []byte) { binary.BigEndian.PutUint32(b[8:], 1) }), errBulkFraming},
+		{"zero chunk length", edit(func(b []byte) { binary.BigEndian.PutUint32(b[recLen:], 0) }), errBulkFraming},
+		{"length above the CDC maximum", edit(func(b []byte) { binary.BigEndian.PutUint32(b[recLen:], maxSyncChunkBytes+1) }), errBulkFraming},
+		{"cumulative bytes above the batch maximum", header(300, 300*maxSyncChunkBytes), errBulkTooLarge},
+		{"total below the record count", header(2, 1), errBulkFraming},
+		{"total above what the records can hold", header(2, 2*maxSyncChunkBytes+1), errBulkFraming},
+		{"declared total smaller than the records", edit(func(b []byte) { binary.BigEndian.PutUint64(b[12:], 2999) }), errBulkFraming},
+		{"declared total larger than the records", edit(func(b []byte) { binary.BigEndian.PutUint64(b[12:], 3001) }), errBulkFraming},
+		{"truncated header", good[:bulkHeaderLen-1], errBulkFraming},
+		{"truncated descriptor", good[:bulkHeaderLen+10], errBulkFraming},
+		{"truncated payload", good[:bulkHeaderLen+bulkDescLen+500], errBulkFraming},
+		{"payload longer than declared", edit(func(b []byte) { binary.BigEndian.PutUint32(b[recLen:], 999) }), errBulkDigest},
+		{"payload shorter than declared", edit(func(b []byte) { binary.BigEndian.PutUint32(b[recLen:], 1001) }), errBulkDigest},
+		{"trailing garbage", append(append([]byte(nil), good...), 0), errBulkFraming},
+		{"payload does not match its digest", flipped, errBulkDigest},
+		{"duplicate descriptors", bulkTestFrame(c1, c1), errBulkFraming},
+		{"same digest with contradictory lengths", contradictory, errBulkFraming},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := parseBulkTestFrame(c.frame, bulkKindData, bulkBatchLimits); !errors.Is(err, c.want) {
+				t.Fatalf("err = %v, want %v", err, c.want)
+			}
+		})
+	}
+	if n, err := parseBulkTestFrame(good, bulkKindData, bulkBatchLimits); err != nil || n != 2 {
+		t.Fatalf("valid frame: n=%d err=%v", n, err)
+	}
+}
+
+func TestBulkFraming_BoundaryBatchesParse(t *testing.T) {
+	tiny := make([][]byte, maxBulkRecords)
+	for i := range tiny {
+		tiny[i] = binary.BigEndian.AppendUint32([]byte("tiny-"), uint32(i))
+	}
+	if n, err := parseBulkTestFrame(bulkTestFrame(tiny...), bulkKindData, bulkBatchLimits); err != nil || n != maxBulkRecords {
+		t.Fatalf("max-count batch: n=%d err=%v", n, err)
+	}
+	// An exactly-at-the-limit byte total passes; one more chunk does not.
+	full := make([][]byte, maxBulkBytes/maxSyncChunkBytes)
+	for i := range full {
+		full[i] = genRandomBytes(int64(100+i), maxSyncChunkBytes)
+	}
+	if n, err := parseBulkTestFrame(bulkTestFrame(full...), bulkKindData, bulkBatchLimits); err != nil || n != len(full) {
+		t.Fatalf("max-bytes batch: n=%d err=%v", n, err)
+	}
+	over := appendBulkHeader(nil, bulkKindData, len(full)+1, int64(len(full)+1)*maxSyncChunkBytes)
+	if _, err := parseBulkTestFrame(over, bulkKindData, bulkBatchLimits); !errors.Is(err, errBulkTooLarge) {
+		t.Fatalf("over-limit batch: %v", err)
+	}
+	// Negotiate alone tolerates a repeated descriptor, never a contradictory one.
+	d := bulkTestDesc(tiny[0])
+	sum, _, _ := normalizedSyncDigest(d.SHA256, d.Length)
+	neg := appendBulkHeader(nil, bulkKindNegotiate, 2, 2*d.Length)
+	neg = appendBulkDesc(appendBulkDesc(neg, sum, int(d.Length)), sum, int(d.Length))
+	if n, err := parseBulkTestFrame(neg, bulkKindNegotiate, bulkNegotiateLimits); err != nil || n != 2 {
+		t.Fatalf("duplicate negotiate descriptors: n=%d err=%v", n, err)
+	}
+}
+
+// bulkTestCounter counts requests by endpoint class and response bytes per
+// class at the server boundary.
+type bulkTestCounter struct {
+	mu    sync.Mutex
+	reqs  map[string]int
+	bytes map[string]int64
+}
+
+func newBulkTestCounter() *bulkTestCounter {
+	return &bulkTestCounter{reqs: map[string]int{}, bytes: map[string]int64{}}
+}
+
+func (c *bulkTestCounter) key(r *http.Request) string {
+	switch {
+	case strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix):
+		return "v1 " + r.Method + " chunk"
+	case strings.HasPrefix(r.URL.Path, "/_zeros3/"):
+		return r.Method + " " + r.URL.Path
+	}
+	return "s3"
+}
+
+type bulkCountingWriter struct {
+	http.ResponseWriter
+	n int64
+}
+
+func (w *bulkCountingWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	w.n += int64(n)
+	return n, err
+}
+
+func (c *bulkTestCounter) wrap(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		k := c.key(r)
+		cw := &bulkCountingWriter{ResponseWriter: w}
+		h.ServeHTTP(cw, r)
+		c.mu.Lock()
+		c.reqs[k]++
+		c.bytes[k] += cw.n
+		c.mu.Unlock()
+	})
+}
+
+func (c *bulkTestCounter) n(key string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reqs[key]
+}
+
+func (c *bulkTestCounter) respBytes(key string) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bytes[key]
+}
+
+// transfers is the number of chunk-moving requests, v1 and v2 combined.
+func (c *bulkTestCounter) transfers() int {
+	return c.n("v1 GET chunk") + c.n("v1 PUT chunk") + c.n("POST "+zeros3BulkFetchPath) + c.n("POST "+zeros3BulkUploadPath)
+}
+
+const (
+	bulkFetchKey  = "POST " + zeros3BulkFetchPath
+	bulkUploadKey = "POST " + zeros3BulkUploadPath
+	bulkNegKey    = "POST " + zeros3BulkNegotiatePath
+)
+
+type bulkTestNode struct {
+	srv   *Server
+	ts    *httptest.Server
+	cnt   *bulkTestCounter
+	cfg   syncClientConfig
+	creds Credentials
+}
+
+func newBulkTestNode(t *testing.T, srv *Server, creds Credentials, region, bucket string, wrap func(http.Handler) http.Handler) *bulkTestNode {
+	t.Helper()
+	n := &bulkTestNode{srv: srv, cnt: newBulkTestCounter(), creds: creds}
+	var h http.Handler = srv
+	if wrap != nil {
+		h = wrap(h)
+	}
+	n.ts = httptest.NewServer(n.cnt.wrap(h))
+	t.Cleanup(n.ts.Close)
+	n.cfg = syncClientConfig{Endpoint: n.ts.URL, Bucket: bucket, Creds: creds, Region: region, HTTPClient: n.ts.Client()}
+	return n
+}
+
+// bulkTestPair is a source holding obj.bin and an empty destination.
+func newBulkTestPair(t *testing.T, srcBulk, dstBulk bool, body []byte, wrapDst func(http.Handler) http.Handler) (src, dst *bulkTestNode) {
+	t.Helper()
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	srcSrv.noBulk, dstSrv.noBulk = !srcBulk, !dstBulk
+	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", map[string]string{"k": "v"})
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+	src = newBulkTestNode(t, srcSrv, creds, region, "src", nil)
+	dst = newBulkTestNode(t, dstSrv, creds, region, "dst", wrapDst)
+	src.cfg.Key, dst.cfg.Key = "obj.bin", "obj.bin"
+	return src, dst
+}
+
+func bulkTestReplicate(src, dst *bulkTestNode, workers int) (syncStats, error) {
+	return replicateObject(replicateConfig{Source: src.cfg, Dest: dst.cfg, Workers: workers})
+}
+
+func bulkTestSetTarget(t *testing.T, n int64) {
+	t.Helper()
+	old := bulkTargetBytes
+	bulkTargetBytes = n
+	t.Cleanup(func() { bulkTargetBytes = old })
+}
+
+func bulkTestDestHas(t *testing.T, dst *bulkTestNode, body []byte) {
+	t.Helper()
+	_, got, err := dst.srv.store.GetObject("dst", "obj.bin")
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("destination object differs from the source (err %v, %d bytes, want %d)", err, len(got), len(body))
+	}
+	if res, err := dst.srv.store.Verify(true); err != nil || !res.OK() {
+		t.Fatalf("destination deep verify: %v %+v", err, res)
+	}
+}
+
+// bulkTestFixture is a store whose chunks span every physical
+// representation: raw packed, DEFLATE packed and loose.
+type bulkTestFixture struct {
+	srv     *Server
+	creds   Credentials
+	region  string
+	store   *Store
+	bodies  map[string][]byte
+	classes map[string][]syncChunkDescriptor
+	chunks  map[string][]byte // digest -> logical bytes
+}
+
+func newBulkTestFixture(t *testing.T) *bulkTestFixture {
+	t.Helper()
+	dir, _, creds, region := newSyncTestServer(t)
+	fx := &bulkTestFixture{creds: creds, region: region, classes: map[string][]syncChunkDescriptor{}, chunks: map[string][]byte{},
+		bodies: map[string][]byte{"packed-raw": genRandomBytes(7001, 700_000), "packed-deflate": corpusEnglish(7002, 600_000), "loose": genRandomBytes(7003, 500_000)}}
+	putPackTestObjects(t, dir, fx.bodies, "packed-raw", "packed-deflate")
+	compactTestDirWith(t, dir, compressTestOpt)
+	putPackTestObjects(t, dir, fx.bodies, "loose")
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	fx.store = store
+	fx.srv = NewServer(store, creds, region)
+	for name, body := range fx.bodies {
+		entry, err := store.lookupObject("b", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var off int64
+		for _, c := range mustManifestFor(t, store, entry).Chunks {
+			fx.classes[name] = append(fx.classes[name], syncChunkDescriptor{SHA256: c.SHA256, Length: c.Length})
+			fx.chunks[c.SHA256] = body[off : off+c.Length]
+			off += c.Length
+		}
+	}
+	st := packTestStats(t, store)
+	if st.PackedCompressedRecs == 0 || st.PackedRawRecords == 0 || st.LooseChunkCount == 0 {
+		t.Fatalf("fixture must mix representations: %+v", st.PackSummary)
+	}
+	return fx
+}
+
+func compactTestDirWith(t *testing.T, dir string, opt compactOptions) {
+	t.Helper()
+	if _, err := compactStore(dir, opt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (fx *bulkTestFixture) node(t *testing.T) *bulkTestNode {
+	return newBulkTestNode(t, fx.srv, fx.creds, fx.region, "b", nil)
+}
+
+func (fx *bulkTestFixture) all() []syncChunkDescriptor {
+	var out []syncChunkDescriptor
+	for _, name := range []string{"packed-raw", "packed-deflate", "loose"} {
+		out = append(out, fx.classes[name]...)
+	}
+	return out
+}
+
+// flipLooseChunkByte damages a loose chunk without changing its length, so
+// presence and length checks still pass and only content verification can
+// catch it.
+func flipLooseChunkByte(t *testing.T, s *Store, hexDigest string) {
+	t.Helper()
+	sum, err := decodeHexSHA256(hexDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(s.chunkPath(sum))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[len(data)/2] ^= 0xff
+	if err := os.WriteFile(s.chunkPath(sum), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func corruptPackedChunk(t *testing.T, s *Store, hexDigest string) {
+	t.Helper()
+	sum, err := decodeHexSHA256(hexDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc, ok := s.packLookup(sum)
+	if !ok {
+		t.Fatalf("chunk %s is not packed", hexDigest)
+	}
+	f, err := os.OpenFile(s.packSnap().packs[loc.pack].path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var b [1]byte
+	at := int64(loc.off) + int64(loc.stored)/2
+	if _, err := f.ReadAt(b[:], at); err != nil {
+		t.Fatal(err)
+	}
+	b[0] ^= 0xff
+	if _, err := f.WriteAt(b[:], at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Capability discovery and compatibility
+// -----------------------------------------------------------------------
+
+func TestBulkDiscovery_AdvertisedAdditivelyAndWithdrawable(t *testing.T) {
+	fx := newBulkTestFixture(t)
+	n := fx.node(t)
+	d, err := discoverZeroS3Sync(n.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Protocol != zeros3SyncProtocolVersion {
+		t.Fatalf("overall sync protocol = %d, want it to stay %d", d.Protocol, zeros3SyncProtocolVersion)
+	}
+	caps, ok := bulkCapsOf(d)
+	if !ok || caps.maxRecords != maxBulkRecords || caps.maxBytes != maxBulkBytes {
+		t.Fatalf("bulk capability = %+v %v", caps, ok)
+	}
+
+	// A client that predates the extension decodes the same response strictly.
+	resp, body, err := n.cfg.signAndDo(context.Background(), http.MethodGet, zeros3SyncInfoPath, nil, nil)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("info: %v", err)
+	}
+	var old struct {
+		Protocol          int    `json:"protocol"`
+		CDC               string `json:"cdc"`
+		Hash              string `json:"hash"`
+		DeltaSync         bool   `json:"delta_sync"`
+		MaxHashesPerBatch int    `json:"max_hashes_per_batch"`
+		MaxBatchBytes     int64  `json:"max_batch_bytes"`
+		MaxChunkBytes     int    `json:"max_chunk_bytes"`
+	}
+	if err := json.Unmarshal(body, &old); err != nil || old.Protocol != 1 || old.MaxChunkBytes != maxSyncChunkBytes {
+		t.Fatalf("legacy decode: %v %+v", err, old)
+	}
+
+	fx.srv.noBulk = true
+	defer func() { fx.srv.noBulk = false }()
+	d, err = discoverZeroS3Sync(n.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := bulkCapsOf(d); ok || d.BulkProtocol != 0 {
+		t.Fatalf("withdrawn bulk capability still advertised: %+v", d)
+	}
+	if st, _ := rawBulkPost(t, n.cfg, zeros3BulkNegotiatePath, bulkTestFrame([]byte("x"))); st != http.StatusNotFound {
+		t.Fatalf("v2 endpoint on a server without bulk: status %d, want 404", st)
+	}
+	for _, c := range []syncDiscoveryResponse{
+		{BulkProtocol: 3, MaxBulkChunks: 10, MaxBulkBytes: 1 << 20},
+		{BulkProtocol: 2, MaxBulkChunks: 0, MaxBulkBytes: 1 << 20},
+		{BulkProtocol: 2, MaxBulkChunks: 10, MaxBulkBytes: 100},
+	} {
+		if _, ok := bulkCapsOf(c); ok {
+			t.Fatalf("capability %+v must not enable bulk", c)
+		}
+	}
+	if caps, ok := bulkCapsOf(syncDiscoveryResponse{BulkProtocol: 2, MaxBulkChunks: 1 << 30, MaxBulkBytes: 1 << 40}); !ok || caps.maxRecords != maxBulkRecords || caps.maxBytes != maxBulkBytes {
+		t.Fatalf("advertised limits must be clamped to this build's: %+v", caps)
+	}
+}
+
+func rawBulkPost(t *testing.T, cfg syncClientConfig, path string, frame []byte) (int, []byte) {
+	t.Helper()
+	resp, body, err := cfg.signAndDo(context.Background(), http.MethodPost, path, frame, map[string]string{"Content-Type": "application/octet-stream"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, body
+}
+
+// -----------------------------------------------------------------------
+// Negotiation
+// -----------------------------------------------------------------------
+
+func TestBulkNegotiate_MatchesV1ForEveryPhysicalState(t *testing.T) {
+	fx := newBulkTestFixture(t)
+	n := fx.node(t)
+	d2, err := discoverZeroS3Sync(n.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d1 := syncDiscoveryResponse{MaxHashesPerBatch: maxSyncBatchDescriptors}
+	var absent []syncChunkDescriptor
+	for i := 0; i < 20; i++ {
+		absent = append(absent, bulkTestDesc(genRandomBytes(int64(8000+i), 1000+i*977)))
+	}
+	all := fx.all()
+	var mixed []syncChunkDescriptor
+	for i := 0; i < len(all) || i < len(absent); i++ {
+		if i < len(all) {
+			mixed = append(mixed, all[i])
+		}
+		if i < len(absent) {
+			mixed = append(mixed, absent[i])
+		}
+	}
+	dups := append(append(append([]syncChunkDescriptor{}, mixed...), mixed...), all[0], absent[0])
+	cases := map[string][]syncChunkDescriptor{
+		"all present":    all,
+		"all missing":    absent,
+		"mixed":          mixed,
+		"duplicates":     dups,
+		"packed raw":     fx.classes["packed-raw"],
+		"packed deflate": fx.classes["packed-deflate"],
+		"loose":          fx.classes["loose"],
+	}
+	for name, descs := range cases {
+		t.Run(name, func(t *testing.T) {
+			m1, err := negotiateSyncMissing(n.cfg, d1, descs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m2, err := negotiateSyncMissing(n.cfg, d2, descs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(m1, m2) {
+				t.Fatalf("v1 missing %d, v2 missing %d", len(m1), len(m2))
+			}
+		})
+	}
+
+	// Order: the v2 response lists the missing set in first-seen request order.
+	req, err := encodeBulkDescriptors(bulkKindNegotiate, dups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, body := rawBulkPost(t, n.cfg, zeros3BulkNegotiatePath, req)
+	if st != http.StatusOK {
+		t.Fatalf("status %d: %s", st, body)
+	}
+	br, err := newBulkReader(bytes.NewReader(body), bulkKindMissing, bulkLimits{maxRecords: maxBulkRecords, allowEmpty: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for {
+		rec, err := br.next(nil)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, hex.EncodeToString(rec.sum[:]))
+	}
+	var want []string
+	for _, a := range mixed {
+		for _, b := range absent {
+			if a == b {
+				want = append(want, a.SHA256)
+			}
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("v2 missing order = %v, want %v", got, want)
+	}
+}
+
+func TestBulkNegotiate_SplitsLargeSetsAndStaysReadOnly(t *testing.T) {
+	fx := newBulkTestFixture(t)
+	n := fx.node(t)
+	d, _ := discoverZeroS3Sync(n.cfg)
+	var descs []syncChunkDescriptor
+	for i := 0; i < 2*maxBulkRecords+10; i++ {
+		descs = append(descs, bulkTestDesc(binary.BigEndian.AppendUint64([]byte("negotiate-"), uint64(i))))
+	}
+	before := packTestStats(t, fx.store).LooseChunkCount
+	missing, err := negotiateSyncMissing(n.cfg, d, descs)
+	if err != nil || len(missing) != len(descs) {
+		t.Fatalf("missing %d of %d: %v", len(missing), len(descs), err)
+	}
+	if got := n.cnt.n(bulkNegKey); got != 3 {
+		t.Fatalf("negotiate requests = %d, want 3 (v1 would need %d)", got, (len(descs)+maxSyncBatchDescriptors-1)/maxSyncBatchDescriptors)
+	}
+	if packTestStats(t, fx.store).LooseChunkCount != before {
+		t.Fatal("negotiation wrote to the store")
+	}
+}
+
+// -----------------------------------------------------------------------
+// Fetch
+// -----------------------------------------------------------------------
+
+func TestBulkFetch_SendsOnlyLogicalBytesFromAnyRepresentation(t *testing.T) {
+	fx := newBulkTestFixture(t)
+	n := fx.node(t)
+	var want []syncChunkDescriptor
+	want = append(want, fx.classes["loose"][:3]...)
+	want = append(want, fx.classes["packed-deflate"][:3]...)
+	want = append(want, fx.classes["packed-raw"][:3]...)
+	want = append(want, fx.classes["packed-deflate"][3:6]...)
+	var frame bytes.Buffer
+	got := map[int][]byte{}
+	err := fetchBulkChunks(context.Background(), n.cfg, want, func(i int, data []byte) error {
+		got[i] = append([]byte(nil), data...)
+		return nil
+	}, &frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logical int64
+	for i, d := range want {
+		if !bytes.Equal(got[i], fx.chunks[d.SHA256]) {
+			t.Fatalf("chunk %d differs from its logical bytes", i)
+		}
+		logical += d.Length
+	}
+	// Exact frame: header + descriptors + logical payloads, no codec or
+	// stored-length leakage even though DEFLATE chunks are in the batch.
+	if int64(frame.Len()) != bulkFrameSize(bulkKindData, want) || int64(frame.Len()) != int64(bulkHeaderLen+bulkDescLen*len(want))+logical {
+		t.Fatalf("frame is %d bytes for %d logical", frame.Len(), logical)
+	}
+	if n.cnt.n(bulkFetchKey) != 1 {
+		t.Fatalf("fetch requests = %d", n.cnt.n(bulkFetchKey))
+	}
+	if n.cnt.respBytes(bulkFetchKey) != int64(frame.Len()) {
+		t.Fatalf("wire bytes %d != frame %d", n.cnt.respBytes(bulkFetchKey), frame.Len())
+	}
+}
+
+func TestBulkFetch_ServerSideFailures(t *testing.T) {
+	type tc struct {
+		name   string
+		setup  func(t *testing.T, fx *bulkTestFixture) (req []syncChunkDescriptor)
+		status int // non-zero: whole request refused before any payload
+		prefix int // otherwise: verified chunks delivered before the failure
+	}
+	loose := func(fx *bulkTestFixture, i int) syncChunkDescriptor { return fx.classes["loose"][i] }
+	raw := func(fx *bulkTestFixture, i int) syncChunkDescriptor { return fx.classes["packed-raw"][i] }
+	cases := []tc{
+		{"missing chunk", func(t *testing.T, fx *bulkTestFixture) []syncChunkDescriptor {
+			return []syncChunkDescriptor{loose(fx, 0), bulkTestDesc([]byte("not in this store"))}
+		}, http.StatusNotFound, 0},
+		{"wrong declared length", func(t *testing.T, fx *bulkTestFixture) []syncChunkDescriptor {
+			d := loose(fx, 0)
+			d.Length--
+			return []syncChunkDescriptor{d}
+		}, http.StatusConflict, 0},
+		{"corrupt first chunk is refused before the status line", func(t *testing.T, fx *bulkTestFixture) []syncChunkDescriptor {
+			flipLooseChunkByte(t, fx.store, loose(fx, 0).SHA256)
+			return []syncChunkDescriptor{loose(fx, 0), loose(fx, 1)}
+		}, http.StatusNotFound, 0},
+		{"corrupt loose chunk after valid frames", func(t *testing.T, fx *bulkTestFixture) []syncChunkDescriptor {
+			flipLooseChunkByte(t, fx.store, loose(fx, 2).SHA256)
+			return []syncChunkDescriptor{loose(fx, 0), loose(fx, 1), loose(fx, 2), loose(fx, 3)}
+		}, 0, 2},
+		{"corrupt packed chunk after valid frames", func(t *testing.T, fx *bulkTestFixture) []syncChunkDescriptor {
+			corruptPackedChunk(t, fx.store, raw(fx, 1).SHA256)
+			return []syncChunkDescriptor{loose(fx, 0), raw(fx, 0), raw(fx, 1), raw(fx, 2)}
+		}, 0, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fx := newBulkTestFixture(t)
+			n := fx.node(t)
+			req := c.setup(t, fx)
+			var delivered int
+			err := fetchBulkChunks(context.Background(), n.cfg, req, func(i int, data []byte) error {
+				if bulkTestDesc(data) != req[i] {
+					t.Fatalf("delivered chunk %d does not hash to its digest", i)
+				}
+				delivered++
+				return nil
+			}, nil)
+			if err == nil {
+				t.Fatal("fetch of a damaged batch succeeded")
+			}
+			if c.status != 0 && !strings.Contains(err.Error(), fmt.Sprintf("status %d", c.status)) {
+				t.Fatalf("err = %v, want status %d", err, c.status)
+			}
+			if c.status == 0 && !errors.Is(err, errBulkFraming) {
+				t.Fatalf("err = %v, want an incomplete-frame error", err)
+			}
+			if delivered != c.prefix {
+				t.Fatalf("delivered %d verified chunks, want %d", delivered, c.prefix)
+			}
+		})
+	}
+
+	t.Run("a valid alternate copy is served", func(t *testing.T) {
+		fx := newBulkTestFixture(t)
+		n := fx.node(t)
+		packed := fx.classes["packed-raw"][0]
+		corruptPackedChunk(t, fx.store, packed.SHA256)
+		sum, _ := decodeHexSHA256(packed.SHA256)
+		if err := os.MkdirAll(filepath.Dir(fx.store.chunkPath(sum)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fx.store.chunkPath(sum), fx.chunks[packed.SHA256], 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := fetchBulkChunks(context.Background(), n.cfg, []syncChunkDescriptor{packed}, nil, nil); err != nil {
+			t.Fatalf("fetch with a good loose fallback: %v", err)
+		}
+	})
+
+	t.Run("duplicate request is refused", func(t *testing.T) {
+		fx := newBulkTestFixture(t)
+		d := fx.classes["loose"][0]
+		req, _ := encodeBulkDescriptors(bulkKindFetch, []syncChunkDescriptor{d, d})
+		if st, _ := rawBulkPost(t, fx.node(t).cfg, zeros3BulkFetchPath, req); st != http.StatusBadRequest {
+			t.Fatalf("status %d", st)
+		}
+	})
+}
+
+func TestBulkFetch_ClientRejectsDishonestResponses(t *testing.T) {
+	fx := newBulkTestFixture(t)
+	n := fx.node(t)
+	want := fx.classes["loose"][:4]
+	var good bytes.Buffer
+	if err := fetchBulkChunks(context.Background(), n.cfg, want, nil, &good); err != nil {
+		t.Fatal(err)
+	}
+	frame := good.Bytes()
+	recSize := func(i int) int { return bulkDescLen + int(want[i].Length) }
+	swapped := append([]byte(nil), frame[:bulkHeaderLen]...)
+	for _, i := range []int{1, 0, 2, 3} {
+		off := bulkHeaderLen
+		for j := 0; j < i; j++ {
+			off += recSize(j)
+		}
+		swapped = append(swapped, frame[off:off+recSize(i)]...)
+	}
+	flipped := append([]byte(nil), frame...)
+	flipped[len(flipped)-5] ^= 1
+	extra := append(append([]byte(nil), frame...), 0)
+	fewer := bulkTestFrame(fx.chunks[want[0].SHA256], fx.chunks[want[1].SHA256])
+	cases := []struct {
+		name  string
+		body  []byte
+		valid int // verified chunks that legitimately precede the failure
+	}{
+		{"records reordered", swapped, 0},
+		{"truncated frame", frame[:len(frame)-10], 3},
+		{"payload altered", flipped, 3},
+		{"bytes after the frame", extra, 4},
+		{"fewer chunks than requested", fewer, 0},
+		{"no body", nil, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Length", strconv.Itoa(len(c.body)))
+				_, _ = w.Write(c.body)
+			}))
+			defer fake.Close()
+			cfg := n.cfg
+			cfg.Endpoint, cfg.HTTPClient = fake.URL, fake.Client()
+			delivered := 0
+			err := fetchBulkChunks(context.Background(), cfg, want, func(i int, data []byte) error {
+				delivered++
+				return nil
+			}, nil)
+			if err == nil {
+				t.Fatal("dishonest response accepted")
+			}
+			if delivered > c.valid {
+				t.Fatalf("delivered %d chunks before detecting the fault, at most %d are valid", delivered, c.valid)
+			}
+		})
+	}
+}
+
+// -----------------------------------------------------------------------
+// Upload
+// -----------------------------------------------------------------------
+
+func bulkTestUploadServer(t *testing.T, wrap func(http.Handler) http.Handler) *bulkTestNode {
+	_, srv, creds, region := newSyncTestServer(t)
+	return newBulkTestNode(t, srv, creds, region, "b", wrap)
+}
+
+func (n *bulkTestNode) has(d syncChunkDescriptor) bool {
+	sum, _, _ := normalizedSyncDigest(d.SHA256, d.Length)
+	_, err := n.srv.store.casStat(sum)
+	return err == nil
+}
+
+func TestBulkUpload_PublishesThroughCASAndIsIdempotent(t *testing.T) {
+	n := bulkTestUploadServer(t, nil)
+	var chunks [][]byte
+	for i := 0; i < 200; i++ {
+		chunks = append(chunks, genRandomBytes(int64(500+i), 1+(i*7919)%maxSyncChunkBytes))
+	}
+	frame := bulkTestFrame(chunks...)
+	for pass := 0; pass < 2; pass++ { // the retry is a no-op
+		if err := uploadBulkFrame(context.Background(), n.cfg, frame); err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+	}
+	for _, c := range chunks {
+		if !n.has(bulkTestDesc(c)) {
+			t.Fatal("uploaded chunk missing")
+		}
+	}
+	if err := uploadBulkFrame(context.Background(), n.cfg, bulkTestFrame(chunks[0])); err != nil {
+		t.Fatalf("single chunk: %v", err)
+	}
+	if res, err := n.srv.store.Verify(true); err != nil || !res.OK() {
+		t.Fatalf("verify: %v %+v", err, res)
+	}
+
+	tiny := make([][]byte, maxBulkRecords)
+	for i := range tiny {
+		tiny[i] = binary.BigEndian.AppendUint32([]byte("t"), uint32(i))
+	}
+	if err := uploadBulkFrame(context.Background(), n.cfg, bulkTestFrame(tiny...)); err != nil {
+		t.Fatalf("max-count batch: %v", err)
+	}
+	over := appendBulkHeader(nil, bulkKindData, maxBulkRecords+1, maxBulkRecords+1)
+	if st, _ := rawBulkPost(t, n.cfg, zeros3BulkUploadPath, over); st != http.StatusBadRequest {
+		t.Fatalf("over-count header: status %d", st)
+	}
+	over = appendBulkHeader(nil, bulkKindData, maxBulkBytes/maxSyncChunkBytes+1, int64(maxBulkBytes/maxSyncChunkBytes+1)*maxSyncChunkBytes)
+	if st, _ := rawBulkPost(t, n.cfg, zeros3BulkUploadPath, over); st != http.StatusBadRequest {
+		t.Fatalf("over-bytes header: status %d", st)
+	}
+}
+
+func TestBulkUpload_NearByteLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes a 64 MiB batch")
+	}
+	n := bulkTestUploadServer(t, nil)
+	full := make([][]byte, maxBulkBytes/maxSyncChunkBytes)
+	for i := range full {
+		full[i] = genRandomBytes(int64(9000+i), maxSyncChunkBytes)
+	}
+	if err := uploadBulkFrame(context.Background(), n.cfg, bulkTestFrame(full...)); err != nil {
+		t.Fatalf("batch at the byte limit: %v", err)
+	}
+	if !n.has(bulkTestDesc(full[len(full)-1])) {
+		t.Fatal("last chunk missing")
+	}
+}
+
+func TestBulkUpload_PresentAndPackedChunksAreNoOps(t *testing.T) {
+	fx := newBulkTestFixture(t)
+	n := fx.node(t)
+	var chunks [][]byte
+	for _, d := range append(append([]syncChunkDescriptor{}, fx.classes["packed-deflate"][:2]...), fx.classes["loose"][:2]...) {
+		chunks = append(chunks, fx.chunks[d.SHA256])
+	}
+	before := packTestStats(t, fx.store)
+	if err := uploadBulkFrame(context.Background(), n.cfg, bulkTestFrame(chunks...)); err != nil {
+		t.Fatal(err)
+	}
+	if after := packTestStats(t, fx.store); after.LooseChunkCount != before.LooseChunkCount {
+		t.Fatalf("re-uploading present chunks created %d loose files", after.LooseChunkCount-before.LooseChunkCount)
+	}
+}
+
+func TestBulkUpload_FailuresKeepPublishedPrefixAndNeverCommit(t *testing.T) {
+	good := [][]byte{genRandomBytes(11, 3000), genRandomBytes(12, 4000), genRandomBytes(13, 5000), genRandomBytes(14, 6000)}
+	badDigest := bulkTestFrame(good...)
+	badDigest[bulkHeaderLen+2*bulkDescLen+3000+4000+7] ^= 1 // inside the third payload
+	badLength := bulkTestFrame(good...)
+	binary.BigEndian.PutUint32(badLength[bulkHeaderLen+32:], 2999)
+	dup := bulkTestFrame(good[0], good[1])
+	dup = append(dup, dup[bulkHeaderLen:bulkHeaderLen+bulkDescLen+3000]...)
+	binary.BigEndian.PutUint32(dup[8:], 3)
+	binary.BigEndian.PutUint64(dup[12:], 3000+4000+3000)
+	laterTruncated := bulkTestFrame(good...)
+	laterTruncated = laterTruncated[:bulkHeaderLen+2*bulkDescLen+3000+4000+20]
+	cases := []struct {
+		name    string
+		frame   []byte
+		persist int // leading good chunks that were already published
+	}{
+		{"digest mismatch in a later record", badDigest, 2},
+		{"declared length disagrees with payload", badLength, 0},
+		{"duplicate record", dup, 2},
+		{"malformed later record", laterTruncated, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			n := bulkTestUploadServer(t, nil)
+			if st, _ := rawBulkPost(t, n.cfg, zeros3BulkUploadPath, c.frame); st != http.StatusBadRequest {
+				t.Fatalf("status %d, want 400", st)
+			}
+			for i, g := range good {
+				if got := n.has(bulkTestDesc(g)); got != (i < c.persist) {
+					t.Fatalf("chunk %d present=%v, want %v", i, got, i < c.persist)
+				}
+			}
+			if _, err := n.srv.store.lookupObject("b", "x"); err == nil {
+				t.Fatal("a failed upload must not create objects")
+			}
+			// A corrected retry succeeds and the store verifies.
+			if err := uploadBulkFrame(context.Background(), n.cfg, bulkTestFrame(good...)); err != nil {
+				t.Fatalf("retry: %v", err)
+			}
+			if res, err := n.srv.store.Verify(true); err != nil || !res.OK() {
+				t.Fatalf("verify: %v %+v", err, res)
+			}
+		})
+	}
+
+	t.Run("request payload hash mismatch is not acknowledged", func(t *testing.T) {
+		n := bulkTestUploadServer(t, nil)
+		frame := bulkTestFrame(good...)
+		req, _ := http.NewRequest(http.MethodPost, n.ts.URL+zeros3BulkUploadPath, bytes.NewReader(frame))
+		wrong := sha256.Sum256([]byte("a different body"))
+		if err := signSigV4Request(req, n.creds, n.cfg.Region, hex.EncodeToString(wrong[:]), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		resp, err := n.ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("status %d, want 403 XAmzContentSHA256Mismatch", resp.StatusCode)
+		}
+		if _, err := n.srv.store.lookupObject("b", "x"); err == nil {
+			t.Fatal("unexpected object")
+		}
+	})
+
+	t.Run("interrupted body", func(t *testing.T) {
+		cut := bulkHeaderLen + bulkDescLen + 3000 + bulkDescLen + 1000
+		n := bulkTestUploadServer(t, func(h http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r.Body = io.NopCloser(io.MultiReader(io.LimitReader(r.Body, int64(cut)), iotest.ErrReader(io.ErrUnexpectedEOF)))
+				h.ServeHTTP(w, r)
+			})
+		})
+		if err := uploadBulkFrame(context.Background(), n.cfg, bulkTestFrame(good...)); err == nil {
+			t.Fatal("interrupted upload was acknowledged")
+		}
+		if !n.has(bulkTestDesc(good[0])) || n.has(bulkTestDesc(good[1])) {
+			t.Fatal("exactly the chunk completed before the interruption should be published")
+		}
+	})
+}
+
+// -----------------------------------------------------------------------
+// Planner and memory budget
+// -----------------------------------------------------------------------
+
+func TestBulkPlanner_BoundsBothAxesAndKeepsOrder(t *testing.T) {
+	mk := func(n int, length int64) []syncChunkDescriptor {
+		out := make([]syncChunkDescriptor, n)
+		for i := range out {
+			out[i] = syncChunkDescriptor{SHA256: fmt.Sprintf("%064x", i), Length: length}
+		}
+		return out
+	}
+	pol := bulkPolicy{maxRecords: 100, targetBytes: 1 << 20}
+	for _, c := range []struct {
+		name   string
+		descs  []syncChunkDescriptor
+		batchN int
+	}{
+		{"thousands of tiny chunks are bounded by count", mk(5000, 100), 50},
+		{"few large chunks are bounded by bytes", mk(40, maxSyncChunkBytes), 10},
+		{"empty", nil, 0},
+		{"single oversized chunk stands alone", mk(1, 2<<20), 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			batches := planBulkBatches(c.descs, pol)
+			if len(batches) != c.batchN {
+				t.Fatalf("%d batches, want %d", len(batches), c.batchN)
+			}
+			var flat []syncChunkDescriptor
+			for _, b := range batches {
+				if len(b) > pol.maxRecords || (len(b) > 1 && bulkDescriptorBytes(b) > pol.targetBytes) {
+					t.Fatalf("batch of %d chunks / %d bytes exceeds the policy", len(b), bulkDescriptorBytes(b))
+				}
+				flat = append(flat, b...)
+			}
+			if !reflect.DeepEqual(flat, c.descs) && len(c.descs) > 0 {
+				t.Fatal("batches do not concatenate back to the input order")
+			}
+		})
+	}
+	a, b := bulkCaps{maxRecords: 64, maxBytes: 4 << 20}, bulkCaps{maxRecords: 4096, maxBytes: maxBulkBytes}
+	if p := bulkPolicyFor(a, b); p.maxRecords != 64 || p.targetBytes != 4<<20 {
+		t.Fatalf("policy must honor the tighter endpoint: %+v", p)
+	}
+}
+
+func TestBulkBudget_BoundsConcurrentBytesRegardlessOfWorkers(t *testing.T) {
+	b := newByteBudget(10)
+	var cur, peak int64
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			release, err := b.acquire(context.Background(), 4)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			c := atomic.AddInt64(&cur, 4)
+			for p := atomic.LoadInt64(&peak); c > p && !atomic.CompareAndSwapInt64(&peak, p, c); p = atomic.LoadInt64(&peak) {
+			}
+			time.Sleep(time.Millisecond)
+			atomic.AddInt64(&cur, -4)
+			release()
+		}()
+	}
+	wg.Wait()
+	if peak > 10 {
+		t.Fatalf("peak in-flight %d exceeds the budget 10", peak)
+	}
+	release, err := b.acquire(context.Background(), 1000) // oversized batches still run, alone
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := b.acquire(ctx, 1); err == nil {
+		t.Fatal("acquire beyond the budget should block until its context ends")
+	}
+	release()
+}
+
+// -----------------------------------------------------------------------
+// Local sync
+// -----------------------------------------------------------------------
+
+func TestBulkSync_UsesBulkAndMatchesV1Stats(t *testing.T) {
+	data := genRandomBytes(7100, 6_000_000)
+	path := writeSyncTempFile(t, t.TempDir(), "f.bin", data)
+	run := func(bulk bool) (syncStats, *bulkTestNode) {
+		_, srv, creds, region := newSyncTestServer(t)
+		srv.noBulk = !bulk
+		n := newBulkTestNode(t, srv, creds, region, "b", nil)
+		createSyncTestBucket(t, n.ts, creds, region, "b")
+		n.cfg.LocalPath, n.cfg.Key = path, "f"
+		stats, err := syncFile(n.cfg)
+		if err != nil {
+			t.Fatalf("bulk=%v: %v", bulk, err)
+		}
+		_, got, err := srv.store.GetObject("b", "f")
+		if err != nil || !bytes.Equal(got, data) {
+			t.Fatalf("bulk=%v: object differs (%v)", bulk, err)
+		}
+		return stats, n
+	}
+	v1Stats, v1 := run(false)
+	v2Stats, v2 := run(true)
+	if v1Stats != v2Stats {
+		t.Fatalf("stats differ:\n v1 %+v\n v2 %+v", v1Stats, v2Stats)
+	}
+	if v2.cnt.n("v1 PUT chunk") != 0 || v2.cnt.n(bulkUploadKey) != 1 || v2.cnt.n(bulkNegKey) != 1 {
+		t.Fatalf("bulk sync requests: %+v", v2.cnt.reqs)
+	}
+	if v1.cnt.n("v1 PUT chunk") != v1Stats.UniqueChunksUploaded || v1.cnt.n(bulkUploadKey) != 0 {
+		t.Fatalf("v1 sync requests: %+v", v1.cnt.reqs)
+	}
+
+	// A rerun finds everything present and uploads nothing; an edit moves only its chunks.
+	stats, err := syncFile(v2.cfg)
+	if err != nil || stats.UploadedBytes != 0 || v2.cnt.n(bulkUploadKey) != 1 {
+		t.Fatalf("rerun: %+v %v %+v", stats, err, v2.cnt.reqs)
+	}
+	data[3_000_000] ^= 0xff
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stats, err = syncFile(v2.cfg)
+	if err != nil || stats.UploadedBytes == 0 || stats.UploadedBytes > 4*cdcMaxChunkSize || v2.cnt.n(bulkUploadKey) != 2 {
+		t.Fatalf("edit: %+v %v %+v", stats, err, v2.cnt.reqs)
+	}
+}
+
+func TestBulkSync_ChunkChangedAfterScanIsNeverSent(t *testing.T) {
+	data := genRandomBytes(7200, 2_000_000)
+	path := writeSyncTempFile(t, t.TempDir(), "f.bin", data)
+	n := bulkTestUploadServer(t, nil)
+	chunks, total, err := scanLocalFileForSync(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := buildSyncPlan(chunks, total)
+	mutated := append([]byte(nil), data...)
+	mutated[len(mutated)/2] ^= 0xff // same size, different bytes
+	if err := os.WriteFile(path, mutated, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := n.cfg
+	cfg.LocalPath = path
+	missing := map[string]bool{}
+	for _, d := range plan.unique {
+		missing[d.SHA256] = true
+	}
+	_, err = uploadMissingSyncChunksBulk(cfg, bulkPolicyFor(bulkCaps{maxRecords: maxBulkRecords, maxBytes: maxBulkBytes}), plan, missing)
+	if !errors.Is(err, errSyncLocalMutation) {
+		t.Fatalf("err = %v, want errSyncLocalMutation", err)
+	}
+	if n.cnt.n(bulkUploadKey) != 0 {
+		t.Fatalf("a batch containing a changed chunk was transmitted: %+v", n.cnt.reqs)
+	}
+	for _, d := range plan.unique {
+		if n.has(d) {
+			t.Fatal("chunk published from a batch that failed local re-verification")
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// Replication
+// -----------------------------------------------------------------------
+
+func TestBulkReplicate_NewToNewUsesBulkAndCollapsesRequests(t *testing.T) {
+	body := genRandomBytes(7300, 6_000_000)
+	v1Src, v1Dst := newBulkTestPair(t, false, false, body, nil)
+	v1Stats, err := bulkTestReplicate(v1Src, v1Dst, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, dst := newBulkTestPair(t, true, true, body, nil)
+	stats, err := bulkTestReplicate(src, dst, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats != v1Stats {
+		t.Fatalf("stats differ:\n v1 %+v\n v2 %+v", v1Stats, stats)
+	}
+	bulkTestDestHas(t, dst, body)
+	if src.cnt.n("v1 GET chunk")+dst.cnt.n("v1 PUT chunk") != 0 || src.cnt.n(bulkFetchKey) != 1 || dst.cnt.n(bulkUploadKey) != 1 {
+		t.Fatalf("bulk requests: src %+v dst %+v", src.cnt.reqs, dst.cnt.reqs)
+	}
+	v1Reqs, v2Reqs := v1Src.cnt.transfers()+v1Dst.cnt.transfers(), src.cnt.transfers()+dst.cnt.transfers()
+	if v2Reqs*20 > v1Reqs {
+		t.Fatalf("transfer requests %d -> %d, want a >=95%% reduction", v1Reqs, v2Reqs)
+	}
+	if dst.cnt.n("POST "+zeros3SyncCommitPath) != 1 {
+		t.Fatalf("commit requests: %+v", dst.cnt.reqs)
+	}
+}
+
+func TestBulkReplicate_FallsBackToV1WhenEitherEndLacksBulk(t *testing.T) {
+	body := genRandomBytes(7400, 2_000_000)
+	for _, c := range []struct {
+		name         string
+		srcOK, dstOK bool
+	}{{"source lacks bulk", false, true}, {"destination lacks bulk", true, false}, {"neither", false, false}} {
+		t.Run(c.name, func(t *testing.T) {
+			src, dst := newBulkTestPair(t, c.srcOK, c.dstOK, body, nil)
+			if _, err := bulkTestReplicate(src, dst, 4); err != nil {
+				t.Fatal(err)
+			}
+			bulkTestDestHas(t, dst, body)
+			// Chunks move over v1; v2 negotiation is used exactly where it was advertised.
+			wantNeg := 0
+			if c.dstOK {
+				wantNeg = 1
+			}
+			if src.cnt.n(bulkFetchKey)+dst.cnt.n(bulkUploadKey)+src.cnt.n(bulkNegKey) != 0 || dst.cnt.n(bulkNegKey) != wantNeg {
+				t.Fatalf("unexpected v2 requests: src %+v dst %+v", src.cnt.reqs, dst.cnt.reqs)
+			}
+			if dst.cnt.n("v1 PUT chunk") == 0 || src.cnt.n("v1 GET chunk") == 0 {
+				t.Fatal("v1 transfer path unused")
+			}
+		})
+	}
+}
+
+func TestBulkReplicate_PhysicalSourceRepresentationDoesNotChangeWireBytes(t *testing.T) {
+	fx := newBulkTestFixture(t)
+	for _, name := range []string{"packed-deflate", "packed-raw", "loose"} {
+		t.Run(name, func(t *testing.T) {
+			src := fx.node(t)
+			_, dstSrv, creds, region := newSyncTestServer(t)
+			mustCreateReplicateBucket(t, dstSrv, "dst")
+			dst := newBulkTestNode(t, dstSrv, creds, region, "dst", nil)
+			src.cfg.Key, dst.cfg.Key = name, name
+			stats, err := bulkTestReplicate(src, dst, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var uniqueBytes int64
+			unique := map[string]bool{}
+			for _, d := range fx.classes[name] {
+				if !unique[d.SHA256] {
+					unique[d.SHA256] = true
+					uniqueBytes += d.Length
+				}
+			}
+			if stats.UploadedBytes != uniqueBytes {
+				t.Fatalf("uploaded %d, want the logical %d", stats.UploadedBytes, uniqueBytes)
+			}
+			framing := int64(len(unique)*bulkDescLen + src.cnt.n(bulkFetchKey)*bulkHeaderLen)
+			if got := src.cnt.respBytes(bulkFetchKey); got != uniqueBytes+framing {
+				t.Fatalf("fetch wire bytes %d, want logical %d + framing %d", got, uniqueBytes, framing)
+			}
+			_, got, err := dstSrv.store.GetObject("dst", name)
+			if err != nil || !bytes.Equal(got, fx.bodies[name]) {
+				t.Fatalf("destination differs: %v", err)
+			}
+			if packTestStats(t, dstSrv.store).PackCount != 0 {
+				t.Fatal("the destination chooses its own representation; it must start loose")
+			}
+			if res, err := dstSrv.store.Verify(true); err != nil || !res.OK() {
+				t.Fatalf("verify: %v %+v", err, res)
+			}
+		})
+	}
+}
+
+func TestBulkReplicate_AdvertisedBulkFailureIsReportedNotHidden(t *testing.T) {
+	body := genRandomBytes(7500, 1_000_000)
+	_, dst := newBulkTestPair(t, true, true, body, func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == zeros3BulkUploadPath {
+				writeSyncError(w, http.StatusInternalServerError, "InternalError", "bulk is broken")
+				return
+			}
+			h.ServeHTTP(w, r)
+		})
+	})
+	src, _ := newBulkTestPair(t, true, true, body, nil)
+	_, err := bulkTestReplicate(src, dst, 4)
+	if err == nil || !strings.Contains(err.Error(), "bulk is broken") {
+		t.Fatalf("err = %v, want the bulk failure surfaced", err)
+	}
+	if dst.cnt.n("v1 PUT chunk") != 0 {
+		t.Fatal("a structural bulk failure must not silently downgrade to v1")
+	}
+	if _, err := dst.srv.store.lookupObject("dst", "obj.bin"); err == nil {
+		t.Fatal("destination committed after a failed transfer")
+	}
+}
+
+func TestBulkReplicate_InterruptedTransferResumesThroughNegotiation(t *testing.T) {
+	bulkTestSetTarget(t, 512<<10)
+	body := genRandomBytes(7600, 6_000_000)
+	var failing atomic.Bool
+	failing.Store(true)
+	var uploads atomic.Int64
+	src, dst := newBulkTestPair(t, true, true, body, func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == zeros3BulkUploadPath && uploads.Add(1) == 4 && failing.Load() {
+				writeSyncError(w, http.StatusServiceUnavailable, "Unavailable", "connection lost")
+				return
+			}
+			h.ServeHTTP(w, r)
+		})
+	})
+	if _, err := bulkTestReplicate(src, dst, 1); err == nil {
+		t.Fatal("first attempt should fail")
+	}
+	if _, err := dst.srv.store.lookupObject("dst", "obj.bin"); err == nil {
+		t.Fatal("namespace must be unchanged after the failed attempt")
+	}
+	if dst.cnt.n("POST "+zeros3SyncCommitPath) != 0 {
+		t.Fatal("commit must not be attempted")
+	}
+	published := packTestStats(t, dst.srv.store).LooseChunkCount
+	if published == 0 {
+		t.Fatal("earlier batches should remain published in CAS")
+	}
+
+	failing.Store(false)
+	uploadsBefore := dst.cnt.n(bulkUploadKey)
+	stats, err := bulkTestReplicate(src, dst, 1)
+	if err != nil {
+		t.Fatalf("rerun: %v", err)
+	}
+	if total := packTestStats(t, dst.srv.store).LooseChunkCount; stats.UniqueChunksUploaded+published != total {
+		t.Fatalf("rerun uploaded %d chunks with %d already published, destination holds %d", stats.UniqueChunksUploaded, published, total)
+	}
+	if stats.UploadedBytes >= int64(len(body)) || stats.UniqueChunksUploaded >= stats.TotalChunks {
+		t.Fatalf("rerun should transfer only the remainder: %+v", stats)
+	}
+	if got := dst.cnt.n(bulkUploadKey) - uploadsBefore; got < 1 || got > 12 {
+		t.Fatalf("rerun uploads = %d", got)
+	}
+	if dst.cnt.n("POST "+zeros3SyncCommitPath) != 1 {
+		t.Fatalf("object must commit exactly once: %+v", dst.cnt.reqs)
+	}
+	bulkTestDestHas(t, dst, body)
+}
+
+func TestBulkRestore_UsesBulkAcrossServers(t *testing.T) {
+	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
+	body := genRandomBytes(7700, 3_000_000)
+	mustPutSourceObject(t, srcSrv, "src", "k", body, "application/octet-stream", nil)
+	mustCreateReplicateBucket(t, dstSrv, "dst")
+	src := newBulkTestNode(t, srcSrv, creds, region, "src", nil)
+	dst := newBulkTestNode(t, dstSrv, creds, region, "dst", nil)
+	summary, err := createSnapshotRemote(src.cfg, "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := restoreNamespace(restoreNamespaceConfig{Snapshot: src.cfg, SnapshotID: summary.SnapshotID, Dest: dst.cfg})
+	if err != nil || !result.OK() {
+		t.Fatalf("restore: %v %+v", err, result)
+	}
+	if src.cnt.n(bulkFetchKey) == 0 || dst.cnt.n(bulkUploadKey) == 0 || src.cnt.n("v1 GET chunk")+dst.cnt.n("v1 PUT chunk") != 0 {
+		t.Fatalf("restore did not use bulk: src %+v dst %+v", src.cnt.reqs, dst.cnt.reqs)
+	}
+	_, got, err := dstSrv.store.GetObject("dst", "k")
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("restored object differs: %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Repair
+// -----------------------------------------------------------------------
+
+func TestBulkRepair_PartialSuccessSurvivesBatchFailure(t *testing.T) {
+	body := genRandomBytes(7800, 3_000_000)
+	for _, c := range []struct {
+		name      string
+		peerSetup func(t *testing.T, peer *Server, chunks []chunkRef) (unresolved map[string]bool, wrap func(http.Handler) http.Handler)
+	}{
+		{"one corrupt chunk on the peer", func(t *testing.T, peer *Server, chunks []chunkRef) (map[string]bool, func(http.Handler) http.Handler) {
+			last := chunks[0].SHA256
+			for _, c := range chunks {
+				last = max(last, c.SHA256)
+			}
+			flipLooseChunkByte(t, peer.store, last)
+			return map[string]bool{last: true}, nil
+		}},
+		{"one chunk absent from the peer", func(t *testing.T, peer *Server, chunks []chunkRef) (map[string]bool, func(http.Handler) http.Handler) {
+			deleteChunkOnDisk(t, peer.store, chunks[5].SHA256)
+			return map[string]bool{chunks[5].SHA256: true}, nil
+		}},
+		{"bulk endpoint failing outright", func(t *testing.T, peer *Server, chunks []chunkRef) (map[string]bool, func(http.Handler) http.Handler) {
+			return map[string]bool{}, func(h http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == zeros3BulkFetchPath {
+						writeSyncError(w, http.StatusInternalServerError, "InternalError", "bulk down")
+						return
+					}
+					h.ServeHTTP(w, r)
+				})
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, store := mustCreateLocalStore(t)
+			if err := store.CreateBucket("b"); err != nil {
+				t.Fatal(err)
+			}
+			entry := mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+			man := mustManifestFor(t, store, entry)
+			_, peerSrv, creds, region := newSyncTestServer(t)
+			primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
+			unresolved, wrap := c.peerSetup(t, peerSrv, man.Chunks)
+			peer := newBulkTestNode(t, peerSrv, creds, region, "", wrap)
+			for _, ch := range man.Chunks {
+				corruptChunkOnDisk(t, store, ch.SHA256)
+			}
+			stats, err := store.repairFromPeer(repairConfig{Peer: peer.cfg, Workers: 4})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stats.BadChunks != len(man.Chunks) || stats.Unresolved != len(unresolved) || stats.Repaired != len(man.Chunks)-len(unresolved) {
+				t.Fatalf("stats = %+v", stats)
+			}
+			for _, f := range stats.Failures {
+				if !unresolved[f.SHA256] {
+					t.Fatalf("unexpected failure %+v", f)
+				}
+			}
+			if len(unresolved) == 0 && !stats.PostRepairOK {
+				t.Fatalf("clean repair did not verify: %+v", stats.PostRepairResult)
+			}
+			if peer.cnt.n(bulkFetchKey) == 0 {
+				t.Fatal("repair against a bulk-capable peer never used bulk")
+			}
+			v1 := peer.cnt.n("v1 GET chunk")
+			if c.name == "one corrupt chunk on the peer" {
+				// Mid-stream corruption keeps the verified prefix; only the tail is retried.
+				if v1 != 1 {
+					t.Fatalf("v1 fallback fetches = %d, want only the damaged chunk", v1)
+				}
+			} else if v1 != len(man.Chunks) {
+				t.Fatalf("a refused batch is retried chunk by chunk: %d fetches for %d chunks", v1, len(man.Chunks))
+			}
+		})
 	}
 }
