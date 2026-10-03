@@ -237,7 +237,7 @@ serialized and safe regardless of worker count.
 
 ## Verification
 
-- **Internal test suite:** 738 tests green; `go vet ./...` and
+- **Internal test suite:** 750 tests green; `go vet ./...` and
   `gofmt -l .` clean; `go test -race ./...` clean.
 - **AWS SDK for Go v2 interoperability:** validated black-box against a
   real `zeros3` process using an ordinary, unmodified SDK client —
