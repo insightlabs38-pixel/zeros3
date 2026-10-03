@@ -17,14 +17,14 @@ forks, and durable snapshots — not as nine unrelated features, but as
 consequences of one architecture: **content-defined chunking → SHA-256
 CAS → immutable manifests → visibility journal.**
 
-- Ordinary S3 clients: AWS SDK for Go v2, `rclone`, the AWS CLI
+- Ordinary S3 clients: AWS SDK for Go v2, minio-go, `rclone`, the AWS CLI
 - CDC + SHA-256 CAS deduplication, measured against real uploads
 - Crash-safe immutable manifests + an append-only visibility journal
 - Delta sync and remote-to-remote replication that transfer only missing bytes
 - Peer-assisted chunk repair, verified byte-for-byte before publication
 - Copy-on-write namespace forks and durable, restorable snapshots
 - Atomic conditional writes (`If-Match` / `If-None-Match`)
-- Streaming ingest: uploads of any size run in bounded memory
+- Streaming I/O: uploads and downloads of any size run in bounded memory; signed `aws-chunked` uploads accepted
 - Bounded parallel chunk transfer
 - Zero third-party dependencies, reproducible build
 
@@ -223,6 +223,15 @@ rose from 20.8 to 40.5 MiB/s at 256 MiB; chunk counts for the fixed
 fixtures (254 / 1000 / 4029 at 16 / 64 / 256 MiB) are unchanged. Single
 runs, 4 vCPU, loopback.
 
+**Streaming reads.** `GetObject` walks the manifest and sends one
+SHA-256-verified CAS chunk at a time, for full and `Range` reads alike. A
+chunk that fails verification is never sent: before the first byte the
+client gets an S3 error, afterwards the response is cut short of its
+`Content-Length`. Full GET of a 1 GiB object peaked at 16 MiB of server
+RSS at 581 MiB/s, against 2043 MiB at 99 MiB/s for the previous
+whole-object build (288 MiB: 15 MiB at 633 MiB/s vs. 577 MiB at 371
+MiB/s). Single runs, 4 vCPU, loopback.
+
 **Bounded parallel delta transfer.** Loopback benchmark, 4 vCPU, a 10ms
 simulated per-request delay standing in for real-network RTT, 256 MiB of
 missing payload:
@@ -237,13 +246,17 @@ serialized and safe regardless of worker count.
 
 ## Verification
 
-- **Internal test suite:** 750 tests green; `go vet ./...` and
+- **Internal test suite:** 760 tests green; `go vet ./...` and
   `gofmt -l .` clean; `go test -race ./...` clean.
 - **AWS SDK for Go v2 interoperability:** validated black-box against a
   real `zeros3` process using an ordinary, unmodified SDK client —
   bucket/object CRUD, `ListObjectsV2`, `CopyObject`, range GET,
   presigned GET/PUT, and a full persistent multipart lifecycle including
   a real process restart mid-upload.
+- **minio-go interoperability:** unmodified minio-go uploads signed as
+  `aws-chunked` (empty, multi-chunk, 40 MiB single PUT, multipart) read
+  back byte-exact; a byte flipped in flight is rejected and publishes
+  nothing.
 - **`rclone` interoperability:** validated black-box with an unpatched
   `rclone` client, including a genuine 1 GiB / 205-part multipart
   upload, restart-persisted and downloaded with exact SHA-256 equality.
@@ -306,8 +319,9 @@ exact API contract:
 - No IAM/STS/KMS/ACL/policy engine; a single static credential pair.
 - `replicate`, `repair`, `fork`, and `snapshot` all require ZeroS3 on
   every server involved — no generic-AWS-S3 source or destination.
-- `GetObject` reconstructs the full object in memory before responding;
-  uploads stream, downloads of very large objects do not yet.
+- `aws-chunked` uploads are supported only as signed
+  `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`; the `-TRAILER`, unsigned, and
+  SigV4A variants are rejected `NotImplemented`.
 - No power-loss (real `kill -9`/hardware) testing beyond deterministic
   in-process crash injection and direct on-disk truncation.
 

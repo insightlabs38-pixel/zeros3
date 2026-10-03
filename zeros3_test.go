@@ -59,31 +59,32 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//       89    Test helpers, fixtures, and TestMain
-//      200    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//     1216    SigV4 authentication (header and payload-mode)
-//     1605    Checksums: CRC32 and Content-MD5
-//     2116    End-to-end HTTP and crash/recovery tests
-//     2790    M2: bucket/object/listing/journal protocol compatibility
-//     3841    M3: CDC/dedup evidence, stats, verify
-//     4977    M3: CopyObject
-//     5524    M3: single-range GET
-//     5725    M5-B: multipart upload
-//     7003    Presigned URLs and virtual-hosted-style addressing
-//     8032    M5-C: version history, restore, GC, storage-efficiency proof
-//     9878    M5-D/P2: ListParts and ListMultipartUploads pagination
-//    11597    M6: delta sync (`zeros3 sync`)
-//    13339    M6C: recursive directory sync
-//    14399    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//    15728    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    17053    M8C: namespace (prefix/bucket) replication
-//    18092    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    19184    M8E: durable namespace snapshots and restore
-//    21262    M8F: conditional operations (Put/Get/Copy preconditions)
-//    22667    M8G: introspection (dry-run planning, diff, inspect)
-//    24619    M8H: bounded parallel chunk transfer
-//    25970    P1: environment credentials, HTTP hardening/shutdown, TLS
-//   27286    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//       90    Test helpers, fixtures, and TestMain
+//      242    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//     1258    SigV4 authentication (header and payload-mode)
+//     1647    Checksums: CRC32 and Content-MD5
+//     2150    End-to-end HTTP and crash/recovery tests
+//     2824    M2: bucket/object/listing/journal protocol compatibility
+//     3875    M3: CDC/dedup evidence, stats, verify
+//     5011    M3: CopyObject
+//     5558    M3: single-range GET
+//     5759    M5-B: multipart upload
+//     7037    Presigned URLs and virtual-hosted-style addressing
+//     8066    M5-C: version history, restore, GC, storage-efficiency proof
+//     9912    M5-D/P2: ListParts and ListMultipartUploads pagination
+//    11631    M6: delta sync (`zeros3 sync`)
+//    13373    M6C: recursive directory sync
+//    14433    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    15762    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//    17087    M8C: namespace (prefix/bucket) replication
+//    18126    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    19218    M8E: durable namespace snapshots and restore
+//    21296    M8F: conditional operations (Put/Get/Copy preconditions)
+//    22701    M8G: introspection (dry-run planning, diff, inspect)
+//    24653    M8H: bounded parallel chunk transfer
+//    26004    P1: environment credentials, HTTP hardening/shutdown, TLS
+//    27320    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//    28250    Streaming reads and aws-chunked SigV4
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -170,6 +171,47 @@ func (s *Store) UploadPart(bucket, key, uploadID string, partNumber int, body []
 	return s.commitPart(bucket, key, uploadID, partNumber, ing)
 }
 
+// readManifestRange, GetObject and GetObjectRange collect the streaming
+// read path's output into memory for small test fixtures.
+func (s *Store) readManifestRange(man manifestV1, rng byteRange) ([]byte, error) {
+	var out []byte
+	rd := s.newManifestReader(man, rng)
+	for {
+		data, err := rd.next()
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, data...)
+	}
+}
+
+func (s *Store) GetObject(bucket, key string) (*objectEntry, []byte, error) {
+	entry, man, err := s.HeadObject(bucket, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	data, err := s.readManifestRange(man, byteRange{start: 0, end: entry.size - 1})
+	if err != nil {
+		return nil, nil, err
+	}
+	return entry, data, nil
+}
+
+func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry, manifestV1, []byte, error) {
+	entry, man, err := s.HeadObject(bucket, key)
+	if err != nil {
+		return nil, manifestV1{}, nil, err
+	}
+	data, err := s.readManifestRange(man, rng)
+	if err != nil {
+		return nil, manifestV1{}, nil, err
+	}
+	return entry, man, data, nil
+}
+
 // checkPayload applies a request's checksum headers to a fully received body.
 func checkPayload(r *http.Request, body []byte) error {
 	c, err := parsePayloadCheck(r, "")
@@ -186,7 +228,7 @@ func authenticateBody(srv *Server, r *http.Request, rawPath, rawQuery string, bo
 	if err != nil {
 		return err
 	}
-	return payloadCheck{sha256: signed}.verifyBytes(body)
+	return payloadCheck{sha256: signed.sha256}.verifyBytes(body)
 }
 
 func genRandomBytes(seed int64, n int) []byte {
@@ -2036,23 +2078,15 @@ func TestPayloadMode_ExcludedModesRejectCleanly(t *testing.T) {
 	}
 }
 
-func TestPayloadMode_StreamingHMACModesRejectedUntilImplemented(t *testing.T) {
+func TestPayloadMode_StreamingHMACTrailerRejected(t *testing.T) {
 	srv, signer := newTestServerAndSigner(t)
-	cases := []string{
-		"STREAMING-AWS4-HMAC-SHA256-PAYLOAD",
-		"STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER",
-	}
-	for _, mode := range cases {
-		t.Run(mode, func(t *testing.T) {
-			body := []byte("streaming mode body")
-			req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
-			signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: mode})
-			var ae *authError
-			err := authenticateBody(srv, req, rawPath, rawQuery, body)
-			if !errors.As(err, &ae) || ae.code != "NotImplemented" {
-				t.Fatalf("expected conditional streaming mode %q, not yet implemented, to be rejected as NotImplemented, got %v", mode, err)
-			}
-		})
+	body := []byte("streaming mode body")
+	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
+	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"})
+	var ae *authError
+	err := authenticateBody(srv, req, rawPath, rawQuery, body)
+	if !errors.As(err, &ae) || ae.code != "NotImplemented" {
+		t.Fatalf("expected the unimplemented trailer streaming mode to be rejected as NotImplemented, got %v", err)
 	}
 }
 
@@ -27681,7 +27715,7 @@ func TestStreamingPut_RejectedBeforeIngest(t *testing.T) {
 		wantCode    string
 	}{
 		{name: "bad-signature", key: "k", signer: &badSigner, wantStatus: 403, wantCode: "SignatureDoesNotMatch"},
-		{name: "streaming-hmac-unsupported", key: "k", payloadHash: "STREAMING-AWS4-HMAC-SHA256-PAYLOAD", wantStatus: 501, wantCode: "NotImplemented"},
+		{name: "streaming-hmac-trailer-unsupported", key: "k", payloadHash: "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER", wantStatus: 501, wantCode: "NotImplemented"},
 		{name: "malformed-condition", key: "k", hdr: map[string]string{"If-None-Match": "nope"}, wantStatus: 400, wantCode: "InvalidArgument"},
 		{name: "conflicting-conditions", key: "k", hdr: map[string]string{"If-None-Match": "*", "If-Match": `"x"`}, wantStatus: 400, wantCode: "InvalidArgument"},
 	}
@@ -28139,6 +28173,26 @@ func TestStreamingPut_LargeObjectBoundedMemory(t *testing.T) {
 		t.Fatal("streamed manifest chunks differ from chunking the same stream directly")
 	}
 
+	var gotSHA [32]byte
+	var gotLen int64
+	getPeak := peakHeapGrowth(func() {
+		resp := doSignedRequest(t, f.ts.Client(), f.ts.URL, f.signer, http.MethodGet, "/b/large", nil, nil)
+		defer resp.Body.Close()
+		hh := sha256.New()
+		gotLen, _ = io.Copy(hh, resp.Body)
+		hh.Sum(gotSHA[:0])
+		if resp.StatusCode != 200 || resp.ContentLength != size {
+			t.Fatalf("large GET: status %d, Content-Length %d", resp.StatusCode, resp.ContentLength)
+		}
+	})
+	if gotLen != size || hex.EncodeToString(gotSHA[:]) != hex.EncodeToString(h.Sum(nil)) {
+		t.Fatalf("large GET returned %d bytes with the wrong digest", gotLen)
+	}
+	t.Logf("downloaded %d MiB; peak heap growth %d MiB", size>>20, getPeak>>20)
+	if getPeak > 64<<20 {
+		t.Fatalf("heap grew by %d MiB while streaming a %d MiB GET", getPeak>>20, size>>20)
+	}
+
 	const window = 16 << 20
 	for off := int64(0); off < size; off += window {
 		n := int64(window)
@@ -28190,4 +28244,852 @@ func peakHeapGrowth(fn func()) uint64 {
 		return p - base.HeapAlloc
 	}
 	return 0
+}
+
+// =============================================================================
+// Streaming reads and aws-chunked SigV4
+// =============================================================================
+
+func textFixture(n int) []byte {
+	words := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"}
+	rnd := rand.New(rand.NewSource(9))
+	var b bytes.Buffer
+	for b.Len() < n {
+		b.WriteString(words[rnd.Intn(len(words))])
+		b.WriteByte(' ')
+	}
+	return b.Bytes()[:n]
+}
+
+func readFixture(kind string, n int) []byte {
+	switch kind {
+	case "text":
+		return textFixture(n)
+	case "shifted":
+		return append(genRandomBytes(5, 37), genRandomBytes(int64(n)+7, n)...)[:n]
+	}
+	return streamFixture(kind, n)
+}
+
+// getBody issues a signed GET and reads the body, returning the read error
+// so truncation is visible to the caller.
+func (f *putFixture) getBody(key string, hdr map[string]string) (*http.Response, []byte, error) {
+	f.t.Helper()
+	resp := doSignedRequest(f.t, f.ts.Client(), f.ts.URL, f.signer, http.MethodGet, "/b/"+key, nil, hdr)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	return resp, body, err
+}
+
+// TestStreamingGet_Matrix reads objects of every CDC-boundary size and
+// content kind through full, prefix, interior, suffix, cross-chunk,
+// single-chunk, clamped, unsatisfiable, and ignored-Range shapes.
+func TestStreamingGet_Matrix(t *testing.T) {
+	f := newPutFixture(t)
+	type shape struct {
+		name       string
+		header     string
+		start, end int64
+		status     int
+	}
+	build := func(size int64, chunks []chunkRef) []shape {
+		shapes := []shape{
+			{"full", "", 0, size - 1, 200},
+			{"multi-range-ignored", "bytes=0-0,2-3", 0, size - 1, 200},
+			{"malformed-ignored", "bytes=abc", 0, size - 1, 200},
+			{"unsat/start-at-size", fmt.Sprintf("bytes=%d-", size), 0, 0, 416},
+			{"unsat/past-end", fmt.Sprintf("bytes=%d-%d", size+5, size+9), 0, 0, 416},
+			{"unsat/zero-suffix", "bytes=-0", 0, 0, 416},
+		}
+		if size == 0 {
+			return shapes
+		}
+		add := func(name string, start, end int64, header string) {
+			shapes = append(shapes, shape{name, header, start, end, 206})
+		}
+		add("prefix/first-byte", 0, 0, "bytes=0-0")
+		add("suffix/last-byte", size-1, size-1, "bytes=-1")
+		add("suffix/oversized", 0, size-1, fmt.Sprintf("bytes=-%d", size+10))
+		add("clamped-end", 0, size-1, fmt.Sprintf("bytes=0-%d", size+1000))
+		if size >= 3 {
+			add("prefix/half", 0, size/2, fmt.Sprintf("bytes=0-%d", size/2))
+			add("interior", size/3, 2*size/3, fmt.Sprintf("bytes=%d-%d", size/3, 2*size/3))
+			add("open-ended", size/2, size-1, fmt.Sprintf("bytes=%d-", size/2))
+		}
+		tail := min(size, cdcTargetChunkSize+7)
+		add("suffix/tail", size-tail, size-1, fmt.Sprintf("bytes=-%d", tail))
+		if len(chunks) > 1 {
+			b := chunks[0].Length
+			add("cross-chunk", b-1, b, fmt.Sprintf("bytes=%d-%d", b-1, b))
+			var off int64
+			for _, c := range chunks[:len(chunks)/2] {
+				off += c.Length
+			}
+			mid := chunks[len(chunks)/2].Length
+			if mid >= 3 {
+				add("single-chunk-subset", off+1, off+mid-2, fmt.Sprintf("bytes=%d-%d", off+1, off+mid-2))
+			}
+		}
+		return shapes
+	}
+
+	type fixture struct {
+		kind string
+		size int
+	}
+	var fixtures []fixture
+	for _, size := range []int{0, 1, cdcMinChunkSize - 1, cdcMinChunkSize, cdcMinChunkSize + 1, cdcTargetChunkSize,
+		cdcMaxChunkSize - 1, cdcMaxChunkSize, cdcMaxChunkSize + 1, 2*cdcMaxChunkSize + 13, 3<<20 + 12345} {
+		fixtures = append(fixtures, fixture{"random", size})
+	}
+	for _, kind := range []string{"repeat", "text", "shifted"} {
+		fixtures = append(fixtures, fixture{kind, cdcMaxChunkSize + 1}, fixture{kind, 3<<20 + 12345})
+	}
+
+	for _, fx := range fixtures {
+		data := readFixture(fx.kind, fx.size)
+		key := fmt.Sprintf("%s-%d", fx.kind, fx.size)
+		entry, err := f.srv.store.PutObject("b", key, data, "application/octet-stream", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, man, err := f.srv.store.HeadObject("b", key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size := int64(len(data))
+		for _, sh := range build(size, man.Chunks) {
+			t.Run(key+"/"+sh.name, func(t *testing.T) {
+				var hdr map[string]string
+				if sh.header != "" {
+					hdr = map[string]string{"Range": sh.header}
+				}
+				resp, body, err := f.getBody(key, hdr)
+				if err != nil {
+					t.Fatalf("body read: %v", err)
+				}
+				if resp.StatusCode != sh.status {
+					t.Fatalf("status %d, want %d", resp.StatusCode, sh.status)
+				}
+				if sh.status == 416 {
+					if got := resp.Header.Get("Content-Range"); got != fmt.Sprintf("bytes */%d", size) {
+						t.Fatalf("416 Content-Range %q", got)
+					}
+					return
+				}
+				want := data[sh.start : sh.end+1]
+				if !bytes.Equal(body, want) || resp.Header.Get("Content-Length") != strconv.Itoa(len(want)) {
+					t.Fatalf("body mismatch: got %d bytes (Content-Length %s), want %d", len(body), resp.Header.Get("Content-Length"), len(want))
+				}
+				if resp.Header.Get("ETag") != `"`+entry.etag+`"` || resp.Header.Get("Accept-Ranges") != "bytes" || resp.Header.Get("Last-Modified") == "" {
+					t.Fatalf("object headers missing: %v", resp.Header)
+				}
+				wantRange := ""
+				if sh.status == 206 {
+					wantRange = fmt.Sprintf("bytes %d-%d/%d", sh.start, sh.end, size)
+				}
+				if resp.Header.Get("Content-Range") != wantRange {
+					t.Fatalf("Content-Range %q, want %q", resp.Header.Get("Content-Range"), wantRange)
+				}
+			})
+		}
+	}
+}
+
+// TestStreamingGet_HeadAndConditionalsSkipPayload deletes every chunk, then
+// shows that HEAD and decided conditional GETs still answer from metadata
+// while a body-bearing GET fails with an S3 error rather than a 200.
+func TestStreamingGet_HeadAndConditionalsSkipPayload(t *testing.T) {
+	f := newPutFixture(t)
+	data := genRandomBytes(83, 400<<10)
+	entry, err := f.srv.store.PutObject("b", "obj", data, "text/x-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(f.srv.store.root, "chunks")); err != nil {
+		t.Fatal(err)
+	}
+	etag := `"` + entry.etag + `"`
+	cases := []struct {
+		name       string
+		method     string
+		hdr        map[string]string
+		wantStatus int
+	}{
+		{"head", http.MethodHead, nil, 200},
+		{"head/not-modified", http.MethodHead, map[string]string{"If-None-Match": etag}, 304},
+		{"get/not-modified", http.MethodGet, map[string]string{"If-None-Match": etag}, 304},
+		{"get/precondition-failed", http.MethodGet, map[string]string{"If-Match": `"other"`}, 412},
+		{"get/missing-chunks", http.MethodGet, nil, 500},
+		{"get/range-missing-chunks", http.MethodGet, map[string]string{"Range": "bytes=5-9"}, 500},
+		{"get/unsatisfiable", http.MethodGet, map[string]string{"Range": "bytes=999999999-"}, 416},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doSignedRequest(t, f.ts.Client(), f.ts.URL, f.signer, tc.method, "/b/obj", nil, tc.hdr)
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+			if tc.wantStatus == 500 && !bytes.Contains(body, []byte("InternalError")) {
+				t.Fatalf("expected an S3 error body, got %q", body)
+			}
+			if tc.method == http.MethodHead && tc.wantStatus == 200 && resp.Header.Get("Content-Length") != strconv.Itoa(len(data)) {
+				t.Fatalf("HEAD Content-Length %q", resp.Header.Get("Content-Length"))
+			}
+		})
+	}
+}
+
+// TestStreamingGet_Corruption damages one CAS chunk at a time and checks
+// that the corrupt chunk's bytes are never emitted, that a failure before
+// the first byte is an S3 error, and that a failure after earlier verified
+// chunks surfaces to the client as a truncated body, never a complete one.
+func TestStreamingGet_Corruption(t *testing.T) {
+	f := newPutFixture(t)
+	data := genRandomBytes(81, 2<<20)
+	if _, err := f.srv.store.PutObject("b", "obj", data, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	_, man, err := f.srv.store.HeadObject("b", "obj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	offsets := make([]int64, len(man.Chunks)+1)
+	for i, c := range man.Chunks {
+		offsets[i+1] = offsets[i] + c.Length
+	}
+	damages := map[string]func(path string, orig []byte){
+		"missing":   func(path string, _ []byte) { os.Remove(path) },
+		"truncated": func(path string, orig []byte) { os.WriteFile(path, orig[:len(orig)/2], 0o644) },
+		"emptied":   func(path string, _ []byte) { os.WriteFile(path, nil, 0o644) },
+		"flipped": func(path string, orig []byte) {
+			bad := append([]byte{}, orig...)
+			bad[len(bad)/2] ^= 0xff
+			os.WriteFile(path, bad, 0o644)
+		},
+	}
+	positions := map[string]int{"first": 0, "middle": len(man.Chunks) / 2, "last": len(man.Chunks) - 1}
+	for dname, damage := range damages {
+		for pname, idx := range positions {
+			t.Run(dname+"/"+pname, func(t *testing.T) {
+				sum, _ := decodeHexSHA256(man.Chunks[idx].SHA256)
+				path := f.srv.store.chunkPath(sum)
+				orig, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				os.Chmod(path, 0o644)
+				damage(path, orig)
+				defer os.WriteFile(path, orig, 0o644)
+
+				size := int64(len(data))
+				damagedLo, damagedHi := offsets[idx], offsets[idx+1]-1
+				rangeHdr := func(a, b int64) map[string]string {
+					return map[string]string{"Range": fmt.Sprintf("bytes=%d-%d", a, b)}
+				}
+				expectIntact := func(what string, hdr map[string]string, lo, hi int64) {
+					_, got, err := f.getBody("obj", hdr)
+					if err != nil || !bytes.Equal(got, data[lo:hi+1]) {
+						t.Fatalf("%s: undamaged range failed: err=%v", what, err)
+					}
+				}
+				expectRefused := func(what string, hdr map[string]string) {
+					resp, got, _ := f.getBody("obj", hdr)
+					if resp.StatusCode != http.StatusInternalServerError || !bytes.Contains(got, []byte("InternalError")) || len(got) > 1024 {
+						t.Fatalf("%s: status %d with %d body bytes, want an S3 error", what, resp.StatusCode, len(got))
+					}
+				}
+				expectTruncated := func(what string, hdr map[string]string, lo, hi int64) {
+					resp, got, err := f.getBody("obj", hdr)
+					if resp.StatusCode != 200 && resp.StatusCode != 206 {
+						t.Fatalf("%s: status %d, want a committed response", what, resp.StatusCode)
+					}
+					if err == nil || int64(len(got)) >= hi-lo+1 {
+						t.Fatalf("%s: damaged read reported success (%d of %d bytes, err %v)", what, len(got), hi-lo+1, err)
+					}
+					if !bytes.HasPrefix(data[lo:hi+1], got) || int64(len(got)) > damagedLo-lo {
+						t.Fatalf("%s: emitted bytes beyond the verified prefix (%d bytes, damaged chunk starts %d bytes in)", what, len(got), damagedLo-lo)
+					}
+				}
+
+				if idx == 0 {
+					expectRefused("full", nil)
+				} else {
+					expectTruncated("full", nil, 0, size-1)
+					expectIntact("range-before-damage", rangeHdr(0, damagedLo-1), 0, damagedLo-1)
+					expectTruncated("range-into-damage", rangeHdr(damagedLo-10, damagedHi), damagedLo-10, damagedHi)
+				}
+				if idx < len(man.Chunks)-1 {
+					expectIntact("range-after-damage", rangeHdr(damagedHi+1, size-1), damagedHi+1, size-1)
+				}
+				expectRefused("range-starting-in-damage", rangeHdr(damagedLo, damagedHi))
+			})
+		}
+	}
+}
+
+// awsFrame is one aws-chunked chunk. declared is the size written in the
+// header (it differs from len(data) only in tampering cases), and header,
+// when set, replaces the whole header line.
+type awsFrame struct {
+	declared int
+	data     []byte
+	sig      string
+	header   string
+}
+
+func awsChunkSig(signer testSigner, when time.Time, prev string, data []byte) string {
+	date := when.UTC().Format("20060102")
+	scope := fmt.Sprintf("%s/%s/s3/aws4_request", date, signer.region)
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256-PAYLOAD", when.UTC().Format("20060102T150405Z"), scope, prev, testHexSHA256(nil), testHexSHA256(data),
+	}, "\n")
+	kDate := testHMAC([]byte("AWS4"+signer.secretKey), date)
+	kSigning := testHMAC(testHMAC(testHMAC(kDate, signer.region), "s3"), "aws4_request")
+	return hex.EncodeToString(testHMAC(kSigning, stringToSign))
+}
+
+// signedAWSFrames splits payload into frames of the cycled sizes (one
+// frame when sizes is empty), chains their signatures from seed, and
+// appends the zero-length final frame.
+func signedAWSFrames(signer testSigner, when time.Time, seed string, payload []byte, sizes []int) []awsFrame {
+	var frames []awsFrame
+	prev := seed
+	for i := 0; len(payload) > 0; i++ {
+		n := len(payload)
+		if len(sizes) > 0 && sizes[i%len(sizes)] < n {
+			n = sizes[i%len(sizes)]
+		}
+		sig := awsChunkSig(signer, when, prev, payload[:n])
+		frames = append(frames, awsFrame{declared: n, data: payload[:n], sig: sig})
+		prev, payload = sig, payload[n:]
+	}
+	return append(frames, awsFrame{sig: awsChunkSig(signer, when, prev, nil)})
+}
+
+func encodeAWSFrames(frames []awsFrame) []byte {
+	var b bytes.Buffer
+	for _, fr := range frames {
+		if fr.header != "" {
+			b.WriteString(fr.header)
+		} else {
+			fmt.Fprintf(&b, "%x;chunk-signature=%s", fr.declared, fr.sig)
+		}
+		b.WriteString("\r\n")
+		b.Write(fr.data)
+		b.WriteString("\r\n")
+	}
+	return b.Bytes()
+}
+
+// awsChunkedPut describes one aws-chunked PUT; the zero value is a valid
+// signed upload of payload and each field breaks exactly one thing.
+type awsChunkedPut struct {
+	path        string
+	payload     []byte
+	sizes       []int
+	payloadHash string
+	signer      *testSigner
+	decodedLen  string // "" = real length, "-" = header omitted
+	encoding    string // "" = aws-chunked, "-" = header omitted
+	hdr         map[string]string
+	frames      func([]awsFrame) []awsFrame
+	raw         func([]byte) []byte
+}
+
+func (f *putFixture) putChunked(c awsChunkedPut) (int, string) {
+	f.t.Helper()
+	signer := f.signer
+	if c.signer != nil {
+		signer = *c.signer
+	}
+	hash := c.payloadHash
+	if hash == "" {
+		hash = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+	}
+	req, err := http.NewRequest(http.MethodPut, f.ts.URL+c.path, nil)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	signed := []string{"content-encoding", "x-amz-decoded-content-length"}
+	switch c.encoding {
+	case "":
+		req.Header.Set("Content-Encoding", "aws-chunked")
+	case "-":
+		signed = signed[1:]
+	default:
+		req.Header.Set("Content-Encoding", c.encoding)
+	}
+	switch c.decodedLen {
+	case "":
+		req.Header.Set("X-Amz-Decoded-Content-Length", strconv.Itoa(len(c.payload)))
+	case "-":
+		signed = signed[:len(signed)-1]
+	default:
+		req.Header.Set("X-Amz-Decoded-Content-Length", c.decodedLen)
+	}
+	now := time.Now()
+	signTestRequest(f.t, req, signer, req.URL.Path, req.URL.RawQuery, nil, now, &signOpts{payloadHash: hash, extraSignedHeaders: signed})
+	for k, v := range c.hdr {
+		req.Header.Set(k, v)
+	}
+	auth := req.Header.Get("Authorization")
+	seed := auth[strings.LastIndex(auth, "Signature=")+len("Signature="):]
+	frames := signedAWSFrames(signer, now, seed, c.payload, c.sizes)
+	if c.frames != nil {
+		frames = c.frames(frames)
+	}
+	body := encodeAWSFrames(frames)
+	if c.raw != nil {
+		body = c.raw(body)
+	}
+	req.Body, req.ContentLength = io.NopCloser(bytes.NewReader(body)), int64(len(body))
+	resp, err := f.ts.Client().Do(req)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var e s3ErrorBody
+	_ = xml.Unmarshal(raw, &e)
+	return resp.StatusCode, e.Code
+}
+
+func flipSig(sig string) string {
+	if sig[0] == '0' {
+		return "1" + sig[1:]
+	}
+	return "0" + sig[1:]
+}
+
+// TestAWSChunked_Matrix drives signed aws-chunked uploads through the real
+// handler: every accepted framing must store exactly the decoded payload,
+// and every tampered, malformed, truncated, or unsupported request must be
+// refused without publishing the object.
+func TestAWSChunked_Matrix(t *testing.T) {
+	f := newPutFixture(t)
+	payload := genRandomBytes(91, 300<<10)
+	sigAt := func(i int, mutate func(*awsFrame)) func([]awsFrame) []awsFrame {
+		return func(fr []awsFrame) []awsFrame {
+			if i < 0 {
+				i += len(fr)
+			}
+			mutate(&fr[i])
+			return fr
+		}
+	}
+	tweak := func(mutate func(*awsFrame)) func(int) func([]awsFrame) []awsFrame {
+		return func(i int) func([]awsFrame) []awsFrame { return sigAt(i, mutate) }
+	}
+	badSig := tweak(func(fr *awsFrame) { fr.sig = flipSig(fr.sig) })
+	badSigner := f.signer
+	badSigner.secretKey = "not-the-secret"
+	longHeader := strings.Repeat("0", 5000)
+	truncate := func(n int) func([]byte) []byte {
+		return func(b []byte) []byte { return b[:len(b)-n] }
+	}
+
+	cases := []struct {
+		name       string
+		put        awsChunkedPut
+		wantStatus int
+		wantCode   string
+	}{
+		{"ok/single-chunk", awsChunkedPut{payload: payload}, 200, ""},
+		{"ok/multi-chunk", awsChunkedPut{payload: payload, sizes: []int{65536}}, 200, ""},
+		{"ok/irregular", awsChunkedPut{payload: payload, sizes: []int{1, 8192, 3, 100000, 65536, 17}}, 200, ""},
+		{"ok/tiny-chunks", awsChunkedPut{payload: payload[:1500], sizes: []int{1}}, 200, ""},
+		{"ok/empty", awsChunkedPut{}, 200, ""},
+		{"ok/checksum-headers", awsChunkedPut{payload: payload, sizes: []int{65536}, hdr: map[string]string{"Content-MD5": md5Header(payload), "x-amz-checksum-crc32": crc32Header(payload, 0)}}, 200, ""},
+		{"ok/encoding-list", awsChunkedPut{payload: payload[:1000], encoding: "gzip, aws-chunked"}, 200, ""},
+
+		{"seed/bad-signature", awsChunkedPut{payload: payload, signer: &badSigner}, 403, "SignatureDoesNotMatch"},
+		{"chunk/bad-first-signature", awsChunkedPut{payload: payload, sizes: []int{65536}, frames: badSig(0)}, 403, "SignatureDoesNotMatch"},
+		{"chunk/bad-middle-signature", awsChunkedPut{payload: payload, sizes: []int{65536}, frames: badSig(2)}, 403, "SignatureDoesNotMatch"},
+		{"chunk/bad-final-signature", awsChunkedPut{payload: payload, sizes: []int{65536}, frames: badSig(-1)}, 403, "SignatureDoesNotMatch"},
+		{"chunk/bad-final-signature-empty", awsChunkedPut{frames: badSig(-1)}, 403, "SignatureDoesNotMatch"},
+		{"chunk/swapped-signatures", awsChunkedPut{payload: payload, sizes: []int{65536}, frames: func(fr []awsFrame) []awsFrame {
+			fr[0].sig, fr[1].sig = fr[1].sig, fr[0].sig
+			return fr
+		}}, 403, "SignatureDoesNotMatch"},
+		{"chunk/modified-payload-byte", awsChunkedPut{payload: payload, sizes: []int{65536}, frames: sigAt(1, func(fr *awsFrame) {
+			fr.data = append([]byte{}, fr.data...)
+			fr.data[7] ^= 1
+		})}, 403, "SignatureDoesNotMatch"},
+		{"checksum/wrong-md5", awsChunkedPut{payload: payload, hdr: map[string]string{"Content-MD5": md5Header([]byte("x"))}}, 400, "BadDigest"},
+
+		{"framing/declared-too-small", awsChunkedPut{payload: payload, sizes: []int{65536}, frames: sigAt(0, func(fr *awsFrame) { fr.declared-- })}, 400, "InvalidRequest"},
+		{"framing/declared-too-large", awsChunkedPut{payload: payload, sizes: []int{65536}, frames: sigAt(0, func(fr *awsFrame) { fr.declared++ })}, 400, "InvalidRequest"},
+		{"framing/declared-over-chunk-limit", awsChunkedPut{payload: payload, frames: sigAt(0, func(fr *awsFrame) { fr.declared = 1 << 30 })}, 400, "InvalidRequest"},
+		{"framing/non-hex-size", awsChunkedPut{payload: payload, frames: sigAt(0, func(fr *awsFrame) { fr.header = "zz;chunk-signature=" + fr.sig })}, 400, "InvalidRequest"},
+		{"framing/negative-size", awsChunkedPut{payload: payload, frames: sigAt(0, func(fr *awsFrame) { fr.header = "-1;chunk-signature=" + fr.sig })}, 400, "InvalidRequest"},
+		{"framing/size-overflow", awsChunkedPut{payload: payload, frames: sigAt(0, func(fr *awsFrame) { fr.header = "ffffffffffffffff;chunk-signature=" + fr.sig })}, 400, "InvalidRequest"},
+		{"framing/missing-signature", awsChunkedPut{payload: payload, frames: sigAt(0, func(fr *awsFrame) { fr.header = fmt.Sprintf("%x", fr.declared) })}, 400, "InvalidRequest"},
+		{"framing/short-signature", awsChunkedPut{payload: payload, frames: sigAt(0, func(fr *awsFrame) { fr.header = fmt.Sprintf("%x;chunk-signature=%s", fr.declared, fr.sig[:63]) })}, 400, "InvalidRequest"},
+		{"framing/extra-extension", awsChunkedPut{payload: payload, frames: sigAt(0, func(fr *awsFrame) { fr.header = fmt.Sprintf("%x;foo=bar;chunk-signature=%s", fr.declared, fr.sig) })}, 400, "InvalidRequest"},
+		{"framing/oversized-header-line", awsChunkedPut{payload: payload, frames: sigAt(0, func(fr *awsFrame) { fr.header = longHeader + ";chunk-signature=" + fr.sig })}, 400, "InvalidRequest"},
+		{"framing/bare-lf-header", awsChunkedPut{payload: payload, raw: func(b []byte) []byte { return bytes.Replace(b, []byte("\r\n"), []byte("\n"), 1) }}, 400, "InvalidRequest"},
+		{"framing/trailing-garbage", awsChunkedPut{payload: payload, raw: func(b []byte) []byte { return append(b, 'x') }}, 400, "InvalidRequest"},
+		{"framing/chunk-after-final", awsChunkedPut{payload: payload[:100], frames: func(fr []awsFrame) []awsFrame { return append(fr, fr[0]) }}, 400, "InvalidRequest"},
+
+		{"length/header-larger-than-payload", awsChunkedPut{payload: payload, decodedLen: strconv.Itoa(len(payload) + 1)}, 400, "IncompleteBody"},
+		{"length/header-smaller-than-payload", awsChunkedPut{payload: payload, decodedLen: strconv.Itoa(len(payload) - 1)}, 400, "IncompleteBody"},
+		{"length/header-missing", awsChunkedPut{payload: payload, decodedLen: "-"}, 411, "MissingContentLength"},
+		{"length/header-not-a-number", awsChunkedPut{payload: payload, decodedLen: "abc"}, 400, "InvalidRequest"},
+		{"length/header-negative", awsChunkedPut{payload: payload, decodedLen: "-5"}, 400, "InvalidRequest"},
+		{"length/header-over-ceiling", awsChunkedPut{payload: payload, decodedLen: strconv.FormatInt(maxStreamedBodySize+1, 10)}, 400, "EntityTooLarge"},
+
+		{"eof/missing-final-chunk", awsChunkedPut{payload: payload, sizes: []int{65536}, frames: func(fr []awsFrame) []awsFrame { return fr[:len(fr)-1] }}, 400, "IncompleteBody"},
+		{"eof/mid-data", awsChunkedPut{payload: payload, sizes: []int{65536}, raw: truncate(1000)}, 400, "IncompleteBody"},
+		{"eof/mid-final-header", awsChunkedPut{payload: payload, raw: truncate(30)}, 400, "IncompleteBody"},
+		{"eof/final-without-crlf", awsChunkedPut{payload: payload, raw: truncate(2)}, 400, "IncompleteBody"},
+
+		{"mode/hmac-trailer", awsChunkedPut{payload: payload, payloadHash: "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"}, 501, "NotImplemented"},
+		{"mode/unsigned-trailer", awsChunkedPut{payload: payload, payloadHash: "STREAMING-UNSIGNED-PAYLOAD-TRAILER"}, 501, "NotImplemented"},
+		{"mode/ecdsa", awsChunkedPut{payload: payload, payloadHash: "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD"}, 501, "NotImplemented"},
+		{"mode/ecdsa-trailer", awsChunkedPut{payload: payload, payloadHash: "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER"}, 501, "NotImplemented"},
+		{"mode/lowercase-sentinel", awsChunkedPut{payload: payload, payloadHash: "streaming-aws4-hmac-sha256-payload"}, 403, "AccessDenied"},
+		{"mode/encoding-missing", awsChunkedPut{payload: payload, encoding: "-"}, 400, "InvalidRequest"},
+		{"mode/encoding-other", awsChunkedPut{payload: payload, encoding: "gzip"}, 400, "InvalidRequest"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.put.path = "/b/" + tc.name
+			f.t = t
+			status, code := f.putChunked(tc.put)
+			if status != tc.wantStatus || code != tc.wantCode {
+				t.Fatalf("got %d %q, want %d %q", status, code, tc.wantStatus, tc.wantCode)
+			}
+			got, body := f.get(tc.name)
+			if tc.wantStatus == 200 {
+				if got != 200 || !bytes.Equal(body, tc.put.payload) {
+					t.Fatalf("accepted upload reads back as %d with %d bytes, want %d", got, len(body), len(tc.put.payload))
+				}
+			} else if got != 404 {
+				t.Fatalf("a refused upload left a readable object (GET %d)", got)
+			}
+		})
+	}
+	if v, err := f.srv.store.Verify(true); err != nil || !v.OK() {
+		t.Fatalf("verify after matrix: %v %+v", err, v)
+	}
+}
+
+// TestAWSChunked_FailureKeepsExistingObject overwrites a live object with
+// uploads that fail after producing chunks and checks the original stays
+// current, with unreachable chunks as the only residue.
+func TestAWSChunked_FailureKeepsExistingObject(t *testing.T) {
+	f := newPutFixture(t)
+	old := genRandomBytes(92, 200<<10)
+	if status, code := f.putChunked(awsChunkedPut{path: "/b/k", payload: old, sizes: []int{65536}}); status != 200 {
+		t.Fatalf("seed upload: %d %s", status, code)
+	}
+	fresh := genRandomBytes(93, 600<<10)
+	status, code := f.putChunked(awsChunkedPut{path: "/b/k", payload: fresh, sizes: []int{65536}, frames: func(fr []awsFrame) []awsFrame {
+		fr[len(fr)-1].sig = flipSig(fr[len(fr)-1].sig)
+		return fr
+	}})
+	if status != 403 || code != "SignatureDoesNotMatch" {
+		t.Fatalf("bad final chunk: %d %s", status, code)
+	}
+	if _, body := f.get("k"); !bytes.Equal(body, old) {
+		t.Fatal("a failed aws-chunked overwrite changed the live object")
+	}
+	if hist, _, err := f.srv.store.ListVersions("b", "k"); err != nil || len(hist) != 0 {
+		t.Fatalf("a failed overwrite wrote history: %v %d", err, len(hist))
+	}
+	if v, err := f.srv.store.Verify(true); err != nil || !v.OK() {
+		t.Fatalf("verify: %v %+v", err, v)
+	}
+}
+
+// TestAWSChunked_ConditionalHistoryRestart repeats the streaming-PUT
+// conditional/history walk with aws-chunked bodies, then reopens the store
+// and compares the manifest chunking against an ordinary PUT of the bytes.
+func TestAWSChunked_ConditionalHistoryRestart(t *testing.T) {
+	f := newPutFixture(t)
+	bodies := [][]byte{genRandomBytes(94, 600<<10), genRandomBytes(95, 700<<10), genRandomBytes(96, 300<<10)}
+	etag := func(b []byte) string { return `"` + hex.EncodeToString(md5Sum(b)) + `"` }
+	steps := []struct {
+		name       string
+		body       int
+		hdr        map[string]string
+		wantStatus int
+		wantLive   int
+	}{
+		{"create-only on absent", 0, map[string]string{"If-None-Match": "*"}, 200, 0},
+		{"create-only on present", 1, map[string]string{"If-None-Match": "*"}, 412, 0},
+		{"if-match current", 1, map[string]string{"If-Match": etag(bodies[0])}, 200, 1},
+		{"if-match stale", 2, map[string]string{"If-Match": etag(bodies[0])}, 412, 1},
+		{"unconditional", 2, nil, 200, 2},
+	}
+	for _, st := range steps {
+		status, _ := f.putChunked(awsChunkedPut{path: "/b/k", payload: bodies[st.body], sizes: []int{65536, 1000}, hdr: st.hdr})
+		if status != st.wantStatus {
+			t.Fatalf("%s: status %d, want %d", st.name, status, st.wantStatus)
+		}
+		if _, got := f.get("k"); !bytes.Equal(got, bodies[st.wantLive]) {
+			t.Fatalf("%s: live object is not body %d", st.name, st.wantLive)
+		}
+	}
+	hist, _, err := f.srv.store.ListVersions("b", "k")
+	if err != nil || len(hist) != 2 {
+		t.Fatalf("history after the sequence: %v %d", err, len(hist))
+	}
+
+	if _, err := f.srv.store.PutObject("b", "plain", bodies[2], "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	root := f.srv.store.root
+	f.srv.store.Close()
+	s2, err := OpenStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	_, got, err := s2.GetObject("b", "k")
+	if err != nil || !bytes.Equal(got, bodies[2]) {
+		t.Fatalf("readback after restart: %v", err)
+	}
+	_, chunked, err := s2.HeadObject("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, plain, err := s2.HeadObject("b", "plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(chunked.Chunks, plain.Chunks) || chunked.ObjectSHA256 != plain.ObjectSHA256 || chunked.ETag != plain.ETag {
+		t.Fatal("aws-chunked ingest produced a different manifest than an ordinary PUT of the same bytes")
+	}
+}
+
+// TestAWSChunked_UploadPart streams a multipart part through aws-chunked
+// framing and completes the upload.
+func TestAWSChunked_UploadPart(t *testing.T) {
+	f := newPutFixture(t)
+	uploadID := doCreateMultipartUpload(t, f.ts.Client(), f.ts.URL, f.signer, "b", "mp")
+	part := genRandomBytes(97, 300<<10)
+	path := fmt.Sprintf("/b/mp?partNumber=1&uploadId=%s", uploadID)
+	bad := awsChunkedPut{path: path, payload: part, sizes: []int{65536}, frames: func(fr []awsFrame) []awsFrame {
+		fr[1].sig = flipSig(fr[1].sig)
+		return fr
+	}}
+	if status, code := f.putChunked(bad); status != 403 || code != "SignatureDoesNotMatch" {
+		t.Fatalf("bad chunk signature on a part: %d %s", status, code)
+	}
+	if parts, _ := doListParts(t, f.ts.Client(), f.ts.URL, f.signer, "b", "mp", uploadID); len(parts.Part) != 0 {
+		t.Fatalf("a refused part was recorded: %+v", parts.Part)
+	}
+	if status, code := f.putChunked(awsChunkedPut{path: path, payload: part, sizes: []int{65536}}); status != 200 {
+		t.Fatalf("part upload: %d %s", status, code)
+	}
+	parts, _ := doListParts(t, f.ts.Client(), f.ts.URL, f.signer, "b", "mp", uploadID)
+	if len(parts.Part) != 1 || strings.Trim(parts.Part[0].ETag, `"`) != hex.EncodeToString(md5Sum(part)) {
+		t.Fatalf("recorded parts: %+v", parts.Part)
+	}
+	_, status, raw := doCompleteMultipartUpload(t, f.ts.Client(), f.ts.URL, f.signer, "b", "mp", uploadID,
+		[]completedPartXML{{PartNumber: 1, ETag: parts.Part[0].ETag}})
+	if status != 200 {
+		t.Fatalf("complete: %d %s", status, raw)
+	}
+	if _, got := f.get("mp"); !bytes.Equal(got, part) {
+		t.Fatal("completed object differs from the chunked part")
+	}
+}
+
+// TestAWSChunked_AWSDocumentationVector replays the worked example from
+// AWS's "Signature Calculations for the Authorization Header: Transferring
+// Payload in Multiple Chunks" page, with its published seed and chunk
+// signatures, so verification is checked against AWS's numbers rather than
+// against this suite's own encoder.
+func TestAWSChunked_AWSDocumentationVector(t *testing.T) {
+	store, _ := newBucketStore(t)
+	if err := store.CreateBucket("examplebucket"); err != nil {
+		t.Fatal(err)
+	}
+	creds := Credentials{AccessKeyID: "AKIAIOSFODNN7EXAMPLE", SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}
+	srv := NewServer(store, creds, "us-east-1")
+	prev := sigv4Now
+	sigv4Now = func() time.Time { return time.Date(2013, 5, 24, 0, 0, 0, 0, time.UTC) }
+	defer func() { sigv4Now = prev }()
+
+	payload := bytes.Repeat([]byte("a"), 65536+1024)
+	frames := []awsFrame{
+		{declared: 65536, data: payload[:65536], sig: "ad80c730a21e5b8d04586a2213dd63b9a0e99e0e2307b0ade35a65485a288648"},
+		{declared: 1024, data: payload[65536:], sig: "0055627c9e194cb4542bae2aa5492e3c1575bbb81b612b7d234b86a503ef5497"},
+		{sig: "b6c6ea8a5354eaf15b3cb7646744f4275b71ea724fed81ceb9323e279d449df9"},
+	}
+	send := func(frames []awsFrame, seed string) *httptest.ResponseRecorder {
+		body := encodeAWSFrames(frames)
+		req := httptest.NewRequest(http.MethodPut, "/examplebucket/chunkObject.txt", bytes.NewReader(body))
+		req.RequestURI = "/examplebucket/chunkObject.txt"
+		req.Host = "s3.amazonaws.com"
+		req.Header.Set("X-Amz-Date", "20130524T000000Z")
+		req.Header.Set("X-Amz-Storage-Class", "REDUCED_REDUNDANCY")
+		req.Header.Set("X-Amz-Content-Sha256", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD")
+		req.Header.Set("Content-Encoding", "aws-chunked")
+		req.Header.Set("X-Amz-Decoded-Content-Length", "66560")
+		req.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		req.ContentLength = int64(len(body))
+		req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request,"+
+			"SignedHeaders=content-encoding;content-length;host;x-amz-content-sha256;x-amz-date;x-amz-decoded-content-length;x-amz-storage-class,Signature="+seed)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec
+	}
+	const seed = "4f232c4386841ef735655705268965c44a0e4690baa4adea153f7db9fa80a0a9"
+	if len(encodeAWSFrames(frames)) != 66824 {
+		t.Fatalf("vector body is %d bytes, AWS documents 66824", len(encodeAWSFrames(frames)))
+	}
+	if rec := send(frames, seed); rec.Code != 200 {
+		t.Fatalf("AWS documentation request rejected: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, got, err := store.GetObject("examplebucket", "chunkObject.txt"); err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("stored object differs from the decoded payload: %v", err)
+	}
+	for i := range frames {
+		tampered := append([]awsFrame{}, frames...)
+		tampered[i].sig = flipSig(tampered[i].sig)
+		if rec := send(tampered, seed); rec.Code != 403 {
+			t.Fatalf("frame %d with a wrong signature: %d", i, rec.Code)
+		}
+	}
+	if rec := send(frames, flipSig(seed)); rec.Code != 403 {
+		t.Fatalf("wrong seed signature: %d", rec.Code)
+	}
+}
+
+// TestAWSChunkReader_Fragmentation feeds one valid body to the decoder
+// through every source fragmentation style, including data-with-EOF reads.
+func TestAWSChunkReader_Fragmentation(t *testing.T) {
+	signer := testSigner{accessKey: "AK", secretKey: "secret", region: "us-east-1"}
+	now := time.Now()
+	payload := genRandomBytes(98, 200<<10)
+	frames := signedAWSFrames(signer, now, strings.Repeat("ab", 32), payload, []int{1, 4096, 65536, 7, 100000})
+	raw := encodeAWSFrames(frames)
+	kDate := testHMAC([]byte("AWS4secret"), now.UTC().Format("20060102"))
+	st := &awsChunkedStream{
+		signingKey: testHMAC(testHMAC(testHMAC(kDate, "us-east-1"), "s3"), "aws4_request"),
+		amzDate:    now.UTC().Format("20060102T150405Z"),
+		scope:      now.UTC().Format("20060102") + "/us-east-1/s3/aws4_request",
+		seedSig:    strings.Repeat("ab", 32),
+		decodedLen: int64(len(payload)),
+	}
+	for _, style := range readStyles {
+		t.Run(style.name, func(t *testing.T) {
+			got, err := io.ReadAll(st.newReader(style.wrap(bytes.NewReader(raw))))
+			if err != nil || !bytes.Equal(got, payload) {
+				t.Fatalf("decoded %d bytes, err %v", len(got), err)
+			}
+			if _, err := io.ReadAll(st.newReader(style.wrap(bytes.NewReader(raw[:len(raw)-5])))); err == nil {
+				t.Fatal("a body cut inside its final frame decoded without error")
+			}
+		})
+	}
+}
+
+// awsChunkedEncoder produces an aws-chunked body for src lazily, so large
+// uploads need no materialized copy.
+type awsChunkedEncoder struct {
+	src     io.Reader
+	signer  testSigner
+	when    time.Time
+	prev    string
+	scratch []byte
+	out     []byte
+	done    bool
+}
+
+func (e *awsChunkedEncoder) Read(p []byte) (int, error) {
+	for len(e.out) == 0 {
+		if e.done {
+			return 0, io.EOF
+		}
+		n, err := io.ReadFull(e.src, e.scratch)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return 0, err
+		}
+		frames := []awsFrame{}
+		if n > 0 {
+			sig := awsChunkSig(e.signer, e.when, e.prev, e.scratch[:n])
+			frames = append(frames, awsFrame{declared: n, data: e.scratch[:n], sig: sig})
+			e.prev = sig
+		}
+		if n < len(e.scratch) {
+			frames = append(frames, awsFrame{sig: awsChunkSig(e.signer, e.when, e.prev, nil)})
+			e.done = true
+		}
+		e.out = encodeAWSFrames(frames)
+	}
+	n := copy(p, e.out)
+	e.out = e.out[n:]
+	return n, nil
+}
+
+func awsChunkedLength(decoded, chunk int64) int64 {
+	overhead := func(n int64) int64 {
+		return int64(len(fmt.Sprintf("%x", n))) + int64(len(";chunk-signature=")) + 64 + 2 + n + 2
+	}
+	total := int64(0)
+	for decoded > 0 {
+		n := min(decoded, chunk)
+		total += overhead(n)
+		decoded -= n
+	}
+	return total + overhead(0)
+}
+
+// TestAWSChunked_LargeObjectBoundedMemory uploads a large object as
+// aws-chunked frames generated on the fly and checks the server's heap
+// stays flat and the stored bytes match.
+func TestAWSChunked_LargeObjectBoundedMemory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large-object streaming test skipped in -short mode")
+	}
+	const size, chunk = 160 << 20, 64 << 10
+	block := genRandomBytes(99, 3<<20+777)
+	f := newPutFixture(t)
+	want := sha256.New()
+	if _, err := io.Copy(want, &cycleReader{block: block, n: size}); err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest(http.MethodPut, f.ts.URL+"/b/large", nil)
+	req.Header.Set("Content-Encoding", "aws-chunked")
+	req.Header.Set("X-Amz-Decoded-Content-Length", strconv.Itoa(size))
+	now := time.Now()
+	signTestRequest(t, req, f.signer, req.URL.Path, req.URL.RawQuery, nil, now, &signOpts{
+		payloadHash: "STREAMING-AWS4-HMAC-SHA256-PAYLOAD", extraSignedHeaders: []string{"content-encoding", "x-amz-decoded-content-length"}})
+	auth := req.Header.Get("Authorization")
+	enc := &awsChunkedEncoder{src: &cycleReader{block: block, n: size}, signer: f.signer, when: now,
+		prev: auth[strings.LastIndex(auth, "Signature=")+len("Signature="):], scratch: make([]byte, chunk)}
+	req.Body, req.ContentLength = io.NopCloser(enc), awsChunkedLength(size, chunk)
+
+	var status int
+	start := time.Now()
+	peak := peakHeapGrowth(func() {
+		resp, err := f.ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		status = resp.StatusCode
+	})
+	if status != 200 {
+		t.Fatalf("large aws-chunked PUT: status %d", status)
+	}
+	t.Logf("uploaded %d MiB in %s; peak heap growth %d MiB", size>>20, time.Since(start).Round(time.Millisecond), peak>>20)
+	if peak > 64<<20 {
+		t.Fatalf("heap grew by %d MiB while decoding a %d MiB aws-chunked body", peak>>20, size>>20)
+	}
+	resp := doSignedRequest(t, f.ts.Client(), f.ts.URL, f.signer, http.MethodGet, "/b/large", nil, nil)
+	defer resp.Body.Close()
+	got := sha256.New()
+	n, _ := io.Copy(got, resp.Body)
+	if n != size || !bytes.Equal(got.Sum(nil), want.Sum(nil)) {
+		t.Fatalf("stored object: %d bytes, digest mismatch", n)
+	}
 }

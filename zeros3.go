@@ -14,6 +14,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/hmac"
@@ -61,31 +62,31 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      392    Content-defined chunking (CDC)
-//      518    Content-addressed chunk storage (CAS)
-//      625    Manifests (immutable, JSON)
-//      724    Visibility journal (append-only, checksummed)
-//     1119    Store: format, namespace, and object CRUD
-//     1889    Version history/restore and ListObjectsV2
-//     2119    SigV4 authentication (header and presigned-URL)
-//     2910    Request payload checksums and S3-shaped XML error/response types
-//     3122    HTTP routing and S3 operation handlers
-//     3510    Conditional operations (PUT/GET/HEAD preconditions)
-//     4093    CopyObject
-//     4387    Multipart upload
-//     5213    Stats and reachability scanning
-//     5924    Verify
-//     6098    Store locking and safe offline GC
-//     6325    Single-range GET
-//     6461    Delta sync client, credentials, and parallel transfer
-//     8384    Recursive directory sync
-//     8689    Remote replication (`zeros3 replicate`)
-//     9453    Peer-assisted corruption repair (`zeros3 repair`)
-//     9931    Namespace (prefix/bucket) replication
-//    10238    Copy-on-write namespace fork (`zeros3 fork`)
-//    10446    Snapshots and restore
-//    11599    Structural diff and inspect (introspection)
-//    12123    CLI dispatch, HTTP server/startup, and main
+//      393    Content-defined chunking (CDC)
+//      519    Content-addressed chunk storage (CAS)
+//      626    Manifests (immutable, JSON)
+//      725    Visibility journal (append-only, checksummed)
+//     1120    Store: format, namespace, and object CRUD
+//     1853    Version history/restore and ListObjectsV2
+//     2083    SigV4 authentication (header and presigned-URL)
+//     3038    Request payload checksums and S3-shaped XML error/response types
+//     3254    HTTP routing and S3 operation handlers
+//     3647    Conditional operations (PUT/GET/HEAD preconditions)
+//     4213    CopyObject
+//     4507    Multipart upload
+//     5333    Stats and reachability scanning
+//     6044    Verify
+//     6218    Store locking and safe offline GC
+//     6445    Streaming object reads (full and ranged GET)
+//     6570    Delta sync client, credentials, and parallel transfer
+//     8493    Recursive directory sync
+//     8798    Remote replication (`zeros3 replicate`)
+//     9562    Peer-assisted corruption repair (`zeros3 repair`)
+//    10040    Namespace (prefix/bucket) replication
+//    10347    Copy-on-write namespace fork (`zeros3 fork`)
+//    10555    Snapshots and restore
+//    11708    Structural diff and inspect (introspection)
+//    12232    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -1800,43 +1801,6 @@ func (s *Store) commitObjectRootChecked(bucket, key, manUUID string, manSHA [32]
 	return entry, nil
 }
 
-// GetObject looks up the current visible version of bucket/key (from the
-// journal-derived namespace), then reconstructs its exact bytes by
-// reading the manifest and following its chunk list through the CAS.
-// Every layer re-verifies content against its own hash, so a corrupted
-// manifest or chunk is reported as an error rather than served silently.
-func (s *Store) GetObject(bucket, key string) (*objectEntry, []byte, error) {
-	obj, err := s.lookupObject(bucket, key)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	man, err := s.readVerifiedManifest(obj.manifestUUID, obj.manifestSHA256)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	buf := make([]byte, 0, man.TotalLength)
-	for _, c := range man.Chunks {
-		sum, err := decodeHexSHA256(c.SHA256)
-		if err != nil {
-			return nil, nil, err
-		}
-		data, err := s.casRead(sum)
-		if err != nil {
-			return nil, nil, fmt.Errorf("chunk read failed: %w", err)
-		}
-		if int64(len(data)) != c.Length {
-			return nil, nil, fmt.Errorf("chunk %s: length mismatch", c.SHA256)
-		}
-		buf = append(buf, data...)
-	}
-	if int64(len(buf)) != man.TotalLength {
-		return nil, nil, fmt.Errorf("reconstructed object length mismatch for %s/%s", bucket, key)
-	}
-	return obj, buf, nil
-}
-
 // lookupObject resolves bucket/key against the journal-derived namespace
 // without reading the manifest or any chunk data.
 func (s *Store) lookupObject(bucket, key string) (*objectEntry, error) {
@@ -2125,7 +2089,9 @@ func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, m
 // path-normalization traps -- repeated slashes, "%2F" standing for a
 // literal slash inside a key, "+" vs "%20" for space, trailing slashes --
 // are preserved exactly as the client sent them and exactly as S3 itself
-// signs them. aws-chunked/trailer payloads are not implemented.
+// signs them. Of the aws-chunked payload modes only the signed
+// STREAMING-AWS4-HMAC-SHA256-PAYLOAD form is implemented; trailer and
+// SigV4A variants are rejected.
 //
 // Header auth (authenticateHeader) and query-string/presigned auth
 // (authenticateQuery) are two different places to *find* a signature and
@@ -2161,13 +2127,10 @@ const (
 	// does not bind the request body to any digest. Content-MD5/CRC32
 	// checks, being independent of SigV4 entirely, are unaffected.
 	sigv4PayloadUnsignedFixed
-	// sigv4PayloadStreamingHMAC and sigv4PayloadStreamingHMACTrailer are
-	// AWS's chunked/streaming request-signing modes. They are recognized
-	// here so a request using them gets a clear, correct classification
-	// rather than falling through to "malformed digest" -- but decoding
-	// the chunk-signature framing itself is implemented only if Phase K's
-	// real-client investigation shows it is actually required; until then
-	// authenticateHeader rejects both cleanly as not-yet-implemented.
+	// sigv4PayloadStreamingHMAC is the signed aws-chunked mode: the seed
+	// request signature binds the headers and every body chunk carries a
+	// chained signature (see awsChunkReader). The trailer form is
+	// recognized but rejected as not implemented.
 	sigv4PayloadStreamingHMAC
 	sigv4PayloadStreamingHMACTrailer
 	// sigv4PayloadUnsupported covers every AWS payload-mode sentinel this
@@ -2493,14 +2456,22 @@ var sigv4Now = time.Now
 // then dispatches to whichever verifier applies. A request is never
 // accepted by both paths or by neither silently -- exactly one runs.
 // It verifies the signature from headers alone, before any body is read;
-// signedBodySHA256 is the lowercase hex digest SigV4 bound the body to
-// (fixed-digest payload mode), which the caller must still confirm against
-// the body it receives, or "" when the body is not bound.
-func (srv *Server) authenticate(r *http.Request, rawPath, rawQuery string) (signedBodySHA256 string, err error) {
+// the returned signedPayload says how the caller must still bind the body
+// it receives.
+func (srv *Server) authenticate(r *http.Request, rawPath, rawQuery string) (signedPayload, error) {
 	if hasQueryAuth(rawQuery) {
-		return "", srv.authenticateQuery(r, rawPath, rawQuery)
+		return signedPayload{}, srv.authenticateQuery(r, rawPath, rawQuery)
 	}
 	return srv.authenticateHeader(r, rawPath, rawQuery)
+}
+
+// signedPayload is what header authentication bound the request body to:
+// sha256 is the lowercase hex digest of a fixed-digest body, stream is the
+// chunk-signature chain of an aws-chunked body, and both are zero when the
+// body is not bound (UNSIGNED-PAYLOAD, presigned).
+type signedPayload struct {
+	sha256 string
+	stream *awsChunkedStream
 }
 
 // hasQueryAuth cheaply decides whether a request is presigned, before any
@@ -2579,47 +2550,47 @@ func (srv *Server) sigv4VerifyCore(r *http.Request, rawPath, canonicalQuery stri
 // digest is returned for the caller to bind to the body it receives,
 // catching tampering that changes the body but replays an old,
 // still-signed content-hash header; in UNSIGNED-PAYLOAD mode, SigV4
-// deliberately places no constraint on the body at all.
-func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string) (string, error) {
+// deliberately places no constraint on the body at all; in the signed
+// streaming mode the result carries the chunk-signature chain that must
+// wrap the body.
+func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string) (signedPayload, error) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		return "", &authError{code: "AccessDenied", msg: "missing Authorization header"}
+		return signedPayload{}, &authError{code: "AccessDenied", msg: "missing Authorization header"}
 	}
 	auth, err := parseAuthorizationHeader(authHeader)
 	if err != nil {
-		return "", &authError{code: "AuthorizationHeaderMalformed", msg: err.Error()}
+		return signedPayload{}, &authError{code: "AuthorizationHeaderMalformed", msg: err.Error()}
 	}
 
 	amzDate := r.Header.Get("X-Amz-Date")
 	if amzDate == "" {
-		return "", &authError{code: "AccessDenied", msg: "missing X-Amz-Date header"}
+		return signedPayload{}, &authError{code: "AccessDenied", msg: "missing X-Amz-Date header"}
 	}
 	t, err := time.Parse("20060102T150405Z", amzDate)
 	if err != nil {
-		return "", &authError{code: "AccessDenied", msg: "invalid X-Amz-Date"}
+		return signedPayload{}, &authError{code: "AccessDenied", msg: "invalid X-Amz-Date"}
 	}
 	if t.Format("20060102") != auth.date {
-		return "", &authError{code: "AccessDenied", msg: "credential date does not match X-Amz-Date"}
+		return signedPayload{}, &authError{code: "AccessDenied", msg: "credential date does not match X-Amz-Date"}
 	}
 	if diff := sigv4Now().Sub(t); diff > requestSkewWindow || diff < -requestSkewWindow {
-		return "", &authError{code: "RequestTimeTooSkewed", msg: "request timestamp outside allowed window"}
+		return signedPayload{}, &authError{code: "RequestTimeTooSkewed", msg: "request timestamp outside allowed window"}
 	}
 
 	rawPayloadHeader := r.Header.Get("X-Amz-Content-Sha256")
 	if rawPayloadHeader == "" {
-		return "", &authError{code: "AccessDenied", msg: "missing or invalid X-Amz-Content-Sha256"}
+		return signedPayload{}, &authError{code: "AccessDenied", msg: "missing or invalid X-Amz-Content-Sha256"}
 	}
 	payloadKind, fixedDigest, payloadErr := classifySigV4Payload(rawPayloadHeader)
 	if payloadErr != nil {
-		return "", &authError{code: "AccessDenied", msg: "missing or invalid X-Amz-Content-Sha256"}
+		return signedPayload{}, &authError{code: "AccessDenied", msg: "missing or invalid X-Amz-Content-Sha256"}
 	}
 	switch payloadKind {
 	case sigv4PayloadUnsupported:
-		return "", &authError{code: "NotImplemented", msg: fmt.Sprintf("x-amz-content-sha256 value %q is not supported by ZeroS3", rawPayloadHeader)}
-	case sigv4PayloadStreamingHMAC, sigv4PayloadStreamingHMACTrailer:
-		// Eligible-but-conditional modes (see Phase K in STATUS.md): not
-		// implemented unless/until a real client is shown to require one.
-		return "", &authError{code: "NotImplemented", msg: fmt.Sprintf("x-amz-content-sha256 value %q is not yet implemented by ZeroS3", rawPayloadHeader)}
+		return signedPayload{}, &authError{code: "NotImplemented", msg: fmt.Sprintf("x-amz-content-sha256 value %q is not supported by ZeroS3", rawPayloadHeader)}
+	case sigv4PayloadStreamingHMACTrailer:
+		return signedPayload{}, &authError{code: "NotImplemented", msg: fmt.Sprintf("x-amz-content-sha256 value %q is not yet implemented by ZeroS3", rawPayloadHeader)}
 	}
 	var hasContentSha, hasHost bool
 	for _, h := range auth.signedHeaders {
@@ -2631,37 +2602,194 @@ func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string)
 		}
 	}
 	if !hasContentSha {
-		return "", &authError{code: "AccessDenied", msg: "x-amz-content-sha256 must be a signed header"}
+		return signedPayload{}, &authError{code: "AccessDenied", msg: "x-amz-content-sha256 must be a signed header"}
 	}
 	if !hasHost {
-		return "", &authError{code: "AccessDenied", msg: "host must be a signed header"}
+		return signedPayload{}, &authError{code: "AccessDenied", msg: "host must be a signed header"}
 	}
 
 	canonicalQuery, err := sigv4CanonicalQuery(rawQuery)
 	if err != nil {
-		return "", &authError{code: "InvalidURI", msg: err.Error()}
+		return signedPayload{}, &authError{code: "InvalidURI", msg: err.Error()}
 	}
 
 	// hashedPayload is the literal value that goes into the canonical
 	// request's HashedPayload slot: the digest itself for the fixed-SHA256
-	// mode, or the exact sentinel string for UNSIGNED-PAYLOAD -- the raw
-	// header value already equals the sentinel here (classifySigV4Payload
-	// only returns sigv4PayloadUnsignedFixed for an exact, case-sensitive
-	// match), so using rawPayloadHeader is equivalent to using the sentinel
-	// constant directly.
+	// mode, or the exact sentinel string for UNSIGNED-PAYLOAD and the
+	// streaming mode -- classifySigV4Payload matches sentinels exactly and
+	// case-sensitively, so the raw header value already equals the sentinel.
 	hashedPayload := fixedDigest
-	if payloadKind == sigv4PayloadUnsignedFixed {
+	if payloadKind != sigv4PayloadFixedSHA256 {
 		hashedPayload = rawPayloadHeader
 	}
 
 	if err := srv.sigv4VerifyCore(r, rawPath, canonicalQuery, auth, amzDate, hashedPayload, "AuthorizationHeaderMalformed"); err != nil {
-		return "", err
+		return signedPayload{}, err
 	}
 
-	if payloadKind == sigv4PayloadFixedSHA256 {
-		return fixedDigest, nil
+	switch payloadKind {
+	case sigv4PayloadFixedSHA256:
+		return signedPayload{sha256: fixedDigest}, nil
+	case sigv4PayloadStreamingHMAC:
+		stream, err := newAWSChunkedStream(r, srv.creds.SecretAccessKey, auth, amzDate)
+		return signedPayload{stream: stream}, err
 	}
-	return "", nil
+	return signedPayload{}, nil
+}
+
+// awsChunkedStream carries what header authentication established for a
+// STREAMING-AWS4-HMAC-SHA256-PAYLOAD request: the seed signature starts the
+// chain that every body chunk's signature extends.
+type awsChunkedStream struct {
+	signingKey []byte
+	amzDate    string
+	scope      string
+	seedSig    string
+	decodedLen int64
+}
+
+// maxAWSChunkSize bounds one signed chunk, which is buffered whole so that
+// no byte is released before its signature verifies.
+const (
+	maxAWSChunkSize   = 16 << 20
+	awsChunkSigMarker = ";chunk-signature="
+)
+
+var emptySHA256Hex = func() string { h := sha256.Sum256(nil); return hex.EncodeToString(h[:]) }()
+
+func newAWSChunkedStream(r *http.Request, secret string, auth *sigv4Auth, amzDate string) (*awsChunkedStream, error) {
+	raw := r.Header.Get("X-Amz-Decoded-Content-Length")
+	if raw == "" {
+		return nil, &authError{code: "MissingContentLength", msg: "x-amz-decoded-content-length is required for aws-chunked payloads"}
+	}
+	decodedLen, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || decodedLen < 0 {
+		return nil, &authError{code: "InvalidRequest", msg: "invalid x-amz-decoded-content-length"}
+	}
+	if decodedLen > maxStreamedBodySize {
+		return nil, &authError{code: "EntityTooLarge", msg: "your proposed upload exceeds the maximum allowed size"}
+	}
+	chunked := false
+	for _, v := range r.Header.Values("Content-Encoding") {
+		for _, enc := range strings.Split(v, ",") {
+			chunked = chunked || strings.EqualFold(strings.TrimSpace(enc), "aws-chunked")
+		}
+	}
+	if !chunked {
+		return nil, &authError{code: "InvalidRequest", msg: "Content-Encoding must include aws-chunked"}
+	}
+	return &awsChunkedStream{
+		signingKey: sigv4SigningKey(secret, auth.date, auth.region, auth.service),
+		amzDate:    amzDate,
+		scope:      fmt.Sprintf("%s/%s/%s/aws4_request", auth.date, auth.region, auth.service),
+		seedSig:    strings.ToLower(auth.signature),
+		decodedLen: decodedLen,
+	}, nil
+}
+
+// awsChunkReader decodes an aws-chunked body into its logical payload.
+// Each chunk is buffered and its chained signature verified before any of
+// its bytes are returned; io.EOF is returned only after the final
+// zero-length chunk verifies and the decoded length matches, so a body
+// that fails at any point can never look like a complete one.
+type awsChunkReader struct {
+	st      *awsChunkedStream
+	br      *bufio.Reader
+	prevSig string
+	buf     bytes.Buffer
+	decoded int64
+	done    bool
+	err     error
+}
+
+func (st *awsChunkedStream) newReader(body io.Reader) *awsChunkReader {
+	return &awsChunkReader{st: st, br: bufio.NewReaderSize(body, 4096), prevSig: st.seedSig}
+}
+
+func (c *awsChunkReader) Read(p []byte) (int, error) {
+	for c.buf.Len() == 0 {
+		if c.err == nil && !c.done {
+			c.err = c.nextChunk()
+		}
+		if c.err != nil {
+			return 0, c.err
+		}
+		if c.done {
+			return 0, io.EOF
+		}
+	}
+	return c.buf.Read(p)
+}
+
+func awsChunkFramingError(err error) error {
+	switch {
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return &authError{code: "IncompleteBody", msg: "aws-chunked body ended before its final chunk"}
+	case errors.Is(err, bufio.ErrBufferFull):
+		return &authError{code: "InvalidRequest", msg: "aws-chunked chunk header is too long"}
+	}
+	return err
+}
+
+func (c *awsChunkReader) nextChunk() error {
+	malformed := &authError{code: "InvalidRequest", msg: "malformed aws-chunked framing"}
+	line, err := c.br.ReadSlice('\n')
+	if err != nil {
+		return awsChunkFramingError(err)
+	}
+	header, ok := strings.CutSuffix(string(line), "\r\n")
+	if !ok {
+		return malformed
+	}
+	sizeHex, sig, ok := strings.Cut(header, awsChunkSigMarker)
+	if !ok || len(sig) != sha256.Size*2 || !isHexDigestSHA256(sig) || len(sizeHex) == 0 || len(sizeHex) > 8 {
+		return malformed
+	}
+	size, err := strconv.ParseUint(sizeHex, 16, 32)
+	if err != nil || size > maxAWSChunkSize {
+		return malformed
+	}
+	if c.decoded+int64(size) > c.st.decodedLen {
+		return &authError{code: "IncompleteBody", msg: "aws-chunked payload is longer than x-amz-decoded-content-length"}
+	}
+
+	c.buf.Reset()
+	if _, err := io.CopyN(&c.buf, c.br, int64(size)); err != nil {
+		return awsChunkFramingError(err)
+	}
+	var crlf [2]byte
+	if _, err := io.ReadFull(c.br, crlf[:]); err != nil {
+		return awsChunkFramingError(err)
+	}
+	if crlf != [2]byte{'\r', '\n'} {
+		return malformed
+	}
+
+	sum := sha256.Sum256(c.buf.Bytes())
+	want := hex.EncodeToString(hmacSHA256(c.st.signingKey, strings.Join([]string{
+		"AWS4-HMAC-SHA256-PAYLOAD", c.st.amzDate, c.st.scope, c.prevSig, emptySHA256Hex, hex.EncodeToString(sum[:]),
+	}, "\n")))
+	if subtle.ConstantTimeCompare([]byte(want), []byte(strings.ToLower(sig))) != 1 {
+		c.buf.Reset()
+		return &authError{code: "SignatureDoesNotMatch", msg: "aws-chunked chunk signature mismatch"}
+	}
+	c.prevSig = want
+	c.decoded += int64(size)
+
+	if size > 0 {
+		return nil
+	}
+	if c.decoded != c.st.decodedLen {
+		return &authError{code: "IncompleteBody", msg: "aws-chunked payload is shorter than x-amz-decoded-content-length"}
+	}
+	if _, err := c.br.Peek(1); err != io.EOF {
+		if err == nil {
+			return malformed
+		}
+		return err
+	}
+	c.done = true
+	return nil
 }
 
 // parseRawQueryParams decodes a raw query string into a name->value map
@@ -3009,6 +3137,10 @@ func s3ErrorStatus(code string) int {
 		return http.StatusRequestedRangeNotSatisfiable
 	case "NotImplemented":
 		return http.StatusNotImplemented
+	case "MissingContentLength":
+		return http.StatusLengthRequired
+	case "InternalError":
+		return http.StatusInternalServerError
 	case "PreconditionFailed":
 		return http.StatusPreconditionFailed
 	default:
@@ -3270,7 +3402,8 @@ type bodyReader struct{ r io.Reader }
 
 func (b bodyReader) Read(p []byte) (int, error) {
 	n, err := b.r.Read(p)
-	if err != nil && err != io.EOF {
+	var ae *authError
+	if err != nil && err != io.EOF && !errors.As(err, &ae) {
 		err = &bodyReadError{err}
 	}
 	return n, err
@@ -3328,7 +3461,7 @@ func writeRequestError(w http.ResponseWriter, err error, resource string) {
 func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rawPath, rawQuery := splitRawRequestURI(r.RequestURI)
 
-	signedSHA256, err := srv.authenticate(r, rawPath, rawQuery)
+	payload, err := srv.authenticate(r, rawPath, rawQuery)
 	if err != nil {
 		var ae *authError
 		if errors.As(err, &ae) {
@@ -3339,10 +3472,14 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	check, err := parsePayloadCheck(r, signedSHA256)
+	check, err := parsePayloadCheck(r, payload.sha256)
 	if err != nil {
 		writeRequestError(w, err, rawPath)
 		return
+	}
+	if payload.stream != nil {
+		r.Body = io.NopCloser(payload.stream.newReader(r.Body))
+		r.ContentLength = payload.stream.decodedLen
 	}
 
 	// The ZeroS3 delta-sync extension (section 15, M6) lives entirely under
@@ -3712,8 +3849,8 @@ func writeObjectHeaders(w http.ResponseWriter, entry *objectEntry, man manifestV
 	}
 }
 
-// writeGetObjectError renders the S3-shaped error for a GetObject/
-// GetObjectRange failure, shared by both the full-object and Range paths.
+// writeGetObjectError renders the S3-shaped error for a GET that fails
+// before its response is committed.
 func writeGetObjectError(w http.ResponseWriter, bucket, key string, err error) {
 	switch {
 	case errors.Is(err, errNoSuchBucket):
@@ -3802,7 +3939,7 @@ func parseGetCondition(r *http.Request) (getCondition, error) {
 
 // handleGetObject dispatches to a full-object 200 response, unless the
 // request carries a satisfiable single-range Range header, in which case
-// it serves a manifest-driven 206 (see Section 15). A Range header this
+// it serves a manifest-driven 206 (see Section 14). A Range header this
 // build doesn't understand (multi-range, malformed syntax) is ignored,
 // matching RFC 7233's allowance to serve the full entity instead of
 // rejecting the request; a syntactically valid but unsatisfiable range
@@ -3815,81 +3952,64 @@ func (srv *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucke
 		writeS3Error(w, "InvalidArgument", err.Error(), "/"+bucket+"/"+key)
 		return
 	}
-	if !cond.isZero() {
-		entry, man, herr := srv.store.HeadObject(bucket, key)
-		if herr != nil {
-			writeGetObjectError(w, bucket, key, herr)
-			return
-		}
-		switch evaluateGetCondition(cond, entry.etag) {
-		case getConditionPreconditionFailed:
-			writeS3Error(w, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold", "/"+bucket+"/"+key)
-			return
-		case getConditionNotModified:
-			writeObjectHeaders(w, entry, man)
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-	}
-
-	rangeHeader := r.Header.Get("Range")
-	if rangeHeader == "" {
-		srv.handleGetObjectFull(w, bucket, key)
-		return
-	}
-
-	// Interpreting a Range header (clamping "end", resolving a suffix
-	// range) needs the object's size, so resolve it once via HeadObject
-	// -- no chunk I/O -- before deciding whether this is a 200, 206, or
-	// 416 response.
 	entry, man, err := srv.store.HeadObject(bucket, key)
 	if err != nil {
 		writeGetObjectError(w, bucket, key, err)
 		return
 	}
-	rng, present, satisfiable := parseRangeSpec(rangeHeader, entry.size)
-	if !present {
-		srv.handleGetObjectFull(w, bucket, key)
+	switch evaluateGetCondition(cond, entry.etag) {
+	case getConditionPreconditionFailed:
+		writeS3Error(w, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold", "/"+bucket+"/"+key)
 		return
-	}
-	if !satisfiable {
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", entry.size))
-		writeS3Error(w, "InvalidRange", "the requested range is not satisfiable", "/"+bucket+"/"+key)
+	case getConditionNotModified:
+		writeObjectHeaders(w, entry, man)
+		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 
-	_, _, data, err := srv.store.GetObjectRange(bucket, key, rng)
-	if err != nil {
-		writeGetObjectError(w, bucket, key, err)
-		return
+	rng, partial := byteRange{start: 0, end: entry.size - 1}, false
+	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
+		parsed, present, satisfiable := parseRangeSpec(rangeHeader, entry.size)
+		if present && !satisfiable {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", entry.size))
+			writeS3Error(w, "InvalidRange", "the requested range is not satisfiable", "/"+bucket+"/"+key)
+			return
+		}
+		if present {
+			rng, partial = parsed, true
+		}
 	}
-	writeObjectHeaders(w, entry, man)
-	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rng.start, rng.end, entry.size))
-	w.Header().Set("Content-Length", strconv.FormatInt(rng.end-rng.start+1, 10))
-	w.WriteHeader(http.StatusPartialContent)
-	_, _ = w.Write(data)
+	srv.streamObject(w, bucket, key, entry, man, rng, partial)
 }
 
-func (srv *Server) handleGetObjectFull(w http.ResponseWriter, bucket, key string) {
-	entry, data, err := srv.store.GetObject(bucket, key)
-	if err != nil {
+// streamObject answers a GET with the chunks of rng. The first chunk is
+// read and verified before the status line is committed, so an object
+// that cannot be served at all gets an S3 error. A failure after that
+// aborts the response short of its Content-Length, which clients observe
+// as a truncated body rather than a complete one.
+func (srv *Server) streamObject(w http.ResponseWriter, bucket, key string, entry *objectEntry, man manifestV1, rng byteRange, partial bool) {
+	rd := srv.store.newManifestReader(man, rng)
+	data, err := rd.next()
+	if err != nil && err != io.EOF {
 		writeGetObjectError(w, bucket, key, err)
 		return
 	}
-	// GetObject already read and hash-verified this exact manifest once
-	// (to get the chunk list); reading it again here to render metadata
-	// headers is a small amount of duplicate I/O in exchange for keeping
-	// GetObject's return signature -- and every existing caller of it --
-	// unchanged.
-	man, err := srv.store.readVerifiedManifest(entry.manifestUUID, entry.manifestSHA256)
-	if err != nil {
-		writeS3Error(w, "InternalError", err.Error(), "/"+bucket+"/"+key)
-		return
-	}
 	writeObjectHeaders(w, entry, man)
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	status := http.StatusOK
+	if partial {
+		status = http.StatusPartialContent
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rng.start, rng.end, entry.size))
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(rng.end-rng.start+1, 10))
+	w.WriteHeader(status)
+	for ; err == nil; data, err = rd.next() {
+		if _, werr := w.Write(data); werr != nil {
+			return
+		}
+	}
+	if err != io.EOF {
+		log.Printf("zeros3: GET /%s/%s aborted mid-stream: %v", bucket, key, err)
+	}
 }
 
 func (srv *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
@@ -6322,14 +6442,12 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 }
 
 // =============================================================================
-// 14. Single-range GET
+// 14. Streaming object reads (full and ranged GET)
 //
-// A Range request is answered by walking the manifest's chunk length
-// list to find exactly the CAS chunks that overlap the requested logical
-// interval, and reading only those -- never reconstructing the whole
-// object first and slicing it, so memory/IO for a range read is bounded
-// by the range size (plus at most the two boundary chunks), not by
-// object size.
+// A GET walks the manifest's chunk list and reads only the CAS chunks that
+// overlap the requested logical interval, one at a time, hash-verifying
+// each before any of its bytes are emitted. Memory is bounded by one
+// chunk regardless of object or range size.
 // =============================================================================
 
 // byteRange is an inclusive, 0-based logical byte interval.
@@ -6396,65 +6514,56 @@ func parseRangeSpec(header string, size int64) (rng byteRange, ok, satisfiable b
 	return byteRange{start: start, end: end}, true, true
 }
 
-// readManifestRange reconstructs exactly [rng.start, rng.end] (inclusive)
-// of the object man describes, reading only the CAS chunks that overlap
-// that interval.
-func (s *Store) readManifestRange(man manifestV1, rng byteRange) ([]byte, error) {
-	out := make([]byte, 0, rng.end-rng.start+1)
-	var offset int64
-	for _, c := range man.Chunks {
-		chunkStart := offset
-		chunkEnd := offset + c.Length - 1 // inclusive
-		offset += c.Length
-		if chunkEnd < rng.start {
+// manifestReader yields the bytes of one inclusive logical range of the
+// object a manifest describes, one verified CAS chunk at a time.
+type manifestReader struct {
+	s      *Store
+	chunks []chunkRef
+	idx    int
+	offset int64
+	rng    byteRange
+}
+
+func (s *Store) newManifestReader(man manifestV1, rng byteRange) *manifestReader {
+	return &manifestReader{s: s, chunks: man.Chunks, rng: rng}
+}
+
+// next returns the next slice of the range, backed by a chunk already
+// verified against its SHA-256 and recorded length, or io.EOF once the
+// whole range has been produced.
+func (m *manifestReader) next() ([]byte, error) {
+	for m.idx < len(m.chunks) && m.offset <= m.rng.end {
+		c := m.chunks[m.idx]
+		chunkStart := m.offset
+		m.idx++
+		m.offset += c.Length
+		if m.offset <= m.rng.start {
 			continue
-		}
-		if chunkStart > rng.end {
-			break
 		}
 		sum, err := decodeHexSHA256(c.SHA256)
 		if err != nil {
 			return nil, err
 		}
-		data, err := s.casRead(sum)
+		data, err := m.s.casRead(sum)
 		if err != nil {
 			return nil, fmt.Errorf("chunk read failed: %w", err)
 		}
 		if int64(len(data)) != c.Length {
 			return nil, fmt.Errorf("chunk %s: length mismatch", c.SHA256)
 		}
-		lo := int64(0)
-		if rng.start > chunkStart {
-			lo = rng.start - chunkStart
+		lo, hi := int64(0), c.Length
+		if m.rng.start > chunkStart {
+			lo = m.rng.start - chunkStart
 		}
-		hi := c.Length
-		if rng.end < chunkEnd {
-			hi = rng.end - chunkStart + 1
+		if m.rng.end < m.offset-1 {
+			hi = m.rng.end - chunkStart + 1
 		}
-		out = append(out, data[lo:hi]...)
+		return data[lo:hi], nil
 	}
-	if int64(len(out)) != rng.end-rng.start+1 {
-		return nil, fmt.Errorf("range reconstruction length mismatch")
+	if m.offset <= m.rng.end {
+		return nil, fmt.Errorf("manifest chunks end before requested range")
 	}
-	return out, nil
-}
-
-// GetObjectRange resolves bucket/key and reconstructs only the requested
-// byte range, never the whole object.
-func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry, manifestV1, []byte, error) {
-	obj, err := s.lookupObject(bucket, key)
-	if err != nil {
-		return nil, manifestV1{}, nil, err
-	}
-	man, err := s.readVerifiedManifest(obj.manifestUUID, obj.manifestSHA256)
-	if err != nil {
-		return nil, manifestV1{}, nil, err
-	}
-	data, err := s.readManifestRange(man, rng)
-	if err != nil {
-		return nil, manifestV1{}, nil, err
-	}
-	return obj, man, data, nil
+	return nil, io.EOF
 }
 
 // =============================================================================
