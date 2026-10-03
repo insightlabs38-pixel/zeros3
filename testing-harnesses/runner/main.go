@@ -33,7 +33,7 @@ var groups = map[string][]harness{
 		{pkg: "./harness/m3/dedup"}, {pkg: "./harness/m5a/presign"}, {pkg: "./harness/m5b/multipart"},
 		{pkg: "./harness/m5d/pagination"}, {pkg: "./harness/p1/env_and_shutdown"},
 		{pkg: "./harness/p2/list_multipart_uploads"}, {pkg: "./harness/m8f/conditional"},
-		{pkg: "./harness/z2_streaming_put"},
+		{pkg: "./harness/z2_streaming_put"}, {pkg: "./harness/z2_aws_chunked"},
 	},
 	"sync": {
 		{pkg: "./harness/m6/sync"}, {pkg: "./harness/m6c/dirsync"}, {pkg: "./harness/m8a/remote_delta"},

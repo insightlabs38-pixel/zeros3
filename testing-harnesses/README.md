@@ -2,7 +2,7 @@
 
 External, black-box validation for ZeroS3. Each harness starts a real
 `zeros3` binary as a subprocess and drives it over plain HTTP with an
-independent S3 client — the AWS SDK for Go v2, `rclone`, or ZeroS3's own
+independent S3 client — the AWS SDK for Go v2, minio-go, `rclone`, or ZeroS3's own
 CLI — so the wire protocol is checked against genuine client behavior
 rather than hand-written doubles.
 
@@ -23,7 +23,7 @@ descend into this module.
 | | `zeros3_test.go` (root) | `testing-harnesses/` |
 |---|---|---|
 | Access | White-box: calls `Store`, handlers, and crash-injection hooks directly | Black-box: HTTP, CLI, and process lifecycle only |
-| Clients | `net/http` + hand-rolled SigV4 | AWS SDK v2, `rclone`, `s3rver` (comparison) |
+| Clients | `net/http` + hand-rolled SigV4 | AWS SDK v2, minio-go, `rclone`, `s3rver` (comparison) |
 | Strength | Invariants, durability, fault injection, races | Interoperability, restart/signal behavior, end-to-end workflows |
 | Dependencies | stdlib only | Pinned third-party modules |
 
@@ -47,6 +47,7 @@ harness/
   m8d/fork/, m8e/snapshot/ copy-on-write forks and snapshots
   m8f/conditional/         If-Match / If-None-Match semantics
   z2_streaming_put/        >256 MiB streamed PutObject and GET: bounded server RSS, byte-exact readback
+  z2_aws_chunked/          minio-go aws-chunked SigV4 uploads via a recording/tampering proxy
   m8g/introspection/       diff / inspect / stats
   m8h/parallel_transfer/   bounded parallel transfer (plus bench/)
   m8_baseline/             throughput baseline
@@ -96,7 +97,7 @@ RCLONE_BIN=$(which rclone) go run ./runner -group clients
 | Group | Contents |
 |---|---|
 | `static` | source-map / test-map checker for `zeros3.go` and `zeros3_test.go` |
-| `s3` | SDK interoperability: CRUD, copy, range, presign, multipart, pagination, conditionals, env/shutdown, large streamed PUT/GET |
+| `s3` | SDK interoperability: CRUD, copy, range, presign, multipart, pagination, conditionals, env/shutdown, large streamed PUT/GET, aws-chunked uploads |
 | `sync` | sync, replication, repair, fork, snapshot, introspection |
 | `clients` | `rclone` (needs `RCLONE_BIN`) and Package Killer (needs `S3RVER_BIN`); skipped when unset |
 | `bench` | throughput benchmarks; not part of `all` |
@@ -115,7 +116,8 @@ github.com/aws/aws-sdk-go-v2/config    v1.33.1
 github.com/aws/aws-sdk-go-v2/credentials v1.20.1
 github.com/aws/aws-sdk-go-v2/service/s3 v1.109.1
 github.com/aws/smithy-go               v1.28.1
+github.com/minio/minio-go/v7           v7.3.0
 ```
 
-plus the SDK's own transitive modules. Nothing here is vendored,
+plus their transitive modules (minio-go is the independent aws-chunked client). Nothing here is vendored,
 compiled into `zeros3`, or required at ZeroS3 runtime.

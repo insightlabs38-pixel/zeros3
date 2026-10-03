@@ -327,13 +327,12 @@ These are not planned for this project, at any tier:
 
 Not implemented in the current candidate, and not claimed as shipped:
 
-- `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` (`aws-chunked` streaming
-  request bodies with per-chunk SigV4 signatures) — eligible but
-  conditional; not implemented, since neither the validated AWS SDK for
-  Go v2 client nor `rclone` requires either mode to complete a full
-  multipart workflow. `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and
-  SigV4A/ECDSA streaming payload modes are permanently out of scope (see
-  "Deliberately unsupported" above), not merely deferred.
+- `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` (`aws-chunked` bodies with
+  a signed trailer) — recognized, not implemented. The non-trailer form is
+  implemented (see "SigV4 payload modes" below).
+  `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and SigV4A/ECDSA streaming payload
+  modes are permanently out of scope (see "Deliberately unsupported"
+  above), not merely deferred.
 - Online/background/scheduled GC and automatic version expiry/retention
   policies — internal versions/restore and offline exclusive GC are
   implemented; these specific extensions remain out of scope by design,
@@ -421,7 +420,8 @@ value this header can carry:
 |---|---|---|
 | Fixed SHA-256 | lowercase or uppercase 64-hex digest | signed; the exact digest must match the actual body received (`XAmzContentSHA256Mismatch` on tamper). The signature is verified from headers before the body is read; the body digest is checked once the stream has been ingested and before the object is published. Covers both an ordinary body and a zero-length body (the SHA-256 of the empty string) — the empty-body case is this same mode, not a separate one. |
 | Fixed unsigned | the literal string `UNSIGNED-PAYLOAD` | signed (the literal string itself is part of the canonical request), but SigV4 places no constraint on the body — `Content-MD5`/CRC32 remain independently enforced if the client sends them. |
-| Streaming HMAC (conditional) | `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` | recognized, not implemented — rejected `NotImplemented`. Eligible for a future pass if a real client is shown to require it; not required by the validated AWS SDK for Go v2 client or `rclone`. |
+| Streaming HMAC | `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` | signed `aws-chunked`. The seed request signature is verified from headers; the body is then decoded chunk by chunk (`<hex-size>;chunk-signature=<sig>\r\n<data>\r\n`, ending with a zero-length chunk) and every chunk's signature must extend the previous one. `Content-Encoding: aws-chunked` and `x-amz-decoded-content-length` are required, chunks are capped at 16 MiB, the decoded length must match the header, and nothing may follow the final chunk. A chunk's bytes are released only after its signature verifies; any failure ends the body with an error (`SignatureDoesNotMatch`, `IncompleteBody`, `InvalidRequest`) before the object is published. The decoded stream feeds the same ingest as an ordinary body, so `Content-MD5`/CRC32 apply to the decoded payload. Validated with minio-go and AWS's published worked example. |
+| Streaming HMAC trailer | `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` | recognized, not implemented — rejected `NotImplemented`. |
 | Excluded | `STREAMING-UNSIGNED-PAYLOAD-TRAILER`, `STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD[-TRAILER]` | recognized, permanently unsupported — rejected `NotImplemented`. |
 | Anything else | any other string | rejected `AccessDenied` (not a valid digest and not a recognized sentinel — including a lowercase/misspelled sentinel variant, which is never silently accepted under some other mode). |
 
@@ -467,14 +467,13 @@ client: an ordinary `PutObject` call with a seekable body sends a plain
 trailer. ZeroS3 validates exactly that header form. `Content-MD5` is
 validated the same way when a client sends it (`rclone`'s ordinary
 single-part upload path does). Neither request-integrity check requires or
-implies `aws-chunked` support, which stays unimplemented per "Optional /
-later-tier behavior" above. The same SDK's `UploadPart`/
+implies `aws-chunked` support. The same SDK's `UploadPart`/
 `CreateMultipartUpload`/`CompleteMultipartUpload` calls likewise send an
 ordinary fixed `x-amz-content-sha256` digest, never a streaming payload
 mode, confirmed directly for a real multipart workflow — which is why
-`STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` remains unimplemented (see
-"SigV4 payload modes" above): a real, unmodified SDK simply never asks for
-it. `rclone`'s own multipart uploads use `UNSIGNED-PAYLOAD` for the same
+the signed streaming mode (see "SigV4 payload modes" above) is exercised
+by minio-go rather than by that SDK, which never asks for it over plain
+HTTP. `rclone`'s own multipart uploads use `UNSIGNED-PAYLOAD` for the same
 reason its ordinary single-part uploads do (a non-seekable
 progress-accounting body reader) — including a genuine 1 GiB/205-part
 proof.
