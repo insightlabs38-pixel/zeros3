@@ -80,8 +80,12 @@ every replication/sync/repair exchange are unchanged — `/_zeros3/v1/chunks`
 serves packed and loose chunks identically, each verified against its
 digest. New writes (PutObject, multipart, sync, replicate, repair) always
 create loose chunks; a store may hold loose, packed, and duplicate copies,
-and a read serves any copy that verifies. `gc` still sweeps loose chunks
-only and never modifies a pack. The first `compact` that publishes a pack
+and a read serves any copy that verifies. `gc -apply` sweeps loose chunks
+and removes packs with no live record; `zeros3 repack -store DIR [-apply]
+[-max-live-percent N] [-pack-size-mib N] [-json]` replaces partly dead packs
+(dry-run unless `-apply`). A pack is never modified: live records are
+copied into new verified packs, published, and only then are the old packs
+removed. The first `compact` that publishes a pack
 raises `FORMAT.json` to `store_format_version` 2 so older builds refuse
 the store; stores never compacted stay at version 1.
 

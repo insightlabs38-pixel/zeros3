@@ -48,6 +48,7 @@ var groups = map[string][]harness{
 		{pkg: "./harness/m8_baseline", args: []string{"-bin", "@bin"}},
 		{pkg: "./harness/m8h/bench", args: []string{"-bin", "@bin"}},
 		{pkg: "./harness/m8h/parallel_transfer", args: []string{"-bin", "@bin"}},
+		{pkg: "./harness/z2_repack"},
 	},
 }
 

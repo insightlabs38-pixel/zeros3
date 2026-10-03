@@ -59,33 +59,34 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//       91    Test helpers, fixtures, and TestMain
-//      243    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//     1259    SigV4 authentication (header and payload-mode)
-//     1648    Checksums: CRC32 and Content-MD5
-//     2151    End-to-end HTTP and crash/recovery tests
-//     2825    M2: bucket/object/listing/journal protocol compatibility
-//     3876    M3: CDC/dedup evidence, stats, verify
-//     5012    M3: CopyObject
-//     5559    M3: single-range GET
-//     5760    M5-B: multipart upload
-//     7038    Presigned URLs and virtual-hosted-style addressing
-//     8067    M5-C: version history, restore, GC, storage-efficiency proof
-//     9913    M5-D/P2: ListParts and ListMultipartUploads pagination
-//    11632    M6: delta sync (`zeros3 sync`)
-//    13374    M6C: recursive directory sync
-//    14434    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//    15763    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    17088    M8C: namespace (prefix/bucket) replication
-//    18127    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    19219    M8E: durable namespace snapshots and restore
-//    21297    M8F: conditional operations (Put/Get/Copy preconditions)
-//    22702    M8G: introspection (dry-run planning, diff, inspect)
-//    24654    M8H: bounded parallel chunk transfer
-//    26005    P1: environment credentials, HTTP hardening/shutdown, TLS
-//    27321    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//    28251    Streaming reads and aws-chunked SigV4
-//    29099    Packed CAS: pack format, mixed reads, compaction, crash points
+//       92    Test helpers, fixtures, and TestMain
+//      244    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//     1260    SigV4 authentication (header and payload-mode)
+//     1649    Checksums: CRC32 and Content-MD5
+//     2152    End-to-end HTTP and crash/recovery tests
+//     2826    M2: bucket/object/listing/journal protocol compatibility
+//     3877    M3: CDC/dedup evidence, stats, verify
+//     5013    M3: CopyObject
+//     5560    M3: single-range GET
+//     5761    M5-B: multipart upload
+//     7039    Presigned URLs and virtual-hosted-style addressing
+//     8068    M5-C: version history, restore, GC, storage-efficiency proof
+//     9914    M5-D/P2: ListParts and ListMultipartUploads pagination
+//    11633    M6: delta sync (`zeros3 sync`)
+//    13375    M6C: recursive directory sync
+//    14435    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    15764    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//    17089    M8C: namespace (prefix/bucket) replication
+//    18128    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    19220    M8E: durable namespace snapshots and restore
+//    21298    M8F: conditional operations (Put/Get/Copy preconditions)
+//    22703    M8G: introspection (dry-run planning, diff, inspect)
+//    24655    M8H: bounded parallel chunk transfer
+//    26006    P1: environment credentials, HTTP hardening/shutdown, TLS
+//    27322    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//    28252    Streaming reads and aws-chunked SigV4
+//    29100    Packed CAS: pack format, mixed reads, compaction, crash points
+//    30077    Pack-aware gc and immutable repacking (`zeros3 repack`)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -29830,7 +29831,7 @@ func TestPack_GCNeverTouchesPacks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dry.PackCount == 0 || dry.PackedChunksUnreachable != 1 || dry.PackedUnreachableBytes != int64(len(dead)) || dry.ChunksUnreachable != 1 {
+	if dry.PackCount == 0 || dry.PackedDeadChunkCount != 1 || dry.PackedDeadBytes != int64(len(dead)) || dry.ChunksUnreachable != 1 || dry.PacksPartiallyDead != 1 || dry.PackWholeReclaimBytes != 0 || dry.PackRepackReclaimBytes <= int64(len(dead)) {
 		t.Fatalf("dry-run gc result: %+v", dry)
 	}
 	if dry.ReclaimablePayloadBytes != int64(len(garbage)) {
@@ -30067,7 +30068,1152 @@ func TestPack_CompactCLI(t *testing.T) {
 	if out, _, code = runZeros3CLI(t, bin, "verify", "-store", dir, "-deep"); code != 0 || !strings.Contains(out, "packs") {
 		t.Fatalf("verify: %q", out)
 	}
-	if out, _, code = runZeros3CLI(t, bin, "gc", "-store", dir); code != 0 || !strings.Contains(out, "not reclaimable yet") {
+	if out, _, code = runZeros3CLI(t, bin, "gc", "-store", dir); code != 0 || !strings.Contains(out, "pack reclaim") {
 		t.Fatalf("gc: %q", out)
+	}
+}
+
+// =============================================================================
+// Z2-04: pack-aware gc and immutable repacking (`zeros3 repack`)
+// =============================================================================
+
+var repackTestOpt = repackOptions{TargetBytes: 128 << 10, MaxLivePercent: 100}
+
+type deadPackStore struct {
+	dir     string
+	live    []byte
+	dead    [][32]byte
+	uploadI string
+}
+
+// buildDeadPackStore packs one live object together with the parts of an
+// active multipart upload (a live root while the pack is written) and then
+// aborts the upload, which leaves its packed chunks dead beside live ones.
+func buildDeadPackStore(t *testing.T, liveBytes, deadBytes int, seed int64) deadPackStore {
+	t.Helper()
+	fx := deadPackStore{dir: t.TempDir(), live: genRandomBytes(seed, liveBytes)}
+	s, err := OpenStore(fx.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, s, "b", "live", fx.live, "application/octet-stream", map[string]string{"m": "1"})
+	if fx.uploadI, err = s.CreateMultipartUpload("b", "dead", "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	ing, err := s.ingestStream(bytes.NewReader(genRandomBytes(seed+1000, deadBytes)), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.commitPart("b", "dead", fx.uploadI, 1, ing); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range ing.chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		fx.dead = append(fx.dead, sum)
+	}
+	s.Close()
+	compactTestDir(t, fx.dir)
+	s, err = OpenStore(fx.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AbortMultipartUpload("b", "dead", fx.uploadI); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	return fx
+}
+
+func reclaimState(t *testing.T, dir string) (PackSummary, []packUsage) {
+	t.Helper()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	rr, err := s.computeReachability(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	us := s.packUsages(rr.ReferencedChunks)
+	return summarizePacks(us), us
+}
+
+// hashDirs hashes every file under the named store subdirectories (and
+// FORMAT.json), recursively and in path order.
+func hashDirs(t *testing.T, root string, subs ...string) string {
+	t.Helper()
+	h := sha256.New()
+	for _, sub := range append([]string{"FORMAT.json"}, subs...) {
+		err := filepath.WalkDir(filepath.Join(root, sub), func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			rel, _ := filepath.Rel(root, path)
+			h.Write([]byte(rel))
+			h.Write(b)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func hashPhysical(t *testing.T, dir string) string {
+	return hashDirs(t, dir, "packs", "chunks", "manifests", "journal", "snapshots")
+}
+
+func packFileSet(t *testing.T, dir string) map[string]bool {
+	t.Helper()
+	set := map[string]bool{}
+	ents, err := os.ReadDir(filepath.Join(dir, "packs"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		set[e.Name()] = true
+	}
+	return set
+}
+
+func requireLiveIntact(t *testing.T, dir string, fx deadPackStore, stage string) {
+	t.Helper()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatalf("%s: reopen: %v", stage, err)
+	}
+	defer s.Close()
+	if _, got, err := s.GetObject("b", "live"); err != nil || !bytes.Equal(got, fx.live) {
+		t.Fatalf("%s: live object lost or changed: %v", stage, err)
+	}
+	if vr, err := s.Verify(true); err != nil || !vr.OK() {
+		t.Fatalf("%s: deep verify: %v %+v", stage, err, vr.Issues)
+	}
+}
+
+func TestRepack_UtilizationProfiles(t *testing.T) {
+	cases := []struct {
+		name       string
+		live, dead int
+	}{
+		{"90pct-live", 4_500_000, 500_000},
+		{"50pct-live", 2_500_000, 2_500_000},
+		{"10pct-live", 500_000, 4_500_000},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fx := buildDeadPackStore(t, c.live, c.dead, int64(10+i))
+			before, _ := reclaimState(t, fx.dir)
+			if before.PackedDeadChunkCount == 0 || before.PacksPartiallyDead+before.PacksFullyDead == 0 {
+				t.Fatalf("fixture has no dead packed records: %+v", before)
+			}
+			meta := hashDirs(t, fx.dir, "manifests", "journal", "snapshots")
+			tree := hashPhysical(t, fx.dir)
+
+			dryOpt := repackTestOpt
+			dryOpt.DryRun = true
+			dry, err := repackStore(fx.dir, dryOpt)
+			if err != nil || !dry.DryRun || dry.PacksSelected != before.PacksPartiallyDead+before.PacksFullyDead {
+				t.Fatalf("dry-run: %+v %v", dry, err)
+			}
+			if hashPhysical(t, fx.dir) != tree {
+				t.Fatal("dry-run changed the store")
+			}
+
+			res, err := repackStore(fx.dir, repackTestOpt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.PacksDeleted != dry.PacksDeleted || res.BytesDeleted != dry.BytesDeleted ||
+				res.RecordsCopied != dry.RecordsCopied || res.BytesRead != dry.BytesRead {
+				t.Fatalf("dry-run estimate disagrees with apply:\n dry %+v\n got %+v", dry, res)
+			}
+			slack := int64(abs(dry.PacksWritten-res.PacksWritten)+1) * packFixedBytes
+			if d := dry.BytesWritten - res.BytesWritten; d > slack || -d > slack {
+				t.Fatalf("estimated write %d vs actual %d", dry.BytesWritten, res.BytesWritten)
+			}
+
+			after, _ := reclaimState(t, fx.dir)
+			if after.PackedDeadChunkCount != 0 || after.PackedLiveBytes != before.PackedLiveBytes || after.PackedLiveChunkCount != before.PackedLiveChunkCount {
+				t.Fatalf("repack must keep every live record and drop every dead one: before %+v after %+v", before, after)
+			}
+			if res.BytesReclaimed <= 0 || after.PackFileBytes != before.PackFileBytes-res.BytesReclaimed {
+				t.Fatalf("reclaimed %d bytes but packs went %d -> %d", res.BytesReclaimed, before.PackFileBytes, after.PackFileBytes)
+			}
+			if hashDirs(t, fx.dir, "manifests", "journal", "snapshots") != meta {
+				t.Fatal("repack changed manifests, journal, or snapshots")
+			}
+			requireLiveIntact(t, fx.dir, fx, "after repack")
+			s, _ := OpenStore(fx.dir)
+			for _, d := range fx.dead {
+				if _, err := s.casStat(d); !os.IsNotExist(err) {
+					t.Fatalf("dead chunk %x survived repack (%v)", d, err)
+				}
+			}
+			s.Close()
+
+			tree = hashPhysical(t, fx.dir)
+			again, err := repackStore(fx.dir, repackTestOpt)
+			if err != nil || again.PacksSelected != 0 || again.PacksWritten != 0 || hashPhysical(t, fx.dir) != tree {
+				t.Fatalf("second repack must be a no-op: %+v %v", again, err)
+			}
+		})
+	}
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+func TestRepack_DefaultPolicyLeavesHealthyPacksAlone(t *testing.T) {
+	fx := buildDeadPackStore(t, 3_000_000, 3_000_000, 21)
+	_, us := reclaimState(t, fx.dir)
+	hashes := map[string][32]byte{}
+	for _, u := range us {
+		b, err := os.ReadFile(filepath.Join(fx.dir, "packs", u.ID+packFileSuffix))
+		if err != nil {
+			t.Fatal(err)
+		}
+		hashes[u.ID] = sha256.Sum256(b)
+	}
+	wantSel := map[string]bool{}
+	for _, u := range us {
+		if u.fullyDead() || u.partiallyDead() && u.Utilization < 0.5 {
+			wantSel[u.ID] = true
+		}
+	}
+	opt := repackOptions{TargetBytes: 256 << 10, MaxLivePercent: defaultRepackMaxLivePercent}
+	res, err := repackStore(fx.dir, opt)
+	if err != nil || res.PacksSelected != len(wantSel) {
+		t.Fatalf("selected %d, want %d: %v", res.PacksSelected, len(wantSel), err)
+	}
+	for id, h := range hashes {
+		b, err := os.ReadFile(filepath.Join(fx.dir, "packs", id+packFileSuffix))
+		switch {
+		case wantSel[id] && err == nil:
+			t.Fatalf("selected pack %s was not removed", id)
+		case !wantSel[id] && (err != nil || sha256.Sum256(b) != h):
+			t.Fatalf("unselected pack %s changed or vanished: %v", id, err)
+		}
+	}
+	for _, u := range res.Selected {
+		if u.DeadRecords == 0 {
+			t.Fatalf("a fully live pack was selected: %+v", u)
+		}
+	}
+	requireLiveIntact(t, fx.dir, fx, "default policy")
+
+	// Threshold 0 reclaims only packs with no live record.
+	fx = buildDeadPackStore(t, 3_000_000, 3_000_000, 22)
+	res, err = repackStore(fx.dir, repackOptions{TargetBytes: 256 << 10, MaxLivePercent: 0})
+	if err != nil || res.PacksRewritten != 0 || res.PacksWritten != 0 {
+		t.Fatalf("threshold 0: %+v %v", res, err)
+	}
+	requireLiveIntact(t, fx.dir, fx, "threshold 0")
+}
+
+func TestRepack_RejectsBadOptions(t *testing.T) {
+	dir := t.TempDir()
+	for _, opt := range []repackOptions{{TargetBytes: 0, MaxLivePercent: 50}, {TargetBytes: 1 << 20, MaxLivePercent: 101}, {TargetBytes: 1 << 20, MaxLivePercent: -1}} {
+		if _, err := repackStore(dir, opt); err == nil {
+			t.Fatalf("options %+v accepted", opt)
+		}
+	}
+}
+
+func TestRepack_NoPacksAndLooseOnlyStores(t *testing.T) {
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, packTestDataset(), "random")
+	tree := hashPhysical(t, dir)
+	for _, dry := range []bool{true, false} {
+		opt := repackTestOpt
+		opt.DryRun = dry
+		res, err := repackStore(dir, opt)
+		if err != nil || res.PackCount != 0 || res.PacksSelected != 0 || res.PacksWritten != 0 {
+			t.Fatalf("dry=%v: %+v %v", dry, res, err)
+		}
+	}
+	if hashPhysical(t, dir) != tree {
+		t.Fatal("repack touched a loose-only store")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packs")); !os.IsNotExist(err) {
+		t.Fatalf("repack created packs/: %v", err)
+	}
+}
+
+func TestRepack_RefusesWhileStoreInUse(t *testing.T) {
+	fx := buildDeadPackStore(t, 600_000, 600_000, 23)
+	lock, err := acquireStoreLock(fx.dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.release()
+	if _, err := repackStore(fx.dir, repackTestOpt); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// ---- controlled utilization at the physical layer -------------------------
+
+// controlledPacks writes n deterministic chunks, packs them by digest, and
+// returns the store plus a referenced set in which each pack keeps the
+// requested live percentage of its records.
+func controlledPacks(t *testing.T, livePct []int) (s *Store, ref map[string]bool, data map[[32]byte][]byte) {
+	t.Helper()
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	data = map[[32]byte][]byte{}
+	all := map[string]bool{}
+	for i := 0; i < 12*len(livePct); i++ {
+		b := genRandomBytes(int64(5000+i), 6000+i%700)
+		sum, err := s.casWrite(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data[sum] = b
+		all[hex.EncodeToString(sum[:])] = true
+	}
+	opt := compactOptions{TargetBytes: 12 * (6350 + packRecordHeaderSize), MinBytes: 1}
+	if _, err := s.compact(all, opt); err != nil {
+		t.Fatal(err)
+	}
+	us := s.packUsages(all)
+	if len(us) != len(livePct) {
+		t.Fatalf("fixture has %d packs, want %d", len(us), len(livePct))
+	}
+	ref = map[string]bool{}
+	for i, u := range us {
+		_, entries, err := loadPackFile(filepath.Join(dir, "packs", u.ID+packFileSuffix))
+		if err != nil {
+			t.Fatal(err)
+		}
+		keep := (len(entries)*livePct[i] + 99) / 100
+		for _, e := range entries[:keep] {
+			ref[hex.EncodeToString(e.sha[:])] = true
+		}
+	}
+	return s, ref, data
+}
+
+func TestRepack_ControlledUtilizationMatrix(t *testing.T) {
+	cases := []struct {
+		name      string
+		livePct   []int
+		wantSel   int // packs selected under the default 50% policy
+		wantFully int
+		wantWrite bool
+	}{
+		{"completely live", []int{100, 100, 100}, 0, 0, false},
+		{"mostly live", []int{90, 80, 100}, 0, 0, false},
+		{"half live borderline", []int{60, 40, 100}, 1, 0, true},
+		{"mostly dead", []int{10, 20, 30, 100}, 3, 0, true},
+		{"mixed with one dead pack", []int{0, 30, 100}, 2, 1, true},
+		{"only dead packs", []int{0, 0, 0}, 3, 3, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, ref, data := controlledPacks(t, c.livePct)
+			rr := reachabilityResult{ReferencedChunks: ref, JournalOK: true}
+			before := hashDirs(t, s.root, "packs")
+
+			dry, err := s.repack(rr, repackOptions{TargetBytes: 1 << 20, MaxLivePercent: 50, DryRun: true})
+			if err != nil || dry.PacksSelected != c.wantSel || dry.PacksFullyDead != c.wantFully || (dry.PacksWritten > 0) != c.wantWrite {
+				t.Fatalf("dry-run: %+v %v", dry, err)
+			}
+			if hashDirs(t, s.root, "packs") != before {
+				t.Fatal("dry-run changed packs")
+			}
+			res, err := s.repack(rr, repackOptions{TargetBytes: 1 << 20, MaxLivePercent: 50})
+			if err != nil || res.PacksDeleted != c.wantSel || (res.PacksWritten > 0) != c.wantWrite {
+				t.Fatalf("apply: %+v %v", res, err)
+			}
+			if c.wantWrite && res.PacksWritten != 1 {
+				t.Fatalf("live data under one target should land in one (undersized) pack: %+v", res)
+			}
+			for hexSum := range ref {
+				sum, _ := decodeHexSHA256(hexSum)
+				if got, err := s.casRead(sum); err != nil || !bytes.Equal(got, data[sum]) {
+					t.Fatalf("live chunk %s lost: %v", hexSum[:8], err)
+				}
+			}
+			after, _ := reclaimState(t, s.root)
+			_ = after
+			again, err := s.repack(rr, repackOptions{TargetBytes: 1 << 20, MaxLivePercent: 50})
+			if err != nil || again.PacksSelected != 0 {
+				t.Fatalf("not converged: %+v %v", again, err)
+			}
+		})
+	}
+}
+
+func TestRepack_LiveDataSpanningPacksAndMultipleOutputs(t *testing.T) {
+	s, ref, data := controlledPacks(t, []int{20, 20, 20, 20, 20, 100})
+	rr := reachabilityResult{ReferencedChunks: ref, JournalOK: true}
+	// A target well below the combined live bytes forces several new packs,
+	// the last one undersized.
+	res, err := s.repack(rr, repackOptions{TargetBytes: 20 << 10, MaxLivePercent: 50})
+	if err != nil || res.PacksDeleted != 5 || res.PacksWritten < 3 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	for hexSum := range ref {
+		sum, _ := decodeHexSHA256(hexSum)
+		if got, err := s.casRead(sum); err != nil || !bytes.Equal(got, data[sum]) {
+			t.Fatalf("live chunk %s: %v", hexSum[:8], err)
+		}
+	}
+	us := s.packUsages(ref)
+	for _, u := range us {
+		if u.DeadRecords != 0 {
+			t.Fatalf("dead records remain: %+v", u)
+		}
+	}
+	// Every new pack is in digest order, like a compacted one.
+	for _, u := range us {
+		_, entries, _ := loadPackFile(filepath.Join(s.root, "packs", u.ID+packFileSuffix))
+		if !sort.SliceIsSorted(entries, func(i, j int) bool { return bytes.Compare(entries[i].sha[:], entries[j].sha[:]) < 0 }) {
+			t.Fatalf("pack %s is not in digest order", u.ID)
+		}
+	}
+}
+
+// ---- duplicate physical locations -----------------------------------------
+
+func publishCopyPack(t *testing.T, s *Store, shas [][32]byte) packInfo {
+	t.Helper()
+	cands := make([]compactCandidate, len(shas))
+	for i, sum := range shas {
+		cands[i] = compactCandidate{sum: sum}
+	}
+	staged, entries, err := s.stagePack(cands, s.casRead, func(compactCandidate, error) error { return errors.New("unreadable") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := s.publishPack(staged, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
+func livePackedDigests(t *testing.T, s *Store, ref map[string]bool, u packUsage) [][32]byte {
+	t.Helper()
+	_, entries, err := loadPackFile(s.packs[u.idx].path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out [][32]byte
+	for _, e := range entries {
+		if ref[hex.EncodeToString(e.sha[:])] {
+			out = append(out, e.sha)
+		}
+	}
+	return out
+}
+
+func TestRepack_DuplicatePackedLocations(t *testing.T) {
+	fx := buildDeadPackStore(t, 2_000_000, 2_000_000, 31)
+	s, err := OpenStore(fx.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr, _ := s.computeReachability(false)
+	var victim packUsage
+	for _, u := range s.packUsages(rr.ReferencedChunks) {
+		if u.partiallyDead() {
+			victim = u
+			break
+		}
+	}
+	live := livePackedDigests(t, s, rr.ReferencedChunks, victim)
+	dup := publishCopyPack(t, s, live)
+	s.Close()
+
+	// A reopen tolerates the duplicate and all data stays readable.
+	requireLiveIntact(t, fx.dir, fx, "with duplicate pack")
+	st, us := reclaimState(t, fx.dir)
+	var redundant *packUsage
+	for i, u := range us {
+		if u.ID == dup.id || u.ID == victim.ID {
+			if u.LiveRecords < len(live) {
+				redundant = &us[i]
+			}
+		}
+	}
+	if redundant == nil {
+		t.Fatalf("one of the two copies must count its records dead: %+v", st)
+	}
+
+	res, err := repackStore(fx.dir, repackTestOpt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PacksDeleted == 0 {
+		t.Fatalf("redundant copy was not reclaimed: %+v", res)
+	}
+	requireLiveIntact(t, fx.dir, fx, "after repack of duplicates")
+	after, _ := reclaimState(t, fx.dir)
+	if after.PackedDeadChunkCount != 0 {
+		t.Fatalf("dead or duplicate records remain: %+v", after)
+	}
+	if again, err := repackStore(fx.dir, repackTestOpt); err != nil || again.PacksSelected != 0 {
+		t.Fatalf("not converged: %+v %v", again, err)
+	}
+}
+
+func TestRepack_FullyRedundantPackRemovedByGC(t *testing.T) {
+	fx := buildDeadPackStore(t, 2_000_000, 2_000_000, 32)
+	s, _ := OpenStore(fx.dir)
+	rr, _ := s.computeReachability(false)
+	var keep packUsage
+	for _, u := range s.packUsages(rr.ReferencedChunks) {
+		if u.LiveRecords == u.Records {
+			keep = u
+			break
+		}
+	}
+	if keep.ID == "" {
+		t.Skip("no fully live pack in this fixture")
+	}
+	copyPack := publishCopyPack(t, s, livePackedDigests(t, s, rr.ReferencedChunks, keep))
+	s.Close()
+	before := packFileSet(t, fx.dir)
+	res, err := gcCollect(fx.dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := packFileSet(t, fx.dir)
+	if !before[copyPack.id+packFileSuffix] || len(after) >= len(before) || res.PacksDeleted == 0 {
+		t.Fatalf("redundant pack not removed: %+v", res)
+	}
+	requireLiveIntact(t, fx.dir, fx, "after gc of redundant pack")
+}
+
+func TestRepack_CorruptPrimaryFallsBackToDuplicate(t *testing.T) {
+	fx := buildDeadPackStore(t, 1_500_000, 1_500_000, 33)
+	s, _ := OpenStore(fx.dir)
+	defer s.Close()
+	rr, _ := s.computeReachability(false)
+	var victim packUsage
+	for _, u := range s.packUsages(rr.ReferencedChunks) {
+		if u.LiveRecords > 0 {
+			victim = u
+			break
+		}
+	}
+	live := livePackedDigests(t, s, rr.ReferencedChunks, victim)
+	publishCopyPack(t, s, live[:1])
+	sum := live[0]
+	good, err := s.casRead(sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flipPackedByte(t, s, sum) // the primary location
+	if got, err := s.casRead(sum); err != nil || !bytes.Equal(got, good) {
+		t.Fatalf("the duplicate pack must serve the chunk: %v", err)
+	}
+	if err := s.reloadPacks(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.casRead(sum); err != nil || !bytes.Equal(got, good) {
+		t.Fatalf("after reload: %v", err)
+	}
+}
+
+func TestRepack_LooseCopyCountsAsSurvivingCopy(t *testing.T) {
+	fx := buildDeadPackStore(t, 2_000_000, 2_000_000, 34)
+	s, _ := OpenStore(fx.dir)
+	rr, _ := s.computeReachability(false)
+	var victim packUsage
+	for _, u := range s.packUsages(rr.ReferencedChunks) {
+		if u.partiallyDead() {
+			victim = u
+			break
+		}
+	}
+	live := livePackedDigests(t, s, rr.ReferencedChunks, victim)
+	data, err := s.casRead(live[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.casRepairPublish(live[0], data); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.repack(rr, repackTestOpt); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.packLocs(live[0])) != 0 {
+		t.Fatal("chunk should survive only as its loose copy")
+	}
+	if got, err := s.casRead(live[0]); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("loose copy: %v", err)
+	}
+	s.Close()
+	requireLiveIntact(t, fx.dir, fx, "loose survivor")
+}
+
+// ---- gc reporting and whole-pack removal ----------------------------------
+
+func TestRepack_GCReportsAndRemovesDeadPacks(t *testing.T) {
+	dir := t.TempDir()
+	liveBody := genRandomBytes(41, 1_000_000)
+	s, _ := OpenStore(dir)
+	s.CreateBucket("b")
+	mustPutObject(t, s, "b", "live", liveBody, "application/octet-stream", nil)
+	s.Close()
+	compactTestDir(t, dir) // pack set A: live data only
+
+	s, _ = OpenStore(dir)
+	id, _ := s.CreateMultipartUpload("b", "dead", "application/octet-stream", nil)
+	ing, err := s.ingestStream(bytes.NewReader(genRandomBytes(42, 1_500_000)), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.commitPart("b", "dead", id, 1, ing)
+	s.Close()
+	compactTestDir(t, dir) // pack set B: upload data only
+	s, _ = OpenStore(dir)
+	if err := s.AbortMultipartUpload("b", "dead", id); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	packsBefore := packFileSet(t, dir)
+
+	tree := hashPhysical(t, dir)
+	dry, err := gcCollect(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.PacksFullyDead == 0 || dry.PacksPartiallyDead != 0 || dry.PackWholeReclaimBytes == 0 || dry.PackRepackReclaimBytes != 0 ||
+		dry.PackedLiveChunkCount == 0 || dry.PackedDeadChunkCount == 0 || dry.PackUtilization <= 0 || dry.PackUtilization >= 1 {
+		t.Fatalf("dry-run: %+v", dry)
+	}
+	if dry.ReclaimableDiskBytes < dry.PackWholeReclaimBytes {
+		t.Fatalf("whole-pack bytes missing from reclaimable disk bytes: %+v", dry)
+	}
+	if hashPhysical(t, dir) != tree {
+		t.Fatal("gc dry-run changed the store")
+	}
+	st, _ := reclaimState(t, dir)
+	if st != dry.PackSummary {
+		t.Fatalf("gc and stats disagree: %+v vs %+v", st, dry.PackSummary)
+	}
+
+	liveFiles := 0
+	app, err := gcCollect(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := packFileSet(t, dir)
+	for name := range after {
+		if !packsBefore[name] {
+			t.Fatalf("gc wrote a new pack %s", name)
+		}
+		liveFiles++
+	}
+	if app.PacksDeleted != dry.PacksFullyDead || len(packsBefore)-len(after) != app.PacksDeleted || app.BytesDeleted < dry.PackWholeReclaimBytes {
+		t.Fatalf("apply: %+v (packs %d -> %d)", app, len(packsBefore), len(after))
+	}
+	if liveFiles == 0 {
+		t.Fatal("live packs were removed")
+	}
+	s, _ = OpenStore(dir)
+	defer s.Close()
+	if _, got, err := s.GetObject("b", "live"); err != nil || !bytes.Equal(got, liveBody) {
+		t.Fatalf("live object: %v", err)
+	}
+	if vr, _ := s.Verify(true); !vr.OK() {
+		t.Fatalf("verify: %+v", vr.Issues)
+	}
+	rr, _ := s.computeReachability(false)
+	if sum := summarizePacks(s.packUsages(rr.ReferencedChunks)); sum.PacksFullyDead != 0 {
+		t.Fatalf("dead packs remain: %+v", sum)
+	}
+}
+
+func TestRepack_StatsExposePackLiveness(t *testing.T) {
+	fx := buildDeadPackStore(t, 1_500_000, 1_500_000, 43)
+	s, _ := OpenStore(fx.dir)
+	defer s.Close()
+	st := packTestStats(t, s)
+	if st.PackedDeadChunkCount == 0 || st.PackedLiveChunkCount == 0 || st.PackedDeadBytes <= 0 || st.PackedLiveBytes <= 0 ||
+		st.PackedLiveChunkCount+st.PackedDeadChunkCount != st.PackedChunkCount || st.PackUtilization <= 0 || st.PackUtilization >= 1 {
+		t.Fatalf("stats: %+v", st.PackSummary)
+	}
+	if st.PackWholeReclaimBytes+st.PackRepackReclaimBytes <= 0 || st.ReclaimableBytes < st.PackWholeReclaimBytes {
+		t.Fatalf("reclaim figures: %+v", st)
+	}
+	var out bytes.Buffer
+	printStatsHuman(&out, st)
+	if !strings.Contains(out.String(), "pack usage") {
+		t.Fatalf("human stats lack pack usage: %q", out.String())
+	}
+}
+
+// ---- every live root type protects its packed chunks ----------------------
+
+func TestRepack_RespectsEveryLiveRootType(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.CreateBucket("b")
+	cur := genRandomBytes(51, 500_000)
+	old := genRandomBytes(52, 500_000)
+	mustPutObject(t, s, "b", "cur", cur, "application/octet-stream", nil)
+	mustPutObject(t, s, "b", "hist", old, "application/octet-stream", nil)
+	histV1, _, _ := s.ListVersions("b", "hist")
+	_ = histV1
+	mustPutObject(t, s, "b", "hist", genRandomBytes(53, 400_000), "application/octet-stream", nil)
+
+	mpID, _ := s.CreateMultipartUpload("b", "mp", "application/octet-stream", nil)
+	mpBody := genRandomBytes(54, 500_000)
+	mpIng, err := s.ingestStream(bytes.NewReader(mpBody), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mpETag, _ := s.commitPart("b", "mp", mpID, 1, mpIng)
+
+	// A snapshot is the only root of this manifest.
+	snapBody := genRandomBytes(55, 500_000)
+	snapIng, err := s.ingestStream(bytes.NewReader(snapBody), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	man := buildManifestV1FromRefs(snapIng.chunks, snapIng.size, snapIng.objSHA256, "etag", "application/octet-stream", nil)
+	manID, manSum, err := s.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "b",
+		Entries: []snapshotEntryV1{{Key: "snap", ManifestUUID: manID, ManifestSHA256: hex.EncodeToString(manSum[:]), Size: snapIng.size, ETag: "etag", ContentType: "application/octet-stream"}}}
+	if err := s.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dead chunks that share packs with all of the above.
+	deadID, _ := s.CreateMultipartUpload("b", "dead", "application/octet-stream", nil)
+	deadIng, _ := s.ingestStream(bytes.NewReader(genRandomBytes(56, 1_500_000)), true)
+	s.commitPart("b", "dead", deadID, 1, deadIng)
+	s.Close()
+	compactTestDir(t, dir)
+	s, _ = OpenStore(dir)
+	if err := s.AbortMultipartUpload("b", "dead", deadID); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	res, err := repackStore(dir, repackTestOpt)
+	if err != nil || res.PacksDeleted == 0 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	after, _ := reclaimState(t, dir)
+	if after.PackedDeadChunkCount != 0 {
+		t.Fatalf("dead records remain: %+v", after)
+	}
+
+	s, _ = OpenStore(dir)
+	defer s.Close()
+	if _, got, err := s.GetObject("b", "cur"); err != nil || !bytes.Equal(got, cur) {
+		t.Fatalf("current object: %v", err)
+	}
+	vs, _, _ := s.ListVersions("b", "hist")
+	if len(vs) == 0 {
+		t.Fatal("no retained version")
+	}
+	if _, m, err := s.RestoreObjectVersion("b", "hist", vs[0].versionID); err != nil || m.TotalLength != int64(len(old)) {
+		t.Fatalf("restoring history: %v", err)
+	}
+	if _, got, err := s.GetObject("b", "hist"); err != nil || !bytes.Equal(got, old) {
+		t.Fatalf("retained version not byte-exact: %v", err)
+	}
+	if _, _, err := s.CompleteMultipartUpload("b", "mp", mpID, []completedPart{{PartNumber: 1, ETag: mpETag}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, got, err := s.GetObject("b", "mp"); err != nil || !bytes.Equal(got, mpBody) {
+		t.Fatalf("multipart upload: %v", err)
+	}
+	for _, c := range snapIng.chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		if _, err := s.casRead(sum); err != nil {
+			t.Fatalf("snapshot-only chunk lost: %v", err)
+		}
+	}
+	for _, c := range deadIng.chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		if _, err := s.casStat(sum); !os.IsNotExist(err) {
+			t.Fatalf("dead chunk survived: %v", err)
+		}
+	}
+	if vr, _ := s.Verify(true); !vr.OK() {
+		t.Fatalf("verify: %+v", vr.Issues)
+	}
+}
+
+// ---- crash matrix ----------------------------------------------------------
+
+func TestRepack_CrashPoints(t *testing.T) {
+	cases := []struct {
+		name        string
+		point       string
+		nth         int
+		wantAdded   bool
+		wantRemoved int // -1: every selected pack
+	}{
+		{"replacement staging just created", hookPackRecordWritten, 1, false, 0},
+		{"partial pack write", hookPackRecordWritten, 3, false, 0},
+		{"write complete, before fsync", hookPackBeforeSync, 1, false, 0},
+		{"after replacement fsync", hookPackAfterSync, 1, false, 0},
+		{"after replacement validation", hookPackValidated, 1, false, 0},
+		{"before publish rename", hookPackBeforePublish, 1, false, 0},
+		{"after rename, before dir fsync", hookPackAfterRename, 1, true, 0},
+		{"first replacement published", hookPackPublished, 1, true, 0},
+		{"second replacement mid-write", hookPackBeforeSync, 2, false, 0},
+		{"second replacement published", hookPackPublished, 2, true, 0},
+		{"before any obsolete pack removal", hookBeforePackDelete, 1, true, 0},
+		{"between obsolete pack removals", hookBeforePackDelete, 2, true, 1},
+		{"removed, before dir fsync", hookPackDeleted, 1, true, -1},
+		{"completed, then restart", hookRepackDone, 1, true, -1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fx := buildDeadPackStore(t, 1_200_000, 1_200_000, 61)
+			before := packFileSet(t, fx.dir)
+			dryOpt := repackTestOpt
+			dryOpt.DryRun = true
+			dry, err := repackStore(fx.dir, dryOpt)
+			if err != nil || dry.PacksSelected < 3 || dry.PacksWritten < 2 {
+				t.Fatalf("fixture too small to exercise the matrix: %+v %v", dry, err)
+			}
+			calls := 0
+			withTestHook(t, func(point string) {
+				if point == c.point {
+					calls++
+					if calls == c.nth {
+						panic(simulatedCrash{point: point})
+					}
+				}
+			})
+			runExpectingSimulatedCrash(t, func() { _, _ = repackStore(fx.dir, repackTestOpt) })
+			testHook = nil
+
+			now := packFileSet(t, fx.dir)
+			added, removed := 0, 0
+			for n := range now {
+				if !before[n] {
+					added++
+				}
+			}
+			for n := range before {
+				if !now[n] {
+					removed++
+				}
+			}
+			wantRemoved := c.wantRemoved
+			if wantRemoved < 0 {
+				wantRemoved = dry.PacksSelected
+			}
+			if (added > 0) != c.wantAdded || removed != wantRemoved {
+				t.Fatalf("physical state: added %d removed %d, want added=%v removed=%d", added, removed, c.wantAdded, wantRemoved)
+			}
+			requireLiveIntact(t, fx.dir, fx, "after crash")
+
+			if _, err := repackStore(fx.dir, repackTestOpt); err != nil {
+				t.Fatalf("rerun: %v", err)
+			}
+			requireLiveIntact(t, fx.dir, fx, "after rerun")
+			st, _ := reclaimState(t, fx.dir)
+			if st.PackedDeadChunkCount != 0 || st.PacksFullyDead != 0 {
+				t.Fatalf("rerun did not converge: %+v", st)
+			}
+			if stale, _ := filepath.Glob(filepath.Join(fx.dir, "tmp", "pack-*.tmp")); len(stale) != 0 {
+				t.Fatalf("stale staging files remain: %v", stale)
+			}
+			tree := hashPhysical(t, fx.dir)
+			if again, err := repackStore(fx.dir, repackTestOpt); err != nil || again.PacksSelected != 0 || hashPhysical(t, fx.dir) != tree {
+				t.Fatalf("converged store must be stable: %+v %v", again, err)
+			}
+		})
+	}
+}
+
+func TestRepack_GCCrashDuringDeadPackRemoval(t *testing.T) {
+	dir := t.TempDir()
+	liveBody := genRandomBytes(71, 600_000)
+	s, _ := OpenStore(dir)
+	s.CreateBucket("b")
+	mustPutObject(t, s, "b", "live", liveBody, "application/octet-stream", nil)
+	id, _ := s.CreateMultipartUpload("b", "dead", "application/octet-stream", nil)
+	ing, _ := s.ingestStream(bytes.NewReader(genRandomBytes(72, 1_500_000)), true)
+	s.commitPart("b", "dead", id, 1, ing)
+	s.Close()
+	compactTestDir(t, dir)
+	s, _ = OpenStore(dir)
+	s.AbortMultipartUpload("b", "dead", id)
+	s.Close()
+
+	calls := 0
+	withTestHook(t, func(point string) {
+		if point == hookBeforePackDelete {
+			calls++
+			if calls == 2 {
+				panic(simulatedCrash{point: point})
+			}
+		}
+	})
+	runExpectingSimulatedCrash(t, func() { _, _ = gcCollect(dir, true) })
+	testHook = nil
+	if _, err := gcCollect(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = OpenStore(dir)
+	defer s.Close()
+	if _, got, err := s.GetObject("b", "live"); err != nil || !bytes.Equal(got, liveBody) {
+		t.Fatalf("live: %v", err)
+	}
+	rr, _ := s.computeReachability(true)
+	if !rr.OK() || summarizePacks(s.packUsages(rr.ReferencedChunks)).PacksFullyDead != 0 {
+		t.Fatalf("after gc rerun: %+v", rr.Issues)
+	}
+}
+
+// ---- failure injection ----------------------------------------------------
+
+func partialPackOf(t *testing.T, s *Store, rr reachabilityResult) packUsage {
+	t.Helper()
+	for _, u := range s.packUsages(rr.ReferencedChunks) {
+		if u.partiallyDead() {
+			return u
+		}
+	}
+	t.Fatal("no partially dead pack")
+	return packUsage{}
+}
+
+func TestRepack_AbortsWhenASourcePackIsUnusable(t *testing.T) {
+	for _, mode := range []string{"truncated", "missing"} {
+		t.Run(mode, func(t *testing.T) {
+			fx := buildDeadPackStore(t, 1_500_000, 1_500_000, 81)
+			s, _ := OpenStore(fx.dir)
+			rr, _ := s.computeReachability(false)
+			u := partialPackOf(t, s, rr)
+			before := packFileSet(t, fx.dir)
+			path := filepath.Join(fx.dir, "packs", u.ID+packFileSuffix)
+			if mode == "truncated" {
+				os.Truncate(path, 10)
+			} else {
+				os.Remove(path)
+			}
+			var res RepackResult
+			if err := s.replacePacks([]packUsage{u}, rr.ReferencedChunks, 128<<10, &res); err == nil {
+				t.Fatal("replacing an unusable pack must fail")
+			}
+			now := packFileSet(t, fx.dir)
+			for n := range before {
+				if mode == "truncated" || n != u.ID+packFileSuffix {
+					if !now[n] {
+						t.Fatalf("pack %s removed after an aborted replacement", n)
+					}
+				}
+			}
+			if res.PacksWritten != 0 || res.PacksDeleted != 0 {
+				t.Fatalf("aborted replacement reported work: %+v", res)
+			}
+			s.Close()
+		})
+	}
+}
+
+func TestRepack_AbortsOnCorruptLiveSource(t *testing.T) {
+	fx := buildDeadPackStore(t, 1_500_000, 1_500_000, 82)
+	s, _ := OpenStore(fx.dir)
+	rr, _ := s.computeReachability(false)
+	u := partialPackOf(t, s, rr)
+	live := livePackedDigests(t, s, rr.ReferencedChunks, u)
+	flipPackedByte(t, s, live[len(live)/2])
+	s.Close()
+	before := packFileSet(t, fx.dir)
+
+	_, err := repackStore(fx.dir, repackTestOpt)
+	if err == nil || !strings.Contains(err.Error(), "nothing was removed") {
+		t.Fatalf("err = %v", err)
+	}
+	if now := packFileSet(t, fx.dir); !reflect.DeepEqual(now, before) {
+		t.Fatalf("pack set changed after an aborted repack: %v -> %v", before, now)
+	}
+	if stale, _ := filepath.Glob(filepath.Join(fx.dir, "tmp", "pack-*.tmp")); len(stale) != 0 {
+		t.Fatalf("staging file left behind: %v", stale)
+	}
+	s, _ = OpenStore(fx.dir)
+	defer s.Close()
+	if vr, _ := s.Verify(true); vr.OK() {
+		t.Fatal("deep verify must still report the corrupt live chunk")
+	}
+}
+
+func TestRepack_AbortsWhenReplacementFailsValidation(t *testing.T) {
+	for _, damage := range []string{"truncate", "flip-payload"} {
+		t.Run(damage, func(t *testing.T) {
+			fx := buildDeadPackStore(t, 1_500_000, 1_500_000, 83)
+			before := packFileSet(t, fx.dir)
+			damaged := false
+			withTestHook(t, func(point string) {
+				if point != hookPackAfterSync || damaged {
+					return
+				}
+				damaged = true
+				staged, _ := filepath.Glob(filepath.Join(fx.dir, "tmp", "pack-*.tmp"))
+				if len(staged) != 1 {
+					t.Errorf("want one staged pack, got %v", staged)
+					return
+				}
+				if damage == "truncate" {
+					os.Truncate(staged[0], 100)
+					return
+				}
+				f, _ := os.OpenFile(staged[0], os.O_RDWR, 0)
+				var b [1]byte
+				f.ReadAt(b[:], packHeaderSize+packRecordHeaderSize+10)
+				b[0] ^= 0xff
+				f.WriteAt(b[:], packHeaderSize+packRecordHeaderSize+10)
+				f.Close()
+			})
+			_, err := repackStore(fx.dir, repackTestOpt)
+			testHook = nil
+			if err == nil || !strings.Contains(err.Error(), "failed validation") {
+				t.Fatalf("err = %v", err)
+			}
+			if now := packFileSet(t, fx.dir); !reflect.DeepEqual(now, before) {
+				t.Fatalf("pack set changed: %v -> %v", before, now)
+			}
+			requireLiveIntact(t, fx.dir, fx, "after failed validation")
+		})
+	}
+}
+
+func TestRepack_ConflictingPackedCopiesBlockDestructiveWork(t *testing.T) {
+	fx := buildDeadPackStore(t, 1_000_000, 1_000_000, 84)
+	s, _ := OpenStore(fx.dir)
+	rr, _ := s.computeReachability(false)
+	u := partialPackOf(t, s, rr)
+	sum := livePackedDigests(t, s, rr.ReferencedChunks, u)[0]
+	staged, entries, err := s.stagePack([]compactCandidate{{sum: sum}},
+		func([32]byte) ([]byte, error) { return []byte("bytes of a different length"), nil },
+		func(compactCandidate, error) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, _, err := statPackFile(staged)
+	if err != nil || len(entries) != 1 {
+		t.Fatal(err)
+	}
+	if err := os.Rename(staged, filepath.Join(fx.dir, "packs", info.id+packFileSuffix)); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	s, err = OpenStore(fx.dir)
+	if err != nil {
+		t.Fatalf("a conflicting pack must not stop the store opening: %v", err)
+	}
+	if len(s.packClashes()) != 1 {
+		t.Fatalf("clashes = %v", s.packClashes())
+	}
+	if vr, _ := s.Verify(false); vr.OK() {
+		t.Fatal("verify must report the contradictory copies")
+	}
+	s.Close()
+	before := packFileSet(t, fx.dir)
+	dryOpt := repackTestOpt
+	dryOpt.DryRun = true
+	if _, err := repackStore(fx.dir, dryOpt); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if _, err := repackStore(fx.dir, repackTestOpt); err == nil || !strings.Contains(err.Error(), "contradictory") {
+		t.Fatalf("apply err = %v", err)
+	}
+	if !reflect.DeepEqual(packFileSet(t, fx.dir), before) {
+		t.Fatal("pack set changed")
+	}
+}
+
+func TestRepack_RefusesUnsafeLiveSet(t *testing.T) {
+	fx := buildDeadPackStore(t, 1_000_000, 1_000_000, 85)
+	s, _ := OpenStore(fx.dir)
+	_, man, _ := s.HeadObject("b", "live")
+	sum, _ := decodeHexSHA256(man.Chunks[0].SHA256)
+	loc, _ := s.packLookup(sum)
+	os.Remove(s.packs[loc.pack].path)
+	s.Close()
+	before := packFileSet(t, fx.dir)
+	if _, err := repackStore(fx.dir, repackTestOpt); !errors.Is(err, errGCUnsafe) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := gcCollect(fx.dir, true); !errors.Is(err, errGCUnsafe) {
+		t.Fatalf("gc err = %v", err)
+	}
+	if !reflect.DeepEqual(packFileSet(t, fx.dir), before) {
+		t.Fatal("pack set changed")
+	}
+}
+
+// ---- CLI -------------------------------------------------------------------
+
+func TestRepack_CLI(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	fx := buildDeadPackStore(t, 1_500_000, 1_500_000, 91)
+	tree := hashPhysical(t, fx.dir)
+
+	out, errOut, code := runZeros3CLI(t, bin, "repack", "-store", fx.dir, "-pack-size-mib", "1", "-max-live-percent", "100")
+	if code != 0 || !strings.Contains(out, "dry-run") || !strings.Contains(out, "would") {
+		t.Fatalf("dry-run: code=%d out=%q err=%q", code, out, errOut)
+	}
+	if hashPhysical(t, fx.dir) != tree {
+		t.Fatal("default invocation modified the store")
+	}
+	out, _, code = runZeros3CLI(t, bin, "gc", "-store", fx.dir)
+	if code != 0 || !strings.Contains(out, "pack reclaim") || !strings.Contains(out, "zeros3 repack") {
+		t.Fatalf("gc: %q", out)
+	}
+	out, _, code = runZeros3CLI(t, bin, "stats", "-store", fx.dir)
+	if code != 0 || !strings.Contains(out, "pack usage") {
+		t.Fatalf("stats: %q", out)
+	}
+	out, errOut, code = runZeros3CLI(t, bin, "repack", "-store", fx.dir, "-pack-size-mib", "1", "-max-live-percent", "100", "-apply", "-json")
+	if code != 0 {
+		t.Fatalf("apply: code=%d err=%q", code, errOut)
+	}
+	var res RepackResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil || res.DryRun || res.PacksDeleted == 0 || res.BytesReclaimed <= 0 {
+		t.Fatalf("apply json: %+v %v", res, err)
+	}
+	requireLiveIntact(t, fx.dir, fx, "cli apply")
+	if out, _, code = runZeros3CLI(t, bin, "verify", "-store", fx.dir, "-deep"); code != 0 {
+		t.Fatalf("verify: %q", out)
+	}
+	if _, errOut, code = runZeros3CLI(t, bin, "repack", "-store", fx.dir, "-max-live-percent", "101"); code == 0 {
+		t.Fatalf("bad threshold accepted: %q", errOut)
 	}
 }

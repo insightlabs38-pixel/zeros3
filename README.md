@@ -26,7 +26,7 @@ CAS → immutable manifests → visibility journal.**
 - Atomic conditional writes (`If-Match` / `If-None-Match`)
 - Streaming I/O: uploads and downloads of any size run in bounded memory; signed `aws-chunked` uploads accepted
 - Bounded parallel chunk transfer
-- Immutable packed storage: `zeros3 compact` folds loose chunk files into a few verified packs
+- Immutable packed storage: `zeros3 compact` folds loose chunk files into a few verified packs; `gc` and `zeros3 repack` reclaim dead packed records by replacing packs
 - Zero third-party dependencies, reproducible build
 
 ZeroS3 is not trying to compete with MinIO or Ceph on distributed
@@ -180,8 +180,22 @@ unchanged, and a store can hold loose chunks, packed chunks, or both; every
 read re-verifies the chunk's SHA-256 and prefers the packed copy, falling
 back to a loose one. `stats` splits loose from packed counts and bytes, and
 `verify` checks pack structure. Run `compact` again to pack newer chunks.
-`gc` never deletes or edits a pack: unreachable packed records are reported
-but not reclaimed yet.
+
+**Reclaiming packed space.** Packs are never edited. `stats` and `gc` report,
+from the same reachability scan, how many packed records no live root
+references (`packed_dead_*`), pack utilization, the bytes `gc -apply` removes
+immediately (packs with no live record) and the bytes only `repack` can
+reclaim (partly dead packs). `zeros3 gc -apply` deletes packs with no live
+record. `zeros3 repack -store DIR` rewrites partly dead packs: it prints
+the packs it would select, the bytes it would read, write and reclaim, and
+changes nothing until `-apply` is given (`-max-live-percent`, default 50,
+selects packs below that live share, so each byte rewritten reclaims at
+least a byte; `-pack-size-mib`; `-json`). Live records are copied in digest
+order into new verified packs, the new packs are published and fsynced, each
+copied chunk must read back from them, and only then are the old packs
+removed — a crash leaves extra packs or staging files, never a missing
+chunk, and rerunning converges. Both commands are offline (exclusive store
+lock) and refuse to delete anything if a live root is corrupt or missing.
 
 **Delta movement.** `zeros3 sync` ingests a local file or directory
 using far less transfer than a full upload when the store already holds
@@ -295,7 +309,8 @@ serialized and safe regardless of worker count.
   (full, prefix, cross-chunk, and suffix ranges, before and after restart);
   crash injection at every `compact` publication boundary loses no live
   chunk; malformed or damaged packs are rejected without panics, large
-  allocations, or corrupt bytes; `gc` leaves packs untouched.
+  allocations, or corrupt bytes; `gc` and `repack` crash injection at every
+  publication and removal boundary loses no live chunk and reruns converge.
 - **Crash and restart testing:** real process restart mid-multipart-
   upload, real SIGINT/SIGTERM graceful-shutdown scenarios, and
   deterministic in-process crash injection against the journal/CAS
@@ -346,8 +361,10 @@ Honest, not exhaustive — see [`S3_COMPAT.md`](./S3_COMPAT.md) for the
 exact API contract:
 
 - Single writer process per store; no distributed/HA operation.
-- Packed storage is v1: no compression, `gc` cannot yet reclaim unreachable
-  packed records, and `compact` is offline. The first `compact` marks the
+- Packed storage is v1: no compression, and `compact`, `gc -apply` and
+  `repack` are offline. Retained history keeps overwritten and deleted
+  versions live, so packed records only die after upload aborts or when
+  history pruning exists. The first `compact` marks the
   store format version 2: earlier builds refuse to open it rather than
   misread it, while a never-compacted store stays version 1 and opens
   with any build.

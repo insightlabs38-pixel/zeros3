@@ -62,33 +62,34 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      414    Content-defined chunking (CDC)
-//      540    Content-addressed chunk storage (CAS)
-//      684    Packed CAS (immutable packs, locator index)
-//     1181    Manifests (immutable, JSON)
-//     1280    Visibility journal (append-only, checksummed)
-//     1675    Store: format, namespace, and object CRUD
-//     2426    Version history/restore and ListObjectsV2
-//     2656    SigV4 authentication (header and presigned-URL)
-//     3611    Request payload checksums and S3-shaped XML error/response types
-//     3827    HTTP routing and S3 operation handlers
-//     4220    Conditional operations (PUT/GET/HEAD preconditions)
-//     4786    CopyObject
-//     5080    Multipart upload
-//     5906    Stats and reachability scanning
-//     6633    Verify
-//     6809    Store locking and safe offline GC
-//     7050    Offline compaction (`zeros3 compact`)
-//     7477    Streaming object reads (full and ranged GET)
-//     7602    Delta sync client, credentials, and parallel transfer
-//     9525    Recursive directory sync
-//     9830    Remote replication (`zeros3 replicate`)
-//    10594    Peer-assisted corruption repair (`zeros3 repair`)
-//    11072    Namespace (prefix/bucket) replication
-//    11379    Copy-on-write namespace fork (`zeros3 fork`)
-//    11587    Snapshots and restore
-//    12740    Structural diff and inspect (introspection)
-//    13264    CLI dispatch, HTTP server/startup, and main
+//      421    Content-defined chunking (CDC)
+//      547    Content-addressed chunk storage (CAS)
+//      704    Packed CAS (immutable packs, locator index)
+//     1325    Manifests (immutable, JSON)
+//     1424    Visibility journal (append-only, checksummed)
+//     1819    Store: format, namespace, and object CRUD
+//     2571    Version history/restore and ListObjectsV2
+//     2801    SigV4 authentication (header and presigned-URL)
+//     3756    Request payload checksums and S3-shaped XML error/response types
+//     3972    HTTP routing and S3 operation handlers
+//     4365    Conditional operations (PUT/GET/HEAD preconditions)
+//     4931    CopyObject
+//     5225    Multipart upload
+//     6051    Stats and reachability scanning
+//     6778    Verify
+//     6954    Store locking and safe offline GC
+//     7209    Offline compaction (`zeros3 compact`)
+//     7664    Pack reclamation and repacking (`zeros3 repack`)
+//     7982    Streaming object reads (full and ranged GET)
+//     8107    Delta sync client, credentials, and parallel transfer
+//    10030    Recursive directory sync
+//    10335    Remote replication (`zeros3 replicate`)
+//    11099    Peer-assisted corruption repair (`zeros3 repair`)
+//    11577    Namespace (prefix/bucket) replication
+//    11884    Copy-on-write namespace fork (`zeros3 fork`)
+//    12092    Snapshots and restore
+//    13245    Structural diff and inspect (introspection)
+//    13769    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -402,6 +403,12 @@ const (
 	hookPackPublished     = "pack-published"
 	hookBeforeLooseDelete = "before-loose-delete"
 	hookCompactDone       = "compact-done"
+
+	// Pack replacement boundaries (section 13d).
+	hookPackValidated    = "pack-validated"
+	hookBeforePackDelete = "before-pack-delete"
+	hookPackDeleted      = "pack-deleted"
+	hookRepackDone       = "repack-done"
 )
 
 // simulatedCrash is panicked by test hooks to unwind out of the commit
@@ -601,17 +608,30 @@ func (s *Store) casStat(sum [32]byte) (int64, error) {
 // digest that names it, so that on-disk corruption (bit rot, a truncated
 // write that somehow left a full-length file, manual tampering) is
 // reported as an error rather than trusted blindly. A chunk may exist as
-// a packed record, a loose file, or both; the packed copy is tried first
-// and any copy that fails verification falls through to the next, so a
-// good copy is served whenever one exists and corrupt bytes never are.
+// packed records (several, after an interrupted repack), a loose file, or
+// both; the packed copies are tried first and any copy that fails
+// verification falls through to the next, so a good copy is served
+// whenever one exists and corrupt bytes never are.
 func (s *Store) casRead(sum [32]byte) ([]byte, error) {
+	return s.casReadExcluding(sum, nil)
+}
+
+// casReadExcluding is casRead restricted to copies outside the packs in
+// skip (indexes into s.packs). Replacing packs uses it to prove a chunk
+// survives their removal.
+func (s *Store) casReadExcluding(sum [32]byte, skip map[int32]bool) ([]byte, error) {
 	var packErr error
-	if loc, ok := s.packLookup(sum); ok {
+	for _, loc := range s.packLocs(sum) {
+		if skip[loc.pack] {
+			continue
+		}
 		data, err := s.readPacked(sum, loc)
 		if err == nil {
 			return data, nil
 		}
-		packErr = err
+		if packErr == nil {
+			packErr = err
+		}
 	}
 	data, err := os.ReadFile(s.chunkPath(sum))
 	if err == nil {
@@ -687,8 +707,9 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
 // is unchanged -- logical SHA-256 plus logical length -- and nothing above
 // the CAS (manifests, journal, snapshots, replication, CDC) knows or cares
 // whether a chunk is a loose file or a packed record. Packs are written
-// only by `zeros3 compact` (section 13c) and are never modified after
-// publication; dead records are reclaimed by rewriting, never in place.
+// only by `zeros3 compact` (section 13c) and `zeros3 repack` (section 13d)
+// and are never modified after publication; dead records are reclaimed by
+// writing a replacement pack and then removing the old one, never in place.
 //
 // Pack v1 file (packs/<id>.pack, id = hex of body_sha256), little-endian:
 //
@@ -714,7 +735,10 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
 // The in-memory locator index (Store.packIdx) is rebuilt from the pack
 // footers/indexes at open and is never trusted for content: every packed
 // read re-checks the record header and re-hashes the payload exactly as a
-// loose read does.
+// loose read does. The same digest may legitimately appear in several packs
+// (an interrupted repack leaves old and new copies): the first pack in name
+// order is the primary location, the rest are kept as fallbacks, and a
+// repeat whose length disagrees is a reported conflict.
 // =============================================================================
 
 const (
@@ -1030,9 +1054,10 @@ func checkPackRecords(path string) error {
 	return nil
 }
 
-// addPackLocked folds one validated pack into the locator index. The
-// first pack (in sorted order) to hold a digest wins; a repeat whose
-// logical length contradicts the first is reported rather than indexed.
+// addPack folds one validated pack into the locator index. The first pack
+// (in sorted order) to hold a digest is its primary location; a repeat with
+// the same length becomes a fallback copy, and one whose logical length
+// contradicts the primary is reported rather than indexed.
 func (s *Store) addPack(info packInfo, entries []packEntry) {
 	s.packMu.Lock()
 	defer s.packMu.Unlock()
@@ -1047,14 +1072,20 @@ func (s *Store) addPack(info packInfo, entries []packEntry) {
 	idx := int32(len(s.packs))
 	s.packs = append(s.packs, info)
 	for _, e := range entries {
-		if prev, ok := s.packIdx[e.sha]; ok {
-			if prev.logical != e.logical {
-				s.packClash = append(s.packClash, fmt.Sprintf("chunk %x has contradictory lengths %d and %d across packs %s and %s",
-					e.sha, prev.logical, e.logical, s.packs[prev.pack].id, info.id))
+		loc := packLoc{pack: idx, codec: e.codec, stored: e.stored, logical: e.logical, off: e.off}
+		prev, ok := s.packIdx[e.sha]
+		switch {
+		case !ok:
+			s.packIdx[e.sha] = loc
+		case prev.logical != e.logical:
+			s.packClash = append(s.packClash, fmt.Sprintf("chunk %x has contradictory lengths %d and %d across packs %s and %s",
+				e.sha, prev.logical, e.logical, s.packs[prev.pack].id, info.id))
+		default:
+			if s.packDup == nil {
+				s.packDup = map[[32]byte][]packLoc{}
 			}
-			continue
+			s.packDup[e.sha] = append(s.packDup[e.sha], loc)
 		}
-		s.packIdx[e.sha] = packLoc{pack: idx, codec: e.codec, stored: e.stored, logical: e.logical, off: e.off}
 	}
 }
 
@@ -1086,6 +1117,26 @@ func (s *Store) loadPacks() error {
 	return nil
 }
 
+// reloadPacks discards the in-memory pack state and rebuilds it from disk,
+// as a fresh open would.
+func (s *Store) reloadPacks() error {
+	s.packMu.Lock()
+	s.packs, s.packIdx, s.packDup, s.packBad, s.packClash = nil, nil, nil, nil, nil
+	s.packMu.Unlock()
+	return s.loadPacks()
+}
+
+// packLocs returns every indexed packed copy of a chunk, primary first.
+func (s *Store) packLocs(sum [32]byte) []packLoc {
+	s.packMu.RLock()
+	defer s.packMu.RUnlock()
+	loc, ok := s.packIdx[sum]
+	if !ok {
+		return nil
+	}
+	return append([]packLoc{loc}, s.packDup[sum]...)
+}
+
 func (s *Store) packLookup(sum [32]byte) (packLoc, bool) {
 	s.packMu.RLock()
 	loc, ok := s.packIdx[sum]
@@ -1106,17 +1157,110 @@ func (s *Store) packTotals() (packs, records int, bytes int64) {
 	return
 }
 
-// packUnreachable counts indexed packed records no live root references.
-func (s *Store) packUnreachable(referenced map[string]bool) (packs, records int, bytes int64) {
+// packUsage classifies one pack's records against the live chunk set.
+// Liveness is derived from reachability on demand and never stored in a
+// pack. A digest held by several packs is live only in its primary pack;
+// every other copy counts as dead, so redundant packs show as reclaimable.
+type packUsage struct {
+	idx         int32
+	ID          string  `json:"id"`
+	Size        int64   `json:"size"`
+	Records     int     `json:"records"`
+	LiveRecords int     `json:"live_records"`
+	LiveBytes   int64   `json:"live_bytes"`
+	DeadRecords int     `json:"dead_records"`
+	DeadBytes   int64   `json:"dead_bytes"`
+	Utilization float64 `json:"utilization"`
+	Reclaimable int64   `json:"reclaimable_bytes"`
+}
+
+const (
+	packFixedBytes  = packHeaderSize + packFooterSize
+	packRecordBytes = packRecordHeaderSize + packIndexEntrySize
+)
+
+// livePhysical is the size of a pack holding only this pack's live records.
+func (u packUsage) livePhysical() int64 {
+	if u.LiveRecords == 0 {
+		return 0
+	}
+	return packFixedBytes + u.LiveBytes + int64(u.LiveRecords)*packRecordBytes
+}
+
+func (u packUsage) fullyDead() bool { return u.Records > 0 && u.LiveRecords == 0 }
+func (u packUsage) partiallyDead() bool {
+	return u.LiveRecords > 0 && u.DeadRecords > 0
+}
+
+// packUsages derives every pack's usage from the locator index and the
+// referenced set, in s.packs order. It reads no pack file; destructive
+// callers re-derive their working set from the packs themselves.
+func (s *Store) packUsages(referenced map[string]bool) []packUsage {
 	s.packMu.RLock()
 	defer s.packMu.RUnlock()
+	us := make([]packUsage, len(s.packs))
+	for i, p := range s.packs {
+		us[i] = packUsage{idx: int32(i), ID: p.id, Size: p.size, Records: p.records}
+	}
 	for sum, loc := range s.packIdx {
-		if !referenced[hex.EncodeToString(sum[:])] {
-			records++
-			bytes += int64(loc.stored)
+		if referenced[hex.EncodeToString(sum[:])] {
+			us[loc.pack].LiveRecords++
+			us[loc.pack].LiveBytes += int64(loc.logical)
 		}
 	}
-	return len(s.packs), records, bytes
+	for i := range us {
+		u := &us[i]
+		u.DeadRecords = u.Records - u.LiveRecords
+		u.DeadBytes = u.Size - packFixedBytes - int64(u.Records)*packRecordBytes - u.LiveBytes
+		if u.Size > 0 {
+			u.Utilization = float64(u.livePhysical()) / float64(u.Size)
+		}
+		u.Reclaimable = u.Size - u.livePhysical()
+	}
+	return us
+}
+
+// PackSummary aggregates pack usage for stats and gc.
+type PackSummary struct {
+	PackCount              int     `json:"pack_count"`
+	PackedChunkCount       int     `json:"packed_chunk_count"`
+	PackFileBytes          int64   `json:"pack_file_bytes"`
+	PackedLiveChunkCount   int     `json:"packed_live_chunk_count"`
+	PackedLiveBytes        int64   `json:"packed_live_bytes"`
+	PackedDeadChunkCount   int     `json:"packed_dead_chunk_count"`
+	PackedDeadBytes        int64   `json:"packed_dead_bytes"`
+	PacksFullyDead         int     `json:"packs_fully_dead"`
+	PacksPartiallyDead     int     `json:"packs_partially_dead"`
+	PackUtilization        float64 `json:"pack_utilization"`
+	PackWholeReclaimBytes  int64   `json:"pack_whole_reclaimable_bytes"`
+	PackRepackReclaimBytes int64   `json:"pack_repack_reclaimable_bytes"`
+}
+
+func summarizePacks(us []packUsage) PackSummary {
+	var sum PackSummary
+	var live int64
+	for _, u := range us {
+		sum.PackCount++
+		sum.PackedChunkCount += u.Records
+		sum.PackFileBytes += u.Size
+		sum.PackedLiveChunkCount += u.LiveRecords
+		sum.PackedLiveBytes += u.LiveBytes
+		sum.PackedDeadChunkCount += u.DeadRecords
+		sum.PackedDeadBytes += u.DeadBytes
+		live += u.livePhysical()
+		switch {
+		case u.fullyDead():
+			sum.PacksFullyDead++
+			sum.PackWholeReclaimBytes += u.Size
+		case u.partiallyDead():
+			sum.PacksPartiallyDead++
+			sum.PackRepackReclaimBytes += u.Reclaimable
+		}
+	}
+	if sum.PackFileBytes > 0 {
+		sum.PackUtilization = float64(live) / float64(sum.PackFileBytes)
+	}
+	return sum
 }
 
 // readPacked reads one packed chunk. The locator is only a hint: the
@@ -1797,6 +1941,7 @@ type Store struct {
 	packMu    sync.RWMutex
 	packs     []packInfo
 	packIdx   map[[32]byte]packLoc
+	packDup   map[[32]byte][]packLoc
 	packBad   []packProblem
 	packClash []string
 }
@@ -6452,13 +6597,12 @@ type StatsResult struct {
 	// ChunkStoreFileBytes is loose chunk-file bytes plus pack-file bytes;
 	// the Loose*/Pack* fields split it by physical representation. Packed
 	// records are counted as stored, so a chunk present both loose and
-	// packed appears in both counts.
-	ChunkStoreFileBytes  int64 `json:"chunk_store_file_bytes"`
-	LooseChunkCount      int   `json:"loose_chunk_count"`
-	LooseChunkFileBytes  int64 `json:"loose_chunk_file_bytes"`
-	PackCount            int   `json:"pack_count"`
-	PackedChunkCount     int   `json:"packed_chunk_count"`
-	PackFileBytes        int64 `json:"pack_file_bytes"`
+	// packed appears in both counts. PackSummary adds the live/dead split
+	// of packed records and what gc and repack can reclaim.
+	ChunkStoreFileBytes int64 `json:"chunk_store_file_bytes"`
+	LooseChunkCount     int   `json:"loose_chunk_count"`
+	LooseChunkFileBytes int64 `json:"loose_chunk_file_bytes"`
+	PackSummary
 	ManifestFileBytes    int64 `json:"manifest_file_bytes"`
 	JournalFileBytes     int64 `json:"journal_file_bytes"`
 	TemporaryFileBytes   int64 `json:"temporary_file_bytes"`
@@ -6608,7 +6752,7 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 		return StatsResult{}, fmt.Errorf("stats: scanning FORMAT.json: %w", err)
 	}
 
-	res.PackCount, res.PackedChunkCount, res.PackFileBytes = s.packTotals()
+	res.PackSummary = summarizePacks(s.packUsages(rr.ReferencedChunks))
 	res.LooseChunkCount = chunkScan.totalCount
 	res.LooseChunkFileBytes = chunkScan.totalBytes
 	res.ChunkStoreFileBytes = chunkScan.totalBytes + res.PackFileBytes
@@ -6620,11 +6764,12 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 	// belongs to a file whose digest/UUID is not in the reachable set
 	// computed above, not a naive "store bytes minus unique bytes"
 	// subtraction (STATS_SPEC.md's explicit warning against that
-	// shortcut). Unreachable records inside packs are not counted: they
-	// cannot be reclaimed until packs can be rewritten. tmp/ is always reclaimable: it is same-store staging
-	// space only, never referenced by any committed manifest/journal
+	// shortcut). Dead records inside a partly live pack are not counted:
+	// only repack reclaims them (PackRepackReclaimBytes); packs with no
+	// live record go with gc. tmp/ is always reclaimable: it is same-store
+	// staging space only, never referenced by any committed manifest/journal
 	// record (see STORAGE_MODEL.md's publication model).
-	res.ReclaimableBytes = chunkScan.unreachableBytes + manifestScan.unreachableBytes + tmpBytes
+	res.ReclaimableBytes = chunkScan.unreachableBytes + manifestScan.unreachableBytes + tmpBytes + res.PackWholeReclaimBytes
 
 	return res, nil
 }
@@ -6834,9 +6979,10 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 // metadata, so an interruption mid-sweep can only ever leave some garbage
 // still on disk -- it can never touch a file reachability classified live.
 //
-// GC only ever deletes loose chunk files. Packs are immutable and shared by
-// many chunks, so they are never deleted or edited here; unreachable packed
-// records are reported but stay on disk until pack-aware repacking exists.
+// GC deletes loose chunk and manifest files, and packs that no live root
+// reads from. A pack shared with live chunks is never edited or deleted
+// here: its dead records are reported and reclaimed by `zeros3 repack`
+// (section 13d), which replaces the pack instead.
 // =============================================================================
 
 // storeLock holds one non-blocking flock on a store's dedicated LOCK file
@@ -6899,16 +7045,14 @@ type GCResult struct {
 	ReclaimablePayloadBytes int64 `json:"reclaimable_payload_bytes"`
 	ReclaimableDiskBytes    int64 `json:"reclaimable_disk_bytes"`
 
-	// Packed storage is never swept: a pack is immutable, and deleting it
-	// for one dead record would destroy its live neighbors. Unreachable
-	// packed records are only reported (and excluded from every
-	// reclaimable figure) until pack-aware repacking exists.
-	PackCount               int   `json:"pack_count"`
-	PackedChunksUnreachable int   `json:"packed_chunks_unreachable"`
-	PackedUnreachableBytes  int64 `json:"packed_unreachable_bytes_deferred"`
+	// Packs are immutable, so dead packed records are never swept
+	// individually. Packs with no live record are removed whole; the rest
+	// are only reported (PackRepackReclaimBytes) and left to `repack`.
+	PackSummary
 
 	ChunksDeleted    int   `json:"chunks_deleted"`
 	ManifestsDeleted int   `json:"manifests_deleted"`
+	PacksDeleted     int   `json:"packs_deleted"`
 	BytesDeleted     int64 `json:"bytes_deleted"`
 }
 
@@ -7001,13 +7145,14 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 		return res, fmt.Errorf("gc: scanning manifests: %w", scanErr)
 	}
 
-	res.PackCount, res.PackedChunksUnreachable, res.PackedUnreachableBytes = store.packUnreachable(rr.ReferencedChunks)
+	usages := store.packUsages(rr.ReferencedChunks)
+	res.PackSummary = summarizePacks(usages)
 
 	tmpBytes, err := dirSizeBytes(filepath.Join(store.root, "tmp"))
 	if err != nil {
 		return res, fmt.Errorf("gc: scanning tmp: %w", err)
 	}
-	res.ReclaimableDiskBytes = res.ReclaimablePayloadBytes + tmpBytes
+	res.ReclaimableDiskBytes = res.ReclaimablePayloadBytes + tmpBytes + res.PackWholeReclaimBytes
 
 	res.Applied = apply
 	if !apply {
@@ -7042,7 +7187,21 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 			os.Remove(filepath.Join(store.root, "tmp", e.Name()))
 		}
 	}
-	res.BytesDeleted = res.ReclaimableDiskBytes
+	res.BytesDeleted = res.ReclaimablePayloadBytes + tmpBytes
+
+	var deadPacks []packUsage
+	for _, u := range usages {
+		if u.fullyDead() {
+			deadPacks = append(deadPacks, u)
+		}
+	}
+	var packRes RepackResult
+	err = store.replacePacks(deadPacks, rr.ReferencedChunks, defaultPackTargetBytes, &packRes)
+	res.PacksDeleted = packRes.PacksDeleted
+	res.BytesDeleted += packRes.BytesDeleted
+	if err != nil {
+		return res, fmt.Errorf("gc: removing dead packs: %w", err)
+	}
 	return res, nil
 }
 
@@ -7220,12 +7379,7 @@ func (s *Store) compact(referenced map[string]bool, opt compactOptions) (Compact
 		return res, nil
 	}
 
-	// Staging files from an interrupted run were never published.
-	if stale, _ := filepath.Glob(filepath.Join(s.root, "tmp", "pack-*.tmp")); len(stale) > 0 {
-		for _, p := range stale {
-			os.Remove(p)
-		}
-	}
+	s.removeStalePackStaging()
 
 	for _, c := range redundant {
 		loc, _ := s.packLookup(c.sum)
@@ -7272,10 +7426,25 @@ func (s *Store) ensurePackedFormat() error {
 	return nil
 }
 
-// stagePack writes one pack into tmp/ from batch's loose chunks and
-// returns its path and entries. Chunks that fail verification are left
-// out. Failures (but not simulated crashes) remove the staging file.
-func (s *Store) stagePack(batch []compactCandidate, res *CompactResult) (string, []packEntry, error) {
+// readLoose returns a loose chunk's bytes only if they hash to its name and
+// fit a pack record.
+func (s *Store) readLoose(sum [32]byte) ([]byte, error) {
+	data, err := os.ReadFile(s.chunkPath(sum))
+	if err != nil {
+		return nil, err
+	}
+	if sha256.Sum256(data) != sum || len(data) < 1 || len(data) > maxPackedChunkBytes {
+		return nil, fmt.Errorf("loose chunk is corrupt; not packed: %w", errChunkCorrupt)
+	}
+	return data, nil
+}
+
+// stagePack writes one pack into tmp/ from batch, fetching each record's
+// verified bytes through read, and returns its path and entries. When read
+// fails, skip decides whether the record is left out (nil) or the whole
+// pack is abandoned (an error). Failures (but not simulated crashes)
+// remove the staging file.
+func (s *Store) stagePack(batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error) (string, []packEntry, error) {
 	f, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "pack-*.tmp")
 	if err != nil {
 		return "", nil, err
@@ -7297,15 +7466,11 @@ func (s *Store) stagePack(batch []compactCandidate, res *CompactResult) (string,
 	off := uint64(packHeaderSize)
 	var rec [packRecordHeaderSize]byte
 	for _, c := range batch {
-		data, err := os.ReadFile(s.chunkPath(c.sum))
+		data, err := read(c.sum)
 		if err != nil {
-			res.Skipped++
-			res.Issues = append(res.Issues, VerifyIssue{Kind: "invalid", Subject: fmt.Sprintf("chunk %x", c.sum), Detail: err.Error()})
-			continue
-		}
-		if sha256.Sum256(data) != c.sum || len(data) < 1 || len(data) > maxPackedChunkBytes {
-			res.Skipped++
-			res.Issues = append(res.Issues, VerifyIssue{Kind: "corrupt", Subject: fmt.Sprintf("chunk %x", c.sum), Detail: "loose chunk is corrupt; not packed"})
+			if serr := skip(c, err); serr != nil {
+				return fail(serr)
+			}
 			continue
 		}
 		e := packEntry{sha: c.sum, off: off + packRecordHeaderSize, stored: uint32(len(data)), logical: uint32(len(data)), codec: packCodecRaw}
@@ -7349,14 +7514,11 @@ func (s *Store) stagePack(batch []compactCandidate, res *CompactResult) (string,
 	return path, entries, nil
 }
 
-func (s *Store) compactBatch(batch []compactCandidate, res *CompactResult) error {
-	staged, entries, err := s.stagePack(batch, res)
-	if err != nil {
-		return fmt.Errorf("compact: writing pack: %w", err)
-	}
-	if len(entries) == 0 {
-		return nil
-	}
+// publishPack verifies a staged pack end to end, raises the store format if
+// needed, renames it into packs/, fsyncs the directory, and indexes it.
+// The staged file is removed on any failure before the rename; after it,
+// the published pack is left in place (a redundant pack is harmless).
+func (s *Store) publishPack(staged string, entries []packEntry) (packInfo, error) {
 	info, got, err := verifyPackFile(staged)
 	if err == nil && len(got) != len(entries) {
 		err = errors.New("pack: staged index disagrees with the records written")
@@ -7368,40 +7530,65 @@ func (s *Store) compactBatch(batch []compactCandidate, res *CompactResult) error
 	}
 	if err != nil {
 		os.Remove(staged)
-		return fmt.Errorf("compact: staged pack failed validation: %w", err)
+		return info, fmt.Errorf("staged pack failed validation: %w", err)
 	}
+	fireTestHook(hookPackValidated)
 	if err := s.ensurePackedFormat(); err != nil {
 		os.Remove(staged)
-		return fmt.Errorf("compact: upgrading store format: %w", err)
+		return info, fmt.Errorf("upgrading store format: %w", err)
 	}
 
 	packDir := filepath.Join(s.root, "packs")
 	if _, err := os.Stat(packDir); os.IsNotExist(err) {
 		if err := os.MkdirAll(packDir, 0o755); err != nil {
 			os.Remove(staged)
-			return err
+			return info, err
 		}
 		if err := syncDir(s.root); err != nil {
 			os.Remove(staged)
-			return err
+			return info, err
 		}
 	}
 	final := filepath.Join(packDir, info.id+packFileSuffix)
 	fireTestHook(hookPackBeforePublish)
 	if err := os.Rename(staged, final); err != nil {
 		os.Remove(staged)
-		return fmt.Errorf("compact: publishing pack: %w", err)
+		return info, fmt.Errorf("publishing pack: %w", err)
 	}
 	fireTestHook(hookPackAfterRename)
 	if err := syncDir(packDir); err != nil {
-		return fmt.Errorf("compact: syncing packs dir: %w", err)
+		return info, fmt.Errorf("syncing packs dir: %w", err)
 	}
 	pub, pubEntries, err := loadPackFile(final)
 	if err != nil || len(pubEntries) != len(entries) {
-		return fmt.Errorf("compact: published pack is not readable (%v); loose chunks kept", err)
+		return info, fmt.Errorf("published pack is not readable (%v)", err)
 	}
 	s.addPack(pub, pubEntries)
 	fireTestHook(hookPackPublished)
+	return pub, nil
+}
+
+func (s *Store) compactBatch(batch []compactCandidate, res *CompactResult) error {
+	skip := func(c compactCandidate, err error) error {
+		kind, detail := "invalid", err.Error()
+		if errors.Is(err, errChunkCorrupt) {
+			kind = "corrupt"
+		}
+		res.Skipped++
+		res.Issues = append(res.Issues, VerifyIssue{Kind: kind, Subject: fmt.Sprintf("chunk %x", c.sum), Detail: detail})
+		return nil
+	}
+	staged, entries, err := s.stagePack(batch, s.readLoose, skip)
+	if err != nil {
+		return fmt.Errorf("compact: writing pack: %w", err)
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	info, err := s.publishPack(staged, entries)
+	if err != nil {
+		return fmt.Errorf("compact: %w; loose chunks kept", err)
+	}
 
 	res.PacksWritten++
 	res.PackBytes += info.size
@@ -7471,6 +7658,324 @@ func runCompact(args []string) {
 		return
 	}
 	printCompactHuman(os.Stdout, res)
+}
+
+// =============================================================================
+// 13d. Pack reclamation: whole-pack removal and immutable repacking
+//
+// A pack never changes after publication, so dead records are reclaimed by
+// replacing packs. Liveness comes from the one reachability scan (section
+// 12a) applied to pack contents; nothing about it is stored in a pack.
+// `zeros3 gc -apply` removes packs with no live record, and `zeros3 repack`
+// also rewrites the live records of mostly dead packs into new packs of
+// the usual size and digest order, using the same writer and publication
+// path as compaction. Both need the exclusive store lock.
+//
+// Replacement order, which makes every interruption point safe -- a crash
+// can leave redundant packs, staging files, or extra bytes, never a
+// missing live chunk:
+//
+//  1. The packs to replace are re-read from disk, and each live digest in
+//     them is looked up outside them. Digests with no verified outside
+//     copy are copied, hash-checked, into new packs in tmp/.
+//  2. Each new pack is verified end to end, renamed into packs/, and
+//     packs/ is fsynced.
+//  3. Every copied digest must now read back, verified, from outside the
+//     packs being replaced. Any failure leaves the old packs in place.
+//  4. Only then are the old packs unlinked and packs/ fsynced. A lost
+//     unlink merely leaves a redundant pack, which the next run removes.
+//
+// A rerun after any interruption finds duplicate copies of the same digest
+// (all but the first pack counts dead), so it converges instead of
+// copying again.
+// =============================================================================
+
+const defaultRepackMaxLivePercent = 50
+
+type repackOptions struct {
+	TargetBytes    int64
+	MaxLivePercent int
+	DryRun         bool
+}
+
+// RepackResult reports one repack pass. In a dry run the write figures are
+// estimates of what an apply would do.
+type RepackResult struct {
+	DryRun    bool          `json:"dry_run"`
+	LiveSetOK bool          `json:"live_set_ok"`
+	Issues    []VerifyIssue `json:"issues,omitempty"`
+
+	PackCount        int   `json:"pack_count"`
+	PackedChunkCount int   `json:"packed_chunk_count"`
+	PackFileBytes    int64 `json:"pack_file_bytes"`
+
+	PacksSelected  int         `json:"packs_selected"`
+	PacksFullyDead int         `json:"packs_fully_dead"`
+	PacksRewritten int         `json:"packs_rewritten"`
+	Selected       []packUsage `json:"selected,omitempty"`
+
+	RecordsCopied  int   `json:"records_copied"`
+	BytesRead      int64 `json:"bytes_read"`
+	PacksWritten   int   `json:"packs_written"`
+	BytesWritten   int64 `json:"bytes_written"`
+	PacksDeleted   int   `json:"packs_deleted"`
+	BytesDeleted   int64 `json:"bytes_deleted"`
+	BytesReclaimed int64 `json:"bytes_reclaimed"`
+}
+
+func (s *Store) removeStalePackStaging() {
+	stale, _ := filepath.Glob(filepath.Join(s.root, "tmp", "pack-*.tmp"))
+	for _, p := range stale {
+		os.Remove(p)
+	}
+}
+
+// selectRepackPacks picks packs with no live record, plus partly dead packs
+// whose live share is below maxLivePercent, in s.packs order.
+func selectRepackPacks(us []packUsage, maxLivePercent int) []packUsage {
+	var sel []packUsage
+	for _, u := range us {
+		if u.fullyDead() || u.partiallyDead() && u.Utilization*100 < float64(maxLivePercent) {
+			sel = append(sel, u)
+		}
+	}
+	return sel
+}
+
+// replacePacks removes the doomed packs after republishing every live chunk
+// that lacks a verified copy elsewhere. See the section comment for the
+// order; doomed must come from packUsages on this store.
+func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, target int64, res *RepackResult) error {
+	if len(doomed) == 0 {
+		return nil
+	}
+	doomed = append([]packUsage(nil), doomed...)
+	skip := map[int32]bool{}
+	seen := map[[32]byte]bool{}
+	var required []compactCandidate
+	for _, u := range doomed {
+		s.packMu.RLock()
+		path := s.packs[u.idx].path
+		s.packMu.RUnlock()
+		info, entries, err := loadPackFile(path)
+		if err != nil || info.id != u.ID {
+			return fmt.Errorf("pack %s changed or is unreadable (%v); nothing was removed", u.ID, err)
+		}
+		skip[u.idx] = true
+		for _, e := range entries {
+			if referenced[hex.EncodeToString(e.sha[:])] && !seen[e.sha] {
+				seen[e.sha] = true
+				required = append(required, compactCandidate{sum: e.sha, size: int64(e.logical)})
+			}
+		}
+	}
+	sort.Slice(required, func(i, j int) bool { return bytes.Compare(required[i].sum[:], required[j].sum[:]) < 0 })
+
+	var need []compactCandidate
+	for _, c := range required {
+		if _, err := s.casReadExcluding(c.sum, skip); err != nil {
+			need = append(need, c)
+		}
+	}
+
+	batches, tail := planPackBatches(need, target, target/packMinFraction)
+	if len(tail) > 0 {
+		batches = append(batches, tail)
+	}
+	read := func(sum [32]byte) ([]byte, error) { return s.casReadExcluding(sum, nil) }
+	abort := func(c compactCandidate, err error) error {
+		return fmt.Errorf("chunk %x has no readable copy to carry over: %w; nothing was removed", c.sum, err)
+	}
+	// Every replacement is staged before any is published, so an unreadable
+	// source leaves nothing but staging files behind.
+	type stagedPack struct {
+		path    string
+		entries []packEntry
+	}
+	var staged []stagedPack
+	defer func() {
+		for _, sp := range staged {
+			os.Remove(sp.path)
+		}
+	}()
+	for _, batch := range batches {
+		path, entries, err := s.stagePack(batch, read, abort)
+		if err != nil {
+			return err
+		}
+		staged = append(staged, stagedPack{path, entries})
+	}
+	for _, sp := range staged {
+		info, err := s.publishPack(sp.path, sp.entries)
+		if err != nil {
+			return fmt.Errorf("%w; nothing was removed", err)
+		}
+		res.PacksWritten++
+		res.BytesWritten += info.size
+		res.RecordsCopied += len(sp.entries)
+		for _, e := range sp.entries {
+			res.BytesRead += int64(e.logical)
+		}
+		// A replacement identical to a doomed pack is that pack.
+		for i, u := range doomed {
+			if u.ID == info.id && skip[u.idx] {
+				delete(skip, u.idx)
+				doomed = append(doomed[:i:i], doomed[i+1:]...)
+				break
+			}
+		}
+	}
+	for _, c := range need {
+		if _, err := s.casReadExcluding(c.sum, skip); err != nil {
+			return fmt.Errorf("chunk %x is not readable from the replacement packs: %w; nothing was removed", c.sum, err)
+		}
+	}
+
+	sort.Slice(doomed, func(i, j int) bool { return doomed[i].ID < doomed[j].ID })
+	for _, u := range doomed {
+		fireTestHook(hookBeforePackDelete)
+		if err := os.Remove(filepath.Join(s.root, "packs", u.ID+packFileSuffix)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing pack %s: %w", u.ID, err)
+		}
+		res.PacksDeleted++
+		res.BytesDeleted += u.Size
+	}
+	fireTestHook(hookPackDeleted)
+	if err := syncDir(filepath.Join(s.root, "packs")); err != nil {
+		return fmt.Errorf("syncing packs dir: %w", err)
+	}
+	return s.reloadPacks()
+}
+
+// repackStore opens storeDir under exclusive ownership and repacks it.
+func repackStore(storeDir string, opt repackOptions) (RepackResult, error) {
+	lock, err := acquireStoreLock(storeDir, true)
+	if err != nil {
+		return RepackResult{}, err
+	}
+	defer lock.release()
+
+	store, err := OpenStore(storeDir)
+	if err != nil {
+		return RepackResult{}, err
+	}
+	defer store.Close()
+
+	rr, err := store.computeReachability(false)
+	if err != nil {
+		return RepackResult{}, err
+	}
+	return store.repack(rr, opt)
+}
+
+func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, error) {
+	res := RepackResult{DryRun: opt.DryRun, LiveSetOK: rr.OK(), Issues: rr.Issues}
+	if opt.TargetBytes <= 0 || opt.MaxLivePercent < 0 || opt.MaxLivePercent > 100 {
+		return res, errors.New("repack: pack size must be positive and the live threshold between 0 and 100")
+	}
+	us := s.packUsages(rr.ReferencedChunks)
+	sum := summarizePacks(us)
+	res.PackCount, res.PackedChunkCount, res.PackFileBytes = sum.PackCount, sum.PackedChunkCount, sum.PackFileBytes
+	sel := selectRepackPacks(us, opt.MaxLivePercent)
+	res.Selected = sel
+	res.PacksSelected = len(sel)
+	var oldBytes, liveBytes int64
+	var liveRecords int
+	for _, u := range sel {
+		oldBytes += u.Size
+		if u.fullyDead() {
+			res.PacksFullyDead++
+			continue
+		}
+		res.PacksRewritten++
+		liveRecords += u.LiveRecords
+		liveBytes += u.LiveBytes
+	}
+
+	if opt.DryRun {
+		if liveRecords > 0 {
+			res.RecordsCopied, res.BytesRead = liveRecords, liveBytes
+			res.BytesWritten = liveBytes + int64(liveRecords)*packRecordBytes + packFixedBytes
+			res.PacksWritten = int((res.BytesWritten + opt.TargetBytes - 1) / opt.TargetBytes)
+			res.BytesWritten += int64(res.PacksWritten-1) * packFixedBytes
+		}
+		res.PacksDeleted, res.BytesDeleted = len(sel), oldBytes
+		res.BytesReclaimed = oldBytes - res.BytesWritten
+		return res, nil
+	}
+	if !rr.OK() {
+		return res, errGCUnsafe
+	}
+	if clash := s.packClashes(); len(clash) > 0 {
+		return res, fmt.Errorf("repack: refusing to run: %s", clash[0])
+	}
+	s.removeStalePackStaging()
+	if err := s.replacePacks(sel, rr.ReferencedChunks, opt.TargetBytes, &res); err != nil {
+		return res, fmt.Errorf("repack: %w", err)
+	}
+	res.BytesReclaimed = res.BytesDeleted - res.BytesWritten
+	fireTestHook(hookRepackDone)
+	return res, nil
+}
+
+func (s *Store) packClashes() []string {
+	s.packMu.RLock()
+	defer s.packMu.RUnlock()
+	return append([]string(nil), s.packClash...)
+}
+
+func printRepackHuman(w io.Writer, r RepackResult) {
+	verb, mode := "", "apply"
+	if r.DryRun {
+		verb, mode = "would ", "dry-run"
+	}
+	fmt.Fprintf(w, "ZeroS3 repack (%s)\n", mode)
+	fmt.Fprintf(w, "live set         ok=%v\n", r.LiveSetOK)
+	fmt.Fprintf(w, "packs            %d | %d chunks | %d bytes\n", r.PackCount, r.PackedChunkCount, r.PackFileBytes)
+	fmt.Fprintf(w, "selected         %d packs | %d with no live chunk | %d partly dead\n", r.PacksSelected, r.PacksFullyDead, r.PacksRewritten)
+	for _, u := range r.Selected {
+		fmt.Fprintf(w, "  %.12s  %d bytes | %d/%d chunks live | %.0f%% live | %d reclaimable\n", u.ID, u.Size, u.LiveRecords, u.Records, u.Utilization*100, u.Reclaimable)
+	}
+	fmt.Fprintf(w, "rewrite          %sread %d chunks (%d bytes) | %swrite %d packs (%d bytes)\n", verb, r.RecordsCopied, r.BytesRead, verb, r.PacksWritten, r.BytesWritten)
+	fmt.Fprintf(w, "remove           %s%d packs (%d bytes)\n", verb, r.PacksDeleted, r.BytesDeleted)
+	fmt.Fprintf(w, "reclaimed        %d bytes\n", r.BytesReclaimed)
+	for _, iss := range r.Issues {
+		fmt.Fprintf(w, "  %s: %s: %s\n", iss.Kind, iss.Subject, iss.Detail)
+	}
+}
+
+// runRepack implements "zeros3 repack -store DIR [-apply] [-max-live-percent N]
+// [-pack-size-mib N] [-json]": dry-run by default. See section 13d.
+func runRepack(args []string) {
+	fs := flag.NewFlagSet("repack", flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	apply := fs.Bool("apply", false, "rewrite and remove packs (default: dry-run only, changes nothing)")
+	maxLive := fs.Int("max-live-percent", defaultRepackMaxLivePercent, "rewrite partly dead packs whose live share is below this percentage")
+	sizeMiB := fs.Int64("pack-size-mib", defaultPackTargetBytes>>20, "target pack size in MiB")
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	fs.Parse(args)
+
+	res, err := repackStore(*storeDir, repackOptions{TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, DryRun: !*apply})
+	if err != nil {
+		switch {
+		case errors.Is(err, errGCStoreInUse):
+			fmt.Fprintf(os.Stderr, "zeros3: repack: %v -- repack requires exclusive access; stop `zeros3 serve`/any other maintenance command against this store first\n", err)
+		case errors.Is(err, errGCUnsafe):
+			fmt.Fprintf(os.Stderr, "zeros3: repack: %v -- run `zeros3 repack` (dry-run) or `zeros3 verify` to see what is broken\n", err)
+		default:
+			fmt.Fprintf(os.Stderr, "zeros3: repack failed: %v\n", err)
+		}
+		os.Exit(1)
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			log.Fatalf("zeros3: %v", err)
+		}
+		return
+	}
+	printRepackHuman(os.Stdout, res)
 }
 
 // =============================================================================
@@ -13294,6 +13799,10 @@ func printStatsHuman(w io.Writer, r StatsResult) {
 	fmt.Fprintf(w, "unique reachable %d bytes (store-global)\n", r.UniqueReachableChunkBytes)
 	fmt.Fprintf(w, "chunk storage    %d loose (%d bytes) | %d packs (%d chunks, %d bytes)\n",
 		r.LooseChunkCount, r.LooseChunkFileBytes, r.PackCount, r.PackedChunkCount, r.PackFileBytes)
+	if r.PackedDeadChunkCount > 0 {
+		fmt.Fprintf(w, "pack usage       %.0f%% live | %d dead chunks (%d bytes) | %d bytes removed by gc | %d bytes via repack\n",
+			r.PackUtilization*100, r.PackedDeadChunkCount, r.PackedDeadBytes, r.PackWholeReclaimBytes, r.PackRepackReclaimBytes)
+	}
 	fmt.Fprintf(w, "store files      %d bytes chunks | %d bytes manifests | %d bytes journal | %d bytes temp\n",
 		r.ChunkStoreFileBytes, r.ManifestFileBytes, r.JournalFileBytes, r.TemporaryFileBytes)
 	fmt.Fprintf(w, "actual/reclaim   %d bytes actual | %d bytes reclaimable\n", r.ActualStoreFileBytes, r.ReclaimableBytes)
@@ -13811,10 +14320,13 @@ func printGCHuman(w io.Writer, r GCResult) {
 	fmt.Fprintf(w, "payload bytes    %d reachable | %d reclaimable\n", r.ReachablePayloadBytes, r.ReclaimablePayloadBytes)
 	fmt.Fprintf(w, "disk bytes       %d reclaimable\n", r.ReclaimableDiskBytes)
 	if r.PackCount > 0 {
-		fmt.Fprintf(w, "packs            %d | %d unreachable packed chunks (%d bytes) not reclaimable yet\n", r.PackCount, r.PackedChunksUnreachable, r.PackedUnreachableBytes)
+		fmt.Fprintf(w, "packs            %d | %d live chunks (%d bytes) | %d dead chunks (%d bytes) | %.0f%% utilized\n",
+			r.PackCount, r.PackedLiveChunkCount, r.PackedLiveBytes, r.PackedDeadChunkCount, r.PackedDeadBytes, r.PackUtilization*100)
+		fmt.Fprintf(w, "pack reclaim     %d fully dead packs (%d bytes removed by gc -apply) | %d partly dead (%d bytes via `zeros3 repack`)\n",
+			r.PacksFullyDead, r.PackWholeReclaimBytes, r.PacksPartiallyDead, r.PackRepackReclaimBytes)
 	}
 	if r.Applied {
-		fmt.Fprintf(w, "deleted          %d chunks | %d manifests | %d bytes\n", r.ChunksDeleted, r.ManifestsDeleted, r.BytesDeleted)
+		fmt.Fprintf(w, "deleted          %d chunks | %d manifests | %d packs | %d bytes\n", r.ChunksDeleted, r.ManifestsDeleted, r.PacksDeleted, r.BytesDeleted)
 	}
 	for _, iss := range r.Issues {
 		fmt.Fprintf(w, "  %s: %s: %s\n", iss.Kind, iss.Subject, iss.Detail)
@@ -13920,6 +14432,8 @@ func main() {
 		runGC(args)
 	case "compact":
 		runCompact(args)
+	case "repack":
+		runRepack(args)
 	case "doctor":
 		runDoctor(args)
 	case "sync":
@@ -13937,7 +14451,7 @@ func main() {
 	case "inspect":
 		runInspect(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, doctor, sync, replicate, repair, fork, snapshot, diff, or inspect)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, repack, doctor, sync, replicate, repair, fork, snapshot, diff, or inspect)\n", cmd)
 		os.Exit(2)
 	}
 }

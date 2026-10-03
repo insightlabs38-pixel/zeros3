@@ -49,6 +49,7 @@ harness/
   z2_streaming_put/        >256 MiB streamed PutObject and GET: bounded server RSS, byte-exact readback
   z2_aws_chunked/          minio-go aws-chunked SigV4 uploads via a recording/tampering proxy
   z2_packed_cas/           `zeros3 compact`: loose -> packed -> mixed byte-exact readback, file counts, throughput, open time, RSS
+  z2_repack/               pack-aware `gc` and `zeros3 repack`: utilization profiles, reclaimed bytes, write amplification, throughput, RSS, GET before/after
   m8g/introspection/       diff / inspect / stats
   m8h/parallel_transfer/   bounded parallel transfer (plus bench/)
   m8_baseline/             throughput baseline
