@@ -261,9 +261,10 @@ serialized and safe regardless of worker count.
   `zeros3.go`.
 - Full generated evidence: [`deps-proof.txt`](./deps-proof.txt).
   Substitution-by-substitution detail: [`STDLIB.md`](./STDLIB.md).
-- External interoperability validation (the AWS SDK, `rclone`) is
-  performed out-of-process, against a running `zeros3` binary over plain
-  HTTP — never imported by, linked into, or required by this module.
+- External interoperability validation (the AWS SDK, `rclone`) lives in
+  [`testing-harnesses/`](./testing-harnesses/), a separate Go module that
+  drives a running `zeros3` binary over plain HTTP — never imported by,
+  linked into, or required by this module.
 
 ## Reproducible build
 
@@ -308,6 +309,7 @@ S3_COMPAT.md     exact supported/unsupported/deviating S3 behavior
 STDLIB.md        standard-library substitutions, mapped to shipped code
 deps-proof.txt   generated zero-dependency evidence
 scripts/         reproducible-build verification script
+testing-harnesses/  external black-box validation (separate Go module)
 ```
 
 The implementation intentionally remains one Go source file for the
