@@ -4,8 +4,9 @@
 #   scripts/validate.sh normal   format/vet/module checks, full root tests,
 #                                static map checks, s3+sync harness groups,
 #                                reproducible build
-#   scripts/validate.sh heavy    race tests, pack GC/repack crash matrix,
-#                                multi-GiB repack and compaction harnesses
+#   scripts/validate.sh heavy    race tests, pack/compression crash matrix,
+#                                multi-GiB repack, compaction and pack
+#                                compression harnesses
 #   scripts/validate.sh all      both
 #   scripts/validate.sh STAGE... run named stages (see `list`)
 #
@@ -13,7 +14,9 @@
 # failing stage prints the tail of its log. All requested stages run; the
 # exit status is nonzero if any failed. A stage that passed for the exact
 # current sources is skipped on the next run (VALIDATE_FORCE=1 reruns it).
-# Harness sizes: REPACK_SIZE_MIB (default 1024 per profile), PACK_SIZE_MIB.
+# Harness sizes: REPACK_SIZE_MIB (default 1024 per profile), COMPACT_SIZE_MIB,
+# COMPRESS_CLASS_MIB (per data family) and COMPRESS_SIZE_MIB (lifecycle store),
+# PACK_SIZE_MIB.
 set -u
 
 # Ambient AWS_* settings would override the harnesses' fixed credentials.
@@ -46,7 +49,7 @@ stage_sync() { build_bin && cd "$root/testing-harnesses" && go run ./runner -gro
 stage_repro() { cd "$root" && sh scripts/reproducible_build.sh; }
 
 stage_race()    { cd "$root" && go test -race -count=1 ./...; }
-stage_crash()   { cd "$root" && go test -race -count=1 -run 'TestRepack_|TestPack_' .; }
+stage_crash()   { cd "$root" && go test -race -count=1 -run 'TestRepack_|TestPack_|TestPackCompress' .; }
 stage_repack() {
 	build_bin && cd "$root/testing-harnesses" &&
 		ZEROS3_BIN="$bin" go run ./harness/z2_repack -size-mib "${REPACK_SIZE_MIB:-1024}" -pack-size-mib "${PACK_SIZE_MIB:-32}"
@@ -56,8 +59,13 @@ stage_compact() {
 		ZEROS3_BIN="$bin" go run ./harness/z2_packed_cas -size-mib "${COMPACT_SIZE_MIB:-1024}" -pack-size-mib "${PACK_SIZE_MIB:-32}"
 }
 
+stage_compression() {
+	build_bin && cd "$root/testing-harnesses" &&
+		ZEROS3_BIN="$bin" go run ./harness/z2_pack_compression -class-mib "${COMPRESS_CLASS_MIB:-64}" -combined-mib "${COMPRESS_SIZE_MIB:-512}" -pack-size-mib "${PACK_SIZE_MIB:-32}"
+}
+
 normal="format modules test static s3 sync repro"
-heavy="race crash repack compact"
+heavy="race crash repack compact compression"
 
 case "${1:-normal}" in
 list) echo "normal: $normal"; echo "heavy: $heavy"; exit 0 ;;

@@ -72,7 +72,7 @@ clients never see any of this: `ListObjectsV2` only ever lists current
 objects.
 
 **Packed chunk storage** (ZeroS3-only CLI surface; invisible on the wire):
-`zeros3 compact -store DIR [-pack-size-mib N] [-dry-run] [-json]` moves
+`zeros3 compact -store DIR [-pack-size-mib N] [-compression auto|off] [-dry-run] [-json]` moves
 loose CAS chunks that live roots reference into immutable pack files under
 `packs/`, under the same exclusive store ownership as `gc -apply`. Chunk
 identity (SHA-256 and length), manifests, ETags, history, snapshots, and
@@ -82,12 +82,16 @@ digest. New writes (PutObject, multipart, sync, replicate, repair) always
 create loose chunks; a store may hold loose, packed, and duplicate copies,
 and a read serves any copy that verifies. `gc -apply` sweeps loose chunks
 and removes packs with no live record; `zeros3 repack -store DIR [-apply]
-[-max-live-percent N] [-pack-size-mib N] [-json]` replaces partly dead packs
-(dry-run unless `-apply`). A pack is never modified: live records are
-copied into new verified packs, published, and only then are the old packs
-removed. The first `compact` that publishes a pack
-raises `FORMAT.json` to `store_format_version` 2 so older builds refuse
-the store; stores never compacted stay at version 1.
+[-max-live-percent N] [-pack-size-mib N] [-compression auto|off] [-json]`
+replaces partly dead packs (dry-run unless `-apply`). A pack is never
+modified: live records are copied into new verified packs, published, and
+only then are the old packs removed. Packed records are raw or DEFLATE
+(`-compression auto`, the default, keeps a record compressed only when that
+saves at least 1/16); chunk identity remains the SHA-256 of the uncompressed
+bytes, so nothing on the wire, in a manifest, or in an ETag changes. The first
+`compact` that publishes a pack raises `FORMAT.json` to `store_format_version`
+2, and the first pack with a compressed record raises it to 3, so older
+builds refuse the store; stores never compacted stay at version 1.
 
 **Atomic conditional operations.** `PutObject` accepts `If-None-Match: *`
 (create only if the key currently has no visible object) and

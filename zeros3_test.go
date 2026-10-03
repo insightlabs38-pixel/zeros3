@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -59,34 +61,35 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//       92    Test helpers, fixtures, and TestMain
-//      244    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//     1260    SigV4 authentication (header and payload-mode)
-//     1649    Checksums: CRC32 and Content-MD5
-//     2152    End-to-end HTTP and crash/recovery tests
-//     2826    M2: bucket/object/listing/journal protocol compatibility
-//     3877    M3: CDC/dedup evidence, stats, verify
-//     5013    M3: CopyObject
-//     5560    M3: single-range GET
-//     5761    M5-B: multipart upload
-//     7039    Presigned URLs and virtual-hosted-style addressing
-//     8068    M5-C: version history, restore, GC, storage-efficiency proof
-//     9914    M5-D/P2: ListParts and ListMultipartUploads pagination
-//    11633    M6: delta sync (`zeros3 sync`)
-//    13375    M6C: recursive directory sync
-//    14435    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//    15764    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    17089    M8C: namespace (prefix/bucket) replication
-//    18128    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    19220    M8E: durable namespace snapshots and restore
-//    21298    M8F: conditional operations (Put/Get/Copy preconditions)
-//    22703    M8G: introspection (dry-run planning, diff, inspect)
-//    24655    M8H: bounded parallel chunk transfer
-//    26006    P1: environment credentials, HTTP hardening/shutdown, TLS
-//    27322    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//    28252    Streaming reads and aws-chunked SigV4
-//    29100    Packed CAS: pack format, mixed reads, compaction, crash points
-//    30077    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//       95    Test helpers, fixtures, and TestMain
+//      247    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//     1263    SigV4 authentication (header and payload-mode)
+//     1652    Checksums: CRC32 and Content-MD5
+//     2155    End-to-end HTTP and crash/recovery tests
+//     2829    M2: bucket/object/listing/journal protocol compatibility
+//     3880    M3: CDC/dedup evidence, stats, verify
+//     5016    M3: CopyObject
+//     5563    M3: single-range GET
+//     5764    M5-B: multipart upload
+//     7042    Presigned URLs and virtual-hosted-style addressing
+//     8071    M5-C: version history, restore, GC, storage-efficiency proof
+//     9917    M5-D/P2: ListParts and ListMultipartUploads pagination
+//    11636    M6: delta sync (`zeros3 sync`)
+//    13378    M6C: recursive directory sync
+//    14438    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    15767    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//    17092    M8C: namespace (prefix/bucket) replication
+//    18131    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    19223    M8E: durable namespace snapshots and restore
+//    21301    M8F: conditional operations (Put/Get/Copy preconditions)
+//    22706    M8G: introspection (dry-run planning, diff, inspect)
+//    24658    M8H: bounded parallel chunk transfer
+//    26009    P1: environment credentials, HTTP hardening/shutdown, TLS
+//    27325    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//    28255    Streaming reads and aws-chunked SigV4
+//    29103    Packed CAS: pack format, mixed reads, compaction, crash points
+//    30080    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//    31232    Adaptive pack compression (codec 1, DEFLATE)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -29478,10 +29481,10 @@ func TestPack_StoreFormatVersionGate(t *testing.T) {
 		t.Fatalf("packed store format = %+v", f)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
-	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 3`), 1), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 4`), 1), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 3") {
+	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 4") {
 		t.Fatalf("unknown future version must be rejected, got %v", err)
 	}
 }
@@ -30091,7 +30094,12 @@ type deadPackStore struct {
 // aborts the upload, which leaves its packed chunks dead beside live ones.
 func buildDeadPackStore(t *testing.T, liveBytes, deadBytes int, seed int64) deadPackStore {
 	t.Helper()
-	fx := deadPackStore{dir: t.TempDir(), live: genRandomBytes(seed, liveBytes)}
+	return buildDeadPackStoreFrom(t, genRandomBytes(seed, liveBytes), genRandomBytes(seed+1000, deadBytes), packTestOpt)
+}
+
+func buildDeadPackStoreFrom(t *testing.T, live, dead []byte, opt compactOptions) deadPackStore {
+	t.Helper()
+	fx := deadPackStore{dir: t.TempDir(), live: live}
 	s, err := OpenStore(fx.dir)
 	if err != nil {
 		t.Fatal(err)
@@ -30103,7 +30111,7 @@ func buildDeadPackStore(t *testing.T, liveBytes, deadBytes int, seed int64) dead
 	if fx.uploadI, err = s.CreateMultipartUpload("b", "dead", "application/octet-stream", nil); err != nil {
 		t.Fatal(err)
 	}
-	ing, err := s.ingestStream(bytes.NewReader(genRandomBytes(seed+1000, deadBytes)), true)
+	ing, err := s.ingestStream(bytes.NewReader(dead), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30115,7 +30123,9 @@ func buildDeadPackStore(t *testing.T, liveBytes, deadBytes int, seed int64) dead
 		fx.dead = append(fx.dead, sum)
 	}
 	s.Close()
-	compactTestDir(t, fx.dir)
+	if _, err := compactStore(fx.dir, opt); err != nil {
+		t.Fatal(err)
+	}
 	s, err = OpenStore(fx.dir)
 	if err != nil {
 		t.Fatal(err)
@@ -30506,7 +30516,7 @@ func publishCopyPack(t *testing.T, s *Store, shas [][32]byte) packInfo {
 	for i, sum := range shas {
 		cands[i] = compactCandidate{sum: sum}
 	}
-	staged, entries, err := s.stagePack(cands, s.casRead, func(compactCandidate, error) error { return errors.New("unreadable") })
+	staged, entries, err := s.stagePack(cands, s.casRead, func(compactCandidate, error) error { return errors.New("unreadable") }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31027,7 +31037,7 @@ func TestRepack_AbortsWhenASourcePackIsUnusable(t *testing.T) {
 				os.Remove(path)
 			}
 			var res RepackResult
-			if err := s.replacePacks([]packUsage{u}, rr.ReferencedChunks, 128<<10, &res); err == nil {
+			if err := s.replacePacks([]packUsage{u}, rr.ReferencedChunks, 128<<10, false, &res); err == nil {
 				t.Fatal("replacing an unusable pack must fail")
 			}
 			now := packFileSet(t, fx.dir)
@@ -31121,7 +31131,7 @@ func TestRepack_ConflictingPackedCopiesBlockDestructiveWork(t *testing.T) {
 	sum := livePackedDigests(t, s, rr.ReferencedChunks, u)[0]
 	staged, entries, err := s.stagePack([]compactCandidate{{sum: sum}},
 		func([32]byte) ([]byte, error) { return []byte("bytes of a different length"), nil },
-		func(compactCandidate, error) error { return nil })
+		func(compactCandidate, error) error { return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31215,5 +31225,1039 @@ func TestRepack_CLI(t *testing.T) {
 	}
 	if _, errOut, code = runZeros3CLI(t, bin, "repack", "-store", fx.dir, "-max-live-percent", "101"); code == 0 {
 		t.Fatalf("bad threshold accepted: %q", errOut)
+	}
+}
+
+// =============================================================================
+// Z2-05: adaptive pack compression (codec 1, DEFLATE)
+// =============================================================================
+
+var compressTestOpt = compactOptions{TargetBytes: 256 << 10, MinBytes: 32 << 10, Compress: true}
+
+var compressTestOneBigPack = compactOptions{TargetBytes: 64 << 20, MinBytes: 1, Compress: true}
+
+var corpusWords = strings.Fields("the of and to in is that for it as was with be by on not he this are or his from at which but have an had they you were their one all we can her has there been if more when will would who so no")
+
+func corpusEnglish(seed int64, n int) []byte {
+	r := rand.New(rand.NewSource(seed))
+	var b bytes.Buffer
+	for b.Len() < n {
+		b.WriteString(corpusWords[int(float64(len(corpusWords))*r.Float64()*r.Float64())])
+		switch r.Intn(12) {
+		case 0:
+			b.WriteString(".\n")
+		case 1:
+			b.WriteString(", ")
+		default:
+			b.WriteByte(' ')
+		}
+	}
+	return b.Bytes()[:n]
+}
+
+func corpusJSON(seed int64, n int) []byte {
+	r := rand.New(rand.NewSource(seed))
+	var b bytes.Buffer
+	for i := 0; b.Len() < n; i++ {
+		fmt.Fprintf(&b, `{"id":%d,"name":"user-%d","email":"user%d@example.com","active":%t,"score":%.2f,"tags":["alpha","beta"],"created":"2026-%02d-%02dT%02d:00:00Z"}`+"\n",
+			i, r.Intn(5000), r.Intn(5000), r.Intn(2) == 0, r.Float64()*100, 1+r.Intn(12), 1+r.Intn(28), r.Intn(24))
+	}
+	return b.Bytes()[:n]
+}
+
+func corpusWeb(seed int64, n int) []byte {
+	r := rand.New(rand.NewSource(seed))
+	var b bytes.Buffer
+	for i := 0; b.Len() < n; i++ {
+		switch i % 3 {
+		case 0:
+			fmt.Fprintf(&b, `<div class="card card--%d"><a href="/p/%d" class="link">%s</a><span data-id="%d"></span></div>`+"\n", r.Intn(9), r.Intn(9999), corpusWords[r.Intn(len(corpusWords))], r.Intn(99999))
+		case 1:
+			fmt.Fprintf(&b, `.c%d{margin:0;padding:%dpx;color:#%06x;display:flex}`+"\n", r.Intn(999), r.Intn(40), r.Intn(1<<24))
+		default:
+			fmt.Fprintf(&b, "function f%d(a,b){var x=a+b*%d;return document.getElementById('n%d').textContent=x;}\n", r.Intn(999), r.Intn(99), r.Intn(999))
+		}
+	}
+	return b.Bytes()[:n]
+}
+
+func corpusGzip(seed int64, n int) []byte {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	zw.Write(corpusEnglish(seed, 4*n))
+	zw.Close()
+	return buf.Bytes()[:n]
+}
+
+func deflateForTest(t *testing.T, data []byte, level int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	fw, err := flate.NewWriter(&buf, level)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw.Write(data)
+	fw.Close()
+	return buf.Bytes()
+}
+
+func putCompressionObject(t *testing.T, dir, key string, data []byte) *objectEntry {
+	t.Helper()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil && !strings.Contains(err.Error(), "exist") {
+		t.Fatal(err)
+	}
+	return mustPutObject(t, s, "b", key, data, "application/octet-stream", nil)
+}
+
+func readRangeForTest(t *testing.T, s *Store, man manifestV1, start, end int64) []byte {
+	t.Helper()
+	var out []byte
+	mr := s.newManifestReader(man, byteRange{start, end})
+	for {
+		b, err := mr.next()
+		if err == io.EOF {
+			return out
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, b...)
+	}
+}
+
+func TestPackCompressor_EncodeRule(t *testing.T) {
+	comp := newPackCompressor()
+	slightly := genRandomBytes(1, 4096)
+	copy(slightly[1000:], make([]byte, 120)) // ~3% redundant: below the 1/16 floor
+	cases := []struct {
+		name string
+		data []byte
+		want byte
+	}{
+		{"one byte", []byte{7}, packCodecRaw},
+		{"tiny text", []byte("hello"), packCodecRaw},
+		{"random", genRandomBytes(2, 65536), packCodecRaw},
+		{"slightly redundant", slightly, packCodecRaw},
+		{"zeros", make([]byte, 65536), packCodecDeflate},
+		{"english", corpusEnglish(3, 65536), packCodecDeflate},
+		{"json", corpusJSON(4, 30000), packCodecDeflate},
+		{"random again (state reuse)", genRandomBytes(5, 65536), packCodecRaw},
+		{"max chunk", corpusWeb(6, maxPackedChunkBytes), packCodecDeflate},
+	}
+	for _, c := range cases {
+		payload, codec := comp.encode(c.data)
+		if codec != c.want {
+			t.Fatalf("%s: codec %d, want %d", c.name, codec, c.want)
+		}
+		sum := sha256.Sum256(c.data)
+		if codec == packCodecRaw && !bytes.Equal(payload, c.data) {
+			t.Fatalf("%s: raw payload differs", c.name)
+		}
+		if codec == packCodecDeflate && len(payload) > len(c.data)-len(c.data)/16 {
+			t.Fatalf("%s: stored %d of %d misses the savings floor", c.name, len(payload), len(c.data))
+		}
+		got, err := decodePackPayload(codec, payload, uint32(len(c.data)), sum, nil)
+		if err != nil || !bytes.Equal(got, c.data) {
+			t.Fatalf("%s: round trip: %v", c.name, err)
+		}
+	}
+	if payload, codec := (*packCompressor)(nil).encode([]byte("abc")); codec != packCodecRaw || string(payload) != "abc" {
+		t.Fatal("nil compressor must store raw")
+	}
+}
+
+func TestPackCompression_AdaptivePolicyByDataClass(t *testing.T) {
+	const n = 1_200_000
+	dupBlock := genRandomBytes(7, 100_000)
+	classes := []struct {
+		name     string
+		data     []byte
+		minSaved float64 // 0: must stay entirely raw
+	}{
+		{"random", genRandomBytes(11, n), 0},
+		{"zeros", make([]byte, n), 95},
+		{"english", corpusEnglish(12, n), 30},
+		{"json", corpusJSON(13, n), 60},
+		{"web assets", corpusWeb(14, n), 50},
+		{"duplicate chunks", bytes.Repeat(dupBlock, n/len(dupBlock)), 0},
+		{"already compressed", corpusGzip(15, n), 0},
+	}
+	for _, c := range classes {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			entry := putCompressionObject(t, dir, "k", c.data)
+			s, _ := OpenStore(dir)
+			man0 := mustManifestFor(t, s, entry)
+			s.Close()
+
+			res, err := compactStore(dir, compressTestOpt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err = OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			entry1, man1, err := s.HeadObject("b", "k")
+			if err != nil || !reflect.DeepEqual(man0, man1) || entry1.etag != entry.etag || entry1.manifestSHA256 != entry.manifestSHA256 {
+				t.Fatalf("compaction changed object identity: %v", err)
+			}
+			if _, got, err := s.GetObject("b", "k"); err != nil || !bytes.Equal(got, c.data) {
+				t.Fatalf("GET after compaction: %v", err)
+			}
+			st := packTestStats(t, s)
+			saved := savedPercent(st.PackedLogicalBytes, st.PackedStoredBytes)
+			t.Logf("%-18s records raw=%d deflate=%d logical=%d stored=%d file=%d saved=%.1f%%",
+				c.name, st.PackedRawRecords, st.PackedCompressedRecs, st.PackedLogicalBytes, st.PackedStoredBytes, st.PackFileBytes, saved)
+			if res.ChunksPacked != st.PackedChunkCount || res.RawRecords != st.PackedRawRecords || res.CompressedRecords != st.PackedCompressedRecs ||
+				res.LogicalBytes != st.PackedLogicalBytes || res.StoredBytes != st.PackedStoredBytes || res.PackBytes != st.PackFileBytes {
+				t.Fatalf("compact result disagrees with stats: %+v vs %+v", res, st.PackSummary)
+			}
+			if c.minSaved == 0 {
+				if st.PackedCompressedRecs != 0 || st.PackedStoredBytes != st.PackedLogicalBytes || st.PackFileBytes > st.PackedLogicalBytes+packFixedBytes*int64(st.PackCount)+packRecordBytes*int64(st.PackedChunkCount) {
+					t.Fatalf("incompressible data must stay raw and unexpanded: %+v", st.PackSummary)
+				}
+			} else if saved < c.minSaved || st.PackedCompressedRecs == 0 {
+				t.Fatalf("saved %.1f%% (want >= %.0f%%) with %d compressed records", saved, c.minSaved, st.PackedCompressedRecs)
+			}
+			if c.name == "duplicate chunks" && st.PackedChunkCount >= len(man1.Chunks) {
+				t.Fatalf("dedup must still collapse repeated chunks: %d unique of %d refs", st.PackedChunkCount, len(man1.Chunks))
+			}
+			if vr, err := s.Verify(true); err != nil || !vr.OK() {
+				t.Fatalf("deep verify: %v %+v", err, vr.Issues)
+			}
+		})
+	}
+}
+
+func TestPackCompression_MixedObjectReadsAndRanges(t *testing.T) {
+	var data []byte
+	data = append(data, corpusEnglish(21, 500_000)...)
+	data = append(data, genRandomBytes(22, 400_000)...)
+	data = append(data, make([]byte, 300_000)...)
+	data = append(data, corpusJSON(23, 300_000)...)
+	dir := t.TempDir()
+	putCompressionObject(t, dir, "mixed", data)
+	if _, err := compactStore(dir, compressTestOneBigPack); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if len(s.packs) != 1 || s.packs[0].deflated == 0 || s.packs[0].deflated == s.packs[0].records {
+		t.Fatalf("want one mixed raw/deflate pack: %+v", s.packs)
+	}
+	_, man, _ := s.HeadObject("b", "mixed")
+	if _, got, err := s.GetObject("b", "mixed"); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("full GET: %v", err)
+	}
+	size := int64(len(data))
+	for _, r := range [][2]int64{{0, 0}, {0, 99}, {499_990, 500_010}, {850_000, 950_000}, {size - 5, size - 1}, {123_456, size - 1}} {
+		if got := readRangeForTest(t, s, man, r[0], r[1]); !bytes.Equal(got, data[r[0]:r[1]+1]) {
+			t.Fatalf("range %v mismatch", r)
+		}
+	}
+	// A fresh open indexes the pack from footers alone: a record whose
+	// payload is garbage still opens, and only its own read fails.
+	b, _ := os.ReadFile(s.packs[0].path)
+	_, entries, _ := loadPackFile(s.packs[0].path)
+	for _, e := range entries {
+		if e.codec == packCodecDeflate {
+			for i := uint32(0); i < e.stored; i++ {
+				b[e.off+uint64(i)] ^= 0x5a
+			}
+			break
+		}
+	}
+	dir2 := t.TempDir()
+	os.MkdirAll(filepath.Join(dir2, "packs"), 0o755)
+	if s2, err := OpenStore(dir2); err != nil {
+		t.Fatal(err)
+	} else {
+		s2.Close()
+	}
+	if err := os.WriteFile(filepath.Join(dir2, "packs", filepath.Base(s.packs[0].path)), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var m0, m1 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+	s2, err := OpenStore(dir2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	runtime.ReadMemStats(&m1)
+	if len(s2.packIdx) != len(entries) || len(s2.packBad) != 0 {
+		t.Fatalf("open must index payload-damaged packs without decoding: idx=%d bad=%d", len(s2.packIdx), len(s2.packBad))
+	}
+	if d := m1.TotalAlloc - m0.TotalAlloc; d > 4<<20 {
+		t.Fatalf("open allocated %d bytes", d)
+	}
+}
+
+func TestPackCompression_StoreFormatBoundary(t *testing.T) {
+	version := func(dir string) int {
+		b, err := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var f storeFormat
+		if err := json.Unmarshal(b, &f); err != nil {
+			t.Fatal(err)
+		}
+		return f.StoreFormatVersion
+	}
+	text := corpusEnglish(31, 600_000)
+	cases := []struct {
+		name string
+		data []byte
+		opt  compactOptions
+		want int
+	}{
+		{"incompressible data stays at the packed version", genRandomBytes(32, 600_000), compressTestOpt, storeFormatVersionPacked},
+		{"compression off stays at the packed version", text, packTestOpt, storeFormatVersionPacked},
+		{"compressed records raise the version", text, compressTestOpt, storeFormatVersionCompressed},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			putCompressionObject(t, dir, "k", c.data)
+			if version(dir) != storeFormatVersion {
+				t.Fatalf("loose store version %d", version(dir))
+			}
+			withTestHook(t, func(point string) {
+				if point == hookPackBeforePublish && version(dir) != c.want {
+					t.Errorf("FORMAT.json is %d when the pack is published, want %d", version(dir), c.want)
+				}
+			})
+			if _, err := compactStore(dir, c.opt); err != nil {
+				t.Fatal(err)
+			}
+			testHook = nil
+			if version(dir) != c.want {
+				t.Fatalf("version %d, want %d", version(dir), c.want)
+			}
+			s, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if _, got, err := s.GetObject("b", "k"); err != nil || !bytes.Equal(got, c.data) {
+				t.Fatalf("reopen: %v", err)
+			}
+		})
+	}
+	if supportedStoreFormat(0) || supportedStoreFormat(storeFormatVersionCompressed+1) || !supportedStoreFormat(storeFormatVersion) || !supportedStoreFormat(storeFormatVersionPacked) {
+		t.Fatal("supported store format range is wrong")
+	}
+}
+
+// ---- hand-built packs: structural and decoding attacks --------------------
+
+type testPackRec struct {
+	sum     [32]byte
+	logical uint32
+	codec   byte
+	payload []byte
+}
+
+// writeTestPack publishes a structurally consistent pack holding exactly
+// recs into an initialized store directory and returns its path.
+func writeTestPack(t *testing.T, dir string, recs []testPackRec) string {
+	t.Helper()
+	var body bytes.Buffer
+	var hdr [packHeaderSize]byte
+	putPackHeader(hdr[:])
+	body.Write(hdr[:])
+	off := uint64(packHeaderSize)
+	index := make([]byte, 0, len(recs)*packIndexEntrySize)
+	for _, r := range recs {
+		e := packEntry{sha: r.sum, off: off + packRecordHeaderSize, stored: uint32(len(r.payload)), logical: r.logical, codec: r.codec}
+		var rh [packRecordHeaderSize]byte
+		var ie [packIndexEntrySize]byte
+		putPackRecordHeader(rh[:], e)
+		putPackIndexEntry(ie[:], e)
+		body.Write(rh[:])
+		body.Write(r.payload)
+		index = append(index, ie[:]...)
+		off = e.off + uint64(e.stored)
+	}
+	body.Write(index)
+	sum := sha256.Sum256(body.Bytes())
+	var ft [packFooterSize]byte
+	putPackFooter(ft[:], uint64(len(recs)), off, sum, crc32.Checksum(index, packCRC))
+	body.Write(ft[:])
+	if err := os.MkdirAll(filepath.Join(dir, "packs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "packs", hex.EncodeToString(sum[:])+packFileSuffix)
+	if err := os.WriteFile(path, body.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func newEmptyStoreDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	return dir
+}
+
+func TestPackCompression_InvalidRecordLengthsRejectedAtOpen(t *testing.T) {
+	good := corpusEnglish(41, 40_000)
+	stream := deflateForTest(t, good, 4)
+	bombStream := deflateForTest(t, make([]byte, 16<<20), flate.BestSpeed)
+	sum := sha256.Sum256(good)
+	cases := []struct {
+		name string
+		rec  testPackRec
+	}{
+		{"unknown codec 2", testPackRec{sum, uint32(len(good)), 2, stream}},
+		{"unknown codec 255", testPackRec{sum, uint32(len(good)), 255, good}},
+		{"deflate with zero stored length", testPackRec{sum, uint32(len(good)), packCodecDeflate, nil}},
+		{"deflate stored == logical", testPackRec{sum, uint32(len(stream)), packCodecDeflate, stream}},
+		{"deflate stored > logical", testPackRec{sum, uint32(len(stream)) - 1, packCodecDeflate, stream}},
+		{"deflate zero logical", testPackRec{sum, 0, packCodecDeflate, stream}},
+		{"deflate logical above the chunk bound", testPackRec{sum, maxPackedChunkBytes + 1, packCodecDeflate, bombStream}},
+		{"raw stored shorter than logical", testPackRec{sum, uint32(len(good)) + 1, packCodecRaw, good}},
+		{"raw stored longer than logical", testPackRec{sum, uint32(len(good)) - 1, packCodecRaw, good}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := newEmptyStoreDir(t)
+			path := writeTestPack(t, dir, []testPackRec{c.rec})
+			if _, _, err := loadPackFile(path); err == nil {
+				t.Fatal("pack with invalid record lengths was accepted")
+			}
+			s, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if len(s.packIdx) != 0 || len(s.packBad) != 1 {
+				t.Fatalf("index=%d bad=%d", len(s.packIdx), len(s.packBad))
+			}
+		})
+	}
+}
+
+func TestPackCompression_CorruptCompressedRecordsFailSafely(t *testing.T) {
+	good := corpusEnglish(51, 40_000)
+	goodSum := sha256.Sum256(good)
+	stream := deflateForTest(t, good, 4)
+	other := sha256.Sum256([]byte("a different chunk"))
+	flipped := append([]byte(nil), stream...)
+	flipped[len(flipped)/2] ^= 0xff
+	garbage := genRandomBytes(52, len(stream))
+	// 16 MiB of zeros in a few KiB: fits the declared length many times over.
+	bomb := deflateForTest(t, make([]byte, 16<<20), flate.BestSpeed)
+	zeros := make([]byte, 200_000)
+	zerosSum := sha256.Sum256(zeros)
+	cases := []struct {
+		name string
+		rec  testPackRec
+	}{
+		{"truncated stream", testPackRec{goodSum, uint32(len(good)), packCodecDeflate, stream[:len(stream)/2]}},
+		{"invalid deflate stream", testPackRec{goodSum, uint32(len(good)), packCodecDeflate, garbage}},
+		{"flipped payload byte", testPackRec{goodSum, uint32(len(good)), packCodecDeflate, flipped}},
+		{"declared logical too short", testPackRec{goodSum, uint32(len(good)) / 2, packCodecDeflate, stream}},
+		{"declared logical too long", testPackRec{goodSum, uint32(len(good)) * 2, packCodecDeflate, stream}},
+		{"valid stream, wrong digest", testPackRec{other, uint32(len(good)), packCodecDeflate, stream}},
+		{"bytes after the stream", testPackRec{goodSum, uint32(len(good)), packCodecDeflate, append(append([]byte(nil), stream...), 1, 2, 3)}},
+		{"decompression bomb capped at declared length", testPackRec{zerosSum, uint32(len(zeros)), packCodecDeflate, bomb}},
+	}
+	neighbor := []byte("healthy raw neighbor chunk")
+	neighborSum := sha256.Sum256(neighbor)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := newEmptyStoreDir(t)
+			path := writeTestPack(t, dir, []testPackRec{c.rec, {neighborSum, uint32(len(neighbor)), packCodecRaw, neighbor}})
+			if _, _, err := verifyPackFile(path); err == nil {
+				t.Fatal("full pack verification accepted the record")
+			}
+			s, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if len(s.packBad) != 0 || len(s.packIdx) != 2 {
+				t.Fatalf("structurally valid pack must index: idx=%d bad=%v", len(s.packIdx), s.packBad)
+			}
+			loc, ok := s.packLookup(c.rec.sum)
+			if !ok {
+				t.Fatal("record not indexed")
+			}
+			var m0, m1 runtime.MemStats
+			runtime.ReadMemStats(&m0)
+			data, err := s.readPacked(c.rec.sum, loc)
+			runtime.ReadMemStats(&m1)
+			if err == nil || data != nil {
+				t.Fatalf("corrupt record returned %d bytes (err %v)", len(data), err)
+			}
+			if d := m1.TotalAlloc - m0.TotalAlloc; d > 4<<20 {
+				t.Fatalf("decoding a malformed record allocated %d bytes", d)
+			}
+			if got, err := s.casRead(c.rec.sum); err == nil || got != nil {
+				t.Fatalf("casRead returned bytes for a corrupt record: %v", err)
+			}
+			if got, err := s.casRead(neighborSum); err != nil || !bytes.Equal(got, neighbor) {
+				t.Fatalf("neighbor record: %v", err)
+			}
+		})
+	}
+}
+
+func TestPackCompression_RecordIndexCodecDisagreement(t *testing.T) {
+	good := corpusEnglish(61, 40_000)
+	sum := sha256.Sum256(good)
+	dir := newEmptyStoreDir(t)
+	path := writeTestPack(t, dir, []testPackRec{{sum, uint32(len(good)), packCodecDeflate, deflateForTest(t, good, 4)}})
+	b, _ := os.ReadFile(path)
+	b[packHeaderSize+40] = packCodecRaw // record header says raw, index says deflate
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := verifyPackFile(path); err == nil || !strings.Contains(err.Error(), "disagrees") {
+		t.Fatalf("verifyPackFile: %v", err)
+	}
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got, err := s.casRead(sum); err == nil || got != nil {
+		t.Fatalf("read with a disagreeing record header: %v", err)
+	}
+	if err := checkPackRecords(path); err == nil {
+		t.Fatal("deep record-header check missed the disagreement")
+	}
+}
+
+func TestPackCompression_MixedRepresentationsOfOneChunk(t *testing.T) {
+	good := corpusEnglish(71, 40_000)
+	sum := sha256.Sum256(good)
+	filler := []byte("filler record so packs differ")
+	deflated := func() testPackRec {
+		return testPackRec{sum, uint32(len(good)), packCodecDeflate, deflateForTest(t, good, 4)}
+	}
+	raw := testPackRec{sum, uint32(len(good)), packCodecRaw, good}
+	fill := func(n byte) testPackRec {
+		p := append([]byte(nil), filler...)
+		p = append(p, n)
+		return testPackRec{sha256.Sum256(p), uint32(len(p)), packCodecRaw, p}
+	}
+
+	cases := []struct {
+		name  string
+		packs [][]testPackRec
+		loose bool
+		clash bool
+	}{
+		{"raw and deflate packs", [][]testPackRec{{raw, fill(1)}, {deflated(), fill(2)}}, false, false},
+		{"deflate in two packs", [][]testPackRec{{deflated(), fill(1)}, {deflated(), fill(2)}}, false, false},
+		{"loose and deflate", [][]testPackRec{{deflated(), fill(1)}}, true, false},
+		{"contradictory logical lengths are a conflict", [][]testPackRec{{raw, fill(1)}, {{sum, uint32(len(good)) + 100, packCodecDeflate, deflateForTest(t, good, 4)}, fill(2)}}, false, true},
+	}
+	flipMiddle := func(t *testing.T, s *Store, loc packLoc) {
+		f, err := os.OpenFile(s.packs[loc.pack].path, os.O_RDWR, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		var b [1]byte
+		at := int64(loc.off) + int64(loc.stored)/2
+		f.ReadAt(b[:], at)
+		b[0] ^= 0xff
+		f.WriteAt(b[:], at)
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := newEmptyStoreDir(t)
+			for _, p := range c.packs {
+				writeTestPack(t, dir, p)
+			}
+			s, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if c.loose {
+				if err := s.casRepairPublish(sum, good); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if (len(s.packClash) > 0) != c.clash {
+				t.Fatalf("clash=%v want %v (%v)", s.packClash, c.clash, s.packClash)
+			}
+			if c.clash {
+				if vr, _ := s.Verify(false); vr.OK() {
+					t.Fatal("verify must report contradictory copies")
+				}
+				return
+			}
+			if n, err := s.casStat(sum); err != nil || n != int64(len(good)) {
+				t.Fatalf("casStat: %d %v", n, err)
+			}
+			if got, err := s.casRead(sum); err != nil || !bytes.Equal(got, good) {
+				t.Fatalf("read with every copy valid: %v", err)
+			}
+			locs := s.packLocs(sum)
+			for i := range locs { // corrupt every packed copy but the last one
+				if i == len(locs)-1 {
+					break
+				}
+				flipMiddle(t, s, locs[i])
+			}
+			if got, err := s.casRead(sum); err != nil || !bytes.Equal(got, good) {
+				t.Fatalf("read must fall back to a valid copy: %v", err)
+			}
+			if c.loose {
+				flipMiddle(t, s, locs[len(locs)-1])
+				if got, err := s.casRead(sum); err != nil || !bytes.Equal(got, good) {
+					t.Fatalf("read must fall back to the loose copy: %v", err)
+				}
+				corruptChunkOnDisk(t, s, hex.EncodeToString(sum[:]))
+			} else {
+				flipMiddle(t, s, locs[len(locs)-1])
+			}
+			if got, err := s.casRead(sum); err == nil || got != nil {
+				t.Fatalf("every copy corrupt must fail without bytes: %v", err)
+			}
+		})
+	}
+}
+
+func TestPackCompression_DeepVerifyDetectsCompressedPayloadCorruption(t *testing.T) {
+	data := corpusEnglish(81, 600_000)
+	dir := t.TempDir()
+	putCompressionObject(t, dir, "k", data)
+	if _, err := compactStore(dir, compressTestOpt); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, man, _ := s.HeadObject("b", "k")
+	sum, _ := decodeHexSHA256(man.Chunks[len(man.Chunks)/2].SHA256)
+	loc, _ := s.packLookup(sum)
+	if loc.codec != packCodecDeflate {
+		t.Fatalf("fixture chunk is codec %d", loc.codec)
+	}
+	if vr, _ := s.Verify(true); !vr.OK() {
+		t.Fatalf("clean store: %+v", vr.Issues)
+	}
+	f, _ := os.OpenFile(s.packs[loc.pack].path, os.O_RDWR, 0)
+	var b [1]byte
+	at := int64(loc.off) + int64(loc.stored)/3
+	f.ReadAt(b[:], at)
+	b[0] ^= 0x01
+	f.WriteAt(b[:], at)
+	f.Close()
+	if vr, _ := s.Verify(true); vr.OK() || vr.Corrupt == 0 {
+		t.Fatalf("deep verify missed a damaged compressed record: %+v", vr)
+	}
+	if _, got, err := s.GetObject("b", "k"); err == nil {
+		t.Fatalf("GET returned %d bytes for a damaged compressed chunk (equal=%v)", len(got), bytes.Equal(got, data))
+	}
+}
+
+// ---- compaction/repack with compression -----------------------------------
+
+func TestPackCompression_CompactOffWritesRawAndRerunIsStable(t *testing.T) {
+	data := corpusEnglish(91, 800_000)
+	dir := t.TempDir()
+	putCompressionObject(t, dir, "k", data)
+	off := compressTestOpt
+	off.Compress = false
+	res, err := compactStore(dir, off)
+	if err != nil || res.CompressedRecords != 0 || res.StoredBytes != res.LogicalBytes || res.ChunksPacked == 0 {
+		t.Fatalf("compression off: %+v %v", res, err)
+	}
+	tree := hashPhysical(t, dir)
+	if again, err := compactStore(dir, compressTestOpt); err != nil || again.PacksWritten != 0 || hashPhysical(t, dir) != tree {
+		t.Fatalf("nothing is loose, so compact must not rewrite packs: %+v %v", again, err)
+	}
+}
+
+func TestPackCompression_PhysicalAccounting(t *testing.T) {
+	live := corpusJSON(101, 600_000)
+	dead := genRandomBytes(102, 400_000)
+	fx := buildDeadPackStoreFrom(t, live, dead, compressTestOpt)
+	s, err := OpenStore(fx.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	rr, _ := s.computeReachability(false)
+	us := s.packUsages(rr.ReferencedChunks)
+	sum := summarizePacks(us)
+	var liveStored, deadStored, liveLogical, allRecords int64
+	for _, u := range us {
+		_, entries, err := loadPackFile(s.packs[u.idx].path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var uLive, uDead, uLiveLogical, uAll int64
+		for _, e := range entries {
+			uAll += int64(e.stored)
+			if rr.ReferencedChunks[hex.EncodeToString(e.sha[:])] {
+				uLive += int64(e.stored)
+				uLiveLogical += int64(e.logical)
+			} else {
+				uDead += int64(e.stored)
+			}
+		}
+		if u.LiveBytes != uLive || u.DeadBytes != uDead || u.LiveLogicalBytes != uLiveLogical {
+			t.Fatalf("pack %.8s: live=%d dead=%d liveLogical=%d, want %d/%d/%d", u.ID, u.LiveBytes, u.DeadBytes, u.LiveLogicalBytes, uLive, uDead, uLiveLogical)
+		}
+		wantPhys := int64(0)
+		if u.LiveRecords > 0 {
+			wantPhys = packFixedBytes + uLive + int64(u.LiveRecords)*packRecordBytes
+		}
+		if u.Reclaimable != u.Size-wantPhys || u.Size != packFixedBytes+uAll+int64(u.Records)*packRecordBytes {
+			t.Fatalf("pack %.8s: size=%d reclaimable=%d want physical %d", u.ID, u.Size, u.Reclaimable, wantPhys)
+		}
+		liveStored += uLive
+		deadStored += uDead
+		liveLogical += uLiveLogical
+		allRecords += int64(u.Records)
+	}
+	if sum.PackedLiveBytes != liveStored || sum.PackedDeadBytes != deadStored || sum.PackedLiveLogicalBytes != liveLogical {
+		t.Fatalf("summary %+v disagrees with per-record totals", sum)
+	}
+	if sum.PackedRawRecords+sum.PackedCompressedRecs != sum.PackedChunkCount || sum.PackedCompressedRecs == 0 || sum.PackedRawRecords == 0 {
+		t.Fatalf("want a mix of raw and compressed records: %+v", sum)
+	}
+	if sum.PackCompressionSaved != sum.PackedLogicalBytes-sum.PackedStoredBytes || sum.PackCompressionSaved <= 0 ||
+		sum.PackFileBytes != int64(sum.PackCount)*packFixedBytes+allRecords*packRecordBytes+sum.PackedStoredBytes {
+		t.Fatalf("physical/stored/logical identities broken: %+v", sum)
+	}
+	if want := float64(sum.PackedLogicalBytes) / float64(sum.PackedStoredBytes); sum.PackCompressionRatio != want || want <= 1 {
+		t.Fatalf("ratio %v want %v", sum.PackCompressionRatio, want)
+	}
+	if liveStored >= liveLogical {
+		t.Fatalf("live stored %d should be well under live logical %d", liveStored, liveLogical)
+	}
+}
+
+func TestPackCompression_RepackSelectionUsesPhysicalBytes(t *testing.T) {
+	live := corpusJSON(111, 300_000) // ~10x smaller on disk
+	dead := genRandomBytes(112, 300_000)
+	fx := buildDeadPackStoreFrom(t, live, dead, compressTestOneBigPack)
+	sum, us := reclaimState(t, fx.dir)
+	if len(us) != 1 || sum.PackedLiveLogicalBytes*100/sum.PackedLogicalBytes < 40 {
+		t.Fatalf("fixture should be about half live by logical bytes: %+v", sum)
+	}
+	if us[0].Utilization*100 >= 30 {
+		t.Fatalf("physical utilization %.1f%% should be far below its logical share", us[0].Utilization*100)
+	}
+	opt := repackOptions{TargetBytes: 64 << 20, MaxLivePercent: 30, DryRun: true, Compress: true}
+	dry, err := repackStore(fx.dir, opt)
+	if err != nil || dry.PacksSelected != 1 {
+		t.Fatalf("a mostly dead pack (by disk bytes) must be selected: %+v %v", dry, err)
+	}
+	opt.DryRun = false
+	res, err := repackStore(fx.dir, opt)
+	if err != nil || res.BytesReclaimed <= dry.BytesReclaimed/2 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	requireLiveIntact(t, fx.dir, fx, "after repack")
+	after, _ := reclaimState(t, fx.dir)
+	if after.PackedDeadChunkCount != 0 || after.PackFileBytes >= sum.PackFileBytes/2 {
+		t.Fatalf("repack should have dropped the dead incompressible records: %+v -> %+v", sum, after)
+	}
+}
+
+func TestPackCompression_RepackMatrix(t *testing.T) {
+	var liveMix []byte
+	liveMix = append(liveMix, corpusEnglish(121, 500_000)...)
+	liveMix = append(liveMix, genRandomBytes(122, 300_000)...)
+	liveMix = append(liveMix, corpusWeb(123, 400_000)...)
+	dead := corpusEnglish(124, 900_000)
+	rawOpt := compressTestOpt
+	rawOpt.Compress = false
+	build := map[string]func(t *testing.T) (deadPackStore, []byte){
+		"raw packs": func(t *testing.T) (deadPackStore, []byte) {
+			return buildDeadPackStoreFrom(t, liveMix, dead, rawOpt), nil
+		},
+		"compressed packs": func(t *testing.T) (deadPackStore, []byte) {
+			return buildDeadPackStoreFrom(t, liveMix, dead, compressTestOpt), nil
+		},
+		"old raw plus new compressed packs": func(t *testing.T) (deadPackStore, []byte) {
+			fx := buildDeadPackStoreFrom(t, liveMix, dead, rawOpt)
+			extra := corpusJSON(125, 500_000)
+			putCompressionObject(t, fx.dir, "extra", extra)
+			if _, err := compactStore(fx.dir, compressTestOpt); err != nil {
+				t.Fatal(err)
+			}
+			return fx, extra
+		},
+	}
+	for name, mk := range build {
+		for _, compress := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/compress=%v", name, compress), func(t *testing.T) {
+				fx, extra := mk(t)
+				before, _ := reclaimState(t, fx.dir)
+				if before.PackedDeadChunkCount == 0 {
+					t.Fatalf("fixture has no dead records: %+v", before)
+				}
+				opt := repackOptions{TargetBytes: 128 << 10, MaxLivePercent: 100, Compress: compress}
+				dryOpt := opt
+				dryOpt.DryRun = true
+				dry, err := repackStore(fx.dir, dryOpt)
+				if err != nil || dry.PacksSelected == 0 {
+					t.Fatalf("dry run: %+v %v", dry, err)
+				}
+				res, err := repackStore(fx.dir, opt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireLiveIntact(t, fx.dir, fx, "after repack")
+				if extra != nil {
+					s, _ := OpenStore(fx.dir)
+					if _, got, err := s.GetObject("b", "extra"); err != nil || !bytes.Equal(got, extra) {
+						t.Fatalf("extra object: %v", err)
+					}
+					s.Close()
+				}
+				after, _ := reclaimState(t, fx.dir)
+				t.Logf("copied=%d raw=%d deflate=%d logical=%d stored=%d written=%d reclaimed=%d (dry-run estimate %d)",
+					res.RecordsCopied, res.RawRecords, res.CompressedRecords, res.LogicalBytes, res.StoredBytes, res.BytesWritten, res.BytesReclaimed, dry.BytesWritten)
+				// Rewriting compressed packs raw (-compression off) may grow them.
+				expands := !compress && name == "compressed packs"
+				if after.PackedDeadChunkCount != 0 || res.BytesReclaimed != before.PackFileBytes-after.PackFileBytes || (res.BytesReclaimed <= 0 && !expands) {
+					t.Fatalf("accounting: reclaimed %d, packs %d -> %d, dead %d", res.BytesReclaimed, before.PackFileBytes, after.PackFileBytes, after.PackedDeadChunkCount)
+				}
+				if res.RecordsCopied != dry.RecordsCopied || res.BytesRead != dry.BytesRead || res.BytesRead != res.LogicalBytes ||
+					res.RawRecords+res.CompressedRecords != res.RecordsCopied {
+					t.Fatalf("dry run %+v vs applied %+v", dry, res)
+				}
+				if compress {
+					if res.CompressedRecords == 0 || res.RawRecords == 0 || res.StoredBytes >= res.LogicalBytes {
+						t.Fatalf("auto policy should yield a mixed, smaller rewrite: %+v", res)
+					}
+				} else if res.CompressedRecords != 0 || res.StoredBytes != res.LogicalBytes {
+					t.Fatalf("compression off must rewrite raw: %+v", res)
+				}
+				if name == "raw packs" && !compress || name == "compressed packs" && compress {
+					if d := dry.BytesWritten - res.BytesWritten; d > packFixedBytes*8 || -d > packFixedBytes*8 {
+						t.Fatalf("estimate %d vs actual %d", dry.BytesWritten, res.BytesWritten)
+					}
+				}
+				if name == "raw packs" && compress && dry.BytesWritten < res.BytesWritten {
+					t.Fatalf("raw-sized estimate %d must not undershoot the compressed result %d", dry.BytesWritten, res.BytesWritten)
+				}
+				tree := hashPhysical(t, fx.dir)
+				if again, err := repackStore(fx.dir, opt); err != nil || again.PacksSelected != 0 || hashPhysical(t, fx.dir) != tree {
+					t.Fatalf("converged store must be stable: %+v %v", again, err)
+				}
+			})
+		}
+	}
+}
+
+func TestPackCompression_RepackAbortsOnDamagedCompressedData(t *testing.T) {
+	newFx := func(t *testing.T) deadPackStore {
+		return buildDeadPackStoreFrom(t, corpusEnglish(131, 900_000), corpusEnglish(132, 900_000), compressTestOpt)
+	}
+	opt := repackOptions{TargetBytes: 128 << 10, MaxLivePercent: 100, Compress: true}
+
+	t.Run("damaged live source", func(t *testing.T) {
+		fx := newFx(t)
+		s, _ := OpenStore(fx.dir)
+		rr, _ := s.computeReachability(false)
+		u := partialPackOf(t, s, rr)
+		live := livePackedDigests(t, s, rr.ReferencedChunks, u)
+		if loc, _ := s.packLookup(live[len(live)/2]); loc.codec != packCodecDeflate {
+			t.Fatalf("source record is codec %d", loc.codec)
+		}
+		flipPackedByte(t, s, live[len(live)/2])
+		s.Close()
+		before := packFileSet(t, fx.dir)
+		if _, err := repackStore(fx.dir, opt); err == nil || !strings.Contains(err.Error(), "nothing was removed") {
+			t.Fatalf("err = %v", err)
+		}
+		if now := packFileSet(t, fx.dir); !reflect.DeepEqual(now, before) {
+			t.Fatalf("pack set changed: %v -> %v", before, now)
+		}
+		if stale, _ := filepath.Glob(filepath.Join(fx.dir, "tmp", "pack-*.tmp")); len(stale) != 0 {
+			t.Fatalf("staging file left behind: %v", stale)
+		}
+	})
+	for _, damage := range []string{"truncate", "flip-compressed-payload"} {
+		t.Run("damaged replacement/"+damage, func(t *testing.T) {
+			fx := newFx(t)
+			before := packFileSet(t, fx.dir)
+			damaged := false
+			withTestHook(t, func(point string) {
+				if point != hookPackAfterSync || damaged {
+					return
+				}
+				damaged = true
+				staged, _ := filepath.Glob(filepath.Join(fx.dir, "tmp", "pack-*.tmp"))
+				if len(staged) != 1 {
+					t.Errorf("want one staged pack, got %v", staged)
+					return
+				}
+				if damage == "truncate" {
+					os.Truncate(staged[0], 100)
+					return
+				}
+				_, entries, err := statPackFile(staged[0])
+				if err != nil || entries[0].codec != packCodecDeflate {
+					t.Errorf("staged pack should start with a compressed record: %v", err)
+					return
+				}
+				f, _ := os.OpenFile(staged[0], os.O_RDWR, 0)
+				var b [1]byte
+				at := int64(entries[0].off) + int64(entries[0].stored)/2
+				f.ReadAt(b[:], at)
+				b[0] ^= 0xff
+				f.WriteAt(b[:], at)
+				f.Close()
+			})
+			_, err := repackStore(fx.dir, opt)
+			testHook = nil
+			if err == nil || !strings.Contains(err.Error(), "failed validation") {
+				t.Fatalf("err = %v", err)
+			}
+			if now := packFileSet(t, fx.dir); !reflect.DeepEqual(now, before) {
+				t.Fatalf("pack set changed: %v -> %v", before, now)
+			}
+			requireLiveIntact(t, fx.dir, fx, "after failed validation")
+		})
+	}
+}
+
+func TestPackCompression_CrashPoints(t *testing.T) {
+	data := map[string][]byte{"text": corpusEnglish(141, 900_000), "random": genRandomBytes(142, 300_000), "json": corpusJSON(143, 500_000)}
+	keys := []string{"text", "random", "json"}
+	compactPoints := []struct {
+		name  string
+		point string
+		nth   int
+	}{
+		{"mid pack creation", hookPackRecordWritten, 3},
+		{"after fsync", hookPackAfterSync, 1},
+		{"after rename, before dir fsync", hookPackAfterRename, 1},
+		{"partway through loose deletion", hookBeforeLooseDelete, 4},
+		{"second pack mid-creation", hookPackBeforeSync, 2},
+	}
+	crash := func(point string, nth int) {
+		calls := 0
+		withTestHook(t, func(p string) {
+			if p == point {
+				calls++
+				if calls == nth {
+					panic(simulatedCrash{point: p})
+				}
+			}
+		})
+	}
+	for _, c := range compactPoints {
+		t.Run("compact/"+c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			putPackTestObjects(t, dir, data, keys...)
+			crash(c.point, c.nth)
+			runExpectingSimulatedCrash(t, func() { _, _ = compactStore(dir, compressTestOpt) })
+			testHook = nil
+			for _, stage := range []string{"after crash", "after rerun"} {
+				if stage == "after rerun" {
+					if _, err := compactStore(dir, compressTestOpt); err != nil {
+						t.Fatal(err)
+					}
+				}
+				s, err := OpenStore(dir)
+				if err != nil {
+					t.Fatalf("%s: %v", stage, err)
+				}
+				for k, body := range data {
+					if _, got, err := s.GetObject("b", k); err != nil || !bytes.Equal(got, body) {
+						t.Fatalf("%s: %s: %v", stage, k, err)
+					}
+				}
+				if vr, err := s.Verify(true); err != nil || !vr.OK() {
+					t.Fatalf("%s: deep verify: %v %+v", stage, err, vr.Issues)
+				}
+				st := packTestStats(t, s)
+				if stage == "after rerun" && (st.LooseChunkCount != 0 || st.PackedCompressedRecs == 0) {
+					t.Fatalf("rerun should converge to compressed packs: %+v", st.PackSummary)
+				}
+				s.Close()
+			}
+		})
+	}
+	repackPoints := []struct {
+		name  string
+		point string
+		nth   int
+	}{
+		{"partial replacement write", hookPackRecordWritten, 3},
+		{"after replacement published", hookPackPublished, 1},
+		{"between obsolete pack removals", hookBeforePackDelete, 2},
+		{"completed", hookRepackDone, 1},
+	}
+	for _, c := range repackPoints {
+		t.Run("repack/"+c.name, func(t *testing.T) {
+			fx := buildDeadPackStoreFrom(t, corpusEnglish(144, 1_200_000), corpusEnglish(145, 1_200_000), compressTestOpt)
+			opt := repackOptions{TargetBytes: 128 << 10, MaxLivePercent: 100, Compress: true}
+			crash(c.point, c.nth)
+			runExpectingSimulatedCrash(t, func() { _, _ = repackStore(fx.dir, opt) })
+			testHook = nil
+			requireLiveIntact(t, fx.dir, fx, "after crash")
+			if _, err := repackStore(fx.dir, opt); err != nil {
+				t.Fatal(err)
+			}
+			requireLiveIntact(t, fx.dir, fx, "after rerun")
+			if st, _ := reclaimState(t, fx.dir); st.PackedDeadChunkCount != 0 || st.PacksFullyDead != 0 {
+				t.Fatalf("rerun did not converge: %+v", st)
+			}
+		})
+	}
+}
+
+func TestPackCompression_CLI(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, map[string][]byte{"text": corpusEnglish(151, 700_000), "random": genRandomBytes(152, 300_000)}, "text", "random")
+	if _, errOut, code := runZeros3CLI(t, bin, "compact", "-store", dir, "-compression", "zstd"); code == 0 || !strings.Contains(errOut, "-compression") {
+		t.Fatalf("bad compression mode accepted: code=%d err=%q", code, errOut)
+	}
+	out, errOut, code := runZeros3CLI(t, bin, "compact", "-store", dir, "-pack-size-mib", "1", "-json")
+	var res CompactResult
+	if code != 0 || json.Unmarshal([]byte(out), &res) != nil || res.CompressedRecords == 0 || res.RawRecords == 0 || res.StoredBytes >= res.LogicalBytes {
+		t.Fatalf("compact: code=%d out=%q err=%q", code, out, errOut)
+	}
+	out, _, code = runZeros3CLI(t, bin, "stats", "-store", dir, "-json")
+	var st StatsResult
+	if code != 0 || json.Unmarshal([]byte(out), &st) != nil || st.PackedCompressedRecs != res.CompressedRecords || st.PackCompressionSaved != res.LogicalBytes-res.StoredBytes || st.PackCompressionRatio <= 1 {
+		t.Fatalf("stats json: code=%d %q", code, out)
+	}
+	if out, _, code = runZeros3CLI(t, bin, "stats", "-store", dir); code != 0 || !strings.Contains(out, "pack compression") || !strings.Contains(out, "deflate") {
+		t.Fatalf("stats: %q", out)
+	}
+	if out, _, code = runZeros3CLI(t, bin, "verify", "-store", dir, "-deep"); code != 0 {
+		t.Fatalf("verify: %q", out)
+	}
+	if out, _, code = runZeros3CLI(t, bin, "repack", "-store", dir, "-compression", "off", "-max-live-percent", "100"); code != 0 || !strings.Contains(out, "dry-run") {
+		t.Fatalf("repack dry-run: %q", out)
+	}
+	if _, _, code = runZeros3CLI(t, bin, "repack", "-store", dir, "-compression", "lz4"); code == 0 {
+		t.Fatal("bad repack compression mode accepted")
 	}
 }
