@@ -6,7 +6,8 @@
 #                                reproducible build
 #   scripts/validate.sh heavy    race tests, pack/compression crash matrix,
 #                                multi-GiB repack, compaction and pack
-#                                compression harnesses
+#                                compression harnesses, 5M-record locator scale
+#   scripts/validate.sh index    locator semantic/differential tests only
 #   scripts/validate.sh all      both
 #   scripts/validate.sh STAGE... run named stages (see `list`)
 #
@@ -16,7 +17,7 @@
 # current sources is skipped on the next run (VALIDATE_FORCE=1 reruns it).
 # Harness sizes: REPACK_SIZE_MIB (default 1024 per profile), COMPACT_SIZE_MIB,
 # COMPRESS_CLASS_MIB (per data family) and COMPRESS_SIZE_MIB (lifecycle store),
-# PACK_SIZE_MIB.
+# PACK_SIZE_MIB, LOCATOR_SCALE (record counts for index-scale, default 5000000).
 set -u
 
 # Ambient AWS_* settings would override the harnesses' fixed credentials.
@@ -50,6 +51,8 @@ stage_repro() { cd "$root" && sh scripts/reproducible_build.sh; }
 
 stage_race()    { cd "$root" && go test -race -count=1 ./...; }
 stage_crash()   { cd "$root" && go test -race -count=1 -run 'TestRepack_|TestPack_|TestPackCompress' .; }
+stage_index() { cd "$root" && go test -count=1 -race -run 'TestLocator_' .; }
+stage_index-scale() { cd "$root" && ZEROS3_LOCATOR_SCALE="${LOCATOR_SCALE:-5000000}" go test -count=1 -run 'TestLocatorScale' -v .; }
 stage_repack() {
 	build_bin && cd "$root/testing-harnesses" &&
 		ZEROS3_BIN="$bin" go run ./harness/z2_repack -size-mib "${REPACK_SIZE_MIB:-1024}" -pack-size-mib "${PACK_SIZE_MIB:-32}"
@@ -65,10 +68,10 @@ stage_compression() {
 }
 
 normal="format modules test static s3 sync repro"
-heavy="race crash repack compact compression"
+heavy="race crash repack compact compression index-scale"
 
 case "${1:-normal}" in
-list) echo "normal: $normal"; echo "heavy: $heavy"; exit 0 ;;
+list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index"; exit 0 ;;
 normal) stages=$normal ;;
 heavy) stages=$heavy ;;
 all) stages="$normal $heavy" ;;

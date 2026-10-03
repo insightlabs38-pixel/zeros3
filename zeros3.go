@@ -16,6 +16,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"compress/flate"
 	"context"
 	"crypto/hmac"
@@ -34,17 +35,22 @@ import (
 	"hash/crc32"
 	"io"
 	"io/fs"
+	"iter"
 	"log"
+	"math"
+	"math/bits"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"uuid"
@@ -63,34 +69,34 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      426    Content-defined chunking (CDC)
-//      552    Content-addressed chunk storage (CAS)
-//      709    Packed CAS (immutable packs, DEFLATE records, locator index)
-//     1494    Manifests (immutable, JSON)
-//     1593    Visibility journal (append-only, checksummed)
-//     1988    Store: format, namespace, and object CRUD
-//     2740    Version history/restore and ListObjectsV2
-//     2970    SigV4 authentication (header and presigned-URL)
-//     3925    Request payload checksums and S3-shaped XML error/response types
-//     4141    HTTP routing and S3 operation handlers
-//     4534    Conditional operations (PUT/GET/HEAD preconditions)
-//     5100    CopyObject
-//     5394    Multipart upload
-//     6220    Stats and reachability scanning
-//     6947    Verify
-//     7123    Store locking and safe offline GC
-//     7378    Offline compaction (`zeros3 compact`)
-//     7894    Pack reclamation and repacking (`zeros3 repack`)
-//     8238    Streaming object reads (full and ranged GET)
-//     8363    Delta sync client, credentials, and parallel transfer
-//    10286    Recursive directory sync
-//    10591    Remote replication (`zeros3 replicate`)
-//    11355    Peer-assisted corruption repair (`zeros3 repair`)
-//    11833    Namespace (prefix/bucket) replication
-//    12140    Copy-on-write namespace fork (`zeros3 fork`)
-//    12348    Snapshots and restore
-//    13501    Structural diff and inspect (introspection)
-//    14025    CLI dispatch, HTTP server/startup, and main
+//      432    Content-defined chunking (CDC)
+//      558    Content-addressed chunk storage (CAS)
+//      717    Packed CAS (immutable packs, DEFLATE records, locator index)
+//     1833    Manifests (immutable, JSON)
+//     1932    Visibility journal (append-only, checksummed)
+//     2327    Store: format, namespace, and object CRUD
+//     3076    Version history/restore and ListObjectsV2
+//     3306    SigV4 authentication (header and presigned-URL)
+//     4261    Request payload checksums and S3-shaped XML error/response types
+//     4477    HTTP routing and S3 operation handlers
+//     4870    Conditional operations (PUT/GET/HEAD preconditions)
+//     5436    CopyObject
+//     5730    Multipart upload
+//     6556    Stats and reachability scanning
+//     7283    Verify
+//     7459    Store locking and safe offline GC
+//     7714    Offline compaction (`zeros3 compact`)
+//     8232    Pack reclamation and repacking (`zeros3 repack`)
+//     8571    Streaming object reads (full and ranged GET)
+//     8696    Delta sync client, credentials, and parallel transfer
+//    10619    Recursive directory sync
+//    10924    Remote replication (`zeros3 replicate`)
+//    11688    Peer-assisted corruption repair (`zeros3 repair`)
+//    12166    Namespace (prefix/bucket) replication
+//    12473    Copy-on-write namespace fork (`zeros3 fork`)
+//    12681    Snapshots and restore
+//    13834    Structural diff and inspect (introspection)
+//    14358    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -622,15 +628,17 @@ func (s *Store) casRead(sum [32]byte) ([]byte, error) {
 }
 
 // casReadExcluding is casRead restricted to copies outside the packs in
-// skip (indexes into s.packs). Replacing packs uses it to prove a chunk
+// skip (pack numbers in the current snapshot). Replacing packs uses it to prove a chunk
 // survives their removal.
 func (s *Store) casReadExcluding(sum [32]byte, skip map[int32]bool) ([]byte, error) {
 	var packErr error
-	for _, loc := range s.packLocs(sum) {
+	st := s.packSnap()
+	var locs [4]packLoc
+	for _, loc := range st.appendLocs(locs[:0], sum) {
 		if skip[loc.pack] {
 			continue
 		}
-		data, err := s.readPacked(sum, loc)
+		data, err := st.readPacked(sum, loc)
 		if err == nil {
 			return data, nil
 		}
@@ -744,12 +752,13 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
 // Every record header is repeated in the index, so the index is only an
 // acceleration structure: it can be rebuilt by scanning the records.
 //
-// The in-memory locator index (Store.packIdx) is rebuilt from the pack
-// footers/indexes at open and is never trusted for content: every packed
-// read re-checks the record header and re-hashes the payload exactly as a
-// loose read does. The same digest may legitimately appear in several packs
-// (an interrupted repack leaves old and new copies): the first pack in name
-// order is the primary location, the rest are kept as fallbacks, and a
+// The in-memory locator (packState) is rebuilt from the pack footers/indexes
+// at open and is never trusted for content: every packed read re-checks the
+// record header and re-hashes the payload exactly as a loose read does. It
+// is a set of immutable sorted levels swapped in whole, so readers never see
+// a partial rebuild. The same digest may legitimately appear in several
+// packs (an interrupted repack leaves old and new copies): the first pack in
+// name order is the primary location, the rest are kept as fallbacks, and a
 // repeat whose length disagrees is a reported conflict.
 // =============================================================================
 
@@ -1101,102 +1110,432 @@ func checkPackRecords(path string) error {
 	return nil
 }
 
-// addPack folds one validated pack into the locator index. The first pack
-// (in sorted order) to hold a digest is its primary location; a repeat with
-// the same length becomes a fallback copy, and one whose logical length
-// contradicts the primary is reported rather than indexed.
-func (s *Store) addPack(info packInfo, entries []packEntry) {
-	s.packMu.Lock()
-	defer s.packMu.Unlock()
-	if s.packIdx == nil {
-		s.packIdx = make(map[[32]byte]packLoc, len(entries))
+// locRec is one locator record. The 52-byte layout has no padding: the
+// logical length and codec share lc (a chunk is far below 1<<24 bytes) and
+// the 64-bit payload offset is split to keep 4-byte alignment.
+type locRec struct {
+	sum          [32]byte
+	pack         uint32
+	stored       uint32
+	lc           uint32
+	offLo, offHi uint32
+}
+
+const _ = uint(1<<24 - 1 - maxPackedChunkBytes)
+
+func mkLocRec(e *packEntry, pack uint32) locRec {
+	return locRec{sum: e.sha, pack: pack, stored: e.stored, lc: e.logical | uint32(e.codec)<<24, offLo: uint32(e.off), offHi: uint32(e.off >> 32)}
+}
+
+func (r *locRec) logical() uint32 { return r.lc & (1<<24 - 1) }
+func (r *locRec) off() uint64     { return uint64(r.offHi)<<32 | uint64(r.offLo) }
+func (r *locRec) loc() packLoc {
+	return packLoc{pack: int32(r.pack), codec: byte(r.lc >> 24), stored: r.stored, logical: r.logical(), off: r.off()}
+}
+
+// cmpLocRec orders records by digest, then pack, then payload offset, so the
+// first record of a digest is its primary location and the rest are its
+// fallbacks in pack order.
+func cmpLocRec(a, b *locRec) int {
+	if x, y := binary.BigEndian.Uint64(a.sum[:8]), binary.BigEndian.Uint64(b.sum[:8]); x != y {
+		return cmp.Compare(x, y)
 	}
-	for _, p := range s.packs {
-		if p.id == info.id {
-			return
+	if c := bytes.Compare(a.sum[8:], b.sum[8:]); c != 0 {
+		return c
+	}
+	if c := cmp.Compare(a.pack, b.pack); c != 0 {
+		return c
+	}
+	return cmp.Compare(a.off(), b.off())
+}
+
+// locIndex is one immutable locator level. recs holds exactly one primary
+// record per digest, sorted by digest; tbl maps the top bits of a digest
+// (32-shift of them) to the range of recs that can hold it, so a lookup is
+// one table read plus a binary search over a few records. Further copies of
+// a digest live in dups only, so the unique-digest common case carries no
+// duplicate overhead.
+type locIndex struct {
+	recs  []locRec
+	dups  []locRec
+	tbl   []uint32
+	shift uint
+}
+
+func (ix *locIndex) size() int { return len(ix.recs) + len(ix.dups) }
+
+// buildLocIndex takes ownership of recs (any order), keeps the first record
+// of each digest as its primary, moves same-length repeats to dups, and
+// reports a repeat whose logical length contradicts its primary through
+// onClash instead of indexing it. recs must hold fewer than 1<<32 records.
+func buildLocIndex(recs []locRec, onClash func(prim, rep *locRec)) *locIndex {
+	nb := min(bits.Len(uint(len(recs)/4)), 24)
+	groupLocRecs(recs, min(nb, locGroupBits))
+	ix := &locIndex{shift: uint(32 - nb)}
+	w := 0
+	for i := range recs {
+		r := recs[i]
+		if w > 0 && recs[w-1].sum == r.sum {
+			if recs[w-1].logical() != r.logical() {
+				onClash(&recs[w-1], &r)
+			} else {
+				ix.dups = append(ix.dups, r)
+			}
+			continue
+		}
+		recs[w] = r
+		w++
+	}
+	if cap(recs)-w > w/16+64 {
+		recs = append(make([]locRec, 0, w), recs[:w]...)
+	}
+	ix.recs = recs[:w]
+	ix.tbl = make([]uint32, 1<<nb+1)
+	j := 0
+	for b := range 1 << nb {
+		ix.tbl[b] = uint32(j)
+		for j < w && int(binary.BigEndian.Uint32(ix.recs[j].sum[:4])>>ix.shift) == b {
+			j++
 		}
 	}
-	idx := int32(len(s.packs))
-	s.packs = append(s.packs, info)
-	for _, e := range entries {
-		loc := packLoc{pack: idx, codec: e.codec, stored: e.stored, logical: e.logical, off: e.off}
-		prev, ok := s.packIdx[e.sha]
-		switch {
-		case !ok:
-			s.packIdx[e.sha] = loc
-		case prev.logical != e.logical:
-			s.packClash = append(s.packClash, fmt.Sprintf("chunk %x has contradictory lengths %d and %d across packs %s and %s",
-				e.sha, prev.logical, e.logical, s.packs[prev.pack].id, info.id))
-		default:
-			if s.packDup == nil {
-				s.packDup = map[[32]byte][]packLoc{}
+	ix.tbl[1<<nb] = uint32(w)
+	return ix
+}
+
+// locGroupBits is how many leading digest bits groupLocRecs splits on. Few
+// enough groups that the permutation streams through cache, so a group is
+// sorted while still resident.
+const locGroupBits = 12
+
+// groupLocRecs sorts recs by cmpLocRec in place: one counting pass and an
+// in-place permutation group the records by the top nb digest bits, then
+// each group is sorted. Digests are uniform, so groups are even and this is
+// near linear; any other input is still sorted correctly, only slower.
+func groupLocRecs(recs []locRec, nb int) {
+	shift := uint(32 - nb)
+	top := func(r *locRec) int { return int(binary.BigEndian.Uint32(r.sum[:4]) >> shift) }
+	end := make([]uint32, 1<<nb+1)
+	for i := range recs {
+		end[top(&recs[i])+1]++
+	}
+	for b := 1; b < len(end); b++ {
+		end[b] += end[b-1]
+	}
+	next := slices.Clone(end[:1<<nb])
+	for b := range 1 << nb {
+		for next[b] < end[b+1] {
+			i := next[b]
+			if d := top(&recs[i]); d != b {
+				recs[i], recs[next[d]] = recs[next[d]], recs[i]
+				next[d]++
+			} else {
+				next[b]++
 			}
-			s.packDup[e.sha] = append(s.packDup[e.sha], loc)
+		}
+		if g := recs[end[b]:end[b+1]]; len(g) > 1 {
+			slices.SortFunc(g, func(a, b locRec) int { return cmpLocRec(&a, &b) })
 		}
 	}
 }
 
-// loadPacks discovers published packs under store/packs and rebuilds the
-// locator index. Only files named <64-hex>.pack count as published; staged
-// artifacts live in tmp/, so anything else here is ignored. A published
-// pack that fails validation is recorded and skipped, not fatal: the rest
-// of the store stays readable and verify reports it.
-func (s *Store) loadPacks() error {
-	dir := filepath.Join(s.root, "packs")
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+func mergeLocIndex(a, b *locIndex, onClash func(prim, rep *locRec)) *locIndex {
+	recs := make([]locRec, 0, a.size()+b.size())
+	recs = append(append(append(append(recs, a.recs...), a.dups...), b.recs...), b.dups...)
+	return buildLocIndex(recs, onClash)
+}
+
+func (ix *locIndex) find(sum *[32]byte) *locRec {
+	b := binary.BigEndian.Uint32(sum[:4]) >> ix.shift
+	lo, hi := ix.tbl[b], ix.tbl[b+1]
+	for lo < hi {
+		m := (lo + hi) >> 1
+		switch c := bytes.Compare(ix.recs[m].sum[:], sum[:]); {
+		case c < 0:
+			lo = m + 1
+		case c > 0:
+			hi = m
+		default:
+			return &ix.recs[m]
 		}
-		return err
-	}
-	for _, e := range ents {
-		if e.IsDir() || !isPackFileName(e.Name()) {
-			continue
-		}
-		info, entries, err := loadPackFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			s.packBad = append(s.packBad, packProblem{name: e.Name(), err: err})
-			continue
-		}
-		s.addPack(info, entries)
 	}
 	return nil
 }
 
-// reloadPacks discards the in-memory pack state and rebuilds it from disk,
-// as a fresh open would.
+func (ix *locIndex) dupsOf(sum *[32]byte) []locRec {
+	if len(ix.dups) == 0 {
+		return nil
+	}
+	i, _ := slices.BinarySearchFunc(ix.dups, *sum, func(r locRec, s [32]byte) int { return bytes.Compare(r.sum[:], s[:]) })
+	j := i
+	for j < len(ix.dups) && ix.dups[j].sum == *sum {
+		j++
+	}
+	return ix.dups[i:j]
+}
+
+// packState is an immutable snapshot of the pack set and its locator, swapped
+// into Store.packSt whole. levels are ordered oldest first: every pack in a
+// level precedes every pack of the next, so probing levels in order yields a
+// digest's copies in pack order. Opening builds a single level; publishing a
+// pack adds a small level, merged tier-wise so the count stays logarithmic.
+type packState struct {
+	packs  []packInfo
+	levels []*locIndex
+	bad    []packProblem
+	clash  []string
+}
+
+func (st *packState) lookup(sum [32]byte) (packLoc, bool) {
+	for _, ix := range st.levels {
+		if r := ix.find(&sum); r != nil {
+			return r.loc(), true
+		}
+	}
+	return packLoc{}, false
+}
+
+// appendLocs appends every indexed copy of a chunk, primary first.
+func (st *packState) appendLocs(dst []packLoc, sum [32]byte) []packLoc {
+	for _, ix := range st.levels {
+		if r := ix.find(&sum); r != nil {
+			dst = append(dst, r.loc())
+			for _, d := range ix.dupsOf(&sum) {
+				dst = append(dst, d.loc())
+			}
+		}
+	}
+	return dst
+}
+
+// primaries iterates each distinct digest's primary location in digest order
+// (level order after a publish) without building a temporary table.
+func (st *packState) primaries() iter.Seq2[*[32]byte, packLoc] {
+	return func(yield func(*[32]byte, packLoc) bool) {
+		for i, ix := range st.levels {
+			for j := range ix.recs {
+				r := &ix.recs[j]
+				if i > 0 && st.inLevels(i, &r.sum) {
+					continue
+				}
+				if !yield(&r.sum, r.loc()) {
+					return
+				}
+			}
+		}
+	}
+}
+
+func (st *packState) inLevels(n int, sum *[32]byte) bool {
+	for _, ix := range st.levels[:n] {
+		if ix.find(sum) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// distinct counts the digests that have a primary location.
+func (st *packState) distinct() int {
+	if len(st.levels) == 1 {
+		return len(st.levels[0].recs)
+	}
+	n := 0
+	for range st.primaries() {
+		n++
+	}
+	return n
+}
+
+func clashMessage(sum [32]byte, prim, rep *locRec, packs []packInfo) string {
+	return fmt.Sprintf("chunk %x has contradictory lengths %d and %d across packs %s and %s",
+		sum, prim.logical(), rep.logical(), packs[prim.pack].id, packs[rep.pack].id)
+}
+
+// withPack returns a snapshot that also indexes one validated pack, which
+// becomes the newest pack. A digest already indexed keeps its primary and
+// the new copy becomes a fallback; one whose logical length contradicts the
+// indexed copy is reported rather than indexed.
+func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, error) {
+	for _, p := range st.packs {
+		if p.id == info.id {
+			return st, nil
+		}
+	}
+	next := &packState{packs: append(slices.Clip(st.packs), info), levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash)}
+	onClash := func(prim, rep *locRec) {
+		next.clash = append(next.clash, clashMessage(prim.sum, prim, rep, next.packs))
+	}
+	idx := uint32(len(st.packs))
+	recs := make([]locRec, 0, len(entries))
+	total := len(entries)
+	for _, ix := range st.levels {
+		total += ix.size()
+	}
+	if total >= math.MaxUint32 {
+		return nil, errors.New("pack locator is full: too many packed records")
+	}
+	for i := range entries {
+		r := mkLocRec(&entries[i], idx)
+		if prev := st.first(&r.sum); prev != nil && prev.logical() != r.logical() {
+			onClash(prev, &r)
+			continue
+		}
+		recs = append(recs, r)
+	}
+	if len(recs) == 0 {
+		return next, nil
+	}
+	next.levels = append(next.levels, buildLocIndex(recs, onClash))
+	for n := len(next.levels); n >= 2 && 2*next.levels[n-1].size() >= next.levels[n-2].size(); n = len(next.levels) {
+		merged := mergeLocIndex(next.levels[n-2], next.levels[n-1], onClash)
+		next.levels = append(next.levels[:n-2], merged)
+	}
+	return next, nil
+}
+
+func (st *packState) first(sum *[32]byte) *locRec {
+	for _, ix := range st.levels {
+		if r := ix.find(sum); r != nil {
+			return r
+		}
+	}
+	return nil
+}
+
+// packRecordHint reads a pack footer's record count, clamped by what the
+// file could hold, to size the open-time record buffer in one allocation.
+func packRecordHint(path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || fi.Size() < packHeaderSize+packFooterSize {
+		return 0
+	}
+	var b [8]byte
+	if _, err := f.ReadAt(b[:], fi.Size()-packFooterSize+8); err != nil {
+		return 0
+	}
+	return int(min(binary.LittleEndian.Uint64(b[:]), uint64(fi.Size())/packRecordBytes))
+}
+
+// loadPackState discovers published packs under store/packs and builds the
+// locator from their indexes alone. Only files named <64-hex>.pack count as
+// published; staged artifacts live in tmp/, so anything else here is
+// ignored. A published pack that fails validation is recorded and skipped,
+// not fatal: the rest of the store stays readable and verify reports it.
+// Packs are numbered in name order, which fixes primary selection.
+func loadPackState(root string) (*packState, error) {
+	dir := filepath.Join(root, "packs")
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &packState{}, nil
+		}
+		return nil, err
+	}
+	var names []string
+	hint := 0
+	for _, e := range ents {
+		if !e.IsDir() && isPackFileName(e.Name()) {
+			names = append(names, e.Name())
+			hint += packRecordHint(filepath.Join(dir, e.Name()))
+		}
+	}
+	if hint >= math.MaxUint32 {
+		return nil, errors.New("pack locator is full: too many packed records")
+	}
+	st := &packState{}
+	recs := make([]locRec, 0, hint)
+	for _, name := range names {
+		info, entries, err := loadPackFile(filepath.Join(dir, name))
+		if err != nil {
+			st.bad = append(st.bad, packProblem{name: name, err: err})
+			continue
+		}
+		idx := uint32(len(st.packs))
+		st.packs = append(st.packs, info)
+		for i := range entries {
+			recs = append(recs, mkLocRec(&entries[i], idx))
+		}
+		if len(recs) >= math.MaxUint32 {
+			return nil, errors.New("pack locator is full: too many packed records")
+		}
+	}
+	st.index(recs)
+	return st, nil
+}
+
+// index builds the open-time locator from every record of st.packs. Clash
+// messages are ordered by the pack and offset they were read at.
+func (st *packState) index(recs []locRec) {
+	var clashes [][2]locRec
+	ix := buildLocIndex(recs, func(prim, rep *locRec) { clashes = append(clashes, [2]locRec{*prim, *rep}) })
+	sort.Slice(clashes, func(i, j int) bool { return locRecOrder(&clashes[i][1], &clashes[j][1]) })
+	for _, c := range clashes {
+		st.clash = append(st.clash, clashMessage(c[0].sum, &c[0], &c[1], st.packs))
+	}
+	if ix.size() > 0 {
+		st.levels = []*locIndex{ix}
+	}
+}
+
+// locRecOrder orders by pack then offset: the order the records were read.
+func locRecOrder(a, b *locRec) bool {
+	if a.pack != b.pack {
+		return a.pack < b.pack
+	}
+	return a.off() < b.off()
+}
+
+func (s *Store) packSnap() *packState {
+	if st := s.packSt.Load(); st != nil {
+		return st
+	}
+	return &packState{}
+}
+
+// addPack folds one validated pack into the locator by swapping in a new
+// snapshot.
+func (s *Store) addPack(info packInfo, entries []packEntry) error {
+	s.packMu.Lock()
+	defer s.packMu.Unlock()
+	next, err := s.packSnap().withPack(info, entries)
+	if err != nil {
+		return err
+	}
+	s.packSt.Store(next)
+	return nil
+}
+
+// reloadPacks rebuilds the pack state from disk, as a fresh open would, and
+// swaps it in whole; a failed rebuild leaves the previous state serving.
 func (s *Store) reloadPacks() error {
 	s.packMu.Lock()
-	s.packs, s.packIdx, s.packDup, s.packBad, s.packClash = nil, nil, nil, nil, nil
-	s.packMu.Unlock()
-	return s.loadPacks()
+	defer s.packMu.Unlock()
+	st, err := loadPackState(s.root)
+	if err != nil {
+		return err
+	}
+	s.packSt.Store(st)
+	return nil
 }
 
 // packLocs returns every indexed packed copy of a chunk, primary first.
 func (s *Store) packLocs(sum [32]byte) []packLoc {
-	s.packMu.RLock()
-	defer s.packMu.RUnlock()
-	loc, ok := s.packIdx[sum]
-	if !ok {
-		return nil
-	}
-	return append([]packLoc{loc}, s.packDup[sum]...)
+	return s.packSnap().appendLocs(nil, sum)
 }
 
 func (s *Store) packLookup(sum [32]byte) (packLoc, bool) {
-	s.packMu.RLock()
-	loc, ok := s.packIdx[sum]
-	s.packMu.RUnlock()
-	return loc, ok
+	return s.packSnap().lookup(sum)
 }
 
 // packTotals returns published pack count, packed record count, and pack
 // file bytes for stats.
 func (s *Store) packTotals() (packs, records int, bytes int64) {
-	s.packMu.RLock()
-	defer s.packMu.RUnlock()
-	for _, p := range s.packs {
+	for _, p := range s.packSnap().packs {
 		packs++
 		records += p.records
 		bytes += p.size
@@ -1248,17 +1587,18 @@ func (u packUsage) partiallyDead() bool {
 }
 
 // packUsages derives every pack's usage from the locator index and the
-// referenced set, in s.packs order. It reads no pack file; destructive
+// referenced set, in pack order. It reads no pack file; destructive
 // callers re-derive their working set from the packs themselves.
 func (s *Store) packUsages(referenced map[string]bool) []packUsage {
-	s.packMu.RLock()
-	defer s.packMu.RUnlock()
-	us := make([]packUsage, len(s.packs))
-	for i, p := range s.packs {
+	st := s.packSnap()
+	us := make([]packUsage, len(st.packs))
+	for i, p := range st.packs {
 		us[i] = packUsage{idx: int32(i), ID: p.id, Size: p.size, Records: p.records, CompressedRecs: p.deflated, LogicalBytes: p.logical}
 	}
-	for sum, loc := range s.packIdx {
-		if referenced[hex.EncodeToString(sum[:])] {
+	var hx [64]byte
+	for sum, loc := range st.primaries() {
+		hex.Encode(hx[:], sum[:])
+		if referenced[string(hx[:])] {
 			us[loc.pack].LiveRecords++
 			us[loc.pack].LiveBytes += int64(loc.stored)
 			us[loc.pack].LiveLogicalBytes += int64(loc.logical)
@@ -1346,10 +1686,14 @@ func summarizePacks(us []packUsage) PackSummary {
 // and codec, and the decoded payload must hash to the digest, before any
 // byte is returned.
 func (s *Store) readPacked(sum [32]byte, loc packLoc) ([]byte, error) {
-	s.packMu.RLock()
-	path := s.packs[loc.pack].path
-	s.packMu.RUnlock()
-	f, err := os.Open(path)
+	return s.packSnap().readPacked(sum, loc)
+}
+
+func (st *packState) readPacked(sum [32]byte, loc packLoc) ([]byte, error) {
+	if int(loc.pack) >= len(st.packs) {
+		return nil, fmt.Errorf("pack: locator for chunk %x is from a replaced pack set", sum)
+	}
+	f, err := os.Open(st.packs[loc.pack].path)
 	if err != nil {
 		return nil, fmt.Errorf("pack: %w", err)
 	}
@@ -1464,19 +1808,14 @@ func (c *packCompressor) encode(data []byte) ([]byte, byte) {
 // failed validation at open, contradictory duplicate records, and a fresh
 // structural (basic) or record-header (deep) check of every indexed pack.
 func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
-	s.packMu.RLock()
-	packs := append([]packInfo(nil), s.packs...)
-	bad := append([]packProblem(nil), s.packBad...)
-	clash := append([]string(nil), s.packClash...)
-	s.packMu.RUnlock()
-
-	for _, b := range bad {
+	st := s.packSnap()
+	for _, b := range st.bad {
 		res.addIssue("corrupt", "pack "+b.name, b.err.Error())
 	}
-	for _, c := range clash {
+	for _, c := range st.clash {
 		res.addIssue("corrupt", "packs", c)
 	}
-	for _, p := range packs {
+	for _, p := range st.packs {
 		res.PacksChecked++
 		var err error
 		if deep {
@@ -2103,16 +2442,13 @@ type Store struct {
 	// for M8E.
 	snapshotMu sync.RWMutex
 
-	// packMu guards the pack locator index (section 4b). The index is an
-	// acceleration structure rebuilt from the immutable packs at open; it
-	// only changes in the process that holds exclusive ownership while
-	// compacting.
-	packMu    sync.RWMutex
-	packs     []packInfo
-	packIdx   map[[32]byte]packLoc
-	packDup   map[[32]byte][]packLoc
-	packBad   []packProblem
-	packClash []string
+	// packSt is the pack locator snapshot (section 4b). It is an
+	// acceleration structure rebuilt from the immutable packs at open and
+	// replaced whole, never mutated; readers load it without locking.
+	// packMu serializes the writers that replace it, which only run in the
+	// process holding exclusive ownership while compacting.
+	packMu sync.Mutex
+	packSt atomic.Pointer[packState]
 }
 
 // OpenStore opens the store rooted at root, initializing it (writing
@@ -2153,7 +2489,7 @@ func OpenStore(root string) (*Store, error) {
 			return nil, fmt.Errorf("store: journal replay failed: %w", err)
 		}
 	}
-	if err := s.loadPacks(); err != nil {
+	if err := s.reloadPacks(); err != nil {
 		j.f.Close()
 		return nil, fmt.Errorf("store: loading packs: %w", err)
 	}
@@ -7772,7 +8108,9 @@ func (s *Store) publishPack(staged string, entries []packEntry) (packInfo, error
 	if err != nil || len(pubEntries) != len(entries) {
 		return info, fmt.Errorf("published pack is not readable (%v)", err)
 	}
-	s.addPack(pub, pubEntries)
+	if err := s.addPack(pub, pubEntries); err != nil {
+		return info, err
+	}
 	fireTestHook(hookPackPublished)
 	return pub, nil
 }
@@ -7972,7 +8310,7 @@ func (s *Store) removeStalePackStaging() {
 }
 
 // selectRepackPacks picks packs with no live record, plus partly dead packs
-// whose live share is below maxLivePercent, in s.packs order.
+// whose live share is below maxLivePercent, in pack order.
 func selectRepackPacks(us []packUsage, maxLivePercent int) []packUsage {
 	var sel []packUsage
 	for _, u := range us {
@@ -7995,10 +8333,7 @@ func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, tar
 	seen := map[[32]byte]bool{}
 	var required []compactCandidate
 	for _, u := range doomed {
-		s.packMu.RLock()
-		path := s.packs[u.idx].path
-		s.packMu.RUnlock()
-		info, entries, err := loadPackFile(path)
+		info, entries, err := loadPackFile(s.packSnap().packs[u.idx].path)
 		if err != nil || info.id != u.ID {
 			return fmt.Errorf("pack %s changed or is unreadable (%v); nothing was removed", u.ID, err)
 		}
@@ -8164,9 +8499,7 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 }
 
 func (s *Store) packClashes() []string {
-	s.packMu.RLock()
-	defer s.packMu.RUnlock()
-	return append([]string(nil), s.packClash...)
+	return s.packSnap().clash
 }
 
 func printRepackHuman(w io.Writer, r RepackResult) {

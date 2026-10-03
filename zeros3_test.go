@@ -61,35 +61,36 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//       95    Test helpers, fixtures, and TestMain
-//      247    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//     1263    SigV4 authentication (header and payload-mode)
-//     1652    Checksums: CRC32 and Content-MD5
-//     2155    End-to-end HTTP and crash/recovery tests
-//     2829    M2: bucket/object/listing/journal protocol compatibility
-//     3880    M3: CDC/dedup evidence, stats, verify
-//     5016    M3: CopyObject
-//     5563    M3: single-range GET
-//     5764    M5-B: multipart upload
-//     7042    Presigned URLs and virtual-hosted-style addressing
-//     8071    M5-C: version history, restore, GC, storage-efficiency proof
-//     9917    M5-D/P2: ListParts and ListMultipartUploads pagination
-//    11636    M6: delta sync (`zeros3 sync`)
-//    13378    M6C: recursive directory sync
-//    14438    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//    15767    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    17092    M8C: namespace (prefix/bucket) replication
-//    18131    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    19223    M8E: durable namespace snapshots and restore
-//    21301    M8F: conditional operations (Put/Get/Copy preconditions)
-//    22706    M8G: introspection (dry-run planning, diff, inspect)
-//    24658    M8H: bounded parallel chunk transfer
-//    26009    P1: environment credentials, HTTP hardening/shutdown, TLS
-//    27325    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//    28255    Streaming reads and aws-chunked SigV4
-//    29103    Packed CAS: pack format, mixed reads, compaction, crash points
-//    30080    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//    31232    Adaptive pack compression (codec 1, DEFLATE)
+//       96    Test helpers, fixtures, and TestMain
+//      248    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//     1264    SigV4 authentication (header and payload-mode)
+//     1653    Checksums: CRC32 and Content-MD5
+//     2156    End-to-end HTTP and crash/recovery tests
+//     2830    M2: bucket/object/listing/journal protocol compatibility
+//     3881    M3: CDC/dedup evidence, stats, verify
+//     5017    M3: CopyObject
+//     5564    M3: single-range GET
+//     5765    M5-B: multipart upload
+//     7043    Presigned URLs and virtual-hosted-style addressing
+//     8072    M5-C: version history, restore, GC, storage-efficiency proof
+//     9918    M5-D/P2: ListParts and ListMultipartUploads pagination
+//    11637    M6: delta sync (`zeros3 sync`)
+//    13379    M6C: recursive directory sync
+//    14439    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    15768    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//    17093    M8C: namespace (prefix/bucket) replication
+//    18132    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    19224    M8E: durable namespace snapshots and restore
+//    21302    M8F: conditional operations (Put/Get/Copy preconditions)
+//    22707    M8G: introspection (dry-run planning, diff, inspect)
+//    24659    M8H: bounded parallel chunk transfer
+//    26010    P1: environment credentials, HTTP hardening/shutdown, TLS
+//    27326    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//    28256    Streaming reads and aws-chunked SigV4
+//    29104    Packed CAS: pack format, mixed reads, compaction, crash points
+//    30081    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//    31233    Adaptive pack compression (codec 1, DEFLATE)
+//    32267    Scalable packed-chunk locator (sorted immutable levels)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -29427,8 +29428,8 @@ func TestPack_CompactIsDeterministicAndRepeatedHashesPackOnce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(s.packIdx) != recs {
-			t.Fatalf("a chunk hash was packed more than once: %d records, %d distinct", recs, len(s.packIdx))
+		if s.packSnap().distinct() != recs {
+			t.Fatalf("a chunk hash was packed more than once: %d records, %d distinct", recs, s.packSnap().distinct())
 		}
 		s.Close()
 	}
@@ -29614,8 +29615,8 @@ func TestPack_MalformedPacksRejectedSafely(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer s.Close()
-			if len(s.packIdx) != 0 || len(s.packBad) != 1 {
-				t.Fatalf("index=%d bad=%d", len(s.packIdx), len(s.packBad))
+			if s.packSnap().distinct() != 0 || len(s.packSnap().bad) != 1 {
+				t.Fatalf("index=%d bad=%d", s.packSnap().distinct(), len(s.packSnap().bad))
 			}
 			vr, err := s.Verify(false)
 			if err != nil || vr.OK() {
@@ -29643,8 +29644,8 @@ func TestPack_UnpublishedArtifactsIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if len(s.packs) != 1 || len(s.packBad) != 0 {
-		t.Fatalf("packs=%d bad=%d", len(s.packs), len(s.packBad))
+	if len(s.packSnap().packs) != 1 || len(s.packSnap().bad) != 0 {
+		t.Fatalf("packs=%d bad=%d", len(s.packSnap().packs), len(s.packSnap().bad))
 	}
 	if _, got, err := s.GetObject("b", "random"); err != nil || !bytes.Equal(got, data["random"]) {
 		t.Fatalf("read with stray artifacts: %v", err)
@@ -29703,7 +29704,7 @@ func flipPackedByte(t *testing.T, s *Store, sum [32]byte) {
 	if !ok {
 		t.Fatal("chunk not packed")
 	}
-	f, err := os.OpenFile(s.packs[loc.pack].path, os.O_RDWR, 0)
+	f, err := os.OpenFile(s.packSnap().packs[loc.pack].path, os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29947,7 +29948,7 @@ func TestPack_CompactCrashPoints(t *testing.T) {
 				return s
 			}
 			s := check("after crash")
-			if published := len(s.packs) > 0; published != c.wantPublished {
+			if published := len(s.packSnap().packs) > 0; published != c.wantPublished {
 				t.Fatalf("published=%v want %v", published, c.wantPublished)
 			}
 			s.Close()
@@ -30529,7 +30530,7 @@ func publishCopyPack(t *testing.T, s *Store, shas [][32]byte) packInfo {
 
 func livePackedDigests(t *testing.T, s *Store, ref map[string]bool, u packUsage) [][32]byte {
 	t.Helper()
-	_, entries, err := loadPackFile(s.packs[u.idx].path)
+	_, entries, err := loadPackFile(s.packSnap().packs[u.idx].path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31175,7 +31176,7 @@ func TestRepack_RefusesUnsafeLiveSet(t *testing.T) {
 	_, man, _ := s.HeadObject("b", "live")
 	sum, _ := decodeHexSHA256(man.Chunks[0].SHA256)
 	loc, _ := s.packLookup(sum)
-	os.Remove(s.packs[loc.pack].path)
+	os.Remove(s.packSnap().packs[loc.pack].path)
 	s.Close()
 	before := packFileSet(t, fx.dir)
 	if _, err := repackStore(fx.dir, repackTestOpt); !errors.Is(err, errGCUnsafe) {
@@ -31452,8 +31453,8 @@ func TestPackCompression_MixedObjectReadsAndRanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if len(s.packs) != 1 || s.packs[0].deflated == 0 || s.packs[0].deflated == s.packs[0].records {
-		t.Fatalf("want one mixed raw/deflate pack: %+v", s.packs)
+	if len(s.packSnap().packs) != 1 || s.packSnap().packs[0].deflated == 0 || s.packSnap().packs[0].deflated == s.packSnap().packs[0].records {
+		t.Fatalf("want one mixed raw/deflate pack: %+v", s.packSnap().packs)
 	}
 	_, man, _ := s.HeadObject("b", "mixed")
 	if _, got, err := s.GetObject("b", "mixed"); err != nil || !bytes.Equal(got, data) {
@@ -31467,8 +31468,8 @@ func TestPackCompression_MixedObjectReadsAndRanges(t *testing.T) {
 	}
 	// A fresh open indexes the pack from footers alone: a record whose
 	// payload is garbage still opens, and only its own read fails.
-	b, _ := os.ReadFile(s.packs[0].path)
-	_, entries, _ := loadPackFile(s.packs[0].path)
+	b, _ := os.ReadFile(s.packSnap().packs[0].path)
+	_, entries, _ := loadPackFile(s.packSnap().packs[0].path)
 	for _, e := range entries {
 		if e.codec == packCodecDeflate {
 			for i := uint32(0); i < e.stored; i++ {
@@ -31484,7 +31485,7 @@ func TestPackCompression_MixedObjectReadsAndRanges(t *testing.T) {
 	} else {
 		s2.Close()
 	}
-	if err := os.WriteFile(filepath.Join(dir2, "packs", filepath.Base(s.packs[0].path)), b, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir2, "packs", filepath.Base(s.packSnap().packs[0].path)), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var m0, m1 runtime.MemStats
@@ -31495,8 +31496,8 @@ func TestPackCompression_MixedObjectReadsAndRanges(t *testing.T) {
 	}
 	defer s2.Close()
 	runtime.ReadMemStats(&m1)
-	if len(s2.packIdx) != len(entries) || len(s2.packBad) != 0 {
-		t.Fatalf("open must index payload-damaged packs without decoding: idx=%d bad=%d", len(s2.packIdx), len(s2.packBad))
+	if s2.packSnap().distinct() != len(entries) || len(s2.packSnap().bad) != 0 {
+		t.Fatalf("open must index payload-damaged packs without decoding: idx=%d bad=%d", s2.packSnap().distinct(), len(s2.packSnap().bad))
 	}
 	if d := m1.TotalAlloc - m0.TotalAlloc; d > 4<<20 {
 		t.Fatalf("open allocated %d bytes", d)
@@ -31647,8 +31648,8 @@ func TestPackCompression_InvalidRecordLengthsRejectedAtOpen(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer s.Close()
-			if len(s.packIdx) != 0 || len(s.packBad) != 1 {
-				t.Fatalf("index=%d bad=%d", len(s.packIdx), len(s.packBad))
+			if s.packSnap().distinct() != 0 || len(s.packSnap().bad) != 1 {
+				t.Fatalf("index=%d bad=%d", s.packSnap().distinct(), len(s.packSnap().bad))
 			}
 		})
 	}
@@ -31693,8 +31694,8 @@ func TestPackCompression_CorruptCompressedRecordsFailSafely(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer s.Close()
-			if len(s.packBad) != 0 || len(s.packIdx) != 2 {
-				t.Fatalf("structurally valid pack must index: idx=%d bad=%v", len(s.packIdx), s.packBad)
+			if len(s.packSnap().bad) != 0 || s.packSnap().distinct() != 2 {
+				t.Fatalf("structurally valid pack must index: idx=%d bad=%v", s.packSnap().distinct(), s.packSnap().bad)
 			}
 			loc, ok := s.packLookup(c.rec.sum)
 			if !ok {
@@ -31772,7 +31773,7 @@ func TestPackCompression_MixedRepresentationsOfOneChunk(t *testing.T) {
 		{"contradictory logical lengths are a conflict", [][]testPackRec{{raw, fill(1)}, {{sum, uint32(len(good)) + 100, packCodecDeflate, deflateForTest(t, good, 4)}, fill(2)}}, false, true},
 	}
 	flipMiddle := func(t *testing.T, s *Store, loc packLoc) {
-		f, err := os.OpenFile(s.packs[loc.pack].path, os.O_RDWR, 0)
+		f, err := os.OpenFile(s.packSnap().packs[loc.pack].path, os.O_RDWR, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -31799,8 +31800,8 @@ func TestPackCompression_MixedRepresentationsOfOneChunk(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if (len(s.packClash) > 0) != c.clash {
-				t.Fatalf("clash=%v want %v (%v)", s.packClash, c.clash, s.packClash)
+			if (len(s.packClashes()) > 0) != c.clash {
+				t.Fatalf("clash=%v want %v (%v)", s.packClashes(), c.clash, s.packClashes())
 			}
 			if c.clash {
 				if vr, _ := s.Verify(false); vr.OK() {
@@ -31861,7 +31862,7 @@ func TestPackCompression_DeepVerifyDetectsCompressedPayloadCorruption(t *testing
 	if vr, _ := s.Verify(true); !vr.OK() {
 		t.Fatalf("clean store: %+v", vr.Issues)
 	}
-	f, _ := os.OpenFile(s.packs[loc.pack].path, os.O_RDWR, 0)
+	f, _ := os.OpenFile(s.packSnap().packs[loc.pack].path, os.O_RDWR, 0)
 	var b [1]byte
 	at := int64(loc.off) + int64(loc.stored)/3
 	f.ReadAt(b[:], at)
@@ -31908,7 +31909,7 @@ func TestPackCompression_PhysicalAccounting(t *testing.T) {
 	sum := summarizePacks(us)
 	var liveStored, deadStored, liveLogical, allRecords int64
 	for _, u := range us {
-		_, entries, err := loadPackFile(s.packs[u.idx].path)
+		_, entries, err := loadPackFile(s.packSnap().packs[u.idx].path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -32259,5 +32260,491 @@ func TestPackCompression_CLI(t *testing.T) {
 	}
 	if _, _, code = runZeros3CLI(t, bin, "repack", "-store", dir, "-compression", "lz4"); code == 0 {
 		t.Fatal("bad repack compression mode accepted")
+	}
+}
+
+// =============================================================================
+// Z2-06: scalable packed-chunk locator (sorted immutable levels)
+// =============================================================================
+
+// refLocator is the simple map model the locator is checked against: the
+// first copy of a digest is primary, same-length repeats are fallbacks in
+// order, and a repeat whose length contradicts the primary is a clash.
+type refLocator struct {
+	ids   []string
+	prim  map[[32]byte]packLoc
+	dups  map[[32]byte][]packLoc
+	clash []string
+}
+
+func newRefLocator() *refLocator {
+	return &refLocator{prim: map[[32]byte]packLoc{}, dups: map[[32]byte][]packLoc{}}
+}
+
+func (r *refLocator) add(id string, entries []packEntry) {
+	idx := int32(len(r.ids))
+	r.ids = append(r.ids, id)
+	for _, e := range entries {
+		loc := packLoc{pack: idx, codec: e.codec, stored: e.stored, logical: e.logical, off: e.off}
+		prev, ok := r.prim[e.sha]
+		switch {
+		case !ok:
+			r.prim[e.sha] = loc
+		case prev.logical != e.logical:
+			r.clash = append(r.clash, fmt.Sprintf("chunk %x has contradictory lengths %d and %d across packs %s and %s", e.sha, prev.logical, e.logical, r.ids[prev.pack], id))
+		default:
+			r.dups[e.sha] = append(r.dups[e.sha], loc)
+		}
+	}
+}
+
+func locTestPackID(i int) string { return fmt.Sprintf("%064x", i) }
+
+// locTestEntries lays out one pack's records contiguously, as a real pack
+// does. A deflate record is any with stored < logical.
+func locTestEntries(sums [][32]byte, logical func(i int) uint32, deflated func(i int) bool) []packEntry {
+	off := uint64(packHeaderSize + packRecordHeaderSize)
+	out := make([]packEntry, len(sums))
+	for i, sum := range sums {
+		e := packEntry{sha: sum, logical: logical(i), codec: packCodecRaw, off: off}
+		e.stored = e.logical
+		if deflated(i) {
+			e.codec, e.stored = packCodecDeflate, e.logical/2
+		}
+		out[i] = e
+		off += uint64(e.stored) + packRecordHeaderSize
+	}
+	return out
+}
+
+// locTestBuild builds the locator three ways: one open-time batch, one pack
+// at a time (as publication does), and a batch followed by single packs.
+func locTestBuild(mode string, packs [][]packEntry) (*packState, *refLocator, error) {
+	ref := newRefLocator()
+	st := &packState{}
+	split := len(packs)
+	if mode == "mixed" {
+		split = len(packs) / 2
+	}
+	if mode != "incremental" {
+		var recs []locRec
+		for i := 0; i < split; i++ {
+			st.packs = append(st.packs, packInfo{id: locTestPackID(i)})
+			for j := range packs[i] {
+				recs = append(recs, mkLocRec(&packs[i][j], uint32(i)))
+			}
+		}
+		st.index(recs)
+	} else {
+		split = 0
+	}
+	for i := split; i < len(packs); i++ {
+		var err error
+		if st, err = st.withPack(packInfo{id: locTestPackID(i)}, packs[i]); err != nil {
+			return nil, nil, err
+		}
+	}
+	for i, p := range packs {
+		ref.add(locTestPackID(i), p)
+	}
+	return st, ref, nil
+}
+
+func locTestCheck(t *testing.T, st *packState, ref *refLocator, probes [][32]byte) {
+	t.Helper()
+	probe := func(sum [32]byte) {
+		want, ok := ref.prim[sum]
+		got, gok := st.lookup(sum)
+		if ok != gok || ok && got != want {
+			t.Fatalf("lookup %x: got %+v,%v want %+v,%v", sum, got, gok, want, ok)
+		}
+		locs := st.appendLocs(nil, sum)
+		var wantLocs []packLoc
+		if ok {
+			wantLocs = append([]packLoc{want}, ref.dups[sum]...)
+		}
+		if !reflect.DeepEqual(locs, wantLocs) {
+			t.Fatalf("locs %x: got %+v want %+v", sum, locs, wantLocs)
+		}
+	}
+	for sum := range ref.prim {
+		probe(sum)
+	}
+	for _, sum := range probes {
+		probe(sum)
+	}
+	seen := map[[32]byte]bool{}
+	for sum, loc := range st.primaries() {
+		if seen[*sum] || ref.prim[*sum] != loc {
+			t.Fatalf("iteration: %x repeated=%v loc=%+v want %+v", *sum, seen[*sum], loc, ref.prim[*sum])
+		}
+		seen[*sum] = true
+	}
+	if len(seen) != len(ref.prim) || st.distinct() != len(ref.prim) {
+		t.Fatalf("iterated %d distinct %d want %d", len(seen), st.distinct(), len(ref.prim))
+	}
+	if !reflect.DeepEqual(append([]string(nil), st.clash...), append([]string(nil), ref.clash...)) {
+		t.Fatalf("clashes: got %v want %v", st.clash, ref.clash)
+	}
+	if len(st.levels) > 24 {
+		t.Fatalf("levels = %d", len(st.levels))
+	}
+}
+
+// locTestUniverse mixes ordinary digests, all 256 leading bytes, the
+// extremes, and a crowd sharing a 4-byte prefix (one large table bucket).
+func locTestUniverse(rng *rand.Rand) [][32]byte {
+	var u [][32]byte
+	for i := 0; i < 1500; i++ {
+		u = append(u, sha256.Sum256([]byte(fmt.Sprintf("locator-%d-%d", rng.Int63(), i))))
+	}
+	for b := 0; b < 256; b++ {
+		var s [32]byte
+		rng.Read(s[:])
+		s[0] = byte(b)
+		u = append(u, s)
+	}
+	var lo, hi [32]byte
+	for i := range hi {
+		hi[i] = 0xff
+	}
+	lo[31], hi[31] = 1, 0xfe
+	u = append(u, lo, hi)
+	var crowd [32]byte
+	rng.Read(crowd[:])
+	for i := 0; i < 400; i++ {
+		s := crowd
+		rng.Read(s[4:])
+		u = append(u, s)
+	}
+	return u
+}
+
+func locTestProbes(rng *rand.Rand, universe [][32]byte) [][32]byte {
+	probes := [][32]byte{{}, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}}
+	for i := 0; i < 600; i++ {
+		var s [32]byte
+		rng.Read(s[:])
+		probes = append(probes, s)
+		n := universe[rng.Intn(len(universe))]
+		n[31]++
+		probes = append(probes, n)
+		n[31] -= 2
+		probes = append(probes, n)
+	}
+	return probes
+}
+
+func TestLocator_DifferentialAgainstReferenceMap(t *testing.T) {
+	for seed := int64(1); seed <= 6; seed++ {
+		rng := rand.New(rand.NewSource(seed))
+		universe := locTestUniverse(rng)
+		lengths := make([]uint32, len(universe))
+		for i := range lengths {
+			lengths[i] = uint32(16 + rng.Intn(cdcMaxChunkSize-16))
+		}
+		var packs [][]packEntry
+		for p, n := 0, 3+rng.Intn(14); p < n; p++ {
+			pick := rng.Perm(len(universe))[:rng.Intn(900)]
+			sums := make([][32]byte, len(pick))
+			for i, u := range pick {
+				sums[i] = universe[u]
+			}
+			packs = append(packs, locTestEntries(sums,
+				func(i int) uint32 {
+					if rng.Intn(100) == 0 {
+						return lengths[pick[i]] + 1 // contradicts every other copy
+					}
+					return lengths[pick[i]]
+				},
+				func(int) bool { return rng.Intn(2) == 0 }))
+		}
+		probes := locTestProbes(rng, universe)
+		for _, mode := range []string{"batch", "incremental", "mixed"} {
+			t.Run(fmt.Sprintf("seed%d/%s", seed, mode), func(t *testing.T) {
+				st, ref, err := locTestBuild(mode, packs)
+				if err != nil {
+					t.Fatal(err)
+				}
+				locTestCheck(t, st, ref, probes)
+			})
+		}
+	}
+}
+
+func TestLocator_TableCases(t *testing.T) {
+	sum := func(first byte, rest ...byte) (s [32]byte) {
+		s[0] = first
+		copy(s[1:], rest)
+		return
+	}
+	var all256 [][32]byte
+	for b := 0; b < 256; b++ {
+		all256 = append(all256, sum(byte(b), 7))
+	}
+	var crowd [][32]byte
+	for i := 0; i < 300; i++ {
+		s := sum(0x80, 1, 2, 3)
+		binary.BigEndian.PutUint16(s[10:], uint16(i))
+		crowd = append(crowd, s)
+	}
+	fixed := func(l uint32) func(int) uint32 { return func(int) uint32 { return l } }
+	raw := func(int) bool { return false }
+	alt := func(i int) bool { return i%2 == 1 }
+	cases := []struct {
+		name                   string
+		packs                  [][]packEntry
+		distinct, clashes, dup int
+	}{
+		{"empty", nil, 0, 0, 0},
+		{"empty pack", [][]packEntry{nil}, 0, 0, 0},
+		{"one entry", [][]packEntry{locTestEntries([][32]byte{sum(0x42)}, fixed(100), raw)}, 1, 0, 0},
+		{"first and last prefix", [][]packEntry{locTestEntries([][32]byte{sum(0x00), sum(0xff, 0xff, 0xff)}, fixed(100), raw)}, 2, 0, 0},
+		{"all 256 prefixes", [][]packEntry{locTestEntries(all256, fixed(4096), alt)}, 256, 0, 0},
+		{"large bucket", [][]packEntry{locTestEntries(crowd, fixed(4096), alt)}, 300, 0, 0},
+		{"duplicate across packs", [][]packEntry{
+			locTestEntries(all256[:10], fixed(500), raw), locTestEntries(all256[:10], fixed(500), raw)}, 10, 0, 10},
+		{"raw then compressed copy", [][]packEntry{
+			locTestEntries(all256[:4], fixed(500), raw), locTestEntries(all256[:4], fixed(500), func(int) bool { return true })}, 4, 0, 4},
+		{"several duplicates", [][]packEntry{
+			locTestEntries(all256[:3], fixed(64), raw), locTestEntries(all256[:3], fixed(64), alt),
+			locTestEntries(all256[:3], fixed(64), raw), locTestEntries(all256[1:2], fixed(64), raw)}, 3, 0, 7},
+		{"contradictory lengths", [][]packEntry{
+			locTestEntries(all256[:5], fixed(500), raw), locTestEntries(all256[3:8], fixed(501), raw)}, 8, 2, 0},
+	}
+	for _, c := range cases {
+		for _, mode := range []string{"batch", "incremental", "mixed"} {
+			t.Run(c.name+"/"+mode, func(t *testing.T) {
+				st, ref, err := locTestBuild(mode, c.packs)
+				if err != nil {
+					t.Fatal(err)
+				}
+				locTestCheck(t, st, ref, [][32]byte{sum(0x00, 0xff), sum(0x7f), sum(0x80, 1, 2, 3, 9), sum(0xff, 0xff, 0xff, 1), sum(0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff)})
+				dup := 0
+				for _, d := range ref.dups {
+					dup += len(d)
+				}
+				if st.distinct() != c.distinct || len(st.clash) != c.clashes || dup != c.dup {
+					t.Fatalf("distinct=%d clashes=%d dups=%d, want %d/%d/%d", st.distinct(), len(st.clash), dup, c.distinct, c.clashes, c.dup)
+				}
+			})
+		}
+	}
+}
+
+func TestLocator_PublishedLevelsStayBounded(t *testing.T) {
+	rng := rand.New(rand.NewSource(9))
+	st := &packState{}
+	ref := newRefLocator()
+	for p := 0; p < 200; p++ {
+		sums := make([][32]byte, 40)
+		for i := range sums {
+			rng.Read(sums[i][:])
+		}
+		es := locTestEntries(sums, func(i int) uint32 { return uint32(100 + i) }, func(int) bool { return false })
+		var err error
+		if st, err = st.withPack(packInfo{id: locTestPackID(p)}, es); err != nil {
+			t.Fatal(err)
+		}
+		ref.add(locTestPackID(p), es)
+		if len(st.levels) > 12 {
+			t.Fatalf("after %d packs: %d levels", p+1, len(st.levels))
+		}
+	}
+	locTestCheck(t, st, ref, nil)
+}
+
+// A reload swaps the locator whole: readers racing with reloadPacks must
+// find every packed chunk at every instant.
+func TestLocator_ReloadNeverExposesPartialIndex(t *testing.T) {
+	data := packTestDataset()
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, data, "random", "repeat", "dup-a")
+	compactTestDir(t, dir)
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var sums [][32]byte
+	for sum := range s.packSnap().primaries() {
+		sums = append(sums, *sum)
+	}
+	if len(sums) < 10 {
+		t.Fatalf("only %d packed chunks", len(sums))
+	}
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	var misses atomic.Int64
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				for _, sum := range sums {
+					if _, ok := s.packLookup(sum); !ok {
+						misses.Add(1)
+					}
+					if len(s.packLocs(sum)) == 0 {
+						misses.Add(1)
+					}
+				}
+			}
+		}()
+	}
+	for i := 0; i < 60; i++ {
+		if err := s.reloadPacks(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+	if misses.Load() != 0 {
+		t.Fatalf("readers missed packed chunks %d times during reload", misses.Load())
+	}
+}
+
+// Chunks that live only inside a pack are found by ingest, so re-ingesting
+// the same content writes no loose chunk, and the locator survives a restart.
+func TestLocator_PackedOnlyChunksDeduplicateAfterRestart(t *testing.T) {
+	data := packTestDataset()
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, data, "random", "repeat")
+	compactTestDir(t, dir)
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := packTestStats(t, s); st.LooseChunkCount != 0 || st.PackCount == 0 {
+		t.Fatalf("fixture: loose=%d packs=%d", st.LooseChunkCount, st.PackCount)
+	}
+	s.Close()
+	putPackTestObjects(t, dir, map[string][]byte{"copy-random": data["random"], "copy-repeat": data["repeat"]}, "copy-random", "copy-repeat")
+	s, err = OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if st := packTestStats(t, s); st.LooseChunkCount != 0 {
+		t.Fatalf("packed chunks were rewritten loose: %d", st.LooseChunkCount)
+	}
+	for _, k := range []string{"copy-random", "copy-repeat"} {
+		want := data[strings.TrimPrefix(k, "copy-")]
+		_, _, got, err := s.GetObjectRange("b", k, byteRange{0, int64(len(want)) - 1})
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("%s: err=%v", k, err)
+		}
+	}
+}
+
+func z206Sum(i uint64) (out [32]byte) {
+	x := i*0x9E3779B97F4A7C15 + 0x1234567
+	for w := 0; w < 4; w++ {
+		x += 0x9E3779B97F4A7C15
+		z := x
+		z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9
+		z = (z ^ (z >> 27)) * 0x94D049BB133111EB
+		z ^= z >> 31
+		binary.LittleEndian.PutUint64(out[w*8:], z)
+	}
+	return
+}
+
+func z206Entry(i uint64) packEntry {
+	l := uint32(1 + i%cdcMaxChunkSize)
+	return packEntry{sha: z206Sum(i), off: 16 + 44 + (i%1000)*300000, stored: l, logical: l}
+}
+
+func z206HeapAfterGC() uint64 {
+	runtime.GC()
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.HeapAlloc
+}
+
+// TestLocatorScale measures the locator representation alone on synthetic
+// records (no pack payload): ZEROS3_LOCATOR_SCALE=100000,1000000,5000000.
+// Every hundredth digest also has a fallback copy in a final pack.
+func TestLocatorScale(t *testing.T) {
+	sizes := strings.Split(os.Getenv("ZEROS3_LOCATOR_SCALE"), ",")
+	if sizes[0] == "" {
+		t.Skip("set ZEROS3_LOCATOR_SCALE to a comma-separated list of record counts")
+	}
+	for _, field := range sizes {
+		n, err := strconv.Atoi(field)
+		if err != nil || n <= 0 {
+			t.Fatalf("bad size %q", field)
+		}
+		const per = 50000
+		base := z206HeapAfterGC()
+		start := time.Now()
+		ps := &packState{}
+		recs := make([]locRec, 0, n+n/100)
+		add := func(id int, es []packEntry) {
+			ps.packs = append(ps.packs, packInfo{id: locTestPackID(id), records: len(es)})
+			for i := range es {
+				recs = append(recs, mkLocRec(&es[i], uint32(id)))
+			}
+		}
+		packs := (n + per - 1) / per
+		for p := 0; p < packs; p++ {
+			es := make([]packEntry, 0, per)
+			for i := p * per; i < min((p+1)*per, n); i++ {
+				es = append(es, z206Entry(uint64(i)))
+			}
+			add(p, es)
+		}
+		var dups []packEntry
+		for i := 0; i < n; i += 100 {
+			dups = append(dups, z206Entry(uint64(i)))
+		}
+		add(packs, dups)
+		ps.index(recs)
+		recs = nil
+		build := time.Since(start)
+		heap := int64(z206HeapAfterGC() - base)
+		if ps.distinct() != n || len(ps.clash) != 0 {
+			t.Fatalf("n=%d: distinct=%d clashes=%d", n, ps.distinct(), len(ps.clash))
+		}
+
+		const probes = 1_000_000
+		lap := time.Now()
+		for j := 0; j < probes; j++ {
+			if _, ok := ps.lookup(z206Sum(uint64(j) * 2654435761 % uint64(n))); !ok {
+				t.Fatalf("n=%d: present digest missing", n)
+			}
+		}
+		pos := time.Since(lap)
+		lap = time.Now()
+		for j := 0; j < probes; j++ {
+			if _, ok := ps.lookup(z206Sum(uint64(n) + uint64(j)*7)); ok {
+				t.Fatalf("n=%d: absent digest found", n)
+			}
+		}
+		neg := time.Since(lap)
+		lap = time.Now()
+		var locs [4]packLoc
+		nd := 0
+		for i := 0; i < n; i += 100 {
+			if len(ps.appendLocs(locs[:0], z206Sum(uint64(i)))) != 2 {
+				t.Fatalf("n=%d: digest %d lacks its fallback", n, i)
+			}
+			nd++
+		}
+		dup := time.Since(lap)
+		lap = time.Now()
+		it := 0
+		for range ps.primaries() {
+			it++
+		}
+		iter := time.Since(lap)
+		if it != n {
+			t.Fatalf("n=%d: iterated %d", n, it)
+		}
+		t.Logf("n=%d build=%v heap=%.1fMiB (%.1f B/digest) lookup hit=%dns miss=%dns fallback=%dns iterate=%v",
+			n, build.Round(time.Millisecond), float64(heap)/(1<<20), float64(heap)/float64(n),
+			pos.Nanoseconds()/probes, neg.Nanoseconds()/probes, dup.Nanoseconds()/int64(nd), iter.Round(time.Microsecond))
+		runtime.KeepAlive(ps)
 	}
 }

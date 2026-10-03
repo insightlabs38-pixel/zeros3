@@ -175,8 +175,10 @@ exclusively, like `gc -apply`; `-pack-size-mib`, `-compression`, `-dry-run`,
 64 MiB of chunk data, re-hashing every chunk and verifying each pack before
 publishing it, and only then removes the loose files, so an interruption can
 leave redundant copies but never lose the only one. Packs are plain files under
-`packs/` carrying their own index, rebuilt at open — no database. Objects,
-manifests, ETags, history, snapshots, forks and replication are logically
+`packs/` carrying their own index, rebuilt at open — no database. The
+in-memory chunk locator built from those indexes costs about 54 bytes per
+distinct packed chunk, is never persisted, and is never trusted for content.
+Objects, manifests, ETags, history, snapshots, forks and replication are logically
 unchanged, and a store can hold loose chunks, packed chunks, or both; every
 read re-verifies the chunk's SHA-256 and prefers the packed copy, falling
 back to a loose one. `stats` splits loose from packed counts and bytes, and
