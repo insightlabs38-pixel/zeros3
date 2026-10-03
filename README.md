@@ -175,8 +175,10 @@ exclusively, like `gc -apply`; `-pack-size-mib`, `-compression`, `-dry-run`,
 64 MiB of chunk data, re-hashing every chunk and verifying each pack before
 publishing it, and only then removes the loose files, so an interruption can
 leave redundant copies but never lose the only one. Packs are plain files under
-`packs/` carrying their own index, rebuilt at open — no database. Objects,
-manifests, ETags, history, snapshots, forks and replication are logically
+`packs/` carrying their own index, rebuilt at open — no database. The
+in-memory chunk locator built from those indexes costs about 54 bytes per
+distinct packed chunk, is never persisted, and is never trusted for content.
+Objects, manifests, ETags, history, snapshots, forks and replication are logically
 unchanged, and a store can hold loose chunks, packed chunks, or both; every
 read re-verifies the chunk's SHA-256 and prefers the packed copy, falling
 back to a loose one. `stats` splits loose from packed counts and bytes, and
@@ -295,8 +297,15 @@ compacted into 96 immutable packs: 95,764 store files became 124, physical
 bytes grew 0.14%, `compact` ran at 61 MiB/s with 50 MiB peak RSS. With a
 cold page cache, full GET of a 256 MiB object went from 212 to 326 MiB/s,
 a 1 MiB range GET from 9.4 to 7.4 ms on average, and server open from 19
-to 93 ms (server peak RSS 18 to 28 MiB). A synthetic 1M-record index opens
-in 0.6 s using ~128 MiB of heap. Single runs, 4 vCPU.
+to 93 ms (server peak RSS 18 to 28 MiB). Single runs, 4 vCPU.
+
+**Packed chunk locator.** The in-memory locator is a sorted array of 52-byte
+records plus a prefix table, replacing a Go map. Synthetic stores of tiny
+chunks: 1M packed chunks open in 0.52 s with 51 MiB of locator heap (map: 0.71 s,
+128 MiB); 5M open in 2.7 s with 256 MiB (map: 3.6 s, 513 MiB), peak RSS 539 MiB
+(725). Point lookups stay at 0.3-0.5 us (hit or miss); a real store's full GET,
+1 MiB range GET and packed-only dedup PUT were unchanged within noise. Single
+runs, 4 vCPU.
 
 **Packed compression.** 64 MiB per data family compacted raw and adaptive
 (`-compression off` / `auto`), single runs, 4 vCPU: English text saved 70.4%
