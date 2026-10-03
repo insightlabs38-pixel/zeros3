@@ -62,31 +62,33 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      393    Content-defined chunking (CDC)
-//      519    Content-addressed chunk storage (CAS)
-//      626    Manifests (immutable, JSON)
-//      725    Visibility journal (append-only, checksummed)
-//     1120    Store: format, namespace, and object CRUD
-//     1853    Version history/restore and ListObjectsV2
-//     2083    SigV4 authentication (header and presigned-URL)
-//     3038    Request payload checksums and S3-shaped XML error/response types
-//     3254    HTTP routing and S3 operation handlers
-//     3647    Conditional operations (PUT/GET/HEAD preconditions)
-//     4213    CopyObject
-//     4507    Multipart upload
-//     5333    Stats and reachability scanning
-//     6044    Verify
-//     6218    Store locking and safe offline GC
-//     6445    Streaming object reads (full and ranged GET)
-//     6570    Delta sync client, credentials, and parallel transfer
-//     8493    Recursive directory sync
-//     8798    Remote replication (`zeros3 replicate`)
-//     9562    Peer-assisted corruption repair (`zeros3 repair`)
-//    10040    Namespace (prefix/bucket) replication
-//    10347    Copy-on-write namespace fork (`zeros3 fork`)
-//    10555    Snapshots and restore
-//    11708    Structural diff and inspect (introspection)
-//    12232    CLI dispatch, HTTP server/startup, and main
+//      414    Content-defined chunking (CDC)
+//      540    Content-addressed chunk storage (CAS)
+//      684    Packed CAS (immutable packs, locator index)
+//     1181    Manifests (immutable, JSON)
+//     1280    Visibility journal (append-only, checksummed)
+//     1675    Store: format, namespace, and object CRUD
+//     2426    Version history/restore and ListObjectsV2
+//     2656    SigV4 authentication (header and presigned-URL)
+//     3611    Request payload checksums and S3-shaped XML error/response types
+//     3827    HTTP routing and S3 operation handlers
+//     4220    Conditional operations (PUT/GET/HEAD preconditions)
+//     4786    CopyObject
+//     5080    Multipart upload
+//     5906    Stats and reachability scanning
+//     6633    Verify
+//     6809    Store locking and safe offline GC
+//     7050    Offline compaction (`zeros3 compact`)
+//     7477    Streaming object reads (full and ranged GET)
+//     7602    Delta sync client, credentials, and parallel transfer
+//     9525    Recursive directory sync
+//     9830    Remote replication (`zeros3 replicate`)
+//    10594    Peer-assisted corruption repair (`zeros3 repair`)
+//    11072    Namespace (prefix/bucket) replication
+//    11379    Copy-on-write namespace fork (`zeros3 fork`)
+//    11587    Snapshots and restore
+//    12740    Structural diff and inspect (introspection)
+//    13264    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -101,6 +103,11 @@ const (
 	storeFormatVersion    = 1
 	cdcFormatVersion      = 1
 	manifestFormatVersion = 1
+	// storeFormatVersionPacked is the version FORMAT.json carries once
+	// `zeros3 compact` has published a pack. Loose-only stores stay at
+	// version 1 (no migration); builds that predate packs reject version 2
+	// at open instead of serving a store whose loose chunks are missing.
+	storeFormatVersionPacked = 2
 
 	// CDC v1 parameters (frozen). See buildGearTable and findCDCBoundary.
 	cdcMinChunkSize    = 16 * 1024
@@ -267,6 +274,10 @@ var (
 	// risk treating reachable-but-corrupt data as garbage.
 	errGCUnsafe = errors.New("authoritative live root set is corrupt or incomplete; refusing to delete anything")
 
+	// errChunkCorrupt marks a CAS read whose bytes do not hash to the
+	// digest that names them, whichever physical copy supplied them.
+	errChunkCorrupt = errors.New("content hash mismatch")
+
 	// errPreconditionFailed (section 10a) is commitObjectRootChecked's
 	// check-function sentinel for a failed S3 conditional-write precondition
 	// (If-None-Match: "*" or If-Match: "<etag>"): the current visible object
@@ -381,6 +392,16 @@ const (
 	// any timing-dependent kill(1) trick -- the same pattern every other
 	// crash test in this file already uses.
 	hookBeforeGCDelete = "before-gc-delete"
+
+	// Compaction publication boundaries (section 13c).
+	hookPackRecordWritten = "pack-record-written"
+	hookPackBeforeSync    = "pack-before-sync"
+	hookPackAfterSync     = "pack-after-sync"
+	hookPackBeforePublish = "pack-before-publish"
+	hookPackAfterRename   = "pack-after-rename"
+	hookPackPublished     = "pack-published"
+	hookBeforeLooseDelete = "before-loose-delete"
+	hookCompactDone       = "compact-done"
 )
 
 // simulatedCrash is panicked by test hooks to unwind out of the commit
@@ -522,6 +543,8 @@ func (c *cdcChunker) next() ([]byte, error) {
 // determines the chunk's storage path (chunks/aa/bb/<64-hex>), so a chunk
 // can never be silently duplicated with different content, and identical
 // content published from two different objects is stored only once.
+// Ingest always writes loose files; `zeros3 compact` can later move chunks
+// into immutable packs (section 4b) without changing their identity.
 // =============================================================================
 
 // chunkPath returns the two-level sharded path for a chunk's digest. The
@@ -539,7 +562,7 @@ func (s *Store) chunkPath(sum [32]byte) string {
 func (s *Store) casWrite(data []byte) ([32]byte, error) {
 	sum := sha256.Sum256(data)
 	path := s.chunkPath(sum)
-	if _, err := os.Stat(path); err == nil {
+	if _, err := s.casStat(sum); err == nil {
 		return sum, nil
 	} else if !os.IsNotExist(err) {
 		return sum, err
@@ -557,19 +580,54 @@ func (s *Store) casWrite(data []byte) ([32]byte, error) {
 	return sum, nil
 }
 
+// casStat reports a chunk's logical length from whichever physical
+// representation holds it, loose first. Like os.Stat on the loose path, a
+// chunk present in neither yields an os.IsNotExist error. It checks
+// presence and recorded length only; content is verified by casRead.
+func (s *Store) casStat(sum [32]byte) (int64, error) {
+	info, err := os.Stat(s.chunkPath(sum))
+	if err == nil {
+		return info.Size(), nil
+	}
+	if os.IsNotExist(err) {
+		if loc, ok := s.packLookup(sum); ok {
+			return int64(loc.logical), nil
+		}
+	}
+	return 0, err
+}
+
 // casRead reads back a chunk and re-verifies its content against the
 // digest that names it, so that on-disk corruption (bit rot, a truncated
 // write that somehow left a full-length file, manual tampering) is
-// reported as an error rather than trusted blindly.
+// reported as an error rather than trusted blindly. A chunk may exist as
+// a packed record, a loose file, or both; the packed copy is tried first
+// and any copy that fails verification falls through to the next, so a
+// good copy is served whenever one exists and corrupt bytes never are.
 func (s *Store) casRead(sum [32]byte) ([]byte, error) {
+	var packErr error
+	if loc, ok := s.packLookup(sum); ok {
+		data, err := s.readPacked(sum, loc)
+		if err == nil {
+			return data, nil
+		}
+		packErr = err
+	}
 	data, err := os.ReadFile(s.chunkPath(sum))
-	if err != nil {
-		return nil, err
+	if err == nil {
+		if got := sha256.Sum256(data); got != sum {
+			err = fmt.Errorf("cas: chunk %x is corrupt (%w)", sum, errChunkCorrupt)
+		} else {
+			return data, nil
+		}
 	}
-	if got := sha256.Sum256(data); got != sum {
-		return nil, fmt.Errorf("cas: chunk %x is corrupt (content hash mismatch)", sum)
+	if packErr != nil && os.IsNotExist(err) {
+		return nil, packErr
 	}
-	return data, nil
+	if packErr != nil {
+		return nil, fmt.Errorf("%w; loose copy: %v", packErr, err)
+	}
+	return nil, err
 }
 
 // ingestResult is what one streaming pass over an object's bytes yields:
@@ -620,6 +678,503 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
 		etagSum.Sum(res.etagMD5[:0])
 	}
 	return res, nil
+}
+
+// =============================================================================
+// 4b. Packed CAS (immutable packs and the chunk locator index)
+//
+// A pack is a second physical representation of CAS chunks. Chunk identity
+// is unchanged -- logical SHA-256 plus logical length -- and nothing above
+// the CAS (manifests, journal, snapshots, replication, CDC) knows or cares
+// whether a chunk is a loose file or a packed record. Packs are written
+// only by `zeros3 compact` (section 13c) and are never modified after
+// publication; dead records are reclaimed by rewriting, never in place.
+//
+// Pack v1 file (packs/<id>.pack, id = hex of body_sha256), little-endian:
+//
+//	header  16 B  "ZSPK" | version u16 | flags u16 (0) | reserved [8] (0)
+//	record  ...   sha256 [32] | logical_len u32 | stored_len u32 |
+//	              codec u8 | reserved [3] (0) | payload [stored_len]
+//	index   52 B per record, in record order:
+//	              sha256 [32] | payload_offset u64 | stored_len u32 |
+//	              logical_len u32 | codec u8 | reserved [3] (0)
+//	footer  64 B  "ZSPF" | version u16 | flags u16 (0) | record_count u64 |
+//	              index_offset u64 | body_sha256 [32] | index_crc32c u32 |
+//	              footer_crc32c u32 (over the preceding 60 bytes)
+//
+// body_sha256 covers every byte before the footer. codec 0 stores the raw
+// logical bytes (stored_len == logical_len); any other codec is rejected,
+// which is the extension point for per-record compression. Records tile
+// the file exactly: the first payload follows the header and its record
+// header, and each later payload follows the previous one, so offsets and
+// lengths are validated arithmetically before any payload is touched.
+// Every record header is repeated in the index, so the index is only an
+// acceleration structure: it can be rebuilt by scanning the records.
+//
+// The in-memory locator index (Store.packIdx) is rebuilt from the pack
+// footers/indexes at open and is never trusted for content: every packed
+// read re-checks the record header and re-hashes the payload exactly as a
+// loose read does.
+// =============================================================================
+
+const (
+	packMagic            = "ZSPK"
+	packFooterMagic      = "ZSPF"
+	packFormatVersion    = uint16(1)
+	packHeaderSize       = 16
+	packRecordHeaderSize = 44
+	packIndexEntrySize   = 52
+	packFooterSize       = 64
+	packCodecRaw         = byte(0)
+	packFileSuffix       = ".pack"
+	// maxPackedChunkBytes bounds one record's logical length; it matches
+	// the largest chunk CDC v1 can emit, so no valid record is rejected.
+	maxPackedChunkBytes = cdcMaxChunkSize
+)
+
+type packEntry struct {
+	sha     [32]byte
+	off     uint64 // payload offset within the pack file
+	stored  uint32
+	logical uint32
+	codec   byte
+}
+
+type packInfo struct {
+	id      string
+	path    string
+	size    int64
+	records int
+}
+
+// packLoc locates one packed chunk: packs[pack] plus the record fields.
+type packLoc struct {
+	pack    int32
+	codec   byte
+	stored  uint32
+	logical uint32
+	off     uint64
+}
+
+// packProblem is a published pack that failed structural validation at
+// open. Its records are not indexed (its chunks read as missing unless a
+// loose copy exists) and verify reports it.
+type packProblem struct {
+	name string
+	err  error
+}
+
+var packCRC = castagnoliTable
+
+func putPackRecordHeader(b []byte, e packEntry) {
+	copy(b[0:32], e.sha[:])
+	binary.LittleEndian.PutUint32(b[32:36], e.logical)
+	binary.LittleEndian.PutUint32(b[36:40], e.stored)
+	b[40] = e.codec
+	b[41], b[42], b[43] = 0, 0, 0
+}
+
+func putPackIndexEntry(b []byte, e packEntry) {
+	copy(b[0:32], e.sha[:])
+	binary.LittleEndian.PutUint64(b[32:40], e.off)
+	binary.LittleEndian.PutUint32(b[40:44], e.stored)
+	binary.LittleEndian.PutUint32(b[44:48], e.logical)
+	b[48] = e.codec
+	b[49], b[50], b[51] = 0, 0, 0
+}
+
+func putPackHeader(b []byte) {
+	copy(b[0:4], packMagic)
+	binary.LittleEndian.PutUint16(b[4:6], packFormatVersion)
+	for i := 6; i < packHeaderSize; i++ {
+		b[i] = 0
+	}
+}
+
+func putPackFooter(b []byte, count, indexOff uint64, bodySHA [32]byte, indexCRC uint32) {
+	copy(b[0:4], packFooterMagic)
+	binary.LittleEndian.PutUint16(b[4:6], packFormatVersion)
+	binary.LittleEndian.PutUint16(b[6:8], 0)
+	binary.LittleEndian.PutUint64(b[8:16], count)
+	binary.LittleEndian.PutUint64(b[16:24], indexOff)
+	copy(b[24:56], bodySHA[:])
+	binary.LittleEndian.PutUint32(b[56:60], indexCRC)
+	binary.LittleEndian.PutUint32(b[60:64], crc32.Checksum(b[:60], packCRC))
+}
+
+func allZero(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// readPackLayout validates a pack's header, footer, and index against its
+// file size without reading any payload, and returns the entries and the
+// body SHA-256 the footer claims. Every length and offset is checked
+// arithmetically before it is used to size an allocation or a read.
+func readPackLayout(f io.ReaderAt, size int64) ([]packEntry, [32]byte, error) {
+	var bodySHA [32]byte
+	if size < packHeaderSize+packFooterSize {
+		return nil, bodySHA, fmt.Errorf("pack: file is %d bytes, smaller than header+footer", size)
+	}
+	var hdr [packHeaderSize]byte
+	if _, err := f.ReadAt(hdr[:], 0); err != nil {
+		return nil, bodySHA, fmt.Errorf("pack: reading header: %w", err)
+	}
+	if string(hdr[0:4]) != packMagic {
+		return nil, bodySHA, errors.New("pack: bad header magic")
+	}
+	if v := binary.LittleEndian.Uint16(hdr[4:6]); v != packFormatVersion {
+		return nil, bodySHA, fmt.Errorf("pack: unsupported format version %d", v)
+	}
+	if !allZero(hdr[6:]) {
+		return nil, bodySHA, errors.New("pack: nonzero reserved header bytes")
+	}
+	var ft [packFooterSize]byte
+	if _, err := f.ReadAt(ft[:], size-packFooterSize); err != nil {
+		return nil, bodySHA, fmt.Errorf("pack: reading footer: %w", err)
+	}
+	if string(ft[0:4]) != packFooterMagic {
+		return nil, bodySHA, errors.New("pack: bad footer magic (truncated or unfinished pack)")
+	}
+	if crc32.Checksum(ft[:60], packCRC) != binary.LittleEndian.Uint32(ft[60:64]) {
+		return nil, bodySHA, errors.New("pack: footer checksum mismatch")
+	}
+	if v := binary.LittleEndian.Uint16(ft[4:6]); v != packFormatVersion {
+		return nil, bodySHA, fmt.Errorf("pack: unsupported footer version %d", v)
+	}
+	if binary.LittleEndian.Uint16(ft[6:8]) != 0 {
+		return nil, bodySHA, errors.New("pack: nonzero footer flags")
+	}
+	count := binary.LittleEndian.Uint64(ft[8:16])
+	indexOff := binary.LittleEndian.Uint64(ft[16:24])
+	copy(bodySHA[:], ft[24:56])
+	indexCRC := binary.LittleEndian.Uint32(ft[56:60])
+
+	indexEnd := uint64(size) - packFooterSize
+	if indexOff < packHeaderSize || indexOff > indexEnd {
+		return nil, bodySHA, errors.New("pack: index offset out of range")
+	}
+	indexLen := indexEnd - indexOff
+	if indexLen%packIndexEntrySize != 0 || count != indexLen/packIndexEntrySize {
+		return nil, bodySHA, errors.New("pack: record count does not match index length")
+	}
+
+	entries := make([]packEntry, 0, count)
+	seen := make(map[[32]byte]struct{}, count)
+	br := bufio.NewReaderSize(io.NewSectionReader(f, int64(indexOff), int64(indexLen)), 256<<10)
+	var buf [packIndexEntrySize]byte
+	crc := uint32(0)
+	next := uint64(packHeaderSize)
+	for i := uint64(0); i < count; i++ {
+		if _, err := io.ReadFull(br, buf[:]); err != nil {
+			return nil, bodySHA, fmt.Errorf("pack: reading index entry %d: %w", i, err)
+		}
+		crc = crc32.Update(crc, packCRC, buf[:])
+		var e packEntry
+		copy(e.sha[:], buf[0:32])
+		e.off = binary.LittleEndian.Uint64(buf[32:40])
+		e.stored = binary.LittleEndian.Uint32(buf[40:44])
+		e.logical = binary.LittleEndian.Uint32(buf[44:48])
+		e.codec = buf[48]
+		if !allZero(buf[49:52]) {
+			return nil, bodySHA, fmt.Errorf("pack: index entry %d has nonzero reserved bytes", i)
+		}
+		if e.codec != packCodecRaw {
+			return nil, bodySHA, fmt.Errorf("pack: index entry %d uses unsupported codec %d", i, e.codec)
+		}
+		if e.logical == 0 || e.logical > maxPackedChunkBytes || e.stored != e.logical {
+			return nil, bodySHA, fmt.Errorf("pack: index entry %d has invalid lengths (logical %d, stored %d)", i, e.logical, e.stored)
+		}
+		if e.off != next+packRecordHeaderSize {
+			return nil, bodySHA, fmt.Errorf("pack: index entry %d payload offset %d is not contiguous", i, e.off)
+		}
+		next = e.off + uint64(e.stored)
+		if next > indexOff {
+			return nil, bodySHA, fmt.Errorf("pack: index entry %d payload runs past the record area", i)
+		}
+		if _, dup := seen[e.sha]; dup {
+			return nil, bodySHA, fmt.Errorf("pack: index entry %d repeats chunk %x", i, e.sha)
+		}
+		seen[e.sha] = struct{}{}
+		entries = append(entries, e)
+	}
+	if next != indexOff {
+		return nil, bodySHA, errors.New("pack: records do not end at the index")
+	}
+	if crc != indexCRC {
+		return nil, bodySHA, errors.New("pack: index checksum mismatch")
+	}
+	return entries, bodySHA, nil
+}
+
+func isPackFileName(name string) bool {
+	id, ok := strings.CutSuffix(name, packFileSuffix)
+	if !ok || len(id) != 64 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// statPackFile structurally validates one pack file's layout and index and
+// derives its id from the footer.
+func statPackFile(path string) (packInfo, []packEntry, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return packInfo{}, nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return packInfo{}, nil, err
+	}
+	entries, bodySHA, err := readPackLayout(f, st.Size())
+	if err != nil {
+		return packInfo{}, nil, err
+	}
+	id := hex.EncodeToString(bodySHA[:])
+	return packInfo{id: id, path: path, size: st.Size(), records: len(entries)}, entries, nil
+}
+
+// loadPackFile additionally requires a published pack's name to be the
+// body SHA-256 its footer declares.
+func loadPackFile(path string) (packInfo, []packEntry, error) {
+	info, entries, err := statPackFile(path)
+	if err != nil {
+		return info, nil, err
+	}
+	if filepath.Base(path) != info.id+packFileSuffix {
+		return packInfo{}, nil, fmt.Errorf("pack: file name does not match footer id %s", info.id)
+	}
+	return info, entries, nil
+}
+
+// verifyPackFile streams the whole pack: body SHA-256 against the footer,
+// every record header against its index entry, and every payload against
+// the digest in its record. It gates publication in compaction. Memory is
+// one chunk plus a read buffer.
+func verifyPackFile(path string) (packInfo, []packEntry, error) {
+	info, entries, err := statPackFile(path)
+	if err != nil {
+		return info, nil, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return info, nil, err
+	}
+	defer f.Close()
+	body := sha256.New()
+	r := bufio.NewReaderSize(io.TeeReader(io.LimitReader(f, info.size-packFooterSize), body), 1<<20)
+	if _, err := io.CopyN(io.Discard, r, packHeaderSize); err != nil {
+		return info, nil, fmt.Errorf("pack: reading header: %w", err)
+	}
+	var want, got [packRecordHeaderSize]byte
+	payload := make([]byte, maxPackedChunkBytes)
+	for i, e := range entries {
+		putPackRecordHeader(want[:], e)
+		if _, err := io.ReadFull(r, got[:]); err != nil {
+			return info, nil, fmt.Errorf("pack: reading record %d header: %w", i, err)
+		}
+		if got != want {
+			return info, nil, fmt.Errorf("pack: record %d header disagrees with its index entry", i)
+		}
+		buf := payload[:e.stored]
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return info, nil, fmt.Errorf("pack: record %d payload truncated: %w", i, err)
+		}
+		if sha256.Sum256(buf) != e.sha {
+			return info, nil, fmt.Errorf("pack: record %d payload does not match chunk %x (%w)", i, e.sha, errChunkCorrupt)
+		}
+	}
+	if _, err := io.Copy(io.Discard, r); err != nil {
+		return info, nil, err
+	}
+	if hex.EncodeToString(body.Sum(nil)) != info.id {
+		return info, nil, errors.New("pack: body checksum mismatch")
+	}
+	return info, entries, nil
+}
+
+// checkPackRecords confirms every record header in a published pack still
+// repeats its index entry, reading headers only. Payload integrity is
+// proven per chunk by casRead, so a damaged record nobody references
+// cannot fail verify -- the same rule loose chunks follow.
+func checkPackRecords(path string) error {
+	_, entries, err := loadPackFile(path)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var want, got [packRecordHeaderSize]byte
+	for i, e := range entries {
+		putPackRecordHeader(want[:], e)
+		if _, err := f.ReadAt(got[:], int64(e.off)-packRecordHeaderSize); err != nil {
+			return fmt.Errorf("pack: reading record %d header: %w", i, err)
+		}
+		if got != want {
+			return fmt.Errorf("pack: record %d header disagrees with its index entry", i)
+		}
+	}
+	return nil
+}
+
+// addPackLocked folds one validated pack into the locator index. The
+// first pack (in sorted order) to hold a digest wins; a repeat whose
+// logical length contradicts the first is reported rather than indexed.
+func (s *Store) addPack(info packInfo, entries []packEntry) {
+	s.packMu.Lock()
+	defer s.packMu.Unlock()
+	if s.packIdx == nil {
+		s.packIdx = make(map[[32]byte]packLoc, len(entries))
+	}
+	for _, p := range s.packs {
+		if p.id == info.id {
+			return
+		}
+	}
+	idx := int32(len(s.packs))
+	s.packs = append(s.packs, info)
+	for _, e := range entries {
+		if prev, ok := s.packIdx[e.sha]; ok {
+			if prev.logical != e.logical {
+				s.packClash = append(s.packClash, fmt.Sprintf("chunk %x has contradictory lengths %d and %d across packs %s and %s",
+					e.sha, prev.logical, e.logical, s.packs[prev.pack].id, info.id))
+			}
+			continue
+		}
+		s.packIdx[e.sha] = packLoc{pack: idx, codec: e.codec, stored: e.stored, logical: e.logical, off: e.off}
+	}
+}
+
+// loadPacks discovers published packs under store/packs and rebuilds the
+// locator index. Only files named <64-hex>.pack count as published; staged
+// artifacts live in tmp/, so anything else here is ignored. A published
+// pack that fails validation is recorded and skipped, not fatal: the rest
+// of the store stays readable and verify reports it.
+func (s *Store) loadPacks() error {
+	dir := filepath.Join(s.root, "packs")
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range ents {
+		if e.IsDir() || !isPackFileName(e.Name()) {
+			continue
+		}
+		info, entries, err := loadPackFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			s.packBad = append(s.packBad, packProblem{name: e.Name(), err: err})
+			continue
+		}
+		s.addPack(info, entries)
+	}
+	return nil
+}
+
+func (s *Store) packLookup(sum [32]byte) (packLoc, bool) {
+	s.packMu.RLock()
+	loc, ok := s.packIdx[sum]
+	s.packMu.RUnlock()
+	return loc, ok
+}
+
+// packTotals returns published pack count, packed record count, and pack
+// file bytes for stats.
+func (s *Store) packTotals() (packs, records int, bytes int64) {
+	s.packMu.RLock()
+	defer s.packMu.RUnlock()
+	for _, p := range s.packs {
+		packs++
+		records += p.records
+		bytes += p.size
+	}
+	return
+}
+
+// packUnreachable counts indexed packed records no live root references.
+func (s *Store) packUnreachable(referenced map[string]bool) (packs, records int, bytes int64) {
+	s.packMu.RLock()
+	defer s.packMu.RUnlock()
+	for sum, loc := range s.packIdx {
+		if !referenced[hex.EncodeToString(sum[:])] {
+			records++
+			bytes += int64(loc.stored)
+		}
+	}
+	return len(s.packs), records, bytes
+}
+
+// readPacked reads one packed chunk. The locator is only a hint: the
+// record header must repeat the digest and lengths, and the payload must
+// hash to the digest, before any byte is returned.
+func (s *Store) readPacked(sum [32]byte, loc packLoc) ([]byte, error) {
+	s.packMu.RLock()
+	path := s.packs[loc.pack].path
+	s.packMu.RUnlock()
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("pack: %w", err)
+	}
+	defer f.Close()
+	buf := make([]byte, packRecordHeaderSize+int(loc.stored))
+	if _, err := f.ReadAt(buf, int64(loc.off)-packRecordHeaderSize); err != nil {
+		return nil, fmt.Errorf("pack: reading chunk %x: %w", sum, err)
+	}
+	var want [packRecordHeaderSize]byte
+	putPackRecordHeader(want[:], packEntry{sha: sum, stored: loc.stored, logical: loc.logical, codec: loc.codec})
+	if [packRecordHeaderSize]byte(buf[:packRecordHeaderSize]) != want {
+		return nil, fmt.Errorf("pack: record header for chunk %x disagrees with the index", sum)
+	}
+	data := buf[packRecordHeaderSize:]
+	if sha256.Sum256(data) != sum {
+		return nil, fmt.Errorf("pack: chunk %x is corrupt (%w)", sum, errChunkCorrupt)
+	}
+	return data, nil
+}
+
+// verifyPacks adds pack-level findings to a verify result: packs that
+// failed validation at open, contradictory duplicate records, and a fresh
+// structural (basic) or record-header (deep) check of every indexed pack.
+func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
+	s.packMu.RLock()
+	packs := append([]packInfo(nil), s.packs...)
+	bad := append([]packProblem(nil), s.packBad...)
+	clash := append([]string(nil), s.packClash...)
+	s.packMu.RUnlock()
+
+	for _, b := range bad {
+		res.addIssue("corrupt", "pack "+b.name, b.err.Error())
+	}
+	for _, c := range clash {
+		res.addIssue("corrupt", "packs", c)
+	}
+	for _, p := range packs {
+		res.PacksChecked++
+		var err error
+		if deep {
+			err = checkPackRecords(p.path)
+		} else {
+			_, _, err = loadPackFile(p.path)
+		}
+		if err != nil {
+			res.addIssue("corrupt", "pack "+p.id, err.Error())
+		}
+	}
 }
 
 // =============================================================================
@@ -1234,6 +1789,16 @@ type Store struct {
 	// replay time, and this field is the only new thing OpenStore adds
 	// for M8E.
 	snapshotMu sync.RWMutex
+
+	// packMu guards the pack locator index (section 4b). The index is an
+	// acceleration structure rebuilt from the immutable packs at open; it
+	// only changes in the process that holds exclusive ownership while
+	// compacting.
+	packMu    sync.RWMutex
+	packs     []packInfo
+	packIdx   map[[32]byte]packLoc
+	packBad   []packProblem
+	packClash []string
 }
 
 // OpenStore opens the store rooted at root, initializing it (writing
@@ -1274,7 +1839,15 @@ func OpenStore(root string) (*Store, error) {
 			return nil, fmt.Errorf("store: journal replay failed: %w", err)
 		}
 	}
+	if err := s.loadPacks(); err != nil {
+		j.f.Close()
+		return nil, fmt.Errorf("store: loading packs: %w", err)
+	}
 	return s, nil
+}
+
+func supportedStoreFormat(v int) bool {
+	return v == storeFormatVersion || v == storeFormatVersionPacked
 }
 
 func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
@@ -1284,8 +1857,8 @@ func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
 		if err := json.Unmarshal(data, &format); err != nil {
 			return storeFormat{}, fmt.Errorf("store: FORMAT.json is corrupt: %w", err)
 		}
-		if format.StoreFormatVersion != storeFormatVersion {
-			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports version %d)", format.StoreFormatVersion, storeFormatVersion)
+		if !supportedStoreFormat(format.StoreFormatVersion) {
+			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports versions %d and %d)", format.StoreFormatVersion, storeFormatVersion, storeFormatVersionPacked)
 		}
 		if format.CDCFormatVersion != cdcFormatVersion {
 			return storeFormat{}, fmt.Errorf("store: unsupported CDC format version %d (this build supports version %d)", format.CDCFormatVersion, cdcFormatVersion)
@@ -1957,7 +2530,7 @@ func (s *Store) RestoreObjectVersion(bucket, key, versionID string) (*objectEntr
 		if herr != nil {
 			return nil, manifestV1{}, fmt.Errorf("restore: historical manifest has a malformed chunk reference: %w", herr)
 		}
-		if _, serr := os.Stat(s.chunkPath(sum)); serr != nil {
+		if _, serr := s.casStat(sum); serr != nil {
 			return nil, manifestV1{}, fmt.Errorf("restore: historical chunk %s is not available: %w", c.SHA256, serr)
 		}
 	}
@@ -4292,7 +4865,7 @@ func (s *Store) CopyObject(req CopyObjectRequest) (*objectEntry, manifestV1, err
 		if herr != nil {
 			return nil, manifestV1{}, fmt.Errorf("copy: source manifest has a malformed chunk reference: %w", herr)
 		}
-		if _, serr := os.Stat(s.chunkPath(sum)); serr != nil {
+		if _, serr := s.casStat(sum); serr != nil {
 			return nil, manifestV1{}, fmt.Errorf("copy: source chunk %s is not available: %w", c.SHA256, serr)
 		}
 	}
@@ -5804,28 +6377,31 @@ func (s *Store) computeReachability(deep bool) (reachabilityResult, error) {
 			continue
 		}
 		res.ChunksChecked++
-		path := s.chunkPath(sum)
-		info, serr := os.Stat(path)
-		if serr != nil {
-			if os.IsNotExist(serr) {
-				res.addIssue("missing", "chunk "+sha, "chunk file does not exist")
-			} else {
-				res.addIssue("invalid", "chunk "+sha, serr.Error())
-			}
-			continue
-		}
-		if info.Size() != length {
-			res.addIssue("corrupt", "chunk "+sha, fmt.Sprintf("file length %d does not match reference length %d", info.Size(), length))
-			continue
-		}
-		if deep {
-			data, rerr := os.ReadFile(path)
-			if rerr != nil {
-				res.addIssue("missing", "chunk "+sha, rerr.Error())
+		if loc, ok := s.packLookup(sum); !ok || int64(loc.logical) != length {
+			info, serr := os.Stat(s.chunkPath(sum))
+			if serr != nil {
+				if os.IsNotExist(serr) {
+					res.addIssue("missing", "chunk "+sha, "chunk file does not exist")
+				} else {
+					res.addIssue("invalid", "chunk "+sha, serr.Error())
+				}
 				continue
 			}
-			if got := sha256.Sum256(data); got != sum {
-				res.addIssue("corrupt", "chunk "+sha, "content hash does not match its content-addressed name")
+			if info.Size() != length {
+				res.addIssue("corrupt", "chunk "+sha, fmt.Sprintf("file length %d does not match reference length %d", info.Size(), length))
+				continue
+			}
+		}
+		if deep {
+			if _, rerr := s.casRead(sum); rerr != nil {
+				switch {
+				case os.IsNotExist(rerr):
+					res.addIssue("missing", "chunk "+sha, rerr.Error())
+				case errors.Is(rerr, errChunkCorrupt):
+					res.addIssue("corrupt", "chunk "+sha, "content hash does not match its content-addressed name")
+				default:
+					res.addIssue("corrupt", "chunk "+sha, rerr.Error())
+				}
 				continue
 			}
 		}
@@ -5873,7 +6449,16 @@ type StatsResult struct {
 	// walk.
 	UniqueReachableChunkBytes int64 `json:"unique_reachable_chunk_bytes"`
 
+	// ChunkStoreFileBytes is loose chunk-file bytes plus pack-file bytes;
+	// the Loose*/Pack* fields split it by physical representation. Packed
+	// records are counted as stored, so a chunk present both loose and
+	// packed appears in both counts.
 	ChunkStoreFileBytes  int64 `json:"chunk_store_file_bytes"`
+	LooseChunkCount      int   `json:"loose_chunk_count"`
+	LooseChunkFileBytes  int64 `json:"loose_chunk_file_bytes"`
+	PackCount            int   `json:"pack_count"`
+	PackedChunkCount     int   `json:"packed_chunk_count"`
+	PackFileBytes        int64 `json:"pack_file_bytes"`
 	ManifestFileBytes    int64 `json:"manifest_file_bytes"`
 	JournalFileBytes     int64 `json:"journal_file_bytes"`
 	TemporaryFileBytes   int64 `json:"temporary_file_bytes"`
@@ -6023,16 +6608,20 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 		return StatsResult{}, fmt.Errorf("stats: scanning FORMAT.json: %w", err)
 	}
 
-	res.ChunkStoreFileBytes = chunkScan.totalBytes
+	res.PackCount, res.PackedChunkCount, res.PackFileBytes = s.packTotals()
+	res.LooseChunkCount = chunkScan.totalCount
+	res.LooseChunkFileBytes = chunkScan.totalBytes
+	res.ChunkStoreFileBytes = chunkScan.totalBytes + res.PackFileBytes
 	res.ManifestFileBytes = manifestScan.totalBytes
 	res.JournalFileBytes = journalBytes
 	res.TemporaryFileBytes = tmpBytes
-	res.ActualStoreFileBytes = chunkScan.totalBytes + manifestScan.totalBytes + journalBytes + tmpBytes + formatBytes
+	res.ActualStoreFileBytes = res.ChunkStoreFileBytes + manifestScan.totalBytes + journalBytes + tmpBytes + formatBytes
 	// Every extra chunk/manifest byte here is exactly classified: it
 	// belongs to a file whose digest/UUID is not in the reachable set
 	// computed above, not a naive "store bytes minus unique bytes"
 	// subtraction (STATS_SPEC.md's explicit warning against that
-	// shortcut). tmp/ is always reclaimable: it is same-store staging
+	// shortcut). Unreachable records inside packs are not counted: they
+	// cannot be reclaimed until packs can be rewritten. tmp/ is always reclaimable: it is same-store staging
 	// space only, never referenced by any committed manifest/journal
 	// record (see STORAGE_MODEL.md's publication model).
 	res.ReclaimableBytes = chunkScan.unreachableBytes + manifestScan.unreachableBytes + tmpBytes
@@ -6065,6 +6654,7 @@ type VerifyResult struct {
 
 	ManifestsChecked int `json:"manifests_checked"`
 	ChunksChecked    int `json:"chunks_checked"`
+	PacksChecked     int `json:"packs_checked"`
 
 	// Live root counts by category (section 12a) -- doctor-style lifecycle
 	// visibility: how many current objects, retained historical versions,
@@ -6102,7 +6692,7 @@ func (r VerifyResult) OK() bool {
 func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res := VerifyResult{Deep: deep}
 
-	if s.format.StoreFormatVersion != storeFormatVersion ||
+	if !supportedStoreFormat(s.format.StoreFormatVersion) ||
 		s.format.CDCFormatVersion != cdcFormatVersion ||
 		s.format.HashAlgorithm != "sha256" {
 		res.addIssue("invalid", "FORMAT.json", "unsupported store/CDC format version or hash algorithm")
@@ -6124,6 +6714,7 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res.Corrupt = rr.Corrupt
 	res.Invalid = rr.Invalid
 	res.Issues = append(res.Issues, rr.Issues...)
+	s.verifyPacks(deep, &res)
 
 	// --- Deep only: whole-object digest ---
 	//
@@ -6242,6 +6833,10 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 // each file is removed independently with no transactional deletion
 // metadata, so an interruption mid-sweep can only ever leave some garbage
 // still on disk -- it can never touch a file reachability classified live.
+//
+// GC only ever deletes loose chunk files. Packs are immutable and shared by
+// many chunks, so they are never deleted or edited here; unreachable packed
+// records are reported but stay on disk until pack-aware repacking exists.
 // =============================================================================
 
 // storeLock holds one non-blocking flock on a store's dedicated LOCK file
@@ -6303,6 +6898,14 @@ type GCResult struct {
 	ReachablePayloadBytes   int64 `json:"reachable_payload_bytes"`
 	ReclaimablePayloadBytes int64 `json:"reclaimable_payload_bytes"`
 	ReclaimableDiskBytes    int64 `json:"reclaimable_disk_bytes"`
+
+	// Packed storage is never swept: a pack is immutable, and deleting it
+	// for one dead record would destroy its live neighbors. Unreachable
+	// packed records are only reported (and excluded from every
+	// reclaimable figure) until pack-aware repacking exists.
+	PackCount               int   `json:"pack_count"`
+	PackedChunksUnreachable int   `json:"packed_chunks_unreachable"`
+	PackedUnreachableBytes  int64 `json:"packed_unreachable_bytes_deferred"`
 
 	ChunksDeleted    int   `json:"chunks_deleted"`
 	ManifestsDeleted int   `json:"manifests_deleted"`
@@ -6398,6 +7001,8 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 		return res, fmt.Errorf("gc: scanning manifests: %w", scanErr)
 	}
 
+	res.PackCount, res.PackedChunksUnreachable, res.PackedUnreachableBytes = store.packUnreachable(rr.ReferencedChunks)
+
 	tmpBytes, err := dirSizeBytes(filepath.Join(store.root, "tmp"))
 	if err != nil {
 		return res, fmt.Errorf("gc: scanning tmp: %w", err)
@@ -6439,6 +7044,433 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 	}
 	res.BytesDeleted = res.ReclaimableDiskBytes
 	return res, nil
+}
+
+// =============================================================================
+// 13c. Offline compaction: loose chunks -> immutable packs (`zeros3 compact`)
+//
+// Compaction needs the same exclusive store ownership as GC. It packs only
+// chunks some live root references (dead loose chunks stay for GC, since a
+// pack cannot shed records), reading and re-hashing each loose file as it
+// goes; a corrupt or oversized chunk is skipped and reported, never packed.
+//
+// Publication order, which makes every interruption point safe -- a crash
+// can leave redundant copies or an unpublished staging file, never a
+// missing live chunk:
+//
+//  1. FORMAT.json is raised to the packed version (atomic, durable), so a
+//     build that cannot read packs refuses the store before any chunk can
+//     disappear from its loose layout.
+//  2. The pack is written to tmp/, fsynced, and fully re-read and
+//     verified (body checksum, record headers, every payload hash).
+//  3. It is renamed to packs/<id>.pack and packs/ is fsynced.
+//  4. Only then are the corresponding loose files unlinked. Unlinks are not
+//     fsynced: a lost unlink merely resurrects a redundant loose copy,
+//     which the next compact removes after re-verifying the packed one.
+//
+// New ingest, sync, and repair keep writing loose chunks; a later compact
+// run packs them.
+// =============================================================================
+
+const (
+	defaultPackTargetBytes = 64 << 20
+	// A final pack smaller than target/packMinFraction is folded into the
+	// previous pack, or -- if it would be the only one -- left loose, so
+	// repeated runs do not accumulate tiny packs.
+	packMinFraction = 8
+)
+
+type compactOptions struct {
+	TargetBytes int64
+	MinBytes    int64
+	DryRun      bool
+}
+
+func defaultCompactOptions() compactOptions {
+	return compactOptions{TargetBytes: defaultPackTargetBytes, MinBytes: defaultPackTargetBytes / packMinFraction}
+}
+
+// CompactResult reports one compaction pass. In a dry run the packing
+// counters are what the pass would do.
+type CompactResult struct {
+	DryRun bool `json:"dry_run"`
+
+	LooseChunks      int `json:"loose_chunks"`
+	UnreachableLoose int `json:"unreachable_loose"`
+	Skipped          int `json:"skipped"`
+	DeferredChunks   int `json:"deferred_chunks"`
+
+	ChunksPacked int   `json:"chunks_packed"`
+	PacksWritten int   `json:"packs_written"`
+	PackBytes    int64 `json:"pack_bytes"`
+
+	LooseRemoved      int   `json:"loose_removed"`
+	LooseBytesRemoved int64 `json:"loose_bytes_removed"`
+
+	Issues []VerifyIssue `json:"issues,omitempty"`
+}
+
+type compactCandidate struct {
+	sum  [32]byte
+	size int64
+}
+
+// planPackBatches splits candidates (already in deterministic order) into
+// packs of at least target bytes; a short tail joins the previous pack, or
+// is deferred when it is the only data and under min.
+func planPackBatches(cands []compactCandidate, target, min int64) (batches [][]compactCandidate, deferred []compactCandidate) {
+	var cur []compactCandidate
+	var curBytes int64
+	for _, c := range cands {
+		cur = append(cur, c)
+		curBytes += c.size + packRecordHeaderSize
+		if curBytes >= target {
+			batches = append(batches, cur)
+			cur, curBytes = nil, 0
+		}
+	}
+	switch {
+	case len(cur) == 0:
+	case curBytes >= min:
+		batches = append(batches, cur)
+	case len(batches) > 0:
+		batches[len(batches)-1] = append(batches[len(batches)-1], cur...)
+	default:
+		deferred = cur
+	}
+	return batches, deferred
+}
+
+// compactStore opens storeDir under exclusive ownership and compacts it.
+func compactStore(storeDir string, opt compactOptions) (CompactResult, error) {
+	lock, err := acquireStoreLock(storeDir, true)
+	if err != nil {
+		return CompactResult{}, err
+	}
+	defer lock.release()
+
+	store, err := OpenStore(storeDir)
+	if err != nil {
+		return CompactResult{}, err
+	}
+	defer store.Close()
+
+	rr, err := store.computeReachability(false)
+	if err != nil {
+		return CompactResult{}, err
+	}
+	return store.compact(rr.ReferencedChunks, opt)
+}
+
+func (s *Store) compact(referenced map[string]bool, opt compactOptions) (CompactResult, error) {
+	res := CompactResult{DryRun: opt.DryRun}
+	if opt.TargetBytes <= 0 {
+		return res, errors.New("compact: pack size must be positive")
+	}
+
+	var cands, redundant []compactCandidate
+	err := filepath.WalkDir(filepath.Join(s.root, "chunks"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		sum, herr := decodeHexSHA256(d.Name())
+		if herr != nil {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		res.LooseChunks++
+		if !referenced[d.Name()] {
+			res.UnreachableLoose++
+			return nil
+		}
+		c := compactCandidate{sum: sum, size: info.Size()}
+		if _, packed := s.packLookup(sum); packed {
+			redundant = append(redundant, c)
+		} else if c.size < 1 || c.size > maxPackedChunkBytes {
+			res.Skipped++
+		} else {
+			cands = append(cands, c)
+		}
+		return nil
+	})
+	if err != nil {
+		return res, fmt.Errorf("compact: scanning chunks: %w", err)
+	}
+
+	batches, deferred := planPackBatches(cands, opt.TargetBytes, opt.MinBytes)
+	res.DeferredChunks = len(deferred)
+	if opt.DryRun {
+		for _, b := range batches {
+			res.PacksWritten++
+			res.ChunksPacked += len(b)
+			for _, c := range b {
+				res.PackBytes += c.size + packRecordHeaderSize
+			}
+		}
+		res.LooseRemoved = len(redundant)
+		return res, nil
+	}
+
+	// Staging files from an interrupted run were never published.
+	if stale, _ := filepath.Glob(filepath.Join(s.root, "tmp", "pack-*.tmp")); len(stale) > 0 {
+		for _, p := range stale {
+			os.Remove(p)
+		}
+	}
+
+	for _, c := range redundant {
+		loc, _ := s.packLookup(c.sum)
+		if _, err := s.readPacked(c.sum, loc); err != nil {
+			res.Skipped++
+			res.Issues = append(res.Issues, VerifyIssue{Kind: "corrupt", Subject: fmt.Sprintf("chunk %x", c.sum), Detail: "packed copy is unreadable; loose copy kept: " + err.Error()})
+			continue
+		}
+		fireTestHook(hookBeforeLooseDelete)
+		if err := os.Remove(s.chunkPath(c.sum)); err != nil && !os.IsNotExist(err) {
+			return res, fmt.Errorf("compact: removing redundant chunk: %w", err)
+		}
+		res.LooseRemoved++
+		res.LooseBytesRemoved += c.size
+	}
+
+	for _, batch := range batches {
+		if err := s.compactBatch(batch, &res); err != nil {
+			return res, err
+		}
+	}
+	fireTestHook(hookCompactDone)
+	return res, nil
+}
+
+// ensurePackedFormat durably raises FORMAT.json to the packed version.
+func (s *Store) ensurePackedFormat() error {
+	if s.format.StoreFormatVersion >= storeFormatVersionPacked {
+		return nil
+	}
+	f := s.format
+	f.StoreFormatVersion = storeFormatVersionPacked
+	data, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := writeFileDurable(filepath.Join(s.root, "tmp"), filepath.Join(s.root, "FORMAT.json"), data); err != nil {
+		return err
+	}
+	if err := syncDir(s.root); err != nil {
+		return err
+	}
+	s.format = f
+	return nil
+}
+
+// stagePack writes one pack into tmp/ from batch's loose chunks and
+// returns its path and entries. Chunks that fail verification are left
+// out. Failures (but not simulated crashes) remove the staging file.
+func (s *Store) stagePack(batch []compactCandidate, res *CompactResult) (string, []packEntry, error) {
+	f, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "pack-*.tmp")
+	if err != nil {
+		return "", nil, err
+	}
+	path := f.Name()
+	fail := func(err error) (string, []packEntry, error) {
+		f.Close()
+		os.Remove(path)
+		return "", nil, err
+	}
+
+	body := sha256.New()
+	w := bufio.NewWriterSize(io.MultiWriter(f, body), 1<<20)
+	var hdr [packHeaderSize]byte
+	putPackHeader(hdr[:])
+	w.Write(hdr[:])
+
+	entries := make([]packEntry, 0, len(batch))
+	off := uint64(packHeaderSize)
+	var rec [packRecordHeaderSize]byte
+	for _, c := range batch {
+		data, err := os.ReadFile(s.chunkPath(c.sum))
+		if err != nil {
+			res.Skipped++
+			res.Issues = append(res.Issues, VerifyIssue{Kind: "invalid", Subject: fmt.Sprintf("chunk %x", c.sum), Detail: err.Error()})
+			continue
+		}
+		if sha256.Sum256(data) != c.sum || len(data) < 1 || len(data) > maxPackedChunkBytes {
+			res.Skipped++
+			res.Issues = append(res.Issues, VerifyIssue{Kind: "corrupt", Subject: fmt.Sprintf("chunk %x", c.sum), Detail: "loose chunk is corrupt; not packed"})
+			continue
+		}
+		e := packEntry{sha: c.sum, off: off + packRecordHeaderSize, stored: uint32(len(data)), logical: uint32(len(data)), codec: packCodecRaw}
+		putPackRecordHeader(rec[:], e)
+		w.Write(rec[:])
+		w.Write(data)
+		entries = append(entries, e)
+		off = e.off + uint64(e.stored)
+		fireTestHook(hookPackRecordWritten)
+	}
+	if len(entries) == 0 {
+		f.Close()
+		os.Remove(path)
+		return "", nil, nil
+	}
+
+	index := make([]byte, len(entries)*packIndexEntrySize)
+	for i, e := range entries {
+		putPackIndexEntry(index[i*packIndexEntrySize:], e)
+	}
+	w.Write(index)
+	if err := w.Flush(); err != nil {
+		return fail(err)
+	}
+	var bodySHA [32]byte
+	body.Sum(bodySHA[:0])
+	var ft [packFooterSize]byte
+	putPackFooter(ft[:], uint64(len(entries)), off, bodySHA, crc32.Checksum(index, packCRC))
+	if _, err := f.Write(ft[:]); err != nil {
+		return fail(err)
+	}
+	fireTestHook(hookPackBeforeSync)
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
+	fireTestHook(hookPackAfterSync)
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return "", nil, err
+	}
+	return path, entries, nil
+}
+
+func (s *Store) compactBatch(batch []compactCandidate, res *CompactResult) error {
+	staged, entries, err := s.stagePack(batch, res)
+	if err != nil {
+		return fmt.Errorf("compact: writing pack: %w", err)
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	info, got, err := verifyPackFile(staged)
+	if err == nil && len(got) != len(entries) {
+		err = errors.New("pack: staged index disagrees with the records written")
+	}
+	for i := 0; err == nil && i < len(got); i++ {
+		if got[i] != entries[i] {
+			err = errors.New("pack: staged index disagrees with the records written")
+		}
+	}
+	if err != nil {
+		os.Remove(staged)
+		return fmt.Errorf("compact: staged pack failed validation: %w", err)
+	}
+	if err := s.ensurePackedFormat(); err != nil {
+		os.Remove(staged)
+		return fmt.Errorf("compact: upgrading store format: %w", err)
+	}
+
+	packDir := filepath.Join(s.root, "packs")
+	if _, err := os.Stat(packDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(packDir, 0o755); err != nil {
+			os.Remove(staged)
+			return err
+		}
+		if err := syncDir(s.root); err != nil {
+			os.Remove(staged)
+			return err
+		}
+	}
+	final := filepath.Join(packDir, info.id+packFileSuffix)
+	fireTestHook(hookPackBeforePublish)
+	if err := os.Rename(staged, final); err != nil {
+		os.Remove(staged)
+		return fmt.Errorf("compact: publishing pack: %w", err)
+	}
+	fireTestHook(hookPackAfterRename)
+	if err := syncDir(packDir); err != nil {
+		return fmt.Errorf("compact: syncing packs dir: %w", err)
+	}
+	pub, pubEntries, err := loadPackFile(final)
+	if err != nil || len(pubEntries) != len(entries) {
+		return fmt.Errorf("compact: published pack is not readable (%v); loose chunks kept", err)
+	}
+	s.addPack(pub, pubEntries)
+	fireTestHook(hookPackPublished)
+
+	res.PacksWritten++
+	res.PackBytes += info.size
+	res.ChunksPacked += len(entries)
+	dirs := map[string]struct{}{}
+	for _, e := range entries {
+		fireTestHook(hookBeforeLooseDelete)
+		p := s.chunkPath(e.sha)
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("compact: removing packed loose chunk: %w", err)
+		}
+		res.LooseRemoved++
+		res.LooseBytesRemoved += int64(e.logical)
+		dirs[filepath.Dir(p)] = struct{}{}
+	}
+	for d := range dirs {
+		if os.Remove(d) == nil {
+			os.Remove(filepath.Dir(d))
+		}
+	}
+	return nil
+}
+
+func printCompactHuman(w io.Writer, r CompactResult) {
+	verb := "wrote"
+	mode := "apply"
+	if r.DryRun {
+		verb, mode = "would write", "dry-run"
+	}
+	fmt.Fprintf(w, "ZeroS3 compact (%s)\n", mode)
+	fmt.Fprintf(w, "loose chunks     %d scanned | %d unreachable (left for gc) | %d skipped | %d deferred (below minimum pack size)\n",
+		r.LooseChunks, r.UnreachableLoose, r.Skipped, r.DeferredChunks)
+	fmt.Fprintf(w, "packs            %s %d | %d chunks | %d bytes\n", verb, r.PacksWritten, r.ChunksPacked, r.PackBytes)
+	fmt.Fprintf(w, "loose removed    %d chunks | %d bytes\n", r.LooseRemoved, r.LooseBytesRemoved)
+	for _, iss := range r.Issues {
+		fmt.Fprintf(w, "  %s: %s: %s\n", iss.Kind, iss.Subject, iss.Detail)
+	}
+}
+
+// runCompact implements "zeros3 compact -store DIR [-pack-size-mib N]
+// [-dry-run] [-json]". See section 13c.
+func runCompact(args []string) {
+	fs := flag.NewFlagSet("compact", flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	sizeMiB := fs.Int64("pack-size-mib", defaultPackTargetBytes>>20, "target pack size in MiB")
+	dryRun := fs.Bool("dry-run", false, "report what would be packed without writing anything")
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	fs.Parse(args)
+
+	opt := compactOptions{TargetBytes: *sizeMiB << 20, DryRun: *dryRun}
+	opt.MinBytes = opt.TargetBytes / packMinFraction
+	res, err := compactStore(*storeDir, opt)
+	if err != nil {
+		if errors.Is(err, errGCStoreInUse) {
+			fmt.Fprintf(os.Stderr, "zeros3: compact: %v -- compact requires exclusive access; stop `zeros3 serve`/any other maintenance command against this store first\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "zeros3: compact failed: %v\n", err)
+		}
+		os.Exit(1)
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			log.Fatalf("zeros3: %v", err)
+		}
+		return
+	}
+	printCompactHuman(os.Stdout, res)
 }
 
 // =============================================================================
@@ -7134,7 +8166,7 @@ func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
 }
 
 // handleSyncNegotiate answers which requested chunks are missing from
-// CAS. It is a pure read (os.Stat only -- never casRead/casWrite), so
+// CAS. It is a pure read (casStat only -- never casRead/casWrite), so
 // negotiation never mutates authoritative state and is always safe to
 // retry, re-run, or run speculatively.
 func (srv *Server) handleSyncNegotiate(w http.ResponseWriter, body []byte) {
@@ -7172,7 +8204,7 @@ func (srv *Server) handleSyncNegotiate(w http.ResponseWriter, body []byte) {
 			continue
 		}
 		seen[norm] = true
-		if _, err := os.Stat(srv.store.chunkPath(sum)); err != nil {
+		if _, err := srv.store.casStat(sum); err != nil {
 			missing = append(missing, norm)
 		}
 	}
@@ -9656,7 +10688,7 @@ func (s *Store) repairFindings() ([]RepairFinding, error) {
 		}
 		kind := "corrupt"
 		if sum, herr := decodeHexSHA256(sha); herr == nil {
-			if _, statErr := os.Stat(s.chunkPath(sum)); os.IsNotExist(statErr) {
+			if _, statErr := s.casStat(sum); os.IsNotExist(statErr) {
 				kind = "missing"
 			}
 		}
@@ -12260,6 +13292,8 @@ func printStatsHuman(w io.Writer, r StatsResult) {
 	fmt.Fprintf(w, "dedup            %d bytes avoided | %.1f%% reduction | %.3f unique/logical\n",
 		r.DedupAvoidedBytes, r.DedupReduction*100, r.UniqueToLogicalRatio)
 	fmt.Fprintf(w, "unique reachable %d bytes (store-global)\n", r.UniqueReachableChunkBytes)
+	fmt.Fprintf(w, "chunk storage    %d loose (%d bytes) | %d packs (%d chunks, %d bytes)\n",
+		r.LooseChunkCount, r.LooseChunkFileBytes, r.PackCount, r.PackedChunkCount, r.PackFileBytes)
 	fmt.Fprintf(w, "store files      %d bytes chunks | %d bytes manifests | %d bytes journal | %d bytes temp\n",
 		r.ChunkStoreFileBytes, r.ManifestFileBytes, r.JournalFileBytes, r.TemporaryFileBytes)
 	fmt.Fprintf(w, "actual/reclaim   %d bytes actual | %d bytes reclaimable\n", r.ActualStoreFileBytes, r.ReclaimableBytes)
@@ -12275,6 +13309,9 @@ func printVerifyHuman(w io.Writer, r VerifyResult) {
 	fmt.Fprintf(w, "roots            %d current | %d historical | %d multipart | %d snapshot\n", r.CurrentRootCount, r.HistoricalRootCount, r.MultipartRootCount, r.SnapshotRootCount)
 	fmt.Fprintf(w, "manifests        %d checked\n", r.ManifestsChecked)
 	fmt.Fprintf(w, "chunks           %d checked\n", r.ChunksChecked)
+	if r.PacksChecked > 0 {
+		fmt.Fprintf(w, "packs            %d checked\n", r.PacksChecked)
+	}
 	fmt.Fprintf(w, "integrity        %d missing | %d corrupt | %d invalid\n", r.Missing, r.Corrupt, r.Invalid)
 	fmt.Fprintf(w, "reclaimable      %d unreachable manifests | %d unreachable chunks | %d bytes\n",
 		r.UnreachableManifests, r.UnreachableChunks, r.ReclaimableBytes)
@@ -12773,6 +13810,9 @@ func printGCHuman(w io.Writer, r GCResult) {
 	fmt.Fprintf(w, "manifests        %d scanned | %d unreachable\n", r.ManifestsScanned, r.ManifestsUnreachable)
 	fmt.Fprintf(w, "payload bytes    %d reachable | %d reclaimable\n", r.ReachablePayloadBytes, r.ReclaimablePayloadBytes)
 	fmt.Fprintf(w, "disk bytes       %d reclaimable\n", r.ReclaimableDiskBytes)
+	if r.PackCount > 0 {
+		fmt.Fprintf(w, "packs            %d | %d unreachable packed chunks (%d bytes) not reclaimable yet\n", r.PackCount, r.PackedChunksUnreachable, r.PackedUnreachableBytes)
+	}
 	if r.Applied {
 		fmt.Fprintf(w, "deleted          %d chunks | %d manifests | %d bytes\n", r.ChunksDeleted, r.ManifestsDeleted, r.BytesDeleted)
 	}
@@ -12878,6 +13918,8 @@ func main() {
 		runRestore(args)
 	case "gc":
 		runGC(args)
+	case "compact":
+		runCompact(args)
 	case "doctor":
 		runDoctor(args)
 	case "sync":
@@ -12895,7 +13937,7 @@ func main() {
 	case "inspect":
 		runInspect(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, doctor, sync, replicate, repair, fork, snapshot, diff, or inspect)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, doctor, sync, replicate, repair, fork, snapshot, diff, or inspect)\n", cmd)
 		os.Exit(2)
 	}
 }
