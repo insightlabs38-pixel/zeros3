@@ -24,7 +24,7 @@ parity.
 | `HeadBucket` | `HEAD /bucket` | 200 empty body if visible, 404 empty body if missing |
 | `DeleteBucket` | `DELETE /bucket` | empty buckets only; `NoSuchBucket`/`BucketNotEmpty` |
 | `PutObject` | `PUT /bucket/key` | arbitrary binary body, 0-byte objects, `Content-Type`, `x-amz-meta-*`, overwrite-same-key; `If-None-Match: *`/`If-Match: "<etag>"` conditional writes. The body streams through CDC into the CAS with bounded memory (no whole-body buffering); up to S3's 5 GiB single-request ceiling, `EntityTooLarge` above it |
-| `GetObject` | `GET /bucket/key` | exact byte reconstruction, ETag, Content-Type, metadata; `If-Match`/`If-None-Match` read preconditions |
+| `GetObject` | `GET /bucket/key` | exact byte reconstruction streamed one SHA-256-verified CAS chunk at a time (bounded memory at any object size), ETag, Content-Type, metadata; `If-Match`/`If-None-Match` read preconditions. A chunk that fails verification after the response has started is never sent and the response ends short of its `Content-Length` |
 | `HeadObject` | `HEAD /bucket/key` | same headers as GetObject, no body; `If-Match`/`If-None-Match` read preconditions |
 | `DeleteObject` | `DELETE /bucket/key` | idempotent non-versioned delete, 204 |
 | `ListObjectsV2` | `GET /bucket?list-type=2...` | `prefix`, `delimiter`/`CommonPrefixes`, `max-keys` (default/clamped to 1000), `continuation-token`, UTF-8 byte-lexical key order, XML escaping |

@@ -66,26 +66,26 @@ import (
 //      625    Manifests (immutable, JSON)
 //      724    Visibility journal (append-only, checksummed)
 //     1119    Store: format, namespace, and object CRUD
-//     1889    Version history/restore and ListObjectsV2
-//     2119    SigV4 authentication (header and presigned-URL)
-//     2910    Request payload checksums and S3-shaped XML error/response types
-//     3122    HTTP routing and S3 operation handlers
-//     3510    Conditional operations (PUT/GET/HEAD preconditions)
-//     4093    CopyObject
-//     4387    Multipart upload
-//     5213    Stats and reachability scanning
-//     5924    Verify
-//     6098    Store locking and safe offline GC
-//     6325    Single-range GET
-//     6461    Delta sync client, credentials, and parallel transfer
-//     8384    Recursive directory sync
-//     8689    Remote replication (`zeros3 replicate`)
-//     9453    Peer-assisted corruption repair (`zeros3 repair`)
-//     9931    Namespace (prefix/bucket) replication
-//    10238    Copy-on-write namespace fork (`zeros3 fork`)
-//    10446    Snapshots and restore
-//    11599    Structural diff and inspect (introspection)
-//    12123    CLI dispatch, HTTP server/startup, and main
+//     1852    Version history/restore and ListObjectsV2
+//     2082    SigV4 authentication (header and presigned-URL)
+//     2873    Request payload checksums and S3-shaped XML error/response types
+//     3087    HTTP routing and S3 operation handlers
+//     3475    Conditional operations (PUT/GET/HEAD preconditions)
+//     4041    CopyObject
+//     4335    Multipart upload
+//     5161    Stats and reachability scanning
+//     5872    Verify
+//     6046    Store locking and safe offline GC
+//     6273    Single-range GET
+//     6398    Delta sync client, credentials, and parallel transfer
+//     8321    Recursive directory sync
+//     8626    Remote replication (`zeros3 replicate`)
+//     9390    Peer-assisted corruption repair (`zeros3 repair`)
+//     9868    Namespace (prefix/bucket) replication
+//    10175    Copy-on-write namespace fork (`zeros3 fork`)
+//    10383    Snapshots and restore
+//    11536    Structural diff and inspect (introspection)
+//    12060    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -1800,43 +1800,6 @@ func (s *Store) commitObjectRootChecked(bucket, key, manUUID string, manSHA [32]
 	return entry, nil
 }
 
-// GetObject looks up the current visible version of bucket/key (from the
-// journal-derived namespace), then reconstructs its exact bytes by
-// reading the manifest and following its chunk list through the CAS.
-// Every layer re-verifies content against its own hash, so a corrupted
-// manifest or chunk is reported as an error rather than served silently.
-func (s *Store) GetObject(bucket, key string) (*objectEntry, []byte, error) {
-	obj, err := s.lookupObject(bucket, key)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	man, err := s.readVerifiedManifest(obj.manifestUUID, obj.manifestSHA256)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	buf := make([]byte, 0, man.TotalLength)
-	for _, c := range man.Chunks {
-		sum, err := decodeHexSHA256(c.SHA256)
-		if err != nil {
-			return nil, nil, err
-		}
-		data, err := s.casRead(sum)
-		if err != nil {
-			return nil, nil, fmt.Errorf("chunk read failed: %w", err)
-		}
-		if int64(len(data)) != c.Length {
-			return nil, nil, fmt.Errorf("chunk %s: length mismatch", c.SHA256)
-		}
-		buf = append(buf, data...)
-	}
-	if int64(len(buf)) != man.TotalLength {
-		return nil, nil, fmt.Errorf("reconstructed object length mismatch for %s/%s", bucket, key)
-	}
-	return obj, buf, nil
-}
-
 // lookupObject resolves bucket/key against the journal-derived namespace
 // without reading the manifest or any chunk data.
 func (s *Store) lookupObject(bucket, key string) (*objectEntry, error) {
@@ -3009,6 +2972,8 @@ func s3ErrorStatus(code string) int {
 		return http.StatusRequestedRangeNotSatisfiable
 	case "NotImplemented":
 		return http.StatusNotImplemented
+	case "InternalError":
+		return http.StatusInternalServerError
 	case "PreconditionFailed":
 		return http.StatusPreconditionFailed
 	default:
@@ -3712,8 +3677,8 @@ func writeObjectHeaders(w http.ResponseWriter, entry *objectEntry, man manifestV
 	}
 }
 
-// writeGetObjectError renders the S3-shaped error for a GetObject/
-// GetObjectRange failure, shared by both the full-object and Range paths.
+// writeGetObjectError renders the S3-shaped error for a GET that fails
+// before its response is committed.
 func writeGetObjectError(w http.ResponseWriter, bucket, key string, err error) {
 	switch {
 	case errors.Is(err, errNoSuchBucket):
@@ -3802,7 +3767,7 @@ func parseGetCondition(r *http.Request) (getCondition, error) {
 
 // handleGetObject dispatches to a full-object 200 response, unless the
 // request carries a satisfiable single-range Range header, in which case
-// it serves a manifest-driven 206 (see Section 15). A Range header this
+// it serves a manifest-driven 206 (see Section 14). A Range header this
 // build doesn't understand (multi-range, malformed syntax) is ignored,
 // matching RFC 7233's allowance to serve the full entity instead of
 // rejecting the request; a syntactically valid but unsatisfiable range
@@ -3815,81 +3780,64 @@ func (srv *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucke
 		writeS3Error(w, "InvalidArgument", err.Error(), "/"+bucket+"/"+key)
 		return
 	}
-	if !cond.isZero() {
-		entry, man, herr := srv.store.HeadObject(bucket, key)
-		if herr != nil {
-			writeGetObjectError(w, bucket, key, herr)
-			return
-		}
-		switch evaluateGetCondition(cond, entry.etag) {
-		case getConditionPreconditionFailed:
-			writeS3Error(w, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold", "/"+bucket+"/"+key)
-			return
-		case getConditionNotModified:
-			writeObjectHeaders(w, entry, man)
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-	}
-
-	rangeHeader := r.Header.Get("Range")
-	if rangeHeader == "" {
-		srv.handleGetObjectFull(w, bucket, key)
-		return
-	}
-
-	// Interpreting a Range header (clamping "end", resolving a suffix
-	// range) needs the object's size, so resolve it once via HeadObject
-	// -- no chunk I/O -- before deciding whether this is a 200, 206, or
-	// 416 response.
 	entry, man, err := srv.store.HeadObject(bucket, key)
 	if err != nil {
 		writeGetObjectError(w, bucket, key, err)
 		return
 	}
-	rng, present, satisfiable := parseRangeSpec(rangeHeader, entry.size)
-	if !present {
-		srv.handleGetObjectFull(w, bucket, key)
+	switch evaluateGetCondition(cond, entry.etag) {
+	case getConditionPreconditionFailed:
+		writeS3Error(w, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold", "/"+bucket+"/"+key)
 		return
-	}
-	if !satisfiable {
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", entry.size))
-		writeS3Error(w, "InvalidRange", "the requested range is not satisfiable", "/"+bucket+"/"+key)
+	case getConditionNotModified:
+		writeObjectHeaders(w, entry, man)
+		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 
-	_, _, data, err := srv.store.GetObjectRange(bucket, key, rng)
-	if err != nil {
-		writeGetObjectError(w, bucket, key, err)
-		return
+	rng, partial := byteRange{start: 0, end: entry.size - 1}, false
+	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
+		parsed, present, satisfiable := parseRangeSpec(rangeHeader, entry.size)
+		if present && !satisfiable {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", entry.size))
+			writeS3Error(w, "InvalidRange", "the requested range is not satisfiable", "/"+bucket+"/"+key)
+			return
+		}
+		if present {
+			rng, partial = parsed, true
+		}
 	}
-	writeObjectHeaders(w, entry, man)
-	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rng.start, rng.end, entry.size))
-	w.Header().Set("Content-Length", strconv.FormatInt(rng.end-rng.start+1, 10))
-	w.WriteHeader(http.StatusPartialContent)
-	_, _ = w.Write(data)
+	srv.streamObject(w, bucket, key, entry, man, rng, partial)
 }
 
-func (srv *Server) handleGetObjectFull(w http.ResponseWriter, bucket, key string) {
-	entry, data, err := srv.store.GetObject(bucket, key)
-	if err != nil {
+// streamObject answers a GET with the chunks of rng. The first chunk is
+// read and verified before the status line is committed, so an object
+// that cannot be served at all gets an S3 error. A failure after that
+// aborts the response short of its Content-Length, which clients observe
+// as a truncated body rather than a complete one.
+func (srv *Server) streamObject(w http.ResponseWriter, bucket, key string, entry *objectEntry, man manifestV1, rng byteRange, partial bool) {
+	rd := srv.store.newManifestReader(man, rng)
+	data, err := rd.next()
+	if err != nil && err != io.EOF {
 		writeGetObjectError(w, bucket, key, err)
 		return
 	}
-	// GetObject already read and hash-verified this exact manifest once
-	// (to get the chunk list); reading it again here to render metadata
-	// headers is a small amount of duplicate I/O in exchange for keeping
-	// GetObject's return signature -- and every existing caller of it --
-	// unchanged.
-	man, err := srv.store.readVerifiedManifest(entry.manifestUUID, entry.manifestSHA256)
-	if err != nil {
-		writeS3Error(w, "InternalError", err.Error(), "/"+bucket+"/"+key)
-		return
-	}
 	writeObjectHeaders(w, entry, man)
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	status := http.StatusOK
+	if partial {
+		status = http.StatusPartialContent
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rng.start, rng.end, entry.size))
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(rng.end-rng.start+1, 10))
+	w.WriteHeader(status)
+	for ; err == nil; data, err = rd.next() {
+		if _, werr := w.Write(data); werr != nil {
+			return
+		}
+	}
+	if err != io.EOF {
+		log.Printf("zeros3: GET /%s/%s aborted mid-stream: %v", bucket, key, err)
+	}
 }
 
 func (srv *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
@@ -6322,14 +6270,12 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 }
 
 // =============================================================================
-// 14. Single-range GET
+// 14. Streaming object reads (full and ranged GET)
 //
-// A Range request is answered by walking the manifest's chunk length
-// list to find exactly the CAS chunks that overlap the requested logical
-// interval, and reading only those -- never reconstructing the whole
-// object first and slicing it, so memory/IO for a range read is bounded
-// by the range size (plus at most the two boundary chunks), not by
-// object size.
+// A GET walks the manifest's chunk list and reads only the CAS chunks that
+// overlap the requested logical interval, one at a time, hash-verifying
+// each before any of its bytes are emitted. Memory is bounded by one
+// chunk regardless of object or range size.
 // =============================================================================
 
 // byteRange is an inclusive, 0-based logical byte interval.
@@ -6396,65 +6342,56 @@ func parseRangeSpec(header string, size int64) (rng byteRange, ok, satisfiable b
 	return byteRange{start: start, end: end}, true, true
 }
 
-// readManifestRange reconstructs exactly [rng.start, rng.end] (inclusive)
-// of the object man describes, reading only the CAS chunks that overlap
-// that interval.
-func (s *Store) readManifestRange(man manifestV1, rng byteRange) ([]byte, error) {
-	out := make([]byte, 0, rng.end-rng.start+1)
-	var offset int64
-	for _, c := range man.Chunks {
-		chunkStart := offset
-		chunkEnd := offset + c.Length - 1 // inclusive
-		offset += c.Length
-		if chunkEnd < rng.start {
+// manifestReader yields the bytes of one inclusive logical range of the
+// object a manifest describes, one verified CAS chunk at a time.
+type manifestReader struct {
+	s      *Store
+	chunks []chunkRef
+	idx    int
+	offset int64
+	rng    byteRange
+}
+
+func (s *Store) newManifestReader(man manifestV1, rng byteRange) *manifestReader {
+	return &manifestReader{s: s, chunks: man.Chunks, rng: rng}
+}
+
+// next returns the next slice of the range, backed by a chunk already
+// verified against its SHA-256 and recorded length, or io.EOF once the
+// whole range has been produced.
+func (m *manifestReader) next() ([]byte, error) {
+	for m.idx < len(m.chunks) && m.offset <= m.rng.end {
+		c := m.chunks[m.idx]
+		chunkStart := m.offset
+		m.idx++
+		m.offset += c.Length
+		if m.offset <= m.rng.start {
 			continue
-		}
-		if chunkStart > rng.end {
-			break
 		}
 		sum, err := decodeHexSHA256(c.SHA256)
 		if err != nil {
 			return nil, err
 		}
-		data, err := s.casRead(sum)
+		data, err := m.s.casRead(sum)
 		if err != nil {
 			return nil, fmt.Errorf("chunk read failed: %w", err)
 		}
 		if int64(len(data)) != c.Length {
 			return nil, fmt.Errorf("chunk %s: length mismatch", c.SHA256)
 		}
-		lo := int64(0)
-		if rng.start > chunkStart {
-			lo = rng.start - chunkStart
+		lo, hi := int64(0), c.Length
+		if m.rng.start > chunkStart {
+			lo = m.rng.start - chunkStart
 		}
-		hi := c.Length
-		if rng.end < chunkEnd {
-			hi = rng.end - chunkStart + 1
+		if m.rng.end < m.offset-1 {
+			hi = m.rng.end - chunkStart + 1
 		}
-		out = append(out, data[lo:hi]...)
+		return data[lo:hi], nil
 	}
-	if int64(len(out)) != rng.end-rng.start+1 {
-		return nil, fmt.Errorf("range reconstruction length mismatch")
+	if m.offset <= m.rng.end {
+		return nil, fmt.Errorf("manifest chunks end before requested range")
 	}
-	return out, nil
-}
-
-// GetObjectRange resolves bucket/key and reconstructs only the requested
-// byte range, never the whole object.
-func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry, manifestV1, []byte, error) {
-	obj, err := s.lookupObject(bucket, key)
-	if err != nil {
-		return nil, manifestV1{}, nil, err
-	}
-	man, err := s.readVerifiedManifest(obj.manifestUUID, obj.manifestSHA256)
-	if err != nil {
-		return nil, manifestV1{}, nil, err
-	}
-	data, err := s.readManifestRange(man, rng)
-	if err != nil {
-		return nil, manifestV1{}, nil, err
-	}
-	return obj, man, data, nil
+	return nil, io.EOF
 }
 
 // =============================================================================

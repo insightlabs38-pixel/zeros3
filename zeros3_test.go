@@ -59,31 +59,32 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//       89    Test helpers, fixtures, and TestMain
-//      200    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//     1216    SigV4 authentication (header and payload-mode)
-//     1605    Checksums: CRC32 and Content-MD5
-//     2116    End-to-end HTTP and crash/recovery tests
-//     2790    M2: bucket/object/listing/journal protocol compatibility
-//     3841    M3: CDC/dedup evidence, stats, verify
-//     4977    M3: CopyObject
-//     5524    M3: single-range GET
-//     5725    M5-B: multipart upload
-//     7003    Presigned URLs and virtual-hosted-style addressing
-//     8032    M5-C: version history, restore, GC, storage-efficiency proof
-//     9878    M5-D/P2: ListParts and ListMultipartUploads pagination
-//    11597    M6: delta sync (`zeros3 sync`)
-//    13339    M6C: recursive directory sync
-//    14399    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//    15728    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    17053    M8C: namespace (prefix/bucket) replication
-//    18092    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    19184    M8E: durable namespace snapshots and restore
-//    21262    M8F: conditional operations (Put/Get/Copy preconditions)
-//    22667    M8G: introspection (dry-run planning, diff, inspect)
-//    24619    M8H: bounded parallel chunk transfer
-//    25970    P1: environment credentials, HTTP hardening/shutdown, TLS
-//   27286    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//       90    Test helpers, fixtures, and TestMain
+//      242    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//     1258    SigV4 authentication (header and payload-mode)
+//     1647    Checksums: CRC32 and Content-MD5
+//     2158    End-to-end HTTP and crash/recovery tests
+//     2832    M2: bucket/object/listing/journal protocol compatibility
+//     3883    M3: CDC/dedup evidence, stats, verify
+//     5019    M3: CopyObject
+//     5566    M3: single-range GET
+//     5767    M5-B: multipart upload
+//     7045    Presigned URLs and virtual-hosted-style addressing
+//     8074    M5-C: version history, restore, GC, storage-efficiency proof
+//     9920    M5-D/P2: ListParts and ListMultipartUploads pagination
+//    11639    M6: delta sync (`zeros3 sync`)
+//    13381    M6C: recursive directory sync
+//    14441    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    15770    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//    17095    M8C: namespace (prefix/bucket) replication
+//    18134    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    19226    M8E: durable namespace snapshots and restore
+//    21304    M8F: conditional operations (Put/Get/Copy preconditions)
+//    22709    M8G: introspection (dry-run planning, diff, inspect)
+//    24661    M8H: bounded parallel chunk transfer
+//    26012    P1: environment credentials, HTTP hardening/shutdown, TLS
+//    27328    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//    28258    Streaming reads
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -168,6 +169,47 @@ func (s *Store) UploadPart(bucket, key, uploadID string, partNumber int, body []
 		return "", err
 	}
 	return s.commitPart(bucket, key, uploadID, partNumber, ing)
+}
+
+// readManifestRange, GetObject and GetObjectRange collect the streaming
+// read path's output into memory for small test fixtures.
+func (s *Store) readManifestRange(man manifestV1, rng byteRange) ([]byte, error) {
+	var out []byte
+	rd := s.newManifestReader(man, rng)
+	for {
+		data, err := rd.next()
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, data...)
+	}
+}
+
+func (s *Store) GetObject(bucket, key string) (*objectEntry, []byte, error) {
+	entry, man, err := s.HeadObject(bucket, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	data, err := s.readManifestRange(man, byteRange{start: 0, end: entry.size - 1})
+	if err != nil {
+		return nil, nil, err
+	}
+	return entry, data, nil
+}
+
+func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry, manifestV1, []byte, error) {
+	entry, man, err := s.HeadObject(bucket, key)
+	if err != nil {
+		return nil, manifestV1{}, nil, err
+	}
+	data, err := s.readManifestRange(man, rng)
+	if err != nil {
+		return nil, manifestV1{}, nil, err
+	}
+	return entry, man, data, nil
 }
 
 // checkPayload applies a request's checksum headers to a fully received body.
@@ -28139,6 +28181,26 @@ func TestStreamingPut_LargeObjectBoundedMemory(t *testing.T) {
 		t.Fatal("streamed manifest chunks differ from chunking the same stream directly")
 	}
 
+	var gotSHA [32]byte
+	var gotLen int64
+	getPeak := peakHeapGrowth(func() {
+		resp := doSignedRequest(t, f.ts.Client(), f.ts.URL, f.signer, http.MethodGet, "/b/large", nil, nil)
+		defer resp.Body.Close()
+		hh := sha256.New()
+		gotLen, _ = io.Copy(hh, resp.Body)
+		hh.Sum(gotSHA[:0])
+		if resp.StatusCode != 200 || resp.ContentLength != size {
+			t.Fatalf("large GET: status %d, Content-Length %d", resp.StatusCode, resp.ContentLength)
+		}
+	})
+	if gotLen != size || hex.EncodeToString(gotSHA[:]) != hex.EncodeToString(h.Sum(nil)) {
+		t.Fatalf("large GET returned %d bytes with the wrong digest", gotLen)
+	}
+	t.Logf("downloaded %d MiB; peak heap growth %d MiB", size>>20, getPeak>>20)
+	if getPeak > 64<<20 {
+		t.Fatalf("heap grew by %d MiB while streaming a %d MiB GET", getPeak>>20, size>>20)
+	}
+
 	const window = 16 << 20
 	for off := int64(0); off < size; off += window {
 		n := int64(window)
@@ -28190,4 +28252,288 @@ func peakHeapGrowth(fn func()) uint64 {
 		return p - base.HeapAlloc
 	}
 	return 0
+}
+
+// =============================================================================
+// Streaming reads
+// =============================================================================
+
+func textFixture(n int) []byte {
+	words := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"}
+	rnd := rand.New(rand.NewSource(9))
+	var b bytes.Buffer
+	for b.Len() < n {
+		b.WriteString(words[rnd.Intn(len(words))])
+		b.WriteByte(' ')
+	}
+	return b.Bytes()[:n]
+}
+
+func readFixture(kind string, n int) []byte {
+	switch kind {
+	case "text":
+		return textFixture(n)
+	case "shifted":
+		return append(genRandomBytes(5, 37), genRandomBytes(int64(n)+7, n)...)[:n]
+	}
+	return streamFixture(kind, n)
+}
+
+// getBody issues a signed GET and reads the body, returning the read error
+// so truncation is visible to the caller.
+func (f *putFixture) getBody(key string, hdr map[string]string) (*http.Response, []byte, error) {
+	f.t.Helper()
+	resp := doSignedRequest(f.t, f.ts.Client(), f.ts.URL, f.signer, http.MethodGet, "/b/"+key, nil, hdr)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	return resp, body, err
+}
+
+// TestStreamingGet_Matrix reads objects of every CDC-boundary size and
+// content kind through full, prefix, interior, suffix, cross-chunk,
+// single-chunk, clamped, unsatisfiable, and ignored-Range shapes.
+func TestStreamingGet_Matrix(t *testing.T) {
+	f := newPutFixture(t)
+	type shape struct {
+		name       string
+		header     string
+		start, end int64
+		status     int
+	}
+	build := func(size int64, chunks []chunkRef) []shape {
+		shapes := []shape{
+			{"full", "", 0, size - 1, 200},
+			{"multi-range-ignored", "bytes=0-0,2-3", 0, size - 1, 200},
+			{"malformed-ignored", "bytes=abc", 0, size - 1, 200},
+			{"unsat/start-at-size", fmt.Sprintf("bytes=%d-", size), 0, 0, 416},
+			{"unsat/past-end", fmt.Sprintf("bytes=%d-%d", size+5, size+9), 0, 0, 416},
+			{"unsat/zero-suffix", "bytes=-0", 0, 0, 416},
+		}
+		if size == 0 {
+			return shapes
+		}
+		add := func(name string, start, end int64, header string) {
+			shapes = append(shapes, shape{name, header, start, end, 206})
+		}
+		add("prefix/first-byte", 0, 0, "bytes=0-0")
+		add("suffix/last-byte", size-1, size-1, "bytes=-1")
+		add("suffix/oversized", 0, size-1, fmt.Sprintf("bytes=-%d", size+10))
+		add("clamped-end", 0, size-1, fmt.Sprintf("bytes=0-%d", size+1000))
+		if size >= 3 {
+			add("prefix/half", 0, size/2, fmt.Sprintf("bytes=0-%d", size/2))
+			add("interior", size/3, 2*size/3, fmt.Sprintf("bytes=%d-%d", size/3, 2*size/3))
+			add("open-ended", size/2, size-1, fmt.Sprintf("bytes=%d-", size/2))
+		}
+		tail := min(size, cdcTargetChunkSize+7)
+		add("suffix/tail", size-tail, size-1, fmt.Sprintf("bytes=-%d", tail))
+		if len(chunks) > 1 {
+			b := chunks[0].Length
+			add("cross-chunk", b-1, b, fmt.Sprintf("bytes=%d-%d", b-1, b))
+			var off int64
+			for _, c := range chunks[:len(chunks)/2] {
+				off += c.Length
+			}
+			mid := chunks[len(chunks)/2].Length
+			if mid >= 3 {
+				add("single-chunk-subset", off+1, off+mid-2, fmt.Sprintf("bytes=%d-%d", off+1, off+mid-2))
+			}
+		}
+		return shapes
+	}
+
+	type fixture struct {
+		kind string
+		size int
+	}
+	var fixtures []fixture
+	for _, size := range []int{0, 1, cdcMinChunkSize - 1, cdcMinChunkSize, cdcMinChunkSize + 1, cdcTargetChunkSize,
+		cdcMaxChunkSize - 1, cdcMaxChunkSize, cdcMaxChunkSize + 1, 2*cdcMaxChunkSize + 13, 3<<20 + 12345} {
+		fixtures = append(fixtures, fixture{"random", size})
+	}
+	for _, kind := range []string{"repeat", "text", "shifted"} {
+		fixtures = append(fixtures, fixture{kind, cdcMaxChunkSize + 1}, fixture{kind, 3<<20 + 12345})
+	}
+
+	for _, fx := range fixtures {
+		data := readFixture(fx.kind, fx.size)
+		key := fmt.Sprintf("%s-%d", fx.kind, fx.size)
+		entry, err := f.srv.store.PutObject("b", key, data, "application/octet-stream", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, man, err := f.srv.store.HeadObject("b", key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size := int64(len(data))
+		for _, sh := range build(size, man.Chunks) {
+			t.Run(key+"/"+sh.name, func(t *testing.T) {
+				var hdr map[string]string
+				if sh.header != "" {
+					hdr = map[string]string{"Range": sh.header}
+				}
+				resp, body, err := f.getBody(key, hdr)
+				if err != nil {
+					t.Fatalf("body read: %v", err)
+				}
+				if resp.StatusCode != sh.status {
+					t.Fatalf("status %d, want %d", resp.StatusCode, sh.status)
+				}
+				if sh.status == 416 {
+					if got := resp.Header.Get("Content-Range"); got != fmt.Sprintf("bytes */%d", size) {
+						t.Fatalf("416 Content-Range %q", got)
+					}
+					return
+				}
+				want := data[sh.start : sh.end+1]
+				if !bytes.Equal(body, want) || resp.Header.Get("Content-Length") != strconv.Itoa(len(want)) {
+					t.Fatalf("body mismatch: got %d bytes (Content-Length %s), want %d", len(body), resp.Header.Get("Content-Length"), len(want))
+				}
+				if resp.Header.Get("ETag") != `"`+entry.etag+`"` || resp.Header.Get("Accept-Ranges") != "bytes" || resp.Header.Get("Last-Modified") == "" {
+					t.Fatalf("object headers missing: %v", resp.Header)
+				}
+				wantRange := ""
+				if sh.status == 206 {
+					wantRange = fmt.Sprintf("bytes %d-%d/%d", sh.start, sh.end, size)
+				}
+				if resp.Header.Get("Content-Range") != wantRange {
+					t.Fatalf("Content-Range %q, want %q", resp.Header.Get("Content-Range"), wantRange)
+				}
+			})
+		}
+	}
+}
+
+// TestStreamingGet_HeadAndConditionalsSkipPayload deletes every chunk, then
+// shows that HEAD and decided conditional GETs still answer from metadata
+// while a body-bearing GET fails with an S3 error rather than a 200.
+func TestStreamingGet_HeadAndConditionalsSkipPayload(t *testing.T) {
+	f := newPutFixture(t)
+	data := genRandomBytes(83, 400<<10)
+	entry, err := f.srv.store.PutObject("b", "obj", data, "text/x-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(f.srv.store.root, "chunks")); err != nil {
+		t.Fatal(err)
+	}
+	etag := `"` + entry.etag + `"`
+	cases := []struct {
+		name       string
+		method     string
+		hdr        map[string]string
+		wantStatus int
+	}{
+		{"head", http.MethodHead, nil, 200},
+		{"head/not-modified", http.MethodHead, map[string]string{"If-None-Match": etag}, 304},
+		{"get/not-modified", http.MethodGet, map[string]string{"If-None-Match": etag}, 304},
+		{"get/precondition-failed", http.MethodGet, map[string]string{"If-Match": `"other"`}, 412},
+		{"get/missing-chunks", http.MethodGet, nil, 500},
+		{"get/range-missing-chunks", http.MethodGet, map[string]string{"Range": "bytes=5-9"}, 500},
+		{"get/unsatisfiable", http.MethodGet, map[string]string{"Range": "bytes=999999999-"}, 416},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doSignedRequest(t, f.ts.Client(), f.ts.URL, f.signer, tc.method, "/b/obj", nil, tc.hdr)
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+			if tc.wantStatus == 500 && !bytes.Contains(body, []byte("InternalError")) {
+				t.Fatalf("expected an S3 error body, got %q", body)
+			}
+			if tc.method == http.MethodHead && tc.wantStatus == 200 && resp.Header.Get("Content-Length") != strconv.Itoa(len(data)) {
+				t.Fatalf("HEAD Content-Length %q", resp.Header.Get("Content-Length"))
+			}
+		})
+	}
+}
+
+// TestStreamingGet_Corruption damages one CAS chunk at a time and checks
+// that the corrupt chunk's bytes are never emitted, that a failure before
+// the first byte is an S3 error, and that a failure after earlier verified
+// chunks surfaces to the client as a truncated body, never a complete one.
+func TestStreamingGet_Corruption(t *testing.T) {
+	f := newPutFixture(t)
+	data := genRandomBytes(81, 2<<20)
+	if _, err := f.srv.store.PutObject("b", "obj", data, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	_, man, err := f.srv.store.HeadObject("b", "obj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	offsets := make([]int64, len(man.Chunks)+1)
+	for i, c := range man.Chunks {
+		offsets[i+1] = offsets[i] + c.Length
+	}
+	damages := map[string]func(path string, orig []byte){
+		"missing":   func(path string, _ []byte) { os.Remove(path) },
+		"truncated": func(path string, orig []byte) { os.WriteFile(path, orig[:len(orig)/2], 0o644) },
+		"emptied":   func(path string, _ []byte) { os.WriteFile(path, nil, 0o644) },
+		"flipped": func(path string, orig []byte) {
+			bad := append([]byte{}, orig...)
+			bad[len(bad)/2] ^= 0xff
+			os.WriteFile(path, bad, 0o644)
+		},
+	}
+	positions := map[string]int{"first": 0, "middle": len(man.Chunks) / 2, "last": len(man.Chunks) - 1}
+	for dname, damage := range damages {
+		for pname, idx := range positions {
+			t.Run(dname+"/"+pname, func(t *testing.T) {
+				sum, _ := decodeHexSHA256(man.Chunks[idx].SHA256)
+				path := f.srv.store.chunkPath(sum)
+				orig, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				os.Chmod(path, 0o644)
+				damage(path, orig)
+				defer os.WriteFile(path, orig, 0o644)
+
+				size := int64(len(data))
+				damagedLo, damagedHi := offsets[idx], offsets[idx+1]-1
+				rangeHdr := func(a, b int64) map[string]string {
+					return map[string]string{"Range": fmt.Sprintf("bytes=%d-%d", a, b)}
+				}
+				expectIntact := func(what string, hdr map[string]string, lo, hi int64) {
+					_, got, err := f.getBody("obj", hdr)
+					if err != nil || !bytes.Equal(got, data[lo:hi+1]) {
+						t.Fatalf("%s: undamaged range failed: err=%v", what, err)
+					}
+				}
+				expectRefused := func(what string, hdr map[string]string) {
+					resp, got, _ := f.getBody("obj", hdr)
+					if resp.StatusCode != http.StatusInternalServerError || !bytes.Contains(got, []byte("InternalError")) || len(got) > 1024 {
+						t.Fatalf("%s: status %d with %d body bytes, want an S3 error", what, resp.StatusCode, len(got))
+					}
+				}
+				expectTruncated := func(what string, hdr map[string]string, lo, hi int64) {
+					resp, got, err := f.getBody("obj", hdr)
+					if resp.StatusCode != 200 && resp.StatusCode != 206 {
+						t.Fatalf("%s: status %d, want a committed response", what, resp.StatusCode)
+					}
+					if err == nil || int64(len(got)) >= hi-lo+1 {
+						t.Fatalf("%s: damaged read reported success (%d of %d bytes, err %v)", what, len(got), hi-lo+1, err)
+					}
+					if !bytes.HasPrefix(data[lo:hi+1], got) || int64(len(got)) > damagedLo-lo {
+						t.Fatalf("%s: emitted bytes beyond the verified prefix (%d bytes, damaged chunk starts %d bytes in)", what, len(got), damagedLo-lo)
+					}
+				}
+
+				if idx == 0 {
+					expectRefused("full", nil)
+				} else {
+					expectTruncated("full", nil, 0, size-1)
+					expectIntact("range-before-damage", rangeHdr(0, damagedLo-1), 0, damagedLo-1)
+					expectTruncated("range-into-damage", rangeHdr(damagedLo-10, damagedHi), damagedLo-10, damagedHi)
+				}
+				if idx < len(man.Chunks)-1 {
+					expectIntact("range-after-damage", rangeHdr(damagedHi+1, size-1), damagedHi+1, size-1)
+				}
+				expectRefused("range-starting-in-damage", rangeHdr(damagedLo, damagedHi))
+			})
+		}
+	}
 }
