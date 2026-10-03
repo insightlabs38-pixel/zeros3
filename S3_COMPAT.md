@@ -71,6 +71,20 @@ alongside the existing integrity/reclaimable accounting. Ordinary S3
 clients never see any of this: `ListObjectsV2` only ever lists current
 objects.
 
+**Packed chunk storage** (ZeroS3-only CLI surface; invisible on the wire):
+`zeros3 compact -store DIR [-pack-size-mib N] [-dry-run] [-json]` moves
+loose CAS chunks that live roots reference into immutable pack files under
+`packs/`, under the same exclusive store ownership as `gc -apply`. Chunk
+identity (SHA-256 and length), manifests, ETags, history, snapshots, and
+every replication/sync/repair exchange are unchanged — `/_zeros3/v1/chunks`
+serves packed and loose chunks identically, each verified against its
+digest. New writes (PutObject, multipart, sync, replicate, repair) always
+create loose chunks; a store may hold loose, packed, and duplicate copies,
+and a read serves any copy that verifies. `gc` still sweeps loose chunks
+only and never modifies a pack. The first `compact` that publishes a pack
+raises `FORMAT.json` to `store_format_version` 2 so older builds refuse
+the store; stores never compacted stay at version 1.
+
 **Atomic conditional operations.** `PutObject` accepts `If-None-Match: *`
 (create only if the key currently has no visible object) and
 `If-Match: "<etag>"` (replace only if the current visible object still has

@@ -59,32 +59,33 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//       90    Test helpers, fixtures, and TestMain
-//      242    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//     1258    SigV4 authentication (header and payload-mode)
-//     1647    Checksums: CRC32 and Content-MD5
-//     2150    End-to-end HTTP and crash/recovery tests
-//     2824    M2: bucket/object/listing/journal protocol compatibility
-//     3875    M3: CDC/dedup evidence, stats, verify
-//     5011    M3: CopyObject
-//     5558    M3: single-range GET
-//     5759    M5-B: multipart upload
-//     7037    Presigned URLs and virtual-hosted-style addressing
-//     8066    M5-C: version history, restore, GC, storage-efficiency proof
-//     9912    M5-D/P2: ListParts and ListMultipartUploads pagination
-//    11631    M6: delta sync (`zeros3 sync`)
-//    13373    M6C: recursive directory sync
-//    14433    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//    15762    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    17087    M8C: namespace (prefix/bucket) replication
-//    18126    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    19218    M8E: durable namespace snapshots and restore
-//    21296    M8F: conditional operations (Put/Get/Copy preconditions)
-//    22701    M8G: introspection (dry-run planning, diff, inspect)
-//    24653    M8H: bounded parallel chunk transfer
-//    26004    P1: environment credentials, HTTP hardening/shutdown, TLS
-//    27320    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//    28250    Streaming reads and aws-chunked SigV4
+//       91    Test helpers, fixtures, and TestMain
+//      243    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//     1259    SigV4 authentication (header and payload-mode)
+//     1648    Checksums: CRC32 and Content-MD5
+//     2151    End-to-end HTTP and crash/recovery tests
+//     2825    M2: bucket/object/listing/journal protocol compatibility
+//     3876    M3: CDC/dedup evidence, stats, verify
+//     5012    M3: CopyObject
+//     5559    M3: single-range GET
+//     5760    M5-B: multipart upload
+//     7038    Presigned URLs and virtual-hosted-style addressing
+//     8067    M5-C: version history, restore, GC, storage-efficiency proof
+//     9913    M5-D/P2: ListParts and ListMultipartUploads pagination
+//    11632    M6: delta sync (`zeros3 sync`)
+//    13374    M6C: recursive directory sync
+//    14434    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    15763    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//    17088    M8C: namespace (prefix/bucket) replication
+//    18127    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    19219    M8E: durable namespace snapshots and restore
+//    21297    M8F: conditional operations (Put/Get/Copy preconditions)
+//    22702    M8G: introspection (dry-run planning, diff, inspect)
+//    24654    M8H: bounded parallel chunk transfer
+//    26005    P1: environment credentials, HTTP hardening/shutdown, TLS
+//    27321    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//    28251    Streaming reads and aws-chunked SigV4
+//    29099    Packed CAS: pack format, mixed reads, compaction, crash points
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -29091,5 +29092,982 @@ func TestAWSChunked_LargeObjectBoundedMemory(t *testing.T) {
 	n, _ := io.Copy(got, resp.Body)
 	if n != size || !bytes.Equal(got.Sum(nil), want.Sum(nil)) {
 		t.Fatalf("stored object: %d bytes, digest mismatch", n)
+	}
+}
+
+// =============================================================================
+// Z2-03: packed CAS (pack format, locator index, mixed reads, `compact`)
+// =============================================================================
+
+var packTestOpt = compactOptions{TargetBytes: 256 << 10, MinBytes: 32 << 10}
+
+func packTestDataset() map[string][]byte {
+	random := genRandomBytes(101, 1_200_000)
+	dupBody := genRandomBytes(102, 600_000)
+	return map[string][]byte{
+		"random":  random,
+		"repeat":  bytes.Repeat([]byte("zeros3-packed-cas/"), 30_000),
+		"dup-a":   dupBody,
+		"dup-b":   append([]byte(nil), dupBody...),
+		"shifted": append([]byte("shifted-prefix-bytes"), random...),
+	}
+}
+
+func putPackTestObjects(t *testing.T, dir string, data map[string][]byte, keys ...string) {
+	t.Helper()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range keys {
+		if _, err := s.PutObject("b", k, data[k], "application/octet-stream", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func compactTestDir(t *testing.T, dir string) CompactResult {
+	t.Helper()
+	res, err := compactStore(dir, packTestOpt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+// buildPackFixture returns a store directory in the requested physical mode.
+// Mixed packs some objects, then adds a shifted copy (sharing packed chunks
+// but with new loose ones) and a fresh object.
+func buildPackFixture(t *testing.T, mode string, data map[string][]byte) string {
+	t.Helper()
+	dir := t.TempDir()
+	switch mode {
+	case "loose":
+		putPackTestObjects(t, dir, data, "random", "repeat", "dup-a", "dup-b", "shifted")
+	case "packed":
+		putPackTestObjects(t, dir, data, "random", "repeat", "dup-a", "dup-b", "shifted")
+		compactTestDir(t, dir)
+	case "mixed":
+		putPackTestObjects(t, dir, data, "random", "repeat", "dup-a")
+		compactTestDir(t, dir)
+		putPackTestObjects(t, dir, data, "dup-b", "shifted")
+	default:
+		t.Fatalf("unknown mode %q", mode)
+	}
+	return dir
+}
+
+func packTestStats(t *testing.T, s *Store) StatsResult {
+	t.Helper()
+	st, err := s.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func TestPack_PhysicalMatrix(t *testing.T) {
+	data := packTestDataset()
+	for _, mode := range []string{"loose", "packed", "mixed"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := buildPackFixture(t, mode, data)
+			for pass := 0; pass < 2; pass++ { // pass 1 reads after a restart
+				s, err := OpenStore(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				st := packTestStats(t, s)
+				switch mode {
+				case "loose":
+					if st.PackCount != 0 || st.LooseChunkCount == 0 {
+						t.Fatalf("loose mode stats: %+v", st)
+					}
+				case "packed":
+					if st.PackCount < 2 || st.LooseChunkCount != 0 {
+						t.Fatalf("packed mode stats: packs=%d loose=%d", st.PackCount, st.LooseChunkCount)
+					}
+				case "mixed":
+					if st.PackCount == 0 || st.LooseChunkCount == 0 {
+						t.Fatalf("mixed mode stats: packs=%d loose=%d", st.PackCount, st.LooseChunkCount)
+					}
+				}
+				for key, body := range data {
+					_, man, err := s.HeadObject("b", key)
+					if err != nil {
+						t.Fatal(err)
+					}
+					size := int64(len(body))
+					ranges := map[string]byteRange{
+						"full":   {0, size - 1},
+						"prefix": {0, 99},
+						"suffix": {size - 1000, size - 1},
+					}
+					if len(man.Chunks) > 1 {
+						c0 := man.Chunks[0].Length
+						ranges["cross-chunk"] = byteRange{c0 - 50, c0 + 49}
+					}
+					for name, rng := range ranges {
+						_, _, got, err := s.GetObjectRange("b", key, rng)
+						if err != nil {
+							t.Fatalf("%s/%s pass %d: %v", key, name, pass, err)
+						}
+						if !bytes.Equal(got, body[rng.start:rng.end+1]) {
+							t.Fatalf("%s/%s pass %d: bytes differ", key, name, pass)
+						}
+					}
+				}
+				if vr, err := s.Verify(true); err != nil || !vr.OK() {
+					t.Fatalf("deep verify: err=%v issues=%+v", err, vr.Issues)
+				}
+				s.Close()
+			}
+		})
+	}
+}
+
+func TestPack_MixedManifestSpansLooseAndPacked(t *testing.T) {
+	data := packTestDataset()
+	dir := buildPackFixture(t, "mixed", data)
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, man, err := s.HeadObject("b", "shifted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loose, packed int
+	for _, c := range man.Chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		if _, err := os.Stat(s.chunkPath(sum)); err == nil {
+			loose++
+		} else if _, ok := s.packLookup(sum); ok {
+			packed++
+		}
+	}
+	if loose == 0 || packed == 0 {
+		t.Fatalf("manifest should span both representations, loose=%d packed=%d", loose, packed)
+	}
+}
+
+func hashTree(t *testing.T, root string) string {
+	t.Helper()
+	h := sha256.New()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(root, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.Write([]byte(e.Name()))
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func TestPack_CompactPreservesLogicalState(t *testing.T) {
+	data := packTestDataset()
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, data, "random", "repeat", "dup-a", "dup-b", "shifted")
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutObject("b", "random", data["repeat"], "text/plain", map[string]string{"k": "v"}); err != nil {
+		t.Fatal(err)
+	}
+	type snap struct {
+		etag, uuid string
+		size       int64
+		ct         string
+	}
+	capture := func(s *Store) map[string]snap {
+		out := map[string]snap{}
+		for k := range data {
+			e, _, err := s.HeadObject("b", k)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[k] = snap{e.etag, e.manifestUUID, e.size, e.contentType}
+		}
+		return out
+	}
+	before := capture(s)
+	hist := historyFor(t, s, "b", "random")
+	if len(hist) != 1 {
+		t.Fatalf("history rows = %d", len(hist))
+	}
+	s.Close()
+	manifestsBefore := hashTree(t, filepath.Join(dir, "manifests"))
+	journalBefore, _ := os.ReadFile(filepath.Join(dir, "journal", "visibility.log"))
+
+	if res := compactTestDir(t, dir); res.PacksWritten < 2 || res.LooseRemoved != res.ChunksPacked {
+		t.Fatalf("compact result: %+v", res)
+	}
+
+	if got := hashTree(t, filepath.Join(dir, "manifests")); got != manifestsBefore {
+		t.Fatal("manifest files changed by compaction")
+	}
+	journalAfter, _ := os.ReadFile(filepath.Join(dir, "journal", "visibility.log"))
+	if !bytes.Equal(journalBefore, journalAfter) {
+		t.Fatal("journal changed by compaction")
+	}
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	after := capture(s2)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("object metadata changed: before=%v after=%v", before, after)
+	}
+	// History restore reads the overwritten (packed) version byte-exactly.
+	if _, _, err := s2.RestoreObjectVersion("b", "random", hist[0].versionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, got, err := s2.GetObject("b", "random"); err != nil || !bytes.Equal(got, data["random"]) {
+		t.Fatalf("restored version differs: %v", err)
+	}
+	// A repeated compact has nothing left to do; new writes stay loose.
+	s2.Close()
+	if res := compactTestDir(t, dir); res.PacksWritten != 0 || res.LooseRemoved != 0 {
+		t.Fatalf("second compact should be a no-op: %+v", res)
+	}
+	s3, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s3.Close()
+	if _, err := s3.PutObject("b", "fresh", genRandomBytes(7, 300_000), "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s3.PutObject("b", "again", data["dup-a"], "", nil); err != nil {
+		t.Fatal(err)
+	}
+	st := packTestStats(t, s3)
+	if st.LooseChunkCount == 0 || st.PackCount == 0 {
+		t.Fatalf("new writes should be loose beside packs: %+v", st)
+	}
+	if vr, err := s3.Verify(true); err != nil || !vr.OK() {
+		t.Fatalf("verify: %v %+v", err, vr.Issues)
+	}
+}
+
+func TestPack_PlanBatchesBoundaries(t *testing.T) {
+	mk := func(n int) []compactCandidate {
+		c := make([]compactCandidate, n)
+		for i := range c {
+			c[i] = compactCandidate{sum: [32]byte{byte(i)}, size: 100}
+		}
+		return c
+	}
+	const rec = 100 + packRecordHeaderSize // 144
+	cases := []struct {
+		name          string
+		n             int
+		target, min   int64
+		wantSizes     []int
+		wantDeferredN int
+	}{
+		{"zero candidates", 0, 1000, 100, nil, 0},
+		{"one chunk below min is deferred", 1, 1000, 200, nil, 1},
+		{"one chunk at min makes a small pack", 1, 1000, rec, []int{1}, 0},
+		{"exactly at target closes the pack", 7, rec * 7, 100, []int{7}, 0},
+		{"one chunk short of target", 6, rec * 7, 100, []int{6}, 0},
+		{"one chunk past target starts a second pack", 8, rec * 7, 100, []int{7, 1}, 0},
+		{"undersized tail folds into previous pack", 8, rec * 7, 200, []int{8}, 0},
+		{"multiple packs plus tail", 15, rec * 7, 100, []int{7, 7, 1}, 0},
+		{"multiple packs, folded tail", 15, rec * 7, 200, []int{7, 8}, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			batches, deferred := planPackBatches(mk(c.n), c.target, c.min)
+			var sizes []int
+			for _, b := range batches {
+				sizes = append(sizes, len(b))
+			}
+			if !reflect.DeepEqual(sizes, c.wantSizes) || len(deferred) != c.wantDeferredN {
+				t.Fatalf("batches=%v deferred=%d, want %v / %d", sizes, len(deferred), c.wantSizes, c.wantDeferredN)
+			}
+		})
+	}
+}
+
+func TestPack_CompactIsDeterministicAndRepeatedHashesPackOnce(t *testing.T) {
+	data := packTestDataset()
+	var ids [2][]string
+	for i := range ids {
+		dir := buildPackFixture(t, "packed", data)
+		ents, err := os.ReadDir(filepath.Join(dir, "packs"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		recs := 0
+		for _, e := range ents {
+			ids[i] = append(ids[i], e.Name())
+			_, entries, err := loadPackFile(filepath.Join(dir, "packs", e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			recs += len(entries)
+		}
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(s.packIdx) != recs {
+			t.Fatalf("a chunk hash was packed more than once: %d records, %d distinct", recs, len(s.packIdx))
+		}
+		s.Close()
+	}
+	if !reflect.DeepEqual(ids[0], ids[1]) || len(ids[0]) < 2 {
+		t.Fatalf("pack ids differ between identical stores or too few packs: %v vs %v", ids[0], ids[1])
+	}
+}
+
+func TestPack_DryRunAndZeroCandidatesWriteNothing(t *testing.T) {
+	data := packTestDataset()
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, data, "random")
+	res, err := compactStore(dir, compactOptions{TargetBytes: packTestOpt.TargetBytes, MinBytes: packTestOpt.MinBytes, DryRun: true})
+	if err != nil || res.PacksWritten == 0 || !res.DryRun {
+		t.Fatalf("dry run: %+v %v", res, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packs")); !os.IsNotExist(err) {
+		t.Fatalf("dry run created packs/: %v", err)
+	}
+	empty := t.TempDir()
+	if res, err := compactStore(empty, packTestOpt); err != nil || res.PacksWritten != 0 {
+		t.Fatalf("empty store compact: %+v %v", res, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(empty, "FORMAT.json")); !bytes.Contains(b, []byte(`"store_format_version": 1`)) {
+		t.Fatalf("zero-candidate compact must not bump the store format: %s", b)
+	}
+}
+
+func TestPack_StoreFormatVersionGate(t *testing.T) {
+	data := packTestDataset()
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, data, "random")
+	read := func() storeFormat {
+		b, err := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var f storeFormat
+		if err := json.Unmarshal(b, &f); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	if v := read().StoreFormatVersion; v != storeFormatVersion {
+		t.Fatalf("loose store version = %d", v)
+	}
+	id := read().StoreID
+	compactTestDir(t, dir)
+	if f := read(); f.StoreFormatVersion != storeFormatVersionPacked || f.StoreID != id {
+		t.Fatalf("packed store format = %+v", f)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
+	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 3`), 1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 3") {
+		t.Fatalf("unknown future version must be rejected, got %v", err)
+	}
+}
+
+func TestPack_CompactRefusesWhileStoreInUse(t *testing.T) {
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, packTestDataset(), "random")
+	lock, err := acquireStoreLock(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.release()
+	if _, err := compactStore(dir, packTestOpt); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("compact must refuse a store held by a server, got %v", err)
+	}
+}
+
+// ---- malformed packs ------------------------------------------------------
+
+func singlePackFixture(t *testing.T) (dir, packPath string, data map[string][]byte) {
+	t.Helper()
+	data = map[string][]byte{"random": genRandomBytes(5, 400_000)}
+	dir = t.TempDir()
+	putPackTestObjects(t, dir, data, "random")
+	if _, err := compactStore(dir, compactOptions{TargetBytes: 8 << 20, MinBytes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ents, err := os.ReadDir(filepath.Join(dir, "packs"))
+	if err != nil || len(ents) != 1 {
+		t.Fatalf("want exactly one pack: %v %d", err, len(ents))
+	}
+	return dir, filepath.Join(dir, "packs", ents[0].Name()), data
+}
+
+// refreshPackChecksums recomputes the index and footer CRCs after a test
+// mutates index bytes, so the mutation is rejected by validation rather
+// than by the checksum.
+func refreshPackChecksums(b []byte) {
+	ft := b[len(b)-packFooterSize:]
+	idxOff := binary.LittleEndian.Uint64(ft[16:24])
+	if idxOff <= uint64(len(b)-packFooterSize) {
+		binary.LittleEndian.PutUint32(ft[56:60], crc32.Checksum(b[idxOff:len(b)-packFooterSize], castagnoliTable))
+	}
+	binary.LittleEndian.PutUint32(ft[60:64], crc32.Checksum(ft[:60], castagnoliTable))
+}
+
+func TestPack_MalformedPacksRejectedSafely(t *testing.T) {
+	_, packPath, _ := singlePackFixture(t)
+	orig, err := os.ReadFile(packPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexOff := int(binary.LittleEndian.Uint64(orig[len(orig)-packFooterSize+16:]))
+	entry := func(b []byte, i int) []byte {
+		return b[indexOff+i*packIndexEntrySize : indexOff+(i+1)*packIndexEntrySize]
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(b []byte) []byte
+	}{
+		{"bad magic", func(b []byte) []byte { b[0] ^= 0xff; return b }},
+		{"bad version", func(b []byte) []byte { b[4] = 9; return b }},
+		{"nonzero reserved header", func(b []byte) []byte { b[10] = 1; return b }},
+		{"truncated header", func(b []byte) []byte { return b[:8] }},
+		{"truncated footer", func(b []byte) []byte { return b[:len(b)-10] }},
+		{"truncated index", func(b []byte) []byte {
+			n := len(b) - packFooterSize
+			return append(b[:n-26:n-26], b[n:]...)
+		}},
+		{"truncated payload", func(b []byte) []byte { return append(b[:100:100], b[400:]...) }},
+		{"bad footer crc", func(b []byte) []byte { b[len(b)-1] ^= 1; return b }},
+		{"absurd record count", func(b []byte) []byte {
+			binary.LittleEndian.PutUint64(b[len(b)-packFooterSize+8:], 1<<62)
+			refreshPackChecksums(b)
+			return b
+		}},
+		{"index offset out of range", func(b []byte) []byte {
+			binary.LittleEndian.PutUint64(b[len(b)-packFooterSize+16:], uint64(len(b))*2)
+			refreshPackChecksums(b)
+			return b
+		}},
+		{"invalid payload offset", func(b []byte) []byte {
+			binary.LittleEndian.PutUint64(entry(b, 0)[32:40], 3)
+			refreshPackChecksums(b)
+			return b
+		}},
+		{"zero stored length", func(b []byte) []byte {
+			binary.LittleEndian.PutUint32(entry(b, 0)[40:44], 0)
+			refreshPackChecksums(b)
+			return b
+		}},
+		{"oversized length", func(b []byte) []byte {
+			binary.LittleEndian.PutUint32(entry(b, 0)[40:44], 0xffffffff)
+			binary.LittleEndian.PutUint32(entry(b, 0)[44:48], 0xffffffff)
+			refreshPackChecksums(b)
+			return b
+		}},
+		{"unsupported codec", func(b []byte) []byte { entry(b, 0)[48] = 1; refreshPackChecksums(b); return b }},
+		{"duplicate digest in one pack", func(b []byte) []byte { copy(entry(b, 1)[:32], entry(b, 0)[:32]); refreshPackChecksums(b); return b }},
+		{"index checksum mismatch", func(b []byte) []byte { entry(b, 0)[0] ^= 1; return b }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "packs"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "packs", filepath.Base(packPath))
+			if err := os.WriteFile(path, c.mutate(append([]byte(nil), orig...)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var m0, m1 runtime.MemStats
+			runtime.ReadMemStats(&m0)
+			_, _, lerr := loadPackFile(path)
+			if lerr == nil {
+				t.Fatal("malformed pack was accepted")
+			}
+			t.Logf("rejected: %v", lerr)
+			runtime.ReadMemStats(&m1)
+			if m1.TotalAlloc-m0.TotalAlloc > 8<<20 {
+				t.Fatalf("malformed pack triggered %d bytes of allocation", m1.TotalAlloc-m0.TotalAlloc)
+			}
+			// A store opens around it, reports it, and indexes nothing from it.
+			s, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if len(s.packIdx) != 0 || len(s.packBad) != 1 {
+				t.Fatalf("index=%d bad=%d", len(s.packIdx), len(s.packBad))
+			}
+			vr, err := s.Verify(false)
+			if err != nil || vr.OK() {
+				t.Fatalf("verify must flag the bad pack: %v %+v", err, vr)
+			}
+		})
+	}
+}
+
+func TestPack_UnpublishedArtifactsIgnored(t *testing.T) {
+	dir, packPath, data := singlePackFixture(t)
+	orig, _ := os.ReadFile(packPath)
+	stray := []string{
+		filepath.Join(dir, "packs", "half-written.pack.tmp"),
+		filepath.Join(dir, "packs", strings.Repeat("0", 64)+".pack.partial"),
+		filepath.Join(dir, "tmp", "pack-123.tmp"),
+	}
+	for _, p := range stray {
+		if err := os.WriteFile(p, orig[:len(orig)/2], 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if len(s.packs) != 1 || len(s.packBad) != 0 {
+		t.Fatalf("packs=%d bad=%d", len(s.packs), len(s.packBad))
+	}
+	if _, got, err := s.GetObject("b", "random"); err != nil || !bytes.Equal(got, data["random"]) {
+		t.Fatalf("read with stray artifacts: %v", err)
+	}
+}
+
+func TestPack_PayloadAndRecordHeaderDamageFailSafely(t *testing.T) {
+	for _, damage := range []string{"payload", "record-header"} {
+		t.Run(damage, func(t *testing.T) {
+			dir, packPath, data := singlePackFixture(t)
+			s, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, man, _ := s.HeadObject("b", "random")
+			s.Close()
+			b, _ := os.ReadFile(packPath)
+			_, entries, _ := loadPackFile(packPath)
+			off := int(entries[1].off)
+			if damage == "record-header" {
+				off -= packRecordHeaderSize
+			}
+			b[off] ^= 0xff
+			if err := os.WriteFile(packPath, b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := verifyPackFile(packPath); err == nil {
+				t.Fatal("full pack verification missed the damage")
+			}
+			s, err = OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if _, got, err := s.GetObject("b", "random"); err == nil {
+				t.Fatalf("damaged chunk must fail the read, got %d bytes (equal=%v)", len(got), bytes.Equal(got, data["random"]))
+			}
+			// Healthy neighbors in the same pack stay readable and exact.
+			sum, _ := decodeHexSHA256(man.Chunks[0].SHA256)
+			if got, err := s.casRead(sum); err != nil || sha256.Sum256(got) != sum {
+				t.Fatalf("neighbor chunk: %v", err)
+			}
+			vr, _ := s.Verify(true)
+			if vr.OK() || vr.Corrupt == 0 {
+				t.Fatalf("deep verify must report corruption: %+v", vr.Issues)
+			}
+		})
+	}
+}
+
+// ---- mixed copies and deliberate corruption preference --------------------
+
+func flipPackedByte(t *testing.T, s *Store, sum [32]byte) {
+	t.Helper()
+	loc, ok := s.packLookup(sum)
+	if !ok {
+		t.Fatal("chunk not packed")
+	}
+	f, err := os.OpenFile(s.packs[loc.pack].path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var b [1]byte
+	f.ReadAt(b[:], int64(loc.off))
+	b[0] ^= 0xff
+	if _, err := f.WriteAt(b[:], int64(loc.off)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPack_DuplicateCopiesCorruptionPreference(t *testing.T) {
+	dir, _, data := singlePackFixture(t)
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, man, _ := s.HeadObject("b", "random")
+	sum, _ := decodeHexSHA256(man.Chunks[2].SHA256)
+	good, err := s.casRead(sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.casRepairPublish(sum, good); err != nil { // second, loose copy
+		t.Fatal(err)
+	}
+	read := func() ([]byte, error) { return s.casRead(sum) }
+	if got, err := read(); err != nil || !bytes.Equal(got, good) {
+		t.Fatalf("both copies good: %v", err)
+	}
+	corruptChunkOnDisk(t, s, man.Chunks[2].SHA256)
+	if got, err := read(); err != nil || !bytes.Equal(got, good) {
+		t.Fatalf("corrupt loose copy must fall back to the packed one: %v", err)
+	}
+	if vr, _ := s.Verify(true); !vr.OK() {
+		t.Fatalf("a valid copy exists, verify should pass: %+v", vr.Issues)
+	}
+	if err := s.casRepairPublish(sum, good); err != nil {
+		t.Fatal(err)
+	}
+	flipPackedByte(t, s, sum)
+	if got, err := read(); err != nil || !bytes.Equal(got, good) {
+		t.Fatalf("corrupt packed copy must fall back to the loose one: %v", err)
+	}
+	corruptChunkOnDisk(t, s, man.Chunks[2].SHA256)
+	got, err := read()
+	if err == nil || got != nil || !errors.Is(err, errChunkCorrupt) {
+		t.Fatalf("both copies corrupt must fail without bytes: %v", err)
+	}
+	if _, gotBody, err := s.GetObject("b", "random"); err == nil {
+		t.Fatalf("object read returned bytes despite a corrupt chunk (equal=%v)", bytes.Equal(gotBody, data["random"]))
+	}
+}
+
+func TestPack_RepairReplacesCorruptPackedChunkFromPeer(t *testing.T) {
+	dir, store := mustCreateLocalStore(t)
+	store.CreateBucket("b")
+	body := genRandomBytes(31, 600_000)
+	mustPutObject(t, store, "b", "k", body, "application/octet-stream", nil)
+	store.Close()
+	if _, err := compactStore(dir, packTestOpt); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, man, _ := store.HeadObject("b", "k")
+	sum, _ := decodeHexSHA256(man.Chunks[1].SHA256)
+	flipPackedByte(t, store, sum)
+
+	_, peerSrv, creds, region := newSyncTestServer(t)
+	peerTS := httptest.NewServer(peerSrv)
+	defer peerTS.Close()
+	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
+
+	findings, err := store.repairFindings()
+	if err != nil || len(findings) != 1 || findings[0].Kind != "corrupt" || findings[0].SHA256 != man.Chunks[1].SHA256 {
+		t.Fatalf("findings = %+v, %v", findings, err)
+	}
+	if _, err := store.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, region)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, got, err := store.GetObject("b", "k"); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("read after repair: %v", err)
+	}
+	if vr, _ := store.Verify(true); !vr.OK() {
+		t.Fatalf("verify after repair: %+v", vr.Issues)
+	}
+}
+
+// ---- GC safety and reporting ---------------------------------------------
+
+func TestPack_GCNeverTouchesPacks(t *testing.T) {
+	data := packTestDataset()
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, data, "random", "dup-a")
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A chunk no root references, forced into a pack: the state a pack
+	// holds once the last reference to a packed chunk disappears.
+	dead := bytes.Repeat([]byte{0xCD}, 7000)
+	deadSum, err := s.casWrite(dead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr, err := s.computeReachability(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr.ReferencedChunks[hex.EncodeToString(deadSum[:])] = true
+	if _, err := s.compact(rr.ReferencedChunks, packTestOpt); err != nil {
+		t.Fatal(err)
+	}
+	garbage := bytes.Repeat([]byte{0xAB}, 5000)
+	if _, err := s.casWrite(garbage); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	before := hashTree(t, filepath.Join(dir, "packs"))
+
+	dry, err := gcCollect(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.PackCount == 0 || dry.PackedChunksUnreachable != 1 || dry.PackedUnreachableBytes != int64(len(dead)) || dry.ChunksUnreachable != 1 {
+		t.Fatalf("dry-run gc result: %+v", dry)
+	}
+	if dry.ReclaimablePayloadBytes != int64(len(garbage)) {
+		t.Fatalf("packed bytes must not be counted reclaimable: %+v", dry)
+	}
+	applied, err := gcCollect(dir, true)
+	if err != nil || applied.ChunksDeleted != 1 {
+		t.Fatalf("apply: %+v %v", applied, err)
+	}
+	if hashTree(t, filepath.Join(dir, "packs")) != before {
+		t.Fatal("gc modified a pack")
+	}
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	for _, k := range []string{"random", "dup-a"} {
+		if _, got, err := s2.GetObject("b", k); err != nil || !bytes.Equal(got, data[k]) {
+			t.Fatalf("live object %s after gc: %v", k, err)
+		}
+	}
+	if vr, _ := s2.Verify(true); !vr.OK() {
+		t.Fatalf("verify after gc: %+v", vr.Issues)
+	}
+}
+
+func TestPack_StatsAndVerifyReportPhysicalLayout(t *testing.T) {
+	dir := buildPackFixture(t, "mixed", packTestDataset())
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	st := packTestStats(t, s)
+	packs, records, packBytes := s.packTotals()
+	if st.PackCount != packs || st.PackedChunkCount != records || st.PackFileBytes != packBytes || st.PackCount == 0 || st.LooseChunkCount == 0 {
+		t.Fatalf("stats: %+v", st)
+	}
+	if st.ChunkStoreFileBytes != st.LooseChunkFileBytes+st.PackFileBytes {
+		t.Fatalf("chunk store bytes do not add up: %+v", st)
+	}
+	var onDisk int64
+	ents, _ := os.ReadDir(filepath.Join(dir, "packs"))
+	for _, e := range ents {
+		info, _ := e.Info()
+		onDisk += info.Size()
+	}
+	if onDisk != st.PackFileBytes {
+		t.Fatalf("pack bytes %d != files on disk %d", st.PackFileBytes, onDisk)
+	}
+	for _, deep := range []bool{false, true} {
+		vr, err := s.Verify(deep)
+		if err != nil || !vr.OK() || vr.PacksChecked != packs {
+			t.Fatalf("deep=%v verify: %v checked=%d %+v", deep, err, vr.PacksChecked, vr.Issues)
+		}
+	}
+}
+
+// ---- crash / publication boundaries --------------------------------------
+
+func TestPack_CompactCrashPoints(t *testing.T) {
+	data := packTestDataset()
+	keys := []string{"random", "repeat", "dup-a", "dup-b", "shifted"}
+	cases := []struct {
+		name          string
+		point         string
+		nth           int
+		wantPublished bool
+	}{
+		{"during pack creation", hookPackRecordWritten, 3, false},
+		{"after data write, before fsync", hookPackBeforeSync, 1, false},
+		{"after fsync", hookPackAfterSync, 1, false},
+		{"before publication rename", hookPackBeforePublish, 1, false},
+		{"after rename, before dir fsync", hookPackAfterRename, 1, true},
+		{"published, before loose deletion", hookPackPublished, 1, true},
+		{"partway through loose deletion", hookBeforeLooseDelete, 4, true},
+		{"second pack mid-creation", hookPackBeforeSync, 2, true},
+		{"immediately after completion", hookCompactDone, 1, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			putPackTestObjects(t, dir, data, keys...)
+			calls := 0
+			withTestHook(t, func(point string) {
+				if point == c.point {
+					calls++
+					if calls == c.nth {
+						panic(simulatedCrash{point: point})
+					}
+				}
+			})
+			runExpectingSimulatedCrash(t, func() { _, _ = compactStore(dir, packTestOpt) })
+			testHook = nil
+
+			check := func(stage string) *Store {
+				s, err := OpenStore(dir)
+				if err != nil {
+					t.Fatalf("%s: reopen: %v", stage, err)
+				}
+				for k, body := range data {
+					if _, got, err := s.GetObject("b", k); err != nil || !bytes.Equal(got, body) {
+						t.Fatalf("%s: %s lost or changed: %v", stage, k, err)
+					}
+				}
+				if vr, err := s.Verify(true); err != nil || !vr.OK() {
+					t.Fatalf("%s: deep verify: %v %+v", stage, err, vr.Issues)
+				}
+				return s
+			}
+			s := check("after crash")
+			if published := len(s.packs) > 0; published != c.wantPublished {
+				t.Fatalf("published=%v want %v", published, c.wantPublished)
+			}
+			s.Close()
+
+			if res, err := compactStore(dir, packTestOpt); err != nil {
+				t.Fatalf("rerun: %v (%+v)", err, res)
+			}
+			s = check("after rerun")
+			defer s.Close()
+			if st := packTestStats(t, s); st.LooseChunkCount != 0 || st.PackCount == 0 {
+				t.Fatalf("rerun should converge to fully packed: loose=%d packs=%d", st.LooseChunkCount, st.PackCount)
+			}
+			if stale, _ := filepath.Glob(filepath.Join(dir, "tmp", "pack-*.tmp")); len(stale) != 0 {
+				t.Fatalf("stale staging files remain: %v", stale)
+			}
+		})
+	}
+}
+
+// ---- logical features over a packed store ---------------------------------
+
+func TestPack_LogicalFeaturesOverPackedStore(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	body := genRandomBytes(77, 900_000)
+	if err := srv.store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, srv.store, "b", "k", body, "application/octet-stream", map[string]string{"m": "1"})
+	if err := srv.store.CreateBucket("b2"); err != nil {
+		t.Fatal(err)
+	}
+	srv.store.Close()
+	if _, err := compactStore(dir, packTestOpt); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	srv = NewServer(store, creds, region)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	cfg := mustPeerConfig(ts, creds, region)
+
+	if st := packTestStats(t, store); st.PackCount == 0 || st.LooseChunkCount != 0 {
+		t.Fatalf("fixture should be fully packed: %+v", st)
+	}
+
+	// CopyObject (server-side) reuses packed chunks.
+	if _, _, err := store.CopyObject(CopyObjectRequest{SrcBucket: "b", SrcKey: "k", DstBucket: "b2", DstKey: "copy"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, got, err := store.GetObject("b2", "copy"); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("copy read: %v", err)
+	}
+
+	// Sync client: negotiation treats packed chunks as present.
+	local := filepath.Join(t.TempDir(), "same.bin")
+	if err := os.WriteFile(local, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	syncCfg := cfg
+	syncCfg.LocalPath, syncCfg.Bucket, syncCfg.Key = local, "b", "synced"
+	stats, err := syncFile(syncCfg)
+	if err != nil || stats.UniqueChunksUploaded != 0 {
+		t.Fatalf("sync of identical content should upload nothing: %+v %v", stats, err)
+	}
+	if _, got, err := store.GetObject("b", "synced"); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("synced object: %v", err)
+	}
+
+	// Snapshot, then replicate the packed object to a fresh store.
+	if _, err := createSnapshotRemote(cfg, "b", ""); err != nil {
+		t.Fatal(err)
+	}
+	_, dstSrv, dstCreds, dstRegion := newSyncTestServer(t)
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	if err := dstSrv.store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replicateObject(replicateConfig{
+		Source: syncClientConfig{Endpoint: ts.URL, Creds: creds, Region: region, HTTPClient: ts.Client(), Bucket: "b", Key: "k"},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Creds: dstCreds, Region: dstRegion, HTTPClient: dstTS.Client(), Bucket: "b", Key: "k"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, got, err := dstSrv.store.GetObject("b", "k"); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("replicated object: %v", err)
+	}
+	// Replication writes the destination loose: new data never enters packs.
+	if st := packTestStats(t, dstSrv.store); st.PackCount != 0 || st.LooseChunkCount == 0 {
+		t.Fatalf("replicated data should be loose: %+v", st)
+	}
+	if vr, _ := store.Verify(true); !vr.OK() {
+		t.Fatalf("verify packed store: %+v", vr.Issues)
+	}
+}
+
+func TestPack_CompactCLI(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, packTestDataset(), "random", "repeat")
+	out, errOut, code := runZeros3CLI(t, bin, "compact", "-store", dir, "-pack-size-mib", "1", "-dry-run")
+	if code != 0 || !strings.Contains(out, "dry-run") {
+		t.Fatalf("dry-run: code=%d out=%q err=%q", code, out, errOut)
+	}
+	out, errOut, code = runZeros3CLI(t, bin, "compact", "-store", dir, "-pack-size-mib", "1", "-json")
+	if code != 0 {
+		t.Fatalf("compact: code=%d err=%q", code, errOut)
+	}
+	var res CompactResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil || res.PacksWritten == 0 || res.DryRun {
+		t.Fatalf("compact json: %+v %v", res, err)
+	}
+	out, _, code = runZeros3CLI(t, bin, "stats", "-store", dir)
+	if code != 0 || !strings.Contains(out, "0 loose") || !strings.Contains(out, "packs") {
+		t.Fatalf("stats: %q", out)
+	}
+	if out, _, code = runZeros3CLI(t, bin, "verify", "-store", dir, "-deep"); code != 0 || !strings.Contains(out, "packs") {
+		t.Fatalf("verify: %q", out)
+	}
+	if out, _, code = runZeros3CLI(t, bin, "gc", "-store", dir); code != 0 || !strings.Contains(out, "not reclaimable yet") {
+		t.Fatalf("gc: %q", out)
 	}
 }
