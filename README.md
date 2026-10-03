@@ -273,6 +273,18 @@ a 1 MiB range GET from 9.4 to 7.4 ms on average, and server open from 19
 to 93 ms (server peak RSS 18 to 28 MiB). A synthetic 1M-record index opens
 in 0.6 s using ~128 MiB of heap. Single runs, 4 vCPU.
 
+**Reclaiming packed space.** 1 GiB of packed data (32 packs) after an aborted
+upload leaves dead records beside live ones. Default `repack` policy
+(rewrite packs below 50% live): at ~90% live nothing is rewritten; at ~50%
+live it reclaimed 285 of 513 reclaimable MiB while rewriting 259 MiB (0.9 bytes
+written per byte reclaimed); at ~10% live it reclaimed 923 MiB (90%) while
+writing 102 MiB (0.11). Forcing a rewrite of the ~90%-live packs reclaims
+10% at 8.9 bytes written per byte reclaimed, which is why it is not the
+default. Repack ran at about 75-90 MiB/s of read+write I/O with 20-22 MiB
+peak RSS; `gc -apply` removed 16 fully dead packs (513 MiB) in 0.3 s. Full
+and range GET latency and server open time (33-44 ms) were unchanged
+before and after. Single runs, 4 vCPU.
+
 **Bounded parallel delta transfer.** Loopback benchmark, 4 vCPU, a 10ms
 simulated per-request delay standing in for real-network RTT, 256 MiB of
 missing payload:
