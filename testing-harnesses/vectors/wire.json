@@ -1,0 +1,195 @@
+{
+ "_comment": "Hand-written S3 wire-shape fixtures (S3 API reference conventions, not recorded from ZeroS3). Steps run in order against an empty bucket 'wire' on a us-east-1 endpoint; '*' in xml text matches any value; {Name} substitutes a captured value; sibling element order across different names is not significant.",
+ "region": "us-east-1",
+ "steps": [
+  {
+   "name": "CreateBucket",
+   "request": {
+    "method": "PUT",
+    "uri": "/wire"
+   },
+   "response": {
+    "status": 200
+   }
+  },
+  {
+   "name": "PutObject",
+   "request": {
+    "method": "PUT",
+    "uri": "/wire/a.txt",
+    "headers": {
+     "Content-Type": "text/plain",
+     "x-amz-meta-origin": "wire"
+    },
+    "body": "hello world"
+   },
+   "response": {
+    "status": 200,
+    "headers": {
+     "ETag": "\"5eb63bbbe01eeed093cb22bb8f5acdc3\""
+    }
+   }
+  },
+  {
+   "name": "PutObject (nested key)",
+   "request": {
+    "method": "PUT",
+    "uri": "/wire/dir/b.txt",
+    "body": "second"
+   },
+   "response": {
+    "status": 200,
+    "headers": {
+     "ETag": "\"a9f0e61a137d86aa9db53465e0801612\""
+    }
+   }
+  },
+  {
+   "name": "ListObjectsV2 with delimiter",
+   "request": {
+    "method": "GET",
+    "uri": "/wire?list-type=2&delimiter=%2F"
+   },
+   "response": {
+    "status": 200,
+    "headers": {
+     "Content-Type": "application/xml"
+    },
+    "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListBucketResult><Name>wire</Name><Prefix></Prefix><Delimiter>/</Delimiter><MaxKeys>1000</MaxKeys><KeyCount>2</KeyCount><IsTruncated>false</IsTruncated><Contents><Key>a.txt</Key><LastModified>*</LastModified><ETag>\"5eb63bbbe01eeed093cb22bb8f5acdc3\"</ETag><Size>11</Size><StorageClass>STANDARD</StorageClass></Contents><CommonPrefixes><Prefix>dir/</Prefix></CommonPrefixes></ListBucketResult>"
+   }
+  },
+  {
+   "name": "GetBucketLocation (us-east-1: empty constraint)",
+   "request": {
+    "method": "GET",
+    "uri": "/wire?location"
+   },
+   "response": {
+    "status": 200,
+    "headers": {
+     "Content-Type": "application/xml"
+    },
+    "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<LocationConstraint></LocationConstraint>"
+   }
+  },
+  {
+   "name": "GetObject single range",
+   "request": {
+    "method": "GET",
+    "uri": "/wire/a.txt",
+    "headers": {
+     "Range": "bytes=0-4"
+    }
+   },
+   "response": {
+    "status": 206,
+    "headers": {
+     "Content-Range": "bytes 0-4/11",
+     "Content-Length": "5",
+     "Accept-Ranges": "bytes",
+     "ETag": "\"5eb63bbbe01eeed093cb22bb8f5acdc3\""
+    },
+    "body": "hello"
+   }
+  },
+  {
+   "name": "GetObject unsatisfiable range",
+   "request": {
+    "method": "GET",
+    "uri": "/wire/a.txt",
+    "headers": {
+     "Range": "bytes=100-"
+    }
+   },
+   "response": {
+    "status": 416,
+    "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>InvalidRange</Code><Message>*</Message><Resource>*</Resource></Error>"
+   }
+  },
+  {
+   "name": "DeleteObjects (missing key succeeds)",
+   "request": {
+    "method": "POST",
+    "uri": "/wire?delete",
+    "headers": {
+     "Content-Type": "application/xml"
+    },
+    "body": "<Delete><Object><Key>a.txt</Key></Object><Object><Key>nope</Key></Object></Delete>"
+   },
+   "response": {
+    "status": 200,
+    "headers": {
+     "Content-Type": "application/xml"
+    },
+    "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DeleteResult><Deleted><Key>a.txt</Key></Deleted><Deleted><Key>nope</Key></Deleted></DeleteResult>"
+   }
+  },
+  {
+   "name": "DeleteObjects Quiet=true",
+   "request": {
+    "method": "POST",
+    "uri": "/wire?delete",
+    "body": "<Delete><Quiet>true</Quiet><Object><Key>dir/b.txt</Key></Object></Delete>"
+   },
+   "response": {
+    "status": 200,
+    "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DeleteResult></DeleteResult>"
+   }
+  },
+  {
+   "name": "DeleteObjects malformed",
+   "request": {
+    "method": "POST",
+    "uri": "/wire?delete",
+    "body": "<Delete>"
+   },
+   "response": {
+    "status": 400,
+    "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>MalformedXML</Code><Message>*</Message><Resource>*</Resource></Error>"
+   }
+  },
+  {
+   "name": "CreateMultipartUpload",
+   "request": {
+    "method": "POST",
+    "uri": "/wire/mp.bin?uploads"
+   },
+   "capture": {
+    "UploadId": "<UploadId>([^<]+)</UploadId>"
+   },
+   "response": {
+    "status": 200,
+    "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<InitiateMultipartUploadResult><Bucket>wire</Bucket><Key>mp.bin</Key><UploadId>*</UploadId></InitiateMultipartUploadResult>"
+   }
+  },
+  {
+   "name": "UploadPart",
+   "request": {
+    "method": "PUT",
+    "uri": "/wire/mp.bin?partNumber=1&uploadId={UploadId}",
+    "body": "only part"
+   },
+   "response": {
+    "status": 200,
+    "headers": {
+     "ETag": "\"14230f1d9c64bd06720ad1be4312c350\""
+    }
+   }
+  },
+  {
+   "name": "CompleteMultipartUpload",
+   "request": {
+    "method": "POST",
+    "uri": "/wire/mp.bin?uploadId={UploadId}",
+    "headers": {
+     "Content-Type": "application/xml"
+    },
+    "body": "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>\"14230f1d9c64bd06720ad1be4312c350\"</ETag></Part></CompleteMultipartUpload>"
+   },
+   "response": {
+    "status": 200,
+    "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CompleteMultipartUploadResult><Location>*</Location><Bucket>wire</Bucket><Key>mp.bin</Key><ETag>\"de7dfe70924e91b296afd1f8fadf8458-1\"</ETag></CompleteMultipartUploadResult>"
+   }
+  }
+ ]
+}

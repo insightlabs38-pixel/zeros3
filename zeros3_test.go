@@ -40,6 +40,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -65,39 +66,40 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//       98    Test helpers, fixtures, and TestMain
-//     255    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//    1271    SigV4 authentication (header and payload-mode)
-//    1660    Checksums: CRC32 and Content-MD5
-//    2163    End-to-end HTTP and crash/recovery tests
-//    2837    M2: bucket/object/listing/journal protocol compatibility
-//    3888    M3: CDC/dedup evidence, stats, verify
-//    5024    M3: CopyObject
-//    5571    M3: single-range GET
-//    5772    M5-B: multipart upload
-//    7050    Presigned URLs and virtual-hosted-style addressing
-//    8079    M5-C: version history, restore, GC, storage-efficiency proof
-//    9546    Z2-08: history retention (prune)
-//   10638    M5-D/P2: ListParts and ListMultipartUploads pagination
-//   12357    M6: delta sync (`zeros3 sync`)
-//   14099    M6C: recursive directory sync
-//   15159    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//   16488    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//   17813    M8C: namespace (prefix/bucket) replication
-//   18852    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//   19944    M8E: durable namespace snapshots and restore
-//   22022    M8F: conditional operations (Put/Get/Copy preconditions)
-//   23427    M8G: introspection (dry-run planning, diff, inspect)
-//   25379    M8H: bounded parallel chunk transfer
-//   26760    P1: environment credentials, HTTP hardening/shutdown, TLS
-//   28076    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//   29006    Streaming reads and aws-chunked SigV4
-//   29854    Packed CAS: pack format, mixed reads, compaction, crash points
-//   30831    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//   31983    Adaptive pack compression (codec 1, DEFLATE)
-//   33017    Scalable packed-chunk locator (sorted immutable levels)
-//   33503    Z2-07: bulk logical-chunk transport (v2)
-//   34896    Hot/warm/cold physical pack tiers
+//      105    Test helpers, fixtures, and TestMain
+//     257    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//    1273    SigV4 authentication (header and payload-mode)
+//    1662    Checksums: CRC32 and Content-MD5
+//    2165    End-to-end HTTP and crash/recovery tests
+//    2839    M2: bucket/object/listing/journal protocol compatibility
+//    3890    M3: CDC/dedup evidence, stats, verify
+//    5026    M3: CopyObject
+//    5573    M3: single-range GET
+//    5774    M5-B: multipart upload
+//    7052    Presigned URLs and virtual-hosted-style addressing
+//    8081    M5-C: version history, restore, GC, storage-efficiency proof
+//    9548    Z2-08: history retention (prune)
+//   10640    M5-D/P2: ListParts and ListMultipartUploads pagination
+//   12359    M6: delta sync (`zeros3 sync`)
+//   14101    M6C: recursive directory sync
+//   15161    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//   16490    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//   17815    M8C: namespace (prefix/bucket) replication
+//   18854    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//   19946    M8E: durable namespace snapshots and restore
+//   22024    M8F: conditional operations (Put/Get/Copy preconditions)
+//   23429    M8G: introspection (dry-run planning, diff, inspect)
+//   25381    M8H: bounded parallel chunk transfer
+//   26762    P1: environment credentials, HTTP hardening/shutdown, TLS
+//   28078    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//   29008    Streaming reads and aws-chunked SigV4
+//   29856    Packed CAS: pack format, mixed reads, compaction, crash points
+//   30833    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//   31985    Adaptive pack compression (codec 1, DEFLATE)
+//   33019    Scalable packed-chunk locator (sorted immutable levels)
+//   33505    Z2-07: bulk logical-chunk transport (v2)
+//   34898    Hot/warm/cold physical pack tiers
+//   35669    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -35661,4 +35663,755 @@ func TestTier_ColdOnlyStoreMovesToHot(t *testing.T) {
 		t.Fatalf("packs per tier: %v", c)
 	}
 	checkTierReads(t, dir, data).Close()
+}
+
+// =============================================================================
+// Z2-09: GetBucketLocation, DeleteObjects, tier init
+// =============================================================================
+
+func z209Server(t *testing.T, region string) (*Store, *httptest.Server, testSigner) {
+	t.Helper()
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	creds := Credentials{AccessKeyID: "AKIATESTACCESSKEY0001", SecretAccessKey: "TestSecretKeyForZeroS3UnitTests0123456789"}
+	ts := httptest.NewServer(NewServer(store, creds, region))
+	t.Cleanup(ts.Close)
+	return store, ts, testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: region}
+}
+
+func z209Do(t *testing.T, ts *httptest.Server, signer testSigner, method, path string, body []byte) (int, string) {
+	t.Helper()
+	resp := doSignedRequest(t, ts.Client(), ts.URL, signer, method, path, body, nil)
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+func TestGetBucketLocation(t *testing.T) {
+	for _, tc := range []struct{ region, want string }{{"us-east-1", ""}, {"eu-west-2", "eu-west-2"}} {
+		t.Run(tc.region, func(t *testing.T) {
+			store, ts, signer := z209Server(t, tc.region)
+			if err := store.CreateBucket("b"); err != nil {
+				t.Fatal(err)
+			}
+			code, body := z209Do(t, ts, signer, http.MethodGet, "/b?location", nil)
+			var lc locationConstraintXML
+			if code != 200 || xml.Unmarshal([]byte(body), &lc) != nil || lc.Region != tc.want {
+				t.Fatalf("location: %d %q", code, body)
+			}
+			if code, body = z209Do(t, ts, signer, http.MethodGet, "/missing?location", nil); code != 404 || !strings.Contains(body, "NoSuchBucket") {
+				t.Fatalf("missing bucket: %d %q", code, body)
+			}
+			resp, err := ts.Client().Get(ts.URL + "/b?location")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != 403 {
+				t.Fatalf("unsigned location = %d", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func deleteRequestXML(quiet bool, keys ...string) []byte {
+	var b bytes.Buffer
+	b.WriteString("<Delete>")
+	if quiet {
+		b.WriteString("<Quiet>true</Quiet>")
+	}
+	for _, k := range keys {
+		b.WriteString("<Object><Key>")
+		_ = xml.EscapeText(&b, []byte(k))
+		b.WriteString("</Key></Object>")
+	}
+	b.WriteString("</Delete>")
+	return b.Bytes()
+}
+
+func TestDeleteObjects_Table(t *testing.T) {
+	hostile := []string{"a&b", "<tag>", `q"uote'`, "sp ace", "pl+us", "per%cent", "dou//ble", "üñí/日本", "../x", "-0"}
+	many := make([]string, 1000)
+	for i := range many {
+		many[i] = fmt.Sprintf("k/%04d", i)
+	}
+	for _, tc := range []struct {
+		name    string
+		keys    []string // existing objects
+		req     []byte
+		wantDel []string // expected <Deleted> keys, nil when quiet/rejected
+		wantErr string   // top-level error code
+		quiet   bool
+	}{
+		{name: "one", keys: []string{"a"}, req: deleteRequestXML(false, "a"), wantDel: []string{"a"}},
+		{name: "many", keys: hostile, req: deleteRequestXML(false, hostile...), wantDel: hostile},
+		{name: "max1000", keys: many, req: deleteRequestXML(false, many...), wantDel: many},
+		{name: "1001 rejected", keys: many, req: deleteRequestXML(false, append(slices.Clone(many), "extra")...), wantErr: "MalformedXML"},
+		{name: "zero rejected", req: deleteRequestXML(false), wantErr: "MalformedXML"},
+		{name: "missing keys succeed", req: deleteRequestXML(false, "nope", "nada"), wantDel: []string{"nope", "nada"}},
+		{name: "duplicates", keys: []string{"d"}, req: deleteRequestXML(false, "d", "d"), wantDel: []string{"d", "d"}},
+		{name: "quiet", keys: []string{"q1", "q2"}, req: deleteRequestXML(true, "q1", "q2", "gone"), quiet: true},
+		{name: "malformed xml", req: []byte("<Delete><Object>"), wantErr: "MalformedXML"},
+		{name: "wrong root", req: []byte("<Foo/>"), wantErr: "MalformedXML"},
+		{name: "missing Key", req: []byte("<Delete><Object></Object></Delete>"), wantErr: "MalformedXML"},
+		{name: "empty Key", req: []byte("<Delete><Object><Key></Key></Object></Delete>"), wantErr: "MalformedXML"},
+		{name: "bad Quiet", req: []byte("<Delete><Quiet>maybe</Quiet><Object><Key>a</Key></Object></Delete>"), wantErr: "MalformedXML"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, ts, signer := z209Server(t, "us-east-1")
+			if err := store.CreateBucket("b"); err != nil {
+				t.Fatal(err)
+			}
+			for _, k := range tc.keys {
+				if _, err := store.PutObject("b", k, []byte("body-"+k), "text/plain", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			started := time.Now()
+			code, body := z209Do(t, ts, signer, http.MethodPost, "/b?delete", tc.req)
+			t.Logf("DeleteObjects of %d keys took %v", bytes.Count(tc.req, []byte("<Object>")), time.Since(started))
+			if tc.wantErr != "" {
+				if code != 400 || !strings.Contains(body, tc.wantErr) {
+					t.Fatalf("got %d %q, want %s", code, body, tc.wantErr)
+				}
+				for _, k := range tc.keys {
+					if _, _, err := store.HeadObject("b", k); err != nil {
+						t.Fatalf("rejected request deleted %q", k)
+					}
+				}
+				return
+			}
+			var res deleteResultXML
+			if code != 200 || xml.Unmarshal([]byte(body), &res) != nil || len(res.Errors) != 0 {
+				t.Fatalf("got %d %.300q", code, body)
+			}
+			var got []string
+			for _, d := range res.Deleted {
+				got = append(got, d.Key)
+			}
+			if !slices.Equal(got, tc.wantDel) {
+				t.Fatalf("deleted = %v, want %v", got, tc.wantDel)
+			}
+			if tc.quiet && strings.Contains(body, "<Deleted>") {
+				t.Fatalf("quiet response lists Deleted: %q", body)
+			}
+			for _, k := range tc.keys {
+				if _, _, err := store.HeadObject("b", k); !errors.Is(err, errNoSuchKey) {
+					t.Fatalf("%q still visible: %v", k, err)
+				}
+				if vs, _, err := store.ListVersions("b", k); err != nil || len(vs) != 1 || vs[0].reason != historyReasonDeleted {
+					t.Fatalf("%q history: %v %v", k, vs, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDeleteObjects_BucketVersionAndBounds(t *testing.T) {
+	store, ts, signer := z209Server(t, "us-east-1")
+	if code, body := z209Do(t, ts, signer, http.MethodPost, "/nobucket?delete", deleteRequestXML(false, "a")); code != 404 || !strings.Contains(body, "NoSuchBucket") {
+		t.Fatalf("missing bucket: %d %q", code, body)
+	}
+	store.CreateBucket("b")
+	store.PutObject("b", "a", []byte("x"), "", nil)
+	// A specific version id is reported per key, never mistaken for a current-delete.
+	code, body := z209Do(t, ts, signer, http.MethodPost, "/b?delete", []byte("<Delete><Object><Key>a</Key><VersionId>v1</VersionId></Object></Delete>"))
+	if code != 200 || !strings.Contains(body, "<Error><Key>a</Key><Code>InvalidArgument</Code>") {
+		t.Fatalf("versioned: %d %q", code, body)
+	}
+	if _, _, err := store.HeadObject("b", "a"); err != nil {
+		t.Fatal("versioned delete removed the current object")
+	}
+	// Oversized XML is refused without being parsed or applied.
+	big := append([]byte("<Delete>"), bytes.Repeat([]byte("<!-- pad -->"), maxDeleteObjectsBody/12+1)...)
+	if code, _ := z209Do(t, ts, signer, http.MethodPost, "/b?delete", append(big, "</Delete>"...)); code != 400 {
+		t.Fatalf("oversized body = %d", code)
+	}
+	if _, _, err := store.HeadObject("b", "a"); err != nil {
+		t.Fatal("oversized request changed state")
+	}
+}
+
+// DeleteObjects must only archive roots: shared chunks stay live through
+// other objects/history/snapshots, survive restart, and are reclaimed only
+// by history prune + GC.
+func TestDeleteObjects_HistoryPruneGC(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared := genRandomBytes(1, 300_000)
+	uniq := genRandomBytes(2, 300_000)
+	store.CreateBucket("b")
+	store.PutObject("b", "keep", shared, "", nil)
+	store.PutObject("b", "dup", shared, "", nil)
+	store.PutObject("b", "uniq", uniq, "", nil)
+	creds := Credentials{AccessKeyID: "AKIATESTACCESSKEY0001", SecretAccessKey: "TestSecretKeyForZeroS3UnitTests0123456789"}
+	ts := httptest.NewServer(NewServer(store, creds, "us-east-1"))
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: "us-east-1"}
+	if code, body := z209Do(t, ts, signer, http.MethodPost, "/b?delete", deleteRequestXML(true, "dup", "uniq")); code != 200 {
+		t.Fatalf("delete: %d %q", code, body)
+	}
+	ts.Close()
+	store.Close() // restart/replay after batch delete
+
+	gc, err := gcCollect(dir, true)
+	if err != nil || gc.ChunksDeleted != 0 {
+		t.Fatalf("gc before prune must keep history-reachable chunks: %+v %v", gc, err)
+	}
+	if _, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(0)}, true); err != nil {
+		t.Fatal(err)
+	}
+	gc, err = gcCollect(dir, true)
+	if err != nil || gc.ChunksDeleted == 0 {
+		t.Fatalf("gc after prune must reclaim the unique object's chunks: %+v %v", gc, err)
+	}
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if _, got, err := s2.GetObject("b", "keep"); err != nil || !bytes.Equal(got, shared) {
+		t.Fatalf("shared chunk lost: %v", err)
+	}
+	for _, k := range []string{"dup", "uniq"} {
+		if _, _, err := s2.HeadObject("b", k); !errors.Is(err, errNoSuchKey) {
+			t.Fatalf("%s should stay deleted after replay: %v", k, err)
+		}
+	}
+	if vr, err := s2.Verify(true); err != nil || !vr.OK() {
+		t.Fatalf("verify: %v %+v", err, vr.Issues)
+	}
+}
+
+func TestTier_InitSafety(t *testing.T) {
+	data := tierSubset(packTestDataset(), "random", "repeat")
+	build := func() string {
+		dir := t.TempDir()
+		putPackTestObjects(t, dir, data, "random", "repeat")
+		tierCompactTo(t, dir, tierCold)
+		return dir
+	}
+	marker := func(dir string) string { return filepath.Join(tierRoot(dir, tierCold), tierMarkerName) }
+
+	// Replacement device: root gone or empty -> init -> store opens; the lost
+	// packs are NOT restored, and verify still says so.
+	for _, name := range []string{"absent", "empty", "empty structure", "fresh ext4", "interrupted init"} {
+		dir := build()
+		root := tierRoot(dir, tierCold)
+		os.RemoveAll(root)
+		switch name {
+		case "empty":
+			os.MkdirAll(root, 0o755)
+		case "empty structure":
+			os.MkdirAll(filepath.Join(root, "packs"), 0o755)
+			os.MkdirAll(filepath.Join(root, "tmp"), 0o755)
+		case "fresh ext4":
+			os.MkdirAll(filepath.Join(root, "lost+found"), 0o755)
+		case "interrupted init":
+			os.MkdirAll(filepath.Join(root, "tmp"), 0o755)
+			os.WriteFile(filepath.Join(root, "tmp", "zs3-123.tmp"), []byte("{"), 0o644)
+		}
+		if _, err := OpenStore(dir); err == nil {
+			t.Fatalf("%s: open must refuse before init", name)
+		}
+		res, err := tierInit(dir, tierCold)
+		if err != nil || res.Action != "initialized" {
+			t.Fatalf("%s: init: %+v %v", name, res, err)
+		}
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatalf("%s: open after init: %v", name, err)
+		}
+		if vr, _ := s.Verify(false); vr.OK() {
+			t.Fatalf("%s: verify must still report the lost cold packs", name)
+		}
+		s.Close()
+		if res, err := tierInit(dir, tierCold); err != nil || res.Action != "already-initialized" {
+			t.Fatalf("%s: idempotent re-init: %+v %v", name, res, err)
+		}
+	}
+
+	// Valid marker, missing packs dir -> structural repair only.
+	dir := build()
+	packsBefore := tierPackIDs(dir, tierCold)
+	os.RemoveAll(tierPackDir(dir, tierCold))
+	if res, err := tierInit(dir, tierCold); err != nil || res.Action != "repaired" {
+		t.Fatalf("repair: %+v %v", res, err)
+	}
+	if len(packsBefore) == 0 || len(tierPackIDs(dir, tierCold)) != 0 {
+		t.Fatal("init must not resurrect packs")
+	}
+
+	refuse := []struct {
+		name  string
+		setup func(dir string)
+		tier  tier
+		want  string
+	}{
+		{"hot", func(string) {}, tierHot, "hot tier"},
+		{"foreign store marker", func(d string) {
+			os.WriteFile(marker(d), []byte(`{"marker_format_version":1,"store_id":"other","tier":"cold"}`), 0o644)
+		}, tierCold, "belongs to store"},
+		{"wrong tier marker", func(d string) {
+			os.WriteFile(marker(d), bytes.Replace(mustRead(t, marker(d)), []byte(`"cold"`), []byte(`"warm"`), 1), 0o644)
+		}, tierCold, "is marked"},
+		{"malformed marker", func(d string) { os.WriteFile(marker(d), []byte("{nope"), 0o644) }, tierCold, "malformed"},
+		{"packs without marker", func(d string) { os.Remove(marker(d)) }, tierCold, "pack set"},
+		{"unrecognized content", func(d string) {
+			os.RemoveAll(tierRoot(d, tierCold))
+			os.MkdirAll(tierRoot(d, tierCold), 0o755)
+			os.WriteFile(filepath.Join(tierRoot(d, tierCold), "photos.zip"), []byte("x"), 0o644)
+		}, tierCold, "unrecognized"},
+		{"root is a file", func(d string) {
+			os.RemoveAll(tierRoot(d, tierCold))
+			os.WriteFile(tierRoot(d, tierCold), []byte("x"), 0o644)
+		}, tierCold, "not a directory"},
+	}
+	for _, c := range refuse {
+		d := build()
+		c.setup(d)
+		before := z209Snapshot(t, d)
+		if _, err := tierInit(d, c.tier); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Fatalf("%s: init = %v, want %q", c.name, err, c.want)
+		}
+		if z209Snapshot(t, d) != before {
+			t.Fatalf("%s: refused init modified the store", c.name)
+		}
+	}
+
+	// Store lock, unsupported format, non-store.
+	d := build()
+	lock, _ := acquireStoreLock(d, false)
+	if _, err := tierInit(d, tierCold); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("lock: %v", err)
+	}
+	lock.release()
+	hot := t.TempDir()
+	putPackTestObjects(t, hot, data, "random")
+	if _, err := tierInit(hot, tierWarm); err == nil || !strings.Contains(err.Error(), "no tier roots") {
+		t.Fatalf("pre-v5 store: %v", err)
+	}
+	if _, err := tierInit(t.TempDir(), tierWarm); err == nil || !strings.Contains(err.Error(), "not a ZeroS3 store") {
+		t.Fatalf("non-store: %v", err)
+	}
+
+	// CLI and StoreID.
+	bin := buildZeros3Binary(t)
+	d = build()
+	os.RemoveAll(tierRoot(d, tierCold))
+	out, errOut, code := runZeros3CLI(t, bin, "tier", "init", "-store", d, "-tier", "cold", "-json")
+	var res TierInitResult
+	if code != 0 || json.Unmarshal([]byte(out), &res) != nil || res.Action != "initialized" {
+		t.Fatalf("cli: %d %q %q", code, out, errOut)
+	}
+	var m tierMarker
+	json.Unmarshal(mustRead(t, marker(d)), &m)
+	if m.StoreID != res.StoreID || m.Tier != "cold" || m.StoreID == "" {
+		t.Fatalf("marker: %+v", m)
+	}
+	if _, _, code := runZeros3CLI(t, bin, "tier", "init", "-store", d, "-tier", "hot"); code == 0 {
+		t.Fatal("cli accepted hot")
+	}
+	if _, _, code := runZeros3CLI(t, bin, "tier", "init", "-store", d); code != 2 {
+		t.Fatalf("cli without -tier: %d", code)
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// z209Snapshot fingerprints every path (and file content) under dir.
+func z209Snapshot(t *testing.T, dir string) string {
+	t.Helper()
+	h := sha256.New()
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(h, p, d.IsDir())
+		if !d.IsDir() {
+			b, err := os.ReadFile(p)
+			h.Write(b)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// =============================================================================
+// Z2-09: golden client vectors (testing-harnesses/vectors)
+//
+// The committed JSON files were produced by an independent reference
+// implementation (vectors/gen.py, anchored on AWS's published example
+// signatures). These tests only READ them and never rewrite them.
+// =============================================================================
+
+type vectorFile struct {
+	AccessKey string            `json:"access_key"`
+	SecretKey string            `json:"secret_key"`
+	Vectors   []json.RawMessage `json:"vectors"`
+}
+
+func loadVectors(t *testing.T, name string, into any) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testing-harnesses", "vectors", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, into); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+}
+
+func withFixedClock(t *testing.T, amzDate string) {
+	t.Helper()
+	now, err := time.Parse("20060102T150405Z", amzDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := sigv4Now
+	sigv4Now = func() time.Time { return now }
+	t.Cleanup(func() { sigv4Now = prev })
+}
+
+func TestVectors_SigV4(t *testing.T) {
+	var f vectorFile
+	loadVectors(t, "sigv4.json", &f)
+	creds := Credentials{AccessKeyID: f.AccessKey, SecretAccessKey: f.SecretKey}
+	if len(f.Vectors) < 12 {
+		t.Fatalf("only %d vectors", len(f.Vectors))
+	}
+	for _, raw := range f.Vectors {
+		var v struct {
+			Name             string            `json:"name"`
+			Method           string            `json:"method"`
+			RawURI           string            `json:"raw_uri"`
+			Headers          map[string]string `json:"headers"`
+			PayloadHex       string            `json:"payload_utf8_hex"`
+			PayloadSHA256    string            `json:"payload_sha256"`
+			Region           string            `json:"region"`
+			AmzDate          string            `json:"amz_date"`
+			SignedHeaders    []string          `json:"signed_headers"`
+			CanonicalRequest string            `json:"canonical_request"`
+			StringToSign     string            `json:"string_to_sign"`
+			SigningKey       string            `json:"signing_key"`
+			Signature        string            `json:"signature"`
+			Authorization    string            `json:"authorization"`
+			Published        string            `json:"aws_published_signature"`
+		}
+		if err := json.Unmarshal(raw, &v); err != nil {
+			t.Fatal(err)
+		}
+		t.Run(v.Name, func(t *testing.T) {
+			withFixedClock(t, v.AmzDate)
+			payload, _ := hex.DecodeString(v.PayloadHex)
+			if sum := sha256.Sum256(payload); hex.EncodeToString(sum[:]) != v.PayloadSHA256 {
+				t.Fatal("vector payload hash is inconsistent")
+			}
+			if v.Published != "" && v.Published != v.Signature {
+				t.Fatalf("vector disagrees with AWS's published signature")
+			}
+			newReq := func() (*http.Request, string, string) {
+				req, rawPath, rawQuery := mustAuthTestRequest(v.Method, v.RawURI, payload)
+				for k, val := range v.Headers {
+					if k == "Host" {
+						req.Host = val
+					} else {
+						req.Header.Set(k, val)
+					}
+				}
+				return req, rawPath, rawQuery
+			}
+
+			// 1. Each intermediate value the parser/canonicalizer computes.
+			req, rawPath, rawQuery := newReq()
+			cu, err := sigv4CanonicalURI(rawPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cq, err := sigv4CanonicalQuery(rawQuery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ch, err := sigv4CanonicalHeaders(req, v.SignedHeaders)
+			if err != nil {
+				t.Fatal(err)
+			}
+			canon := strings.Join([]string{v.Method, cu, cq, ch, sigv4SignedHeadersList(v.SignedHeaders), v.PayloadSHA256}, "\n")
+			if canon != v.CanonicalRequest {
+				t.Fatalf("canonical request:\n got %q\nwant %q", canon, v.CanonicalRequest)
+			}
+			scope := v.AmzDate[:8] + "/" + v.Region + "/s3/aws4_request"
+			crHash := sha256.Sum256([]byte(canon))
+			sts := strings.Join([]string{"AWS4-HMAC-SHA256", v.AmzDate, scope, hex.EncodeToString(crHash[:])}, "\n")
+			if sts != v.StringToSign {
+				t.Fatalf("string to sign:\n got %q\nwant %q", sts, v.StringToSign)
+			}
+			key := sigv4SigningKey(f.SecretKey, v.AmzDate[:8], v.Region, "s3")
+			if hex.EncodeToString(key) != v.SigningKey || hex.EncodeToString(hmacSHA256(key, sts)) != v.Signature {
+				t.Fatal("signing key or signature differs")
+			}
+
+			// 2. The server accepts the golden Authorization exactly as sent...
+			srv := NewServer(nil, creds, v.Region)
+			req.Header.Set("Authorization", v.Authorization)
+			sp, err := srv.authenticate(req, rawPath, rawQuery)
+			if err != nil || sp.sha256 != v.PayloadSHA256 {
+				t.Fatalf("golden request rejected: %v (payload %q)", err, sp.sha256)
+			}
+			// ...and rejects a flipped signature or a different signed payload hash.
+			req, rawPath, rawQuery = newReq()
+			bad := []byte(v.Authorization)
+			bad[len(bad)-1] ^= 1
+			req.Header.Set("Authorization", string(bad))
+			if _, err := srv.authenticate(req, rawPath, rawQuery); err == nil {
+				t.Fatal("tampered signature accepted")
+			}
+			req, rawPath, rawQuery = newReq()
+			req.Header.Set("Authorization", v.Authorization)
+			req.Header.Set("X-Amz-Content-Sha256", strings.Repeat("0", 64))
+			if _, err := srv.authenticate(req, rawPath, rawQuery); err == nil {
+				t.Fatal("tampered payload hash accepted")
+			}
+
+			// 3. ZeroS3's own client signer agrees when it signs the same header set.
+			if strings.Join(v.SignedHeaders, ";") == "host;x-amz-content-sha256;x-amz-date" {
+				u, err := url.Parse("http://" + v.Headers["Host"] + v.RawURI)
+				if err != nil {
+					t.Fatal(err)
+				}
+				creq := &http.Request{Method: v.Method, URL: u, Host: u.Host, Header: http.Header{}}
+				now, _ := time.Parse("20060102T150405Z", v.AmzDate)
+				if err := signSigV4Request(creq, creds, v.Region, v.PayloadSHA256, now); err != nil {
+					t.Fatal(err)
+				}
+				if got := creq.Header.Get("Authorization"); !strings.HasSuffix(got, "Signature="+v.Signature) {
+					t.Fatalf("client signer signature differs: %s", got)
+				}
+			}
+		})
+	}
+}
+
+func TestVectors_Presign(t *testing.T) {
+	var f vectorFile
+	loadVectors(t, "presign.json", &f)
+	creds := Credentials{AccessKeyID: f.AccessKey, SecretAccessKey: f.SecretKey}
+	for _, raw := range f.Vectors {
+		var v struct {
+			Name      string `json:"name"`
+			Method    string `json:"method"`
+			Host      string `json:"host"`
+			RawPath   string `json:"raw_path"`
+			Expires   int64  `json:"expires"`
+			AmzDate   string `json:"amz_date"`
+			Region    string `json:"region"`
+			Signature string `json:"signature"`
+			URL       string `json:"url"`
+			Published string `json:"aws_published_signature"`
+		}
+		if err := json.Unmarshal(raw, &v); err != nil {
+			t.Fatal(err)
+		}
+		t.Run(v.Name, func(t *testing.T) {
+			if v.Published != "" && v.Published != v.Signature {
+				t.Fatal("vector disagrees with AWS's published signature")
+			}
+			now, _ := time.Parse("20060102T150405Z", v.AmzDate)
+			withFixedClock(t, v.AmzDate)
+			srv := NewServer(nil, creds, v.Region)
+			verify := func(at time.Time, rawURL string) error {
+				sigv4Now = func() time.Time { return at }
+				u, err := url.Parse(rawURL)
+				if err != nil {
+					return err
+				}
+				req := httptest.NewRequest(v.Method, "http://"+v.Host+u.EscapedPath()+"?"+u.RawQuery, nil)
+				req.Host = v.Host
+				_, err = srv.authenticate(req, u.EscapedPath(), u.RawQuery)
+				return err
+			}
+			if err := verify(now, v.URL); err != nil {
+				t.Fatalf("golden presigned URL rejected: %v", err)
+			}
+			if err := verify(now.Add(time.Duration(v.Expires)*time.Second+time.Second), v.URL); err == nil {
+				t.Fatal("golden URL accepted after expiry")
+			}
+			if err := verify(now, strings.Replace(v.URL, "X-Amz-Signature="+v.Signature[:2], "X-Amz-Signature=00", 1)); err == nil && !strings.HasPrefix(v.Signature, "00") {
+				t.Fatal("tampered signature accepted")
+			}
+			// ZeroS3's own presigner reproduces the golden URL byte for byte when it
+			// can express the vector (path-style, host-only signing: always here).
+			if v.Name == "AWS example: presigned GET" {
+				return // virtual-host style under a real AWS hostname; verifier check above is the anchor
+			}
+			bucket, key, _ := strings.Cut(strings.TrimPrefix(v.RawPath, "/"), "/")
+			bucket, _ = url.PathUnescape(bucket)
+			key, _ = url.PathUnescape(key)
+			got, err := GeneratePresignedURL(creds, v.Region, PresignRequest{Method: v.Method, Endpoint: "http://" + v.Host, Bucket: bucket, Key: key, Expires: time.Duration(v.Expires) * time.Second}, now)
+			if err != nil || got != v.URL {
+				t.Fatalf("presigner differs from golden:\n got %s\nwant %s (%v)", got, v.URL, err)
+			}
+		})
+	}
+}
+
+// xmlShape renders an XML document as a comparable string: sibling elements
+// are ordered by name only (order across names is not significant on the S3
+// wire; order among same-named siblings is preserved).
+func xmlShape(t *testing.T, doc string) string {
+	t.Helper()
+	type node struct {
+		name string
+		text strings.Builder
+		kids []*node
+	}
+	root := &node{}
+	stack := []*node{root}
+	dec := xml.NewDecoder(strings.NewReader(doc))
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("bad XML %q: %v", doc, err)
+		}
+		switch e := tok.(type) {
+		case xml.StartElement:
+			n := &node{name: e.Name.Local}
+			stack[len(stack)-1].kids = append(stack[len(stack)-1].kids, n)
+			stack = append(stack, n)
+		case xml.EndElement:
+			stack = stack[:len(stack)-1]
+		case xml.CharData:
+			stack[len(stack)-1].text.Write(bytes.TrimSpace(e))
+		}
+	}
+	var render func(n *node) string
+	render = func(n *node) string {
+		kids := slices.Clone(n.kids)
+		sort.SliceStable(kids, func(i, j int) bool { return kids[i].name < kids[j].name })
+		var sb strings.Builder
+		sb.WriteString("<" + n.name + ">" + n.text.String())
+		for _, k := range kids {
+			sb.WriteString(render(k))
+		}
+		return sb.String() + "</>"
+	}
+	return render(root)
+}
+
+func xmlMatchesGolden(t *testing.T, got, golden string) bool {
+	t.Helper()
+	g, w := xmlShape(t, got), xmlShape(t, golden)
+	// "*" in golden text matches any text content.
+	re := regexp.MustCompile(`>\*<`)
+	pattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(re.ReplaceAllString(w, ">\x00<")), "\x00", `[^<]*`) + "$"
+	return regexp.MustCompile(pattern).MatchString(g)
+}
+
+func TestVectors_WireShapes(t *testing.T) {
+	var f struct {
+		Region string `json:"region"`
+		Steps  []struct {
+			Name    string `json:"name"`
+			Capture map[string]string
+			Request struct {
+				Method  string            `json:"method"`
+				URI     string            `json:"uri"`
+				Headers map[string]string `json:"headers"`
+				Body    string            `json:"body"`
+			} `json:"request"`
+			Response struct {
+				Status  int               `json:"status"`
+				Headers map[string]string `json:"headers"`
+				Body    *string           `json:"body"`
+				XML     string            `json:"xml"`
+			} `json:"response"`
+		} `json:"steps"`
+	}
+	loadVectors(t, "wire.json", &f)
+	_, ts, signer := z209Server(t, f.Region)
+	vars := map[string]string{}
+	sub := func(s string) string {
+		for k, v := range vars {
+			s = strings.ReplaceAll(s, "{"+k+"}", v)
+		}
+		return s
+	}
+	for _, st := range f.Steps {
+		resp := doSignedRequest(t, ts.Client(), ts.URL, signer, st.Request.Method, sub(st.Request.URI), []byte(sub(st.Request.Body)), st.Request.Headers)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != st.Response.Status {
+			t.Fatalf("%s: status %d, want %d (%s)", st.Name, resp.StatusCode, st.Response.Status, body)
+		}
+		for h, want := range st.Response.Headers {
+			if got := resp.Header.Get(h); got != want {
+				t.Fatalf("%s: header %s = %q, want %q", st.Name, h, got, want)
+			}
+		}
+		if st.Response.Body != nil && string(body) != *st.Response.Body {
+			t.Fatalf("%s: body %q, want %q", st.Name, body, *st.Response.Body)
+		}
+		if st.Response.XML != "" && !xmlMatchesGolden(t, string(body), st.Response.XML) {
+			t.Fatalf("%s: XML shape differs:\n got %s\nwant %s", st.Name, body, st.Response.XML)
+		}
+		for name, pat := range st.Capture {
+			m := regexp.MustCompile(pat).FindStringSubmatch(string(body))
+			if m == nil {
+				t.Fatalf("%s: capture %s not found in %s", st.Name, name, body)
+			}
+			vars[name] = m[1]
+		}
+	}
+}
+
+func TestProbe(t *testing.T) {
+	_, ts, signer := z209Server(t, "us-east-1")
+	cfg := syncClientConfig{Endpoint: ts.URL, Creds: Credentials{AccessKeyID: signer.accessKey, SecretAccessKey: signer.secretKey}, Region: "us-east-1"}
+	res := probeEndpoint(cfg)
+	if res.Kind != "zeros3" || res.Implementation != "zeros3" || res.CoreS3Profile != coreS3ProfileVersion || res.SyncProtocol == 0 || res.BulkProtocol == 0 {
+		t.Fatalf("zeros3 endpoint: %+v", res)
+	}
+	generic := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "<Error/>", http.StatusNotFound) }))
+	defer generic.Close()
+	cfg.Endpoint = generic.URL
+	if res := probeEndpoint(cfg); res.Kind != "generic-s3" {
+		t.Fatalf("generic endpoint: %+v", res)
+	}
+	cfg.Creds.SecretAccessKey = "wrong"
+	cfg.Endpoint = ts.URL
+	if res := probeEndpoint(cfg); res.Kind != "unauthorized" {
+		t.Fatalf("bad credentials: %+v", res)
+	}
+	cfg.Endpoint = "http://127.0.0.1:1"
+	if res := probeEndpoint(cfg); res.Kind != "unreachable" {
+		t.Fatalf("closed port: %+v", res)
+	}
+	// The discovery document stays decodable by clients that predate the new fields.
+	_, body := z209Do(t, ts, signer, http.MethodGet, zeros3SyncInfoPath, nil)
+	var old struct {
+		Protocol int  `json:"protocol"`
+		Delta    bool `json:"delta_sync"`
+	}
+	if json.Unmarshal([]byte(body), &old) != nil || old.Protocol == 0 || !old.Delta || strings.Contains(body, "pack") || strings.Contains(body, "tier") {
+		t.Fatalf("info document: %s", body)
+	}
 }
