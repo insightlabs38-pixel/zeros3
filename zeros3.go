@@ -729,6 +729,81 @@ func (s *Store) casStage(data []byte) (string, error) {
 	return f.Name(), nil
 }
 
+// testDirEvent, when non-nil, observes every shard-directory creation and
+// directory fsync casEnsureShardDirs performs ("mkdir"/"sync", path relative
+// to the store root). Test-only; nil in every real code path.
+var testDirEvent func(op, rel string)
+
+func (s *Store) fireDirEvent(op, dir string) {
+	if testDirEvent != nil {
+		rel, _ := filepath.Rel(s.root, dir)
+		testDirEvent(op, filepath.ToSlash(rel))
+	}
+}
+
+// casEnsureShardDirs creates any missing chunks/aa and chunks/aa/bb
+// directories the files need and makes each new directory entry durable in
+// its parent before any chunk is renamed into it: create aa, fsync chunks/,
+// create bb, fsync chunks/aa/. Only parents of directories created here are
+// synced (the final bb directory is synced by casPublish after the renames).
+// It runs inside casPubMu, so exactly one writer decides creation and no
+// observer can see a chunk below a directory whose entry is not yet durable.
+// It returns the directories it created so a failed publication can remove
+// them again.
+func (s *Store) casEnsureShardDirs(files []casStaged) (created []string, err error) {
+	chunks := filepath.Join(s.root, "chunks")
+	mk := func(dir string) (bool, error) {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			if os.IsExist(err) {
+				if fi, serr := os.Stat(dir); serr == nil && fi.IsDir() {
+					return false, nil
+				}
+			}
+			return false, err
+		}
+		s.fireDirEvent("mkdir", dir)
+		created = append(created, dir)
+		return true, nil
+	}
+	aas, bbs := map[string]struct{}{}, map[string]struct{}{}
+	for _, f := range files {
+		bb := filepath.Dir(s.chunkPath(f.sum))
+		bbs[bb] = struct{}{}
+		aas[filepath.Dir(bb)] = struct{}{}
+	}
+	var newAA bool
+	for aa := range aas {
+		made, merr := mk(aa)
+		if merr != nil {
+			return created, merr
+		}
+		newAA = newAA || made
+	}
+	if newAA {
+		s.fireDirEvent("sync", chunks)
+		if err := syncDir(chunks); err != nil {
+			return created, err
+		}
+	}
+	parents := map[string]struct{}{}
+	for bb := range bbs {
+		made, merr := mk(bb)
+		if merr != nil {
+			return created, merr
+		}
+		if made {
+			parents[filepath.Dir(bb)] = struct{}{}
+		}
+	}
+	for aa := range parents {
+		s.fireDirEvent("sync", aa)
+		if err := syncDir(aa); err != nil {
+			return created, err
+		}
+	}
+	return created, nil
+}
+
 // casPublish renames synced staged files into their final paths and fsyncs
 // the touched directories, all inside the publication barrier. Unless
 // replace is set, a digest that became durable since staging (loose or
@@ -736,11 +811,14 @@ func (s *Store) casStage(data []byte) (string, error) {
 func (s *Store) casPublish(files []casStaged, replace bool) (err error) {
 	s.casPubMu.Lock()
 	defer s.casPubMu.Unlock()
-	var created []string
+	var created, newDirs []string
 	defer func() {
 		if err != nil {
 			for _, p := range created {
 				os.Remove(p)
+			}
+			for i := len(newDirs) - 1; i >= 0; i-- {
+				os.Remove(newDirs[i]) // only succeeds while still empty
 			}
 		}
 		for _, f := range files {
@@ -749,6 +827,10 @@ func (s *Store) casPublish(files []casStaged, replace bool) (err error) {
 			}
 		}
 	}()
+	newDirs, err = s.casEnsureShardDirs(files)
+	if err != nil {
+		return err
+	}
 	fireTestHook(hookCASBeforeRename)
 	dirs := map[string]struct{}{}
 	for i := range files {
@@ -904,9 +986,6 @@ func (b *casBatch) Abort() {
 func (s *Store) casFlushFiles(files []casStaged) error {
 	fireTestHook(hookCASBeforeStageSync)
 	if err := forEachBounded(len(files), casSyncWorkers, func(i int) error {
-		if err := os.MkdirAll(filepath.Dir(s.chunkPath(files[i].sum)), 0o755); err != nil {
-			return err
-		}
 		return fsyncPath(files[i].tmp)
 	}); err != nil {
 		for _, f := range files {
@@ -15598,11 +15677,6 @@ func (s *Store) annotateAffectedObjects(findings []RepairFinding) {
 // reader (casRead) can only ever observe the old, fully-valid bytes or the
 // new, fully-valid bytes -- never a torn write (B5).
 func (s *Store) casRepairPublish(sum [32]byte, data []byte) error {
-	path := s.chunkPath(sum)
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	tmp, err := s.casStage(data)
 	if err != nil {
 		return err

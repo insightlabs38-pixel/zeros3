@@ -38023,3 +38023,152 @@ func TestCASBatch_RealProcessKillMidIngest(t *testing.T) {
 		t.Fatalf("verify after gc: %v %+v", err, v)
 	}
 }
+
+// shardPayloads returns n distinct small payloads whose digests all start
+// with the given four hex digits (aabb), or with only the aa prefix and
+// pairwise-different bb when anyBB is set.
+func shardPayloads(t *testing.T, aa, bb string, n int, anyBB bool) [][]byte {
+	t.Helper()
+	var out [][]byte
+	seenBB := map[string]bool{}
+	for i := uint64(0); len(out) < n; i++ {
+		if i > 1<<26 {
+			t.Fatal("shard payload search exhausted")
+		}
+		b := []byte(fmt.Sprintf("shard-payload-%d", i))
+		h := hex.EncodeToString(func() []byte { s := sha256.Sum256(b); return s[:] }())
+		switch {
+		case anyBB && h[:2] == aa && h[2:4] != bb && !seenBB[h[2:4]]:
+			seenBB[h[2:4]] = true
+			out = append(out, b)
+		case !anyBB && h[:4] == aa+bb:
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// recordShardEvents captures the ordered shard-directory creation/fsync
+// events and the publication-barrier hook points of one test.
+func recordShardEvents(t *testing.T) func() []string {
+	t.Helper()
+	var mu sync.Mutex
+	var ev []string
+	oldDir := testDirEvent
+	testDirEvent = func(op, rel string) { mu.Lock(); ev = append(ev, op+" "+rel); mu.Unlock() }
+	t.Cleanup(func() { testDirEvent = oldDir })
+	withTestHook(t, func(p string) {
+		if p == hookCASBeforeRename {
+			mu.Lock()
+			ev = append(ev, "rename")
+			mu.Unlock()
+		}
+	})
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := ev
+		ev = nil
+		return out
+	}
+}
+
+func TestCASShardDirs_ParentDurabilityOrdering(t *testing.T) {
+	store, _ := newBucketStore(t)
+	take := recordShardEvents(t)
+	same := shardPayloads(t, "a1", "b2", 1, false)[0]
+	otherBB2 := shardPayloads(t, "a1", "b2", 1, true)[0] // aa=a1, bb != b2
+	want := func(name string, got, exp []string) {
+		t.Helper()
+		if strings.Join(got, "|") != strings.Join(exp, "|") {
+			t.Fatalf("%s: events %v, want %v", name, got, exp)
+		}
+	}
+	sum := sha256.Sum256(same)
+	if _, err := store.casWrite(same); err != nil {
+		t.Fatal(err)
+	}
+	want("new aa", take(), []string{
+		"mkdir chunks/a1", "sync chunks", "mkdir chunks/a1/b2", "sync chunks/a1", "rename"})
+	if _, err := store.casWrite(otherBB2); err != nil {
+		t.Fatal(err)
+	}
+	h2 := hex.EncodeToString(func() []byte { s := sha256.Sum256(otherBB2); return s[:] }())
+	want("existing aa, new bb", take(), []string{
+		"mkdir chunks/a1/" + h2[2:4], "sync chunks/a1", "rename"})
+	// Both shard directories already exist: a second chunk in each, and a
+	// dedup rewrite, must incur no mkdir or parent fsync at all.
+	extra := shardPayloads(t, "a1", "b2", 2, false)[1]
+	if _, err := store.casWrite(extra); err != nil {
+		t.Fatal(err)
+	}
+	want("existing aa and bb", take(), []string{"rename"})
+	if _, err := store.casRead(sum); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCASShardDirs_ConcurrentFirstUseOfOneShard(t *testing.T) {
+	store, dir := newBucketStore(t)
+	take := recordShardEvents(t)
+	payloads := shardPayloads(t, "c3", "d4", 8, false)
+	var wg sync.WaitGroup
+	errs := make(chan error, len(payloads))
+	start := make(chan struct{})
+	for _, p := range payloads {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := store.casWrite(p)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	counts := map[string]int{}
+	for _, e := range take() {
+		if e != "rename" {
+			counts[e]++
+		}
+	}
+	for _, e := range []string{"mkdir chunks/c3", "sync chunks", "mkdir chunks/c3/d4", "sync chunks/c3"} {
+		if counts[e] != 1 {
+			t.Fatalf("%q happened %d times, want exactly once (%v)", e, counts[e], counts)
+		}
+	}
+	if len(counts) != 4 {
+		t.Fatalf("unexpected directory events: %v", counts)
+	}
+	loose := casLooseChunks(t, dir)
+	for _, p := range payloads {
+		sum := sha256.Sum256(p)
+		if !loose[hex.EncodeToString(sum[:])] {
+			t.Fatal("concurrently written chunk missing")
+		}
+	}
+}
+
+func TestCASShardDirs_FailedPublishRemovesItsNewDirs(t *testing.T) {
+	store, dir := newBucketStore(t)
+	data := genRandomBytes(11, 40000)
+	withTestHook(t, func(p string) {
+		if p == hookCASBeforeRename {
+			os.Remove(casStagedFiles(t, dir)[0]) // make the rename fail
+		}
+	})
+	if _, err := store.casWrite(data); err == nil {
+		t.Fatal("publication with a vanished staged file was acknowledged")
+	}
+	sum := sha256.Sum256(data)
+	aa := filepath.Join(dir, "chunks", hex.EncodeToString(sum[:])[:2])
+	if _, err := os.Stat(aa); !os.IsNotExist(err) {
+		t.Fatalf("failed publication left its new shard directory behind: %v", err)
+	}
+}
