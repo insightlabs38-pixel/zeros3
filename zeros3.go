@@ -71,37 +71,37 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//     475    Content-defined chunking (CDC)
-//     601    Content-addressed chunk storage (CAS)
-//     779    Packed CAS (immutable packs, DEFLATE records, locator index)
-//    2126    Manifests (immutable, JSON)
-//    2225    Visibility journal (append-only, checksummed)
-//    2638    Store: format, namespace, and object CRUD
-//    3457    Version history/restore, history pruning, ListObjectsV2
-//    3930    SigV4 authentication (header and presigned-URL)
-//    4885    Request payload checksums and S3-shaped XML error/response types
-//    5101    HTTP routing and S3 operation handlers
-//    5514    Conditional operations (PUT/GET/HEAD preconditions)
-//    6182    CopyObject
-//    6476    Multipart upload
-//    7302    Stats and reachability scanning
-//    8060    Verify
-//    8236    Store locking and safe offline GC
-//    8493    Offline compaction (`zeros3 compact`)
-//    9027    Pack reclamation and repacking (`zeros3 repack`)
-//    9470    Physical tiers: status and pack movement (`zeros3 tier`)
-//    9982    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//   11046    Streaming object reads (full and ranged GET)
-//   11171    Delta sync client, credentials, and parallel transfer
-//   13157    Bulk logical-chunk transport (v2)
-//   14061    Recursive directory sync
-//   14366    Remote replication (`zeros3 replicate`)
-//   15113    Peer-assisted corruption repair (`zeros3 repair`)
-//   15625    Namespace (prefix/bucket) replication
-//   15932    Copy-on-write namespace fork (`zeros3 fork`)
-//   16140    Snapshots and restore
-//   17287    Structural diff and inspect (introspection)
-//   18563    CLI dispatch, HTTP server/startup, and main
+//     487    Content-defined chunking (CDC)
+//     613    Content-addressed chunk storage (CAS)
+//     1088    Packed CAS (immutable packs, DEFLATE records, locator index)
+//    2435    Manifests (immutable, JSON)
+//    2534    Visibility journal (append-only, checksummed)
+//    2947    Store: format, namespace, and object CRUD
+//    3769    Version history/restore, history pruning, ListObjectsV2
+//    4242    SigV4 authentication (header and presigned-URL)
+//    5197    Request payload checksums and S3-shaped XML error/response types
+//    5413    HTTP routing and S3 operation handlers
+//    5826    Conditional operations (PUT/GET/HEAD preconditions)
+//    6494    CopyObject
+//    6788    Multipart upload
+//    7614    Stats and reachability scanning
+//    8372    Verify
+//    8548    Store locking and safe offline GC
+//    8805    Offline compaction (`zeros3 compact`)
+//    9339    Pack reclamation and repacking (`zeros3 repack`)
+//    9782    Physical tiers: status and pack movement (`zeros3 tier`)
+//    10294    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//   11358    Streaming object reads (full and ranged GET)
+//   11483    Delta sync client, credentials, and parallel transfer
+//   13469    Bulk logical-chunk transport (v2)
+//   14380    Recursive directory sync
+//   14685    Remote replication (`zeros3 replicate`)
+//   15432    Peer-assisted corruption repair (`zeros3 repair`)
+//   15949    Namespace (prefix/bucket) replication
+//   16256    Copy-on-write namespace fork (`zeros3 fork`)
+//   16464    Snapshots and restore
+//   17611    Structural diff and inspect (introspection)
+//   18887    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -409,8 +409,20 @@ func fireTestHook(point string) {
 }
 
 const (
-	hookBeforeChunkWrite            = "before-chunk-write"
-	hookAfterChunksPublished        = "after-chunks-published"
+	hookBeforeChunkWrite     = "before-chunk-write"
+	hookAfterChunksPublished = "after-chunks-published"
+	// Loose-CAS batch boundaries (section 4): after one chunk is staged,
+	// around the staged-file fsyncs, around the final renames and directory
+	// fsyncs (the last three fire inside the publication barrier), and
+	// after a whole flush.
+	hookCASAfterStage               = "cas-after-stage"
+	hookCASBeforeStageSync          = "cas-before-stage-sync"
+	hookCASAfterStageSync           = "cas-after-stage-sync"
+	hookCASBeforeRename             = "cas-before-rename"
+	hookCASAfterFirstRename         = "cas-after-first-rename"
+	hookCASBeforeDirSync            = "cas-before-dir-sync"
+	hookCASAfterDirSync             = "cas-after-dir-sync"
+	hookCASAfterFlush               = "cas-after-flush"
 	hookAfterManifestPublished      = "after-manifest-published"
 	hookAfterJournalWriteBeforeSync = "after-journal-write-before-sync"
 	hookAfterJournalSync            = "after-journal-sync"
@@ -616,36 +628,326 @@ func (s *Store) chunkPath(sum [32]byte) string {
 	return filepath.Join(s.root, "chunks", h[0:2], h[2:4], h)
 }
 
+// CAS publication barrier. A loose chunk becomes visible to casStat, casRead
+// and therefore to negotiation and to commits that reference it, the moment
+// its final path exists, so the final path must never exist before the
+// chunk's directory entry is crash-durable. Chunks are staged as hidden
+// tmp/cas-*.tmp files (data fsynced, invisible to every CAS lookup) and
+// published in groups by casPublish, which holds casPubMu exclusively from
+// the first final rename until every touched directory has been fsynced.
+// Observers (casStat, loose casRead) take it shared, so none can see or
+// depend on a chunk whose publication is not yet durable; a failed
+// publication removes what it created before releasing the barrier.
+// Interrupted staging leaves only tmp/ files, which GC clears.
+// casBatchMaxBytes and casBatchMaxRecords bound one batch's staged files;
+// casSyncWorkers bounds concurrent fsyncs per flush. ZEROS3_CAS_BATCH_MIB
+// and ZEROS3_CAS_SYNC_WORKERS override them for benchmarking, not as a
+// supported tuning interface.
+var (
+	casBatchMaxBytes   = 8 << 20
+	casBatchMaxRecords = 256
+	casSyncWorkers     = 4
+)
+
+func init() {
+	if n, err := strconv.Atoi(os.Getenv("ZEROS3_CAS_BATCH_MIB")); err == nil && n >= 1 && n <= 64 {
+		casBatchMaxBytes = n << 20
+		casBatchMaxRecords = n * 32
+	}
+	if n, err := strconv.Atoi(os.Getenv("ZEROS3_CAS_SYNC_WORKERS")); err == nil && n >= 1 && n <= 32 {
+		casSyncWorkers = n
+	}
+}
+
+func fsyncPath(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// forEachBounded runs fn(0..n-1) on at most workers goroutines and returns
+// the first error; once one fails no new index is started.
+func forEachBounded(n, workers int, fn func(i int) error) error {
+	workers = min(workers, n)
+	var (
+		wg     sync.WaitGroup
+		next   atomic.Int64
+		failed atomic.Bool
+		mu     sync.Mutex
+		first  error
+	)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !failed.Load() {
+				i := int(next.Add(1)) - 1
+				if i >= n {
+					return
+				}
+				if err := fn(i); err != nil {
+					mu.Lock()
+					if first == nil {
+						first = err
+					}
+					mu.Unlock()
+					failed.Store(true)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return first
+}
+
+type casStaged struct {
+	sum [32]byte
+	tmp string // "" once renamed or removed
+}
+
+// casStage writes data to a hidden staging file without syncing it.
+func (s *Store) casStage(data []byte) (string, error) {
+	f, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "cas-*.tmp")
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+// casPublish renames synced staged files into their final paths and fsyncs
+// the touched directories, all inside the publication barrier. Unless
+// replace is set, a digest that became durable since staging (loose or
+// packed) is left alone and its staged copy discarded.
+func (s *Store) casPublish(files []casStaged, replace bool) (err error) {
+	s.casPubMu.Lock()
+	defer s.casPubMu.Unlock()
+	var created []string
+	defer func() {
+		if err != nil {
+			for _, p := range created {
+				os.Remove(p)
+			}
+		}
+		for _, f := range files {
+			if f.tmp != "" && err != nil {
+				os.Remove(f.tmp)
+			}
+		}
+	}()
+	fireTestHook(hookCASBeforeRename)
+	dirs := map[string]struct{}{}
+	for i := range files {
+		f := &files[i]
+		final := s.chunkPath(f.sum)
+		if !replace {
+			if _, serr := s.casStatLocked(f.sum); serr == nil {
+				os.Remove(f.tmp)
+				f.tmp = ""
+				continue
+			} else if !os.IsNotExist(serr) {
+				return serr
+			}
+		}
+		if err := os.Rename(f.tmp, final); err != nil {
+			return err
+		}
+		f.tmp = ""
+		if !replace {
+			created = append(created, final)
+		}
+		dirs[filepath.Dir(final)] = struct{}{}
+		if i == 0 {
+			fireTestHook(hookCASAfterFirstRename)
+		}
+	}
+	fireTestHook(hookCASBeforeDirSync)
+	list := make([]string, 0, len(dirs))
+	for d := range dirs {
+		list = append(list, d)
+	}
+	if err := forEachBounded(len(list), casSyncWorkers, func(i int) error { return syncDir(list[i]) }); err != nil {
+		return err
+	}
+	fireTestHook(hookCASAfterDirSync)
+	return nil
+}
+
+// casBatch groups the loose-CAS publication of one synchronous operation's
+// chunks: Add stages each missing chunk immediately (the caller's bytes are
+// not retained) and a full batch starts flushing while the caller keeps
+// staging the next one. At most one flush is in flight, it is always joined
+// by Flush or Abort before the operation returns, and nothing is durable, or
+// visible to CAS lookups, until the Flush that covers it returns nil.
+type casBatch struct {
+	s      *Store
+	files  []casStaged
+	seen   map[[32]byte]struct{}
+	bytes  int
+	flight *casFlight
+}
+
+type casFlight struct {
+	done     chan struct{}
+	err      error
+	panicked any // re-raised in the caller: test hooks simulate crashes by panicking
+}
+
+func (s *Store) newCASBatch() *casBatch { return &casBatch{s: s} }
+
+// Add stages data under its SHA-256 unless that digest is already staged in
+// this batch or already stored (loose or packed, any tier).
+func (b *casBatch) Add(data []byte) ([32]byte, error) { return b.add(sha256.Sum256(data), data) }
+
+// add is Add for a caller that has already verified sum == SHA-256(data).
+func (b *casBatch) add(sum [32]byte, data []byte) ([32]byte, error) {
+	if _, ok := b.seen[sum]; ok {
+		return sum, nil
+	}
+	if b.seen == nil {
+		b.seen = map[[32]byte]struct{}{}
+	}
+	b.seen[sum] = struct{}{}
+	if _, err := b.s.casStat(sum); err == nil {
+		return sum, nil
+	} else if !os.IsNotExist(err) {
+		return sum, err
+	}
+	tmp, err := b.s.casStage(data)
+	if err != nil {
+		return sum, err
+	}
+	b.files = append(b.files, casStaged{sum: sum, tmp: tmp})
+	b.bytes += len(data)
+	fireTestHook(hookCASAfterStage)
+	if b.bytes >= casBatchMaxBytes || len(b.files) >= casBatchMaxRecords {
+		return sum, b.startFlush()
+	}
+	return sum, nil
+}
+
+// startFlush launches the staged files' flush, first joining the previous
+// one so staged files and open descriptors stay bounded to two batches.
+func (b *casBatch) startFlush() error {
+	if err := b.wait(); err != nil {
+		return err
+	}
+	files := b.files
+	b.files, b.bytes = nil, 0
+	clear(b.seen)
+	if len(files) == 0 {
+		return nil
+	}
+	f := &casFlight{done: make(chan struct{})}
+	b.flight = f
+	go func() {
+		defer close(f.done)
+		defer func() { f.panicked = recover() }()
+		f.err = b.s.casFlushFiles(files)
+	}()
+	return nil
+}
+
+func (b *casBatch) wait() error {
+	f := b.flight
+	if f == nil {
+		return nil
+	}
+	<-f.done
+	b.flight = nil
+	if f.panicked != nil {
+		panic(f.panicked)
+	}
+	return f.err
+}
+
+// Flush returns once every chunk added so far is durable CAS content, or
+// with the first flush error, in which case nothing from the failed flush is
+// left published.
+func (b *casBatch) Flush() error {
+	if err := b.startFlush(); err != nil {
+		return err
+	}
+	return b.wait()
+}
+
+// Abort joins any in-flight flush and discards unflushed staged files; it
+// is a no-op after a successful Flush.
+func (b *casBatch) Abort() {
+	if f := b.flight; f != nil {
+		<-f.done
+		b.flight = nil
+	}
+	for _, f := range b.files {
+		os.Remove(f.tmp)
+	}
+	b.files, b.bytes = nil, 0
+	clear(b.seen)
+}
+
+// casFlushFiles fsyncs the staged files (bounded parallelism) and then
+// publishes them under the barrier.
+func (s *Store) casFlushFiles(files []casStaged) error {
+	fireTestHook(hookCASBeforeStageSync)
+	if err := forEachBounded(len(files), casSyncWorkers, func(i int) error {
+		if err := os.MkdirAll(filepath.Dir(s.chunkPath(files[i].sum)), 0o755); err != nil {
+			return err
+		}
+		return fsyncPath(files[i].tmp)
+	}); err != nil {
+		for _, f := range files {
+			os.Remove(f.tmp)
+		}
+		return err
+	}
+	fireTestHook(hookCASAfterStageSync)
+	if err := s.casPublish(files, false); err != nil {
+		return err
+	}
+	fireTestHook(hookCASAfterFlush)
+	return nil
+}
+
 // casWrite durably publishes data under its own content hash. If a chunk
 // with this hash already exists, publication is a no-op (immutable
 // content-addressed chunks are safe to dedup this way); its content is
 // re-verified on read instead of on every dedup'd write.
 func (s *Store) casWrite(data []byte) ([32]byte, error) {
-	sum := sha256.Sum256(data)
-	path := s.chunkPath(sum)
-	if _, err := s.casStat(sum); err == nil {
-		return sum, nil
-	} else if !os.IsNotExist(err) {
+	b := s.newCASBatch()
+	defer b.Abort()
+	sum, err := b.Add(data)
+	if err != nil {
 		return sum, err
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return sum, err
-	}
-	if err := writeFileDurable(filepath.Join(s.root, "tmp"), path, data); err != nil {
-		return sum, err
-	}
-	if err := syncDir(dir); err != nil {
-		return sum, err
-	}
-	return sum, nil
+	return sum, b.Flush()
 }
 
 // casStat reports a chunk's logical length from whichever physical
 // representation holds it, loose first. Like os.Stat on the loose path, a
 // chunk present in neither yields an os.IsNotExist error. It checks
-// presence and recorded length only; content is verified by casRead.
+// presence and recorded length only; content is verified by casRead. It
+// waits out any in-flight publication (see the barrier above).
 func (s *Store) casStat(sum [32]byte) (int64, error) {
+	s.casPubMu.RLock()
+	defer s.casPubMu.RUnlock()
+	return s.casStatLocked(sum)
+}
+
+func (s *Store) casStatLocked(sum [32]byte) (int64, error) {
 	info, err := os.Stat(s.chunkPath(sum))
 	if err == nil {
 		return info.Size(), nil
@@ -684,7 +986,9 @@ func (s *Store) casReadExcluding(sum [32]byte, skip map[int32]bool) ([]byte, err
 			return false
 		}
 		looseDone = true
+		s.casPubMu.RLock()
 		data, err := os.ReadFile(s.chunkPath(sum))
+		s.casPubMu.RUnlock()
 		if err == nil {
 			if got := sha256.Sum256(data); got != sum {
 				err = fmt.Errorf("cas: chunk %x is corrupt (%w)", sum, errChunkCorrupt)
@@ -747,6 +1051,8 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
 	if withMD5 {
 		etagSum = md5.New() //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5.
 	}
+	batch := s.newCASBatch()
+	defer batch.Abort()
 	for {
 		chunk, err := c.nextView()
 		if err == io.EOF {
@@ -756,7 +1062,7 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
 			return ingestResult{}, fmt.Errorf("chunking failed: %w", err)
 		}
 		fireTestHook(hookBeforeChunkWrite)
-		sum, err := s.casWrite(chunk)
+		sum, err := batch.Add(chunk)
 		if err != nil {
 			return ingestResult{}, fmt.Errorf("cas write failed: %w", err)
 		}
@@ -766,6 +1072,9 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
 		if etagSum != nil {
 			etagSum.Write(chunk)
 		}
+	}
+	if err := batch.Flush(); err != nil {
+		return ingestResult{}, fmt.Errorf("cas write failed: %w", err)
 	}
 	fireTestHook(hookAfterChunksPublished)
 	objSum.Sum(res.objSHA256[:0])
@@ -2760,6 +3069,9 @@ type Store struct {
 	// process holding exclusive ownership while compacting.
 	packMu sync.Mutex
 	packSt atomic.Pointer[packState]
+
+	// casPubMu is the loose-CAS publication barrier (section 4).
+	casPubMu sync.RWMutex
 }
 
 // OpenStore opens the store rooted at root, initializing it (writing
@@ -13557,12 +13869,13 @@ type syncBulkUploadResponse struct {
 	Bytes  int64 `json:"bytes"`
 }
 
-// handleBulkUpload parses and publishes the frame incrementally: one chunk
-// is verified against its digest and written with casWrite before the next
-// is read. Chunks published before a later framing or request-checksum
-// failure stay as ordinary unreachable CAS content (exactly like a failed
-// streaming PUT); success is acknowledged only after the whole signed body
-// has been consumed and its checksums verified.
+// handleBulkUpload parses the frame incrementally: one chunk is verified
+// against its digest and staged in a casBatch before the next is read. Full
+// batches publish as they fill and stay as ordinary unreachable CAS content
+// after a later framing or request-checksum failure (exactly like a failed
+// streaming PUT); the last partial batch is published only after the whole
+// signed body has been consumed and its checksums verified, and success is
+// acknowledged only after that publication is durable.
 func (srv *Server) handleBulkUpload(w http.ResponseWriter, r *http.Request, rawPath string, check payloadCheck) {
 	if r.ContentLength > bulkMaxFrameBytes {
 		writeSyncError(w, http.StatusBadRequest, "BatchTooLarge", "upload exceeds the maximum bulk frame size")
@@ -13596,6 +13909,8 @@ func (srv *Server) handleBulkUpload(w http.ResponseWriter, r *http.Request, rawP
 		return
 	}
 	scratch := make([]byte, maxSyncChunkBytes)
+	batch := srv.store.newCASBatch()
+	defer batch.Abort()
 	var chunks int
 	for {
 		rec, err := br.next(scratch)
@@ -13607,11 +13922,10 @@ func (srv *Server) handleBulkUpload(w http.ResponseWriter, r *http.Request, rawP
 			return
 		}
 		fireTestHook(hookBeforeChunkWrite)
-		if _, err := srv.store.casWrite(rec.payload); err != nil {
+		if _, err := batch.add(rec.sum, rec.payload); err != nil {
 			writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
 			return
 		}
-		fireTestHook(hookAfterChunksPublished)
 		chunks++
 	}
 	if err := br.finish(); err != nil {
@@ -13636,6 +13950,11 @@ func (srv *Server) handleBulkUpload(w http.ResponseWriter, r *http.Request, rawP
 		writeRequestError(w, err, rawPath)
 		return
 	}
+	if err := batch.Flush(); err != nil {
+		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	fireTestHook(hookAfterChunksPublished)
 	writeSyncJSON(w, http.StatusOK, syncBulkUploadResponse{Chunks: chunks, Bytes: int64(br.sum)})
 }
 
@@ -15284,10 +15603,15 @@ func (s *Store) casRepairPublish(sum [32]byte, data []byte) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := writeFileDurable(filepath.Join(s.root, "tmp"), path, data); err != nil {
+	tmp, err := s.casStage(data)
+	if err != nil {
 		return err
 	}
-	return syncDir(dir)
+	if err := fsyncPath(tmp); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return s.casPublish([]casStaged{{sum: sum, tmp: tmp}}, true)
 }
 
 // maxRepairChunkBytes bounds one peer-fetched repair chunk's response body

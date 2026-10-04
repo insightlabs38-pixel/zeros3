@@ -21,6 +21,8 @@
 #                                hottest-reference target computation (seconds)
 #   scripts/validate.sh tier-rebalance  tier rebalance planner/executor/crash tests plus the
 #                                black-box rebalance scenario (browser + checkpoint)
+#   scripts/validate.sh cas-batch  grouped loose-CAS publication: batch/barrier/crash/concurrency tests,
+#                                real-process kill, bulk-upload batching (under a minute)
 #   scripts/validate.sh vectors  golden client vectors (SigV4, presign, wire shapes) plus the
 #                                fast GetBucketLocation/DeleteObjects/probe tests (seconds)
 #   scripts/validate.sh client   Core Client Profile v1 (AWS SDK + minio-go [+ AWS CLI if
@@ -42,7 +44,9 @@
 # without bulk transport to act as the v1 client; default: built from the
 # Z2-06 commit), TIER_SEG_MIB (tier-life object segment size, default 4),
 # TIER_BASELINE_BIN (the Z2-08 build, store formats 1-4; default: built from
-# its merge commit 33478ce).
+# its merge commit 33478ce), CAS_SIZE_MIB (cas-bench PutObject size, default 256),
+# CAS_MULTIPART_MIB (cas-bench multipart size, default 256), CAS_BASELINE_BIN (a build
+# predating grouped CAS publication; default: built from the Z2-10 merge a2bf462).
 set -u
 
 # Ambient AWS_* settings would override the harnesses' fixed credentials.
@@ -105,6 +109,21 @@ stage_bulk-bench() {
 		go run ./harness/z2_bulk_transfer -bin "$bin" -baseline-bin "$base" -size-mib "${BULK_SIZE_MIB:-256}" \
 			-delays-ms 0,5,10 -v1-workers 8 -v2-workers 8 -matrix-delay-ms 10
 }
+stage_cas-batch() { cd "$root" && go test -count=1 -run 'TestCASBatch_|TestBulkUpload_|TestRepair_' .; }
+stage_cas-bench() {
+	build_bin || return 1
+	base="${CAS_BASELINE_BIN:-}"
+	if [ -z "$base" ]; then
+		base="$logs/zeros3-z2-10-baseline"
+		tmp=$(mktemp -d) &&
+			(cd "$root" && git archive a2bf462 zeros3.go go.mod | tar -x -C "$tmp") &&
+			(cd "$tmp" && CGO_ENABLED=0 go build -o "$base" zeros3.go) || return 1
+		rm -rf "$tmp"
+	fi
+	cd "$root/testing-harnesses" &&
+		go run ./harness/z2_cas_batch -bin "$bin" -baseline-bin "$base" -size-mib "${CAS_SIZE_MIB:-256}" -multipart-mib "${CAS_MULTIPART_MIB:-256}" &&
+		go run ./harness/z2_bulk_transfer -bin "$bin" -size-mib "${BULK_SIZE_MIB:-256}" -delays-ms 0,10 -v2-workers 8
+}
 stage_tier() { cd "$root" && go test -count=1 -run 'TestTier_|TestLocator_' .; }
 stage_tier-life() {
 	build_bin || return 1
@@ -151,10 +170,10 @@ stage_compression() {
 }
 
 normal="format modules test static s3 sync repro"
-heavy="race crash repack compact compression index-scale bulk-bench history-life tier-life"
+heavy="race crash repack compact compression index-scale bulk-bench cas-bench history-life tier-life"
 
 case "${1:-normal}" in
-list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk history history-life tier tier-policy tier-rebalance tier-life vectors client apps"; exit 0 ;;
+list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk cas-batch history history-life tier tier-policy tier-rebalance tier-life vectors client apps"; exit 0 ;;
 normal) stages=$normal ;;
 heavy) stages=$heavy ;;
 all) stages="$normal $heavy" ;;

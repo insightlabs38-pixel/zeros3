@@ -27,6 +27,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -247,6 +248,17 @@ type result struct {
 	elapsed                         time.Duration
 	src, dst                        map[string]int
 	srvSrcRSS, srvDstRSS, clientRSS int64
+	dstLoose                        int // loose chunk files in the destination store
+}
+
+func countFiles(root string) (n int) {
+	_ = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			n++
+		}
+		return nil
+	})
+	return n
 }
 
 func transferReqs(c map[string]int) int {
@@ -311,6 +323,7 @@ func run(c config1, srcDir, dstDir string, bothSides bool, deep bool, srcETag *s
 		fail("%s: destination ETag %s != source %s", c.label, got, *srcETag)
 	}
 	r.srvSrcRSS, r.srvDstRSS = stopServer(srcCmd), stopServer(dstCmd)
+	r.dstLoose = countFiles(filepath.Join(dstDir, "chunks"))
 	if deep {
 		v := exec.Command(serverBin, "verify", "-store", dstDir, "-deep")
 		if vout, err := v.CombinedOutput(); err != nil {
@@ -439,7 +452,7 @@ func main() {
 				return o
 			}(),
 			"source_requests": last.src, "dest_requests": last.dst, "transfer_requests": xfer,
-			"rss_source_mib": last.srvSrcRSS >> 20, "rss_dest_mib": last.srvDstRSS >> 20, "rss_client_mib": last.clientRSS >> 20,
+			"dest_loose_files": last.dstLoose, "rss_source_mib": last.srvSrcRSS >> 20, "rss_dest_mib": last.srvDstRSS >> 20, "rss_client_mib": last.clientRSS >> 20,
 		})
 		fmt.Println("RECORD " + string(rec))
 		if strings.HasPrefix(c.label, "bulk") {

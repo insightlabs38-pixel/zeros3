@@ -152,7 +152,11 @@ directory (the only portable way to make a rename itself durable on
 Linux) — applied consistently to CAS chunks, manifests, and journal
 frames, with the journal's own `fsync` as the exact acknowledgment
 threshold: a mutation is acknowledged over HTTP only after its journal
-frame's sync call returns.
+frame's sync call returns. CAS chunks written together (one object's
+chunks, one bulk frame) share one bounded publication: file fsyncs run with
+a small worker bound, then renames and directory fsyncs run inside a
+barrier that casStat and loose reads wait on, so no chunk is visible
+before its directory entry is durable.
 
 **Why it matters:** this is the entire crash-safety argument for the
 project in one mechanism — "acknowledged mutation ⇒ durable" is a claim
