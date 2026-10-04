@@ -66,41 +66,42 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//      106    Test helpers, fixtures, and TestMain
-//     258    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//    1274    SigV4 authentication (header and payload-mode)
-//    1663    Checksums: CRC32 and Content-MD5
-//    2166    End-to-end HTTP and crash/recovery tests
-//    2840    M2: bucket/object/listing/journal protocol compatibility
-//    3891    M3: CDC/dedup evidence, stats, verify
-//    5027    M3: CopyObject
-//    5574    M3: single-range GET
-//    5775    M5-B: multipart upload
-//    7053    Presigned URLs and virtual-hosted-style addressing
-//    8082    M5-C: version history, restore, GC, storage-efficiency proof
-//    9549    Z2-08: history retention (prune)
-//   10641    M5-D/P2: ListParts and ListMultipartUploads pagination
-//   12360    M6: delta sync (`zeros3 sync`)
-//   14102    M6C: recursive directory sync
-//   15162    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//   16491    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//   17816    M8C: namespace (prefix/bucket) replication
-//   18855    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//   19947    M8E: durable namespace snapshots and restore
-//   22025    M8F: conditional operations (Put/Get/Copy preconditions)
-//   23430    M8G: introspection (dry-run planning, diff, inspect)
-//   25382    M8H: bounded parallel chunk transfer
-//   26763    P1: environment credentials, HTTP hardening/shutdown, TLS
-//   28079    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//   29009    Streaming reads and aws-chunked SigV4
-//   29857    Packed CAS: pack format, mixed reads, compaction, crash points
-//   30834    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//   31986    Adaptive pack compression (codec 1, DEFLATE)
-//   33020    Scalable packed-chunk locator (sorted immutable levels)
-//   33506    Z2-07: bulk logical-chunk transport (v2)
-//   34932    Hot/warm/cold physical pack tiers
-//   35703    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//   36454    Z2-10: content-aware tier policy and rebalance
+//      107    Test helpers, fixtures, and TestMain
+//     259    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//    1275    SigV4 authentication (header and payload-mode)
+//    1664    Checksums: CRC32 and Content-MD5
+//    2167    End-to-end HTTP and crash/recovery tests
+//    2841    M2: bucket/object/listing/journal protocol compatibility
+//    3892    M3: CDC/dedup evidence, stats, verify
+//    5028    M3: CopyObject
+//    5575    M3: single-range GET
+//    5776    M5-B: multipart upload
+//    7054    Presigned URLs and virtual-hosted-style addressing
+//    8083    M5-C: version history, restore, GC, storage-efficiency proof
+//    9550    Z2-08: history retention (prune)
+//   10642    M5-D/P2: ListParts and ListMultipartUploads pagination
+//   12361    M6: delta sync (`zeros3 sync`)
+//   14103    M6C: recursive directory sync
+//   15163    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//   16492    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//   17817    M8C: namespace (prefix/bucket) replication
+//   18856    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//   19948    M8E: durable namespace snapshots and restore
+//   22026    M8F: conditional operations (Put/Get/Copy preconditions)
+//   23431    M8G: introspection (dry-run planning, diff, inspect)
+//   25383    M8H: bounded parallel chunk transfer
+//   26764    P1: environment credentials, HTTP hardening/shutdown, TLS
+//   28080    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//   29010    Streaming reads and aws-chunked SigV4
+//   29858    Packed CAS: pack format, mixed reads, compaction, crash points
+//   30835    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//   31987    Adaptive pack compression (codec 1, DEFLATE)
+//   33021    Scalable packed-chunk locator (sorted immutable levels)
+//   33507    Z2-07: bulk logical-chunk transport (v2)
+//   34935    Hot/warm/cold physical pack tiers
+//   35706    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//   36457    Z2-10: content-aware tier policy and rebalance
+//   37489    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -34342,7 +34343,7 @@ func TestBulkUpload_PresentAndPackedChunksAreNoOps(t *testing.T) {
 	}
 }
 
-func TestBulkUpload_FailuresKeepPublishedPrefixAndNeverCommit(t *testing.T) {
+func TestBulkUpload_FailuresPublishNoPartialBatchAndNeverCommit(t *testing.T) {
 	good := [][]byte{genRandomBytes(11, 3000), genRandomBytes(12, 4000), genRandomBytes(13, 5000), genRandomBytes(14, 6000)}
 	badDigest := bulkTestFrame(good...)
 	badDigest[bulkHeaderLen+2*bulkDescLen+3000+4000+7] ^= 1 // inside the third payload
@@ -34359,10 +34360,12 @@ func TestBulkUpload_FailuresKeepPublishedPrefixAndNeverCommit(t *testing.T) {
 		frame   []byte
 		persist int // leading good chunks that were already published
 	}{
-		{"digest mismatch in a later record", badDigest, 2},
+		// A partial batch is published only after the whole request
+		// verifies, so these small frames leave nothing behind.
+		{"digest mismatch in a later record", badDigest, 0},
 		{"declared length disagrees with payload", badLength, 0},
-		{"duplicate record", dup, 2},
-		{"malformed later record", laterTruncated, 2},
+		{"duplicate record", dup, 0},
+		{"malformed later record", laterTruncated, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -34420,8 +34423,8 @@ func TestBulkUpload_FailuresKeepPublishedPrefixAndNeverCommit(t *testing.T) {
 		if err := uploadBulkFrame(context.Background(), n.cfg, bulkTestFrame(good...)); err == nil {
 			t.Fatal("interrupted upload was acknowledged")
 		}
-		if !n.has(bulkTestDesc(good[0])) || n.has(bulkTestDesc(good[1])) {
-			t.Fatal("exactly the chunk completed before the interruption should be published")
+		if n.has(bulkTestDesc(good[0])) || n.has(bulkTestDesc(good[1])) {
+			t.Fatal("an interrupted request's partial batch must not be published")
 		}
 	})
 }
@@ -37479,5 +37482,540 @@ func TestTierRebalance_CLI(t *testing.T) {
 	}
 	if out, _, code = runZeros3CLI(t, bin, "verify", "-store", dir, "-deep"); code != 0 {
 		t.Fatalf("verify: %q", out)
+	}
+}
+
+// =============================================================================
+// Z2-11: grouped loose-CAS publication (casBatch, casPublish)
+// =============================================================================
+
+// casHookCounter counts every test-hook point; hooks fire from flush
+// goroutines too, so it is mutex-guarded. Extra runs inside the hook.
+type casHookCounter struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+func countCASHooks(t *testing.T, extra func(point string, nth int)) *casHookCounter {
+	t.Helper()
+	c := &casHookCounter{n: map[string]int{}}
+	withTestHook(t, func(p string) {
+		c.mu.Lock()
+		c.n[p]++
+		nth := c.n[p]
+		c.mu.Unlock()
+		if extra != nil {
+			extra(p, nth)
+		}
+	})
+	return c
+}
+
+func (c *casHookCounter) count(p string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n[p]
+}
+
+// casLooseChunks returns every loose chunk under dir and fails if any file's
+// content does not hash to its name.
+func casLooseChunks(t *testing.T, dir string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	err := filepath.WalkDir(filepath.Join(dir, "chunks"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != d.Name() {
+			t.Errorf("chunk file %s does not hash to its name", d.Name())
+		}
+		out[d.Name()] = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func casStagedFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	names, err := filepath.Glob(filepath.Join(dir, "tmp", "cas-*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return names
+}
+
+func TestCASBatch_PublicationBarrier(t *testing.T) {
+	store, dir := newBucketStore(t)
+	data := genRandomBytes(1, 70000)
+	sum := sha256.Sum256(data)
+	reached, release := make(chan struct{}), make(chan struct{})
+	withTestHook(t, func(p string) {
+		if p != hookCASBeforeDirSync {
+			return
+		}
+		// Every rename is done and the chunk's final path exists, but the
+		// directory fsync has not run: the barrier must still be held.
+		if store.casPubMu.TryRLock() {
+			store.casPubMu.RUnlock()
+			t.Error("publication barrier not held between rename and directory fsync")
+		}
+		if _, err := os.Stat(store.chunkPath(sum)); err != nil {
+			t.Errorf("final path should already exist: %v", err)
+		}
+		close(reached)
+		<-release
+	})
+	written := make(chan error, 1)
+	go func() { _, err := store.casWrite(data); written <- err }()
+	<-reached
+	stat, read := make(chan error, 1), make(chan error, 1)
+	started := make(chan struct{}, 2)
+	go func() { started <- struct{}{}; _, err := store.casStat(sum); stat <- err }()
+	go func() { started <- struct{}{}; _, err := store.casRead(sum); read <- err }()
+	<-started
+	<-started
+	for i := 0; i < 1000; i++ {
+		runtime.Gosched() // give an unprotected observer every chance to finish
+	}
+	select {
+	case <-stat:
+		t.Fatal("casStat observed a chunk before its durability barrier completed")
+	case <-read:
+		t.Fatal("casRead observed a chunk before its durability barrier completed")
+	default:
+	}
+	close(release)
+	for name, ch := range map[string]chan error{"casWrite": written, "casStat": stat, "casRead": read} {
+		if err := <-ch; err != nil {
+			t.Fatalf("%s after the barrier released: %v", name, err)
+		}
+	}
+	if got := casLooseChunks(t, dir); !got[hex.EncodeToString(sum[:])] || len(casStagedFiles(t, dir)) != 0 {
+		t.Fatalf("chunk missing or staging left behind: %v", got)
+	}
+}
+
+func TestCASBatch_FlushFailureLeavesNothingPublished(t *testing.T) {
+	t.Run("directory cannot be created", func(t *testing.T) {
+		store, dir := newBucketStore(t)
+		data := genRandomBytes(2, 50000)
+		sum := sha256.Sum256(data)
+		blocker := filepath.Join(dir, "chunks", hex.EncodeToString(sum[:])[:2])
+		if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.casWrite(data); err == nil {
+			t.Fatal("publication into an unusable directory was acknowledged")
+		}
+		if _, err := store.casStat(sum); err == nil || len(casStagedFiles(t, dir)) != 0 {
+			t.Fatalf("failed flush left state behind: stat=%v staged=%v", err, casStagedFiles(t, dir))
+		}
+	})
+	t.Run("rename fails after earlier renames", func(t *testing.T) {
+		store, dir := newBucketStore(t)
+		a, b := genRandomBytes(3, 40000), genRandomBytes(4, 40000)
+		withTestHook(t, func(p string) {
+			if p == hookCASAfterFirstRename {
+				for _, f := range casStagedFiles(t, dir) { // the not-yet-renamed one
+					os.Remove(f)
+				}
+			}
+		})
+		batch := store.newCASBatch()
+		defer batch.Abort()
+		for _, d := range [][]byte{a, b} {
+			if _, err := batch.Add(d); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := batch.Flush(); err == nil {
+			t.Fatal("flush with a failing rename was acknowledged")
+		}
+		for _, d := range [][]byte{a, b} {
+			if _, err := store.casStat(sha256.Sum256(d)); !os.IsNotExist(err) {
+				t.Fatalf("a failed flush left a published chunk: %v", err)
+			}
+		}
+		if len(casStagedFiles(t, dir)) != 0 {
+			t.Fatal("staging left behind")
+		}
+	})
+}
+
+func TestCASBatch_BatchLocalDuplicatesStageOnce(t *testing.T) {
+	store, dir := newBucketStore(t)
+	a, b := genRandomBytes(5, 30000), genRandomBytes(6, 30000)
+	c := countCASHooks(t, nil)
+	batch := store.newCASBatch()
+	defer batch.Abort()
+	var sums [][32]byte
+	for _, d := range [][]byte{a, b, a, a, b} {
+		sum, err := batch.Add(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sums = append(sums, sum)
+	}
+	if sums[0] != sums[2] || sums[0] != sums[3] || sums[1] != sums[4] || sums[0] == sums[1] {
+		t.Fatalf("Add must return each occurrence's own digest: %x", sums)
+	}
+	if err := batch.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.count(hookCASAfterStage); got != 2 {
+		t.Fatalf("staged %d files for 2 distinct chunks", got)
+	}
+	if got := casLooseChunks(t, dir); len(got) != 2 {
+		t.Fatalf("%d loose chunks, want 2", len(got))
+	}
+}
+
+func TestCASBatch_ConcurrentWritersOfOneDigest(t *testing.T) {
+	t.Run("another writer publishes first", func(t *testing.T) {
+		store, dir := newBucketStore(t)
+		x := genRandomBytes(7, 60000)
+		sum := sha256.Sum256(x)
+		batch := store.newCASBatch()
+		defer batch.Abort()
+		if _, err := batch.Add(x); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.casWrite(x); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Stat(store.chunkPath(sum))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := batch.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		after, err := os.Stat(store.chunkPath(sum))
+		if err != nil || !os.SameFile(before, after) {
+			t.Fatalf("a batch replaced an independently published chunk: %v", err)
+		}
+		if got := casLooseChunks(t, dir); len(got) != 1 || len(casStagedFiles(t, dir)) != 0 {
+			t.Fatalf("loose=%d staged=%v", len(got), casStagedFiles(t, dir))
+		}
+	})
+	t.Run("two batches stage the same chunks", func(t *testing.T) {
+		store, dir := newBucketStore(t)
+		shared := [][]byte{genRandomBytes(8, 50000), genRandomBytes(9, 50000), genRandomBytes(10, 50000)}
+		for round := 0; round < 8; round++ {
+			shared = append(shared, genRandomBytes(int64(100+round), 40000))
+			var wg sync.WaitGroup
+			errs := make([]error, 2)
+			start := make(chan struct{})
+			for g := range errs {
+				b := store.newCASBatch()
+				for _, d := range shared {
+					if _, err := b.Add(d); err != nil {
+						t.Fatal(err)
+					}
+				}
+				wg.Add(1)
+				go func() { defer wg.Done(); <-start; errs[g] = b.Flush() }()
+			}
+			close(start)
+			wg.Wait()
+			if errs[0] != nil || errs[1] != nil {
+				t.Fatalf("concurrent identical flushes: %v %v", errs[0], errs[1])
+			}
+		}
+		if got := casLooseChunks(t, dir); len(got) != len(shared) || len(casStagedFiles(t, dir)) != 0 {
+			t.Fatalf("loose=%d want %d, staged=%v", len(got), len(shared), casStagedFiles(t, dir))
+		}
+		for _, d := range shared {
+			if got, err := store.casRead(sha256.Sum256(d)); err != nil || !bytes.Equal(got, d) {
+				t.Fatalf("read back: %v", err)
+			}
+		}
+	})
+}
+
+func TestCASBatch_ExistingChunksInAnyTierStageNothing(t *testing.T) {
+	dir := t.TempDir()
+	data := map[string][]byte{}
+	for i, k := range []string{"hot", "warm", "cold", "loose"} {
+		data[k] = genRandomBytes(int64(200+i), 600_000)
+	}
+	putPackTestObjects(t, dir, data, "hot")
+	tierCompactTo(t, dir, tierHot)
+	putPackTestObjects(t, dir, data, "warm")
+	tierCompactTo(t, dir, tierWarm)
+	putPackTestObjects(t, dir, data, "cold")
+	tierCompactTo(t, dir, tierCold)
+	putPackTestObjects(t, dir, data, "loose")
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	c := countCASHooks(t, nil)
+	loose := len(casLooseChunks(t, dir))
+	for k, d := range data {
+		if _, err := store.PutObject("b", k+"-again", d, "application/octet-stream", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c.count(hookCASAfterStage) != 0 || len(casLooseChunks(t, dir)) != loose {
+		t.Fatalf("re-ingesting existing chunks staged %d files and grew loose chunks %d -> %d",
+			c.count(hookCASAfterStage), loose, len(casLooseChunks(t, dir)))
+	}
+}
+
+func TestCASBatch_IngestDuplicateAndLocalizedEdit(t *testing.T) {
+	store, _ := newBucketStore(t)
+	data := genRandomBytes(300, 6<<20)
+	if _, err := store.PutObject("b", "k", data, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	c := countCASHooks(t, nil)
+	if _, err := store.PutObject("b", "dup", data, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	if c.count(hookCASAfterStage) != 0 {
+		t.Fatalf("duplicate PUT staged %d chunks", c.count(hookCASAfterStage))
+	}
+	edited := slices.Clone(data)
+	edited[3<<20] ^= 0xff
+	if _, err := store.PutObject("b", "edit", edited, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := c.count(hookCASAfterStage); n < 1 || n > 4 {
+		t.Fatalf("one-byte edit staged %d chunks, want 1..4", n)
+	}
+}
+
+func TestCASBatch_IngestIsBoundedAndHandlesTinyObjects(t *testing.T) {
+	store, dir := newBucketStore(t)
+	for _, n := range []int{0, 1, 4 << 20} {
+		d := genRandomBytes(int64(400+n), n)
+		if _, err := store.PutObject("b", fmt.Sprintf("o%d", n), d, "application/octet-stream", nil); err != nil {
+			t.Fatalf("%d-byte object: %v", n, err)
+		}
+		if _, got, err := store.GetObject("b", fmt.Sprintf("o%d", n)); err != nil || !bytes.Equal(got, d) {
+			t.Fatalf("%d-byte readback: %v", n, err)
+		}
+	}
+	var maxStaged atomic.Int64
+	countCASHooks(t, func(p string, _ int) {
+		if p == hookCASAfterStage {
+			maxStaged.Store(max(maxStaged.Load(), int64(len(casStagedFiles(t, dir)))))
+		}
+	})
+	big := genRandomBytes(500, 40<<20)
+	if _, err := store.PutObject("b", "big", big, "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	// One batch may be flushing while the next fills.
+	if m := int(maxStaged.Load()); m == 0 || m > 2*casBatchMaxRecords {
+		t.Fatalf("peak staged files %d, want 1..%d", m, 2*casBatchMaxRecords)
+	}
+	if len(casStagedFiles(t, dir)) != 0 {
+		t.Fatal("staging left behind after a successful ingest")
+	}
+	if v, err := store.Verify(true); err != nil || !v.OK() {
+		t.Fatalf("verify: %v %+v", err, v)
+	}
+}
+
+func TestCASBatch_InterruptionMatrix(t *testing.T) {
+	points := []struct {
+		point string
+		nth   int
+	}{
+		{hookCASAfterStage, 5},
+		{hookCASBeforeStageSync, 1},
+		{hookCASAfterStageSync, 1},
+		{hookCASBeforeRename, 1},
+		{hookCASAfterFirstRename, 1},
+		{hookCASBeforeDirSync, 1},
+		{hookCASAfterDirSync, 1},
+		{hookCASAfterFlush, 1}, // one full batch durable, object still incomplete
+		{hookCASAfterFlush, 2},
+		{hookAfterChunksPublished, 1}, // every chunk durable, no manifest
+	}
+	old := genRandomBytes(600, 300<<10)
+	keep := genRandomBytes(601, 700<<10)
+	fresh := genRandomBytes(602, 20<<20)
+	for _, pt := range points {
+		t.Run(fmt.Sprintf("%s#%d", pt.point, pt.nth), func(t *testing.T) {
+			store, dir := newBucketStore(t)
+			for k, d := range map[string][]byte{"k": old, "keep": keep} {
+				if _, err := store.PutObject("b", k, d, "text/plain", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			countCASHooks(t, func(p string, nth int) {
+				if p == pt.point && nth == pt.nth {
+					panic(simulatedCrash{point: p})
+				}
+			})
+			runExpectingSimulatedCrash(t, func() { _, _ = store.PutObject("b", "k", fresh, "text/plain", nil) })
+			testHook = nil
+			store.Close()
+
+			s2, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for k, want := range map[string][]byte{"k": old, "keep": keep} {
+				if _, got, err := s2.GetObject("b", k); err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("acknowledged object %q damaged by an interrupted overwrite: %v", k, err)
+				}
+			}
+			casLooseChunks(t, dir) // every surviving chunk must hash to its name
+			if v, err := s2.Verify(true); err != nil || !v.OK() {
+				t.Fatalf("verify after interruption: %v %+v", err, v)
+			}
+			if _, err := s2.PutObject("b", "k", fresh, "text/plain", nil); err != nil {
+				t.Fatalf("retry: %v", err)
+			}
+			if _, got, err := s2.GetObject("b", "k"); err != nil || !bytes.Equal(got, fresh) {
+				t.Fatalf("retry did not converge: %v", err)
+			}
+			s2.Close()
+			// Crash staging is not authoritative data: GC clears it.
+			stale := filepath.Join(dir, "tmp", "cas-stale.tmp")
+			if err := os.WriteFile(stale, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if res, err := gcCollect(dir, true); err != nil || !res.LiveSetOK {
+				t.Fatalf("gc: %v %+v", err, res)
+			}
+			if len(casStagedFiles(t, dir)) != 0 {
+				t.Fatal("gc left CAS staging behind")
+			}
+			s3, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s3.Close()
+			if v, err := s3.Verify(true); err != nil || !v.OK() {
+				t.Fatalf("verify after gc: %v %+v", err, v)
+			}
+			for k, want := range map[string][]byte{"k": fresh, "keep": keep} {
+				if _, got, err := s3.GetObject("b", k); err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("live object %q damaged by gc: %v", k, err)
+				}
+			}
+		})
+	}
+}
+
+func TestCASBatch_BulkUploadPublishesFullBatchesOnly(t *testing.T) {
+	var chunks [][]byte
+	for i := 0; i < 44; i++ { // 44 x 250 kB: the first batch fills (8 MiB) before the end
+		chunks = append(chunks, genRandomBytes(int64(700+i), 250_000))
+	}
+	t.Run("valid frame", func(t *testing.T) {
+		n := bulkTestUploadServer(t, nil)
+		if err := uploadBulkFrame(context.Background(), n.cfg, bulkTestFrame(chunks...)); err != nil {
+			t.Fatal(err)
+		}
+		for i, d := range chunks {
+			if !n.has(bulkTestDesc(d)) {
+				t.Fatalf("chunk %d missing after an acknowledged upload", i)
+			}
+		}
+		if res, err := n.srv.store.Verify(true); err != nil || !res.OK() {
+			t.Fatalf("verify: %v %+v", err, res)
+		}
+	})
+	t.Run("corrupt last record", func(t *testing.T) {
+		n := bulkTestUploadServer(t, nil)
+		frame := bulkTestFrame(chunks...)
+		frame[len(frame)-1] ^= 1
+		if st, _ := rawBulkPost(t, n.cfg, zeros3BulkUploadPath, frame); st != http.StatusBadRequest {
+			t.Fatalf("status %d, want 400", st)
+		}
+		perBatch := (casBatchMaxBytes + 249_999) / 250_000
+		for i, d := range chunks {
+			if got := n.has(bulkTestDesc(d)); got != (i < perBatch) {
+				t.Fatalf("chunk %d present=%v: only the full first batch (%d chunks) may be published", i, got, perBatch)
+			}
+		}
+		if staged := casStagedFiles(t, n.srv.store.root); len(staged) != 0 {
+			t.Fatalf("staging left behind: %v", staged)
+		}
+	})
+}
+
+func TestCASBatch_RealProcessKillMidIngest(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	storeDir := t.TempDir()
+	addr := freeTCPAddr(t)
+	srv := exec.Command(bin, "-store", storeDir, "-addr", addr)
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { srv.Process.Kill(); srv.Wait() }()
+	waitForZeros3Serve(t, addr)
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{}
+	resp := doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, "/b", nil, nil)
+	resp.Body.Close()
+	big := genRandomBytes(800, 128<<20)
+	put := make(chan int, 1)
+	putReq := mustSignedRequest(t, signer, http.MethodPut, "http://"+addr+"/b/big", big)
+	go func() {
+		r, err := (&http.Client{}).Do(putReq)
+		if err != nil {
+			put <- -1
+			return
+		}
+		r.Body.Close()
+		put <- r.StatusCode
+	}()
+	// Kill once at least one batch is durable but the object cannot be complete.
+	deadline := time.Now().Add(30 * time.Second)
+	for len(casLooseChunks(t, storeDir)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("no chunk was ever published")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	srv.Process.Kill()
+	srv.Wait()
+	if st := <-put; st == http.StatusOK {
+		t.Skip("the upload finished before it could be killed")
+	}
+
+	s, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.GetObject("b", "big"); !errors.Is(err, errNoSuchKey) {
+		t.Fatalf("an interrupted PUT must not be visible: %v", err)
+	}
+	casLooseChunks(t, storeDir)
+	if v, err := s.Verify(true); err != nil || !v.OK() {
+		t.Fatalf("verify after kill: %v %+v", err, v)
+	}
+	if _, err := s.PutObject("b", "big", big, "application/octet-stream", nil); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	s.Close()
+	if res, err := gcCollect(storeDir, true); err != nil || !res.LiveSetOK {
+		t.Fatalf("gc: %v %+v", err, res)
+	}
+	s, err = OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, got, err := s.GetObject("b", "big"); err != nil || !bytes.Equal(got, big) {
+		t.Fatalf("retried object unreadable after gc: %v", err)
+	}
+	if v, err := s.Verify(true); err != nil || !v.OK() {
+		t.Fatalf("verify after gc: %v %+v", err, v)
 	}
 }
