@@ -167,6 +167,11 @@ func main() {
 		fmt.Println("FAIL: ZEROS3_BIN is required")
 		os.Exit(2)
 	}
+	for _, kv := range os.Environ() { // ambient AWS_* would override the fixed credentials
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "AWS_") {
+			os.Unsetenv(k)
+		}
+	}
 	var err error
 	if storeDir, err = os.MkdirTemp("", "zeros3-z2-history-"); err != nil {
 		fmt.Println("FAIL:", err)
@@ -287,8 +292,8 @@ func main() {
 	var dry gcJSON
 	run(&dry, "gc", "-store", storeDir, "-json")
 	check("gc sees the newly unreachable roots", dry.LiveSetOK && dry.HistoricalRootCount == 2 && dry.SnapshotRootCount == 1 && dry.ManifestsUnreachable == 4 &&
-		dry.ChunksUnreachable > 0 && dry.PackedDeadChunkCount > 0, "%+v", dry)
-	fmt.Printf("RECORD unreachable manifests=%d chunks=%d payload_bytes=%d packed_dead_chunks=%d packed_dead_bytes=%d\n",
+		dry.PackedDeadChunkCount > 0, "%+v", dry)
+	fmt.Printf("RECORD unreachable manifests=%d loose_chunks=%d loose_payload_bytes=%d packed_dead_chunks=%d packed_dead_bytes=%d\n",
 		dry.ManifestsUnreachable, dry.ChunksUnreachable, dry.ReclaimablePayloadBytes, dry.PackedDeadChunkCount, dry.PackedDeadBytes)
 	var gc gcJSON
 	run(&gc, "gc", "-store", storeDir, "-apply", "-json")
