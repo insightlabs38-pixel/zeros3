@@ -32,6 +32,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
@@ -24919,12 +24920,42 @@ func TestTransferHTTPTransport_PoolSizedForMaxWorkers(t *testing.T) {
 // transfers.
 func wrapChunkEndpoint(srv *Server, targetHexDigest string, intercept func(w http.ResponseWriter, r *http.Request) bool) http.HandlerFunc {
 	target := zeros3SyncChunksPrefix + targetHexDigest
+	next := v1OnlyHandler(srv)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == target && intercept(w, r) {
 			return
 		}
-		srv.ServeHTTP(w, r)
+		next.ServeHTTP(w, r)
 	}
+}
+
+// v1OnlyHandler presents h as a server that predates bulk transport: the
+// discovery document omits the bulk fields and the v2 endpoints are unknown.
+func v1OnlyHandler(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, zeros3BulkPathPrefix):
+			writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown ZeroS3 sync extension operation")
+		case r.URL.Path == zeros3SyncInfoPath && r.Method == http.MethodGet:
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, r)
+			var d map[string]json.RawMessage
+			if rec.Code == http.StatusOK && json.Unmarshal(rec.Body.Bytes(), &d) == nil {
+				for _, k := range []string{"bulk_protocol_version", "max_bulk_chunks", "max_bulk_bytes"} {
+					delete(d, k)
+				}
+				writeSyncJSON(w, http.StatusOK, d)
+				return
+			}
+			for k, v := range rec.Header() {
+				w.Header()[k] = v
+			}
+			w.WriteHeader(rec.Code)
+			_, _ = w.Write(rec.Body.Bytes())
+		default:
+			h.ServeHTTP(w, r)
+		}
+	})
 }
 
 // -----------------------------------------------------------------------
@@ -25014,7 +25045,6 @@ func TestReplicate_PartialAndZeroMissing_WithWorkers(t *testing.T) {
 
 func TestReplicate_DuplicateDigestReferencesTransferOnce(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
-	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	if err := srcSrv.store.CreateBucket("src"); err != nil {
 		t.Fatal(err)
 	}
@@ -25055,11 +25085,11 @@ func TestReplicate_DuplicateDigestReferencesTransferOnce(t *testing.T) {
 		if r.Method == http.MethodGet && r.URL.Path == zeros3SyncChunksPrefix+hexDigest {
 			atomic.AddInt64(&chunkGETs, 1)
 		}
-		srcSrv.ServeHTTP(w, r)
+		v1OnlyHandler(srcSrv).ServeHTTP(w, r)
 	})
 	srcTS := httptest.NewServer(srcHandler)
 	defer srcTS.Close()
-	dstTS := httptest.NewServer(dstSrv)
+	dstTS := httptest.NewServer(v1OnlyHandler(dstSrv))
 	defer dstTS.Close()
 
 	cfg := replicateConfig{
@@ -25091,7 +25121,6 @@ func TestReplicate_DuplicateDigestReferencesTransferOnce(t *testing.T) {
 
 func TestReplicate_SourceMissingOneChunkAmongMany(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
-	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(80050, 3_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25112,7 +25141,7 @@ func TestReplicate_SourceMissingOneChunkAmongMany(t *testing.T) {
 	})
 	srcTS := httptest.NewServer(srcHandler)
 	defer srcTS.Close()
-	dstTS := httptest.NewServer(dstSrv)
+	dstTS := httptest.NewServer(v1OnlyHandler(dstSrv))
 	defer dstTS.Close()
 
 	cfg := replicateConfig{
@@ -25130,7 +25159,6 @@ func TestReplicate_SourceMissingOneChunkAmongMany(t *testing.T) {
 
 func TestReplicate_SourceReturnsWrongDigestAmongMany(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
-	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(80051, 3_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25152,7 +25180,7 @@ func TestReplicate_SourceReturnsWrongDigestAmongMany(t *testing.T) {
 	})
 	srcTS := httptest.NewServer(srcHandler)
 	defer srcTS.Close()
-	dstTS := httptest.NewServer(dstSrv)
+	dstTS := httptest.NewServer(v1OnlyHandler(dstSrv))
 	defer dstTS.Close()
 
 	cfg := replicateConfig{
@@ -25170,7 +25198,6 @@ func TestReplicate_SourceReturnsWrongDigestAmongMany(t *testing.T) {
 
 func TestReplicate_DestinationUploadRejectsAmongMany(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
-	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(80052, 3_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25190,7 +25217,7 @@ func TestReplicate_DestinationUploadRejectsAmongMany(t *testing.T) {
 		_, _ = w.Write([]byte("simulated destination rejection"))
 		return true
 	})
-	srcTS := httptest.NewServer(srcSrv)
+	srcTS := httptest.NewServer(v1OnlyHandler(srcSrv))
 	defer srcTS.Close()
 	dstTS := httptest.NewServer(dstHandler)
 	defer dstTS.Close()
@@ -25210,7 +25237,6 @@ func TestReplicate_DestinationUploadRejectsAmongMany(t *testing.T) {
 
 func TestReplicate_ConnectionResetOnOneChunkIsHandledAsFailure(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
-	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(80053, 2_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25242,7 +25268,7 @@ func TestReplicate_ConnectionResetOnOneChunkIsHandledAsFailure(t *testing.T) {
 	})
 	srcTS := httptest.NewServer(srcHandler)
 	defer srcTS.Close()
-	dstTS := httptest.NewServer(dstSrv)
+	dstTS := httptest.NewServer(v1OnlyHandler(dstSrv))
 	defer dstTS.Close()
 
 	cfg := replicateConfig{
@@ -25260,7 +25286,6 @@ func TestReplicate_ConnectionResetOnOneChunkIsHandledAsFailure(t *testing.T) {
 
 func TestReplicate_CancellationStopsUnnecessaryWorkOnFailure(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
-	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(80054, 4_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25288,11 +25313,11 @@ func TestReplicate_CancellationStopsUnnecessaryWorkOnFailure(t *testing.T) {
 			// to cancel work that has not started yet.
 			time.Sleep(30 * time.Millisecond)
 		}
-		srcSrv.ServeHTTP(w, r)
+		v1OnlyHandler(srcSrv).ServeHTTP(w, r)
 	})
 	srcTS := httptest.NewServer(srcHandler)
 	defer srcTS.Close()
-	dstTS := httptest.NewServer(dstSrv)
+	dstTS := httptest.NewServer(v1OnlyHandler(dstSrv))
 	defer dstTS.Close()
 
 	cfg := replicateConfig{
@@ -25344,7 +25369,6 @@ func TestReplicate_SuccessfulTransferCommitsExactlyOnce(t *testing.T) {
 
 func TestReplicate_FailureLeavesUploadedChunksReusable_RerunTransfersOnlyRemaining(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
-	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(80056, 3_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25369,11 +25393,11 @@ func TestReplicate_FailureLeavesUploadedChunksReusable_RerunTransfersOnlyRemaini
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		srcSrv.ServeHTTP(w, r)
+		v1OnlyHandler(srcSrv).ServeHTTP(w, r)
 	})
 	srcTS := httptest.NewServer(srcHandler)
 	defer srcTS.Close()
-	dstTS := httptest.NewServer(dstSrv)
+	dstTS := httptest.NewServer(v1OnlyHandler(dstSrv))
 	defer dstTS.Close()
 
 	cfg := replicateConfig{
@@ -25476,7 +25500,6 @@ func TestReplicate_WorkersGreaterThanChunkCount(t *testing.T) {
 
 func TestReplicate_ConcurrentChunkFetchesActuallyOverlap(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
-	srcSrv.noBulk, dstSrv.noBulk = true, true // these intercept the v1 per-chunk endpoints
 	body := genRandomBytes(90050, 3_000_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25494,11 +25517,11 @@ func TestReplicate_ConcurrentChunkFetchesActuallyOverlap(t *testing.T) {
 			time.Sleep(15 * time.Millisecond)
 			atomic.AddInt64(&cur, -1)
 		}
-		srcSrv.ServeHTTP(w, r)
+		v1OnlyHandler(srcSrv).ServeHTTP(w, r)
 	})
 	srcTS := httptest.NewServer(srcHandler)
 	defer srcTS.Close()
-	dstTS := httptest.NewServer(dstSrv)
+	dstTS := httptest.NewServer(v1OnlyHandler(dstSrv))
 	defer dstTS.Close()
 
 	cfg := replicateConfig{
@@ -25516,7 +25539,6 @@ func TestReplicate_ConcurrentChunkFetchesActuallyOverlap(t *testing.T) {
 
 func TestReplicate_ParallelTransferFasterThanSequentialUnderLatency(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
-	srcSrv.noBulk, dstSrv.noBulk = true, true // the delay is injected on the v1 per-chunk endpoint
 	body := genRandomBytes(90200, 1_500_000)
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", nil)
 	mustCreateReplicateBucket(t, dstSrv, "dst")
@@ -25526,11 +25548,11 @@ func TestReplicate_ParallelTransferFasterThanSequentialUnderLatency(t *testing.T
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix) {
 			time.Sleep(delay)
 		}
-		srcSrv.ServeHTTP(w, r)
+		v1OnlyHandler(srcSrv).ServeHTTP(w, r)
 	})
 	srcTS := httptest.NewServer(delayed)
 	defer srcTS.Close()
-	dstTS := httptest.NewServer(dstSrv)
+	dstTS := httptest.NewServer(v1OnlyHandler(dstSrv))
 	defer dstTS.Close()
 
 	baseCfg := replicateConfig{
@@ -25770,7 +25792,6 @@ func TestRepair_WrongPeerBytesAmongMany_Concurrent(t *testing.T) {
 	}
 
 	_, peerSrv, creds, region := newSyncTestServer(t)
-	peerSrv.noBulk = true // intercepts the v1 per-chunk endpoint
 	primePeerWithObject(t, peerSrv, "b", "k", body, "application/octet-stream", nil)
 	wrongDigest := man.Chunks[3].SHA256
 	wrongHandler := wrapChunkEndpoint(peerSrv, wrongDigest, func(w http.ResponseWriter, r *http.Request) bool {
@@ -32988,15 +33009,27 @@ func newBulkTestNode(t *testing.T, srv *Server, creds Credentials, region, bucke
 	return n
 }
 
+// bulkOnlyIf composes wrap with the v1-only boundary when bulk is false.
+func bulkOnlyIf(bulk bool, wrap func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return func(h http.Handler) http.Handler {
+		if wrap != nil {
+			h = wrap(h)
+		}
+		if !bulk {
+			h = v1OnlyHandler(h)
+		}
+		return h
+	}
+}
+
 // bulkTestPair is a source holding obj.bin and an empty destination.
 func newBulkTestPair(t *testing.T, srcBulk, dstBulk bool, body []byte, wrapDst func(http.Handler) http.Handler) (src, dst *bulkTestNode) {
 	t.Helper()
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
-	srcSrv.noBulk, dstSrv.noBulk = !srcBulk, !dstBulk
 	mustPutSourceObject(t, srcSrv, "src", "obj.bin", body, "application/octet-stream", map[string]string{"k": "v"})
 	mustCreateReplicateBucket(t, dstSrv, "dst")
-	src = newBulkTestNode(t, srcSrv, creds, region, "src", nil)
-	dst = newBulkTestNode(t, dstSrv, creds, region, "dst", wrapDst)
+	src = newBulkTestNode(t, srcSrv, creds, region, "src", bulkOnlyIf(srcBulk, nil))
+	dst = newBulkTestNode(t, dstSrv, creds, region, "dst", bulkOnlyIf(dstBulk, wrapDst))
 	src.cfg.Key, dst.cfg.Key = "obj.bin", "obj.bin"
 	return src, dst
 }
@@ -33170,8 +33203,7 @@ func TestBulkDiscovery_AdvertisedAdditivelyAndWithdrawable(t *testing.T) {
 		t.Fatalf("legacy decode: %v %+v", err, old)
 	}
 
-	fx.srv.noBulk = true
-	defer func() { fx.srv.noBulk = false }()
+	n = newBulkTestNode(t, fx.srv, fx.creds, fx.region, "b", bulkOnlyIf(false, nil))
 	d, err = discoverZeroS3Sync(n.cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -33765,8 +33797,7 @@ func TestBulkSync_UsesBulkAndMatchesV1Stats(t *testing.T) {
 	path := writeSyncTempFile(t, t.TempDir(), "f.bin", data)
 	run := func(bulk bool) (syncStats, *bulkTestNode) {
 		_, srv, creds, region := newSyncTestServer(t)
-		srv.noBulk = !bulk
-		n := newBulkTestNode(t, srv, creds, region, "b", nil)
+		n := newBulkTestNode(t, srv, creds, region, "b", bulkOnlyIf(bulk, nil))
 		createSyncTestBucket(t, n.ts, creds, region, "b")
 		n.cfg.LocalPath, n.cfg.Key = path, "f"
 		stats, err := syncFile(n.cfg)
@@ -33869,6 +33900,31 @@ func TestBulkReplicate_NewToNewUsesBulkAndCollapsesRequests(t *testing.T) {
 	}
 	if dst.cnt.n("POST "+zeros3SyncCommitPath) != 1 {
 		t.Fatalf("commit requests: %+v", dst.cnt.reqs)
+	}
+}
+
+// Ordinary product traffic through an unmodified standard reverse proxy must
+// keep using bulk transport end to end.
+func TestBulkReplicate_ThroughStandardReverseProxy(t *testing.T) {
+	body := genRandomBytes(7310, 6_000_000)
+	src, dst := newBulkTestPair(t, true, true, body, nil)
+	via := func(n *bulkTestNode) {
+		u, err := url.Parse(n.ts.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		px := httptest.NewServer(httputil.NewSingleHostReverseProxy(u))
+		t.Cleanup(px.Close)
+		n.cfg.Endpoint = px.URL
+	}
+	via(src)
+	via(dst)
+	if _, err := bulkTestReplicate(src, dst, 8); err != nil {
+		t.Fatal(err)
+	}
+	bulkTestDestHas(t, dst, body)
+	if src.cnt.n(bulkFetchKey) == 0 || dst.cnt.n(bulkUploadKey) == 0 || src.cnt.n("v1 GET chunk")+dst.cnt.n("v1 PUT chunk") != 0 {
+		t.Fatalf("bulk not used through proxy: src %+v dst %+v", src.cnt.reqs, dst.cnt.reqs)
 	}
 }
 

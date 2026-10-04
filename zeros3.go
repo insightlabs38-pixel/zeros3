@@ -4501,9 +4501,6 @@ type Server struct {
 	// this field existed. It is never used for anything SigV4-related --
 	// the raw, unmodified r.Host is what gets signed/verified either way.
 	vhostBase string
-	// noBulk withholds the v2 bulk-transport capability, making this
-	// server indistinguishable from a build that predates it.
-	noBulk bool
 }
 
 func NewServer(store *Store, creds Credentials, region string) *Server {
@@ -9274,9 +9271,7 @@ func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
 		MaxBatchBytes:     maxSyncBatchBytes,
 		MaxChunkBytes:     maxSyncChunkBytes,
 	}
-	if !srv.noBulk {
-		d.BulkProtocol, d.MaxBulkChunks, d.MaxBulkBytes = zeros3BulkProtocolVersion, maxBulkRecords, maxBulkBytes
-	}
+	d.BulkProtocol, d.MaxBulkChunks, d.MaxBulkBytes = zeros3BulkProtocolVersion, maxBulkRecords, maxBulkBytes
 	writeSyncJSON(w, http.StatusOK, d)
 }
 
@@ -10912,7 +10907,7 @@ func writeBulkParseError(w http.ResponseWriter, err error) {
 }
 
 func (srv *Server) handleBulk(w http.ResponseWriter, r *http.Request, rawPath string, check payloadCheck) {
-	if srv.noBulk || r.Method != http.MethodPost {
+	if r.Method != http.MethodPost {
 		writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown ZeroS3 sync extension operation")
 		return
 	}
