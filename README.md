@@ -28,6 +28,7 @@ CAS → immutable manifests → visibility journal.**
 - Bounded parallel chunk transfer, batched into a few bulk requests between ZeroS3 servers
 - Immutable packed storage: `zeros3 compact` folds loose chunk files into a few verified packs, DEFLATE-compressing each record that shrinks; `gc` and `zeros3 repack` reclaim dead packed records by replacing packs
 - Hot/warm/cold physical pack tiers (`compact -tier`, `zeros3 tier status|init|move`) beneath the same logical CAS; warm and cold can be separate local mounts
+- Portable snapshot bundles: `zeros3 bundle export|import|inspect` turn one snapshot into a single self-verifying `.zs3b` file and back into another store ([format](./BUNDLE_FORMAT.md))
 - Content-aware placement: `zeros3 tier policy` and `tier rebalance` give each chunk the hottest tier any live root (current, history, snapshot, multipart) asks for
 - Zero third-party dependencies, reproducible build
 
@@ -335,6 +336,21 @@ collection, restored with zero new CAS payload. `zeros3 diff` and
 `zeros3 inspect` are read-only tools for comparing objects and
 inspecting a store's structural sharing.
 
+**Portable snapshot bundles.** `zeros3 bundle export -store DIR -snapshot ID
+-out FILE.zs3b [-compression auto|off]` writes one already-existing snapshot as a
+single artifact: the descriptor, its manifests, and each unique logical chunk once
+(optionally DEFLATE-compressed), in a deterministic order, ending in a whole-file
+SHA-256. Physical layout (loose/packed/tier) never leaks in, and the file is
+written atomically. `zeros3 bundle import -store DIR -in FILE.zs3b` runs offline
+under the exclusive store lock, verifies everything while publishing chunks through
+grouped durable CAS batches, and publishes the snapshot descriptor last, so a
+corrupt or interrupted import never exposes a snapshot and a retry converges. It
+never touches the ordinary namespace; restore with `zeros3 snapshot restore` as
+usual. `zeros3 bundle inspect -in FILE [-verify]` reports a cheap header "parsed"
+view, or with `-verify` streams and fully "verified" the bundle. Bundles are
+full (not thin) and carry one snapshot, no history. See
+[BUNDLE_FORMAT.md](./BUNDLE_FORMAT.md).
+
 **History retention.** History is kept until you retire it:
 `zeros3 versions prune -store DIR -bucket B [-prefix P | -key K]
 (-keep-last N | -older-than 30d | both) [-apply] [-json]`. It is a dry run
@@ -597,6 +613,7 @@ zeros3.go        the entire implementation (stdlib only)
 zeros3_test.go   the entire test suite (stdlib testing only)
 go.mod           module zeros3, go 1.27.0, no require block
 S3_COMPAT.md     exact supported/unsupported/deviating S3 behavior
+BUNDLE_FORMAT.md portable snapshot bundle (.zs3b) format v1
 STDLIB.md        standard-library substitutions, mapped to shipped code
 deps-proof.txt   generated zero-dependency evidence
 scripts/         reproducible-build verification script

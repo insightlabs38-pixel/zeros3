@@ -66,42 +66,43 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//      107    Test helpers, fixtures, and TestMain
-//     259    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//    1275    SigV4 authentication (header and payload-mode)
-//    1664    Checksums: CRC32 and Content-MD5
-//    2167    End-to-end HTTP and crash/recovery tests
-//    2841    M2: bucket/object/listing/journal protocol compatibility
-//    3892    M3: CDC/dedup evidence, stats, verify
-//    5028    M3: CopyObject
-//    5575    M3: single-range GET
-//    5776    M5-B: multipart upload
-//    7054    Presigned URLs and virtual-hosted-style addressing
-//    8083    M5-C: version history, restore, GC, storage-efficiency proof
-//    9550    Z2-08: history retention (prune)
-//   10642    M5-D/P2: ListParts and ListMultipartUploads pagination
-//   12361    M6: delta sync (`zeros3 sync`)
-//   14103    M6C: recursive directory sync
-//   15163    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//   16492    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//   17817    M8C: namespace (prefix/bucket) replication
-//   18856    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//   19948    M8E: durable namespace snapshots and restore
-//   22026    M8F: conditional operations (Put/Get/Copy preconditions)
-//   23431    M8G: introspection (dry-run planning, diff, inspect)
-//   25383    M8H: bounded parallel chunk transfer
-//   26764    P1: environment credentials, HTTP hardening/shutdown, TLS
-//   28080    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//   29014    Streaming reads and aws-chunked SigV4
-//   29862    Packed CAS: pack format, mixed reads, compaction, crash points
-//   30839    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//   31991    Adaptive pack compression (codec 1, DEFLATE)
-//   33025    Scalable packed-chunk locator (sorted immutable levels)
-//   33511    Z2-07: bulk logical-chunk transport (v2)
-//   34939    Hot/warm/cold physical pack tiers
-//   35710    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//   36461    Z2-10: content-aware tier policy and rebalance
-//   37493    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//      108    Test helpers, fixtures, and TestMain
+//     260    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//    1276    SigV4 authentication (header and payload-mode)
+//    1665    Checksums: CRC32 and Content-MD5
+//    2168    End-to-end HTTP and crash/recovery tests
+//    2842    M2: bucket/object/listing/journal protocol compatibility
+//    3893    M3: CDC/dedup evidence, stats, verify
+//    5029    M3: CopyObject
+//    5576    M3: single-range GET
+//    5777    M5-B: multipart upload
+//    7055    Presigned URLs and virtual-hosted-style addressing
+//    8084    M5-C: version history, restore, GC, storage-efficiency proof
+//    9551    Z2-08: history retention (prune)
+//   10643    M5-D/P2: ListParts and ListMultipartUploads pagination
+//   12362    M6: delta sync (`zeros3 sync`)
+//   14104    M6C: recursive directory sync
+//   15164    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//   16493    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//   17818    M8C: namespace (prefix/bucket) replication
+//   18857    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//   19949    M8E: durable namespace snapshots and restore
+//   22027    M8F: conditional operations (Put/Get/Copy preconditions)
+//   23432    M8G: introspection (dry-run planning, diff, inspect)
+//   25384    M8H: bounded parallel chunk transfer
+//   26765    P1: environment credentials, HTTP hardening/shutdown, TLS
+//   28081    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//   29015    Streaming reads and aws-chunked SigV4
+//   29863    Packed CAS: pack format, mixed reads, compaction, crash points
+//   30840    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//   31992    Adaptive pack compression (codec 1, DEFLATE)
+//   33026    Scalable packed-chunk locator (sorted immutable levels)
+//   33512    Z2-07: bulk logical-chunk transport (v2)
+//   34940    Hot/warm/cold physical pack tiers
+//   35711    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//   36462    Z2-10: content-aware tier policy and rebalance
+//   37494    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//   38178    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -38171,4 +38172,1434 @@ func TestCASShardDirs_FailedPublishRemovesItsNewDirs(t *testing.T) {
 	if _, err := os.Stat(aa); !os.IsNotExist(err) {
 		t.Fatalf("failed publication left its new shard directory behind: %v", err)
 	}
+}
+
+// =============================================================================
+// Portable snapshot bundles (section 16b)
+// =============================================================================
+
+// testBundle builds a complete .zs3b from logical parts, with a field per
+// thing the parser must police, so one table can corrupt every layer.
+type testBundle struct {
+	magic              string
+	version, flags     uint16
+	descLen            *uint32
+	nManifests         *uint32
+	nChunks, nBytes    *uint64
+	frameOverride      []byte
+	manifests          []*tbManifest
+	emitManifests      []*tbManifest // nil: manifests, in order
+	chunks             []tbChunk
+	noFooter, badHash  bool
+	trailing           []byte
+	tamperFooterStored bool
+}
+
+type tbManifest struct {
+	uuid string
+	data []byte // hashed into the descriptor and the record
+	emit []byte // bytes actually written (nil: data)
+}
+
+type tbChunk struct {
+	sha        [32]byte
+	logical    uint32
+	stored     []byte
+	codec      byte
+	declStored *uint32
+}
+
+func tbDeflate(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w, _ := flate.NewWriter(&buf, flate.DefaultCompression)
+	w.Write(data)
+	w.Close()
+	return buf.Bytes()
+}
+
+func tbManifestOf(t *testing.T, uuid string, chunks [][]byte) *tbManifest {
+	t.Helper()
+	m := manifestV1{ManifestFormatVersion: manifestFormatVersion, CDCFormatVersion: cdcFormatVersion, HashAlgorithm: "sha256",
+		ManifestUUID: uuid, Chunks: []chunkRef{}, Metadata: []metadataKV{}, CreatedAt: time.Unix(1, 0).UTC(), VersionID: "v", ETag: "e", ContentType: "x/y"}
+	for _, c := range chunks {
+		sum := sha256.Sum256(c)
+		m.Chunks = append(m.Chunks, chunkRef{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(c))})
+		m.TotalLength += int64(len(c))
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &tbManifest{uuid: uuid, data: data}
+}
+
+func (b *testBundle) editManifest(t *testing.T, i int, edit func(*manifestV1)) {
+	t.Helper()
+	var m manifestV1
+	if err := json.Unmarshal(b.manifests[i].data, &m); err != nil {
+		t.Fatal(err)
+	}
+	edit(&m)
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.manifests[i].data = data
+}
+
+// newTestBundle: obj-0 = {A, B (deflated), C}, obj-1 = {A, D}. Four unique
+// chunks, one referenced twice.
+func newTestBundle(t *testing.T) *testBundle {
+	t.Helper()
+	a, c, d := genRandomBytes(1, 3000), genRandomBytes(3, 5000), genRandomBytes(4, 4000)
+	bb := bytes.Repeat([]byte("compressible text "), 400)
+	tb := &testBundle{magic: bundleMagic, version: bundleFormatVersion}
+	tb.manifests = []*tbManifest{
+		tbManifestOf(t, "00000000-0000-7000-8000-000000000001", [][]byte{a, bb, c}),
+		tbManifestOf(t, "00000000-0000-7000-8000-000000000002", [][]byte{a, d}),
+	}
+	for _, p := range [][]byte{a, bb, c, d} {
+		ch := tbChunk{sha: sha256.Sum256(p), logical: uint32(len(p)), stored: p, codec: bundleCodecRaw}
+		if len(p) == len(bb) {
+			ch.stored, ch.codec = tbDeflate(t, p), bundleCodecDeflate
+		}
+		tb.chunks = append(tb.chunks, ch)
+	}
+	slices.SortFunc(tb.chunks, func(x, y tbChunk) int { return bytes.Compare(x.sha[:], y.sha[:]) })
+	return tb
+}
+
+func (b *testBundle) bytes(t *testing.T) []byte {
+	t.Helper()
+	frame := b.frameOverride
+	if frame == nil {
+		desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: "00000000-0000-7000-8000-0000000000aa",
+			CreatedAt: time.Unix(5, 0).UTC(), SourceBucket: "src", SourcePrefix: "p"}
+		for i, m := range b.manifests {
+			sum := sha256.Sum256(m.data)
+			desc.Entries = append(desc.Entries, snapshotEntryV1{Key: fmt.Sprintf("obj-%d", i), ManifestUUID: m.uuid, ManifestSHA256: hex.EncodeToString(sum[:]), Size: 1})
+		}
+		var err error
+		if frame, err = encodeSnapshotDescriptor(desc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var uniqueBytes uint64
+	for _, c := range b.chunks {
+		uniqueBytes += uint64(c.logical)
+	}
+	hdr := make([]byte, bundleHeaderSize)
+	copy(hdr, b.magic)
+	binary.BigEndian.PutUint16(hdr[8:], b.version)
+	binary.BigEndian.PutUint16(hdr[10:], b.flags)
+	put32 := func(off int, def uint32, o *uint32) {
+		if o != nil {
+			def = *o
+		}
+		binary.BigEndian.PutUint32(hdr[off:], def)
+	}
+	put32(12, uint32(len(frame)), b.descLen)
+	put32(16, uint32(len(b.manifests)), b.nManifests)
+	chunks, nbytes := uint64(len(b.chunks)), uniqueBytes
+	if b.nChunks != nil {
+		chunks = *b.nChunks
+	}
+	if b.nBytes != nil {
+		nbytes = *b.nBytes
+	}
+	binary.BigEndian.PutUint64(hdr[20:], chunks)
+	binary.BigEndian.PutUint64(hdr[28:], nbytes)
+
+	var out bytes.Buffer
+	out.Write(hdr)
+	out.Write(frame)
+	ems := b.emitManifests
+	if ems == nil {
+		ems = b.manifests
+	}
+	for _, m := range ems {
+		sum := sha256.Sum256(m.data)
+		data := m.emit
+		if data == nil {
+			data = m.data
+		}
+		rec := make([]byte, bundleManifestHdr)
+		copy(rec, m.uuid)
+		copy(rec[36:], sum[:])
+		binary.BigEndian.PutUint32(rec[68:], uint32(len(m.data)))
+		out.Write(rec)
+		out.Write(data)
+	}
+	var stored, raw, defl uint64
+	for _, c := range b.chunks {
+		rec := make([]byte, bundleChunkHdr)
+		copy(rec, c.sha[:])
+		binary.BigEndian.PutUint32(rec[32:], c.logical)
+		ds := uint32(len(c.stored))
+		if c.declStored != nil {
+			ds = *c.declStored
+		}
+		binary.BigEndian.PutUint32(rec[36:], ds)
+		rec[40] = c.codec
+		out.Write(rec)
+		out.Write(c.stored)
+		stored += uint64(ds)
+		if c.codec == bundleCodecDeflate {
+			defl++
+		} else {
+			raw++
+		}
+	}
+	if !b.noFooter {
+		foot := make([]byte, 32)
+		copy(foot, bundleFooterMagic)
+		binary.BigEndian.PutUint64(foot[8:], stored)
+		binary.BigEndian.PutUint64(foot[16:], raw)
+		binary.BigEndian.PutUint64(foot[24:], defl)
+		out.Write(foot)
+		sum := sha256.Sum256(out.Bytes())
+		if b.badHash {
+			sum[0] ^= 1
+		}
+		out.Write(sum[:])
+	}
+	out.Write(b.trailing)
+	return out.Bytes()
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func TestBundle_FormatValidSyntheticBundle(t *testing.T) {
+	data := newTestBundle(t).bytes(t)
+	var chunks int
+	st, err := readBundle(bytes.NewReader(data), bundleSink{chunk: func([32]byte, []byte) error { chunks++; return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chunks != 4 || st.UniqueChunks != 4 || st.ChunkOccurrences != 5 || st.Manifests != 2 || st.Objects != 2 ||
+		st.RawRecords != 3 || st.CompressedRecords != 1 || st.Status != "verified" || st.BundleBytes != int64(len(data)) {
+		t.Fatalf("stats = %+v (chunks %d)", st, chunks)
+	}
+	if string(data[:8]) != "ZS3BNDL1" || string(data[len(data)-64:len(data)-56]) != "ZS3BEND1" {
+		t.Fatal("magic values differ from the documented ones")
+	}
+}
+
+// TestBundle_ParserMutationMatrix: every corruption layer must be rejected
+// by the verifying parser, never accepted and never panic.
+func TestBundle_ParserMutationMatrix(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(t *testing.T, b *testBundle)
+		post func([]byte) []byte
+	}{
+		{name: "bad magic", mut: func(_ *testing.T, b *testBundle) { b.magic = "ZS3BNDL2" }},
+		{name: "unsupported version", mut: func(_ *testing.T, b *testBundle) { b.version = 2 }},
+		{name: "invalid flags", mut: func(_ *testing.T, b *testBundle) { b.flags = 1 }},
+		{name: "truncated header", post: func(d []byte) []byte { return d[:20] }},
+		{name: "oversized descriptor length", mut: func(_ *testing.T, b *testBundle) { b.descLen = ptr(uint32(0xFFFFFFF0)) }},
+		{name: "bad snapshot descriptor", mut: func(_ *testing.T, b *testBundle) {
+			b.frameOverride = bytes.Repeat([]byte("x"), 64)
+		}},
+		{name: "impossible manifest count", mut: func(_ *testing.T, b *testBundle) { b.nManifests = ptr(uint32(0xFFFFFFFF)) }},
+		{name: "impossible chunk count", mut: func(_ *testing.T, b *testBundle) { b.nChunks = ptr(uint64(1) << 40) }},
+		{name: "duplicate manifest", mut: func(_ *testing.T, b *testBundle) {
+			b.emitManifests = []*tbManifest{b.manifests[0], b.manifests[0]}
+		}},
+		{name: "unknown manifest", mut: func(t *testing.T, b *testBundle) {
+			b.emitManifests = []*tbManifest{b.manifests[0], tbManifestOf(t, "00000000-0000-7000-8000-000000000003", nil)}
+		}},
+		{name: "missing manifest", mut: func(_ *testing.T, b *testBundle) { b.emitManifests = []*tbManifest{b.manifests[0]} }},
+		{name: "manifest sha mismatch", mut: func(_ *testing.T, b *testBundle) {
+			e := slices.Clone(b.manifests[0].data)
+			e[len(e)/2] ^= 1
+			b.manifests[0].emit = e
+		}},
+		{name: "manifest malformed", mut: func(_ *testing.T, b *testBundle) { b.manifests[0].data = []byte("{not json") }},
+		{name: "manifest wrong version", mut: func(t *testing.T, b *testBundle) {
+			b.editManifest(t, 0, func(m *manifestV1) { m.HashAlgorithm = "md5" })
+		}},
+		{name: "manifest uuid disagrees with record", mut: func(t *testing.T, b *testBundle) {
+			b.editManifest(t, 0, func(m *manifestV1) { m.ManifestUUID = "00000000-0000-7000-8000-0000000000ff" })
+		}},
+		{name: "contradictory chunk lengths", mut: func(t *testing.T, b *testBundle) { b.editManifestChunk0(t) }},
+		{name: "duplicate chunk", mut: func(_ *testing.T, b *testBundle) {
+			var n uint64
+			for _, c := range b.chunks {
+				n += uint64(c.logical)
+			}
+			b.chunks = []tbChunk{b.chunks[0], b.chunks[0], b.chunks[1], b.chunks[2]}
+			b.nChunks, b.nBytes = ptr(uint64(4)), ptr(n) // header agrees with the manifests; the stream repeats a record
+		}},
+		{name: "unknown chunk", mut: func(_ *testing.T, b *testBundle) {
+			p := genRandomBytes(99, int(b.chunks[1].logical))
+			b.chunks[1] = tbChunk{sha: sha256.Sum256(p), logical: uint32(len(p)), stored: p}
+		}},
+		{name: "missing chunk", mut: func(_ *testing.T, b *testBundle) { b.chunks = b.chunks[:3] }},
+		{name: "wrong logical length", mut: func(_ *testing.T, b *testBundle) {
+			b.chunks[0].logical++
+			b.chunks[0].stored = append(slices.Clone(b.chunks[0].stored), 0)
+		}},
+		{name: "unknown codec", mut: func(_ *testing.T, b *testBundle) { b.chunks[0].codec = 7 }},
+		{name: "truncated raw payload", mut: func(_ *testing.T, b *testBundle) {
+			i := slices.IndexFunc(b.chunks, func(c tbChunk) bool { return c.codec == bundleCodecRaw })
+			b.chunks[i].declStored = ptr(uint32(len(b.chunks[i].stored)))
+			b.chunks[i].stored = b.chunks[i].stored[:len(b.chunks[i].stored)-9]
+		}},
+		{name: "truncated compressed payload", mut: func(_ *testing.T, b *testBundle) {
+			i := slices.IndexFunc(b.chunks, func(c tbChunk) bool { return c.codec == bundleCodecDeflate })
+			b.chunks[i].declStored = ptr(uint32(len(b.chunks[i].stored)))
+			b.chunks[i].stored = b.chunks[i].stored[:len(b.chunks[i].stored)/2]
+		}},
+		{name: "deflate bomb", mut: func(t *testing.T, b *testBundle) {
+			i := slices.IndexFunc(b.chunks, func(c tbChunk) bool { return c.codec == bundleCodecDeflate })
+			b.chunks[i].stored = tbDeflate(t, make([]byte, 4<<20)) // declared logical is far smaller
+		}},
+		{name: "deflate trailing garbage", mut: func(t *testing.T, b *testBundle) {
+			i := slices.IndexFunc(b.chunks, func(c tbChunk) bool { return c.codec == bundleCodecDeflate })
+			b.chunks[i].stored = append(slices.Clone(b.chunks[i].stored), 1, 2, 3)
+		}},
+		{name: "chunk digest mismatch", mut: func(_ *testing.T, b *testBundle) {
+			i := slices.IndexFunc(b.chunks, func(c tbChunk) bool { return c.codec == bundleCodecRaw })
+			s := slices.Clone(b.chunks[i].stored)
+			s[10] ^= 1
+			b.chunks[i].stored = s
+		}},
+		{name: "wrong record count", mut: func(_ *testing.T, b *testBundle) { b.nChunks = ptr(uint64(len(b.chunks) + 1)) }},
+		{name: "wrong total bytes", mut: func(_ *testing.T, b *testBundle) {
+			var n uint64
+			for _, c := range b.chunks {
+				n += uint64(c.logical)
+			}
+			b.nBytes = ptr(n + 1)
+		}},
+		{name: "missing footer", mut: func(_ *testing.T, b *testBundle) { b.noFooter = true }},
+		{name: "truncated footer hash", post: func(d []byte) []byte { return d[:len(d)-10] }},
+		{name: "footer hash mismatch", mut: func(_ *testing.T, b *testBundle) { b.badHash = true }},
+		{name: "trailing garbage", mut: func(_ *testing.T, b *testBundle) { b.trailing = []byte("x") }},
+		{name: "flipped payload byte under valid framing", post: func(d []byte) []byte {
+			d = slices.Clone(d)
+			d[len(d)/2] ^= 0x40
+			return d
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newTestBundle(t)
+			if tc.mut != nil {
+				tc.mut(t, b)
+			}
+			data := b.bytes(t)
+			if tc.post != nil {
+				data = tc.post(data)
+			}
+			_, err := readBundle(bytes.NewReader(data), bundleSink{})
+			if err == nil {
+				t.Fatal("corrupt bundle was accepted")
+			}
+		})
+	}
+}
+
+// editManifestChunk0 makes obj-1 record chunk A with a different length than
+// obj-0 does, keeping each manifest internally consistent.
+func (b *testBundle) editManifestChunk0(t *testing.T) string {
+	t.Helper()
+	var m0 manifestV1
+	if err := json.Unmarshal(b.manifests[0].data, &m0); err != nil {
+		t.Fatal(err)
+	}
+	b.editManifest(t, 1, func(m *manifestV1) {
+		m.Chunks[0].SHA256 = m0.Chunks[0].SHA256
+		m.Chunks[0].Length++
+		m.TotalLength++
+	})
+	return m0.Chunks[0].SHA256
+}
+
+// ---- store-backed helpers ------------------------------------------------------
+
+func bundleFixtureBodies() map[string][]byte {
+	img := genRandomBytes(201, 300_000)
+	return map[string][]byte{
+		"site/index.html": bytes.Repeat([]byte("<div class=\"row\">hello zeros3 bundle</div>\n"), 3000),
+		"site/app.js":     bytes.Repeat([]byte("function f(x){return x*2+1}\n"), 12000),
+		"site/img.bin":    img,
+		"site/copy.bin":   img,
+		"site/shift.bin":  append(genRandomBytes(202, 5000), img...),
+		"site/empty":      {},
+		"site/small.txt":  []byte("hello"),
+	}
+}
+
+// bundleFixture returns a closed source store holding bodies in bucket "b"
+// plus one snapshot of all of it.
+func bundleFixture(t *testing.T, bodies map[string][]byte) (dir, snapID string) {
+	t.Helper()
+	dir = t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range slices.Sorted(maps.Keys(bodies)) {
+		if _, err := s.PutObject("b", k, bodies[k], "application/test", map[string]string{"k": k}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := s.captureSnapshotEntries("b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapID = newUUIDv7()
+	if err := s.publishSnapshot(snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: snapID,
+		CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: entries}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	return dir, snapID
+}
+
+func bundleExportT(t *testing.T, dir, snap string, compress bool) (string, BundleStats) {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "x.zs3b")
+	st, err := exportBundleFile(dir, snap, out, compress)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	return out, st
+}
+
+func bundleImportT(t *testing.T, dir, path string) BundleImportResult {
+	t.Helper()
+	res, err := importBundleFile(dir, path)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	return res
+}
+
+func bundleServe(t *testing.T, s *Store) (syncClientConfig, testSigner) {
+	t.Helper()
+	creds := Credentials{AccessKeyID: "AKIASYNCTESTACCESSKEY1", SecretAccessKey: "SyncTestSecretKeyForZeroS3M6Tests0123456"}
+	ts := httptest.NewServer(NewServer(s, creds, "us-east-1"))
+	t.Cleanup(ts.Close)
+	return syncClientConfig{Endpoint: ts.URL, Creds: creds, Region: "us-east-1", HTTPClient: ts.Client()},
+		testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: "us-east-1"}
+}
+
+// bundleRestoreCheck restores snapID from dir into bucket "restored" through
+// the existing snapshot-restore machinery and proves every object exact.
+func bundleRestoreCheck(t *testing.T, dir, snapID string, bodies map[string][]byte) {
+	t.Helper()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("restored"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := bundleServe(t, s)
+	snapCfg, dstCfg := cfg, cfg
+	dstCfg.Bucket = "restored"
+	res, err := restoreNamespace(restoreNamespaceConfig{Snapshot: snapCfg, SnapshotID: snapID, Dest: dstCfg})
+	if err != nil || !res.OK() {
+		t.Fatalf("restore: %v %+v", err, res)
+	}
+	for k, want := range bodies {
+		if _, got, err := s.GetObject("restored", k); err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("%s: restored body differs: %v", k, err)
+		}
+		if n := int64(len(want)); n > 1000 {
+			r := byteRange{n / 3, n/3 + 777}
+			if _, _, got, err := s.GetObjectRange("restored", k, r); err != nil || !bytes.Equal(got, want[r.start:r.end+1]) {
+				t.Fatalf("%s: range differs: %v", k, err)
+			}
+		}
+	}
+	if vr, err := s.Verify(true); err != nil || !vr.OK() {
+		t.Fatalf("deep verify: %v %+v", err, vr.Issues)
+	}
+}
+
+func bundleNamespaceFingerprint(s *Store) string {
+	var sb strings.Builder
+	for _, b := range s.ListBuckets() {
+		fmt.Fprintf(&sb, "bucket %s %s\n", b.name, b.createdAt.Format(time.RFC3339Nano))
+	}
+	for _, o := range s.snapshotNamespace() {
+		fmt.Fprintf(&sb, "%s/%s %s %x %d %s %s %d\n", o.bucket, o.key, o.entry.manifestUUID, o.entry.manifestSHA256, o.entry.size, o.entry.etag, o.entry.contentType, o.entry.seq)
+	}
+	return sb.String()
+}
+
+func bundleStoreBytes(t *testing.T, dir string) map[string][]byte {
+	t.Helper()
+	out := map[string][]byte{}
+	for _, f := range []string{"FORMAT.json", filepath.Join("journal", "visibility.log")} {
+		b, err := os.ReadFile(filepath.Join(dir, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[f] = b
+	}
+	return out
+}
+
+func bundleSnapshotFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	ents, err := os.ReadDir(filepath.Join(dir, "snapshots"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range ents {
+		out = append(out, e.Name())
+	}
+	return out
+}
+
+func bundleVerifyOK(t *testing.T, dir string) {
+	t.Helper()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if vr, err := s.Verify(true); err != nil || !vr.OK() {
+		t.Fatalf("verify: %v %+v", err, vr.Issues)
+	}
+}
+
+// ---- export / import semantics -------------------------------------------------
+
+func TestBundle_RoundTripPreservesIdentityAndDeduplicates(t *testing.T) {
+	bodies := bundleFixtureBodies()
+	src, snap := bundleFixture(t, bodies)
+	path, ex := bundleExportT(t, src, snap, true)
+
+	if ex.Objects != len(bodies) || ex.Manifests != len(bodies) || ex.CompressedRecords == 0 || ex.RawRecords == 0 {
+		t.Fatalf("export stats %+v", ex)
+	}
+	if ex.UniqueChunks >= ex.ChunkOccurrences || ex.UniqueLogicalBytes >= ex.SnapshotLogicalBytes || ex.DedupedBytes <= 0 {
+		t.Fatalf("shared chunks were not deduplicated: %+v", ex)
+	}
+	if ex.StoredPayloadBytes >= ex.UniqueLogicalBytes {
+		t.Fatalf("compressible content did not compress: %+v", ex)
+	}
+	// Independent count of distinct chunk digests across the manifests.
+	distinct := map[string]bool{}
+	s, _ := OpenStore(src)
+	d, _ := s.readSnapshot(snap)
+	for _, e := range d.Entries {
+		m, _, err := s.readManifest(e.ManifestUUID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range m.Chunks {
+			distinct[c.SHA256] = true
+		}
+	}
+	s.Close()
+	if int64(len(distinct)) != ex.UniqueChunks {
+		t.Fatalf("bundle holds %d chunk records, snapshot has %d distinct chunks", ex.UniqueChunks, len(distinct))
+	}
+
+	vst, err := verifyBundleFile(path)
+	if err != nil || vst.Status != "verified" || vst.UniqueChunks != ex.UniqueChunks || vst.BundleBytes != ex.BundleBytes || vst.StoredPayloadBytes != ex.StoredPayloadBytes {
+		t.Fatalf("verify: %v %+v", err, vst)
+	}
+	pst, err := inspectBundleHeader(path)
+	if err != nil || pst.Status != "parsed" || pst.UniqueChunks != ex.UniqueChunks || pst.Manifests != ex.Manifests || pst.SnapshotID != snap || pst.StoredPayloadBytes != ex.StoredPayloadBytes {
+		t.Fatalf("inspect: %v %+v", err, pst)
+	}
+
+	dst := t.TempDir()
+	res := bundleImportT(t, dst, path)
+	if res.SnapshotID != snap || res.ManifestsImported != len(bodies) || res.ChunksImported != ex.UniqueChunks || res.ChunksReused != 0 || res.SnapshotReused {
+		t.Fatalf("import result %+v", res)
+	}
+	// Identity: descriptor frame and manifest files are byte-identical.
+	a, _ := os.ReadFile(filepath.Join(src, "snapshots", snap+".snap"))
+	b, err := os.ReadFile(filepath.Join(dst, "snapshots", snap+".snap"))
+	if err != nil || !bytes.Equal(a, b) {
+		t.Fatalf("snapshot descriptor changed in transit: %v", err)
+	}
+	for _, e := range d.Entries {
+		ma, _ := os.ReadFile(filepath.Join(src, "manifests", e.ManifestUUID+".json"))
+		mb, err := os.ReadFile(filepath.Join(dst, "manifests", e.ManifestUUID+".json"))
+		if err != nil || !bytes.Equal(ma, mb) {
+			t.Fatalf("manifest %s changed in transit: %v", e.ManifestUUID, err)
+		}
+	}
+	bundleRestoreCheck(t, dst, snap, bodies)
+}
+
+func TestBundle_ExportIsDeterministicAndAtomic(t *testing.T) {
+	src, snap := bundleFixture(t, bundleFixtureBodies())
+	before := bundleTreeHash(t, src)
+	p1, s1 := bundleExportT(t, src, snap, false)
+	p2, s2 := bundleExportT(t, src, snap, false)
+	a, _ := os.ReadFile(p1)
+	b, _ := os.ReadFile(p2)
+	if !bytes.Equal(a, b) || s1 != s2 {
+		t.Fatal("compression=off exports of one snapshot differ")
+	}
+	if s1.CompressedRecords != 0 || s1.StoredPayloadBytes != s1.UniqueLogicalBytes {
+		t.Fatalf("compression=off wrote compressed records: %+v", s1)
+	}
+	c1, _ := bundleExportT(t, src, snap, true)
+	c2, _ := bundleExportT(t, src, snap, true)
+	ca, _ := os.ReadFile(c1)
+	cb, _ := os.ReadFile(c2)
+	if !bytes.Equal(ca, cb) || len(ca) >= len(a) {
+		t.Fatalf("auto export not reproducible or not smaller (%d vs %d)", len(ca), len(a))
+	}
+	if bundleTreeHash(t, src) != before {
+		t.Fatal("export modified the store")
+	}
+
+	// A failed export leaves neither a final nor a temporary file.
+	outDir := t.TempDir()
+	out := filepath.Join(outDir, "x.zs3b")
+	if _, err := exportBundleFile(src, newUUIDv7(), out, true); err == nil {
+		t.Fatal("exporting an unknown snapshot succeeded")
+	}
+	if ents, _ := os.ReadDir(outDir); len(ents) != 0 {
+		t.Fatalf("failed export left files behind: %v", ents)
+	}
+	// Corrupt a referenced chunk mid-export: no partial bundle appears either.
+	for h := range casLooseChunks(t, src) {
+		os.WriteFile(filepath.Join(src, "chunks", h[:2], h[2:4], h), []byte("rot"), 0o644)
+		break
+	}
+	if _, err := exportBundleFile(src, snap, out, true); err == nil {
+		t.Fatal("export of a store with a corrupt chunk succeeded")
+	}
+	if ents, _ := os.ReadDir(outDir); len(ents) != 0 {
+		t.Fatalf("failed export left files behind: %v", ents)
+	}
+}
+
+func TestBundle_ExportIndependentOfPhysicalRepresentation(t *testing.T) {
+	src, snap := bundleFixture(t, bundleFixtureBodies())
+	ref, _ := bundleExportT(t, src, snap, false)
+	want, _ := os.ReadFile(ref)
+
+	variants := map[string]func(t *testing.T, dir string){
+		"packed raw hot": func(t *testing.T, dir string) {
+			opt := packTestOpt
+			opt.Compress = false
+			if _, err := compactStore(dir, opt); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"packed compressed warm": func(t *testing.T, dir string) {
+			opt := packTestOpt
+			opt.Compress, opt.Tier = true, tierWarm
+			if _, err := compactStore(dir, opt); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"packed compressed cold": func(t *testing.T, dir string) {
+			opt := packTestOpt
+			opt.Compress, opt.Tier = true, tierCold
+			if _, err := compactStore(dir, opt); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"mixed packed hot+cold plus loose": func(t *testing.T, dir string) {
+			opt := packTestOpt
+			opt.Compress = true
+			if _, err := compactStore(dir, opt); err != nil {
+				t.Fatal(err)
+			}
+			if ids := tierPackIDs(dir, tierHot); len(ids) > 1 {
+				tierTestMove(t, dir, tierHot, tierCold, true, ids[0])
+			}
+			s, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			d, _ := s.readSnapshot(snap)
+			m, _, _ := s.readManifest(d.Entries[0].ManifestUUID)
+			for _, c := range m.Chunks[:min(2, len(m.Chunks))] { // loose duplicates of packed chunks
+				sum, _ := decodeHexSHA256(c.SHA256)
+				data, err := s.casRead(sum)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := s.casRepairPublish(sum, data); err != nil {
+					t.Fatal(err)
+				}
+			}
+		},
+	}
+	for name, prep := range variants {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			copyTreeT(t, src, dir)
+			prep(t, dir)
+			loose, tiers := len(casLooseChunks(t, dir)), tierCounts(dir)
+			switch name {
+			case "packed raw hot":
+				if loose != 0 || tiers[tierHot] == 0 {
+					t.Fatalf("variant not realised: loose %d tiers %v", loose, tiers)
+				}
+			case "packed compressed warm":
+				if loose != 0 || tiers[tierWarm] == 0 || tiers[tierHot] != 0 {
+					t.Fatalf("variant not realised: loose %d tiers %v", loose, tiers)
+				}
+			case "packed compressed cold":
+				if loose != 0 || tiers[tierCold] == 0 {
+					t.Fatalf("variant not realised: loose %d tiers %v", loose, tiers)
+				}
+			case "mixed packed hot+cold plus loose":
+				if loose == 0 || tiers[tierCold] == 0 || tiers[tierHot] == 0 {
+					t.Fatalf("variant not realised: loose %d tiers %v", loose, tiers)
+				}
+			}
+			got, _ := bundleExportT(t, dir, snap, false)
+			gb, _ := os.ReadFile(got)
+			if !bytes.Equal(gb, want) {
+				t.Fatal("bundle bytes depend on the source's physical representation")
+			}
+			for _, leak := range []string{"warm", "cold", "pack", "tier", "StoreID", "store_id"} {
+				if bytes.Contains(gb, []byte(leak)) && leak != "pack" {
+					t.Fatalf("bundle leaks physical metadata %q", leak)
+				}
+			}
+		})
+	}
+}
+
+// bundleTreeHash fingerprints every file of a store (names and bytes),
+// ignoring the lock file and scratch space.
+func bundleTreeHash(t *testing.T, root string) string {
+	t.Helper()
+	h := sha256.New()
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		if rel == "LOCK" || strings.HasPrefix(rel, "tmp"+string(filepath.Separator)) {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(h, "%s %d\n", rel, len(b))
+		h.Write(b)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func copyTreeT(t *testing.T, src, dst string) {
+	t.Helper()
+	err := filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		if d.IsDir() {
+			return os.MkdirAll(filepath.Join(dst, rel), 0o755)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dst, rel), data, 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBundle_ImportNeverTouchesNamespaceOrFormat(t *testing.T) {
+	bodies := bundleFixtureBodies()
+	src, snap := bundleFixture(t, bodies)
+	path, _ := bundleExportT(t, src, snap, true)
+
+	dst := t.TempDir()
+	d, err := OpenStore(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.CreateBucket("other")
+	d.PutObject("other", "keep.txt", []byte("live data"), "text/plain", nil) // source bucket "b" does not exist here
+	nsBefore := bundleNamespaceFingerprint(d)
+	d.Close()
+	filesBefore := bundleStoreBytes(t, dst)
+
+	res := bundleImportT(t, dst, path)
+	if res.SnapshotID != snap {
+		t.Fatalf("%+v", res)
+	}
+	d, _ = OpenStore(dst)
+	defer d.Close()
+	if bundleNamespaceFingerprint(d) != nsBefore {
+		t.Fatal("import changed the ordinary namespace")
+	}
+	if err := d.HeadBucket("b"); err == nil {
+		t.Fatal("import created the source bucket")
+	}
+	for f, b := range bundleStoreBytes(t, dst) {
+		if !bytes.Equal(b, filesBefore[f]) {
+			t.Fatalf("import modified %s (format bump or journal record)", f)
+		}
+	}
+	if _, err := d.readSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	rr, err := d.computeReachability(false)
+	if err != nil || !rr.OK() || rr.SnapshotRootCount != len(bodies) {
+		t.Fatalf("imported snapshot is not a valid GC root: %v %+v", err, rr.Issues)
+	}
+	d.Close()
+	// Survives restart and GC.
+	if res, err := gcCollect(dst, true); err != nil || !res.LiveSetOK {
+		t.Fatalf("gc: %v %+v", err, res)
+	}
+	bundleRestoreCheck(t, dst, snap, bodies)
+}
+
+func TestBundle_ImportIsIdempotentAndCollisionsFail(t *testing.T) {
+	bodies := bundleFixtureBodies()
+	src, snap := bundleFixture(t, bodies)
+	path, ex := bundleExportT(t, src, snap, true)
+	dst := t.TempDir()
+	bundleImportT(t, dst, path)
+	treeBefore := bundleTreeHash(t, dst)
+
+	res := bundleImportT(t, dst, path)
+	if !res.SnapshotReused || res.ChunksImported != 0 || res.ChunksReused != ex.UniqueChunks || res.ManifestsImported != 0 || res.ManifestsReused != len(bodies) {
+		t.Fatalf("second import was not a pure reuse: %+v", res)
+	}
+	if got := bundleSnapshotFiles(t, dst); len(got) != 1 {
+		t.Fatalf("repeated import duplicated roots: %v", got)
+	}
+	if bundleTreeHash(t, dst) != treeBefore {
+		t.Fatal("repeated import rewrote store content")
+	}
+
+	t.Run("same snapshot id different descriptor", func(t *testing.T) {
+		d2 := t.TempDir()
+		s, _ := OpenStore(d2)
+		other := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: snap, CreatedAt: time.Unix(9, 0).UTC(), SourceBucket: "elsewhere"}
+		if err := s.publishSnapshot(other); err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+		before, _ := os.ReadFile(filepath.Join(d2, "snapshots", snap+".snap"))
+		if _, err := importBundleFile(d2, path); err == nil || !strings.Contains(err.Error(), "different descriptor") {
+			t.Fatalf("err = %v", err)
+		}
+		after, _ := os.ReadFile(filepath.Join(d2, "snapshots", snap+".snap"))
+		if !bytes.Equal(before, after) {
+			t.Fatal("existing snapshot descriptor was overwritten")
+		}
+	})
+	t.Run("manifest uuid collision", func(t *testing.T) {
+		d2 := t.TempDir()
+		s, _ := OpenStore(d2)
+		s.Close()
+		sd, _ := OpenStore(src)
+		d, _ := sd.readSnapshot(snap)
+		sd.Close()
+		victim := filepath.Join(d2, "manifests", d.Entries[3].ManifestUUID+".json")
+		os.WriteFile(victim, []byte(`{"someone":"else"}`), 0o644)
+		if _, err := importBundleFile(d2, path); err == nil || !strings.Contains(err.Error(), "identity collision") {
+			t.Fatalf("err = %v", err)
+		}
+		if b, _ := os.ReadFile(victim); string(b) != `{"someone":"else"}` {
+			t.Fatal("conflicting manifest was overwritten")
+		}
+		if len(bundleSnapshotFiles(t, d2)) != 0 {
+			t.Fatal("snapshot published despite manifest collision")
+		}
+	})
+}
+
+func TestBundle_ImportRequiresExclusiveStore(t *testing.T) {
+	src, snap := bundleFixture(t, bundleFixtureBodies())
+	path, _ := bundleExportT(t, src, snap, true)
+	dst := t.TempDir()
+	lock, err := acquireStoreLock(dst, false) // a live server holds the shared lock
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.release()
+	if _, err := importBundleFile(dst, path); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("import into a store in use: %v", err)
+	}
+	// Export (read-only) coexists with the server's shared lock.
+	if _, err := exportBundleFile(src, snap, filepath.Join(t.TempDir(), "y.zs3b"), true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBundle_PartialOverlapImportsOnlyMissingContent(t *testing.T) {
+	bodies := map[string][]byte{}
+	for i := 0; i < 5; i++ {
+		bodies[fmt.Sprintf("o%d", i)] = genRandomBytes(int64(300+i), 250_000)
+	}
+	src, snap := bundleFixture(t, bodies)
+	path, ex := bundleExportT(t, src, snap, true)
+
+	dst := t.TempDir()
+	put := func(keys ...string) {
+		s, err := OpenStore(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		s.CreateBucket("pre")
+		for _, k := range keys {
+			if _, err := s.PutObject("pre", k, bodies[k], "x/y", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	chunkCount := func(key string) int64 {
+		s, _ := OpenStore(src)
+		defer s.Close()
+		d, _ := s.readSnapshot(snap)
+		for _, e := range d.Entries {
+			if e.Key == "b/"+key || e.Key == key {
+				m, _, _ := s.readManifest(e.ManifestUUID)
+				return int64(len(m.Chunks))
+			}
+		}
+		t.Fatalf("no entry %s", key)
+		return 0
+	}
+	put("o0")
+	tierCompactTo(t, dst, tierWarm) // o0: packed warm
+	put("o1")
+	tierCompactTo(t, dst, tierCold) // o1: packed cold
+	put("o2")
+	tierCompactTo(t, dst, tierHot) // o2: packed hot
+	put("o3")                      // o3: loose; o4 missing
+	looseBefore := casLooseChunks(t, dst)
+	wantImported := chunkCount("o4")
+
+	res := bundleImportT(t, dst, path)
+	if res.ChunksImported != wantImported || res.ChunksReused != ex.UniqueChunks-wantImported {
+		t.Fatalf("imported %d reused %d, want imported %d of %d: %+v", res.ChunksImported, res.ChunksReused, wantImported, ex.UniqueChunks, res)
+	}
+	if got := len(casLooseChunks(t, dst)); int64(got) != int64(len(looseBefore))+wantImported {
+		t.Fatalf("loose chunks %d, want %d + %d (a packed chunk got a loose duplicate)", got, len(looseBefore), wantImported)
+	}
+	bundleRestoreCheck(t, dst, snap, bodies)
+}
+
+func TestBundle_CorruptExistingChunkIsRepairedFromVerifiedPayload(t *testing.T) {
+	bodies := map[string][]byte{"only": genRandomBytes(310, 200_000)}
+	src, snap := bundleFixture(t, bodies)
+	path, _ := bundleExportT(t, src, snap, true)
+
+	dst := t.TempDir()
+	s, _ := OpenStore(dst)
+	s.CreateBucket("pre")
+	s.PutObject("pre", "only", bodies["only"], "x/y", nil)
+	// Rot one existing loose copy in place: present, wrong content.
+	var rotted string
+	for h := range casLooseChunks(t, dst) {
+		rotted = h
+		break
+	}
+	s.Close()
+	os.WriteFile(filepath.Join(dst, "chunks", rotted[:2], rotted[2:4], rotted), []byte("rot"), 0o644)
+
+	res := bundleImportT(t, dst, path)
+	if res.ChunksRepaired != 1 {
+		t.Fatalf("expected one repaired chunk: %+v", res)
+	}
+	bundleRestoreCheck(t, dst, snap, bodies)
+}
+
+func TestBundle_CorruptBundleNeverPublishesSnapshot(t *testing.T) {
+	bodies := bundleFixtureBodies()
+	src, snap := bundleFixture(t, bodies)
+	path, _ := bundleExportT(t, src, snap, true)
+	good, _ := os.ReadFile(path)
+	cases := map[string]func([]byte) []byte{
+		"footer hash":    func(d []byte) []byte { d = slices.Clone(d); d[len(d)-1] ^= 1; return d },
+		"trailing bytes": func(d []byte) []byte { return append(slices.Clone(d), 0) },
+		"truncated":      func(d []byte) []byte { return d[:len(d)*3/4] },
+		"payload flip":   func(d []byte) []byte { d = slices.Clone(d); d[len(d)-200] ^= 1; return d },
+	}
+	for name, mut := range cases {
+		t.Run(name, func(t *testing.T) {
+			dst := t.TempDir()
+			bad := filepath.Join(t.TempDir(), "bad.zs3b")
+			os.WriteFile(bad, mut(good), 0o644)
+			if _, err := importBundleFile(dst, bad); err == nil {
+				t.Fatal("corrupt bundle imported")
+			}
+			if len(bundleSnapshotFiles(t, dst)) != 0 {
+				t.Fatal("snapshot root published from a corrupt bundle")
+			}
+			bundleVerifyOK(t, dst)
+			bundleImportT(t, dst, path) // retry with the good bundle converges
+			bundleRestoreCheck(t, dst, snap, bodies)
+		})
+	}
+}
+
+func TestBundle_InspectDistinguishesParsedFromVerified(t *testing.T) {
+	src, snap := bundleFixture(t, bundleFixtureBodies())
+	path, _ := bundleExportT(t, src, snap, false)
+	data, _ := os.ReadFile(path)
+	data[len(data)/2] ^= 1 // payload damage the header cannot reveal
+	bad := filepath.Join(t.TempDir(), "bad.zs3b")
+	os.WriteFile(bad, data, 0o644)
+	if st, err := inspectBundleHeader(bad); err != nil || st.Status != "parsed" {
+		t.Fatalf("header inspect: %v %+v", err, st)
+	}
+	if _, err := verifyBundleFile(bad); err == nil {
+		t.Fatal("verify accepted a damaged bundle")
+	}
+}
+
+func TestBundle_CLI(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	src, snap := bundleFixture(t, bundleFixtureBodies())
+	out := filepath.Join(t.TempDir(), "s.zs3b")
+	so, se, code := runZeros3CLI(t, bin, "bundle", "export", "-store", src, "-snapshot", snap, "-out", out, "-json")
+	if code != 0 {
+		t.Fatalf("export: %s %s", so, se)
+	}
+	var ex BundleStats
+	if err := json.Unmarshal([]byte(so), &ex); err != nil || ex.Status != "exported" || ex.SnapshotID != snap {
+		t.Fatalf("export json: %v %s", err, so)
+	}
+	so, se, code = runZeros3CLI(t, bin, "bundle", "inspect", "-in", out)
+	if code != 0 || !strings.Contains(so, "bundle parsed") || !strings.Contains(so, "run with -verify") {
+		t.Fatalf("inspect: %d %s %s", code, so, se)
+	}
+	so, se, code = runZeros3CLI(t, bin, "bundle", "inspect", "-in", out, "-verify", "-json")
+	var vr BundleStats
+	if code != 0 || json.Unmarshal([]byte(so), &vr) != nil || vr.Status != "verified" || vr.UniqueChunks != ex.UniqueChunks {
+		t.Fatalf("inspect -verify: %d %s %s", code, so, se)
+	}
+	dst := t.TempDir()
+	so, se, code = runZeros3CLI(t, bin, "bundle", "import", "-store", dst, "-in", out, "-json")
+	var im BundleImportResult
+	if code != 0 || json.Unmarshal([]byte(so), &im) != nil || im.SnapshotID != snap || im.ChunksImported != ex.UniqueChunks {
+		t.Fatalf("import: %d %s %s", code, so, se)
+	}
+	if _, se, code = runZeros3CLI(t, bin, "bundle", "export", "-store", src, "-snapshot", "nope", "-out", out); code == 0 {
+		t.Fatalf("bad snapshot id accepted: %s", se)
+	}
+	if _, _, code = runZeros3CLI(t, bin, "bundle"); code != 2 {
+		t.Fatalf("bare bundle exit code = %d", code)
+	}
+}
+
+// ---- crash / interruption -------------------------------------------------------
+
+func TestBundle_ImportCrashMatrix(t *testing.T) {
+	bodies := map[string][]byte{}
+	for i := 0; i < 6; i++ {
+		bodies[fmt.Sprintf("k%d", i)] = genRandomBytes(int64(400+i), 180_000)
+	}
+	src, snap := bundleFixture(t, bodies)
+	path, _ := bundleExportT(t, src, snap, true)
+
+	oldRecords := casBatchMaxRecords
+	casBatchMaxRecords = 3 // several grouped flushes per import
+	t.Cleanup(func() { casBatchMaxRecords = oldRecords })
+
+	points := []struct {
+		point   string
+		nth     int
+		visible bool // the descriptor file is already complete on disk
+	}{
+		{hookBundleChunk, 2, false},
+		{hookCASAfterFlush, 1, false},
+		{hookBundleChunksDone, 1, false},
+		{hookBundleManifestPublished, 2, false},
+		{hookBundleManifestsDone, 1, false},
+		{hookBundleBeforeSnapshot, 1, false},
+		{hookBundleSnapshotWritten, 1, true},
+		{hookBundleSnapshotPublished, 1, true},
+	}
+	for _, pt := range points {
+		t.Run(pt.point, func(t *testing.T) {
+			dst := t.TempDir()
+			f, _ := os.Open(path)
+			defer f.Close()
+			s, err := OpenStore(dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n := 0
+			withTestHook(t, func(p string) {
+				if p == pt.point {
+					if n++; n == pt.nth {
+						panic(simulatedCrash{point: p})
+					}
+				}
+			})
+			runExpectingSimulatedCrash(t, func() { s.importBundle(f) })
+			testHook = nil
+			s.Close()
+
+			if got := len(bundleSnapshotFiles(t, dst)) == 1; got != pt.visible {
+				t.Fatalf("snapshot visible = %v after crash at %s, want %v", got, pt.point, pt.visible)
+			}
+			bundleVerifyOK(t, dst)
+			res := bundleImportT(t, dst, path) // converges
+			if !pt.visible && res.SnapshotReused {
+				t.Fatal("snapshot unexpectedly pre-existing")
+			}
+			bundleRestoreCheck(t, dst, snap, bodies)
+			if got := bundleSnapshotFiles(t, dst); len(got) != 1 {
+				t.Fatalf("roots after retry: %v", got)
+			}
+		})
+	}
+}
+
+func TestBundle_ImportUsesGroupedCASPublication(t *testing.T) {
+	bodies := map[string][]byte{"big": genRandomBytes(500, 12<<20)}
+	src, snap := bundleFixture(t, bodies)
+	path, ex := bundleExportT(t, src, snap, true)
+	c := countCASHooks(t, nil)
+	res := bundleImportT(t, t.TempDir(), path)
+	flushes := c.count(hookCASAfterFlush)
+	if res.ChunksImported != ex.UniqueChunks || ex.UniqueChunks < 100 {
+		t.Fatalf("fixture too small: %+v", res)
+	}
+	if flushes == 0 || int64(flushes)*8 > ex.UniqueChunks {
+		t.Fatalf("%d chunks were published in %d flushes: not grouped", ex.UniqueChunks, flushes)
+	}
+}
+
+// =============================================================================
+// Bundle lifecycle scenarios (stage bundle-life)
+// =============================================================================
+
+// bundleObserve records everything a client can see about one object over
+// HTTP: full GET, HEAD, ranged GET and conditional requests.
+func bundleObserve(t *testing.T, base string, signer testSigner, bucket, key string, size int) string {
+	t.Helper()
+	c := &http.Client{}
+	path := "/" + bucket + "/" + key
+	var out strings.Builder
+	do := func(label, method string, hdr map[string]string) {
+		resp := doSignedRequest(t, c, base, signer, method, path, nil, hdr)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		sum := sha256.Sum256(body)
+		fmt.Fprintf(&out, "%s %s %d etag=%s ct=%s cl=%s cr=%s body=%x\n", key, label, resp.StatusCode,
+			resp.Header.Get("ETag"), resp.Header.Get("Content-Type"), resp.Header.Get("Content-Length"), resp.Header.Get("Content-Range"), sum[:6])
+	}
+	probe := doSignedRequest(t, c, base, signer, http.MethodHead, path, nil, nil)
+	etag := probe.Header.Get("ETag")
+	probe.Body.Close()
+	do("GET", http.MethodGet, nil)
+	do("HEAD", http.MethodHead, nil)
+	if size > 100 {
+		do("RANGE", http.MethodGet, map[string]string{"Range": fmt.Sprintf("bytes=%d-%d", size/4, size/4+99)})
+		do("SUFFIX", http.MethodGet, map[string]string{"Range": "bytes=-50"})
+	}
+	do("IF-NONE-MATCH", http.MethodGet, map[string]string{"If-None-Match": etag})
+	do("IF-MATCH-WRONG", http.MethodGet, map[string]string{"If-Match": `"nope"`})
+	return out.String()
+}
+
+func bundleSiteBodies(version int) map[string][]byte {
+	b := map[string][]byte{
+		"index.html":    bytes.Repeat([]byte("<section><h1>ZeroS3 site</h1><p>lorem ipsum dolor sit amet</p></section>\n"), 5000),
+		"css/main.css":  bytes.Repeat([]byte(".a{color:#123;margin:0 auto}.b{padding:4px}\n"), 6000),
+		"js/app.js":     bytes.Repeat([]byte("export const f=(x)=>x.map(y=>y*2).filter(Boolean);\n"), 9000),
+		"img/hero.bin":  genRandomBytes(601, 700_000),
+		"img/logo.bin":  genRandomBytes(602, 120_000),
+		"data/big.json": []byte(strings.Repeat(`{"id":12345,"name":"record","tags":["a","b","c"]},`, 12000)),
+	}
+	b["img/hero@2x.bin"] = b["img/hero.bin"] // sites ship the same asset under several names
+	b["css/main.min.css"] = b["css/main.css"]
+	if version >= 2 {
+		b["index.html"] = append([]byte("<!-- v2 -->\n"), b["index.html"]...)
+		b["js/app.js"] = append(b["js/app.js"], []byte("export const v2=true;\n")...)
+		b["img/new.bin"] = genRandomBytes(603, 90_000)
+	}
+	return b
+}
+
+func TestBundleLife_BrowserSiteRoundTrip(t *testing.T) {
+	v1, v2 := bundleSiteBodies(1), bundleSiteBodies(2)
+	src := t.TempDir()
+	s, err := OpenStore(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.CreateBucket("site")
+	for k, b := range v1 {
+		if _, err := s.PutObject("site", k, b, "application/octet-stream", map[string]string{"v": "1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, _ := s.captureSnapshotEntries("site", "")
+	snap := newUUIDv7()
+	if err := s.publishSnapshot(snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: snap, CreatedAt: time.Now().UTC(), SourceBucket: "site", Entries: entries}); err != nil {
+		t.Fatal(err)
+	}
+	for k, b := range v2 { // site v2: localized edits (and one new file)
+		if _, err := s.PutObject("site", k, b, "application/octet-stream", map[string]string{"v": "2"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+
+	// Nontrivial physical state: compacted+compressed, tiered, rebalanced.
+	opt := packTestOpt
+	opt.Compress = true
+	if _, err := compactStore(src, opt); err != nil {
+		t.Fatal(err)
+	}
+	if ids := tierPackIDs(src, tierHot); len(ids) > 2 {
+		tierTestMove(t, src, tierHot, tierCold, true, ids[:len(ids)/2]...)
+	}
+	if _, err := tierRebalance(src, rebalanceOptions{Apply: true, TargetBytes: 256 << 10, Compress: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	path, ex := bundleExportT(t, src, snap, true)
+	t.Logf("site v1 bundle: snapshot %s, unique %s, bundle file %s, deduplicated %s, compression %.2fx",
+		mib(ex.SnapshotLogicalBytes), mib(ex.UniqueLogicalBytes), mib(ex.BundleBytes), mib(ex.DedupedBytes), ex.CompressionRatio)
+	if ex.DedupedBytes <= 0 || ex.BundleBytes >= ex.UniqueLogicalBytes {
+		t.Fatalf("bundle shows no dedup/compression benefit: %+v", ex)
+	}
+
+	dst := t.TempDir()
+	bundleImportT(t, dst, path)
+	ds, err := OpenStore(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ds.Close()
+	ds.CreateBucket("restored")
+	cfg, signer := bundleServe(t, ds)
+	dstCfg := cfg
+	dstCfg.Bucket = "restored"
+	if res, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg, SnapshotID: snap, Dest: dstCfg}); err != nil || !res.OK() {
+		t.Fatalf("restore: %v %+v", err, res)
+	}
+
+	// The reference: the v1 site served by an independent store built directly.
+	ref := t.TempDir()
+	rs, _ := OpenStore(ref)
+	defer rs.Close()
+	rs.CreateBucket("restored")
+	for k, b := range v1 {
+		if _, err := rs.PutObject("restored", k, b, "application/octet-stream", map[string]string{"v": "1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rcfg, rsigner := bundleServe(t, rs)
+	for k, b := range v1 {
+		want := bundleObserve(t, rcfg.Endpoint, rsigner, "restored", k, len(b))
+		got := bundleObserve(t, cfg.Endpoint, signer, "restored", k, len(b))
+		if want != got {
+			t.Fatalf("%s: observations differ\nwant:\n%s\ngot:\n%s", k, want, got)
+		}
+		if _, body, err := ds.GetObject("restored", k); err != nil || !bytes.Equal(body, b) {
+			t.Fatalf("%s: body differs: %v", k, err)
+		}
+	}
+	if _, _, err := ds.GetObject("restored", "img/new.bin"); err == nil {
+		t.Fatal("v2-only object leaked into the v1 snapshot")
+	}
+}
+
+func TestBundleLife_CheckpointSharesChunksOnce(t *testing.T) {
+	shared := genRandomBytes(700, 6<<20)
+	ckpt1 := append(append([]byte("ckpt-1-header\n"), shared...), genRandomBytes(701, 1<<20)...)
+	ckpt2 := append(append([]byte("ckpt-2-hdr\n"), shared...), genRandomBytes(702, 1<<20)...)
+	bodies := map[string][]byte{"models/run1/ckpt.bin": ckpt1, "models/run2/ckpt.bin": ckpt2}
+	src, snap := bundleFixture(t, bodies)
+	path, ex := bundleExportT(t, src, snap, true)
+	t.Logf("checkpoints: snapshot %s, unique %s (dedup %.2fx), bundle %s",
+		mib(ex.SnapshotLogicalBytes), mib(ex.UniqueLogicalBytes), ex.DedupRatio, mib(ex.BundleBytes))
+	if ex.DedupRatio < 1.5 || ex.BundleBytes > ex.UniqueLogicalBytes+ex.UniqueLogicalBytes/50 {
+		t.Fatalf("shared checkpoint chunks were not carried once: %+v", ex)
+	}
+	dst := t.TempDir()
+	bundleImportT(t, dst, path)
+	bundleRestoreCheck(t, dst, snap, bodies)
+}
+
+func TestBundleLife_BundleSurvivesSourceDeletionAndGC(t *testing.T) {
+	bodies := bundleFixtureBodies()
+	src, snap := bundleFixture(t, bodies)
+	path, _ := bundleExportT(t, src, snap, true)
+
+	// Make the source forget everything: snapshot, current objects, history.
+	s, err := OpenStore(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.deleteSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	for k := range bodies {
+		if err := s.DeleteObject("b", k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	zero := 0
+	if _, err := pruneHistoryStore(src, historyPruneOptions{Bucket: "b", Prefix: "", KeepLast: &zero}, true); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := gcCollect(src, true); err != nil || !res.LiveSetOK {
+		t.Fatalf("gc: %v %+v", err, res)
+	}
+	if _, err := repackStore(src, repackOptions{TargetBytes: 128 << 10, MaxLivePercent: 100, Compress: true}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(casLooseChunks(t, src)); n != 0 {
+		t.Fatalf("source still holds %d chunks; GC did not remove source-only content", n)
+	}
+
+	dst := t.TempDir()
+	bundleImportT(t, dst, path)
+	bundleRestoreCheck(t, dst, snap, bodies)
+}
+
+// TestBundleLife_RealProcessKillDuringImport kills a real `bundle import`
+// after chunks are published but before the snapshot root exists.
+func TestBundleLife_RealProcessKillDuringImport(t *testing.T) {
+	bodies := map[string][]byte{"big": genRandomBytes(800, 192<<20)}
+	src, snap := bundleFixture(t, bodies)
+	path, _ := bundleExportT(t, src, snap, false)
+	bin := buildZeros3Binary(t)
+	dst := t.TempDir()
+	cmd := exec.Command(bin, "bundle", "import", "-store", dst, "-in", path)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dst, "chunks")); err == nil && len(casLooseChunksNoVerify(dst)) > 4 {
+			break
+		}
+		select {
+		case <-done:
+			t.Skip("import finished before it could be killed")
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("import never published a chunk")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cmd.Process.Kill()
+	<-done
+	if len(bundleSnapshotFiles(t, dst)) != 0 {
+		t.Skip("import finished before it could be killed")
+	}
+	s, err := OpenStore(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list, err := s.listSnapshots(); err != nil || len(list) != 0 {
+		t.Fatalf("interrupted import exposed a snapshot: %v %v", list, err)
+	}
+	s.Close()
+	if res, err := gcCollect(dst, false); err != nil || !res.LiveSetOK {
+		t.Fatalf("store after kill: %v %+v", err, res)
+	}
+	res := bundleImportT(t, dst, path)
+	if res.ChunksReused == 0 {
+		t.Fatalf("retry did not reuse the chunks the killed import published: %+v", res)
+	}
+	bundleRestoreCheck(t, dst, snap, bodies)
+}
+
+func casLooseChunksNoVerify(dir string) []string {
+	var out []string
+	filepath.WalkDir(filepath.Join(dir, "chunks"), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			out = append(out, p)
+		}
+		return nil
+	})
+	return out
+}
+
+// =============================================================================
+// Bundle planner scale (stage bundle-scale)
+// =============================================================================
+
+func TestBundleScale_PlannerOneMillionChunks(t *testing.T) {
+	const n = 1_000_000
+	// Synthetic manifests: 100 manifests of 10k chunk refs, 10% of digests
+	// repeated across manifests so planning must unique them.
+	var mans []manifestV1
+	r := rand.New(rand.NewSource(1))
+	digests := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		var d [32]byte
+		binary.BigEndian.PutUint64(d[:], uint64(i))
+		r.Read(d[8:])
+		digests = append(digests, hex.EncodeToString(d[:]))
+	}
+	for m := 0; m < 100; m++ {
+		man := manifestV1{Chunks: make([]chunkRef, 0, n/100)}
+		for i := m * (n / 100); i < (m+1)*(n/100); i++ {
+			man.Chunks = append(man.Chunks, chunkRef{SHA256: digests[i], Length: int64(16384 + i%65536)})
+		}
+		mans = append(mans, man)
+	}
+	digests = nil
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	start := time.Now()
+	var plan []bundleChunkDesc
+	var err error
+	for _, m := range mans {
+		if plan, err = appendManifestChunks(plan, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, m := range mans[:10] { // repeats across manifests
+		if plan, err = appendManifestChunks(plan, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if plan, err = planBundleChunks(plan); err != nil {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	heap := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	if len(plan) != n || !slices.IsSortedFunc(plan, func(a, b bundleChunkDesc) int { return bytes.Compare(a.sha[:], b.sha[:]) }) {
+		t.Fatalf("plan has %d descriptors, sorted=%v", len(plan), true)
+	}
+	perDesc := float64(heap) / float64(len(plan))
+	t.Logf("planned %d unique descriptors in %v; plan heap %.1f MiB = %.1f bytes/descriptor (36-byte descriptors incl. append slack)",
+		len(plan), took, float64(heap)/(1<<20), perDesc)
+	if perDesc > 80 {
+		t.Fatalf("%.1f bytes per descriptor: planner is not compact", perDesc)
+	}
+	runtime.KeepAlive(mans)
 }
