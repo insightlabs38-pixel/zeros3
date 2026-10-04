@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"compress/flate"
 	"compress/gzip"
 	"context"
@@ -27,6 +28,7 @@ import (
 	"hash/crc32"
 	"io"
 	"io/fs"
+	"maps"
 	"math/big"
 	"math/rand"
 	"net"
@@ -63,38 +65,39 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//       97    Test helpers, fixtures, and TestMain
-//     252    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//    1268    SigV4 authentication (header and payload-mode)
-//    1657    Checksums: CRC32 and Content-MD5
-//    2160    End-to-end HTTP and crash/recovery tests
-//    2834    M2: bucket/object/listing/journal protocol compatibility
-//    3885    M3: CDC/dedup evidence, stats, verify
-//    5021    M3: CopyObject
-//    5568    M3: single-range GET
-//    5769    M5-B: multipart upload
-//    7047    Presigned URLs and virtual-hosted-style addressing
-//    8076    M5-C: version history, restore, GC, storage-efficiency proof
-//    9543    Z2-08: history retention (prune)
-//   10634    M5-D/P2: ListParts and ListMultipartUploads pagination
-//   12353    M6: delta sync (`zeros3 sync`)
-//   14095    M6C: recursive directory sync
-//   15155    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//   16484    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//   17809    M8C: namespace (prefix/bucket) replication
-//   18848    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//   19940    M8E: durable namespace snapshots and restore
-//   22018    M8F: conditional operations (Put/Get/Copy preconditions)
-//   23423    M8G: introspection (dry-run planning, diff, inspect)
-//   25375    M8H: bounded parallel chunk transfer
-//   26756    P1: environment credentials, HTTP hardening/shutdown, TLS
-//   28072    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//   29002    Streaming reads and aws-chunked SigV4
-//   29850    Packed CAS: pack format, mixed reads, compaction, crash points
-//   30827    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//   31979    Adaptive pack compression (codec 1, DEFLATE)
-//   33013    Scalable packed-chunk locator (sorted immutable levels)
-//   33499    Z2-07: bulk logical-chunk transport (v2)
+//       98    Test helpers, fixtures, and TestMain
+//     255    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//    1271    SigV4 authentication (header and payload-mode)
+//    1660    Checksums: CRC32 and Content-MD5
+//    2163    End-to-end HTTP and crash/recovery tests
+//    2837    M2: bucket/object/listing/journal protocol compatibility
+//    3888    M3: CDC/dedup evidence, stats, verify
+//    5024    M3: CopyObject
+//    5571    M3: single-range GET
+//    5772    M5-B: multipart upload
+//    7050    Presigned URLs and virtual-hosted-style addressing
+//    8079    M5-C: version history, restore, GC, storage-efficiency proof
+//    9546    Z2-08: history retention (prune)
+//   10638    M5-D/P2: ListParts and ListMultipartUploads pagination
+//   12357    M6: delta sync (`zeros3 sync`)
+//   14099    M6C: recursive directory sync
+//   15159    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//   16488    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//   17813    M8C: namespace (prefix/bucket) replication
+//   18852    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//   19944    M8E: durable namespace snapshots and restore
+//   22022    M8F: conditional operations (Put/Get/Copy preconditions)
+//   23427    M8G: introspection (dry-run planning, diff, inspect)
+//   25379    M8H: bounded parallel chunk transfer
+//   26760    P1: environment credentials, HTTP hardening/shutdown, TLS
+//   28076    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//   29006    Streaming reads and aws-chunked SigV4
+//   29854    Packed CAS: pack format, mixed reads, compaction, crash points
+//   30831    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//   31983    Adaptive pack compression (codec 1, DEFLATE)
+//   33017    Scalable packed-chunk locator (sorted immutable levels)
+//   33503    Z2-07: bulk logical-chunk transport (v2)
+//   34896    Hot/warm/cold physical pack tiers
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -10225,7 +10228,8 @@ func TestPrune_StoreFormatVersions(t *testing.T) {
 	}
 
 	// Every format this build supports opens; one beyond it fails closed.
-	for v := storeFormatVersion; v <= storeFormatVersionHistoryPrune+1; v++ {
+	// (A bare format 5 has no tier roots, so it fails closed too.)
+	for v := storeFormatVersion; v <= storeFormatVersionTiers+1; v++ {
 		d := t.TempDir()
 		st, err := OpenStore(d)
 		if err != nil {
@@ -30228,10 +30232,10 @@ func TestPack_StoreFormatVersionGate(t *testing.T) {
 		t.Fatalf("packed store format = %+v", f)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
-	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 5`), 1), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 6`), 1), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 5") {
+	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 6") {
 		t.Fatalf("unknown future version must be rejected, got %v", err)
 	}
 }
@@ -31263,11 +31267,11 @@ func publishCopyPack(t *testing.T, s *Store, shas [][32]byte) packInfo {
 	for i, sum := range shas {
 		cands[i] = compactCandidate{sum: sum}
 	}
-	staged, entries, err := s.stagePack(cands, s.casRead, func(compactCandidate, error) error { return errors.New("unreadable") }, nil)
+	staged, entries, err := s.stagePack(tierHot, cands, s.casRead, func(compactCandidate, error) error { return errors.New("unreadable") }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := s.publishPack(staged, entries)
+	info, err := s.publishPack(tierHot, staged, entries)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31876,7 +31880,7 @@ func TestRepack_ConflictingPackedCopiesBlockDestructiveWork(t *testing.T) {
 	rr, _ := s.computeReachability(false)
 	u := partialPackOf(t, s, rr)
 	sum := livePackedDigests(t, s, rr.ReferencedChunks, u)[0]
-	staged, entries, err := s.stagePack([]compactCandidate{{sum: sum}},
+	staged, entries, err := s.stagePack(tierHot, []compactCandidate{{sum: sum}},
 		func([32]byte) ([]byte, error) { return []byte("bytes of a different length"), nil },
 		func(compactCandidate, error) error { return nil }, nil)
 	if err != nil {
@@ -32302,7 +32306,7 @@ func TestPackCompression_StoreFormatBoundary(t *testing.T) {
 			}
 		})
 	}
-	if supportedStoreFormat(0) || supportedStoreFormat(storeFormatVersionHistoryPrune+1) || !supportedStoreFormat(storeFormatVersion) || !supportedStoreFormat(storeFormatVersionPacked) || !supportedStoreFormat(storeFormatVersionHistoryPrune) {
+	if supportedStoreFormat(0) || supportedStoreFormat(storeFormatVersionTiers+1) || !supportedStoreFormat(storeFormatVersionTiers) || !supportedStoreFormat(storeFormatVersion) || !supportedStoreFormat(storeFormatVersionPacked) || !supportedStoreFormat(storeFormatVersionHistoryPrune) {
 		t.Fatal("supported store format range is wrong")
 	}
 }
@@ -33077,7 +33081,7 @@ func locTestBuild(mode string, packs [][]packEntry) (*packState, *refLocator, er
 		for i := 0; i < split; i++ {
 			st.packs = append(st.packs, packInfo{id: locTestPackID(i)})
 			for j := range packs[i] {
-				recs = append(recs, mkLocRec(&packs[i][j], uint32(i)))
+				recs = append(recs, mkLocRec(&packs[i][j], uint32(i), tierHot))
 			}
 		}
 		st.index(recs)
@@ -33430,7 +33434,7 @@ func TestLocatorScale(t *testing.T) {
 		add := func(id int, es []packEntry) {
 			ps.packs = append(ps.packs, packInfo{id: locTestPackID(id), records: len(es)})
 			for i := range es {
-				recs = append(recs, mkLocRec(&es[i], uint32(id)))
+				recs = append(recs, mkLocRec(&es[i], uint32(id), tierHot))
 			}
 		}
 		packs := (n + per - 1) / per
@@ -34886,4 +34890,775 @@ func TestBulkRepair_PartialSuccessSurvivesBatchFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+// =============================================================================
+// Hot/warm/cold physical pack tiers (section 13e)
+// =============================================================================
+
+func tierTestDataset() map[string][]byte {
+	d := packTestDataset()
+	d["warm"] = genRandomBytes(104, 700_000)
+	d["cold"] = genRandomBytes(103, 700_000)
+	return d
+}
+
+func tierCompactTo(t *testing.T, dir string, to tier) CompactResult {
+	t.Helper()
+	opt := packTestOpt
+	opt.Tier = to
+	res, err := compactStore(dir, opt)
+	if err != nil {
+		t.Fatalf("compact -tier %s: %v", to, err)
+	}
+	return res
+}
+
+func tierPackIDs(dir string, t tier) []string {
+	var ids []string
+	ents, _ := os.ReadDir(tierPackDir(dir, t))
+	for _, e := range ents {
+		if isPackFileName(e.Name()) {
+			ids = append(ids, strings.TrimSuffix(e.Name(), packFileSuffix))
+		}
+	}
+	return ids
+}
+
+func tierSubset(data map[string][]byte, keys ...string) map[string][]byte {
+	sub := map[string][]byte{}
+	for _, k := range keys {
+		sub[k] = data[k]
+	}
+	return sub
+}
+
+// tierPacksHash fingerprints every tier's published pack files.
+func tierPacksHash(t *testing.T, dir string) string {
+	t.Helper()
+	h := sha256.New()
+	for tt := range numTiers {
+		if _, err := os.Stat(tierPackDir(dir, tt)); err == nil {
+			h.Write([]byte(hashTree(t, tierPackDir(dir, tt))))
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func tierCounts(dir string) [numTiers]int {
+	var n [numTiers]int
+	for t := range numTiers {
+		n[t] = len(tierPackIDs(dir, t))
+	}
+	return n
+}
+
+// checkTierReads proves every object reads byte-exact in full and by range,
+// then deep-verifies the store.
+func checkTierReads(t *testing.T, dir string, data map[string][]byte) *Store {
+	t.Helper()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	for k, body := range data {
+		if _, got, err := s.GetObject("b", k); err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("%s: full GET: %v", k, err)
+		}
+		n := int64(len(body))
+		for _, r := range []byteRange{{0, min(99, n-1)}, {max(n/2-150_000, 0), n/2 + 150_000}, {n - 777, n - 1}} {
+			if _, _, got, err := s.GetObjectRange("b", k, r); err != nil || !bytes.Equal(got, body[r.start:r.end+1]) {
+				t.Fatalf("%s: range %v: %v", k, r, err)
+			}
+		}
+	}
+	if vr, err := s.Verify(true); err != nil || !vr.OK() {
+		t.Fatalf("deep verify: %v %+v", err, vr.Issues)
+	}
+	return s
+}
+
+func tierTestMove(t *testing.T, dir string, from, to tier, apply bool, ids ...string) TierMoveResult {
+	t.Helper()
+	res, err := tierMove(dir, tierMoveOptions{From: from, To: to, IDs: ids, All: len(ids) == 0, Apply: apply})
+	if err != nil {
+		t.Fatalf("tier move %s->%s: %v", from, to, err)
+	}
+	return res
+}
+
+func TestTier_LifecycleCompactMoveReads(t *testing.T) {
+	data := tierTestDataset()
+	dir := t.TempDir()
+	put := func(keys ...string) { putPackTestObjects(t, dir, data, keys...) }
+	put("random", "repeat")
+	tierCompactTo(t, dir, tierHot)
+	if v := formatVersionOf(t, dir); v >= storeFormatVersionTiers {
+		t.Fatalf("hot-only store must not reach format %d, got %d", storeFormatVersionTiers, v)
+	}
+	put("warm")
+	tierCompactTo(t, dir, tierWarm)
+	put("cold")
+	tierCompactTo(t, dir, tierCold)
+	put("dup-a", "dup-b", "shifted")
+	mixed := bytes.Join([][]byte{data["random"][:300_000], data["warm"][:300_000], data["cold"][:300_000]}, nil)
+	data["mixed"] = mixed
+	put("mixed")
+	if v := formatVersionOf(t, dir); v != storeFormatVersionTiers {
+		t.Fatalf("format = %d, want %d", v, storeFormatVersionTiers)
+	}
+	if c := tierCounts(dir); c[tierHot] == 0 || c[tierWarm] == 0 || c[tierCold] == 0 {
+		t.Fatalf("packs per tier = %v", c)
+	}
+	for _, tt := range []tier{tierWarm, tierCold} {
+		if m, err := os.ReadFile(filepath.Join(tierRoot(dir, tt), tierMarkerName)); err != nil || !strings.Contains(string(m), `"tier": "`+tt.String()+`"`) {
+			t.Fatalf("%s marker: %q %v", tt, m, err)
+		}
+	}
+	// Dedup is global: the cold object's bytes under a new key add no chunk.
+	s := checkTierReads(t, dir, data)
+	before := packTestStats(t, s).LooseChunkCount
+	if _, err := s.PutObject("b", "cold-copy", data["cold"], "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	if after := packTestStats(t, s).LooseChunkCount; after != before {
+		t.Fatalf("ingesting cold-resident bytes wrote %d new loose chunks", after-before)
+	}
+	data["cold-copy"] = data["cold"]
+	s.Close()
+
+	// Per-tier status sums to the aggregate totals.
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr, _ := s.computeReachability(false)
+	ts, err := s.tierStatus(rr)
+	st := packTestStats(t, s)
+	if err != nil || len(ts.Tiers) != 3 {
+		t.Fatalf("tier status: %+v %v", ts, err)
+	}
+	var sum PackSummary
+	for _, x := range ts.Tiers {
+		if x.Marker == "absent" || x.PackCount == 0 {
+			t.Fatalf("tier %s: %+v", x.Tier, x)
+		}
+		sum.PackCount += x.PackCount
+		sum.PackedChunkCount += x.PackedChunkCount
+		sum.PackFileBytes += x.PackFileBytes
+		sum.PackedLogicalBytes += x.PackedLogicalBytes
+	}
+	if sum.PackCount != st.PackCount || sum.PackedChunkCount != st.PackedChunkCount || sum.PackFileBytes != st.PackFileBytes || sum.PackedLogicalBytes != st.PackedLogicalBytes || ts.LooseChunks != st.LooseChunkCount {
+		t.Fatalf("tier sums %+v != aggregate %+v", sum, st.PackSummary)
+	}
+	s.Close()
+
+	// Dry-run is the default and changes nothing.
+	snap := tierPacksHash(t, dir)
+	if res := tierTestMove(t, dir, tierHot, tierWarm, false); !res.DryRun || len(res.Packs) == 0 || tierPacksHash(t, dir) != snap {
+		t.Fatalf("dry-run: %+v", res)
+	}
+
+	// hot -> warm, restart, warm -> cold, restart; then one pack back to hot.
+	hot := tierPackIDs(dir, tierHot)
+	if res := tierTestMove(t, dir, tierHot, tierWarm, true); res.PacksMoved != len(hot) {
+		t.Fatalf("move hot->warm: %+v", res)
+	}
+	if c := tierCounts(dir); c[tierHot] != 0 {
+		t.Fatalf("hot packs remain: %v", c)
+	}
+	checkTierReads(t, dir, data).Close()
+	tierTestMove(t, dir, tierWarm, tierCold, true)
+	if c := tierCounts(dir); c[tierHot] != 0 || c[tierWarm] != 0 || c[tierCold] == 0 {
+		t.Fatalf("all packs should be cold: %v", c)
+	}
+	checkTierReads(t, dir, data).Close()
+	back := tierPackIDs(dir, tierCold)[0]
+	if res := tierTestMove(t, dir, tierCold, tierHot, true, back); res.PacksMoved != 1 {
+		t.Fatalf("cold->hot: %+v", res)
+	}
+	// Idempotent: the same move again finds nothing left to do.
+	if res := tierTestMove(t, dir, tierCold, tierHot, true, back); res.PacksMoved != 0 || res.Packs[0].Action != "already-moved" {
+		t.Fatalf("rerun: %+v", res)
+	}
+	if c := tierCounts(dir); c[tierHot] != 1 {
+		t.Fatalf("hot packs: %v", c)
+	}
+	checkTierReads(t, dir, data).Close()
+	tierTestMove(t, dir, tierCold, tierHot, true)
+	if c := tierCounts(dir); c[tierWarm]+c[tierCold] != 0 {
+		t.Fatalf("everything should be hot again: %v", c)
+	}
+	if v := formatVersionOf(t, dir); v != storeFormatVersionTiers {
+		t.Fatalf("format must never downgrade, got %d", v)
+	}
+	checkTierReads(t, dir, data).Close()
+}
+
+func TestTier_MoveExistingTarget(t *testing.T) {
+	data := tierSubset(packTestDataset(), "random", "repeat")
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, data, "random", "repeat")
+	tierCompactTo(t, dir, tierHot)
+	id := tierPackIDs(dir, tierHot)[0]
+	tierTestMove(t, dir, tierHot, tierCold, true, id)
+	// Put the identical pack back in hot: now both tiers hold it.
+	if b, err := os.ReadFile(filepath.Join(tierPackDir(dir, tierCold), id+packFileSuffix)); err != nil {
+		t.Fatal(err)
+	} else if err := os.WriteFile(filepath.Join(tierPackDir(dir, tierHot), id+packFileSuffix), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := OpenStore(dir)
+	if len(s.packSnap().packs) != len(tierPackIDs(dir, tierHot))+len(tierPackIDs(dir, tierCold)) {
+		t.Fatal("same pack id in two tiers must be two physical packs")
+	}
+	s.Close()
+	// Valid existing target: adopted, source removed.
+	res := tierTestMove(t, dir, tierHot, tierCold, true, id)
+	if res.Packs[0].Action != "adopt-target" || res.PacksMoved != 1 {
+		t.Fatalf("adopt: %+v", res)
+	}
+	if slices.Contains(tierPackIDs(dir, tierHot), id) {
+		t.Fatal("source not removed")
+	}
+	checkTierReads(t, dir, data).Close()
+
+	// Corrupt existing target: fail, source intact, nothing overwritten.
+	tierTestMove(t, dir, tierCold, tierHot, true, id)
+	src := filepath.Join(tierPackDir(dir, tierHot), id+packFileSuffix)
+	good, _ := os.ReadFile(src)
+	bad := append([]byte(nil), good...)
+	bad[len(bad)/2] ^= 0xFF
+	dst := filepath.Join(tierPackDir(dir, tierCold), id+packFileSuffix)
+	if err := os.WriteFile(dst, bad, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tierMove(dir, tierMoveOptions{From: tierHot, To: tierCold, IDs: []string{id}, Apply: true}); err == nil {
+		t.Fatal("moving over an invalid published target must fail")
+	}
+	if now, _ := os.ReadFile(src); !bytes.Equal(now, good) {
+		t.Fatal("source damaged")
+	}
+	if now, _ := os.ReadFile(dst); !bytes.Equal(now, bad) {
+		t.Fatal("suspicious target was overwritten")
+	}
+	os.Remove(dst)
+	checkTierReads(t, dir, data).Close()
+}
+
+func TestTier_MoveCrashPoints(t *testing.T) {
+	data := tierSubset(packTestDataset(), "random", "repeat")
+	cases := []struct {
+		point     string
+		nth       int
+		published bool // target pack file exists after the crash
+		srcGone   bool
+	}{
+		{hookMoveStart, 1, false, false},
+		{hookMoveCopy, 1, false, false},
+		{hookMoveBeforeSync, 1, false, false},
+		{hookMoveAfterSync, 1, false, false},
+		{hookMoveValidated, 1, false, false},
+		{hookMoveAfterFormat, 1, false, false},
+		{hookMoveBeforeRename, 1, false, false},
+		{hookMoveAfterRename, 1, true, false},
+		{hookMoveAfterDirSync, 1, true, false},
+		{hookMoveBeforeDelete, 1, true, false},
+		{hookMoveAfterDelete, 1, true, true},
+		{hookMoveDone, 1, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.point, func(t *testing.T) {
+			dir := t.TempDir()
+			putPackTestObjects(t, dir, data, "random", "repeat")
+			tierCompactTo(t, dir, tierHot)
+			id := tierPackIDs(dir, tierHot)[0]
+			calls := 0
+			withTestHook(t, func(point string) {
+				if point == c.point {
+					if calls++; calls == c.nth {
+						panic(simulatedCrash{point: point})
+					}
+				}
+			})
+			runExpectingSimulatedCrash(t, func() {
+				_, _ = tierMove(dir, tierMoveOptions{From: tierHot, To: tierCold, IDs: []string{id}, Apply: true})
+			})
+			testHook = nil
+			inCold := len(tierPackIDs(dir, tierCold)) == 1
+			inHot := slices.Contains(tierPackIDs(dir, tierHot), id)
+			if inCold != c.published || inHot == c.srcGone {
+				t.Fatalf("published=%v (want %v) srcPresent=%v (want %v)", inCold, c.published, inHot, !c.srcGone)
+			}
+			if inCold && formatVersionOf(t, dir) != storeFormatVersionTiers {
+				t.Fatal("a cold pack exists but FORMAT is below 5")
+			}
+			checkTierReads(t, dir, data).Close()
+			tierTestMove(t, dir, tierHot, tierCold, true, id)
+			if slices.Contains(tierPackIDs(dir, tierHot), id) || !slices.Contains(tierPackIDs(dir, tierCold), id) {
+				t.Fatal("rerun did not converge")
+			}
+			checkTierReads(t, dir, data).Close()
+			if stale, _ := filepath.Glob(filepath.Join(tierRoot(dir, tierCold), "tmp", "pack-*.tmp")); len(stale) != 0 {
+				t.Fatalf("stale staging: %v", stale)
+			}
+		})
+	}
+}
+
+// TestTier_CompactIntoTierCrashPoints and the format-ordering invariant:
+// a non-hot pack is never published while FORMAT is below 5.
+func TestTier_CompactIntoColdCrashPoints(t *testing.T) {
+	keys := []string{"random", "repeat", "dup-a", "shifted"}
+	data := tierSubset(packTestDataset(), keys...)
+	cases := []struct {
+		point string
+		nth   int
+	}{
+		{hookPackRecordWritten, 3}, {hookPackBeforeSync, 1}, {hookPackAfterSync, 1}, {hookPackBeforePublish, 1},
+		{hookPackAfterRename, 1}, {hookPackPublished, 1}, {hookBeforeLooseDelete, 4}, {hookCompactDone, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.point, func(t *testing.T) {
+			dir := t.TempDir()
+			putPackTestObjects(t, dir, data, keys...)
+			calls := 0
+			withTestHook(t, func(point string) {
+				if point == hookPackBeforePublish || point == hookPackAfterRename {
+					if formatVersionOf(t, dir) != storeFormatVersionTiers {
+						t.Errorf("%s: cold publication reached with FORMAT below 5", point)
+					}
+				}
+				if point == c.point {
+					if calls++; calls == c.nth {
+						panic(simulatedCrash{point: point})
+					}
+				}
+			})
+			runExpectingSimulatedCrash(t, func() {
+				_, _ = compactStore(dir, compactOptions{Tier: tierCold, TargetBytes: packTestOpt.TargetBytes, MinBytes: packTestOpt.MinBytes})
+			})
+			testHook = nil
+			if len(tierPackIDs(dir, tierCold)) > 0 && formatVersionOf(t, dir) != storeFormatVersionTiers {
+				t.Fatal("cold pack with FORMAT below 5")
+			}
+			checkTierReads(t, dir, data).Close()
+			tierCompactTo(t, dir, tierCold)
+			if c := tierCounts(dir); c[tierHot] != 0 || c[tierCold] == 0 {
+				t.Fatalf("rerun should converge into cold: %v", c)
+			}
+			s := checkTierReads(t, dir, data)
+			defer s.Close()
+			if n := packTestStats(t, s).LooseChunkCount; n != 0 {
+				t.Fatalf("loose chunks remain: %d", n)
+			}
+		})
+	}
+}
+
+func TestTier_RootSafety(t *testing.T) {
+	data := tierSubset(packTestDataset(), "random", "repeat")
+	build := func() string {
+		dir := t.TempDir()
+		putPackTestObjects(t, dir, data, "random", "repeat")
+		tierCompactTo(t, dir, tierWarm)
+		return dir
+	}
+	marker := func(dir string, tt tier) string { return filepath.Join(tierRoot(dir, tt), tierMarkerName) }
+	if s, err := OpenStore(build()); err != nil {
+		t.Fatalf("correct markers must open: %v", err)
+	} else {
+		s.Close()
+	}
+	cases := []struct {
+		name   string
+		break_ func(dir string)
+		want   string
+	}{
+		{"wrong store id", func(d string) {
+			os.WriteFile(marker(d, tierWarm), []byte(`{"marker_format_version":1,"store_id":"other","tier":"warm"}`), 0o644)
+		}, "belongs to store"},
+		{"wrong tier", func(d string) {
+			b, _ := os.ReadFile(marker(d, tierWarm))
+			os.WriteFile(marker(d, tierWarm), bytes.Replace(b, []byte(`"warm"`), []byte(`"cold"`), 1), 0o644)
+		}, "is marked"},
+		{"malformed", func(d string) { os.WriteFile(marker(d, tierWarm), []byte("{not json"), 0o644) }, "malformed"},
+		{"missing marker", func(d string) { os.Remove(marker(d, tierWarm)) }, "missing or unmounted"},
+		{"cold root removed", func(d string) { os.RemoveAll(tierRoot(d, tierCold)) }, "missing or unmounted"},
+		{"warm root replaced by empty dir", func(d string) {
+			os.RemoveAll(tierRoot(d, tierWarm))
+			os.MkdirAll(tierRoot(d, tierWarm), 0o755)
+		}, "missing or unmounted"},
+		{"warm packs dir gone", func(d string) { os.RemoveAll(tierPackDir(d, tierWarm)) }, "no packs directory"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := build()
+			c.break_(dir)
+			if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("open = %v, want %q", err, c.want)
+			}
+			if c.name == "missing marker" || strings.HasPrefix(c.name, "warm root") {
+				if _, err := os.Stat(marker(dir, tierWarm)); err == nil {
+					t.Fatal("marker was silently recreated")
+				}
+			}
+			// Moves and compaction fail closed too, never recreating the root.
+			if _, err := compactStore(dir, compactOptions{Tier: tierCold, TargetBytes: 1 << 20, MinBytes: 1}); err == nil {
+				t.Fatal("compact must fail closed")
+			}
+		})
+	}
+	// A marker damaged after open is reported by verify.
+	dir := build()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	os.WriteFile(marker(dir, tierCold), []byte("junk"), 0o644)
+	if vr, _ := s.Verify(false); vr.OK() {
+		t.Fatal("verify missed a malformed tier marker")
+	}
+	// Hot-only stores (formats 1-4) never look at tier roots.
+	hot := t.TempDir()
+	putPackTestObjects(t, hot, data, "random")
+	tierCompactTo(t, hot, tierHot)
+	os.MkdirAll(filepath.Join(tierRoot(hot, tierCold), "packs"), 0o755)
+	if s, err := OpenStore(hot); err != nil {
+		t.Fatalf("hot-only store with stray tier dir: %v", err)
+	} else {
+		s.Close()
+	}
+}
+
+// TestTier_FallbackAcrossTiers: duplicate physical copies are served hottest
+// first; a damaged hot copy falls back to the colder one and verify still
+// reports the damage.
+func TestTier_FallbackAcrossTiers(t *testing.T) {
+	data := tierSubset(packTestDataset(), "random", "repeat")
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, data, "random", "repeat")
+	tierCompactTo(t, dir, tierWarm)
+	id := tierPackIDs(dir, tierWarm)[0]
+	warmPath := filepath.Join(tierPackDir(dir, tierWarm), id+packFileSuffix)
+	hotPath := filepath.Join(tierPackDir(dir, tierHot), id+packFileSuffix)
+	os.MkdirAll(filepath.Dir(hotPath), 0o755)
+	good, _ := os.ReadFile(warmPath)
+	if err := os.WriteFile(hotPath, good, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := OpenStore(dir)
+	_, entries, _ := loadPackFile(warmPath)
+	locs := s.packLocs(entries[0].sha)
+	if len(locs) != 2 || locs[0].tier != tierHot || locs[1].tier != tierWarm {
+		t.Fatalf("preference order: %+v", locs)
+	}
+	s.Close()
+	// Damage the hot copy's first record header (the index no longer matches).
+	bad := append([]byte(nil), good...)
+	bad[packHeaderSize+5] ^= 0xFF
+	if err := os.WriteFile(hotPath, bad, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for k, body := range data {
+		if _, got, err := s.GetObject("b", k); k == "random" || k == "repeat" {
+			if err != nil || !bytes.Equal(got, body) {
+				t.Fatalf("%s must be served from the warm copy: %v", k, err)
+			}
+		}
+	}
+	if vr, _ := s.Verify(true); vr.OK() {
+		t.Fatal("deep verify must still report the damaged hot copy")
+	}
+}
+
+func tierSynthPack(id string, t tier, shas ...[32]byte) (packInfo, []packEntry) {
+	var es []packEntry
+	for i, sha := range shas {
+		es = append(es, packEntry{sha: sha, off: uint64(100 + i*10), stored: 5, logical: 5})
+	}
+	return packInfo{id: id, tier: t, records: len(es)}, es
+}
+
+func TestTier_LocatorPreferenceDifferential(t *testing.T) {
+	rng := rand.New(rand.NewSource(7))
+	sums := make([][32]byte, 40)
+	for i := range sums {
+		sums[i] = sha256.Sum256([]byte{byte(i)})
+	}
+	st := &packState{}
+	copies := map[[32]byte][]tier{}
+	for n := 0; n < 120; n++ {
+		tt := tier(rng.Intn(int(numTiers)))
+		var shas [][32]byte
+		for _, i := range rng.Perm(len(sums))[:1+rng.Intn(6)] {
+			shas = append(shas, sums[i])
+			copies[sums[i]] = append(copies[sums[i]], tt)
+		}
+		info, es := tierSynthPack(fmt.Sprintf("p%03d", n), tt, shas...)
+		var err error
+		if st, err = st.withPack(info, es); err != nil {
+			t.Fatal(err)
+		}
+		// A pack published later may be hotter than an older level's copy.
+		for _, sum := range shas {
+			want := slices.Min(copies[sum])
+			loc, ok := st.lookup(sum)
+			if !ok || loc.tier != want {
+				t.Fatalf("step %d: lookup tier %v, want %v", n, loc.tier, want)
+			}
+			ls := st.appendLocs(nil, sum)
+			if len(ls) != len(copies[sum]) || !slices.IsSortedFunc(ls, func(a, b packLoc) int { return cmp.Compare(a.tier, b.tier) }) {
+				t.Fatalf("step %d: appendLocs %+v for copies %v", n, ls, copies[sum])
+			}
+		}
+	}
+	seen := map[[32]byte]tier{}
+	for sum, loc := range st.primaries() {
+		if _, dup := seen[*sum]; dup {
+			t.Fatal("primaries yielded a digest twice")
+		}
+		seen[*sum] = loc.tier
+		if loc.tier != slices.Min(copies[*sum]) {
+			t.Fatalf("primary tier %v, want %v", loc.tier, slices.Min(copies[*sum]))
+		}
+	}
+	if len(seen) != len(copies) || st.distinct() != len(copies) || len(st.packs) != 120 {
+		t.Fatalf("primaries=%d distinct=%d packs=%d, want %d digests", len(seen), st.distinct(), len(st.packs), len(copies))
+	}
+	// The same body id may live in every tier; a contradictory length clashes.
+	a, ea := tierSynthPack("same", tierHot, sums[0])
+	b, eb := tierSynthPack("same", tierCold, sums[0])
+	next, _ := (&packState{}).withPack(a, ea)
+	if next, _ = next.withPack(b, eb); len(next.packs) != 2 || len(next.clash) != 0 {
+		t.Fatalf("same id in two tiers: packs=%d clash=%v", len(next.packs), next.clash)
+	}
+	c, ec := tierSynthPack("odd", tierWarm, sums[0])
+	ec[0].logical = 9
+	if next, _ = next.withPack(c, ec); len(next.clash) != 1 {
+		t.Fatalf("contradictory length across tiers must clash: %v", next.clash)
+	}
+}
+
+func TestTier_RepackGCPreserveTiersAndPaths(t *testing.T) {
+	data := tierTestDataset()
+	data["h2"], data["w2"], data["c2"] = genRandomBytes(201, 600_000), genRandomBytes(202, 600_000), genRandomBytes(203, 600_000)
+	dir := t.TempDir()
+	for _, g := range []struct {
+		to   tier
+		keys []string
+	}{{tierHot, []string{"random", "h2"}}, {tierWarm, []string{"warm", "w2"}}, {tierCold, []string{"cold", "c2"}}} {
+		putPackTestObjects(t, dir, data, g.keys...)
+		tierCompactTo(t, dir, g.to)
+	}
+	live := map[string]bool{"random": true, "warm": true, "cold": true}
+	tierOf := func(s *Store, key string) map[tier]int {
+		_, man, _ := s.HeadObject("b", key)
+		m := map[tier]int{}
+		for _, c := range man.Chunks {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			if loc, ok := s.packLookup(sum); ok {
+				m[loc.tier]++
+			}
+		}
+		return m
+	}
+	s, _ := OpenStore(dir)
+	want := map[string]map[tier]int{}
+	for k := range live {
+		want[k] = tierOf(s, k)
+	}
+	s.Close()
+	for _, k := range []string{"h2", "w2", "c2"} {
+		s, _ := OpenStore(dir)
+		if err := s.DeleteObject("b", k); err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+	}
+	if _, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(0)}, true); err != nil {
+		t.Fatal(err)
+	}
+	before := tierCounts(dir)
+	dry, err := repackStore(dir, repackOptions{Tier: "warm", TargetBytes: 128 << 10, MaxLivePercent: 100, DryRun: true})
+	if err != nil || dry.PacksSelected == 0 {
+		t.Fatalf("dry-run: %+v %v", dry, err)
+	}
+	for _, u := range dry.Selected {
+		if u.Tier != "warm" {
+			t.Fatalf("-tier warm selected a %s pack", u.Tier)
+		}
+	}
+	if _, err := repackStore(dir, repackOptions{TargetBytes: 128 << 10, MaxLivePercent: 100}); err != nil {
+		t.Fatal(err)
+	}
+	gc, err := gcCollect(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := tierCounts(dir)
+	for tt := range numTiers {
+		if after[tt] == 0 || after[tt] > before[tt]+1 {
+			t.Fatalf("tier %s packs %d -> %d: replacements must stay in their tier (gc %+v)", tt, before[tt], after[tt], gc)
+		}
+	}
+	s, err = OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for k := range live {
+		if got := tierOf(s, k); len(got) != 1 || got[slices.Collect(maps.Keys(want[k]))[0]] == 0 {
+			t.Fatalf("%s moved tiers: %v -> %v", k, want[k], got)
+		}
+		if _, body, err := s.GetObject("b", k); err != nil || !bytes.Equal(body, data[k]) {
+			t.Fatalf("%s lost: %v", k, err)
+		}
+	}
+	rr, _ := s.computeReachability(false)
+	if sum := summarizePacks(s.packUsages(rr.ReferencedChunks)); sum.PackedDeadChunkCount != 0 || sum.PacksFullyDead != 0 {
+		t.Fatalf("dead records remain after repack+gc: %+v", sum)
+	}
+	if vr, _ := s.Verify(true); !vr.OK() {
+		t.Fatalf("verify: %+v", vr.Issues)
+	}
+}
+
+// TestTier_GCRemovesDeadPackFromItsTier: a fully dead cold pack is deleted
+// from the cold directory by gc, never touching hot.
+func TestTier_GCRemovesDeadPackFromItsTier(t *testing.T) {
+	data := tierTestDataset()
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, data, "random", "cold")
+	tierCompactTo(t, dir, tierHot)
+	tierTestMove(t, dir, tierHot, tierCold, true)
+	s, _ := OpenStore(dir)
+	s.DeleteObject("b", "cold")
+	s.Close()
+	if _, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(0)}, true); err != nil {
+		t.Fatal(err)
+	}
+	before := len(tierPackIDs(dir, tierCold))
+	if _, err := gcCollect(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	if after := len(tierPackIDs(dir, tierCold)); after >= before {
+		t.Fatalf("cold packs %d -> %d: dead pack not removed from the cold directory", before, after)
+	}
+	delete(data, "cold")
+	for k := range data {
+		if k != "random" {
+			delete(data, k)
+		}
+	}
+	checkTierReads(t, dir, data).Close()
+}
+
+// TestTier_TransferFromColdSource: sync negotiation and replication read
+// logical bytes, so a cold-resident source behaves like a hot one; replication
+// writes loose (hot) chunks at the destination.
+func TestTier_TransferFromColdSource(t *testing.T) {
+	dir, srv, creds, region := newSyncTestServer(t)
+	body := genRandomBytes(77, 900_000)
+	if err := srv.store.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, srv.store, "b", "k", body, "application/octet-stream", nil)
+	srv.store.Close()
+	tierCompactTo(t, dir, tierCold)
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	ts := httptest.NewServer(NewServer(store, creds, region))
+	defer ts.Close()
+	if c := tierCounts(dir); c[tierCold] == 0 || c[tierHot] != 0 {
+		t.Fatalf("source should be cold: %v", c)
+	}
+	_, dstSrv, dstCreds, dstRegion := newSyncTestServer(t)
+	dstTS := httptest.NewServer(dstSrv)
+	defer dstTS.Close()
+	dstSrv.store.CreateBucket("b")
+	if _, err := replicateObject(replicateConfig{
+		Source: syncClientConfig{Endpoint: ts.URL, Creds: creds, Region: region, HTTPClient: ts.Client(), Bucket: "b", Key: "k"},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Creds: dstCreds, Region: dstRegion, HTTPClient: dstTS.Client(), Bucket: "b", Key: "k"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, got, err := dstSrv.store.GetObject("b", "k"); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("replicated object: %v", err)
+	}
+	if st := packTestStats(t, dstSrv.store); st.PackCount != 0 || st.LooseChunkCount == 0 {
+		t.Fatalf("replicated data should be loose hot: %+v", st)
+	}
+}
+
+func TestTier_CLI(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, packTestDataset(), "random", "repeat")
+	if _, errOut, code := runZeros3CLI(t, bin, "compact", "-store", dir, "-tier", "lukewarm"); code != 2 || !strings.Contains(errOut, "tier") {
+		t.Fatalf("bad tier: code=%d %q", code, errOut)
+	}
+	out, errOut, code := runZeros3CLI(t, bin, "compact", "-store", dir, "-pack-size-mib", "1", "-tier", "warm", "-json")
+	var cr CompactResult
+	if code != 0 || json.Unmarshal([]byte(out), &cr) != nil || cr.Tier != "warm" || cr.PacksWritten == 0 {
+		t.Fatalf("compact warm: code=%d %q %q", code, out, errOut)
+	}
+	out, _, code = runZeros3CLI(t, bin, "tier", "status", "-store", dir, "-json")
+	var ts TierStatusResult
+	if code != 0 || json.Unmarshal([]byte(out), &ts) != nil || ts.StoreFormatVersion != storeFormatVersionTiers || ts.Tiers[tierWarm].PackCount != cr.PacksWritten || ts.Tiers[tierWarm].Marker != "ok" || ts.Tiers[tierHot].PackCount != 0 {
+		t.Fatalf("tier status: code=%d %q", code, out)
+	}
+	if out, _, code = runZeros3CLI(t, bin, "tier", "status", "-store", dir); code != 0 || !strings.Contains(out, "warm") {
+		t.Fatalf("tier status human: %q", out)
+	}
+	for _, args := range [][]string{
+		{"-from", "warm", "-to", "warm", "-all"},
+		{"-from", "warm", "-to", "cold"}, // neither -pack nor -all
+		{"-from", "warm"},
+	} {
+		if _, _, code := runZeros3CLI(t, bin, append([]string{"tier", "move", "-store", dir}, args...)...); code == 0 {
+			t.Fatalf("tier move %v must be rejected", args)
+		}
+	}
+	snap := tierPacksHash(t, dir)
+	out, _, code = runZeros3CLI(t, bin, "tier", "move", "-store", dir, "-from", "warm", "-to", "cold", "-all", "-json")
+	var mr TierMoveResult
+	if code != 0 || json.Unmarshal([]byte(out), &mr) != nil || !mr.DryRun || len(mr.Packs) != cr.PacksWritten || tierPacksHash(t, dir) != snap {
+		t.Fatalf("dry-run: code=%d %q", code, out)
+	}
+	if out, _, code = runZeros3CLI(t, bin, "tier", "move", "-store", dir, "-from", "warm", "-to", "cold", "-all", "-apply", "-json"); code != 0 {
+		t.Fatalf("apply: %q", out)
+	}
+	if c := tierCounts(dir); c[tierWarm] != 0 || c[tierCold] != cr.PacksWritten {
+		t.Fatalf("after apply: %v", c)
+	}
+	if out, _, code = runZeros3CLI(t, bin, "verify", "-store", dir, "-deep"); code != 0 {
+		t.Fatalf("verify: %q", out)
+	}
+}
+
+// A store that only ever used cold has no store/packs; moving back to hot
+// must create it.
+func TestTier_ColdOnlyStoreMovesToHot(t *testing.T) {
+	data := tierSubset(packTestDataset(), "random", "repeat")
+	dir := t.TempDir()
+	putPackTestObjects(t, dir, data, "random", "repeat")
+	tierCompactTo(t, dir, tierCold)
+	if _, err := os.Stat(tierPackDir(dir, tierHot)); err == nil {
+		t.Fatal("fixture should have no hot packs directory")
+	}
+	tierTestMove(t, dir, tierCold, tierHot, true)
+	if c := tierCounts(dir); c[tierCold] != 0 || c[tierHot] == 0 {
+		t.Fatalf("packs per tier: %v", c)
+	}
+	checkTierReads(t, dir, data).Close()
 }
