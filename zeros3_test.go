@@ -32302,7 +32302,7 @@ func TestPackCompression_StoreFormatBoundary(t *testing.T) {
 			}
 		})
 	}
-	if supportedStoreFormat(0) || supportedStoreFormat(storeFormatVersionCompressed+1) || !supportedStoreFormat(storeFormatVersion) || !supportedStoreFormat(storeFormatVersionPacked) {
+	if supportedStoreFormat(0) || supportedStoreFormat(storeFormatVersionHistoryPrune+1) || !supportedStoreFormat(storeFormatVersion) || !supportedStoreFormat(storeFormatVersionPacked) || !supportedStoreFormat(storeFormatVersionHistoryPrune) {
 		t.Fatal("supported store format range is wrong")
 	}
 }
