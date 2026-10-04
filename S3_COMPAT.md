@@ -144,6 +144,24 @@ non-ZeroS3 endpoint (one that doesn't answer `/_zeros3/v1/info`
 successfully) falls back to an ordinary `PutObject` instead of sending
 any of the other three.
 
+**Optional bulk transport.** A server that supports it adds
+`bulk_protocol_version` (2), `max_bulk_chunks` and `max_bulk_bytes` to the
+`/_zeros3/v1/info` response (older clients ignore them; the sync protocol
+itself stays version 1) and serves three more endpoints, which carry the same
+logical chunks (SHA-256, length, uncompressed bytes — never pack or codec
+details) in bounded binary frames instead of one request per chunk:
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/_zeros3/v2/negotiate` | `POST` | missing-chunk query (descriptors in, missing descriptors out) |
+| `/_zeros3/v2/chunks/fetch` | `POST` | descriptors in, one verified chunk frame out |
+| `/_zeros3/v2/chunks/upload` | `POST` | chunk frame in, published through the ordinary CAS write |
+
+A batch is limited to 4096 chunks and 64 MiB independently. Clients send a
+v2 request only to an endpoint that advertised it, and move chunks in bulk
+only when both ends of the transfer did; otherwise they use the v1 endpoints
+unchanged. Objects still commit through `/_zeros3/v1/commit`.
+
 **Recursive directory sync (`zeros3 sync LOCAL_DIRECTORY s3://bucket/prefix/`)
 is a client-side feature of this same ZeroS3-specific extension, not a new
 AWS S3 API operation and not a new wire protocol.** It sends zero new

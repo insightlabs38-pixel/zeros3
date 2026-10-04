@@ -320,7 +320,7 @@ above without deserving their own essay:
 |---|---|
 | `bytes` | in-memory request/response buffers |
 | `encoding/base64` | checksum/digest header encoding |
-| `encoding/binary` | journal frame and manifest binary layout |
+| `encoding/binary` | journal frame and manifest binary layout, bulk transfer frames |
 | `encoding/hex` | chunk/manifest content-address formatting |
 | `encoding/json` | manifests, `FORMAT.json`, journal payloads, `-json` CLI output, `/_zeros3/v1/...` wire bodies |
 | `errors` | error classification and wrapping |

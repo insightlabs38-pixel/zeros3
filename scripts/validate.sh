@@ -6,8 +6,11 @@
 #                                reproducible build
 #   scripts/validate.sh heavy    race tests, pack/compression crash matrix,
 #                                multi-GiB repack, compaction and pack
-#                                compression harnesses, 5M-record locator scale
+#                                compression harnesses, 5M-record locator scale,
+#                                bulk-transfer request/RTT benchmark
 #   scripts/validate.sh index    locator semantic/differential tests only
+#   scripts/validate.sh bulk     bulk framing/protocol tests plus the sync,
+#                                replicate, restore and repair suites
 #   scripts/validate.sh all      both
 #   scripts/validate.sh STAGE... run named stages (see `list`)
 #
@@ -17,7 +20,10 @@
 # current sources is skipped on the next run (VALIDATE_FORCE=1 reruns it).
 # Harness sizes: REPACK_SIZE_MIB (default 1024 per profile), COMPACT_SIZE_MIB,
 # COMPRESS_CLASS_MIB (per data family) and COMPRESS_SIZE_MIB (lifecycle store),
-# PACK_SIZE_MIB, LOCATOR_SCALE (record counts for index-scale, default 5000000).
+# PACK_SIZE_MIB, LOCATOR_SCALE (record counts for index-scale, default 5000000),
+# BULK_SIZE_MIB (bulk-bench payload, default 256), BULK_BASELINE_BIN (a build
+# without bulk transport to act as the v1 client; default: built from the
+# Z2-06 commit).
 set -u
 
 # Ambient AWS_* settings would override the harnesses' fixed credentials.
@@ -47,6 +53,23 @@ stage_static() {
 }
 stage_s3() { build_bin && cd "$root/testing-harnesses" && go run ./runner -group s3 -bin "$bin"; }
 stage_sync() { build_bin && cd "$root/testing-harnesses" && go run ./runner -group sync -bin "$bin"; }
+stage_bulk() {
+	cd "$root" && go test -count=1 -run 'TestBulk|TestSync_|TestReplicate_|TestRepair_|TestSnapshotRestore' .
+}
+stage_bulk-bench() {
+	build_bin || return 1
+	base="${BULK_BASELINE_BIN:-}"
+	if [ -z "$base" ]; then
+		base="$logs/zeros3-v1-baseline"
+		tmp=$(mktemp -d) &&
+			(cd "$root" && git archive 0b3595c zeros3.go go.mod | tar -x -C "$tmp") &&
+			(cd "$tmp" && CGO_ENABLED=0 go build -o "$base" zeros3.go) || return 1
+		rm -rf "$tmp"
+	fi
+	cd "$root/testing-harnesses" &&
+		go run ./harness/z2_bulk_transfer -bin "$bin" -baseline-bin "$base" -size-mib "${BULK_SIZE_MIB:-256}" \
+			-delays-ms 0,5,10 -v1-workers 8 -v2-workers 8 -matrix-delay-ms 10
+}
 stage_repro() { cd "$root" && sh scripts/reproducible_build.sh; }
 
 stage_race()    { cd "$root" && go test -race -count=1 ./...; }
@@ -68,10 +91,10 @@ stage_compression() {
 }
 
 normal="format modules test static s3 sync repro"
-heavy="race crash repack compact compression index-scale"
+heavy="race crash repack compact compression index-scale bulk-bench"
 
 case "${1:-normal}" in
-list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index"; exit 0 ;;
+list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk"; exit 0 ;;
 normal) stages=$normal ;;
 heavy) stages=$heavy ;;
 all) stages="$normal $heavy" ;;
