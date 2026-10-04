@@ -3374,6 +3374,179 @@ func TestListObjectsV2_XMLEscaping(t *testing.T) {
 	}
 }
 
+// listEncodingKeys is the key table for the encoding-type=url tests: every
+// shape XML 1.0 cannot (or should not) carry verbatim.
+var listEncodingKeys = []string{
+	"plain.txt", "sp ace", "plus+sign", "per%cent", "q?mark", "hash#tag",
+	"nul\x00byte", "ctl\x01char", "new\nline", "uni-\u00e9\u65e5\u672c", "emoji-\U0001F600",
+	"dir/a b", "dir/nul\x00x", "dir/sub/deep\x01", "dir/sub/z",
+}
+
+// doSignedRawPath signs the wire-encoded path (EscapedPath) so keys containing
+// '%' are not re-decoded by the test signer's canonicalization.
+func doSignedRawPath(t *testing.T, client *http.Client, base string, signer testSigner, method, path string, body []byte) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, base+path, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	signTestRequest(t, req, signer, req.URL.EscapedPath(), req.URL.RawQuery, body, time.Now(), nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func listEncPath(key string) string {
+	segs := strings.Split(key, "/")
+	for i, sg := range segs {
+		segs[i] = sigv4EncodeBytes([]byte(sg))
+	}
+	return strings.Join(segs, "/")
+}
+
+func rawListEnc(t *testing.T, client *http.Client, ts, bucket string, signer testSigner, q url.Values) (*listBucketResult, []byte) {
+	t.Helper()
+	q.Set("list-type", "2")
+	resp := doSignedRawPath(t, client, ts, signer, http.MethodGet, "/"+bucket+"?"+q.Encode(), nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list %v: %d %s", q, resp.StatusCode, body)
+	}
+	if bytes.IndexByte(body, 0) >= 0 {
+		t.Fatalf("response contains a raw NUL byte: %q", body)
+	}
+	dec := xml.NewDecoder(bytes.NewReader(body))
+	dec.Strict = true
+	var res listBucketResult
+	if err := dec.Decode(&res); err != nil {
+		t.Fatalf("response is not valid XML: %v\n%s", err, body)
+	}
+	return &res, body
+}
+
+func TestListObjectsV2_EncodingTypeURL(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "enc"); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range listEncodingKeys {
+		resp := doSignedRawPath(t, client, ts.URL, signer, http.MethodPut, "/enc/"+listEncPath(k), []byte("v:"+k))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT %q: %d", k, resp.StatusCode)
+		}
+	}
+	// Direct CRUD stays byte-exact.
+	for _, k := range listEncodingKeys {
+		resp := doSignedRawPath(t, client, ts.URL, signer, http.MethodGet, "/enc/"+listEncPath(k), nil)
+		got, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || string(got) != "v:"+k {
+			t.Fatalf("GET %q: %d %q", k, resp.StatusCode, got)
+		}
+	}
+	want := append([]string{}, listEncodingKeys...)
+	sort.Strings(want)
+	decode := func(s string) string {
+		b, err := percentDecodeToBytes(s)
+		if err != nil {
+			t.Fatalf("decode %q: %v", s, err)
+		}
+		return string(b)
+	}
+
+	// Full listing: valid XML, EncodingType advertised, exact encodings.
+	res, body := rawListEnc(t, client, ts.URL, "enc", signer, url.Values{"encoding-type": {"url"}})
+	if res.EncodingType != "url" || !strings.Contains(string(body), "<EncodingType>url</EncodingType>") {
+		t.Fatalf("EncodingType not advertised: %s", body)
+	}
+	var got []string
+	for _, c := range res.Contents {
+		got = append(got, decode(c.Key))
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("decoded keys %q != %q", got, want)
+	}
+	for _, c := range res.Contents {
+		if strings.ContainsAny(c.Key, " +\x00\x01\n#?") && !strings.Contains(c.Key, "%") {
+			t.Fatalf("unencoded key material %q", c.Key)
+		}
+		if strings.Contains(c.Key, "+") && !strings.Contains(decode(c.Key), "+") {
+			t.Fatalf("space encoded as '+': %q", c.Key)
+		}
+	}
+	for _, exact := range []string{"sp%20ace", "plus%2Bsign", "per%25cent", "nul%00byte", "ctl%01char", "new%0Aline", "uni-%C3%A9%E6%97%A5%E6%9C%AC", "emoji-%F0%9F%98%80", "dir%2Fa%20b"} {
+		if !strings.Contains(string(body), "<Key>"+exact+"</Key>") {
+			t.Fatalf("missing exact encoded key %q in %s", exact, body)
+		}
+	}
+	// Without the parameter nothing is encoded or advertised.
+	plain, pbody := rawListEnc(t, client, ts.URL, "enc", signer, url.Values{"prefix": {"sp ace"}})
+	if plain.EncodingType != "" || strings.Contains(string(pbody), "EncodingType") || plain.Prefix != "sp ace" {
+		t.Fatalf("unencoded listing changed: %s", pbody)
+	}
+
+	// Pagination: tokens resume from the real key and never carry the encoding.
+	var paged []string
+	tok := ""
+	for pages := 0; pages < 50; pages++ {
+		q := url.Values{"encoding-type": {"url"}, "max-keys": {"3"}}
+		if tok != "" {
+			q.Set("continuation-token", tok)
+		}
+		r, _ := rawListEnc(t, client, ts.URL, "enc", signer, q)
+		for _, c := range r.Contents {
+			paged = append(paged, decode(c.Key))
+		}
+		if !r.IsTruncated {
+			break
+		}
+		last, err := decodeContinuationToken(r.NextContinuationToken)
+		if err != nil || last != paged[len(paged)-1] {
+			t.Fatalf("token resumes at %q (%v), want real key %q", last, err, paged[len(paged)-1])
+		}
+		tok = r.NextContinuationToken
+	}
+	if !reflect.DeepEqual(paged, want) {
+		t.Fatalf("paged %q != %q", paged, want)
+	}
+
+	// Prefix/delimiter grouping is computed on logical keys; Prefix, Delimiter
+	// and CommonPrefixes are encoded.
+	r, _ := rawListEnc(t, client, ts.URL, "enc", signer, url.Values{"encoding-type": {"url"}, "prefix": {"dir/"}, "delimiter": {"/"}})
+	if r.Prefix != "dir%2F" || r.Delimiter != "%2F" {
+		t.Fatalf("Prefix/Delimiter %q %q", r.Prefix, r.Delimiter)
+	}
+	var keys, cps []string
+	for _, c := range r.Contents {
+		keys = append(keys, decode(c.Key))
+	}
+	for _, c := range r.CommonPrefixes {
+		cps = append(cps, decode(c.Prefix))
+	}
+	if !reflect.DeepEqual(keys, []string{"dir/a b", "dir/nul\x00x"}) || !reflect.DeepEqual(cps, []string{"dir/sub/"}) {
+		t.Fatalf("grouping keys=%q prefixes=%q", keys, cps)
+	}
+	r, _ = rawListEnc(t, client, ts.URL, "enc", signer, url.Values{"encoding-type": {"url"}, "prefix": {"nul\x00"}})
+	if r.Prefix != "nul%00" || len(r.Contents) != 1 || decode(r.Contents[0].Key) != "nul\x00byte" {
+		t.Fatalf("NUL prefix listing: %+v", r)
+	}
+
+	// Only "url" is accepted.
+	resp := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/enc?list-type=2&encoding-type=base64", nil, nil)
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), "InvalidArgument") {
+		t.Fatalf("encoding-type=base64: %d %s", resp.StatusCode, b)
+	}
+}
+
 func TestListObjectsV2_PrefixDelimiterCommonPrefixes(t *testing.T) {
 	srv, signer := newTestServerAndSigner(t)
 	ts := httptest.NewServer(srv)

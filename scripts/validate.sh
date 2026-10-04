@@ -152,7 +152,7 @@ stage_tier-rebalance() {
 		cd "$root/testing-harnesses" && ZEROS3_BIN="$bin" go run ./harness/z2_consumer -scenario rebalance
 }
 stage_vectors() {
-	cd "$root" && go test -count=1 -run 'TestVectors_|TestGetBucketLocation|TestDeleteObjects_|TestProbe' . &&
+	cd "$root" && go test -count=1 -run 'TestVectors_|TestGetBucketLocation|TestDeleteObjects_|TestProbe|TestListObjectsV2_' . &&
 		{ ! command -v python3 >/dev/null || python3 testing-harnesses/vectors/gen.py --check; }
 }
 stage_client() { build_bin && cd "$root/testing-harnesses" && go run ./runner -group client -bin "$bin"; }

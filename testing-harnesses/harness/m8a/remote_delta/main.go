@@ -27,14 +27,20 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -193,6 +199,144 @@ func mustReadAll(r interface{ Read([]byte) (int, error) }) []byte {
 	return buf.Bytes()
 }
 
+// commitGate is a tiny stdlib reverse proxy in front of the destination
+// server. It forwards everything unchanged (preserving the client's Host
+// header so SigV4 stays valid) except the FIRST final ZeroS3 commit
+// (POST /_zeros3/v1/commit) for one specific bucket/key: that request is
+// announced on `arrived`, held until `release` is closed, and only then
+// forwarded. Channels, not sleeps, order the race: replicate has already
+// observed the old destination state and reached its final commit when the
+// harness performs the interloper write.
+type commitGate struct {
+	bucket, key string
+	arrived     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+	mu          sync.Mutex
+	status      int // HTTP status the held commit received from the destination
+	srv         *http.Server
+	addr        string
+}
+
+func newCommitGate(dstAddr, bucket, key string) (*commitGate, error) {
+	g := &commitGate{bucket: bucket, key: key, arrived: make(chan struct{}), release: make(chan struct{})}
+	target, _ := url.Parse("http://" + dstAddr)
+	rp := httputil.NewSingleHostReverseProxy(target) // keeps the inbound Host header
+	rp.ModifyResponse = func(resp *http.Response) error {
+		if resp.Request.Header.Get("X-M8a-Held") != "" {
+			g.mu.Lock()
+			g.status = resp.StatusCode
+			g.mu.Unlock()
+		}
+		return nil
+	}
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/_zeros3/v1/commit" {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			var head struct{ Bucket, Key string }
+			if json.Unmarshal(body, &head) == nil && head.Bucket == g.bucket && head.Key == g.key {
+				held := false
+				g.once.Do(func() { held = true })
+				if held {
+					close(g.arrived)
+					select {
+					case <-g.release:
+					case <-r.Context().Done():
+						return
+					}
+					r.Header.Set("X-M8a-Held", "1")
+				}
+			}
+		}
+		rp.ServeHTTP(w, r)
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	g.addr = ln.Addr().String()
+	g.srv = &http.Server{Handler: h}
+	go g.srv.Serve(ln)
+	return g, nil
+}
+
+func (g *commitGate) heldStatus() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.status
+}
+
+// conflictRace runs one deterministic Phase 6 round for `key`:
+//
+//	replicate observes the old destination -> reaches its final /commit ->
+//	the gate HOLDS that commit -> the AWS SDK commits the interloper directly
+//	against the destination -> the commit is released -> the safe-mode
+//	precondition must reject replicate.
+func conflictRace(ctx context.Context, binPath, srcEndpoint, dstAddr string, srcClient, dstClient *s3.Client, srcBucket, dstBucket, key string, seed int64) {
+	raceSrc := randomBytes(seed, 20_000_000)
+	_, err := srcClient.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(srcBucket), Key: aws.String(key), Body: bytes.NewReader(raceSrc)})
+	check("AWS SDK PutObject: source object for the conflict-race test ("+key+")", err)
+	interloper := []byte("the AWS SDK's concurrent racing PutObject content on the destination " + key)
+
+	gate, err := newCommitGate(dstAddr, dstBucket, key)
+	if err != nil {
+		log.Fatalf("starting commit gate: %v", err)
+	}
+	defer gate.srv.Close()
+
+	raceCmd := exec.Command(binPath, "replicate",
+		"-from", srcEndpoint, "-to", "http://"+gate.addr,
+		"-from-access-key", accessKeyID, "-from-secret-key", secretAccessKey,
+		"-to-access-key", accessKeyID, "-to-secret-key", secretAccessKey,
+		"-region", region,
+		"s3://"+srcBucket+"/"+key, "s3://"+dstBucket+"/"+key)
+	var raceOut bytes.Buffer
+	raceCmd.Stdout = &raceOut
+	raceCmd.Stderr = &raceOut
+	if err := raceCmd.Start(); err != nil {
+		log.Fatalf("starting racing replicate: %v", err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- raceCmd.Wait() }()
+
+	var replicateErr error
+	select {
+	case <-gate.arrived:
+		// replicate is parked at its final commit: the interloper now lands first.
+		_, putErr := dstClient.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(dstBucket), Key: aws.String(key), Body: bytes.NewReader(interloper)})
+		check("AWS SDK interloper PutObject on destination while replicate's commit is held", putErr)
+		close(gate.release)
+		replicateErr = <-exited
+	case replicateErr = <-exited:
+		fail++
+		fmt.Printf("FAIL: replicate exited (%v) before reaching its final commit for %s\n%s\n", replicateErr, key, raceOut.String())
+		return
+	case <-time.After(2 * time.Minute): // failsafe only; not used for ordering
+		raceCmd.Process.Kill()
+		<-exited
+		fail++
+		fmt.Printf("FAIL: replicate never reached its final commit for %s\n%s\n", key, raceOut.String())
+		return
+	}
+
+	requireTrue("held commit was rejected by the destination with 412 (safe-mode precondition)", gate.heldStatus() == http.StatusPreconditionFailed,
+		fmt.Sprintf("destination answered the held commit with %d", gate.heldStatus()))
+	requireTrue("replicate exits nonzero with a safe-mode conflict", replicateErr != nil && strings.Contains(raceOut.String(), "safe-mode conflict"),
+		fmt.Sprintf("err=%v output=%s", replicateErr, raceOut.String()))
+	getRace, err := dstClient.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(dstBucket), Key: aws.String(key)})
+	check("AWS SDK GetObject after the conflict race", err)
+	if getRace != nil {
+		gotRace := mustReadAll(getRace.Body)
+		requireTrue("interloper remains the current object, byte-exact (no mixed or corrupt object)", bytes.Equal(gotRace, interloper),
+			fmt.Sprintf("final object len=%d replicateContent=%v", len(gotRace), bytes.Equal(gotRace, raceSrc)))
+	}
+}
+
 func main() {
 	binPath := os.Getenv("ZEROS3_BIN")
 	if binPath == "" {
@@ -251,6 +395,26 @@ func main() {
 	check("CreateBucket on source", err)
 	_, err = dstClient.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(dstBucket)})
 	check("CreateBucket on destination", err)
+
+	if os.Getenv("M8A_CONFLICT_ONLY") != "" {
+		// Focused mode: only the deterministic conflict phase, repeated.
+		reps := 1
+		if n, err := strconv.Atoi(os.Getenv("M8A_CONFLICT_REPS")); err == nil && n > 0 {
+			reps = n
+		}
+		for i := 0; i < reps; i++ {
+			key := "race-object"
+			if i > 0 {
+				key = fmt.Sprintf("race-object-%d", i)
+			}
+			conflictRace(ctx, binPath, srcEndpoint, dstAddr, srcClient, dstClient, srcBucket, dstBucket, key, int64(5+i))
+		}
+		fmt.Printf("\n===== SUMMARY (conflict only, %d reps): %d passed, %d failed =====\n", reps, pass, fail)
+		if fail > 0 {
+			os.Exit(1)
+		}
+		return
+	}
 
 	const baseSize = 24_000_000
 	base := randomBytes(1, baseSize)
@@ -363,50 +527,16 @@ func main() {
 		statLine(out5, "Uploaded payload:"), statLine(out5, "Reuse:"))
 
 	// =========================================================================
-	// Phase 6: conflict -- mutate the destination (via a racing AWS SDK
-	// PutObject) between replicate's observation and its eventual commit.
-	// Best-effort/timing-based, like Phase 5; the one invariant checked is
-	// the one that must hold regardless of which side wins the real race:
-	// the final object is exactly one writer's content, never a corrupted
-	// mix, and if replicate lost the race it reports a non-zero exit.
+	// Phase 6: conflict -- a deterministic interception, not a timing race.
+	// A stdlib proxy in front of the destination holds replicate's final
+	// /commit for race-object; the AWS SDK commits an interloper PutObject
+	// directly on the destination; the commit is then released and the
+	// safe-mode precondition must reject replicate. The interloper must
+	// remain the current object, byte-exact. (A sleep-based version wrongly
+	// required a nonzero exit whenever the interloper was last, even when
+	// replicate had legitimately committed first.)
 	// =========================================================================
-	raceSrc := randomBytes(5, 20_000_000)
-	_, err = srcClient.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(srcBucket), Key: aws.String("race-object"), Body: bytes.NewReader(raceSrc)})
-	check("AWS SDK PutObject: source object for the conflict-race test", err)
-	interloper := []byte("the AWS SDK's concurrent racing PutObject content on the destination")
-
-	raceCmd := exec.Command(binPath, "replicate",
-		"-from", srcEndpoint, "-to", dstEndpoint,
-		"-from-access-key", accessKeyID, "-from-secret-key", secretAccessKey,
-		"-to-access-key", accessKeyID, "-to-secret-key", secretAccessKey,
-		"-region", region,
-		"s3://"+srcBucket+"/race-object", "s3://"+dstBucket+"/race-object")
-	var raceOut bytes.Buffer
-	raceCmd.Stdout = &raceOut
-	raceCmd.Stderr = &raceOut
-	if err := raceCmd.Start(); err != nil {
-		log.Fatalf("starting racing replicate: %v", err)
-	}
-	time.Sleep(300 * time.Millisecond)
-	_, putErr := dstClient.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(dstBucket), Key: aws.String("race-object"), Body: bytes.NewReader(interloper)})
-	check("AWS SDK racing PutObject on destination", putErr)
-	replicateRaceErr := raceCmd.Wait()
-
-	getRace, err := dstClient.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(dstBucket), Key: aws.String("race-object")})
-	check("AWS SDK GetObject after the conflict race", err)
-	if getRace != nil {
-		gotRace := mustReadAll(getRace.Body)
-		replicateWon := bytes.Equal(gotRace, raceSrc)
-		interloperWon := bytes.Equal(gotRace, interloper)
-		requireTrue("conflict-race result is exactly one writer's content, never a corrupted mix", replicateWon != interloperWon,
-			fmt.Sprintf("neither/both matched: len=%d replicateWon=%v interloperWon=%v", len(gotRace), replicateWon, interloperWon))
-		if interloperWon {
-			requireTrue("when the AWS SDK PutObject won the race, replicate correctly reported a non-zero exit (safe-mode conflict)", replicateRaceErr != nil, "replicate exited 0 but did not win")
-			noteInfo("Phase 6 outcome this run: AWS SDK PutObject won (replicate correctly rejected as a conflict)")
-		} else if replicateWon {
-			noteInfo("Phase 6 outcome this run: zeros3 replicate completed its commit before the racing PutObject arrived (both are legitimate outcomes of a real race)")
-		}
-	}
+	conflictRace(ctx, binPath, srcEndpoint, dstAddr, srcClient, dstClient, srcBucket, dstBucket, "race-object", 5)
 
 	// =========================================================================
 	// Phase 7: source mutation -- overwrite the source object's current

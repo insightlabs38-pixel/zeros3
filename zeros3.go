@@ -5444,6 +5444,7 @@ type listBucketResult struct {
 	Prefix                string            `xml:"Prefix"`
 	Delimiter             string            `xml:"Delimiter,omitempty"`
 	MaxKeys               int               `xml:"MaxKeys"`
+	EncodingType          string            `xml:"EncodingType,omitempty"`
 	KeyCount              int               `xml:"KeyCount"`
 	IsTruncated           bool              `xml:"IsTruncated"`
 	ContinuationToken     string            `xml:"ContinuationToken,omitempty"`
@@ -6425,28 +6426,36 @@ func (srv *Server) handleDeleteObjects(w http.ResponseWriter, bucket string, bod
 // parseListObjectsV2Query extracts the ESSENTIAL ListObjectsV2 query
 // parameters. max-keys defaults to (and is clamped to) 1000, matching
 // real S3's default/maximum page size.
-func parseListObjectsV2Query(rawQuery string) (listType, prefix, delimiter, continuationToken string, maxKeys int, err error) {
+//
+// encoding-type is the one S3 response-encoding knob: absent or "url". With
+// "url" the key-valued response fields are percent-encoded because XML 1.0
+// cannot carry every legal object-key byte (NUL, most C0 controls).
+func parseListObjectsV2Query(rawQuery string) (listType, prefix, delimiter, continuationToken, encodingType string, maxKeys int, err error) {
 	values, err := url.ParseQuery(rawQuery)
 	if err != nil {
-		return "", "", "", "", 0, fmt.Errorf("malformed query string")
+		return "", "", "", "", "", 0, fmt.Errorf("malformed query string")
 	}
 	listType = values.Get("list-type")
 	prefix = values.Get("prefix")
 	delimiter = values.Get("delimiter")
 	continuationToken = values.Get("continuation-token")
+	encodingType = values.Get("encoding-type")
+	if encodingType != "" && encodingType != "url" {
+		return "", "", "", "", "", 0, fmt.Errorf("invalid encoding-type %q (only \"url\" is supported)", encodingType)
+	}
 
 	maxKeys = 1000
 	if raw := values.Get("max-keys"); raw != "" {
 		n, convErr := strconv.Atoi(raw)
 		if convErr != nil || n < 0 {
-			return "", "", "", "", 0, fmt.Errorf("invalid max-keys %q", raw)
+			return "", "", "", "", "", 0, fmt.Errorf("invalid max-keys %q", raw)
 		}
 		maxKeys = n
 	}
 	if maxKeys > 1000 {
 		maxKeys = 1000
 	}
-	return listType, prefix, delimiter, continuationToken, maxKeys, nil
+	return listType, prefix, delimiter, continuationToken, encodingType, maxKeys, nil
 }
 
 // parseListPartsQuery parses ListParts' two pagination query parameters.
@@ -6519,7 +6528,7 @@ func parseListMultipartUploadsQuery(rawQuery string) (prefix, delimiter, keyMark
 }
 
 func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery string) {
-	listType, prefix, delimiter, continuationToken, maxKeys, err := parseListObjectsV2Query(rawQuery)
+	listType, prefix, delimiter, continuationToken, encodingType, maxKeys, err := parseListObjectsV2Query(rawQuery)
 	if err != nil {
 		writeS3Error(w, "InvalidArgument", err.Error(), "/"+bucket)
 		return
@@ -6547,11 +6556,18 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 		return
 	}
 
+	// Filtering and pagination above ran on the logical key strings; enc only
+	// changes their XML representation. Token fields and ETag stay verbatim.
+	enc := func(s string) string { return s }
+	if encodingType == "url" {
+		enc = func(s string) string { return sigv4EncodeBytes([]byte(s)) }
+	}
 	result := listBucketResult{
 		Name:              bucket,
-		Prefix:            prefix,
-		Delimiter:         delimiter,
+		Prefix:            enc(prefix),
+		Delimiter:         enc(delimiter),
 		MaxKeys:           maxKeys,
+		EncodingType:      encodingType,
 		KeyCount:          len(page.contents) + len(page.commonPrefixes),
 		IsTruncated:       page.truncated,
 		ContinuationToken: continuationToken,
@@ -6566,7 +6582,7 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 			return
 		}
 		result.Contents = append(result.Contents, xmlContent{
-			Key:          obj.key,
+			Key:          enc(obj.key),
 			LastModified: iso8601(man.CreatedAt),
 			ETag:         `"` + obj.entry.etag + `"`,
 			Size:         obj.entry.size,
@@ -6574,7 +6590,7 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 		})
 	}
 	for _, cp := range page.commonPrefixes {
-		result.CommonPrefixes = append(result.CommonPrefixes, xmlCommonPrefix{Prefix: cp})
+		result.CommonPrefixes = append(result.CommonPrefixes, xmlCommonPrefix{Prefix: enc(cp)})
 	}
 	writeXML(w, http.StatusOK, result)
 }

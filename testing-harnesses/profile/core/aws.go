@@ -194,16 +194,27 @@ func (a *awsClient) List(b string, o ListOpts) (ListPage, error) {
 	if o.Max > 0 {
 		in.MaxKeys = aws.Int32(int32(o.Max))
 	}
+	dec := func(s string) string { return s }
+	if o.EncodingURL {
+		in.EncodingType = types.EncodingTypeUrl
+		// The Go SDK does not decode for the caller (boto3 does).
+		dec = func(s string) string {
+			if d, err := url.QueryUnescape(s); err == nil {
+				return d
+			}
+			return s
+		}
+	}
 	out, err := a.c.ListObjectsV2(a.ctx, in)
 	if err != nil {
 		return ListPage{}, awsErr(err)
 	}
 	pg := ListPage{Truncated: aws.ToBool(out.IsTruncated), Next: aws.ToString(out.NextContinuationToken)}
 	for _, c := range out.Contents {
-		pg.Keys = append(pg.Keys, aws.ToString(c.Key))
+		pg.Keys = append(pg.Keys, dec(aws.ToString(c.Key)))
 	}
 	for _, p := range out.CommonPrefixes {
-		pg.Prefixes = append(pg.Prefixes, aws.ToString(p.Prefix))
+		pg.Prefixes = append(pg.Prefixes, dec(aws.ToString(p.Prefix)))
 	}
 	return pg, nil
 }
