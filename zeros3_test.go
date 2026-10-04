@@ -34791,6 +34791,39 @@ func TestBulkReplicate_InterruptedTransferResumesThroughNegotiation(t *testing.T
 	bulkTestDestHas(t, dst, body)
 }
 
+// A server may answer a bulk upload before reading it, so Do returns while
+// the transport still reads the (pooled) frame. uploadBulkFrame must not
+// return, and so must not let the caller recycle the frame, until the
+// transport has closed the request body.
+func TestBulkUpload_WaitsForTransportToReleaseFrame(t *testing.T) {
+	release := make(chan struct{})
+	var closed atomic.Bool
+	rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		go func() {
+			<-release
+			closed.Store(true)
+			r.Body.Close()
+		}()
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+	})
+	cfg := syncClientConfig{Endpoint: "http://bulk.invalid", Creds: Credentials{AccessKeyID: "a", SecretAccessKey: "b"}, Region: "us-east-1", HTTPClient: &http.Client{Transport: rt}}
+	done := make(chan error, 1)
+	go func() { done <- uploadBulkFrame(context.Background(), cfg, make([]byte, 1<<10)) }()
+	select {
+	case err := <-done:
+		t.Fatalf("uploadBulkFrame returned (%v) while the transport still held the frame", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err == nil || !closed.Load() {
+		t.Fatalf("want a 503 error after the body was released, got %v (closed=%v)", err, closed.Load())
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func TestBulkRestore_UsesBulkAcrossServers(t *testing.T) {
 	_, srcSrv, _, dstSrv, creds, region := newReplicateTestServerPair(t)
 	body := genRandomBytes(7700, 3_000_000)

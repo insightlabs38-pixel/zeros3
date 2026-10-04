@@ -11522,18 +11522,54 @@ func (cfg syncClientConfig) signAndDo(ctx context.Context, method, path string, 
 // signAndDoStream is signAndDo without reading the response: the caller
 // owns resp.Body and must bound every read from it.
 func (cfg syncClientConfig) signAndDoStream(ctx context.Context, method, path string, body []byte, headers map[string]string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(cfg.Endpoint, "/")+path, bytes.NewReader(body))
+	resp, _, err := cfg.signAndDoBody(ctx, method, path, body, headers)
+	return resp, err
+}
+
+// trackedBody counts the request bodies the transport still holds open.
+type trackedBody struct {
+	io.Reader
+	once sync.Once
+	wg   *sync.WaitGroup
+}
+
+func (b *trackedBody) Close() error {
+	b.once.Do(b.wg.Done)
+	return nil
+}
+
+// signAndDoBody is signAndDoStream that also returns a wait function that
+// blocks until the transport has closed every copy of the request body. A
+// server may answer before it has read the request, and Do then returns while
+// the transport is still reading body; a caller that recycles body must wait
+// first.
+func (cfg syncClientConfig) signAndDoBody(ctx context.Context, method, path string, body []byte, headers map[string]string) (*http.Response, func(), error) {
+	var wg sync.WaitGroup
+	newBody := func() io.ReadCloser {
+		wg.Add(1)
+		return &trackedBody{Reader: bytes.NewReader(body), wg: &wg}
+	}
+	var rb io.Reader
+	if len(body) > 0 {
+		rb = newBody()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(cfg.Endpoint, "/")+path, rb)
 	if err != nil {
-		return nil, err
+		return nil, func() {}, err
+	}
+	if len(body) > 0 {
+		req.ContentLength = int64(len(body))
+		req.GetBody = func() (io.ReadCloser, error) { return newBody(), nil }
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 	payloadHash := sha256.Sum256(body)
 	if err := signSigV4Request(req, cfg.Creds, cfg.Region, hex.EncodeToString(payloadHash[:]), time.Now()); err != nil {
-		return nil, err
+		return nil, func() {}, err
 	}
-	return cfg.client().Do(req)
+	resp, err := cfg.client().Do(req)
+	return resp, wg.Wait, err
 }
 
 // discoverZeroS3Sync performs capability discovery (A1). Any failure --
@@ -12805,7 +12841,9 @@ func fetchBulkChunks(ctx context.Context, cfg syncClientConfig, descs []syncChun
 
 // uploadBulkFrame posts one already-verified data frame.
 func uploadBulkFrame(ctx context.Context, cfg syncClientConfig, frame []byte) error {
-	resp, err := cfg.signAndDoStream(ctx, http.MethodPost, zeros3BulkUploadPath, frame, map[string]string{"Content-Type": "application/octet-stream"})
+	resp, wait, err := cfg.signAndDoBody(ctx, http.MethodPost, zeros3BulkUploadPath, frame, map[string]string{"Content-Type": "application/octet-stream"})
+	// frame is pooled: the transport must be done reading it before the caller recycles it.
+	defer wait()
 	if err != nil {
 		return fmt.Errorf("bulk upload request failed: %w", err)
 	}
