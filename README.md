@@ -27,6 +27,7 @@ CAS → immutable manifests → visibility journal.**
 - Streaming I/O: uploads and downloads of any size run in bounded memory; signed `aws-chunked` uploads accepted
 - Bounded parallel chunk transfer, batched into a few bulk requests between ZeroS3 servers
 - Immutable packed storage: `zeros3 compact` folds loose chunk files into a few verified packs, DEFLATE-compressing each record that shrinks; `gc` and `zeros3 repack` reclaim dead packed records by replacing packs
+- Locality-aware packs: `compact -layout locality` (default) writes chunks in first-reference manifest order, so a sequential GET reads adjacent records with one bounded `ReadAt` per window on one open pack; pack format v1 and chunk identity are unchanged
 - Hot/warm/cold physical pack tiers (`compact -tier`, `zeros3 tier status|init|move`) beneath the same logical CAS; warm and cold can be separate local mounts
 - Portable snapshot bundles: `zeros3 bundle export|import|inspect` turn one snapshot into a single self-verifying `.zs3b` file and back into another store ([format](./BUNDLE_FORMAT.md))
 - Content-aware placement: `zeros3 tier policy` and `tier rebalance` give each chunk the hottest tier any live root (current, history, snapshot, multipart) asks for
@@ -177,8 +178,8 @@ manifests (`zeros3 versions`/`restore`/`gc`).
 
 **Packed storage.** New chunks always land as loose files under
 `chunks/`. `zeros3 compact -store DIR` (offline: it takes the store
-exclusively, like `gc -apply`; `-pack-size-mib`, `-compression`, `-dry-run`,
-`-json`) copies the chunks live roots reference into immutable packs of about
+exclusively, like `gc -apply`; `-pack-size-mib`, `-compression`, `-layout`,
+`-dry-run`, `-json`) copies the chunks live roots reference into immutable packs of about
 64 MiB of chunk data, re-hashing every chunk and verifying each pack before
 publishing it, and only then removes the loose files, so an interruption can
 leave redundant copies but never lose the only one. Packs are plain files under
@@ -190,6 +191,31 @@ unchanged, and a store can hold loose chunks, packed chunks, or both; every
 read re-verifies the chunk's SHA-256 and prefers the packed copy, falling
 back to a loose one. `stats` splits loose from packed counts and bytes, and
 `verify` checks pack structure. Run `compact` again to pack newer chunks.
+
+**Pack locality.** `compact -layout locality|digest` (default `locality`) picks the
+record order inside new packs; pack format v1, chunk identity and
+deduplication are identical either way. `digest` is the previous order.
+`locality` ranks each candidate chunk by its first reference when the live
+roots are walked in priority order — current objects (bucket/key order),
+active multipart uploads, snapshots, then retained history (newest first) —
+the same root walk GC uses. A chunk shared by several objects is stored once,
+at its first reference; unreferenced candidates follow in digest order. The
+ranking is a sort plus one binary search per reference (about 100 ms and 21
+MiB for 4,000 objects / 8,182 chunks; 1M synthetic candidates in about 1.5 s
+at 48 B each) and does not depend on map or directory order. `repack` and
+`tier rebalance` keep surviving records in their source physical order
+(rebalance splits keep source-relative order inside each destination tier),
+so a locality layout survives maintenance; old digest-ordered packs stay
+valid and are not rewritten. On GET, `manifestReader` coalesces upcoming
+records that are physically contiguous in one pack into a run read with a
+single `ReadAt` (at most 64 records, 4 MiB stored, 8 MiB decoded), keeping at
+most one pack file open per request. Each record in a run is still checked
+against its locator entry, decoded and SHA-256 verified on its own; a record
+that fails is re-read through the ordinary copy selection (other packed
+copy, hot loose copy, ...) and that pack gets no further runs in the
+request, so one bad record never fails a GET that has a valid fallback.
+Warm and cold records coalesce the same way, unless a hot loose copy outranks
+them.
 
 **Packed compression.** Compression is a property of the packed record only,
 applied by `compact` and `repack` (uploads always write raw loose chunks).
@@ -223,7 +249,8 @@ the packs it would select, the bytes it would read, write and reclaim, and
 changes nothing until `-apply` is given (`-max-live-percent`, default 50,
 selects packs below that live share, so each byte rewritten reclaims at
 least a byte; `-pack-size-mib`; `-compression`; `-json`). Live records are
-copied in digest order, re-encoded under the current compression policy
+copied in their source physical order (a locality layout survives repack),
+re-encoded under the current compression policy
 (old raw packs become compressed; `-compression off` rewrites them raw), into
 new verified packs, the new packs are published and fsynced, each
 copied chunk must read back from them, and only then are the old packs
@@ -417,6 +444,24 @@ bytes grew 0.14%, `compact` ran at 61 MiB/s with 50 MiB peak RSS. With a
 cold page cache, full GET of a 256 MiB object went from 212 to 326 MiB/s,
 a 1 MiB range GET from 9.4 to 7.4 ms on average, and server open from 19
 to 93 ms (server peak RSS 18 to 28 MiB). Single runs, 4 vCPU.
+
+**Pack locality.** 256 MiB pseudo-random object, 64 MiB packs, raw records,
+page cache warm, medians of three runs, 4 vCPU, loopback, against the
+previous (digest layout, one record per read) build. Digest layout: 24% of
+adjacent chunk pairs share a pack, none are physically adjacent, 12,164
+pack transitions per GiB, and one full GET does 4,019 pack opens and 4,021
+`pread64`. Locality layout: 99.9% adjacent, runs average 1,005 chunks, 12
+transitions per GiB, and one full GET does 4 opens and 68 `pread64`. Full
+GET 609 -> 852 MiB/s (digest layout with the new reader: 767); 16 MiB range
+538 -> 707 MiB/s; 64 MiB range 566 -> 833 MiB/s; 1 MiB range 4.7 -> 4.8 ms
+and random 64 KiB reads 3.1 -> 3.2 ms (noise level); 8 concurrent 16 MiB
+range readers 1,165 -> 1,842 MiB/s; server RSS growth for one full GET
+11 -> 7 MiB (55 MiB for the 8 readers). A three-version 128 MiB checkpoint
+set (shared chunks stored once) went 662 -> 839 MiB/s with 2,012 -> 2 opens,
+and a 400-file site 3,460 -> 401 opens. `compact` itself takes about 30-45%
+longer on large objects (1.9 -> 2.8 s for 256 MiB) because loose files are
+read in manifest rather than directory order; the ranking is a small part of
+that.
 
 **Packed chunk locator.** The in-memory locator is a sorted array of 52-byte
 records plus a prefix table, replacing a Go map. Synthetic stores of tiny
