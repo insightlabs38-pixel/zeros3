@@ -50,7 +50,7 @@ var groups = map[string][]harness{
 		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "invariance"}},
 	},
 	"apps": {
-		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "browser,artifact"}},
+		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "browser,artifact,rebalance"}},
 	},
 	"bench": {
 		{pkg: "./harness/m8_baseline", args: []string{"-bin", "@bin"}},

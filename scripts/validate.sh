@@ -17,6 +17,10 @@
 #   scripts/validate.sh tier     hot/warm/cold tier unit, crash and CLI tests (fast)
 #   scripts/validate.sh tier-life  black-box tier lifecycle harness (compact -tier,
 #                                tier move, prune + gc/repack, v1-v5 format compat)
+#   scripts/validate.sh tier-policy  content-aware tier policy: rule resolution, persistence,
+#                                hottest-reference target computation (seconds)
+#   scripts/validate.sh tier-rebalance  tier rebalance planner/executor/crash tests plus the
+#                                black-box rebalance scenario (browser + checkpoint)
 #   scripts/validate.sh vectors  golden client vectors (SigV4, presign, wire shapes) plus the
 #                                fast GetBucketLocation/DeleteObjects/probe tests (seconds)
 #   scripts/validate.sh client   Core Client Profile v1 (AWS SDK + minio-go [+ AWS CLI if
@@ -115,6 +119,11 @@ stage_tier-life() {
 	cd "$root/testing-harnesses" &&
 		ZEROS3_BIN="$bin" go run ./harness/z2_storage_tiers -seg-mib "${TIER_SEG_MIB:-4}" -baseline-bin "$base"
 }
+stage_tier-policy() { cd "$root" && go test -count=1 -run 'TestTierPolicy_' .; }
+stage_tier-rebalance() {
+	cd "$root" && go test -count=1 -run 'TestTierRebalance_' . && build_bin &&
+		cd "$root/testing-harnesses" && ZEROS3_BIN="$bin" go run ./harness/z2_consumer -scenario rebalance
+}
 stage_vectors() {
 	cd "$root" && go test -count=1 -run 'TestVectors_|TestGetBucketLocation|TestDeleteObjects_|TestProbe' . &&
 		{ ! command -v python3 >/dev/null || python3 testing-harnesses/vectors/gen.py --check; }
@@ -124,7 +133,7 @@ stage_apps() { build_bin && cd "$root/testing-harnesses" && go run ./runner -gro
 stage_repro() { cd "$root" && sh scripts/reproducible_build.sh; }
 
 stage_race()    { cd "$root" && go test -race -count=1 ./...; }
-stage_crash()   { cd "$root" && go test -race -count=1 -run 'TestRepack_|TestPack_|TestPackCompress|TestTier_' .; }
+stage_crash()   { cd "$root" && go test -race -count=1 -run 'TestRepack_|TestPack_|TestPackCompress|TestTier_|TestTierRebalance_' .; }
 stage_index() { cd "$root" && go test -count=1 -race -run 'TestLocator_' .; }
 stage_index-scale() { cd "$root" && ZEROS3_LOCATOR_SCALE="${LOCATOR_SCALE:-5000000}" go test -count=1 -run 'TestLocatorScale' -v .; }
 stage_repack() {
@@ -145,7 +154,7 @@ normal="format modules test static s3 sync repro"
 heavy="race crash repack compact compression index-scale bulk-bench history-life tier-life"
 
 case "${1:-normal}" in
-list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk history history-life tier tier-life vectors client apps"; exit 0 ;;
+list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk history history-life tier tier-policy tier-rebalance tier-life vectors client apps"; exit 0 ;;
 normal) stages=$normal ;;
 heavy) stages=$heavy ;;
 all) stages="$normal $heavy" ;;
