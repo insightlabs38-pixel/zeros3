@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,36 +64,37 @@ import (
 //   Lines    Area
 //   -----    ----
 //       97    Test helpers, fixtures, and TestMain
-//      249    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//     1265    SigV4 authentication (header and payload-mode)
-//     1654    Checksums: CRC32 and Content-MD5
-//     2157    End-to-end HTTP and crash/recovery tests
-//     2831    M2: bucket/object/listing/journal protocol compatibility
-//     3882    M3: CDC/dedup evidence, stats, verify
-//     5018    M3: CopyObject
-//     5565    M3: single-range GET
-//     5766    M5-B: multipart upload
-//     7044    Presigned URLs and virtual-hosted-style addressing
-//     8073    M5-C: version history, restore, GC, storage-efficiency proof
-//     9919    M5-D/P2: ListParts and ListMultipartUploads pagination
-//    11638    M6: delta sync (`zeros3 sync`)
-//    13380    M6C: recursive directory sync
-//    14440    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//    15769    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    17094    M8C: namespace (prefix/bucket) replication
-//    18133    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    19225    M8E: durable namespace snapshots and restore
-//    21303    M8F: conditional operations (Put/Get/Copy preconditions)
-//    22708    M8G: introspection (dry-run planning, diff, inspect)
-//    24660    M8H: bounded parallel chunk transfer
-//    26021    P1: environment credentials, HTTP hardening/shutdown, TLS
-//    27337    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//    28267    Streaming reads and aws-chunked SigV4
-//    29115    Packed CAS: pack format, mixed reads, compaction, crash points
-//    30092    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//    31244    Adaptive pack compression (codec 1, DEFLATE)
-//    32278    Scalable packed-chunk locator (sorted immutable levels)
-//    32764    Z2-07: bulk logical-chunk transport (v2)
+//     252    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//    1268    SigV4 authentication (header and payload-mode)
+//    1657    Checksums: CRC32 and Content-MD5
+//    2160    End-to-end HTTP and crash/recovery tests
+//    2834    M2: bucket/object/listing/journal protocol compatibility
+//    3885    M3: CDC/dedup evidence, stats, verify
+//    5021    M3: CopyObject
+//    5568    M3: single-range GET
+//    5769    M5-B: multipart upload
+//    7047    Presigned URLs and virtual-hosted-style addressing
+//    8076    M5-C: version history, restore, GC, storage-efficiency proof
+//    9543    Z2-08: history retention (prune)
+//   10634    M5-D/P2: ListParts and ListMultipartUploads pagination
+//   12353    M6: delta sync (`zeros3 sync`)
+//   14095    M6C: recursive directory sync
+//   15155    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//   16484    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//   17809    M8C: namespace (prefix/bucket) replication
+//   18848    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//   19940    M8E: durable namespace snapshots and restore
+//   22018    M8F: conditional operations (Put/Get/Copy preconditions)
+//   23423    M8G: introspection (dry-run planning, diff, inspect)
+//   25375    M8H: bounded parallel chunk transfer
+//   26756    P1: environment credentials, HTTP hardening/shutdown, TLS
+//   28072    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//   29002    Streaming reads and aws-chunked SigV4
+//   29850    Packed CAS: pack format, mixed reads, compaction, crash points
+//   30827    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//   31979    Adaptive pack compression (codec 1, DEFLATE)
+//   33013    Scalable packed-chunk locator (sorted immutable levels)
+//   33499    Z2-07: bulk logical-chunk transport (v2)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -9534,6 +9536,718 @@ func TestJournal_GenuinelyUnknownRecordTypeStillFailsClosed(t *testing.T) {
 
 	if _, err := OpenStore(dir); err == nil {
 		t.Fatalf("expected OpenStore to fail closed on a genuinely unknown record type")
+	}
+}
+
+// =============================================================================
+// History retention (prune), section 7d
+// =============================================================================
+
+func pruneHistoryIDs(t *testing.T, s *Store, bucket, key string) []string {
+	t.Helper()
+	var ids []string
+	for _, e := range historyFor(t, s, bucket, key) {
+		ids = append(ids, e.versionID)
+	}
+	return ids
+}
+
+// pruneFixture creates bucket "b" where each key is written versions+1 times,
+// leaving `versions` historical rows per key.
+func pruneFixture(t *testing.T, keys []string, versions int) (string, *Store) {
+	t.Helper()
+	dir, s := mustCreateLocalStore(t)
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range keys {
+		for i := 0; i <= versions; i++ {
+			mustPutObject(t, s, "b", k, []byte(fmt.Sprintf("%s generation %d", k, i)), "text/plain", nil)
+		}
+	}
+	return dir, s
+}
+
+// pruneTestFrameTarget closes a prune frame after about two version IDs.
+const pruneTestFrameTarget = 120
+
+func pruneKeep(n int) *int { return &n }
+
+func mustPrunePlan(t *testing.T, s *Store, opt historyPruneOptions) HistoryPruneResult {
+	t.Helper()
+	res, err := s.PlanHistoryPrune(opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func journalBytes(t *testing.T, dir string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "journal", "visibility.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func formatVersionOf(t *testing.T, dir string) int {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f storeFormat
+	if err := json.Unmarshal(b, &f); err != nil {
+		t.Fatal(err)
+	}
+	return f.StoreFormatVersion
+}
+
+func versionIDsOf(r HistoryPruneResult) []string {
+	var ids []string
+	for _, v := range r.Versions {
+		ids = append(ids, v.VersionID)
+	}
+	return ids
+}
+
+func TestPrune_SelectTable(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	mk := func(n int) []*historyVersionEntry {
+		var out []*historyVersionEntry
+		for i := 0; i < n; i++ { // seq 10,20,...; archived one hour apart
+			out = append(out, &historyVersionEntry{versionID: fmt.Sprintf("v%d", i), seq: uint64(10 * (i + 1)), archivedAt: base.Add(time.Duration(i) * time.Hour)})
+		}
+		return out
+	}
+	at := func(h int, extra time.Duration) *time.Time {
+		c := base.Add(time.Duration(h)*time.Hour + extra)
+		return &c
+	}
+	cases := []struct {
+		name   string
+		n      int
+		keep   *int
+		cutoff *time.Time
+		want   []string
+	}{
+		{"empty", 0, pruneKeep(0), nil, nil},
+		{"one, keep 0", 1, pruneKeep(0), nil, []string{"v0"}},
+		{"one, keep 1", 1, pruneKeep(1), nil, nil},
+		{"several, keep 0", 4, pruneKeep(0), nil, []string{"v0", "v1", "v2", "v3"}},
+		{"several, keep 1", 4, pruneKeep(1), nil, []string{"v0", "v1", "v2"}},
+		{"keep == len", 4, pruneKeep(4), nil, nil},
+		{"keep > len", 4, pruneKeep(9), nil, nil},
+		{"age none eligible", 4, nil, at(0, 0), nil},
+		{"age all eligible", 4, nil, at(99, 0), []string{"v0", "v1", "v2", "v3"}},
+		{"age exact boundary is protected", 4, nil, at(2, 0), []string{"v0", "v1"}},
+		{"age one ns past boundary", 4, nil, at(2, time.Nanosecond), []string{"v0", "v1", "v2"}},
+		{"combined: keep protects newer", 4, pruneKeep(3), at(99, 0), []string{"v0"}},
+		{"combined: age protects newer", 4, pruneKeep(0), at(2, 0), []string{"v0", "v1"}},
+		{"combined: both protect", 4, pruneKeep(2), at(1, 0), []string{"v0"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in := mk(c.n)
+			for i, j := 0, len(in)-1; i < j; i, j = i+1, j-1 { // order must come from seq, not input order
+				in[i], in[j] = in[j], in[i]
+			}
+			var got []string
+			for _, e := range selectPruneVersions(in, c.keep, c.cutoff) {
+				got = append(got, e.versionID)
+			}
+			if !slices.Equal(got, c.want) {
+				t.Fatalf("selected %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestPrune_PlanScopeAndValidation(t *testing.T) {
+	_, s := pruneFixture(t, []string{"a/1", "a/2", "b/1"}, 3)
+	all := mustPrunePlan(t, s, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(1)})
+	if all.KeysMatched != 3 || all.HistoricalExamined != 9 || all.HistoricalSelected != 6 || all.HistoricalRetained != 3 {
+		t.Fatalf("bucket scope: %+v", all)
+	}
+	if again := mustPrunePlan(t, s, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(1)}); !slices.Equal(versionIDsOf(all), versionIDsOf(again)) {
+		t.Fatal("plan is not deterministic")
+	}
+	for i := 1; i < len(all.Versions); i++ { // (bucket, key, seq) order
+		p, q := all.Versions[i-1], all.Versions[i]
+		if p.Key > q.Key || p.Key == q.Key && p.seq >= q.seq {
+			t.Fatalf("plan not ordered: %+v then %+v", p, q)
+		}
+	}
+	if p := mustPrunePlan(t, s, historyPruneOptions{Bucket: "b", Prefix: "a/", KeepLast: pruneKeep(1)}); p.KeysMatched != 2 || p.HistoricalSelected != 4 {
+		t.Fatalf("prefix scope: %+v", p)
+	}
+	if p := mustPrunePlan(t, s, historyPruneOptions{Bucket: "b", Key: "b/1", KeepLast: pruneKeep(0)}); p.KeysMatched != 1 || p.HistoricalSelected != 3 || p.SelectedLogicalBytes == 0 {
+		t.Fatalf("key scope: %+v", p)
+	}
+	if p := mustPrunePlan(t, s, historyPruneOptions{Bucket: "other", KeepLast: pruneKeep(0)}); p.KeysMatched != 0 || len(p.Versions) != 0 {
+		t.Fatalf("unknown bucket: %+v", p)
+	}
+
+	// One cutoff per plan: nothing was archived before an hour ago, everything before an hour from now.
+	now := time.Now()
+	if p := mustPrunePlan(t, s, historyPruneOptions{Bucket: "b", OlderThan: time.Hour, Now: now}); p.HistoricalSelected != 0 || p.Cutoff == "" {
+		t.Fatalf("age none eligible: %+v", p)
+	}
+	if p := mustPrunePlan(t, s, historyPruneOptions{Bucket: "b", OlderThan: time.Hour, Now: now.Add(2 * time.Hour)}); p.HistoricalSelected != 9 {
+		t.Fatalf("age all eligible: %+v", p)
+	}
+
+	for name, opt := range map[string]historyPruneOptions{
+		"no bucket":        {KeepLast: pruneKeep(1)},
+		"no criterion":     {Bucket: "b"},
+		"key and prefix":   {Bucket: "b", Key: "a/1", Prefix: "a/", KeepLast: pruneKeep(1)},
+		"negative keep":    {Bucket: "b", KeepLast: pruneKeep(-1)},
+		"negative age":     {Bucket: "b", OlderThan: -time.Hour},
+		"prefix only, bad": {Bucket: "b", Prefix: "a/"},
+	} {
+		if _, err := s.PlanHistoryPrune(opt); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+func TestPrune_DeletedBucketHistoryIsPruneable(t *testing.T) {
+	dir, s := pruneFixture(t, []string{"k"}, 3)
+	if err := s.DeleteObject("b", "k"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	res, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(0)}, true)
+	if err != nil || res.HistoricalSelected != 4 || res.VersionsPruned != 4 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if n := len(historyFor(t, s2, "b", "k")); n != 0 {
+		t.Fatalf("history rows left: %d", n)
+	}
+	if len(s2.history) != 0 {
+		t.Fatalf("empty history maps not released: %+v", s2.history)
+	}
+}
+
+func TestPrune_DryRunMakesNoChange(t *testing.T) {
+	dir, s := pruneFixture(t, []string{"k"}, 3)
+	s.Close()
+	journal, format := journalBytes(t, dir), formatVersionOf(t, dir)
+	res, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(1)}, false)
+	if err != nil || res.Applied || res.HistoricalSelected != 2 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if !bytes.Equal(journal, journalBytes(t, dir)) || formatVersionOf(t, dir) != format {
+		t.Fatal("dry run changed the journal or FORMAT.json")
+	}
+	if format != storeFormatVersion {
+		t.Fatalf("fresh store format = %d", format)
+	}
+}
+
+func TestPrune_ApplyBatchedFramesMatchReplay(t *testing.T) {
+	dir, s := pruneFixture(t, []string{"a", "b", "c"}, 5)
+	plan := mustPrunePlan(t, s, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(2)})
+	framesBefore := s.journal.nextSeq
+	if err := s.applyHistoryPrune(&plan, pruneTestFrameTarget); err != nil { // tiny target: several frames
+		t.Fatal(err)
+	}
+	if plan.JournalFrames < 3 || plan.VersionsPruned != 9 || s.journal.nextSeq != framesBefore+uint64(plan.JournalFrames) {
+		t.Fatalf("frames/pruned: %+v", plan)
+	}
+	if v := formatVersionOf(t, dir); v != storeFormatVersionHistoryPrune {
+		t.Fatalf("FORMAT.json version = %d, want %d", v, storeFormatVersionHistoryPrune)
+	}
+	live := map[string][]string{}
+	for _, k := range []string{"a", "b", "c"} {
+		live[k] = pruneHistoryIDs(t, s, "b", k)
+		if len(live[k]) != 2 {
+			t.Fatalf("%s: retained %d, want 2", k, len(live[k]))
+		}
+	}
+	s.Close()
+
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	for k, want := range live {
+		if got := pruneHistoryIDs(t, s2, "b", k); !slices.Equal(got, want) {
+			t.Fatalf("replay differs for %s: %v vs live %v", k, got, want)
+		}
+		if _, body, err := s2.GetObject("b", k); err != nil || string(body) != k+" generation 5" {
+			t.Fatalf("current %s: %q %v", k, body, err)
+		}
+	}
+	// Converged: nothing left to plan; re-applying the stale plan is a harmless no-op.
+	if p := mustPrunePlan(t, s2, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(2)}); p.HistoricalSelected != 0 {
+		t.Fatalf("not converged: %+v", p)
+	}
+	if err := s2.applyHistoryPrune(&plan, pruneTestFrameTarget); err != nil {
+		t.Fatal(err)
+	}
+	if plan.VersionsPruned != 9 { // unchanged: the second pass removed nothing
+		t.Fatalf("stale plan removed rows: %+v", plan)
+	}
+	for k, want := range live {
+		if got := pruneHistoryIDs(t, s2, "b", k); !slices.Equal(got, want) {
+			t.Fatalf("stale plan changed %s", k)
+		}
+	}
+}
+
+func TestPrune_ReplayRejectsMalformedAndToleratesAbsent(t *testing.T) {
+	id := newUUIDv7()
+	frame := func(payload string) func(t *testing.T) error {
+		return func(t *testing.T) error {
+			dir, s := pruneFixture(t, []string{"k"}, 1)
+			if _, err := s.journal.appendFrame(recordTypePruneHistory, []byte(payload)); err != nil {
+				t.Fatal(err)
+			}
+			s.Close()
+			s2, err := OpenStore(dir)
+			if err == nil {
+				if n := len(historyFor(t, s2, "b", "k")); n != 1 {
+					t.Fatalf("history rows = %d", n)
+				}
+				s2.Close()
+			}
+			return err
+		}
+	}
+	bad := map[string]string{
+		"not json":       `{`,
+		"no entries":     `{"entries":[]}`,
+		"empty bucket":   `{"entries":[{"bucket":"","key":"k","version_ids":["` + id + `"]}]}`,
+		"empty key":      `{"entries":[{"bucket":"b","key":"","version_ids":["` + id + `"]}]}`,
+		"no ids":         `{"entries":[{"bucket":"b","key":"k","version_ids":[]}]}`,
+		"bad id":         `{"entries":[{"bucket":"b","key":"k","version_ids":["nope"]}]}`,
+		"upper-case id":  `{"entries":[{"bucket":"b","key":"k","version_ids":["` + strings.ToUpper(id) + `"]}]}`,
+		"unknown field":  `{"entries":[{"bucket":"b","key":"k","version_ids":["` + id + `"]}],"x":1}`,
+		"trailing value": `{"entries":[{"bucket":"b","key":"k","version_ids":["` + id + `"]}]} {}`,
+	}
+	for name, payload := range bad {
+		t.Run(name, func(t *testing.T) {
+			if err := frame(payload)(t); err == nil || !strings.Contains(err.Error(), "prune-history") {
+				t.Fatalf("expected a prune-history replay failure, got %v", err)
+			}
+		})
+	}
+	t.Run("absent version and bucket are no-ops", func(t *testing.T) {
+		p := `{"entries":[{"bucket":"b","key":"k","version_ids":["` + id + `"]},{"bucket":"gone","key":"x","version_ids":["` + id + `"]}]}`
+		if err := frame(p)(t); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestPrune_ExclusiveStoreOwnership(t *testing.T) {
+	dir, s := pruneFixture(t, []string{"k"}, 2)
+	s.Close()
+	lock, err := acquireStoreLock(dir, false) // a live server holds a shared lock
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.release()
+	for _, apply := range []bool{false, true} {
+		if _, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(0)}, apply); !errors.Is(err, errGCStoreInUse) {
+			t.Fatalf("apply=%v: err = %v, want errGCStoreInUse", apply, err)
+		}
+	}
+}
+
+func TestPrune_ParseRetentionAge(t *testing.T) {
+	for in, want := range map[string]time.Duration{"30d": 30 * 24 * time.Hour, "1d": 24 * time.Hour, "36h": 36 * time.Hour, "90m": 90 * time.Minute} {
+		if got, err := parseRetentionAge(in); err != nil || got != want {
+			t.Errorf("%q: %v %v", in, got, err)
+		}
+	}
+	for _, in := range []string{"", "0", "0d", "-1d", "d", "1.5d", "abc", "-5h", "9999999999999d"} {
+		if _, err := parseRetentionAge(in); err == nil {
+			t.Errorf("%q: expected an error", in)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// Crash boundaries
+// -----------------------------------------------------------------------
+
+func TestPrune_CrashBoundaries(t *testing.T) {
+	const last = -1
+	type tc struct {
+		name       string
+		crashAt    string
+		nth        int   // crash on the nth firing of crashAt; last = the final frame's
+		wantFormat int   // FORMAT.json version after the crash
+		wantFrames []int // acceptable counts of complete frames applied after restart; last = all
+		tear       bool  // truncate the unacknowledged frame mid-way
+	}
+	cases := []tc{
+		{"before format", hookPruneBeforeFormat, 1, storeFormatVersion, []int{0}, false},
+		{"after format", hookPruneAfterFormat, 1, storeFormatVersionHistoryPrune, []int{0}, false},
+		{"before first frame", hookPruneBeforeFrame, 1, storeFormatVersionHistoryPrune, []int{0}, false},
+		{"after first frame", hookPruneAfterFrame, 1, storeFormatVersionHistoryPrune, []int{1}, false},
+		{"between frames", hookPruneBeforeFrame, 3, storeFormatVersionHistoryPrune, []int{2}, false},
+		{"after all frames", hookPruneAfterFrame, last, storeFormatVersionHistoryPrune, []int{last}, false},
+		{"frame written, outcome unknown", hookAfterJournalWriteBeforeSync, 2, storeFormatVersionHistoryPrune, []int{1, 2}, false},
+		{"torn frame", hookAfterJournalWriteBeforeSync, 2, storeFormatVersionHistoryPrune, []int{1}, true},
+	}
+	keys := []string{"a", "b", "c", "d"}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir, s := pruneFixture(t, keys, 3)
+			s.Close()
+			opt := historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(1)}
+			s, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan := mustPrunePlan(t, s, opt)
+			frames, err := buildPruneFrames(plan.Versions, pruneTestFrameTarget)
+			if err != nil || len(frames) < 4 {
+				t.Fatalf("need several frames, got %d (%v)", len(frames), err)
+			}
+			nth := c.nth
+			if nth == last {
+				nth = len(frames)
+			}
+			fired := 0
+			withTestHook(t, func(point string) {
+				if point == c.crashAt {
+					if fired++; fired == nth {
+						panic(simulatedCrash{point: point})
+					}
+				}
+			})
+			runExpectingSimulatedCrash(t, func() { _ = s.applyHistoryPrune(&plan, pruneTestFrameTarget) })
+			testHook = nil
+			start := s.journal.writeOffset // end of the last acknowledged frame
+			s.Close()
+			if c.tear {
+				path := filepath.Join(dir, "journal", "visibility.log")
+				if err := os.Truncate(path, start+(int64(len(journalBytes(t, dir)))-start)/2); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if v := formatVersionOf(t, dir); v != c.wantFormat {
+				t.Fatalf("format = %d, want %d", v, c.wantFormat)
+			}
+
+			s2, err := OpenStore(dir)
+			if err != nil {
+				t.Fatalf("restart: %v", err)
+			}
+			defer s2.Close()
+			pruned := 0
+			for _, k := range keys {
+				if _, body, err := s2.GetObject("b", k); err != nil || string(body) != k+" generation 3" {
+					t.Fatalf("current %s damaged: %q %v", k, body, err)
+				}
+				pruned += 3 - len(pruneHistoryIDs(t, s2, "b", k))
+			}
+			// The visible state is exactly a whole number of frames: never a partial one.
+			rows := func(n int) (total int) {
+				for _, f := range frames[:n] {
+					p, _ := parsePruneHistoryPayload(f)
+					for _, e := range p.Entries {
+						total += len(e.VersionIDs)
+					}
+				}
+				return total
+			}
+			ok, want := false, 0
+			for _, n := range c.wantFrames {
+				if n == last {
+					n = len(frames)
+				}
+				if rows(n) == pruned {
+					ok, want = true, rows(n)
+				}
+			}
+			if !ok {
+				t.Fatalf("%d rows pruned after restart is not any of frame counts %v", pruned, c.wantFrames)
+			}
+
+			// Rerunning the same retention command converges.
+			res, err := pruneHistoryStoreOpen(s2, opt)
+			if err != nil || res.VersionsPruned != plan.HistoricalSelected-want {
+				t.Fatalf("rerun: %+v %v (want %d more)", res, err, plan.HistoricalSelected-want)
+			}
+			for _, k := range keys {
+				if n := len(pruneHistoryIDs(t, s2, "b", k)); n != 1 {
+					t.Fatalf("%s retains %d rows after convergence, want 1", k, n)
+				}
+			}
+		})
+	}
+}
+
+// pruneHistoryStoreOpen plans and applies on an already-open store.
+func pruneHistoryStoreOpen(s *Store, opt historyPruneOptions) (HistoryPruneResult, error) {
+	res, err := s.PlanHistoryPrune(opt)
+	if err != nil {
+		return res, err
+	}
+	err = s.applyHistoryPrune(&res, pruneTestFrameTarget)
+	return res, err
+}
+
+// -----------------------------------------------------------------------
+// Root independence and physical reclamation
+// -----------------------------------------------------------------------
+
+func TestPrune_SnapshotSurvivesPruneThenGC(t *testing.T) {
+	dir, s := mustCreateLocalStore(t)
+	for _, b := range []string{"src", "dst"} {
+		if err := s.CreateBucket(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, b, c := genRandomBytes(701, 300_000), genRandomBytes(702, 300_000), genRandomBytes(703, 300_000)
+	mustPutObject(t, s, "src", "k", a, "application/octet-stream", nil)
+	entries, err := s.captureSnapshotEntries("src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "src", Entries: entries}
+	if err := s.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, s, "src", "k", b, "application/octet-stream", nil) // archives a
+	mustPutObject(t, s, "src", "k", c, "application/octet-stream", nil) // archives b
+	if err := s.DeleteObject("src", "k"); err != nil {                  // archives c
+		t.Fatal(err)
+	}
+	s.Close()
+
+	if gc, err := gcCollect(dir, false); err != nil || gc.ChunksUnreachable != 0 || gc.HistoricalRootCount != 3 || gc.SnapshotRootCount != 1 {
+		t.Fatalf("before prune: %+v %v", gc, err)
+	}
+	res, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "src", KeepLast: pruneKeep(0)}, true)
+	if err != nil || res.VersionsPruned != 3 {
+		t.Fatalf("prune: %+v %v", res, err)
+	}
+	dry, err := gcCollect(dir, false)
+	if err != nil || !dry.LiveSetOK || dry.HistoricalRootCount != 0 || dry.SnapshotRootCount != 1 || dry.ManifestsUnreachable != 2 || dry.ChunksUnreachable == 0 {
+		t.Fatalf("after prune: %+v %v", dry, err)
+	}
+	if app, err := gcCollect(dir, true); err != nil || app.ManifestsDeleted != 2 || app.ChunksDeleted != dry.ChunksUnreachable {
+		t.Fatalf("gc apply: %+v %v", app, err)
+	}
+	if gc, err := gcCollect(dir, false); err != nil || gc.ChunksUnreachable != 0 || gc.ManifestsUnreachable != 0 {
+		t.Fatalf("gc not converged: %+v %v", gc, err)
+	}
+
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if v, err := reopened.Verify(true); err != nil || !v.OK() {
+		t.Fatalf("deep verify: %+v %v", v, err)
+	}
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	ts := httptest.NewServer(NewServer(reopened, creds, defaultRegion))
+	defer ts.Close()
+	cfg := func(bucket string) syncClientConfig {
+		return syncClientConfig{Endpoint: ts.URL, Bucket: bucket, Creds: creds, Region: defaultRegion, HTTPClient: ts.Client()}
+	}
+	result, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg("src"), SnapshotID: desc.SnapshotID, Dest: cfg("dst")})
+	if err != nil || !result.OK() || result.Replicated != 1 {
+		t.Fatalf("snapshot restore after prune+gc: %+v %v", result, err)
+	}
+	if _, body, err := reopened.GetObject("dst", "k"); err != nil || !bytes.Equal(body, a) {
+		t.Fatalf("restored content differs: %v", err)
+	}
+}
+
+func TestPrune_SharedAndRestoredRootsStayPinned(t *testing.T) {
+	dir, s := mustCreateLocalStore(t)
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	x, y, z := genRandomBytes(711, 300_000), genRandomBytes(712, 300_000), genRandomBytes(713, 300_000)
+	put := func(key string, body []byte) { mustPutObject(t, s, "b", key, body, "application/octet-stream", nil) }
+	put("k", x)
+	put("k", y) // history h1 -> manifest X
+	h1 := pruneHistoryIDs(t, s, "b", "k")[0]
+	if _, _, err := s.RestoreObjectVersion("b", "k", h1); err != nil { // current -> X again; archives Y (h2)
+		t.Fatal(err)
+	}
+	put("k", z) // archives the restored X as h3: h1 and h3 share one manifest
+	put("k2", x)
+	ids := pruneHistoryIDs(t, s, "b", "k")
+	if len(ids) != 3 {
+		t.Fatalf("history = %v", ids)
+	}
+	e1, e3 := historyFor(t, s, "b", "k")[0], historyFor(t, s, "b", "k")[2]
+	if e1.manifestUUID != e3.manifestUUID {
+		t.Fatal("fixture: h1 and h3 should share a manifest")
+	}
+	gcDry := func() GCResult {
+		t.Helper()
+		s.Close()
+		gc, err := gcCollect(dir, false)
+		if err != nil || !gc.LiveSetOK {
+			t.Fatalf("gc: %+v %v", gc, err)
+		}
+		var oerr error
+		if s, oerr = OpenStore(dir); oerr != nil {
+			t.Fatal(oerr)
+		}
+		return gc
+	}
+
+	// Pruning h1 alone leaves the shared manifest pinned through h3.
+	if res := mustPrunePlan(t, s, historyPruneOptions{Bucket: "b", Key: "k", KeepLast: pruneKeep(2)}); !slices.Equal(versionIDsOf(res), []string{h1}) {
+		t.Fatalf("plan = %v, want only h1", versionIDsOf(res))
+	}
+	s.Close()
+	if res, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", Key: "k", KeepLast: pruneKeep(2)}, true); err != nil || res.VersionsPruned != 1 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	var err error
+	if s, err = OpenStore(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := pruneHistoryIDs(t, s, "b", "k"); len(got) != 2 || got[0] == h1 {
+		t.Fatalf("history after pruning h1 = %v", got)
+	}
+	if gc := gcDry(); gc.ChunksUnreachable != 0 || gc.ManifestsUnreachable != 0 {
+		t.Fatalf("shared manifest lost its pin: %+v", gc)
+	}
+
+	// A restored root is an ordinary current root: pruning all history keeps it.
+	if _, _, err := s.RestoreObjectVersion("b", "k", e3.versionID); err != nil { // current -> X; archives Z
+		t.Fatal(err)
+	}
+	s.Close()
+	if res, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(0)}, true); err != nil || res.HistoricalExamined != 3 || res.VersionsPruned != 3 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if s, err = OpenStore(dir); err != nil {
+		t.Fatal(err)
+	}
+	// Y and Z lost their last root; X stays reachable via current k and k2.
+	if gc := gcDry(); gc.ManifestsUnreachable != 2 || gc.ChunksUnreachable == 0 {
+		t.Fatalf("after pruning all history: %+v", gc)
+	}
+	s.Close()
+	if _, err := gcCollect(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	if s, err = OpenStore(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"k", "k2"} {
+		if _, body, err := s.GetObject("b", k); err != nil || !bytes.Equal(body, x) {
+			t.Fatalf("%s after gc: %v", k, err)
+		}
+	}
+	if v, err := s.Verify(true); err != nil || !v.OK() {
+		t.Fatalf("deep verify: %+v %v", v, err)
+	}
+}
+
+func TestPrune_PackedHistoryReclaimedByRepack(t *testing.T) {
+	dir, s := mustCreateLocalStore(t)
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	var last []byte
+	for i := 0; i < 4; i++ {
+		last = genRandomBytes(int64(720+i), 1_200_000)
+		mustPutObject(t, s, "b", "k", last, "application/octet-stream", nil)
+	}
+	s.Close()
+	compactTestDir(t, dir)
+	before, err := gcCollect(dir, false)
+	if err != nil || before.PackedDeadChunkCount != 0 || before.PackedLiveChunkCount == 0 {
+		t.Fatalf("history should pin every packed record: %+v %v", before, err)
+	}
+	if res, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(0)}, true); err != nil || res.VersionsPruned != 3 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	dead, err := gcCollect(dir, false)
+	if err != nil || dead.PackedDeadChunkCount == 0 || dead.PackedDeadBytes == 0 || dead.PackFileBytes != before.PackFileBytes {
+		t.Fatalf("pruned history should leave dead packed records and untouched packs: %+v %v", dead, err)
+	}
+	rp, err := repackStore(dir, repackTestOpt)
+	if err != nil || rp.PacksDeleted == 0 {
+		t.Fatalf("repack: %+v %v", rp, err)
+	}
+	after, err := gcCollect(dir, false)
+	if err != nil || after.PackedDeadChunkCount != 0 || after.PackFileBytes >= before.PackFileBytes {
+		t.Fatalf("repack did not reclaim: before %d after %+v %v", before.PackFileBytes, after, err)
+	}
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if _, body, err := s2.GetObject("b", "k"); err != nil || !bytes.Equal(body, last) {
+		t.Fatalf("current object after repack: %v", err)
+	}
+	if v, err := s2.Verify(true); err != nil || !v.OK() {
+		t.Fatalf("deep verify: %+v %v", v, err)
+	}
+}
+
+func TestPrune_StoreFormatVersions(t *testing.T) {
+	dir, s := pruneFixture(t, []string{"k"}, 2)
+	s.Close()
+	if res, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(5)}, true); err != nil || res.HistoricalSelected != 0 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if v := formatVersionOf(t, dir); v != storeFormatVersion {
+		t.Fatalf("a prune that selects nothing must not raise the format (got %d)", v)
+	}
+	if _, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(0)}, true); err != nil {
+		t.Fatal(err)
+	}
+	if v := formatVersionOf(t, dir); v != storeFormatVersionHistoryPrune {
+		t.Fatalf("format = %d", v)
+	}
+	compactTestDir(t, dir) // must not lower the format
+	if v := formatVersionOf(t, dir); v != storeFormatVersionHistoryPrune {
+		t.Fatalf("compact lowered the format to %d", v)
+	}
+
+	// Every format this build supports opens; one beyond it fails closed.
+	for v := storeFormatVersion; v <= storeFormatVersionHistoryPrune+1; v++ {
+		d := t.TempDir()
+		st, err := OpenStore(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.Close()
+		path := filepath.Join(d, "FORMAT.json")
+		data, _ := os.ReadFile(path)
+		var f storeFormat
+		_ = json.Unmarshal(data, &f)
+		f.StoreFormatVersion = v
+		data, _ = json.Marshal(f)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		st, err = OpenStore(d)
+		if (err == nil) != (v <= storeFormatVersionHistoryPrune) {
+			t.Fatalf("format %d: open err = %v", v, err)
+		}
+		if err == nil {
+			st.Close()
+		}
 	}
 }
 
@@ -29514,10 +30228,10 @@ func TestPack_StoreFormatVersionGate(t *testing.T) {
 		t.Fatalf("packed store format = %+v", f)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
-	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 4`), 1), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 5`), 1), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 4") {
+	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 5") {
 		t.Fatalf("unknown future version must be rejected, got %v", err)
 	}
 }
