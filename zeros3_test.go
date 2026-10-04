@@ -92,16 +92,16 @@ import (
 //   25383    M8H: bounded parallel chunk transfer
 //   26764    P1: environment credentials, HTTP hardening/shutdown, TLS
 //   28080    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//   29010    Streaming reads and aws-chunked SigV4
-//   29858    Packed CAS: pack format, mixed reads, compaction, crash points
-//   30835    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//   31987    Adaptive pack compression (codec 1, DEFLATE)
-//   33021    Scalable packed-chunk locator (sorted immutable levels)
-//   33507    Z2-07: bulk logical-chunk transport (v2)
-//   34935    Hot/warm/cold physical pack tiers
-//   35706    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//   36457    Z2-10: content-aware tier policy and rebalance
-//   37489    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//   29014    Streaming reads and aws-chunked SigV4
+//   29862    Packed CAS: pack format, mixed reads, compaction, crash points
+//   30839    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//   31991    Adaptive pack compression (codec 1, DEFLATE)
+//   33025    Scalable packed-chunk locator (sorted immutable levels)
+//   33511    Z2-07: bulk logical-chunk transport (v2)
+//   34939    Hot/warm/cold physical pack tiers
+//   35710    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//   36461    Z2-10: content-aware tier policy and rebalance
+//   37493    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -28680,7 +28680,9 @@ func TestIngestCrash_Matrix(t *testing.T) {
 				s2.Close()
 
 				res, err := gcCollect(dir, true)
-				if err != nil || !res.LiveSetOK || res.ChunksDeleted == 0 {
+				// A crash mid-stream precedes the first batch flush, so it
+				// leaves no chunks; later stages leave durable orphans.
+				if err != nil || !res.LiveSetOK || (res.ChunksDeleted == 0) != (pt.point == hookBeforeChunkWrite) {
 					t.Fatalf("gc after crash: %v %+v", err, res)
 				}
 				if pt.point == hookAfterManifestPublished && res.ManifestsDeleted != 1 {
@@ -28758,8 +28760,10 @@ func TestStreamingPut_InterruptedBodies(t *testing.T) {
 		if _, err := f.srv.store.lookupObject("b", "cut"); !errors.Is(err, errNoSuchKey) {
 			t.Fatalf("a truncated upload left a visible object: %v", err)
 		}
-		if countChunkFiles(t, f.srv.store.root) == 0 {
-			t.Fatal("expected the truncated upload's already-ingested chunks to be staged")
+		// The truncated body's partial batch was never flushed, so nothing
+		// of it is published and no staging is left behind.
+		if n := countChunkFiles(t, f.srv.store.root); n != 0 || len(casStagedFiles(t, f.srv.store.root)) != 0 {
+			t.Fatalf("a truncated upload left %d chunks / %d staged files", n, len(casStagedFiles(t, f.srv.store.root)))
 		}
 		if status, _ := f.put("cut", body, "", nil, nil, false); status != 200 {
 			t.Fatalf("retry after an aborted upload failed: %d", status)
