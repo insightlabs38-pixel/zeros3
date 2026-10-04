@@ -71,36 +71,37 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//     469    Content-defined chunking (CDC)
-//     595    Content-addressed chunk storage (CAS)
-//     773    Packed CAS (immutable packs, DEFLATE records, locator index)
-//    2120    Manifests (immutable, JSON)
-//    2219    Visibility journal (append-only, checksummed)
-//    2632    Store: format, namespace, and object CRUD
-//    3451    Version history/restore, history pruning, ListObjectsV2
-//    3924    SigV4 authentication (header and presigned-URL)
-//    4879    Request payload checksums and S3-shaped XML error/response types
-//    5095    HTTP routing and S3 operation handlers
-//    5508    Conditional operations (PUT/GET/HEAD preconditions)
-//    6176    CopyObject
-//    6470    Multipart upload
-//    7296    Stats and reachability scanning
-//    8023    Verify
-//    8199    Store locking and safe offline GC
-//    8456    Offline compaction (`zeros3 compact`)
-//    8990    Pack reclamation and repacking (`zeros3 repack`)
-//    9367    Physical tiers: status and pack movement (`zeros3 tier`)
-//    9988    Streaming object reads (full and ranged GET)
-//   10113    Delta sync client, credentials, and parallel transfer
-//   12063    Bulk logical-chunk transport (v2)
-//   12965    Recursive directory sync
-//   13270    Remote replication (`zeros3 replicate`)
-//   14017    Peer-assisted corruption repair (`zeros3 repair`)
-//   14529    Namespace (prefix/bucket) replication
-//   14836    Copy-on-write namespace fork (`zeros3 fork`)
-//   15044    Snapshots and restore
-//   16191    Structural diff and inspect (introspection)
-//   17467    CLI dispatch, HTTP server/startup, and main
+//     475    Content-defined chunking (CDC)
+//     601    Content-addressed chunk storage (CAS)
+//     779    Packed CAS (immutable packs, DEFLATE records, locator index)
+//    2126    Manifests (immutable, JSON)
+//    2225    Visibility journal (append-only, checksummed)
+//    2638    Store: format, namespace, and object CRUD
+//    3457    Version history/restore, history pruning, ListObjectsV2
+//    3930    SigV4 authentication (header and presigned-URL)
+//    4885    Request payload checksums and S3-shaped XML error/response types
+//    5101    HTTP routing and S3 operation handlers
+//    5514    Conditional operations (PUT/GET/HEAD preconditions)
+//    6182    CopyObject
+//    6476    Multipart upload
+//    7302    Stats and reachability scanning
+//    8060    Verify
+//    8236    Store locking and safe offline GC
+//    8493    Offline compaction (`zeros3 compact`)
+//    9027    Pack reclamation and repacking (`zeros3 repack`)
+//    9470    Physical tiers: status and pack movement (`zeros3 tier`)
+//    9982    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//   11046    Streaming object reads (full and ranged GET)
+//   11171    Delta sync client, credentials, and parallel transfer
+//   13157    Bulk logical-chunk transport (v2)
+//   14061    Recursive directory sync
+//   14366    Remote replication (`zeros3 replicate`)
+//   15113    Peer-assisted corruption repair (`zeros3 repair`)
+//   15625    Namespace (prefix/bucket) replication
+//   15932    Copy-on-write namespace fork (`zeros3 fork`)
+//   16140    Snapshots and restore
+//   17287    Structural diff and inspect (introspection)
+//   18563    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -437,6 +438,11 @@ const (
 	hookBeforePackDelete = "before-pack-delete"
 	hookPackDeleted      = "pack-deleted"
 	hookRepackDone       = "repack-done"
+
+	// Tier rebalance boundaries (section 13f), beyond the pack and move hooks.
+	hookRebalanceBeforeStage = "rebalance-before-stage"
+	hookRebalancePublished   = "rebalance-published"
+	hookRebalanceDone        = "rebalance-done"
 
 	// Cross-tier pack move boundaries (section 13e), in order.
 	hookMoveStart        = "move-start"
@@ -7591,6 +7597,33 @@ func (r reachabilityResult) OK() bool {
 // -- see the section 12a doc comment. It never mutates the store; it only
 // reads the journal, manifests, and (when deep) chunk content.
 func (s *Store) computeReachability(deep bool) (reachabilityResult, error) {
+	return s.computeReachabilityObserved(deep, nil)
+}
+
+// rootScope names the four live-root categories computeReachability walks.
+type rootScope uint8
+
+const (
+	scopeCurrent rootScope = iota
+	scopeHistory
+	scopeSnapshot
+	scopeMultipart
+	numScopes
+)
+
+func (r rootScope) String() string {
+	return [...]string{"current", "history", "snapshot", "multipart"}[min(r, numScopes-1)]
+}
+
+// rootObserver is told, once per live root whose manifest or part list is
+// readable, which bucket/key it names and which chunks it references. Tier
+// planning observes the same roots GC treats as authoritative instead of
+// walking them a second time.
+type rootObserver func(scope rootScope, bucket, key string, chunks []chunkRef)
+
+// computeReachabilityObserved is computeReachability that also reports every
+// live root to obs (nil observes nothing).
+func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reachabilityResult, error) {
 	res := reachabilityResult{
 		ReferencedManifests: map[string]bool{},
 		ReferencedChunks:    map[string]bool{},
@@ -7687,14 +7720,20 @@ func (s *Store) computeReachability(deep bool) (reachabilityResult, error) {
 	}
 
 	wantChunks := map[string]int64{} // hex sha256 -> best-known length, from every readable live manifest/part
+	want := func(scope rootScope, bucket, key string, chunks []chunkRef) {
+		for _, c := range chunks {
+			wantChunks[c.SHA256] = c.Length
+		}
+		if obs != nil {
+			obs(scope, bucket, key, chunks)
+		}
+	}
 
 	// Root category 1: current visible objects.
 	for _, o := range s.snapshotNamespace() {
 		res.CurrentRootCount++
 		if man, ok := checkRoot(o.bucket+"/"+o.key, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
-			for _, c := range man.Chunks {
-				wantChunks[c.SHA256] = c.Length
-			}
+			want(scopeCurrent, o.bucket, o.key, man.Chunks)
 		}
 	}
 	// Root category 2: retained historical versions.
@@ -7702,9 +7741,7 @@ func (s *Store) computeReachability(deep bool) (reachabilityResult, error) {
 		res.HistoricalRootCount++
 		subject := fmt.Sprintf("history:%s/%s@%s", o.bucket, o.key, o.entry.versionID)
 		if man, ok := checkRoot(subject, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
-			for _, c := range man.Chunks {
-				wantChunks[c.SHA256] = c.Length
-			}
+			want(scopeHistory, o.bucket, o.key, man.Chunks)
 		}
 	}
 	// Root category 3: active multipart uploads. These do not go through
@@ -7714,13 +7751,15 @@ func (s *Store) computeReachability(deep bool) (reachabilityResult, error) {
 		for _, p := range up.parts {
 			res.MultipartRootCount++
 			subject := fmt.Sprintf("multipart:%s/part%d", up.uploadID, p.partNumber)
+			valid := p.chunks[:0:0]
 			for i, c := range p.chunks {
 				if _, herr := decodeHexSHA256(c.SHA256); herr != nil {
 					res.addIssue("invalid", subject, fmt.Sprintf("part chunk %d has a malformed sha256: %s", i, c.SHA256))
 					continue
 				}
-				wantChunks[c.SHA256] = c.Length
+				valid = append(valid, c)
 			}
+			want(scopeMultipart, up.bucket, up.key, valid)
 		}
 	}
 	// Root category 4 (section 15h): durable namespace snapshots.
@@ -7750,9 +7789,7 @@ func (s *Store) computeReachability(deep bool) (reachabilityResult, error) {
 				continue
 			}
 			if man, ok := checkRoot(subject, se.ManifestUUID, sum); ok {
-				for _, c := range man.Chunks {
-					wantChunks[c.SHA256] = c.Length
-				}
+				want(scopeSnapshot, snap.SourceBucket, se.Key, man.Chunks)
 			}
 		}
 	}
@@ -9086,6 +9123,50 @@ func selectRepackPacks(us []packUsage, maxLivePercent int) []packUsage {
 // that lacks a verified copy elsewhere. See the section comment for the
 // order; doomed must come from packUsages on this store.
 func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, target int64, compress bool, res *RepackResult) error {
+	return s.replacePacksTo(doomed, referenced, nil, target, compress, res)
+}
+
+// tieredChunk is a live chunk a replacement must hold in tier t.
+type tieredChunk struct {
+	compactCandidate
+	t tier
+}
+
+// copyAtTier proves a verified copy of a chunk exists in tier t outside the
+// packs in skip; hot also accepts a loose file.
+func (s *Store) copyAtTier(sum [32]byte, t tier, skip map[int32]bool) error {
+	st := s.packSnap()
+	var locs [4]packLoc
+	var first error
+	for _, loc := range st.appendLocs(locs[:0], sum) {
+		if loc.tier != t || skip[loc.pack] {
+			continue
+		}
+		_, err := st.readPacked(sum, loc)
+		if err == nil {
+			return nil
+		}
+		if first == nil {
+			first = err
+		}
+	}
+	if t == tierHot {
+		if data, err := os.ReadFile(s.chunkPath(sum)); err == nil && sha256.Sum256(data) == sum {
+			return nil
+		}
+	}
+	if first != nil {
+		return first
+	}
+	return fmt.Errorf("no valid %s copy of chunk %x", t, sum)
+}
+
+// replacePacksTo is replacePacks with an optional placement: dest names the
+// tier each live chunk must end up in (nil keeps every record in the tier of
+// the pack carrying it). A live chunk is carried over unless a verified copy
+// already sits at its destination tier outside the doomed packs; chunks the
+// doomed packs hold dead are never copied.
+func (s *Store) replacePacksTo(doomed []packUsage, referenced map[string]bool, dest func([32]byte) tier, target int64, compress bool, res *RepackResult) error {
 	if len(doomed) == 0 {
 		return nil
 	}
@@ -9107,12 +9188,16 @@ func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, tar
 		for _, e := range entries {
 			if referenced[hex.EncodeToString(e.sha[:])] && !seen[e.sha] {
 				seen[e.sha] = true
-				required[u.tier] = append(required[u.tier], compactCandidate{sum: e.sha, size: int64(e.logical)})
+				to := u.tier
+				if dest != nil {
+					to = dest(e.sha)
+				}
+				required[to] = append(required[to], compactCandidate{sum: e.sha, size: int64(e.logical)})
 			}
 		}
 	}
 
-	var need []compactCandidate
+	var need []tieredChunk
 	type tierBatches struct {
 		t       tier
 		batches [][]compactCandidate
@@ -9123,15 +9208,21 @@ func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, tar
 		sort.Slice(req, func(i, j int) bool { return bytes.Compare(req[i].sum[:], req[j].sum[:]) < 0 })
 		var tneed []compactCandidate
 		for _, c := range req {
-			if _, err := s.casReadExcluding(c.sum, skip); err != nil {
+			var err error
+			if dest == nil {
+				_, err = s.casReadExcluding(c.sum, skip)
+			} else {
+				err = s.copyAtTier(c.sum, t, skip)
+			}
+			if err != nil {
 				tneed = append(tneed, c)
+				need = append(need, tieredChunk{c, t})
 			}
 		}
 		batches, tail := planPackBatches(tneed, target, target/packMinFraction)
 		if len(tail) > 0 {
 			batches = append(batches, tail)
 		}
-		need = append(need, tneed...)
 		plans = append(plans, tierBatches{t, batches})
 	}
 	read := func(sum [32]byte) ([]byte, error) { return s.casReadExcluding(sum, nil) }
@@ -9152,6 +9243,9 @@ func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, tar
 		}
 	}()
 	comp := newCompressor(compress)
+	if dest != nil {
+		fireTestHook(hookRebalanceBeforeStage)
+	}
 	for _, pl := range plans {
 		for _, batch := range pl.batches {
 			path, entries, err := s.stagePack(pl.t, batch, read, abort, comp)
@@ -9183,8 +9277,17 @@ func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, tar
 			}
 		}
 	}
+	if dest != nil {
+		fireTestHook(hookRebalancePublished)
+	}
 	for _, c := range need {
-		if _, err := s.casReadExcluding(c.sum, skip); err != nil {
+		var err error
+		if dest == nil {
+			_, err = s.casReadExcluding(c.sum, skip)
+		} else {
+			err = s.copyAtTier(c.sum, c.t, skip)
+		}
+		if err != nil {
 			return fmt.Errorf("chunk %x is not readable from the replacement packs: %w; nothing was removed", c.sum, err)
 		}
 	}
@@ -9875,15 +9978,970 @@ func runProbe(args []string) {
 	}
 }
 
+// =============================================================================
+// 13f. Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//
+// Placement is derived, never stored per chunk. A chunk may be referenced by
+// many roots (current objects, retained history, snapshots, active multipart
+// parts); each root asks for a physical tier through the policy, and the
+// chunk's effective tier is the HOTTEST tier any live root asks for:
+//
+//	current -> hot, old history -> cold, snapshot -> warm (built-in defaults)
+//	chunk shared by current + history  -> hot
+//	chunk shared by snapshot + history -> warm
+//	chunk only in history              -> cold
+//
+// Policy rules (TIER_POLICY.json, explicit overrides only) pick a requested
+// tier per root: within one scope the most specific rule wins (longest
+// bucket+prefix, then bucket-wide, then scope-wide, then the built-in
+// default). The file is administrative: no manifest, chunk identity, journal
+// record or pack records it, OpenStore never reads it, and a malformed file
+// stops only `tier policy` and `tier rebalance`.
+//
+// `tier rebalance` reuses the one reachability walk GC trusts (a rootObserver)
+// and the existing pack primitives. Per pack it chooses: leave it (every live
+// record is where policy wants it), move it whole (movePack) when every live
+// record is misplaced for one common tier and nothing is dead or redundant, or
+// rewrite its live records into target-tier packs (replacePacksTo) and only
+// then remove it. Loose chunks stay hot or are packed into their target tier.
+// `tier move` stays a low-level escape hatch that may create drift; rebalance
+// reports and corrects it.
+// =============================================================================
+
+const (
+	tierPolicyFileName      = "TIER_POLICY.json"
+	tierPolicyFormatVersion = 1
+	maxPolicyPrefixBytes    = 1024
+)
+
+// builtinScopeTiers are the requested tiers when no explicit rule matches.
+var builtinScopeTiers = [numScopes]tier{scopeCurrent: tierHot, scopeHistory: tierCold, scopeSnapshot: tierWarm, scopeMultipart: tierHot}
+
+func parseScope(v string) (rootScope, error) {
+	for sc := range numScopes {
+		if sc.String() == v {
+			return sc, nil
+		}
+	}
+	return 0, fmt.Errorf("scope must be current, history, snapshot, or multipart, not %q", v)
+}
+
+// tierPolicyRule is one explicit override. An empty bucket is scope-wide; an
+// empty prefix with a bucket is bucket-wide.
+type tierPolicyRule struct {
+	Scope  string `json:"scope"`
+	Bucket string `json:"bucket,omitempty"`
+	Prefix string `json:"prefix,omitempty"`
+	Tier   string `json:"tier"`
+}
+
+func (r tierPolicyRule) selector() [3]string { return [3]string{r.Scope, r.Bucket, r.Prefix} }
+
+func (r tierPolicyRule) validate() error {
+	if _, err := parseScope(r.Scope); err != nil {
+		return err
+	}
+	if _, err := parseTier(r.Tier); err != nil {
+		return err
+	}
+	switch {
+	case r.Bucket == "" && r.Prefix != "":
+		return errors.New("a prefix needs a bucket")
+	case strings.ContainsAny(r.Bucket, "/\x00") || !utf8.ValidString(r.Bucket):
+		return fmt.Errorf("invalid bucket name %q", r.Bucket)
+	case len(r.Prefix) > maxPolicyPrefixBytes || strings.ContainsRune(r.Prefix, 0) || !utf8.ValidString(r.Prefix):
+		return fmt.Errorf("invalid prefix %q", r.Prefix)
+	}
+	return nil
+}
+
+type tierPolicyFile struct {
+	FormatVersion int              `json:"format_version"`
+	Rules         []tierPolicyRule `json:"rules"`
+}
+
+// tierPolicy is the validated, canonically ordered rule set.
+type tierPolicy struct{ rules []tierPolicyRule }
+
+func (p *tierPolicy) canonicalize() {
+	scopeIdx := func(r tierPolicyRule) rootScope { sc, _ := parseScope(r.Scope); return sc }
+	slices.SortFunc(p.rules, func(a, b tierPolicyRule) int {
+		return cmp.Or(cmp.Compare(scopeIdx(a), scopeIdx(b)), cmp.Compare(a.Bucket, b.Bucket), cmp.Compare(a.Prefix, b.Prefix))
+	})
+}
+
+// loadTierPolicy reads TIER_POLICY.json; a missing file is the empty policy
+// (built-in defaults) and anything unparseable or invalid is an error.
+func loadTierPolicy(root string) (tierPolicy, error) {
+	path := filepath.Join(root, tierPolicyFileName)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return tierPolicy{}, nil
+	}
+	if err != nil {
+		return tierPolicy{}, err
+	}
+	bad := func(err error) (tierPolicy, error) {
+		return tierPolicy{}, fmt.Errorf("tier policy: %s is malformed (%w); fix or remove it -- ordinary reads and writes are unaffected", path, err)
+	}
+	var f tierPolicyFile
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&f); err != nil {
+		return bad(err)
+	}
+	if dec.Decode(&struct{}{}) != io.EOF {
+		return bad(errors.New("trailing data"))
+	}
+	if f.FormatVersion != tierPolicyFormatVersion {
+		return bad(fmt.Errorf("unsupported format_version %d", f.FormatVersion))
+	}
+	seen := map[[3]string]bool{}
+	for i, r := range f.Rules {
+		if err := r.validate(); err != nil {
+			return bad(fmt.Errorf("rule %d: %w", i, err))
+		}
+		if seen[r.selector()] {
+			return bad(fmt.Errorf("rule %d duplicates an earlier selector", i))
+		}
+		seen[r.selector()] = true
+	}
+	p := tierPolicy{rules: f.Rules}
+	p.canonicalize()
+	return p, nil
+}
+
+// saveTierPolicy replaces the policy file durably: stage, fsync, rename,
+// fsync the store root. A crash leaves the old or the new complete file.
+func saveTierPolicy(root string, p tierPolicy) error {
+	p.canonicalize()
+	data, err := json.MarshalIndent(tierPolicyFile{FormatVersion: tierPolicyFormatVersion, Rules: append([]tierPolicyRule{}, p.rules...)}, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(root, "tmp")
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		return err
+	}
+	if err := writeFileDurable(tmp, filepath.Join(root, tierPolicyFileName), append(data, '\n')); err != nil {
+		return err
+	}
+	return syncDir(root)
+}
+
+type resolvedRule struct {
+	bucket, prefix string
+	rank           [2]int
+	t              tier
+}
+
+// tierResolver maps one root (scope, bucket, key) to its requested tier.
+type tierResolver struct{ rules [numScopes][]resolvedRule }
+
+func (p tierPolicy) resolver() tierResolver {
+	var rs tierResolver
+	for _, r := range p.rules {
+		sc, _ := parseScope(r.Scope)
+		t, _ := parseTier(r.Tier)
+		rank := [2]int{0, 0} // scope-wide
+		if r.Bucket != "" {
+			rank = [2]int{1, 0} // bucket-wide
+			if r.Prefix != "" {
+				rank = [2]int{1, 1 + len(r.Prefix)}
+			}
+		}
+		rs.rules[sc] = append(rs.rules[sc], resolvedRule{r.Bucket, r.Prefix, rank, t})
+	}
+	return rs
+}
+
+// resolve applies the most specific matching rule of the root's scope. Two
+// matching rules cannot share a rank (that would be one selector), so the
+// choice is deterministic.
+func (rs tierResolver) resolve(scope rootScope, bucket, key string) tier {
+	best, bestRank := builtinScopeTiers[scope], [2]int{-1, -1}
+	for _, r := range rs.rules[scope] {
+		if (r.bucket == "" || r.bucket == bucket && strings.HasPrefix(key, r.prefix)) && (r.rank[0] > bestRank[0] || r.rank[0] == bestRank[0] && r.rank[1] > bestRank[1]) {
+			best, bestRank = r.t, r.rank
+		}
+	}
+	return best
+}
+
+// chunkWant is one live chunk's effective tier and the set of tiers (bit per
+// tier) some root requested for it.
+type chunkWant struct {
+	t    tier
+	mask uint8
+}
+
+// tierTargets is the derived chunk -> effective tier map. It is rebuilt from
+// policy and live roots on every use and never persisted.
+type tierTargets struct{ want map[string]chunkWant }
+
+// observer folds each root's requested tier into its chunks. The effective
+// tier is the hottest (numerically lowest) request, so the result does not
+// depend on map or root order and a colder reference never downgrades a
+// chunk a hotter root needs.
+func (tt *tierTargets) observer(rs tierResolver) rootObserver {
+	return func(scope rootScope, bucket, key string, chunks []chunkRef) {
+		t := rs.resolve(scope, bucket, key)
+		for _, c := range chunks {
+			w, ok := tt.want[c.SHA256]
+			if !ok {
+				w.t = t
+			}
+			w.t = min(w.t, t)
+			w.mask |= 1 << t
+			tt.want[c.SHA256] = w
+		}
+	}
+}
+
+func (tt *tierTargets) of(sum [32]byte) (chunkWant, bool) {
+	var hx [64]byte
+	hex.Encode(hx[:], sum[:])
+	w, ok := tt.want[string(hx[:])]
+	return w, ok
+}
+
+// TierPolicyResult is `tier policy list|set|remove`'s report.
+type TierPolicyResult struct {
+	Defaults map[string]string `json:"defaults"`
+	Rules    []tierPolicyRule  `json:"rules"`
+	Action   string            `json:"action,omitempty"` // added, replaced, removed, not-found
+}
+
+func policyResult(p tierPolicy, action string) TierPolicyResult {
+	res := TierPolicyResult{Defaults: map[string]string{}, Rules: append([]tierPolicyRule{}, p.rules...), Action: action}
+	for sc := range numScopes {
+		res.Defaults[sc.String()] = builtinScopeTiers[sc].String()
+	}
+	return res
+}
+
+// tierPolicyAdmin runs one offline policy operation. List shares the store
+// lock; set and remove need exclusive ownership. Only the policy file is
+// involved, so a store whose other tier roots are broken can still be
+// administered. mutate returns the action to report; a nil mutate lists.
+func tierPolicyAdmin(storeDir string, mutate func(*tierPolicy) (string, error)) (TierPolicyResult, error) {
+	lock, err := acquireStoreLock(storeDir, mutate != nil)
+	if err != nil {
+		return TierPolicyResult{}, err
+	}
+	defer lock.release()
+	if _, err := os.Stat(filepath.Join(storeDir, "FORMAT.json")); err != nil {
+		return TierPolicyResult{}, fmt.Errorf("tier policy: %s is not a ZeroS3 store: %w", storeDir, err)
+	}
+	p, err := loadTierPolicy(storeDir)
+	if err != nil {
+		return TierPolicyResult{}, err
+	}
+	if mutate == nil {
+		return policyResult(p, ""), nil
+	}
+	action, err := mutate(&p)
+	if err != nil {
+		return TierPolicyResult{}, err
+	}
+	if action == "not-found" {
+		return policyResult(p, action), nil
+	}
+	if err := saveTierPolicy(storeDir, p); err != nil {
+		return TierPolicyResult{}, fmt.Errorf("tier policy: saving: %w", err)
+	}
+	p.canonicalize()
+	return policyResult(p, action), nil
+}
+
+func tierPolicySet(storeDir string, r tierPolicyRule) (TierPolicyResult, error) {
+	if err := r.validate(); err != nil {
+		return TierPolicyResult{}, fmt.Errorf("tier policy set: %w", err)
+	}
+	return tierPolicyAdmin(storeDir, func(p *tierPolicy) (string, error) {
+		for i := range p.rules {
+			if p.rules[i].selector() == r.selector() {
+				p.rules[i].Tier = r.Tier
+				return "replaced", nil
+			}
+		}
+		p.rules = append(p.rules, r)
+		return "added", nil
+	})
+}
+
+// tierPolicyRemove of an absent selector is a reported no-op ("not-found"),
+// not an error, so scripted removal is idempotent.
+func tierPolicyRemove(storeDir string, r tierPolicyRule) (TierPolicyResult, error) {
+	r.Tier = tierHot.String() // selector only; a tier is not part of identity
+	if err := r.validate(); err != nil {
+		return TierPolicyResult{}, fmt.Errorf("tier policy remove: %w", err)
+	}
+	return tierPolicyAdmin(storeDir, func(p *tierPolicy) (string, error) {
+		i := slices.IndexFunc(p.rules, func(x tierPolicyRule) bool { return x.selector() == r.selector() })
+		if i < 0 {
+			return "not-found", nil
+		}
+		p.rules = slices.Delete(p.rules, i, i+1)
+		return "removed", nil
+	})
+}
+
+func printTierPolicyHuman(w io.Writer, r TierPolicyResult) {
+	if r.Action != "" {
+		fmt.Fprintf(w, "ZeroS3 tier policy: %s\n", r.Action)
+	} else {
+		fmt.Fprintln(w, "ZeroS3 tier policy")
+	}
+	fmt.Fprintln(w, "built-in defaults (a chunk takes the hottest tier any live root requests)")
+	for sc := range numScopes {
+		fmt.Fprintf(w, "  %-10s %s\n", sc, r.Defaults[sc.String()])
+	}
+	if len(r.Rules) == 0 {
+		fmt.Fprintln(w, "explicit overrides: none")
+		return
+	}
+	fmt.Fprintln(w, "explicit overrides (most specific wins within a scope)")
+	for _, x := range r.Rules {
+		where := "all buckets"
+		if x.Bucket != "" {
+			where = "bucket " + x.Bucket
+			if x.Prefix != "" {
+				where += " prefix " + strconv.Quote(x.Prefix)
+			}
+		}
+		fmt.Fprintf(w, "  %-10s %-4s %s\n", x.Scope, x.Tier, where)
+	}
+}
+
+type rebalanceOptions struct {
+	Apply       bool
+	TargetBytes int64
+	Compress    bool
+	// MinMisplacedPercent defers rewriting a pack that also keeps well-placed
+	// records unless at least this share of its live bytes is misplaced; it
+	// bounds the write amplification of fixing a few records in a big pack.
+	// Zero (the default) converges exactly.
+	MinMisplacedPercent int
+}
+
+// deferred reports whether a rewrite is below the churn threshold.
+func (c packClass) deferred(action string, pct int) bool {
+	return action == "rewrite" && c.keep > 0 && pct > 0 && c.movedLogical*100 < int64(pct)*(c.keepLogical+c.movedLogical)
+}
+
+// RebalanceStep is one source pack that is not already where policy wants it.
+type RebalanceStep struct {
+	Pack      string `json:"pack"`
+	Tier      string `json:"tier"`
+	Action    string `json:"action"` // move, rewrite, redundant, deferred (below -min-misplaced-percent)
+	To        string `json:"to,omitempty"`
+	Records   int    `json:"records"`
+	Misplaced int    `json:"misplaced_records"`
+	Kept      int    `json:"kept_records"`
+	Redundant int    `json:"redundant_records"`
+	Dead      int    `json:"dead_records"`
+	Size      int64  `json:"size"`
+}
+
+// RebalanceResult reports a rebalance dry-run (estimates) or apply (actuals).
+// Misplaced bytes are logical; written bytes are physical pack bytes, so
+// their ratio is the write amplification of fixing a small misplaced share
+// that lives inside a large immutable pack.
+type RebalanceResult struct {
+	DryRun    bool          `json:"dry_run"`
+	Estimated bool          `json:"estimated"`
+	LiveSetOK bool          `json:"live_set_ok"`
+	Issues    []VerifyIssue `json:"issues,omitempty"`
+
+	PolicyRules             int              `json:"policy_rules"`
+	RootCounts              map[string]int   `json:"root_counts"`
+	ChunksByTarget          map[string]int64 `json:"chunks_by_target"`
+	LogicalBytesByTarget    map[string]int64 `json:"logical_bytes_by_target"`
+	ChunksRequested         map[string]int64 `json:"chunks_requested"`
+	ChunksPromotedBySharing int64            `json:"chunks_promoted_by_sharing"`
+
+	LooseStayHot       int64 `json:"loose_stay_hot"`
+	LoosePackWarm      int64 `json:"loose_pack_warm"`
+	LoosePackCold      int64 `json:"loose_pack_cold"`
+	LooseRedundant     int64 `json:"loose_redundant"` // loose copies whose target-tier pack copy already exists
+	LooseUnpackable    int64 `json:"loose_unpackable"`
+	LoosePacked        int64 `json:"loose_packed"`
+	LooseRemoved       int64 `json:"loose_removed"`
+	LoosePackedBytes   int64 `json:"loose_packed_logical_bytes"`
+	PacksTotal         int   `json:"packs_total"`
+	PacksCompliant     int   `json:"packs_compliant"`
+	PacksWholeMove     int   `json:"packs_whole_move"`
+	PacksRewrite       int   `json:"packs_rewrite"`
+	PacksRedundant     int   `json:"packs_redundant"`
+	PacksDeferred      int   `json:"packs_deferred"`
+	DeadRecordsDropped int   `json:"dead_records_dropped"`
+	DeadBytesDropped   int64 `json:"dead_bytes_dropped"`
+
+	MisplacedChunks       int64   `json:"misplaced_chunks"`
+	MisplacedLogicalBytes int64   `json:"misplaced_logical_bytes"`
+	BytesRead             int64   `json:"bytes_read"`
+	BytesWritten          int64   `json:"bytes_written"`
+	LogicalBytesRewritten int64   `json:"logical_bytes_rewritten"`
+	PacksRewritten        int     `json:"packs_rewritten"`
+	PacksMoved            int     `json:"packs_moved"`
+	PacksWritten          int     `json:"packs_written"`
+	PacksDeleted          int     `json:"packs_deleted"`
+	WriteAmplification    float64 `json:"write_amplification"`
+
+	Steps []RebalanceStep `json:"steps,omitempty"`
+}
+
+// packClass is how one pack's records stand against the target map.
+type packClass struct {
+	keep, moved, redundant, dead int
+	movedMask                    uint8 // target tiers of the misplaced records
+	keepStored, movedStored      int64
+	movedLogical, keepLogical    int64
+	deadStored                   int64
+	records                      int
+}
+
+// classifyPack sorts every record of pack idx. A live record is kept when the
+// pack is its target tier's designated copy, redundant when another copy
+// already serves its target tier, and misplaced otherwise. Dead records are
+// those no live root references.
+func (s *Store) classifyPack(st *packState, idx int32, tg *tierTargets, loose map[[32]byte]int64) (packClass, error) {
+	p := st.packs[idx]
+	info, entries, err := loadPackFile(p.path)
+	if err != nil || info.id != p.id {
+		return packClass{}, fmt.Errorf("pack %s changed or is unreadable (%v)", p.label(), err)
+	}
+	c := packClass{records: len(entries)}
+	var locs [4]packLoc
+	for _, e := range entries {
+		w, live := tg.of(e.sha)
+		if !live {
+			c.dead++
+			c.deadStored += int64(e.stored)
+			continue
+		}
+		other := false
+		for _, loc := range st.appendLocs(locs[:0], e.sha) {
+			if loc.tier == w.t && loc.pack != idx {
+				other = true
+			}
+		}
+		_, isLoose := loose[e.sha]
+		switch {
+		case w.t == p.tier && st.designated(e.sha, idx):
+			c.keep++
+			c.keepStored += int64(e.stored)
+			c.keepLogical += int64(e.logical)
+		case other || w.t == tierHot && isLoose:
+			c.redundant++
+		default:
+			c.moved++
+			c.movedMask |= 1 << w.t
+			c.movedStored += int64(e.stored)
+			c.movedLogical += int64(e.logical)
+		}
+	}
+	return c, nil
+}
+
+// designated reports whether pack idx holds the first indexed copy of a chunk
+// within its own tier; other same-tier copies are redundant.
+func (st *packState) designated(sum [32]byte, idx int32) bool {
+	var locs [4]packLoc
+	t := st.packs[idx].tier
+	for _, loc := range st.appendLocs(locs[:0], sum) {
+		if loc.tier == t {
+			return loc.pack == idx
+		}
+	}
+	return false
+}
+
+// action picks what a pack needs: nothing, a whole-pack move, or a rewrite.
+// A pack holding only redundant and dead records is rewritten to nothing; one
+// holding only dead records is left to gc.
+func (c packClass) action() (action string, to tier) {
+	switch {
+	case c.moved == 0 && c.keep == 0 && c.redundant > 0:
+		return "redundant", 0
+	case c.moved == 0:
+		return "compliant", 0
+	case c.keep == 0 && c.redundant == 0 && c.dead == 0 && bits.OnesCount8(c.movedMask) == 1:
+		return "move", tier(bits.TrailingZeros8(c.movedMask))
+	}
+	return "rewrite", 0
+}
+
+// scanLooseLive lists referenced loose chunks (hex name -> size).
+func (s *Store) scanLooseLive(referenced map[string]bool) (map[[32]byte]int64, error) {
+	out := map[[32]byte]int64{}
+	err := filepath.WalkDir(filepath.Join(s.root, "chunks"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || !referenced[d.Name()] {
+			return nil
+		}
+		sum, herr := decodeHexSHA256(d.Name())
+		if herr != nil {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		out[sum] = info.Size()
+		return nil
+	})
+	return out, err
+}
+
+func (s *Store) summarizeTargets(rr reachabilityResult, tg *tierTargets, res *RebalanceResult) {
+	res.RootCounts = map[string]int{"current": rr.CurrentRootCount, "history": rr.HistoricalRootCount, "snapshot": rr.SnapshotRootCount, "multipart": rr.MultipartRootCount}
+	res.ChunksByTarget, res.LogicalBytesByTarget, res.ChunksRequested = map[string]int64{}, map[string]int64{}, map[string]int64{}
+	for t := range numTiers {
+		res.ChunksByTarget[t.String()], res.LogicalBytesByTarget[t.String()], res.ChunksRequested[t.String()] = 0, 0, 0
+	}
+	for sha, w := range tg.want {
+		res.ChunksByTarget[w.t.String()]++
+		res.LogicalBytesByTarget[w.t.String()] += rr.ChunkLength[sha]
+		for t := range numTiers {
+			if w.mask&(1<<t) != 0 {
+				res.ChunksRequested[t.String()]++
+			}
+		}
+		if w.mask>>(w.t+1) != 0 {
+			res.ChunksPromotedBySharing++
+		}
+	}
+}
+
+// rebalance converges physical placement toward tg. Dry-run only classifies;
+// apply first packs or cleans loose chunks, then handles each pack in
+// (tier, id) order, re-deriving its class from the current locator so every
+// step is safe after any earlier step or an interrupted earlier run. A source
+// pack is removed only by replacePacksTo/movePack, after every live record
+// has a verified surviving copy.
+func (s *Store) rebalance(rr reachabilityResult, tg *tierTargets, opt rebalanceOptions) (RebalanceResult, error) {
+	res := RebalanceResult{DryRun: !opt.Apply, Estimated: !opt.Apply, LiveSetOK: rr.OK(), Issues: rr.Issues}
+	if opt.TargetBytes <= 0 {
+		return res, errors.New("tier rebalance: pack size must be positive")
+	}
+	s.summarizeTargets(rr, tg, &res)
+	if opt.Apply {
+		if !rr.OK() {
+			return res, errGCUnsafe
+		}
+		if clash := s.packClashes(); len(clash) > 0 {
+			return res, fmt.Errorf("tier rebalance: refusing to run: %s", clash[0])
+		}
+		s.removeStalePackStaging()
+	}
+	loose, err := s.scanLooseLive(rr.ReferencedChunks)
+	if err != nil {
+		return res, fmt.Errorf("tier rebalance: scanning chunks: %w", err)
+	}
+
+	// Loose chunks: hot targets stay; others are packed into their tier, or
+	// just deleted when a verified copy already sits there.
+	var pack [numTiers][]compactCandidate
+	var redundantLoose []tieredChunk
+	st := s.packSnap()
+	for _, sum := range slices.SortedFunc(maps.Keys(loose), func(a, b [32]byte) int { return bytes.Compare(a[:], b[:]) }) {
+		w, _ := tg.of(sum)
+		size := loose[sum]
+		var locs [4]packLoc
+		switch {
+		case w.t == tierHot:
+			res.LooseStayHot++
+		case size < 1 || size > maxPackedChunkBytes:
+			res.LooseUnpackable++
+		case slices.ContainsFunc(st.appendLocs(locs[:0], sum), func(l packLoc) bool { return l.tier == w.t }):
+			res.LooseRedundant++
+			redundantLoose = append(redundantLoose, tieredChunk{compactCandidate{sum, size}, w.t})
+		default:
+			pack[w.t] = append(pack[w.t], compactCandidate{sum, size})
+			res.MisplacedChunks++
+			res.MisplacedLogicalBytes += size
+		}
+	}
+	res.LoosePackWarm, res.LoosePackCold = int64(len(pack[tierWarm])), int64(len(pack[tierCold]))
+
+	// Packs, in a fixed order.
+	order := make([]int32, len(st.packs))
+	for i := range order {
+		order[i] = int32(i)
+	}
+	slices.SortFunc(order, func(a, b int32) int {
+		return cmp.Or(cmp.Compare(st.packs[a].tier, st.packs[b].tier), cmp.Compare(st.packs[a].id, st.packs[b].id))
+	})
+	res.PacksTotal = len(order)
+	var steps []RebalanceStep
+	for _, idx := range order {
+		c, err := s.classifyPack(st, idx, tg, loose)
+		if err != nil {
+			return res, fmt.Errorf("tier rebalance: %w", err)
+		}
+		action, to := c.action()
+		if c.deferred(action, opt.MinMisplacedPercent) {
+			action = "deferred"
+		}
+		if action == "compliant" {
+			res.PacksCompliant++
+			continue
+		}
+		p := st.packs[idx]
+		step := RebalanceStep{Pack: p.id, Tier: p.tier.String(), Action: action, Records: c.records, Misplaced: c.moved, Kept: c.keep, Redundant: c.redundant, Dead: c.dead, Size: p.size}
+		res.MisplacedChunks += int64(c.moved)
+		res.MisplacedLogicalBytes += c.movedLogical
+		switch action {
+		case "deferred":
+			res.PacksDeferred++
+		case "move":
+			step.To = to.String()
+			res.PacksWholeMove++
+			res.BytesRead += p.size
+			res.BytesWritten += p.size
+		default:
+			if action == "redundant" {
+				res.PacksRedundant++
+			} else {
+				res.PacksRewrite++
+			}
+			carried := c.keepStored + c.movedStored
+			res.PacksRewritten++
+			res.DeadRecordsDropped += c.dead
+			res.DeadBytesDropped += c.deadStored
+			res.BytesRead += carried
+			res.LogicalBytesRewritten += c.keepLogical + c.movedLogical
+			if carried > 0 {
+				res.BytesWritten += carried + int64(c.keep+c.moved)*packRecordBytes + packFixedBytes
+			}
+		}
+		steps = append(steps, step)
+	}
+	for t := tierWarm; t < numTiers; t++ {
+		for _, c := range pack[t] {
+			res.BytesRead += c.size
+			res.BytesWritten += c.size + packRecordBytes
+		}
+	}
+	res.Steps = steps
+	res.WriteAmplification = writeAmplification(res)
+	if !opt.Apply {
+		return res, nil
+	}
+
+	// Apply. Counters now hold actuals, not estimates.
+	res.Estimated = false
+	res.BytesRead, res.BytesWritten, res.LogicalBytesRewritten, res.PacksRewritten = 0, 0, 0, 0
+	res.PacksWholeMove, res.PacksRewrite, res.PacksRedundant, res.DeadRecordsDropped, res.DeadBytesDropped = 0, 0, 0, 0, 0
+	comp := newCompressor(opt.Compress)
+	var cres CompactResult
+	for _, c := range redundantLoose {
+		if err := s.copyAtTier(c.sum, c.t, nil); err != nil {
+			pack[c.t] = append(pack[c.t], c.compactCandidate)
+			continue
+		}
+		fireTestHook(hookBeforeLooseDelete)
+		if err := os.Remove(s.chunkPath(c.sum)); err != nil && !os.IsNotExist(err) {
+			return res, fmt.Errorf("tier rebalance: removing redundant loose chunk: %w", err)
+		}
+		res.LooseRemoved++
+	}
+	for t := tierWarm; t < numTiers; t++ {
+		sort.Slice(pack[t], func(i, j int) bool { return bytes.Compare(pack[t][i].sum[:], pack[t][j].sum[:]) < 0 })
+		batches, _ := planPackBatches(pack[t], opt.TargetBytes, 0) // min 0: nothing is deferred
+		for _, batch := range batches {
+			if err := s.compactBatch(t, batch, &cres, comp); err != nil {
+				return res, fmt.Errorf("tier rebalance: %w", err)
+			}
+		}
+	}
+	res.LoosePacked, res.LooseRemoved = int64(cres.ChunksPacked), res.LooseRemoved+int64(cres.LooseRemoved)
+	res.LoosePackedBytes = cres.LogicalBytes
+	res.PacksWritten += cres.PacksWritten
+	res.BytesWritten += cres.PackBytes
+	res.BytesRead += cres.LogicalBytes
+
+	dest := func(sum [32]byte) tier {
+		if w, ok := tg.of(sum); ok {
+			return w.t
+		}
+		return tierHot
+	}
+	type packKey struct {
+		t  tier
+		id string
+	}
+	var pending []packKey
+	var pendingLive int64
+	flush := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		if err := s.reloadPacks(); err != nil {
+			return err
+		}
+		cur := s.packSnap()
+		var doomed []packUsage
+		for _, k := range pending {
+			for i, p := range cur.packs {
+				if p.tier == k.t && p.id == k.id {
+					doomed = append(doomed, packUsage{idx: int32(i), tier: p.tier, Tier: p.tier.String(), ID: p.id, Size: p.size})
+				}
+			}
+		}
+		var rep RepackResult
+		if err := s.replacePacksTo(doomed, rr.ReferencedChunks, dest, opt.TargetBytes, opt.Compress, &rep); err != nil {
+			return err
+		}
+		res.PacksWritten += rep.PacksWritten
+		res.PacksDeleted += rep.PacksDeleted
+		res.BytesWritten += rep.BytesWritten
+		res.BytesRead += rep.BytesRead
+		res.LogicalBytesRewritten += rep.LogicalBytes
+		res.PacksRewritten += len(doomed)
+		pending, pendingLive = nil, 0
+		return nil
+	}
+	moved := false
+	for _, step := range steps {
+		cur := s.packSnap()
+		var t tier
+		t, _ = parseTier(step.Tier)
+		idx := slices.IndexFunc(cur.packs, func(p packInfo) bool { return p.tier == t && p.id == step.Pack })
+		if idx < 0 {
+			continue
+		}
+		c, err := s.classifyPack(cur, int32(idx), tg, loose)
+		if err != nil {
+			return res, fmt.Errorf("tier rebalance: %w", err)
+		}
+		action, to := c.action()
+		if c.deferred(action, opt.MinMisplacedPercent) {
+			continue
+		}
+		switch action {
+		case "move":
+			if err := s.movePack(step.Pack, t, to); err != nil {
+				return res, fmt.Errorf("tier rebalance: %w", err)
+			}
+			moved = true
+			res.PacksWholeMove++
+			res.PacksMoved++
+			res.BytesRead += cur.packs[idx].size
+			res.BytesWritten += cur.packs[idx].size
+		case "rewrite", "redundant":
+			if action == "rewrite" {
+				res.PacksRewrite++
+			} else {
+				res.PacksRedundant++
+			}
+			res.DeadRecordsDropped += c.dead
+			res.DeadBytesDropped += c.deadStored
+			pending = append(pending, packKey{t, step.Pack})
+			if pendingLive += c.keepLogical + c.movedLogical; pendingLive >= opt.TargetBytes {
+				if err := flush(); err != nil {
+					return res, fmt.Errorf("tier rebalance: %w", err)
+				}
+				moved = false
+			}
+		}
+	}
+	if err := flush(); err != nil {
+		return res, fmt.Errorf("tier rebalance: %w", err)
+	}
+	if moved {
+		if err := s.reloadPacks(); err != nil {
+			return res, err
+		}
+	}
+	res.WriteAmplification = writeAmplification(res)
+	fireTestHook(hookRebalanceDone)
+	return res, nil
+}
+
+func writeAmplification(r RebalanceResult) float64 {
+	if r.MisplacedLogicalBytes <= 0 {
+		return 0
+	}
+	return float64(r.BytesWritten) / float64(r.MisplacedLogicalBytes)
+}
+
+// tierRebalance opens storeDir under exclusive ownership and rebalances it.
+// A malformed policy, a broken tier root or an invalid live set stops it
+// before anything is written.
+func tierRebalance(storeDir string, opt rebalanceOptions) (RebalanceResult, error) {
+	lock, err := acquireStoreLock(storeDir, true)
+	if err != nil {
+		return RebalanceResult{}, err
+	}
+	defer lock.release()
+	pol, err := loadTierPolicy(storeDir)
+	if err != nil {
+		return RebalanceResult{}, err
+	}
+	s, err := OpenStore(storeDir)
+	if err != nil {
+		return RebalanceResult{}, err
+	}
+	defer s.Close()
+	if err := s.checkTierRoots(); err != nil {
+		return RebalanceResult{}, fmt.Errorf("tier rebalance: %w", err)
+	}
+	tg := &tierTargets{want: map[string]chunkWant{}}
+	rr, err := s.computeReachabilityObserved(false, tg.observer(pol.resolver()))
+	if err != nil {
+		return RebalanceResult{}, err
+	}
+	res, err := s.rebalance(rr, tg, opt)
+	res.PolicyRules = len(pol.rules)
+	return res, err
+}
+
+func printRebalanceHuman(w io.Writer, r RebalanceResult) {
+	mode, est := "apply", ""
+	if r.DryRun {
+		mode, est = "dry-run", "estimated "
+	}
+	fmt.Fprintf(w, "ZeroS3 tier rebalance (%s)\n", mode)
+	fmt.Fprintf(w, "live set         ok=%v | %d policy rules | roots %v\n", r.LiveSetOK, r.PolicyRules, r.RootCounts)
+	for t := range numTiers {
+		n := t.String()
+		fmt.Fprintf(w, "target %-4s      %d chunks | %d logical bytes | %d requested by some root\n", n, r.ChunksByTarget[n], r.LogicalBytesByTarget[n], r.ChunksRequested[n])
+	}
+	fmt.Fprintf(w, "shared           %d chunks promoted hotter than another root asked\n", r.ChunksPromotedBySharing)
+	fmt.Fprintf(w, "loose            %d stay hot | %d pack warm | %d pack cold | %d already served by a pack | %d unpackable\n", r.LooseStayHot, r.LoosePackWarm, r.LoosePackCold, r.LooseRedundant, r.LooseUnpackable)
+	fmt.Fprintf(w, "packs            %d | %d compliant | %d whole moves | %d rewrites | %d redundant | %d deferred\n", r.PacksTotal, r.PacksCompliant, r.PacksWholeMove, r.PacksRewrite, r.PacksRedundant, r.PacksDeferred)
+	for _, st := range r.Steps {
+		fmt.Fprintf(w, "  %-4s %.12s  %s %s | %d misplaced, %d kept, %d redundant, %d dead of %d records\n", st.Tier, st.Pack, st.Action, st.To, st.Misplaced, st.Kept, st.Redundant, st.Dead, st.Records)
+	}
+	fmt.Fprintf(w, "misplaced        %d chunks | %d logical bytes\n", r.MisplacedChunks, r.MisplacedLogicalBytes)
+	fmt.Fprintf(w, "io               %sread %d bytes | %swritten %d bytes | write amplification %.2f\n", est, r.BytesRead, est, r.BytesWritten, r.WriteAmplification)
+	fmt.Fprintf(w, "dead dropped     %d records | %d stored bytes\n", r.DeadRecordsDropped, r.DeadBytesDropped)
+	if !r.DryRun {
+		fmt.Fprintf(w, "applied          %d packs moved | %d rewritten | %d written | %d deleted | %d loose packed | %d loose removed\n", r.PacksMoved, r.PacksRewritten, r.PacksWritten, r.PacksDeleted, r.LoosePacked, r.LooseRemoved)
+	}
+	for _, iss := range r.Issues {
+		fmt.Fprintf(w, "  %s: %s: %s\n", iss.Kind, iss.Subject, iss.Detail)
+	}
+}
+
+// runTierPolicy implements "zeros3 tier policy list|set|remove".
+func runTierPolicy(args []string) {
+	usage := "usage: zeros3 tier policy list -store DIR [-json]\n       zeros3 tier policy set -store DIR -scope S -tier T [-bucket B [-prefix P]] [-json]\n       zeros3 tier policy remove -store DIR -scope S [-bucket B [-prefix P]] [-json]"
+	if len(args) == 0 || args[0] != "list" && args[0] != "set" && args[0] != "remove" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	fs := flag.NewFlagSet("tier policy "+args[0], flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	var scope, tierName, bucket, prefix *string
+	if args[0] != "list" {
+		scope = fs.String("scope", "", "root class: current, history, snapshot, or multipart")
+		bucket = fs.String("bucket", "", "limit the rule to one bucket (default: every bucket)")
+		prefix = fs.String("prefix", "", "limit the rule to keys with this prefix (needs -bucket)")
+	}
+	if args[0] == "set" {
+		tierName = fs.String("tier", "", "requested tier: hot, warm, or cold")
+	}
+	fs.Parse(args[1:])
+	var res TierPolicyResult
+	var err error
+	switch args[0] {
+	case "list":
+		res, err = tierPolicyAdmin(*storeDir, nil)
+	case "set":
+		res, err = tierPolicySet(*storeDir, tierPolicyRule{Scope: *scope, Bucket: *bucket, Prefix: *prefix, Tier: *tierName})
+	default:
+		res, err = tierPolicyRemove(*storeDir, tierPolicyRule{Scope: *scope, Bucket: *bucket, Prefix: *prefix})
+	}
+	if err != nil {
+		if errors.Is(err, errGCStoreInUse) {
+			fmt.Fprintf(os.Stderr, "zeros3: tier policy: %v -- stop `zeros3 serve`/any other maintenance command against this store first\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "zeros3: %v\n", err)
+		}
+		os.Exit(1)
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			log.Fatalf("zeros3: %v", err)
+		}
+		return
+	}
+	printTierPolicyHuman(os.Stdout, res)
+}
+
+// runTierRebalance implements "zeros3 tier rebalance -store DIR [-apply]
+// [-pack-size-mib N] [-compression auto|off] [-min-misplaced-percent N] [-json]":
+// dry-run by default.
+func runTierRebalance(args []string) {
+	fs := flag.NewFlagSet("tier rebalance", flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	apply := fs.Bool("apply", false, "move and rewrite packs toward policy (default: dry-run, changes nothing)")
+	sizeMiB := fs.Int64("pack-size-mib", defaultPackTargetBytes>>20, "target pack size in MiB of chunk data before compression")
+	compression := fs.String("compression", "auto", "record compression for rewritten packs: auto (DEFLATE when it saves space) or off (raw records)")
+	minMisplaced := fs.Int("min-misplaced-percent", 0, "leave a pack alone unless this share of its live bytes is misplaced (0 = always converge exactly)")
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	fs.Parse(args)
+	compress, err := parseCompressionFlag(*compression)
+	if err == nil && (*minMisplaced < 0 || *minMisplaced > 100) {
+		err = errors.New("-min-misplaced-percent must be between 0 and 100")
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: tier rebalance: %v\n", err)
+		os.Exit(2)
+	}
+	res, err := tierRebalance(*storeDir, rebalanceOptions{Apply: *apply, TargetBytes: *sizeMiB << 20, Compress: compress, MinMisplacedPercent: *minMisplaced})
+	if err != nil {
+		switch {
+		case errors.Is(err, errGCStoreInUse):
+			fmt.Fprintf(os.Stderr, "zeros3: tier rebalance: %v -- it requires exclusive access; stop `zeros3 serve`/any other maintenance command against this store first\n", err)
+		case errors.Is(err, errGCUnsafe):
+			fmt.Fprintf(os.Stderr, "zeros3: tier rebalance: %v -- run `zeros3 tier rebalance` (dry-run) or `zeros3 verify` to see what is broken\n", err)
+		default:
+			fmt.Fprintf(os.Stderr, "zeros3: tier rebalance failed: %v\n", err)
+		}
+		os.Exit(1)
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			log.Fatalf("zeros3: %v", err)
+		}
+		return
+	}
+	printRebalanceHuman(os.Stdout, res)
+}
+
 type packIDList []string
 
 func (l *packIDList) String() string     { return strings.Join(*l, ",") }
 func (l *packIDList) Set(v string) error { *l = append(*l, v); return nil }
 
-// runTier implements "zeros3 tier status|init|move". See section 13e.
+// runTier implements "zeros3 tier status|init|move|policy|rebalance". See
+// sections 13e and 13f.
 func runTier(args []string) {
+	if len(args) > 0 && args[0] == "policy" {
+		runTierPolicy(args[1:])
+		return
+	}
+	if len(args) > 0 && args[0] == "rebalance" {
+		runTierRebalance(args[1:])
+		return
+	}
 	if len(args) == 0 || args[0] != "status" && args[0] != "move" && args[0] != "init" {
-		fmt.Fprintln(os.Stderr, "usage: zeros3 tier status -store DIR [-json]\n       zeros3 tier init -store DIR -tier warm|cold [-json]\n       zeros3 tier move -store DIR -from TIER -to TIER (-pack ID ... | -all) [-apply] [-json]")
+		fmt.Fprintln(os.Stderr, "usage: zeros3 tier status -store DIR [-json]\n       zeros3 tier init -store DIR -tier warm|cold [-json]\n       zeros3 tier move -store DIR -from TIER -to TIER (-pack ID ... | -all) [-apply] [-json]\n       zeros3 tier policy list|set|remove -store DIR ...\n       zeros3 tier rebalance -store DIR [-apply] [-json]")
 		os.Exit(2)
 	}
 	fs := flag.NewFlagSet("tier "+args[0], flag.ExitOnError)

@@ -66,40 +66,41 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//      105    Test helpers, fixtures, and TestMain
-//     257    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//    1273    SigV4 authentication (header and payload-mode)
-//    1662    Checksums: CRC32 and Content-MD5
-//    2165    End-to-end HTTP and crash/recovery tests
-//    2839    M2: bucket/object/listing/journal protocol compatibility
-//    3890    M3: CDC/dedup evidence, stats, verify
-//    5026    M3: CopyObject
-//    5573    M3: single-range GET
-//    5774    M5-B: multipart upload
-//    7052    Presigned URLs and virtual-hosted-style addressing
-//    8081    M5-C: version history, restore, GC, storage-efficiency proof
-//    9548    Z2-08: history retention (prune)
-//   10640    M5-D/P2: ListParts and ListMultipartUploads pagination
-//   12359    M6: delta sync (`zeros3 sync`)
-//   14101    M6C: recursive directory sync
-//   15161    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//   16490    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//   17815    M8C: namespace (prefix/bucket) replication
-//   18854    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//   19946    M8E: durable namespace snapshots and restore
-//   22024    M8F: conditional operations (Put/Get/Copy preconditions)
-//   23429    M8G: introspection (dry-run planning, diff, inspect)
-//   25381    M8H: bounded parallel chunk transfer
-//   26762    P1: environment credentials, HTTP hardening/shutdown, TLS
-//   28078    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//   29008    Streaming reads and aws-chunked SigV4
-//   29856    Packed CAS: pack format, mixed reads, compaction, crash points
-//   30833    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//   31985    Adaptive pack compression (codec 1, DEFLATE)
-//   33019    Scalable packed-chunk locator (sorted immutable levels)
-//   33505    Z2-07: bulk logical-chunk transport (v2)
-//   34898    Hot/warm/cold physical pack tiers
-//   35669    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//      106    Test helpers, fixtures, and TestMain
+//     258    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//    1274    SigV4 authentication (header and payload-mode)
+//    1663    Checksums: CRC32 and Content-MD5
+//    2166    End-to-end HTTP and crash/recovery tests
+//    2840    M2: bucket/object/listing/journal protocol compatibility
+//    3891    M3: CDC/dedup evidence, stats, verify
+//    5027    M3: CopyObject
+//    5574    M3: single-range GET
+//    5775    M5-B: multipart upload
+//    7053    Presigned URLs and virtual-hosted-style addressing
+//    8082    M5-C: version history, restore, GC, storage-efficiency proof
+//    9549    Z2-08: history retention (prune)
+//   10641    M5-D/P2: ListParts and ListMultipartUploads pagination
+//   12360    M6: delta sync (`zeros3 sync`)
+//   14102    M6C: recursive directory sync
+//   15162    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//   16491    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//   17816    M8C: namespace (prefix/bucket) replication
+//   18855    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//   19947    M8E: durable namespace snapshots and restore
+//   22025    M8F: conditional operations (Put/Get/Copy preconditions)
+//   23430    M8G: introspection (dry-run planning, diff, inspect)
+//   25382    M8H: bounded parallel chunk transfer
+//   26763    P1: environment credentials, HTTP hardening/shutdown, TLS
+//   28079    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//   29009    Streaming reads and aws-chunked SigV4
+//   29857    Packed CAS: pack format, mixed reads, compaction, crash points
+//   30834    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//   31986    Adaptive pack compression (codec 1, DEFLATE)
+//   33020    Scalable packed-chunk locator (sorted immutable levels)
+//   33506    Z2-07: bulk logical-chunk transport (v2)
+//   34932    Hot/warm/cold physical pack tiers
+//   35703    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//   36454    Z2-10: content-aware tier policy and rebalance
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -36446,5 +36447,1037 @@ func TestProbe(t *testing.T) {
 	}
 	if json.Unmarshal([]byte(body), &old) != nil || old.Protocol == 0 || !old.Delta || strings.Contains(body, "pack") || strings.Contains(body, "tier") {
 		t.Fatalf("info document: %s", body)
+	}
+}
+
+// =============================================================================
+// Content-aware tier policy and rebalance (section 13f)
+// =============================================================================
+
+// tierSeg returns one fixed random segment; objects are built from segments
+// so that revisions share some chunks and not others.
+func tierSeg(name string) []byte {
+	seeds := map[string]struct{ seed, n int }{"a": {1001, 400_000}, "b": {1002, 300_000}, "c": {1003, 300_000}, "d": {1004, 300_000}}
+	return genRandomBytes(int64(seeds[name].seed), seeds[name].n)
+}
+
+func tierJoin(segs ...string) []byte {
+	var b []byte
+	for _, s := range segs {
+		b = append(b, tierSeg(s)...)
+	}
+	return b
+}
+
+// tierPublishSnapshot snapshots every current object of bucket.
+func tierPublishSnapshot(t *testing.T, s *Store, bucket string) {
+	t.Helper()
+	entries, err := s.captureSnapshotEntries(bucket, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: bucket, Entries: entries}
+	if err := s.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// tierFixture builds the browser-style workload on loose chunks:
+//
+//	app.js v0 = a+d, v1 = a+b, v2 = a+c (v2 current; v0, v1 history)
+//	snapshot taken while v1 was current
+//	optionally an active multipart part holding d
+func tierFixture(t *testing.T, multipart bool) string {
+	t.Helper()
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("site"); err != nil {
+		t.Fatal(err)
+	}
+	mustPutObject(t, s, "site", "app.js", tierJoin("a", "d"), "text/javascript", nil)
+	mustPutObject(t, s, "site", "app.js", tierJoin("a", "b"), "text/javascript", nil)
+	tierPublishSnapshot(t, s, "site")
+	mustPutObject(t, s, "site", "app.js", tierJoin("a", "c"), "text/javascript", nil)
+	if multipart {
+		id, err := s.CreateMultipartUpload("site", "upload/big", "application/octet-stream", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ing, err := s.ingestStream(bytes.NewReader(tierSeg("d")), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.commitPart("site", "upload/big", id, 1, ing); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// tierSets are the chunk digests each root class references, read straight
+// from the store's own state (not through the reachability observer).
+type tierSets [numScopes]map[string]bool
+
+func tierRootSets(t *testing.T, s *Store) tierSets {
+	t.Helper()
+	var sets tierSets
+	for i := range sets {
+		sets[i] = map[string]bool{}
+	}
+	add := func(sc rootScope, uuid string) {
+		man, _, err := s.readManifest(uuid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range man.Chunks {
+			sets[sc][c.SHA256] = true
+		}
+	}
+	for _, o := range s.snapshotNamespace() {
+		add(scopeCurrent, o.entry.manifestUUID)
+	}
+	for _, o := range s.snapshotHistory() {
+		add(scopeHistory, o.entry.manifestUUID)
+	}
+	snaps, _ := s.scanSnapshots()
+	for _, sn := range snaps {
+		for _, e := range sn.Entries {
+			add(scopeSnapshot, e.ManifestUUID)
+		}
+	}
+	for _, up := range s.snapshotUploads() {
+		for _, p := range up.parts {
+			for _, c := range p.chunks {
+				sets[scopeMultipart][c.SHA256] = true
+			}
+		}
+	}
+	return sets
+}
+
+// tierExpected is the model of the central rule: the hottest tier requested
+// by any root class that references the digest.
+func tierExpected(sets tierSets, req [numScopes]tier) map[string]tier {
+	exp := map[string]tier{}
+	for sc := range numScopes {
+		for d := range sets[sc] {
+			if cur, ok := exp[d]; !ok || req[sc] < cur {
+				exp[d] = req[sc]
+			}
+		}
+	}
+	return exp
+}
+
+func tierTargetsOf(t *testing.T, dir string) (*tierTargets, reachabilityResult, *Store) {
+	t.Helper()
+	pol, err := loadTierPolicy(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tg := &tierTargets{want: map[string]chunkWant{}}
+	rr, err := s.computeReachabilityObserved(false, tg.observer(pol.resolver()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tg, rr, s
+}
+
+func tierMustSet(t *testing.T, dir, scope, bucket, prefix, tr string) {
+	t.Helper()
+	if _, err := tierPolicySet(dir, tierPolicyRule{Scope: scope, Bucket: bucket, Prefix: prefix, Tier: tr}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTierPolicy_RuleResolution(t *testing.T) {
+	type q struct {
+		scope       rootScope
+		bucket, key string
+		want        tier
+	}
+	r := func(scope, bucket, prefix, tr string) tierPolicyRule {
+		return tierPolicyRule{Scope: scope, Bucket: bucket, Prefix: prefix, Tier: tr}
+	}
+	cases := []struct {
+		name  string
+		rules []tierPolicyRule
+		qs    []q
+	}{
+		{"built-in defaults", nil, []q{{scopeCurrent, "b", "k", tierHot}, {scopeHistory, "b", "k", tierCold}, {scopeSnapshot, "b", "k", tierWarm}, {scopeMultipart, "b", "k", tierHot}}},
+		{"scope-wide override", []tierPolicyRule{r("history", "", "", "warm")}, []q{{scopeHistory, "x", "y", tierWarm}, {scopeCurrent, "x", "y", tierHot}, {scopeSnapshot, "x", "y", tierWarm}}},
+		{"bucket-wide beats scope-wide", []tierPolicyRule{r("current", "", "", "warm"), r("current", "site", "", "cold")}, []q{{scopeCurrent, "site", "k", tierCold}, {scopeCurrent, "other", "k", tierWarm}}},
+		{"short and longer prefix", []tierPolicyRule{r("current", "b", "a/", "warm"), r("current", "b", "a/b/", "cold")}, []q{{scopeCurrent, "b", "a/b/c", tierCold}, {scopeCurrent, "b", "a/x", tierWarm}, {scopeCurrent, "b", "z", tierHot}, {scopeCurrent, "other", "a/b/c", tierHot}}},
+		{"prefix beats bucket-wide beats scope-wide", []tierPolicyRule{r("current", "", "", "warm"), r("current", "site", "", "cold"), r("current", "site", "x/", "hot")}, []q{{scopeCurrent, "site", "x/1", tierHot}, {scopeCurrent, "site", "y", tierCold}, {scopeCurrent, "o", "y", tierWarm}}},
+		{"same prefix in different scopes", []tierPolicyRule{r("current", "b", "p/", "cold"), r("history", "b", "p/", "hot")}, []q{{scopeCurrent, "b", "p/1", tierCold}, {scopeHistory, "b", "p/1", tierHot}, {scopeSnapshot, "b", "p/1", tierWarm}, {scopeMultipart, "b", "p/1", tierHot}}},
+		{"deleted bucket history", []tierPolicyRule{r("history", "gone", "k", "warm")}, []q{{scopeHistory, "gone", "k1", tierWarm}, {scopeHistory, "gone", "z", tierCold}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Rule order must not matter.
+			for pass := 0; pass < 3; pass++ {
+				rules := slices.Clone(c.rules)
+				rand.New(rand.NewSource(int64(pass))).Shuffle(len(rules), func(i, j int) { rules[i], rules[j] = rules[j], rules[i] })
+				rs := tierPolicy{rules: rules}.resolver()
+				for _, x := range c.qs {
+					if got := rs.resolve(x.scope, x.bucket, x.key); got != x.want {
+						t.Fatalf("%s %s/%s = %s, want %s (order %d)", x.scope, x.bucket, x.key, got, x.want, pass)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestTierPolicy_Persistence(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := OpenStore(dir); err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(dir, tierPolicyFileName)
+	res, err := tierPolicyAdmin(dir, nil)
+	if err != nil || len(res.Rules) != 0 || res.Defaults["history"] != "cold" || res.Defaults["snapshot"] != "warm" || res.Defaults["current"] != "hot" || res.Defaults["multipart"] != "hot" {
+		t.Fatalf("no file: %+v %v", res, err)
+	}
+	if _, err := os.Stat(policyPath); !os.IsNotExist(err) {
+		t.Fatal("listing must not create the policy file")
+	}
+	tierMustSet(t, dir, "history", "", "", "warm")
+	tierMustSet(t, dir, "current", "site", "", "cold")
+	tierMustSet(t, dir, "current", "site", "prod/", "hot")
+	first, _ := os.ReadFile(policyPath)
+
+	// Replacing an existing selector changes its tier only; same set in a
+	// different order serializes identically.
+	if res, err = tierPolicySet(dir, tierPolicyRule{Scope: "history", Tier: "cold"}); err != nil || res.Action != "replaced" || len(res.Rules) != 3 {
+		t.Fatalf("replace: %+v %v", res, err)
+	}
+	tierMustSet(t, dir, "history", "", "", "warm")
+	if again, _ := os.ReadFile(policyPath); !bytes.Equal(again, first) {
+		t.Fatalf("serialization is not deterministic:\n%s\n%s", first, again)
+	}
+	other := t.TempDir()
+	OpenStore(other)
+	tierMustSet(t, other, "current", "site", "prod/", "hot")
+	tierMustSet(t, other, "history", "", "", "warm")
+	tierMustSet(t, other, "current", "site", "", "cold")
+	if b, _ := os.ReadFile(filepath.Join(other, tierPolicyFileName)); !bytes.Equal(b, first) {
+		t.Fatal("insertion order changed the file")
+	}
+	if strings.Contains(string(first), "multipart") || strings.Contains(string(first), "snapshot") {
+		t.Fatalf("built-in defaults must not be persisted:\n%s", first)
+	}
+
+	// Restart: a fresh load sees the same rules.
+	p, err := loadTierPolicy(dir)
+	if err != nil || len(p.rules) != 3 {
+		t.Fatalf("reload: %+v %v", p, err)
+	}
+	if res, err = tierPolicyRemove(dir, tierPolicyRule{Scope: "current", Bucket: "site", Prefix: "prod/"}); err != nil || res.Action != "removed" || len(res.Rules) != 2 {
+		t.Fatalf("remove: %+v %v", res, err)
+	}
+	if res, err = tierPolicyRemove(dir, tierPolicyRule{Scope: "current", Bucket: "site", Prefix: "prod/"}); err != nil || res.Action != "not-found" {
+		t.Fatalf("remove absent: %+v %v", res, err)
+	}
+	for _, bad := range []tierPolicyRule{
+		{Scope: "current", Prefix: "p/", Tier: "hot"},
+		{Scope: "bogus", Tier: "hot"},
+		{Scope: "current", Tier: "lukewarm"},
+		{Scope: "current", Bucket: "a/b", Tier: "hot"},
+		{Scope: "current", Bucket: "b", Prefix: "x\x00", Tier: "hot"},
+	} {
+		if _, err := tierPolicySet(dir, bad); err == nil {
+			t.Fatalf("%+v must be rejected", bad)
+		}
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "tmp", "zs3-*.tmp")); len(left) != 0 {
+		t.Fatalf("staging left behind: %v", left)
+	}
+}
+
+func TestTierPolicy_MalformedFileOnlyBlocksAdministration(t *testing.T) {
+	good := `{"format_version":1,"rules":[{"scope":"current","tier":"hot"}]}`
+	for name, content := range map[string]string{
+		"garbage":       "not json",
+		"truncated":     good[:len(good)-9],
+		"unknown field": `{"format_version":1,"rules":[],"x":1}`,
+		"wrong version": `{"format_version":9,"rules":[]}`,
+		"duplicate":     `{"format_version":1,"rules":[{"scope":"current","tier":"hot"},{"scope":"current","tier":"cold"}]}`,
+		"bad tier":      `{"format_version":1,"rules":[{"scope":"current","tier":"tepid"}]}`,
+		"trailing data": good + "{}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := tierFixture(t, false)
+			if err := os.WriteFile(filepath.Join(dir, tierPolicyFileName), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// Ordinary serving is unaffected.
+			s, err := OpenStore(dir)
+			if err != nil {
+				t.Fatalf("open must not read the policy: %v", err)
+			}
+			if _, got, err := s.GetObject("site", "app.js"); err != nil || !bytes.Equal(got, tierJoin("a", "c")) {
+				t.Fatalf("GET: %v", err)
+			}
+			s.Close()
+			if _, err := tierPolicyAdmin(dir, nil); err == nil || !strings.Contains(err.Error(), "malformed") {
+				t.Fatalf("list = %v", err)
+			}
+			if _, err := tierPolicySet(dir, tierPolicyRule{Scope: "history", Tier: "warm"}); err == nil {
+				t.Fatal("set must refuse a malformed file")
+			}
+			before := tierTreeHash(t, dir)
+			for _, apply := range []bool{false, true} {
+				if _, err := tierRebalance(dir, rebalanceOptions{Apply: apply, TargetBytes: 256 << 10, Compress: true}); err == nil || !strings.Contains(err.Error(), "malformed") {
+					t.Fatalf("rebalance(apply=%v) = %v", apply, err)
+				}
+			}
+			if tierTreeHash(t, dir) != before {
+				t.Fatal("a refused rebalance changed the store")
+			}
+		})
+	}
+}
+
+func TestTierPolicy_MutationNeedsExclusiveStore(t *testing.T) {
+	dir := tierFixture(t, false)
+	shared, err := acquireStoreLock(dir, false) // e.g. a running server
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tierPolicySet(dir, tierPolicyRule{Scope: "history", Tier: "warm"}); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("set under a shared lock: %v", err)
+	}
+	if _, err := tierPolicyAdmin(dir, nil); err != nil {
+		t.Fatalf("list may share the store: %v", err)
+	}
+	if _, err := tierRebalance(dir, rebalanceOptions{TargetBytes: 256 << 10}); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("even a dry-run needs exclusive ownership: %v", err)
+	}
+	shared.release()
+	excl, _ := acquireStoreLock(dir, true)
+	if _, err := tierPolicyAdmin(dir, nil); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("list under an exclusive lock: %v", err)
+	}
+	excl.release()
+	if _, err := os.Stat(filepath.Join(dir, tierPolicyFileName)); !os.IsNotExist(err) {
+		t.Fatal("a refused set created the file")
+	}
+}
+
+// The central rule, against a model: a chunk's effective tier is the hottest
+// tier requested by any live root that references it.
+func TestTierPolicy_HottestReferenceWins(t *testing.T) {
+	cases := []struct {
+		name      string
+		multipart bool
+		rules     []tierPolicyRule
+		req       [numScopes]tier
+		check     func(t *testing.T, sets tierSets, got map[string]tier)
+	}{
+		{"current+history: shared hot, history-only cold", false, nil, builtinScopeTiers,
+			func(t *testing.T, sets tierSets, got map[string]tier) {
+				tierAssertAll(t, "current∩history", got, tierHot, tierIntersect(sets[scopeCurrent], sets[scopeHistory]))
+				tierAssertAll(t, "history-only", got, tierCold, tierMinus(sets[scopeHistory], sets[scopeCurrent], sets[scopeSnapshot], sets[scopeMultipart]))
+			}},
+		{"history+snapshot: shared warm", false, nil, builtinScopeTiers,
+			func(t *testing.T, sets tierSets, got map[string]tier) {
+				tierAssertAll(t, "snapshot∩history\\current", got, tierWarm, tierMinus(tierIntersect(sets[scopeSnapshot], sets[scopeHistory]), sets[scopeCurrent]))
+			}},
+		{"current cold by prefix + snapshot warm: shared warm", false, []tierPolicyRule{{Scope: "current", Bucket: "site", Prefix: "app", Tier: "cold"}},
+			[numScopes]tier{scopeCurrent: tierCold, scopeHistory: tierCold, scopeSnapshot: tierWarm, scopeMultipart: tierHot},
+			func(t *testing.T, sets tierSets, got map[string]tier) {
+				tierAssertAll(t, "current∩snapshot", got, tierWarm, tierIntersect(sets[scopeCurrent], sets[scopeSnapshot]))
+				tierAssertAll(t, "current-only", got, tierCold, tierMinus(sets[scopeCurrent], sets[scopeSnapshot], sets[scopeHistory], sets[scopeMultipart]))
+			}},
+		{"multipart+history: shared hot", true, nil, builtinScopeTiers,
+			func(t *testing.T, sets tierSets, got map[string]tier) {
+				tierAssertAll(t, "multipart∩history", got, tierHot, tierIntersect(sets[scopeMultipart], sets[scopeHistory]))
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := tierFixture(t, c.multipart)
+			for _, r := range c.rules {
+				tierMustSet(t, dir, r.Scope, r.Bucket, r.Prefix, r.Tier)
+			}
+			tg, rr, s := tierTargetsOf(t, dir)
+			defer s.Close()
+			sets := tierRootSets(t, s)
+			exp := tierExpected(sets, c.req)
+			got := map[string]tier{}
+			for d, w := range tg.want {
+				got[d] = w.t
+			}
+			if !reflect.DeepEqual(got, exp) {
+				t.Fatalf("targets differ from the model: got %d chunks, want %d", len(got), len(exp))
+			}
+			if len(got) != len(rr.ReferencedChunks) {
+				t.Fatalf("targets cover %d chunks, reachability %d", len(got), len(rr.ReferencedChunks))
+			}
+			c.check(t, sets, got)
+		})
+	}
+}
+
+func tierIntersect(a, b map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for d := range a {
+		if b[d] {
+			out[d] = true
+		}
+	}
+	return out
+}
+
+func tierMinus(a map[string]bool, others ...map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for d := range a {
+		keep := true
+		for _, o := range others {
+			keep = keep && !o[d]
+		}
+		if keep {
+			out[d] = true
+		}
+	}
+	return out
+}
+
+func tierAssertAll(t *testing.T, what string, got map[string]tier, want tier, set map[string]bool) {
+	t.Helper()
+	if len(set) == 0 {
+		t.Fatalf("%s: vacuous (no such chunks in the fixture)", what)
+	}
+	for d := range set {
+		if got[d] != want {
+			t.Fatalf("%s: chunk %.12s is %s, want %s", what, d, got[d], want)
+		}
+	}
+}
+
+func TestTierPolicy_DeletedBucketHistoryKeepsPolicy(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := OpenStore(dir)
+	s.CreateBucket("site")
+	mustPutObject(t, s, "site", "app.js", tierJoin("a", "b"), "text/javascript", nil)
+	mustPutObject(t, s, "site", "app.js", tierJoin("a", "c"), "text/javascript", nil)
+	if err := s.DeleteObject("site", "app.js"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteBucket("site"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	tierMustSet(t, dir, "history", "site", "app", "warm")
+	tg, _, s := tierTargetsOf(t, dir)
+	defer s.Close()
+	if len(tg.want) == 0 {
+		t.Fatal("history of a deleted bucket must stay live")
+	}
+	for d, w := range tg.want {
+		if w.t != tierWarm {
+			t.Fatalf("chunk %.12s = %s; the history rule for the deleted bucket was not applied", d, w.t)
+		}
+	}
+}
+
+// tierTreeHash fingerprints every file under the store (except its lock).
+func tierTreeHash(t *testing.T, dir string) string {
+	t.Helper()
+	h := sha256.New()
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Base(p) == "LOCK" {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, p)
+		fmt.Fprintf(h, "%s %d\n", rel, len(b))
+		h.Write(b)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// tierMisplaced counts live chunks lacking a verified copy at their
+// effective tier, and the live chunks overall.
+func tierMisplaced(t *testing.T, dir string) (misplaced, live int) {
+	t.Helper()
+	tg, _, s := tierTargetsOf(t, dir)
+	defer s.Close()
+	for d, w := range tg.want {
+		sum, _ := decodeHexSHA256(d)
+		live++
+		if s.copyAtTier(sum, w.t, nil) != nil {
+			misplaced++
+		}
+	}
+	return
+}
+
+func tierManifestBytes(t *testing.T, s *Store, uuid string) []byte {
+	t.Helper()
+	man, _, err := s.readManifest(uuid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []byte
+	for _, c := range man.Chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		b, err := s.casRead(sum)
+		if err != nil {
+			t.Fatalf("chunk %.12s: %v", c.SHA256, err)
+		}
+		out = append(out, b...)
+	}
+	return out
+}
+
+// tierCheckFixture proves the workload reads exactly as built: current GET
+// and Range, both retained versions, the snapshot's copy, then deep verify.
+func tierCheckFixture(t *testing.T, dir string) {
+	t.Helper()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	v2 := tierJoin("a", "c")
+	if _, got, err := s.GetObject("site", "app.js"); err != nil || !bytes.Equal(got, v2) {
+		t.Fatalf("GET: %v", err)
+	}
+	for _, r := range []byteRange{{0, 99}, {350_000, 450_000}, {int64(len(v2)) - 777, int64(len(v2)) - 1}} {
+		if _, _, got, err := s.GetObjectRange("site", "app.js", r); err != nil || !bytes.Equal(got, v2[r.start:r.end+1]) {
+			t.Fatalf("range %v: %v", r, err)
+		}
+	}
+	hist := map[string]bool{}
+	for _, o := range s.snapshotHistory() {
+		hist[string(tierManifestBytes(t, s, o.entry.manifestUUID))] = true
+	}
+	if len(hist) != 2 || !hist[string(tierJoin("a", "d"))] || !hist[string(tierJoin("a", "b"))] {
+		t.Fatalf("retained versions differ: %d distinct", len(hist))
+	}
+	snaps, _ := s.scanSnapshots()
+	if len(snaps) != 1 || len(snaps[0].Entries) != 1 || !bytes.Equal(tierManifestBytes(t, s, snaps[0].Entries[0].ManifestUUID), tierJoin("a", "b")) {
+		t.Fatal("snapshot content differs")
+	}
+	if vr, err := s.Verify(true); err != nil || !vr.OK() {
+		t.Fatalf("deep verify: %v %+v", err, vr.Issues)
+	}
+}
+
+func tierRebalanceTest(t *testing.T, dir string, apply bool) RebalanceResult {
+	t.Helper()
+	res, err := tierRebalance(dir, rebalanceOptions{Apply: apply, TargetBytes: 256 << 10, Compress: true})
+	if err != nil {
+		t.Fatalf("rebalance(apply=%v): %v", apply, err)
+	}
+	return res
+}
+
+func tierAssertConverged(t *testing.T, dir string) {
+	t.Helper()
+	if m, live := tierMisplaced(t, dir); m != 0 || live == 0 {
+		t.Fatalf("%d of %d live chunks lack a copy at their target tier", m, live)
+	}
+	res := tierRebalanceTest(t, dir, false)
+	if len(res.Steps) != 0 || res.LoosePackWarm+res.LoosePackCold+res.LooseRedundant != 0 || res.MisplacedChunks != 0 {
+		t.Fatalf("not converged: %+v", res)
+	}
+}
+
+func TestTierRebalance_DryRunThenApplyOnLooseChunks(t *testing.T) {
+	dir := tierFixture(t, true)
+	before := tierTreeHash(t, dir)
+	res := tierRebalanceTest(t, dir, false)
+	if !res.DryRun || !res.Estimated || !res.LiveSetOK || res.LoosePackCold == 0 || res.LoosePackWarm == 0 || res.LooseStayHot == 0 {
+		t.Fatalf("dry-run: %+v", res)
+	}
+	if res.ChunksByTarget["hot"] == 0 || res.ChunksByTarget["warm"] == 0 || res.ChunksByTarget["cold"] == 0 || res.ChunksPromotedBySharing == 0 {
+		t.Fatalf("targets: %+v", res)
+	}
+	if res.RootCounts["current"] != 1 || res.RootCounts["history"] != 2 || res.RootCounts["snapshot"] != 1 || res.RootCounts["multipart"] != 1 {
+		t.Fatalf("roots: %v", res.RootCounts)
+	}
+	if res.WriteAmplification <= 0 || res.MisplacedLogicalBytes == 0 {
+		t.Fatalf("write amplification not reported: %+v", res)
+	}
+	if tierTreeHash(t, dir) != before {
+		t.Fatal("dry-run changed the store")
+	}
+	if v := formatVersionOf(t, dir); v >= storeFormatVersionTiers {
+		t.Fatalf("dry-run raised FORMAT to %d", v)
+	}
+
+	got := tierRebalanceTest(t, dir, true)
+	if got.DryRun || got.Estimated || got.LoosePacked == 0 || got.PacksWritten == 0 {
+		t.Fatalf("apply: %+v", got)
+	}
+	if formatVersionOf(t, dir) != storeFormatVersionTiers {
+		t.Fatal("warm/cold packs exist but FORMAT is below 5")
+	}
+	if c := tierCounts(dir); c[tierWarm] == 0 || c[tierCold] == 0 {
+		t.Fatalf("packs per tier: %v", c)
+	}
+	// Hot-target chunks were left loose.
+	s, _ := OpenStore(dir)
+	if st := packTestStats(t, s); st.LooseChunkCount == 0 {
+		t.Fatal("hot chunks must stay loose")
+	}
+	s.Close()
+	tierAssertConverged(t, dir)
+	tierCheckFixture(t, dir)
+
+	// A second apply has nothing left to do.
+	if again := tierRebalanceTest(t, dir, true); again.LoosePacked != 0 || again.PacksWritten != 0 || again.PacksMoved != 0 {
+		t.Fatalf("second apply: %+v", again)
+	}
+}
+
+// tierPackedStore compacts the store's loose chunks into hot packs.
+func tierPackedStore(t *testing.T, dir string) { t.Helper(); compactTestDir(t, dir) }
+
+func TestTierRebalance_WholePackMoveKeepsBytes(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := OpenStore(dir)
+	s.CreateBucket("site")
+	mustPutObject(t, s, "site", "app.js", tierJoin("a", "d"), "text/javascript", nil)
+	s.Close()
+	tierPackedStore(t, dir) // packs holding only what becomes history
+	old := tierPackIDs(dir, tierHot)
+	s, _ = OpenStore(dir)
+	mustPutObject(t, s, "site", "app.js", tierJoin("b", "c"), "text/javascript", nil) // no shared chunks
+	s.Close()
+	tierPackedStore(t, dir)
+	if len(old) == 0 || len(tierPackIDs(dir, tierHot)) <= len(old) {
+		t.Fatalf("fixture needs separate packs: %v", tierPackIDs(dir, tierHot))
+	}
+	hashes := map[string]string{}
+	for _, id := range old {
+		b, _ := os.ReadFile(filepath.Join(tierPackDir(dir, tierHot), id+packFileSuffix))
+		hashes[id] = fmt.Sprint(len(b), sha256.Sum256(b))
+	}
+
+	dry := tierRebalanceTest(t, dir, false)
+	if dry.PacksWholeMove != len(old) || dry.PacksRewrite != 0 || dry.PacksCompliant != len(tierPackIDs(dir, tierHot))-len(old) {
+		t.Fatalf("dry-run: %+v", dry)
+	}
+	res := tierRebalanceTest(t, dir, true)
+	if res.PacksMoved != len(old) || res.PacksRewritten != 0 || res.PacksWritten != 0 {
+		t.Fatalf("apply: %+v", res)
+	}
+	cold := tierPackIDs(dir, tierCold)
+	slices.Sort(cold)
+	slices.Sort(old)
+	if !slices.Equal(cold, old) {
+		t.Fatalf("cold packs %v, want the old hot packs %v", cold, old)
+	}
+	for _, id := range old {
+		b, err := os.ReadFile(filepath.Join(tierPackDir(dir, tierCold), id+packFileSuffix))
+		if err != nil || fmt.Sprint(len(b), sha256.Sum256(b)) != hashes[id] {
+			t.Fatalf("pack %s was not moved byte-for-byte (%v)", id, err)
+		}
+	}
+	tierAssertConverged(t, dir)
+}
+
+// tierMixedStore packs history, current, and dead records into the same
+// immutable packs.
+func tierMixedStore(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	s, _ := OpenStore(dir)
+	s.CreateBucket("site")
+	mustPutObject(t, s, "site", "app.js", tierJoin("a", "d"), "text/javascript", nil)
+	mustPutObject(t, s, "site", "app.js", tierJoin("a", "b"), "text/javascript", nil)
+	tierPublishSnapshot(t, s, "site")
+	mustPutObject(t, s, "site", "app.js", tierJoin("a", "c"), "text/javascript", nil)
+	deadID, _ := s.CreateMultipartUpload("site", "dead", "application/octet-stream", nil)
+	deadIng, _ := s.ingestStream(bytes.NewReader(genRandomBytes(1005, 700_000)), true)
+	s.commitPart("site", "dead", deadID, 1, deadIng)
+	s.Close()
+	tierPackedStore(t, dir)
+	s, _ = OpenStore(dir)
+	if err := s.AbortMultipartUpload("site", "dead", deadID); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	return dir
+}
+
+func TestTierRebalance_MixedPacksAreRewritten(t *testing.T) {
+	dir := tierMixedStore(t)
+	s0, _ := OpenStore(dir)
+	deadBefore := packTestStats(t, s0).PackedDeadChunkCount
+	s0.Close()
+	dry := tierRebalanceTest(t, dir, false)
+	if dry.PacksRewrite == 0 || dry.PacksWholeMove != 0 || dry.DeadRecordsDropped == 0 || dry.WriteAmplification <= 0 {
+		t.Fatalf("dry-run: %+v", dry)
+	}
+	res := tierRebalanceTest(t, dir, true)
+	if res.PacksRewritten != dry.PacksRewrite+dry.PacksRedundant || res.PacksWritten == 0 || res.PacksDeleted == 0 || res.DeadRecordsDropped != dry.DeadRecordsDropped {
+		t.Fatalf("apply %+v vs dry-run %+v", res, dry)
+	}
+	if c := tierCounts(dir); c[tierWarm] == 0 || c[tierCold] == 0 || c[tierHot] == 0 {
+		t.Fatalf("packs per tier: %v", c)
+	}
+	// Dead records vanish only from packs that had to be rewritten anyway; a
+	// compliant pack's dead records stay for gc/repack.
+	s, _ := OpenStore(dir)
+	if after := packTestStats(t, s).PackedDeadChunkCount; after >= deadBefore || after != deadBefore-res.DeadRecordsDropped {
+		t.Fatalf("dead records %d -> %d, dropped %d", deadBefore, after, res.DeadRecordsDropped)
+	}
+	s.Close()
+	tierAssertConverged(t, dir)
+	tierCheckFixture(t, dir)
+}
+
+func TestTierRebalance_MinMisplacedDefersCostlyRewrites(t *testing.T) {
+	dir := tierMixedStore(t)
+	opt := rebalanceOptions{TargetBytes: 256 << 10, Compress: true, MinMisplacedPercent: 100}
+	dry, err := tierRebalance(dir, opt)
+	if err != nil || dry.PacksDeferred == 0 {
+		t.Fatalf("a 100%% threshold must defer packs that keep well-placed records: %+v %v", dry, err)
+	}
+	if def := tierRebalanceTest(t, dir, false); def.PacksDeferred != 0 || def.BytesWritten <= dry.BytesWritten {
+		t.Fatalf("default is exact convergence: %+v vs %+v", def, dry)
+	}
+	opt.Apply = true
+	if _, err := tierRebalance(dir, opt); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := tierMisplaced(t, dir); m == 0 {
+		t.Fatal("deferred packs should leave misplaced chunks behind")
+	}
+	tierCheckFixture(t, dir)
+	tierRebalanceTest(t, dir, true)
+	tierAssertConverged(t, dir)
+}
+
+func TestTierRebalance_DriftAndDuplicatesConverge(t *testing.T) {
+	dir := tierMixedStore(t)
+	tierRebalanceTest(t, dir, true)
+	hot := tierPackIDs(dir, tierHot)
+	if len(hot) == 0 {
+		t.Fatal("no hot pack")
+	}
+
+	// Deliberate drift: tier move is allowed to contradict policy.
+	tierTestMove(t, dir, tierHot, tierCold, true, hot...)
+	m, _ := tierMisplaced(t, dir)
+	if m == 0 {
+		t.Fatal("manual move created no drift")
+	}
+	dry := tierRebalanceTest(t, dir, false)
+	if dry.PacksWholeMove == 0 && dry.PacksRewrite == 0 {
+		t.Fatalf("drift not detected: %+v", dry)
+	}
+	tierRebalanceTest(t, dir, true)
+	tierAssertConverged(t, dir)
+
+	// An interrupted move leaves the same pack in two tiers; the extra copy
+	// is redundant and is removed, the desired-tier copy is reused untouched.
+	hot = tierPackIDs(dir, tierHot)
+	src := filepath.Join(tierPackDir(dir, tierHot), hot[0]+packFileSuffix)
+	b, _ := os.ReadFile(src)
+	if err := os.WriteFile(filepath.Join(tierPackDir(dir, tierCold), hot[0]+packFileSuffix), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := tierRebalanceTest(t, dir, true)
+	if res.PacksRedundant == 0 {
+		t.Fatalf("duplicate pack not recognised: %+v", res)
+	}
+	if after, err := os.ReadFile(src); err != nil || !bytes.Equal(after, b) {
+		t.Fatal("the valid desired-tier copy must be reused, not rewritten")
+	}
+	tierAssertConverged(t, dir)
+	tierCheckFixture(t, dir)
+}
+
+func TestTierRebalance_HistoryPruneChangesTargets(t *testing.T) {
+	dir := tierMixedStore(t)
+	tierRebalanceTest(t, dir, true)
+	before := tierRebalanceTest(t, dir, false)
+	if before.ChunksByTarget["cold"] == 0 {
+		t.Fatalf("fixture has no cold chunks: %+v", before)
+	}
+	zero := 0
+	if _, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "site", KeepLast: &zero}, true); err != nil {
+		t.Fatal(err)
+	}
+	after := tierRebalanceTest(t, dir, false)
+	if after.ChunksByTarget["cold"] != 0 || after.RootCounts["history"] != 0 {
+		t.Fatalf("prune must remove cold targets: %+v", after)
+	}
+	tierRebalanceTest(t, dir, true)
+	if _, err := gcCollect(dir, true); err != nil {
+		t.Fatalf("gc after rebalance: %v", err)
+	}
+	if _, err := repackStore(dir, repackOptions{TargetBytes: 256 << 10, MaxLivePercent: 100, Compress: true}); err != nil {
+		t.Fatalf("repack after rebalance: %v", err)
+	}
+	s, _ := OpenStore(dir)
+	defer s.Close()
+	if _, got, err := s.GetObject("site", "app.js"); err != nil || !bytes.Equal(got, tierJoin("a", "c")) {
+		t.Fatalf("GET: %v", err)
+	}
+	if vr, _ := s.Verify(true); !vr.OK() {
+		t.Fatalf("verify: %+v", vr.Issues)
+	}
+}
+
+func TestTierRebalance_RefusesUnsafeStates(t *testing.T) {
+	t.Run("invalid live set blocks apply, dry-run reports it", func(t *testing.T) {
+		dir := tierMixedStore(t)
+		s, _ := OpenStore(dir)
+		_, man, _ := s.HeadObject("site", "app.js")
+		sum, _ := decodeHexSHA256(man.Chunks[0].SHA256)
+		loc, _ := s.packLookup(sum)
+		os.Remove(s.packSnap().packs[loc.pack].path)
+		s.Close()
+		before := tierTreeHash(t, dir)
+		dry, err := tierRebalance(dir, rebalanceOptions{TargetBytes: 256 << 10, Compress: true})
+		if err != nil || dry.LiveSetOK || len(dry.Issues) == 0 {
+			t.Fatalf("dry-run: %+v %v", dry, err)
+		}
+		if _, err := tierRebalance(dir, rebalanceOptions{Apply: true, TargetBytes: 256 << 10, Compress: true}); !errors.Is(err, errGCUnsafe) {
+			t.Fatalf("apply err = %v", err)
+		}
+		if tierTreeHash(t, dir) != before {
+			t.Fatal("a refused apply changed the store")
+		}
+	})
+	t.Run("tier roots fail closed", func(t *testing.T) {
+		dir := tierFixture(t, false)
+		tierRebalanceTest(t, dir, true)
+		os.Remove(filepath.Join(tierRoot(dir, tierCold), tierMarkerName))
+		before := tierTreeHash(t, dir)
+		for _, apply := range []bool{false, true} {
+			if _, err := tierRebalance(dir, rebalanceOptions{Apply: apply, TargetBytes: 256 << 10, Compress: true}); err == nil || !strings.Contains(err.Error(), "missing or unmounted") {
+				t.Fatalf("apply=%v: %v", apply, err)
+			}
+		}
+		if tierTreeHash(t, dir) != before {
+			t.Fatal("changed despite a missing tier root")
+		}
+	})
+	t.Run("corrupt source record keeps every source", func(t *testing.T) {
+		dir := tierMixedStore(t)
+		s, _ := OpenStore(dir)
+		var victim string
+		for _, p := range s.packSnap().packs {
+			victim = p.path
+			break
+		}
+		s.Close()
+		f, _ := os.OpenFile(victim, os.O_RDWR, 0)
+		f.WriteAt([]byte{0xde, 0xad}, packHeaderSize+packRecordHeaderSize+3)
+		f.Close()
+		if _, err := tierRebalance(dir, rebalanceOptions{Apply: true, TargetBytes: 256 << 10, Compress: true}); err == nil {
+			t.Fatal("a corrupt live record must stop the rebalance")
+		}
+		if !strings.Contains(strings.Join(tierPackIDs(dir, tierHot), ","), strings.TrimSuffix(filepath.Base(victim), packFileSuffix)) {
+			t.Fatal("the corrupt source pack was removed")
+		}
+		if left, _ := filepath.Glob(filepath.Join(dir, "tmp", "pack-*.tmp")); len(left) != 0 {
+			t.Fatalf("staging left behind: %v", left)
+		}
+	})
+}
+
+func TestTierRebalance_CrashPointsConverge(t *testing.T) {
+	points := []struct {
+		hook  string
+		nth   int
+		loose bool // use the loose fixture (loose -> non-hot migration)
+	}{
+		{hookRebalanceBeforeStage, 1, false},
+		{hookPackRecordWritten, 3, false},
+		{hookPackAfterSync, 1, false},
+		{hookPackValidated, 1, false},
+		{hookPackPublished, 1, false},
+		{hookRebalancePublished, 1, false},
+		{hookBeforePackDelete, 1, false},
+		{hookPackDeleted, 1, false},
+		{hookRebalanceDone, 1, false},
+		{hookPackRecordWritten, 2, true},
+		{hookPackValidated, 1, true},
+		{hookPackPublished, 1, true},
+		{hookBeforeLooseDelete, 1, true},
+		{hookBeforeLooseDelete, 5, true},
+	}
+	for _, c := range points {
+		t.Run(fmt.Sprintf("%s#%d loose=%v", c.hook, c.nth, c.loose), func(t *testing.T) {
+			var dir string
+			if c.loose {
+				dir = tierFixture(t, false)
+			} else {
+				dir = tierMixedStore(t)
+			}
+			calls := 0
+			withTestHook(t, func(point string) {
+				if point == c.hook {
+					if calls++; calls == c.nth {
+						panic(simulatedCrash{point: point})
+					}
+				}
+			})
+			runExpectingSimulatedCrash(t, func() {
+				_, _ = tierRebalance(dir, rebalanceOptions{Apply: true, TargetBytes: 256 << 10, Compress: true})
+			})
+			testHook = nil
+			tierCheckFixture(t, dir) // every object, version and the snapshot still read byte-exact
+			tierRebalanceTest(t, dir, true)
+			tierAssertConverged(t, dir)
+			tierCheckFixture(t, dir)
+			if left, _ := filepath.Glob(filepath.Join(dir, "tiers", "*", "tmp", "pack-*.tmp")); len(left) != 0 {
+				t.Fatalf("staging left behind: %v", left)
+			}
+		})
+	}
+}
+
+func TestTierRebalance_WholeMoveCrashConverges(t *testing.T) {
+	for _, hook := range []string{hookMoveValidated, hookMoveAfterRename, hookMoveBeforeDelete, hookMoveAfterDelete} {
+		t.Run(hook, func(t *testing.T) {
+			dir := t.TempDir()
+			s, _ := OpenStore(dir)
+			s.CreateBucket("site")
+			mustPutObject(t, s, "site", "app.js", tierJoin("a", "d"), "text/javascript", nil)
+			s.Close()
+			tierPackedStore(t, dir)
+			s, _ = OpenStore(dir)
+			mustPutObject(t, s, "site", "app.js", tierJoin("b", "c"), "text/javascript", nil)
+			s.Close()
+			tierPackedStore(t, dir)
+			withTestHook(t, func(point string) {
+				if point == hook {
+					panic(simulatedCrash{point: point})
+				}
+			})
+			runExpectingSimulatedCrash(t, func() {
+				_, _ = tierRebalance(dir, rebalanceOptions{Apply: true, TargetBytes: 256 << 10, Compress: true})
+			})
+			testHook = nil
+			s, _ = OpenStore(dir)
+			if _, got, err := s.GetObject("site", "app.js"); err != nil || !bytes.Equal(got, tierJoin("b", "c")) {
+				t.Fatalf("GET after crash: %v", err)
+			}
+			s.Close()
+			tierRebalanceTest(t, dir, true)
+			tierAssertConverged(t, dir)
+		})
+	}
+}
+
+func TestTierRebalance_MultipartRootsStaySafe(t *testing.T) {
+	dir := tierFixture(t, true)
+	tierRebalanceTest(t, dir, true)
+	s, _ := OpenStore(dir)
+	defer s.Close()
+	ups := s.snapshotUploads()
+	if len(ups) != 1 {
+		t.Fatalf("uploads: %d", len(ups))
+	}
+	tg, _, _ := tierTargetsOf(t, dir)
+	for _, c := range ups[0].parts[1].chunks {
+		if tg.want[c.SHA256].t != tierHot {
+			t.Fatalf("active part chunk %.12s targets %s", c.SHA256, tg.want[c.SHA256].t)
+		}
+	}
+	etag := ups[0].parts[1].etag
+	if _, _, err := s.CompleteMultipartUpload("site", "upload/big", ups[0].uploadID, []completedPart{{PartNumber: 1, ETag: etag}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, got, err := s.GetObject("site", "upload/big"); err != nil || !bytes.Equal(got, tierSeg("d")) {
+		t.Fatalf("completed upload: %v", err)
+	}
+}
+
+// Latest model blocks are shared with older checkpoints: they must keep a
+// hot copy rather than be duplicated into a colder tier.
+func TestTierRebalance_SharedCheckpointBlocksStayHot(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := OpenStore(dir)
+	s.CreateBucket("ckpt")
+	mustPutObject(t, s, "ckpt", "models/old/model.bin", tierJoin("a", "b"), "application/octet-stream", nil)
+	mustPutObject(t, s, "ckpt", "models/latest/model.bin", tierJoin("a", "c"), "application/octet-stream", nil)
+	s.Close()
+	tierMustSet(t, dir, "current", "ckpt", "models/latest/", "hot")
+	tierMustSet(t, dir, "current", "ckpt", "models/old/", "warm")
+	tierPackedStore(t, dir)
+	res := tierRebalanceTest(t, dir, true)
+	if res.ChunksPromotedBySharing != 0 && res.ChunksByTarget["warm"] == 0 {
+		t.Fatalf("%+v", res)
+	}
+	tg, _, s := tierTargetsOf(t, dir)
+	defer s.Close()
+	_, latest, _ := s.HeadObject("ckpt", "models/latest/model.bin")
+	shared := 0
+	for _, c := range latest.Chunks {
+		if tg.want[c.SHA256].mask&(1<<tierWarm) != 0 { // also requested by the older checkpoint
+			shared++
+			sum, _ := decodeHexSHA256(c.SHA256)
+			if tg.want[c.SHA256].t != tierHot || s.copyAtTier(sum, tierHot, nil) != nil {
+				t.Fatalf("shared block %.12s is not hot", c.SHA256)
+			}
+			if s.copyAtTier(sum, tierWarm, nil) == nil {
+				t.Fatalf("shared block %.12s was duplicated into warm", c.SHA256)
+			}
+		}
+	}
+	if shared == 0 {
+		t.Fatal("vacuous: the checkpoints share no blocks")
+	}
+	tierAssertConverged(t, dir)
+}
+
+func TestTierRebalance_CLI(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	dir := tierFixture(t, false)
+	if out, _, code := runZeros3CLI(t, bin, "tier", "policy", "list", "-store", dir, "-json"); code != 0 || !strings.Contains(out, `"history": "cold"`) {
+		t.Fatalf("list: code=%d %q", code, out)
+	}
+	if out, _, code := runZeros3CLI(t, bin, "tier", "policy", "list", "-store", dir); code != 0 || !strings.Contains(out, "built-in defaults") || !strings.Contains(out, "explicit overrides: none") {
+		t.Fatalf("list human: %q", out)
+	}
+	if _, errOut, code := runZeros3CLI(t, bin, "tier", "policy", "set", "-store", dir, "-scope", "current", "-prefix", "x", "-tier", "cold"); code == 0 || !strings.Contains(errOut, "prefix needs a bucket") {
+		t.Fatalf("prefix without bucket: code=%d %q", code, errOut)
+	}
+	if out, _, code := runZeros3CLI(t, bin, "tier", "policy", "set", "-store", dir, "-scope", "current", "-bucket", "site", "-prefix", "app", "-tier", "warm", "-json"); code != 0 || !strings.Contains(out, `"added"`) {
+		t.Fatalf("set: %q", out)
+	}
+	before := tierTreeHash(t, dir)
+	out, errOut, code := runZeros3CLI(t, bin, "tier", "rebalance", "-store", dir, "-json")
+	var rr RebalanceResult
+	if code != 0 || json.Unmarshal([]byte(out), &rr) != nil || !rr.DryRun || rr.PolicyRules != 1 || tierTreeHash(t, dir) != before {
+		t.Fatalf("dry-run: code=%d %q %q", code, out, errOut)
+	}
+	if out, errOut, code = runZeros3CLI(t, bin, "tier", "rebalance", "-store", dir, "-apply", "-json"); code != 0 {
+		t.Fatalf("apply: %q %q", out, errOut)
+	}
+	if out, _, code = runZeros3CLI(t, bin, "tier", "rebalance", "-store", dir); code != 0 || !strings.Contains(out, "write amplification") {
+		t.Fatalf("human: %q", out)
+	}
+	if _, _, code = runZeros3CLI(t, bin, "tier", "policy", "remove", "-store", dir, "-scope", "current", "-bucket", "site", "-prefix", "app"); code != 0 {
+		t.Fatal("remove failed")
+	}
+	if out, _, code = runZeros3CLI(t, bin, "verify", "-store", dir, "-deep"); code != 0 {
+		t.Fatalf("verify: %q", out)
 	}
 }
