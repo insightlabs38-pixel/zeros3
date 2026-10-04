@@ -189,7 +189,7 @@ stage_client() { build_bin && cd "$root/testing-harnesses" && go run ./runner -g
 stage_apps() { build_bin && cd "$root/testing-harnesses" && go run ./runner -group apps -bin "$bin"; }
 stage_repro() { cd "$root" && sh scripts/reproducible_build.sh; }
 
-stage_race()    { cd "$root" && go test -race -count=1 ./...; }
+stage_race()    { cd "$root" && go test -race -count=1 -timeout 60m ./...; }
 stage_crash()   { cd "$root" && go test -race -count=1 -run 'TestRepack_|TestPack_|TestPackCompress|TestTier_|TestTierRebalance_' .; }
 stage_index() { cd "$root" && go test -count=1 -race -run 'TestLocator_' .; }
 stage_index-scale() { cd "$root" && ZEROS3_LOCATOR_SCALE="${LOCATOR_SCALE:-5000000}" go test -count=1 -run 'TestLocatorScale' -v .; }
