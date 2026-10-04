@@ -10,6 +10,9 @@
 //	            history prune/gc/repack, reads byte-exact throughout
 //	artifact    multipart checkpoint, range read, localized-edit delta sync,
 //	            snapshot, tier move
+//	rebalance   content-aware placement (tier policy + rebalance) over the browser
+//	            workload and a checkpoint projection: hottest reference wins, reads
+//	            unchanged, policy/prune change placement; prints measurements
 //
 // It starts the real zeros3 binary (ZEROS3_BIN) and talks to it only over S3
 // and the documented CLI.
@@ -204,7 +207,7 @@ func record(r core.Report) {
 }
 
 func main() {
-	scen := flag.String("scenario", "invariance,browser,artifact", "comma-separated: invariance, browser, artifact")
+	scen := flag.String("scenario", "invariance,browser,artifact", "comma-separated: invariance, browser, artifact, rebalance")
 	flag.StringVar(&onlyStates, "states", "", "invariance only: comma-separated physical states to run (default all; the first run state is the baseline)")
 	asJSON := flag.Bool("json", false, "emit the JSON summary only")
 	flag.Parse()
@@ -226,6 +229,8 @@ func main() {
 			browser()
 		case "artifact":
 			artifact()
+		case "rebalance":
+			rebalance()
 		default:
 			must(fmt.Errorf("unknown scenario %q", s))
 		}

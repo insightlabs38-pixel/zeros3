@@ -28,6 +28,7 @@ CAS → immutable manifests → visibility journal.**
 - Bounded parallel chunk transfer, batched into a few bulk requests between ZeroS3 servers
 - Immutable packed storage: `zeros3 compact` folds loose chunk files into a few verified packs, DEFLATE-compressing each record that shrinks; `gc` and `zeros3 repack` reclaim dead packed records by replacing packs
 - Hot/warm/cold physical pack tiers (`compact -tier`, `zeros3 tier status|init|move`) beneath the same logical CAS; warm and cold can be separate local mounts
+- Content-aware placement: `zeros3 tier policy` and `tier rebalance` give each chunk the hottest tier any live root (current, history, snapshot, multipart) asks for
 - Zero third-party dependencies, reproducible build
 
 ZeroS3 is not trying to compete with MinIO or Ceph on distributed
@@ -232,7 +233,7 @@ at `store/tiers/warm` and `store/tiers/cold`, each with its own `packs/` and
 `tmp/`, so either can be a mount or bind mount on a different device. Lookup
 prefers hot over warm over cold (a loose copy first), and a damaged copy falls
 back to the next valid one. New uploads always land loose (hot); there is no
-direct-to-pack ingest, no automatic heat policy and no asynchronous archive
+direct-to-pack ingest, no access-heat tracking and no asynchronous archive
 restore -- cold is simply a slower-or-cheaper directory that is always
 readable. `zeros3 compact -tier hot|warm|cold` (default hot) packs loose
 chunks straight into a tier; `zeros3 repack` and `gc` keep each pack in its
@@ -262,6 +263,41 @@ another source.
 The first warm/cold pack raises `FORMAT.json` to 5 (before it is published,
 and never lowered afterwards), so a build that predates tiers refuses the
 store; a hot-only store stays at its old version.
+
+**Content-aware tier policy and rebalance.** Placement follows the logical
+content graph, not objects. A chunk may be referenced by many roots; each root
+requests a tier and the chunk's effective tier is the **hottest** request of any
+live reference (hot < warm < cold in preference). Built-in defaults: `current`
+hot, `history` cold, `snapshot` warm, `multipart` hot -- so a chunk shared by the
+current object and an old revision stays hot, one shared only by a snapshot and
+history is warm, and one only history references is cold. Overrides are
+explicit rules in `store/TIER_POLICY.json` (`zeros3 tier policy list|set|remove
+-store DIR -scope current|history|snapshot|multipart [-tier T] [-bucket B
+[-prefix P]]`): within a scope the longest matching `bucket`+`prefix` wins, then
+bucket-wide, then scope-wide, then the built-in default (plain string prefixes,
+no globbing; history matches the original bucket/key even after the bucket was
+deleted; snapshots match their captured source bucket and key). The file holds
+only overrides, is replaced atomically and durably, needs the exclusive store
+lock to change, is not storage truth (no manifest, chunk identity, journal or
+pack records it, `FORMAT.json` is not bumped, and a malformed file stops only
+`tier policy`/`tier rebalance`, never ordinary reads and writes). `zeros3 tier
+rebalance -store DIR [-apply] [-pack-size-mib N] [-compression auto|off]
+[-min-misplaced-percent N] [-json]` (dry-run by default; exclusive/offline)
+recomputes every chunk's target from policy plus the same live roots `gc`
+trusts -- nothing per chunk is stored -- and converges placement: loose chunks
+stay hot or are packed into their target tier; a pack whose live records all
+need one other tier moves whole (`tier move`'s crash-safe primitive, bytes
+unchanged); a pack mixing targets, dead or redundant records has its needed
+records rewritten into target-tier packs (existing staging, verification and
+removal order; dead records are not copied) and is removed only after every live
+record has a verified surviving copy; duplicate copies already at the target are
+reused. The dry-run reports targets, loose and pack actions, estimated I/O and
+write amplification (physical bytes written per logical byte misplaced -- a few
+misplaced chunks inside a big immutable pack cost a whole-pack rewrite;
+`-min-misplaced-percent` defers such rewrites). `tier move` remains a low-level
+escape hatch that may contradict policy; the next rebalance reports and corrects
+the drift. It refuses `-apply` on an invalid live set or a bad tier root. There
+is no read-heat tracking, background worker or online rebalance.
 
 **Delta movement.** `zeros3 sync` ingests a local file or directory
 using far less transfer than a full upload when the store already holds
@@ -518,6 +554,7 @@ Honest, not exhaustive — see [`S3_COMPAT.md`](./S3_COMPAT.md) for the
 exact API contract:
 
 - Single writer process per store; no distributed/HA operation.
+- Tier placement is explicit and offline: policy plus `tier rebalance`; no access tracking, automatic promotion or demotion, or S3 storage classes.
 - Packed storage is v1: `compact`, `gc -apply` and `repack` are offline.
   Retained history keeps overwritten and deleted versions live, so packed
   records only die after upload aborts or after `versions prune` retires

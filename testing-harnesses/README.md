@@ -58,7 +58,8 @@ harness/
   z2_repack/               pack-aware `gc` and `zeros3 repack`: utilization profiles, reclaimed bytes, write amplification, throughput, RSS, GET before/after
   z2_consumer/             ZeroS3-specific consumer contract: one S3 read scenario over loose/packed/
                            compressed/warm/cold/mixed stores (`invariance`), browser-site workload with
-                           batch delete + prune + gc/repack (`browser`), checkpoint workload (`artifact`)
+                           batch delete + prune + gc/repack (`browser`), checkpoint workload (`artifact`),
+                           content-aware tier policy + rebalance over both (`rebalance`)
   m8g/introspection/       diff / inspect / stats
   m8h/parallel_transfer/   bounded parallel transfer (plus bench/)
   m8_baseline/             throughput baseline
