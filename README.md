@@ -27,7 +27,7 @@ CAS → immutable manifests → visibility journal.**
 - Streaming I/O: uploads and downloads of any size run in bounded memory; signed `aws-chunked` uploads accepted
 - Bounded parallel chunk transfer, batched into a few bulk requests between ZeroS3 servers
 - Immutable packed storage: `zeros3 compact` folds loose chunk files into a few verified packs, DEFLATE-compressing each record that shrinks; `gc` and `zeros3 repack` reclaim dead packed records by replacing packs
-- Hot/warm/cold physical pack tiers (`compact -tier`, `zeros3 tier status|move`) beneath the same logical CAS; warm and cold can be separate local mounts
+- Hot/warm/cold physical pack tiers (`compact -tier`, `zeros3 tier status|init|move`) beneath the same logical CAS; warm and cold can be separate local mounts
 - Zero third-party dependencies, reproducible build
 
 ZeroS3 is not trying to compete with MinIO or Ceph on distributed
@@ -151,8 +151,8 @@ CDC + CAS
 ## What it can do
 
 **S3 compatibility.** `CreateBucket`, `ListBuckets`, `HeadBucket`,
-`DeleteBucket`, `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`,
-`ListObjectsV2` (prefix/delimiter/pagination), `CopyObject`
+`DeleteBucket`, `GetBucketLocation`, `PutObject`, `GetObject`, `HeadObject`,
+`DeleteObject`, `DeleteObjects` (≤1000 keys), `ListObjectsV2` (prefix/delimiter/pagination), `CopyObject`
 (`COPY`/`REPLACE` directives, same/cross-bucket, source preconditions),
 single-range `GetObject`, and a full persistent multipart upload
 lifecycle (`CreateMultipartUpload`/`UploadPart`/`ListParts`/
@@ -248,7 +248,17 @@ unchanged by tiering. Each warm/cold root carries a `TIER.json` naming the
 store and tier; once a store is at format 5, an expected tier root that is
 missing, empty, foreign or malformed (an unmounted device, say) fails the open
 instead of letting its packs silently vanish -- mount the right device before
-opening, and note a replacement device must carry the original `TIER.json`.
+opening. For a *replacement or new* device,
+`zeros3 tier init -store DIR -tier warm|cold [-json]` (exclusive lock, reads
+`FORMAT.json` directly, so it works while the open is refused) creates only the
+structural root -- `TIER.json` for this store's ID, `packs/`, `tmp/` -- and only
+over an absent or empty root (an empty `packs/`/`tmp/` or a fresh filesystem's
+`lost+found` is fine). It refuses hot, a marker for another store or tier, any
+non-empty or unrecognized directory, and a pack set with no marker; there is no
+force mode, so an unmounted device can never be silently overwritten. **It does
+not restore data**: if the failed device held the only copy of a live chunk,
+`zeros3 verify` still reports it missing after init -- repair or restore from
+another source.
 The first warm/cold pack raises `FORMAT.json` to 5 (before it is published,
 and never lowered afterwards), so a build that predates tiers refuses the
 store; a hot-only store stays at its old version.
@@ -429,6 +439,13 @@ MiB batches and at most 4 in flight.
   bucket/object CRUD, `ListObjectsV2`, `CopyObject`, range GET,
   presigned GET/PUT, and a full persistent multipart lifecycle including
   a real process restart mid-upload.
+- **Core Client Profile v1** ([`S3_COMPAT.md`](./S3_COMPAT.md#zeros3-core-client-profile-v1)):
+  one portable black-box suite (`testing-harnesses/profile/conformance`) passes
+  with the AWS SDK for Go v2 and minio-go; the same consumer reads are
+  byte-identical over loose, packed raw/compressed, hot, warm, cold and
+  mixed-tier stores; browser-site and checkpoint application scenarios run end to end;
+  independent golden SigV4/presign/wire vectors are checked by `go test`.
+  `zeros3 probe -endpoint URL` tells a ZeroS3 endpoint from a generic S3 one.
 - **minio-go interoperability:** unmodified minio-go uploads signed as
   `aws-chunked` (empty, multi-chunk, 40 MiB single PUT, multipart) read
   back byte-exact; a byte flipped in flight is rejected and publishes

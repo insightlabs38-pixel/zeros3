@@ -15,6 +15,72 @@ style) addressing, Authorization-header and query-string (presigned URL)
 SigV4, and the operation set below. It is not a goal to reach full AWS S3
 parity.
 
+## ZeroS3 Core Client Profile v1
+
+The **Core Client Profile v1** is the contract a portable client can rely on
+without reading the rest of this document. It is deliberately small and is
+**not full AWS S3**; it is what a native client (the planned Mojo S3
+connector, a browser/storage client, an artifact or build-cache tool) should
+implement and test against first. `GET /_zeros3/v1/info` advertises
+`"implementation": "zeros3"` and `"core_s3_profile": 1` (additive fields that
+older clients ignore); `zeros3 probe -endpoint URL` reads them and reports
+`zeros3` or `generic-s3`.
+
+| Area | Operations |
+|---|---|
+| Buckets | `ListBuckets`, `CreateBucket`, `HeadBucket`, `DeleteBucket`, `GetBucketLocation` |
+| Objects | `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `DeleteObjects`, `ListObjectsV2`, `CopyObject` |
+| Reads | single `Range`; `If-Match` / `If-None-Match` |
+| Writes | `Content-MD5`, `x-amz-checksum-crc32`, conditional PUT (`If-None-Match: *`, `If-Match`) |
+| Multipart | create, upload part, list parts, list uploads, complete, abort |
+| Auth | SigV4 header auth; SigV4 presigned GET/PUT; `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` (aws-chunked) bodies |
+
+Connection model: one endpoint, one configured region, one static credential
+pair, **path-style** addressing (virtual-hosted style is opt-in). Nothing
+about packs, compression, tiers or the locator is visible through the profile:
+a client observes the same S3 behavior whether data is loose, packed raw or
+compressed, hot, warm, cold or a mix.
+
+Two operations were added for the profile:
+
+- `GetBucketLocation` — `GET /bucket?location`. Returns the server's single
+  configured region as a `LocationConstraint`; like AWS, `us-east-1` is the
+  empty constraint. Missing bucket: `NoSuchBucket`.
+- `DeleteObjects` — `POST /bucket?delete`, up to 1000 keys, `Quiet=true`
+  supported. Each key goes through the same path as `DeleteObject` (a missing
+  key is success; an existing key's root is archived into internal history;
+  no chunk is deleted — `versions prune` + `gc`/`repack` reclaim space). It is
+  not atomic: per-key failures appear in the result. Zero or more than 1000
+  keys, a missing/empty `Key`, or malformed XML is `MalformedXML`; the request
+  body is capped at 8 MiB. A non-empty `VersionId` other than `null` is
+  reported as a per-key `InvalidArgument` (AWS versioning is not supported).
+
+**Validated with:** the AWS SDK for Go v2 (full profile, on loose and
+mixed-tier stores) and minio-go (the same suite; CRC32 and a few client-only
+limits are skipped), both via `testing-harnesses/profile/conformance`
+(`scripts/validate.sh client`). The AWS CLI smoke test and the existing
+`rclone` profile run only where those tools are already installed; they were
+not available in the recorded run.
+
+**Golden client vectors** for implementing a client in another language live
+in [`testing-harnesses/vectors/`](./testing-harnesses/vectors): `sigv4.json`
+(canonical request, string-to-sign and signature for plain/space/`+`/`%`/
+encoded-slash/repeated-slash/unicode keys, unsorted queries, metadata headers,
+empty and non-empty payloads, plus four AWS-published examples),
+`presign.json` (GET, PUT, expiry bounds, encoded keys) and `wire.json`
+(ListObjectsV2, GetBucketLocation, DeleteObjects, range GET, multipart
+completion). They were produced by an independent stdlib-only reference
+(`gen.py`, which reproduces AWS's published signatures) and are consumed, never
+rewritten, by `go test -run TestVectors_` (`scripts/validate.sh vectors`). A
+first native connector can implement exactly this table, verify itself against
+the vectors offline, then run `profile/conformance` against a live endpoint.
+
+Out of scope for the profile (and not implemented): ACLs, policies, IAM/STS,
+KMS/SSE, lifecycle, object lock/legal hold, tagging, CORS, website hosting,
+notifications, replication configuration, requester pays, the AWS Versioning
+API, `SelectObjectContent`, other checksum families, multi-region semantics.
+A client that insists on one of these needs configuring down to the profile.
+
 ## Implemented and tested
 
 | Operation | Wire form | Notes |
@@ -27,6 +93,8 @@ parity.
 | `GetObject` | `GET /bucket/key` | exact byte reconstruction streamed one SHA-256-verified CAS chunk at a time (bounded memory at any object size), ETag, Content-Type, metadata; `If-Match`/`If-None-Match` read preconditions. A chunk that fails verification after the response has started is never sent and the response ends short of its `Content-Length` |
 | `HeadObject` | `HEAD /bucket/key` | same headers as GetObject, no body; `If-Match`/`If-None-Match` read preconditions |
 | `DeleteObject` | `DELETE /bucket/key` | idempotent non-versioned delete, 204 |
+| `DeleteObjects` | `POST /bucket?delete` + XML body | ≤1000 keys, `Quiet`; each key uses `DeleteObject` semantics (history archive, no CAS deletion); not atomic; see the Core Client Profile above |
+| `GetBucketLocation` | `GET /bucket?location` | the server's one configured region; empty constraint for `us-east-1` |
 | `ListObjectsV2` | `GET /bucket?list-type=2...` | `prefix`, `delimiter`/`CommonPrefixes`, `max-keys` (default/clamped to 1000), `continuation-token`, UTF-8 byte-lexical key order, XML escaping |
 | `CopyObject` | `PUT /bucket/key` + `x-amz-copy-source` | `COPY`/`REPLACE` metadata directives, same/cross-bucket, zero new CAS payload bytes; works identically for a completed multipart object; `x-amz-copy-source-if-match`/`-if-none-match` source preconditions |
 | single-range `GetObject` | `GET` + `Range: bytes=...` | `start-end`, `start-`, `-suffix`; 416 with `Content-Range: bytes */<size>` for an unsatisfiable range; works across a completed multipart object's part boundaries |
