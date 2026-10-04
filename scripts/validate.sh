@@ -14,6 +14,9 @@
 #                                replicate, restore and repair suites
 #   scripts/validate.sh history  history prune planner/journal/crash/reclamation tests
 #   scripts/validate.sh history-life  black-box prune lifecycle harness (gc + repack)
+#   scripts/validate.sh tier     hot/warm/cold tier unit, crash and CLI tests (fast)
+#   scripts/validate.sh tier-life  black-box tier lifecycle harness (compact -tier,
+#                                tier move, prune + gc/repack, v1-v5 format compat)
 #   scripts/validate.sh all      both
 #   scripts/validate.sh STAGE... run named stages (see `list`)
 #
@@ -28,7 +31,9 @@
 # (a build predating history pruning; default: built from the Z2-07 merge),
 # BULK_SIZE_MIB (bulk-bench payload, default 256), BULK_BASELINE_BIN (a build
 # without bulk transport to act as the v1 client; default: built from the
-# Z2-06 commit).
+# Z2-06 commit), TIER_SEG_MIB (tier-life object segment size, default 4),
+# TIER_BASELINE_BIN (the Z2-08 build, store formats 1-4; default: built from
+# its merge commit 33478ce).
 set -u
 
 # Ambient AWS_* settings would override the harnesses' fixed credentials.
@@ -91,10 +96,24 @@ stage_bulk-bench() {
 		go run ./harness/z2_bulk_transfer -bin "$bin" -baseline-bin "$base" -size-mib "${BULK_SIZE_MIB:-256}" \
 			-delays-ms 0,5,10 -v1-workers 8 -v2-workers 8 -matrix-delay-ms 10
 }
+stage_tier() { cd "$root" && go test -count=1 -run 'TestTier_|TestLocator_' .; }
+stage_tier-life() {
+	build_bin || return 1
+	base="${TIER_BASELINE_BIN:-}"
+	if [ -z "$base" ]; then
+		base="$logs/zeros3-z2-08-baseline"
+		tmp=$(mktemp -d) &&
+			(cd "$root" && git archive 33478ce zeros3.go go.mod | tar -x -C "$tmp") &&
+			(cd "$tmp" && CGO_ENABLED=0 go build -o "$base" zeros3.go) || return 1
+		rm -rf "$tmp"
+	fi
+	cd "$root/testing-harnesses" &&
+		ZEROS3_BIN="$bin" go run ./harness/z2_storage_tiers -seg-mib "${TIER_SEG_MIB:-4}" -baseline-bin "$base"
+}
 stage_repro() { cd "$root" && sh scripts/reproducible_build.sh; }
 
 stage_race()    { cd "$root" && go test -race -count=1 ./...; }
-stage_crash()   { cd "$root" && go test -race -count=1 -run 'TestRepack_|TestPack_|TestPackCompress' .; }
+stage_crash()   { cd "$root" && go test -race -count=1 -run 'TestRepack_|TestPack_|TestPackCompress|TestTier_' .; }
 stage_index() { cd "$root" && go test -count=1 -race -run 'TestLocator_' .; }
 stage_index-scale() { cd "$root" && ZEROS3_LOCATOR_SCALE="${LOCATOR_SCALE:-5000000}" go test -count=1 -run 'TestLocatorScale' -v .; }
 stage_repack() {
@@ -112,10 +131,10 @@ stage_compression() {
 }
 
 normal="format modules test static s3 sync repro"
-heavy="race crash repack compact compression index-scale bulk-bench history-life"
+heavy="race crash repack compact compression index-scale bulk-bench history-life tier-life"
 
 case "${1:-normal}" in
-list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk history history-life"; exit 0 ;;
+list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk history history-life tier tier-life"; exit 0 ;;
 normal) stages=$normal ;;
 heavy) stages=$heavy ;;
 all) stages="$normal $heavy" ;;

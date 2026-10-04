@@ -37,6 +37,7 @@ import (
 	"io/fs"
 	"iter"
 	"log"
+	"maps"
 	"math"
 	"math/bits"
 	"net"
@@ -70,35 +71,36 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//     449    Content-defined chunking (CDC)
-//     575    Content-addressed chunk storage (CAS)
-//     734    Packed CAS (immutable packs, DEFLATE records, locator index)
-//    1850    Manifests (immutable, JSON)
-//    1949    Visibility journal (append-only, checksummed)
-//    2362    Store: format, namespace, and object CRUD
-//    3177    Version history/restore, history pruning, ListObjectsV2
-//    3650    SigV4 authentication (header and presigned-URL)
-//    4605    Request payload checksums and S3-shaped XML error/response types
-//    4821    HTTP routing and S3 operation handlers
-//    5218    Conditional operations (PUT/GET/HEAD preconditions)
-//    5784    CopyObject
-//    6078    Multipart upload
-//    6904    Stats and reachability scanning
-//    7631    Verify
-//    7807    Store locking and safe offline GC
-//    8062    Offline compaction (`zeros3 compact`)
-//    8580    Pack reclamation and repacking (`zeros3 repack`)
-//    8919    Streaming object reads (full and ranged GET)
-//    9044    Delta sync client, credentials, and parallel transfer
-//   10987    Bulk logical-chunk transport (v2)
-//   11889    Recursive directory sync
-//   12194    Remote replication (`zeros3 replicate`)
-//   12941    Peer-assisted corruption repair (`zeros3 repair`)
-//   13453    Namespace (prefix/bucket) replication
-//   13760    Copy-on-write namespace fork (`zeros3 fork`)
-//   13968    Snapshots and restore
-//   15115    Structural diff and inspect (introspection)
-//   15639    CLI dispatch, HTTP server/startup, and main
+//     469    Content-defined chunking (CDC)
+//     595    Content-addressed chunk storage (CAS)
+//     773    Packed CAS (immutable packs, DEFLATE records, locator index)
+//    2112    Manifests (immutable, JSON)
+//    2211    Visibility journal (append-only, checksummed)
+//    2624    Store: format, namespace, and object CRUD
+//    3443    Version history/restore, history pruning, ListObjectsV2
+//    3916    SigV4 authentication (header and presigned-URL)
+//    4871    Request payload checksums and S3-shaped XML error/response types
+//    5087    HTTP routing and S3 operation handlers
+//    5484    Conditional operations (PUT/GET/HEAD preconditions)
+//    6050    CopyObject
+//    6344    Multipart upload
+//    7170    Stats and reachability scanning
+//    7897    Verify
+//    8073    Store locking and safe offline GC
+//    8330    Offline compaction (`zeros3 compact`)
+//    8864    Pack reclamation and repacking (`zeros3 repack`)
+//    9241    Physical tiers: status and pack movement (`zeros3 tier`)
+//    9647    Streaming object reads (full and ranged GET)
+//    9772    Delta sync client, credentials, and parallel transfer
+//   11715    Bulk logical-chunk transport (v2)
+//   12617    Recursive directory sync
+//   12922    Remote replication (`zeros3 replicate`)
+//   13669    Peer-assisted corruption repair (`zeros3 repair`)
+//   14181    Namespace (prefix/bucket) replication
+//   14488    Copy-on-write namespace fork (`zeros3 fork`)
+//   14696    Snapshots and restore
+//   15843    Structural diff and inspect (introspection)
+//   17119    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -123,9 +125,13 @@ const (
 	// storeFormatVersionHistoryPrune is raised before the first
 	// recordTypePruneHistory frame is appended, so a build that cannot
 	// replay it refuses the store at open instead of at journal replay.
+	// storeFormatVersionTiers is raised before the first pack is published
+	// into a warm or cold tier root, so a build that only knows store/packs
+	// refuses the store instead of silently losing those packs.
 	storeFormatVersionPacked       = 2
 	storeFormatVersionCompressed   = 3
 	storeFormatVersionHistoryPrune = 4
+	storeFormatVersionTiers        = 5
 
 	// CDC v1 parameters (frozen). See buildGearTable and findCDCBoundary.
 	cdcMinChunkSize    = 16 * 1024
@@ -432,6 +438,20 @@ const (
 	hookPackDeleted      = "pack-deleted"
 	hookRepackDone       = "repack-done"
 
+	// Cross-tier pack move boundaries (section 13e), in order.
+	hookMoveStart        = "move-start"
+	hookMoveCopy         = "move-copy"
+	hookMoveBeforeSync   = "move-before-sync"
+	hookMoveAfterSync    = "move-after-sync"
+	hookMoveValidated    = "move-validated"
+	hookMoveAfterFormat  = "move-after-format"
+	hookMoveBeforeRename = "move-before-rename"
+	hookMoveAfterRename  = "move-after-rename"
+	hookMoveAfterDirSync = "move-after-dir-sync"
+	hookMoveBeforeDelete = "move-before-delete"
+	hookMoveAfterDelete  = "move-after-delete"
+	hookMoveDone         = "move-done"
+
 	// History prune boundaries (section 7d).
 	hookPruneBeforeFormat = "prune-before-format"
 	hookPruneAfterFormat  = "prune-after-format"
@@ -648,12 +668,36 @@ func (s *Store) casRead(sum [32]byte) ([]byte, error) {
 // skip (pack numbers in the current snapshot). Replacing packs uses it to prove a chunk
 // survives their removal.
 func (s *Store) casReadExcluding(sum [32]byte, skip map[int32]bool) ([]byte, error) {
-	var packErr error
+	var packErr, looseErr error
+	var looseData []byte
+	looseDone := false
+	// A loose chunk is hot, so it is tried before the first warm or cold
+	// packed copy; otherwise it follows the hot packed copies.
+	loose := func() bool {
+		if looseDone {
+			return false
+		}
+		looseDone = true
+		data, err := os.ReadFile(s.chunkPath(sum))
+		if err == nil {
+			if got := sha256.Sum256(data); got != sum {
+				err = fmt.Errorf("cas: chunk %x is corrupt (%w)", sum, errChunkCorrupt)
+			} else {
+				looseData = data
+				return true
+			}
+		}
+		looseErr = err
+		return false
+	}
 	st := s.packSnap()
 	var locs [4]packLoc
 	for _, loc := range st.appendLocs(locs[:0], sum) {
 		if skip[loc.pack] {
 			continue
+		}
+		if loc.tier != tierHot && loose() {
+			return looseData, nil
 		}
 		data, err := st.readPacked(sum, loc)
 		if err == nil {
@@ -663,21 +707,16 @@ func (s *Store) casReadExcluding(sum [32]byte, skip map[int32]bool) ([]byte, err
 			packErr = err
 		}
 	}
-	data, err := os.ReadFile(s.chunkPath(sum))
-	if err == nil {
-		if got := sha256.Sum256(data); got != sum {
-			err = fmt.Errorf("cas: chunk %x is corrupt (%w)", sum, errChunkCorrupt)
-		} else {
-			return data, nil
-		}
+	if loose() {
+		return looseData, nil
 	}
-	if packErr != nil && os.IsNotExist(err) {
+	if packErr != nil && os.IsNotExist(looseErr) {
 		return nil, packErr
 	}
 	if packErr != nil {
-		return nil, fmt.Errorf("%w; loose copy: %v", packErr, err)
+		return nil, fmt.Errorf("%w; loose copy: %v", packErr, looseErr)
 	}
-	return nil, err
+	return nil, looseErr
 }
 
 // ingestResult is what one streaming pass over an object's bytes yields:
@@ -777,6 +816,11 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
 // packs (an interrupted repack leaves old and new copies): the first pack in
 // name order is the primary location, the rest are kept as fallbacks, and a
 // repeat whose length disagrees is a reported conflict.
+//
+// Packs have a physical tier (hot: store/packs, the original location; warm
+// and cold: store/tiers/<tier>/packs, from store format 5). Tier is placement
+// only -- the identical <id>.pack may sit in several tiers, so (tier, id)
+// names a physical pack -- and the primary location is the hottest copy.
 // =============================================================================
 
 const (
@@ -803,8 +847,180 @@ type packEntry struct {
 	codec   byte
 }
 
+// tier is a pack's physical storage class. Loose chunks are always hot; only
+// published packs may live in warm or cold. Placement is not encoded in the
+// pack: the same <id>.pack may be copied between tier roots unchanged, and
+// (tier, id) -- never id alone -- names one physical pack. Lower is hotter.
+type tier uint8
+
+const (
+	tierHot tier = iota
+	tierWarm
+	tierCold
+	numTiers
+)
+
+const (
+	tierMarkerName          = "TIER.json"
+	tierMarkerFormatVersion = 1
+	// packIdxBits is the share of a locRec's pack field holding the pack's
+	// number; the tier sits above it so records order hot before warm before
+	// cold and one locator serves every tier.
+	packIdxBits = 30
+	packIdxMask = 1<<packIdxBits - 1
+)
+
+func (t tier) String() string { return [...]string{"hot", "warm", "cold"}[min(t, numTiers-1)] }
+
+func parseTier(v string) (tier, error) {
+	for t := range numTiers {
+		if t.String() == v {
+			return t, nil
+		}
+	}
+	return 0, fmt.Errorf("tier must be hot, warm, or cold, not %q", v)
+}
+
+// tierRoot is a non-hot tier's mount-point directory; hot is the store root.
+func tierRoot(root string, t tier) string {
+	if t == tierHot {
+		return root
+	}
+	return filepath.Join(root, "tiers", t.String())
+}
+
+// tierPackDir is where a tier's published packs live. Hot keeps the original
+// store/packs location.
+func tierPackDir(root string, t tier) string { return filepath.Join(tierRoot(root, t), "packs") }
+
+// tierTmpDir is a tier's staging directory. A non-hot tier stages inside its
+// own root so publication is a same-filesystem atomic rename.
+func tierTmpDir(root string, t tier) string { return filepath.Join(tierRoot(root, t), "tmp") }
+
+type tierMarker struct {
+	MarkerFormatVersion int    `json:"marker_format_version"`
+	StoreID             string `json:"store_id"`
+	Tier                string `json:"tier"`
+}
+
+// checkTierRoot proves a non-hot tier root is the one this store expects:
+// a TIER.json naming this store and tier, beside a packs directory. A
+// missing, empty, foreign, or malformed root is an error -- never silently
+// recreated -- so an unmounted device cannot make its packs vanish.
+func checkTierRoot(root string, storeID string, t tier) error {
+	dir := tierRoot(root, t)
+	data, err := os.ReadFile(filepath.Join(dir, tierMarkerName))
+	if err != nil {
+		return fmt.Errorf("store: %s tier root %s is missing or unmounted (%s unreadable: %v)", t, dir, tierMarkerName, err)
+	}
+	var m tierMarker
+	if err := json.Unmarshal(data, &m); err != nil {
+		return fmt.Errorf("store: %s tier marker in %s is malformed: %w", t, dir, err)
+	}
+	switch {
+	case m.MarkerFormatVersion != tierMarkerFormatVersion:
+		return fmt.Errorf("store: %s tier marker in %s has unsupported marker format %d", t, dir, m.MarkerFormatVersion)
+	case m.StoreID != storeID:
+		return fmt.Errorf("store: %s tier root %s belongs to store %q, not %q", t, dir, m.StoreID, storeID)
+	case m.Tier != t.String():
+		return fmt.Errorf("store: tier root %s is marked %q, expected %q", dir, m.Tier, t)
+	}
+	if fi, err := os.Stat(tierPackDir(root, t)); err != nil || !fi.IsDir() {
+		return fmt.Errorf("store: %s tier root %s has no packs directory", t, dir)
+	}
+	return nil
+}
+
+// checkTierRoots validates every non-hot root of a tiered (format 5) store.
+func (s *Store) checkTierRoots() error {
+	if s.format.StoreFormatVersion < storeFormatVersionTiers {
+		return nil
+	}
+	for t := tierWarm; t < numTiers; t++ {
+		if err := checkTierRoot(s.root, s.format.StoreID, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// initTierRoots creates (never overwrites) the warm and cold roots of a store
+// still below format 5, each marker written last and durably so a root with
+// a marker always has its directories. An existing root is validated, not
+// rewritten. Called before the format bump: roots are harmless to older
+// builds, and a crash leaves at most empty tier directories.
+func (s *Store) initTierRoots() error {
+	for t := tierWarm; t < numTiers; t++ {
+		dir := tierRoot(s.root, t)
+		if err := checkTierRoot(s.root, s.format.StoreID, t); err == nil {
+			continue
+		} else if _, serr := os.Stat(filepath.Join(dir, tierMarkerName)); serr == nil {
+			return err // a marker exists but is wrong: never overwrite it
+		}
+		for _, sub := range []string{"packs", "tmp"} {
+			if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+				return err
+			}
+		}
+		data, err := json.MarshalIndent(tierMarker{tierMarkerFormatVersion, s.format.StoreID, t.String()}, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := writeFileDurable(filepath.Join(dir, "tmp"), filepath.Join(dir, tierMarkerName), data); err != nil {
+			return err
+		}
+		for _, d := range []string{dir, filepath.Dir(dir), s.root} {
+			if err := syncDir(d); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// prepareTier makes a non-hot tier ready to stage into: roots are created
+// while the store is still below format 5, and validated afterwards.
+func (s *Store) prepareTier(t tier) error {
+	if t == tierHot {
+		return nil
+	}
+	if s.format.StoreFormatVersion < storeFormatVersionTiers {
+		if err := s.initTierRoots(); err != nil {
+			return err
+		}
+	} else if err := checkTierRoot(s.root, s.format.StoreID, t); err != nil {
+		return err
+	}
+	return os.MkdirAll(tierTmpDir(s.root, t), 0o755)
+}
+
+// tmpDirs lists the staging directories that exist: the store's own and each
+// non-hot tier's.
+func (s *Store) tmpDirs() []string {
+	dirs := []string{filepath.Join(s.root, "tmp")}
+	for t := tierWarm; t < numTiers; t++ {
+		if fi, err := os.Stat(tierTmpDir(s.root, t)); err == nil && fi.IsDir() {
+			dirs = append(dirs, tierTmpDir(s.root, t))
+		}
+	}
+	return dirs
+}
+
+func (s *Store) tmpBytes() (int64, error) {
+	var total int64
+	for _, d := range s.tmpDirs() {
+		n, err := dirSizeBytes(d)
+		if err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
 type packInfo struct {
 	id       string
+	tier     tier // physical placement; (tier, id) identifies a pack file
 	path     string
 	size     int64
 	records  int
@@ -845,7 +1061,8 @@ func checkPackLengths(codec byte, stored, logical uint32) error {
 
 // packLoc locates one packed chunk: packs[pack] plus the record fields.
 type packLoc struct {
-	pack    int32
+	pack    int32 // index into packState.packs
+	tier    tier
 	codec   byte
 	stored  uint32
 	logical uint32
@@ -1140,19 +1357,22 @@ type locRec struct {
 
 const _ = uint(1<<24 - 1 - maxPackedChunkBytes)
 
-func mkLocRec(e *packEntry, pack uint32) locRec {
-	return locRec{sum: e.sha, pack: pack, stored: e.stored, lc: e.logical | uint32(e.codec)<<24, offLo: uint32(e.off), offHi: uint32(e.off >> 32)}
+func mkLocRec(e *packEntry, pack uint32, t tier) locRec {
+	return locRec{sum: e.sha, pack: uint32(t)<<packIdxBits | pack, stored: e.stored, lc: e.logical | uint32(e.codec)<<24, offLo: uint32(e.off), offHi: uint32(e.off >> 32)}
 }
 
 func (r *locRec) logical() uint32 { return r.lc & (1<<24 - 1) }
 func (r *locRec) off() uint64     { return uint64(r.offHi)<<32 | uint64(r.offLo) }
+func (r *locRec) tier() tier      { return tier(r.pack >> packIdxBits) }
+func (r *locRec) packIdx() uint32 { return r.pack & packIdxMask }
 func (r *locRec) loc() packLoc {
-	return packLoc{pack: int32(r.pack), codec: byte(r.lc >> 24), stored: r.stored, logical: r.logical(), off: r.off()}
+	return packLoc{pack: int32(r.packIdx()), tier: r.tier(), codec: byte(r.lc >> 24), stored: r.stored, logical: r.logical(), off: r.off()}
 }
 
-// cmpLocRec orders records by digest, then pack, then payload offset, so the
-// first record of a digest is its primary location and the rest are its
-// fallbacks in pack order.
+// cmpLocRec orders records by digest, then tier and pack (the pack field
+// carries the tier above the pack number), then payload offset, so the first
+// record of a digest is its primary location -- the hottest copy -- and the
+// rest are its fallbacks in preference order.
 func cmpLocRec(a, b *locRec) int {
 	if x, y := binary.BigEndian.Uint64(a.sum[:8]), binary.BigEndian.Uint64(b.sum[:8]); x != y {
 		return cmp.Compare(x, y)
@@ -1295,6 +1515,9 @@ func (ix *locIndex) dupsOf(sum *[32]byte) []locRec {
 // level precedes every pack of the next, so probing levels in order yields a
 // digest's copies in pack order. Opening builds a single level; publishing a
 // pack adds a small level, merged tier-wise so the count stays logarithmic.
+// A level never promises the hottest copy: a pack published after open can
+// be hotter than an older level's, so lookups compare across levels by
+// physical tier (hot > warm > cold) and let the older level win a tie.
 type packState struct {
 	packs  []packInfo
 	levels []*locIndex
@@ -1302,17 +1525,31 @@ type packState struct {
 	clash  []string
 }
 
-func (st *packState) lookup(sum [32]byte) (packLoc, bool) {
+// best returns a digest's primary record: the hottest copy, the oldest
+// level among equals. A hot hit ends the search.
+func (st *packState) best(sum *[32]byte) *locRec {
+	var best *locRec
 	for _, ix := range st.levels {
-		if r := ix.find(&sum); r != nil {
-			return r.loc(), true
+		if r := ix.find(sum); r != nil && (best == nil || r.tier() < best.tier()) {
+			if best = r; r.tier() == tierHot {
+				break
+			}
 		}
+	}
+	return best
+}
+
+func (st *packState) lookup(sum [32]byte) (packLoc, bool) {
+	if r := st.best(&sum); r != nil {
+		return r.loc(), true
 	}
 	return packLoc{}, false
 }
 
-// appendLocs appends every indexed copy of a chunk, primary first.
+// appendLocs appends every indexed copy of a chunk in preference order:
+// hottest tier first, then level and pack order within a tier.
 func (st *packState) appendLocs(dst []packLoc, sum [32]byte) []packLoc {
+	n := len(dst)
 	for _, ix := range st.levels {
 		if r := ix.find(&sum); r != nil {
 			dst = append(dst, r.loc())
@@ -1321,6 +1558,9 @@ func (st *packState) appendLocs(dst []packLoc, sum [32]byte) []packLoc {
 			}
 		}
 	}
+	if len(st.levels) > 1 {
+		slices.SortStableFunc(dst[n:], func(a, b packLoc) int { return cmp.Compare(a.tier, b.tier) })
+	}
 	return dst
 }
 
@@ -1328,10 +1568,10 @@ func (st *packState) appendLocs(dst []packLoc, sum [32]byte) []packLoc {
 // (level order after a publish) without building a temporary table.
 func (st *packState) primaries() iter.Seq2[*[32]byte, packLoc] {
 	return func(yield func(*[32]byte, packLoc) bool) {
-		for i, ix := range st.levels {
+		for _, ix := range st.levels {
 			for j := range ix.recs {
 				r := &ix.recs[j]
-				if i > 0 && st.inLevels(i, &r.sum) {
+				if len(st.levels) > 1 && st.best(&r.sum) != r {
 					continue
 				}
 				if !yield(&r.sum, r.loc()) {
@@ -1340,15 +1580,6 @@ func (st *packState) primaries() iter.Seq2[*[32]byte, packLoc] {
 			}
 		}
 	}
-}
-
-func (st *packState) inLevels(n int, sum *[32]byte) bool {
-	for _, ix := range st.levels[:n] {
-		if ix.find(sum) != nil {
-			return true
-		}
-	}
-	return false
 }
 
 // distinct counts the digests that have a primary location.
@@ -1365,7 +1596,16 @@ func (st *packState) distinct() int {
 
 func clashMessage(sum [32]byte, prim, rep *locRec, packs []packInfo) string {
 	return fmt.Sprintf("chunk %x has contradictory lengths %d and %d across packs %s and %s",
-		sum, prim.logical(), rep.logical(), packs[prim.pack].id, packs[rep.pack].id)
+		sum, prim.logical(), rep.logical(), packs[prim.packIdx()].label(), packs[rep.packIdx()].label())
+}
+
+// label names a physical pack in messages: its id, prefixed by its tier when
+// not hot.
+func (p packInfo) label() string {
+	if p.tier == tierHot {
+		return p.id
+	}
+	return p.tier.String() + "/" + p.id
 }
 
 // withPack returns a snapshot that also indexes one validated pack, which
@@ -1374,9 +1614,12 @@ func clashMessage(sum [32]byte, prim, rep *locRec, packs []packInfo) string {
 // indexed copy is reported rather than indexed.
 func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, error) {
 	for _, p := range st.packs {
-		if p.id == info.id {
+		if p.id == info.id && p.tier == info.tier {
 			return st, nil
 		}
+	}
+	if len(st.packs) >= packIdxMask {
+		return nil, errors.New("pack locator is full: too many packs")
 	}
 	next := &packState{packs: append(slices.Clip(st.packs), info), levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash)}
 	onClash := func(prim, rep *locRec) {
@@ -1392,8 +1635,8 @@ func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, e
 		return nil, errors.New("pack locator is full: too many packed records")
 	}
 	for i := range entries {
-		r := mkLocRec(&entries[i], idx)
-		if prev := st.first(&r.sum); prev != nil && prev.logical() != r.logical() {
+		r := mkLocRec(&entries[i], idx, info.tier)
+		if prev := st.best(&r.sum); prev != nil && prev.logical() != r.logical() {
 			onClash(prev, &r)
 			continue
 		}
@@ -1408,15 +1651,6 @@ func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, e
 		next.levels = append(next.levels[:n-2], merged)
 	}
 	return next, nil
-}
-
-func (st *packState) first(sum *[32]byte) *locRec {
-	for _, ix := range st.levels {
-		if r := ix.find(sum); r != nil {
-			return r
-		}
-	}
-	return nil
 }
 
 // packRecordHint reads a pack footer's record count, clamped by what the
@@ -1438,27 +1672,39 @@ func packRecordHint(path string) int {
 	return int(min(binary.LittleEndian.Uint64(b[:]), uint64(fi.Size())/packRecordBytes))
 }
 
-// loadPackState discovers published packs under store/packs and builds the
-// locator from their indexes alone. Only files named <64-hex>.pack count as
-// published; staged artifacts live in tmp/, so anything else here is
-// ignored. A published pack that fails validation is recorded and skipped,
-// not fatal: the rest of the store stays readable and verify reports it.
-// Packs are numbered in name order, which fixes primary selection.
-func loadPackState(root string) (*packState, error) {
-	dir := filepath.Join(root, "packs")
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &packState{}, nil
-		}
-		return nil, err
+// loadPackState discovers published packs and builds the locator from their
+// indexes alone: store/packs (hot) and, from format 5 on, each non-hot tier's
+// packs directory. Only files named <64-hex>.pack count as published; staged
+// artifacts live in tmp/, so anything else here is ignored. A published pack
+// that fails validation is recorded and skipped, not fatal: the rest of the
+// store stays readable and verify reports it. Packs are numbered tier by tier
+// (hot, warm, cold), in name order within a tier, which fixes the order of
+// primary selection and fallbacks.
+func loadPackState(root string, format int) (*packState, error) {
+	type found struct {
+		t    tier
+		dir  string
+		name string
 	}
-	var names []string
+	var files []found
 	hint := 0
-	for _, e := range ents {
-		if !e.IsDir() && isPackFileName(e.Name()) {
-			names = append(names, e.Name())
-			hint += packRecordHint(filepath.Join(dir, e.Name()))
+	for t := tierHot; t < numTiers; t++ {
+		if t != tierHot && format < storeFormatVersionTiers {
+			break
+		}
+		dir := tierPackDir(root, t)
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) && t == tierHot {
+				continue
+			}
+			return nil, err
+		}
+		for _, e := range ents {
+			if !e.IsDir() && isPackFileName(e.Name()) {
+				files = append(files, found{t, dir, e.Name()})
+				hint += packRecordHint(filepath.Join(dir, e.Name()))
+			}
 		}
 	}
 	if hint >= math.MaxUint32 {
@@ -1466,16 +1712,24 @@ func loadPackState(root string) (*packState, error) {
 	}
 	st := &packState{}
 	recs := make([]locRec, 0, hint)
-	for _, name := range names {
-		info, entries, err := loadPackFile(filepath.Join(dir, name))
+	for _, f := range files {
+		info, entries, err := loadPackFile(filepath.Join(f.dir, f.name))
 		if err != nil {
+			name := f.name
+			if f.t != tierHot {
+				name = f.t.String() + "/" + name
+			}
 			st.bad = append(st.bad, packProblem{name: name, err: err})
 			continue
 		}
+		if len(st.packs) >= packIdxMask {
+			return nil, errors.New("pack locator is full: too many packs")
+		}
+		info.tier = f.t
 		idx := uint32(len(st.packs))
 		st.packs = append(st.packs, info)
 		for i := range entries {
-			recs = append(recs, mkLocRec(&entries[i], idx))
+			recs = append(recs, mkLocRec(&entries[i], idx, f.t))
 		}
 		if len(recs) >= math.MaxUint32 {
 			return nil, errors.New("pack locator is full: too many packed records")
@@ -1532,7 +1786,7 @@ func (s *Store) addPack(info packInfo, entries []packEntry) error {
 func (s *Store) reloadPacks() error {
 	s.packMu.Lock()
 	defer s.packMu.Unlock()
-	st, err := loadPackState(s.root)
+	st, err := loadPackState(s.root, s.format.StoreFormatVersion)
 	if err != nil {
 		return err
 	}
@@ -1571,6 +1825,8 @@ func (s *Store) packTotals() (packs, records int, bytes int64) {
 // count the uncompressed chunk bytes the records represent.
 type packUsage struct {
 	idx              int32
+	tier             tier
+	Tier             string  `json:"tier"`
 	ID               string  `json:"id"`
 	Size             int64   `json:"size"`
 	Records          int     `json:"records"`
@@ -1598,6 +1854,9 @@ func (u packUsage) livePhysical() int64 {
 	return packFixedBytes + u.LiveBytes + int64(u.LiveRecords)*packRecordBytes
 }
 
+// label names the physical pack: its id, prefixed by a non-hot tier.
+func (u packUsage) label() string { return packInfo{id: u.ID, tier: u.tier}.label() }
+
 func (u packUsage) fullyDead() bool { return u.Records > 0 && u.LiveRecords == 0 }
 func (u packUsage) partiallyDead() bool {
 	return u.LiveRecords > 0 && u.DeadRecords > 0
@@ -1610,7 +1869,7 @@ func (s *Store) packUsages(referenced map[string]bool) []packUsage {
 	st := s.packSnap()
 	us := make([]packUsage, len(st.packs))
 	for i, p := range st.packs {
-		us[i] = packUsage{idx: int32(i), ID: p.id, Size: p.size, Records: p.records, CompressedRecs: p.deflated, LogicalBytes: p.logical}
+		us[i] = packUsage{idx: int32(i), tier: p.tier, Tier: p.tier.String(), ID: p.id, Size: p.size, Records: p.records, CompressedRecs: p.deflated, LogicalBytes: p.logical}
 	}
 	var hx [64]byte
 	for sum, loc := range st.primaries() {
@@ -1826,6 +2085,9 @@ func (c *packCompressor) encode(data []byte) ([]byte, byte) {
 // structural (basic) or record-header (deep) check of every indexed pack.
 func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
 	st := s.packSnap()
+	if err := s.checkTierRoots(); err != nil {
+		res.addIssue("corrupt", "tiers", err.Error())
+	}
 	for _, b := range st.bad {
 		res.addIssue("corrupt", "pack "+b.name, b.err.Error())
 	}
@@ -1841,7 +2103,7 @@ func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
 			_, _, err = loadPackFile(p.path)
 		}
 		if err != nil {
-			res.addIssue("corrupt", "pack "+p.id, err.Error())
+			res.addIssue("corrupt", "pack "+p.label(), err.Error())
 		}
 	}
 }
@@ -2524,6 +2786,10 @@ func OpenStore(root string) (*Store, error) {
 			return nil, fmt.Errorf("store: journal replay failed: %w", err)
 		}
 	}
+	if err := s.checkTierRoots(); err != nil {
+		j.f.Close()
+		return nil, err
+	}
 	if err := s.reloadPacks(); err != nil {
 		j.f.Close()
 		return nil, fmt.Errorf("store: loading packs: %w", err)
@@ -2532,7 +2798,7 @@ func OpenStore(root string) (*Store, error) {
 }
 
 func supportedStoreFormat(v int) bool {
-	return v >= storeFormatVersion && v <= storeFormatVersionHistoryPrune
+	return v >= storeFormatVersion && v <= storeFormatVersionTiers
 }
 
 func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
@@ -2543,7 +2809,7 @@ func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
 			return storeFormat{}, fmt.Errorf("store: FORMAT.json is corrupt: %w", err)
 		}
 		if !supportedStoreFormat(format.StoreFormatVersion) {
-			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports versions %d through %d)", format.StoreFormatVersion, storeFormatVersion, storeFormatVersionHistoryPrune)
+			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports versions %d through %d)", format.StoreFormatVersion, storeFormatVersion, storeFormatVersionTiers)
 		}
 		if format.CDCFormatVersion != cdcFormatVersion {
 			return storeFormat{}, fmt.Errorf("store: unsupported CDC format version %d (this build supports version %d)", format.CDCFormatVersion, cdcFormatVersion)
@@ -7596,7 +7862,7 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 	if err != nil {
 		return StatsResult{}, fmt.Errorf("stats: scanning journal: %w", err)
 	}
-	tmpBytes, err := dirSizeBytes(filepath.Join(s.root, "tmp"))
+	tmpBytes, err := s.tmpBytes()
 	if err != nil {
 		return StatsResult{}, fmt.Errorf("stats: scanning tmp: %w", err)
 	}
@@ -7792,7 +8058,7 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	if merr != nil {
 		return res, fmt.Errorf("verify: scanning manifests: %w", merr)
 	}
-	tmpBytes, terr := dirSizeBytes(filepath.Join(s.root, "tmp"))
+	tmpBytes, terr := s.tmpBytes()
 	if terr != nil {
 		return res, fmt.Errorf("verify: scanning tmp: %w", terr)
 	}
@@ -8001,7 +8267,7 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 	usages := store.packUsages(rr.ReferencedChunks)
 	res.PackSummary = summarizePacks(usages)
 
-	tmpBytes, err := dirSizeBytes(filepath.Join(store.root, "tmp"))
+	tmpBytes, err := store.tmpBytes()
 	if err != nil {
 		return res, fmt.Errorf("gc: scanning tmp: %w", err)
 	}
@@ -8035,9 +8301,11 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 	}
 	// tmp/ staging files are always safe to clear (section 12): never
 	// referenced by any committed manifest/journal record.
-	if tmpEntries, rerr := os.ReadDir(filepath.Join(store.root, "tmp")); rerr == nil {
-		for _, e := range tmpEntries {
-			os.Remove(filepath.Join(store.root, "tmp", e.Name()))
+	for _, dir := range store.tmpDirs() {
+		if tmpEntries, rerr := os.ReadDir(dir); rerr == nil {
+			for _, e := range tmpEntries {
+				os.Remove(filepath.Join(dir, e.Name()))
+			}
 		}
 	}
 	res.BytesDeleted = res.ReclaimablePayloadBytes + tmpBytes
@@ -8095,6 +8363,7 @@ const (
 )
 
 type compactOptions struct {
+	Tier        tier // physical tier new packs are published into (default hot)
 	TargetBytes int64
 	MinBytes    int64
 	DryRun      bool
@@ -8126,7 +8395,8 @@ func newCompressor(compress bool) *packCompressor {
 // CompactResult reports one compaction pass. In a dry run the packing
 // counters are what the pass would do.
 type CompactResult struct {
-	DryRun bool `json:"dry_run"`
+	DryRun bool   `json:"dry_run"`
+	Tier   string `json:"tier"`
 
 	LooseChunks      int `json:"loose_chunks"`
 	UnreachableLoose int `json:"unreachable_loose"`
@@ -8204,7 +8474,7 @@ func compactStore(storeDir string, opt compactOptions) (CompactResult, error) {
 }
 
 func (s *Store) compact(referenced map[string]bool, opt compactOptions) (CompactResult, error) {
-	res := CompactResult{DryRun: opt.DryRun}
+	res := CompactResult{DryRun: opt.DryRun, Tier: opt.Tier.String()}
 	if opt.TargetBytes <= 0 {
 		return res, errors.New("compact: pack size must be positive")
 	}
@@ -8280,7 +8550,7 @@ func (s *Store) compact(referenced map[string]bool, opt compactOptions) (Compact
 	}
 
 	for _, batch := range batches {
-		if err := s.compactBatch(batch, &res, comp); err != nil {
+		if err := s.compactBatch(opt.Tier, batch, &res, comp); err != nil {
 			return res, err
 		}
 	}
@@ -8322,14 +8592,17 @@ func (s *Store) readLoose(sum [32]byte) ([]byte, error) {
 	return data, nil
 }
 
-// stagePack writes one pack into tmp/ from batch, fetching each record's
+// stagePack writes one pack into tier t's staging directory from batch, fetching each record's
 // verified logical bytes through read, and returns its path and entries.
 // comp picks each record's codec (nil stores every record raw). When read
 // fails, skip decides whether the record is left out (nil) or the whole
 // pack is abandoned (an error). Failures (but not simulated crashes)
 // remove the staging file.
-func (s *Store) stagePack(batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, comp *packCompressor) (string, []packEntry, error) {
-	f, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "pack-*.tmp")
+func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, comp *packCompressor) (string, []packEntry, error) {
+	if err := s.prepareTier(t); err != nil {
+		return "", nil, err
+	}
+	f, err := os.CreateTemp(tierTmpDir(s.root, t), "pack-*.tmp")
 	if err != nil {
 		return "", nil, err
 	}
@@ -8400,11 +8673,13 @@ func (s *Store) stagePack(batch []compactCandidate, read func([32]byte) ([]byte,
 }
 
 // publishPack verifies a staged pack end to end, raises the store format if
-// needed (to the compressed version when any record is not raw), renames it
-// into packs/, fsyncs the directory, and indexes it.
+// needed (to the compressed version when any record is not raw, and to the
+// tiered version before anything lands in a warm or cold root), renames it
+// into tier t's packs directory -- the same filesystem as its staging
+// directory -- fsyncs that directory, and indexes it.
 // The staged file is removed on any failure before the rename; after it,
 // the published pack is left in place (a redundant pack is harmless).
-func (s *Store) publishPack(staged string, entries []packEntry) (packInfo, error) {
+func (s *Store) publishPack(t tier, staged string, entries []packEntry) (packInfo, error) {
 	info, got, err := verifyPackFile(staged)
 	if err == nil && len(got) != len(entries) {
 		err = errors.New("pack: staged index disagrees with the records written")
@@ -8426,12 +8701,15 @@ func (s *Store) publishPack(staged string, entries []packEntry) (packInfo, error
 			break
 		}
 	}
+	if t != tierHot {
+		need = max(need, storeFormatVersionTiers)
+	}
 	if err := s.ensureStoreFormat(need); err != nil {
 		os.Remove(staged)
 		return info, fmt.Errorf("upgrading store format: %w", err)
 	}
 
-	packDir := filepath.Join(s.root, "packs")
+	packDir := tierPackDir(s.root, t)
 	if _, err := os.Stat(packDir); os.IsNotExist(err) {
 		if err := os.MkdirAll(packDir, 0o755); err != nil {
 			os.Remove(staged)
@@ -8456,6 +8734,7 @@ func (s *Store) publishPack(staged string, entries []packEntry) (packInfo, error
 	if err != nil || len(pubEntries) != len(entries) {
 		return info, fmt.Errorf("published pack is not readable (%v)", err)
 	}
+	pub.tier = t
 	if err := s.addPack(pub, pubEntries); err != nil {
 		return info, err
 	}
@@ -8463,7 +8742,7 @@ func (s *Store) publishPack(staged string, entries []packEntry) (packInfo, error
 	return pub, nil
 }
 
-func (s *Store) compactBatch(batch []compactCandidate, res *CompactResult, comp *packCompressor) error {
+func (s *Store) compactBatch(t tier, batch []compactCandidate, res *CompactResult, comp *packCompressor) error {
 	skip := func(c compactCandidate, err error) error {
 		kind, detail := "invalid", err.Error()
 		if errors.Is(err, errChunkCorrupt) {
@@ -8473,14 +8752,14 @@ func (s *Store) compactBatch(batch []compactCandidate, res *CompactResult, comp 
 		res.Issues = append(res.Issues, VerifyIssue{Kind: kind, Subject: fmt.Sprintf("chunk %x", c.sum), Detail: detail})
 		return nil
 	}
-	staged, entries, err := s.stagePack(batch, s.readLoose, skip, comp)
+	staged, entries, err := s.stagePack(t, batch, s.readLoose, skip, comp)
 	if err != nil {
 		return fmt.Errorf("compact: writing pack: %w", err)
 	}
 	if len(entries) == 0 {
 		return nil
 	}
-	info, err := s.publishPack(staged, entries)
+	info, err := s.publishPack(t, staged, entries)
 	if err != nil {
 		return fmt.Errorf("compact: %w; loose chunks kept", err)
 	}
@@ -8520,7 +8799,7 @@ func printCompactHuman(w io.Writer, r CompactResult) {
 	fmt.Fprintf(w, "ZeroS3 compact (%s)\n", mode)
 	fmt.Fprintf(w, "loose chunks     %d scanned | %d unreachable (left for gc) | %d skipped | %d deferred (below minimum pack size)\n",
 		r.LooseChunks, r.UnreachableLoose, r.Skipped, r.DeferredChunks)
-	fmt.Fprintf(w, "packs            %s %d | %d chunks | %d bytes\n", verb, r.PacksWritten, r.ChunksPacked, r.PackBytes)
+	fmt.Fprintf(w, "packs            %s %d into %s | %d chunks | %d bytes\n", verb, r.PacksWritten, r.Tier, r.ChunksPacked, r.PackBytes)
 	if !r.DryRun && r.ChunksPacked > 0 {
 		fmt.Fprintf(w, "compression      %d raw + %d deflate records | %d logical -> %d stored bytes (%.1f%% saved)\n",
 			r.RawRecords, r.CompressedRecords, r.LogicalBytes, r.StoredBytes, savedPercent(r.LogicalBytes, r.StoredBytes))
@@ -8539,7 +8818,7 @@ func savedPercent(logical, stored int64) float64 {
 }
 
 // runCompact implements "zeros3 compact -store DIR [-pack-size-mib N]
-// [-compression auto|off] [-dry-run] [-json]". See section 13c.
+// [-compression auto|off] [-tier hot|warm|cold] [-dry-run] [-json]". See section 13c.
 func runCompact(args []string) {
 	fs := flag.NewFlagSet("compact", flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
@@ -8547,14 +8826,19 @@ func runCompact(args []string) {
 	compression := fs.String("compression", "auto", "pack record compression: auto (DEFLATE when it saves space) or off (raw records)")
 	dryRun := fs.Bool("dry-run", false, "report what would be packed without writing anything")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	tierName := fs.String("tier", "hot", "physical tier the new packs are published into: hot, warm, or cold")
 	fs.Parse(args)
 
 	compress, err := parseCompressionFlag(*compression)
+	var t tier
+	if err == nil {
+		t, err = parseTier(*tierName)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: compact: %v\n", err)
 		os.Exit(2)
 	}
-	opt := compactOptions{TargetBytes: *sizeMiB << 20, DryRun: *dryRun, Compress: compress}
+	opt := compactOptions{Tier: t, TargetBytes: *sizeMiB << 20, DryRun: *dryRun, Compress: compress}
 	opt.MinBytes = opt.TargetBytes / packMinFraction
 	res, err := compactStore(*storeDir, opt)
 	if err != nil {
@@ -8610,6 +8894,7 @@ func runCompact(args []string) {
 const defaultRepackMaxLivePercent = 50
 
 type repackOptions struct {
+	Tier           string // "" or "all": every tier; otherwise only packs in that tier
 	TargetBytes    int64
 	MaxLivePercent int
 	DryRun         bool
@@ -8651,9 +8936,11 @@ type RepackResult struct {
 }
 
 func (s *Store) removeStalePackStaging() {
-	stale, _ := filepath.Glob(filepath.Join(s.root, "tmp", "pack-*.tmp"))
-	for _, p := range stale {
-		os.Remove(p)
+	for _, dir := range s.tmpDirs() {
+		stale, _ := filepath.Glob(filepath.Join(dir, "pack-*.tmp"))
+		for _, p := range stale {
+			os.Remove(p)
+		}
 	}
 }
 
@@ -8679,32 +8966,47 @@ func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, tar
 	doomed = append([]packUsage(nil), doomed...)
 	skip := map[int32]bool{}
 	seen := map[[32]byte]bool{}
-	var required []compactCandidate
+	// Replacements keep the tier of the pack whose record they carry (the
+	// hottest, if several doomed packs hold it): tiers are never merged.
+	var required [numTiers][]compactCandidate
+	paths := map[int32]string{}
 	for _, u := range doomed {
-		info, entries, err := loadPackFile(s.packSnap().packs[u.idx].path)
+		path := s.packSnap().packs[u.idx].path
+		info, entries, err := loadPackFile(path)
 		if err != nil || info.id != u.ID {
 			return fmt.Errorf("pack %s changed or is unreadable (%v); nothing was removed", u.ID, err)
 		}
 		skip[u.idx] = true
+		paths[u.idx] = path
 		for _, e := range entries {
 			if referenced[hex.EncodeToString(e.sha[:])] && !seen[e.sha] {
 				seen[e.sha] = true
-				required = append(required, compactCandidate{sum: e.sha, size: int64(e.logical)})
+				required[u.tier] = append(required[u.tier], compactCandidate{sum: e.sha, size: int64(e.logical)})
 			}
 		}
 	}
-	sort.Slice(required, func(i, j int) bool { return bytes.Compare(required[i].sum[:], required[j].sum[:]) < 0 })
 
 	var need []compactCandidate
-	for _, c := range required {
-		if _, err := s.casReadExcluding(c.sum, skip); err != nil {
-			need = append(need, c)
-		}
+	type tierBatches struct {
+		t       tier
+		batches [][]compactCandidate
 	}
-
-	batches, tail := planPackBatches(need, target, target/packMinFraction)
-	if len(tail) > 0 {
-		batches = append(batches, tail)
+	var plans []tierBatches
+	for t := range numTiers {
+		req := required[t]
+		sort.Slice(req, func(i, j int) bool { return bytes.Compare(req[i].sum[:], req[j].sum[:]) < 0 })
+		var tneed []compactCandidate
+		for _, c := range req {
+			if _, err := s.casReadExcluding(c.sum, skip); err != nil {
+				tneed = append(tneed, c)
+			}
+		}
+		batches, tail := planPackBatches(tneed, target, target/packMinFraction)
+		if len(tail) > 0 {
+			batches = append(batches, tail)
+		}
+		need = append(need, tneed...)
+		plans = append(plans, tierBatches{t, batches})
 	}
 	read := func(sum [32]byte) ([]byte, error) { return s.casReadExcluding(sum, nil) }
 	abort := func(c compactCandidate, err error) error {
@@ -8713,6 +9015,7 @@ func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, tar
 	// Every replacement is staged before any is published, so an unreadable
 	// source leaves nothing but staging files behind.
 	type stagedPack struct {
+		t       tier
 		path    string
 		entries []packEntry
 	}
@@ -8723,15 +9026,17 @@ func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, tar
 		}
 	}()
 	comp := newCompressor(compress)
-	for _, batch := range batches {
-		path, entries, err := s.stagePack(batch, read, abort, comp)
-		if err != nil {
-			return err
+	for _, pl := range plans {
+		for _, batch := range pl.batches {
+			path, entries, err := s.stagePack(pl.t, batch, read, abort, comp)
+			if err != nil {
+				return err
+			}
+			staged = append(staged, stagedPack{pl.t, path, entries})
 		}
-		staged = append(staged, stagedPack{path, entries})
 	}
 	for _, sp := range staged {
-		info, err := s.publishPack(sp.path, sp.entries)
+		info, err := s.publishPack(sp.t, sp.path, sp.entries)
 		if err != nil {
 			return fmt.Errorf("%w; nothing was removed", err)
 		}
@@ -8745,7 +9050,7 @@ func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, tar
 		res.BytesRead += info.logical
 		// A replacement identical to a doomed pack is that pack.
 		for i, u := range doomed {
-			if u.ID == info.id && skip[u.idx] {
+			if u.ID == info.id && u.tier == sp.t && skip[u.idx] {
 				delete(skip, u.idx)
 				doomed = append(doomed[:i:i], doomed[i+1:]...)
 				break
@@ -8758,18 +9063,28 @@ func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, tar
 		}
 	}
 
-	sort.Slice(doomed, func(i, j int) bool { return doomed[i].ID < doomed[j].ID })
+	sort.Slice(doomed, func(i, j int) bool {
+		if doomed[i].tier != doomed[j].tier {
+			return doomed[i].tier < doomed[j].tier
+		}
+		return doomed[i].ID < doomed[j].ID
+	})
+	// Each pack is removed from the directory that physically holds it.
+	removedFrom := map[string]bool{}
 	for _, u := range doomed {
 		fireTestHook(hookBeforePackDelete)
-		if err := os.Remove(filepath.Join(s.root, "packs", u.ID+packFileSuffix)); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("removing pack %s: %w", u.ID, err)
+		if err := os.Remove(paths[u.idx]); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing pack %s: %w", u.label(), err)
 		}
+		removedFrom[filepath.Dir(paths[u.idx])] = true
 		res.PacksDeleted++
 		res.BytesDeleted += u.Size
 	}
 	fireTestHook(hookPackDeleted)
-	if err := syncDir(filepath.Join(s.root, "packs")); err != nil {
-		return fmt.Errorf("syncing packs dir: %w", err)
+	for _, dir := range slices.Sorted(maps.Keys(removedFrom)) {
+		if err := syncDir(dir); err != nil {
+			return fmt.Errorf("syncing packs dir: %w", err)
+		}
 	}
 	return s.reloadPacks()
 }
@@ -8804,6 +9119,9 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 	sum := summarizePacks(us)
 	res.PackCount, res.PackedChunkCount, res.PackFileBytes = sum.PackCount, sum.PackedChunkCount, sum.PackFileBytes
 	sel := selectRepackPacks(us, opt.MaxLivePercent)
+	if opt.Tier != "" && opt.Tier != "all" {
+		sel = slices.DeleteFunc(sel, func(u packUsage) bool { return u.Tier != opt.Tier })
+	}
 	res.Selected = sel
 	res.PacksSelected = len(sel)
 	var oldBytes, liveBytes, liveLogical int64
@@ -8860,7 +9178,7 @@ func printRepackHuman(w io.Writer, r RepackResult) {
 	fmt.Fprintf(w, "packs            %d | %d chunks | %d bytes\n", r.PackCount, r.PackedChunkCount, r.PackFileBytes)
 	fmt.Fprintf(w, "selected         %d packs | %d with no live chunk | %d partly dead\n", r.PacksSelected, r.PacksFullyDead, r.PacksRewritten)
 	for _, u := range r.Selected {
-		fmt.Fprintf(w, "  %.12s  %d bytes | %d/%d chunks live | %.0f%% live | %d reclaimable\n", u.ID, u.Size, u.LiveRecords, u.Records, u.Utilization*100, u.Reclaimable)
+		fmt.Fprintf(w, "  %s %.12s  %d bytes | %d/%d chunks live | %.0f%% live | %d reclaimable\n", u.Tier, u.ID, u.Size, u.LiveRecords, u.Records, u.Utilization*100, u.Reclaimable)
 	}
 	fmt.Fprintf(w, "rewrite          %sread %d chunks (%d bytes) | %swrite %d packs (%d bytes)\n", verb, r.RecordsCopied, r.BytesRead, verb, r.PacksWritten, r.BytesWritten)
 	if !r.DryRun && r.RecordsCopied > 0 {
@@ -8885,14 +9203,18 @@ func runRepack(args []string) {
 	sizeMiB := fs.Int64("pack-size-mib", defaultPackTargetBytes>>20, "target pack size in MiB of chunk data before compression")
 	compression := fs.String("compression", "auto", "record compression for rewritten packs: auto (DEFLATE when it saves space) or off (raw records)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	tierName := fs.String("tier", "all", "only repack packs in this tier: hot, warm, cold, or all (replacements always stay in their tier)")
 	fs.Parse(args)
 
 	compress, err := parseCompressionFlag(*compression)
+	if err == nil && *tierName != "all" {
+		_, err = parseTier(*tierName)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: repack: %v\n", err)
 		os.Exit(2)
 	}
-	res, err := repackStore(*storeDir, repackOptions{TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, DryRun: !*apply, Compress: compress})
+	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, DryRun: !*apply, Compress: compress})
 	if err != nil {
 		switch {
 		case errors.Is(err, errGCStoreInUse):
@@ -8913,6 +9235,412 @@ func runRepack(args []string) {
 		return
 	}
 	printRepackHuman(os.Stdout, res)
+}
+
+// =============================================================================
+// 13e. Physical tiers: status and pack movement (`zeros3 tier`)
+//
+// Hot/warm/cold are synchronous local placements of immutable packs beneath
+// the logical CAS: loose chunks and store/packs are hot; warm and cold are
+// roots under store/tiers/ (separate mounts are fine, each carrying a
+// TIER.json that names its store and tier). A move copies a pack into the
+// target tier's own staging directory -- never a cross-device rename --
+// verifies the copy end to end, raises the store to format 5 if needed,
+// renames it into the target packs directory, fsyncs it, and only then
+// removes the source. Every interruption leaves source only, source plus
+// target, or target only, all readable; rerunning converges.
+// =============================================================================
+
+type TierStatus struct {
+	Tier           string `json:"tier"`
+	Root           string `json:"root"`
+	Marker         string `json:"marker"`
+	DuplicatePacks int    `json:"duplicate_packs"` // packs whose id is also held by another tier
+	PackSummary
+}
+
+type TierStatusResult struct {
+	StoreFormatVersion int          `json:"store_format_version"`
+	LooseChunks        int          `json:"loose_chunks"`
+	LooseBytes         int64        `json:"loose_bytes"`
+	Tiers              []TierStatus `json:"tiers"`
+	LiveSetOK          bool         `json:"live_set_ok"`
+}
+
+func (s *Store) tierStatus(rr reachabilityResult) (TierStatusResult, error) {
+	res := TierStatusResult{StoreFormatVersion: s.format.StoreFormatVersion, LiveSetOK: rr.OK()}
+	scan, err := s.scanChunkFiles(rr.ReferencedChunks)
+	if err != nil {
+		return res, err
+	}
+	res.LooseChunks, res.LooseBytes = scan.totalCount, scan.totalBytes
+	usages := s.packUsages(rr.ReferencedChunks)
+	held := map[string]int{}
+	for _, u := range usages {
+		held[u.ID]++
+	}
+	for t := range numTiers {
+		var in []packUsage
+		dups := 0
+		for _, u := range usages {
+			if u.tier == t {
+				in = append(in, u)
+				if held[u.ID] > 1 {
+					dups++
+				}
+			}
+		}
+		st := TierStatus{Tier: t.String(), Root: tierRoot(s.root, t), Marker: "n/a", DuplicatePacks: dups, PackSummary: summarizePacks(in)}
+		if t != tierHot {
+			if err := checkTierRoot(s.root, s.format.StoreID, t); err != nil {
+				st.Marker = "absent"
+				if s.format.StoreFormatVersion >= storeFormatVersionTiers {
+					st.Marker = err.Error()
+				}
+			} else {
+				st.Marker = "ok"
+			}
+		}
+		res.Tiers = append(res.Tiers, st)
+	}
+	return res, nil
+}
+
+func printTierStatusHuman(w io.Writer, r TierStatusResult) {
+	fmt.Fprintf(w, "ZeroS3 tier status (store format %d)\n", r.StoreFormatVersion)
+	fmt.Fprintf(w, "loose (hot)      %d chunks | %d bytes\n", r.LooseChunks, r.LooseBytes)
+	for _, t := range r.Tiers {
+		fmt.Fprintf(w, "%-4s packs      %d | %d records (%d compressed) | %d logical -> %d stored | %d file bytes\n",
+			t.Tier, t.PackCount, t.PackedChunkCount, t.PackedCompressedRecs, t.PackedLogicalBytes, t.PackedStoredBytes, t.PackFileBytes)
+		fmt.Fprintf(w, "     live/dead   %d / %d chunks | %d reclaimable bytes | %d duplicate packs | marker %s\n",
+			t.PackedLiveChunkCount, t.PackedDeadChunkCount, t.PackWholeReclaimBytes+t.PackRepackReclaimBytes, t.DuplicatePacks, t.Marker)
+	}
+}
+
+type tierMoveOptions struct {
+	From, To tier
+	IDs      []string // pack ids; All selects every pack in From instead
+	All      bool
+	Apply    bool
+}
+
+type TierMoveItem struct {
+	ID      string `json:"id"`
+	Size    int64  `json:"size"`
+	Records int    `json:"records"`
+	Action  string `json:"action"` // move, adopt-target (target already holds it), already-moved
+}
+
+type TierMoveResult struct {
+	DryRun     bool           `json:"dry_run"`
+	From       string         `json:"from"`
+	To         string         `json:"to"`
+	Packs      []TierMoveItem `json:"packs"`
+	PacksMoved int            `json:"packs_moved"`
+	BytesMoved int64          `json:"bytes_moved"`
+}
+
+// planTierMove resolves the requested packs against the current snapshot.
+func (s *Store) planTierMove(opt tierMoveOptions) ([]TierMoveItem, error) {
+	if opt.From == opt.To {
+		return nil, errors.New("tier move: -from and -to must differ")
+	}
+	ids := opt.IDs
+	st := s.packSnap()
+	if opt.All {
+		ids = nil
+		for _, p := range st.packs {
+			if p.tier == opt.From {
+				ids = append(ids, p.id)
+			}
+		}
+	} else if len(ids) == 0 {
+		return nil, errors.New("tier move: name packs with -pack, or pass -all to move every pack in the source tier")
+	}
+	sort.Strings(ids)
+	ids = slices.Compact(ids)
+	find := func(t tier, id string) *packInfo {
+		for i := range st.packs {
+			if st.packs[i].tier == t && st.packs[i].id == id {
+				return &st.packs[i]
+			}
+		}
+		return nil
+	}
+	var items []TierMoveItem
+	for _, id := range ids {
+		if !isPackFileName(id + packFileSuffix) {
+			return nil, fmt.Errorf("tier move: %q is not a pack id", id)
+		}
+		src := find(opt.From, id)
+		if src == nil {
+			if dst := find(opt.To, id); dst != nil {
+				items = append(items, TierMoveItem{ID: id, Size: dst.size, Records: dst.records, Action: "already-moved"})
+				continue
+			}
+			return nil, fmt.Errorf("tier move: pack %s is not in the %s tier", id, opt.From)
+		}
+		action := "move"
+		if _, err := os.Stat(filepath.Join(tierPackDir(s.root, opt.To), id+packFileSuffix)); err == nil {
+			action = "adopt-target"
+		}
+		items = append(items, TierMoveItem{ID: id, Size: src.size, Records: src.records, Action: action})
+	}
+	return items, nil
+}
+
+// movePack moves one pack between tiers; it is idempotent and safe to
+// interrupt anywhere. See the section comment for the order. The locator is
+// left listing the removed source (reads fall back to the target copy); the
+// caller reloads it once after the whole batch rather than once per pack.
+func (s *Store) movePack(id string, from, to tier) error {
+	var src *packInfo
+	st := s.packSnap()
+	for i := range st.packs {
+		if st.packs[i].tier == from && st.packs[i].id == id {
+			src = &st.packs[i]
+		}
+	}
+	if src == nil {
+		return fmt.Errorf("pack %s is not in the %s tier", id, from)
+	}
+	if err := s.prepareTier(to); err != nil {
+		return err
+	}
+	fireTestHook(hookMoveStart)
+	dstDir := tierPackDir(s.root, to)
+	if _, err := os.Stat(dstDir); os.IsNotExist(err) { // e.g. a store that only ever used cold
+		if err := os.MkdirAll(dstDir, 0o755); err != nil {
+			return err
+		}
+		if err := syncDir(filepath.Dir(dstDir)); err != nil {
+			return err
+		}
+	}
+	dst := filepath.Join(dstDir, id+packFileSuffix)
+	if _, err := os.Stat(dst); err == nil {
+		// A published target is adopted only if it is the same valid pack.
+		if info, _, err := verifyPackFile(dst); err != nil || info.id != id {
+			return fmt.Errorf("%s tier holds an invalid %s (%v); source left intact", to, filepath.Base(dst), err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	} else {
+		staged, err := s.copyPackToTier(src.path, to)
+		if err != nil {
+			return err
+		}
+		if info, _, err := verifyPackFile(staged); err != nil || info.id != id {
+			os.Remove(staged)
+			return fmt.Errorf("staged copy of %s failed validation (%v); source left intact", id, err)
+		}
+		fireTestHook(hookMoveValidated)
+		if to != tierHot {
+			if err := s.ensureStoreFormat(storeFormatVersionTiers); err != nil {
+				os.Remove(staged)
+				return fmt.Errorf("upgrading store format: %w", err)
+			}
+		}
+		fireTestHook(hookMoveAfterFormat)
+		fireTestHook(hookMoveBeforeRename)
+		if err := os.Rename(staged, dst); err != nil {
+			os.Remove(staged)
+			return fmt.Errorf("publishing %s into %s tier: %w", id, to, err)
+		}
+		fireTestHook(hookMoveAfterRename)
+		if err := syncDir(dstDir); err != nil {
+			return fmt.Errorf("syncing %s packs dir: %w", to, err)
+		}
+	}
+	fireTestHook(hookMoveAfterDirSync)
+	// The target must load as the same pack before the source may go.
+	pub, entries, err := loadPackFile(dst)
+	if err == nil {
+		err = checkPackRecords(dst)
+	}
+	if err != nil || pub.id != id || len(entries) != src.records {
+		return fmt.Errorf("%s copy of %s is not readable (%v); source left intact", to, id, err)
+	}
+	pub.tier = to
+	if err := s.addPack(pub, entries); err != nil {
+		return err
+	}
+	fireTestHook(hookMoveBeforeDelete)
+	if err := os.Remove(src.path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing source pack: %w", err)
+	}
+	fireTestHook(hookMoveAfterDelete)
+	if err := syncDir(filepath.Dir(src.path)); err != nil {
+		return fmt.Errorf("syncing %s packs dir: %w", from, err)
+	}
+	return nil
+}
+
+// copyPackToTier streams src into a staging file inside tier t's own root
+// and fsyncs it.
+func (s *Store) copyPackToTier(src string, t tier) (string, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	out, err := os.CreateTemp(tierTmpDir(s.root, t), "pack-*.tmp")
+	if err != nil {
+		return "", err
+	}
+	fail := func(err error) (string, error) {
+		out.Close()
+		os.Remove(out.Name())
+		return "", err
+	}
+	buf := make([]byte, 1<<20)
+	for {
+		n, rerr := in.Read(buf)
+		if n > 0 {
+			if _, err := out.Write(buf[:n]); err != nil {
+				return fail(err)
+			}
+			fireTestHook(hookMoveCopy)
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return fail(rerr)
+		}
+	}
+	fireTestHook(hookMoveBeforeSync)
+	if err := out.Sync(); err != nil {
+		return fail(err)
+	}
+	fireTestHook(hookMoveAfterSync)
+	if err := out.Close(); err != nil {
+		os.Remove(out.Name())
+		return "", err
+	}
+	return out.Name(), nil
+}
+
+func tierMove(storeDir string, opt tierMoveOptions) (TierMoveResult, error) {
+	lock, err := acquireStoreLock(storeDir, true)
+	if err != nil {
+		return TierMoveResult{}, err
+	}
+	defer lock.release()
+	s, err := OpenStore(storeDir)
+	if err != nil {
+		return TierMoveResult{}, err
+	}
+	defer s.Close()
+	res := TierMoveResult{DryRun: !opt.Apply, From: opt.From.String(), To: opt.To.String()}
+	items, err := s.planTierMove(opt)
+	if err != nil {
+		return res, err
+	}
+	res.Packs = items
+	if !opt.Apply {
+		return res, nil
+	}
+	s.removeStalePackStaging()
+	defer s.reloadPacks()
+	for _, it := range items {
+		if it.Action == "already-moved" {
+			continue
+		}
+		if err := s.movePack(it.ID, opt.From, opt.To); err != nil {
+			return res, fmt.Errorf("tier move: %w", err)
+		}
+		res.PacksMoved++
+		res.BytesMoved += it.Size
+	}
+	fireTestHook(hookMoveDone)
+	return res, nil
+}
+
+type packIDList []string
+
+func (l *packIDList) String() string     { return strings.Join(*l, ",") }
+func (l *packIDList) Set(v string) error { *l = append(*l, v); return nil }
+
+// runTier implements "zeros3 tier status|move". See section 13e.
+func runTier(args []string) {
+	if len(args) == 0 || args[0] != "status" && args[0] != "move" {
+		fmt.Fprintln(os.Stderr, "usage: zeros3 tier status -store DIR [-json]\n       zeros3 tier move -store DIR -from TIER -to TIER (-pack ID ... | -all) [-apply] [-json]")
+		os.Exit(2)
+	}
+	fs := flag.NewFlagSet("tier "+args[0], flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	var from, to *string
+	var apply, all *bool
+	var ids packIDList
+	if args[0] == "move" {
+		from = fs.String("from", "", "source tier: hot, warm, or cold")
+		to = fs.String("to", "", "target tier: hot, warm, or cold")
+		fs.Var(&ids, "pack", "pack id to move (repeatable)")
+		all = fs.Bool("all", false, "move every pack in the source tier")
+		apply = fs.Bool("apply", false, "copy, verify, publish, and remove the source (default: dry-run, changes nothing)")
+	}
+	fs.Parse(args[1:])
+	emit := func(v any, human func()) {
+		if !*asJSON {
+			human()
+			return
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(v); err != nil {
+			log.Fatalf("zeros3: %v", err)
+		}
+	}
+
+	if args[0] == "status" {
+		store, err := OpenStore(*storeDir)
+		if err != nil {
+			log.Fatalf("zeros3: failed to open store: %v", err)
+		}
+		defer store.Close()
+		rr, err := store.computeReachability(false)
+		if err == nil {
+			var res TierStatusResult
+			if res, err = store.tierStatus(rr); err == nil {
+				emit(res, func() { printTierStatusHuman(os.Stdout, res) })
+				return
+			}
+		}
+		fmt.Fprintf(os.Stderr, "zeros3: tier status failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	opt := tierMoveOptions{IDs: ids, All: *all, Apply: *apply}
+	var err error
+	if opt.From, err = parseTier(*from); err == nil {
+		opt.To, err = parseTier(*to)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: tier move: -from and -to are required: %v\n", err)
+		os.Exit(2)
+	}
+	res, err := tierMove(*storeDir, opt)
+	if err != nil {
+		if errors.Is(err, errGCStoreInUse) {
+			fmt.Fprintf(os.Stderr, "zeros3: tier move: %v -- it requires exclusive access; stop `zeros3 serve`/any other maintenance command against this store first\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "zeros3: %v\n", err)
+		}
+		os.Exit(1)
+	}
+	emit(res, func() {
+		mode := "apply"
+		if res.DryRun {
+			mode = "dry-run"
+		}
+		fmt.Fprintf(os.Stdout, "ZeroS3 tier move %s -> %s (%s)\n", res.From, res.To, mode)
+		for _, it := range res.Packs {
+			fmt.Fprintf(os.Stdout, "  %s  %d bytes | %d records | %s\n", it.ID, it.Size, it.Records, it.Action)
+		}
+		fmt.Fprintf(os.Stdout, "moved            %d packs | %d bytes\n", res.PacksMoved, res.BytesMoved)
+	})
 }
 
 // =============================================================================
@@ -16417,6 +17145,8 @@ func main() {
 		runCompact(args)
 	case "repack":
 		runRepack(args)
+	case "tier":
+		runTier(args)
 	case "doctor":
 		runDoctor(args)
 	case "sync":
@@ -16434,7 +17164,7 @@ func main() {
 	case "inspect":
 		runInspect(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, repack, doctor, sync, replicate, repair, fork, snapshot, diff, or inspect)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, repack, tier, doctor, sync, replicate, repair, fork, snapshot, diff, or inspect)\n", cmd)
 		os.Exit(2)
 	}
 }

@@ -27,6 +27,7 @@ CAS → immutable manifests → visibility journal.**
 - Streaming I/O: uploads and downloads of any size run in bounded memory; signed `aws-chunked` uploads accepted
 - Bounded parallel chunk transfer, batched into a few bulk requests between ZeroS3 servers
 - Immutable packed storage: `zeros3 compact` folds loose chunk files into a few verified packs, DEFLATE-compressing each record that shrinks; `gc` and `zeros3 repack` reclaim dead packed records by replacing packs
+- Hot/warm/cold physical pack tiers (`compact -tier`, `zeros3 tier status|move`) beneath the same logical CAS; warm and cold can be separate local mounts
 - Zero third-party dependencies, reproducible build
 
 ZeroS3 is not trying to compete with MinIO or Ceph on distributed
@@ -223,6 +224,34 @@ copied chunk must read back from them, and only then are the old packs
 removed — a crash leaves extra packs or staging files, never a missing
 chunk, and rerunning converges. Both commands are offline (exclusive store
 lock) and refuse to delete anything if a live root is corrupt or missing.
+
+**Physical tiers (hot/warm/cold).** Packs can live in three synchronous
+local storage classes under the one logical CAS; reads never care which.
+Loose chunks and `store/packs/` are **hot**; **warm** and **cold** are roots
+at `store/tiers/warm` and `store/tiers/cold`, each with its own `packs/` and
+`tmp/`, so either can be a mount or bind mount on a different device. Lookup
+prefers hot over warm over cold (a loose copy first), and a damaged copy falls
+back to the next valid one. New uploads always land loose (hot); there is no
+direct-to-pack ingest, no automatic heat policy and no asynchronous archive
+restore -- cold is simply a slower-or-cheaper directory that is always
+readable. `zeros3 compact -tier hot|warm|cold` (default hot) packs loose
+chunks straight into a tier; `zeros3 repack` and `gc` keep each pack in its
+tier (`repack -tier` limits it to one). `zeros3 tier status -store DIR`
+reports packs, records, bytes, live/dead space, duplicate copies and marker
+state per tier plus the loose chunks. `zeros3 tier move -store DIR -from T -to T
+(-pack ID ... | -all) [-apply]` moves whole packs (dry-run by default,
+exclusive/offline): it copies into the target tier's own staging directory --
+never a cross-device rename -- verifies the copy end to end, renames and
+fsyncs it into place, and only then removes the source, so every interruption
+leaves a readable copy and rerunning converges. Pack bytes and format are
+unchanged by tiering. Each warm/cold root carries a `TIER.json` naming the
+store and tier; once a store is at format 5, an expected tier root that is
+missing, empty, foreign or malformed (an unmounted device, say) fails the open
+instead of letting its packs silently vanish -- mount the right device before
+opening, and note a replacement device must carry the original `TIER.json`.
+The first warm/cold pack raises `FORMAT.json` to 5 (before it is published,
+and never lowered afterwards), so a build that predates tiers refuses the
+store; a hot-only store stays at its old version.
 
 **Delta movement.** `zeros3 sync` ingests a local file or directory
 using far less transfer than a full upload when the store already holds
@@ -476,7 +505,8 @@ exact API contract:
   Retained history keeps overwritten and deleted versions live, so packed
   records only die after upload aborts or after `versions prune` retires
   history. The first `compact` marks the store format version 2, the first
-  compressed record version 3 and the first history prune version 4: earlier builds refuse to open such a store rather than
+  compressed record version 3, the first history prune version 4 and the
+  first warm/cold pack version 5: earlier builds refuse to open such a store rather than
   misread it, while a never-compacted store stays version 1 and opens with
   any build. Pack size targets chunk data before compression, so compressed
   packs come out smaller; compression is DEFLATE only, per chunk.
