@@ -66,44 +66,45 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//      109    Test helpers, fixtures, and TestMain
-//     261    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//    1277    SigV4 authentication (header and payload-mode)
-//    1673    Checksums: CRC32 and Content-MD5
-//    2176    End-to-end HTTP and crash/recovery tests
-//    2850    M2: bucket/object/listing/journal protocol compatibility
-//    4074    M3: CDC/dedup evidence, stats, verify
-//    5210    M3: CopyObject
-//    5757    M3: single-range GET
-//    5958    M5-B: multipart upload
-//    7236    Presigned URLs and virtual-hosted-style addressing
-//    8265    M5-C: version history, restore, GC, storage-efficiency proof
-//    9732    Z2-08: history retention (prune)
-//   10824    M5-D/P2: ListParts and ListMultipartUploads pagination
-//   12543    M6: delta sync (`zeros3 sync`)
-//   14285    M6C: recursive directory sync
-//   15345    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//   16674    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//   17999    M8C: namespace (prefix/bucket) replication
-//   19038    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//   20130    M8E: durable namespace snapshots and restore
-//   22208    M8F: conditional operations (Put/Get/Copy preconditions)
-//   23613    M8G: introspection (dry-run planning, diff, inspect)
-//   25565    M8H: bounded parallel chunk transfer
-//   26946    P1: environment credentials, HTTP hardening/shutdown, TLS
-//   28262    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//   29196    Streaming reads and aws-chunked SigV4
-//   30044    Packed CAS: pack format, mixed reads, compaction, crash points
-//   31021    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//   32167    Adaptive pack compression (codec 1, DEFLATE)
-//   33201    Scalable packed-chunk locator (sorted immutable levels)
-//   33687    Z2-07: bulk logical-chunk transport (v2)
-//   35115    Hot/warm/cold physical pack tiers
-//   35886    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//   36637    Z2-10: content-aware tier policy and rebalance
-//   37669    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
-//   38353    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
-//   39783    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
+//      110    Test helpers, fixtures, and TestMain
+//     262    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//    1278    SigV4 authentication (header and payload-mode)
+//    1674    Checksums: CRC32 and Content-MD5
+//    2177    End-to-end HTTP and crash/recovery tests
+//    2851    M2: bucket/object/listing/journal protocol compatibility
+//    4075    M3: CDC/dedup evidence, stats, verify
+//    5211    M3: CopyObject
+//    5758    M3: single-range GET
+//    5959    M5-B: multipart upload
+//    7237    Presigned URLs and virtual-hosted-style addressing
+//    8266    M5-C: version history, restore, GC, storage-efficiency proof
+//    9733    Z2-08: history retention (prune)
+//   10825    M5-D/P2: ListParts and ListMultipartUploads pagination
+//   12544    M6: delta sync (`zeros3 sync`)
+//   14286    M6C: recursive directory sync
+//   15346    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//   16675    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//   18000    M8C: namespace (prefix/bucket) replication
+//   19039    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//   20131    M8E: durable namespace snapshots and restore
+//   22209    M8F: conditional operations (Put/Get/Copy preconditions)
+//   23614    M8G: introspection (dry-run planning, diff, inspect)
+//   25566    M8H: bounded parallel chunk transfer
+//   26947    P1: environment credentials, HTTP hardening/shutdown, TLS
+//   28263    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//   29197    Streaming reads and aws-chunked SigV4
+//   30045    Packed CAS: pack format, mixed reads, compaction, crash points
+//   31022    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//   32168    Adaptive pack compression (codec 1, DEFLATE)
+//   33202    Scalable packed-chunk locator (sorted immutable levels)
+//   33688    Z2-07: bulk logical-chunk transport (v2)
+//   35116    Hot/warm/cold physical pack tiers
+//   35887    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//   36638    Z2-10: content-aware tier policy and rebalance
+//   37670    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//   38354    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
+//   39791    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
+//   41125    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -38770,28 +38771,35 @@ func bundleServe(t *testing.T, s *Store) (syncClientConfig, testSigner) {
 // the existing snapshot-restore machinery and proves every object exact.
 func bundleRestoreCheck(t *testing.T, dir, snapID string, bodies map[string][]byte) {
 	t.Helper()
+	bundleRestoreCheckTo(t, dir, snapID, "restored", bodies)
+}
+
+// bundleRestoreCheckTo is bundleRestoreCheck into an explicit bucket, so one
+// store can prove several snapshots (a delta chain) side by side.
+func bundleRestoreCheckTo(t *testing.T, dir, snapID, bucket string, bodies map[string][]byte) {
+	t.Helper()
 	s, err := OpenStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := s.CreateBucket("restored"); err != nil {
+	if err := s.CreateBucket(bucket); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _ := bundleServe(t, s)
 	snapCfg, dstCfg := cfg, cfg
-	dstCfg.Bucket = "restored"
+	dstCfg.Bucket = bucket
 	res, err := restoreNamespace(restoreNamespaceConfig{Snapshot: snapCfg, SnapshotID: snapID, Dest: dstCfg})
 	if err != nil || !res.OK() {
 		t.Fatalf("restore: %v %+v", err, res)
 	}
 	for k, want := range bodies {
-		if _, got, err := s.GetObject("restored", k); err != nil || !bytes.Equal(got, want) {
+		if _, got, err := s.GetObject(bucket, k); err != nil || !bytes.Equal(got, want) {
 			t.Fatalf("%s: restored body differs: %v", k, err)
 		}
 		if n := int64(len(want)); n > 1000 {
 			r := byteRange{n / 3, n/3 + 777}
-			if _, _, got, err := s.GetObjectRange("restored", k, r); err != nil || !bytes.Equal(got, want[r.start:r.end+1]) {
+			if _, _, got, err := s.GetObjectRange(bucket, k, r); err != nil || !bytes.Equal(got, want[r.start:r.end+1]) {
 				t.Fatalf("%s: range differs: %v", k, err)
 			}
 		}
@@ -41111,4 +41119,1425 @@ func TestLocalityBench_CompactOverhead(t *testing.T) {
 		}
 		t.Logf("compact -layout %-8s %v (%d packs, %d chunks)", c.layout, time.Since(start), res.PacksWritten, res.ChunksPacked)
 	}
+}
+
+// =============================================================================
+// Z2-14: delta (thin) snapshot bundles (stages bundle-delta, bundle-delta-life,
+// bundle-delta-scale)
+// =============================================================================
+
+// testDelta builds a complete .zs3d from logical parts with a field per thing
+// the parser polices. Chunk codec 2 records carry no payload.
+type testDelta struct {
+	magic                    string
+	version, flags           uint16
+	descLen                  *uint32
+	nManifests               *uint32
+	nChunks, nBytes          *uint64
+	nPayload, nPayloadBytes  *uint64
+	baseID                   string
+	baseSHA                  [32]byte
+	frameOverride            []byte
+	manifests, emitManifests []*tbManifest
+	chunks                   []tbChunk
+	base                     []bundleChunkDesc // what the resolver returns
+	noFooter, badHash        bool
+	trailing                 []byte
+	footStored, footRaw      *uint64
+	footDefl, footRef        *uint64
+}
+
+const testDeltaBaseID = "00000000-0000-7000-8000-0000000000bb"
+
+// newTestDelta: the newTestBundle target (chunks A,B,C,D) against a base that
+// holds A and D: B (deflated) and C (raw) are payload, A and D base references.
+func newTestDelta(t *testing.T) *testDelta {
+	t.Helper()
+	tb := newTestBundle(t)
+	td := &testDelta{magic: deltaMagic, version: deltaFormatVersion, baseID: testDeltaBaseID, manifests: tb.manifests}
+	td.baseSHA = sha256.Sum256([]byte("base descriptor frame"))
+	a, d := genRandomBytes(1, 3000), genRandomBytes(4, 4000)
+	for _, c := range tb.chunks {
+		if c.sha == sha256.Sum256(a) || c.sha == sha256.Sum256(d) {
+			td.base = append(td.base, bundleChunkDesc{sha: c.sha, length: c.logical})
+			c = tbChunk{sha: c.sha, logical: c.logical, codec: deltaCodecBaseRef}
+		}
+		td.chunks = append(td.chunks, c)
+	}
+	slices.SortFunc(td.base, func(x, y bundleChunkDesc) int { return bytes.Compare(x.sha[:], y.sha[:]) })
+	return td
+}
+
+func (b *testDelta) bytes(t *testing.T) []byte {
+	t.Helper()
+	frame := b.frameOverride
+	if frame == nil {
+		desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: "00000000-0000-7000-8000-0000000000aa",
+			CreatedAt: time.Unix(5, 0).UTC(), SourceBucket: "src", SourcePrefix: "p"}
+		for i, m := range b.manifests {
+			sum := sha256.Sum256(m.data)
+			desc.Entries = append(desc.Entries, snapshotEntryV1{Key: fmt.Sprintf("obj-%d", i), ManifestUUID: m.uuid, ManifestSHA256: hex.EncodeToString(sum[:]), Size: 1})
+		}
+		var err error
+		if frame, err = encodeSnapshotDescriptor(desc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var uniqueBytes, payload, payloadBytes uint64
+	for _, c := range b.chunks {
+		uniqueBytes += uint64(c.logical)
+		if c.codec != deltaCodecBaseRef {
+			payload++
+			payloadBytes += uint64(c.logical)
+		}
+	}
+	or := func(def uint64, o *uint64) uint64 {
+		if o != nil {
+			return *o
+		}
+		return def
+	}
+	hdr := make([]byte, deltaHeaderSize)
+	copy(hdr, b.magic)
+	binary.BigEndian.PutUint16(hdr[8:], b.version)
+	binary.BigEndian.PutUint16(hdr[10:], b.flags)
+	dl, nm := uint32(len(frame)), uint32(len(b.manifests))
+	if b.descLen != nil {
+		dl = *b.descLen
+	}
+	if b.nManifests != nil {
+		nm = *b.nManifests
+	}
+	binary.BigEndian.PutUint32(hdr[12:], dl)
+	binary.BigEndian.PutUint32(hdr[16:], nm)
+	binary.BigEndian.PutUint64(hdr[20:], or(uint64(len(b.chunks)), b.nChunks))
+	binary.BigEndian.PutUint64(hdr[28:], or(uniqueBytes, b.nBytes))
+	binary.BigEndian.PutUint64(hdr[36:], or(payload, b.nPayload))
+	binary.BigEndian.PutUint64(hdr[44:], or(payloadBytes, b.nPayloadBytes))
+	copy(hdr[52:], b.baseID)
+	copy(hdr[88:], b.baseSHA[:])
+
+	var out bytes.Buffer
+	out.Write(hdr)
+	out.Write(frame)
+	ems := b.emitManifests
+	if ems == nil {
+		ems = b.manifests
+	}
+	for _, m := range ems {
+		sum := sha256.Sum256(m.data)
+		data := m.emit
+		if data == nil {
+			data = m.data
+		}
+		rec := make([]byte, bundleManifestHdr)
+		copy(rec, m.uuid)
+		copy(rec[36:], sum[:])
+		binary.BigEndian.PutUint32(rec[68:], uint32(len(m.data)))
+		out.Write(rec)
+		out.Write(data)
+	}
+	var stored, raw, defl, ref uint64
+	for _, c := range b.chunks {
+		rec := make([]byte, bundleChunkHdr)
+		copy(rec, c.sha[:])
+		binary.BigEndian.PutUint32(rec[32:], c.logical)
+		ds := uint32(len(c.stored))
+		if c.declStored != nil {
+			ds = *c.declStored
+		}
+		binary.BigEndian.PutUint32(rec[36:], ds)
+		rec[40] = c.codec
+		out.Write(rec)
+		out.Write(c.stored)
+		stored += uint64(ds)
+		switch c.codec {
+		case deltaCodecBaseRef:
+			ref++
+		case bundleCodecDeflate:
+			defl++
+		default:
+			raw++
+		}
+	}
+	if !b.noFooter {
+		foot := make([]byte, deltaFooterSize)
+		copy(foot, deltaFooterMagic)
+		binary.BigEndian.PutUint64(foot[8:], or(stored, b.footStored))
+		binary.BigEndian.PutUint64(foot[16:], or(raw, b.footRaw))
+		binary.BigEndian.PutUint64(foot[24:], or(defl, b.footDefl))
+		binary.BigEndian.PutUint64(foot[32:], or(ref, b.footRef))
+		out.Write(foot)
+		sum := sha256.Sum256(out.Bytes())
+		if b.badHash {
+			sum[0] ^= 1
+		}
+		out.Write(sum[:])
+	}
+	out.Write(b.trailing)
+	return out.Bytes()
+}
+
+// read parses data against the builder's synthetic base inventory.
+func (b *testDelta) read(data []byte, sink deltaSink) (BundleStats, error) {
+	return readDeltaBundle(bytes.NewReader(data), func(deltaHeader) ([]bundleChunkDesc, error) { return b.base, nil }, sink)
+}
+
+func TestBundleDelta_FormatValidSyntheticDelta(t *testing.T) {
+	td := newTestDelta(t)
+	data := td.bytes(t)
+	var payload, refs int
+	st, err := td.read(data, deltaSink{
+		chunk:   func([32]byte, []byte) error { payload++; return nil },
+		baseRef: func([32]byte, uint32) error { refs++; return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload != 2 || refs != 2 || st.Kind != "delta" || st.Status != "verified" || st.UniqueChunks != 4 || st.TargetUniqueChunks != 4 ||
+		st.PayloadChunks != 2 || st.BaseReusedChunks != 2 || st.RawRecords != 1 || st.CompressedRecords != 1 ||
+		st.Manifests != 2 || st.BundleBytes != int64(len(data)) || st.BaseSnapshotID != testDeltaBaseID ||
+		st.BaseReusedLogicalBytes != 7000 || st.PayloadLogicalBytes+st.BaseReusedLogicalBytes != st.UniqueLogicalBytes {
+		t.Fatalf("stats = %+v (payload %d refs %d)", st, payload, refs)
+	}
+	if string(data[:8]) != "ZS3DLTA1" || string(data[len(data)-72:len(data)-64]) != "ZS3DEND1" || deltaHeaderSize != 120 || deltaFooterSize != 40 {
+		t.Fatal("magic/size values differ from the documented ones")
+	}
+	if string(data[52:88]) != testDeltaBaseID || !bytes.Equal(data[88:120], td.baseSHA[:]) {
+		t.Fatal("header does not carry the base identity at the documented offsets")
+	}
+	// The full-bundle parser must refuse a delta (distinct magic), and vice versa.
+	if _, err := readBundle(bytes.NewReader(data), bundleSink{}); err == nil {
+		t.Fatal("full parser accepted a delta bundle")
+	}
+	if _, err := readDeltaBundle(bytes.NewReader(newTestBundle(t).bytes(t)), func(deltaHeader) ([]bundleChunkDesc, error) { return nil, nil }, deltaSink{}); err == nil {
+		t.Fatal("delta parser accepted a full bundle")
+	}
+}
+
+// TestBundleDelta_ParserMutationMatrix: every corruption layer of a delta
+// must be rejected by the verifying parser, never accepted, never panic.
+func TestBundleDelta_ParserMutationMatrix(t *testing.T) {
+	refIdx := func(b *testDelta) int {
+		return slices.IndexFunc(b.chunks, func(c tbChunk) bool { return c.codec == deltaCodecBaseRef })
+	}
+	payloadIdx := func(b *testDelta, codec byte) int {
+		return slices.IndexFunc(b.chunks, func(c tbChunk) bool { return c.codec == codec })
+	}
+	cases := []struct {
+		name string
+		mut  func(t *testing.T, b *testDelta)
+		post func([]byte) []byte
+	}{
+		{name: "bad magic", mut: func(_ *testing.T, b *testDelta) { b.magic = "ZS3BNDL1" }},
+		{name: "unsupported version", mut: func(_ *testing.T, b *testDelta) { b.version = 2 }},
+		{name: "invalid flags", mut: func(_ *testing.T, b *testDelta) { b.flags = 1 }},
+		{name: "malformed base id", mut: func(_ *testing.T, b *testDelta) { b.baseID = "NOT-A-SNAPSHOT-ID-0000000000000000000" }},
+		{name: "truncated header", post: func(d []byte) []byte { return d[:100] }},
+		{name: "oversized descriptor length", mut: func(_ *testing.T, b *testDelta) { b.descLen = ptr(uint32(0xFFFFFFF0)) }},
+		{name: "truncated target descriptor", post: func(d []byte) []byte { return d[:deltaHeaderSize+20] }},
+		{name: "bad target descriptor", mut: func(_ *testing.T, b *testDelta) { b.frameOverride = bytes.Repeat([]byte("x"), 64) }},
+		{name: "impossible manifest count", mut: func(_ *testing.T, b *testDelta) { b.nManifests = ptr(uint32(0xFFFFFFFF)) }},
+		{name: "impossible chunk count", mut: func(_ *testing.T, b *testDelta) { b.nChunks = ptr(uint64(1) << 40) }},
+		{name: "impossible payload count", mut: func(_ *testing.T, b *testDelta) { b.nPayload = ptr(uint64(99)) }},
+		{name: "payload bytes beyond target bytes", mut: func(_ *testing.T, b *testDelta) { b.nPayloadBytes = ptr(uint64(1) << 40) }},
+		{name: "duplicate manifest", mut: func(_ *testing.T, b *testDelta) { b.emitManifests = []*tbManifest{b.manifests[0], b.manifests[0]} }},
+		{name: "unknown manifest", mut: func(t *testing.T, b *testDelta) {
+			b.emitManifests = []*tbManifest{b.manifests[0], tbManifestOf(t, "00000000-0000-7000-8000-000000000003", nil)}
+		}},
+		{name: "missing manifest", mut: func(_ *testing.T, b *testDelta) { b.emitManifests = []*tbManifest{b.manifests[0]} }},
+		{name: "manifest sha mismatch", mut: func(_ *testing.T, b *testDelta) {
+			e := slices.Clone(b.manifests[0].data)
+			e[len(e)/2] ^= 1
+			b.manifests[0].emit = e
+		}},
+		{name: "manifest malformed", mut: func(_ *testing.T, b *testDelta) { b.manifests[0].data = []byte("{not json") }},
+		{name: "duplicate chunk", mut: func(_ *testing.T, b *testDelta) {
+			b.chunks = []tbChunk{b.chunks[0], b.chunks[0], b.chunks[1], b.chunks[2]}
+			b.nChunks, b.nBytes, b.nPayload, b.nPayloadBytes = ptr(uint64(4)), nil, nil, nil
+		}},
+		{name: "missing target chunk", mut: func(_ *testing.T, b *testDelta) { b.chunks = b.chunks[:3] }},
+		{name: "extra unknown chunk", mut: func(_ *testing.T, b *testDelta) {
+			p := genRandomBytes(99, 1000)
+			b.chunks[1] = tbChunk{sha: sha256.Sum256(p), logical: 1000, stored: p}
+		}},
+		{name: "out of order chunks", mut: func(_ *testing.T, b *testDelta) { b.chunks[0], b.chunks[1] = b.chunks[1], b.chunks[0] }},
+		{name: "wrong logical length", mut: func(_ *testing.T, b *testDelta) {
+			i := payloadIdx(b, bundleCodecRaw)
+			b.chunks[i].logical++
+			b.chunks[i].stored = append(slices.Clone(b.chunks[i].stored), 0)
+		}},
+		{name: "unknown codec", mut: func(_ *testing.T, b *testDelta) { b.chunks[payloadIdx(b, bundleCodecRaw)].codec = 7 }},
+		{name: "raw payload with zero stored length", mut: func(_ *testing.T, b *testDelta) {
+			i := payloadIdx(b, bundleCodecRaw)
+			b.chunks[i].stored = nil
+		}},
+		{name: "base reference with stored bytes", mut: func(_ *testing.T, b *testDelta) {
+			i := refIdx(b)
+			b.chunks[i].stored = []byte("payload that must not exist")
+		}},
+		{name: "base reference with declared stored length only", mut: func(_ *testing.T, b *testDelta) {
+			b.chunks[refIdx(b)].declStored = ptr(uint32(5))
+		}},
+		{name: "base reference not held by the base", mut: func(_ *testing.T, b *testDelta) { b.base = b.base[1:] }},
+		{name: "base reference with the wrong base length", mut: func(_ *testing.T, b *testDelta) { b.base[0].length++ }},
+		{name: "payload for a chunk the base holds", mut: func(_ *testing.T, b *testDelta) {
+			i := payloadIdx(b, bundleCodecRaw)
+			b.base = append(b.base, bundleChunkDesc{sha: b.chunks[i].sha, length: b.chunks[i].logical})
+			slices.SortFunc(b.base, func(x, y bundleChunkDesc) int { return bytes.Compare(x.sha[:], y.sha[:]) })
+		}},
+		{name: "truncated raw payload", mut: func(_ *testing.T, b *testDelta) {
+			i := payloadIdx(b, bundleCodecRaw)
+			b.chunks[i].declStored = ptr(uint32(len(b.chunks[i].stored)))
+			b.chunks[i].stored = b.chunks[i].stored[:len(b.chunks[i].stored)-9]
+		}},
+		{name: "truncated compressed payload", mut: func(_ *testing.T, b *testDelta) {
+			i := payloadIdx(b, bundleCodecDeflate)
+			b.chunks[i].declStored = ptr(uint32(len(b.chunks[i].stored)))
+			b.chunks[i].stored = b.chunks[i].stored[:len(b.chunks[i].stored)/2]
+		}},
+		{name: "deflate bomb", mut: func(t *testing.T, b *testDelta) {
+			b.chunks[payloadIdx(b, bundleCodecDeflate)].stored = tbDeflate(t, make([]byte, 4<<20))
+		}},
+		{name: "deflate trailing garbage", mut: func(_ *testing.T, b *testDelta) {
+			i := payloadIdx(b, bundleCodecDeflate)
+			b.chunks[i].stored = append(slices.Clone(b.chunks[i].stored), 1, 2, 3)
+		}},
+		{name: "payload digest mismatch", mut: func(_ *testing.T, b *testDelta) {
+			i := payloadIdx(b, bundleCodecRaw)
+			s := slices.Clone(b.chunks[i].stored)
+			s[10] ^= 1
+			b.chunks[i].stored = s
+		}},
+		{name: "wrong payload chunk count", mut: func(_ *testing.T, b *testDelta) { b.nPayload = ptr(uint64(1)) }},
+		{name: "wrong payload byte count", mut: func(_ *testing.T, b *testDelta) { b.nPayloadBytes = ptr(uint64(5000)) }},
+		{name: "wrong target chunk count", mut: func(_ *testing.T, b *testDelta) { b.nChunks, b.nPayload = ptr(uint64(5)), ptr(uint64(3)) }},
+		{name: "wrong target byte count", mut: func(_ *testing.T, b *testDelta) { b.nBytes = ptr(uint64(1) << 20) }},
+		{name: "footer stored bytes", mut: func(_ *testing.T, b *testDelta) { b.footStored = ptr(uint64(1)) }},
+		{name: "footer raw records", mut: func(_ *testing.T, b *testDelta) { b.footRaw = ptr(uint64(9)) }},
+		{name: "footer deflate records", mut: func(_ *testing.T, b *testDelta) { b.footDefl = ptr(uint64(9)) }},
+		{name: "footer base-reference records", mut: func(_ *testing.T, b *testDelta) { b.footRef = ptr(uint64(9)) }},
+		{name: "missing footer", mut: func(_ *testing.T, b *testDelta) { b.noFooter = true }},
+		{name: "truncated footer hash", post: func(d []byte) []byte { return d[:len(d)-10] }},
+		{name: "whole-file hash mismatch", mut: func(_ *testing.T, b *testDelta) { b.badHash = true }},
+		{name: "trailing garbage", mut: func(_ *testing.T, b *testDelta) { b.trailing = []byte("x") }},
+		{name: "flipped payload byte under valid framing", post: func(d []byte) []byte {
+			d = slices.Clone(d)
+			d[len(d)/2] ^= 0x40
+			return d
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newTestDelta(t)
+			if tc.mut != nil {
+				tc.mut(t, b)
+			}
+			data := b.bytes(t)
+			if tc.post != nil {
+				data = tc.post(data)
+			}
+			if _, err := b.read(data, deltaSink{}); err == nil {
+				t.Fatal("corrupt delta was accepted")
+			}
+		})
+	}
+	// The unmutated control passes, so each rejection above is the mutation's doing.
+	b := newTestDelta(t)
+	if _, err := b.read(b.bytes(t), deltaSink{}); err != nil {
+		t.Fatalf("control delta rejected: %v", err)
+	}
+}
+
+// ---- planner ---------------------------------------------------------------------
+
+func descOf(n byte, length uint32) bundleChunkDesc {
+	var d bundleChunkDesc
+	d.sha[0], d.length = n, length
+	return d
+}
+
+func TestBundleDelta_PlannerClassification(t *testing.T) {
+	classify := func(target, base []bundleChunkDesc) (payload, ref []byte, err error) {
+		err = deltaClassify(target, base, func(c bundleChunkDesc, in bool) error {
+			if in {
+				ref = append(ref, c.sha[0])
+			} else {
+				payload = append(payload, c.sha[0])
+			}
+			return nil
+		})
+		return
+	}
+	cases := []struct {
+		name         string
+		target, base []bundleChunkDesc
+		payload, ref []byte
+		wantErr      bool
+	}{
+		{name: "empty base", target: []bundleChunkDesc{descOf(1, 5), descOf(2, 5)}, payload: []byte{1, 2}},
+		{name: "empty target", base: []bundleChunkDesc{descOf(1, 5)}},
+		{name: "identical", target: []bundleChunkDesc{descOf(1, 5), descOf(2, 6)}, base: []bundleChunkDesc{descOf(1, 5), descOf(2, 6)}, ref: []byte{1, 2}},
+		{name: "disjoint", target: []bundleChunkDesc{descOf(2, 5), descOf(4, 5)}, base: []bundleChunkDesc{descOf(1, 5), descOf(3, 5), descOf(9, 5)}, payload: []byte{2, 4}},
+		{name: "interleaved overlap", target: []bundleChunkDesc{descOf(1, 5), descOf(3, 5), descOf(5, 5), descOf(7, 5)},
+			base: []bundleChunkDesc{descOf(0, 9), descOf(3, 5), descOf(4, 9), descOf(7, 5), descOf(8, 1)}, payload: []byte{1, 5}, ref: []byte{3, 7}},
+		{name: "contradictory length", target: []bundleChunkDesc{descOf(3, 5)}, base: []bundleChunkDesc{descOf(3, 6)}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, r, err := classify(tc.target, tc.base)
+			if (err != nil) != tc.wantErr || !bytes.Equal(p, tc.payload) || !bytes.Equal(r, tc.ref) {
+				t.Fatalf("payload %v ref %v err %v; want %v %v wantErr=%v", p, r, err, tc.payload, tc.ref, tc.wantErr)
+			}
+			if !tc.wantErr {
+				n, err := deltaCount(tc.target, tc.base)
+				if err != nil || int(n.payloadChunks) != len(tc.payload) || int(n.refChunks) != len(tc.ref) {
+					t.Fatalf("counts %+v err %v", n, err)
+				}
+			}
+		})
+	}
+}
+
+// ---- store-backed helpers ----------------------------------------------------------
+
+// deltaSnapshot captures bucket b's current namespace as a new snapshot.
+func deltaSnapshot(t *testing.T, s *Store) string {
+	t.Helper()
+	entries, err := s.captureSnapshotEntries("b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := newUUIDv7()
+	if err := s.publishSnapshot(snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: id,
+		CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: entries}); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// deltaChain builds one closed source store holding bucket "b" and one
+// snapshot per version; each version makes the namespace exactly equal to
+// that version (changed/new keys are put, absent keys deleted).
+func deltaChain(t *testing.T, versions ...map[string][]byte) (dir string, snaps []string) {
+	t.Helper()
+	dir = t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	var prev map[string][]byte
+	for _, v := range versions {
+		for _, k := range slices.Sorted(maps.Keys(v)) {
+			if old, ok := prev[k]; ok && bytes.Equal(old, v[k]) {
+				continue
+			}
+			if _, err := s.PutObject("b", k, v[k], "application/test", map[string]string{"k": k}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for k := range prev {
+			if _, ok := v[k]; !ok {
+				if err := s.DeleteObject("b", k); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		snaps = append(snaps, deltaSnapshot(t, s))
+		prev = v
+	}
+	return dir, snaps
+}
+
+func deltaExportT(t *testing.T, dir, base, target string, compress bool) (string, BundleStats) {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "x.zs3d")
+	st, err := exportDeltaFile(dir, base, target, out, compress)
+	if err != nil {
+		t.Fatalf("delta export: %v", err)
+	}
+	return out, st
+}
+
+func fileBytes(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// deltaV1V2 is the standard small revision pair: a unchanged, b edited in the
+// middle, c deleted, d new, e a new name for a's content.
+func deltaV1V2() (v1, v2 map[string][]byte) {
+	a, b, c := genRandomBytes(901, 400_000), genRandomBytes(902, 500_000), genRandomBytes(903, 100_000)
+	v1 = map[string][]byte{"a": a, "b": b, "c": c}
+	b2 := slices.Clone(b)
+	copy(b2[250_000:], genRandomBytes(904, 6000))
+	v2 = map[string][]byte{"a": a, "b": b2, "d": genRandomBytes(905, 200_000), "e": a}
+	return
+}
+
+func TestBundleDelta_ExportImportRestoresTargetOverBase(t *testing.T) {
+	v1, v2 := deltaV1V2()
+	src, snaps := deltaChain(t, v1, v2)
+	_, full2 := bundleExportT(t, src, snaps[1], true)
+	path, ex := deltaExportT(t, src, snaps[0], snaps[1], true)
+
+	if ex.Kind != "delta" || ex.BaseSnapshotID != snaps[0] || ex.SnapshotID != snaps[1] || ex.Status != "exported" ||
+		ex.PayloadChunks == 0 || ex.BaseReusedChunks == 0 ||
+		ex.PayloadChunks+ex.BaseReusedChunks != ex.UniqueChunks || ex.UniqueChunks != full2.UniqueChunks ||
+		ex.PayloadLogicalBytes+ex.BaseReusedLogicalBytes != ex.UniqueLogicalBytes ||
+		ex.Manifests != full2.Manifests || ex.RawRecords+ex.CompressedRecords != ex.PayloadChunks {
+		t.Fatalf("delta stats: %+v\nfull stats: %+v", ex, full2)
+	}
+	// d (200 kB new) plus b's edited neighbourhood is the payload; a, e and b's
+	// untouched chunks are base references.
+	if ex.PayloadLogicalBytes < 200_000 || ex.PayloadLogicalBytes > 330_000 || ex.BundleBytes >= full2.BundleBytes/2 {
+		t.Fatalf("payload %d bytes / delta %d bytes vs full %d: not tracking the change", ex.PayloadLogicalBytes, ex.BundleBytes, full2.BundleBytes)
+	}
+	t.Logf("delta %s vs full %s; payload %s, base-reused %s (%.1f%%)", mib(ex.BundleBytes), mib(full2.BundleBytes),
+		mib(ex.PayloadLogicalBytes), mib(ex.BaseReusedLogicalBytes), 100*ex.BaseReuseRatio)
+
+	// Inspect: parsed without the base, verified only against it.
+	if st, err := inspectDeltaHeader(path); err != nil || st.Status != "parsed" || st.PayloadChunks != ex.PayloadChunks ||
+		st.BaseReusedChunks != ex.BaseReusedChunks || st.BaseDescriptorSHA256 != ex.BaseDescriptorSHA256 || st.BundleBytes != ex.BundleBytes ||
+		st.StoredPayloadBytes != ex.StoredPayloadBytes || st.BaseReuseRatio != ex.BaseReuseRatio {
+		t.Fatalf("inspect: %v %+v", err, st)
+	}
+	if st, err := verifyDeltaFile(path, src); err != nil || st.Status != "verified" || st.PayloadChunks != ex.PayloadChunks {
+		t.Fatalf("verify: %v %+v", err, st)
+	}
+
+	dst := t.TempDir()
+	bundleImportT(t, dst, mustBundle(t, src, snaps[0]))
+	res, err := importBundleFile(dst, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ChunksImported != ex.PayloadChunks || res.BaseRefChunks != ex.BaseReusedChunks || res.BaseSnapshotID != snaps[0] ||
+		res.ManifestsImported+res.ManifestsReused != ex.Manifests || res.SnapshotReused || res.SnapshotID != snaps[1] {
+		t.Fatalf("import = %+v, export = %+v", res, ex)
+	}
+	bundleRestoreCheckTo(t, dst, snaps[1], "r2", v2)
+	bundleRestoreCheckTo(t, dst, snaps[0], "r1", v1) // the base is untouched
+	ds, _ := OpenStore(dst)
+	defer ds.Close()
+	if _, _, err := ds.GetObject("r2", "c"); err == nil {
+		t.Fatal("object deleted in the target is present after restoring it")
+	}
+	if got := bundleSnapshotFiles(t, dst); len(got) != 2 {
+		t.Fatalf("snapshots after delta import: %v", got)
+	}
+}
+
+// mustBundle exports a full bundle of snap and returns its path.
+func mustBundle(t *testing.T, dir, snap string) string {
+	t.Helper()
+	p, _ := bundleExportT(t, dir, snap, true)
+	return p
+}
+
+func TestBundleDelta_SemanticsMetadataNewObjectsDeletesAndSameSnapshot(t *testing.T) {
+	shared := genRandomBytes(910, 300_000)
+	gone := genRandomBytes(911, 150_000)
+	v1 := map[string][]byte{"shared": shared, "gone": gone, "keep": genRandomBytes(912, 100_000)}
+	src := t.TempDir()
+	s, _ := OpenStore(src)
+	s.CreateBucket("b")
+	for k, b := range v1 {
+		s.PutObject("b", k, b, "x/y", map[string]string{"rev": "1"})
+	}
+	s1 := deltaSnapshot(t, s)
+	s.PutObject("b", "shared", shared, "x/y", map[string]string{"rev": "2"}) // metadata-only: same bytes, new manifest
+	s.PutObject("b", "alias", shared, "x/y", nil)                            // new object reusing base chunks
+	s.DeleteObject("b", "gone")                                              // deletion carries no record
+	s2 := deltaSnapshot(t, s)
+	s.Close()
+
+	path, ex := deltaExportT(t, src, s1, s2, false)
+	if ex.PayloadChunks != 0 || ex.BaseReusedChunks != ex.UniqueChunks || ex.StoredPayloadBytes != 0 || ex.BaseReuseRatio != 1 {
+		t.Fatalf("expected metadata + references only: %+v", ex)
+	}
+	// Every target manifest is carried even though the base holds most of them.
+	if ex.Manifests != 3 || ex.Objects != 3 {
+		t.Fatalf("manifests/objects = %d/%d, want all 3 target manifests: %+v", ex.Manifests, ex.Objects, ex)
+	}
+	dst := t.TempDir()
+	bundleImportT(t, dst, mustBundle(t, src, s1))
+	res := bundleImportT(t, dst, path)
+	if res.ChunksImported != 0 || res.ManifestsImported != 2 || res.ManifestsReused != 1 {
+		t.Fatalf("import = %+v", res)
+	}
+	want := map[string][]byte{"shared": shared, "alias": shared, "keep": v1["keep"]}
+	bundleRestoreCheckTo(t, dst, s2, "r2", want)
+
+	// base == target: full metadata, zero payload, everything a reference.
+	same, st := deltaExportT(t, src, s2, s2, true)
+	if st.PayloadChunks != 0 || st.BaseReusedChunks != st.UniqueChunks || st.UniqueChunks == 0 {
+		t.Fatalf("base == target: %+v", st)
+	}
+	r := bundleImportT(t, dst, same)
+	if !r.SnapshotReused || r.ChunksImported != 0 || r.ManifestsImported != 0 {
+		t.Fatalf("base == target import = %+v", r)
+	}
+}
+
+// deltaImportFails imports path into dst, requiring failure and that nothing
+// of the target (snapshot root) became visible.
+func deltaImportFails(t *testing.T, dst, path, target, wantMsg string) {
+	t.Helper()
+	_, err := importBundleFile(dst, path)
+	if err == nil {
+		t.Fatal("delta import succeeded")
+	}
+	if wantMsg != "" && !strings.Contains(err.Error(), wantMsg) {
+		t.Fatalf("error %q does not mention %q", err, wantMsg)
+	}
+	if slices.Contains(bundleSnapshotFiles(t, dst), target+".snap") {
+		t.Fatal("target snapshot was published by a failed delta import")
+	}
+}
+
+func TestBundleDelta_BaseIdentityFailsClosed(t *testing.T) {
+	v1, v2 := deltaV1V2()
+	src, snaps := deltaChain(t, v1, v2)
+	path, _ := deltaExportT(t, src, snaps[0], snaps[1], true)
+	good := fileBytes(t, path)
+	write := func(b []byte) string {
+		p := filepath.Join(t.TempDir(), "d.zs3d")
+		os.WriteFile(p, b, 0o644)
+		return p
+	}
+
+	t.Run("missing base fails before any payload is imported", func(t *testing.T) {
+		dst := t.TempDir()
+		deltaImportFails(t, dst, path, snaps[1], snaps[0])
+		if n := len(casLooseChunksNoVerify(dst)); n != 0 {
+			t.Fatalf("%d chunks imported although the base is absent", n)
+		}
+	})
+	t.Run("destination already holding every target chunk cannot stand in for the base", func(t *testing.T) {
+		dst := t.TempDir()
+		bundleImportT(t, dst, mustBundle(t, src, snaps[1])) // full target: all chunks present, base snapshot absent
+		deltaImportFails(t, dst, path, snaps[0], snaps[0])
+	})
+	t.Run("same snapshot id with a different descriptor", func(t *testing.T) {
+		dst := t.TempDir()
+		s, _ := OpenStore(dst)
+		s.CreateBucket("b")
+		s.PutObject("b", "x", []byte("other"), "x/y", nil)
+		entries, _ := s.captureSnapshotEntries("b", "")
+		if err := s.publishSnapshot(snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: snaps[0],
+			CreatedAt: time.Unix(7, 0).UTC(), SourceBucket: "b", Entries: entries}); err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+		deltaImportFails(t, dst, path, snaps[1], "different descriptor")
+	})
+	t.Run("declared base descriptor hash is wrong", func(t *testing.T) {
+		dst := t.TempDir()
+		bundleImportT(t, dst, mustBundle(t, src, snaps[0]))
+		bad := slices.Clone(good)
+		bad[88] ^= 1
+		deltaImportFails(t, dst, write(bad), snaps[1], "different descriptor")
+	})
+	t.Run("declared base id names another snapshot", func(t *testing.T) {
+		dst := t.TempDir()
+		bundleImportT(t, dst, mustBundle(t, src, snaps[0]))
+		bundleImportT(t, dst, mustBundle(t, src, snaps[1]))
+		bad := slices.Clone(good)
+		copy(bad[52:88], snaps[1]) // a real snapshot, but not the one the hash names
+		deltaImportFails(t, dst, write(bad), "", "different descriptor")
+	})
+	t.Run("base manifest damaged in the destination", func(t *testing.T) {
+		dst := t.TempDir()
+		bundleImportT(t, dst, mustBundle(t, src, snaps[0]))
+		ents, _ := os.ReadDir(filepath.Join(dst, "manifests"))
+		os.WriteFile(filepath.Join(dst, "manifests", ents[0].Name()), []byte("{}"), 0o644)
+		deltaImportFails(t, dst, path, snaps[1], "")
+	})
+	t.Run("verify names the base requirement", func(t *testing.T) {
+		if _, err := verifyDeltaFile(path, t.TempDir()); err == nil {
+			t.Fatal("delta verified against a store without its base")
+		}
+	})
+	if _, err := importBundleFile(t.TempDir(), write(good)); err == nil {
+		t.Fatal("control: delta imported into an empty store")
+	}
+}
+
+func TestBundleDelta_ChainOfDeltasAndOutOfOrderFailure(t *testing.T) {
+	r := rand.New(rand.NewSource(5))
+	big := genRandomBytes(920, 600_000)
+	versions := []map[string][]byte{{"model": big, "cfg": []byte("v0")}}
+	for i := 1; i <= 3; i++ {
+		prev := versions[i-1]
+		next := maps.Clone(prev)
+		m := slices.Clone(prev["model"])
+		copy(m[r.Intn(len(m)-5000):], genRandomBytes(int64(930+i), 4000)) // localized edit
+		next["model"] = m
+		next["cfg"] = []byte(fmt.Sprintf("v%d", i))
+		next[fmt.Sprintf("extra%d", i)] = genRandomBytes(int64(940+i), 50_000)
+		versions = append(versions, next)
+	}
+	src, snaps := deltaChain(t, versions...)
+	var deltas []string
+	var stats []BundleStats
+	for i := 0; i < 3; i++ {
+		p, st := deltaExportT(t, src, snaps[i], snaps[i+1], true)
+		deltas, stats = append(deltas, p), append(stats, st)
+		if st.PayloadFraction > 0.4 || st.BaseReusedChunks == 0 {
+			t.Fatalf("delta %d is not thin: %+v", i, st)
+		}
+	}
+	dst := t.TempDir()
+	bundleImportT(t, dst, mustBundle(t, src, snaps[0]))
+	deltaImportFails(t, dst, deltas[1], snaps[2], snaps[1]) // S1 -> S2 before S0 -> S1: no automatic chain search
+	for i := 0; i < 3; i++ {
+		res := bundleImportT(t, dst, deltas[i])
+		if res.BaseSnapshotID != snaps[i] || res.ChunksImported != stats[i].PayloadChunks {
+			t.Fatalf("delta %d import = %+v", i, res)
+		}
+		bundleRestoreCheckTo(t, dst, snaps[i+1], fmt.Sprintf("r%d", i+1), versions[i+1])
+	}
+	// Each imported target is an ordinary independent snapshot: its full
+	// bundle is byte-identical to the one the source produces.
+	for i := range snaps {
+		a, _ := bundleExportT(t, src, snaps[i], false)
+		b, _ := bundleExportT(t, dst, snaps[i], false)
+		if !bytes.Equal(fileBytes(t, a), fileBytes(t, b)) {
+			t.Fatalf("full bundle of S%d differs between source and the delta-built store", i)
+		}
+	}
+}
+
+func TestBundleDelta_CorruptBaseReferenceFailsThenConverges(t *testing.T) {
+	v1, v2 := deltaV1V2()
+	src, snaps := deltaChain(t, v1, v2)
+	path, ex := deltaExportT(t, src, snaps[0], snaps[1], true)
+	full1 := mustBundle(t, src, snaps[0])
+	dst := t.TempDir()
+	bundleImportT(t, dst, full1)
+
+	// Destroy every physical copy of one chunk the delta only references.
+	ss, _ := OpenStore(src)
+	victim := manifestSums(t, ss, "b", "a")[0]
+	ss.Close()
+	h := hex.EncodeToString(victim[:])
+	os.WriteFile(filepath.Join(dst, "chunks", h[:2], h[2:4], h), []byte("rot"), 0o644)
+
+	deltaImportFails(t, dst, path, snaps[1], "unreadable")
+	if _, err := verifyDeltaFile(path, dst); err == nil {
+		t.Fatal("verify accepted a base whose referenced chunk is unreadable")
+	}
+	// Repair the base (the delta itself cannot), then the same delta converges.
+	if res := bundleImportT(t, dst, full1); res.ChunksRepaired != 1 {
+		t.Fatalf("base repair = %+v", res)
+	}
+	res := bundleImportT(t, dst, path)
+	if res.ChunksImported != ex.PayloadChunks {
+		t.Fatalf("converged import = %+v", res)
+	}
+	bundleRestoreCheckTo(t, dst, snaps[1], "r2", v2)
+}
+
+func TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting(t *testing.T) {
+	v1, v2 := deltaV1V2()
+	src, snaps := deltaChain(t, v1, v2)
+	path, ex := deltaExportT(t, src, snaps[0], snaps[1], true)
+	dst := t.TempDir()
+	bundleImportT(t, dst, mustBundle(t, src, snaps[0]))
+	// Unrelated destination content that happens to hold target-new payload
+	// chunks: "d" intact, plus one of "b"'s new chunks rotted in place.
+	s, _ := OpenStore(dst)
+	s.CreateBucket("pre")
+	s.PutObject("pre", "d", v2["d"], "x/y", nil)
+	before := casLooseChunks(t, dst)
+	s.Close()
+	var rotted string
+	ss, _ := OpenStore(src)
+	for _, sum := range manifestSums(t, ss, "b", "d") {
+		if h := hex.EncodeToString(sum[:]); before[h] {
+			rotted = h
+			break
+		}
+	}
+	ss.Close()
+	if rotted == "" {
+		t.Fatal("no destination copy of a target-new chunk to rot")
+	}
+	os.WriteFile(filepath.Join(dst, "chunks", rotted[:2], rotted[2:4], rotted), []byte("rot"), 0o644)
+
+	res := bundleImportT(t, dst, path)
+	if res.ChunksRepaired != 1 || res.ChunksReused == 0 || res.ChunksImported+res.ChunksReused+res.ChunksRepaired != ex.PayloadChunks {
+		t.Fatalf("import = %+v (payload chunks %d)", res, ex.PayloadChunks)
+	}
+	bundleRestoreCheckTo(t, dst, snaps[1], "r2", v2)
+}
+
+func TestBundleDelta_ImportIsIdempotentAndNeverTouchesNamespaceOrFormat(t *testing.T) {
+	v1, v2 := deltaV1V2()
+	src, snaps := deltaChain(t, v1, v2)
+	path, ex := deltaExportT(t, src, snaps[0], snaps[1], true)
+	dst := t.TempDir()
+	bundleImportT(t, dst, mustBundle(t, src, snaps[0]))
+	s, _ := OpenStore(dst)
+	s.CreateBucket("live")
+	s.PutObject("live", "k", []byte("current namespace"), "x/y", nil)
+	fp := bundleNamespaceFingerprint(s)
+	s.Close()
+	files := bundleStoreBytes(t, dst)
+
+	first := bundleImportT(t, dst, path)
+	tree := bundleTreeHash(t, dst)
+	second := bundleImportT(t, dst, path)
+	if first.ChunksImported != ex.PayloadChunks || second.ChunksImported != 0 || second.ChunksRepaired != 0 || second.ManifestsImported != 0 ||
+		!second.SnapshotReused || second.BaseRefChunks != first.BaseRefChunks {
+		t.Fatalf("first %+v second %+v", first, second)
+	}
+	if bundleTreeHash(t, dst) != tree {
+		t.Fatal("re-importing the same delta changed the store")
+	}
+	s, _ = OpenStore(dst)
+	if bundleNamespaceFingerprint(s) != fp {
+		t.Fatal("delta import changed the current namespace")
+	}
+	s.Close()
+	for name, want := range files {
+		if got := bundleStoreBytes(t, dst)[name]; !bytes.Equal(got, want) {
+			t.Fatalf("delta import changed %s", name)
+		}
+	}
+	bundleVerifyOK(t, dst)
+}
+
+func TestBundleDelta_ImportCrashMatrix(t *testing.T) {
+	v1 := map[string][]byte{"base": genRandomBytes(950, 120_000)}
+	v2 := maps.Clone(v1)
+	for i := 0; i < 6; i++ {
+		v2[fmt.Sprintf("n%d", i)] = genRandomBytes(int64(960+i), 180_000)
+	}
+	src, snaps := deltaChain(t, v1, v2)
+	path, ex := deltaExportT(t, src, snaps[0], snaps[1], true)
+	full1 := mustBundle(t, src, snaps[0])
+	if ex.PayloadChunks < 8 || ex.BaseReusedChunks == 0 {
+		t.Fatalf("fixture too small: %+v", ex)
+	}
+	oldRecords := casBatchMaxRecords
+	casBatchMaxRecords = 3
+	t.Cleanup(func() { casBatchMaxRecords = oldRecords })
+
+	points := []struct {
+		point   string
+		nth     int
+		visible bool
+	}{
+		{hookBundleChunk, 2, false},
+		{hookCASAfterFlush, 1, false},
+		{hookBundleChunksDone, 1, false},
+		{hookBundleManifestPublished, 2, false},
+		{hookBundleManifestsDone, 1, false},
+		{hookBundleBeforeSnapshot, 1, false},
+		{hookBundleSnapshotWritten, 1, true},
+		{hookBundleSnapshotPublished, 1, true},
+	}
+	for _, pt := range points {
+		t.Run(pt.point, func(t *testing.T) {
+			dst := t.TempDir()
+			bundleImportT(t, dst, full1)
+			f, _ := os.Open(path)
+			defer f.Close()
+			s, err := OpenStore(dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n := 0
+			withTestHook(t, func(p string) {
+				if p == pt.point {
+					if n++; n == pt.nth {
+						panic(simulatedCrash{point: p})
+					}
+				}
+			})
+			runExpectingSimulatedCrash(t, func() { s.importDeltaBundle(f) })
+			testHook = nil
+			s.Close()
+
+			want := 1
+			if pt.visible {
+				want = 2
+			}
+			if got := bundleSnapshotFiles(t, dst); len(got) != want {
+				t.Fatalf("snapshot files after crash at %s: %v, want %d", pt.point, got, want)
+			}
+			bundleVerifyOK(t, dst)
+			bundleRestoreCheckTo(t, dst, snaps[0], "r1", v1) // the base stays intact
+			res := bundleImportT(t, dst, path)               // retry converges
+			if res.SnapshotReused != pt.visible {
+				t.Fatalf("SnapshotReused = %v after crash at %s", res.SnapshotReused, pt.point)
+			}
+			bundleRestoreCheckTo(t, dst, snaps[1], "r2", v2)
+			if got := bundleSnapshotFiles(t, dst); len(got) != 2 {
+				t.Fatalf("roots after retry: %v", got)
+			}
+		})
+	}
+}
+
+func TestBundleDelta_ImportUsesGroupedCASPublication(t *testing.T) {
+	v1 := map[string][]byte{"s": genRandomBytes(970, 50_000)}
+	v2 := map[string][]byte{"s": v1["s"], "big": genRandomBytes(971, 12<<20)}
+	src, snaps := deltaChain(t, v1, v2)
+	path, ex := deltaExportT(t, src, snaps[0], snaps[1], true)
+	dst := t.TempDir()
+	bundleImportT(t, dst, mustBundle(t, src, snaps[0]))
+	c := countCASHooks(t, nil)
+	res := bundleImportT(t, dst, path)
+	flushes := c.count(hookCASAfterFlush)
+	if res.ChunksImported != ex.PayloadChunks || ex.PayloadChunks < 100 || res.BaseRefChunks == 0 {
+		t.Fatalf("fixture: %+v %+v", res, ex)
+	}
+	if flushes == 0 || int64(flushes)*8 > ex.PayloadChunks {
+		t.Fatalf("%d payload chunks published in %d flushes: not grouped", ex.PayloadChunks, flushes)
+	}
+}
+
+func TestBundleDelta_ExportDeterministicAndIndependentOfPhysicalRepresentation(t *testing.T) {
+	v1, v2 := deltaV1V2()
+	src, snaps := deltaChain(t, v1, v2)
+	before := bundleTreeHash(t, src)
+	p1, s1 := deltaExportT(t, src, snaps[0], snaps[1], false)
+	p2, s2 := deltaExportT(t, src, snaps[0], snaps[1], false)
+	want := fileBytes(t, p1)
+	if !bytes.Equal(want, fileBytes(t, p2)) || s1 != s2 {
+		t.Fatal("compression=off delta exports differ")
+	}
+	if s1.CompressedRecords != 0 || s1.StoredPayloadBytes != s1.PayloadLogicalBytes {
+		t.Fatalf("compression=off wrote compressed records: %+v", s1)
+	}
+	c1, cs := deltaExportT(t, src, snaps[0], snaps[1], true)
+	c2, _ := deltaExportT(t, src, snaps[0], snaps[1], true)
+	if !bytes.Equal(fileBytes(t, c1), fileBytes(t, c2)) || cs.BundleBytes > s1.BundleBytes {
+		t.Fatal("auto delta not reproducible or larger than raw")
+	}
+	if bundleTreeHash(t, src) != before {
+		t.Fatal("delta export modified the store")
+	}
+
+	variants := map[string]func(t *testing.T, dir string){
+		"packed compressed cold": func(t *testing.T, dir string) {
+			opt := packTestOpt
+			opt.Compress, opt.Tier = true, tierCold
+			if _, err := compactStore(dir, opt); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"mixed packed hot+cold": func(t *testing.T, dir string) {
+			opt := packTestOpt
+			opt.Compress = true
+			if _, err := compactStore(dir, opt); err != nil {
+				t.Fatal(err)
+			}
+			if ids := tierPackIDs(dir, tierHot); len(ids) > 1 {
+				tierTestMove(t, dir, tierHot, tierCold, true, ids[0])
+			}
+		},
+	}
+	for name, prep := range variants {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			copyTreeT(t, src, dir)
+			prep(t, dir)
+			if len(casLooseChunks(t, dir)) != 0 {
+				t.Fatal("variant left loose chunks")
+			}
+			got, _ := deltaExportT(t, dir, snaps[0], snaps[1], false)
+			if !bytes.Equal(fileBytes(t, got), want) {
+				t.Fatal("delta bytes depend on the source's physical representation")
+			}
+		})
+	}
+
+	// Failed exports leave neither a final nor a temporary file.
+	outDir := t.TempDir()
+	out := filepath.Join(outDir, "x.zs3d")
+	if _, err := exportDeltaFile(src, newUUIDv7(), snaps[1], out, true); err == nil {
+		t.Fatal("export against an unknown base succeeded")
+	}
+	if _, err := exportDeltaFile(src, snaps[0], newUUIDv7(), out, true); err == nil {
+		t.Fatal("export of an unknown target succeeded")
+	}
+	if ents, _ := os.ReadDir(outDir); len(ents) != 0 {
+		t.Fatalf("failed export left files behind: %v", ents)
+	}
+}
+
+func TestBundleDelta_CLI(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	v1, v2 := deltaV1V2()
+	src, snaps := deltaChain(t, v1, v2)
+	full1 := filepath.Join(t.TempDir(), "s1.zs3b")
+	if so, se, code := runZeros3CLI(t, bin, "bundle", "export", "-store", src, "-snapshot", snaps[0], "-out", full1); code != 0 {
+		t.Fatalf("full export: %s %s", so, se)
+	}
+	if b := fileBytes(t, full1); string(b[:8]) != bundleMagic {
+		t.Fatal("export without -base-snapshot did not produce a full bundle")
+	}
+	out := filepath.Join(t.TempDir(), "u.zs3d")
+	so, se, code := runZeros3CLI(t, bin, "bundle", "export", "-store", src, "-snapshot", snaps[1], "-base-snapshot", snaps[0], "-out", out, "-compression", "auto", "-json")
+	var ex BundleStats
+	if code != 0 || json.Unmarshal([]byte(so), &ex) != nil || ex.Kind != "delta" || ex.BaseSnapshotID != snaps[0] || ex.Status != "exported" {
+		t.Fatalf("delta export: %d %s %s", code, so, se)
+	}
+	if b := fileBytes(t, out); string(b[:8]) != deltaMagic {
+		t.Fatal("-base-snapshot did not produce a delta bundle")
+	}
+	if _, se, code = runZeros3CLI(t, bin, "bundle", "export", "-store", src, "-snapshot", snaps[1], "-base-snapshot", "nope", "-out", out); code != 2 {
+		t.Fatalf("bad -base-snapshot: code %d %s", code, se)
+	}
+	so, se, code = runZeros3CLI(t, bin, "bundle", "inspect", "-in", out)
+	if code != 0 || !strings.Contains(so, "bundle parsed (delta format v1)") || !strings.Contains(so, "base snapshot   "+snaps[0]) || !strings.Contains(so, "-verify -base-store") {
+		t.Fatalf("inspect: %d %s %s", code, so, se)
+	}
+	_, se, code = runZeros3CLI(t, bin, "bundle", "inspect", "-in", out, "-verify")
+	if code == 0 || !strings.Contains(se, "-base-store") {
+		t.Fatalf("delta -verify without a base store must fail clearly: %d %s", code, se)
+	}
+	so, se, code = runZeros3CLI(t, bin, "bundle", "inspect", "-in", out, "-verify", "-base-store", src, "-json")
+	var vr BundleStats
+	if code != 0 || json.Unmarshal([]byte(so), &vr) != nil || vr.Status != "verified" || vr.PayloadChunks != ex.PayloadChunks {
+		t.Fatalf("inspect -verify -base-store: %d %s %s", code, so, se)
+	}
+	if so, se, code = runZeros3CLI(t, bin, "bundle", "inspect", "-in", full1, "-verify", "-json"); code != 0 {
+		t.Fatalf("full bundle -verify must not need a store: %d %s %s", code, so, se)
+	}
+	dst := t.TempDir()
+	if _, se, code = runZeros3CLI(t, bin, "bundle", "import", "-store", dst, "-in", out); code == 0 || !strings.Contains(se, snaps[0]) {
+		t.Fatalf("delta import without its base: %d %s", code, se)
+	}
+	if so, se, code = runZeros3CLI(t, bin, "bundle", "import", "-store", dst, "-in", full1); code != 0 {
+		t.Fatalf("base import: %s %s", so, se)
+	}
+	so, se, code = runZeros3CLI(t, bin, "bundle", "import", "-store", dst, "-in", out, "-json")
+	var im BundleImportResult
+	if code != 0 || json.Unmarshal([]byte(so), &im) != nil || im.SnapshotID != snaps[1] || im.BaseSnapshotID != snaps[0] || im.ChunksImported != ex.PayloadChunks {
+		t.Fatalf("delta import: %d %s %s", code, so, se)
+	}
+}
+
+// ---- lifecycle scenarios (stage bundle-delta-life) -----------------------------
+
+type cliRun struct {
+	out    string
+	wall   time.Duration
+	rssMiB float64
+}
+
+// runZeros3Timed runs the CLI, requiring success, and reports wall time and
+// the child's own peak resident set: VmHWM polled from /proc (rusage maxrss
+// would include the large test process's pre-exec memory).
+func runZeros3Timed(t *testing.T, bin string, args ...string) cliRun {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
+	start := time.Now()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var hwmKiB atomic.Int64
+	stop := make(chan struct{})
+	polled := make(chan struct{})
+	go func() {
+		defer close(polled)
+		path := fmt.Sprintf("/proc/%d/status", cmd.Process.Pid)
+		for {
+			if b, err := os.ReadFile(path); err == nil {
+				for _, l := range strings.Split(string(b), "\n") {
+					if v, ok := strings.CutPrefix(l, "VmHWM:"); ok {
+						if n, err := strconv.ParseInt(strings.Fields(v)[0], 10, 64); err == nil && n > hwmKiB.Load() {
+							hwmKiB.Store(n)
+						}
+					}
+				}
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+	}()
+	err := cmd.Wait()
+	close(stop)
+	<-polled
+	if err != nil {
+		t.Fatalf("zeros3 %v: %v\n%s", args, err, errBuf.String())
+	}
+	return cliRun{out: outBuf.String(), wall: time.Since(start), rssMiB: float64(hwmKiB.Load()) / 1024}
+}
+
+func mibPerSec(bytes int64, d time.Duration) float64 { return float64(bytes) / (1 << 20) / d.Seconds() }
+
+// deltaCLI exports full+delta artifacts for target (against base) through the
+// real CLI and returns stats plus timing of the delta export.
+func deltaCLIExport(t *testing.T, bin, src, base, target string) (path string, st BundleStats, run cliRun) {
+	t.Helper()
+	path = filepath.Join(t.TempDir(), "d.zs3d")
+	run = runZeros3Timed(t, bin, "bundle", "export", "-store", src, "-snapshot", target, "-base-snapshot", base, "-out", path, "-json")
+	if err := json.Unmarshal([]byte(run.out), &st); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+func TestBundleDeltaLife_BrowserSiteRevision(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	v1, v2 := bundleSiteBodies(1), bundleSiteBodies(2)
+	src := t.TempDir()
+	s, err := OpenStore(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.CreateBucket("site")
+	snap := func() string {
+		entries, _ := s.captureSnapshotEntries("site", "")
+		id := newUUIDv7()
+		if err := s.publishSnapshot(snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: id, CreatedAt: time.Now().UTC(), SourceBucket: "site", Entries: entries}); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	for k, b := range v1 {
+		s.PutObject("site", k, b, "application/octet-stream", map[string]string{"v": "1"})
+	}
+	s1 := snap()
+	for k, b := range v2 { // localized edits, one new file, every object rewritten (new manifests)
+		s.PutObject("site", k, b, "application/octet-stream", map[string]string{"v": "2"})
+	}
+	s2 := snap()
+	s.Close()
+	opt := packTestOpt // mixed physical state: compacted, compressed, partly cold
+	opt.Compress = true
+	if _, err := compactStore(src, opt); err != nil {
+		t.Fatal(err)
+	}
+	if ids := tierPackIDs(src, tierHot); len(ids) > 2 {
+		tierTestMove(t, src, tierHot, tierCold, true, ids[:len(ids)/2]...)
+	}
+
+	full1 := filepath.Join(t.TempDir(), "s1.zs3b")
+	full2 := filepath.Join(t.TempDir(), "s2.zs3b")
+	runZeros3Timed(t, bin, "bundle", "export", "-store", src, "-snapshot", s1, "-out", full1)
+	f2 := runZeros3Timed(t, bin, "bundle", "export", "-store", src, "-snapshot", s2, "-out", full2)
+	dpath, ex, dx := deltaCLIExport(t, bin, src, s1, s2)
+	fullBytes, deltaBytes := int64(len(fileBytes(t, full2))), int64(len(fileBytes(t, dpath)))
+	if ex.PayloadLogicalBytes == 0 || ex.BaseReuseRatio < 0.5 || deltaBytes >= fullBytes/2 {
+		t.Fatalf("site delta not thin: %+v (delta %d vs full %d)", ex, deltaBytes, fullBytes)
+	}
+
+	dst := t.TempDir()
+	runZeros3Timed(t, bin, "bundle", "import", "-store", dst, "-in", full1)
+	im := runZeros3Timed(t, bin, "bundle", "import", "-store", dst, "-in", dpath, "-json")
+	var res BundleImportResult
+	if err := json.Unmarshal([]byte(im.out), &res); err != nil || res.SnapshotID != s2 || res.ChunksImported != ex.PayloadChunks {
+		t.Fatalf("import: %v %+v", err, res)
+	}
+	t.Logf("site v2: full %s, delta %s (%.1f%% smaller); base-reused %s, payload %s; delta export %v (rss %.0f MiB) vs full export %v; delta import %v (rss %.0f MiB)",
+		mib(fullBytes), mib(deltaBytes), 100*(1-float64(deltaBytes)/float64(fullBytes)), mib(ex.BaseReusedLogicalBytes), mib(ex.PayloadLogicalBytes),
+		dx.wall.Round(time.Millisecond), dx.rssMiB, f2.wall.Round(time.Millisecond), im.wall.Round(time.Millisecond), im.rssMiB)
+
+	// Client-visible behaviour of the restored v2 site equals a store built directly from v2.
+	ds, err := OpenStore(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ds.Close()
+	ds.CreateBucket("restored")
+	cfg, signer := bundleServe(t, ds)
+	dstCfg := cfg
+	dstCfg.Bucket = "restored"
+	if r, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg, SnapshotID: s2, Dest: dstCfg}); err != nil || !r.OK() {
+		t.Fatalf("restore: %v %+v", err, r)
+	}
+	ref := t.TempDir()
+	rs, _ := OpenStore(ref)
+	defer rs.Close()
+	rs.CreateBucket("restored")
+	for k, b := range v2 {
+		rs.PutObject("restored", k, b, "application/octet-stream", map[string]string{"v": "2"})
+	}
+	rcfg, rsigner := bundleServe(t, rs)
+	for k, b := range v2 {
+		want := bundleObserve(t, rcfg.Endpoint, rsigner, "restored", k, len(b))
+		got := bundleObserve(t, cfg.Endpoint, signer, "restored", k, len(b))
+		if want != got {
+			t.Fatalf("%s: observations differ\nwant:\n%s\ngot:\n%s", k, want, got)
+		}
+	}
+	if vr, err := ds.Verify(true); err != nil || !vr.OK() {
+		t.Fatalf("deep verify: %v %+v", err, vr.Issues)
+	}
+}
+
+func deltaCkptMiB() int {
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_DELTA_CKPT_MIB")); err == nil && v > 0 {
+		return v
+	}
+	return 128
+}
+
+// TestBundleDeltaLife_CheckpointChain: three versions of one checkpoint
+// shipped as full S1 + delta S1->S2 + delta S2->S3 into a fresh store.
+func TestBundleDeltaLife_CheckpointChain(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	size := deltaCkptMiB() << 20
+	c1 := genRandomBytes(1000, size)
+	edit := func(b []byte, seed int64, at float64, n int) []byte {
+		b = slices.Clone(b)
+		copy(b[int(float64(len(b))*at):], genRandomBytes(seed, n))
+		return b
+	}
+	c2 := edit(edit(edit(c1, 1001, 0.0, 4096), 1002, 0.20, 1<<20), 1003, 0.55, 1<<20)
+	c2 = edit(c2, 1004, 0.80, 1<<20)
+	c3 := edit(edit(c2, 1005, 0.0, 4096), 1006, 0.35, 2<<20)
+	versions := []map[string][]byte{
+		{"ckpt/model.bin": c1, "ckpt/meta.json": []byte(`{"step":1000}`)},
+		{"ckpt/model.bin": c2, "ckpt/meta.json": []byte(`{"step":2000}`)},
+		{"ckpt/model.bin": c3, "ckpt/meta.json": []byte(`{"step":3000}`)},
+	}
+	src, snaps := deltaChain(t, versions...)
+
+	full := make([]string, 3)
+	var fullBytes [3]int64
+	for i := range full {
+		full[i] = filepath.Join(t.TempDir(), fmt.Sprintf("s%d.zs3b", i+1))
+		runZeros3Timed(t, bin, "bundle", "export", "-store", src, "-snapshot", snaps[i], "-out", full[i])
+		fullBytes[i] = int64(len(fileBytes(t, full[i])))
+	}
+	var dpaths [2]string
+	var dstats [2]BundleStats
+	var druns [2]cliRun
+	for i := range dpaths {
+		dpaths[i], dstats[i], druns[i] = deltaCLIExport(t, bin, src, snaps[i], snaps[i+1])
+	}
+
+	dst := t.TempDir()
+	fi := runZeros3Timed(t, bin, "bundle", "import", "-store", dst, "-in", full[0])
+	var imps [2]cliRun
+	for i := range dpaths {
+		imps[i] = runZeros3Timed(t, bin, "bundle", "import", "-store", dst, "-in", dpaths[i], "-json")
+		var res BundleImportResult
+		if err := json.Unmarshal([]byte(imps[i].out), &res); err != nil || res.SnapshotID != snaps[i+1] || res.ChunksImported != dstats[i].PayloadChunks || res.ChunksRepaired != 0 {
+			t.Fatalf("delta %d import: %v %+v", i, err, res)
+		}
+	}
+
+	for i := range dpaths {
+		ex := dstats[i]
+		t.Logf("checkpoint S%d->S%d: full %s, delta %s (%.2f%% smaller); payload %s of %s target (%.2f%%), base reuse %.2f%%; export %v (%.0f MiB/s of target, rss %.0f MiB), import %v (%.0f MiB/s of target, rss %.0f MiB)",
+			i+1, i+2, mib(fullBytes[i+1]), mib(ex.BundleBytes), 100*(1-float64(ex.BundleBytes)/float64(fullBytes[i+1])),
+			mib(ex.PayloadLogicalBytes), mib(ex.UniqueLogicalBytes), 100*ex.PayloadFraction, 100*ex.BaseReuseRatio,
+			druns[i].wall.Round(time.Millisecond), mibPerSec(ex.UniqueLogicalBytes, druns[i].wall), druns[i].rssMiB,
+			imps[i].wall.Round(time.Millisecond), mibPerSec(ex.UniqueLogicalBytes, imps[i].wall), imps[i].rssMiB)
+		if ex.PayloadFraction > 0.10 || ex.BaseReuseRatio < 0.90 || ex.BundleBytes > fullBytes[i+1]/8 {
+			t.Fatalf("localized checkpoint edit is not thin: %+v", ex)
+		}
+	}
+	t.Logf("full S1 import %v (rss %.0f MiB)", fi.wall.Round(time.Millisecond), fi.rssMiB)
+
+	// Shared chunks are never re-payloaded: no payload record of a delta is in its base.
+	ss, _ := OpenStore(src)
+	for i := range dpaths {
+		bp, err := ss.planBundleSnapshot(snaps[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, _ := os.Open(dpaths[i])
+		var sums [][32]byte
+		_, err = readDeltaBundle(f, func(deltaHeader) ([]bundleChunkDesc, error) { return bp.plan, nil }, deltaSink{chunk: func(sum [32]byte, _ []byte) error { sums = append(sums, sum); return nil }})
+		f.Close()
+		if err != nil || int64(len(sums)) != dstats[i].PayloadChunks {
+			t.Fatalf("delta %d: %v (%d payload sums)", i, err, len(sums))
+		}
+		for _, sum := range sums {
+			if _, ok := slices.BinarySearchFunc(bp.plan, sum, func(c bundleChunkDesc, s [32]byte) int { return bytes.Compare(c.sha[:], s[:]) }); ok {
+				t.Fatalf("delta %d re-carries chunk %x its base already holds", i, sum)
+			}
+		}
+	}
+	ss.Close()
+
+	for i := range versions {
+		bundleRestoreCheckTo(t, dst, snaps[i], fmt.Sprintf("r%d", i+1), versions[i])
+	}
+	ds, _ := OpenStore(dst)
+	defer ds.Close()
+	for i, v := range versions { // exact ranges over every restored version, including the edited regions
+		for _, at := range []float64{0, 0.2, 0.35, 0.55, 0.8, 0.999} {
+			n := int64(len(v["ckpt/model.bin"]))
+			r := byteRange{int64(float64(n) * at), int64(float64(n)*at) + 4095}
+			if r.end >= n {
+				r.end = n - 1
+			}
+			_, _, got, err := ds.GetObjectRange(fmt.Sprintf("r%d", i+1), "ckpt/model.bin", r)
+			if err != nil || !bytes.Equal(got, v["ckpt/model.bin"][r.start:r.end+1]) {
+				t.Fatalf("v%d range %v differs: %v", i+1, r, err)
+			}
+		}
+	}
+}
+
+// TestBundleDeltaLife_CDCShiftResynchronises: an insertion and a deletion in
+// the middle of a large object shift every later byte, yet CDC resyncs, so
+// only a bounded neighbourhood is payload.
+func TestBundleDeltaLife_CDCShiftResynchronises(t *testing.T) {
+	const size = 64 << 20
+	v1 := genRandomBytes(1100, size)
+	ins := genRandomBytes(1101, 1000)
+	v2 := slices.Concat(v1[:size/2], ins, v1[size/2:]) // insertion
+	v3 := slices.Concat(v2[:size/5], v2[size/5+700:])  // deletion
+	src, snaps := deltaChain(t, map[string][]byte{"o": v1}, map[string][]byte{"o": v2}, map[string][]byte{"o": v3})
+	for i := 0; i < 2; i++ {
+		_, ex := deltaExportT(t, src, snaps[i], snaps[i+1], false)
+		t.Logf("shift %d: %d payload chunks, %s payload of %s (%.3f%%), base reuse %.3f%%", i+1, ex.PayloadChunks,
+			mib(ex.PayloadLogicalBytes), mib(ex.UniqueLogicalBytes), 100*ex.PayloadFraction, 100*ex.BaseReuseRatio)
+		if ex.PayloadChunks == 0 || ex.PayloadChunks > 8 || ex.PayloadFraction > 0.03 || ex.BaseReuseRatio < 0.97 {
+			t.Fatalf("shift did not resynchronise within a bounded neighbourhood: %+v", ex)
+		}
+	}
+	dst := t.TempDir()
+	bundleImportT(t, dst, mustBundle(t, src, snaps[0]))
+	for i := 0; i < 2; i++ {
+		p, _ := deltaExportT(t, src, snaps[i], snaps[i+1], true)
+		bundleImportT(t, dst, p)
+	}
+	ds, _ := OpenStore(dst)
+	defer ds.Close()
+	ds.CreateBucket("restored")
+	cfg, _ := bundleServe(t, ds)
+	dstCfg := cfg
+	dstCfg.Bucket = "restored"
+	if r, err := restoreNamespace(restoreNamespaceConfig{Snapshot: cfg, SnapshotID: snaps[2], Dest: dstCfg}); err != nil || !r.OK() {
+		t.Fatalf("restore: %v %+v", err, r)
+	}
+	if _, got, err := ds.GetObject("restored", "o"); err != nil || !bytes.Equal(got, v3) {
+		t.Fatalf("restored object differs: %v", err)
+	}
+}
+
+// TestBundleDeltaLife_RealProcessKillDuringDeltaImport kills a real
+// `bundle import` of a payload-heavy delta after payload chunks are
+// published but before the target snapshot root exists.
+func TestBundleDeltaLife_RealProcessKillDuringDeltaImport(t *testing.T) {
+	v0 := map[string][]byte{"small": genRandomBytes(1200, 2<<20)}
+	v1 := map[string][]byte{"small": v0["small"], "big": genRandomBytes(1201, 192<<20)}
+	src, snaps := deltaChain(t, v0, v1)
+	path, ex := deltaExportT(t, src, snaps[0], snaps[1], false)
+	bin := buildZeros3Binary(t)
+	dst := t.TempDir()
+	bundleImportT(t, dst, mustBundle(t, src, snaps[0]))
+	baseline := len(casLooseChunksNoVerify(dst))
+
+	cmd := exec.Command(bin, "bundle", "import", "-store", dst, "-in", path)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	deadline := time.Now().Add(60 * time.Second)
+	for len(casLooseChunksNoVerify(dst)) <= baseline+4 {
+		select {
+		case <-done:
+			t.Skip("import finished before it could be killed")
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("import never published a payload chunk")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cmd.Process.Kill()
+	<-done
+	if len(bundleSnapshotFiles(t, dst)) != 1 {
+		t.Skip("import finished before it could be killed")
+	}
+	s, err := OpenStore(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list, err := s.listSnapshots(); err != nil || len(list) != 1 || list[0].SnapshotID != snaps[0] {
+		t.Fatalf("interrupted import exposed the target or lost the base: %v %v", list, err)
+	}
+	s.Close()
+	if res, err := gcCollect(dst, false); err != nil || !res.LiveSetOK {
+		t.Fatalf("store after kill: %v %+v", err, res)
+	}
+	bundleRestoreCheckTo(t, dst, snaps[0], "r1", v0) // base still readable
+	res := bundleImportT(t, dst, path)
+	if res.ChunksReused == 0 || res.ChunksImported+res.ChunksReused+res.ChunksRepaired != ex.PayloadChunks {
+		t.Fatalf("retry did not reuse the killed import's chunks: %+v", res)
+	}
+	bundleRestoreCheckTo(t, dst, snaps[1], "r2", v1)
+}
+
+// ---- planner scale (stage bundle-delta-scale) ------------------------------------
+
+func TestBundleDeltaScale_MergeOneMillionChunks(t *testing.T) {
+	const n = 1_000_000
+	mk := func(i uint64) bundleChunkDesc {
+		var b [8]byte
+		binary.BigEndian.PutUint64(b[:], i)
+		sum := sha256.Sum256(b[:])
+		return bundleChunkDesc{sha: sum, length: 16384 + binary.BigEndian.Uint32(sum[:4])%200_000}
+	}
+	var before, built, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	base, target := make([]bundleChunkDesc, 0, n), make([]bundleChunkDesc, 0, n)
+	for i := uint64(0); i < n; i++ {
+		base = append(base, mk(i))
+		if i%20 == 0 { // 5% of the target is new content
+			target = append(target, mk(n+i))
+		} else {
+			target = append(target, mk(i))
+		}
+	}
+	var err error
+	if base, err = planBundleChunks(base); err != nil {
+		t.Fatal(err)
+	}
+	if target, err = planBundleChunks(target); err != nil {
+		t.Fatal(err)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&built)
+	start := time.Now()
+	cnt, err := deltaCount(target, base)
+	took := time.Since(start)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cnt.payloadChunks != n/20 || cnt.refChunks != n-n/20 {
+		t.Fatalf("counts %+v", cnt)
+	}
+	heap := int64(built.HeapAlloc) - int64(before.HeapAlloc)
+	alloc := int64(after.TotalAlloc - built.TotalAlloc)
+	t.Logf("classified %d target vs %d base descriptors in %v: %d payload, %d base-ref; inventories %.1f MiB (%.1f B/descriptor), merge allocated %d bytes",
+		len(target), len(base), took, cnt.payloadChunks, cnt.refChunks, float64(heap)/(1<<20), float64(heap)/float64(len(base)+len(target)), alloc)
+	if perDesc := float64(heap) / float64(len(base)+len(target)); perDesc > 80 {
+		t.Fatalf("%.1f bytes per descriptor: inventories are not compact", perDesc)
+	}
+	if alloc > 1<<20 {
+		t.Fatalf("merge allocated %d bytes: it must not build per-chunk structures", alloc)
+	}
+	runtime.KeepAlive(base)
+	runtime.KeepAlive(target)
 }

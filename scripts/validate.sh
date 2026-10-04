@@ -28,6 +28,11 @@
 #   scripts/validate.sh bundle-life  bundle scenarios: browser/checkpoint round trips, source deletion + GC,
 #                                real-process kill during import
 #   scripts/validate.sh bundle-scale  chunk-planner scale sanity (1M synthetic descriptors)
+#   scripts/validate.sh bundle-delta  delta (.zs3d) bundles: parser matrix, base-inventory planner, export/import,
+#                                base identity, chains, base-ref corruption, crash matrix, CLI (seconds)
+#   scripts/validate.sh bundle-delta-life  delta scenarios: browser revision, 128 MiB checkpoint chain, CDC shift,
+#                                real-process kill during delta import
+#   scripts/validate.sh bundle-delta-scale  delta merge sanity (1M base x 1M target descriptors, no payload)
 #   scripts/validate.sh locality  pack locality: layout planner/root-order tests, maintenance order preservation
 #                                (repack/rebalance), coalesced packed-run reads incl. corruption fallback (seconds)
 #   scripts/validate.sh locality-bench  baseline (Z2-12) vs current packed-read matrix on 256 MiB sequential,
@@ -139,6 +144,9 @@ stage_cas-bench() {
 stage_bundle() { cd "$root" && go test -count=1 -run 'TestBundle_|TestCASShardDirs_' .; }
 stage_bundle-life() { cd "$root" && go test -count=1 -run 'TestBundleLife_' .; }
 stage_bundle-scale() { cd "$root" && go test -count=1 -run 'TestBundleScale_' -v .; }
+stage_bundle-delta() { cd "$root" && go test -count=1 -run 'TestBundleDelta_' .; }
+stage_bundle-delta-life() { cd "$root" && go test -count=1 -run 'TestBundleDeltaLife_' -v .; }
+stage_bundle-delta-scale() { cd "$root" && go test -count=1 -run 'TestBundleDeltaScale_' -v .; }
 stage_locality() { cd "$root" && go test -count=1 -run 'TestLocality_|TestPackRun_' .; }
 stage_locality-bench() {
 	build_bin || return 1
@@ -181,7 +189,7 @@ stage_client() { build_bin && cd "$root/testing-harnesses" && go run ./runner -g
 stage_apps() { build_bin && cd "$root/testing-harnesses" && go run ./runner -group apps -bin "$bin"; }
 stage_repro() { cd "$root" && sh scripts/reproducible_build.sh; }
 
-stage_race()    { cd "$root" && go test -race -count=1 ./...; }
+stage_race()    { cd "$root" && go test -race -count=1 -timeout 60m ./...; }
 stage_crash()   { cd "$root" && go test -race -count=1 -run 'TestRepack_|TestPack_|TestPackCompress|TestTier_|TestTierRebalance_' .; }
 stage_index() { cd "$root" && go test -count=1 -race -run 'TestLocator_' .; }
 stage_index-scale() { cd "$root" && ZEROS3_LOCATOR_SCALE="${LOCATOR_SCALE:-5000000}" go test -count=1 -run 'TestLocatorScale' -v .; }
@@ -203,7 +211,7 @@ normal="format modules test static s3 sync repro"
 heavy="race crash repack compact compression index-scale bulk-bench cas-bench history-life tier-life"
 
 case "${1:-normal}" in
-list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk cas-batch bundle bundle-life bundle-scale locality locality-bench history history-life tier tier-policy tier-rebalance tier-life vectors client apps"; exit 0 ;;
+list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk cas-batch bundle bundle-life bundle-scale bundle-delta bundle-delta-life bundle-delta-scale locality locality-bench history history-life tier tier-policy tier-rebalance tier-life vectors client apps"; exit 0 ;;
 normal) stages=$normal ;;
 heavy) stages=$heavy ;;
 all) stages="$normal $heavy" ;;

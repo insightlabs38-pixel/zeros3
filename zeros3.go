@@ -71,38 +71,39 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//     497    Content-defined chunking (CDC)
-//     623    Content-addressed chunk storage (CAS)
-//     1177    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//    2719    Manifests (immutable, JSON)
-//    2818    Visibility journal (append-only, checksummed)
-//    3231    Store: format, namespace, and object CRUD
-//    4057    Version history/restore, history pruning, ListObjectsV2
-//    4530    SigV4 authentication (header and presigned-URL)
-//    5485    Request payload checksums and S3-shaped XML error/response types
-//    5702    HTTP routing and S3 operation handlers
-//    6115    Conditional operations (PUT/GET/HEAD preconditions)
-//    6799    CopyObject
-//    7093    Multipart upload
-//    7919    Stats and reachability scanning
-//    8702    Verify
-//    8878    Store locking and safe offline GC
-//    9135    Offline compaction (`zeros3 compact`)
-//    9764    Pack reclamation and repacking (`zeros3 repack`)
-//    10211    Physical tiers: status and pack movement (`zeros3 tier`)
-//    10723    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//   11787    Streaming object reads (full and ranged GET)
-//   12049    Delta sync client, credentials, and parallel transfer
-//   14035    Bulk logical-chunk transport (v2)
-//   14946    Recursive directory sync
-//   15251    Remote replication (`zeros3 replicate`)
-//   15998    Peer-assisted corruption repair (`zeros3 repair`)
-//   16510    Namespace (prefix/bucket) replication
-//   16817    Copy-on-write namespace fork (`zeros3 fork`)
-//   17025    Snapshots and restore
-//   18186    Structural diff and inspect (introspection)
-//   19462    Portable snapshot bundles (`zeros3 bundle`)
-//   20487    CLI dispatch, HTTP server/startup, and main
+//     498    Content-defined chunking (CDC)
+//     624    Content-addressed chunk storage (CAS)
+//     1178    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
+//    2720    Manifests (immutable, JSON)
+//    2819    Visibility journal (append-only, checksummed)
+//    3232    Store: format, namespace, and object CRUD
+//    4058    Version history/restore, history pruning, ListObjectsV2
+//    4531    SigV4 authentication (header and presigned-URL)
+//    5486    Request payload checksums and S3-shaped XML error/response types
+//    5703    HTTP routing and S3 operation handlers
+//    6116    Conditional operations (PUT/GET/HEAD preconditions)
+//    6800    CopyObject
+//    7094    Multipart upload
+//    7920    Stats and reachability scanning
+//    8703    Verify
+//    8879    Store locking and safe offline GC
+//    9136    Offline compaction (`zeros3 compact`)
+//    9765    Pack reclamation and repacking (`zeros3 repack`)
+//    10212    Physical tiers: status and pack movement (`zeros3 tier`)
+//    10724    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//   11788    Streaming object reads (full and ranged GET)
+//   12050    Delta sync client, credentials, and parallel transfer
+//   14036    Bulk logical-chunk transport (v2)
+//   14947    Recursive directory sync
+//   15252    Remote replication (`zeros3 replicate`)
+//   15999    Peer-assisted corruption repair (`zeros3 repair`)
+//   16511    Namespace (prefix/bucket) replication
+//   16818    Copy-on-write namespace fork (`zeros3 fork`)
+//   17026    Snapshots and restore
+//   18187    Structural diff and inspect (introspection)
+//   19463    Portable snapshot bundles (`zeros3 bundle`)
+//   20623    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//   21258    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -19632,7 +19633,21 @@ type BundleStats struct {
 	StoredPayloadBytes   int64   `json:"stored_payload_bytes"`
 	BundleBytes          int64   `json:"bundle_bytes"`
 	DedupRatio           float64 `json:"dedup_ratio"`       // snapshot logical / unique logical
-	CompressionRatio     float64 `json:"compression_ratio"` // unique logical / stored payload
+	CompressionRatio     float64 `json:"compression_ratio"` // unique logical / stored payload (delta: payload logical / stored)
+
+	// Delta bundles only (zero and omitted for a full bundle). Unique chunks
+	// and bytes above then describe the whole target snapshot.
+	Kind                     string  `json:"kind,omitempty"` // "full" or "delta"
+	BaseSnapshotID           string  `json:"base_snapshot_id,omitempty"`
+	BaseDescriptorSHA256     string  `json:"base_descriptor_sha256,omitempty"`
+	TargetUniqueChunks       int64   `json:"target_unique_chunks,omitempty"`
+	TargetUniqueLogicalBytes int64   `json:"target_unique_logical_bytes,omitempty"`
+	BaseReusedChunks         int64   `json:"base_reused_chunks,omitempty"`
+	BaseReusedLogicalBytes   int64   `json:"base_reused_logical_bytes,omitempty"`
+	PayloadChunks            int64   `json:"payload_chunks,omitempty"`
+	PayloadLogicalBytes      int64   `json:"payload_logical_bytes,omitempty"`
+	BaseReuseRatio           float64 `json:"base_reuse_ratio,omitempty"` // base-reused logical / target unique logical
+	PayloadFraction          float64 `json:"payload_fraction,omitempty"` // payload logical / target unique logical
 }
 
 func (b *BundleStats) finish() {
@@ -19651,7 +19666,7 @@ func bundleDescriptorStats(d snapshotDescriptorV1, nManifests int) BundleStats {
 		logical += e.Size
 	}
 	return BundleStats{
-		FormatVersion: bundleFormatVersion, SnapshotID: d.SnapshotID,
+		Kind: "full", FormatVersion: bundleFormatVersion, SnapshotID: d.SnapshotID,
 		CreatedAt: d.CreatedAt.UTC().Format(time.RFC3339Nano), SourceBucket: d.SourceBucket, SourcePrefix: d.SourcePrefix,
 		Objects: len(d.Entries), Manifests: nManifests, SnapshotLogicalBytes: logical,
 	}
@@ -19673,55 +19688,100 @@ func (b *bundleHashWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// readBundleManifest reads one manifest the snapshot references and fully
+// validates it (identity, schema, chunk bounds, length sum).
+func (s *Store) readBundleManifest(r bundleManifestRef) ([]byte, manifestV1, error) {
+	m, data, err := s.readManifest(r.uuid)
+	if err != nil {
+		return nil, m, fmt.Errorf("%w: %v", errManifestUnavailable, err)
+	}
+	if len(data) > maxBundleManifest {
+		return nil, m, bundleErr("manifest %s of %d bytes is too large for a bundle", r.uuid, len(data))
+	}
+	if _, err := parseBundleManifest(r.uuid, data, r.sha); err != nil {
+		return nil, m, err
+	}
+	return data, m, nil
+}
+
+// bundleSnapshotPlan is the compact export plan of one stored snapshot: its
+// exact descriptor frame, unique manifests (UUID order) and the unique
+// logical chunk set (digest order) its verified manifests require.
+type bundleSnapshotPlan struct {
+	d           snapshotDescriptorV1
+	frame       []byte
+	refs        []bundleManifestRef
+	plan        []bundleChunkDesc
+	occurrences int64
+	uniqueBytes int64
+}
+
+func (s *Store) planBundleSnapshot(id string) (bundleSnapshotPlan, error) {
+	var sp bundleSnapshotPlan
+	var err error
+	if sp.d, sp.frame, err = s.readSnapshotFrame(id); err != nil {
+		return sp, err
+	}
+	if len(sp.frame) > maxBundleDescriptor {
+		return sp, bundleErr("snapshot descriptor of %d bytes is too large for a bundle", len(sp.frame))
+	}
+	if sp.refs, err = bundleManifestRefs(sp.d); err != nil {
+		return sp, err
+	}
+	for _, r := range sp.refs {
+		_, m, err := s.readBundleManifest(r)
+		if err != nil {
+			return sp, err
+		}
+		if sp.plan, err = appendManifestChunks(sp.plan, m); err != nil {
+			return sp, err
+		}
+	}
+	sp.occurrences = int64(len(sp.plan))
+	if sp.plan, err = planBundleChunks(sp.plan); err != nil {
+		return sp, err
+	}
+	for _, c := range sp.plan {
+		sp.uniqueBytes += int64(c.length)
+	}
+	return sp, nil
+}
+
+// writeBundleManifestRecords writes refs' manifest records (UUID order),
+// re-reading and re-validating each manifest. Full and delta bundles share
+// this identical section.
+func (s *Store) writeBundleManifestRecords(w io.Writer, refs []bundleManifestRef) error {
+	for _, r := range refs {
+		data, _, err := s.readBundleManifest(r)
+		if err != nil {
+			return err
+		}
+		rec := make([]byte, bundleManifestHdr)
+		copy(rec, r.uuid)
+		copy(rec[36:], r.sha[:])
+		binary.BigEndian.PutUint32(rec[68:], uint32(len(data)))
+		if _, err := w.Write(rec); err != nil {
+			return err
+		}
+		if _, err := w.Write(data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // exportBundle streams snapshot id as a bundle to w. Planning keeps only
 // compact descriptors; payloads are read, optionally compressed and written
 // one chunk at a time.
 func (s *Store) exportBundle(id string, w io.Writer, compress bool) (BundleStats, error) {
-	d, frame, err := s.readSnapshotFrame(id)
+	sp, err := s.planBundleSnapshot(id)
 	if err != nil {
 		return BundleStats{}, err
 	}
-	if len(frame) > maxBundleDescriptor {
-		return BundleStats{}, bundleErr("snapshot descriptor of %d bytes is too large for a bundle", len(frame))
-	}
-	refs, err := bundleManifestRefs(d)
-	if err != nil {
-		return BundleStats{}, err
-	}
-	var plan []bundleChunkDesc
-	readManifest := func(r bundleManifestRef) ([]byte, manifestV1, error) {
-		m, data, err := s.readManifest(r.uuid)
-		if err != nil {
-			return nil, m, fmt.Errorf("%w: %v", errManifestUnavailable, err)
-		}
-		if len(data) > maxBundleManifest {
-			return nil, m, bundleErr("manifest %s of %d bytes is too large for a bundle", r.uuid, len(data))
-		}
-		if _, err := parseBundleManifest(r.uuid, data, r.sha); err != nil {
-			return nil, m, err
-		}
-		return data, m, nil
-	}
-	for _, r := range refs {
-		_, m, err := readManifest(r)
-		if err != nil {
-			return BundleStats{}, err
-		}
-		if plan, err = appendManifestChunks(plan, m); err != nil {
-			return BundleStats{}, err
-		}
-	}
-	occurrences := int64(len(plan))
-	if plan, err = planBundleChunks(plan); err != nil {
-		return BundleStats{}, err
-	}
-	var uniqueBytes int64
-	for _, c := range plan {
-		uniqueBytes += int64(c.length)
-	}
+	d, frame, refs, plan, uniqueBytes := sp.d, sp.frame, sp.refs, sp.plan, sp.uniqueBytes
 
 	st := bundleDescriptorStats(d, len(refs))
-	st.Status, st.ChunkOccurrences, st.UniqueChunks, st.UniqueLogicalBytes = "exported", occurrences, int64(len(plan)), uniqueBytes
+	st.Status, st.ChunkOccurrences, st.UniqueChunks, st.UniqueLogicalBytes = "exported", sp.occurrences, int64(len(plan)), uniqueBytes
 
 	hw := &bundleHashWriter{w: w, h: sha256.New()}
 	hdr := make([]byte, bundleHeaderSize)
@@ -19737,21 +19797,8 @@ func (s *Store) exportBundle(id string, w io.Writer, compress bool) (BundleStats
 	if _, err := hw.Write(frame); err != nil {
 		return BundleStats{}, err
 	}
-	for _, r := range refs {
-		data, _, err := readManifest(r)
-		if err != nil {
-			return BundleStats{}, err
-		}
-		rec := make([]byte, bundleManifestHdr)
-		copy(rec, r.uuid)
-		copy(rec[36:], r.sha[:])
-		binary.BigEndian.PutUint32(rec[68:], uint32(len(data)))
-		if _, err := hw.Write(rec); err != nil {
-			return BundleStats{}, err
-		}
-		if _, err := hw.Write(data); err != nil {
-			return BundleStats{}, err
-		}
+	if err := s.writeBundleManifestRecords(hw, refs); err != nil {
+		return BundleStats{}, err
 	}
 	comp := newCompressor(compress)
 	for _, c := range plan {
@@ -19814,9 +19861,17 @@ func exportBundleFile(storeDir, snapshotID, out string, compress bool) (BundleSt
 	return store.exportBundleToPath(snapshotID, out, compress)
 }
 
-func (s *Store) exportBundleToPath(snapshotID, out string, compress bool) (st BundleStats, err error) {
+func (s *Store) exportBundleToPath(snapshotID, out string, compress bool) (BundleStats, error) {
+	return writeBundleAtomic(out, ".zs3b-export-*.tmp", func(w io.Writer) (BundleStats, error) {
+		return s.exportBundle(snapshotID, w, compress)
+	})
+}
+
+// writeBundleAtomic streams one artifact into a temp file beside out, fsyncs
+// and renames it, then fsyncs the directory; a failed export leaves no file.
+func writeBundleAtomic(out, tmpPattern string, write func(io.Writer) (BundleStats, error)) (st BundleStats, err error) {
 	dir := filepath.Dir(out)
-	tmp, err := os.CreateTemp(dir, ".zs3b-export-*.tmp")
+	tmp, err := os.CreateTemp(dir, tmpPattern)
 	if err != nil {
 		return BundleStats{}, err
 	}
@@ -19827,7 +19882,7 @@ func (s *Store) exportBundleToPath(snapshotID, out string, compress bool) (st Bu
 		}
 	}()
 	bw := bufio.NewWriterSize(tmp, 1<<20)
-	if st, err = s.exportBundle(snapshotID, bw, compress); err != nil {
+	if st, err = write(bw); err != nil {
 		return BundleStats{}, err
 	}
 	if err = bw.Flush(); err != nil {
@@ -19931,6 +19986,57 @@ type bundleSink struct {
 	chunk      func(sum [32]byte, data []byte) error
 }
 
+// readBundleManifests reads exactly refs' manifest records (in UUID order),
+// verifying each, hands each verified manifest to emit (may be nil) and
+// returns the chunk occurrences they require. Shared by full and delta
+// bundles, whose manifest sections are identical.
+func readBundleManifests(hr io.Reader, refs []bundleManifestRef, emit func(uuid string, data []byte) error) ([]bundleChunkDesc, error) {
+	var plan []bundleChunkDesc
+	rec := make([]byte, bundleManifestHdr)
+	for i, ref := range refs {
+		if err := bundleReadFull(hr, rec, "manifest record"); err != nil {
+			return nil, err
+		}
+		uuid := string(rec[:36])
+		if !validSnapshotUUID(uuid) {
+			return nil, bundleErr("manifest record %d has a malformed UUID", i)
+		}
+		if uuid != ref.uuid {
+			if i > 0 && uuid == refs[i-1].uuid {
+				return nil, bundleErr("duplicate manifest record %s", uuid)
+			}
+			if _, ok := slices.BinarySearchFunc(refs, uuid, func(r bundleManifestRef, id string) int { return strings.Compare(r.uuid, id) }); !ok {
+				return nil, bundleErr("manifest %s is not referenced by the snapshot", uuid)
+			}
+			return nil, bundleErr("manifest %s is out of order or %s is missing", uuid, ref.uuid)
+		}
+		if [32]byte(rec[36:68]) != ref.sha {
+			return nil, bundleErr("manifest %s declares a hash that conflicts with the snapshot", uuid)
+		}
+		n := binary.BigEndian.Uint32(rec[68:])
+		if n == 0 || n > maxBundleManifest {
+			return nil, bundleErr("manifest %s length %d is out of bounds", uuid, n)
+		}
+		data, err := bundleReadN(hr, int(n), "manifest "+uuid)
+		if err != nil {
+			return nil, err
+		}
+		m, err := parseBundleManifest(uuid, data, ref.sha)
+		if err != nil {
+			return nil, err
+		}
+		if plan, err = appendManifestChunks(plan, m); err != nil {
+			return nil, err
+		}
+		if emit != nil {
+			if err := emit(uuid, data); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return plan, nil
+}
+
 // readBundle fully parses and verifies one bundle: header bounds, the
 // snapshot descriptor, exactly the manifests it references (in UUID order),
 // exactly the unique chunks those manifests require (in digest order), every
@@ -19967,48 +20073,9 @@ func readBundle(r io.Reader, sink bundleSink) (BundleStats, error) {
 	}
 	st := bundleDescriptorStats(d, len(refs))
 
-	var plan []bundleChunkDesc
-	rec := make([]byte, bundleManifestHdr)
-	for i, ref := range refs {
-		if err := bundleReadFull(hr, rec, "manifest record"); err != nil {
-			return BundleStats{}, err
-		}
-		uuid := string(rec[:36])
-		if !validSnapshotUUID(uuid) {
-			return BundleStats{}, bundleErr("manifest record %d has a malformed UUID", i)
-		}
-		if uuid != ref.uuid {
-			if i > 0 && uuid == refs[i-1].uuid {
-				return BundleStats{}, bundleErr("duplicate manifest record %s", uuid)
-			}
-			if _, ok := slices.BinarySearchFunc(refs, uuid, func(r bundleManifestRef, id string) int { return strings.Compare(r.uuid, id) }); !ok {
-				return BundleStats{}, bundleErr("manifest %s is not referenced by the snapshot", uuid)
-			}
-			return BundleStats{}, bundleErr("manifest %s is out of order or %s is missing", uuid, ref.uuid)
-		}
-		if [32]byte(rec[36:68]) != ref.sha {
-			return BundleStats{}, bundleErr("manifest %s declares a hash that conflicts with the snapshot", uuid)
-		}
-		n := binary.BigEndian.Uint32(rec[68:])
-		if n == 0 || n > maxBundleManifest {
-			return BundleStats{}, bundleErr("manifest %s length %d is out of bounds", uuid, n)
-		}
-		data, err := bundleReadN(hr, int(n), "manifest "+uuid)
-		if err != nil {
-			return BundleStats{}, err
-		}
-		m, err := parseBundleManifest(uuid, data, ref.sha)
-		if err != nil {
-			return BundleStats{}, err
-		}
-		if plan, err = appendManifestChunks(plan, m); err != nil {
-			return BundleStats{}, err
-		}
-		if sink.manifest != nil {
-			if err := sink.manifest(uuid, data); err != nil {
-				return BundleStats{}, err
-			}
-		}
+	plan, err := readBundleManifests(hr, refs, sink.manifest)
+	if err != nil {
+		return BundleStats{}, err
 	}
 	st.ChunkOccurrences = int64(len(plan))
 	if plan, err = planBundleChunks(plan); err != nil {
@@ -20175,123 +20242,154 @@ type BundleImportResult struct {
 	SnapshotReused    bool   `json:"snapshot_reused"`
 	LogicalBytes      int64  `json:"logical_bytes"`
 	PayloadBytesRead  int64  `json:"payload_bytes_read"`
+
+	// Delta imports only: the declared base and the base-referenced chunks
+	// that were verified readable (they are never imported).
+	BaseSnapshotID string `json:"base_snapshot_id,omitempty"`
+	BaseRefChunks  int64  `json:"base_ref_chunks,omitempty"`
+	BaseRefBytes   int64  `json:"base_ref_bytes,omitempty"`
 }
 
 type stagedManifest struct{ uuid, tmp string }
 
-// importBundle imports one bundle into a store the caller owns exclusively.
-func (s *Store) importBundle(r io.Reader) (res BundleImportResult, err error) {
-	var (
-		frame     []byte
-		haveSnap  bool
-		staged    []stagedManifest
-		batch     = s.newCASBatch()
-		committed bool
-	)
-	defer func() {
-		if !committed {
-			batch.Abort()
+// bundleImporter is the one import path shared by full and delta bundles: it
+// receives verified descriptor/manifest/chunk content from the parser, stages
+// manifests, groups chunks through casBatch and, in publish, makes the target
+// durable with the snapshot descriptor strictly last.
+type bundleImporter struct {
+	s         *Store
+	res       BundleImportResult
+	frame     []byte
+	haveSnap  bool
+	staged    []stagedManifest
+	batch     *casBatch
+	committed bool
+}
+
+func (s *Store) newBundleImporter() *bundleImporter {
+	return &bundleImporter{s: s, batch: s.newCASBatch()}
+}
+
+// close discards uncommitted batch state and unpublished staged manifests.
+func (im *bundleImporter) close() {
+	if !im.committed {
+		im.batch.Abort()
+	}
+	for _, m := range im.staged {
+		if m.tmp != "" {
+			os.Remove(m.tmp)
 		}
-		for _, m := range staged {
-			if m.tmp != "" {
-				os.Remove(m.tmp)
-			}
+	}
+}
+
+func (im *bundleImporter) descriptor(d snapshotDescriptorV1, f []byte) error {
+	im.frame = append([]byte(nil), f...)
+	im.res.SnapshotID, im.res.Objects = d.SnapshotID, len(d.Entries)
+	existing, rerr := os.ReadFile(im.s.snapshotPath(d.SnapshotID))
+	switch {
+	case rerr == nil && bytes.Equal(existing, f):
+		im.haveSnap = true
+	case rerr == nil:
+		return fmt.Errorf("bundle import: snapshot %s already exists with a different descriptor", d.SnapshotID)
+	case !os.IsNotExist(rerr):
+		return rerr
+	}
+	return nil
+}
+
+func (im *bundleImporter) manifest(uuid string, data []byte) error {
+	path := filepath.Join(im.s.root, "manifests", uuid+".json")
+	existing, rerr := os.ReadFile(path)
+	switch {
+	case rerr == nil:
+		if sha256.Sum256(existing) != sha256.Sum256(data) {
+			return fmt.Errorf("bundle import: manifest %s already exists with different content (identity collision)", uuid)
 		}
-	}()
-	sink := bundleSink{
-		descriptor: func(d snapshotDescriptorV1, f []byte) error {
-			frame = append([]byte(nil), f...)
-			res.SnapshotID, res.Objects = d.SnapshotID, len(d.Entries)
-			existing, rerr := os.ReadFile(s.snapshotPath(d.SnapshotID))
-			switch {
-			case rerr == nil && bytes.Equal(existing, f):
-				haveSnap = true
-			case rerr == nil:
-				return fmt.Errorf("bundle import: snapshot %s already exists with a different descriptor", d.SnapshotID)
-			case !os.IsNotExist(rerr):
-				return rerr
-			}
-			return nil
-		},
-		manifest: func(uuid string, data []byte) error {
-			path := filepath.Join(s.root, "manifests", uuid+".json")
-			existing, rerr := os.ReadFile(path)
-			switch {
-			case rerr == nil:
-				if sha256.Sum256(existing) != sha256.Sum256(data) {
-					return fmt.Errorf("bundle import: manifest %s already exists with different content (identity collision)", uuid)
-				}
-				res.ManifestsReused++
-				return nil
-			case !os.IsNotExist(rerr):
-				return rerr
-			}
-			tmp, serr := s.casStage(data)
-			if serr != nil {
-				return serr
-			}
-			staged = append(staged, stagedManifest{uuid: uuid, tmp: tmp})
-			return nil
-		},
-		chunk: func(sum [32]byte, data []byte) error {
-			res.LogicalBytes += int64(len(data))
-			if _, serr := s.casStat(sum); serr == nil {
-				if _, rerr := s.casRead(sum); rerr == nil {
-					res.ChunksReused++
-				} else {
-					// Every existing copy is corrupt: add a verified loose copy.
-					if perr := s.casRepairPublish(sum, data); perr != nil {
-						return perr
-					}
-					if _, rerr := s.casRead(sum); rerr != nil {
-						return fmt.Errorf("bundle import: chunk %x is still unreadable after repair: %w", sum, rerr)
-					}
-					res.ChunksRepaired++
-				}
-			} else if !os.IsNotExist(serr) {
-				return serr
-			} else {
-				if _, aerr := batch.add(sum, data); aerr != nil {
-					return aerr
-				}
-				res.ChunksImported++
-			}
-			fireTestHook(hookBundleChunk)
-			return nil
-		},
+		im.res.ManifestsReused++
+		return nil
+	case !os.IsNotExist(rerr):
+		return rerr
 	}
-	st, err := readBundle(r, sink)
-	if err != nil {
-		return res, err
+	tmp, serr := im.s.casStage(data)
+	if serr != nil {
+		return serr
 	}
-	res.PayloadBytesRead = st.StoredPayloadBytes
-	if err = batch.Flush(); err != nil {
-		return res, err
+	im.staged = append(im.staged, stagedManifest{uuid: uuid, tmp: tmp})
+	return nil
+}
+
+func (im *bundleImporter) chunk(sum [32]byte, data []byte) error {
+	s := im.s
+	im.res.LogicalBytes += int64(len(data))
+	if _, serr := s.casStat(sum); serr == nil {
+		if _, rerr := s.casRead(sum); rerr == nil {
+			im.res.ChunksReused++
+		} else {
+			// Every existing copy is corrupt: add a verified loose copy.
+			if perr := s.casRepairPublish(sum, data); perr != nil {
+				return perr
+			}
+			if _, rerr := s.casRead(sum); rerr != nil {
+				return fmt.Errorf("bundle import: chunk %x is still unreadable after repair: %w", sum, rerr)
+			}
+			im.res.ChunksRepaired++
+		}
+	} else if !os.IsNotExist(serr) {
+		return serr
+	} else {
+		if _, aerr := im.batch.add(sum, data); aerr != nil {
+			return aerr
+		}
+		im.res.ChunksImported++
 	}
-	committed = true
+	fireTestHook(hookBundleChunk)
+	return nil
+}
+
+// publish runs after the whole stream verified: chunks, then manifests, then
+// -- last and atomically -- the snapshot descriptor.
+func (im *bundleImporter) publish() (BundleImportResult, error) {
+	s, res := im.s, &im.res
+	if err := im.batch.Flush(); err != nil {
+		return *res, err
+	}
+	im.committed = true
 	fireTestHook(hookBundleChunksDone)
 
-	if err = s.commitStagedManifests(staged); err != nil {
-		return res, err
+	if err := s.commitStagedManifests(im.staged); err != nil {
+		return *res, err
 	}
-	res.ManifestsImported = len(staged)
+	res.ManifestsImported = len(im.staged)
 	fireTestHook(hookBundleManifestsDone)
 
 	fireTestHook(hookBundleBeforeSnapshot)
 	s.snapshotMu.Lock()
 	defer s.snapshotMu.Unlock()
-	if haveSnap {
+	if im.haveSnap {
 		res.SnapshotReused = true
 	} else {
 		if _, serr := os.Stat(s.snapshotPath(res.SnapshotID)); serr == nil {
-			return res, fmt.Errorf("bundle import: snapshot %s appeared during import", res.SnapshotID)
+			return *res, fmt.Errorf("bundle import: snapshot %s appeared during import", res.SnapshotID)
 		}
-		if err = s.publishSnapshotFrame(res.SnapshotID, frame); err != nil {
-			return res, err
+		if err := s.publishSnapshotFrame(res.SnapshotID, im.frame); err != nil {
+			return *res, err
 		}
 	}
 	fireTestHook(hookBundleSnapshotPublished)
-	return res, nil
+	return *res, nil
+}
+
+// importBundle imports one full bundle into a store the caller owns
+// exclusively.
+func (s *Store) importBundle(r io.Reader) (BundleImportResult, error) {
+	im := s.newBundleImporter()
+	defer im.close()
+	st, err := readBundle(r, bundleSink{descriptor: im.descriptor, manifest: im.manifest, chunk: im.chunk})
+	if err != nil {
+		return im.res, err
+	}
+	im.res.PayloadBytesRead = st.StoredPayloadBytes
+	return im.publish()
 }
 
 // commitStagedManifests makes verified staged manifests durable and publishes
@@ -20339,6 +20437,9 @@ func importBundleFile(storeDir, path string) (BundleImportResult, error) {
 		return BundleImportResult{}, err
 	}
 	defer store.Close()
+	if bundleKind(path) == "delta" {
+		return store.importDeltaBundle(f)
+	}
 	return store.importBundle(f)
 }
 
@@ -20393,13 +20494,17 @@ func runBundleExport(args []string) {
 	fs := flag.NewFlagSet("bundle export", flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	snapshot := fs.String("snapshot", "", "ID of an existing snapshot to export")
-	out := fs.String("out", "", "output bundle file (.zs3b), written atomically")
+	baseSnapshot := fs.String("base-snapshot", "", "export a delta bundle (.zs3d) carrying only chunks this base snapshot (same store) does not hold; omit for a self-contained full bundle (.zs3b)")
+	out := fs.String("out", "", "output bundle file (.zs3b full, .zs3d delta), written atomically")
 	compression := fs.String("compression", "auto", "chunk record compression: auto (DEFLATE when it saves space) or off (raw records)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	fs.Parse(args)
 	compress, err := parseCompressionFlag(*compression)
 	if err == nil && !validSnapshotID(*snapshot) {
 		err = fmt.Errorf("-snapshot must be a snapshot ID, not %q", *snapshot)
+	}
+	if err == nil && *baseSnapshot != "" && !validSnapshotID(*baseSnapshot) {
+		err = fmt.Errorf("-base-snapshot must be a snapshot ID, not %q", *baseSnapshot)
 	}
 	if err == nil && *out == "" {
 		err = errors.New("-out is required")
@@ -20408,7 +20513,12 @@ func runBundleExport(args []string) {
 		fmt.Fprintf(os.Stderr, "zeros3: bundle export: %v\n", err)
 		os.Exit(2)
 	}
-	st, err := exportBundleFile(*storeDir, *snapshot, *out, compress)
+	var st BundleStats
+	if *baseSnapshot != "" {
+		st, err = exportDeltaFile(*storeDir, *baseSnapshot, *snapshot, *out, compress)
+	} else {
+		st, err = exportBundleFile(*storeDir, *snapshot, *out, compress)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: bundle export failed: %v\n", err)
 		os.Exit(1)
@@ -20417,13 +20527,17 @@ func runBundleExport(args []string) {
 		printBundleJSON(st)
 		return
 	}
+	if st.Kind == "delta" {
+		printDeltaStats(os.Stdout, st)
+		return
+	}
 	printBundleStats(os.Stdout, st)
 }
 
 func runBundleImport(args []string) {
 	fs := flag.NewFlagSet("bundle import", flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
-	in := fs.String("in", "", "bundle file (.zs3b) to import")
+	in := fs.String("in", "", "bundle file to import (.zs3b full or .zs3d delta, detected by magic; a delta needs its base snapshot already in the store)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	fs.Parse(args)
 	if *in == "" {
@@ -20444,6 +20558,9 @@ func runBundleImport(args []string) {
 		return
 	}
 	fmt.Printf("imported snapshot %s (%d objects)\n", res.SnapshotID, res.Objects)
+	if res.BaseSnapshotID != "" {
+		fmt.Printf("base            %s (%d chunks, %s verified readable, not imported)\n", res.BaseSnapshotID, res.BaseRefChunks, mib(res.BaseRefBytes))
+	}
 	fmt.Printf("manifests       %d imported, %d reused\n", res.ManifestsImported, res.ManifestsReused)
 	fmt.Printf("chunks          %d imported, %d reused, %d repaired\n", res.ChunksImported, res.ChunksReused, res.ChunksRepaired)
 	fmt.Printf("bytes           %s logical, %s payload read\n", mib(res.LogicalBytes), mib(res.PayloadBytesRead))
@@ -20454,19 +20571,30 @@ func runBundleImport(args []string) {
 
 func runBundleInspect(args []string) {
 	fs := flag.NewFlagSet("bundle inspect", flag.ExitOnError)
-	in := fs.String("in", "", "bundle file (.zs3b) to inspect")
+	in := fs.String("in", "", "bundle file (.zs3b full or .zs3d delta, detected by magic) to inspect")
 	verify := fs.Bool("verify", false, "stream the whole bundle and verify every hash, record and the footer")
+	baseStore := fs.String("base-store", "", "delta bundles only: store holding the declared base snapshot; required with -verify")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	fs.Parse(args)
 	if *in == "" {
 		fmt.Fprintln(os.Stderr, "zeros3: bundle inspect: -in is required")
 		os.Exit(2)
 	}
+	delta := bundleKind(*in) == "delta"
+	if delta && *verify && *baseStore == "" {
+		fmt.Fprintln(os.Stderr, "zeros3: bundle inspect: -verify of a delta bundle requires -base-store DIR: a delta omits every payload its base snapshot already holds, so it can only be verified against that exact base")
+		os.Exit(2)
+	}
 	var st BundleStats
 	var err error
-	if *verify {
+	switch {
+	case delta && *verify:
+		st, err = verifyDeltaFile(*in, *baseStore)
+	case delta:
+		st, err = inspectDeltaHeader(*in)
+	case *verify:
 		st, err = verifyBundleFile(*in)
-	} else {
+	default:
 		st, err = inspectBundleHeader(*in)
 	}
 	if err != nil {
@@ -20477,10 +20605,653 @@ func runBundleInspect(args []string) {
 		printBundleJSON(st)
 		return
 	}
-	printBundleStats(os.Stdout, st)
-	if !*verify {
-		fmt.Println("note            header and descriptor parsed only; run with -verify to verify the content")
+	if delta {
+		printDeltaStats(os.Stdout, st)
+	} else {
+		printBundleStats(os.Stdout, st)
 	}
+	if !*verify {
+		if delta {
+			fmt.Println("note            header, descriptor and footer parsed only; run with -verify -base-store DIR to verify against the declared base")
+		} else {
+			fmt.Println("note            header and descriptor parsed only; run with -verify to verify the content")
+		}
+	}
+}
+
+// =============================================================================
+// 16c. Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//
+// A .zs3d delta bundle (ZeroS3 delta bundle format v1, BUNDLE_FORMAT.md) is
+// the dependent companion of the self-contained .zs3b: it carries ONE target
+// snapshot MINUS the chunk payloads its exact base snapshot already holds.
+//
+//	target unique chunks T, base unique chunks B (logical SHA-256 + length)
+//	payload set        = T - B   (raw / DEFLATE records, as in a full bundle)
+//	base-reference set = T ∩ B   (codec 2: logical length only, no payload)
+//
+// All target metadata is always carried (descriptor frame, every manifest,
+// one record per target chunk), so the artifact describes the whole target
+// by itself and only payload bytes are elided. The header names the base by
+// snapshot ID AND the SHA-256 of its exact stored descriptor frame; a base
+// reference is valid only for a chunk that belongs to that base snapshot's
+// verified manifests -- never for whatever the destination CAS happens to
+// hold. Import resolves (and verifies) the base before reading any payload,
+// verifies that every base-referenced chunk is readable through casRead, and
+// then reuses the full-bundle importer unchanged: casBatch for payloads,
+// exact-UUID manifests, descriptor last. The imported target is an ordinary
+// independent snapshot and may be the base of the next delta.
+//
+// A delta cannot repair a damaged base chunk: it deliberately holds no
+// payload for it, so such an import fails and publishes nothing. Planning
+// merges two compact sorted (36-byte) inventories in O(B+T); no per-chunk
+// map is built. Full bundle v1 is untouched: separate magic, footer and
+// extension.
+// =============================================================================
+
+const (
+	deltaMagic         = "ZS3DLTA1"
+	deltaFooterMagic   = "ZS3DEND1"
+	deltaFormatVersion = 1
+	deltaHeaderSize    = 120 // magic 8, version 2, flags 2, desc len 4, manifests 4, target chunks 8, target bytes 8, payload chunks 8, payload bytes 8, base ID 36, base descriptor sha256 32
+	deltaFooterSize    = 40  // magic 8, stored bytes 8, raw records 8, deflate records 8, base-ref records 8 (then sha256 32)
+
+	deltaCodecBaseRef = 2
+)
+
+// deltaHeader is the parsed fixed header of a delta bundle.
+type deltaHeader struct {
+	descLen, manifests  uint32
+	chunks, uniqueBytes uint64
+	payloadChunks       uint64
+	payloadBytes        uint64
+	baseID              string
+	baseSHA             [32]byte
+}
+
+func parseDeltaHeader(hdr []byte) (deltaHeader, error) {
+	var h deltaHeader
+	if string(hdr[:8]) != deltaMagic {
+		return h, bundleErr("bad delta magic")
+	}
+	if v := binary.BigEndian.Uint16(hdr[8:]); v != deltaFormatVersion {
+		return h, bundleErr("unsupported delta bundle format version %d (this build supports %d)", v, deltaFormatVersion)
+	}
+	if f := binary.BigEndian.Uint16(hdr[10:]); f != 0 {
+		return h, bundleErr("unsupported delta flags %#x", f)
+	}
+	h.descLen = binary.BigEndian.Uint32(hdr[12:])
+	h.manifests = binary.BigEndian.Uint32(hdr[16:])
+	h.chunks = binary.BigEndian.Uint64(hdr[20:])
+	h.uniqueBytes = binary.BigEndian.Uint64(hdr[28:])
+	h.payloadChunks = binary.BigEndian.Uint64(hdr[36:])
+	h.payloadBytes = binary.BigEndian.Uint64(hdr[44:])
+	h.baseID = string(hdr[52:88])
+	copy(h.baseSHA[:], hdr[88:120])
+	if !validSnapshotID(h.baseID) {
+		return h, bundleErr("base snapshot ID %q is malformed", h.baseID)
+	}
+	if h.descLen < snapshotHeaderSize+4 || h.descLen > maxBundleDescriptor {
+		return h, bundleErr("snapshot descriptor length %d is out of bounds", h.descLen)
+	}
+	if h.manifests > maxBundleManifests {
+		return h, bundleErr("manifest count %d exceeds max %d", h.manifests, maxBundleManifests)
+	}
+	if h.chunks > maxBundleChunkOccurrences || h.uniqueBytes > h.chunks*cdcMaxChunkSize || h.uniqueBytes < h.chunks {
+		return h, bundleErr("target chunk count %d / byte total %d is impossible", h.chunks, h.uniqueBytes)
+	}
+	if h.payloadChunks > h.chunks || h.payloadBytes > h.uniqueBytes || h.payloadBytes > h.payloadChunks*cdcMaxChunkSize || h.payloadBytes < h.payloadChunks {
+		return h, bundleErr("payload chunk count %d / byte total %d is impossible", h.payloadChunks, h.payloadBytes)
+	}
+	return h, nil
+}
+
+// checkDeltaLengths is the per-codec length rule of a delta record: the pack
+// rule for raw/DEFLATE plus codec 2 (base reference), which stores nothing.
+func checkDeltaLengths(codec byte, stored, logical uint32) error {
+	if codec == deltaCodecBaseRef {
+		if stored != 0 || logical == 0 || logical > maxPackedChunkBytes {
+			return fmt.Errorf("invalid lengths for base reference (logical %d, stored %d)", logical, stored)
+		}
+		return nil
+	}
+	return checkPackLengths(codec, stored, logical)
+}
+
+// deltaClassify walks the target's sorted unique inventory against the base's
+// in one linear merge and reports, per target chunk, whether the base holds
+// it. A digest recorded with two different lengths is rejected.
+func deltaClassify(target, base []bundleChunkDesc, fn func(c bundleChunkDesc, inBase bool) error) error {
+	j := 0
+	for _, c := range target {
+		for j < len(base) && bytes.Compare(base[j].sha[:], c.sha[:]) < 0 {
+			j++
+		}
+		in := j < len(base) && base[j].sha == c.sha
+		if in && base[j].length != c.length {
+			return bundleErr("chunk %x has length %d in the target but %d in the base snapshot", c.sha, c.length, base[j].length)
+		}
+		if err := fn(c, in); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deltaCounts is the classification summary of one target against one base.
+type deltaCounts struct {
+	payloadChunks, payloadBytes int64
+	refChunks, refBytes         int64
+}
+
+func deltaCount(target, base []bundleChunkDesc) (deltaCounts, error) {
+	var n deltaCounts
+	err := deltaClassify(target, base, func(c bundleChunkDesc, in bool) error {
+		if in {
+			n.refChunks++
+			n.refBytes += int64(c.length)
+		} else {
+			n.payloadChunks++
+			n.payloadBytes += int64(c.length)
+		}
+		return nil
+	})
+	return n, err
+}
+
+// finishDelta fills the derived delta ratios. Stats keep the full-bundle
+// meaning for unique chunks/bytes (here: the whole target).
+func (b *BundleStats) finishDelta() {
+	b.Kind = "delta"
+	b.TargetUniqueChunks, b.TargetUniqueLogicalBytes = b.UniqueChunks, b.UniqueLogicalBytes
+	b.DedupedBytes = b.SnapshotLogicalBytes - b.UniqueLogicalBytes
+	if b.UniqueLogicalBytes > 0 {
+		b.DedupRatio = float64(b.SnapshotLogicalBytes) / float64(b.UniqueLogicalBytes)
+		b.BaseReuseRatio = float64(b.BaseReusedLogicalBytes) / float64(b.UniqueLogicalBytes)
+		b.PayloadFraction = float64(b.PayloadLogicalBytes) / float64(b.UniqueLogicalBytes)
+	}
+	if b.StoredPayloadBytes > 0 {
+		b.CompressionRatio = float64(b.PayloadLogicalBytes) / float64(b.StoredPayloadBytes)
+	}
+}
+
+// resolveDeltaBase locates the exact base snapshot a delta declares in this
+// store and returns its verified unique chunk inventory. The stored
+// descriptor frame must hash to the header's value and every base manifest
+// is read and validated exactly as a full-bundle export would.
+func (s *Store) resolveDeltaBase(h deltaHeader) ([]bundleChunkDesc, error) {
+	_, frame, err := s.readSnapshotFrame(h.baseID)
+	if err != nil {
+		return nil, fmt.Errorf("delta bundle requires base snapshot %s: %w", h.baseID, err)
+	}
+	if sha256.Sum256(frame) != h.baseSHA {
+		return nil, bundleErr("base snapshot %s is stored with a different descriptor than the delta was built against", h.baseID)
+	}
+	sp, err := s.planBundleSnapshot(h.baseID)
+	if err != nil {
+		return nil, fmt.Errorf("delta base snapshot %s: %w", h.baseID, err)
+	}
+	if sha256.Sum256(sp.frame) != h.baseSHA {
+		return nil, bundleErr("base snapshot %s changed while it was being resolved", h.baseID)
+	}
+	return sp.plan, nil
+}
+
+// checkBaseRef proves a base-referenced chunk is really readable: casRead
+// verifies the digest of whichever copy it serves, so a locator entry whose
+// every physical copy is missing or corrupt fails here.
+func (s *Store) checkBaseRef(sum [32]byte, length uint32) error {
+	data, err := s.casRead(sum)
+	if err != nil {
+		return fmt.Errorf("base chunk %x is declared by the base snapshot but unreadable (a delta carries no payload to repair it): %w", sum, err)
+	}
+	if len(data) != int(length) {
+		return bundleErr("base chunk %x is %d bytes in the store but %d in the delta", sum, len(data), length)
+	}
+	return nil
+}
+
+// ---- export -----------------------------------------------------------------
+
+// exportDelta streams target as a delta against base to w. Both inventories
+// are compact sorted slices; only payload chunks are read from the CAS.
+func (s *Store) exportDelta(baseID, targetID string, w io.Writer, compress bool) (BundleStats, error) {
+	tp, err := s.planBundleSnapshot(targetID)
+	if err != nil {
+		return BundleStats{}, err
+	}
+	bp := tp
+	if baseID != targetID {
+		if bp, err = s.planBundleSnapshot(baseID); err != nil {
+			return BundleStats{}, fmt.Errorf("base snapshot %s: %w", baseID, err)
+		}
+	}
+	baseSHA := sha256.Sum256(bp.frame)
+	cnt, err := deltaCount(tp.plan, bp.plan)
+	if err != nil {
+		return BundleStats{}, err
+	}
+
+	st := bundleDescriptorStats(tp.d, len(tp.refs))
+	st.Status, st.ChunkOccurrences, st.UniqueChunks, st.UniqueLogicalBytes = "exported", tp.occurrences, int64(len(tp.plan)), tp.uniqueBytes
+	st.BaseSnapshotID, st.BaseDescriptorSHA256 = baseID, hex.EncodeToString(baseSHA[:])
+	st.BaseReusedChunks, st.BaseReusedLogicalBytes = cnt.refChunks, cnt.refBytes
+	st.PayloadChunks, st.PayloadLogicalBytes = cnt.payloadChunks, cnt.payloadBytes
+
+	hw := &bundleHashWriter{w: w, h: sha256.New()}
+	hdr := make([]byte, deltaHeaderSize)
+	copy(hdr, deltaMagic)
+	binary.BigEndian.PutUint16(hdr[8:], deltaFormatVersion)
+	binary.BigEndian.PutUint32(hdr[12:], uint32(len(tp.frame)))
+	binary.BigEndian.PutUint32(hdr[16:], uint32(len(tp.refs)))
+	binary.BigEndian.PutUint64(hdr[20:], uint64(len(tp.plan)))
+	binary.BigEndian.PutUint64(hdr[28:], uint64(tp.uniqueBytes))
+	binary.BigEndian.PutUint64(hdr[36:], uint64(cnt.payloadChunks))
+	binary.BigEndian.PutUint64(hdr[44:], uint64(cnt.payloadBytes))
+	copy(hdr[52:], baseID)
+	copy(hdr[88:], baseSHA[:])
+	if _, err := hw.Write(hdr); err != nil {
+		return BundleStats{}, err
+	}
+	if _, err := hw.Write(tp.frame); err != nil {
+		return BundleStats{}, err
+	}
+	if err := s.writeBundleManifestRecords(hw, tp.refs); err != nil {
+		return BundleStats{}, err
+	}
+	comp := newCompressor(compress)
+	rec := make([]byte, bundleChunkHdr)
+	err = deltaClassify(tp.plan, bp.plan, func(c bundleChunkDesc, inBase bool) error {
+		copy(rec, c.sha[:])
+		binary.BigEndian.PutUint32(rec[32:], c.length)
+		if inBase {
+			binary.BigEndian.PutUint32(rec[36:], 0)
+			rec[40] = deltaCodecBaseRef
+			_, err := hw.Write(rec)
+			return err
+		}
+		data, err := s.casRead(c.sha)
+		if err != nil {
+			return fmt.Errorf("delta export: chunk %x: %w", c.sha, err)
+		}
+		if len(data) != int(c.length) {
+			return bundleErr("chunk %x is %d bytes in the store but %d in its manifest", c.sha, len(data), c.length)
+		}
+		payload, codec := comp.encode(data)
+		binary.BigEndian.PutUint32(rec[36:], uint32(len(payload)))
+		rec[40] = codec
+		if _, err := hw.Write(rec); err != nil {
+			return err
+		}
+		if _, err := hw.Write(payload); err != nil {
+			return err
+		}
+		st.StoredPayloadBytes += int64(len(payload))
+		if codec == bundleCodecDeflate {
+			st.CompressedRecords++
+		} else {
+			st.RawRecords++
+		}
+		return nil
+	})
+	if err != nil {
+		return BundleStats{}, err
+	}
+	foot := make([]byte, deltaFooterSize)
+	copy(foot, deltaFooterMagic)
+	binary.BigEndian.PutUint64(foot[8:], uint64(st.StoredPayloadBytes))
+	binary.BigEndian.PutUint64(foot[16:], uint64(st.RawRecords))
+	binary.BigEndian.PutUint64(foot[24:], uint64(st.CompressedRecords))
+	binary.BigEndian.PutUint64(foot[32:], uint64(cnt.refChunks))
+	if _, err := hw.Write(foot); err != nil {
+		return BundleStats{}, err
+	}
+	if _, err := w.Write(hw.h.Sum(nil)); err != nil {
+		return BundleStats{}, err
+	}
+	st.BundleBytes = hw.n + sha256.Size
+	st.finishDelta()
+	return st, nil
+}
+
+// exportDeltaFile writes the delta atomically (temp file, fsync, rename)
+// under a shared store lock; nothing in the store is modified.
+func exportDeltaFile(storeDir, baseID, targetID, out string, compress bool) (BundleStats, error) {
+	lock, err := acquireStoreLock(storeDir, false)
+	if err != nil {
+		return BundleStats{}, err
+	}
+	defer lock.release()
+	store, err := OpenStore(storeDir)
+	if err != nil {
+		return BundleStats{}, err
+	}
+	defer store.Close()
+	return writeBundleAtomic(out, ".zs3d-export-*.tmp", func(w io.Writer) (BundleStats, error) {
+		return store.exportDelta(baseID, targetID, w, compress)
+	})
+}
+
+// ---- streaming parser / verifier ---------------------------------------------
+
+// deltaSink receives verified delta content. payload chunks arrive through
+// chunk (as in a full bundle); base-referenced chunks only through baseRef.
+// Slices are valid only during the call; any callback may be nil.
+type deltaSink struct {
+	descriptor func(d snapshotDescriptorV1, frame []byte) error
+	manifest   func(uuid string, data []byte) error
+	chunk      func(sum [32]byte, data []byte) error
+	baseRef    func(sum [32]byte, length uint32) error
+}
+
+// readDeltaBundle fully parses and verifies one delta bundle against its
+// declared base. resolve is called right after the header parses -- before
+// any payload is read -- and must return the exact base snapshot's verified
+// unique chunk inventory (digest order) or fail. Every base-reference record
+// must be a member of that inventory with the same length, and every chunk
+// the base holds must be a base reference. A delta cannot be verified
+// without its base, so there is no resolver-less mode.
+func readDeltaBundle(r io.Reader, resolve func(deltaHeader) ([]bundleChunkDesc, error), sink deltaSink) (BundleStats, error) {
+	hr := &bundleHashReader{r: bufio.NewReaderSize(r, 1<<20), h: sha256.New()}
+	hdrBytes := make([]byte, deltaHeaderSize)
+	if err := bundleReadFull(hr, hdrBytes, "delta header"); err != nil {
+		return BundleStats{}, err
+	}
+	hdr, err := parseDeltaHeader(hdrBytes)
+	if err != nil {
+		return BundleStats{}, err
+	}
+	base, err := resolve(hdr)
+	if err != nil {
+		return BundleStats{}, err
+	}
+	frame, err := bundleReadN(hr, int(hdr.descLen), "snapshot descriptor")
+	if err != nil {
+		return BundleStats{}, err
+	}
+	d, err := decodeSnapshotDescriptor(frame)
+	if err != nil {
+		return BundleStats{}, bundleErr("snapshot descriptor: %v", err)
+	}
+	refs, err := bundleManifestRefs(d)
+	if err != nil {
+		return BundleStats{}, err
+	}
+	if uint64(len(refs)) != uint64(hdr.manifests) {
+		return BundleStats{}, bundleErr("header declares %d manifests but the snapshot references %d", hdr.manifests, len(refs))
+	}
+	if sink.descriptor != nil {
+		if err := sink.descriptor(d, frame); err != nil {
+			return BundleStats{}, err
+		}
+	}
+	st := bundleDescriptorStats(d, len(refs))
+	st.BaseSnapshotID, st.BaseDescriptorSHA256 = hdr.baseID, hex.EncodeToString(hdr.baseSHA[:])
+
+	plan, err := readBundleManifests(hr, refs, sink.manifest)
+	if err != nil {
+		return BundleStats{}, err
+	}
+	st.ChunkOccurrences = int64(len(plan))
+	if plan, err = planBundleChunks(plan); err != nil {
+		return BundleStats{}, err
+	}
+	var uniqueBytes int64
+	for _, c := range plan {
+		uniqueBytes += int64(c.length)
+	}
+	if uint64(len(plan)) != hdr.chunks {
+		return BundleStats{}, bundleErr("header declares %d target chunks but the manifests require %d", hdr.chunks, len(plan))
+	}
+	if uint64(uniqueBytes) != hdr.uniqueBytes {
+		return BundleStats{}, bundleErr("header declares %d target chunk bytes but the manifests require %d", hdr.uniqueBytes, uniqueBytes)
+	}
+	st.UniqueChunks, st.UniqueLogicalBytes = int64(len(plan)), uniqueBytes
+
+	crec := make([]byte, bundleChunkHdr)
+	payload := make([]byte, cdcMaxChunkSize)
+	decoded := make([]byte, cdcMaxChunkSize)
+	j := 0
+	for i, want := range plan {
+		if err := bundleReadFull(hr, crec, "chunk record"); err != nil {
+			return BundleStats{}, err
+		}
+		sum := [32]byte(crec[:32])
+		if sum != want.sha {
+			if i > 0 && sum == plan[i-1].sha {
+				return BundleStats{}, bundleErr("duplicate chunk record %x", sum)
+			}
+			if _, ok := slices.BinarySearchFunc(plan, sum, func(c bundleChunkDesc, s [32]byte) int { return bytes.Compare(c.sha[:], s[:]) }); !ok {
+				return BundleStats{}, bundleErr("chunk %x is not required by any manifest", sum)
+			}
+			return BundleStats{}, bundleErr("chunk record %x is out of order or %x is missing", sum, want.sha)
+		}
+		logical := binary.BigEndian.Uint32(crec[32:])
+		stored := binary.BigEndian.Uint32(crec[36:])
+		codec := crec[40]
+		if logical != want.length {
+			return BundleStats{}, bundleErr("chunk %x declares length %d but its manifests record %d", sum, logical, want.length)
+		}
+		if err := checkDeltaLengths(codec, stored, logical); err != nil {
+			return BundleStats{}, bundleErr("chunk %x: %v", sum, err)
+		}
+		for j < len(base) && bytes.Compare(base[j].sha[:], sum[:]) < 0 {
+			j++
+		}
+		inBase := j < len(base) && base[j].sha == sum
+		if inBase && base[j].length != logical {
+			return BundleStats{}, bundleErr("chunk %x has length %d in the delta but %d in the base snapshot", sum, logical, base[j].length)
+		}
+		if codec == deltaCodecBaseRef {
+			if !inBase {
+				return BundleStats{}, bundleErr("chunk %x is a base reference but the base snapshot does not hold it", sum)
+			}
+			st.BaseReusedChunks++
+			st.BaseReusedLogicalBytes += int64(logical)
+			if sink.baseRef != nil {
+				if err := sink.baseRef(sum, logical); err != nil {
+					return BundleStats{}, err
+				}
+			}
+			continue
+		}
+		if inBase {
+			return BundleStats{}, bundleErr("chunk %x is held by the base snapshot but carried as payload", sum)
+		}
+		if err := bundleReadFull(hr, payload[:stored], fmt.Sprintf("chunk %x payload", sum)); err != nil {
+			return BundleStats{}, err
+		}
+		data, err := decodePackPayload(codec, payload[:stored], logical, sum, decoded)
+		if err != nil {
+			return BundleStats{}, bundleErr("%v", err)
+		}
+		st.StoredPayloadBytes += int64(stored)
+		st.PayloadChunks++
+		st.PayloadLogicalBytes += int64(logical)
+		if codec == bundleCodecDeflate {
+			st.CompressedRecords++
+		} else {
+			st.RawRecords++
+		}
+		if sink.chunk != nil {
+			if err := sink.chunk(sum, data); err != nil {
+				return BundleStats{}, err
+			}
+		}
+	}
+	if uint64(st.PayloadChunks) != hdr.payloadChunks || uint64(st.PayloadLogicalBytes) != hdr.payloadBytes {
+		return BundleStats{}, bundleErr("header declares %d payload chunks / %d bytes but the records carry %d / %d",
+			hdr.payloadChunks, hdr.payloadBytes, st.PayloadChunks, st.PayloadLogicalBytes)
+	}
+
+	foot := make([]byte, deltaFooterSize)
+	if err := bundleReadFull(hr, foot, "footer"); err != nil {
+		return BundleStats{}, err
+	}
+	want := hr.h.Sum(nil)
+	var got [sha256.Size]byte
+	if err := bundleReadFull(hr.r, got[:], "footer hash"); err != nil {
+		return BundleStats{}, err
+	}
+	if string(foot[:8]) != deltaFooterMagic {
+		return BundleStats{}, bundleErr("bad delta footer magic")
+	}
+	if !bytes.Equal(want, got[:]) {
+		return BundleStats{}, bundleErr("whole-bundle SHA-256 mismatch")
+	}
+	if int64(binary.BigEndian.Uint64(foot[8:])) != st.StoredPayloadBytes ||
+		int64(binary.BigEndian.Uint64(foot[16:])) != st.RawRecords ||
+		int64(binary.BigEndian.Uint64(foot[24:])) != st.CompressedRecords ||
+		int64(binary.BigEndian.Uint64(foot[32:])) != st.BaseReusedChunks {
+		return BundleStats{}, bundleErr("footer statistics disagree with the records")
+	}
+	if _, err := hr.r.ReadByte(); err != io.EOF {
+		return BundleStats{}, bundleErr("trailing bytes after the footer")
+	}
+	st.BundleBytes = hr.n + sha256.Size
+	st.Status = "verified"
+	st.finishDelta()
+	return st, nil
+}
+
+// inspectDeltaHeader parses a delta's header, descriptor and footer without
+// reading any record or the base. Nothing here is verified.
+func inspectDeltaHeader(path string) (BundleStats, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return BundleStats{}, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return BundleStats{}, err
+	}
+	if fi.Size() < deltaHeaderSize+deltaFooterSize+sha256.Size {
+		return BundleStats{}, bundleErr("file of %d bytes is too short", fi.Size())
+	}
+	hdrBytes := make([]byte, deltaHeaderSize)
+	if err := bundleReadFull(f, hdrBytes, "delta header"); err != nil {
+		return BundleStats{}, err
+	}
+	hdr, err := parseDeltaHeader(hdrBytes)
+	if err != nil {
+		return BundleStats{}, err
+	}
+	if int64(deltaHeaderSize)+int64(hdr.descLen)+deltaFooterSize+sha256.Size > fi.Size() {
+		return BundleStats{}, bundleErr("snapshot descriptor extends past the end of the file")
+	}
+	frame, err := bundleReadN(f, int(hdr.descLen), "snapshot descriptor")
+	if err != nil {
+		return BundleStats{}, err
+	}
+	d, err := decodeSnapshotDescriptor(frame)
+	if err != nil {
+		return BundleStats{}, bundleErr("snapshot descriptor: %v", err)
+	}
+	foot := make([]byte, deltaFooterSize)
+	if _, err := f.ReadAt(foot, fi.Size()-sha256.Size-deltaFooterSize); err != nil {
+		return BundleStats{}, err
+	}
+	if string(foot[:8]) != deltaFooterMagic {
+		return BundleStats{}, bundleErr("bad delta footer magic")
+	}
+	st := bundleDescriptorStats(d, int(hdr.manifests))
+	st.Status, st.BundleBytes = "parsed", fi.Size()
+	st.BaseSnapshotID, st.BaseDescriptorSHA256 = hdr.baseID, hex.EncodeToString(hdr.baseSHA[:])
+	st.UniqueChunks, st.UniqueLogicalBytes = int64(hdr.chunks), int64(hdr.uniqueBytes)
+	st.PayloadChunks, st.PayloadLogicalBytes = int64(hdr.payloadChunks), int64(hdr.payloadBytes)
+	st.BaseReusedChunks, st.BaseReusedLogicalBytes = int64(hdr.chunks-hdr.payloadChunks), int64(hdr.uniqueBytes-hdr.payloadBytes)
+	st.StoredPayloadBytes = int64(binary.BigEndian.Uint64(foot[8:]))
+	st.RawRecords = int64(binary.BigEndian.Uint64(foot[16:]))
+	st.CompressedRecords = int64(binary.BigEndian.Uint64(foot[24:]))
+	if uint64(st.RawRecords+st.CompressedRecords) != hdr.payloadChunks || uint64(binary.BigEndian.Uint64(foot[32:])) != hdr.chunks-hdr.payloadChunks {
+		return BundleStats{}, bundleErr("footer record counts disagree with the header")
+	}
+	st.finishDelta()
+	return st, nil
+}
+
+// verifyDeltaFile fully verifies a delta against its declared base found in
+// baseStoreDir: exact base descriptor, base inventory, every base-reference
+// membership and readability, every payload hash, footer and EOF. The store
+// is opened under a shared lock and never modified.
+func verifyDeltaFile(path, baseStoreDir string) (BundleStats, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return BundleStats{}, err
+	}
+	defer f.Close()
+	lock, err := acquireStoreLock(baseStoreDir, false)
+	if err != nil {
+		return BundleStats{}, err
+	}
+	defer lock.release()
+	store, err := OpenStore(baseStoreDir)
+	if err != nil {
+		return BundleStats{}, err
+	}
+	defer store.Close()
+	return readDeltaBundle(f, store.resolveDeltaBase, deltaSink{baseRef: store.checkBaseRef})
+}
+
+// ---- import -------------------------------------------------------------------
+
+// importDeltaBundle imports one delta bundle into a store the caller owns
+// exclusively. The base is resolved before any payload is read; base
+// references are checked readable; everything else is the full importer.
+func (s *Store) importDeltaBundle(r io.Reader) (BundleImportResult, error) {
+	im := s.newBundleImporter()
+	defer im.close()
+	resolve := func(h deltaHeader) ([]bundleChunkDesc, error) {
+		im.res.BaseSnapshotID = h.baseID
+		return s.resolveDeltaBase(h)
+	}
+	st, err := readDeltaBundle(r, resolve, deltaSink{
+		descriptor: im.descriptor,
+		manifest:   im.manifest,
+		chunk:      im.chunk,
+		baseRef: func(sum [32]byte, n uint32) error {
+			if err := s.checkBaseRef(sum, n); err != nil {
+				return err
+			}
+			im.res.BaseRefChunks++
+			im.res.BaseRefBytes += int64(n)
+			return nil
+		},
+	})
+	if err != nil {
+		return im.res, err
+	}
+	im.res.PayloadBytesRead = st.StoredPayloadBytes
+	return im.publish()
+}
+
+// bundleKind says which artifact a file is, by magic alone.
+func bundleKind(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return "full"
+	}
+	defer f.Close()
+	var magic [8]byte
+	if n, _ := f.ReadAt(magic[:], 0); n == 8 && string(magic[:]) == deltaMagic {
+		return "delta"
+	}
+	return "full"
+}
+
+func printDeltaStats(w io.Writer, st BundleStats) {
+	fmt.Fprintf(w, "bundle %s (delta format v%d)\n", st.Status, deltaFormatVersion)
+	fmt.Fprintf(w, "target snapshot %s created %s\n", st.SnapshotID, st.CreatedAt)
+	fmt.Fprintf(w, "base snapshot   %s (descriptor sha256 %s)\n", st.BaseSnapshotID, st.BaseDescriptorSHA256)
+	fmt.Fprintf(w, "source          bucket %q prefix %q\n", st.SourceBucket, st.SourcePrefix)
+	fmt.Fprintf(w, "objects         %d   manifests %d (all target manifests carried)\n", st.Objects, st.Manifests)
+	fmt.Fprintf(w, "target chunks   %d unique, %s logical\n", st.TargetUniqueChunks, mib(st.TargetUniqueLogicalBytes))
+	fmt.Fprintf(w, "base-ref chunks %d, %s logical (base reuse %.1f%%)\n", st.BaseReusedChunks, mib(st.BaseReusedLogicalBytes), 100*st.BaseReuseRatio)
+	fmt.Fprintf(w, "payload chunks  %d, %s logical (%.1f%% of target): %d raw, %d compressed\n",
+		st.PayloadChunks, mib(st.PayloadLogicalBytes), 100*st.PayloadFraction, st.RawRecords, st.CompressedRecords)
+	fmt.Fprintf(w, "stored bytes    payload %s, delta file %s (compression ratio %.2fx)\n",
+		mib(st.StoredPayloadBytes), mib(st.BundleBytes), st.CompressionRatio)
 }
 
 // =============================================================================
