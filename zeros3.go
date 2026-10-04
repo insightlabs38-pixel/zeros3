@@ -73,36 +73,36 @@ import (
 //        1    Package overview, imports, constants, and shared utilities
 //     497    Content-defined chunking (CDC)
 //     623    Content-addressed chunk storage (CAS)
-//     1177    Packed CAS (immutable packs, DEFLATE records, locator index)
-//    2524    Manifests (immutable, JSON)
-//    2623    Visibility journal (append-only, checksummed)
-//    3036    Store: format, namespace, and object CRUD
-//    3858    Version history/restore, history pruning, ListObjectsV2
-//    4331    SigV4 authentication (header and presigned-URL)
-//    5286    Request payload checksums and S3-shaped XML error/response types
-//    5502    HTTP routing and S3 operation handlers
-//    5915    Conditional operations (PUT/GET/HEAD preconditions)
-//    6583    CopyObject
-//    6877    Multipart upload
-//    7703    Stats and reachability scanning
-//    8461    Verify
-//    8637    Store locking and safe offline GC
-//    8894    Offline compaction (`zeros3 compact`)
-//    9428    Pack reclamation and repacking (`zeros3 repack`)
-//    9871    Physical tiers: status and pack movement (`zeros3 tier`)
-//    10383    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//   11447    Streaming object reads (full and ranged GET)
-//   11572    Delta sync client, credentials, and parallel transfer
-//   13558    Bulk logical-chunk transport (v2)
-//   14469    Recursive directory sync
-//   14774    Remote replication (`zeros3 replicate`)
-//   15521    Peer-assisted corruption repair (`zeros3 repair`)
-//   16033    Namespace (prefix/bucket) replication
-//   16340    Copy-on-write namespace fork (`zeros3 fork`)
-//   16548    Snapshots and restore
-//   17709    Structural diff and inspect (introspection)
-//   18985    Portable snapshot bundles (`zeros3 bundle`)
-//   20010    CLI dispatch, HTTP server/startup, and main
+//     1177    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
+//    2719    Manifests (immutable, JSON)
+//    2818    Visibility journal (append-only, checksummed)
+//    3231    Store: format, namespace, and object CRUD
+//    4057    Version history/restore, history pruning, ListObjectsV2
+//    4530    SigV4 authentication (header and presigned-URL)
+//    5485    Request payload checksums and S3-shaped XML error/response types
+//    5702    HTTP routing and S3 operation handlers
+//    6115    Conditional operations (PUT/GET/HEAD preconditions)
+//    6799    CopyObject
+//    7093    Multipart upload
+//    7919    Stats and reachability scanning
+//    8702    Verify
+//    8878    Store locking and safe offline GC
+//    9135    Offline compaction (`zeros3 compact`)
+//    9764    Pack reclamation and repacking (`zeros3 repack`)
+//    10211    Physical tiers: status and pack movement (`zeros3 tier`)
+//    10723    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//   11787    Streaming object reads (full and ranged GET)
+//   12049    Delta sync client, credentials, and parallel transfer
+//   14035    Bulk logical-chunk transport (v2)
+//   14946    Recursive directory sync
+//   15251    Remote replication (`zeros3 replicate`)
+//   15998    Peer-assisted corruption repair (`zeros3 repair`)
+//   16510    Namespace (prefix/bucket) replication
+//   16817    Copy-on-write namespace fork (`zeros3 fork`)
+//   17025    Snapshots and restore
+//   18186    Structural diff and inspect (introspection)
+//   19462    Portable snapshot bundles (`zeros3 bundle`)
+//   20487    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -2435,6 +2435,201 @@ func decodePackPayload(codec byte, stored []byte, logical uint32, sum [32]byte, 
 	return data, nil
 }
 
+// =============================================================================
+// 4c. Coalesced packed reads
+//
+// A sequential GET walks an object's chunks in manifest order. With a
+// locality pack layout (section 13c) adjacent chunks usually sit in adjacent
+// pack records, so manifestReader (section 14) gathers a bounded run of such
+// records and fetches them with ONE ReadAt on a pack file it keeps open for
+// the request. This only changes how bytes are fetched: every record in the
+// run is still checked against the locator-derived header and decoded and
+// SHA-256 verified on its own, exactly as readPacked does, and a record that
+// fails is re-read through the ordinary casRead copy selection, so one bad
+// record never fails a GET that has a valid fallback copy.
+//
+// Runs are request-local: at most one pack file is open per request, nothing
+// is cached across requests, and a run is bounded in records, stored bytes
+// (the ReadAt) and decoded bytes (the DEFLATE arena). Pack format and locator
+// are unchanged.
+// =============================================================================
+
+// Run bounds. Variables so tests and benchmarks can vary them; they are set
+// before any reader starts.
+var (
+	packRunMaxStored  = 4 << 20 // header + payload bytes fetched by one ReadAt
+	packRunMaxRecords = 64
+	packRunMaxLogical = 8 << 20 // decoded bytes one run may hold
+)
+
+// packTrace is the optional test/benchmark counter set (Store.packTrace).
+type packTrace struct {
+	Opens, ReadAts, Runs, Chunks, StoredBytes, Failures atomic.Int64
+	// OnRun, if set, sees every run's size as planned.
+	OnRun func(records, storedBytes, logicalBytes int)
+}
+
+// Run buffers are recycled across requests so concurrent GETs do not each
+// allocate (and the GC then retain) multi-MiB windows. A buffer belongs to
+// one reader from first use until close.
+var packRunBufs, packRunArenas sync.Pool
+
+// runBufClass rounds a needed size up to a fixed capacity class so a
+// sequential read, whose runs differ by a few records, keeps one buffer
+// instead of replacing it with a slightly larger one per run.
+func runBufClass(size, limit int) int {
+	switch {
+	case size <= maxPackedChunkBytes+packRecordHeaderSize:
+		return maxPackedChunkBytes + packRecordHeaderSize
+	case size <= 1<<20+maxPackedChunkBytes:
+		return 1<<20 + maxPackedChunkBytes
+	}
+	return max(size, limit)
+}
+
+func getRunBuf(pool *sync.Pool, size, limit int) []byte {
+	if bp, _ := pool.Get().(*[]byte); bp != nil && cap(*bp) >= size {
+		return (*bp)[:size]
+	}
+	return make([]byte, size, runBufClass(size, limit))
+}
+
+func putRunBuf(pool *sync.Pool, b []byte) {
+	if cap(b) > 0 {
+		pool.Put(&b)
+	}
+}
+
+// packRunReader reads contiguous records of one request's packs. It is not
+// safe for concurrent use. Returned chunk bytes alias its buffers and stay
+// valid only until the next read.
+type packRunReader struct {
+	st    *packState // one locator snapshot for the whole request
+	trace *packTrace
+	f     *os.File
+	fPack int32
+	buf   []byte
+	arena []byte
+}
+
+func newPackRunReader(st *packState, trace *packTrace) *packRunReader {
+	return &packRunReader{st: st, trace: trace, fPack: -1}
+}
+
+// file returns the open file for pack, closing the previous pack's file.
+func (r *packRunReader) file(pack int32) (*os.File, error) {
+	if r.f != nil && r.fPack == pack {
+		return r.f, nil
+	}
+	r.close()
+	if pack < 0 || int(pack) >= len(r.st.packs) {
+		return nil, fmt.Errorf("pack: locator is from a replaced pack set")
+	}
+	f, err := os.Open(r.st.packs[pack].path)
+	if err != nil {
+		return nil, fmt.Errorf("pack: %w", err)
+	}
+	if r.trace != nil {
+		r.trace.Opens.Add(1)
+	}
+	r.f, r.fPack = f, pack
+	return f, nil
+}
+
+// close releases the open pack file and returns the buffers; chunk bytes
+// handed out earlier must no longer be in use.
+func (r *packRunReader) close() {
+	if r.f != nil {
+		r.f.Close()
+		r.f, r.fPack = nil, -1
+	}
+	putRunBuf(&packRunBufs, r.buf)
+	putRunBuf(&packRunArenas, r.arena)
+	r.buf, r.arena = nil, nil
+}
+
+// read fetches locs -- records of ONE pack, ordered and physically
+// contiguous (each header starts where the previous payload ends) -- with a
+// single ReadAt, then validates every record independently. out[k] is chunk
+// k's verified logical bytes, or nil with errs[k] set: a short or failed read
+// only fails the records it did not fully deliver.
+func (r *packRunReader) read(sums [][32]byte, locs []packLoc) (out [][]byte, errs []error) {
+	n := len(locs)
+	out, errs = make([][]byte, n), make([]error, n)
+	failAll := func(err error) ([][]byte, []error) {
+		for k := range errs {
+			errs[k] = err
+		}
+		return out, errs
+	}
+	if n == 0 {
+		return out, errs
+	}
+	first, last := locs[0], locs[n-1]
+	for k := 1; k < n; k++ {
+		if locs[k].pack != first.pack || int64(locs[k].off)-packRecordHeaderSize != int64(locs[k-1].off)+int64(locs[k-1].stored) {
+			return failAll(errors.New("pack: records are not physically contiguous"))
+		}
+	}
+	start := int64(first.off) - packRecordHeaderSize
+	size := int64(last.off) + int64(last.stored) - start
+	f, err := r.file(first.pack)
+	if err != nil {
+		return failAll(err)
+	}
+	if int64(cap(r.buf)) < size {
+		putRunBuf(&packRunBufs, r.buf)
+		r.buf = getRunBuf(&packRunBufs, int(size), packRunMaxStored)
+	}
+	buf := r.buf[:size]
+	got, rerr := f.ReadAt(buf, start)
+	if r.trace != nil {
+		r.trace.ReadAts.Add(1)
+		r.trace.StoredBytes.Add(int64(got))
+	}
+	if rerr == nil || rerr == io.EOF && got == len(buf) {
+		rerr = nil
+	} else if rerr == io.EOF {
+		rerr = io.ErrUnexpectedEOF
+	}
+	var inflate int
+	for _, l := range locs {
+		if l.codec == packCodecDeflate {
+			inflate += int(l.logical)
+		}
+	}
+	if cap(r.arena) < inflate {
+		putRunBuf(&packRunArenas, r.arena)
+		r.arena = getRunBuf(&packRunArenas, inflate, packRunMaxLogical)
+	}
+	arena := r.arena[:inflate]
+	for k, l := range locs {
+		rec := int(int64(l.off) - packRecordHeaderSize - start)
+		end := rec + packRecordHeaderSize + int(l.stored)
+		if end > got {
+			errs[k] = fmt.Errorf("pack: reading chunk %x: %w", sums[k], cmp.Or(rerr, io.ErrUnexpectedEOF))
+			continue
+		}
+		var want [packRecordHeaderSize]byte
+		putPackRecordHeader(want[:], packEntry{sha: sums[k], stored: l.stored, logical: l.logical, codec: l.codec})
+		if [packRecordHeaderSize]byte(buf[rec:rec+packRecordHeaderSize]) != want {
+			errs[k] = fmt.Errorf("pack: record header for chunk %x disagrees with the index", sums[k])
+			continue
+		}
+		var dst []byte
+		if l.codec == packCodecDeflate {
+			dst, arena = arena[:l.logical:l.logical], arena[l.logical:]
+		}
+		data, err := decodePackPayload(l.codec, buf[rec+packRecordHeaderSize:end], l.logical, sums[k], dst)
+		if err != nil {
+			errs[k] = fmt.Errorf("pack: %w", err)
+			continue
+		}
+		out[k] = data
+	}
+	return out, errs
+}
+
 // packDeflateLevel is the DEFLATE level for newly written records. Against
 // BestSpeed it saves 3-15% more on text-like chunks for under 15% more
 // compact time end to end; reads are unaffected.
@@ -3158,6 +3353,10 @@ type Store struct {
 	// process holding exclusive ownership while compacting.
 	packMu sync.Mutex
 	packSt atomic.Pointer[packState]
+
+	// packTrace, when set (tests and benchmarks only), counts coalesced
+	// packed-read activity. Nil in production: no counters, no atomics.
+	packTrace *packTrace
 
 	// casPubMu is the loose-CAS publication barrier (section 4).
 	casPubMu sync.RWMutex
@@ -5444,6 +5643,7 @@ type listBucketResult struct {
 	Prefix                string            `xml:"Prefix"`
 	Delimiter             string            `xml:"Delimiter,omitempty"`
 	MaxKeys               int               `xml:"MaxKeys"`
+	EncodingType          string            `xml:"EncodingType,omitempty"`
 	KeyCount              int               `xml:"KeyCount"`
 	IsTruncated           bool              `xml:"IsTruncated"`
 	ContinuationToken     string            `xml:"ContinuationToken,omitempty"`
@@ -6257,6 +6457,7 @@ func (srv *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucke
 // as a truncated body rather than a complete one.
 func (srv *Server) streamObject(w http.ResponseWriter, bucket, key string, entry *objectEntry, man manifestV1, rng byteRange, partial bool) {
 	rd := srv.store.newManifestReader(man, rng)
+	defer rd.close()
 	data, err := rd.next()
 	if err != nil && err != io.EOF {
 		writeGetObjectError(w, bucket, key, err)
@@ -6425,28 +6626,36 @@ func (srv *Server) handleDeleteObjects(w http.ResponseWriter, bucket string, bod
 // parseListObjectsV2Query extracts the ESSENTIAL ListObjectsV2 query
 // parameters. max-keys defaults to (and is clamped to) 1000, matching
 // real S3's default/maximum page size.
-func parseListObjectsV2Query(rawQuery string) (listType, prefix, delimiter, continuationToken string, maxKeys int, err error) {
+//
+// encoding-type is the one S3 response-encoding knob: absent or "url". With
+// "url" the key-valued response fields are percent-encoded because XML 1.0
+// cannot carry every legal object-key byte (NUL, most C0 controls).
+func parseListObjectsV2Query(rawQuery string) (listType, prefix, delimiter, continuationToken, encodingType string, maxKeys int, err error) {
 	values, err := url.ParseQuery(rawQuery)
 	if err != nil {
-		return "", "", "", "", 0, fmt.Errorf("malformed query string")
+		return "", "", "", "", "", 0, fmt.Errorf("malformed query string")
 	}
 	listType = values.Get("list-type")
 	prefix = values.Get("prefix")
 	delimiter = values.Get("delimiter")
 	continuationToken = values.Get("continuation-token")
+	encodingType = values.Get("encoding-type")
+	if encodingType != "" && encodingType != "url" {
+		return "", "", "", "", "", 0, fmt.Errorf("invalid encoding-type %q (only \"url\" is supported)", encodingType)
+	}
 
 	maxKeys = 1000
 	if raw := values.Get("max-keys"); raw != "" {
 		n, convErr := strconv.Atoi(raw)
 		if convErr != nil || n < 0 {
-			return "", "", "", "", 0, fmt.Errorf("invalid max-keys %q", raw)
+			return "", "", "", "", "", 0, fmt.Errorf("invalid max-keys %q", raw)
 		}
 		maxKeys = n
 	}
 	if maxKeys > 1000 {
 		maxKeys = 1000
 	}
-	return listType, prefix, delimiter, continuationToken, maxKeys, nil
+	return listType, prefix, delimiter, continuationToken, encodingType, maxKeys, nil
 }
 
 // parseListPartsQuery parses ListParts' two pagination query parameters.
@@ -6519,7 +6728,7 @@ func parseListMultipartUploadsQuery(rawQuery string) (prefix, delimiter, keyMark
 }
 
 func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery string) {
-	listType, prefix, delimiter, continuationToken, maxKeys, err := parseListObjectsV2Query(rawQuery)
+	listType, prefix, delimiter, continuationToken, encodingType, maxKeys, err := parseListObjectsV2Query(rawQuery)
 	if err != nil {
 		writeS3Error(w, "InvalidArgument", err.Error(), "/"+bucket)
 		return
@@ -6547,11 +6756,18 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 		return
 	}
 
+	// Filtering and pagination above ran on the logical key strings; enc only
+	// changes their XML representation. Token fields and ETag stay verbatim.
+	enc := func(s string) string { return s }
+	if encodingType == "url" {
+		enc = func(s string) string { return sigv4EncodeBytes([]byte(s)) }
+	}
 	result := listBucketResult{
 		Name:              bucket,
-		Prefix:            prefix,
-		Delimiter:         delimiter,
+		Prefix:            enc(prefix),
+		Delimiter:         enc(delimiter),
 		MaxKeys:           maxKeys,
+		EncodingType:      encodingType,
 		KeyCount:          len(page.contents) + len(page.commonPrefixes),
 		IsTruncated:       page.truncated,
 		ContinuationToken: continuationToken,
@@ -6566,7 +6782,7 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 			return
 		}
 		result.Contents = append(result.Contents, xmlContent{
-			Key:          obj.key,
+			Key:          enc(obj.key),
 			LastModified: iso8601(man.CreatedAt),
 			ETag:         `"` + obj.entry.etag + `"`,
 			Size:         obj.entry.size,
@@ -6574,7 +6790,7 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 		})
 	}
 	for _, cp := range page.commonPrefixes {
-		result.CommonPrefixes = append(result.CommonPrefixes, xmlCommonPrefix{Prefix: cp})
+		result.CommonPrefixes = append(result.CommonPrefixes, xmlCommonPrefix{Prefix: enc(cp)})
 	}
 	writeXML(w, http.StatusOK, result)
 }
@@ -8130,26 +8346,36 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 		}
 	}
 
+	// Observation order is locality priority (compaction ranks chunks by first
+	// reference): current objects, active multipart, snapshots, then retained
+	// history. Within a category the order is deterministic when an observer
+	// is attached. GC and verify only take the union, so order is otherwise moot.
 	// Root category 1: current visible objects.
-	for _, o := range s.snapshotNamespace() {
+	curObjs := s.snapshotNamespace()
+	if obs != nil {
+		sort.Slice(curObjs, func(i, j int) bool {
+			return cmp.Or(cmp.Compare(curObjs[i].bucket, curObjs[j].bucket), cmp.Compare(curObjs[i].key, curObjs[j].key)) < 0
+		})
+	}
+	for _, o := range curObjs {
 		res.CurrentRootCount++
 		if man, ok := checkRoot(o.bucket+"/"+o.key, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
 			want(scopeCurrent, o.bucket, o.key, man.Chunks)
 		}
 	}
-	// Root category 2: retained historical versions.
-	for _, o := range s.snapshotHistory() {
-		res.HistoricalRootCount++
-		subject := fmt.Sprintf("history:%s/%s@%s", o.bucket, o.key, o.entry.versionID)
-		if man, ok := checkRoot(subject, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
-			want(scopeHistory, o.bucket, o.key, man.Chunks)
-		}
-	}
 	// Root category 3: active multipart uploads. These do not go through
 	// the manifest mechanism before completion -- each already-published
 	// part's own chunk list is a live root directly.
-	for _, up := range s.snapshotUploads() {
-		for _, p := range up.parts {
+	uploads := s.snapshotUploads()
+	if obs != nil {
+		sort.Slice(uploads, func(i, j int) bool {
+			a, b := uploads[i], uploads[j]
+			return cmp.Or(cmp.Compare(a.bucket, b.bucket), cmp.Compare(a.key, b.key), cmp.Compare(a.uploadID, b.uploadID)) < 0
+		})
+	}
+	for _, up := range uploads {
+		for _, pn := range slices.Sorted(maps.Keys(up.parts)) {
+			p := up.parts[pn]
 			res.MultipartRootCount++
 			subject := fmt.Sprintf("multipart:%s/part%d", up.uploadID, p.partNumber)
 			valid := p.chunks[:0:0]
@@ -8195,6 +8421,21 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 		}
 	}
 
+	// Root category 2: retained historical versions.
+	histObjs := s.snapshotHistory()
+	if obs != nil { // newest retained version first
+		sort.Slice(histObjs, func(i, j int) bool {
+			a, b := histObjs[i], histObjs[j]
+			return cmp.Or(cmp.Compare(a.bucket, b.bucket), cmp.Compare(a.key, b.key), cmp.Compare(b.entry.seq, a.entry.seq)) < 0
+		})
+	}
+	for _, o := range histObjs {
+		res.HistoricalRootCount++
+		subject := fmt.Sprintf("history:%s/%s@%s", o.bucket, o.key, o.entry.versionID)
+		if man, ok := checkRoot(subject, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
+			want(scopeHistory, o.bucket, o.key, man.Chunks)
+		}
+	}
 	// One unified chunk existence/integrity pass over every referenced
 	// digest, regardless of which root category claimed it.
 	for sha, length := range wantChunks {
@@ -8926,16 +9167,42 @@ const (
 	packMinFraction = 8
 )
 
+// packLayout orders the chunks compaction writes into packs. Pack format v1
+// allows any record order, so this is purely physical placement: chunk
+// identity, deduplication and the pack format are the same either way.
+type packLayout uint8
+
+const (
+	// layoutDigest packs loose chunks in digest order (the pre-Z2-13 order).
+	layoutDigest packLayout = iota
+	// layoutLocality packs chunks in first-reference manifest order, so
+	// consecutive chunks of an object are physically adjacent in a pack.
+	layoutLocality
+)
+
+func (l packLayout) String() string { return [...]string{"digest", "locality"}[min(l, layoutLocality)] }
+
+func parseLayoutFlag(v string) (packLayout, error) {
+	switch v {
+	case "digest":
+		return layoutDigest, nil
+	case "locality":
+		return layoutLocality, nil
+	}
+	return 0, fmt.Errorf("-layout must be locality or digest, not %q", v)
+}
+
 type compactOptions struct {
 	Tier        tier // physical tier new packs are published into (default hot)
 	TargetBytes int64
 	MinBytes    int64
 	DryRun      bool
 	Compress    bool
+	Layout      packLayout // chunk order within new packs (zero value: digest)
 }
 
 func defaultCompactOptions() compactOptions {
-	return compactOptions{TargetBytes: defaultPackTargetBytes, MinBytes: defaultPackTargetBytes / packMinFraction, Compress: true}
+	return compactOptions{TargetBytes: defaultPackTargetBytes, MinBytes: defaultPackTargetBytes / packMinFraction, Compress: true, Layout: layoutLocality}
 }
 
 // parseCompressionFlag maps the -compression flag onto the Compress option.
@@ -8961,6 +9228,10 @@ func newCompressor(compress bool) *packCompressor {
 type CompactResult struct {
 	DryRun bool   `json:"dry_run"`
 	Tier   string `json:"tier"`
+	Layout string `json:"layout"`
+	// LocalityRanked is how many candidates a live root referenced and so
+	// received a first-reference rank (locality layout only).
+	LocalityRanked int `json:"locality_ranked,omitempty"`
 
 	LooseChunks      int `json:"loose_chunks"`
 	UnreachableLoose int `json:"unreachable_loose"`
@@ -8988,6 +9259,54 @@ type CompactResult struct {
 type compactCandidate struct {
 	sum  [32]byte
 	size int64
+	rank uint32 // locality rank: 1-based first-reference order, 0 = unreferenced by any observed root
+}
+
+// localityOrder sorts cands into locality layout order: ranked candidates in
+// the order a root walk first references them, then unranked ones, ties and
+// the unranked tail in digest order. walk must visit live roots in priority
+// order, deterministically (see computeReachabilityObserved). A shared digest
+// receives exactly one rank -- its earliest reference -- so deduplication is
+// never traded for locality. Memory is O(len(cands)): ranks live in the
+// candidates themselves and each reference is a binary search, with no
+// digest-keyed map. It returns how many candidates were ranked.
+func localityOrder(cands []compactCandidate, walk func(rootObserver) error) (int, error) {
+	slices.SortFunc(cands, func(a, b compactCandidate) int { return bytes.Compare(a.sum[:], b.sum[:]) })
+	for i := range cands {
+		cands[i].rank = 0
+	}
+	var next uint32
+	obs := func(_ rootScope, _, _ string, chunks []chunkRef) {
+		for _, c := range chunks {
+			if int(next) == len(cands) {
+				return
+			}
+			sum, err := decodeHexSHA256(c.SHA256)
+			if err != nil {
+				continue
+			}
+			i, ok := slices.BinarySearchFunc(cands, sum, func(e compactCandidate, t [32]byte) int { return bytes.Compare(e.sum[:], t[:]) })
+			if ok && cands[i].rank == 0 {
+				next++
+				cands[i].rank = next
+			}
+		}
+	}
+	if err := walk(obs); err != nil {
+		return 0, err
+	}
+	slices.SortFunc(cands, func(a, b compactCandidate) int {
+		switch {
+		case a.rank == b.rank:
+			return bytes.Compare(a.sum[:], b.sum[:])
+		case a.rank == 0:
+			return 1
+		case b.rank == 0:
+			return -1
+		}
+		return cmp.Compare(a.rank, b.rank)
+	})
+	return int(next), nil
 }
 
 // planPackBatches splits candidates (already in deterministic order) into
@@ -9079,6 +9398,18 @@ func (s *Store) compact(referenced map[string]bool, opt compactOptions) (Compact
 	})
 	if err != nil {
 		return res, fmt.Errorf("compact: scanning chunks: %w", err)
+	}
+
+	res.Layout = opt.Layout.String()
+	if opt.Layout == layoutLocality && len(cands) > 1 {
+		ranked, err := localityOrder(cands, func(obs rootObserver) error {
+			_, err := s.computeReachabilityObserved(false, obs)
+			return err
+		})
+		if err != nil {
+			return res, fmt.Errorf("compact: locality ordering: %w", err)
+		}
+		res.LocalityRanked = ranked
 	}
 
 	batches, deferred := planPackBatches(cands, opt.TargetBytes, opt.MinBytes)
@@ -9363,7 +9694,7 @@ func printCompactHuman(w io.Writer, r CompactResult) {
 	fmt.Fprintf(w, "ZeroS3 compact (%s)\n", mode)
 	fmt.Fprintf(w, "loose chunks     %d scanned | %d unreachable (left for gc) | %d skipped | %d deferred (below minimum pack size)\n",
 		r.LooseChunks, r.UnreachableLoose, r.Skipped, r.DeferredChunks)
-	fmt.Fprintf(w, "packs            %s %d into %s | %d chunks | %d bytes\n", verb, r.PacksWritten, r.Tier, r.ChunksPacked, r.PackBytes)
+	fmt.Fprintf(w, "packs            %s %d into %s | %d chunks | %d bytes | %s layout\n", verb, r.PacksWritten, r.Tier, r.ChunksPacked, r.PackBytes, r.Layout)
 	if !r.DryRun && r.ChunksPacked > 0 {
 		fmt.Fprintf(w, "compression      %d raw + %d deflate records | %d logical -> %d stored bytes (%.1f%% saved)\n",
 			r.RawRecords, r.CompressedRecords, r.LogicalBytes, r.StoredBytes, savedPercent(r.LogicalBytes, r.StoredBytes))
@@ -9391,18 +9722,23 @@ func runCompact(args []string) {
 	dryRun := fs.Bool("dry-run", false, "report what would be packed without writing anything")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	tierName := fs.String("tier", "hot", "physical tier the new packs are published into: hot, warm, or cold")
+	layoutName := fs.String("layout", "locality", "chunk order inside new packs: locality (first-reference manifest order) or digest")
 	fs.Parse(args)
 
 	compress, err := parseCompressionFlag(*compression)
 	var t tier
+	var layout packLayout
 	if err == nil {
 		t, err = parseTier(*tierName)
+	}
+	if err == nil {
+		layout, err = parseLayoutFlag(*layoutName)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: compact: %v\n", err)
 		os.Exit(2)
 	}
-	opt := compactOptions{Tier: t, TargetBytes: *sizeMiB << 20, DryRun: *dryRun, Compress: compress}
+	opt := compactOptions{Tier: t, TargetBytes: *sizeMiB << 20, DryRun: *dryRun, Compress: compress, Layout: layout}
 	opt.MinBytes = opt.TargetBytes / packMinFraction
 	res, err := compactStore(*storeDir, opt)
 	if err != nil {
@@ -9432,7 +9768,8 @@ func runCompact(args []string) {
 // 12a) applied to pack contents; nothing about it is stored in a pack.
 // `zeros3 gc -apply` removes packs with no live record, and `zeros3 repack`
 // also rewrites the live records of mostly dead packs into new packs of
-// the usual size and digest order, using the same writer and publication
+// the usual size, keeping survivors in their source physical order (so a
+// locality layout survives), using the same writer and publication
 // path as compaction. Both need the exclusive store lock.
 //
 // Replacement order, which makes every interruption point safe -- a crash
@@ -9572,6 +9909,10 @@ func (s *Store) replacePacksTo(doomed []packUsage, referenced map[string]bool, d
 		return nil
 	}
 	doomed = append([]packUsage(nil), doomed...)
+	// Carried records keep their source physical order -- source tier, then
+	// pack order, then record order -- so a locality layout survives repack
+	// and rebalance. A digest carried twice keeps its first position.
+	slices.SortFunc(doomed, func(a, b packUsage) int { return cmp.Or(cmp.Compare(a.tier, b.tier), cmp.Compare(a.idx, b.idx)) })
 	skip := map[int32]bool{}
 	seen := map[[32]byte]bool{}
 	// Replacements keep the tier of the pack whose record they carry (the
@@ -9606,7 +9947,6 @@ func (s *Store) replacePacksTo(doomed []packUsage, referenced map[string]bool, d
 	var plans []tierBatches
 	for t := range numTiers {
 		req := required[t]
-		sort.Slice(req, func(i, j int) bool { return bytes.Compare(req[i].sum[:], req[j].sum[:]) < 0 })
 		var tneed []compactCandidate
 		for _, c := range req {
 			var err error
@@ -10963,9 +11303,9 @@ func (s *Store) rebalance(rr reachabilityResult, tg *tierTargets, opt rebalanceO
 			res.LooseUnpackable++
 		case slices.ContainsFunc(st.appendLocs(locs[:0], sum), func(l packLoc) bool { return l.tier == w.t }):
 			res.LooseRedundant++
-			redundantLoose = append(redundantLoose, tieredChunk{compactCandidate{sum, size}, w.t})
+			redundantLoose = append(redundantLoose, tieredChunk{compactCandidate{sum: sum, size: size}, w.t})
 		default:
-			pack[w.t] = append(pack[w.t], compactCandidate{sum, size})
+			pack[w.t] = append(pack[w.t], compactCandidate{sum: sum, size: size})
 			res.MisplacedChunks++
 			res.MisplacedLogicalBytes += size
 		}
@@ -11517,26 +11857,51 @@ func parseRangeSpec(header string, size int64) (rng byteRange, ok, satisfiable b
 }
 
 // manifestReader yields the bytes of one inclusive logical range of the
-// object a manifest describes, one verified CAS chunk at a time.
+// object a manifest describes, one verified CAS chunk at a time. It is the one
+// layer that sees upcoming chunk order, so it coalesces adjacent packed
+// records into bounded runs (section 4c); generic casRead stays ignorant of
+// what comes next. Call close when done with a reader that stopped early.
 type manifestReader struct {
 	s      *Store
 	chunks []chunkRef
 	idx    int
 	offset int64
 	rng    byteRange
+
+	pr  *packRunReader // created on first packed read; holds <= 1 pack file
+	bad map[int32]bool // packs whose run had a failing record: no more runs from them
+
+	// q holds the verified (or failed) chunks of the current run, in
+	// manifest order; qh is the next to hand out.
+	q    []runChunk
+	qh   int
+	sums [][32]byte // scratch for planning a run
+	locs []packLoc
+}
+
+type runChunk struct {
+	idx  int
+	data []byte
+	err  error
 }
 
 func (s *Store) newManifestReader(man manifestV1, rng byteRange) *manifestReader {
 	return &manifestReader{s: s, chunks: man.Chunks, rng: rng}
 }
 
+func (m *manifestReader) close() {
+	if m.pr != nil {
+		m.pr.close()
+	}
+}
+
 // next returns the next slice of the range, backed by a chunk already
 // verified against its SHA-256 and recorded length, or io.EOF once the
-// whole range has been produced.
+// whole range has been produced. The slice is valid until the next call.
 func (m *manifestReader) next() ([]byte, error) {
 	for m.idx < len(m.chunks) && m.offset <= m.rng.end {
 		c := m.chunks[m.idx]
-		chunkStart := m.offset
+		i, chunkStart := m.idx, m.offset
 		m.idx++
 		m.offset += c.Length
 		if m.offset <= m.rng.start {
@@ -11544,13 +11909,16 @@ func (m *manifestReader) next() ([]byte, error) {
 		}
 		sum, err := decodeHexSHA256(c.SHA256)
 		if err != nil {
+			m.close()
 			return nil, err
 		}
-		data, err := m.s.casRead(sum)
+		data, err := m.chunk(i, sum, chunkStart)
 		if err != nil {
+			m.close()
 			return nil, fmt.Errorf("chunk read failed: %w", err)
 		}
 		if int64(len(data)) != c.Length {
+			m.close()
 			return nil, fmt.Errorf("chunk %s: length mismatch", c.SHA256)
 		}
 		lo, hi := int64(0), c.Length
@@ -11562,10 +11930,119 @@ func (m *manifestReader) next() ([]byte, error) {
 		}
 		return data[lo:hi], nil
 	}
+	m.close()
 	if m.offset <= m.rng.end {
 		return nil, fmt.Errorf("manifest chunks end before requested range")
 	}
 	return nil, io.EOF
+}
+
+// chunk returns chunk i's verified bytes: from the current run, from a new
+// run starting at i, or through the ordinary copy selection.
+func (m *manifestReader) chunk(i int, sum [32]byte, chunkStart int64) ([]byte, error) {
+	if m.qh < len(m.q) && m.q[m.qh].idx != i {
+		m.q, m.qh = m.q[:0], 0 // defensive: a run never outlives its consumer
+	}
+	if m.qh >= len(m.q) && m.planRun(i, sum, chunkStart) {
+		m.fetchRun(i)
+	}
+	if m.qh < len(m.q) {
+		e := m.q[m.qh]
+		m.qh++
+		if e.err == nil {
+			return e.data, nil
+		}
+		// This record failed inside its run; the other copies decide.
+	}
+	return m.s.casRead(sum)
+}
+
+// primary is the packed record casRead would serve for sum if it verifies:
+// the hottest packed copy, unless that copy is warm or cold and a hot loose
+// copy outranks it. ok is false when the chunk must go through casRead.
+func (m *manifestReader) primary(sum [32]byte, length int64) (packLoc, bool) {
+	var locs [4]packLoc
+	ls := m.pr.st.appendLocs(locs[:0], sum)
+	if len(ls) == 0 || int64(ls[0].logical) != length || m.bad[ls[0].pack] {
+		return packLoc{}, false
+	}
+	if ls[0].tier != tierHot {
+		if _, err := os.Lstat(m.s.chunkPath(sum)); !os.IsNotExist(err) {
+			return packLoc{}, false
+		}
+	}
+	return ls[0], true
+}
+
+// planRun fills m.sums/m.locs with chunk i and the following chunks that
+// the requested range needs and that sit physically contiguous in the same
+// pack, within the run bounds. It reports false when chunk i is not served
+// from a pack.
+func (m *manifestReader) planRun(i int, sum [32]byte, chunkStart int64) bool {
+	if m.pr == nil {
+		st := m.s.packSnap()
+		if len(st.packs) == 0 {
+			return false
+		}
+		m.pr = newPackRunReader(st, m.s.packTrace)
+	}
+	first, ok := m.primary(sum, m.chunks[i].Length)
+	if !ok {
+		return false
+	}
+	m.sums, m.locs = append(m.sums[:0], sum), append(m.locs[:0], first)
+	stored, logical := packRecordHeaderSize+int(first.stored), int(first.logical)
+	next := chunkStart + m.chunks[i].Length // start offset of chunk j
+	for j := i + 1; j < len(m.chunks) && next <= m.rng.end && len(m.locs) < packRunMaxRecords; j++ {
+		sj, err := decodeHexSHA256(m.chunks[j].SHA256)
+		if err != nil {
+			break
+		}
+		l, ok := m.primary(sj, m.chunks[j].Length)
+		prev := m.locs[len(m.locs)-1]
+		if !ok || l.pack != first.pack || int64(l.off)-packRecordHeaderSize != int64(prev.off)+int64(prev.stored) ||
+			stored+packRecordHeaderSize+int(l.stored) > packRunMaxStored || logical+int(l.logical) > packRunMaxLogical {
+			break
+		}
+		m.sums, m.locs = append(m.sums, sj), append(m.locs, l)
+		stored += packRecordHeaderSize + int(l.stored)
+		logical += int(l.logical)
+		next += m.chunks[j].Length
+	}
+	return true
+}
+
+// fetchRun reads the planned run and queues its chunks; a failing record
+// stops further runs from its pack for the rest of the request.
+func (m *manifestReader) fetchRun(i int) {
+	data, errs := m.pr.read(m.sums, m.locs)
+	m.q, m.qh = m.q[:0], 0
+	for k := range data {
+		m.q = append(m.q, runChunk{idx: i + k, data: data[k], err: errs[k]})
+		if errs[k] != nil {
+			if m.bad == nil {
+				m.bad = map[int32]bool{}
+			}
+			m.bad[m.locs[0].pack] = true
+		}
+	}
+	if t := m.s.packTrace; t != nil {
+		t.Runs.Add(1)
+		t.Chunks.Add(int64(len(data)))
+		if t.OnRun != nil {
+			var stored, logical int
+			for _, l := range m.locs {
+				stored += packRecordHeaderSize + int(l.stored)
+				logical += int(l.logical)
+			}
+			t.OnRun(len(m.locs), stored, logical)
+		}
+		for _, err := range errs {
+			if err != nil {
+				t.Failures.Add(1)
+			}
+		}
+	}
 }
 
 // =============================================================================

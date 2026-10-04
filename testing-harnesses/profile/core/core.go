@@ -66,6 +66,8 @@ type GetOpts struct {
 type ListOpts struct {
 	Prefix, Delimiter, Token string
 	Max                      int
+	// EncodingURL requests EncodingType=url; clients return decoded keys.
+	EncodingURL bool
 }
 
 type ListPage struct {
@@ -494,6 +496,50 @@ func scList(t *T) {
 	t.Check("prefix with plus", err == nil && len(pg.Keys) == 1 && pg.Keys[0] == "plus+/y", "%+v %v", pg, err)
 	_, err = c.List(b+"-missing", ListOpts{})
 	t.Status("list missing bucket is 404", err, 404)
+	scListEncoded(t)
+}
+
+// scListEncoded lists keys XML cannot carry verbatim (NUL, controls) plus
+// '%', '+', space, '?', '#' and Unicode with EncodingType=url; the client
+// must reconstruct the exact keys, with pagination and prefix/delimiter
+// resuming from the logical key.
+func scListEncoded(t *T) {
+	c := t.C
+	b := t.Bucket("listenc")
+	keys := []string{
+		"e/sp ace", "e/plus+x", "e/per%cent", "e/q?m", "e/h#t", "e/nul\x00b", "e/ctl\x01c",
+		"e/nl\nx", "e/\u65e5\u672c", "e/\U0001F600", "e/sub/a b", "e/sub/\x00z", "top",
+	}
+	for _, k := range keys {
+		put(t, b, k, []byte(k), PutOpts{})
+	}
+	var want []string
+	for _, k := range keys {
+		if strings.HasPrefix(k, "e/") {
+			want = append(want, k)
+		}
+	}
+	sort.Strings(want)
+	var got []string
+	tok := ""
+	for i := 0; i < 20; i++ {
+		pg, err := c.List(b, ListOpts{Prefix: "e/", Max: 4, Token: tok, EncodingURL: true})
+		if !t.NoErr("encoded ListObjectsV2 page", err) {
+			break
+		}
+		got = append(got, pg.Keys...)
+		if !pg.Truncated {
+			break
+		}
+		tok = pg.Next
+	}
+	t.Check("encoded listing reconstructs exact keys across pages", strings.Join(got, "\x01|") == strings.Join(want, "\x01|"), "got %q want %q", got, want)
+	pg, err := c.List(b, ListOpts{Prefix: "e/", Delimiter: "/", EncodingURL: true})
+	t.Check("encoded delimiter grouping", err == nil && len(pg.Prefixes) == 1 && pg.Prefixes[0] == "e/sub/" && len(pg.Keys) == len(want)-2, "%+v %v", pg, err)
+	pg, err = c.List(b, ListOpts{Prefix: "e/nul\x00", EncodingURL: true})
+	t.Check("encoded NUL prefix", err == nil && len(pg.Keys) == 1 && pg.Keys[0] == "e/nul\x00b", "%+v %v", pg, err)
+	g, err := c.Get(b, "e/nul\x00b", GetOpts{})
+	t.Check("direct GET of NUL key is byte-exact", err == nil && string(g.Body) == "e/nul\x00b", "%v", err)
 }
 
 func scBatchDelete(t *T) {

@@ -28,6 +28,11 @@
 #   scripts/validate.sh bundle-life  bundle scenarios: browser/checkpoint round trips, source deletion + GC,
 #                                real-process kill during import
 #   scripts/validate.sh bundle-scale  chunk-planner scale sanity (1M synthetic descriptors)
+#   scripts/validate.sh locality  pack locality: layout planner/root-order tests, maintenance order preservation
+#                                (repack/rebalance), coalesced packed-run reads incl. corruption fallback (seconds)
+#   scripts/validate.sh locality-bench  baseline (Z2-12) vs current packed-read matrix on 256 MiB sequential,
+#                                checkpoint and site fixtures (strace open/pread counts when available), the
+#                                run-window sweep and the 1M-candidate planner sanity
 #   scripts/validate.sh vectors  golden client vectors (SigV4, presign, wire shapes) plus the
 #                                fast GetBucketLocation/DeleteObjects/probe tests (seconds)
 #   scripts/validate.sh client   Core Client Profile v1 (AWS SDK + minio-go [+ AWS CLI if
@@ -51,7 +56,9 @@
 # TIER_BASELINE_BIN (the Z2-08 build, store formats 1-4; default: built from
 # its merge commit 33478ce), CAS_SIZE_MIB (cas-bench PutObject size, default 256),
 # CAS_MULTIPART_MIB (cas-bench multipart size, default 256), CAS_BASELINE_BIN (a build
-# predating grouped CAS publication; default: built from the Z2-10 merge a2bf462).
+# predating grouped CAS publication; default: built from the Z2-10 merge a2bf462),
+# LOCALITY_BASELINE_BIN (the pre-locality build for locality-bench; default: built from the Z2-12
+# merge 32c8d42), LOCALITY_SIZE_MIB (locality-bench object size, default 256).
 set -u
 
 # Ambient AWS_* settings would override the harnesses' fixed credentials.
@@ -132,6 +139,21 @@ stage_cas-bench() {
 stage_bundle() { cd "$root" && go test -count=1 -run 'TestBundle_|TestCASShardDirs_' .; }
 stage_bundle-life() { cd "$root" && go test -count=1 -run 'TestBundleLife_' .; }
 stage_bundle-scale() { cd "$root" && go test -count=1 -run 'TestBundleScale_' -v .; }
+stage_locality() { cd "$root" && go test -count=1 -run 'TestLocality_|TestPackRun_' .; }
+stage_locality-bench() {
+	build_bin || return 1
+	base="${LOCALITY_BASELINE_BIN:-}"
+	if [ -z "$base" ]; then
+		base="$logs/zeros3-z2-12-baseline"
+		tmp=$(mktemp -d) &&
+			(cd "$root" && git archive 32c8d42 zeros3.go go.mod | tar -x -C "$tmp") &&
+			(cd "$tmp" && CGO_ENABLED=0 go build -o "$base" zeros3.go) || return 1
+		rm -rf "$tmp"
+	fi
+	(cd "$root/testing-harnesses" &&
+		ZEROS3_BIN="$bin" go run ./harness/z2_locality -baseline-bin "$base" -size-mib "${LOCALITY_SIZE_MIB:-256}" -pack-size-mib "${PACK_SIZE_MIB:-64}") &&
+		cd "$root" && ZEROS3_LOCALITY_BENCH=1 go test -count=1 -run 'TestLocalityScale_|TestLocalityBench_' -v .
+}
 stage_tier() { cd "$root" && go test -count=1 -run 'TestTier_|TestLocator_' .; }
 stage_tier-life() {
 	build_bin || return 1
@@ -152,7 +174,7 @@ stage_tier-rebalance() {
 		cd "$root/testing-harnesses" && ZEROS3_BIN="$bin" go run ./harness/z2_consumer -scenario rebalance
 }
 stage_vectors() {
-	cd "$root" && go test -count=1 -run 'TestVectors_|TestGetBucketLocation|TestDeleteObjects_|TestProbe' . &&
+	cd "$root" && go test -count=1 -run 'TestVectors_|TestGetBucketLocation|TestDeleteObjects_|TestProbe|TestListObjectsV2_' . &&
 		{ ! command -v python3 >/dev/null || python3 testing-harnesses/vectors/gen.py --check; }
 }
 stage_client() { build_bin && cd "$root/testing-harnesses" && go run ./runner -group client -bin "$bin"; }
@@ -181,7 +203,7 @@ normal="format modules test static s3 sync repro"
 heavy="race crash repack compact compression index-scale bulk-bench cas-bench history-life tier-life"
 
 case "${1:-normal}" in
-list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk cas-batch bundle bundle-life bundle-scale history history-life tier tier-policy tier-rebalance tier-life vectors client apps"; exit 0 ;;
+list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk cas-batch bundle bundle-life bundle-scale locality locality-bench history history-life tier tier-policy tier-rebalance tier-life vectors client apps"; exit 0 ;;
 normal) stages=$normal ;;
 heavy) stages=$heavy ;;
 all) stages="$normal $heavy" ;;

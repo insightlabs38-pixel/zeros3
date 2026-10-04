@@ -474,9 +474,16 @@ documented AWS S3 behavior, rather than simply "not implemented":
   Real S3 rejects certain same-key copies where the metadata directive is
   `COPY` (no metadata change); ZeroS3 always publishes a new manifest/
   version/timestamp for the destination instead.
-- **`ListObjectsV2` has no `encoding-type=url`.** XML escaping alone covers
-  every tested key shape (including XML-special and Unicode characters);
-  clients relying on URL-encoded key parts in the response are unsupported.
+- **`ListObjectsV2` supports `encoding-type=url` (and only that value;
+  anything else is `InvalidArgument`).** XML 1.0 cannot carry every legal
+  object-key byte (NUL and most C0 controls), so clients handling arbitrary
+  keys should request `EncodingType=url`. The response then advertises
+  `<EncodingType>url</EncodingType>` and byte-wise uppercase `%XX`-encodes
+  `Key`, `Prefix`, `Delimiter` and `CommonPrefixes/Prefix` (space is `%20`,
+  `/` is `%2F`; `+` is never emitted for space). Filtering, grouping and
+  continuation tokens work on the original keys; `ContinuationToken`,
+  `NextContinuationToken`, `Name` and `ETag` are never encoded. Without the
+  parameter, output is unchanged.
 - **Legacy `ListObjects` (no `list-type=2`) is explicitly rejected**, not
   silently reinterpreted as V2.
 - **Multi-range GET (`bytes=0-1,3-4`) is unsupported.** Per RFC 7233's
@@ -500,8 +507,8 @@ documented AWS S3 behavior, rather than simply "not implemented":
   base domain (`-vhost-base`) maps `bucket.<base>` to a bucket; there is no
   wildcard-TLS or multi-domain routing, and this is request-addressing
   support only (no DNS automation).
-- **`ListMultipartUploads` has no `encoding-type=url` support**, matching
-  `ListObjectsV2`'s own lack of it above. `prefix`, `delimiter`/
+- **`ListMultipartUploads` has no `encoding-type=url` support**
+  (`ListObjectsV2` only, above). `prefix`, `delimiter`/
   `CommonPrefixes`, and their pagination/marker interaction are fully
   implemented (see the compatibility table above).
 - **`NextPartNumberMarker`/`NextKeyMarker`/`NextUploadIdMarker` are always

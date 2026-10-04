@@ -46,7 +46,7 @@ harness/
   m5b/multipart/           multipart lifecycle across a process restart
   m5d/pagination/          ListParts / ListMultipartUploads paging
   m6/sync, m6c/dirsync/    delta sync of a file and of a directory tree
-  m8a/remote_delta/        remote-to-remote replication
+  m8a/remote_delta/        remote-to-remote replication; the conflict phase holds the final /commit behind a proxy so the interloper write lands first (M8A_CONFLICT_ONLY=1 M8A_CONFLICT_REPS=N repeats just that phase)
   m8b/repair/              peer-assisted repair
   m8c/namespace_replication/
   m8d/fork/, m8e/snapshot/ copy-on-write forks and snapshots
@@ -55,6 +55,8 @@ harness/
   z2_aws_chunked/          minio-go aws-chunked SigV4 uploads via a recording/tampering proxy
   z2_packed_cas/           `zeros3 compact`: loose -> packed -> mixed byte-exact readback, file counts, throughput, open time, RSS
   z2_pack_compression/     adaptive packed-record compression: raw vs compressed per data family, old raw packs -> mixed packs -> repack, byte-exact GET/range, RSS
+  z2_locality/             pack layout x read path matrix (Z2-12 baseline vs current; digest vs locality layout): adjacent-chunk
+                           physical contiguity, pack opens / pread64 under strace, full GET, 1/16/64 MiB ranges, small random reads, RSS
   z2_repack/               pack-aware `gc` and `zeros3 repack`: utilization profiles, reclaimed bytes, write amplification, throughput, RSS, GET before/after
   z2_consumer/             ZeroS3-specific consumer contract: one S3 read scenario over loose/packed/
                            compressed/warm/cold/mixed stores (`invariance`), browser-site workload with
