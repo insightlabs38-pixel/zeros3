@@ -127,7 +127,11 @@ visibility journal
   hash; a second write of identical bytes is a no-op. A chunk is a loose
   file when written and can later be moved into an immutable pack
   (`zeros3 compact`), compressed or not; its identity, the SHA-256 of the
-  uncompressed bytes, never changes (see "Packed storage").
+  uncompressed bytes, never changes (see "Packed storage"). Loose chunks
+  are published in bounded groups (about 8 MiB per PutObject, UploadPart or
+  bulk upload): staged files are fsynced, then renamed into `chunks/aa/bb/`
+  and their directories fsynced before any lookup can see them, so the
+  layout and the acknowledged-write durability are unchanged.
 - **Immutable manifest** — one JSON file per object version: its ordered
   chunk list, total length, object SHA-256, ETag, Content-Type, and
   metadata. Manifests are never mutated, only superseded.
@@ -465,6 +469,16 @@ memory depends on batch size and the 4-batch cap, not object size or
 `-workers`. At 10 ms, 4 MiB / 8 MiB / 16 MiB batches reached 32.7 / 32.0 /
 31.0 MiB/s with 4 workers and gained nothing from 8, so the default is 8
 MiB batches and at most 4 in flight.
+
+Grouped loose-CAS publication (Z2-11) targets those per-chunk durable
+writes. On a 4-core ext4 VM, 256 MiB of unique data through PutObject went
+from 20.1 to 35.6 MiB/s (1.77x), a 256 MiB multipart upload from 18.5 to
+26.7 MiB/s, and a 4 MiB PutObject got faster (0.65x the time); bulk
+replication into a grouped destination rose from about 30 to 35-38 MiB/s
+at 0-10 ms. Peak server RSS stayed 15 MiB and a duplicate PutObject still
+writes nothing. Directory fsyncs are not merged -- random digests land in
+distinct `aa/bb` directories -- the gain comes from overlapping the
+fsyncs and from overlapping them with chunking and hashing.
 
 ## Verification
 
