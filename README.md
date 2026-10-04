@@ -256,6 +256,24 @@ collection, restored with zero new CAS payload. `zeros3 diff` and
 `zeros3 inspect` are read-only tools for comparing objects and
 inspecting a store's structural sharing.
 
+**History retention.** History is kept until you retire it:
+`zeros3 versions prune -store DIR -bucket B [-prefix P | -key K]
+(-keep-last N | -older-than 30d | both) [-apply] [-json]`. It is a dry run
+unless `-apply` is given, needs at least one criterion, and runs offline under
+the exclusive store lock (stop `zeros3 serve`). Only historical versions are
+candidates, never a current object. `-keep-last N` protects each key's newest
+N historical versions (0 is allowed when explicit); `-older-than D` uses one
+UTC cutoff captured at planning time and prunes only versions archived strictly
+before it; with both, a version must be outside the newest N *and* older than
+the cutoff. The bucket need not still exist. The plan is persisted as the exact
+version IDs (journal record type 12, batched into bounded frames, each durable
+on its own), so replay never depends on the clock, an interrupted prune leaves a
+valid store, and re-running converges. Pruning retires history roots only:
+snapshots, current objects and other versions keep whatever they reference, and
+nothing is deleted until `zeros3 gc -apply` / `zeros3 repack -apply` reclaim
+what became unreachable. The first prune raises `FORMAT.json` to store format
+version 4, so builds that predate it refuse the store.
+
 **Operational hardening.** Environment-variable credentials
 (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`), conservative
 HTTP server timeouts, graceful `SIGINT`/`SIGTERM` shutdown with a bounded
@@ -456,14 +474,15 @@ exact API contract:
 - Single writer process per store; no distributed/HA operation.
 - Packed storage is v1: `compact`, `gc -apply` and `repack` are offline.
   Retained history keeps overwritten and deleted versions live, so packed
-  records only die after upload aborts or when history pruning exists. The
-  first `compact` marks the store format version 2, and the first compressed
-  record version 3: earlier builds refuse to open such a store rather than
+  records only die after upload aborts or after `versions prune` retires
+  history. The first `compact` marks the store format version 2, the first
+  compressed record version 3 and the first history prune version 4: earlier builds refuse to open such a store rather than
   misread it, while a never-compacted store stays version 1 and opens with
   any build. Pack size targets chunk data before compression, so compressed
   packs come out smaller; compression is DEFLATE only, per chunk.
 - Internal object version history (`zeros3 versions`/`restore`) is a
-  ZeroS3-only mechanism, not the AWS S3 Versioning API.
+  ZeroS3-only mechanism, not the AWS S3 Versioning API. Retention is explicit
+  and offline; there is no automatic expiration or lifecycle configuration.
 - No IAM/STS/KMS/ACL/policy engine; a single static credential pair.
 - `replicate`, `repair`, `fork`, and `snapshot` all require ZeroS3 on
   every server involved — no generic-AWS-S3 source or destination.

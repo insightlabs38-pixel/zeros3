@@ -7,10 +7,13 @@
 #   scripts/validate.sh heavy    race tests, pack/compression crash matrix,
 #                                multi-GiB repack, compaction and pack
 #                                compression harnesses, 5M-record locator scale,
-#                                bulk-transfer request/RTT benchmark
+#                                bulk-transfer request/RTT benchmark,
+#                                history prune lifecycle
 #   scripts/validate.sh index    locator semantic/differential tests only
 #   scripts/validate.sh bulk     bulk framing/protocol tests plus the sync,
 #                                replicate, restore and repair suites
+#   scripts/validate.sh history  history prune planner/journal/crash/reclamation tests
+#   scripts/validate.sh history-life  black-box prune lifecycle harness (gc + repack)
 #   scripts/validate.sh all      both
 #   scripts/validate.sh STAGE... run named stages (see `list`)
 #
@@ -21,6 +24,8 @@
 # Harness sizes: REPACK_SIZE_MIB (default 1024 per profile), COMPACT_SIZE_MIB,
 # COMPRESS_CLASS_MIB (per data family) and COMPRESS_SIZE_MIB (lifecycle store),
 # PACK_SIZE_MIB, LOCATOR_SCALE (record counts for index-scale, default 5000000),
+# HISTORY_SEG_MIB (history-life object half size, default 4), HISTORY_BASELINE_BIN
+# (a build predating history pruning; default: built from the Z2-07 merge),
 # BULK_SIZE_MIB (bulk-bench payload, default 256), BULK_BASELINE_BIN (a build
 # without bulk transport to act as the v1 client; default: built from the
 # Z2-06 commit).
@@ -55,6 +60,22 @@ stage_s3() { build_bin && cd "$root/testing-harnesses" && go run ./runner -group
 stage_sync() { build_bin && cd "$root/testing-harnesses" && go run ./runner -group sync -bin "$bin"; }
 stage_bulk() {
 	cd "$root" && go test -count=1 -run 'TestBulk|TestSync_|TestReplicate_|TestRepair_|TestSnapshotRestore' .
+}
+stage_history() {
+	cd "$root" && go test -count=1 -run 'TestPrune_|TestJournal_|TestVersions_|TestRestore_|TestCrash_JournalReplay|TestPack_StoreFormatVersionGate' .
+}
+stage_history-life() {
+	build_bin || return 1
+	base="${HISTORY_BASELINE_BIN:-}"
+	if [ -z "$base" ]; then
+		base="$logs/zeros3-z2-07-baseline"
+		tmp=$(mktemp -d) &&
+			(cd "$root" && git archive 24ec2a6 zeros3.go go.mod | tar -x -C "$tmp") &&
+			(cd "$tmp" && CGO_ENABLED=0 go build -o "$base" zeros3.go) || return 1
+		rm -rf "$tmp"
+	fi
+	cd "$root/testing-harnesses" &&
+		ZEROS3_BIN="$bin" go run ./harness/z2_history_prune -seg-mib "${HISTORY_SEG_MIB:-4}" -baseline-bin "$base"
 }
 stage_bulk-bench() {
 	build_bin || return 1
@@ -91,10 +112,10 @@ stage_compression() {
 }
 
 normal="format modules test static s3 sync repro"
-heavy="race crash repack compact compression index-scale bulk-bench"
+heavy="race crash repack compact compression index-scale bulk-bench history-life"
 
 case "${1:-normal}" in
-list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk"; exit 0 ;;
+list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk history history-life"; exit 0 ;;
 normal) stages=$normal ;;
 heavy) stages=$heavy ;;
 all) stages="$normal $heavy" ;;

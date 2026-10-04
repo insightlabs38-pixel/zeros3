@@ -53,6 +53,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 	"uuid"
 )
 
@@ -69,35 +70,35 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      433    Content-defined chunking (CDC)
-//      559    Content-addressed chunk storage (CAS)
-//      718    Packed CAS (immutable packs, DEFLATE records, locator index)
-//     1834    Manifests (immutable, JSON)
-//     1933    Visibility journal (append-only, checksummed)
-//     2328    Store: format, namespace, and object CRUD
-//     3077    Version history/restore and ListObjectsV2
-//     3307    SigV4 authentication (header and presigned-URL)
-//     4262    Request payload checksums and S3-shaped XML error/response types
-//     4478    HTTP routing and S3 operation handlers
-//     4878    Conditional operations (PUT/GET/HEAD preconditions)
-//     5444    CopyObject
-//     5738    Multipart upload
-//     6564    Stats and reachability scanning
-//     7291    Verify
-//     7467    Store locking and safe offline GC
-//     7722    Offline compaction (`zeros3 compact`)
-//     8240    Pack reclamation and repacking (`zeros3 repack`)
-//     8579    Streaming object reads (full and ranged GET)
-//     8704    Delta sync client, credentials, and parallel transfer
-//    10649    Bulk logical-chunk transport (v2)
-//    11551    Recursive directory sync
-//    11856    Remote replication (`zeros3 replicate`)
-//    12603    Peer-assisted corruption repair (`zeros3 repair`)
-//    13115    Namespace (prefix/bucket) replication
-//    13422    Copy-on-write namespace fork (`zeros3 fork`)
-//    13630    Snapshots and restore
-//    14777    Structural diff and inspect (introspection)
-//    15301    CLI dispatch, HTTP server/startup, and main
+//     449    Content-defined chunking (CDC)
+//     575    Content-addressed chunk storage (CAS)
+//     734    Packed CAS (immutable packs, DEFLATE records, locator index)
+//    1850    Manifests (immutable, JSON)
+//    1949    Visibility journal (append-only, checksummed)
+//    2362    Store: format, namespace, and object CRUD
+//    3177    Version history/restore, history pruning, ListObjectsV2
+//    3650    SigV4 authentication (header and presigned-URL)
+//    4605    Request payload checksums and S3-shaped XML error/response types
+//    4821    HTTP routing and S3 operation handlers
+//    5218    Conditional operations (PUT/GET/HEAD preconditions)
+//    5784    CopyObject
+//    6078    Multipart upload
+//    6904    Stats and reachability scanning
+//    7631    Verify
+//    7807    Store locking and safe offline GC
+//    8062    Offline compaction (`zeros3 compact`)
+//    8580    Pack reclamation and repacking (`zeros3 repack`)
+//    8919    Streaming object reads (full and ranged GET)
+//    9044    Delta sync client, credentials, and parallel transfer
+//   10987    Bulk logical-chunk transport (v2)
+//   11889    Recursive directory sync
+//   12194    Remote replication (`zeros3 replicate`)
+//   12941    Peer-assisted corruption repair (`zeros3 repair`)
+//   13453    Namespace (prefix/bucket) replication
+//   13760    Copy-on-write namespace fork (`zeros3 fork`)
+//   13968    Snapshots and restore
+//   15115    Structural diff and inspect (introspection)
+//   15639    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -119,8 +120,12 @@ const (
 	// storeFormatVersionCompressed is raised before the first pack holding a
 	// compressed record is published, so a build that reads only raw packs
 	// refuses the store instead of failing chunk by chunk.
-	storeFormatVersionPacked     = 2
-	storeFormatVersionCompressed = 3
+	// storeFormatVersionHistoryPrune is raised before the first
+	// recordTypePruneHistory frame is appended, so a build that cannot
+	// replay it refuses the store at open instead of at journal replay.
+	storeFormatVersionPacked       = 2
+	storeFormatVersionCompressed   = 3
+	storeFormatVersionHistoryPrune = 4
 
 	// CDC v1 parameters (frozen). See buildGearTable and findCDCBoundary.
 	cdcMinChunkSize    = 16 * 1024
@@ -175,6 +180,11 @@ const (
 	recordTypePutObjectRootV2           = byte(9)
 	recordTypeCompleteMultipartUploadV2 = byte(10)
 	recordTypeDeleteObjectRootV2        = byte(11)
+
+	// recordTypePruneHistory durably retires exact history rows by version
+	// ID (see journalPruneHistoryPayload). Stores that may contain it carry
+	// FORMAT.json version 4 or later.
+	recordTypePruneHistory = byte(12)
 
 	// maxBufferedBodySize bounds the structured (XML/JSON) request bodies
 	// that are read fully into memory. maxStreamedBodySize bounds one
@@ -421,6 +431,12 @@ const (
 	hookBeforePackDelete = "before-pack-delete"
 	hookPackDeleted      = "pack-deleted"
 	hookRepackDone       = "repack-done"
+
+	// History prune boundaries (section 7d).
+	hookPruneBeforeFormat = "prune-before-format"
+	hookPruneAfterFormat  = "prune-after-format"
+	hookPruneBeforeFrame  = "prune-before-frame"
+	hookPruneAfterFrame   = "prune-after-frame"
 )
 
 // simulatedCrash is panicked by test hooks to unwind out of the commit
@@ -2097,6 +2113,23 @@ type journalArchivedVersionPayload struct {
 	Reason         string    `json:"reason"` // historyReasonOverwritten | historyReasonDeleted
 }
 
+// journalPruneHistoryPayload is the record-type-12 payload: the exact
+// historical version IDs to retire, grouped by key. Retention rules are
+// planning inputs and are never persisted; replaying exact IDs reproduces
+// the same history regardless of when replay runs. Each frame is
+// independently durable, and an ID that is already absent is a no-op so a
+// re-run converges. Only history rows are removed -- never a current root,
+// a manifest, or any CAS data.
+type journalPruneHistoryPayload struct {
+	Entries []journalPruneHistoryEntry `json:"entries"`
+}
+
+type journalPruneHistoryEntry struct {
+	Bucket     string   `json:"bucket"`
+	Key        string   `json:"key"`
+	VersionIDs []string `json:"version_ids"`
+}
+
 // journalPutPayloadV2 is the record-type-9 payload: journalPutPayload's
 // fields plus an optional Previous, populated whenever this commit
 // replaces an existing current root (ordinary PUT overwrite, CopyObject
@@ -2266,7 +2299,8 @@ func replayJournal(f *os.File) (validEnd int64, lastSeq uint64, records []journa
 		switch recType {
 		case recordTypeCreateBucket, recordTypePutObjectRoot, recordTypeDeleteObjectRoot, recordTypeDeleteBucket,
 			recordTypeCreateMultipartUpload, recordTypeUploadPart, recordTypeAbortMultipartUpload, recordTypeCompleteMultipartUpload,
-			recordTypePutObjectRootV2, recordTypeCompleteMultipartUploadV2, recordTypeDeleteObjectRootV2:
+			recordTypePutObjectRootV2, recordTypeCompleteMultipartUploadV2, recordTypeDeleteObjectRootV2,
+			recordTypePruneHistory:
 			// known record type
 		default:
 			return 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: unknown record type %d", offset, recType)
@@ -2426,8 +2460,8 @@ type Store struct {
 	// the commit or delete that produces it (section 7c). A key's history
 	// slice outlives the key's current root (a DeleteBucket that removes
 	// an emptied bucket leaves that bucket's former keys' history rows in
-	// place, addressable by zeros3 versions/restore, until this milestone
-	// -- deliberately -- never expires or deletes them).
+	// place, addressable by zeros3 versions/restore, until an explicit
+	// `versions prune` retires them; nothing expires automatically).
 	history map[string]map[string][]*historyVersionEntry
 
 	// snapshotMu guards store/snapshots/ create-vs-delete and
@@ -2498,7 +2532,7 @@ func OpenStore(root string) (*Store, error) {
 }
 
 func supportedStoreFormat(v int) bool {
-	return v >= storeFormatVersion && v <= storeFormatVersionCompressed
+	return v >= storeFormatVersion && v <= storeFormatVersionHistoryPrune
 }
 
 func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
@@ -2509,7 +2543,7 @@ func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
 			return storeFormat{}, fmt.Errorf("store: FORMAT.json is corrupt: %w", err)
 		}
 		if !supportedStoreFormat(format.StoreFormatVersion) {
-			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports versions %d through %d)", format.StoreFormatVersion, storeFormatVersion, storeFormatVersionCompressed)
+			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports versions %d through %d)", format.StoreFormatVersion, storeFormatVersion, storeFormatVersionHistoryPrune)
 		}
 		if format.CDCFormatVersion != cdcFormatVersion {
 			return storeFormat{}, fmt.Errorf("store: unsupported CDC format version %d (this build supports version %d)", format.CDCFormatVersion, cdcFormatVersion)
@@ -2723,10 +2757,76 @@ func (s *Store) applyRecord(rec journalRecord) error {
 			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
 		delete(b.objects, p.Key)
+	case recordTypePruneHistory:
+		p, err := parsePruneHistoryPayload(rec.payload)
+		if err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
+		s.removeHistoryLocked(p)
 	default:
 		return fmt.Errorf("seq %d: unknown record type %d", rec.seq, rec.recType)
 	}
 	return nil
+}
+
+// parsePruneHistoryPayload validates a prune frame's structure. Live code
+// calls it before appending so a frame replay would reject is never
+// journaled; replay calls it so a malformed frame is journal corruption.
+func parsePruneHistoryPayload(payload []byte) (journalPruneHistoryPayload, error) {
+	var p journalPruneHistoryPayload
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
+		return p, fmt.Errorf("prune-history: %w", err)
+	}
+	if dec.More() || len(p.Entries) == 0 {
+		return p, errors.New("prune-history: trailing data or no entries")
+	}
+	for _, e := range p.Entries {
+		if e.Bucket == "" || e.Key == "" || !utf8.ValidString(e.Bucket) || !utf8.ValidString(e.Key) || len(e.VersionIDs) == 0 {
+			return p, errors.New("prune-history: malformed entry")
+		}
+		for _, id := range e.VersionIDs {
+			if u, err := uuid.Parse(id); err != nil || u.String() != id {
+				return p, fmt.Errorf("prune-history: malformed version ID %q", id)
+			}
+		}
+	}
+	return p, nil
+}
+
+// removeHistoryLocked is the single implementation of a prune frame's
+// effect, shared by live application and replay. A valid ID that is not
+// present is skipped. History slices are replaced, never edited in place,
+// because readers hold them outside s.mu. Must be called with s.mu held.
+func (s *Store) removeHistoryLocked(p journalPruneHistoryPayload) (removed int) {
+	for _, e := range p.Entries {
+		drop := make(map[string]bool, len(e.VersionIDs))
+		for _, id := range e.VersionIDs {
+			drop[id] = true
+		}
+		old := s.history[e.Bucket][e.Key]
+		kept := make([]*historyVersionEntry, 0, len(old))
+		for _, h := range old {
+			if drop[h.versionID] {
+				removed++
+				continue
+			}
+			kept = append(kept, h)
+		}
+		if len(kept) == len(old) {
+			continue
+		}
+		if len(kept) > 0 {
+			s.history[e.Bucket][e.Key] = kept
+			continue
+		}
+		delete(s.history[e.Bucket], e.Key)
+		if len(s.history[e.Bucket]) == 0 {
+			delete(s.history, e.Bucket)
+		}
+	}
+	return removed
 }
 
 // archiveVersionLocked appends one archived-version payload (decoded from
@@ -3087,10 +3187,9 @@ func (s *Store) HeadObject(bucket, key string) (*objectEntry, manifestV1, error)
 // archivedVersionPayload + archiveVersionLocked so there is exactly one
 // place this bookkeeping happens. A first-time PUT to a key that has never
 // had a current root archives nothing (there is no meaningful "previous
-// state" to keep). History is retained indefinitely: this milestone
-// implements no explicit version deletion, expiration, or retention
-// policy, so restored/superseded versions remain live GC roots forever
-// (see section 12b).
+// state" to keep). History is retained until `zeros3 versions prune`
+// explicitly retires rows (section 7d); there is no automatic expiration,
+// so superseded versions otherwise remain live GC roots (see section 12b).
 // =============================================================================
 
 // historyNamespaceObject is one flattened (bucket, key, historyVersionEntry)
@@ -3191,6 +3290,250 @@ func (s *Store) RestoreObjectVersion(bucket, key, versionID string) (*objectEntr
 		return nil, manifestV1{}, err
 	}
 	return entry, man, nil
+}
+
+// =============================================================================
+// 7d. Explicit history retention (prune)
+//
+// History rows are GC roots (section 12a). Pruning retires exact history
+// rows by version ID and nothing else: it never touches a current root,
+// snapshot, manifest, chunk or pack. Manifests and chunks that lose their
+// last root become ordinary GC/repack garbage under the canonical
+// reachability scan. Retention rules (keep-last N, older-than D) only
+// drive planning; what is journaled (recordTypePruneHistory) is the exact
+// ID set, so replay is independent of wall-clock time.
+//
+// Frames are independent: each is durable on its own, the in-memory rows
+// are removed only after the frame is synced, and an interrupted prune
+// leaves a valid store whose re-run plans just the remainder. The first
+// frame is preceded by a durable FORMAT.json raise to version 4.
+// =============================================================================
+
+// pruneFrameTargetBytes is the approximate payload size at which a prune
+// frame is closed, far below maxJournalPayload.
+const pruneFrameTargetBytes = 256 * 1024
+
+type historyPruneOptions struct {
+	Bucket    string
+	Prefix    string // mutually exclusive with Key
+	Key       string
+	KeepLast  *int          // newest N historical versions per key are protected
+	OlderThan time.Duration // only versions archived strictly before Now-OlderThan are eligible; 0 = unset
+	Now       time.Time     // planning instant; zero means time.Now()
+}
+
+type historyPruneVersion struct {
+	Bucket     string    `json:"bucket"`
+	Key        string    `json:"key"`
+	VersionID  string    `json:"version_id"`
+	Size       int64     `json:"size"`
+	ArchivedAt time.Time `json:"archived_at"`
+	Reason     string    `json:"reason"`
+	seq        uint64
+}
+
+// HistoryPruneResult is both the plan and, after ApplyHistoryPrune, the
+// outcome. Versions is the exact, ordered (bucket, key, seq) removal set.
+type HistoryPruneResult struct {
+	Applied              bool                  `json:"applied"`
+	Bucket               string                `json:"bucket"`
+	Prefix               string                `json:"prefix,omitempty"`
+	Key                  string                `json:"key,omitempty"`
+	KeepLast             *int                  `json:"keep_last,omitempty"`
+	OlderThan            string                `json:"older_than,omitempty"`
+	Cutoff               string                `json:"cutoff,omitempty"`
+	KeysMatched          int                   `json:"keys_matched"`
+	HistoricalExamined   int                   `json:"historical_examined"`
+	HistoricalRetained   int                   `json:"historical_retained"`
+	HistoricalSelected   int                   `json:"historical_selected"`
+	SelectedLogicalBytes int64                 `json:"selected_logical_bytes"`
+	JournalFrames        int                   `json:"journal_frames,omitempty"`
+	VersionsPruned       int                   `json:"versions_pruned,omitempty"`
+	Versions             []historyPruneVersion `json:"versions"`
+}
+
+// selectPruneVersions returns the rows of one key's history eligible for
+// pruning, oldest first by journal seq. keepLast protects the newest N rows;
+// cutoff (when non-nil) additionally protects every row with
+// archivedAt >= cutoff. A row is selected only if no protection applies.
+func selectPruneVersions(entries []*historyVersionEntry, keepLast *int, cutoff *time.Time) []*historyVersionEntry {
+	sorted := append([]*historyVersionEntry(nil), entries...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].seq < sorted[j].seq })
+	eligible := len(sorted)
+	if keepLast != nil {
+		eligible = max(0, len(sorted)-*keepLast)
+	}
+	var out []*historyVersionEntry
+	for _, e := range sorted[:eligible] {
+		if cutoff == nil || e.archivedAt.Before(*cutoff) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// PlanHistoryPrune computes the exact set of history rows opt retires. It
+// reads a consistent copy of the history and mutates nothing. The bucket
+// need not currently exist: history outlives bucket deletion.
+func (s *Store) PlanHistoryPrune(opt historyPruneOptions) (HistoryPruneResult, error) {
+	res := HistoryPruneResult{Bucket: opt.Bucket, Prefix: opt.Prefix, Key: opt.Key, KeepLast: opt.KeepLast, Versions: []historyPruneVersion{}}
+	switch {
+	case opt.Bucket == "":
+		return res, errors.New("a bucket is required")
+	case opt.Key != "" && opt.Prefix != "":
+		return res, errors.New("-key and -prefix are mutually exclusive")
+	case opt.KeepLast == nil && opt.OlderThan == 0:
+		return res, errors.New("a retention criterion (-keep-last and/or -older-than) is required")
+	case opt.KeepLast != nil && *opt.KeepLast < 0:
+		return res, errors.New("-keep-last must not be negative")
+	case opt.OlderThan < 0:
+		return res, errors.New("-older-than must be positive")
+	}
+	var cutoff *time.Time
+	if opt.OlderThan > 0 {
+		now := opt.Now
+		if now.IsZero() {
+			now = time.Now()
+		}
+		c := now.UTC().Add(-opt.OlderThan)
+		cutoff = &c
+		res.OlderThan = opt.OlderThan.String()
+		res.Cutoff = c.Format(time.RFC3339Nano)
+	}
+
+	snap := map[string][]*historyVersionEntry{}
+	s.mu.Lock()
+	for key, entries := range s.history[opt.Bucket] {
+		if (opt.Key != "" && key != opt.Key) || !strings.HasPrefix(key, opt.Prefix) {
+			continue
+		}
+		snap[key] = entries
+	}
+	s.mu.Unlock()
+
+	keys := make([]string, 0, len(snap))
+	for k := range snap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		entries := snap[key]
+		res.KeysMatched++
+		res.HistoricalExamined += len(entries)
+		for _, e := range selectPruneVersions(entries, opt.KeepLast, cutoff) {
+			res.Versions = append(res.Versions, historyPruneVersion{
+				Bucket: opt.Bucket, Key: key, VersionID: e.versionID, Size: e.size,
+				ArchivedAt: e.archivedAt.UTC(), Reason: e.reason, seq: e.seq,
+			})
+			res.SelectedLogicalBytes += e.size
+		}
+	}
+	res.HistoricalSelected = len(res.Versions)
+	res.HistoricalRetained = res.HistoricalExamined - res.HistoricalSelected
+	return res, nil
+}
+
+// buildPruneFrames groups an ordered removal set into journal payloads of
+// roughly target bytes each.
+func buildPruneFrames(vs []historyPruneVersion, target int) ([][]byte, error) {
+	var frames [][]byte
+	var cur journalPruneHistoryPayload
+	size := 0
+	flush := func() error {
+		if len(cur.Entries) == 0 {
+			return nil
+		}
+		b, err := json.Marshal(cur)
+		if err != nil {
+			return err
+		}
+		frames = append(frames, b)
+		cur, size = journalPruneHistoryPayload{}, 0
+		return nil
+	}
+	for _, v := range vs {
+		n := len(cur.Entries)
+		if n == 0 || cur.Entries[n-1].Bucket != v.Bucket || cur.Entries[n-1].Key != v.Key {
+			cur.Entries = append(cur.Entries, journalPruneHistoryEntry{Bucket: v.Bucket, Key: v.Key})
+			size += len(v.Bucket) + len(v.Key) + 64
+			n++
+		}
+		cur.Entries[n-1].VersionIDs = append(cur.Entries[n-1].VersionIDs, v.VersionID)
+		size += len(v.VersionID) + 4
+		if size >= target {
+			if err := flush(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := flush(); err != nil {
+		return nil, err
+	}
+	return frames, nil
+}
+
+// ApplyHistoryPrune durably retires res.Versions: FORMAT.json is raised to
+// version 4 first, then each frame is appended and synced before its rows
+// leave memory. It requires exclusive store ownership (see
+// pruneHistoryStore).
+func (s *Store) ApplyHistoryPrune(res *HistoryPruneResult) error {
+	return s.applyHistoryPrune(res, pruneFrameTargetBytes)
+}
+
+func (s *Store) applyHistoryPrune(res *HistoryPruneResult, frameTarget int) error {
+	if len(res.Versions) == 0 {
+		res.Applied = true
+		return nil
+	}
+	frames, err := buildPruneFrames(res.Versions, frameTarget)
+	if err != nil {
+		return err
+	}
+	fireTestHook(hookPruneBeforeFormat)
+	if err := s.ensureStoreFormat(storeFormatVersionHistoryPrune); err != nil {
+		return fmt.Errorf("upgrading store format: %w", err)
+	}
+	fireTestHook(hookPruneAfterFormat)
+	for _, payload := range frames {
+		p, err := parsePruneHistoryPayload(payload)
+		if err != nil {
+			return err
+		}
+		fireTestHook(hookPruneBeforeFrame)
+		s.mu.Lock()
+		if _, err := s.journal.appendFrame(recordTypePruneHistory, payload); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		res.VersionsPruned += s.removeHistoryLocked(p)
+		s.mu.Unlock()
+		res.JournalFrames++
+		fireTestHook(hookPruneAfterFrame)
+	}
+	res.Applied = true
+	return nil
+}
+
+// pruneHistoryStore plans (and, with apply, performs) a prune under
+// exclusive store ownership, so the retention snapshot cannot change
+// underneath the plan and a live server never sees rows disappear.
+func pruneHistoryStore(storeDir string, opt historyPruneOptions, apply bool) (HistoryPruneResult, error) {
+	lock, err := acquireStoreLock(storeDir, true)
+	if err != nil {
+		return HistoryPruneResult{}, err
+	}
+	defer lock.release()
+	store, err := OpenStore(storeDir)
+	if err != nil {
+		return HistoryPruneResult{}, err
+	}
+	defer store.Close()
+	res, err := store.PlanHistoryPrune(opt)
+	if err != nil || !apply {
+		return res, err
+	}
+	err = store.ApplyHistoryPrune(&res)
+	return res, err
 }
 
 // =============================================================================
@@ -4501,9 +4844,6 @@ type Server struct {
 	// this field existed. It is never used for anything SigV4-related --
 	// the raw, unmodified r.Host is what gets signed/verified either way.
 	vhostBase string
-	// noBulk withholds the v2 bulk-transport capability, making this
-	// server indistinguishable from a build that predates it.
-	noBulk bool
 }
 
 func NewServer(store *Store, creds Credentials, region string) *Server {
@@ -9274,9 +9614,7 @@ func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
 		MaxBatchBytes:     maxSyncBatchBytes,
 		MaxChunkBytes:     maxSyncChunkBytes,
 	}
-	if !srv.noBulk {
-		d.BulkProtocol, d.MaxBulkChunks, d.MaxBulkBytes = zeros3BulkProtocolVersion, maxBulkRecords, maxBulkBytes
-	}
+	d.BulkProtocol, d.MaxBulkChunks, d.MaxBulkBytes = zeros3BulkProtocolVersion, maxBulkRecords, maxBulkBytes
 	writeSyncJSON(w, http.StatusOK, d)
 }
 
@@ -10912,7 +11250,7 @@ func writeBulkParseError(w http.ResponseWriter, err error) {
 }
 
 func (srv *Server) handleBulk(w http.ResponseWriter, r *http.Request, rawPath string, check payloadCheck) {
-	if srv.noBulk || r.Method != http.MethodPost {
+	if r.Method != http.MethodPost {
 		writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown ZeroS3 sync extension operation")
 		return
 	}
@@ -15744,6 +16082,10 @@ type versionRow struct {
 // restart, since it is derived entirely from the journal-reconstructed
 // namespace/history (section 7c).
 func runVersions(args []string) {
+	if len(args) > 0 && args[0] == "prune" {
+		runVersionsPrune(args[1:])
+		return
+	}
 	fs := flag.NewFlagSet("versions", flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	bucket := fs.String("bucket", "", "bucket name (required)")
@@ -15810,6 +16152,111 @@ func runVersions(args []string) {
 			status += "(deleted)"
 		}
 		fmt.Printf("%-38s %-12s %10d %-30s %s\n", r.VersionID, status, r.Size, ts, r.ETag)
+	}
+}
+
+// parseRetentionAge parses -older-than: a positive Go duration, or a whole
+// number of days written "Nd".
+func parseRetentionAge(v string) (time.Duration, error) {
+	var d time.Duration
+	if n, ok := strings.CutSuffix(v, "d"); ok {
+		days, err := strconv.ParseInt(n, 10, 64)
+		if err != nil || days > int64(math.MaxInt64/(24*time.Hour)) {
+			return 0, fmt.Errorf("invalid duration %q", v)
+		}
+		d = time.Duration(days) * 24 * time.Hour
+	} else {
+		var err error
+		if d, err = time.ParseDuration(v); err != nil {
+			return 0, fmt.Errorf("invalid duration %q", v)
+		}
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("duration %q must be positive", v)
+	}
+	return d, nil
+}
+
+// runVersionsPrune implements "zeros3 versions prune": a dry-run-by-default
+// retention plan over historical versions. Both the plan and -apply run
+// under exclusive store ownership (stop `zeros3 serve` first).
+func runVersionsPrune(args []string) {
+	fs := flag.NewFlagSet("versions prune", flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	bucket := fs.String("bucket", "", "bucket name (required; the bucket may no longer exist)")
+	prefix := fs.String("prefix", "", "only keys with this prefix (exclusive with -key)")
+	key := fs.String("key", "", "only this exact key (exclusive with -prefix)")
+	keepLast := fs.Int("keep-last", 0, "protect the newest N historical versions of each key")
+	olderThan := fs.String("older-than", "", "only prune versions archived strictly before now minus this age (e.g. 30d, 720h)")
+	apply := fs.Bool("apply", false, "durably retire the selected versions (default: dry run)")
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	fs.Parse(args)
+
+	opt := historyPruneOptions{Bucket: *bucket, Prefix: *prefix, Key: *key}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "keep-last" {
+			opt.KeepLast = keepLast
+		}
+	})
+	if *olderThan != "" {
+		d, err := parseRetentionAge(*olderThan)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "zeros3: versions prune: %v\n", err)
+			os.Exit(2)
+		}
+		opt.OlderThan = d
+	}
+	if opt.Bucket == "" || (opt.Key != "" && opt.Prefix != "") || (opt.KeepLast == nil && opt.OlderThan == 0) || (opt.KeepLast != nil && *opt.KeepLast < 0) {
+		fmt.Fprintln(os.Stderr, "zeros3: versions prune: -bucket and at least one of -keep-last/-older-than are required; -key and -prefix are mutually exclusive; -keep-last must not be negative")
+		os.Exit(2)
+	}
+
+	res, err := pruneHistoryStore(*storeDir, opt, *apply)
+	if err != nil {
+		if errors.Is(err, errGCStoreInUse) {
+			fmt.Fprintf(os.Stderr, "zeros3: versions prune: %v -- prune requires exclusive access; stop `zeros3 serve`/any other maintenance command against this store first\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "zeros3: versions prune failed: %v\n", err)
+		}
+		os.Exit(1)
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			log.Fatalf("zeros3: %v", err)
+		}
+		return
+	}
+	printPruneHuman(os.Stdout, res)
+}
+
+func printPruneHuman(w io.Writer, r HistoryPruneResult) {
+	mode := "dry run"
+	if r.Applied {
+		mode = "applied"
+	}
+	fmt.Fprintf(w, "history prune (%s) bucket=%s", mode, r.Bucket)
+	if r.Prefix != "" {
+		fmt.Fprintf(w, " prefix=%s", r.Prefix)
+	}
+	if r.Key != "" {
+		fmt.Fprintf(w, " key=%s", r.Key)
+	}
+	if r.KeepLast != nil {
+		fmt.Fprintf(w, " keep-last=%d", *r.KeepLast)
+	}
+	if r.Cutoff != "" {
+		fmt.Fprintf(w, " cutoff=%s", r.Cutoff)
+	}
+	fmt.Fprintf(w, "\nkeys matched        %d\nhistorical examined %d\nretained            %d\nselected            %d (%s logical; physical reclaim depends on remaining roots)\n",
+		r.KeysMatched, r.HistoricalExamined, r.HistoricalRetained, r.HistoricalSelected, humanBytes(r.SelectedLogicalBytes))
+	if r.Applied {
+		fmt.Fprintf(w, "pruned %d history versions in %d journal frames; run `zeros3 gc` to see newly reclaimable storage\n", r.VersionsPruned, r.JournalFrames)
+		return
+	}
+	if r.HistoricalSelected > 0 {
+		fmt.Fprintf(w, "no changes made; re-run with -apply to retire these versions (-json lists them)\n")
 	}
 }
 
