@@ -23,6 +23,11 @@
 #                                black-box rebalance scenario (browser + checkpoint)
 #   scripts/validate.sh cas-batch  grouped loose-CAS publication: batch/barrier/crash/concurrency tests,
 #                                real-process kill, bulk-upload batching (under a minute)
+#   scripts/validate.sh bundle  portable snapshot bundles: format/parser matrix, export/import,
+#                                idempotence, collisions, crash matrix, grouped CAS publication (seconds)
+#   scripts/validate.sh bundle-life  bundle scenarios: browser/checkpoint round trips, source deletion + GC,
+#                                real-process kill during import
+#   scripts/validate.sh bundle-scale  chunk-planner scale sanity (1M synthetic descriptors)
 #   scripts/validate.sh vectors  golden client vectors (SigV4, presign, wire shapes) plus the
 #                                fast GetBucketLocation/DeleteObjects/probe tests (seconds)
 #   scripts/validate.sh client   Core Client Profile v1 (AWS SDK + minio-go [+ AWS CLI if
@@ -124,6 +129,9 @@ stage_cas-bench() {
 		go run ./harness/z2_cas_batch -bin "$bin" -baseline-bin "$base" -size-mib "${CAS_SIZE_MIB:-256}" -multipart-mib "${CAS_MULTIPART_MIB:-256}" &&
 		go run ./harness/z2_bulk_transfer -bin "$bin" -size-mib "${BULK_SIZE_MIB:-256}" -delays-ms 0,10 -v2-workers 8
 }
+stage_bundle() { cd "$root" && go test -count=1 -run 'TestBundle_|TestCASShardDirs_' .; }
+stage_bundle-life() { cd "$root" && go test -count=1 -run 'TestBundleLife_' .; }
+stage_bundle-scale() { cd "$root" && go test -count=1 -run 'TestBundleScale_' -v .; }
 stage_tier() { cd "$root" && go test -count=1 -run 'TestTier_|TestLocator_' .; }
 stage_tier-life() {
 	build_bin || return 1
@@ -173,7 +181,7 @@ normal="format modules test static s3 sync repro"
 heavy="race crash repack compact compression index-scale bulk-bench cas-bench history-life tier-life"
 
 case "${1:-normal}" in
-list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk cas-batch history history-life tier tier-policy tier-rebalance tier-life vectors client apps"; exit 0 ;;
+list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk cas-batch bundle bundle-life bundle-scale history history-life tier tier-policy tier-rebalance tier-life vectors client apps"; exit 0 ;;
 normal) stages=$normal ;;
 heavy) stages=$heavy ;;
 all) stages="$normal $heavy" ;;
