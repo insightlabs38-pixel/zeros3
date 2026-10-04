@@ -66,43 +66,44 @@ import (
 //
 //   Lines    Area
 //   -----    ----
-//      108    Test helpers, fixtures, and TestMain
-//     260    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//    1276    SigV4 authentication (header and payload-mode)
-//    1665    Checksums: CRC32 and Content-MD5
-//    2168    End-to-end HTTP and crash/recovery tests
-//    2842    M2: bucket/object/listing/journal protocol compatibility
-//    3893    M3: CDC/dedup evidence, stats, verify
-//    5029    M3: CopyObject
-//    5576    M3: single-range GET
-//    5777    M5-B: multipart upload
-//    7055    Presigned URLs and virtual-hosted-style addressing
-//    8084    M5-C: version history, restore, GC, storage-efficiency proof
-//    9551    Z2-08: history retention (prune)
-//   10643    M5-D/P2: ListParts and ListMultipartUploads pagination
-//   12362    M6: delta sync (`zeros3 sync`)
-//   14104    M6C: recursive directory sync
-//   15164    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//   16493    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//   17818    M8C: namespace (prefix/bucket) replication
-//   18857    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//   19949    M8E: durable namespace snapshots and restore
-//   22027    M8F: conditional operations (Put/Get/Copy preconditions)
-//   23432    M8G: introspection (dry-run planning, diff, inspect)
-//   25384    M8H: bounded parallel chunk transfer
-//   26765    P1: environment credentials, HTTP hardening/shutdown, TLS
-//   28081    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//   29015    Streaming reads and aws-chunked SigV4
-//   29863    Packed CAS: pack format, mixed reads, compaction, crash points
-//   30840    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//   31992    Adaptive pack compression (codec 1, DEFLATE)
-//   33026    Scalable packed-chunk locator (sorted immutable levels)
-//   33512    Z2-07: bulk logical-chunk transport (v2)
-//   34940    Hot/warm/cold physical pack tiers
-//   35711    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//   36462    Z2-10: content-aware tier policy and rebalance
-//   37494    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
-//   38178    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
+//      109    Test helpers, fixtures, and TestMain
+//     261    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//    1277    SigV4 authentication (header and payload-mode)
+//    1673    Checksums: CRC32 and Content-MD5
+//    2176    End-to-end HTTP and crash/recovery tests
+//    2850    M2: bucket/object/listing/journal protocol compatibility
+//    4074    M3: CDC/dedup evidence, stats, verify
+//    5210    M3: CopyObject
+//    5757    M3: single-range GET
+//    5958    M5-B: multipart upload
+//    7236    Presigned URLs and virtual-hosted-style addressing
+//    8265    M5-C: version history, restore, GC, storage-efficiency proof
+//    9732    Z2-08: history retention (prune)
+//   10824    M5-D/P2: ListParts and ListMultipartUploads pagination
+//   12543    M6: delta sync (`zeros3 sync`)
+//   14285    M6C: recursive directory sync
+//   15345    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//   16674    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//   17999    M8C: namespace (prefix/bucket) replication
+//   19038    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//   20130    M8E: durable namespace snapshots and restore
+//   22208    M8F: conditional operations (Put/Get/Copy preconditions)
+//   23613    M8G: introspection (dry-run planning, diff, inspect)
+//   25565    M8H: bounded parallel chunk transfer
+//   26946    P1: environment credentials, HTTP hardening/shutdown, TLS
+//   28262    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//   29196    Streaming reads and aws-chunked SigV4
+//   30044    Packed CAS: pack format, mixed reads, compaction, crash points
+//   31021    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//   32167    Adaptive pack compression (codec 1, DEFLATE)
+//   33201    Scalable packed-chunk locator (sorted immutable levels)
+//   33687    Z2-07: bulk logical-chunk transport (v2)
+//   35115    Hot/warm/cold physical pack tiers
+//   35886    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//   36637    Z2-10: content-aware tier policy and rebalance
+//   37669    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//   38353    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
+//   39783    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -1505,6 +1506,13 @@ func newTestServerAndSigner(t *testing.T) (*Server, testSigner) {
 	srv := NewServer(store, creds, "us-east-1")
 	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: "us-east-1"}
 	return srv, signer
+}
+
+// newTestServerAndSignerFor serves an already-open store.
+func newTestServerAndSignerFor(t *testing.T, store *Store) (*Server, testSigner) {
+	t.Helper()
+	creds := Credentials{AccessKeyID: "AKIATESTACCESSKEY0001", SecretAccessKey: "TestSecretKeyForZeroS3UnitTests0123456789"}
+	return NewServer(store, creds, "us-east-1"), testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: "us-east-1"}
 }
 
 func mustAuthTestRequest(method, rawTarget string, body []byte) (req *http.Request, rawPath, rawQuery string) {
@@ -31432,13 +31440,7 @@ func TestRepack_LiveDataSpanningPacksAndMultipleOutputs(t *testing.T) {
 			t.Fatalf("dead records remain: %+v", u)
 		}
 	}
-	// Every new pack is in digest order, like a compacted one.
-	for _, u := range us {
-		_, entries, _ := loadPackFile(filepath.Join(s.root, "packs", u.ID+packFileSuffix))
-		if !sort.SliceIsSorted(entries, func(i, j int) bool { return bytes.Compare(entries[i].sha[:], entries[j].sha[:]) < 0 }) {
-			t.Fatalf("pack %s is not in digest order", u.ID)
-		}
-	}
+	// Record order of the new packs is covered by TestLocality_Repack*.
 }
 
 // ---- duplicate physical locations -----------------------------------------
@@ -39775,4 +39777,1338 @@ func TestBundleScale_PlannerOneMillionChunks(t *testing.T) {
 		t.Fatalf("%.1f bytes per descriptor: planner is not compact", perDesc)
 	}
 	runtime.KeepAlive(mans)
+}
+
+// =============================================================================
+// Z2-13: locality-aware pack layout and coalesced packed reads
+// =============================================================================
+
+// manifestSums returns the object's manifest chunk digests in order.
+func manifestSums(t *testing.T, s *Store, bucket, key string) [][32]byte {
+	t.Helper()
+	_, man, err := s.HeadObject(bucket, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out [][32]byte
+	for _, c := range man.Chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		out = append(out, sum)
+	}
+	return out
+}
+
+// firstSeen keeps the first occurrence of each digest, in order.
+func firstSeen(seqs ...[][32]byte) [][32]byte {
+	seen := map[[32]byte]bool{}
+	var out [][32]byte
+	for _, seq := range seqs {
+		for _, sum := range seq {
+			if !seen[sum] {
+				seen[sum] = true
+				out = append(out, sum)
+			}
+		}
+	}
+	return out
+}
+
+// packSequences returns each published pack's record digests in physical order.
+func packSequences(t *testing.T, s *Store) [][][32]byte {
+	t.Helper()
+	var out [][][32]byte
+	for _, p := range s.packSnap().packs {
+		_, entries, err := loadPackFile(p.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seq := make([][32]byte, len(entries))
+		for i, e := range entries {
+			seq[i] = e.sha
+		}
+		out = append(out, seq)
+	}
+	return out
+}
+
+// assertPhysicalSequence proves the packs hold exactly want, in order: the
+// packs, laid end to end by the position of their first record, spell want.
+func assertPhysicalSequence(t *testing.T, s *Store, want [][32]byte) {
+	t.Helper()
+	pos := map[[32]byte]int{}
+	for i, sum := range want {
+		pos[sum] = i
+	}
+	packs := packSequences(t, s)
+	for _, p := range packs {
+		if _, ok := pos[p[0]]; !ok {
+			t.Fatalf("pack holds a record outside the expected set")
+		}
+	}
+	sort.Slice(packs, func(i, j int) bool { return pos[packs[i][0]] < pos[packs[j][0]] })
+	var got [][32]byte
+	for _, p := range packs {
+		got = append(got, p...)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("physical records %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("physical record %d is %x, want %x", i, got[i][:4], want[i][:4])
+		}
+	}
+}
+
+func digestSorted(seq [][32]byte) [][32]byte {
+	out := append([][32]byte(nil), seq...)
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i][:], out[j][:]) < 0 })
+	return out
+}
+
+func localityTestSum(i int) [32]byte {
+	return sha256.Sum256([]byte(fmt.Sprintf("locality-%d", i)))
+}
+
+func localityRefs(sums ...[32]byte) []chunkRef {
+	refs := make([]chunkRef, len(sums))
+	for i, s := range sums {
+		refs[i] = chunkRef{SHA256: hex.EncodeToString(s[:]), Length: 1}
+	}
+	return refs
+}
+
+func TestLocality_FirstReferenceRanking(t *testing.T) {
+	var s [16][32]byte
+	for i := range s {
+		s[i] = localityTestSum(i)
+	}
+	// current A: a b c d / current B: e f g / multipart: h / snapshot: c d p q /
+	// history: a b x y, plus u1/u2 that no root references.
+	a, b, c, d, e, f, g, h, p, q, x, y, u1, u2 := s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12], s[13]
+	walk := func(obs rootObserver) error {
+		obs(scopeCurrent, "b", "A", localityRefs(a, b, c, d))
+		obs(scopeCurrent, "b", "B", localityRefs(e, f, g))
+		obs(scopeMultipart, "b", "M", localityRefs(h))
+		obs(scopeSnapshot, "b", "S", localityRefs(c, d, p, q))
+		obs(scopeHistory, "b", "A", localityRefs(a, b, x, y))
+		return nil
+	}
+	want := [][32]byte{a, b, c, d, e, f, g, h, p, q, x, y}
+	tail := digestSorted([][32]byte{u1, u2})
+	want = append(want, tail...)
+	// Candidate input order must not matter.
+	for trial := 0; trial < 20; trial++ {
+		cands := make([]compactCandidate, 0, 14)
+		for _, i := range rand.New(rand.NewSource(int64(trial))).Perm(14) {
+			cands = append(cands, compactCandidate{sum: s[i], size: 10})
+		}
+		ranked, err := localityOrder(cands, walk)
+		if err != nil || ranked != 12 {
+			t.Fatalf("ranked %d: %v", ranked, err)
+		}
+		for i := range cands {
+			if cands[i].sum != want[i] {
+				t.Fatalf("trial %d: position %d is %x, want %x", trial, i, cands[i].sum[:4], want[i][:4])
+			}
+		}
+	}
+	// Candidates absent from every root keep digest order; a subset works too.
+	cands := []compactCandidate{{sum: u2}, {sum: x}, {sum: u1}, {sum: a}}
+	if ranked, _ := localityOrder(cands, walk); ranked != 2 || cands[0].sum != a || cands[1].sum != x {
+		t.Fatalf("subset: ranked %d, order %x %x", ranked, cands[0].sum[:4], cands[1].sum[:4])
+	}
+	// No candidates, one candidate, and an empty walk are fine.
+	if n, err := localityOrder(nil, walk); n != 0 || err != nil {
+		t.Fatal(n, err)
+	}
+	one := []compactCandidate{{sum: g}}
+	if n, _ := localityOrder(one, func(rootObserver) error { return nil }); n != 0 || one[0].sum != g {
+		t.Fatal("empty walk")
+	}
+}
+
+// localityRootStore builds one store holding every root class, each with a
+// private chunk set and a few chunks shared with other classes.
+type localityRoots struct {
+	dir                                     string
+	cur1, cur2, mpPart1, mpPart2, snap, his [][32]byte
+}
+
+func newLocalityRoots(t *testing.T, putOrder []string) localityRoots {
+	t.Helper()
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.CreateBucket("b")
+	shared := genRandomBytes(900, 300_000)
+	bodies := map[string][]byte{
+		"cur-b": append(genRandomBytes(901, 300_000), shared...),
+		"cur-a": append(genRandomBytes(902, 300_000), shared[:150_000]...),
+	}
+	for _, k := range putOrder {
+		mustPutObject(t, s, "b", k, bodies[k], "application/octet-stream", nil)
+	}
+	// History: an overwritten, unrelated old version of cur-a.
+	var r localityRoots
+	r.dir = dir
+	histBody := genRandomBytes(903, 300_000)
+	mustPutObject(t, s, "b", "cur-a", histBody, "application/octet-stream", nil)
+	mustPutObject(t, s, "b", "cur-a", bodies["cur-a"], "application/octet-stream", nil)
+	// Active multipart upload; parts committed out of order.
+	mpID, _ := s.CreateMultipartUpload("b", "mp", "application/octet-stream", nil)
+	for _, pn := range []int{2, 1} {
+		ing, err := s.ingestStream(bytes.NewReader(genRandomBytes(910+int64(pn), 250_000)), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.commitPart("b", "mp", mpID, pn, ing); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range ing.chunks {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			if pn == 1 {
+				r.mpPart1 = append(r.mpPart1, sum)
+			} else {
+				r.mpPart2 = append(r.mpPart2, sum)
+			}
+		}
+	}
+	// Snapshot-only content.
+	snapIng, _ := s.ingestStream(bytes.NewReader(genRandomBytes(920, 250_000)), true)
+	man := buildManifestV1FromRefs(snapIng.chunks, snapIng.size, snapIng.objSHA256, "etag", "application/octet-stream", nil)
+	manID, manSum, err := s.publishManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "b",
+		Entries: []snapshotEntryV1{{Key: "snap", ManifestUUID: manID, ManifestSHA256: hex.EncodeToString(manSum[:]), Size: snapIng.size, ETag: "etag", ContentType: "application/octet-stream"}}}
+	if err := s.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range snapIng.chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		r.snap = append(r.snap, sum)
+	}
+	r.cur1, r.cur2 = manifestSums(t, s, "b", "cur-a"), manifestSums(t, s, "b", "cur-b")
+	hs, _, _ := s.ListVersions("b", "cur-a")
+	for _, h := range hs {
+		hman, _, err := s.readManifest(h.manifestUUID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range hman.Chunks {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			r.his = append(r.his, sum)
+		}
+	}
+	return r
+}
+
+func TestLocality_RootObservationOrder(t *testing.T) {
+	r := newLocalityRoots(t, []string{"cur-b", "cur-a"})
+	s, err := OpenStore(r.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	type obsRec struct {
+		scope rootScope
+		key   string
+		first string
+	}
+	var first []obsRec
+	for trial := 0; trial < 8; trial++ { // map iteration must not leak into the order
+		var recs []obsRec
+		_, err := s.computeReachabilityObserved(false, func(sc rootScope, bucket, key string, chunks []chunkRef) {
+			recs = append(recs, obsRec{sc, bucket + "/" + key, chunks[0].SHA256})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first == nil {
+			first = recs
+		} else if !reflect.DeepEqual(first, recs) {
+			t.Fatalf("observation order changed between runs:\n%v\n%v", first, recs)
+		}
+	}
+	var scopes []rootScope
+	var curKeys []string
+	for _, o := range first {
+		if len(scopes) == 0 || scopes[len(scopes)-1] != o.scope {
+			scopes = append(scopes, o.scope)
+		}
+		if o.scope == scopeCurrent {
+			curKeys = append(curKeys, o.key)
+		}
+	}
+	if !reflect.DeepEqual(scopes, []rootScope{scopeCurrent, scopeMultipart, scopeSnapshot, scopeHistory}) {
+		t.Fatalf("scope order %v: want current, multipart, snapshot, history", scopes)
+	}
+	if !reflect.DeepEqual(curKeys, []string{"b/cur-a", "b/cur-b"}) {
+		t.Fatalf("current objects not in key order: %v", curKeys)
+	}
+	// Multipart parts are observed in ascending part number.
+	var mp []obsRec
+	for _, o := range first {
+		if o.scope == scopeMultipart {
+			mp = append(mp, o)
+		}
+	}
+	if len(mp) != 2 || mp[0].first != hex.EncodeToString(r.mpPart1[0][:]) || mp[1].first != hex.EncodeToString(r.mpPart2[0][:]) {
+		t.Fatalf("multipart parts not ascending: %v", mp)
+	}
+}
+
+func TestLocality_CompactLayoutsEndToEnd(t *testing.T) {
+	for _, compress := range []bool{false, true} {
+		t.Run(fmt.Sprintf("compress=%v", compress), func(t *testing.T) {
+			r := newLocalityRoots(t, []string{"cur-b", "cur-a"})
+			// Candidate set is everything loose; digest layout is the baseline.
+			digestDir := t.TempDir()
+			copyTree(t, r.dir, digestDir)
+			opt := compactOptions{TargetBytes: 256 << 10, MinBytes: 32 << 10, Compress: compress}
+
+			opt.Layout = layoutLocality
+			res, err := compactStore(r.dir, opt)
+			if err != nil || res.Layout != "locality" || res.LocalityRanked == 0 || res.PacksWritten < 3 {
+				t.Fatalf("%+v %v", res, err)
+			}
+			s, err := OpenStore(r.dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			// current (key order), multipart (part order), snapshot, history;
+			// shared chunks appear once, at their first reference.
+			want := firstSeen(r.cur1, r.cur2, r.mpPart1, r.mpPart2, r.snap, r.his)
+			assertPhysicalSequence(t, s, want)
+			if n := len(packSequences(t, s)); n < 3 {
+				t.Fatalf("expected an object spanning several packs, got %d", n)
+			}
+			// Every chunk is stored once: dedup beats locality.
+			total := 0
+			for _, p := range packSequences(t, s) {
+				total += len(p)
+			}
+			if total != len(want) {
+				t.Fatalf("%d records for %d distinct chunks", total, len(want))
+			}
+
+			opt.Layout = layoutDigest
+			dres, err := compactStore(digestDir, opt)
+			if err != nil || dres.Layout != "digest" || dres.LocalityRanked != 0 {
+				t.Fatalf("%+v %v", dres, err)
+			}
+			ds, _ := OpenStore(digestDir)
+			defer ds.Close()
+			assertPhysicalSequence(t, ds, digestSorted(want))
+		})
+	}
+}
+
+func copyTree(t *testing.T, src, dst string) {
+	t.Helper()
+	err := filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		if d.IsDir() {
+			return os.MkdirAll(filepath.Join(dst, rel), 0o755)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dst, rel), b, 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Two stores with the same logical roots, built in different orders, must
+// compact to byte-identical packs: no map or filesystem order may leak in.
+func TestLocality_DeterministicAcrossBuildOrder(t *testing.T) {
+	ids := func(dir string) []string {
+		ents, _ := os.ReadDir(filepath.Join(dir, "packs"))
+		var out []string
+		for _, e := range ents {
+			out = append(out, e.Name())
+		}
+		return out
+	}
+	opt := compactOptions{TargetBytes: 128 << 10, MinBytes: 16 << 10, Layout: layoutLocality}
+	var got [][]string
+	for _, order := range [][]string{{"cur-b", "cur-a"}, {"cur-a", "cur-b"}} {
+		r := newLocalityRoots(t, order)
+		if _, err := compactStore(r.dir, opt); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, ids(r.dir))
+	}
+	if len(got[0]) == 0 || !reflect.DeepEqual(got[0], got[1]) {
+		t.Fatalf("pack sets differ: %v vs %v", got[0], got[1])
+	}
+}
+
+func TestLocality_PackBoundariesAndTailFolding(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := OpenStore(dir)
+	s.CreateBucket("b")
+	mustPutObject(t, s, "b", "big", genRandomBytes(930, 3_000_000), "application/octet-stream", nil)
+	s.Close()
+	opt := compactOptions{TargetBytes: 256 << 10, MinBytes: 32 << 10, Layout: layoutLocality}
+	res, err := compactStore(dir, opt)
+	if err != nil || res.PacksWritten < 10 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	s, _ = OpenStore(dir)
+	defer s.Close()
+	assertPhysicalSequence(t, s, firstSeen(manifestSums(t, s, "b", "big")))
+	// The logical sequence is cut into consecutive pack-sized runs: every pack
+	// reaches the target, except a final tail that is itself at least the
+	// minimum (a smaller tail is folded into the previous pack).
+	var small []int64
+	for _, p := range s.packSnap().packs {
+		if p.size < opt.TargetBytes {
+			small = append(small, p.size)
+		}
+	}
+	if len(small) > 1 || len(small) == 1 && small[0] < opt.MinBytes {
+		t.Fatalf("pack sizes violate target/tail rules: %v (target %d, min %d)", small, opt.TargetBytes, opt.MinBytes)
+	}
+}
+
+func TestLocality_SingleChunkEmptyAndSharedObjects(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := OpenStore(dir)
+	s.CreateBucket("b")
+	mustPutObject(t, s, "b", "empty", nil, "text/plain", nil)
+	mustPutObject(t, s, "b", "one", genRandomBytes(940, 20_000), "text/plain", nil)
+	body := genRandomBytes(941, 400_000)
+	mustPutObject(t, s, "b", "x", body, "text/plain", nil)
+	mustPutObject(t, s, "b", "y", body, "text/plain", nil)
+	s.Close()
+	if _, err := compactStore(dir, compactOptions{TargetBytes: 64 << 10, MinBytes: 1, Layout: layoutLocality}); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = OpenStore(dir)
+	defer s.Close()
+	assertPhysicalSequence(t, s, firstSeen(manifestSums(t, s, "b", "empty"), manifestSums(t, s, "b", "one"), manifestSums(t, s, "b", "x"), manifestSums(t, s, "b", "y")))
+}
+
+// ---- maintenance preserves physical order ---------------------------------
+
+// orderedPack writes n loose chunks, publishes them as one pack in a fixed
+// non-digest order, removes the loose copies, and returns the order.
+func orderedPack(t *testing.T, s *Store, seed int64, n int) [][32]byte {
+	t.Helper()
+	var sums [][32]byte
+	for i := 0; i < n; i++ {
+		sum, err := s.casWrite(genRandomBytes(seed+int64(i), 3000+i*37))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sums = append(sums, sum)
+	}
+	// A deterministic scramble that is not digest order.
+	order := make([][32]byte, 0, n)
+	for _, i := range rand.New(rand.NewSource(seed)).Perm(n) {
+		order = append(order, sums[i])
+	}
+	if sort.SliceIsSorted(order, func(i, j int) bool { return bytes.Compare(order[i][:], order[j][:]) < 0 }) {
+		t.Fatal("scramble is accidentally sorted")
+	}
+	publishCopyPack(t, s, order)
+	for _, sum := range order {
+		os.Remove(s.chunkPath(sum))
+	}
+	return order
+}
+
+func refSet(sums ...[32]byte) map[string]bool {
+	m := map[string]bool{}
+	for _, s := range sums {
+		m[hex.EncodeToString(s[:])] = true
+	}
+	return m
+}
+
+func TestLocality_RepackKeepsSurvivorsInSourceOrder(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	order := orderedPack(t, s, 1000, 24)
+	var live [][32]byte
+	for i, sum := range order {
+		if i%3 != 1 { // two thirds survive
+			live = append(live, sum)
+		}
+	}
+	ref := refSet(live...)
+	us := s.packUsages(ref)
+	var res RepackResult
+	if err := s.replacePacks(us, ref, 1<<20, false, &res); err != nil {
+		t.Fatal(err)
+	}
+	assertPhysicalSequence(t, s, live)
+}
+
+func TestLocality_RepackCombinesPacksInPackOrderAndDedups(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	p1 := orderedPack(t, s, 2000, 10)
+	var fresh [][32]byte
+	for i := 0; i < 3; i++ {
+		sum, err := s.casWrite(genRandomBytes(2500+int64(i), 4000))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh = append(fresh, sum)
+	}
+	// A second pack repeating two of the first pack's chunks.
+	publishCopyPack(t, s, [][32]byte{fresh[0], p1[5], fresh[1], p1[2], fresh[2]})
+	for _, sum := range fresh {
+		os.Remove(s.chunkPath(sum))
+	}
+	ref := refSet(append(append([][32]byte{}, p1...), fresh...)...)
+	// Expected: records of each doomed pack in pack-set order, first copy wins.
+	var want [][32]byte
+	seen := map[[32]byte]bool{}
+	for _, p := range s.packSnap().packs {
+		_, entries, err := loadPackFile(p.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if !seen[e.sha] {
+				seen[e.sha] = true
+				want = append(want, e.sha)
+			}
+		}
+	}
+	var res RepackResult
+	if err := s.replacePacks(s.packUsages(ref), ref, 1<<20, false, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(want) != 13 {
+		t.Fatalf("fixture has %d distinct chunks, want 13", len(want))
+	}
+	assertPhysicalSequence(t, s, want)
+}
+
+func TestLocality_RebalanceSplitKeepsSourceOrderPerTier(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	order := orderedPack(t, s, 4000, 18)
+	dest := map[[32]byte]tier{}
+	var perTier [numTiers][][32]byte
+	for i, sum := range order {
+		to := [...]tier{tierHot, tierCold, tierWarm}[i%3]
+		if i%7 == 0 {
+			to = tierCold
+		}
+		dest[sum] = to
+		perTier[to] = append(perTier[to], sum)
+	}
+	ref := refSet(order...)
+	var res RepackResult
+	err = s.replacePacksTo(s.packUsages(ref), ref, func(sum [32]byte) tier { return dest[sum] }, 1<<20, false, &res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for tr := tierHot; tr < numTiers; tr++ {
+		var got [][32]byte
+		for _, p := range s.packSnap().packs {
+			if p.tier != tr {
+				continue
+			}
+			_, entries, _ := loadPackFile(p.path)
+			for _, e := range entries {
+				got = append(got, e.sha)
+			}
+		}
+		if !reflect.DeepEqual(got, perTier[tr]) {
+			t.Fatalf("%s tier order differs from source-relative order:\n got %x\nwant %x", tr, got, perTier[tr])
+		}
+	}
+}
+
+// ---- 1M-candidate planner sanity -------------------------------------------
+
+func TestLocalityScale_Planner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scale sanity")
+	}
+	const n = 1_000_000
+	cands := make([]compactCandidate, n)
+	for i := range cands {
+		cands[i] = compactCandidate{sum: localityTestSum(i), size: 65536}
+	}
+	// 1000 objects x 1000 chunks, referenced in a shuffled global order, with a
+	// tenth of the references repeated (shared chunks) and a twentieth of the
+	// candidates unreferenced.
+	perm := rand.New(rand.NewSource(7)).Perm(n)
+	walk := func(obs rootObserver) error {
+		for o := 0; o < 1000; o++ {
+			refs := make([]chunkRef, 0, 1100)
+			for k := 0; k < 1000; k++ {
+				if i := perm[o*1000+k]; i%20 != 0 {
+					refs = append(refs, chunkRef{SHA256: hex.EncodeToString(cands[i].sum[:]), Length: 65536})
+				}
+			}
+			for k := 0; k < 100; k++ {
+				rs := localityTestSum(perm[(o*7+k)%n])
+				refs = append(refs, chunkRef{SHA256: hex.EncodeToString(rs[:])})
+			}
+			obs(scopeCurrent, "b", fmt.Sprintf("k%04d", o), refs)
+		}
+		return nil
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	start := time.Now()
+	ranked, err := localityOrder(cands, walk)
+	took := time.Since(start)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ranked < n*9/10 {
+		t.Fatalf("ranked %d of %d", ranked, n)
+	}
+	// The planner's own footprint (ranks live in the candidates) -- not the walk's garbage.
+	t.Logf("1M-candidate planner: %v, %.0f bytes/candidate (candidate struct %d B), total alloc %d MiB, ranked %d",
+		took, float64(after.HeapAlloc-before.HeapAlloc)/n, reflect.TypeOf(compactCandidate{}).Size(), (after.TotalAlloc-before.TotalAlloc)>>20, ranked)
+	if took > 30*time.Second {
+		t.Fatalf("planner took %v", took)
+	}
+	// The result is a valid permutation ordered by rank.
+	prev := uint32(0)
+	for i := 0; i < ranked; i++ {
+		if cands[i].rank != prev+1 {
+			t.Fatalf("rank %d at position %d after %d", cands[i].rank, i, prev)
+		}
+		prev = cands[i].rank
+	}
+}
+
+// ---- coalesced packed reads -------------------------------------------------
+
+// packRunFixture is a compacted store with one multi-pack object (and an
+// optional second compressible one) opened with a packTrace.
+type packRunFixture struct {
+	dir   string
+	s     *Store
+	trace *packTrace
+	data  map[string][]byte
+}
+
+func newPackRunFixture(t *testing.T, layout packLayout, compress bool) *packRunFixture {
+	t.Helper()
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.CreateBucket("b")
+	data := map[string][]byte{
+		"rand": genRandomBytes(7001, 1_500_000),
+		// Compressible and incompressible regions interleaved: a mixed-codec run.
+		"mixed": bytes.Join([][]byte{
+			genRandomBytes(7002, 200_000), bytes.Repeat([]byte("compressible-text/"), 15_000),
+			genRandomBytes(7003, 200_000), bytes.Repeat([]byte("more-repeating-bytes "), 12_000),
+		}, nil),
+	}
+	for _, k := range []string{"rand", "mixed"} {
+		mustPutObject(t, s, "b", k, data[k], "application/octet-stream", nil)
+	}
+	s.Close()
+	if _, err := compactStore(dir, compactOptions{TargetBytes: 384 << 10, MinBytes: 32 << 10, Compress: compress, Layout: layout}); err != nil {
+		t.Fatal(err)
+	}
+	f := &packRunFixture{dir: dir, trace: &packTrace{}, data: data}
+	f.reopen(t)
+	return f
+}
+
+func (f *packRunFixture) reopen(t *testing.T) {
+	t.Helper()
+	if f.s != nil {
+		f.s.Close()
+	}
+	s, err := OpenStore(f.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.packTrace = f.trace
+	f.s = s
+	t.Cleanup(func() { s.Close() })
+}
+
+func (f *packRunFixture) read(t *testing.T, key string, rng byteRange) ([]byte, error) {
+	t.Helper()
+	_, man, err := f.s.HeadObject("b", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f.s.readManifestRange(man, rng)
+}
+
+func (f *packRunFixture) reset() {
+	f.trace.Opens.Store(0)
+	f.trace.ReadAts.Store(0)
+	f.trace.Runs.Store(0)
+	f.trace.Chunks.Store(0)
+	f.trace.StoredBytes.Store(0)
+	f.trace.Failures.Store(0)
+}
+
+func TestPackRun_RangesMatchOrdinaryReads(t *testing.T) {
+	for _, layout := range []packLayout{layoutDigest, layoutLocality} {
+		for _, compress := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/compress=%v", layout, compress), func(t *testing.T) {
+				f := newPackRunFixture(t, layout, compress)
+				if compress {
+					st := packTestStats(t, f.s)
+					if st.PackedCompressedRecs == 0 || st.PackedRawRecords == 0 {
+						t.Fatalf("fixture lacks mixed codecs: %+v", st)
+					}
+				}
+				for key, want := range f.data {
+					n := int64(len(want))
+					ranges := []byteRange{
+						{0, n - 1}, {0, 99}, {n - 1000, n - 1}, {n / 2, n/2 + 1<<20 - 1}, {70_000, 70_000},
+						{3, n - 4}, {n/3 - 5, n/3 + 400_000}, {n - 1, n - 1},
+					}
+					for _, r := range ranges {
+						r.end = min(r.end, n-1)
+						got, err := f.read(t, key, r)
+						if err != nil || !bytes.Equal(got, want[r.start:r.end+1]) {
+							t.Fatalf("%s %v: %v", key, r, err)
+						}
+					}
+				}
+				// An ordinary per-chunk read agrees chunk by chunk.
+				for _, sum := range manifestSums(t, f.s, "b", "mixed") {
+					loc, ok := f.s.packLookup(sum)
+					if !ok {
+						t.Fatal("chunk not packed")
+					}
+					one, err := f.s.readPacked(sum, loc)
+					if err != nil || sha256.Sum256(one) != sum {
+						t.Fatal(err)
+					}
+				}
+				if f.trace.Failures.Load() != 0 {
+					t.Fatalf("%d run failures on a healthy store", f.trace.Failures.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestPackRun_LocalityCoalescesDigestDoesNot(t *testing.T) {
+	loc := newPackRunFixture(t, layoutLocality, false)
+	dig := newPackRunFixture(t, layoutDigest, false)
+	chunks := int64(len(manifestSums(t, loc.s, "b", "rand")))
+	for _, f := range []*packRunFixture{loc, dig} {
+		f.reset()
+		if _, err := f.read(t, "rand", byteRange{0, int64(len(f.data["rand"])) - 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := loc.trace.Chunks.Load(); got != chunks {
+		t.Fatalf("locality: runs served %d chunks, want %d", got, chunks)
+	}
+	// One pack file open per pack; far fewer ReadAts than chunks.
+	packs := int64(len(loc.s.packSnap().packs))
+	if o := loc.trace.Opens.Load(); o > packs {
+		t.Fatalf("locality opens %d > %d packs", o, packs)
+	}
+	// A run never leaves its pack, and these packs fit one window: one ReadAt per pack.
+	if r := loc.trace.ReadAts.Load(); r > packs {
+		t.Fatalf("locality ReadAts %d for %d packs and %d chunks", r, packs, chunks)
+	}
+	if r := dig.trace.ReadAts.Load(); r < chunks*9/10 {
+		t.Fatalf("digest layout unexpectedly coalesced: %d ReadAts for %d chunks", r, chunks)
+	}
+}
+
+func TestPackRun_BoundsAndFileReuse(t *testing.T) {
+	oldRec, oldStored, oldLogical := packRunMaxRecords, packRunMaxStored, packRunMaxLogical
+	t.Cleanup(func() { packRunMaxRecords, packRunMaxStored, packRunMaxLogical = oldRec, oldStored, oldLogical })
+	for _, cfg := range []struct{ rec, stored, logical int }{
+		{7, 4 << 20, 8 << 20}, {64, 150_000, 8 << 20}, {64, 4 << 20, 200_000}, {1, 4 << 20, 8 << 20}, {3, 120_000, 120_000},
+	} {
+		packRunMaxRecords, packRunMaxStored, packRunMaxLogical = cfg.rec, cfg.stored, cfg.logical
+		f := newPackRunFixture(t, layoutLocality, true)
+		var bad atomic.Int64
+		f.trace.OnRun = func(records, stored, logical int) {
+			// A single record larger than the window is still its own run.
+			if records > cfg.rec || (records > 1 && (stored > cfg.stored || logical > cfg.logical)) {
+				bad.Add(1)
+			}
+		}
+		for key, want := range f.data {
+			f.reset()
+			got, err := f.read(t, key, byteRange{0, int64(len(want)) - 1})
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("%+v %s: %v", cfg, key, err)
+			}
+			if bad.Load() != 0 {
+				t.Fatalf("%+v: %d runs exceeded a bound", cfg, bad.Load())
+			}
+			// One open per distinct pack visited, even across many windows.
+			visited := map[int32]bool{}
+			for _, sum := range manifestSums(t, f.s, "b", key) {
+				l, _ := f.s.packLookup(sum)
+				visited[l.pack] = true
+			}
+			if o := f.trace.Opens.Load(); o > int64(len(visited)) {
+				t.Fatalf("%+v %s: %d opens for %d packs (file not reused across windows)", cfg, key, o, len(visited))
+			}
+		}
+	}
+}
+
+func TestPackRun_RangeFetchesOnlyNeededChunks(t *testing.T) {
+	f := newPackRunFixture(t, layoutLocality, false)
+	_, man, _ := f.s.HeadObject("b", "rand")
+	// overlap counts the chunks intersecting [lo, hi].
+	overlap := func(lo, hi int64) int64 {
+		var n, off int64
+		for _, c := range man.Chunks {
+			if off <= hi && off+c.Length > lo {
+				n++
+			}
+			off += c.Length
+		}
+		return n
+	}
+	for _, r := range []byteRange{{0, 99}, {500_000, 500_000}, {400_000, 400_000 + 1<<20 - 1}, {1_400_000, 1_499_999}} {
+		f.reset()
+		got, err := f.read(t, "rand", r)
+		if err != nil || !bytes.Equal(got, f.data["rand"][r.start:r.end+1]) {
+			t.Fatalf("%v: %v", r, err)
+		}
+		if want := overlap(r.start, r.end); f.trace.Chunks.Load() != want {
+			t.Fatalf("%v: run reads covered %d chunks, range needs %d", r, f.trace.Chunks.Load(), want)
+		}
+	}
+}
+
+func TestPackRun_TiersAndLooseCopyPreference(t *testing.T) {
+	for _, to := range []tier{tierWarm, tierCold} {
+		t.Run(to.String(), func(t *testing.T) {
+			f := newPackRunFixture(t, layoutLocality, true)
+			for _, p := range f.s.packSnap().packs {
+				if err := f.s.movePack(p.id, tierHot, to); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.s.Close()
+			f.reopen(t)
+			f.reset()
+			got, err := f.read(t, "rand", byteRange{0, int64(len(f.data["rand"])) - 1})
+			if err != nil || !bytes.Equal(got, f.data["rand"]) {
+				t.Fatal(err)
+			}
+			if f.trace.Chunks.Load() == 0 || f.trace.ReadAts.Load()*4 > f.trace.Chunks.Load() {
+				t.Fatalf("%s tier did not coalesce: %d ReadAts for %d chunks", to, f.trace.ReadAts.Load(), f.trace.Chunks.Load())
+			}
+
+			// A hot loose copy outranks a warm/cold packed one: damage the
+			// packed record, add the loose copy, and the read must never touch it.
+			sums := manifestSums(t, f.s, "b", "rand")
+			victim := sums[len(sums)/2]
+			loc, _ := f.s.packLookup(victim)
+			data, err := f.s.readPacked(victim, loc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := f.s.packSnap().packs[loc.pack].path
+			raw, _ := os.ReadFile(path)
+			raw[loc.off+uint64(loc.stored)/2] ^= 0xff
+			if err := os.WriteFile(path, raw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			writeLooseCopy(t, f.s, data)
+			f.reset()
+			got, err = f.read(t, "rand", byteRange{0, int64(len(f.data["rand"])) - 1})
+			if err != nil || !bytes.Equal(got, f.data["rand"]) {
+				t.Fatalf("loose copy did not outrank the damaged %s record: %v", to, err)
+			}
+			if f.trace.Failures.Load() != 0 {
+				t.Fatalf("the damaged %s record was read despite a hot loose copy", to)
+			}
+		})
+	}
+}
+
+// damagePack flips or truncates the record at loc inside the pack file at
+// path ("truncate" cuts the file in the middle of that record's payload).
+func damagePack(t *testing.T, path string, loc packLoc, kind string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch kind {
+	case "header":
+		raw[loc.off-packRecordHeaderSize+33] ^= 0xff // logical_len
+	case "payload":
+		raw[loc.off+uint64(loc.stored)/2] ^= 0x01
+	case "deflate":
+		if loc.codec != packCodecDeflate {
+			t.Fatal("chunk is not deflated")
+		}
+		raw[loc.off+uint64(loc.stored)/3] ^= 0xff
+	case "truncate":
+		raw = raw[:loc.off+uint64(loc.stored)/2]
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// damagePrimary damages sum's primary packed record in place.
+func damagePrimary(t *testing.T, s *Store, sum [32]byte, kind string) {
+	t.Helper()
+	loc := mustLoc(t, s, sum)
+	damagePack(t, s.packSnap().packs[loc.pack].path, loc, kind)
+}
+
+func TestPackRun_CorruptionFallsBackOrFailsWithoutLeakingBytes(t *testing.T) {
+	for _, kind := range []string{"header", "payload", "deflate", "truncate"} {
+		for _, fallback := range []string{"packed-copy", "loose-copy", "none"} {
+			t.Run(kind+"/"+fallback, func(t *testing.T) {
+				oldRec := packRunMaxRecords
+				packRunMaxRecords = 6 // several runs per pack, so the bad-pack rule is exercised
+				t.Cleanup(func() { packRunMaxRecords = oldRec })
+				f := newPackRunFixture(t, layoutLocality, true)
+				key := "mixed"
+				sums := manifestSums(t, f.s, "b", key)
+				// A victim whose codec fits the damage kind.
+				vi := -1
+				for i := 3; i < len(sums)-2 && vi < 0; i++ {
+					if l := mustLoc(t, f.s, sums[i]); (kind == "deflate") == (l.codec == packCodecDeflate) {
+						vi = i
+					}
+				}
+				if vi < 0 {
+					t.Fatal("no suitable victim chunk")
+				}
+				vloc := mustLoc(t, f.s, sums[vi])
+				path := f.s.packSnap().packs[vloc.pack].path
+				// Everything the damage takes out: the victim, plus -- for a
+				// truncated file -- every later record of its pack.
+				var affected [][32]byte
+				for _, sum := range sums {
+					l := mustLoc(t, f.s, sum)
+					if f.s.packSnap().packs[l.pack].path == path && (l.off == vloc.off || kind == "truncate" && l.off > vloc.off) {
+						affected = append(affected, sum)
+					}
+				}
+				switch fallback {
+				case "packed-copy":
+					// A good copy in a colder tier: the damaged hot record stays the primary.
+					staged, entries, err := f.s.stagePack(tierHot, func() []compactCandidate {
+						var c []compactCandidate
+						for _, sum := range affected {
+							c = append(c, compactCandidate{sum: sum})
+						}
+						return c
+					}(), f.s.casRead, func(compactCandidate, error) error { return errors.New("unreadable") }, newPackCompressor())
+					if err != nil {
+						t.Fatal(err)
+					}
+					info, err := f.s.publishPack(tierHot, staged, entries)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := f.s.movePack(info.id, tierHot, tierCold); err != nil {
+						t.Fatal(err)
+					}
+					f.s.Close()
+					f.reopen(t)
+				case "loose-copy":
+					for _, sum := range affected {
+						writeLooseCopy(t, f.s, mustCasRead(t, f.s, sum))
+					}
+				}
+				damagePack(t, path, mustLoc(t, f.s, sums[vi]), kind)
+				f.reset()
+				want := f.data[key]
+				got, err := f.read(t, key, byteRange{0, int64(len(want)) - 1})
+				switch fallback {
+				case "none":
+					if err == nil {
+						t.Fatalf("damaged record with no fallback was served: equal=%v", bytes.Equal(got, want))
+					}
+				default:
+					if err != nil || !bytes.Equal(got, want) {
+						t.Fatalf("fallback %s: %v (equal=%v)", fallback, err, bytes.Equal(got, want))
+					}
+					if f.trace.Failures.Load() == 0 && fallback == "packed-copy" {
+						t.Fatal("the damaged primary was never read: fixture does not exercise the fallback")
+					}
+				}
+				// Whatever was produced before an error is an exact prefix: no
+				// corrupt byte ever left the reader.
+				_, man, _ := f.s.HeadObject("b", key)
+				rd := f.s.newManifestReader(man, byteRange{0, int64(len(want)) - 1})
+				defer rd.close()
+				var off int64
+				for {
+					d, err := rd.next()
+					if err != nil {
+						break
+					}
+					if !bytes.Equal(d, want[off:off+int64(len(d))]) {
+						t.Fatalf("corrupt bytes served at offset %d", off)
+					}
+					off += int64(len(d))
+				}
+			})
+		}
+	}
+}
+
+func TestPackRun_BadPackStopsFurtherRuns(t *testing.T) {
+	oldRec := packRunMaxRecords
+	packRunMaxRecords = 4
+	t.Cleanup(func() { packRunMaxRecords = oldRec })
+	f := newPackRunFixture(t, layoutLocality, false)
+	sums := manifestSums(t, f.s, "b", "rand")
+	writeLooseCopy(t, f.s, mustCasRead(t, f.s, sums[1])) // a loose fallback so the read succeeds
+	damagePrimary(t, f.s, sums[1], "payload")
+	f.reset()
+	got, err := f.read(t, "rand", byteRange{0, int64(len(f.data["rand"])) - 1})
+	if err != nil || !bytes.Equal(got, f.data["rand"]) {
+		t.Fatal(err)
+	}
+	// The first run (chunks 0-3) hit the bad record. That record's pack is
+	// disabled for runs, so far fewer runs than chunks/4 follow from it.
+	first := f.s.packSnap().packs[mustLoc(t, f.s, sums[1]).pack].path
+	inFirst := 0
+	for _, sum := range sums {
+		if f.s.packSnap().packs[mustLoc(t, f.s, sum).pack].path == first {
+			inFirst++
+		}
+	}
+	maxRuns := int64(1 + (len(sums)-inFirst+3)/4 + 1)
+	if f.trace.Failures.Load() != 1 || f.trace.Runs.Load() > maxRuns {
+		t.Fatalf("failures %d, runs %d (chunks in bad pack %d of %d, max %d)", f.trace.Failures.Load(), f.trace.Runs.Load(), inFirst, len(sums), maxRuns)
+	}
+}
+
+// writeLooseCopy plants a loose chunk file even when a packed copy exists
+// (casWrite would deduplicate against it).
+func writeLooseCopy(t *testing.T, s *Store, data []byte) {
+	t.Helper()
+	p := s.chunkPath(sha256.Sum256(data))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustCasRead(t *testing.T, s *Store, sum [32]byte) []byte {
+	t.Helper()
+	b, err := s.casRead(sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func mustLoc(t *testing.T, s *Store, sum [32]byte) packLoc {
+	t.Helper()
+	l, ok := s.packLookup(sum)
+	if !ok {
+		t.Fatal("not packed")
+	}
+	return l
+}
+
+func TestPackRun_NoncontiguousAndSingleChunk(t *testing.T) {
+	f := newPackRunFixture(t, layoutDigest, false)
+	// Digest layout: neighbors are not physically adjacent, so every run is 1 record.
+	var sizes []int
+	f.trace.OnRun = func(records, _, _ int) { sizes = append(sizes, records) }
+	got, err := f.read(t, "rand", byteRange{0, int64(len(f.data["rand"])) - 1})
+	if err != nil || !bytes.Equal(got, f.data["rand"]) {
+		t.Fatal(err)
+	}
+	multi := 0
+	for _, n := range sizes {
+		if n > 1 {
+			multi++
+		}
+	}
+	if multi > len(sizes)/10 {
+		t.Fatalf("%d of %d runs coalesced in digest layout", multi, len(sizes))
+	}
+	// Direct primitive: a non-contiguous set is refused wholesale, never guessed at.
+	sums := manifestSums(t, f.s, "b", "rand")
+	locs := []packLoc{mustLoc(t, f.s, sums[0]), mustLoc(t, f.s, sums[1])}
+	r := newPackRunReader(f.s.packSnap(), nil)
+	defer r.close()
+	if locs[0].pack == locs[1].pack && int64(locs[1].off)-packRecordHeaderSize == int64(locs[0].off)+int64(locs[0].stored) {
+		t.Skip("accidentally adjacent")
+	}
+	_, errs := r.read(sums[:2], locs)
+	if errs[0] == nil || errs[1] == nil {
+		t.Fatal("noncontiguous records were read as a run")
+	}
+}
+
+func TestPackRun_ConcurrentReadersAndHTTP(t *testing.T) {
+	f := newPackRunFixture(t, layoutLocality, true)
+	srv, signer := newTestServerAndSignerFor(t, f.s)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	var wg sync.WaitGroup
+	var failures atomic.Int64
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for key, want := range f.data {
+				lo := int64(w*37_000) % int64(len(want)/2)
+				hi := lo + 600_000
+				resp := doSignedRequest(t, ts.Client(), ts.URL, signer, http.MethodGet, "/b/"+key, nil, map[string]string{"Range": fmt.Sprintf("bytes=%d-%d", lo, hi)})
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusPartialContent || !bytes.Equal(body, want[lo:min(hi+1, int64(len(want)))]) {
+					failures.Add(1)
+				}
+				resp = doSignedRequest(t, ts.Client(), ts.URL, signer, http.MethodGet, "/b/"+key, nil, nil)
+				body, _ = io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK || !bytes.Equal(body, want) {
+					failures.Add(1)
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	if failures.Load() != 0 {
+		t.Fatalf("%d concurrent reads differed", failures.Load())
+	}
+}
+
+func TestPackRun_HTTPCorruptionNeverReachesClient(t *testing.T) {
+	f := newPackRunFixture(t, layoutLocality, false)
+	sums := manifestSums(t, f.s, "b", "rand")
+	damagePrimary(t, f.s, sums[len(sums)/2], "payload") // no fallback
+	srv, signer := newTestServerAndSignerFor(t, f.s)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	resp := doSignedRequest(t, ts.Client(), ts.URL, signer, http.MethodGet, "/b/rand", nil, nil)
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	want := f.data["rand"]
+	if err == nil && resp.StatusCode == http.StatusOK && bytes.Equal(body, want) {
+		t.Fatal("damaged object downloaded successfully")
+	}
+	if len(body) > len(want) || !bytes.Equal(body, want[:len(body)]) {
+		t.Fatalf("client received %d bytes that are not a clean prefix", len(body))
+	}
+	// Conditional and HEAD requests never read chunk data and are unaffected.
+	hresp := doSignedRequest(t, ts.Client(), ts.URL, signer, http.MethodHead, "/b/rand", nil, nil)
+	hresp.Body.Close()
+	if hresp.StatusCode != http.StatusOK {
+		t.Fatalf("HEAD: %d", hresp.StatusCode)
+	}
+	etag := hresp.Header.Get("ETag")
+	nm := doSignedRequest(t, ts.Client(), ts.URL, signer, http.MethodGet, "/b/rand", nil, map[string]string{"If-None-Match": etag})
+	nm.Body.Close()
+	if nm.StatusCode != http.StatusNotModified {
+		t.Fatalf("If-None-Match: %d", nm.StatusCode)
+	}
+}
+
+// TestLocalityBench_RunWindows sweeps the coalescing window over a
+// locality-compacted object and reports sequential-read throughput, ReadAt
+// count and Go heap growth. Opt-in: ZEROS3_LOCALITY_BENCH=1 (object size in
+// MiB: ZEROS3_LOCALITY_BENCH_MIB, default 256).
+func TestLocalityBench_RunWindows(t *testing.T) {
+	if os.Getenv("ZEROS3_LOCALITY_BENCH") == "" {
+		t.Skip("set ZEROS3_LOCALITY_BENCH=1")
+	}
+	mib := 256
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_LOCALITY_BENCH_MIB")); err == nil && v > 0 {
+		mib = v
+	}
+	oldRec, oldStored, oldLogical := packRunMaxRecords, packRunMaxStored, packRunMaxLogical
+	t.Cleanup(func() { packRunMaxRecords, packRunMaxStored, packRunMaxLogical = oldRec, oldStored, oldLogical })
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.CreateBucket("b")
+	if _, err := s.PutObject("b", "big", genRandomBytes(1, mib<<20), "application/octet-stream", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if _, err := compactStore(dir, compactOptions{TargetBytes: 64 << 20, MinBytes: 8 << 20, Layout: layoutLocality}); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = OpenStore(dir)
+	defer s.Close()
+	trace := &packTrace{}
+	s.packTrace = trace
+	_, man, _ := s.HeadObject("b", "big")
+	full := byteRange{0, man.TotalLength - 1}
+	t.Logf("%d MiB object, %d chunks, %d packs", mib, len(man.Chunks), len(s.packSnap().packs))
+	t.Logf("%-10s %-8s %10s %9s %10s", "window", "records", "MiB/s", "ReadAts", "heap+MiB")
+	for _, win := range []int{1 << 20, 4 << 20, 8 << 20} {
+		for _, rec := range []int{32, 64, 128} {
+			packRunMaxStored, packRunMaxRecords, packRunMaxLogical = win, rec, 2*win
+			var rates []float64
+			var reads int64
+			var heap uint64
+			for rep := 0; rep < 4; rep++ {
+				trace.ReadAts.Store(0)
+				runtime.GC()
+				var m0, m1 runtime.MemStats
+				runtime.ReadMemStats(&m0)
+				start := time.Now()
+				rd := s.newManifestReader(man, full)
+				var n int64
+				var peak uint64
+				for {
+					d, err := rd.next()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					n += int64(len(d))
+					if n&(8<<20-1) < 65536 {
+						runtime.ReadMemStats(&m1)
+						peak = max(peak, m1.HeapInuse)
+					}
+				}
+				took := time.Since(start)
+				if rep > 0 {
+					rates = append(rates, float64(n)/(1<<20)/took.Seconds())
+				}
+				reads = trace.ReadAts.Load()
+				heap = max(heap, peak-min(peak, m0.HeapInuse))
+			}
+			sort.Float64s(rates)
+			t.Logf("%-10s %-8d %10.0f %9d %10.1f", fmt.Sprintf("%dMiB", win>>20), rec, rates[len(rates)/2], reads, float64(heap)/(1<<20))
+		}
+	}
+	// The old path for comparison: one record per read.
+	packRunMaxRecords = 1
+	var rates []float64
+	for rep := 0; rep < 4; rep++ {
+		start := time.Now()
+		rd := s.newManifestReader(man, full)
+		var n int64
+		for {
+			d, err := rd.next()
+			if err != nil {
+				break
+			}
+			n += int64(len(d))
+		}
+		if rep > 0 {
+			rates = append(rates, float64(n)/(1<<20)/time.Since(start).Seconds())
+		}
+	}
+	sort.Float64s(rates)
+	t.Logf("%-10s %-8d %10.0f   (one record per ReadAt, file reused)", "-", 1, rates[len(rates)/2])
+}
+
+// TestLocalityBench_CompactOverhead times what the locality layout adds to
+// compaction on a many-object store: the second (observed) reachability pass
+// plus ranking, against the pass compact already needed, and total compact
+// time for both layouts. Opt-in: ZEROS3_LOCALITY_BENCH=1.
+func TestLocalityBench_CompactOverhead(t *testing.T) {
+	if os.Getenv("ZEROS3_LOCALITY_BENCH") == "" {
+		t.Skip("set ZEROS3_LOCALITY_BENCH=1")
+	}
+	objects := 4000
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.CreateBucket("b")
+	var logical int64
+	for i := 0; i < objects; i++ {
+		body := genRandomBytes(int64(i+1), 16_000+(i*37)%160_000)
+		logical += int64(len(body))
+		if _, err := s.PutObject("b", fmt.Sprintf("dir%03d/obj%05d", i%97, i), body, "application/octet-stream", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	other := t.TempDir()
+	copyTree(t, dir, other)
+
+	s, _ = OpenStore(dir)
+	t0 := time.Now()
+	rr, err := s.computeReachability(false)
+	pass1 := time.Since(t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cands []compactCandidate
+	for h, n := range rr.ChunkLength {
+		sum, _ := decodeHexSHA256(h)
+		cands = append(cands, compactCandidate{sum: sum, size: n})
+	}
+	var m0, m1 runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&m0)
+	t1 := time.Now()
+	ranked, err := localityOrder(cands, func(obs rootObserver) error {
+		_, err := s.computeReachabilityObserved(false, obs)
+		return err
+	})
+	plan := time.Since(t1)
+	runtime.ReadMemStats(&m1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	t.Logf("%d objects, %d MiB logical, %d chunks (ranked %d)", objects, logical>>20, len(cands), ranked)
+	t.Logf("reachability pass compact already needs: %v; locality planning (2nd observed pass + ranking): %v, %d MiB allocated",
+		pass1, plan, (m1.TotalAlloc-m0.TotalAlloc)>>20)
+
+	for _, c := range []struct {
+		dir    string
+		layout packLayout
+	}{{other, layoutDigest}, {dir, layoutLocality}} {
+		start := time.Now()
+		res, err := compactStore(c.dir, compactOptions{TargetBytes: 64 << 20, MinBytes: 8 << 20, Layout: c.layout})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("compact -layout %-8s %v (%d packs, %d chunks)", c.layout, time.Since(start), res.PacksWritten, res.ChunksPacked)
+	}
 }
