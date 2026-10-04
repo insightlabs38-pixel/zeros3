@@ -33,6 +33,11 @@ path should pass both.
 ## Layout
 
 ```
+profile/core/              portable Core Client Profile v1 suite (AWS SDK + minio-go adaptors)
+profile/conformance/       runs it against any endpoint (-endpoint) or a managed fixture (-managed),
+                           -json summary, AWS CLI smoke when `aws` is installed
+vectors/                   golden SigV4 / presign / wire fixtures (+ gen.py reference); validated by
+                           the root `go test -run TestVectors_`
 runner/                    builds zeros3 once and runs selected harness groups
 harness/
   m2/                      canonical AWS SDK workflow, restart persistence
@@ -51,6 +56,9 @@ harness/
   z2_packed_cas/           `zeros3 compact`: loose -> packed -> mixed byte-exact readback, file counts, throughput, open time, RSS
   z2_pack_compression/     adaptive packed-record compression: raw vs compressed per data family, old raw packs -> mixed packs -> repack, byte-exact GET/range, RSS
   z2_repack/               pack-aware `gc` and `zeros3 repack`: utilization profiles, reclaimed bytes, write amplification, throughput, RSS, GET before/after
+  z2_consumer/             ZeroS3-specific consumer contract: one S3 read scenario over loose/packed/
+                           compressed/warm/cold/mixed stores (`invariance`), browser-site workload with
+                           batch delete + prune + gc/repack (`browser`), checkpoint workload (`artifact`)
   m8g/introspection/       diff / inspect / stats
   m8h/parallel_transfer/   bounded parallel transfer (plus bench/)
   m8_baseline/             throughput baseline
@@ -95,6 +103,8 @@ go run ./runner -group s3,sync             # build ../zeros3.go, run groups
 go run ./runner -group all -bin /tmp/zeros3-bin
 
 RCLONE_BIN=$(which rclone) go run ./runner -group clients
+go run ./runner -group client,apps          # Core Client Profile (AWS SDK + minio-go), state invariance, applications
+go run ./profile/conformance -endpoint http://host:9000 -access-key K -secret-key S -json   # any endpoint
 ```
 
 | Group | Contents |
@@ -103,6 +113,8 @@ RCLONE_BIN=$(which rclone) go run ./runner -group clients
 | `s3` | SDK interoperability: CRUD, copy, range, presign, multipart, pagination, conditionals, env/shutdown, large streamed PUT/GET, aws-chunked uploads, packed CAS compaction and compression |
 | `sync` | sync, replication, repair, fork, snapshot, introspection |
 | `clients` | `rclone` (needs `RCLONE_BIN`) and Package Killer (needs `S3RVER_BIN`); skipped when unset |
+| `client` | Core Client Profile v1 via AWS SDK + minio-go (+ AWS CLI smoke if installed) on a managed server, and physical-state invariance; not part of `all` |
+| `apps` | browser-site and checkpoint application scenarios; not part of `all` |
 | `bench` | throughput benchmarks; not part of `all` |
 
 `all` is `static,s3,sync,clients`. Package Killer additionally needs

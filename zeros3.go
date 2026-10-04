@@ -74,33 +74,33 @@ import (
 //     469    Content-defined chunking (CDC)
 //     595    Content-addressed chunk storage (CAS)
 //     773    Packed CAS (immutable packs, DEFLATE records, locator index)
-//    2112    Manifests (immutable, JSON)
-//    2211    Visibility journal (append-only, checksummed)
-//    2624    Store: format, namespace, and object CRUD
-//    3443    Version history/restore, history pruning, ListObjectsV2
-//    3916    SigV4 authentication (header and presigned-URL)
-//    4871    Request payload checksums and S3-shaped XML error/response types
-//    5087    HTTP routing and S3 operation handlers
-//    5484    Conditional operations (PUT/GET/HEAD preconditions)
-//    6050    CopyObject
-//    6344    Multipart upload
-//    7170    Stats and reachability scanning
-//    7897    Verify
-//    8073    Store locking and safe offline GC
-//    8330    Offline compaction (`zeros3 compact`)
-//    8864    Pack reclamation and repacking (`zeros3 repack`)
-//    9241    Physical tiers: status and pack movement (`zeros3 tier`)
-//    9647    Streaming object reads (full and ranged GET)
-//    9772    Delta sync client, credentials, and parallel transfer
-//   11715    Bulk logical-chunk transport (v2)
-//   12617    Recursive directory sync
-//   12922    Remote replication (`zeros3 replicate`)
-//   13669    Peer-assisted corruption repair (`zeros3 repair`)
-//   14181    Namespace (prefix/bucket) replication
-//   14488    Copy-on-write namespace fork (`zeros3 fork`)
-//   14696    Snapshots and restore
-//   15843    Structural diff and inspect (introspection)
-//   17119    CLI dispatch, HTTP server/startup, and main
+//    2120    Manifests (immutable, JSON)
+//    2219    Visibility journal (append-only, checksummed)
+//    2632    Store: format, namespace, and object CRUD
+//    3451    Version history/restore, history pruning, ListObjectsV2
+//    3924    SigV4 authentication (header and presigned-URL)
+//    4879    Request payload checksums and S3-shaped XML error/response types
+//    5095    HTTP routing and S3 operation handlers
+//    5508    Conditional operations (PUT/GET/HEAD preconditions)
+//    6176    CopyObject
+//    6470    Multipart upload
+//    7296    Stats and reachability scanning
+//    8023    Verify
+//    8199    Store locking and safe offline GC
+//    8456    Offline compaction (`zeros3 compact`)
+//    8990    Pack reclamation and repacking (`zeros3 repack`)
+//    9367    Physical tiers: status and pack movement (`zeros3 tier`)
+//    9988    Streaming object reads (full and ranged GET)
+//   10113    Delta sync client, credentials, and parallel transfer
+//   12063    Bulk logical-chunk transport (v2)
+//   12965    Recursive directory sync
+//   13270    Remote replication (`zeros3 replicate`)
+//   14017    Peer-assisted corruption repair (`zeros3 repair`)
+//   14529    Namespace (prefix/bucket) replication
+//   14836    Copy-on-write namespace fork (`zeros3 fork`)
+//   15044    Snapshots and restore
+//   16191    Structural diff and inspect (introspection)
+//   17467    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -909,6 +909,17 @@ type tierMarker struct {
 // recreated -- so an unmounted device cannot make its packs vanish.
 func checkTierRoot(root string, storeID string, t tier) error {
 	dir := tierRoot(root, t)
+	if err := checkTierMarker(dir, storeID, t); err != nil {
+		return err
+	}
+	if fi, err := os.Stat(tierPackDir(root, t)); err != nil || !fi.IsDir() {
+		return fmt.Errorf("store: %s tier root %s has no packs directory", t, dir)
+	}
+	return nil
+}
+
+// checkTierMarker validates only the TIER.json of the tier root at dir.
+func checkTierMarker(dir string, storeID string, t tier) error {
 	data, err := os.ReadFile(filepath.Join(dir, tierMarkerName))
 	if err != nil {
 		return fmt.Errorf("store: %s tier root %s is missing or unmounted (%s unreadable: %v)", t, dir, tierMarkerName, err)
@@ -924,9 +935,6 @@ func checkTierRoot(root string, storeID string, t tier) error {
 		return fmt.Errorf("store: %s tier root %s belongs to store %q, not %q", t, dir, m.StoreID, storeID)
 	case m.Tier != t.String():
 		return fmt.Errorf("store: tier root %s is marked %q, expected %q", dir, m.Tier, t)
-	}
-	if fi, err := os.Stat(tierPackDir(root, t)); err != nil || !fi.IsDir() {
-		return fmt.Errorf("store: %s tier root %s has no packs directory", t, dir)
 	}
 	return nil
 }
@@ -5212,7 +5220,13 @@ func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
 // design (XML/JSON control requests). Object payloads never come through
 // here; they stream via ingestRequestBody.
 func readBufferedBody(w http.ResponseWriter, r *http.Request, rawPath string, check payloadCheck) ([]byte, bool) {
-	body, err := readAllLimited(r.Body, maxBufferedBodySize)
+	return readBufferedBodyLimit(w, r, rawPath, check, maxBufferedBodySize)
+}
+
+// readBufferedBodyLimit is readBufferedBody with a caller-chosen bound, for
+// control requests that have a much smaller natural ceiling.
+func readBufferedBodyLimit(w http.ResponseWriter, r *http.Request, rawPath string, check payloadCheck, limit int64) ([]byte, bool) {
+	body, err := readAllLimited(r.Body, limit)
 	if err != nil {
 		writeS3Error(w, "InvalidRequest", "failed to read request body", rawPath)
 		return nil, false
@@ -5380,6 +5394,8 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// for x-amz-copy-source before falling through to an ordinary PUT.
 	mpQuery, _ := url.ParseQuery(rawQuery)
 	_, hasUploads := mpQuery["uploads"]
+	_, hasLocation := mpQuery["location"]
+	_, hasDelete := mpQuery["delete"]
 	uploadID := mpQuery.Get("uploadId")
 	_, hasUploadID := mpQuery["uploadId"]
 
@@ -5400,6 +5416,14 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		srv.handleAbortMultipartUpload(w, bucket, key, uploadID)
 	case key == "" && r.Method == http.MethodGet && hasUploads:
 		srv.handleListMultipartUploads(w, bucket, rawQuery)
+	case key == "" && r.Method == http.MethodGet && hasLocation:
+		srv.handleGetBucketLocation(w, bucket)
+	case key == "" && r.Method == http.MethodPost && hasDelete:
+		body, ok := readBufferedBodyLimit(w, r, rawPath, check, maxDeleteObjectsBody)
+		if !ok {
+			return
+		}
+		srv.handleDeleteObjects(w, bucket, body)
 	case r.Method == http.MethodPut && key == "":
 		srv.handleCreateBucket(w, bucket)
 	case r.Method == http.MethodPut:
@@ -5886,6 +5910,108 @@ func (srv *Server) handleDeleteObject(w http.ResponseWriter, bucket, key string)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+	fireTestHook(hookAfterAck)
+}
+
+// locationConstraintXML is GetBucketLocation's body. ZeroS3 has one
+// configured region; like AWS, us-east-1 is the empty constraint.
+type locationConstraintXML struct {
+	XMLName xml.Name `xml:"LocationConstraint"`
+	Region  string   `xml:",chardata"`
+}
+
+func (srv *Server) handleGetBucketLocation(w http.ResponseWriter, bucket string) {
+	if err := srv.store.HeadBucket(bucket); err != nil {
+		writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", "/"+bucket)
+		return
+	}
+	loc := srv.region
+	if loc == "us-east-1" {
+		loc = ""
+	}
+	writeXML(w, http.StatusOK, locationConstraintXML{Region: loc})
+}
+
+const (
+	// maxDeleteObjectsKeys is S3's DeleteObjects batch ceiling.
+	maxDeleteObjectsKeys = 1000
+	// coreS3ProfileVersion is the ZeroS3 Core Client Profile this build serves.
+	coreS3ProfileVersion = 1
+	// maxDeleteObjectsBody bounds the request XML: 1000 keys of up to 1 KiB,
+	// each worst-case entity-escaped, with headroom.
+	maxDeleteObjectsBody = 8 * 1024 * 1024
+)
+
+type deleteObjectsRequestXML struct {
+	XMLName xml.Name `xml:"Delete"`
+	Quiet   bool     `xml:"Quiet"`
+	Objects []struct {
+		Key       *string `xml:"Key"`
+		VersionID string  `xml:"VersionId"`
+	} `xml:"Object"`
+}
+
+type deletedXML struct {
+	Key string `xml:"Key"`
+}
+
+type deleteErrorXML struct {
+	Key     string `xml:"Key"`
+	Code    string `xml:"Code"`
+	Message string `xml:"Message"`
+}
+
+type deleteResultXML struct {
+	XMLName xml.Name         `xml:"DeleteResult"`
+	Deleted []deletedXML     `xml:"Deleted"`
+	Errors  []deleteErrorXML `xml:"Error"`
+}
+
+// handleDeleteObjects deletes each listed key through Store.DeleteObject --
+// the same durable, history-archiving primitive as a single DELETE -- in
+// request order. It is deliberately not atomic: a per-key failure is
+// reported in the result and does not undo or stop the other keys.
+func (srv *Server) handleDeleteObjects(w http.ResponseWriter, bucket string, body []byte) {
+	res := "/" + bucket
+	var req deleteObjectsRequestXML
+	if err := xml.Unmarshal(body, &req); err != nil {
+		writeS3Error(w, "MalformedXML", "the Delete request body could not be parsed", res)
+		return
+	}
+	if n := len(req.Objects); n == 0 || n > maxDeleteObjectsKeys {
+		writeS3Error(w, "MalformedXML", fmt.Sprintf("the Delete request must list 1 to %d objects", maxDeleteObjectsKeys), res)
+		return
+	}
+	for _, o := range req.Objects {
+		if o.Key == nil || *o.Key == "" {
+			writeS3Error(w, "MalformedXML", "every Object in the Delete request needs a Key", res)
+			return
+		}
+	}
+	if err := srv.store.HeadBucket(bucket); err != nil {
+		writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", res)
+		return
+	}
+	out := deleteResultXML{}
+	for _, o := range req.Objects {
+		key := *o.Key
+		if o.VersionID != "" && o.VersionID != "null" {
+			out.Errors = append(out.Errors, deleteErrorXML{Key: key, Code: "InvalidArgument", Message: "ZeroS3 does not support deleting specific object versions"})
+			continue
+		}
+		if err := srv.store.DeleteObject(bucket, key); err != nil {
+			code := "InternalError"
+			if errors.Is(err, errNoSuchBucket) {
+				code = "NoSuchBucket"
+			}
+			out.Errors = append(out.Errors, deleteErrorXML{Key: key, Code: code, Message: err.Error()})
+			continue
+		}
+		if !req.Quiet {
+			out.Deleted = append(out.Deleted, deletedXML{Key: key})
+		}
+	}
+	writeXML(w, http.StatusOK, out)
 	fireTestHook(hookAfterAck)
 }
 
@@ -9557,23 +9683,218 @@ func tierMove(storeDir string, opt tierMoveOptions) (TierMoveResult, error) {
 	return res, nil
 }
 
+// TierInitResult reports one `tier init`.
+type TierInitResult struct {
+	Tier    string `json:"tier"`
+	Root    string `json:"root"`
+	StoreID string `json:"store_id"`
+	// Action is "initialized" (fresh root), "repaired" (valid marker, missing
+	// directories) or "already-initialized" (nothing to do). Never "restored":
+	// init recreates structure only, never pack payload.
+	Action string `json:"action"`
+}
+
+// tierInitCheckEmpty accepts a not-yet-marked tier root only if it holds
+// nothing, or only empty packs/tmp directories (plus the empty lost+found a
+// fresh ext4 mount carries).
+func tierInitCheckEmpty(dir string) error {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range ents {
+		sub := filepath.Join(dir, e.Name())
+		fi, err := os.Stat(sub)
+		if err != nil || !fi.IsDir() || e.Name() != "packs" && e.Name() != "tmp" && e.Name() != "lost+found" {
+			return fmt.Errorf("tier init: %s is not empty and has no %s (found %q); refusing to initialize over unrecognized content", dir, tierMarkerName, e.Name())
+		}
+		inner, err := os.ReadDir(sub)
+		if err != nil {
+			return err
+		}
+		if e.Name() == "tmp" { // staging left by an interrupted earlier init is ours to ignore
+			inner = slices.DeleteFunc(inner, func(f os.DirEntry) bool { ok, _ := filepath.Match("zs3-*.tmp", f.Name()); return ok })
+		}
+		if len(inner) > 0 {
+			return fmt.Errorf("tier init: %s/%s is not empty and has no %s; an existing pack set without its marker is never adopted automatically", dir, e.Name(), tierMarkerName)
+		}
+	}
+	return nil
+}
+
+// tierInit initializes the structural root (TIER.json, packs/, tmp/) of a
+// replacement or new warm/cold tier. It works while OpenStore refuses the
+// store: it holds the exclusive lock and reads FORMAT.json directly. It
+// recreates structure only -- never pack payload -- and refuses any target
+// that is not clearly empty or already marked for this store and tier.
+func tierInit(storeDir string, t tier) (TierInitResult, error) {
+	if t == tierHot {
+		return TierInitResult{}, errors.New("tier init: the hot tier is the store root and cannot be initialized; choose warm or cold")
+	}
+	lock, err := acquireStoreLock(storeDir, true)
+	if err != nil {
+		return TierInitResult{}, err
+	}
+	defer lock.release()
+	formatPath := filepath.Join(storeDir, "FORMAT.json")
+	if _, err := os.Stat(formatPath); err != nil {
+		return TierInitResult{}, fmt.Errorf("tier init: %s is not a ZeroS3 store: %w", storeDir, err)
+	}
+	format, err := loadOrInitFormat(storeDir, formatPath)
+	if err != nil {
+		return TierInitResult{}, err
+	}
+	dir := tierRoot(storeDir, t)
+	res := TierInitResult{Tier: t.String(), Root: dir, StoreID: format.StoreID}
+	if format.StoreFormatVersion < storeFormatVersionTiers {
+		return res, fmt.Errorf("tier init: store format %d has no tier roots (the first tier move or compact -tier creates them)", format.StoreFormatVersion)
+	}
+
+	_, merr := os.Stat(filepath.Join(dir, tierMarkerName))
+	switch {
+	case merr == nil:
+		// Marked: only this store's own marker for this tier is accepted;
+		// missing directories alone are repaired.
+		if err := checkTierMarker(dir, format.StoreID, t); err != nil {
+			return res, fmt.Errorf("tier init: %w", err)
+		}
+		res.Action = "already-initialized"
+		for _, sub := range []string{"packs", "tmp"} {
+			if _, err := os.Stat(filepath.Join(dir, sub)); err != nil {
+				res.Action = "repaired"
+			}
+			if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+				return res, err
+			}
+		}
+		if res.Action == "repaired" {
+			for _, d := range []string{filepath.Join(dir, "packs"), filepath.Join(dir, "tmp"), dir} {
+				if err := syncDir(d); err != nil {
+					return res, err
+				}
+			}
+		}
+		return res, nil
+	case !os.IsNotExist(merr):
+		return res, fmt.Errorf("tier init: cannot inspect %s: %w", dir, merr)
+	}
+
+	if fi, err := os.Stat(dir); err == nil {
+		if !fi.IsDir() {
+			return res, fmt.Errorf("tier init: %s is not a directory", dir)
+		}
+		if err := tierInitCheckEmpty(dir); err != nil {
+			return res, err
+		}
+	} else if !os.IsNotExist(err) {
+		return res, err
+	}
+	for _, sub := range []string{"packs", "tmp"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+			return res, err
+		}
+	}
+	data, err := json.MarshalIndent(tierMarker{tierMarkerFormatVersion, format.StoreID, t.String()}, "", "  ")
+	if err != nil {
+		return res, err
+	}
+	if err := writeFileDurable(filepath.Join(dir, "tmp"), filepath.Join(dir, tierMarkerName), data); err != nil {
+		return res, err
+	}
+	for _, d := range []string{filepath.Join(dir, "packs"), filepath.Join(dir, "tmp"), dir, filepath.Dir(dir), storeDir} {
+		if err := syncDir(d); err != nil {
+			return res, err
+		}
+	}
+	res.Action = "initialized"
+	return res, nil
+}
+
+// ProbeResult is `zeros3 probe`'s report.
+type ProbeResult struct {
+	Endpoint string `json:"endpoint"`
+	// Kind is "zeros3", "generic-s3" (answers, but not with ZeroS3's capability
+	// document), "unauthorized" (credentials rejected: cannot classify) or
+	// "unreachable".
+	Kind           string `json:"kind"`
+	Detail         string `json:"detail,omitempty"`
+	CoreS3Profile  int    `json:"core_s3_profile,omitempty"`
+	SyncProtocol   int    `json:"sync_protocol,omitempty"`
+	BulkProtocol   int    `json:"bulk_protocol,omitempty"`
+	DeltaSync      bool   `json:"delta_sync,omitempty"`
+	MaxBulkChunks  int    `json:"max_bulk_chunks,omitempty"`
+	Implementation string `json:"implementation,omitempty"`
+}
+
+// probeEndpoint asks one endpoint for ZeroS3's capability document.
+func probeEndpoint(cfg syncClientConfig) ProbeResult {
+	res := ProbeResult{Endpoint: cfg.Endpoint}
+	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3SyncInfoPath, nil, nil)
+	var d syncDiscoveryResponse
+	switch {
+	case err != nil:
+		res.Kind, res.Detail = "unreachable", err.Error()
+	case resp.StatusCode == http.StatusForbidden:
+		res.Kind, res.Detail = "unauthorized", "credentials rejected; cannot tell whether this is ZeroS3"
+	case resp.StatusCode == http.StatusOK && json.Unmarshal(body, &d) == nil && d.Protocol > 0:
+		res.Kind, res.Implementation, res.CoreS3Profile = "zeros3", "zeros3", d.CoreS3Profile
+		res.SyncProtocol, res.BulkProtocol, res.DeltaSync, res.MaxBulkChunks = d.Protocol, d.BulkProtocol, d.DeltaSync, d.MaxBulkChunks
+		if d.Implementation != "" {
+			res.Implementation = d.Implementation
+		}
+	default:
+		res.Kind, res.Detail = "generic-s3", fmt.Sprintf("no ZeroS3 capability document (HTTP %d); use plain S3 operations only", resp.StatusCode)
+	}
+	return res
+}
+
+// runProbe implements "zeros3 probe -endpoint URL [-json]".
+func runProbe(args []string) {
+	fs := flag.NewFlagSet("probe", flag.ExitOnError)
+	endpoint, accessKey, secretKey, region := snapshotClientFlags(fs)
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	fs.Parse(args)
+	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
+	res := probeEndpoint(syncClientConfig{Endpoint: *endpoint, Creds: Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey}, Region: *region})
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(res)
+	} else {
+		fmt.Printf("%s: %s", res.Endpoint, res.Kind)
+		if res.Kind == "zeros3" {
+			fmt.Printf(" (core S3 profile %d, sync protocol %d, bulk protocol %d)", res.CoreS3Profile, res.SyncProtocol, res.BulkProtocol)
+		}
+		if res.Detail != "" {
+			fmt.Printf(" -- %s", res.Detail)
+		}
+		fmt.Println()
+	}
+	if res.Kind == "unreachable" {
+		os.Exit(1)
+	}
+}
+
 type packIDList []string
 
 func (l *packIDList) String() string     { return strings.Join(*l, ",") }
 func (l *packIDList) Set(v string) error { *l = append(*l, v); return nil }
 
-// runTier implements "zeros3 tier status|move". See section 13e.
+// runTier implements "zeros3 tier status|init|move". See section 13e.
 func runTier(args []string) {
-	if len(args) == 0 || args[0] != "status" && args[0] != "move" {
-		fmt.Fprintln(os.Stderr, "usage: zeros3 tier status -store DIR [-json]\n       zeros3 tier move -store DIR -from TIER -to TIER (-pack ID ... | -all) [-apply] [-json]")
+	if len(args) == 0 || args[0] != "status" && args[0] != "move" && args[0] != "init" {
+		fmt.Fprintln(os.Stderr, "usage: zeros3 tier status -store DIR [-json]\n       zeros3 tier init -store DIR -tier warm|cold [-json]\n       zeros3 tier move -store DIR -from TIER -to TIER (-pack ID ... | -all) [-apply] [-json]")
 		os.Exit(2)
 	}
 	fs := flag.NewFlagSet("tier "+args[0], flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
-	var from, to *string
+	var from, to, initTier *string
 	var apply, all *bool
 	var ids packIDList
+	if args[0] == "init" {
+		initTier = fs.String("tier", "", "tier root to initialize: warm or cold")
+	}
 	if args[0] == "move" {
 		from = fs.String("from", "", "source tier: hot, warm, or cold")
 		to = fs.String("to", "", "target tier: hot, warm, or cold")
@@ -9594,6 +9915,26 @@ func runTier(args []string) {
 		}
 	}
 
+	if args[0] == "init" {
+		t, err := parseTier(*initTier)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "zeros3: tier init: -tier is required: %v\n", err)
+			os.Exit(2)
+		}
+		res, err := tierInit(*storeDir, t)
+		if err != nil {
+			if errors.Is(err, errGCStoreInUse) {
+				fmt.Fprintf(os.Stderr, "zeros3: tier init: %v -- it requires exclusive access; stop `zeros3 serve`/any other maintenance command against this store first\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "zeros3: %v\n", err)
+			}
+			os.Exit(1)
+		}
+		emit(res, func() {
+			fmt.Fprintf(os.Stdout, "ZeroS3 tier init %s: %s (%s, store %s)\nThis creates structure only; it does not restore packs. Run `zeros3 verify` to see any data still missing.\n", res.Tier, res.Action, res.Root, res.StoreID)
+		})
+		return
+	}
 	if args[0] == "status" {
 		store, err := OpenStore(*storeDir)
 		if err != nil {
@@ -9884,6 +10225,11 @@ type syncDiscoveryResponse struct {
 	MaxHashesPerBatch int    `json:"max_hashes_per_batch"`
 	MaxBatchBytes     int64  `json:"max_batch_bytes"`
 	MaxChunkBytes     int    `json:"max_chunk_bytes"`
+
+	// Additive identification: lets a client tell a ZeroS3 endpoint from a
+	// generic S3 one, and which Core Client Profile it serves (S3_COMPAT.md).
+	Implementation string `json:"implementation,omitempty"`
+	CoreS3Profile  int    `json:"core_s3_profile,omitempty"`
 
 	// Optional bulk transport (section 15b-ter); absent from servers that
 	// predate it, which clients must then treat as v1-only.
@@ -10341,6 +10687,8 @@ func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
 		MaxHashesPerBatch: maxSyncBatchDescriptors,
 		MaxBatchBytes:     maxSyncBatchBytes,
 		MaxChunkBytes:     maxSyncChunkBytes,
+		Implementation:    "zeros3",
+		CoreS3Profile:     coreS3ProfileVersion,
 	}
 	d.BulkProtocol, d.MaxBulkChunks, d.MaxBulkBytes = zeros3BulkProtocolVersion, maxBulkRecords, maxBulkBytes
 	writeSyncJSON(w, http.StatusOK, d)
@@ -17147,6 +17495,8 @@ func main() {
 		runRepack(args)
 	case "tier":
 		runTier(args)
+	case "probe":
+		runProbe(args)
 	case "doctor":
 		runDoctor(args)
 	case "sync":
@@ -17164,7 +17514,7 @@ func main() {
 	case "inspect":
 		runInspect(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, repack, tier, doctor, sync, replicate, repair, fork, snapshot, diff, or inspect)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, repack, tier, probe, doctor, sync, replicate, repair, fork, snapshot, diff, or inspect)\n", cmd)
 		os.Exit(2)
 	}
 }

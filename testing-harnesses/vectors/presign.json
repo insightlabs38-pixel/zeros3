@@ -1,0 +1,98 @@
+{
+ "access_key": "AKIAIOSFODNN7EXAMPLE",
+ "secret_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+ "vectors": [
+  {
+   "name": "AWS example: presigned GET",
+   "method": "GET",
+   "host": "examplebucket.s3.amazonaws.com",
+   "raw_path": "/test.txt",
+   "expires": 86400,
+   "amz_date": "20130524T000000Z",
+   "region": "us-east-1",
+   "canonical_request": "GET\n/test.txt\nX-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20130524T000000Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host\nhost:examplebucket.s3.amazonaws.com\n\nhost\nUNSIGNED-PAYLOAD",
+   "string_to_sign": "AWS4-HMAC-SHA256\n20130524T000000Z\n20130524/us-east-1/s3/aws4_request\n3bfa292879f6447bbcda7001decf97f4a54dc650c8942174ae0a9121cf58ad04",
+   "signature": "aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404",
+   "url": "http://examplebucket.s3.amazonaws.com/test.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20130524T000000Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host&X-Amz-Signature=aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404",
+   "aws_published_signature": "aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404"
+  },
+  {
+   "name": "GET, path style",
+   "method": "GET",
+   "host": "zeros3.test:9000",
+   "raw_path": "/bucket/key.txt",
+   "expires": 900,
+   "amz_date": "20260102T030405Z",
+   "region": "us-east-1",
+   "canonical_request": "GET\n/bucket/key.txt\nX-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260102%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260102T030405Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host\nhost:zeros3.test:9000\n\nhost\nUNSIGNED-PAYLOAD",
+   "string_to_sign": "AWS4-HMAC-SHA256\n20260102T030405Z\n20260102/us-east-1/s3/aws4_request\ne29b8ae67487eaba1e649fa9647961a8ac20ca8d1d531923802e8f5002ec075a",
+   "signature": "9163fd7f9421cb9543dc469e4d8cada7c17b57fceb6937c06df83d77b19e42ee",
+   "url": "http://zeros3.test:9000/bucket/key.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260102%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260102T030405Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=9163fd7f9421cb9543dc469e4d8cada7c17b57fceb6937c06df83d77b19e42ee"
+  },
+  {
+   "name": "PUT, path style",
+   "method": "PUT",
+   "host": "zeros3.test:9000",
+   "raw_path": "/bucket/upload.bin",
+   "expires": 3600,
+   "amz_date": "20260102T030405Z",
+   "region": "us-east-1",
+   "canonical_request": "PUT\n/bucket/upload.bin\nX-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260102%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260102T030405Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host\nhost:zeros3.test:9000\n\nhost\nUNSIGNED-PAYLOAD",
+   "string_to_sign": "AWS4-HMAC-SHA256\n20260102T030405Z\n20260102/us-east-1/s3/aws4_request\nec2c9cc3b91cec5063a595e684a81b68f44d4ccae7188e2c2700c985b2401649",
+   "signature": "fb99d7cbc4fb917ccab6acc7a2008dda63978537e820f7d67f37a2dbafbc4369",
+   "url": "http://zeros3.test:9000/bucket/upload.bin?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260102%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260102T030405Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=fb99d7cbc4fb917ccab6acc7a2008dda63978537e820f7d67f37a2dbafbc4369"
+  },
+  {
+   "name": "GET, encoded key",
+   "method": "GET",
+   "host": "zeros3.test:9000",
+   "raw_path": "/bucket/dir/a%20b%2Bc%25d.txt",
+   "expires": 900,
+   "amz_date": "20260102T030405Z",
+   "region": "us-east-1",
+   "canonical_request": "GET\n/bucket/dir/a%20b%2Bc%25d.txt\nX-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260102%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260102T030405Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host\nhost:zeros3.test:9000\n\nhost\nUNSIGNED-PAYLOAD",
+   "string_to_sign": "AWS4-HMAC-SHA256\n20260102T030405Z\n20260102/us-east-1/s3/aws4_request\n32e29660c4f7a5ff8ad52d9159cf1541afe7ef96154de746179290f17c5535ee",
+   "signature": "908e6f8428ad459b5a6c9a1b114c6ee06c9ee308e2c02ffed38c91c0b5de62b3",
+   "url": "http://zeros3.test:9000/bucket/dir/a%20b%2Bc%25d.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260102%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260102T030405Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=908e6f8428ad459b5a6c9a1b114c6ee06c9ee308e2c02ffed38c91c0b5de62b3"
+  },
+  {
+   "name": "GET, unicode key",
+   "method": "GET",
+   "host": "zeros3.test:9000",
+   "raw_path": "/bucket/%C3%BC%E6%97%A5.txt",
+   "expires": 900,
+   "amz_date": "20260102T030405Z",
+   "region": "us-east-1",
+   "canonical_request": "GET\n/bucket/%C3%BC%E6%97%A5.txt\nX-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260102%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260102T030405Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host\nhost:zeros3.test:9000\n\nhost\nUNSIGNED-PAYLOAD",
+   "string_to_sign": "AWS4-HMAC-SHA256\n20260102T030405Z\n20260102/us-east-1/s3/aws4_request\ne4d26ff77b2ae990a2f8c67412d35670804ae6a63d446f76485f498592940262",
+   "signature": "c07da5b75a58b782162167592792d4261a8e4cfebfebe2d223b615e55c1e8dfb",
+   "url": "http://zeros3.test:9000/bucket/%C3%BC%E6%97%A5.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260102%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260102T030405Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=c07da5b75a58b782162167592792d4261a8e4cfebfebe2d223b615e55c1e8dfb"
+  },
+  {
+   "name": "GET, minimum expiry",
+   "method": "GET",
+   "host": "zeros3.test:9000",
+   "raw_path": "/bucket/key.txt",
+   "expires": 1,
+   "amz_date": "20260102T030405Z",
+   "region": "us-east-1",
+   "canonical_request": "GET\n/bucket/key.txt\nX-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260102%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260102T030405Z&X-Amz-Expires=1&X-Amz-SignedHeaders=host\nhost:zeros3.test:9000\n\nhost\nUNSIGNED-PAYLOAD",
+   "string_to_sign": "AWS4-HMAC-SHA256\n20260102T030405Z\n20260102/us-east-1/s3/aws4_request\nb28481ba2efeaa3fef539b06cd31b3421183d08f079c88ee885a4af073ae5546",
+   "signature": "deaccda381c219fbe799b43a91047affa5ff22870ee8c6b7d3d26d94cb631dfe",
+   "url": "http://zeros3.test:9000/bucket/key.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260102%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260102T030405Z&X-Amz-Expires=1&X-Amz-SignedHeaders=host&X-Amz-Signature=deaccda381c219fbe799b43a91047affa5ff22870ee8c6b7d3d26d94cb631dfe"
+  },
+  {
+   "name": "GET, maximum expiry",
+   "method": "GET",
+   "host": "zeros3.test:9000",
+   "raw_path": "/bucket/key.txt",
+   "expires": 604800,
+   "amz_date": "20260102T030405Z",
+   "region": "eu-west-2",
+   "canonical_request": "GET\n/bucket/key.txt\nX-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260102%2Feu-west-2%2Fs3%2Faws4_request&X-Amz-Date=20260102T030405Z&X-Amz-Expires=604800&X-Amz-SignedHeaders=host\nhost:zeros3.test:9000\n\nhost\nUNSIGNED-PAYLOAD",
+   "string_to_sign": "AWS4-HMAC-SHA256\n20260102T030405Z\n20260102/eu-west-2/s3/aws4_request\n56657a48812c915c74426b2f6dda9c95216ebe8243fbe14f1ecaff71eeb6b1a3",
+   "signature": "4f182341cf7957e2f160491ba1f9cf1a651a025263269a8343cc3a18f5d4e694",
+   "url": "http://zeros3.test:9000/bucket/key.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260102%2Feu-west-2%2Fs3%2Faws4_request&X-Amz-Date=20260102T030405Z&X-Amz-Expires=604800&X-Amz-SignedHeaders=host&X-Amz-Signature=4f182341cf7957e2f160491ba1f9cf1a651a025263269a8343cc3a18f5d4e694"
+  }
+ ]
+}

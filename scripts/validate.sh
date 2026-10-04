@@ -17,6 +17,11 @@
 #   scripts/validate.sh tier     hot/warm/cold tier unit, crash and CLI tests (fast)
 #   scripts/validate.sh tier-life  black-box tier lifecycle harness (compact -tier,
 #                                tier move, prune + gc/repack, v1-v5 format compat)
+#   scripts/validate.sh vectors  golden client vectors (SigV4, presign, wire shapes) plus the
+#                                fast GetBucketLocation/DeleteObjects/probe tests (seconds)
+#   scripts/validate.sh client   Core Client Profile v1 (AWS SDK + minio-go [+ AWS CLI if
+#                                installed]) against a managed server, plus physical-state invariance
+#   scripts/validate.sh apps     browser-site and artifact/checkpoint application scenarios
 #   scripts/validate.sh all      both
 #   scripts/validate.sh STAGE... run named stages (see `list`)
 #
@@ -110,6 +115,12 @@ stage_tier-life() {
 	cd "$root/testing-harnesses" &&
 		ZEROS3_BIN="$bin" go run ./harness/z2_storage_tiers -seg-mib "${TIER_SEG_MIB:-4}" -baseline-bin "$base"
 }
+stage_vectors() {
+	cd "$root" && go test -count=1 -run 'TestVectors_|TestGetBucketLocation|TestDeleteObjects_|TestProbe' . &&
+		{ ! command -v python3 >/dev/null || python3 testing-harnesses/vectors/gen.py --check; }
+}
+stage_client() { build_bin && cd "$root/testing-harnesses" && go run ./runner -group client -bin "$bin"; }
+stage_apps() { build_bin && cd "$root/testing-harnesses" && go run ./runner -group apps -bin "$bin"; }
 stage_repro() { cd "$root" && sh scripts/reproducible_build.sh; }
 
 stage_race()    { cd "$root" && go test -race -count=1 ./...; }
@@ -134,7 +145,7 @@ normal="format modules test static s3 sync repro"
 heavy="race crash repack compact compression index-scale bulk-bench history-life tier-life"
 
 case "${1:-normal}" in
-list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk history history-life tier tier-life"; exit 0 ;;
+list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk history history-life tier tier-life vectors client apps"; exit 0 ;;
 normal) stages=$normal ;;
 heavy) stages=$heavy ;;
 all) stages="$normal $heavy" ;;

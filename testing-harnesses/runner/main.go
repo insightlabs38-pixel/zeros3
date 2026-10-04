@@ -45,6 +45,13 @@ var groups = map[string][]harness{
 		{pkg: "./harness/rclone", need: "RCLONE_BIN"},
 		{pkg: "./harness/package-killer", need: "S3RVER_BIN"},
 	},
+	"client": {
+		{pkg: "./profile/conformance", args: []string{"-managed", "-bin", "@bin"}},
+		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "invariance"}},
+	},
+	"apps": {
+		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "browser,artifact"}},
+	},
 	"bench": {
 		{pkg: "./harness/m8_baseline", args: []string{"-bin", "@bin"}},
 		{pkg: "./harness/m8h/bench", args: []string{"-bin", "@bin"}},
@@ -57,7 +64,7 @@ var allGroups = []string{"static", "s3", "sync", "clients"}
 
 func main() {
 	list := flag.Bool("list", false, "list groups and harnesses")
-	sel := flag.String("group", "s3", "comma-separated groups: static,s3,sync,clients,bench,all")
+	sel := flag.String("group", "s3", "comma-separated groups: static,s3,sync,clients,client,apps,bench,all")
 	bin := flag.String("bin", "", "prebuilt zeros3 binary (default: build ../zeros3.go)")
 	flag.Parse()
 
