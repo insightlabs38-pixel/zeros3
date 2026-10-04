@@ -25,7 +25,7 @@ CAS → immutable manifests → visibility journal.**
 - Copy-on-write namespace forks and durable, restorable snapshots
 - Atomic conditional writes (`If-Match` / `If-None-Match`)
 - Streaming I/O: uploads and downloads of any size run in bounded memory; signed `aws-chunked` uploads accepted
-- Bounded parallel chunk transfer
+- Bounded parallel chunk transfer, batched into a few bulk requests between ZeroS3 servers
 - Immutable packed storage: `zeros3 compact` folds loose chunk files into a few verified packs, DEFLATE-compressing each record that shrinks; `gc` and `zeros3 repack` reclaim dead packed records by replacing packs
 - Zero third-party dependencies, reproducible build
 
@@ -231,7 +231,13 @@ whole bucket or prefix) moves objects between two ZeroS3 servers,
 transferring only the chunks the destination doesn't already have, as a
 client-orchestrated relay — neither server ever contacts the other
 directly. `-workers N` bounds parallel chunk transfer for sync, repair,
-and replication alike.
+and replication alike. Servers advertise an optional bulk transport
+(`/_zeros3/v2`) that moves the same logical chunks in bounded batches of up
+to 4096 chunks / 64 MiB (clients target 8 MiB), cutting a 256 MiB transfer
+from ~7,900 HTTP requests to 66; it is used automatically when every
+endpoint involved supports it, and older servers or clients keep using the
+per-chunk protocol. Bulk runs at most 4 batches at once whatever `-workers`
+says.
 
 **Integrity and recovery.** `zeros3 verify` (`-deep` for full content
 re-hashing) checks structural, per-chunk, and whole-object integrity and
@@ -348,9 +354,28 @@ missing payload:
 `-workers` is configurable (1..32, default 8); publication stays
 serialized and safe regardless of worker count.
 
+**Bulk transfer.** 256 MiB, loopback, 4 vCPU, per-request delay on the
+destination only; a per-chunk client (8 workers) against the bulk client,
+measured in one harness against the same servers (its proxy pools
+connections, so the per-chunk figures differ from the table above):
+
+| Delay | Per-chunk | Bulk | Transfer requests |
+|---:|---:|---:|---:|
+| 0 ms | 21.11 MiB/s | 31.96 MiB/s | 7,868 → 66 (-99.2%) |
+| 5 ms | 20.92 MiB/s | 31.12 MiB/s | 7,868 → 66 |
+| 10 ms | 18.44 MiB/s | 31.42 MiB/s (1.70x) | 7,868 → 66 |
+
+Throughput is flat across delay because the destination's per-chunk
+durable writes, not the network round trips, become the limit. Peak RSS:
+servers 14-21 MiB, bulk client 56 MiB (per-chunk client 18 MiB); client
+memory depends on batch size and the 4-batch cap, not object size or
+`-workers`. At 10 ms, 4 MiB / 8 MiB / 16 MiB batches reached 32.7 / 32.0 /
+31.0 MiB/s with 4 workers and gained nothing from 8, so the default is 8
+MiB batches and at most 4 in flight.
+
 ## Verification
 
-- **Internal test suite:** 778 tests green; `go vet ./...` and
+- **Internal test suite:** 845 tests green; `go vet ./...` and
   `gofmt -l .` clean; `go test -race ./...` clean.
 - **AWS SDK for Go v2 interoperability:** validated black-box against a
   real `zeros3` process using an ordinary, unmodified SDK client —
