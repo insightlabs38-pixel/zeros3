@@ -294,9 +294,9 @@ behavioral gates.
 
 ## Security issues
 
-Do not publish a sensitive vulnerability report merely to satisfy the normal
-issue workflow.
+Do not publish a sensitive vulnerability through the normal public issue
+workflow.
 
-The repository does not yet publish a dedicated private security-reporting
-address in documentation. Until one is configured, avoid adding a speculative
-`SECURITY.md` that promises a channel the maintainer does not actually monitor.
+Use GitHub Private Vulnerability Reporting as documented in
+[SECURITY.md](./SECURITY.md). That policy also describes the current security
+boundary and supported pre-1.0 versions.
