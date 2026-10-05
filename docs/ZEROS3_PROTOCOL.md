@@ -3,12 +3,10 @@
 ZeroS3 exposes a small content-native protocol under the reserved
 `/_zeros3/` namespace in addition to its ordinary S3 surface.
 
-This protocol exists for clients that want to exploit ZeroS3's logical chunk
-model directly: delta upload, ZeroS3-to-ZeroS3 replication, peer repair,
-snapshot orchestration, and structural inspection.
-
-It is **not S3**. Ordinary S3 clients do not need to implement anything in
-this document.
+This protocol is separate from S3 and exposes ZeroS3's logical chunk model to
+clients that need delta upload, ZeroS3-to-ZeroS3 replication, peer repair,
+snapshot orchestration, or structural inspection. Ordinary S3 clients do not
+need to implement it.
 
 For ordinary compatibility, see [../S3_COMPAT.md](../S3_COMPAT.md).
 
@@ -16,8 +14,8 @@ For ordinary compatibility, see [../S3_COMPAT.md](../S3_COMPAT.md).
 
 The native protocol follows five rules:
 
-1. **Logical content only.** Wire identities are SHA-256 + logical length.
-   Packs, offsets, codecs, and tiers never appear.
+1. **Logical content only.** Wire identities are SHA-256 plus logical length;
+   packs, offsets, codecs, and tiers never appear.
 2. **Ordinary object result.** A successful native commit produces the same
    kind of object root/manifests used by normal PutObject.
 3. **Explicit discovery.** Clients must discover version/capability support
@@ -76,9 +74,8 @@ uses discovery to distinguish ZeroS3 from generic S3.
 
 ## Authentication
 
-Every native request passes through ZeroS3's normal SigV4 header verifier.
-
-There is no separate native-protocol credential format.
+Every native request passes through ZeroS3's normal SigV4 header verifier, so
+there is no separate native-protocol credential format.
 
 A client should sign:
 
@@ -291,8 +288,8 @@ Response:
 
 The commit request includes two mutually meaningful safety fields:
 
-- `expect_absent` — require no current destination object;
-- `expected_etag` — require the destination current ETag observed during
+- `expect_absent`: require no current destination object;
+- `expected_etag`: require the destination current ETag observed during
   planning.
 
 Built-in sync/replication uses these to avoid silently overwriting a concurrent
@@ -340,7 +337,8 @@ both ZeroS3 and generic S3 endpoints.
 
 ## Remote replication
 
-ZeroS3-to-ZeroS3 replication is client-orchestrated.
+ZeroS3-to-ZeroS3 replication is orchestrated by the client rather than by one
+server connecting directly to the other.
 
 The relay process talks independently to source and destination:
 
@@ -360,7 +358,7 @@ destination /commit
 Neither server is configured with the other server's credentials, and neither
 server needs to make outbound requests.
 
-The destination result is an ordinary object.
+After commit, the destination is an ordinary S3-visible object.
 
 Recursive namespace replication adds client-side ListObjectsV2 enumeration and
 reuses the same per-object pipeline.
@@ -536,7 +534,8 @@ primitives as replication.
 Within one store, the payload is already present, so restore normally transfers
 no new CAS payload.
 
-For operational use, see [OPERATIONS.md](./OPERATIONS.md).
+Operational snapshot workflows are documented in
+[OPERATIONS.md](./OPERATIONS.md).
 
 ## Reachability endpoint
 
@@ -553,7 +552,8 @@ It is not intended as an S3 API.
 
 ## Versioning rules
 
-A client must not guess compatibility.
+Clients must use the advertised protocol identifiers rather than infer
+compatibility.
 
 For v1 JSON requests, send exactly:
 
@@ -625,8 +625,8 @@ The current static-credential security boundary is described in
 
 ## Related documentation
 
-- [../S3_COMPAT.md](../S3_COMPAT.md) — ordinary S3 contract
-- [ARCHITECTURE.md](./ARCHITECTURE.md) — logical/physical storage design
-- [OPERATIONS.md](./OPERATIONS.md) — operator workflows
-- [../BUNDLE_FORMAT.md](../BUNDLE_FORMAT.md) — portable snapshot artifacts
-- [../testing-harnesses/README.md](../testing-harnesses/README.md) — black-box validation
+- [../S3_COMPAT.md](../S3_COMPAT.md): ordinary S3 contract
+- [ARCHITECTURE.md](./ARCHITECTURE.md): logical/physical storage design
+- [OPERATIONS.md](./OPERATIONS.md): operator workflows
+- [../BUNDLE_FORMAT.md](../BUNDLE_FORMAT.md): portable snapshot artifacts
+- [../testing-harnesses/README.md](../testing-harnesses/README.md): black-box validation

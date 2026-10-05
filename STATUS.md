@@ -78,14 +78,15 @@ The content-native protocol is separate from S3. It is used by `zeros3 sync`,
 
 - logical sync protocol: **v1**
 - optional bulk chunk transport: **v2**
-- ordinary S3 remains the compatibility fallback where documented
+- ordinary S3 remains the compatibility fallback where documented.
 
-See [docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md).
+The native protocol is specified in
+[docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md).
 
 ## Persistent format versions
 
-All persistent formats are explicit. A binary that does not understand a
-required format must refuse the store instead of guessing.
+Persistent formats are explicitly versioned, and a binary that does not
+understand a required format must refuse the store instead of guessing.
 
 | Format | Current version | Notes |
 |---|---:|---|
@@ -132,14 +133,15 @@ Normal upgrade procedure:
 4. run `zeros3 doctor` or `zeros3 verify`;
 5. only then use features that advance the store format.
 
-See [docs/OPERATIONS.md](./docs/OPERATIONS.md).
+The full upgrade workflow is documented in
+[docs/OPERATIONS.md](./docs/OPERATIONS.md).
 
 ### Downgrade
 
 Downgrade is not a supported migration mechanism.
 
 If a newer feature has raised `FORMAT.json`, older binaries that do not
-understand that format are expected to refuse the store. This is deliberate.
+understand that format are expected to refuse the store by design.
 
 To move data to an older or otherwise separate store, use logical export/
 transfer primitives supported by both sides rather than editing
@@ -173,15 +175,13 @@ real process termination on selected ingest/import paths. They do **not** claim
 comprehensive hardware power-loss, faulty-device, kernel-fault, or distributed
 failure testing.
 
-Run:
+Operational validation can use:
 
 ```sh
 ./zeros3 doctor -store ./zeros3-data
 ./zeros3 verify -store ./zeros3-data
 ./zeros3 verify -store ./zeros3-data -deep
 ```
-
-as appropriate for operational validation.
 
 ## Security boundary
 
@@ -197,12 +197,12 @@ Do not expose the example credentials from the README beyond local testing.
 
 ## Documentation map
 
-- [README.md](./README.md) — project overview and quick start
-- [S3_COMPAT.md](./S3_COMPAT.md) — exact ordinary-S3 contract
-- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — storage model and invariants
-- [docs/OPERATIONS.md](./docs/OPERATIONS.md) — running, backup, recovery, maintenance
-- [docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md) — ZeroS3-aware protocol
-- [docs/BENCHMARKS.md](./docs/BENCHMARKS.md) — current and historical measurements
-- [BUNDLE_FORMAT.md](./BUNDLE_FORMAT.md) — portable full/delta snapshot formats
-- [STDLIB.md](./STDLIB.md) — zero-dependency implementation notes
-- [testing-harnesses/README.md](./testing-harnesses/README.md) — black-box validation
+- [README.md](./README.md): project overview and quick start
+- [S3_COMPAT.md](./S3_COMPAT.md): exact ordinary-S3 contract
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): storage model and invariants
+- [docs/OPERATIONS.md](./docs/OPERATIONS.md): running, backup, recovery, maintenance
+- [docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md): ZeroS3-aware protocol
+- [docs/BENCHMARKS.md](./docs/BENCHMARKS.md): current and historical measurements
+- [BUNDLE_FORMAT.md](./BUNDLE_FORMAT.md): portable full/delta snapshot formats
+- [STDLIB.md](./STDLIB.md): zero-dependency implementation notes
+- [testing-harnesses/README.md](./testing-harnesses/README.md): black-box validation

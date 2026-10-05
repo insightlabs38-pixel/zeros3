@@ -31,9 +31,7 @@ a synthetic reproduction can demonstrate the issue.
 
 ## Supported versions
 
-ZeroS3 is currently pre-1.0.
-
-Security fixes target:
+Because ZeroS3 is pre-1.0, security fixes target:
 
 - the latest published release; and
 - current `main` when the fix has not yet been released.
@@ -116,8 +114,8 @@ not create a security risk should use the normal public issue/PR workflow.
 
 ## Related documentation
 
-- [STATUS.md](./STATUS.md) — maturity and supported deployment boundary
-- [S3_COMPAT.md](./S3_COMPAT.md) — exact ordinary-S3 contract
-- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — integrity/durability model
-- [docs/OPERATIONS.md](./docs/OPERATIONS.md) — deployment and recovery guidance
-- [CONTRIBUTING.md](./CONTRIBUTING.md) — contribution workflow
+- [STATUS.md](./STATUS.md): maturity and supported deployment boundary
+- [S3_COMPAT.md](./S3_COMPAT.md): exact ordinary-S3 contract
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): integrity/durability model
+- [docs/OPERATIONS.md](./docs/OPERATIONS.md): deployment and recovery guidance
+- [CONTRIBUTING.md](./CONTRIBUTING.md): contribution workflow

@@ -1,9 +1,8 @@
 # S3 compatibility
 
-This document is the exact ordinary-S3 contract ZeroS3 currently exposes.
-It describes shipped behavior only. ZeroS3-native content-transfer and
-maintenance extensions are documented separately in
-[docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md).
+This document defines the ordinary-S3 contract ZeroS3 currently exposes.
+ZeroS3-native content-transfer and maintenance extensions are specified
+separately in [docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md).
 
 ZeroS3 intentionally implements a focused S3-compatible subset rather than
 attempting full AWS S3 parity.
@@ -101,8 +100,8 @@ Each key goes through ordinary `DeleteObject` semantics:
 - reclaiming retired content remains a separate history-prune/GC/repack
   operation.
 
-The request is not atomic across keys. Per-key failures are returned in the
-result.
+`DeleteObjects` is not atomic across keys; per-key failures are returned in
+the result.
 
 A non-empty `VersionId` other than `null` is rejected for that entry because
 the AWS S3 Versioning API is not implemented.
@@ -172,8 +171,8 @@ One byte range is supported:
 An unsatisfiable range returns 416 with
 `Content-Range: bytes */<object-size>`.
 
-Multi-range requests are not implemented. They are treated as an unsupported
-range form rather than producing `multipart/byteranges`.
+Multi-range requests are unsupported and do not produce
+`multipart/byteranges`.
 
 ## ListObjectsV2 key encoding
 
@@ -274,7 +273,7 @@ Required query fields are the usual:
 The built-in `zeros3 presign` command signs `host` and uses
 `UNSIGNED-PAYLOAD`, matching the intended portable profile.
 
-Session-token authentication is not implemented. `X-Amz-Security-Token` is
+Session-token authentication is unsupported, so `X-Amz-Security-Token` is
 rejected rather than ignored.
 
 ## Addressing
@@ -375,8 +374,8 @@ The current implementation does not provide:
 - AWS S3 Versioning;
 - SigV4A/multi-region signing.
 
-Absence from this list is not a promise that another AWS S3 operation is
-implemented. The positive operation table above is authoritative.
+The positive operation table above is authoritative; absence from this list
+does not imply that another AWS S3 operation is implemented.
 
 Future enterprise or compatibility work may add capabilities where they fit the
 architecture; this document intentionally states current scope rather than
@@ -429,8 +428,8 @@ evidence map.
 
 ## Related documentation
 
-- [README.md](./README.md) — overview and quick start
-- [STATUS.md](./STATUS.md) — maturity, deployment boundaries, format versions
-- [docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md) — content-native protocol
-- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — logical and physical storage model
-- [docs/OPERATIONS.md](./docs/OPERATIONS.md) — operational procedures
+- [README.md](./README.md): overview and quick start
+- [STATUS.md](./STATUS.md): maturity, deployment boundaries, format versions
+- [docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md): content-native protocol
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): logical and physical storage model
+- [docs/OPERATIONS.md](./docs/OPERATIONS.md): operational procedures
