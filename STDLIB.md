@@ -315,38 +315,85 @@ default.
 client-side signing means there is exactly one place in the codebase
 that can get request canonicalization wrong, not two.
 
-## Additional standard-library surface
+## Direct standard-library import surface
 
-Packages used throughout the implementation that support the substitutions
-above without deserving their own essay:
+The production file's direct import block is part of the zero-dependency
+contract. The list below is complete for the current frozen implementation;
+many packages are explained in depth in the substitutions above, while the rest
+are supporting primitives.
 
 | Package | Role |
 |---|---|
-| `bytes` | in-memory request/response buffers |
-| `encoding/base64` | checksum/digest header encoding |
-| `encoding/binary` | journal frame and manifest binary layout, bulk transfer frames |
-| `encoding/hex` | chunk/manifest content-address formatting |
-| `encoding/json` | manifests, `FORMAT.json`, journal payloads, `-json` CLI output, `/_zeros3/v1/...` wire bodies |
-| `errors` | error classification and wrapping |
-| `flag` | CLI subcommand parsing (`serve`, `stats`, `verify`, `sync`, `replicate`, `repair`, `fork`, `snapshot`, `presign`, `versions`, `restore`, `gc`, `doctor`, `diff`, `inspect`) |
-| `fmt` | formatting, CLI/error output |
-| `io` / `io/fs` | streaming reads/writes, buffered chunk hashing |
-| `log` | request/error diagnostics to stderr |
-| `net` | `net.SplitHostPort` for virtual-host `Host` parsing |
-| `sort` | deterministic listing/pagination order |
-| `strconv` | numeric header fields (`Content-Length`, `Content-Range`) |
-| `strings` | S3 key/header/path processing |
-| `time` | SigV4 timestamps, journal/manifest metadata |
+| `bufio` | bounded buffered parsing for aws-chunked bodies and portable/bulk streams |
+| `bytes` | in-memory bounded buffers, comparisons, readers |
+| `cmp` | ordered comparisons used with generic collection helpers |
+| `compress/flate` | per-record DEFLATE for packs and snapshot bundles |
+| `context` | cancellation, shutdown, bounded transfer work |
+| `crypto/hmac` | SigV4 HMAC |
+| `crypto/md5` | S3 ETags and Content-MD5 compatibility |
+| `crypto/sha256` | CAS identity, object/bundle hashes, SigV4 |
+| `crypto/subtle` | constant-time signature comparison |
+| `encoding/base64` | request checksum/digest headers |
+| `encoding/binary` | journal, pack, bulk, snapshot and bundle binary framing |
+| `encoding/hex` | content-address and signature encoding |
+| `encoding/json` | manifests, format metadata, extension protocol, CLI JSON |
+| `encoding/xml` | ordinary S3 request/response XML |
+| `errors` | error classification/wrapping |
+| `flag` | CLI command parsing |
+| `fmt` | CLI/error formatting |
+| `hash` | common streaming hash interfaces |
+| `hash/crc32` | request CRC32 plus CRC32C metadata framing |
+| `io` | bounded streaming and reader/writer composition |
+| `io/fs` | filesystem traversal types |
+| `iter` | standard iterator plumbing for compact collection traversal |
+| `log` | server diagnostics |
+| `maps` | standard map collection helpers |
+| `math` | bounded numeric/statistical calculations |
+| `math/bits` | compact prefix/index calculations |
+| `net` | host/address handling |
+| `net/http` | S3 server and ZeroS3-native HTTP clients |
+| `net/url` | safe query construction and URI handling |
+| `os` | files, process environment and signals |
+| `os/signal` | graceful shutdown |
+| `path/filepath` | store paths and safe filesystem traversal |
+| `slices` | sorting/searching/collection helpers |
+| `sort` | deterministic ordering |
+| `strconv` | numeric header/CLI/wire parsing |
+| `strings` | S3 keys, headers, canonicalization and CLI processing |
+| `sync` | mutexes, wait groups, condition variables and bounded coordination |
+| `sync/atomic` | small concurrent counters/state |
+| `syscall` | Linux advisory flock |
+| `time` | SigV4 timestamps, metadata, retention cutoffs |
+| `unicode/utf8` | UTF-8/XML-safe key handling |
+| `uuid` | Go 1.27 standard-library UUIDv7 identifiers |
 
-`testing`, `net/http/httptest`, and (in `zeros3_test.go` only)
-`crypto/tls`, `crypto/x509`, `os/exec`, and `math/rand` support the test
-suite's real-process, real-socket, and adversarial-TLS coverage — no
-third-party test framework is used anywhere in `zeros3_test.go`.
+The implementation does **not** import `os/exec`, a C binding, or a
+third-party module. Runtime storage/protocol functionality is therefore in the
+root Go module itself rather than delegated to subprocesses or external
+libraries.
 
-## Mechanical dependency proof
+The CLI surface now includes ordinary serving/inspection commands plus
+`compact`, `repack`, `tier`, `probe`, `sync`, `replicate`, `repair`,
+`fork`, `snapshot`, `bundle`, `diff`, and `inspect`; those additions did
+not change the root dependency boundary.
 
-External interoperability validation is performed out-of-process and is
-not part of the ZeroS3 module or binary. The generated, mechanical
-zero-dependency evidence (`go.mod`'s empty `require` block, `go list
--deps .`'s full linked-package set, and the non-stdlib-import check)
-lives in [`deps-proof.txt`](./deps-proof.txt).
+`testing`, `net/http/httptest`, and other standard-library test packages are
+used by `zeros3_test.go`. Third-party SDKs exist only in the independent
+`testing-harnesses/` module.
+
+## Dependency proof
+
+External interoperability validation is performed out-of-process and is not
+part of the ZeroS3 root module or binary.
+
+Current dependency evidence lives in
+[`deps-proof.txt`](./deps-proof.txt). It records:
+
+- the production source/go.mod commit and blobs inspected;
+- the complete direct import surface;
+- the empty root dependency boundary;
+- exact Go 1.27 commands for reproducing the transitive non-stdlib check,
+  CGO-disabled build, and reproducible build.
+
+The evidence file is deliberately current and reproducible rather than
+presenting an old build transcript as proof of a newer binary.

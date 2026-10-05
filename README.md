@@ -426,8 +426,8 @@ The root module has:
 - no subprocess dependency from `zeros3.go`.
 
 [STDLIB.md](./STDLIB.md) explains the major standard-library substitutions.
-[`deps-proof.txt`](./deps-proof.txt) records the mechanical dependency
-evidence.
+[`deps-proof.txt`](./deps-proof.txt) records current source-level dependency
+evidence and the exact Go 1.27 commands used to reproduce the mechanical proof.
 
 Third-party SDKs are confined to the independent black-box harness module.
 

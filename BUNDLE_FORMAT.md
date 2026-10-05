@@ -1,5 +1,7 @@
 # ZeroS3 portable snapshot bundles
 
+This is the normative file-format reference for ZeroS3 portable snapshot artifacts. Both formats below are **format v1** and are independent of live CAS pack/tier layout. An incompatible future artifact change must use an explicit new version/magic rather than silently reinterpreting v1. Current project maturity/format policy is summarized in [STATUS.md](./STATUS.md).
+
 Two artifacts move one immutable snapshot between stores. All integers are
 big-endian; the magic decides the format, the file extension is only a convention.
 
