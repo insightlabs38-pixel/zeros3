@@ -35,6 +35,9 @@
 #   scripts/validate.sh bundle-delta-scale  delta merge sanity (1M base x 1M target descriptors, no payload)
 #   scripts/validate.sh locality  pack locality: layout planner/root-order tests, maintenance order preservation
 #                                (repack/rebalance), coalesced packed-run reads incl. corruption fallback (seconds)
+#   scripts/validate.sh direct-pack        direct pack ingest: writer, selection, tail, dedup, concurrency, multipart
+#   scripts/validate.sh direct-pack-life   direct pack ingest: crash matrix, failed requests, real kill, gc/repack/tier/bundle
+#   scripts/validate.sh direct-pack-bench  3df362b baseline vs current 256 MiB PUT (+compact), compressible, checkpoint, multipart, small
 #   scripts/validate.sh locality-bench  baseline (Z2-12) vs current packed-read matrix on 256 MiB sequential,
 #                                checkpoint and site fixtures (strace open/pread counts when available), the
 #                                run-window sweep and the 1M-candidate planner sanity
@@ -63,7 +66,9 @@
 # CAS_MULTIPART_MIB (cas-bench multipart size, default 256), CAS_BASELINE_BIN (a build
 # predating grouped CAS publication; default: built from the Z2-10 merge a2bf462),
 # LOCALITY_BASELINE_BIN (the pre-locality build for locality-bench; default: built from the Z2-12
-# merge 32c8d42), LOCALITY_SIZE_MIB (locality-bench object size, default 256).
+# merge 32c8d42), LOCALITY_SIZE_MIB (locality-bench object size, default 256),
+# DIRECT_PACK_BASELINE_BIN (the pre-direct-pack build for direct-pack-bench; default: built from the
+# Z2-14 merge 3df362b), DIRECT_PACK_SIZE_MIB / DIRECT_PACK_COMPRESS_MIB (object sizes, default 256 / 192).
 set -u
 
 # Ambient AWS_* settings would override the harnesses' fixed credentials.
@@ -162,6 +167,21 @@ stage_locality-bench() {
 		ZEROS3_BIN="$bin" go run ./harness/z2_locality -baseline-bin "$base" -size-mib "${LOCALITY_SIZE_MIB:-256}" -pack-size-mib "${PACK_SIZE_MIB:-64}") &&
 		cd "$root" && ZEROS3_LOCALITY_BENCH=1 go test -count=1 -run 'TestLocalityScale_|TestLocalityBench_' -v .
 }
+stage_direct-pack() { cd "$root" && go test -count=1 -run 'TestDirectPack_' .; }
+stage_direct-pack-life() { cd "$root" && go test -count=1 -run 'TestDirectPackLife_' .; }
+stage_direct-pack-bench() {
+	build_bin || return 1
+	base="${DIRECT_PACK_BASELINE_BIN:-}"
+	if [ -z "$base" ]; then
+		base="$logs/zeros3-z2-14-baseline"
+		tmp=$(mktemp -d) &&
+			(cd "$root" && git archive 3df362b zeros3.go go.mod | tar -x -C "$tmp") &&
+			(cd "$tmp" && CGO_ENABLED=0 go build -o "$base" zeros3.go) || return 1
+		rm -rf "$tmp"
+	fi
+	cd "$root/testing-harnesses" &&
+		go run ./harness/z2_direct_pack -bin "$bin" -baseline-bin "$base" -size-mib "${DIRECT_PACK_SIZE_MIB:-256}" -compress-mib "${DIRECT_PACK_COMPRESS_MIB:-192}"
+}
 stage_tier() { cd "$root" && go test -count=1 -run 'TestTier_|TestLocator_' .; }
 stage_tier-life() {
 	build_bin || return 1
@@ -211,7 +231,7 @@ normal="format modules test static s3 sync repro"
 heavy="race crash repack compact compression index-scale bulk-bench cas-bench history-life tier-life"
 
 case "${1:-normal}" in
-list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk cas-batch bundle bundle-life bundle-scale bundle-delta bundle-delta-life bundle-delta-scale locality locality-bench history history-life tier tier-policy tier-rebalance tier-life vectors client apps"; exit 0 ;;
+list) echo "normal: $normal"; echo "heavy: $heavy"; echo "focused: index bulk cas-batch direct-pack direct-pack-life direct-pack-bench bundle bundle-life bundle-scale bundle-delta bundle-delta-life bundle-delta-scale locality locality-bench history history-life tier tier-policy tier-rebalance tier-life vectors client apps"; exit 0 ;;
 normal) stages=$normal ;;
 heavy) stages=$heavy ;;
 all) stages="$normal $heavy" ;;
