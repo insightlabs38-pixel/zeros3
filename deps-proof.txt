@@ -1,240 +1,135 @@
-ZeroS3 zero-dependency proof
-============================
+ZeroS3 dependency evidence
+==========================
 
-Generated: 2026-08-31T02:21:39Z
-Go toolchain: go version go1.27.0 linux/amd64
-GOOS/GOARCH: linux/amd64
+Production source checked: a4f7362d346f841ad98ba5c3c836a1f25ef2fb22
+zeros3.go blob:            f38f50bd19e44a1387a9228d227a8c05e1ec728a
+go.mod blob:               09e4dd65a72eddfb3bb72c77194adda5226883e4
+Required toolchain:         Go 1.27.0
+Validated platform target:  linux/amd64
+
+This file is a current source-level dependency proof and a reproducible command
+recipe. It intentionally does not preserve the old 2026-08-31 go-list transcript
+as if it described the current October implementation.
 
 --- go.mod (verbatim) ---
+
 module zeros3
 
 go 1.27.0
 
---- go.sum ---
-(no go.sum file present)
+There is no root go.sum and no root vendor/ directory.
 
---- vendor/ ---
-(none)
+--- production direct imports (zeros3.go) ---
 
---- CGO_ENABLED=0 build ---
-build OK, CGO not required
-
---- go list -deps . (every package linked into the zeros3 binary) ---
-internal/goarch
-unsafe
-internal/abi
-internal/unsafeheader
-internal/cpu
-internal/bytealg
-internal/byteorder
-internal/chacha8rand
-internal/coverage/rtcov
-internal/godebugs
-internal/goexperiment
-internal/goos
-internal/profilerecord
-internal/runtime/atomic
-internal/runtime/syscall/linux
-math/bits
-internal/strconv
-internal/runtime/cgroup
-internal/runtime/exithook
-internal/runtime/gc
-internal/runtime/sys
-internal/runtime/gc/scan
-internal/asan
-internal/msan
-internal/race
-internal/runtime/math
-internal/runtime/maps
-internal/runtime/pprof/label
-internal/stringslite
-internal/trace/tracev2
-runtime
-internal/reflectlite
-errors
-sync/atomic
-internal/sync
-internal/synctest
-sync
-io
-iter
-unicode
-unicode/utf8
+bufio
 bytes
-internal/oserror
 cmp
-slices
-syscall
-time
+compress/flate
 context
-hash
-strconv
-crypto
-internal/bisect
-internal/godebug
-crypto/internal/fips140deps/godebug
-strings
-crypto/internal/fips140
-crypto/internal/fips140/alias
-crypto/internal/fips140deps/byteorder
-crypto/internal/fips140deps/cpu
-crypto/internal/impl
-crypto/internal/fips140/sha256
-crypto/internal/constanttime
-crypto/internal/fips140/subtle
-crypto/internal/fips140/sha3
-crypto/internal/fips140/sha512
-crypto/internal/fips140/hmac
-crypto/internal/fips140/check
-crypto/internal/fips140/aes
-crypto/internal/fips140deps/time
-crypto/internal/entropy/v1.0.0
-internal/syscall/unix
-math
-path
-io/fs
-internal/filepathlite
-internal/poll
-internal/syscall/execenv
-internal/testlog
-os
-crypto/internal/sysrand
-crypto/internal/fips140/drbg
-crypto/internal/fips140/aes/gcm
-crypto/fips140
-crypto/internal/fips140only
-crypto/subtle
-crypto/cipher
-crypto/internal/boring/sig
-crypto/internal/boring
-crypto/sha3
-crypto/internal/fips140hash
 crypto/hmac
 crypto/md5
 crypto/sha256
+crypto/subtle
 encoding/base64
-reflect
 encoding/binary
-internal/fmtsort
-fmt
 encoding/hex
-encoding
-encoding/json/internal
-encoding/json/internal/jsonflags
-encoding/json/internal/jsonopts
-unicode/utf16
-encoding/json/internal/jsonwire
-encoding/json/jsontext
-encoding/base32
-encoding/json/v2
 encoding/json
-bufio
 encoding/xml
+errors
 flag
+fmt
+hash
 hash/crc32
-log/internal
+io
+io/fs
+iter
 log
-vendor/golang.org/x/net/dns/dnsmessage
-internal/nettrace
-internal/singleflight
-weak
-unique
-net/netip
-runtime/cgo
-net
-compress/flate
-compress/gzip
-container/list
-crypto/aes
-crypto/des
-crypto/internal/fips140/nistec/fiat
-crypto/internal/fips140/nistec
-crypto/internal/fips140/ecdh
-crypto/internal/fips140/edwards25519/field
-math/rand/v2
-crypto/internal/randutil
-crypto/internal/rand
-crypto/ecdh
-math/rand
-math/big
-crypto/elliptic
-crypto/internal/boring/bbig
-crypto/internal/fips140/bigmod
-crypto/internal/fips140/ecdsa
-crypto/internal/fips140cache
-crypto/sha512
-internal/saferio
-encoding/asn1
-vendor/golang.org/x/crypto/cryptobyte/asn1
-vendor/golang.org/x/crypto/cryptobyte
-crypto/ecdsa
-crypto/internal/fips140/edwards25519
-crypto/internal/fips140/ed25519
-crypto/rand
-crypto/ed25519
-crypto/internal/fips140/hkdf
-crypto/hkdf
-crypto/internal/fips140/mlkem
-crypto/mlkem
-vendor/golang.org/x/crypto/internal/alias
-vendor/golang.org/x/crypto/chacha20
-vendor/golang.org/x/crypto/internal/poly1305
-vendor/golang.org/x/sys/cpu
-vendor/golang.org/x/crypto/chacha20poly1305
-crypto/hpke
-crypto/internal/fips140/tls12
-crypto/internal/fips140/tls13
-crypto/internal/fips140/mldsa
-crypto/mldsa
-crypto/rc4
-crypto/internal/fips140/rsa
-crypto/rsa
-crypto/sha1
-crypto/tls/internal/fips140tls
-crypto/dsa
-crypto/x509/pkix
-encoding/pem
 maps
-net/url
-path/filepath
-crypto/x509
-sort
-crypto/tls
-vendor/golang.org/x/text/transform
-vendor/golang.org/x/text/unicode/bidi
-vendor/golang.org/x/text/secure/bidirule
-vendor/golang.org/x/text/unicode/norm
-vendor/golang.org/x/net/idna
-net/textproto
-vendor/golang.org/x/net/http/httpguts
-vendor/golang.org/x/net/http/httpproxy
-mime
-mime/quotedprintable
-mime/multipart
-net/http/httptrace
-net/http/internal
-net/http/internal/ascii
-vendor/golang.org/x/net/http2/hpack
-net/http/internal/httpcommon
-net/http/internal/httpsfv
-net/http/internal/http2
+math
+math/bits
+net
 net/http
+net/url
+os
 os/signal
+path/filepath
+slices
+sort
+strconv
+strings
+sync
+sync/atomic
+syscall
+time
+unicode/utf8
 uuid
-zeros3
 
---- Non-stdlib package check ---
-A package is stdlib iff it has no dot in its first path segment.
-internal/* and vendor/golang.org/x/* below are part of the Go
-toolchain's own standard-library implementation (used internally by
-net/http, crypto/tls, etc.) -- not a ZeroS3 dependency. 'uuid' is
-the Go 1.27 standard library's own uuid package. 'zeros3' is this
-module itself.
-(none found -- no non-stdlib, non-vendored-stdlib import exists)
+Every direct import above is part of the Go 1.27 standard library.
 
---- Direct imports of zeros3.go / zeros3_test.go ---
-Every import in both files' import blocks is either a Go standard-library
-package or "uuid" (the Go 1.27 standard library's own uuid package).
-Verified directly against each file's import block; no golang.org/x/...
-or other third-party import appears in either file.
+The production file does not import:
+- os/exec
+- cgo / "C"
+- any third-party module
+
+Third-party clients used for black-box interoperability live only in the
+separate testing-harnesses Go module.
+
+--- reproduce with Go 1.27 ---
+
+From the repository root:
+
+1. Confirm the root module has no requirements:
+
+    cat go.mod
+
+Expected:
+
+    module zeros3
+
+    go 1.27.0
+
+2. Confirm there is no root dependency lock/vendor tree:
+
+    test ! -e go.sum
+    test ! -d vendor
+
+3. Print the production file's direct Go imports:
+
+    go list -f '{{join .Imports "\n"}}' .
+
+4. Prove there are no non-standard transitive packages other than the root
+   module itself:
+
+    go list -deps -f '{{if and (not .Standard) (ne .ImportPath "zeros3")}}{{.ImportPath}}{{end}}' .       | sed '/^$/d'
+
+Expected output: empty.
+
+5. Build without CGO:
+
+    CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-buildid="       -o /tmp/zeros3-deps-proof zeros3.go
+
+Expected: build succeeds.
+
+6. Run the repository's reproducible-build check:
+
+    ./scripts/reproducible_build.sh
+
+That script builds independent source copies and requires byte-identical output.
+
+--- dependency boundary ---
+
+root module
+    zeros3.go
+    zeros3_test.go
+    go.mod (no require)
+        |
+        +-- Go 1.27 standard library only
+
+testing-harnesses/ (separate Go module)
+        |
+        +-- AWS SDK for Go v2
+        +-- minio-go
+        +-- other external interoperability tooling
+
+The harness module drives a built ZeroS3 process over HTTP/CLI boundaries and
+is never imported or linked by the root production module.

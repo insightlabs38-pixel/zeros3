@@ -1,699 +1,490 @@
 # ZeroS3
 
-**S3 on the outside. Content-addressed storage underneath.**
+**S3 on the outside. Content-aware storage underneath.**
 
-ZeroS3 is a local, self-hosted, S3-compatible object store built with Go
-1.27 and **zero third-party runtime dependencies** — one implementation
-file, `zeros3.go`, plus an organizer-approved `zeros3_test.go`. Ordinary
-S3 clients (the AWS SDK, `rclone`, the AWS CLI) talk to it exactly as
-they would talk to real S3. Underneath that ordinary surface, every
-object is split into content-defined chunks, stored once in a SHA-256
-content-addressed store, described by an immutable manifest, and made
-visible only through a durable, append-only journal.
+ZeroS3 is a self-hosted, single-node S3-compatible object store written in Go
+with **zero third-party runtime dependencies**. Ordinary S3 applications can
+use it as an object store; underneath that interface, objects are represented
+as content-defined chunks in a SHA-256 content-addressed store.
 
-That one storage substrate is what lets a single codebase support
-deduplication, delta transfer, peer-assisted repair, copy-on-write
-forks, and durable snapshots — not as nine unrelated features, but as
-consequences of one architecture: **content-defined chunking → SHA-256
-CAS → immutable manifests → visibility journal.**
+That substrate gives ZeroS3 capabilities that are usually separate systems:
+deduplication, edit-locality reuse, delta transfer, peer repair, retained
+history, copy-on-write forks, immutable snapshots, thin snapshot deltas,
+locality-aware packed storage, and hot/warm/cold physical placement.
 
-- Ordinary S3 clients: AWS SDK for Go v2, minio-go, `rclone`, the AWS CLI
-- CDC + SHA-256 CAS deduplication, measured against real uploads
-- Crash-safe immutable manifests + an append-only visibility journal
-- Delta sync and remote-to-remote replication that transfer only missing bytes
-- Peer-assisted chunk repair, verified byte-for-byte before publication
-- Copy-on-write namespace forks and durable, restorable snapshots
-- Atomic conditional writes (`If-Match` / `If-None-Match`)
-- Streaming I/O: uploads and downloads of any size run in bounded memory; signed `aws-chunked` uploads accepted
-- Bounded parallel chunk transfer, batched into a few bulk requests between ZeroS3 servers
-- Immutable packed storage: `zeros3 compact` folds loose chunk files into a few verified packs, DEFLATE-compressing each record that shrinks; `gc` and `zeros3 repack` reclaim dead packed records by replacing packs
-- Locality-aware packs: `compact -layout locality` (default) writes chunks in first-reference manifest order, so a sequential GET reads adjacent records with one bounded `ReadAt` per window on one open pack; pack format v1 and chunk identity are unchanged
-- Hot/warm/cold physical pack tiers (`compact -tier`, `zeros3 tier status|init|move`) beneath the same logical CAS; warm and cold can be separate local mounts
-- Portable snapshot bundles: `zeros3 bundle export|import|inspect` turn one snapshot into a single self-verifying `.zs3b` file (or, against an exact base snapshot, a thin `.zs3d` delta) and back into another store ([format](./BUNDLE_FORMAT.md))
-- Content-aware placement: `zeros3 tier policy` and `tier rebalance` give each chunk the hottest tier any live root (current, history, snapshot, multipart) asks for
-- Zero third-party dependencies, reproducible build
+The production implementation intentionally remains one Go source file:
+[`zeros3.go`](./zeros3.go).
 
-ZeroS3 is not trying to compete with MinIO or Ceph on distributed
-cluster scale — no clustering, no IAM, no erasure coding, no multi-node
-HA. Its differentiator is narrower and, we think, more interesting: an
-ordinary S3 surface sitting directly on a content-aware storage engine,
-in the spirit of what Git and Xet-like systems do for structural
-sharing — applied to an S3-shaped object store.
+> **Current status:** public preview / pre-1.0, Linux, single-node and
+> feature-frozen while real integrations and documentation are hardened.
+> See [STATUS.md](./STATUS.md).
 
 ## Why ZeroS3
 
-Standing up a local S3-compatible store for development or testing
-normally means pulling in a dependency-heavy server or SDK stack.
-ZeroS3 implements the storage and protocol layers directly instead:
-incoming objects are content-defined-chunked, stored once by SHA-256
-content address, described by an immutable manifest, and made visible
-only through an append-only, checksummed journal. That architecture
-isn't incidental — it's what lets `CopyObject` publish a new object
-version without moving a single payload byte, what lets an edited
-revision of a large file reuse most of its bytes automatically, and what
-lets replication, repair, forking, and snapshots all reuse the same
-negotiate/fetch/commit machinery instead of each needing its own.
+ZeroS3 is not an attempt to recreate the entire AWS S3 product or compete with
+distributed object stores on cluster scale.
+
+Its narrower goal is to make a content-native storage engine directly usable
+through a standard S3 surface.
+
+```text
+ordinary S3 application
+        |
+        | S3 / SigV4
+        v
++-------------------------+
+|        ZeroS3           |
+|                         |
+| CDC -> SHA-256 CAS      |
+|       -> manifests      |
+|       -> durable roots  |
+|                         |
+| loose / packed storage  |
+| locality / compression  |
+| hot / warm / cold       |
++-------------------------+
+```
+
+The logical object is independent of its physical representation. The same
+manifest can keep describing the same bytes while chunks move from loose files
+into packs, packs are compressed or repacked, or physical copies move between
+tiers.
+
+That separation is the basis for most of ZeroS3's feature compression: higher
+level capabilities reuse the same few storage primitives instead of creating
+parallel storage subsystems.
+
+## Two ways to use it
+
+### 1. Ordinary S3 client
+
+Use an AWS-compatible SDK, CLI, or application normally.
+
+The client gets the standard S3 behavior in
+[Core Client Profile v1](./S3_COMPAT.md#core-client-profile-v1). Server-side
+content-aware behavior is transparent:
+
+- content-defined chunking;
+- SHA-256 CAS deduplication;
+- immutable manifests;
+- retained overwrite/delete history;
+- packed/locality-aware physical storage;
+- verified reads;
+- physical tiering and maintenance.
+
+A normal full `PutObject` still sends the full object over the network. ZeroS3
+can avoid storing duplicate chunks, but an ordinary S3 client does not perform
+client-side delta negotiation.
+
+### 2. ZeroS3-aware client
+
+A client can detect ZeroS3 with:
+
+```sh
+./zeros3 probe -endpoint http://127.0.0.1:9000
+```
+
+and use the ZeroS3-native chunk protocol.
+
+That enables content-aware transfer:
+
+```text
+client CDC
+   |
+   +--> describe / negotiate hashes
+   |
+   +--> transfer only missing chunks
+   |
+   +--> atomic ordinary-object commit
+```
+
+The resulting object is still an ordinary S3 object.
+
+The built-in `sync`, `replicate`, and `repair` commands use this model.
+Independent clients can target the documented protocol in
+[docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md).
+
+## Good fit / not a fit
+
+| Good fit today | Not the current target |
+|---|---|
+| local/self-hosted S3 development | multi-node HA object-store cluster |
+| research/team artifact storage | public multi-tenant cloud storage |
+| model/checkpoint revisions | complete AWS S3 parity |
+| datasets and build artifacts | IAM/STS/KMS platform |
+| content with repeated revisions | Windows storage server |
+| applications that value dedup/snapshots | automatic distributed consensus |
+| ZeroS3-aware delta clients | transparent replacement for every S3 workload |
 
 ## Quick start
 
-Requires Go **1.27.x** (`go.mod` pins `go 1.27.0`; `GOTOOLCHAIN=auto`
-fetches it automatically, or install it from [go.dev/dl](https://go.dev/dl/)).
+ZeroS3 currently builds from source. It requires Go **1.27.x**.
 
 ```sh
+git clone https://github.com/insightlabs38-pixel/zeros3.git
+cd zeros3
+
 go build -o zeros3 zeros3.go
 ./zeros3 serve
-# defaults: store ./zeros3-data, listen 127.0.0.1:9000
 ```
 
-Default credentials (a single static keypair — there is no IAM/STS/KMS;
-see "Known limitations"):
+Defaults:
 
+```text
+store:   ./zeros3-data
+listen:  127.0.0.1:9000
+region:  us-east-1
 ```
+
+Example credentials:
+
+```text
 Access Key ID:     AKIAZEROS3EXAMPLE01
 Secret Access Key: zeros3exampleSecretKeyForM1TestingOnly01
-Region:            us-east-1
 ```
 
-Override with `-access-key`/`-secret-key`/`-region`, or the standard
-`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION` environment
-variables. Point any path-style S3 client at it:
+**These credentials are public examples. Do not expose a server using them
+beyond local testing.** Configure your own credentials before binding ZeroS3
+to a non-loopback interface.
+
+Credentials can be set with server flags or:
+
+```sh
+export AWS_ACCESS_KEY_ID='your-access-key'
+export AWS_SECRET_ACCESS_KEY='your-secret-key'
+export AWS_REGION='us-east-1'
+```
+
+### AWS CLI
+
+```sh
+export AWS_ACCESS_KEY_ID='AKIAZEROS3EXAMPLE01'
+export AWS_SECRET_ACCESS_KEY='zeros3exampleSecretKeyForM1TestingOnly01'
+export AWS_DEFAULT_REGION='us-east-1'
+
+aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://demo
+aws --endpoint-url http://127.0.0.1:9000 s3 cp ./hello.txt s3://demo/hello.txt
+aws --endpoint-url http://127.0.0.1:9000 s3 cp s3://demo/hello.txt -
+```
+
+### AWS SDK for Go v2
+
+Use a normal S3 client with a custom endpoint and path-style addressing:
 
 ```go
 cfg, _ := config.LoadDefaultConfig(ctx,
     config.WithRegion("us-east-1"),
     config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-        "AKIAZEROS3EXAMPLE01", "zeros3exampleSecretKeyForM1TestingOnly01", "")),
+        "AKIAZEROS3EXAMPLE01",
+        "zeros3exampleSecretKeyForM1TestingOnly01",
+        "",
+    )),
 )
+
 client := s3.NewFromConfig(cfg, func(o *s3.Options) {
     o.BaseEndpoint = aws.String("http://127.0.0.1:9000")
     o.UsePathStyle = true
 })
-client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String("my-bucket")})
-client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("my-bucket"), Key: aws.String("hello.txt"), Body: ...})
 ```
 
-Or with the AWS CLI:
+For the exact supported S3 surface, see [S3_COMPAT.md](./S3_COMPAT.md).
+
+## Architecture in three layers
+
+```text
+APPLICATION SURFACE
+  ordinary S3                    ZeroS3-aware tools
+  PUT/GET/range/multipart        sync/replicate/repair
+           \                      /
+            +--------------------+
+                     |
+                     v
+LOGICAL CONTENT LAYER
+  deterministic CDC
+       -> SHA-256 chunk identity
+       -> immutable manifests
+       -> journal/current roots
+       -> history / snapshots / forks
+                     |
+                     v
+PHYSICAL STORAGE LAYER
+  loose CAS
+       or immutable pack-v1
+       -> locality-aware record order
+       -> optional per-record DEFLATE
+       -> hot / warm / cold roots
+       -> GC / repack / rebalance
+```
+
+The important invariant is:
+
+> **manifests describe logical chunks, not pack locations.**
+
+Physical maintenance can therefore change layout without changing object
+identity or the S3 representation.
+
+Read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the complete storage,
+durability, read/write, and root model.
+
+## Core capabilities
+
+### S3-compatible application surface
+
+Core Client Profile v1 includes:
+
+- bucket create/list/head/delete/location;
+- object put/get/head/delete/batch-delete/copy;
+- ListObjectsV2;
+- single byte ranges;
+- ETag read/write conditions;
+- Content-MD5 and CRC32 request checks;
+- persistent multipart upload;
+- SigV4 header auth;
+- presigned GET/PUT;
+- signed non-trailer aws-chunked payloads;
+- path-style and optional virtual-hosted addressing.
+
+See [S3_COMPAT.md](./S3_COMPAT.md).
+
+### Content-defined deduplication
+
+Object bytes are split with deterministic content-defined chunking:
+
+```text
+16 KiB minimum
+64 KiB target
+256 KiB maximum
+```
+
+Each chunk is identified by SHA-256. Local edits therefore tend to perturb
+only chunks around the edit instead of shifting every later fixed-size block.
+
+### Streaming ingest and reads
+
+Large objects do not require whole-object buffering.
+
+Known-size writes of at least 64 MiB can stream new chunks directly into
+locality-ordered immutable hot packs. Smaller or size-unknown writes and some
+internal transfer paths use grouped loose CAS publication.
+
+Reads reconstruct objects from their manifests and verify logical chunk hashes
+before serving bytes.
+
+### Immutable packed storage
+
+Loose chunks can be compacted into immutable pack-v1 files.
+
+Packs support:
+
+- raw or adaptive per-record DEFLATE storage;
+- locality-aware record order;
+- bounded coalesced reads;
+- GC of fully dead packs;
+- repacking of partly dead packs;
+- hot/warm/cold physical placement.
+
+Pack identity and placement never appear in object manifests.
+
+### History and structural sharing
+
+Overwrites and deletes retain previous roots until explicitly pruned.
+
+The same immutable content graph supports:
+
+- `versions` and zero-copy `restore`;
+- `CopyObject` with no new payload when chunks already exist;
+- copy-on-write namespace `fork`;
+- immutable namespace `snapshot`;
+- structural `diff` and `inspect`.
+
+### Portable snapshots
+
+A snapshot can become a portable artifact:
+
+- **`.zs3b` full bundle** — self-contained descriptor, manifests, and unique
+  chunk payloads;
+- **`.zs3d` delta bundle** — complete target metadata plus only chunk payloads
+  absent from one exact base snapshot.
+
+See [BUNDLE_FORMAT.md](./BUNDLE_FORMAT.md).
+
+### Delta movement and repair
+
+ZeroS3-aware transfer operates on logical chunk identities rather than whole
+object blobs.
+
+It supports:
+
+- local file/directory sync;
+- ZeroS3-to-ZeroS3 replication;
+- optional bounded bulk transport;
+- peer-assisted repair of missing/corrupt live chunks.
+
+See [docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md).
+
+### Physical tiers
+
+Hot, warm, and cold pack roots all sit under one logical CAS.
+
+Tier policy is content-aware: if one chunk is referenced by several live roots,
+its desired placement is the **hottest** tier requested by any of those roots.
+
+Physical tiering is not exposed as AWS S3 StorageClass.
+
+## Try these next
+
+### Inspect the store
 
 ```sh
-aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://my-bucket
-aws --endpoint-url http://127.0.0.1:9000 s3 cp ./hello.txt s3://my-bucket/hello.txt
+./zeros3 stats -store ./zeros3-data
+./zeros3 doctor -store ./zeros3-data
+./zeros3 verify -store ./zeros3-data
 ```
 
-## Architecture
-
-```
-S3 / SigV4
-    |
-    v
-content-defined chunking (CDC)
-    |
-    v
-SHA-256 content-addressed store (CAS)
-    |
-    v
-immutable manifests
-    |
-    v
-visibility journal
-```
-
-- **S3 / SigV4** — a custom root `http.Handler` (no `http.ServeMux`)
-  keeps the raw request target intact through authentication, so S3
-  path-normalization traps (`//`, `%2F`, `+` vs `%20`) can't be silently
-  rewritten before the signature is checked.
-- **CDC** — a streaming Gear-hash content-defined chunker (16KiB min /
-  64KiB target / 256KiB max) splits object bytes at content-determined
-  boundaries, so an edit anywhere in a file only perturbs the chunks
-  near that edit.
-- **SHA-256 CAS** — each chunk is stored once, named by its own content
-  hash; a second write of identical bytes is a no-op. A chunk is a loose
-  file when written and can later be moved into an immutable pack
-  (`zeros3 compact`), compressed or not; its identity, the SHA-256 of the
-  uncompressed bytes, never changes (see "Packed storage"). Loose chunks
-  are published in bounded groups (about 8 MiB per PutObject, UploadPart or
-  bulk upload): staged files are fsynced, then renamed into `chunks/aa/bb/`
-  and their directories fsynced before any lookup can see them, so the
-  layout and the acknowledged-write durability are unchanged.
-- **Immutable manifest** — one JSON file per object version: its ordered
-  chunk list, total length, object SHA-256, ETag, Content-Type, and
-  metadata. Manifests are never mutated, only superseded.
-- **Visibility journal** — an append-only, CRC32C-framed binary log is
-  the sole authority for which buckets/keys currently exist. A read
-  replays it at store-open time to learn the namespace, then follows
-  manifest → chunks to reconstruct bytes.
-
-Every higher-level capability below is orchestration over this one
-substrate, not a parallel implementation:
-
-```
-CDC + CAS
-  -> dedup / edit-locality reuse
-  -> delta sync / remote replication
-  -> peer-assisted repair
-  -> copy-on-write fork
-  -> snapshots / restore
-  -> diff / inspect
-```
-
-## What it can do
-
-**S3 compatibility.** `CreateBucket`, `ListBuckets`, `HeadBucket`,
-`DeleteBucket`, `GetBucketLocation`, `PutObject`, `GetObject`, `HeadObject`,
-`DeleteObject`, `DeleteObjects` (≤1000 keys), `ListObjectsV2` (prefix/delimiter/pagination), `CopyObject`
-(`COPY`/`REPLACE` directives, same/cross-bucket, source preconditions),
-single-range `GetObject`, and a full persistent multipart upload
-lifecycle (`CreateMultipartUpload`/`UploadPart`/`ListParts`/
-`CompleteMultipartUpload`/`AbortMultipartUpload`/`ListMultipartUploads`,
-survives a real process restart mid-upload) — all over path-style and
-opt-in virtual-hosted-style addressing, with both Authorization-header
-and presigned-URL SigV4. See [`S3_COMPAT.md`](./S3_COMPAT.md) for the
-exact contract.
-
-**Content-aware storage.** Every write goes through the same CDC → CAS →
-manifest → journal pipeline. `CopyObject` publishes a new object version
-without moving a payload byte; an edited revision of a large object
-reuses the vast majority of its bytes automatically; internal object
-version history and zero-copy restore are built on the same immutable
-manifests (`zeros3 versions`/`restore`/`gc`).
-
-**Packed storage.** New chunks land as loose files under
-`chunks/` (large known-size uploads can stream into packs instead; see
-"Direct pack ingest"). `zeros3 compact -store DIR` (offline: it takes the store
-exclusively, like `gc -apply`; `-pack-size-mib`, `-compression`, `-layout`,
-`-dry-run`, `-json`) copies the chunks live roots reference into immutable packs of about
-64 MiB of chunk data, re-hashing every chunk and verifying each pack before
-publishing it, and only then removes the loose files, so an interruption can
-leave redundant copies but never lose the only one. Packs are plain files under
-`packs/` carrying their own index, rebuilt at open — no database. The
-in-memory chunk locator built from those indexes costs about 54 bytes per
-distinct packed chunk, is never persisted, and is never trusted for content.
-Objects, manifests, ETags, history, snapshots, forks and replication are logically
-unchanged, and a store can hold loose chunks, packed chunks, or both; every
-read re-verifies the chunk's SHA-256 and prefers the packed copy, falling
-back to a loose one. `stats` splits loose from packed counts and bytes, and
-`verify` checks pack structure. Run `compact` again to pack newer chunks.
-
-**Direct pack ingest.** A PutObject, UploadPart or CompleteMultipartUpload whose
-logical size is known and at least 64 MiB streams its *new* chunks straight into
-hot, immutable pack-v1 files in object (CDC) order -- the same order
-`compact -layout locality` would give them -- instead of thousands of loose
-files, so a large upload is read-optimized immediately and needs no later
-`compact`. Chunking, global dedup (an existing loose or packed copy in any tier is
-reused, never rewritten), checksums, manifests, ETags and the journal are
-unchanged; each request owns one staging file at a time and holds no pack in
-memory. A pack is published (verified, fsynced, then indexed) as soon as it
-reaches about 64 MiB; a final remainder under 8 MiB is stored as ordinary loose
-chunks rather than a tiny pack. Small, unknown-size (chunked-encoding) and
-bulk/bundle/repair writes stay loose. Direct packs are raw (adaptive DEFLATE cut
-online write throughput by about 36% in measurement); `repack -compression auto`
-recompresses them only when it rewrites a partly dead pack. No format changes:
-a direct pack is indistinguishable from a compacted one. A failed request can
-leave unreachable packs, which `gc` removes like loose garbage; two concurrent
-uploads of the same new chunk may each store a copy, which `repack`/`gc` converge.
-
-**Pack locality.** `compact -layout locality|digest` (default `locality`) picks the
-record order inside new packs; pack format v1, chunk identity and
-deduplication are identical either way. `digest` is the previous order.
-`locality` ranks each candidate chunk by its first reference when the live
-roots are walked in priority order — current objects (bucket/key order),
-active multipart uploads, snapshots, then retained history (newest first) —
-the same root walk GC uses. A chunk shared by several objects is stored once,
-at its first reference; unreferenced candidates follow in digest order. The
-ranking is a sort plus one binary search per reference (about 100 ms and 21
-MiB for 4,000 objects / 8,182 chunks; 1M synthetic candidates in about 1.5 s
-at 48 B each) and does not depend on map or directory order. `repack` and
-`tier rebalance` keep surviving records in their source physical order
-(rebalance splits keep source-relative order inside each destination tier),
-so a locality layout survives maintenance; old digest-ordered packs stay
-valid and are not rewritten. On GET, `manifestReader` coalesces upcoming
-records that are physically contiguous in one pack into a run read with a
-single `ReadAt` (at most 64 records, 4 MiB stored, 8 MiB decoded), keeping at
-most one pack file open per request. Each record in a run is still checked
-against its locator entry, decoded and SHA-256 verified on its own; a record
-that fails is re-read through the ordinary copy selection (other packed
-copy, hot loose copy, ...) and that pack gets no further runs in the
-request, so one bad record never fails a GET that has a valid fallback.
-Warm and cold records coalesce the same way, unless a hot loose copy outranks
-them.
-
-**Packed compression.** Compression is a property of the packed record only,
-applied by `compact` and `repack` (uploads write raw loose chunks or raw direct packs).
-Each chunk is DEFLATE-compressed (standard library, default level) and stored
-compressed only if that saves at least 1/16 of its size; otherwise the record
-stays raw, so packs mix both and incompressible data (encrypted, already
-compressed, random) is never expanded. `-compression off` keeps records raw.
-Chunk identity stays the SHA-256 of the uncompressed bytes, so CDC
-boundaries, manifests, object digests, ETags, history, sync and replication
-are unchanged. A read decodes at most the record's declared length (never
-more than the 256 KiB chunk bound), requires the stream to end exactly there,
-and checks the SHA-256 of the result, so a malformed or tampered record
-fails the read and the next valid copy is tried. `stats` reports
-`packed_raw_records`, `packed_compressed_records`, `packed_logical_bytes`
-(uncompressed), `packed_stored_bytes`, `pack_file_bytes` (physical),
-`pack_compression_saved_bytes` and `pack_compression_ratio`;
-`packed_live_bytes`, `packed_dead_bytes`, utilization and every reclaimable
-figure count stored (physical) bytes, with `packed_live_logical_bytes` for the
-uncompressed size. The first pack containing a compressed record raises
-`FORMAT.json` to store format version 3, so builds that predate compression
-refuse the store; raw-only packed stores stay at version 2 and loose-only
-stores at 1, and this build opens all three.
-
-**Reclaiming packed space.** Packs are never edited. `stats` and `gc` report,
-from the same reachability scan, how many packed records no live root
-references (`packed_dead_*`), pack utilization, the bytes `gc -apply` removes
-immediately (packs with no live record) and the bytes only `repack` can
-reclaim (partly dead packs). `zeros3 gc -apply` deletes packs with no live
-record. `zeros3 repack -store DIR` rewrites partly dead packs: it prints
-the packs it would select, the bytes it would read, write and reclaim, and
-changes nothing until `-apply` is given (`-max-live-percent`, default 50,
-selects packs below that live share, so each byte rewritten reclaims at
-least a byte; `-pack-size-mib`; `-compression`; `-json`). Live records are
-copied in their source physical order (a locality layout survives repack),
-re-encoded under the current compression policy
-(old raw packs become compressed; `-compression off` rewrites them raw), into
-new verified packs, the new packs are published and fsynced, each
-copied chunk must read back from them, and only then are the old packs
-removed — a crash leaves extra packs or staging files, never a missing
-chunk, and rerunning converges. Both commands are offline (exclusive store
-lock) and refuse to delete anything if a live root is corrupt or missing.
-
-**Physical tiers (hot/warm/cold).** Packs can live in three synchronous
-local storage classes under the one logical CAS; reads never care which.
-Loose chunks and `store/packs/` are **hot**; **warm** and **cold** are roots
-at `store/tiers/warm` and `store/tiers/cold`, each with its own `packs/` and
-`tmp/`, so either can be a mount or bind mount on a different device. Lookup
-prefers hot over warm over cold (a loose copy first), and a damaged copy falls
-back to the next valid one. New uploads always land hot (loose, or direct packs
-for large uploads); there is no direct-to-warm/cold ingest, no access-heat tracking and no asynchronous archive
-restore -- cold is simply a slower-or-cheaper directory that is always
-readable. `zeros3 compact -tier hot|warm|cold` (default hot) packs loose
-chunks straight into a tier; `zeros3 repack` and `gc` keep each pack in its
-tier (`repack -tier` limits it to one). `zeros3 tier status -store DIR`
-reports packs, records, bytes, live/dead space, duplicate copies and marker
-state per tier plus the loose chunks. `zeros3 tier move -store DIR -from T -to T
-(-pack ID ... | -all) [-apply]` moves whole packs (dry-run by default,
-exclusive/offline): it copies into the target tier's own staging directory --
-never a cross-device rename -- verifies the copy end to end, renames and
-fsyncs it into place, and only then removes the source, so every interruption
-leaves a readable copy and rerunning converges. Pack bytes and format are
-unchanged by tiering. Each warm/cold root carries a `TIER.json` naming the
-store and tier; once a store is at format 5, an expected tier root that is
-missing, empty, foreign or malformed (an unmounted device, say) fails the open
-instead of letting its packs silently vanish -- mount the right device before
-opening. For a *replacement or new* device,
-`zeros3 tier init -store DIR -tier warm|cold [-json]` (exclusive lock, reads
-`FORMAT.json` directly, so it works while the open is refused) creates only the
-structural root -- `TIER.json` for this store's ID, `packs/`, `tmp/` -- and only
-over an absent or empty root (an empty `packs/`/`tmp/` or a fresh filesystem's
-`lost+found` is fine). It refuses hot, a marker for another store or tier, any
-non-empty or unrecognized directory, and a pack set with no marker; there is no
-force mode, so an unmounted device can never be silently overwritten. **It does
-not restore data**: if the failed device held the only copy of a live chunk,
-`zeros3 verify` still reports it missing after init -- repair or restore from
-another source.
-The first warm/cold pack raises `FORMAT.json` to 5 (before it is published,
-and never lowered afterwards), so a build that predates tiers refuses the
-store; a hot-only store stays at its old version.
-
-**Content-aware tier policy and rebalance.** Placement follows the logical
-content graph, not objects. A chunk may be referenced by many roots; each root
-requests a tier and the chunk's effective tier is the **hottest** request of any
-live reference (hot < warm < cold in preference). Built-in defaults: `current`
-hot, `history` cold, `snapshot` warm, `multipart` hot -- so a chunk shared by the
-current object and an old revision stays hot, one shared only by a snapshot and
-history is warm, and one only history references is cold. Overrides are
-explicit rules in `store/TIER_POLICY.json` (`zeros3 tier policy list|set|remove
--store DIR -scope current|history|snapshot|multipart [-tier T] [-bucket B
-[-prefix P]]`): within a scope the longest matching `bucket`+`prefix` wins, then
-bucket-wide, then scope-wide, then the built-in default (plain string prefixes,
-no globbing; history matches the original bucket/key even after the bucket was
-deleted; snapshots match their captured source bucket and key). The file holds
-only overrides, is replaced atomically and durably, needs the exclusive store
-lock to change, is not storage truth (no manifest, chunk identity, journal or
-pack records it, `FORMAT.json` is not bumped, and a malformed file stops only
-`tier policy`/`tier rebalance`, never ordinary reads and writes). `zeros3 tier
-rebalance -store DIR [-apply] [-pack-size-mib N] [-compression auto|off]
-[-min-misplaced-percent N] [-json]` (dry-run by default; exclusive/offline)
-recomputes every chunk's target from policy plus the same live roots `gc`
-trusts -- nothing per chunk is stored -- and converges placement: loose chunks
-stay hot or are packed into their target tier; a pack whose live records all
-need one other tier moves whole (`tier move`'s crash-safe primitive, bytes
-unchanged); a pack mixing targets, dead or redundant records has its needed
-records rewritten into target-tier packs (existing staging, verification and
-removal order; dead records are not copied) and is removed only after every live
-record has a verified surviving copy; duplicate copies already at the target are
-reused. The dry-run reports targets, loose and pack actions, estimated I/O and
-write amplification (physical bytes written per logical byte misplaced -- a few
-misplaced chunks inside a big immutable pack cost a whole-pack rewrite;
-`-min-misplaced-percent` defers such rewrites). `tier move` remains a low-level
-escape hatch that may contradict policy; the next rebalance reports and corrects
-the drift. It refuses `-apply` on an invalid live set or a bad tier root. There
-is no read-heat tracking, background worker or online rebalance.
-
-**Delta movement.** `zeros3 sync` ingests a local file or directory
-using far less transfer than a full upload when the store already holds
-most of the bytes. `zeros3 replicate` (optionally `-recursive`, for a
-whole bucket or prefix) moves objects between two ZeroS3 servers,
-transferring only the chunks the destination doesn't already have, as a
-client-orchestrated relay — neither server ever contacts the other
-directly. `-workers N` bounds parallel chunk transfer for sync, repair,
-and replication alike. Servers advertise an optional bulk transport
-(`/_zeros3/v2`) that moves the same logical chunks in bounded batches of up
-to 4096 chunks / 64 MiB (clients target 8 MiB), cutting a 256 MiB transfer
-from ~7,900 HTTP requests to 66; it is used automatically when every
-endpoint involved supports it, and older servers or clients keep using the
-per-chunk protocol. Bulk runs at most 4 batches at once whatever `-workers`
-says.
-
-**Integrity and recovery.** `zeros3 verify` (`-deep` for full content
-re-hashing) checks structural, per-chunk, and whole-object integrity and
-never mutates anything. `zeros3 repair -from PEER` restores missing or
-corrupt chunk bytes from an explicitly-trusted peer, verifying every
-byte's SHA-256 before it's ever written to disk. `zeros3 gc` is
-dry-run by default and refuses to run if the live root set isn't fully
-valid, rather than risk treating broken live data as garbage.
-
-**Structural sharing and history.** `zeros3 fork` clones a bucket or
-prefix inside one store with zero new CAS payload bytes — a true
-copy-on-write namespace. `zeros3 snapshot create/restore` captures
-immutable, restorable point-in-time namespace state that survives
-subsequent mutation or deletion of its source, pinned through garbage
-collection, restored with zero new CAS payload. `zeros3 diff` and
-`zeros3 inspect` are read-only tools for comparing objects and
-inspecting a store's structural sharing.
-
-**Portable snapshot bundles.** `zeros3 bundle export -store DIR -snapshot ID
--out FILE.zs3b [-compression auto|off] [-base-snapshot BASE]` writes one already-existing snapshot as a
-single artifact: the descriptor, its manifests, and each unique logical chunk once
-(optionally DEFLATE-compressed), in a deterministic order, ending in a whole-file
-SHA-256. Physical layout (loose/packed/tier) never leaks in, and the file is
-written atomically. `zeros3 bundle import -store DIR -in FILE.zs3b` runs offline
-under the exclusive store lock, verifies everything while publishing chunks through
-grouped durable CAS batches, and publishes the snapshot descriptor last, so a
-corrupt or interrupted import never exposes a snapshot and a retry converges. It
-never touches the ordinary namespace; restore with `zeros3 snapshot restore` as
-usual. `zeros3 bundle inspect -in FILE [-verify]` reports a cheap header "parsed"
-view, or with `-verify` streams and fully "verified" the bundle. A full bundle
-carries one snapshot, no history, and is self-contained (the archival primitive).
-Adding `-base-snapshot BASE` to `export` writes a thin **delta bundle** (`.zs3d`)
-instead: all target metadata, but chunk payloads only for content the exact base
-snapshot (same store) lacks; the rest are payload-free base references. A delta
-depends on that base (named by ID and descriptor hash): `import` needs the base
-already present, `inspect -verify` needs `-base-store DIR`, and the imported target
-becomes an ordinary snapshot that can be the base of the next delta. See
-[BUNDLE_FORMAT.md](./BUNDLE_FORMAT.md).
-
-**History retention.** History is kept until you retire it:
-`zeros3 versions prune -store DIR -bucket B [-prefix P | -key K]
-(-keep-last N | -older-than 30d | both) [-apply] [-json]`. It is a dry run
-unless `-apply` is given, needs at least one criterion, and runs offline under
-the exclusive store lock (stop `zeros3 serve`). Only historical versions are
-candidates, never a current object. `-keep-last N` protects each key's newest
-N historical versions (0 is allowed when explicit); `-older-than D` uses one
-UTC cutoff captured at planning time and prunes only versions archived strictly
-before it; with both, a version must be outside the newest N *and* older than
-the cutoff. The bucket need not still exist. The plan is persisted as the exact
-version IDs (journal record type 12, batched into bounded frames, each durable
-on its own), so replay never depends on the clock, an interrupted prune leaves a
-valid store, and re-running converges. Pruning retires history roots only:
-snapshots, current objects and other versions keep whatever they reference, and
-nothing is deleted until `zeros3 gc -apply` / `zeros3 repack -apply` reclaim
-what became unreachable. The first prune raises `FORMAT.json` to store format
-version 4, so builds that predate it refuse the store.
-
-**Operational hardening.** Environment-variable credentials
-(`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`), conservative
-HTTP server timeouts, graceful `SIGINT`/`SIGTERM` shutdown with a bounded
-drain, and optional HTTPS via Go's standard-library TLS server
-(`-tls-cert`/`-tls-key`). Atomic conditional writes (`If-Match`/
-`If-None-Match`) resolve concurrent writers to exactly one winner, with
-the condition revalidated at ZeroS3's own locked namespace-commit
-boundary rather than a race-prone check before the request body is
-read.
-
-## Measured results
-
-Two measurements that tell the architectural story; both are
-environment/fixture-specific, not universal claims.
-
-**Localized-edit CDC reuse.** A 4MiB object with a ~4KB insertion near
-the start: 96.6% byte reuse from the original upload
-(`TestDedup_EditedObjectReuseBeatsFixedSizeChunking`), against 0% reuse
-for the same edit chunked with a fixed 64KiB window. An 8MB file synced,
-then re-synced after a small 4KiB mid-file insertion, reused 99.0% of
-its bytes and transferred only the touched chunks.
-
-**Streaming ingest.** `PutObject` and `UploadPart` bodies stream from the
-socket through CDC into the CAS; the object SHA-256, ETag, and request
-checksums accumulate in the same pass, and the object becomes visible only
-at the journal commit. A 288 MiB upload (past the former 256 MiB buffering
-ceiling) peaked at 13 MiB of server RSS (1 GiB: 19 MiB), while the
-previous whole-body-buffering build used 582 MiB and rejected it. On
-non-compressible content, side by side on the same machine, ordinary PUT
-rose from 20.8 to 40.5 MiB/s at 256 MiB; chunk counts for the fixed
-fixtures (254 / 1000 / 4029 at 16 / 64 / 256 MiB) are unchanged. Single
-runs, 4 vCPU, loopback.
-
-**Streaming reads.** `GetObject` walks the manifest and sends one
-SHA-256-verified CAS chunk at a time, for full and `Range` reads alike. A
-chunk that fails verification is never sent: before the first byte the
-client gets an S3 error, afterwards the response is cut short of its
-`Content-Length`. Full GET of a 1 GiB object peaked at 16 MiB of server
-RSS at 581 MiB/s, against 2043 MiB at 99 MiB/s for the previous
-whole-object build (288 MiB: 15 MiB at 633 MiB/s vs. 577 MiB at 371
-MiB/s). Single runs, 4 vCPU, loopback.
-
-**Packed storage.** 6 GiB of incompressible data (25 objects, 95,736 chunks)
-compacted into 96 immutable packs: 95,764 store files became 124, physical
-bytes grew 0.14%, `compact` ran at 61 MiB/s with 50 MiB peak RSS. With a
-cold page cache, full GET of a 256 MiB object went from 212 to 326 MiB/s,
-a 1 MiB range GET from 9.4 to 7.4 ms on average, and server open from 19
-to 93 ms (server peak RSS 18 to 28 MiB). Single runs, 4 vCPU.
-
-**Pack locality.** 256 MiB pseudo-random object, 64 MiB packs, raw records,
-page cache warm, medians of three runs, 4 vCPU, loopback, against the
-previous (digest layout, one record per read) build. Digest layout: 24% of
-adjacent chunk pairs share a pack, none are physically adjacent, 12,164
-pack transitions per GiB, and one full GET does 4,019 pack opens and 4,021
-`pread64`. Locality layout: 99.9% adjacent, runs average 1,005 chunks, 12
-transitions per GiB, and one full GET does 4 opens and 68 `pread64`. Full
-GET 609 -> 852 MiB/s (digest layout with the new reader: 767); 16 MiB range
-538 -> 707 MiB/s; 64 MiB range 566 -> 833 MiB/s; 1 MiB range 4.7 -> 4.8 ms
-and random 64 KiB reads 3.1 -> 3.2 ms (noise level); 8 concurrent 16 MiB
-range readers 1,165 -> 1,842 MiB/s; server RSS growth for one full GET
-11 -> 7 MiB (55 MiB for the 8 readers). A three-version 128 MiB checkpoint
-set (shared chunks stored once) went 662 -> 839 MiB/s with 2,012 -> 2 opens,
-and a 400-file site 3,460 -> 401 opens. `compact` itself takes about 30-45%
-longer on large objects (1.9 -> 2.8 s for 256 MiB) because loose files are
-read in manifest rather than directory order; the ranking is a small part of
-that.
-
-**Packed chunk locator.** The in-memory locator is a sorted array of 52-byte
-records plus a prefix table, replacing a Go map. Synthetic stores of tiny
-chunks: 1M packed chunks open in 0.52 s with 51 MiB of locator heap (map: 0.71 s,
-128 MiB); 5M open in 2.7 s with 256 MiB (map: 3.6 s, 513 MiB), peak RSS 539 MiB
-(725). Point lookups stay at 0.3-0.5 us (hit or miss); a real store's full GET,
-1 MiB range GET and packed-only dedup PUT were unchanged within noise. Single
-runs, 4 vCPU.
-
-**Packed compression.** 64 MiB per data family compacted raw and adaptive
-(`-compression off` / `auto`), single runs, 4 vCPU: English text saved 70.4%
-(3.4x), JSON 86.5% (7.4x), HTML/CSS/JS-like assets 88.2% (8.5x), half-text
-half-random 34.7%; random, already-deflated and duplicate-heavy data stayed
-raw with pack bytes identical to raw mode. `compact` ran at 27 (text), 43
-(JSON), 48 (web) and 44 (random) MiB/s against 53-62 raw, peak RSS 17-28 MiB.
-With a cold page cache full GET went from 169 to 70 MiB/s (text), 167 to 119
-(JSON), 188 to 140 (web) and was unchanged for incompressible data (168 vs
-165); a 256 KiB range GET took 4.3 to 6.3 ms (text), 3.4 to 4.4 ms (JSON) and
-the same for web; server open stayed 14-32 ms because opening reads only pack
-footers. In a 640 MiB lifecycle store (old raw packs, then adaptive compact,
-then repack of dead records) repack read 512 MiB logical, wrote 274 MiB
-(rewriting the old raw text as compressed) and reclaimed 254 MiB at 35 MiB/s
-with 30 MiB peak RSS; the final store held 3,882 raw and 4,052 compressed
-records at 1.91x. Level choice (BestSpeed vs default): the default saved
-3-15% more on text-like data for under 15% more compact time.
-
-**Reclaiming packed space.** 1 GiB of packed data (32 packs) after an aborted
-upload leaves dead records beside live ones. Default `repack` policy
-(rewrite packs below 50% live): at ~90% live nothing is rewritten; at ~50%
-live it reclaimed 285 of 513 reclaimable MiB while rewriting 259 MiB (0.9 bytes
-written per byte reclaimed); at ~10% live it reclaimed 923 MiB (90%) while
-writing 102 MiB (0.11). Forcing a rewrite of the ~90%-live packs reclaims
-10% at 8.9 bytes written per byte reclaimed, which is why it is not the
-default. Repack ran at about 75-90 MiB/s of read+write I/O with 20-22 MiB
-peak RSS; `gc -apply` removed 16 fully dead packs (513 MiB) in 0.3 s. Full
-and range GET latency and server open time (33-44 ms) were unchanged
-before and after. Single runs, 4 vCPU.
-
-**Bounded parallel delta transfer.** Loopback benchmark, 4 vCPU, a 10ms
-simulated per-request delay standing in for real-network RTT, 256 MiB of
-missing payload:
-
-| Workers | Throughput | Speedup vs. 1 worker |
-|---:|---:|---:|
-| 1 | 4.36 MiB/s | 1.00x |
-| 16 | 35.70 MiB/s | 8.18x |
-
-`-workers` is configurable (1..32, default 8); publication stays
-serialized and safe regardless of worker count.
-
-**Bulk transfer.** 256 MiB, loopback, 4 vCPU, per-request delay on the
-destination only; a per-chunk client (8 workers) against the bulk client,
-measured in one harness against the same servers (its proxy pools
-connections, so the per-chunk figures differ from the table above):
-
-| Delay | Per-chunk | Bulk | Transfer requests |
-|---:|---:|---:|---:|
-| 0 ms | 21.11 MiB/s | 31.96 MiB/s | 7,868 → 66 (-99.2%) |
-| 5 ms | 20.92 MiB/s | 31.12 MiB/s | 7,868 → 66 |
-| 10 ms | 18.44 MiB/s | 31.42 MiB/s (1.70x) | 7,868 → 66 |
-
-Throughput is flat across delay because the destination's per-chunk
-durable writes, not the network round trips, become the limit. Peak RSS:
-servers 14-21 MiB, bulk client 56 MiB (per-chunk client 18 MiB); client
-memory depends on batch size and the 4-batch cap, not object size or
-`-workers`. At 10 ms, 4 MiB / 8 MiB / 16 MiB batches reached 32.7 / 32.0 /
-31.0 MiB/s with 4 workers and gained nothing from 8, so the default is 8
-MiB batches and at most 4 in flight.
-
-Grouped loose-CAS publication (Z2-11) targets those per-chunk durable
-writes. On a 4-core ext4 VM, 256 MiB of unique data through PutObject went
-from 20.1 to 35.6 MiB/s (1.77x), a 256 MiB multipart upload from 18.5 to
-26.7 MiB/s, and a 4 MiB PutObject got faster (0.65x the time); bulk
-replication into a grouped destination rose from about 30 to 35-38 MiB/s
-at 0-10 ms. Peak server RSS stayed 15 MiB and a duplicate PutObject still
-writes nothing. Directory fsyncs are not merged -- random digests land in
-distinct `aa/bb` directories -- the gain comes from overlapping the
-fsyncs and from overlapping them with chunking and hashing.
-
-## Verification
-
-- **Internal test suite:** 845 tests green; `go vet ./...` and
-  `gofmt -l .` clean; `go test -race ./...` clean.
-- **AWS SDK for Go v2 interoperability:** validated black-box against a
-  real `zeros3` process using an ordinary, unmodified SDK client —
-  bucket/object CRUD, `ListObjectsV2`, `CopyObject`, range GET,
-  presigned GET/PUT, and a full persistent multipart lifecycle including
-  a real process restart mid-upload.
-- **Core Client Profile v1** ([`S3_COMPAT.md`](./S3_COMPAT.md#zeros3-core-client-profile-v1)):
-  one portable black-box suite (`testing-harnesses/profile/conformance`) passes
-  with the AWS SDK for Go v2 and minio-go; the same consumer reads are
-  byte-identical over loose, packed raw/compressed, hot, warm, cold and
-  mixed-tier stores; browser-site and checkpoint application scenarios run end to end;
-  independent golden SigV4/presign/wire vectors are checked by `go test`.
-  `zeros3 probe -endpoint URL` tells a ZeroS3 endpoint from a generic S3 one.
-- **minio-go interoperability:** unmodified minio-go uploads signed as
-  `aws-chunked` (empty, multi-chunk, 40 MiB single PUT, multipart) read
-  back byte-exact; a byte flipped in flight is rejected and publishes
-  nothing.
-- **`rclone` interoperability:** validated black-box with an unpatched
-  `rclone` client, including a genuine 1 GiB / 205-part multipart
-  upload, restart-persisted and downloaded with exact SHA-256 equality.
-- **Package Killer comparison:** the same frozen AWS SDK test logic, run
-  unmodified against both ZeroS3 and `s3rver` 3.7.1 (changing only
-  endpoint/credential/addressing settings) — 14/14 passed on both
-  targets.
-- **Packed compression:** raw, compressed, and mixed-codec packs read back
-  byte-exact (full and ranged) through a real binary; malformed, truncated,
-  oversized or tampered compressed records fail without panics, corrupt
-  bytes or unbounded allocation; `compact` and `repack` crash points leave
-  compressed stores intact.
-- **Packed storage:** loose, packed, and mixed stores read back byte-exact
-  (full, prefix, cross-chunk, and suffix ranges, before and after restart);
-  crash injection at every `compact` publication boundary loses no live
-  chunk; malformed or damaged packs are rejected without panics, large
-  allocations, or corrupt bytes; `gc` and `repack` crash injection at every
-  publication and removal boundary loses no live chunk and reruns converge.
-- **Crash and restart testing:** real process restart mid-multipart-
-  upload, real SIGINT/SIGTERM graceful-shutdown scenarios, and
-  deterministic in-process crash injection against the journal/CAS
-  recovery model.
-- **Concurrency:** deterministic concurrent-conditional-writer races
-  (N clients, exactly one winner), parallel transfer cancellation, and
-  the race detector across the full suite.
-- **Reproducible build:** two independent source copies, built
-  separately, produce byte-identical output — see below.
-
-## Zero-dependency proof
-
-- `go.mod` has no `require` block; no `go.sum`; no `vendor/` directory.
-- `go list -deps .` resolves only Go standard-library packages (plus
-  toolchain-internal `internal/...`/`vendor/golang.org/x/...` entries
-  that are part of the Go toolchain's own implementation of
-  `net/http`/`crypto/tls` — not a ZeroS3 dependency) and the Go 1.27
-  standard library's own `uuid` package.
-- `CGO_ENABLED=0 go build` succeeds; no subprocess/shell-out anywhere in
-  `zeros3.go`.
-- Full generated evidence: [`deps-proof.txt`](./deps-proof.txt).
-  Substitution-by-substitution detail: [`STDLIB.md`](./STDLIB.md).
-- External interoperability validation (the AWS SDK, `rclone`) lives in
-  [`testing-harnesses/`](./testing-harnesses/), a separate Go module that
-  drives a running `zeros3` binary over plain HTTP — never imported by,
-  linked into, or required by this module.
-
-## Reproducible build
+Use `-deep` when you want full content re-hashing:
 
 ```sh
-CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-buildid=" -o zeros3 zeros3.go
+./zeros3 verify -store ./zeros3-data -deep
 ```
 
-Two independent builds — from two separately-copied source trees at two
-different absolute paths — produce byte-identical output. Reproduce with
-[`scripts/reproducible_build.sh`](./scripts/reproducible_build.sh) (no
-arguments needed).
+### Create an immutable namespace snapshot
 
-## Platform
+With the server running:
 
-Linux is the supported and tested platform for the hackathon build.
-Other Unix-like systems may work but were not part of the validated
-target. Windows is not currently supported or tested.
+```sh
+./zeros3 snapshot create   -endpoint http://127.0.0.1:9000   s3://demo
 
-## Known limitations
+./zeros3 snapshot list   -endpoint http://127.0.0.1:9000
+```
 
-Honest, not exhaustive — see [`S3_COMPAT.md`](./S3_COMPAT.md) for the
-exact API contract:
+### Export a portable snapshot
 
-- Single writer process per store; no distributed/HA operation.
-- Tier placement is explicit and offline: policy plus `tier rebalance`; no access tracking, automatic promotion or demotion, or S3 storage classes.
-- Packed storage is v1: `compact`, `gc -apply` and `repack` are offline.
-  Retained history keeps overwritten and deleted versions live, so packed
-  records only die after upload aborts or after `versions prune` retires
-  history. The first `compact` marks the store format version 2, the first
-  compressed record version 3, the first history prune version 4 and the
-  first warm/cold pack version 5: earlier builds refuse to open such a store rather than
-  misread it, while a never-compacted store stays version 1 and opens with
-  any build. Pack size targets chunk data before compression, so compressed
-  packs come out smaller; compression is DEFLATE only, per chunk.
-- Internal object version history (`zeros3 versions`/`restore`) is a
-  ZeroS3-only mechanism, not the AWS S3 Versioning API. Retention is explicit
-  and offline; there is no automatic expiration or lifecycle configuration.
-- No IAM/STS/KMS/ACL/policy engine; a single static credential pair.
-- `replicate`, `repair`, `fork`, and `snapshot` all require ZeroS3 on
-  every server involved — no generic-AWS-S3 source or destination.
-- `aws-chunked` uploads are supported only as signed
-  `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`; the `-TRAILER`, unsigned, and
-  SigV4A variants are rejected `NotImplemented`.
-- No power-loss (real `kill -9`/hardware) testing beyond deterministic
-  in-process crash injection and direct on-disk truncation.
+After obtaining a snapshot ID:
+
+```sh
+./zeros3 bundle export   -store ./zeros3-data   -snapshot SNAPSHOT_ID   -out snapshot.zs3b
+```
+
+Bundle import/maintenance is offline. See
+[docs/OPERATIONS.md](./docs/OPERATIONS.md).
+
+### Compact loose content
+
+Stop `zeros3 serve` before exclusive maintenance:
+
+```sh
+./zeros3 compact -store ./zeros3-data
+```
+
+Large known-size uploads may already be directly packed, so compact only needs
+to handle remaining loose content.
+
+## Measured behavior
+
+Measurements are environment-specific, not universal performance claims.
+The full methodology and historical context live in
+[docs/BENCHMARKS.md](./docs/BENCHMARKS.md).
+
+A few results that characterize the current architecture:
+
+| Scenario | Result |
+|---|---|
+| localized edit | 4 MiB object + ~4 KiB insertion reused 96.6% of original bytes; fixed 64 KiB blocks reused 0% in the comparison fixture |
+| direct pack ingest | 256 MiB pseudo-random PUT: 72–89 MiB/s, +7 MiB RSS, 0 loose chunks / 4 packs |
+| time to locality-packed state | baseline PUT + compact 7.1 s; direct ingest 2.9 s (~59% less) |
+| locality-aware packed GET | 256 MiB full GET: 4,019 -> 4 pack opens and 609 -> 852 MiB/s in the locality experiment |
+| checkpoint delta bundle | 128 MiB S1->S2 delta: 3.67 MiB vs 128.26 MiB full target bundle (97.1% smaller) |
+
+The current direct-packed 1 GiB sanity run reached 81.6 MiB/s PUT with about
++14 MiB RSS, created 16 packs and no loose chunks, and immediately read at
+917 MiB/s on the recorded machine.
+
+## Validation
+
+ZeroS3 uses two test layers:
+
+- **root suite:** stdlib-only white-box tests, crash injection, corruption
+  cases, and race testing;
+- **testing-harnesses:** separate dependency-bearing module that drives real
+  ZeroS3 processes through independent S3 clients.
+
+Validated client paths include AWS SDK for Go v2, minio-go, and rclone.
+
+Golden SigV4/presign/wire vectors support independent client implementations.
+
+See [testing-harnesses/README.md](./testing-harnesses/README.md).
+
+## Zero-dependency core
+
+The root module has:
+
+- no third-party runtime packages;
+- no `require` block;
+- no root `go.sum`;
+- no vendor directory;
+- no CGO requirement;
+- no subprocess dependency from `zeros3.go`.
+
+[STDLIB.md](./STDLIB.md) explains the major standard-library substitutions.
+[`deps-proof.txt`](./deps-proof.txt) records current source-level dependency
+evidence and the exact Go 1.27 commands used to reproduce the mechanical proof.
+
+Third-party SDKs are confined to the independent black-box harness module.
+
+## Current boundaries
+
+The important current limitations are deliberate and explicit:
+
+- one writer process per store;
+- no distributed/HA operation;
+- one static SigV4 credential pair;
+- no IAM/STS/KMS/ACL/policy engine;
+- no server-side encryption;
+- Linux is the validated platform;
+- several destructive/physical-maintenance operations are offline and take
+  exclusive store ownership;
+- ZeroS3 internal version history is not the AWS S3 Versioning API;
+- physical hot/warm/cold tiers are not S3 StorageClass;
+- no comprehensive hardware power-loss/device-failure test campaign;
+- pre-1.0 CLI and ZeroS3-native protocol surfaces may still evolve under
+  explicit versioning rules.
+
+See [STATUS.md](./STATUS.md) for the precise maturity/format posture.
+
+## Documentation
+
+| Document | Purpose |
+|---|---|
+| [STATUS.md](./STATUS.md) | maturity, supported deployment, format versions, compatibility policy |
+| [S3_COMPAT.md](./S3_COMPAT.md) | exact ordinary-S3 contract |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | logical/physical storage design and durability invariants |
+| [docs/OPERATIONS.md](./docs/OPERATIONS.md) | running, backup, recovery, maintenance, upgrades |
+| [docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md) | ZeroS3-aware discovery, delta, bulk, and commit protocol |
+| [docs/BENCHMARKS.md](./docs/BENCHMARKS.md) | current measurements and historical performance context |
+| [BUNDLE_FORMAT.md](./BUNDLE_FORMAT.md) | full and delta snapshot artifact formats |
+| [STDLIB.md](./STDLIB.md) | standard-library implementation notes |
+| [testing-harnesses/README.md](./testing-harnesses/README.md) | independent validation and evidence map |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | architecture constraints and contribution workflow |
 
 ## Project layout
 
-```
-zeros3.go        the entire implementation (stdlib only)
-zeros3_test.go   the entire test suite (stdlib testing only)
-go.mod           module zeros3, go 1.27.0, no require block
-S3_COMPAT.md     exact supported/unsupported/deviating S3 behavior
-BUNDLE_FORMAT.md portable snapshot bundle formats: full (.zs3b) v1, delta (.zs3d) v1
-STDLIB.md        standard-library substitutions, mapped to shipped code
-deps-proof.txt   generated zero-dependency evidence
-scripts/         reproducible-build verification script
-testing-harnesses/  external black-box validation (separate Go module)
-```
+```text
+zeros3.go                 complete production implementation
+zeros3_test.go            stdlib-only white-box test suite
+go.mod                    Go 1.27 module; no require directives
 
-The implementation intentionally remains one Go source file for the
-hackathon's Single File constraint; both `zeros3.go` and
-`zeros3_test.go` open with subsystem maps for navigation.
+README.md                 project landing page
+STATUS.md                 maturity / format contract
+S3_COMPAT.md              ordinary S3 compatibility contract
+BUNDLE_FORMAT.md          portable snapshot formats
+STDLIB.md                 stdlib / zero-dependency engineering notes
+deps-proof.txt            generated dependency evidence
+
+docs/                     architecture, operations, protocol, benchmarks
+scripts/                  validation and reproducible-build helpers
+testing-harnesses/        external black-box validation (separate Go module)
+```
 
 ## License
 
-[Apache License 2.0](./LICENSE).
+Apache License 2.0. See [LICENSE](./LICENSE).

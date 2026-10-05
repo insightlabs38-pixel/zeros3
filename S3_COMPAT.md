@@ -1,659 +1,436 @@
-# S3 Compatibility
+# S3 compatibility
 
-This document states exactly what ZeroS3 does and does not implement of the
-S3 HTTP API, reconciled against the current `zeros3.go` implementation and
-its test suite (`zeros3_test.go`). Nothing below is aspirational: every
-"implemented/tested" line has a corresponding unit/integration test, and the
-external-interoperability claims are backed by real-SDK/real-client
-validation described in [`README.md`](./README.md#verification).
+This document is the exact ordinary-S3 contract ZeroS3 currently exposes.
+It describes shipped behavior only. ZeroS3-native content-transfer and
+maintenance extensions are documented separately in
+[docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md).
+
+ZeroS3 intentionally implements a focused S3-compatible subset rather than
+attempting full AWS S3 parity.
 
 ## Compatibility posture
 
-ZeroS3 targets a **small, explicit S3 subset that ordinary SDKs can use
-without special protocol hacks**: path-style (and, opt-in, virtual-hosted-
-style) addressing, Authorization-header and query-string (presigned URL)
-SigV4, and the operation set below. It is not a goal to reach full AWS S3
-parity.
+The primary portable contract is **ZeroS3 Core Client Profile v1**.
 
-## ZeroS3 Core Client Profile v1
+An application that stays within this profile can use ZeroS3 through ordinary
+S3 SDKs without knowing anything about CDC, CAS, packs, tiers, snapshots, or
+the ZeroS3-native protocol.
 
-The **Core Client Profile v1** is the contract a portable client can rely on
-without reading the rest of this document. It is deliberately small and is
-**not full AWS S3**; it is what a native client (the planned Mojo S3
-connector, a browser/storage client, an artifact or build-cache tool) should
-implement and test against first. `GET /_zeros3/v1/info` advertises
-`"implementation": "zeros3"` and `"core_s3_profile": 1` (additive fields that
-older clients ignore); `zeros3 probe -endpoint URL` reads them and reports
-`zeros3` or `generic-s3`.
+`GET /_zeros3/v1/info` advertises:
 
-| Area | Operations |
+```json
+{
+  "implementation": "zeros3",
+  "core_s3_profile": 1
+}
+```
+
+and `zeros3 probe -endpoint URL` distinguishes ZeroS3 from a generic
+S3-compatible endpoint.
+
+## Core Client Profile v1
+
+| Area | Supported contract |
 |---|---|
 | Buckets | `ListBuckets`, `CreateBucket`, `HeadBucket`, `DeleteBucket`, `GetBucketLocation` |
 | Objects | `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `DeleteObjects`, `ListObjectsV2`, `CopyObject` |
-| Reads | single `Range`; `If-Match` / `If-None-Match` |
-| Writes | `Content-MD5`, `x-amz-checksum-crc32`, conditional PUT (`If-None-Match: *`, `If-Match`) |
+| Reads | one byte range; `If-Match` / `If-None-Match` |
+| Writes | `Content-MD5`, `x-amz-checksum-crc32`, conditional PUT |
 | Multipart | create, upload part, list parts, list uploads, complete, abort |
-| Auth | SigV4 header auth; SigV4 presigned GET/PUT; `STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER]` (aws-chunked) bodies |
+| Auth | SigV4 header auth; SigV4 presigned GET/PUT; signed `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` aws-chunked bodies |
+| Addressing | path style always; virtual-hosted style when configured |
+| Region | one configured server region |
 
-Connection model: one endpoint, one configured region, one static credential
-pair, **path-style** addressing (virtual-hosted style is opt-in). Nothing
-about packs, compression, tiers or the locator is visible through the profile:
-a client observes the same S3 behavior whether data is loose, packed raw or
-compressed, hot, warm, cold or a mix.
+The profile deliberately excludes IAM/STS, policy/ACL APIs, KMS/SSE,
+AWS Versioning, lifecycle, tagging, CORS, notifications, Object Lock,
+website hosting, requester-pays, replication configuration, SelectObjectContent,
+and other AWS services/features layered around S3.
 
-Two operations were added for the profile:
+### Validated clients
 
-- `GetBucketLocation` — `GET /bucket?location`. Returns the server's single
-  configured region as a `LocationConstraint`; like AWS, `us-east-1` is the
-  empty constraint. Missing bucket: `NoSuchBucket`.
-- `DeleteObjects` — `POST /bucket?delete`, up to 1000 keys, `Quiet=true`
-  supported. Each key goes through the same path as `DeleteObject` (a missing
-  key is success; an existing key's root is archived into internal history;
-  no chunk is deleted — `versions prune` + `gc`/`repack` reclaim space). It is
-  not atomic: per-key failures appear in the result. Zero or more than 1000
-  keys, a missing/empty `Key`, or malformed XML is `MalformedXML`; the request
-  body is capped at 8 MiB. A non-empty `VersionId` other than `null` is
-  reported as a per-key `InvalidArgument` (AWS versioning is not supported).
+The profile is exercised by the portable black-box conformance harness in
+`testing-harnesses/profile/conformance`.
 
-**Validated with:** the AWS SDK for Go v2 (full profile, on loose and
-mixed-tier stores) and minio-go (the same suite; CRC32 and a few client-only
-limits are skipped), both via `testing-harnesses/profile/conformance`
-(`scripts/validate.sh client`). The AWS CLI smoke test and the existing
-`rclone` profile run only where those tools are already installed; they were
-not available in the recorded run.
+Recorded validation includes:
 
-**Golden client vectors** for implementing a client in another language live
-in [`testing-harnesses/vectors/`](./testing-harnesses/vectors): `sigv4.json`
-(canonical request, string-to-sign and signature for plain/space/`+`/`%`/
-encoded-slash/repeated-slash/unicode keys, unsorted queries, metadata headers,
-empty and non-empty payloads, plus four AWS-published examples),
-`presign.json` (GET, PUT, expiry bounds, encoded keys) and `wire.json`
-(ListObjectsV2, GetBucketLocation, DeleteObjects, range GET, multipart
-completion). They were produced by an independent stdlib-only reference
-(`gen.py`, which reproduces AWS's published signatures) and are consumed, never
-rewritten, by `go test -run TestVectors_` (`scripts/validate.sh vectors`). A
-first native connector can implement exactly this table, verify itself against
-the vectors offline, then run `profile/conformance` against a live endpoint.
+- AWS SDK for Go v2;
+- minio-go;
+- rclone on its dedicated interoperability path;
+- independent golden SigV4, presign, and wire vectors under
+  `testing-harnesses/vectors/`.
 
-Out of scope for the profile (and not implemented): ACLs, policies, IAM/STS,
-KMS/SSE, lifecycle, object lock/legal hold, tagging, CORS, website hosting,
-notifications, replication configuration, requester pays, the AWS Versioning
-API, `SelectObjectContent`, other checksum families, multi-region semantics.
-A client that insists on one of these needs configuring down to the profile.
+The same client-visible reads are tested over loose, raw packed, compressed
+packed, hot, warm, cold, and mixed physical layouts. Physical representation
+is not part of the S3 contract.
 
-## Implemented and tested
+## Implemented operations
 
-| Operation | Wire form | Notes |
+| Operation | Wire form | Current behavior |
 |---|---|---|
-| `ListBuckets` | `GET /` | S3-shaped `ListAllMyBucketsResult` XML; buckets sorted by name |
-| `CreateBucket` | `PUT /bucket` | idempotent (see "Compatibility deviations" below) |
-| `HeadBucket` | `HEAD /bucket` | 200 empty body if visible, 404 empty body if missing |
-| `DeleteBucket` | `DELETE /bucket` | empty buckets only; `NoSuchBucket`/`BucketNotEmpty` |
-| `PutObject` | `PUT /bucket/key` | arbitrary binary body, 0-byte objects, `Content-Type`, `x-amz-meta-*`, overwrite-same-key; `If-None-Match: *`/`If-Match: "<etag>"` conditional writes. The body streams through CDC into the CAS with bounded memory (no whole-body buffering); up to S3's 5 GiB single-request ceiling, `EntityTooLarge` above it |
-| `GetObject` | `GET /bucket/key` | exact byte reconstruction streamed one SHA-256-verified CAS chunk at a time (bounded memory at any object size), ETag, Content-Type, metadata; `If-Match`/`If-None-Match` read preconditions. A chunk that fails verification after the response has started is never sent and the response ends short of its `Content-Length` |
-| `HeadObject` | `HEAD /bucket/key` | same headers as GetObject, no body; `If-Match`/`If-None-Match` read preconditions |
-| `DeleteObject` | `DELETE /bucket/key` | idempotent non-versioned delete, 204 |
-| `DeleteObjects` | `POST /bucket?delete` + XML body | ≤1000 keys, `Quiet`; each key uses `DeleteObject` semantics (history archive, no CAS deletion); not atomic; see the Core Client Profile above |
-| `GetBucketLocation` | `GET /bucket?location` | the server's one configured region; empty constraint for `us-east-1` |
-| `ListObjectsV2` | `GET /bucket?list-type=2...` | `prefix`, `delimiter`/`CommonPrefixes`, `max-keys` (default/clamped to 1000), `continuation-token`, UTF-8 byte-lexical key order, XML escaping |
-| `CopyObject` | `PUT /bucket/key` + `x-amz-copy-source` | `COPY`/`REPLACE` metadata directives, same/cross-bucket, zero new CAS payload bytes; works identically for a completed multipart object; `x-amz-copy-source-if-match`/`-if-none-match` source preconditions |
-| single-range `GetObject` | `GET` + `Range: bytes=...` | `start-end`, `start-`, `-suffix`; 416 with `Content-Range: bytes */<size>` for an unsatisfiable range; works across a completed multipart object's part boundaries |
-| `CreateMultipartUpload` | `POST /bucket/key?uploads` | persistent upload session, journal-backed |
-| `UploadPart` | `PUT /bucket/key?partNumber=N&uploadId=ID` | streamed through the same ingest path into the ordinary CAS; replacing a part number overwrites it |
-| `ListParts` | `GET /bucket/key?uploadId=ID` | paginated: `part-number-marker`/`max-parts` (default/clamped to 1000), `IsTruncated`/`NextPartNumberMarker`, stable ascending part-number order, replaced parts never duplicate |
-| `CompleteMultipartUpload` | `POST /bucket/key?uploadId=ID` + XML body | validates strict ascending part order, ETags, ≥5MiB non-final parts; re-chunks the true logical concatenation via a fresh CDC pass (never treats a part boundary as a chunk boundary); publishes an ordinary object |
-| `AbortMultipartUpload` | `DELETE /bucket/key?uploadId=ID` | not idempotent — a repeat abort 404s, matching real S3 |
-| `ListMultipartUploads` | `GET /bucket?uploads` | paginated: `key-marker`/`upload-id-marker`/`max-uploads` (default/clamped to 1000), `IsTruncated`/`NextKeyMarker`/`NextUploadIdMarker`, ordered by key then upload ID (upload IDs are UUIDv7, so this reproduces real S3's own "same key, ascending initiation time" order); `upload-id-marker` is ignored unless `key-marker` is also given, matching real S3; `prefix`, `delimiter`/`CommonPrefixes` (first delimiter occurrence after `prefix`, arbitrary-string delimiter, correct dedup/pagination across group boundaries) |
-| ordinary request checksum | `x-amz-checksum-crc32` header | verified against the streamed payload before the manifest is published; a mismatch is `BadDigest` and the object never becomes visible |
-| `Content-MD5` | `Content-MD5` header | verified against the streamed payload at the same point; malformed digest input (bad base64, wrong decoded length) reported as `InvalidDigest`, a well-formed digest that doesn't match reported as `BadDigest` |
-| SigV4 auth (header) | `Authorization` header, `AWS4-HMAC-SHA256` | raw request-target signing (no `ServeMux` path cleaning before verification); `X-Amz-Content-Sha256` supports both the fixed SHA-256 digest mode (including the empty-body case) and the fixed `UNSIGNED-PAYLOAD` sentinel — see "SigV4 payload modes" below |
-| SigV4 auth (query / presigned URLs) | `X-Amz-Algorithm`/`X-Amz-Credential`/`X-Amz-Date`/`X-Amz-Expires`/`X-Amz-SignedHeaders`/`X-Amz-Signature` query parameters | GET and PUT; shares the same canonicalization/signing core as header auth (`sigv4VerifyCore`); fixed `UNSIGNED-PAYLOAD` payload hash, `host` is the only signed header a generated URL uses; expiry bounded to 1..604800s |
-| `zeros3 presign get\|put` CLI | stdlib `flag`-based subcommand | generates a query-auth URL using the exact same signing primitives the server verifies with; never echoes the secret key |
-| virtual-hosted-style addressing | `http://bucket.<vhost-base>[:port]/key` | opt-in via `zeros3 serve -vhost-base <domain>`; bucket/key resolution happens strictly after SigV4 verification, from the unmodified `Host` header, so it never changes what was signed; path-style remains available unconditionally, on the same server, even when a vhost base is configured |
-| metadata round-trip | `Content-Type` + `x-amz-meta-*` | preserved on every operation that carries them |
+| `ListBuckets` | `GET /` | S3-shaped XML; bucket names sorted |
+| `CreateBucket` | `PUT /bucket` | idempotent for an already-existing bucket |
+| `HeadBucket` | `HEAD /bucket` | 200 if present, 404 if missing |
+| `DeleteBucket` | `DELETE /bucket` | empty bucket only |
+| `GetBucketLocation` | `GET /bucket?location` | returns the server's configured region; `us-east-1` uses the empty constraint |
+| `PutObject` | `PUT /bucket/key` | streaming body, metadata, content type, conditional writes, request checksums |
+| `GetObject` | `GET /bucket/key` | streaming verified reads, metadata, single range, read preconditions |
+| `HeadObject` | `HEAD /bucket/key` | same object metadata/preconditions, no body |
+| `DeleteObject` | `DELETE /bucket/key` | idempotent current-object delete |
+| `DeleteObjects` | `POST /bucket?delete` | up to 1000 keys, `Quiet`; per-key semantics, not an all-or-nothing transaction |
+| `ListObjectsV2` | `GET /bucket?list-type=2...` | prefix, delimiter/CommonPrefixes, max-keys, continuation token, optional `encoding-type=url` |
+| `CopyObject` | `PUT /bucket/key` + `x-amz-copy-source` | COPY/REPLACE metadata, cross/same bucket, source ETag preconditions |
+| `CreateMultipartUpload` | `POST /bucket/key?uploads` | persistent journal-backed upload |
+| `UploadPart` | `PUT /bucket/key?partNumber=N&uploadId=ID` | replaceable part number, normal content integrity |
+| `ListParts` | `GET /bucket/key?uploadId=ID` | paginated part listing |
+| `CompleteMultipartUpload` | `POST /bucket/key?uploadId=ID` | validates requested part order/ETags and re-chunks final logical bytes across part seams |
+| `AbortMultipartUpload` | `DELETE /bucket/key?uploadId=ID` | aborts the live upload; repeated abort reports `NoSuchUpload` |
+| `ListMultipartUploads` | `GET /bucket?uploads` | markers, max-uploads, prefix, delimiter/CommonPrefixes |
 
-`zeros3 stats` (human/`-json`) and `zeros3 verify` (structural, `-deep` for
-full content + whole-object digest re-hashing) round out the CLI; they are
-ZeroS3-only tooling, not part of the S3 wire protocol.
+Single-request PutObject follows the implementation's 5 GiB ceiling.
 
-**Internal object version history, restore, and safe GC** (ZeroS3-only
-CLI/library surface, not part of the S3 wire protocol and not the AWS S3
-Versioning API — see the "Full AWS versioning" non-goal below): every
-overwrite (ordinary `PutObject`, `CopyObject`, or a completed multipart
-upload) and every `DeleteObject` of an existing object archives the state
-it replaces into per-key history, retained indefinitely, with a stable
-UUIDv7 version identity per archived state. `zeros3 versions -bucket B
--key K [-json]` lists a key's current root plus its history, oldest-first.
-`zeros3 restore -bucket B -key K -version ID` makes that version the new
-current object state, zero-copy (reuses the exact existing manifest) and
-non-destructive (creates a new current state; never rewinds or removes
-existing history). `zeros3 gc -store DIR [-apply] [-json]` is dry-run by
-default; `-apply` requires exclusive ownership of the store (a
-`syscall.Flock`-based lock `zeros3 serve` also holds, shared, for its
-whole run) and refuses outright if the authoritative live root set
-(current objects + retained historical versions + active multipart
-uploads, one shared reachability scan) is not fully valid. `zeros3 doctor
--store DIR [-deep] [-json]` is a read-only lifecycle diagnostic built
-directly on the `verify` engine, reporting live root counts by category
-alongside the existing integrity/reclaimable accounting. Ordinary S3
-clients never see any of this: `ListObjectsV2` only ever lists current
-objects.
+### DeleteObjects details
 
-**Packed chunk storage** (ZeroS3-only CLI surface; invisible on the wire):
-`zeros3 compact -store DIR [-pack-size-mib N] [-compression auto|off] [-dry-run] [-json]` moves
-loose CAS chunks that live roots reference into immutable pack files under
-`packs/`, under the same exclusive store ownership as `gc -apply`. Chunk
-identity (SHA-256 and length), manifests, ETags, history, snapshots, and
-every replication/sync/repair exchange are unchanged — `/_zeros3/v1/chunks`
-serves packed and loose chunks identically, each verified against its
-digest. New writes (PutObject, multipart, sync, replicate, repair) always
-create loose chunks; a store may hold loose, packed, and duplicate copies,
-and a read serves any copy that verifies. `gc -apply` sweeps loose chunks
-and removes packs with no live record; `zeros3 repack -store DIR [-apply]
-[-max-live-percent N] [-pack-size-mib N] [-compression auto|off] [-json]`
-replaces partly dead packs (dry-run unless `-apply`). A pack is never
-modified: live records are copied into new verified packs, published, and
-only then are the old packs removed. Packed records are raw or DEFLATE
-(`-compression auto`, the default, keeps a record compressed only when that
-saves at least 1/16); chunk identity remains the SHA-256 of the uncompressed
-bytes, so nothing on the wire, in a manifest, or in an ETag changes. The first
-`compact` that publishes a pack raises `FORMAT.json` to `store_format_version`
-2, and the first pack with a compressed record raises it to 3, so older
-builds refuse the store; stores never compacted stay at version 1.
+`DeleteObjects` accepts at most 1000 keys and supports `Quiet=true`.
 
-**Atomic conditional operations.** `PutObject` accepts `If-None-Match: *`
-(create only if the key currently has no visible object) and
-`If-Match: "<etag>"` (replace only if the current visible object still has
-exactly that ETag), enforced inside `commitObjectRootChecked`'s locked
-commit boundary — the same precondition primitive delta sync's own
-safe-mode conflict check already uses — so concurrent writers racing the
-same precondition always resolve to exactly one winner, never two
-acknowledged successes and never a lost update. A failed conditional write
-publishes nothing; its already-CDC-chunked speculative CAS payload is
-ordinary, GC-collectible garbage, identical in kind to any other failed
-commit in this codebase. `GetObject`/`HeadObject` accept the same
-validators as read preconditions (`If-Match` mismatch -> 412;
-`If-None-Match` match -> 304, decided before any `Range` processing).
-`CopyObject` accepts `x-amz-copy-source-if-match`/
-`x-amz-copy-source-if-none-match` as source-side preconditions, evaluated
-against the exact source revision `CopyObject` already captures atomically
-(one `lookupObject` call; nothing is re-fetched afterward). Supported
-validator syntax is deliberately narrow: a single quoted or unquoted ETag
-(compared case-insensitively) or the literal `*` for `PutObject`'s
-`If-None-Match`; comma-separated lists, weak (`W/`) validators, and
-`If-Match: "*"` are rejected as `InvalidArgument` rather than silently
-approximated.
+Each key goes through ordinary `DeleteObject` semantics:
 
-## ZeroS3 extensions (not S3 APIs)
+- deleting a missing key succeeds;
+- deleting an existing current object archives the replaced root into ZeroS3
+  internal history;
+- no chunk is synchronously removed from the CAS;
+- reclaiming retired content remains a separate history-prune/GC/repack
+  operation.
 
-`zeros3 sync` (delta transfer) is a **ZeroS3-specific extension**, not part
-of the S3 wire protocol and not usable by an ordinary S3 SDK. It lives
-entirely under the reserved `/_zeros3/v1/...` path namespace — never a real
-S3 operation name, method, or path shape — so it can never be confused
-with, or accidentally shadow, an actual S3 request:
+The request is not atomic across keys. Per-key failures are returned in the
+result.
 
-| Endpoint | Method | Purpose |
+A non-empty `VersionId` other than `null` is rejected for that entry because
+the AWS S3 Versioning API is not implemented.
+
+## Object integrity and ETags
+
+ZeroS3 deliberately keeps several integrity concepts separate.
+
+| Concept | Algorithm | Meaning |
 |---|---|---|
-| `/_zeros3/v1/info` | `GET` | capability discovery (`protocol`/`cdc`/`hash`/`delta_sync`/batch and size limits, JSON) |
-| `/_zeros3/v1/object?bucket=&key=` | `GET` | object chunk descriptor (ordered chunks/size/ETag/content-type/metadata, JSON) |
-| `/_zeros3/v1/negotiate` | `POST` | bounded missing-chunk query (JSON in/out) |
-| `/_zeros3/v1/chunks/<sha256-hex>` | `GET` | chunk download (raw bytes; also `repair`'s only network call) |
-| `/_zeros3/v1/chunks/<sha256-hex>` | `PUT` | idempotent chunk upload (raw bytes) |
-| `/_zeros3/v1/commit` | `POST` | atomic ordinary object commit (JSON in/out) |
-| `/_zeros3/v1/reachability?bucket=&key=` | `GET` | per-chunk store-wide reachability query (`inspect`'s only new endpoint — JSON out, read-only) |
+| CAS chunk identity | SHA-256 | immutable logical chunk identity and read verification |
+| Whole-object digest | SHA-256 | manifest-level end-to-end content digest |
+| Single-part ETag | MD5(body) | S3 compatibility/cache validator |
+| Multipart ETag | MD5(concatenated binary part-MD5s) + `-N` | conventional multipart ETag |
+| SigV4 payload hash | SHA-256 / sentinel | authentication binding |
+| `Content-MD5` | MD5 + base64 | optional request-body integrity |
+| `x-amz-checksum-crc32` | IEEE CRC32 + base64 | optional request-body integrity |
+| Journal/snapshot frame checksum | CRC32C | torn/corrupt metadata-frame detection |
 
-All four are authenticated by the exact same SigV4 header verification
-every ordinary S3 request goes through, and all four render JSON, never
-XML — a deliberate visual signal, on the wire, that these are not S3
-responses. A successful `/commit` produces an ordinary object reachable
-through every operation in the table above; the extension endpoints
-themselves are never involved in reading it back. `zeros3 sync` against a
-non-ZeroS3 endpoint (one that doesn't answer `/_zeros3/v1/info`
-successfully) falls back to an ordinary `PutObject` instead of sending
-any of the other three.
+The CAS digest is not an ETag, and the ETag is not used as the storage
+integrity identity.
 
-**Optional bulk transport.** A server that supports it adds
-`bulk_protocol_version` (2), `max_bulk_chunks` and `max_bulk_bytes` to the
-`/_zeros3/v1/info` response (older clients ignore them; the sync protocol
-itself stays version 1) and serves three more endpoints, which carry the same
-logical chunks (SHA-256, length, uncompressed bytes — never pack or codec
-details) in bounded binary frames instead of one request per chunk:
+## Conditional operations
 
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/_zeros3/v2/negotiate` | `POST` | missing-chunk query (descriptors in, missing descriptors out) |
-| `/_zeros3/v2/chunks/fetch` | `POST` | descriptors in, one verified chunk frame out |
-| `/_zeros3/v2/chunks/upload` | `POST` | chunk frame in, published through the ordinary CAS write |
+### PutObject
 
-A batch is limited to 4096 chunks and 64 MiB independently. Clients send a
-v2 request only to an endpoint that advertised it, and move chunks in bulk
-only when both ends of the transfer did; otherwise they use the v1 endpoints
-unchanged. Objects still commit through `/_zeros3/v1/commit`.
+Supported write preconditions:
 
-**Recursive directory sync (`zeros3 sync LOCAL_DIRECTORY s3://bucket/prefix/`)
-is a client-side feature of this same ZeroS3-specific extension, not a new
-AWS S3 API operation and not a new wire protocol.** It sends zero new
-endpoints or request shapes: for every eligible local file it derives a
-destination key and calls the exact same single-file `zeros3 sync` client
-pipeline described above (capability discovery, `/negotiate`, chunk
-upload, `/commit`), one file at a time. An ordinary S3 SDK talking to a
-ZeroS3 server never observes anything about how a given object was
-produced — a directory-synced object is, on the wire and on disk, the same
-ordinary object a single-file sync or a plain `PutObject` would have
-produced. Directory sync is non-destructive (it only uploads new/changed
-local files; a remote object with no corresponding local file is left
-untouched — there is no delete mode) and every file still goes through the
-same safe-mode conflict precondition, so one file's remote conflict can
-never silently overwrite or corrupt another.
+- `If-None-Match: *`
+- `If-Match: "<etag>"` (quoted or unquoted accepted by the narrow parser)
 
-**Remote-to-remote delta replication (`zeros3 replicate SOURCE DESTINATION
---from SRC_ENDPOINT --to DST_ENDPOINT`) is proprietary ZeroS3 functionality
-layered on this same extension, not a generic AWS S3-to-S3 replication
-feature and not part of the S3 wire protocol.** It replicates one existing
-object from a source ZeroS3 server to a destination ZeroS3 server,
-transferring only the chunks the destination doesn't already have — the
-two new endpoints in the table above (`GET /object`, `GET
-/chunks/<sha256-hex>`) exist solely to make a source's chunk list and
-payload bytes reachable to this client; every other step (capability
-discovery, negotiate, chunk upload, commit) reuses the exact same delta-
-sync endpoints and client primitives unmodified. The architecture is a
-**client-orchestrated relay**: the `zeros3` CLI process talks independently
-to both servers and relays only the missing bytes between them in memory —
-neither server ever makes an outbound request of its own, stores the
-other's credentials, or learns the other exists. This is a deliberate
-choice to avoid introducing any server-side SSRF surface. A successful
-replication produces an ordinary destination object, indistinguishable
-from one written by `PutObject`, `CopyObject`, or `zeros3 sync` — no new
-persistent format, no "replica object" concept. `replicate` requires both
-endpoints to be ZeroS3 servers that pass capability discovery; there is no
-generic-S3-source or generic-S3-destination fallback (unlike `zeros3
-sync`'s plain-`PutObject` fallback for a non-ZeroS3 destination).
+The condition is revalidated at ZeroS3's locked namespace-commit boundary,
+after payload ingest. Concurrent writers therefore cannot both successfully
+commit the same create-only/replace-only condition.
 
-**Peer-assisted corruption repair (`zeros3 repair -store DIR -from
-PEER_ENDPOINT`) is a ZeroS3-specific maintenance extension, not an S3 API
-and not a new wire protocol.** It sends zero new endpoints: repair's only
-network call is an authenticated GET against the exact same `GET
-/chunks/<sha256-hex>` endpoint `replicate` already uses, addressed only by
-content digest. Detection reuses the store's existing deep-verify
-reachability scan (`Store.Verify`'s own machinery) rather than a second
-integrity checker, so repair can only ever act on digests that scan
-already treats as live/reachable — unreachable or orphaned corruption is
-never fetched over the network by this command; that remains `gc`'s job.
-Every peer-supplied chunk is independently re-hashed against the exact
-digest requested before it is ever written to local storage — the peer is
-trusted as a source of candidate bytes, never for integrity, so a wrong,
-truncated, or oversized response is rejected outright. Repair never
-publishes a manifest, journal record, or namespace change: it only ever
-replaces one CAS chunk file's bytes with independently-verified bytes for
-a digest an already-published, already-authoritative manifest already
-claims, so a repaired object is indistinguishable, to GET/HEAD/
-ListObjectsV2/versions/`verify -deep`/GC, from one that was never
-corrupted. Like `replicate`, this is a client-orchestrated operation with
-no server-to-server protocol: the peer never learns anything beyond
-answering an ordinary authenticated chunk-fetch request it would already
-answer for `replicate`.
+A failed conditional request can leave unreachable immutable CAS content, but
+does not publish the object root.
 
-**Prefix/bucket delta replication (`zeros3 replicate -recursive SOURCE
-DEST --from SRC_ENDPOINT --to DST_ENDPOINT`) is proprietary ZeroS3
-functionality layered on `replicate`, not a generic AWS S3-to-S3
-replication feature and not part of the S3 wire protocol.** It sends
-**zero** new endpoints beyond `replicate`'s own two: enumeration uses
-ordinary, already-existing `ListObjectsV2` (the standard S3 listing
-operation itself, not a proprietary namespace-index endpoint) against the
-source, and every selected object is replicated through the *exact same*
-single-object `replicate` pipeline unmodified — capability discovery,
-object descriptor, chunk fetch, negotiate, chunk upload, commit, conflict
-precondition, all reused verbatim, once per object. The only new
-client-side logic is enumeration/pagination, source-to-destination key
-mapping, and result aggregation — no second replication protocol.
-`-recursive` is the sole switch between "one object" and "a prefix/bucket"
-CLI forms; it is never guessed from a trailing slash (a legal S3 object
-key may itself end in `/`). Namespace replication is one-way and
-non-destructive: it never deletes, mirrors, or touches a destination-only
-object, and it is not atomic across objects — one object's conflict or
-corrupt/unavailable source chunk fails only that object, and the command
-reports the exact failed set with a non-zero exit. Each replicated object
-is committed through the exact same persistent-format-unchanged path
-single-object `replicate` already uses, so it is indistinguishable, to
-GET/HEAD/ListObjectsV2/versions/`verify -deep`/GC/`repair`, from one
-produced by ordinary `PutObject` or single-object `replicate`. Only the
-current object per key is replicated (no historical-version replication);
-no in-progress multipart upload session is migrated.
+### GetObject / HeadObject
 
-**Copy-on-write namespace fork (`zeros3 fork SOURCE DEST -endpoint
-ENDPOINT`) is proprietary ZeroS3 functionality layered on `replicate
--recursive`, not an S3 API and not part of the wire protocol.** It sends
-**zero** new endpoints beyond what `replicate -recursive` already uses:
-fork is same-store namespace-replication orchestration with source and
-destination pointed at one endpoint, so every source chunk a forked
-object's manifest references is already present in that one store's CAS —
-negotiation always finds nothing missing, so **zero new CAS payload
-bytes** are ever written for a fork, structurally, not as a special case.
-The only fork-specific logic is an overlap-safety check (rejecting a
-same-bucket source/destination relationship where one prefix contains,
-equals, or is nested inside the other) and a stricter destination-conflict
-precondition: unlike `replicate -recursive`, which treats an unchanged
-pre-existing destination object as a legitimate re-sync target, `fork`
-rejects *any* pre-existing destination object that differs from what it is
-about to publish (no `--force`), while still resuming cleanly against its
-own already-landed objects on a rerun. A forked object is committed
-through the exact same persistent-format-unchanged path replication
-already uses, so it is indistinguishable, to GET/HEAD/ListObjectsV2/
-versions/`verify -deep`/GC/`repair`, from any other object — the two
-namespaces are ordinary, independently mutable S3 namespaces from the
-moment the fork completes, sharing chunks only because two manifests
-happen to reference the same content-addressed digests, exactly as any
-two independently-uploaded byte-identical objects already would. Fork is
-same-store only (no `--from`/`--to`); cross-server namespace cloning is
-`replicate -recursive`'s job. Only the current object per key is forked
-(no historical-version cloning); no point-in-time bucket snapshot is
-taken.
+Supported read preconditions:
 
-**Durable namespace snapshots (`zeros3 snapshot create/list/show/
-delete/restore`) are proprietary ZeroS3 functionality, not an S3 API and
-not part of the wire protocol.** `snapshot create` captures the current,
-in-memory namespace state under one bucket/prefix (under `Store.mu`, so a
-concurrent writer can never produce a mixed-time capture) into a small,
-versioned, CRC32C-integrity-checked descriptor file (`store/snapshots/
-<id>`) naming each captured key's manifest by (UUID, SHA256) — never a
-copy of manifest content or CAS payload. This is a fourth, additional GC
-root category alongside current objects, retained historical versions,
-and active multipart uploads: a snapshot's captured manifests/chunks are
-protected from `zeros3 gc` for as long as the snapshot exists, even after
-the live object that produced them has been overwritten or deleted, with
-no new per-chunk reference counting. A snapshot descriptor that fails its
-own integrity check makes `zeros3 gc -apply` refuse to sweep anything at
-all (the same fail-closed policy a corrupt manifest/chunk already
-triggers), never silently treating a snapshot it cannot trust as garbage.
-`snapshot restore` republishes a captured snapshot's entries as ordinary
-objects at an explicit destination, reusing the exact same negotiate/
-fetch/commit pipeline already in use — same-store only, so every chunk a
-restored object's manifest references is already present in that one
-store's CAS and **zero new CAS payload bytes** are ever written,
-structurally, not as a special case. Restore is create-only (no
-`--force`): a pre-existing, differently-identified destination object is
-always reported as a conflict, while a resumed rerun still lands cleanly
-against its own already-restored objects. A snapshot captures only the
-*current* object per key (no historical-version snapshot, no
-incomplete-multipart-upload snapshot, no bucket policy/configuration
-snapshot); `snapshot delete` removes only the descriptor, never any
-chunk/manifest directly — ordinary `zeros3 gc` decides what, if anything,
-has become unreachable once nothing else references it.
+- `If-Match`
+- `If-None-Match`
 
-**Read-only replication planning, structural diff, and CAS inspect
-(`replicate -dry-run`, `zeros3 diff`, `zeros3 inspect`) are proprietary
-ZeroS3 functionality, not S3 APIs and not part of the wire protocol.** All
-three are read-only: none of them can publish an object, upload a chunk,
-alter CAS contents, append a journal record, or change any namespace/
-snapshot state, independently proven by hashing every file under a
-store's directory before and after running them and requiring a
-byte-identical tree. `replicate -dry-run` sends **zero** new endpoints: it
-is `replicate`'s own existing discover/describe/negotiate prefix,
-extracted into a shared planner (`planReplication`) that both the dry-run
-and a real replication call, stopping before the one step (the fetch/
-upload/commit tail) that could ever write anything — so a dry-run's
-predicted transfer and an immediately-following real replication's actual
-transfer are never two independently-computed numbers that could
-disagree, they are the same computation run twice against the same
-unchanged state. `zeros3 diff` also sends **zero** new endpoints: it calls
-the existing per-object descriptor endpoint (`GET /object`) once per
-object — the same server or two different servers, no special-casing
-either way — and compares the two descriptors' ordered chunk digests/
-lengths entirely client-side; it never fetches an object body or a chunk
-payload, and never plans or performs a transfer of any kind. `zeros3
-inspect` sends **one** new endpoint, `GET /reachability` (table above):
-every other field it reports comes from the same existing object-
-descriptor endpoint `diff` uses. The reachability endpoint walks the same
-four authoritative root categories `zeros3 gc`/`zeros3 verify` already
-protect (current objects, retained historical versions, active multipart
-uploads, durable snapshots) fresh on every call — there is no persistent
-index, refcount table, or planning cache anywhere, and no persistent-
-format change of any kind.
+The implementation intentionally does not implement the full HTTP conditional
+request grammar. Comma-separated validator lists and weak validators are not
+silently approximated.
 
-## Deliberately unsupported (explicit non-goals)
+### CopyObject
 
-These are not planned for this project, at any tier:
+Supported source preconditions:
 
-- IAM/STS/KMS/ACL/bucket-policy engine.
-- Bucket/object encryption, storage classes, object-lock/retention.
-- CORS, static website hosting, event notifications.
-- SigV4a (multi-region signing), including the
-  `STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD[-TRAILER]` payload modes.
-- `STREAMING-UNSIGNED-PAYLOAD-TRAILER` (unsigned streaming request bodies
-  with a trailer-based checksum) — recognized and rejected cleanly
-  (`NotImplemented`), never implemented.
-- Full AWS versioning: the AWS S3 Versioning API specifically —
-  `versionId=` query parameters, bucket-versioning configuration state,
-  delete markers, per-version GET/HEAD/DELETE, S3 version-listing APIs.
-  ZeroS3's own internal, non-AWS-API object version history/restore
-  (`zeros3 versions`/`restore`, see "Implemented and tested" above) is a
-  different mechanism and is implemented.
-- Multi-writer/distributed/HA operation (single writer process per store).
-- FUSE, dashboards, Kubernetes/Lambda integration.
+- `x-amz-copy-source-if-match`
+- `x-amz-copy-source-if-none-match`
 
-## Optional / later-tier behavior (not started, by design)
+Date-based CopyObject source preconditions are not implemented.
 
-Not implemented in the current candidate, and not claimed as shipped:
+## Range reads
 
-- `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` (`aws-chunked` bodies with
-  a signed trailer) — recognized, not implemented. The non-trailer form is
-  implemented (see "SigV4 payload modes" below).
-  `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and SigV4A/ECDSA streaming payload
-  modes are permanently out of scope (see "Deliberately unsupported"
-  above), not merely deferred.
-- Online/background/scheduled GC and automatic version expiry/retention
-  policies — internal versions/restore and offline exclusive GC are
-  implemented; these specific extensions remain out of scope by design,
-  not merely unstarted. (Peer-assisted physical-chunk repair beyond
-  explicit `restore` is implemented; an *autonomous, continuously
-  running* healing daemon with automatic peer discovery remains an
-  explicit non-goal, not merely unstarted.)
+One byte range is supported:
 
-Delta sync, recursive directory sync, remote-to-remote delta replication,
-peer-assisted corruption repair, prefix/bucket delta replication,
-copy-on-write namespace fork, durable namespace snapshots with
-zero-payload restore, and read-only replication planning/structural
-diff/CAS inspect are all implemented — see "ZeroS3 extensions (not S3
-APIs)" above.
+- `bytes=start-end`
+- `bytes=start-`
+- `bytes=-suffix`
 
-## Compatibility deviations (differs from real AWS S3)
+An unsatisfiable range returns 416 with
+`Content-Range: bytes */<object-size>`.
 
-Places where ZeroS3's behavior is intentionally narrower or different from
-documented AWS S3 behavior, rather than simply "not implemented":
+Multi-range requests are not implemented. They are treated as an unsupported
+range form rather than producing `multipart/byteranges`.
 
-- **`CreateBucket` is idempotent.** Re-creating an existing bucket succeeds
-  (200) instead of AWS's region/ownership-dependent
-  `BucketAlreadyExists`/`BucketAlreadyOwnedByYou` errors. This keeps the
-  supported surface small; it was not specified as a MUST behavior either
-  way.
-- **`CopyObject` supports only ETag-based source preconditions.**
-  `x-amz-copy-source-if-match`/`x-amz-copy-source-if-none-match` are read
-  and enforced (see "Atomic conditional operations" above);
-  `x-amz-copy-source-if-modified-since`/`-if-unmodified-since` are not.
-- **`CopyObject` does not reject same-key `COPY`-directive self-copies.**
-  Real S3 rejects certain same-key copies where the metadata directive is
-  `COPY` (no metadata change); ZeroS3 always publishes a new manifest/
-  version/timestamp for the destination instead.
-- **`ListObjectsV2` supports `encoding-type=url` (and only that value;
-  anything else is `InvalidArgument`).** XML 1.0 cannot carry every legal
-  object-key byte (NUL and most C0 controls), so clients handling arbitrary
-  keys should request `EncodingType=url`. The response then advertises
-  `<EncodingType>url</EncodingType>` and byte-wise uppercase `%XX`-encodes
-  `Key`, `Prefix`, `Delimiter` and `CommonPrefixes/Prefix` (space is `%20`,
-  `/` is `%2F`; `+` is never emitted for space). Filtering, grouping and
-  continuation tokens work on the original keys; `ContinuationToken`,
-  `NextContinuationToken`, `Name` and `ETag` are never encoded. Without the
-  parameter, output is unchanged.
-- **Legacy `ListObjects` (no `list-type=2`) is explicitly rejected**, not
-  silently reinterpreted as V2.
-- **Multi-range GET (`bytes=0-1,3-4`) is unsupported.** Per RFC 7233's
-  allowance for range forms a server doesn't support, ZeroS3 ignores the
-  header and serves the full object with 200, rather than a
-  `multipart/byteranges` 206 response.
-- **`StorageClass` is a hardcoded `"STANDARD"` literal** in `ListObjectsV2`
-  responses — no real storage classes exist in ZeroS3.
-- **A single static SigV4 credential pair** is the only supported identity;
-  there is no credential/session-token management, so per-request STS
-  session tokens are not accepted — this applies identically to header auth
-  and to presigned URLs: `X-Amz-Security-Token` is explicitly rejected
-  (`AuthorizationQueryParametersError`) rather than silently ignored.
-- **Presigned URLs sign only the `host` header.** Real S3 presigned URLs may
-  sign additional headers; ZeroS3's `zeros3 presign` CLI and verifier only
-  require/use `host`, matching the AWS SDK for Go v2 presigner's own
-  default.
-- **`X-Amz-Expires` is bounded to 1..604800 seconds** (AWS's own documented
-  maximum), with no configurable override.
-- **Virtual-host addressing is opt-in and single-domain.** One configured
-  base domain (`-vhost-base`) maps `bucket.<base>` to a bucket; there is no
-  wildcard-TLS or multi-domain routing, and this is request-addressing
-  support only (no DNS automation).
-- **`ListMultipartUploads` has no `encoding-type=url` support**
-  (`ListObjectsV2` only, above). `prefix`, `delimiter`/
-  `CommonPrefixes`, and their pagination/marker interaction are fully
-  implemented (see the compatibility table above).
-- **`NextPartNumberMarker`/`NextKeyMarker`/`NextUploadIdMarker` are always
-  rendered, including when not truncated** (0 / empty, matching AWS's own
-  documented example response for `ListMultipartUploads`, which shows
-  present-but-empty marker elements even when `IsTruncated` is `false`);
-  every AWS SDK drives pagination off `IsTruncated`, not off whether a
-  `Next*` field is present, so this is compatible in practice even though
-  it was not independently verified for the non-truncated `ListParts` case.
-- **`AbortMultipartUpload` is not idempotent.** A second abort of an
-  already-aborted (or already-completed) upload ID reports `NoSuchUpload`,
-  matching real S3's own behavior here — unlike `DeleteObject`/
-  `CreateBucket`, which ZeroS3 does treat as idempotent.
-- **Multipart part-size minimum is fixed at 5MiB** (every part except the
-  last), matching AWS's own documented rule, with no configurable
-  override.
+## ListObjectsV2 key encoding
 
-## SigV4 payload modes (header-auth `X-Amz-Content-Sha256`)
+Without `encoding-type=url`, ListObjectsV2 emits normal XML-escaped values.
 
-One explicit interpretation layer (`classifySigV4Payload`) covers every
-value this header can carry:
+With:
 
-| Mode | Value | Behavior |
-|---|---|---|
-| Fixed SHA-256 | lowercase or uppercase 64-hex digest | signed; the exact digest must match the actual body received (`XAmzContentSHA256Mismatch` on tamper). The signature is verified from headers before the body is read; the body digest is checked once the stream has been ingested and before the object is published. Covers both an ordinary body and a zero-length body (the SHA-256 of the empty string) — the empty-body case is this same mode, not a separate one. |
-| Fixed unsigned | the literal string `UNSIGNED-PAYLOAD` | signed (the literal string itself is part of the canonical request), but SigV4 places no constraint on the body — `Content-MD5`/CRC32 remain independently enforced if the client sends them. |
-| Streaming HMAC | `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` | signed `aws-chunked`. The seed request signature is verified from headers; the body is then decoded chunk by chunk (`<hex-size>;chunk-signature=<sig>\r\n<data>\r\n`, ending with a zero-length chunk) and every chunk's signature must extend the previous one. `Content-Encoding: aws-chunked` and `x-amz-decoded-content-length` are required, chunks are capped at 16 MiB, the decoded length must match the header, and nothing may follow the final chunk. A chunk's bytes are released only after its signature verifies; any failure ends the body with an error (`SignatureDoesNotMatch`, `IncompleteBody`, `InvalidRequest`) before the object is published. The decoded stream feeds the same ingest as an ordinary body, so `Content-MD5`/CRC32 apply to the decoded payload. Validated with minio-go and AWS's published worked example. |
-| Streaming HMAC trailer | `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` | recognized, not implemented — rejected `NotImplemented`. |
-| Excluded | `STREAMING-UNSIGNED-PAYLOAD-TRAILER`, `STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD[-TRAILER]` | recognized, permanently unsupported — rejected `NotImplemented`. |
-| Anything else | any other string | rejected `AccessDenied` (not a valid digest and not a recognized sentinel — including a lowercase/misspelled sentinel variant, which is never silently accepted under some other mode). |
+```text
+encoding-type=url
+```
 
-Query-string (presigned URL) auth is unaffected by any of this: it always
-uses the fixed `UNSIGNED-PAYLOAD` sentinel unconditionally, via a
-completely separate code path (`authenticateQuery`) that never calls
-`classifySigV4Payload`.
+ZeroS3 additionally percent-encodes key-bearing fields bytewise and advertises
+`<EncodingType>url</EncodingType>`.
 
-## Multipart upload ETag semantics
+Encoded fields include:
 
-A completed multipart object's ETag is **not** the ordinary single-PUT
-rule (plain MD5 of the object body). It follows the conventional S3
-multipart formula: `MD5(binary_MD5(part1) || binary_MD5(part2) || ...) +
-"-" + part_count`, computed over the parts exactly as named in the
-`CompleteMultipartUpload` request. The two rules are kept strictly
-separate in the implementation and are proven to actually differ for the
-same underlying bytes.
+- `Key`
+- `Prefix`
+- `Delimiter`
+- `CommonPrefixes/Prefix`
 
-## Hash/checksum taxonomy (kept deliberately distinct)
+Encoding uses uppercase `%XX`; space is `%20`; slash is `%2F`; `+` is
+never used for space.
 
-| Concept | Algorithm | Purpose | Where |
-|---|---|---|---|
-| CAS chunk identity | SHA-256 | content-addressed dedup/integrity namespace | every chunk file name |
-| object-level digest | SHA-256 | whole-object integrity, checked by `verify -deep` | manifest `object_sha256` |
-| S3 ETag (single-part) | MD5 of the object body | S3 compatibility/cache-condition contract | manifest `etag`, `ETag` header |
-| S3 ETag (multipart) | MD5 of concatenated per-part MD5s, `-N` suffix | S3 compatibility contract, genuinely different formula from single-part | manifest `etag` for a completed multipart object, `ETag` header |
-| SigV4 payload hash | SHA-256 (`x-amz-content-sha256`) | request authentication | Authorization header / signed value |
-| `x-amz-checksum-crc32` | CRC32 (IEEE), base64 | client-requested transport integrity | `parsePayloadCheck` / `payloadCheck.verify` |
-| `Content-MD5` | MD5, base64 | client-requested transport integrity, independent of CRC32 | `parsePayloadCheck` / `payloadCheck.verify` |
-| journal frame checksum | CRC32C (Castagnoli) | recovery/torn-frame detection, not authentication | journal frame trailer |
+Filtering, delimiter grouping, and continuation tokens operate on the original
+key bytes, not the rendered encoding.
 
-These six concepts never stand in for one another: a chunk's CAS SHA-256 is
-not the object's SHA-256, the object SHA-256 is not the ETag, the ETag is
-not the SigV4 payload hash, and the request-checksum headers (CRC32/
-Content-MD5) are independent, opt-in, per-request checks over the logical
-payload — never confused with any of the above.
+Any other `encoding-type` value is `InvalidArgument`.
 
-## Modern SDK checksum behavior
+This mode is the portable choice for arbitrary legal key bytes that XML 1.0
+cannot represent directly.
 
-Investigated directly (not assumed) against a current AWS SDK for Go v2
-client: an ordinary `PutObject` call with a seekable body sends a plain
-`x-amz-checksum-crc32` header — no `aws-chunked` framing, no streaming
-trailer. ZeroS3 validates exactly that header form. `Content-MD5` is
-validated the same way when a client sends it (`rclone`'s ordinary
-single-part upload path does). Neither request-integrity check requires or
-implies `aws-chunked` support. The same SDK's `UploadPart`/
-`CreateMultipartUpload`/`CompleteMultipartUpload` calls likewise send an
-ordinary fixed `x-amz-content-sha256` digest, never a streaming payload
-mode, confirmed directly for a real multipart workflow — which is why
-the signed streaming mode (see "SigV4 payload modes" above) is exercised
-by minio-go rather than by that SDK, which never asks for it over plain
-HTTP. `rclone`'s own multipart uploads use `UNSIGNED-PAYLOAD` for the same
-reason its ordinary single-part uploads do (a non-seekable
-progress-accounting body reader) — including a genuine 1 GiB/205-part
-proof.
+## SigV4
 
-## Path/addressing
+ZeroS3 implements AWS Signature Version 4 with one configured static credential
+pair and one server region.
 
-Path-style is always available: `http://host:port/bucket/key`. The HTTP
-handler is a plain `http.Handler`, deliberately not built on
-`http.ServeMux` — `ServeMux` cleans `//`, resolves `.`/`..`, and would
-silently rewrite the request target that SigV4 signs. `RequestURI`/
-`RawQuery` are read directly and kept intact through authentication; only
-after auth succeeds is the path percent-decoded into a semantic
-bucket/key. Adversarial raw-path cases (`//`, `%2F`, `%25`, `+` vs `%20`,
-Unicode, trailing slash) are covered by the SigV4 test suite.
+Canonicalization is performed from the original request target rather than an
+HTTP router-normalized path.
 
-Virtual-hosted-style addressing (`http://bucket.<vhost-base>[:port]/key`)
-is available when the server is started with `-vhost-base <domain>`
-(default: unset, path-style only). Bucket extraction from `Host` happens
-strictly *after* SigV4 verification succeeds, reading the exact, unmodified
-`Host` header value that was itself part of the signed canonical request —
-it is never rewritten, normalized, or consulted before authentication, so
-enabling virtual-host routing cannot change what a request's signature
-covers. A `Host` without the configured suffix (a bare IP, `localhost`, an
-unrelated domain, or the bare base domain with no bucket label) falls back
-to ordinary path-style parsing unconditionally, on the same server.
+Covered edge cases include:
 
-## Presigned URLs (SigV4 query-string authentication)
+- repeated slashes;
+- encoded slash;
+- percent signs;
+- plus versus space;
+- Unicode;
+- query sorting;
+- metadata headers;
+- virtual-hosted addressing.
 
-Header auth and query auth are two ways to *locate* a signature (an
-`Authorization` header vs. `X-Amz-*` query parameters) and two different
-payload/expiry policies, but they share one signature verifier
-(`sigv4VerifyCore`) — there is exactly one canonicalization/HMAC
-implementation in `zeros3.go`, used by both directions (server-side
-verification and `zeros3 presign` generation alike).
+### Header authentication payload modes
 
-- **Required parameters:** `X-Amz-Algorithm` (must be `AWS4-HMAC-SHA256`),
-  `X-Amz-Credential`, `X-Amz-Date`, `X-Amz-Expires`, `X-Amz-SignedHeaders`
-  (must include `host`), `X-Amz-Signature`. Each must appear exactly once;
-  a duplicate is rejected, not resolved by picking one value.
-- **`X-Amz-Security-Token` is explicitly rejected**, not silently ignored —
-  ZeroS3 has no session/STS credential model to validate it against.
-- **Payload hash is always the fixed `UNSIGNED-PAYLOAD` sentinel** for
-  query auth, matching real S3 presigned URLs and the AWS SDK for Go v2
-  presigner's own default; this does not change header auth's exact-body-
-  hash requirement, which is untouched.
-- **Expiry:** `X-Amz-Expires` must be an integer in `1..604800` seconds; a
-  request is accepted through and including its exact expiry instant, and
-  rejected starting the next second. `X-Amz-Date` more than 15 minutes in
-  the future is rejected regardless of `X-Amz-Expires` (the same skew
-  window header auth uses).
-- **Canonical query construction excludes only `X-Amz-Signature` itself**
-  — every other query parameter, signed-header-related or not, is part of
-  the canonical query and therefore part of what's signed; adding, removing,
-  or changing any query parameter after generation invalidates the
-  signature.
-- **Mutation safety:** every adversarial presigned-PUT case (tampered path/
-  bucket/signature/Host, expired URL, wrong credential scope) is proven,
-  both in `zeros3_test.go` and against a real external SDK client, to leave
-  no visible object and no namespace mutation.
+`X-Amz-Content-Sha256` supports:
 
-## Known gaps
+| Value | Behavior |
+|---|---|
+| 64-hex SHA-256 digest | request is signed against that digest and the received logical body must match |
+| `UNSIGNED-PAYLOAD` | sentinel is signed; SigV4 itself does not bind the body |
+| `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` | signed aws-chunked body with chained per-chunk signatures |
 
-The compatibility-relevant subset of ZeroS3's known limitations is
-repeated above; see [`README.md`](./README.md#known-limitations) for the
-short summary. This document is updated whenever a listed behavior
-actually ships — features move from "optional / later-tier" to
-"implemented and tested" only alongside their tests and (where
-applicable) external interoperability evidence, never ahead of it.
+The signed aws-chunked mode requires:
+
+- `Content-Encoding: aws-chunked`;
+- `x-amz-decoded-content-length`;
+- valid chained signatures;
+- a valid final zero-length signed chunk;
+- exact decoded length;
+- no bytes after the final chunk.
+
+Individual signed chunks are bounded, verified before their bytes are released
+to the ingest path, and the decoded payload then uses the same request checksum
+and object-ingest machinery as an ordinary body.
+
+Recognized but **not implemented**:
+
+- `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER`;
+- `STREAMING-UNSIGNED-PAYLOAD-TRAILER`;
+- SigV4A/ECDSA streaming payload modes.
+
+These values are rejected rather than silently interpreted as another mode.
+
+### Presigned URLs
+
+SigV4 query authentication supports presigned GET and PUT.
+
+Required query fields are the usual:
+
+- `X-Amz-Algorithm`
+- `X-Amz-Credential`
+- `X-Amz-Date`
+- `X-Amz-Expires`
+- `X-Amz-SignedHeaders`
+- `X-Amz-Signature`
+
+`X-Amz-Expires` is limited to 1..604800 seconds.
+
+The built-in `zeros3 presign` command signs `host` and uses
+`UNSIGNED-PAYLOAD`, matching the intended portable profile.
+
+Session-token authentication is not implemented. `X-Amz-Security-Token` is
+rejected rather than ignored.
+
+## Addressing
+
+### Path style
+
+Always available:
+
+```text
+http://host:port/bucket/key
+```
+
+### Virtual-hosted style
+
+Optional with:
+
+```sh
+zeros3 serve -vhost-base example.internal
+```
+
+which allows:
+
+```text
+http://bucket.example.internal[:port]/key
+```
+
+Bucket extraction happens after successful SigV4 verification from the
+unmodified Host value. Requests outside the configured suffix continue through
+path-style parsing.
+
+ZeroS3 does not automate DNS or wildcard TLS configuration.
+
+## Multipart semantics
+
+Multipart upload state is persistent in the same visibility journal model as
+ordinary namespace state.
+
+Completion:
+
+- requires strict ascending part order in the completion request;
+- validates part ETags;
+- enforces the 5 MiB minimum for every non-final part;
+- replays the selected logical parts through one fresh CDC pass;
+- therefore does not preserve part boundaries as content-chunk boundaries.
+
+The completed object's multipart ETag follows:
+
+```text
+MD5(binary_MD5(part1) || binary_MD5(part2) || ...) + "-" + part_count
+```
+
+and remains distinct from the single-part ETag rule.
+
+## Intentional AWS deviations
+
+ZeroS3 is S3-compatible within the stated profile, not behavior-identical to
+AWS S3 in every corner case.
+
+Current intentional deviations include:
+
+- **CreateBucket is idempotent.** Re-creating an existing bucket succeeds.
+- **One static identity.** No IAM/STS credential/session model exists.
+- **One configured region.** There is no multi-region routing/signing model.
+- **No AWS Versioning API.** ZeroS3's retained internal history is a different
+  mechanism and is not exposed through `versionId=`, version listing, delete
+  markers, or bucket-versioning configuration.
+- **CopyObject date preconditions are absent.** ETag source preconditions are
+  supported.
+- **Same-key COPY self-copy is accepted.** ZeroS3 can publish a new current
+  manifest/version rather than reproducing AWS's narrower rejection behavior.
+- **Legacy ListObjects is rejected.** Only ListObjectsV2 is in the profile.
+- **Multi-range GET is absent.**
+- **StorageClass renders as `STANDARD`.** ZeroS3 physical hot/warm/cold tiers
+  are internal physical placement and are not S3 StorageClass values.
+- **Virtual-hosted style is opt-in for one configured base domain.**
+- **ListMultipartUploads does not implement `encoding-type=url`.**
+- **AbortMultipartUpload is not idempotent.** A repeated abort reports
+  `NoSuchUpload`.
+- **Multipart non-final minimum is fixed at 5 MiB.**
+
+## Deliberately unsupported S3 areas
+
+The current implementation does not provide:
+
+- IAM or STS;
+- ACLs or bucket policies;
+- KMS/SSE or object encryption;
+- S3 storage classes;
+- Object Lock/legal hold;
+- AWS lifecycle configuration;
+- bucket/object tagging APIs;
+- CORS;
+- static website hosting;
+- notifications/event configuration;
+- AWS replication configuration;
+- requester pays;
+- S3 Select;
+- AWS S3 Versioning;
+- SigV4A/multi-region signing.
+
+Absence from this list is not a promise that another AWS S3 operation is
+implemented. The positive operation table above is authoritative.
+
+Future enterprise or compatibility work may add capabilities where they fit the
+architecture; this document intentionally states current scope rather than
+permanently constraining future design.
+
+## ZeroS3-native behavior is separate
+
+Ordinary S3 clients do not need to understand:
+
+- CDC or logical chunk hashes;
+- loose versus packed CAS;
+- pack compression/locality;
+- hot/warm/cold physical placement;
+- internal history;
+- snapshots and forks;
+- full/delta snapshot bundles;
+- ZeroS3 delta synchronization;
+- peer repair.
+
+Large known-size writes may be stored directly into immutable packs, while
+small/unknown-size and some internal transfer paths may initially use loose CAS
+chunks. This physical choice is transparent through the S3 contract.
+
+ZeroS3-aware clients can additionally negotiate logical chunks and transfer
+only missing content. That protocol is documented in
+[docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md).
+
+## Validation evidence
+
+The S3 surface is covered by two complementary layers:
+
+1. `zeros3_test.go`: white-box protocol, storage, crash, corruption, and race
+   tests using only the Go standard library.
+2. `testing-harnesses/`: black-box real-process validation using independent
+   clients, including AWS SDK for Go v2 and minio-go.
+
+Useful focused gates include:
+
+```sh
+scripts/validate.sh s3
+scripts/validate.sh client
+scripts/validate.sh vectors
+```
+
+The external harness module is deliberately separate from the dependency-free
+root module.
+
+See [testing-harnesses/README.md](./testing-harnesses/README.md) for the current
+evidence map.
+
+## Related documentation
+
+- [README.md](./README.md) — overview and quick start
+- [STATUS.md](./STATUS.md) — maturity, deployment boundaries, format versions
+- [docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md) — content-native protocol
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — logical and physical storage model
+- [docs/OPERATIONS.md](./docs/OPERATIONS.md) — operational procedures
