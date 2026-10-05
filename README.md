@@ -465,6 +465,7 @@ See [STATUS.md](./STATUS.md) for the precise maturity/format posture.
 | [STDLIB.md](./STDLIB.md) | standard-library implementation notes |
 | [testing-harnesses/README.md](./testing-harnesses/README.md) | independent validation and evidence map |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | architecture constraints and contribution workflow |
+| [SECURITY.md](./SECURITY.md) | private vulnerability reporting and security boundary |
 
 ## Project layout
 
@@ -475,6 +476,7 @@ go.mod                    Go 1.27 module; no require directives
 
 README.md                 project landing page
 STATUS.md                 maturity / format contract
+SECURITY.md               private vulnerability reporting / security policy
 S3_COMPAT.md              ordinary S3 compatibility contract
 BUNDLE_FORMAT.md          portable snapshot formats
 STDLIB.md                 stdlib / zero-dependency engineering notes
