@@ -7990,6 +7990,11 @@ func (srv *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, buck
 		writeMultipartError(w, err, "/"+bucket+"/"+key)
 		return
 	}
+	if source := r.Header.Get("X-Amz-Copy-Source"); source != "" {
+		srv.handleUploadPartCopy(w, r, bucket, key, uploadID, partNumber, source)
+		return
+	}
+
 	ing, err := srv.ingestRequestBody(w, r, check)
 	if err != nil {
 		writeRequestError(w, err, "/"+bucket+"/"+key)
@@ -8002,6 +8007,101 @@ func (srv *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, buck
 	}
 	w.Header().Set("ETag", `"`+etag+`"`)
 	w.WriteHeader(http.StatusOK)
+	fireTestHook(hookAfterAck)
+}
+
+// copyPartReader adapts the existing verified chunk iterator without buffering
+// an entire object or adding a second source-read implementation.
+type copyPartReader struct {
+	source  *manifestReader
+	pending []byte
+}
+
+func (r *copyPartReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for len(r.pending) == 0 {
+		data, err := r.source.next()
+		if err != nil {
+			return 0, err
+		}
+		r.pending = data
+	}
+	n := copy(p, r.pending)
+	r.pending = r.pending[n:]
+	return n, nil
+}
+
+// handleUploadPartCopy ingests verified source bytes, not the empty signed
+// request body. Use the ordinary multipart commit before reporting XML success.
+func (srv *Server) handleUploadPartCopy(w http.ResponseWriter, r *http.Request, bucket, key, uploadID string, partNumber int, source string) {
+	resource := "/" + bucket + "/" + key
+	srcBucket, srcKey, err := parseCopySource(source)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		return
+	}
+	entry, man, err := srv.store.HeadObject(srcBucket, srcKey)
+	if err != nil {
+		writeGetObjectError(w, srcBucket, srcKey, err)
+		return
+	}
+	for _, header := range []string{"X-Amz-Copy-Source-If-Unmodified-Since", "X-Amz-Copy-Source-If-Modified-Since"} {
+		if r.Header.Get(header) != "" {
+			writeS3Error(w, "NotImplemented", "date-based copy preconditions are unsupported", resource)
+			return
+		}
+	}
+	conditionRequest := r.Clone(r.Context())
+	conditionRequest.Header = make(http.Header)
+	conditionRequest.Header.Set("If-Match", r.Header.Get("X-Amz-Copy-Source-If-Match"))
+	conditionRequest.Header.Set("If-None-Match", r.Header.Get("X-Amz-Copy-Source-If-None-Match"))
+	cond, err := parseGetCondition(conditionRequest)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		return
+	}
+	if evaluateGetCondition(cond, entry.etag) != getConditionProceed {
+		writeS3Error(w, "PreconditionFailed", "copy source precondition failed", resource)
+		return
+	}
+	rng := byteRange{start: 0, end: entry.size - 1}
+	if raw := r.Header.Get("X-Amz-Copy-Source-Range"); raw != "" {
+		bounds := strings.Split(strings.TrimPrefix(raw, "bytes="), "-")
+		if !strings.HasPrefix(raw, "bytes=") || len(bounds) != 2 {
+			writeS3Error(w, "InvalidArgument", "copy range must be bytes=start-end", resource)
+			return
+		}
+		start, startErr := strconv.ParseInt(bounds[0], 10, 64)
+		end, endErr := strconv.ParseInt(bounds[1], 10, 64)
+		if startErr != nil || endErr != nil || start < 0 || end < start || end >= entry.size {
+			writeS3Error(w, "InvalidArgument", "copy range is outside source object", resource)
+			return
+		}
+		rng = byteRange{start: start, end: end}
+	}
+	if rng.end-rng.start+1 > 5*1024*1024*1024 {
+		writeS3Error(w, "EntityTooLarge", "copy part exceeds 5 GiB", resource)
+		return
+	}
+	rd := srv.store.newManifestReader(man, rng)
+	defer rd.close()
+	ing, err := srv.store.ingestStream(&copyPartReader{source: rd}, true, ingestOptions{})
+	if err != nil {
+		writeS3Error(w, "InternalError", err.Error(), resource)
+		return
+	}
+	etag, err := srv.store.commitPart(bucket, key, uploadID, partNumber, ing)
+	if err != nil {
+		writeMultipartError(w, err, resource)
+		return
+	}
+	writeXML(w, http.StatusOK, struct {
+		XMLName      xml.Name `xml:"CopyPartResult"`
+		LastModified string   `xml:"LastModified"`
+		ETag         string   `xml:"ETag"`
+	}{LastModified: iso8601(time.Now().UTC()), ETag: `"` + etag + `"`})
 	fireTestHook(hookAfterAck)
 }
 

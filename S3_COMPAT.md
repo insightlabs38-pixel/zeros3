@@ -35,7 +35,7 @@ S3-compatible endpoint.
 | Objects | `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `DeleteObjects`, `ListObjectsV2`, `CopyObject` |
 | Reads | one byte range; `If-Match` / `If-None-Match` |
 | Writes | `Content-MD5`, `x-amz-checksum-crc32`, conditional PUT |
-| Multipart | create, upload part, list parts, list uploads, complete, abort |
+| Multipart | create, upload part, copy part, list parts, list uploads, complete, abort |
 | Auth | SigV4 header auth; SigV4 presigned GET/PUT; signed `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` aws-chunked bodies |
 | Addressing | path style always; virtual-hosted style when configured |
 | Region | one configured server region |
@@ -80,6 +80,7 @@ is not part of the S3 contract.
 | `CopyObject` | `PUT /bucket/key` + `x-amz-copy-source` | COPY/REPLACE metadata, cross/same bucket, source ETag preconditions |
 | `CreateMultipartUpload` | `POST /bucket/key?uploads` | persistent journal-backed upload |
 | `UploadPart` | `PUT /bucket/key?partNumber=N&uploadId=ID` | replaceable part number, normal content integrity |
+| `UploadPartCopy` | `PUT /bucket/key?partNumber=N&uploadId=ID` + `x-amz-copy-source` | full or inclusive `bytes=start-end` source range, source ETag preconditions |
 | `ListParts` | `GET /bucket/key?uploadId=ID` | paginated part listing |
 | `CompleteMultipartUpload` | `POST /bucket/key?uploadId=ID` | validates requested part order/ETags and re-chunks final logical bytes across part seams |
 | `AbortMultipartUpload` | `DELETE /bucket/key?uploadId=ID` | aborts the live upload; repeated abort reports `NoSuchUpload` |
@@ -159,6 +160,18 @@ Supported source preconditions:
 - `x-amz-copy-source-if-none-match`
 
 Date-based CopyObject source preconditions are not implemented.
+
+### UploadPartCopy
+
+`UploadPartCopy` streams verified source object bytes into the existing
+multipart commit path and returns an XML `CopyPartResult` containing a quoted
+part ETag and `LastModified`. A full copy or an explicit inclusive
+`bytes=start-end` range is supported, up to 5 GiB per part. Invalid or
+out-of-bounds ranges and failed ETag source preconditions publish no part.
+
+Supported source preconditions are `x-amz-copy-source-if-match` and
+`x-amz-copy-source-if-none-match`. Date-based source preconditions return
+`NotImplemented`. Versioned copy sources remain outside the Core Client Profile.
 
 ## Range reads
 

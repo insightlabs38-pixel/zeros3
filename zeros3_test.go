@@ -43680,3 +43680,79 @@ func TestDirectPackLife_RealProcessKillAfterFirstPackBeforeRoot(t *testing.T) {
 		t.Fatalf("verify after gc: %v %+v", err, v)
 	}
 }
+
+// Exercise actual signed HTTP copy semantics and verify completed object bytes.
+func TestUploadPartCopy_ProtocolAndFailures(t *testing.T) {
+	srv, signer := newTestServerAndSigner(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	client := ts.Client()
+	if err := doCreateBucket(t, client, ts.URL, signer, "b"); err != nil {
+		t.Fatal(err)
+	}
+	source := []byte("abcdefghij")
+	put := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, "/b/source", source, nil)
+	put.Body.Close()
+	if put.StatusCode != 200 {
+		t.Fatal(put.StatusCode)
+	}
+	upload := doCreateMultipartUpload(t, client, ts.URL, signer, "b", "destination")
+	path := "/b/destination?partNumber=1&uploadId=" + url.QueryEscape(upload)
+	for _, tc := range []struct {
+		name, src, rng, match string
+		status                int
+	}{
+		{"missing", "/b/missing", "", "", 404},
+		{"range", "/b/source", "bytes=2-100", "", 400},
+		{"suffix", "/b/source", "bytes=-3", "", 400},
+		{"condition", "/b/source", "", `"wrong"`, 412},
+		{"success", "/b/source", "bytes=2-6", "", 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doSignedRequest(t, client, ts.URL, signer, http.MethodPut, path, nil, map[string]string{"X-Amz-Copy-Source": tc.src, "X-Amz-Copy-Source-Range": tc.rng, "X-Amz-Copy-Source-If-Match": tc.match})
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != tc.status {
+				t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+			}
+			parts, status := doListParts(t, client, ts.URL, signer, "b", "destination", upload)
+			if status != 200 {
+				t.Fatal(status)
+			}
+			if tc.status != 200 {
+				if len(parts.Part) != 0 {
+					t.Fatal("failed copy published part")
+				}
+				return
+			}
+			var result struct {
+				XMLName      xml.Name
+				ETag         string
+				LastModified string
+			}
+			if err := xml.Unmarshal(body, &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.XMLName.Local != "CopyPartResult" || result.ETag == "" || !strings.Contains(resp.Header.Get("Content-Type"), "xml") {
+				t.Fatalf("invalid success: %s", body)
+			}
+			if _, err := time.Parse(time.RFC3339, result.LastModified); err != nil {
+				t.Fatal(err)
+			}
+			expected := md5.Sum(source[2:7])
+			if result.ETag != `"`+hex.EncodeToString(expected[:])+`"` || len(parts.Part) != 1 || parts.Part[0].Size != 5 {
+				t.Fatalf("wrong copied part: %s %+v", body, parts)
+			}
+			_, status, data := doCompleteMultipartUpload(t, client, ts.URL, signer, "b", "destination", upload, []completedPartXML{{PartNumber: 1, ETag: result.ETag}})
+			if status != 200 {
+				t.Fatalf("complete: %d %s", status, data)
+			}
+			get := doSignedRequest(t, client, ts.URL, signer, http.MethodGet, "/b/destination", nil, nil)
+			data, _ = io.ReadAll(get.Body)
+			get.Body.Close()
+			if get.StatusCode != 200 || !bytes.Equal(data, source[2:7]) {
+				t.Fatalf("copied bytes=%q", data)
+			}
+		})
+	}
+}
