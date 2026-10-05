@@ -1,8 +1,8 @@
 # ZeroS3 status
 
 ZeroS3 is a pre-1.0, single-node, S3-compatible content-aware object store.
-The current implementation is feature-frozen while documentation and real
-consumer integrations are hardened.
+Current development emphasizes documentation, interoperability, and real
+consumer integrations before additional core feature expansion.
 
 This file is the compact source of truth for maturity, compatibility, supported
 deployment shape, and persistent-format versions. For usage, start with
@@ -28,9 +28,8 @@ deployment shape, and persistent-format versions. For usage, start with
   are explicitly versioned and fail closed when a binary cannot understand
   them.
 
-The current feature set is intentionally paused. New core capabilities should
-be driven by real users or integrations rather than by speculative surface
-expansion.
+New core capabilities should be driven primarily by real users, integrations,
+or measured bottlenecks rather than speculative surface expansion.
 
 ## Good deployment fit
 

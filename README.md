@@ -15,8 +15,9 @@ locality-aware packed storage, and hot/warm/cold physical placement.
 The production implementation intentionally remains one Go source file:
 [`zeros3.go`](./zeros3.go).
 
-> **Current status:** public preview / pre-1.0, Linux, single-node and
-> feature-frozen while real integrations and documentation are hardened.
+> **Current status:** public preview / pre-1.0, Linux and single-node.
+> Current development emphasizes interoperability, real integrations, and
+> hardening over speculative feature expansion.
 > See [STATUS.md](./STATUS.md).
 
 ## Why ZeroS3

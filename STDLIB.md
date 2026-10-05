@@ -318,7 +318,7 @@ that can get request canonicalization wrong, not two.
 ## Direct standard-library import surface
 
 The production file's direct import block is part of the zero-dependency
-contract. The list below is complete for the current frozen implementation;
+contract. The list below is complete for the current implementation;
 many packages are explained in depth in the substitutions above, while the rest
 are supporting primitives.
 

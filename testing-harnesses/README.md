@@ -254,35 +254,9 @@ direct-pack-life
 direct-pack-bench
 ```
 
-Use the narrowest stage capable of detecting the defect introduced by the
-change.
-
-Do not turn the full race/scale suite into an edit loop.
-
-## Validation economy
-
-The project intentionally treats test cost as part of engineering discipline.
-
-Examples:
-
-- parser-only edit -> focused parser tests;
-- pack-writer edit -> pack/direct-pack focused tests;
-- S3 wire edit -> relevant root tests + `s3`/`client`;
-- documentation/comment-only edit -> link/claim/static checks, not the race
-  suite;
-- final semantic state -> broader gates once.
-
-A heavy behavioral gate that passed on executable state X does not become
-invalid because a later commit only rewrites documentation.
-
-## Long-running validation
-
-Some full race/scale stages can take many minutes.
-
-When automated agents run them, avoid tight status polling or repeatedly
-restarting the same expensive workload merely to observe progress.
-
-The goal is to preserve one stable run and consume its final result.
+Use focused stages while developing a change and broader validation before a
+release or when shared storage/protocol paths are affected. Full race, scale,
+and benchmark stages are intentionally separate because they can be expensive.
 
 ## Third-party dependencies
 

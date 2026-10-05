@@ -3,13 +3,9 @@
 This document records measurements that explain ZeroS3's architectural
 tradeoffs. They are **not universal performance guarantees**.
 
-The current feature-frozen main line referenced here includes Z2-15 at merge:
-
-```text
-a4f7362
-```
-
-The executable Z2-15 change itself is commit `1c25a4c`.
+The measurements below were collected during development leading to the first
+public release. Relevant comparison commits are recorded where they help
+reproduce a result.
 
 Where a result compares two builds, the comparison is meaningful primarily
 because both sides used the same fixture/machine/harness. Do not compare raw
@@ -41,21 +37,13 @@ present one "best" number independent of workload.
 
 Large known-size pseudo-random PutObject, 256 MiB.
 
-Baseline:
+Baseline commit: `3df362b` (before direct pack ingest).
 
-```text
-3df362b  (pre-Z2-15)
-```
-
-Current:
-
-```text
-Z2-15 direct pack ingest
-```
+Direct-pack implementation commit: `1c25a4c`.
 
 Recorded on the same development machine.
 
-| Metric | Pre-Z2-15 | Z2-15 |
+| Metric | Before direct pack ingest | Direct pack ingest |
 |---|---:|---:|
 | PUT throughput | 61–67 MiB/s | 72–89 MiB/s |
 | server RSS growth | +6 MiB | +7 MiB |
@@ -97,7 +85,7 @@ No post-PUT compact was required.
 
 ### 1 GiB sanity run
 
-Current Z2-15 build:
+Direct-pack build:
 
 | Metric | Result |
 |---|---:|
@@ -171,7 +159,7 @@ promise that every edit shape produces those exact percentages.
 
 ## Pack locality and read coalescing
 
-Z2-13 changed new compacted pack record order from digest-oriented layout to
+The locality/coalescing change moved new compacted pack record order from digest-oriented layout to
 first-reference locality order and added bounded contiguous run reads.
 
 Fixture:
@@ -219,7 +207,7 @@ Locality-oriented compaction was about 30–45% slower for large loose objects i
 the recorded fixture because it read loose files in manifest order rather than
 digest/directory order.
 
-Z2-15 later removes much of that cost for large known-size new uploads by
+Direct pack ingest later removes much of that cost for large known-size new uploads by
 writing object-order packs directly.
 
 ## Portable full and delta bundles
@@ -374,7 +362,7 @@ packs.
 
 ## Bulk delta transport
 
-Z2-07 compared per-chunk transport against the optional bulk v2 transport on a
+The bulk-transport experiment compared per-chunk transport against the optional bulk v2 transport on a
 256 MiB missing-payload transfer.
 
 Same harness, 8-worker per-chunk path versus bulk:
@@ -394,7 +382,7 @@ Request reduction:
 The bulk path stayed roughly flat across the injected delay because storage
 publication became the dominant limit.
 
-Z2-11 later improved the destination publication path and recorded bulk runs in
+Grouped CAS publication later improved the destination publication path and recorded bulk runs in
 the mid-30 MiB/s range on the same class of fixture.
 
 Do not compare those absolute numbers to unrelated sequential-transfer
@@ -402,7 +390,7 @@ benchmarks that used different worker/proxy setups.
 
 ## Grouped loose-CAS publication
 
-Before Z2-11, a 64 MiB PutObject issued roughly two fsync operations plus one
+Before grouped CAS publication, a 64 MiB PutObject issued roughly two fsync operations plus one
 rename per new chunk in the investigated path.
 
 The chosen grouped publication mechanism stages/fsyncs chunks with bounded
@@ -423,14 +411,14 @@ Recorded 256 MiB multipart:
 
 Server peak RSS remained around 15 MiB in those runs.
 
-Z2-15 direct packing later bypasses most loose-file fanout for large known-size
+Direct pack ingest later bypasses most loose-file fanout for large known-size
 uploads altogether.
 
 ## Streaming memory evolution
 
 ### Upload
 
-Earlier whole-body buffering was removed in Z2-01.
+Earlier whole-body buffering was removed by the streaming-ingest change.
 
 Recorded:
 
@@ -445,7 +433,7 @@ streaming RSS ~13 MiB and accepted
 
 ### Download
 
-Z2-02 switched full/range reads to bounded chunk-at-a-time reconstruction.
+The streaming-read change switched full/range reads to bounded chunk-at-a-time reconstruction.
 
 Recorded 1 GiB full GET:
 

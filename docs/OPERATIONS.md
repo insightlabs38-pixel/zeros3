@@ -554,7 +554,7 @@ Use:
 - `verify` for explicit validation;
 - process/system metrics for CPU, memory, disk usage, and I/O.
 
-There is no built-in Prometheus endpoint in the current frozen feature set.
+There is no built-in Prometheus endpoint in the current feature set.
 
 ## Incident checklist
 
