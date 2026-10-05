@@ -71,39 +71,39 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//     498    Content-defined chunking (CDC)
-//     624    Content-addressed chunk storage (CAS)
-//     1178    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//    2720    Manifests (immutable, JSON)
-//    2819    Visibility journal (append-only, checksummed)
-//    3232    Store: format, namespace, and object CRUD
-//    4058    Version history/restore, history pruning, ListObjectsV2
-//    4531    SigV4 authentication (header and presigned-URL)
-//    5486    Request payload checksums and S3-shaped XML error/response types
-//    5703    HTTP routing and S3 operation handlers
-//    6116    Conditional operations (PUT/GET/HEAD preconditions)
-//    6800    CopyObject
-//    7094    Multipart upload
-//    7920    Stats and reachability scanning
-//    8703    Verify
-//    8879    Store locking and safe offline GC
-//    9136    Offline compaction (`zeros3 compact`)
-//    9765    Pack reclamation and repacking (`zeros3 repack`)
-//    10212    Physical tiers: status and pack movement (`zeros3 tier`)
-//    10724    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//   11788    Streaming object reads (full and ranged GET)
-//   12050    Delta sync client, credentials, and parallel transfer
-//   14036    Bulk logical-chunk transport (v2)
-//   14947    Recursive directory sync
-//   15252    Remote replication (`zeros3 replicate`)
-//   15999    Peer-assisted corruption repair (`zeros3 repair`)
-//   16511    Namespace (prefix/bucket) replication
-//   16818    Copy-on-write namespace fork (`zeros3 fork`)
-//   17026    Snapshots and restore
-//   18187    Structural diff and inspect (introspection)
-//   19463    Portable snapshot bundles (`zeros3 bundle`)
-//   20623    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//   21258    CLI dispatch, HTTP server/startup, and main
+//     499    Content-defined chunking (CDC)
+//     625    Content-addressed chunk storage (CAS)
+//     1356    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
+//    2899    Manifests (immutable, JSON)
+//    2998    Visibility journal (append-only, checksummed)
+//    3411    Store: format, namespace, and object CRUD
+//    4240    Version history/restore, history pruning, ListObjectsV2
+//    4713    SigV4 authentication (header and presigned-URL)
+//    5668    Request payload checksums and S3-shaped XML error/response types
+//    5885    HTTP routing and S3 operation handlers
+//    6298    Conditional operations (PUT/GET/HEAD preconditions)
+//    6982    CopyObject
+//    7276    Multipart upload
+//    8106    Stats and reachability scanning
+//    8889    Verify
+//    9065    Store locking and safe offline GC
+//    9322    Offline compaction (`zeros3 compact`)
+//    10028    Pack reclamation and repacking (`zeros3 repack`)
+//    10475    Physical tiers: status and pack movement (`zeros3 tier`)
+//    10987    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//   12051    Streaming object reads (full and ranged GET)
+//   12313    Delta sync client, credentials, and parallel transfer
+//   14299    Bulk logical-chunk transport (v2)
+//   15210    Recursive directory sync
+//   15515    Remote replication (`zeros3 replicate`)
+//   16262    Peer-assisted corruption repair (`zeros3 repair`)
+//   16774    Namespace (prefix/bucket) replication
+//   17081    Copy-on-write namespace fork (`zeros3 fork`)
+//   17289    Snapshots and restore
+//   18450    Structural diff and inspect (introspection)
+//   19726    Portable snapshot bundles (`zeros3 bundle`)
+//   20886    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//   21521    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -444,6 +444,7 @@ const (
 	hookPackBeforePublish = "pack-before-publish"
 	hookPackAfterRename   = "pack-after-rename"
 	hookPackPublished     = "pack-published"
+	hookPackAfterDirSync  = "pack-after-dir-sync"
 	hookBeforeLooseDelete = "before-loose-delete"
 	hookCompactDone       = "compact-done"
 
@@ -1128,12 +1129,184 @@ type ingestResult struct {
 	etagMD5   [md5.Size]byte // set only when ingestStream is asked for it
 }
 
+// ingestOptions are the only hints the ingest path takes from its caller.
+type ingestOptions struct {
+	size int64 // known logical size of the stream; <= 0 when unknown
+}
+
+// directPack reports whether new chunks should stream straight into
+// immutable packs (see packSink) instead of loose files: only known-size
+// bodies at least directPackMinBytes long qualify. An unknown size is never
+// buffered to find out. PutObject, CompleteMultipartUpload's final pass and
+// UploadPart all qualify; bulk transport, bundle import and repair do not
+// go through ingestStream at all.
+func (o ingestOptions) directPack() bool {
+	return o.size >= directPackMinBytes
+}
+
+// Direct pack ingest policy (section 4). directPackMinBytes is the object
+// size from which an upload writes its new chunks into packs: it equals
+// the ordinary pack target, so a qualifying object yields at least one
+// full-size pack of its own. directPackCompress selects adaptive DEFLATE
+// (the exact compact/repack policy) for those records; raw keeps online
+// writes at full speed and `repack -compression auto` compresses later.
+// ZEROS3_DIRECT_PACK_MIB (0 disables) and ZEROS3_DIRECT_PACK_COMPRESS
+// (auto|off) override them for benchmarking, not as a supported tuning
+// interface.
+var (
+	directPackMinBytes int64 = defaultPackTargetBytes
+	directPackCompress       = false
+	// directPackTarget is the pack fill size; the shortest final pack is
+	// directPackTarget/packMinFraction. Tests shrink it.
+	directPackTarget int64 = defaultPackTargetBytes
+)
+
+func init() {
+	if n, err := strconv.Atoi(os.Getenv("ZEROS3_DIRECT_PACK_MIB")); err == nil && n >= 0 && n <= 1<<20 {
+		directPackMinBytes = int64(n) << 20
+		if n == 0 {
+			directPackMinBytes = math.MaxInt64
+		}
+	}
+	switch os.Getenv("ZEROS3_DIRECT_PACK_COMPRESS") {
+	case "auto":
+		directPackCompress = true
+	case "off":
+		directPackCompress = false
+	}
+}
+
+// chunkSink is where ingestStream's chunker delivers each chunk: loose CAS
+// files (looseSink) or immutable packs (packSink). A sink never retains
+// the chunk's bytes past Put, makes nothing durable until Flush returns
+// nil, and Abort discards whatever Flush has not published.
+type chunkSink interface {
+	Put(sum [32]byte, chunk []byte) error
+	Flush() error
+	Abort()
+}
+
+type looseSink struct{ b *casBatch }
+
+func (l looseSink) Put(sum [32]byte, chunk []byte) error {
+	_, err := l.b.add(sum, chunk)
+	return err
+}
+func (l looseSink) Flush() error { return l.b.Flush() }
+func (l looseSink) Abort()       { l.b.Abort() }
+
+// packSink writes an object's new chunks directly into hot, immutable
+// pack-v1 files in first-occurrence (= CDC) order, the same locality order
+// `compact -layout locality` would later give them, so no loose files are
+// created only to be read back and packed. Each request owns its builder:
+// at most one staging file exists, a full pack (defaultPackTargetBytes) is
+// published as soon as it fills, and a final remainder below the minimum
+// pack size goes through ordinary loose CAS rather than becoming a tiny
+// pack. Chunks already stored anywhere (loose, or packed in any tier) are
+// never rewritten; a digest repeated inside the unpublished pack is written
+// once. Two concurrent requests may both write a chunk neither had yet
+// published; the locator keeps duplicate copies safely and repack/gc later
+// converge them. Packs published before a later failure are unreachable
+// ordinary CAS content, exactly like loose chunks published by a failed
+// request.
+type packSink struct {
+	s       *Store
+	comp    *packCompressor
+	cur     *packBuilder
+	pending map[[32]byte]struct{} // digests in cur
+}
+
+func (s *Store) newPackSink() *packSink {
+	p := &packSink{s: s, pending: map[[32]byte]struct{}{}}
+	if directPackCompress {
+		p.comp = newPackCompressor()
+	}
+	return p
+}
+
+func (p *packSink) Put(sum [32]byte, chunk []byte) error {
+	if _, ok := p.pending[sum]; ok {
+		return nil
+	}
+	if _, err := p.s.casStat(sum); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if p.cur == nil {
+		b, err := p.s.newPackBuilder(tierHot, p.comp, 1024)
+		if err != nil {
+			return err
+		}
+		p.cur = b
+	}
+	p.cur.Add(sum, chunk)
+	p.pending[sum] = struct{}{}
+	if p.cur.LogicalBytes() >= directPackTarget {
+		return p.publish()
+	}
+	return nil
+}
+
+// publish finishes the current pack and makes it durable CAS content through
+// publishPack (full verification, format upgrade, rename, directory fsync,
+// locator).
+func (p *packSink) publish() error {
+	b := p.cur
+	p.cur = nil
+	clear(p.pending)
+	path, entries, err := b.Finish()
+	if err != nil {
+		return err
+	}
+	_, err = p.s.publishPack(tierHot, path, entries)
+	return err
+}
+
+func (p *packSink) Flush() error {
+	b := p.cur
+	if b == nil {
+		return nil
+	}
+	if b.LogicalBytes() >= directPackTarget/packMinFraction {
+		return p.publish()
+	}
+	// Too little new content for a pack of its own: store the staged
+	// records as loose chunks, re-reading and re-verifying each one.
+	loose := p.s.newCASBatch()
+	defer loose.Abort()
+	for i, e := range b.entries {
+		data, err := b.readRecord(i)
+		if err != nil {
+			return err
+		}
+		if _, err := loose.add(e.sha, data); err != nil {
+			return err
+		}
+	}
+	if err := loose.Flush(); err != nil {
+		return err
+	}
+	p.Abort()
+	return nil
+}
+
+func (p *packSink) Abort() {
+	if p.cur != nil {
+		p.cur.Abort()
+		p.cur = nil
+	}
+	clear(p.pending)
+}
+
 // ingestStream streams r through CDC, durably publishing each chunk into
 // the CAS as it is produced and accumulating the whole-object SHA-256
 // (and, for single-part ETags, MD5) incrementally. Memory use is bounded
 // by the chunker's buffer regardless of object size. Chunks published
 // before a later failure are unreachable until a manifest names them.
-func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
+// opt only picks the physical sink (loose files or direct packs); chunking,
+// hashing and the result are identical either way.
+func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (ingestResult, error) {
 	c := newCDCChunker(r)
 	res := ingestResult{chunks: []chunkRef{}}
 	objSum := sha256.New()
@@ -1141,8 +1314,13 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
 	if withMD5 {
 		etagSum = md5.New() //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5.
 	}
-	batch := s.newCASBatch()
-	defer batch.Abort()
+	var sink chunkSink
+	if opt.directPack() {
+		sink = s.newPackSink()
+	} else {
+		sink = looseSink{s.newCASBatch()}
+	}
+	defer sink.Abort()
 	for {
 		chunk, err := c.nextView()
 		if err == io.EOF {
@@ -1152,8 +1330,8 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
 			return ingestResult{}, fmt.Errorf("chunking failed: %w", err)
 		}
 		fireTestHook(hookBeforeChunkWrite)
-		sum, err := batch.Add(chunk)
-		if err != nil {
+		sum := sha256.Sum256(chunk)
+		if err := sink.Put(sum, chunk); err != nil {
 			return ingestResult{}, fmt.Errorf("cas write failed: %w", err)
 		}
 		res.chunks = append(res.chunks, chunkRef{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(chunk))})
@@ -1163,7 +1341,7 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
 			etagSum.Write(chunk)
 		}
 	}
-	if err := batch.Flush(); err != nil {
+	if err := sink.Flush(); err != nil {
 		return ingestResult{}, fmt.Errorf("cas write failed: %w", err)
 	}
 	fireTestHook(hookAfterChunksPublished)
@@ -1181,8 +1359,9 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool) (ingestResult, error) {
 // is unchanged -- logical SHA-256 plus logical length -- and nothing above
 // the CAS (manifests, journal, snapshots, replication, CDC) knows or cares
 // whether a chunk is a loose file or a packed record. Packs are written
-// only by `zeros3 compact` (section 13c) and `zeros3 repack` (section 13d)
-// and are never modified after publication; dead records are reclaimed by
+// through one writer (packBuilder) by `zeros3 compact` (section 13c),
+// `zeros3 repack` (section 13d) and, for large known-size uploads, direct
+// pack ingest (packSink, section 4), and are never modified after publication; dead records are reclaimed by
 // writing a replacement pack and then removing the old one, never in place.
 //
 // Pack v1 file (packs/<id>.pack, id = hex of body_sha256), little-endian:
@@ -3308,9 +3487,12 @@ type multipartUpload struct {
 }
 
 type Store struct {
-	root    string
-	format  storeFormat
-	journal *Journal
+	root   string
+	format storeFormat
+	// formatMu serializes ensureStoreFormat: concurrent direct-pack ingests
+	// may each need to raise FORMAT.json.
+	formatMu sync.Mutex
+	journal  *Journal
 
 	mu      sync.Mutex
 	buckets map[string]*bucketEntry
@@ -5879,7 +6061,7 @@ func (srv *Server) ingestRequestBody(w http.ResponseWriter, r *http.Request, che
 		crc = crc32.NewIEEE()
 		body = io.TeeReader(body, crc)
 	}
-	ing, err := srv.store.ingestStream(body, true)
+	ing, err := srv.store.ingestStream(body, true, ingestOptions{size: r.ContentLength})
 	if err != nil {
 		return ingestResult{}, err
 	}
@@ -7598,7 +7780,11 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 	// multipartReader/ingestStream), never buffering the whole
 	// reconstructed object.
 	mr := &multipartReader{s: s, parts: parts}
-	ing, err := s.ingestStream(mr, false)
+	var total int64
+	for _, p := range parts {
+		total += p.size
+	}
+	ing, err := s.ingestStream(mr, false, ingestOptions{size: total})
 	if err != nil {
 		return nil, manifestV1{}, fmt.Errorf("multipart: assembling final object failed: %w", err)
 	}
@@ -9456,6 +9642,8 @@ func (s *Store) compact(referenced map[string]bool, opt compactOptions) (Compact
 
 // ensureStoreFormat durably raises FORMAT.json to at least version v.
 func (s *Store) ensureStoreFormat(v int) error {
+	s.formatMu.Lock()
+	defer s.formatMu.Unlock()
 	if s.format.StoreFormatVersion >= v {
 		return nil
 	}
@@ -9488,6 +9676,131 @@ func (s *Store) readLoose(sum [32]byte) ([]byte, error) {
 	return data, nil
 }
 
+// packBuilder streams one pack-v1 file into a tier's staging directory:
+// header, then each record as it is added, then (Finish) the index and
+// footer, fsynced. It is the only code that emits pack bytes -- compaction,
+// repack, rebalance and direct ingest all build packs through it -- and it
+// retains only compact packEntry metadata, never record payloads.
+type packBuilder struct {
+	f       *os.File
+	path    string
+	body    hash.Hash
+	w       *bufio.Writer
+	comp    *packCompressor
+	entries []packEntry
+	off     uint64
+	logical int64
+	done    bool
+}
+
+// newPackBuilder creates the staging file in tier t's staging directory. comp
+// picks each record's codec (nil stores every record raw). capacity is a
+// hint for the number of records.
+func (s *Store) newPackBuilder(t tier, comp *packCompressor, capacity int) (*packBuilder, error) {
+	if err := s.prepareTier(t); err != nil {
+		return nil, err
+	}
+	f, err := os.CreateTemp(tierTmpDir(s.root, t), "pack-*.tmp")
+	if err != nil {
+		return nil, err
+	}
+	b := &packBuilder{f: f, path: f.Name(), body: sha256.New(), comp: comp, entries: make([]packEntry, 0, capacity), off: packHeaderSize}
+	b.w = bufio.NewWriterSize(io.MultiWriter(f, b.body), 1<<20)
+	var hdr [packHeaderSize]byte
+	putPackHeader(hdr[:])
+	b.w.Write(hdr[:])
+	return b, nil
+}
+
+// Add appends one record. data must be the chunk's verified logical bytes
+// (SHA-256 sum); it is not retained.
+func (b *packBuilder) Add(sum [32]byte, data []byte) {
+	payload, codec := b.comp.encode(data)
+	e := packEntry{sha: sum, off: b.off + packRecordHeaderSize, stored: uint32(len(payload)), logical: uint32(len(data)), codec: codec}
+	var rec [packRecordHeaderSize]byte
+	putPackRecordHeader(rec[:], e)
+	b.w.Write(rec[:])
+	b.w.Write(payload)
+	b.entries = append(b.entries, e)
+	b.off = e.off + uint64(e.stored)
+	b.logical += int64(len(data))
+	fireTestHook(hookPackRecordWritten)
+}
+
+// Records and LogicalBytes describe what has been added so far;
+// LogicalBytes counts record headers too, the unit pack targets use.
+func (b *packBuilder) Records() int { return len(b.entries) }
+func (b *packBuilder) LogicalBytes() int64 {
+	return b.logical + int64(len(b.entries))*packRecordHeaderSize
+}
+
+// Finish appends the index and footer, fsyncs and closes the file, and
+// returns its path and entries. A failure removes the staging file.
+func (b *packBuilder) Finish() (string, []packEntry, error) {
+	fail := func(err error) (string, []packEntry, error) {
+		b.Abort()
+		return "", nil, err
+	}
+	index := make([]byte, len(b.entries)*packIndexEntrySize)
+	for i, e := range b.entries {
+		putPackIndexEntry(index[i*packIndexEntrySize:], e)
+	}
+	b.w.Write(index)
+	if err := b.w.Flush(); err != nil {
+		return fail(err)
+	}
+	var bodySHA [32]byte
+	b.body.Sum(bodySHA[:0])
+	var ft [packFooterSize]byte
+	putPackFooter(ft[:], uint64(len(b.entries)), b.off, bodySHA, crc32.Checksum(index, packCRC))
+	if _, err := b.f.Write(ft[:]); err != nil {
+		return fail(err)
+	}
+	fireTestHook(hookPackBeforeSync)
+	if err := b.f.Sync(); err != nil {
+		return fail(err)
+	}
+	fireTestHook(hookPackAfterSync)
+	b.done = true
+	if err := b.f.Close(); err != nil {
+		os.Remove(b.path)
+		return "", nil, err
+	}
+	return b.path, b.entries, nil
+}
+
+// Abort closes and removes an unfinished staging file; it is a no-op once
+// Finish has succeeded (the caller then owns the staged path).
+func (b *packBuilder) Abort() {
+	if b.done {
+		return
+	}
+	b.done = true
+	b.f.Close()
+	os.Remove(b.path)
+}
+
+// readRecord returns record i's verified logical bytes from the staging
+// file. Nothing about the file is trusted: the record header is compared
+// with the expected one, the payload is decoded under the codec length rule
+// and its SHA-256 must equal the digest that names it.
+func (b *packBuilder) readRecord(i int) ([]byte, error) {
+	if err := b.w.Flush(); err != nil {
+		return nil, err
+	}
+	e := b.entries[i]
+	buf := make([]byte, packRecordHeaderSize+int(e.stored))
+	if _, err := b.f.ReadAt(buf, int64(e.off)-packRecordHeaderSize); err != nil {
+		return nil, fmt.Errorf("pack: re-reading staged chunk %x: %w", e.sha, err)
+	}
+	var want [packRecordHeaderSize]byte
+	putPackRecordHeader(want[:], e)
+	if [packRecordHeaderSize]byte(buf[:packRecordHeaderSize]) != want {
+		return nil, fmt.Errorf("pack: staged record header for chunk %x is wrong", e.sha)
+	}
+	return decodePackPayload(e.codec, buf[packRecordHeaderSize:], e.logical, e.sha, nil)
+}
+
 // stagePack writes one pack into tier t's staging directory from batch, fetching each record's
 // verified logical bytes through read, and returns its path and entries.
 // comp picks each record's codec (nil stores every record raw). When read
@@ -9495,77 +9808,26 @@ func (s *Store) readLoose(sum [32]byte) ([]byte, error) {
 // pack is abandoned (an error). Failures (but not simulated crashes)
 // remove the staging file.
 func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, comp *packCompressor) (string, []packEntry, error) {
-	if err := s.prepareTier(t); err != nil {
-		return "", nil, err
-	}
-	f, err := os.CreateTemp(tierTmpDir(s.root, t), "pack-*.tmp")
+	b, err := s.newPackBuilder(t, comp, len(batch))
 	if err != nil {
 		return "", nil, err
 	}
-	path := f.Name()
-	fail := func(err error) (string, []packEntry, error) {
-		f.Close()
-		os.Remove(path)
-		return "", nil, err
-	}
-
-	body := sha256.New()
-	w := bufio.NewWriterSize(io.MultiWriter(f, body), 1<<20)
-	var hdr [packHeaderSize]byte
-	putPackHeader(hdr[:])
-	w.Write(hdr[:])
-
-	entries := make([]packEntry, 0, len(batch))
-	off := uint64(packHeaderSize)
-	var rec [packRecordHeaderSize]byte
 	for _, c := range batch {
 		data, err := read(c.sum)
 		if err != nil {
 			if serr := skip(c, err); serr != nil {
-				return fail(serr)
+				b.Abort()
+				return "", nil, serr
 			}
 			continue
 		}
-		payload, codec := comp.encode(data)
-		e := packEntry{sha: c.sum, off: off + packRecordHeaderSize, stored: uint32(len(payload)), logical: uint32(len(data)), codec: codec}
-		putPackRecordHeader(rec[:], e)
-		w.Write(rec[:])
-		w.Write(payload)
-		entries = append(entries, e)
-		off = e.off + uint64(e.stored)
-		fireTestHook(hookPackRecordWritten)
+		b.Add(c.sum, data)
 	}
-	if len(entries) == 0 {
-		f.Close()
-		os.Remove(path)
+	if b.Records() == 0 {
+		b.Abort()
 		return "", nil, nil
 	}
-
-	index := make([]byte, len(entries)*packIndexEntrySize)
-	for i, e := range entries {
-		putPackIndexEntry(index[i*packIndexEntrySize:], e)
-	}
-	w.Write(index)
-	if err := w.Flush(); err != nil {
-		return fail(err)
-	}
-	var bodySHA [32]byte
-	body.Sum(bodySHA[:0])
-	var ft [packFooterSize]byte
-	putPackFooter(ft[:], uint64(len(entries)), off, bodySHA, crc32.Checksum(index, packCRC))
-	if _, err := f.Write(ft[:]); err != nil {
-		return fail(err)
-	}
-	fireTestHook(hookPackBeforeSync)
-	if err := f.Sync(); err != nil {
-		return fail(err)
-	}
-	fireTestHook(hookPackAfterSync)
-	if err := f.Close(); err != nil {
-		os.Remove(path)
-		return "", nil, err
-	}
-	return path, entries, nil
+	return b.Finish()
 }
 
 // publishPack verifies a staged pack end to end, raises the store format if
@@ -9626,6 +9888,7 @@ func (s *Store) publishPack(t tier, staged string, entries []packEntry) (packInf
 	if err := syncDir(packDir); err != nil {
 		return info, fmt.Errorf("syncing packs dir: %w", err)
 	}
+	fireTestHook(hookPackAfterDirSync)
 	pub, pubEntries, err := loadPackFile(final)
 	if err != nil || len(pubEntries) != len(entries) {
 		return info, fmt.Errorf("published pack is not readable (%v)", err)

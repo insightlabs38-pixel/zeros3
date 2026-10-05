@@ -176,8 +176,9 @@ reuses the vast majority of its bytes automatically; internal object
 version history and zero-copy restore are built on the same immutable
 manifests (`zeros3 versions`/`restore`/`gc`).
 
-**Packed storage.** New chunks always land as loose files under
-`chunks/`. `zeros3 compact -store DIR` (offline: it takes the store
+**Packed storage.** New chunks land as loose files under
+`chunks/` (large known-size uploads can stream into packs instead; see
+"Direct pack ingest"). `zeros3 compact -store DIR` (offline: it takes the store
 exclusively, like `gc -apply`; `-pack-size-mib`, `-compression`, `-layout`,
 `-dry-run`, `-json`) copies the chunks live roots reference into immutable packs of about
 64 MiB of chunk data, re-hashing every chunk and verifying each pack before
@@ -191,6 +192,24 @@ unchanged, and a store can hold loose chunks, packed chunks, or both; every
 read re-verifies the chunk's SHA-256 and prefers the packed copy, falling
 back to a loose one. `stats` splits loose from packed counts and bytes, and
 `verify` checks pack structure. Run `compact` again to pack newer chunks.
+
+**Direct pack ingest.** A PutObject, UploadPart or CompleteMultipartUpload whose
+logical size is known and at least 64 MiB streams its *new* chunks straight into
+hot, immutable pack-v1 files in object (CDC) order -- the same order
+`compact -layout locality` would give them -- instead of thousands of loose
+files, so a large upload is read-optimized immediately and needs no later
+`compact`. Chunking, global dedup (an existing loose or packed copy in any tier is
+reused, never rewritten), checksums, manifests, ETags and the journal are
+unchanged; each request owns one staging file at a time and holds no pack in
+memory. A pack is published (verified, fsynced, then indexed) as soon as it
+reaches about 64 MiB; a final remainder under 8 MiB is stored as ordinary loose
+chunks rather than a tiny pack. Small, unknown-size (chunked-encoding) and
+bulk/bundle/repair writes stay loose. Direct packs are raw (adaptive DEFLATE cut
+online write throughput by about 36% in measurement); `repack -compression auto`
+recompresses them only when it rewrites a partly dead pack. No format changes:
+a direct pack is indistinguishable from a compacted one. A failed request can
+leave unreachable packs, which `gc` removes like loose garbage; two concurrent
+uploads of the same new chunk may each store a copy, which `repack`/`gc` converge.
 
 **Pack locality.** `compact -layout locality|digest` (default `locality`) picks the
 record order inside new packs; pack format v1, chunk identity and
@@ -218,7 +237,7 @@ Warm and cold records coalesce the same way, unless a hot loose copy outranks
 them.
 
 **Packed compression.** Compression is a property of the packed record only,
-applied by `compact` and `repack` (uploads always write raw loose chunks).
+applied by `compact` and `repack` (uploads write raw loose chunks or raw direct packs).
 Each chunk is DEFLATE-compressed (standard library, default level) and stored
 compressed only if that saves at least 1/16 of its size; otherwise the record
 stays raw, so packs mix both and incompressible data (encrypted, already
@@ -264,8 +283,8 @@ Loose chunks and `store/packs/` are **hot**; **warm** and **cold** are roots
 at `store/tiers/warm` and `store/tiers/cold`, each with its own `packs/` and
 `tmp/`, so either can be a mount or bind mount on a different device. Lookup
 prefers hot over warm over cold (a loose copy first), and a damaged copy falls
-back to the next valid one. New uploads always land loose (hot); there is no
-direct-to-pack ingest, no access-heat tracking and no asynchronous archive
+back to the next valid one. New uploads always land hot (loose, or direct packs
+for large uploads); there is no direct-to-warm/cold ingest, no access-heat tracking and no asynchronous archive
 restore -- cold is simply a slower-or-cheaper directory that is always
 readable. `zeros3 compact -tier hot|warm|cold` (default hot) packs loose
 chunks straight into a tier; `zeros3 repack` and `gc` keep each pack in its
