@@ -50,9 +50,9 @@ ZeroS3 has two test layers:
 - `testing-harnesses/`: black-box tests using real processes and independent
   clients for S3 interoperability, lifecycle workflows, and benchmarks.
 
-See [testing-harnesses/README.md](./testing-harnesses/README.md).
-
-Run focused validation for the behavior you changed, then broader gates when
+The harness layout is documented in
+[testing-harnesses/README.md](./testing-harnesses/README.md). Run focused
+validation for the behavior you changed, then broader gates when
 shared protocol/storage paths are affected. Documentation-only changes should
 use documentation/static validation rather than expensive behavioral suites.
 
@@ -90,11 +90,12 @@ Performance work should include a same-workload baseline and the costs relevant
 to the change, such as throughput, latency, RSS, physical bytes, syscall/file
 count, request count, or write amplification.
 
-See [docs/BENCHMARKS.md](./docs/BENCHMARKS.md) for existing measurements.
+Existing measurement conventions and results are documented in
+[docs/BENCHMARKS.md](./docs/BENCHMARKS.md).
 
 ## Pull requests
 
-Keep changes focused. A PR should explain:
+Keep pull requests focused and explain:
 
 - what changed and why;
 - compatibility or durability implications, if any;
@@ -108,7 +109,7 @@ artifacts.
 
 ## Style
 
-Prefer deterministic, bounded, explicit code. Comments should explain
+Prefer deterministic, bounded, explicit code, with comments that explain
 non-obvious protocol, durability, security, or concurrency invariants rather
 than restating ordinary code.
 

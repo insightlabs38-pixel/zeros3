@@ -10,16 +10,16 @@ big-endian; the magic decides the format, the file extension is only a conventio
 | format | **full bundle format v1** | **delta bundle format v1** (not "bundle v2") |
 | extension / magic | `.zs3b` / `ZS3BNDL1`, footer `ZS3BEND1` | `.zs3d` / `ZS3DLTA1`, footer `ZS3DEND1` |
 | carries | descriptor, all manifests, every unique chunk once | descriptor, **all** manifests, every unique chunk as a record, payload only for chunks the exact base lacks |
-| standalone | **yes** — the self-contained archival primitive | **no** — depends on one exact base snapshot |
+| standalone | **yes**, self-contained archival primitive | **no**, depends on one exact base snapshot |
 | `inspect -verify` needs | nothing | `-base-store DIR` holding the base |
 
 ## Full bundle v1 (`.zs3b`)
 
 A full bundle is an offline, self-contained, self-verifying copy of **one** immutable
 snapshot: its descriptor, every manifest it references, and every unique logical
-chunk those manifests need. It carries logical content only — never pack IDs,
+chunk those manifests need. It carries logical content only, never pack IDs,
 offsets, loose paths, tiers, StoreID, pack codec state or journal records.
-All integers are big-endian. A bundle is one stream, in this order:
+A full bundle is one stream in this order:
 
 ```
 header | snapshot descriptor | manifest records | chunk records | footer
@@ -67,7 +67,7 @@ SHA-256 byte order:
 
 | size | field |
 |-----:|-------|
-| 32 | SHA-256 of the **uncompressed** chunk — the chunk's identity |
+| 32 | SHA-256 of the **uncompressed** chunk; this is the chunk identity |
 | 4 | logical length (1 … 262,144; must equal every manifest's length for the digest) |
 | 4 | stored payload length |
 | 1 | codec: `0` raw, `1` DEFLATE (RFC 1951) |
@@ -97,24 +97,30 @@ the footer has only *parsed* the bundle, not *verified* it.
 
 ### Determinism
 
-Descriptor: store's canonical order. Manifests: UUID order. Chunks: SHA-256 order.
-Nothing depends on physical layout, so exports of one unchanged snapshot are
-byte-identical for a given compression mode (always for `off`; for `auto` with the
-same Go DEFLATE implementation).
+The descriptor uses the store's canonical order, manifests are written in UUID
+order, and chunks are written in SHA-256 order. Physical layout does not affect
+the output, so an unchanged snapshot exports byte-identically for
+`-compression off` and, with the same Go DEFLATE implementation, for
+`-compression auto`.
 
 ### Import and publication guarantee
 
-Import is offline and needs exclusive store ownership. It verifies the stream
-while publishing missing chunks through the grouped durable CAS path (existing
-loose/packed/warm/cold copies are reused after a verified read; a present but
-unreadable copy is repaired from the verified payload). Manifests are staged and,
-only after the whole bundle (including footer hash and EOF) verified, published
-under their original UUIDs (an existing identical manifest is reused, a differing
-one aborts the import). The snapshot descriptor is published **last**: it is the
-atomic logical-publication boundary. A failed or interrupted import leaves at most
-unreachable immutable chunks/manifests and never a visible snapshot; the ordinary
-namespace, journal and `FORMAT.json` are never modified. Re-importing the same
-bundle is idempotent; the same SnapshotID with a different descriptor is refused.
+Import is offline and requires exclusive store ownership. Missing chunks are
+published through the grouped durable CAS path. Existing loose, packed, warm,
+or cold copies are reused only after a verified read; an unreadable copy can be
+repaired from the verified bundle payload.
+
+Manifests are staged under their original UUIDs. An identical existing
+manifest is reused, while the same UUID with different bytes aborts the import.
+
+The snapshot descriptor is published **last**, after the footer hash and EOF
+have been verified. This is the atomic logical-publication boundary. An
+interrupted import may leave unreachable immutable chunks or manifests, but it
+never exposes a partial snapshot and does not modify the ordinary namespace,
+journal, or `FORMAT.json`.
+
+Re-importing the same bundle is idempotent. Reusing a SnapshotID with a
+different descriptor is rejected.
 
 ## Delta bundle v1 (`.zs3d`)
 
@@ -129,11 +135,14 @@ payload set        = T - B   -> raw / DEFLATE records
 base-reference set = T ∩ B   -> codec 2, logical length only, no payload
 ```
 
-The artifact still describes the **whole target**: the descriptor frame, *every*
-target manifest (also those the base has — metadata is small, and carrying it lets
-the file prove the target structure, chunk inventory and lengths by itself) and one
-chunk record for *every* target unique chunk. Only payload bytes are omitted. A
-deleted object needs no record: the target descriptor simply omits it.
+The artifact still describes the **whole target**. It contains the target
+descriptor, every target manifest, and one record for every target unique
+chunk. Manifests are included even when the base already has them so the delta
+can describe and validate the complete target structure independently.
+
+Only chunk payload bytes supplied by the declared base are omitted. Deleted
+objects need no explicit record because the target descriptor simply omits
+them.
 
 ```
 header | target descriptor | manifest records | chunk records | footer
@@ -155,10 +164,12 @@ header | target descriptor | manifest records | chunk records | footer
 | 52 | 36 | base snapshot ID (canonical lowercase UUID text) |
 | 88 | 32 | SHA-256 of the **exact stored base descriptor frame** |
 
-The base is named by ID **and** by the hash of its stored frame; a store whose
-snapshot of that ID has any other bytes is not the base. Target descriptor and
-manifest records are exactly as in the full bundle (descriptor frame verbatim,
-manifests in UUID order, same record layout and checks).
+The base is identified by both snapshot ID and the SHA-256 of its exact stored
+descriptor frame. A snapshot with the same ID but different descriptor bytes is
+not an acceptable base.
+
+Target descriptor and manifest records use the same representation and checks
+as a full bundle: descriptor frame verbatim, manifests in UUID order.
 
 ### Chunk records
 
@@ -196,30 +207,25 @@ byte-identical, regardless of loose/packed/tier layout of either snapshot.
 
 ### Dependency, verification and import
 
-* **Not self-contained.** Export (`zeros3 bundle export -store DIR -snapshot
-  TARGET -base-snapshot BASE -out update.zs3d`) needs both snapshots in the same
-  store (`BASE == TARGET` is valid: all metadata, zero payload). Export never falls
-  back to a full bundle; the reuse ratio is reported and the caller decides.
-  Export a full `.zs3b` of the target for an archival, base-independent copy.
-* **Inspect.** `bundle inspect -in FILE` auto-detects the format. For a delta it
-  reports the header-level view (*parsed*), including the base ID and descriptor
-  hash, without needing the base. `-verify` requires `-base-store DIR`; without it
-  the command fails: payload omission can only be verified against the declared base.
-  Verification resolves the base (exact frame hash, verified manifests, inventory),
-  checks every base-reference membership and length, reads every referenced base
-  chunk through the CAS, verifies every payload, footer and EOF (*verified*).
-* **Import.** `bundle import -store DIR -in FILE` needs no extra flag; the base is
-  embedded. The base is resolved from the header **before any payload is read**:
-  a missing base, a different descriptor frame, a damaged base manifest or an
-  unreadable base-referenced chunk fails the import and publishes nothing. A delta
-  carries no payload for base-referenced chunks, so it **cannot repair** a damaged
-  base: repair the base (e.g. re-import its full bundle) and retry. Payload chunks
-  go through the same grouped CAS path as a full import (existing valid copies are
-  reused — even unrelated ones — and corrupt copies repaired from the verified
-  payload); manifests keep their UUIDs; the target descriptor is published **last**.
-  The namespace, journal, history, tier policy and `FORMAT.json` are untouched, and
-  re-importing is idempotent.
-* **Chains.** The imported target is an ordinary independent snapshot and can be the
-  base of the next delta. Each delta names exactly one base; there is no chain
-  metadata and no automatic search: `S0 → S1 → S2` must be imported in that order,
-  and `S1 → S2` before `S0 → S1` fails because `S1` is absent.
+* **Not self-contained.** Export requires both base and target snapshots in the
+  same store. `BASE == TARGET` is valid and produces full metadata with zero
+  payload. Export never falls back to a full bundle; use `.zs3b` when an
+  archival, base-independent artifact is required.
+* **Inspect.** `bundle inspect -in FILE` auto-detects the format and can parse
+  delta metadata without the base. Full verification requires
+  `-base-store DIR`, because omitted payload can only be validated against the
+  declared base. Verification checks the exact base descriptor, manifests,
+  inventory, every base-reference membership and length, every referenced base
+  chunk, payload records, footer, and EOF.
+* **Import.** `bundle import -store DIR -in FILE` resolves the embedded base
+  **before any payload is read**. A missing or changed base, damaged base
+  manifest, or unreadable base-referenced chunk fails the import before target
+  publication. A delta cannot repair a damaged base because it contains no
+  payload for base-reference records. Payload chunks use the same grouped CAS
+  import path as full bundles, manifests keep their UUIDs, and the target
+  descriptor is published last. Namespace, journal, history, tier policy, and
+  `FORMAT.json` remain unchanged.
+* **Chains.** An imported target is an ordinary snapshot and can become the base
+  of the next delta. Each delta names exactly one base, so chains such as
+  `S0 -> S1 -> S2` must be imported in order. There is no automatic chain
+  search.

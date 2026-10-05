@@ -1,6 +1,6 @@
 # ZeroS3
 
-**S3 on the outside. Content-aware storage underneath.**
+**S3-compatible at the interface, content-aware underneath.**
 
 ZeroS3 is a self-hosted, single-node S3-compatible object store written in Go
 with **zero third-party runtime dependencies**. Ordinary S3 applications can
@@ -16,9 +16,9 @@ The production implementation intentionally remains one Go source file:
 [`zeros3.go`](./zeros3.go).
 
 > **Current status:** public preview / pre-1.0, Linux and single-node.
-> Current development emphasizes interoperability, real integrations, and
-> hardening over speculative feature expansion.
-> See [STATUS.md](./STATUS.md).
+> Development currently emphasizes interoperability, real integrations, and
+> hardening over speculative feature expansion; [STATUS.md](./STATUS.md)
+> defines the supported deployment and compatibility boundaries.
 
 ## Why ZeroS3
 
@@ -51,9 +51,8 @@ manifest can keep describing the same bytes while chunks move from loose files
 into packs, packs are compressed or repacked, or physical copies move between
 tiers.
 
-That separation is the basis for most of ZeroS3's feature compression: higher
-level capabilities reuse the same few storage primitives instead of creating
-parallel storage subsystems.
+That separation lets higher-level capabilities reuse the same storage
+primitives instead of creating parallel storage subsystems.
 
 ## Two ways to use it
 
@@ -119,7 +118,7 @@ Independent clients can target the documented protocol in
 
 ## Quick start
 
-ZeroS3 currently builds from source. It requires Go **1.27.x**.
+ZeroS3 currently builds from source and requires Go **1.27.x**.
 
 ```sh
 git clone https://github.com/insightlabs38-pixel/zeros3.git
@@ -245,7 +244,8 @@ Core Client Profile v1 includes:
 - signed non-trailer aws-chunked payloads;
 - path-style and optional virtual-hosted addressing.
 
-See [S3_COMPAT.md](./S3_COMPAT.md).
+The exact supported S3 contract is documented in
+[S3_COMPAT.md](./S3_COMPAT.md).
 
 ### Content-defined deduplication
 
@@ -302,12 +302,13 @@ The same immutable content graph supports:
 
 A snapshot can become a portable artifact:
 
-- **`.zs3b` full bundle** — self-contained descriptor, manifests, and unique
+- **`.zs3b` full bundle:** self-contained descriptor, manifests, and unique
   chunk payloads;
-- **`.zs3d` delta bundle** — complete target metadata plus only chunk payloads
+- **`.zs3d` delta bundle:** complete target metadata plus only chunk payloads
   absent from one exact base snapshot.
 
-See [BUNDLE_FORMAT.md](./BUNDLE_FORMAT.md).
+The binary formats and verification rules are documented in
+[BUNDLE_FORMAT.md](./BUNDLE_FORMAT.md).
 
 ### Delta movement and repair
 
@@ -319,9 +320,10 @@ It supports:
 - local file/directory sync;
 - ZeroS3-to-ZeroS3 replication;
 - optional bounded bulk transport;
-- peer-assisted repair of missing/corrupt live chunks.
+- peer-assisted repair of missing or corrupt live chunks.
 
-See [docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md).
+[docs/ZEROS3_PROTOCOL.md](./docs/ZEROS3_PROTOCOL.md) specifies the native
+discovery, negotiation, bulk-transfer, and commit protocol.
 
 ### Physical tiers
 
@@ -353,9 +355,12 @@ Use `-deep` when you want full content re-hashing:
 With the server running:
 
 ```sh
-./zeros3 snapshot create   -endpoint http://127.0.0.1:9000   s3://demo
+./zeros3 snapshot create \
+  -endpoint http://127.0.0.1:9000 \
+  s3://demo
 
-./zeros3 snapshot list   -endpoint http://127.0.0.1:9000
+./zeros3 snapshot list \
+  -endpoint http://127.0.0.1:9000
 ```
 
 ### Export a portable snapshot
@@ -363,11 +368,14 @@ With the server running:
 After obtaining a snapshot ID:
 
 ```sh
-./zeros3 bundle export   -store ./zeros3-data   -snapshot SNAPSHOT_ID   -out snapshot.zs3b
+./zeros3 bundle export \
+  -store ./zeros3-data \
+  -snapshot SNAPSHOT_ID \
+  -out snapshot.zs3b
 ```
 
-Bundle import/maintenance is offline. See
-[docs/OPERATIONS.md](./docs/OPERATIONS.md).
+Bundle import and physical maintenance are offline operations; the operational
+workflow is documented in [docs/OPERATIONS.md](./docs/OPERATIONS.md).
 
 ### Compact loose content
 
@@ -410,10 +418,9 @@ ZeroS3 uses two test layers:
   ZeroS3 processes through independent S3 clients.
 
 Validated client paths include AWS SDK for Go v2, minio-go, and rclone.
-
-Golden SigV4/presign/wire vectors support independent client implementations.
-
-See [testing-harnesses/README.md](./testing-harnesses/README.md).
+Independent-client work is also covered by fixed SigV4, presign, and wire
+vectors. The black-box evidence map is documented in
+[testing-harnesses/README.md](./testing-harnesses/README.md).
 
 ## Zero-dependency core
 
@@ -450,7 +457,8 @@ The important current limitations are deliberate and explicit:
 - pre-1.0 CLI and ZeroS3-native protocol surfaces may still evolve under
   explicit versioning rules.
 
-See [STATUS.md](./STATUS.md) for the precise maturity/format posture.
+[STATUS.md](./STATUS.md) defines the precise maturity, compatibility, and
+persistent-format posture.
 
 ## Documentation
 
@@ -490,4 +498,4 @@ testing-harnesses/        external black-box validation (separate Go module)
 
 ## License
 
-Apache License 2.0. See [LICENSE](./LICENSE).
+ZeroS3 is licensed under Apache 2.0; see [LICENSE](./LICENSE).

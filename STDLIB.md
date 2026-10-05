@@ -1,399 +1,257 @@
 # Standard Library Craft
 
-ZeroS3 ships as one file, `zeros3.go`, built entirely on the Go 1.27
-standard library. This log picks the 15 strongest cases where a normal
-project would reach for a third-party package, and explains exactly what
-stdlib primitive replaced it and what ZeroS3 had to build itself to fill
-the gap — then closes with the full breadth of stdlib packages actually
-exercised. Every line below points at real, shipped code; nothing here
-is aspirational.
+ZeroS3's production core is one Go 1.27 source file with no third-party
+runtime dependencies. The zero-dependency constraint is useful only because
+the standard-library implementation still covers the difficult parts of the
+system: SigV4, S3 wire semantics, content-defined chunking, durable metadata,
+packed storage, concurrency, TLS, and outbound ZeroS3 transfers.
+
+This document records where the standard library was sufficient, where ZeroS3
+had to supply missing algorithms or storage semantics, and the complete direct
+import surface.
 
 ## At a glance
 
-- Zero third-party runtime dependencies
-- Go 1.27, zero `require` in `go.mod`
-- One implementation source file (`zeros3.go`)
-- Mechanical proof: [`deps-proof.txt`](./deps-proof.txt)
+- Go 1.27
+- no `require` directives in the root `go.mod`
+- no root `go.sum` or vendor tree
+- no CGO requirement
+- no subprocess dependency from `zeros3.go`
+- one production implementation file
+- reproducible dependency checks in
+  [`deps-proof.txt`](./deps-proof.txt)
+
+## Major substitutions
+
+| Common dependency | ZeroS3 uses | ZeroS3 supplies |
+|---|---|---|
+| AWS SigV4 signer/verifier | `crypto/hmac`, `crypto/sha256`, `crypto/subtle`, `net/http`, `net/url` | canonical request handling, credential scope, signing-key derivation, presigning, verification |
+| S3 server framework | `net/http`, `encoding/xml` | routing, S3 operation semantics, error mapping, pagination, multipart rules |
+| CDC library | byte operations + `crypto/sha256` | deterministic Gear/FastCDC-style chunking |
+| UUID package | Go 1.27 `uuid` | nothing beyond normal use |
+| CAS library | `crypto/sha256`, `encoding/hex` | chunk identity, layout, verified reads, manifest integration |
+| embedded metadata database | `os`, `io`, `encoding/binary`, `hash/crc32` | append-only visibility journal and replay |
+| transactional durability layer | `os.File.Sync`, `os.Rename` | explicit durable-publication ordering and directory fsync |
+| checksum helper | `hash/crc32`, `encoding/base64` | S3 CRC32 validation and CRC32C metadata framing |
+| S3 ETag helper | `crypto/md5` | single-part and multipart ETag rules |
+| file-locking package | `syscall.Flock` | shared server ownership and exclusive maintenance locking |
+| worker-pool / errgroup | `context`, `sync.WaitGroup`, buffered channels | bounded transfer concurrency and cancellation |
+| graceful-shutdown library | `os/signal`, `context`, `http.Server.Shutdown` | shutdown policy and second-signal behavior |
+| TLS sidecar/library | `net/http` TLS serving | CLI integration and configuration checks |
+| filesystem sync/walk helper | `filepath.WalkDir`, `io/fs` | directory mapping and safe file-type handling |
+| HTTP client / request library | `net/http`, `net/url` | signed ZeroS3 client requests, pooling, transfer bounds |
+
+The important distinction is that the standard library often provides the
+primitive, not the storage or protocol behavior. ZeroS3 still owns the
+canonicalization rules, persistent formats, failure boundaries, and S3
+semantics that define the product.
+
+## Where ZeroS3 does substantial work
+
+### SigV4
+
+The standard library provides the cryptographic and HTTP primitives, but not
+AWS Signature Version 4.
 
-## 15 meaningful substitutions
-
-### 1. AWS SigV4 signer/verifier
+ZeroS3 implements:
+
+- raw request-target preservation;
+- canonical URI and query encoding;
+- canonical header construction;
+- credential-scope validation;
+- signing-key derivation;
+- header-authenticated requests;
+- presigned URLs;
+- signed aws-chunked payload verification.
 
-**Normally:** an AWS SDK's own request signer (e.g. `aws/signer/v4`), or
-a third-party SigV4 library.
+The server avoids routing that would normalize the path before signature
+verification. This is necessary for keys containing encoded slashes, repeated
+slashes, plus signs, percent escapes, or other path forms where normalization
+would change the signed bytes.
 
-**Instead:** `crypto/hmac`, `crypto/sha256`, `crypto/subtle`,
-`encoding/hex`, `net/http`, `net/url`.
+Signature comparison uses `crypto/subtle` rather than ordinary string
+comparison.
 
-**What ZeroS3 had to implement:** the entire canonicalization algorithm —
-raw request-target preservation (deliberately *not* running through
-`http.ServeMux`, which would clean `//`/`.`/`..` before the signature is
-checked), query-parameter encode-then-sort, header canonicalization,
-credential-scope validation, and signing-key derivation (date → region →
-service → `aws4_request`) — for both Authorization-header and
-query-string (presigned URL) auth, sharing one verifier core
-(`sigv4VerifyCore`) so there is exactly one signing implementation used
-by both the server's verification path and the `zeros3 presign` CLI's
-generation path. Signature comparison uses `crypto/subtle`'s
-constant-time compare rather than `==`, so a mismatching signature can't
-leak timing information about how much of it matched.
+### S3 wire semantics
 
-**Why it matters:** the signer is the security boundary of the whole
-protocol surface; authoring it directly, rather than trusting an
-imported implementation, is what let ZeroS3 also correctly handle the
-raw-path edge cases (`%2F`, `+` vs `%20`, encoded slashes) that a
-path-normalizing router would silently break.
+`net/http` and `encoding/xml` provide transport and serialization, while
+ZeroS3 supplies the S3 behavior layered on top.
 
-### 2. S3 protocol/server framework
+ZeroS3 implements the supported operation contract directly, including:
 
-**Normally:** an S3-compatible server framework or toolkit (what a
-project like `s3rver` provides) plus an XML request/response codec.
+- bucket/object routing;
+- S3-shaped XML errors;
+- ListObjectsV2 pagination;
+- CopyObject semantics;
+- conditional reads/writes;
+- multipart lifecycle and ETag rules;
+- SigV4 request handling;
+- range responses;
+- encoded object-key listings.
 
-**Instead:** a hand-rolled `http.Handler` (no `http.ServeMux`) for
-method/subresource dispatch, `encoding/xml` for wire-format encoding.
-
-**What ZeroS3 had to implement:** S3's own request/response semantics —
-bucket/object routing by hand, `ListObjectsV2` pagination/continuation-
-token contract, S3-shaped error XML envelopes, `CopyObject` metadata-
-directive rules, and multipart's part-ordering/ETag-formula rules.
-`encoding/xml`'s marshaling/escaping is a complete fit for the wire
-shapes once those semantics are defined; the semantics themselves are
-authored, not provided.
-
-**Why it matters:** this is the difference between "imports an S3
-server" and "implements the S3 protocol" — the latter is what makes the
-zero-dependency claim mean something for the project's actual core
-functionality, not just its plumbing.
-
-### 3. Content-defined chunking library
-
-**Normally:** a chunking library (e.g. `restic/chunker`) implementing
-Gear-hash or FastCDC-style content-defined boundaries.
+The supported surface is documented in [S3_COMPAT.md](./S3_COMPAT.md).
 
-**Instead:** a hand-rolled streaming Gear-hash chunker over `[]byte`,
-with its deterministic gear table seeded via `crypto/sha256`.
-
-**What ZeroS3 had to implement:** the entire chunking algorithm — a
-streaming rolling fingerprint, FastCDC-style min/target/max boundary
-normalization (16KiB min / 64KiB target / 256KiB max), and a
-deterministic gear table so the same bytes always chunk the same way.
-No stdlib package does content-defined chunking; stdlib only supplies
-the hash primitive used to derive the table.
-
-**Why it matters:** this is the single algorithm the rest of the
-architecture's dedup/delta-transfer story depends on — an edit anywhere
-in a file perturbs only the chunks near that edit, which is what makes
-localized-edit reuse and delta sync work at all.
-
-### 4. UUID library
+### Content-defined chunking
 
-**Normally:** a third-party UUID generator (e.g. `google/uuid`).
+The Go standard library has no content-defined chunker.
 
-**Instead:** the Go 1.27 standard library's own `uuid` package
-(`uuid.NewV7`).
-
-**What ZeroS3 had to implement:** nothing. Manifest, object-version, and
-snapshot identifiers use the stdlib generator directly.
+ZeroS3 implements deterministic Gear/FastCDC-style boundaries with:
 
-**Why it matters:** the cleanest substitution in the project, and a
-direct demonstration of what a genuinely current Go toolchain removes
-from the dependency list — this identifier type used to require an
-import in every Go project that needed it.
-
-### 5. Content-addressed storage / integrity library
+```text
+minimum: 16 KiB
+target:  64 KiB
+maximum: 256 KiB
+```
 
-**Normally:** a CAS library, or an object-storage SDK's own
-content-integrity layer.
+The deterministic Gear table is derived from a fixed SHA-256 seed. Identical
+input under CDC v1 therefore produces identical logical chunk boundaries.
 
-**Instead:** `crypto/sha256`, `encoding/hex`.
+This is the mechanism behind edit-locality reuse, global CAS deduplication,
+delta transfer, and thin snapshot deltas.
 
-**What ZeroS3 had to implement:** the CAS layout itself — chunk/manifest
-naming by content hash, re-verification on every read (`casWrite`/
-`casRead`), and the layering of chunk-level SHA-256 identity, whole-
-object SHA-256 (checked by `verify -deep`), and S3's own MD5-based ETag
-as three deliberately distinct concepts that never stand in for one
-another.
+### Namespace journal
 
-**Why it matters:** content addressing is what makes deduplication,
-zero-payload `CopyObject`, zero-payload forks, and zero-payload snapshot
-restore all the same mechanism instead of four separate features.
+Instead of embedding a key-value database, ZeroS3 keeps the current namespace
+and multipart state in an append-only checksummed visibility journal.
 
-### 6. Embedded metadata database
+The implementation defines:
 
-**Normally:** an embedded key-value/document database (e.g. `bbolt`,
-`badger`) for tracking what buckets/objects currently exist.
+- binary frame layouts;
+- CRC32C validation;
+- sequence ordering;
+- replay on open;
+- persistent multipart records;
+- fail-closed handling of malformed or unsupported records.
 
-**Instead:** `os`, `io`, `encoding/binary`, `hash/crc32`.
+Current namespace state is rebuilt into memory from that journal.
 
-**What ZeroS3 had to implement:** an append-only, CRC32C-framed,
-replay-based "visibility journal" that is the sole source of truth for
-the bucket/object namespace — every frame's binary layout, its
-checksum, and the replay-on-open logic that reconstructs the in-memory
-namespace from it at store-open time.
+### Durable publication
 
-**Why it matters:** this is a genuine engineering tradeoff, not a free
-substitution — no transactions, indexes, or range queries came for
-free; replay-on-open and an in-memory map were hand-built to get them
-back, in exchange for an exact, auditable durability contract (see
-entry 7).
+ZeroS3 does not receive crash semantics from a database transaction layer. It
+uses a small publication pattern repeatedly:
 
-### 7. Transaction/durability layer
+```text
+write staging bytes
+fsync file
+rename into final location
+fsync containing directory
+publish higher-level reference
+```
 
-**Normally:** a transactional storage engine's own durability guarantees
-(the ACID layer a database like `bbolt`/`badger`/SQLite provides).
+The same pattern appears in chunk, pack, manifest, snapshot, and format
+publication where applicable. The visibility journal's durable commit is the
+logical acknowledgement boundary for namespace mutations.
 
-**Instead:** `os.File.Sync`, atomic `os.Rename`, and explicit directory
-fsync.
+Grouped loose-CAS publication and immutable direct-pack publication optimize
+this pattern without changing its ordering guarantees.
 
-**What ZeroS3 had to implement:** the durable-publish sequence used by
-every write in the system — stage bytes in a temp file, `fsync` the
-file, atomically rename it into place, then `fsync` the containing
-directory (the only portable way to make a rename itself durable on
-Linux) — applied consistently to CAS chunks, manifests, and journal
-frames, with the journal's own `fsync` as the exact acknowledgment
-threshold: a mutation is acknowledged over HTTP only after its journal
-frame's sync call returns. CAS chunks written together (one object's
-chunks, one bulk frame) share one bounded publication: file fsyncs run with
-a small worker bound, then renames and directory fsyncs run inside a
-barrier that casStat and loose reads wait on, so no chunk is visible
-before its directory entry is durable.
+### Concurrency
 
-**Why it matters:** this is the entire crash-safety argument for the
-project in one mechanism — "acknowledged mutation ⇒ durable" is a claim
-that only holds because this exact ordering is enforced everywhere, not
-asserted after the fact.
+Bounded parallelism uses standard synchronization primitives rather than a
+worker-pool package.
 
-### 8. CRC/checksum library
+The implementation combines:
 
-**Normally:** a checksum/integrity utility package.
+- contexts for cancellation;
+- wait groups for completion;
+- buffered channels as counting semaphores;
+- explicit store/namespace/pack locks for shared state.
 
-**Instead:** `hash/crc32` (Castagnoli table), `encoding/base64`.
+The same approach is used by sync, replication, repair, grouped CAS
+publication, and other bounded parallel paths.
 
-**What ZeroS3 had to implement:** two independent uses sharing one
-primitive — ordinary `x-amz-checksum-crc32` request-integrity validation
-over the logical payload, and CRC32C framing for visibility-journal
-frames (recovery/torn-frame detection, not authentication) and snapshot
-descriptors.
+## Scope boundaries made easier by the standard library
 
-**Why it matters:** keeping this checksum concept strictly separate from
-SigV4's payload hash, S3's ETag, and CAS's SHA-256 identity (six
-distinct hash/checksum concepts in the codebase, none used as a stand-in
-for another) is what avoids an entire class of "which hash actually
-proved what" bugs.
+Several areas need very little custom machinery because the standard library
+already supplies the hard part.
 
-### 9. S3-compatible ETag helper
+### UUIDv7
 
-**Normally:** an S3-compatibility shim that computes AWS-style ETags.
+Go 1.27 provides UUIDv7 directly through `uuid.NewV7`, so ZeroS3 does not
+carry a UUID dependency.
 
-**Instead:** `crypto/md5`.
+### TLS
 
-**What ZeroS3 had to implement:** both S3 ETag formulas correctly kept
-distinct — the ordinary single-part rule (plain MD5 of the object body)
-and the genuinely different multipart rule (`MD5` of the concatenated
-per-part MD5s, plus a `-N` suffix) — computed from the manifest, never
-conflated with the object's own SHA-256 or the CAS chunk identity.
+ZeroS3 uses Go's HTTP/TLS server. It adds certificate/key flags and startup
+validation, but does not implement ACME, certificate renewal, mTLS, or custom
+PKI.
 
-**Why it matters:** MD5 here is explicitly not a security use (marked as
-such in the source) — it exists solely to match a documented AWS
-compatibility contract, a distinction worth making explicit given MD5's
-reputation elsewhere.
+### Graceful shutdown
 
-### 10. Advisory file locking library
+`os/signal` and `http.Server.Shutdown` provide the core mechanism. ZeroS3
+adds the policy: SIGINT/SIGTERM starts a bounded graceful drain, while a second
+signal forces immediate termination.
 
-**Normally:** a cross-platform file-locking package (e.g.
-`gofrs/flock`).
+### Filesystem walking
 
-**Instead:** `syscall` (`syscall.Flock`, `LOCK_EX`/`LOCK_SH`/`LOCK_NB`/
-`LOCK_UN`).
-
-**What ZeroS3 had to implement:** the exclusive-ownership contract `gc
--apply` needs — a shared lock for an ordinary store user (`zeros3
-serve`), and an exclusive, non-blocking lock GC must win before it may
-delete anything, so a GC run can never race a live server's writes.
-
-**Why it matters:** this is a correctness-critical lock, not a
-convenience one — it's the only thing standing between "safe offline
-garbage collection" and "GC racing a running server against live data."
-
-### 11. Bounded worker pool / errgroup
-
-**Normally:** a worker-pool or task-group library (e.g.
-`golang.org/x/sync/errgroup` or `golang.org/x/sync/semaphore` — both
-themselves out of scope for a zero-dependency build).
-
-**Instead:** `context`, `sync.WaitGroup`, and a plain buffered channel
-used as a counting semaphore.
-
-**What ZeroS3 had to implement:** `runTransferWorkers`, the bounded-
-concurrency chunk-transfer pool shared by `sync`, `replicate`, and
-`repair` — parallel independent chunk transfers with one-failure
-cancellation, while preserving each operation's single serialized
-commit at the end, so concurrency only ever applies to the part of the
-pipeline that's safe to parallelize.
-
-**Why it matters:** `-workers` took 256 MiB of missing payload from
-4.36 MiB/s to 35.70 MiB/s (8.18x) at 16 workers in one benchmark
-environment — a real throughput result — while the commit path stayed
-exactly as serialized and safe as the sequential version.
-
-### 12. Graceful-shutdown / process-lifecycle library
-
-**Normally:** a process-supervision or graceful-restart library.
-
-**Instead:** `os/signal` (`signal.Notify`/`signal.Stop`),
-`context.WithTimeout`, and `net/http`'s own `http.Server.Shutdown`.
-
-**What ZeroS3 had to implement:** the small decision logic around those
-primitives — `SIGINT`/`SIGTERM` stop the listener immediately and drain
-in-flight requests within a bounded grace period; a second signal during
-drain forces an immediate exit instead of waiting out the rest of the
-grace period; a normal shutdown is never logged as a fatal error.
-
-**Why it matters:** `signal.Notify` and `http.Server.Shutdown` already
-do most of the real work — this is a case where the stdlib primitives
-were sufficient and the honest accounting is that very little needed to
-be authored, which is itself worth stating plainly rather than
-overselling.
-
-### 13. TLS termination
-
-**Normally:** a reverse-proxy TLS sidecar, or a certificate-automation
-library (e.g. an ACME client).
-
-**Instead:** `net/http`'s `http.Server.ListenAndServeTLS`, backed by
-`crypto/tls` internally.
-
-**What ZeroS3 had to implement:** the smallest possible integration
-point — `-tls-cert`/`-tls-key` flags, with no ACME, no certificate
-generation or renewal, no mTLS, and no custom `tls.Config`; neither flag
-means plain HTTP, and exactly one of the two is a startup error, with
-`InsecureSkipVerify` never set in the default path.
-
-**Why it matters:** this is a deliberate scope boundary as much as a
-substitution — `net/http` supplies a production-grade TLS server for
-free, and the honest limitation (no cert automation) is stated rather
-than hidden.
-
-### 14. Recursive filesystem walking/sync helper
-
-**Normally:** a directory-walking or file-sync utility library.
-
-**Instead:** `path/filepath`'s `WalkDir`, `io/fs.DirEntry`.
-
-**What ZeroS3 had to implement:** directory-sync's traversal and
-prefix-mapping logic on top of `WalkDir`'s already-deterministic,
-lexically-sorted-per-directory traversal order (which meant no separate
-sort step was needed), plus symlink/special-file detection straight from
-the `readdir`-derived `DirEntry.Type()` — never a followed `Stat` — so a
-symlink is identified and skipped without ever being dereferenced.
-
-**Why it matters:** the safety property here (never following a
-symlink) depends on using the right stdlib entry point (`DirEntry`, not
-`os.Stat`); the substitution and the security property are the same
-decision.
-
-### 15. Outbound HTTP client (for sync/replicate/repair)
-
-**Normally:** an HTTP client library with retry/transport tuning (e.g.
-`resty`, `req`), plus a second request-signing implementation for
-client-side calls.
-
-**Instead:** `net/http`'s own `http.Client`/`http.NewRequest`,
-`net/http.Transport` for connection pooling, `net/url`'s `url.Values`
-for query construction.
-
-**What ZeroS3 had to implement:** the first genuine outbound HTTP
-*client* role in the codebase (every other CLI verb operates directly on
-a local store) — `signSigV4Request` reuses the exact same
-canonicalization primitives the server verifies with, so there is still
-only one signing implementation, now used in both directions; a tuned
-`http.Transport` (bounded `MaxConnsPerHost`/`MaxIdleConns`) sized off
-the same worker-count bound as entry 11, rather than an unbounded
-default.
-
-**Why it matters:** reusing the server's own SigV4 primitives for
-client-side signing means there is exactly one place in the codebase
-that can get request canonicalization wrong, not two.
+`filepath.WalkDir` provides deterministic directory traversal. ZeroS3 uses
+`DirEntry.Type` so directory sync can reject symlinks and special files
+without following them.
 
 ## Direct standard-library import surface
 
-The production file's direct import block is part of the zero-dependency
-contract. The list below is complete for the current implementation;
-many packages are explained in depth in the substitutions above, while the rest
-are supporting primitives.
+The direct production import block is part of the zero-dependency contract.
 
 | Package | Role |
 |---|---|
-| `bufio` | bounded buffered parsing for aws-chunked bodies and portable/bulk streams |
-| `bytes` | in-memory bounded buffers, comparisons, readers |
-| `cmp` | ordered comparisons used with generic collection helpers |
-| `compress/flate` | per-record DEFLATE for packs and snapshot bundles |
-| `context` | cancellation, shutdown, bounded transfer work |
+| `bufio` | bounded buffered parsing for aws-chunked and binary streams |
+| `bytes` | bounded in-memory buffers, comparisons, readers |
+| `cmp` | ordered comparisons |
+| `compress/flate` | per-record DEFLATE for packs and bundles |
+| `context` | cancellation and bounded shutdown/transfer work |
 | `crypto/hmac` | SigV4 HMAC |
-| `crypto/md5` | S3 ETags and Content-MD5 compatibility |
+| `crypto/md5` | S3 ETags and Content-MD5 |
 | `crypto/sha256` | CAS identity, object/bundle hashes, SigV4 |
 | `crypto/subtle` | constant-time signature comparison |
 | `encoding/base64` | request checksum/digest headers |
-| `encoding/binary` | journal, pack, bulk, snapshot and bundle binary framing |
-| `encoding/hex` | content-address and signature encoding |
-| `encoding/json` | manifests, format metadata, extension protocol, CLI JSON |
-| `encoding/xml` | ordinary S3 request/response XML |
-| `errors` | error classification/wrapping |
-| `flag` | CLI command parsing |
-| `fmt` | CLI/error formatting |
-| `hash` | common streaming hash interfaces |
-| `hash/crc32` | request CRC32 plus CRC32C metadata framing |
-| `io` | bounded streaming and reader/writer composition |
+| `encoding/binary` | journal, pack, bulk, snapshot, and bundle framing |
+| `encoding/hex` | digest/signature encoding |
+| `encoding/json` | manifests, format metadata, native protocol, CLI JSON |
+| `encoding/xml` | S3 XML |
+| `errors` | error classification |
+| `flag` | CLI parsing |
+| `fmt` | formatting |
+| `hash` | streaming hash interfaces |
+| `hash/crc32` | CRC32 and CRC32C |
+| `io` | streaming and bounded reader/writer composition |
 | `io/fs` | filesystem traversal types |
-| `iter` | standard iterator plumbing for compact collection traversal |
+| `iter` | iterator helpers |
 | `log` | server diagnostics |
-| `maps` | standard map collection helpers |
-| `math` | bounded numeric/statistical calculations |
-| `math/bits` | compact prefix/index calculations |
-| `net` | host/address handling |
-| `net/http` | S3 server and ZeroS3-native HTTP clients |
-| `net/url` | safe query construction and URI handling |
-| `os` | files, process environment and signals |
+| `maps` | map helpers |
+| `math` | bounded numeric calculations |
+| `math/bits` | compact index/prefix calculations |
+| `net` | address handling |
+| `net/http` | S3 server and native HTTP clients |
+| `net/url` | query construction and URI handling |
+| `os` | files, environment, process state |
 | `os/signal` | graceful shutdown |
-| `path/filepath` | store paths and safe filesystem traversal |
-| `slices` | sorting/searching/collection helpers |
+| `path/filepath` | store paths and traversal |
+| `slices` | sorting/search helpers |
 | `sort` | deterministic ordering |
-| `strconv` | numeric header/CLI/wire parsing |
-| `strings` | S3 keys, headers, canonicalization and CLI processing |
-| `sync` | mutexes, wait groups, condition variables and bounded coordination |
+| `strconv` | numeric parsing |
+| `strings` | keys, headers, canonicalization, CLI parsing |
+| `sync` | locks, wait groups, condition variables |
 | `sync/atomic` | small concurrent counters/state |
 | `syscall` | Linux advisory flock |
-| `time` | SigV4 timestamps, metadata, retention cutoffs |
+| `time` | timestamps and retention cutoffs |
 | `unicode/utf8` | UTF-8/XML-safe key handling |
-| `uuid` | Go 1.27 standard-library UUIDv7 identifiers |
+| `uuid` | UUIDv7 identifiers |
 
-The implementation does **not** import `os/exec`, a C binding, or a
-third-party module. Runtime storage/protocol functionality is therefore in the
-root Go module itself rather than delegated to subprocesses or external
-libraries.
-
-The CLI surface now includes ordinary serving/inspection commands plus
-`compact`, `repack`, `tier`, `probe`, `sync`, `replicate`, `repair`,
-`fork`, `snapshot`, `bundle`, `diff`, and `inspect`; those additions did
-not change the root dependency boundary.
-
-`testing`, `net/http/httptest`, and other standard-library test packages are
-used by `zeros3_test.go`. Third-party SDKs exist only in the independent
+The production core does not import `os/exec`, a C binding, or a third-party
+module. Third-party SDKs exist only in the independent
 `testing-harnesses/` module.
 
 ## Dependency proof
 
-External interoperability validation is performed out-of-process and is not
-part of the ZeroS3 root module or binary.
+[`deps-proof.txt`](./deps-proof.txt) records the inspected source/module
+identity and the Go 1.27 commands used to reproduce the dependency checks.
 
-Current dependency evidence lives in
-[`deps-proof.txt`](./deps-proof.txt). It records:
+The proof covers:
 
-- the production source/go.mod commit and blobs inspected;
+- the empty root dependency graph;
 - the complete direct import surface;
-- the empty root dependency boundary;
-- exact Go 1.27 commands for reproducing the transitive non-stdlib check,
-  CGO-disabled build, and reproducible build.
+- a CGO-disabled build;
+- the reproducible-build check.
 
-The evidence file is deliberately current and reproducible rather than
-presenting an old build transcript as proof of a newer binary.
+External interoperability dependencies remain isolated in
+`testing-harnesses/`.

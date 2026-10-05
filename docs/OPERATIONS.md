@@ -1,31 +1,26 @@
 # ZeroS3 operations
 
-This guide is for running and maintaining a ZeroS3 store safely.
+This guide covers routine operation, backup, recovery, upgrades, maintenance,
+and incident handling for a single-node ZeroS3 store. The underlying storage
+model is described in [ARCHITECTURE.md](./ARCHITECTURE.md), while
+[../STATUS.md](../STATUS.md) defines the current deployment limits and format
+policy.
 
-It focuses on tasks and failure boundaries rather than storage internals. For
-architecture, see [ARCHITECTURE.md](./ARCHITECTURE.md). For the exact S3
-surface, see [../S3_COMPAT.md](../S3_COMPAT.md).
-
-## Operational model
+## Deployment model
 
 A ZeroS3 store is currently:
 
 - single-node;
 - owned by one serving process for normal writes;
-- protected by a filesystem lock against destructive offline maintenance;
-- recoverable from immutable content/manifests plus the visibility journal;
-- explicitly maintained with `verify`, `doctor`, snapshots, bundles, GC,
-  repack, and tier commands.
+- protected by a filesystem lock against conflicting exclusive maintenance;
+- recoverable through immutable content, manifests, journal state, snapshots,
+  and portable bundles.
 
 There is no distributed failover or multi-writer consensus.
 
 ## Before using real data
 
-### Use your own credentials
-
-The credentials shown in the README are public examples.
-
-Set real values before exposing ZeroS3 beyond loopback:
+Use credentials that are not the public README examples:
 
 ```sh
 export AWS_ACCESS_KEY_ID='replace-me'
@@ -33,148 +28,105 @@ export AWS_SECRET_ACCESS_KEY='replace-me-with-a-long-secret'
 export AWS_REGION='us-east-1'
 ```
 
-ZeroS3 currently has one static SigV4 credential pair. It does not implement
-IAM, STS, ACLs, or a policy engine.
+ZeroS3 currently supports one static SigV4 identity. It does not provide IAM,
+STS, ACLs, or a policy engine.
 
-### Use TLS for untrusted networks
+Use TLS when traffic can cross an untrusted network. ZeroS3 can terminate TLS
+with Go's HTTP/TLS server, but it does not automate certificate issuance or
+renewal.
 
-ZeroS3 can terminate TLS directly using Go's standard HTTP/TLS server.
-
-Configure a certificate and key with the server TLS flags when traffic can
-cross an untrusted network.
-
-ZeroS3 does not automate certificate issuance or renewal.
-
-### Pick a persistent store directory
-
-Do not treat the default `./zeros3-data` path as ephemeral if the data matters.
-
-Use a directory backed by storage whose persistence and backup behavior you
-understand.
-
-Warm/cold tier roots may be separate mounts, but the store remains one logical
-unit. Losing the only physical copy of a live logical chunk is data loss unless
-another trusted source or bundle can repair it.
+Choose a persistent store path whose filesystem, backup, and failure behavior
+you understand. Warm and cold tier roots may live on separate mounts, but all
+configured roots remain part of one logical store.
 
 ## Starting and stopping
 
-### Start
+Start a store:
 
 ```sh
 ./zeros3 serve -store /srv/zeros3
 ```
 
-The default listen address is loopback. Configure a non-loopback address only
+The default listen address is loopback. Configure non-loopback serving only
 after setting real credentials and, where appropriate, TLS.
 
-### Stop
+For normal shutdown, send SIGINT or SIGTERM and let the graceful drain finish.
+Abrupt termination is tested on selected paths, but it is not the recommended
+administrative stop procedure.
 
-Use SIGINT or SIGTERM and allow graceful shutdown to complete.
+## Health checks
 
-Do not routinely use SIGKILL as an administrative stop mechanism.
-
-Selected mutation paths are tested against abrupt process termination, but a
-clean stop remains the normal operational procedure.
-
-## Routine health checks
-
-### Fast structural check
+Use the lightweight structural check for routine validation:
 
 ```sh
 ./zeros3 verify -store /srv/zeros3
 ```
 
-This validates store structure and logical references without the full
-whole-content rehashing cost of deep verification.
-
-### Deep verification
+Use deep verification when you need to rehash live content:
 
 ```sh
 ./zeros3 verify -store /srv/zeros3 -deep
 ```
 
-Use this when:
+Typical reasons to run a deep check include:
 
-- validating important backups/restores;
-- investigating suspected corruption;
-- after storage-device trouble;
-- before destructive maintenance when confidence matters more than speed;
-- periodically for high-value stores if the cost is acceptable.
+- suspected corruption;
+- storage-device trouble;
+- validating a restored store;
+- checking important data before destructive maintenance.
 
-### Lifecycle diagnostic
+For lifecycle/integrity diagnostics:
 
 ```sh
 ./zeros3 doctor -store /srv/zeros3
 ```
 
-`doctor` reports integrity/lifecycle information without changing the store.
-
-Use `-deep` when you want the diagnostic to include deep verification.
-
-### Storage accounting
+For storage accounting:
 
 ```sh
 ./zeros3 stats -store /srv/zeros3
 ```
 
-Use the JSON forms of operational commands where you need machine-readable
-automation.
+Machine-readable JSON forms are available where documented by the CLI.
 
-## Online versus offline operations
+## Online and offline operations
 
-The important rule is simple:
+The practical rule is:
 
-> If a command needs exclusive store ownership, stop `zeros3 serve` first.
+> Stop `zeros3 serve` before any command that requires exclusive store
+> ownership.
 
-The server holds a shared store lock while running. Destructive maintenance
-requires the exclusive lock and should fail rather than race the live server.
+The live server holds a shared store lock. Destructive physical maintenance
+requires the exclusive lock and should fail rather than race normal writes.
 
-Typical online/client-facing operations:
+Common online operations include S3 reads/writes, snapshots, sync, replication,
+repair, and read-only inspection.
 
-- S3 reads/writes;
-- snapshot create/list/show/delete/restore;
-- sync/replicate/repair;
-- probe;
-- read-only inspection.
+Common offline/exclusive operations include bundle import, compact, destructive
+GC, repack, tier initialization/movement/rebalance, and history pruning.
 
-Typical offline/exclusive store operations:
+## Backup
 
-- bundle import;
-- compact;
-- destructive GC apply;
-- repack apply;
-- tier initialization/movement/rebalance;
-- history pruning.
+### Full portable backup
 
-A dry-run command may still intentionally require exclusive ownership when its
-plan depends on a stable physical store.
+A portable backup starts with an immutable snapshot and exports it as a
+self-contained `.zs3b` bundle.
 
-## Backup strategy
+1. Create a snapshot.
+2. Export it to a full bundle.
+3. Verify the bundle.
+4. Copy the bundle to independent storage.
+5. Periodically test restoration into a fresh store.
 
-ZeroS3 snapshots and bundles separate namespace capture from portable backup.
-
-### Recommended portable backup flow
-
-1. Create an immutable snapshot while the server is running.
-2. Stop the server if needed for the chosen export/maintenance workflow.
-3. Export the snapshot as a full `.zs3b`.
-4. Verify the bundle.
-5. Copy the bundle to independent storage.
-6. Periodically test import into a fresh store.
-
-Create a snapshot:
+Create and list snapshots:
 
 ```sh
 ./zeros3 snapshot create   -endpoint http://127.0.0.1:9000   s3://important-bucket
-```
 
-List snapshots:
-
-```sh
 ./zeros3 snapshot list   -endpoint http://127.0.0.1:9000
 ```
 
-Export a self-contained bundle:
+Export a full bundle:
 
 ```sh
 ./zeros3 bundle export   -store /srv/zeros3   -snapshot SNAPSHOT_ID   -out backup.zs3b
@@ -186,72 +138,52 @@ Verify it:
 ./zeros3 bundle inspect -in backup.zs3b -verify
 ```
 
-A full bundle is the portable archival primitive. It includes the snapshot
-descriptor, every referenced manifest, and every unique logical chunk once.
+A full bundle contains the snapshot descriptor, all referenced manifests, and
+all unique logical chunk payloads required by the snapshot.
 
-See [../BUNDLE_FORMAT.md](../BUNDLE_FORMAT.md).
+### Incremental bundle chains
 
-## Incremental backup chains
-
-A delta bundle stores the target snapshot's full metadata but omits payload
-already present in one exact base snapshot.
-
-Example:
+A `.zs3d` delta contains complete target metadata but omits payload already
+available from one exact base snapshot.
 
 ```sh
 ./zeros3 bundle export   -store /srv/zeros3   -snapshot TARGET_ID   -base-snapshot BASE_ID   -out update.zs3d
 ```
 
-A delta is **not self-contained**.
-
-To verify it:
+Verify a delta against its base store:
 
 ```sh
 ./zeros3 bundle inspect   -in update.zs3d   -verify   -base-store /srv/zeros3
 ```
 
-For disaster recovery, keep periodic full bundles rather than relying on an
-unbounded chain of deltas.
+A delta is not self-contained. Keep periodic full bundles instead of depending
+on an indefinitely long chain of deltas.
 
-A reasonable pattern is:
+A practical pattern is:
 
 ```text
 full S0
   -> delta S0->S1
   -> delta S1->S2
-  -> ...
   -> new full checkpoint
 ```
 
-The exact retention cadence is workload-dependent.
+## Restore
 
-## Restoring a portable bundle
-
-Use a fresh or compatible destination store.
-
-Import is offline and does not populate the ordinary live namespace directly.
+Import a full bundle into a fresh or compatible destination store:
 
 ```sh
 ./zeros3 bundle import   -store /srv/zeros3-restored   -in backup.zs3b
 ```
 
-After import, the snapshot exists in the destination store.
-
-Start the destination server and restore the snapshot into an explicit live
-bucket/prefix using the snapshot restore command.
-
-A bundle import publishes the snapshot descriptor last. An interrupted import
-may leave unreachable chunks/manifests, but must not expose an incomplete
+Bundle import publishes the snapshot descriptor last. An interrupted import may
+leave unreachable chunks or manifests, but it must not expose an incomplete
 snapshot.
 
-Re-import is designed to converge/idempotently reuse content.
+After import, start the destination server and restore the snapshot into an
+explicit live bucket/prefix.
 
-## Delta bundle restore
-
-To import `.zs3d`, the destination must already contain the exact declared base
-snapshot.
-
-Import the chain in order:
+For a delta chain, import the exact base first, then apply deltas in order:
 
 ```text
 full S0
@@ -260,141 +192,112 @@ delta S1->S2
 ```
 
 A delta cannot repair a damaged base-referenced chunk because it intentionally
-contains no payload for that chunk.
-
-If verification/import reports a damaged base, repair or restore the base first.
+contains no payload for that chunk. Repair or restore the base before retrying.
 
 ## Filesystem-level backups
 
-A stopped store can also be protected with a filesystem-level snapshot/copy if
-the underlying filesystem/storage system provides one.
+A stopped store can also be protected by a filesystem snapshot or copy.
 
-Treat all configured tier roots as part of the store.
+If you use this method, treat all configured roots as one store. Do not copy
+only `store/packs/` while omitting journal state, manifests, snapshots, loose
+chunks, tier roots, `FORMAT.json`, or tier metadata.
 
-Do not copy only `store/packs/` while ignoring:
+Portable `.zs3b` bundles remain the simpler logical backup format when moving
+data between machines.
 
-- the visibility journal;
-- manifests;
-- snapshots;
-- loose chunks;
-- warm/cold tier roots;
-- `FORMAT.json`;
-- tier markers/policy metadata.
+## Upgrades
 
-For portable logical recovery across machines, `.zs3b` remains the simpler
-artifact contract.
-
-## Upgrade procedure
-
-ZeroS3 uses explicit persistent format versions.
-
-Before an upgrade:
+Before upgrading:
 
 1. stop the existing server cleanly;
-2. record the currently running binary/version/commit;
-3. make a backup appropriate to the value of the data;
-4. preferably keep a verified full snapshot bundle for critical state.
+2. record the current version or commit;
+3. keep a backup appropriate to the value of the data;
+4. preferably keep a verified full bundle for critical state.
 
-Then:
+Then install the newer binary, open the store, and run:
 
-1. install/build the newer binary;
-2. open the store with the newer binary;
-3. run `doctor` or `verify`;
-4. start serving;
-5. only then enable features that may advance `FORMAT.json`.
+```sh
+./zeros3 doctor -store /srv/zeros3
+```
 
-A newer binary can open supported older store levels.
+or:
 
-A feature that requires a newer reader raises the store format before
-publishing incompatible state.
+```sh
+./zeros3 verify -store /srv/zeros3
+```
 
-See [../STATUS.md](../STATUS.md).
+Only after that should you enable features that may raise `FORMAT.json`.
 
-## Downgrade
+A newer binary can open supported older store levels. A feature that requires a
+newer reader raises the store format before publishing state that the old
+reader could misinterpret.
 
-Do not edit `FORMAT.json` by hand to force a downgrade.
+### Downgrades
 
-If a feature has raised the store to a format an older binary does not
-understand, that older binary is expected to refuse the store.
+Do not edit `FORMAT.json` to force a downgrade.
 
-Use logical transfer/export into another compatible store if you must move data
-to an older implementation.
+If a newer feature has raised the store to a format an older binary does not
+understand, refusal is the intended behavior. Use logical export or transfer
+into another compatible store instead.
 
-## Reclaiming space safely
+## Reclaiming space
 
-Logical root retirement and physical deletion are intentionally separate.
+Logical root retirement and physical deletion are separate operations.
 
-### Step 1: decide what may stop being live
+### Retire history
 
-Current objects are always roots.
-
-Other roots can include:
-
-- retained history;
-- active multipart uploads;
-- snapshots.
-
-If old versions should remain recoverable, do not prune them.
-
-### Step 2: prune history when appropriate
-
-History prune is dry-run unless `-apply` is supplied.
-
-Example pattern:
+Review retained versions first. If older history is no longer needed, run a
+dry-run prune:
 
 ```sh
 ./zeros3 versions prune   -store /srv/zeros3   -bucket my-bucket   -keep-last 3
 ```
 
-Review the plan, then apply deliberately:
+Apply only after reviewing the plan:
 
 ```sh
 ./zeros3 versions prune   -store /srv/zeros3   -bucket my-bucket   -keep-last 3   -apply
 ```
 
-Pruning retires history roots. It does not synchronously delete payload.
+Pruning removes history roots, not chunk bytes.
 
-### Step 3: inspect GC
+### Garbage collection
+
+Inspect unreachable data:
 
 ```sh
 ./zeros3 gc -store /srv/zeros3
 ```
 
-GC is dry-run by default.
-
-If the live-root scan is not trustworthy, destructive GC refuses to proceed.
-
-### Step 4: apply GC
+Apply:
 
 ```sh
 ./zeros3 gc -store /srv/zeros3 -apply
 ```
 
-GC removes unreachable loose chunks and fully dead packs.
+GC removes unreachable loose chunks and fully dead packs. If authoritative
+liveness cannot be established safely, destructive GC refuses to proceed.
 
-### Step 5: repack partly-dead packs
+### Repack
 
-Partly-live packs are immutable and cannot be edited in place.
+Partly-live packs are immutable. Repack creates verified replacements
+containing the live records.
 
-Inspect repack:
+Dry run:
 
 ```sh
 ./zeros3 repack -store /srv/zeros3
 ```
 
-Apply only after reviewing the plan:
+Apply:
 
 ```sh
 ./zeros3 repack -store /srv/zeros3 -apply
 ```
 
-Repack publishes verified replacement packs before removing old ones.
+## Compaction and compression
 
-## Compaction
-
-Compaction converts loose live chunks into immutable packs.
-
-With the server stopped:
+Compaction moves live loose chunks into immutable packs:
 
 ```sh
 ./zeros3 compact -store /srv/zeros3
@@ -403,47 +306,25 @@ With the server stopped:
 Locality layout is the default.
 
 Large known-size uploads may already be directly packed, so compaction is most
-useful for:
+useful for small-object workloads, unknown-size paths, bundle/repair/bulk
+imports, and older loose stores.
 
-- small-object workloads;
-- unknown-size upload paths;
-- bundle/repair/bulk-created loose chunks;
-- older stores created before direct packing.
-
-Compaction changes physical layout only.
-
-## Compression
-
-Packed records can use adaptive DEFLATE.
-
-Online direct packs are raw by default because the measured CPU/read tradeoff
-was unfavorable for the default ingest path.
-
-Compaction can encode compressible loose data with the pack compression policy.
-
-Current `repack` rewrites selected partly-dead packs; it is not a general
-"recompress every healthy raw pack" command.
-
-Do not assume that setting `-compression auto` will rewrite fully-live healthy
-raw packs.
+Direct-ingest packs are raw by default; adaptive compression is available when
+creating or rewriting packs, but current `repack` only rewrites selected
+partly-dead packs. It is not a general command for recompressing every healthy
+raw pack.
 
 ## Tier operations
 
-ZeroS3 supports physical hot/warm/cold pack roots.
-
-Warm/cold may be separate devices/mounts.
-
-### Inspect
+Inspect configured physical tiers:
 
 ```sh
 ./zeros3 tier status -store /srv/zeros3
 ```
 
-### Initialize a replacement/new tier root
+### Initialize a new or replacement root
 
-If a configured tier device is absent/empty and the store refuses to open,
-initialize the structural tier marker only after mounting the intended
-replacement storage:
+If a configured warm/cold mount is intentionally empty:
 
 ```sh
 ./zeros3 tier init -store /srv/zeros3 -tier warm
@@ -455,188 +336,145 @@ or:
 ./zeros3 tier init -store /srv/zeros3 -tier cold
 ```
 
-`tier init` does **not** restore data.
+Initialization creates the structural tier marker. It does not restore missing
+data.
 
-If the failed device held the only physical copy of a live chunk, verification
-will still report missing content.
+If the failed device held the only copy of a live chunk, verification will
+still report that content missing.
 
-### Move packs
+### Move and rebalance
 
-`tier move` is dry-run by default. Review the plan before `-apply`.
+`tier move` and `tier rebalance` are dry-run by default. Review their plans
+before using `-apply`.
 
-A move copies into the destination tier, verifies and durably publishes the new
-copy, then removes the source.
+A tier move publishes and verifies the destination copy before removing the
+source.
 
-### Rebalance by content policy
+Rebalance derives desired placement from logical roots. If shared chunks have
+different tier requirements, the hottest requirement wins.
 
-`tier rebalance` is also dry-run by default.
+Use `-min-misplaced-percent` when you want to avoid rewriting an almost-correct
+pack because only a small fraction of its live records are misplaced.
 
-It computes desired physical placement from live-root policy and the hottest
-requirement among every reference to each chunk.
+## Replacing a failed tier device
 
-Use `-min-misplaced-percent` when you want to defer expensive whole-pack
-rewrites caused by only a few misplaced records.
-
-## Replacing a failed warm/cold device
-
-A safe recovery sequence is:
+A conservative recovery sequence is:
 
 1. stop the server;
-2. mount/attach the intended replacement storage;
-3. run `tier init` only if the tier root is genuinely new/empty;
+2. attach or mount the intended replacement device;
+3. run `tier init` only if that root is genuinely new and empty;
 4. run `verify`;
-5. repair/restore any missing logical chunks;
+5. repair or restore any missing live chunks;
 6. run `verify -deep`;
-7. only then resume normal operation.
+7. resume service only after the store validates.
 
-Never use an empty tier root as evidence that the old data was unnecessary.
-
-The marker checks are intentionally fail-closed to catch an accidentally
-unmounted device.
+The tier marker checks are intentionally fail-closed so an accidentally
+unmounted device is not mistaken for an empty tier.
 
 ## Corruption recovery
 
-### Detect
+Detect suspected corruption with:
 
 ```sh
 ./zeros3 verify -store /srv/zeros3 -deep
 ```
 
-### Repair from a trusted peer
+`zeros3 repair` can fetch required logical chunks from an explicitly configured
+ZeroS3 peer. The local store hashes candidate bytes before publication, so the
+peer supplies availability rather than integrity authority.
 
-`zeros3 repair` can fetch missing/corrupt live logical chunks from an
-explicitly configured ZeroS3 peer.
+After repair, run deep verification again. If no peer has the content, restore
+it from a verified backup or bundle.
 
-The local side independently SHA-256 verifies candidate bytes before
-publication.
+## Snapshots and multipart roots
 
-The peer is therefore trusted for availability, not integrity.
+Snapshots and active multipart uploads are reachability roots.
 
-After repair:
+Deleting a snapshot removes the snapshot root, not payload immediately. If you
+want the resulting unused data reclaimed, follow snapshot deletion with the
+appropriate history/GC/repack workflow.
 
-```sh
-./zeros3 verify -store /srv/zeros3 -deep
-```
+Aborted large multipart uploads can leave dead direct packs. Ordinary GC
+reclaims them.
 
-If no peer contains the required content, restore it from a verified backup or
-bundle.
+## Monitoring
 
-## Snapshot lifecycle
-
-Snapshots are GC roots.
-
-Deleting a snapshot removes the root descriptor, not chunk bytes directly.
-
-After deleting snapshots that are no longer needed:
-
-1. review retained history;
-2. run GC dry-run;
-3. apply GC if appropriate;
-4. repack partly-dead packs if worthwhile.
-
-## Multipart cleanup
-
-Active multipart uploads are live roots.
-
-Abort abandoned uploads rather than leaving them indefinitely.
-
-Large UploadPart requests can create direct packs. Aborting the upload can
-therefore leave fully-dead packs; ordinary GC reclaims them.
-
-## Monitoring today
-
-ZeroS3 currently provides CLI/JSON observability rather than a metrics daemon.
+ZeroS3 currently exposes CLI/JSON operational state rather than a metrics
+daemon.
 
 Use:
 
 - `stats -json` for storage accounting;
-- `doctor -json` for lifecycle/integrity state;
+- `doctor -json` for lifecycle and integrity information;
 - `verify` for explicit validation;
-- process/system metrics for CPU, memory, disk usage, and I/O.
+- normal system/process tooling for CPU, memory, disk, and I/O.
 
 There is no built-in Prometheus endpoint in the current feature set.
 
-## Incident checklist
+## Incident response
 
 For unexplained read failures or suspected storage damage:
 
 1. avoid destructive maintenance;
-2. preserve logs and, if possible, a filesystem snapshot/copy;
+2. preserve logs and, if possible, a filesystem snapshot or copy;
 3. stop the server if physical storage is unstable;
 4. run structural `verify`;
-5. run `verify -deep` if feasible;
-6. identify whether another physical copy/peer/bundle contains the missing
-   digest;
+5. run `verify -deep` when feasible;
+6. identify another physical copy, peer, or bundle containing the required
+   logical digest;
 7. repair or restore;
-8. verify again;
-9. only after a clean live-root scan consider GC/repack.
+8. verify again before returning to destructive maintenance.
 
-## Disaster-recovery boundaries
+## Tested recovery boundary
 
-Tested behavior includes:
+The test suite covers deterministic crash injection across many publication
+boundaries, process restart during multipart work, real abrupt termination on
+selected ingest/import paths, retry convergence, and corruption/truncation
+handling for several persistent formats.
 
-- deterministic crash injection at many durable-publication boundaries;
-- process restart during multipart work;
-- real abrupt process termination on selected ingest and bundle-import paths;
-- retry/convergence behavior;
-- corruption/truncation handling for several persistent formats.
+It does not claim comprehensive coverage of hardware power loss, faulty
+controller caches, kernel/filesystem corruption, or simultaneous loss of
+several devices.
 
-Not comprehensively tested/claimed:
+Backups should account for those limits.
 
-- hardware power loss during every mutation path;
-- faulty controller write caches;
-- filesystem/kernel corruption;
-- simultaneous loss of several independent devices;
-- distributed network partitions (ZeroS3 is not a distributed store).
+## Maintenance summary
 
-Plan backups accordingly.
-
-## Maintenance decision table
-
-| Goal | First command / primitive | Notes |
+| Goal | Command or primitive | Notes |
 |---|---|---|
-| check structure | `verify` | read-only |
-| fully rehash content | `verify -deep` | read-only, more expensive |
-| inspect lifecycle | `doctor` | read-only |
+| structural check | `verify` | read-only |
+| full content rehash | `verify -deep` | more expensive |
+| lifecycle diagnostic | `doctor` | read-only |
 | estimate dead data | `gc` | dry-run |
-| remove unreachable loose/fully-dead packs | `gc -apply` | offline/exclusive |
-| reclaim partly-dead pack space | `repack` then `repack -apply` | offline/exclusive |
-| pack loose content | `compact` | offline/exclusive |
-| retire old object history | `versions prune` then `-apply` | offline/exclusive |
-| capture point-in-time namespace | `snapshot create` | online via endpoint |
+| delete unreachable content | `gc -apply` | exclusive |
+| reclaim partly-dead packs | `repack`, then `-apply` | exclusive |
+| pack loose content | `compact` | exclusive |
+| retire old history | `versions prune`, then `-apply` | exclusive |
+| capture namespace state | `snapshot create` | online |
 | portable full backup | snapshot + `.zs3b` | self-contained |
 | incremental snapshot transfer | `.zs3d` | exact base required |
-| repair live corrupted chunks | `repair` | explicit trusted peer |
-| inspect tiers | `tier status` | physical placement |
+| repair live content | `repair` | explicit peer |
+| inspect physical tiers | `tier status` | physical placement |
 | converge tier policy | `tier rebalance` | dry-run first |
 
-## Security summary
+## Security
 
-Current deployment security is intentionally narrow.
+Current deployment security is intentionally narrow: SigV4, one static
+credential pair, optional TLS, and content-integrity verification.
 
-ZeroS3 has:
+ZeroS3 does not currently provide IAM/STS, per-user authorization, bucket
+policies/ACLs, KMS-backed encryption, or multi-tenant isolation.
 
-- SigV4;
-- one static credential pair;
-- optional TLS;
-- content-integrity verification.
-
-It does not currently have:
-
-- IAM/STS;
-- per-user authorization;
-- bucket policies/ACLs;
-- server-side encryption/KMS;
-- audit-compliance framework;
-- multi-tenant isolation.
-
-Do not infer enterprise controls that are not documented.
+See [../SECURITY.md](../SECURITY.md) for the security policy and reporting
+process.
 
 ## Related documentation
 
-- [../README.md](../README.md) — quick start
-- [../STATUS.md](../STATUS.md) — maturity / format versions
-- [../S3_COMPAT.md](../S3_COMPAT.md) — exact S3 behavior
-- [ARCHITECTURE.md](./ARCHITECTURE.md) — storage model
-- [ZEROS3_PROTOCOL.md](./ZEROS3_PROTOCOL.md) — content-native protocol
-- [../BUNDLE_FORMAT.md](../BUNDLE_FORMAT.md) — full/delta artifact formats
+| Document | Purpose |
+|---|---|
+| [../README.md](../README.md) | quick start |
+| [../STATUS.md](../STATUS.md) | maturity and format versions |
+| [../S3_COMPAT.md](../S3_COMPAT.md) | exact S3 behavior |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | storage model |
+| [ZEROS3_PROTOCOL.md](./ZEROS3_PROTOCOL.md) | content-native protocol |
+| [../BUNDLE_FORMAT.md](../BUNDLE_FORMAT.md) | full and delta bundle formats |

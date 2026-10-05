@@ -1,89 +1,74 @@
 # ZeroS3 architecture
 
-ZeroS3 is an S3-compatible object store whose logical storage model is
-content-addressed rather than whole-object-blob-addressed.
+ZeroS3 is an S3-compatible object store whose logical storage model is based on
+content identity rather than whole-object blobs.
 
-This document explains the internal model and the invariants that let features
-compose without changing the ordinary S3 surface.
+This document explains the internal model and the invariants that let S3
+compatibility, deduplication, snapshots, delta transfer, packed storage, and
+physical tiering share one storage substrate.
 
 For current maturity and format versions, see [../STATUS.md](../STATUS.md).
-For the exact S3 contract, see [../S3_COMPAT.md](../S3_COMPAT.md).
 
-## Design summary
+## System model
 
-The architecture has three layers:
+ZeroS3 has three layers:
 
 ```text
 APPLICATION SURFACE
-  S3 / SigV4
-  ZeroS3-native sync/replication/repair
-                |
-                v
+  ordinary S3                  ZeroS3-aware clients
+  PUT/GET/multipart            sync/replicate/repair
+            \                    /
+             +------------------+
+                     |
+                     v
 LOGICAL CONTENT LAYER
-  CDC
-    -> SHA-256 chunk identities
-    -> immutable object manifests
-    -> journal-backed current roots
-    -> history / snapshots / multipart roots
-                |
-                v
+  deterministic CDC
+       -> SHA-256 chunk identity
+       -> immutable manifests
+       -> current/history/snapshot roots
+                     |
+                     v
 PHYSICAL STORAGE LAYER
-  loose chunk files
-  immutable pack-v1 files
-    -> locality-aware order
-    -> optional per-record DEFLATE
-    -> hot / warm / cold locations
-    -> GC / repack / rebalance
+  loose CAS or immutable pack-v1
+       -> locality-aware order
+       -> optional per-record DEFLATE
+       -> hot / warm / cold placement
+       -> GC / repack / rebalance
 ```
 
-The central separation is:
-
-> **Logical chunk identity is independent of physical chunk placement.**
-
-A manifest never says "read pack X at offset Y." It says that the object needs a
-logical SHA-256 chunk of a declared length. A reconstructible locator chooses a
-physical copy at read time.
-
-That choice is what allows physical layout to evolve without rewriting logical
-object metadata.
+The defining rule is that manifests describe logical chunks, not pack
+locations. Physical layout can change without changing object identity or the
+S3-visible object.
 
 ## Logical object model
 
-An ordinary object is represented by an immutable manifest.
-
-Conceptually:
+A visible object resolves through the current namespace to an immutable
+manifest:
 
 ```text
-object key
+bucket/key
    |
-   v
-current namespace root
+current root
    |
-   v
 manifest UUID
    |
-   +-- ordered chunk A
-   +-- ordered chunk B
-   +-- ordered chunk C
-   |
+   +-- ordered logical chunks
    +-- total length
    +-- whole-object SHA-256
    +-- ETag
-   +-- Content-Type
+   +-- content type
    +-- user metadata
 ```
 
-The ordered chunk list is the authoritative recipe for reconstructing object
-bytes.
+Overwriting an object publishes a new manifest and root. Existing manifests are
+never edited in place.
 
-The manifest is immutable after publication. An overwrite creates a new
-manifest/root rather than editing the old manifest in place.
+This immutable-root model is also reused by retained history, snapshots, forks,
+and bundle export.
 
 ## Content-defined chunking
 
-ZeroS3 uses deterministic Gear/FastCDC-style content-defined chunking.
-
-Current CDC v1 bounds:
+CDC v1 uses deterministic Gear/FastCDC-style boundaries:
 
 ```text
 minimum: 16 KiB
@@ -91,176 +76,102 @@ target:  64 KiB
 maximum: 256 KiB
 ```
 
-Chunk boundaries depend on content, not fixed offsets.
-
-This matters for revision-heavy data. A localized insertion or deletion tends
-to perturb only nearby chunks before the chunker re-synchronizes with the
-unchanged suffix.
-
-A fixed-size chunker would shift every later boundary after an insertion.
-
-CDC format/version is part of the persistent compatibility contract. The same
-bytes under the same CDC version must produce the same logical chunk sequence.
-
-## Chunk identity
+Chunk boundaries depend on nearby content instead of fixed offsets. Local
+insertions or deletions therefore tend to disturb only a bounded region before
+the chunker re-synchronizes with unchanged data.
 
 Each logical chunk is identified by:
 
 ```text
-SHA-256(uncompressed logical chunk bytes)
+SHA-256(uncompressed logical bytes)
++ declared logical length
 ```
 
-plus its declared logical length.
-
-Chunk identity never changes because of:
-
-- loose versus packed storage;
-- compression;
-- pack order;
-- hot/warm/cold placement;
-- replication;
-- snapshots;
-- bundles.
-
-Every successful physical read is rechecked against the logical digest.
-
-This means the in-memory physical locator is a performance index, not an
-authority for content correctness.
+That identity is independent of compression, packing, tier placement, or
+replication.
 
 ## Namespace authority
 
-The current bucket/object namespace is not inferred from files in the CAS.
+The CAS does not determine which objects are visible.
 
-It is reconstructed from an append-only visibility journal.
+Current buckets, objects, and persistent multipart state are reconstructed from
+an append-only checksummed visibility journal. Physical chunks or manifests may
+exist without being visible through S3.
 
-The journal is:
+This separation is central to crash safety. A failed request may leave
+unreachable immutable data, but it must not publish a partial object.
 
-- checksummed;
-- sequence-ordered;
-- replayed at store open;
-- the authority for current bucket/object roots and persistent multipart state.
+## Write path
 
-Physical chunks and manifests can exist without being visible through S3.
-
-That property is important for crash safety: a failed ingest may leave immutable
-unreachable material, but it must not make a partial object visible.
-
-## Write pipeline
-
-The common logical write pipeline is:
+The common logical write path is:
 
 ```text
 request body
    |
-   v
 streaming CDC
    |
-   +--> object SHA-256 / ETag / request checksums
-   |
-   +--> ordered logical chunk refs
-   |
+   +--> object SHA-256 / ETag / request checksum
+   +--> ordered logical chunk references
    +--> physical CAS publication
    |
-   v
 immutable manifest
    |
-   v
 journal/current-root commit
 ```
 
-The final root commit is the logical visibility boundary.
+The final namespace commit is the logical visibility boundary.
 
-### Small / unknown-size writes
+### Loose CAS path
 
-The general CAS path stages new loose chunks in bounded groups.
+Small, size-unknown, and several internal transfer paths publish new chunks
+through the grouped loose-CAS mechanism.
 
-The grouped durable publication introduced for the loose path:
+Chunks are staged, fsynced with bounded concurrency, deduplicated again before
+publication, renamed into their shard directories, and made durable with the
+required directory fsyncs.
 
-1. stages temporary files;
-2. fsyncs chunk files with bounded concurrency;
-3. rechecks deduplication;
-4. renames durable candidates into the chunk shard;
-5. fsyncs created directories;
-6. releases the publication barrier.
-
-A chunk can therefore become reusable before the final object commit, but the
-object itself is not visible until its manifest/root commits.
+Chunks can therefore become reusable before the final object commit while the
+object itself remains invisible.
 
 ### Direct pack ingest
 
 Known-size PutObject, UploadPart, and final multipart completion of at least
-64 MiB can use the direct-pack path.
+64 MiB can write new chunks directly into immutable hot packs.
 
-New chunks are written in first logical object occurrence order directly into
-immutable hot pack-v1 files.
+New chunks are appended in first logical occurrence order. Full packs are
+finalized, verified, durably published, and then added to the in-memory
+locator. A final new-content tail below about 8 MiB is stored through the loose
+CAS path instead of creating a very small pack.
 
-A full pack is:
+Direct packs are raw by default because the online compression experiment
+showed a large throughput and read-speed cost for adaptive DEFLATE. Compression
+is therefore left to physical maintenance paths where appropriate.
 
-1. written to a staging file;
-2. finalized with its normal pack index/footer;
-3. fsynced;
-4. verified;
-5. renamed into the hot pack root;
-6. parent directory fsynced;
-7. added to the in-memory locator.
+## Failure behavior during writes
 
-The same pack writer emits pack-v1 bytes for both online direct ingest and
-offline compaction.
+Physical content can be published before the request's final namespace commit
+without making the object visible.
 
-A final new-content tail below about 8 MiB is stored through the ordinary loose
-CAS path rather than creating a pathological tiny pack.
+If a request later fails because of a checksum mismatch, conditional conflict,
+body error, or process interruption, already-published chunks or packs may
+remain unreachable. They are safe to reuse and can later be reclaimed through
+normal reachability-based maintenance.
 
-Direct packs are raw by default. Compression was intentionally kept off the
-online default because the measured write/read cost outweighed the storage
-benefit for the default path.
+ZeroS3 does not try to roll back immutable CAS content because another request
+may already have reused it.
 
-## Failure model during ingest
+## Read path
 
-A write can fail after some chunks or packs have already been published.
-
-Examples:
-
-- request checksum mismatch;
-- conditional PUT failure;
-- client body failure;
-- process termination;
-- final namespace conflict.
-
-The safe outcome is:
-
-```text
-physical immutable data may remain
-manifest/root for failed object is not committed
-object is not visible
-unreachable material is later reclaimable
-```
-
-ZeroS3 deliberately does not try to roll back already-published immutable
-content transactionally. Another concurrent write may already have reused it.
-
-This turns failed-write cleanup into ordinary reachability/GC instead of a
-second rollback subsystem.
-
-## Read pipeline
-
-A read begins with the authoritative current root, loads the immutable
-manifest, and reconstructs requested logical ranges from chunk references.
-
-Conceptually:
+Reads begin with the current root and immutable manifest, then resolve each
+logical chunk to an available physical copy:
 
 ```text
 bucket/key
    |
-   v
-current root
-   |
-   v
 manifest
    |
-   v
-logical chunk sequence
+ordered logical chunks
    |
-   v
 physical locator
    |
    +--> loose hot copy
@@ -268,341 +179,213 @@ physical locator
    +--> warm packed copy
    +--> cold packed copy
    |
-   v
-verify SHA-256
+SHA-256 verification
    |
-   v
 HTTP response
 ```
 
-A corrupt physical copy is not trusted merely because the locator points to it.
-The reader can fall back to another valid physical copy.
+A physical location is never trusted as proof of correctness. The logical
+digest is verified before bytes are accepted.
+
+If one packed copy is corrupt and another valid copy exists, normal copy
+selection can fall back to the valid copy.
 
 ## Packed CAS
 
-Pack-v1 groups many logical chunks into one immutable file.
+Pack-v1 groups many logical chunks into one immutable file. A pack stores
+record metadata, payloads, an index, and integrity information.
 
-A pack contains:
+Pack representation remains entirely physical, so object manifests never
+contain:
 
-- fixed format header;
-- chunk records;
-- fixed-size index entries;
-- integrity metadata/footer.
+- pack IDs;
+- offsets;
+- compression codecs;
+- tier names.
 
-Records store logical digest, logical length, physical payload length, codec,
-and offset metadata needed to reconstruct the physical locator.
+This makes repack, compression, locality changes, and tier moves transparent to
+the logical object model.
 
-The pack format is independent of object manifests.
+### Locality
 
-## Locality-aware packing
+Offline compaction defaults to first-reference locality order instead of digest
+order. Shared chunks are stored once at their first deterministic reference.
 
-Digest order is excellent for deterministic indexing but poor for sequential
-object reads.
+Repack and rebalance preserve relative physical order for surviving records so
+routine maintenance does not discard locality.
 
-ZeroS3 therefore defaults compaction to locality order.
+### Coalesced reads
 
-The locality planner walks live roots in a deterministic priority order and
-ranks each unique candidate chunk by first reference.
+When consecutive manifest chunks are physically contiguous in one pack, the
+reader combines them into bounded run reads. Each logical record is still
+decoded and SHA-256 verified independently.
 
-For current storage policy that walk begins with current objects and also
-covers multipart, snapshots, and retained history.
+If a record in a pack fails verification, further coalesced runs from that pack
+are disabled for the request and ordinary fallback selection resumes.
 
-Shared chunks are stored once at their first ranked position.
+### Compression
 
-Maintenance operations preserve source physical order for survivors so locality
-does not disappear during routine repack/rebalance.
+Pack records support raw and DEFLATE payloads. Adaptive compression keeps a
+compressed record only when it saves enough space to justify the representation.
 
-### Coalesced packed reads
-
-When consecutive manifest chunks occupy physically contiguous records in one
-pack, the read path combines them into bounded run reads instead of performing
-one file open/pread per chunk.
-
-Every logical record is still independently decoded and SHA-256 checked.
-
-If one record fails, the request stops using coalesced runs from that damaged
-pack and returns to ordinary physical-copy selection.
-
-## Packed compression
-
-Pack records support:
-
-- codec 0: raw;
-- codec 1: DEFLATE.
-
-Adaptive compression stores a record compressed only when the result saves at
-least 1/16 of its logical size.
-
-Compression changes physical bytes only.
-
-The chunk's logical SHA-256, object manifest, ETag, snapshot, bundle, and
-replication identity are unchanged.
-
-Online direct packs are raw by default. Offline compaction/repacking can create
-compressed records.
+Compression changes physical bytes only; logical chunk identity and manifests
+remain unchanged.
 
 ## Physical locator
 
-Packed chunk lookup is rebuilt from immutable pack indexes at open.
+Packed chunk lookup is reconstructed from immutable pack indexes at store open.
+The locator is a compact sorted structure with prefix narrowing rather than a
+large Go map entry per digest.
 
-The current locator is a compact sorted representation with prefix narrowing
-rather than one large Go map.
+It can represent duplicate physical copies and tier identity. Correctness still
+comes from the logical digest check, so the locator is reconstructible
+performance metadata rather than a source of truth.
 
-The locator can represent:
+Durably renamed packs are safe even if the process stops before the runtime
+locator is updated; the next open discovers them from the pack roots.
 
-- primary packed location;
-- duplicate/fallback physical copies;
-- hot/warm/cold tier identity.
+## Roots and reachability
 
-Pack publication updates the locator through immutable state replacement under
-the pack lock.
+ZeroS3 derives liveness from authoritative roots instead of maintaining a
+persistent chunk refcount database.
 
-A crash after durable pack rename but before the runtime locator update is safe:
-the next open rebuilds the locator from the pack directory.
+Current root categories include:
 
-## Root categories and reachability
-
-Physical liveness is derived from logical roots rather than reference counters.
-
-The major live root categories are:
-
-- current object roots;
-- retained historical versions;
+- visible objects;
+- retained history;
 - active multipart uploads;
 - immutable snapshots.
 
-A common reachability walk feeds:
+The common reachability scan is reused by verification, GC, packed live/dead
+accounting, tier policy, rebalance, and structural inspection.
 
-- GC;
-- packed live/dead accounting;
-- tier policy;
-- rebalance;
-- structural inspection.
+If an authoritative root cannot be interpreted safely, destructive GC fails
+closed rather than guessing that referenced content is dead.
 
-This avoids maintaining a separate persistent per-chunk refcount database.
+## History, snapshots, and forks
 
-A broken authoritative root makes destructive GC fail closed rather than
-guessing that referenced data is garbage.
+### Retained history
 
-## Retained history
+Overwrites and deletes can retain the previous object root. History supports
+zero-copy restore and explicit pruning.
 
-When a current object is overwritten or deleted, the replaced root can be
-retained as internal ZeroS3 history.
+History is not the AWS S3 Versioning API. Pruning retires logical roots; GC and
+repack handle physical reclamation separately.
 
-History is not AWS S3 Versioning.
+### Snapshots
 
-It exists to preserve immutable logical roots cheaply and supports:
+A snapshot captures immutable object roots for a bucket/prefix by copying
+metadata references rather than payload.
 
-- listing retained versions through ZeroS3 tooling;
-- zero-copy restore;
-- explicit pruning;
-- later physical reclamation by GC/repack.
+Snapshots remain independent GC roots and can later be restored, inspected,
+diffed, or exported as portable bundles.
 
-Pruning retires roots; it does not directly delete chunk bytes.
+### Forks
 
-## Snapshots
+A fork republishes an existing namespace into another namespace in the same
+store. Because the CAS is shared, existing payload does not need to be copied.
 
-A snapshot is an immutable descriptor of current namespace roots for one
-bucket/prefix.
-
-It stores object-root metadata, not copied payload.
-
-Snapshots:
-
-- are independent GC roots;
-- survive later mutation/deletion of live objects;
-- can restore into an ordinary namespace using existing content;
-- can be exported to full or delta bundles.
-
-Snapshot creation copies current root metadata under the namespace lock, then
-publishes the descriptor durably without holding that lock across slow I/O.
-
-## Forks and structural sharing
-
-A fork republishes an existing namespace into another destination namespace
-within the same store.
-
-Because source and destination share one CAS, negotiation finds the payload
-already present.
-
-The result is ordinary independent S3 objects whose manifests reference
-already-existing chunks.
-
-The fork has no persistent "parent" relationship after publication.
+After publication, the destination is an ordinary independent namespace rather
+than a permanently linked child.
 
 ## Portable bundles
 
-Portable bundle formats deliberately contain **logical** storage information,
-not physical pack/tier state.
+Portable bundles contain logical storage state, never physical pack/tier state.
 
-A full `.zs3b` includes:
+A full `.zs3b` contains one exact snapshot descriptor, all referenced
+manifests, and every unique logical chunk once.
 
-- one exact snapshot descriptor;
-- all referenced manifests;
-- every unique logical chunk once.
+A delta `.zs3d` contains the complete target metadata but omits payload for
+chunks already present in one exact base snapshot.
 
-A delta `.zs3d` includes:
+Imported targets become ordinary snapshots in the destination store; the
+binary formats are specified in [../BUNDLE_FORMAT.md](../BUNDLE_FORMAT.md).
 
-- the complete target descriptor;
-- all target manifests;
-- one logical record for every target unique chunk;
-- payload only for chunks absent from one exact base snapshot.
+## ZeroS3-native transfer and repair
 
-Imported targets become ordinary snapshots in the destination store.
+The native protocol exposes logical chunk identity to compatible clients.
 
-See [../BUNDLE_FORMAT.md](../BUNDLE_FORMAT.md).
-
-## ZeroS3-native delta transfer
-
-The ZeroS3-native protocol exposes the logical chunk graph to aware clients.
-
-A typical transfer is:
+A typical delta transfer is:
 
 ```text
 discover endpoint
    |
-describe source object / build local CDC plan
+build or fetch logical chunk plan
    |
-negotiate logical hashes with destination
+negotiate missing hashes
    |
 transfer only missing chunks
    |
 commit ordinary destination object
 ```
 
-An optional bulk transport batches the same logical chunks to reduce HTTP
-request count without exposing physical pack representation.
+Bulk v2 batches the same logical chunks to reduce HTTP request count without
+exposing pack representation.
 
-See [ZEROS3_PROTOCOL.md](./ZEROS3_PROTOCOL.md).
-
-## Repair
-
-Peer repair is content-addressed.
-
-The local store first identifies missing/corrupt live logical chunks through its
-own verification/reachability machinery.
-
-For each required digest, the configured peer can provide candidate bytes.
-
-The local side independently hashes those bytes against the requested digest
-before publication.
-
-The peer is trusted as a source of bytes, not as an integrity authority.
+Peer repair reuses logical chunk identity as well. Candidate bytes fetched from
+a configured peer are independently SHA-256 verified before publication. The
+wire contract is specified in [ZEROS3_PROTOCOL.md](./ZEROS3_PROTOCOL.md).
 
 ## Physical tiers
 
-The logical CAS can have packed copies in:
+Packed copies can live in hot, warm, or cold roots. Tier placement remains a
+physical concern and is not exposed as AWS S3 StorageClass.
 
-- hot;
-- warm;
-- cold.
+Tier policy is evaluated over logical roots, and a shared chunk inherits the
+hottest requirement among all roots that reference it.
 
-Hot includes the main pack root and loose chunks. Warm/cold can be separate
-mounts under tier roots with store/tier identity markers.
+For example, a chunk referenced by both a current object and old history stays
+hot while the current reference exists. Once only cold-eligible roots remain,
+rebalance can move it colder.
 
-Lookup preference is physical policy only. Logical object identity does not
-contain a tier.
+## Maintenance
 
-### Content-aware tier policy
+The maintenance commands all operate on the same logical/physical separation.
 
-Tier policy is applied to logical roots.
+- **compact** packs live loose chunks without changing manifests.
+- **gc** removes unreachable loose chunks and fully dead packs.
+- **repack** rewrites selected partly-dead packs with verified live records.
+- **tier rebalance** converges physical placement toward content-aware tier
+  policy.
 
-Each live reference requests a desired tier. A shared chunk's effective desired
-tier is the hottest requested tier among all live roots referencing it.
+Old physical copies are removed only after required replacement content is
+durably published and verified.
 
-Example:
+Several destructive physical-maintenance operations currently require
+exclusive store ownership.
 
-```text
-current object wants chunk A hot
-old history wants chunk A cold
+## Durability model
 
-effective placement for A = hot
-```
-
-A history-only chunk can move cold without dragging content still needed by a
-current object out of the hot tier.
-
-This is a content-graph policy rather than an object-blob storage-class label.
-
-## Maintenance model
-
-### Compact
-
-Offline compaction moves loose live chunks into immutable packs.
-
-It never changes logical manifests.
-
-### GC
-
-GC computes reachability from all authoritative roots.
-
-It can remove:
-
-- unreachable loose chunks;
-- packs containing no live records.
-
-It does not edit a partially-live immutable pack.
-
-### Repack
-
-Repack replaces selected partly-dead packs with new verified packs containing
-their live survivors.
-
-Source physical order is preserved for locality.
-
-### Tier rebalance
-
-Rebalance computes desired chunk placement from root policy and current
-physical layout.
-
-It can:
-
-- pack loose chunks into a target tier;
-- move an entire pack when every live record needs the same new tier;
-- split/rewrite mixed packs when necessary.
-
-Every destructive old-copy removal occurs only after a verified surviving copy
-exists.
-
-## Durability invariants
-
-The recurring durable-publication shape is:
+The recurring publication pattern is:
 
 ```text
-stage
-  -> fsync bytes
-  -> atomic rename
-  -> fsync containing directory
-  -> publish higher-level reference
+stage bytes
+fsync file
+rename into place
+fsync containing directory
+publish higher-level reference
 ```
 
-The journal/root commit is the point at which an object mutation becomes
-logically visible/acknowledged.
+The exact steps vary by structure, but the rule remains the same: lower-level
+immutable data becomes durable before a higher-level reference can make it
+visible.
 
-The implementation uses the same small durability vocabulary across chunks,
-packs, manifests, snapshots, and format metadata rather than depending on an
-embedded database transaction layer.
+The namespace journal commit is the final acknowledgement boundary for ordinary
+object mutations.
 
 ## Concurrency model
 
 One server process owns a store for normal operation.
 
-Important in-process synchronization boundaries include:
-
-- namespace/root lock;
-- pack-state publication lock;
-- loose-CAS publication barrier;
-- snapshot-specific synchronization;
-- filesystem store lock for online versus exclusive maintenance.
-
-Offline destructive maintenance requires exclusive ownership and cannot run
-against a live serving process that holds its shared store lock.
+In-process synchronization protects namespace commits, pack-state publication,
+grouped loose-CAS publication, snapshots, and format upgrades. The filesystem
+store lock separates live serving from exclusive maintenance.
 
 ZeroS3 is not a distributed multi-writer system.
 
-## Why the architecture stays compact
+## Why the design stays compact
 
-Many features are projections of the same underlying primitives:
+Most higher-level features are compositions of a few primitives:
 
 ```text
 CDC + CAS
@@ -617,7 +400,7 @@ immutable manifests + roots
   -> forks
   -> bundle metadata
 
-logical identity != physical placement
+logical identity independent of physical placement
   -> packs
   -> compression
   -> locality
@@ -626,49 +409,29 @@ logical identity != physical placement
   -> rebalance
 ```
 
-This capability density is intentional.
+This capability density is deliberate. New features should preferably extend
+these mechanisms or introduce one reusable primitive rather than create a
+parallel storage model.
 
-A new feature should preferably compose existing primitives or introduce one
-general mechanism that enables several capabilities, rather than adding an
-independent storage subsystem.
+## Security boundary
 
-## Format boundaries
+ZeroS3 currently provides SigV4 authentication, optional TLS, content-integrity
+verification, bounded parsing, and explicit version checks.
 
-The current versions are summarized in [../STATUS.md](../STATUS.md).
+It does not currently provide IAM/STS, policy/ACL evaluation, KMS-backed
+encryption, multi-tenant isolation, or distributed consensus.
 
-Important rules:
+See [../SECURITY.md](../SECURITY.md) and
+[OPERATIONS.md](./OPERATIONS.md) for deployment guidance.
 
-- format changes are explicit;
-- older unsupported readers fail closed;
-- manifests stay physical-layout agnostic;
-- store format is raised before state requiring the newer reader is published;
-- bundle formats are external transport artifacts, not live CAS formats.
+## Related documentation
 
-## Security and trust boundaries
-
-ZeroS3 currently provides:
-
-- SigV4 authentication;
-- optional TLS;
-- digest verification for content;
-- bounded/untrusted parsing on network and bundle inputs.
-
-It does not provide:
-
-- IAM/STS;
-- ACL/policy evaluation;
-- encryption at rest/KMS;
-- multi-tenant isolation;
-- distributed trust/consensus.
-
-See [OPERATIONS.md](./OPERATIONS.md) for deployment guidance.
-
-## Further reading
-
-- [../README.md](../README.md) — overview and quick start
-- [../STATUS.md](../STATUS.md) — maturity / version policy
-- [../S3_COMPAT.md](../S3_COMPAT.md) — S3 contract
-- [OPERATIONS.md](./OPERATIONS.md) — operator procedures
-- [ZEROS3_PROTOCOL.md](./ZEROS3_PROTOCOL.md) — content-native wire protocol
-- [../BUNDLE_FORMAT.md](../BUNDLE_FORMAT.md) — portable snapshot artifacts
-- [BENCHMARKS.md](./BENCHMARKS.md) — measured behavior
+| Document | Purpose |
+|---|---|
+| [../README.md](../README.md) | overview and quick start |
+| [../STATUS.md](../STATUS.md) | maturity and format policy |
+| [../S3_COMPAT.md](../S3_COMPAT.md) | S3 contract |
+| [OPERATIONS.md](./OPERATIONS.md) | operator procedures |
+| [ZEROS3_PROTOCOL.md](./ZEROS3_PROTOCOL.md) | content-native protocol |
+| [../BUNDLE_FORMAT.md](../BUNDLE_FORMAT.md) | portable snapshot artifacts |
+| [BENCHMARKS.md](./BENCHMARKS.md) | measured behavior |
