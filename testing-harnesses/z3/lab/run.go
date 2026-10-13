@@ -47,6 +47,7 @@ type Row struct {
 	Status   string `json:"status"` // ok | invalid | error
 	Error    string `json:"error,omitempty"`
 	Oracle   bool   `json:"oracle,omitempty"`
+	CostNA   bool   `json:"cost_na,omitempty"` // experimental representation: no physical cost defined
 
 	LogicalSize int64 `json:"logical_size"`
 	Account
@@ -218,18 +219,23 @@ func measure(cfg RunConfig, rp Rep, ac *Acct, in *Input, mem corpus.Member, want
 	}
 	row.Oracle = plan.Oracle
 	row.Detail = plan.Detail
-	acct, err := ac.Add(plan)
-	if err != nil {
-		row.Status, row.Error = "error", err.Error()
-		return row, true
-	}
-	row.Account = acct
-	if acct.PackedKnown {
-		row.IncrementalPacked, row.CumulativePacked = i64p(acct.IncrementalPack), i64p(acct.CumulativePack)
-	}
-	total := acct.ReuseBytes + acct.NewBytes
-	if total > 0 {
-		row.ReusePct = 100 * float64(acct.ReuseBytes) / float64(total)
+	var acct Account
+	if plan.NoCost {
+		row.CostNA = true
+	} else {
+		acct, err = ac.Add(plan)
+		if err != nil {
+			row.Status, row.Error = "error", err.Error()
+			return row, true
+		}
+		row.Account = acct
+		if acct.PackedKnown {
+			row.IncrementalPacked, row.CumulativePacked = i64p(acct.IncrementalPack), i64p(acct.CumulativePack)
+		}
+		total := acct.ReuseBytes + acct.NewBytes
+		if total > 0 {
+			row.ReusePct = 100 * float64(acct.ReuseBytes) / float64(total)
+		}
 	}
 	if plan.Rebuild != nil && !plan.Oracle {
 		hc := &hashCounter{h: sha256.New()}
@@ -298,7 +304,7 @@ func fillComparisons(rows []Row) {
 	}
 	for i := range rows {
 		r := &rows[i]
-		if r.Status == "error" {
+		if r.Status == "error" || r.CostNA {
 			continue
 		}
 		if raw != nil && raw.Status == "ok" {

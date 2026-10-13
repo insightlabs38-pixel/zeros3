@@ -63,6 +63,7 @@ func Reps() []Rep {
 		{"delta-replace", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaReplace) }},
 		{"delta-xor", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaXOR) }},
 		{"delta-xorz", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaXORZ) }},
+		{"deflate-ir", analyzeDeflateIR},
 		{"preflate", analyzePreflate},
 		{"preflate-rcdc", analyzePreflateRCDC},
 		{"oracle-logical", analyzeLogicalOracle},

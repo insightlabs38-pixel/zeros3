@@ -569,6 +569,12 @@ func TestRunSanityAcrossFormats(t *testing.T) {
 	}
 	for _, r := range rep.Rows {
 		c := byKey[r.Family+r.Revision+"cdc"]
+		if r.CostNA { // experimental representation: no cost, no comparisons
+			if r.VsCDCBytes != nil || r.VsRawBytes != 0 || r.Incremental != 0 {
+				t.Fatalf("cost-less row %s/%s %s carries comparisons", r.Family, r.Revision, r.Rep)
+			}
+			continue
+		}
 		if r.VsCDCBytes == nil || *r.VsCDCBytes != c.Incremental-r.Incremental {
 			t.Fatalf("vs_cdc inconsistent for %s/%s %s", r.Family, r.Revision, r.Rep)
 		}

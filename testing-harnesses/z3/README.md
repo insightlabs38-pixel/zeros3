@@ -15,6 +15,9 @@ lab/          representation laboratory: accounting, baselines, reports
 cmd/z3corpus  gen | verify | list
 cmd/z3lab     run the laboratory over a corpus
 cmd/z3oracle  Preflate oracle report (Z3-04); needs the optional oracle
+deflate/      native exact RFC1951 parser/replayer + gzip/zlib wrappers (Z3-05)
+cmd/z3deflate characterize the parser/replayer over a corpus
+cmd/z3fetch   opt-in pinned real-world samples (realworld/sources.json)
 oracle/       opt-in external research oracles (preflate-rs wrapper + setup.sh)
 ```
 
@@ -119,3 +122,20 @@ go run ./cmd/z3oracle -corpus "$TMPDIR/z3c" [-ext "$TMPDIR/z3ext"]
 ```
 
 Results: `../results/Z3_04_PREFLATE_ORACLE.md`.
+
+## Native exact DEFLATE (Z3-05)
+
+`deflate.Parse` turns a raw RFC1951 stream into an explicit IR (blocks, dynamic-header encoding choices, raw
+token symbols/extra bits, padding bits) plus the decoded plaintext; `Replay` regenerates the identical bits.
+`ParseGzip`/`ParseZlib` keep wrapper bytes verbatim. Differential oracle: `compress/flate` (Preflate is optional).
+The lab representation `deflate-ir` reports parse/replay success, structure and time; its cost is N/A until Z3-06
+defines a physical encoding.
+
+```sh
+go test ./deflate                                   # golden, malformed, differential, mutation, fuzz seeds
+go test ./deflate -run '^$' -fuzz '^FuzzParse$' -fuzztime 60s
+go test ./deflate -run '^$' -bench . -benchmem
+go run ./cmd/z3deflate -corpus "$TMPDIR/z3c"
+```
+
+Results: `../results/Z3_05_DEFLATE_PARSER.md`. Real-world samples: `realworld/README.md`.

@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"zeros3-z3/deflate"
 )
 
 func TestGzipHeaderLen(t *testing.T) {
@@ -182,5 +184,34 @@ func TestPreflateRealOracle(t *testing.T) {
 	}
 	if supported == 0 {
 		t.Fatal("no supported rows")
+	}
+}
+
+// The native parser and the Preflate oracle must agree on the decoded plaintext.
+func TestNativeParserAgreesWithPreflate(t *testing.T) {
+	bin, ok := PreflateBinary()
+	if !ok {
+		t.Skip("preflate oracle not built (oracle/preflate/setup.sh)")
+	}
+	g := genFamilies(t, "deflate-L6-insert-mid", "deflate-L1-insert-mid", "deflate-fixed-insert-mid", "deflate-L0-insert-mid", "deflate-L9-insert-mid")
+	n := 0
+	for fam, revs := range g {
+		for _, r := range revs {
+			plain, _, res, err := analyzeOracle(bin, r.data)
+			if err != nil || !res.OK {
+				t.Fatalf("%s %s: oracle %v %s", fam, r.Revision, err, res.Err)
+			}
+			s, err := deflate.Parse(r.data, deflate.Options{})
+			if err != nil {
+				t.Fatalf("%s %s: native parse: %v", fam, r.Revision, err)
+			}
+			if !bytes.Equal(plain, s.Plain) {
+				t.Fatalf("%s %s: native and Preflate plaintext differ", fam, r.Revision)
+			}
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatal("nothing compared")
 	}
 }
