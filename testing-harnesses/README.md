@@ -121,6 +121,16 @@ z2_direct_pack/             direct pack ingest
 The historical directory names are retained as source provenance; they are not
 public feature version numbers.
 
+### Research
+
+```text
+z3/                         structure-aware representation research:
+                            deterministic corpus factory + representation
+                            laboratory (separate stdlib-only module)
+```
+
+See [z3/README.md](z3/README.md). It never touches the store format.
+
 ## Running harnesses
 
 Build ZeroS3 from the repository root:

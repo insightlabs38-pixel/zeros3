@@ -261,7 +261,7 @@ func init() {
 						{Name: "archive/data.pkl", Data: pkl, Align: 64},
 						{Name: "archive/byteorder", Data: []byte("little"), Align: 64},
 					}
-					cur := map[string]string{"archive/data.pkl": contentKey(pkl)}
+					cur := map[string]string{"archive/data.pkl": contentKey(pkl), "archive/byteorder": contentKey([]byte("little")), "archive/version": contentKey([]byte("3\n"))}
 					for k, s := range stor {
 						name := fmt.Sprintf("archive/data/%d", k)
 						es = append(es, zipEntry{Name: name, Data: s, Align: 64})
