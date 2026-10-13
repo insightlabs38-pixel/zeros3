@@ -26,6 +26,8 @@ type Seg struct {
 	// Logical returns the segment's decoded content when the container
 	// compresses members (ZIP, chunked arrays); nil otherwise.
 	Logical func() ([]byte, error)
+	// Deflate marks a segment whose bytes are exactly one raw RFC1951 stream.
+	Deflate bool
 }
 
 var (
@@ -124,7 +126,7 @@ func segZip(s Source) ([]Seg, error) {
 			return nil, err
 		}
 		f := f
-		segs = append(segs, Seg{Key: f.Name, Off: off, Len: int64(f.CompressedSize64), Logical: func() ([]byte, error) {
+		segs = append(segs, Seg{Key: f.Name, Off: off, Len: int64(f.CompressedSize64), Deflate: f.Method == zip.Deflate, Logical: func() ([]byte, error) {
 			rc, err := f.Open()
 			if err != nil {
 				return nil, err
@@ -463,7 +465,7 @@ func segNDArray(s Source) ([]Seg, error) {
 			return nil, err
 		}
 		o, l := int64(off), int64(ln)
-		segs = append(segs, Seg{Key: fmt.Sprintf("c%d", i), Off: o, Len: l, Logical: func() ([]byte, error) {
+		segs = append(segs, Seg{Key: fmt.Sprintf("c%d", i), Off: o, Len: l, Deflate: true, Logical: func() ([]byte, error) {
 			raw, err := s.Span(o, l)
 			if err != nil {
 				return nil, err

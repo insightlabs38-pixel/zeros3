@@ -2,6 +2,7 @@
 //
 //	z3corpus gen    -out DIR [-seed N] [-size-kib N] [-revisions N] [-families glob,glob] [-max-mib N]
 //	z3corpus verify -dir DIR [-regen]
+//	z3corpus ext    -out DIR [-seed N] [-size-kib N] [-revisions N]   optional external DEFLATE producers
 //	z3corpus list
 //
 // Generated corpora are scratch data: write them to a temporary directory.
@@ -25,6 +26,8 @@ func main() {
 		gen(os.Args[2:])
 	case "verify":
 		verify(os.Args[2:])
+	case "ext":
+		ext(os.Args[2:])
 	case "list":
 		for _, f := range corpus.Families() {
 			fmt.Printf("%-28s %-12s %s\n", f.Name, f.Format, f.Workload)
@@ -89,4 +92,32 @@ func verify(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("ok: %d members\n", len(m.Members))
+}
+
+// ext writes the optional external-producer corpus; missing tools are skipped.
+func ext(args []string) {
+	cfg := corpus.DefaultConfig()
+	fs := flag.NewFlagSet("ext", flag.ExitOnError)
+	out := fs.String("out", "", "output directory (required)")
+	fs.Uint64Var(&cfg.Seed, "seed", cfg.Seed, "generator seed")
+	fs.IntVar(&cfg.SizeKiB, "size-kib", 256, "approximate base artifact size")
+	fs.IntVar(&cfg.Revisions, "revisions", 2, "revisions after r0")
+	fs.Parse(args)
+	if *out == "" {
+		fmt.Fprintln(os.Stderr, "z3corpus ext: -out is required")
+		os.Exit(2)
+	}
+	if err := os.MkdirAll(*out, 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	m, skipped, err := corpus.GenerateExt(cfg, *out)
+	for _, s := range skipped {
+		fmt.Fprintln(os.Stderr, "skipped:", s)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Printf("wrote %d external-producer members to %s\n", len(m.Members), *out)
 }

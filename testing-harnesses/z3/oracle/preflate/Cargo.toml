@@ -1,0 +1,12 @@
+# Research-only wrapper around preflate-rs. Built outside the repo by setup.sh
+# (this file is copied next to a pinned upstream checkout); not part of any Go module.
+[package]
+name = "z3preflate"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+preflate-rs = { path = "../src/preflate" }
+
+[workspace]
