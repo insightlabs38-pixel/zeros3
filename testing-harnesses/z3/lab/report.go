@@ -282,3 +282,16 @@ func Problems(r *Report) []string {
 	}
 	return out
 }
+
+// ReadJSON reads a report written by WriteJSON.
+func ReadJSON(path string) (*Report, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var r Report
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}

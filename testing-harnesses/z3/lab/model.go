@@ -74,6 +74,9 @@ type Comp struct {
 	ID   ID
 	Size int64
 	Data func() ([]byte, error)
+	// Class optionally labels the component ("plain", "unit", ...) for cost
+	// breakdowns; it never affects identity or accounting totals.
+	Class string
 }
 
 // Piece is one element of a representation's recipe: a reference to a
@@ -127,6 +130,12 @@ type Account struct {
 	PackedNew        int64 `json:"-"` // packed estimate of NewBytes
 	IncrementalPack  int64 `json:"-"` // PackedNew + recipe bytes
 	CumulativePack   int64 `json:"-"`
+	// Per-class breakdown (components with a Class): new bytes, packed new
+	// bytes, references (all, new or reused) and new component counts.
+	ClassNew       map[string]int64 `json:"class_new_bytes,omitempty"`
+	ClassPackedNew map[string]int64 `json:"class_packed_new_bytes,omitempty"`
+	ClassRefs      map[string]int   `json:"class_refs,omitempty"`
+	ClassNewComps  map[string]int   `json:"class_new_comps,omitempty"`
 }
 
 // Acct tracks the components a representation has stored across a family.
@@ -160,6 +169,12 @@ func (a *Acct) Add(p *Plan) (Account, error) {
 			return ac, fmt.Errorf("lab: negative component size %d", c.Size)
 		}
 		ac.Components++
+		if c.Class != "" {
+			if ac.ClassRefs == nil {
+				ac.ClassRefs = map[string]int{}
+			}
+			ac.ClassRefs[c.Class]++
+		}
 		if old, ok := a.store[c.ID]; ok {
 			if old.Size != c.Size {
 				return ac, fmt.Errorf("lab: component %x registered with sizes %d and %d", c.ID[:6], old.Size, c.Size)
@@ -177,6 +192,13 @@ func (a *Acct) Add(p *Plan) (Account, error) {
 		ac.NewComponents++
 		ac.NewBytes += c.Size
 		added = append(added, c)
+		if c.Class != "" {
+			if ac.ClassNew == nil {
+				ac.ClassNew, ac.ClassNewComps = map[string]int64{}, map[string]int{}
+			}
+			ac.ClassNew[c.Class] += c.Size
+			ac.ClassNewComps[c.Class]++
+		}
 	}
 	// UniqueComponents counts distinct ids referenced, new or already stored.
 	ids := map[ID]bool{}
@@ -196,6 +218,12 @@ func (a *Acct) Add(p *Plan) (Account, error) {
 				return ac, err
 			}
 			ac.PackedNew += ps
+			if c.Class != "" {
+				if ac.ClassPackedNew == nil {
+					ac.ClassPackedNew = map[string]int64{}
+				}
+				ac.ClassPackedNew[c.Class] += ps
+			}
 		}
 		ac.IncrementalPack = ac.PackedNew + ac.MetaBytes + ac.IndexBytes
 	}

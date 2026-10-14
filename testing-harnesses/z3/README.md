@@ -16,7 +16,9 @@ cmd/z3corpus  gen | verify | list
 cmd/z3lab     run the laboratory over a corpus
 cmd/z3oracle  Preflate oracle report (Z3-04); needs the optional oracle
 deflate/      native exact RFC1951 parser/replayer + gzip/zlib wrappers (Z3-05)
+ir/           block-local exact reconstruction IR (skeleton + units), explicit codecs E1/E2 (Z3-06)
 cmd/z3deflate characterize the parser/replayer over a corpus
+cmd/z3ir      unit-survival, entropy and family-cost reports (Z3-06)
 cmd/z3fetch   opt-in pinned real-world samples (realworld/sources.json)
 oracle/       opt-in external research oracles (preflate-rs wrapper + setup.sh)
 ```
@@ -139,3 +141,33 @@ go run ./cmd/z3deflate -corpus "$TMPDIR/z3c"
 ```
 
 Results: `../results/Z3_05_DEFLATE_PARSER.md`. Real-world samples: `realworld/README.md`.
+
+## Block-local reconstruction IR (Z3-06)
+
+`ir.Encode(stream, cfg)` splits the exact DEFLATE reconstruction metadata of a parsed stream into a **skeleton**
+(block table with exact dynamic headers, stored/tail padding, a unit index, stream length + CRC-32) and
+content-addressable **units**: runs of the literal/match token sequence *without literal byte values* (those live in
+the semantic plaintext). Units cut the metadata, never the bitstream; the bits of a block are a function of its header
+and tokens, so `ir.Reconstruct(skeleton, units, plaintext)` replays the original bytes exactly (length and CRC are
+checked before a byte is written). Cut policies (`ir.Policy`): whole stream, native block, block groups, content-defined
+block groups, and token-run units cut at rolling-hash positions of the plaintext (default 1-64 KiB).
+
+| codec | unit representation |
+|---|---|
+| `E1` | byte oriented: 16-bit control word (length symbol, distance code, length extra) + varint literal run + distance extra bytes |
+| `E1Flate` | E1 through `compress/flate` (baseline) |
+| `E2` | adaptive binary range coder over the same fields, recent-distance cache, models reset per unit |
+
+Lab representations (all rebuilt from skeleton + units + semantic plaintext chunks only, compared by length, SHA-256
+and bytes): `ir-mono-e2`, `ir-block-e2[-pu]`, `ir-group256k-e2`, `ir-cblk64k-e2`, `ir-tok{1,2,4,8,16,64}k-e2`,
+`ir-tok16k-e2-pu` (`-pu`: plaintext cut at unit boundaries instead of CDC), `ir-tok16k-e1[f]`.
+
+```sh
+go run ./cmd/z3ir units   -corpus "$TMPDIR/z3c" -families 'deflate-L6-*'   # unit survival per policy
+go run ./cmd/z3ir entropy -corpus "$TMPDIR/z3c"                             # IR size and entropy per codec
+go run ./cmd/z3ir family  -corpus "$TMPDIR/z3c" -ref-bytes 35 -json r.json  # cost with plaintext/unit/ref breakdown
+go test ./ir ./lab -short                                                   # round trips, malformed, locality
+go test ./ir -run '^$' -fuzz '^FuzzReconstruct$' -fuzztime 60s              # also FuzzUnitDecode/FuzzSkeleton/FuzzEncodeDecode
+```
+
+Results: `../results/Z3_06_DEFLATE_IR.md`.

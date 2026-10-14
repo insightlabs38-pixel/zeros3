@@ -14,6 +14,7 @@ import (
 type Input struct {
 	Family, Format string
 	Revision       string
+	Mutation       string // corpus mutation label of this revision (informational)
 	Src            Source
 	Prev           *Input // previous revision of the same family, or nil
 	Opts           Options
@@ -22,6 +23,10 @@ type Input struct {
 	segsErr error
 	segsOK  bool
 	dsteps  map[deltaMode]map[string]dstep
+
+	// parsed caches native-parser results per stream offset, so several
+	// DEFLATE representations of one revision parse it once.
+	parsed map[int64]*parsedStream
 }
 
 // Options bound and tune laboratory experiments.
@@ -53,7 +58,7 @@ type Rep struct {
 
 // Reps returns the built-in representations in report order.
 func Reps() []Rep {
-	return []Rep{
+	reps := []Rep{
 		{"raw", analyzeRaw},
 		{"cdc", func(in *Input) (*Plan, error) { return analyzeChunked(in, cdcSplit) }},
 		{"fixed-64k", func(in *Input) (*Plan, error) { return analyzeChunked(in, fixedSplit(64<<10)) }},
@@ -70,6 +75,10 @@ func Reps() []Rep {
 		{"oracle-refmask", func(in *Input) (*Plan, error) { return analyzeRefMask(in, false) }},
 		{"oracle-refmask+refs", func(in *Input) (*Plan, error) { return analyzeRefMask(in, true) }},
 	}
+	for _, sp := range IRSpecs() {
+		reps = append(reps, irRep(sp))
+	}
+	return reps
 }
 
 // spanComp is a component whose payload is a span of a source.
