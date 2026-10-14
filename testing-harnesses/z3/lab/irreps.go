@@ -107,6 +107,12 @@ func IRSpecs() []IRSpec {
 		{Name: "ir-tok64k-e2", Codec: ir.E2, Policy: pol(ir.PTokRun, 64<<10)},
 		{Name: "ir-tok16k-e1", Codec: ir.E1, Policy: pol(ir.PTokRun, 16<<10)},
 		{Name: "ir-tok16k-e1f", Codec: ir.E1Flate, Policy: pol(ir.PTokRun, 16<<10)},
+		{Name: "irp-mono", Codec: ir.Pred, Policy: pol(ir.PStream, 0), Profile: ir.AutoProfile},
+		{Name: "irp-tok1k", Codec: ir.Pred, Policy: pol(ir.PTokRun, 1<<10), Profile: ir.AutoProfile},
+		{Name: "irp-tok2k", Codec: ir.Pred, Policy: pol(ir.PTokRun, 2<<10), Profile: ir.AutoProfile},
+		{Name: "irp-tok4k", Codec: ir.Pred, Policy: pol(ir.PTokRun, 4<<10), Profile: ir.AutoProfile},
+		{Name: "irp-tok16k", Codec: ir.Pred, Policy: pol(ir.PTokRun, 16<<10), Profile: ir.AutoProfile},
+		{Name: "irp-tok64k", Codec: ir.Pred, Policy: pol(ir.PTokRun, 64<<10), Profile: ir.AutoProfile},
 	}
 }
 

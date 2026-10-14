@@ -39,7 +39,7 @@ func TestIRRepsExact(t *testing.T) {
 func TestIRAppendReusesUnits(t *testing.T) {
 	dir := tinyCorpus(t, "deflate-L6-append")
 	cfg := testCfg(dir)
-	cfg.Reps = []string{"cdc", "ir-tok2k-e2"}
+	cfg.Reps = []string{"cdc", "ir-tok2k-e2", "irp-tok2k"}
 	rep, err := Run(cfg)
 	if err != nil {
 		t.Fatal(err)

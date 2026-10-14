@@ -403,3 +403,18 @@ func analyzePreflateOpt(in *Input, reconCDC bool) (*Plan, error) {
 	}
 	return p, nil
 }
+
+// PreflateRecon runs the optional oracle on one raw DEFLATE stream and returns
+// the reconstruction-blob size and the oracle's analyze time in ns. ok=false if
+// the oracle is absent or rejects the stream.
+func PreflateRecon(raw []byte) (recon int, analyzeNS int64, ok bool) {
+	bin, have := PreflateBinary()
+	if !have {
+		return 0, 0, false
+	}
+	plain, rc, res, err := analyzeOracle(bin, raw)
+	if err != nil || !res.OK || len(plain) == 0 {
+		return 0, 0, false
+	}
+	return len(rc), res.NS, true
+}
