@@ -15,6 +15,13 @@ import (
 	"zeros3-z3/binref"
 )
 
+// Total entries read over all symbol / relocation sections: sections may
+// overlap in the file, so per-section bounds alone would multiply.
+var (
+	symBudget   = maxSyms
+	relocBudget = maxRelocs
+)
+
 var (
 	ErrMalformed   = errors.New("elfz3: malformed")
 	ErrUnsupported = errors.New("elfz3: unsupported")
@@ -53,12 +60,6 @@ func bad(f string, a ...any) error { return fmt.Errorf("%w: %s", ErrMalformed, f
 
 func span(off, n uint64, size int) bool {
 	return off <= uint64(size) && n <= uint64(size)-off
-}
-
-type iv struct {
-	off, end int
-	name     string
-	sec      int // section index or -1
 }
 
 // Parse validates data as an ELF64 LE file and returns its Image.
@@ -114,25 +115,26 @@ func Parse(data []byte) (*binref.Image, *Info, error) {
 	}
 	info.Sections = secs
 
-	// regions: header tables and file-backed sections, first-come on overlap.
-	ivs := []iv{{0, 64, "ehdr", -1}}
+	// regions: header tables and sections (NOBITS become virtual-only spans).
+	spans := []binref.Span{{Name: "ehdr", Off: 0, End: 64}}
 	if phnum > 0 {
-		ivs = append(ivs, iv{int(phoff), int(phoff + phnum*phentsize), "phdr", -1})
+		spans = append(spans, binref.Span{Name: "phdr", Off: int(phoff), End: int(phoff + phnum*phentsize)})
 	}
 	if shnum > 0 {
-		ivs = append(ivs, iv{int(shoff), int(shoff + shnum*shentsize), "shdr", -1})
+		spans = append(spans, binref.Span{Name: "shdr", Off: int(shoff), End: int(shoff + shnum*shentsize)})
 	}
-	for i, s := range secs {
-		if s.Type != 0 && s.Type != 8 && s.Size > 0 {
-			ivs = append(ivs, iv{int(s.Off), int(s.Off + s.Size), s.Name, i})
+	for _, s := range secs {
+		alloc, ex := s.Flags&shfAlloc != 0, s.Flags&shfExec != 0
+		switch {
+		case s.Type == 0 || s.Size == 0:
+		case s.Type == 8:
+			if alloc {
+				spans = append(spans, binref.Span{Name: s.Name, Off: 0, End: 0, VA: s.Addr, VSize: s.Size, Mapped: true, Exec: ex})
+			}
+		default:
+			spans = append(spans, binref.Span{Name: s.Name, Off: int(s.Off), End: int(s.Off + s.Size), VA: s.Addr, Mapped: alloc, Exec: alloc && ex})
 		}
 	}
-	sort.SliceStable(ivs, func(a, b int) bool {
-		if ivs[a].off != ivs[b].off {
-			return ivs[a].off < ivs[b].off
-		}
-		return ivs[a].end > ivs[b].end
-	})
 	im := &binref.Image{Data: data}
 	switch info.Machine {
 	case 62:
@@ -140,33 +142,7 @@ func Parse(data []byte) (*binref.Image, *Info, error) {
 	case 183:
 		im.Arch = "aarch64"
 	}
-	cur := 0
-	add := func(r binref.Region) { im.Regions = append(im.Regions, r) }
-	for _, v := range ivs {
-		if v.end <= cur {
-			continue
-		}
-		if v.off > cur {
-			add(binref.Region{Name: "gap", Off: cur, Len: v.off - cur})
-			cur = v.off
-		}
-		r := binref.Region{Name: v.name, Off: cur, Len: v.end - cur}
-		if v.sec >= 0 && secs[v.sec].Flags&shfAlloc != 0 {
-			r.Mapped, r.VA = true, secs[v.sec].Addr+uint64(cur-v.off)
-			r.Exec = secs[v.sec].Flags&shfExec != 0
-		}
-		add(r)
-		cur = v.end
-	}
-	if cur < len(data) {
-		add(binref.Region{Name: "tail", Off: cur, Len: len(data) - cur})
-	}
-	// NOBITS sections occupy addresses but no file bytes: zero-length regions at the end.
-	for _, s := range secs {
-		if s.Type == 8 && s.Flags&shfAlloc != 0 && s.Size > 0 {
-			add(binref.Region{Name: s.Name, Off: len(data), VA: s.Addr, VSize: s.Size, Mapped: true, Exec: s.Flags&shfExec != 0})
-		}
-	}
+	im.Regions = binref.Partition(len(data), spans)
 	if err := im.Prepare(); err != nil {
 		return nil, nil, err
 	}
@@ -174,6 +150,7 @@ func Parse(data []byte) (*binref.Image, *Info, error) {
 	// symbols (and their value fields as table slots)
 	exec := info.Type == 2 || info.Type == 3
 	symCount := map[int]uint64{}
+	symLeft, relocLeft := symBudget, relocBudget
 	for i, s := range secs {
 		if s.Type != 2 && s.Type != 11 {
 			continue
@@ -182,6 +159,9 @@ func Parse(data []byte) (*binref.Image, *Info, error) {
 			return nil, nil, bad("symbol table %d", i)
 		}
 		n := s.Size / 24
+		if symLeft -= int(n); symLeft < 0 {
+			return nil, nil, bad("symbol entries exceed the budget")
+		}
 		symCount[i] = n
 		str := secs[s.Link]
 		strb := data[str.Off : str.Off+str.Size]
@@ -219,6 +199,9 @@ func Parse(data []byte) (*binref.Image, *Info, error) {
 			return nil, nil, bad("relocation section %d", i)
 		}
 		n := s.Size / ent
+		if relocLeft -= int(n); relocLeft < 0 {
+			return nil, nil, bad("relocation entries exceed the budget")
+		}
 		if s.Link != 0 {
 			if _, ok := symCount[int(s.Link)]; !ok {
 				return nil, nil, bad("relocation section %d links a non-symbol table", i)
@@ -275,8 +258,6 @@ func relocEnc(machine uint16, typ uint32) (binref.Enc, int) {
 			return binref.EncAbs64, 8
 		case 2, 4: // PC32, PLT32
 			return binref.EncRel32, 4
-		case 10, 11: // 32, 32S
-			return binref.EncAbs32, 4
 		}
 	case 183: // AArch64
 		switch typ {

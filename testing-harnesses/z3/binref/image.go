@@ -43,7 +43,6 @@ type Enc uint8
 const (
 	EncRel32 Enc = iota + 1 // int32 relative to the end of the slot (+Bias): branches, RIP-relative
 	EncAbs64                // absolute VA
-	EncAbs32                // absolute VA, 32 bits
 	EncRVA32                // VA - Image.Base, 32 bits
 	EncOff32                // VA - Image.Base2, 32 bits (Go pclntab: offsets from the text start)
 )
@@ -168,8 +167,6 @@ func decodeSlot(e Enc, bias uint8, slotVA, base, base2, v uint64) uint64 {
 	switch e {
 	case EncRel32:
 		return slotVA + 4 + uint64(bias) + uint64(int64(int32(uint32(v))))
-	case EncAbs32:
-		return uint64(uint32(v))
 	case EncRVA32:
 		return base + uint64(uint32(v))
 	case EncOff32:
@@ -182,8 +179,6 @@ func encodeSlot(e Enc, bias uint8, slotVA, base, base2, t uint64) uint64 {
 	switch e {
 	case EncRel32:
 		return uint64(uint32(t - slotVA - 4 - uint64(bias)))
-	case EncAbs32:
-		return uint64(uint32(t))
 	case EncRVA32:
 		return uint64(uint32(t - base))
 	case EncOff32:
@@ -215,4 +210,59 @@ func (im *Image) InExec(va uint64) bool {
 	}
 	i := im.regionAtVA(va)
 	return i >= 0 && im.Regions[i].Exec
+}
+
+// Span is a candidate region before partitioning: [Off,End) of the file.
+// Spans with Off==End and VSize>0 are virtual-only (NOBITS / zero raw size).
+type Span struct {
+	Name     string
+	Off, End int
+	VA       uint64
+	VSize    uint64
+	Mapped   bool
+	Exec     bool
+}
+
+// Partition turns possibly overlapping spans into an exact partition of
+// [0,size): earlier offsets win, gaps become "gap" regions, the part after the
+// last span "tail"; virtual-only spans are appended as zero-length regions.
+func Partition(size int, spans []Span) []Region {
+	sort.SliceStable(spans, func(a, b int) bool {
+		if spans[a].Off != spans[b].Off {
+			return spans[a].Off < spans[b].Off
+		}
+		return spans[a].End > spans[b].End
+	})
+	var out []Region
+	var virt []Region
+	cur := 0
+	for _, v := range spans {
+		if v.Off == v.End {
+			if v.Mapped && v.VSize > 0 {
+				virt = append(virt, Region{Name: v.Name, Off: size, VA: v.VA, VSize: v.VSize, Mapped: true, Exec: v.Exec})
+			}
+			continue
+		}
+		if v.Off < 0 || v.End > size || v.End <= cur {
+			continue
+		}
+		if v.Off > cur {
+			out = append(out, Region{Name: "gap", Off: cur, Len: v.Off - cur})
+			cur = v.Off
+		}
+		r := Region{Name: v.Name, Off: cur, Len: v.End - cur}
+		if v.Mapped {
+			r.Mapped, r.Exec = true, v.Exec
+			r.VA = v.VA + uint64(cur-v.Off)
+			if v.VSize > uint64(v.End-v.Off) {
+				r.VSize = v.VSize - uint64(cur-v.Off)
+			}
+		}
+		out = append(out, r)
+		cur = v.End
+	}
+	if cur < size {
+		out = append(out, Region{Name: "tail", Off: cur, Len: size - cur})
+	}
+	return append(out, virt...)
 }

@@ -7,6 +7,28 @@ import (
 	"zeros3-z3/binref"
 )
 
+func runStat(args []string) {
+	fs := flag.NewFlagSet("stat", flag.ExitOnError)
+	a := fs.String("bin", "", "")
+	um := fs.String("units", "auto", "")
+	fs.Parse(args)
+	b := mustLoad(*a)
+	n, _, err := normalize(b, cfg{setFull, binref.IdentSymbol, *um})
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Printf("%+v\n", n.Stat)
+	if b.Pe != nil {
+		i := b.Pe
+		fmt.Printf("PE: sections %d base-reloc entries %d (slots %d) import descriptors %d exports %d RUNTIME_FUNCTION %d coff symbols %d certificate bytes %d slots by directory %v\n", len(i.Sections), i.BaseRelocs, i.RelocSlots, i.Imports, i.Exports, i.Pdata, i.Syms, i.CertSize, i.SlotsByDir)
+	}
+	for _, s := range n.Streams {
+		if s.Kind == "refs" {
+			fmt.Printf("refs stream of %s: %d B\n", b.Im.Regions[s.Region].Name, len(s.Data))
+		}
+	}
+}
+
 func runDbg(args []string) {
 	fs := flag.NewFlagSet("dbg", flag.ExitOnError)
 	a := fs.String("base", "", "")

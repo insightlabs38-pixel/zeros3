@@ -188,6 +188,23 @@ func buildOne(root, work, goos, goarch string, fl Flags, m Mut, out string) erro
 	return nil
 }
 
+// buildOther builds an unrelated program (cmd/z3tar) with the same flags: the
+// control for the admission rule.
+func buildOther(root, goos, goarch string, fl Flags, out string) error {
+	args := append([]string{"build"}, fl.Args...)
+	args = append(args, "-o", out, "./cmd/z3tar")
+	cmd := exec.Command(goTool(), args...)
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
+	if gorootCopy != "" {
+		cmd.Env = append(cmd.Env, "GOROOT="+gorootCopy, "GOTOOLCHAIN=local")
+	}
+	if o, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("other %s: %v\n%s", fl.Name, err, o)
+	}
+	return nil
+}
+
 func runCorpus(args []string) {
 	fs := flag.NewFlagSet("corpus", flag.ExitOnError)
 	out := fs.String("out", "", "output directory (outside the repository)")
@@ -243,6 +260,15 @@ func runCorpus(args []string) {
 			sum := sha256.Sum256(data)
 			arts = append(arts, Artifact{*goos, *goarch, fl.Name, name, file, int64(len(data)), hex.EncodeToString(sum[:])})
 			fmt.Fprintf(os.Stderr, "built %s/%s %-6s %-6s %d\n", *goos, *goarch, fl.Name, name, len(data))
+		}
+		if fl.Name == "std" || fl.Name == "strip" {
+			file := filepath.Join(dir, "other"+ext(*goos))
+			if err := buildOther(root, *goos, *goarch, fl, file); err != nil {
+				fatal(err)
+			}
+			data, _ := os.ReadFile(file)
+			sum := sha256.Sum256(data)
+			arts = append(arts, Artifact{*goos, *goarch, fl.Name, "other", file, int64(len(data)), hex.EncodeToString(sum[:])})
 		}
 	}
 	ver, _ := exec.Command("go", "version").Output()

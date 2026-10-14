@@ -250,3 +250,28 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+// Overlapping relocation sections must not multiply the work.
+func TestRelocationAmplification(t *testing.T) {
+	secs := goodSections()
+	for i := 0; i < 6; i++ {
+		secs = append(secs, sh{name: ".rela.dyn", typ: 4, flags: 2, data: bytes.Repeat(rela(dataVA, 8, 0, textVA+16), 4), link: 5, ents: 24})
+	}
+	data := build(secs, -1)
+	// point every extra rela section at the same file range as the first one
+	le := binary.LittleEndian
+	shoff := int(le.Uint64(data[40:]))
+	first := le.Uint64(data[shoff+7*64+24:])
+	for i := 8; i < 13; i++ {
+		le.PutUint64(data[shoff+i*64+24:], first)
+	}
+	if _, _, err := Parse(data); err != nil {
+		t.Fatalf("fixture must parse: %v", err)
+	}
+	old := relocBudget
+	relocBudget = 20 // 7 sections x 4 entries + 1
+	defer func() { relocBudget = old }()
+	if _, _, err := Parse(data); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("err = %v", err)
+	}
+}

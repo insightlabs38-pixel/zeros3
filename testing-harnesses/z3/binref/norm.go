@@ -39,13 +39,15 @@ type Stream struct {
 
 // Stats counts what Normalize did.
 type Stats struct {
-	Listed   [nClass]int // candidate slots per class
-	Accepted [nClass]int // slots recorded as references
-	Intra    int         // target in the same unit as the source (left raw: position independent)
-	Unmapped int         // target outside every mapped region
-	Overlap  int
-	Collide  int // target unit id shared by several units (left raw)
-	Units    int // referenced units in the table
+	Listed    [nClass]int // candidate slots per class
+	Accepted  [nClass]int // slots recorded as references
+	Intra     int         // target in the same unit as the source (left raw: position independent)
+	Unmapped  int         // target outside every mapped region
+	Overlap   int
+	Collide   int    // target unit id shared by several units (left raw)
+	Units     int    // referenced units in the table
+	ByEnc     [5]int // accepted references per encoding
+	RegionRel int    // references recorded relative to a region (no unit contained the target)
 }
 
 // Norm is the normalized representation of one image.
@@ -78,7 +80,20 @@ func uv(b []byte, v uint64) []byte { return binary.AppendUvarint(b, v) }
 // overlaps. Zero or oversized Size extends to the next unit / region end.
 func (im *Image) CleanUnits(us []Unit) []Unit {
 	us = append([]Unit(nil), us...)
-	sort.SliceStable(us, func(a, b int) bool { return us[a].VA < us[b].VA })
+	sort.SliceStable(us, func(a, b int) bool {
+		if us[a].VA != us[b].VA {
+			return us[a].VA < us[b].VA
+		}
+		return us[a].Size > us[b].Size // aliases at one address: the sized one first
+	})
+	k := 0
+	for i, u := range us { // one unit per address
+		if i == 0 || u.VA != us[k-1].VA {
+			us[k] = u
+			k++
+		}
+	}
+	us = us[:k]
 	var out []Unit
 	for i, u := range us {
 		ri := im.regionAtVA(u.VA)
@@ -269,8 +284,12 @@ func Normalize(im *Image, slots []Slot, units []Unit, ident Ident) (*Norm, error
 		} else {
 			ui = -1
 		}
+		if ui < 0 {
+			st.RegionRel++
+		}
 		byRegion[a.sr] = append(byRegion[a.sr], rec{a, ui})
 		st.Accepted[a.Class]++
+		st.ByEnc[a.Enc]++
 	}
 	// 4. streams.
 	var hdr []byte

@@ -20,7 +20,7 @@ Normalize(image, slots, units, identity) → streams:
 Reconstruct(streams) → original bytes          (no access to the Image or the parser)
 ```
 
-A slot is `{offset, encoding (rel32+bias | abs64 | abs32 | rva32 | text-offset32), class}`. The *target* is decoded from the
+A slot is `{offset, encoding (rel32+bias | abs64 | rva32 | text-offset32), class}`. The *target* is decoded from the
 slot's own bytes, so `encode(decode(v)) == v` is checked per slot and the exact reconstruction does not depend on what
 the scan believed the instruction was: a false positive costs one wasted reference record, never correctness.
 A reference is recorded as `(slot delta, encoding, target unit id, offset in unit)` or, when no unit contains the target,
@@ -32,7 +32,7 @@ Every normalized row reported below was rebuilt from its streams and compared by
 (`normRep` aborts otherwise). The ELF parser rejects: header/phdr/shdr tables outside the file, section ranges that leave
 the file or overflow, bad section-name index, string indexes outside their table, unterminated or over-long names, symbol
 tables with wrong entry size or link, relocation sections with wrong entry size or link, relocations naming a symbol past
-the table. ELF32 / big-endian are `ErrUnsupported`. Everything else stays in opaque regions.
+the table. Symbol and relocation entries are budgeted over all sections together (sections may overlap in the file, so per-section bounds alone would multiply). ELF32 / big-endian are `ErrUnsupported`. Everything else stays in opaque regions.
 
 ## B. Corpus
 
@@ -66,27 +66,27 @@ Percent of the *current* build that is new bytes (new CDC chunk bytes, productio
 
 | pair | raw CDC | fixed 4K | section | sect+CDC | func ranges | reloc+struct | x86 refs | full | ORACLE | CDC-4K raw | CDC-4K full | Δ raw | Δ full |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
-| const+string r0→r1 | 77.1 | 97.8 | 96.0 | 76.7 | 68.1 | 78.2 | 52.3 | 51.3 | 41.8 | 66.5 | 36.5 | 28.2 | 26.5 |
+| const+string r0→r1 | 77.1 | 97.8 | 96.0 | 76.7 | 68.1 | 78.2 | 52.3 | 51.3 | 41.8 | 66.5 | 36.6 | 28.2 | 26.5 |
 | add function r1→r2 | 81.1 | 90.0 | 99.9 | 81.2 | 69.3 | 82.9 | 56.8 | 55.8 | 46.5 | 65.2 | 33.4 | 28.5 | 26.4 |
 | change body r2→r3 | 45.1 | 44.8 | 87.5 | 37.2 | 35.6 | 38.4 | 37.2 | 39.9 | 38.4 | 28.5 | 28.0 | 26.0 | 26.0 |
 | remove function r2→r1 | 81.1 | 90.0 | 99.9 | 81.2 | 69.3 | 82.8 | 56.8 | 55.8 | 46.5 | 65.2 | 33.4 | 28.4 | 26.4 |
-| early insert r2→early | 88.7 | 98.7 | 100.0 | 88.6 | 85.9 | 90.7 | 69.7 | 73.0 | 63.4 | 72.7 | 47.9 | 31.2 | 25.9 |
-| reorder r2→swap | 43.9 | 33.9 | 90.5 | 38.5 | 36.8 | 38.7 | 40.9 | 42.9 | 38.7 | 26.1 | 26.0 | 23.9 | 23.9 |
-| data table r2→data | 74.9 | 70.4 | 93.7 | 70.9 | 61.0 | 70.7 | 49.6 | 52.2 | 42.6 | 58.9 | 30.5 | 20.5 | 19.1 |
-| new packages r2→deps | 90.7 | 95.6 | 99.9 | 93.9 | 89.8 | 95.5 | 74.9 | 77.7 | 68.2 | 78.6 | 54.4 | 34.0 | 29.6 |
+| early insert r2→early | 88.7 | 98.7 | 100.0 | 88.6 | 85.9 | 90.7 | 69.7 | 73.0 | 63.4 | 72.7 | 47.8 | 31.2 | 25.9 |
+| reorder r2→swap | 43.9 | 33.9 | 90.5 | 38.5 | 36.8 | 38.7 | 40.9 | 42.9 | 38.7 | 26.1 | 25.9 | 23.9 | 23.9 |
+| data table r2→data | 74.9 | 70.4 | 93.7 | 70.9 | 61.0 | 70.7 | 49.6 | 52.2 | 42.6 | 58.9 | 30.4 | 20.5 | 19.1 |
+| new packages r2→deps | 90.7 | 95.6 | 99.9 | 93.9 | 89.8 | 95.5 | 74.9 | 77.7 | 68.2 | 78.6 | 54.5 | 34.0 | 29.6 |
 
 #### linux/amd64 strip: new bytes as % of the current build
 
 | pair | raw CDC | fixed 4K | section | sect+CDC | reloc+struct | x86 refs | full | ORACLE | CDC-4K raw | CDC-4K full | Δ raw | Δ full |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
-| const+string r0→r1 | 69.5 | 96.7 | 98.4 | 71.0 | 72.2 | 33.5 | 31.6 | 19.7 | 58.7 | 14.0 | 3.6 | 1.3 |
+| const+string r0→r1 | 69.5 | 96.7 | 98.4 | 71.0 | 72.2 | 33.5 | 31.6 | 19.7 | 58.7 | 14.1 | 3.6 | 1.3 |
 | add function r1→r2 | 74.2 | 85.1 | 99.9 | 75.4 | 77.4 | 36.9 | 34.9 | 24.4 | 55.7 | 6.5 | 3.4 | 0.3 |
 | change body r2→r3 | 21.4 | 17.8 | 85.8 | 12.2 | 13.9 | 12.2 | 16.1 | 14.6 | 2.3 | 2.0 | 0.1 | 0.1 |
 | remove function r2→r1 | 74.2 | 85.1 | 99.9 | 75.4 | 77.4 | 36.9 | 34.9 | 24.4 | 55.7 | 6.5 | 3.4 | 0.3 |
-| early insert r2→early | 88.4 | 98.1 | 99.9 | 88.3 | 90.8 | 64.6 | 69.1 | 56.6 | 70.7 | 33.4 | 11.9 | 4.6 |
-| reorder r2→swap | 18.2 | 1.6 | 85.8 | 13.8 | 13.0 | 17.6 | 19.6 | 14.2 | 2.3 | 2.3 | 0.1 | 0.1 |
+| early insert r2→early | 88.4 | 98.1 | 99.9 | 88.3 | 90.8 | 64.6 | 69.1 | 56.6 | 70.7 | 33.3 | 11.9 | 4.6 |
+| reorder r2→swap | 18.2 | 1.6 | 85.8 | 13.8 | 13.0 | 17.6 | 19.6 | 14.2 | 2.3 | 2.2 | 0.1 | 0.1 |
 | data table r2→data | 72.5 | 55.9 | 99.9 | 70.0 | 67.8 | 37.5 | 41.0 | 28.6 | 57.4 | 15.0 | 2.2 | 0.2 |
-| new packages r2→deps | 87.9 | 93.5 | 99.9 | 90.9 | 92.8 | 61.9 | 65.7 | 53.3 | 73.4 | 36.1 | 9.8 | 3.4 |
+| new packages r2→deps | 87.9 | 93.5 | 99.9 | 90.9 | 92.8 | 61.9 | 65.7 | 53.3 | 73.4 | 36.3 | 9.8 | 3.4 |
 
 Columns: `section` = one object per section (any change dirties the section); `sect+CDC` = CDC inside each section;
 `func ranges` = one object per symbol-delimited function range (8.5 k objects, +96 B each not included here);
@@ -96,7 +96,7 @@ bound, not an achievable cost**; `CDC-4K` = the same gear CDC with 1/16 of the p
 sensitivity only; `Δ` = pairwise copy/literal delta against the previous build (24-byte anchors, literals DEFLATEd, 6 B per copy)
 over the raw file, or over the normalized payload plus reference streams.
 
-**Plain structure does not help.** `sect+CDC` is within 1-2 points of raw CDC in every shifted-layout pair; whole-section objects
+**Plain structure does not help.** `sect+CDC` is within 1-4 points of raw CDC in every shifted-layout pair; whole-section objects
 are 99.9% new; function ranges save 12 points on an add (81.1 → 69.3) but need 8.5 k objects, which at the lab's 96 B per reference
 is another 13 points (82.3% total). Sections still contain every moved address.
 
@@ -152,7 +152,7 @@ imprecision harmless.
 
 **Production CDC cannot cash the result in once the layout shifts.** For the stripped early insert the masked `.text` is identical to the
 base except 13 runs / 55 bytes, yet 684 kB of its 2.04 MB (27 chunks) are new: each tiny residual dirties a 64 KiB-average chunk. The same data
-under `CDC-4K` is 33.4% (add: 6.5%) and under pairwise delta 4.6% (add: 0.3%). **The binding constraint after normalization is chunk
+under `CDC-4K` is 33.3% (add: 6.5%) and under pairwise delta 4.6% (add: 0.3%). **The binding constraint after normalization is chunk
 granularity, not reference coverage.**
 
 ## F. Target identity (question 4) and layout movement (question 5)
@@ -165,7 +165,7 @@ Cells: production-CDC % / pairwise-delta %.
 |---|---|--:|--:|--:|--:|
 | add function r1→r2 | auto | 56.1 / 27.3 | 54.4 / 27.1 | 55.8 / 26.4 | 54.3 / 26.5 |
 | early insert r2→early | auto | 73.0 / 27.3 | 71.3 / 26.9 | 73.0 / 25.9 | 96.3 / 27.5 |
-| reorder r2→swap | auto | 39.7 / 23.9 | 40.2 / 23.9 | 42.9 / 23.9 | 38.9 / 23.9 |
+| reorder r2→swap | auto | 39.7 / 23.9 | 40.2 / 23.9 | 42.9 / 23.9 | 38.6 / 23.9 |
 
 ##### target identities, strip (CDC % / pairwise-delta %)
 
@@ -188,7 +188,7 @@ Cells: production-CDC % / pairwise-delta %.
 * **Ordinal** (control) loses to symbol under movement (5.5 vs 4.6) and is the worst identity when units are derived from CALL targets (6.9): rank shifts for every unit after an insertion, and spurious derived starts shift it further.
 * **Reorder** (`swap`): unstripped Δ 23.9 → 23.9 (debug-bound); stripped 0.1 → 0.1 — a one-function reorder inside a package is already
   nearly free under delta and masking does not hurt it. Under production CDC masking gives nothing here (raw 18.2; 17.6 with x86 refs, 19.6 with all classes) because it adds a metadata stream to a layout that barely moved.
-* **Insertion before everything** (`early`): the hard case. Stripped Δ 11.9 → 4.6, CDC-4K 70.7 → 33.4, production CDC 88.4 → 69.1.
+* **Insertion before everything** (`early`): the hard case. Stripped Δ 11.9 → 4.6, CDC-4K 70.7 → 33.3, production CDC 88.4 → 69.1.
   The remaining 4.6% is mostly references from code to *data* targets: without data symbols the target is only "section + offset", which
   shifts when data moves (Go's stripped binaries have function names via pclntab but no data symbols).
 
@@ -319,8 +319,8 @@ independent opaque regions).
 
 | flags | file | payload | meta (refs+units+regions) | meta DEFLATEd | refs | units | meta % of file | objects (CDC) |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
-| std | 6285736 | 6285736 | 602296 | 275017 | 85399 | 5671 | 9.6% | 124 |
-| strip | 4219040 | 4219040 | 528952 | 226904 | 79468 | 4181 | 12.5% | 84 |
+| std | 6285736 | 6285736 | 602296 | 274894 | 85399 | 5671 | 9.6% | 124 |
+| strip | 4219040 | 4219040 | 528952 | 226808 | 79468 | 4181 | 12.5% | 84 |
 
 Reference records average 6.7-7.1 B (4 B unit id + offset + kind + delta): 9.6-12.5% of the file before compression (4.5-5.4% DEFLATEd).
 That is the price of a *first* copy; an unrelated binary pays it with no reuse (see Z3-13K admission). Unit table: 4-6 k entries,
@@ -330,16 +330,16 @@ one 4-byte id and a VA delta each (about 5 B/entry).
 
 | step | MiB/s |
 |---|--:|
-| parse (ELF + pclntab) | 5668 |
-| x86 + pointer scan | 456 |
-| normalize (given slots, units) | 184 |
-| reconstruct | 1418 |
-| SHA-256 verify (reference) | 1394 |
+| parse (container + pclntab) | 4290 |
+| x86 + pointer scan | 459 |
+| normalize (given slots, units) | 191 |
+| reconstruct | 1731 |
+| SHA-256 verify (reference) | 1550 |
 
 normalize allocates 51.9 MiB for a 6.0 MiB image (51 streams)
 
-Lab-quality numbers (single thread, Go, no tuning): the scan is 405 MiB/s, normalization 145 MiB/s and allocates 8.6× the image
-(per-slot structs and a masked copy), reconstruction 1.4 GiB/s (SHA-256 verification alone is 1.5 GiB/s). Nothing here is CPU-prohibitive
+Lab-quality numbers (single thread, Go, no tuning; the same step varied by about ±30% between runs on this shared machine): the scan is a few hundred MiB/s, normalization 100-190 MiB/s and allocates about 8.6× the image
+(per-slot structs and a masked copy), reconstruction about the speed of SHA-256 verification alone (1.1-1.5 GiB/s). Nothing here is CPU-prohibitive
 for a background representation; normalization would need a tighter implementation before it is on a write path.
 
 ## L. Beyond Go, and other architectures
@@ -362,32 +362,32 @@ The mechanism is not Go-specific.
 
 | pair | raw CDC | fixed 4K | section | sect+CDC | func ranges | reloc+struct | x86 refs | full | ORACLE | CDC-4K raw | CDC-4K full | Δ raw | Δ full |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
-| const+string r0→r1 | 85.3 | 78.2 | 93.8 | 81.9 | 66.2 | 81.6 | 82.0 | 76.2 | 71.7 | 59.9 | 54.9 | 24.3 | 24.3 |
-| add function r1→r2 | 90.9 | 88.2 | 99.3 | 88.3 | 76.3 | 87.0 | 88.3 | 86.3 | 83.6 | 64.6 | 58.0 | 28.1 | 26.7 |
-| change body r2→r3 | 56.6 | 44.7 | 83.9 | 39.8 | 38.6 | 40.1 | 39.8 | 37.9 | 36.0 | 24.9 | 23.8 | 21.4 | 21.4 |
-| remove function r2→r1 | 90.9 | 88.2 | 99.3 | 88.3 | 76.3 | 86.9 | 88.3 | 86.3 | 83.6 | 64.6 | 58.0 | 28.1 | 26.7 |
+| const+string r0→r1 | 85.3 | 78.2 | 93.8 | 81.9 | 66.2 | 81.6 | 82.0 | 75.7 | 71.7 | 59.9 | 55.0 | 24.3 | 24.3 |
+| add function r1→r2 | 90.9 | 88.2 | 99.3 | 88.3 | 76.3 | 87.0 | 88.3 | 85.8 | 83.6 | 64.6 | 58.0 | 28.1 | 26.7 |
+| change body r2→r3 | 56.6 | 44.7 | 83.9 | 39.8 | 38.6 | 40.1 | 39.8 | 37.4 | 36.0 | 24.9 | 23.8 | 21.4 | 21.4 |
+| remove function r2→r1 | 90.9 | 88.2 | 99.3 | 88.3 | 76.3 | 86.9 | 88.3 | 85.8 | 83.6 | 64.6 | 58.0 | 28.1 | 26.7 |
 | early insert r2→early | 94.8 | 95.7 | 99.3 | 94.2 | 89.9 | 96.3 | 94.2 | 98.6 | 94.1 | 69.6 | 70.8 | 27.2 | 25.8 |
-| reorder r2→swap | 48.9 | 32.9 | 88.0 | 41.5 | 40.4 | 39.7 | 41.5 | 40.0 | 37.6 | 25.7 | 25.2 | 23.5 | 23.5 |
-| data table r2→data | 81.5 | 82.6 | 93.8 | 78.9 | 72.9 | 79.0 | 78.9 | 78.5 | 74.1 | 61.3 | 59.6 | 23.7 | 22.7 |
-| new packages r2→deps | 92.8 | 92.1 | 99.3 | 93.3 | 84.8 | 94.4 | 93.4 | 97.7 | 93.3 | 76.4 | 78.1 | 31.7 | 30.8 |
+| reorder r2→swap | 48.9 | 32.9 | 88.0 | 41.5 | 40.4 | 39.7 | 41.5 | 39.5 | 37.6 | 25.7 | 25.1 | 23.5 | 23.5 |
+| data table r2→data | 81.5 | 82.6 | 93.8 | 78.9 | 72.9 | 79.0 | 78.9 | 78.0 | 74.1 | 61.3 | 59.6 | 23.7 | 22.7 |
+| new packages r2→deps | 92.8 | 92.1 | 99.3 | 93.3 | 84.8 | 94.4 | 93.4 | 97.7 | 93.3 | 76.4 | 78.2 | 31.7 | 30.8 |
 
 ##### linux/arm64 strip: new bytes as % of the current build
 
 | pair | raw CDC | fixed 4K | section | sect+CDC | reloc+struct | x86 refs | full | ORACLE | CDC-4K raw | CDC-4K full | Δ raw | Δ full |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
-| const+string r0→r1 | 82.5 | 67.7 | 95.1 | 77.6 | 76.1 | 77.7 | 68.0 | 63.1 | 52.7 | 46.2 | 1.3 | 1.4 |
-| add function r1→r2 | 88.3 | 82.6 | 99.0 | 85.4 | 82.3 | 85.4 | 81.4 | 78.5 | 54.0 | 45.2 | 3.6 | 1.7 |
-| change body r2→r3 | 41.1 | 18.1 | 82.3 | 19.1 | 17.5 | 19.1 | 14.1 | 12.2 | 2.8 | 1.8 | 0.1 | 0.1 |
-| remove function r2→r1 | 88.3 | 82.6 | 99.0 | 85.4 | 82.3 | 85.4 | 81.4 | 78.5 | 54.0 | 45.2 | 3.6 | 1.7 |
-| early insert r2→early | 94.6 | 93.6 | 99.0 | 93.6 | 95.6 | 93.6 | 98.9 | 93.5 | 69.5 | 70.7 | 10.1 | 8.3 |
-| data table r2→data | 82.5 | 74.3 | 99.9 | 80.6 | 79.6 | 80.6 | 78.9 | 73.4 | 58.6 | 56.2 | 4.7 | 3.3 |
+| const+string r0→r1 | 82.5 | 67.7 | 95.1 | 77.6 | 76.1 | 77.7 | 67.2 | 63.1 | 52.7 | 46.3 | 1.3 | 1.4 |
+| add function r1→r2 | 88.3 | 82.6 | 99.0 | 85.4 | 82.3 | 85.4 | 80.6 | 78.5 | 54.0 | 45.2 | 3.6 | 1.7 |
+| change body r2→r3 | 41.1 | 18.1 | 82.3 | 19.1 | 17.5 | 19.1 | 13.4 | 12.2 | 2.8 | 1.8 | 0.1 | 0.1 |
+| remove function r2→r1 | 88.3 | 82.6 | 99.0 | 85.4 | 82.3 | 85.4 | 80.6 | 78.5 | 54.0 | 45.2 | 3.6 | 1.7 |
+| early insert r2→early | 94.6 | 93.6 | 99.0 | 93.6 | 95.6 | 93.6 | 98.9 | 93.5 | 69.5 | 70.8 | 10.1 | 8.3 |
+| data table r2→data | 82.5 | 74.3 | 99.9 | 80.6 | 79.6 | 80.6 | 78.1 | 73.4 | 58.6 | 56.3 | 4.7 | 3.3 |
 
 Δ add function stripped 3.6 → 1.7 from pointers and function-table offsets alone; the BL / ADRP+ADD references that dominate x86's gain here
 are the unimplemented part.
 
 ## Answers
 
-1. **Plain section segmentation:** none. `sect+CDC` ≈ raw CDC (within 1-2 points); function ranges −12 points but +13 in entries.
+1. **Plain section segmentation:** none. `sect+CDC` ≈ raw CDC (within 1-4 points); function ranges −12 points but +13 in entries.
 2. **Explicit relocations:** none in static Go; 17.5 k RELATIVE in PIE, worth 11-13 CDC points on append-style changes and nothing under movement.
 3. **Encoded x86 references:** the dominant class. Stripped add: 77.4 → 36.9 (CDC), 3.4% → 0.3% (Δ); masked `.text` differs in 97 bytes instead of 31 409.
 4. **Stable identity:** symbol name where it exists; region-relative close behind for append-style changes; content for stripped code but needs a collision policy; ordinal fails under insertion.
@@ -395,7 +395,7 @@ are the unimplemented part.
 6. **Stripped:** easier for Go (no DWARF, names survive in pclntab); no dependence on names (call-derived units are enough); native stripped binaries gain less (gcc 9.3 → 4.4).
 7. **Incremental cost vs CDC:** production CDC 74.2 → 34.9 (stripped add), 81.1 → 55.8 (std add); CDC-4K 55.7 → 6.5; pairwise delta 3.4 → 0.3. The gain is real but **production 64 KiB CDC realises only part of it**.
 8. **Metadata:** 9.6-12.5% of file, 4.5-5.4% DEFLATEd, 6.7-7.1 B per reference.
-9. **Performance:** scan 405, normalize 145, reconstruct 1 444 MiB/s; parse is negligible.
+9. **Performance:** scan ≈ 0.3-0.45 GiB/s, normalize ≈ 0.1-0.2 GiB/s, reconstruct ≈ SHA-256 speed; parse is negligible (table K; ±30% run to run).
 10. **Substrate worth carrying to PE:** yes — `Region`, `Slot`, units, one `Normalize`/`Reconstruct`; the x86 scan and `gopcln` are format-independent already.
 
 ## Gate
@@ -416,7 +416,8 @@ are the unimplemented part.
 ## Tests actually run
 
 `go test ./binref ./elfz3 ./gopcln ./cmd/z3bin` (substrate round trips under every identity, shift invariance, corrupt-stream no-panic, x86 fixtures; ELF good case,
-25 malformed/overflow/index cases, overlapping sections; synthetic Go pclntab; delta and scaled-CDC sanity). One 25 s smoke fuzz of `elfz3.FuzzParse`
+17 malformed/overflow/index cases, overlapping sections, relocation-section amplification; synthetic Go pclntab; delta and scaled-CDC sanity). One 25 s smoke fuzz of `elfz3.FuzzParse`
 (whatever `Parse` accepts must normalize and reconstruct byte-for-byte): it found one genuine defect in the first 3 s (a NULL section named as the section-name table sliced
 out of bounds); fixed, preserved as a deterministic case and as `testdata/fuzz/FuzzParse/…`, and the rerun made 3.5 M executions clean.
 No DEFLATE/tar/Safetensors/tensor fuzzing and no root ZeroS3 tests were run.
+Checkpoint, once, after the batch: `gofmt -l .` (clean), `go vet ./...` (clean), `go test ./...` (all packages pass).

@@ -112,6 +112,7 @@ type bin struct {
 	Data   []byte
 	Im     *binref.Image
 	Elf    *elfz3.Info
+	Pe     *pez3.Info
 	Pcln   *gopcln.Table
 	Format string
 	Parse  int64 // ns
@@ -127,7 +128,10 @@ func loadBin(name string, data []byte) (*bin, error) {
 		b.Im, b.Elf, err = elfz3.Parse(data)
 	case len(data) > 2 && string(data[:2]) == "MZ":
 		b.Format = "pe"
-		b.Im, err = pez3.Parse(data)
+		b.Im, b.Pe, err = pez3.Parse(data)
+	case len(data) > 4 && data[0] == 0xCF && data[1] == 0xFA && data[2] == 0xED && data[3] == 0xFE:
+		b.Format = "macho (characterization)"
+		b.Im, err = machoImage(data)
 	default:
 		err = fmt.Errorf("unknown binary format")
 	}
@@ -185,6 +189,8 @@ func (b *bin) units(mode string) []binref.Unit {
 			mode = "sym"
 		case b.Pcln != nil:
 			mode = "pcln"
+		case b.Pe != nil && len(b.Pe.Funcs) > 0:
+			mode = "pdata"
 		default:
 			mode = "call"
 		}
@@ -195,6 +201,10 @@ func (b *bin) units(mode string) []binref.Unit {
 	case "pcln":
 		if b.Pcln != nil {
 			return b.Im.CleanUnits(b.Pcln.Units)
+		}
+	case "pdata":
+		if b.Pe != nil && len(b.Pe.Funcs) > 0 {
+			return b.Im.CleanUnits(b.Pe.Funcs)
 		}
 	}
 	return b.Im.UnitsFromBranches(binref.ScanX86(b.Im))

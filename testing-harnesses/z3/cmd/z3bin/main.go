@@ -36,6 +36,10 @@ func main() {
 		runDbg(os.Args[2:])
 	case "ccorpus":
 		runCCorpus(os.Args[2:])
+	case "stat":
+		runStat(os.Args[2:])
+	case "verify":
+		runVerify(os.Args[2:])
 	case "pair":
 		runPair(os.Args[2:])
 	default:

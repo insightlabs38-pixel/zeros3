@@ -392,7 +392,7 @@ func runReport(args []string) {
 			}
 			return float64(len(d)) / (1 << 20) / (float64(bs) / 1e9)
 		}
-		fmt.Printf("| parse (ELF + pclntab) | %.0f |\n", best(func() { loadBin("x", d) }))
+		fmt.Printf("| parse (container + pclntab) | %.0f |\n", best(func() { loadBin("x", d) }))
 		b := bp("std", "r2")
 		cf := cfg{setFull, binref.IdentSymbol, "auto"}
 		var sl []binref.Slot
@@ -454,6 +454,25 @@ func runReport(args []string) {
 			}
 		}
 	}
+	if want("classes") {
+		for _, fl := range []string{"strip", "std"} {
+			for _, ps := range []pairSpec{pairSpecs[1], pairSpecs[4]} {
+				m.classTable(*dir, *goos, *arch, fl, ps)
+			}
+		}
+	}
+	if want("xformat") {
+		for _, fl := range []string{"strip", "std"} {
+			fmt.Printf("\n#### same source mutation, ELF versus PE, %s (new bytes as %% of the current build)\n\n", fl)
+			m.xformat(*dir, fl)
+		}
+	}
+	if want("admit") {
+		for _, fl := range []string{"strip", "std"} {
+			fmt.Printf("\n#### admission by measured cost, %s/%s %s (new bytes + 96 B per reference, %% of current build)\n\n", *goos, *arch, fl)
+			m.admit(*dir, *goos, *arch, fl, pairSpecs)
+		}
+	}
 	if want("meta-flags") && *goos == "linux" && *arch == "amd64" {
 		fmt.Print("\n#### build metadata: r2 → r3 under different flags (raw CDC %, section+CDC %, raw Δ %)\n\n")
 		fmt.Println("| flags | file | raw CDC | sect+CDC | raw Δ | full-norm Δ | regions that differ most (literal bytes) |")
@@ -486,4 +505,113 @@ func runReport(args []string) {
 		}
 	}
 	_ = os.Stdout
+}
+
+// ---- Z3-13 sections ----
+
+// classTable: which reference classes pay, for one format and flag set.
+func (m *memo) classTable(dir, goos, arch, flags string, ps pairSpec) {
+	p := func(rev string) *bin { return m.bin(filepath.Join(dir, goos+"-"+arch, flags, rev+ext(goos))) }
+	if !have(dir, goos, arch, flags, ps.base, ps.cur) {
+		return
+	}
+	b, c := p(ps.base), p(ps.cur)
+	n := len(c.Data)
+	fmt.Printf("\n##### %s/%s %s, %s\n\n", goos, arch, flags, ps.label)
+	fmt.Println("| reference classes masked | CDC % | CDC-4K % | Δ % | reference metadata B | references |")
+	fmt.Println("|---|--:|--:|--:|--:|--:|")
+	bb, cb := m.base(b), m.base(c)
+	nb, _ := Cost(repByName(bb, "raw CDC").Objs, repByName(cb, "raw CDC").Objs)
+	n4, _ := Cost(repByName(bb, "CDC 4K-avg").Objs, repByName(cb, "CDC 4K-avg").Objs)
+	dr := deltaCost(b.Data, c.Data)
+	fmt.Printf("| none (raw) | %s | %s | %s | 0 | 0 |\n", fp(pct(nb, n)), fp(pct(n4, n)), fp(pct(dr.Cost, n)))
+	tableOnly := slotSet{Name: "format tables (no Go)", Table: true}
+	sets := []slotSet{
+		{Name: "relocations only", Reloc: true},
+		tableOnly,
+		{Name: "relocations + format tables", Reloc: true, Table: true},
+		{Name: "Go function table only", Go: true},
+		{Name: "x86 branch + RIP only", Branch: true, RIP: true},
+		{Name: "x86 + relocations", Reloc: true, Branch: true, RIP: true},
+		{Name: "x86 + relocations + tables + Go table", Reloc: true, Table: true, Branch: true, RIP: true, Go: true},
+		{Name: "all (+ pointer scan)", Reloc: true, Table: true, Branch: true, RIP: true, Ptr: true, Go: true},
+	}
+	for _, s := range sets {
+		cf := cfg{s, binref.IdentSymbol, "auto"}
+		r := m.rep(c, cf, false)
+		nbb, _ := Cost(m.rep(b, cf, false).Objs, r.Objs)
+		n4b, _ := Cost(m.normObjs4k(b, cf), m.normObjs4k(c, cf))
+		dp, dm := normDelta(m.norm(b, cf), m.norm(c, cf))
+		fmt.Printf("| %s | %s | %s | %s | %d | %d |\n", s.Name, fp(pct(nbb, n)), fp(pct(n4b, n)), fp(pct(dp+dm, n)), r.Meta, r.Refs)
+	}
+}
+
+// xformat: the same source mutation, ELF versus PE.
+func (m *memo) xformat(dir, flags string) {
+	fmt.Println("| mutation | ELF CDC raw → full | ELF Δ raw → full | PE CDC raw → full | PE Δ raw → full |")
+	fmt.Println("|---|--:|--:|--:|--:|")
+	cf := cfg{setFull, binref.IdentSymbol, "auto"}
+	for _, ps := range pairSpecs {
+		row := fmt.Sprintf("| %s |", ps.label)
+		ok := true
+		for _, f := range []struct{ goos string }{{"linux"}, {"windows"}} {
+			if !have(dir, f.goos, "amd64", flags, ps.base, ps.cur) {
+				ok = false
+				break
+			}
+			b := m.bin(filepath.Join(dir, f.goos+"-amd64", flags, ps.base+ext(f.goos)))
+			c := m.bin(filepath.Join(dir, f.goos+"-amd64", flags, ps.cur+ext(f.goos)))
+			n := len(c.Data)
+			bb, cb := m.base(b), m.base(c)
+			nb, _ := Cost(repByName(bb, "raw CDC").Objs, repByName(cb, "raw CDC").Objs)
+			nf, _ := Cost(m.rep(b, cf, false).Objs, m.rep(c, cf, false).Objs)
+			dr := deltaCost(b.Data, c.Data)
+			dp, dm := normDelta(m.norm(b, cf), m.norm(c, cf))
+			row += fmt.Sprintf(" %s → %s | %s → %s |", fp(pct(nb, n)), fp(pct(nf, n)), fp(pct(dr.Cost, n)), fp(pct(dp+dm, n)))
+		}
+		if ok {
+			fmt.Println(row)
+		}
+	}
+}
+
+// admit: choose the cheapest representation by measured cost (new bytes + 96 B per object reference).
+func (m *memo) admit(dir, goos, arch, flags string, pairs []pairSpec) {
+	p := func(rev string) *bin { return m.bin(filepath.Join(dir, goos+"-"+arch, flags, rev+ext(goos))) }
+	cands := []struct {
+		name string
+		cf   *cfg
+	}{{"raw CDC", nil}, {"section + CDC", nil}, {"x86 refs", &cfg{setX86, binref.IdentSymbol, "auto"}}, {"full", &cfg{setFull, binref.IdentSymbol, "auto"}}}
+	fmt.Println("| pair | raw CDC | section+CDC | x86 refs | full | chosen | saving vs raw (points) |")
+	fmt.Println("|---|--:|--:|--:|--:|---|--:|")
+	one := func(label string, b, c *bin) {
+		n := len(c.Data)
+		bb, cb := m.base(b), m.base(c)
+		costs := make([]float64, len(cands))
+		row := fmt.Sprintf("| %s |", label)
+		best := 0
+		for i, cd := range cands {
+			var nb, objs int
+			switch {
+			case cd.cf != nil:
+				nb, objs = Cost(m.rep(b, *cd.cf, false).Objs, m.rep(c, *cd.cf, false).Objs)
+			default:
+				nb, objs = Cost(repByName(bb, cd.name).Objs, repByName(cb, cd.name).Objs)
+			}
+			costs[i] = pct(nb+objs*chunkRef, n)
+			if costs[i] < costs[best]-0.5 { // a candidate must win by half a point to displace raw CDC
+				best = i
+			}
+			row += " " + fp(costs[i]) + " |"
+		}
+		fmt.Printf("%s %s | %s |\n", row, cands[best].name, fp(costs[0]-costs[best]))
+	}
+	for _, ps := range pairs {
+		if have(dir, goos, arch, flags, ps.base, ps.cur) {
+			one(ps.label, p(ps.base), p(ps.cur))
+		}
+	}
+	if have(dir, goos, arch, flags, "r2", "other") {
+		one("unrelated program (r2 → other)", p("r2"), p("other"))
+	}
 }
