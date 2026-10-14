@@ -46,6 +46,9 @@ func recipeBytes(p *Plan) map[string]int64 {
 			out["loc6"] += inl
 			continue
 		}
+		if pc.Via {
+			continue
+		}
 		l := uint64(pc.Comp.Size)
 		out["json"] += int64(len(`{"sha256":"`) + 64 + len(`","length":`) + len(strconv.FormatUint(l, 10)) + len(`},`))
 		out["flat35"] += 35

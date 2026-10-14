@@ -33,6 +33,8 @@ binref/       format-independent binary substrate: regions + reference slots, x8
 elfz3/        bounded ELF64-LE parser -> binref.Image (Z3-12)
 gopcln/       Go function table (pclntab) reader: unit starts/names/entry-offset slots, ELF and PE (Z3-12)
 pez3/         bounded PE32+ parser -> binref.Image: sections, base relocations, imports/exports/.pdata RVAs, opaque certificate overlay (Z3-13)
+carz3/        bounded CARv1/CARv2 parser (CIDs, DAG-CBOR header subset, sorted indexes), exact block-set recipe, streaming reader, deterministic CAR families (Z3-14)
+cmd/z3car     Z3-14 measurements: fetch (pinned go-car samples), families, real, ident, read, stream
 cmd/z3bin     Z3-12/13 corpus builder (go build -overlay, gcc/clang C) and measurements: pair, attr, delta, runs, report, verify; lab-only Mach-O view
 ```
 
