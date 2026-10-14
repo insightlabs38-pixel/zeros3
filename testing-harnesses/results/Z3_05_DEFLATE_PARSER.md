@@ -57,7 +57,7 @@ canonicalising length 258, removing the window check) makes tests fail.
 Fuzz targets: `FuzzParse` (bytes), `FuzzMutatedSeed` (structured edits of 14 valid seeds), `FuzzGzip`; invariants:
 no panic, bounded work, acceptance parity and plaintext equality with `compress/flate`, exact replay of the consumed
 bytes, strict/lenient trailing-data consistency, stats consistency. Seeds run in normal `go test`; smoke run 20 s per
-target found nothing. A longer campaign (FuzzParse 20 min, FuzzMutatedSeed 20 min, FuzzGzip 8 min, 2 workers) was started separately; its outcome is recorded at the end of this section.
+target found nothing. A longer background campaign with 2 workers then completed with no failing input and no crash: FuzzParse 20 min (12.0 M execs), FuzzMutatedSeed 20 min (17.8 M), FuzzGzip 8 min (16.5 M).
 
 Lab integration: representation `deflate-ir` (`Plan.NoCost`: parse success, exact replay by SHA-256, plaintext and
 structural counters, parse/replay time; physical cost and comparisons are **N/A**, marked with a dagger in tables).
