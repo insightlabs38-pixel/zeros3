@@ -84,6 +84,9 @@ func Reps() []Rep {
 	for _, sp := range IRSpecs() {
 		reps = append(reps, irRep(sp))
 	}
+	for _, ts := range TarSpecs() {
+		reps = append(reps, tarRep(ts, false), tarRep(ts, true))
+	}
 	return reps
 }
 
