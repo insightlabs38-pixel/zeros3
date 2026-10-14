@@ -21,6 +21,7 @@ type FRow struct {
 	Err                string
 	Exact              bool
 	Acct               Account
+	CostPacked         int64 // with production pack compression of the new components (RunBytesFamilyPacked)
 	Cost               int64 // NewBytes + table-layout recipe + plan meta + index bytes
 	Detail             map[string]any
 	BuildMs            float64
@@ -38,9 +39,16 @@ func TableCost(a Account) int64 {
 // one fresh component store per representation, and verifies exact
 // reconstruction of every accepted revision.
 func RunBytesFamily(family, format string, revs []NamedBytes, reps []Rep) []FRow {
+	return RunBytesFamilyPacked(family, format, revs, reps, false)
+}
+
+// RunBytesFamilyPacked is RunBytesFamily with the production pack-compression
+// estimate (DEFLATE, kept when it saves 1/16) applied to new components; the
+// result is in FRow.CostPacked.
+func RunBytesFamilyPacked(family, format string, revs []NamedBytes, reps []Rep, pack bool) []FRow {
 	var rows []FRow
 	for _, rp := range reps {
-		ac := NewAcct(35, false)
+		ac := NewAcct(35, pack)
 		var prev *Input
 		for i, rv := range revs {
 			in := &Input{Family: family, Format: format, Revision: rv.Label, Src: BytesSource(family+"/"+rv.Label, rv.Data), Prev: prev, Opts: DefaultOptions()}
@@ -66,6 +74,9 @@ func RunBytesFamily(family, format string, revs []NamedBytes, reps []Rep) []FRow
 				continue
 			}
 			row.Cost = TableCost(row.Acct)
+			if row.Acct.PackedKnown {
+				row.CostPacked = row.Acct.PackedNew + row.Acct.Layouts["table"] + row.Acct.PlanMetaBytes + row.Acct.IndexBytes
+			}
 			var out bytes.Buffer
 			if rerr := plan.Rebuild(&out, ac.Get); rerr != nil || !bytes.Equal(out.Bytes(), rv.Data) {
 				row.Status = "invalid"

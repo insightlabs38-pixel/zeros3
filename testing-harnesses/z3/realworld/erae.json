@@ -1,0 +1,12 @@
+{
+ "schema": "z3-realworld-erae/1",
+ "comment": "Pinned public EraE archives from the ethPandaOps history mirror (https://data.ethpandaops.io/erae/). Fetched on demand by `z3era fetch`; never committed (3.4-4.1 MB each).",
+ "sources": [
+  {"name": "sepolia-00000-8e3e7dc9.erae", "url": "https://data.ethpandaops.io/erae/sepolia/sepolia-00000-8e3e7dc9.erae", "size": 3464070, "sha256": "50e29a878a489ef195d4df52072a4524b7bba8b74d65c1e5f5401f914c96366a"},
+  {"name": "sepolia-00001-c78ee2bd.erae", "url": "https://data.ethpandaops.io/erae/sepolia/sepolia-00001-c78ee2bd.erae", "size": 3471155, "sha256": "7119d2d07d9a019437b22373e714acdee6d66e71b4481fdb79d535a2676ed442"},
+  {"name": "sepolia-00002-d3abbc5d.erae", "url": "https://data.ethpandaops.io/erae/sepolia/sepolia-00002-d3abbc5d.erae", "size": 3472732, "sha256": "62f85fad4c2a921b58960e12359b5b407e0ff353267eb40b92ca671cecf7535c"},
+  {"name": "sepolia-00003-47e8d303.erae", "url": "https://data.ethpandaops.io/erae/sepolia/sepolia-00003-47e8d303.erae", "size": 3472489, "sha256": "f32201d5f6c06245e4597e8e49193c8561e56eec404fd57e19daa188eaf2cc46"},
+  {"name": "mainnet-00000-a6860fef.erae", "url": "https://data.ethpandaops.io/erae/mainnet/mainnet-00000-a6860fef.erae", "size": 4087953, "sha256": "ee0bf48ac736558538b597261beba4c7352e4e06a2cdb090dab5bc68b6149959"},
+  {"name": "mainnet-00001-05c64fc4.erae", "url": "https://data.ethpandaops.io/erae/mainnet/mainnet-00001-05c64fc4.erae", "size": 3844572, "sha256": "5e466b724a0852010dbbe8d22a1a1cd43a17fa65f9ea3371aebb36c1694b87a8"}
+ ]
+}
