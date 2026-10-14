@@ -72,10 +72,14 @@ func replayStored(bw *bitWriter, b *Block, data []byte) error {
 	if len(data) > 0xffff {
 		return fmt.Errorf("%w: stored block of %d bytes", ErrInvalidIR, len(data))
 	}
-	if b.PadLen != uint8((8-bw.nacc%8)%8) {
+	if b.AutoPad {
+		bw.put(0, (8-bw.nacc%8)%8)
+	} else if b.PadLen != uint8((8-bw.nacc%8)%8) {
 		return fmt.Errorf("%w: stored padding length %d", ErrInvalidIR, b.PadLen)
 	}
-	bw.put(uint32(b.PadBits), uint(b.PadLen))
+	if !b.AutoPad {
+		bw.put(uint32(b.PadBits), uint(b.PadLen))
+	}
 	n := uint32(len(data))
 	bw.put(n|(^n&0xffff)<<16, 32)
 	bw.bytes(data)

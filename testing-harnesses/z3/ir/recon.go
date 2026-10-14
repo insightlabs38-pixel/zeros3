@@ -18,6 +18,12 @@ type Config struct {
 	Codec   Codec
 	Policy  Policy
 	Profile uint8 // predictor profile (Codec == Pred)
+	// NoHeaderPred stores every block header exactly (the Z3-06/07 skeleton),
+	// instead of the flag for zlib/gzip-predictable headers and zero padding.
+	NoHeaderPred bool
+	// Mode picks the profiles AutoProfile may choose: "ratio" (default),
+	// "balanced" or "fast" (see Modes).
+	Mode string
 	// Cost, if non-nil, accumulates ideal code lengths (bits) per category for
 	// range-coded codecs.
 	Cost *[NumCats]float64
@@ -87,15 +93,26 @@ func Encode(s *deflate.Stream, cfg Config) (*Package, error) {
 	ends := append(append([]int(nil), cs...), len(f.toks))
 	sk := &Skeleton{Codec: cfg.Codec, Profile: cfg.Profile, TailPadBits: s.TailPadBits, TailPadLen: s.TailPadLen}
 	pk := &Package{Skel: sk}
+	prevN := 0
 	for i := range s.Blocks {
 		m := blockMeta(&s.Blocks[i])
+		if !cfg.NoHeaderPred {
+			if m.Kind == deflate.Stored {
+				m.AutoPad = m.PadBits == 0
+			} else if m.Kind == deflate.Dynamic && blockPredicted(&s.Blocks[i]) {
+				m.Pred = true
+			}
+		}
 		sk.Blocks = append(sk.Blocks, m)
-		pk.BlockBytes = append(pk.BlockBytes, encodeBlockMeta(nil, &m))
+		pk.BlockBytes = append(pk.BlockBytes, encodeBlockMeta(nil, &m, prevN))
+		if m.Kind != deflate.Stored {
+			prevN = m.NTokens
+		}
 	}
 	var pred *predictor
 	if cfg.Codec == Pred {
 		if cfg.Profile == AutoProfile {
-			sk.Profile = ChooseProfile(s, cfg.Policy)
+			sk.Profile = ChooseProfileIn(s, cfg.Policy, ModeProfiles(cfg.Mode))
 		}
 		pred = newPredictor(s.Plain, sk.Profile)
 	}
@@ -246,10 +263,10 @@ func Decode(skel []byte, unit func(i int) ([]byte, error), plain []byte, opt Dec
 		b := deflate.Block{Final: m.Final, Kind: m.Kind, PlainOff: pos}
 		switch m.Kind {
 		case deflate.Stored:
-			b.PadBits, b.PadLen, b.PlainLen = m.PadBits, m.PadLen, m.StoredLen
+			b.PadBits, b.PadLen, b.PlainLen, b.AutoPad = m.PadBits, m.PadLen, m.StoredLen, m.AutoPad
 			pos += m.StoredLen
 		default:
-			if m.Kind == deflate.Dynamic {
+			if m.Kind == deflate.Dynamic && !m.Pred {
 				b.HLIT, b.HDIST, b.HCLEN, b.CLLens = m.HLIT, m.HDIST, m.HCLEN, m.CLLens
 				b.CLSyms = m.CLSyms
 				b.LitLens, b.DistLens = ExpandLengths(m)
@@ -267,6 +284,16 @@ func Decode(skel []byte, unit func(i int) ([]byte, error), plain []byte, opt Dec
 				pos += n
 			}
 			b.PlainLen = pos - b.PlainOff
+			if m.Pred {
+				kind, pm, ok := zlibBlock(b.Tokens, b.PlainLen)
+				if !ok || kind != deflate.Dynamic {
+					return nil, nil, corrupt("block %d: predicted header is not dynamic", bi)
+				}
+				b.HLIT, b.HDIST, b.HCLEN, b.CLLens, b.CLSyms = pm.HLIT, pm.HDIST, pm.HCLEN, pm.CLLens, pm.CLSyms
+				if b.LitLens, b.DistLens = ExpandLengths(&pm); b.LitLens == nil {
+					return nil, nil, corrupt("block %d: predicted code lengths", bi)
+				}
+			}
 		}
 		st.Blocks = append(st.Blocks, b)
 	}
@@ -336,4 +363,12 @@ func (it *runIter) next(pos int, verify bool) (deflate.Token, int, error) {
 		}
 	}
 	return t, n, nil
+}
+
+// ModeProfiles returns the profile ids of a mode ("" = ratio).
+func ModeProfiles(mode string) []uint8 {
+	if ids, ok := Modes[mode]; ok {
+		return ids
+	}
+	return Modes["ratio"]
 }

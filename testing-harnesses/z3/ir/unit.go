@@ -143,10 +143,8 @@ type e2model struct {
 	lrMant  [24][4]bitModel
 	lsym    [4][32]bitModel
 	lext    [29][5]bitModel
-	rep     [3][4]bitModel
 	dsym    [3][32]bitModel
 	dext    [30][14]bitModel
-	cache   [4]int
 	prevLen int // previous match length
 }
 
@@ -170,11 +168,6 @@ func newE2() *e2model {
 	for i := range m.lext {
 		for j := range m.lext[i] {
 			m.lext[i][j].init()
-		}
-	}
-	for i := range m.rep {
-		for j := range m.rep[i] {
-			m.rep[i][j].init()
 		}
 	}
 	for i := range m.dsym {
@@ -266,54 +259,25 @@ func (m *e2model) match(io *rcio, lastLits int, t deflate.Token) (deflate.Token,
 	}
 	length := deflate.LengthBase(257+ls) + int(x)
 	lb := m.distCtx(length)
-	d := 0
-	if enc {
-		d = t.Distance()
-	}
-	r := 4
-	io.cat = CatRep
-	for i := 0; i < 4; i++ {
-		want := 0
-		if enc && m.cache[i] == d {
-			want = 1
-		}
-		if io.bit(&m.rep[lb][i], want) == 1 {
-			r = i
-			break
-		}
-	}
+	// The recent-distance cache of Z3-06 was removed in Z3-08E: it saved
+	// <=0.2% on periodic data and cost 3% on binary structures.
 	var dc int
 	var de uint32
-	if r < 4 {
-		d = m.cache[r]
-		if d < 1 || d > 32768 {
-			return 0, false
-		}
-		dc, de = distCodeOf(d)
-	} else {
-		if enc {
-			dc, de = t.DistCode(), t.DistExtra()
-		}
-		io.cat = CatDistSym
-		dc = io.tree(m.dsym[lb][:], 5, dc)
-		if dc > 29 {
-			return 0, false
-		}
-		io.cat = CatDistExtra
-		nb := deflate.DistExtraBits(dc)
-		var y uint32
-		for i := nb - 1; i >= 0; i-- {
-			y = y<<1 | uint32(io.bit(&m.dext[dc][min(nb-1-i, 13)], int(de>>uint(i))&1))
-		}
-		de = y
-		d = deflate.DistBase(dc) + int(de)
+	if enc {
+		dc, de = t.DistCode(), t.DistExtra()
 	}
-	// update the recent-distance cache (move to front)
-	if r == 4 {
-		r = 3
+	io.cat = CatDistSym
+	dc = io.tree(m.dsym[lb][:], 5, dc)
+	if dc > 29 {
+		return 0, false
 	}
-	copy(m.cache[1:r+1], m.cache[:r])
-	m.cache[0] = d
+	io.cat = CatDistExtra
+	nb = deflate.DistExtraBits(dc)
+	var y uint32
+	for i := nb - 1; i >= 0; i-- {
+		y = y<<1 | uint32(io.bit(&m.dext[dc][min(nb-1-i, 13)], int(de>>uint(i))&1))
+	}
+	de = y
 	m.prevLen = length
 	return deflate.Match(257+ls, x, dc, de), true
 }

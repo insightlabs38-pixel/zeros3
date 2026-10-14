@@ -28,6 +28,10 @@ func main() {
 		verify(os.Args[2:])
 	case "ext":
 		ext(os.Args[2:])
+	case "plain":
+		plainCmd(os.Args[2:])
+	case "extreal":
+		extreal(os.Args[2:])
 	case "list":
 		for _, f := range corpus.Families() {
 			fmt.Printf("%-28s %-12s %s\n", f.Name, f.Format, f.Workload)
@@ -120,4 +124,70 @@ func ext(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("wrote %d external-producer members to %s\n", len(m.Members), *out)
+}
+
+// extreal recompresses real plaintext revisions with the optional producers.
+func extreal(args []string) {
+	fs := flag.NewFlagSet("extreal", flag.ExitOnError)
+	out := fs.String("out", "", "output directory (required)")
+	label := fs.String("label", "real", "family label")
+	plains := fs.String("plain", "", "comma-separated plaintext files, one per revision")
+	mib := fs.Int("mib", 8, "bytes of each plaintext to use (MiB)")
+	prods := fs.String("producers", "", "producer name globs (default all)")
+	fs.Parse(args)
+	if *out == "" || *plains == "" {
+		fmt.Fprintln(os.Stderr, "z3corpus extreal: -out and -plain are required")
+		os.Exit(2)
+	}
+	if err := os.MkdirAll(*out, 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	var globs []string
+	if *prods != "" {
+		globs = strings.Split(*prods, ",")
+	}
+	m, skipped, err := corpus.GenerateExtReal(*out, *label, strings.Split(*plains, ","), *mib<<20, globs)
+	for _, s := range skipped {
+		fmt.Fprintln(os.Stderr, "skipped:", s)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Printf("wrote %d members to %s\n", len(m.Members), *out)
+}
+
+// plainCmd writes deterministic repeat-distance plaintext revision chains.
+func plainCmd(args []string) {
+	fs := flag.NewFlagSet("plain", flag.ExitOnError)
+	out := fs.String("out", "", "output directory (required)")
+	kinds := fs.String("kinds", strings.Join(corpus.RepeatKinds(), ","), "plaintext kinds")
+	kib := fs.Int("kib", 4096, "base size (KiB)")
+	revs := fs.Int("revs", 2, "revisions after r0")
+	seed := fs.Uint64("seed", 1, "seed")
+	fs.Parse(args)
+	if *out == "" {
+		fmt.Fprintln(os.Stderr, "z3corpus plain: -out is required")
+		os.Exit(2)
+	}
+	for _, k := range strings.Split(*kinds, ",") {
+		rs, err := corpus.RepeatRevisions(k, *seed, *kib<<10, *revs)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		for i, b := range rs {
+			p := fmt.Sprintf("%s/%s.r%d", *out, k, i)
+			if err := os.MkdirAll(*out, 0o755); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			if err := os.WriteFile(p, b, 0o644); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		}
+		fmt.Printf("%s: %d revisions\n", k, len(rs))
+	}
 }

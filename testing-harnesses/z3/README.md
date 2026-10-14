@@ -20,8 +20,11 @@ ir/           block-local exact reconstruction IR (skeleton + units), explicit c
               predictor + corrections (Z3-06/07)
 cmd/z3deflate characterize the parser/replayer over a corpus
 cmd/z3ir      unit-survival, entropy, family-cost, predictor and chooser reports (Z3-06/07)
-cmd/z3fetch   opt-in pinned real-world samples (realworld/sources.json)
-oracle/       opt-in external research oracles (preflate-rs wrapper + setup.sh)
+cmd/z3fetch   opt-in pinned real-world samples (realworld/sources.json); gzip/zip/OCI/Hugging Face groups
+oracle/       opt-in external research oracles (preflate-rs wrapper + setup.sh) and producers (miniz_oxide, python venv)
+st/           strict stdlib-only Safetensors parser, bounded reads, exact rebuild, builder (Z3-09)
+tdelta/       simple exact tensor-delta baselines (xor, planes, sparse, float-split, ...) (Z3-09)
+cmd/z3st      Safetensors characterisation: identity, bits, spacing, blocks, delta, class, header, base, reshard (Z3-09)
 ```
 
 ```sh
@@ -176,3 +179,41 @@ go test ./ir -run '^$' -fuzz '^FuzzReconstruct$' -fuzztime 60s              # al
 ```
 
 Results: `../results/Z3_06_DEFLATE_IR.md`, `../results/Z3_07_PREDICTIVE_RECONSTRUCTION.md`.
+
+## Z3-08: generalization, streaming, production-shaped evidence
+
+```sh
+# real DEFLATE families (opt-in downloads, hash-verified, cached outside Git)
+go run ./cmd/z3fetch -group deflate -out "$TMPDIR/rw" -max-mib 800        # wheels, sdists, jars, apks, crates, npm, GNU tarballs, Go src, OCI layers
+go run ./cmd/z3ir family -corpus "$TMPDIR/rw" -reps cdc,preflate,oracle-logical,irp-tok16k,irp-tok16k-bal -ref-bytes 35
+# producer matrix: real plaintext revisions recompressed by every installed producer
+oracle/producers/setup.sh                                                  # python venv (zlib-ng, ISA-L, libdeflate, zopfli) + miniz_oxide, outside Git
+go run ./cmd/z3corpus extreal -out "$TMPDIR/ext" -label gosrc -plain a.tar,b.tar,c.tar -mib 6   # Z3_PYTHON / Z3_MINIZ select producers
+go run ./cmd/z3ir producers -corpus "$TMPDIR/ext"
+# zlib levels 1-3 (exact deflate_fast emulation), tiny blocks, repeated distances, speed modes
+go run ./cmd/z3ir fast -plain big.tar -producers zlib1,zlib2,zlib3,gzip1
+go run ./cmd/z3corpus plain -out "$TMPDIR/rep" && go run ./cmd/z3ir predict -ablate -corpus "$TMPDIR/ext2" -group-by kind
+go run ./cmd/z3ir modes -corpus "$TMPDIR/ext"                              # ratio / balanced / fast
+# streaming, ranges, recipes, lifecycle
+go run ./cmd/z3ir stream -base big.tar -mib 64,256,1024 -producer gzip6
+go run ./cmd/z3ir range -gz some.gz
+go run ./cmd/z3ir recipe -from report.json -reps cdc,irp-tok4k,irp-tok16k,irp-tok64k
+go run ./cmd/z3ir lifecycle -from report.json
+```
+
+Results: `../results/Z3_08_DEFLATE_GENERALIZATION.md`.
+
+## Z3-09: Safetensors characterisation
+
+```sh
+go run ./cmd/z3fetch -group pythia14m-train,pythia14m-sft-koshirowada,pythia14m-logs-honicky,bert-tiny-family,pythia14m-siblings -out "$TMPDIR/st" -max-mib 1500
+go run ./cmd/z3st inspect  -corpus "$TMPDIR/st"      # structure and the I/O of a bounded parse
+go run ./cmd/z3st identity -corpus "$TMPDIR/st"      # tensor identity, renames, header/data order
+go run ./cmd/z3st bits     -corpus "$TMPDIR/st"      # bit-identical elements, XOR sparsity, sign/exponent/mantissa
+go run ./cmd/z3st spacing  -corpus "$TMPDIR/st" -families rw-pythia14m-train
+go run ./cmd/z3st blocks|delta|class|header|base|reshard -corpus "$TMPDIR/st"
+go run ./cmd/z3ir family -corpus "$TMPDIR/st" -reps cdc,struct-seg,struct-cdc,delta-xorz,delta-plane,delta-sparse,delta-float,delta-best
+go test ./st ./tdelta; go test ./st -run '^$' -fuzz '^FuzzParse$' -fuzztime 60s
+```
+
+Results: `../results/Z3_09_SAFETENSORS_CHARACTERIZATION.md`.

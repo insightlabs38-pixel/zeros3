@@ -64,6 +64,11 @@ type BlockMeta struct {
 	CLSyms             []deflate.CLSym
 
 	NTokens int // fixed/dynamic
+
+	// Pred (dynamic): kind and header are not stored, they are recomputed from
+	// the block's tokens by zlibBlock. AutoPad (stored): zero padding bits, so
+	// PadLen is implied by the bit position.
+	Pred, AutoPad bool
 }
 
 // UnitIdx is the skeleton's index entry for one unit.

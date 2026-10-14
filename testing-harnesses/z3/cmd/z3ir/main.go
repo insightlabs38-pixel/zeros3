@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/pprof"
 	"strings"
 )
 
@@ -20,6 +21,14 @@ func main() {
 		os.Exit(2)
 	}
 	args := os.Args[2:]
+	if f := os.Getenv("Z3_CPUPROFILE"); f != "" { // pprof of any subcommand
+		pf, err := os.Create(f)
+		if err != nil {
+			fatal(err)
+		}
+		pprof.StartCPUProfile(pf)
+		defer pprof.StopCPUProfile()
+	}
 	switch os.Args[1] {
 	case "units":
 		unitsCmd(args)
@@ -29,6 +38,20 @@ func main() {
 		familyCmd(args)
 	case "predict":
 		predictCmd(args)
+	case "producers":
+		producersCmd(os.Args[2:])
+	case "recipe":
+		recipeCmd(os.Args[2:])
+	case "lifecycle":
+		lifecycleCmd(os.Args[2:])
+	case "range":
+		rangeCmd(os.Args[2:])
+	case "modes":
+		modesCmd(os.Args[2:])
+	case "stream":
+		streamCmd(os.Args[2:])
+	case "fast":
+		fastCmd(os.Args[2:])
 	case "chooser":
 		chooserCmd(args)
 	case "matrix":

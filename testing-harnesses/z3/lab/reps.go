@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"zeros3-z3/tdelta"
 )
 
 // Input is what a representation sees for one revision.
@@ -68,6 +70,10 @@ func Reps() []Rep {
 		{"delta-replace", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaReplace) }},
 		{"delta-xor", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaXOR) }},
 		{"delta-xorz", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaXORZ) }},
+		{"delta-plane", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaPlane) }},
+		{"delta-sparse", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaSparse) }},
+		{"delta-float", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaFloat) }},
+		{"delta-best", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaBest) }},
 		{"deflate-ir", analyzeDeflateIR},
 		{"preflate", analyzePreflate},
 		{"preflate-rcdc", analyzePreflateRCDC},
@@ -211,7 +217,36 @@ const (
 	deltaReplace deltaMode = iota
 	deltaXOR
 	deltaXORZ
+	// Z3-09: tensor-aware exact deltas (tdelta). deltaBest picks, per tensor,
+	// the smallest of xor+z, byte-plane xor+z, sparse and float-split.
+	deltaPlane
+	deltaSparse
+	deltaFloat
+	deltaBest
 )
+
+// tdeltaCandidates lists the codecs a mode may use for a segment.
+func tdeltaCandidates(mode deltaMode, dtype string) []tdelta.Codec {
+	float := dtype == "F32" || dtype == "F16" || dtype == "BF16"
+	switch mode {
+	case deltaPlane:
+		return []tdelta.Codec{tdelta.Plane}
+	case deltaSparse:
+		return []tdelta.Codec{tdelta.Sparse}
+	case deltaFloat:
+		if float {
+			return []tdelta.Codec{tdelta.FloatSplit}
+		}
+		return []tdelta.Codec{tdelta.Plane}
+	case deltaBest:
+		c := []tdelta.Codec{tdelta.XORZ, tdelta.Plane, tdelta.Sparse}
+		if float {
+			c = append(c, tdelta.FloatSplit)
+		}
+		return c
+	}
+	return nil
+}
 
 func xorBytes(a, b []byte) []byte {
 	out := make([]byte, len(a))
@@ -297,12 +332,28 @@ func analyzeDelta(in *Input, mode deltaMode) (*Plan, error) {
 				}
 				refSegs++
 			} else {
-				x := xorBytes(base, cur)
-				payload := x
-				if mode == deltaXORZ {
-					payload = deflateRaw(x)
+				var payload []byte
+				var used tdelta.Codec
+				if cands := tdeltaCandidates(mode, rg.Seg.DType); cands != nil {
+					for _, c := range cands {
+						p, err := tdelta.EncodeFor(c, rg.Seg.DType, base, cur, rg.Seg.Width)
+						if err != nil {
+							continue
+						}
+						if payload == nil || len(p)+1 < len(payload) {
+							payload, used = p, c
+						}
+					}
+					if payload != nil {
+						payload = append([]byte{byte(used)}, payload...) // codec tag
+					}
+				} else {
+					payload = xorBytes(base, cur)
+					if mode == deltaXORZ {
+						payload = deflateRaw(payload)
+					}
 				}
-				if mode == deltaXOR || int64(len(payload)) < rg.Len {
+				if payload != nil && (mode == deltaXOR || int64(len(payload)) < rg.Len) {
 					h := sha256.New()
 					h.Write([]byte{'d', byte(mode)})
 					bid := sum(base)
@@ -312,6 +363,7 @@ func analyzeDelta(in *Input, mode deltaMode) (*Plan, error) {
 					copy(id[:], h.Sum(nil))
 					st.comp = bytesComp(id, payload)
 					st.delta, st.z = true, mode == deltaXORZ
+					st.tagged, st.dtype, st.width = tdeltaCandidates(mode, rg.Seg.DType) != nil, rg.Seg.DType, rg.Seg.Width
 					st.baseSrc, st.baseOff = in.Prev.Src, pg.Off
 					deltaSegs++
 					deltaBytes += len(payload)
@@ -338,7 +390,18 @@ func analyzeDelta(in *Input, mode deltaMode) (*Plan, error) {
 			if err != nil {
 				return err
 			}
-			if st.delta {
+			if st.delta && st.tagged {
+				base, err := st.baseSrc.Span(st.baseOff, st.regionLen)
+				if err != nil {
+					return err
+				}
+				if len(blob) < 1 {
+					return fmt.Errorf("empty tensor delta")
+				}
+				if blob, err = tdelta.DecodeFor(tdelta.Codec(blob[0]), st.dtype, base, blob[1:], len(base), st.width); err != nil {
+					return err
+				}
+			} else if st.delta {
 				if st.z {
 					if blob, err = io.ReadAll(flate.NewReader(bytes.NewReader(blob))); err != nil {
 						return err
@@ -371,6 +434,9 @@ type dstep struct {
 	comp      *Comp
 	inline    []byte
 	delta, z  bool
+	tagged    bool   // payload starts with a tdelta codec tag
+	dtype     string // tensor dtype and element bytes (tagged payloads)
+	width     int
 	baseSrc   Source
 	baseOff   int64
 }

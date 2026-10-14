@@ -4,6 +4,10 @@
 //
 //	z3fetch -list
 //	z3fetch -group pythia-14m -out DIR [-cache DIR] [-max-mib N]
+//	z3fetch -group go-src,django-sdist -out DIR     (comma list; "deflate" = every gzip/zip group)
+//
+// URLs of the form oci://REGISTRY/REPO@sha256:DIGEST fetch a registry blob with
+// an anonymous Docker Hub pull token (the blob digest is also its SHA-256).
 //
 // Downloads are opt-in and never part of tests. A hash mismatch is an error and
 // the file is discarded.
@@ -19,12 +23,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 type source struct {
-	Group, Format, Name, URL, SHA256, Ref string
-	Size                                  int64
+	Group, Format, Name, URL, SHA256, Ref, Upstream string
+	Size                                            int64
 }
 
 type sources struct {
@@ -35,7 +40,7 @@ type sources struct {
 
 func main() {
 	list := flag.Bool("list", false, "list the pinned sources")
-	group := flag.String("group", "", "group to fetch")
+	group := flag.String("group", "", "group(s) to fetch (comma list; 'deflate' = all gzip/zip groups)")
 	out := flag.String("out", "", "write the group as a z3 corpus here")
 	cache := flag.String("cache", "", "download cache (default ~/.cache/z3-realworld)")
 	maxMiB := flag.Int64("max-mib", 256, "refuse to download more than this in total")
@@ -51,7 +56,7 @@ func main() {
 	}
 	if *list || *group == "" {
 		for _, x := range s.Sources {
-			fmt.Printf("%-12s %-12s %-12s %10d  %s  %s\n", x.Group, x.Format, x.Name, x.Size, x.SHA256[:12], s.Licenses[x.Group])
+			fmt.Printf("%-18s %-12s %-14s %10d  %s  %s\n", x.Group, x.Format, x.Name, x.Size, x.SHA256[:12], s.Licenses[x.Group])
 		}
 		return
 	}
@@ -61,8 +66,12 @@ func main() {
 	}
 	var sel []source
 	var total int64
+	want := map[string]bool{}
+	for _, g := range strings.Split(*group, ",") {
+		want[g] = true
+	}
 	for _, x := range s.Sources {
-		if x.Group == *group {
+		if want[x.Group] || want["deflate"] && (x.Format == "gzip" || x.Format == "zip") {
 			sel = append(sel, x)
 			total += x.Size
 		}
@@ -80,7 +89,8 @@ func main() {
 		Truth                                                                    map[string][]string `json:"truth,omitempty"`
 	}
 	var ms []member
-	for i, x := range sel {
+	nth := map[string]int{}
+	for _, x := range sel {
 		p, err := fetch(*cache, x)
 		if err != nil {
 			fatal(err)
@@ -90,18 +100,20 @@ func main() {
 			continue
 		}
 		ext := map[string]string{"safetensors": ".safetensors", "zip": ".zip", "gzip": ".gz"}[x.Format]
-		rel := filepath.Join("rw-"+x.Group, fmt.Sprintf("r%d%s", i, ext))
+		idx := nth[x.Group]
+		nth[x.Group]++
+		rel := filepath.Join("rw-"+x.Group, fmt.Sprintf("r%d%s", idx, ext))
 		if err := os.MkdirAll(filepath.Join(*out, filepath.Dir(rel)), 0o755); err != nil {
 			fatal(err)
 		}
 		if err := copyFile(p, filepath.Join(*out, rel)); err != nil {
 			fatal(err)
 		}
-		m := member{Family: "rw-" + x.Group, Format: x.Format, Workload: "real-world", Revision: fmt.Sprintf("r%d", i), Index: i,
+		m := member{Family: "rw-" + x.Group, Format: x.Format, Workload: "real-world", Revision: fmt.Sprintf("r%d", idx), Index: idx,
 			Mutation: x.Name, Path: filepath.ToSlash(rel), Size: x.Size, SHA256: x.SHA256,
 			Truth: map[string][]string{"source": {x.Ref}, "license": {s.Licenses[x.Group]}}}
-		if i > 0 {
-			m.Parent, m.Base = fmt.Sprintf("r%d", i-1), "r0"
+		if idx > 0 {
+			m.Parent, m.Base = fmt.Sprintf("r%d", idx-1), "r0"
 		}
 		ms = append(ms, m)
 	}
@@ -145,7 +157,7 @@ func fetch(cache string, x source) (string, error) {
 		return p, nil
 	}
 	c := &http.Client{Timeout: 10 * time.Minute}
-	resp, err := c.Get(x.URL)
+	resp, err := get(c, x.URL)
 	if err != nil {
 		return "", err
 	}
@@ -170,6 +182,31 @@ func fetch(cache string, x source) (string, error) {
 		return "", fmt.Errorf("%s: got %d bytes sha256 %x, want %d bytes %s", x.URL, n, h.Sum(nil), x.Size, x.SHA256)
 	}
 	return p, os.Rename(tmp, p)
+}
+
+// get issues the request; oci:// URLs go through an anonymous pull token and
+// the registry's redirect (the Authorization header is not forwarded).
+func get(c *http.Client, u string) (*http.Response, error) {
+	if !strings.HasPrefix(u, "oci://") {
+		return c.Get(u)
+	}
+	host, path, ok := strings.Cut(strings.TrimPrefix(u, "oci://"), "/")
+	repo, digest, ok2 := strings.Cut(path, "@")
+	if !ok || !ok2 || host != "registry-1.docker.io" {
+		return nil, fmt.Errorf("unsupported oci url %q", u)
+	}
+	tr, err := c.Get("https://auth.docker.io/token?service=registry.docker.io&scope=repository:" + repo + ":pull")
+	if err != nil {
+		return nil, err
+	}
+	defer tr.Body.Close()
+	var tok struct{ Token string }
+	if err := json.NewDecoder(tr.Body).Decode(&tok); err != nil || tok.Token == "" {
+		return nil, fmt.Errorf("oci token: %v", err)
+	}
+	req, _ := http.NewRequest("GET", "https://"+host+"/v2/"+repo+"/blobs/"+digest, nil)
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	return c.Do(req)
 }
 
 func verify(p string, x source) (bool, error) {

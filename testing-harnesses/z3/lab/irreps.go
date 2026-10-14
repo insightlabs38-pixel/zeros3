@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"time"
 
 	"zeros3-z3/deflate"
@@ -87,6 +88,8 @@ type IRSpec struct {
 	// UnitPlain cuts the plaintext at the unit boundaries instead of CDC.
 	UnitPlain bool
 	Profile   uint8
+	Mode      string // ratio | balanced | fast (AutoProfile only)
+	NoHdrPred bool   // keep every block header exact (Z3-06/07 skeleton)
 }
 
 // IRSpecs lists the laboratory's IR representations (report order).
@@ -113,6 +116,10 @@ func IRSpecs() []IRSpec {
 		{Name: "irp-tok4k", Codec: ir.Pred, Policy: pol(ir.PTokRun, 4<<10), Profile: ir.AutoProfile},
 		{Name: "irp-tok16k", Codec: ir.Pred, Policy: pol(ir.PTokRun, 16<<10), Profile: ir.AutoProfile},
 		{Name: "irp-tok64k", Codec: ir.Pred, Policy: pol(ir.PTokRun, 64<<10), Profile: ir.AutoProfile},
+		{Name: "irp-tok16k-bal", Codec: ir.Pred, Policy: pol(ir.PTokRun, 16<<10), Profile: ir.AutoProfile, Mode: "balanced"},
+		{Name: "irp-tok16k-fast", Codec: ir.Pred, Policy: pol(ir.PTokRun, 16<<10), Profile: ir.AutoProfile, Mode: "fast"},
+		{Name: "irp-tok4k-bal", Codec: ir.Pred, Policy: pol(ir.PTokRun, 4<<10), Profile: ir.AutoProfile, Mode: "balanced"},
+		{Name: "irp-tok16k-xh", Codec: ir.Pred, Policy: pol(ir.PTokRun, 16<<10), Profile: ir.AutoProfile, NoHdrPred: true},
 	}
 }
 
@@ -171,7 +178,7 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 			continue
 		}
 		s := ps.s
-		pk, err := ir.Encode(s, ir.Config{Codec: spec.Codec, Policy: spec.Policy, Profile: spec.Profile})
+		pk, err := ir.Encode(s, ir.Config{Codec: spec.Codec, Policy: spec.Policy, Profile: spec.Profile, Mode: spec.Mode, NoHeaderPred: spec.NoHdrPred})
 		if err != nil {
 			stats.fallback += rg.Len
 			stats.fails++
@@ -180,6 +187,10 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 			}
 			continue
 		}
+		if stats.profiles == nil {
+			stats.profiles = map[uint8]int{}
+		}
+		stats.profiles[pk.Skel.Profile]++
 		st := &irStream{first: len(p.Pieces), region: rg, skel: pk.Skeleton, plainLen: len(s.Plain)}
 		if spec.UnitPlain {
 			st.plainSplit = unitPlainBoundaries(s, pk)
@@ -204,6 +215,9 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 			}
 			p.Pieces = append(p.Pieces, Piece{Comp: classed(bytesComp(irUnitID(ub), ub), "unit"), Len: int64(len(ub))})
 		}
+		if len(p.Pieces) == st.first { // empty stream (e.g. an empty ZIP member): keep a placeholder so first < last
+			p.Pieces = append(p.Pieces, Piece{Inline: []byte{}})
+		}
 		st.last = len(p.Pieces)
 		p.MetaBytes += int64(len(pk.Skeleton))
 		streams = append(streams, st)
@@ -222,7 +236,7 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 		"ir_skeleton_bytes": stats.skel, "ir_unit_bytes": stats.unitBytes, "ir_units": stats.units, "ir_inline_units": stats.inlineUnits, "tokens": stats.tokens,
 		"matches": stats.matches, "wrapper_bytes": stats.wrapper, "fallback_bytes": stats.fallback,
 		"analyze_ms": ms(stats.analyze), "parse_ms": ms(stats.parse),
-		"codec": spec.Codec.String(), "policy": spec.Policy.String(),
+		"codec": spec.Codec.String(), "policy": spec.Policy.String(), "profiles": profileSummary(stats.profiles),
 	}
 	byFirst := map[int]*irStream{}
 	for _, s := range streams {
@@ -294,6 +308,7 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 const unitInlineMax = 64
 
 type irStats struct {
+	profiles                                   map[uint8]int
 	inlineUnits                                int
 	streams, ok, fails, units, tokens, matches int
 	comp, plain, skel, unitBytes, wrapper      int64
@@ -387,3 +402,20 @@ func (m multiCloser) Close() error {
 
 // DropParsed releases cached parse results of this revision.
 func (in *Input) DropParsed() { in.parsed = nil }
+
+func profileSummary(m map[uint8]int) string {
+	var ids []int
+	for id := range m {
+		ids = append(ids, int(id))
+	}
+	sort.Ints(ids)
+	var parts []string
+	for _, id := range ids {
+		name := fmt.Sprint(id)
+		if id < len(ir.Profiles) {
+			name = ir.Profiles[id].Name
+		}
+		parts = append(parts, fmt.Sprintf("%s x%d", name, m[uint8(id)]))
+	}
+	return strings.Join(parts, ", ")
+}

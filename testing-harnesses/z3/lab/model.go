@@ -136,6 +136,10 @@ type Account struct {
 	ClassPackedNew map[string]int64 `json:"class_packed_new_bytes,omitempty"`
 	ClassRefs      map[string]int   `json:"class_refs,omitempty"`
 	ClassNewComps  map[string]int   `json:"class_new_comps,omitempty"`
+	// Z3-08H: serialised recipe bytes of the piece list under each layout
+	// (excluding PlanMetaBytes), see recipe.go.
+	Layouts       map[string]int64 `json:"recipe_layout_bytes,omitempty"`
+	PlanMetaBytes int64            `json:"plan_meta_bytes,omitempty"`
 }
 
 // Acct tracks the components a representation has stored across a family.
@@ -210,6 +214,7 @@ func (a *Acct) Add(p *Plan) (Account, error) {
 	ac.UniqueComponents = len(ids)
 	ac.MetaBytes = a.RefBytes*int64(ac.Components) + ac.InlineBytes + InlineRecipeOverhead*int64(inlineCount(p)) + p.MetaBytes
 	ac.IndexBytes = p.IndexBytes
+	ac.Layouts, ac.PlanMetaBytes = recipeBytes(p), p.MetaBytes
 	ac.Incremental = ac.NewBytes + ac.MetaBytes + ac.IndexBytes
 	if ac.PackedKnown {
 		for _, c := range added {

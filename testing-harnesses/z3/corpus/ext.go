@@ -32,6 +32,9 @@ l,w,m,s=map(int,sys.argv[1:5])
 c=zlib.compressobj(l,8,w,m,s)
 sys.stdout.buffer.write(c.compress(sys.stdin.buffer.read())+c.flush())`
 
+// Compress runs the producer on plain.
+func (p ExtProducer) Compress(plain []byte) ([]byte, error) { return p.run(plain) }
+
 func runPipe(in []byte, name string, args ...string) ([]byte, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Stdin = bytes.NewReader(in)
@@ -118,6 +121,7 @@ func ExtProducers() (found []ExtProducer, skipped []string) {
 	} else {
 		skipped = append(skipped, "info-zip-* (zip not found)")
 	}
+	found, skipped = appendExtraProducers(found, skipped)
 	return found, skipped
 }
 

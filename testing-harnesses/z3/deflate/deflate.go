@@ -145,6 +145,9 @@ type Block struct {
 	// Stored: the padding bits between the 3-bit header and the byte boundary.
 	PadBits uint8
 	PadLen  uint8
+	// AutoPad: zero padding whose length Replay derives from the bit position
+	// (PadBits/PadLen are ignored). Set only by reconstruction layers.
+	AutoPad bool
 
 	// Dynamic header, as encoded.
 	HLIT, HDIST, HCLEN uint8     // raw field values

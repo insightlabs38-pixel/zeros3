@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	skelVersion = 1
+	skelVersion = 2
 	maxBlocks   = 1 << 18
 	maxUnits    = 1 << 20
 )
@@ -152,22 +152,68 @@ func parsePadMarker(m byte) (bits, n uint8, ok bool) {
 
 func bits32len(x uint32) int { return bits.Len32(x) }
 
-// encodeBlockMeta appends the exact encoding of one block.
-func encodeBlockMeta(dst []byte, m *BlockMeta) []byte {
-	h := byte(m.Kind) << 1
+// Block entry header byte:
+//
+//	bit 0     BFINAL
+//	bits 1-2  BTYPE (stored, fixed, dynamic)
+//	bit 3     dynamic: header predicted from the tokens (Pred); stored: zero padding (AutoPad)
+//	bit 4     fixed/dynamic: NTokens equals the previous compressed block's; stored: StoredLen is 0
+//
+// followed by what the flags do not imply: NTokens (varint) for fixed/dynamic,
+// the pad marker for stored without AutoPad, StoredLen for a non-empty stored
+// block, the exact header bits for a dynamic block without Pred. An explicit
+// NTokens or StoredLen never repeats what a flag could say (canonical form).
+const (
+	hFinal    = 1
+	hKindShft = 1
+	hFlag3    = 8
+	hFlag4    = 16
+)
+
+// encodeBlockMeta appends the exact encoding of one block; prevN is the token
+// count of the previous fixed/dynamic block (0 before the first).
+func encodeBlockMeta(dst []byte, m *BlockMeta, prevN int) []byte {
+	h := byte(m.Kind) << hKindShft
 	if m.Final {
-		h |= 1
+		h |= hFinal
 	}
-	dst = append(dst, h)
 	switch m.Kind {
 	case deflate.Stored:
-		dst = append(dst, padMarker(m.PadBits, m.PadLen))
-		dst = uvarint(dst, uint64(m.StoredLen))
+		if m.AutoPad {
+			h |= hFlag3
+		}
+		if m.StoredLen == 0 {
+			h |= hFlag4
+		}
+		dst = append(dst, h)
+		if !m.AutoPad {
+			dst = append(dst, padMarker(m.PadBits, m.PadLen))
+		}
+		if m.StoredLen != 0 {
+			dst = uvarint(dst, uint64(m.StoredLen))
+		}
 	case deflate.Fixed:
-		dst = uvarint(dst, uint64(m.NTokens))
+		if m.NTokens == prevN {
+			h |= hFlag4
+		}
+		dst = append(dst, h)
+		if m.NTokens != prevN {
+			dst = uvarint(dst, uint64(m.NTokens))
+		}
 	case deflate.Dynamic:
-		dst = uvarint(dst, uint64(m.NTokens))
-		dst = append(dst, dynHeaderBits(m)...)
+		if m.Pred {
+			h |= hFlag3
+		}
+		if m.NTokens == prevN {
+			h |= hFlag4
+		}
+		dst = append(dst, h)
+		if m.NTokens != prevN {
+			dst = uvarint(dst, uint64(m.NTokens))
+		}
+		if !m.Pred {
+			dst = append(dst, dynHeaderBits(m)...)
+		}
 	}
 	return dst
 }
@@ -203,8 +249,12 @@ func dynHeaderBits(m *BlockMeta) []byte {
 func (s *Skeleton) Marshal() []byte {
 	b := []byte{skelVersion, byte(s.Codec), s.Profile}
 	b = uvarint(b, uint64(len(s.Blocks)))
+	prevN := 0
 	for i := range s.Blocks {
-		b = encodeBlockMeta(b, &s.Blocks[i])
+		b = encodeBlockMeta(b, &s.Blocks[i], prevN)
+		if s.Blocks[i].Kind != deflate.Stored {
+			prevN = s.Blocks[i].NTokens
+		}
 	}
 	b = append(b, padMarker(s.TailPadBits, s.TailPadLen))
 	b = uvarint(b, uint64(len(s.Units)))
@@ -262,36 +312,62 @@ func ParseSkeleton(b []byte, maxPlain int) (*Skeleton, error) {
 		return nil, r.err
 	}
 	s.Blocks = make([]BlockMeta, 0, min(int(nb), 1024))
-	totalTok := 0
+	totalTok, prevN := 0, 0
 	for i := 0; i < int(nb); i++ {
 		h := r.byte()
 		if r.err != nil {
 			return nil, r.err
 		}
-		if h > 5 {
+		if h > hFlag4|hFlag3|2<<hKindShft|hFinal {
 			return nil, corrupt("block %d header byte %#x", i, h)
 		}
-		m := BlockMeta{Final: h&1 == 1, Kind: deflate.BlockKind(h >> 1)}
+		m := BlockMeta{Final: h&hFinal == 1, Kind: deflate.BlockKind(h >> hKindShft & 3)}
+		f3, f4 := h&hFlag3 != 0, h&hFlag4 != 0
 		if m.Final != (i == int(nb)-1) {
 			return nil, corrupt("block %d final flag", i)
 		}
 		switch m.Kind {
 		case deflate.Stored:
-			pb, pn, ok := parsePadMarker(r.byte())
-			if !ok {
-				return nil, corrupt("block %d pad marker", i)
+			m.AutoPad = f3
+			if !f3 {
+				pb, pn, ok := parsePadMarker(r.byte())
+				if !ok {
+					return nil, corrupt("block %d pad marker", i)
+				}
+				m.PadBits, m.PadLen = pb, pn
 			}
-			m.PadBits, m.PadLen = pb, pn
-			m.StoredLen = int(r.uvarint(65535))
-		case deflate.Fixed:
-			m.NTokens = int(r.uvarint(uint64(maxPlain)))
-		case deflate.Dynamic:
-			m.NTokens = int(r.uvarint(uint64(maxPlain)))
-			if r.err != nil {
-				return nil, r.err
+			if !f4 {
+				m.StoredLen = int(r.uvarint(65535))
+				if m.StoredLen == 0 && r.err == nil {
+					return nil, corrupt("block %d non-canonical empty stored block", i)
+				}
 			}
-			if err := parseDynHeader(r, &m); err != nil {
-				return nil, fmt.Errorf("block %d: %w", i, err)
+		case deflate.Fixed, deflate.Dynamic:
+			if m.Kind == deflate.Fixed && f3 {
+				return nil, corrupt("block %d fixed block with header flag", i)
+			}
+			if f4 {
+				m.NTokens = prevN
+			} else {
+				m.NTokens = int(r.uvarint(uint64(maxPlain)))
+				if m.NTokens == prevN && r.err == nil {
+					return nil, corrupt("block %d non-canonical token count", i)
+				}
+			}
+			prevN = m.NTokens
+			if m.Kind == deflate.Dynamic {
+				m.Pred = f3
+				if m.Pred && m.NTokens > maxPredictTokens {
+					return nil, corrupt("block %d predicted header over %d tokens", i, maxPredictTokens)
+				}
+				if r.err != nil {
+					return nil, r.err
+				}
+				if !m.Pred {
+					if err := parseDynHeader(r, &m); err != nil {
+						return nil, fmt.Errorf("block %d: %w", i, err)
+					}
+				}
 			}
 		default:
 			return nil, corrupt("block %d kind %d", i, m.Kind)
