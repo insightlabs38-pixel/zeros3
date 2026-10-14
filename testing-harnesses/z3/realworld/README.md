@@ -19,3 +19,9 @@ Candidates not yet pinned or verified (next batches): small GGUF revisions (e.g.
 quantizations), related PE and ELF builds (consecutive point releases of one static binary, e.g. busybox or a Go
 toolchain `gofmt`), larger gzip producers (go.dev release tarballs publish SHA-256 in `/dl/?mode=json`, 60-80 MB each),
 and PyTorch `.bin` checkpoint revisions from the Hugging Face repositories already used above.
+
+## Blockchain archives (Z3-14 / Z3-15)
+
+* `car.json` - ipld/go-car CAR samples (CARv1, CARv2 with and without index, two malformed). `go run ./cmd/z3car fetch` -> `~/.cache/z3-realworld/car` (override `Z3_CAR_CACHE`).
+* `erae.json` - ethPandaOps EraE archives (Sepolia epochs 0-3, mainnet epochs 0-1, 3.4-4.1 MB each). `go run ./cmd/z3era fetch` -> `~/.cache/z3-realworld/erae` (override `Z3_ERAE_CACHE`).
+* Solana testnet incremental snapshots are not pinned: the RPC node serves only the current one (`/incremental-snapshot.tar.bz2` redirects to a file that disappears within minutes), and a full snapshot is ~9 GB. Names, sizes and SHA-256 of the measured pair are in `results/Z3_15_MERKLE_STATE.md` (names, sizes, SHA-256).

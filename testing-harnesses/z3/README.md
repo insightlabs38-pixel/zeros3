@@ -33,6 +33,14 @@ binref/       format-independent binary substrate: regions + reference slots, x8
 elfz3/        bounded ELF64-LE parser -> binref.Image (Z3-12)
 gopcln/       Go function table (pclntab) reader: unit starts/names/entry-offset slots, ELF and PE (Z3-12)
 pez3/         bounded PE32+ parser -> binref.Image: sections, base relocations, imports/exports/.pdata RVAs, opaque certificate overlay (Z3-13)
+carz3/        bounded CARv1/CARv2 parser (CIDs, DAG-CBOR header subset, sorted indexes), exact block-set recipe, streaming reader, deterministic CAR families (Z3-14)
+cmd/z3car     Z3-14 measurements: fetch (pinned go-car samples), families, real, ident, read, stream
+merklez3/     opaque-identity Merkle/DAG engine: hash-guided Discover / DiffAligned, Walk, synthetic trie + mutations, disk-backed store (Z3-15)
+srev/         the candidate shared StructuredRevision shape evaluated against the CAR / Merkle / EraE adapters (Z3-15F)
+eraez3/       e2store/EraE parser, Snappy decoder + reference-encoder port, exact plaintext-stream representation, writer for re-exports (Z3-15C)
+cmd/z3merkle  Z3-15 measurements: sparse, mutate, fork, hashes, scale, partial
+cmd/z3era     Z3-15C measurements: fetch (pinned EraE), characterize, families, read
+cmd/z3sol     Z3-15E Solana snapshot characterisation over decompressed tars: scan, compare, cdc, estimate
 cmd/z3bin     Z3-12/13 corpus builder (go build -overlay, gcc/clang C) and measurements: pair, attr, delta, runs, report, verify; lab-only Mach-O view
 ```
 

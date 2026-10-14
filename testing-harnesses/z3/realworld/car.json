@@ -1,0 +1,11 @@
+{
+ "schema": "z3-realworld-car/1",
+ "comment": "Pinned public CAR fixtures from ipld/go-car (Apache-2.0 / MIT). Fetched on demand by `z3car fetch`; never committed (sample-v1 is 480 KB).",
+ "sources": [
+  {"name": "sample-v1.car", "url": "https://raw.githubusercontent.com/ipld/go-car/master/v2/testdata/sample-v1.car", "size": 479907, "sha256": "a94c376598d06d2cf4061079c8b25f7d544a94766da710182c839f754951a730"},
+  {"name": "sample-wrapped-v2.car", "url": "https://raw.githubusercontent.com/ipld/go-car/master/v2/testdata/sample-wrapped-v2.car", "size": 521708, "sha256": "0e41236279febfd398ef836ea65f99a2c42596c212563304d2273ca852047ad9"},
+  {"name": "sample-v2-indexless.car", "url": "https://raw.githubusercontent.com/ipld/go-car/master/v2/testdata/sample-v2-indexless.car", "size": 479958, "sha256": "4c1b83a2160343b08e40e5e2cb5d85a57424e491f04d102d2490ea6c64dc660f"},
+  {"name": "sample-v1-with-zero-len-section.car", "url": "https://raw.githubusercontent.com/ipld/go-car/master/v2/testdata/sample-v1-with-zero-len-section.car", "size": 481955, "sha256": "78660600384938581a990055b6dfa28145282dd6799428fcde1a1caaf16c5f71"},
+  {"name": "sample-v1-tailing-corrupt-section.car", "url": "https://raw.githubusercontent.com/ipld/go-car/master/v2/testdata/sample-v1-tailing-corrupt-section.car", "size": 479894, "sha256": "7a7e805e797cd141ec607dd6c91dc07ff7f2d4888f720e0eda120158a6765b4a"}
+ ]
+}

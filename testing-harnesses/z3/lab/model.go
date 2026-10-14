@@ -85,6 +85,10 @@ type Piece struct {
 	Comp   *Comp
 	Inline []byte
 	Len    int64 // bytes of the original object this piece reproduces (concat plans)
+	// Via marks a component that is reachable through another component of the
+	// same plan (a parent node or manifest lists its digest), so the recipe
+	// carries no reference to it. It still counts as stored/reused content.
+	Via bool
 }
 
 // Plan is what a representation would store for one revision.
@@ -162,6 +166,7 @@ func (a *Acct) Add(p *Plan) (Account, error) {
 	var ac Account
 	ac.PackedKnown = a.Pack && !p.NoPack
 	seen := map[ID]bool{}
+	via := 0
 	var added []Comp
 	for _, pc := range p.Pieces {
 		if pc.Comp == nil {
@@ -173,6 +178,9 @@ func (a *Acct) Add(p *Plan) (Account, error) {
 			return ac, fmt.Errorf("lab: negative component size %d", c.Size)
 		}
 		ac.Components++
+		if pc.Via {
+			via++
+		}
 		if c.Class != "" {
 			if ac.ClassRefs == nil {
 				ac.ClassRefs = map[string]int{}
@@ -212,7 +220,7 @@ func (a *Acct) Add(p *Plan) (Account, error) {
 		}
 	}
 	ac.UniqueComponents = len(ids)
-	ac.MetaBytes = a.RefBytes*int64(ac.Components) + ac.InlineBytes + InlineRecipeOverhead*int64(inlineCount(p)) + p.MetaBytes
+	ac.MetaBytes = a.RefBytes*int64(ac.Components-via) + ac.InlineBytes + InlineRecipeOverhead*int64(inlineCount(p)) + p.MetaBytes
 	ac.IndexBytes = p.IndexBytes
 	ac.Layouts, ac.PlanMetaBytes = recipeBytes(p), p.MetaBytes
 	ac.Incremental = ac.NewBytes + ac.MetaBytes + ac.IndexBytes
