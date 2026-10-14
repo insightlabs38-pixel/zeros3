@@ -25,7 +25,9 @@
   "pythia14m-sft-koshirowada": "fine-tune of Apache-2.0 EleutherAI/pythia-14m; see the repository's model card (research use, weights are not redistributed)",
   "pythia14m-logs-honicky": "fine-tune of Apache-2.0 EleutherAI/pythia-14m; see the repository's model card (research use, weights are not redistributed)",
   "bert-tiny-family": "google base Apache-2.0; fine-tunes: see each repository's model card (research use, weights are not redistributed)",
-  "pythia14m-siblings": "Apache-2.0 base; fine-tunes: see model cards (research use, weights are not redistributed)"
+  "pythia14m-siblings": "Apache-2.0 base; fine-tunes: see model cards (research use, weights are not redistributed)",
+  "pythia70m-train": "Apache-2.0 (EleutherAI/pythia-70m model card)",
+  "smollm2-135m": "Apache-2.0 (HuggingFaceTB/SmolLM2-135M and -Instruct model cards)"
  },
  "note": "Pinned, hash-verified research samples. Never committed; fetched by cmd/z3fetch into a cache outside Git. 'upstream' records how the pin was cross-checked at pin time.",
  "sources": [
@@ -1283,6 +1285,69 @@
    "size": 28144000,
    "ref": "domenicrosati/batch_1024_wd_0.1@main (a6ad3fdb0dffda254802d0165b44178f67444436) model.safetensors [sha256 HF LFS oid]",
    "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia70m-train",
+   "format": "safetensors",
+   "name": "step1000",
+   "url": "https://huggingface.co/EleutherAI/pythia-70m/resolve/0fa739a8417c3c7d2a98ed3b283cacec67fd61df/model.safetensors",
+   "sha256": "09883f904c4a50de85c682cdfa0434aaf34e62392fe883e58410d12d39b1ee88",
+   "size": 281715176,
+   "ref": "EleutherAI/pythia-70m@step1000 (0fa739a8417c3c7d2a98ed3b283cacec67fd61df)"
+  },
+  {
+   "group": "pythia70m-train",
+   "format": "safetensors",
+   "name": "step2000",
+   "url": "https://huggingface.co/EleutherAI/pythia-70m/resolve/978373d6e469beb1131434e60a4c3cad051620a2/model.safetensors",
+   "sha256": "2797aae83a6f65521e58345929853ff176890161743afee9db3d030b72f7bb90",
+   "size": 281715176,
+   "ref": "EleutherAI/pythia-70m@step2000 (978373d6e469beb1131434e60a4c3cad051620a2)"
+  },
+  {
+   "group": "pythia70m-train",
+   "format": "safetensors",
+   "name": "step4000",
+   "url": "https://huggingface.co/EleutherAI/pythia-70m/resolve/904ea85340922718b8b68c56f9ee1fef30bb313a/model.safetensors",
+   "sha256": "b10ada55ab1e229e1d05dab06e9bb965da1c74d161b52843c73e4acba7945f67",
+   "size": 281715176,
+   "ref": "EleutherAI/pythia-70m@step4000 (904ea85340922718b8b68c56f9ee1fef30bb313a)"
+  },
+  {
+   "group": "pythia70m-train",
+   "format": "safetensors",
+   "name": "step8000",
+   "url": "https://huggingface.co/EleutherAI/pythia-70m/resolve/f912434e6d0ecb727c8dbe3721de8749a29f92c1/model.safetensors",
+   "sha256": "388e90b4782d56d058ebc40a204ab7f6072044aa539116ab425874d9996c1c9e",
+   "size": 281715176,
+   "ref": "EleutherAI/pythia-70m@step8000 (f912434e6d0ecb727c8dbe3721de8749a29f92c1)"
+  },
+  {
+   "group": "pythia70m-train",
+   "format": "safetensors",
+   "name": "step143000",
+   "url": "https://huggingface.co/EleutherAI/pythia-70m/resolve/de3e4e2d6cbb3b1a51f90fe153ea51fcd8c7c852/model.safetensors",
+   "sha256": "737de0ce1e32a9559925b452921cdea0b12d3932133b6b0b70b61a351b9f6272",
+   "size": 281715176,
+   "ref": "EleutherAI/pythia-70m@step143000 (de3e4e2d6cbb3b1a51f90fe153ea51fcd8c7c852)"
+  },
+  {
+   "group": "smollm2-135m",
+   "format": "safetensors",
+   "name": "base",
+   "url": "https://huggingface.co/HuggingFaceTB/SmolLM2-135M/resolve/93efa2f097d58c2a74874c7e644dbc9b0cee75a2/model.safetensors",
+   "sha256": "80521b40281d6ce74e35c9282c22539e75aa0ac8578892b2a59955ef78d55da1",
+   "size": 269060552,
+   "ref": "HuggingFaceTB/SmolLM2-135M (93efa2f097d58c2a74874c7e644dbc9b0cee75a2)"
+  },
+  {
+   "group": "smollm2-135m",
+   "format": "safetensors",
+   "name": "instruct",
+   "url": "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/resolve/12fd25f77366fa6b3b4b768ec3050bf629380bac/model.safetensors",
+   "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c",
+   "size": 269060552,
+   "ref": "HuggingFaceTB/SmolLM2-135M-Instruct (12fd25f77366fa6b3b4b768ec3050bf629380bac)"
   }
  ]
 }
