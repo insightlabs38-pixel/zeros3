@@ -63,6 +63,9 @@ func Reps() []Rep {
 		{"delta-replace", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaReplace) }},
 		{"delta-xor", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaXOR) }},
 		{"delta-xorz", func(in *Input) (*Plan, error) { return analyzeDelta(in, deltaXORZ) }},
+		{"deflate-ir", analyzeDeflateIR},
+		{"preflate", analyzePreflate},
+		{"preflate-rcdc", analyzePreflateRCDC},
 		{"oracle-logical", analyzeLogicalOracle},
 		{"oracle-refmask", func(in *Input) (*Plan, error) { return analyzeRefMask(in, false) }},
 		{"oracle-refmask+refs", func(in *Input) (*Plan, error) { return analyzeRefMask(in, true) }},
@@ -372,10 +375,14 @@ type dstep struct {
 func analyzeLogicalOracle(in *Input) (*Plan, error) {
 	p := &Plan{Oracle: true}
 	switch in.Format {
-	case "gzip":
-		zr, err := gzip.NewReader(io.NewSectionReader(in.Src.R, 0, in.Src.Size))
-		if err != nil {
-			return nil, err
+	case "gzip", "deflate":
+		var zr io.Reader = flate.NewReader(io.NewSectionReader(in.Src.R, 0, in.Src.Size))
+		if in.Format == "gzip" {
+			g, err := gzip.NewReader(io.NewSectionReader(in.Src.R, 0, in.Src.Size))
+			if err != nil {
+				return nil, err
+			}
+			zr = g
 		}
 		plain, err := inflateLimited(zr)
 		if err != nil {

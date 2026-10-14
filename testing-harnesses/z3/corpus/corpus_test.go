@@ -92,7 +92,7 @@ func TestManifestCountsAndCoverage(t *testing.T) {
 			}
 		}
 	}
-	for _, f := range []string{"raw", "gzip", "zip", "safetensors", "gguf", "pytorch-zip", "zbin", "car", "pagedb", "colstore", "ndarray", "protorec"} {
+	for _, f := range []string{"raw", "gzip", "deflate", "zip", "safetensors", "gguf", "pytorch-zip", "zbin", "car", "pagedb", "colstore", "ndarray", "protorec"} {
 		if !formats[f] {
 			t.Errorf("missing workload class %s", f)
 		}

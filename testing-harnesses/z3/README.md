@@ -14,6 +14,11 @@ corpus/       deterministic revision-family generator + manifest
 lab/          representation laboratory: accounting, baselines, reports
 cmd/z3corpus  gen | verify | list
 cmd/z3lab     run the laboratory over a corpus
+cmd/z3oracle  Preflate oracle report (Z3-04); needs the optional oracle
+deflate/      native exact RFC1951 parser/replayer + gzip/zlib wrappers (Z3-05)
+cmd/z3deflate characterize the parser/replayer over a corpus
+cmd/z3fetch   opt-in pinned real-world samples (realworld/sources.json)
+oracle/       opt-in external research oracles (preflate-rs wrapper + setup.sh)
 ```
 
 ```sh
@@ -41,6 +46,7 @@ tensors, records, blocks).
 |---|---|---|
 | raw controls | `raw-{append,insert,delete,sparse-edit,reorder,random}` | |
 | DEFLATE | `gzip-L{1,6,9}-insert-mid`, `gzip-L6-{insert-begin,delete,replace,append,repetitive,incompressible}` | Go `compress/gzip`, zero mtime |
+| raw RFC1951 | `deflate-{L0,L1,L6,L9,huffonly,fixed}-insert-mid`, `deflate-L6-{insert-begin,delete,replace,append,repetitive,incompressible,multirev}` | `compress/flate` (stored/dynamic/Huffman-only) and `corpus.DeflateFixed` (fixed-Huffman greedy emitter) |
 | ZIP | `zip-{stored,deflate}-{change,add,remove,reorder,meta}` | own minimal writer (no data descriptors, no zip64); `archive/zip` reads it |
 | Safetensors | `st-*` | spec layout; BF16/F16/F32; padded header |
 | GGUF | `gguf-{metadata,modify-tensor,requant,repeated}` | v3 subset: u32/f32/string metadata, 1-D tensors F32/F16/Q4_0/Q8_0, alignment 32, no arrays |
@@ -100,3 +106,36 @@ base from the previous revision's file; chain walking cost is not modelled.
 dump hook, then compares production CDC constants, gear table and chunk
 boundaries against the lab copy over generated streams (whole and fragmented
 reads). It fails on drift in either direction.
+
+## DEFLATE oracle (Z3-04)
+
+`z3corpus ext -out DIR` writes an *optional* corpus recompressed by locally installed producers (python3 zlib with
+several levels/memLevels/strategies, GNU gzip, Info-ZIP); absent tools are skipped. It is kept apart from the
+guaranteed stdlib corpus in all reports.
+
+`oracle/preflate/setup.sh` clones and builds a pinned `preflate-rs` outside Git (provenance in
+`oracle/preflate/README.md`). With it present the lab adds `preflate` (plaintext chunks + reconstruction blob as
+recipe metadata) and `preflate-rcdc` (blob also CDC-chunked); without it they are not applicable and no test fails.
+
+```sh
+go run ./cmd/z3oracle -corpus "$TMPDIR/z3c" [-ext "$TMPDIR/z3ext"]
+```
+
+Results: `../results/Z3_04_PREFLATE_ORACLE.md`.
+
+## Native exact DEFLATE (Z3-05)
+
+`deflate.Parse` turns a raw RFC1951 stream into an explicit IR (blocks, dynamic-header encoding choices, raw
+token symbols/extra bits, padding bits) plus the decoded plaintext; `Replay` regenerates the identical bits.
+`ParseGzip`/`ParseZlib` keep wrapper bytes verbatim. Differential oracle: `compress/flate` (Preflate is optional).
+The lab representation `deflate-ir` reports parse/replay success, structure and time; its cost is N/A until Z3-06
+defines a physical encoding.
+
+```sh
+go test ./deflate                                   # golden, malformed, differential, mutation, fuzz seeds
+go test ./deflate -run '^$' -fuzz '^FuzzParse$' -fuzztime 60s
+go test ./deflate -run '^$' -bench . -benchmem
+go run ./cmd/z3deflate -corpus "$TMPDIR/z3c"
+```
+
+Results: `../results/Z3_05_DEFLATE_PARSER.md`. Real-world samples: `realworld/README.md`.

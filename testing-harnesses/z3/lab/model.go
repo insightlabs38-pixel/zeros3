@@ -100,6 +100,10 @@ type Plan struct {
 	Oracle bool
 	// NoPack skips pack-compression estimation (e.g. the whole-object control).
 	NoPack bool
+	// NoCost marks an experimental representation with no physical encoding
+	// yet: it is parsed and replayed and its structure reported, but no cost
+	// is invented (rows show N/A).
+	NoCost bool
 	Detail map[string]any
 }
 

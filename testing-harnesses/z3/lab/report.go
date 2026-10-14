@@ -23,6 +23,7 @@ func WriteJSON(path string, r *Report) error {
 type Sum struct {
 	Family, Format, Rep string
 	Oracle              bool
+	CostNA              bool // experimental: no physical cost defined
 	Revs                int
 	Logical             int64
 	Incr                int64
@@ -54,7 +55,7 @@ func Summarize(rows []Row, key func(Row) (family, format string)) []Sum {
 		k := fam + "\x00" + fmtName + "\x00" + r.Rep
 		s := idx[k]
 		if s == nil {
-			s = &Sum{Family: fam, Format: fmtName, Rep: r.Rep, Oracle: r.Oracle, PackedKnown: true}
+			s = &Sum{Family: fam, Format: fmtName, Rep: r.Rep, Oracle: r.Oracle, CostNA: r.CostNA, PackedKnown: !r.CostNA}
 			idx[k] = s
 			order = append(order, k)
 		}
@@ -67,6 +68,12 @@ func Summarize(rows []Row, key func(Row) (family, format string)) []Sum {
 		}
 		s.Revs++
 		s.Logical += r.LogicalSize
+		if r.RoundtripExact == "yes" {
+			s.Exact++
+		}
+		if r.CostNA {
+			continue
+		}
 		s.Incr += r.Incremental
 		s.Reuse += r.ReuseBytes
 		s.New += r.NewBytes
@@ -74,9 +81,6 @@ func Summarize(rows []Row, key func(Row) (family, format string)) []Sum {
 			s.Packed += *r.IncrementalPacked
 		} else {
 			s.PackedKnown = false
-		}
-		if r.RoundtripExact == "yes" {
-			s.Exact++
 		}
 	}
 	out := make([]Sum, 0, len(order))
@@ -196,6 +200,10 @@ func writeSums(w io.Writer, ss []Sum, withErr bool) {
 		if s.Oracle {
 			name += "*"
 		}
+		if s.CostNA {
+			fmt.Fprintf(tw, "%s\t%s\tN/A\tN/A\tN/A\tN/A\tN/A\tN/A\t%s\t%d\n", name+"\u2020", mib(s.Logical), rtLabel(s), s.Errors)
+			continue
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%.1f\t%s\t%s\t%s\t%s\t%s\t%d\n", name, mib(s.Logical), mib(s.Incr), s.pctLogical(s.Incr),
 			packed, pct, vs, reuse, rtLabel(s), s.Errors)
 	}
@@ -236,7 +244,7 @@ func writeRanking(w io.Writer, fam []Sum) {
 		}
 		l := line{family: f, format: ss[0].Format, cdcPct: cdc.pctLogical(cdc.Packed), bestRep: "-", bestPct: cdc.pctLogical(cdc.Packed), oracleRep: "-", oraclePct: cdc.pctLogical(cdc.Packed)}
 		for _, s := range ss {
-			if !s.PackedKnown || s.Revs == 0 || s.Rep == "cdc" || s.Rep == "raw" || s.Invalid > 0 || s.Errors > 0 {
+			if s.CostNA || !s.PackedKnown || s.Revs == 0 || s.Rep == "cdc" || s.Rep == "raw" || s.Invalid > 0 || s.Errors > 0 {
 				continue
 			}
 			p := s.pctLogical(s.Packed)
@@ -261,7 +269,7 @@ func writeRanking(w io.Writer, fam []Sum) {
 		fmt.Fprintf(tw, "%s\t%s\t%.1f\t%s\t%.1f\t%s\t%.1f\t%.1f\n", l.family, l.format, l.cdcPct, l.bestRep, l.bestPct, l.oracleRep, l.oraclePct, l.cdcPct-l.oraclePct)
 	}
 	tw.Flush()
-	fmt.Fprintln(w, "('*' and 'oracle' = estimate without a reconstruction path; 'best valid' reps are exactly reversible)")
+	fmt.Fprintln(w, "('*' and 'oracle' = estimate without a reconstruction path; 'best valid' reps are exactly reversible; '\u2020' = experimental, parsed and replayed but no physical cost defined)")
 }
 
 // Problems lists rows that failed exact reconstruction or errored.
