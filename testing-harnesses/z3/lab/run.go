@@ -175,6 +175,7 @@ func runFamily(cfg RunConfig, reps []Rep, members []corpus.Member) ([]Row, error
 		in := &Input{Family: mem.Family, Format: mem.Format, Revision: mem.Revision, Src: src, Prev: prev, Opts: cfg.Opts}
 		if prev != nil {
 			prev.Prev = nil // keep only one level of history
+			prev.parsed = nil
 		}
 		h := sha256.New()
 		r, _ := src.Reader(0, src.Size)
