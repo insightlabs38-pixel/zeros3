@@ -72,7 +72,7 @@ func aggregate(rep *lab.Report, refBytes, runBytes int64) (map[string][]*famRow,
 		var cp int64
 		for cl, v := range r.ClassPackedNew {
 			switch cl {
-			case "plain":
+			case "plain", "tarhdr", "tarpay":
 				a.plainNew += v
 			case "unit":
 				a.unitNew += v

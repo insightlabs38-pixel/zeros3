@@ -1,7 +1,7 @@
 # Z3-10: tensor-pair delta representation
 
 Laboratory evidence only. `zeros3.go`, the root `go.mod`, the store, manifests, journal and every persistent format are untouched; the codec,
-container and tools live under `testing-harnesses/z3` (`tdelta/`, `cmd/z3tdelta`, a 40-line exported view of the existing range coder in `ir/rcpub.go`).
+container and tools live under `testing-harnesses/z3` (`tdelta/`, `cmd/z3tdelta`, a 65-line exported view of the existing range coder in `ir/rcpub.go`).
 Nothing is wired into persistence.
 
 Target architecture, as asked:
@@ -22,7 +22,7 @@ go test ./tdelta
 
 ## What was built
 
-* **PXR** (`tdelta/pxr.go`, ~190 lines): the Z3-10A native codec. The XOR of target and base is coded element by element with the Z3 adaptive range coder (`ir.RCEncoder`, no
+* **PXR** (`tdelta/pxr.go`, ~210 lines): the Z3-10A native codec. The XOR of target and base is coded element by element with the Z3 adaptive range coder (`ir.RCEncoder`, no
   second entropy coder). Per element one *changed* flag (context: last three flags); for changed elements the `w` XOR bytes, most significant first, each as a zero flag and an
   8-bit tree. Contexts are small: plane index, bucket of the byte above in the same element, bucket of the same plane in the previous element, and the **base element's
   exponent-ish bits** (top byte below the sign, 32 levels) because small weights move by more ULPs than large ones. `base == nil` codes the target against zeros (standalone byte planes).

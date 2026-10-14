@@ -25,6 +25,10 @@ oracle/       opt-in external research oracles (preflate-rs wrapper + setup.sh) 
 st/           strict stdlib-only Safetensors parser, bounded reads, exact rebuild, builder (Z3-09)
 tdelta/       simple exact tensor-delta baselines (xor, planes, sparse, float-split, ...) (Z3-09)
 cmd/z3st      Safetensors characterisation: identity, bits, spacing, blocks, delta, class, header, base, reshard (Z3-09)
+tdelta/       (Z3-10) also: PXR native byte-plane XOR range codec, row-aligned reuse recipe, per-tensor admission, whole-file Safetensors container
+cmd/z3tdelta  Z3-10 measurements: pairs (CDC / standalone / DEFLATE plane-XOR / PXR / hybrid), family (base policy, chain depth), sweep (row reuse), perf
+tarz3/        exact tar structure parser: structure bytes vs member payloads, Split/Join, fail-safe UnsupportedError (Z3-11)
+cmd/z3tar     Z3-11 measurements: parse, churn (what the plaintext CDC floor is made of), range, admit
 ```
 
 ```sh

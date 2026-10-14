@@ -2,6 +2,7 @@ package lab
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -10,6 +11,7 @@ import (
 
 	"zeros3-z3/deflate"
 	"zeros3-z3/ir"
+	"zeros3-z3/tarz3"
 )
 
 // Z3-06/07 representations built on the exact reconstruction IR (package ir).
@@ -90,6 +92,9 @@ type IRSpec struct {
 	Profile   uint8
 	Mode      string // ratio | balanced | fast (AutoProfile only)
 	NoHdrPred bool   // keep every block header exact (Z3-06/07 skeleton)
+	// TarPlain cuts the plaintext with the named tar segmentation (Z3-11) instead of
+	// CDC; a plaintext that is not a tar this package reconstructs exactly stays CDC.
+	TarPlain string
 }
 
 // IRSpecs lists the laboratory's IR representations (report order).
@@ -120,6 +125,9 @@ func IRSpecs() []IRSpec {
 		{Name: "irp-tok16k-fast", Codec: ir.Pred, Policy: pol(ir.PTokRun, 16<<10), Profile: ir.AutoProfile, Mode: "fast"},
 		{Name: "irp-tok4k-bal", Codec: ir.Pred, Policy: pol(ir.PTokRun, 4<<10), Profile: ir.AutoProfile, Mode: "balanced"},
 		{Name: "irp-tok16k-xh", Codec: ir.Pred, Policy: pol(ir.PTokRun, 16<<10), Profile: ir.AutoProfile, NoHdrPred: true},
+		{Name: "irp-tok16k+tarmem", Codec: ir.Pred, Policy: pol(ir.PTokRun, 16<<10), Profile: ir.AutoProfile, TarPlain: "tarmem"},
+		{Name: "irp-tok16k+tarmem-s", Codec: ir.Pred, Policy: pol(ir.PTokRun, 16<<10), Profile: ir.AutoProfile, TarPlain: "tarmem-s"},
+		{Name: "irp-tok16k+tarmem-cdc64k", Codec: ir.Pred, Policy: pol(ir.PTokRun, 16<<10), Profile: ir.AutoProfile, TarPlain: "tarmem-cdc64k"},
 	}
 }
 
@@ -202,6 +210,23 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 				}
 				prev = b
 			}
+		} else if ts, ok := tarSpecByName(spec.TarPlain); ok {
+			n0 := len(p.Pieces)
+			st, terr := tarPieces(p, s.Plain, ts, in.Opts.InlineMax)
+			var u *tarz3.UnsupportedError
+			switch {
+			case errors.As(terr, &u): // fail safe: CDC plaintext
+				p.Pieces = p.Pieces[:n0]
+				stats.tarFallback++
+				if err := chunkBytesClass(p, s.Plain, "plain"); err != nil {
+					return nil, err
+				}
+			case terr != nil:
+				return nil, terr
+			default:
+				stats.tarMembers += st.Members
+				stats.tarHdr += st.HdrBytes
+			}
 		} else if err := chunkBytesClass(p, s.Plain, "plain"); err != nil {
 			return nil, err
 		}
@@ -236,6 +261,7 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 		"ir_skeleton_bytes": stats.skel, "ir_unit_bytes": stats.unitBytes, "ir_units": stats.units, "ir_inline_units": stats.inlineUnits, "tokens": stats.tokens,
 		"matches": stats.matches, "wrapper_bytes": stats.wrapper, "fallback_bytes": stats.fallback,
 		"analyze_ms": ms(stats.analyze), "parse_ms": ms(stats.parse),
+		"tar_fallback_streams": stats.tarFallback, "tar_members": stats.tarMembers, "tar_header_bytes": stats.tarHdr,
 		"codec": spec.Codec.String(), "policy": spec.Policy.String(), "profiles": profileSummary(stats.profiles),
 	}
 	byFirst := map[int]*irStream{}
@@ -248,6 +274,10 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 			if s := byFirst[i]; s != nil {
 				plain := make([]byte, 0, s.plainLen)
 				for _, pc := range p.Pieces[s.first:s.mid] {
+					if pc.Comp == nil { // inline piece (tar structure)
+						plain = append(plain, pc.Inline...)
+						continue
+					}
 					b, err := get(pc.Comp.ID)
 					if err != nil {
 						return err
@@ -313,6 +343,8 @@ type irStats struct {
 	streams, ok, fails, units, tokens, matches int
 	comp, plain, skel, unitBytes, wrapper      int64
 	fallback                                   int64
+	tarFallback, tarMembers                    int
+	tarHdr                                     int64
 	analyze, parse                             time.Duration
 }
 

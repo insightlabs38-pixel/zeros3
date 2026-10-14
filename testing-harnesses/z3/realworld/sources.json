@@ -27,7 +27,10 @@
   "bert-tiny-family": "google base Apache-2.0; fine-tunes: see each repository's model card (research use, weights are not redistributed)",
   "pythia14m-siblings": "Apache-2.0 base; fine-tunes: see model cards (research use, weights are not redistributed)",
   "pythia70m-train": "Apache-2.0 (EleutherAI/pythia-70m model card)",
-  "smollm2-135m": "Apache-2.0 (HuggingFaceTB/SmolLM2-135M and -Instruct model cards)"
+  "smollm2-135m": "Apache-2.0 (HuggingFaceTB/SmolLM2-135M and -Instruct model cards)",
+  "python-oci-deps": "Python Software Foundation licence + Debian main (mixed; research use only): Docker Hub library/python apt-installed dependency layer",
+  "python-oci-runtime": "Python Software Foundation licence + Debian main (mixed; research use only): Docker Hub library/python CPython build layer",
+  "python-oci-tail": "Python Software Foundation licence + Debian main (mixed; research use only): Docker Hub library/python tail layer (pip/setuptools/wheel)"
  },
  "note": "Pinned, hash-verified research samples. Never committed; fetched by cmd/z3fetch into a cache outside Git. 'upstream' records how the pin was cross-checked at pin time.",
  "sources": [
@@ -1348,6 +1351,156 @@
    "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c",
    "size": 269060552,
    "ref": "HuggingFaceTB/SmolLM2-135M-Instruct (12fd25f77366fa6b3b4b768ec3050bf629380bac)"
+  },
+  {
+   "group": "python-oci-deps",
+   "format": "gzip",
+   "name": "3.12.1",
+   "url": "oci://registry-1.docker.io/library/python@sha256:be0f2e005f57dfa5f2f18c087285d4dade328259aa362ef5edd4d846fd6cb75c",
+   "sha256": "be0f2e005f57dfa5f2f18c087285d4dade328259aa362ef5edd4d846fd6cb75c",
+   "size": 3510763,
+   "ref": "Docker Hub library/python:3.12.1-slim-bookworm layer #1 apt-installed dependency layer (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-deps",
+   "format": "gzip",
+   "name": "3.12.2",
+   "url": "oci://registry-1.docker.io/library/python@sha256:1103112ebfc46e01c0f35f3586e5a39c6a9ffa32c1a362d4d5f20e3783c6fdd7",
+   "sha256": "1103112ebfc46e01c0f35f3586e5a39c6a9ffa32c1a362d4d5f20e3783c6fdd7",
+   "size": 3507699,
+   "ref": "Docker Hub library/python:3.12.2-slim-bookworm layer #1 apt-installed dependency layer (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-deps",
+   "format": "gzip",
+   "name": "3.12.3",
+   "url": "oci://registry-1.docker.io/library/python@sha256:276709cbedc1f168290ee408fca2af2aacfeb4f922ddca125e9e8047f9841479",
+   "sha256": "276709cbedc1f168290ee408fca2af2aacfeb4f922ddca125e9e8047f9841479",
+   "size": 3510934,
+   "ref": "Docker Hub library/python:3.12.3-slim-bookworm layer #1 apt-installed dependency layer (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-deps",
+   "format": "gzip",
+   "name": "3.12.4",
+   "url": "oci://registry-1.docker.io/library/python@sha256:a21a42cb9734eb8bf959604f0175a3fb0ea93caea931d758b8b86b1acf2c6421",
+   "sha256": "a21a42cb9734eb8bf959604f0175a3fb0ea93caea931d758b8b86b1acf2c6421",
+   "size": 3509904,
+   "ref": "Docker Hub library/python:3.12.4-slim-bookworm layer #1 apt-installed dependency layer (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-deps",
+   "format": "gzip",
+   "name": "3.12.5",
+   "url": "oci://registry-1.docker.io/library/python@sha256:467daa3d4c8b6f3916948d9277922e51161a5d42c977631819a635d2fa9fb32e",
+   "sha256": "467daa3d4c8b6f3916948d9277922e51161a5d42c977631819a635d2fa9fb32e",
+   "size": 3511398,
+   "ref": "Docker Hub library/python:3.12.5-slim-bookworm layer #1 apt-installed dependency layer (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-runtime",
+   "format": "gzip",
+   "name": "3.12.1",
+   "url": "oci://registry-1.docker.io/library/python@sha256:ca08baf710868cd57a66a3ad898db732a16a6d5812edaa7efb76ebb88a1251fa",
+   "sha256": "ca08baf710868cd57a66a3ad898db732a16a6d5812edaa7efb76ebb88a1251fa",
+   "size": 11967482,
+   "ref": "Docker Hub library/python:3.12.1-slim-bookworm layer #2 CPython build layer (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-runtime",
+   "format": "gzip",
+   "name": "3.12.2",
+   "url": "oci://registry-1.docker.io/library/python@sha256:e71929d491677492d7a4ad57a7fa341553306ea7568c09e4231dcc509dd00ae9",
+   "sha256": "e71929d491677492d7a4ad57a7fa341553306ea7568c09e4231dcc509dd00ae9",
+   "size": 11991210,
+   "ref": "Docker Hub library/python:3.12.2-slim-bookworm layer #2 CPython build layer (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-runtime",
+   "format": "gzip",
+   "name": "3.12.3",
+   "url": "oci://registry-1.docker.io/library/python@sha256:2e133733af76c2a11aee79b7cfc733cc8065bc538d74b80ad65846d336a0904e",
+   "sha256": "2e133733af76c2a11aee79b7cfc733cc8065bc538d74b80ad65846d336a0904e",
+   "size": 12000905,
+   "ref": "Docker Hub library/python:3.12.3-slim-bookworm layer #2 CPython build layer (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-runtime",
+   "format": "gzip",
+   "name": "3.12.4",
+   "url": "oci://registry-1.docker.io/library/python@sha256:16661da94c6b59ad94d3beb260dc1a6510d6e92d524ab4894e25bb64596895a5",
+   "sha256": "16661da94c6b59ad94d3beb260dc1a6510d6e92d524ab4894e25bb64596895a5",
+   "size": 12005473,
+   "ref": "Docker Hub library/python:3.12.4-slim-bookworm layer #2 CPython build layer (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-runtime",
+   "format": "gzip",
+   "name": "3.12.5",
+   "url": "oci://registry-1.docker.io/library/python@sha256:96d51d0de90c323e22cf7900a0ee9185e1e3c185b3ed4fecd9202ae1534e60c7",
+   "sha256": "96d51d0de90c323e22cf7900a0ee9185e1e3c185b3ed4fecd9202ae1534e60c7",
+   "size": 11724854,
+   "ref": "Docker Hub library/python:3.12.5-slim-bookworm layer #2 CPython build layer (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-tail",
+   "format": "gzip",
+   "name": "3.12.1",
+   "url": "oci://registry-1.docker.io/library/python@sha256:022edbc22fa9a8a991a070357ae49b9b6fd5102a6471a869a8c7120c4d8196c1",
+   "sha256": "022edbc22fa9a8a991a070357ae49b9b6fd5102a6471a869a8c7120c4d8196c1",
+   "size": 2960805,
+   "ref": "Docker Hub library/python:3.12.1-slim-bookworm layer #4 tail layer (pip/setuptools/wheel) (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-tail",
+   "format": "gzip",
+   "name": "3.12.2",
+   "url": "oci://registry-1.docker.io/library/python@sha256:a47354887c310a4b86f2eec46704051aa91513f71ef42a44dcedeea84062c163",
+   "sha256": "a47354887c310a4b86f2eec46704051aa91513f71ef42a44dcedeea84062c163",
+   "size": 2979227,
+   "ref": "Docker Hub library/python:3.12.2-slim-bookworm layer #4 tail layer (pip/setuptools/wheel) (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-tail",
+   "format": "gzip",
+   "name": "3.12.3",
+   "url": "oci://registry-1.docker.io/library/python@sha256:3cf9507408dcb24084c3a20ccd068986cc37d1b13629d357f402581af5177013",
+   "sha256": "3cf9507408dcb24084c3a20ccd068986cc37d1b13629d357f402581af5177013",
+   "size": 3053532,
+   "ref": "Docker Hub library/python:3.12.3-slim-bookworm layer #4 tail layer (pip/setuptools/wheel) (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-tail",
+   "format": "gzip",
+   "name": "3.12.4",
+   "url": "oci://registry-1.docker.io/library/python@sha256:3f5faab3df7809e6204d76de2ac979d120d0b82e1625e8f5b47fb80e7d670a37",
+   "sha256": "3f5faab3df7809e6204d76de2ac979d120d0b82e1625e8f5b47fb80e7d670a37",
+   "size": 4235307,
+   "ref": "Docker Hub library/python:3.12.4-slim-bookworm layer #4 tail layer (pip/setuptools/wheel) (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
+  },
+  {
+   "group": "python-oci-tail",
+   "format": "gzip",
+   "name": "3.12.5",
+   "url": "oci://registry-1.docker.io/library/python@sha256:7ab50b4ae9438decebef449b4afb727284fe0c8f9198b603c588fea80266eb13",
+   "sha256": "7ab50b4ae9438decebef449b4afb727284fe0c8f9198b603c588fea80266eb13",
+   "size": 1751083,
+   "ref": "Docker Hub library/python:3.12.5-slim-bookworm layer #4 tail layer (pip/setuptools/wheel) (blob digest == sha256)",
+   "upstream": "registry digest == sha256"
   }
  ]
 }
