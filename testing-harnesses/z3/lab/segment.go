@@ -7,11 +7,12 @@ import (
 	"compress/flate"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"sort"
+
+	"zeros3-z3/st"
 )
 
 // Laboratory segmenters. Each recognises just enough of a container to
@@ -28,6 +29,9 @@ type Seg struct {
 	Logical func() ([]byte, error)
 	// Deflate marks a segment whose bytes are exactly one raw RFC1951 stream.
 	Deflate bool
+	// DType and Width (element bytes) describe tensor segments (Safetensors).
+	DType string
+	Width int
 }
 
 var (
@@ -139,41 +143,18 @@ func segZip(s Source) ([]Seg, error) {
 }
 
 func segSafetensors(s Source) ([]Seg, error) {
-	if s.Size < 8 {
-		return nil, errors.New("short file")
-	}
-	b, err := s.Span(0, 8)
+	f, err := st.Parse(s.R, s.Size, st.Options{MaxHeader: maxHeaderBytes})
 	if err != nil {
 		return nil, err
 	}
-	hl := binary.LittleEndian.Uint64(b)
-	if hl > maxHeaderBytes || hl > uint64(s.Size-8) {
-		return nil, fmt.Errorf("header length %d", hl)
-	}
-	hb, err := s.Span(8, int64(hl))
-	if err != nil {
-		return nil, err
-	}
-	var hdr map[string]json.RawMessage
-	if err := json.Unmarshal(hb, &hdr); err != nil {
-		return nil, err
-	}
-	data := uint64(s.Size) - 8 - hl
 	var segs []Seg
-	for name, raw := range hdr {
-		if name == "__metadata__" {
-			continue
+	for i := range f.Tensors {
+		t := &f.Tensors[i]
+		w := 0
+		if t.Bits%8 == 0 {
+			w = t.Bits / 8
 		}
-		var e struct {
-			Offsets [2]uint64 `json:"data_offsets"`
-		}
-		if err := json.Unmarshal(raw, &e); err != nil {
-			return nil, err
-		}
-		if e.Offsets[0] > e.Offsets[1] || e.Offsets[1] > data {
-			return nil, fmt.Errorf("tensor %q offsets %v outside %d data bytes", name, e.Offsets, data)
-		}
-		segs = append(segs, Seg{Key: name, Off: 8 + int64(hl) + int64(e.Offsets[0]), Len: int64(e.Offsets[1] - e.Offsets[0])})
+		segs = append(segs, Seg{Key: t.Name, Off: f.DataStart + t.Begin, Len: t.Size(), DType: t.DType, Width: w})
 	}
 	return segs, nil
 }

@@ -20,7 +20,12 @@
   "guava-jar": "Apache-2.0 (Guava)",
   "commons-lang3-jar": "Apache-2.0 (Commons Lang)",
   "junit-jar": "EPL-1.0 (JUnit 4)",
-  "fdroid-apk": "GPL-3.0-or-later (F-Droid client)"
+  "fdroid-apk": "GPL-3.0-or-later (F-Droid client)",
+  "pythia14m-train": "Apache-2.0 (EleutherAI/pythia-14m model card)",
+  "pythia14m-sft-koshirowada": "fine-tune of Apache-2.0 EleutherAI/pythia-14m; see the repository's model card (research use, weights are not redistributed)",
+  "pythia14m-logs-honicky": "fine-tune of Apache-2.0 EleutherAI/pythia-14m; see the repository's model card (research use, weights are not redistributed)",
+  "bert-tiny-family": "google base Apache-2.0; fine-tunes: see each repository's model card (research use, weights are not redistributed)",
+  "pythia14m-siblings": "Apache-2.0 base; fine-tunes: see model cards (research use, weights are not redistributed)"
  },
  "note": "Pinned, hash-verified research samples. Never committed; fetched by cmd/z3fetch into a cache outside Git. 'upstream' records how the pin was cross-checked at pin time.",
  "sources": [
@@ -918,6 +923,366 @@
    "size": 12569951,
    "ref": "F-Droid client org.fdroid.fdroid 2.0.2 (versionCode 2000052); APK (ZIP/DEFLATE) as published on f-droid.org",
    "upstream": "pinned at first fetch (no upstream digest published)"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step0",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/56079904bb80b7f36d3b794089f146e7a4d6efae/model.safetensors",
+   "sha256": "495e509ae82ddbe9cf39558a13b10973822c7bcedd0c6fd7d3225620b9e2edb5",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step0 (56079904bb80b7f36d3b794089f146e7a4d6efae) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step1",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/a5a6c6adfd6e48b43682e231c1c30cc674545f0e/model.safetensors",
+   "sha256": "495e509ae82ddbe9cf39558a13b10973822c7bcedd0c6fd7d3225620b9e2edb5",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step1 (a5a6c6adfd6e48b43682e231c1c30cc674545f0e) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step2",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/090e997cac8cc804b7a34d32d3861457d7120b0c/model.safetensors",
+   "sha256": "2ae08af3f06ec7f941864db21c62e302104110e0383087f2d0c17dbdd81e65a3",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step2 (090e997cac8cc804b7a34d32d3861457d7120b0c) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step4",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/de985e60a7337d37f0eb3bc628d0b16c8202947c/model.safetensors",
+   "sha256": "dd73d4daf939090799305b159558e955b57a9553bdd6e76ae35b87e2bd8f4118",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step4 (de985e60a7337d37f0eb3bc628d0b16c8202947c) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step8",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/fbd7af0e00c2ded2d0812b65b95842a65fdbc9d8/model.safetensors",
+   "sha256": "96647c0e6154a26c52f8b7c3875b7067b7f957b5c8f134a2d53029023164e79f",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step8 (fbd7af0e00c2ded2d0812b65b95842a65fdbc9d8) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step16",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/b3819bb4ea5715cf5b9454428aa746cb6f61c953/model.safetensors",
+   "sha256": "4a8158144b747a0bb249f5d5e6e91c68b78602305d92251907c646826d937f51",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step16 (b3819bb4ea5715cf5b9454428aa746cb6f61c953) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step32",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/6eae4186e80772e4f571b94526ea7e7348b5e011/model.safetensors",
+   "sha256": "88a3985e028657fa5754b0132eb49570e22fdbb8def2d8211c89a507e00bfcf7",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step32 (6eae4186e80772e4f571b94526ea7e7348b5e011) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step64",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/34ae3b5dc9c67591eaa0d394440b2c2d3752a143/model.safetensors",
+   "sha256": "d8d2526f37980c0a8fc402ccd8d9360217a1d5591c1d4f5ba979e443e6c73df1",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step64 (34ae3b5dc9c67591eaa0d394440b2c2d3752a143) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step128",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/3a5eb43ebee7160010d65f7162fd09eb1ae543e2/model.safetensors",
+   "sha256": "21111152279ffd687f9b0275229e00595585b4ea1f6a64fc2c7f0622fb48a467",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step128 (3a5eb43ebee7160010d65f7162fd09eb1ae543e2) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step256",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/f102f5014c71a573c3dab96838d46989345b9a51/model.safetensors",
+   "sha256": "e8e5503624ed604b466c13f893ef5affa50b46139fc2719f86989f662f4105a6",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step256 (f102f5014c71a573c3dab96838d46989345b9a51) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step512",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/64c08eedb345bd7766b4283febb672eb04e993ba/model.safetensors",
+   "sha256": "79bc00ca3a953c902efa9fc2a322b6590749af213ca97129e903d1859d655353",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step512 (64c08eedb345bd7766b4283febb672eb04e993ba) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step1000",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/5b020995bfc7aee2931b0f35bd70cf7ee8b1db62/model.safetensors",
+   "sha256": "acc2b8045b54b406bcec99962f91e60202d448a00231669ee3674cab234eb244",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step1000 (5b020995bfc7aee2931b0f35bd70cf7ee8b1db62) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step2000",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/55c108a1bc50cc1c118276ac6c592725636531c7/model.safetensors",
+   "sha256": "37b7abc5bc4c0a884c8fbf959e0278d549af2fcea8eb40f21e8f56a84ce05ac7",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step2000 (55c108a1bc50cc1c118276ac6c592725636531c7) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step100000",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/d8ef477bd905f3cceeb9327b0cefba4f6f9895ac/model.safetensors",
+   "sha256": "d42411e70b4110bb69bc4301af75f25efbdf4b2278b2235bfe1d3d567b33bb59",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step100000 (d8ef477bd905f3cceeb9327b0cefba4f6f9895ac) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step140000",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/a5891531bf82c6a04eeea84c2bb5b69da15c7c4b/model.safetensors",
+   "sha256": "5ac655e21f6d9e95bc2629a30c3ef965bade7b6997e81d58fbf1068664580f81",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step140000 (a5891531bf82c6a04eeea84c2bb5b69da15c7c4b) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step141000",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/37d03d13381a010ede721945b18170e2f61b0f95/model.safetensors",
+   "sha256": "f3e03d7ad423d3eb082e4cc8f475840904c7eab57c3e2ada98c7d5d6b85758ba",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step141000 (37d03d13381a010ede721945b18170e2f61b0f95) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step142000",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/cca39af689139d049aedf10206e932638f19679a/model.safetensors",
+   "sha256": "8658293250f8b9a54da5919f3a5ee901f14f3a5ca7cbafea7257d45f0a0e414c",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step142000 (cca39af689139d049aedf10206e932638f19679a) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-train",
+   "format": "safetensors",
+   "name": "step143000",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/f1545025bb394553a7f4e547db0874886f05ef9c/model.safetensors",
+   "sha256": "116a02532db461f91386a5b20f942ff2c8d4de7341e21b55caafc3d7b25f49a1",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@step143000 (f1545025bb394553a7f4e547db0874886f05ef9c) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-sft-koshirowada",
+   "format": "safetensors",
+   "name": "c0-7cfeda8",
+   "url": "https://huggingface.co/koshirowada/pythia_14m_sft/resolve/7cfeda8b5d6117252887f47a391f9e5fd0bd78b4/model.safetensors",
+   "sha256": "4f6c006b230f4d2ae1b443996d156a1520d15aa629bad116b975f29b6852989d",
+   "size": 56279344,
+   "ref": "koshirowada/pythia_14m_sft@7cfeda8b5d6117252887f47a391f9e5fd0bd78b4 (7cfeda8b5d6117252887f47a391f9e5fd0bd78b4) model.safetensors [2024-11-18 'Initial model upload'] [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-sft-koshirowada",
+   "format": "safetensors",
+   "name": "c1-ddfd7fe",
+   "url": "https://huggingface.co/koshirowada/pythia_14m_sft/resolve/ddfd7fe6d498774bda09fd7db5a1053cb03c8a8c/model.safetensors",
+   "sha256": "509744123e5eee3a77a5c081655a2b377921c1687c08517cee6f0c2fbc1b18bf",
+   "size": 56279344,
+   "ref": "koshirowada/pythia_14m_sft@ddfd7fe6d498774bda09fd7db5a1053cb03c8a8c (ddfd7fe6d498774bda09fd7db5a1053cb03c8a8c) model.safetensors [2024-11-30 'Training in progress, epoch 1'] [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-sft-koshirowada",
+   "format": "safetensors",
+   "name": "c2-741d343",
+   "url": "https://huggingface.co/koshirowada/pythia_14m_sft/resolve/741d343a0dcf7f800abfe8250037da587fbdad28/model.safetensors",
+   "sha256": "4d6fe233dd6e0cd71f1c22cf387a6c776af66f7fc320fbbc5a621fbaffcb1146",
+   "size": 56279344,
+   "ref": "koshirowada/pythia_14m_sft@741d343a0dcf7f800abfe8250037da587fbdad28 (741d343a0dcf7f800abfe8250037da587fbdad28) model.safetensors [2024-11-30 'Training in progress, epoch 2'] [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-sft-koshirowada",
+   "format": "safetensors",
+   "name": "c3-0043edc",
+   "url": "https://huggingface.co/koshirowada/pythia_14m_sft/resolve/0043edc3e3c6bcb0262b50b61b2e34532a20f9d6/model.safetensors",
+   "sha256": "206221e125160f7f2f3d2b90c0f26a4174c28f377083450fee718ea73347300a",
+   "size": 56279344,
+   "ref": "koshirowada/pythia_14m_sft@0043edc3e3c6bcb0262b50b61b2e34532a20f9d6 (0043edc3e3c6bcb0262b50b61b2e34532a20f9d6) model.safetensors [2024-11-30 'Training in progress, epoch 3'] [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-sft-koshirowada",
+   "format": "safetensors",
+   "name": "c4-e624c10",
+   "url": "https://huggingface.co/koshirowada/pythia_14m_sft/resolve/e624c10d84a29648dec7eec5b9de9fc498fbb794/model.safetensors",
+   "sha256": "79582190efc11c106520b0776da6e7b79d01b4ae18f63b63fb47baf90c58cb4e",
+   "size": 56279344,
+   "ref": "koshirowada/pythia_14m_sft@e624c10d84a29648dec7eec5b9de9fc498fbb794 (e624c10d84a29648dec7eec5b9de9fc498fbb794) model.safetensors [2024-11-30 'Training in progress, epoch 1'] [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-logs-honicky",
+   "format": "safetensors",
+   "name": "c0-d4e5940",
+   "url": "https://huggingface.co/honicky/pythia-14m-hdfs-logs/resolve/d4e5940fb08d22ade34a1575bd29a3d6f10a674b/model.safetensors",
+   "sha256": "72cc3e9191ab16bd10147d6dd25f45759e35b65b3b49a9c34715befb8e47dfe1",
+   "size": 56279344,
+   "ref": "honicky/pythia-14m-hdfs-logs@d4e5940fb08d22ade34a1575bd29a3d6f10a674b (d4e5940fb08d22ade34a1575bd29a3d6f10a674b) model.safetensors [2024-11-30 'Initial model trained on HDFS logs'] [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-logs-honicky",
+   "format": "safetensors",
+   "name": "c1-10d5137",
+   "url": "https://huggingface.co/honicky/pythia-14m-hdfs-logs/resolve/10d51379603efe04557780d89b9a0b2172883c77/model.safetensors",
+   "sha256": "94f5163861d27180b7f6ff5f15b60cc0b507756488be2b1bbdb891ed3fa6c4de",
+   "size": 56279344,
+   "ref": "honicky/pythia-14m-hdfs-logs@10d51379603efe04557780d89b9a0b2172883c77 (10d51379603efe04557780d89b9a0b2172883c77) model.safetensors [2024-11-30 'Trained 2110 steps'] [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-logs-honicky",
+   "format": "safetensors",
+   "name": "c2-3bc7ebb",
+   "url": "https://huggingface.co/honicky/pythia-14m-hdfs-logs/resolve/3bc7ebbd4fdb6b3423063344b8bb0e2fc5180529/model.safetensors",
+   "sha256": "538022b218844fc879142fe00ecd2b3a42104c946c40b4e764b34d14b6e8ee99",
+   "size": 56279344,
+   "ref": "honicky/pythia-14m-hdfs-logs@3bc7ebbd4fdb6b3423063344b8bb0e2fc5180529 (3bc7ebbd4fdb6b3423063344b8bb0e2fc5180529) model.safetensors [2024-12-01 'Trained 12000 steps'] [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "bert-tiny-family",
+   "format": "safetensors",
+   "name": "base-google-L2H128",
+   "url": "https://huggingface.co/google/bert_uncased_L-2_H-128_A-2/resolve/30b0a37ccaaa32f332884b96992754e246e48c5f/model.safetensors",
+   "sha256": "7fb69ad9f6866d8983183c930e33828f326470bf6ad8bbb2ad4ed957a92e9414",
+   "size": 17739144,
+   "ref": "google/bert_uncased_L-2_H-128_A-2@main (30b0a37ccaaa32f332884b96992754e246e48c5f) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "bert-tiny-family",
+   "format": "safetensors",
+   "name": "mlm-mrpc",
+   "url": "https://huggingface.co/muhtasham/tiny-mlm-glue-mrpc/resolve/ba980ee66f230789e95910941ba98eae580fe045/model.safetensors",
+   "sha256": "39af77801a5e556d040ea6fc87cc181fe4900667608c1f300ec8ab926577dff5",
+   "size": 17675744,
+   "ref": "muhtasham/tiny-mlm-glue-mrpc@main (ba980ee66f230789e95910941ba98eae580fe045) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "bert-tiny-family",
+   "format": "safetensors",
+   "name": "mlm-snli",
+   "url": "https://huggingface.co/muhtasham/tiny-mlm-snli/resolve/8339ef9ac5909ea93b6ba0352949d9ea3cec9683/model.safetensors",
+   "sha256": "76ac059ceeb48cf86c515814c991d8f5cadb466d0aac1aae6db1081c8a3fcad7",
+   "size": 17675744,
+   "ref": "muhtasham/tiny-mlm-snli@main (8339ef9ac5909ea93b6ba0352949d9ea3cec9683) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "bert-tiny-family",
+   "format": "safetensors",
+   "name": "mlm-emails",
+   "url": "https://huggingface.co/postbot/bert_uncased_tiny-multi-emails-hq/resolve/3ad962562f100664a7782082d3c0e931a89e462a/model.safetensors",
+   "sha256": "427f45c3d36b4959a0d5e9acdc71b08c6cca90bdb0e5c05eef7586f0ad1ab9de",
+   "size": 17675744,
+   "ref": "postbot/bert_uncased_tiny-multi-emails-hq@main (3ad962562f100664a7782082d3c0e931a89e462a) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "bert-tiny-family",
+   "format": "safetensors",
+   "name": "cls-tweet",
+   "url": "https://huggingface.co/muhtasham/tiny-vanilla-target-tweet/resolve/e8506c570873be8b83a85ac035b322e1b4cb08a6/model.safetensors",
+   "sha256": "18159bcf179694e90a16e3bc9d71f7cb695adec1015257d4e6c1f904c07892bc",
+   "size": 17554534,
+   "ref": "muhtasham/tiny-vanilla-target-tweet@main (e8506c570873be8b83a85ac035b322e1b4cb08a6) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "bert-tiny-family",
+   "format": "safetensors",
+   "name": "tok-finer",
+   "url": "https://huggingface.co/muhtasham/bert-tiny-finetuned-finer/resolve/fdb1bae19c52910aa6fa1ff51bceb94dde3e338c/model.safetensors",
+   "sha256": "7c5ef8814bfcaa9b71d4e4451c61b043d757f73cc9f8ecfbea69c6ad6ce9246b",
+   "size": 17630204,
+   "ref": "muhtasham/bert-tiny-finetuned-finer@main (fdb1bae19c52910aa6fa1ff51bceb94dde3e338c) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "bert-tiny-family",
+   "format": "safetensors",
+   "name": "cls-sst2",
+   "url": "https://huggingface.co/marlex7/tiny-bert-sst2-distilled/resolve/dbee1295428aa14cb4851097271116075a21f88f/model.safetensors",
+   "sha256": "bebb183449b400902f4865136239e0d2a372240a7f66d63c7d20e7e6fdb8be7a",
+   "size": 17549312,
+   "ref": "marlex7/tiny-bert-sst2-distilled@main (dbee1295428aa14cb4851097271116075a21f88f) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-siblings",
+   "format": "safetensors",
+   "name": "base-main",
+   "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/cf967c0a9a04383db6f7b1108d86b2962634b4ac/model.safetensors",
+   "sha256": "116a02532db461f91386a5b20f942ff2c8d4de7341e21b55caafc3d7b25f49a1",
+   "size": 28143920,
+   "ref": "EleutherAI/pythia-14m@main (cf967c0a9a04383db6f7b1108d86b2962634b4ac) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-siblings",
+   "format": "safetensors",
+   "name": "b128-wd0",
+   "url": "https://huggingface.co/domenicrosati/batch_128_wd_0/resolve/70cb3fd204832a0921375cd57eb43d9244683f2a/model.safetensors",
+   "sha256": "90ffc9c37db29560b9184e0677b1b78dace7e2b8185043463eaf347bbfaca909",
+   "size": 28144000,
+   "ref": "domenicrosati/batch_128_wd_0@main (70cb3fd204832a0921375cd57eb43d9244683f2a) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
+  },
+  {
+   "group": "pythia14m-siblings",
+   "format": "safetensors",
+   "name": "b1024-wd0.1",
+   "url": "https://huggingface.co/domenicrosati/batch_1024_wd_0.1/resolve/a6ad3fdb0dffda254802d0165b44178f67444436/model.safetensors",
+   "sha256": "ccd8f78cf335506eaa67d59c3d8a76e466b5c273b72a0a30f4e2aca2c1b85e53",
+   "size": 28144000,
+   "ref": "domenicrosati/batch_1024_wd_0.1@main (a6ad3fdb0dffda254802d0165b44178f67444436) model.safetensors [sha256 HF LFS oid]",
+   "upstream": "HF LFS oid (sha256) verified at pin time"
   }
  ]
 }
