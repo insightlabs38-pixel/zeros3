@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/bits"
+	"sync"
 
 	"zeros3-z3/deflate"
 )
@@ -40,14 +41,40 @@ type Profile struct {
 	// MaxInsert > 0: matches longer than this do not insert their interior
 	// positions into the chain (zlib deflate_fast's max_insert_length).
 	MaxInsert int
+	// Emu > 0: exact emulation of zlib deflate_fast at that level (zfast.go);
+	// Warm is the free-run warm-up before a unit, in plaintext bytes.
+	Emu  int
+	Warm int
+	// Nice > 0: stop walking the chain once a candidate is at least this long
+	// (zlib's nice_length): longer candidates are never the compressor's pick.
+	Nice int
 }
 
-// Profiles is the small fixed profile set (index = ID).
+// Profiles is the fixed profile set (index = ID, 4 bits in each unit header).
+// IDs 0-3 are the Z3-07 profiles, 4-6 the exact zlib deflate_fast emulators,
+// 7-12 the Z3-08F speed variants of the generic, zlib-like and go-like engines.
 var Profiles = []Profile{
-	{0, "generic", 3, 128, true, 32, true, true, 0},
-	{1, "zlib-like", 3, 256, true, 32, false, true, 0},
-	{2, "go-like", 4, 32, true, 32, true, false, 0},
-	{3, "zlib-fast-like", 3, 8, false, 32, true, true, 4},
+	{ID: 0, Name: "generic", HashLen: 3, MaxChain: 128, Lazy: true, MaxCand: 32, Recency: true, Frontier: true},
+	{ID: 1, Name: "zlib-like", HashLen: 3, MaxChain: 256, Lazy: true, MaxCand: 32, Frontier: true},
+	{ID: 2, Name: "go-like", HashLen: 4, MaxChain: 32, Lazy: true, MaxCand: 32, Recency: true},
+	{ID: 3, Name: "zlib-fast-like", HashLen: 3, MaxChain: 8, MaxCand: 32, Recency: true, Frontier: true, MaxInsert: 4},
+	{ID: 4, Name: "zlib-L1-exact", HashLen: 3, MaxChain: 4, MaxCand: 1, Recency: true, Frontier: true, MaxInsert: 4, Emu: 1, Warm: 64 << 10},
+	{ID: 5, Name: "zlib-L2-exact", HashLen: 3, MaxChain: 8, MaxCand: 1, Recency: true, Frontier: true, MaxInsert: 5, Emu: 2, Warm: 64 << 10},
+	{ID: 6, Name: "zlib-L3-exact", HashLen: 3, MaxChain: 32, MaxCand: 1, Recency: true, Frontier: true, MaxInsert: 6, Emu: 3, Warm: 64 << 10},
+	{ID: 7, Name: "generic-balanced", HashLen: 3, MaxChain: 32, Lazy: true, MaxCand: 16, Recency: true, Frontier: true, Nice: 64},
+	{ID: 8, Name: "generic-fast", HashLen: 3, MaxChain: 8, MaxCand: 8, Recency: true, Frontier: true, Nice: 32},
+	{ID: 9, Name: "zlib-balanced", HashLen: 3, MaxChain: 64, Lazy: true, MaxCand: 16, Frontier: true, Nice: 128},
+	{ID: 10, Name: "zlib-fast", HashLen: 3, MaxChain: 16, Lazy: true, MaxCand: 8, Frontier: true, Nice: 64},
+	{ID: 11, Name: "go-balanced", HashLen: 4, MaxChain: 16, Lazy: true, MaxCand: 16, Recency: true},
+	{ID: 12, Name: "go-fast", HashLen: 4, MaxChain: 6, MaxCand: 8, Recency: true},
+}
+
+// Modes group profiles into the laboratory's three operating points. The
+// emulating profiles (4-6) are exact and cheap, so every mode includes them.
+var Modes = map[string][]uint8{
+	"ratio":    {0, 1, 2, 3, 4, 5, 6},
+	"balanced": {7, 9, 11, 4, 5, 6},
+	"fast":     {8, 10, 12, 4, 5, 6},
 }
 
 // Ablate switches predictor features off for the Z3-07A ablation study. It is
@@ -57,7 +84,6 @@ var Profiles = []Profile{
 var Ablate struct {
 	NoLazyHint bool // drop the next-position lookahead context
 	NoRunCtx   bool // drop the literal-run-length context of the match flag
-	NoRepCtx   bool // drop the repeat-distance context of the candidate choice
 	NoLenCtx   bool // drop candidate length contexts of the candidate choice
 	NoIdxCtx   bool // one context for every candidate decision
 }
@@ -75,7 +101,8 @@ type window struct {
 	plain     []byte
 	base, end int // window covers [base, end); candidates are searched at positions in [start, end)
 	prof      *Profile
-	head      [1 << 16]int32
+	head      [1 << 16]hentry // generation-tagged: stale entries of earlier units read as empty
+	gen       uint32
 	prev      [32768]int32
 	inserted  int // next position to insert
 	work      int64
@@ -83,6 +110,25 @@ type window struct {
 	ent       [2]centry // two-entry candidate cache (pos and its lookahead)
 	nextEvict int
 }
+
+type hentry struct {
+	pos int32
+	gen uint32
+}
+
+func (w *window) headGet(h uint32) int32 {
+	if e := w.head[h]; e.gen == w.gen {
+		return e.pos
+	}
+	return 0
+}
+
+func (w *window) headSet(h uint32, v int32) { w.head[h] = hentry{v, w.gen} }
+
+var windowPool = sync.Pool{New: func() any { return &window{} }}
+
+// release returns the window to the pool; it must not be used afterwards.
+func (w *window) release() { w.plain, w.prof = nil, nil; windowPool.Put(w) }
 
 type centry struct {
 	pos   int
@@ -103,10 +149,28 @@ func hashAt(b []byte, q, n int) uint32 {
 }
 
 func newWindow(plain []byte, start, plainLen int, prof *Profile) *window {
-	w := &window{plain: plain, prof: prof, end: start + plainLen}
+	w := windowPool.Get().(*window)
+	w.gen++
+	if w.gen == 0 { // wrapped: stale tags could match again
+		w.head = [1 << 16]hentry{}
+		w.gen = 1
+	}
+	w.plain, w.prof, w.end, w.work, w.nextEvict = plain, prof, start+plainLen, 0, 0
+	w.ent[0].valid, w.ent[1].valid = false, false
 	w.base = max(0, start-32768)
 	w.inserted = w.base
 	w.budget = int64(plainLen)*512 + 1<<20
+	if prof.Emu > 0 {
+		warm := prof.Warm
+		if EmuWarm > 0 {
+			warm = EmuWarm
+		}
+		from := max(0, start-warm)
+		w.base = from
+		w.inserted = from
+		w.emuWarm(from, start)
+		return w
+	}
 	if prof.MaxInsert > 0 && start > w.base {
 		w.simulateWindow(start)
 	}
@@ -144,8 +208,8 @@ func (w *window) insertTo(limit int) {
 			continue
 		}
 		h := hashAt(w.plain, q, n)
-		w.prev[q&32767] = w.head[h]
-		w.head[h] = int32(q - w.base + 1)
+		w.prev[q&32767] = w.headGet(h)
+		w.headSet(h, int32(q-w.base+1))
 	}
 	if limit > w.inserted {
 		w.inserted = limit
@@ -154,6 +218,10 @@ func (w *window) insertTo(limit int) {
 
 // afterMatch applies the profile's insertion policy for a match at pos.
 func (w *window) afterMatch(pos, length int) {
+	if w.prof.Emu > 0 {
+		w.emuAfter(pos, length)
+		return
+	}
 	if mi := w.prof.MaxInsert; mi > 0 && length > mi {
 		w.insertTo(pos + 1)
 		if pos+length > w.inserted {
@@ -165,6 +233,9 @@ func (w *window) afterMatch(pos, length int) {
 // search lists the candidates at pos ranked by (length desc, distance asc).
 // ok=false means the work budget was exhausted.
 func (w *window) search(pos, capLen int) ([]cand, int, bool) {
+	if w.prof.Emu > 0 {
+		return w.emuSearch(pos, capLen)
+	}
 	for i := range w.ent {
 		if e := &w.ent[i]; e.valid && e.pos == pos {
 			return e.buf[:e.n], e.lmax, true
@@ -179,7 +250,7 @@ func (w *window) search(pos, capLen int) ([]cand, int, bool) {
 	lmax := 0
 	if capLen >= n && pos+n <= w.end {
 		h := hashAt(w.plain, pos, n)
-		q := int(w.head[h])
+		q := int(w.headGet(h))
 		maxc := w.prof.MaxCand
 		for steps := 0; q != 0 && steps < w.prof.MaxChain; steps++ {
 			qa := w.base + q - 1
@@ -202,6 +273,9 @@ func (w *window) search(pos, capLen int) ([]cand, int, bool) {
 					if len(out) < maxc {
 						out = append(out, cand{d, l})
 					}
+				}
+				if nice := w.prof.Nice; nice > 0 && l >= nice {
+					break
 				}
 			}
 		next:
@@ -301,7 +375,7 @@ func runBucket(n int) int {
 
 type predModel struct {
 	kind    [8][3][6]bitModel
-	idx     [2][3][4][4]bitModel // [isRepeatDistance][length class][candidate length bucket][min(i,3)]
+	idx     [3][4][4]bitModel // [length class vs the longest][candidate length bucket][min(i,3)][length class][candidate length bucket][min(i,3)]
 	lenSame [3][3]bitModel
 	lenUn   [20]bitModel
 	lenMant [20][4]bitModel
@@ -327,27 +401,22 @@ func newPredModel(p *Profile) *predModel {
 			}
 		}
 	}
-	for r := range m.idx {
-		for lc := range m.idx[r] {
-			for lb := range m.idx[r][lc] {
-				for i := range m.idx[r][lc][lb] {
-					mm := &m.idx[r][lc][lb][i]
-					mm.init()
-					// bit 1 = "this candidate"; prior P(bit==0)
-					p0 := 3000
-					if i == 0 {
-						p0 = 900
-					} else if i == 1 {
-						p0 = 2200
-					}
-					if lc > 0 {
-						p0 += 600
-					}
-					if r == 1 {
-						p0 -= 700
-					}
-					mm.setP(min(max(p0, 200), 3900))
+	for lc := range m.idx {
+		for lb := range m.idx[lc] {
+			for i := range m.idx[lc][lb] {
+				mm := &m.idx[lc][lb][i]
+				mm.init()
+				// bit 1 = "this candidate"; prior P(bit==0)
+				p0 := 3000
+				if i == 0 {
+					p0 = 900
+				} else if i == 1 {
+					p0 = 2200
 				}
+				if lc > 0 {
+					p0 += 600
+				}
+				mm.setP(min(max(p0, 200), 3900))
 			}
 		}
 	}
@@ -368,11 +437,10 @@ func newPredModel(p *Profile) *predModel {
 
 // predictor encodes/decodes units against a fixed plaintext.
 type predictor struct {
-	plain    []byte
-	prof     *Profile
-	Stats    PredStats
-	lastIdx  int
-	lastDist int // distance of the previous match in this unit (repeat-offset context)
+	plain   []byte
+	prof    *Profile
+	Stats   PredStats
+	lastIdx int
 }
 
 func newPredictor(plain []byte, profile uint8) *predictor {
@@ -442,10 +510,7 @@ func (p *predictor) token(io *rcio, m *predModel, w *window, pos, lits int, t de
 		if enc && idx == i {
 			want = 1
 		}
-		rep, lc := 0, 0
-		if cands[i].dist == p.lastDist {
-			rep = 1
-		}
+		lc := 0
 		if cands[i].length < lmax {
 			lc = 1
 			if cands[i].length+3 < lmax {
@@ -461,17 +526,14 @@ func (p *predictor) token(io *rcio, m *predModel, w *window, pos, lits int, t de
 		case l >= 8:
 			lb = 1
 		}
-		if Ablate.NoRepCtx {
-			rep = 0
-		}
 		if Ablate.NoLenCtx {
 			lc, lb = 0, 0
 		}
 		ii := min(i, 3)
 		if Ablate.NoIdxCtx {
-			rep, lc, lb, ii = 0, 0, 0, 0
+			lc, lb, ii = 0, 0, 0
 		}
-		if io.bit(&m.idx[rep][lc][lb][ii], want) == 1 {
+		if io.bit(&m.idx[lc][lb][ii], want) == 1 {
 			got = i
 			break
 		}
@@ -500,7 +562,6 @@ func (p *predictor) token(io *rcio, m *predModel, w *window, pos, lits int, t de
 		}
 		sym, extra := lengthCode(length)
 		dc, de := distCodeOf(c.dist)
-		p.lastDist = c.dist
 		w.afterMatch(pos, length)
 		return deflate.Match(sym, extra, dc, de), length, nil
 	}
@@ -515,13 +576,11 @@ func (p *predictor) token(io *rcio, m *predModel, w *window, pos, lits int, t de
 	if !ok2 {
 		return 0, 0, corrupt("escape match")
 	}
-	p.lastDist = tok.Distance()
 	w.afterMatch(pos, tok.Length())
 	return tok, tok.Length(), nil
 }
 
 func (p *predictor) newState(start, plainLen int) (*window, *predModel) {
-	p.lastDist = 0
 	return newWindow(p.plain, start, plainLen, p.prof), newPredModel(p.prof)
 }
 
@@ -532,6 +591,7 @@ func (p *predictor) encodeUnit(runs []Run, start, plainLen int, cost *[NumCats]f
 
 func (p *predictor) encode(runs []Run, start, plainLen int, cost *[NumCats]float64) ([]byte, error) {
 	w, m := p.newState(start, plainLen)
+	defer w.release()
 	e := newEncoder()
 	io := &rcio{enc: e, cost: cost}
 	pos, lits := start, 0
@@ -578,6 +638,7 @@ func (p *predictor) decodeUnit(data []byte, start, plainLen int) ([]Run, error) 
 		return nil, corrupt("unit outside plaintext")
 	}
 	w, m := p.newState(start, plainLen)
+	defer w.release()
 	io := &rcio{dec: newDecoder(data[1:])}
 	var runs []Run
 	pos, lits := start, 0
@@ -608,6 +669,11 @@ func (p *predictor) decodeUnit(data []byte, start, plainLen int) ([]Run, error) 
 // units (at most 8 spread across the stream, at most 64 KiB of plaintext each).
 // It is deterministic: ties go to the lower profile id.
 func ChooseProfile(s *deflate.Stream, pol Policy) uint8 {
+	return ChooseProfileIn(s, pol, Modes["ratio"])
+}
+
+// ChooseProfileIn is ChooseProfile restricted to the given profile ids.
+func ChooseProfileIn(s *deflate.Stream, pol Policy, ids []uint8) uint8 {
 	f := flatten(s)
 	cs := cuts(s, f, pol)
 	starts := append([]int{0}, cs...)
@@ -618,7 +684,8 @@ func ChooseProfile(s *deflate.Stream, pol Policy) uint8 {
 	posAt, _ := tokenStarts(s, f, starts)
 	step := max(1, len(starts)/8)
 	best, bestSize := uint8(0), int(^uint(0)>>1)
-	for _, prof := range Profiles {
+	for _, id := range ids {
+		prof := Profiles[id]
 		total := 0
 		for u := 0; u < len(starts); u += step {
 			a, b := starts[u], ends[u]

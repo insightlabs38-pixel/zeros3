@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"runtime"
+	"strings"
 	"time"
 
 	"zeros3-z3/ir"
@@ -37,6 +38,7 @@ func predictCmd(args []string) {
 	revs := fs.Int("revs", 2, "revisions per family to include (from r0)")
 	skipPF := fs.Bool("no-preflate", false, "do not call the Preflate oracle")
 	ablate := fs.Bool("ablate", false, "run the Z3-07A feature ablation instead of the profile tables")
+	groupBy := fs.String("group-by", "family", "ablation columns: family | kind (extreal label) | producer")
 	fs.Parse(args)
 	if *dir == "" {
 		fatal(fmt.Errorf("-corpus is required"))
@@ -47,7 +49,7 @@ func predictCmd(args []string) {
 	}
 	defer cl.Close()
 	if *ablate {
-		ablation(ins, order, *revs)
+		ablation(ins, order, *revs, *groupBy)
 		return
 	}
 	pols := []ir.Policy{{Kind: ir.PTokRun, Target: 16 << 10}, {Kind: ir.PTokRun, Target: 4 << 10}, {Kind: ir.PTokRun, Target: 2 << 10}, {Kind: ir.PBlock}}
@@ -206,30 +208,49 @@ func predictCmd(args []string) {
 }
 
 // ablation measures the whole-stream predictor with one feature disabled at a time.
-func ablation(ins map[string][]*lab.Input, order []string, revs int) {
+func ablation(ins map[string][]*lab.Input, order []string, revs int, groupBy string) {
 	type variant struct {
 		name string
 		set  func()
 	}
 	reset := func() {
-		ir.Ablate.NoLazyHint, ir.Ablate.NoRunCtx, ir.Ablate.NoRepCtx, ir.Ablate.NoLenCtx, ir.Ablate.NoIdxCtx = false, false, false, false, false
+		ir.Ablate.NoLazyHint, ir.Ablate.NoRunCtx, ir.Ablate.NoLenCtx, ir.Ablate.NoIdxCtx = false, false, false, false
 	}
 	variants := []variant{
 		{"full model", func() {}},
 		{"no lazy hint", func() { ir.Ablate.NoLazyHint = true }},
 		{"no literal-run context", func() { ir.Ablate.NoRunCtx = true }},
-		{"no repeat-distance context", func() { ir.Ablate.NoRepCtx = true }},
 		{"no length contexts", func() { ir.Ablate.NoLenCtx = true }},
-		{"no candidate contexts (rank only)", func() { ir.Ablate.NoIdxCtx = true; ir.Ablate.NoLenCtx = true; ir.Ablate.NoRepCtx = true }},
+		{"no candidate contexts (rank only)", func() { ir.Ablate.NoIdxCtx = true; ir.Ablate.NoLenCtx = true }},
 		{"no contexts at all", func() {
-			ir.Ablate.NoIdxCtx, ir.Ablate.NoLenCtx, ir.Ablate.NoRepCtx, ir.Ablate.NoRunCtx, ir.Ablate.NoLazyHint = true, true, true, true, true
+			ir.Ablate.NoIdxCtx, ir.Ablate.NoLenCtx, ir.Ablate.NoRunCtx, ir.Ablate.NoLazyHint = true, true, true, true
 		}},
 	}
 	fmt.Println("### Predictor feature ablation: whole-stream, best fixed profile per stream, % of compressed bytes (bits/token)")
+	groupOf := func(fam string) string {
+		f := strings.TrimPrefix(fam, "extreal-")
+		i := strings.LastIndex(f, "-")
+		switch {
+		case groupBy == "kind" && i >= 0:
+			return f[i+1:]
+		case groupBy == "producer" && i >= 0:
+			return f[:i]
+		}
+		return fam
+	}
+	var groups []string
+	members := map[string][]string{}
+	for _, fam := range order {
+		g := groupOf(fam)
+		if len(members[g]) == 0 {
+			groups = append(groups, g)
+		}
+		members[g] = append(members[g], fam)
+	}
 	hdr := "| variant |"
 	sep := "|---|"
-	for _, f := range order {
-		hdr += " " + f + " |"
+	for _, g := range groups {
+		hdr += " " + g + " |"
 		sep += "---|"
 	}
 	fmt.Println(hdr)
@@ -241,39 +262,41 @@ func ablation(ins map[string][]*lab.Input, order []string, revs int) {
 	_ = stream{}
 	for _, v := range variants {
 		row := "| " + v.name + " |"
-		for _, fam := range order {
+		for _, g := range groups {
 			var comp, size, tokens int64
-			for ri, in := range ins[fam] {
-				if ri >= revs {
-					break
-				}
-				regs, err := in.StreamRegions()
-				if err != nil {
-					break
-				}
-				for _, rg := range regs {
-					if !rg.Stream {
-						continue
+			for _, fam := range members[g] {
+				for ri, in := range ins[fam] {
+					if ri >= revs {
+						break
 					}
-					s, err := in.ParseStream(rg.Off, rg.Len)
-					if err != nil || s.Stats().Tokens == 0 {
-						continue
+					regs, err := in.StreamRegions()
+					if err != nil {
+						break
 					}
-					reset()
-					v.set()
-					best := int64(1 << 62)
-					for pi := range ir.Profiles {
-						pk, err := ir.Encode(s, ir.Config{Codec: ir.Pred, Policy: ir.Policy{Kind: ir.PStream}, Profile: uint8(pi)})
-						if err == nil {
-							best = min(best, int64(pk.TotalUnitBytes()+len(pk.Skeleton)))
+					for _, rg := range regs {
+						if !rg.Stream {
+							continue
 						}
+						s, err := in.ParseStream(rg.Off, rg.Len)
+						if err != nil || s.Stats().Tokens == 0 {
+							continue
+						}
+						reset()
+						v.set()
+						best := int64(1 << 62)
+						for pi := range ir.Profiles {
+							pk, err := ir.Encode(s, ir.Config{Codec: ir.Pred, Policy: ir.Policy{Kind: ir.PStream}, Profile: uint8(pi)})
+							if err == nil {
+								best = min(best, int64(pk.TotalUnitBytes()+len(pk.Skeleton)))
+							}
+						}
+						reset()
+						comp += int64(s.Stats().CompressedBytes)
+						tokens += int64(s.Stats().Tokens)
+						size += best
 					}
-					reset()
-					comp += int64(s.Stats().CompressedBytes)
-					tokens += int64(s.Stats().Tokens)
-					size += best
+					in.DropParsed()
 				}
-				in.DropParsed()
 			}
 			row += fmt.Sprintf(" %s (%s) |", pct(size, comp), fmt.Sprintf("%.2f", float64(size)*8/float64(max(tokens, 1))))
 		}

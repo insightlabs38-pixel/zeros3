@@ -1,23 +1,101 @@
 package deflate
 
-// bitReader reads an LSB-first bit stream from memory.
+import "io"
+
+// bitReader reads an LSB-first bit stream from memory, or (streaming mode,
+// src != nil) from a reader through a reusable buffer.
 type bitReader struct {
 	data []byte
 	pos  int // next byte to load
 	acc  uint64
 	nacc uint
+
+	src  io.Reader // streaming source; data is then a refillable buffer
+	base int64     // bytes of src preceding data[0]
+	rerr error
 }
 
 func (b *bitReader) fill() {
-	for b.nacc <= 56 && b.pos < len(b.data) {
+	for b.nacc <= 56 {
+		if b.pos >= len(b.data) {
+			if b.src == nil || !b.refill() {
+				return
+			}
+		}
 		b.acc |= uint64(b.data[b.pos]) << b.nacc
 		b.pos++
 		b.nacc += 8
 	}
 }
 
+// refill replaces the exhausted buffer with the next chunk of the source.
+func (b *bitReader) refill() bool {
+	if b.rerr != nil {
+		return false
+	}
+	b.base += int64(len(b.data))
+	b.data, b.pos = b.data[:cap(b.data)], 0
+	for {
+		n, err := b.src.Read(b.data)
+		if n > 0 {
+			b.data = b.data[:n]
+			return true
+		}
+		if err != nil {
+			b.rerr = err
+			b.data = b.data[:0]
+			return false
+		}
+	}
+}
+
 // bitPos is the absolute number of bits consumed.
-func (b *bitReader) bitPos() int64 { return int64(b.pos)*8 - int64(b.nacc) }
+func (b *bitReader) bitPos() int64 { return (b.base+int64(b.pos))*8 - int64(b.nacc) }
+
+// readStream consumes n whole bytes (the reader must be byte aligned) and
+// passes them to emit in chunks no larger than the buffer.
+func (b *bitReader) readStream(n int, emit func([]byte) error) error {
+	if b.nacc%8 != 0 {
+		panic("deflate: unaligned readStream")
+	}
+	var tmp [8]byte
+	k := 0
+	for b.nacc > 0 && n > 0 {
+		tmp[k] = byte(b.acc)
+		b.acc >>= 8
+		b.nacc -= 8
+		k++
+		n--
+	}
+	if k > 0 {
+		if err := emit(tmp[:k]); err != nil {
+			return err
+		}
+	}
+	for n > 0 {
+		if b.pos >= len(b.data) && (b.src == nil || !b.refill()) {
+			return ErrTruncated
+		}
+		m := min(n, len(b.data)-b.pos)
+		if err := emit(b.data[b.pos : b.pos+m]); err != nil {
+			return err
+		}
+		b.pos += m
+		n -= m
+	}
+	return nil
+}
+
+// leftover returns the whole bytes read ahead but not consumed.
+func (b *bitReader) leftover() []byte {
+	var out []byte
+	for b.nacc >= 8 {
+		out = append(out, byte(b.acc))
+		b.acc >>= 8
+		b.nacc -= 8
+	}
+	return append(out, b.data[b.pos:]...)
+}
 
 // bits consumes n <= 32 bits.
 func (b *bitReader) bits(n uint) (uint32, error) {
