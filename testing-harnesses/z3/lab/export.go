@@ -9,3 +9,7 @@ func ChunkCDC(r io.Reader, fn func(off int64, chunk []byte) error) error { retur
 // PackedLen is the stored size under the production pack rule (DEFLATE, kept
 // only if it saves at least 1/16).
 func PackedLen(b []byte) int64 { return packedLen(b) }
+
+// GearAt exposes the production gear table entry (laboratory sensitivity runs
+// that scale the chunk-size parameters keep the same gear function).
+func GearAt(b byte) uint64 { return gearTable[b] }

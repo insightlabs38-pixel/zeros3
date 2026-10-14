@@ -29,6 +29,11 @@ tdelta/       (Z3-10) also: PXR native byte-plane XOR range codec, row-aligned r
 cmd/z3tdelta  Z3-10 measurements: pairs (CDC / standalone / DEFLATE plane-XOR / PXR / hybrid), family (base policy, chain depth), sweep (row reuse), perf
 tarz3/        exact tar structure parser: structure bytes vs member payloads, Split/Join, fail-safe UnsupportedError (Z3-11)
 cmd/z3tar     Z3-11 measurements: parse, churn (what the plaintext CDC floor is made of), range, admit
+binref/       format-independent binary substrate: regions + reference slots, x86 scan, one Normalize/Reconstruct (Z3-12)
+elfz3/        bounded ELF64-LE parser -> binref.Image (Z3-12)
+gopcln/       Go function table (pclntab) reader: unit starts/names/entry-offset slots, ELF and PE (Z3-12)
+pez3/         bounded PE32+ parser -> binref.Image: sections, base relocations, imports/exports/.pdata RVAs, opaque certificate overlay (Z3-13)
+cmd/z3bin     Z3-12/13 corpus builder (go build -overlay, gcc/clang C) and measurements: pair, attr, delta, runs, report, verify; lab-only Mach-O view
 ```
 
 ```sh
