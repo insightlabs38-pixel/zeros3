@@ -151,7 +151,7 @@ func singlePack(l *gitz3.Lab, st *gitz3.State) *gitz3.Pack {
 		if pk != nil {
 			return nil
 		}
-		p, err := l.ParsedPack(f, st.Algo)
+		p, err := l.ParsedPack(f, gitz3.AlgoOf(st))
 		if err != nil {
 			return nil
 		}
@@ -166,7 +166,7 @@ func printIR(l *gitz3.Lab, sc *gitz3.Scenario) {
 			if f.Kind != "pack" || singlePack(l, s) == nil {
 				continue
 			}
-			if an, err := l.Analysis(f, s.Algo); err == nil {
+			if an, err := l.Analysis(f, gitz3.AlgoOf(s)); err == nil {
 				ir := an.IRSummary()
 				fmt.Printf("exact DEFLATE of `%s`: %d/%d entries reconstruct; zlib %d B <- plaintext %d B + skeleton %d B + units %d B (%.1f B/entry)\n", s.Label, ir.OK, ir.Entries, ir.Zlib, ir.Plain, ir.Skel, ir.Units, float64(ir.Skel+ir.Units)/float64(max(ir.OK, 1)))
 			}

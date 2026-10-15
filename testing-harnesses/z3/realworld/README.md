@@ -34,3 +34,11 @@ and PyTorch `.bin` checkpoint revisions from the Hugging Face repositories alrea
   The local `zeros3` entry needs `Z3_ZEROS3_REPO=<checkout>`. Fetch date and the git version are printed with every run.
 * Binary-ish blobs: `z3fetch -group fdroid-apk` (five F-Droid client APKs, 12-13 MB each, already pinned in `sources.json`) re-exported
   as five commits of one path by `z3git binhist`. The bytes are real; the history is synthetic, so it says nothing about an independent Git producer.
+
+## OCI images (Z3-17)
+
+* `oci.json` - six images pinned by index digest: `quay.io/prometheus/node-exporter` v1.7.0/v1.8.0/v1.8.1 (tiny family, one large Go
+  binary layer, multi-arch) and `mcr.microsoft.com/dotnet/runtime-deps` 8.0.1/8.0.2/8.0.3-alpine3.19 (multi-layer family, a changed layer with
+  related content). `go run ./cmd/z3oci fetch -group nodeexp,rtdeps -max-mib 150` fetches anonymously by digest, verifies size and SHA-256
+  of every blob and caches under `~/.cache/z3-realworld/oci` (override `Z3_OCI_CACHE`); amd64 and arm64 only, attestation manifests skipped, ~77 MiB in total.
+  Docker Hub and ECR Public were not used: their anonymous pull and data limits were exhausted in this environment.

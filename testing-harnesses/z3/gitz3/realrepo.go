@@ -147,7 +147,7 @@ func (c *RealRepo) PackState(label, dir string, revs []string, spec RepackSpec) 
 		return nil, err
 	}
 	name := strings.TrimSuffix(filepath.Base(m[0]), ".pack")
-	return &State{Label: label, Algo: SHA1, Files: []File{{Name: "pack/" + name + ".pack", Kind: "pack", Data: pk}, {Name: "pack/" + name + ".idx", Kind: "idx", Data: ix}}}, nil
+	return &State{Label: label, Tag: int(SHA1), Files: []File{{Name: "pack/" + name + ".pack", Kind: "pack", Data: pk}, {Name: "pack/" + name + ".idx", Kind: "idx", Data: ix}}}, nil
 }
 
 // LooseState explodes the pack of revs into loose object files (git unpack-objects).

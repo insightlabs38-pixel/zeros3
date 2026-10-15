@@ -113,7 +113,7 @@ func runScenarios(c *common, l *gitz3.Lab, cache *gitz3.RealRepo, w, name string
 				fmt.Printf("\npack `%s`: %s\n", s.Label, gitz3.Shape(p))
 				for _, f := range s.Files {
 					if f.Kind == "pack" {
-						if an, err := l.Analysis(f, s.Algo); err == nil {
+						if an, err := l.Analysis(f, gitz3.AlgoOf(s)); err == nil {
 							ir := an.IRSummary()
 							fmt.Printf("exact DEFLATE of `%s`: %d/%d entries reconstruct; zlib %d B <- plaintext %d B + skeleton %d B + units %d B (%.1f B/entry)\n", s.Label, ir.OK, ir.Entries, ir.Zlib, ir.Plain, ir.Skel, ir.Units, float64(ir.Skel+ir.Units)/float64(max(ir.OK, 1)))
 						}

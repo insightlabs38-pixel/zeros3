@@ -44,6 +44,9 @@ cmd/z3sol     Z3-15E Solana snapshot characterisation over decompressed tars: sc
 gitz3/        bounded Git substrate: loose objects, pack v2/v3 (full, OFS_DELTA, REF_DELTA), Git delta parse/apply, idx v2 (+v1 characterisation), deterministic git producer harness, exact pack/loose recipes (seq and set+permutation layouts), churn attribution, read-cost and scaling measurements (Z3-16)
 cmd/z3git     Z3-16 measurements: probe, matrix, real, binhist, derive, mapping, reads, scale, fixtures
 oracle/gitdelta  optional Git diff-delta oracle (Git's create_delta compiled from a pinned tag outside Git; GPL sources are fetched, never committed)
+fstate/       shared lab runner for file-set states (state/file/representation matrix, serialised-recipe round trip, cumulative component store); used by gitz3 and ociz3
+ociz3/        bounded OCI substrate: layout/index/manifest/config parsing with descriptor and DiffID verification, deterministic synthetic image builder, anonymous research registry client, exact layer representations over the Z3-05..11 gzip/tar primitives (Z3-17)
+cmd/z3oci     Z3-17 measurements: resolve, fetch, walk, synth, real, reads
 cmd/z3bin     Z3-12/13 corpus builder (go build -overlay, gcc/clang C) and measurements: pair, attr, delta, runs, report, verify; lab-only Mach-O view
 ```
 
@@ -266,3 +269,29 @@ reconstruction through `ir`; `auto` falls back to the zlib bytes per entry when 
 and the oracle `floor-native-obj`. The `.idx` is regenerated from the pack and charged one flag byte when byte-identical.
 
 Results: `../results/Z3_16_GIT_PACKS.md`.
+
+## Z3-17: OCI registry content and image layers
+
+`ociz3` reads an image layout or registry-fetched graph (index -> manifest -> config/layers; OCI and Docker v2 media types) with
+bounds on document size, descriptor counts, nesting depth, blob size and inflation. Every descriptor is size- and SHA-256-checked
+and every layer's DiffID is checked against the config before anything is transformed; a mismatch, an unknown or unsupported media
+type (zstd, attestations, sha512), a layer outside the transform guard or a stream the exact-DEFLATE code rejects stays an
+ordinary production-CDC blob. Manifests, configs and indexes are always stored as their exact bytes.
+The registry client is anonymous, digest-pinned, byte-capped and used only by `cmd/z3oci fetch`; tests use a local TLS fake.
+
+```sh
+go test ./fstate ./ociz3                                        # builder, walk, hostile documents, fake registry, exactness of every representation
+go test ./ociz3 -run '^$' -fuzz '^FuzzDocuments$' -fuzztime 20s
+go run ./cmd/z3oci fetch -group nodeexp,rtdeps -max-mib 150     # pinned images (realworld/oci.json) -> ~/.cache/z3-realworld/oci
+go run ./cmd/z3oci walk -group rtdeps                           # descriptors, DiffIDs, registry digest vs component identity
+go run ./cmd/z3oci synth                                        # 19 synthetic revision kinds (Z3-17D)
+go run ./cmd/z3oci real                                         # real families, cross-platform reuse, the three-number split (Z3-17E/F)
+go run ./cmd/z3oci reads [-group rtdeps -name 8.0.1] | reads -scale 64   # partial reads, throughput, peak memory (Z3-17G)
+```
+
+Representations (`ociz3.Reps`): `reg-blob (model)` (registry granularity, oracle), `cdc-archive` / `archive-tar` (the OCI export as one tar),
+`layer-gzip-exact` (exact DEFLATE over the compressed layer), `layer-tar+gzip[-cdc]` (tar members as components plus exact
+DEFLATE reconstruction; `-cdc` chunks large members), and the choosers `oci-auto` (greedy against the current store) and
+`oci-auto-s10` (also accepts a first-sight premium up to 10 %).
+
+Results: `../results/Z3_17_OCI_CONTENT.md`.

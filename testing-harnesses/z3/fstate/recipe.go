@@ -1,10 +1,13 @@
-package gitz3
+package fstate
 
 import (
 	"encoding/binary"
+	"errors"
 
 	"zeros3-z3/lab"
 )
+
+var errCorrupt = errors.New("fstate: corrupt piece recipe")
 
 // MarshalPieces serialises a plan's piece list in the lab's "table" layout, the
 // layout every headline cost uses: a digest table (32-byte SHA-256 and a length
@@ -43,17 +46,43 @@ func MarshalPieces(ps []lab.Piece) []byte {
 	return append(out, body...)
 }
 
+type reader struct {
+	b   []byte
+	pos int
+	err error
+}
+
+func (m *reader) uv(limit uint64) uint64 {
+	v, n := binary.Uvarint(m.b[m.pos:])
+	if n <= 0 || v > limit {
+		m.err = errCorrupt
+		return 0
+	}
+	m.pos += n
+	return v
+}
+
+func (m *reader) take(n int) []byte {
+	if n < 0 || m.pos+n > len(m.b) {
+		m.err = errCorrupt
+		return nil
+	}
+	b := m.b[m.pos : m.pos+n]
+	m.pos += n
+	return b
+}
+
 // UnmarshalPieces is the inverse of MarshalPieces. Component pieces carry only
 // identity and size; payloads come from the store.
 func UnmarshalPieces(b []byte) ([]lab.Piece, error) {
-	m := &mreader{b: b}
+	m := &reader{b: b}
 	nt := int(m.uv(1 << 24))
 	type ent struct {
 		id   lab.ID
 		size int64
 	}
 	if m.err != nil || nt > len(b) {
-		return nil, corrupt("piece table")
+		return nil, errCorrupt
 	}
 	tab := make([]ent, 0, nt)
 	for i := 0; i < nt; i++ {
@@ -64,7 +93,7 @@ func UnmarshalPieces(b []byte) ([]lab.Piece, error) {
 	}
 	n := int(m.uv(1 << 24))
 	if m.err != nil || n > len(b) {
-		return nil, corrupt("piece count")
+		return nil, errCorrupt
 	}
 	ps := make([]lab.Piece, 0, n)
 	for i := 0; i < n; i++ {
@@ -78,7 +107,7 @@ func UnmarshalPieces(b []byte) ([]lab.Piece, error) {
 			continue
 		}
 		if int(v>>1) >= len(tab) {
-			return nil, corrupt("piece index")
+			return nil, errCorrupt
 		}
 		e := tab[v>>1]
 		ps = append(ps, lab.Piece{Comp: &lab.Comp{ID: e.id, Size: e.size}, Len: e.size})

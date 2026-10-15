@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"zeros3-z3/fstate"
 	"zeros3-z3/lab"
 )
 
@@ -358,13 +359,13 @@ func TestPieceRecipeRobust(t *testing.T) {
 	p.Resolve()
 	an, _ := AnalyzePack(p)
 	pl, _ := an.SeqPlan(RepOpts{Mode: "plain"})
-	enc := MarshalPieces(pl.Pieces)
-	if dec, err := UnmarshalPieces(enc); err != nil || len(dec) != CountListed(pl.Pieces) {
-		t.Fatalf("round trip: %v (%d vs %d pieces)", err, len(dec), CountListed(pl.Pieces))
+	enc := fstate.MarshalPieces(pl.Pieces)
+	if dec, err := fstate.UnmarshalPieces(enc); err != nil || len(dec) != fstate.CountListed(pl.Pieces) {
+		t.Fatalf("round trip: %v (%d vs %d pieces)", err, len(dec), fstate.CountListed(pl.Pieces))
 	}
 	for n := 0; n < len(enc); n++ {
 		mustNotPanic(t, "piece truncation", func() {
-			if _, err := UnmarshalPieces(enc[:n]); err == nil && n < len(enc)-1 {
+			if _, err := fstate.UnmarshalPieces(enc[:n]); err == nil && n < len(enc)-1 {
 				// a prefix may decode only if it ends exactly at a piece boundary of a shorter list; the declared count prevents that
 				t.Fatalf("truncation at %d of %d accepted", n, len(enc))
 			}
@@ -373,6 +374,6 @@ func TestPieceRecipeRobust(t *testing.T) {
 	for i := range enc {
 		m := append([]byte(nil), enc...)
 		m[i] ^= 0xff
-		mustNotPanic(t, "piece mutation", func() { UnmarshalPieces(m) })
+		mustNotPanic(t, "piece mutation", func() { fstate.UnmarshalPieces(m) })
 	}
 }

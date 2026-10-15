@@ -166,7 +166,7 @@ func TestFixturePacks(t *testing.T) {
 			t.Fatalf("thin pack resolve: %v", err)
 		}
 		l := NewLab(96, true)
-		rows := l.RunStates([]*State{{Label: "thin", Algo: a, Files: []File{{Name: "pack/t.pack", Kind: "pack", Data: thin}}}}, ExactReps())
+		rows := l.RunStates([]*State{{Label: "thin", Tag: int(a), Files: []File{{Name: "pack/t.pack", Kind: "pack", Data: thin}}}}, ExactReps())
 		for _, r := range rows {
 			if !r.Oracle && !r.Exact {
 				t.Fatalf("%s thin fallback not exact: %s", r.Rep, r.Err)
