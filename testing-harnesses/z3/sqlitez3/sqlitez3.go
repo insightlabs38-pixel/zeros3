@@ -401,3 +401,23 @@ func ReadPage(recipe []byte, n int64, get Getter, lim Limits) ([]byte, error) {
 	}
 	return rc.page(ents[n-k*int64(rc.Fanout)], n, get)
 }
+
+// Components reports the digest of every page component the recipe's nodes name,
+// reading each node once through get (the nodes themselves are in the recipe).
+// It is how a reachability walk finds the components that no recipe lists.
+func Components(recipe []byte, get Getter, lim Limits, fn func(ID)) error {
+	rc, err := ParseRecipe(recipe, lim)
+	if err != nil {
+		return err
+	}
+	for k := int64(0); k < int64(rc.NodeCount()); k++ {
+		ents, err := rc.loadNode(k, get)
+		if err != nil {
+			return err
+		}
+		for _, e := range ents {
+			fn(e.id)
+		}
+	}
+	return nil
+}
