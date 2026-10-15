@@ -1,0 +1,24 @@
+{
+  "schema": "z3-realworld-oci/1",
+  "note": "Pinned OCI images for Z3-17 (cmd/z3oci fetch). Nothing is committed or fetched by tests. Every image is fetched anonymously by index digest (tags are informational), every manifest/config/layer blob is size- and SHA-256-verified, and blobs are cached outside Git under ~/.cache/z3-realworld/oci. Only the listed platforms are fetched; attestation manifests are skipped.",
+  "images": [
+    {"group": "nodeexp", "name": "v1.7.0", "registry": "quay.io", "repository": "prometheus/node-exporter", "tag": "v1.7.0",
+     "index": "sha256:4cb2b9019f1757be8482419002cb7afe028fdba35d47958829e4cfeaf6246d80", "platforms": ["linux/amd64", "linux/arm64"], "license": "Apache-2.0",
+     "note": "tiny static Go binary on a busybox base; multi-arch index"},
+    {"group": "nodeexp", "name": "v1.8.0", "registry": "quay.io", "repository": "prometheus/node-exporter", "tag": "v1.8.0",
+     "index": "sha256:8a57af80a4c77ffb97749b44895248563616fcfd405b5370d5db35fe6c15e4ec", "platforms": ["linux/amd64", "linux/arm64"], "license": "Apache-2.0",
+     "note": "next release: changed binary layer, shared base layers"},
+    {"group": "nodeexp", "name": "v1.8.1", "registry": "quay.io", "repository": "prometheus/node-exporter", "tag": "v1.8.1",
+     "index": "sha256:fa7fa12a57eff607176d5c363d8bb08dfbf636b36ac3cb5613a202f3c61a6631", "platforms": ["linux/amd64", "linux/arm64"], "license": "Apache-2.0",
+     "note": "patch release"},
+    {"group": "rtdeps", "name": "8.0.1", "registry": "mcr.microsoft.com", "repository": "dotnet/runtime-deps", "tag": "8.0.1-alpine3.19",
+     "index": "sha256:f7edf2a72da515d07371f05efc5cdd1b3be59d179bca5f43a970c552cd546b1c", "platforms": ["linux/amd64", "linux/arm64"], "license": "MIT (image content: Alpine + .NET deps, see upstream)",
+     "note": "multi-layer family: alpine base layer plus small package layers"},
+    {"group": "rtdeps", "name": "8.0.2", "registry": "mcr.microsoft.com", "repository": "dotnet/runtime-deps", "tag": "8.0.2-alpine3.19",
+     "index": "sha256:d6ee8dbe148acfd54c548550b905632a3adeef2d312b8f1cf5da57e785a03122", "platforms": ["linux/amd64", "linux/arm64"], "license": "MIT (image content: Alpine + .NET deps, see upstream)",
+     "note": "adjacent version"},
+    {"group": "rtdeps", "name": "8.0.3", "registry": "mcr.microsoft.com", "repository": "dotnet/runtime-deps", "tag": "8.0.3-alpine3.19",
+     "index": "sha256:ddda904d7c75a25fd29d757fe6ee39ff85090a96ac7a3d0e3f1d7b74f691e821", "platforms": ["linux/amd64", "linux/arm64"], "license": "MIT (image content: Alpine + .NET deps, see upstream)",
+     "note": "adjacent version"}
+  ]
+}
