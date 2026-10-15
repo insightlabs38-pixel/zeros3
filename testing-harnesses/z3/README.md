@@ -41,6 +41,9 @@ eraez3/       e2store/EraE parser, Snappy decoder + reference-encoder port, exac
 cmd/z3merkle  Z3-15 measurements: sparse, mutate, fork, hashes, scale, partial
 cmd/z3era     Z3-15C measurements: fetch (pinned EraE), characterize, families, read
 cmd/z3sol     Z3-15E Solana snapshot characterisation over decompressed tars: scan, compare, cdc, estimate
+gitz3/        bounded Git substrate: loose objects, pack v2/v3 (full, OFS_DELTA, REF_DELTA), Git delta parse/apply, idx v2 (+v1 characterisation), deterministic git producer harness, exact pack/loose recipes (seq and set+permutation layouts), churn attribution, read-cost and scaling measurements (Z3-16)
+cmd/z3git     Z3-16 measurements: probe, matrix, real, binhist, derive, mapping, reads, scale, fixtures
+oracle/gitdelta  optional Git diff-delta oracle (Git's create_delta compiled from a pinned tag outside Git; GPL sources are fetched, never committed)
 cmd/z3bin     Z3-12/13 corpus builder (go build -overlay, gcc/clang C) and measurements: pair, attr, delta, runs, report, verify; lab-only Mach-O view
 ```
 
@@ -234,3 +237,32 @@ go test ./st ./tdelta; go test ./st -run '^$' -fuzz '^FuzzParse$' -fuzztime 60s
 ```
 
 Results: `../results/Z3_09_SAFETENSORS_CHARACTERIZATION.md`.
+
+## Z3-16: Git packs and loose objects
+
+`gitz3` parses loose objects, pack files (full, `OFS_DELTA`, `REF_DELTA`), the Git delta format and pack index v2 with hard
+bounds (object count, object size, inflated bytes, delta depth, total delta output, checked offsets, no recursion);
+anything it cannot parse, resolve or verify (thin packs, checksum mismatch, duplicate ids, limits) is left to ordinary CDC.
+The installed `git` is an optional *producer* only; unit tests run on tiny committed fixtures (`gitz3/testdata`, regenerated
+and compared only when the recorded git version is installed).
+
+```sh
+go test ./gitz3                                              # fixtures, malformed/hostile inputs, exactness of every representation
+go test ./gitz3 -run '^$' -fuzz '^FuzzParsePack$' -fuzztime 20s   # also FuzzDelta / FuzzParseIdx / FuzzParseLoose
+export Z3_WORK=$TMPDIR/z3git                                 # scratch repositories (never committed)
+go run ./cmd/z3git probe                                     # versions, command lines, pack/idx SHA-256, byte reproducibility
+go run ./cmd/z3git matrix -algo sha1 -families add-small -scenarios loose-pack,repeat,reorder,depth,level,refdelta,small-rev,chain
+go run ./cmd/z3git matrix -algo sha256 -families add-small
+go run ./cmd/z3git mapping | derive [-pairs -cross v1.7.12,v2.0.0,v2.20.0,v2.43.0,v2.50.0] | reads | scale -sweep all
+oracle/gitdelta/setup.sh                                     # optional: Git's create_delta as a derivation oracle (outside Git)
+go run ./cmd/z3git real -repos lua,imgui,codicons,zeros3     # pinned real histories (realworld/git.json), see realworld/README.md
+go run ./cmd/z3fetch -group fdroid-apk -out $TMPDIR/apk && go run ./cmd/z3git binhist -corpus $TMPDIR/apk -group rw-fdroid-apk
+```
+
+Representations (`gitz3.ExactReps`): `gp-entry` (exact entry bytes as components), `gp-zlib` (zlib streams as components, headers and
+OFS distances derived), `gp-plain` / `gp-auto` (plaintext components - canonical object bytes or delta programs - plus exact DEFLATE
+reconstruction through `ir`; `auto` falls back to the zlib bytes per entry when the plaintext route costs more than 1.1x),
+`gp-set` / `gp-set-plain` (the same entries described order-independently by object id in id-sectioned tables plus a permutation),
+and the oracle `floor-native-obj`. The `.idx` is regenerated from the pack and charged one flag byte when byte-identical.
+
+Results: `../results/Z3_16_GIT_PACKS.md`.

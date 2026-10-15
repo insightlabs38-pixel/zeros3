@@ -1,0 +1,14 @@
+{
+  "schema": "z3-realworld-git/1",
+  "note": "Pinned git object sets for Z3-16 (cmd/z3git real). Nothing is committed or fetched by tests. Each repository is fetched by explicit tip SHA with a shallow depth into a bare cache outside Git; all packs are then produced locally by a single git version with explicit settings (git pack-objects), never taken from the server.",
+  "repos": [
+    {"name": "lua", "url": "https://github.com/lua/lua.git", "tip": "b35736b9d71182bae67492af2a387b3f6e89fd05", "depth": 1500, "license": "MIT",
+     "mix": "many small C source files, long source history"},
+    {"name": "imgui", "url": "https://github.com/ocornut/imgui.git", "tip": "c1aaac65e896a45f81f47a4d68f9959e0f86c859", "depth": 400, "license": "MIT",
+     "mix": "few very large C++ sources (up to ~1 MB), changelog, fonts/images"},
+    {"name": "codicons", "url": "https://github.com/microsoft/vscode-codicons.git", "tip": "8853e0b1b0e2058b099fde515d5f1f478db2f8e1", "depth": 600, "license": "CC-BY-4.0 (icons) / MIT",
+     "mix": "SVG and JSON assets, PNG preview, lockfile"},
+    {"name": "zeros3", "url": "local", "tip": "25d7590726f0bcb8329bd33bbcd063d8cbf11f94", "depth": 150, "license": "Apache-2.0",
+     "mix": "Go source, Markdown result documents, harness code (this repository at the Z3-14/15 merge)"}
+  ]
+}
