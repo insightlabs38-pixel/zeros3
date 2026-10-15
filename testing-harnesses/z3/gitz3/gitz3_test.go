@@ -151,7 +151,11 @@ func TestFixturePacks(t *testing.T) {
 				}
 			}
 			ac := lab.NewAcct(96, true)
-			exact(t, ac, EntryWholePlan(p, RepOpts{}), data)
+			wp, werr := EntryWholePlan(p, RepOpts{})
+			if werr != nil {
+				t.Fatal(werr)
+			}
+			exact(t, ac, wp, data)
 			if _, err := NativeObjPlan(p, RepOpts{}); err != nil {
 				t.Fatal(err)
 			}

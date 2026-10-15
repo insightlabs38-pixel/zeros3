@@ -7,9 +7,10 @@ import (
 	"hash/adler32"
 	"hash/crc32"
 	"io"
+	"sync"
 )
 
-// Entry is one parsed pack entry. Offsets are into Pack.Data.
+// Entry is one parsed pack entry. Offsets are into the pack source.
 type Entry struct {
 	Off, End   int64  // whole entry [Off,End)
 	Kind       uint8  // 1..4 full object, 6 OFS_DELTA, 7 REF_DELTA
@@ -30,56 +31,86 @@ type Entry struct {
 
 func (e *Entry) IsDelta() bool { return e.Kind == ofsDelta || e.Kind == refDelta }
 
-// Pack is a parsed pack file held in memory.
+// Pack is a parsed pack: structural metadata plus a bounded random-access source.
+// It never holds the pack bytes; every range is read on demand through the source
+// (a file, a CAS-backed object, a byte slice), and no read can go past Size.
 type Pack struct {
-	Algo     Algo
-	Data     []byte
-	Version  uint32
-	Entries  []Entry
-	Trailer  []byte
-	Lim      Limits
+	Algo    Algo
+	Version uint32
+	Entries []Entry
+	Trailer []byte
+	Lim     Limits
+	Size    int64 // bytes of the pack, trailer included
+
+	src      *io.SectionReader
 	byOff    map[int64]int
 	ids      map[string]int
 	resolved bool
 }
 
-// ParsePack parses the pack structure: header, every entry header, every zlib
-// stream boundary (each stream is inflated once to find its end, check its
-// declared size and its Adler-32) and the trailer checksum. It does not
-// resolve deltas; see Resolve. Anything it cannot parse is an error the caller
-// answers by treating the pack as opaque bytes.
+// ParsePack parses an in-memory pack; a convenience wrapper over ParsePackAt.
 func ParsePack(data []byte, a Algo, lim Limits) (*Pack, error) {
+	return ParsePackAt(bytes.NewReader(data), int64(len(data)), a, lim)
+}
+
+// ParsePackAt parses the pack structure of the size bytes readable from r:
+// header, every entry header, every zlib stream boundary (each stream is inflated
+// once to find its end, check its declared size and its Adler-32) and the trailer
+// checksum. It reads in bounded pieces (a fixed header window, a fixed streaming
+// buffer), never past size, and allocates nothing from a declared length. It does
+// not resolve deltas; see Resolve. Anything it cannot parse is an error the caller
+// answers by treating the pack as opaque bytes. A source shorter than size is
+// ErrCorrupt.
+func ParsePackAt(r io.ReaderAt, size int64, a Algo, lim Limits) (*Pack, error) {
 	lim = lim.norm()
-	hs := a.Size()
-	if int64(len(data)) > lim.MaxPack {
-		return nil, limit("pack %d bytes", len(data))
+	hs := int64(a.Size())
+	if size < 0 {
+		return nil, corrupt("negative pack size")
 	}
-	if len(data) < 12+hs {
+	if size > lim.MaxPack {
+		return nil, limit("pack %d bytes", size)
+	}
+	if size < 12+hs {
 		return nil, corrupt("pack shorter than header+trailer")
 	}
-	if string(data[:4]) != "PACK" {
+	src := io.NewSectionReader(r, 0, size)
+	var hdr [12]byte
+	if err := readFullAt(src, hdr[:], 0); err != nil {
+		return nil, err
+	}
+	if string(hdr[:4]) != "PACK" {
 		return nil, corrupt("pack magic")
 	}
-	ver := binary.BigEndian.Uint32(data[4:])
+	ver := binary.BigEndian.Uint32(hdr[4:])
 	if ver != 2 && ver != 3 {
 		return nil, ErrUnsupported
 	}
-	n := binary.BigEndian.Uint32(data[8:])
-	body := int64(len(data) - hs)
+	n := binary.BigEndian.Uint32(hdr[8:])
+	body := size - hs
 	if int64(n) > int64(lim.MaxObjects) || int64(n) > (body-12)/9 {
 		return nil, limit("object count %d", n)
 	}
 	h := a.New()
-	h.Write(data[:body])
-	if !bytes.Equal(h.Sum(nil), data[body:]) {
+	if got, err := io.Copy(h, io.NewSectionReader(src, 0, body)); err != nil {
+		return nil, err
+	} else if got != body {
+		return nil, corrupt("source ended at %d of %d bytes", got, body)
+	}
+	trailer := make([]byte, hs)
+	if err := readFullAt(src, trailer, body); err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(h.Sum(nil), trailer) {
 		return nil, ErrChecksum
 	}
-	p := &Pack{Algo: a, Data: data, Version: ver, Trailer: data[body:], Lim: lim, byOff: make(map[int64]int, n)}
+	p := &Pack{Algo: a, Version: ver, Trailer: trailer, Lim: lim, Size: size, src: src, byOff: make(map[int64]int, n)}
 	p.Entries = make([]Entry, 0, n)
+	zr := getZReader()
+	defer putZReader(zr)
 	var inflated int64
 	off := int64(12)
 	for i := uint32(0); i < n; i++ {
-		e, err := p.parseEntry(off, body)
+		e, err := p.parseEntry(off, body, zr)
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +118,6 @@ func ParsePack(data []byte, a Algo, lim Limits) (*Pack, error) {
 		if inflated > lim.MaxInflated {
 			return nil, limit("inflated bytes > %d", lim.MaxInflated)
 		}
-		e.CRC = crc32.ChecksumIEEE(data[e.Off:e.End])
 		p.byOff[e.Off] = len(p.Entries)
 		p.Entries = append(p.Entries, e)
 		off = e.End
@@ -98,31 +128,88 @@ func ParsePack(data []byte, a Algo, lim Limits) (*Pack, error) {
 	return p, nil
 }
 
-type adlerSink struct {
-	h hashAdler
-	n int64
-}
-type hashAdler = interface {
-	io.Writer
-	Sum32() uint32
-}
-
-func (s *adlerSink) Write(b []byte) (int, error) { s.n += int64(len(b)); return s.h.Write(b) }
-
-func (p *Pack) parseEntry(off, body int64) (Entry, error) {
-	d := p.Data
-	e := Entry{Off: off, Base: -1}
-	i := off
-	if i >= body {
-		return e, corrupt("entry offset %d at/after trailer", i)
+// readFullAt fills b from r at off. A short read is ErrCorrupt (the source is
+// shorter than its declared size); other I/O errors pass through.
+func readFullAt(r io.ReaderAt, b []byte, off int64) error {
+	n, err := r.ReadAt(b, off)
+	if n == len(b) {
+		return nil
 	}
+	if err == nil || err == io.EOF {
+		return corrupt("source ended at %d, wanted %d bytes at %d", off+int64(n), len(b), off)
+	}
+	return err
+}
+
+// ReadAt reads from the pack source; it never reads past Size.
+func (p *Pack) ReadAt(b []byte, off int64) (int, error) { return p.src.ReadAt(b, off) }
+
+// Range is a bounded reader over the pack bytes [off,end).
+func (p *Pack) Range(off, end int64) (*io.SectionReader, error) {
+	if off < 0 || off > end || end > p.Size {
+		return nil, corrupt("range [%d,%d) outside pack of %d bytes", off, end, p.Size)
+	}
+	return io.NewSectionReader(p.src, off, end-off), nil
+}
+
+// Bytes copies the pack bytes [off,end) into memory. For headers, trailers and
+// other small ranges; large ranges should go through Range / WriteRange.
+func (p *Pack) Bytes(off, end int64) ([]byte, error) {
+	if off < 0 || off > end || end > p.Size {
+		return nil, corrupt("range [%d,%d) outside pack of %d bytes", off, end, p.Size)
+	}
+	b := make([]byte, end-off)
+	if err := readFullAt(p.src, b, off); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// WriteRange streams the pack bytes [off,end) to w.
+func (p *Pack) WriteRange(w io.Writer, off, end int64) error {
+	r, err := p.Range(off, end)
+	if err != nil {
+		return err
+	}
+	n, err := io.Copy(w, r)
+	if err == nil && n != end-off {
+		err = corrupt("source ended at %d of %d", off+n, end)
+	}
+	return err
+}
+
+// EntryBytes is the exact bytes of entry i (header, base encoding, zlib stream).
+func (p *Pack) EntryBytes(i int) ([]byte, error) { return p.Bytes(p.Entries[i].Off, p.Entries[i].End) }
+
+// ZlibBytes is the exact zlib stream of entry i.
+func (p *Pack) ZlibBytes(i int) ([]byte, error) { return p.Bytes(p.Entries[i].ZOff, p.Entries[i].ZEnd) }
+
+// HeaderBytes is the entry's type/size varint plus its OFS/REF base encoding.
+func (p *Pack) HeaderBytes(i int) ([]byte, error) {
+	return p.Bytes(p.Entries[i].Off, p.Entries[i].ZOff)
+}
+
+// maxEntryHdr bounds the type/size varint (10) plus an OFS varint (10) or a REF id (32).
+const maxEntryHdr = 64
+
+func (p *Pack) parseEntry(off, body int64, zr *zreader) (Entry, error) {
+	e := Entry{Off: off, Base: -1}
+	if off >= body {
+		return e, corrupt("entry offset %d at/after trailer", off)
+	}
+	var window [maxEntryHdr]byte
+	d := window[:min(int64(maxEntryHdr), body-off)]
+	if err := readFullAt(p.src, d, off); err != nil {
+		return e, err
+	}
+	i := int64(0)
 	c := d[i]
 	i++
 	e.Kind = (c >> 4) & 7
 	size := uint64(c & 15)
 	shift := uint(4)
 	for c&0x80 != 0 {
-		if i >= body {
+		if i >= int64(len(d)) {
 			return e, corrupt("entry header truncated")
 		}
 		if shift > 56 {
@@ -137,19 +224,19 @@ func (p *Pack) parseEntry(off, body int64) (Entry, error) {
 		return e, limit("entry size %d", size)
 	}
 	e.Size = int64(size)
-	e.HdrLen = int(i - off)
+	e.HdrLen = int(i)
 	switch e.Kind {
 	case 1, 2, 3, 4:
 	case ofsDelta:
 		start := i
-		if i >= body {
+		if i >= int64(len(d)) {
 			return e, corrupt("OFS header truncated")
 		}
 		c = d[i]
 		i++
 		ofs := uint64(c & 0x7f)
 		for c&0x80 != 0 {
-			if i >= body {
+			if i >= int64(len(d)) {
 				return e, corrupt("OFS header truncated")
 			}
 			if ofs >= 1<<56 {
@@ -167,40 +254,131 @@ func (p *Pack) parseEntry(off, body int64) (Entry, error) {
 		e.BaseLen = int(i - start)
 	case refDelta:
 		hs := int64(p.Algo.Size())
-		if i+hs > body {
+		if i+hs > int64(len(d)) {
 			return e, corrupt("REF header truncated")
 		}
-		e.BaseRef = d[i : i+hs]
+		e.BaseRef = append([]byte(nil), d[i:i+hs]...)
 		i += hs
 		e.BaseLen = int(hs)
 	default:
 		return e, corrupt("entry type %d", e.Kind)
 	}
-	e.ZOff = i
-	zl, err := inflateZlib(d[i:body], e.Size, io.Discard)
+	e.ZOff = off + i
+	zr.reset(p.src, e.ZOff, body, crc32.ChecksumIEEE(d[:i]))
+	zl, err := inflateZlibFrom(zr, e.Size, io.Discard)
 	if err != nil {
 		return e, err
 	}
-	e.ZEnd = i + zl
+	e.ZEnd = e.ZOff + zl
 	e.End = e.ZEnd
+	e.CRC = zr.crcSum()
 	return e, nil
 }
 
-// inflateZlib decodes the zlib stream at the start of data into w, requires it
-// to produce exactly want bytes with a valid Adler-32, and returns its length.
-// It uses compress/flate over a bytes.Reader (which implements io.ByteReader, so
-// the reader consumes no byte beyond the stream) and never allocates from the
-// claimed length.
-func inflateZlib(data []byte, want int64, w io.Writer) (int64, error) {
-	if len(data) < 2+2+4 {
-		return 0, corrupt("zlib stream truncated")
+// zreader is the byte-exact input of the zlib decoder over a ReaderAt range: it
+// reads ahead only inside its own buffer, so the number of bytes the decoder
+// consumed (and their CRC-32) is exact; compress/flate uses it directly because it
+// implements io.ByteReader.
+type zreader struct {
+	r    io.ReaderAt
+	next int64 // source offset of the next byte to buffer
+	end  int64
+	buf  [4 << 10]byte
+	i, n int
+	h    int    // buf[h:i] is consumed but not yet folded into crc
+	crc  uint32 // CRC-32 over the header bytes given to reset plus every consumed byte
+}
+
+var zpool = sync.Pool{New: func() any { return new(zreader) }}
+
+func getZReader() *zreader  { return zpool.Get().(*zreader) }
+func putZReader(z *zreader) { z.r = nil; zpool.Put(z) }
+
+// reset points z at [off,end) of r; crc seeds the running CRC-32.
+func (z *zreader) reset(r io.ReaderAt, off, end int64, crc uint32) {
+	z.r, z.next, z.end, z.i, z.n, z.h, z.crc = r, off, end, 0, 0, 0, crc
+}
+
+func (z *zreader) sync() {
+	z.crc = crc32.Update(z.crc, crc32.IEEETable, z.buf[z.h:z.i])
+	z.h = z.i
+}
+
+func (z *zreader) crcSum() uint32 { z.sync(); return z.crc }
+
+// pos is the source offset of the next unconsumed byte.
+func (z *zreader) pos() int64 { return z.next - int64(z.n-z.i) }
+
+func (z *zreader) fill() error {
+	z.sync()
+	z.i, z.n, z.h = 0, 0, 0
+	want := min(int64(len(z.buf)), z.end-z.next)
+	if want <= 0 {
+		return io.ErrUnexpectedEOF
 	}
-	cmf, flg := data[0], data[1]
+	if err := readFullAt(z.r, z.buf[:want], z.next); err != nil {
+		return err
+	}
+	z.n = int(want)
+	z.next += want
+	return nil
+}
+
+func (z *zreader) ReadByte() (byte, error) {
+	if z.i == z.n {
+		if err := z.fill(); err != nil {
+			return 0, err
+		}
+	}
+	c := z.buf[z.i]
+	z.i++
+	return c, nil
+}
+
+func (z *zreader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if z.i == z.n {
+		if err := z.fill(); err != nil {
+			return 0, err
+		}
+	}
+	n := copy(p, z.buf[z.i:z.n])
+	z.i += n
+	return n, nil
+}
+
+type adlerSink struct {
+	h hashAdler
+	n int64
+}
+type hashAdler = interface {
+	io.Writer
+	Sum32() uint32
+}
+
+func (s *adlerSink) Write(b []byte) (int, error) { s.n += int64(len(b)); return s.h.Write(b) }
+
+// inflateZlibFrom decodes the zlib stream at z's position into w, requires it to
+// produce exactly want bytes with a valid Adler-32, and returns its length. It
+// consumes no byte beyond the stream and never allocates from the claimed length.
+// On error w may already hold a prefix of the plaintext.
+func inflateZlibFrom(z *zreader, want int64, w io.Writer) (int64, error) {
+	start := z.pos()
+	var hd [2]byte
+	for k := range hd {
+		c, err := z.ReadByte()
+		if err != nil {
+			return 0, corrupt("zlib stream truncated")
+		}
+		hd[k] = c
+	}
+	cmf, flg := hd[0], hd[1]
 	if cmf&15 != 8 || cmf>>4 > 7 || (uint(cmf)<<8|uint(flg))%31 != 0 || flg&0x20 != 0 {
 		return 0, corrupt("zlib header %02x%02x", cmf, flg)
 	}
-	br := bytes.NewReader(data[2:])
-	fr := flate.NewReader(br)
+	fr := flate.NewReader(z)
 	defer fr.Close()
 	sink := &adlerSink{h: adler32.New()}
 	n, err := io.Copy(io.MultiWriter(sink, w), io.LimitReader(fr, want+1))
@@ -210,29 +388,56 @@ func inflateZlib(data []byte, want int64, w io.Writer) (int64, error) {
 	if n != want {
 		return 0, corrupt("inflated %d bytes, header says %d", n, want)
 	}
-	used := int64(len(data)-2) - int64(br.Len())
-	if used+2+4 > int64(len(data)) {
-		return 0, corrupt("zlib trailer truncated")
+	var tr [4]byte
+	for k := range tr {
+		c, err := z.ReadByte()
+		if err != nil {
+			return 0, corrupt("zlib trailer truncated")
+		}
+		tr[k] = c
 	}
-	if binary.BigEndian.Uint32(data[2+used:]) != sink.h.Sum32() {
+	if binary.BigEndian.Uint32(tr[:]) != sink.h.Sum32() {
 		return 0, corrupt("zlib Adler-32")
 	}
-	return 2 + used + 4, nil
+	return z.pos() - start, nil
 }
 
-// ZlibBytes is the exact zlib stream of entry i.
-func (p *Pack) ZlibBytes(i int) []byte { return p.Data[p.Entries[i].ZOff:p.Entries[i].ZEnd] }
+// inflateZlib is inflateZlibFrom over an in-memory stream.
+func inflateZlib(data []byte, want int64, w io.Writer) (int64, error) {
+	z := getZReader()
+	defer putZReader(z)
+	z.reset(bytes.NewReader(data), 0, int64(len(data)), 0)
+	return inflateZlibFrom(z, want, w)
+}
 
-// HeaderBytes is the entry's type/size varint plus its OFS/REF base encoding.
-func (p *Pack) HeaderBytes(i int) []byte { return p.Data[p.Entries[i].Off:p.Entries[i].ZOff] }
+// InflateTo streams the zlib plaintext of entry i to w: the object payload of a
+// full entry, the delta program of a delta entry. The stream is verified (declared
+// size, Adler-32, exact extent) as it is written; on error w may already hold a
+// prefix, which the caller must discard.
+func (p *Pack) InflateTo(i int, w io.Writer) error {
+	if i < 0 || i >= len(p.Entries) {
+		return corrupt("entry %d", i)
+	}
+	e := &p.Entries[i]
+	z := getZReader()
+	defer putZReader(z)
+	z.reset(p.src, e.ZOff, e.ZEnd, 0)
+	n, err := inflateZlibFrom(z, e.Size, w)
+	if err == nil && n != e.ZEnd-e.ZOff {
+		err = corrupt("entry %d: zlib stream is %d bytes, parsed as %d", i, n, e.ZEnd-e.ZOff)
+	}
+	return err
+}
 
-// Inflate returns the zlib plaintext of entry i: the object payload of a full
-// entry, the delta program of a delta entry.
+// Inflate is InflateTo into memory: the bounded materialisation helper (an entry's
+// inflated size is limited by Limits.MaxObjectSize at parse time). Delta
+// resolution and the lab's component builders still need whole payloads; this is
+// the one place that materialises them.
 func (p *Pack) Inflate(i int) ([]byte, error) {
 	e := &p.Entries[i]
 	var buf bytes.Buffer
 	buf.Grow(int(min(e.Size, (e.ZEnd-e.ZOff)*1032+64)))
-	if _, err := inflateZlib(p.Data[e.ZOff:e.ZEnd], e.Size, &buf); err != nil {
+	if err := p.InflateTo(i, &buf); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil

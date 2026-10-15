@@ -32,7 +32,7 @@ type Churn struct {
 }
 
 // Attribute compares two resolved packs of (partly) the same objects.
-func Attribute(a, b *Pack) Churn {
+func Attribute(a, b *Pack) (Churn, error) {
 	var c Churn
 	c.EntriesA, c.EntriesB = len(a.Entries), len(b.Entries)
 	aIdx := map[string]int{}
@@ -65,9 +65,25 @@ func Attribute(a, b *Pack) Churn {
 		case ea.IsDelta() && eb.IsDelta():
 			sameBase = bytes.Equal(a.Entries[ea.Base].ID, b.Entries[eb.Base].ID)
 		}
-		sameZ := bytes.Equal(a.ZlibBytes(j), b.ZlibBytes(i))
+		za, err := a.ZlibBytes(j)
+		if err != nil {
+			return c, err
+		}
+		zb, err := b.ZlibBytes(i)
+		if err != nil {
+			return c, err
+		}
+		sameZ := bytes.Equal(za, zb)
+		ra, err := a.EntryBytes(j)
+		if err != nil {
+			return c, err
+		}
+		rb, err := b.EntryBytes(i)
+		if err != nil {
+			return c, err
+		}
 		switch {
-		case bytes.Equal(a.Data[ea.Off:ea.End], b.Data[eb.Off:eb.End]):
+		case bytes.Equal(ra, rb):
 			c.Same += sz
 			c.NSame++
 			if !adj {
@@ -80,8 +96,10 @@ func Attribute(a, b *Pack) Churn {
 				c.AdjBroken += sz
 			}
 		case sameBase:
-			pa, _ := a.Inflate(j)
-			pb, _ := b.Inflate(i)
+			pa, pb, err := inflatePair(a, j, b, i)
+			if err != nil {
+				return c, err
+			}
 			if bytes.Equal(pa, pb) {
 				c.ZlibOnly += sz
 				c.NZlib++
@@ -97,8 +115,10 @@ func Attribute(a, b *Pack) Churn {
 			c.DeltaBoth++
 			if sameBase {
 				c.DeltaSameBase++
-				pa, _ := a.Inflate(j)
-				pb, _ := b.Inflate(i)
+				pa, pb, err := inflatePair(a, j, b, i)
+				if err != nil {
+					return c, err
+				}
 				if bytes.Equal(pa, pb) {
 					c.DeltaSameProg++
 					c.DeltaProgBytes += int64(len(pb))
@@ -106,7 +126,16 @@ func Attribute(a, b *Pack) Churn {
 			}
 		}
 	}
-	return c
+	return c, nil
+}
+
+func inflatePair(a *Pack, j int, b *Pack, i int) ([]byte, []byte, error) {
+	pa, err := a.Inflate(j)
+	if err != nil {
+		return nil, nil, err
+	}
+	pb, err := b.Inflate(i)
+	return pa, pb, err
 }
 
 // DeltaStats summarises the delta structure of a resolved pack.

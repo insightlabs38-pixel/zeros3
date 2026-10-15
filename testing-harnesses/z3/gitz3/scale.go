@@ -2,7 +2,6 @@ package gitz3
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"runtime"
@@ -220,14 +219,32 @@ func MeasureScale(label string, a Algo, pack, idx []byte, doIR bool) ScalePoint 
 	_ = ss
 	smp = startSampler()
 	t0 = time.Now()
-	var out bytes.Buffer
-	out.Grow(len(pack))
-	err = pl.Rebuild(&out, ac.Get)
+	out := &EqWriter{Want: pack} // the rebuilt pack is compared as it streams out, never held
+	err = pl.Rebuild(out, ac.Get)
 	sp.RebuildMs = since(t0)
 	sp.PeakRebuildMiB = smp.finish(base)
-	sp.ExactOK = err == nil && sha256.Sum256(out.Bytes()) == sha256.Sum256(pack)
+	sp.ExactOK = err == nil && out.Equal()
 	if err != nil {
 		sp.Err = err.Error()
 	}
 	return sp
 }
+
+// EqWriter compares the bytes written to it against Want as they arrive, so exact
+// reconstruction of a large object is checked without a second copy of it.
+type EqWriter struct {
+	Want []byte
+	n    int
+	bad  bool
+}
+
+func (e *EqWriter) Write(b []byte) (int, error) {
+	if e.n+len(b) > len(e.Want) || !bytes.Equal(b, e.Want[e.n:e.n+len(b)]) {
+		e.bad = true
+	}
+	e.n += len(b)
+	return len(b), nil
+}
+
+// Equal reports whether exactly Want, in full, was written.
+func (e *EqWriter) Equal() bool { return !e.bad && e.n == len(e.Want) }

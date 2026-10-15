@@ -176,7 +176,10 @@ func AnalyzePack(p *Pack) (*PackAnalysis, error) {
 		e := &p.Entries[i]
 		ep := &an.Entries[i]
 		ep.Kind, ep.Size = e.Kind, e.Size
-		ep.Z = p.ZlibBytes(i)
+		var err error
+		if ep.Z, err = p.ZlibBytes(i); err != nil {
+			return nil, err
+		}
 		copy(ep.ZHdr[:], ep.Z[:2])
 		pl, err := p.Inflate(i)
 		if err != nil {

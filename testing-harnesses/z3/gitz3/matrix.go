@@ -167,7 +167,7 @@ func ExactReps() []RepDef {
 			if err != nil {
 				return fallbackCDC(f)
 			}
-			return EntryWholePlan(p, opts(c, "")), nil
+			return EntryWholePlan(p, opts(c, ""))
 		}},
 		exactRep("gp-zlib", "zlib", func(an *PackAnalysis, o RepOpts) *lab.Plan { pl, _ := an.SeqPlan(o); return pl }),
 		exactRep("gp-plain", "plain", func(an *PackAnalysis, o RepOpts) *lab.Plan { pl, _ := an.SeqPlan(o); return pl }),

@@ -7,6 +7,15 @@
 // an error rather than panicking on hostile input, and treats "cannot parse /
 // cannot verify" as a reason to fall back to ordinary bytes, never as a reason
 // to reject an object.
+//
+// Two layers share the package. The reusable mechanism - gitz3.go, objects.go,
+// delta.go, pack.go (ParsePackAt over an io.ReaderAt, bounded ranges, streaming
+// InflateTo, Resolve/Object), idx.go - imports no laboratory package. The
+// experiment layer - plans, accounting, scenarios, producers, matrices, reports
+// (rep.go, loose.go, wholeplan.go, setperm.go, admit.go, matrix.go, ...) adapts the
+// mechanism to lab.Plan and fstate. Remaining integration debt: delta resolution
+// and the component builders still materialise whole object payloads (bounded by
+// Limits.MaxObjectSize) through Pack.Inflate; idx parsing takes []byte.
 package gitz3
 
 import (

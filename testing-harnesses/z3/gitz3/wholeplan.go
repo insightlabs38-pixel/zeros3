@@ -1,30 +1,35 @@
 package gitz3
 
 import (
-	"io"
-
 	"zeros3-z3/lab"
 )
 
 // EntryWholePlan is the pack-entry structural split without any zlib or delta
 // knowledge: header (12 B) and trailer inline, each entry's exact bytes
 // (header + base encoding + zlib stream) one component. Concat plan, so range
-// reads work generically.
-func EntryWholePlan(p *Pack, o RepOpts) *lab.Plan {
+// reads work generically. The pack is read entry by entry through its source.
+func EntryWholePlan(p *Pack, o RepOpts) (*lab.Plan, error) {
 	pl := &lab.Plan{Concat: true}
-	pl.Pieces = append(pl.Pieces, lab.Piece{Inline: append([]byte(nil), p.Data[:12]...), Len: 12})
-	for i := range p.Entries {
-		e := &p.Entries[i]
-		b := p.Data[e.Off:e.End]
-		for _, pc := range mkPieces(b, o.inline(), "entry") {
-			pl.Pieces = append(pl.Pieces, pc)
-		}
+	hdr, err := p.Bytes(0, 12)
+	if err != nil {
+		return nil, err
 	}
-	hs := p.Algo.Size()
-	pl.Pieces = append(pl.Pieces, lab.Piece{Inline: append([]byte(nil), p.Data[len(p.Data)-hs:]...), Len: int64(hs)})
+	pl.Pieces = append(pl.Pieces, lab.Piece{Inline: hdr, Len: 12})
+	for i := range p.Entries {
+		b, err := p.EntryBytes(i)
+		if err != nil {
+			return nil, err
+		}
+		pl.Pieces = append(pl.Pieces, mkPieces(b, o.inline(), "entry")...)
+	}
+	hs := int64(p.Algo.Size())
+	tr, err := p.Bytes(p.Size-hs, p.Size)
+	if err != nil {
+		return nil, err
+	}
+	pl.Pieces = append(pl.Pieces, lab.Piece{Inline: tr, Len: hs})
 	pl.Rebuild = lab.ConcatRebuild(pl)
-	_ = io.EOF
-	return pl
+	return pl, nil
 }
 
 // NativeObjPlan is the oracle floor: the pack's unique objects as canonical
