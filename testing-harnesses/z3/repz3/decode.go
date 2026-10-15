@@ -27,6 +27,10 @@ type Env struct {
 	Table  Table
 	Limits Limits
 
+	// ExpandOnly is a laboratory knob for the reachability study: owning sections
+	// are ignored and every kind's Expand names the VIA components.
+	ExpandOnly bool
+
 	noVerify bool // tests only: skip the representation digest check
 }
 
@@ -161,6 +165,16 @@ func (c *Call) decodeConcat() error {
 	return nil
 }
 
+// WriteMember streams member i to w in bounded pieces (a stored component, or a
+// derived member rebuilt progressively from its child), checking length and
+// SHA-256 as decodeConcat does.
+func (c *Call) WriteMember(i int, w io.Writer) error {
+	if i < 0 || i >= len(c.Rep.Members) {
+		return corrupt("member %d of %d", i, len(c.Rep.Members))
+	}
+	return c.writeMember(&c.Rep.Members[i], w)
+}
+
 func (c *Call) writeMember(m *Member, w io.Writer) error {
 	if m.Role == Derived {
 		return c.streamDerived(m, w)
@@ -261,6 +275,25 @@ func (c *Call) Get(id SHA) ([]byte, error) {
 	return ReadObject(c.env.Src, id, decl, c.env.Limits.norm().MaxWhole)
 }
 
+// GetExact is Get for a component the representation does not list as a member
+// (a VIA component named by a table): the length must equal declared, which the
+// decoder took from its own stored table, before any byte is read.
+func (c *Call) GetExact(id SHA, declared int64) ([]byte, error) {
+	if declared < 0 {
+		return nil, corrupt("negative declared length")
+	}
+	return ReadObject(c.env.Src, id, declared, c.env.Limits.norm().MaxWhole)
+}
+
+// GetAny is Get for a component whose length only the store knows (a point read
+// that followed a native record to it). The bytes are hashed against the id.
+func (c *Call) GetAny(id SHA) ([]byte, error) {
+	return ReadObject(c.env.Src, id, -1, c.env.Limits.norm().MaxWhole)
+}
+
+// Source is the bounded source this call reads through.
+func (c *Call) Source() Source { return c.env.Src }
+
 // Member returns the exact bytes of member i: a stored component, or a derived
 // member rebuilt from its child (bounded by Limits.MaxWhole).
 func (c *Call) Member(i int) ([]byte, error) {
@@ -281,19 +314,28 @@ func (c *Call) Member(i int) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Resolve maps a native identity to the component holding it: this
-// representation's own index sections first (O(log n) bounded reads), then the
-// source's global native index. found is false when neither knows it.
+// Resolve maps a native identity to the component holding it by searching this
+// representation's own record sections (O(log n) bounded reads each). The
+// representation therefore carries everything it needs: no global state is
+// consulted. The same key in several sections is fine when they agree; sections
+// that disagree make the identity ambiguous and the answer is ErrAmbiguous,
+// never a silent pick. found is false when no section knows it.
 func (c *Call) Resolve(native []byte) (id SHA, found bool, err error) {
 	for _, x := range c.Rep.Indexes {
-		if x.Type == IndexNative && len(native) == x.KeyWidth {
-			if id, found, err = LookupIndex(c.env.Src, x, native); err != nil || found {
-				return id, found, err
-			}
+		if len(native) != x.KeyWidth {
+			continue
 		}
-	}
-	if r, ok := c.env.Src.(NativeResolver); ok {
-		id, found = r.Resolve(native)
+		v, ok, err := LookupIndex(c.env.Src, x, native)
+		if err != nil {
+			return SHA{}, false, err
+		}
+		if !ok {
+			continue
+		}
+		if found && v != id {
+			return SHA{}, false, fmt.Errorf("%w: %x", ErrAmbiguous, native[:min(len(native), 6)])
+		}
+		id, found = v, true
 	}
 	return id, found, nil
 }

@@ -43,7 +43,7 @@ func rebuild(e *Env, id SHA) ([]byte, error) {
 
 // golden is the byte-exact wire form of a small representation. If it changes the
 // contract changed: bump Version.
-const golden = "5a335250" + "01" + "01" + "0a" + "02" + // magic, version 1, kind concat, size 10, 2 members
+const golden = "5a335250" + "02" + "01" + "0a" + "02" + // magic, version 2, kind concat, size 10, 2 members
 	"01" + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" + "00" + // empty stored member
 	"01" + "84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882" + "0a" + // 10-byte member
 	"00" + "00" // no recipe, no index
@@ -83,7 +83,7 @@ func fullRep(st *MemStore) *Rep {
 			{Role: Stored, SHA: sha256.Sum256([]byte("x")), Size: 1},
 			{Role: Derived, SHA: sha256.Sum256(framed), Size: int64(len(framed)), Child: child, Frame: Frame{Prefix: []byte("P:"), Zeros: 3}},
 		},
-		Indexes: []Index{{Type: IndexNative, KeyWidth: 8, Count: 1, Ref: ix}}}
+		Indexes: []Index{{KeyWidth: 8, Count: 1, Ref: ix, Owns: true}}}
 }
 
 func TestEveryTruncationFails(t *testing.T) {
@@ -118,13 +118,15 @@ func TestMalformedHeaders(t *testing.T) {
 		want error
 	}{
 		{"magic", mut(func(b []byte) []byte { b[0] = 'X'; return b }), ErrCorrupt},
-		{"unknown version", mut(func(b []byte) []byte { b[4] = 2; return b }), ErrUnsupported},
+		{"unknown version", mut(func(b []byte) []byte { b[4] = 3; return b }), ErrUnsupported},
+		{"obsolete version 1", mut(func(b []byte) []byte { b[4] = 1; return b }), ErrUnsupported},
+		{"index flags", mut(func(b []byte) []byte { b[len(b)-35] = 0x80; return b }), ErrCorrupt},
 		{"unknown kind", mut(func(b []byte) []byte { b[5] = 99; return b }), ErrUnsupported},
 		{"kind zero", mut(func(b []byte) []byte { b[5] = 0; return b }), ErrUnsupported},
-		{"unterminated varint", append([]byte("Z3RP\x01\x01"), bytes.Repeat([]byte{0xff}, 12)...), ErrCorrupt},
-		{"non-minimal varint", []byte("Z3RP\x01\x01\x80\x00\x00\x00\x00"), ErrCorrupt},
-		{"size over int64", append([]byte("Z3RP\x01\x01"), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01), ErrCorrupt},
-		{"excessive member count", append([]byte("Z3RP\x01\x01\x00"), 0xff, 0xff, 0xff, 0x7f), ErrLimit},
+		{"unterminated varint", append([]byte("Z3RP\x02\x01"), bytes.Repeat([]byte{0xff}, 12)...), ErrCorrupt},
+		{"non-minimal varint", []byte("Z3RP\x02\x01\x80\x00\x00\x00\x00"), ErrCorrupt},
+		{"size over int64", append([]byte("Z3RP\x02\x01"), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01), ErrCorrupt},
+		{"excessive member count", append([]byte("Z3RP\x02\x01\x00"), 0xff, 0xff, 0xff, 0x7f), ErrLimit},
 		{"role", mut(func(b []byte) []byte { b[8] = 7; return b }), ErrCorrupt},
 		{"via on the wire", mut(func(b []byte) []byte { b[8] = byte(Via); return b }), ErrCorrupt},
 	}
@@ -134,7 +136,7 @@ func TestMalformedHeaders(t *testing.T) {
 		}
 	}
 	// a member count the remaining bytes cannot hold must not allocate
-	if _, err := Unmarshal(append([]byte("Z3RP\x01\x01\x00"), 0xff, 0xff, 0xff, 0x0f), Limits{MaxMembers: 1 << 30}); !errors.Is(err, ErrCorrupt) {
+	if _, err := Unmarshal(append([]byte("Z3RP\x02\x01\x00"), 0xff, 0xff, 0xff, 0x0f), Limits{MaxMembers: 1 << 30}); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("huge count: %v", err)
 	}
 	// recipe longer than the object
@@ -147,6 +149,14 @@ func TestMalformedHeaders(t *testing.T) {
 	if _, err := Unmarshal(b, Limits{MaxRepBytes: 16}); err == nil {
 		t.Error("recipe over MaxRepBytes parsed")
 	}
+}
+
+func tooManySections() []Index {
+	var x []Index
+	for i := 0; i <= maxIndexes; i++ {
+		x = append(x, Index{KeyWidth: 8, Count: 1, Ref: SHA{byte(i + 1)}})
+	}
+	return x
 }
 
 func TestValidateRejects(t *testing.T) {
@@ -162,10 +172,11 @@ func TestValidateRejects(t *testing.T) {
 		"frame over length":     {Kind: KindCAR, Members: []Member{{Role: Derived, SHA: a, Size: 4, Child: b, Frame: Frame{Prefix: []byte("xyz"), Zeros: 2}}}},
 		"frame zeros bound":     {Kind: KindCAR, Members: []Member{{Role: Derived, SHA: a, Size: 1 << 40, Child: b, Frame: Frame{Zeros: maxZeros + 1}}}},
 		"frame prefix bound":    {Kind: KindCAR, Members: []Member{{Role: Derived, SHA: a, Size: 1 << 40, Child: b, Frame: Frame{Prefix: make([]byte, maxPrefix+1)}}}},
-		"index geometry":        {Kind: KindCAR, Indexes: []Index{{Type: IndexNative, KeyWidth: 0, Count: 1}}},
-		"index count":           {Kind: KindCAR, Indexes: []Index{{Type: IndexNative, KeyWidth: 8, Count: maxIndexCount + 1}}},
-		"index type":            {Kind: KindCAR, Indexes: []Index{{Type: 9, KeyWidth: 8, Count: 1}}},
-		"duplicate index type":  {Kind: KindCAR, Indexes: []Index{{Type: IndexNative, KeyWidth: 8, Count: 1}, {Type: IndexNative, KeyWidth: 8, Count: 1}}},
+		"index geometry":        {Kind: KindCAR, Indexes: []Index{{KeyWidth: 0, Count: 1}}},
+		"index count":           {Kind: KindCAR, Indexes: []Index{{KeyWidth: 8, Count: maxIndexCount + 1}}},
+		"duplicate section":     {Kind: KindCAR, Indexes: []Index{{KeyWidth: 8, Count: 1, Ref: a}, {KeyWidth: 8, Count: 1, Ref: a}}},
+		"descending sections":   {Kind: KindCAR, Indexes: []Index{{KeyWidth: 8, Count: 1, Ref: SHA{2}}, {KeyWidth: 8, Count: 1, Ref: SHA{1}}}},
+		"too many sections":     {Kind: KindCAR, Indexes: tooManySections()},
 	}
 	for name, r := range bad {
 		if _, err := r.Marshal(); err == nil {
@@ -381,22 +392,22 @@ func nest(st *MemStore, depth int) (SHA, []byte) {
 
 func TestNestingDepth(t *testing.T) {
 	st := NewMemStore()
-	two, payload := nest(st, 2)
-	three, _ := nest(st, 3)
+	three, payload := nest(st, 3)
+	four, _ := nest(st, 4)
 	five, _ := nest(st, 5)
 	e := &Env{Src: st}
-	if got, err := rebuild(e, two); err != nil || !bytes.Equal(got, payload) {
-		t.Fatalf("depth 2: %v", err)
+	if got, err := rebuild(e, three); err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("depth 3 (gzip -> tar -> database) by default: %v", err)
 	}
-	if _, err := rebuild(e, three); !errors.Is(err, ErrDepth) || !errors.Is(err, ErrLimit) {
-		t.Fatalf("depth 3 by default: %v", err)
+	if _, err := rebuild(e, four); !errors.Is(err, ErrDepth) || !errors.Is(err, ErrLimit) {
+		t.Fatalf("depth 4 by default: %v", err)
 	}
-	if _, err := e.Reachable(three); !errors.Is(err, ErrDepth) {
-		t.Fatalf("walker depth 3: %v", err)
+	if _, err := e.Reachable(four); !errors.Is(err, ErrDepth) {
+		t.Fatalf("walker depth 4: %v", err)
 	}
-	e3 := &Env{Src: st, Limits: Limits{MaxDepth: 3}}
-	if got, err := rebuild(e3, three); err != nil || !bytes.Equal(got, payload) {
-		t.Fatalf("depth 3 opted in: %v", err)
+	e4 := &Env{Src: st, Limits: Limits{MaxDepth: 4}}
+	if got, err := rebuild(e4, four); err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("depth 4 opted in: %v", err)
 	}
 	e9 := &Env{Src: st, Limits: Limits{MaxDepth: 99}} // clamped to the hard maximum
 	if _, err := rebuild(e9, five); !errors.Is(err, ErrDepth) {
@@ -479,7 +490,7 @@ func TestNativeIndexLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref, _ := st.Put(recs)
-	x := Index{Type: IndexNative, KeyWidth: 9, Count: n, Ref: ref}
+	x := Index{KeyWidth: 9, Count: n, Ref: ref}
 	for _, k := range []string{"key-00000", "key-00003", "key-02997"} {
 		id, ok, err := LookupIndex(st, x, []byte(k))
 		if err != nil || !ok || id != pairs[k] {
@@ -536,7 +547,7 @@ func FuzzUnmarshal(f *testing.F) {
 	f.Add([]byte(golden))
 	b, _ := hex.DecodeString(golden)
 	f.Add(b)
-	f.Add([]byte("Z3RP\x01\x01\x00\x00\x00\x00"))
+	f.Add([]byte("Z3RP\x02\x01\x00\x00\x00\x00"))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		r, err := Unmarshal(b, Limits{MaxMembers: 1 << 12, MaxRepBytes: 1 << 20})
 		if err != nil {

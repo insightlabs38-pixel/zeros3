@@ -52,16 +52,6 @@ func (r *recSource) ReadAt(id repz3.SHA, p []byte, off int64) (int, error) {
 	r.seen[id] = true
 	return r.Source.ReadAt(id, p, off)
 }
-func (r *recSource) Resolve(n []byte) (repz3.SHA, bool) {
-	if nr, ok := r.Source.(repz3.NativeResolver); ok {
-		return nr.Resolve(n)
-	}
-	return repz3.SHA{}, false
-}
-
-// noNative hides the source's global native index.
-type noNative struct{ repz3.Source }
-
 func rebuild(src repz3.Source, id repz3.SHA) ([]byte, error) {
 	var b bytes.Buffer
 	_, _, err := NewEnv(src).Reconstruct(id, &b)
@@ -70,13 +60,13 @@ func rebuild(src repz3.Source, id repz3.SHA) ([]byte, error) {
 
 // persisted analyses and stores one stage and returns only what storage keeps: the
 // digest and the cost. The bundle (the analysis structure) is not returned.
-func persisted(t *testing.T, st *repz3.MemStore, ch *Chain, s Stage) (repz3.SHA, repz3.Cost) {
+func persisted(t *testing.T, st *repz3.MemStore, cat *repz3.Catalog, ch *Chain, s Stage) (repz3.SHA, repz3.Cost) {
 	t.Helper()
-	cand, err := ch.Encode(st, s.Data)
+	cand, err := ch.Encode(st, cat, s.Data)
 	if err != nil {
 		t.Fatalf("%s/%s: encode: %v", ch.Name, s.Label, err)
 	}
-	id, cost, err := Commit(st, cand)
+	id, cost, err := Commit(st, cat, cand)
 	if err != nil {
 		t.Fatalf("%s/%s: commit: %v", ch.Name, s.Label, err)
 	}
@@ -91,10 +81,11 @@ func TestMigratedWorkloadsAreExactReachableAndAccounted(t *testing.T) {
 	for _, ch := range testChains(t) {
 		t.Run(ch.Name, func(t *testing.T) {
 			st := repz3.NewMemStore()
+			cat := NewCatalog(st)
 			var added int64
 			for _, s := range ch.Stages {
 				before := st.Len()
-				id, cost := persisted(t, st, ch, s)
+				id, cost := persisted(t, st, cat, ch, s)
 				rec := record(st)
 				var out bytes.Buffer
 				n, sum, err := NewEnv(rec).Reconstruct(id, &out)
@@ -108,10 +99,18 @@ func TestMigratedWorkloadsAreExactReachableAndAccounted(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%s: reach: %v", s.Label, err)
 				}
+				owned := 0
 				for obj, role := range r.Role {
-					if role != repz3.DepIndex && !rec.seen[obj] {
+					switch {
+					case role == repz3.DepIndex:
+					case role == repz3.DepOwned && !rec.seen[obj]:
+						owned++ // a node of an earlier revision that this tree replaced: kept by the owning section until compaction
+					case !rec.seen[obj]:
 						t.Errorf("%s: %v %x is reachable but reconstruction never read it", s.Label, role, obj[:4])
 					}
+				}
+				if owned > 0 && owned*10 > len(r.Role) {
+					t.Errorf("%s: %d of %d live objects are owned but unused", s.Label, owned, len(r.Role))
 				}
 				for obj := range rec.seen {
 					if _, ok := r.Role[obj]; !ok {
@@ -147,8 +146,8 @@ func allIDs(st *repz3.MemStore) (ids []repz3.SHA) {
 func TestSerializationIsDeterministic(t *testing.T) {
 	for _, ch := range testChains(t) {
 		s := ch.Stages[0]
-		a, err1 := ch.Encode(repz3.NewMemStore(), s.Data)
-		b, err2 := ch.Encode(repz3.NewMemStore(), s.Data)
+		a, err1 := ch.Encode(repz3.NewMemStore(), nil, s.Data)
+		b, err2 := ch.Encode(repz3.NewMemStore(), nil, s.Data)
 		if err1 != nil || err2 != nil {
 			t.Fatal(err1, err2)
 		}
@@ -190,11 +189,11 @@ func TestFallbackIsAnalysisTimeOnly(t *testing.T) {
 	st := repz3.NewMemStore()
 	var ids []repz3.SHA
 	for _, s := range ch.Stages[:3] {
-		id, _ := persisted(t, st, ch, s)
+		id, _ := persisted(t, st, nil, ch, s)
 		ids = append(ids, id)
 	}
 	wholesale := ch.Stages[3]
-	cand, err := ch.Encode(st, wholesale.Data)
+	cand, err := ch.Encode(st, nil, wholesale.Data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,15 +203,15 @@ func TestFallbackIsAnalysisTimeOnly(t *testing.T) {
 			t.Errorf("wholesale rewrite at overhead %d: candidate used=%v kind=%d err=%v", ov, used, chosen.Rep.Kind, err)
 		}
 	}
-	sparse, err := ch.Encode(repz3.NewMemStore(), ch.Stages[0].Data) // first sight into an empty store
+	sparse, err := ch.Encode(repz3.NewMemStore(), nil, ch.Stages[0].Data) // first sight into an empty store
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = sparse
 	// a state that does win is admitted
 	st2 := repz3.NewMemStore()
-	persisted(t, st2, ch, ch.Stages[0])
-	sp, _ := ch.Encode(st2, ch.Stages[1].Data)
+	persisted(t, st2, nil, ch, ch.Stages[0])
+	sp, _ := ch.Encode(st2, nil, ch.Stages[1].Data)
 	if chosen, used, err := Admit(st2, sp, ch.Stages[1].Data, 256); err != nil || !used || chosen.Rep.Kind != repz3.KindSQLite {
 		t.Errorf("sparse update not admitted: used=%v err=%v", used, err)
 	}
@@ -258,7 +257,7 @@ func TestFallbackIsAnalysisTimeOnly(t *testing.T) {
 func TestNoDecoderMeansUnsupported(t *testing.T) {
 	ch := SQLiteChain(200)
 	st := repz3.NewMemStore()
-	id, _ := persisted(t, st, ch, ch.Stages[0])
+	id, _ := persisted(t, st, nil, ch, ch.Stages[0])
 	var out bytes.Buffer
 	if _, _, err := (&repz3.Env{Src: st}).Reconstruct(id, &out); !errors.Is(err, repz3.ErrUnsupported) {
 		t.Fatalf("%v", err)
@@ -279,11 +278,11 @@ func TestKindRecipesAreHostileSafe(t *testing.T) {
 	for _, ch := range small {
 		st := repz3.NewMemStore()
 		s := ch.Stages[0]
-		cand, err := ch.Encode(st, s.Data)
+		cand, err := ch.Encode(st, nil, s.Data)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := Commit(st, cand); err != nil {
+		if _, _, err := Commit(st, nil, cand); err != nil {
 			t.Fatal(err)
 		}
 		try := func(label string, mut func(r repz3.Rep) repz3.Rep) {
@@ -323,21 +322,21 @@ func TestKindRecipesAreHostileSafe(t *testing.T) {
 }
 
 // Merkle: a native index entry is a hint. A record that points a native identity at
-// a different valid node is caught by the decoder's hash check; the source's global
-// native index is required for reused subtrees.
+// a different valid node is caught by the decoder's hash check, and every revision
+// rebuilds from its own sections alone, including one that reuses earlier subtrees.
 func TestMerkleNativeIndexIsAHint(t *testing.T) {
 	ch, err := MerkleChain(merklez3.HashSHA3_256, 1500)
 	if err != nil {
 		t.Fatal(err)
 	}
 	st := repz3.NewMemStore()
-	id0, _ := persisted(t, st, ch, ch.Stages[0])
-	id1, _ := persisted(t, st, ch, ch.Stages[1])
-	if got, err := rebuild(noNative{st}, id0); err != nil || !bytes.Equal(got, ch.Stages[0].Data) {
-		t.Fatalf("first sight is self-contained: %v", err)
-	}
-	if _, err := rebuild(noNative{st}, id1); !errors.Is(err, repz3.ErrMissing) {
-		t.Fatalf("reused subtrees without the global index: %v", err)
+	cat := NewCatalog(st)
+	id0, _ := persisted(t, st, cat, ch, ch.Stages[0])
+	id1, _ := persisted(t, st, cat, ch, ch.Stages[1])
+	for i, id := range []repz3.SHA{id0, id1} {
+		if got, err := rebuild(st, id); err != nil || !bytes.Equal(got, ch.Stages[i].Data) {
+			t.Fatalf("revision %d is self-contained: %v", i, err)
+		}
 	}
 	// point the first two records of the first revision's own index at each other's node
 	rep, _ := NewEnv(st).LoadRep(id0)
@@ -351,14 +350,14 @@ func TestMerkleNativeIndexIsAHint(t *testing.T) {
 	st2 := repz3.NewMemStore()
 	nref, _ := st2.Put(recs)
 	r2 := *rep
-	r2.Indexes = []repz3.Index{{Type: x.Type, KeyWidth: x.KeyWidth, Count: x.Count, Ref: nref}}
+	r2.Indexes = []repz3.Index{{KeyWidth: x.KeyWidth, Count: x.Count, Ref: nref, Owns: true}}
 	raw, _ := r2.Marshal()
 	// the tampered store: all original objects plus the swapped index
 	for _, o := range allIDs(st) {
 		st2.Put(st.Bytes(o))
 	}
 	rid, _ := st2.Put(raw)
-	if _, err := rebuild(noNative{st2}, rid); !errors.Is(err, repz3.ErrMismatch) {
+	if _, err := rebuild(st2, rid); !errors.Is(err, repz3.ErrMismatch) {
 		t.Fatalf("swapped index records: %v", err)
 	}
 	// a node that does not hash to its native identity
@@ -385,11 +384,11 @@ func TestMerkleSHA256NeedsNoIndex(t *testing.T) {
 	}
 	st := repz3.NewMemStore()
 	for _, s := range ch.Stages {
-		id, cost := persisted(t, st, ch, s)
+		id, cost := persisted(t, st, nil, ch, s)
 		if cost.IndexObjs != 0 {
 			t.Errorf("%s: %d index objects", s.Label, cost.IndexObjs)
 		}
-		if got, err := rebuild(noNative{st}, id); err != nil || !bytes.Equal(got, s.Data) {
+		if got, err := rebuild(st, id); err != nil || !bytes.Equal(got, s.Data) {
 			t.Errorf("%s: %v", s.Label, err)
 		}
 	}
@@ -401,7 +400,7 @@ func compoundFixture(t *testing.T) (*repz3.MemStore, *Chain, repz3.SHA) {
 	t.Helper()
 	ch := CompoundChain(300)
 	st := repz3.NewMemStore()
-	id, _ := persisted(t, st, ch, ch.Stages[0])
+	id, _ := persisted(t, st, nil, ch, ch.Stages[0])
 	return st, ch, id
 }
 
@@ -471,7 +470,7 @@ func TestCompoundDerivedStructure(t *testing.T) {
 	}
 	var childOnly []repz3.SHA
 	for obj, role := range r.Role {
-		if role == repz3.DepVia || (role == repz3.DepStored && !parent[obj]) || (role == repz3.DepRep && children[obj]) {
+		if role == repz3.DepVia || ((role == repz3.DepStored || role == repz3.DepTable) && !parent[obj]) || (role == repz3.DepRep && children[obj]) {
 			childOnly = append(childOnly, obj)
 		}
 	}
@@ -498,7 +497,7 @@ func TestCompoundDerivedStructure(t *testing.T) {
 		t.Fatalf("restored: %v", err)
 	}
 	// the revision shares its child-only components with the next
-	id2, cost2 := persisted(t, st, ch, ch.Stages[1])
+	id2, cost2 := persisted(t, st, nil, ch, ch.Stages[1])
 	if cost2.Payload >= int64(len(ch.Stages[1].Data))/10 {
 		t.Errorf("second layer stored %d bytes", cost2.Payload)
 	}
@@ -523,10 +522,10 @@ func TestDerivedPrefixFraming(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Prove(parent, framed); err != nil {
+	if err := Prove(nil, parent, framed); err != nil {
 		t.Fatal(err)
 	}
-	id, _, err := Commit(st, parent)
+	id, _, err := Commit(st, nil, parent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,26 +538,31 @@ func TestCompoundDepthIsBounded(t *testing.T) {
 	ch := SQLiteChain(100)
 	db := ch.Stages[0].Data
 	child, _, _ := EncodeSQLite(bytes.NewReader(db), int64(len(db)))
-	mid, err := newBundle(&repz3.Rep{Kind: repz3.KindConcat, Size: int64(len(db)), Members: []repz3.Member{{Role: repz3.Derived, SHA: sha256.Sum256(db), Size: int64(len(db)), Child: child.ID}}}, nil, child)
-	if err != nil {
-		t.Fatal(err)
+	wrap := func(in *Bundle) *Bundle {
+		b, err := newBundle(&repz3.Rep{Kind: repz3.KindConcat, Size: int64(len(db)), Members: []repz3.Member{{Role: repz3.Derived, SHA: sha256.Sum256(db), Size: int64(len(db)), Child: in.ID}}}, nil, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
 	}
-	top, err := newBundle(&repz3.Rep{Kind: repz3.KindConcat, Size: int64(len(db)), Members: []repz3.Member{{Role: repz3.Derived, SHA: sha256.Sum256(db), Size: int64(len(db)), Child: mid.ID}}}, nil, mid)
-	if err != nil {
-		t.Fatal(err)
-	}
+	three, four := wrap(wrap(child)), wrap(wrap(wrap(child)))
 	st := repz3.NewMemStore()
-	id, _, _ := Commit(st, top)
+	id3, _, _ := Commit(st, nil, three)
+	id4, _, _ := Commit(st, nil, four)
 	env := NewEnv(st)
-	if _, _, err := env.Reconstruct(id, io.Discard); !errors.Is(err, repz3.ErrDepth) {
-		t.Fatalf("depth 3 by default: %v", err)
+	var out bytes.Buffer
+	if _, _, err := env.Reconstruct(id3, &out); err != nil || !bytes.Equal(out.Bytes(), db) {
+		t.Fatalf("depth 3 (gzip -> tar -> database) by default: %v", err)
 	}
-	if _, err := env.Reachable(id); !errors.Is(err, repz3.ErrDepth) {
+	if _, _, err := env.Reconstruct(id4, io.Discard); !errors.Is(err, repz3.ErrDepth) {
+		t.Fatalf("depth 4 by default: %v", err)
+	}
+	if _, err := env.Reachable(id4); !errors.Is(err, repz3.ErrDepth) {
 		t.Fatalf("walker: %v", err)
 	}
-	env.Limits.MaxDepth = 3
-	var out bytes.Buffer
-	if _, _, err := env.Reconstruct(id, &out); err != nil || !bytes.Equal(out.Bytes(), db) {
+	env.Limits.MaxDepth = 4
+	out.Reset()
+	if _, _, err := env.Reconstruct(id4, &out); err != nil || !bytes.Equal(out.Bytes(), db) {
 		t.Fatalf("explicit opt-in: %v", err)
 	}
 }
@@ -569,7 +573,7 @@ func TestPartialReadsKeepTheirLocality(t *testing.T) {
 	t.Run("sqlite page", func(t *testing.T) {
 		ch := SQLiteChain(1500)
 		st := repz3.NewMemStore()
-		id, _ := persisted(t, st, ch, ch.Stages[0])
+		id, _ := persisted(t, st, nil, ch, ch.Stages[0])
 		st.ResetReads()
 		c, err := NewEnv(st).Open(id)
 		if err != nil {
@@ -595,7 +599,7 @@ func TestPartialReadsKeepTheirLocality(t *testing.T) {
 	t.Run("car block", func(t *testing.T) {
 		ch := CARChains(carz3.TinyBlocks)[0]
 		st := repz3.NewMemStore()
-		id, _ := persisted(t, st, ch, ch.Stages[0])
+		id, _ := persisted(t, st, nil, ch, ch.Stages[0])
 		data := ch.Stages[0].Data
 		rd, err := carz3.NewReader(bytes.NewReader(data), carz3.DefaultLimits())
 		if err != nil {
@@ -639,7 +643,7 @@ func TestPartialReadsKeepTheirLocality(t *testing.T) {
 			t.Fatal(err)
 		}
 		st := repz3.NewMemStore()
-		id, _ := persisted(t, st, ch, ch.Stages[0])
+		id, _ := persisted(t, st, nil, ch, ch.Stages[0])
 		p, _ := gitz3.ParsePack(ch.Stages[0].Data, gitz3.SHA1, gitz3.Limits{})
 		p.Resolve()
 		found := 0

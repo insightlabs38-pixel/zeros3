@@ -3,6 +3,7 @@ package kinds
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"os"
 	"os/exec"
@@ -29,7 +30,7 @@ type Stage struct {
 type Chain struct {
 	Name   string
 	Stages []Stage
-	Encode func(st *repz3.MemStore, data []byte) (*Bundle, error)
+	Encode func(st *repz3.MemStore, cat *repz3.Catalog, data []byte) (*Bundle, error)
 	// NegativeOK marks stages that are expected to lose to CDC (the analyzer must fall back).
 	Negative map[string]bool
 }
@@ -128,7 +129,7 @@ func SQLiteChain(pages int) *Chain {
 	whole := synthSQLite(99, pages)
 	return &Chain{Name: "sqlite", Negative: map[string]bool{"wholesale": true},
 		Stages: []Stage{{"first sight", joinSQLite(r0)}, {"sparse updates", joinSQLite(sparse)}, {"vacuum", joinSQLite(vac)}, {"wholesale", joinSQLite(whole)}},
-		Encode: func(_ *repz3.MemStore, d []byte) (*Bundle, error) {
+		Encode: func(_ *repz3.MemStore, _ *repz3.Catalog, d []byte) (*Bundle, error) {
 			b, _, err := EncodeSQLite(bytes.NewReader(d), int64(len(d)))
 			return b, err
 		}}
@@ -144,7 +145,7 @@ func CARChains(sc carz3.Scale) []*Chain {
 		if !ok {
 			continue
 		}
-		c := &Chain{Name: "car/" + f.Name, Encode: func(_ *repz3.MemStore, d []byte) (*Bundle, error) {
+		c := &Chain{Name: "car/" + f.Name, Encode: func(_ *repz3.MemStore, _ *repz3.Catalog, d []byte) (*Bundle, error) {
 			b, _, err := EncodeCAR(bytes.NewReader(d), int64(len(d)))
 			return b, err
 		}}
@@ -171,7 +172,7 @@ func GitFixtureChain(algo gitz3.Algo) (*Chain, error) {
 }
 
 func gitChain(name string, algo gitz3.Algo, st []Stage) *Chain {
-	return &Chain{Name: name, Stages: st, Encode: func(_ *repz3.MemStore, d []byte) (*Bundle, error) {
+	return &Chain{Name: name, Stages: st, Encode: func(_ *repz3.MemStore, _ *repz3.Catalog, d []byte) (*Bundle, error) {
 		b, _, err := EncodeGit(d, algo)
 		return b, err
 	}}
@@ -223,8 +224,8 @@ func MerkleChain(h merklez3.HashFn, keys int) (*Chain, error) {
 		label string
 		s     *merklez3.State
 	}{"+10 keys updated", states[1].s.Update(states[1].s.PickScattered(2, 10))})
-	c := &Chain{Name: "merkle/" + h.Name, Encode: func(st *repz3.MemStore, d []byte) (*Bundle, error) {
-		b, _, err := EncodeMerkle(d, h, st)
+	c := &Chain{Name: "merkle/" + h.Name, Encode: func(st *repz3.MemStore, cat *repz3.Catalog, d []byte) (*Bundle, error) {
+		b, _, err := EncodeMerkle(d, h, st, cat)
 		return b, err
 	}}
 	for _, x := range states {
@@ -235,6 +236,29 @@ func MerkleChain(h merklez3.HashFn, keys int) (*Chain, error) {
 			return nil, err
 		}
 		c.Stages = append(c.Stages, Stage{x.label, buf.Bytes()})
+	}
+	return c, nil
+}
+
+// MerkleLongChain is a revision chain: a trie snapshot, then revs successive
+// revisions that each update one scattered key (every revision reuses the previous
+// one's subtrees, so the section chain grows until it is compacted).
+func MerkleLongChain(h merklez3.HashFn, keys, revs int) (*Chain, error) {
+	cfg := merklez3.Config{Hash: h, LeafMax: 8}
+	s := merklez3.NewState(15, keys)
+	c := &Chain{Name: "merkle-long/" + h.Name, Encode: func(st *repz3.MemStore, cat *repz3.Catalog, d []byte) (*Bundle, error) {
+		b, _, err := EncodeMerkle(d, h, st, cat)
+		return b, err
+	}}
+	for i := 0; i <= revs; i++ {
+		ms := merklez3.NewMapStore()
+		root, _ := s.BuildInto(cfg, ms)
+		var buf bytes.Buffer
+		if _, err := merklez3.Snapshot(ms, root, &buf); err != nil {
+			return nil, err
+		}
+		c.Stages = append(c.Stages, Stage{fmt.Sprintf("rev %d", i), buf.Bytes()})
+		s = s.Update(s.PickScattered(uint64(100+i), 1))
 	}
 	return c, nil
 }
@@ -266,13 +290,134 @@ func CompoundChain(pages int) *Chain {
 		return TarLayer(names, map[string][]byte{"etc/app.conf": []byte("mode=prod\nretries=3\n"), "lib/libapp.so": lib, "data/app.db": db, "data/blocks.car": car})
 	}
 	return &Chain{Name: "compound/tar+sqlite", Stages: []Stage{{"first sight", mk(db0)}, {"db sparse updates", mk(db1)}},
-		Encode: func(_ *repz3.MemStore, d []byte) (*Bundle, error) {
+		Encode: func(_ *repz3.MemStore, _ *repz3.Catalog, d []byte) (*Bundle, error) {
 			b, _, err := EncodeTarLayer(d, 64<<10)
 			return b, err
 		}}
 }
 
 var epoch = time.Unix(1700000000, 0).UTC()
+
+var vocab = func() []string {
+	var w []string
+	for _, a := range []string{"user", "order", "item", "event", "session", "token", "price", "stock"} {
+		for _, b := range []string{"id", "name", "ts", "state", "note", "ref", "qty", "kind"} {
+			w = append(w, a+"_"+b)
+		}
+	}
+	return w
+}()
+
+// textPage is a database-shaped page whose payload is row-like text, so DEFLATE finds
+// real matches and Huffman statistics (a random page would only produce stored blocks).
+func textPage(rng *xorshift, ps int) []byte {
+	var b bytes.Buffer
+	for b.Len() < ps {
+		fmt.Fprintf(&b, "%s=%d;%s=%x;", vocab[rng.next()%uint64(len(vocab))], rng.next()%1000000007, vocab[rng.next()%uint64(len(vocab))], rng.next()%(1<<40))
+	}
+	return b.Bytes()[:ps]
+}
+
+// synthSQLiteText is synthSQLite with compressible pages.
+func synthSQLiteText(seed uint64, pages int) [][]byte {
+	rng := xorshift(seed | 1)
+	out := make([][]byte, pages)
+	for i := range out {
+		p := textPage(&rng, sqlitePS)
+		switch {
+		case i == 0:
+			copy(p, "SQLite format 3\x00")
+			p[16], p[17] = 0x10, 0x00
+		case rng.next()%5 == 0:
+			p[0], p[1], p[2], p[3] = 0, 0, 0, 0
+		default:
+			p[0] = 0x0d
+		}
+		out[i] = p
+	}
+	return out
+}
+
+// textSparse changes n pages with fresh row text (a compressible update).
+func textSparse(pages [][]byte, seed uint64, n int) [][]byte {
+	out := append([][]byte(nil), pages...)
+	rng := xorshift(seed | 1)
+	for k := 0; k < n; k++ {
+		i := 1 + int(rng.next()%uint64(len(out)-1))
+		q := textPage(&rng, sqlitePS)
+		copy(q[:4], out[i][:4])
+		out[i] = q
+	}
+	return out
+}
+
+// GzipLayer compresses a tar with the Go gzip writer (deterministic: zero mtime).
+func GzipLayer(tarBytes []byte, level int) []byte {
+	var b bytes.Buffer
+	w, _ := gzip.NewWriterLevel(&b, level)
+	w.Write(tarBytes)
+	w.Close()
+	return b.Bytes()
+}
+
+// GzipVariants are the four representations of one compressed layer that Z3-21
+// compares: production CDC of the gzip bytes, the exact gzip alone (plaintext cut
+// by CDC), the gzip over a tar split, and the gzip over a tar split whose database
+// is a DERIVED child.
+var GzipVariants = []string{"cdc", "gzip-exact", "gzip+tar", "gzip+tar+derived"}
+
+// EncodeGzipVariant analyses gz under one variant.
+func EncodeGzipVariant(variant string, gz []byte) (*Bundle, error) {
+	switch variant {
+	case "cdc":
+		return CDC(gz)
+	case "gzip-exact":
+		b, _, err := EncodeGzip(gz, CDC)
+		return b, err
+	}
+	minDerived := int64(64 << 10)
+	if variant == "gzip+tar" {
+		minDerived = 1 << 60
+	}
+	b, _, err := EncodeGzip(gz, func(plain []byte) (*Bundle, error) {
+		t, _, err := EncodeTarLayer(plain, minDerived)
+		if err != nil {
+			return CDC(plain)
+		}
+		return t, nil
+	})
+	return b, err
+}
+
+// GzipCompoundChain is the compressed OCI-like layer: the CompoundChain tar with a
+// compressible database, gzip-compressed: first sight, sparse database updates and
+// a VACUUM-like rewrite.
+func GzipCompoundChain(variant string, pages int) *Chain {
+	r0 := synthSQLiteText(21, pages)
+	sparse := textSparse(r0, 9, 20)
+	var vac [][]byte
+	rng := xorshift(77)
+	for i, p := range sparse {
+		if i > 0 && rng.next()%10 == 0 {
+			continue
+		}
+		vac = append(vac, p)
+	}
+	rngl := xorshift(4)
+	lib := make([]byte, 256<<10)
+	for off := 0; off < len(lib); off += 4096 {
+		copy(lib[off:], textPage(&rngl, 4096))
+	}
+	car := carz3.Families(carz3.TinyBlocks)[0].Revs[0].Data
+	names := []string{"etc/app.conf", "lib/libapp.so", "data/app.db", "data/blocks.car"}
+	mk := func(db []byte) []byte {
+		return GzipLayer(TarLayer(names, map[string][]byte{"etc/app.conf": []byte("mode=prod\nretries=3\n"), "lib/libapp.so": lib, "data/app.db": db, "data/blocks.car": car}), gzip.DefaultCompression)
+	}
+	return &Chain{Name: "gzip/" + variant, Stages: []Stage{{"first sight", mk(joinSQLite(r0))}, {"db sparse updates", mk(joinSQLite(sparse))}, {"vacuum", mk(joinSQLite(vac))}},
+		Encode: func(_ *repz3.MemStore, _ *repz3.Catalog, d []byte) (*Bundle, error) {
+			return EncodeGzipVariant(variant, d)
+		}}
+}
 
 // Scale sizes the chains: the tests use Small, the report Full.
 type Scale struct {
@@ -292,7 +437,7 @@ var (
 // installed).
 func Chains(sc Scale, work string) ([]*Chain, error) {
 	out := CARChains(sc.CAR)
-	out = append(out, SQLiteChain(sc.SQLitePages), CompoundChain(sc.CompoundPages))
+	out = append(out, SQLiteChain(sc.SQLitePages), CompoundChain(sc.CompoundPages), GzipCompoundChain("gzip+tar+derived", sc.CompoundPages))
 	m, err := MerkleChain(merklez3.HashSHA3_256, sc.MerkleKeys)
 	if err != nil {
 		return nil, err

@@ -1,4 +1,4 @@
-// Package repz3 is the Z3-20 candidate serialized representation contract. It is a
+// Package repz3 is the Z3-20/21 candidate serialized representation contract. It is a
 // laboratory object, not a ZeroS3 production format: nothing here is a
 // compatibility promise and the byte layout may change after Z3-20.
 //
@@ -21,7 +21,7 @@
 //	            child representation object SHA-256 (32 B) |
 //	            prefix length, prefix bytes | zero-suffix length
 //	recipe length | recipe bytes (opaque to this package)
-//	n index sections, each: type (1 B) | key width | record count | component SHA-256 (32 B)
+//	n record sections, each: flags (1 B) | key width | record count | component SHA-256 (32 B)
 //
 // Roles. STORED: the bytes are one component fetched by SHA-256. DERIVED: the bytes
 // are never stored; the child representation produces the middle of them and the
@@ -42,6 +42,7 @@
 package repz3
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -51,8 +52,8 @@ import (
 // SHA is the SHA-256 identity of exact bytes.
 type SHA = [32]byte
 
-// Version is the only contract version this package decodes.
-const Version = 1
+// Version is the only contract version this package decodes (Z3-21: 2).
+const Version = 2
 
 const magic = "Z3RP"
 
@@ -65,6 +66,7 @@ var (
 	ErrShort       = errors.New("repz3: short read from source")
 	ErrCycle       = fmt.Errorf("%w: representation cycle", ErrCorrupt)
 	ErrDepth       = fmt.Errorf("%w: nesting depth", ErrLimit)
+	ErrAmbiguous   = errors.New("repz3: native identity maps to different components")
 )
 
 func corrupt(f string, a ...any) error {
@@ -80,10 +82,11 @@ const (
 	KindSQLite Kind = 3
 	KindGit    Kind = 4
 	KindMerkle Kind = 5
+	KindGzip   Kind = 6
 )
 
 // Known reports whether this contract version defines the kind.
-func (k Kind) Known() bool { return k >= KindConcat && k <= KindMerkle }
+func (k Kind) Known() bool { return k >= KindConcat && k <= KindGzip }
 
 // Role is how a component takes part in a representation.
 type Role uint8
@@ -111,23 +114,24 @@ type Member struct {
 	Frame Frame
 }
 
-// IndexNative is the only index type: Count records of key[KeyWidth] || SHA-256,
-// strictly ascending by key, stored as one component. It maps a format-native
-// identity to the component that holds the native object. It is a hint.
-const IndexNative = 1
-
-// Index is a reference to a native lookup section. The records are real bytes in
-// a component, not part of the representation object, so a point lookup reads
-// O(log Count) records through the bounded source API.
+// Index is a reference to a record section: Count records of key[KeyWidth] ||
+// SHA-256, strictly ascending by key, stored as one component. It maps a
+// format-native identity to the component that holds the native object. The
+// records are real bytes in a component, not part of the representation object,
+// so a point lookup reads O(log Count) records through the bounded source API.
+// Owns marks a section whose record targets are live while the section is
+// referenced (the section is then the VIA list of the representation).
 type Index struct {
-	Type     uint8
 	KeyWidth int
 	Count    int64
 	Ref      SHA
+	Owns     bool
 }
 
 // Bytes is the size of the index component.
 func (x Index) Bytes() int64 { return x.Count * int64(x.KeyWidth+32) }
+
+const flagOwns = 1
 
 // Rep is a decoded representation object.
 type Rep struct {
@@ -140,7 +144,7 @@ type Rep struct {
 
 // Limits bound every parse and walk. The zero value selects the defaults.
 type Limits struct {
-	MaxDepth    int   // nesting depth, outermost = 1 (default 2, hard maximum HardMaxDepth)
+	MaxDepth    int   // nesting depth, outermost = 1 (default 3: gzip -> tar -> database; hard maximum HardMaxDepth)
 	MaxMembers  int   // members per representation (default 1<<22)
 	MaxRepBytes int64 // serialized representation object (default 256 MiB)
 	MaxWhole    int64 // one whole-component fetch (default 64 MiB)
@@ -155,13 +159,13 @@ const (
 	maxZeros      = 1 << 16
 	maxKeyWidth   = 64
 	maxIndexCount = 1 << 28
-	maxIndexes    = 4
+	maxIndexes    = 16
 	minMemberWire = 1 + 32 + 1
 )
 
 func (l Limits) norm() Limits {
 	if l.MaxDepth <= 0 {
-		l.MaxDepth = 2
+		l.MaxDepth = 3
 	}
 	l.MaxDepth = min(l.MaxDepth, HardMaxDepth)
 	if l.MaxMembers <= 0 {
@@ -233,12 +237,10 @@ func (r *Rep) Validate(lim Limits) error {
 	if len(r.Indexes) > maxIndexes {
 		return corrupt("%d index sections", len(r.Indexes))
 	}
-	last := -1
 	for i, x := range r.Indexes {
-		if x.Type != IndexNative || int(x.Type) <= last {
-			return corrupt("index %d: type %d (types must be known and ascending)", i, x.Type)
+		if i > 0 && bytes.Compare(r.Indexes[i-1].Ref[:], x.Ref[:]) >= 0 {
+			return corrupt("index %d: sections must be strictly ascending by component digest", i)
 		}
-		last = int(x.Type)
 		if x.KeyWidth < 1 || x.KeyWidth > maxKeyWidth || x.Count < 1 || x.Count > maxIndexCount {
 			return corrupt("index %d: geometry %d x %d", i, x.KeyWidth, x.Count)
 		}
@@ -274,7 +276,11 @@ func (r *Rep) Marshal() ([]byte, error) {
 	b = append(b, r.Recipe...)
 	b = appendUv(b, uint64(len(r.Indexes)))
 	for _, x := range r.Indexes {
-		b = append(b, x.Type)
+		var fl byte
+		if x.Owns {
+			fl |= flagOwns
+		}
+		b = append(b, fl)
 		b = appendUv(b, uint64(x.KeyWidth))
 		b = appendUv(b, uint64(x.Count))
 		b = append(b, x.Ref[:]...)
@@ -389,7 +395,11 @@ func Unmarshal(b []byte, lim Limits) (*Rep, error) {
 		if r.err != nil {
 			break
 		}
-		x := Index{Type: t[0]}
+		if t[0]&^flagOwns != 0 {
+			r.fail("index %d: flags %#x", i, t[0])
+			break
+		}
+		x := Index{Owns: t[0]&flagOwns != 0}
 		x.KeyWidth = int(r.uv(maxKeyWidth))
 		x.Count = int64(r.uv(maxIndexCount))
 		x.Ref = r.sha()

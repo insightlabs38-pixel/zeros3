@@ -1,4 +1,4 @@
-// Package kinds is the finite in-code table of Z3-20 decoders plus the thin
+// Package kinds is the finite in-code table of Z3-21 decoders plus the thin
 // adapters that turn the existing CAR, SQLite, Git, Merkle and tar mechanisms
 // into repz3 representations. A decoder reads only the serialized representation
 // and the bounded source; an adapter (analysis side) may use any state it likes
@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 
 	"zeros3-z3/lab"
 	"zeros3-z3/repz3"
@@ -29,6 +30,8 @@ func Lookup(k repz3.Kind) (repz3.Decoder, bool) {
 		return gitDecoder{}, true
 	case repz3.KindMerkle:
 		return merkleDecoder{}, true
+	case repz3.KindGzip:
+		return gzipDecoder{}, true
 	}
 	return nil, false
 }
@@ -78,21 +81,38 @@ func (b *Bundle) Persist(st *repz3.MemStore) (repz3.SHA, []repz3.SHA, error) {
 	return b.ID, added, nil
 }
 
-// Prove persists the bundle into a scratch store, reconstructs it through the
-// serialized form only and compares length, SHA-256 and bytes with want. It is
-// the analysis-time exactness check; a failure means "use CDC instead".
-func Prove(b *Bundle, want []byte) error {
+// Prove persists the bundle into a scratch copy of base (nil = empty), reconstructs
+// it through the serialized form only and compares length, SHA-256 and bytes with
+// want. It also checks the GC gate: every object the reconstruction read is in the
+// set the contract's reachability keeps alive. It is the analysis-time exactness
+// check; a failure means "use CDC instead".
+func Prove(base *repz3.MemStore, b *Bundle, want []byte) error {
 	scratch := repz3.NewMemStore()
+	if base != nil {
+		scratch = base.Clone()
+	}
 	if _, _, err := b.Persist(scratch); err != nil {
 		return err
 	}
+	scratch.ResetReads()
 	var out bytes.Buffer
-	n, sum, err := NewEnv(scratch).Reconstruct(b.ID, &out)
+	env := NewEnv(scratch)
+	n, sum, err := env.Reconstruct(b.ID, &out)
 	if err != nil {
 		return err
 	}
 	if n != int64(len(want)) || sum != sha256.Sum256(want) || !bytes.Equal(out.Bytes(), want) {
 		return errors.New("kinds: reconstruction differs from the input")
+	}
+	_, read := scratch.Touched()
+	reach, err := env.Reachable(b.ID)
+	if err != nil {
+		return err
+	}
+	for id := range read {
+		if _, ok := reach.Role[id]; !ok {
+			return fmt.Errorf("kinds: reconstruction read %x, which the contract would not keep alive", id[:6])
+		}
 	}
 	return nil
 }
@@ -123,7 +143,7 @@ func Admit(st *repz3.MemStore, cand *Bundle, data []byte, perObject int64) (chos
 	if err != nil {
 		return nil, false, err
 	}
-	if cand == nil || Prove(cand, data) != nil {
+	if cand == nil || Prove(st, cand, data) != nil {
 		return cdc, false, nil
 	}
 	cc, err := dryCost(st, cand)
@@ -149,30 +169,21 @@ func dryCost(st *repz3.MemStore, b *Bundle) (repz3.Cost, error) {
 	return NewEnv(c).Account(id, added)
 }
 
-// Commit persists the chosen bundle into st, registers native indexes (what a
-// real store does at put time) and returns its digest and cost.
-func Commit(st *repz3.MemStore, b *Bundle) (repz3.SHA, repz3.Cost, error) {
+// Commit persists the chosen bundle into st, makes its representation a live root
+// of the native accelerator cat (nil = none; what a real store does at put time)
+// and returns its digest and cost.
+func Commit(st *repz3.MemStore, cat *repz3.Catalog, b *Bundle) (repz3.SHA, repz3.Cost, error) {
 	id, added, err := b.Persist(st)
 	if err != nil {
 		return id, repz3.Cost{}, err
 	}
-	if err := ingestAll(st, b); err != nil {
-		return id, repz3.Cost{}, err
+	if cat != nil {
+		if err := cat.Ingest(id); err != nil {
+			return id, repz3.Cost{}, err
+		}
 	}
 	c, err := NewEnv(st).Account(id, added)
 	return id, c, err
-}
-
-func ingestAll(st *repz3.MemStore, b *Bundle) error {
-	for _, c := range b.Children {
-		if err := ingestAll(st, c); err != nil {
-			return err
-		}
-	}
-	if len(b.Rep.Indexes) > 0 {
-		return st.IngestNative(b.ID)
-	}
-	return nil
 }
 
 func sha(b []byte) repz3.SHA { return sha256.Sum256(b) }

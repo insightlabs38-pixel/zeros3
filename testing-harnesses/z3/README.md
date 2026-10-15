@@ -52,9 +52,9 @@ cmd/z3struct  Z3-18 structured-data shootout: chars (SQLite/LevelDB/RocksDB/Parq
 oracle/structured  Z3-18 deterministic Python producers (pinned venv outside Git): SQLite, LevelDB/RocksDB, Parquet, Zarr v2/v3
 composez3/    Z3-19 experimental composition coordinator: outer exact plan + bounded inner transform (ELF/PE binref, sqlitez3, carz3) for detected member payloads, composition record, depth <= 2
 cmd/z3compose Z3-19 compound workloads: oci (real node-exporter layers), sqlite, car, git (pack -> blob) with CDC / outer / inner / composed rows, accounting split, reads
-repz3/        Z3-20 candidate serialized representation contract (lab, not a production format): versioned rep object, STORED/DERIVED members, framing, opaque recipe, native index ref, bounded Source, nested decode (depth <= 2), reachability walker; stdlib only
-repz3/kinds/  Z3-20 kind table (CAR, SQLite, Git gp-zlib, Merkle) + thin adapters from carz3/sqlitez3/gitz3/merklez3/tar, workloads, partial reads
-cmd/z3rep     Z3-20 measurements over the migrated workloads: cost, per-object-overhead sensitivity, reads, coverage, contract overhead
+repz3/        Z3-20/21 candidate serialized representation contract (lab, not a production format): versioned rep object (v2), STORED/DERIVED members, framing, opaque recipe, record sections (native index, optional ownership), bounded Source, nested decode (depth <= 3), reachability/mark walker, native catalog (derived accelerator); stdlib only
+repz3/kinds/  kind table (CAR, SQLite, Git gp-zlib with stream table, Merkle with section chain, exact gzip over tar) + thin adapters from carz3/sqlitez3/gitz3/merklez3/tar/ir, workloads, partial reads, reachability study
+cmd/z3conv    Z3-21 measurements (supersedes z3rep): validation matrix, reachability policy study, native-index ownership and rebuild, exact gzip compositions, Git point reads, overhead sensitivity
 cmd/z3bin     Z3-12/13 corpus builder (go build -overlay, gcc/clang C) and measurements: pair, attr, delta, runs, report, verify; lab-only Mach-O view
 ```
 
