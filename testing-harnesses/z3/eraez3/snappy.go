@@ -336,3 +336,6 @@ func FrameEncodeRaw(plain []byte) []byte {
 	}
 	return out
 }
+
+// BlockDecode decodes one raw Snappy block (not framed) of at most limit bytes.
+func BlockDecode(src []byte, limit int) ([]byte, error) { return blockDecode(src, limit) }
