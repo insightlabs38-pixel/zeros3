@@ -109,7 +109,7 @@ func RegBlob() fstate.RepDef {
 // tar of the layout): "cdc-archive" chunks the tar; "archive-tar" cuts it with the
 // Z3-11 tar split (member payloads - the blobs - by content, CDC inside large ones).
 func ArchiveRep(name, labName string) fstate.RepDef {
-	return fstate.RepDef{Name: name, Snapshot: func(c *fstate.Ctx, st *fstate.State) (*lab.Plan, error) {
+	return fstate.RepDef{Name: name, Object: func(st *fstate.State) []byte { return Archive(st.Files) }, Snapshot: func(c *fstate.Ctx, st *fstate.State) (*lab.Plan, error) {
 		a := fstate.File{Name: "export.tar", Kind: "archive", Data: Archive(st.Files)}
 		if labName == "cdc" {
 			return fstate.Baseline("cdc", a)

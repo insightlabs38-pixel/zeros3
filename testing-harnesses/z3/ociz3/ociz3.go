@@ -278,3 +278,33 @@ func ParseConfig(b []byte, lim Limits) (*ImageConfig, error) {
 	}
 	return &c, nil
 }
+
+// ClassifyRoot decides what a root document is from its own bytes: KindIndex for an
+// OCI image index or Docker manifest list, KindManifest for a direct OCI or Docker
+// schema-2 image manifest. The returned media type is the document's own, or the
+// OCI default when it omits one. Malformed JSON is ErrCorrupt; a well-formed
+// document that is neither (Docker schema 1, an artifact manifest, an empty
+// object, any other declared media type) is ErrUnsupported.
+func ClassifyRoot(b []byte, lim Limits) (Kind, string, error) {
+	lim = lim.norm()
+	var p struct {
+		MediaType string          `json:"mediaType"`
+		Manifests json.RawMessage `json:"manifests"`
+		Config    json.RawMessage `json:"config"`
+		Layers    json.RawMessage `json:"layers"`
+	}
+	if err := decode(b, &p, lim); err != nil {
+		return "", "", err
+	}
+	switch k := KindOf(p.MediaType); {
+	case k == KindIndex || k == KindManifest:
+		return k, p.MediaType, nil
+	case p.MediaType != "":
+		return "", "", fmt.Errorf("%w: root media type %q", ErrUnsupported, p.MediaType)
+	case p.Manifests != nil:
+		return KindIndex, MTOCIIndex, nil
+	case p.Config != nil && p.Layers != nil:
+		return KindManifest, MTOCIManifest, nil
+	}
+	return "", "", fmt.Errorf("%w: root is neither an index nor a manifest", ErrUnsupported)
+}
