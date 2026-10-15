@@ -2,45 +2,67 @@ package gitz3
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
+	"io"
 	"sort"
 )
 
-// Idx is a parsed pack index v2.
+// Idx is a parsed pack index v2. Only the fanout, the section geometry and the
+// two trailer checksums are resident; ids, CRCs and offsets are read on demand
+// from the source in bounded pieces and never beyond Size.
 type Idx struct {
 	Algo   Algo
-	Data   []byte
 	N      int
 	Fanout [256]uint32
+	Size   int64
+	src    io.ReaderAt
+	err    error // first I/O error met by a convenience accessor
 	// section offsets
-	idsOff, crcOff, offOff, big, bigN int
-	PackSum, IdxSum                   []byte
+	idsOff, crcOff, offOff, big int64
+	bigN                        int64
+	PackSum, IdxSum             []byte
 }
 
 const idxHdr = 8 + 256*4
 
-// ParseIdx parses and validates a v2 pack index: magic/version, fanout
-// monotonicity, exact length (including the 64-bit offset table), strictly
-// sorted ids consistent with the fanout, bounded 64-bit offset references, and
-// the index checksum.
+// idxBuf is the fixed streaming window of ParseIdxAt.
+const idxBuf = 64 << 10
+
+// ParseIdx parses a byte-backed v2 index; it is a thin wrapper over ParseIdxAt.
 func ParseIdx(data []byte, a Algo, lim Limits) (*Idx, error) {
+	return ParseIdxAt(bytes.NewReader(data), int64(len(data)), a, lim)
+}
+
+// ParseIdxAt parses and validates the v2 pack index of the size bytes readable
+// from r: magic/version, fanout monotonicity, exact length (including the 64-bit
+// offset table), strictly sorted ids consistent with the fanout, bounded 64-bit
+// offset references, and the index checksum. It streams through fixed windows,
+// never reads past size, and allocates nothing from a declared count. A source
+// shorter than size is ErrCorrupt.
+func ParseIdxAt(r io.ReaderAt, size int64, a Algo, lim Limits) (*Idx, error) {
 	lim = lim.norm()
-	hs := a.Size()
-	if len(data) < idxHdr+2*hs {
+	hs := int64(a.Size())
+	if size < idxHdr+2*hs {
 		return nil, corrupt("idx shorter than fanout+trailer")
 	}
-	if !bytes.Equal(data[:4], []byte{0xff, 't', 'O', 'c'}) {
+	src := io.NewSectionReader(r, 0, size)
+	var hdr [idxHdr]byte
+	if err := readFullAt(src, hdr[:], 0); err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(hdr[:4], []byte{0xff, 't', 'O', 'c'}) {
 		return nil, ErrUnsupported // v1 idx has no magic; handled by ParseIdxV1
 	}
-	if binary.BigEndian.Uint32(data[4:]) != 2 {
+	if binary.BigEndian.Uint32(hdr[4:]) != 2 {
 		return nil, ErrUnsupported
 	}
-	x := &Idx{Algo: a, Data: data}
+	x := &Idx{Algo: a, Size: size, src: src}
 	prev := uint32(0)
 	for i := 0; i < 256; i++ {
-		v := binary.BigEndian.Uint32(data[8+4*i:])
+		v := binary.BigEndian.Uint32(hdr[8+4*i:])
 		if v < prev {
 			return nil, corrupt("fanout not monotonic at %d", i)
 		}
@@ -49,73 +71,167 @@ func ParseIdx(data []byte, a Algo, lim Limits) (*Idx, error) {
 	if uint64(prev) > uint64(lim.MaxObjects) {
 		return nil, limit("idx object count %d", prev)
 	}
-	n := int(prev)
-	x.N = n
+	n := int64(prev)
+	x.N = int(n)
+	// n <= MaxObjects, so these products cannot overflow int64.
 	x.idsOff = idxHdr
 	x.crcOff = x.idsOff + n*hs
 	x.offOff = x.crcOff + 4*n
 	x.big = x.offOff + 4*n
-	rest := len(data) - 2*hs - x.big
+	rest := size - 2*hs - x.big
 	if rest < 0 || rest%8 != 0 {
 		return nil, corrupt("idx length")
 	}
 	x.bigN = rest / 8
-	maxRef := -1
-	for i := 0; i < n; i++ {
-		o := binary.BigEndian.Uint32(data[x.offOff+4*i:])
-		if o&0x80000000 != 0 {
-			if r := int(o & 0x7fffffff); r > maxRef {
-				maxRef = r
+	buf := make([]byte, idxBuf)
+	// offsets: every 64-bit reference must land inside the 64-bit table
+	maxRef := int64(-1)
+	for done := int64(0); done < n; {
+		m := min(n-done, idxBuf/4)
+		if err := readFullAt(src, buf[:4*m], x.offOff+4*done); err != nil {
+			return nil, err
+		}
+		for i := int64(0); i < m; i++ {
+			if o := binary.BigEndian.Uint32(buf[4*i:]); o&0x80000000 != 0 {
+				maxRef = max(maxRef, int64(o&0x7fffffff))
 			}
 		}
+		done += m
 	}
 	if maxRef >= x.bigN {
 		return nil, corrupt("64-bit offset reference %d of %d", maxRef, x.bigN)
 	}
-	var last []byte
-	for i := 0; i < n; i++ {
-		id := data[x.idsOff+i*hs : x.idsOff+(i+1)*hs]
-		if last != nil && bytes.Compare(last, id) >= 0 {
-			return nil, corrupt("ids not strictly sorted at %d", i)
+	// ids: strictly sorted, consistent with the fanout
+	last := make([]byte, hs)
+	pos, b := int64(0), 0
+	for done := int64(0); done < n; {
+		m := min(n-done, idxBuf/hs)
+		if err := readFullAt(src, buf[:m*hs], x.idsOff+done*hs); err != nil {
+			return nil, err
 		}
-		last = id
-	}
-	// fanout consistency: fanout[b] = number of ids whose first byte <= b
-	pos := 0
-	for b := 0; b < 256; b++ {
-		for pos < n && int(data[x.idsOff+pos*hs]) <= b {
+		for i := int64(0); i < m; i++ {
+			id := buf[i*hs : (i+1)*hs]
+			if done+i > 0 && bytes.Compare(last, id) >= 0 {
+				return nil, corrupt("ids not strictly sorted at %d", done+i)
+			}
+			copy(last, id)
+			// fanout[c] = number of ids whose first byte <= c
+			for b < int(id[0]) {
+				if int64(x.Fanout[b]) != pos {
+					return nil, corrupt("fanout[%d]=%d, ids say %d", b, x.Fanout[b], pos)
+				}
+				b++
+			}
 			pos++
 		}
-		if uint32(pos) != x.Fanout[b] {
+		done += m
+	}
+	for ; b < 256; b++ {
+		if int64(x.Fanout[b]) != pos {
 			return nil, corrupt("fanout[%d]=%d, ids say %d", b, x.Fanout[b], pos)
 		}
 	}
-	x.PackSum = data[len(data)-2*hs : len(data)-hs]
-	x.IdxSum = data[len(data)-hs:]
-	if !bytes.Equal(a.Sum(data[:len(data)-hs]), x.IdxSum) {
+	x.PackSum = make([]byte, hs)
+	x.IdxSum = make([]byte, hs)
+	if err := readFullAt(src, x.PackSum, size-2*hs); err != nil {
+		return nil, err
+	}
+	if err := readFullAt(src, x.IdxSum, size-hs); err != nil {
+		return nil, err
+	}
+	h := a.New()
+	if got, err := io.CopyBuffer(h, io.NewSectionReader(src, 0, size-hs), buf); err != nil {
+		return nil, err
+	} else if got != size-hs {
+		return nil, corrupt("source ended at %d of %d bytes", got, size-hs)
+	}
+	if !bytes.Equal(h.Sum(nil), x.IdxSum) {
 		return nil, ErrChecksum
 	}
 	return x, nil
 }
 
-// ID returns the i'th (sorted) id.
-func (x *Idx) ID(i int) []byte {
-	hs := x.Algo.Size()
-	return x.Data[x.idsOff+i*hs : x.idsOff+(i+1)*hs]
-}
+// Err returns the first I/O error met by ID, Offset, CRC or Lookup (which return
+// zero values on error so that byte-backed callers keep their shape).
+func (x *Idx) Err() error { return x.err }
 
-// Offset returns the pack offset of the i'th (sorted) id.
-func (x *Idx) Offset(i int) int64 {
-	o := binary.BigEndian.Uint32(x.Data[x.offOff+4*i:])
-	if o&0x80000000 == 0 {
-		return int64(o)
+func (x *Idx) fail(err error) { x.err = cmp.Or(x.err, err) }
+
+func (x *Idx) check(i int) error {
+	if i < 0 || i >= x.N {
+		return corrupt("idx position %d of %d", i, x.N)
 	}
-	r := int(o & 0x7fffffff)
-	return int64(binary.BigEndian.Uint64(x.Data[x.big+8*r:]))
+	return nil
 }
 
-// CRC returns the stored CRC-32 of the i'th (sorted) id's pack entry.
-func (x *Idx) CRC(i int) uint32 { return binary.BigEndian.Uint32(x.Data[x.crcOff+4*i:]) }
+// ReadID reads the i'th (sorted) id.
+func (x *Idx) ReadID(i int) ([]byte, error) {
+	if err := x.check(i); err != nil {
+		return nil, err
+	}
+	hs := int64(x.Algo.Size())
+	id := make([]byte, hs)
+	return id, readFullAt(x.src, id, x.idsOff+int64(i)*hs)
+}
+
+// ReadOffset reads the pack offset of the i'th (sorted) id, following the
+// 64-bit table when the 32-bit slot refers to it.
+func (x *Idx) ReadOffset(i int) (int64, error) {
+	if err := x.check(i); err != nil {
+		return 0, err
+	}
+	var w [8]byte
+	if err := readFullAt(x.src, w[:4], x.offOff+4*int64(i)); err != nil {
+		return 0, err
+	}
+	o := binary.BigEndian.Uint32(w[:4])
+	if o&0x80000000 == 0 {
+		return int64(o), nil
+	}
+	r := int64(o & 0x7fffffff)
+	if r >= x.bigN {
+		return 0, corrupt("64-bit offset reference %d of %d", r, x.bigN)
+	}
+	if err := readFullAt(x.src, w[:], x.big+8*r); err != nil {
+		return 0, err
+	}
+	return int64(binary.BigEndian.Uint64(w[:])), nil
+}
+
+// ReadCRC reads the stored CRC-32 of the i'th (sorted) id's pack entry.
+func (x *Idx) ReadCRC(i int) (uint32, error) {
+	if err := x.check(i); err != nil {
+		return 0, err
+	}
+	var w [4]byte
+	err := readFullAt(x.src, w[:], x.crcOff+4*int64(i))
+	return binary.BigEndian.Uint32(w[:]), err
+}
+
+// ID returns the i'th (sorted) id (nil on error; see Err).
+func (x *Idx) ID(i int) []byte {
+	id, err := x.ReadID(i)
+	if err != nil {
+		x.fail(err)
+		return nil
+	}
+	return id
+}
+
+// Offset returns the pack offset of the i'th (sorted) id (0 on error; see Err).
+func (x *Idx) Offset(i int) int64 {
+	o, err := x.ReadOffset(i)
+	x.fail(err)
+	return o
+}
+
+// CRC returns the stored CRC-32 of the i'th (sorted) id's pack entry (0 on
+// error; see Err).
+func (x *Idx) CRC(i int) uint32 {
+	c, err := x.ReadCRC(i)
+	x.fail(err)
+	return c
+}
 
 // LookupStats counts what a lookup touched.
 type LookupStats struct {
@@ -124,7 +240,7 @@ type LookupStats struct {
 }
 
 // Lookup finds id with the fanout table and a binary search over the sorted
-// ids. It returns the sorted position or -1.
+// ids. It returns the sorted position or -1 (also on an I/O error; see Err).
 func (x *Idx) Lookup(id []byte) (int, LookupStats) {
 	var st LookupStats
 	hs := x.Algo.Size()
@@ -141,7 +257,12 @@ func (x *Idx) Lookup(id []byte) (int, LookupStats) {
 	st.Touched += 4
 	for lo < hi {
 		m := (lo + hi) / 2
-		c := bytes.Compare(x.ID(m), id)
+		mid, err := x.ReadID(m)
+		if err != nil {
+			x.fail(err)
+			return -1, st
+		}
+		c := bytes.Compare(mid, id)
 		st.Probes++
 		st.Touched += hs
 		switch {
@@ -216,8 +337,20 @@ func (x *Idx) CheckAgainstPack(p *Pack) error {
 		return ErrMismatch
 	}
 	for i := 0; i < x.N; i++ {
-		j := p.IndexOfID(x.ID(i))
-		if j < 0 || p.Entries[j].Off != x.Offset(i) || p.Entries[j].CRC != x.CRC(i) {
+		id, err := x.ReadID(i)
+		if err != nil {
+			return err
+		}
+		off, err := x.ReadOffset(i)
+		if err != nil {
+			return err
+		}
+		crc, err := x.ReadCRC(i)
+		if err != nil {
+			return err
+		}
+		j := p.IndexOfID(id)
+		if j < 0 || p.Entries[j].Off != off || p.Entries[j].CRC != crc {
 			return ErrMismatch
 		}
 	}
@@ -226,7 +359,8 @@ func (x *Idx) CheckAgainstPack(p *Pack) error {
 
 var _ = crc32.IEEE
 
-// ParseIdxV1 validates a version-1 pack index (no magic): 256 fanout words, then
+// ParseIdxV1 is byte-backed and characterization-only (v1 is the legacy form; it
+// was not converted to ReaderAt). It validates a version-1 pack index (no magic): 256 fanout words, then
 // N records of (u32 offset, id), then the pack and index checksums. It exists to
 // characterise the older form, which carries no CRCs and only 31-bit offsets.
 func ParseIdxV1(data []byte, a Algo, lim Limits) (ids [][]byte, offsets []uint32, err error) {

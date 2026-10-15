@@ -14,7 +14,7 @@ func PlanFromRevision(r *srev.Revision) *Plan {
 	p := &Plan{MetaBytes: r.Residual, IndexBytes: r.Index, Detail: r.Notes}
 	for _, m := range r.Members {
 		c := &Comp{ID: ID(m.C.SHA), Size: m.C.Size, Data: m.C.Data, Class: m.C.Class}
-		p.Pieces = append(p.Pieces, Piece{Comp: c, Len: m.C.Size, Via: m.Via})
+		p.Pieces = append(p.Pieces, Piece{Comp: c, Len: m.C.Size, Via: m.Via, Derived: m.Derived})
 	}
 	if r.Rebuild != nil {
 		p.Rebuild = func(w io.Writer, get func(ID) ([]byte, error)) error {
@@ -44,7 +44,7 @@ func RevisionOfPlan(pl *Plan) *srev.Revision {
 		}
 		c := pc.Comp
 		comp := srev.Component{SHA: c.ID, Size: c.Size, Data: c.Data, Class: c.Class, Native: natives[c.ID]}
-		r.Members = append(r.Members, srev.Member{C: comp, Via: pc.Via})
+		r.Members = append(r.Members, srev.Member{C: comp, Via: pc.Via, Derived: pc.Derived})
 	}
 	r.Residual = pl.MetaBytes + inline
 	r.Index = pl.IndexBytes

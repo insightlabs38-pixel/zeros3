@@ -20,9 +20,15 @@ type Component struct {
 // Member places a component in a revision. Via means the component is reachable
 // through another member (a parent node or manifest lists its identity), so the
 // recipe carries no reference to it.
+//
+// Derived (Z3-19) means the component is named and verified by the recipe but its
+// bytes are not stored: a nested representation recorded in the same revision
+// produces them. Four unrelated workloads (OCI/ELF, OCI/SQLite, Git/SQLite,
+// archive/CAR) needed exactly this and nothing else.
 type Member struct {
-	C   Component
-	Via bool
+	C       Component
+	Via     bool
+	Derived bool
 }
 
 // Revision is what an adapter hands to the storage accounting.

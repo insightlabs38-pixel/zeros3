@@ -177,6 +177,9 @@ func (r *Runner) RunStates(states []*State, reps []RepDef) []Row {
 				for k, v := range acc.ClassNew {
 					row.Detail["new_"+k] += v
 				}
+				for k, v := range acc.ClassPackedNew {
+					row.Detail["packed_"+k] += v
+				}
 				if !rp.Oracle {
 					if verr := verifyPlan(ac, pl, acc, f.Data, f.Name); verr != nil {
 						row.Exact, row.Err = false, verr.Error()
