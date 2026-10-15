@@ -7,13 +7,15 @@ type DepRole uint8
 
 const (
 	DepRep    DepRole = iota + 1 // a representation object (the top one or a child)
-	DepStored                    // a component the representation names (STORED member)
-	DepVia                       // a component named only inside a stored component
-	DepIndex                     // a native index component (lookup only, not needed to rebuild)
+	DepTable                     // a STORED member of a format kind: a structural table or node, not payload
+	DepStored                    // a STORED member of a concat representation: payload
+	DepVia                       // a component named only inside a stored component (the kind's Expand)
+	DepOwned                     // a record target kept alive by an owning section
+	DepIndex                     // a record section component (native index)
 )
 
 func (r DepRole) String() string {
-	return [...]string{"?", "rep", "stored", "via", "index"}[min(r, 4)]
+	return [...]string{"?", "rep", "table", "stored", "via", "owned", "index"}[min(r, 6)]
 }
 
 // Reach is the transitive SHA-256 dependency set of a representation.
@@ -21,6 +23,9 @@ type Reach struct {
 	Role    map[SHA]DepRole
 	Order   []SHA // first-seen order: deterministic for one source
 	Derived int   // derived members traversed (not objects: their bytes are never stored)
+	// Via lists, per representation, the components its kind's Expand named (what an
+	// explicit dependency sidecar would have to hold); recorded for the policy study.
+	Via map[SHA][]SHA
 }
 
 func (r *Reach) add(id SHA, role DepRole, max int) error {
@@ -47,14 +52,22 @@ func (r *Reach) Count(role DepRole) (n int) {
 
 // Reachable returns every object needed to rebuild representation id: the
 // representation objects of the whole child tree, their stored members, the
-// components their kinds name through stored components (VIA, found by the
-// kind's Expand reading only stored components) and the native index components.
-// It derives the set from serialized bytes alone, applies the same depth, cycle
-// and size limits as reconstruction, and never writes output.
-func (e *Env) Reachable(id SHA) (*Reach, error) {
-	r := &Reach{Role: map[SHA]DepRole{}}
-	if err := e.walk(r, id, 1, nil); err != nil {
-		return nil, err
+// remaining components (VIA) and the record sections. VIA is the targets of the
+// representation's owning sections when it has any, otherwise whatever the
+// kind's Expand finds by reading stored components. It derives the set from
+// serialized bytes alone, applies the same depth, cycle and size limits as
+// reconstruction, and never writes output.
+func (e *Env) Reachable(id SHA) (*Reach, error) { return e.ReachableAll([]SHA{id}) }
+
+// ReachableAll is the mark phase of a mock collector: the exact object set kept
+// alive by a set of live top-level representations. Representations shared by
+// several roots are walked once.
+func (e *Env) ReachableAll(ids []SHA) (*Reach, error) {
+	r := &Reach{Role: map[SHA]DepRole{}, Via: map[SHA][]SHA{}}
+	for _, id := range ids {
+		if err := e.walk(r, id, 1, nil); err != nil {
+			return nil, err
+		}
 	}
 	return r, nil
 }
@@ -77,6 +90,10 @@ func (e *Env) walk(r *Reach, id SHA, depth int, path []SHA) error {
 		return err
 	}
 	c := e.call(id, rep, depth, path, nil)
+	member := DepStored
+	if rep.Kind != KindConcat {
+		member = DepTable
+	}
 	for i := range rep.Members {
 		m := &rep.Members[i]
 		if m.Role == Derived {
@@ -86,17 +103,39 @@ func (e *Env) walk(r *Reach, id SHA, depth int, path []SHA) error {
 			}
 			continue
 		}
-		if err := r.add(m.SHA, DepStored, max); err != nil {
+		if err := r.add(m.SHA, member, max); err != nil {
 			return err
 		}
 	}
-	if rep.Kind != KindConcat {
+	owning := false
+	for _, x := range rep.Indexes {
+		if err := r.add(x.Ref, DepIndex, max); err != nil {
+			return err
+		}
+		if !x.Owns || e.ExpandOnly {
+			continue
+		}
+		owning = true
+		var addErr error
+		if err := ScanIndex(e.Src, x, func(_ []byte, v SHA) error {
+			addErr = r.add(v, DepOwned, max)
+			return addErr
+		}); err != nil {
+			return err
+		}
+	}
+	if rep.Kind != KindConcat && !owning {
 		d, err := e.decoder(rep.Kind)
 		if err != nil {
 			return err
 		}
 		var addErr error
+		seenVia := map[SHA]bool{}
 		if err := d.Expand(c, func(s SHA) {
+			if !seenVia[s] {
+				seenVia[s] = true
+				r.Via[id] = append(r.Via[id], s)
+			}
 			if addErr == nil {
 				addErr = r.add(s, DepVia, max)
 			}
@@ -107,11 +146,6 @@ func (e *Env) walk(r *Reach, id SHA, depth int, path []SHA) error {
 			return addErr
 		}
 	}
-	for _, x := range rep.Indexes {
-		if err := r.add(x.Ref, DepIndex, max); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -120,13 +154,15 @@ func (e *Env) walk(r *Reach, id SHA, depth int, path []SHA) error {
 type Cost struct {
 	Objects                            int // new objects of every class
 	PayloadObjs, RecipeObjs, IndexObjs int
-	Payload                            int64 // new component bytes (stored and via)
+	TableObjs                          int
+	Payload                            int64 // new component bytes (stored payload, via, owned)
 	Recipe                             int64 // new representation objects (parent and children)
-	Index                              int64 // new native index components
+	Index                              int64 // new record sections (native index; owning sections double as the VIA list)
+	Table                              int64 // new format structural tables and nodes (STORED members of format kinds)
 }
 
 // Bytes is the persisted byte total.
-func (c Cost) Bytes() int64 { return c.Payload + c.Recipe + c.Index }
+func (c Cost) Bytes() int64 { return c.Payload + c.Recipe + c.Index + c.Table }
 
 // Total adds a physical overhead of perObject bytes to every newly stored object.
 func (c Cost) Total(perObject int64) int64 { return c.Bytes() + perObject*int64(c.Objects) }
@@ -157,6 +193,9 @@ func (e *Env) Account(root SHA, added []SHA) (Cost, error) {
 		case DepIndex:
 			c.IndexObjs++
 			c.Index += sz
+		case DepTable:
+			c.TableObjs++
+			c.Table += sz
 		default:
 			c.PayloadObjs++
 			c.Payload += sz
