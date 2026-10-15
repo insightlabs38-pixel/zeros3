@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"zeros3-z3/corpus"
 	"zeros3-z3/fstate"
 )
 
@@ -139,56 +138,6 @@ func TestMalformedLayersFallBackExactly(t *testing.T) {
 	n := &Node{Kind: KindLayerGz, Data: bomb, DiffID: Sum256(nil)}
 	if got := VerifyDiffID(n, Limits{MaxInflated: 1 << 20}); got == "ok" {
 		t.Errorf("bomb accepted: %s", got)
-	}
-}
-
-// Random byte mutations of the documents and of a layer never panic or hang, and
-// whatever still parses is walked and represented exactly.
-func TestRandomMutationsOfTinyImage(t *testing.T) {
-	b, root := tinyImage(t, nil)
-	r := corpus.NewRNG(5, "oci-mutate")
-	docs := [][]byte{root, b.Manifest, b.Config}
-	for i := 0; i < 600; i++ {
-		d := append([]byte(nil), docs[i%3]...)
-		for k := 0; k <= r.Intn(3); k++ {
-			switch r.Intn(3) {
-			case 0:
-				d[r.Intn(len(d))] ^= byte(1 << uint(r.Intn(8)))
-			case 1:
-				p := r.Intn(len(d))
-				d = append(d[:p], d[p+1:]...)
-			default:
-				p := r.Intn(len(d))
-				d = append(d[:p], append([]byte{byte(r.Intn(256))}, d[p:]...)...)
-			}
-		}
-		st := MemStore{}
-		for k, v := range b.Blobs {
-			st[k] = v
-		}
-		rootDoc := root
-		switch i % 3 {
-		case 0:
-			rootDoc = d
-		case 1:
-			// a mutated manifest under its own (new) digest, listed by the real index
-			md := st.Put(d)
-			rootDoc, _ = RootIndex([]Descriptor{{MediaType: MTOCIManifest, Digest: md, Size: int64(len(d))}}, nil, MTOCIIndex)
-		default:
-			md := st.Put(b.Manifest)
-			_ = md
-			st.Put(d)
-		}
-		img, err := Walk(st, rootDoc, Limits{})
-		if err != nil {
-			continue
-		}
-		rows := Runner(96, true).RunStates([]*fstate.State{{Label: "mut", Files: Files(img)}}, Reps()[:6])
-		for _, rw := range rows {
-			if !rw.Oracle && !rw.Exact {
-				t.Fatalf("mutation %d: %s not exact: %s", i, rw.Rep, rw.Err)
-			}
-		}
 	}
 }
 

@@ -3,7 +3,6 @@ package ociz3
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +11,7 @@ import (
 
 // Store is a digest-addressed blob store (an OCI layout's blobs/sha256 directory,
 // a registry cache, or memory). Blob returns the stored bytes without verifying
-// them; callers verify descriptors.
+// them; callers verify descriptors. Lab-only shape: whole blobs as []byte.
 type Store interface {
 	Blob(digest string) ([]byte, error)
 }
@@ -114,13 +113,9 @@ func WriteLayout(dir string, rootDigestDoc []byte, st MemStore) error {
 // LayoutRoot builds the index.json of a layout that holds one registry document
 // (an index or a manifest) as its only entry.
 func LayoutRoot(doc []byte) ([]byte, error) {
-	mt := MTOCIIndex
-	var probe struct {
-		MediaType string `json:"mediaType"`
-		Layers    []any  `json:"layers"`
-	}
-	if json.Unmarshal(doc, &probe) == nil && probe.MediaType != "" {
-		mt = probe.MediaType
+	_, mt, err := ClassifyRoot(doc, Limits{})
+	if err != nil {
+		return nil, err
 	}
 	return RootIndex([]Descriptor{{MediaType: mt, Digest: Sum256(doc), Size: int64(len(doc))}}, nil, MTOCIIndex)
 }

@@ -11,40 +11,62 @@ import (
 	"sort"
 )
 
-// Node is one blob of an image graph.
+// Node is one blob of an image graph. Data holds the whole blob: lab-only residency.
+// The descriptor/graph logic (Walk, ClassifyRoot, the parsers) reads only documents
+// of at most Limits.MaxJSON bytes; a Store-backed integration would keep Data off
+// the node and verify blobs by streaming them (size + sha256) instead.
 type Node struct {
 	Digest    string
 	MediaType string
 	Size      int64
 	Kind      Kind // effective kind: KindBlob when unknown, unsupported, missing or unverified
 	Data      []byte
-	Status    string // ok | missing | size-mismatch | digest-mismatch | unsupported-digest | unparsable
+	Status    string // ok | missing | size-mismatch | digest-mismatch | unsupported-digest | unparsable | conflict
 	Platform  *Platform
-	Parents   []string // digests of the documents that list this blob
+	Parents   []string // distinct digests of the documents that list this blob
 	DiffID    string   // layers: the config's diff_id for this layer position ("" if unknown)
 	DiffOK    string   // layers: "", "ok", "mismatch", "n/a"
+
+	declKind Kind // KindOf the first descriptor's media type: later descriptors must agree
 }
 
-// Image is the verified graph below a root document (index.json or a manifest).
+// Image is the verified graph below a root document: an image index / manifest
+// list, or a direct image manifest.
 type Image struct {
-	Root  []byte // exact bytes of the root document
+	Root  []byte // layout index.json: the root index itself, or for a direct manifest the one-entry index naming it
+	Doc   []byte // exact bytes of the root document as given
+	Form  Kind   // KindIndex or KindManifest: what Doc is
 	Nodes []*Node
 	By    map[string]*Node
 	Notes []string
 }
 
-// Walk reads the graph below rootDoc (an index or a manifest) from st. Every
-// descriptor is checked (size and sha256) before its blob is trusted: a blob that
-// fails is kept as an opaque node, the image is still representable. Documents are
-// parsed only to find descriptors; their bytes are never regenerated.
+// Walk reads the graph below rootDoc (an index, a manifest list, or a direct
+// manifest) from st. Every descriptor is checked (size and sha256) before its blob
+// is trusted: a blob that fails is kept as an opaque node, the image is still
+// representable. A digest is one node with one verified byte string: a later
+// descriptor of the same digest must agree on size and kind, otherwise the node
+// becomes opaque ("conflict"), never reinterpreted. Documents are parsed only to
+// find descriptors; their bytes are never regenerated.
 func Walk(st Store, rootDoc []byte, lim Limits) (*Image, error) {
 	lim = lim.norm()
-	img := &Image{Root: rootDoc, By: map[string]*Node{}}
+	form, rootMT, err := ClassifyRoot(rootDoc, lim)
+	if err != nil {
+		return nil, err
+	}
+	img := &Image{Root: rootDoc, Doc: rootDoc, Form: form, By: map[string]*Node{}}
 	var visit func(d Descriptor, parent string, depth int) error
 	add := func(d Descriptor, parent string) (*Node, bool, error) {
 		if n, ok := img.By[d.Digest]; ok {
-			if parent != "" {
+			if parent != "" && !contains(n.Parents, parent) {
 				n.Parents = append(n.Parents, parent)
+			}
+			if why := conflictOf(n, d); why != "" {
+				if n.Status == "ok" {
+					n.Status = "conflict"
+				}
+				n.Kind, n.DiffID, n.DiffOK = KindBlob, "", ""
+				img.Notes = append(img.Notes, fmt.Sprintf("descriptor conflict on %s: %s", short(d.Digest), why))
 			}
 			return n, false, nil
 		}
@@ -52,6 +74,7 @@ func Walk(st Store, rootDoc []byte, lim Limits) (*Image, error) {
 			return nil, false, fmt.Errorf("%w: more than %d blobs", ErrLimit, lim.MaxNodes)
 		}
 		n := &Node{Digest: d.Digest, MediaType: d.MediaType, Size: d.Size, Kind: KindOf(d.MediaType), Platform: d.Platform}
+		n.declKind = n.Kind
 		if parent != "" {
 			n.Parents = append(n.Parents, parent)
 		}
@@ -129,19 +152,69 @@ func Walk(st Store, rootDoc []byte, lim Limits) (*Image, error) {
 		}
 		return nil
 	}
-	// the root document: an index, a manifest, or (index.json of a layout) an index whose
-	// entries point at either
-	ix, ierr := ParseIndex(rootDoc, lim)
-	if ierr != nil {
-		return nil, ierr
-	}
-	for _, d := range ix.Manifests {
+	switch form {
+	case KindIndex:
+		ix, err := ParseIndex(rootDoc, lim)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range ix.Manifests {
+			if err := visit(d, "", 0); err != nil {
+				return nil, err
+			}
+		}
+	default: // a direct manifest: it becomes an ordinary blob node under a derived one-entry layout index
+		if img.Root, err = LayoutRoot(rootDoc); err != nil {
+			return nil, err
+		}
+		d := Descriptor{MediaType: rootMT, Digest: Sum256(rootDoc), Size: int64(len(rootDoc))}
+		st = withDoc{st, d.Digest, rootDoc}
 		if err := visit(d, "", 0); err != nil {
 			return nil, err
 		}
 	}
 	img.assignDiffIDs(lim)
 	return img, nil
+}
+
+// withDoc serves the root document itself when the store does not hold it.
+type withDoc struct {
+	Store
+	digest string
+	doc    []byte
+}
+
+func (w withDoc) Blob(d string) ([]byte, error) {
+	if d == w.digest {
+		return w.doc, nil
+	}
+	return w.Store.Blob(d)
+}
+
+// conflictOf reports how a further descriptor of an already-seen digest disagrees
+// with the node: a size other than the verified byte string's (or, for an
+// unverified node, the first descriptor's), or a media type of another kind.
+func conflictOf(n *Node, d Descriptor) string {
+	size := n.Size
+	if n.Data != nil {
+		size = int64(len(n.Data))
+	}
+	if d.Size != size {
+		return fmt.Sprintf("size %d vs %d", d.Size, size)
+	}
+	if k := KindOf(d.MediaType); k != n.declKind {
+		return fmt.Sprintf("kind %s vs %s", k, n.declKind)
+	}
+	return ""
+}
+
+func contains(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // assignDiffIDs pairs every layer of every verified manifest with the config's
@@ -162,7 +235,11 @@ func (img *Image) assignDiffIDs(lim Limits) {
 			continue
 		}
 		cfg, err := ParseConfig(cn.Data, lim)
-		if err != nil || len(cfg.RootFS.DiffIDs) != len(m.Layers) {
+		if err != nil {
+			img.Notes = append(img.Notes, fmt.Sprintf("manifest %s: unparsable config", short(n.Digest)))
+			continue
+		}
+		if len(cfg.RootFS.DiffIDs) != len(m.Layers) {
 			img.Notes = append(img.Notes, fmt.Sprintf("manifest %s: %d layers, config has %d diff_ids", short(n.Digest), len(m.Layers), len(cfg.RootFS.DiffIDs)))
 			continue
 		}

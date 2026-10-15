@@ -225,27 +225,39 @@ func (c *Client) Blob(repo, digest string, size int64) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// FetchImage fetches the index (or manifest) at indexDigest and, for every
-// manifest that matches one of platforms ("os/arch[/variant]"; empty = all
-// non-attestation manifests), its config and layers. It returns the exact root
-// document and a store holding every verified blob. Attestation manifests and
-// other non-image manifests are skipped (listed in notes).
+// FetchImage fetches the root at rootDigest and its blobs. The root is an index /
+// manifest list or a direct image manifest (decided by ClassifyRoot, not by the
+// registry's Content-Type). For an index, every manifest that matches one of
+// platforms ("os/arch[/variant]"; empty = all non-attestation manifests) is fetched
+// with its config and layers; a direct manifest has no platform entry and is always
+// fetched whole. It returns the exact root document and a store holding every
+// verified blob. Attestation manifests and other non-image manifests are skipped
+// (listed in notes).
 func (c *Client) FetchImage(repo, rootDigest string, platforms []string) (root []byte, st MemStore, notes []string, err error) {
 	_, root, err = c.Manifest(repo, rootDigest)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	form, _, err := ClassifyRoot(root, Limits{})
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	st = MemStore{}
-	st[rootDigest] = root
+	st[Sum256(root)] = root
+	if form == KindManifest {
+		if err := c.fetchManifestBlobs(repo, root, st); err != nil {
+			return nil, nil, nil, err
+		}
+		return root, st, notes, nil
+	}
 	want := map[string]bool{}
 	for _, p := range platforms {
 		want[p] = true
 	}
-	ix, ierr := ParseIndex(root, Limits{})
-	if ierr != nil {
-		return nil, nil, nil, ierr
+	ix, err := ParseIndex(root, Limits{})
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	// the root is an index; each selected entry is fetched and walked
 	for _, d := range ix.Manifests {
 		if d.Platform == nil || d.Platform.OS == "unknown" || d.Platform.Architecture == "unknown" {
 			notes = append(notes, "skipped non-image manifest "+short(d.Digest))
@@ -259,17 +271,25 @@ func (c *Client) FetchImage(repo, rootDigest string, platforms []string) (root [
 			return nil, nil, nil, err
 		}
 		st[d.Digest] = mb
-		m, err := ParseManifest(mb, Limits{})
-		if err != nil {
+		if err := c.fetchManifestBlobs(repo, mb, st); err != nil {
 			return nil, nil, nil, err
-		}
-		for _, bd := range append([]Descriptor{m.Config}, m.Layers...) {
-			b, err := c.Blob(repo, bd.Digest, bd.Size)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			st[bd.Digest] = b
 		}
 	}
 	return root, st, notes, nil
+}
+
+// fetchManifestBlobs fetches the (verified) config and layers a manifest lists.
+func (c *Client) fetchManifestBlobs(repo string, manifest []byte, st MemStore) error {
+	m, err := ParseManifest(manifest, Limits{})
+	if err != nil {
+		return err
+	}
+	for _, bd := range append([]Descriptor{m.Config}, m.Layers...) {
+		b, err := c.Blob(repo, bd.Digest, bd.Size)
+		if err != nil {
+			return err
+		}
+		st[bd.Digest] = b
+	}
+	return nil
 }

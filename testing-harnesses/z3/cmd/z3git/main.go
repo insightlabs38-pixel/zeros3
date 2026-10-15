@@ -191,7 +191,12 @@ func printChurn(l *gitz3.Lab, sc *gitz3.Scenario) {
 			gitz3.ChurnHeader(os.Stdout)
 			any = true
 		}
-		gitz3.WriteChurn(os.Stdout, sc.States[0].Label+" -> "+sc.States[i].Label, gitz3.Attribute(ps[0], ps[i]))
+		ch, cerr := gitz3.Attribute(ps[0], ps[i])
+		if cerr != nil {
+			fmt.Fprintln(os.Stderr, "churn:", cerr)
+			continue
+		}
+		gitz3.WriteChurn(os.Stdout, sc.States[0].Label+" -> "+sc.States[i].Label, ch)
 	}
 }
 

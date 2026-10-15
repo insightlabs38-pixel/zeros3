@@ -7,14 +7,17 @@
 // Every accepted non-oracle plan is checked the same way: its piece list is
 // serialised in the lab's table layout (the bytes must equal the accounted
 // recipe size), deserialised, and the original file is rebuilt from stored
-// components only and compared by length and SHA-256.
+// components only and compared by length, SHA-256 and bytes. A non-oracle plan
+// with no reconstruction path is a row failure, never an exact row.
 package fstate
 
 import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"time"
 
@@ -61,6 +64,9 @@ type RepDef struct {
 	Oracle bool
 	// Snapshot, if set, plans the whole state as one object instead of file by file.
 	Snapshot func(c *Ctx, st *State) (*lab.Plan, error)
+	// Object returns the exact bytes a Snapshot plan represents; a non-oracle
+	// snapshot representation without it cannot be verified and is a row failure.
+	Object func(st *State) []byte
 }
 
 // Row is one (state, representation) measurement summed over the state's files.
@@ -124,6 +130,13 @@ func (r *Runner) RunStates(states []*State, reps []RepDef) []Row {
 							row.CostPacked = acc.PackedNew + acc.Layouts["table"] + acc.PlanMetaBytes
 						}
 						row.NewComps, row.Comps, row.Reused = acc.NewComponents, acc.Components, acc.ReusedComponents
+						if !rp.Oracle {
+							if rp.Object == nil {
+								err = errors.New("snapshot representation has no Object to verify against")
+							} else {
+								err = verifyPlan(ac, pl, acc, rp.Object(st), "snapshot")
+							}
+						}
 					}
 				}
 				if err != nil {
@@ -164,30 +177,9 @@ func (r *Runner) RunStates(states []*State, reps []RepDef) []Row {
 				for k, v := range acc.ClassNew {
 					row.Detail["new_"+k] += v
 				}
-				if !rp.Oracle && pl.Rebuild != nil {
-					// the recipe that is charged is the recipe that is used: serialise the piece
-					// list (table layout), check its size against the accounting, deserialise it
-					// and rebuild from the deserialised pieces only
-					enc := MarshalPieces(pl.Pieces)
-					if want := acc.Layouts["table"] + uvLen(uint64(CountListed(pl.Pieces))); int64(len(enc)) != want {
-						row.Exact = false
-						row.Err = fmt.Sprintf("recipe bytes %d, accounted %d (%s)", len(enc), want, f.Name)
-					}
-					dec, derr := UnmarshalPieces(enc)
-					if derr != nil {
-						row.Exact, row.Err = false, derr.Error()
-					} else {
-						pl.Pieces = dec
-					}
-					var out bytes.Buffer
-					rerr := pl.Rebuild(&out, ac.Get)
-					if rerr != nil || out.Len() != len(f.Data) || sha256.Sum256(out.Bytes()) != sha256.Sum256(f.Data) {
-						row.Exact = false
-						if rerr != nil {
-							row.Err = rerr.Error()
-						} else {
-							row.Err = "rebuild mismatch " + f.Name
-						}
+				if !rp.Oracle {
+					if verr := verifyPlan(ac, pl, acc, f.Data, f.Name); verr != nil {
+						row.Exact, row.Err = false, verr.Error()
 					}
 				}
 			}
@@ -199,6 +191,56 @@ func (r *Runner) RunStates(states []*State, reps []RepDef) []Row {
 		}
 	}
 	return rows
+}
+
+// verifyPlan enforces the exactness invariant for one accepted non-oracle plan:
+// the recipe that is charged is the recipe that is used. The piece list is
+// serialised (table layout), its size checked against the accounting, deserialised,
+// and the object rebuilt from the deserialised pieces and the stored components
+// only; length, SHA-256 and bytes must equal want. A plan with no reconstruction
+// path (no Rebuild and not a plain concatenation of its pieces) is a failure, never
+// an exact row.
+func verifyPlan(ac *lab.Acct, pl *lab.Plan, acc lab.Account, want []byte, name string) error {
+	rebuild := pl.Rebuild
+	if rebuild == nil && pl.Concat {
+		rebuild = func(w io.Writer, get func(lab.ID) ([]byte, error)) error { return concatPieces(w, pl.Pieces, get) }
+	}
+	if rebuild == nil {
+		return fmt.Errorf("no reconstruction path (%s)", name)
+	}
+	enc := MarshalPieces(pl.Pieces)
+	if w := acc.Layouts["table"] + uvLen(uint64(CountListed(pl.Pieces))); int64(len(enc)) != w {
+		return fmt.Errorf("recipe bytes %d, accounted %d (%s)", len(enc), w, name)
+	}
+	dec, err := UnmarshalPieces(enc)
+	if err != nil {
+		return err
+	}
+	pl.Pieces = dec
+	var out bytes.Buffer
+	if err := rebuild(&out, ac.Get); err != nil {
+		return err
+	}
+	if out.Len() != len(want) || sha256.Sum256(out.Bytes()) != sha256.Sum256(want) || !bytes.Equal(out.Bytes(), want) {
+		return fmt.Errorf("rebuild mismatch %s", name)
+	}
+	return nil
+}
+
+func concatPieces(w io.Writer, ps []lab.Piece, get func(lab.ID) ([]byte, error)) error {
+	for _, p := range ps {
+		b := p.Inline
+		if p.Comp != nil {
+			var err error
+			if b, err = get(p.Comp.ID); err != nil {
+				return err
+			}
+		}
+		if _, err := w.Write(b); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
@@ -232,18 +274,22 @@ func BaselineReps() []RepDef {
 // SnapshotCDC is the state-as-one-object baseline: the files sorted by name,
 // framed (u16 name length, name, u64 size, bytes), chunked with production CDC.
 func SnapshotCDC() RepDef {
-	return RepDef{Name: "cdc-snapshot", Snapshot: func(c *Ctx, st *State) (*lab.Plan, error) {
-		files := append([]File(nil), st.Files...)
-		sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
-		var b bytes.Buffer
-		for _, f := range files {
-			b.Write([]byte{byte(len(f.Name) >> 8), byte(len(f.Name))})
-			b.WriteString(f.Name)
-			var sz [8]byte
-			binary.BigEndian.PutUint64(sz[:], uint64(len(f.Data)))
-			b.Write(sz[:])
-			b.Write(f.Data)
-		}
-		return Baseline("cdc", File{Name: "snapshot", Kind: "snapshot", Data: b.Bytes()})
+	return RepDef{Name: "cdc-snapshot", Object: snapshotObject, Snapshot: func(c *Ctx, st *State) (*lab.Plan, error) {
+		return Baseline("cdc", File{Name: "snapshot", Kind: "snapshot", Data: snapshotObject(st)})
 	}}
+}
+
+func snapshotObject(st *State) []byte {
+	files := append([]File(nil), st.Files...)
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	var b bytes.Buffer
+	for _, f := range files {
+		b.Write([]byte{byte(len(f.Name) >> 8), byte(len(f.Name))})
+		b.WriteString(f.Name)
+		var sz [8]byte
+		binary.BigEndian.PutUint64(sz[:], uint64(len(f.Data)))
+		b.Write(sz[:])
+		b.Write(f.Data)
+	}
+	return b.Bytes()
 }
