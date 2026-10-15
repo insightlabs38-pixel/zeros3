@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"go/parser"
@@ -243,4 +244,142 @@ func TestCoreMechanismImportsNoLab(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The ReaderAt index parser is observably identical to the byte-backed wrapper:
+// same structure, same lookups, ids, offsets and CRCs, same pack agreement, and
+// no read beyond the declared size.
+func TestParseIdxAtMatchesBytes(t *testing.T) {
+	for _, a := range algos {
+		for _, v := range []string{"ofs", "ref"} {
+			name := fmt.Sprintf("%s-%s", a, v)
+			idx, data := fx(t, name+".idx"), fx(t, name+".pack")
+			want, err := ParseIdx(idx, a, Limits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			spy := &spyAt{b: idx, limit: int64(len(idx))}
+			got, err := ParseIdxAt(spy, int64(len(idx)), a, Limits{})
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if spy.oob {
+				t.Errorf("%s: a read went past the declared size", name)
+			}
+			if got.N != want.N || got.Fanout != want.Fanout || got.Size != int64(len(idx)) ||
+				!bytes.Equal(got.PackSum, want.PackSum) || !bytes.Equal(got.IdxSum, want.IdxSum) {
+				t.Fatalf("%s: structure differs", name)
+			}
+			for i := 0; i < got.N; i++ {
+				if !bytes.Equal(got.ID(i), want.ID(i)) || got.Offset(i) != want.Offset(i) || got.CRC(i) != want.CRC(i) {
+					t.Fatalf("%s: entry %d differs", name, i)
+				}
+				if p, st := got.Lookup(want.ID(i)); p != i {
+					t.Fatalf("%s: lookup %d -> %d", name, i, p)
+				} else if _, st2 := want.Lookup(want.ID(i)); st != st2 {
+					t.Fatalf("%s: lookup stats differ", name)
+				}
+			}
+			if got.Err() != nil || want.Err() != nil {
+				t.Fatal(got.Err(), want.Err())
+			}
+			if p, _ := got.Lookup(bytes.Repeat([]byte{0xee}, a.Size())); p != -1 {
+				t.Fatal("absent id found")
+			}
+			if _, err := got.ReadID(got.N); !errors.Is(err, ErrCorrupt) {
+				t.Fatalf("out-of-range position: %v", err)
+			}
+			pk, err := ParsePackAt(&spyAt{b: data, limit: int64(len(data))}, int64(len(data)), a, Limits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pk.Resolve(); err != nil {
+				t.Fatal(err)
+			}
+			if err := got.CheckAgainstPack(pk); err != nil {
+				t.Fatalf("%s: CheckAgainstPack: %v", name, err)
+			}
+		}
+	}
+}
+
+// A source shorter than its declared size, a truncated declaration and a source
+// that fails mid-parse are errors, never panics or out-of-bounds reads.
+func TestParseIdxAtShortAndBounded(t *testing.T) {
+	for _, a := range algos {
+		idx := fx(t, fmt.Sprintf("%s-ofs.idx", a))
+		for n := 0; n < len(idx); n += 1 + n/16 {
+			// declared size shorter: the trailer no longer matches
+			spy := &spyAt{b: idx, limit: int64(n)}
+			if _, err := ParseIdxAt(spy, int64(n), a, Limits{}); err == nil {
+				t.Fatalf("%v: declared %d of %d accepted", a, n, len(idx))
+			}
+			if spy.oob {
+				t.Fatalf("%v: read past declared size %d", a, n)
+			}
+			// source shorter than the declared size
+			if _, err := ParseIdxAt(bytes.NewReader(idx[:n]), int64(len(idx)), a, Limits{}); err == nil {
+				t.Fatalf("%v: short source %d of %d accepted", a, n, len(idx))
+			}
+		}
+		// declared larger than the source with no EOF-shaped help
+		if _, err := ParseIdxAt(bytes.NewReader(idx), int64(len(idx))+8, a, Limits{}); err == nil {
+			t.Fatalf("%v: oversize declaration accepted", a)
+		}
+		// an I/O failure surfaces as an error
+		if _, err := ParseIdxAt(errAt{}, int64(len(idx)), a, Limits{}); err == nil {
+			t.Fatalf("%v: failing source accepted", a)
+		}
+		// a source that fails after parsing is reported by Err and by the Read* forms
+		if _, err := ParseIdxAt(&flakyAt{b: idx, okReads: 3}, int64(len(idx)), a, Limits{}); err == nil {
+			t.Fatalf("%v: mid-parse failure accepted", a)
+		}
+		x2, _ := ParseIdx(idx, a, Limits{})
+		x2.src = errAt{}
+		if _, err := x2.ReadOffset(0); err == nil {
+			t.Fatal("read error swallowed")
+		}
+		if x2.Offset(0) != 0 || x2.Err() == nil {
+			t.Fatal("sticky error not recorded")
+		}
+	}
+}
+
+// A hostile fanout declaring millions of objects over a tiny source is rejected
+// before any proportional allocation.
+func TestParseIdxAtHostileCount(t *testing.T) {
+	a := SHA1
+	b := []byte{0xff, 't', 'O', 'c', 0, 0, 0, 2}
+	for i := 0; i < 256; i++ {
+		b = binary.BigEndian.AppendUint32(b, 1<<22)
+	}
+	b = append(b, make([]byte, 2*a.Size())...)
+	if _, err := ParseIdxAt(bytes.NewReader(b), int64(len(b)), a, Limits{}); err == nil {
+		t.Fatal("hostile object count accepted")
+	}
+	b2 := b[:0:0]
+	b2 = append(b2, b[:8]...)
+	for i := 0; i < 256; i++ {
+		b2 = binary.BigEndian.AppendUint32(b2, 1<<31)
+	}
+	b2 = append(b2, make([]byte, 2*a.Size())...)
+	if _, err := ParseIdxAt(bytes.NewReader(b2), int64(len(b2)), a, Limits{}); !errors.Is(err, ErrLimit) {
+		t.Fatalf("count above the limit: %v", err)
+	}
+}
+
+type errAt struct{}
+
+func (errAt) ReadAt([]byte, int64) (int, error) { return 0, errors.New("io failure") }
+
+type flakyAt struct {
+	b       []byte
+	okReads int
+}
+
+func (f *flakyAt) ReadAt(p []byte, off int64) (int, error) {
+	if f.okReads--; f.okReads < 0 {
+		return 0, errors.New("io failure")
+	}
+	return bytes.NewReader(f.b).ReadAt(p, off)
 }
