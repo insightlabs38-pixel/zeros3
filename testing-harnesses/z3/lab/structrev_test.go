@@ -235,3 +235,19 @@ func indexOfRef(rep *carz3.Rep, sum [32]byte) int {
 	}
 	return 0
 }
+
+// A derived member (named by the recipe, bytes produced by a nested representation) survives
+// the round trip through the shared shape.
+func TestSrevCarriesDerivedMembers(t *testing.T) {
+	c := &Comp{ID: sum([]byte("payload")), Size: 7, Data: func() ([]byte, error) { return []byte("payload"), nil }}
+	pl := &Plan{Pieces: []Piece{{Comp: c, Derived: true}}, Rebuild: func(io.Writer, func(ID) ([]byte, error)) error { return nil }}
+	back := PlanFromRevision(RevisionOfPlan(pl))
+	if len(back.Pieces) != 1 || !back.Pieces[0].Derived || back.Pieces[0].Via {
+		t.Fatalf("derived flag lost: %+v", back.Pieces)
+	}
+	acct := NewAcct(96, false)
+	acc, err := acct.Add(back)
+	if err != nil || acc.NewBytes != 0 || acc.Derived != 1 || acc.DerivedBytes != 7 || acct.Has(c.ID) {
+		t.Fatalf("a derived member must be charged as a reference only: %+v %v", acc, err)
+	}
+}

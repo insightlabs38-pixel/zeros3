@@ -77,6 +77,13 @@ type Comp struct {
 	// Class optionally labels the component ("plain", "unit", ...) for cost
 	// breakdowns; it never affects identity or accounting totals.
 	Class string
+	// Pad is, for a whole tar member body, the number of trailing bytes that are tar
+	// block padding (zeros); a nested transform works on Data[:Size-Pad] (Z3-19).
+	Pad int
+	// Pre is, for a whole Git object, the length of the "blob N\0" header before the
+	// content a nested transform represents; the header bytes are carried in the
+	// composition record (Z3-19).
+	Pre int
 }
 
 // Piece is one element of a representation's recipe: a reference to a
@@ -89,6 +96,11 @@ type Piece struct {
 	// same plan (a parent node or manifest lists its digest), so the recipe
 	// carries no reference to it. It still counts as stored/reused content.
 	Via bool
+	// Derived marks a component whose bytes are NOT stored: it is produced at
+	// rebuild time by another representation of the same plan (a nested transform,
+	// Z3-19). Its reference is charged like any piece (the digest and length are in
+	// the recipe and verified), its bytes are not.
+	Derived bool
 }
 
 // Plan is what a representation would store for one revision.
@@ -124,6 +136,8 @@ type Account struct {
 	NewComponents    int   `json:"new_components"`
 	ReusedComponents int   `json:"reused_components"`
 	InlineBytes      int64 `json:"inline_bytes"`
+	Derived          int   `json:"derived_refs,omitempty"`
+	DerivedBytes     int64 `json:"derived_bytes,omitempty"`
 	NewBytes         int64 `json:"new_semantic_bytes"`
 	ReuseBytes       int64 `json:"reuse_bytes"`
 	MetaBytes        int64 `json:"metadata_bytes"`
@@ -180,6 +194,11 @@ func (a *Acct) Add(p *Plan) (Account, error) {
 		ac.Components++
 		if pc.Via {
 			via++
+		}
+		if pc.Derived {
+			ac.Derived++
+			ac.DerivedBytes += c.Size
+			continue
 		}
 		if c.Class != "" {
 			if ac.ClassRefs == nil {

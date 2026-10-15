@@ -50,6 +50,8 @@ cmd/z3oci     Z3-17 measurements: resolve, fetch, walk, synth, real, reads
 sqlitez3/     exact SQLite main-file representation: page tree (content-addressed nodes of page digests) + head split of overflow/freelist pages; ReaderAt in, Writer out (Z3-18)
 cmd/z3struct  Z3-18 structured-data shootout: chars (SQLite/LevelDB/RocksDB/Parquet/Zarr controls and native-boundary oracles), sqlite (promoted candidate)
 oracle/structured  Z3-18 deterministic Python producers (pinned venv outside Git): SQLite, LevelDB/RocksDB, Parquet, Zarr v2/v3
+composez3/    Z3-19 experimental composition coordinator: outer exact plan + bounded inner transform (ELF/PE binref, sqlitez3, carz3) for detected member payloads, composition record, depth <= 2
+cmd/z3compose Z3-19 compound workloads: oci (real node-exporter layers), sqlite, car, git (pack -> blob) with CDC / outer / inner / composed rows, accounting split, reads
 cmd/z3bin     Z3-12/13 corpus builder (go build -overlay, gcc/clang C) and measurements: pair, attr, delta, runs, report, verify; lab-only Mach-O view
 ```
 

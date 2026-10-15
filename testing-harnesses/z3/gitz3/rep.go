@@ -220,6 +220,10 @@ type RepOpts struct {
 	SectionK  int               // set layout: mean entries per table section (default 8)
 	Slack     float64           // auto: accept ModeP up to (1+Slack) x the ModeZ cost (default 0.10; negative = 0)
 	Has       func(lab.ID) bool // components already stored (family accounting); nil = none
+	// WholeMin (Z3-19) keeps the canonical plaintext of a full blob entry of at least
+	// this many bytes as one component (class "gitobj", Pre = header length) instead
+	// of production CDC chunks, so a nested transform can take the blob as a unit.
+	WholeMin int
 }
 
 func (o RepOpts) slack() float64 {
@@ -284,6 +288,13 @@ func entryPieces(ep *EntryPrep, mode int, o RepOpts) (pcs []lab.Piece, nPlain, n
 		cls = "delta"
 	}
 	pp := mkPieces(ep.Comp, o.inline(), cls)
+	if o.WholeMin > 0 && ep.Kind == uint8(Blob) && len(ep.Comp) >= o.WholeMin {
+		if nul := bytes.IndexByte(ep.Comp, 0); nul > 0 && nul < 32 {
+			c := mkComp(ep.Comp)
+			c.Class, c.Pre = "gitobj", nul+1
+			pp = []lab.Piece{{Comp: c, Len: int64(len(ep.Comp))}}
+		}
+	}
 	pcs = append(pcs, pp...)
 	for _, u := range ep.Units {
 		pcs = append(pcs, mkPieces(u, o.inline(), "unit")...)

@@ -102,6 +102,9 @@ func tarPieces(p *Plan, plain []byte, ts TarSpec, inlineMax int64) (TarStats, er
 			continue
 		}
 		emit(body, "tarpay")
+		if n := len(p.Pieces); n > 0 && p.Pieces[n-1].Comp != nil && p.Pieces[n-1].Comp.Class == "tarpay" {
+			p.Pieces[n-1].Comp.Pad = int(m.End() - m.PayOff - m.PayLen)
+		}
 	}
 	if a.TrailOff < a.Size {
 		st.Trail = a.Size - a.TrailOff
