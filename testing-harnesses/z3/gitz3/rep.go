@@ -273,6 +273,9 @@ type PackStats struct {
 	SkelBytes, UnitBytes        int64
 	MetaBytes                   int64
 	Deltas                      int
+	// FirstPiece[i] is the index in Plan.Pieces of entry i's first piece (Z3-20: lets
+	// an adapter build a native-id -> component index).
+	FirstPiece []int
 }
 
 const metaMagic = 0xA1
@@ -340,6 +343,7 @@ func (an *PackAnalysis) SeqPlan(o RepOpts) (*lab.Plan, *PackStats) {
 		e := &p.Entries[i]
 		mode := o.chooseMode(ep)
 		pcs, nPlain, nUnits := entryPieces(ep, mode, o)
+		st.FirstPiece = append(st.FirstPiece, len(pl.Pieces))
 		zc, explicit := zhdrCode(ep.ZHdr[:])
 		meta = append(meta, ep.Kind|byte(mode)<<3|zc<<4)
 		if explicit {
@@ -582,6 +586,9 @@ func RebuildSeq(meta []byte, pieces []lab.Piece, get func(lab.ID) ([]byte, error
 	}
 	if m.err != nil {
 		return m.err
+	}
+	if m.pos != len(m.b) {
+		return corrupt("%d trailing recipe bytes", len(m.b)-m.pos)
 	}
 	_, err := w.Write(h.Sum(nil))
 	return err
