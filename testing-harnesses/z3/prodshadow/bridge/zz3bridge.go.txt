@@ -1,0 +1,287 @@
+// Z3-22 same-package lab bridge. This file is NOT part of ZeroS3: the Z3
+// harness copies the current, unmodified zeros3.go into a temporary directory,
+// renames one method (computeReachabilityObserved -> ...Orig) and adds this
+// file. Nothing here is committed as Go source or built into the product.
+//
+// Two additions, both driven only by environment variables:
+//
+//	Z3_SHADOW_LIVE=<file>   computeReachabilityObserved also marks the listed
+//	                        chunks live, so the real compact/gc/repack/tier/verify
+//	                        code sees "authoritative roots + shadow roots".
+//	Z3_BRIDGE_STORE=<dir>   serve a loopback lab API over the REAL Store: CAS
+//	                        stat/read/put-batch, an S3 signing proxy in front of
+//	                        the real Server handler, and chunk location queries.
+package main
+
+import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reachabilityResult, error) {
+	res, err := s.computeReachabilityObservedOrig(deep, obs)
+	if err != nil {
+		return res, err
+	}
+	p := os.Getenv("Z3_SHADOW_LIVE")
+	if p == "" {
+		return res, nil
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		panic("Z3_SHADOW_LIVE unreadable: " + err.Error()) // never run destructive code on a half-known live set
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		h := strings.TrimSpace(sc.Text())
+		if h == "" {
+			continue
+		}
+		sum, herr := decodeHexSHA256(h)
+		if herr != nil {
+			panic("Z3_SHADOW_LIVE: bad line " + h)
+		}
+		n, serr := s.casStat(sum)
+		if serr != nil {
+			// same rule as an authoritative root: a live chunk that is absent fails the
+			// live set closed, so destructive commands refuse to run
+			res.addIssue("missing", "shadow:"+h, "shadow-live chunk is not in the CAS")
+			continue
+		}
+		res.ReferencedChunks[h] = true
+		res.ChunkLength[h] = n
+		res.ValidChunks[h] = true
+	}
+	return res, nil
+}
+
+func init() {
+	if dir := os.Getenv("Z3_BRIDGE_STORE"); dir != "" {
+		z3bridgeMain(dir)
+	}
+}
+
+type z3Where struct {
+	SHA      string   `json:"sha"`
+	Size     int64    `json:"size"`
+	Loose    bool     `json:"loose"`
+	LooseLen int64    `json:"loose_len,omitempty"`
+	Packed   []z3Loc  `json:"packed,omitempty"`
+}
+
+type z3Loc struct {
+	Pack    string `json:"pack"`
+	Tier    string `json:"tier"`
+	Codec   int    `json:"codec"`
+	Stored  uint32 `json:"stored"`
+	Logical uint32 `json:"logical"`
+}
+
+func z3where(s *Store, sum [32]byte) (z3Where, bool) {
+	w := z3Where{SHA: hex.EncodeToString(sum[:])}
+	if fi, err := os.Stat(s.chunkPath(sum)); err == nil {
+		w.Loose, w.LooseLen, w.Size = true, fi.Size(), fi.Size()
+	}
+	st := s.packSnap()
+	for _, l := range st.appendLocs(nil, sum) {
+		w.Packed = append(w.Packed, z3Loc{Pack: st.packs[l.pack].id, Tier: l.tier.String(), Codec: int(l.codec), Stored: l.stored, Logical: l.logical})
+		w.Size = int64(l.logical)
+	}
+	return w, w.Loose || len(w.Packed) > 0
+}
+
+func z3bridgeMain(dir string) {
+	fail := func(err error) { fmt.Fprintln(os.Stderr, "z3bridge:", err); os.Exit(1) }
+	lock, err := acquireStoreLock(dir, false)
+	if err != nil {
+		fail(err)
+	}
+	t0 := time.Now()
+	store, err := OpenStore(dir)
+	if err != nil {
+		fail(err)
+	}
+	openMS := time.Since(t0).Seconds() * 1000
+	_ = store.CreateBucket("shadow")
+	creds := Credentials{AccessKeyID: "AKIAZ3SHADOW", SecretAccessKey: "z3ShadowLabSecretKey000000000000000000"}
+	srv := NewServer(store, creds, "us-east-1")
+	l1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fail(err)
+	}
+	go http.Serve(l1, srv)
+	real := "http://" + l1.Addr().String()
+
+	mux := http.NewServeMux()
+	jsonOut := func(w http.ResponseWriter, v any) { w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(v) }
+	parseSHA := func(r *http.Request) ([32]byte, error) { return decodeHexSHA256(r.URL.Query().Get("sha")) }
+
+	mux.HandleFunc("/cas/stat", func(w http.ResponseWriter, r *http.Request) {
+		sum, err := parseSHA(r)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		x, ok := z3where(store, sum)
+		if !ok {
+			http.Error(w, "missing", 404)
+			return
+		}
+		jsonOut(w, x)
+	})
+	mux.HandleFunc("/cas/read", func(w http.ResponseWriter, r *http.Request) {
+		sum, err := parseSHA(r)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		data, err := store.casRead(sum)
+		if err != nil {
+			code := 500
+			if os.IsNotExist(err) {
+				code = 404
+			} else if errors.Is(err, errChunkCorrupt) {
+				code = 422
+			}
+			http.Error(w, err.Error(), code)
+			return
+		}
+		w.Write(data)
+	})
+	// putbatch: body = repeated [u32 big-endian length][bytes]; reply lists existed flags.
+	mux.HandleFunc("/cas/putbatch", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		type ent struct {
+			SHA     string `json:"sha"`
+			Existed bool   `json:"existed"`
+		}
+		var out []ent
+		b := store.newCASBatch()
+		defer b.Abort()
+		for len(body) > 0 {
+			if len(body) < 4 {
+				http.Error(w, "truncated frame", 400)
+				return
+			}
+			n := int(binary.BigEndian.Uint32(body))
+			body = body[4:]
+			if n > len(body) {
+				http.Error(w, "truncated frame", 400)
+				return
+			}
+			data := body[:n]
+			body = body[n:]
+			sum := sha256.Sum256(data)
+			_, serr := store.casStat(sum)
+			if _, err := b.Add(data); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			out = append(out, ent{SHA: hex.EncodeToString(sum[:]), Existed: serr == nil})
+		}
+		if err := b.Flush(); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		jsonOut(w, out)
+	})
+	// S3 signing proxy: the Z3 client speaks unsigned HTTP; the real handler sees real SigV4.
+	hc := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 64}}
+	mux.HandleFunc("/s3/", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		u := real + strings.TrimPrefix(r.URL.EscapedPath(), "/s3")
+		if r.URL.RawQuery != "" {
+			u += "?" + r.URL.RawQuery
+		}
+		req, _ := http.NewRequest(r.Method, u, strings.NewReader(string(body)))
+		if rg := r.Header.Get("Range"); rg != "" {
+			req.Header.Set("Range", rg)
+		}
+		sum := sha256sumHex(body)
+		if err := signSigV4Request(req, creds, "us-east-1", sum, time.Now()); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		resp, err := hc.Do(req)
+		if err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		defer resp.Body.Close()
+		for _, h := range []string{"Etag", "Content-Range", "Content-Length"} {
+			if v := resp.Header.Get(h); v != "" {
+				w.Header().Set(h, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+	})
+	// obj/touch: which production chunks a range of an authoritative object needs, and where they live.
+	mux.HandleFunc("/obj/touch", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		_, man, err := store.HeadObject(q.Get("bucket"), q.Get("key"))
+		if err != nil {
+			http.Error(w, err.Error(), 404)
+			return
+		}
+		off, _ := strconv.ParseInt(q.Get("off"), 10, 64)
+		n, _ := strconv.ParseInt(q.Get("len"), 10, 64)
+		var out []z3Where
+		var pos int64
+		for _, c := range man.Chunks {
+			if pos+c.Length > off && pos < off+n {
+				sum, _ := decodeHexSHA256(c.SHA256)
+				x, _ := z3where(store, sum)
+				x.SHA = c.SHA256
+				x.Size = c.Length
+				out = append(out, x)
+			}
+			pos += c.Length
+		}
+		jsonOut(w, out)
+	})
+	var once sync.Once
+	mux.HandleFunc("/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() {
+			store.Close()
+			lock.release()
+			w.Write([]byte("ok"))
+			go func() { time.Sleep(20 * time.Millisecond); os.Exit(0) }()
+		})
+	})
+	l2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fail(err)
+	}
+	st := store.packSnap()
+	fmt.Printf("{\"addr\":%q,\"open_ms\":%.2f,\"packs\":%d}\n", l2.Addr().String(), openMS, len(st.packs))
+	http.Serve(l2, mux)
+	os.Exit(0)
+}
+
+func sha256sumHex(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
