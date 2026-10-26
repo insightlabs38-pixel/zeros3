@@ -49,6 +49,18 @@ func main() {
 		cmdC23(os.Args[2:])
 	case "estargz-replay":
 		cmdEstargzReplay(os.Args[2:])
+	case "i24":
+		cmdI24(os.Args[2:])
+	case "i24x":
+		cmdI24Cross(os.Args[2:])
+	case "dupes":
+		cmdDupes(os.Args[2:])
+	case "i24sum":
+		cmdI24Sum(os.Args[2:])
+	case "verify":
+		cmdVerify(os.Args[2:])
+	case "scan":
+		cmdScan(os.Args[2:])
 	case "c23sum":
 		cmdC23Sum(os.Args[2:])
 	case "tar":

@@ -34,6 +34,9 @@ type Cost struct {
 type Chain struct {
 	seen map[[32]byte]struct{}
 	Cum  Cost
+	// OnNew, if set, is called for every chunk stored for the first time with its
+	// stream offset, raw length and pack-rule size (used for cost attribution).
+	OnNew func(off, n, packed int64)
 }
 
 func NewChain() *Chain { return &Chain{seen: map[[32]byte]struct{}{}} }
@@ -48,7 +51,11 @@ func (c *Chain) AddStream(r io.Reader) (Cost, error) {
 			c.seen[id] = struct{}{}
 			k.NewChunks++
 			k.NewBytes += int64(len(ch))
-			k.Packed += lab.PackedLen(ch)
+			p := lab.PackedLen(ch)
+			k.Packed += p
+			if c.OnNew != nil {
+				c.OnNew(off, int64(len(ch)), p)
+			}
 		}
 		return nil
 	})

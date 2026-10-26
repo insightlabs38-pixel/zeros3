@@ -245,6 +245,7 @@ func readXattrs(p string) string {
 // Features selects which attributes a format is expected to preserve.
 type Features struct {
 	Mtime, DirMtime, Xattr, Hard, Mode, Sparse bool
+	NoDirAttrs                                 bool // skip mode/mtime/xattr of directories
 }
 
 // Diff compares got against want under feat and returns up to 8 mismatches.
@@ -269,6 +270,9 @@ func Diff(want, got map[string]Snap, feat Features) (n int, sample []string) {
 		case w.Type == "f" && (w.Size != g.Size || w.SHA != g.SHA):
 			note("%s: content differs", p)
 		}
+		if w.Type == "d" && feat.NoDirAttrs {
+			continue
+		}
 		if feat.Mode && w.Type != "l" && w.Mode != g.Mode {
 			note("%s: mode %o != %o", p, w.Mode, g.Mode)
 		}
@@ -288,4 +292,50 @@ func Diff(want, got map[string]Snap, feat Features) (n int, sample []string) {
 		}
 	}
 	return
+}
+
+// ScanTree builds a Tree description of an existing directory (a real-world revision).
+// Hard links become KHard entries pointing at the first path seen; file bodies are not
+// described (consumers read contents from disk).
+func ScanTree(dir string) (*Tree, error) {
+	t := &Tree{Rev: filepath.Base(dir)}
+	inos := map[uint64]string{}
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p == dir {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, p)
+		rel = filepath.ToSlash(rel)
+		var st syscall.Stat_t
+		if err := syscall.Lstat(p, &st); err != nil {
+			return err
+		}
+		e := &Entry{Path: rel, Mode: st.Mode & 0o7777, Mtime: st.Mtim.Sec}
+		switch st.Mode & syscall.S_IFMT {
+		case syscall.S_IFDIR:
+			e.Kind = KDir
+		case syscall.S_IFLNK:
+			e.Kind = KSymlink
+			e.Link, _ = os.Readlink(p)
+		case syscall.S_IFREG:
+			e.Kind = KFile
+			if first, ok := inos[st.Ino]; ok && st.Nlink > 1 {
+				e.Kind, e.Link = KHard, first
+			} else if st.Nlink > 1 {
+				inos[st.Ino] = rel
+			}
+			if e.Kind == KFile {
+				e.Body = &Body{Size: st.Size}
+			}
+		default:
+			return fmt.Errorf("%s: unsupported file type", rel)
+		}
+		t.Entries = append(t.Entries, e)
+		return nil
+	})
+	t.sort()
+	return t, err
 }
