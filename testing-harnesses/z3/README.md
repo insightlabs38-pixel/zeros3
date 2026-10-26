@@ -55,6 +55,8 @@ cmd/z3compose Z3-19 compound workloads: oci (real node-exporter layers), sqlite,
 repz3/        Z3-20/21 candidate serialized representation contract (lab, not a production format): versioned rep object (v2), STORED/DERIVED members, framing, opaque recipe, record sections (native index, optional ownership), bounded Source, nested decode (depth <= 3), reachability/mark walker, native catalog (derived accelerator); stdlib only
 repz3/kinds/  kind table (CAR, SQLite, Git gp-zlib with stream table, Merkle with section chain, exact gzip over tar) + thin adapters from carz3/sqlitez3/gitz3/merklez3/tar/ir, workloads, partial reads, reachability study
 cmd/z3conv    Z3-21 measurements (supersedes z3rep): validation matrix, reachability policy study, native-index ownership and rebuild, exact gzip compositions, Git point reads, overhead sensitivity
+prodshadow/   Z3-22 production shadow integration (lab only): builds the unmodified zeros3.go and a one-method-renamed bridge copy into the OS temp dir, maps repz3 components onto the real CAS (direct chunk up to the 256 KiB record limit, otherwise a bounded descriptor over production CDC chunks), a production-backed repz3.Source, lab-only shadow roots, and failure / GC / lifecycle scenarios. No committed copy of production code
+cmd/z3shadow  Z3-22 measurements: mapping, chains (real physical cost, loose and packed), reads, restart, scenarios
 cmd/z3bin     Z3-12/13 corpus builder (go build -overlay, gcc/clang C) and measurements: pair, attr, delta, runs, report, verify; lab-only Mach-O view
 ```
 
