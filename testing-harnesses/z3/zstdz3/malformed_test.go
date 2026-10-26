@@ -76,6 +76,7 @@ func TestMalformedMatrix(t *testing.T) {
 		want error
 	}{
 		{"corrupt magic", mut(func(b []byte) []byte { b[1] ^= 0xff; return b }), Limits{}, ErrCorrupt},
+		{"magicless frame (rejected, never reinterpreted)", good[4:], Limits{}, ErrCorrupt},
 		{"legacy frame", append(le32(0xFD2FB525), 0, 0, 0, 0), Limits{}, ErrUnsupported},
 		{"reserved frame bit", mut(func(b []byte) []byte { b[4] |= 8; return b }), Limits{}, ErrCorrupt},
 		{"truncated header", good[:5], Limits{}, ErrCorrupt},

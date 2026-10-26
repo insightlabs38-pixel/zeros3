@@ -309,3 +309,27 @@ DEFLATE reconstruction; `-cdc` chunks large members), and the choosers `oci-auto
 `oci-auto-s10` (also accepts a first-sight premium up to 10 %).
 
 Results: `../results/Z3_17_OCI_CONTENT.md`.
+
+## Z3-25: exact Zstandard parse/replay (`zstdz3`)
+
+`zstdz3` is a stdlib-only RFC 8878 decoder that also records the producer's compression decisions, so any dictionary-free
+Zstandard stream can be rebuilt bit for bit from a semantic plaintext, a small canonical skeleton and per-block units. It imports no
+laboratory package; the experimental layer is `cmd/z3zstd` plus a thin `repz3.KindZstd` adapter (`repz3/kinds/zstd.go`).
+
+```sh
+sh oracle/zstd/setup.sh                                            # pinned zstd 1.5.5 + 1.5.7 builds and the klauspost producer, outside Git
+go test ./zstdz3 ./repz3/kinds -run 'Zstd|Fixture|Malformed|Range|Coverage|IR|Seq|Hostile|Skippable|Trunc|XXH|Predefined'
+go test ./zstdz3 -run '^$' -fuzz '^FuzzParse$' -fuzztime 20s       # also FuzzIRUnmarshal
+go run ./cmd/z3zstd gen -dir /root/z3scratch/c25                    # R0-R11 trees -> tar -> zstd 1.5.5 -3 -T1, FLOOR chain
+go run ./cmd/z3zstd eco -dir /root/z3scratch/c25 && go run ./cmd/z3zstd ecosum   # A/B/C/D/F economics (Z3-23 corpus)
+go run ./cmd/z3zstd matrix -in PLAIN.tar                            # producer matrix, cross-version reuse
+go run ./cmd/z3zstd range -in R0.z155l3.zst                         # checkpoint / ranged replay costs
+go run ./cmd/z3zstd memgen -mib 256 -out p.bin   # then memparse / memreplay on its zstd output (fresh processes)
+```
+
+API: `Parse(r, plain, units, Options) -> skeleton`, `Replay(w, skeleton, units, plain)`, `ReplayFrom(w, skeleton, checkpoint, ...)`,
+`Unmarshal/Marshal` (canonical skeleton), `Scan` (headers only; `frontier.ScanZstd` is now a view over it). Sequences are coded by the
+plaintext-derived match model (`zstdz3/model.go`) or as explicit varints (`Options.NoSeqModel`). Anything the replay cannot reproduce
+becomes a counted fallback block holding the original bytes.
+
+Results: `../results/Z3_25_ZSTD_EXACT_REPLAY.md`.

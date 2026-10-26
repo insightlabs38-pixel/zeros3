@@ -62,8 +62,8 @@ type Result struct {
 	Stats       Stats
 }
 
-// Parse decodes the Zstandard stream r, writes the plaintext to plain (progressively,
-// block by block), writes the unit stream to units (nil to discard) and returns the
+// Parse decodes the Zstandard stream r, writes the plaintext to plain (nil discards it;
+// progressively, block by block), writes the unit stream to units (nil to discard) and returns the
 // skeleton. The stream must be
 // dictionary-free; every frame is verified (content size and checksum when present).
 // Compressed blocks are replayed against the original as they are parsed, so a
@@ -71,6 +71,9 @@ type Result struct {
 // becomes a BlockFallback and is counted in Stats.
 func Parse(r io.Reader, plain io.Writer, units io.Writer, opt Options) (*Result, error) {
 	lim := opt.Limits.fill()
+	if plain == nil {
+		plain = io.Discard
+	}
 	p := &parser{br: bufio.NewReaderSize(r, 1<<20), plain: plain, units: units, lim: lim, noModel: opt.NoSeqModel, ckEvery: opt.CheckpointEvery}
 	if err := p.run(); err != nil {
 		return nil, err

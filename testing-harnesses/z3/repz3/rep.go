@@ -83,10 +83,11 @@ const (
 	KindGit    Kind = 4
 	KindMerkle Kind = 5
 	KindGzip   Kind = 6
+	KindZstd   Kind = 7 // Z3-25 lab kind: exact Zstandard replay over a semantic plaintext child
 )
 
 // Known reports whether this contract version defines the kind.
-func (k Kind) Known() bool { return k >= KindConcat && k <= KindGzip }
+func (k Kind) Known() bool { return k >= KindConcat && k <= KindZstd }
 
 // Role is how a component takes part in a representation.
 type Role uint8
