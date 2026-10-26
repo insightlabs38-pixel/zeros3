@@ -333,3 +333,6 @@ plaintext-derived match model (`zstdz3/model.go`) or as explicit varints (`Optio
 becomes a counted fallback block holding the original bytes.
 
 Results: `../results/Z3_25_ZSTD_EXACT_REPLAY.md`.
+diskimg/      Z3-26 sparse/differencing disk-image lab: deterministic logical-disk corpus, bounded QCOW2 and VHDX scanners (exact file tiling, native allocation maps, VHDX partial-block present-sector runs), disclosed VHDX GUID normalisation
+cmd/z3disk    Z3-26 driver: Family A (rebuilt standalone) and Family B (backing/differencing chains) matrices against production CDC, native-piece, fine-grid and guest-semantic floors; read-cost, determinism and parent-path studies
+oracle/vhdxgen, oracle/vhdiread, oracle/disk_setup.sh   Z3-26 isolated producers/oracles: pinned `vhdx-rs` VHDX writer (dynamic + differencing) and a libvhdi chain reader (never a ZeroS3 dependency); QCOW2 comes from system `qemu-img`
