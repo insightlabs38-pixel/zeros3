@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"zeros3-z3/merklez3"
 	"zeros3-z3/repz3"
 	"zeros3-z3/repz3/kinds"
 )
@@ -126,6 +127,34 @@ func TestCatalogOverSharedRoots(t *testing.T) {
 	cat.Remove(wid)
 	if !reflect.DeepEqual(cat.Mappings(), rb(ids[1])) {
 		t.Fatal("after removing the wrapper the catalog differs from a rebuild")
+	}
+	// a second trie under another native hash exposes disjoint identities: both coexist, removal of
+	// one leaves the other's mappings exactly as a rebuild gives them
+	ch2, err := kinds.MerkleChain(merklez3.HashSHA512_256, 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, err := ch2.Encode(st, cat, ch2.Stages[0].Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id2, _, err := kinds.Commit(st, cat, b2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	both := cat.Mappings()
+	only2 := rb(id2)
+	for k := range only2 {
+		if _, dup := rb(ids[1])[k]; dup {
+			t.Fatalf("native key %q appears under both hash domains", k)
+		}
+	}
+	if len(both) != len(rb(ids[1]))+len(only2) {
+		t.Fatalf("catalog holds %d keys, domains hold %d + %d", len(both), len(rb(ids[1])), len(only2))
+	}
+	cat.Remove(id2)
+	if !reflect.DeepEqual(cat.Mappings(), rb(ids[1])) {
+		t.Fatal("removing the second domain changed the first")
 	}
 	cat.Remove(ids[1])
 	if cat.Entries() != 0 {

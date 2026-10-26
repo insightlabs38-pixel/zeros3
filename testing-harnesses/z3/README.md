@@ -318,7 +318,7 @@ laboratory package; the experimental layer is `cmd/z3zstd` plus a thin `repz3.Ki
 
 ```sh
 sh oracle/zstd/setup.sh                                            # pinned zstd 1.5.5 + 1.5.7 builds and the klauspost producer, outside Git
-go test ./zstdz3 ./repz3/kinds -run 'Zstd|Fixture|Malformed|Range|Coverage|IR|Seq|Hostile|Skippable|Trunc|XXH|Predefined'
+go test ./zstdz3 ./repz3/kinds -run 'Zstd|Fixture|Malformed|Range|Coverage|IR|Seq|Hostile|Skippable|Trunc|XXH|Predefined'   # hermetic; the reference builds only add differential rows
 go test ./zstdz3 -run '^$' -fuzz '^FuzzParse$' -fuzztime 20s       # also FuzzIRUnmarshal
 go run ./cmd/z3zstd gen -dir /root/z3scratch/c25                    # R0-R11 trees -> tar -> zstd 1.5.5 -3 -T1, FLOOR chain
 go run ./cmd/z3zstd eco -dir /root/z3scratch/c25 && go run ./cmd/z3zstd ecosum   # A/B/C/D/F economics (Z3-23 corpus)
@@ -336,3 +336,22 @@ Results: `../results/Z3_25_ZSTD_EXACT_REPLAY.md`.
 diskimg/      Z3-26 sparse/differencing disk-image lab: deterministic logical-disk corpus, bounded QCOW2 and VHDX scanners (exact file tiling, native allocation maps, VHDX partial-block present-sector runs), disclosed VHDX GUID normalisation
 cmd/z3disk    Z3-26 driver: Family A (rebuilt standalone) and Family B (backing/differencing chains) matrices against production CDC, native-piece, fine-grid and guest-semantic floors; read-cost, determinism and parent-path studies
 oracle/vhdxgen, oracle/vhdiread, oracle/disk_setup.sh   Z3-26 isolated producers/oracles: pinned `vhdx-rs` VHDX writer (dynamic + differencing) and a libvhdi chain reader (never a ZeroS3 dependency); QCOW2 comes from system `qemu-img`
+dagz3/        Z3-28 representation-DAG lab (not a format): bounded recursive discovery over the repz3 kinds with cumulative budgets, DAG/reachability/liveness helpers (lab root set, mark/sweep, deletion and read-set gates), exact and greedy global planners over content-addressed candidate sets, wide/fan-in scale probes
+cmd/z3dag     Z3-28 driver: dag (correctness table), econ (depth economics), plan (planner vs greedy, store sensitivity, mixed winner, overhead, read-aware), scale, reads (nested point reads), budget (hostile inputs)
+zstdz3/synth.go  lab-only Zstandard frame synthesizer (greedy matches, predefined tables; libzstd-decodable) so tests and the DAG lab need no external zstd
+
+## Z3-28: representation DAGs, deep composition, global planning
+
+`repz3` v2 is unchanged on the wire. `dagz3` stresses it with depth-4 chains (`zstd > tar > gzip > sqlite`, `gzip > tar > zstd > car`), fan-out,
+children shared by several parents and roots, graph-shaped formats, malformed DAGs and competing candidate plans, and audits which promoted code is
+portable. Hermetic tests need nothing outside the module (`go test ./dagz3 ./repz3/...`); the optional real-producer check uses a python
+`zstandard` wheel unpacked outside Git.
+
+```sh
+go test ./dagz3 ./repz3/... ./zstdz3
+go test -race ./dagz3 -run TestCodecBranches        # pipes, nested codecs, concurrent readers
+go run ./cmd/z3dag all                                # every table of the report (about 3 minutes)
+Z3_PYZSTD=/path/with/zstandard go run ./cmd/z3dag econ  # adds the libzstd 1.5.7 producer row
+```
+
+Results: `../results/Z3_28_REPRESENTATION_DAGS.md`.

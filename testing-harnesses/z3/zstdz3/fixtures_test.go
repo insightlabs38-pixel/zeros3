@@ -156,6 +156,29 @@ func TestFixtureRLELiterals(t *testing.T) {
 	}
 }
 
+// repeatTablesFixture is the smallest stream that reuses all three previous sequence
+// tables: a first compressed block fixes the (predefined) tables, a second one declares
+// repeat mode for LL, OF and ML. Reference producers emit repeat mode only on their own
+// schedule, so the hermetic coverage gate depends on this committed stream.
+func repeatTablesFixture(t testing.TB) (comp, plain []byte) {
+	f := newFx(t, true)
+	f.raw(sampleText(300, 8), false)
+	l := []byte("hijklmnhijklmnhijklmnhijklmn")
+	f.compressed(BlockRec{LitMode: litRaw, LitForm: 0}, l, []seqRec{{ll: 3, ml: 6, of: 4 + 40}, {ll: 5, ml: 7, of: 4 + 11}, {ll: 1, ml: 5, of: 4 + 70}}, false)
+	f.compressed(BlockRec{LitMode: litRaw, LitForm: 0, Modes: 3<<6 | 3<<4 | 3<<2}, l[:20], []seqRec{{ll: 4, ml: 5, of: 4 + 40}, {ll: 6, ml: 6, of: 4 + 11}, {ll: 2, ml: 9, of: 4 + 70}}, true)
+	return f.finish()
+}
+
+func TestFixtureRepeatTables(t *testing.T) {
+	comp, plain := repeatTablesFixture(t)
+	res := checkFixture(t, comp, plain)
+	for k := 0; k < 3; k++ {
+		if res.Stats.SeqModes[k][3] != 1 {
+			t.Fatalf("table %d repeat mode used %d times: %+v", k, res.Stats.SeqModes[k][3], res.Stats.SeqModes)
+		}
+	}
+}
+
 func TestFixtureRLETables(t *testing.T) {
 	// all sequences share one literal-length code, one offset code and one match-length
 	// code, so each table is a single symbol (RLE mode, no state bits).
