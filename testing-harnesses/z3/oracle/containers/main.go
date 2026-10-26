@@ -5,6 +5,8 @@
 //
 //	z3cprod estargz    -in TAR -out BLOB [-chunk N] [-level L]
 //	z3cprod zstdchunked -in TAR -out BLOB [-level L]
+//	z3cprod zstd       -in TAR -out FILE [-level 1..4]   (Z3-25: plain klauspost/compress stream,
+//	                   single encoder goroutine; 1 fastest, 2 default, 3 better, 4 best)
 //
 // Each writes BLOB and BLOB.toc.json (the decompressed TOC / manifest) and prints
 // one JSON line of producer facts.
@@ -50,6 +52,8 @@ func main() {
 		die(runEstargz(*in, *out, *chunk, *level))
 	case "zstdchunked":
 		die(runZstdChunked(*in, *out, *level))
+	case "zstd":
+		die(runZstdPlain(*in, *out, *level))
 	default:
 		die(fmt.Errorf("unknown mode %s", os.Args[1]))
 	}
@@ -166,4 +170,36 @@ func runZstdChunked(in, out string, level int) error {
 		"mode": "zstdchunked", "blob": len(raw), "meta": meta, "manifest_offset": off, "manifest_clen": clen, "toc_json": len(toc),
 		"lib": "containers/storage v1.59.1 pkg/chunked/compressor",
 	})
+}
+
+// runZstdPlain writes a plain Zstandard stream with klauspost/compress, the encoder
+// containers/storage uses, as an independent producer for the exact-replay tests.
+func runZstdPlain(in, out string, level int) error {
+	if level == 0 {
+		level = int(zstd.SpeedDefault)
+	}
+	f, err := os.Open(in)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	o, err := os.Create(out)
+	if err != nil {
+		return err
+	}
+	w, err := zstd.NewWriter(o, zstd.WithEncoderLevel(zstd.EncoderLevel(level)), zstd.WithEncoderConcurrency(1))
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(w, f); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	if err := o.Close(); err != nil {
+		return err
+	}
+	st, _ := os.Stat(out)
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"mode": "zstd", "level": level, "size": st.Size(), "lib": "klauspost/compress v1.18.0"})
 }
