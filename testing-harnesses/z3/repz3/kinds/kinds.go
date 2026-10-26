@@ -41,6 +41,11 @@ func Lookup(k repz3.Kind) (repz3.Decoder, bool) {
 // NewEnv returns a reconstruction environment over src with the kind table.
 func NewEnv(src repz3.Source) *repz3.Env { return &repz3.Env{Src: src, Table: Lookup} }
 
+// NewEnvLimits is NewEnv under explicit limits (a depth-4 representation needs MaxDepth 4).
+func NewEnvLimits(src repz3.Source, lim repz3.Limits) *repz3.Env {
+	return &repz3.Env{Src: src, Table: Lookup, Limits: lim}
+}
+
 // Bundle is what an analyzer hands to storage for one representation: the
 // serialized object, the component and index objects it needs that analysis
 // produced, and the child bundles of its DERIVED members. Components already in
@@ -51,6 +56,13 @@ type Bundle struct {
 	ID       repz3.SHA
 	Objects  [][]byte
 	Children []*Bundle
+}
+
+// NewBundle serialises rep and bundles it with the component objects it needs and the
+// bundles of its DERIVED children (for adapters outside this package, e.g. the DAG lab's
+// container splitters).
+func NewBundle(rep *repz3.Rep, objs [][]byte, children ...*Bundle) (*Bundle, error) {
+	return newBundle(rep, objs, children...)
 }
 
 func newBundle(rep *repz3.Rep, objs [][]byte, children ...*Bundle) (*Bundle, error) {
@@ -89,6 +101,11 @@ func (b *Bundle) Persist(st *repz3.MemStore) (repz3.SHA, []repz3.SHA, error) {
 // set the contract's reachability keeps alive. It is the analysis-time exactness
 // check; a failure means "use CDC instead".
 func Prove(base *repz3.MemStore, b *Bundle, want []byte) error {
+	return ProveLimits(base, b, want, repz3.Limits{})
+}
+
+// ProveLimits is Prove under explicit limits.
+func ProveLimits(base *repz3.MemStore, b *Bundle, want []byte, lim repz3.Limits) error {
 	scratch := repz3.NewMemStore()
 	if base != nil {
 		scratch = base.Clone()
@@ -98,7 +115,7 @@ func Prove(base *repz3.MemStore, b *Bundle, want []byte) error {
 	}
 	scratch.ResetReads()
 	var out bytes.Buffer
-	env := NewEnv(scratch)
+	env := NewEnvLimits(scratch, lim)
 	n, sum, err := env.Reconstruct(b.ID, &out)
 	if err != nil {
 		return err

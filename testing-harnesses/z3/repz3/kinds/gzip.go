@@ -279,6 +279,24 @@ func (c *crcReader) Read(p []byte) (int, error) {
 
 var errAbort = errors.New("kinds: gzip decode stopped")
 
+// replayCause combines the outcome of a codec replay with that of the goroutine that streams
+// the semantic plaintext (the DERIVED child). A child failure is the cause and the codec's
+// complaint ("plaintext ends early") its consequence: reporting the child's error keeps its
+// contract class (ErrMissing, ErrMismatch, ErrDepth ...) visible to errors.Is through any
+// number of nested codec parents instead of burying it under the codec's own message.
+func replayCause(replayErr, childErr error) error {
+	switch {
+	case childErr != nil && !errors.Is(childErr, errAbort):
+		if replayErr != nil {
+			return fmt.Errorf("%w (replay: %v)", childErr, replayErr)
+		}
+		return childErr
+	case replayErr != nil:
+		return replayErr
+	}
+	return childErr
+}
+
 func (gzipDecoder) Decode(c *repz3.Call) error {
 	g, err := gzipRecipe(c)
 	if err != nil {
@@ -311,11 +329,8 @@ func (gzipDecoder) Decode(c *repz3.Call) error {
 	}, cr, ir.StreamDecodeOptions{})
 	pr.CloseWithError(errAbort)
 	werr := <-done
-	if err != nil {
+	if err = replayCause(err, werr); err != nil {
 		return err
-	}
-	if werr != nil {
-		return werr
 	}
 	if cr.n != pm.Size || binary.LittleEndian.Uint32(g.trailer) != cr.crc || binary.LittleEndian.Uint32(g.trailer[4:]) != uint32(cr.n) {
 		return fmt.Errorf("%w: gzip trailer disagrees with the replayed plaintext", repz3.ErrMismatch)

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"zeros3-z3/repz3"
+	"zeros3-z3/zstdz3"
 )
 
 func zstdFixtures(t *testing.T) map[string][]byte {
@@ -100,16 +101,11 @@ func TestZstdKindRejects(t *testing.T) {
 	_ = sha256.Sum256
 }
 
-// TestZstdOverTar composes zstd -> tar layer (DERIVED child) when a reference zstd is
-// installed: exact compression normalization plus container structure.
+// TestZstdOverTar composes zstd -> tar layer (DERIVED child): exact compression
+// normalization plus container structure. The stream comes from the reference zstd when
+// one is installed (differential producer) and from zstdz3.Synth otherwise, so the test
+// is hermetic.
 func TestZstdOverTar(t *testing.T) {
-	bin := "/root/z3cache/tools/zstd-1.5.7/zstd"
-	if v := os.Getenv("Z3_TOOLS"); v != "" {
-		bin = v + "/tools/zstd-1.5.7/zstd"
-	}
-	if _, err := os.Stat(bin); err != nil {
-		t.Skip("reference zstd not installed")
-	}
 	var tb bytes.Buffer
 	tw := tar.NewWriter(&tb)
 	for i := 0; i < 40; i++ {
@@ -118,11 +114,20 @@ func TestZstdOverTar(t *testing.T) {
 		tw.Write(body)
 	}
 	tw.Close()
-	cmd := exec.Command(bin, "-3", "-T1", "-q", "-c")
-	cmd.Stdin = bytes.NewReader(tb.Bytes())
-	zst, err := cmd.Output()
+	zst, err := zstdz3.Synth(tb.Bytes())
 	if err != nil {
 		t.Fatal(err)
+	}
+	bin := "/root/z3cache/tools/zstd-1.5.7/zstd"
+	if v := os.Getenv("Z3_TOOLS"); v != "" {
+		bin = v + "/tools/zstd-1.5.7/zstd"
+	}
+	if _, err := os.Stat(bin); err == nil {
+		cmd := exec.Command(bin, "-3", "-T1", "-q", "-c")
+		cmd.Stdin = bytes.NewReader(tb.Bytes())
+		if zst, err = cmd.Output(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	b, _, err := EncodeZstd(zst, func(plain []byte) (*Bundle, error) {
 		bb, _, err := EncodeTarLayer(plain, 1<<62)

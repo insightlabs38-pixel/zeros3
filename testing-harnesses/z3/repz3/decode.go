@@ -3,6 +3,7 @@ package repz3
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -115,9 +116,10 @@ func (e *Env) Reconstruct(id SHA, w io.Writer) (int64, SHA, error) {
 // bound is the writer every decoder gets: it refuses output beyond the declared
 // size, so a hostile recipe cannot produce unbounded bytes.
 type bound struct {
-	w   io.Writer
-	n   int64
-	max int64
+	w    io.Writer
+	n    int64
+	max  int64
+	werr error // the destination's own failure: never reclassified as corruption
 }
 
 func (b *bound) Write(p []byte) (int, error) {
@@ -125,6 +127,9 @@ func (b *bound) Write(p []byte) (int, error) {
 		return 0, fmt.Errorf("%w: output exceeds the declared %d bytes", ErrMismatch, b.max)
 	}
 	n, err := b.w.Write(p)
+	if err != nil {
+		b.werr = err
+	}
 	if n < 0 || n > len(p) {
 		return 0, fmt.Errorf("repz3: writer returned %d for %d bytes", n, len(p))
 	}
@@ -148,12 +153,28 @@ func (e *Env) run(id SHA, rep *Rep, depth int, path []SHA, w io.Writer) error {
 		}
 	}
 	if err != nil {
+		if bw.werr == nil {
+			err = classify(rep.Kind, err)
+		}
 		return err
 	}
 	if bw.n != rep.Size {
 		return fmt.Errorf("%w: wrote %d bytes, representation declares %d", ErrMismatch, bw.n, rep.Size)
 	}
 	return nil
+}
+
+// classify keeps a decoder's failure inside the contract's error classes. A format package
+// reports its own errors (sqlitez3: corrupt ...); an error that carries none of the
+// contract's sentinels is a recipe or component the decoder could not accept, i.e. corrupt.
+// Both stay visible to errors.Is. Failures of the destination writer are not reclassified.
+func classify(k Kind, err error) error {
+	for _, s := range []error{ErrCorrupt, ErrUnsupported, ErrLimit, ErrMissing, ErrMismatch, ErrShort, ErrAmbiguous} {
+		if errors.Is(err, s) {
+			return err
+		}
+	}
+	return fmt.Errorf("%w: kind %d: %w", ErrCorrupt, k, err)
 }
 
 func (c *Call) decodeConcat() error {

@@ -68,6 +68,9 @@ func fixtures(t *testing.T) []fixture {
 	c, p = f.finish()
 	add(fixture{"fx_repeat_zero_ll.zst", "zstdz3 test builder", "TestFixtureRepeatOffsets style (validated by zstd 1.5.7 -d)", "repeat codes with zero literal length, direct Huffman weights, 4 streams, treeless reuse", c, p, 0})
 
+	c, p = repeatTablesFixture(t)
+	add(fixture{"fx_repeat_tables.zst", "zstdz3 test builder", "repeatTablesFixture (decoded by libzstd 1.5.7 via python-zstandard 0.25.0)", "repeat mode for all three sequence tables (LL, OF, ML) reusing the first block's tables", c, p, 0})
+
 	a := frameOf([]byte{0x04, 0x58}, blk(true, BlockRaw, []byte("first frame "), 12))
 	x := newXXH64()
 	x.write([]byte("first frame "))
