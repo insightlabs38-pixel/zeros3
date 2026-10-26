@@ -171,6 +171,7 @@ type unitReader struct {
 	units []zsUnit
 	next  int
 	cur   []byte
+	err   error // the source's own failure, kept because the replay reports only a truncated stream
 }
 
 func (u *unitReader) Read(p []byte) (int, error) {
@@ -186,6 +187,7 @@ func (u *unitReader) Read(p []byte) (int, error) {
 		}
 		b, err := u.c.GetExact(x.sha, x.size)
 		if err != nil {
+			u.err = err
 			return 0, err
 		}
 		u.cur = b
@@ -211,13 +213,13 @@ func (zstdDecoder) Decode(c *repz3.Call) error {
 		pw.CloseWithError(err)
 		done <- err
 	}()
-	_, err = zstdz3.Replay(c.W, skel, bufio.NewReaderSize(&unitReader{c: c, units: units}, 1<<16), pr, zstdz3.Limits{})
+	ur := &unitReader{c: c, units: units}
+	_, err = zstdz3.Replay(c.W, skel, bufio.NewReaderSize(ur, 1<<16), pr, zstdz3.Limits{})
 	pr.CloseWithError(errAbort)
-	werr := <-done
-	if err != nil {
-		return err
+	if err != nil && ur.err != nil { // a missing or corrupt unit is the cause of a "truncated unit stream"
+		err = fmt.Errorf("%w (replay: %v)", ur.err, err)
 	}
-	return werr
+	return replayCause(err, <-done)
 }
 
 // Expand: the large units are named by the stored table.

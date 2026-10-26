@@ -560,3 +560,94 @@ func FuzzUnmarshal(f *testing.F) {
 		}
 	})
 }
+
+// TestReachabilityIsDepthSound: a child shared by two roots at different depths must be
+// judged by its deepest use. Memoising a visited representation without its height would
+// make Reachable([A, B]) succeed while B alone fails (and while Reconstruct(B) fails),
+// so liveness would depend on which other roots happen to be in the set.
+func TestReachabilityIsDepthSound(t *testing.T) {
+	st := NewMemStore()
+	leaf, _ := concatOf(st, []byte("leaf"))
+	mid, _ := derive(st, leaf, 4, Frame{}, []byte("leaf"))    // height 2
+	shallow, _ := derive(st, mid, 4, Frame{}, []byte("leaf")) // A: mid at depth 2, leaf at 3
+	x, _ := derive(st, mid, 4, Frame{}, []byte("leaf"))
+	y, _ := derive(st, x, 4, Frame{}, []byte("leaf")) // x at 2 ... use a chain so mid lands at depth 4
+	z, _ := derive(st, y, 4, Frame{}, []byte("leaf"))
+	deep, _ := derive(st, z, 4, Frame{}, []byte("leaf")) // mid at depth 5 under MaxDepth 4
+	e := &Env{Src: st, Limits: Limits{MaxDepth: 4}}
+	if _, err := rebuild(e, shallow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuild(e, deep); !errors.Is(err, ErrDepth) {
+		t.Fatalf("reconstruct of the deep root: %v", err)
+	}
+	if _, err := e.ReachableAll([]SHA{deep}); !errors.Is(err, ErrDepth) {
+		t.Fatalf("deep root alone: %v", err)
+	}
+	if _, err := e.ReachableAll([]SHA{shallow, deep}); !errors.Is(err, ErrDepth) {
+		t.Fatalf("deep root after a shallow root that shares its child: %v", err)
+	}
+	if _, err := e.ReachableAll([]SHA{deep, shallow}); !errors.Is(err, ErrDepth) {
+		t.Fatalf("deep root before a shallow root: %v", err)
+	}
+	if _, err := e.ReachableAll([]SHA{shallow}); err != nil {
+		t.Fatalf("shallow root: %v", err)
+	}
+	// the native accelerator reads the same trees and must agree with reconstruction
+	cat := NewCatalog(st, nil)
+	cat.SetLimits(Limits{MaxDepth: 4})
+	if err := cat.Ingest(deep); !errors.Is(err, ErrDepth) {
+		t.Fatalf("catalog ingest of the deep root: %v", err)
+	}
+	if err := cat.Ingest(shallow); err != nil {
+		t.Fatalf("catalog ingest of the shallow root: %v", err)
+	}
+	if err := NewCatalog(st, nil).Ingest(mustDepth4(st)); !errors.Is(err, ErrDepth) {
+		t.Fatalf("a default-limit catalog must refuse a depth-4 root: %v", err)
+	}
+}
+
+func mustDepth4(st *MemStore) SHA { id, _ := nest(st, 4); return id }
+
+// TestLongerCycleAmongValidRepresentations: A -> B -> C -> A, where B and C are otherwise
+// ordinary representations (equal sizes, so the cycle is the only inconsistency) next to a healthy
+// root. Every walk returns ErrCycle; no
+// partial output is accepted; the healthy sibling still reconstructs.
+func TestLongerCycleAmongValidRepresentations(t *testing.T) {
+	st := NewMemStore()
+	healthy, _ := concatOf(st, []byte("fine"))
+	a, b, c := SHA{0xa1}, SHA{0xb2}, SHA{0xc3}
+	link := func(next SHA) []byte {
+		r := &Rep{Kind: KindConcat, Size: 3, Members: []Member{{Role: Derived, SHA: SHA{}, Size: 3, Child: next}}}
+		raw, err := r.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	st.Set(a, link(b))
+	st.Set(b, link(c))
+	st.Set(c, link(a))
+	e := &Env{Src: st, noVerify: true, Limits: Limits{MaxDepth: 4}}
+	for _, root := range []SHA{a, b, c} {
+		var out bytes.Buffer
+		if _, _, err := e.Reconstruct(root, &out); !errors.Is(err, ErrCycle) && !errors.Is(err, ErrDepth) {
+			t.Fatalf("root %x: %v", root[:2], err)
+		}
+		if _, err := e.Reachable(root); !errors.Is(err, ErrCycle) {
+			t.Fatalf("walker, root %x: %v", root[:2], err)
+		}
+		if _, err := e.ReachableAll([]SHA{healthy, root}); !errors.Is(err, ErrCycle) {
+			t.Fatalf("walker with a healthy root first: %v", err)
+		}
+	}
+	if got, err := rebuild(&Env{Src: st}, healthy); err != nil || string(got) != "fine" {
+		t.Fatalf("healthy sibling: %q %v", got, err)
+	}
+	cat := NewCatalog(st, nil)
+	cat.SetLimits(Limits{MaxDepth: 4})
+	cat.env.noVerify = true
+	if err := cat.Ingest(a); !errors.Is(err, ErrCycle) {
+		t.Fatalf("catalog: %v", err)
+	}
+}

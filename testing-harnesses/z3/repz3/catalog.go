@@ -68,9 +68,20 @@ func NewCatalog(src Source, domain func(*Rep, Index) string) *Catalog {
 		roots: map[SHA][]SHA{}, reps: map[SHA]*catRep{}, secs: map[SHA]*catSec{}, idx: map[string][]catEntry{}}
 }
 
+// SetLimits sets the bounds the catalog applies when it reads a root's representation
+// tree (default: the Limits zero value, i.e. depth 3). A catalog must accept every root
+// the environment that reconstructs it accepts.
+func (c *Catalog) SetLimits(l Limits) { c.env.Limits = l }
+
 // Rebuild is the restart path: a fresh catalog from the live roots only.
 func Rebuild(src Source, domain func(*Rep, Index) string, roots []SHA) (*Catalog, error) {
+	return RebuildLimits(src, domain, Limits{}, roots)
+}
+
+// RebuildLimits is Rebuild under explicit limits.
+func RebuildLimits(src Source, domain func(*Rep, Index) string, lim Limits, roots []SHA) (*Catalog, error) {
 	c := NewCatalog(src, domain)
+	c.SetLimits(lim)
 	for _, r := range roots {
 		if err := c.Ingest(r); err != nil {
 			return nil, fmt.Errorf("rebuilding from root %x: %w", r[:6], err)
@@ -81,27 +92,45 @@ func Rebuild(src Source, domain func(*Rep, Index) string, roots []SHA) (*Catalog
 
 func (c *Catalog) tree(root SHA) (map[SHA]*Rep, error) {
 	out := map[SHA]*Rep{}
-	var visit func(id SHA, depth int, path []SHA) error
-	visit = func(id SHA, depth int, path []SHA) error {
+	height := map[SHA]int{}
+	maxDepth := c.env.Limits.norm().MaxDepth
+	var visit func(id SHA, depth int, path []SHA) (int, error)
+	visit = func(id SHA, depth int, path []SHA) (int, error) {
+		for _, p := range path {
+			if p == id { // checked before the shared-descendant shortcut: a node in progress is not done
+				return 0, fmt.Errorf("%w: %x", ErrCycle, id[:6])
+			}
+		}
 		if _, ok := out[id]; ok {
-			return nil
+			// a shared descendant is read once; each further use is checked against its height
+			if h := height[id]; depth+h-1 > maxDepth {
+				return 0, fmt.Errorf("%w: %x reaches depth %d (maximum %d)", ErrDepth, id[:6], depth+h-1, maxDepth)
+			}
+			return height[id], nil
 		}
 		rep, err := c.env.load(id, depth, path)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		out[id] = rep
 		p := append(append([]SHA(nil), path...), id)
+		h := 1
 		for i := range rep.Members {
 			if rep.Members[i].Role == Derived {
-				if err := visit(rep.Members[i].Child, depth+1, p); err != nil {
-					return err
+				ch, err := visit(rep.Members[i].Child, depth+1, p)
+				if err != nil {
+					return 0, err
+				}
+				if ch+1 > h {
+					h = ch + 1
 				}
 			}
 		}
-		return nil
+		height[id] = h
+		return h, nil
 	}
-	return out, visit(root, 1, nil)
+	_, err := visit(root, 1, nil)
+	return out, err
 }
 
 // Ingest makes root a live root: every record section its representation tree

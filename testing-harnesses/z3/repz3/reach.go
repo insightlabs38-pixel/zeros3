@@ -23,6 +23,10 @@ type Reach struct {
 	Role    map[SHA]DepRole
 	Order   []SHA // first-seen order: deterministic for one source
 	Derived int   // derived members traversed (not objects: their bytes are never stored)
+	// Height is, per representation, the nesting depth of its own subtree (a representation
+	// with no derived child is 1). A representation shared by several parents is walked
+	// once, so each further use is checked against this instead of being re-walked.
+	Height map[SHA]int
 	// Via lists, per representation, the components its kind's Expand named (what an
 	// explicit dependency sidecar would have to hold); recorded for the policy study.
 	Via map[SHA][]SHA
@@ -63,7 +67,7 @@ func (e *Env) Reachable(id SHA) (*Reach, error) { return e.ReachableAll([]SHA{id
 // alive by a set of live top-level representations. Representations shared by
 // several roots are walked once.
 func (e *Env) ReachableAll(ids []SHA) (*Reach, error) {
-	r := &Reach{Role: map[SHA]DepRole{}, Via: map[SHA][]SHA{}}
+	r := &Reach{Role: map[SHA]DepRole{}, Via: map[SHA][]SHA{}, Height: map[SHA]int{}}
 	for _, id := range ids {
 		if err := e.walk(r, id, 1, nil); err != nil {
 			return nil, err
@@ -80,6 +84,11 @@ func (e *Env) walk(r *Reach, id SHA, depth int, path []SHA) error {
 		}
 	}
 	if _, seen := r.Role[id]; seen {
+		// Shared descendant: its objects are already counted, but this use may sit deeper
+		// than the first one did, and reconstruction through it must stay within the limit.
+		if h := r.Height[id]; depth+h-1 > e.Limits.norm().MaxDepth {
+			return fmt.Errorf("%w: %x reaches depth %d (maximum %d)", ErrDepth, id[:6], depth+h-1, e.Limits.norm().MaxDepth)
+		}
 		return nil
 	}
 	rep, err := e.load(id, depth, path)
@@ -94,12 +103,16 @@ func (e *Env) walk(r *Reach, id SHA, depth int, path []SHA) error {
 	if rep.Kind != KindConcat {
 		member = DepTable
 	}
+	height := 1
 	for i := range rep.Members {
 		m := &rep.Members[i]
 		if m.Role == Derived {
 			r.Derived++
 			if err := e.walk(r, m.Child, depth+1, c.path); err != nil {
 				return fmt.Errorf("child %x: %w", m.Child[:6], err)
+			}
+			if h := 1 + r.Height[m.Child]; h > height {
+				height = h
 			}
 			continue
 		}
@@ -140,12 +153,13 @@ func (e *Env) walk(r *Reach, id SHA, depth int, path []SHA) error {
 				addErr = r.add(s, DepVia, max)
 			}
 		}); err != nil {
-			return err
+			return classify(rep.Kind, err)
 		}
 		if addErr != nil {
 			return addErr
 		}
 	}
+	r.Height[id] = height
 	return nil
 }
 
