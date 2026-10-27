@@ -71,39 +71,40 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//     499    Content-defined chunking (CDC)
-//     625    Content-addressed chunk storage (CAS)
-//     1356    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//    2899    Manifests (immutable, JSON)
-//    2998    Visibility journal (append-only, checksummed)
-//    3411    Store: format, namespace, and object CRUD
-//    4240    Version history/restore, history pruning, ListObjectsV2
-//    4713    SigV4 authentication (header and presigned-URL)
-//    5668    Request payload checksums and S3-shaped XML error/response types
-//    5885    HTTP routing and S3 operation handlers
-//    6298    Conditional operations (PUT/GET/HEAD preconditions)
-//    6982    CopyObject
-//    7276    Multipart upload
-//    8106    Stats and reachability scanning
-//    8889    Verify
-//    9065    Store locking and safe offline GC
-//    9322    Offline compaction (`zeros3 compact`)
-//    10028    Pack reclamation and repacking (`zeros3 repack`)
-//    10475    Physical tiers: status and pack movement (`zeros3 tier`)
-//    10987    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//   12051    Streaming object reads (full and ranged GET)
-//   12313    Delta sync client, credentials, and parallel transfer
-//   14299    Bulk logical-chunk transport (v2)
-//   15210    Recursive directory sync
-//   15515    Remote replication (`zeros3 replicate`)
-//   16262    Peer-assisted corruption repair (`zeros3 repair`)
-//   16774    Namespace (prefix/bucket) replication
-//   17081    Copy-on-write namespace fork (`zeros3 fork`)
-//   17289    Snapshots and restore
-//   18450    Structural diff and inspect (introspection)
-//   19726    Portable snapshot bundles (`zeros3 bundle`)
-//   20886    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//   21521    CLI dispatch, HTTP server/startup, and main
+//      504    Content-defined chunking (CDC)
+//      630    Content-addressed chunk storage (CAS)
+//     1361    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
+//     2926    Manifests (immutable, JSON)
+//     3025    Visibility journal (append-only, checksummed)
+//     3438    Store: format, namespace, and object CRUD
+//     4274    Version history/restore, history pruning, ListObjectsV2
+//     4747    SigV4 authentication (header and presigned-URL)
+//     5702    Request payload checksums and S3-shaped XML error/response types
+//     5919    HTTP routing and S3 operation handlers
+//     6332    Conditional operations (PUT/GET/HEAD preconditions)
+//     7016    CopyObject
+//     7310    Multipart upload
+//     8240    Stats and reachability scanning
+//     9046    Verify
+//     9222    Store locking and safe offline GC
+//     9479    Offline compaction (`zeros3 compact`)
+//    10185    Pack reclamation and repacking (`zeros3 repack`)
+//    10632    Physical tiers: status and pack movement (`zeros3 tier`)
+//    11144    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    12208    Streaming object reads (full and ranged GET)
+//    12460    Delta sync client, credentials, and parallel transfer
+//    14446    Bulk logical-chunk transport (v2)
+//    15357    Recursive directory sync
+//    15662    Remote replication (`zeros3 replicate`)
+//    16409    Peer-assisted corruption repair (`zeros3 repair`)
+//    16921    Namespace (prefix/bucket) replication
+//    17228    Copy-on-write namespace fork (`zeros3 fork`)
+//    17436    Snapshots and restore
+//    18597    Structural diff and inspect (introspection)
+//    19873    Portable snapshot bundles (`zeros3 bundle`)
+//    21033    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    21668    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    24222    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -135,6 +136,10 @@ const (
 	storeFormatVersionCompressed   = 3
 	storeFormatVersionHistoryPrune = 4
 	storeFormatVersionTiers        = 5
+	// storeFormatVersionRepresentations (declared in section 16d) is raised
+	// before the first optional representation root is published, so a build
+	// that does not know roots refuses the store instead of garbage-collecting
+	// the components they name.
 
 	// CDC v1 parameters (frozen). See buildGearTable and findCDCBoundary.
 	cdcMinChunkSize    = 16 * 1024
@@ -1542,9 +1547,12 @@ func (s *Store) checkTierRoots() error {
 // rewritten. Called before the format bump: roots are harmless to older
 // builds, and a crash leaves at most empty tier directories.
 func (s *Store) initTierRoots() error {
+	s.formatMu.Lock()
+	storeID := s.format.StoreID
+	s.formatMu.Unlock()
 	for t := tierWarm; t < numTiers; t++ {
 		dir := tierRoot(s.root, t)
-		if err := checkTierRoot(s.root, s.format.StoreID, t); err == nil {
+		if err := checkTierRoot(s.root, storeID, t); err == nil {
 			continue
 		} else if _, serr := os.Stat(filepath.Join(dir, tierMarkerName)); serr == nil {
 			return err // a marker exists but is wrong: never overwrite it
@@ -1554,7 +1562,7 @@ func (s *Store) initTierRoots() error {
 				return err
 			}
 		}
-		data, err := json.MarshalIndent(tierMarker{tierMarkerFormatVersion, s.format.StoreID, t.String()}, "", "  ")
+		data, err := json.MarshalIndent(tierMarker{tierMarkerFormatVersion, storeID, t.String()}, "", "  ")
 		if err != nil {
 			return err
 		}
@@ -2582,6 +2590,25 @@ func (st *packState) readPacked(sum [32]byte, loc packLoc) ([]byte, error) {
 	return data, nil
 }
 
+// inflaters recycles DEFLATE readers across pack records: a fresh reader
+// allocates a 32 KiB window, which dominates reading many small records.
+var inflaters sync.Pool
+
+func getInflater(r io.Reader) io.ReadCloser {
+	if v := inflaters.Get(); v != nil {
+		fr := v.(io.ReadCloser)
+		if fr.(flate.Resetter).Reset(r, nil) == nil {
+			return fr
+		}
+	}
+	return flate.NewReader(r)
+}
+
+func putInflater(fr io.ReadCloser) {
+	fr.Close()
+	inflaters.Put(fr)
+}
+
 // decodePackPayload turns one record's stored payload into its verified
 // logical bytes. The payload and lengths are untrusted: the codec length
 // rule is enforced first, a deflate stream is read for at most the declared
@@ -2599,8 +2626,8 @@ func decodePackPayload(codec byte, stored []byte, logical uint32, sum [32]byte, 
 		}
 		data = dst[:logical]
 		br := bytes.NewReader(stored)
-		fr := flate.NewReader(br)
-		defer fr.Close()
+		fr := getInflater(br)
+		defer putInflater(fr)
 		if _, err := io.ReadFull(fr, data); err != nil {
 			return nil, fmt.Errorf("chunk %x: deflate payload is truncated or malformed: %v (%w)", sum, err, errChunkCorrupt)
 		}
@@ -3543,6 +3570,10 @@ type Store struct {
 
 	// casPubMu is the loose-CAS publication barrier (section 4).
 	casPubMu sync.RWMutex
+
+	// rep is the optional structured-representation state (section 16d):
+	// runtime mode, derived catalog and counters. Nothing in it is authoritative.
+	rep repState
 }
 
 // OpenStore opens the store rooted at root, initializing it (writing
@@ -3591,11 +3622,14 @@ func OpenStore(root string) (*Store, error) {
 		j.f.Close()
 		return nil, fmt.Errorf("store: loading packs: %w", err)
 	}
+	if _, err := os.Lstat(s.repDir()); err == nil || !os.IsNotExist(err) {
+		s.rep.mayHaveRoots.Store(true) // present, or unreadable: let reachability report it
+	}
 	return s, nil
 }
 
 func supportedStoreFormat(v int) bool {
-	return v >= storeFormatVersion && v <= storeFormatVersionTiers
+	return v >= storeFormatVersion && v <= storeFormatVersionRepresentations
 }
 
 func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
@@ -3606,7 +3640,7 @@ func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
 			return storeFormat{}, fmt.Errorf("store: FORMAT.json is corrupt: %w", err)
 		}
 		if !supportedStoreFormat(format.StoreFormatVersion) {
-			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports versions %d through %d)", format.StoreFormatVersion, storeFormatVersion, storeFormatVersionTiers)
+			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports versions %d through %d)", format.StoreFormatVersion, storeFormatVersion, storeFormatVersionRepresentations)
 		}
 		if format.CDCFormatVersion != cdcFormatVersion {
 			return storeFormat{}, fmt.Errorf("store: unsupported CDC format version %d (this build supports version %d)", format.CDCFormatVersion, cdcFormatVersion)
@@ -8484,6 +8518,19 @@ type reachabilityResult struct {
 	ReferencedChunks    map[string]bool  // hex sha256 -> true; every chunk any live, readable manifest/part points to
 	ChunkLength         map[string]int64 // hex sha256 -> best-known length, from the reference (not disk)
 	ValidChunks         map[string]bool  // subset of ReferencedChunks whose file passed integrity checks
+
+	// Optional structured representations (section 16d). Their physical chunks
+	// are part of ReferencedChunks/ChunkLength; a root that cannot be trusted
+	// is a missing/corrupt issue (so OK() is false) and appears in RepFaults.
+	RepRoots        int               // live manifests whose representation root was read
+	RepFaults       map[string]string // manifest UUID -> why its root or closure is not usable
+	RepObjects      int               // distinct representation objects reached
+	RepComponents   int               // distinct logical components reached
+	RepLogicalBytes int64             // their logical size
+	RepChunkCount   int               // distinct physical chunks they occupy
+	RepChunkBytes   int64
+	RepRootFiles    int      // published root files
+	RepOrphanRoots  []string // root files whose manifest no live root names
 }
 
 // OK reports whether the authoritative live root set is fully valid: every
@@ -8632,6 +8679,12 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 			obs(scope, bucket, key, chunks)
 		}
 	}
+	// The optional representation of a live manifest is part of the same root:
+	// its chunks are wanted (and observed) beside the manifest's own.
+	rctx := s.newRepReachCtx(&res)
+	wantRep := func(scope rootScope, bucket, key, uuid string, man manifestV1) {
+		rctx.observe(uuid, man, func(chunks []chunkRef) { want(scope, bucket, key, chunks) })
+	}
 
 	// Observation order is locality priority (compaction ranks chunks by first
 	// reference): current objects, active multipart, snapshots, then retained
@@ -8648,6 +8701,7 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 		res.CurrentRootCount++
 		if man, ok := checkRoot(o.bucket+"/"+o.key, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
 			want(scopeCurrent, o.bucket, o.key, man.Chunks)
+			wantRep(scopeCurrent, o.bucket, o.key, o.entry.manifestUUID, man)
 		}
 	}
 	// Root category 3: active multipart uploads. These do not go through
@@ -8704,6 +8758,7 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 			}
 			if man, ok := checkRoot(subject, se.ManifestUUID, sum); ok {
 				want(scopeSnapshot, snap.SourceBucket, se.Key, man.Chunks)
+				wantRep(scopeSnapshot, snap.SourceBucket, se.Key, se.ManifestUUID, man)
 			}
 		}
 	}
@@ -8721,8 +8776,10 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 		subject := fmt.Sprintf("history:%s/%s@%s", o.bucket, o.key, o.entry.versionID)
 		if man, ok := checkRoot(subject, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
 			want(scopeHistory, o.bucket, o.key, man.Chunks)
+			wantRep(scopeHistory, o.bucket, o.key, o.entry.manifestUUID, man)
 		}
 	}
+	rctx.finish()
 	// One unified chunk existence/integrity pass over every referenced
 	// digest, regardless of which root category claimed it.
 	for sha, length := range wantChunks {
@@ -12325,17 +12382,7 @@ func (m *manifestReader) chunk(i int, sum [32]byte, chunkStart int64) ([]byte, e
 // the hottest packed copy, unless that copy is warm or cold and a hot loose
 // copy outranks it. ok is false when the chunk must go through casRead.
 func (m *manifestReader) primary(sum [32]byte, length int64) (packLoc, bool) {
-	var locs [4]packLoc
-	ls := m.pr.st.appendLocs(locs[:0], sum)
-	if len(ls) == 0 || int64(ls[0].logical) != length || m.bad[ls[0].pack] {
-		return packLoc{}, false
-	}
-	if ls[0].tier != tierHot {
-		if _, err := os.Lstat(m.s.chunkPath(sum)); !os.IsNotExist(err) {
-			return packLoc{}, false
-		}
-	}
-	return ls[0], true
+	return packPrimary(m.s, m.pr.st, m.bad, sum, length)
 }
 
 // planRun fills m.sums/m.locs with chunk i and the following chunks that
@@ -21615,6 +21662,2560 @@ func printDeltaStats(w io.Writer, st BundleStats) {
 		st.PayloadChunks, mib(st.PayloadLogicalBytes), 100*st.PayloadFraction, st.RawRecords, st.CompressedRecords)
 	fmt.Fprintf(w, "stored bytes    payload %s, delta file %s (compression ratio %.2fx)\n",
 		mib(st.StoredPayloadBytes), mib(st.BundleBytes), st.CompressionRatio)
+}
+
+// =============================================================================
+// 16d. Structured representations (Z3-I0): optional alternative storage
+//
+// A representation is an optional, immutable description of how to rebuild
+// an object's exact bytes from SHA-256-addressed components and child
+// representations (STORED / DERIVED members, framing, an opaque per-kind
+// recipe, native record sections). Components are ordinary CAS chunks (or, above
+// 256 KiB, a flat descriptor of ordinary CDC chunks); a root file per
+// immutable manifest names the representation. The ordinary CDC manifest stays
+// authoritative and the journal stays the only namespace visibility
+// boundary; a representation can be absent, unreadable or stale without
+// changing any S3-visible behavior. Kinds are a finite in-code switch:
+// Concat (tar), CAR, SQLite and Merkle. See docs/ARCHITECTURE.md.
+//
+// Wire format "Production Representation Format v1":
+//
+//	"ZS3R" | version (1 B) | kind (1 B) | size
+//	n members, each
+//	    STORED  0x01 | SHA-256 | length
+//	    DERIVED 0x03 | SHA-256 of the framed output | framed length |
+//	            child representation SHA-256 | prefix length, prefix | zero-suffix length
+//	recipe length | recipe bytes (opaque to the generic layer)
+//	n record sections, each: flags (1 B) | key width | record count | component SHA-256
+//
+// All integers are minimal unsigned varints; the object is consumed exactly.
+// A representation is named by the SHA-256 of its serialized bytes and is
+// loaded only after that digest matches. Kind numbers keep fixed headroom:
+// 1 Concat, 2 CAR, 3 SQLite, 4 (Git, reserved), 5 Merkle, 6 (Gzip, reserved),
+// 7 (Zstd, reserved). Reserved and unknown kinds fail as unsupported.
+// =============================================================================
+
+const (
+	repMagic       = "ZS3R"
+	repWireVersion = 1
+
+	repMaxPrefix     = 64
+	repMaxZeros      = 1 << 16
+	repMaxKeyWidth   = 64
+	repMaxIndexCount = 1 << 28
+	repMaxIndexes    = 16
+	repMinMemberWire = 1 + 32 + 1
+
+	// repDirectMax is the largest logical component stored as one ordinary
+	// CAS chunk (pack records are 1..maxPackedChunkBytes); larger components
+	// are virtual (flat descriptor of CDC chunks).
+	repDirectMax = maxPackedChunkBytes
+	repHardDepth = 4
+)
+
+var (
+	errRepCorrupt     = errors.New("representation: corrupt")
+	errRepUnsupported = errors.New("representation: unsupported version or kind")
+	errRepLimit       = errors.New("representation: limit exceeded")
+	errRepMissing     = errors.New("representation: object not in source")
+	errRepMismatch    = errors.New("representation: object does not match its recipe")
+	errRepShort       = errors.New("representation: short read from source")
+	errRepCycle       = fmt.Errorf("%w: representation cycle", errRepCorrupt)
+	errRepDepth       = fmt.Errorf("%w: nesting depth", errRepLimit)
+	errRepAmbiguous   = errors.New("representation: native identity maps to different components")
+)
+
+func repCorrupt(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{errRepCorrupt}, a...)...)
+}
+
+// repKind selects the in-code decoder.
+type repKind uint8
+
+const (
+	repKindConcat repKind = 1
+	repKindCAR    repKind = 2
+	repKindSQLite repKind = 3
+	// 4 is reserved for Git, 6 for Gzip and 7 for Zstd.
+	repKindMerkle repKind = 5
+)
+
+// supported reports whether this build can decode the kind.
+func (k repKind) supported() bool { return k == repKindConcat }
+
+type repRole uint8
+
+const (
+	repStored  repRole = 1
+	repVia     repRole = 2 // never on the wire: discovered by the kind's Expand
+	repDerived repRole = 3
+)
+
+// repFrame is the exact bytes around a child's output inside a derived member.
+type repFrame struct {
+	Prefix []byte
+	Zeros  int
+}
+
+// repMember is one wire entry. For repStored, SHA/Size name the component. For
+// repDerived they name the framed output (Prefix || child output || Zeros).
+type repMember struct {
+	Role  repRole
+	SHA   [32]byte
+	Size  int64
+	Child [32]byte
+	Frame repFrame
+}
+
+// repIndex references a record section: Count records of key[KeyWidth] ||
+// SHA-256, strictly ascending by key, stored as one component. Owns marks a
+// section whose record targets stay live while the section is referenced.
+type repIndex struct {
+	KeyWidth int
+	Count    int64
+	Ref      [32]byte
+	Owns     bool
+}
+
+func (x repIndex) bytes() int64 { return x.Count * int64(x.KeyWidth+32) }
+
+const repFlagOwns = 1
+
+// repObject is a decoded representation object.
+type repObject struct {
+	Kind    repKind
+	Size    int64
+	Members []repMember
+	Recipe  []byte
+	Indexes []repIndex
+}
+
+// repLimits bound every parse and walk; the zero value selects the defaults.
+type repLimits struct {
+	MaxDepth    int   // nesting depth, outermost = 1 (default 3, hard maximum repHardDepth)
+	MaxMembers  int   // members per representation (default 1<<20)
+	MaxRepBytes int64 // serialized representation object (default 64 MiB)
+	MaxWhole    int64 // one whole-component fetch (default 64 MiB)
+	MaxObjects  int   // distinct objects a reachability walk may list (default 1<<22)
+}
+
+// repProdLimits is what every production reader, walker and catalog accepts: all
+// subsystems must agree on the graphs they admit.
+var repProdLimits = repLimits{MaxDepth: repHardDepth}
+
+func (l repLimits) norm() repLimits {
+	if l.MaxDepth <= 0 {
+		l.MaxDepth = 3
+	}
+	l.MaxDepth = min(l.MaxDepth, repHardDepth)
+	if l.MaxMembers <= 0 {
+		l.MaxMembers = 1 << 20
+	}
+	if l.MaxRepBytes <= 0 {
+		l.MaxRepBytes = 64 << 20
+	}
+	if l.MaxWhole <= 0 {
+		l.MaxWhole = 64 << 20
+	}
+	if l.MaxObjects <= 0 {
+		l.MaxObjects = 1 << 22
+	}
+	return l
+}
+
+// validate checks the structural invariants Marshal and Unmarshal share.
+func (r *repObject) validate(lim repLimits) error {
+	lim = lim.norm()
+	if !r.Kind.supported() {
+		return fmt.Errorf("%w: kind %d", errRepUnsupported, r.Kind)
+	}
+	if r.Size < 0 {
+		return repCorrupt("negative size")
+	}
+	if len(r.Members) > lim.MaxMembers {
+		return fmt.Errorf("%w: %d members", errRepLimit, len(r.Members))
+	}
+	sizeOf := map[[32]byte]int64{}
+	var sum int64
+	for i := range r.Members {
+		m := &r.Members[i]
+		if m.Size < 0 {
+			return repCorrupt("member %d: negative length", i)
+		}
+		switch m.Role {
+		case repStored:
+			if prev, ok := sizeOf[m.SHA]; ok && prev != m.Size {
+				return repCorrupt("member %d: component listed with lengths %d and %d", i, prev, m.Size)
+			}
+			sizeOf[m.SHA] = m.Size
+		case repDerived:
+			f := m.Frame
+			if len(f.Prefix) > repMaxPrefix || f.Zeros < 0 || f.Zeros > repMaxZeros {
+				return repCorrupt("member %d: frame bounds", i)
+			}
+			if int64(len(f.Prefix))+int64(f.Zeros) > m.Size {
+				return repCorrupt("member %d: frame exceeds the framed length", i)
+			}
+		case repVia:
+			return repCorrupt("member %d: VIA has no wire form", i)
+		default:
+			return repCorrupt("member %d: role %d", i, m.Role)
+		}
+		if sum > math.MaxInt64-m.Size {
+			return repCorrupt("member lengths overflow")
+		}
+		sum += m.Size
+	}
+	if r.Kind == repKindConcat {
+		if sum != r.Size {
+			return repCorrupt("concat members total %d, size %d", sum, r.Size)
+		}
+		if len(r.Recipe) != 0 || len(r.Indexes) != 0 {
+			return repCorrupt("concat carries a recipe or index")
+		}
+	}
+	if len(r.Indexes) > repMaxIndexes {
+		return repCorrupt("%d index sections", len(r.Indexes))
+	}
+	for i, x := range r.Indexes {
+		if i > 0 && bytes.Compare(r.Indexes[i-1].Ref[:], x.Ref[:]) >= 0 {
+			return repCorrupt("index %d: sections must be strictly ascending by component digest", i)
+		}
+		if x.KeyWidth < 1 || x.KeyWidth > repMaxKeyWidth || x.Count < 1 || x.Count > repMaxIndexCount {
+			return repCorrupt("index %d: geometry %d x %d", i, x.KeyWidth, x.Count)
+		}
+	}
+	return nil
+}
+
+// marshal serialises the representation; the same object always yields the same bytes.
+func (r *repObject) marshal() ([]byte, error) {
+	if err := r.validate(repLimits{MaxMembers: math.MaxInt32}); err != nil {
+		return nil, err
+	}
+	b := make([]byte, 0, 16+len(r.Members)*(repMinMemberWire+1)+len(r.Recipe)+len(r.Indexes)*40)
+	b = append(b, repMagic...)
+	b = append(b, repWireVersion, byte(r.Kind))
+	b = binary.AppendUvarint(b, uint64(r.Size))
+	b = binary.AppendUvarint(b, uint64(len(r.Members)))
+	for i := range r.Members {
+		m := &r.Members[i]
+		b = append(b, byte(m.Role))
+		b = append(b, m.SHA[:]...)
+		b = binary.AppendUvarint(b, uint64(m.Size))
+		if m.Role == repDerived {
+			b = append(b, m.Child[:]...)
+			b = binary.AppendUvarint(b, uint64(len(m.Frame.Prefix)))
+			b = append(b, m.Frame.Prefix...)
+			b = binary.AppendUvarint(b, uint64(m.Frame.Zeros))
+		}
+	}
+	b = binary.AppendUvarint(b, uint64(len(r.Recipe)))
+	b = append(b, r.Recipe...)
+	b = binary.AppendUvarint(b, uint64(len(r.Indexes)))
+	for _, x := range r.Indexes {
+		var fl byte
+		if x.Owns {
+			fl |= repFlagOwns
+		}
+		b = append(b, fl)
+		b = binary.AppendUvarint(b, uint64(x.KeyWidth))
+		b = binary.AppendUvarint(b, uint64(x.Count))
+		b = append(b, x.Ref[:]...)
+	}
+	return b, nil
+}
+
+type repWireReader struct {
+	b   []byte
+	pos int
+	err error
+}
+
+func (r *repWireReader) fail(f string, a ...any) {
+	if r.err == nil {
+		r.err = repCorrupt(f, a...)
+	}
+}
+
+// uv reads a minimal varint no larger than max.
+func (r *repWireReader) uv(max uint64) uint64 {
+	if r.err != nil {
+		return 0
+	}
+	v, n := binary.Uvarint(r.b[r.pos:])
+	if n <= 0 || n != len(binary.AppendUvarint(nil, v)) {
+		r.fail("varint at %d", r.pos)
+		return 0
+	}
+	if v > max {
+		r.fail("value %d above %d at %d", v, max, r.pos)
+		return 0
+	}
+	r.pos += n
+	return v
+}
+
+func (r *repWireReader) take(n int) []byte {
+	if r.err != nil {
+		return nil
+	}
+	if n < 0 || n > len(r.b)-r.pos {
+		r.fail("%d bytes at %d exceed the object", n, r.pos)
+		return nil
+	}
+	s := r.b[r.pos : r.pos+n]
+	r.pos += n
+	return s
+}
+
+func (r *repWireReader) sha() (s [32]byte) {
+	copy(s[:], r.take(32))
+	return s
+}
+
+// unmarshalRep parses and validates one representation object. No allocation
+// is sized by a declared count beyond what the remaining bytes could hold.
+func unmarshalRep(b []byte, lim repLimits) (*repObject, error) {
+	lim = lim.norm()
+	if len(b) < len(repMagic)+2 || string(b[:len(repMagic)]) != repMagic {
+		return nil, repCorrupt("magic")
+	}
+	if b[4] != repWireVersion {
+		return nil, fmt.Errorf("%w: contract version %d", errRepUnsupported, b[4])
+	}
+	if !repKind(b[5]).supported() {
+		return nil, fmt.Errorf("%w: kind %d", errRepUnsupported, b[5])
+	}
+	r := &repWireReader{b: b, pos: 6}
+	rep := &repObject{Kind: repKind(b[5])}
+	rep.Size = int64(r.uv(math.MaxInt64))
+	n := r.uv(math.MaxInt32)
+	if r.err == nil && n > uint64(lim.MaxMembers) {
+		return nil, fmt.Errorf("%w: %d members", errRepLimit, n)
+	}
+	if r.err == nil && n > uint64(len(b)-r.pos)/repMinMemberWire {
+		r.fail("%d members cannot fit in %d bytes", n, len(b)-r.pos)
+	}
+	if r.err == nil {
+		rep.Members = make([]repMember, 0, n)
+	}
+	for i := uint64(0); i < n && r.err == nil; i++ {
+		var m repMember
+		role := r.take(1)
+		if r.err != nil {
+			break
+		}
+		m.Role = repRole(role[0])
+		switch m.Role {
+		case repStored, repDerived:
+		default:
+			r.fail("member %d: role %d", i, role[0])
+			continue
+		}
+		m.SHA = r.sha()
+		m.Size = int64(r.uv(math.MaxInt64))
+		if m.Role == repDerived {
+			m.Child = r.sha()
+			pl := r.uv(repMaxPrefix)
+			m.Frame.Prefix = append([]byte(nil), r.take(int(pl))...)
+			m.Frame.Zeros = int(r.uv(repMaxZeros))
+		}
+		rep.Members = append(rep.Members, m)
+	}
+	rl := r.uv(math.MaxInt32)
+	if r.err == nil && rl > uint64(lim.MaxRepBytes) {
+		return nil, fmt.Errorf("%w: recipe of %d bytes", errRepLimit, rl)
+	}
+	rep.Recipe = append([]byte(nil), r.take(int(rl))...)
+	ni := r.uv(repMaxIndexes)
+	for i := uint64(0); i < ni && r.err == nil; i++ {
+		t := r.take(1)
+		if r.err != nil {
+			break
+		}
+		if t[0]&^repFlagOwns != 0 {
+			r.fail("index %d: flags %#x", i, t[0])
+			break
+		}
+		x := repIndex{Owns: t[0]&repFlagOwns != 0}
+		x.KeyWidth = int(r.uv(repMaxKeyWidth))
+		x.Count = int64(r.uv(repMaxIndexCount))
+		x.Ref = r.sha()
+		rep.Indexes = append(rep.Indexes, x)
+	}
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.pos != len(b) {
+		return nil, repCorrupt("%d trailing bytes", len(b)-r.pos)
+	}
+	if err := rep.validate(lim); err != nil {
+		return nil, err
+	}
+	return rep, nil
+}
+
+// repSource serves SHA-256-addressed logical objects (components, representation
+// objects, index sections) by bounded range. It is the only access a decoder
+// has to stored bytes. Size must be cheap and must not read the object; ReadAt
+// has io.ReaderAt semantics for the one object (a short read returns an error).
+type repSource interface {
+	Size(id [32]byte) (int64, error)
+	ReadAt(id [32]byte, p []byte, off int64) (int, error)
+}
+
+// repTrusted is implemented by sources whose direct components are verified
+// against their digest by the physical read itself.
+type repTrusted interface {
+	DirectVerified(id [32]byte) bool
+}
+
+func repAlreadyVerified(src repSource, id [32]byte) bool {
+	t, ok := src.(repTrusted)
+	return ok && t.DirectVerified(id)
+}
+
+// repPrefetcher is implemented by sources that can fetch an ordered list of
+// upcoming whole components with coalesced physical reads, or a whole set in
+// physical order. Both are hints only.
+type repPrefetcher interface {
+	Prefetch(ids [][32]byte)
+	PrefetchSet(ids [][32]byte)
+}
+
+func repReadFull(src repSource, id [32]byte, p []byte, off int64) error {
+	n, err := src.ReadAt(id, p, off)
+	if n == len(p) {
+		return nil
+	}
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("representation: reading %x: %w", id[:6], err)
+	}
+	return fmt.Errorf("%w: %x returned %d of %d bytes at %d", errRepShort, id[:6], n, len(p), off)
+}
+
+// repReadObject returns the whole object after checking its length against the
+// store, an optional declared length (-1 = none) and max, before allocating.
+// The bytes are hashed against id.
+func repReadObject(src repSource, id [32]byte, declared, max int64) ([]byte, error) {
+	size, err := src.Size(id)
+	if err != nil {
+		return nil, err
+	}
+	if size < 0 || (declared >= 0 && size != declared) {
+		return nil, fmt.Errorf("%w: %x is %d bytes, recipe says %d", errRepMismatch, id[:6], size, declared)
+	}
+	if size > max {
+		return nil, fmt.Errorf("%w: %x is %d bytes (cap %d)", errRepLimit, id[:6], size, max)
+	}
+	b := make([]byte, size)
+	if err := repReadFull(src, id, b, 0); err != nil {
+		return nil, err
+	}
+	if !repAlreadyVerified(src, id) && sha256.Sum256(b) != id {
+		return nil, fmt.Errorf("%w: %x bytes do not hash to their address", errRepMismatch, id[:6])
+	}
+	return b, nil
+}
+
+// repScanIndex reads one record section in bounded pieces, verifying its length
+// against the representation, its SHA-256 against its address and the strict
+// ascending key order, and calls fn for every record.
+func repScanIndex(src repSource, x repIndex, fn func(key []byte, target [32]byte) error) error {
+	if x.Count < 1 || x.Count > repMaxIndexCount || x.KeyWidth < 1 || x.KeyWidth > repMaxKeyWidth {
+		return repCorrupt("index geometry %d x %d", x.KeyWidth, x.Count)
+	}
+	size, err := src.Size(x.Ref)
+	if err != nil {
+		return err
+	}
+	if size != x.bytes() {
+		return fmt.Errorf("%w: index component is %d bytes, recipe says %d", errRepMismatch, size, x.bytes())
+	}
+	w := int64(x.KeyWidth + 32)
+	per := max(int64(1), (64<<10)/w)
+	buf := make([]byte, per*w)
+	h := sha256.New()
+	var prev []byte
+	for rec := int64(0); rec < x.Count; {
+		n := min(per, x.Count-rec)
+		b := buf[:n*w]
+		if err := repReadFull(src, x.Ref, b, rec*w); err != nil {
+			return err
+		}
+		h.Write(b)
+		for i := int64(0); i < n; i++ {
+			r := b[i*w : (i+1)*w]
+			key := r[:x.KeyWidth]
+			if prev != nil && bytes.Compare(prev, key) >= 0 {
+				return repCorrupt("index %x: keys not strictly ascending at record %d", x.Ref[:6], rec+i)
+			}
+			prev = append(prev[:0], key...)
+			var t [32]byte
+			copy(t[:], r[x.KeyWidth:])
+			if err := fn(key, t); err != nil {
+				return err
+			}
+		}
+		rec += n
+	}
+	var sum [32]byte
+	h.Sum(sum[:0])
+	if sum != x.Ref {
+		return fmt.Errorf("%w: index %x bytes do not hash to their address", errRepMismatch, x.Ref[:6])
+	}
+	return nil
+}
+
+// repLookupIndex binary-searches one native index component with bounded reads.
+func repLookupIndex(src repSource, x repIndex, key []byte) (id [32]byte, found bool, err error) {
+	if len(key) != x.KeyWidth {
+		return id, false, nil
+	}
+	size, err := src.Size(x.Ref)
+	if err != nil {
+		return id, false, err
+	}
+	if x.Count < 0 || x.Count > math.MaxInt64/int64(x.KeyWidth+32) || size != x.bytes() {
+		return id, false, fmt.Errorf("%w: index component is %d bytes, recipe says %d records of %d", errRepMismatch, size, x.Count, x.KeyWidth+32)
+	}
+	w := x.KeyWidth + 32
+	rec := make([]byte, w)
+	lo, hi := int64(0), x.Count
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		if err := repReadFull(src, x.Ref, rec, mid*int64(w)); err != nil {
+			return id, false, err
+		}
+		switch c := bytes.Compare(rec[:x.KeyWidth], key); {
+		case c == 0:
+			copy(id[:], rec[x.KeyWidth:])
+			return id, true, nil
+		case c < 0:
+			lo = mid + 1
+		default:
+			hi = mid
+		}
+	}
+	return id, false, nil
+}
+
+// repBuildIndex serialises native index records (key -> component SHA) sorted
+// by key. All keys must have width w.
+func repBuildIndex(w int, pairs map[string][32]byte) ([]byte, int64, error) {
+	keys := make([]string, 0, len(pairs))
+	for k := range pairs {
+		if len(k) != w {
+			return nil, 0, fmt.Errorf("representation: native key of %d bytes in a %d-byte index", len(k), w)
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]byte, 0, len(keys)*(w+32))
+	for _, k := range keys {
+		v := pairs[k]
+		out = append(out, k...)
+		out = append(out, v[:]...)
+	}
+	return out, int64(len(keys)), nil
+}
+
+// repDecoder is a kind's reconstruction logic. It sees only the parsed
+// representation, the bounded source and the writer and keeps no state between
+// calls. Decode writes the exact output progressively; Expand reports the VIA
+// components (those named only inside stored components) without writing.
+type repDecoder interface {
+	Decode(c *repCall) error
+	Expand(c *repCall, emit func([32]byte)) error
+}
+
+// repDecoderFor is the finite kind table: a switch, never a registry.
+func repDecoderFor(k repKind) (repDecoder, bool) {
+	return nil, false
+}
+
+// repEnv is everything a reconstruction or walk needs besides the representation.
+type repEnv struct {
+	Src    repSource
+	Limits repLimits
+
+	noVerify bool // tests only: skip the representation digest check (a hash cycle cannot be built honestly)
+}
+
+// repCall is one decoder invocation.
+type repCall struct {
+	Rep *repObject
+	ID  [32]byte  // the representation object's digest
+	W   io.Writer // nil during Expand
+
+	env      *repEnv
+	depth    int
+	path     [][32]byte // ancestors including ID
+	declared map[[32]byte]int64
+	scratch  []byte
+}
+
+// loadRep fetches a representation object by digest, verifies the digest and
+// parses it.
+func (e *repEnv) loadRep(id [32]byte) (*repObject, error) { return e.load(id, 1, nil) }
+
+func (e *repEnv) load(id [32]byte, depth int, path [][32]byte) (*repObject, error) {
+	lim := e.Limits.norm()
+	if depth > lim.MaxDepth {
+		return nil, fmt.Errorf("%w: %x at depth %d (maximum %d)", errRepDepth, id[:6], depth, lim.MaxDepth)
+	}
+	for _, p := range path {
+		if p == id {
+			return nil, fmt.Errorf("%w: %x", errRepCycle, id[:6])
+		}
+	}
+	size, err := e.Src.Size(id)
+	if err != nil {
+		return nil, err
+	}
+	if size < 0 || size > lim.MaxRepBytes {
+		return nil, fmt.Errorf("%w: representation %x is %d bytes", errRepLimit, id[:6], size)
+	}
+	b := make([]byte, size)
+	if err := repReadFull(e.Src, id, b, 0); err != nil {
+		return nil, err
+	}
+	if !e.noVerify && sha256.Sum256(b) != id {
+		return nil, fmt.Errorf("%w: representation %x does not hash to its address", errRepMismatch, id[:6])
+	}
+	return unmarshalRep(b, lim)
+}
+
+func (e *repEnv) decoder(k repKind) (repDecoder, error) {
+	if d, ok := repDecoderFor(k); ok {
+		return d, nil
+	}
+	return nil, fmt.Errorf("%w: no decoder for kind %d", errRepUnsupported, k)
+}
+
+func (e *repEnv) call(id [32]byte, rep *repObject, depth int, path [][32]byte, w io.Writer) *repCall {
+	p := make([][32]byte, len(path)+1)
+	copy(p, path)
+	p[len(path)] = id
+	return &repCall{Rep: rep, ID: id, W: w, env: e, depth: depth, path: p}
+}
+
+// reconstruct writes the exact output of representation id to w and returns its
+// length and SHA-256 for the caller to compare with the object's identity.
+// Bytes are written before the final checks complete: on error the caller
+// discards what was written. There is no fallback inside the decoder.
+func (e *repEnv) reconstruct(id [32]byte, w io.Writer) (int64, [32]byte, error) {
+	rep, err := e.load(id, 1, nil)
+	if err != nil {
+		return 0, [32]byte{}, err
+	}
+	h := sha256.New()
+	if err := e.run(id, rep, 1, nil, io.MultiWriter(w, h)); err != nil {
+		return 0, [32]byte{}, err
+	}
+	var sum [32]byte
+	h.Sum(sum[:0])
+	return rep.Size, sum, nil
+}
+
+// repBound is the writer every decoder gets: it refuses output beyond the
+// declared size, so a hostile recipe cannot produce unbounded bytes.
+type repBound struct {
+	w    io.Writer
+	n    int64
+	max  int64
+	werr error // the destination's own failure: never reclassified as corruption
+}
+
+func (b *repBound) Write(p []byte) (int, error) {
+	if int64(len(p)) > b.max-b.n {
+		return 0, fmt.Errorf("%w: output exceeds the declared %d bytes", errRepMismatch, b.max)
+	}
+	n, err := b.w.Write(p)
+	if err != nil {
+		b.werr = err
+	}
+	if n < 0 || n > len(p) {
+		return 0, fmt.Errorf("representation: writer returned %d for %d bytes", n, len(p))
+	}
+	b.n += int64(n)
+	if err == nil && n < len(p) {
+		err = io.ErrShortWrite
+	}
+	return n, err
+}
+
+func (e *repEnv) run(id [32]byte, rep *repObject, depth int, path [][32]byte, w io.Writer) error {
+	bw := &repBound{w: w, max: rep.Size}
+	c := e.call(id, rep, depth, path, bw)
+	var err error
+	if rep.Kind == repKindConcat {
+		err = c.decodeConcat()
+	} else {
+		var d repDecoder
+		if d, err = e.decoder(rep.Kind); err == nil {
+			err = d.Decode(c)
+		}
+	}
+	if err != nil {
+		if bw.werr == nil {
+			err = repClassify(rep.Kind, err)
+		}
+		return err
+	}
+	if bw.n != rep.Size {
+		return fmt.Errorf("%w: wrote %d bytes, representation declares %d", errRepMismatch, bw.n, rep.Size)
+	}
+	return nil
+}
+
+// repClassify keeps a decoder's failure inside the contract's error classes. A
+// kind reports its own errors; one that carries no generic sentinel is a recipe
+// or component the decoder could not accept, i.e. corrupt. Both stay visible to
+// errors.Is, and destination-writer failures are not reclassified.
+func repClassify(k repKind, err error) error {
+	for _, s := range []error{errRepCorrupt, errRepUnsupported, errRepLimit, errRepMissing, errRepMismatch, errRepShort, errRepAmbiguous} {
+		if errors.Is(err, s) {
+			return err
+		}
+	}
+	return fmt.Errorf("%w: kind %d: %w", errRepCorrupt, k, err)
+}
+
+func (c *repCall) decodeConcat() error {
+	for i := range c.Rep.Members {
+		if i%32 == 0 {
+			c.prefetchFrom(i, 32)
+		}
+		if err := c.writeMember(&c.Rep.Members[i], c.W); err != nil {
+			return fmt.Errorf("member %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// prefetchFrom hints the next n stored members to a coalescing source.
+func (c *repCall) prefetchFrom(i, n int) {
+	p, ok := c.env.Src.(repPrefetcher)
+	if !ok {
+		return
+	}
+	var ids [][32]byte
+	for j := i; j < len(c.Rep.Members) && len(ids) < n; j++ {
+		if m := &c.Rep.Members[j]; m.Role == repStored && m.Size > 0 && m.Size <= repDirectMax {
+			ids = append(ids, m.SHA)
+		}
+	}
+	if len(ids) > 1 {
+		p.Prefetch(ids)
+	}
+}
+
+// prefetchSet hints a coalescing source to load a whole set in physical order.
+func (c *repCall) prefetchSet(ids [][32]byte) {
+	if p, ok := c.env.Src.(repPrefetcher); ok && len(ids) > 1 {
+		p.PrefetchSet(ids)
+	}
+}
+
+// prefetch hints a coalescing source about upcoming direct components.
+func (c *repCall) prefetch(ids [][32]byte) {
+	if p, ok := c.env.Src.(repPrefetcher); ok && len(ids) > 1 {
+		p.Prefetch(ids)
+	}
+}
+
+// WriteMember streams member i to w in bounded pieces.
+func (c *repCall) writeMemberAt(i int, w io.Writer) error {
+	if i < 0 || i >= len(c.Rep.Members) {
+		return repCorrupt("member %d of %d", i, len(c.Rep.Members))
+	}
+	return c.writeMember(&c.Rep.Members[i], w)
+}
+
+func (c *repCall) writeMember(m *repMember, w io.Writer) error {
+	if m.Role == repDerived {
+		return c.streamDerived(m, w)
+	}
+	return c.streamStored(m, w)
+}
+
+// streamStored copies one component to w in bounded pieces, checking its length
+// before the first read and its SHA-256 after the last.
+func (c *repCall) streamStored(m *repMember, w io.Writer) error {
+	size, err := c.env.Src.Size(m.SHA)
+	if err != nil {
+		return err
+	}
+	if size != m.Size {
+		return fmt.Errorf("%w: %x is %d bytes, recipe says %d", errRepMismatch, m.SHA[:6], size, m.Size)
+	}
+	if c.scratch == nil {
+		c.scratch = make([]byte, 64<<10)
+	}
+	verified := repAlreadyVerified(c.env.Src, m.SHA)
+	h := sha256.New()
+	for off := int64(0); off < size; {
+		n := int(min(int64(len(c.scratch)), size-off))
+		if err := repReadFull(c.env.Src, m.SHA, c.scratch[:n], off); err != nil {
+			return err
+		}
+		if !verified {
+			h.Write(c.scratch[:n])
+		}
+		if _, err := w.Write(c.scratch[:n]); err != nil {
+			return err
+		}
+		off += int64(n)
+	}
+	if verified {
+		return nil
+	}
+	var sum [32]byte
+	h.Sum(sum[:0])
+	if sum != m.SHA {
+		return fmt.Errorf("%w: %x bytes do not hash to their address", errRepMismatch, m.SHA[:6])
+	}
+	return nil
+}
+
+var repZeroBlock [4096]byte
+
+// streamDerived produces a derived member: the child representation is loaded
+// and verified by digest, reconstructed progressively between the frame's
+// prefix and zero suffix, and the whole is checked against the member's length
+// and SHA-256.
+func (c *repCall) streamDerived(m *repMember, w io.Writer) error {
+	child, err := c.env.load(m.Child, c.depth+1, c.path)
+	if err != nil {
+		return fmt.Errorf("child %x: %w", m.Child[:6], err)
+	}
+	f := m.Frame
+	if int64(len(f.Prefix))+child.Size+int64(f.Zeros) != m.Size {
+		return fmt.Errorf("%w: child %x is %d bytes, framed length %d (prefix %d, zeros %d)", errRepMismatch, m.Child[:6], child.Size, m.Size, len(f.Prefix), f.Zeros)
+	}
+	h := sha256.New()
+	cw := &repBound{w: io.MultiWriter(w, h), max: m.Size}
+	if _, err := cw.Write(f.Prefix); err != nil {
+		return err
+	}
+	if err := c.env.run(m.Child, child, c.depth+1, c.path, cw); err != nil {
+		return fmt.Errorf("child %x: %w", m.Child[:6], err)
+	}
+	for z := f.Zeros; z > 0; {
+		n := min(z, len(repZeroBlock))
+		if _, err := cw.Write(repZeroBlock[:n]); err != nil {
+			return err
+		}
+		z -= n
+	}
+	if cw.n != m.Size {
+		return fmt.Errorf("%w: derived member wrote %d of %d bytes", errRepMismatch, cw.n, m.Size)
+	}
+	var sum [32]byte
+	h.Sum(sum[:0])
+	if sum != m.SHA {
+		return fmt.Errorf("%w: child %x output does not hash to the member digest", errRepMismatch, m.Child[:6])
+	}
+	return nil
+}
+
+// get fetches one whole component by digest for decoders that need all its
+// bytes. The length is checked against the recipe when the representation
+// lists the component, the cap is Limits.MaxWhole, and the bytes are hashed.
+func (c *repCall) get(id [32]byte) ([]byte, error) {
+	if c.declared == nil {
+		c.declared = make(map[[32]byte]int64, len(c.Rep.Members))
+		for i := range c.Rep.Members {
+			if m := &c.Rep.Members[i]; m.Role == repStored {
+				c.declared[m.SHA] = m.Size
+			}
+		}
+	}
+	decl := int64(-1)
+	if s, ok := c.declared[id]; ok {
+		decl = s
+	}
+	return repReadObject(c.env.Src, id, decl, c.env.Limits.norm().MaxWhole)
+}
+
+// getExact is get for a component the representation does not list as a
+// member (a VIA component named by a table): the length must equal declared,
+// which the decoder took from its own stored table, before any byte is read.
+func (c *repCall) getExact(id [32]byte, declared int64) ([]byte, error) {
+	if declared < 0 {
+		return nil, repCorrupt("negative declared length")
+	}
+	return repReadObject(c.env.Src, id, declared, c.env.Limits.norm().MaxWhole)
+}
+
+// getAny is get for a component whose length only the store knows.
+func (c *repCall) getAny(id [32]byte) ([]byte, error) {
+	return repReadObject(c.env.Src, id, -1, c.env.Limits.norm().MaxWhole)
+}
+
+// member returns the exact bytes of member i: a stored component, or a derived
+// member rebuilt from its child (bounded by Limits.MaxWhole).
+func (c *repCall) member(i int) ([]byte, error) {
+	if i < 0 || i >= len(c.Rep.Members) {
+		return nil, repCorrupt("member %d of %d", i, len(c.Rep.Members))
+	}
+	m := &c.Rep.Members[i]
+	if m.Role == repStored {
+		return c.get(m.SHA)
+	}
+	if m.Size > c.env.Limits.norm().MaxWhole {
+		return nil, fmt.Errorf("%w: derived member %d is %d bytes", errRepLimit, i, m.Size)
+	}
+	var buf bytes.Buffer
+	if err := c.streamDerived(m, &buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// resolve maps a native identity to the component holding it by searching this
+// representation's own record sections. Sections that disagree make the
+// identity ambiguous: the answer is errRepAmbiguous, never a silent pick.
+func (c *repCall) resolve(native []byte) (id [32]byte, found bool, err error) {
+	for _, x := range c.Rep.Indexes {
+		if len(native) != x.KeyWidth {
+			continue
+		}
+		v, ok, err := repLookupIndex(c.env.Src, x, native)
+		if err != nil {
+			return [32]byte{}, false, err
+		}
+		if !ok {
+			continue
+		}
+		if found && v != id {
+			return [32]byte{}, false, fmt.Errorf("%w: %x", errRepAmbiguous, native[:min(len(native), 6)])
+		}
+		id, found = v, true
+	}
+	return id, found, nil
+}
+
+// open loads a representation for partial reads (no output is written).
+func (e *repEnv) open(id [32]byte) (*repCall, error) {
+	rep, err := e.load(id, 1, nil)
+	if err != nil {
+		return nil, err
+	}
+	return e.call(id, rep, 1, nil, nil), nil
+}
+
+// ---- reachability -----------------------------------------------------------
+
+// repDepRole classifies an object a representation needs to stay alive.
+type repDepRole uint8
+
+const (
+	repDepRep    repDepRole = iota + 1 // a representation object (the top one or a child)
+	repDepTable                        // a STORED member of a format kind: a table or node
+	repDepStored                       // a STORED member of a concat representation: payload
+	repDepVia                          // a component named only inside a stored component
+	repDepOwned                        // a record target kept alive by an owning section
+	repDepIndex                        // a record section component
+)
+
+func (r repDepRole) String() string {
+	return [...]string{"?", "rep", "table", "stored", "via", "owned", "index"}[min(r, 6)]
+}
+
+// repReach is the transitive SHA-256 dependency set of representations.
+type repReach struct {
+	Role    map[[32]byte]repDepRole
+	Order   []([32]byte) // first-seen order: deterministic for one source
+	Derived int
+	// Height is, per representation, the nesting depth of its own subtree. A
+	// representation shared by several parents is walked once, so each further
+	// use is checked against this instead of being re-walked: liveness never
+	// depends on the order of the root set.
+	Height map[[32]byte]int
+}
+
+func (r *repReach) add(id [32]byte, role repDepRole, max int) error {
+	if _, ok := r.Role[id]; ok {
+		return nil
+	}
+	if len(r.Role) >= max {
+		return fmt.Errorf("%w: more than %d objects", errRepLimit, max)
+	}
+	r.Role[id] = role
+	r.Order = append(r.Order, id)
+	return nil
+}
+
+func (r *repReach) count(role repDepRole) (n int) {
+	for _, v := range r.Role {
+		if v == role {
+			n++
+		}
+	}
+	return n
+}
+
+// reachable returns every object needed to rebuild representation id.
+func (e *repEnv) reachable(id [32]byte) (*repReach, error) { return e.reachableAll([][32]byte{id}) }
+
+// reachableAll is the mark phase: the exact object set kept alive by a set of
+// live top-level representations. Shared representations are walked once.
+func (e *repEnv) reachableAll(ids [][32]byte) (*repReach, error) {
+	r := &repReach{Role: map[[32]byte]repDepRole{}, Height: map[[32]byte]int{}}
+	return r, e.reachInto(r, ids)
+}
+
+// reachInto adds ids to an existing reach set.
+func (e *repEnv) reachInto(r *repReach, ids [][32]byte) error {
+	for _, id := range ids {
+		if err := e.walk(r, id, 1, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *repEnv) walk(r *repReach, id [32]byte, depth int, path [][32]byte) error {
+	lim := e.Limits.norm()
+	for _, p := range path {
+		if p == id {
+			return fmt.Errorf("%w: %x", errRepCycle, id[:6])
+		}
+	}
+	if _, seen := r.Role[id]; seen {
+		// Shared descendant: its objects are already counted, but this use may sit
+		// deeper than the first one did, and reconstruction through it must stay
+		// within the limit.
+		if h := r.Height[id]; depth+h-1 > lim.MaxDepth {
+			return fmt.Errorf("%w: %x reaches depth %d (maximum %d)", errRepDepth, id[:6], depth+h-1, lim.MaxDepth)
+		}
+		return nil
+	}
+	rep, err := e.load(id, depth, path)
+	if err != nil {
+		return err
+	}
+	if err := r.add(id, repDepRep, lim.MaxObjects); err != nil {
+		return err
+	}
+	c := e.call(id, rep, depth, path, nil)
+	member := repDepStored
+	if rep.Kind != repKindConcat {
+		member = repDepTable
+	}
+	height := 1
+	for i := range rep.Members {
+		m := &rep.Members[i]
+		if m.Role == repDerived {
+			r.Derived++
+			if err := e.walk(r, m.Child, depth+1, c.path); err != nil {
+				return fmt.Errorf("child %x: %w", m.Child[:6], err)
+			}
+			if h := 1 + r.Height[m.Child]; h > height {
+				height = h
+			}
+			continue
+		}
+		if err := r.add(m.SHA, member, lim.MaxObjects); err != nil {
+			return err
+		}
+	}
+	owning := false
+	for _, x := range rep.Indexes {
+		if err := r.add(x.Ref, repDepIndex, lim.MaxObjects); err != nil {
+			return err
+		}
+		if !x.Owns {
+			continue
+		}
+		owning = true
+		var addErr error
+		if err := repScanIndex(e.Src, x, func(_ []byte, v [32]byte) error {
+			addErr = r.add(v, repDepOwned, lim.MaxObjects)
+			return addErr
+		}); err != nil {
+			return err
+		}
+	}
+	if rep.Kind != repKindConcat && !owning {
+		d, err := e.decoder(rep.Kind)
+		if err != nil {
+			return err
+		}
+		var addErr error
+		if err := d.Expand(c, func(s [32]byte) {
+			if addErr == nil {
+				addErr = r.add(s, repDepVia, lim.MaxObjects)
+			}
+		}); err != nil {
+			return repClassify(rep.Kind, err)
+		}
+		if addErr != nil {
+			return addErr
+		}
+	}
+	r.Height[id] = height
+	return nil
+}
+
+// ---- native catalog ---------------------------------------------------------
+
+// repCatalog is the derived, rebuildable native-identity accelerator:
+//
+//	native key -> owning record sections -> SHA-256
+//
+// The canonical truth is the record sections that live representations
+// reference; the catalog holds nothing else, never keeps content alive and can
+// be discarded at any time (rebuild from the live roots). A representation never
+// needs it to decode (repCall.resolve searches the representation's own
+// sections), so a stale or missing entry only costs a missed reuse. It holds no
+// persisted state and decoders never consult it.
+type repCatalog struct {
+	env    *repEnv
+	src    repSource
+	domain func(*repObject, repIndex) string
+
+	roots map[[32]byte][][32]byte  // live root -> representations of its tree that own sections
+	reps  map[[32]byte]*repCatRep  // representation -> its sections, with the number of roots holding it
+	secs  map[[32]byte]*repCatSec  // section component -> records and the representations listing it
+	idx   map[string][]repCatEntry // domain || key -> owning sections
+}
+
+type repCatRep struct {
+	rep   *repObject
+	roots int
+}
+
+type repCatSec struct {
+	domain string
+	keys   [][]byte
+	reps   map[[32]byte]int
+}
+
+type repCatEntry struct {
+	sec    [32]byte
+	target [32]byte
+}
+
+// repOwner is one record that maps a key: the section holding it, the SHA-256
+// it names and the representations that list the section.
+type repOwner struct {
+	Section [32]byte
+	Target  [32]byte
+	Reps    [][32]byte
+}
+
+// repDefaultDomain separates native identities by kind and key width.
+func repDefaultDomain(rep *repObject, x repIndex) string {
+	return fmt.Sprintf("k%d/w%d", rep.Kind, x.KeyWidth)
+}
+
+func newRepCatalog(src repSource) *repCatalog {
+	return &repCatalog{src: src, env: &repEnv{Src: src, Limits: repProdLimits}, domain: repDefaultDomain,
+		roots: map[[32]byte][][32]byte{}, reps: map[[32]byte]*repCatRep{}, secs: map[[32]byte]*repCatSec{}, idx: map[string][]repCatEntry{}}
+}
+
+// rebuildRepCatalog is the restart path: a fresh catalog from the live roots only.
+func rebuildRepCatalog(src repSource, roots [][32]byte) (*repCatalog, error) {
+	c := newRepCatalog(src)
+	for _, r := range roots {
+		if err := c.ingest(r); err != nil {
+			return nil, fmt.Errorf("rebuilding from root %x: %w", r[:6], err)
+		}
+	}
+	return c, nil
+}
+
+func (c *repCatalog) tree(root [32]byte) (map[[32]byte]*repObject, error) {
+	out := map[[32]byte]*repObject{}
+	height := map[[32]byte]int{}
+	maxDepth := c.env.Limits.norm().MaxDepth
+	var visit func(id [32]byte, depth int, path [][32]byte) (int, error)
+	visit = func(id [32]byte, depth int, path [][32]byte) (int, error) {
+		for _, p := range path {
+			if p == id { // checked before the shared-descendant shortcut: a node in progress is not done
+				return 0, fmt.Errorf("%w: %x", errRepCycle, id[:6])
+			}
+		}
+		if _, ok := out[id]; ok {
+			// a shared descendant is read once; each further use is checked against its height
+			if h := height[id]; depth+h-1 > maxDepth {
+				return 0, fmt.Errorf("%w: %x reaches depth %d (maximum %d)", errRepDepth, id[:6], depth+h-1, maxDepth)
+			}
+			return height[id], nil
+		}
+		rep, err := c.env.load(id, depth, path)
+		if err != nil {
+			return 0, err
+		}
+		out[id] = rep
+		p := append(append([][32]byte(nil), path...), id)
+		h := 1
+		for i := range rep.Members {
+			if rep.Members[i].Role == repDerived {
+				ch, err := visit(rep.Members[i].Child, depth+1, p)
+				if err != nil {
+					return 0, err
+				}
+				if ch+1 > h {
+					h = ch + 1
+				}
+			}
+		}
+		height[id] = h
+		return h, nil
+	}
+	_, err := visit(root, 1, nil)
+	return out, err
+}
+
+// ingest makes root a live root: every record section its representation tree
+// lists is verified and read once, and its records become lookups. A missing or
+// corrupt representation or section fails the whole call and leaves the catalog
+// unchanged. Ingesting a live root again changes nothing.
+func (c *repCatalog) ingest(root [32]byte) error {
+	if _, ok := c.roots[root]; ok {
+		return nil
+	}
+	reps, err := c.tree(root)
+	if err != nil {
+		return err
+	}
+	loaded := map[[32]byte]*repCatSec{}
+	type rec struct {
+		sec    [32]byte
+		key    []byte
+		target [32]byte
+	}
+	var recs []rec
+	for _, rep := range reps {
+		for _, x := range rep.Indexes {
+			if _, ok := c.secs[x.Ref]; ok {
+				continue
+			}
+			if _, ok := loaded[x.Ref]; ok {
+				continue
+			}
+			s := &repCatSec{domain: c.domain(rep, x), reps: map[[32]byte]int{}}
+			loaded[x.Ref] = s
+			if err := repScanIndex(c.src, x, func(k []byte, t [32]byte) error {
+				kk := append([]byte(nil), k...)
+				s.keys = append(s.keys, kk)
+				recs = append(recs, rec{x.Ref, kk, t})
+				return nil
+			}); err != nil {
+				return fmt.Errorf("section %x: %w", x.Ref[:6], err)
+			}
+		}
+	}
+	for ref, s := range loaded {
+		c.secs[ref] = s
+	}
+	for _, r := range recs {
+		k := c.secs[r.sec].domain + "\x00" + string(r.key)
+		c.idx[k] = append(c.idx[k], repCatEntry{r.sec, r.target})
+	}
+	var owners [][32]byte
+	for id, rep := range reps {
+		if len(rep.Indexes) == 0 {
+			continue
+		}
+		owners = append(owners, id)
+		cr := c.reps[id]
+		if cr == nil {
+			cr = &repCatRep{rep: rep}
+			c.reps[id] = cr
+			for _, x := range rep.Indexes {
+				c.secs[x.Ref].reps[id]++
+			}
+		}
+		cr.roots++
+	}
+	sort.Slice(owners, func(i, j int) bool { return bytes.Compare(owners[i][:], owners[j][:]) < 0 })
+	c.roots[root] = owners
+	return nil
+}
+
+// remove ends root's ownership. Mappings whose last owning section was only
+// listed by representations of this root's tree disappear.
+func (c *repCatalog) remove(root [32]byte) {
+	owners, ok := c.roots[root]
+	if !ok {
+		return
+	}
+	delete(c.roots, root)
+	for _, id := range owners {
+		cr := c.reps[id]
+		cr.roots--
+		if cr.roots > 0 {
+			continue
+		}
+		delete(c.reps, id)
+		for _, x := range cr.rep.Indexes {
+			s := c.secs[x.Ref]
+			delete(s.reps, id)
+			if len(s.reps) == 0 {
+				c.dropSection(x.Ref, s)
+			}
+		}
+	}
+}
+
+func (c *repCatalog) dropSection(ref [32]byte, s *repCatSec) {
+	for _, k := range s.keys {
+		key := s.domain + "\x00" + string(k)
+		es := c.idx[key]
+		out := es[:0]
+		for _, e := range es {
+			if e.sec != ref {
+				out = append(out, e)
+			}
+		}
+		if len(out) == 0 {
+			delete(c.idx, key)
+		} else {
+			c.idx[key] = out
+		}
+	}
+	delete(c.secs, ref)
+}
+
+// owners lists the records that map key in domain, one per owning section.
+func (c *repCatalog) owners(domain string, key []byte) []repOwner {
+	var out []repOwner
+	for _, e := range c.idx[domain+"\x00"+string(key)] {
+		o := repOwner{Section: e.sec, Target: e.target}
+		for r := range c.secs[e.sec].reps {
+			o.Reps = append(o.Reps, r)
+		}
+		sort.Slice(o.Reps, func(i, j int) bool { return bytes.Compare(o.Reps[i][:], o.Reps[j][:]) < 0 })
+		out = append(out, o)
+	}
+	return out
+}
+
+// resolve returns the component a native identity maps to. Several owners that
+// agree are one answer; owners that disagree return errRepAmbiguous: a native
+// identity is a hint and the catalog never picks between different components.
+func (c *repCatalog) resolve(domain string, key []byte) ([32]byte, bool, error) {
+	es := c.idx[domain+"\x00"+string(key)]
+	if len(es) == 0 {
+		return [32]byte{}, false, nil
+	}
+	t := es[0].target
+	for _, e := range es[1:] {
+		if e.target != t {
+			return [32]byte{}, false, fmt.Errorf("%w: %x", errRepAmbiguous, key[:min(len(key), 6)])
+		}
+	}
+	return t, true, nil
+}
+
+// inSection reports whether the section component ref holds a record for key.
+func (c *repCatalog) inSection(domain string, key []byte, ref [32]byte) bool {
+	for _, e := range c.idx[domain+"\x00"+string(key)] {
+		if e.sec == ref {
+			return true
+		}
+	}
+	return false
+}
+
+// mappings is the canonical dump: key -> the distinct targets, sorted. Two
+// catalogs with equal mappings answer every lookup alike.
+func (c *repCatalog) mappings() map[string][][32]byte {
+	out := make(map[string][][32]byte, len(c.idx))
+	for k, es := range c.idx {
+		seen := map[[32]byte]bool{}
+		var ts [][32]byte
+		for _, e := range es {
+			if !seen[e.target] {
+				seen[e.target] = true
+				ts = append(ts, e.target)
+			}
+		}
+		sort.Slice(ts, func(i, j int) bool { return bytes.Compare(ts[i][:], ts[j][:]) < 0 })
+		out[k] = ts
+	}
+	return out
+}
+
+// sections returns the record sections a live representation lists.
+func (c *repCatalog) sections(rep [32]byte) []repIndex {
+	if cr := c.reps[rep]; cr != nil {
+		return append([]repIndex(nil), cr.rep.Indexes...)
+	}
+	return nil
+}
+
+func (c *repCatalog) entries() int   { return len(c.idx) }
+func (c *repCatalog) nSections() int { return len(c.secs) }
+func (c *repCatalog) records() (n int) {
+	for _, es := range c.idx {
+		n += len(es)
+	}
+	return n
+}
+
+// ---- virtual components and the representation root --------------------------
+
+// A logical component of at most repDirectMax bytes is one ordinary CAS chunk
+// whose digest is the component SHA-256 (no descriptor). A larger component is
+// virtual: a flat, ordered descriptor of ordinary production CDC chunks, with
+// the logical identity still SHA-256 of the exact component bytes. Empty
+// components have no physical object.
+const (
+	repMaxDescRefs = 1 << 16
+	repMaxDescSize = int64(repMaxDescRefs) * repDirectMax
+	repMaxRootSize = 64 << 20
+)
+
+var repEmptySHA = sha256.Sum256(nil)
+
+var errRepDescriptor = fmt.Errorf("%w: bad descriptor or root", errRepCorrupt)
+
+type repChunkRef struct {
+	SHA [32]byte
+	Len uint32
+}
+
+// repDesc maps a virtual logical component onto ordinary production chunks.
+type repDesc struct {
+	Size int64
+	Refs []repChunkRef
+	offs []int64 // cumulative start offsets, derived on demand
+}
+
+func (d *repDesc) validate() error {
+	if d.Size <= repDirectMax || d.Size > repMaxDescSize {
+		return fmt.Errorf("%w: virtual component of %d bytes", errRepDescriptor, d.Size)
+	}
+	defer func() {
+		if d.offs == nil { // computed once, before the descriptor is shared
+			d.offs = d.computeOffsets()
+		}
+	}()
+	if n := len(d.Refs); n < 2 || n > repMaxDescRefs {
+		return fmt.Errorf("%w: %d refs", errRepDescriptor, n)
+	}
+	var sum int64
+	for _, r := range d.Refs {
+		if r.Len < 1 || r.Len > repDirectMax {
+			return fmt.Errorf("%w: chunk length %d", errRepDescriptor, r.Len)
+		}
+		sum += int64(r.Len)
+	}
+	if sum != d.Size {
+		return fmt.Errorf("%w: refs sum to %d, size says %d", errRepDescriptor, sum, d.Size)
+	}
+	return nil
+}
+
+func (d *repDesc) appendTo(b []byte) []byte {
+	b = binary.AppendUvarint(b, uint64(d.Size))
+	b = binary.AppendUvarint(b, uint64(len(d.Refs)))
+	for _, r := range d.Refs {
+		b = append(b, r.SHA[:]...)
+		b = binary.AppendUvarint(b, uint64(r.Len))
+	}
+	return b
+}
+
+func repMinUvarint(b []byte) (uint64, int, error) {
+	v, n := binary.Uvarint(b)
+	if n <= 0 || n != len(binary.AppendUvarint(nil, v)) {
+		return 0, 0, fmt.Errorf("%w: bad varint", errRepDescriptor)
+	}
+	return v, n, nil
+}
+
+// parseRepDesc parses one descriptor from the front of b and returns the bytes
+// consumed. Allocation is bounded by len(b), never by a declared count.
+func parseRepDesc(b []byte) (*repDesc, int, error) {
+	size, n, err := repMinUvarint(b)
+	if err != nil {
+		return nil, 0, err
+	}
+	pos := n
+	count, n, err := repMinUvarint(b[pos:])
+	if err != nil {
+		return nil, 0, err
+	}
+	pos += n
+	if size > uint64(repMaxDescSize) || count > repMaxDescRefs || count > uint64(len(b)-pos)/33 {
+		return nil, 0, fmt.Errorf("%w: size %d count %d", errRepDescriptor, size, count)
+	}
+	d := &repDesc{Size: int64(size), Refs: make([]repChunkRef, 0, count)}
+	for i := uint64(0); i < count; i++ {
+		if len(b)-pos < 33 {
+			return nil, 0, fmt.Errorf("%w: truncated", errRepDescriptor)
+		}
+		var r repChunkRef
+		copy(r.SHA[:], b[pos:])
+		pos += 32
+		l, n, err := repMinUvarint(b[pos:])
+		if err != nil {
+			return nil, 0, err
+		}
+		pos += n
+		if l > repDirectMax {
+			return nil, 0, fmt.Errorf("%w: chunk length %d", errRepDescriptor, l)
+		}
+		r.Len = uint32(l)
+		d.Refs = append(d.Refs, r)
+	}
+	if err := d.validate(); err != nil {
+		return nil, 0, err
+	}
+	return d, pos, nil
+}
+
+func (d *repDesc) computeOffsets() []int64 {
+	o := make([]int64, len(d.Refs)+1)
+	for i, r := range d.Refs {
+		o[i+1] = o[i] + int64(r.Len)
+	}
+	return o
+}
+
+// offsets returns the cumulative start offset of every ref. Validated descriptors
+// carry them; the fallback never mutates, so shared descriptors stay race-free.
+func (d *repDesc) offsets() []int64 {
+	if d.offs != nil {
+		return d.offs
+	}
+	return d.computeOffsets()
+}
+
+// repRoot is the optional metadata that attaches a representation to one
+// immutable manifest. It carries the descriptors of every virtual component in
+// the representation's closure, so it is independently readable.
+//
+//	"ZS3T" | version (1 B) | uvarint(len) manifest UUID | object SHA-256 |
+//	uvarint(object size) | representation SHA-256 |
+//	uvarint(n) { component SHA-256 | descriptor } ascending | CRC32C (LE)
+type repRoot struct {
+	ManifestUUID string
+	ObjSHA       [32]byte
+	ObjSize      int64
+	Rep          [32]byte
+	Descs        map[[32]byte]*repDesc
+}
+
+const (
+	repRootMagic   = "ZS3T"
+	repRootVersion = 1
+	repMaxUUIDLen  = 64
+)
+
+func sortedSHAKeys[V any](m map[[32]byte]V) [][32]byte {
+	ids := make([][32]byte, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return bytes.Compare(ids[i][:], ids[j][:]) < 0 })
+	return ids
+}
+
+// marshal is canonical: descriptors in ascending logical-SHA order, CRC32C trailer.
+func (r *repRoot) marshal() ([]byte, error) {
+	if len(r.ManifestUUID) == 0 || len(r.ManifestUUID) > repMaxUUIDLen || r.ObjSize < 0 {
+		return nil, fmt.Errorf("%w: manifest identity or size", errRepDescriptor)
+	}
+	b := append([]byte(repRootMagic), repRootVersion)
+	b = binary.AppendUvarint(b, uint64(len(r.ManifestUUID)))
+	b = append(b, r.ManifestUUID...)
+	b = append(b, r.ObjSHA[:]...)
+	b = binary.AppendUvarint(b, uint64(r.ObjSize))
+	b = append(b, r.Rep[:]...)
+	ids := sortedSHAKeys(r.Descs)
+	b = binary.AppendUvarint(b, uint64(len(ids)))
+	for _, id := range ids {
+		d := r.Descs[id]
+		if err := d.validate(); err != nil {
+			return nil, err
+		}
+		b = append(b, id[:]...)
+		b = d.appendTo(b)
+	}
+	if len(b) > repMaxRootSize {
+		return nil, fmt.Errorf("%w: root of %d bytes", errRepLimit, len(b))
+	}
+	return binary.LittleEndian.AppendUint32(b, crc32.Checksum(b, castagnoliTable)), nil
+}
+
+// unmarshalRepRoot parses and fully validates a root; it never panics on hostile bytes.
+func unmarshalRepRoot(b []byte) (*repRoot, error) {
+	if len(b) < len(repRootMagic)+1+4 || len(b) > repMaxRootSize {
+		return nil, fmt.Errorf("%w: root length %d", errRepDescriptor, len(b))
+	}
+	body, tail := b[:len(b)-4], b[len(b)-4:]
+	if crc32.Checksum(body, castagnoliTable) != binary.LittleEndian.Uint32(tail) {
+		return nil, fmt.Errorf("%w: root checksum", errRepDescriptor)
+	}
+	if string(body[:4]) != repRootMagic {
+		return nil, fmt.Errorf("%w: root magic", errRepDescriptor)
+	}
+	if body[4] != repRootVersion {
+		return nil, fmt.Errorf("%w: root version %d", errRepUnsupported, body[4])
+	}
+	pos := 5
+	ulen, n, err := repMinUvarint(body[pos:])
+	if err != nil {
+		return nil, err
+	}
+	pos += n
+	if ulen == 0 || ulen > repMaxUUIDLen || uint64(len(body)-pos) < ulen+32 {
+		return nil, fmt.Errorf("%w: manifest identity", errRepDescriptor)
+	}
+	r := &repRoot{ManifestUUID: string(body[pos : pos+int(ulen)]), Descs: map[[32]byte]*repDesc{}}
+	pos += int(ulen)
+	copy(r.ObjSHA[:], body[pos:])
+	pos += 32
+	sz, n, err := repMinUvarint(body[pos:])
+	if err != nil || sz > 1<<62 {
+		return nil, fmt.Errorf("%w: object size", errRepDescriptor)
+	}
+	r.ObjSize = int64(sz)
+	pos += n
+	if len(body)-pos < 32 {
+		return nil, fmt.Errorf("%w: truncated", errRepDescriptor)
+	}
+	copy(r.Rep[:], body[pos:])
+	pos += 32
+	nd, n, err := repMinUvarint(body[pos:])
+	if err != nil {
+		return nil, err
+	}
+	pos += n
+	if nd > uint64(len(body)-pos)/36 {
+		return nil, fmt.Errorf("%w: %d descriptors in %d bytes", errRepDescriptor, nd, len(body)-pos)
+	}
+	var prev [32]byte
+	for i := uint64(0); i < nd; i++ {
+		if len(body)-pos < 32 {
+			return nil, fmt.Errorf("%w: truncated", errRepDescriptor)
+		}
+		var id [32]byte
+		copy(id[:], body[pos:])
+		pos += 32
+		if i > 0 && bytes.Compare(id[:], prev[:]) <= 0 {
+			return nil, fmt.Errorf("%w: descriptors not strictly ascending", errRepDescriptor)
+		}
+		prev = id
+		d, used, err := parseRepDesc(body[pos:])
+		if err != nil {
+			return nil, err
+		}
+		pos += used
+		r.Descs[id] = d
+	}
+	if pos != len(body) {
+		return nil, fmt.Errorf("%w: %d trailing bytes", errRepDescriptor, len(body)-pos)
+	}
+	return r, nil
+}
+
+// ---- root storage ------------------------------------------------------------
+
+const (
+	storeFormatVersionRepresentations = 6
+
+	hookRepComponentsStaged  = "rep-components-staged"
+	hookRepComponentsFlushed = "rep-components-flushed"
+	hookRepObjectPublished   = "rep-object-published"
+	hookRepRootAfterFormat   = "rep-root-after-format"
+	hookRepRootBeforeWrite   = "rep-root-before-write"
+	hookRepRootWritten       = "rep-root-written"
+	hookRepRootBeforeRename  = "rep-root-before-rename"
+	hookRepRootAfterRename   = "rep-root-after-rename"
+	hookRepRootPublished     = "rep-root-published"
+	hookRepBeforeNamespace   = "rep-before-namespace-commit"
+	hookRepAnalysisStarted   = "rep-analysis-started"
+	hookRepRootBeforeRetire  = "rep-root-before-retire"
+	hookRepRootAfterRetire   = "rep-root-after-retire"
+)
+
+func (s *Store) repDir() string      { return filepath.Join(s.root, "representations") }
+func (s *Store) repRootsDir() string { return filepath.Join(s.repDir(), "roots") }
+
+func (s *Store) repRootPath(manifestUUID string) string {
+	return filepath.Join(s.repRootsDir(), manifestUUID+".root")
+}
+
+// validRepRootName reports whether a directory entry is a published root file
+// and returns the manifest UUID it names. Temporary and foreign names are not roots.
+func validRepRootName(name string) (string, bool) {
+	u, ok := strings.CutSuffix(name, ".root")
+	if !ok || u == "" || len(u) > repMaxUUIDLen || strings.ContainsAny(u, "/\\") || strings.HasPrefix(u, ".") {
+		return "", false
+	}
+	return u, true
+}
+
+// ensureRepFormat durably raises FORMAT.json to level 6 before the first root
+// is published. Levels are cumulative (a level 6 store is also a level 5 store
+// with warm and cold tier roots), so a store still below 5 gets its tier roots
+// first, exactly as `tier init` does; they are harmless to older builds, and a
+// crash between the two steps leaves a valid lower-level store.
+func (s *Store) ensureRepFormat() error {
+	s.rep.formatMu.Lock() // one publisher raises the store; the others then see the new level
+	defer s.rep.formatMu.Unlock()
+	s.formatMu.Lock()
+	level := s.format.StoreFormatVersion
+	s.formatMu.Unlock()
+	if level >= storeFormatVersionRepresentations {
+		return nil
+	}
+	if level < storeFormatVersionTiers {
+		if err := s.initTierRoots(); err != nil {
+			return err
+		}
+	}
+	return s.ensureStoreFormat(storeFormatVersionRepresentations)
+}
+
+// publishRepRoot durably publishes the root for its manifest: the store format
+// is raised first (older readers cannot understand roots), then the root is
+// staged in tmp/, fsynced, renamed and the directories fsynced. A published
+// root is immutable; republishing the same manifest replaces it atomically.
+func (s *Store) publishRepRoot(r *repRoot) error {
+	data, err := r.marshal()
+	if err != nil {
+		return err
+	}
+	if err := s.ensureRepFormat(); err != nil {
+		return err
+	}
+	s.rep.mayHaveRoots.Store(true)
+	fireTestHook(hookRepRootAfterFormat)
+	dir := s.repRootsDir()
+	created := false
+	if _, serr := os.Stat(s.repDir()); os.IsNotExist(serr) {
+		created = true
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if created {
+		if err := syncDir(s.root); err != nil {
+			return err
+		}
+		if err := syncDir(s.repDir()); err != nil {
+			return err
+		}
+	}
+	fireTestHook(hookRepRootBeforeWrite)
+	tmp, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "rep-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	fail := func(err error) error {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fail(err)
+	}
+	fireTestHook(hookRepRootWritten)
+	if err := tmp.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	fireTestHook(hookRepRootBeforeRename)
+	if err := os.Rename(tmpName, s.repRootPath(r.ManifestUUID)); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	fireTestHook(hookRepRootAfterRename)
+	if err := syncDir(dir); err != nil {
+		return err
+	}
+	fireTestHook(hookRepRootPublished)
+	return nil
+}
+
+// loadRepRoot reads and parses the root attached to a manifest. A missing root
+// is an os.IsNotExist error; any other failure means a root exists but cannot
+// be trusted. The root must name the manifest it is filed under.
+func (s *Store) loadRepRoot(manifestUUID string) (*repRoot, error) {
+	data, err := os.ReadFile(s.repRootPath(manifestUUID))
+	if err != nil {
+		return nil, err
+	}
+	r, err := unmarshalRepRoot(data)
+	if err != nil {
+		return nil, err
+	}
+	if r.ManifestUUID != manifestUUID {
+		return nil, fmt.Errorf("%w: root for %q filed under %q", errRepCorrupt, r.ManifestUUID, manifestUUID)
+	}
+	return r, nil
+}
+
+// retireRepRoot atomically stops considering a manifest's root live. The
+// manifest, the CDC chunks and the namespace are untouched; representation-only
+// content becomes collectible by the next gc.
+func (s *Store) retireRepRoot(manifestUUID string) error {
+	fireTestHook(hookRepRootBeforeRetire)
+	if err := os.Remove(s.repRootPath(manifestUUID)); err != nil {
+		return err
+	}
+	if err := syncDir(s.repRootsDir()); err != nil {
+		return err
+	}
+	s.repInvalidate()
+	fireTestHook(hookRepRootAfterRetire)
+	return nil
+}
+
+// repRootFiles lists the manifest UUIDs that have a published root file,
+// ignoring temporary files and foreign names.
+func (s *Store) repRootFiles() ([]string, error) {
+	ents, err := os.ReadDir(s.repRootsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		if u, ok := validRepRootName(e.Name()); ok {
+			out = append(out, u)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// repRootBytes is the total size of published root files.
+func (s *Store) repRootBytes() (n int64, count int) {
+	ents, _ := os.ReadDir(s.repRootsDir())
+	for _, e := range ents {
+		if _, ok := validRepRootName(e.Name()); ok {
+			if fi, err := e.Info(); err == nil {
+				n += fi.Size()
+				count++
+			}
+		}
+	}
+	return n, count
+}
+
+// ---- the production Source over the CAS ---------------------------------------
+
+// repReadStats is the physical work one Source did, for measurement.
+type repReadStats struct {
+	Chunks, StoredBytes, LogicalBytes int64
+	Packs                             map[int32]bool
+}
+
+// storeRepSource serves logical components from the store's CAS. A direct
+// component is one ordinary chunk; a virtual one is read through its descriptor
+// (taken from the root, then from the base map). Every physical chunk goes
+// through the production CAS read path (loose file, packs of any tier, copy
+// fallback) and is SHA-256 verified; a descriptor is never trusted for
+// content. One request owns one source: it keeps at most one pack file open
+// and a bounded cache of verified chunks, nothing persists past close.
+type storeRepSource struct {
+	s     *Store
+	local map[[32]byte]*repDesc
+	base  func([32]byte) *repDesc
+
+	mu    sync.Mutex
+	st    *packState // one locator snapshot for the whole request
+	prs   map[int32]*packRunReader
+	prOrd []int32
+	bad   map[int32]bool
+	pre   map[[32]byte][]byte // verified chunks fetched ahead
+	preB  int
+	last  [32]byte
+	lastD []byte
+	stats repReadStats
+}
+
+const (
+	repPrefetchCap  = 16 << 20
+	repMaxOpenPacks = 6
+)
+
+func (s *Store) newRepSource(local map[[32]byte]*repDesc, base func([32]byte) *repDesc) *storeRepSource {
+	return &storeRepSource{s: s, local: local, base: base}
+}
+
+func (src *storeRepSource) close() {
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	src.release()
+}
+
+// refresh drops the request's locator snapshot and caches so the next read sees
+// packs published since (the source stays usable).
+func (src *storeRepSource) refresh() {
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	src.release()
+}
+
+func (src *storeRepSource) release() {
+	for _, r := range src.prs {
+		r.close()
+	}
+	src.prs, src.prOrd, src.st = nil, nil, nil
+	src.pre, src.preB, src.lastD = nil, 0, nil
+}
+
+func (src *storeRepSource) desc(id [32]byte) *repDesc {
+	if d, ok := src.local[id]; ok {
+		return d
+	}
+	if src.base != nil {
+		return src.base(id)
+	}
+	return nil
+}
+
+func repClassifyCAS(id [32]byte, err error) error {
+	switch {
+	case os.IsNotExist(err):
+		return fmt.Errorf("%w: %x: %w", errRepMissing, id[:6], err)
+	case errors.Is(err, errChunkCorrupt):
+		return fmt.Errorf("%w: %x: %w", errRepMismatch, id[:6], err)
+	}
+	return fmt.Errorf("representation: chunk %x: %w", id[:6], err)
+}
+
+// DirectVerified reports that reading id returns bytes the CAS read path has
+// already hashed against id (a direct component is one ordinary chunk whose
+// digest is the component SHA-256), so a decoder need not hash them again.
+func (src *storeRepSource) DirectVerified(id [32]byte) bool {
+	return id != repEmptySHA && src.desc(id) == nil
+}
+
+func (src *storeRepSource) Size(id [32]byte) (int64, error) {
+	if id == repEmptySHA {
+		return 0, nil
+	}
+	if d := src.desc(id); d != nil {
+		return d.Size, nil
+	}
+	src.mu.Lock()
+	if src.lastD != nil && src.last == id {
+		n := int64(len(src.lastD))
+		src.mu.Unlock()
+		return n, nil
+	}
+	if d, ok := src.pre[id]; ok {
+		n := int64(len(d))
+		src.mu.Unlock()
+		return n, nil
+	}
+	src.mu.Unlock()
+	n, err := src.s.casStat(id)
+	if err != nil {
+		return 0, repClassifyCAS(id, err)
+	}
+	return n, nil
+}
+
+// packPrimary is the packed record casRead would serve for sum if it verifies:
+// the hottest packed copy, unless that copy is warm or cold and a hot loose
+// copy outranks it. length < 0 skips the length check. ok is false when the
+// chunk must go through casRead.
+func packPrimary(s *Store, st *packState, bad map[int32]bool, sum [32]byte, length int64) (packLoc, bool) {
+	var locs [4]packLoc
+	ls := st.appendLocs(locs[:0], sum)
+	if len(ls) == 0 || (length >= 0 && int64(ls[0].logical) != length) || bad[ls[0].pack] {
+		return packLoc{}, false
+	}
+	if ls[0].tier != tierHot {
+		if _, err := os.Lstat(s.chunkPath(sum)); !os.IsNotExist(err) {
+			return packLoc{}, false
+		}
+	}
+	return ls[0], true
+}
+
+func (src *storeRepSource) note(data []byte, loc *packLoc) {
+	if t := src.s.packTrace; t != nil {
+		t.Chunks.Add(1)
+	}
+	src.stats.Chunks++
+	src.stats.LogicalBytes += int64(len(data))
+	if loc != nil {
+		src.stats.StoredBytes += int64(loc.stored) + packRecordHeaderSize
+		if src.stats.Packs == nil {
+			src.stats.Packs = map[int32]bool{}
+		}
+		src.stats.Packs[loc.pack] = true
+	}
+}
+
+// snapshot is the request's locator snapshot.
+func (src *storeRepSource) snapshot() *packState {
+	if src.st == nil {
+		src.st = src.s.packSnap()
+	}
+	return src.st
+}
+
+// readerFor returns the request-local reader holding the file of one pack open.
+// A few packs stay open at once (a representation's components can interleave
+// several), so a scattered read pattern does not reopen the same pack.
+func (src *storeRepSource) readerFor(pack int32) *packRunReader {
+	if r, ok := src.prs[pack]; ok {
+		return r
+	}
+	if len(src.prOrd) >= repMaxOpenPacks {
+		old := src.prOrd[0]
+		src.prs[old].close()
+		delete(src.prs, old)
+		src.prOrd = src.prOrd[1:]
+	}
+	if src.prs == nil {
+		src.prs = map[int32]*packRunReader{}
+	}
+	r := newPackRunReader(src.snapshot(), src.s.packTrace)
+	src.prs[pack] = r
+	src.prOrd = append(src.prOrd, pack)
+	return r
+}
+
+// chunk returns one verified production chunk. length < 0 means unknown.
+func (src *storeRepSource) chunk(sum [32]byte, length int64) ([]byte, error) {
+	if src.lastD != nil && src.last == sum {
+		return src.lastD, nil
+	}
+	if d, ok := src.pre[sum]; ok {
+		return d, nil
+	}
+	var data []byte
+	if st := src.snapshot(); len(st.packs) > 0 {
+		if loc, ok := packPrimary(src.s, st, src.bad, sum, length); ok {
+			out, errs := src.readerFor(loc.pack).read([][32]byte{sum}, []packLoc{loc})
+			if errs[0] == nil {
+				data = append([]byte(nil), out[0]...)
+				src.note(data, &loc)
+			} else {
+				if src.bad == nil {
+					src.bad = map[int32]bool{}
+				}
+				src.bad[loc.pack] = true
+			}
+		}
+	}
+	if data == nil {
+		var err error
+		if data, err = src.s.casRead(sum); err != nil {
+			return nil, repClassifyCAS(sum, err)
+		}
+		src.note(data, nil)
+	}
+	if length >= 0 && int64(len(data)) != length {
+		return nil, fmt.Errorf("%w: chunk %x is %d bytes, expected %d", errRepMismatch, sum[:6], len(data), length)
+	}
+	src.last, src.lastD = sum, data
+	return data, nil
+}
+
+// Prefetch fetches the leading ordered list of whole components with coalesced
+// pack reads (a hint: components that are loose, virtual or unplanned are left
+// to chunk). Results are bounded, verified and request-local.
+func (src *storeRepSource) Prefetch(ids [][32]byte) {
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	sums := make([][32]byte, 0, len(ids))
+	for _, id := range ids {
+		if id != repEmptySHA && src.desc(id) == nil {
+			sums = append(sums, id)
+		}
+	}
+	src.prefetchSums(sums, nil)
+}
+
+type repPrefetchEnt struct {
+	sum [32]byte
+	loc packLoc
+}
+
+func (src *storeRepSource) prefetchSums(sums [][32]byte, lens []int64) {
+	if len(sums) < 2 || len(src.snapshot().packs) == 0 {
+		return
+	}
+	st := src.snapshot()
+	ents := make([]repPrefetchEnt, 0, len(sums))
+	for i, sum := range sums {
+		length := int64(-1)
+		if lens != nil {
+			length = lens[i]
+		}
+		if loc, ok := packPrimary(src.s, st, src.bad, sum, length); ok {
+			ents = append(ents, repPrefetchEnt{sum, loc})
+		}
+	}
+	src.prefetchEnts(ents)
+}
+
+// PrefetchSet fetches a whole set of components whose consumption order the
+// caller does not know: they are ordered by physical location so adjacent
+// records are read in one pass, up to the request cache bound.
+func (src *storeRepSource) PrefetchSet(ids [][32]byte) {
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	st := src.snapshot()
+	if len(ids) < 2 || len(st.packs) == 0 {
+		return
+	}
+	ents := make([]repPrefetchEnt, 0, len(ids))
+	for _, id := range ids {
+		if id == repEmptySHA || src.desc(id) != nil {
+			continue
+		}
+		if loc, ok := packPrimary(src.s, st, src.bad, id, -1); ok {
+			ents = append(ents, repPrefetchEnt{id, loc})
+		}
+	}
+	sort.Slice(ents, func(i, j int) bool {
+		if ents[i].loc.pack != ents[j].loc.pack {
+			return ents[i].loc.pack < ents[j].loc.pack
+		}
+		return ents[i].loc.off < ents[j].loc.off
+	})
+	src.prefetchEnts(ents)
+}
+
+// prefetchEnts reads the entries in the order given, coalescing runs of
+// physically adjacent records of one pack into single reads.
+func (src *storeRepSource) prefetchEnts(ents []repPrefetchEnt) {
+	if src.preB > repPrefetchCap/2 {
+		src.pre, src.preB = nil, 0
+	}
+	for i := 0; i < len(ents) && src.preB < repPrefetchCap; {
+		first := ents[i].loc
+		rs, rl := [][32]byte{ents[i].sum}, []packLoc{first}
+		stored, logical := packRecordHeaderSize+int(first.stored), int(first.logical)
+		j := i + 1
+		for ; j < len(ents) && len(rl) < packRunMaxRecords; j++ {
+			l := ents[j].loc
+			prev := rl[len(rl)-1]
+			if l.pack != first.pack || int64(l.off)-packRecordHeaderSize != int64(prev.off)+int64(prev.stored) ||
+				stored+packRecordHeaderSize+int(l.stored) > packRunMaxStored || logical+int(l.logical) > packRunMaxLogical {
+				break
+			}
+			rs, rl = append(rs, ents[j].sum), append(rl, l)
+			stored += packRecordHeaderSize + int(l.stored)
+			logical += int(l.logical)
+		}
+		if len(rl) > 1 {
+			out, errs := src.readerFor(first.pack).read(rs, rl)
+			for k := range out {
+				if errs[k] != nil {
+					if src.bad == nil {
+						src.bad = map[int32]bool{}
+					}
+					src.bad[first.pack] = true
+					continue
+				}
+				if src.pre == nil {
+					src.pre = map[[32]byte][]byte{}
+				}
+				cp := append([]byte(nil), out[k]...)
+				src.pre[rs[k]] = cp
+				src.preB += len(cp)
+				src.note(cp, &rl[k])
+			}
+		}
+		i = j
+	}
+}
+
+func (src *storeRepSource) ReadAt(id [32]byte, p []byte, off int64) (int, error) {
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if off < 0 {
+		return 0, fmt.Errorf("representation: negative offset %d", off)
+	}
+	if id == repEmptySHA {
+		return 0, io.EOF
+	}
+	d := src.desc(id)
+	if d == nil {
+		data, err := src.chunk(id, -1)
+		if err != nil {
+			return 0, err
+		}
+		if off >= int64(len(data)) {
+			return 0, io.EOF
+		}
+		n := copy(p, data[off:])
+		if n < len(p) {
+			return n, io.EOF
+		}
+		return n, nil
+	}
+	if off >= d.Size {
+		return 0, io.EOF
+	}
+	offs := d.offsets()
+	i := sort.Search(len(d.Refs), func(k int) bool { return offs[k+1] > off })
+	n := 0
+	for ; n < len(p) && i < len(d.Refs); i++ {
+		ref := d.Refs[i]
+		if _, cached := src.pre[ref.SHA]; !cached && !(src.lastD != nil && src.last == ref.SHA) {
+			// Fetch ahead along the descriptor: one coalesced read for several chunks.
+			var sums [][32]byte
+			var lens []int64
+			for k := i; k < len(d.Refs) && k < i+packRunMaxRecords; k++ {
+				sums, lens = append(sums, d.Refs[k].SHA), append(lens, int64(d.Refs[k].Len))
+			}
+			src.prefetchSums(sums, lens)
+		}
+		data, err := src.chunk(ref.SHA, int64(ref.Len))
+		if err != nil {
+			return n, err
+		}
+		from := int64(0)
+		if off+int64(n) > offs[i] {
+			from = off + int64(n) - offs[i]
+		}
+		n += copy(p[n:], data[from:])
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// ---- store integration ---------------------------------------------------------
+
+// repMode is the runtime policy for optional representations. It is never
+// persisted: the on-disk format describes data, not preference.
+type repMode int32
+
+const (
+	repModeOff    repMode = iota // do not create; reads use CDC; existing roots are still understood
+	repModeShadow                // create and persist valid representations; reads use CDC
+	repModePrefer                // create; reads may use a representation when supported
+)
+
+func (m repMode) String() string {
+	return [...]string{"off", "shadow", "prefer"}[min(m, repModePrefer)]
+}
+
+func parseRepMode(v string) (repMode, error) {
+	switch v {
+	case "", "off":
+		return repModeOff, nil
+	case "shadow":
+		return repModeShadow, nil
+	case "prefer":
+		return repModePrefer, nil
+	}
+	return repModeOff, fmt.Errorf("unknown representation mode %q (want off, shadow or prefer)", v)
+}
+
+// repState is the store's derived, discardable representation state: the
+// native catalog and the union of descriptors of live roots (used to reuse
+// components other roots already describe), plus runtime counters. None of it
+// is correctness state; it is rebuilt from the live roots.
+type repState struct {
+	mode atomic.Int32
+
+	buildMu sync.Mutex
+	// formatMu serializes the one-time raise to format 6 across concurrent root publishers.
+	formatMu sync.Mutex
+	built    atomic.Bool
+	catMu    sync.RWMutex
+	cat      *repCatalog
+	descMu   sync.RWMutex
+	desc     map[[32]byte]*repDesc
+
+	// mayHaveRoots is false while the store has never held a representation root:
+	// lookups for one are then skipped (a store that does not use the feature pays
+	// nothing). It is set when a root is published or the roots directory exists.
+	mayHaveRoots atomic.Bool
+
+	reads, rangeReads, fallbacks, optionalFailures atomic.Int64
+}
+
+func (s *Store) setRepMode(m repMode) { s.rep.mode.Store(int32(m)) }
+func (s *Store) repMode() repMode     { return repMode(s.rep.mode.Load()) }
+
+func (s *Store) repInvalidate() { s.rep.built.Store(false) }
+
+func (s *Store) repDescLookup(id [32]byte) *repDesc {
+	s.rep.descMu.RLock()
+	defer s.rep.descMu.RUnlock()
+	return s.rep.desc[id]
+}
+
+// liveManifestUUIDs is the set of manifests some authoritative root (current,
+// retained history, snapshot) names.
+func (s *Store) liveManifestUUIDs() map[string]bool {
+	live := map[string]bool{}
+	for _, o := range s.snapshotNamespace() {
+		live[o.entry.manifestUUID] = true
+	}
+	for _, o := range s.snapshotHistory() {
+		live[o.entry.manifestUUID] = true
+	}
+	snaps, _ := s.scanSnapshots()
+	for _, sn := range snaps {
+		for _, e := range sn.Entries {
+			live[e.ManifestUUID] = true
+		}
+	}
+	return live
+}
+
+// repEnsure builds the derived state from the live roots once. A root that
+// cannot be read is skipped here (reachability reports it); this state is only
+// an accelerator.
+func (s *Store) repEnsure() {
+	if s.rep.built.Load() {
+		return
+	}
+	s.rep.buildMu.Lock()
+	defer s.rep.buildMu.Unlock()
+	if s.rep.built.Load() {
+		return
+	}
+	live := s.liveManifestUUIDs()
+	files, _ := s.repRootFiles()
+	desc := map[[32]byte]*repDesc{}
+	seen := map[[32]byte]bool{}
+	var reps [][32]byte
+	for _, u := range files {
+		if !live[u] {
+			continue
+		}
+		r, err := s.loadRepRoot(u)
+		if err != nil {
+			continue
+		}
+		for id, d := range r.Descs {
+			desc[id] = d
+		}
+		if !seen[r.Rep] {
+			seen[r.Rep] = true
+			reps = append(reps, r.Rep)
+		}
+	}
+	sort.Slice(reps, func(i, j int) bool { return bytes.Compare(reps[i][:], reps[j][:]) < 0 })
+	src := s.newRepSource(nil, func(id [32]byte) *repDesc { return desc[id] })
+	cat := newRepCatalog(src)
+	for _, rep := range reps {
+		if err := cat.ingest(rep); err != nil {
+			log.Printf("zeros3: representation catalog skipped %x: %v", rep[:6], err)
+		}
+	}
+	src.close()
+	s.rep.catMu.Lock()
+	s.rep.cat = cat
+	s.rep.catMu.Unlock()
+	s.rep.descMu.Lock()
+	s.rep.desc = desc
+	s.rep.descMu.Unlock()
+	s.rep.built.Store(true)
+}
+
+// repAdopt folds a freshly published root into the derived state.
+func (s *Store) repAdopt(r *repRoot) {
+	if !s.rep.built.Load() {
+		return
+	}
+	s.rep.descMu.Lock()
+	for id, d := range r.Descs {
+		s.rep.desc[id] = d
+	}
+	s.rep.descMu.Unlock()
+	s.rep.catMu.Lock()
+	defer s.rep.catMu.Unlock()
+	if err := s.rep.cat.ingest(r.Rep); err != nil {
+		log.Printf("zeros3: representation catalog skipped %x: %v", r.Rep[:6], err)
+	}
+	s.rep.cat.src.(*storeRepSource).close()
+}
+
+// ---- reachability ------------------------------------------------------------------
+
+// repClosure is the physical dependency set of one representation root: the
+// ordinary CAS chunks its components occupy, with exact accounting.
+type repClosure struct {
+	chunks []chunkRef
+	logic  []repLogical // every logical object of the closure; counted once, then dropped
+}
+
+type repLogical struct {
+	id   [32]byte
+	size int64
+	rep  bool
+}
+
+// repReachCtx memoises per-manifest and per-representation closures during one
+// reachability scan and records every representation fault as an issue, once.
+type repReachCtx struct {
+	s      *Store
+	res    *reachabilityResult
+	byUUID map[string]*repClosure
+	byRep  map[[32]byte]*repClosure
+	seen   map[[32]byte]struct{} // logical objects already counted, across roots
+	chunks map[[32]byte]struct{} // physical chunks already counted
+}
+
+func (s *Store) newRepReachCtx(res *reachabilityResult) *repReachCtx {
+	return &repReachCtx{s: s, res: res, byUUID: map[string]*repClosure{}, byRep: map[[32]byte]*repClosure{},
+		seen: map[[32]byte]struct{}{}, chunks: map[[32]byte]struct{}{}}
+}
+
+// count folds a new closure into the scan's distinct totals: objects, components
+// and chunks are counted once however many roots share them.
+func (rc *repReachCtx) count(cl *repClosure) {
+	for _, o := range cl.logic {
+		if _, dup := rc.seen[o.id]; dup {
+			continue
+		}
+		rc.seen[o.id] = struct{}{}
+		if o.rep {
+			rc.res.RepObjects++
+		} else {
+			rc.res.RepComponents++
+			rc.res.RepLogicalBytes += o.size
+		}
+	}
+	cl.logic = nil
+	for _, c := range cl.chunks {
+		if sum, err := decodeHexSHA256(c.SHA256); err == nil {
+			if _, dup := rc.chunks[sum]; !dup {
+				rc.chunks[sum] = struct{}{}
+				rc.res.RepChunkCount++
+				rc.res.RepChunkBytes += c.Length
+			}
+		}
+	}
+}
+
+func (rc *repReachCtx) fault(uuid string, err error) {
+	kind := "corrupt"
+	if errors.Is(err, errRepMissing) || os.IsNotExist(err) {
+		kind = "missing"
+	}
+	rc.res.addIssue(kind, "representation "+uuid, err.Error())
+	if rc.res.RepFaults == nil {
+		rc.res.RepFaults = map[string]string{}
+	}
+	rc.res.RepFaults[uuid] = err.Error()
+}
+
+// closureOf returns the closure of the representation root attached to a live
+// manifest, nil when it has none or the root cannot be trusted (in which case
+// an issue was recorded: destructive maintenance fails closed on it).
+func (rc *repReachCtx) closureOf(uuid string, man manifestV1) *repClosure {
+	if cl, ok := rc.byUUID[uuid]; ok {
+		return cl
+	}
+	var cl *repClosure
+	defer func() { rc.byUUID[uuid] = cl }()
+	if !rc.s.rep.mayHaveRoots.Load() {
+		return nil
+	}
+	root, err := rc.s.loadRepRoot(uuid)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			rc.fault(uuid, err)
+		}
+		return nil
+	}
+	if hex.EncodeToString(root.ObjSHA[:]) != man.ObjectSHA256 || root.ObjSize != man.TotalLength {
+		rc.fault(uuid, fmt.Errorf("%w: root names a different object than manifest %s", errRepMismatch, uuid))
+		return nil
+	}
+	rc.res.RepRoots++
+	if c, ok := rc.byRep[root.Rep]; ok {
+		cl = c
+		return cl
+	}
+	c, err := rc.s.repClosureOf(root)
+	if err != nil {
+		rc.fault(uuid, err)
+		return nil
+	}
+	rc.byRep[root.Rep] = c
+	rc.count(c)
+	cl = c
+	return cl
+}
+
+func (s *Store) repClosureOf(root *repRoot) (*repClosure, error) {
+	src := s.newRepSource(root.Descs, nil)
+	defer src.close()
+	env := &repEnv{Src: src, Limits: repProdLimits}
+	reach, err := env.reachable(root.Rep)
+	if err != nil {
+		return nil, err
+	}
+	cl := &repClosure{}
+	seen := map[[32]byte]bool{}
+	add := func(sum [32]byte, n int64) {
+		if !seen[sum] {
+			seen[sum] = true
+			cl.chunks = append(cl.chunks, chunkRef{SHA256: hex.EncodeToString(sum[:]), Length: n})
+		}
+	}
+	for _, id := range reach.Order {
+		n, err := src.Size(id)
+		if err != nil {
+			return nil, err
+		}
+		cl.logic = append(cl.logic, repLogical{id, n, reach.Role[id] == repDepRep})
+		if n == 0 {
+			continue
+		}
+		if d := root.Descs[id]; d != nil {
+			for _, r := range d.Refs {
+				add(r.SHA, int64(r.Len))
+			}
+			continue
+		}
+		add(id, n)
+	}
+	return cl, nil
+}
+
+// observe adds a live manifest's representation chunks to the scan, under the
+// same root (scope, bucket, key) as its CDC chunks so locality and tier policy
+// treat the representation as part of the object.
+func (rc *repReachCtx) observe(uuid string, man manifestV1, want func(chunks []chunkRef)) {
+	if cl := rc.closureOf(uuid, man); cl != nil {
+		want(cl.chunks)
+	}
+}
+
+// finish records the orphan roots (the distinct totals were counted as closures were built).
+func (rc *repReachCtx) finish() {
+	res := rc.res
+	files, _ := rc.s.repRootFiles()
+	res.RepRootFiles = len(files)
+	for _, u := range files {
+		if !res.ReferencedManifests[u] {
+			res.RepOrphanRoots = append(res.RepOrphanRoots, u)
+		}
+	}
 }
 
 // =============================================================================
