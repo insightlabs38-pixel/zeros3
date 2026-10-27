@@ -13,3 +13,40 @@ func PackedLen(b []byte) int64 { return packedLen(b) }
 // GearAt exposes the production gear table entry (laboratory sensitivity runs
 // that scale the chunk-size parameters keep the same gear function).
 func GearAt(b byte) uint64 { return gearTable[b] }
+
+// ChunkScaled is the same gear CDC with scaled parameters (sensitivity runs; moved here from
+// cmd/z3bin unchanged so later studies share it). target must be a power of two.
+func ChunkScaled(b []byte, min, target, max int) [][]byte {
+	bits := 0
+	for 1<<bits < target {
+		bits++
+	}
+	maskS, maskL := uint64(1)<<bits-1, uint64(1)<<(bits-1)-1
+	var out [][]byte
+	for len(b) > 0 {
+		lim := len(b)
+		if lim > max {
+			lim = max
+		}
+		n := lim
+		var h uint64
+		for i := 0; i < lim; i++ {
+			h = (h << 1) + gearTable[b[i]]
+			sz := i + 1
+			if sz < min {
+				continue
+			}
+			m := maskL
+			if sz < target {
+				m = maskS
+			}
+			if h&m == 0 {
+				n = sz
+				break
+			}
+		}
+		out = append(out, b[:n])
+		b = b[n:]
+	}
+	return out
+}
