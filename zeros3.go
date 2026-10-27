@@ -22,6 +22,8 @@ import (
 	"crypto/hmac"
 	"crypto/md5"
 	"crypto/sha256"
+	"crypto/sha3"
+	"crypto/sha512"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
@@ -71,40 +73,40 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      504    Content-defined chunking (CDC)
-//      630    Content-addressed chunk storage (CAS)
-//     1361    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//     2926    Manifests (immutable, JSON)
-//     3025    Visibility journal (append-only, checksummed)
-//     3438    Store: format, namespace, and object CRUD
-//     4274    Version history/restore, history pruning, ListObjectsV2
-//     4747    SigV4 authentication (header and presigned-URL)
-//     5702    Request payload checksums and S3-shaped XML error/response types
-//     5919    HTTP routing and S3 operation handlers
-//     6332    Conditional operations (PUT/GET/HEAD preconditions)
-//     7016    CopyObject
-//     7310    Multipart upload
-//     8240    Stats and reachability scanning
-//     9046    Verify
-//     9222    Store locking and safe offline GC
-//     9479    Offline compaction (`zeros3 compact`)
-//    10185    Pack reclamation and repacking (`zeros3 repack`)
-//    10632    Physical tiers: status and pack movement (`zeros3 tier`)
-//    11144    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    12208    Streaming object reads (full and ranged GET)
-//    12460    Delta sync client, credentials, and parallel transfer
-//    14446    Bulk logical-chunk transport (v2)
-//    15357    Recursive directory sync
-//    15662    Remote replication (`zeros3 replicate`)
-//    16409    Peer-assisted corruption repair (`zeros3 repair`)
-//    16921    Namespace (prefix/bucket) replication
-//    17228    Copy-on-write namespace fork (`zeros3 fork`)
-//    17436    Snapshots and restore
-//    18597    Structural diff and inspect (introspection)
-//    19873    Portable snapshot bundles (`zeros3 bundle`)
-//    21033    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    21668    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    24222    CLI dispatch, HTTP server/startup, and main
+//      506    Content-defined chunking (CDC)
+//      632    Content-addressed chunk storage (CAS)
+//     1363    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
+//     2928    Manifests (immutable, JSON)
+//     3027    Visibility journal (append-only, checksummed)
+//     3440    Store: format, namespace, and object CRUD
+//     4277    Version history/restore, history pruning, ListObjectsV2
+//     4750    SigV4 authentication (header and presigned-URL)
+//     5705    Request payload checksums and S3-shaped XML error/response types
+//     5922    HTTP routing and S3 operation handlers
+//     6335    Conditional operations (PUT/GET/HEAD preconditions)
+//     7019    CopyObject
+//     7316    Multipart upload
+//     8247    Stats and reachability scanning
+//     9053    Verify
+//     9229    Store locking and safe offline GC
+//     9486    Offline compaction (`zeros3 compact`)
+//    10192    Pack reclamation and repacking (`zeros3 repack`)
+//    10639    Physical tiers: status and pack movement (`zeros3 tier`)
+//    11151    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    12215    Streaming object reads (full and ranged GET)
+//    12467    Delta sync client, credentials, and parallel transfer
+//    14453    Bulk logical-chunk transport (v2)
+//    15364    Recursive directory sync
+//    15669    Remote replication (`zeros3 replicate`)
+//    16416    Peer-assisted corruption repair (`zeros3 repair`)
+//    16928    Namespace (prefix/bucket) replication
+//    17235    Copy-on-write namespace fork (`zeros3 fork`)
+//    17443    Snapshots and restore
+//    18604    Structural diff and inspect (introspection)
+//    19890    Portable snapshot bundles (`zeros3 bundle`)
+//    21050    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    21685    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    27295    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -4097,6 +4099,7 @@ func (s *Store) commitIngested(bucket, key string, ing ingestResult, contentType
 		return nil, fmt.Errorf("manifest publish failed: %w", err)
 	}
 	fireTestHook(hookAfterManifestPublished)
+	s.maybeBuildRep(man)
 
 	if cond.isZero() {
 		return s.commitObjectRoot(bucket, key, manUUID, manSHA, man)
@@ -6673,7 +6676,7 @@ func (srv *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucke
 // aborts the response short of its Content-Length, which clients observe
 // as a truncated body rather than a complete one.
 func (srv *Server) streamObject(w http.ResponseWriter, bucket, key string, entry *objectEntry, man manifestV1, rng byteRange, partial bool) {
-	rd := srv.store.newManifestReader(man, rng)
+	rd := srv.store.openObjectReader(man, rng)
 	defer rd.close()
 	data, err := rd.next()
 	if err != nil && err != io.EOF {
@@ -7129,6 +7132,9 @@ func (s *Store) CopyObject(req CopyObjectRequest) (*objectEntry, manifestV1, err
 		return nil, manifestV1{}, fmt.Errorf("copy: manifest publish failed: %w", err)
 	}
 	fireTestHook(hookAfterManifestPublished)
+	if s.repMode() != repModeOff && !s.repCloneRoot(srcMan.ManifestUUID, dstMan) {
+		s.maybeBuildRep(dstMan)
+	}
 	entry, err := s.commitObjectRoot(req.DstBucket, req.DstKey, manUUID, manSHA, dstMan)
 	return entry, dstMan, err
 }
@@ -7832,6 +7838,7 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 		return nil, manifestV1{}, fmt.Errorf("multipart: manifest publish failed: %w", err)
 	}
 	fireTestHook(hookAfterManifestPublished)
+	s.maybeBuildRep(man)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -19250,7 +19257,13 @@ func runServe(args []string) {
 	region := fs.String("region", defaultRegion, "SigV4 region clients must sign with (default: AWS_REGION)")
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (PEM); requires -tls-key. Neither flag: plain HTTP (default). Both: HTTPS via Go's standard-library TLS server. Exactly one without the other is a startup error.")
 	tlsKey := fs.String("tls-key", "", "TLS private key file (PEM); requires -tls-cert. See -tls-cert.")
+	repFlag := fs.String("representations", "off", "experimental optional structured representations: off (default), shadow (create and persist them, read through CDC) or prefer (also read through them when supported); raises the store format to 6 on first use")
 	fs.Parse(args)
+	repSel, err := parseRepMode(*repFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: serve: -representations: %v\n", err)
+		os.Exit(2)
+	}
 	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
 	// P1-C1: -tls-cert/-tls-key are an all-or-nothing pair, checked
@@ -19266,6 +19279,10 @@ func runServe(args []string) {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
 	defer store.Close()
+	store.setRepMode(repSel)
+	if repSel != repModeOff {
+		store.repEnsure()
+	}
 
 	// A running server holds a SHARED advisory lock on the store for its
 	// whole lifetime -- see section 13b -- so that destructive `gc -apply`
@@ -21741,7 +21758,9 @@ const (
 )
 
 // supported reports whether this build can decode the kind.
-func (k repKind) supported() bool { return k == repKindConcat }
+func (k repKind) supported() bool {
+	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindMerkle
+}
 
 type repRole uint8
 
@@ -22232,6 +22251,14 @@ type repDecoder interface {
 
 // repDecoderFor is the finite kind table: a switch, never a registry.
 func repDecoderFor(k repKind) (repDecoder, bool) {
+	switch k {
+	case repKindCAR:
+		return repCARDecoder{}, true
+	case repKindSQLite:
+		return repSQLiteDecoder{}, true
+	case repKindMerkle:
+		return repMerkleDecoder{}, true
+	}
 	return nil, false
 }
 
@@ -22810,6 +22837,9 @@ type repOwner struct {
 
 // repDefaultDomain separates native identities by kind and key width.
 func repDefaultDomain(rep *repObject, x repIndex) string {
+	if rep.Kind == repKindMerkle && len(rep.Recipe) > 0 {
+		return repMerkleDomain(rep.Recipe[0], x.KeyWidth)
+	}
 	return fmt.Sprintf("k%d/w%d", rep.Kind, x.KeyWidth)
 }
 
@@ -23901,6 +23931,2611 @@ func (src *storeRepSource) ReadAt(id [32]byte, p []byte, off int64) (int, error)
 	return n, nil
 }
 
+// ---- SQLite kind -----------------------------------------------------------------
+//
+// The Z3-18 page tree: a SQLite main database file is an array of fixed-size
+// pages. Pages are grouped under content-addressed nodes (fanout entries each);
+// the representation lists node digests as STORED members and the pages hang
+// off the nodes (VIA). A page that does not start with a b-tree type byte
+// (overflow, freelist, pointer-map and zero pages start with 0x00) begins with
+// a 4-byte page number that changes whenever the page moves; that head is kept
+// in the node as a delta against "the next page" and the 4-byte-shorter body is
+// the component. The split is purely byte-level and reversible for any page
+// content: a wrong guess about a page's role costs recipe bytes, never exactness.
+//
+// Recipe (opaque to the generic layer):
+//
+//	"SQZ1" | pageSize | fanout | size | tail (size % pageSize raw bytes)
+//
+// Node (one per fanout consecutive pages; the last may be shorter):
+//
+//	per page: flag (0 whole, 1 head split) | [zigzag(head - (pageIndex+2))] | SHA-256 of the component
+
+const (
+	sqliteFanout    = 64
+	sqliteMaxFanout = 4096
+	sqliteRecipeTag = "SQZ1"
+	sqliteMagic     = "SQLite format 3\x00"
+	sqliteMaxSize   = int64(1) << 40
+)
+
+var errSQLiteUnsupported = fmt.Errorf("%w: not a supported SQLite database", errRepUnsupported)
+
+func sqliteZig(v int64) uint64   { return uint64(v<<1) ^ uint64(v>>63) }
+func sqliteUnzig(u uint64) int64 { return int64(u>>1) ^ -int64(u&1) }
+
+// sqlitePageSize validates the 100-byte header and returns the page size.
+func sqlitePageSize(hdr []byte) (int, error) {
+	if len(hdr) < 100 || !bytes.HasPrefix(hdr, []byte(sqliteMagic)) {
+		return 0, errSQLiteUnsupported
+	}
+	ps := int(binary.BigEndian.Uint16(hdr[16:]))
+	if ps == 1 {
+		ps = 65536
+	}
+	if ps < 512 || ps&(ps-1) != 0 {
+		return 0, errSQLiteUnsupported
+	}
+	return ps, nil
+}
+
+func repReadFullAt(r io.ReaderAt, b []byte, off int64) error {
+	n, err := r.ReadAt(b, off)
+	if n == len(b) {
+		return nil
+	}
+	if err == nil || err == io.EOF {
+		return repCorrupt("source ended at %d, wanted %d bytes at %d", off+int64(n), len(b), off)
+	}
+	return err
+}
+
+// sqliteEncode reads the size bytes of r page by page, emits every component
+// (pages first, then each node) to put, and returns the serialised recipe head
+// and the node digests. A source that is not a SQLite database is unsupported.
+func sqliteEncode(r io.ReaderAt, size int64, put func(id [32]byte, data []byte, node bool) error) (head []byte, nodes [][32]byte, err error) {
+	if size < 100 {
+		return nil, nil, errSQLiteUnsupported
+	}
+	if size > sqliteMaxSize {
+		return nil, nil, fmt.Errorf("%w: %d bytes", errRepLimit, size)
+	}
+	var hdr [100]byte
+	if err := repReadFullAt(r, hdr[:], 0); err != nil {
+		return nil, nil, err
+	}
+	ps, err := sqlitePageSize(hdr[:])
+	if err != nil {
+		return nil, nil, err
+	}
+	if size < int64(ps) {
+		return nil, nil, errSQLiteUnsupported
+	}
+	npages := size / int64(ps)
+	tail := size % int64(ps)
+	head = append([]byte(sqliteRecipeTag), binary.AppendUvarint(nil, uint64(ps))...)
+	head = binary.AppendUvarint(head, sqliteFanout)
+	head = binary.AppendUvarint(head, uint64(size))
+	if tail > 0 {
+		tb := make([]byte, tail)
+		if err := repReadFullAt(r, tb, npages*int64(ps)); err != nil {
+			return nil, nil, err
+		}
+		head = append(head, tb...)
+	}
+	page := make([]byte, ps)
+	var node []byte
+	for i := int64(0); i < npages; i++ {
+		if err := repReadFullAt(r, page, i*int64(ps)); err != nil {
+			return nil, nil, err
+		}
+		body, flag := page, byte(0)
+		var pghead uint32
+		if i > 0 && page[0] == 0 {
+			flag, pghead, body = 1, binary.BigEndian.Uint32(page), page[4:]
+		}
+		id := sha256.Sum256(body)
+		if err := put(id, body, false); err != nil {
+			return nil, nil, err
+		}
+		node = append(node, flag)
+		if flag == 1 {
+			node = binary.AppendUvarint(node, sqliteZig(int64(pghead)-(i+2)))
+		}
+		node = append(node, id[:]...)
+		if (i+1)%sqliteFanout == 0 || i == npages-1 {
+			nid := sha256.Sum256(node)
+			if err := put(nid, node, true); err != nil {
+				return nil, nil, err
+			}
+			nodes = append(nodes, nid)
+			node = node[:0]
+		}
+	}
+	return head, nodes, nil
+}
+
+// sqliteRecipe is a parsed, bounds-checked recipe. nodes aliases the input.
+type sqliteRecipe struct {
+	pageSize, fanout int
+	size, pages      int64
+	tail             []byte
+	nodes            [][32]byte
+}
+
+// parseSQLiteRecipe validates the recipe head and the node list against the
+// declared geometry. Nothing is allocated from a declared count.
+func parseSQLiteRecipe(head []byte, nodes [][32]byte) (*sqliteRecipe, error) {
+	if len(head) < len(sqliteRecipeTag) || string(head[:4]) != sqliteRecipeTag {
+		return nil, repCorrupt("SQLite recipe magic")
+	}
+	pos := 4
+	next := func() (uint64, error) {
+		v, n := binary.Uvarint(head[pos:])
+		if n <= 0 {
+			return 0, repCorrupt("SQLite recipe varint")
+		}
+		pos += n
+		return v, nil
+	}
+	ps, err := next()
+	if err != nil {
+		return nil, err
+	}
+	fan, err := next()
+	if err != nil {
+		return nil, err
+	}
+	size, err := next()
+	if err != nil {
+		return nil, err
+	}
+	if ps < 512 || ps > 65536 || ps&(ps-1) != 0 || fan < 2 || fan > sqliteMaxFanout {
+		return nil, repCorrupt("SQLite recipe geometry %d/%d", ps, fan)
+	}
+	if size > uint64(sqliteMaxSize) {
+		return nil, fmt.Errorf("%w: SQLite size %d", errRepLimit, size)
+	}
+	if size < ps {
+		return nil, repCorrupt("SQLite size %d below one page", size)
+	}
+	rc := &sqliteRecipe{pageSize: int(ps), fanout: int(fan), size: int64(size), pages: int64(size / ps), nodes: nodes}
+	tail := int64(size % ps)
+	if int64(len(head)-pos) != tail {
+		return nil, repCorrupt("SQLite recipe tail is %d bytes, geometry implies %d", len(head)-pos, tail)
+	}
+	rc.tail = head[pos:]
+	if want := (rc.pages + int64(rc.fanout) - 1) / int64(rc.fanout); int64(len(nodes)) != want {
+		return nil, repCorrupt("SQLite lists %d nodes, geometry implies %d", len(nodes), want)
+	}
+	return rc, nil
+}
+
+func (rc *sqliteRecipe) pagesIn(k int64) int64 {
+	return min(int64(rc.fanout), rc.pages-k*int64(rc.fanout))
+}
+
+type sqliteEntry struct {
+	split bool
+	delta int64
+	id    [32]byte
+}
+
+func parseSQLiteNode(nb []byte, want int64) ([]sqliteEntry, error) {
+	out := make([]sqliteEntry, 0, want)
+	pos := 0
+	for int64(len(out)) < want {
+		if pos >= len(nb) {
+			return nil, repCorrupt("SQLite node ends after %d of %d entries", len(out), want)
+		}
+		var e sqliteEntry
+		switch nb[pos] {
+		case 0:
+			pos++
+		case 1:
+			v, n := binary.Uvarint(nb[pos+1:])
+			if n <= 0 {
+				return nil, repCorrupt("SQLite node delta")
+			}
+			e.split, e.delta = true, sqliteUnzig(v)
+			pos += 1 + n
+		default:
+			return nil, repCorrupt("SQLite node flag %d", nb[pos])
+		}
+		if len(nb)-pos < 32 {
+			return nil, repCorrupt("SQLite node digest")
+		}
+		copy(e.id[:], nb[pos:])
+		pos += 32
+		out = append(out, e)
+	}
+	if pos != len(nb) {
+		return nil, repCorrupt("%d trailing bytes in SQLite node", len(nb)-pos)
+	}
+	return out, nil
+}
+
+type repSQLiteDecoder struct{}
+
+func sqliteOf(c *repCall) (*sqliteRecipe, error) {
+	nodes := make([][32]byte, 0, len(c.Rep.Members))
+	for i := range c.Rep.Members {
+		if c.Rep.Members[i].Role != repStored {
+			return nil, repCorrupt("SQLite member %d is not a stored node", i)
+		}
+		nodes = append(nodes, c.Rep.Members[i].SHA)
+	}
+	return parseSQLiteRecipe(c.Rep.Recipe, nodes)
+}
+
+func (rc *sqliteRecipe) loadNode(c *repCall, k int64) ([]sqliteEntry, error) {
+	nb, err := c.get(rc.nodes[k])
+	if err != nil {
+		return nil, err
+	}
+	ents, err := parseSQLiteNode(nb, rc.pagesIn(k))
+	if err != nil {
+		return nil, err
+	}
+	return ents, nil
+}
+
+// page rebuilds page idx from its entry; dst is reused when large enough.
+func (rc *sqliteRecipe) page(c *repCall, e sqliteEntry, idx int64) ([]byte, error) {
+	body, err := c.getAny(e.id)
+	if err != nil {
+		return nil, err
+	}
+	if !e.split {
+		if len(body) != rc.pageSize {
+			return nil, repCorrupt("SQLite page component %d bytes", len(body))
+		}
+		return body, nil
+	}
+	if idx == 0 || len(body) != rc.pageSize-4 {
+		return nil, repCorrupt("SQLite split page component %d bytes", len(body))
+	}
+	head := idx + 2 + e.delta
+	if head < 0 || head > 1<<32-1 {
+		return nil, repCorrupt("SQLite page %d head %d out of range", idx, head)
+	}
+	out := make([]byte, 0, rc.pageSize)
+	out = binary.BigEndian.AppendUint32(out, uint32(head))
+	return append(out, body...), nil
+}
+
+func entryIDs(ents []sqliteEntry) [][32]byte {
+	ids := make([][32]byte, len(ents))
+	for i, e := range ents {
+		ids[i] = e.id
+	}
+	return ids
+}
+
+func (repSQLiteDecoder) Decode(c *repCall) error {
+	rc, err := sqliteOf(c)
+	if err != nil {
+		return err
+	}
+	for k := int64(0); k < int64(len(rc.nodes)); k++ {
+		ents, err := rc.loadNode(c, k)
+		if err != nil {
+			return err
+		}
+		c.prefetch(entryIDs(ents))
+		for j, e := range ents {
+			pg, err := rc.page(c, e, k*int64(rc.fanout)+int64(j))
+			if err != nil {
+				return err
+			}
+			if _, err := c.W.Write(pg); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = c.W.Write(rc.tail)
+	return err
+}
+
+func (repSQLiteDecoder) Expand(c *repCall, emit func([32]byte)) error {
+	rc, err := sqliteOf(c)
+	if err != nil {
+		return err
+	}
+	for k := int64(0); k < int64(len(rc.nodes)); k++ {
+		ents, err := rc.loadNode(c, k)
+		if err != nil {
+			return err
+		}
+		for _, e := range ents {
+			emit(e.id)
+		}
+	}
+	return nil
+}
+
+// sqliteReadRange writes bytes [off, off+n) of the database: the nodes and page
+// components the range touches, nothing else. The caller has validated the range
+// against the representation size.
+func sqliteReadRange(c *repCall, off, n int64, w io.Writer) error {
+	rc, err := sqliteOf(c)
+	if err != nil {
+		return err
+	}
+	if off < 0 || n < 0 || off+n > rc.size {
+		return repCorrupt("SQLite range [%d,+%d) outside %d bytes", off, n, rc.size)
+	}
+	end := off + n
+	ps := int64(rc.pageSize)
+	for pos := off; pos < end; {
+		pg := pos / ps
+		if pg >= rc.pages { // inside the raw tail
+			from := pos - rc.pages*ps
+			if _, err := w.Write(rc.tail[from : from+(end-pos)]); err != nil {
+				return err
+			}
+			return nil
+		}
+		k := pg / int64(rc.fanout)
+		ents, err := rc.loadNode(c, k)
+		if err != nil {
+			return err
+		}
+		last := min((end-1)/ps, rc.pages-1, (k+1)*int64(rc.fanout)-1)
+		c.prefetch(entryIDs(ents[pg-k*int64(rc.fanout) : last-k*int64(rc.fanout)+1]))
+		for ; pg <= last && pos < end; pg++ {
+			data, err := rc.page(c, ents[pg-k*int64(rc.fanout)], pg)
+			if err != nil {
+				return err
+			}
+			lo := pos - pg*ps
+			hi := min(ps, end-pg*ps)
+			if _, err := w.Write(data[lo:hi]); err != nil {
+				return err
+			}
+			pos = pg*ps + hi
+		}
+	}
+	return nil
+}
+
+// encodeSQLite analyses a SQLite database file and writes its components.
+func (b *repBuilder) encodeSQLite(r io.ReaderAt, size int64) (*repObject, error) {
+	if err := b.budget.inspect(size); err != nil {
+		return nil, err
+	}
+	sizes := map[[32]byte]int64{}
+	head, nodes, err := sqliteEncode(r, size, func(id [32]byte, data []byte, node bool) error {
+		if node {
+			sizes[id] = int64(len(data))
+		}
+		if _, ok := b.written[id]; ok {
+			return nil
+		}
+		_, err := b.putBlob(data)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &repObject{Kind: repKindSQLite, Size: size, Recipe: head[:len(head):len(head)]}
+	for _, id := range nodes {
+		out.Members = append(out.Members, repMember{Role: repStored, SHA: id, Size: sizes[id]})
+	}
+	return out, nil
+}
+
+// ---- CAR kind -----------------------------------------------------------------
+//
+// A bounded, stdlib-only subset of CARv1/CARv2 sufficient to separate the block
+// payloads from the archive serialisation and to rebuild the archive byte for
+// byte (the Z3-14 set layout). The sorted digest table of the distinct blocks is
+// cut with production CDC into STORED members, the blocks hang off that table
+// (VIA), and the opaque recipe is the head (header, CARv2 wrapper, CID prefixes)
+// and tail (per-section order):
+//
+//	uvarint(len head) | head | tail
+//
+// CIDs and the CARv2 index are derived from the block digests when the parser
+// verified that they are; a native CID is a hint only and never replaces the
+// ZeroS3 SHA-256 identity of the block bytes.
+
+const (
+	carMaxDigest    = 64
+	carMaxVarint    = 9
+	carV2PragmaLen  = 11
+	carV2HeaderLen  = 40
+	carV2Fixed      = carV2PragmaLen + carV2HeaderLen
+	carMaxPad       = 1 << 20
+	carMaxTable     = 64 << 20
+	carMaxHeader    = 1 << 20
+	carMaxRoots     = 1 << 16
+	carMaxBlocks    = 1 << 21
+	carMaxBlock     = 64 << 20
+	carMaxTotal     = int64(1) << 40
+	carMhIdentity   = 0x00
+	carMhSHA2_256   = 0x12
+	carMhSHA2_512   = 0x13
+	carMhSHA3_512   = 0x14
+	carMhSHA3_256   = 0x16
+	carCodecDagPB   = 0x70
+	carIdxSorted    = 0x0400
+	carIdxMultihash = 0x0401
+)
+
+var carV2Pragma = []byte{0x0a, 0xa1, 0x67, 'v', 'e', 'r', 's', 'i', 'o', 'n', 0x02}
+
+var errCARUnsupported = fmt.Errorf("%w: unsupported CAR", errRepUnsupported)
+
+func carMalformed(f string, a ...any) error {
+	return fmt.Errorf("%w: malformed CAR: %s", errRepCorrupt, fmt.Sprintf(f, a...))
+}
+func carUnsupported(f string, a ...any) error {
+	return fmt.Errorf("%w: %s", errCARUnsupported, fmt.Sprintf(f, a...))
+}
+
+// carUvarint decodes a canonical (minimal) multiformats unsigned varint. n == 0
+// means b ends inside the varint.
+func carUvarint(b []byte) (v uint64, n int, err error) {
+	for i := 0; i < len(b); i++ {
+		if i >= carMaxVarint {
+			return 0, 0, carMalformed("varint longer than %d bytes", carMaxVarint)
+		}
+		c := b[i]
+		v |= uint64(c&0x7f) << (7 * uint(i))
+		if c&0x80 == 0 {
+			if c == 0 && i > 0 {
+				return 0, 0, carUnsupported("non-minimal varint")
+			}
+			return v, i + 1, nil
+		}
+	}
+	return 0, 0, nil
+}
+
+// carCID is the parsed view of one exactly-encoded CID.
+type carCID struct {
+	Raw      []byte
+	Codec    uint64
+	HashCode uint64
+	Digest   []byte
+	Prefix   int // len(Raw)-len(Digest)
+}
+
+func (c carCID) clone() carCID {
+	raw := append([]byte(nil), c.Raw...)
+	c.Raw = raw
+	c.Digest = raw[c.Prefix:]
+	return c
+}
+
+// parseCARCID parses the CID at the start of b and returns it with its length.
+func parseCARCID(b []byte) (carCID, int, error) {
+	if len(b) >= 2 && b[0] == carMhSHA2_256 && b[1] == 0x20 {
+		if len(b) < 34 {
+			return carCID{}, 0, carMalformed("truncated CIDv0")
+		}
+		return carCID{Raw: b[:34], Codec: carCodecDagPB, HashCode: carMhSHA2_256, Digest: b[2:34], Prefix: 2}, 34, nil
+	}
+	p := 0
+	var f [4]uint64
+	for k := range f {
+		v, n, err := carUvarint(b[p:])
+		if err != nil {
+			return carCID{}, 0, err
+		}
+		if n == 0 {
+			return carCID{}, 0, carMalformed("truncated CID")
+		}
+		f[k] = v
+		p += n
+	}
+	if f[0] != 1 {
+		return carCID{}, 0, carUnsupported("CID version %d", f[0])
+	}
+	if f[3] > carMaxDigest {
+		return carCID{}, 0, carMalformed("CID digest length %d", f[3])
+	}
+	if uint64(len(b)-p) < f[3] {
+		return carCID{}, 0, carMalformed("truncated CID digest")
+	}
+	end := p + int(f[3])
+	return carCID{Raw: b[:end], Codec: f[1], HashCode: f[2], Digest: b[p:end], Prefix: p}, end, nil
+}
+
+// verify checks block against the CID's multihash for the algorithms the
+// standard library provides. ok is false when the hash function is not known;
+// bad is true when it is known and does not match.
+func (c carCID) verify(block []byte) (known, match bool) {
+	var d []byte
+	switch c.HashCode {
+	case carMhIdentity:
+		d = block
+	case carMhSHA2_256:
+		s := sha256.Sum256(block)
+		d = s[:]
+	case carMhSHA2_512:
+		s := sha512.Sum512(block)
+		d = s[:]
+	case carMhSHA3_256:
+		s := sha3.Sum256(block)
+		d = s[:]
+	case carMhSHA3_512:
+		s := sha3.Sum512(block)
+		d = s[:]
+	default:
+		return false, false
+	}
+	return true, string(d) == string(c.Digest)
+}
+
+// derivableFrom256 reports whether the CID is exactly Prefix || sha256(block).
+func (c carCID) derivableFrom256(sum [32]byte) bool {
+	return c.HashCode == carMhSHA2_256 && len(c.Digest) == 32 && string(c.Digest) == string(sum[:])
+}
+
+// carCBORHead reads one item head, requiring the shortest argument encoding
+// and a definite length.
+func carCBORHead(b []byte) (major byte, val uint64, n int, err error) {
+	if len(b) == 0 {
+		return 0, 0, 0, carMalformed("truncated CBOR")
+	}
+	major, ai := b[0]>>5, b[0]&0x1f
+	switch {
+	case ai < 24:
+		return major, uint64(ai), 1, nil
+	case ai >= 28:
+		return 0, 0, 0, carUnsupported("indefinite / reserved CBOR argument")
+	}
+	size := 1 << (ai - 24)
+	if len(b) < 1+size {
+		return 0, 0, 0, carMalformed("truncated CBOR argument")
+	}
+	for i := 0; i < size; i++ {
+		val = val<<8 | uint64(b[1+i])
+	}
+	if val < [...]uint64{24, 1 << 8, 1 << 16, 1 << 32}[ai-24] {
+		return 0, 0, 0, carUnsupported("non-minimal CBOR argument")
+	}
+	return major, val, 1 + size, nil
+}
+
+// checkCARHeader validates a CARv1 header body: the one DAG-CBOR shape the
+// format defines, {"roots": [CID...], "version": 1} in either key order.
+func checkCARHeader(raw []byte) error {
+	p := 0
+	if len(raw) == 0 || raw[0] != 0xa2 {
+		return carUnsupported("header is not a 2-entry CBOR map")
+	}
+	p++
+	seen := map[string]bool{}
+	for k := 0; k < 2; k++ {
+		maj, l, n, err := carCBORHead(raw[p:])
+		if err != nil {
+			return err
+		}
+		if maj != 3 || l > 7 || uint64(len(raw)-p-n) < l {
+			return carUnsupported("header key")
+		}
+		key := string(raw[p+n : p+n+int(l)])
+		p += n + int(l)
+		if seen[key] {
+			return carUnsupported("duplicate header key")
+		}
+		seen[key] = true
+		switch key {
+		case "version":
+			maj, v, n, err := carCBORHead(raw[p:])
+			if err != nil {
+				return err
+			}
+			if maj != 0 || v != 1 {
+				return carUnsupported("header version %d", v)
+			}
+			p += n
+		case "roots":
+			maj, cnt, n, err := carCBORHead(raw[p:])
+			if err != nil {
+				return err
+			}
+			if maj != 4 || cnt > carMaxRoots || cnt > uint64(len(raw)) {
+				return carMalformed("roots array")
+			}
+			p += n
+			for i := uint64(0); i < cnt; i++ {
+				if len(raw)-p < 2 || raw[p] != 0xd8 || raw[p+1] != 0x2a {
+					return carUnsupported("root is not a tag-42 link")
+				}
+				p += 2
+				maj, bl, n, err := carCBORHead(raw[p:])
+				if err != nil {
+					return err
+				}
+				if maj != 2 || bl < 1 || uint64(len(raw)-p-n) < bl || raw[p+n] != 0x00 {
+					return carMalformed("root link bytes")
+				}
+				_, cn, err := parseCARCID(raw[p+n+1 : p+n+int(bl)])
+				if err != nil {
+					return err
+				}
+				if uint64(cn) != bl-1 {
+					return carMalformed("root link has trailing bytes")
+				}
+				p += n + int(bl)
+			}
+		default:
+			return carUnsupported("header key %q", key)
+		}
+	}
+	if p != len(raw) {
+		return carMalformed("trailing bytes after header map")
+	}
+	return nil
+}
+
+// carSection is one CARv1 section as the streaming reader yields it.
+type carSection struct {
+	off     int64 // offset of the section (its length varint) in the CARv1 stream
+	prefix  int
+	cid     carCID
+	data    []byte // valid until the next call
+	dataOff int64
+}
+
+// carReader streams a CARv1: header first, then one section at a time. Memory is
+// bounded by the largest block seen, not by the archive size.
+type carReader struct {
+	br     *bufio.Reader
+	pos    int64
+	blocks int64
+	header []byte
+	buf    []byte
+	big    bytes.Buffer
+}
+
+func newCARReader(r io.Reader) (*carReader, error) {
+	rd := &carReader{br: bufio.NewReaderSize(r, 1<<16)}
+	hl, _, err := rd.uvarint(false)
+	if err != nil {
+		return nil, err
+	}
+	if hl == 0 || int64(hl) > carMaxHeader {
+		return nil, carMalformed("header length %d", hl)
+	}
+	raw := make([]byte, hl)
+	if _, err := io.ReadFull(rd.br, raw); err != nil {
+		return nil, carMalformed("truncated header")
+	}
+	rd.pos += int64(hl)
+	if err := checkCARHeader(raw); err != nil {
+		return nil, err
+	}
+	rd.header = raw
+	return rd, nil
+}
+
+func (r *carReader) uvarint(eofOK bool) (uint64, int, error) {
+	var tmp [carMaxVarint]byte
+	for i := 0; i < carMaxVarint; i++ {
+		c, err := r.br.ReadByte()
+		if err != nil {
+			if i == 0 && eofOK && err == io.EOF {
+				return 0, 0, io.EOF
+			}
+			return 0, 0, carMalformed("truncated varint")
+		}
+		tmp[i] = c
+		if c&0x80 == 0 {
+			v, n, err := carUvarint(tmp[:i+1])
+			if err != nil {
+				return 0, 0, err
+			}
+			r.pos += int64(n)
+			return v, n, nil
+		}
+	}
+	return 0, 0, carMalformed("varint longer than %d bytes", carMaxVarint)
+}
+
+// next returns the next section, or io.EOF after the last one.
+func (r *carReader) next(limit int64) (*carSection, error) {
+	off := r.pos
+	sl, n, err := r.uvarint(true)
+	if err != nil {
+		return nil, err
+	}
+	if sl == 0 {
+		return nil, carUnsupported("zero-length section")
+	}
+	if sl > uint64(carMaxBlock+2+4*carMaxVarint+carMaxDigest) {
+		return nil, carMalformed("section length %d", sl)
+	}
+	if r.blocks >= carMaxBlocks {
+		return nil, fmt.Errorf("%w: more than %d CAR blocks", errRepLimit, carMaxBlocks)
+	}
+	if r.pos+int64(sl) > limit {
+		return nil, carMalformed("section exceeds the archive")
+	}
+	head, _ := r.br.Peek(int(min(sl, 3+3*carMaxVarint+carMaxDigest)))
+	cid, cl, err := parseCARCID(head)
+	if err != nil {
+		return nil, err
+	}
+	if uint64(cl) > sl {
+		return nil, carMalformed("CID longer than its section")
+	}
+	cid = cid.clone()
+	r.br.Discard(cl)
+	dl := int(sl) - cl
+	if int64(dl) > carMaxBlock {
+		return nil, carMalformed("block of %d bytes", dl)
+	}
+	var data []byte
+	if dl <= 1<<20 {
+		if cap(r.buf) < dl {
+			r.buf = make([]byte, dl)
+		}
+		data = r.buf[:dl]
+		if _, err := io.ReadFull(r.br, data); err != nil {
+			return nil, carMalformed("truncated block")
+		}
+	} else { // grow with the data actually present: a hostile length costs nothing
+		r.big.Reset()
+		if n, _ := io.CopyN(&r.big, r.br, int64(dl)); n != int64(dl) {
+			return nil, carMalformed("truncated block")
+		}
+		data = r.big.Bytes()
+	}
+	r.pos += int64(sl)
+	r.blocks++
+	return &carSection{off: off, prefix: n, cid: cid, data: data, dataOff: off + int64(n) + int64(cl)}, nil
+}
+
+// carV2 is the exact wrapper layout of a CARv2 file.
+type carV2 struct {
+	headerRaw  [carV2HeaderLen]byte
+	dataOffset uint64
+	dataSize   uint64
+	padBefore  []byte
+	padAfter   []byte
+	indexRaw   []byte // nil when there is no index
+}
+
+func carReadAt(src io.ReaderAt, off, n int64) ([]byte, error) {
+	b := make([]byte, n)
+	if n == 0 {
+		return b, nil
+	}
+	if _, err := src.ReadAt(b, off); err != nil && !(err == io.EOF && int64(len(b)) == n) {
+		return nil, carMalformed("short read: %v", err)
+	}
+	return b, nil
+}
+
+// parseCARV2 validates the wrapper of the CARv2 file and keeps every
+// non-payload byte exactly.
+func parseCARV2(src io.ReaderAt, size int64) (*carV2, error) {
+	if size < carV2Fixed {
+		return nil, carMalformed("CARv2 shorter than pragma+header")
+	}
+	var fixed [carV2Fixed]byte
+	if _, err := src.ReadAt(fixed[:], 0); err != nil {
+		return nil, carMalformed("reading CARv2 header: %v", err)
+	}
+	if !bytes.Equal(fixed[:carV2PragmaLen], carV2Pragma) {
+		return nil, carMalformed("not a CARv2 pragma")
+	}
+	v := &carV2{}
+	copy(v.headerRaw[:], fixed[carV2PragmaLen:])
+	h := v.headerRaw[:]
+	v.dataOffset = binary.LittleEndian.Uint64(h[16:])
+	v.dataSize = binary.LittleEndian.Uint64(h[24:])
+	indexOffset := binary.LittleEndian.Uint64(h[32:])
+	sz := uint64(size)
+	if v.dataOffset < carV2Fixed || v.dataOffset > sz || v.dataSize > sz-v.dataOffset {
+		return nil, carMalformed("CARv2 data range [%d,+%d) outside file of %d", v.dataOffset, v.dataSize, size)
+	}
+	dataEnd := v.dataOffset + v.dataSize
+	tailEnd := sz
+	if indexOffset != 0 {
+		if indexOffset < dataEnd || indexOffset > sz {
+			return nil, carMalformed("CARv2 index offset %d outside [%d,%d]", indexOffset, dataEnd, sz)
+		}
+		tailEnd = indexOffset
+	}
+	if v.dataOffset-carV2Fixed > carMaxPad || tailEnd-dataEnd > carMaxPad {
+		return nil, carUnsupported("CARv2 padding over %d bytes", carMaxPad)
+	}
+	var err error
+	if v.padBefore, err = carReadAt(src, carV2Fixed, int64(v.dataOffset-carV2Fixed)); err != nil {
+		return nil, err
+	}
+	if v.padAfter, err = carReadAt(src, int64(dataEnd), int64(tailEnd-dataEnd)); err != nil {
+		return nil, err
+	}
+	if indexOffset != 0 {
+		if sz-indexOffset > 1<<30 {
+			return nil, carUnsupported("CARv2 index over 1 GiB")
+		}
+		if v.indexRaw, err = carReadAt(src, int64(indexOffset), int64(sz-indexOffset)); err != nil {
+			return nil, err
+		}
+	}
+	return v, nil
+}
+
+// carDeriveHeader recomputes the 40-byte header from the wrapper pieces and the
+// payload size; characteristics are taken from the original.
+func carDeriveHeader(char []byte, padBefore int, dataSize int64, padAfter int, hasIndex bool) [carV2HeaderLen]byte {
+	var h [carV2HeaderLen]byte
+	copy(h[:16], char)
+	do := uint64(carV2Fixed + padBefore)
+	binary.LittleEndian.PutUint64(h[16:], do)
+	binary.LittleEndian.PutUint64(h[24:], uint64(dataSize))
+	if hasIndex {
+		binary.LittleEndian.PutUint64(h[32:], do+uint64(dataSize)+uint64(padAfter))
+	}
+	return h
+}
+
+type carIndexRec struct {
+	mh     uint64
+	digest []byte
+	offset uint64
+}
+
+// parseCARIndex parses an IndexSorted or MultihashIndexSorted index. ok is false
+// for any other codec (kept as opaque bytes by callers). The whole input must be
+// consumed exactly.
+func parseCARIndex(raw []byte) (codec uint64, ok bool, err error) {
+	codec, n, err := carUvarint(raw)
+	if err != nil {
+		return 0, false, err
+	}
+	if n == 0 {
+		return 0, false, carMalformed("empty index")
+	}
+	if codec != carIdxSorted && codec != carIdxMultihash {
+		return codec, false, nil
+	}
+	p := n
+	u32 := func() (uint32, bool) {
+		if len(raw)-p < 4 {
+			return 0, false
+		}
+		v := binary.LittleEndian.Uint32(raw[p:])
+		p += 4
+		return v, true
+	}
+	u64 := func() (uint64, bool) {
+		if len(raw)-p < 8 {
+			return 0, false
+		}
+		v := binary.LittleEndian.Uint64(raw[p:])
+		p += 8
+		return v, true
+	}
+	multi := func() error {
+		nw, ok := u32()
+		if !ok || int64(nw) > int64(len(raw)) {
+			return carMalformed("index width count")
+		}
+		for i := uint32(0); i < nw; i++ {
+			w, ok1 := u32()
+			dl, ok2 := u64()
+			if !ok1 || !ok2 || w < 8 || w-8 > carMaxDigest || dl%uint64(w) != 0 || dl > uint64(len(raw)-p) {
+				return carMalformed("index bucket header")
+			}
+			p += int(dl)
+		}
+		return nil
+	}
+	if codec == carIdxSorted {
+		if err := multi(); err != nil {
+			return 0, false, err
+		}
+	} else {
+		nm, ok := u32()
+		if !ok || int64(nm) > int64(len(raw)) {
+			return 0, false, carMalformed("index multihash count")
+		}
+		for i := uint32(0); i < nm; i++ {
+			if _, ok := u64(); !ok {
+				return 0, false, carMalformed("index multihash code")
+			}
+			if err := multi(); err != nil {
+				return 0, false, err
+			}
+		}
+	}
+	if p != len(raw) {
+		return 0, false, carMalformed("trailing bytes after index")
+	}
+	return codec, true, nil
+}
+
+// buildCARIndex encodes recs in the canonical order of go-car-style writers:
+// multihash codes ascending, then widths ascending, then digests bytewise (ties
+// by offset). Whether that reproduces a given file's index is checked byte for
+// byte by the analyzer.
+func buildCARIndex(codec uint64, recs []carIndexRec) []byte {
+	rs := append([]carIndexRec(nil), recs...)
+	sort.SliceStable(rs, func(i, j int) bool {
+		a, b := rs[i], rs[j]
+		if a.mh != b.mh {
+			return a.mh < b.mh
+		}
+		if len(a.digest) != len(b.digest) {
+			return len(a.digest) < len(b.digest)
+		}
+		if c := bytes.Compare(a.digest, b.digest); c != 0 {
+			return c < 0
+		}
+		return a.offset < b.offset
+	})
+	out := binary.AppendUvarint(nil, codec)
+	le32 := func(v uint32) { out = binary.LittleEndian.AppendUint32(out, v) }
+	le64 := func(v uint64) { out = binary.LittleEndian.AppendUint64(out, v) }
+	type run struct{ lo, hi int }
+	groups := func(rs []carIndexRec, key func(carIndexRec) uint64) []run {
+		var out []run
+		for i := 0; i < len(rs); {
+			j := i
+			for j < len(rs) && key(rs[j]) == key(rs[i]) {
+				j++
+			}
+			out = append(out, run{i, j})
+			i = j
+		}
+		return out
+	}
+	widthRuns := func(rs []carIndexRec) {
+		wr := groups(rs, func(r carIndexRec) uint64 { return uint64(len(r.digest)) })
+		le32(uint32(len(wr)))
+		for _, g := range wr {
+			w := len(rs[g.lo].digest) + 8
+			le32(uint32(w))
+			le64(uint64(w * (g.hi - g.lo)))
+			for _, r := range rs[g.lo:g.hi] {
+				out = append(out, r.digest...)
+				le64(r.offset)
+			}
+		}
+	}
+	if codec == carIdxSorted {
+		widthRuns(rs)
+		return out
+	}
+	mr := groups(rs, func(r carIndexRec) uint64 { return r.mh })
+	le32(uint32(len(mr)))
+	for _, g := range mr {
+		le64(rs[g.lo].mh)
+		widthRuns(rs[g.lo:g.hi])
+	}
+	return out
+}
+
+const (
+	carIndexNone    = 0 // no index in the file
+	carIndexDerived = 1 // rebuilt from the entries (verified exact at build time)
+	carIndexExact   = 2 // kept as exact bytes (unknown codec, or not rebuildable)
+)
+
+// carRef is one section of the archive as a representation sees it.
+type carRef struct {
+	sum     [32]byte // SHA-256 of the block bytes (ZeroS3 identity)
+	length  int64
+	cid     []byte // exact CID bytes when !derived
+	prefix  int    // index into carRep.prefixes when derived
+	derived bool   // CID == prefixes[prefix] || sum
+	srcOff  int64  // analysis only: absolute offset of the block bytes in the source
+}
+
+// carRep is the exact representation of one CAR file.
+type carRep struct {
+	v2         bool
+	header     []byte // exact CARv1 header body
+	prefixes   [][]byte
+	refs       []carRef
+	char       [16]byte
+	hdrExact   []byte
+	padBefore  []byte
+	padAfter   []byte
+	indexMode  int
+	indexCodec uint64
+	indexBytes []byte
+}
+
+func (rep *carRep) cidOf(r *carRef) []byte {
+	if r.derived {
+		return append(append([]byte(nil), rep.prefixes[r.prefix]...), r.sum[:]...)
+	}
+	return r.cid
+}
+
+func (rep *carRep) cidLen(r *carRef) int64 {
+	if r.derived {
+		return int64(len(rep.prefixes[r.prefix]) + 32)
+	}
+	return int64(len(r.cid))
+}
+
+func (rep *carRep) sectionLen(r *carRef) int64 {
+	cl := rep.cidLen(r)
+	return int64(len(binary.AppendUvarint(nil, uint64(cl+r.length)))) + cl + r.length
+}
+
+// buildCAR parses the CAR (v1 or v2) in src and returns its representation. It
+// streams: only the refs (one per section), the small CARv2 wrapper and the
+// index are retained, never a block payload.
+func buildCAR(src io.ReaderAt, size int64) (*carRep, error) {
+	rep := &carRep{}
+	var base int64
+	var v2 *carV2
+	head := make([]byte, min(size, carV2PragmaLen))
+	if _, err := src.ReadAt(head, 0); err != nil && err != io.EOF {
+		return nil, carMalformed("read: %v", err)
+	}
+	dataSize := size
+	if bytes.HasPrefix(head, carV2Pragma) {
+		var err error
+		if v2, err = parseCARV2(src, size); err != nil {
+			return nil, err
+		}
+		base, dataSize = int64(v2.dataOffset), int64(v2.dataSize)
+		rep.v2 = true
+	}
+	if dataSize > carMaxTotal {
+		return nil, carMalformed("archive over %d bytes", carMaxTotal)
+	}
+	rd, err := newCARReader(io.NewSectionReader(src, base, dataSize))
+	if err != nil {
+		return nil, err
+	}
+	rep.header = append([]byte(nil), rd.header...)
+	prefixIdx := map[string]int{}
+	var recs []carIndexRec
+	for n := 0; ; n++ {
+		e, err := rd.next(dataSize)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256(e.data)
+		if known, match := e.cid.verify(e.data); known && !match {
+			return nil, carMalformed("block %d: CID multihash does not match payload", n)
+		}
+		r := carRef{sum: sum, length: int64(len(e.data)), srcOff: base + e.dataOff}
+		if e.cid.derivableFrom256(sum) {
+			p := string(e.cid.Raw[:e.cid.Prefix])
+			k, ok := prefixIdx[p]
+			if !ok {
+				k = len(rep.prefixes)
+				prefixIdx[p] = k
+				rep.prefixes = append(rep.prefixes, []byte(p))
+			}
+			r.derived, r.prefix = true, k
+		} else {
+			r.cid = append([]byte(nil), e.cid.Raw...)
+		}
+		if v2 != nil && v2.indexRaw != nil && e.cid.HashCode != carMhIdentity { // writers do not index identity CIDs
+			recs = append(recs, carIndexRec{mh: e.cid.HashCode, digest: append([]byte(nil), e.cid.Digest...), offset: uint64(e.off)})
+		}
+		rep.refs = append(rep.refs, r)
+	}
+	if rd.pos != dataSize {
+		return nil, carMalformed("payload ends at %d, expected %d", rd.pos, dataSize)
+	}
+	if v2 != nil {
+		copy(rep.char[:], v2.headerRaw[:16])
+		rep.padBefore, rep.padAfter = v2.padBefore, v2.padAfter
+		if carDeriveHeader(rep.char[:], len(v2.padBefore), dataSize, len(v2.padAfter), v2.indexRaw != nil) != v2.headerRaw {
+			rep.hdrExact = append([]byte(nil), v2.headerRaw[:]...)
+		}
+		switch {
+		case v2.indexRaw == nil:
+			rep.indexMode = carIndexNone
+		default:
+			codec, ok, err := parseCARIndex(v2.indexRaw)
+			if err != nil {
+				return nil, err
+			}
+			rep.indexMode = carIndexExact
+			if ok {
+				rep.indexCodec = codec
+				use := recs
+				if codec != carIdxMultihash { // IndexSorted has no multihash-code level
+					use = make([]carIndexRec, len(recs))
+					for i, r := range recs {
+						use[i] = carIndexRec{digest: r.digest, offset: r.offset}
+					}
+				}
+				if bytes.Equal(buildCARIndex(codec, use), v2.indexRaw) {
+					rep.indexMode = carIndexDerived
+				}
+			}
+			if rep.indexMode == carIndexExact {
+				rep.indexBytes = v2.indexRaw
+			}
+		}
+	}
+	return rep, nil
+}
+
+// payloadSize is the size of the CARv1 stream.
+func (rep *carRep) payloadSize() int64 {
+	n := int64(len(binary.AppendUvarint(nil, uint64(len(rep.header))))) + int64(len(rep.header))
+	for i := range rep.refs {
+		n += rep.sectionLen(&rep.refs[i])
+	}
+	return n
+}
+
+func (rep *carRep) v2Header() [carV2HeaderLen]byte {
+	if rep.hdrExact != nil {
+		var hdr [carV2HeaderLen]byte
+		copy(hdr[:], rep.hdrExact)
+		return hdr
+	}
+	return carDeriveHeader(rep.char[:], len(rep.padBefore), rep.payloadSize(), len(rep.padAfter), rep.indexMode != carIndexNone)
+}
+
+func (rep *carRep) indexBytesOrRebuilt() []byte {
+	switch rep.indexMode {
+	case carIndexExact:
+		return rep.indexBytes
+	case carIndexDerived:
+		off := int64(len(binary.AppendUvarint(nil, uint64(len(rep.header))))) + int64(len(rep.header))
+		recs := make([]carIndexRec, 0, len(rep.refs))
+		for i := range rep.refs {
+			r := &rep.refs[i]
+			c, _, _ := parseCARCID(rep.cidOf(r))
+			if c.HashCode != carMhIdentity {
+				rec := carIndexRec{digest: c.Digest, offset: uint64(off)}
+				if rep.indexCodec == carIdxMultihash {
+					rec.mh = c.HashCode
+				}
+				recs = append(recs, rec)
+			}
+			off += rep.sectionLen(r)
+		}
+		return buildCARIndex(rep.indexCodec, recs)
+	}
+	return nil
+}
+
+// marshalParts serialises the recipe as head (header, wrapper, index, CID
+// prefix table), the sorted distinct-block table, and tail (the per-section
+// order). Sorting the table makes two archives holding the same set of blocks
+// produce identical table bytes whatever their order.
+func (rep *carRep) marshalParts() (head, table, tail []byte) {
+	flags := byte(0)
+	if rep.v2 {
+		flags |= 1
+	}
+	b := []byte{1, flags | byte(rep.indexMode)<<1}
+	b = binary.AppendUvarint(b, uint64(len(rep.header)))
+	b = append(b, rep.header...)
+	if rep.v2 {
+		b = append(b, rep.char[:]...)
+		b = binary.AppendUvarint(b, rep.indexCodec)
+		b = binary.AppendUvarint(b, uint64(len(rep.padBefore)))
+		b = append(b, rep.padBefore...)
+		b = binary.AppendUvarint(b, uint64(len(rep.padAfter)))
+		b = append(b, rep.padAfter...)
+		b = binary.AppendUvarint(b, uint64(len(rep.hdrExact)))
+		b = append(b, rep.hdrExact...)
+		if rep.indexMode == carIndexExact {
+			b = binary.AppendUvarint(b, uint64(len(rep.indexBytes)))
+			b = append(b, rep.indexBytes...)
+		}
+	}
+	b = binary.AppendUvarint(b, uint64(len(rep.prefixes)))
+	for _, p := range rep.prefixes {
+		b = binary.AppendUvarint(b, uint64(len(p)))
+		b = append(b, p...)
+	}
+	head = b
+	tbl := map[[32]byte]int{}
+	var order []*carRef
+	for i := range rep.refs {
+		r := &rep.refs[i]
+		if _, ok := tbl[r.sum]; !ok {
+			tbl[r.sum] = len(order)
+			order = append(order, r)
+		}
+	}
+	sort.Slice(order, func(i, j int) bool { return bytes.Compare(order[i].sum[:], order[j].sum[:]) < 0 })
+	for i, r := range order {
+		tbl[r.sum] = i
+	}
+	table = binary.AppendUvarint(nil, uint64(len(order)))
+	for _, r := range order {
+		table = append(table, r.sum[:]...)
+		table = binary.AppendUvarint(table, uint64(r.length))
+	}
+	tail = binary.AppendUvarint(nil, uint64(len(rep.refs)))
+	for i := range rep.refs {
+		r := &rep.refs[i]
+		tail = binary.AppendUvarint(tail, uint64(tbl[r.sum])+1)
+		if r.derived {
+			tail = binary.AppendUvarint(tail, uint64(r.prefix)+1)
+		} else {
+			tail = binary.AppendUvarint(tail, 0)
+			tail = binary.AppendUvarint(tail, uint64(len(r.cid)))
+			tail = append(tail, r.cid...)
+		}
+	}
+	return head, table, tail
+}
+
+// unmarshalCAR parses head || table || tail (bounds-checked: every count is
+// bounded by the bytes that remain).
+func unmarshalCAR(b []byte) (*carRep, error) {
+	p := 0
+	u := func() (uint64, error) {
+		v, n, err := carUvarint(b[p:])
+		if err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			return 0, carMalformed("recipe truncated")
+		}
+		p += n
+		return v, nil
+	}
+	take := func(n uint64) ([]byte, error) {
+		if n > uint64(len(b)-p) {
+			return nil, carMalformed("recipe truncated")
+		}
+		x := b[p : p+int(n)]
+		p += int(n)
+		return append([]byte(nil), x...), nil
+	}
+	if len(b) < 2 || b[0] != 1 {
+		return nil, repCorrupt("CAR recipe version")
+	}
+	if b[1]>>1 > carIndexExact || b[1]&1 > 1 {
+		return nil, repCorrupt("CAR recipe flags")
+	}
+	rep := &carRep{v2: b[1]&1 != 0, indexMode: int(b[1] >> 1)}
+	p = 2
+	var err error
+	var n uint64
+	if n, err = u(); err != nil {
+		return nil, err
+	}
+	if rep.header, err = take(n); err != nil {
+		return nil, err
+	}
+	if err := checkCARHeader(rep.header); err != nil {
+		return nil, err
+	}
+	if rep.v2 {
+		c, err := take(16)
+		if err != nil {
+			return nil, err
+		}
+		copy(rep.char[:], c)
+		if rep.indexCodec, err = u(); err != nil {
+			return nil, err
+		}
+		for _, dst := range []*[]byte{&rep.padBefore, &rep.padAfter, &rep.hdrExact} {
+			if n, err = u(); err != nil {
+				return nil, err
+			}
+			if *dst, err = take(n); err != nil {
+				return nil, err
+			}
+		}
+		if len(rep.hdrExact) == 0 {
+			rep.hdrExact = nil
+		}
+		if len(rep.hdrExact) != 0 && len(rep.hdrExact) != carV2HeaderLen {
+			return nil, repCorrupt("CAR header exception of %d bytes", len(rep.hdrExact))
+		}
+		if len(rep.padBefore) > carMaxPad || len(rep.padAfter) > carMaxPad {
+			return nil, repCorrupt("CAR padding")
+		}
+		if rep.indexMode == carIndexExact {
+			if n, err = u(); err != nil {
+				return nil, err
+			}
+			if rep.indexBytes, err = take(n); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if n, err = u(); err != nil {
+		return nil, err
+	}
+	for i := uint64(0); i < n; i++ {
+		l, err := u()
+		if err != nil {
+			return nil, err
+		}
+		x, err := take(l)
+		if err != nil {
+			return nil, err
+		}
+		rep.prefixes = append(rep.prefixes, x)
+	}
+	if n, err = u(); err != nil {
+		return nil, err
+	}
+	type tableEntry struct {
+		sum [32]byte
+		ln  int64
+	}
+	var tbl []tableEntry
+	for i := uint64(0); i < n; i++ {
+		s, err := take(32)
+		if err != nil {
+			return nil, err
+		}
+		l, err := u()
+		if err != nil {
+			return nil, err
+		}
+		if l > carMaxBlock {
+			return nil, repCorrupt("CAR block of %d bytes", l)
+		}
+		var t tableEntry
+		copy(t.sum[:], s)
+		t.ln = int64(l)
+		tbl = append(tbl, t)
+	}
+	if n, err = u(); err != nil {
+		return nil, err
+	}
+	if n > carMaxBlocks {
+		return nil, fmt.Errorf("%w: %d CAR blocks", errRepLimit, n)
+	}
+	for i := uint64(0); i < n; i++ {
+		var r carRef
+		k, err := u()
+		if err != nil {
+			return nil, err
+		}
+		if k == 0 || k > uint64(len(tbl)) {
+			return nil, repCorrupt("CAR block index out of range")
+		}
+		r.sum, r.length = tbl[k-1].sum, tbl[k-1].ln
+		m, err := u()
+		if err != nil {
+			return nil, err
+		}
+		if m == 0 {
+			l, err := u()
+			if err != nil {
+				return nil, err
+			}
+			if r.cid, err = take(l); err != nil {
+				return nil, err
+			}
+		} else {
+			if m > uint64(len(rep.prefixes)) {
+				return nil, repCorrupt("CAR prefix index out of range")
+			}
+			r.derived, r.prefix = true, int(m-1)
+		}
+		rep.refs = append(rep.refs, r)
+	}
+	if p != len(b) {
+		return nil, repCorrupt("trailing CAR recipe bytes")
+	}
+	return rep, nil
+}
+
+type repCARDecoder struct{}
+
+// carOf assembles head || table (the STORED members) || tail and parses it.
+func carOf(c *repCall) (*carRep, error) {
+	hl, n := binary.Uvarint(c.Rep.Recipe)
+	if n <= 0 || hl > uint64(len(c.Rep.Recipe)-n) {
+		return nil, repCorrupt("CAR recipe head")
+	}
+	head, tail := c.Rep.Recipe[n:n+int(hl)], c.Rep.Recipe[n+int(hl):]
+	buf := append([]byte(nil), head...)
+	for i := range c.Rep.Members {
+		if i%16 == 0 {
+			c.prefetchFrom(i, 16)
+		}
+		b, err := c.member(i)
+		if err != nil {
+			return nil, err
+		}
+		if len(buf)+len(b)+len(tail) > carMaxTable {
+			return nil, fmt.Errorf("%w: CAR block table over %d bytes", errRepLimit, carMaxTable)
+		}
+		buf = append(buf, b...)
+	}
+	return unmarshalCAR(append(buf, tail...))
+}
+
+// block returns a ref's verified payload.
+func (rep *carRep) block(c *repCall, r *carRef) ([]byte, error) {
+	b, err := c.getExact(r.sum, r.length)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// prefetchBlocks hints the blocks of refs[i:i+n] to a coalescing source.
+func (rep *carRep) prefetchBlocks(c *repCall, i, n int) {
+	ids := make([][32]byte, 0, n)
+	for j := i; j < len(rep.refs) && len(ids) < n; j++ {
+		if r := &rep.refs[j]; r.length > 0 && r.length <= repDirectMax {
+			ids = append(ids, r.sum)
+		}
+	}
+	c.prefetch(ids)
+}
+
+func (rep *carRep) writeSection(c *repCall, w io.Writer, buf []byte, r *carRef) ([]byte, error) {
+	d, err := rep.block(c, r)
+	if err != nil {
+		return buf, err
+	}
+	cid := rep.cidOf(r)
+	buf = binary.AppendUvarint(buf[:0], uint64(len(cid))+uint64(len(d)))
+	buf = append(buf, cid...)
+	buf = append(buf, d...)
+	_, err = w.Write(buf)
+	return buf, err
+}
+
+func (repCARDecoder) Decode(c *repCall) error {
+	rep, err := carOf(c)
+	if err != nil {
+		return err
+	}
+	var idx []byte
+	if rep.v2 {
+		hdr := rep.v2Header()
+		for _, b := range [][]byte{carV2Pragma, hdr[:], rep.padBefore} {
+			if _, err := c.W.Write(b); err != nil {
+				return err
+			}
+		}
+		idx = rep.indexBytesOrRebuilt()
+	}
+	buf := binary.AppendUvarint(nil, uint64(len(rep.header)))
+	buf = append(buf, rep.header...)
+	if _, err := c.W.Write(buf); err != nil {
+		return err
+	}
+	for i := range rep.refs {
+		if i%32 == 0 {
+			rep.prefetchBlocks(c, i, 32)
+		}
+		if buf, err = rep.writeSection(c, c.W, buf, &rep.refs[i]); err != nil {
+			return err
+		}
+	}
+	if rep.v2 {
+		if _, err := c.W.Write(rep.padAfter); err != nil {
+			return err
+		}
+		if _, err := c.W.Write(idx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (repCARDecoder) Expand(c *repCall, emit func([32]byte)) error {
+	rep, err := carOf(c)
+	if err != nil {
+		return err
+	}
+	for i := range rep.refs {
+		emit(rep.refs[i].sum)
+	}
+	return nil
+}
+
+// carReadRange writes bytes [off, off+n) of the archive. It never touches
+// blocks whose section lies outside the range (the CARv2 wrapper, header and
+// index bytes are served from the recipe itself).
+func carReadRange(c *repCall, off, n int64, w io.Writer) error {
+	rep, err := carOf(c)
+	if err != nil {
+		return err
+	}
+	var pre, idx []byte
+	if rep.v2 {
+		hdr := rep.v2Header()
+		pre = append(append(append(pre, carV2Pragma...), hdr[:]...), rep.padBefore...)
+		idx = rep.indexBytesOrRebuilt()
+	}
+	head := append(pre, binary.AppendUvarint(nil, uint64(len(rep.header)))...)
+	head = append(head, rep.header...)
+	pos := int64(0)
+	end := off + n
+	emit := func(b []byte) error {
+		e := pos + int64(len(b))
+		if e > off && pos < end {
+			if _, err := w.Write(b[max(off, pos)-pos : min(end, e)-pos]); err != nil {
+				return err
+			}
+		}
+		pos = e
+		return nil
+	}
+	if err := emit(head); err != nil {
+		return err
+	}
+	var buf []byte
+	for i := range rep.refs {
+		r := &rep.refs[i]
+		secLen := rep.sectionLen(r)
+		if pos+secLen <= off || pos >= end {
+			pos += secLen
+			if pos >= end {
+				break
+			}
+			continue
+		}
+		d, err := rep.block(c, r)
+		if err != nil {
+			return err
+		}
+		cid := rep.cidOf(r)
+		buf = binary.AppendUvarint(buf[:0], uint64(len(cid))+uint64(len(d)))
+		buf = append(append(buf, cid...), d...)
+		if err := emit(buf); err != nil {
+			return err
+		}
+		if pos >= end {
+			break
+		}
+	}
+	if pos < end {
+		if err := emit(rep.padAfter); err != nil {
+			return err
+		}
+		if err := emit(idx); err != nil {
+			return err
+		}
+	}
+	if end > pos {
+		return repCorrupt("CAR range [%d,+%d) beyond archive of %d bytes", off, n, pos)
+	}
+	return nil
+}
+
+// encodeCAR analyses a CARv1/v2 archive and writes its components.
+func (b *repBuilder) encodeCAR(src io.ReaderAt, size int64) (*repObject, error) {
+	if err := b.budget.inspect(size); err != nil {
+		return nil, err
+	}
+	rep, err := buildCAR(src, size)
+	if err != nil {
+		return nil, err
+	}
+	head, table, tail := rep.marshalParts()
+	out := &repObject{Kind: repKindCAR, Size: size}
+	err = b.putCDC(bytes.NewReader(table), func(sum [32]byte, n int64) {
+		out.Members = append(out.Members, repMember{Role: repStored, SHA: sum, Size: n})
+	})
+	if err != nil {
+		return nil, err
+	}
+	seen := map[[32]byte]bool{}
+	for i := range rep.refs {
+		r := &rep.refs[i]
+		if seen[r.sum] {
+			continue
+		}
+		seen[r.sum] = true
+		if err := b.putRange(src, r.srcOff, r.length, r.sum); err != nil {
+			return nil, err
+		}
+	}
+	out.Recipe = binary.AppendUvarint(nil, uint64(len(head)))
+	out.Recipe = append(append(out.Recipe, head...), tail...)
+	return out, nil
+}
+
+// carSniff is the cheap pre-check of a CARv1 header (varint length, DAG-CBOR map
+// of 2) or a CARv2 pragma; the analyzer still has to parse the whole archive.
+func carSniff(b []byte) bool {
+	return len(b) >= 64 && ((b[0] < 0x80 && (b[1] == 0xa2 || b[1] == 0xa1)) || bytes.HasPrefix(b, carV2Pragma))
+}
+
+// ---- Merkle kind ---------------------------------------------------------------
+//
+// The Z3-15 hash-guided snapshot archive: the exact bytes are
+//
+//	"Z3SNAP1\0" | uvarint(len root) | root native identity | every reachable node
+//	once, depth-first pre-order, each uvarint(len payload) | payload
+//
+// which is a function of the graph. Nodes carry an opaque native identity (a hash
+// the generic layer never interprets); equal identity proves a subtree
+// unchanged. The representation lists only the root node (STORED); every other
+// node is VIA. The opaque recipe is
+//
+//	hash tag (1 B) | uvarint(len root) | root native identity
+//
+// Native ownership. A SHA-256 native hash needs no record sections: the identity
+// is the component identity and reachability walks the graph. For any other
+// supported hash the representation carries record sections (Owns) that map the
+// native identity of every node of its tree to the node component. A section
+// lists the nodes its revision added; a revision that reuses a subtree lists the
+// sections of the representation that owns it, so the chain is closed under reuse
+// (bounded by merkleMaxSections, then compacted). The sections are the complete
+// VIA list, so garbage collection reads index bytes (64 B per node) instead of
+// the graph. A native hash is only a key: the decoder recomputes it over every
+// fetched node and ZeroS3 identity stays SHA-256 of the exact node bytes.
+
+const (
+	merkleMagic       = "Z3SNAP1\x00"
+	merkleMaxSections = 8
+	merkleMaxNodes    = 1 << 20
+	merkleMaxPayload  = 16 << 20
+)
+
+type merkleHash struct {
+	name string
+	sum  func([]byte) []byte
+}
+
+// merkleHashes are the native hash functions the decoder knows (a finite list,
+// selected by tag). No algorithm is added to broaden the accepted inputs.
+var merkleHashes = map[byte]merkleHash{
+	1: {"sha3-256", func(b []byte) []byte { s := sha3.Sum256(b); return s[:] }},
+	2: {"sha512-256", func(b []byte) []byte { s := sha512.Sum512_256(b); return s[:] }},
+	3: {"sha256", func(b []byte) []byte { s := sha256.Sum256(b); return s[:] }},
+	4: {"sha256/16", func(b []byte) []byte { s := sha256.Sum256(b); return s[:16] }},
+}
+
+// repMerkleDomain is the catalog namespace of a Merkle section: nodes hashed
+// with different native functions never conflict even at the same key width.
+func repMerkleDomain(tag byte, width int) string { return fmt.Sprintf("merkle/%d/w%d", tag, width) }
+
+// merkleKids extracts the positional child identities (16 slots for a branch,
+// none for a leaf) from a node payload; "" marks an empty slot.
+func merkleKids(p []byte) ([]string, error) {
+	if len(p) < 2 {
+		return nil, repCorrupt("Merkle short node")
+	}
+	switch p[0] {
+	case 0x01:
+		return nil, nil
+	case 0x02:
+		if len(p) < 4 {
+			return nil, repCorrupt("Merkle short branch")
+		}
+		bm := binary.BigEndian.Uint16(p[2:])
+		q := 4
+		kids := make([]string, 16)
+		for i := 0; i < 16; i++ {
+			if bm&(1<<uint(i)) == 0 {
+				continue
+			}
+			l, n := binary.Uvarint(p[q:])
+			if n <= 0 || l > 64 || uint64(len(p)-q-n) < l {
+				return nil, repCorrupt("Merkle bad child id")
+			}
+			kids[i] = string(p[q+n : q+n+int(l)])
+			q += n + int(l)
+		}
+		if q != len(p) {
+			return nil, repCorrupt("Merkle trailing bytes in branch")
+		}
+		return kids, nil
+	}
+	return nil, repCorrupt("Merkle unknown node kind %d", p[0])
+}
+
+// merkleStore serves nodes (payload + children) by native identity.
+type merkleStore interface {
+	get(id string) (payload []byte, kids []string, err error)
+}
+
+// merkleWalk visits every node reachable from root exactly once (a DAG's shared
+// subtrees once) in depth-first pre-order.
+func merkleWalk(s merkleStore, root string, fn func(id string, payload []byte) error) error {
+	stack := []string{root}
+	seen := map[string]bool{}
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if id == "" || seen[id] {
+			continue
+		}
+		if len(seen) >= merkleMaxNodes {
+			return fmt.Errorf("%w: more than %d Merkle nodes", errRepLimit, merkleMaxNodes)
+		}
+		seen[id] = true
+		payload, kids, err := s.get(id)
+		if err != nil {
+			return err
+		}
+		if err := fn(id, payload); err != nil {
+			return err
+		}
+		for i := len(kids) - 1; i >= 0; i-- {
+			stack = append(stack, kids[i])
+		}
+	}
+	return nil
+}
+
+// merkleSnapshot writes the exact archive of the graph rooted at root.
+func merkleSnapshot(s merkleStore, root string, w io.Writer) error {
+	hdr := append([]byte(merkleMagic), binary.AppendUvarint(nil, uint64(len(root)))...)
+	hdr = append(hdr, root...)
+	if _, err := w.Write(hdr); err != nil {
+		return err
+	}
+	var rec []byte
+	return merkleWalk(s, root, func(_ string, payload []byte) error {
+		rec = binary.AppendUvarint(rec[:0], uint64(len(payload)))
+		rec = append(rec, payload...)
+		_, err := w.Write(rec)
+		return err
+	})
+}
+
+type repMerkleDecoder struct{}
+
+type merkleDec struct {
+	c       *repCall
+	h       merkleHash
+	root    string
+	rootSHA [32]byte
+	nodes   map[string][32]byte // every section record of the representation
+	sha     map[string][32]byte
+}
+
+func newMerkleDec(c *repCall) (*merkleDec, error) {
+	r := c.Rep.Recipe
+	if len(r) < 2 {
+		return nil, repCorrupt("Merkle recipe")
+	}
+	h, ok := merkleHashes[r[0]]
+	if !ok {
+		return nil, fmt.Errorf("%w: Merkle native hash tag %d", errRepUnsupported, r[0])
+	}
+	l, n := binary.Uvarint(r[1:])
+	if n <= 0 || l > 64 || uint64(len(r)-1-n) != l || len(c.Rep.Members) < 1 || c.Rep.Members[0].Role != repStored {
+		return nil, repCorrupt("Merkle recipe")
+	}
+	s := &merkleDec{c: c, h: h, root: string(r[1+n:]), rootSHA: c.Rep.Members[0].SHA, sha: map[string][32]byte{}, nodes: map[string][32]byte{}}
+	// the representation's own sections are the whole native map: no global state
+	for _, x := range c.Rep.Indexes {
+		if x.KeyWidth != int(l) {
+			return nil, repCorrupt("Merkle section key width %d, root identity %d", x.KeyWidth, l)
+		}
+		err := repScanIndex(c.env.Src, x, func(k []byte, t [32]byte) error {
+			id := string(k)
+			if prev, dup := s.nodes[id]; dup && prev != t {
+				return fmt.Errorf("%w: node %x", errRepAmbiguous, k[:min(len(k), 6)])
+			}
+			s.nodes[id] = t
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
+func (s *merkleDec) get(id string) ([]byte, []string, error) {
+	var sum [32]byte
+	if t, ok := s.nodes[id]; ok {
+		sum = t
+	} else if id == s.root {
+		sum = s.rootSHA
+	} else if s.h.name == "sha256" && len(id) == 32 { // the native identity is the component identity
+		copy(sum[:], id)
+	} else {
+		return nil, nil, fmt.Errorf("%w: native node %x", errRepMissing, id[:min(len(id), 6)])
+	}
+	p, err := s.c.getAny(sum)
+	if err != nil {
+		return nil, nil, err
+	}
+	if string(s.h.sum(p)) != id {
+		return nil, nil, fmt.Errorf("%w: node %x does not hash to its native identity", errRepMismatch, id[:min(len(id), 6)])
+	}
+	kids, err := merkleKids(p)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.sha[id] = sum
+	return p, kids, nil
+}
+
+func (repMerkleDecoder) Decode(c *repCall) error {
+	s, err := newMerkleDec(c)
+	if err != nil {
+		return err
+	}
+	if len(s.nodes) > 1 { // the sections name every node: read them in physical order
+		ids := make([][32]byte, 0, len(s.nodes))
+		for _, sum := range s.nodes {
+			ids = append(ids, sum)
+		}
+		c.prefetchSet(ids)
+	}
+	return merkleSnapshot(s, s.root, c.W)
+}
+
+func (repMerkleDecoder) Expand(c *repCall, emit func([32]byte)) error {
+	s, err := newMerkleDec(c)
+	if err != nil {
+		return err
+	}
+	return merkleWalk(s, s.root, func(id string, _ []byte) error { emit(s.sha[id]); return nil })
+}
+
+// ---- analysis
+
+type merkleNode struct {
+	id  string
+	sha [32]byte
+	off int64 // payload offset in the source
+	ln  int
+}
+
+// merkleScan is the streaming first pass: it reads each record once, recognises
+// the native hash from the root node, and keeps only identities and offsets.
+type merkleScan struct {
+	src   io.ReaderAt
+	tag   byte
+	h     merkleHash
+	root  string
+	nodes []merkleNode
+	byID  map[string]int32
+}
+
+func (m *merkleScan) payload(i int32) ([]byte, error) {
+	n := &m.nodes[i]
+	p := make([]byte, n.ln)
+	if err := repReadFullAt(m.src, p, n.off); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (m *merkleScan) get(id string) ([]byte, []string, error) {
+	i, ok := m.byID[id]
+	if !ok {
+		return nil, nil, fmt.Errorf("%w: native node %x is not in the snapshot", errRepMissing, id[:min(len(id), 6)])
+	}
+	p, err := m.payload(i)
+	if err != nil {
+		return nil, nil, err
+	}
+	kids, err := merkleKids(p)
+	return p, kids, err
+}
+
+func scanMerkle(src io.ReaderAt, size int64) (*merkleScan, error) {
+	if size < int64(len(merkleMagic))+2 {
+		return nil, fmt.Errorf("%w: not a Merkle snapshot", errRepUnsupported)
+	}
+	var head [len(merkleMagic) + binary.MaxVarintLen64]byte
+	hn, _ := src.ReadAt(head[:], 0)
+	if hn < len(merkleMagic)+1 || string(head[:len(merkleMagic)]) != merkleMagic {
+		return nil, fmt.Errorf("%w: not a Merkle snapshot", errRepUnsupported)
+	}
+	rl, n := binary.Uvarint(head[len(merkleMagic):hn])
+	if n <= 0 || rl == 0 || rl > 64 || int64(len(merkleMagic)+n)+int64(rl) > size {
+		return nil, fmt.Errorf("%w: Merkle root identity", errRepUnsupported)
+	}
+	p := int64(len(merkleMagic) + n)
+	rootID := make([]byte, rl)
+	if err := repReadFullAt(src, rootID, p); err != nil {
+		return nil, err
+	}
+	p += int64(rl)
+	m := &merkleScan{src: src, root: string(rootID), byID: map[string]int32{}}
+	var buf []byte
+	for p < size {
+		var lb [binary.MaxVarintLen64]byte
+		ln, _ := src.ReadAt(lb[:], p)
+		l, n := binary.Uvarint(lb[:ln])
+		if n <= 0 || l > merkleMaxPayload || int64(l) > size-p-int64(n) {
+			return nil, fmt.Errorf("%w: truncated Merkle record", errRepUnsupported)
+		}
+		if len(m.nodes) >= merkleMaxNodes {
+			return nil, fmt.Errorf("%w: more than %d Merkle nodes", errRepLimit, merkleMaxNodes)
+		}
+		if cap(buf) < int(l) {
+			buf = make([]byte, l)
+		}
+		pl := buf[:l]
+		if err := repReadFullAt(src, pl, p+int64(n)); err != nil {
+			return nil, err
+		}
+		if _, err := merkleKids(pl); err != nil {
+			return nil, fmt.Errorf("%w: %v", errRepUnsupported, err)
+		}
+		if len(m.nodes) == 0 { // the first record is the root: it names the native hash
+			for tag := byte(1); tag <= 4; tag++ {
+				if h := merkleHashes[tag]; string(h.sum(pl)) == m.root {
+					m.tag, m.h = tag, h
+					break
+				}
+			}
+			if m.h.sum == nil {
+				return nil, fmt.Errorf("%w: first Merkle node does not hash to the root under a known function", errRepUnsupported)
+			}
+		}
+		id := string(m.h.sum(pl))
+		if _, dup := m.byID[id]; dup {
+			return nil, fmt.Errorf("%w: duplicate Merkle node", errRepUnsupported)
+		}
+		m.byID[id] = int32(len(m.nodes))
+		m.nodes = append(m.nodes, merkleNode{id: id, sha: sha256.Sum256(pl), off: p + int64(n), ln: int(l)})
+		p += int64(n) + int64(l)
+	}
+	if len(m.nodes) == 0 || m.nodes[0].id != m.root {
+		return nil, fmt.Errorf("%w: Merkle snapshot has no root node", errRepUnsupported)
+	}
+	return m, nil
+}
+
+// encodeMerkle analyses a snapshot archive. cat (may be nil) supplies reusable
+// nodes for non-SHA-256 native hashes; a SHA-256 snapshot always writes every
+// node (the CAS deduplicates), so no pruning ever relies on an unproven closure.
+func (b *repBuilder) encodeMerkle(src io.ReaderAt, size int64, cat *repCatalog) (*repObject, error) {
+	if err := b.budget.inspect(size); err != nil {
+		return nil, err
+	}
+	m, err := scanMerkle(src, size)
+	if err != nil {
+		return nil, err
+	}
+	direct := m.h.name == "sha256" && len(m.root) == 32
+	dom := repMerkleDomain(m.tag, len(m.root))
+	known := func(id string) bool {
+		i, ok := m.byID[id]
+		if direct || cat == nil || !ok {
+			return false
+		}
+		t, found, err := cat.resolve(dom, []byte(id))
+		return err == nil && found && t == m.nodes[i].sha
+	}
+	// Discover the nodes this revision must write; a known node prunes its subtree.
+	var fresh []int32
+	var reused []string
+	{
+		stack := []string{m.root}
+		seen := map[string]bool{}
+		for len(stack) > 0 {
+			id := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if id == "" {
+				continue
+			}
+			if known(id) || seen[id] {
+				if !seen[id] {
+					reused = append(reused, id)
+				}
+				continue
+			}
+			_, kids, err := m.get(id)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", errRepUnsupported, err)
+			}
+			seen[id] = true
+			fresh = append(fresh, m.byID[id])
+			for i := len(kids) - 1; i >= 0; i-- {
+				stack = append(stack, kids[i])
+			}
+		}
+	}
+	root := m.nodes[0]
+	out := &repObject{Kind: repKindMerkle, Size: size,
+		Members: []repMember{{Role: repStored, SHA: root.sha, Size: int64(root.ln)}}}
+	out.Recipe = binary.AppendUvarint([]byte{m.tag}, uint64(len(m.root)))
+	out.Recipe = append(out.Recipe, m.root...)
+	for _, i := range fresh {
+		pl, err := m.payload(i)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := b.putBlob(pl); err != nil {
+			return nil, err
+		}
+	}
+	if direct {
+		return out, nil
+	}
+	if len(m.root) > 64 {
+		return nil, fmt.Errorf("%w: native identity of %d bytes", errRepUnsupported, len(m.root))
+	}
+	section := func(ids func(yield func(string))) (repIndex, []byte, error) {
+		pairs := map[string][32]byte{}
+		ids(func(id string) { pairs[id] = m.nodes[m.byID[id]].sha })
+		recs, n, err := repBuildIndex(len(m.root), pairs)
+		if err != nil {
+			return repIndex{}, nil, err
+		}
+		return repIndex{KeyWidth: len(m.root), Count: n, Ref: sha256.Sum256(recs), Owns: true}, recs, nil
+	}
+	chain := map[[32]byte]repIndex{}
+	var newSecs [][]byte
+	if len(fresh) > 0 {
+		x, recs, err := section(func(y func(string)) {
+			for _, i := range fresh {
+				y(m.nodes[i].id)
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		chain[x.Ref] = x
+		newSecs = append(newSecs, recs)
+	}
+	for _, id := range reused {
+		var best []repIndex
+		var bestRep [32]byte
+		for _, o := range cat.owners(dom, []byte(id)) {
+			if o.Target != m.nodes[m.byID[id]].sha {
+				continue
+			}
+			for _, r := range o.Reps {
+				s := cat.sections(r)
+				if best == nil || len(s) < len(best) || (len(s) == len(best) && bytes.Compare(r[:], bestRep[:]) < 0) {
+					best, bestRep = s, r
+				}
+			}
+		}
+		if best == nil {
+			return nil, fmt.Errorf("%w: reused node %x has no owning representation", errRepUnsupported, id[:min(len(id), 6)])
+		}
+		for _, x := range best {
+			chain[x.Ref] = x
+		}
+	}
+	if len(chain) > merkleMaxSections {
+		// Leveled compaction. The largest inherited section is the base and stays;
+		// every node it does not cover is rewritten into one delta section. When the
+		// base covers less than half of its records of the current tree, everything
+		// is rewritten into one full section (major compaction).
+		var base repIndex
+		for _, x := range chain {
+			if x.Count > base.Count || (x.Count == base.Count && bytes.Compare(x.Ref[:], base.Ref[:]) < 0) {
+				base = x
+			}
+		}
+		covered := map[string]bool{}
+		if cat != nil {
+			for _, n := range m.nodes {
+				if cat.inSection(dom, []byte(n.id), base.Ref) {
+					covered[n.id] = true
+				}
+			}
+		}
+		if int64(len(covered))*2 < base.Count {
+			x, recs, err := section(func(y func(string)) {
+				for _, n := range m.nodes {
+					y(n.id)
+				}
+			})
+			if err != nil {
+				return nil, err
+			}
+			chain = map[[32]byte]repIndex{x.Ref: x}
+			newSecs = [][]byte{recs}
+		} else {
+			x, recs, err := section(func(y func(string)) {
+				for _, n := range m.nodes {
+					if !covered[n.id] {
+						y(n.id)
+					}
+				}
+			})
+			if err != nil {
+				return nil, err
+			}
+			chain = map[[32]byte]repIndex{base.Ref: base}
+			newSecs = nil
+			if x.Count > 0 {
+				chain[x.Ref] = x
+				newSecs = [][]byte{recs}
+			}
+		}
+	}
+	for _, x := range chain {
+		out.Indexes = append(out.Indexes, x)
+	}
+	sort.Slice(out.Indexes, func(i, j int) bool { return bytes.Compare(out.Indexes[i].Ref[:], out.Indexes[j].Ref[:]) < 0 })
+	for _, recs := range newSecs {
+		if _, err := b.putBlob(recs); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// ---- Concat / tar -----------------------------------------------------------------
+//
+// A tar archive is a KindConcat representation: each 512-byte header is a STORED
+// component, an ordinary member body (with its block padding) is a STORED
+// component, and a member body that is itself a supported structure (SQLite,
+// CAR or Merkle snapshot) is a DERIVED member whose child is that kind's
+// representation and whose frame is the zero padding. The end-of-archive blocks
+// are one STORED component. No tar semantics are in the generic layer, and
+// member names are never interpreted or extracted: entries are byte ranges.
+
+const (
+	tarBlock         = 512
+	repMaxTarEntries = 1 << 16
+	repMinChildBytes = 1 << 10
+)
+
+func tarHeaderOK(hdr []byte) bool {
+	chk := strings.Trim(string(hdr[148:156]), "\x00 ")
+	want, err := strconv.ParseUint(chk, 8, 32)
+	if err != nil {
+		return false
+	}
+	var sum uint64
+	for i, c := range hdr {
+		if i >= 148 && i < 156 {
+			c = ' '
+		}
+		sum += uint64(c)
+	}
+	return sum == want
+}
+
+// tarEntrySize parses the octal size field of a header.
+func tarEntrySize(hdr []byte) (int64, bool) {
+	if hdr[124]&0x80 != 0 {
+		return 0, false
+	}
+	size, err := strconv.ParseInt(strings.Trim(string(hdr[124:136]), "\x00 "), 8, 64)
+	return size, err == nil && size >= 0
+}
+
+// repBudget bounds the cumulative work spent analysing one object.
+type repBudget struct {
+	attempts   int
+	members    int
+	inspected  int64
+	entriesAll int
+}
+
+const (
+	repMaxAttempts = 256
+	repMaxMembers  = 64
+	repMaxInspect  = int64(1) << 30
+)
+
+func (bd *repBudget) inspect(n int64) error {
+	bd.inspected += n
+	if bd.inspected > repMaxInspect {
+		return fmt.Errorf("%w: analysis inspected more than %d bytes", errRepLimit, repMaxInspect)
+	}
+	return nil
+}
+
+func (bd *repBudget) attempt() error {
+	if bd.attempts++; bd.attempts > repMaxAttempts {
+		return fmt.Errorf("%w: more than %d analysis attempts", errRepLimit, repMaxAttempts)
+	}
+	return nil
+}
+
+func (bd *repBudget) entries(n int) error {
+	if bd.entriesAll += n; bd.entriesAll > repMaxTarEntries {
+		return fmt.Errorf("%w: more than %d tar entries", errRepLimit, repMaxTarEntries)
+	}
+	return nil
+}
+
+// repBuilder writes the components of one object's representation through one
+// CAS batch (nothing is durable or visible until flush), remembers the
+// descriptors of the virtual components it creates and proves children as it goes.
+type repBuilder struct {
+	s       *Store
+	big     bool // large object: components stream into immutable packs, not loose files
+	sink    chunkSink
+	descs   map[[32]byte]*repDesc
+	written map[[32]byte]struct{}
+	budget  repBudget
+	src     *storeRepSource
+	env     *repEnv
+	cat     *repCatalog
+}
+
+func (s *Store) newRepBuilder(size int64, base func([32]byte) *repDesc, cat *repCatalog) *repBuilder {
+	b := &repBuilder{s: s, big: ingestOptions{size: size}.directPack(), descs: map[[32]byte]*repDesc{}, written: map[[32]byte]struct{}{}, cat: cat}
+	b.sink = b.newSink()
+	b.src = s.newRepSource(b.descs, base)
+	b.env = &repEnv{Src: b.src, Limits: repProdLimits}
+	return b
+}
+
+// newSink picks the physical sink exactly as an ordinary ingest of the same
+// size would: loose CAS files, or immutable packs for large objects.
+func (b *repBuilder) newSink() chunkSink {
+	if b.big {
+		return b.s.newPackSink()
+	}
+	return looseSink{b.s.newCASBatch()}
+}
+
+func (b *repBuilder) close() {
+	b.sink.Abort()
+	b.src.close()
+}
+
+// flush makes everything staged so far durable CAS content.
+func (b *repBuilder) flush() error {
+	if err := b.sink.Flush(); err != nil {
+		return err
+	}
+	b.sink = b.newSink()
+	b.src.refresh() // packs published by the flush must be visible to the proof
+	return nil
+}
+
+// putBlob stores one logical component: nothing for an empty one, one ordinary
+// chunk up to repDirectMax, otherwise production CDC chunks plus a descriptor.
+func (b *repBuilder) putBlob(data []byte) ([32]byte, error) {
+	sum := sha256.Sum256(data)
+	if len(data) == 0 {
+		return sum, nil
+	}
+	if _, ok := b.written[sum]; ok {
+		return sum, nil
+	}
+	if len(data) <= repDirectMax {
+		if err := b.sink.Put(sum, data); err != nil {
+			return sum, err
+		}
+		b.written[sum] = struct{}{}
+		return sum, nil
+	}
+	got, err := b.putStream(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return sum, err
+	}
+	if got != sum {
+		return sum, errors.New("representation: internal digest mismatch")
+	}
+	return sum, nil
+}
+
+// putStream stores size bytes of r as one logical component and returns its
+// SHA-256, holding at most a chunk-sized window.
+func (b *repBuilder) putStream(r io.Reader, size int64) ([32]byte, error) {
+	if size == 0 {
+		return repEmptySHA, nil
+	}
+	if size <= repDirectMax {
+		buf := make([]byte, size)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return [32]byte{}, err
+		}
+		return b.putBlob(buf)
+	}
+	if size > repMaxDescSize {
+		return [32]byte{}, fmt.Errorf("%w: component of %d bytes", errRepLimit, size)
+	}
+	h := sha256.New()
+	d := &repDesc{Size: size}
+	c := newCDCChunker(io.LimitReader(r, size))
+	for {
+		chunk, err := c.nextView()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return [32]byte{}, err
+		}
+		cs := sha256.Sum256(chunk)
+		if err := b.sink.Put(cs, chunk); err != nil {
+			return [32]byte{}, err
+		}
+		h.Write(chunk)
+		d.Refs = append(d.Refs, repChunkRef{SHA: cs, Len: uint32(len(chunk))})
+	}
+	var sum [32]byte
+	h.Sum(sum[:0])
+	if err := d.validate(); err != nil {
+		return sum, err
+	}
+	b.descs[sum] = d
+	b.written[sum] = struct{}{}
+	return sum, nil
+}
+
+// putCDC cuts r with production CDC and stores every chunk as a direct component
+// (each at most repDirectMax), reporting each in order.
+func (b *repBuilder) putCDC(r io.Reader, each func(sum [32]byte, n int64)) error {
+	c := newCDCChunker(r)
+	for {
+		chunk, err := c.nextView()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(chunk)
+		if _, ok := b.written[sum]; !ok {
+			if err := b.sink.Put(sum, chunk); err != nil {
+				return err
+			}
+			b.written[sum] = struct{}{}
+		}
+		each(sum, int64(len(chunk)))
+	}
+}
+
+// putRange stores src[off, off+n) as a component and checks it hashes to want.
+func (b *repBuilder) putRange(src io.ReaderAt, off, n int64, want [32]byte) error {
+	if _, ok := b.written[want]; ok || n == 0 {
+		return nil
+	}
+	if n > carMaxBlock {
+		return fmt.Errorf("%w: block of %d bytes", errRepLimit, n)
+	}
+	buf := make([]byte, n)
+	if err := repReadFullAt(src, buf, off); err != nil {
+		return err
+	}
+	got, err := b.putBlob(buf)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return repCorrupt("block at %d does not hash to its table digest", off)
+	}
+	return nil
+}
+
+// finishRep serialises rep and stores it as a component, returning its digest.
+func (b *repBuilder) finishRep(rep *repObject) ([32]byte, error) {
+	raw, err := rep.marshal()
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return b.putBlob(raw)
+}
+
+// proof reconstructs representation id through the production decoder and
+// Source into a counting hash sink and compares length and SHA-256.
+func (b *repBuilder) proof(id [32]byte, wantSize int64, want [32]byte) error {
+	n, sum, err := b.env.reconstruct(id, io.Discard)
+	if err != nil {
+		return err
+	}
+	if n != wantSize || sum != want {
+		return fmt.Errorf("%w: reconstruction differs from the input", errRepMismatch)
+	}
+	return nil
+}
+
+// tarPrescan walks only the headers, so a malformed or oversized archive is
+// rejected before any component is written. Positions only; nothing is extracted.
+func tarPrescan(src io.ReaderAt, size int64) error {
+	hdr := make([]byte, tarBlock)
+	pos, entries := int64(0), 0
+	for {
+		if pos+tarBlock > size {
+			return fmt.Errorf("%w: tar ends inside a header at %d", errRepUnsupported, pos)
+		}
+		if err := repReadFullAt(src, hdr, pos); err != nil {
+			return err
+		}
+		if allZero(hdr) {
+			if pos == 0 {
+				return fmt.Errorf("%w: tar without entries", errRepUnsupported)
+			}
+			return nil
+		}
+		if !tarHeaderOK(hdr) {
+			return fmt.Errorf("%w: tar header checksum at %d", errRepUnsupported, pos)
+		}
+		esz, ok := tarEntrySize(hdr)
+		if !ok {
+			return fmt.Errorf("%w: tar entry at %d has no octal size", errRepUnsupported, pos)
+		}
+		padded := (esz + tarBlock - 1) / tarBlock * tarBlock
+		if size-pos-tarBlock < padded {
+			return fmt.Errorf("%w: tar entry at %d is truncated", errRepUnsupported, pos)
+		}
+		if entries++; entries > repMaxTarEntries {
+			return fmt.Errorf("%w: more than %d tar entries", errRepLimit, repMaxTarEntries)
+		}
+		pos += tarBlock + padded
+	}
+}
+
+// encodeTar splits a tar archive (positions only; no entry is extracted).
+func (b *repBuilder) encodeTar(src io.ReaderAt, size int64) (*repObject, error) {
+	if err := tarPrescan(src, size); err != nil {
+		return nil, err
+	}
+	out := &repObject{Kind: repKindConcat, Size: size}
+	stored := func(sum [32]byte, n int64) {
+		out.Members = append(out.Members, repMember{Role: repStored, SHA: sum, Size: n})
+	}
+	pos, entries := int64(0), 0
+	hdr := make([]byte, tarBlock)
+	for {
+		if pos+tarBlock > size {
+			return nil, fmt.Errorf("%w: tar ends inside a header at %d", errRepUnsupported, pos)
+		}
+		if err := repReadFullAt(src, hdr, pos); err != nil {
+			return nil, err
+		}
+		if allZero(hdr) {
+			break
+		}
+		if !tarHeaderOK(hdr) {
+			return nil, fmt.Errorf("%w: tar header checksum at %d", errRepUnsupported, pos)
+		}
+		esz, ok := tarEntrySize(hdr)
+		if !ok {
+			return nil, fmt.Errorf("%w: tar entry at %d has no octal size", errRepUnsupported, pos)
+		}
+		padded := (esz + tarBlock - 1) / tarBlock * tarBlock
+		if size-pos-tarBlock < padded {
+			return nil, fmt.Errorf("%w: tar entry at %d is truncated", errRepUnsupported, pos)
+		}
+		if entries++; entries > repMaxTarEntries {
+			return nil, fmt.Errorf("%w: more than %d tar entries", errRepLimit, repMaxTarEntries)
+		}
+		if err := b.budget.entries(1); err != nil {
+			return nil, err
+		}
+		hs, err := b.putBlob(hdr)
+		if err != nil {
+			return nil, err
+		}
+		stored(hs, tarBlock)
+		bodyOff := pos + tarBlock
+		pos = bodyOff + padded
+		if padded == 0 {
+			continue
+		}
+		if m, ok, err := b.tryChild(src, bodyOff, esz, padded); err != nil {
+			return nil, err
+		} else if ok {
+			out.Members = append(out.Members, m)
+			continue
+		}
+		if err := b.budget.inspect(padded); err != nil {
+			return nil, err
+		}
+		bs, err := b.putStream(io.NewSectionReader(src, bodyOff, padded), padded)
+		if err != nil {
+			return nil, err
+		}
+		stored(bs, padded)
+	}
+	if pos == 0 {
+		return nil, fmt.Errorf("%w: tar without entries", errRepUnsupported)
+	}
+	if rest := size - pos; rest > 0 {
+		if err := b.budget.inspect(rest); err != nil {
+			return nil, err
+		}
+		ts, err := b.putStream(io.NewSectionReader(src, pos, rest), rest)
+		if err != nil {
+			return nil, err
+		}
+		stored(ts, rest)
+	}
+	return out, nil
+}
+
+// tryChild tries to represent a tar member body as a structured child. Any
+// failure (parse rejection, limits, a child that does not prove exact) leaves the
+// member to be stored as ordinary bytes; it never fails the parent.
+func (b *repBuilder) tryChild(src io.ReaderAt, off, esz, padded int64) (repMember, bool, error) {
+	if esz < repMinChildBytes || b.budget.members >= repMaxMembers {
+		return repMember{}, false, nil
+	}
+	var head [64]byte
+	n, _ := src.ReadAt(head[:], off)
+	hd := head[:min(n, int(esz))]
+	kind := repKind(0)
+	switch {
+	case bytes.HasPrefix(hd, []byte(sqliteMagic)):
+		kind = repKindSQLite
+	case bytes.HasPrefix(hd, []byte(merkleMagic)):
+		kind = repKindMerkle
+	case carSniff(hd):
+		kind = repKindCAR
+	default:
+		return repMember{}, false, nil
+	}
+	b.budget.members++
+	if err := b.budget.attempt(); err != nil {
+		return repMember{}, false, nil
+	}
+	data := io.NewSectionReader(src, off, esz)
+	child, err := b.encodeKind(kind, data, esz)
+	if err != nil {
+		return repMember{}, false, nil
+	}
+	id, err := b.finishRep(child)
+	if err != nil {
+		return repMember{}, false, nil
+	}
+	if err := b.flush(); err != nil {
+		return repMember{}, false, err
+	}
+	// The framed member is the child's output plus the zero padding: its digest is
+	// what the parent checks, and the child must prove exact before it is used.
+	h := sha256.New()
+	if _, err := io.Copy(h, io.NewSectionReader(src, off, padded)); err != nil {
+		return repMember{}, false, err
+	}
+	var framed [32]byte
+	h.Sum(framed[:0])
+	pad := make([]byte, padded-esz)
+	if _, err := src.ReadAt(pad, off+esz); err != nil && err != io.EOF {
+		return repMember{}, false, nil
+	}
+	if !allZero(pad) {
+		return repMember{}, false, nil
+	}
+	ch := sha256.New()
+	cn, _, err := b.env.reconstruct(id, ch)
+	if err != nil || cn != esz {
+		return repMember{}, false, nil
+	}
+	ch.Write(pad)
+	var got [32]byte
+	ch.Sum(got[:0])
+	if got != framed {
+		return repMember{}, false, nil
+	}
+	return repMember{Role: repDerived, SHA: framed, Size: padded, Child: id, Frame: repFrame{Zeros: int(padded - esz)}}, true, nil
+}
+
+func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObject, error) {
+	switch k {
+	case repKindSQLite:
+		return b.encodeSQLite(src, size)
+	case repKindCAR:
+		return b.encodeCAR(src, size)
+	case repKindMerkle:
+		return b.encodeMerkle(src, size, b.cat)
+	case repKindConcat:
+		return b.encodeTar(src, size)
+	}
+	return nil, fmt.Errorf("%w: kind %d", errRepUnsupported, k)
+}
+
+// repCandidate picks the structural kind of an object from its content, never
+// from a name or content type: SQLite, Merkle snapshot, tar (header checksum
+// validated) or CAR, in that order. ok is false when nothing applies.
+func repCandidate(src io.ReaderAt, size int64) (repKind, bool) {
+	var head [tarBlock]byte
+	n, _ := src.ReadAt(head[:], 0)
+	hd := head[:min(int64(n), size)]
+	switch {
+	case bytes.HasPrefix(hd, []byte(sqliteMagic)):
+		return repKindSQLite, true
+	case bytes.HasPrefix(hd, []byte(merkleMagic)):
+		return repKindMerkle, true
+	case len(hd) == tarBlock && !allZero(hd) && tarHeaderOK(hd):
+		return repKindConcat, true
+	case carSniff(hd):
+		return repKindCAR, true
+	}
+	return 0, false
+}
+
 // ---- store integration ---------------------------------------------------------
 
 // repMode is the runtime policy for optional representations. It is never
@@ -24050,6 +26685,172 @@ func (s *Store) repAdopt(r *repRoot) {
 		log.Printf("zeros3: representation catalog skipped %x: %v", r.Rep[:6], err)
 	}
 	s.rep.cat.src.(*storeRepSource).close()
+}
+
+// ---- object view over a manifest -------------------------------------------------
+
+// manifestReaderAt presents an object's CDC chunks as an io.ReaderAt. A
+// sequential scan streams through one manifestReader (coalesced pack runs); a
+// jump starts a new one. It is for one analysis, not for concurrent use.
+type manifestReaderAt struct {
+	s         *Store
+	man       manifestV1
+	size      int64
+	rd        *manifestReader
+	streamEnd int64
+	cur       []byte
+	curOff    int64
+}
+
+func (s *Store) newManifestReaderAt(man manifestV1) *manifestReaderAt {
+	return &manifestReaderAt{s: s, man: man, size: man.TotalLength}
+}
+
+func (m *manifestReaderAt) close() {
+	if m.rd != nil {
+		m.rd.close()
+		m.rd = nil
+	}
+	m.cur = nil
+}
+
+func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, errors.New("negative offset")
+	}
+	n := 0
+	for n < len(p) && off < m.size {
+		if m.cur != nil && off >= m.curOff && off < m.curOff+int64(len(m.cur)) {
+			c := copy(p[n:], m.cur[off-m.curOff:])
+			n += c
+			off += int64(c)
+			continue
+		}
+		if m.rd == nil || m.streamEnd != off {
+			m.close()
+			m.rd = m.s.newManifestReader(m.man, byteRange{start: off, end: m.size - 1})
+			m.streamEnd = off
+		}
+		data, err := m.rd.next()
+		if err != nil {
+			m.close()
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			return n, err
+		}
+		m.cur, m.curOff = data, m.streamEnd
+		m.streamEnd += int64(len(data))
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// ---- building and publishing ---------------------------------------------------
+
+// repBuild analyses the object a published manifest describes, writes its
+// representation and publishes the root. It returns errRepUnsupported when no
+// structural kind applies; every other error means the optional work failed.
+// Nothing here changes what is visible: the namespace commit is separate.
+func (s *Store) repBuild(man manifestV1) error {
+	if man.TotalLength < 1 {
+		return errRepUnsupported
+	}
+	objSHA, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		return err
+	}
+	if man.TotalLength > repMaxInspect {
+		return fmt.Errorf("%w: object of %d bytes is above the analysis budget", errRepUnsupported, man.TotalLength)
+	}
+	ra := s.newManifestReaderAt(man)
+	defer ra.close()
+	kind, ok := repCandidate(ra, man.TotalLength)
+	if !ok {
+		return errRepUnsupported
+	}
+	s.repEnsure()
+	fireTestHook(hookRepAnalysisStarted)
+	b := s.newRepBuilder(man.TotalLength, s.repDescLookup, nil)
+	defer b.close()
+	var rep *repObject
+	if err := func() (err error) {
+		s.rep.catMu.RLock()
+		defer s.rep.catMu.RUnlock()
+		b.cat = s.rep.cat
+		rep, err = b.encodeKind(kind, ra, man.TotalLength)
+		return err
+	}(); err != nil {
+		return err
+	}
+	id, err := b.finishRep(rep)
+	if err != nil {
+		return err
+	}
+	fireTestHook(hookRepComponentsStaged)
+	if err := b.flush(); err != nil {
+		return err
+	}
+	fireTestHook(hookRepComponentsFlushed)
+	// The proof runs the production decoder over the production Source: the exact
+	// length and SHA-256 of the authoritative object, never a buffered copy.
+	if err := b.proof(id, man.TotalLength, objSHA); err != nil {
+		return fmt.Errorf("representation proof failed: %w", err)
+	}
+	reach, err := b.env.reachable(id)
+	if err != nil {
+		return fmt.Errorf("representation reachability failed: %w", err)
+	}
+	root := &repRoot{ManifestUUID: man.ManifestUUID, ObjSHA: objSHA, ObjSize: man.TotalLength, Rep: id, Descs: map[[32]byte]*repDesc{}}
+	for _, oid := range reach.Order {
+		if d := b.src.desc(oid); d != nil {
+			root.Descs[oid] = d
+		}
+	}
+	fireTestHook(hookRepObjectPublished)
+	if err := s.publishRepRoot(root); err != nil {
+		return err
+	}
+	s.repAdopt(root)
+	return nil
+}
+
+// maybeBuildRep is the one optional hook every ingest path calls between
+// publishing its manifest and committing its namespace root. An analysis,
+// proof or publication failure is logged and counted, never returned.
+func (s *Store) maybeBuildRep(man manifestV1) {
+	if s.repMode() == repModeOff {
+		return
+	}
+	if err := s.repBuild(man); err != nil && !errors.Is(err, errRepUnsupported) {
+		s.rep.optionalFailures.Add(1)
+		log.Printf("zeros3: optional representation for manifest %s skipped: %v", man.ManifestUUID, err)
+	}
+	fireTestHook(hookRepBeforeNamespace)
+}
+
+// repCloneRoot attaches the representation of an already proven manifest to a
+// new manifest of byte-identical content (CopyObject, restore): a small root
+// sidecar pointing at the same representation and descriptors.
+func (s *Store) repCloneRoot(srcUUID string, dst manifestV1) bool {
+	r, err := s.loadRepRoot(srcUUID)
+	if err != nil {
+		return false
+	}
+	if hex.EncodeToString(r.ObjSHA[:]) != dst.ObjectSHA256 || r.ObjSize != dst.TotalLength {
+		return false
+	}
+	clone := *r
+	clone.ManifestUUID = dst.ManifestUUID
+	if err := s.publishRepRoot(&clone); err != nil {
+		s.rep.optionalFailures.Add(1)
+		log.Printf("zeros3: optional representation copy for manifest %s skipped: %v", dst.ManifestUUID, err)
+		return false
+	}
+	s.repAdopt(&clone)
+	return true
 }
 
 // ---- reachability ------------------------------------------------------------------
@@ -24216,6 +27017,278 @@ func (rc *repReachCtx) finish() {
 			res.RepOrphanRoots = append(res.RepOrphanRoots, u)
 		}
 	}
+}
+
+// ---- reads ---------------------------------------------------------------------------
+
+// objectReader yields the verified bytes of one inclusive range, in order.
+type objectReader interface {
+	next() ([]byte, error)
+	close()
+}
+
+var errRepCanceled = errors.New("representation read canceled")
+
+// repStreamReader runs one reconstruction in a goroutine and hands its output
+// to the HTTP handler a verified piece at a time. Closing it cancels the
+// producer, which stops at its next write.
+type repStreamReader struct {
+	ch     chan []byte
+	done   chan struct{}
+	cancel atomic.Bool
+	err    error
+	src    *storeRepSource
+}
+
+// repChanWriter batches the decoder's small writes into pieces of up to
+// repStreamPiece bytes before handing them to the consumer.
+type repChanWriter struct {
+	r   *repStreamReader
+	buf []byte
+}
+
+const repStreamPiece = 256 << 10
+
+func (w *repChanWriter) Write(p []byte) (int, error) {
+	if w.r.cancel.Load() {
+		return 0, errRepCanceled
+	}
+	n := len(p)
+	for len(p) > 0 {
+		if w.buf == nil {
+			w.buf = make([]byte, 0, repStreamPiece)
+		}
+		c := copy(w.buf[len(w.buf):cap(w.buf)], p)
+		w.buf = w.buf[:len(w.buf)+c]
+		p = p[c:]
+		if len(w.buf) == cap(w.buf) {
+			if err := w.flush(); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return n, nil
+}
+
+func (w *repChanWriter) flush() error {
+	if len(w.buf) == 0 {
+		return nil
+	}
+	piece := w.buf
+	w.buf = nil
+	select {
+	case w.r.ch <- piece:
+		return nil
+	case <-w.r.done:
+		return errRepCanceled
+	}
+}
+
+// startRepStream runs produce(w) on a goroutine and streams its writes.
+func startRepStream(src *storeRepSource, produce func(w io.Writer) error) *repStreamReader {
+	r := &repStreamReader{ch: make(chan []byte, 4), done: make(chan struct{}), src: src}
+	go func() {
+		defer close(r.ch)
+		w := &repChanWriter{r: r}
+		r.err = produce(w)
+		if r.err == nil {
+			r.err = w.flush()
+		}
+	}()
+	return r
+}
+
+func (r *repStreamReader) next() ([]byte, error) {
+	b, ok := <-r.ch
+	if ok {
+		return b, nil
+	}
+	if r.err != nil {
+		return nil, r.err
+	}
+	return nil, io.EOF
+}
+
+func (r *repStreamReader) close() {
+	if r.cancel.Swap(true) {
+		return
+	}
+	close(r.done)
+	for range r.ch { // drain until the producer exits
+	}
+	r.src.close()
+}
+
+// primedReader hands out an already fetched first piece, then continues.
+type primedReader struct {
+	first []byte
+	have  bool
+	rd    objectReader
+}
+
+func (p *primedReader) next() ([]byte, error) {
+	if p.have {
+		p.have = false
+		return p.first, nil
+	}
+	return p.rd.next()
+}
+func (p *primedReader) close() { p.rd.close() }
+
+// concatRangeSupported reports whether every member overlapping the range is a
+// stored component (a derived member needs a child reconstruction: use CDC).
+func concatRangeSupported(rep *repObject, off, end int64) bool {
+	pos := int64(0)
+	for i := range rep.Members {
+		m := &rep.Members[i]
+		if pos < end && pos+m.Size > off && m.Role != repStored {
+			return false
+		}
+		pos += m.Size
+	}
+	return true
+}
+
+func concatReadRange(c *repCall, off, n int64, w io.Writer) error {
+	end := off + n
+	pos := int64(0)
+	for i := range c.Rep.Members {
+		m := &c.Rep.Members[i]
+		if pos >= end {
+			break
+		}
+		if pos+m.Size > off {
+			if m.Size > repDirectMax {
+				// a virtual member: read only the bytes asked for
+				if err := concatLargeRange(c, m, pos, off, end, w); err != nil {
+					return err
+				}
+				pos += m.Size
+				continue
+			}
+			data, err := c.get(m.SHA)
+			if err != nil {
+				return err
+			}
+			if _, err := w.Write(data[max(off-pos, 0):min(end-pos, m.Size)]); err != nil {
+				return err
+			}
+		}
+		pos += m.Size
+	}
+	return nil
+}
+
+// concatLargeRange serves part of a virtual member by reading only the bytes
+// asked for; every physical chunk read is verified by the Source, and the member
+// digest is not re-checked (this is a range, not the whole component).
+func concatLargeRange(c *repCall, m *repMember, pos, off, end int64, w io.Writer) error {
+	lo, hi := max(off-pos, 0), min(end-pos, m.Size)
+	buf := make([]byte, 64<<10)
+	for at := lo; at < hi; {
+		n := int(min(int64(len(buf)), hi-at))
+		if err := repReadFull(c.env.Src, m.SHA, buf[:n], at); err != nil {
+			return err
+		}
+		if _, err := w.Write(buf[:n]); err != nil {
+			return err
+		}
+		at += int64(n)
+	}
+	return nil
+}
+
+// repOpenReader tries to serve rng from the object's representation. It returns
+// nil when no usable representation applies (the caller uses CDC); any error
+// before the first byte is reported so the caller can fall back in-request.
+func (s *Store) repOpenReader(man manifestV1, rng byteRange) (objectReader, error) {
+	if man.TotalLength < 1 || !s.rep.mayHaveRoots.Load() {
+		return nil, nil
+	}
+	root, err := s.loadRepRoot(man.ManifestUUID)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if hex.EncodeToString(root.ObjSHA[:]) != man.ObjectSHA256 || root.ObjSize != man.TotalLength {
+		return nil, fmt.Errorf("%w: root names a different object", errRepMismatch)
+	}
+	whole := rng.start == 0 && rng.end == man.TotalLength-1
+	src := s.newRepSource(root.Descs, nil)
+	env := &repEnv{Src: src, Limits: repProdLimits}
+	var produce func(w io.Writer) error
+	if whole {
+		produce = func(w io.Writer) error {
+			n, sum, err := env.reconstruct(root.Rep, w)
+			if err != nil {
+				return err
+			}
+			if n != root.ObjSize || sum != root.ObjSHA {
+				return fmt.Errorf("%w: reconstruction differs from the object", errRepMismatch)
+			}
+			return nil
+		}
+	} else {
+		call, err := env.open(root.Rep)
+		if err != nil {
+			src.close()
+			return nil, err
+		}
+		off, n := rng.start, rng.end-rng.start+1
+		switch call.Rep.Kind {
+		case repKindSQLite:
+			produce = func(w io.Writer) error { return sqliteReadRange(call, off, n, w) }
+		case repKindCAR:
+			if n > 64<<20 {
+				src.close()
+				return nil, nil
+			}
+			produce = func(w io.Writer) error { return carReadRange(call, off, n, w) }
+		case repKindConcat:
+			if !concatRangeSupported(call.Rep, off, off+n) {
+				src.close()
+				return nil, nil
+			}
+			produce = func(w io.Writer) error { return concatReadRange(call, off, n, w) }
+		default:
+			src.close()
+			return nil, nil
+		}
+	}
+	rd := startRepStream(src, produce)
+	first, err := rd.next()
+	if err != nil && err != io.EOF {
+		rd.close()
+		return nil, err
+	}
+	if whole {
+		s.rep.reads.Add(1)
+	} else {
+		s.rep.rangeReads.Add(1)
+	}
+	if err == io.EOF {
+		return &primedReader{rd: rd}, nil
+	}
+	return &primedReader{first: first, have: true, rd: rd}, nil
+}
+
+// openObjectReader is the one read-path selection: a representation when the
+// mode allows it and it applies, otherwise (or on any failure before the first
+// byte) the ordinary CDC manifest reader. CDC stays the authority.
+func (s *Store) openObjectReader(man manifestV1, rng byteRange) objectReader {
+	if s.repMode() == repModePrefer {
+		rd, err := s.repOpenReader(man, rng)
+		if err == nil && rd != nil {
+			return rd
+		}
+		if err != nil {
+			s.rep.fallbacks.Add(1)
+			log.Printf("zeros3: representation read of manifest %s fell back to CDC: %v", man.ManifestUUID, err)
+		}
+	}
+	return s.newManifestReader(man, rng)
 }
 
 // =============================================================================
