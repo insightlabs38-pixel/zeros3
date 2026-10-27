@@ -174,6 +174,12 @@ func EncodeCPP(src []byte) []byte { return encodeCPP(src, 14) }
 func EncodeCPP15(src []byte) []byte { return encodeCPP(src, 15) }
 
 func encodeCPP(src []byte, top uint) []byte {
+	return encodeCPPHash(src, top, func(u, mask uint32) uint32 { return hashMask(u, mask, top) })
+}
+
+// encodeCPPHash is encodeCPP with the hash-table index function supplied (u is the four
+// bytes, mask the table size minus one).
+func encodeCPPHash(src []byte, top uint, hf func(u, mask uint32) uint32) []byte {
 	n := len(src)
 	dst := make([]byte, binary.MaxVarintLen32+n+n/6+64)
 	d := binary.PutUvarint(dst, uint64(n))
@@ -211,7 +217,7 @@ func encodeCPP(src []byte, top uint) []byte {
 					if i == 0 {
 						dword = preload
 					}
-					h := hashMask(dword, mask, top)
+					h := hf(dword, mask)
 					cand = int(table[h])
 					table[h] = uint16(delta + i)
 					if load32(buf, cand) == dword {
@@ -232,7 +238,7 @@ func encodeCPP(src []byte, top uint) []byte {
 		if !found {
 			for {
 				data = load64(buf, ip)
-				h := hashMask(uint32(data), mask, top)
+				h := hf(uint32(data), mask)
 				step := skip >> 5
 				skip += step
 				nextIP := ip + int(step)
@@ -261,8 +267,8 @@ func encodeCPP(src []byte, top uint) []byte {
 				goto remainder
 			}
 			data = load64(buf, ip)
-			table[hashMask(load32(buf, ip-1), mask, top)] = uint16(ip - 1)
-			h := hashMask(uint32(data), mask, top)
+			table[hf(load32(buf, ip-1), mask)] = uint16(ip - 1)
+			h := hf(uint32(data), mask)
 			cand = int(table[h])
 			table[h] = uint16(ip)
 			if uint32(data) != load32(buf, cand) {
