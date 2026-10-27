@@ -47,6 +47,8 @@ ZeroS3 has two test layers:
 
 - `zeros3_test.go`: stdlib-only white-box tests for invariants, parsing,
   corruption, crash recovery, concurrency, and persistent formats.
+  `zeros3_rep_test.go` holds the same kind of tests for the optional
+  structured-representation layer (production section 16d).
 - `testing-harnesses/`: black-box tests using real processes and independent
   clients for S3 interoperability, lifecycle workflows, and benchmarks.
 

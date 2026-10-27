@@ -116,6 +116,7 @@ z2_storage_tiers/           hot/warm/cold tier lifecycle
 z2_consumer/                browser/checkpoint application scenarios
 z2_locality/                locality and coalesced reads
 z2_direct_pack/             direct pack ingest
+z3_i0/                      optional structured representations (needs a pre-I0 binary too)
 ```
 
 The historical directory names are retained as source provenance; they are not

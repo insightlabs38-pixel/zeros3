@@ -262,6 +262,69 @@ accounting, tier policy, rebalance, and structural inspection.
 If an authoritative root cannot be interpreted safely, destructive GC fails
 closed rather than guessing that referenced content is dead.
 
+An optional representation root (next section) is part of its manifest's root:
+the components it names are marked live through the same scan, and a root that
+cannot be read or that names missing state is a missing/corrupt issue that
+blocks destructive maintenance until it is repaired or retired.
+
+## Optional structured representations
+
+Status: experimental, default off (`zeros3 serve -representations off|shadow|prefer`).
+
+A representation is an optional, immutable description of how to rebuild an
+object's exact bytes from SHA-256-addressed components instead of CDC chunks.
+It never replaces the ordinary object:
+
+```text
+bucket/key -> journal -> immutable manifest -> ordinary CDC chunks      (authoritative)
+                              |
+                              +-> optional representation root (per manifest UUID)
+                                      -> representation object (DAG of child objects)
+                                      -> components (ordinary CAS chunks)
+```
+
+- The **journal remains the only namespace visibility boundary.** A root is
+  metadata attached to an immutable manifest and can exist before the namespace
+  commit (it is then an invisible orphan) without making anything visible.
+  Publishing or retiring a root creates no journal record and no object version.
+- **Identity.** Object SHA, representation SHA (SHA-256 of the serialized
+  representation, format `ZS3R` v1), component SHA (SHA-256 of exact bytes) and
+  format-native identity (CID, Merkle hash) stay distinct. Native identities are
+  lookup hints; ZeroS3 SHA-256 is the truth.
+- **Kinds** (a finite in-code switch, numbering fixed): 1 Concat (tar), 2 CAR,
+  3 SQLite page tree, 5 Merkle snapshot. 4 (Git), 6 (Gzip) and 7 (Zstd) are
+  reserved and fail as unsupported. A parent may point at a child representation
+  by digest (DERIVED members, with prefix and zero-suffix framing); children are
+  shared through ordinary content addressing, never reference counted.
+- **Components.** A component of at most 256 KiB is one ordinary CAS chunk whose
+  digest is the component SHA-256. A larger one is *virtual*: a flat descriptor
+  of ordinary CDC chunks stored in the root file, so every root is independently
+  readable and `compact` can pack everything.
+- **Root file** `store/representations/roots/<manifest-uuid>.root` (`ZS3T` v1,
+  CRC32C): manifest UUID, object SHA-256 and size, representation SHA, virtual
+  component descriptors. It is written through tmp, fsync, rename and directory
+  fsync, and is immutable. It is optional acceleration metadata: if it is absent,
+  stale or unreadable the object is served by CDC exactly as before.
+- **Liveness** follows the manifest: current, retained-history and snapshot
+  roots keep their representation closure alive; the closure joins the common
+  reachability scan. The native catalog is a derived, rebuildable accelerator and
+  never keeps anything alive. A root whose manifest no live root names is garbage
+  that `gc -apply` removes together with representation-only chunks.
+- **Creation** is opt-in, deterministic and best-effort: after the CDC manifest is
+  published and before the namespace commit the object is analysed (bounded work,
+  bounded memory, content sniffing only), its components are written, the
+  representation is reconstructed through the production decoder and compared with
+  the object's SHA-256 and size, and only then is the root published. Any failure
+  falls back to the plain CDC object; a PUT never fails because of it.
+- **Reads** (`prefer`): a whole GET, and ranges for SQLite pages, CAR sections and
+  stored tar members, may be served from the representation; everything is
+  verified per component, and any failure before the first byte falls back to CDC
+  in the same request. `shadow` keeps reads on CDC.
+- **Store format 6** is raised just before the first root is published. Portable
+  bundles (`ZS3BNDL1`/`ZS3DLTA1`) and the ZeroS3-native protocol are unchanged and
+  carry only the authoritative CDC state; representations are local and can be
+  rebuilt later.
+
 ## History, snapshots, and forks
 
 ### Retained history

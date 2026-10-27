@@ -87,26 +87,26 @@ import (
 //     7019    CopyObject
 //     7316    Multipart upload
 //     8247    Stats and reachability scanning
-//     9053    Verify
-//     9229    Store locking and safe offline GC
-//     9486    Offline compaction (`zeros3 compact`)
-//    10192    Pack reclamation and repacking (`zeros3 repack`)
-//    10639    Physical tiers: status and pack movement (`zeros3 tier`)
-//    11151    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    12215    Streaming object reads (full and ranged GET)
-//    12467    Delta sync client, credentials, and parallel transfer
-//    14453    Bulk logical-chunk transport (v2)
-//    15364    Recursive directory sync
-//    15669    Remote replication (`zeros3 replicate`)
-//    16416    Peer-assisted corruption repair (`zeros3 repair`)
-//    16928    Namespace (prefix/bucket) replication
-//    17235    Copy-on-write namespace fork (`zeros3 fork`)
-//    17443    Snapshots and restore
-//    18604    Structural diff and inspect (introspection)
-//    19890    Portable snapshot bundles (`zeros3 bundle`)
-//    21050    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    21685    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    27295    CLI dispatch, HTTP server/startup, and main
+//     9077    Verify
+//     9265    Store locking and safe offline GC
+//     9546    Offline compaction (`zeros3 compact`)
+//    10252    Pack reclamation and repacking (`zeros3 repack`)
+//    10699    Physical tiers: status and pack movement (`zeros3 tier`)
+//    11211    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    12275    Streaming object reads (full and ranged GET)
+//    12527    Delta sync client, credentials, and parallel transfer
+//    14513    Bulk logical-chunk transport (v2)
+//    15424    Recursive directory sync
+//    15729    Remote replication (`zeros3 replicate`)
+//    16476    Peer-assisted corruption repair (`zeros3 repair`)
+//    16988    Namespace (prefix/bucket) replication
+//    17295    Copy-on-write namespace fork (`zeros3 fork`)
+//    17503    Snapshots and restore
+//    18664    Structural diff and inspect (introspection)
+//    19986    Portable snapshot bundles (`zeros3 bundle`)
+//    21146    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    21781    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    27449    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -8884,6 +8884,18 @@ type StatsResult struct {
 	ActualStoreFileBytes int64 `json:"actual_store_file_bytes"`
 	ReclaimableBytes     int64 `json:"reclaimable_bytes"`
 
+	// Optional structured representations (section 16d), additive: zero on a
+	// store that never published one. The reachable chunks are ordinary chunks
+	// and are also counted in UniqueReachableChunkBytes and the pack/loose fields.
+	RepresentationRootCount             int   `json:"representation_root_count"`
+	RepresentationObjectCount           int   `json:"representation_object_count"`
+	RepresentationComponentCount        int   `json:"representation_component_count"`
+	RepresentationComponentLogicalBytes int64 `json:"representation_component_logical_bytes"`
+	RepresentationMetadataFileBytes     int64 `json:"representation_metadata_file_bytes"`
+	RepresentationReachableChunkCount   int   `json:"representation_reachable_chunk_count"`
+	RepresentationReachableChunkBytes   int64 `json:"representation_reachable_chunk_bytes"`
+	RepresentationOrphanRootCount       int   `json:"representation_orphan_root_count"`
+
 	DedupAvoidedBytes    int64   `json:"dedup_avoided_bytes"`
 	DedupReduction       float64 `json:"dedup_reduction"`
 	UniqueToLogicalRatio float64 `json:"unique_to_logical_ratio"`
@@ -9046,6 +9058,18 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 	// record (see STORAGE_MODEL.md's publication model).
 	res.ReclaimableBytes = chunkScan.unreachableBytes + manifestScan.unreachableBytes + tmpBytes + res.PackWholeReclaimBytes
 
+	res.RepresentationRootCount = rr.RepRoots
+	res.RepresentationObjectCount = rr.RepObjects
+	res.RepresentationComponentCount = rr.RepComponents
+	res.RepresentationComponentLogicalBytes = rr.RepLogicalBytes
+	res.RepresentationReachableChunkCount = rr.RepChunkCount
+	res.RepresentationReachableChunkBytes = rr.RepChunkBytes
+	res.RepresentationOrphanRootCount = len(rr.RepOrphanRoots)
+	rootBytes, _ := s.repRootBytes()
+	res.RepresentationMetadataFileBytes = rootBytes
+	res.ActualStoreFileBytes += rootBytes
+	res.ReclaimableBytes += s.repOrphanRootBytes(rr.RepOrphanRoots)
+
 	return res, nil
 }
 
@@ -9085,6 +9109,12 @@ type VerifyResult struct {
 	SnapshotRootCount   int `json:"snapshot_root_count"`
 
 	issueTracker
+
+	// Representation roots read (live manifests with an optional representation),
+	// those deep verification reconstructed exactly, and orphan root files.
+	RepresentationRoots       int `json:"representation_roots"`
+	RepresentationsVerified   int `json:"representations_verified"`
+	RepresentationOrphanRoots int `json:"representation_orphan_roots"`
 
 	UnreachableManifests int   `json:"unreachable_manifests"`
 	UnreachableChunks    int   `json:"unreachable_chunks"`
@@ -9134,6 +9164,8 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res.Corrupt = rr.Corrupt
 	res.Invalid = rr.Invalid
 	res.Issues = append(res.Issues, rr.Issues...)
+	res.RepresentationRoots = rr.RepRoots
+	res.RepresentationOrphanRoots = len(rr.RepOrphanRoots)
 	s.verifyPacks(deep, &res)
 
 	// --- Deep only: whole-object digest ---
@@ -9205,6 +9237,10 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 		}
 	}
 
+	if deep {
+		s.verifyRepresentationsDeep(rr, &res)
+	}
+
 	// --- Unreachable/reclaimable accounting (informational, not a failure) ---
 	chunkScan, serr := s.scanChunkFiles(rr.ReferencedChunks)
 	if serr != nil {
@@ -9220,7 +9256,7 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	}
 	res.UnreachableManifests = manifestScan.unreachableCount
 	res.UnreachableChunks = chunkScan.unreachableCount
-	res.ReclaimableBytes = chunkScan.unreachableBytes + manifestScan.unreachableBytes + tmpBytes
+	res.ReclaimableBytes = chunkScan.unreachableBytes + manifestScan.unreachableBytes + tmpBytes + s.repOrphanRootBytes(rr.RepOrphanRoots)
 
 	return res, nil
 }
@@ -9315,6 +9351,12 @@ type GCResult struct {
 
 	ManifestsScanned     int `json:"manifests_scanned"`
 	ManifestsUnreachable int `json:"manifests_unreachable"`
+
+	// Optional representation roots whose manifest no live root names are
+	// garbage: gc reports them and, with -apply, removes them with the
+	// representation-only chunks they alone kept alive.
+	RepresentationOrphanRoots  int `json:"representation_orphan_roots"`
+	RepresentationRootsDeleted int `json:"representation_roots_deleted"`
 
 	ReachablePayloadBytes   int64 `json:"reachable_payload_bytes"`
 	ReclaimablePayloadBytes int64 `json:"reclaimable_payload_bytes"`
@@ -9420,6 +9462,10 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 		return res, fmt.Errorf("gc: scanning manifests: %w", scanErr)
 	}
 
+	res.RepresentationOrphanRoots = len(rr.RepOrphanRoots)
+	orphanRootBytes := store.repOrphanRootBytes(rr.RepOrphanRoots)
+	res.ReclaimablePayloadBytes += orphanRootBytes
+
 	usages := store.packUsages(rr.ReferencedChunks)
 	res.PackSummary = summarizePacks(usages)
 
@@ -9441,6 +9487,20 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 		return res, errGCUnsafe
 	}
 
+	// Orphan representation roots go first: a root without its chunks is
+	// harmless garbage, chunks without their root never are.
+	for _, u := range rr.RepOrphanRoots {
+		fireTestHook(hookBeforeGCDelete)
+		if err := os.Remove(store.repRootPath(u)); err != nil && !os.IsNotExist(err) {
+			return res, fmt.Errorf("gc: removing representation root %s: %w", u, err)
+		}
+		res.RepresentationRootsDeleted++
+	}
+	if len(rr.RepOrphanRoots) > 0 {
+		if err := syncDir(store.repRootsDir()); err != nil {
+			return res, fmt.Errorf("gc: syncing representation roots: %w", err)
+		}
+	}
 	for _, p := range unreachableChunkPaths {
 		fireTestHook(hookBeforeGCDelete)
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
@@ -19166,6 +19226,11 @@ func printStatsHuman(w io.Writer, r StatsResult) {
 		fmt.Fprintf(w, "pack usage       %.0f%% live | %d dead chunks (%d bytes) | %d bytes removed by gc | %d bytes via repack\n",
 			r.PackUtilization*100, r.PackedDeadChunkCount, r.PackedDeadBytes, r.PackWholeReclaimBytes, r.PackRepackReclaimBytes)
 	}
+	if r.RepresentationRootCount > 0 || r.RepresentationOrphanRootCount > 0 {
+		fmt.Fprintf(w, "representations  %d roots | %d objects | %d components (%d bytes) | %d chunks (%d bytes) | %d root bytes | %d orphan roots\n",
+			r.RepresentationRootCount, r.RepresentationObjectCount, r.RepresentationComponentCount, r.RepresentationComponentLogicalBytes,
+			r.RepresentationReachableChunkCount, r.RepresentationReachableChunkBytes, r.RepresentationMetadataFileBytes, r.RepresentationOrphanRootCount)
+	}
 	fmt.Fprintf(w, "store files      %d bytes chunks | %d bytes manifests | %d bytes journal | %d bytes temp\n",
 		r.ChunkStoreFileBytes, r.ManifestFileBytes, r.JournalFileBytes, r.TemporaryFileBytes)
 	fmt.Fprintf(w, "actual/reclaim   %d bytes actual | %d bytes reclaimable\n", r.ActualStoreFileBytes, r.ReclaimableBytes)
@@ -19183,6 +19248,9 @@ func printVerifyHuman(w io.Writer, r VerifyResult) {
 	fmt.Fprintf(w, "chunks           %d checked\n", r.ChunksChecked)
 	if r.PacksChecked > 0 {
 		fmt.Fprintf(w, "packs            %d checked\n", r.PacksChecked)
+	}
+	if r.RepresentationRoots > 0 || r.RepresentationOrphanRoots > 0 {
+		fmt.Fprintf(w, "representations  %d live roots | %d verified exact | %d orphan roots\n", r.RepresentationRoots, r.RepresentationsVerified, r.RepresentationOrphanRoots)
 	}
 	fmt.Fprintf(w, "integrity        %d missing | %d corrupt | %d invalid\n", r.Missing, r.Corrupt, r.Invalid)
 	fmt.Fprintf(w, "reclaimable      %d unreachable manifests | %d unreachable chunks | %d bytes\n",
@@ -19799,6 +19867,9 @@ func printGCHuman(w io.Writer, r GCResult) {
 	fmt.Fprintf(w, "live set         ok=%v\n", r.LiveSetOK)
 	fmt.Fprintf(w, "chunks           %d scanned | %d reachable | %d unreachable\n", r.ChunksScanned, r.ChunksReachable, r.ChunksUnreachable)
 	fmt.Fprintf(w, "manifests        %d scanned | %d unreachable\n", r.ManifestsScanned, r.ManifestsUnreachable)
+	if r.RepresentationOrphanRoots > 0 {
+		fmt.Fprintf(w, "representations  %d orphan roots | %d deleted\n", r.RepresentationOrphanRoots, r.RepresentationRootsDeleted)
+	}
 	fmt.Fprintf(w, "payload bytes    %d reachable | %d reclaimable\n", r.ReachablePayloadBytes, r.ReclaimablePayloadBytes)
 	fmt.Fprintf(w, "disk bytes       %d reclaimable\n", r.ReclaimableDiskBytes)
 	if r.PackCount > 0 {
@@ -19858,13 +19929,38 @@ func runDoctor(args []string) {
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	deep := fs.Bool("deep", false, "re-hash every reachable chunk's actual bytes")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	retire := fs.Bool("retire-bad-representations", false, "remove the optional representation roots of live objects that cannot be trusted (needs exclusive store access; the objects, manifests and CDC chunks are untouched)")
 	fs.Parse(args)
 
+	if *retire {
+		lock, err := acquireStoreLock(*storeDir, true)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "zeros3: doctor: -retire-bad-representations needs exclusive access to the store: %v\n", err)
+			os.Exit(1)
+		}
+		defer lock.release()
+	}
 	store, err := OpenStore(*storeDir)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
 	defer store.Close()
+
+	if *retire {
+		rr, err := store.computeReachability(false)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "zeros3: doctor: %v\n", err)
+			os.Exit(1)
+		}
+		retired, err := store.retireFaultyRepresentations(rr)
+		for _, u := range retired {
+			fmt.Fprintf(os.Stderr, "zeros3: doctor: retired representation root of manifest %s\n", u)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "zeros3: doctor: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	res, err := store.Verify(*deep)
 	if err != nil {
@@ -27017,6 +27113,64 @@ func (rc *repReachCtx) finish() {
 			res.RepOrphanRoots = append(res.RepOrphanRoots, u)
 		}
 	}
+}
+
+// repOrphanRootBytes is the size of the named root files.
+func (s *Store) repOrphanRootBytes(uuids []string) (n int64) {
+	for _, u := range uuids {
+		if fi, err := os.Stat(s.repRootPath(u)); err == nil {
+			n += fi.Size()
+		}
+	}
+	return n
+}
+
+// verifyRepresentationsDeep reconstructs every live representation exactly
+// through the production decoder and Source, into a hash sink, and compares
+// length and SHA-256 with its root and the authoritative object. Roots that
+// reachability already reported are not reported twice.
+func (s *Store) verifyRepresentationsDeep(rr reachabilityResult, res *VerifyResult) {
+	for _, uuid := range slices.Sorted(maps.Keys(rr.ReferencedManifests)) {
+		if _, bad := rr.RepFaults[uuid]; bad {
+			continue
+		}
+		root, err := s.loadRepRoot(uuid)
+		if err != nil {
+			continue
+		}
+		subject := "representation " + uuid
+		src := s.newRepSource(root.Descs, nil)
+		env := &repEnv{Src: src, Limits: repProdLimits}
+		n, sum, err := env.reconstruct(root.Rep, io.Discard)
+		src.close()
+		switch {
+		case err != nil:
+			kind := "corrupt"
+			if errors.Is(err, errRepMissing) {
+				kind = "missing"
+			}
+			res.addIssue(kind, subject, "reconstruction failed: "+err.Error())
+		case n != root.ObjSize || sum != root.ObjSHA:
+			res.addIssue("corrupt", subject, "reconstruction does not equal the authoritative object")
+		default:
+			res.RepresentationsVerified++
+		}
+	}
+}
+
+// retireFaultyRepresentations removes the root files of live manifests whose
+// optional representation cannot be trusted (unreadable, inconsistent with the
+// manifest, or naming missing state). The manifests, CDC chunks and namespace
+// are untouched; only optional metadata is retired, which lets gc proceed.
+func (s *Store) retireFaultyRepresentations(rr reachabilityResult) ([]string, error) {
+	var retired []string
+	for _, uuid := range slices.Sorted(maps.Keys(rr.RepFaults)) {
+		if err := s.retireRepRoot(uuid); err != nil && !os.IsNotExist(err) {
+			return retired, err
+		}
+		retired = append(retired, uuid)
+	}
+	return retired, nil
 }
 
 // ---- reads ---------------------------------------------------------------------------

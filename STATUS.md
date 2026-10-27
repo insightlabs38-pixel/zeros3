@@ -24,6 +24,10 @@ deployment shape, and persistent-format versions. For usage, start with
 - **Content-native scope:** CDC/CAS deduplication, delta transfer, repair,
   structural history/snapshots/forks, portable snapshot bundles, packed CAS,
   physical tiers, and content-aware placement.
+- **Experimental, default off:** optional structured representations
+  (`zeros3 serve -representations shadow|prefer`) for tar, SQLite, CAR and
+  Merkle-snapshot objects. The ordinary CDC object stays authoritative; see
+  [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 - **Release status:** no stable 1.0 compatibility promise yet. Persistent formats
   are explicitly versioned and fail closed when a binary cannot understand
   them.
@@ -93,7 +97,9 @@ understand a required format must refuse the store instead of guessing.
 | CDC | 1 | deterministic Gear/FastCDC-style boundaries; 16 KiB min, 64 KiB target, 256 KiB max |
 | Manifest | 1 | immutable JSON logical object description |
 | Visibility journal | 1 framing | append-only, checksummed namespace authority; later record kinds remain versioned/fail-closed |
-| Store format | 1..5 | feature floor recorded in `FORMAT.json`; see below |
+| Store format | 1..6 | feature floor recorded in `FORMAT.json`; see below |
+| Representation object | 1 | optional immutable structured-representation description, magic `ZS3R` |
+| Representation root | 1 | optional per-manifest sidecar naming a representation, magic `ZS3T` |
 | Pack | 1 | immutable packed CAS records and index |
 | Snapshot descriptor | 1 | immutable namespace snapshot descriptor |
 | Full snapshot bundle | 1 | `.zs3b`, magic `ZS3BNDL1` |
@@ -110,6 +116,13 @@ understand a required format must refuse the store instead of guessing.
 | 3 | compressed pack records |
 | 4 | persisted history-prune records |
 | 5 | warm/cold physical tier roots |
+| 6 | optional structured representation roots (`store/representations/roots/`) |
+
+Level 6 is raised (together with the level-5 tier roots, if the store has none
+yet) immediately before the first representation root is published, and only
+then. Opening a store with a newer binary, or running with
+`-representations` off, shadow or prefer without publishing a root, does not
+change the level. Binaries that predate level 6 refuse a level-6 store at open.
 
 The version never decreases automatically.
 
