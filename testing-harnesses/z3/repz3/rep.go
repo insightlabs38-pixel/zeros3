@@ -77,19 +77,20 @@ func corrupt(f string, a ...any) error {
 type Kind uint8
 
 const (
-	KindConcat Kind = 1 // members in order are the output (generic; the only built-in kind)
-	KindCAR    Kind = 2
-	KindSQLite Kind = 3
-	KindGit    Kind = 4
-	KindMerkle Kind = 5
-	KindGzip   Kind = 6
-	KindZstd   Kind = 7 // Z3-25 lab kind: exact Zstandard replay over a semantic plaintext child
-	KindModel  Kind = 8 // Z3-29 lab kind: model artifact as an op list over components, optionally XOR-plane residuals against a base member
-	KindSST    Kind = 9 // Z3-30 lab kind: LevelDB / RocksDB / Pebble table as logical record groups plus per-block framing and Snappy replay
+	KindConcat  Kind = 1 // members in order are the output (generic; the only built-in kind)
+	KindCAR     Kind = 2
+	KindSQLite  Kind = 3
+	KindGit     Kind = 4
+	KindMerkle  Kind = 5
+	KindGzip    Kind = 6
+	KindZstd    Kind = 7  // Z3-25 lab kind: exact Zstandard replay over a semantic plaintext child
+	KindModel   Kind = 8  // Z3-29 lab kind: model artifact as an op list over components, optionally XOR-plane residuals against a base member
+	KindSST     Kind = 9  // Z3-30 lab kind: LevelDB / RocksDB / Pebble table as logical record groups plus per-block framing and Snappy replay
+	KindParquet Kind = 10 // Z3-31 lab kind: Parquet file as per-column logical value/level streams plus page-layout and compression replay recipes
 )
 
 // Known reports whether this contract version defines the kind.
-func (k Kind) Known() bool { return k >= KindConcat && k <= KindSST }
+func (k Kind) Known() bool { return k >= KindConcat && k <= KindParquet }
 
 // Role is how a component takes part in a representation.
 type Role uint8
