@@ -34,6 +34,8 @@ func Lookup(k repz3.Kind) (repz3.Decoder, bool) {
 		return gzipDecoder{}, true
 	case repz3.KindZstd:
 		return zstdDecoder{}, true
+	case repz3.KindModel:
+		return modelDecoder{}, true
 	}
 	return nil, false
 }

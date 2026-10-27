@@ -1,0 +1,696 @@
+{
+ "schema": "z3-derived-models/1",
+ "note": "locally produced from pinned real artifacts; never committed",
+ "artifacts": [
+  {
+   "name": "py70/main.Q4_K_M.gguf",
+   "size": 49115200,
+   "sha256": "832c04d986889230247c7150c69ec514efa56b99db0b8b3ef385739466c15c60",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/main.Q8_0.gguf",
+   "size": 76721728,
+   "sha256": "2a1077dbf04de398464c0650b2bb7345c99292947cff8be5578209953494a353",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/main.f16.gguf",
+   "size": 142708256,
+   "sha256": "40c908b2e73bd5a25812af08021162828a14576760da81e5562631344c801f90",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step1000.Q4_K_M.gguf",
+   "size": 49115200,
+   "sha256": "0d15b526a3c5b0c0a393641021ccde9ba9005a4f32c20e4a51821131d5ecf8eb",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step1000.Q8_0.gguf",
+   "size": 76721728,
+   "sha256": "4a7865fa999d6bb0841ac25ad513f773f6c3530921cd6013a5fb8d1e8fe87bcc",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step1000.f16.gguf",
+   "size": 142708256,
+   "sha256": "b16d63e283e92eefb3121e6e8c732cba6e6c002c76e7e189047973ab4175a0ba",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step2000.Q4_K_M.gguf",
+   "size": 49115200,
+   "sha256": "5e7cd0a505fcd5d7d51424e45107b438fe7e2f7de3507b305ccf193d4a21b9a8",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step2000.Q8_0.gguf",
+   "size": 76721728,
+   "sha256": "d06f6ca50044308187d31e629bdfdba85bab0e89bb0a36d3b2b392151ecebe58",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step2000.f16.gguf",
+   "size": 142708256,
+   "sha256": "b7f2b5ce143762a4515d1273582ba6a084d40858b1379483bb19e9d9c6638909",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step4000.Q4_K_M.gguf",
+   "size": 49115200,
+   "sha256": "f4e419183c60b17d8d8a2b54f79ecfc6ad5209d48cef85021a438b977fbc1a89",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step4000.Q8_0.gguf",
+   "size": 76721728,
+   "sha256": "4d398aa350a388d9e0d0d09c8ba972b0272a5a70ea21d298feafbd42b01849fa",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step4000.f16.gguf",
+   "size": 142708256,
+   "sha256": "e65b01fcc2d69570df12e2626c1366dc11118d3e03f26d644571922d35699572",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step8000.Q4_K_M.gguf",
+   "size": 49115200,
+   "sha256": "7cebd3995936edef61123655b2f2cfc6bbfb4baf520434d18bb31719e97638eb",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step8000.Q8_0.gguf",
+   "size": 76721728,
+   "sha256": "4cc8cbb327152e10597db61a209781a4d5a858b6b89d19565fe859ad9bf0ba7b",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step8000.f16.gguf",
+   "size": 142708256,
+   "sha256": "972fe105f0dbdff12171ace1c830b2a44c3154bd16a1201af980f4330534360e",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/main/config.json",
+   "size": 567,
+   "sha256": "002050231a9b1ec3ac77aa6b9b3bbdc4d923f4068a7dd33b8da72a9bd6ad9a43",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/main/pytorch_model.bin",
+   "size": 166049099,
+   "sha256": "f629437d6fe950ffda3ef94f6a956a1bb63a2e79e03c296c92fe208999aeb092",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/main/special_tokens_map.json",
+   "size": 99,
+   "sha256": "6f50ab5a5a509a1c309d6171f339b196a900dc9c99ad0408ff23bb615fdae7ad",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/main/tokenizer.json",
+   "size": 2113710,
+   "sha256": "c24618a1b3e6a38167beff1c72cffd126c3a66254347304b50547d12c5f25624",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/main/tokenizer_config.json",
+   "size": 396,
+   "sha256": "70e38394e494931c6f773ba41e19460dd4436526b852207367f04341b4066d3f",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step1000/config.json",
+   "size": 567,
+   "sha256": "002050231a9b1ec3ac77aa6b9b3bbdc4d923f4068a7dd33b8da72a9bd6ad9a43",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step1000/pytorch_model.bin",
+   "size": 166049099,
+   "sha256": "71c57e35247b68602f0580905c634784570fb80142ccd3efb66ecda7f24c3a43",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step1000/special_tokens_map.json",
+   "size": 99,
+   "sha256": "6f50ab5a5a509a1c309d6171f339b196a900dc9c99ad0408ff23bb615fdae7ad",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step1000/tokenizer.json",
+   "size": 2113710,
+   "sha256": "c24618a1b3e6a38167beff1c72cffd126c3a66254347304b50547d12c5f25624",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step1000/tokenizer_config.json",
+   "size": 396,
+   "sha256": "70e38394e494931c6f773ba41e19460dd4436526b852207367f04341b4066d3f",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step2000/config.json",
+   "size": 567,
+   "sha256": "002050231a9b1ec3ac77aa6b9b3bbdc4d923f4068a7dd33b8da72a9bd6ad9a43",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step2000/pytorch_model.bin",
+   "size": 166049099,
+   "sha256": "04b07de9d3065ad3654b21f0f2eb31881084db83119b2807370efa02e292ba8e",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step2000/special_tokens_map.json",
+   "size": 99,
+   "sha256": "6f50ab5a5a509a1c309d6171f339b196a900dc9c99ad0408ff23bb615fdae7ad",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step2000/tokenizer.json",
+   "size": 2113710,
+   "sha256": "c24618a1b3e6a38167beff1c72cffd126c3a66254347304b50547d12c5f25624",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step2000/tokenizer_config.json",
+   "size": 396,
+   "sha256": "70e38394e494931c6f773ba41e19460dd4436526b852207367f04341b4066d3f",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step4000/config.json",
+   "size": 567,
+   "sha256": "002050231a9b1ec3ac77aa6b9b3bbdc4d923f4068a7dd33b8da72a9bd6ad9a43",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step4000/pytorch_model.bin",
+   "size": 166049099,
+   "sha256": "3e3602bab40e80969c414ecab36efd119741056632ca53f35b4a60e44ae21ce1",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step4000/special_tokens_map.json",
+   "size": 99,
+   "sha256": "6f50ab5a5a509a1c309d6171f339b196a900dc9c99ad0408ff23bb615fdae7ad",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step4000/tokenizer.json",
+   "size": 2113710,
+   "sha256": "c24618a1b3e6a38167beff1c72cffd126c3a66254347304b50547d12c5f25624",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step4000/tokenizer_config.json",
+   "size": 396,
+   "sha256": "70e38394e494931c6f773ba41e19460dd4436526b852207367f04341b4066d3f",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step8000/config.json",
+   "size": 567,
+   "sha256": "002050231a9b1ec3ac77aa6b9b3bbdc4d923f4068a7dd33b8da72a9bd6ad9a43",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step8000/pytorch_model.bin",
+   "size": 166049099,
+   "sha256": "59bb76b9fa6cdf255ac2c9d9817f13c7127f5436616f86ad7a37dedc0d16119e",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step8000/special_tokens_map.json",
+   "size": 99,
+   "sha256": "6f50ab5a5a509a1c309d6171f339b196a900dc9c99ad0408ff23bb615fdae7ad",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step8000/tokenizer.json",
+   "size": 2113710,
+   "sha256": "c24618a1b3e6a38167beff1c72cffd126c3a66254347304b50547d12c5f25624",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "py70/step8000/tokenizer_config.json",
+   "size": 396,
+   "sha256": "70e38394e494931c6f773ba41e19460dd4436526b852207367f04341b4066d3f",
+   "class": "REAL_REEXPORT",
+   "derivation": "convert_hf_to_gguf.py (f16) / llama-quantize from the pinned pythia-70m .bin checkpoint of the same step",
+   "producer": {
+    "llama.cpp": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50 (2026-10-26)",
+    "gguf-py": "0.19.0",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst-Q4_K_M.addkv.gguf",
+   "size": 105457248,
+   "sha256": "dfc3b92b95814d9733918bf9f208fd02ab73277c11cb1a72d06534d196dff38d",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteGGUF of QuantFactory SmolLM2-135M-Instruct Q4_K_M; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteGGUF"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst-Q4_K_M.align64.gguf",
+   "size": 105454208,
+   "sha256": "be56e38aad9d98bf54ada883f2dcee3caac0b119da1751aef05fa3c933cfc87b",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteGGUF of QuantFactory SmolLM2-135M-Instruct Q4_K_M; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteGGUF"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst-Q4_K_M.reverse.gguf",
+   "size": 105454144,
+   "sha256": "1189161d60299876ede0337940eac46611a9aa3b2139967f2b43307f1fc2cf58",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteGGUF of QuantFactory SmolLM2-135M-Instruct Q4_K_M; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteGGUF"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst.onetensor.safetensors",
+   "size": 269060552,
+   "sha256": "c77c70eaa7d014368f33b0f66d24ed05bdcc6b97f72d835c0ee10b443b6e42ed",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteST of SmolLM2-135M-Instruct; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteST"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst.reverse.safetensors",
+   "size": 269060368,
+   "sha256": "44e9420fbf443eb43dbfb087bac881cdf2bee5d005fb4c043626fa1fd78ad3b0",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteST of SmolLM2-135M-Instruct; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteST"
+   }
+  },
+  {
+   "name": "reexport/pythia70m-main/resave.bin",
+   "size": 166044005,
+   "sha256": "a8da25192dcad2fe61ec4c5d71a8c4bbce2565a8ec460f5077d5804ae8abbe0d",
+   "class": "REAL_REEXPORT",
+   "derivation": "pt_reexport.py: torch.load(weights_only) + torch.save of the pinned Pythia-70M main .bin state_dict",
+   "producer": {
+    "torch": "2.14.1+cpu"
+   }
+  },
+  {
+   "name": "reexport/pythia70m-main/reversed.bin",
+   "size": 166049453,
+   "sha256": "353755d5cbe47e834a856170fd70545b06cdd1724a3f04edbd928f5396cbe582",
+   "class": "REAL_REEXPORT",
+   "derivation": "pt_reexport.py: torch.load(weights_only) + torch.save of the pinned Pythia-70M main .bin state_dict",
+   "producer": {
+    "torch": "2.14.1+cpu"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst.shards3/model-00001-of-00003.safetensors",
+   "size": 88488408,
+   "sha256": "3a0005941f5f6f9643556d8d1e6265cf55ddd542497fb23ffe6ee6d190bb03b6",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteST of SmolLM2-135M-Instruct; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteST"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst.shards3/model-00002-of-00003.safetensors",
+   "size": 88516320,
+   "sha256": "28dfce3ccc3830f278e25c1ba24e5df711a473f1ca8821c325e0463527904ca7",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteST of SmolLM2-135M-Instruct; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteST"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst.shards3/model-00003-of-00003.safetensors",
+   "size": 92055416,
+   "sha256": "4fd7a1cc5016a6b758edf7b3625a56e697de2dbc496d3aab9e0ca3df83671e00",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteST of SmolLM2-135M-Instruct; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteST"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst.shards3/model.safetensors.index.json",
+   "size": 22404,
+   "sha256": "a7bc09f2adf23c0e97f6e5540ca215cba6877550e0eb9def83de613ca26eba3f",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteST of SmolLM2-135M-Instruct; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteST"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst.shards5/model-00001-of-00005.safetensors",
+   "size": 56623240,
+   "sha256": "de1e543a5887c217ac618285bdfd48dfc702f6c8c3bd64de5ee550c21e4a3b72",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteST of SmolLM2-135M-Instruct; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteST"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst.shards5/model-00002-of-00005.safetensors",
+   "size": 53108752,
+   "sha256": "bdd2c3283783e5a34a4277eb82d54040edb538a0fa97aa2c89bd23b090e6f600",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteST of SmolLM2-135M-Instruct; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteST"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst.shards5/model-00003-of-00005.safetensors",
+   "size": 53110368,
+   "sha256": "5506dc4ad133414af0bd46e28fb510ef1ae8ce6fd13cac6acced5ca42ae16949",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteST of SmolLM2-135M-Instruct; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteST"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst.shards5/model-00004-of-00005.safetensors",
+   "size": 53107520,
+   "sha256": "297bca581669b2ae57db8f9b7099aaedf2c0673f358b0b16c599a55f16ffcc3e",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteST of SmolLM2-135M-Instruct; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteST"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst.shards5/model-00005-of-00005.safetensors",
+   "size": 53110288,
+   "sha256": "11e68833ef48e99d3a26e44eea335b00d57273484e15447c2732ee7581d0cbeb",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteST of SmolLM2-135M-Instruct; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteST"
+   }
+  },
+  {
+   "name": "reexport/smollm2-inst.shards5/model.safetensors.index.json",
+   "size": 22404,
+   "sha256": "f9f64d839423f16a5d7b5bff5f09cec821506d1332d637926b83b0b9e9d97430",
+   "class": "REAL_REEXPORT",
+   "derivation": "z3model derive: RewriteST of SmolLM2-135M-Instruct; tensor bytes copied unchanged",
+   "producer": {
+    "tool": "testing-harnesses/z3 modelz3.RewriteST"
+   }
+  }
+ ]
+}
