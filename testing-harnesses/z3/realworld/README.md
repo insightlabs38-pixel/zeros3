@@ -45,7 +45,7 @@ and PyTorch `.bin` checkpoint revisions from the Hugging Face repositories alrea
 
 ## Model artifacts (Z3-29)
 
-* `models.json` - 38 pinned Hugging Face artifacts (7.6 GiB), written by `python3 -I pin_models.py > models.json` (revision commit, LFS SHA-256, size, licence,
+* `models.json` - 40 pinned Hugging Face artifacts (8.4 GiB), written by `python3 -I pin_models.py > models.json` (revision commit, LFS SHA-256, size, licence,
   relationship): Safetensors (SmolLM2-135M star, Qwen2.5-0.5B base/Instruct, SmolLM v1 control), GGUF (QuantFactory/bartowski/mradermacher/Dhruval/official Qwen
   quantisations of SmolLM2-135M, SmolLM v1, Qwen2.5-0.5B, Qwen3-0.6B), PyTorch ZIP `.bin` (Pythia-14M/70M checkpoints, bert-tiny base and fine-tunes, Pythia-70M-deduped) and
   the Pythia-70M `model.safetensors` of the same revision. `go run ./cmd/z3fetch -sources realworld/models.json -group <g> -cache <dir> -max-mib N` downloads one group (cache keyed by SHA-256).

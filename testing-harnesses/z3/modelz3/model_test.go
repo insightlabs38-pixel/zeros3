@@ -253,6 +253,9 @@ func TestModelRecipeMalformed(t *testing.T) {
 		"huge chunk": func(r *repz3.Rep) {
 			r.Recipe = kinds.BuildModelRecipe([]kinds.ModelOp{{Tag: kinds.ModelPlanes, Res: 0, W: 2, E: 1 << 40}})
 		},
+		"chunk bytes beyond the cap": func(r *repz3.Rep) {
+			r.Recipe = kinds.BuildModelRecipe([]kinds.ModelOp{{Tag: kinds.ModelPlanes, Res: 0, W: 2, E: 1 << 24}})
+		},
 	}
 	for name, f := range mut {
 		r := good()

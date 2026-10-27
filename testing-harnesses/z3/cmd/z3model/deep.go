@@ -29,6 +29,10 @@ func families() []family {
 		{"SmolLM2-135M GGUF Q8_0 base>instruct", "gguf", []string{"gguf-smollm2/qf-base-Q8_0", "gguf-smollm2/qf-inst-Q8_0"}},
 		{"Qwen2.5-0.5B GGUF Q4_K_M base>instruct", "gguf", []string{"gguf-qwen05/qf-base-Q4_K_M", "gguf-qwen05/qf-inst-Q4_K_M"}},
 		{"Qwen3-0.6B GGUF Q4_K_M base>post", "gguf", []string{"gguf-qwen3/mr-base-Q4_K_M", "gguf-qwen3/mr-post-Q4_K_M"}},
+		{"CONTROL unrelated GGUF Q4_K_M: SmolLM2 instruct > SmolLM v1 (same architecture)", "gguf", []string{"gguf-smollm2/qf-inst-Q4_K_M", "gguf-smollm-v1/qf-v1-Q4_K_M"}},
+		{"CONTROL unrelated Safetensors BF16: Qwen2.5-0.5B base > SmolLM2-135M base", "st", []string{"st-qwen05/base", "st-smollm2-star/base"}},
+		{"CONTROL other producer GGUF Q8_0: QuantFactory > bartowski (same instruct model)", "gguf", []string{"gguf-smollm2/qf-inst-Q8_0", "gguf-smollm2-bartowski/bw-inst-Q8_0"}},
+		{"CONTROL other producer GGUF Q4_K_M: QuantFactory > bartowski imatrix", "gguf", []string{"gguf-smollm2/qf-inst-Q4_K_M", "gguf-smollm2-bartowski/bw-inst-Q4_K_M"}},
 		{"Pythia-70M GGUF f16 chain (REAL_REEXPORT)", "gguf", []string{"derived/py70/step1000.f16.gguf", "derived/py70/step2000.f16.gguf", "derived/py70/step4000.f16.gguf", "derived/py70/step8000.f16.gguf", "derived/py70/main.f16.gguf"}},
 		{"Pythia-70M GGUF Q4_K_M chain (REAL_REEXPORT)", "gguf", []string{"derived/py70/step1000.Q4_K_M.gguf", "derived/py70/step2000.Q4_K_M.gguf", "derived/py70/step4000.Q4_K_M.gguf", "derived/py70/step8000.Q4_K_M.gguf", "derived/py70/main.Q4_K_M.gguf"}},
 	}
@@ -197,9 +201,8 @@ func runDeep(s *store, filter string, prove bool) {
 				cum.Objects += c.Objects
 				parts = append(parts, fmt.Sprintf("%.1f", pct(c.Total(true), f.Size)))
 				if prove || i == len(files)-1 {
-					t0 := time.Now()
-					ok := reconstructOK(store, id, f)
-					lastDec = time.Since(t0)
+					ok, dur := reconstructOK(store, id, f)
+					lastDec = dur
 					exact = exact && ok
 				}
 				lastID = id
@@ -234,21 +237,21 @@ func runDeep(s *store, filter string, prove bool) {
 	printHWM()
 }
 
-func reconstructOK(st *repz3.MemStore, id repz3.SHA, f *file) bool {
+func reconstructOK(st *repz3.MemStore, id repz3.SHA, f *file) (bool, time.Duration) {
 	env := kinds.NewEnvLimits(st, repz3.Limits{MaxDepth: repz3.HardMaxDepth, MaxWhole: 1 << 30})
-	h := sha256.New()
-	n, sum, err := env.Reconstruct(id, h)
-	_ = sum
+	t0 := time.Now()
+	n, sum, err := env.Reconstruct(id, io.Discard)
+	dur := time.Since(t0)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "reconstruct:", err)
-		return false
+		return false, dur
 	}
 	// compare with the original bytes in a streaming pass
-	got := h.Sum(nil)
+	got := sum[:]
 	want := sha256.New()
 	_, err = io.Copy(want, io.NewSectionReader(f.f, 0, f.Size))
 	check(err)
-	return n == f.Size && bytes.Equal(got, want.Sum(nil))
+	return n == f.Size && bytes.Equal(got, want.Sum(nil)), dur
 }
 
 func printHWM() {

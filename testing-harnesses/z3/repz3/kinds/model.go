@@ -31,12 +31,13 @@ import (
 // child is another KindModel representation of those bytes (a bounded chain through the
 // contract's depth limit). Nothing here names a bucket, key or version.
 const (
-	modelVer         = 1
-	opCopy      byte = 0
-	opXORPlanes byte = 1
-	opPlanes    byte = 2
-	maxOps           = 1 << 21
-	maxModelW        = 4096
+	modelVer           = 1
+	opCopy        byte = 0
+	opXORPlanes   byte = 1
+	opPlanes      byte = 2
+	maxOps             = 1 << 21
+	maxModelW          = 4096
+	maxChunkBytes      = 16 << 20 // one residual chunk (E elements of W bytes): the only decode-side allocation unit
 )
 
 type modelOp struct {
@@ -113,7 +114,7 @@ func parseModelRecipe(rep *repz3.Rep) (*modelRecipe, error) {
 			if op.W, ok = get(maxModelW + 1); !ok || op.W < 1 {
 				return bad("op %d width", i)
 			}
-			if op.E, ok = get(1 << 28); !ok || op.E < 1 {
+			if op.E, ok = get(1 << 28); !ok || op.E < 1 || int64(op.E)*int64(op.W) > maxChunkBytes {
 				return bad("op %d chunk", i)
 			}
 			op.Size = size(op.Res)
@@ -172,6 +173,7 @@ func (modelDecoder) Decode(c *repz3.Call) error {
 	if err != nil {
 		return err
 	}
+	var bufs [3][]byte // residual, base and output chunks, reused by every op
 	for i := range r.Ops {
 		op := &r.Ops[i]
 		if op.Tag == opCopy {
@@ -180,7 +182,7 @@ func (modelDecoder) Decode(c *repz3.Call) error {
 			}
 			continue
 		}
-		if err := applyResidual(c, op, c.W); err != nil {
+		if err := applyResidual(c, op, c.W, &bufs); err != nil {
 			return fmt.Errorf("op %d: %w", i, err)
 		}
 	}
@@ -244,7 +246,7 @@ func (s *storedReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func applyResidual(c *repz3.Call, op *modelOp, w io.Writer) error {
+func applyResidual(c *repz3.Call, op *modelOp, w io.Writer, bufs *[3][]byte) error {
 	res := memberStream(c, op.Res)
 	defer res.Close()
 	var base io.ReadCloser
@@ -253,12 +255,13 @@ func applyResidual(c *repz3.Call, op *modelOp, w io.Writer) error {
 		defer base.Close()
 	}
 	chunk := int64(op.E) * int64(op.W)
-	rbuf := make([]byte, min(chunk, op.Size))
-	var bbuf, out []byte
-	if base != nil {
-		bbuf = make([]byte, len(rbuf))
+	n0 := int(min(chunk, op.Size))
+	for i := range bufs {
+		if cap(bufs[i]) < n0 {
+			bufs[i] = make([]byte, n0)
+		}
 	}
-	out = make([]byte, len(rbuf))
+	rbuf, bbuf, out := bufs[0][:n0], bufs[1][:n0], bufs[2][:n0]
 	for done := int64(0); done < op.Size; {
 		n := min(chunk, op.Size-done)
 		if _, err := io.ReadFull(res, rbuf[:n]); err != nil {

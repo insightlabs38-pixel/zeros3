@@ -26,7 +26,6 @@ type BaseTensor struct {
 	Width int
 	Hops  int // delta hops to a stored component (0 = Raw)
 	Raw   bool
-	raw   []byte     // Raw: the component bytes (kept for the bundle that first stores them)
 	spec  *childSpec // !Raw: how to rebuild the bytes
 	child *kinds.Bundle
 }
@@ -42,8 +41,10 @@ type Policy struct {
 	Delta  bool // XOR-planes against the same name/type/size base tensor
 	Planes bool // standalone byte planes
 	Chunk  int  // target bytes per residual chunk (default 256 KiB)
-	// MaxHops bounds the delta chain: a tensor may be coded against a base that is itself at most
-	// MaxHops-1 hops from a stored component (default 3; the contract allows depth 4 = 1 + 3 hops).
+	// MaxHops bounds the chain of residual operations a tensor may sit at: a stored component is
+	// hop 0, a planes residual or an XOR against a hop-h base is hop h+1. Decoding a tensor at hop h
+	// nests h representations (the file's, then h-1 children), so the contract's depth limit of 4
+	// allows MaxHops <= 4; the default is 3.
 	MaxHops int
 }
 
@@ -276,7 +277,7 @@ func EncodeModel(src *Src, lay *Layout, bases []map[string]*BaseTensor, has func
 			op.Tag, op.M = kinds.ModelCopy, addMember(m)
 			objs = append(objs, extra...)
 			addKid(kid)
-			bt.Raw, bt.raw, bt.spec, bt.child, bt.Hops = c.base.Raw, c.base.raw, c.base.spec, c.base.child, c.base.Hops
+			bt.Raw, bt.spec, bt.child, bt.Hops = c.base.Raw, c.base.spec, c.base.child, c.base.Hops
 			stats.CopyBase += n
 			stats.NCopyBase++
 		case 0:

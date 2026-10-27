@@ -74,6 +74,12 @@ func main() {
 		runReexport(newStore(c, "/home/user/z3cache/derived"))
 	case "meta":
 		runMeta(newStore(c, "/home/user/z3cache/derived"))
+	case "reads":
+		runReads(newStore(c, "/home/user/z3cache/derived"))
+	case "shards":
+		runShards(newStore(c, "/home/user/z3cache/derived"), "/home/user/z3cache/shardwork")
+	case "fields":
+		runFields(newStore(c, "/home/user/z3cache/derived"), fs.Arg(0), fs.Arg(1))
 	case "pt":
 		runPT(newStore(c, "/home/user/z3cache/derived"), *filter)
 	case "gguf":
