@@ -176,6 +176,7 @@ type pfRegion struct {
 	Off, Len int64
 	Stream   bool // a raw DEFLATE stream
 	Inline   bool // wrapper bytes kept verbatim in the recipe
+	Stored   bool // the data of a stored (method 0) ZIP member (Z3-32 inner transforms)
 }
 
 // deflateRegions partitions the object into raw DEFLATE streams, wrapper bytes
@@ -184,7 +185,7 @@ func deflateRegions(in *Input) ([]pfRegion, error) {
 	size := in.Src.Size
 	switch in.Format {
 	case "deflate":
-		return []pfRegion{{0, size, true, false}}, nil
+		return []pfRegion{{Off: 0, Len: size, Stream: true}}, nil
 	case "gzip":
 		head, err := in.Src.Span(0, min(size, 1<<20))
 		if err != nil {
@@ -197,7 +198,7 @@ func deflateRegions(in *Input) ([]pfRegion, error) {
 		if int64(h)+8 > size {
 			return nil, io.ErrUnexpectedEOF
 		}
-		return []pfRegion{{0, int64(h), false, true}, {int64(h), size - int64(h) - 8, true, false}, {size - 8, 8, false, true}}, nil
+		return []pfRegion{{Off: 0, Len: int64(h), Inline: true}, {Off: int64(h), Len: size - int64(h) - 8, Stream: true}, {Off: size - 8, Len: 8, Inline: true}}, nil
 	case "zip", "pytorch-zip", "ndarray":
 		segs, err := in.Segs()
 		if err != nil {
@@ -210,7 +211,7 @@ func deflateRegions(in *Input) ([]pfRegion, error) {
 			if st {
 				n++
 			}
-			out = append(out, pfRegion{rg.Off, rg.Len, st, false})
+			out = append(out, pfRegion{Off: rg.Off, Len: rg.Len, Stream: st, Stored: rg.Seg != nil && !rg.Seg.Deflate})
 		}
 		if n == 0 {
 			return nil, ErrNotApplicable

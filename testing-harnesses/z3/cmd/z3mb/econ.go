@@ -80,8 +80,11 @@ func fnv(b []byte) uint64 {
 // item whose hash is 0 mod M, M = target / mean item size); sections without item boundaries
 // (ID tables, gaps) use scaled CDC.
 func unitCut(kib int) cutter {
-	return cutter{fmt.Sprintf("unit-%dk", kib), func(p []byte, secs []dexz3.Sec) []int {
-		t := kib << 10
+	return cutter{fmt.Sprintf("unit-%dk", kib), unitCutBytes(kib << 10)}
+}
+
+func unitCutBytes(t int) func(p []byte, secs []dexz3.Sec) []int {
+	return func(p []byte, secs []dexz3.Sec) []int {
 		var out []int
 		for _, s := range secs {
 			if len(s.Items) < 2 {
@@ -114,7 +117,7 @@ func unitCut(kib int) cutter {
 			}
 		}
 		return out
-	}}
+	}
 }
 
 // perItem cuts at every item start (one component per code item / string / class_data...).
@@ -201,10 +204,13 @@ func dexPlan(cfg dexz3.Config) func(f lab.EconFile) (*lab.Plan, bool, error) {
 	}
 }
 
-// treeFan > 0 packs the component list into content-defined index nodes of about that many
-// 32-byte digests: the children are reachable through their node (Via, no recipe reference of
-// their own) and an unchanged run of children is one unchanged node.
+// treeFan > 0 packs the component list of every plan into content-defined index nodes of about
+// that many 32-byte digests: the children are reachable through their node (Via, no recipe
+// reference of their own) and an unchanged run of children is one unchanged node.
 var treeFan = 0
+
+// starMode runs every revision after the first against a store holding only the first.
+var starMode = os.Getenv("Z3MB_STAR") != ""
 
 // refBytes is the recipe cost of one component reference (lab convention 96).
 var refBytes int64 = lab.EconRef
@@ -213,75 +219,43 @@ func newStore() *lab.EconStore {
 	return &lab.EconStore{Ac: lab.NewAcct(refBytes, true), Seen: map[string][32]byte{}}
 }
 
-func repPlan(rep *dexz3.Rep) *lab.Plan {
-	return compPlan(rep.Meta, rep.Comps, "dexn", func(meta []byte, cs [][]byte) ([]byte, error) { return dexz3.Decode(meta, cs) })
+// packPieces turns a meta record and its components into plan pieces (flat).
+func packPieces(meta []byte, comps [][]byte, class string) []lab.Piece {
+	ps := []lab.Piece{{Inline: meta}}
+	for _, c := range comps {
+		ps = append(ps, lab.Piece{Comp: mkComp(c, class), Len: int64(len(c))})
+	}
+	return ps
 }
 
-func compPlan(meta []byte, comps [][]byte, class string, decode func(meta []byte, cs [][]byte) ([]byte, error)) *lab.Plan {
-	p := &lab.Plan{}
-	p.Pieces = append(p.Pieces, lab.Piece{Inline: meta})
-	ids := make([]lab.ID, len(comps))
-	for i, c := range comps {
-		ids[i] = sum(c)
+// unpackPieces fetches the meta record and component bytes back from a flat piece list.
+func unpackPieces(pieces []lab.Piece, get func(lab.ID) ([]byte, error)) ([]byte, [][]byte, error) {
+	if len(pieces) == 0 || pieces[0].Comp != nil {
+		return nil, nil, fmt.Errorf("missing meta piece")
 	}
-	var top []lab.ID
-	if treeFan > 0 {
-		var cur []byte
-		var members []int
-		flush := func() {
-			if len(members) == 0 {
-				return
-			}
-			nd := mkComp(cur, "node")
-			top = append(top, nd.ID)
-			p.Pieces = append(p.Pieces, lab.Piece{Comp: nd, Len: nd.Size})
-			for _, m := range members {
-				p.Pieces = append(p.Pieces, lab.Piece{Comp: mkComp(comps[m], class), Len: int64(len(comps[m])), Via: true})
-			}
-			cur, members = nil, nil
+	var cs [][]byte
+	for _, pc := range pieces[1:] {
+		if pc.Comp == nil {
+			return nil, nil, fmt.Errorf("unexpected inline piece")
 		}
-		for i, id := range ids {
-			cur = append(cur, id[:]...)
-			members = append(members, i)
-			if (int(id[0])<<8|int(id[1]))%treeFan == 0 || len(members) >= 4*treeFan {
-				flush()
-			}
+		b, err := get(pc.Comp.ID)
+		if err != nil {
+			return nil, nil, err
 		}
-		flush()
-	} else {
-		for i, c := range comps {
-			p.Pieces = append(p.Pieces, lab.Piece{Comp: mkComp(c, class), Len: int64(len(c))})
-			_ = i
-		}
+		cs = append(cs, b)
 	}
+	return pieces[0].Inline, cs, nil
+}
+
+func repPlan(rep *dexz3.Rep) *lab.Plan {
+	pieces := packPieces(rep.Meta, rep.Comps, "dexn")
+	p := &lab.Plan{Pieces: pieces}
 	p.Rebuild = func(w io.Writer, get func(lab.ID) ([]byte, error)) error {
-		list := ids
-		if treeFan > 0 {
-			list = nil
-			for _, t := range top {
-				nb, err := get(t)
-				if err != nil {
-					return err
-				}
-				if len(nb)%32 != 0 {
-					return fmt.Errorf("bad index node")
-				}
-				for o := 0; o < len(nb); o += 32 {
-					var id lab.ID
-					copy(id[:], nb[o:])
-					list = append(list, id)
-				}
-			}
+		meta, cs, err := unpackPieces(pieces, get)
+		if err != nil {
+			return err
 		}
-		cs := make([][]byte, len(list))
-		for i, id := range list {
-			b, err := get(id)
-			if err != nil {
-				return err
-			}
-			cs[i] = b
-		}
-		out, err := decode(meta, cs)
+		out, err := dexz3.Decode(meta, cs)
 		if err != nil {
 			return err
 		}
@@ -289,6 +263,67 @@ func compPlan(meta []byte, comps [][]byte, class string, decode func(meta []byte
 		return err
 	}
 	return p
+}
+
+// treeify returns p with its component pieces indexed by nodes (see treeFan). Rebuild first checks
+// that every node lists exactly the digests its children have, then runs the original rebuild.
+func treeify(p *lab.Plan, fan int) *lab.Plan {
+	if fan <= 0 || p == nil {
+		return p
+	}
+	np := *p
+	np.Concat = false
+	np.Pieces = append([]lab.Piece(nil), p.Pieces...)
+	var elig []int
+	for i, pc := range np.Pieces {
+		if pc.Comp != nil && !pc.Via && !pc.Derived {
+			elig = append(elig, i)
+		}
+	}
+	if len(elig) < 8 {
+		return p
+	}
+	type node struct {
+		comp *lab.Comp
+		ids  []byte
+	}
+	var nodes []node
+	var cur []byte
+	flush := func() {
+		if len(cur) > 0 {
+			nodes = append(nodes, node{mkComp(cur, "node"), cur})
+			cur = nil
+		}
+	}
+	n := 0
+	for _, i := range elig {
+		id := np.Pieces[i].Comp.ID
+		cur = append(cur, id[:]...)
+		np.Pieces[i].Via = true
+		n++
+		if (int(id[0])<<8|int(id[1]))%fan == 0 || n >= 4*fan {
+			flush()
+			n = 0
+		}
+	}
+	flush()
+	for _, nd := range nodes {
+		np.Pieces = append(np.Pieces, lab.Piece{Comp: nd.comp, Len: nd.comp.Size})
+	}
+	inner := p.Rebuild
+	np.Rebuild = func(w io.Writer, get func(lab.ID) ([]byte, error)) error {
+		for _, nd := range nodes {
+			b, err := get(nd.comp.ID)
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(b, nd.ids) {
+				return fmt.Errorf("index node differs")
+			}
+		}
+		return inner(w, get)
+	}
+	return &np
 }
 
 type econRep struct {
@@ -304,7 +339,11 @@ func dexReps(names ...string) []econRep {
 		{"raw-unit-16k", rawCutPlan(unitCut(16), "raw")},
 		{"raw-unit-4k", rawCutPlan(unitCut(4), "raw")},
 	}
-	for _, c := range []cutter{cdcProd(), cdcScaled(64), cdcScaled(16), cdcScaled(4), sectionCDC(16), sectionCDC(4), unitCut(64), unitCut(16), unitCut(8), unitCut(4), unitCut(2), perItem(dexz3.TypeCode)} {
+	all = append(all,
+		econRep{"n-unit-4k-k2", dexPlan(dexz3.Config{K0: 2, Cut: unitCut(4).Cut})},
+		econRep{"n-unit-4k-k4", dexPlan(dexz3.Config{K0: 4, Cut: unitCut(4).Cut})},
+		econRep{"oracle-payload-unit-4k", payloadOracle(unitCut(4))})
+	for _, c := range []cutter{cdcProd(), cdcScaled(64), cdcScaled(16), cdcScaled(4), sectionCDC(16), sectionCDC(4), unitCut(64), unitCut(16), unitCut(8), unitCut(4), unitCut(2), unitCut(1), perItem(dexz3.TypeCode)} {
 		c := c
 		all = append(all, econRep{"n-" + c.Name, dexPlan(dexz3.Config{Cut: c.Cut})})
 	}
@@ -369,16 +408,32 @@ func runFamily(title string, revs []revFiles, reps []econRep) error {
 	fmt.Printf(" %9s %7s %6s\n", "total", "newComp", "fb")
 	for _, rp := range reps {
 		st := newStore()
+		var base *lab.EconStore
 		fmt.Printf("%-16s", rp.Name)
 		var tot lab.EconAgg
 		var bad string
-		for _, rv := range revs {
-			a := st.Run(lab.EconRep{Name: rp.Name, Plan: func(f lab.EconFile) (*lab.Plan, bool, error) { return rp.Plan(f) }}, rv.Files)
+		for ri, rv := range revs {
+			cur := st
+			if starMode && ri > 0 {
+				cur = base.Clone()
+			}
+			a := cur.Run(lab.EconRep{Name: rp.Name, Plan: func(f lab.EconFile) (*lab.Plan, bool, error) {
+				pl, fb, err := rp.Plan(f)
+				return treeify(pl, treeFan), fb, err
+			}}, rv.Files)
+			if starMode && ri == 0 {
+				base = st
+			}
 			if !a.Exact {
 				bad = a.Err
 			}
 			fmt.Printf(" %9s", kib(a.Pack))
 			tot.Add(a)
+			if os.Getenv("Z3MB_V") != "" {
+				defer func(n string, a lab.EconAgg) {
+					fmt.Printf("      [%s] newComps %d refs %d meta %d packedNew %d classes %v refsBy %v\n", n, a.NewComps, a.Refs, a.Meta, a.PackedNew, a.Classes, a.ClassRefs)
+				}(rv.Name, a)
+			}
 		}
 		fmt.Printf(" %9s %7d %6d", kib(tot.Pack), tot.NewComps, tot.Fallback)
 		if bad != "" {
@@ -414,5 +469,30 @@ func init() {
 			revs = append(revs, revFiles{filepath.Base(d), fs})
 		}
 		return runFamily(strings.Join(args[1:], " "), revs, dexReps(names...))
+	}
+}
+
+func errorsIs(err, target error) bool { return errors.Is(err, target) }
+
+// payloadOracle prices only the masked payload groups (no reference streams, no recipe): a lower
+// bound that cannot be decoded.
+func payloadOracle(c cutter) func(f lab.EconFile) (*lab.Plan, bool, error) {
+	return func(f lab.EconFile) (*lab.Plan, bool, error) {
+		df, err := dexz3.Parse(bytes.NewReader(f.Data), int64(len(f.Data)), dexz3.Limits{})
+		if err != nil {
+			pl, e := lab.CDCPlan(f, "dex")
+			return pl, true, e
+		}
+		rep, err := dexz3.Encode(df, f.Data, dexz3.Config{Cut: c.Cut})
+		if err != nil {
+			pl, e := lab.CDCPlan(f, "dex")
+			return pl, true, e
+		}
+		p := &lab.Plan{Oracle: true}
+		for _, cm := range rep.Comps {
+			pay, _, _ := dexz3.SplitComp(cm)
+			p.Pieces = append(p.Pieces, lab.Piece{Comp: mkComp(pay, "payload")})
+		}
+		return p, false, nil
 	}
 }

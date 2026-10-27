@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/adler32"
+
+	"zeros3-z3/idxref"
 )
 
 // Representation of one DEX (the "indexed-reference" candidate):
@@ -56,30 +58,6 @@ type Rep struct {
 	Secs  []Sec // sections in payload coordinates (analysis)
 }
 
-func fnv64(h uint64, b []byte) uint64 {
-	for _, c := range b {
-		h = (h ^ uint64(c)) * 1099511628211
-	}
-	return h
-}
-
-func zigzag(v int64) uint64   { return uint64(v<<1) ^ uint64(v>>63) }
-func unzigzag(u uint64) int64 { return int64(u>>1) ^ -int64(u&1) }
-
-// offItems collects, per target section type, the item start offsets in file order.
-func offItems(w *Walked) map[uint16][]int64 {
-	m := map[uint16][]int64{}
-	for _, it := range w.Items {
-		m[it.Type] = append(m[it.Type], it.Off)
-	}
-	ss := make([]int64, len(w.StrOff))
-	for i, o := range w.StrOff {
-		ss[i] = int64(o)
-	}
-	m[TypeStringData] = ss
-	return m
-}
-
 func spaceOf(s Space) int { return int(s) - 1 } // SpString..SpMethod -> 0..4
 
 func (f *File) mapSpan() (int64, int64) {
@@ -122,13 +100,11 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 			return nil, err
 		}
 	}
-	var pi [numSpaces]*prefixIndex
+	var pi [numSpaces]*idxref.PrefixIndex
 	var st Stats
 	for sp := SpString; sp <= SpMethod; sp++ {
-		pi[sp] = newPrefixIndex(tb.ID[sp], k0)
-		for _, c := range pi[sp].multi {
-			st.Collisions[sp] += len(c)
-		}
+		pi[sp] = idxref.NewPrefixIndex(tb.ID[sp], k0)
+		st.Collisions[sp] = pi[sp].Collisions()
 	}
 	// masked payload and per-slot reference bytes
 	masked := append([]byte(nil), data...)
@@ -160,7 +136,7 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 			}
 		} else {
 			stream = spaceOf(s.Space)
-			if b, err = pi[s.Space].put(nil, s.Val); err != nil {
+			if b, err = pi[s.Space].Put(nil, s.Val); err != nil {
 				return nil, err
 			}
 		}
@@ -186,12 +162,12 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 			if i+1 < len(sc.Items) {
 				end = sc.Items[i+1]
 			}
-			h := fnv64(14695981039346656037, payload[st:end])
+			h := idxref.FNV64(idxref.FNVInit, payload[st:end])
 			for ri < len(refs) && refs[ri].pos < st {
 				ri++
 			}
 			for j := ri; j < len(refs) && refs[j].pos < end; j++ {
-				h = fnv64(h^uint64(refs[j].st), refs[j].b)
+				h = idxref.FNV64(h^uint64(refs[j].st), refs[j].b)
 			}
 			sc.Hash[i] = h
 		}
@@ -215,14 +191,7 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 			streams[refs[ri].st] = append(streams[refs[ri].st], refs[ri].b...)
 			ri++
 		}
-		c := binary.AppendUvarint(nil, uint64(end-start))
-		for _, s := range streams {
-			c = binary.AppendUvarint(c, uint64(len(s)))
-		}
-		c = append(c, payload[start:end]...)
-		for _, s := range streams {
-			c = append(c, s...)
-		}
+		c := idxref.PackComp(payload[start:end], streams[:])
 		rep.Comps = append(rep.Comps, c)
 		start = end
 	}
@@ -251,39 +220,16 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 
 // SplitComp splits one component into its payload and reference streams.
 func SplitComp(c []byte) (payload []byte, streams [numStream][]byte, err error) {
-	n, k := binary.Uvarint(c)
-	if k <= 0 {
-		return nil, streams, bad("component header")
+	p, ss, err := idxref.SplitComp(c, numStream)
+	if err != nil {
+		return nil, streams, idxErr(err)
 	}
-	c = c[k:]
-	var ls [numStream]uint64
-	for i := range ls {
-		if ls[i], k = binary.Uvarint(c); k <= 0 {
-			return nil, streams, bad("component header")
-		}
-		c = c[k:]
-	}
-	tot := n
-	for _, l := range ls {
-		if l > uint64(len(c)) {
-			return nil, streams, bad("component stream length")
-		}
-		tot += l
-		if tot > uint64(len(c)) {
-			return nil, streams, bad("component length")
-		}
-	}
-	if tot != uint64(len(c)) {
-		return nil, streams, bad("component has %d trailing bytes", uint64(len(c))-tot)
-	}
-	payload, c = c[:n], c[n:]
-	for i, l := range ls {
-		streams[i], c = c[:l], c[l:]
-	}
-	return payload, streams, nil
+	copy(streams[:], ss)
+	return p, streams, nil
 }
 
-// Decode rebuilds the DEX from Meta and the component bytes (in order).
+// Decode rebuilds the DEX from Meta and the component bytes (in order). Every length it allocates
+// from is bounded by the component bytes it was handed.
 func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	if len(meta) < len(repMagic)+2+HeaderSize || string(meta[:4]) != repMagic {
 		return nil, bad("representation header")
@@ -300,16 +246,29 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	if size < HeaderSize+int64(len(mapb)) || mOff < HeaderSize || mOff+int64(len(mapb)) > size || len(mapb) < 16 {
 		return nil, bad("header/map geometry")
 	}
-	if size > 1<<31 {
-		return nil, fmt.Errorf("%w: file size", ErrLimit)
+	// the components must account for every byte of the file before anything is allocated
+	var split [][numStream][]byte
+	var payloads [][]byte
+	var plen int64
+	for _, c := range comps {
+		p, ss, err := SplitComp(c)
+		if err != nil {
+			return nil, err
+		}
+		payloads = append(payloads, p)
+		split = append(split, ss)
+		plen += int64(len(p))
+	}
+	if plen != size-HeaderSize-int64(len(mapb)) {
+		return nil, bad("payload is %d bytes, the header describes %d", plen, size-HeaderSize-int64(len(mapb)))
 	}
 	buf := make([]byte, size)
 	copy(buf, raw[:])
 	copy(buf[mOff:], mapb)
 	var streams [numStream][]byte
 	pos := int64(HeaderSize)
-	fill := func(b []byte) error {
-		for len(b) > 0 {
+	for i, p := range payloads {
+		for b := p; len(b) > 0; {
 			if pos == mOff {
 				pos += int64(len(mapb))
 			}
@@ -317,32 +276,13 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 			if pos < mOff {
 				lim = mOff
 			}
-			if pos >= lim {
-				return bad("payload longer than the file")
-			}
 			n := copy(buf[pos:lim], b)
 			pos += int64(n)
 			b = b[n:]
 		}
-		return nil
-	}
-	for _, c := range comps {
-		p, ss, err := SplitComp(c)
-		if err != nil {
-			return nil, err
+		for k := range split[i] {
+			streams[k] = append(streams[k], split[i][k]...)
 		}
-		if err := fill(p); err != nil {
-			return nil, err
-		}
-		for i := range ss {
-			streams[i] = append(streams[i], ss[i]...)
-		}
-	}
-	if pos == mOff {
-		pos += int64(len(mapb))
-	}
-	if pos != size {
-		return nil, bad("payload shorter than the file (%d of %d)", pos, size)
 	}
 	f, err := Parse(bytes.NewReader(buf), size, Limits{})
 	if err != nil {
@@ -375,20 +315,20 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	}
 	// 2. index spaces in dependency order
 	var tb Tables
-	var pi [numSpaces]*prefixIndex
+	var pi [numSpaces]*idxref.PrefixIndex
 	var sr [numStream][]byte
 	copy(sr[:], streams[:])
 	resolve := func(sp Space) error {
-		pi[sp] = newPrefixIndex(tb.ID[sp], k0)
+		pi[sp] = idxref.NewPrefixIndex(tb.ID[sp], k0)
 		b := sr[spaceOf(sp)]
 		for i := range w.Slots {
 			s := &w.Slots[i]
 			if s.Space != sp {
 				continue
 			}
-			v, rest, err := pi[sp].get(b)
+			v, rest, err := pi[sp].Get(b)
 			if err != nil {
-				return err
+				return idxErr(err)
 			}
 			b = rest
 			s.Val = v
@@ -496,15 +436,8 @@ func putSlot(b []byte, s *Slot, v uint32) error {
 	return nil
 }
 
-// Sec is one section of the file (or of the payload) with the start offsets of its items.
-type Sec struct {
-	Type     uint16
-	Off, End int
-	Items    []int // item (or array row) starts inside [Off, End), ascending; nil for gaps
-	// Hash is, for each item, a digest of its payload bytes and of the reference bytes of the
-	// slots inside it (set by Encode; nil for raw-file sections).
-	Hash []uint64
-}
+// Sec is one section of the file (or of the payload) with its record boundaries; see idxref.Sec.
+type Sec = idxref.Sec
 
 // Sections lists the spans of the file with their item boundaries. With payload set, coordinates
 // are those of the payload (file without header and map list) and those two spans are omitted.
@@ -555,23 +488,18 @@ type offCoder struct {
 
 type offKind struct {
 	list    []int64 // item starts of the target section, file order
-	end     []int64 // item ends
 	ord     map[int64]int
 	seen    map[int]bool
 	prevNew int
-	cls     *prefixIndex
-	clsOf   []int   // ordinal -> class number
-	clsOrd  [][]int // class -> ordinals
+	cls     *idxref.ClassIndex // items by the identity of their masked bytes; handle = ordinal
 }
 
 func newOffCoder(f *File, w *Walked, masked []byte, k0 int) *offCoder {
 	oc := &offCoder{}
 	type tab struct {
-		list, end []int64
-		ord       map[int64]int
-		cls       *prefixIndex
-		clsOf     []int
-		clsOrd    [][]int
+		list []int64
+		ord  map[int64]int
+		cls  *idxref.ClassIndex
 	}
 	byType := map[uint16]*tab{}
 	for k := OffKind(1); k < numOffKinds; k++ {
@@ -579,41 +507,31 @@ func newOffCoder(f *File, w *Walked, masked []byte, k0 int) *offCoder {
 		tb := byType[t]
 		if tb == nil {
 			tb = &tab{}
+			var end []int64
 			for _, it := range w.Items {
 				if it.Type == t {
 					tb.list = append(tb.list, it.Off)
-					tb.end = append(tb.end, it.Off+it.Len)
+					end = append(end, it.Off+it.Len)
 				}
 			}
 			if t == TypeStringData {
 				for i, o := range w.StrOff {
 					tb.list = append(tb.list, int64(o))
-					tb.end = append(tb.end, int64(w.StrEnd[i]))
+					end = append(end, int64(w.StrEnd[i]))
 				}
 			}
 			tb.ord = make(map[int64]int, len(tb.list))
+			hs := make([]int, len(tb.list))
+			ids := make([]Identity, len(tb.list))
 			for i, o := range tb.list {
 				tb.ord[o] = i
+				hs[i] = i
+				ids[i] = hash('O', []byte{byte(t), byte(t >> 8)}, masked[o:end[i]])
 			}
-			var ids []Identity
-			idx := map[Identity]int{}
-			tb.clsOf = make([]int, len(tb.list))
-			for i := range tb.list {
-				id := hash('O', []byte{byte(t), byte(t >> 8)}, masked[tb.list[i]:tb.end[i]])
-				c, ok := idx[id]
-				if !ok {
-					c = len(ids)
-					idx[id] = c
-					ids = append(ids, id)
-					tb.clsOrd = append(tb.clsOrd, nil)
-				}
-				tb.clsOf[i] = c
-				tb.clsOrd[c] = append(tb.clsOrd[c], i)
-			}
-			tb.cls = newPrefixIndex(ids, k0)
+			tb.cls = idxref.NewClassIndex(hs, ids, k0)
 			byType[t] = tb
 		}
-		oc.kinds[k] = &offKind{list: tb.list, end: tb.end, ord: tb.ord, seen: map[int]bool{}, prevNew: -1, cls: tb.cls, clsOf: tb.clsOf, clsOrd: tb.clsOrd}
+		oc.kinds[k] = &offKind{list: tb.list, ord: tb.ord, seen: map[int]bool{}, prevNew: -1, cls: tb.cls}
 	}
 	return oc
 }
@@ -628,22 +546,9 @@ func (oc *offCoder) put(kind OffKind, pos int64) ([]byte, error) {
 		ko.seen[o] = true
 		d := o - ko.prevNew
 		ko.prevNew = o
-		return binary.AppendUvarint(nil, zigzag(int64(d))<<1), nil
+		return binary.AppendUvarint(nil, idxref.Zigzag(int64(d))<<1), nil
 	}
-	b := binary.AppendUvarint(nil, 1)
-	c := ko.clsOf[o]
-	b, err := ko.cls.put(b, uint32(c))
-	if err != nil {
-		return nil, err
-	}
-	if n := len(ko.clsOrd[c]); n > 1 {
-		for j, x := range ko.clsOrd[c] {
-			if x == o {
-				b = binary.AppendUvarint(b, uint64(j))
-			}
-		}
-	}
-	return b, nil
+	return ko.cls.Put(binary.AppendUvarint(nil, 1), o)
 }
 
 func (oc *offCoder) get(kind OffKind, b []byte) (int64, []byte, error) {
@@ -655,7 +560,7 @@ func (oc *offCoder) get(kind OffKind, b []byte) (int64, []byte, error) {
 	b = b[k:]
 	var o int
 	if u&1 == 0 {
-		o = ko.prevNew + int(unzigzag(u>>1))
+		o = ko.prevNew + int(idxref.Unzigzag(u>>1))
 		if o < 0 || o >= len(ko.list) {
 			return 0, nil, bad("offset ordinal %d outside %d items", o, len(ko.list))
 		}
@@ -665,19 +570,11 @@ func (oc *offCoder) get(kind OffKind, b []byte) (int64, []byte, error) {
 		if u != 1 || ko.cls == nil {
 			return 0, nil, bad("offset stream symbol")
 		}
-		c, rest, err := ko.cls.get(b)
+		h, rest, err := ko.cls.Get(b)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, idxErr(err)
 		}
-		b = rest
-		j := uint64(0)
-		if len(ko.clsOrd[c]) > 1 {
-			if j, k = binary.Uvarint(b); k <= 0 || j >= uint64(len(ko.clsOrd[c])) {
-				return 0, nil, bad("offset occurrence")
-			}
-			b = b[k:]
-		}
-		o = ko.clsOrd[c][j]
+		b, o = rest, h
 	}
 	return ko.list[o], b, nil
 }

@@ -1,9 +1,10 @@
 package dexz3
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+
+	"zeros3-z3/idxref"
 )
 
 // Identity is the DEX-native semantic identity of an indexed entity: a SHA-256 over a canonical
@@ -14,18 +15,9 @@ import (
 //	proto   H("P" | return type | n | parameter types...)         shorty is derived, not identity
 //	field   H("F" | class type | field type | name string)
 //	method  H("M" | class type | proto | name string)
-type Identity = [32]byte
+type Identity = idxref.Identity
 
-func hash(tag byte, parts ...[]byte) Identity {
-	h := sha256.New()
-	h.Write([]byte{tag})
-	for _, p := range parts {
-		h.Write(p)
-	}
-	var out Identity
-	h.Sum(out[:0])
-	return out
-}
+func hash(tag byte, parts ...[]byte) Identity { return idxref.Hash(tag, parts...) }
 
 func u32le(v uint32) []byte { return binary.LittleEndian.AppendUint32(nil, v) }
 
@@ -147,110 +139,18 @@ func identMethods(data []byte, f *File, T, P, S []Identity) ([]Identity, error) 
 	return out, nil
 }
 
-// checkUnique rejects a table holding two entries with one identity (ambiguous: nothing may be
-// normalized against it).
+// checkUnique rejects a table holding two entries with one identity.
 func checkUnique(sp Space, ids []Identity) error {
-	seen := make(map[Identity]struct{}, len(ids))
-	for _, id := range ids {
-		if _, dup := seen[id]; dup {
-			return fmt.Errorf("%w: duplicate %s identity (ambiguous)", ErrUnsupported, sp)
-		}
-		seen[id] = struct{}{}
+	if err := idxref.CheckUnique(sp.String(), ids); err != nil {
+		return fmt.Errorf("%w: %v", ErrUnsupported, err)
 	}
 	return nil
 }
 
-// prefixIndex codes a reference to table entry i as the first K0 bytes of its identity, plus the
-// fewest extra bytes that make the prefix unique among the entries sharing those K0 bytes. The
-// decoder owns the same table, so the extra length is implied and no escape marker exists.
-type prefixIndex struct {
-	k0    int
-	ids   []Identity
-	uniq  map[uint32]uint32
-	multi map[uint32][]uint32
-}
-
-func key(id *Identity, k0 int) uint32 {
-	var k uint32
-	for i := 0; i < k0; i++ {
-		k = k<<8 | uint32(id[i])
+// idxErr maps a reference-stream error to this package's malformed-input error.
+func idxErr(err error) error {
+	if err == nil {
+		return nil
 	}
-	return k
-}
-
-func newPrefixIndex(ids []Identity, k0 int) *prefixIndex {
-	p := &prefixIndex{k0: k0, ids: ids, uniq: make(map[uint32]uint32, len(ids)), multi: map[uint32][]uint32{}}
-	for i := range ids {
-		k := key(&ids[i], k0)
-		if m, ok := p.multi[k]; ok {
-			p.multi[k] = append(m, uint32(i))
-		} else if j, ok := p.uniq[k]; ok {
-			delete(p.uniq, k)
-			p.multi[k] = []uint32{j, uint32(i)}
-		} else {
-			p.uniq[k] = uint32(i)
-		}
-	}
-	return p
-}
-
-func (p *prefixIndex) put(dst []byte, i uint32) ([]byte, error) {
-	if uint64(i) >= uint64(len(p.ids)) {
-		return dst, bad("reference %d outside table of %d", i, len(p.ids))
-	}
-	id := &p.ids[i]
-	k := key(id, p.k0)
-	dst = append(dst, id[:p.k0]...)
-	cands, ok := p.multi[k]
-	if !ok {
-		return dst, nil
-	}
-	for e := p.k0; e < 32; e++ {
-		dst = append(dst, id[e])
-		n := 0
-		for _, c := range cands {
-			if string(p.ids[c][:e+1]) == string(id[:e+1]) {
-				n++
-			}
-		}
-		if n == 1 {
-			return dst, nil
-		}
-	}
-	return dst, bad("identity not unique")
-}
-
-// get reads one reference from b and returns the table index and the remaining bytes.
-func (p *prefixIndex) get(b []byte) (uint32, []byte, error) {
-	if len(b) < p.k0 {
-		return 0, nil, bad("reference stream truncated")
-	}
-	var k uint32
-	for i := 0; i < p.k0; i++ {
-		k = k<<8 | uint32(b[i])
-	}
-	if j, ok := p.uniq[k]; ok {
-		return j, b[p.k0:], nil
-	}
-	cands, ok := p.multi[k]
-	if !ok {
-		return 0, nil, bad("reference to an unknown identity")
-	}
-	cur := append([]uint32(nil), cands...)
-	for e := p.k0; e < 32 && len(cur) > 1; e++ {
-		if e >= len(b) {
-			return 0, nil, bad("reference stream truncated")
-		}
-		n := cur[:0]
-		for _, c := range cur {
-			if p.ids[c][e] == b[e] {
-				n = append(n, c)
-			}
-		}
-		cur = n
-		if len(cur) == 1 {
-			return cur[0], b[e+1:], nil
-		}
-	}
-	return 0, nil, bad("reference to an unknown identity")
+	return fmt.Errorf("%w: %v", ErrFormat, err)
 }

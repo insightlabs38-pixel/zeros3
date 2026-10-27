@@ -25,6 +25,7 @@ func (w *walker) stat(name string, bytes int64, deep bool) {
 
 func (w *walker) classBody() error {
 	r := w.r
+	w.c.Bounds = append(w.c.Bounds, r.p)
 	r.u2() // access_flags
 	w.slot2(SpClass, ClHdr, false)
 	w.slot2(SpClass, ClHdr, true)
@@ -38,6 +39,7 @@ func (w *walker) classBody() error {
 			return fmt.Errorf("%w: members %d", ErrLimit, n)
 		}
 		for i := 0; i < n && r.err == nil; i++ {
+			w.c.Bounds = append(w.c.Bounds, r.p)
 			r.u2() // access_flags
 			w.slot2(SpUtf8, ClMember, false)
 			w.slot2(SpUtf8, ClMember, false)
@@ -47,6 +49,7 @@ func (w *walker) classBody() error {
 			w.attributes(kind == 1, 0)
 		}
 	}
+	w.c.Bounds = append(w.c.Bounds, r.p)
 	w.attributes(false, 0)
 	if r.err != nil {
 		return r.err
@@ -351,6 +354,7 @@ func (w *walker) code(end int64, depth int) {
 	w.c.Code += cl
 	for pc := int64(0); pc < cl && r.err == nil; {
 		op := r.b[base+pc]
+		w.c.Ops[op]++
 		n := int64(opLen[op])
 		if n < 0 {
 			r.fail("invalid opcode %#x at pc %d", op, pc)

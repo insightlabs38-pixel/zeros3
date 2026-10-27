@@ -8,7 +8,9 @@
 // each index slot by a short digest of the target's DEX-native identity (never the numeric index)
 // and Decode rebuilds the exact bytes from that representation alone. Nothing here depends on the
 // tool that produced the DEX, on the base revision, or on the header checksum (the header is kept
-// as exact bytes). Stdlib only.
+// as exact bytes; its adler32 is re-verified on decode when the original was valid). DEX versions
+// 035-041 are accepted (037 and 039 are what the corpus holds); CompactDex, link data and the
+// call-site / method-handle tables are not modelled (their bytes stay opaque payload). Stdlib only.
 package dexz3
 
 import (

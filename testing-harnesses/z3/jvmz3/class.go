@@ -201,6 +201,8 @@ type File struct {
 	Methods int
 	Code    int64 // bytes of Code attribute bytecode
 	Ranges  []AttrRange
+	Ops     map[byte]int // opcodes decoded in Code attributes
+	Bounds  []int64      // start of the class header, of every field and method, and of the class attributes
 	Lim     Limits
 }
 
@@ -286,12 +288,17 @@ func ParseBytes(b []byte, lim Limits, masked bool) (*File, error) {
 // an attribute_name_index and must write the resolved index into b (or fail).
 type resolver func(s *Slot) error
 
+// prepare runs once the constant pool has been walked (before the class body), so a masked walk can
+// build the Utf8 table its attribute-name resolver needs.
+type prepare func(c *File) error
+
 type walker struct {
 	r      *reader
 	c      *File
 	lim    Limits
 	masked bool
 	res    resolver
+	prep   prepare
 	utf8   func(idx uint32) ([]byte, bool) // content of a Utf8 entry
 	depth  int
 }
@@ -353,13 +360,13 @@ func (w *walker) slot2(sp Space, cl Class, opt bool) uint32 {
 }
 
 func walk(b []byte, lim Limits, masked bool, res resolver) (*File, error) {
-	return walkWith(b, lim, masked, res)
+	return walkWith(b, lim, masked, res, nil)
 }
 
-func walkWith(b []byte, lim Limits, masked bool, res resolver) (*File, error) {
-	c := &File{Size: int64(len(b)), Lim: lim, Attrs: map[string]*AttrStat{}}
+func walkWith(b []byte, lim Limits, masked bool, res resolver, prep prepare) (*File, error) {
+	c := &File{Size: int64(len(b)), Lim: lim, Attrs: map[string]*AttrStat{}, Ops: map[byte]int{}}
 	r := &reader{b: b}
-	w := &walker{r: r, c: c, lim: lim, masked: masked, res: res}
+	w := &walker{r: r, c: c, lim: lim, masked: masked, res: res, prep: prep}
 	if r.u4() != 0xCAFEBABE {
 		return nil, bad("magic")
 	}
@@ -449,6 +456,11 @@ func walkWith(b []byte, lim Limits, masked bool, res resolver) (*File, error) {
 			if r.err != nil {
 				return nil, r.err
 			}
+		}
+	}
+	if w.prep != nil {
+		if err := w.prep(c); err != nil {
+			return nil, err
 		}
 	}
 	if err := w.classBody(); err != nil {

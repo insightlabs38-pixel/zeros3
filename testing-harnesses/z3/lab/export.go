@@ -50,3 +50,7 @@ func ChunkScaled(b []byte, min, target, max int) [][]byte {
 	}
 	return out
 }
+
+// IRRep returns the exact-DEFLATE reconstruction representation for spec (Z3-32 builds custom
+// specs with an Inner transform).
+func IRRep(spec IRSpec) Rep { return irRep(spec) }
