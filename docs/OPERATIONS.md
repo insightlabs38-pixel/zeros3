@@ -205,6 +205,12 @@ chunks, tier roots, `FORMAT.json`, or tier metadata.
 Portable `.zs3b` bundles remain the simpler logical backup format when moving
 data between machines.
 
+On a store that uses optional representations (store format 6) a filesystem
+backup must also include `representations/` (the root files; their components are
+ordinary chunks and packs). Portable bundles do not need it: they carry the
+authoritative CDC state only, so a restored store is complete without
+representations and can rebuild them later.
+
 ## Upgrades
 
 Before upgrading:
@@ -227,6 +233,15 @@ or:
 ```
 
 Only after that should you enable features that may raise `FORMAT.json`.
+
+Opening an older store with a newer binary does not upgrade it. Enabling optional
+representations (`zeros3 serve -representations shadow|prefer`) raises the store to
+format 6 only when the first representation root is published (a store still below
+format 5 also gets its empty warm/cold tier roots at that moment). Turning the
+setting back to `off` never downgrades the store; roots already present stay
+understood by every maintenance command (verify, gc, compact, repack, tier,
+history prune), they are just not created or read. Binaries that predate format 6
+refuse such a store at open.
 
 A newer binary can open supported older store levels. A feature that requires a
 newer reader raises the store format before publishing state that the old
@@ -385,6 +400,27 @@ peer supplies availability rather than integrity authority.
 
 After repair, run deep verification again. If no peer has the content, restore
 it from a verified backup or bundle.
+
+### Optional representation roots
+
+Representations are optional acceleration metadata. `verify` always reports a root
+that is unreadable, names a different object than its manifest, or depends on
+missing components; `verify -deep` additionally reconstructs every live
+representation and compares it with the authoritative object. While such a fault
+exists the object is still served from its CDC chunks, but `gc -apply` (and the
+other destructive passes) refuse to run, exactly as for any untrusted root. Retire
+the faulty roots, then continue:
+
+```sh
+./zeros3 doctor -store /srv/zeros3 -retire-bad-representations   # exclusive access
+./zeros3 gc -store /srv/zeros3 -apply
+```
+
+Retiring removes only root files; manifests, CDC chunks and the namespace are
+untouched. `gc` also reports and removes orphan roots (their manifest is no longer
+live) together with the representation-only chunks they alone kept alive.
+`stats -json` reports `representation_*` fields (roots, objects, components,
+reachable chunks, root-file bytes, orphan roots).
 
 ## Snapshots and multipart roots
 

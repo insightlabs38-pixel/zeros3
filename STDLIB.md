@@ -40,6 +40,7 @@ import surface.
 | TLS sidecar/library | `net/http` TLS serving | CLI integration and configuration checks |
 | filesystem sync/walk helper | `filepath.WalkDir`, `io/fs` | directory mapping and safe file-type handling |
 | HTTP client / request library | `net/http`, `net/url` | signed ZeroS3 client requests, pooling, transfer bounds |
+| SQLite / CAR / tar / Merkle-DAG libraries | `bytes`, `encoding/binary`, `io`, `crypto/sha256`, `crypto/sha3`, `crypto/sha512`, `hash/crc32` | the optional structured-representation layer: bounded parsers and exact decoders for a SQLite page tree, CARv1/v2, tar framing and a hash-addressed snapshot, with no CGO, no external executable and no third-party library |
 
 The important distinction is that the standard library often provides the
 primitive, not the storage or protocol behavior. ZeroS3 still owns the
@@ -202,6 +203,8 @@ The direct production import block is part of the zero-dependency contract.
 | `crypto/hmac` | SigV4 HMAC |
 | `crypto/md5` | S3 ETags and Content-MD5 |
 | `crypto/sha256` | CAS identity, object/bundle hashes, SigV4 |
+| `crypto/sha3` | native node hashes of the optional Merkle representation and CID verification (SHA3-256/512) |
+| `crypto/sha512` | native node hashes of the optional Merkle representation and CID verification (SHA-512, SHA-512/256) |
 | `crypto/subtle` | constant-time signature comparison |
 | `encoding/base64` | request checksum/digest headers |
 | `encoding/binary` | journal, pack, bulk, snapshot, and bundle framing |
