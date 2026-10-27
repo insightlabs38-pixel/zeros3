@@ -389,3 +389,22 @@ go run ./cmd/z3parquet perf -file big.parquet -phase encode ; python oracle/parq
 ```
 
 Results: `../results/Z3_31_PARQUET_REENCODING.md`.
+
+## Z3-32 (managed bytecode: DEX / APK and JVM class / JAR)
+
+`dexz3` (strict DEX reader, slot walker, indexed-reference representation), `jvmz3` (class reader and the same idea for constant-pool indexes), `idxref` (the shared
+identity / prefix-coder / component-packaging substrate), `pdelta` (the Z3-12 pairwise delta, moved out of `cmd/z3bin`), `repz3/kinds/dex.go` (lab `KindDEX` = 11) and
+the driver `cmd/z3mb`. Producers and corpora live outside Git: the real APK/JAR histories come from `realworld/sources.json` (`z3fetch -group fdroid-apk|guava-jar|commons-lang3-jar|junit-jar`),
+the controlled workload is `z3mb workload DIR` (needs `javac`, a JDK 21 and `Z3_R8=r8-8.7.18.jar` from Google Maven) and `z3mb apk DIR WLDIR` (needs Info-ZIP). Hermetic tests use the committed
+fixtures in `dexz3/testdata` and `jvmz3/testdata`.
+
+```sh
+go test ./idxref ./dexz3 ./jvmz3 ./cmd/z3mb ./repz3/...
+go test ./dexz3 -run '^$' -fuzz '^FuzzDex$' -fuzztime 25s ; go test ./jvmz3 -run '^$' -fuzz '^FuzzClass$' -fuzztime 25s
+go run ./cmd/z3mb attrib dex OLDDIR NEWDIR ; go run ./cmd/z3mb attrib jvm OLD.jar NEW.jar      # where the changed bytes are
+Z3MB_TREE=64 go run ./cmd/z3mb dexecon cdc,n-unit-4k DIR...        # DEX economics (Z3MB_STAR=1: every revision against the first; Z3MB_REF=32: 32 B/ref)
+Z3MB_TREE=64 go run ./cmd/z3mb zipecon cdc,outer,outer+dex-unit-4k FILE...   # APK / JAR with exact ZIP + DEFLATE ; jvmecon: standalone classes
+go run ./cmd/z3mb lockin outer,outer+dex-unit-4k FILE... ; rolling 2 REPS FILE... ; reads DEX ; readsjar ARCHIVE MEMBER REPS... ; perf DEX ; zipperf REP FILE ; overhead DEX... ; coverage PATH...
+```
+
+Results: `../results/Z3_32_MANAGED_BYTECODE.md`.

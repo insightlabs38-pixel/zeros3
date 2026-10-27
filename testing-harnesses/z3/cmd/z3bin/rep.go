@@ -37,36 +37,9 @@ type Rep struct {
 
 // cdcObjsP is the same gear CDC with scaled parameters (sensitivity only).
 func cdcObjsP(b []byte, min, target, max int) []obj {
-	bits := 0
-	for 1<<bits < target {
-		bits++
-	}
-	maskS, maskL := uint64(1)<<bits-1, uint64(1)<<(bits-1)-1
 	var out []obj
-	for len(b) > 0 {
-		lim := len(b)
-		if lim > max {
-			lim = max
-		}
-		n := lim
-		var h uint64
-		for i := 0; i < lim; i++ {
-			h = (h << 1) + lab.GearAt(b[i])
-			sz := i + 1
-			if sz < min {
-				continue
-			}
-			m := maskL
-			if sz < target {
-				m = maskS
-			}
-			if h&m == 0 {
-				n = sz
-				break
-			}
-		}
-		out = append(out, one(b[:n])...)
-		b = b[n:]
+	for _, c := range lab.ChunkScaled(b, min, target, max) {
+		out = append(out, one(c)...)
 	}
 	return out
 }

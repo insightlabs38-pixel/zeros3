@@ -40,6 +40,8 @@ func Lookup(k repz3.Kind) (repz3.Decoder, bool) {
 		return sstDecoder{}, true
 	case repz3.KindParquet:
 		return parquetDecoder{}, true
+	case repz3.KindDEX:
+		return dexDecoder{}, true
 	}
 	return nil, false
 }

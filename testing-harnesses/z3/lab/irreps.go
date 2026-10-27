@@ -82,6 +82,14 @@ func (in *Input) ParseStream(off, n int64) (*deflate.Stream, error) {
 	return ps.s, nil
 }
 
+// Inner replaces the CDC chunking of a member's plaintext (Z3-32). Encode returns the pieces that
+// represent plain (Inline pieces carry recipe bytes, component pieces carry stored bytes) or
+// ok=false to leave the plaintext to CDC. Decode rebuilds the plaintext from those pieces only.
+type Inner interface {
+	Encode(plain []byte) (pieces []Piece, ok bool, err error)
+	Decode(pieces []Piece, get func(ID) ([]byte, error)) ([]byte, error)
+}
+
 // IRSpec names one reconstruction-IR representation.
 type IRSpec struct {
 	Name   string
@@ -95,6 +103,9 @@ type IRSpec struct {
 	// TarPlain cuts the plaintext with the named tar segmentation (Z3-11) instead of
 	// CDC; a plaintext that is not a tar this package reconstructs exactly stays CDC.
 	TarPlain string
+	// Inner, when set, represents the plaintext of DEFLATE members and the data of stored ZIP
+	// members it accepts (Z3-32); everything else stays CDC.
+	Inner Inner
 }
 
 // IRSpecs lists the laboratory's IR representations (report order).
@@ -141,6 +152,7 @@ type irStream struct {
 	skel             []byte
 	plainLen         int
 	plainSplit       []int // unit-aligned plaintext boundaries (UnitPlain)
+	inner            bool  // pieces [first,mid) are Inner pieces, not plaintext chunks
 }
 
 func irUnitID(b []byte) ID { return sum(append([]byte("z3/ir/unit\x00"), b...)) }
@@ -152,6 +164,7 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 	}
 	p := &Plan{}
 	var streams []*irStream
+	var stored []*irStored
 	var stats irStats
 	t0 := time.Now()
 	for _, rg := range regions {
@@ -164,6 +177,21 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 			continue
 		case !rg.Stream:
 			var e error
+			if rg.Stored && spec.Inner != nil && rg.Len > 0 {
+				data, err := in.Src.Span(rg.Off, rg.Len)
+				if err != nil {
+					return nil, err
+				}
+				if pcs, ok, err := spec.Inner.Encode(data); err != nil {
+					return nil, err
+				} else if ok {
+					first := len(p.Pieces)
+					p.Pieces = append(p.Pieces, pcs...)
+					stored = append(stored, &irStored{first: first, last: len(p.Pieces), region: rg})
+					stats.innerStored++
+					continue
+				}
+			}
 			if rg.Len < in.Opts.InlineMax {
 				e = appendRegion(p, in.Src, rg.Off, rg.Len, in.Opts)
 			} else {
@@ -227,6 +255,12 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 				stats.tarMembers += st.Members
 				stats.tarHdr += st.HdrBytes
 			}
+		} else if pcs, ok, err := innerPieces(spec.Inner, s.Plain); err != nil {
+			return nil, err
+		} else if ok {
+			p.Pieces = append(p.Pieces, pcs...)
+			st.inner = true
+			stats.innerStreams++
 		} else if err := chunkBytesClass(p, s.Plain, "plain"); err != nil {
 			return nil, err
 		}
@@ -261,19 +295,51 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 		"ir_skeleton_bytes": stats.skel, "ir_unit_bytes": stats.unitBytes, "ir_units": stats.units, "ir_inline_units": stats.inlineUnits, "tokens": stats.tokens,
 		"matches": stats.matches, "wrapper_bytes": stats.wrapper, "fallback_bytes": stats.fallback,
 		"analyze_ms": ms(stats.analyze), "parse_ms": ms(stats.parse),
-		"tar_fallback_streams": stats.tarFallback, "tar_members": stats.tarMembers, "tar_header_bytes": stats.tarHdr,
+		"inner_streams": stats.innerStreams, "inner_stored": stats.innerStored, "tar_fallback_streams": stats.tarFallback, "tar_members": stats.tarMembers, "tar_header_bytes": stats.tarHdr,
 		"codec": spec.Codec.String(), "policy": spec.Policy.String(), "profiles": profileSummary(stats.profiles),
 	}
 	byFirst := map[int]*irStream{}
 	for _, s := range streams {
 		byFirst[s.first] = s
 	}
+	byStored := map[int]*irStored{}
+	for _, s := range stored {
+		byStored[s.first] = s
+	}
 	var replayDur time.Duration
 	p.Rebuild = func(w io.Writer, get func(ID) ([]byte, error)) error {
 		for i := 0; i < len(p.Pieces); i++ {
+			if s := byStored[i]; s != nil {
+				data, err := spec.Inner.Decode(p.Pieces[s.first:s.last], get)
+				if err != nil {
+					return err
+				}
+				orig, err := in.Src.Span(s.region.Off, s.region.Len)
+				if err != nil {
+					return err
+				}
+				if !bytes.Equal(data, orig) {
+					return fmt.Errorf("inner reconstruction of a stored member differs (%d vs %d bytes)", len(data), len(orig))
+				}
+				if _, err := w.Write(data); err != nil {
+					return err
+				}
+				i = s.last - 1
+				continue
+			}
 			if s := byFirst[i]; s != nil {
 				plain := make([]byte, 0, s.plainLen)
+				if s.inner {
+					d, err := spec.Inner.Decode(p.Pieces[s.first:s.mid], get)
+					if err != nil {
+						return err
+					}
+					plain = append(plain, d...)
+				}
 				for _, pc := range p.Pieces[s.first:s.mid] {
+					if s.inner {
+						break
+					}
 					if pc.Comp == nil { // inline piece (tar structure)
 						plain = append(plain, pc.Inline...)
 						continue
@@ -337,7 +403,20 @@ func analyzeIR(in *Input, spec IRSpec) (*Plan, error) {
 // unitInlineMax: units smaller than this live in the recipe instead of the store.
 const unitInlineMax = 64
 
+type irStored struct {
+	first, last int
+	region      pfRegion
+}
+
+func innerPieces(in Inner, plain []byte) ([]Piece, bool, error) {
+	if in == nil {
+		return nil, false, nil
+	}
+	return in.Encode(plain)
+}
+
 type irStats struct {
+	innerStored, innerStreams                  int
 	profiles                                   map[uint8]int
 	inlineUnits                                int
 	streams, ok, fails, units, tokens, matches int
