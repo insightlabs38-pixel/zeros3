@@ -62,6 +62,10 @@ cmd/z3frontier Z3-23/24 measurements: gen, tar, c23 (OCI tar+zstd / eStargz / zs
 oracle/containers  Z3-23 external producers (own Go module, never a dependency): estargz + zstd:chunked wrapper, setup.sh pinning zstd, erofs-utils, composefs, nydus-image
 cmd/z3shadow  Z3-22 measurements: mapping, chains (real physical cost, loose and packed), reads, restart, scenarios
 cmd/z3bin     Z3-12/13 corpus builder (go build -overlay, gcc/clang C) and measurements: pair, attr, delta, runs, report, verify; lab-only Mach-O view
+snappyz3/     Z3-30 strict stdlib Snappy block parser, command-recipe replay (literal bytes come from the decoded child), and the deterministic reference encoders (Go snappy, C++ snappy 1.1.10 and the 15-bit variant RocksDB bundles) used as per-block predictors
+sstz3/        Z3-30 SST substrate for LevelDB / RocksDB BlockBasedTable / Pebble: ReaderAt footer/metaindex/properties/(two-level) index parser with SUPPORTED/OPAQUE_PRESERVED/UNSUPPORTED_FALLBACK feature classes, exact block walker/writer, logical record groups (content-addressed, record-hash cut), serialized recipe, streaming and ranged Decode, synthetic fixtures
+cmd/z3sst     Z3-30 study: gen-ops (deterministic workload), audit, rt (exactness over a corpus), snappy, econ (production CDC vs native blocks vs entry-level forms), reads, perf
+oracle/sst    Z3-30 producers outside the module: gen_sst.py (LevelDB 1.23 via plyvel, RocksDB 9.8.4 via rocksdict) and pebblegen (Pebble v1.1.5, nested Go module); setup.sh
 ```
 
 ```sh

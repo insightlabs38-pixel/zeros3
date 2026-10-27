@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 )
 
 type ID [32]byte
@@ -173,6 +174,16 @@ func NewAcct(refBytes int64, pack bool) *Acct {
 	return &Acct{RefBytes: refBytes, Pack: pack, store: map[ID]Comp{}}
 }
 
+// Clone returns an independent copy of the store (components are shared, not copied).
+func (a *Acct) Clone() *Acct {
+	c := *a
+	c.store = make(map[ID]Comp, len(a.store))
+	for k, v := range a.store {
+		c.store[k] = v
+	}
+	return &c
+}
+
 // Add records one revision's plan and returns its incremental cost. The first
 // occurrence of a component is new; later references (in this or any earlier
 // revision) are reuse.
@@ -310,10 +321,27 @@ func packedSize(c Comp) (int64, error) {
 	return packedLen(b), nil
 }
 
+// packedCache memoises the pack estimate by content digest: the same component is
+// evaluated many times across representations and runs.
+var packedCache sync.Map
+
 func packedLen(b []byte) int64 {
 	if len(b) == 0 {
 		return 0
 	}
+	if len(b) >= 256 {
+		id := sum(b)
+		if v, ok := packedCache.Load(id); ok {
+			return v.(int64)
+		}
+		n := packedLenRaw(b)
+		packedCache.Store(id, n)
+		return n
+	}
+	return packedLenRaw(b)
+}
+
+func packedLenRaw(b []byte) int64 {
 	var cw countWriter
 	fw, _ := flate.NewWriter(&cw, flate.DefaultCompression)
 	fw.Write(b)
