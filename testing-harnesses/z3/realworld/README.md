@@ -42,3 +42,14 @@ and PyTorch `.bin` checkpoint revisions from the Hugging Face repositories alrea
   related content). `go run ./cmd/z3oci fetch -group nodeexp,rtdeps -max-mib 150` fetches anonymously by digest, verifies size and SHA-256
   of every blob and caches under `~/.cache/z3-realworld/oci` (override `Z3_OCI_CACHE`); amd64 and arm64 only, attestation manifests skipped, ~77 MiB in total.
   Docker Hub and ECR Public were not used: their anonymous pull and data limits were exhausted in this environment.
+
+## Model artifacts (Z3-29)
+
+* `models.json` - 40 pinned Hugging Face artifacts (8.4 GiB), written by `python3 -I pin_models.py > models.json` (revision commit, LFS SHA-256, size, licence,
+  relationship): Safetensors (SmolLM2-135M star, Qwen2.5-0.5B base/Instruct, SmolLM v1 control), GGUF (QuantFactory/bartowski/mradermacher/Dhruval/official Qwen
+  quantisations of SmolLM2-135M, SmolLM v1, Qwen2.5-0.5B, Qwen3-0.6B), PyTorch ZIP `.bin` (Pythia-14M/70M checkpoints, bert-tiny base and fine-tunes, Pythia-70M-deduped) and
+  the Pythia-70M `model.safetensors` of the same revision. `go run ./cmd/z3fetch -sources realworld/models.json -group <g> -cache <dir> -max-mib N` downloads one group (cache keyed by SHA-256).
+* `derived_models.json` - REAL_REEXPORT artifacts built locally from pinned bytes (`derive_pythia_gguf.sh`: Pythia-70M `.bin` -> GGUF f16/Q4_K_M/Q8_0 with llama.cpp
+  7aca0d2ea8d92b56911233b822db01f9fbb1ae50; `z3model derive`: layout-only GGUF/Safetensors re-exports; `pt_reexport.py`: re-saved torch checkpoints). Never committed.
+* `pt_oracle.py` - ORACLE only: restricted unpickler that lists tensor name / dtype / shape per `data/<id>` storage; no candidate depends on it.
+* `go run ./cmd/z3model {gguf|st|pt|reexport|deep|entropy|meta|derive}` reproduces every table of `results/Z3_29_MODEL_ARTIFACTS.md`.
