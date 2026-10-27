@@ -4,6 +4,7 @@ the live table files after every revision. usage: gen_sst.py leveldb|rocksdb OPS
 import glob, hashlib, json, os, shutil, sys
 
 producer, opsdir, outroot, workroot = sys.argv[1:5]
+only = sys.argv[5] if len(sys.argv) > 5 else None  # run one family
 FILE = 4 << 20
 BLOCK = 4096
 plan = json.load(open(os.path.join(opsdir, "plan.json")))
@@ -38,13 +39,16 @@ class LevelDB:
     def __init__(self, path):
         import plyvel
         self.plyvel, self.path, self.db = plyvel, path, None
+        self.codec = "snappy"
         self.info = {"producer": "LevelDB", "version": plyvel.__leveldb_version__, "binding": "plyvel " + plyvel.__version__,
                      "options": {"max_file_size": FILE, "write_buffer_size": "4 MiB (scaled with the table size)", "block_size": BLOCK, "compression": "snappy", "bloom_filter_bits": 10}}
+
+    codecs = {"snappy": "snappy", "none": None}
 
     def open(self, scale=1.0):
         self.scale = scale
         self.db = self.plyvel.DB(self.path, create_if_missing=True, write_buffer_size=int((4 << 20) * scale), max_file_size=int(FILE * scale),
-                                 block_size=BLOCK, compression="snappy", bloom_filter_bits=10)
+                                 block_size=BLOCK, compression=self.codec, bloom_filter_bits=10)
 
     def close(self):
         if self.db is not None:
@@ -70,6 +74,9 @@ class LevelDB:
             self.db.compact_range()
             self.close(); self.open(self.scale)
 
+    def autocompact(self):
+        pass  # LevelDB compacts by itself: the snapshot step settles the database
+
     def settle(self):
         """close, reopen and close again so recovery writes the log into a table and obsolete files are purged"""
         self.close(); self.open(self.scale); self.close()
@@ -84,6 +91,8 @@ class RocksDB:
     def __init__(self, path):
         import rocksdict
         self.r, self.path, self.db = rocksdict, path, None
+        self.codec = "snappy"
+        self.codecs = {"snappy": "snappy", "none": "none", "lz4": "lz4", "zlib": "zlib", "zstd": "zstd"}
         self.info = {"producer": "RocksDB", "version": "9.8.4", "binding": "rocksdict 0.3.29",
                      "options": {"target_file_size_base": FILE, "block_size": BLOCK, "compression": "snappy", "bloom_filter_bits": 10,
                                  "format_version": "default (6)", "checksum": "default (xxh3)", "auto_compactions": False}}
@@ -92,7 +101,7 @@ class RocksDB:
         r = self.r
         o = r.Options(raw_mode=True); o.create_if_missing(True)
         o.set_write_buffer_size(32 << 20); o.set_target_file_size_base(int(FILE * scale))
-        o.set_disable_auto_compactions(True); o.set_compression_type(r.DBCompressionType.snappy())
+        o.set_disable_auto_compactions(True); o.set_compression_type(getattr(r.DBCompressionType, self.codec)())
         o.set_max_background_jobs(1)
         bb = r.BlockBasedOptions(); bb.set_block_size(BLOCK); bb.set_bloom_filter(10.0, False)
         o.set_block_based_table_factory(bb)
@@ -122,6 +131,9 @@ class RocksDB:
         co.set_bottommost_level_compaction(self.r.BottommostLevelCompaction.force())
         self.db.compact_range(None, None, co)
 
+    def autocompact(self):
+        self.compact()  # auto compactions are off in this harness: a full compaction stands in
+
     def settle(self):
         self.db.flush()
 
@@ -139,6 +151,8 @@ def sha(p):
 
 Engine = LevelDB if producer == "leveldb" else RocksDB
 for fam in plan["families"]:
+    if only and fam["name"] != only:
+        continue
     work = os.path.join(workroot, producer, fam["name"])
     shutil.rmtree(work, ignore_errors=True); os.makedirs(work)
     path, basepath = os.path.join(work, "db"), os.path.join(work, "base")
@@ -146,16 +160,29 @@ for fam in plan["families"]:
     out = os.path.join(outroot, producer, fam["name"])
     shutil.rmtree(out, ignore_errors=True); os.makedirs(out)
     files = {}
+    skip = False
     for st in fam["steps"]:
         c = st["c"]
+        if skip and c != "newdb":
+            continue
         if c == "newdb":
-            eng.close(); shutil.rmtree(path, ignore_errors=True); eng.open(st.get("scale", 1.0))
+            eng.close(); shutil.rmtree(path, ignore_errors=True)
+            eng.codec = "snappy"
+            if "codec" in st:
+                if st["codec"] not in eng.codecs:
+                    skip = True
+                    continue
+                eng.codec = eng.codecs[st["codec"]] if producer == "rocksdb" else st["codec"] if st["codec"] != "none" else None
+            skip = False
+            eng.open(st.get("scale", 1.0))
         elif c == "apply":
             eng.apply(os.path.join(opsdir, st["ops"]), st["batch"])
         elif c == "flush":
             eng.flush()
         elif c == "compact":
             eng.compact()
+        elif c == "autocompact":
+            eng.autocompact()
         elif c == "reopen":
             eng.close(); eng.open(st["scale"])
         elif c == "savebase":

@@ -85,10 +85,11 @@ const (
 	KindGzip   Kind = 6
 	KindZstd   Kind = 7 // Z3-25 lab kind: exact Zstandard replay over a semantic plaintext child
 	KindModel  Kind = 8 // Z3-29 lab kind: model artifact as an op list over components, optionally XOR-plane residuals against a base member
+	KindSST    Kind = 9 // Z3-30 lab kind: LevelDB / RocksDB / Pebble table as logical record groups plus per-block framing and Snappy replay
 )
 
 // Known reports whether this contract version defines the kind.
-func (k Kind) Known() bool { return k >= KindConcat && k <= KindModel }
+func (k Kind) Known() bool { return k >= KindConcat && k <= KindSST }
 
 // Role is how a component takes part in a representation.
 type Role uint8

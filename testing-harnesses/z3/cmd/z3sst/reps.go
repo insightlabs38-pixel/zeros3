@@ -256,6 +256,9 @@ func allReps(target int) []repDef {
 		{name: "blocks", plan: func(f file) (*lab.Plan, bool, error) { return nativeBlocks(f, false) }},
 		{name: "blocks-grp", plan: func(f file) (*lab.Plan, bool, error) { return nativeBlocks(f, true) }},
 		sstRep("ublocks", sstz3.FormBlocks, nil),
+		{name: "ukv-expl", plan: func(f file) (*lab.Plan, bool, error) {
+			return sstPlan(f, sstz3.Options{Form: sstz3.FormUKV, Cutter: hashCutter(target)(), NoPredict: true})
+		}},
 		sstRep("rec1", sstz3.FormUKV, func() sstz3.Cutter { return sstz3.RecordCutter{} }),
 		sstRep("blkrec", sstz3.FormUKV, nil),
 		sstRep("full", sstz3.FormFull, hashCutter(target)),

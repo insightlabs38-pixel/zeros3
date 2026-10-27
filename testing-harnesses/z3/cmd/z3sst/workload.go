@@ -333,6 +333,13 @@ func cmdGenOps(args []string) error {
 			o.del(e.key())
 		}
 	}, "v-del.ops")
+	mChurn := vmod(func(md *model, o *opWriter) {
+		for _, e := range pick(base, 0.45, 16, false) {
+			e.ver++
+			md.put(e)
+			o.put(e.key(), val(e.class, e.id, e.ver, seed))
+		}
+	}, "v-churn.ops")
 	mWhole := vmod(func(md *model, o *opWriter) {
 		for _, e := range base.sorted() {
 			e.ver = 100
@@ -435,6 +442,7 @@ func cmdGenOps(args []string) error {
 	variant("v02-update-flush", "overwrite 1% of keys, flush only", "PRODUCER_WORKLOAD", mUpd, step{"c": "apply", "ops": "v-upd.ops", "batch": 500}, step{"c": "flush"})
 	variant("v03-update-compact", "overwrite 1% of keys + full compaction", "PRODUCER_WORKLOAD", mUpd, step{"c": "apply", "ops": "v-upd.ops", "batch": 500}, step{"c": "compact"})
 	variant("v04-insert-compact", "insert 2% keys in the middle + full compaction", "PRODUCER_WORKLOAD", mIns, step{"c": "apply", "ops": "v-ins.ops", "batch": 500}, step{"c": "compact"})
+	variant("v10-churn", "overwrite 45% of keys; the engine compacts on its own (LevelDB) or fully (RocksDB, Pebble)", "PRODUCER_WORKLOAD", mChurn, step{"c": "apply", "ops": "v-churn.ops", "batch": 500}, step{"c": "autocompact"})
 	variant("v05-delete-compact", "delete 2% keys + full compaction", "PRODUCER_WORKLOAD", mDel, step{"c": "apply", "ops": "v-del.ops", "batch": 500}, step{"c": "compact"})
 	variant("v06-recompact", "full compaction of an unchanged database", "PRODUCER_WORKLOAD", base, step{"c": "compact"})
 	for _, x := range []struct {
@@ -454,6 +462,16 @@ func cmdGenOps(args []string) error {
 	rk := rev{"n04-rekey", "identical values under renamed keys (key space changed)", "PRODUCER_WORKLOAD", nb, lb + 2*int64(nb), ""}
 	vrevs = append(vrevs, rk)
 	fams = append(fams, family{"variants", vsteps, vrevs})
+
+	// codecs: the base load under other block compressions (characterisation and negative control:
+	// only none and Snappy are expressed; a producer skips the codecs it does not have)
+	var csteps []step
+	var crevs2 []rev
+	for _, c := range []string{"none", "lz4", "zlib", "zstd"} {
+		csteps = append(csteps, step{"c": "newdb", "codec": c}, step{"c": "apply", "ops": "base.ops", "batch": 1000}, step{"c": "compact"}, step{"c": "snapshot", "rev": "k-" + c})
+		crevs2 = append(crevs2, mk(base, "k-"+c, "base load with block compression "+c, "PRODUCER_WORKLOAD", ""))
+	}
+	fams = append(fams, family{"codecs", csteps, crevs2})
 
 	pb, _ := json.MarshalIndent(map[string]any{"seed": seed, "base_entries": nb, "base_logical": lb, "families": fams}, "", " ")
 	return os.WriteFile(filepath.Join(dir, "plan.json"), pb, 0o644)

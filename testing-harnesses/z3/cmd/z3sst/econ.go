@@ -24,17 +24,18 @@ const refBytes = 96 // Z3-18/29 convention: one component reference in a manifes
 
 // agg is the accounting of one state under one representation.
 type agg struct {
-	Raw       int64  `json:"raw"`
-	Pack      int64  `json:"pack"`      // packed new components + references + recipe (the cost)
-	New       int64  `json:"new"`       // unpacked new component bytes
-	PackedNew int64  `json:"packedNew"` // packed new component bytes
-	Meta      int64  `json:"meta"`      // recipe bytes charged (head, no digests)
-	Refs      int    `json:"refs"`      // component references
-	NewComps  int    `json:"newComps"`
-	Fallback  int    `json:"fallback"` // files that fell back to CDC
-	Files     int    `json:"files"`
-	Exact     bool   `json:"exact"`
-	Err       string `json:"err,omitempty"`
+	Raw       int64            `json:"raw"`
+	Pack      int64            `json:"pack"`      // packed new components + references + recipe (the cost)
+	New       int64            `json:"new"`       // unpacked new component bytes
+	PackedNew int64            `json:"packedNew"` // packed new component bytes
+	Meta      int64            `json:"meta"`      // recipe bytes charged (head, no digests)
+	Refs      int              `json:"refs"`      // component references
+	NewComps  int              `json:"newComps"`
+	Fallback  int              `json:"fallback"` // files that fell back to CDC
+	Files     int              `json:"files"`
+	Classes   map[string]int64 `json:"classes,omitempty"` // packed new bytes by component class
+	Exact     bool             `json:"exact"`
+	Err       string           `json:"err,omitempty"`
 }
 
 func (a *agg) add(o agg) {
@@ -47,14 +48,44 @@ func (a *agg) add(o agg) {
 	a.NewComps += o.NewComps
 	a.Fallback += o.Fallback
 	a.Files += o.Files
+	for k, v := range o.Classes {
+		if a.Classes == nil {
+			a.Classes = map[string]int64{}
+		}
+		a.Classes[k] += v
+	}
+}
+
+// store is a component store plus the files (name and content) it already holds: an
+// unchanged file costs nothing under every representation (the Z3-16/17 runner rule).
+type store struct {
+	ac   *lab.Acct
+	seen map[string][32]byte
+}
+
+func newStore() *store { return &store{lab.NewAcct(refBytes, true), map[string][32]byte{}} }
+
+func (s *store) Clone() *store {
+	m := make(map[string][32]byte, len(s.seen))
+	for k, v := range s.seen {
+		m[k] = v
+	}
+	return &store{s.ac.Clone(), m}
 }
 
 // runFiles adds the plans of the files to the store and verifies every non-oracle plan by
 // rebuilding the file from the serialized recipe and the stored components.
-func runFiles(ac *lab.Acct, rep repDef, files []file) agg {
+func runFiles(st *store, rep repDef, files []file) agg {
+	ac := st.ac
 	a := agg{Exact: true}
 	for _, f := range files {
 		a.Files++
+		if h := sha256.Sum256(f.data); st.seen[f.name] == h {
+			a.Raw += int64(len(f.data))
+			continue
+		} else {
+			st.seen[f.name] = h
+		}
 		a.Raw += int64(len(f.data))
 		pl, fb, err := rep.plan(f)
 		if err != nil || pl == nil {
@@ -75,6 +106,12 @@ func runFiles(ac *lab.Acct, rep repDef, files []file) agg {
 		a.Meta += acc.MetaBytes - refBytes*int64(acc.Components)
 		a.Refs += acc.Components
 		a.NewComps += acc.NewComponents
+		for k, v := range acc.ClassPackedNew {
+			if a.Classes == nil {
+				a.Classes = map[string]int64{}
+			}
+			a.Classes[k] += v
+		}
 		if rep.oracle || pl.Oracle {
 			continue
 		}
@@ -194,13 +231,15 @@ func cmdEcon(args []string) error {
 	fs := flag.NewFlagSet("econ", flag.ExitOnError)
 	root := fs.String("corpus", filepath.Join(os.Getenv("HOME"), ".cache", "z3-sst", "corpus"), "corpus root")
 	prods := fs.String("prod", "leveldb,rocksdb,pebble", "producers")
-	target := fs.Int("target", 16<<10, "group target bytes")
-	repNames := fs.String("reps", "", "comma-separated representation names (default all)")
+	target := fs.Int("target", 8<<10, "group target bytes")
+	repNames := fs.String("reps", "", "comma-separated representation names for the variants (default all)")
+	chainReps := fs.String("creps", "cdc,blocks,ublocks,full,ukv,kv", "representations for the chain")
 	out := fs.String("json", "", "write results as JSON to this prefix")
 	chain := fs.Bool("chain", true, "run the revision chain")
 	vars := fs.Bool("variants", true, "run the variants")
 	fs.Parse(args)
 	reps := pick(allReps(*target), *repNames)
+	creps := pick(allReps(*target), *chainReps)
 	for _, prod := range strings.Split(*prods, ",") {
 		res := &econResult{Producer: prod, Target: *target, First: map[string]agg{}}
 		if *vars {
@@ -223,7 +262,7 @@ func cmdEcon(args []string) error {
 				rows[i] = variantRow{Rev: s.rev, Class: s.meta.Class, Reps: map[string]agg{}, Logica: s.meta.Logical}
 			}
 			for _, rep := range reps {
-				ac0 := lab.NewAcct(refBytes, true)
+				ac0 := newStore()
 				res.First[rep.name] = runFiles(ac0, rep, r0.tables)
 				var wg sync.WaitGroup
 				sem := make(chan struct{}, 4)
@@ -266,8 +305,8 @@ func cmdEcon(args []string) error {
 					rows[i].Raw += int64(len(f.data))
 				}
 			}
-			for _, rep := range reps {
-				ac := lab.NewAcct(refBytes, true)
+			for _, rep := range creps {
+				ac := newStore()
 				var cum int64
 				for i, s := range sts {
 					a := runFiles(ac, rep, s.tables)
@@ -278,25 +317,25 @@ func cmdEcon(args []string) error {
 						rows[i].Rolling[rep.name] = a
 						continue
 					}
-					rc := lab.NewAcct(refBytes, true)
+					rc := newStore()
 					runFiles(rc, rep, sts[i-1].tables)
 					rows[i].Rolling[rep.name] = runFiles(rc, rep, s.tables)
 				}
 				fmt.Fprintf(os.Stderr, "%s chain %s done\n", prod, rep.name)
 			}
-			cdc := reps[0]
-			for _, r := range reps {
+			cdc := creps[0]
+			for _, r := range creps {
 				if r.name == "cdc" {
 					cdc = r
 				}
 			}
-			ac := lab.NewAcct(refBytes, true)
+			ac := newStore()
 			for i, s := range sts {
 				rows[i].Other = runFiles(ac, cdc, s.other)
 			}
 			res.Chain = rows
 		}
-		printEcon(res, reps)
+		printEcon(res, reps, creps)
 		if *out != "" {
 			b, _ := json.MarshalIndent(res, "", " ")
 			if err := os.WriteFile(*out+"-"+prod+".json", b, 0o644); err != nil {
@@ -307,7 +346,7 @@ func cmdEcon(args []string) error {
 	return nil
 }
 
-func printEcon(r *econResult, reps []repDef) {
+func printEcon(r *econResult, reps, creps []repDef) {
 	h := fstate.Human
 	fmt.Printf("\n### %s variants: cost of the revision added to a store holding r0 (packed bytes, 96 B/ref, group target %d KiB)\n", r.Producer, r.Target>>10)
 	head := "| variant |"
@@ -342,13 +381,18 @@ func printEcon(r *econResult, reps []repDef) {
 	if len(r.Chain) == 0 {
 		return
 	}
+	head, sep = "| state |", "|---|"
+	for _, rp := range creps {
+		head += " " + rp.name + " |"
+		sep += "---:|"
+	}
 	for _, kind := range []string{"incremental", "rolling"} {
 		fmt.Printf("\n### %s chain, %s cost per state (packed bytes)\n", r.Producer, kind)
 		fmt.Println(head)
 		fmt.Println(sep)
 		for _, c := range r.Chain {
 			row := "| " + c.Rev + " |"
-			for _, rp := range reps {
+			for _, rp := range creps {
 				a := c.Incr[rp.name]
 				if kind == "rolling" {
 					a = c.Rolling[rp.name]
@@ -363,7 +407,7 @@ func printEcon(r *econResult, reps []repDef) {
 	fmt.Println(sep)
 	var cum, roll = map[string]int64{}, map[string]int64{}
 	for _, c := range r.Chain {
-		for _, rp := range reps {
+		for _, rp := range creps {
 			cum[rp.name] = c.Cumulative[rp.name]
 			roll[rp.name] += c.Rolling[rp.name].Pack
 		}
@@ -373,7 +417,7 @@ func printEcon(r *econResult, reps []repDef) {
 		m map[string]int64
 	}{{"cumulative retained", cum}, {"rolling (live state only)", roll}} {
 		row := "| " + kv.n + " |"
-		for _, rp := range reps {
+		for _, rp := range creps {
 			row += " " + h(kv.m[rp.name]) + " |"
 		}
 		fmt.Println(row)

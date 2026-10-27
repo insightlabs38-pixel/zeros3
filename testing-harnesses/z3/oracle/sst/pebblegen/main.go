@@ -36,13 +36,15 @@ func must(err error) {
 	}
 }
 
+var codec = pebble.SnappyCompression
+
 func options(scale float64) *pebble.Options {
 	o := &pebble.Options{FormatMajorVersion: pebble.FormatNewest, DisableAutomaticCompactions: true, MemTableSize: 32 << 20, Levels: make([]pebble.LevelOptions, 7)}
 	for i := range o.Levels {
 		o.Levels[i].BlockSize = block
 		o.Levels[i].TargetFileSize = int64(float64(file) * scale)
 		o.Levels[i].FilterPolicy = bloom.FilterPolicy(10)
-		o.Levels[i].Compression = pebble.SnappyCompression
+		o.Levels[i].Compression = codec
 	}
 	return o
 }
@@ -90,6 +92,10 @@ func sha(p string) string {
 
 func main() {
 	opsdir, outroot, workroot := os.Args[1], os.Args[2], os.Args[3]
+	only := ""
+	if len(os.Args) > 4 {
+		only = os.Args[4] // run one family
+	}
 	var plan struct {
 		Families []fam `json:"families"`
 	}
@@ -97,6 +103,9 @@ func main() {
 	must(err)
 	must(json.Unmarshal(b, &plan))
 	for _, f := range plan.Families {
+		if only != "" && f.Name != only {
+			continue
+		}
 		work := filepath.Join(workroot, "pebble", f.Name)
 		os.RemoveAll(work)
 		must(os.MkdirAll(work, 0o755))
@@ -116,11 +125,28 @@ func main() {
 			}
 		}
 		files := map[string][]map[string]any{}
+		skip := false
 		for _, st := range f.Steps {
+			if skip && st["c"].(string) != "newdb" {
+				continue
+			}
 			switch st["c"].(string) {
 			case "newdb":
 				closeDB()
 				os.RemoveAll(path)
+				codec = pebble.SnappyCompression
+				if c, ok := st["codec"].(string); ok {
+					switch c {
+					case "none":
+						codec = pebble.NoCompression
+					case "zstd":
+						codec = pebble.ZstdCompression
+					default:
+						skip = true
+						continue
+					}
+				}
+				skip = false
 				s := 1.0
 				if v, ok := st["scale"]; ok {
 					s = v.(float64)
@@ -145,7 +171,7 @@ func main() {
 				must(bt.Commit(pebble.NoSync))
 			case "flush":
 				must(db.Flush())
-			case "compact":
+			case "compact", "autocompact":
 				must(db.Flush())
 				must(db.Compact([]byte{0}, []byte{0xff, 0xff, 0xff, 0xff}, true))
 			case "reopen":

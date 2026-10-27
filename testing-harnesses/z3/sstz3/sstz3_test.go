@@ -480,3 +480,32 @@ func FuzzEncodeDecode(f *testing.F) {
 		}
 	})
 }
+
+// TestHashCutterIsPositionIndependent: a record's cut decision depends on the record alone, so
+// two cuts of the same record sequence started at different records agree from the first
+// boundary they share (this is why an inserted or deleted record moves no later group).
+func TestHashCutterIsPositionIndependent(t *testing.T) {
+	kvs := genKV(3000, 11, false)
+	cuts := func(from int) map[int]bool {
+		c := &HashCutter{Target: 2000, Max: 1 << 30}
+		m := map[int]bool{}
+		for i := from; i < len(kvs); i++ {
+			if c.Cut(kvs[i].uk, len(kvs[i].val)) {
+				m[i] = true
+			}
+		}
+		return m
+	}
+	a := cuts(0)
+	for _, from := range []int{1, 7, 100, 1234} {
+		b := cuts(from)
+		for i := range b {
+			if !a[i] {
+				t.Fatalf("start %d: cut after record %d is not in the full cut", from, i)
+			}
+		}
+		if len(b) == 0 {
+			t.Fatalf("start %d: no cuts", from)
+		}
+	}
+}

@@ -24,6 +24,18 @@ func main() {
 		err = cmdEcon(os.Args[2:])
 	case "logical":
 		err = cmdLogical(os.Args[2:])
+	case "reads":
+		err = cmdReads(os.Args[2:])
+	case "perf":
+		err = cmdPerf(os.Args[2:])
+	case "codecs":
+		err = cmdCodecs(os.Args[2:])
+	case "lockin":
+		err = cmdLockIn(os.Args[2:])
+	case "repcost":
+		err = cmdRepCost(os.Args[2:])
+	case "identity":
+		err = cmdIdentity(os.Args[2:])
 	case "audit":
 		err = cmdAudit(os.Args[2:])
 	default:

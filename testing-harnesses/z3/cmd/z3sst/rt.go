@@ -33,7 +33,7 @@ func tableFiles(roots []string) []string {
 // compare length, SHA-256 and bytes with the original.
 func cmdRT(args []string) error {
 	fs := flag.NewFlagSet("rt", flag.ExitOnError)
-	target := fs.Int("target", 16<<10, "group target bytes")
+	target := fs.Int("target", 8<<10, "group target bytes")
 	fs.Parse(args)
 	forms := []sstz3.Form{sstz3.FormBlocks, sstz3.FormUKV, sstz3.FormFull, sstz3.FormKV, sstz3.FormKTV, sstz3.FormKVT}
 	type agg struct {
@@ -115,16 +115,21 @@ func cmdRT(args []string) error {
 		}
 	}
 	var ks []string
+	failed := 0
 	for k := range res {
 		ks = append(ks, k)
 	}
 	sort.Strings(ks)
 	for _, k := range ks {
 		a := res[k]
+		failed += a.bad
 		fmt.Printf("%-16s files=%d bad=%d in=%.0f MiB comps=%d payload=%.1f MiB recipe=%.2f MiB enc=%.0f MiB/s dec=%.0f MiB/s\n", k, a.files, a.bad, float64(a.bytes)/(1<<20), a.comps,
 			float64(a.payload)/(1<<20), float64(a.rec)/(1<<20), float64(a.bytes)/(1<<20)/a.enc.Seconds(), float64(a.bytes)/(1<<20)/a.dec.Seconds())
 		fmt.Printf("    snappy blocks explicit/go/cpp14/cpp15: %v\n", a.pred)
 		fmt.Printf("    recipe: framing %d snappy %d explicit %d groups %d trailers %d digests %d; %d blocks, %.1f snappy cmds/block\n", a.sz.Framing, a.sz.Snappy, a.sz.Explicit, a.sz.Groups, a.sz.Trailers, a.sz.Digests, a.blocks, float64(a.cmds)/float64(a.blocks))
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d inexact round trips", failed)
 	}
 	return nil
 }

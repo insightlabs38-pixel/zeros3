@@ -18,6 +18,7 @@ import (
 func cmdAudit(args []string) error {
 	fs := flag.NewFlagSet("audit", flag.ExitOnError)
 	deep := fs.Bool("deep", false, "decode every block and compare entry counts with the table properties")
+	codecs := fs.Bool("codecs", false, "include the codec controls (tables the representation rejects)")
 	fs.Parse(args)
 	type agg struct {
 		files, blocks   int
@@ -35,7 +36,7 @@ func cmdAudit(args []string) error {
 	byProducer := map[string]*agg{}
 	for _, root := range fs.Args() {
 		filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() || !(strings.HasSuffix(p, ".ldb") || strings.HasSuffix(p, ".sst")) || strings.Contains(p, "_other") {
+			if err != nil || info.IsDir() || !(strings.HasSuffix(p, ".ldb") || strings.HasSuffix(p, ".sst")) || strings.Contains(p, "_other") || (!*codecs && strings.Contains(p, "/codecs/")) {
 				return nil
 			}
 			rel, _ := filepath.Rel(root, p)

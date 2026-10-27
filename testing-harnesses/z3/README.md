@@ -359,3 +359,16 @@ Z3_PYZSTD=/path/with/zstandard go run ./cmd/z3dag econ  # adds the libzstd 1.5.7
 ```
 
 Results: `../results/Z3_28_REPRESENTATION_DAGS.md`.
+
+## Z3-30 (SST re-encoding)
+
+Producers and corpus live outside Git (`oracle/sst/setup.sh`: LevelDB 1.23 via plyvel, RocksDB 9.8.4 via rocksdict, Pebble v1.1.5 as a nested module). Hermetic tests need nothing:
+
+```sh
+go test ./snappyz3 ./sstz3 ./repz3/kinds -run 'SST|Snappy|Form|Malformed|Recipe|Ranges|Hostile|Hash|Reference|Odd|Open'
+Z3_SST_CORPUS=$HOME/.cache/z3-sst/corpus go test ./cmd/z3sst -run RealCorpus   # real-producer exactness, needs the corpus
+go run ./cmd/z3sst audit -deep $CORPUS ; go run ./cmd/z3sst rt $CORPUS/rocksdb/chain ; go run ./cmd/z3sst econ -prod rocksdb
+go run ./cmd/z3sst snappy $CORPUS ; go run ./cmd/z3sst lockin ; go run ./cmd/z3sst identity ; go run ./cmd/z3sst reads ; go run ./cmd/z3sst perf
+```
+
+Results: `../results/Z3_30_SST_REENCODING.md`.

@@ -341,11 +341,15 @@ func packedLen(b []byte) int64 {
 	return packedLenRaw(b)
 }
 
+var flatePool = sync.Pool{New: func() any { w, _ := flate.NewWriter(io.Discard, flate.DefaultCompression); return w }}
+
 func packedLenRaw(b []byte) int64 {
 	var cw countWriter
-	fw, _ := flate.NewWriter(&cw, flate.DefaultCompression)
+	fw := flatePool.Get().(*flate.Writer)
+	fw.Reset(&cw)
 	fw.Write(b)
 	fw.Close()
+	flatePool.Put(fw)
 	if cw.n <= int64(len(b)-max(1, len(b)/16)) {
 		return cw.n
 	}
