@@ -109,8 +109,8 @@ func TestHybridMalformed(t *testing.T) {
 	if v, _, _, _, err := hybridDecode(huge, 0, 10); err != nil || len(v) != 10 {
 		t.Errorf("zero-width bomb: %v %d", err, len(v))
 	}
-	if _, ok := hybridEncodeRuns(nil, 0, []uint64{1<<31 | 1}, nil); ok {
-		t.Error("zero-width run replay accepted a hostile group count")
+	if out, ok := hybridEncodeRuns(nil, 0, []uint64{1<<31 | 1}, nil); !ok || len(out) != 5 {
+		t.Errorf("zero-width run replay: %x %v", out, ok) // the header only, without looping over 2^30 groups
 	}
 }
 
@@ -183,6 +183,7 @@ func TestProducerPagesAreExactlyReplayable(t *testing.T) {
 		"dd_none.parquet":       {comp: CompNone, explicit: true},
 		"pa_gzip.parquet":       {opaque: "codec GZIP"},
 		"pa_nested.parquet":     {opaque: "repeated"},
+		"pa_delta.parquet":      {opaque: "encoding"},
 	}
 	for name, w := range exp {
 		t.Run(name, func(t *testing.T) {
@@ -281,4 +282,28 @@ func TestNoPredictForcesExplicitRecipes(t *testing.T) {
 	if plan.DictMode == DictPredicted {
 		t.Fatal("dictionary predicted with predictors disabled")
 	}
+}
+
+// FuzzHybrid: any stream the decoder accepts is replayed exactly by its own run headers
+// and padding (the property the explicit layout relies on), and nothing panics.
+func FuzzHybrid(f *testing.F) {
+	f.Add([]byte{2<<1 | 1, 0b10110101, 0b11111011}, 1, 11)
+	f.Add([]byte{8 << 1, 1}, 1, 8)
+	f.Add(hybridEncodeStd([]uint32{1, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 1}, 2), 2, 13)
+	f.Fuzz(func(t *testing.T, b []byte, bw, n int) {
+		if bw < 0 || bw > 32 || n < 0 || n > 1<<16 {
+			return
+		}
+		vals, hdrs, pad, used, err := hybridDecode(b, bw, n)
+		if err != nil {
+			return
+		}
+		if len(vals) != n || used > len(b) {
+			t.Fatalf("decoded %d of %d values using %d of %d bytes", len(vals), n, used, len(b))
+		}
+		again, ok := hybridEncodeRuns(vals, bw, hdrs, pad)
+		if !ok || !bytes.Equal(again, b[:used]) {
+			t.Fatalf("explicit headers do not replay the accepted stream")
+		}
+	})
 }

@@ -153,14 +153,20 @@ type layout struct {
 	LvlHdrs []uint64
 	LvlPad  []uint32
 	ValExpl bool
-	ValBW   int
-	ValHdrs []uint64
-	ValPad  []uint32
+	// ValWidth: the standard run encoder with a stored index width (a writer that sizes the
+	// width from the dictionary as it stood when the page was cut, not from the final one).
+	ValWidth bool
+	ValBW    int
+	ValHdrs  []uint64
+	ValPad   []uint32
 }
 
 // Explicit reports which hybrid streams of the page carry stored run headers (the rest
 // follow the standard encoder).
 func (l layout) Explicit() (levels, values bool) { return l.LvlExpl, l.ValExpl }
+
+// WidthOnly reports a standard run encoding whose index width is stored (a tiny recipe).
+func (l layout) WidthOnly() bool { return l.ValWidth }
 
 // pageContent is the logical content of a data page.
 type pageContent struct {
@@ -236,7 +242,7 @@ func encodeValues(pg *Page, c colSpec, d *dict, pc *pageContent, lay layout) ([]
 			idx[i] = v
 		}
 		bw := d.indexWidth()
-		if lay.ValExpl {
+		if lay.ValExpl || lay.ValWidth {
 			bw = lay.ValBW
 		}
 		if bw > 32 {
@@ -382,34 +388,27 @@ func decodePage(pg *Page, c colSpec, d *dict, levels, values []byte, lim Limits)
 	return pc, lay, nil
 }
 
-// runState builds the canonical level stream: for MaxDef == 1 alternating run lengths
-// (present, null, present, ...; the first run may be empty) as uvarints, otherwise
-// (level, run length) pairs. A run may span pages, so the state lives per column.
+// runState builds the canonical level stream: one record per run of equal definition
+// levels, uvarint(run length << 4 | level), so any record can be read without its
+// neighbours (MaxDef is capped at 8 for logical columns). A run may span pages, so the
+// state lives per column.
 type runState struct {
 	init       bool
 	level, run int
 }
 
-func (st *runState) emit(c colSpec, fn func(rec []byte, items int) error) error {
-	var tmp [20]byte
-	b := tmp[:0]
-	if c.MaxDef != 1 {
-		b = binary.AppendUvarint(b, uint64(st.level))
-	}
-	return fn(binary.AppendUvarint(b, uint64(st.run)), st.run)
+func (st *runState) emit(fn func(rec []byte, items int) error) error {
+	var tmp [10]byte
+	return fn(binary.AppendUvarint(tmp[:0], uint64(st.run)<<4|uint64(st.level)), st.run)
 }
 
 // add feeds one definition level; a closed run is passed to fn.
-func (st *runState) add(c colSpec, lv int, fn func(rec []byte, items int) error) error {
+func (st *runState) add(lv int, fn func(rec []byte, items int) error) error {
 	if !st.init {
-		st.init, st.run = true, 0
-		st.level = lv
-		if c.MaxDef == 1 {
-			st.level = 1
-		}
+		st.init, st.level, st.run = true, lv, 0
 	}
 	if lv != st.level {
-		if err := st.emit(c, fn); err != nil {
+		if err := st.emit(fn); err != nil {
 			return err
 		}
 		st.level, st.run = lv, 0
@@ -419,10 +418,10 @@ func (st *runState) add(c colSpec, lv int, fn func(rec []byte, items int) error)
 }
 
 // finish flushes the last run.
-func (st *runState) finish(c colSpec, fn func(rec []byte, items int) error) error {
+func (st *runState) finish(fn func(rec []byte, items int) error) error {
 	if !st.init {
 		return nil
 	}
 	st.init = false
-	return st.emit(c, fn)
+	return st.emit(fn)
 }

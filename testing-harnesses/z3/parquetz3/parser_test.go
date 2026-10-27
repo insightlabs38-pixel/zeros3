@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tc "zeros3-z3/thriftcompactz3"
@@ -58,6 +59,7 @@ type fixture struct {
 	listCount            int // override schema list count (0 = honest)
 	extraPageBytes       int // payload bytes the page header does not account for
 	unknownFieldInFooter bool
+	enc                  int32 // page encoding (0 = PLAIN)
 }
 
 func (f fixture) build() []byte {
@@ -84,7 +86,7 @@ func (f fixture) build() []byte {
 	ph.field(&l, 5, tc.Struct)
 	var l2 int16
 	ph.i32(&l2, 1, int32(n))
-	ph.i32(&l2, 2, EncPlain)
+	ph.i32(&l2, 2, f.enc)
 	ph.i32(&l2, 3, EncRLE)
 	ph.i32(&l2, 4, EncRLE)
 	ph.stop()
@@ -373,4 +375,62 @@ func FuzzOpen(f *testing.F) {
 			}
 		}
 	})
+}
+
+// Bodies that parse as pages but are not valid logical pages make the chunk opaque (kept as
+// bytes, never guessed): the file still opens and still rebuilds.
+func TestMalformedPageBodies(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fx   fixture
+		why  string
+	}{
+		{"honest page", fixture{}, ""},
+		{"uncompressed size lies", fixture{pageUnc: 399}, "declares 399"},
+		{"dictionary encoding without a dictionary page", fixture{enc: EncRLEDict}, "without a dictionary"},
+		{"unsupported page encoding", fixture{enc: EncDeltaBin}, "encoding"},
+		{"page holds fewer values than the chunk", fixture{n: 100, pageComp: 396, pageUnc: 396, chunkComp: 396 + 14}, "does not decode"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := tc.fx.build()
+			r := bytes.NewReader(b)
+			f, err := Open(r, int64(len(b)), Limits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := NewAnalyzer(r, f, Limits{}).Chunk(&f.RowGroups[0].Chunks[0], nil, nil)
+			if err != nil {
+				if tc.why != "" {
+					return // a clean error is also acceptable for a structurally broken chunk
+				}
+				t.Fatal(err)
+			}
+			if tc.why == "" {
+				if plan.Opaque {
+					t.Fatalf("the honest synthetic page is opaque: %s", plan.Reason)
+				}
+				return
+			}
+			if !plan.Opaque || !strings.Contains(plan.Reason, tc.why) {
+				t.Fatalf("opaque=%v reason %q, want %q", plan.Opaque, plan.Reason, tc.why)
+			}
+		})
+	}
+}
+
+// A value above the logical limit makes its chunk opaque; the rest of the file stays logical.
+func TestLargeValueThreshold(t *testing.T) {
+	b := load(t, "pa_snappy_v1.parquet")
+	st := store{}
+	rec, _, stats, err := Encode(bytes.NewReader(b), int64(len(b)), Options{Limits: Limits{MaxValue: 8}}, st.emit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.OpaqueChunks == 0 || stats.LogicalChunks == 0 {
+		t.Fatalf("logical %d opaque %d", stats.LogicalChunks, stats.OpaqueChunks)
+	}
+	var out bytes.Buffer
+	if err := Decode(&out, rec, st.get, Limits{}); err != nil || !bytes.Equal(out.Bytes(), b) {
+		t.Fatalf("round trip with opaque chunks: %v", err)
+	}
 }

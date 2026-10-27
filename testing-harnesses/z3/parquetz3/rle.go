@@ -253,8 +253,9 @@ func hybridEncodeRuns(vals []uint32, bw int, hdrs []uint64, pad []uint32) ([]byt
 		w.out = binary.AppendUvarint(w.out, h)
 		if h&1 == 1 {
 			total := int(h>>1) * 8
-			if bw == 0 && total > 1<<24 {
-				return nil, false
+			if bw == 0 { // zero-width values occupy no bytes: only the count matters
+				pos += min(total, len(vals)-pos)
+				continue
 			}
 			for i := 0; i < total; i++ {
 				v := uint32(0)

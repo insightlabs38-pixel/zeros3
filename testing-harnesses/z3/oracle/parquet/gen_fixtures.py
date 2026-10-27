@@ -27,6 +27,8 @@ w("pa_none_plain.parquet", compression="none", use_dictionary=False)
 w("pa_bss.parquet", compression="snappy", use_dictionary=False, use_byte_stream_split=["value", "score"])
 pq.write_table(t, os.path.join(out, "pa_rg500.parquet"), row_group_size=500, compression="snappy")
 pq.write_table(t.slice(0, 1500), os.path.join(out, "pa_gzip.parquet"), compression="gzip")
+pq.write_table(t.slice(0, 1500).select(["id", "qty", "payload"]), os.path.join(out, "pa_delta.parquet"), compression="snappy", use_dictionary=False,
+               column_encoding={"id": "DELTA_BINARY_PACKED", "qty": "DELTA_BINARY_PACKED", "payload": "DELTA_LENGTH_BYTE_ARRAY"})
 nt = pa.table({"id": pa.array(np.arange(500, dtype=np.int64)), "tags": pa.array([[int(i), int(i) + 1] for i in range(500)], type=pa.list_(pa.int32()))})
 pq.write_table(nt, os.path.join(out, "pa_nested.parquet"), compression="snappy")
 con = duckdb.connect()

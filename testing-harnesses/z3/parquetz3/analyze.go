@@ -297,10 +297,15 @@ func (a *Analyzer) chunkPass(c *Chunk, plan *ChunkPlan, sk *sink) error {
 			if !ok1 || !ok2 || !sameBytes(lb, levels) || !sameBytes(vb, values) {
 				ex := lay
 				ex.LvlExpl = spec.MaxDef > 0 && (!ok1 || !sameBytes(lb, levels))
-				ex.ValExpl = dictEnc(p.Enc) || p.Enc == EncRLE
-				ex.ValExpl = ex.ValExpl && (!ok2 || !sameBytes(vb, values))
 				lb, ok1 = encodeLevels(p, spec, pc.defs, ex)
+				isIdx := dictEnc(p.Enc) || p.Enc == EncRLE
+				// values: the standard encoder with the stored width first, the run headers last
+				ex.ValExpl, ex.ValWidth = false, isIdx && !a.NoPredict
 				vb, ok2 = encodeValues(p, spec, d, &pc, ex)
+				if !ok2 || !sameBytes(vb, values) {
+					ex.ValExpl, ex.ValWidth = isIdx, false
+					vb, ok2 = encodeValues(p, spec, d, &pc, ex)
+				}
 				if !ok1 || !ok2 || !sameBytes(lb, levels) || !sameBytes(vb, values) {
 					return opq("page %d layout is not reproducible", pi)
 				}
@@ -310,7 +315,10 @@ func (a *Analyzer) chunkPass(c *Chunk, plan *ChunkPlan, sk *sink) error {
 				std.LvlHdrs, std.LvlPad = nil, nil
 			}
 			if !std.ValExpl {
-				std.ValHdrs, std.ValPad, std.ValBW = nil, nil, 0
+				std.ValHdrs, std.ValPad = nil, nil
+				if !std.ValWidth {
+					std.ValBW = 0
+				}
 			}
 			info.Lay, info.Present, info.Mode = std, pc.present, ModeData
 			info.Body = int64(len(lb) + len(vb))
@@ -389,7 +397,7 @@ func (a *Analyzer) chunkPass(c *Chunk, plan *ChunkPlan, sk *sink) error {
 func feed(sk *sink, spec colSpec, pc *pageContent, rs *runState) error {
 	if spec.MaxDef > 0 && sk.level != nil {
 		for _, d := range pc.defs {
-			if err := rs.add(spec, int(d), sk.level); err != nil {
+			if err := rs.add(int(d), sk.level); err != nil {
 				return err
 			}
 		}
@@ -402,4 +410,24 @@ func feed(sk *sink, spec colSpec, pc *pageContent, rs *runState) error {
 		}
 	}
 	return nil
+}
+
+// Content delivers the logical content of a chunk in file order: every value record in
+// canonical form and every level run (the null structure). It reports opaque=true, and
+// delivers nothing, for a chunk that cannot be decoded logically.
+func (a *Analyzer) Content(c *Chunk, value func(rec []byte) error, level func(rec []byte, items int) error) (opaque bool, err error) {
+	plan, err := a.Chunk(c, nil, nil)
+	if err != nil || plan.Opaque {
+		return plan != nil && plan.Opaque, err
+	}
+	sk := &sink{value: value, level: level}
+	if _, err = a.Chunk(c, plan, sk); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// FinishColumn flushes the level run still open at the end of a column.
+func (a *Analyzer) FinishColumn(col int, level func(rec []byte, items int) error) error {
+	return a.Runs(col).finish(level)
 }

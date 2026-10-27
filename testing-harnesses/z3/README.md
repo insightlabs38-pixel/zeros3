@@ -66,6 +66,10 @@ snappyz3/     Z3-30 strict stdlib Snappy block parser, command-recipe replay (li
 sstz3/        Z3-30 SST substrate for LevelDB / RocksDB BlockBasedTable / Pebble: ReaderAt footer/metaindex/properties/(two-level) index parser with SUPPORTED/OPAQUE_PRESERVED/UNSUPPORTED_FALLBACK feature classes, exact block walker/writer, logical record groups (content-addressed, record-hash cut), serialized recipe, streaming and ranged Decode, synthetic fixtures
 cmd/z3sst     Z3-30 study: gen-ops (deterministic workload), audit, rt (exactness over a corpus), snappy, econ (production CDC vs native blocks vs entry-level forms), reads, perf
 oracle/sst    Z3-30 producers outside the module: gen_sst.py (LevelDB 1.23 via plyvel, RocksDB 9.8.4 via rocksdict) and pebblegen (Pebble v1.1.5, nested Go module); setup.sh
+thriftcompactz3/  Z3-31 strict bounded Thrift Compact Protocol reader (only what Parquet metadata needs: no RPC, no code generation)
+parquetz3/    Z3-31 Parquet substrate: ReaderAt footer/page parser with exact span decomposition, PLAIN / RLE-bit-packed hybrid / dictionary / byte-stream-split page coding with verified layout predictors, exact Snappy (C++ 1.1.x, 1.2.x CRC) and Zstd page replay, per-column logical value and level streams (content-defined groups, digest nodes), serialized recipe, streaming and ranged Decode
+cmd/z3parquet Z3-31 study: audit, rt (exactness over the corpus), econ (production CDC vs structural baselines vs logical groups vs oracle), chain, reads, perf, overhead, isolation, dump
+oracle/parquet Z3-31 producers outside the module: gen_pyarrow.py (PyArrow 18.1.0 variants and chain, DuckDB 2.0.0 re-exports, controls), gen_large.py, gen_fixtures.py (committed fixtures), fetch_ref.sh (pinned Apache parquet-testing), validate.py (PyArrow/DuckDB differential oracle); setup.sh
 ```
 
 ```sh
@@ -372,3 +376,16 @@ go run ./cmd/z3sst snappy $CORPUS ; go run ./cmd/z3sst lockin ; go run ./cmd/z3s
 ```
 
 Results: `../results/Z3_30_SST_REENCODING.md`.
+
+## Z3-31 (Parquet re-encoding)
+
+Producers and corpus live outside Git (`oracle/parquet/setup.sh`, `gen_pyarrow.py`, `fetch_ref.sh`; `Z3_STRUCT_CACHE` defaults to `~/.cache/z3-parquet`). Hermetic tests use the committed fixtures in `parquetz3/testdata`:
+
+```sh
+go test ./thriftcompactz3 ./parquetz3 ./snappyz3 ./repz3/... ./cmd/z3parquet
+go run ./cmd/z3parquet audit ; go run ./cmd/z3parquet rt ; go run ./cmd/z3parquet econ -reps cdc,pages,dpages,logical,o-value
+go run ./cmd/z3parquet chain ; go run ./cmd/z3parquet reads ; go run ./cmd/z3parquet overhead ; go run ./cmd/z3parquet isolation
+go run ./cmd/z3parquet perf -file big.parquet -phase encode ; python oracle/parquet/validate.py $(go build -o /tmp/z3pq ./cmd/z3parquet && echo /tmp/z3pq) FILE...
+```
+
+Results: `../results/Z3_31_PARQUET_REENCODING.md`.

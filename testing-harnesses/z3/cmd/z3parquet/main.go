@@ -18,6 +18,22 @@ func main() {
 		err = cmdAudit(os.Args[2:])
 	case "econ":
 		err = cmdEcon(os.Args[2:])
+	case "rt":
+		err = cmdRT(os.Args[2:])
+	case "chain":
+		err = cmdChain(os.Args[2:])
+	case "reads":
+		err = cmdReads(os.Args[2:])
+	case "perf":
+		err = cmdPerf(os.Args[2:])
+	case "isolation":
+		err = cmdIsolation(os.Args[2:])
+	case "contract":
+		err = cmdContract(os.Args[2:])
+	case "dump":
+		err = cmdDump(os.Args[2:])
+	case "overhead":
+		err = cmdOverhead(os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}

@@ -76,7 +76,7 @@ func scenarios() (first []scenario, rows []scenario, err error) {
 	return
 }
 
-func runScenario(reps []lab.EconRep, sc scenario, base map[string]*lab.EconStore) (row, error) {
+func runScenario(reps []repDef, sc scenario) (row, error) {
 	r := row{Name: sc.Name, Class: sc.Class, Reps: map[string]lab.EconAgg{}}
 	tf, err := file(sc.Target)
 	if err != nil {
@@ -91,21 +91,32 @@ func runScenario(reps []lab.EconRep, sc scenario, base map[string]*lab.EconStore
 		}
 		sfiles = append(sfiles, f)
 	}
-	for _, rep := range reps {
+	for _, rd := range reps {
+		rep := rd.mk()
 		st := lab.NewEconStore()
 		for _, f := range sfiles {
 			st.Run(rep, []lab.EconFile{f})
 		}
-		r.Reps[rep.Name] = st.Run(rep, []lab.EconFile{tf})
+		r.Reps[rd.name] = st.Run(rep, []lab.EconFile{tf})
 	}
 	return r, nil
 }
 
-func allReps(opt repOptions) []lab.EconRep {
-	return append([]lab.EconRep{cdcRep(), physRep("rgs", "rg", "rg"), physRep("chunks", "chunk", "chunk"), physRep("pages", "page", "page"), dpageRep()}, logicalReps(opt)...)
+// repDef builds a fresh representation per scenario (the value-identity oracle keeps state).
+type repDef struct {
+	name   string
+	oracle bool
+	mk     func() lab.EconRep
 }
 
-func pick(all []lab.EconRep, names string) []lab.EconRep {
+func fixed(r lab.EconRep) repDef { return repDef{r.Name, r.Oracle, func() lab.EconRep { return r }} }
+
+func allReps(opt repOptions) []repDef {
+	out := []repDef{fixed(cdcRep()), fixed(physRep("rgs", "rg", "rg")), fixed(physRep("chunks", "chunk", "chunk")), fixed(physRep("pages", "page", "page")), fixed(dpageRep())}
+	return append(out, logicalReps(opt)...)
+}
+
+func pick(all []repDef, names string) []repDef {
 	if names == "" {
 		return all
 	}
@@ -113,9 +124,9 @@ func pick(all []lab.EconRep, names string) []lab.EconRep {
 	for _, n := range strings.Split(names, ",") {
 		set[n] = true
 	}
-	var out []lab.EconRep
+	var out []repDef
 	for _, r := range all {
-		if set[r.Name] {
+		if set[r.name] {
 			out = append(out, r)
 		}
 	}
@@ -124,7 +135,7 @@ func pick(all []lab.EconRep, names string) []lab.EconRep {
 
 func cmdEcon(args []string) error {
 	fs := flag.NewFlagSet("econ", flag.ExitOnError)
-	repNames := fs.String("reps", "cdc,rgs,chunks,pages,dpages", "representations")
+	repNames := fs.String("reps", "cdc,rgs,chunks,pages,dpages", "representations (cdc,rgs,chunks,pages,dpages,logical,lg-fixed,lg-page,lg-nopred,lg-2k,lg-32k,lg-128k,lg-512k,o-value)")
 	only := fs.String("only", "", "comma-separated scenario name prefixes")
 	out := fs.String("json", "", "write JSON here")
 	target := fs.Int("target", 8<<10, "group target bytes (logical representations)")
@@ -148,7 +159,7 @@ func cmdEcon(args []string) error {
 	}
 	var res []row
 	for _, sc := range first {
-		r, err := runScenario(reps, sc, nil)
+		r, err := runScenario(reps, sc)
 		if err != nil {
 			return err
 		}
@@ -168,7 +179,7 @@ func cmdEcon(args []string) error {
 		go func(i int, sc scenario) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			r, err := runScenario(reps, sc, nil)
+			r, err := runScenario(reps, sc)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil && firstErr == nil {
@@ -195,11 +206,11 @@ func cmdEcon(args []string) error {
 	return nil
 }
 
-func printRows(rows []row, reps []lab.EconRep) {
+func printRows(rows []row, reps []repDef) {
 	h := fstate.Human
 	head, sep := "| scenario | class | file |", "|---|---|---:|"
 	for _, r := range reps {
-		head += " " + r.Name + " |"
+		head += " " + r.name + " |"
 		sep += "---:|"
 	}
 	fmt.Println(head)
@@ -207,9 +218,9 @@ func printRows(rows []row, reps []lab.EconRep) {
 	for _, r := range rows {
 		line := fmt.Sprintf("| %s | %s | %s |", r.Name, r.Class, h(r.Raw))
 		for _, rp := range reps {
-			a := r.Reps[rp.Name]
+			a := r.Reps[rp.name]
 			s := h(a.Pack)
-			if !a.Exact && !rp.Oracle {
+			if !a.Exact && !rp.oracle {
 				s += "!"
 			}
 			if a.Fallback > 0 {

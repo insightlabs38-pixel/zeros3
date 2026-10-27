@@ -160,3 +160,6 @@ func CDCPlan(f EconFile, family string) (*Plan, error) {
 	}
 	return nil, fmt.Errorf("lab: no cdc baseline")
 }
+
+// PackedSize is the production pack rule applied to b (DEFLATE, kept only if it saves 1/16).
+func PackedSize(b []byte) int64 { return packedLen(b) }

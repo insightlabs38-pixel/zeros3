@@ -27,24 +27,25 @@ type cov struct {
 	Opaque    int64 // pages of opaque chunks
 	Unsup     int64 // whole files that failed to open
 	// detail
-	EncBytes   map[string]int64
-	EncPages   map[string]int
-	CompPages  map[string]int
-	CompBytes  map[string]int64
-	CompRec    int64
-	LayoutStd  int
-	LayoutLvl  int
-	LayoutVal  int
-	DictChunks map[string]int
-	DictBytes  map[string]int64
-	OpaqueWhy  map[string]int64
-	V1, V2     int
-	CRC, PStat int
-	ChunkFlags map[string]int
-	Codecs     map[string]int64
-	Versions   map[string]int
-	Creators   map[string]int
-	Chunks     int
+	EncBytes    map[string]int64
+	EncPages    map[string]int
+	CompPages   map[string]int
+	CompBytes   map[string]int64
+	CompRec     int64
+	LayoutStd   int
+	LayoutLvl   int
+	LayoutVal   int
+	LayoutWidth int
+	DictChunks  map[string]int
+	DictBytes   map[string]int64
+	OpaqueWhy   map[string]int64
+	V1, V2      int
+	CRC, PStat  int
+	ChunkFlags  map[string]int
+	Codecs      map[string]int64
+	Versions    map[string]int
+	Creators    map[string]int
+	Chunks      int
 }
 
 func newCov() *cov {
@@ -71,6 +72,7 @@ func (c *cov) add(o *cov) {
 	c.LayoutStd += o.LayoutStd
 	c.LayoutLvl += o.LayoutLvl
 	c.LayoutVal += o.LayoutVal
+	c.LayoutWidth += o.LayoutWidth
 	c.V1 += o.V1
 	c.V2 += o.V2
 	c.CRC += o.CRC
@@ -236,6 +238,8 @@ func auditFile(data []byte, noPredict bool) *fileInfo {
 				if pi.Mode == parquetz3.ModeData {
 					l, v := pi.Lay.Explicit()
 					switch {
+					case pi.Lay.WidthOnly() && !l:
+						c.LayoutWidth++
 					case l || v:
 						explicit = true
 						if l {
@@ -375,7 +379,7 @@ func cmdAudit(args []string) error {
 			fmt.Printf("%s %d pages %s of replayed payload bytes; ", k, c.CompPages[k], pct(c.CompBytes[k], cb))
 		}
 		fmt.Printf("explicit recipe bytes %s (%s of file)\n", mib(c.CompRec), pct(c.CompRec, c.Bytes))
-		fmt.Printf("layout: %d pages standard, %d explicit level streams, %d explicit value/index streams; dictionary chunks %v (bytes %v)\n", c.LayoutStd, c.LayoutLvl, c.LayoutVal, c.DictChunks, c.DictBytes)
+		fmt.Printf("layout: %d pages standard, %d with a stored index width only, %d explicit level streams, %d explicit value/index streams; dictionary chunks %v (bytes %v)\n", c.LayoutStd, c.LayoutWidth, c.LayoutLvl, c.LayoutVal, c.DictChunks, c.DictBytes)
 		if len(c.OpaqueWhy) > 0 {
 			fmt.Printf("opaque chunk reasons (payload MiB): ")
 			for _, k := range sortedKeys(c.OpaqueWhy) {
