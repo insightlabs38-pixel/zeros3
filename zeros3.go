@@ -40668,17 +40668,18 @@ type repPQcolState struct {
 
 // Port source: zeros3-z3/parquetz3/decode.go
 type repPQdecoder struct {
-	rec   *repPQRecipe
-	get   repPQGetter
-	lim   repPQLimits
-	stats repPQRangeStats
-	cols  []repPQcolState
-	cp    *repPQCompressor
+	rec       *repPQRecipe
+	get       repPQGetter
+	lim       repPQLimits
+	stats     repPQRangeStats
+	cols      []repPQcolState
+	activeCol int // release old-column dictionaries; reconstruct on demand
+	cp        *repPQCompressor
 }
 
 // Port source: zeros3-z3/parquetz3/decode.go
 func repPQnewDecoder(rec *repPQRecipe, get repPQGetter, lim repPQLimits) *repPQdecoder {
-	d := &repPQdecoder{rec: rec, lim: lim.norm(), cp: repPQNewCompressor(repPQCodecNone, lim)}
+	d := &repPQdecoder{activeCol: -1, rec: rec, lim: lim.norm(), cp: repPQNewCompressor(repPQCodecNone, lim)}
 	d.get = get
 	d.cols = make([]repPQcolState, len(rec.Cols))
 	for i := range rec.Cols {
@@ -40752,6 +40753,9 @@ func (d *repPQdecoder) readValues(cs *repPQcolState, k int) (repPQrecs, error) {
 		}
 		if cs.spec.Phys == repPQTBoolean && rec[0] > 1 {
 			return r, repPQrecipeErr("boolean value %d is not 0 or 1", rec[0])
+		}
+		if int64(len(r.buf))+int64(len(rec)) > d.lim.MaxPage {
+			return r, repPQlimitErr("canonical page bytes")
 		}
 		r.add(rec)
 	}
@@ -40839,6 +40843,14 @@ func (d *repPQdecoder) compRec(s *repPQSeg) (repPQCompRec, error) {
 // page rebuilds the bytes of a logical page segment (raw header + payload).
 func (d *repPQdecoder) page(si int) ([]byte, error) {
 	s := &d.rec.Segs[si]
+	if d.activeCol != s.Col {
+		if d.activeCol >= 0 {
+			prev := &d.cols[d.activeCol]
+			prev.dict = nil
+			prev.dictSeg = -1
+		}
+		d.activeCol = s.Col
+	}
 	cs := &d.cols[s.Col]
 	pg := s.Page
 	rec, err := d.compRec(s)

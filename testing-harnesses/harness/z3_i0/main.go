@@ -59,11 +59,15 @@ const (
 )
 
 var (
-	failed          bool
-	bin             string
-	baseB           string
-	codecFixtureDir string
-	gitFixtureDir   string
+	failed               bool
+	bin                  string
+	baseB                string
+	codecFixtureDir      string
+	gitFixtureDir        string
+	structuredFixtureDir string
+	i1Binary             string
+	managedStoreDir      string
+	managedInputs        string
 )
 
 func check(name string, ok bool, detail string, args ...any) {
@@ -307,6 +311,16 @@ func fixtures() []fixture {
 			fx = append(fx, fixture{name, data})
 		}
 	}
+	if structuredFixtureDir != "" {
+		for _, name := range []string{"table.sst", "table.parquet"} {
+			data, err := os.ReadFile(filepath.Join(structuredFixtureDir, name))
+			if err != nil {
+				panic(err)
+			}
+			fx = append(fx, fixture{name, data})
+		}
+	}
+
 	return fx
 
 }
@@ -856,7 +870,7 @@ func phaseCrash(rounds int) {
 	db := sqliteDB(3000, 4096, 21)
 	tarB := tarOf(map[string][]byte{"app.db": db, "x": []byte("x")}, []string{"x", "app.db"})
 	data := [][]byte{db, tarB, carOf(blocks(2500, 3000, 22)), merkleSnapshot(keysOf(10000, 23), nil)}
-	if codecFixtureDir != "" || gitFixtureDir != "" {
+	if codecFixtureDir != "" || gitFixtureDir != "" || structuredFixtureDir != "" {
 		fx := fixtures()
 		data = append([][]byte{fx[len(fx)-2].data, fx[len(fx)-1].data}, data...)
 	}
@@ -1136,6 +1150,8 @@ func main() {
 	phase := flag.String("phase", "all", "all|compat|bundles|kinds|crash|large|reads")
 	largeMiB := flag.Int("large-mib", 256, "size of the large-object phase in MiB")
 	crashRounds := flag.Int("crash-rounds", 4, "SIGKILL rounds")
+	flag.StringVar(&structuredFixtureDir, "structured-fixtures", "", "optional I3 native structured fixture directory")
+	flag.StringVar(&i1Binary, "i1-bin", "", "stable I1 binary for rollback checks")
 	flag.StringVar(&gitFixtureDir, "git-fixtures", "", "optional I1C Git pack/idx fixture directory")
 	flag.StringVar(&codecFixtureDir, "codec-fixtures", "", "optional I1B fixture directory: add gzip/zstd nested objects to every phase")
 	flag.Parse()
@@ -1156,6 +1172,7 @@ func main() {
 			f()
 		}
 	}
+	run("i3-compat", phaseI3Compat)
 	run("compat", phaseCompat)
 	run("bundles", phaseBundles)
 	run("kinds", phaseKinds)
@@ -1166,3 +1183,97 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+func phaseI3Compat() {
+	if i1Binary == "" || (structuredFixtureDir == "" && managedStoreDir == "") {
+		panic("i3-compat requires -i1-bin and -structured-fixtures")
+	}
+	var fx []fixture
+	var dir string
+	var srv *exec.Cmd
+	var addr string
+	var c *s3.Client
+	var e error
+	var wantRoots int
+	if managedStoreDir != "" {
+		dir = managedStoreDir
+		for _, p := range strings.Split(managedInputs, ",") {
+			data, e := os.ReadFile(p)
+			if e != nil {
+				panic(e)
+			}
+			fx = append(fx, fixture{filepath.Base(p), data})
+		}
+		wantRoots = len(fx)
+	} else {
+		for _, name := range []string{"table.sst", "table.parquet"} {
+			data, e := os.ReadFile(filepath.Join(structuredFixtureDir, name))
+			if e != nil {
+				panic(e)
+			}
+			fx = append(fx, fixture{name, data})
+		}
+		filler := make([]byte, 3<<20)
+		rand.New(rand.NewSource(921)).Read(filler)
+		fx = append(fx, fixture{"filler.bin", filler})
+		dir, e = os.MkdirTemp("", "z3-i3-compat-")
+		if e != nil {
+			panic(e)
+		}
+		defer os.RemoveAll(dir)
+		srv, addr, _ = startServer(bin, dir, "-representations", "prefer")
+		c = newClient(addr)
+		c.CreateBucket(context.Background(), &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+		for _, f := range fx {
+			put(c, f.name, f.data)
+		}
+		stop(srv)
+		wantRoots = len(fx) - 1
+	}
+	verifyDeep("I3 new-kind source full proof", dir, wantRoots)
+	before := dirDigest(dir)
+	for _, mode := range []string{"off", "shadow", "prefer"} {
+		srv, addr, _ = startServer(i1Binary, dir, "-representations", mode)
+		readAllCheck("I1 reads unknown optional I3 kinds in "+mode, newClient(addr), fx)
+		stop(srv)
+		check("I1 opening does not rewrite I3 store ("+mode+")", dirDigest(dir) == before, "store changed")
+	}
+	for _, args := range [][]string{{"verify", "-deep", "-store", dir}, {"gc", "-apply", "-store", dir}, {"repack", "-apply", "-max-live-percent", "100", "-store", dir}} {
+		out, se, err := cli(i1Binary, args...)
+		check("I1 unknown kind fails closed: "+args[0], err != nil, "%s %s", out, se)
+		check("I1 refusal preserves store: "+args[0], dirDigest(dir) == before, "store changed")
+	}
+	verifyDeep("I3 still verifies after I1 refusals", dir, wantRoots)
+	// Lossless compaction may copy known chunks and leave unknown graph chunks
+	// loose. Check the complete graph afterward instead of requiring refusal.
+	out, se, err := cli(i1Binary, "compact", "-store", dir, "-pack-size-mib", "1")
+	check("I1 compaction handles unknown optional graph safely", err == nil || strings.Contains(out+se, "unsupported") || strings.Contains(out+se, "unsafe"), "%s %s", out, se)
+	verifyDeep("I3 graph remains exact after I1 compaction", dir, wantRoots)
+	srv, addr, _ = startServer(i1Binary, dir, "-representations", "prefer")
+	readAllCheck("I1 CDC reads remain exact after compaction", newClient(addr), fx)
+	stop(srv)
+
+	legacy, e := os.MkdirTemp("", "z3-i1-compat-")
+	if e != nil {
+		panic(e)
+	}
+	defer os.RemoveAll(legacy)
+	srv, addr, _ = startServer(i1Binary, legacy, "-representations", "prefer")
+	c = newClient(addr)
+	c.CreateBucket(context.Background(), &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	old := append([]fixture{{"db", sqliteDB(32, 4096, 901)}}, fx...)
+	for _, f := range old {
+		put(c, f.name, f.data)
+	}
+	stop(srv)
+	oldDigest := dirDigest(legacy)
+	for _, mode := range []string{"off", "shadow", "prefer"} {
+		srv, addr, _ = startServer(bin, legacy, "-representations", mode)
+		readAllCheck("I3 reads I1 store in "+mode, newClient(addr), old)
+		stop(srv)
+		check("I3 opening I1 store does not upgrade ("+mode+")", dirDigest(legacy) == oldDigest, "store changed")
+	}
+}
+
+// phaseI3Delta proves portable full+delta transfer from a real Model-base chain;
+// destinations use their ordinary default-off creation policy.

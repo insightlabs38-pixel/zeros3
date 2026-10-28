@@ -12,10 +12,11 @@ target, rows, batch = 1 << 30, 267_000_000, 1_000_000
 schema = pa.schema([("value", pa.int32())])
 def write(padding):
     rng = np.random.RandomState(1039)
-    s = schema.with_metadata({b"zeros3_memory_control": b"x" * padding})
+    s = schema
     with pq.ParquetWriter(path, s, compression="snappy", use_dictionary=False,
                           store_schema=False, write_statistics=False,
                           data_page_size=1 << 20) as w:
+        w.add_key_value_metadata({"zeros3_memory_control": "x" * padding})
         for start in range(0, rows, batch):
             n = min(batch, rows - start)
             values = rng.randint(-(1 << 31), 1 << 31, n, dtype=np.int32)

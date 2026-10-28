@@ -1,0 +1,64 @@
+{
+ "producer": {
+  "producer": "pyarrow",
+  "version": "18.1.0",
+  "source_bytes": 1073741824,
+  "rows": 267000000,
+  "logical_value_bytes": 1068000000,
+  "footer_padding": 5631035,
+  "sha256": "c0144382e663a3500e3b85aba7c1d74254fc4cfc110028b8586f5cfb3ff31751",
+  "class_": "SYNTHETIC_MEMORY_CONTROL"
+ },
+ "resource": {
+  "exit": 0,
+  "seconds": 88.80268975299987,
+  "maxrss_kib": 101292,
+  "production_sha256": "36e389f1dad4876cc9c51646619b3687ea41a09ecc8ed0e37b4c8c69f09d3d96",
+  "scope": "bounded structured draft; analyzer+CAS+serialized full proof+reachability",
+  "inputs": [
+   {
+    "path": "/workspace/work/q10-large/gib.parquet",
+    "sha256": "c0144382e663a3500e3b85aba7c1d74254fc4cfc110028b8586f5cfb3ff31751",
+    "bytes": 1073741824
+   }
+  ]
+ },
+ "proof": [
+  {
+   "File": "gib.parquet",
+   "Kind": "parquet",
+   "SHA": "c0144382e663a3500e3b85aba7c1d74254fc4cfc110028b8586f5cfb3ff31751",
+   "Root": "2d2d9c9d68f071aa48c852f69d1aa8175e79e2e0df8d50d593f6df7ddf23e986",
+   "Bytes": 1073741824,
+   "AnalysisNS": 87107318898,
+   "Reachable": 33191,
+   "Descriptors": 1,
+   "Hops": 0,
+   "RangeBytes": 4096,
+   "Ranges": [
+    {
+     "Offset": 0,
+     "Length": 4096,
+     "FetchedBytes": 1074524,
+     "Components": 34
+    },
+    {
+     "Offset": 536868864,
+     "Length": 4096,
+     "FetchedBytes": 1078145,
+     "Components": 45
+    },
+    {
+     "Offset": 1073737728,
+     "Length": 4096,
+     "FetchedBytes": 5651307,
+     "Components": 1
+    }
+   ],
+   "Fallback": "",
+   "ClosureBytes": 1074821826,
+   "Exact": true,
+   "HeapGrowth": 87170496
+  }
+ ]
+}

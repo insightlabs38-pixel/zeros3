@@ -611,7 +611,7 @@ func TestRepWireCorruptionMatrix(t *testing.T) {
 	}
 	mut("magic", func(b []byte) []byte { b[0] = 'X'; return b }, errRepCorrupt)
 	mut("version", func(b []byte) []byte { b[4] = 2; return b }, errRepUnsupported)
-	mut("kind", func(b []byte) []byte { b[5] = 9; return b }, errRepUnsupported)
+	mut("kind", func(b []byte) []byte { b[5] = 13; return b }, errRepUnsupported)
 	mut("unassigned kind", func(b []byte) []byte { b[5] = 8; return b }, errRepUnsupported)
 	mut("trailing", func(b []byte) []byte { return append(b, 0) }, errRepCorrupt)
 	mut("role", func(b []byte) []byte { b[9] = 2; return b }, errRepCorrupt)
