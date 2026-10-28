@@ -3,6 +3,7 @@ package kinds
 import (
 	"bytes"
 	"errors"
+	"os"
 	"testing"
 
 	"zeros3-z3/repz3"
@@ -187,5 +188,23 @@ func TestSSTKindReadsAndHostileRecipes(t *testing.T) {
 	bad[len(bad)-1] ^= 0xff
 	if _, _, _, err := EncodeSST(bytes.NewReader(bad), int64(len(bad)), sstz3.Options{Form: sstz3.FormUKV}); err == nil || !(errors.Is(err, sstz3.ErrUnsupported) || errors.Is(err, sstz3.ErrCorrupt)) {
 		t.Fatalf("damaged magic: %v", err)
+	}
+}
+
+func TestSSTNativeZstdKindClosure(t *testing.T) {
+	for _, engine := range []string{"rocksdb", "pebble"} {
+		data, e := os.ReadFile("../../sstz3/testdata/" + engine + "-zstd.sst")
+		if e != nil {
+			t.Fatal(e)
+		}
+		for form := sstz3.FormBlocks; form <= sstz3.FormKVT; form++ {
+			b, _, _, e := EncodeSST(bytes.NewReader(data), int64(len(data)), sstz3.Options{Form: form, Cutter: &sstz3.HashCutter{Target: 2048, Max: 8192}})
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e := Prove(nil, b, data); e != nil {
+				t.Fatal(e)
+			}
+		}
 	}
 }

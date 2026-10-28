@@ -246,6 +246,10 @@ func DecodeRange(w io.Writer, recipe []byte, get Getter, off, n int64, lim Limit
 		st.Blocks++
 		payload.Reset()
 		switch bl.Trailer[0] {
+		case CompZstd:
+			if err := replayZstdBlock(&payload, bl.Zstd, raw, lim); err != nil {
+				return st, err
+			}
 		case CompNone:
 			payload.Write(raw)
 		case CompSnappy:

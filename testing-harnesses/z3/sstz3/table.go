@@ -86,12 +86,15 @@ func (t *Table) PropUint(name string) (uint64, bool) {
 func (t *Table) Prop(name string) string { return string(t.Props[name]) }
 
 // DecodeBlock decompresses a raw block. Snappy returns the exact command recipe. Any
-// other compression type is Unsupported.
+// Zstd uses the shared exact frame substrate; other codecs remain Unsupported.
 func DecodeBlock(b *RawBlock, lim Limits) (decoded []byte, cmds []snappyz3.Cmd, err error) {
 	lim = lim.norm()
 	switch b.Comp() {
 	case CompNone:
 		return b.Payload, nil, nil
+	case CompZstd:
+		d, _, e := analyzeZstdBlock(b.Payload, lim)
+		return d, nil, e
 	case CompSnappy:
 		d, c, err := snappyz3.Parse(b.Payload, snappyz3.Limits{MaxDecoded: lim.MaxDecoded})
 		if err != nil {
@@ -160,9 +163,13 @@ func open(r io.ReaderAt, size int64, lim Limits, keep bool) (*Table, error) {
 		if f.Version < 1 || f.Version > 4 {
 			c = Unsupported
 		}
-		add("footer", c, fmt.Sprintf("pebble table format %d, checksum type %d", f.Version, f.Checksum))
+		if c == Unsupported {
+			add("footer", c, fmt.Sprintf("pebble table format %d; footer layout unknown", f.Version))
+		} else {
+			add("footer", c, fmt.Sprintf("pebble table format %d, checksum type %d", f.Version, f.Checksum))
+		}
 	}
-	if f.Checksum != CksumCRC32 {
+	if f.Checksum != CksumCRC32 && !(f.Family == FamilyPebble && f.Version > 4) {
 		add("checksum", Opaque, fmt.Sprintf("type %d: trailers preserved verbatim, not verified", f.Checksum))
 	}
 	if err := t.Reject(); err != nil {

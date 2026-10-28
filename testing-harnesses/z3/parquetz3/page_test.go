@@ -183,7 +183,7 @@ func TestProducerPagesAreExactlyReplayable(t *testing.T) {
 		"dd_none.parquet":       {comp: CompNone, explicit: true},
 		"pa_gzip.parquet":       {opaque: "codec GZIP"},
 		"pa_nested.parquet":     {opaque: "repeated"},
-		"pa_delta.parquet":      {opaque: "encoding"},
+		"pa_delta.parquet":      {comp: CompSnapCPP, opaque: "encoding"},
 	}
 	for name, w := range exp {
 		t.Run(name, func(t *testing.T) {
@@ -192,6 +192,10 @@ func TestProducerPagesAreExactlyReplayable(t *testing.T) {
 			for gi := range f.RowGroups {
 				for ci := range f.RowGroups[gi].Chunks {
 					c := &f.RowGroups[gi].Chunks[ci]
+					w := w
+					if name == "pa_delta.parquet" && f.Columns[c.Col].Name == "payload" {
+						w.opaque = ""
+					}
 					plan, err := an.Chunk(c, nil, nil)
 					if err != nil {
 						t.Fatal(err)

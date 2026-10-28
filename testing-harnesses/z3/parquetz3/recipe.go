@@ -185,6 +185,10 @@ func (r *Recipe) Marshal() ([]byte, Sizes) {
 						b = appendExplicit(b, s.Lay.LvlHdrs, s.Lay.LvlPad, bits.Len(uint(col.MaxDef)))
 					}
 				}
+				if len(s.Lay.Delta) > 0 {
+					b = appendUv(b, uint64(len(s.Lay.Delta)))
+					b = append(b, s.Lay.Delta...)
+				}
 				if s.Lay.ValWidth {
 					b = append(b, byte(s.Lay.ValBW))
 				}
@@ -424,6 +428,9 @@ func ParseRecipe(b []byte, lim Limits) (*Recipe, error) {
 				}
 			} else if s.Lay.LvlExpl {
 				r.fail("segment %d: explicit levels without levels", i)
+			}
+			if s.Page.Enc == EncDeltaLenBA {
+				s.Lay.Delta = r.take(r.uv(uint64(lim.MaxPage)))
 			}
 			if s.Lay.ValWidth {
 				s.Lay.ValBW = int(r.byte())

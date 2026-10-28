@@ -264,6 +264,12 @@ func Encode(r io.ReaderAt, size int64, opt Options, emit Emit) ([]byte, Sizes, S
 		st.CompBlocks[rb.Comp()&7]++
 		st.DataBytes += int64(h.Size) + trailerLen
 		st.DecodedBytes += int64(len(dec))
+		if rb.Comp() == CompZstd {
+			_, bl.Zstd, err = analyzeZstdBlock(rb.Payload, lim)
+			if err != nil {
+				return nil, Sizes{}, st, err
+			}
+		}
 		if rb.Comp() == CompSnappy {
 			st.SnappyCmds += int64(len(cmds))
 			if !opt.NoPredict && len(dec) <= snappyz3.MaxPredict {

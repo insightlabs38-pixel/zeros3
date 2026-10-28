@@ -28,6 +28,7 @@ func cmdAudit(args []string) error {
 		compBlocks      map[uint8]int
 		compBytes       map[uint8]int64
 		tailBytes       int64
+		unknownBytes    int64
 		entries, propN  int64
 		mismatch, perr  int
 		props           map[string]map[string]int
@@ -56,7 +57,11 @@ func cmdAudit(args []string) error {
 				fmt.Printf("%s: %v\n", p, err)
 				return nil
 			}
-			a.sigs[fmt.Sprintf("%s v%d cksum=%d", t.Footer.Family, t.Footer.Version, t.Footer.Checksum)]++
+			if t.Footer.Family == sstz3.FamilyPebble && t.Footer.Version > 4 {
+				a.sigs[fmt.Sprintf("%s v%d footer layout unknown", t.Footer.Family, t.Footer.Version)]++
+			} else {
+				a.sigs[fmt.Sprintf("%s v%d cksum=%d", t.Footer.Family, t.Footer.Version, t.Footer.Checksum)]++
+			}
 			for _, ft := range t.Features {
 				d := ft.Detail
 				if ft.Name == "data-blocks" {
@@ -83,7 +88,11 @@ func cmdAudit(args []string) error {
 				}
 			}
 			a.blocks += len(t.Blocks)
-			a.tailBytes += t.Size - t.DataEnd
+			if t.DataEnd > 0 {
+				a.tailBytes += t.Size - t.DataEnd
+			} else {
+				a.unknownBytes += t.Size
+			}
 			supported := t.Reject() == nil
 			if t.DataEnd == 0 {
 				fmt.Printf("%s: coverage incomplete: index/feature fallback; block-byte totals below exclude unknown blocks\n", p)
@@ -138,7 +147,7 @@ func cmdAudit(args []string) error {
 	sort.Strings(prods)
 	for _, p := range prods {
 		a := byProducer[p]
-		fmt.Printf("== %s: %d tables, %.1f MiB, %d data blocks, tail (non-data) %.2f%% of bytes, parse errors %d\n", p, a.files, float64(a.bytes)/(1<<20), a.blocks, 100*float64(a.tailBytes)/float64(a.bytes), a.perr)
+		fmt.Printf("== %s: %d tables, %.1f MiB, %d data blocks, tail (non-data) %.2f%% of bytes, parse errors %d; unknown-index file bytes %.2f MiB\n", p, a.files, float64(a.bytes)/(1<<20), a.blocks, 100*float64(a.tailBytes)/float64(a.bytes), a.perr, float64(a.unknownBytes)/(1<<20))
 		for _, m := range []map[string]int{a.sigs, a.feats} {
 			var ks []string
 			for k := range m {
