@@ -88,10 +88,11 @@ const (
 	KindSST     Kind = 9  // Z3-30 lab kind: LevelDB / RocksDB / Pebble table as logical record groups plus per-block framing and Snappy replay
 	KindParquet Kind = 10 // Z3-31 lab kind: Parquet file as per-column logical value/level streams plus page-layout and compression replay recipes
 	KindDEX     Kind = 11 // Z3-32 lab kind: DEX as a masked payload plus semantic-identity reference streams, in index nodes of stored groups
+	KindCLR     Kind = 12 // Z3-33 lab kind: .NET assembly as a masked payload plus semantic-identity reference streams, in index nodes of stored groups
 )
 
 // Known reports whether this contract version defines the kind.
-func (k Kind) Known() bool { return k >= KindConcat && k <= KindDEX }
+func (k Kind) Known() bool { return k >= KindConcat && k <= KindCLR }
 
 // Role is how a component takes part in a representation.
 type Role uint8
