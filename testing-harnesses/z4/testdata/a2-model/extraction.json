@@ -1,0 +1,12 @@
+{
+ "commit": "43dfe4192ef0b25d035fac0850af263a7f866beb",
+ "source_sha256": "0103ddc65fc80427aec33f3ad752e38b2de469a5c4e3fdc354eb8f8aa271692f",
+ "extracted_block_sha256": [
+  "47d6ae7c52e16c44c2ab95c4b46d1b40d16e6a65bc248340239083cb922b8cc4",
+  "12cba090420d8dcac0e96bcd21e36826d62febedcc0807ece094f9f6dde74990"
+ ],
+ "extracted_lines": [
+  1418,
+  296
+ ]
+}
