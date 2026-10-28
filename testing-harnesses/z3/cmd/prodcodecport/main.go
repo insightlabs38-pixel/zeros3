@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 type pkgMeta struct {
@@ -38,6 +39,8 @@ type edit struct {
 	lo, hi int
 	text   string
 }
+
+var provided = map[string]bool{}
 
 var prefixes = map[string]string{"zeros3-z3/deflate": "repDF", "zeros3-z3/ir": "repIR", "zeros3-z3/zstdz3": "repZS"}
 
@@ -74,16 +77,48 @@ func must(err error) {
 }
 func main() {
 	if len(os.Args) < 3 || len(os.Args) > 4 {
-		panic("extract lab-directory output-prefix [git]")
+		panic("extract lab-directory output-prefix [git|managed|managed-analysis|model-layout|model-codec|managed-codec]")
 	}
 	packagePaths := []string{"zeros3-z3/deflate", "zeros3-z3/ir", "zeros3-z3/zstdz3"}
 	gitMode := len(os.Args) == 4 && os.Args[3] == "git"
-	if len(os.Args) == 4 && !gitMode {
+	managedMode := len(os.Args) == 4 && (os.Args[3] == "managed" || os.Args[3] == "managed-analysis")
+	modelMode := len(os.Args) == 4 && os.Args[3] == "model-layout"
+	modelCodecMode := len(os.Args) == 4 && os.Args[3] == "model-codec"
+	managedCodecMode := len(os.Args) == 4 && os.Args[3] == "managed-codec"
+	structuredMode := len(os.Args) == 4 && os.Args[3] == "structured"
+	structuredCodecMode := len(os.Args) == 4 && os.Args[3] == "structured-codec"
+	if len(os.Args) == 4 && !gitMode && !managedMode && !modelMode && !modelCodecMode && !managedCodecMode && !structuredMode && !structuredCodecMode {
 		panic("unknown extraction mode")
 	}
 	if gitMode {
 		packagePaths = []string{"zeros3-z3/gitz3"}
 		prefixes = map[string]string{"zeros3-z3/gitz3": "repGT"}
+	}
+	if managedMode {
+		packagePaths = []string{"zeros3-z3/dexz3", "zeros3-z3/clrz3", "zeros3-z3/idxref", "zeros3-z3/pez3", "zeros3-z3/binref"}
+		prefixes = map[string]string{"zeros3-z3/dexz3": "repDX", "zeros3-z3/clrz3": "repCL", "zeros3-z3/idxref": "repIX", "zeros3-z3/pez3": "repPE", "zeros3-z3/binref": "repBR"}
+	}
+	if modelMode {
+		packagePaths = []string{"zeros3-z3/st", "zeros3-z3/ggufz3"}
+		prefixes = map[string]string{"zeros3-z3/st": "repST", "zeros3-z3/ggufz3": "repGG"}
+	}
+	if modelCodecMode {
+		packagePaths = []string{"zeros3-z3/repz3/kinds"}
+		prefixes = map[string]string{"zeros3-z3/repz3/kinds": "repMD"}
+	}
+	if managedCodecMode {
+		packagePaths = []string{"zeros3-z3/repz3/kinds"}
+		prefixes = map[string]string{"zeros3-z3/repz3/kinds": "repMC"}
+	}
+	if structuredMode {
+		packagePaths = []string{"zeros3-z3/sstz3", "zeros3-z3/parquetz3", "zeros3-z3/snappyz3", "zeros3-z3/thriftcompactz3"}
+		prefixes = map[string]string{"zeros3-z3/sstz3": "repSS", "zeros3-z3/parquetz3": "repPQ", "zeros3-z3/snappyz3": "repSN", "zeros3-z3/thriftcompactz3": "repTC", "zeros3-z3/zstdz3": "repZS"}
+		provided["zeros3-z3/zstdz3"] = true
+	}
+	if structuredCodecMode {
+		packagePaths = []string{"zeros3-z3/repz3/kinds"}
+		prefixes = map[string]string{"zeros3-z3/repz3/kinds": "repSC", "zeros3-z3/sstz3": "repSS", "zeros3-z3/parquetz3": "repPQ"}
+		provided["zeros3-z3/sstz3"], provided["zeros3-z3/parquetz3"] = true, true
 	}
 	args := []string{"list", "-deps", "-export", "-json"}
 	for _, p := range packagePaths {
@@ -169,11 +204,35 @@ func main() {
 	if gitMode {
 		roots = []string{"zeros3-z3/gitz3:ParsePackAt", "zeros3-z3/gitz3:ParseIdxAt", "zeros3-z3/gitz3:mreader", "zeros3-z3/gitz3:encodeEntryHeader", "zeros3-z3/gitz3:encodeOfs", "zeros3-z3/gitz3:zhdrCode", "zeros3-z3/gitz3:metaMagic", "zeros3-z3/gitz3:ModeZ"}
 	}
+	if managedMode {
+		roots = []string{"zeros3-z3/dexz3:Decode", "zeros3-z3/clrz3:Decode"}
+		if os.Args[3] == "managed-analysis" {
+			roots = append(roots, "zeros3-z3/dexz3:Parse", "zeros3-z3/dexz3:Encode", "zeros3-z3/clrz3:Parse", "zeros3-z3/clrz3:Encode")
+		}
+	}
+	if modelMode {
+		roots = []string{"zeros3-z3/st:Parse", "zeros3-z3/ggufz3:Parse"}
+	}
+	if modelCodecMode {
+		roots = []string{"zeros3-z3/repz3/kinds:modelDecoder", "zeros3-z3/repz3/kinds:BuildModelRecipe", "zeros3-z3/repz3/kinds:PlaneChunks", "zeros3-z3/repz3/kinds:ReadModelRange", "zeros3-z3/repz3/kinds:ModelNames"}
+	}
+	if managedCodecMode {
+		roots = []string{"zeros3-z3/repz3/kinds:dexDecoder", "zeros3-z3/repz3/kinds:clrDecoder"}
+	}
+	if structuredMode {
+		roots = []string{"zeros3-z3/sstz3:Encode", "zeros3-z3/sstz3:Decode", "zeros3-z3/sstz3:DecodeRange", "zeros3-z3/sstz3:HashCutter", "zeros3-z3/parquetz3:Encode", "zeros3-z3/parquetz3:Decode", "zeros3-z3/parquetz3:DecodeRange", "zeros3-z3/parquetz3:Components"}
+	}
+	if structuredCodecMode {
+		roots = []string{"zeros3-z3/repz3/kinds:sstDecoder", "zeros3-z3/repz3/kinds:parquetDecoder", "zeros3-z3/repz3/kinds:ReadSSTRange", "zeros3-z3/repz3/kinds:ReadParquetRange"}
+	}
 	keep := map[*decl]bool{}
 	var visit func(string)
 	visit = func(k string) {
 		d := owners[k]
 		if d == nil {
+			if provided[strings.SplitN(k, ":", 2)[0]] {
+				return
+			}
 			panic("missing declaration " + k)
 		}
 		if keep[d] {
