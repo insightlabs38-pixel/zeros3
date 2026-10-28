@@ -24,6 +24,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/md5"
 	"crypto/sha256"
@@ -58,9 +59,10 @@ const (
 )
 
 var (
-	failed bool
-	bin    string
-	baseB  string
+	failed          bool
+	bin             string
+	baseB           string
+	codecFixtureDir string
 )
 
 func check(name string, ok bool, detail string, args ...any) {
@@ -261,7 +263,7 @@ func fixtures() []fixture {
 	mk := merkleSnapshot(keysOf(6000, 3), nil)
 	rnd := make([]byte, 700<<10)
 	rand.New(rand.NewSource(4)).Read(rnd)
-	return []fixture{
+	fx := []fixture{
 		{"sqlite.db", db},
 		{"sqlite-update.db", updatePages(db, 4096, []int{7, 99, 1200}, 5)},
 		{"archive.car", car},
@@ -273,6 +275,30 @@ func fixtures() []fixture {
 		{"random.bin", rnd},
 		{"fake-sqlite.db", append([]byte("SQLite format 3\x00"), rnd[:30000]...)},
 	}
+	if codecFixtureDir != "" {
+		plain, err := os.ReadFile(filepath.Join(codecFixtureDir, "nested.tar"))
+		if err != nil {
+			panic(err)
+		}
+		zst, err := os.ReadFile(filepath.Join(codecFixtureDir, "nested.zst"))
+		if err != nil {
+			panic(err)
+		}
+		var gz bytes.Buffer
+		w, err := gzip.NewWriterLevel(&gz, gzip.BestSpeed)
+		if err != nil {
+			panic(err)
+		}
+		if _, err = w.Write(plain); err != nil {
+			panic(err)
+		}
+		if err = w.Close(); err != nil {
+			panic(err)
+		}
+		fx = append(fx, fixture{"nested.tar.gz", gz.Bytes()}, fixture{"nested.tar.zst", zst})
+	}
+	return fx
+
 }
 
 // ---- process and client plumbing ------------------------------------------------------------
@@ -737,7 +763,7 @@ func verifyDeep(label, dir string, wantRoots int) {
 func phaseKinds() {
 	fmt.Println("== kinds: structural representations through maintenance and restarts")
 	fx := fixtures()
-	wantRoots := 8 // everything but random.bin and fake-sqlite.db
+	wantRoots := len(fx) - 2 // everything but random.bin and fake-sqlite.db
 	for _, mode := range []string{"shadow", "prefer"} {
 		dir, _ := os.MkdirTemp("", "z3i0-kinds-")
 		defer os.RemoveAll(dir)
@@ -820,6 +846,10 @@ func phaseCrash(rounds int) {
 	db := sqliteDB(3000, 4096, 21)
 	tarB := tarOf(map[string][]byte{"app.db": db, "x": []byte("x")}, []string{"x", "app.db"})
 	data := [][]byte{db, tarB, carOf(blocks(2500, 3000, 22)), merkleSnapshot(keysOf(10000, 23), nil)}
+	if codecFixtureDir != "" {
+		fx := fixtures()
+		data = append([][]byte{fx[len(fx)-2].data, fx[len(fx)-1].data}, data...)
+	}
 	rng := rand.New(rand.NewSource(7))
 	for round := 0; round < rounds; round++ {
 		dir, _ := os.MkdirTemp("", "z3i0-crash-")
@@ -1096,6 +1126,7 @@ func main() {
 	phase := flag.String("phase", "all", "all|compat|bundles|kinds|crash|large|reads")
 	largeMiB := flag.Int("large-mib", 256, "size of the large-object phase in MiB")
 	crashRounds := flag.Int("crash-rounds", 4, "SIGKILL rounds")
+	flag.StringVar(&codecFixtureDir, "codec-fixtures", "", "optional I1B fixture directory: add gzip/zstd nested objects to every phase")
 	flag.Parse()
 	bin = os.Getenv("ZEROS3_BIN")
 	baseB = os.Getenv("ZEROS3_BASE_BIN")

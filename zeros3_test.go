@@ -16253,6 +16253,32 @@ func TestReplicate_ResumeAfterPartialPriorUpload(t *testing.T) {
 // server subprocesses (real HTTP, real TCP) and killed partway through,
 // before it can commit anything; a second, uninterrupted run is then
 // required to complete the replication correctly.
+// interruptibleReplicationSource makes process interruption precede commit
+// deterministically, independent of loopback speed and worker count.
+func interruptibleReplicationSource(t *testing.T, sourceURL string) (string, <-chan struct{}, func()) {
+	t.Helper()
+	target, err := url.Parse(sourceURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	var blocked atomic.Bool
+	blocked.Store(true)
+	entered := make(chan struct{})
+	var once sync.Once
+	gate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if blocked.Load() && (r.URL.Path == zeros3BulkFetchPath || strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix)) {
+			io.Copy(io.Discard, r.Body)
+			once.Do(func() { close(entered) })
+			<-r.Context().Done()
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(gate.Close)
+	return gate.URL, entered, func() { blocked.Store(false) }
+}
+
 func TestReplicate_ResumeAcrossRealProcessInterruption(t *testing.T) {
 	bin := buildZeros3Binary(t)
 
@@ -16298,28 +16324,8 @@ func TestReplicate_ResumeAcrossRealProcessInterruption(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	// Gate source fetches so interruption is known to precede commit even
-	// when a loopback 20 MB transfer completes in less than 150 ms.
-	target, err := url.Parse("http://" + srcAddr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	var blocked atomic.Bool
-	blocked.Store(true)
-	entered := make(chan struct{})
-	var once sync.Once
-	gate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if blocked.Load() && (r.URL.Path == zeros3BulkFetchPath || strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix)) {
-			io.Copy(io.Discard, r.Body)
-			once.Do(func() { close(entered) })
-			<-r.Context().Done()
-			return
-		}
-		proxy.ServeHTTP(w, r)
-	}))
-	defer gate.Close()
-	replicateArgs := []string{"replicate", "-from", gate.URL, "-to", "http://" + dstAddr, "s3://src/big.bin", "s3://dst/big.bin"}
+	sourceURL, entered, resumeSource := interruptibleReplicationSource(t, "http://"+srcAddr)
+	replicateArgs := []string{"replicate", "-from", sourceURL, "-to", "http://" + dstAddr, "s3://src/big.bin", "s3://dst/big.bin"}
 
 	// Kill a real client process while a source fetch is demonstrably active.
 	firstAttempt := exec.Command(bin, replicateArgs...)
@@ -16335,7 +16341,7 @@ func TestReplicate_ResumeAcrossRealProcessInterruption(t *testing.T) {
 	}
 	firstAttempt.Process.Kill()
 	firstAttempt.Wait()
-	blocked.Store(false)
+	resumeSource()
 
 	if resp := doSignedRequest(t, client, "http://"+dstAddr, signer, http.MethodHead, "/dst/big.bin", nil, nil); resp.StatusCode == http.StatusOK {
 		resp.Body.Close()
@@ -18804,30 +18810,25 @@ func TestReplicateNamespace_ResumeAcrossRealProcessInterruption(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	replicateArgs := []string{"replicate", "-recursive", "-from", "http://" + srcAddr, "-to", "http://" + dstAddr, "s3://src/ns/", "s3://dst/ns/"}
+	sourceURL, entered, resumeSource := interruptibleReplicationSource(t, "http://"+srcAddr)
+	replicateArgs := []string{"replicate", "-recursive", "-from", sourceURL, "-to", "http://" + dstAddr, "s3://src/ns/", "s3://dst/ns/"}
 
-	// First attempt: a real subprocess, killed shortly after it starts.
-	// M8H-B's bounded worker pool transfers a single object's chunks
-	// concurrently, so the old sequential-transport assumption behind this
-	// delay (long enough to guarantee interruption, short enough to be a
-	// fast test) no longer holds at 250ms -- a parallel transfer of the
-	// first 8MB object can now, some of the time, both finish uploading
-	// its chunks *and* have its commit request already accepted by the
-	// destination server before the kill signal is even delivered (the
-	// process is killed, but a request it already handed to the kernel's
-	// TCP send buffer is not un-sent: the server still processes it).
-	// 50ms keeps this test's actual intent -- interrupt the first attempt
-	// before it can safely be assumed to have finished -- reliable again:
-	// short enough that not even one object's discovery/negotiate/
-	// transfer/commit round trip can complete first, regardless of how
-	// many workers make the transfer itself faster.
+	// Kill an actual client with a fetch held open, never a commit already
+	// accepted by the destination. Preserve all namespace resume assertions.
 	firstAttempt := exec.Command(bin, replicateArgs...)
 	if err := firstAttempt.Start(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		firstAttempt.Process.Kill()
+		firstAttempt.Wait()
+		t.Fatal("namespace replication never reached gated fetch")
+	}
 	firstAttempt.Process.Kill()
 	firstAttempt.Wait()
+	resumeSource()
 
 	// Second, uninterrupted attempt must complete every object correctly,
 	// resuming from whatever the killed attempt already landed in the

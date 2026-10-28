@@ -48,6 +48,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -21853,8 +21854,8 @@ func printDeltaStats(w io.Writer, st BundleStats) {
 // All integers are minimal unsigned varints; the object is consumed exactly.
 // A representation is named by the SHA-256 of its serialized bytes and is
 // loaded only after that digest matches. Kind numbers keep fixed headroom:
-// 1 Concat, 2 CAR, 3 SQLite, 4 (Git, reserved), 5 Merkle, 6 (Gzip, reserved),
-// 7 (Zstd, reserved). Reserved and unknown kinds fail as unsupported.
+// 1 Concat, 2 CAR, 3 SQLite, 4 (Git, reserved), 5 Merkle, 6 Gzip,
+// 7 Zstd. Reserved and unknown kinds fail as unsupported.
 // =============================================================================
 
 const (
@@ -21898,13 +21899,15 @@ const (
 	repKindConcat repKind = 1
 	repKindCAR    repKind = 2
 	repKindSQLite repKind = 3
-	// 4 is reserved for Git, 6 for Gzip and 7 for Zstd.
+	// 4 is reserved for Git; codec numbers retain their I0 reservations.
 	repKindMerkle repKind = 5
+	repKindGzip   repKind = 6
+	repKindZstd   repKind = 7
 )
 
 // supported reports whether this build can decode the kind.
 func (k repKind) supported() bool {
-	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindMerkle
+	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindMerkle || k == repKindGzip || k == repKindZstd
 }
 
 type repRole uint8
@@ -22403,6 +22406,10 @@ func repDecoderFor(k repKind) (repDecoder, bool) {
 		return repSQLiteDecoder{}, true
 	case repKindMerkle:
 		return repMerkleDecoder{}, true
+	case repKindGzip:
+		return gzipDecoder{}, true
+	case repKindZstd:
+		return zstdDecoder{}, true
 	}
 	return nil, false
 }
@@ -26304,6 +26311,7 @@ type repBuilder struct {
 	descs   map[[32]byte]*repDesc
 	written map[[32]byte]struct{}
 	budget  repBudget
+	depth   int // analysis nesting; default 3, decode hard limit remains 4
 	src     *storeRepSource
 	env     *repEnv
 	cat     *repCatalog
@@ -26606,6 +26614,10 @@ func (b *repBuilder) tryChild(src io.ReaderAt, off, esz, padded int64) (repMembe
 	hd := head[:min(n, int(esz))]
 	kind := repKind(0)
 	switch {
+	case bytes.HasPrefix(hd, []byte{0x1f, 0x8b, 8}):
+		kind = repKindGzip
+	case bytes.HasPrefix(hd, []byte{0x28, 0xb5, 0x2f, 0xfd}):
+		kind = repKindZstd
 	case bytes.HasPrefix(hd, []byte(sqliteMagic)):
 		kind = repKindSQLite
 	case bytes.HasPrefix(hd, []byte(merkleMagic)):
@@ -26660,8 +26672,261 @@ func (b *repBuilder) tryChild(src io.ReaderAt, off, esz, padded int64) (repMembe
 	return repMember{Role: repDerived, SHA: framed, Size: padded, Child: id, Frame: repFrame{Zeros: int(padded - esz)}}, true, nil
 }
 
+// child opens a serialized child at the next existing depth (lab Call.Child).
+func (c *repCall) child(i int) (*repCall, error) {
+	if i < 0 || i >= len(c.Rep.Members) || c.Rep.Members[i].Role != repDerived {
+		return nil, repCorrupt("member %d is not derived", i)
+	}
+	id := c.Rep.Members[i].Child
+	rep, err := c.env.load(id, c.depth+1, c.path)
+	if err != nil {
+		return nil, err
+	}
+	return c.env.call(id, rep, c.depth+1, c.path, nil), nil
+}
+
+// Codec analysis adapts the lab's streaming outputs to production CAS members.
+// Plaintext is staged on disk; only the codec window, one unit and metadata live
+// in memory. Temporary files never participate in namespace visibility.
+type repCodecSink struct {
+	b                *repBuilder
+	plain            *os.File
+	max, n           int64
+	digest           hash.Hash
+	crc              uint32
+	meta             []byte
+	units            int
+	descriptionBytes int64
+}
+
+func (s *repCodecSink) Plain(p []byte) error {
+	if int64(len(p)) > s.max-s.n {
+		return fmt.Errorf("%w: codec plaintext exceeds %d bytes", errRepLimit, s.max)
+	}
+	if err := s.b.budget.inspect(int64(len(p))); err != nil {
+		return err
+	}
+	n, err := s.plain.Write(p)
+	if n != 0 {
+		s.digest.Write(p[:n])
+		s.crc = crc32.Update(s.crc, crc32.IEEETable, p[:n])
+		s.n += int64(n)
+	}
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	return err
+}
+func (s *repCodecSink) Write(p []byte) (int, error) {
+	if err := s.Plain(p); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+func (s *repCodecSink) Unit(i int, u []byte) error {
+	if i != s.units {
+		return repCorrupt("codec unit order %d, expected %d", i, s.units)
+	}
+	if s.units >= 1<<16 || len(s.meta) > 32<<20 || len(u) > 1<<20 {
+		return fmt.Errorf("%w: codec unit metadata", errRepLimit)
+	}
+	s.meta = binary.AppendUvarint(s.meta, uint64(len(u)))
+	if len(u) < gzUnitInline {
+		s.meta = append(s.meta, u...)
+	} else {
+		id, err := s.b.putBlob(u)
+		if err != nil {
+			return err
+		}
+		s.meta = append(s.meta, id[:]...)
+	}
+	s.descriptionBytes += int64(len(u))
+	s.units++
+	return nil
+}
+
+// Descriptions may add bounded sidecar overhead, never uncontrolled expansion.
+// CDC remains authoritative; this is not a first-sight net-storage saving claim.
+func (s *repCodecSink) admitDescription(compressed int64, skeleton int) error {
+	cost := s.descriptionBytes + int64(len(s.meta)) + int64(skeleton)
+	if int64(skeleton)+int64(len(s.meta))+20 > maxGzTable || skeleton > 4<<20 || cost > min(int64(64<<20), compressed+64<<10) {
+		return fmt.Errorf("%w: codec description costs %d bytes", errRepUnsupported, cost)
+	}
+	return nil
+}
+
+func (b *repBuilder) codecTemp() (*os.File, error) {
+	return os.CreateTemp(filepath.Join(b.s.root, "tmp"), "rep-codec-*.tmp")
+}
+func repRemoveTemp(f *os.File) { f.Close(); os.Remove(f.Name()) }
+
+// encodeCodecPlain reuses structural analyzers and falls back to a plain CDC
+// concat. The outer decoder always consumes a serialized DERIVED child.
+func (b *repBuilder) encodeCodecPlain(f *os.File, n int64) ([32]byte, error) {
+	if k, ok := repCandidate(f, n); ok {
+		if err := b.budget.attempt(); err != nil {
+			return [32]byte{}, err
+		}
+		child, err := b.encodeKind(k, f, n)
+		if err == nil {
+			return b.finishRep(child)
+		}
+		if b.budget.inspected > repMaxInspect {
+			return [32]byte{}, err
+		}
+	}
+	child := &repObject{Kind: repKindConcat, Size: n}
+	if err := b.putCDC(io.NewSectionReader(f, 0, n), func(id [32]byte, size int64) {
+		child.Members = append(child.Members, repMember{Role: repStored, SHA: id, Size: size})
+	}); err != nil {
+		return [32]byte{}, err
+	}
+	return b.finishRep(child)
+}
+func (b *repBuilder) codecTable(table []byte) ([]repMember, error) {
+	var members []repMember
+	err := b.putCDC(bytes.NewReader(table), func(id [32]byte, n int64) { members = append(members, repMember{Role: repStored, SHA: id, Size: n}) })
+	return members, err
+}
+
+func (b *repBuilder) encodeGzip(src io.ReaderAt, size int64) (*repObject, error) {
+	if err := b.budget.inspect(size); err != nil {
+		return nil, err
+	}
+	header, err := repDFGzipHeader(io.NewSectionReader(src, 0, min(size, int64(maxGzHeader)+1)))
+	if err != nil || len(header) > maxGzHeader {
+		return nil, fmt.Errorf("%w: gzip header", errRepUnsupported)
+	}
+	f, err := b.codecTemp()
+	if err != nil {
+		return nil, err
+	}
+	defer repRemoveTemp(f)
+	var sink *repCodecSink
+	var stats *repIRStreamStats
+	for _, mode := range []string{"", "balanced", "fast"} {
+		if err = f.Truncate(0); err != nil {
+			return nil, err
+		}
+		if _, err = f.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		sink = &repCodecSink{b: b, plain: f, max: min(int64(MaxGzipInflated), size*MaxGzipRatio+4096), digest: sha256.New()}
+		stats, _, err = repIREncodeStream(io.NewSectionReader(src, int64(len(header)), size-int64(len(header))), repIRStreamConfig{Target: 16 << 10, Profile: repIRAutoProfile, Mode: mode}, sink)
+		if err == nil || !errors.Is(err, repIRErrLimit) {
+			break
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: gzip analysis: %v", errRepUnsupported, err)
+	}
+	if int64(len(header))+stats.StreamLen+8 != size {
+		return nil, fmt.Errorf("%w: gzip multi-member or trailing bytes", errRepUnsupported)
+	}
+	var trailer [8]byte
+	if err := repReadFullAt(src, trailer[:], size-8); err != nil {
+		return nil, err
+	}
+	if binary.LittleEndian.Uint32(trailer[:4]) != sink.crc || binary.LittleEndian.Uint32(trailer[4:]) != uint32(sink.n) {
+		return nil, fmt.Errorf("%w: gzip trailer", errRepUnsupported)
+	}
+	if err := sink.admitDescription(size, len(stats.Skeleton)); err != nil {
+		return nil, err
+	}
+	child, err := b.encodeCodecPlain(f, sink.n)
+	if err != nil {
+		return nil, err
+	}
+	table := binary.AppendUvarint(nil, uint64(len(stats.Skeleton)))
+	table = append(table, stats.Skeleton...)
+	table = binary.AppendUvarint(table, uint64(sink.units))
+	table = append(table, sink.meta...)
+	members, err := b.codecTable(table)
+	if err != nil {
+		return nil, err
+	}
+	out := &repObject{Kind: repKindGzip, Size: size, Members: members}
+	var plainSHA [32]byte
+	sink.digest.Sum(plainSHA[:0])
+	out.Members = append(out.Members, repMember{Role: repDerived, SHA: plainSHA, Size: sink.n, Child: child})
+	out.Recipe = binary.AppendUvarint(nil, uint64(len(header)))
+	out.Recipe = append(out.Recipe, header...)
+	out.Recipe = append(out.Recipe, trailer[:]...)
+	out.Recipe = binary.AppendUvarint(out.Recipe, uint64(len(members)))
+	return out, nil
+}
+
+func repZstdLimits() repZSLimits {
+	return repZSLimits{MaxFrames: 4096, MaxBlocks: 1 << 16, MaxWindow: 16 << 20, MaxFrameDecoded: repMaxInspect, MaxTotalDecoded: repMaxInspect, MaxLiterals: repMaxInspect, MaxSequences: 1 << 28, MaxSkippable: 1 << 20, MaxIRBytes: 32 << 20, MaxRatio: MaxZstdRatio}
+}
+func (b *repBuilder) encodeZstd(src io.ReaderAt, size int64) (*repObject, error) {
+	if err := b.budget.inspect(size); err != nil {
+		return nil, err
+	}
+	plain, err := b.codecTemp()
+	if err != nil {
+		return nil, err
+	}
+	defer repRemoveTemp(plain)
+	units, err := b.codecTemp()
+	if err != nil {
+		return nil, err
+	}
+	defer repRemoveTemp(units)
+	sink := &repCodecSink{b: b, plain: plain, max: min(int64(MaxZstdPlain), size*MaxZstdRatio+1<<20), digest: sha256.New()}
+	result, err := repZSParse(io.NewSectionReader(src, 0, size), sink, units, repZSOptions{repZSLimits: repZstdLimits()})
+	if err != nil {
+		return nil, fmt.Errorf("%w: zstd analysis: %v", errRepUnsupported, err)
+	}
+	if _, err := units.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	for i, n := range result.UnitSizes {
+		if n > 1<<20 {
+			return nil, fmt.Errorf("%w: zstd unit length", errRepLimit)
+		}
+		data := make([]byte, n)
+		if _, err := io.ReadFull(units, data); err != nil {
+			return nil, err
+		}
+		if err := sink.Unit(i, data); err != nil {
+			return nil, err
+		}
+	}
+	if err := sink.admitDescription(size, len(result.Raw)); err != nil {
+		return nil, err
+	}
+	child, err := b.encodeCodecPlain(plain, sink.n)
+	if err != nil {
+		return nil, err
+	}
+	table := binary.AppendUvarint(nil, uint64(len(result.Raw)))
+	table = append(table, result.Raw...)
+	table = binary.AppendUvarint(table, uint64(sink.units))
+	table = append(table, sink.meta...)
+	members, err := b.codecTable(table)
+	if err != nil {
+		return nil, err
+	}
+	var plainSHA [32]byte
+	sink.digest.Sum(plainSHA[:0])
+	out := &repObject{Kind: repKindZstd, Size: size, Members: members, Recipe: binary.AppendUvarint(nil, uint64(len(members)))}
+	out.Members = append(out.Members, repMember{Role: repDerived, SHA: plainSHA, Size: sink.n, Child: child})
+	return out, nil
+}
+
 func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObject, error) {
+	if b.depth >= 3 || ((k == repKindGzip || k == repKindZstd) && b.depth >= 2) {
+		return nil, fmt.Errorf("%w: analysis nesting", errRepDepth)
+	}
+	b.depth++
+	defer func() { b.depth-- }()
+
 	switch k {
+	case repKindGzip:
+		return b.encodeGzip(src, size)
+	case repKindZstd:
+		return b.encodeZstd(src, size)
 	case repKindSQLite:
 		return b.encodeSQLite(src, size)
 	case repKindCAR:
@@ -26682,6 +26947,10 @@ func repCandidate(src io.ReaderAt, size int64) (repKind, bool) {
 	n, _ := src.ReadAt(head[:], 0)
 	hd := head[:min(int64(n), size)]
 	switch {
+	case bytes.HasPrefix(hd, []byte{0x1f, 0x8b, 8}):
+		return repKindGzip, true
+	case bytes.HasPrefix(hd, []byte{0x28, 0xb5, 0x2f, 0xfd}):
+		return repKindZstd, true
 	case bytes.HasPrefix(hd, []byte(sqliteMagic)):
 		return repKindSQLite, true
 	case bytes.HasPrefix(hd, []byte(merkleMagic)):
@@ -27523,6 +27792,8299 @@ func (s *Store) openObjectReader(man manifestV1, rng byteRange) objectReader {
 		}
 	}
 	return s.newManifestReader(man, rng)
+}
+
+// Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.
+
+// Port source: zeros3-z3/deflate/bits.go
+// bitReader reads an LSB-first bit stream from memory, or (streaming mode,
+// src != nil) from a reader through a reusable buffer.
+type repDFbitReader struct {
+	data []byte
+	pos  int // next byte to load
+	acc  uint64
+	nacc uint
+
+	src  io.Reader // streaming source; data is then a refillable buffer
+	base int64     // bytes of src preceding data[0]
+	rerr error
+}
+
+// Port source: zeros3-z3/deflate/bits.go
+func (b *repDFbitReader) fill() {
+	for b.nacc <= 56 {
+		if b.pos >= len(b.data) {
+			if b.src == nil || !b.refill() {
+				return
+			}
+		}
+		b.acc |= uint64(b.data[b.pos]) << b.nacc
+		b.pos++
+		b.nacc += 8
+	}
+}
+
+// Port source: zeros3-z3/deflate/bits.go
+// refill replaces the exhausted buffer with the next chunk of the source.
+func (b *repDFbitReader) refill() bool {
+	if b.rerr != nil {
+		return false
+	}
+	b.base += int64(len(b.data))
+	b.data, b.pos = b.data[:cap(b.data)], 0
+	for {
+		n, err := b.src.Read(b.data)
+		if n > 0 {
+			b.data = b.data[:n]
+			return true
+		}
+		if err != nil {
+			b.rerr = err
+			b.data = b.data[:0]
+			return false
+		}
+	}
+}
+
+// Port source: zeros3-z3/deflate/bits.go
+// bitPos is the absolute number of bits consumed.
+func (b *repDFbitReader) bitPos() int64 { return (b.base+int64(b.pos))*8 - int64(b.nacc) }
+
+// Port source: zeros3-z3/deflate/bits.go
+// readStream consumes n whole bytes (the reader must be byte aligned) and
+// passes them to emit in chunks no larger than the buffer.
+func (b *repDFbitReader) readStream(n int, emit func([]byte) error) error {
+	if b.nacc%8 != 0 {
+		panic("deflate: unaligned readStream")
+	}
+	var tmp [8]byte
+	k := 0
+	for b.nacc > 0 && n > 0 {
+		tmp[k] = byte(b.acc)
+		b.acc >>= 8
+		b.nacc -= 8
+		k++
+		n--
+	}
+	if k > 0 {
+		if err := emit(tmp[:k]); err != nil {
+			return err
+		}
+	}
+	for n > 0 {
+		if b.pos >= len(b.data) && (b.src == nil || !b.refill()) {
+			return repDFErrTruncated
+		}
+		m := min(n, len(b.data)-b.pos)
+		if err := emit(b.data[b.pos : b.pos+m]); err != nil {
+			return err
+		}
+		b.pos += m
+		n -= m
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/deflate/bits.go
+// leftover returns the whole bytes read ahead but not consumed.
+func (b *repDFbitReader) leftover() []byte {
+	var out []byte
+	for b.nacc >= 8 {
+		out = append(out, byte(b.acc))
+		b.acc >>= 8
+		b.nacc -= 8
+	}
+	return append(out, b.data[b.pos:]...)
+}
+
+// Port source: zeros3-z3/deflate/bits.go
+// bits consumes n <= 32 bits.
+func (b *repDFbitReader) bits(n uint) (uint32, error) {
+	if n == 0 {
+		return 0, nil
+	}
+	if b.nacc < n {
+		b.fill()
+		if b.nacc < n {
+			return 0, repDFErrTruncated
+		}
+	}
+	v := uint32(b.acc & (1<<n - 1))
+	b.acc >>= n
+	b.nacc -= n
+	return v, nil
+}
+
+// Port source: zeros3-z3/deflate/bits.go
+// readBytes consumes n whole bytes; the reader must be byte aligned.
+func (b *repDFbitReader) readBytes(n int) ([]byte, error) {
+	if b.nacc%8 != 0 {
+		panic("deflate: unaligned readBytes")
+	}
+	// bytes already buffered in acc are the next bytes of the stream
+	start := b.pos - int(b.nacc/8)
+	if start+n > len(b.data) {
+		return nil, repDFErrTruncated
+	}
+	out := b.data[start : start+n]
+	b.acc, b.nacc, b.pos = 0, 0, start+n
+	return out, nil
+}
+
+// Port source: zeros3-z3/deflate/bits.go
+// bitWriter writes an LSB-first bit stream, flushing to a sink in chunks.
+type repDFbitWriter struct {
+	buf   []byte
+	acc   uint64
+	nacc  uint
+	flush func([]byte) error
+	err   error
+}
+
+// Port source: zeros3-z3/deflate/bits.go
+const repDFflushAt = 32 << 10
+
+// Port source: zeros3-z3/deflate/bits.go
+func (w *repDFbitWriter) put(v uint32, n uint) {
+	w.acc |= uint64(v) << w.nacc
+	w.nacc += n
+	for w.nacc >= 8 {
+		w.buf = append(w.buf, byte(w.acc))
+		w.acc >>= 8
+		w.nacc -= 8
+	}
+	if len(w.buf) >= repDFflushAt {
+		w.drain()
+	}
+}
+
+// Port source: zeros3-z3/deflate/bits.go
+func (w *repDFbitWriter) drain() {
+	if w.err == nil && len(w.buf) > 0 {
+		w.err = w.flush(w.buf)
+	}
+	w.buf = w.buf[:0]
+}
+
+// Port source: zeros3-z3/deflate/bits.go
+func (w *repDFbitWriter) bytes(b []byte) { // writer must be byte aligned
+	w.drain()
+	if w.err == nil {
+		w.err = w.flush(b)
+	}
+}
+
+// Port source: zeros3-z3/deflate/deflate.go
+// Errors returned by Parse (wrapped with a bit offset where known).
+var (
+	repDFErrTruncated   = errors.New("deflate: truncated stream")
+	repDFErrCorrupt     = errors.New("deflate: corrupt stream")
+	repDFErrTrailing    = errors.New("deflate: trailing data after final block")
+	repDFErrLimit       = errors.New("deflate: size limit exceeded")
+	repDFErrInvalidIR   = errors.New("deflate: invalid representation")
+	repDFErrChecksum    = errors.New("deflate: checksum mismatch")
+	repDFErrUnsupported = errors.New("deflate: unsupported")
+)
+
+// Port source: zeros3-z3/deflate/deflate.go
+func repDFcorrupt(bit int64, why string) error {
+	return fmt.Errorf("%w: %s at bit %d", repDFErrCorrupt, why, bit)
+}
+
+// Port source: zeros3-z3/deflate/deflate.go
+// Options bound a parse. Zero fields take the defaults below.
+type repDFOptions struct {
+	MaxOutput     int  // decoded plaintext bytes (default 64 MiB)
+	MaxTokens     int  // literal/match tokens (default 32 Mi, 128 MiB of tokens)
+	MaxBlocks     int  // blocks (default 256 Ki)
+	AllowTrailing bool // permit input bytes after the final block
+}
+
+// Port source: zeros3-z3/deflate/deflate.go
+const (
+	repDFDefaultMaxOutput = 64 << 20
+	repDFDefaultMaxTokens = 32 << 20
+	repDFDefaultMaxBlocks = 256 << 10
+)
+
+// Port source: zeros3-z3/deflate/deflate.go
+func (o repDFOptions) norm() repDFOptions {
+	if o.MaxOutput <= 0 {
+		o.MaxOutput = repDFDefaultMaxOutput
+	}
+	if o.MaxTokens <= 0 {
+		o.MaxTokens = repDFDefaultMaxTokens
+	}
+	if o.MaxBlocks <= 0 {
+		o.MaxBlocks = repDFDefaultMaxBlocks
+	}
+	return o
+}
+
+// Port source: zeros3-z3/deflate/deflate.go
+// BlockKind is the BTYPE field.
+type repDFBlockKind uint8
+
+// Port source: zeros3-z3/deflate/deflate.go
+const (
+	repDFStored  repDFBlockKind = 0
+	repDFFixed   repDFBlockKind = 1
+	repDFDynamic repDFBlockKind = 2
+)
+
+// Port source: zeros3-z3/deflate/deflate.go
+func (k repDFBlockKind) String() string {
+	switch k {
+	case repDFStored:
+		return "stored"
+	case repDFFixed:
+		return "fixed"
+	case repDFDynamic:
+		return "dynamic"
+	}
+	return "invalid"
+}
+
+// Port source: zeros3-z3/deflate/deflate.go
+// Token is one literal or length/distance pair, holding the raw symbol and
+// extra-bit values so that non-canonical choices (for example length 258 as
+// symbol 284 + extra 31 instead of symbol 285) survive replay.
+//
+//	bits  0..8   literal/length symbol (0..255 literal, 257..285 length)
+//	bits  9..13  length extra-bit value
+//	bits 14..18  distance code
+//	bits 19..31  distance extra-bit value
+type repDFToken uint32
+
+// Port source: zeros3-z3/deflate/deflate.go
+// Literal returns the token for byte b.
+func repDFLiteral(b byte) repDFToken { return repDFToken(b) }
+
+// Port source: zeros3-z3/deflate/deflate.go
+// Match returns a length/distance token from raw symbol and extra values.
+func repDFMatch(lenSym int, lenExtra uint32, distCode int, distExtra uint32) repDFToken {
+	return repDFToken(uint32(lenSym) | lenExtra<<9 | uint32(distCode)<<14 | distExtra<<19)
+}
+
+// Port source: zeros3-z3/deflate/deflate.go
+func (t repDFToken) Sym() int { return int(t & 0x1ff) }
+
+// Port source: zeros3-z3/deflate/deflate.go
+func (t repDFToken) IsLiteral() bool { return t&0x1ff < 256 }
+
+// Port source: zeros3-z3/deflate/deflate.go
+func (t repDFToken) LenExtra() uint32 { return uint32(t>>9) & 31 }
+
+// Port source: zeros3-z3/deflate/deflate.go
+func (t repDFToken) DistCode() int { return int(t>>14) & 31 }
+
+// Port source: zeros3-z3/deflate/deflate.go
+func (t repDFToken) DistExtra() uint32 { return uint32(t >> 19) }
+
+// Port source: zeros3-z3/deflate/deflate.go
+// Length is the match length (valid for match tokens).
+func (t repDFToken) Length() int { return repDFlenBase[t.Sym()-257] + int(t.LenExtra()) }
+
+// Port source: zeros3-z3/deflate/deflate.go
+// Distance is the match distance (valid for match tokens).
+func (t repDFToken) Distance() int { return repDFdistBase[t.DistCode()] + int(t.DistExtra()) }
+
+// Port source: zeros3-z3/deflate/deflate.go
+var (
+	repDFlenBase  = [29]int{3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258}
+	repDFlenExtra = [29]uint8{0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0}
+	repDFdistBase = [30]int{1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577}
+	repDFdistExtr = [30]uint8{0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13}
+	// clOrder is the order in which code-length code lengths are transmitted.
+	repDFclOrder = [19]uint8{16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15}
+)
+
+// Port source: zeros3-z3/deflate/deflate.go
+// CLSym is one symbol of the encoded dynamic-header code-length sequence:
+// 0..15 a literal length, 16 repeat previous (2 extra bits, 3..6), 17 repeat
+// zero (3 extra bits, 3..10), 18 repeat zero (7 extra bits, 11..138).
+type repDFCLSym struct {
+	Sym   uint8
+	Extra uint8
+}
+
+// Port source: zeros3-z3/deflate/deflate.go
+// Block is one DEFLATE block with everything needed to reproduce its bits.
+type repDFBlock struct {
+	Final bool
+	Kind  repDFBlockKind
+
+	// Plaintext span produced by this block.
+	PlainOff, PlainLen int
+	// Bit span in the compressed stream, header through end-of-block.
+	StartBit, EndBit int64
+
+	// Stored: the padding bits between the 3-bit header and the byte boundary.
+	PadBits uint8
+	PadLen  uint8
+	// AutoPad: zero padding whose length Replay derives from the bit position
+	// (PadBits/PadLen are ignored). Set only by reconstruction layers.
+	AutoPad bool
+
+	// Dynamic header, as encoded.
+	HLIT, HDIST, HCLEN uint8        // raw field values
+	CLLens             [19]uint8    // code-length code lengths indexed by symbol; first HCLEN+4 of clOrder are transmitted
+	CLSyms             []repDFCLSym // the exact code-length symbol sequence
+	LitLens, DistLens  []uint8      // resulting lengths (HLIT+257, HDIST+1 entries)
+	HeaderBits         int          // bits from after BTYPE to the first token
+
+	// Fixed and dynamic: tokens in order; the end-of-block symbol is implicit.
+	Tokens []repDFToken
+}
+
+// Port source: zeros3-z3/deflate/deflate.go
+// Stream is a parsed raw DEFLATE stream.
+type repDFStream struct {
+	Blocks []repDFBlock
+	Plain  []byte
+	// Consumed is the number of input bytes covered by the stream (through the
+	// byte holding the final bit).
+	Consumed int
+	// TailPadBits/TailPadLen are the padding bits after the final block.
+	TailPadBits, TailPadLen uint8
+}
+
+// Port source: zeros3-z3/deflate/deflate.go
+func (b *repDFBlock) String() string {
+	return fmt.Sprintf("%s final=%v plain=%d tokens=%d bits=%d", b.Kind, b.Final, b.PlainLen, len(b.Tokens), b.EndBit-b.StartBit)
+}
+
+// Port source: zeros3-z3/deflate/export.go
+// ValidLengths reports whether lens form a Huffman code the parser accepts:
+// complete, or a single length-1 code, or (if allowEmpty) no codes at all.
+func repDFValidLengths(lens []uint8, allowEmpty bool) bool {
+	d, ok := repDFbuildDecoder(lens)
+	return ok && (allowEmpty || !d.empty)
+}
+
+// Port source: zeros3-z3/deflate/export.go
+// CLOrder is the transmission order of the 19 code-length code lengths.
+func repDFCLOrder() [19]uint8 { return repDFclOrder }
+
+// Port source: zeros3-z3/deflate/export.go
+// LengthExtraBits is the number of extra bits of length symbol sym (257..285).
+func repDFLengthExtraBits(sym int) int { return int(repDFlenExtra[sym-257]) }
+
+// Port source: zeros3-z3/deflate/export.go
+// DistExtraBits is the number of extra bits of distance code dc (0..29).
+func repDFDistExtraBits(dc int) int { return int(repDFdistExtr[dc]) }
+
+// Port source: zeros3-z3/deflate/export.go
+// LengthBase and DistBase give the smallest length/distance of a code.
+func repDFLengthBase(sym int) int { return repDFlenBase[sym-257] }
+
+// Port source: zeros3-z3/deflate/export.go
+func repDFDistBase(dc int) int { return repDFdistBase[dc] }
+
+// Port source: zeros3-z3/deflate/huffman.go
+const (
+	repDFmaxCodeLen = 15
+	repDFfastBits   = 9
+)
+
+// Port source: zeros3-z3/deflate/huffman.go
+// decoder is a canonical Huffman decoder: a fast table for codes up to
+// fastBits and the count/symbol arrays for the rest.
+type repDFdecoder struct {
+	count [repDFmaxCodeLen + 1]uint16
+	sym   []uint16
+	fast  [1 << repDFfastBits]uint16 // sym<<4 | len; 0 = take the slow path
+	empty bool                       // no symbols at all (only valid for distances)
+}
+
+// Port source: zeros3-z3/deflate/huffman.go
+// buildDecoder validates lens with the same acceptance rule as compress/flate
+// (complete, or exactly one code of length 1, or empty) and builds a decoder.
+func repDFbuildDecoder(lens []uint8) (*repDFdecoder, bool) {
+	d := &repDFdecoder{}
+	n := 0
+	for _, l := range lens {
+		if l > repDFmaxCodeLen {
+			return nil, false
+		}
+		if l != 0 {
+			d.count[l]++
+			n++
+		}
+	}
+	if n == 0 {
+		d.empty = true
+		return d, true
+	}
+	left := 1
+	for l := 1; l <= repDFmaxCodeLen; l++ {
+		left <<= 1
+		left -= int(d.count[l])
+		if left < 0 {
+			return nil, false // oversubscribed
+		}
+	}
+	if left > 0 && !(n == 1 && d.count[1] == 1) {
+		return nil, false // incomplete
+	}
+	var offs [repDFmaxCodeLen + 2]uint16
+	for l := 1; l <= repDFmaxCodeLen; l++ {
+		offs[l+1] = offs[l] + d.count[l]
+	}
+	d.sym = make([]uint16, n)
+	for s, l := range lens {
+		if l != 0 {
+			d.sym[offs[l]] = uint16(s)
+			offs[l]++
+		}
+	}
+	// fast table
+	code, idx := 0, 0
+	for l := 1; l <= repDFfastBits; l++ {
+		for i := 0; i < int(d.count[l]); i++ {
+			rev := int(bits.Reverse16(uint16(code))) >> (16 - l)
+			e := d.sym[idx]<<4 | uint16(l)
+			for j := rev; j < 1<<repDFfastBits; j += 1 << l {
+				d.fast[j] = e
+			}
+			code++
+			idx++
+		}
+		code <<= 1
+	}
+	return d, true
+}
+
+// Port source: zeros3-z3/deflate/huffman.go
+// decode reads one symbol. ok=false with truncated=true means the input ended;
+// ok=false otherwise means an invalid code (empty or unreachable).
+func (d *repDFdecoder) decode(br *repDFbitReader) (sym int, err error) {
+	br.fill()
+	if e := d.fast[br.acc&(1<<repDFfastBits-1)]; e != 0 {
+		l := uint(e & 15)
+		if l > br.nacc {
+			return 0, repDFErrTruncated
+		}
+		br.acc >>= l
+		br.nacc -= l
+		return int(e >> 4), nil
+	}
+	if d.empty {
+		return 0, repDFcorrupt(br.bitPos(), "symbol from empty code")
+	}
+	// slow path: canonical decode, one bit at a time
+	code, first, index := 0, 0, 0
+	acc := br.acc
+	for l := uint(1); l <= repDFmaxCodeLen; l++ {
+		if l > br.nacc {
+			return 0, repDFErrTruncated
+		}
+		code |= int(acc & 1)
+		acc >>= 1
+		c := int(d.count[l])
+		if code-c < first {
+			br.acc >>= l
+			br.nacc -= l
+			return int(d.sym[index+(code-first)]), nil
+		}
+		index += c
+		first += c
+		first <<= 1
+		code <<= 1
+	}
+	return 0, repDFcorrupt(br.bitPos(), "invalid Huffman code")
+}
+
+// Port source: zeros3-z3/deflate/huffman.go
+// encoder maps symbols to LSB-first-ready canonical codes.
+type repDFencoder struct {
+	code []uint16 // bit-reversed canonical code
+	len  []uint8
+}
+
+// Port source: zeros3-z3/deflate/huffman.go
+func repDFbuildEncoder(lens []uint8) *repDFencoder {
+	var count [repDFmaxCodeLen + 1]int
+	for _, l := range lens {
+		if l != 0 {
+			count[l]++
+		}
+	}
+	// RFC1951 3.2.2: next_code[l] = (next_code[l-1] + count[l-1]) << 1
+	var next [repDFmaxCodeLen + 2]int
+	code := 0
+	count[0] = 0
+	for l := 1; l <= repDFmaxCodeLen; l++ {
+		code = (code + count[l-1]) << 1
+		next[l] = code
+	}
+	e := &repDFencoder{code: make([]uint16, len(lens)), len: lens}
+	for s, l := range lens {
+		if l != 0 {
+			e.code[s] = bits.Reverse16(uint16(next[l])) >> (16 - l)
+			next[l]++
+		}
+	}
+	return e
+}
+
+// Port source: zeros3-z3/deflate/huffman.go
+var (
+	repDFfixedOnce sync.Once
+	repDFfixedLit  *repDFdecoder
+	repDFfixedDist *repDFdecoder
+	repDFfixedLitL []uint8
+	repDFfixedDstL []uint8
+	repDFfixedLitE *repDFencoder
+	repDFfixedDstE *repDFencoder
+)
+
+// Port source: zeros3-z3/deflate/huffman.go
+func repDFinitFixed() {
+	repDFfixedOnce.Do(func() {
+		repDFfixedLitL = make([]uint8, 288)
+		for i := range repDFfixedLitL {
+			switch {
+			case i < 144:
+				repDFfixedLitL[i] = 8
+			case i < 256:
+				repDFfixedLitL[i] = 9
+			case i < 280:
+				repDFfixedLitL[i] = 7
+			default:
+				repDFfixedLitL[i] = 8
+			}
+		}
+		repDFfixedDstL = make([]uint8, 32)
+		for i := range repDFfixedDstL {
+			repDFfixedDstL[i] = 5
+		}
+		repDFfixedLit, _ = repDFbuildDecoder(repDFfixedLitL)
+		repDFfixedDist, _ = repDFbuildDecoder(repDFfixedDstL)
+		repDFfixedLitE = repDFbuildEncoder(repDFfixedLitL)
+		repDFfixedDstE = repDFbuildEncoder(repDFfixedDstL)
+	})
+}
+
+// Port source: zeros3-z3/deflate/parse.go
+type repDFparser struct {
+	br     repDFbitReader
+	opt    repDFOptions
+	s      *repDFStream
+	tokens int
+}
+
+// Port source: zeros3-z3/deflate/parse.go
+func (p *repDFparser) run() error {
+	s := p.s
+	for {
+		if len(s.Blocks) >= p.opt.MaxBlocks {
+			return fmt.Errorf("%w: more than %d blocks", repDFErrLimit, p.opt.MaxBlocks)
+		}
+		start := p.br.bitPos()
+		hdr, err := p.br.bits(3)
+		if err != nil {
+			return err
+		}
+		b := repDFBlock{Final: hdr&1 == 1, Kind: repDFBlockKind(hdr >> 1), StartBit: start, PlainOff: len(s.Plain)}
+		switch b.Kind {
+		case repDFStored:
+			err = p.stored(&b)
+		case repDFFixed:
+			err = p.huffBlock(&b, repDFfixedLit, repDFfixedDist)
+		case repDFDynamic:
+			var lit, dist *repDFdecoder
+			if lit, dist, err = p.dynamicHeader(&b); err == nil {
+				err = p.huffBlock(&b, lit, dist)
+			}
+		default:
+			return repDFcorrupt(start, "reserved block type 3")
+		}
+		if err != nil {
+			return err
+		}
+		b.EndBit = p.br.bitPos()
+		b.PlainLen = len(s.Plain) - b.PlainOff
+		s.Blocks = append(s.Blocks, b)
+		if b.Final {
+			break
+		}
+	}
+	n := uint((8 - p.br.bitPos()%8) % 8)
+	v, err := p.br.bits(n)
+	if err != nil {
+		return err
+	}
+	s.TailPadBits, s.TailPadLen = uint8(v), uint8(n)
+	s.Consumed = int((p.br.bitPos() + 7) / 8)
+	if !p.opt.AllowTrailing && s.Consumed != len(p.br.data) {
+		return fmt.Errorf("%w: %d bytes", repDFErrTrailing, len(p.br.data)-s.Consumed)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/deflate/parse.go
+func (p *repDFparser) stored(b *repDFBlock) error {
+	n := uint((8 - p.br.bitPos()%8) % 8)
+	v, err := p.br.bits(n)
+	if err != nil {
+		return err
+	}
+	b.PadBits, b.PadLen = uint8(v), uint8(n)
+	hdr, err := p.br.readBytes(4)
+	if err != nil {
+		return err
+	}
+	ln := int(hdr[0]) | int(hdr[1])<<8
+	nln := int(hdr[2]) | int(hdr[3])<<8
+	if ln != ^nln&0xffff {
+		return repDFcorrupt(p.br.bitPos(), "stored LEN/NLEN mismatch")
+	}
+	if len(p.s.Plain)+ln > p.opt.MaxOutput {
+		return fmt.Errorf("%w: output over %d bytes", repDFErrLimit, p.opt.MaxOutput)
+	}
+	raw, err := p.br.readBytes(ln)
+	if err != nil {
+		return err
+	}
+	p.s.Plain = append(p.s.Plain, raw...)
+	return nil
+}
+
+// Port source: zeros3-z3/deflate/parse.go
+func (p *repDFparser) dynamicHeader(b *repDFBlock) (lit, dist *repDFdecoder, err error) {
+	br := &p.br
+	hs := br.bitPos()
+	f, err := br.bits(14)
+	if err != nil {
+		return nil, nil, err
+	}
+	b.HLIT, b.HDIST, b.HCLEN = uint8(f&31), uint8(f>>5&31), uint8(f>>10&15)
+	nlit, ndist, nclen := int(b.HLIT)+257, int(b.HDIST)+1, int(b.HCLEN)+4
+	if nlit > 286 || ndist > 30 {
+		return nil, nil, repDFcorrupt(hs, "too many length or distance symbols")
+	}
+	for i := 0; i < nclen; i++ {
+		v, err := br.bits(3)
+		if err != nil {
+			return nil, nil, err
+		}
+		b.CLLens[repDFclOrder[i]] = uint8(v)
+	}
+	cl, ok := repDFbuildDecoder(b.CLLens[:])
+	if !ok || cl.empty {
+		return nil, nil, repDFcorrupt(hs, "invalid code-length code")
+	}
+	lens := make([]uint8, 0, nlit+ndist)
+	for len(lens) < nlit+ndist {
+		sym, err := cl.decode(br)
+		if err != nil {
+			return nil, nil, err
+		}
+		cs := repDFCLSym{Sym: uint8(sym)}
+		if sym < 16 {
+			lens = append(lens, uint8(sym))
+			b.CLSyms = append(b.CLSyms, cs)
+			continue
+		}
+		var base, nb uint
+		var val uint8
+		switch sym {
+		case 16:
+			if len(lens) == 0 {
+				return nil, nil, repDFcorrupt(br.bitPos(), "repeat with no previous length")
+			}
+			base, nb, val = 3, 2, lens[len(lens)-1]
+		case 17:
+			base, nb = 3, 3
+		case 18:
+			base, nb = 11, 7
+		}
+		x, err := br.bits(nb)
+		if err != nil {
+			return nil, nil, err
+		}
+		cs.Extra = uint8(x)
+		rep := int(base) + int(x)
+		if len(lens)+rep > nlit+ndist {
+			return nil, nil, repDFcorrupt(br.bitPos(), "repeat overruns code lengths")
+		}
+		for j := 0; j < rep; j++ {
+			lens = append(lens, val)
+		}
+		b.CLSyms = append(b.CLSyms, cs)
+	}
+	b.LitLens, b.DistLens = lens[:nlit:nlit], lens[nlit:]
+	if b.LitLens[256] == 0 {
+		return nil, nil, repDFcorrupt(hs, "no end-of-block code")
+	}
+	var ok1, ok2 bool
+	if lit, ok1 = repDFbuildDecoder(b.LitLens); !ok1 || lit.empty {
+		return nil, nil, repDFcorrupt(hs, "invalid literal/length code")
+	}
+	if dist, ok2 = repDFbuildDecoder(b.DistLens); !ok2 {
+		return nil, nil, repDFcorrupt(hs, "invalid distance code")
+	}
+	b.HeaderBits = int(br.bitPos() - hs)
+	return lit, dist, nil
+}
+
+// Port source: zeros3-z3/deflate/parse.go
+func (p *repDFparser) huffBlock(b *repDFBlock, lit, dist *repDFdecoder) error {
+	br := &p.br
+	s := p.s
+	for {
+		sym, err := lit.decode(br)
+		if err != nil {
+			return err
+		}
+		if sym == 256 {
+			return nil
+		}
+		if p.tokens >= p.opt.MaxTokens {
+			return fmt.Errorf("%w: more than %d tokens", repDFErrLimit, p.opt.MaxTokens)
+		}
+		if sym < 256 {
+			if len(s.Plain) >= p.opt.MaxOutput {
+				return fmt.Errorf("%w: output over %d bytes", repDFErrLimit, p.opt.MaxOutput)
+			}
+			s.Plain = append(s.Plain, byte(sym))
+			b.Tokens = append(b.Tokens, repDFLiteral(byte(sym)))
+			p.tokens++
+			continue
+		}
+		if sym > 285 {
+			return repDFcorrupt(br.bitPos(), "invalid length symbol")
+		}
+		li := sym - 257
+		le, err := br.bits(uint(repDFlenExtra[li]))
+		if err != nil {
+			return err
+		}
+		dc, err := dist.decode(br)
+		if err != nil {
+			return err
+		}
+		if dc > 29 {
+			return repDFcorrupt(br.bitPos(), "invalid distance symbol")
+		}
+		de, err := br.bits(uint(repDFdistExtr[dc]))
+		if err != nil {
+			return err
+		}
+		t := repDFMatch(sym, le, dc, de)
+		length, d := t.Length(), t.Distance()
+		if d > len(s.Plain) {
+			return repDFcorrupt(br.bitPos(), "distance beyond start of output")
+		}
+		if len(s.Plain)+length > p.opt.MaxOutput {
+			return fmt.Errorf("%w: output over %d bytes", repDFErrLimit, p.opt.MaxOutput)
+		}
+		s.Plain = repDFappendMatch(s.Plain, d, length)
+		b.Tokens = append(b.Tokens, t)
+		p.tokens++
+	}
+}
+
+// Port source: zeros3-z3/deflate/parse.go
+// appendMatch copies length bytes from distance d back, handling overlap.
+func repDFappendMatch(plain []byte, d, length int) []byte {
+	from := len(plain) - d
+	if d >= length {
+		return append(plain, plain[from:from+length]...)
+	}
+	for i := 0; i < length; i++ {
+		plain = append(plain, plain[from+i])
+	}
+	return plain
+}
+
+// Port source: zeros3-z3/deflate/replay.go
+// Bytes replays the stream into memory.
+func (s *repDFStream) Bytes() ([]byte, error) {
+	var b bytes.Buffer
+	if err := s.Replay(&b); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
+// Port source: zeros3-z3/deflate/replay.go
+// Replay writes the exact original DEFLATE bytes to w, in chunks of at most
+// about 32 KiB of working buffer.
+func (s *repDFStream) Replay(w io.Writer) error {
+	repDFinitFixed()
+	bw := &repDFbitWriter{flush: func(b []byte) error { _, err := w.Write(b); return err }}
+	if len(s.Blocks) == 0 || !s.Blocks[len(s.Blocks)-1].Final {
+		return fmt.Errorf("%w: no final block", repDFErrInvalidIR)
+	}
+	for i := range s.Blocks {
+		b := &s.Blocks[i]
+		if b.Final != (i == len(s.Blocks)-1) {
+			return fmt.Errorf("%w: block %d final flag", repDFErrInvalidIR, i)
+		}
+		if b.PlainOff < 0 || b.PlainLen < 0 || b.PlainOff+b.PlainLen > len(s.Plain) {
+			return fmt.Errorf("%w: block %d plaintext span", repDFErrInvalidIR, i)
+		}
+		hdr := uint32(b.Kind) << 1
+		if b.Final {
+			hdr |= 1
+		}
+		bw.put(hdr, 3)
+		var err error
+		switch b.Kind {
+		case repDFStored:
+			err = repDFreplayStored(bw, b, s.Plain[b.PlainOff:b.PlainOff+b.PlainLen])
+		case repDFFixed:
+			err = repDFreplayTokens(bw, b, repDFfixedLitE, repDFfixedDstE)
+		case repDFDynamic:
+			var le, de *repDFencoder
+			if le, de, err = repDFreplayDynamicHeader(bw, b); err == nil {
+				err = repDFreplayTokens(bw, b, le, de)
+			}
+		default:
+			err = fmt.Errorf("%w: block kind %d", repDFErrInvalidIR, b.Kind)
+		}
+		if err != nil {
+			return err
+		}
+		if bw.err != nil {
+			return bw.err
+		}
+	}
+	if want := (8 - bw.nacc%8) % 8; uint(s.TailPadLen) != want {
+		return fmt.Errorf("%w: tail padding %d bits, need %d", repDFErrInvalidIR, s.TailPadLen, want)
+	}
+	bw.put(uint32(s.TailPadBits), uint(s.TailPadLen))
+	if bw.nacc != 0 {
+		return fmt.Errorf("%w: unaligned tail", repDFErrInvalidIR)
+	}
+	bw.drain()
+	return bw.err
+}
+
+// Port source: zeros3-z3/deflate/replay.go
+func repDFreplayStored(bw *repDFbitWriter, b *repDFBlock, data []byte) error {
+	if len(data) > 0xffff {
+		return fmt.Errorf("%w: stored block of %d bytes", repDFErrInvalidIR, len(data))
+	}
+	if b.AutoPad {
+		bw.put(0, (8-bw.nacc%8)%8)
+	} else if b.PadLen != uint8((8-bw.nacc%8)%8) {
+		return fmt.Errorf("%w: stored padding length %d", repDFErrInvalidIR, b.PadLen)
+	}
+	if !b.AutoPad {
+		bw.put(uint32(b.PadBits), uint(b.PadLen))
+	}
+	n := uint32(len(data))
+	bw.put(n|(^n&0xffff)<<16, 32)
+	bw.bytes(data)
+	return nil
+}
+
+// Port source: zeros3-z3/deflate/replay.go
+func repDFreplayDynamicHeader(bw *repDFbitWriter, b *repDFBlock) (le, de *repDFencoder, err error) {
+	nlit, ndist, nclen := int(b.HLIT)+257, int(b.HDIST)+1, int(b.HCLEN)+4
+	if b.HLIT > 29 || b.HDIST > 29 || b.HCLEN > 15 || len(b.LitLens) != nlit || len(b.DistLens) != ndist {
+		return nil, nil, fmt.Errorf("%w: dynamic header sizes", repDFErrInvalidIR)
+	}
+	bw.put(uint32(b.HLIT)|uint32(b.HDIST)<<5|uint32(b.HCLEN)<<10, 14)
+	for i := 0; i < nclen; i++ {
+		l := b.CLLens[repDFclOrder[i]]
+		if l > 7 {
+			return nil, nil, fmt.Errorf("%w: code-length code length %d", repDFErrInvalidIR, l)
+		}
+		bw.put(uint32(l), 3)
+	}
+	for i := nclen; i < 19; i++ {
+		if b.CLLens[repDFclOrder[i]] != 0 {
+			return nil, nil, fmt.Errorf("%w: untransmitted code-length code length set", repDFErrInvalidIR)
+		}
+	}
+	ce := repDFbuildEncoder(b.CLLens[:])
+	total := 0
+	for _, cs := range b.CLSyms {
+		if cs.Sym > 18 || ce.len[cs.Sym] == 0 {
+			return nil, nil, fmt.Errorf("%w: code-length symbol %d has no code", repDFErrInvalidIR, cs.Sym)
+		}
+		bw.put(uint32(ce.code[cs.Sym]), uint(ce.len[cs.Sym]))
+		switch {
+		case cs.Sym < 16:
+			total++
+		case cs.Sym == 16:
+			bw.put(uint32(cs.Extra), 2)
+			total += 3 + int(cs.Extra)
+		case cs.Sym == 17:
+			bw.put(uint32(cs.Extra), 3)
+			total += 3 + int(cs.Extra)
+		default:
+			bw.put(uint32(cs.Extra), 7)
+			total += 11 + int(cs.Extra)
+		}
+	}
+	if total != nlit+ndist {
+		return nil, nil, fmt.Errorf("%w: code-length sequence covers %d of %d lengths", repDFErrInvalidIR, total, nlit+ndist)
+	}
+	return repDFbuildEncoder(b.LitLens), repDFbuildEncoder(b.DistLens), nil
+}
+
+// Port source: zeros3-z3/deflate/replay.go
+func repDFreplayTokens(bw *repDFbitWriter, b *repDFBlock, le, de *repDFencoder) error {
+	for _, t := range b.Tokens {
+		sym := t.Sym()
+		if sym > 285 || sym == 256 || sym >= len(le.len) || le.len[sym] == 0 {
+			return fmt.Errorf("%w: token symbol %d has no code", repDFErrInvalidIR, sym)
+		}
+		bw.put(uint32(le.code[sym]), uint(le.len[sym]))
+		if sym < 256 {
+			continue
+		}
+		li := sym - 257
+		bw.put(t.LenExtra(), uint(repDFlenExtra[li]))
+		dc := t.DistCode()
+		if dc > 29 || dc >= len(de.len) || de.len[dc] == 0 {
+			return fmt.Errorf("%w: distance code %d has no code", repDFErrInvalidIR, dc)
+		}
+		bw.put(uint32(de.code[dc]), uint(de.len[dc]))
+		bw.put(t.DistExtra(), uint(repDFdistExtr[dc]))
+	}
+	if le.len[256] == 0 {
+		return fmt.Errorf("%w: no end-of-block code", repDFErrInvalidIR)
+	}
+	bw.put(uint32(le.code[256]), uint(le.len[256]))
+	return nil
+}
+
+// Port source: zeros3-z3/deflate/stats.go
+// Stats are structural counters of a parsed stream, for sizing later IR work.
+type repDFStats struct {
+	CompressedBytes int
+	PlainBytes      int
+
+	Blocks, StoredBlocks, FixedBlocks, DynamicBlocks int
+	EmptyBlocks                                      int // no plaintext produced
+
+	Tokens, Literals, Matches int
+	MatchBytes                int // plaintext bytes produced by matches
+	MaxDistance, MaxLength    int
+	NonCanonicalLengths       int // length 258 coded as symbol 284 + extra 31
+	StoredBytes               int
+
+	DynHeaderBits int64 // dynamic headers excluding the 3-bit block header
+	TokenBits     int64 // Huffman-coded tokens including end-of-block
+	StoredBits    int64 // whole stored blocks including padding and LEN/NLEN
+	CLSyms        int   // code-length symbols across dynamic headers
+	RepeatSyms    int   // of which 16/17/18
+
+	// NaiveIRBytes is a deliberately crude size of an uncompressed explicit IR
+	// (not a codec design): 6 bytes per block, a dynamic header as 3 bits per
+	// transmitted code-length code length + 1 byte per code-length symbol
+	// (+1 when it has extra bits), 2 bytes per literal run, 4 bytes per match.
+	NaiveIRBytes int
+}
+
+// Port source: zeros3-z3/deflate/stats.go
+// Stats computes structural counters.
+func (s *repDFStream) Stats() repDFStats {
+	st := repDFStats{CompressedBytes: s.Consumed, PlainBytes: len(s.Plain), Blocks: len(s.Blocks)}
+	for i := range s.Blocks {
+		b := &s.Blocks[i]
+		if b.PlainLen == 0 {
+			st.EmptyBlocks++
+		}
+		st.NaiveIRBytes += 6
+		switch b.Kind {
+		case repDFStored:
+			st.StoredBlocks++
+			st.StoredBytes += b.PlainLen
+			st.StoredBits += b.EndBit - b.StartBit
+			continue
+		case repDFFixed:
+			st.FixedBlocks++
+		case repDFDynamic:
+			st.DynamicBlocks++
+			st.DynHeaderBits += int64(b.HeaderBits)
+			st.CLSyms += len(b.CLSyms)
+			st.NaiveIRBytes += (int(b.HCLEN)+4)*3/8 + 1
+			for _, c := range b.CLSyms {
+				st.NaiveIRBytes++
+				if c.Sym >= 16 {
+					st.RepeatSyms++
+					st.NaiveIRBytes++
+				}
+			}
+		}
+		st.TokenBits += b.EndBit - b.StartBit - 3 - int64(b.HeaderBits)
+		inRun := false
+		for _, t := range b.Tokens {
+			st.Tokens++
+			if t.IsLiteral() {
+				st.Literals++
+				if !inRun {
+					st.NaiveIRBytes += 2
+					inRun = true
+				}
+				continue
+			}
+			inRun = false
+			st.Matches++
+			st.NaiveIRBytes += 4
+			l, d := t.Length(), t.Distance()
+			st.MatchBytes += l
+			st.MaxLength, st.MaxDistance = max(st.MaxLength, l), max(st.MaxDistance, d)
+			if t.Sym() == 284 && t.LenExtra() == 31 {
+				st.NonCanonicalLengths++
+			}
+		}
+	}
+	return st
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+// Window is a power-of-two ring of the most recent plaintext. Positions are
+// absolute stream offsets.
+type repDFWindow struct {
+	buf  []byte
+	mask int64
+	n    int64 // total bytes written
+	tmp  []byte
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+// NewWindow returns a ring holding at least size bytes (rounded up to a power of two, minimum 32 KiB).
+func repDFNewWindow(size int) *repDFWindow {
+	sz := 1 << 15
+	for sz < size {
+		sz <<= 1
+	}
+	return &repDFWindow{buf: make([]byte, sz), mask: int64(sz - 1)}
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+// Size is the capacity of the ring in bytes.
+func (w *repDFWindow) Size() int { return len(w.buf) }
+
+// Port source: zeros3-z3/deflate/stream.go
+// Len is the total number of bytes written.
+func (w *repDFWindow) Len() int64 { return w.n }
+
+// Port source: zeros3-z3/deflate/stream.go
+// Put appends one byte.
+func (w *repDFWindow) Put(c byte) {
+	w.buf[w.n&w.mask] = c
+	w.n++
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+// Write appends p.
+func (w *repDFWindow) Write(p []byte) {
+	for len(p) > 0 {
+		i := int(w.n & w.mask)
+		k := copy(w.buf[i:], p)
+		p = p[k:]
+		w.n += int64(k)
+	}
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+// Copy appends length bytes taken d bytes back (overlap allowed). d must not
+// exceed Len() or the ring size.
+func (w *repDFWindow) Copy(d, length int) {
+	for i := 0; i < length; i++ {
+		w.buf[w.n&w.mask] = w.buf[(w.n-int64(d))&w.mask]
+		w.n++
+	}
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+// Read returns the bytes [from, to) as one slice, valid until the next call.
+// The range must lie inside the ring (to-from <= Size, from >= Len-Size).
+func (w *repDFWindow) Read(from, to int64) []byte {
+	if from < 0 || to < from || to > w.n || to-from > int64(len(w.buf)) || from < w.n-int64(len(w.buf)) {
+		panic(fmt.Sprintf("deflate: window read [%d,%d) outside ring (len %d, size %d)", from, to, w.n, len(w.buf)))
+	}
+	n := int(to - from)
+	i := int(from & w.mask)
+	if i+n <= len(w.buf) {
+		return w.buf[i : i+n]
+	}
+	if cap(w.tmp) < n {
+		w.tmp = make([]byte, n)
+	}
+	w.tmp = w.tmp[:n]
+	k := copy(w.tmp, w.buf[i:])
+	copy(w.tmp[k:], w.buf[:n-k])
+	return w.tmp
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+// Handler receives the decoded structure in stream order.
+type repDFHandler interface {
+	// BeginBlock: Final, Kind and (dynamic) the exact header fields are set;
+	// Tokens is nil. The pointer is only valid during the call.
+	BeginBlock(b *repDFBlock) error
+	// Token delivers one literal or match; its plaintext is already in the window.
+	Token(t repDFToken) error
+	// StoredData delivers a chunk of a stored block's payload (already in the window).
+	StoredData(p []byte) error
+	// EndBlock: tokens is the number of tokens of a fixed/dynamic block.
+	EndBlock(b *repDFBlock, tokens int) error
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+// StreamResult is what is known after a stream ends.
+type repDFStreamResult struct {
+	Blocks                  int
+	Tokens                  int64
+	Plain                   int64
+	TailPadBits, TailPadLen uint8
+	Consumed                int64 // bytes of the DEFLATE stream (through the byte holding the final bit)
+	Rest                    []byte
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+// StreamParse decodes the raw DEFLATE stream at the start of r. win receives
+// the plaintext; its capacity must be at least 32 KiB. After the stream the
+// bytes already read from r but not part of it are in Rest (read the remainder
+// of r for the rest).
+func repDFStreamParse(r io.Reader, win *repDFWindow, h repDFHandler, opt repDFOptions) (*repDFStreamResult, error) {
+	opt = opt.norm()
+	repDFinitFixed()
+	p := &repDFparser{br: repDFbitReader{src: r, data: make([]byte, 0, 64<<10)}, opt: opt}
+	res := &repDFStreamResult{}
+	for {
+		if res.Blocks >= opt.MaxBlocks {
+			return nil, fmt.Errorf("%w: more than %d blocks", repDFErrLimit, opt.MaxBlocks)
+		}
+		start := p.br.bitPos()
+		hdr, err := p.br.bits(3)
+		if err != nil {
+			return nil, repDFstreamErr(&p.br, err)
+		}
+		b := repDFBlock{Final: hdr&1 == 1, Kind: repDFBlockKind(hdr >> 1), StartBit: start, PlainOff: int(win.Len())}
+		ntok := 0
+		switch b.Kind {
+		case repDFStored:
+			err = repDFstreamStored(p, win, h, &b)
+		case repDFFixed:
+			if err = h.BeginBlock(&b); err == nil {
+				ntok, err = repDFstreamTokens(p, win, h, repDFfixedLit, repDFfixedDist, res)
+			}
+		case repDFDynamic:
+			var lit, dist *repDFdecoder
+			if lit, dist, err = p.dynamicHeader(&b); err == nil {
+				if err = h.BeginBlock(&b); err == nil {
+					ntok, err = repDFstreamTokens(p, win, h, lit, dist, res)
+				}
+			}
+		default:
+			return nil, repDFcorrupt(start, "reserved block type 3")
+		}
+		if err != nil {
+			return nil, repDFstreamErr(&p.br, err)
+		}
+		b.EndBit = p.br.bitPos()
+		b.PlainLen = int(win.Len()) - b.PlainOff
+		if err := h.EndBlock(&b, ntok); err != nil {
+			return nil, err
+		}
+		res.Blocks++
+		if b.Final {
+			break
+		}
+	}
+	n := uint((8 - p.br.bitPos()%8) % 8)
+	v, err := p.br.bits(n)
+	if err != nil {
+		return nil, repDFstreamErr(&p.br, err)
+	}
+	res.TailPadBits, res.TailPadLen = uint8(v), uint8(n)
+	res.Consumed = (p.br.bitPos() + 7) / 8
+	res.Plain = win.Len()
+	res.Rest = p.br.leftover()
+	return res, nil
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+func repDFstreamErr(br *repDFbitReader, err error) error {
+	if errors.Is(err, repDFErrTruncated) && br.rerr != nil && !errors.Is(br.rerr, io.EOF) {
+		return br.rerr
+	}
+	return err
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+func repDFstreamStored(p *repDFparser, win *repDFWindow, h repDFHandler, b *repDFBlock) error {
+	n := uint((8 - p.br.bitPos()%8) % 8)
+	v, err := p.br.bits(n)
+	if err != nil {
+		return err
+	}
+	b.PadBits, b.PadLen = uint8(v), uint8(n)
+	var hdr [4]byte
+	k := 0
+	if err := p.br.readStream(4, func(c []byte) error { k += copy(hdr[k:], c); return nil }); err != nil {
+		return err
+	}
+	ln := int(hdr[0]) | int(hdr[1])<<8
+	if nln := int(hdr[2]) | int(hdr[3])<<8; ln != ^nln&0xffff {
+		return repDFcorrupt(p.br.bitPos(), "stored LEN/NLEN mismatch")
+	}
+	b.PlainLen = ln
+	if err := h.BeginBlock(b); err != nil {
+		return err
+	}
+	return p.br.readStream(ln, func(c []byte) error {
+		win.Write(c)
+		return h.StoredData(c)
+	})
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+func repDFstreamTokens(p *repDFparser, win *repDFWindow, h repDFHandler, lit, dist *repDFdecoder, res *repDFStreamResult) (int, error) {
+	br := &p.br
+	n := 0
+	for {
+		sym, err := lit.decode(br)
+		if err != nil {
+			return n, err
+		}
+		if sym == 256 {
+			return n, nil
+		}
+		n++
+		res.Tokens++
+		if sym < 256 {
+			win.Put(byte(sym))
+			if err := h.Token(repDFLiteral(byte(sym))); err != nil {
+				return n, err
+			}
+			continue
+		}
+		if sym > 285 {
+			return n, repDFcorrupt(br.bitPos(), "invalid length symbol")
+		}
+		le, err := br.bits(uint(repDFlenExtra[sym-257]))
+		if err != nil {
+			return n, err
+		}
+		dc, err := dist.decode(br)
+		if err != nil {
+			return n, err
+		}
+		if dc > 29 {
+			return n, repDFcorrupt(br.bitPos(), "invalid distance symbol")
+		}
+		de, err := br.bits(uint(repDFdistExtr[dc]))
+		if err != nil {
+			return n, err
+		}
+		t := repDFMatch(sym, le, dc, de)
+		d := t.Distance()
+		if int64(d) > win.Len() {
+			return n, repDFcorrupt(br.bitPos(), "distance beyond start of output")
+		}
+		win.Copy(d, t.Length())
+		if err := h.Token(t); err != nil {
+			return n, err
+		}
+	}
+}
+
+// Port source: zeros3-z3/deflate/stream.go
+// GzipHeaderLen reads one gzip member header from r and returns its exact bytes.
+func repDFGzipHeader(r io.Reader) ([]byte, error) {
+	var hdr [10]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return nil, err
+	}
+	if hdr[0] != 0x1f || hdr[1] != 0x8b || hdr[2] != 8 {
+		return nil, fmt.Errorf("%w: not a gzip member", repDFErrCorrupt)
+	}
+	out := append([]byte(nil), hdr[:]...)
+	flg := hdr[3]
+	if flg&0xe0 != 0 {
+		return nil, fmt.Errorf("%w: reserved gzip flags", repDFErrCorrupt)
+	}
+	one := make([]byte, 1)
+	readZ := func() error { // zero-terminated string, bounded
+		for i := 0; i < 1<<16; i++ {
+			if _, err := io.ReadFull(r, one); err != nil {
+				return err
+			}
+			out = append(out, one[0])
+			if one[0] == 0 {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: gzip header string too long", repDFErrLimit)
+	}
+	if flg&4 != 0 {
+		var l [2]byte
+		if _, err := io.ReadFull(r, l[:]); err != nil {
+			return nil, err
+		}
+		out = append(out, l[:]...)
+		x := make([]byte, int(l[0])|int(l[1])<<8)
+		if _, err := io.ReadFull(r, x); err != nil {
+			return nil, err
+		}
+		out = append(out, x...)
+	}
+	if flg&8 != 0 {
+		if err := readZ(); err != nil {
+			return nil, err
+		}
+	}
+	if flg&16 != 0 {
+		if err := readZ(); err != nil {
+			return nil, err
+		}
+	}
+	if flg&2 != 0 {
+		var c [2]byte
+		if _, err := io.ReadFull(r, c[:]); err != nil {
+			return nil, err
+		}
+		out = append(out, c[:]...)
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/deflate/swriter.go
+// StreamWriter writes the exact DEFLATE bits of a stream block by block,
+// without holding the stream: the streaming counterpart of Stream.Replay.
+type repDFStreamWriter struct {
+	bw     *repDFbitWriter
+	le, de *repDFencoder
+	kind   repDFBlockKind
+	open   bool
+	blocks int
+	bytes  int64 // bytes handed to the sink or buffered
+}
+
+// Port source: zeros3-z3/deflate/swriter.go
+// NewStreamWriter writes to w.
+func repDFNewStreamWriter(w io.Writer) *repDFStreamWriter {
+	repDFinitFixed()
+	s := &repDFStreamWriter{}
+	s.bw = &repDFbitWriter{flush: func(b []byte) error { s.bytes += int64(len(b)); _, err := w.Write(b); return err }}
+	return s
+}
+
+// Port source: zeros3-z3/deflate/swriter.go
+// NewStreamWriterAt writes as if startBit bits of the stream had already been
+// written (they read as zero placeholders): a range materializer's entry point.
+func repDFNewStreamWriterAt(w io.Writer, startBit int64) *repDFStreamWriter {
+	s := repDFNewStreamWriter(w)
+	s.bytes = startBit / 8
+	s.bw.nacc = uint(startBit % 8)
+	return s
+}
+
+// Port source: zeros3-z3/deflate/swriter.go
+// Resume continues a block whose header lies before the starting position; b
+// supplies its code tables (Kind, and for dynamic blocks LitLens/DistLens).
+func (s *repDFStreamWriter) Resume(b *repDFBlock) error {
+	if s.open {
+		return fmt.Errorf("%w: block already open", repDFErrInvalidIR)
+	}
+	s.kind = b.Kind
+	switch b.Kind {
+	case repDFFixed:
+		s.le, s.de = repDFfixedLitE, repDFfixedDstE
+	case repDFDynamic:
+		if len(b.LitLens) < 257 || len(b.DistLens) == 0 {
+			return fmt.Errorf("%w: dynamic tables missing", repDFErrInvalidIR)
+		}
+		s.le, s.de = repDFbuildEncoder(b.LitLens), repDFbuildEncoder(b.DistLens)
+	default:
+		return fmt.Errorf("%w: cannot resume a %s block", repDFErrInvalidIR, b.Kind)
+	}
+	s.open = true
+	return nil
+}
+
+// Port source: zeros3-z3/deflate/swriter.go
+// Drain hands every completed byte written so far to the sink.
+func (s *repDFStreamWriter) Drain() error {
+	s.bw.drain()
+	return s.bw.err
+}
+
+// Port source: zeros3-z3/deflate/swriter.go
+// BitPos is the number of bits written so far.
+func (s *repDFStreamWriter) BitPos() int64 {
+	return (s.bytes+int64(len(s.bw.buf)))*8 + int64(s.bw.nacc)
+}
+
+// Port source: zeros3-z3/deflate/swriter.go
+// Begin writes the block header. For a dynamic block b must carry the exact
+// header fields (HLIT..CLSyms, LitLens, DistLens); for a stored block the
+// payload follows in Stored. b.Final selects BFINAL.
+func (s *repDFStreamWriter) Begin(b *repDFBlock) error {
+	if s.open {
+		return fmt.Errorf("%w: block already open", repDFErrInvalidIR)
+	}
+	hdr := uint32(b.Kind) << 1
+	if b.Final {
+		hdr |= 1
+	}
+	s.bw.put(hdr, 3)
+	var err error
+	s.kind = b.Kind
+	switch b.Kind {
+	case repDFStored:
+		return nil // closed by Stored
+	case repDFFixed:
+		s.le, s.de = repDFfixedLitE, repDFfixedDstE
+	case repDFDynamic:
+		s.le, s.de, err = repDFreplayDynamicHeader(s.bw, b)
+	default:
+		err = fmt.Errorf("%w: block kind %d", repDFErrInvalidIR, b.Kind)
+	}
+	s.open = err == nil
+	return err
+}
+
+// Port source: zeros3-z3/deflate/swriter.go
+// Stored writes a whole stored block's padding, length and payload (after Begin).
+func (s *repDFStreamWriter) Stored(b *repDFBlock, data []byte) error {
+	if s.kind != repDFStored {
+		return fmt.Errorf("%w: not a stored block", repDFErrInvalidIR)
+	}
+	if err := repDFreplayStored(s.bw, b, data); err != nil {
+		return err
+	}
+	s.blocks++
+	return s.bw.err
+}
+
+// Port source: zeros3-z3/deflate/swriter.go
+// Token writes one literal or match of the open block.
+func (s *repDFStreamWriter) Token(t repDFToken) error {
+	if !s.open {
+		return fmt.Errorf("%w: no open block", repDFErrInvalidIR)
+	}
+	le, de := s.le, s.de
+	sym := t.Sym()
+	if sym > 285 || sym == 256 || sym >= len(le.len) || le.len[sym] == 0 {
+		return fmt.Errorf("%w: token symbol %d has no code", repDFErrInvalidIR, sym)
+	}
+	s.bw.put(uint32(le.code[sym]), uint(le.len[sym]))
+	if sym >= 256 {
+		s.bw.put(t.LenExtra(), uint(repDFlenExtra[sym-257]))
+		dc := t.DistCode()
+		if dc > 29 || dc >= len(de.len) || de.len[dc] == 0 {
+			return fmt.Errorf("%w: distance code %d has no code", repDFErrInvalidIR, dc)
+		}
+		s.bw.put(uint32(de.code[dc]), uint(de.len[dc]))
+		s.bw.put(t.DistExtra(), uint(repDFdistExtr[dc]))
+	}
+	return s.bw.err
+}
+
+// Port source: zeros3-z3/deflate/swriter.go
+// End writes the end-of-block code.
+func (s *repDFStreamWriter) End() error {
+	if !s.open {
+		return fmt.Errorf("%w: no open block", repDFErrInvalidIR)
+	}
+	if s.le.len[256] == 0 {
+		return fmt.Errorf("%w: no end-of-block code", repDFErrInvalidIR)
+	}
+	s.bw.put(uint32(s.le.code[256]), uint(s.le.len[256]))
+	s.open = false
+	s.blocks++
+	return s.bw.err
+}
+
+// Port source: zeros3-z3/deflate/swriter.go
+// Finish writes the tail padding and flushes. The padding length must be the
+// one that byte-aligns the stream.
+func (s *repDFStreamWriter) Finish(padBits, padLen uint8) error {
+	if s.open {
+		return fmt.Errorf("%w: block still open", repDFErrInvalidIR)
+	}
+	if want := (8 - s.bw.nacc%8) % 8; uint(padLen) != want {
+		return fmt.Errorf("%w: tail padding %d bits, need %d", repDFErrInvalidIR, padLen, want)
+	}
+	s.bw.put(uint32(padBits), uint(padLen))
+	s.bw.drain()
+	return s.bw.err
+}
+
+// Port source: zeros3-z3/ir/model.go
+var (
+	repIRErrCorrupt = errors.New("ir: corrupt representation")
+	repIRErrLimit   = errors.New("ir: limit exceeded")
+)
+
+// Port source: zeros3-z3/ir/model.go
+func repIRcorrupt(f string, a ...any) error {
+	return fmt.Errorf("%w: %s", repIRErrCorrupt, fmt.Sprintf(f, a...))
+}
+
+// Port source: zeros3-z3/ir/model.go
+// Run is a (possibly empty) literal run followed by an optional match.
+// M == 0 means no match follows (only allowed at the end of a unit).
+type repIRRun struct {
+	Lits uint32
+	M    repDFToken
+}
+
+// Port source: zeros3-z3/ir/model.go
+func (r repIRRun) tokens() int {
+	if r.M != 0 {
+		return int(r.Lits) + 1
+	}
+	return int(r.Lits)
+}
+
+// Port source: zeros3-z3/ir/model.go
+func (r repIRRun) plainLen() int {
+	if r.M != 0 {
+		return int(r.Lits) + r.M.Length()
+	}
+	return int(r.Lits)
+}
+
+// Port source: zeros3-z3/ir/model.go
+// BlockMeta is the exact per-block reconstruction metadata (no tokens).
+type repIRBlockMeta struct {
+	Final bool
+	Kind  repDFBlockKind
+
+	PadBits, PadLen uint8 // stored: padding after the 3-bit header
+	StoredLen       int   // stored: payload bytes
+
+	HLIT, HDIST, HCLEN uint8
+	CLLens             [19]uint8 // by symbol
+	CLSyms             []repDFCLSym
+
+	NTokens int // fixed/dynamic
+
+	// Pred (dynamic): kind and header are not stored, they are recomputed from
+	// the block's tokens by zlibBlock. AutoPad (stored): zero padding bits, so
+	// PadLen is implied by the bit position.
+	Pred, AutoPad bool
+}
+
+// Port source: zeros3-z3/ir/model.go
+// UnitIdx is the skeleton's index entry for one unit.
+type repIRUnitIdx struct {
+	PlainLen int // bytes of plaintext the unit's tokens produce
+	NTokens  int
+}
+
+// Port source: zeros3-z3/ir/model.go
+// Skeleton is everything except the unit contents.
+type repIRSkeleton struct {
+	Codec   repIRCodec
+	Profile uint8
+	Blocks  []repIRBlockMeta
+	// Tail padding bits after the final block.
+	TailPadBits, TailPadLen uint8
+	Units                   []repIRUnitIdx
+	StreamLen               int    // bytes of the replayed DEFLATE stream
+	CRC                     uint32 // CRC-32 (IEEE) of the replayed stream
+}
+
+// Port source: zeros3-z3/ir/model.go
+// Codec identifies a unit representation.
+type repIRCodec uint8
+
+// Port source: zeros3-z3/ir/model.go
+const (
+	repIRE1      repIRCodec = 1 // compact structural, byte oriented
+	repIRE1Flate repIRCodec = 2 // E1 bytes through compress/flate
+	repIRE2      repIRCodec = 3 // range-coded structural
+	repIRPred    repIRCodec = 4 // predictor + corrections (predict.go)
+)
+
+// Port source: zeros3-z3/ir/model.go
+func (c repIRCodec) String() string {
+	switch c {
+	case repIRE1:
+		return "E1"
+	case repIRE1Flate:
+		return "E1+flate"
+	case repIRE2:
+		return "E2"
+	case repIRPred:
+		return "P"
+	}
+	return fmt.Sprintf("codec%d", uint8(c))
+}
+
+// Port source: zeros3-z3/ir/model.go
+func repIRtokenPlain(t repDFToken) int {
+	if t.IsLiteral() {
+		return 1
+	}
+	return t.Length()
+}
+
+// Port source: zeros3-z3/ir/policy.go
+var repIRgear = func() (t [256]uint64) {
+	for i := range t {
+		h := sha256.Sum256([]byte(fmt.Sprintf("Z3/ir/gear/%d", i)))
+		t[i] = binary.BigEndian.Uint64(h[:8])
+	}
+	return
+}()
+
+// Port source: zeros3-z3/ir/policy.go
+func repIRpow2floor(n int) int {
+	p := 1
+	for p*2 <= n {
+		p *= 2
+	}
+	return p
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// Profile parameterises candidate generation; it is not a separate engine.
+type repIRProfile struct {
+	ID       uint8
+	Name     string
+	HashLen  int  // minimum candidate length (bytes hashed)
+	MaxChain int  // chain entries examined per position
+	Lazy     bool // compute the lookahead hint for the next position
+	MaxCand  int  // candidates kept
+	Recency  bool // candidates nearest-first; otherwise longest-first
+	// Frontier keeps only candidates that are nearer or longer than everything
+	// nearer (chain matchers); table-based matchers (Go levels 1-6) pick
+	// dominated candidates too, so their profile keeps every candidate.
+	Frontier bool
+	// MaxInsert > 0: matches longer than this do not insert their interior
+	// positions into the chain (zlib deflate_fast's max_insert_length).
+	MaxInsert int
+	// Emu > 0: exact emulation of zlib deflate_fast at that level (zfast.go);
+	// Warm is the free-run warm-up before a unit, in plaintext bytes.
+	Emu  int
+	Warm int
+	// Nice > 0: stop walking the chain once a candidate is at least this long
+	// (zlib's nice_length): longer candidates are never the compressor's pick.
+	Nice int
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// Profiles is the fixed profile set (index = ID, 4 bits in each unit header).
+// IDs 0-3 are the Z3-07 profiles, 4-6 the exact zlib deflate_fast emulators,
+// 7-12 the Z3-08F speed variants of the generic, zlib-like and go-like engines.
+var repIRProfiles = []repIRProfile{
+	{ID: 0, Name: "generic", HashLen: 3, MaxChain: 128, Lazy: true, MaxCand: 32, Recency: true, Frontier: true},
+	{ID: 1, Name: "zlib-like", HashLen: 3, MaxChain: 256, Lazy: true, MaxCand: 32, Frontier: true},
+	{ID: 2, Name: "go-like", HashLen: 4, MaxChain: 32, Lazy: true, MaxCand: 32, Recency: true},
+	{ID: 3, Name: "zlib-fast-like", HashLen: 3, MaxChain: 8, MaxCand: 32, Recency: true, Frontier: true, MaxInsert: 4},
+	{ID: 4, Name: "zlib-L1-exact", HashLen: 3, MaxChain: 4, MaxCand: 1, Recency: true, Frontier: true, MaxInsert: 4, Emu: 1, Warm: 64 << 10},
+	{ID: 5, Name: "zlib-L2-exact", HashLen: 3, MaxChain: 8, MaxCand: 1, Recency: true, Frontier: true, MaxInsert: 5, Emu: 2, Warm: 64 << 10},
+	{ID: 6, Name: "zlib-L3-exact", HashLen: 3, MaxChain: 32, MaxCand: 1, Recency: true, Frontier: true, MaxInsert: 6, Emu: 3, Warm: 64 << 10},
+	{ID: 7, Name: "generic-balanced", HashLen: 3, MaxChain: 32, Lazy: true, MaxCand: 16, Recency: true, Frontier: true, Nice: 64},
+	{ID: 8, Name: "generic-fast", HashLen: 3, MaxChain: 8, MaxCand: 8, Recency: true, Frontier: true, Nice: 32},
+	{ID: 9, Name: "zlib-balanced", HashLen: 3, MaxChain: 64, Lazy: true, MaxCand: 16, Frontier: true, Nice: 128},
+	{ID: 10, Name: "zlib-fast", HashLen: 3, MaxChain: 16, Lazy: true, MaxCand: 8, Frontier: true, Nice: 64},
+	{ID: 11, Name: "go-balanced", HashLen: 4, MaxChain: 16, Lazy: true, MaxCand: 16, Recency: true},
+	{ID: 12, Name: "go-fast", HashLen: 4, MaxChain: 6, MaxCand: 8, Recency: true},
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// Modes group profiles into the laboratory's three operating points. The
+// emulating profiles (4-6) are exact and cheap, so every mode includes them.
+var repIRModes = map[string][]uint8{
+	"ratio":    {0, 1, 2, 3, 4, 5, 6},
+	"balanced": {7, 9, 11, 4, 5, 6},
+	"fast":     {8, 10, 12, 4, 5, 6},
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// Ablate switches predictor features off for the Z3-07A ablation study. It is
+// experiment-only global state (never set by library code) and must stay zero
+// in normal operation: units encoded with a feature off are not decodable
+// with it on.
+var repIRAblate struct {
+	NoLazyHint bool // drop the next-position lookahead context
+	NoRunCtx   bool // drop the literal-run-length context of the match flag
+	NoLenCtx   bool // drop candidate length contexts of the candidate choice
+	NoIdxCtx   bool // one context for every candidate decision
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// PredStats are diagnostics gathered while encoding with the predictor.
+type repIRPredStats struct {
+	Tokens, Matches int
+	Escapes         int
+	IdxHist         [8]int
+	LenExact        int
+	Work            int64
+}
+
+// Port source: zeros3-z3/ir/predict.go
+type repIRwindow struct {
+	plain     []byte
+	base, end int // window covers [base, end); candidates are searched at positions in [start, end)
+	prof      *repIRProfile
+	head      [1 << 16]repIRhentry // generation-tagged: stale entries of earlier units read as empty
+	gen       uint32
+	prev      [32768]int32
+	inserted  int // next position to insert
+	work      int64
+	budget    int64
+	ent       [2]repIRcentry // two-entry candidate cache (pos and its lookahead)
+	nextEvict int
+}
+
+// Port source: zeros3-z3/ir/predict.go
+type repIRhentry struct {
+	pos int32
+	gen uint32
+}
+
+// Port source: zeros3-z3/ir/predict.go
+func (w *repIRwindow) headGet(h uint32) int32 {
+	if e := w.head[h]; e.gen == w.gen {
+		return e.pos
+	}
+	return 0
+}
+
+// Port source: zeros3-z3/ir/predict.go
+func (w *repIRwindow) headSet(h uint32, v int32) { w.head[h] = repIRhentry{v, w.gen} }
+
+// Port source: zeros3-z3/ir/predict.go
+var repIRwindowPool = sync.Pool{New: func() any { return &repIRwindow{} }}
+
+// Port source: zeros3-z3/ir/predict.go
+// release returns the window to the pool; it must not be used afterwards.
+func (w *repIRwindow) release() { w.plain, w.prof = nil, nil; repIRwindowPool.Put(w) }
+
+// Port source: zeros3-z3/ir/predict.go
+type repIRcentry struct {
+	pos   int
+	valid bool
+	n     int
+	lmax  int
+	buf   [64]repIRcand
+}
+
+// Port source: zeros3-z3/ir/predict.go
+type repIRcand struct{ dist, length int }
+
+// Port source: zeros3-z3/ir/predict.go
+func repIRhashAt(b []byte, q, n int) uint32 {
+	v := uint32(b[q]) | uint32(b[q+1])<<8 | uint32(b[q+2])<<16
+	if n >= 4 {
+		v |= uint32(b[q+3]) << 24
+	}
+	return v * 0x9E3779B1 >> 16
+}
+
+// Port source: zeros3-z3/ir/predict.go
+func repIRnewWindow(plain []byte, start, plainLen int, prof *repIRProfile) *repIRwindow {
+	w := repIRwindowPool.Get().(*repIRwindow)
+	w.gen++
+	if w.gen == 0 { // wrapped: stale tags could match again
+		w.head = [1 << 16]repIRhentry{}
+		w.gen = 1
+	}
+	w.plain, w.prof, w.end, w.work, w.nextEvict = plain, prof, start+plainLen, 0, 0
+	w.ent[0].valid, w.ent[1].valid = false, false
+	w.base = max(0, start-32768)
+	w.inserted = w.base
+	w.budget = int64(plainLen)*512 + 1<<20
+	if prof.Emu > 0 {
+		warm := prof.Warm
+		if repIREmuWarm > 0 {
+			warm = repIREmuWarm
+		}
+		from := max(0, start-warm)
+		w.base = from
+		w.inserted = from
+		w.emuWarm(from, start)
+		return w
+	}
+	if prof.MaxInsert > 0 && start > w.base {
+		w.simulateWindow(start)
+	}
+	w.insertTo(start)
+	return w
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// simulateWindow rebuilds the chain over [base, start) the way the profile's
+// compressor would have built it: interior positions of long matches are not
+// inserted, and the decoder does not know the earlier token boundaries, so the
+// predictor walks the window greedily with its own top candidate. The walk
+// resynchronises with the real boundaries within a few tokens.
+func (w *repIRwindow) simulateWindow(start int) {
+	n := w.prof.HashLen
+	pos := w.base
+	for pos < start {
+		cands, lmax, ok := w.search(pos, min(258, w.end-pos))
+		if !ok || len(cands) == 0 || lmax < n {
+			pos++
+			continue
+		}
+		l := min(cands[0].length, start-pos)
+		w.afterMatch(pos, l)
+		pos += l
+	}
+	for i := range w.ent { // the cache must not outlive the simulated walk
+		w.ent[i].valid = false
+	}
+}
+
+// Port source: zeros3-z3/ir/predict.go
+func (w *repIRwindow) insertTo(limit int) {
+	n := w.prof.HashLen
+	for q := w.inserted; q < limit; q++ {
+		if q+n > w.end { // positions near the unit end cannot start a candidate
+			continue
+		}
+		h := repIRhashAt(w.plain, q, n)
+		w.prev[q&32767] = w.headGet(h)
+		w.headSet(h, int32(q-w.base+1))
+	}
+	if limit > w.inserted {
+		w.inserted = limit
+	}
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// afterMatch applies the profile's insertion policy for a match at pos.
+func (w *repIRwindow) afterMatch(pos, length int) {
+	if w.prof.Emu > 0 {
+		w.emuAfter(pos, length)
+		return
+	}
+	if mi := w.prof.MaxInsert; mi > 0 && length > mi {
+		w.insertTo(pos + 1)
+		if pos+length > w.inserted {
+			w.inserted = pos + length
+		}
+	}
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// search lists the candidates at pos ranked by (length desc, distance asc).
+// ok=false means the work budget was exhausted.
+func (w *repIRwindow) search(pos, capLen int) ([]repIRcand, int, bool) {
+	if w.prof.Emu > 0 {
+		return w.emuSearch(pos, capLen)
+	}
+	for i := range w.ent {
+		if e := &w.ent[i]; e.valid && e.pos == pos {
+			return e.buf[:e.n], e.lmax, true
+		}
+	}
+	n := w.prof.HashLen
+	w.insertTo(pos)
+	e := &w.ent[w.nextEvict]
+	w.nextEvict ^= 1
+	e.valid = false
+	out := e.buf[:0]
+	lmax := 0
+	if capLen >= n && pos+n <= w.end {
+		h := repIRhashAt(w.plain, pos, n)
+		q := int(w.headGet(h))
+		maxc := w.prof.MaxCand
+		for steps := 0; q != 0 && steps < w.prof.MaxChain; steps++ {
+			qa := w.base + q - 1
+			d := pos - qa
+			if d <= 0 || d > 32768 {
+				break
+			}
+			var l int
+			if w.prof.Frontier && lmax >= n && lmax < capLen && w.plain[qa+lmax] != w.plain[pos+lmax] {
+				w.work++ // cannot beat the best so far (zlib's quick reject)
+				goto next
+			}
+			l = repIRmatchLen(w.plain, qa, pos, capLen)
+			w.work += int64(l) + 1
+			if l >= n {
+				if l > lmax {
+					lmax = l
+				}
+				if !w.prof.Frontier || l == lmax && (len(out) == 0 || out[len(out)-1].length < l) {
+					if len(out) < maxc {
+						out = append(out, repIRcand{d, l})
+					}
+				}
+				if nice := w.prof.Nice; nice > 0 && l >= nice {
+					break
+				}
+			}
+		next:
+			nq := int(w.prev[qa&32767])
+			if nq >= q { // stale link
+				break
+			}
+			q = nq
+		}
+	}
+	if w.work > w.budget {
+		return nil, 0, false
+	}
+	if !w.prof.Recency { // longest first
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
+	}
+	e.pos, e.valid, e.n, e.lmax = pos, true, len(out), lmax
+	return out, lmax, true
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// matchLen returns how many bytes of p[q:] and p[pos:] agree, at most max
+// (q < pos, pos+max <= len(p)).
+func repIRmatchLen(p []byte, q, pos, max int) int {
+	l := 0
+	for l+8 <= max {
+		x := binary.LittleEndian.Uint64(p[q+l:]) ^ binary.LittleEndian.Uint64(p[pos+l:])
+		if x != 0 {
+			return l + bits.TrailingZeros64(x)>>3
+		}
+		l += 8
+	}
+	for l < max && p[q+l] == p[pos+l] {
+		l++
+	}
+	return l
+}
+
+// Port source: zeros3-z3/ir/predict.go
+func repIRlengthCode(l int) (sym int, extra uint32) {
+	lo, hi := 0, 28
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if repDFLengthBase(257+mid) <= l {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if l == 258 {
+		return 285, 0
+	}
+	return 257 + lo, uint32(l - repDFLengthBase(257+lo))
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// canonical reports whether t is the canonical encoding of its length/distance.
+func repIRcanonical(t repDFToken) bool {
+	s, e := repIRlengthCode(t.Length())
+	return s == t.Sym() && e == t.LenExtra()
+}
+
+// Port source: zeros3-z3/ir/predict.go
+func repIRlmaxBucket(l int) int {
+	switch {
+	case l == 0:
+		return 0
+	case l <= 3:
+		return 1
+	case l == 4:
+		return 2
+	case l <= 6:
+		return 3
+	case l <= 9:
+		return 4
+	case l <= 17:
+		return 5
+	case l <= 33:
+		return 6
+	}
+	return 7
+}
+
+// Port source: zeros3-z3/ir/predict.go
+func repIRrunBucket(n int) int {
+	switch {
+	case n == 0:
+		return 0
+	case n <= 2:
+		return 1
+	case n <= 8:
+		return 2
+	case n <= 63:
+		return 3
+	case n <= 127:
+		return 4
+	}
+	return 5
+}
+
+// Port source: zeros3-z3/ir/predict.go
+type repIRpredModel struct {
+	kind    [8][3][6]repIRbitModel
+	idx     [3][4][4]repIRbitModel // [length class vs the longest][candidate length bucket][min(i,3)][length class][candidate length bucket][min(i,3)]
+	lenSame [3][3]repIRbitModel
+	lenUn   [20]repIRbitModel
+	lenMant [20][4]repIRbitModel
+	esc     *repIRe2model
+}
+
+// Port source: zeros3-z3/ir/predict.go
+func repIRnewPredModel(p *repIRProfile) *repIRpredModel {
+	m := &repIRpredModel{esc: repIRnewE2()}
+	for a := range m.kind {
+		for b := range m.kind[a] {
+			for c := range m.kind[a][b] {
+				mm := &m.kind[a][b][c]
+				mm.init()
+				// prior P(isMatch==0)
+				switch {
+				case a == 0: // no candidate: almost surely a literal
+					mm.setP(4060)
+				case a == 1:
+					mm.setP(2600)
+				default:
+					mm.setP(500)
+				}
+			}
+		}
+	}
+	for lc := range m.idx {
+		for lb := range m.idx[lc] {
+			for i := range m.idx[lc][lb] {
+				mm := &m.idx[lc][lb][i]
+				mm.init()
+				// bit 1 = "this candidate"; prior P(bit==0)
+				p0 := 3000
+				if i == 0 {
+					p0 = 900
+				} else if i == 1 {
+					p0 = 2200
+				}
+				if lc > 0 {
+					p0 += 600
+				}
+				mm.setP(min(max(p0, 200), 3900))
+			}
+		}
+	}
+	for i := range m.lenSame {
+		for j := range m.lenSame[i] {
+			m.lenSame[i][j].init()
+			m.lenSame[i][j].setP(500) // bit 1 = the candidate's full length
+		}
+	}
+	for i := range m.lenUn {
+		m.lenUn[i].init()
+		for j := range m.lenMant[i] {
+			m.lenMant[i][j].init()
+		}
+	}
+	return m
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// predictor encodes/decodes units against a fixed plaintext.
+type repIRpredictor struct {
+	plain   []byte
+	prof    *repIRProfile
+	Stats   repIRPredStats
+	lastIdx int
+}
+
+// Port source: zeros3-z3/ir/predict.go
+func repIRnewPredictor(plain []byte, profile uint8) *repIRpredictor {
+	p := &repIRpredictor{plain: plain}
+	if int(profile) < len(repIRProfiles) {
+		p.prof = &repIRProfiles[profile]
+	} else {
+		p.prof = &repIRProfiles[0]
+	}
+	return p
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// token codes one token at pos (encoding when t is meaningful, decoding when
+// io.dec != nil). lits is the number of literals since the last match.
+func (p *repIRpredictor) token(io *repIRrcio, m *repIRpredModel, w *repIRwindow, pos, lits int, t repDFToken) (repDFToken, int, error) {
+	enc := io.dec == nil
+	capLen := min(258, w.end-pos)
+	cands, lmax, ok := w.search(pos, capLen)
+	if !ok {
+		return 0, 0, fmt.Errorf("%w: predictor work budget", repIRErrLimit)
+	}
+	lazy := 0
+	if p.prof.Lazy && !repIRAblate.NoLazyHint && lmax > 0 && pos+1 < w.end {
+		_, l2, ok := w.search(pos+1, min(258, w.end-pos-1))
+		if !ok {
+			return 0, 0, fmt.Errorf("%w: predictor work budget", repIRErrLimit)
+		}
+		lazy = 1
+		if l2 > lmax {
+			lazy = 2
+		}
+	}
+	lb := repIRlmaxBucket(lmax)
+	rb := repIRrunBucket(lits)
+	if repIRAblate.NoRunCtx {
+		rb = 0
+	}
+	km := &m.kind[lb][lazy][rb]
+	isMatch := 0
+	if enc && !t.IsLiteral() {
+		isMatch = 1
+	}
+	io.cat = repIRCatPredHit
+	if io.bit(km, isMatch) == 0 {
+		return repDFLiteral(0), 1, nil
+	}
+	// match: find the candidate
+	n := len(cands)
+	idx := n
+	var length int
+	if enc {
+		length = t.Length()
+		if repIRcanonical(t) {
+			d := t.Distance()
+			for i, c := range cands {
+				if c.dist == d && c.length >= length {
+					idx = i
+					break
+				}
+			}
+		}
+	}
+	io.cat = repIRCatPredDist
+	got := n
+	for i := 0; i < n; i++ {
+		want := 0
+		if enc && idx == i {
+			want = 1
+		}
+		lc := 0
+		if cands[i].length < lmax {
+			lc = 1
+			if cands[i].length+3 < lmax {
+				lc = 2
+			}
+		}
+		lb := 0
+		switch l := cands[i].length; {
+		case l >= 32:
+			lb = 3
+		case l >= 16:
+			lb = 2
+		case l >= 8:
+			lb = 1
+		}
+		if repIRAblate.NoLenCtx {
+			lc, lb = 0, 0
+		}
+		ii := min(i, 3)
+		if repIRAblate.NoIdxCtx {
+			lc, lb, ii = 0, 0, 0
+		}
+		if io.bit(&m.idx[lc][lb][ii], want) == 1 {
+			got = i
+			break
+		}
+	}
+	p.lastIdx = got
+	if got < n {
+		c := cands[got]
+		io.cat = repIRCatPredLen
+		same := 0
+		if enc && length == c.length {
+			same = 1
+		}
+		ctx := &m.lenSame[min(got, 2)][lazy]
+		if io.bit(ctx, same) == 1 {
+			length = c.length
+		} else {
+			delta := 0
+			if enc {
+				delta = c.length - length - 1
+			}
+			delta = io.gamma(m.lenUn[:], m.lenMant[:], delta)
+			length = c.length - delta - 1
+			if length < p.prof.HashLen || length > c.length {
+				return 0, 0, repIRcorrupt("predicted length %d", length)
+			}
+		}
+		sym, extra := repIRlengthCode(length)
+		dc, de := repIRdistCodeOf(c.dist)
+		w.afterMatch(pos, length)
+		return repDFMatch(sym, extra, dc, de), length, nil
+	}
+	// escape: explicit coding
+	if io.dec == nil {
+		p.Stats.Escapes++
+	}
+	io.cat = repIRCatPredEscape
+	io.force = repIRCatPredEscape + 1
+	tok, ok2 := m.esc.match(io, lits, t)
+	io.force = 0
+	if !ok2 {
+		return 0, 0, repIRcorrupt("escape match")
+	}
+	w.afterMatch(pos, tok.Length())
+	return tok, tok.Length(), nil
+}
+
+// Port source: zeros3-z3/ir/predict.go
+func (p *repIRpredictor) newState(start, plainLen int) (*repIRwindow, *repIRpredModel) {
+	return repIRnewWindow(p.plain, start, plainLen, p.prof), repIRnewPredModel(p.prof)
+}
+
+// Port source: zeros3-z3/ir/predict.go
+// encodeUnit encodes one unit whose first token starts at plaintext offset start.
+func (p *repIRpredictor) encodeUnit(runs []repIRRun, start, plainLen int, cost *[repIRNumCats]float64) ([]byte, error) {
+	return p.encode(runs, start, plainLen, cost)
+}
+
+// Port source: zeros3-z3/ir/predict.go
+func (p *repIRpredictor) encode(runs []repIRRun, start, plainLen int, cost *[repIRNumCats]float64) ([]byte, error) {
+	w, m := p.newState(start, plainLen)
+	defer w.release()
+	e := repIRnewEncoder()
+	io := &repIRrcio{enc: e, cost: cost}
+	pos, lits := start, 0
+	for _, r := range runs {
+		for i := uint32(0); i < r.Lits; i++ {
+			if _, n, err := p.token(io, m, w, pos, lits, repDFLiteral(0)); err != nil {
+				return nil, err
+			} else {
+				pos += n
+			}
+			lits++
+			p.Stats.Tokens++
+		}
+		if r.M != 0 {
+			tok, n, err := p.token(io, m, w, pos, lits, r.M)
+			if err == nil {
+				p.Stats.IdxHist[min(p.lastIdx, 7)]++
+			}
+			if err != nil {
+				return nil, err
+			}
+			if tok != r.M {
+				return nil, fmt.Errorf("predictor changed a token (%#x -> %#x)", uint32(r.M), uint32(tok))
+			}
+			pos += n
+			lits = 0
+			p.Stats.Tokens++
+			p.Stats.Matches++
+		}
+	}
+	p.Stats.Work += w.work
+	return append([]byte{byte(repIRPred) | p.prof.ID<<4}, e.finish()...), nil
+}
+
+// Port source: zeros3-z3/ir/predict.go
+func (p *repIRpredictor) decodeUnit(data []byte, start, plainLen int) ([]repIRRun, error) {
+	if len(data) < 1 || repIRCodec(data[0]&15) != repIRPred {
+		return nil, repIRcorrupt("predictive unit header")
+	}
+	if int(data[0]>>4) >= len(repIRProfiles) {
+		return nil, repIRcorrupt("unknown predictor profile %d", data[0]>>4)
+	}
+	p.prof = &repIRProfiles[data[0]>>4] // units carry their profile
+	if start < 0 || start+plainLen > len(p.plain) {
+		return nil, repIRcorrupt("unit outside plaintext")
+	}
+	w, m := p.newState(start, plainLen)
+	defer w.release()
+	io := &repIRrcio{dec: repIRnewDecoder(data[1:])}
+	var runs []repIRRun
+	pos, lits := start, 0
+	end := start + plainLen
+	for pos < end {
+		tok, n, err := p.token(io, m, w, pos, lits, 0)
+		if err != nil {
+			return nil, err
+		}
+		if pos+n > end {
+			return nil, repIRcorrupt("predicted token overruns its unit")
+		}
+		pos += n
+		if tok.IsLiteral() {
+			lits++
+			continue
+		}
+		runs = append(runs, repIRRun{Lits: uint32(lits), M: tok})
+		lits = 0
+	}
+	if lits > 0 {
+		runs = append(runs, repIRRun{Lits: uint32(lits)})
+	}
+	return runs, nil
+}
+
+// Port source: zeros3-z3/ir/range.go
+// RangeIndex holds the compressed bit offset at which each unit's first token
+// is written (after any block header that precedes it).
+type repIRRangeIndex struct {
+	UnitBits []int64
+}
+
+// Port source: zeros3-z3/ir/range.go
+// Marshal encodes the index as delta varints.
+func (ix *repIRRangeIndex) Marshal() []byte {
+	var b []byte
+	prev := int64(0)
+	for _, v := range ix.UnitBits {
+		b = binary.AppendUvarint(b, uint64(v-prev))
+		prev = v
+	}
+	return b
+}
+
+// Port source: zeros3-z3/ir/range.go
+// ParseRangeIndex decodes n offsets.
+func repIRParseRangeIndex(b []byte, n int) (*repIRRangeIndex, error) {
+	ix := &repIRRangeIndex{UnitBits: make([]int64, 0, n)}
+	prev := int64(0)
+	for i := 0; i < n; i++ {
+		v, k := binary.Uvarint(b)
+		if k <= 0 {
+			return nil, repIRcorrupt("range index truncated")
+		}
+		b = b[k:]
+		prev += int64(v)
+		ix.UnitBits = append(ix.UnitBits, prev)
+	}
+	if len(b) != 0 {
+		return nil, repIRcorrupt("range index has trailing bytes")
+	}
+	return ix, nil
+}
+
+// Port source: zeros3-z3/ir/range.go
+// Checkpoints keeps every step-th offset only (a sparser index; the
+// materializer then decodes more units before the range).
+func (ix *repIRRangeIndex) Checkpoints(step int) *repIRRangeIndex {
+	out := &repIRRangeIndex{}
+	for i := 0; i < len(ix.UnitBits); i += step {
+		out.UnitBits = append(out.UnitBits, ix.UnitBits[i])
+	}
+	return out
+}
+
+// Port source: zeros3-z3/ir/range.go
+// RangeNeeds reports what one range materialization had to touch.
+type repIRRangeNeeds struct {
+	FirstUnit     int   // unit decoding started at
+	UnitsDecoded  int   // units decoded (including look-ahead for predicted headers)
+	UnitBytes     int   // encoded bytes of those units
+	PlainBytes    int64 // distinct semantic plaintext bytes fetched: warm-up windows, units and stored payloads
+	SkeletonBytes int   // the whole skeleton is read here (splittable by block range, see the report)
+	RangeUnits    int   // units whose tokens are written into the range
+	HeaderUnits   int   // units decoded only to predict a dynamic header (UnitsDecoded - RangeUnits)
+	OutBytes      int   // compressed bytes produced, including the discarded lead-in
+}
+
+// Port source: zeros3-z3/ir/range.go
+// MaterializeRange rebuilds bytes [a, b) of the compressed stream. plainAt
+// returns the semantic plaintext [from, to) (a ring or a store read); unit(i)
+// returns unit i. ix lists the offsets of every step-th unit (step 1 = all).
+func repIRMaterializeRange(skel []byte, ix *repIRRangeIndex, step int, unit func(i int) ([]byte, error),
+	plainAt func(from, to int64) ([]byte, error), a, b int64) ([]byte, repIRRangeNeeds, error) {
+	var need repIRRangeNeeds
+	need.SkeletonBytes = len(skel)
+	sk, err := repIRParseSkeleton(skel, 1<<40)
+	if err != nil {
+		return nil, need, err
+	}
+	if sk.Codec != repIRPred {
+		return nil, need, repIRcorrupt("range materialization supports the predictive codec only")
+	}
+	if a < 0 || b < a || b > int64(sk.StreamLen) {
+		return nil, need, fmt.Errorf("range [%d,%d) outside the %d byte stream", a, b, sk.StreamLen)
+	}
+	nu := len(sk.Units)
+	startPos := make([]int64, nu) // plaintext offset of each unit
+	tokStart := make([]int, nu)   // global token index of each unit's first token
+	storedPos := map[int]int64{}  // plaintext offset of each stored block
+	blockTok := make([]int, len(sk.Blocks)+1)
+	{
+		for i := range sk.Blocks {
+			blockTok[i+1] = blockTok[i] + sk.Blocks[i].NTokens
+		}
+		var acc int64
+		next := 0 // next block to examine for stored placement
+		ti := 0
+		place := func(limit int) {
+			for next < len(sk.Blocks) && blockTok[next] <= limit {
+				if sk.Blocks[next].Kind == repDFStored {
+					storedPos[next] = acc
+					acc += int64(sk.Blocks[next].StoredLen)
+				}
+				next++
+			}
+		}
+		for k, u := range sk.Units {
+			place(ti)
+			startPos[k], tokStart[k] = acc, ti
+			acc += int64(u.PlainLen)
+			ti += u.NTokens
+		}
+		place(1 << 60)
+	}
+	// starting unit: the last indexed unit whose first byte lies before a
+	u0 := -1
+	if a > 0 {
+		if j := sort.Search(len(ix.UnitBits), func(i int) bool { return ix.UnitBits[i]/8 >= a }) - 1; j >= 0 {
+			u0 = j * step
+		}
+	}
+	var startBit int64
+	g := 0 // global token index decoding starts at
+	if u0 >= 0 {
+		startBit, g = ix.UnitBits[u0/step], tokStart[u0]
+		need.FirstUnit = u0
+	}
+	// block containing token g
+	bi := 0
+	for u0 >= 0 && bi < len(sk.Blocks) && (sk.Blocks[bi].Kind == repDFStored || blockTok[bi+1] <= g) {
+		bi++
+	}
+	if u0 >= 0 && bi == len(sk.Blocks) {
+		return nil, need, repIRcorrupt("unit %d starts after the last block", u0)
+	}
+	bi0 := bi
+
+	// unit token cache (small LRU)
+	type cached struct {
+		k    int
+		toks []repDFToken
+	}
+	var cache []cached
+	var fetched [][2]int64
+	tokensOf := func(k int) ([]repDFToken, error) {
+		for _, c := range cache {
+			if c.k == k {
+				return c.toks, nil
+			}
+		}
+		u := sk.Units[k]
+		wbase := max(0, startPos[k]-repIRwarmMax)
+		pl, err := plainAt(wbase, startPos[k]+int64(u.PlainLen))
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(pl)) != startPos[k]+int64(u.PlainLen)-wbase {
+			return nil, repIRcorrupt("plaintext fetch returned %d bytes", len(pl))
+		}
+		fetched = append(fetched, [2]int64{wbase, wbase + int64(len(pl))})
+		data, err := unit(k)
+		if err != nil {
+			return nil, err
+		}
+		need.UnitBytes += len(data)
+		need.UnitsDecoded++
+		runs, err := repIRnewPredictor(pl, 0).decodeUnit(data, int(startPos[k]-wbase), u.PlainLen)
+		if err != nil {
+			return nil, fmt.Errorf("unit %d: %w", k, err)
+		}
+		toks := make([]repDFToken, 0, u.NTokens)
+		pos := int(startPos[k] - wbase)
+		for _, r := range runs {
+			for j := uint32(0); j < r.Lits; j++ {
+				toks = append(toks, repDFLiteral(pl[pos]))
+				pos++
+			}
+			if r.M != 0 {
+				toks = append(toks, r.M)
+				pos += r.M.Length()
+			}
+		}
+		if len(toks) != u.NTokens {
+			return nil, repIRcorrupt("unit %d decodes to %d tokens, index says %d", k, len(toks), u.NTokens)
+		}
+		cache = append(cache, cached{k, toks})
+		if len(cache) > 128 {
+			cache = cache[1:]
+		}
+		return toks, nil
+	}
+	unitOf := func(tok int) int { return sort.Search(nu, func(i int) bool { return tokStart[i] > tok }) - 1 }
+	tokenAt := func(tok int) (repDFToken, error) {
+		k := unitOf(tok)
+		if k < 0 || k >= nu {
+			return 0, repIRcorrupt("token %d has no unit", tok)
+		}
+		ts, err := tokensOf(k)
+		if err != nil {
+			return 0, err
+		}
+		return ts[tok-tokStart[k]], nil
+	}
+
+	emitted := map[int]bool{}
+	var out bytes.Buffer
+	w := repDFNewStreamWriterAt(&out, startBit)
+	done := func() bool { return w.BitPos() >= 8*b }
+	for ; bi < len(sk.Blocks) && !done(); bi++ {
+		m := &sk.Blocks[bi]
+		blk := repDFBlock{Final: m.Final, Kind: m.Kind}
+		if m.Kind == repDFStored {
+			blk.PadBits, blk.PadLen, blk.PlainLen, blk.AutoPad = m.PadBits, m.PadLen, m.StoredLen, m.AutoPad
+			from := storedPos[bi]
+			data, err := plainAt(from, from+int64(m.StoredLen))
+			if err != nil {
+				return nil, need, err
+			}
+			fetched = append(fetched, [2]int64{from, from + int64(len(data))})
+			if err := w.Begin(&blk); err != nil {
+				return nil, need, err
+			}
+			if err := w.Stored(&blk, data); err != nil {
+				return nil, need, err
+			}
+			continue
+		}
+		if m.Kind == repDFDynamic && !m.Pred {
+			blk.HLIT, blk.HDIST, blk.HCLEN, blk.CLLens, blk.CLSyms = m.HLIT, m.HDIST, m.HCLEN, m.CLLens, m.CLSyms
+			if blk.LitLens, blk.DistLens = repIRExpandLengths(m); blk.LitLens == nil {
+				return nil, need, repIRcorrupt("block %d code lengths", bi)
+			}
+		}
+		if m.Pred { // every token of the block is needed before its header is known
+			toks := make([]repDFToken, 0, m.NTokens)
+			for t := blockTok[bi]; t < blockTok[bi+1]; t++ {
+				tk, err := tokenAt(t)
+				if err != nil {
+					return nil, need, err
+				}
+				toks = append(toks, tk)
+			}
+			plainLen := 0
+			for _, tk := range toks {
+				plainLen += repIRtokenPlain(tk)
+			}
+			kind, pm, ok := repIRzlibBlock(toks, plainLen)
+			if !ok || kind != repDFDynamic {
+				return nil, need, repIRcorrupt("block %d: predicted header is not dynamic", bi)
+			}
+			blk.HLIT, blk.HDIST, blk.HCLEN, blk.CLLens, blk.CLSyms = pm.HLIT, pm.HDIST, pm.HCLEN, pm.CLLens, pm.CLSyms
+			if blk.LitLens, blk.DistLens = repIRExpandLengths(&pm); blk.LitLens == nil {
+				return nil, need, repIRcorrupt("block %d: predicted code lengths", bi)
+			}
+		}
+		first := blockTok[bi]
+		if u0 >= 0 && bi == bi0 {
+			// the range starts inside this block: its header lies before startBit
+			first = g
+			if err := w.Resume(&blk); err != nil {
+				return nil, need, err
+			}
+		} else if err := w.Begin(&blk); err != nil {
+			return nil, need, err
+		}
+		for t := first; t < blockTok[bi+1]; t++ {
+			emitted[unitOf(t)] = true
+			tk, err := tokenAt(t)
+			if err != nil {
+				return nil, need, err
+			}
+			if err := w.Token(tk); err != nil {
+				return nil, need, err
+			}
+			if done() {
+				break
+			}
+		}
+		if done() {
+			break
+		}
+		if err := w.End(); err != nil {
+			return nil, need, err
+		}
+	}
+	if bi >= len(sk.Blocks) && !done() {
+		if err := w.Finish(sk.TailPadBits, sk.TailPadLen); err != nil {
+			return nil, need, err
+		}
+	}
+	if err := w.Drain(); err != nil {
+		return nil, need, err
+	}
+	need.OutBytes = out.Len()
+	need.RangeUnits = len(emitted)
+	need.HeaderUnits = need.UnitsDecoded - need.RangeUnits
+	sort.Slice(fetched, func(i, j int) bool { return fetched[i][0] < fetched[j][0] })
+	hi := int64(-1)
+	for _, iv := range fetched { // union of the fetched intervals
+		if iv[1] <= hi {
+			continue
+		}
+		need.PlainBytes += iv[1] - max(iv[0], hi)
+		hi = iv[1]
+	}
+	base := startBit / 8
+	if b > base+int64(out.Len()) {
+		return nil, need, repIRcorrupt("range ends at %d but only %d bytes were produced from %d", b, base+int64(out.Len()), base)
+	}
+	return append([]byte(nil), out.Bytes()[a-base:b-base]...), need, nil
+}
+
+// Port source: zeros3-z3/ir/rc.go
+const (
+	repIRprobBits = 12
+	repIRrcTop    = 1 << 24
+)
+
+// Port source: zeros3-z3/ir/rc.go
+// bitModel estimates P(bit==0) at two adaptation speeds (shift 4 and 7) and
+// averages them, which learns quickly in short units yet stays stable.
+type repIRbitModel struct{ fast, slow uint16 }
+
+// Port source: zeros3-z3/ir/rc.go
+func (m *repIRbitModel) init() { m.fast, m.slow = 0x8000, 0x8000 }
+
+// Port source: zeros3-z3/ir/rc.go
+func (m *repIRbitModel) p() uint32 {
+	p := (uint32(m.fast) + uint32(m.slow)) >> 5 // 0..4095 of 12 bits
+	if p < 1 {
+		p = 1
+	} else if p > 4095 {
+		p = 4095
+	}
+	return p
+}
+
+// Port source: zeros3-z3/ir/rc.go
+func (m *repIRbitModel) update(bit int) {
+	if bit == 0 {
+		m.fast += (65535 - m.fast) >> 4
+		m.slow += (65535 - m.slow) >> 7
+	} else {
+		m.fast -= m.fast >> 4
+		m.slow -= m.slow >> 7
+	}
+}
+
+// Port source: zeros3-z3/ir/rc.go
+// setP initialises both estimates to probability p0 (of a zero bit, 1..4095 / 4096).
+func (m *repIRbitModel) setP(p0 int) {
+	v := uint16(p0 << 4)
+	m.fast, m.slow = v, v
+}
+
+// Port source: zeros3-z3/ir/rc.go
+// Cost categories for entropy accounting.
+const (
+	repIRCatKind = iota
+	repIRCatLitRun
+	repIRCatLenSym
+	repIRCatLenExtra
+	repIRCatRep
+	repIRCatDistSym
+	repIRCatDistExtra
+	repIRCatPredHit    // predictor: match/literal decisions
+	repIRCatPredLen    // predictor: length corrections
+	repIRCatPredDist   // predictor: distance rank / escape
+	repIRCatPredEscape // predictor: explicit distance after an escape
+	repIRNumCats
+)
+
+// Port source: zeros3-z3/ir/rc.go
+type repIRencoder struct {
+	low       uint64
+	rng       uint32
+	cache     byte
+	cacheSize int64
+	out       []byte
+}
+
+// Port source: zeros3-z3/ir/rc.go
+func repIRnewEncoder() *repIRencoder { return &repIRencoder{rng: 0xFFFFFFFF, cacheSize: 1} }
+
+// Port source: zeros3-z3/ir/rc.go
+func (e *repIRencoder) shiftLow() {
+	if uint32(e.low) < 0xFF000000 || e.low>>32 != 0 {
+		carry := byte(e.low >> 32)
+		temp := e.cache
+		for {
+			e.out = append(e.out, temp+carry)
+			temp = 0xFF
+			e.cacheSize--
+			if e.cacheSize == 0 {
+				break
+			}
+		}
+		e.cache = byte(uint32(e.low) >> 24)
+	}
+	e.cacheSize++
+	e.low = uint64(uint32(e.low) << 8)
+}
+
+// Port source: zeros3-z3/ir/rc.go
+func (e *repIRencoder) encode(m *repIRbitModel, bit int) {
+	bound := (e.rng >> repIRprobBits) * m.p()
+	if bit == 0 {
+		e.rng = bound
+	} else {
+		e.low += uint64(bound)
+		e.rng -= bound
+	}
+	m.update(bit)
+	for e.rng < repIRrcTop {
+		e.rng <<= 8
+		e.shiftLow()
+	}
+}
+
+// Port source: zeros3-z3/ir/rc.go
+// finish flushes with as many trailing zero bits as the interval allows,
+// drops the always-zero leading byte and trims trailing zero bytes (the
+// decoder reads zeros past the end).
+func (e *repIRencoder) finish() []byte {
+	for k := 32; k >= 0; k-- {
+		mask := uint64(1)<<k - 1
+		v := (e.low + mask) &^ mask
+		if v < e.low+uint64(e.rng) {
+			e.low = v
+			break
+		}
+	}
+	for i := 0; i < 5; i++ {
+		e.shiftLow()
+	}
+	out := e.out[1:]
+	for len(out) > 0 && out[len(out)-1] == 0 {
+		out = out[:len(out)-1]
+	}
+	return out
+}
+
+// Port source: zeros3-z3/ir/rc.go
+type repIRdecoder struct {
+	in   []byte
+	pos  int
+	rng  uint32
+	code uint32
+}
+
+// Port source: zeros3-z3/ir/rc.go
+func repIRnewDecoder(in []byte) *repIRdecoder {
+	d := &repIRdecoder{in: in, rng: 0xFFFFFFFF}
+	for i := 0; i < 4; i++ {
+		d.code = d.code<<8 | uint32(d.next())
+	}
+	return d
+}
+
+// Port source: zeros3-z3/ir/rc.go
+func (d *repIRdecoder) next() byte {
+	if d.pos < len(d.in) {
+		b := d.in[d.pos]
+		d.pos++
+		return b
+	}
+	d.pos++ // count reads past the end
+	return 0
+}
+
+// Port source: zeros3-z3/ir/rc.go
+func (d *repIRdecoder) decode(m *repIRbitModel) int {
+	bound := (d.rng >> repIRprobBits) * m.p()
+	var bit int
+	if d.code < bound {
+		d.rng = bound
+	} else {
+		d.code -= bound
+		d.rng -= bound
+		bit = 1
+	}
+	m.update(bit)
+	for d.rng < repIRrcTop {
+		d.rng <<= 8
+		d.code = d.code<<8 | uint32(d.next())
+	}
+	return bit
+}
+
+// Port source: zeros3-z3/ir/rc.go
+// rcio is one direction of the coder. bit() encodes the supplied bit when
+// encoding and ignores it when decoding; either way it returns the bit that
+// was coded, so a single model routine serves both directions.
+type repIRrcio struct {
+	enc  *repIRencoder
+	dec  *repIRdecoder
+	cost *[repIRNumCats]float64
+	cat  int
+	// force, when >= 0 (set with forceCat), overrides cat for cost accounting.
+	force int
+}
+
+// Port source: zeros3-z3/ir/rc.go
+func (r *repIRrcio) bit(m *repIRbitModel, b int) int {
+	if r.dec != nil {
+		return r.dec.decode(m)
+	}
+	if r.cost != nil {
+		p := float64(m.p()) / (1 << repIRprobBits)
+		if b != 0 {
+			p = 1 - p
+		}
+		c := r.cat
+		if r.force > 0 {
+			c = r.force - 1
+		}
+		r.cost[c] -= math.Log2(p)
+	}
+	r.enc.encode(m, b)
+	return b
+}
+
+// Port source: zeros3-z3/ir/rc.go
+// tree codes an nbits-wide value MSB first through a binary tree of models
+// (len(ms) >= 1<<nbits).
+func (r *repIRrcio) tree(ms []repIRbitModel, nbits int, v int) int {
+	node := 1
+	for i := nbits - 1; i >= 0; i-- {
+		b := r.bit(&ms[node], (v>>i)&1)
+		node = node<<1 | b
+	}
+	return node - 1<<nbits
+}
+
+// Port source: zeros3-z3/ir/rc.go
+// gamma codes v >= 0 as an Elias-gamma style number: the bit length of v+1 in
+// unary (ctx models un[0..]) then the mantissa (mant[nb][0..3]).
+func (r *repIRrcio) gamma(un []repIRbitModel, mant [][4]repIRbitModel, v int) int {
+	x := v + 1
+	nb := 0
+	if r.dec == nil {
+		for t := x; t > 1; t >>= 1 {
+			nb++
+		}
+	}
+	// unary length
+	n := 0
+	for {
+		more := 0
+		if r.dec == nil && n < nb {
+			more = 1
+		}
+		if n >= len(un) {
+			break
+		}
+		if r.bit(&un[n], more) == 0 {
+			break
+		}
+		n++
+	}
+	nb = n
+	if nb >= len(mant) {
+		nb = len(mant) - 1
+	}
+	val := 1
+	for j := nb - 1; j >= 0; j-- {
+		ctx := 3
+		switch {
+		case j == nb-1:
+			ctx = 0
+		case j == nb-2:
+			ctx = 1 + val&1
+		}
+		b := r.bit(&mant[nb][ctx], (x>>j)&1)
+		val = val<<1 | b
+	}
+	return val - 1
+}
+
+// Port source: zeros3-z3/ir/recon.go
+// AutoProfile in Config.Profile selects the predictor profile per stream.
+const repIRAutoProfile = 255
+
+// Port source: zeros3-z3/ir/recon.go
+// ModeProfiles returns the profile ids of a mode ("" = ratio).
+func repIRModeProfiles(mode string) []uint8 {
+	if ids, ok := repIRModes[mode]; ok {
+		return ids
+	}
+	return repIRModes["ratio"]
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+const (
+	repIRskelVersion = 2
+	repIRmaxBlocks   = 1 << 18
+	repIRmaxUnits    = 1 << 20
+)
+
+// Port source: zeros3-z3/ir/skeleton.go
+// bitw writes LSB-first like DEFLATE.
+type repIRbitw struct {
+	out  []byte
+	acc  uint64
+	nacc uint
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+func (w *repIRbitw) put(v uint32, n uint) {
+	w.acc |= uint64(v) << w.nacc
+	w.nacc += n
+	for w.nacc >= 8 {
+		w.out = append(w.out, byte(w.acc))
+		w.acc >>= 8
+		w.nacc -= 8
+	}
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+// putCode writes a canonical Huffman code MSB first.
+func (w *repIRbitw) putCode(code uint16, n uint8) {
+	for i := int(n) - 1; i >= 0; i-- {
+		w.put(uint32(code>>uint(i))&1, 1)
+	}
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+func (w *repIRbitw) flush() []byte {
+	if w.nacc > 0 {
+		w.out = append(w.out, byte(w.acc))
+		w.acc, w.nacc = 0, 0
+	}
+	return w.out
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+type repIRbitr struct {
+	in   []byte
+	pos  int // bit position
+	over bool
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+func (r *repIRbitr) get(n uint) uint32 {
+	var v uint32
+	for i := uint(0); i < n; i++ {
+		by := r.pos >> 3
+		if by >= len(r.in) {
+			r.over = true
+			return 0
+		}
+		v |= uint32(r.in[by]>>(uint(r.pos)&7)&1) << i
+		r.pos++
+	}
+	return v
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+func (r *repIRbitr) alignedPos() int { return (r.pos + 7) >> 3 }
+
+// Port source: zeros3-z3/ir/skeleton.go
+// canonCodes assigns canonical codes to lens (RFC1951 3.2.2).
+func repIRcanonCodes(lens []uint8) (codes []uint16) {
+	var count [16]int
+	for _, l := range lens {
+		count[l]++
+	}
+	count[0] = 0
+	var next [16]int
+	code := 0
+	for l := 1; l < 16; l++ {
+		code = (code + count[l-1]) << 1
+		next[l] = code
+	}
+	codes = make([]uint16, len(lens))
+	for s, l := range lens {
+		if l != 0 {
+			codes[s] = uint16(next[l])
+			next[l]++
+		}
+	}
+	return
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+// canon is a canonical Huffman decoder built once per code (puff style).
+type repIRcanon struct {
+	count [16]int
+	syms  []int // symbols ordered by (length, symbol)
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+func repIRnewCanon(lens []uint8) *repIRcanon {
+	c := &repIRcanon{}
+	for _, l := range lens {
+		c.count[l]++
+	}
+	c.count[0] = 0
+	for l := 1; l < 16; l++ {
+		for s, ln := range lens {
+			if int(ln) == l {
+				c.syms = append(c.syms, s)
+			}
+		}
+	}
+	return c
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+func (c *repIRcanon) decode(r *repIRbitr) (int, bool) {
+	code, first, index := 0, 0, 0
+	for l := 1; l < 16; l++ {
+		code |= int(r.get(1))
+		if r.over {
+			return 0, false
+		}
+		n := c.count[l]
+		if code-n < first {
+			i := index + (code - first)
+			if i < len(c.syms) {
+				return c.syms[i], true
+			}
+			return 0, false
+		}
+		index += n
+		first = (first + n) << 1
+		code <<= 1
+	}
+	return 0, false
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+func repIRuvarint(b []byte, v uint64) []byte { return binary.AppendUvarint(b, v) }
+
+// Port source: zeros3-z3/ir/skeleton.go
+func repIRpadMarker(bits uint8, n uint8) byte { return byte(1<<n | bits) }
+
+// Port source: zeros3-z3/ir/skeleton.go
+func repIRparsePadMarker(m byte) (bits, n uint8, ok bool) {
+	if m == 0 {
+		return 0, 0, false
+	}
+	n = uint8(repIRbits32len(uint32(m)) - 1)
+	if n > 7 {
+		return 0, 0, false
+	}
+	return m & (1<<n - 1), n, true
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+func repIRbits32len(x uint32) int { return bits.Len32(x) }
+
+// Port source: zeros3-z3/ir/skeleton.go
+// Block entry header byte:
+//
+//	bit 0     BFINAL
+//	bits 1-2  BTYPE (stored, fixed, dynamic)
+//	bit 3     dynamic: header predicted from the tokens (Pred); stored: zero padding (AutoPad)
+//	bit 4     fixed/dynamic: NTokens equals the previous compressed block's; stored: StoredLen is 0
+//
+// followed by what the flags do not imply: NTokens (varint) for fixed/dynamic,
+// the pad marker for stored without AutoPad, StoredLen for a non-empty stored
+// block, the exact header bits for a dynamic block without Pred. An explicit
+// NTokens or StoredLen never repeats what a flag could say (canonical form).
+const (
+	repIRhFinal    = 1
+	repIRhKindShft = 1
+	repIRhFlag3    = 8
+	repIRhFlag4    = 16
+)
+
+// Port source: zeros3-z3/ir/skeleton.go
+// encodeBlockMeta appends the exact encoding of one block; prevN is the token
+// count of the previous fixed/dynamic block (0 before the first).
+func repIRencodeBlockMeta(dst []byte, m *repIRBlockMeta, prevN int) []byte {
+	h := byte(m.Kind) << repIRhKindShft
+	if m.Final {
+		h |= repIRhFinal
+	}
+	switch m.Kind {
+	case repDFStored:
+		if m.AutoPad {
+			h |= repIRhFlag3
+		}
+		if m.StoredLen == 0 {
+			h |= repIRhFlag4
+		}
+		dst = append(dst, h)
+		if !m.AutoPad {
+			dst = append(dst, repIRpadMarker(m.PadBits, m.PadLen))
+		}
+		if m.StoredLen != 0 {
+			dst = repIRuvarint(dst, uint64(m.StoredLen))
+		}
+	case repDFFixed:
+		if m.NTokens == prevN {
+			h |= repIRhFlag4
+		}
+		dst = append(dst, h)
+		if m.NTokens != prevN {
+			dst = repIRuvarint(dst, uint64(m.NTokens))
+		}
+	case repDFDynamic:
+		if m.Pred {
+			h |= repIRhFlag3
+		}
+		if m.NTokens == prevN {
+			h |= repIRhFlag4
+		}
+		dst = append(dst, h)
+		if m.NTokens != prevN {
+			dst = repIRuvarint(dst, uint64(m.NTokens))
+		}
+		if !m.Pred {
+			dst = append(dst, repIRdynHeaderBits(m)...)
+		}
+	}
+	return dst
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+var repIRclOrder = repDFCLOrder()
+
+// Port source: zeros3-z3/ir/skeleton.go
+// dynHeaderBits writes the dynamic header exactly as DEFLATE transmits it
+// (after BTYPE): HLIT HDIST HCLEN, code-length code lengths, then the
+// Huffman-coded code-length symbol sequence.
+func repIRdynHeaderBits(m *repIRBlockMeta) []byte {
+	var w repIRbitw
+	w.put(uint32(m.HLIT)|uint32(m.HDIST)<<5|uint32(m.HCLEN)<<10, 14)
+	n := int(m.HCLEN) + 4
+	for i := 0; i < n; i++ {
+		w.put(uint32(m.CLLens[repIRclOrder[i]]), 3)
+	}
+	codes := repIRcanonCodes(m.CLLens[:])
+	for _, cs := range m.CLSyms {
+		w.putCode(codes[cs.Sym], m.CLLens[cs.Sym])
+		switch {
+		case cs.Sym == 16:
+			w.put(uint32(cs.Extra), 2)
+		case cs.Sym == 17:
+			w.put(uint32(cs.Extra), 3)
+		case cs.Sym == 18:
+			w.put(uint32(cs.Extra), 7)
+		}
+	}
+	return w.flush()
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+// Marshal encodes the skeleton.
+func (s *repIRSkeleton) Marshal() []byte {
+	b := []byte{repIRskelVersion, byte(s.Codec), s.Profile}
+	b = repIRuvarint(b, uint64(len(s.Blocks)))
+	prevN := 0
+	for i := range s.Blocks {
+		b = repIRencodeBlockMeta(b, &s.Blocks[i], prevN)
+		if s.Blocks[i].Kind != repDFStored {
+			prevN = s.Blocks[i].NTokens
+		}
+	}
+	b = append(b, repIRpadMarker(s.TailPadBits, s.TailPadLen))
+	b = repIRuvarint(b, uint64(len(s.Units)))
+	for _, u := range s.Units {
+		b = repIRuvarint(b, uint64(u.PlainLen))
+		b = repIRuvarint(b, uint64(u.NTokens))
+	}
+	b = repIRuvarint(b, uint64(s.StreamLen))
+	b = binary.LittleEndian.AppendUint32(b, s.CRC)
+	return b
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+type repIRsreader struct {
+	b   []byte
+	pos int
+	err error
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+func (r *repIRsreader) byte() byte {
+	if r.pos >= len(r.b) {
+		r.err = repIRcorrupt("skeleton truncated")
+		return 0
+	}
+	v := r.b[r.pos]
+	r.pos++
+	return v
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+func (r *repIRsreader) uvarint(limit uint64) uint64 {
+	if r.err != nil {
+		return 0
+	}
+	v, n := binary.Uvarint(r.b[r.pos:])
+	if n <= 0 || (n > 1 && r.b[r.pos+n-1] == 0) { // overflow, truncation or non-minimal
+		r.err = repIRcorrupt("skeleton varint")
+		return 0
+	}
+	r.pos += n
+	if v > limit {
+		r.err = fmt.Errorf("%w: skeleton value %d over %d", repIRErrLimit, v, limit)
+		return 0
+	}
+	return v
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+// ParseSkeleton decodes and validates a skeleton. maxPlain bounds every length.
+func repIRParseSkeleton(b []byte, maxPlain int) (*repIRSkeleton, error) {
+	r := &repIRsreader{b: b}
+	if v := r.byte(); r.err == nil && v != repIRskelVersion {
+		return nil, repIRcorrupt("skeleton version %d", v)
+	}
+	s := &repIRSkeleton{Codec: repIRCodec(r.byte()), Profile: r.byte()}
+	nb := r.uvarint(repIRmaxBlocks)
+	if r.err != nil {
+		return nil, r.err
+	}
+	s.Blocks = make([]repIRBlockMeta, 0, min(int(nb), 1024))
+	totalTok, prevN := 0, 0
+	for i := 0; i < int(nb); i++ {
+		h := r.byte()
+		if r.err != nil {
+			return nil, r.err
+		}
+		if h > repIRhFlag4|repIRhFlag3|2<<repIRhKindShft|repIRhFinal {
+			return nil, repIRcorrupt("block %d header byte %#x", i, h)
+		}
+		m := repIRBlockMeta{Final: h&repIRhFinal == 1, Kind: repDFBlockKind(h >> repIRhKindShft & 3)}
+		f3, f4 := h&repIRhFlag3 != 0, h&repIRhFlag4 != 0
+		if m.Final != (i == int(nb)-1) {
+			return nil, repIRcorrupt("block %d final flag", i)
+		}
+		switch m.Kind {
+		case repDFStored:
+			m.AutoPad = f3
+			if !f3 {
+				pb, pn, ok := repIRparsePadMarker(r.byte())
+				if !ok {
+					return nil, repIRcorrupt("block %d pad marker", i)
+				}
+				m.PadBits, m.PadLen = pb, pn
+			}
+			if !f4 {
+				m.StoredLen = int(r.uvarint(65535))
+				if m.StoredLen == 0 && r.err == nil {
+					return nil, repIRcorrupt("block %d non-canonical empty stored block", i)
+				}
+			}
+		case repDFFixed, repDFDynamic:
+			if m.Kind == repDFFixed && f3 {
+				return nil, repIRcorrupt("block %d fixed block with header flag", i)
+			}
+			if f4 {
+				m.NTokens = prevN
+			} else {
+				m.NTokens = int(r.uvarint(uint64(maxPlain)))
+				if m.NTokens == prevN && r.err == nil {
+					return nil, repIRcorrupt("block %d non-canonical token count", i)
+				}
+			}
+			prevN = m.NTokens
+			if m.Kind == repDFDynamic {
+				m.Pred = f3
+				if m.Pred && m.NTokens > repIRmaxPredictTokens {
+					return nil, repIRcorrupt("block %d predicted header over %d tokens", i, repIRmaxPredictTokens)
+				}
+				if r.err != nil {
+					return nil, r.err
+				}
+				if !m.Pred {
+					if err := repIRparseDynHeader(r, &m); err != nil {
+						return nil, fmt.Errorf("block %d: %w", i, err)
+					}
+				}
+			}
+		default:
+			return nil, repIRcorrupt("block %d kind %d", i, m.Kind)
+		}
+		if r.err != nil {
+			return nil, r.err
+		}
+		totalTok += m.NTokens
+		if totalTok > maxPlain {
+			return nil, fmt.Errorf("%w: more tokens than plaintext bytes", repIRErrLimit)
+		}
+		s.Blocks = append(s.Blocks, m)
+	}
+	tb, tn, ok := repIRparsePadMarker(r.byte())
+	if !ok {
+		return nil, repIRcorrupt("tail pad marker")
+	}
+	s.TailPadBits, s.TailPadLen = tb, tn
+	nu := r.uvarint(repIRmaxUnits)
+	if r.err != nil {
+		return nil, r.err
+	}
+	s.Units = make([]repIRUnitIdx, 0, min(int(nu), 1024))
+	sumTok, sumPlain := 0, 0
+	for i := 0; i < int(nu); i++ {
+		u := repIRUnitIdx{PlainLen: int(r.uvarint(uint64(maxPlain))), NTokens: int(r.uvarint(uint64(maxPlain)))}
+		if r.err != nil {
+			return nil, r.err
+		}
+		if u.PlainLen == 0 || u.NTokens == 0 || u.NTokens > u.PlainLen {
+			return nil, repIRcorrupt("unit %d index %+v", i, u)
+		}
+		sumTok += u.NTokens
+		sumPlain += u.PlainLen
+		if sumTok > totalTok || sumPlain > maxPlain {
+			return nil, fmt.Errorf("%w: unit index exceeds block table", repIRErrLimit)
+		}
+		s.Units = append(s.Units, u)
+	}
+	if sumTok != totalTok {
+		return nil, repIRcorrupt("units hold %d tokens, blocks need %d", sumTok, totalTok)
+	}
+	s.StreamLen = int(r.uvarint(1 << 40))
+	if r.pos+4 > len(r.b) {
+		return nil, repIRcorrupt("skeleton truncated at crc")
+	}
+	s.CRC = binary.LittleEndian.Uint32(r.b[r.pos:])
+	r.pos += 4
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.pos != len(b) {
+		return nil, repIRcorrupt("skeleton has %d trailing bytes", len(b)-r.pos)
+	}
+	return s, nil
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+func repIRparseDynHeader(r *repIRsreader, m *repIRBlockMeta) error {
+	br := &repIRbitr{in: r.b[r.pos:]}
+	f := br.get(14)
+	m.HLIT, m.HDIST, m.HCLEN = uint8(f&31), uint8(f>>5&31), uint8(f>>10&15)
+	nlit, ndist, nclen := int(m.HLIT)+257, int(m.HDIST)+1, int(m.HCLEN)+4
+	if nlit > 286 || ndist > 30 {
+		return repIRcorrupt("too many length or distance symbols")
+	}
+	for i := 0; i < nclen; i++ {
+		m.CLLens[repIRclOrder[i]] = uint8(br.get(3))
+	}
+	if br.over {
+		return repIRcorrupt("dynamic header truncated")
+	}
+	if !repDFValidLengths(m.CLLens[:], false) {
+		return repIRcorrupt("invalid code-length code")
+	}
+	total := 0
+	cd := repIRnewCanon(m.CLLens[:])
+	for total < nlit+ndist {
+		sym, ok := cd.decode(br)
+		if !ok {
+			return repIRcorrupt("code-length symbol")
+		}
+		cs := repDFCLSym{Sym: uint8(sym)}
+		rep := 1
+		switch {
+		case sym < 16:
+		case sym == 16:
+			if total == 0 {
+				return repIRcorrupt("repeat with no previous length")
+			}
+			cs.Extra = uint8(br.get(2))
+			rep = 3 + int(cs.Extra)
+		case sym == 17:
+			cs.Extra = uint8(br.get(3))
+			rep = 3 + int(cs.Extra)
+		default:
+			cs.Extra = uint8(br.get(7))
+			rep = 11 + int(cs.Extra)
+		}
+		if br.over {
+			return repIRcorrupt("dynamic header truncated")
+		}
+		if total+rep > nlit+ndist {
+			return repIRcorrupt("repeat overruns code lengths")
+		}
+		total += rep
+		m.CLSyms = append(m.CLSyms, cs)
+	}
+	if pad := br.alignedPos()*8 - br.pos; pad > 0 && br.in[br.alignedPos()-1]>>(8-uint(pad)) != 0 {
+		return repIRcorrupt("non-zero header padding") // keeps the skeleton canonical
+	}
+	r.pos += br.alignedPos()
+	lit, dist := repIRExpandLengths(m)
+	if lit == nil || lit[256] == 0 || !repDFValidLengths(lit, false) || !repDFValidLengths(dist, true) {
+		return repIRcorrupt("invalid literal/length or distance code")
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/ir/skeleton.go
+// ExpandLengths expands the code-length symbol sequence into literal/length
+// and distance code lengths; nil if the sequence is inconsistent.
+func repIRExpandLengths(m *repIRBlockMeta) (lit, dist []uint8) {
+	nlit, ndist := int(m.HLIT)+257, int(m.HDIST)+1
+	lens := make([]uint8, 0, nlit+ndist)
+	for _, cs := range m.CLSyms {
+		switch {
+		case cs.Sym < 16:
+			lens = append(lens, cs.Sym)
+		case cs.Sym == 16:
+			if len(lens) == 0 {
+				return nil, nil
+			}
+			p := lens[len(lens)-1]
+			for j := 0; j < 3+int(cs.Extra); j++ {
+				lens = append(lens, p)
+			}
+		case cs.Sym == 17:
+			for j := 0; j < 3+int(cs.Extra); j++ {
+				lens = append(lens, 0)
+			}
+		case cs.Sym == 18:
+			for j := 0; j < 11+int(cs.Extra); j++ {
+				lens = append(lens, 0)
+			}
+		default:
+			return nil, nil
+		}
+		if len(lens) > nlit+ndist {
+			return nil, nil
+		}
+	}
+	if len(lens) != nlit+ndist {
+		return nil, nil
+	}
+	return lens[:nlit:nlit], lens[nlit:]
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// StreamConfig configures EncodeStream.
+type repIRStreamConfig struct {
+	Target       int   // token-run unit target in plaintext bytes (default 16 KiB)
+	Profile      uint8 // predictor profile, or AutoProfile
+	NoHeaderPred bool
+	Mode         string // profile set for AutoProfile: ratio | balanced | fast
+	// Auto profile: units 0..ProbeFirst-1 and every ProbeEvery-th unit are
+	// encoded with every profile and the smallest wins until the next probe.
+	ProbeFirst, ProbeEvery int
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// StreamSink receives the encoder's outputs in order.
+type repIRStreamSink interface {
+	// Plain gets the semantic plaintext, sequentially.
+	Plain(p []byte) error
+	// Unit gets the i-th encoded unit.
+	Unit(i int, data []byte) error
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// Index parses the range index collected while encoding.
+func (s *repIRStreamStats) Index() (*repIRRangeIndex, error) {
+	return repIRParseRangeIndex(s.RangeIndexData, s.Units)
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// StreamStats describes one streaming encode.
+type repIRStreamStats struct {
+	Skeleton       []byte
+	Blocks, Units  int
+	Tokens         int64
+	PlainLen       int64
+	StreamLen      int64
+	UnitBytes      int64
+	RingBytes      int
+	PredictedHdrs  int
+	RangeIndexData []byte // delta-varint compressed bit offset at which each unit's first token is written
+	Pred           repIRPredStats
+}
+
+// Port source: zeros3-z3/ir/stream.go
+const repIRwarmMax = 128 << 10
+
+// Port source: zeros3-z3/ir/stream.go
+func repIRringFor(hi int) int {
+	need := hi + 2*repIRwarmMax + 4096
+	sz := 1 << 16
+	for sz < need {
+		sz <<= 1
+	}
+	return sz
+}
+
+// Port source: zeros3-z3/ir/stream.go
+type repIRcountCRC struct {
+	n   int64
+	crc uint32
+}
+
+// Port source: zeros3-z3/ir/stream.go
+func (c *repIRcountCRC) Write(b []byte) (int, error) {
+	c.n += int64(len(b))
+	c.crc = crc32.Update(c.crc, crc32.IEEETable, b)
+	return len(b), nil
+}
+
+// Port source: zeros3-z3/ir/stream.go
+type repIRstreamEnc struct {
+	cfg  repIRStreamConfig
+	sink repIRStreamSink
+	win  *repDFWindow
+	w    *repDFStreamWriter
+	cc   repIRcountCRC
+
+	lo, hi int
+	mask   uint64
+	h      uint64
+	size   int
+	pend   bool
+
+	runs     []repIRRun
+	lits     uint32
+	unitTok  int
+	unitPos  int64 // plaintext offset of the open unit's first token
+	pos      int64 // plaintext offset of the next token
+	emitted  int64
+	nunits   int
+	lastBits int64
+	idxB     []byte
+	curProf  uint8
+	probeAt  int
+
+	blockB     []byte // serialised block entries: the skeleton is kept serialised, not as structs
+	nblocks    int
+	prevBlockN int
+	unitB      []byte // serialised unit index
+	cur        repDFBlock
+	toks       []repDFToken
+	over       bool
+	blkPlain   int
+	stored     []byte
+	stats      repIRStreamStats
+	pr         repIRpredictor
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// EncodeStream parses the raw DEFLATE stream at the start of r in bounded
+// memory and emits plaintext and units to sink. Bytes read from r beyond the
+// stream are returned in rest.
+func repIREncodeStream(r io.Reader, cfg repIRStreamConfig, sink repIRStreamSink) (st *repIRStreamStats, rest []byte, err error) {
+	if cfg.Target == 0 {
+		cfg.Target = 16 << 10
+	}
+	if cfg.ProbeFirst == 0 {
+		cfg.ProbeFirst = 4
+	}
+	if cfg.ProbeEvery == 0 {
+		cfg.ProbeEvery = 64
+	}
+	target := max(cfg.Target, 64)
+	e := &repIRstreamEnc{cfg: cfg, sink: sink, lo: target / 4, hi: target * 4, mask: uint64(repIRpow2floor(target)) - 1}
+	e.win = repDFNewWindow(repIRringFor(e.hi))
+	e.w = repDFNewStreamWriter(&e.cc)
+	if cfg.Profile != repIRAutoProfile {
+		e.curProf = cfg.Profile
+	}
+	res, err := repDFStreamParse(r, e.win, e, repDFOptions{MaxBlocks: repIRmaxBlocks})
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := e.flushUnit(); err != nil {
+		return nil, nil, err
+	}
+	if err := e.w.Finish(res.TailPadBits, res.TailPadLen); err != nil {
+		return nil, nil, err
+	}
+	if err := e.emitPlain(e.win.Len()); err != nil {
+		return nil, nil, err
+	}
+	// skeleton = Marshal() of the structs, assembled from the serialised pieces
+	sk := []byte{repIRskelVersion, byte(repIRPred), e.curProf}
+	sk = repIRuvarint(sk, uint64(e.nblocks))
+	sk = append(sk, e.blockB...)
+	sk = append(sk, repIRpadMarker(res.TailPadBits, res.TailPadLen))
+	sk = repIRuvarint(sk, uint64(e.nunits))
+	sk = append(sk, e.unitB...)
+	sk = repIRuvarint(sk, uint64(e.cc.n))
+	sk = binary.LittleEndian.AppendUint32(sk, e.cc.crc)
+	e.stats.Skeleton = sk
+	e.stats.Blocks, e.stats.Units, e.stats.Tokens = e.nblocks, e.nunits, res.Tokens
+	e.stats.PlainLen, e.stats.StreamLen, e.stats.RingBytes = e.win.Len(), e.cc.n, e.win.Size()
+	e.stats.RangeIndexData = e.idxB
+	e.stats.Pred = e.pr.Stats
+	return &e.stats, res.Rest, nil
+}
+
+// Port source: zeros3-z3/ir/stream.go
+func (e *repIRstreamEnc) emitPlain(upto int64) error {
+	for e.emitted < upto {
+		n := min(upto-e.emitted, 64<<10)
+		if err := e.sink.Plain(e.win.Read(e.emitted, e.emitted+n)); err != nil {
+			return err
+		}
+		e.emitted += n
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/ir/stream.go
+func (e *repIRstreamEnc) gear(p []byte) {
+	for _, c := range p {
+		e.h = e.h<<1 + repIRgear[c]
+	}
+}
+
+// Port source: zeros3-z3/ir/stream.go
+func (e *repIRstreamEnc) BeginBlock(b *repDFBlock) error {
+	e.cur = *b
+	e.cur.Tokens = nil
+	e.cur.CLSyms = append([]repDFCLSym(nil), b.CLSyms...)
+	e.toks, e.over, e.blkPlain, e.stored = e.toks[:0], false, 0, e.stored[:0]
+	if b.Kind == repDFStored {
+		if err := e.flushUnit(); err != nil { // a unit never spans a stored block
+			return err
+		}
+		return e.w.Begin(b)
+	}
+	return e.w.Begin(b)
+}
+
+// Port source: zeros3-z3/ir/stream.go
+func (e *repIRstreamEnc) StoredData(p []byte) error {
+	e.stored = append(e.stored, p...)
+	e.gear(p)
+	e.pos += int64(len(p))
+	e.size, e.pend = 0, false
+	if e.win.Len()-e.emitted >= 64<<10 {
+		return e.emitPlain(e.win.Len())
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/ir/stream.go
+func (e *repIRstreamEnc) Token(t repDFToken) error {
+	if e.size > 0 && (e.pend || e.size >= e.hi) {
+		if err := e.flushUnit(); err != nil {
+			return err
+		}
+	}
+	n := repIRtokenPlain(t)
+	if e.unitTok == 0 {
+		e.unitPos = e.pos
+		bp := e.w.BitPos()
+		e.idxB = binary.AppendUvarint(e.idxB, uint64(bp-e.lastBits))
+		e.lastBits = bp
+	}
+	if t.IsLiteral() {
+		e.h = e.h<<1 + repIRgear[byte(t)]
+		e.size++
+		if e.size >= e.lo && e.h&e.mask == 0 {
+			e.pend = true
+		}
+		e.lits++
+	} else {
+		for _, c := range e.win.Read(e.pos, e.pos+int64(n)) {
+			e.h = e.h<<1 + repIRgear[c]
+			e.size++
+			if e.size >= e.lo && e.h&e.mask == 0 {
+				e.pend = true
+			}
+		}
+		e.runs = append(e.runs, repIRRun{Lits: e.lits, M: t})
+		e.lits = 0
+	}
+	e.unitTok++
+	e.pos += int64(n)
+	e.blkPlain += n
+	if len(e.toks) < repIRmaxPredictTokens {
+		e.toks = append(e.toks, t)
+	} else {
+		e.over = true
+	}
+	if err := e.w.Token(t); err != nil {
+		return err
+	}
+	if e.win.Len()-e.emitted >= 64<<10 {
+		return e.emitPlain(e.win.Len())
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/ir/stream.go
+func (e *repIRstreamEnc) EndBlock(b *repDFBlock, tokens int) error {
+	m := repIRBlockMeta{Final: b.Final, Kind: b.Kind}
+	switch b.Kind {
+	case repDFStored:
+		if err := e.w.Stored(b, e.stored); err != nil {
+			return err
+		}
+		m.PadBits, m.PadLen, m.StoredLen = b.PadBits, b.PadLen, b.PlainLen
+		m.AutoPad = !e.cfg.NoHeaderPred && b.PadBits == 0
+	default:
+		if err := e.w.End(); err != nil {
+			return err
+		}
+		m.NTokens = tokens
+		if b.Kind == repDFDynamic {
+			m.HLIT, m.HDIST, m.HCLEN, m.CLLens, m.CLSyms = e.cur.HLIT, e.cur.HDIST, e.cur.HCLEN, e.cur.CLLens, e.cur.CLSyms
+			if !e.cfg.NoHeaderPred && !e.over {
+				blk := e.cur
+				blk.Tokens, blk.PlainLen = e.toks, e.blkPlain
+				if repIRblockPredicted(&blk) {
+					m.Pred = true
+					e.stats.PredictedHdrs++
+				}
+			}
+		}
+	}
+	e.blockB = repIRencodeBlockMeta(e.blockB, &m, e.prevBlockN)
+	if m.Kind != repDFStored {
+		e.prevBlockN = m.NTokens
+	}
+	e.nblocks++
+	return nil
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// flushUnit encodes the open unit (if any) and hands it to the sink.
+func (e *repIRstreamEnc) flushUnit() error {
+	e.size, e.pend = 0, false
+	if e.unitTok == 0 {
+		return nil
+	}
+	if e.lits > 0 {
+		e.runs = append(e.runs, repIRRun{Lits: e.lits})
+	}
+	plainLen := int(e.pos - e.unitPos)
+	wbase := max(0, e.unitPos-repIRwarmMax)
+	plain := e.win.Read(wbase, e.unitPos+int64(plainLen))
+	rel := int(e.unitPos - wbase)
+	k := e.nunits
+	probe := e.cfg.Profile == repIRAutoProfile && (k < e.cfg.ProbeFirst || k%e.cfg.ProbeEvery == 0)
+	var data []byte
+	var err error
+	if probe {
+		bestSize := int(^uint(0) >> 1)
+		for _, id := range repIRModeProfiles(e.cfg.Mode) {
+			prof := &repIRProfiles[id]
+			p := repIRnewPredictor(plain, prof.ID)
+			d, err := p.encode(e.runs, rel, plainLen, nil)
+			if err != nil {
+				continue
+			}
+			if len(d) < bestSize {
+				bestSize, data, e.curProf = len(d), d, prof.ID
+			}
+		}
+		if data == nil {
+			return fmt.Errorf("ir: no profile could encode unit %d", k)
+		}
+	} else {
+		e.pr.plain = plain
+		e.pr.prof = &repIRProfiles[e.curProf]
+		if data, err = e.pr.encode(e.runs, rel, plainLen, nil); err != nil {
+			return fmt.Errorf("ir: predictive unit %d: %w", k, err)
+		}
+	}
+	if err := e.sink.Unit(k, data); err != nil {
+		return err
+	}
+	e.stats.UnitBytes += int64(len(data))
+	e.unitB = repIRuvarint(e.unitB, uint64(plainLen))
+	e.unitB = repIRuvarint(e.unitB, uint64(e.unitTok))
+	e.nunits++
+	e.runs, e.lits, e.unitTok = e.runs[:0], 0, 0
+	return nil
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// StreamDecodeOptions bound the streaming reconstruction.
+type repIRStreamDecodeOptions struct {
+	MaxUnitPlain int // largest unit (plaintext bytes) accepted; default 1 MiB
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// ReconstructStream rebuilds the DEFLATE stream from the skeleton, the units
+// and the sequential semantic plaintext, writing to w as it goes. Memory is
+// bounded by the skeleton, one unit and the plaintext ring. The recorded
+// length and CRC-32 are checked at the end: bytes written to w are only
+// trustworthy once it returns nil.
+func repIRReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, error), plain io.Reader, opt repIRStreamDecodeOptions) error {
+	if opt.MaxUnitPlain == 0 {
+		opt.MaxUnitPlain = 1 << 20
+	}
+	sk, err := repIRParseSkeleton(skel, 1<<40)
+	if err != nil {
+		return err
+	}
+	if sk.Codec != repIRPred {
+		return repIRcorrupt("streaming reconstruction supports the predictive codec only")
+	}
+	win := repDFNewWindow(opt.MaxUnitPlain + 2*repIRwarmMax + 4096)
+	var cc repIRcountCRC
+	sw := repDFNewStreamWriter(io.MultiWriter(&cc, w))
+	rd := &repIRplainFeed{r: plain, win: win}
+
+	// plaintext placement of units around stored blocks (as in Decode)
+	type stored struct{ atTok, n int }
+	var sts []stored
+	tok := 0
+	for i := range sk.Blocks {
+		if sk.Blocks[i].Kind == repDFStored {
+			sts = append(sts, stored{tok, sk.Blocks[i].StoredLen})
+		}
+		tok += sk.Blocks[i].NTokens
+	}
+	startPos := make([]int64, len(sk.Units))
+	{
+		var acc int64
+		si, ti := 0, 0
+		for k, u := range sk.Units {
+			for si < len(sts) && sts[si].atTok <= ti {
+				acc += int64(sts[si].n)
+				si++
+			}
+			if si < len(sts) && sts[si].atTok < ti+u.NTokens {
+				return repIRcorrupt("unit %d spans a stored block", k)
+			}
+			if u.PlainLen > opt.MaxUnitPlain {
+				return fmt.Errorf("%w: unit %d has %d plaintext bytes (max %d)", repIRErrLimit, k, u.PlainLen, opt.MaxUnitPlain)
+			}
+			startPos[k] = acc
+			acc += int64(u.PlainLen)
+			ti += u.NTokens
+		}
+	}
+
+	var (
+		pos      int64
+		unitIdx  int // next unit to load
+		runs     []repIRRun
+		ri       int
+		lits     uint32
+		unitLeft int
+	)
+	loadUnit := func() error {
+		if unitIdx >= len(sk.Units) {
+			return repIRcorrupt("token stream exhausted")
+		}
+		u := sk.Units[unitIdx]
+		if startPos[unitIdx] != pos {
+			return repIRcorrupt("unit %d starts at %d, expected %d", unitIdx, startPos[unitIdx], pos)
+		}
+		if err := rd.upto(pos + int64(u.PlainLen)); err != nil {
+			return err
+		}
+		data, err := unit(unitIdx)
+		if err != nil {
+			return err
+		}
+		wbase := max(0, pos-repIRwarmMax)
+		pl := win.Read(wbase, pos+int64(u.PlainLen))
+		p := repIRnewPredictor(pl, 0)
+		if runs, err = p.decodeUnit(data, int(pos-wbase), u.PlainLen); err != nil {
+			return fmt.Errorf("unit %d: %w", unitIdx, err)
+		}
+		n, pl2 := 0, 0
+		for _, r := range runs {
+			n += r.tokens()
+			pl2 += r.plainLen()
+		}
+		if n != u.NTokens || pl2 != u.PlainLen {
+			return repIRcorrupt("unit %d decodes to %d tokens / %d bytes, index says %d / %d", unitIdx, n, pl2, u.NTokens, u.PlainLen)
+		}
+		ri, lits, unitLeft = 0, 0, u.NTokens
+		unitIdx++
+		return nil
+	}
+	nextTok := func() (repDFToken, error) {
+		for unitLeft == 0 {
+			if err := loadUnit(); err != nil {
+				return 0, err
+			}
+		}
+		run := runs[ri]
+		var t repDFToken
+		if lits < run.Lits {
+			if err := rd.upto(pos + 1); err != nil {
+				return 0, err
+			}
+			t = repDFLiteral(win.Read(pos, pos+1)[0])
+			lits++
+			pos++
+		} else {
+			t = run.M
+			if t == 0 {
+				return 0, repIRcorrupt("unit run without a match")
+			}
+			ri, lits = ri+1, 0
+			if int64(t.Distance()) > pos {
+				return 0, repIRcorrupt("match distance %d at %d", t.Distance(), pos)
+			}
+			pos += int64(t.Length())
+		}
+		unitLeft--
+		return t, nil
+	}
+
+	for bi := range sk.Blocks {
+		m := &sk.Blocks[bi]
+		b := repDFBlock{Final: m.Final, Kind: m.Kind}
+		switch m.Kind {
+		case repDFStored:
+			b.PadBits, b.PadLen, b.PlainLen, b.AutoPad = m.PadBits, m.PadLen, m.StoredLen, m.AutoPad
+			if err := rd.upto(pos + int64(m.StoredLen)); err != nil {
+				return err
+			}
+			if m.StoredLen > opt.MaxUnitPlain {
+				return fmt.Errorf("%w: stored block of %d bytes", repIRErrLimit, m.StoredLen)
+			}
+			data := win.Read(pos, pos+int64(m.StoredLen))
+			if err := sw.Begin(&b); err != nil {
+				return err
+			}
+			if err := sw.Stored(&b, data); err != nil {
+				return err
+			}
+			pos += int64(m.StoredLen)
+			continue
+		}
+		var buf []repDFToken
+		if m.Kind == repDFDynamic && !m.Pred {
+			b.HLIT, b.HDIST, b.HCLEN, b.CLLens, b.CLSyms = m.HLIT, m.HDIST, m.HCLEN, m.CLLens, m.CLSyms
+			if b.LitLens, b.DistLens = repIRExpandLengths(m); b.LitLens == nil {
+				return repIRcorrupt("block %d code lengths", bi)
+			}
+		}
+		if m.Pred { // the header depends on every token of the block
+			start := pos
+			buf = make([]repDFToken, 0, m.NTokens)
+			for j := 0; j < m.NTokens; j++ {
+				t, err := nextTok()
+				if err != nil {
+					return err
+				}
+				buf = append(buf, t)
+			}
+			kind, pm, ok := repIRzlibBlock(buf, int(pos-start))
+			if !ok || kind != repDFDynamic {
+				return repIRcorrupt("block %d: predicted header is not dynamic", bi)
+			}
+			b.HLIT, b.HDIST, b.HCLEN, b.CLLens, b.CLSyms = pm.HLIT, pm.HDIST, pm.HCLEN, pm.CLLens, pm.CLSyms
+			if b.LitLens, b.DistLens = repIRExpandLengths(&pm); b.LitLens == nil {
+				return repIRcorrupt("block %d: predicted code lengths", bi)
+			}
+		}
+		if err := sw.Begin(&b); err != nil {
+			return err
+		}
+		if m.Pred {
+			for _, t := range buf {
+				if err := sw.Token(t); err != nil {
+					return err
+				}
+			}
+		} else {
+			for j := 0; j < m.NTokens; j++ {
+				t, err := nextTok()
+				if err != nil {
+					return err
+				}
+				if err := sw.Token(t); err != nil {
+					return err
+				}
+			}
+		}
+		if err := sw.End(); err != nil {
+			return err
+		}
+	}
+	if unitLeft != 0 || unitIdx != len(sk.Units) {
+		return repIRcorrupt("units not fully consumed")
+	}
+	if err := sw.Finish(sk.TailPadBits, sk.TailPadLen); err != nil {
+		return err
+	}
+	if err := rd.drainCheck(pos); err != nil {
+		return err
+	}
+	if int(cc.n) != sk.StreamLen || cc.crc != sk.CRC {
+		return repIRcorrupt("replayed stream is %d bytes crc %08x, skeleton says %d crc %08x", cc.n, cc.crc, sk.StreamLen, sk.CRC)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// plainFeed reads the semantic plaintext into the ring on demand.
+type repIRplainFeed struct {
+	r   io.Reader
+	win *repDFWindow
+	buf []byte
+	eof bool
+}
+
+// Port source: zeros3-z3/ir/stream.go
+func (f *repIRplainFeed) upto(n int64) error {
+	for f.win.Len() < n {
+		if f.eof {
+			return repIRcorrupt("semantic plaintext ends at %d, need %d", f.win.Len(), n)
+		}
+		if f.buf == nil {
+			f.buf = make([]byte, 32<<10)
+		}
+		want := int(min(int64(len(f.buf)), n-f.win.Len()))
+		k, err := f.r.Read(f.buf[:want])
+		f.win.Write(f.buf[:k])
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				f.eof = true
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// drainCheck verifies the plaintext reader holds exactly total bytes.
+func (f *repIRplainFeed) drainCheck(total int64) error {
+	if f.win.Len() != total {
+		if f.win.Len() < total {
+			return repIRcorrupt("plaintext shorter than the stream needs")
+		}
+		return repIRcorrupt("plaintext longer than the stream needs")
+	}
+	var b [1]byte
+	if n, _ := f.r.Read(b[:]); n != 0 {
+		return repIRcorrupt("plaintext longer than the stream needs")
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/ir/unit.go
+type repIRe2model struct {
+	lrUn    [4][24]repIRbitModel
+	lrMant  [24][4]repIRbitModel
+	lsym    [4][32]repIRbitModel
+	lext    [29][5]repIRbitModel
+	dsym    [3][32]repIRbitModel
+	dext    [30][14]repIRbitModel
+	prevLen int // previous match length
+}
+
+// Port source: zeros3-z3/ir/unit.go
+func repIRnewE2() *repIRe2model {
+	m := &repIRe2model{}
+	for i := range m.lrUn {
+		for j := range m.lrUn[i] {
+			m.lrUn[i][j].init()
+		}
+	}
+	for i := range m.lrMant {
+		for j := range m.lrMant[i] {
+			m.lrMant[i][j].init()
+		}
+	}
+	for i := range m.lsym {
+		for j := range m.lsym[i] {
+			m.lsym[i][j].init()
+		}
+	}
+	for i := range m.lext {
+		for j := range m.lext[i] {
+			m.lext[i][j].init()
+		}
+	}
+	for i := range m.dsym {
+		for j := range m.dsym[i] {
+			m.dsym[i][j].init()
+		}
+	}
+	for i := range m.dext {
+		for j := range m.dext[i] {
+			m.dext[i][j].init()
+		}
+	}
+	return m
+}
+
+// Port source: zeros3-z3/ir/unit.go
+func repIRlenBucket(l int) int {
+	switch {
+	case l <= 4:
+		return 0
+	case l <= 8:
+		return 1
+	case l <= 16:
+		return 2
+	}
+	return 3
+}
+
+// Port source: zeros3-z3/ir/unit.go
+func repIRlitBucket(n int) int {
+	switch {
+	case n == 0:
+		return 0
+	case n == 1:
+		return 1
+	case n <= 4:
+		return 2
+	}
+	return 3
+}
+
+// Port source: zeros3-z3/ir/unit.go
+// litRun codes a literal-run length (the number of literal tokens before the
+// next match, or at the end of the unit).
+func (m *repIRe2model) litRun(io *repIRrcio, n int) int {
+	io.cat = repIRCatLitRun
+	return io.gamma(m.lrUn[repIRlenBucket(m.prevLen)][:], m.lrMant[:], n)
+}
+
+// Port source: zeros3-z3/ir/unit.go
+func (m *repIRe2model) distCtx(length int) int {
+	switch {
+	case length <= 4:
+		return 0
+	case length <= 8:
+		return 1
+	}
+	return 2
+}
+
+// Port source: zeros3-z3/ir/unit.go
+// distCodeOf returns the (code, extra) of distance d, 1..32768.
+func repIRdistCodeOf(d int) (int, uint32) {
+	lo, hi := 0, 29
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if repDFDistBase(mid) <= d {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return lo, uint32(d - repDFDistBase(lo))
+}
+
+// Port source: zeros3-z3/ir/unit.go
+// match codes a match token after a literal run of lastLits literals.
+// When decoding, t is ignored. ok=false means an invalid symbol was decoded.
+func (m *repIRe2model) match(io *repIRrcio, lastLits int, t repDFToken) (repDFToken, bool) {
+	enc := io.dec == nil
+	ls, le := 0, uint32(0)
+	if enc {
+		ls, le = t.Sym()-257, t.LenExtra()
+	}
+	io.cat = repIRCatLenSym
+	ls = io.tree(m.lsym[repIRlitBucket(lastLits)][:], 5, ls)
+	if ls > 28 {
+		return 0, false
+	}
+	io.cat = repIRCatLenExtra
+	nb := repDFLengthExtraBits(257 + ls)
+	var x uint32
+	for i := nb - 1; i >= 0; i-- {
+		x = x<<1 | uint32(io.bit(&m.lext[ls][i], int(le>>uint(i))&1))
+	}
+	length := repDFLengthBase(257+ls) + int(x)
+	lb := m.distCtx(length)
+	// The recent-distance cache of Z3-06 was removed in Z3-08E: it saved
+	// <=0.2% on periodic data and cost 3% on binary structures.
+	var dc int
+	var de uint32
+	if enc {
+		dc, de = t.DistCode(), t.DistExtra()
+	}
+	io.cat = repIRCatDistSym
+	dc = io.tree(m.dsym[lb][:], 5, dc)
+	if dc > 29 {
+		return 0, false
+	}
+	io.cat = repIRCatDistExtra
+	nb = repDFDistExtraBits(dc)
+	var y uint32
+	for i := nb - 1; i >= 0; i-- {
+		y = y<<1 | uint32(io.bit(&m.dext[dc][min(nb-1-i, 13)], int(de>>uint(i))&1))
+	}
+	de = y
+	m.prevLen = length
+	return repDFMatch(257+ls, x, dc, de), true
+}
+
+// Port source: zeros3-z3/ir/zfast.go
+// zlevel is the deflate_fast row of zlib's configuration_table.
+type repIRzlevel struct{ chain, nice, maxInsert int }
+
+// Port source: zeros3-z3/ir/zfast.go
+var repIRzfastLevels = [...]repIRzlevel{{}, {4, 8, 4}, {8, 16, 5}, {32, 32, 6}}
+
+// Port source: zeros3-z3/ir/zfast.go
+const (
+	repIRzMaxDist = 32768 - (258 + 3 + 1) // MAX_DIST = w_size - MIN_LOOKAHEAD
+	repIRzHashLen = 1 << 15
+)
+
+// Port source: zeros3-z3/ir/zfast.go
+// EmuWarm overrides the warm-up length of emulating profiles (experiments only;
+// zero means the profile's own value). It must be identical when decoding.
+var repIREmuWarm int
+
+// Port source: zeros3-z3/ir/zfast.go
+// zhash is zlib's 3-byte hash for memLevel 8 (hash_bits 15, shift 5).
+func repIRzhash(b []byte, q int) uint32 {
+	return (uint32(b[q])<<10 ^ uint32(b[q+1])<<5 ^ uint32(b[q+2])) & (repIRzHashLen - 1)
+}
+
+// Port source: zeros3-z3/ir/zfast.go
+func (w *repIRwindow) emuInsert(q int) (prevHead int) {
+	if q+3 > w.end {
+		return 0
+	}
+	h := repIRzhash(w.plain, q)
+	prevHead = int(w.headGet(h))
+	w.prev[q&32767] = int32(prevHead)
+	w.headSet(h, int32(q+1))
+	return prevHead
+}
+
+// Port source: zeros3-z3/ir/zfast.go
+// emuDecide inserts pos and returns the match deflate_fast would take there
+// (length 0: literal). capLen bounds the match length (remaining input).
+func (w *repIRwindow) emuDecide(pos, capLen int) (dist, length int) {
+	head := w.emuInsert(pos)
+	if head == 0 || capLen < 3 {
+		return 0, 0
+	}
+	lv := repIRzfastLevels[w.prof.Emu]
+	cur := head - 1
+	if pos-cur > repIRzMaxDist {
+		return 0, 0
+	}
+	nice := min(lv.nice, capLen)
+	best, bestAt := 2, -1
+	chain := lv.chain
+	limit := pos - repIRzMaxDist // candidates must be > limit
+	for {
+		// zlib's quick reject: bytes at best_len, best_len-1 and the first two
+		if w.plain[cur+best] == w.plain[pos+best] && w.plain[cur+best-1] == w.plain[pos+best-1] &&
+			w.plain[cur] == w.plain[pos] && w.plain[cur+1] == w.plain[pos+1] {
+			l := repIRmatchLen(w.plain, cur, pos, capLen)
+			w.work += int64(l) + 1
+			if l > best {
+				best, bestAt = l, cur
+				if l >= nice {
+					break
+				}
+			}
+		} else {
+			w.work++
+		}
+		nx := int(w.prev[cur&32767]) - 1
+		chain--
+		if nx <= limit || nx < 0 || nx >= cur || chain == 0 {
+			break
+		}
+		cur = nx
+	}
+	if bestAt < 0 || best < 3 {
+		return 0, 0
+	}
+	return pos - bestAt, min(best, capLen)
+}
+
+// Port source: zeros3-z3/ir/zfast.go
+// emuWarm free-runs the emulator over [from, start). Tokens never cross start
+// (the real ones cannot, a unit starts on a token boundary).
+func (w *repIRwindow) emuWarm(from, start int) {
+	lv := repIRzfastLevels[w.prof.Emu]
+	pos := from
+	for pos < start {
+		_, l := w.emuDecide(pos, min(258, start-pos))
+		if l < 3 {
+			pos++
+			continue
+		}
+		if l <= lv.maxInsert {
+			for q := pos + 1; q < pos+l; q++ {
+				w.emuInsert(q)
+			}
+		}
+		pos += l
+	}
+	w.inserted = start
+}
+
+// Port source: zeros3-z3/ir/zfast.go
+// emuSearch is search() for emulating profiles: at most one candidate.
+func (w *repIRwindow) emuSearch(pos, capLen int) ([]repIRcand, int, bool) {
+	for i := range w.ent {
+		if e := &w.ent[i]; e.valid && e.pos == pos {
+			return e.buf[:e.n], e.lmax, true
+		}
+	}
+	e := &w.ent[w.nextEvict]
+	w.nextEvict ^= 1
+	e.valid = false
+	out := e.buf[:0]
+	lmax := 0
+	if pos >= w.inserted { // positions are visited once, in order
+		d, l := w.emuDecide(pos, capLen)
+		w.inserted = pos + 1
+		if l >= 3 {
+			out = append(out, repIRcand{d, l})
+			lmax = l
+		}
+	}
+	if w.work > w.budget {
+		return nil, 0, false
+	}
+	e.pos, e.valid, e.n, e.lmax = pos, true, len(out), lmax
+	return out, lmax, true
+}
+
+// Port source: zeros3-z3/ir/zfast.go
+// emuAfter applies deflate_fast's insertion rule for a token of length l at pos.
+func (w *repIRwindow) emuAfter(pos, l int) {
+	if l <= repIRzfastLevels[w.prof.Emu].maxInsert {
+		for q := pos + 1; q < pos+l; q++ {
+			w.emuInsert(q)
+		}
+	}
+	w.inserted = pos + l
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+const (
+	repIRzLCodes    = 286
+	repIRzDCodes    = 30
+	repIRzBLCodes   = 19
+	repIRzHeapSize  = 2*repIRzLCodes + 1
+	repIRzMaxBits   = 15
+	repIRzMaxBLBits = 7
+)
+
+// Port source: zeros3-z3/ir/ztrees.go
+var repIRzBLOrder = [19]int{16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15}
+
+// Port source: zeros3-z3/ir/ztrees.go
+type repIRzdesc struct {
+	slen      []uint8 // static code lengths (nil for the bit-length tree)
+	extra     []uint8
+	extraBase int
+	elems     int
+	maxLength int
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+var repIRzLDesc, repIRzDDesc, repIRzBLDesc repIRzdesc
+
+// Port source: zeros3-z3/ir/ztrees.go
+func init() {
+	sl := make([]uint8, repIRzLCodes+2)
+	for i := range sl {
+		switch {
+		case i < 144:
+			sl[i] = 8
+		case i < 256:
+			sl[i] = 9
+		case i < 280:
+			sl[i] = 7
+		default:
+			sl[i] = 8
+		}
+	}
+	le := make([]uint8, 29)
+	for i := range le {
+		le[i] = uint8(repDFLengthExtraBits(257 + i))
+	}
+	sd := make([]uint8, repIRzDCodes)
+	de := make([]uint8, repIRzDCodes)
+	for i := range sd {
+		sd[i] = 5
+		de[i] = uint8(repDFDistExtraBits(i))
+	}
+	bl := make([]uint8, repIRzBLCodes)
+	bl[16], bl[17], bl[18] = 2, 3, 7
+	repIRzLDesc = repIRzdesc{sl, le, 257, repIRzLCodes, repIRzMaxBits}
+	repIRzDDesc = repIRzdesc{sd, de, 0, repIRzDCodes, repIRzMaxBits}
+	repIRzBLDesc = repIRzdesc{nil, bl, 0, repIRzBLCodes, repIRzMaxBLBits}
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+type repIRztree struct {
+	freq, ln, dad []int
+	maxCode       int
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+func repIRnewZTree(n int) *repIRztree {
+	return &repIRztree{freq: make([]int, 2*n+2), ln: make([]int, 2*n+2), dad: make([]int, 2*n+2)}
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+type repIRzbuilder struct {
+	heap             [repIRzHeapSize + 1]int
+	heapLen, heapMax int
+	depth            [repIRzHeapSize + 1]uint8
+	blCount          [repIRzMaxBits + 1]int
+	optLen, stLen    int
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+func (b *repIRzbuilder) smaller(t *repIRztree, n, m int) bool {
+	return t.freq[n] < t.freq[m] || t.freq[n] == t.freq[m] && b.depth[n] <= b.depth[m]
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+func (b *repIRzbuilder) down(t *repIRztree, k int) {
+	v := b.heap[k]
+	j := k << 1
+	for j <= b.heapLen {
+		if j < b.heapLen && b.smaller(t, b.heap[j+1], b.heap[j]) {
+			j++
+		}
+		if b.smaller(t, v, b.heap[j]) {
+			break
+		}
+		b.heap[k] = b.heap[j]
+		k = j
+		j <<= 1
+	}
+	b.heap[k] = v
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+func (b *repIRzbuilder) build(t *repIRztree, d *repIRzdesc) {
+	maxCode := -1
+	b.heapLen, b.heapMax = 0, repIRzHeapSize
+	for n := 0; n < d.elems; n++ {
+		if t.freq[n] != 0 {
+			b.heapLen++
+			b.heap[b.heapLen] = n
+			maxCode = n
+			b.depth[n] = 0
+		} else {
+			t.ln[n] = 0
+		}
+	}
+	for b.heapLen < 2 {
+		node := 0
+		if maxCode < 2 {
+			maxCode++
+			node = maxCode
+		}
+		b.heapLen++
+		b.heap[b.heapLen] = node
+		t.freq[node] = 1
+		b.depth[node] = 0
+		b.optLen--
+		if d.slen != nil {
+			b.stLen -= int(d.slen[node])
+		}
+	}
+	t.maxCode = maxCode
+	for n := b.heapLen / 2; n >= 1; n-- {
+		b.down(t, n)
+	}
+	node := d.elems
+	for {
+		n := b.heap[1]
+		b.heap[1] = b.heap[b.heapLen]
+		b.heapLen--
+		b.down(t, 1)
+		m := b.heap[1]
+		b.heapMax--
+		b.heap[b.heapMax] = n
+		b.heapMax--
+		b.heap[b.heapMax] = m
+		t.freq[node] = t.freq[n] + t.freq[m]
+		b.depth[node] = max(b.depth[n], b.depth[m]) + 1
+		t.dad[n], t.dad[m] = node, node
+		b.heap[1] = node
+		node++
+		b.down(t, 1)
+		if b.heapLen < 2 {
+			break
+		}
+	}
+	b.heapMax--
+	b.heap[b.heapMax] = b.heap[1]
+	b.genBitlen(t, d)
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+func (b *repIRzbuilder) genBitlen(t *repIRztree, d *repIRzdesc) {
+	maxCode := t.maxCode
+	overflow := 0
+	for i := range b.blCount {
+		b.blCount[i] = 0
+	}
+	t.ln[b.heap[b.heapMax]] = 0
+	h := b.heapMax + 1
+	for ; h < repIRzHeapSize; h++ {
+		n := b.heap[h]
+		bits := t.ln[t.dad[n]] + 1
+		if bits > d.maxLength {
+			bits = d.maxLength
+			overflow++
+		}
+		t.ln[n] = bits
+		if n > maxCode {
+			continue
+		}
+		b.blCount[bits]++
+		xbits := 0
+		if n >= d.extraBase {
+			xbits = int(d.extra[n-d.extraBase])
+		}
+		f := t.freq[n]
+		b.optLen += f * (bits + xbits)
+		if d.slen != nil {
+			b.stLen += f * (int(d.slen[n]) + xbits)
+		}
+	}
+	if overflow == 0 {
+		return
+	}
+	for {
+		bits := d.maxLength - 1
+		for b.blCount[bits] == 0 {
+			bits--
+		}
+		b.blCount[bits]--
+		b.blCount[bits+1] += 2
+		b.blCount[d.maxLength]--
+		overflow -= 2
+		if overflow <= 0 {
+			break
+		}
+	}
+	for bits := d.maxLength; bits != 0; bits-- {
+		n := b.blCount[bits]
+		for n != 0 {
+			h--
+			m := b.heap[h]
+			if m > maxCode {
+				continue
+			}
+			if t.ln[m] != bits {
+				b.optLen += (bits - t.ln[m]) * t.freq[m]
+				t.ln[m] = bits
+			}
+			n--
+		}
+	}
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+// scan counts the code-length symbols zlib's scan_tree would emit.
+func repIRzScan(t *repIRztree, maxCode int, bl *repIRztree) {
+	prevlen, nextlen, count, maxCount, minCount := -1, t.ln[0], 0, 7, 4
+	if nextlen == 0 {
+		maxCount, minCount = 138, 3
+	}
+	t.ln[maxCode+1] = 0xffff
+	for n := 0; n <= maxCode; n++ {
+		curlen := nextlen
+		nextlen = t.ln[n+1]
+		count++
+		if count < maxCount && curlen == nextlen {
+			continue
+		} else if count < minCount {
+			bl.freq[curlen] += count
+		} else if curlen != 0 {
+			if curlen != prevlen {
+				bl.freq[curlen]++
+			}
+			bl.freq[16]++
+		} else if count <= 10 {
+			bl.freq[17]++
+		} else {
+			bl.freq[18]++
+		}
+		count, prevlen = 0, curlen
+		if nextlen == 0 {
+			maxCount, minCount = 138, 3
+		} else if curlen == nextlen {
+			maxCount, minCount = 6, 3
+		} else {
+			maxCount, minCount = 7, 4
+		}
+	}
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+// zSend returns the code-length symbol sequence zlib's send_tree would emit.
+func repIRzSend(t *repIRztree, maxCode int, out []repDFCLSym) []repDFCLSym {
+	prevlen, nextlen, count, maxCount, minCount := -1, t.ln[0], 0, 7, 4
+	if nextlen == 0 {
+		maxCount, minCount = 138, 3
+	}
+	for n := 0; n <= maxCode; n++ {
+		curlen := nextlen
+		nextlen = t.ln[n+1]
+		count++
+		if count < maxCount && curlen == nextlen {
+			continue
+		} else if count < minCount {
+			for ; count != 0; count-- {
+				out = append(out, repDFCLSym{Sym: uint8(curlen)})
+			}
+		} else if curlen != 0 {
+			if curlen != prevlen {
+				out = append(out, repDFCLSym{Sym: uint8(curlen)})
+				count--
+			}
+			out = append(out, repDFCLSym{Sym: 16, Extra: uint8(count - 3)})
+		} else if count <= 10 {
+			out = append(out, repDFCLSym{Sym: 17, Extra: uint8(count - 3)})
+		} else {
+			out = append(out, repDFCLSym{Sym: 18, Extra: uint8(count - 11)})
+		}
+		count, prevlen = 0, curlen
+		if nextlen == 0 {
+			maxCount, minCount = 138, 3
+		} else if curlen == nextlen {
+			maxCount, minCount = 6, 3
+		} else {
+			maxCount, minCount = 7, 4
+		}
+	}
+	return out
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+// maxPredictTokens keeps zlib's 16-bit frequency fields from overflowing.
+const repIRmaxPredictTokens = 32767
+
+// Port source: zeros3-z3/ir/ztrees.go
+// zlibBlock predicts what zlib/gzip's _tr_flush_block writes for a block of
+// toks (storedLen = its plaintext bytes). ok=false when it is not predictable
+// (stored, or too many tokens). For Dynamic, m carries the header fields.
+func repIRzlibBlock(toks []repDFToken, storedLen int) (kind repDFBlockKind, m repIRBlockMeta, ok bool) {
+	if len(toks) == 0 || len(toks) > repIRmaxPredictTokens {
+		return 0, m, false
+	}
+	lt, dt, bt := repIRnewZTree(repIRzLCodes), repIRnewZTree(repIRzDCodes), repIRnewZTree(repIRzBLCodes)
+	for _, t := range toks {
+		lt.freq[t.Sym()]++
+		if !t.IsLiteral() {
+			dt.freq[t.DistCode()]++
+		}
+	}
+	lt.freq[256]++
+	b := &repIRzbuilder{}
+	b.build(lt, &repIRzLDesc)
+	b.build(dt, &repIRzDDesc)
+	repIRzScan(lt, lt.maxCode, bt)
+	repIRzScan(dt, dt.maxCode, bt)
+	b.build(bt, &repIRzBLDesc)
+	maxBL := repIRzBLCodes - 1
+	for ; maxBL >= 3; maxBL-- {
+		if bt.ln[repIRzBLOrder[maxBL]] != 0 {
+			break
+		}
+	}
+	b.optLen += 3*(maxBL+1) + 5 + 5 + 4
+	optB, stB := (b.optLen+3+7)>>3, (b.stLen+3+7)>>3
+	if stB <= optB {
+		optB = stB
+	}
+	switch {
+	case storedLen+4 <= optB:
+		return repDFStored, m, false
+	case stB == optB:
+		return repDFFixed, m, true
+	}
+	m.Kind = repDFDynamic
+	m.HLIT, m.HDIST, m.HCLEN = uint8(lt.maxCode+1-257), uint8(dt.maxCode), uint8(maxBL+1-4)
+	for i := 0; i < repIRzBLCodes; i++ {
+		m.CLLens[i] = uint8(bt.ln[i])
+	}
+	m.CLSyms = repIRzSend(lt, lt.maxCode, nil)
+	m.CLSyms = repIRzSend(dt, dt.maxCode, m.CLSyms)
+	return repDFDynamic, m, true
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
+// blockPredicted reports whether zlibBlock reproduces the block's kind and header.
+func repIRblockPredicted(b *repDFBlock) bool {
+	if b.Kind == repDFStored {
+		return false
+	}
+	kind, m, ok := repIRzlibBlock(b.Tokens, b.PlainLen)
+	if !ok || kind != b.Kind {
+		return false
+	}
+	if kind == repDFFixed {
+		return true
+	}
+	return m.HLIT == b.HLIT && m.HDIST == b.HDIST && m.HCLEN == b.HCLEN && m.CLLens == b.CLLens && reflect.DeepEqual(m.CLSyms, b.CLSyms)
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+// revReader reads a Zstandard backward bitstream. The last byte carries a 1-bit end
+// marker above the data bits; reading starts at the highest data bit and moves down,
+// so the first value read is the last one written.
+type repZSrevReader struct {
+	b   []byte
+	pos int // data bits not yet read: bits [0,pos) remain
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+func repZSnewRevReader(b []byte) (*repZSrevReader, error) {
+	if len(b) == 0 {
+		return nil, repZScorrupt("empty bitstream")
+	}
+	last := b[len(b)-1]
+	if last == 0 {
+		return nil, repZScorrupt("bitstream without end marker")
+	}
+	return &repZSrevReader{b: b, pos: (len(b)-1)*8 + bits.Len8(last) - 1}, nil
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+func (r *repZSrevReader) load(i int) uint64 {
+	if i+8 <= len(r.b) {
+		return binary.LittleEndian.Uint64(r.b[i:])
+	}
+	var v uint64
+	for k := 0; k < 8 && i+k < len(r.b); k++ {
+		v |= uint64(r.b[i+k]) << (8 * k)
+	}
+	return v
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+// get returns bits [pos-n,pos) with the caller guaranteeing 0 <= n <= 32, n <= pos.
+func (r *repZSrevReader) get(n int) uint32 {
+	if n == 0 {
+		return 0
+	}
+	s := r.pos - n
+	return uint32(r.load(s>>3)>>(uint(s)&7)) & (1<<uint(n) - 1)
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+// read consumes n bits (n <= 32); ok is false if fewer remain.
+func (r *repZSrevReader) read(n int) (uint32, bool) {
+	if n > r.pos {
+		return 0, false
+	}
+	v := r.get(n)
+	r.pos -= n
+	return v, true
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+// peek returns the next n bits (n <= 32) without consuming, zero-extended on the right
+// past the beginning of the stream (Huffman lookups near the end).
+func (r *repZSrevReader) peek(n int) uint32 {
+	if n <= r.pos {
+		return r.get(n)
+	}
+	return r.get(r.pos) << uint(n-r.pos)
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+func (r *repZSrevReader) skip(n int) bool {
+	if n > r.pos {
+		return false
+	}
+	r.pos -= n
+	return true
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+// revWriter builds a backward bitstream: values are appended least-significant-bit
+// first and finish adds the end marker and zero padding.
+type repZSrevWriter struct {
+	buf []byte
+	acc uint64
+	n   int
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+func (w *repZSrevWriter) write(v uint32, n int) {
+	if n == 0 {
+		return
+	}
+	w.acc |= uint64(v) << uint(w.n)
+	w.n += n
+	for w.n >= 8 {
+		w.buf = append(w.buf, byte(w.acc))
+		w.acc >>= 8
+		w.n -= 8
+	}
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+func (w *repZSrevWriter) finish() []byte {
+	w.write(1, 1)
+	if w.n > 0 {
+		w.buf = append(w.buf, byte(w.acc))
+		w.acc, w.n = 0, 0
+	}
+	return w.buf
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+// fwdReader reads an LSB-first forward bitstream (the FSE table description).
+type repZSfwdReader struct {
+	b   []byte
+	pos int // bits consumed
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+func (r *repZSfwdReader) read(n int) (uint32, bool) {
+	if r.pos+n > len(r.b)*8 {
+		return 0, false
+	}
+	var v uint64
+	for k, i := 0, r.pos>>3; k < 6 && i+k < len(r.b); k++ {
+		v |= uint64(r.b[i+k]) << (8 * k)
+	}
+	v = v >> (uint(r.pos) & 7) & (1<<uint(n) - 1)
+	r.pos += n
+	return uint32(v), true
+}
+
+// Port source: zeros3-z3/zstdz3/bits.go
+func (r *repZSfwdReader) bytes() int { return (r.pos + 7) >> 3 }
+
+// Port source: zeros3-z3/zstdz3/block.go
+const (
+	repZSlitRaw     = 0
+	repZSlitRLE     = 1
+	repZSlitComp    = 2
+	repZSlitTreeles = 3
+
+	repZSiLL = 0
+	repZSiOF = 1
+	repZSiML = 2
+)
+
+// Port source: zeros3-z3/zstdz3/block.go
+// codingState is what a compressed block inherits from earlier blocks of its frame.
+type repZScodingState struct {
+	huff *repZShuffTable
+	fse  [3]*repZSfseTable // LL, OF, ML
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+type repZSlitHdr struct {
+	mode, form uint8
+	regen      int
+	treeDesc   []byte // verbatim tree description (mode litComp)
+	tree       *repZShuffTable
+	streams    int
+	body       []byte // raw: the literals; RLE: one byte; else jump table + streams
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+type repZSseqHdr struct {
+	n        int
+	modes    byte
+	tabBytes []byte // verbatim table descriptions between the modes byte and the bitstream
+	tabs     [3]*repZSfseTable
+	stream   []byte
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+type repZSblockHdr struct {
+	lit repZSlitHdr
+	seq repZSseqHdr
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+var (
+	repZSllBase = [36]uint32{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 40, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536}
+	repZSllBits = [36]uint8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	repZSmlBase = [53]uint32{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027, 2051, 4099, 8195, 16387, 32771, 65539}
+	repZSmlBits = [53]uint8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+
+	repZSmaxAcc = [3]int{repZSmaxAccLL, repZSmaxAccOF, repZSmaxAccML}
+	repZSmaxSym = [3]int{repZSmaxSymLL, repZSmaxSymOF, repZSmaxSymML}
+)
+
+// Port source: zeros3-z3/zstdz3/block.go
+func repZSllCode(v uint32) int {
+	if v < 16 {
+		return int(v)
+	}
+	return sort.Search(36, func(i int) bool { return repZSllBase[i] > v }) - 1
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+func repZSmlCode(v uint32) int {
+	if v < 35 {
+		return int(v) - 3
+	}
+	return sort.Search(53, func(i int) bool { return repZSmlBase[i] > v }) - 1
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+func repZSofCode(v uint32) int { return 31 - bits.LeadingZeros32(v) }
+
+// Port source: zeros3-z3/zstdz3/block.go
+// seqRec is one sequence: literal length, match length, and the offset value as coded
+// (1..3 are repeat-offset codes, larger values are offset+3).
+type repZSseqRec struct{ ll, ml, of uint32 }
+
+// Port source: zeros3-z3/zstdz3/block.go
+func repZSscanBlock(st *repZScodingState, c []byte, bmax int) (*repZSblockHdr, error) {
+	h := &repZSblockHdr{}
+	used, err := repZSscanLiterals(st, c, bmax, &h.lit)
+	if err != nil {
+		return nil, err
+	}
+	if err := repZSscanSeqs(st, c[used:], bmax, &h.seq); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+func repZSscanLiterals(st *repZScodingState, c []byte, bmax int, l *repZSlitHdr) (int, error) {
+	if len(c) == 0 {
+		return 0, repZScorrupt("empty compressed block")
+	}
+	b0 := c[0]
+	l.mode = b0 & 3
+	sf := b0 >> 2 & 3
+	need := func(n int) error {
+		if len(c) < n {
+			return repZScorrupt("truncated literals header")
+		}
+		return nil
+	}
+	if l.mode == repZSlitRaw || l.mode == repZSlitRLE {
+		var hdr int
+		switch sf {
+		case 0, 2:
+			hdr, l.form, l.regen = 1, 0, int(b0>>3)
+		case 1:
+			if err := need(2); err != nil {
+				return 0, err
+			}
+			hdr, l.form, l.regen = 2, 1, int(b0>>4)|int(c[1])<<4
+		default:
+			if err := need(3); err != nil {
+				return 0, err
+			}
+			hdr, l.form, l.regen = 3, 2, int(b0>>4)|int(c[1])<<4|int(c[2])<<12
+		}
+		if l.regen > bmax {
+			return 0, repZScorrupt("literals of %d bytes in a block of at most %d", l.regen, bmax)
+		}
+		n := l.regen
+		if l.mode == repZSlitRLE {
+			n = 1
+		}
+		if len(c)-hdr < n {
+			return 0, repZScorrupt("truncated literals")
+		}
+		l.body = c[hdr : hdr+n]
+		return hdr + n, nil
+	}
+	l.form = sf
+	var hdr, regen, comp int
+	switch sf {
+	case 0, 1:
+		if err := need(3); err != nil {
+			return 0, err
+		}
+		v := uint32(c[0]) | uint32(c[1])<<8 | uint32(c[2])<<16
+		hdr, regen, comp = 3, int(v>>4&0x3ff), int(v>>14&0x3ff)
+	case 2:
+		if err := need(4); err != nil {
+			return 0, err
+		}
+		v := binary.LittleEndian.Uint32(c)
+		hdr, regen, comp = 4, int(v>>4&0x3fff), int(v>>18&0x3fff)
+	default:
+		if err := need(5); err != nil {
+			return 0, err
+		}
+		v := uint64(binary.LittleEndian.Uint32(c)) | uint64(c[4])<<32
+		hdr, regen, comp = 5, int(v>>4&0x3ffff), int(v>>22&0x3ffff)
+	}
+	l.streams = 4
+	if sf == 0 {
+		l.streams = 1
+	}
+	if regen == 0 || regen > bmax {
+		return 0, repZScorrupt("compressed literals of %d bytes in a block of at most %d", regen, bmax)
+	}
+	if comp == 0 || len(c)-hdr < comp {
+		return 0, repZScorrupt("literals section of %d bytes overruns the block", comp)
+	}
+	l.regen = regen
+	sec := c[hdr : hdr+comp]
+	if l.mode == repZSlitComp {
+		t, n, err := repZSreadHuffTree(sec)
+		if err != nil {
+			return 0, err
+		}
+		l.treeDesc, l.tree, sec = sec[:n], t, sec[n:]
+		st.huff = t
+	} else {
+		if st.huff == nil {
+			return 0, repZScorrupt("treeless literals without a previous huffman tree")
+		}
+		l.tree = st.huff
+	}
+	if len(sec) == 0 || (l.streams == 4 && len(sec) < 7) {
+		return 0, repZScorrupt("literals streams missing")
+	}
+	l.body = sec
+	return hdr + comp, nil
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+// parseSeqTables reads the three table descriptions selected by modes from b and
+// resolves repeat modes against prev. It returns the tables and the bytes used.
+func repZSparseSeqTables(modes byte, b []byte, prev [3]*repZSfseTable) (tabs [3]*repZSfseTable, used int, err error) {
+	for k := 0; k < 3; k++ {
+		switch modes >> uint(6-2*k) & 3 {
+		case 0:
+			tabs[k] = repZSpredTables[k]
+		case 1:
+			if used >= len(b) {
+				return tabs, 0, repZScorrupt("truncated rle table")
+			}
+			if int(b[used]) > repZSmaxSym[k] {
+				return tabs, 0, repZScorrupt("rle symbol %d", b[used])
+			}
+			tabs[k] = repZSrleTable(b[used])
+			used++
+		case 2:
+			t, n, err := repZSreadFSEDesc(b[used:], repZSmaxAcc[k], repZSmaxSym[k])
+			if err != nil {
+				return tabs, 0, err
+			}
+			t.kind, t.desc = 2, append([]byte(nil), b[used:used+n]...)
+			tabs[k] = t
+			used += n
+		default:
+			if prev[k] == nil {
+				return tabs, 0, repZScorrupt("repeat table without a previous table")
+			}
+			tabs[k] = prev[k]
+		}
+	}
+	return tabs, used, nil
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+func repZSscanSeqs(st *repZScodingState, c []byte, bmax int, s *repZSseqHdr) error {
+	if len(c) == 0 {
+		return repZScorrupt("missing sequences section")
+	}
+	b0 := int(c[0])
+	p := 1
+	switch {
+	case b0 == 0:
+		if len(c) != 1 {
+			return repZScorrupt("bytes after an empty sequences section")
+		}
+		return nil
+	case b0 < 128:
+		s.n = b0
+	case b0 < 255:
+		if len(c) < 2 {
+			return repZScorrupt("truncated sequence count")
+		}
+		s.n, p = (b0-128)<<8+int(c[1]), 2
+	default:
+		if len(c) < 3 {
+			return repZScorrupt("truncated sequence count")
+		}
+		s.n, p = int(c[1])+int(c[2])<<8+0x7f00, 3
+	}
+	if s.n > bmax/3 {
+		return repZScorrupt("%d sequences cannot fit a block of %d", s.n, bmax)
+	}
+	if len(c) < p+1 {
+		return repZScorrupt("truncated sequence modes")
+	}
+	s.modes = c[p]
+	if s.modes&3 != 0 {
+		return repZScorrupt("reserved sequence mode bits")
+	}
+	tabs, used, err := repZSparseSeqTables(s.modes, c[p+1:], st.fse)
+	if err != nil {
+		return err
+	}
+	s.tabs, s.tabBytes = tabs, c[p+1:p+1+used]
+	s.stream = c[p+1+used:]
+	if len(s.stream) == 0 {
+		return repZScorrupt("missing sequence bitstream")
+	}
+	st.fse = tabs
+	return nil
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+func repZSfitBuf(b []byte, n int) []byte {
+	if cap(b) < n {
+		return make([]byte, n, max(n, 2*cap(b)))
+	}
+	return b[:n]
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+// decodeLiterals returns the regenerated literal bytes (into scratch when possible).
+func repZSdecodeLiterals(l *repZSlitHdr, scratch []byte) ([]byte, error) {
+	switch l.mode {
+	case repZSlitRaw:
+		return l.body, nil
+	case repZSlitRLE:
+		out := repZSfitBuf(scratch, l.regen)
+		for i := range out {
+			out[i] = l.body[0]
+		}
+		return out, nil
+	}
+	out := repZSfitBuf(scratch, l.regen)
+	if l.streams == 1 {
+		return out, l.tree.decodeStream(l.body, out)
+	}
+	j, body := l.body[:6], l.body[6:]
+	s1, s2, s3 := int(binary.LittleEndian.Uint16(j)), int(binary.LittleEndian.Uint16(j[2:])), int(binary.LittleEndian.Uint16(j[4:]))
+	s4 := len(body) - s1 - s2 - s3
+	seg := (l.regen + 3) / 4
+	last := l.regen - 3*seg
+	if s4 < 1 || s1 < 1 || s2 < 1 || s3 < 1 || last < 0 {
+		return nil, repZScorrupt("bad huffman jump table")
+	}
+	parts := [4][]byte{body[:s1], body[s1 : s1+s2], body[s1+s2 : s1+s2+s3], body[s1+s2+s3:]}
+	for i := 0; i < 4; i++ {
+		lo, hi := i*seg, (i+1)*seg
+		if i == 3 {
+			hi = l.regen
+		}
+		if err := l.tree.decodeStream(parts[i], out[lo:hi]); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+// decodeSeqs decodes the sequence bitstream. rank holds, per table, the position of
+// the final state among the states that carry its symbol: the one free choice a
+// producer makes that the symbols themselves do not determine.
+func repZSdecodeSeqs(s *repZSseqHdr) (trip []repZSseqRec, rank [3]uint32, err error) {
+	r, err := repZSnewRevReader(s.stream)
+	if err != nil {
+		return nil, rank, err
+	}
+	var st [3]int
+	for _, k := range [3]int{repZSiLL, repZSiOF, repZSiML} {
+		v, ok := r.read(int(s.tabs[k].acc))
+		if !ok {
+			return nil, rank, repZScorrupt("truncated sequence states")
+		}
+		st[k] = int(v)
+	}
+	trip = make([]repZSseqRec, s.n)
+	for i := 0; i < s.n; i++ {
+		el, eo, em := s.tabs[repZSiLL].dec[st[repZSiLL]], s.tabs[repZSiOF].dec[st[repZSiOF]], s.tabs[repZSiML].dec[st[repZSiML]]
+		ob, ok1 := r.read(int(eo.sym))
+		mb, ok2 := r.read(int(repZSmlBits[em.sym]))
+		lb, ok3 := r.read(int(repZSllBits[el.sym]))
+		if !(ok1 && ok2 && ok3) {
+			return nil, rank, repZScorrupt("sequence bitstream underrun")
+		}
+		trip[i] = repZSseqRec{ll: repZSllBase[el.sym] + lb, ml: repZSmlBase[em.sym] + mb, of: 1<<uint(eo.sym) + ob}
+		if i+1 == s.n {
+			break
+		}
+		for _, p := range [3]struct {
+			k int
+			e repZSfseDec
+		}{{repZSiLL, el}, {repZSiML, em}, {repZSiOF, eo}} {
+			v, ok := r.read(int(p.e.nb))
+			if !ok {
+				return nil, rank, repZScorrupt("sequence bitstream underrun")
+			}
+			st[p.k] = int(p.e.base) + int(v)
+		}
+	}
+	if r.pos != 0 {
+		return nil, rank, repZScorrupt("sequence bitstream has %d unused bits", r.pos)
+	}
+	for k := 0; k < 3; k++ {
+		rank[k] = uint32(s.tabs[k].rank(st[k]))
+	}
+	return trip, rank, nil
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+// history is the sliding window of one frame's decoded output.
+type repZShistory struct {
+	buf    []byte
+	window int64
+	total  int64 // bytes of the frame decoded before the current block
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+// reserve makes room for a block of up to n bytes, keeping window bytes of history.
+// The buffer slides only when full, with slack so that the copy is amortized.
+func (h *repZShistory) reserve(n int) {
+	if len(h.buf)+n <= cap(h.buf) {
+		return
+	}
+	keep := min(int64(len(h.buf)), h.window)
+	need := keep + int64(n)
+	if int64(cap(h.buf)) >= need {
+		copy(h.buf, h.buf[int64(len(h.buf))-keep:])
+		h.buf = h.buf[:keep]
+		return
+	}
+	nb := make([]byte, keep, need+min(h.window, 16<<20)+4*repZSmaxBlock)
+	copy(nb, h.buf[int64(len(h.buf))-keep:])
+	h.buf = nb
+}
+
+// Port source: zeros3-z3/zstdz3/block.go
+// exec runs the sequences over the literals, appending the block's output to h.buf and
+// updating the recent offsets. bmax bounds the block's decoded size.
+func (h *repZShistory) exec(trip []repZSseqRec, lits []byte, rep *[3]uint32, bmax int) error {
+	out := h.buf
+	start := len(out)
+	lp := 0
+	for _, s := range trip {
+		ll, ml := int(s.ll), int(s.ml)
+		if ll > len(lits)-lp {
+			return repZScorrupt("sequence uses more literals than the section holds")
+		}
+		if len(out)-start+ll+ml > bmax {
+			return repZScorrupt("block decodes past %d bytes", bmax)
+		}
+		out = append(out, lits[lp:lp+ll]...)
+		lp += ll
+		off, err := repZSresolveOffset(rep, s)
+		if err != nil {
+			return err
+		}
+		if int64(off) > h.window || int(off) > len(out) || off == 0 {
+			return repZScorrupt("offset %d beyond the %d bytes of history", off, min(int64(len(out)), h.window))
+		}
+		for rem := ml; rem > 0; {
+			n := min(rem, int(off))
+			out = append(out, out[len(out)-int(off):len(out)-int(off)+n]...)
+			rem -= n
+		}
+	}
+	out = append(out, lits[lp:]...)
+	if len(out)-start > bmax {
+		return repZScorrupt("block decodes past %d bytes", bmax)
+	}
+	h.buf = out
+	return nil
+}
+
+// Port source: zeros3-z3/zstdz3/doc.go
+var (
+	// ErrCorrupt reports a stream that violates the format.
+	repZSErrCorrupt = errors.New("zstdz3: corrupt stream")
+	// ErrUnsupported reports a valid-looking construct outside the implemented subset
+	// (dictionary dependency, legacy frames); never decoded on a best-effort basis.
+	repZSErrUnsupported = errors.New("zstdz3: unsupported feature")
+	// ErrLimit reports that a configured bound would be exceeded.
+	repZSErrLimit = errors.New("zstdz3: limit exceeded")
+	// ErrIR reports a malformed serialized reconstruction description.
+	repZSErrIR = errors.New("zstdz3: malformed reconstruction description")
+)
+
+// Port source: zeros3-z3/zstdz3/doc.go
+func repZScorrupt(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repZSErrCorrupt}, a...)...)
+}
+
+// Port source: zeros3-z3/zstdz3/doc.go
+func repZSunsupported(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repZSErrUnsupported}, a...)...)
+}
+
+// Port source: zeros3-z3/zstdz3/doc.go
+func repZSlimit(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repZSErrLimit}, a...)...)
+}
+
+// Port source: zeros3-z3/zstdz3/doc.go
+func repZSbadIR(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repZSErrIR}, a...)...)
+}
+
+// Port source: zeros3-z3/zstdz3/doc.go
+// Limits bound every resource a hostile stream could consume. Zero fields take the
+// DefaultLimits value. Memory is the window (history) plus one block plus the
+// description being built; it never follows a declared Frame_Content_Size.
+type repZSLimits struct {
+	MaxFrames       int   // frames (standard and skippable)
+	MaxBlocks       int   // blocks in the stream
+	MaxWindow       int64 // Window_Size a frame may declare
+	MaxFrameDecoded int64 // decoded bytes of one frame
+	MaxTotalDecoded int64 // decoded bytes of the stream
+	MaxLiterals     int64 // regenerated literal bytes in the stream
+	MaxSequences    int64 // sequences in the stream
+	MaxSkippable    int64 // bytes of one skippable frame payload (kept verbatim)
+	MaxIRBytes      int64 // skeleton + unit bytes
+	MaxRatio        int64 // decoded bytes per compressed byte (plus a fixed allowance)
+}
+
+// Port source: zeros3-z3/zstdz3/doc.go
+// DefaultLimits are generous enough for multi-gigabyte container layers and small
+// enough that a hostile header cannot force a large allocation.
+func repZSDefaultLimits() repZSLimits {
+	return repZSLimits{
+		MaxFrames: 1 << 20, MaxBlocks: 1 << 24, MaxWindow: 1 << 27,
+		MaxFrameDecoded: 1 << 40, MaxTotalDecoded: 1 << 40,
+		MaxLiterals: 1 << 40, MaxSequences: 1 << 34, MaxSkippable: 1 << 28,
+		MaxIRBytes: 1 << 34, MaxRatio: 1 << 16,
+	}
+}
+
+// Port source: zeros3-z3/zstdz3/doc.go
+func (l repZSLimits) fill() repZSLimits {
+	d := repZSDefaultLimits()
+	if l.MaxFrames <= 0 {
+		l.MaxFrames = d.MaxFrames
+	}
+	if l.MaxBlocks <= 0 {
+		l.MaxBlocks = d.MaxBlocks
+	}
+	if l.MaxWindow <= 0 {
+		l.MaxWindow = d.MaxWindow
+	}
+	if l.MaxFrameDecoded <= 0 {
+		l.MaxFrameDecoded = d.MaxFrameDecoded
+	}
+	if l.MaxTotalDecoded <= 0 {
+		l.MaxTotalDecoded = d.MaxTotalDecoded
+	}
+	if l.MaxLiterals <= 0 {
+		l.MaxLiterals = d.MaxLiterals
+	}
+	if l.MaxSequences <= 0 {
+		l.MaxSequences = d.MaxSequences
+	}
+	if l.MaxSkippable <= 0 {
+		l.MaxSkippable = d.MaxSkippable
+	}
+	if l.MaxIRBytes <= 0 {
+		l.MaxIRBytes = d.MaxIRBytes
+	}
+	if l.MaxRatio <= 0 {
+		l.MaxRatio = d.MaxRatio
+	}
+	return l
+}
+
+// Port source: zeros3-z3/zstdz3/doc.go
+const (
+	repZSmagicStd   = 0xFD2FB528
+	repZSmagicSkip  = 0x184D2A50
+	repZSmagicSkipM = 0xFFFFFFF0
+	repZSmaxBlock   = 128 << 10 // Block_Maximum_Size
+	// ratioSlack lets tiny streams (a few header bytes) decode to a block or two.
+	repZSratioSlack = 1 << 20
+)
+
+// Port source: zeros3-z3/zstdz3/frame.go
+// frameHdr is a parsed standard-frame header. raw is the exact header (from the Frame
+// Header Descriptor to the end of Frame_Content_Size), kept verbatim in the skeleton.
+type repZSframeHdr struct {
+	raw      []byte
+	single   bool
+	checksum bool
+	dictID   uint32
+	hasFCS   bool
+	fcs      uint64
+	window   int64
+}
+
+// Port source: zeros3-z3/zstdz3/frame.go
+func repZSfhdLen(fhd byte) int {
+	n := 1
+	if fhd>>5&1 == 0 {
+		n++
+	}
+	n += [4]int{0, 1, 2, 4}[fhd&3]
+	switch fhd >> 6 {
+	case 0:
+		if fhd>>5&1 == 1 {
+			n++
+		}
+	case 1:
+		n += 2
+	case 2:
+		n += 4
+	default:
+		n += 8
+	}
+	return n
+}
+
+// Port source: zeros3-z3/zstdz3/frame.go
+// parseFrameHeader validates raw (exactly fhdLen bytes) against the format and lim.
+func repZSparseFrameHeader(raw []byte, lim repZSLimits) (*repZSframeHdr, error) {
+	return repZSparseFrameHeaderX(raw, lim, false)
+}
+
+// Port source: zeros3-z3/zstdz3/frame.go
+func repZSparseFrameHeaderX(raw []byte, lim repZSLimits, allowDict bool) (*repZSframeHdr, error) {
+	if len(raw) == 0 || len(raw) != repZSfhdLen(raw[0]) {
+		return nil, repZScorrupt("frame header length")
+	}
+	fhd := raw[0]
+	if fhd>>3&1 != 0 {
+		return nil, repZScorrupt("reserved frame header bit set")
+	}
+	h := &repZSframeHdr{raw: raw, single: fhd>>5&1 == 1, checksum: fhd>>2&1 == 1}
+	p := 1
+	if !h.single {
+		wd := raw[1]
+		p = 2
+		wlog := 10 + uint(wd>>3)
+		base := int64(1) << wlog
+		h.window = base + base/8*int64(wd&7)
+	}
+	switch fhd & 3 {
+	case 1:
+		h.dictID, p = uint32(raw[p]), p+1
+	case 2:
+		h.dictID, p = uint32(binary.LittleEndian.Uint16(raw[p:])), p+2
+	case 3:
+		h.dictID, p = binary.LittleEndian.Uint32(raw[p:]), p+4
+	}
+	switch fhd >> 6 {
+	case 0:
+		if h.single {
+			h.hasFCS, h.fcs = true, uint64(raw[p])
+		}
+	case 1:
+		h.hasFCS, h.fcs = true, uint64(binary.LittleEndian.Uint16(raw[p:]))+256
+	case 2:
+		h.hasFCS, h.fcs = true, uint64(binary.LittleEndian.Uint32(raw[p:]))
+	default:
+		h.hasFCS, h.fcs = true, binary.LittleEndian.Uint64(raw[p:])
+	}
+	if h.hasFCS && h.fcs > math.MaxInt64 {
+		return nil, repZScorrupt("frame content size %d", h.fcs)
+	}
+	if h.single {
+		h.window = int64(h.fcs)
+	}
+	if h.window > lim.MaxWindow {
+		return nil, repZSlimit("window size %d > %d", h.window, lim.MaxWindow)
+	}
+	if h.hasFCS && int64(h.fcs) > lim.MaxFrameDecoded {
+		return nil, repZSlimit("frame content size %d > %d", h.fcs, lim.MaxFrameDecoded)
+	}
+	if h.dictID != 0 && !allowDict {
+		return nil, repZSunsupported("dictionary id %d", h.dictID)
+	}
+	return h, nil
+}
+
+// Port source: zeros3-z3/zstdz3/frame.go
+// blockMax is Block_Maximum_Size for the frame.
+func (h *repZSframeHdr) blockMax() int { return int(min(h.window, repZSmaxBlock)) }
+
+// Port source: zeros3-z3/zstdz3/fse.go
+type repZSfseDec struct {
+	sym  uint8
+	nb   uint8
+	base uint16
+}
+
+// Port source: zeros3-z3/zstdz3/fse.go
+type repZSfseTable struct {
+	kind   uint8  // 0 predefined, 1 RLE, 2 FSE-compressed: how the stream introduced it
+	desc   []byte // RLE: the symbol; FSE: the verbatim description (for checkpoints)
+	acc    uint8
+	counts []int16 // normalized distribution; -1 is "less than one"
+	dec    []repZSfseDec
+	// Encoding index, built on first use: for each symbol the states carrying it, once
+	// ascending by state number (rank order) and once ascending by baseline.
+	symOff  []int32
+	symList []uint16
+	byBase  []uint16
+}
+
+// Port source: zeros3-z3/zstdz3/fse.go
+const (
+	repZSmaxAccLL = 9
+	repZSmaxAccML = 9
+	repZSmaxAccOF = 8
+	repZSmaxSymLL = 35
+	repZSmaxSymML = 52
+	repZSmaxSymOF = 31
+)
+
+// Port source: zeros3-z3/zstdz3/fse.go
+// Predefined distributions (RFC 8878 section 3.1.1.3.2.2).
+var (
+	repZSpredLL = []int16{4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1, -1, -1, -1, -1}
+	repZSpredML = []int16{1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1}
+	repZSpredOF = []int16{1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1}
+)
+
+// Port source: zeros3-z3/zstdz3/fse.go
+var repZSpredTables [3]*repZSfseTable
+
+// Port source: zeros3-z3/zstdz3/fse.go
+func init() {
+	for i, d := range []struct {
+		c   []int16
+		acc int
+	}{{repZSpredLL, 6}, {repZSpredOF, 5}, {repZSpredML, 6}} {
+		t, err := repZSbuildFSE(d.c, d.acc)
+		if err != nil {
+			panic("zstdz3: predefined table: " + err.Error())
+		}
+		// Predefined tables are shared across concurrent parser/replay calls.
+		// Publish their encoding indexes fully initialized.
+		t.initEnc()
+		repZSpredTables[i] = t
+	}
+}
+
+// Port source: zeros3-z3/zstdz3/fse.go
+func repZSrleTable(sym uint8) *repZSfseTable {
+	c := make([]int16, int(sym)+1)
+	c[sym] = 1
+	return &repZSfseTable{kind: 1, desc: []byte{sym}, acc: 0, counts: c, dec: []repZSfseDec{{sym: sym}}}
+}
+
+// Port source: zeros3-z3/zstdz3/fse.go
+// buildFSE constructs the decoding table; counts must sum (counting -1 as 1) to 1<<acc.
+func repZSbuildFSE(counts []int16, acc int) (*repZSfseTable, error) {
+	size := 1 << uint(acc)
+	if acc > 15 || len(counts) > 256 {
+		return nil, repZScorrupt("fse table too large")
+	}
+	var sum int
+	for _, c := range counts {
+		switch {
+		case c == -1:
+			sum++
+		case c < 0:
+			return nil, repZScorrupt("fse count %d", c)
+		default:
+			sum += int(c)
+		}
+	}
+	if sum != size {
+		return nil, repZScorrupt("fse distribution sums to %d, want %d", sum, size)
+	}
+	t := &repZSfseTable{acc: uint8(acc), counts: counts, dec: make([]repZSfseDec, size)}
+	next := make([]uint32, len(counts))
+	high := size - 1
+	for s, c := range counts {
+		if c == -1 {
+			t.dec[high].sym = uint8(s)
+			high--
+			next[s] = 1
+		} else {
+			next[s] = uint32(c)
+		}
+	}
+	step := size>>1 + size>>3 + 3
+	mask := size - 1
+	pos := 0
+	for s, c := range counts {
+		for i := 0; i < int(c); i++ {
+			t.dec[pos].sym = uint8(s)
+			pos = (pos + step) & mask
+			for pos > high {
+				pos = (pos + step) & mask
+			}
+		}
+	}
+	if pos != 0 {
+		return nil, repZScorrupt("fse spread did not close")
+	}
+	for u := range t.dec {
+		s := t.dec[u].sym
+		n := next[s]
+		next[s]++
+		nb := acc - (bits.Len32(n) - 1)
+		t.dec[u].nb = uint8(nb)
+		t.dec[u].base = uint16(int(n)<<uint(nb) - size)
+	}
+	return t, nil
+}
+
+// Port source: zeros3-z3/zstdz3/fse.go
+// readFSEDesc parses a normalized-count description (RFC 8878 section 4.1.1) at the start
+// of b and returns the table and the bytes the description occupies.
+func repZSreadFSEDesc(b []byte, maxAcc, maxSym int) (*repZSfseTable, int, error) {
+	r := repZSfwdReader{b: b}
+	v, ok := r.read(4)
+	if !ok {
+		return nil, 0, repZScorrupt("truncated fse description")
+	}
+	acc := int(v) + 5
+	if acc > maxAcc {
+		return nil, 0, repZScorrupt("fse accuracy log %d > %d", acc, maxAcc)
+	}
+	remaining := 1<<uint(acc) + 1
+	threshold := 1 << uint(acc)
+	nbBits := acc + 1
+	var counts []int16
+	prev0 := false
+	for remaining > 1 && len(counts) <= maxSym {
+		if prev0 {
+			for {
+				f, ok := r.read(2)
+				if !ok {
+					return nil, 0, repZScorrupt("truncated fse zero run")
+				}
+				for k := 0; k < int(f); k++ {
+					counts = append(counts, 0)
+				}
+				if f != 3 {
+					break
+				}
+				if len(counts) > maxSym+1 {
+					return nil, 0, repZScorrupt("fse zero run past the last symbol")
+				}
+			}
+			if len(counts) > maxSym+1 {
+				return nil, 0, repZScorrupt("fse zero run past the last symbol")
+			}
+			prev0 = false
+			if len(counts) > maxSym {
+				break
+			}
+		}
+		max := 2*threshold - 1 - remaining
+		low, ok := r.read(nbBits - 1)
+		if !ok {
+			return nil, 0, repZScorrupt("truncated fse count")
+		}
+		var count int
+		if int(low) < max {
+			count = int(low)
+		} else {
+			hi, ok := r.read(1)
+			if !ok {
+				return nil, 0, repZScorrupt("truncated fse count")
+			}
+			count = int(low) | int(hi)<<uint(nbBits-1)
+			if count >= threshold {
+				count -= max
+			}
+		}
+		count--
+		if count < 0 {
+			remaining--
+		} else {
+			remaining -= count
+		}
+		if remaining < 0 {
+			return nil, 0, repZScorrupt("fse distribution overshoots")
+		}
+		counts = append(counts, int16(count))
+		prev0 = count == 0
+		for remaining < threshold && threshold > 1 {
+			nbBits--
+			threshold >>= 1
+		}
+	}
+	if remaining != 1 {
+		return nil, 0, repZScorrupt("fse distribution does not close")
+	}
+	if len(counts) > maxSym+1 {
+		return nil, 0, repZScorrupt("fse symbol %d > %d", len(counts)-1, maxSym)
+	}
+	t, err := repZSbuildFSE(counts, acc)
+	if err != nil {
+		return nil, 0, err
+	}
+	return t, r.bytes(), nil
+}
+
+// Port source: zeros3-z3/zstdz3/fse.go
+// initEnc builds the per-symbol state lists used by replay.
+func (t *repZSfseTable) initEnc() {
+	if t.symList != nil {
+		return
+	}
+	n := len(t.counts)
+	t.symOff = make([]int32, n+1)
+	for _, d := range t.dec {
+		t.symOff[int(d.sym)+1]++
+	}
+	for i := 0; i < n; i++ {
+		t.symOff[i+1] += t.symOff[i]
+	}
+	t.symList = make([]uint16, len(t.dec))
+	fill := make([]int32, n)
+	for u, d := range t.dec {
+		t.symList[t.symOff[d.sym]+fill[d.sym]] = uint16(u)
+		fill[d.sym]++
+	}
+	t.byBase = append([]uint16(nil), t.symList...)
+	for s := 0; s < n; s++ {
+		seg := t.byBase[t.symOff[s]:t.symOff[s+1]]
+		sort.Slice(seg, func(i, j int) bool { return t.dec[seg[i]].base < t.dec[seg[j]].base })
+	}
+}
+
+// Port source: zeros3-z3/zstdz3/fse.go
+// rank returns the position of state u among the states that carry its symbol.
+func (t *repZSfseTable) rank(u int) int {
+	t.initEnc()
+	s := t.dec[u].sym
+	seg := t.symList[t.symOff[s]:t.symOff[s+1]]
+	return sort.Search(len(seg), func(i int) bool { return int(seg[i]) >= u })
+}
+
+// Port source: zeros3-z3/zstdz3/fse.go
+// stateAt is the inverse of rank; ok is false for an impossible rank or symbol.
+func (t *repZSfseTable) stateAt(sym int, rank uint32) (int, bool) {
+	t.initEnc()
+	if sym >= len(t.counts) {
+		return 0, false
+	}
+	seg := t.symList[t.symOff[sym]:t.symOff[sym+1]]
+	if uint64(rank) >= uint64(len(seg)) {
+		return 0, false
+	}
+	return int(seg[rank]), true
+}
+
+// Port source: zeros3-z3/zstdz3/fse.go
+// prev finds the state that carries sym and whose baseline range contains next; the
+// bits the decoder must read to get from it to next are next-base (nb bits).
+func (t *repZSfseTable) prev(sym int, next int) (state int, bits uint32, nb int, ok bool) {
+	t.initEnc()
+	if sym >= len(t.counts) {
+		return 0, 0, 0, false
+	}
+	seg := t.byBase[t.symOff[sym]:t.symOff[sym+1]]
+	i := sort.Search(len(seg), func(i int) bool { return int(t.dec[seg[i]].base) > next }) - 1
+	if i < 0 {
+		return 0, 0, 0, false
+	}
+	d := t.dec[seg[i]]
+	if next-int(d.base) >= 1<<d.nb {
+		return 0, 0, 0, false
+	}
+	return int(seg[i]), uint32(next - int(d.base)), int(d.nb), true
+}
+
+// Port source: zeros3-z3/zstdz3/huff.go
+const repZSmaxHuffBits = 11
+
+// Port source: zeros3-z3/zstdz3/huff.go
+type repZShuffDec struct{ sym, nb uint8 }
+
+// Port source: zeros3-z3/zstdz3/huff.go
+type repZShuffTable struct {
+	desc    []byte // the verbatim tree description (for checkpoints)
+	nsym    int
+	maxBits int
+	nb      [256]uint8
+	code    [256]uint16
+	dec     []repZShuffDec
+}
+
+// Port source: zeros3-z3/zstdz3/huff.go
+// buildHuff builds the table from the listed weights; the final symbol's weight is
+// implied by the requirement that the sum of 2^(w-1) is a power of two.
+func repZSbuildHuff(listed []uint8) (*repZShuffTable, error) {
+	if len(listed) == 0 || len(listed) > 255 {
+		return nil, repZScorrupt("huffman tree with %d weights", len(listed))
+	}
+	var total uint32
+	for _, w := range listed {
+		if w > repZSmaxHuffBits {
+			return nil, repZScorrupt("huffman weight %d", w)
+		}
+		if w > 0 {
+			total += 1 << (w - 1)
+		}
+	}
+	if total == 0 {
+		return nil, repZScorrupt("huffman tree without weight")
+	}
+	mb := bits.Len32(total) // floor(log2 total) + 1
+	if mb > repZSmaxHuffBits {
+		return nil, repZScorrupt("huffman max bits %d", mb)
+	}
+	rest := uint32(1)<<uint(mb) - total
+	if rest == 0 || rest&(rest-1) != 0 {
+		return nil, repZScorrupt("huffman weights do not complete a prefix code")
+	}
+	t := &repZShuffTable{nsym: len(listed) + 1, maxBits: mb}
+	weights := append(append(make([]uint8, 0, 256), listed...), uint8(bits.Len32(rest)))
+	if weights[len(weights)-1] > repZSmaxHuffBits {
+		return nil, repZScorrupt("huffman implied weight")
+	}
+	// A complete code has an even number (at least two) of leaves at the deepest
+	// level, i.e. of weight-1 symbols; the reference decoder rejects anything else.
+	ones := 0
+	for _, w := range weights {
+		if w == 1 {
+			ones++
+		}
+	}
+	if ones < 2 || ones&1 != 0 {
+		return nil, repZScorrupt("huffman tree with %d symbols of the longest code", ones)
+	}
+	t.dec = make([]repZShuffDec, 1<<uint(mb))
+	pos := 0
+	for w := 1; w <= mb; w++ {
+		nbits := uint8(mb + 1 - w)
+		for s, sw := range weights {
+			if int(sw) != w {
+				continue
+			}
+			n := 1 << uint(w-1)
+			for k := 0; k < n; k++ {
+				t.dec[pos+k] = repZShuffDec{uint8(s), nbits}
+			}
+			t.nb[s] = nbits
+			t.code[s] = uint16(pos >> uint(mb-int(nbits)))
+			pos += n
+		}
+	}
+	if pos != 1<<uint(mb) {
+		return nil, repZScorrupt("huffman table not full")
+	}
+	return t, nil
+}
+
+// Port source: zeros3-z3/zstdz3/huff.go
+// readHuffTree parses a Huffman tree description at the start of b (RFC 8878 section
+// 4.2.1) and returns the tree and the description's byte length.
+func repZSreadHuffTree(b []byte) (*repZShuffTable, int, error) {
+	if len(b) == 0 {
+		return nil, 0, repZScorrupt("missing huffman tree description")
+	}
+	hb := int(b[0])
+	var w []uint8
+	var n int
+	if hb >= 128 {
+		cnt := hb - 127
+		n = 1 + (cnt+1)/2
+		if len(b) < n {
+			return nil, 0, repZScorrupt("truncated direct huffman weights")
+		}
+		w = make([]uint8, cnt)
+		for i := range w {
+			if i&1 == 0 {
+				w[i] = b[1+i/2] >> 4
+			} else {
+				w[i] = b[1+i/2] & 15
+			}
+		}
+	} else {
+		n = 1 + hb
+		if hb == 0 || len(b) < n {
+			return nil, 0, repZScorrupt("bad compressed huffman weights size %d", hb)
+		}
+		var err error
+		if w, err = repZSdecodeHuffWeights(b[1:n]); err != nil {
+			return nil, 0, err
+		}
+	}
+	t, err := repZSbuildHuff(w)
+	if err != nil {
+		return nil, 0, err
+	}
+	t.desc = append([]byte(nil), b[:n]...)
+	return t, n, nil
+}
+
+// Port source: zeros3-z3/zstdz3/huff.go
+// decodeHuffWeights decodes the FSE-compressed weights: two interleaved states over one
+// backward bitstream, accuracy log at most 6, ending when a state update overruns.
+func repZSdecodeHuffWeights(b []byte) ([]uint8, error) {
+	t, k, err := repZSreadFSEDesc(b, 6, 255)
+	if err != nil {
+		return nil, err
+	}
+	r, err := repZSnewRevReader(b[k:])
+	if err != nil {
+		return nil, err
+	}
+	acc := int(t.acc)
+	v1, ok1 := r.read(acc)
+	v2, ok2 := r.read(acc)
+	if !ok1 || !ok2 {
+		return nil, repZScorrupt("truncated huffman weight states")
+	}
+	s := [2]int{int(v1), int(v2)}
+	var out []uint8
+	for i := 0; ; i++ {
+		if len(out) >= 255 {
+			return nil, repZScorrupt("too many huffman weights")
+		}
+		st := i & 1
+		d := t.dec[s[st]]
+		out = append(out, d.sym)
+		n := int(d.nb)
+		if n > r.pos { // the update overran the stream: the other state's symbol is the last one
+			out = append(out, t.dec[s[st^1]].sym)
+			break
+		}
+		s[st] = int(d.base) + int(r.get(n))
+		r.pos -= n
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/zstdz3/huff.go
+// decodeStream decodes len(out) symbols from one backward Huffman stream.
+func (t *repZShuffTable) decodeStream(data []byte, out []byte) error {
+	r, err := repZSnewRevReader(data)
+	if err != nil {
+		return err
+	}
+	mb := t.maxBits
+	for i := range out {
+		e := t.dec[r.peek(mb)]
+		if !r.skip(int(e.nb)) {
+			return repZScorrupt("huffman stream overrun")
+		}
+		out[i] = e.sym
+	}
+	if r.pos != 0 {
+		return repZScorrupt("huffman stream has %d unused bits", r.pos)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/zstdz3/huff.go
+// encodeStream appends the backward stream for lit (the last symbol is written first,
+// so the decoder meets the first symbol first). It fails for a symbol outside the tree.
+func (t *repZShuffTable) encodeStream(dst []byte, lit []byte) ([]byte, bool) {
+	var w repZSrevWriter
+	w.buf = dst
+	for i := len(lit) - 1; i >= 0; i-- {
+		nb := t.nb[lit[i]]
+		if nb == 0 {
+			return dst, false
+		}
+		w.write(uint32(t.code[lit[i]]), int(nb))
+	}
+	return w.finish(), true
+}
+
+// Port source: zeros3-z3/zstdz3/model.go
+// The sequence model is the one predictor of Z3-25. It does not imitate any compressor:
+// it re-derives, from the plaintext alone, the two things a sequence's match fields
+// usually contain no information about, and codes only the deviation.
+//
+//	match length   the longest extension of the source over the plaintext, bounded by the
+//	               block end; coded only when the producer chose a shorter match
+//	offset         the rank of the source among the earlier positions that start the same
+//	               4 bytes, nearest first, found by walking a hash chain over the
+//	               plaintext window; coded as the raw offset value when it is not found
+//
+// Both are bijections given the plaintext, so nothing is ever guessed: a block whose
+// model coding does not decode back to its decisions simply keeps the explicit coding.
+// Literal lengths and repeat-offset codes stay explicit.
+//
+// Sequence record in a model-coded unit: uvarint literal length, then one tag byte:
+//
+//	0..63      source by rank, match length = longest extension
+//	128..191   source by rank (tag-128), then uvarint match length - 3
+//	64..66     repeat-offset code 1..3 (tag-63), then uvarint match length - 3
+//	255        uvarint offset value, then uvarint match length - 3
+const (
+	repZStagRank    = 0
+	repZStagRankML  = 128
+	repZStagRep     = 64
+	repZStagRaw     = 255
+	repZSmaxRank    = 64
+	repZSchainSteps = 64
+	repZSminMatch   = 4
+
+	// modelMaxWindow bounds the index memory (4 bytes per window position, rounded up).
+	repZSmodelMaxWindow = 16 << 20
+)
+
+// Port source: zeros3-z3/zstdz3/model.go
+type repZSmatchModel struct {
+	window int64
+	hbits  uint
+	head   []uint32 // hash -> position+1 (frame-relative, wraps at 2^32)
+	prev   []uint32 // ring: position & mask -> previous position+1 with the same hash
+	mask   uint32
+	ins    int64 // positions < ins have been indexed
+}
+
+// Port source: zeros3-z3/zstdz3/model.go
+// newMatchModel returns nil when the window is too large for the model; such frames
+// keep the explicit coding.
+func repZSnewMatchModel(window int64) *repZSmatchModel {
+	if window <= 0 || window > repZSmodelMaxWindow {
+		return nil
+	}
+	hb := uint(10)
+	for int64(1)<<hb < window && hb < 22 {
+		hb++
+	}
+	size := uint32(1)
+	for int64(size) < window+2*repZSmaxBlock {
+		size <<= 1
+	}
+	return &repZSmatchModel{window: window, hbits: hb, head: make([]uint32, 1<<hb), prev: make([]uint32, size), mask: size - 1}
+}
+
+// Port source: zeros3-z3/zstdz3/model.go
+func (m *repZSmatchModel) hash(b []byte) uint32 {
+	return (binary.LittleEndian.Uint32(b) * 2654435761) >> (32 - m.hbits)
+}
+
+// Port source: zeros3-z3/zstdz3/model.go
+// blockView is the plaintext a block's sequences are coded against: buf holds the
+// frame's recent output ending with the block, base is the frame offset of buf[0].
+type repZSblockView struct {
+	buf        []byte
+	base       int64
+	start, end int64 // frame offsets of the block
+}
+
+// Port source: zeros3-z3/zstdz3/model.go
+// advance indexes every position below limit whose four bytes are available.
+func (m *repZSmatchModel) advance(v *repZSblockView, limit int64) {
+	if lo := limit - m.window - 1; m.ins < lo {
+		m.ins = lo
+	}
+	if m.ins < v.base {
+		m.ins = v.base
+	}
+	last := v.end - 3 // positions p with p+4 <= end
+	if limit > last {
+		limit = last
+	}
+	for ; m.ins < limit; m.ins++ {
+		i := m.ins - v.base
+		h := m.hash(v.buf[i:])
+		m.prev[uint32(m.ins)&m.mask] = m.head[h]
+		m.head[h] = uint32(m.ins) + 1
+	}
+}
+
+// Port source: zeros3-z3/zstdz3/model.go
+// walk visits the chain of earlier positions with the same hash as q, nearest first,
+// calling fn for those that share at least minMatch bytes with q; fn returns true to
+// stop. At most chainSteps links are followed.
+func (m *repZSmatchModel) walk(v *repZSblockView, q int64, fn func(src int64) bool) {
+	if q+repZSminMatch > v.end {
+		return
+	}
+	cur := v.buf[q-v.base : v.end-v.base]
+	p := m.head[m.hash(cur)]
+	last := q
+	for steps := 0; p != 0 && steps < repZSchainSteps; steps++ {
+		src := q - int64(uint32(q)-(p-1))
+		if src >= last || q-src > m.window || src < v.base {
+			return
+		}
+		if repZSlce(v.buf[src-v.base:], cur) >= repZSminMatch && fn(src) {
+			return
+		}
+		last = src
+		p = m.prev[uint32(src)&m.mask]
+	}
+}
+
+// Port source: zeros3-z3/zstdz3/model.go
+func repZSlce(a, b []byte) int {
+	n := min(len(a), len(b))
+	i := 0
+	for i+8 <= n && binary.LittleEndian.Uint64(a[i:]) == binary.LittleEndian.Uint64(b[i:]) {
+		i += 8
+	}
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	return i
+}
+
+// Port source: zeros3-z3/zstdz3/model.go
+// encode codes the block's sequences. Every record is decoded again right away, with
+// the index in exactly the state a decoder would have, and ok is false if any record
+// does not come back identical (the block then keeps the explicit coding).
+func (m *repZSmatchModel) encode(v *repZSblockView, trip []repZSseqRec) (out []byte, ok bool) {
+	pos := v.start
+	var rec []byte
+	for _, t := range trip {
+		rec = m.encodeOne(rec[:0], v, pos, t)
+		back, _, err := m.decodeOne(bytes.NewReader(rec), v, pos)
+		if err != nil || back != t {
+			return nil, false
+		}
+		out = append(out, rec...)
+		pos += int64(t.ll) + int64(t.ml)
+	}
+	return out, true
+}
+
+// Port source: zeros3-z3/zstdz3/model.go
+func (m *repZSmatchModel) encodeOne(out []byte, v *repZSblockView, pos int64, t repZSseqRec) []byte {
+	q := pos + int64(t.ll)
+	out = binary.AppendUvarint(out, uint64(t.ll))
+	m.advance(v, q)
+	if t.of <= 3 {
+		out = append(out, byte(repZStagRep+t.of-1))
+		return binary.AppendUvarint(out, uint64(t.ml-3))
+	}
+	src := q - int64(t.of-3)
+	rank, found := 0, false
+	m.walk(v, q, func(s int64) bool {
+		if s == src {
+			found = true
+			return true
+		}
+		rank++
+		return rank >= repZSmaxRank
+	})
+	if !found {
+		out = append(out, repZStagRaw)
+		out = binary.AppendUvarint(out, uint64(t.of))
+		return binary.AppendUvarint(out, uint64(t.ml-3))
+	}
+	if int(t.ml) == repZSlce(v.buf[src-v.base:], v.buf[q-v.base:v.end-v.base]) {
+		return append(out, byte(repZStagRank+rank))
+	}
+	out = append(out, byte(repZStagRankML+rank))
+	return binary.AppendUvarint(out, uint64(t.ml-3))
+}
+
+// Port source: zeros3-z3/zstdz3/model.go
+// decode reads n sequences of a model-coded unit.
+func (m *repZSmatchModel) decode(r io.ByteReader, v *repZSblockView, n int) ([]repZSseqRec, error) {
+	trip := make([]repZSseqRec, n)
+	pos := v.start
+	for i := range trip {
+		t, _, err := m.decodeOne(r, v, pos)
+		if err != nil {
+			return nil, err
+		}
+		trip[i] = t
+		pos += int64(t.ll) + int64(t.ml)
+	}
+	return trip, nil
+}
+
+// Port source: zeros3-z3/zstdz3/model.go
+func (m *repZSmatchModel) decodeOne(r io.ByteReader, v *repZSblockView, pos int64) (repZSseqRec, int64, error) {
+	ll, err := repZSreadMinimalUvarint(r)
+	if err != nil {
+		return repZSseqRec{}, 0, err
+	}
+	tag, err := r.ReadByte()
+	if err != nil {
+		return repZSseqRec{}, 0, repZSbadIR("truncated unit stream")
+	}
+	if ll > repZSmaxBlock {
+		return repZSseqRec{}, 0, repZSbadIR("literal length %d", ll)
+	}
+	q := pos + int64(ll)
+	var of uint32
+	var ml uint64
+	explicitML := true
+	switch {
+	case tag >= repZStagRep && tag <= repZStagRep+2:
+		of = uint32(tag-repZStagRep) + 1
+	case tag == repZStagRaw:
+		ov, err := repZSreadMinimalUvarint(r)
+		if err != nil {
+			return repZSseqRec{}, 0, err
+		}
+		if ov == 0 || ov > 1<<32-1 {
+			return repZSseqRec{}, 0, repZSbadIR("offset value %d", ov)
+		}
+		of = uint32(ov)
+	case tag < repZSmaxRank || tag >= repZStagRankML && tag < repZStagRankML+repZSmaxRank:
+		rank := int(tag & 63)
+		explicitML = tag >= repZStagRankML
+		m.advance(v, q)
+		src, k := int64(-1), 0
+		m.walk(v, q, func(s int64) bool {
+			if k == rank {
+				src = s
+				return true
+			}
+			k++
+			return false
+		})
+		if src < 0 {
+			return repZSseqRec{}, 0, repZSbadIR("rank %d beyond the candidates", rank)
+		}
+		of = uint32(q-src) + 3
+		if !explicitML {
+			ml = uint64(repZSlce(v.buf[src-v.base:], v.buf[q-v.base:v.end-v.base]))
+			if ml < 3 {
+				return repZSseqRec{}, 0, repZSbadIR("match length %d", ml)
+			}
+		}
+	default:
+		return repZSseqRec{}, 0, repZSbadIR("sequence tag %d", tag)
+	}
+	if explicitML {
+		x, err := repZSreadMinimalUvarint(r)
+		if err != nil {
+			return repZSseqRec{}, 0, err
+		}
+		ml = x + 3
+	}
+	if ml > repZSmaxBlock {
+		return repZSseqRec{}, 0, repZSbadIR("match length %d", ml)
+	}
+	return repZSseqRec{ll: uint32(ll), ml: uint32(ml), of: of}, q + int64(ml), nil
+}
+
+// Port source: zeros3-z3/zstdz3/parse.go
+// Stats accounts for what a Parse found and what the description costs, per class.
+type repZSStats struct {
+	Frames, Skippable int
+	Blocks            [4]int   // by BlockType: raw, rle, transformed, fallback
+	StreamBytes       [4]int64 // compressed stream bytes (block header included) per type
+	PlainBytes        int64
+	TotalBytes        int64 // the whole input
+	Literals          int64
+	Sequences         int64
+
+	// Description bytes by class.
+	SkeletonBytes int // whole skeleton
+	TreeBytes     int // verbatim Huffman tree descriptions
+	TableBytes    int // verbatim FSE/RLE table descriptions and mode bytes
+	RankBytes     int // residual final-state ranks
+	SkipBytes     int // skippable payloads
+	FrameBytes    int // everything else in the skeleton: headers, block records, counts
+	UnitBytes     int // sequence-decision units
+	FallbackBytes int // bytes of fallback units (original compressed blocks)
+
+	// Coverage of coding modes among compressed blocks (transformed or fallback).
+	LitModes     [4]int
+	LitStreams   [5]int // index 1 or 4
+	HuffDirect   int
+	HuffFSE      int
+	SeqModes     [3][4]int // LL, OF, ML by mode
+	RepeatCodes  [4]int    // offset values 1,2,3 and >3
+	ZeroLLRepeat int       // repeat-offset codes with a zero literal length
+	Empty        int       // compressed blocks without sequences
+}
+
+// Port source: zeros3-z3/zstdz3/parse.go
+// IRBytes is the full description: skeleton plus units.
+func (s *repZSStats) IRBytes() int { return s.SkeletonBytes + s.UnitBytes + s.FallbackBytes }
+
+// Port source: zeros3-z3/zstdz3/parse.go
+// Options configure Parse.
+type repZSOptions struct {
+	repZSLimits
+	// NoSeqModel keeps every block's sequences as explicit varints instead of the
+	// plaintext-derived match model (model.go).
+	NoSeqModel bool
+	// CheckpointEvery records a Checkpoint at every n-th block of each frame (0: none).
+	CheckpointEvery int
+}
+
+// Port source: zeros3-z3/zstdz3/parse.go
+// Result is the outcome of Parse.
+type repZSResult struct {
+	Skeleton  *repZSSkeleton
+	Raw       []byte   // Skeleton.Marshal()
+	UnitSizes []uint32 // bytes each unit contributed to the unit stream, in block order
+	// Checkpoints are the requested replay starting points, in stream order.
+	Checkpoints []repZSCheckpoint
+	Stats       repZSStats
+}
+
+// Port source: zeros3-z3/zstdz3/parse.go
+// Parse decodes the Zstandard stream r, writes the plaintext to plain (nil discards it;
+// progressively, block by block), writes the unit stream to units (nil to discard) and returns the
+// skeleton. The stream must be
+// dictionary-free; every frame is verified (content size and checksum when present).
+// Compressed blocks are replayed against the original as they are parsed, so a
+// returned BlockCompressed record is known to rebuild byte for byte; anything else
+// becomes a BlockFallback and is counted in Stats.
+func repZSParse(r io.Reader, plain io.Writer, units io.Writer, opt repZSOptions) (*repZSResult, error) {
+	lim := opt.repZSLimits.fill()
+	if plain == nil {
+		plain = io.Discard
+	}
+	p := &repZSparser{br: bufio.NewReaderSize(r, 1<<20), plain: plain, units: units, lim: lim, noModel: opt.NoSeqModel, ckEvery: opt.CheckpointEvery}
+	if err := p.run(); err != nil {
+		return nil, err
+	}
+	res := &repZSResult{Skeleton: &p.skel, Stats: p.st, UnitSizes: p.usizes}
+	if len(p.cps) > 0 {
+		next := 0
+		res.Raw = p.skel.marshal(func(fi, bi, off int) {
+			if next < len(p.cps) && p.cps[next].Frame == fi && p.cps[next].Block == bi {
+				p.cps[next].SkelOff = off
+				next++
+			}
+		})
+		res.Checkpoints = p.cps
+	} else {
+		res.Raw = p.skel.Marshal()
+	}
+	res.Stats.SkeletonBytes = len(res.Raw)
+	res.Stats.FrameBytes = len(res.Raw) - res.Stats.TreeBytes - res.Stats.TableBytes - res.Stats.RankBytes - res.Stats.SkipBytes
+	if int64(len(res.Raw))+int64(p.st.UnitBytes+p.st.FallbackBytes) > lim.MaxIRBytes {
+		return nil, repZSlimit("description of %d bytes", len(res.Raw))
+	}
+	return res, nil
+}
+
+// Port source: zeros3-z3/zstdz3/parse.go
+type repZSparser struct {
+	br      *bufio.Reader
+	plain   io.Writer
+	units   io.Writer
+	usizes  []uint32
+	noModel bool
+	ckEvery int
+	cps     []repZSCheckpoint
+	model   *repZSmatchModel // created on the first block that can use it
+	window  int64
+	lim     repZSLimits
+	skel    repZSSkeleton
+	st      repZSStats
+
+	blocks    int
+	decoded   int64
+	consumed  int64
+	cbuf      []byte
+	lbuf      []byte
+	hist      repZShistory
+	irUnitSum int64
+}
+
+// Port source: zeros3-z3/zstdz3/parse.go
+func (p *repZSparser) readFull(b []byte, what string) error {
+	n, err := io.ReadFull(p.br, b)
+	p.consumed += int64(n)
+	p.st.TotalBytes += int64(n)
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return repZScorrupt("truncated %s", what)
+	}
+	return err
+}
+
+// Port source: zeros3-z3/zstdz3/parse.go
+func (p *repZSparser) run() error {
+	for {
+		var m [4]byte
+		n, err := io.ReadFull(p.br, m[:])
+		p.consumed += int64(n)
+		p.st.TotalBytes += int64(n)
+		if err == io.EOF && len(p.skel.Frames) == 0 {
+			return repZScorrupt("empty stream")
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err == io.ErrUnexpectedEOF {
+			return repZScorrupt("truncated frame magic")
+		}
+		if err != nil {
+			return err
+		}
+		if len(p.skel.Frames) >= p.lim.MaxFrames {
+			return repZSlimit("more than %d frames", p.lim.MaxFrames)
+		}
+		magic := binary.LittleEndian.Uint32(m[:])
+		switch {
+		case magic == repZSmagicStd:
+			if err := p.frame(); err != nil {
+				return err
+			}
+		case magic&repZSmagicSkipM == repZSmagicSkip:
+			if err := p.skippable(uint8(magic & 15)); err != nil {
+				return err
+			}
+		case magic >= 0xFD2FB522 && magic <= 0xFD2FB527 || magic == 0x1EB52FFD:
+			return repZSunsupported("legacy zstd frame %#x", magic)
+		default:
+			return repZScorrupt("bad frame magic %#x", magic)
+		}
+	}
+}
+
+// Port source: zeros3-z3/zstdz3/parse.go
+func (p *repZSparser) skippable(low uint8) error {
+	var sz [4]byte
+	if err := p.readFull(sz[:], "skippable frame size"); err != nil {
+		return err
+	}
+	n := int64(binary.LittleEndian.Uint32(sz[:]))
+	if n > p.lim.MaxSkippable {
+		return repZSlimit("skippable frame of %d bytes", n)
+	}
+	var buf bytes.Buffer
+	got, err := io.Copy(&buf, io.LimitReader(p.br, n))
+	p.consumed += got
+	p.st.TotalBytes += got
+	if err != nil {
+		return err
+	}
+	if got != n {
+		return repZScorrupt("truncated skippable frame")
+	}
+	p.skel.Frames = append(p.skel.Frames, repZSFrameRec{Skippable: true, SkipLow: low, Skip: buf.Bytes()})
+	p.st.Skippable++
+	p.st.SkipBytes += int(n)
+	return nil
+}
+
+// Port source: zeros3-z3/zstdz3/parse.go
+func (p *repZSparser) frame() error {
+	fhd, err := p.br.Peek(1)
+	if err != nil {
+		return repZScorrupt("truncated frame header")
+	}
+	raw := make([]byte, repZSfhdLen(fhd[0]))
+	if err := p.readFull(raw, "frame header"); err != nil {
+		return err
+	}
+	fh, err := repZSparseFrameHeader(raw, p.lim)
+	if err != nil {
+		return err
+	}
+	f := repZSFrameRec{Header: raw}
+	p.st.Frames++
+	bmax := fh.blockMax()
+	p.hist.window = fh.window
+	p.hist.buf = p.hist.buf[:0]
+	p.hist.total = 0
+	p.model, p.window = nil, fh.window
+	framePlain, fidx := p.st.PlainBytes, len(p.skel.Frames)
+	var st repZScodingState
+	rep := [3]uint32{1, 4, 8}
+	sum := repZSnewXXH64()
+	var total int64
+	for last := false; !last; {
+		if p.blocks++; p.blocks > p.lim.MaxBlocks {
+			return repZSlimit("more than %d blocks", p.lim.MaxBlocks)
+		}
+		if p.ckEvery > 0 && len(f.Blocks)%p.ckEvery == 0 {
+			cp := repZSCheckpoint{Frame: fidx, Block: len(f.Blocks), FramePlain: framePlain, PlainOff: p.st.PlainBytes, CompOff: p.st.TotalBytes, UnitOff: p.irUnitSum}
+			cp.snapshot(&st)
+			p.cps = append(p.cps, cp)
+		}
+		var bh [3]byte
+		if err := p.readFull(bh[:], "block header"); err != nil {
+			return err
+		}
+		v := uint32(bh[0]) | uint32(bh[1])<<8 | uint32(bh[2])<<16
+		var typ repZSBlockType
+		var size int
+		last, typ, size = v&1 == 1, repZSBlockType(v>>1&3), int(v>>3)
+		if typ == 3 {
+			return repZScorrupt("reserved block type")
+		}
+		if size > bmax {
+			return repZScorrupt("block of %d bytes, at most %d", size, bmax)
+		}
+		clen := size
+		if typ == repZSBlockRLE {
+			clen = 1
+		}
+		p.cbuf = repZSfitBuf(p.cbuf, clen)
+		if err := p.readFull(p.cbuf, "block"); err != nil {
+			return err
+		}
+		content := p.cbuf
+		p.hist.reserve(bmax)
+		start := len(p.hist.buf)
+		blockTotal := p.hist.total
+		rec := repZSBlockRec{Last: last, Type: typ}
+		var unit []byte
+		var trip []repZSseqRec
+		switch typ {
+		case repZSBlockRaw:
+			p.hist.buf = append(p.hist.buf, content...)
+		case repZSBlockRLE:
+			rec.RLE = content[0]
+			for i := 0; i < size; i++ {
+				p.hist.buf = append(p.hist.buf, content[0])
+			}
+		default:
+			rec, trip, unit, err = p.compressed(&st, &rep, content, bmax, last)
+			if err != nil {
+				return err
+			}
+		}
+		out := p.hist.buf[start:]
+		rec.DecLen = uint32(len(out))
+		if rec.Type == repZSBlockFallback {
+			rec.DecLen = uint32(len(out))
+		}
+		total += int64(len(out))
+		p.decoded += int64(len(out))
+		if total > p.lim.MaxFrameDecoded || p.decoded > p.lim.MaxTotalDecoded {
+			return repZSlimit("decoded size")
+		}
+		if fh.hasFCS && total > int64(fh.fcs) {
+			return repZScorrupt("frame decodes past its declared content size %d", fh.fcs)
+		}
+		if p.consumed < 1<<40 && p.decoded > p.lim.MaxRatio*p.consumed+repZSratioSlack {
+			return repZSlimit("expansion ratio: %d bytes from %d", p.decoded, p.consumed)
+		}
+		sum.write(out)
+		if _, err := p.plain.Write(out); err != nil {
+			return err
+		}
+		p.hist.total += int64(len(out))
+		p.st.PlainBytes += int64(len(out))
+		p.st.Blocks[rec.Type]++
+		p.st.StreamBytes[rec.Type] += int64(3 + clen)
+		if rec.HasUnit() {
+			if rec.Type == repZSBlockCompressed {
+				unit = p.encodeUnit(&rec, trip, start, blockTotal)
+			}
+			if err := p.emit(rec, unit); err != nil {
+				return err
+			}
+		}
+		f.Blocks = append(f.Blocks, rec)
+	}
+	if fh.hasFCS && uint64(total) != fh.fcs {
+		return repZScorrupt("frame decodes %d bytes, header says %d", total, fh.fcs)
+	}
+	if fh.checksum {
+		var c [4]byte
+		if err := p.readFull(c[:], "content checksum"); err != nil {
+			return err
+		}
+		f.Checksum = binary.LittleEndian.Uint32(c[:])
+		if f.Checksum != uint32(sum.sum()) {
+			return repZScorrupt("content checksum mismatch")
+		}
+	}
+	p.skel.Frames = append(p.skel.Frames, f)
+	return nil
+}
+
+// Port source: zeros3-z3/zstdz3/parse.go
+// encodeUnit codes a transformed block's sequences, with the match model when it is
+// available and proves it decodes back; otherwise as explicit varints.
+func (p *repZSparser) encodeUnit(rec *repZSBlockRec, trip []repZSseqRec, start int, total int64) []byte {
+	if p.model == nil && !p.noModel {
+		p.model = repZSnewMatchModel(p.window)
+	}
+	if p.model != nil {
+		end := total + int64(len(p.hist.buf)-start)
+		v := &repZSblockView{buf: p.hist.buf, base: total - int64(start), start: total, end: end}
+		if u, ok := p.model.encode(v, trip); ok {
+			rec.Model = true
+			return u
+		}
+	}
+	return repZSencodeTriples(trip)
+}
+
+// Port source: zeros3-z3/zstdz3/parse.go
+func (p *repZSparser) emit(rec repZSBlockRec, unit []byte) error {
+	if rec.Type == repZSBlockFallback {
+		p.st.FallbackBytes += len(unit)
+	} else {
+		p.st.UnitBytes += len(unit)
+	}
+	if p.irUnitSum += int64(len(unit)); p.irUnitSum > p.lim.MaxIRBytes {
+		return repZSlimit("units of %d bytes", p.irUnitSum)
+	}
+	p.usizes = append(p.usizes, uint32(len(unit)))
+	if p.units != nil {
+		if _, err := p.units.Write(unit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/zstdz3/parse.go
+// compressed decodes one compressed block into p.hist, builds its record and unit and
+// proves the record by rebuilding the original bytes.
+func (p *repZSparser) compressed(st *repZScodingState, rep *[3]uint32, content []byte, bmax int, last bool) (repZSBlockRec, []repZSseqRec, []byte, error) {
+	pre := *st
+	h, err := repZSscanBlock(st, content, bmax)
+	if err != nil {
+		return repZSBlockRec{}, nil, nil, err
+	}
+	if p.st.Literals += int64(h.lit.regen); p.st.Literals > p.lim.MaxLiterals {
+		return repZSBlockRec{}, nil, nil, repZSlimit("literals")
+	}
+	if p.st.Sequences += int64(h.seq.n); p.st.Sequences > p.lim.MaxSequences {
+		return repZSBlockRec{}, nil, nil, repZSlimit("sequences")
+	}
+	lits, err := repZSdecodeLiterals(&h.lit, p.lbuf)
+	if err != nil {
+		return repZSBlockRec{}, nil, nil, err
+	}
+	if h.lit.mode != repZSlitRaw { // raw literals alias the block buffer
+		p.lbuf = lits
+	}
+	var trip []repZSseqRec
+	var rank [3]uint32
+	if h.seq.n > 0 {
+		if trip, rank, err = repZSdecodeSeqs(&h.seq); err != nil {
+			return repZSBlockRec{}, nil, nil, err
+		}
+	}
+	start := len(p.hist.buf)
+	if err := p.hist.exec(trip, lits, rep, bmax); err != nil {
+		return repZSBlockRec{}, nil, nil, err
+	}
+	out := p.hist.buf[start:]
+
+	// coverage counters
+	p.st.LitModes[h.lit.mode]++
+	if h.lit.mode >= repZSlitComp {
+		p.st.LitStreams[h.lit.streams]++
+		if h.lit.mode == repZSlitComp {
+			if h.lit.treeDesc[0] >= 128 {
+				p.st.HuffDirect++
+			} else {
+				p.st.HuffFSE++
+			}
+		}
+	}
+	if h.seq.n == 0 {
+		p.st.Empty++
+	} else {
+		for k := 0; k < 3; k++ {
+			p.st.SeqModes[k][h.seq.modes>>uint(6-2*k)&3]++
+		}
+		for _, t := range trip {
+			if t.of > 3 {
+				p.st.RepeatCodes[3]++
+			} else {
+				p.st.RepeatCodes[t.of-1]++
+				if t.ll == 0 {
+					p.st.ZeroLLRepeat++
+				}
+			}
+		}
+	}
+
+	rec := repZSBlockRec{Last: last, Type: repZSBlockCompressed, LitMode: h.lit.mode, LitForm: h.lit.form,
+		Regen: uint32(h.lit.regen), TreeDesc: h.lit.treeDesc, NSeq: uint32(h.seq.n),
+		Modes: h.seq.modes, TabBytes: h.seq.tabBytes, Rank: rank}
+	re, err := repZSbuildCompressed(&pre, &rec, out, trip)
+	if err == nil && bytes.Equal(re, content) {
+		p.st.TreeBytes += len(rec.TreeDesc)
+		if rec.NSeq > 0 {
+			p.st.TableBytes += 1 + len(rec.TabBytes)
+			for _, r := range rec.Rank {
+				p.st.RankBytes += len(binary.AppendUvarint(nil, uint64(r)))
+			}
+		}
+		// the record keeps views into the shared block buffer; give it its own bytes
+		rec.TreeDesc = append([]byte(nil), rec.TreeDesc...)
+		rec.TabBytes = append([]byte(nil), rec.TabBytes...)
+		return rec, trip, nil, nil
+	}
+	if err != nil && !errors.Is(err, repZSErrMismatch) && !errors.Is(err, repZSErrIR) {
+		return repZSBlockRec{}, nil, nil, err
+	}
+	return repZSBlockRec{Last: last, Type: repZSBlockFallback, CompLen: uint32(len(content))}, nil, append([]byte(nil), content...), nil
+}
+
+// Port source: zeros3-z3/zstdz3/range.go
+// TableRef is an active table as introduced by the stream.
+type repZSTableRef struct {
+	Kind uint8 // tabNone, tabPredefined, tabRLE or tabFSE
+	Desc []byte
+}
+
+// Port source: zeros3-z3/zstdz3/range.go
+const (
+	repZStabNone = 3 // no table yet (a Repeat mode here would be invalid)
+)
+
+// Port source: zeros3-z3/zstdz3/range.go
+// Checkpoint is the replay state at the start of one block.
+type repZSCheckpoint struct {
+	Frame, Block int   // frame index in the skeleton; block index within the frame
+	FramePlain   int64 // stream plaintext offset of the frame start
+	PlainOff     int64 // stream plaintext offset of the block
+	CompOff      int64 // stream offset of the block header
+	UnitOff      int64 // offset of the block's unit in the unit stream
+	SkelOff      int   // offset of the block record in the skeleton
+	Tree         []byte
+	Tabs         [3]repZSTableRef
+}
+
+// Port source: zeros3-z3/zstdz3/range.go
+func (c *repZSCheckpoint) snapshot(st *repZScodingState) {
+	if st.huff != nil {
+		c.Tree = append([]byte(nil), st.huff.desc...)
+	}
+	for k, t := range st.fse {
+		if t == nil {
+			c.Tabs[k] = repZSTableRef{Kind: repZStabNone}
+			continue
+		}
+		c.Tabs[k] = repZSTableRef{Kind: t.kind, Desc: append([]byte(nil), t.desc...)}
+	}
+}
+
+// Port source: zeros3-z3/zstdz3/range.go
+// state rebuilds the inherited coding state.
+func (c *repZSCheckpoint) state() (st repZScodingState, err error) {
+	if len(c.Tree) > 0 {
+		t, n, err := repZSreadHuffTree(c.Tree)
+		if err != nil || n != len(c.Tree) {
+			return st, repZSbadIR("checkpoint tree")
+		}
+		st.huff = t
+	}
+	for k, r := range c.Tabs {
+		switch r.Kind {
+		case repZStabNone:
+		case 0:
+			st.fse[k] = repZSpredTables[k]
+		case 1:
+			if len(r.Desc) != 1 || int(r.Desc[0]) > repZSmaxSym[k] {
+				return st, repZSbadIR("checkpoint rle table")
+			}
+			st.fse[k] = repZSrleTable(r.Desc[0])
+		case 2:
+			t, n, err := repZSreadFSEDesc(r.Desc, repZSmaxAcc[k], repZSmaxSym[k])
+			if err != nil || n != len(r.Desc) {
+				return st, repZSbadIR("checkpoint fse table")
+			}
+			st.fse[k] = t
+		default:
+			return st, repZSbadIR("checkpoint table kind %d", r.Kind)
+		}
+	}
+	return st, nil
+}
+
+// Port source: zeros3-z3/zstdz3/range.go
+// Marshal is the canonical serialization of a checkpoint (bytes charged to the index).
+func (c *repZSCheckpoint) Marshal() []byte {
+	var b []byte
+	for _, v := range []uint64{uint64(c.Frame), uint64(c.Block), uint64(c.FramePlain), uint64(c.PlainOff), uint64(c.CompOff), uint64(c.UnitOff), uint64(c.SkelOff)} {
+		b = binary.AppendUvarint(b, v)
+	}
+	b = binary.AppendUvarint(b, uint64(len(c.Tree)))
+	b = append(b, c.Tree...)
+	for _, t := range c.Tabs {
+		b = append(b, t.Kind)
+		if t.Kind == 1 || t.Kind == 2 {
+			b = binary.AppendUvarint(b, uint64(len(t.Desc)))
+			b = append(b, t.Desc...)
+		}
+	}
+	return b
+}
+
+// Port source: zeros3-z3/zstdz3/range.go
+// RangeStats says what a ranged replay touched.
+type repZSRangeStats struct {
+	Blocks      int   // blocks replayed
+	Out         int64 // compressed bytes produced (from the checkpoint on)
+	UnitBytes   int64 // unit-stream bytes consumed
+	PlainBytes  int64 // plaintext read for the blocks themselves
+	WindowBytes int64 // plaintext read for the model's window
+	SkelBytes   int   // skeleton bytes of the replayed block records
+}
+
+// Port source: zeros3-z3/zstdz3/range.go
+// ReplayFrom writes the compressed stream from the start of the checkpoint's block until
+// at least stop bytes of the stream (an absolute compressed offset) have been produced
+// or the stream ends. units must be positioned at cp.UnitOff; plain serves the semantic
+// plaintext at stream offsets (ReadAt must return len(p) bytes or an error).
+func repZSReplayFrom(w io.Writer, s *repZSSkeleton, cp *repZSCheckpoint, units io.Reader, plain io.ReaderAt, stop int64) (repZSRangeStats, error) {
+	var rs repZSRangeStats
+	if cp.Frame < 0 || cp.Frame >= len(s.Frames) || s.Frames[cp.Frame].Skippable || cp.Block < 0 || cp.Block >= len(s.Frames[cp.Frame].Blocks) {
+		return rs, repZSbadIR("checkpoint outside the skeleton")
+	}
+	st, err := cp.state()
+	if err != nil {
+		return rs, err
+	}
+	ub := bufio.NewReaderSize(&repZScountReader{r: units, n: &rs.UnitBytes}, 1<<12)
+	pos := cp.CompOff
+	var buf []byte
+	readPlain := func(off int64, n int) ([]byte, error) {
+		b := make([]byte, n)
+		if _, err := plain.ReadAt(b, off); err != nil {
+			return nil, fmt.Errorf("%w: semantic plaintext at %d: %v", repZSErrMismatch, off, err)
+		}
+		return b, nil
+	}
+	for fi := cp.Frame; fi < len(s.Frames) && pos < stop; fi++ {
+		f := &s.Frames[fi]
+		bi, fplain := 0, cp.FramePlain
+		if fi != cp.Frame {
+			var err error
+			if fplain, err = repZSplanEnd(s, fi); err != nil {
+				return rs, err
+			}
+		} else {
+			bi = cp.Block
+		}
+		if f.Skippable {
+			var h [8]byte
+			binary.LittleEndian.PutUint32(h[:], repZSmagicSkip|uint32(f.SkipLow))
+			binary.LittleEndian.PutUint32(h[4:], uint32(len(f.Skip)))
+			if err := repZSwriteAll(w, &pos, h[:], f.Skip); err != nil {
+				return rs, err
+			}
+			continue
+		}
+		fh, err := repZSparseFrameHeader(f.Header, repZSLimits{MaxWindow: 1 << 62, MaxFrameDecoded: 1 << 62})
+		if err != nil {
+			return rs, err
+		}
+		rf := &repZSreplayFrame{bmax: min(fh.blockMax(), repZSmaxBlock), hist: repZShistory{window: fh.window}}
+		poff := fplain
+		for j := 0; j < bi; j++ {
+			poff += int64(f.Blocks[j].DecLen)
+		}
+		if fi == cp.Frame {
+			rf.st = st
+		} else {
+			var m [4]byte
+			binary.LittleEndian.PutUint32(m[:], repZSmagicStd)
+			if err := repZSwriteAll(w, &pos, m[:], f.Header); err != nil {
+				return rs, err
+			}
+		}
+		for j := bi; j < len(f.Blocks); j++ {
+			if f.Blocks[j].Model {
+				rf.model = repZSnewMatchModel(fh.window)
+				break
+			}
+		}
+		if rf.model != nil && poff > fplain {
+			lo := max(fplain, poff-fh.window)
+			wb, err := readPlain(lo, int(poff-lo))
+			if err != nil {
+				return rs, err
+			}
+			rs.WindowBytes += int64(len(wb))
+			rf.hist.buf, rf.hist.total = wb, poff-fplain
+		} else {
+			rf.hist.total = poff - fplain
+		}
+		for j := bi; j < len(f.Blocks) && pos < stop; j++ {
+			k := &f.Blocks[j]
+			buf, err = readPlain(poff, int(k.DecLen))
+			if err != nil {
+				return rs, err
+			}
+			rs.PlainBytes += int64(k.DecLen)
+			rs.SkelBytes += len(k.appendTo(nil))
+			content, typ, err := rf.rebuildBlock(k, buf, ub)
+			if err != nil {
+				return rs, fmt.Errorf("frame %d block %d: %w", fi, j, err)
+			}
+			size := len(content)
+			if typ == repZSBlockRLE {
+				size = int(k.DecLen)
+			}
+			if err := repZSwriteAll(w, &pos, repZSblockHeader(k.Last, typ, size), content); err != nil {
+				return rs, err
+			}
+			rs.Blocks++
+			poff += int64(k.DecLen)
+			if k.Last && fh.checksum {
+				var c [4]byte
+				binary.LittleEndian.PutUint32(c[:], f.Checksum)
+				if err := repZSwriteAll(w, &pos, c[:]); err != nil {
+					return rs, err
+				}
+			}
+		}
+	}
+	rs.Out = pos - cp.CompOff
+	rs.UnitBytes -= int64(ub.Buffered())
+	return rs, nil
+}
+
+// Port source: zeros3-z3/zstdz3/range.go
+type repZScountReader struct {
+	r io.Reader
+	n *int64
+}
+
+// Port source: zeros3-z3/zstdz3/range.go
+func (c *repZScountReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	*c.n += int64(n)
+	return n, err
+}
+
+// Port source: zeros3-z3/zstdz3/range.go
+func repZSwriteAll(w io.Writer, pos *int64, parts ...[]byte) error {
+	for _, p := range parts {
+		n, err := w.Write(p)
+		*pos += int64(n)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/zstdz3/range.go
+// planEnd is the stream plaintext offset at which frame fi starts.
+func repZSplanEnd(s *repZSSkeleton, fi int) (int64, error) {
+	var off int64
+	for i := 0; i < fi; i++ {
+		for j := range s.Frames[i].Blocks {
+			off += int64(s.Frames[i].Blocks[j].DecLen)
+		}
+	}
+	return off, nil
+}
+
+// Port source: zeros3-z3/zstdz3/replay.go
+// ErrMismatch reports that the replayed bytes contradict the description (checksum, a
+// short or long plaintext, an RLE block over non-uniform bytes).
+var repZSErrMismatch = fmt.Errorf("zstdz3: replay disagrees with the description")
+
+// Port source: zeros3-z3/zstdz3/replay.go
+func repZSencodeTriples(trip []repZSseqRec) []byte {
+	b := make([]byte, 0, 4*len(trip))
+	for _, t := range trip {
+		b = binary.AppendUvarint(b, uint64(t.ll))
+		b = binary.AppendUvarint(b, uint64(t.ml-3))
+		b = binary.AppendUvarint(b, uint64(t.of))
+	}
+	return b
+}
+
+// Port source: zeros3-z3/zstdz3/replay.go
+// readTriples reads n sequences of the unit stream; varints must be minimal.
+func repZSreadTriples(r io.ByteReader, n int) ([]repZSseqRec, error) {
+	trip := make([]repZSseqRec, n)
+	for i := range trip {
+		var v [3]uint64
+		for k := range v {
+			x, err := repZSreadMinimalUvarint(r)
+			if err != nil {
+				return nil, err
+			}
+			v[k] = x
+		}
+		if v[0] > repZSmaxBlock || v[1] > repZSmaxBlock || v[2] == 0 || v[2] > 1<<32-1 {
+			return nil, repZSbadIR("sequence value")
+		}
+		trip[i] = repZSseqRec{ll: uint32(v[0]), ml: uint32(v[1]) + 3, of: uint32(v[2])}
+	}
+	return trip, nil
+}
+
+// Port source: zeros3-z3/zstdz3/replay.go
+func repZSreadMinimalUvarint(r io.ByteReader) (uint64, error) {
+	var x uint64
+	var s uint
+	for i := 0; ; i++ {
+		c, err := r.ReadByte()
+		if err != nil {
+			return 0, repZSbadIR("truncated unit stream")
+		}
+		if i == 9 && c > 1 {
+			return 0, repZSbadIR("varint overflow")
+		}
+		if c < 0x80 {
+			if i > 0 && c == 0 {
+				return 0, repZSbadIR("non-minimal varint")
+			}
+			return x | uint64(c)<<s, nil
+		}
+		x |= uint64(c&0x7f) << s
+		s += 7
+	}
+}
+
+// Port source: zeros3-z3/zstdz3/replay.go
+func repZSlitHeader(mode, form uint8, regen, comp int) ([]byte, error) {
+	if mode <= repZSlitRLE {
+		switch form {
+		case 0:
+			if regen > 31 {
+				return nil, repZSErrMismatch
+			}
+			return []byte{mode | byte(regen)<<3}, nil
+		case 1:
+			if regen > 4095 {
+				return nil, repZSErrMismatch
+			}
+			return []byte{mode | 1<<2 | byte(regen&15)<<4, byte(regen >> 4)}, nil
+		default:
+			if regen >= 1<<20 {
+				return nil, repZSErrMismatch
+			}
+			return []byte{mode | 3<<2 | byte(regen&15)<<4, byte(regen >> 4), byte(regen >> 12)}, nil
+		}
+	}
+	w := [4]uint{10, 10, 14, 18}[form&3]
+	if uint(regen) >= 1<<w || uint(comp) >= 1<<w {
+		return nil, repZSErrMismatch
+	}
+	v := uint64(mode) | uint64(form)<<2 | uint64(regen)<<4 | uint64(comp)<<(4+w)
+	n := [4]int{3, 3, 4, 5}[form&3]
+	var b [8]byte
+	binary.LittleEndian.PutUint64(b[:], v)
+	return b[:n], nil
+}
+
+// Port source: zeros3-z3/zstdz3/replay.go
+func repZSseqCountHeader(n int) []byte {
+	switch {
+	case n == 0:
+		return []byte{0}
+	case n < 128:
+		return []byte{byte(n)}
+	case n < 0x7f00:
+		return []byte{byte(n>>8) + 128, byte(n)}
+	}
+	return []byte{255, byte(n - 0x7f00), byte((n - 0x7f00) >> 8)}
+}
+
+// Port source: zeros3-z3/zstdz3/replay.go
+func repZSencodeSeqs(tabs [3]*repZSfseTable, trip []repZSseqRec, rank [3]uint32) ([]byte, error) {
+	n := len(trip)
+	codes := func(i int) (c [3]int, ok bool) {
+		t := trip[i]
+		c[repZSiLL], c[repZSiML], c[repZSiOF] = repZSllCode(t.ll), repZSmlCode(t.ml), repZSofCode(t.of)
+		ok = t.ml >= 3 && t.of >= 1 && c[repZSiLL] >= 0 && c[repZSiML] >= 0 && t.ll-repZSllBase[c[repZSiLL]] < 1<<repZSllBits[c[repZSiLL]] && t.ml-repZSmlBase[c[repZSiML]] < 1<<repZSmlBits[c[repZSiML]]
+		return
+	}
+	var w repZSrevWriter
+	extras := func(i int, c [3]int) {
+		t := trip[i]
+		w.write(t.ll-repZSllBase[c[repZSiLL]], int(repZSllBits[c[repZSiLL]]))
+		w.write(t.ml-repZSmlBase[c[repZSiML]], int(repZSmlBits[c[repZSiML]]))
+		w.write(t.of-1<<uint(c[repZSiOF]), c[repZSiOF])
+	}
+	c, ok := codes(n - 1)
+	if !ok {
+		return nil, repZSErrMismatch
+	}
+	var st [3]int
+	for k := 0; k < 3; k++ {
+		if st[k], ok = tabs[k].stateAt(c[k], rank[k]); !ok {
+			return nil, repZSErrMismatch
+		}
+	}
+	extras(n-1, c)
+	for i := n - 2; i >= 0; i-- {
+		if c, ok = codes(i); !ok {
+			return nil, repZSErrMismatch
+		}
+		for _, k := range [3]int{repZSiOF, repZSiML, repZSiLL} {
+			ps, bits, nb, ok := tabs[k].prev(c[k], st[k])
+			if !ok {
+				return nil, repZSErrMismatch
+			}
+			w.write(bits, nb)
+			st[k] = ps
+		}
+		extras(i, c)
+	}
+	w.write(uint32(st[repZSiML]), int(tabs[repZSiML].acc))
+	w.write(uint32(st[repZSiOF]), int(tabs[repZSiOF].acc))
+	w.write(uint32(st[repZSiLL]), int(tabs[repZSiLL].acc))
+	return w.finish(), nil
+}
+
+// Port source: zeros3-z3/zstdz3/replay.go
+// buildCompressed re-emits a compressed block's bytes from its record, its plaintext,
+// its sequences and the state it inherits (read-only).
+func repZSbuildCompressed(st *repZScodingState, k *repZSBlockRec, plain []byte, trip []repZSseqRec) ([]byte, error) {
+	lits := plain
+	if k.NSeq > 0 {
+		lits = make([]byte, 0, k.Regen)
+		pos := 0
+		for _, t := range trip {
+			end := pos + int(t.ll) + int(t.ml)
+			if end > len(plain) {
+				return nil, repZSErrMismatch
+			}
+			lits = append(lits, plain[pos:pos+int(t.ll)]...)
+			pos = end
+		}
+		lits = append(lits, plain[pos:]...)
+	}
+	if len(lits) != int(k.Regen) {
+		return nil, repZSErrMismatch
+	}
+	var out []byte
+	switch k.LitMode {
+	case repZSlitRaw:
+		h, err := repZSlitHeader(repZSlitRaw, k.LitForm, len(lits), 0)
+		if err != nil {
+			return nil, err
+		}
+		out = append(h, lits...)
+	case repZSlitRLE:
+		if len(lits) == 0 {
+			return nil, repZSErrMismatch
+		}
+		h, err := repZSlitHeader(repZSlitRLE, k.LitForm, len(lits), 0)
+		if err != nil {
+			return nil, err
+		}
+		out = append(h, lits[0])
+	default:
+		tree := st.huff
+		var desc []byte
+		if k.LitMode == repZSlitComp {
+			var n int
+			var err error
+			if tree, n, err = repZSreadHuffTree(k.TreeDesc); err != nil || n != len(k.TreeDesc) {
+				return nil, repZSErrMismatch
+			}
+			desc = k.TreeDesc
+		}
+		if tree == nil || len(lits) == 0 {
+			return nil, repZSErrMismatch
+		}
+		body := append([]byte(nil), desc...)
+		if k.LitForm == 0 {
+			var ok bool
+			if body, ok = tree.encodeStream(body, lits); !ok {
+				return nil, repZSErrMismatch
+			}
+		} else {
+			seg := (len(lits) + 3) / 4
+			var sizes [3]int
+			var streams []byte
+			for i := 0; i < 4; i++ {
+				lo, hi := min(i*seg, len(lits)), min((i+1)*seg, len(lits))
+				if i == 3 {
+					hi = len(lits)
+				}
+				before := len(streams)
+				var ok bool
+				if streams, ok = tree.encodeStream(streams, lits[lo:hi]); !ok {
+					return nil, repZSErrMismatch
+				}
+				if i < 3 {
+					if sizes[i] = len(streams) - before; sizes[i] > 65535 {
+						return nil, repZSErrMismatch
+					}
+				}
+			}
+			for _, s := range sizes {
+				body = binary.LittleEndian.AppendUint16(body, uint16(s))
+			}
+			body = append(body, streams...)
+		}
+		h, err := repZSlitHeader(k.LitMode, k.LitForm, len(lits), len(body))
+		if err != nil {
+			return nil, err
+		}
+		out = append(h, body...)
+	}
+	out = append(out, repZSseqCountHeader(int(k.NSeq))...)
+	if k.NSeq == 0 {
+		return out, nil
+	}
+	tabs, used, err := repZSparseSeqTables(k.Modes, k.TabBytes, st.fse)
+	if err != nil || used != len(k.TabBytes) {
+		return nil, repZSErrMismatch
+	}
+	stream, err := repZSencodeSeqs(tabs, trip, k.Rank)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, k.Modes)
+	out = append(out, k.TabBytes...)
+	return append(out, stream...), nil
+}
+
+// Port source: zeros3-z3/zstdz3/replay.go
+func repZSblockHeader(last bool, typ repZSBlockType, size int) []byte {
+	v := uint32(size)<<3 | uint32(typ)<<1
+	if last {
+		v |= 1
+	}
+	return []byte{byte(v), byte(v >> 8), byte(v >> 16)}
+}
+
+// Port source: zeros3-z3/zstdz3/replay.go
+// replayFrame is the per-frame state replay carries: the coding tables a block inherits
+// and, for model-coded sequences, the plaintext window and its match index.
+type repZSreplayFrame struct {
+	st    repZScodingState
+	hist  repZShistory
+	model *repZSmatchModel
+	bmax  int
+}
+
+// Port source: zeros3-z3/zstdz3/replay.go
+// rebuildBlock produces the block's content bytes (without the 3-byte header) and the
+// zstd block type, advancing the inherited state and consuming the block's unit. plain
+// is the block's semantic plaintext.
+func (rf *repZSreplayFrame) rebuildBlock(k *repZSBlockRec, plain []byte, units *bufio.Reader) (content []byte, typ repZSBlockType, err error) {
+	start, total := len(rf.hist.buf), rf.hist.total
+	if rf.model != nil { // the window is only needed by model-coded sequences
+		rf.hist.reserve(len(plain))
+		start = len(rf.hist.buf)
+		rf.hist.buf = append(rf.hist.buf, plain...)
+	}
+	rf.hist.total += int64(len(plain))
+	switch k.Type {
+	case repZSBlockRaw:
+		return plain, repZSBlockRaw, nil
+	case repZSBlockRLE:
+		for _, c := range plain {
+			if c != k.RLE {
+				return nil, 0, repZSErrMismatch
+			}
+		}
+		return []byte{k.RLE}, repZSBlockRLE, nil
+	case repZSBlockFallback:
+		content = make([]byte, k.CompLen)
+		if _, err := io.ReadFull(units, content); err != nil {
+			return nil, 0, repZSbadIR("truncated unit stream")
+		}
+	default:
+		var trip []repZSseqRec
+		if k.NSeq > 0 {
+			if k.Model {
+				if rf.model == nil {
+					return nil, 0, repZSbadIR("model-coded sequences in a frame the model does not cover")
+				}
+				v := &repZSblockView{buf: rf.hist.buf, base: total - int64(start), start: total, end: rf.hist.total}
+				trip, err = rf.model.decode(units, v, int(k.NSeq))
+			} else {
+				trip, err = repZSreadTriples(units, int(k.NSeq))
+			}
+			if err != nil {
+				return nil, 0, err
+			}
+		}
+		if content, err = repZSbuildCompressed(&rf.st, k, plain, trip); err != nil {
+			return nil, 0, err
+		}
+	}
+	if len(content) > rf.bmax {
+		return nil, 0, repZSErrMismatch
+	}
+	if _, err := repZSscanBlock(&rf.st, content, rf.bmax); err != nil {
+		return nil, 0, fmt.Errorf("%w: rebuilt block: %v", repZSErrMismatch, err)
+	}
+	return content, repZSBlockCompressed, nil
+}
+
+// Port source: zeros3-z3/zstdz3/replay.go
+// Replay writes the original stream described by skel, taking units from units and the
+// semantic plaintext from plain (read sequentially, consumed exactly). It returns the
+// bytes written. Memory is one block, the inherited tables and the skeleton.
+func repZSReplay(w io.Writer, skel []byte, units io.Reader, plain io.Reader, lim repZSLimits) (int64, error) {
+	s, err := repZSUnmarshal(skel, lim)
+	if err != nil {
+		return 0, err
+	}
+	return repZSReplaySkeleton(w, s, units, plain)
+}
+
+// Port source: zeros3-z3/zstdz3/replay.go
+// ReplaySkeleton is Replay for an already validated skeleton.
+func repZSReplaySkeleton(w io.Writer, s *repZSSkeleton, unitStream io.Reader, plain io.Reader) (int64, error) {
+	units := bufio.NewReaderSize(unitStream, 1<<16)
+	var n int64
+	put := func(b ...[]byte) error {
+		for _, p := range b {
+			m, err := w.Write(p)
+			n += int64(m)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	var buf []byte
+	for fi := range s.Frames {
+		f := &s.Frames[fi]
+		if f.Skippable {
+			var h [8]byte
+			binary.LittleEndian.PutUint32(h[:], repZSmagicSkip|uint32(f.SkipLow))
+			binary.LittleEndian.PutUint32(h[4:], uint32(len(f.Skip)))
+			if err := put(h[:], f.Skip); err != nil {
+				return n, err
+			}
+			continue
+		}
+		fh, err := repZSparseFrameHeader(f.Header, repZSLimits{MaxWindow: 1 << 62, MaxFrameDecoded: 1 << 62})
+		if err != nil {
+			return n, err
+		}
+		var m [4]byte
+		binary.LittleEndian.PutUint32(m[:], repZSmagicStd)
+		if err := put(m[:], f.Header); err != nil {
+			return n, err
+		}
+		rf := &repZSreplayFrame{bmax: min(fh.blockMax(), repZSmaxBlock), hist: repZShistory{window: fh.window}}
+		for bi := range f.Blocks {
+			if f.Blocks[bi].Model {
+				rf.model = repZSnewMatchModel(fh.window)
+				break
+			}
+		}
+		sum := repZSnewXXH64()
+		for bi := range f.Blocks {
+			k := &f.Blocks[bi]
+			buf = repZSfitBuf(buf, int(k.DecLen))
+			if _, err := io.ReadFull(plain, buf); err != nil {
+				return n, fmt.Errorf("%w: semantic plaintext ends early: %v", repZSErrMismatch, err)
+			}
+			sum.write(buf)
+			content, typ, err := rf.rebuildBlock(k, buf, units)
+			if err != nil {
+				return n, fmt.Errorf("frame %d block %d: %w", fi, bi, err)
+			}
+			size := len(content)
+			if typ == repZSBlockRLE {
+				size = int(k.DecLen)
+			}
+			if err := put(repZSblockHeader(k.Last, typ, size), content); err != nil {
+				return n, err
+			}
+		}
+		if fh.checksum {
+			if uint32(sum.sum()) != f.Checksum {
+				return n, fmt.Errorf("%w: content checksum", repZSErrMismatch)
+			}
+			var c [4]byte
+			binary.LittleEndian.PutUint32(c[:], f.Checksum)
+			if err := put(c[:]); err != nil {
+				return n, err
+			}
+		}
+	}
+	var one [1]byte
+	if m, _ := io.ReadFull(plain, one[:]); m != 0 {
+		return n, fmt.Errorf("%w: semantic plaintext is longer than the description", repZSErrMismatch)
+	}
+	if _, err := units.ReadByte(); err != io.EOF {
+		return n, repZSbadIR("unit stream is longer than the description")
+	}
+	return n, nil
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+// BlockType is how a block is represented.
+type repZSBlockType uint8
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+const (
+	repZSBlockRaw repZSBlockType = iota
+	repZSBlockRLE
+	repZSBlockCompressed // transformed: literal and sequence entropy streams are regenerated
+	repZSBlockFallback   // original compressed bytes kept as a unit
+)
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+func (t repZSBlockType) String() string {
+	return [...]string{"raw", "rle", "compressed", "fallback"}[t&3]
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+// BlockRec is one block of the skeleton.
+type repZSBlockRec struct {
+	Last     bool
+	Type     repZSBlockType
+	DecLen   uint32
+	CompLen  uint32 // fallback: bytes of the original compressed block in the unit stream
+	Model    bool   // sequences are coded by the match model (see model.go), not as explicit varints
+	RLE      byte
+	LitMode  uint8
+	LitForm  uint8
+	Regen    uint32
+	TreeDesc []byte
+	NSeq     uint32
+	Modes    byte
+	TabBytes []byte
+	Rank     [3]uint32
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+// HasUnit reports whether the block consumes a unit.
+func (b *repZSBlockRec) HasUnit() bool {
+	return b.Type == repZSBlockFallback || (b.Type == repZSBlockCompressed && b.NSeq > 0)
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+// FrameRec is one frame of the skeleton.
+type repZSFrameRec struct {
+	Skippable bool
+	SkipLow   uint8
+	Skip      []byte // skippable payload, opaque and verbatim
+	Header    []byte // standard frame header, verbatim
+	Blocks    []repZSBlockRec
+	Checksum  uint32 // content checksum, verified at parse and at replay
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+// Skeleton is the decoded skeleton.
+type repZSSkeleton struct{ Frames []repZSFrameRec }
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+const repZSskelVersion = 1
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+// UnitCount is the number of blocks that contribute to the unit stream.
+func (s *repZSSkeleton) UnitCount() (n int) {
+	for i := range s.Frames {
+		for j := range s.Frames[i].Blocks {
+			if s.Frames[i].Blocks[j].HasUnit() {
+				n++
+			}
+		}
+	}
+	return
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+func repZSappendUv(b []byte, v uint64) []byte { return binary.AppendUvarint(b, v) }
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+// Marshal returns the canonical serialization.
+func (s *repZSSkeleton) Marshal() []byte { return s.marshal(nil) }
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+// marshal serializes the skeleton; at, if set, receives the offset of every block record.
+func (s *repZSSkeleton) marshal(at func(frame, block, off int)) []byte {
+	b := []byte{'Z', 'S', repZSskelVersion}
+	b = repZSappendUv(b, uint64(len(s.Frames)))
+	for i := range s.Frames {
+		f := &s.Frames[i]
+		if f.Skippable {
+			b = append(b, 1, f.SkipLow)
+			b = repZSappendUv(b, uint64(len(f.Skip)))
+			b = append(b, f.Skip...)
+			continue
+		}
+		b = append(b, 0, byte(len(f.Header)))
+		b = append(b, f.Header...)
+		b = repZSappendUv(b, uint64(len(f.Blocks)))
+		for j := range f.Blocks {
+			if at != nil {
+				at(i, j, len(b))
+			}
+			b = f.Blocks[j].appendTo(b)
+		}
+		if len(f.Header) > 0 && f.Header[0]>>2&1 == 1 {
+			b = binary.LittleEndian.AppendUint32(b, f.Checksum)
+		}
+	}
+	return b
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+func (k *repZSBlockRec) appendTo(b []byte) []byte {
+	tag := byte(k.Type) << 1
+	if k.Last {
+		tag |= 1
+	}
+	if k.Model {
+		tag |= 8
+	}
+	b = append(b, tag)
+	b = repZSappendUv(b, uint64(k.DecLen))
+	switch k.Type {
+	case repZSBlockRLE:
+		b = append(b, k.RLE)
+	case repZSBlockFallback:
+		b = repZSappendUv(b, uint64(k.CompLen))
+	case repZSBlockCompressed:
+		b = append(b, k.LitMode|k.LitForm<<2)
+		b = repZSappendUv(b, uint64(k.Regen))
+		if k.LitMode == repZSlitComp {
+			b = repZSappendUv(b, uint64(len(k.TreeDesc)))
+			b = append(b, k.TreeDesc...)
+		}
+		b = repZSappendUv(b, uint64(k.NSeq))
+		if k.NSeq > 0 {
+			b = append(b, k.Modes)
+			b = repZSappendUv(b, uint64(len(k.TabBytes)))
+			b = append(b, k.TabBytes...)
+			for _, r := range k.Rank {
+				b = repZSappendUv(b, uint64(r))
+			}
+		}
+	}
+	return b
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+type repZSskelReader struct {
+	b []byte
+	p int
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+func (r *repZSskelReader) byte() (byte, error) {
+	if r.p >= len(r.b) {
+		return 0, repZSbadIR("truncated")
+	}
+	r.p++
+	return r.b[r.p-1], nil
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+func (r *repZSskelReader) uv() (uint64, error) {
+	v, n := binary.Uvarint(r.b[r.p:])
+	if n <= 0 {
+		return 0, repZSbadIR("bad varint")
+	}
+	if n != len(binary.AppendUvarint(nil, v)) {
+		return 0, repZSbadIR("non-minimal varint")
+	}
+	r.p += n
+	return v, nil
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+// count reads a varint that must not exceed the bytes left (each counted item takes at least one).
+func (r *repZSskelReader) count() (int, error) {
+	v, err := r.uv()
+	if err != nil {
+		return 0, err
+	}
+	if v > uint64(len(r.b)-r.p) {
+		return 0, repZSbadIR("count %d exceeds the remaining %d bytes", v, len(r.b)-r.p)
+	}
+	return int(v), nil
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+func (r *repZSskelReader) take(n int) ([]byte, error) {
+	if n < 0 || n > len(r.b)-r.p {
+		return nil, repZSbadIR("truncated")
+	}
+	r.p += n
+	return r.b[r.p-n : r.p], nil
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+// Unmarshal parses and validates a skeleton: canonical encoding, enum ranges, header
+// validity, table descriptions that parse to exactly their length, per-frame
+// coverage of Frame_Content_Size, and no trailing bytes. Sub-slices alias b.
+func repZSUnmarshal(b []byte, lim repZSLimits) (*repZSSkeleton, error) {
+	lim = lim.fill()
+	r := &repZSskelReader{b: b}
+	if len(b) < 3 || b[0] != 'Z' || b[1] != 'S' || b[2] != repZSskelVersion {
+		return nil, repZSbadIR("bad magic or version")
+	}
+	r.p = 3
+	nf, err := r.count()
+	if err != nil {
+		return nil, err
+	}
+	if nf > lim.MaxFrames {
+		return nil, repZSbadIR("%d frames", nf)
+	}
+	s := &repZSSkeleton{Frames: make([]repZSFrameRec, nf)}
+	var nblocks int
+	for i := range s.Frames {
+		f := &s.Frames[i]
+		kind, err := r.byte()
+		if err != nil {
+			return nil, err
+		}
+		switch kind {
+		case 1:
+			low, err := r.byte()
+			if err != nil || low > 15 {
+				return nil, repZSbadIR("skippable magic")
+			}
+			n, err := r.count()
+			if err != nil {
+				return nil, err
+			}
+			f.Skippable, f.SkipLow = true, low
+			f.Skip, _ = r.take(n)
+		case 0:
+			hl, err := r.byte()
+			if err != nil {
+				return nil, err
+			}
+			if f.Header, err = r.take(int(hl)); err != nil {
+				return nil, err
+			}
+			fh, err := repZSparseFrameHeader(f.Header, lim)
+			if err != nil {
+				return nil, repZSbadIR("frame header: %v", err)
+			}
+			n, err := r.count()
+			if err != nil {
+				return nil, err
+			}
+			if n == 0 {
+				return nil, repZSbadIR("frame without blocks")
+			}
+			if nblocks += n; nblocks > lim.MaxBlocks {
+				return nil, repZSbadIR("%d blocks", nblocks)
+			}
+			f.Blocks = make([]repZSBlockRec, n)
+			var total int64
+			for j := range f.Blocks {
+				k := &f.Blocks[j]
+				if err := r.block(k, fh.blockMax()); err != nil {
+					return nil, err
+				}
+				if k.Last != (j == n-1) {
+					return nil, repZSbadIR("last-block flag")
+				}
+				if total += int64(k.DecLen); total > lim.MaxFrameDecoded {
+					return nil, repZSbadIR("frame decodes past the limit")
+				}
+			}
+			if fh.hasFCS && uint64(total) != fh.fcs {
+				return nil, repZSbadIR("blocks cover %d bytes, frame header says %d", total, fh.fcs)
+			}
+			if fh.checksum {
+				c, err := r.take(4)
+				if err != nil {
+					return nil, err
+				}
+				f.Checksum = binary.LittleEndian.Uint32(c)
+			}
+		default:
+			return nil, repZSbadIR("frame kind %d", kind)
+		}
+	}
+	if r.p != len(b) {
+		return nil, repZSbadIR("%d trailing bytes", len(b)-r.p)
+	}
+	return s, nil
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+func (r *repZSskelReader) block(k *repZSBlockRec, bmax int) error {
+	tag, err := r.byte()
+	if err != nil {
+		return err
+	}
+	if tag>>4 != 0 {
+		return repZSbadIR("block tag %#x", tag)
+	}
+	k.Last, k.Type, k.Model = tag&1 == 1, repZSBlockType(tag>>1&3), tag&8 != 0
+	if k.Model && k.Type != repZSBlockCompressed {
+		return repZSbadIR("model flag on a %v block", k.Type)
+	}
+	dl, err := r.uv()
+	if err != nil {
+		return err
+	}
+	if dl > uint64(bmax) {
+		return repZSbadIR("block of %d bytes in a window allowing %d", dl, bmax)
+	}
+	k.DecLen = uint32(dl)
+	switch k.Type {
+	case repZSBlockRaw:
+		return nil
+	case repZSBlockRLE:
+		k.RLE, err = r.byte()
+		return err
+	case repZSBlockFallback:
+		cl, err := r.uv()
+		if err != nil {
+			return err
+		}
+		if cl == 0 || cl > uint64(bmax) {
+			return repZSbadIR("fallback block of %d bytes", cl)
+		}
+		k.CompLen = uint32(cl)
+		return nil
+	}
+	lit, err := r.byte()
+	if err != nil {
+		return err
+	}
+	k.LitMode, k.LitForm = lit&3, lit>>2
+	if lit>>4 != 0 || (k.LitMode <= repZSlitRLE && k.LitForm > 2) {
+		return repZSbadIR("literals mode byte %#x", lit)
+	}
+	rg, err := r.uv()
+	if err != nil {
+		return err
+	}
+	if rg > dl {
+		return repZSbadIR("%d literals in a block of %d", rg, dl)
+	}
+	k.Regen = uint32(rg)
+	if k.LitMode == repZSlitComp {
+		n, err := r.count()
+		if err != nil {
+			return err
+		}
+		k.TreeDesc, _ = r.take(n)
+		if _, used, err := repZSreadHuffTree(k.TreeDesc); err != nil || used != len(k.TreeDesc) {
+			return repZSbadIR("huffman tree description")
+		}
+	}
+	ns, err := r.uv()
+	if err != nil {
+		return err
+	}
+	if ns > uint64(bmax/3) {
+		return repZSbadIR("%d sequences", ns)
+	}
+	k.NSeq = uint32(ns)
+	if k.Model && ns == 0 {
+		return repZSbadIR("model flag on a block without sequences")
+	}
+	if ns == 0 {
+		if k.Regen != k.DecLen {
+			return repZSbadIR("block without sequences regenerates %d of %d bytes", k.Regen, k.DecLen)
+		}
+		return nil
+	}
+	if k.Modes, err = r.byte(); err != nil {
+		return err
+	}
+	if k.Modes&3 != 0 {
+		return repZSbadIR("reserved sequence mode bits")
+	}
+	n, err := r.count()
+	if err != nil {
+		return err
+	}
+	k.TabBytes, _ = r.take(n)
+	prev := [3]*repZSfseTable{repZSpredTables[0], repZSpredTables[1], repZSpredTables[2]}
+	if _, used, err := repZSparseSeqTables(k.Modes, k.TabBytes, prev); err != nil || used != len(k.TabBytes) {
+		return repZSbadIR("sequence table descriptions")
+	}
+	for i := range k.Rank {
+		v, err := r.uv()
+		if err != nil {
+			return err
+		}
+		if v > 1<<12 {
+			return repZSbadIR("rank %d", v)
+		}
+		k.Rank[i] = uint32(v)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/zstdz3/skeleton.go
+// Equal reports whether two skeletons serialize identically (used by tests).
+func (s *repZSSkeleton) Equal(o *repZSSkeleton) bool { return bytes.Equal(s.Marshal(), o.Marshal()) }
+
+// Port source: zeros3-z3/zstdz3/walk.go
+// resolveOffset applies the repeat-offset rules (RFC 8878 section 3.1.1.5) and returns
+// the real offset, updating rep.
+func repZSresolveOffset(rep *[3]uint32, s repZSseqRec) (uint32, error) {
+	if s.of > 3 {
+		off := s.of - 3
+		rep[2], rep[1], rep[0] = rep[1], rep[0], off
+		return off, nil
+	}
+	idx := int(s.of) - 1
+	if s.ll == 0 {
+		idx++
+	}
+	var off uint32
+	switch idx {
+	case 0:
+		off = rep[0]
+	case 1:
+		off = rep[1]
+		rep[1], rep[0] = rep[0], off
+	case 2:
+		off = rep[2]
+		rep[2], rep[1], rep[0] = rep[1], rep[0], off
+	default:
+		off = rep[0] - 1
+		if off == 0 {
+			return 0, repZScorrupt("repeat offset of zero")
+		}
+		rep[2], rep[1], rep[0] = rep[1], rep[0], off
+	}
+	return off, nil
+}
+
+// Port source: zeros3-z3/zstdz3/xxh64.go
+// XXH64 (seed 0), the hash behind the Zstandard content checksum (low 32 bits).
+const (
+	repZSxp1 = 11400714785074694791
+	repZSxp2 = 14029467366897019727
+	repZSxp3 = 1609587929392839161
+	repZSxp4 = 9650029242287828579
+	repZSxp5 = 2870177450012600261
+)
+
+// Port source: zeros3-z3/zstdz3/xxh64.go
+type repZSxxh64 struct {
+	v1, v2, v3, v4 uint64
+	total          uint64
+	mem            [32]byte
+	n              int
+}
+
+// Port source: zeros3-z3/zstdz3/xxh64.go
+func repZSnewXXH64() *repZSxxh64 {
+	x := &repZSxxh64{}
+	x.reset()
+	return x
+}
+
+// Port source: zeros3-z3/zstdz3/xxh64.go
+func (x *repZSxxh64) reset() {
+	m := uint64(repZSxp1)
+	x.v1, x.v2, x.v3, x.v4 = m+repZSxp2, repZSxp2, 0, -m
+	x.total, x.n = 0, 0
+}
+
+// Port source: zeros3-z3/zstdz3/xxh64.go
+func repZSxround(acc, in uint64) uint64 { return bits.RotateLeft64(acc+in*repZSxp2, 31) * repZSxp1 }
+
+// Port source: zeros3-z3/zstdz3/xxh64.go
+func repZSxmerge(h, v uint64) uint64 { return (h^repZSxround(0, v))*repZSxp1 + repZSxp4 }
+
+// Port source: zeros3-z3/zstdz3/xxh64.go
+func (x *repZSxxh64) write(p []byte) {
+	x.total += uint64(len(p))
+	if x.n+len(p) < 32 {
+		x.n += copy(x.mem[x.n:], p)
+		return
+	}
+	if x.n > 0 {
+		k := copy(x.mem[x.n:], p)
+		p = p[k:]
+		x.stripe(x.mem[:])
+		x.n = 0
+	}
+	for len(p) >= 32 {
+		x.stripe(p[:32])
+		p = p[32:]
+	}
+	x.n = copy(x.mem[:], p)
+}
+
+// Port source: zeros3-z3/zstdz3/xxh64.go
+func (x *repZSxxh64) stripe(b []byte) {
+	x.v1 = repZSxround(x.v1, binary.LittleEndian.Uint64(b))
+	x.v2 = repZSxround(x.v2, binary.LittleEndian.Uint64(b[8:]))
+	x.v3 = repZSxround(x.v3, binary.LittleEndian.Uint64(b[16:]))
+	x.v4 = repZSxround(x.v4, binary.LittleEndian.Uint64(b[24:]))
+}
+
+// Port source: zeros3-z3/zstdz3/xxh64.go
+func (x *repZSxxh64) sum() uint64 {
+	var h uint64
+	if x.total >= 32 {
+		h = bits.RotateLeft64(x.v1, 1) + bits.RotateLeft64(x.v2, 7) + bits.RotateLeft64(x.v3, 12) + bits.RotateLeft64(x.v4, 18)
+		h = repZSxmerge(repZSxmerge(repZSxmerge(repZSxmerge(h, x.v1), x.v2), x.v3), x.v4)
+	} else {
+		h = repZSxp5
+	}
+	h += x.total
+	b := x.mem[:x.n]
+	for ; len(b) >= 8; b = b[8:] {
+		h ^= repZSxround(0, binary.LittleEndian.Uint64(b))
+		h = bits.RotateLeft64(h, 27)*repZSxp1 + repZSxp4
+	}
+	if len(b) >= 4 {
+		h ^= uint64(binary.LittleEndian.Uint32(b)) * repZSxp1
+		h = bits.RotateLeft64(h, 23)*repZSxp2 + repZSxp3
+		b = b[4:]
+	}
+	for _, c := range b {
+		h ^= uint64(c) * repZSxp5
+		h = bits.RotateLeft64(h, 11) * repZSxp1
+	}
+	h ^= h >> 33
+	h *= repZSxp2
+	h ^= h >> 29
+	h *= repZSxp3
+	h ^= h >> 32
+	return h
+}
+
+const (
+	gzUnitInline = 64
+	maxGzTable   = 32 << 20
+	maxGzHeader  = 1<<16 + 1024
+	// Analysis admission, as ociz3.Guard: inflated bytes and expansion ratio.
+	MaxGzipInflated = 256 << 20
+	MaxGzipRatio    = 128
+)
+
+var errGzip = errors.New("kinds: gzip member the contract does not express")
+
+func gzipHeaderLen(b []byte) (int, error) {
+	if len(b) < 10 || b[0] != 0x1f || b[1] != 0x8b || b[2] != 8 {
+		return 0, fmt.Errorf("%w: not a gzip deflate member", errGzip)
+	}
+	flg := b[3]
+	if flg&0xe0 != 0 {
+		return 0, fmt.Errorf("%w: reserved flags", errGzip)
+	}
+	pos := 10
+	if flg&4 != 0 { // FEXTRA
+		if len(b) < pos+2 {
+			return 0, fmt.Errorf("%w: truncated extra field", errGzip)
+		}
+		pos += 2 + int(binary.LittleEndian.Uint16(b[pos:]))
+	}
+	for _, bit := range []byte{8, 16} { // FNAME, FCOMMENT
+		if flg&bit != 0 {
+			i := bytes.IndexByte(b[min(pos, len(b)):], 0)
+			if i < 0 {
+				return 0, fmt.Errorf("%w: unterminated name or comment", errGzip)
+			}
+			pos += i + 1
+		}
+	}
+	if flg&2 != 0 { // FHCRC
+		pos += 2
+	}
+	if pos > len(b) || pos > maxGzHeader {
+		return 0, fmt.Errorf("%w: header of %d bytes", errGzip, pos)
+	}
+	return pos, nil
+}
+
+type gzipDecoder struct{}
+
+type gzUnit struct {
+	inline []byte
+	sha    [32]byte
+	size   int64
+}
+
+type gzRecipe struct {
+	header, trailer []byte
+	nTable          int
+}
+
+func gzipRecipe(c *repCall) (*gzRecipe, error) {
+	r := c.Rep.Recipe
+	hl, n := binary.Uvarint(r)
+	if n <= 0 || hl < 10 || hl > maxGzHeader || uint64(len(r)-n) < hl+8 {
+		return nil, fmt.Errorf("%w: gzip recipe header", errRepCorrupt)
+	}
+	g := &gzRecipe{header: r[n : n+int(hl)], trailer: r[n+int(hl) : n+int(hl)+8]}
+	nt, k := binary.Uvarint(r[n+int(hl)+8:])
+	if k <= 0 || n+int(hl)+8+k != len(r) || nt < 1 || nt+1 != uint64(len(c.Rep.Members)) || c.Rep.Members[nt].Role != repDerived {
+		return nil, fmt.Errorf("%w: gzip recipe members", errRepCorrupt)
+	}
+	g.nTable = int(nt)
+	if gl, err := gzipHeaderLen(g.header); err != nil || gl != len(g.header) {
+		return nil, fmt.Errorf("%w: gzip header", errRepCorrupt)
+	}
+	return g, nil
+}
+
+func gzipTable(c *repCall, g *gzRecipe) (skel []byte, units []gzUnit, err error) {
+	t, err := readTable(c, g.nTable, maxGzTable)
+	if err != nil {
+		return nil, nil, err
+	}
+	bad := func(what string) error { return fmt.Errorf("%w: gzip table %s", errRepCorrupt, what) }
+	sl, k := binary.Uvarint(t)
+	if k <= 0 || sl > 4<<20 || sl > uint64(len(t)-k) {
+		return nil, nil, bad("skeleton")
+	}
+	skel, t = t[k:k+int(sl)], t[k+int(sl):]
+	n, k := binary.Uvarint(t)
+	if k <= 0 || n > 1<<16 || n > uint64(len(t)-k) {
+		return nil, nil, bad("unit count")
+	}
+	t = t[k:]
+	units = make([]gzUnit, 0, n)
+	for i := uint64(0); i < n; i++ {
+		l, k := binary.Uvarint(t)
+		if k <= 0 || l > 1<<20 {
+			return nil, nil, bad("unit length")
+		}
+		t = t[k:]
+		u := gzUnit{size: int64(l)}
+		if l < gzUnitInline {
+			if uint64(len(t)) < l {
+				return nil, nil, bad("inline unit")
+			}
+			u.inline, t = t[:l], t[l:]
+		} else {
+			if len(t) < 32 {
+				return nil, nil, bad("unit digest")
+			}
+			copy(u.sha[:], t)
+			t = t[32:]
+		}
+		units = append(units, u)
+	}
+	if len(t) != 0 {
+		return nil, nil, bad("trailing bytes")
+	}
+	parsed, err := repIRParseSkeleton(skel, MaxGzipInflated)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(parsed.Units) != len(units) {
+		return nil, nil, repCorrupt("gzip table unit count differs from skeleton")
+	}
+
+	return skel, units, nil
+}
+
+type crcReader struct {
+	r   io.Reader
+	crc uint32
+	n   int64
+}
+
+func (c *crcReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.crc = crc32.Update(c.crc, crc32.IEEETable, p[:n])
+	c.n += int64(n)
+	return n, err
+}
+
+var errAbort = errors.New("kinds: gzip decode stopped")
+
+// replayCause combines the outcome of a codec replay with that of the goroutine that streams
+// the semantic plaintext (the DERIVED child). A child failure is the cause and the codec's
+// complaint ("plaintext ends early") its consequence: reporting the child's error keeps its
+// contract class (ErrMissing, ErrMismatch, ErrDepth ...) visible to errors.Is through any
+// number of nested codec parents instead of burying it under the codec's own message.
+func replayCause(replayErr, childErr error) error {
+	switch {
+	case childErr != nil && !errors.Is(childErr, errAbort):
+		if replayErr != nil {
+			return fmt.Errorf("%w (replay: %v)", childErr, replayErr)
+		}
+		return childErr
+	case replayErr != nil:
+		return replayErr
+	}
+	return childErr
+}
+
+func (gzipDecoder) Decode(c *repCall) error {
+	g, err := gzipRecipe(c)
+	if err != nil {
+		return err
+	}
+	skel, units, err := gzipTable(c, g)
+	if err != nil {
+		return err
+	}
+	pm := &c.Rep.Members[g.nTable]
+	if _, err := c.W.Write(g.header); err != nil {
+		return err
+	}
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() { // the child's progressive output is the semantic plaintext
+		err := c.writeMemberAt(g.nTable, pw)
+		pw.CloseWithError(err)
+		done <- err
+	}()
+	cr := &crcReader{r: pr}
+	err = repIRReconstructStream(c.W, skel, func(i int) ([]byte, error) {
+		if i < 0 || i >= len(units) {
+			return nil, fmt.Errorf("%w: unit %d of %d", errRepCorrupt, i, len(units))
+		}
+		if units[i].size < gzUnitInline {
+			return units[i].inline, nil
+		}
+		return c.getExact(units[i].sha, units[i].size)
+	}, cr, repIRStreamDecodeOptions{})
+	pr.CloseWithError(errAbort)
+	werr := <-done
+	if err = replayCause(err, werr); err != nil {
+		return err
+	}
+	if cr.n != pm.Size || binary.LittleEndian.Uint32(g.trailer) != cr.crc || binary.LittleEndian.Uint32(g.trailer[4:]) != uint32(cr.n) {
+		return fmt.Errorf("%w: gzip trailer disagrees with the replayed plaintext", errRepMismatch)
+	}
+	_, err = c.W.Write(g.trailer)
+	return err
+}
+
+// Expand: the large IR units are named by the stored table.
+func (gzipDecoder) Expand(c *repCall, emit func([32]byte)) error {
+	g, err := gzipRecipe(c)
+	if err != nil {
+		return err
+	}
+	_, units, err := gzipTable(c, g)
+	if err != nil {
+		return err
+	}
+	for _, u := range units {
+		if u.size >= gzUnitInline {
+			emit(u.sha)
+		}
+	}
+	return nil
+}
+
+const (
+	zsUnitInline = 64
+	maxZsTable   = 32 << 20
+	// MaxZstdPlain bounds analysis memory (bytes decoded), MaxZstdRatio the expansion.
+	MaxZstdPlain = 1 << 30
+	MaxZstdRatio = 1 << 12
+)
+
+type zstdDecoder struct{}
+
+type zsUnit struct {
+	inline []byte
+	sha    [32]byte
+	size   int64
+}
+
+func zstdRecipe(c *repCall) (nTable int, err error) {
+	nt, k := binary.Uvarint(c.Rep.Recipe)
+	if k <= 0 || k != len(c.Rep.Recipe) || nt < 1 || nt+1 != uint64(len(c.Rep.Members)) || c.Rep.Members[nt].Role != repDerived {
+		return 0, fmt.Errorf("%w: zstd recipe members", errRepCorrupt)
+	}
+	return int(nt), nil
+}
+
+func zstdTable(c *repCall, nTable int) (skel []byte, units []zsUnit, err error) {
+	t, err := readTable(c, nTable, maxZsTable)
+	if err != nil {
+		return nil, nil, err
+	}
+	bad := func(what string) error { return fmt.Errorf("%w: zstd table %s", errRepCorrupt, what) }
+	sl, k := binary.Uvarint(t)
+	if k <= 0 || sl > uint64(len(t)-k) {
+		return nil, nil, bad("skeleton")
+	}
+	skel, t = t[k:k+int(sl)], t[k+int(sl):]
+	n, k := binary.Uvarint(t)
+	if k <= 0 || n > 1<<16 || n > uint64(len(t)-k) {
+		return nil, nil, bad("unit count")
+	}
+	t = t[k:]
+	units = make([]zsUnit, 0, n)
+	for i := uint64(0); i < n; i++ {
+		l, k := binary.Uvarint(t)
+		if k <= 0 || l > 1<<20 {
+			return nil, nil, bad("unit length")
+		}
+		t = t[k:]
+		u := zsUnit{size: int64(l)}
+		if l < zsUnitInline {
+			if uint64(len(t)) < l {
+				return nil, nil, bad("inline unit")
+			}
+			u.inline, t = t[:l], t[l:]
+		} else {
+			if len(t) < 32 {
+				return nil, nil, bad("unit digest")
+			}
+			copy(u.sha[:], t)
+			t = t[32:]
+		}
+		units = append(units, u)
+	}
+	if len(t) != 0 {
+		return nil, nil, bad("trailing bytes")
+	}
+	return skel, units, nil
+}
+
+// unitReader streams the units in order, fetching each large one from the source when
+// the replay first needs it.
+type unitReader struct {
+	c     *repCall
+	units []zsUnit
+	next  int
+	cur   []byte
+	err   error // the source's own failure, kept because the replay reports only a truncated stream
+}
+
+func (u *unitReader) Read(p []byte) (int, error) {
+	for len(u.cur) == 0 {
+		if u.next >= len(u.units) {
+			return 0, io.EOF
+		}
+		x := u.units[u.next]
+		u.next++
+		if x.size < zsUnitInline {
+			u.cur = x.inline
+			continue
+		}
+		b, err := u.c.getExact(x.sha, x.size)
+		if err != nil {
+			u.err = err
+			return 0, err
+		}
+		u.cur = b
+	}
+	n := copy(p, u.cur)
+	u.cur = u.cur[n:]
+	return n, nil
+}
+
+func (zstdDecoder) Decode(c *repCall) error {
+	nTable, err := zstdRecipe(c)
+	if err != nil {
+		return err
+	}
+	skel, units, err := zstdTable(c, nTable)
+	if err != nil {
+		return err
+	}
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() { // the child's progressive output is the semantic plaintext
+		err := c.writeMemberAt(nTable, pw)
+		pw.CloseWithError(err)
+		done <- err
+	}()
+	ur := &unitReader{c: c, units: units}
+	_, err = repZSReplay(c.W, skel, bufio.NewReaderSize(ur, 1<<16), pr, repZstdLimits())
+	pr.CloseWithError(errAbort)
+	if err != nil && ur.err != nil { // a missing or corrupt unit is the cause of a "truncated unit stream"
+		err = fmt.Errorf("%w (replay: %v)", ur.err, err)
+	}
+	return replayCause(err, <-done)
+}
+
+// Expand: the large units are named by the stored table.
+func (zstdDecoder) Expand(c *repCall, emit func([32]byte)) error {
+	nTable, err := zstdRecipe(c)
+	if err != nil {
+		return err
+	}
+	_, units, err := zstdTable(c, nTable)
+	if err != nil {
+		return err
+	}
+	for _, u := range units {
+		if u.size >= zsUnitInline {
+			emit(u.sha)
+		}
+	}
+	return nil
+}
+func readTable(c *repCall, n int, max int64) ([]byte, error) {
+	var buf []byte
+	for i := 0; i < n; i++ {
+		if c.Rep.Members[i].Role != repStored {
+			return nil, fmt.Errorf("%w: table member %d is not a stored component", errRepCorrupt, i)
+		}
+		b, err := c.member(i)
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(buf))+int64(len(b)) > max {
+			return nil, fmt.Errorf("%w: table over %d bytes", errRepLimit, max)
+		}
+		buf = append(buf, b...)
+	}
+	return buf, nil
 }
 
 // =============================================================================

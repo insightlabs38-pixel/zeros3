@@ -56,6 +56,9 @@ func init() {
 		if err != nil {
 			panic("zstdz3: predefined table: " + err.Error())
 		}
+		// Predefined tables are shared across concurrent parser/replay calls.
+		// Publish their encoding indexes fully initialized.
+		t.initEnc()
 		predTables[i] = t
 	}
 }
