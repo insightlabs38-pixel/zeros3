@@ -26619,6 +26619,8 @@ func (b *repBuilder) tryChild(src io.ReaderAt, off, esz, padded int64) (repMembe
 	hd := head[:min(n, int(esz))]
 	kind := repKind(0)
 	switch {
+	case bytes.HasPrefix(hd, []byte("PACK")) || bytes.HasPrefix(hd, []byte{0xff, 't', 'O', 'c'}):
+		kind = repKindGit
 	case bytes.HasPrefix(hd, []byte{0x1f, 0x8b, 8}):
 		kind = repKindGzip
 	case bytes.HasPrefix(hd, []byte{0x28, 0xb5, 0x2f, 0xfd}):
@@ -26920,6 +26922,158 @@ func (b *repBuilder) encodeZstd(src io.ReaderAt, size int64) (*repObject, error)
 	return out, nil
 }
 
+// Git parsing stays random-access and bounded; resolved payloads are bounded per
+// object/chain by the proven substrate, never a whole-pack analysis buffer.
+type repGitBudgetSource struct {
+	src    io.ReaderAt
+	budget *repBudget
+}
+
+func (s repGitBudgetSource) ReadAt(p []byte, off int64) (int, error) {
+	if int64(len(p)) > repMaxInspect-s.budget.inspected {
+		return 0, fmt.Errorf("%w: Git inspection budget", errRepLimit)
+	}
+	n, err := s.src.ReadAt(p, off)
+	if e := s.budget.inspect(int64(n)); e != nil {
+		return n, e
+	}
+	return n, err
+}
+func repGitLimits() repGTLimits {
+	return repGTLimits{MaxObjects: 1 << 18, MaxObjectSize: 64 << 20, MaxInflated: 512 << 20, MaxDeltaDepth: 64, MaxDeltaOut: 512 << 20, MaxPack: repMaxInspect}
+}
+
+func (b *repBuilder) encodeGit(src io.ReaderAt, size int64) (*repObject, error) {
+	var magic [4]byte
+	if err := repReadFullAt(src, magic[:], 0); err != nil {
+		return nil, err
+	}
+	input := repGitBudgetSource{src: src, budget: &b.budget}
+	if bytes.Equal(magic[:], []byte{0xff, 't', 'O', 'c'}) {
+		return b.encodeGitIdx(input, size)
+	}
+	var pack *repGTPack
+	var err error
+	for _, algo := range []repGTAlgo{repGTSHA1, repGTSHA256} {
+		pack, err = repGTParsePackAt(input, size, algo, repGitLimits())
+		if err == nil {
+			var decoded int64
+			for _, entry := range pack.Entries {
+				decoded += entry.Size
+			}
+			if err = b.budget.inspect(decoded); err != nil {
+				return nil, err
+			}
+			stats, resolveErr := pack.Resolve()
+			if resolveErr != nil {
+				return nil, fmt.Errorf("%w: Git resolve: %w", errRepUnsupported, resolveErr)
+			}
+			if err = b.budget.inspect(stats.Inflated + stats.DeltaOut); err != nil {
+				return nil, err
+			}
+			break
+		}
+		if b.budget.inspected >= repMaxInspect {
+			return nil, fmt.Errorf("%w: Git analysis budget", errRepUnsupported)
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: Git parse/resolve: %v", errRepUnsupported, err)
+	}
+	meta := []byte{repGTmetaMagic, byte(pack.Algo)}
+	meta = binary.AppendUvarint(meta, uint64(pack.Version))
+	meta = binary.AppendUvarint(meta, uint64(len(pack.Entries)))
+	var entries []gitEntry
+	pairs := make(map[string][32]byte, len(pack.Entries))
+	for i, e := range pack.Entries {
+		var zh [2]byte
+		if err := repReadFullAt(input, zh[:], e.ZOff); err != nil {
+			return nil, err
+		}
+		code, explicit := repGTzhdrCode(zh[:])
+		// The gp-zlib metadata is copied from SeqPlan's ModeZ branch; only the
+		// Source/component boundary changes (one possibly virtual zlib component).
+		meta = append(meta, e.Kind|byte(repGTModeZ)<<3|code<<4)
+		if explicit {
+			meta = append(meta, zh[:]...)
+		}
+		switch e.Kind {
+		case repGTofsDelta:
+			meta = binary.AppendUvarint(meta, uint64(i-e.Base))
+		case repGTrefDelta:
+			meta = append(meta, e.BaseRef...)
+		}
+		meta = binary.AppendUvarint(meta, uint64(e.Size))
+		meta = binary.AppendUvarint(meta, 1)
+		if e.ZEnd-e.ZOff > 64<<20 {
+			return nil, fmt.Errorf("%w: Git compressed entry exceeds 64 MiB", errRepUnsupported)
+		}
+		id, err := b.putStream(io.NewSectionReader(input, e.ZOff, e.ZEnd-e.ZOff), e.ZEnd-e.ZOff)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, gitEntry{sha: id, size: e.ZEnd - e.ZOff})
+		pairs[string(e.ID)] = id
+	}
+	table := binary.AppendUvarint(nil, uint64(len(meta)))
+	table = append(table, meta...)
+	table = binary.AppendUvarint(table, uint64(len(entries)))
+	for _, e := range entries {
+		table = append(table, e.sha[:]...)
+		table = binary.AppendUvarint(table, uint64(e.size))
+	}
+	if len(table) > maxGitTable {
+		return nil, fmt.Errorf("%w: Git table size", errRepUnsupported)
+	}
+	members, err := b.codecTable(table)
+	if err != nil {
+		return nil, err
+	}
+	index, count, err := repBuildIndex(pack.Algo.Size(), pairs)
+	if err != nil {
+		return nil, err
+	}
+	id, err := b.putBlob(index)
+	if err != nil {
+		return nil, err
+	}
+	return &repObject{Kind: repKindGit, Size: size, Members: members, Indexes: []repIndex{{KeyWidth: pack.Algo.Size(), Count: count, Ref: id}}}, nil
+}
+
+// A standalone idx has no closed dependency on its pack. Represent validated
+// v2 sections exactly with existing Concat, rather than persisting IdxPlan's
+// analysis closure or inventing an external-base primitive.
+func (b *repBuilder) encodeGitIdx(src io.ReaderAt, size int64) (*repObject, error) {
+	var idx *repGTIdx
+	var err error
+	for _, algo := range []repGTAlgo{repGTSHA1, repGTSHA256} {
+		idx, err = repGTParseIdxAt(src, size, algo, repGitLimits())
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: Git idx: %v", errRepUnsupported, err)
+	}
+	out := &repObject{Kind: repKindConcat, Size: size}
+	bounds := []int64{0, repGTidxHdr, idx.crcOff, idx.offOff, idx.big, size - int64(2*idx.Algo.Size()), size}
+	for i := 0; i < len(bounds)-1; i++ {
+		n := bounds[i+1] - bounds[i]
+		if n < 0 {
+			return nil, repCorrupt("Git idx section order")
+		}
+		if n == 0 {
+			continue
+		}
+		id, err := b.putStream(io.NewSectionReader(src, bounds[i], n), n)
+		if err != nil {
+			return nil, err
+		}
+		out.Members = append(out.Members, repMember{Role: repStored, SHA: id, Size: n})
+	}
+	return out, nil
+}
+
 func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObject, error) {
 	if b.depth >= 3 || ((k == repKindGzip || k == repKindZstd) && b.depth >= 2) {
 		return nil, fmt.Errorf("%w: analysis nesting", errRepDepth)
@@ -26928,6 +27082,8 @@ func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObj
 	defer func() { b.depth-- }()
 
 	switch k {
+	case repKindGit:
+		return b.encodeGit(src, size)
 	case repKindGzip:
 		return b.encodeGzip(src, size)
 	case repKindZstd:
@@ -26952,6 +27108,8 @@ func repCandidate(src io.ReaderAt, size int64) (repKind, bool) {
 	n, _ := src.ReadAt(head[:], 0)
 	hd := head[:min(int64(n), size)]
 	switch {
+	case bytes.HasPrefix(hd, []byte("PACK")) || bytes.HasPrefix(hd, []byte{0xff, 't', 'O', 'c'}):
+		return repKindGit, true
 	case bytes.HasPrefix(hd, []byte{0x1f, 0x8b, 8}):
 		return repKindGzip, true
 	case bytes.HasPrefix(hd, []byte{0x28, 0xb5, 0x2f, 0xfd}):
@@ -37447,6 +37605,9 @@ func repGitRebuildSeq(meta []byte, pieces []gitEntry, get func([32]byte) ([]byte
 	if m.err != nil {
 		return m.err
 	}
+	if ver < 2 || n > uint64(len(pieces)) {
+		return repGTcorrupt("recipe version/count")
+	}
 	h := a.New()
 	out := io.MultiWriter(w, h)
 	var hdr [12]byte
@@ -37504,6 +37665,9 @@ func repGitRebuildSeq(meta []byte, pieces []gitEntry, get func([32]byte) ([]byte
 			if m.err != nil {
 				return m.err
 			}
+			if nz == 0 {
+				return repGTcorrupt("empty compressed entry")
+			}
 			ps, err := nextPieces(nz)
 			if err != nil {
 				return err
@@ -37534,6 +37698,9 @@ func repGitRebuildSeq(meta []byte, pieces []gitEntry, get func([32]byte) ([]byte
 	}
 	if m.err != nil {
 		return m.err
+	}
+	if pi != len(pieces) {
+		return repGTcorrupt("unused recipe pieces")
 	}
 	if m.pos != len(m.b) {
 		return repGTcorrupt("%d trailing recipe bytes", len(m.b)-m.pos)

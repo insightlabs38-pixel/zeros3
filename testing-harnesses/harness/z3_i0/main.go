@@ -63,6 +63,7 @@ var (
 	bin             string
 	baseB           string
 	codecFixtureDir string
+	gitFixtureDir   string
 )
 
 func check(name string, ok bool, detail string, args ...any) {
@@ -296,6 +297,15 @@ func fixtures() []fixture {
 			panic(err)
 		}
 		fx = append(fx, fixture{"nested.tar.gz", gz.Bytes()}, fixture{"nested.tar.zst", zst})
+	}
+	if gitFixtureDir != "" {
+		for _, name := range []string{"sha1-ofs.pack", "sha256-ref.pack", "sha1-ofs.idx"} {
+			data, err := os.ReadFile(filepath.Join(gitFixtureDir, name))
+			if err != nil {
+				panic(err)
+			}
+			fx = append(fx, fixture{name, data})
+		}
 	}
 	return fx
 
@@ -846,7 +856,7 @@ func phaseCrash(rounds int) {
 	db := sqliteDB(3000, 4096, 21)
 	tarB := tarOf(map[string][]byte{"app.db": db, "x": []byte("x")}, []string{"x", "app.db"})
 	data := [][]byte{db, tarB, carOf(blocks(2500, 3000, 22)), merkleSnapshot(keysOf(10000, 23), nil)}
-	if codecFixtureDir != "" {
+	if codecFixtureDir != "" || gitFixtureDir != "" {
 		fx := fixtures()
 		data = append([][]byte{fx[len(fx)-2].data, fx[len(fx)-1].data}, data...)
 	}
@@ -1126,6 +1136,7 @@ func main() {
 	phase := flag.String("phase", "all", "all|compat|bundles|kinds|crash|large|reads")
 	largeMiB := flag.Int("large-mib", 256, "size of the large-object phase in MiB")
 	crashRounds := flag.Int("crash-rounds", 4, "SIGKILL rounds")
+	flag.StringVar(&gitFixtureDir, "git-fixtures", "", "optional I1C Git pack/idx fixture directory")
 	flag.StringVar(&codecFixtureDir, "codec-fixtures", "", "optional I1B fixture directory: add gzip/zstd nested objects to every phase")
 	flag.Parse()
 	bin = os.Getenv("ZEROS3_BIN")
