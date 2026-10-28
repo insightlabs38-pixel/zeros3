@@ -8677,7 +8677,9 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 		return cached.man, true
 	}
 
-	wantChunks := map[string]int64{} // hex sha256 -> best-known length, from every readable live manifest/part
+	// Build the final length map directly; retaining a second copy costs one
+	// hash-table entry per representation component during maintenance.
+	wantChunks := res.ChunkLength
 	want := func(scope rootScope, bucket, key string, chunks []chunkRef) {
 		for _, c := range chunks {
 			wantChunks[c.SHA256] = c.Length
@@ -8791,7 +8793,6 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 	// digest, regardless of which root category claimed it.
 	for sha, length := range wantChunks {
 		res.ReferencedChunks[sha] = true
-		res.ChunkLength[sha] = length
 		sum, herr := decodeHexSHA256(sha) // already validated above when added to wantChunks
 		if herr != nil {
 			continue
@@ -23573,7 +23574,20 @@ func (s *Store) publishRepRoot(r *repRoot) error {
 // is an os.IsNotExist error; any other failure means a root exists but cannot
 // be trusted. The root must name the manifest it is filed under.
 func (s *Store) loadRepRoot(manifestUUID string) (*repRoot, error) {
-	data, err := os.ReadFile(s.repRootPath(manifestUUID))
+	f, err := os.Open(s.repRootPath(manifestUUID))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > repMaxRootSize {
+		return nil, fmt.Errorf("%w: root length %d", errRepDescriptor, info.Size())
+	}
+	// Bound the read too: a damaged file may grow after Stat.
+	data, err := io.ReadAll(io.LimitReader(f, repMaxRootSize+1))
 	if err != nil {
 		return nil, err
 	}
@@ -26983,6 +26997,12 @@ func (s *Store) newRepReachCtx(res *reachabilityResult) *repReachCtx {
 // count folds a new closure into the scan's distinct totals: objects, components
 // and chunks are counted once however many roots share them.
 func (rc *repReachCtx) count(cl *repClosure) {
+	if len(rc.seen) == 0 {
+		rc.seen = make(map[[32]byte]struct{}, len(cl.logic))
+	}
+	if len(rc.chunks) == 0 {
+		rc.chunks = make(map[[32]byte]struct{}, len(cl.chunks))
+	}
 	for _, o := range cl.logic {
 		if _, dup := rc.seen[o.id]; dup {
 			continue
@@ -27066,8 +27086,11 @@ func (s *Store) repClosureOf(root *repRoot) (*repClosure, error) {
 	if err != nil {
 		return nil, err
 	}
-	cl := &repClosure{}
-	seen := map[[32]byte]bool{}
+	cl := &repClosure{
+		chunks: make([]chunkRef, 0, len(reach.Order)),
+		logic:  make([]repLogical, 0, len(reach.Order)),
+	}
+	seen := make(map[[32]byte]bool, len(reach.Order))
 	add := func(sum [32]byte, n int64) {
 		if !seen[sum] {
 			seen[sum] = true
