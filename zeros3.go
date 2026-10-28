@@ -26727,7 +26727,7 @@ func (s *repCodecSink) Unit(i int, u []byte) error {
 	if i != s.units {
 		return repCorrupt("codec unit order %d, expected %d", i, s.units)
 	}
-	if len(s.meta) > 32<<20 || len(u) > 1<<20 {
+	if s.units >= 1<<16 || len(s.meta) > 32<<20 || len(u) > 1<<20 {
 		return fmt.Errorf("%w: codec unit metadata", errRepLimit)
 	}
 	s.meta = binary.AppendUvarint(s.meta, uint64(len(u)))
@@ -26749,7 +26749,7 @@ func (s *repCodecSink) Unit(i int, u []byte) error {
 // CDC remains authoritative; this is not a first-sight net-storage saving claim.
 func (s *repCodecSink) admitDescription(compressed int64, skeleton int) error {
 	cost := s.descriptionBytes + int64(len(s.meta)) + int64(skeleton)
-	if cost > min(int64(64<<20), compressed+64<<10) {
+	if int64(skeleton)+int64(len(s.meta))+20 > maxGzTable || skeleton > 4<<20 || cost > min(int64(64<<20), compressed+64<<10) {
 		return fmt.Errorf("%w: codec description costs %d bytes", errRepUnsupported, cost)
 	}
 	return nil
@@ -35708,7 +35708,7 @@ func (x *repZSxxh64) sum() uint64 {
 
 const (
 	gzUnitInline = 64
-	maxGzTable   = 256 << 20
+	maxGzTable   = 32 << 20
 	maxGzHeader  = 1<<16 + 1024
 	// Analysis admission, as ociz3.Guard: inflated bytes and expansion ratio.
 	MaxGzipInflated = 256 << 20
@@ -35788,19 +35788,19 @@ func gzipTable(c *repCall, g *gzRecipe) (skel []byte, units []gzUnit, err error)
 	}
 	bad := func(what string) error { return fmt.Errorf("%w: gzip table %s", errRepCorrupt, what) }
 	sl, k := binary.Uvarint(t)
-	if k <= 0 || sl > uint64(len(t)-k) {
+	if k <= 0 || sl > 4<<20 || sl > uint64(len(t)-k) {
 		return nil, nil, bad("skeleton")
 	}
 	skel, t = t[k:k+int(sl)], t[k+int(sl):]
 	n, k := binary.Uvarint(t)
-	if k <= 0 || n > uint64(len(t)-k) {
+	if k <= 0 || n > 1<<16 || n > uint64(len(t)-k) {
 		return nil, nil, bad("unit count")
 	}
 	t = t[k:]
 	units = make([]gzUnit, 0, n)
 	for i := uint64(0); i < n; i++ {
 		l, k := binary.Uvarint(t)
-		if k <= 0 || l > 1<<30 {
+		if k <= 0 || l > 1<<20 {
 			return nil, nil, bad("unit length")
 		}
 		t = t[k:]
@@ -35822,6 +35822,14 @@ func gzipTable(c *repCall, g *gzRecipe) (skel []byte, units []gzUnit, err error)
 	if len(t) != 0 {
 		return nil, nil, bad("trailing bytes")
 	}
+	parsed, err := repIRParseSkeleton(skel, MaxGzipInflated)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(parsed.Units) != len(units) {
+		return nil, nil, repCorrupt("gzip table unit count differs from skeleton")
+	}
+
 	return skel, units, nil
 }
 
@@ -35920,7 +35928,7 @@ func (gzipDecoder) Expand(c *repCall, emit func([32]byte)) error {
 
 const (
 	zsUnitInline = 64
-	maxZsTable   = 256 << 20
+	maxZsTable   = 32 << 20
 	// MaxZstdPlain bounds analysis memory (bytes decoded), MaxZstdRatio the expansion.
 	MaxZstdPlain = 1 << 30
 	MaxZstdRatio = 1 << 12
@@ -35954,14 +35962,14 @@ func zstdTable(c *repCall, nTable int) (skel []byte, units []zsUnit, err error) 
 	}
 	skel, t = t[k:k+int(sl)], t[k+int(sl):]
 	n, k := binary.Uvarint(t)
-	if k <= 0 || n > uint64(len(t)-k) {
+	if k <= 0 || n > 1<<16 || n > uint64(len(t)-k) {
 		return nil, nil, bad("unit count")
 	}
 	t = t[k:]
 	units = make([]zsUnit, 0, n)
 	for i := uint64(0); i < n; i++ {
 		l, k := binary.Uvarint(t)
-		if k <= 0 || l > 1<<30 {
+		if k <= 0 || l > 1<<20 {
 			return nil, nil, bad("unit length")
 		}
 		t = t[k:]

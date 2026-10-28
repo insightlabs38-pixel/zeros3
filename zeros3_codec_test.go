@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -630,6 +631,42 @@ func TestRepCodecEconomics(t *testing.T) {
 			slices.Sort(cdcTimes)
 			slices.Sort(repTimes)
 			t.Logf("codec=%s packed_whole_CDC_median=%s direct_rep_median=%s", codec, cdcTimes[2], repTimes[2])
+		})
+	}
+}
+
+func TestRepCodecMetadataCountsBounded(t *testing.T) {
+	for _, kind := range []repKind{repKindGzip, repKindZstd} {
+		t.Run(fmt.Sprint(kind), func(t *testing.T) {
+			src := newRepMem()
+			// An otherwise physically present table with many empty inline units must
+			// fail before allocating one Go record per claimed unit.
+			table := binary.AppendUvarint(nil, 0)
+			table = binary.AppendUvarint(table, (1<<16)+1)
+			table = append(table, make([]byte, (1<<16)+1)...)
+			id := src.put(table)
+			r := &repObject{Kind: kind, Members: []repMember{{Role: repStored, SHA: id, Size: int64(len(table))}, {Role: repDerived}}}
+			if kind == repKindGzip {
+				r.Recipe = binary.AppendUvarint(nil, 10)
+				r.Recipe = append(r.Recipe, []byte{0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255}...)
+				r.Recipe = append(r.Recipe, make([]byte, 8)...)
+				r.Recipe = binary.AppendUvarint(r.Recipe, 1)
+			} else {
+				r.Recipe = []byte{1}
+			}
+			env := &repEnv{Src: src, Limits: repProdLimits}
+			call := env.call([32]byte{}, r, 1, nil, io.Discard)
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			d, _ := repDecoderFor(kind)
+			err := d.Decode(call)
+			runtime.ReadMemStats(&after)
+			if err == nil {
+				t.Fatal("oversized unit count accepted")
+			}
+			if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 1<<20 {
+				t.Fatalf("unit count allocated %d bytes", allocated)
+			}
 		})
 	}
 }

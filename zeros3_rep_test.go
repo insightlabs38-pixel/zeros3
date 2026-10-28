@@ -573,7 +573,7 @@ func TestRepWireGoldenAndRoundTrip(t *testing.T) {
 }
 
 func TestRepWireKindNumbers(t *testing.T) {
-	want := map[repKind]bool{1: true, 2: true, 3: true, 4: false, 5: true, 6: false, 7: false, 8: false, 0: false, 255: false}
+	want := map[repKind]bool{1: true, 2: true, 3: true, 4: false, 5: true, 6: true, 7: true, 8: false, 0: false, 255: false}
 	for k, ok := range want {
 		if k.supported() != ok {
 			t.Fatalf("kind %d supported=%v", k, k.supported())
@@ -585,7 +585,7 @@ func TestRepWireKindNumbers(t *testing.T) {
 			t.Fatalf("kind %d: want unsupported, got %v", k, err)
 		}
 	}
-	if repKindConcat != 1 || repKindCAR != 2 || repKindSQLite != 3 || repKindMerkle != 5 {
+	if repKindConcat != 1 || repKindCAR != 2 || repKindSQLite != 3 || repKindMerkle != 5 || repKindGzip != 6 || repKindZstd != 7 {
 		t.Fatal("kind numbering moved")
 	}
 }
