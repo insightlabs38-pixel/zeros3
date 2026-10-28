@@ -24,6 +24,20 @@ func main() {
 	if e != nil {
 		panic(e)
 	}
+	if len(os.Args) > 2 && os.Args[2] == "--records" {
+		enc := json.NewEncoder(os.Stdout)
+		for _, r := range p.Records {
+			out := struct {
+				Block, Code uint64
+				Values      int
+				SHA         string
+			}{r.Block, r.Code, r.Values, fmt.Sprintf("%x", r.OperandSHA)}
+			if e := enc.Encode(out); e != nil {
+				panic(e)
+			}
+		}
+		return
+	}
 	blocks, records := map[uint64]int{}, map[uint64]int{}
 	for _, v := range p.Blocks {
 		blocks[v.ID]++

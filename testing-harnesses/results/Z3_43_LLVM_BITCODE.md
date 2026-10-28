@@ -37,7 +37,9 @@ checked before expansion, including zero-width Fixed arrays. Decoder uses existi
 bounded Concat/Stored primitives; the encoder retains a whole-file diagnostic plan.
 
 LLVM's independent analyzer agrees on every per-block instance/record count:
-28,242 blocks and 1,854,143 records over all 65 outputs. Native IR names annotate
+28,242 blocks and 1,854,143 records over all 65 outputs. Numeric operand hashes
+also match LLVM for 1,853,891 records; 252 native blob records are excluded from
+that numeric comparison and retain full byte proofs. Native IR names annotate
 function fingerprints only. Equal shapes do not prove equal semantics or IDs.
 SQLite transition 3.45.3→3.46.1: 1,465 common names, 1,260 same record shapes,
 but only two byte/operand-identical function bodies. Next transition also has
@@ -66,7 +68,7 @@ is already 69,493 B and additive union is 153,922 B. Restored controls add zero.
 declared closure. Worst logical Source API amplification: CDC 51.21x, fine CDC
 14.65x, functions 48.58x, leaves 116.23x, grouped records 164.14x. These are not
 physical CAS I/O figures; whole-object SHA256 proof is separate from range reads.
-Final harness 5.093 s / 274,892 KiB RSS (268.4 MiB), compiler excluded, includes
+Final harness 4.422 s / 291,048 KiB RSS (284.2 MiB), compiler excluded, includes
 whole-file plans, all accounting/proofs/ranges; no streaming decoder memory claim.
 
 Validation: complete analysis tests/vet pass; native tiny fixture, unknown IDs,
