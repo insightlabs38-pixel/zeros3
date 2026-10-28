@@ -1,136 +1,88 @@
-# ZeroS3 surplus campaign — live progress
+# ZeroS3 surplus campaign — final decision record
 
-Merged Q1: PR #72, `4f97c7beeaad542db854a54aa874f87a6dc6d5ff` (I1A_PARTIAL).
-Merged Q2: PR #73, `bd0562101364b65e7ddec4a33bc89ab7189b6b87` (I1B_COMPLETE).
-Merged Q3: PR #74, `f0b34b6ed9a34dbcef56fd745e0a55f6e65f9e43` (I1C_COMPLETE).
-Merged Q4: PR #75, `1a0879cfa8cc904398df1aec54e3796b046882a4`; all targets DEFER.
-Merged Q5: PR #76, `4d2f9593317804a1a8deaab5ca34f5124fb4d735` (ELF/PE DEFER).
-Merged Q6: PR #77, `701b3610d7b6b173ca6ded997e3db196bc5af28f`.
-PLANNER_NEEDS_MORE_EVIDENCE; canonical 36-case/252-policy evidence retained.
-Merged Q7: PR #78, `c3efe6c387fcec3c6e37be327a627a83c9aee64d`.
-Mechanically shared frontier capture,
-transient component/span/pack proofs and cumulative physical accounting.
-Q7 gates pass: NOT_WORTH_COMPLEXITY for current persistent-format change.
-37 actual stages, full costs/range amplification, exact Q6 frontier preserved.
-Q8 gates pass: Zstd SST exact in132 six-form replays; delta-length Parquet
-reduces DuckDB REP37.3%;162 proved inputs/fallbacks. Pebble2.1.7 format7
-and LZ4 remain CDC. Ready research merge, then continue Q9 draft-only port.
-ELF/PE DEFER: genuine grouped exact gains on controlled histories, mixed C++
-and public losses. Closed recipes/evidence retained; Q6 now captures unified
-physical candidate closures and tests honest late bootstrap/regret policies.
-All three debug targets DEFER; controlled wins fail natural-history breadth/
-economics. Exact parsers/grouping/native attribution retained for Q5.
-Q2 checkpoints: `eb07532`, `a0a20ab`, final validation checkpoint in this branch.
-Continue through the entire queue automatically. Hourly wakes are recovery after
-usage limits, never normal batch stop points; an active worker treats a wake as
-a reminder and must not start a second worker.
+2026-10-28. Audited main: `d61342734e7a1839d216f30a66bc0e74c4887c88`.
+This summary is a subsequent documentation-only change. Queue Q1–Q16 and useful
+unlocked expansion work are closed; blocked prototypes are not claimed complete
+or merge-ready. Stop reason: only gated, unsupported or disproportionate work
+remains under this campaign's rules, not a checkpoint/reminder/usage boundary.
 
-## Q1 carry-forward
-Full-scan allocation −26.3%; bounded root loading; CDC whole GET policy;
-post-commit optional sync/native/full/delta import roots and mode-aware import.
-1 GiB whole GET 2.7→1.1s, server peak 161→143 MiB; deep verify 216→218 MiB:
-no deep-verification RSS win, descriptor materialization remains a debt.
-Full/race/compatibility gates pass; all original corruption/resume assertions kept.
+| Queue | PR | Recorded outcome / report in this directory |
+|---|---|---|
+| Q1 runtime | [#72](https://github.com/insightlabs38-pixel/zeros3/pull/72), merged | I1A_PARTIAL; [runtime](Z3_I1A_REP_RUNTIME.md) |
+| Q2 codecs | [#73](https://github.com/insightlabs38-pixel/zeros3/pull/73), merged | I1B_COMPLETE; [reserved Gzip/Zstd](Z3_I1B_CODEC_KINDS.md) |
+| Q3 Git/OCI | [#74](https://github.com/insightlabs38-pixel/zeros3/pull/74), merged | I1C_COMPLETE; [integration](Z3_I1C_GIT_OCI.md) |
+| Q4 debug symbols | [#75](https://github.com/insightlabs38-pixel/zeros3/pull/75), merged | all DEFER; [report](Z3_34_DEBUG_SYMBOLS.md) |
+| Q5 native binaries | [#76](https://github.com/insightlabs38-pixel/zeros3/pull/76), merged | ELF/PE DEFER; [report](Z3_35_NATIVE_BINARY_RESCUE.md) |
+| Q6 planner | [#77](https://github.com/insightlabs38-pixel/zeros3/pull/77), merged | PLANNER_NEEDS_MORE_EVIDENCE; [report](Z3_36_ADMISSION_PLANNER.md) |
+| Q7 convergence | [#78](https://github.com/insightlabs38-pixel/zeros3/pull/78), merged | NOT_WORTH_COMPLEXITY; [report](Z3_37_STORAGE_CONVERGENCE.md) |
+| Q8 breadth | [#79](https://github.com/insightlabs38-pixel/zeros3/pull/79), merged | bounded SST/Parquet research; [report](Z3_38_STRUCTURED_BREADTH.md) |
+| Q9 Model/managed | [#80](https://github.com/insightlabs38-pixel/zeros3/pull/80), **open draft** | I2_DRAFT_BLOCKED; report lives on draft branch |
+| Q10 SST/Parquet | [#81](https://github.com/insightlabs38-pixel/zeros3/pull/81), **open draft** | I3_DRAFT_COMPLETE bounded prototype, unmerged; report on draft branch |
+| Q11 XZ/packages | [#82](https://github.com/insightlabs38-pixel/zeros3/pull/82), merged | NO_XZ_TARGET on tested histories; [report](Z3_39_XZ_PACKAGES.md) |
+| Q12 scientific | [#83](https://github.com/insightlabs38-pixel/zeros3/pull/83), merged | HDF5/ORC/Arrow DEFER; [report](Z3_40_SCIENTIFIC_COLUMNAR.md) |
+| Q13 WIM/ESD | [#84](https://github.com/insightlabs38-pixel/zeros3/pull/84), merged | DEFER, producer-only; [report](Z3_41_WIM_ESD.md) |
+| Q14 send streams | [#85](https://github.com/insightlabs38-pixel/zeros3/pull/85), merged | full-send DEFER, incremental KILL; [report](Z3_42_FS_SEND.md) |
+| Q15 bitcode | [#86](https://github.com/insightlabs38-pixel/zeros3/pull/86), merged | generic grouping KILL, normalization DEFER; [report](Z3_43_LLVM_BITCODE.md) |
+| Q16 broad tail | [#87](https://github.com/insightlabs38-pixel/zeros3/pull/87), merged | five-format shootout; ONNX DEFER; [report](Z3_44_BROAD_TAIL.md) |
+| E5 CRAM | [#88](https://github.com/insightlabs38-pixel/zeros3/pull/88), merged | framing KILL, entropy replay DEFER; [report](Z3_E5_CRAM.md) |
 
-## Q2
-Reserved Gzip 6/Zstd 7: mechanically extracted streaming codec cores and lab
-serialized adapters, temp-backed plaintext, direct CAS units, bounded metadata,
-analysis depth ≤3 and existing cumulative inspection limits. Nested tar→SQLite
-and CAR exact, cold semantic ranges measured, public compressed ranges use CDC.
-Seven lab recipe vectors pass after translating only pre-existing envelope and
-child addresses. Generator output reproduces the production codec declarations.
-Lab/production predefined FSE tables now initialize indexes before concurrent use.
-64 MiB stored-DEFLATE proof succeeds at 50,168 KiB peak RSS; retained best-speed
-negative hits the predictor budget and falls back to verified CDC at 19,840 KiB.
-Four-revision sidecars are additive; later sidecar growth ≈10 KiB/revision.
-Full suite 206.4s, race 49.5s, lab tests/vet, root vet/gofmt, decoder/analyzer fuzz,
-and codec-expanded wire/compat/bundle/lifecycle/SIGKILL checks pass.
-No test removed/skipped to obtain PASS; namespace interruption now uses a real
-fetch gate instead of a timing assumption, preserving every resume assertion.
+Production integrations are Q1–Q3 only. `zeros3.go` remains the sole production
+source (37,850 lines), stdlib-only; root go.mod/go.sum are unchanged by the
+campaign. Main production kinds remain 1–7: reserved Git 4/Gzip 6/Zstd 7 gained
+bounded implementations. No new number ≥8, store/wire version, default-on mode,
+persistent planner/refcount state or generic BASE was merged. CDC is authoritative;
+optional representation creation follows existing proof/publication rules.
+Main production/mod/sum are byte-identical to the Q3 merge after all later work.
 
-## Next
-Q3 implements bounded gp-zlib pack v2/v3 and idx v2; all eight lab vectors,
-hostile CDC fallbacks and public hiredis reexports pass. Reorder shares 5109/5216
-components but cumulative additive CDC+representation costs exceed CDC alone.
-BusyBox registry blobs/DiffIDs verified; codec/tar composition works. Generic
-ZIP Concat/Derived adapter passes framing/descriptor/ZIP64/signing/reorder cases.
-Q3 integration closed (full179.865s; black-box54/24/32/24). Q4 evidence report
-Z3_34_DEBUG_SYMBOLS.md, provenance/metrics under testdata/q4-debug. Q4 is merged. Q5 report Z3_35_NATIVE_BINARY_RESCUE.md; canonical19-way
-matrices and SHA provenance in testdata/q5-native. Continue Q6 admission planner
-after eligible research merge. Do not restart Q1-Q6.
-All later queue entries remain unfinished. No research promotions/kills yet.
-No new production number ≥8, wire/store version, default or planner decision merged.
+Q1 reduced median full-scan allocation 26.3%; 1 GiB prefer whole GET 2.7→1.1 s,
+server peak 161→143 MiB. Deep verify 216→218 MiB is **not** an RSS improvement.
+Descriptor materialization/global GC map migration remain explicitly deferred;
+ZS3T v1 was preserved. Transfers gain best-effort roots only after CDC commit.
+Q2/Q3 mechanically port exact substrates, bounded temp-backed analysis and nested
+composition. Unsupported producers fall back; no verification bypass was added.
 
-## Current durable cursor
-Q8 merged PR #79, 4390079. Q9 preserved as blocked draft PR #80, head 218ad72;
-managed creation remains disabled for whole-file memory debt. Do not restart Q9.
-Q10 active draft PR #81, first checkpoint ddd43d5; native 1 GiB full proof passes,
-9 lab roots match exactly, strict fallbacks and range amplification recorded.
-Finish Q10 gates/report, keep draft unmerged, then Q11 from latest origin/main.
-Q11-Q16 remain unfinished; no second worker and no pause at reminder boundaries.
+Research positives are conditional, not storage promotions: Q8 DuckDB REP −37.3%;
+Q12 standalone structured gains 50–57%; Q14 full-send payload reuse −64.7%; Q16
+ONNX planes −26.8%. Retaining source CDC makes their additive layouts larger.
+Q6 beam regret 0.0066% uses future evidence; it does not establish causal admission.
+Q13 uses genuine native WIM producer work, without a natural Windows OS history.
+Q15 independently matched 1,853,891 numeric records; generic grouping costs +17.2%.
+E5 native block grouping loses to fine CDC; a Java fixture's seven auxiliary-tag
+conversions remain a semantic negative, never disguised as a successful round trip.
+No new research family received an unconditional production promotion.
 
-Q10 complete as bounded draft PR #81: 9 exact lab identities,162 production
-proofs/fallbacks, native1GiB89.3MiBRSS, explicit cold-range amplification.
-EmbeddedZstd/prefix expansion guarded; compatibility54/bundles24/kinds32/
-crash24/rollback23 and full321.583s pass. No draft kinds merged.
-Next Q11 XZ/package Stage A; Q11-Q16 remain unfinished. Do not restart Q9/Q10.
+Draft #80 head `43dfe4192ef0b25d035fac0850af263a7f866beb`: streaming Model prototype,
+DEX/CLR whole-file memory debt; ordinary managed creation stays disabled. Model's
+1 GiB probe is bounded, but natural model/managed breadth and code-size remain debts.
+Draft #81 head `0a37846c610fa4268548957da7b0fde3c0d9c249`: bounded SST/Parquet
+prototype; native 1 GiB proof ~89.3 MiB RSS, with explicit range amplification.
+The drafts add 8,482/7,687 net production lines and 262/255 function declarations.
+Their new kinds 8–12, code-growth decisions and production promotion remain
+unapproved and unmerged. A bounded prototype verdict is not release readiness.
 
-Q11 Stage A closed: NO_XZ_TARGET on6 real release artifacts,24 exact compressed/
-interior rows; separate8-row recompression control cannot rescue history costs.
-No XZ decoder/production change. Continue Q12 scientific/columnar shootout after
-eligible Q11 research merge. Q12-Q16 remain unfinished; drafts80/81 stay unmerged.
+Validation is recorded per immutable checkpoint/report, with exact source hashes,
+serialized SHA256/length/byte proofs, full reachable costs and cold-source ranges.
+Production gates include complete root tests/vet, relevant races, old levels 1–5,
+pre-I0 format-6 refusal, bundles/replication/lifecycle and actual process-crash tests.
+Research final module tests/vet pass. Existing canonical cases/wire goldens were
+retained; timing-dependent interruption was replaced by a real fetch gate.
+Q12's broad legacy race attempt timed out at 600 s: it remains a timeout, not PASS;
+changed-surface races pass. Q16's timed fuzz count was only 27; the separate
+fixed-count 2,000-mutation PASS is reported honestly. No redundant race claim.
+Native producers/oracles stay outside candidate decoder dependencies. Cached pinned
+assets and shell extraction/copy were reused; branches and genuine checkpoints stay.
 
-Q11 merged PR #82,596e045: NO_XZ_TARGET for tested histories; no production diff.
-Q12 closed: HDF5/ORC/Arrow DEFER.68 inputs,354 rows,654 serialized proofs,
-762 authenticated cold ranges; full/vet/targeted-race/fuzz pass. Standalone
-controlled gains50–57% remain additive with CDC; no production savings claimed.
-Independent18 native-readable references; no real-history promotion evidence.
-Broad legacy kinds race default600s timeout retained; changed-surface races pass.
-Next Q13 WIM/ESD characterization. Q13-Q16 and useful expansion remain unfinished.
-Draft80/81 helper/LOC accounting corrected (docs only); both stay unmerged.
+Expansion audit: E2 WOFF2/Brotli, E3 ONNX and E4 WAL received Q16 evidence;
+additional codec work lacks natural-history/retained-source economics. E5 is closed.
+E1 has no measured dictionary/window/EROFS/SquashFS consumer unlock. E6 still lacks
+the required real LevelDB rebuild/restore history. E7 has no ≥100 MiB/s residual
+coder beating plane+DEFLATE. Killed PyTorch/JVM/Wasm/PXR lanes were not reopened.
+These are explicit prerequisites, not claims of completed unsupported codecs.
 
-Q12 merged PR #83,b0fd4fc: scientific profiles remain DEFER; production unchanged.
-Q13 closed DEFER:33 state files(30 distinct),165 rows,733 serialized proofs,
-297 cold ranges. Opaque XPRESS/LZX chunks near tested file-data floor; solid
-reexport gap lacks real-history/decision-cost evidence. Native append already
-shares resources; integrity excludes current XML/header, preserved by whole SHA.
-Full/vet gates pass. Next Q14 FS-send; Q14-Q16/eligible expansion remain unfinished.
-
-## Durable cursor — Q14 closed, Q15 next (2026-10-28)
-
-Q14 `z3/fs-send-frontier`: full-send payload experiment DEFER; incremental-chain
-transform KILL on measured native legacy workloads. Native userspace pool,
-snapshot/send/receive and final tree diff succeeded without host filesystem
-privileges. Modern ZFS/Btrfs remain reference-only DEFER. 22 inputs / 18 unique
-sources, 83 exact serialized proofs, 249 ranges, strict/native-oracle parity,
-198,770 fuzz executions. Full-send standalone win is additive storage loss;
-no production changes or generic BASE. See Z3_42_FS_SEND.md and q14-send artifacts.
-Next unfinished queue item is Q15 LLVM bitcode; Q9/Q10 remain blocked drafts.
-
-## Durable cursor — Q15 closed, Q16 next (2026-10-28)
-
-Q15 `z3/llvm-bitcode-frontier`: generic grouping KILL; semantic normalization
-DEFER. Five hiredis and three SQLite source releases plus C/C++ controls produced
-65 bitcodes / 56 unique SHA256s. Strict generic framing matches LLVM's 28,242
-block and 1,854,143 record counts; 325 exact representations / 975 ranges.
-Function grouping costs +17.2% versus CDC overall; every additive layout loses.
-Same-named functions demonstrate operand/ID churn without a defensible generic
-normalization. Complete analysis tests/vet and bounded parser fuzz pass. Production
-untouched. Q16 broad-tail ranking + one deep target is the next unfinished item;
-expansion pool remains available only where evidence justifies useful work.
-
-## Durable cursor — Q16 closed, expansion E5 next (2026-10-28)
-
-Q16 `z3/broad-tail-frontier`: five-format shootout completed before one deep
-ONNX dense-initializer adapter. 44 inputs / 41 SHA256s, 214 representations,
-1,866 exact serialized proofs and 450 ranges. Native metadata/payload parity
-for 52 raw tensors in each of six model states; typed scalar/external/unknown
-fields remain opaque. Planes save 26.8% standalone, but retained CDC + planes
-costs +73.2%; production integration DEFER. Other format decisions and exact
-unlock conditions are in Z3_44_BROAD_TAIL.md. Production remains untouched.
-Expansion E2/E3/E4 received characterization/deep evidence in Q16; no further
-Brotli codec or WAL implementation is justified by current natural-history and
-retained-source economics. E1 has no measured dictionary/window consumer unlock;
-E6 lacks the required real LevelDB rebuild/restore history; E7 lacks a qualifying
->=100 MiB/s residual coder. E5 CRAM characterization is the next useful lane.
-Q9/Q10 remain draft-only and unmerged; no reminder creates a second worker.
+Largest blockers: duplicate retained-source storage; causal admission evidence;
+new-kind/code-size approval; managed streaming; natural model/managed/OS histories;
+descriptor/deep-verification RSS and unsupported codec profiles.
+Next recommended queue item: none currently unlocked. Reopen I2/I3 only with their
+approval gates and missing streaming/corpus/economics evidence; do not merge either
+draft on a reminder. Broader lifecycle/GC work needs its own scoped evidence.
+An hourly wake must read this terminal record and avoid restarting closed batches.
