@@ -1,0 +1,10 @@
+# Disposable-store driver; requires fresh scratch directory and prebuilt probes.
+import pathlib,json,subprocess,shutil,hashlib
+w=pathlib.Path('/workspace/work/z4-a0');rows=json.loads(pathlib.Path('/workspace/zeros3/testing-harnesses/z4/testdata/a0-audit/preselected-inputs.json').read_text());out=[]
+def dig(p):return {str(f.relative_to(p)):hashlib.sha256(f.read_bytes()).hexdigest() for f in p.rglob('*') if f.is_file()}
+for kind in ['sst','parquet','dex','clr']:
+ r=next(r for r in rows if r['kind']==kind);p=w/('compat-'+kind);assert not p.exists();binary=w/('i3' if kind in ['sst','parquet'] else 'i2')/'probe'
+ with (w/(kind+'-compat.jsonl')).open('w') as f:subprocess.run([str(binary),kind+'@'+str(p),r['path']],stdout=f,stderr=subprocess.PIPE,check=True)
+ for op,args in [('verify',['verify','-deep']),('retire',['doctor','-retire-bad-representations'])]:
+  q=w/('old-'+kind+'-'+op);shutil.copytree(p,q);before=dig(q);res=subprocess.run([str(w/'i1'),*args,'-store',str(q)],capture_output=True,text=True);after=dig(q);out.append(dict(kind=kind,operation=op,exit=res.returncode,stdout=res.stdout,stderr=res.stderr,changed=[k for k in sorted(before.keys()|after.keys()) if before.get(k)!=after.get(k)]))
+(w/'remaining-kinds.json').write_text(json.dumps(out,indent=1))
