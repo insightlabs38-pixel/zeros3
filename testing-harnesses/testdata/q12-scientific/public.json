@@ -1,0 +1,146 @@
+[
+ {
+  "url": "https://raw.githubusercontent.com/apache/arrow-testing/5a26d35785ff8761e56d79eebff971f6f737e18c/data/arrow-ipc-stream/integration/0.14.1/generated_primitive.arrow_file",
+  "file": "arrow-0.14.1-primitive.arrow_file",
+  "bytes": 22358,
+  "sha256": "cdc6c6a28c020c50cb7011c75b0117aedb3c3bacec927e935546fef18b694212",
+  "family": "arrow-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/apache/arrow-testing/5a26d35785ff8761e56d79eebff971f6f737e18c/data/arrow-ipc-stream/integration/0.14.1/generated_dictionary.stream",
+  "file": "arrow-0.14.1-dictionary.stream",
+  "bytes": 2060,
+  "sha256": "f65278d79c28e02145336c535a174f5cf89770dd79b623fc71ca3472bb7f8588",
+  "family": "arrow-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/apache/arrow-testing/5a26d35785ff8761e56d79eebff971f6f737e18c/data/arrow-ipc-stream/integration/1.0.0-bigendian/generated_primitive.stream",
+  "file": "arrow-1.0.0-bigendian-primitive.stream",
+  "bytes": 20288,
+  "sha256": "ee51ae4cdf29a3c86ad8e3dc230dc6565877dbeb08ea94dd92ebf937467c0ae6",
+  "family": "arrow-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/apache/arrow-testing/5a26d35785ff8761e56d79eebff971f6f737e18c/data/arrow-ipc-stream/integration/cpp-21.0.0/generated_primitive.arrow_file",
+  "file": "arrow-cpp-21.0.0-primitive.arrow_file",
+  "bytes": 8658,
+  "sha256": "ca039c4a866e9c52aeaa609ab0e35fabc1539bc0cea92a96844e39d36dff9178",
+  "family": "arrow-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/apache/arrow-testing/5a26d35785ff8761e56d79eebff971f6f737e18c/data/arrow-ipc-stream/integration/cpp-21.0.0/generated_dictionary.arrow_file",
+  "file": "arrow-cpp-21.0.0-dictionary.arrow_file",
+  "bytes": 2650,
+  "sha256": "327ef7199411c01646f775f0d36598564b8d45c685a5c86f1218420c9d3899b4",
+  "family": "arrow-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/apache/arrow-testing/5a26d35785ff8761e56d79eebff971f6f737e18c/data/arrow-ipc-stream/integration/cpp-21.0.0/generated_nested.arrow_file",
+  "file": "arrow-cpp-21.0.0-nested.arrow_file",
+  "bytes": 2650,
+  "sha256": "dfe410425461bd5c19f8f114af32993169ab898b70d6fec3b7827d1996a9f880",
+  "family": "arrow-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/apache/arrow-testing/5a26d35785ff8761e56d79eebff971f6f737e18c/data/arrow-ipc-stream/integration/cpp-21.0.0/generated_binary_view.arrow_file",
+  "file": "arrow-cpp-21.0.0-binary_view.arrow_file",
+  "bytes": 9794,
+  "sha256": "a1735a305fe65149e7eb3a34d8a2597eda7359784b0ec3510669b604cac1582f",
+  "family": "arrow-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/apache/arrow-testing/5a26d35785ff8761e56d79eebff971f6f737e18c/data/arrow-ipc-stream/integration/cpp-21.0.0/generated_custom_metadata.arrow_file",
+  "file": "arrow-cpp-21.0.0-custom_metadata.arrow_file",
+  "bytes": 2674,
+  "sha256": "67b14c6017f8cc24d8f2602fdd064a905c29ad2bc369d239071604f99077d9d3",
+  "family": "arrow-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/apache/arrow-testing/5a26d35785ff8761e56d79eebff971f6f737e18c/data/arrow-ipc-stream/integration/cpp-21.0.0/generated_map_non_canonical.arrow_file",
+  "file": "arrow-cpp-21.0.0-map_non_canonical.arrow_file",
+  "bytes": 1226,
+  "sha256": "06dd3b25be792ab69d73d4d2c82ca6c26fd930c896d694438070379b551b6fc0",
+  "family": "arrow-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/apache/arrow-testing/5a26d35785ff8761e56d79eebff971f6f737e18c/data/arrow-ipc-stream/integration/cpp-21.0.0/generated_decimal256.arrow_file",
+  "file": "arrow-cpp-21.0.0-decimal256.arrow_file",
+  "bytes": 25546,
+  "sha256": "864f2bfffbac8adf378d0d77d912877b69763360c875d8c5ab99ee2c857af65c",
+  "family": "arrow-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/h5py/h5py/6347df1522372b83a026907fe9aa6b639d4ab8f6/h5py/tests/data_files/compound-dtype-complex.h5",
+  "file": "hdf5-compound-dtype-complex.h5",
+  "bytes": 13792,
+  "sha256": "ebcd9658096064f16e46a2d74b9532c9e6a6ad5b67a827f2fb4f6379f6b05380",
+  "family": "hdf5-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/h5py/h5py/6347df1522372b83a026907fe9aa6b639d4ab8f6/h5py/tests/data_files/vlen_seq_fillvalue.h5",
+  "file": "hdf5-vlen_seq_fillvalue.h5",
+  "bytes": 6144,
+  "sha256": "7a97d8ce42086e0938519e41e74558e1ef689d273d9e6a8a4edb188aa270e5d7",
+  "family": "hdf5-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/h5py/h5py/6347df1522372b83a026907fe9aa6b639d4ab8f6/h5py/tests/data_files/vlen_string_dset.h5",
+  "file": "hdf5-vlen_string_dset.h5",
+  "bytes": 6304,
+  "sha256": "900f8baf19d3d8c4d1193ac1ac6019ee7774005e85c030af44e6757b38d29793",
+  "family": "hdf5-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/h5py/h5py/6347df1522372b83a026907fe9aa6b639d4ab8f6/h5py/tests/data_files/vlen_string_dset_utc.h5",
+  "file": "hdf5-vlen_string_dset_utc.h5",
+  "bytes": 169904,
+  "sha256": "85b728382b833c1da61627b9a334e22822d5c1cb359fe3ba6f25262af4532f63",
+  "family": "hdf5-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/h5py/h5py/6347df1522372b83a026907fe9aa6b639d4ab8f6/h5py/tests/data_files/vlen_string_s390x.h5",
+  "file": "hdf5-vlen_string_s390x.h5",
+  "bytes": 9008,
+  "sha256": "ea990c68e0371bafab4966f752fa1355b3b9f64360066f6d9daff8f1b7e74ca5",
+  "family": "hdf5-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/apache/orc/5b876e746cee4d15c8fae884ce4ab5d2b547ec0c/examples/TestOrcFile.testMemoryManagementV11.orc",
+  "file": "orc-TestOrcFile.testMemoryManagementV11.orc",
+  "bytes": 19869,
+  "sha256": "a01bbc35ab37e3882783a642290a90e65f8a58b1c8576a86cb1fdd92b6ea8b54",
+  "family": "orc-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/apache/orc/5b876e746cee4d15c8fae884ce4ab5d2b547ec0c/examples/TestOrcFile.testMemoryManagementV12.orc",
+  "file": "orc-TestOrcFile.testMemoryManagementV12.orc",
+  "bytes": 10864,
+  "sha256": "a186b5f56c7451e7b20e8c886512646579c6abf113d2501a90a51d96339de6f9",
+  "family": "orc-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ },
+ {
+  "url": "https://raw.githubusercontent.com/apache/orc/5b876e746cee4d15c8fae884ce4ab5d2b547ec0c/examples/TestOrcFile.metaData.orc",
+  "file": "orc-TestOrcFile.metaData.orc",
+  "bytes": 41935,
+  "sha256": "0a440fa2da8b29d34aece3e4edfd0b41c4295216316bdfbb0c664e84f53e6223",
+  "family": "orc-reference",
+  "class_": "REFERENCE_FIXTURE_NOT_HISTORY"
+ }
+]

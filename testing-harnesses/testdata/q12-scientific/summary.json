@@ -1,0 +1,226 @@
+{
+ "hdf5-none": {
+  "source-cdc-prod": {
+   "Cumulative": 8034997,
+   "Additive": 8034997,
+   "Fallback": ""
+  },
+  "native-span-oracle": {
+   "Cumulative": 11652196,
+   "Additive": 19687193,
+   "Fallback": ""
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 5823933,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 5021888,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "native-fine-exact": {
+   "Cumulative": 5776923,
+   "Additive": 13811920,
+   "Fallback": ""
+  },
+  "planes-codec-exact": {
+   "Cumulative": 3998433,
+   "Additive": 12033430,
+   "Fallback": ""
+  }
+ },
+ "hdf5-gzip": {
+  "source-cdc-prod": {
+   "Cumulative": 11147223,
+   "Additive": 11147223,
+   "Fallback": ""
+  },
+  "native-span-oracle": {
+   "Cumulative": 10356045,
+   "Additive": 21503268,
+   "Fallback": ""
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 5823933,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 5021888,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "native-fine-exact": {
+   "Cumulative": 10356045,
+   "Additive": 21503268,
+   "Fallback": ""
+  },
+  "planes-codec-exact": {
+   "Cumulative": 10356045,
+   "Additive": 21503268,
+   "Fallback": ""
+  }
+ },
+ "orc-pyorc": {
+  "source-cdc-prod": {
+   "Cumulative": 7408039,
+   "Additive": 7408039,
+   "Fallback": ""
+  },
+  "native-span-oracle": {
+   "Cumulative": 10481166,
+   "Additive": 17889205,
+   "Fallback": ""
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 5823933,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 5021888,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "native-fine-exact": {
+   "Cumulative": 7408039,
+   "Additive": 7408039,
+   "Fallback": "scientific: unsupported profile"
+  },
+  "planes-codec-exact": {
+   "Cumulative": 7408039,
+   "Additive": 7408039,
+   "Fallback": "scientific: unsupported profile"
+  }
+ },
+ "orc-pyarrow": {
+  "source-cdc-prod": {
+   "Cumulative": 7372313,
+   "Additive": 7372313,
+   "Fallback": ""
+  },
+  "native-span-oracle": {
+   "Cumulative": 10480361,
+   "Additive": 17852674,
+   "Fallback": ""
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 5823933,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 5021888,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "native-fine-exact": {
+   "Cumulative": 7372313,
+   "Additive": 7372313,
+   "Fallback": "scientific: unsupported profile"
+  },
+  "planes-codec-exact": {
+   "Cumulative": 7372313,
+   "Additive": 7372313,
+   "Fallback": "scientific: unsupported profile"
+  }
+ },
+ "arrow-none": {
+  "source-cdc-prod": {
+   "Cumulative": 9405693,
+   "Additive": 9405693,
+   "Fallback": ""
+  },
+  "native-span-oracle": {
+   "Cumulative": 10601136,
+   "Additive": 20006829,
+   "Fallback": ""
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 5823933,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 5021888,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "native-fine-exact": {
+   "Cumulative": 5333143,
+   "Additive": 14738836,
+   "Fallback": ""
+  },
+  "planes-codec-exact": {
+   "Cumulative": 3982671,
+   "Additive": 13388364,
+   "Fallback": ""
+  }
+ },
+ "arrow-zstd": {
+  "source-cdc-prod": {
+   "Cumulative": 9212142,
+   "Additive": 9212142,
+   "Fallback": ""
+  },
+  "native-span-oracle": {
+   "Cumulative": 9325081,
+   "Additive": 18537223,
+   "Fallback": ""
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 5823933,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 5021888,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "native-fine-exact": {
+   "Cumulative": 7956903,
+   "Additive": 17169045,
+   "Fallback": ""
+  },
+  "planes-codec-exact": {
+   "Cumulative": 4215635,
+   "Additive": 13427777,
+   "Fallback": ""
+  }
+ },
+ "hdf5-unlimited": {
+  "source-cdc-prod": {
+   "Cumulative": 4391053,
+   "Additive": 4391053,
+   "Fallback": ""
+  },
+  "native-span-oracle": {
+   "Cumulative": 4204314,
+   "Additive": 8595367,
+   "Fallback": ""
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 3691712,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 3842393,
+   "Additive": null,
+   "Fallback": ""
+  },
+  "native-fine-exact": {
+   "Cumulative": 4391053,
+   "Additive": 4391053,
+   "Fallback": "scientific: unsupported profile"
+  },
+  "planes-codec-exact": {
+   "Cumulative": 4391053,
+   "Additive": 4391053,
+   "Fallback": "scientific: unsupported profile"
+  }
+ }
+}

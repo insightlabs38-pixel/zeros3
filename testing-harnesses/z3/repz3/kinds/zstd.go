@@ -59,10 +59,15 @@ var errZstd = errors.New("kinds: zstd stream the contract does not express")
 // EncodeZstd analyses one Zstandard stream. child builds the representation of the
 // decoded bytes (EncodeTarLayer, or CDC for a plaintext that is not a tar).
 func EncodeZstd(zst []byte, child func(plain []byte) (*Bundle, error)) (*Bundle, *ZstdStats, error) {
+	return EncodeZstdLimited(zst, child, zstdz3.Limits{MaxTotalDecoded: min(MaxZstdPlain, int64(len(zst))*MaxZstdRatio+1<<20)})
+}
+
+// EncodeZstdLimited reuses the same recipe/objects with caller-supplied analysis
+// limits for bounded embedded buffers. It changes no decoder or wire contract.
+func EncodeZstdLimited(zst []byte, child func([]byte) (*Bundle, error), lim zstdz3.Limits) (*Bundle, *ZstdStats, error) {
 	t0 := time.Now()
 	var plain, units bytes.Buffer
-	res, err := zstdz3.Parse(bytes.NewReader(zst), &plain, &units, zstdz3.Options{Limits: zstdz3.Limits{
-		MaxTotalDecoded: min(MaxZstdPlain, int64(len(zst))*MaxZstdRatio+1<<20)}})
+	res, err := zstdz3.Parse(bytes.NewReader(zst), &plain, &units, zstdz3.Options{Limits: lim})
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %v", errZstd, err)
 	}
