@@ -245,7 +245,7 @@ func (s *Study) Observe(o admission.Observation) error {
 		add(st, 6, id, pack)
 		st.totals[6] += int64(len(members)) * 48
 		row.PackIndex += int64(len(members)) * 48
-		largest := 0
+		smallest := len(pack)
 		pos := 0
 		for _, b := range members {
 			end := pos + len(b)
@@ -253,12 +253,12 @@ func (s *Study) Observe(o admission.Observation) error {
 			if e != nil || !bytes.Equal(rebuilt, b) {
 				return fmt.Errorf("pack proof: %v", e)
 			}
-			largest = max(largest, len(b))
+			smallest = min(smallest, len(b))
 			row.PackRequested += int64(min(4096, len(b)))
 			row.PackBackingRead += int64(len(pack))
 			pos = end
 		}
-		row.PackWorstDead += int64(len(pack) - largest)
+		row.PackWorstDead += int64(len(pack) - smallest)
 		pack = nil
 		members = nil
 		return nil
