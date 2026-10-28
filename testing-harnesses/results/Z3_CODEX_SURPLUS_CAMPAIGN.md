@@ -118,3 +118,19 @@ Same-named functions demonstrate operand/ID churn without a defensible generic
 normalization. Complete analysis tests/vet and bounded parser fuzz pass. Production
 untouched. Q16 broad-tail ranking + one deep target is the next unfinished item;
 expansion pool remains available only where evidence justifies useful work.
+
+## Durable cursor — Q16 closed, expansion E5 next (2026-10-28)
+
+Q16 `z3/broad-tail-frontier`: five-format shootout completed before one deep
+ONNX dense-initializer adapter. 44 inputs / 41 SHA256s, 214 representations,
+1,866 exact serialized proofs and 450 ranges. Native metadata/payload parity
+for 52 raw tensors in each of six model states; typed scalar/external/unknown
+fields remain opaque. Planes save 26.8% standalone, but retained CDC + planes
+costs +73.2%; production integration DEFER. Other format decisions and exact
+unlock conditions are in Z3_44_BROAD_TAIL.md. Production remains untouched.
+Expansion E2/E3/E4 received characterization/deep evidence in Q16; no further
+Brotli codec or WAL implementation is justified by current natural-history and
+retained-source economics. E1 has no measured dictionary/window consumer unlock;
+E6 lacks the required real LevelDB rebuild/restore history; E7 lacks a qualifying
+>=100 MiB/s residual coder. E5 CRAM characterization is the next useful lane.
+Q9/Q10 remain draft-only and unmerged; no reminder creates a second worker.

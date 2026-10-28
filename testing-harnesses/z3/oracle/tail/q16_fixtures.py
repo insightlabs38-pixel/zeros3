@@ -1,4 +1,4 @@
-"""Original native ONNX fixtures; external files validate at production only.
+"""Original native ONNX fixtures; external files validate at producer time.
 Usage: OUTPUT. Keep graph-only external fixture tests independent of its sidecar.
 """
 import hashlib,json,pathlib,sys
