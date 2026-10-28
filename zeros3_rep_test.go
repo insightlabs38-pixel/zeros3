@@ -1803,7 +1803,10 @@ func TestRepFailureAfterOutputStartsDoesNotPanic(t *testing.T) {
 		}
 	}
 	repCorruptFile(t, l.s.chunkPath(victim), func(b []byte) []byte { b[7] ^= 1; return b })
-	rd := l.s.openObjectReader(man, byteRange{0, int64(len(db)) - 1})
+	rd, err := l.s.repOpenReader(man, byteRange{0, int64(len(db)) - 1})
+	if err != nil || rd == nil {
+		t.Fatalf("direct representation decoder: %v", err)
+	}
 	defer rd.close()
 	var got []byte
 	var rerr error
@@ -2479,7 +2482,10 @@ func TestRepPackedCopyFallback(t *testing.T) {
 	}
 	// without another copy, the representation path fails (CDC still reads the object)
 	_, man := l.manifest("db")
-	rd := l.s.openObjectReader(man, byteRange{0, int64(len(db)) - 1})
+	rd, err := l.s.repOpenReader(man, byteRange{0, int64(len(db)) - 1})
+	if err != nil || rd == nil {
+		t.Fatalf("direct representation decoder: %v", err)
+	}
 	var got []byte
 	for {
 		p, err := rd.next()
@@ -2496,7 +2502,11 @@ func TestRepPackedCopyFallback(t *testing.T) {
 	p := l.s.chunkPath(victim)
 	os.MkdirAll(filepath.Dir(p), 0o755)
 	os.WriteFile(p, data, 0o644)
-	if got := repReadAll(t, l.s, man, byteRange{0, int64(len(db)) - 1}); !bytes.Equal(got, db) {
+	rd, err = l.s.repOpenReader(man, byteRange{0, int64(len(db)) - 1})
+	if err != nil || rd == nil {
+		t.Fatalf("direct decoder after adding valid copy: %v", err)
+	}
+	if got := repCollectReader(t, rd); !bytes.Equal(got, db) {
 		t.Fatal("copy fallback did not serve the valid loose copy")
 	}
 }
@@ -2557,6 +2567,12 @@ func TestRepConcurrentReadsMixedTiers(t *testing.T) {
 				var rd objectReader
 				if g%4 == 3 { // plain CDC reads alongside
 					rd = l.s.newManifestReader(man, rng)
+				} else if g%4 == 0 && rng.start == 0 && rng.end == man.TotalLength-1 {
+					rd, err = l.s.repOpenReader(man, rng)
+					if err != nil || rd == nil {
+						errc <- fmt.Errorf("direct decoder %s: %v", key, err)
+						return
+					}
 				} else {
 					rd = l.s.openObjectReader(man, rng)
 				}
@@ -2623,7 +2639,11 @@ func TestRepConcurrentPutsAndReads(t *testing.T) {
 				errc <- err
 				return
 			}
-			rd := l.s.openObjectReader(man, byteRange{0, int64(len(data)) - 1})
+			rd, err := l.s.repOpenReader(man, byteRange{0, int64(len(data)) - 1})
+			if err != nil || rd == nil {
+				errc <- fmt.Errorf("direct decoder %s: %v", key, err)
+				return
+			}
 			defer rd.close()
 			var got []byte
 			for {
@@ -3427,7 +3447,10 @@ func benchRepPacked(b *testing.B, data []byte, rng func(size int64) byteRange) {
 	b.SetBytes(r.end - r.start + 1)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		rd := s.openObjectReader(man, r)
+		rd, err := s.repOpenReader(man, r)
+		if err != nil || rd == nil {
+			b.Fatalf("direct decoder: %v", err)
+		}
 		for {
 			if _, err := rd.next(); err != nil {
 				break

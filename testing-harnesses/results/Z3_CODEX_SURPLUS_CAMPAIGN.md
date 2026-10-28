@@ -1,40 +1,31 @@
-# ZeroS3 surplus campaign checkpoint
+# ZeroS3 surplus campaign — live progress
 
-Campaign base and current main: `b050175029f8a484db1e97c6678c863b4d4984dd`.
-Merged campaign PRs: none. Draft: #72, Z3-I1A runtime hardening.
-Branch: `z3/i1a-representation-runtime`.
-Checkpoints: `20519bb` characterization; `6adfc67` bounded root loading and
-closure allocation; final healthy-set-sharing/evidence checkpoint in this branch.
-The campaign is unfinished; do not infer completion from this checkpoint.
+Main before Q1 merge: `b050175029f8a484db1e97c6678c863b4d4984dd`.
+Q1 branch: `z3/i1a-representation-runtime`; PR #72 passes final gates and is ready to merge.
+Published checkpoints: `20519bb`, `6adfc67`, `0691572`, `324c250`.
+The campaign continues automatically across batches; hourly wakes are recovery
+for usage-limit interruptions, never normal batch stop points or second workers.
 
-## Delivered and measured
-- Root reads reject oversized on-disk files before allocation; sparse corrupt
-  root regression preserves fail-closed maintenance and manifest availability.
-- Remove duplicate length-map storage, share healthy read-only liveness sets,
-  and size closure allocations from the validated graph.
-- Full-scan benchmark allocation down 26.3%; no proven deep-verification RSS win.
-- 1 GiB exact whole/range/deep verification passes (266,240 components).
-- Compatibility, bundle/replication, lifecycle and crash black-box checks pass.
-- Final vet, formatting, targeted race and read matrix pass. Final full suite
-  fails two replication interruption/reuse tests; interruption reproduces 3/3
-  on unchanged main, reuse passes 3/3 in isolation. No tests changed/skipped.
-- Wire bytes, production kind numbers, store level and default mode unchanged.
-- No research promotions/kills, new integration kinds or persistent decisions.
+## Q1
+Reduced full-scan allocation 26.3%; bounded root-file reads; shared healthy
+liveness tables; released unused Verify lengths; whole GET chooses CDC while
+representation ranges/direct verification remain. Transfer roots follow durable
+sync/native commit or full/delta snapshot publication. Mode-aware import CLI.
+Transfer mode/failure/reuse/CLI and twelve crash cases pass. Final black-box
+compat/bundle/lifecycle/crash and race gates pass. Full repository suite, vet and formatting pass.
+Baseline timing-sensitive interruption/reuse fixtures now synchronize on actual
+fetch/upload progress; all original state/byte/reuse assertions remain. Decoder
+corruption/concurrency coverage remains explicit under CDC whole-read policy.
+Isolated 1 GiB: prefer whole GET 2.7 → 1.1 s; server peak 161 → 143 MiB;
+deep verify 216 → 218 MiB (unresolved, no RSS-win claim). Verdict I1A_PARTIAL.
+No production dependency, kind, wire, store/default change.
 
-## Remaining work and resume
-Q1 is active; PR #72 stays draft. Main has not advanced. Resume the existing
-branch and inspect its latest report and validation state before doing new work.
-Next priorities: peak verification memory (211 MiB baseline / 215 MiB final),
-whole-read overhead (full matrix in Z3_I1A_REP_RUNTIME.md), descriptor streaming,
-and root creation on sync/native replication/bundle import.
-Sync/native replication share handleSyncCommit. Full/delta bundle publication
-shares bundleImporter.publish; the CLI currently lacks destination representation
-mode configuration. Preserve CDC success and snapshot publication semantics.
-Do not start Q2 until Q1 is complete or its remaining work is explicitly resolved.
-New format kinds and ZS3R/ZS3T changes remain unauthorized for unattended merge.
-
-## Continuation task
-An enabled hourly task was created in this conversation at the user's request.
-Treat a wake while already active as a reminder, never a second worker.
-The uploaded campaign file remains the queue/gate authority; this checkpoint is
-only a progress record. No branches were deleted and no history was rewritten.
+## Queue
+After final gates, merge Q1 if eligible and start Q2 from latest origin/main.
+Q2: mechanically port reserved Gzip 6 and Zstd 7, bounded streaming analyzers,
+nested gzip/zstd→tar→SQLite/CAR, fixed lab-fixture fidelity, strict fallbacks.
+Preliminary type-aware extraction compiles independently in scratch; it has not
+entered production or been claimed integrated. The lab decoder adapters already
+exist in repz3/kinds/gzip.go and zstd.go; reuse those exact serialized contracts.
+All later queue entries remain unfinished. No research promotions/kills yet.
+New kinds >=8 / ZS3R/ZS3T changes remain draft-only; CDC remains authoritative.
