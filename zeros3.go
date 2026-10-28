@@ -8521,10 +8521,11 @@ type reachabilityResult struct {
 	ManifestsChecked int
 	ChunksChecked    int
 
+	// Chunk maps are read-only after the scan; healthy scans share their sets.
 	ReferencedManifests map[string]bool  // manifest UUID -> true; every manifest any live root points to
 	ReferencedChunks    map[string]bool  // hex sha256 -> true; every chunk any live, readable manifest/part points to
 	ChunkLength         map[string]int64 // hex sha256 -> best-known length, from the reference (not disk)
-	ValidChunks         map[string]bool  // subset of ReferencedChunks whose file passed integrity checks
+	ValidChunks         map[string]bool  // read-only subset; aliases ReferencedChunks when all chunks pass
 
 	// Optional structured representations (section 16d). Their physical chunks
 	// are part of ReferencedChunks/ChunkLength; a root that cannot be trusted
@@ -8586,7 +8587,6 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 		ReferencedManifests: map[string]bool{},
 		ReferencedChunks:    map[string]bool{},
 		ChunkLength:         map[string]int64{},
-		ValidChunks:         map[string]bool{},
 	}
 
 	jf, err := os.Open(filepath.Join(s.root, "journal", "visibility.log"))
@@ -8790,9 +8790,12 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 	}
 	rctx.finish()
 	// One unified chunk existence/integrity pass over every referenced
-	// digest, regardless of which root category claimed it.
+	// digest, regardless of which root category claimed it. Healthy scans share
+	// the two read-only sets; only a faulty scan needs a separate valid subset.
+	var invalidChunks []string
 	for sha, length := range wantChunks {
 		res.ReferencedChunks[sha] = true
+		invalidChunks = append(invalidChunks, sha)
 		sum, herr := decodeHexSHA256(sha) // already validated above when added to wantChunks
 		if herr != nil {
 			continue
@@ -8826,7 +8829,14 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 				continue
 			}
 		}
-		res.ValidChunks[sha] = true
+		invalidChunks = invalidChunks[:len(invalidChunks)-1]
+	}
+	res.ValidChunks = res.ReferencedChunks
+	if len(invalidChunks) != 0 {
+		res.ValidChunks = maps.Clone(res.ReferencedChunks)
+		for _, sha := range invalidChunks {
+			delete(res.ValidChunks, sha)
+		}
 	}
 
 	return res, nil
