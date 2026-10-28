@@ -1,0 +1,26 @@
+[
+ {
+  "url": "https://deb.debian.org/debian/pool/main/w/wimlib/wimtools_1.13.6-1_amd64.deb",
+  "file": "wimtools_1.13.6-1_amd64.deb",
+  "sha256": "6bfe5d8f1b4d1de2a6a428946a3cca0a8f9851edc96f70e8d24aca499ee2d80a",
+  "bytes": 105520
+ },
+ {
+  "url": "https://deb.debian.org/debian/pool/main/w/wimlib/libwim15_1.13.6-1_amd64.deb",
+  "file": "libwim15_1.13.6-1_amd64.deb",
+  "sha256": "8bdfe2e31ec04243582d17703ebbc49a844c6713f359ddfa6fa05631f329d0b2",
+  "bytes": 174456
+ },
+ {
+  "url": "https://deb.debian.org/debian/pool/main/n/ntfs-3g/libntfs-3g89_2022.10.3-1+deb12u3_amd64.deb",
+  "file": "libntfs-3g89_2022.10.3-1+deb12u3_amd64.deb",
+  "bytes": 163640,
+  "sha256": "4e8034088b3445bb45afb66b2f4f4a6d7369747eb40537183d90f00c469dee15"
+ },
+ {
+  "url": "https://deb.debian.org/debian/pool/main/f/fuse/libfuse2_2.9.9-6+b1_amd64.deb",
+  "file": "libfuse2_2.9.9-6+b1_amd64.deb",
+  "bytes": 118668,
+  "sha256": "df32b8f65d819f854e096896890d6ad632b6e520977bb120bb3143b4c66e2fcd"
+ }
+]
