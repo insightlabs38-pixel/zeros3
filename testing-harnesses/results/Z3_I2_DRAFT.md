@@ -13,6 +13,8 @@ Type-aware extractor selects6386 managed-core lines,901 ST/GGUF parser lines,
 to existing production primitives. Group cutters shell-extracted from econx/lab.
 Only zeros3.go is production;37850→46332 lines (+8482,22.4%). Root module/sum
 unchanged; `go list -deps` reports only stdlib plus zeros3. All code stays draft.
+Added function declarations:262. Three ported codec families; two major adapter
+paths (streaming Model and quarantined managed), with shared group cutters reused.
 Recipe/component bytes remain the lab contracts. Eight immutable producer/
 synthetic vectors preserve their original recipes and groups after the existing
 Z3RP-v2→ZS3R-v1 envelope/child-address translation. Both managed encoder cores
