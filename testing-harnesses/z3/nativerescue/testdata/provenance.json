@@ -1,0 +1,16 @@
+[
+  {
+    "class": "PRODUCER_WORKLOAD",
+    "file": "small.elf",
+    "source": "Q4 controlled rev0/gcc-dwarf5",
+    "bytes": 47480,
+    "sha256": "2da7a184518a2c7e197b4b471af2701ce9cd4f329401f020edeb1f17ba511505"
+  },
+  {
+    "class": "PRODUCER_WORKLOAD",
+    "file": "small.exe",
+    "source": "Q4 controlled rev0/sample.exe",
+    "bytes": 5120,
+    "sha256": "59f519456bbc621f05d5e68463feb473a7707a6b6bc6371170d449a10e895266"
+  }
+]
