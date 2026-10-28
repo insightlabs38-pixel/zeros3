@@ -25,8 +25,8 @@ deployment shape, and persistent-format versions. For usage, start with
   structural history/snapshots/forks, portable snapshot bundles, packed CAS,
   physical tiers, and content-aware placement.
 - **Experimental, default off:** optional structured representations
-  (`zeros3 serve -representations shadow|prefer`) for tar, SQLite, CAR and
-  Merkle-snapshot objects. The ordinary CDC object stays authoritative; see
+  (`zeros3 serve -representations shadow|prefer`) for tar, SQLite, CAR,
+  Merkle snapshots, Git, Gzip/Zstd and Safetensors/GGUF models. The ordinary CDC object stays authoritative; see
   [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 - **Release status:** no stable 1.0 compatibility promise yet. Persistent formats
   are explicitly versioned and fail closed when a binary cannot understand
@@ -117,12 +117,19 @@ understand a required format must refuse the store instead of guessing.
 | 4 | persisted history-prune records |
 | 5 | warm/cold physical tier roots |
 | 6 | optional structured representation roots (`store/representations/roots/`) |
+| 7 | Model kind 8 (Safetensors/GGUF); older format-6 binaries refuse the store |
 
 Level 6 is raised (together with the level-5 tier roots, if the store has none
 yet) immediately before the first representation root is published, and only
 then. Opening a store with a newer binary, or running with
 `-representations` off, shadow or prefer without publishing a root, does not
 change the level. Binaries that predate level 6 refuse a level-6 store at open.
+
+Model publication raises level 7 only after its exact proof and before publishing
+the root, including a Model nested below another kind. A crash may leave level 7
+without a published accelerator. Binaries supporting only level 6 refuse local
+opens and maintenance; compatible servers still accept older wire clients.
+Portable bundles carry ordinary content without optional roots or their floor.
 
 The version never decreases automatically.
 

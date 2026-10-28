@@ -1,0 +1,10 @@
+{
+ "source_commit": "43dfe419",
+ "source_archive_sha256": "6f57c38250992651256505dcdf0494cf3284002d8e97864da8e709c4ed02ab0b",
+ "selection": "all three Model hop vectors; five managed vectors belong to separate A4 tranche",
+ "selected": [
+  "model-hop1",
+  "model-hop2",
+  "model-hop3"
+ ]
+}

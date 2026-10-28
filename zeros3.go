@@ -3634,7 +3634,7 @@ func OpenStore(root string) (*Store, error) {
 }
 
 func supportedStoreFormat(v int) bool {
-	return v >= storeFormatVersion && v <= storeFormatVersionRepresentations
+	return v >= storeFormatVersion && v <= storeFormatVersionSupported
 }
 
 func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
@@ -3645,7 +3645,7 @@ func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
 			return storeFormat{}, fmt.Errorf("store: FORMAT.json is corrupt: %w", err)
 		}
 		if !supportedStoreFormat(format.StoreFormatVersion) {
-			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports versions %d through %d)", format.StoreFormatVersion, storeFormatVersion, storeFormatVersionRepresentations)
+			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports versions %d through %d)", format.StoreFormatVersion, storeFormatVersion, storeFormatVersionSupported)
 		}
 		if format.CDCFormatVersion != cdcFormatVersion {
 			return storeFormat{}, fmt.Errorf("store: unsupported CDC format version %d (this build supports version %d)", format.CDCFormatVersion, cdcFormatVersion)
@@ -22441,6 +22441,7 @@ type repCall struct {
 	path     [][32]byte // ancestors including ID
 	declared map[[32]byte]int64
 	scratch  []byte
+	work     *repDecodeWork // one aggregate budget, shared by derived readers
 }
 
 // loadRep fetches a representation object by digest, verifies the digest and
@@ -22534,8 +22535,16 @@ func (b *repBound) Write(p []byte) (int, error) {
 }
 
 func (e *repEnv) run(id [32]byte, rep *repObject, depth int, path [][32]byte, w io.Writer) error {
+	return e.runWork(id, rep, depth, path, w, newRepDecodeWork(rep.Size))
+}
+
+func (e *repEnv) runWork(id [32]byte, rep *repObject, depth int, path [][32]byte, w io.Writer, work *repDecodeWork) error {
+	if err := work.enter(rep); err != nil {
+		return err
+	}
 	bw := &repBound{w: w, max: rep.Size}
 	c := e.call(id, rep, depth, path, bw)
+	c.work = work
 	var err error
 	if rep.Kind == repKindConcat {
 		err = c.decodeConcat()
@@ -22622,6 +22631,9 @@ func (c *repCall) writeMemberAt(i int, w io.Writer) error {
 }
 
 func (c *repCall) writeMember(m *repMember, w io.Writer) error {
+	if err := c.decodeWork().step(1); err != nil {
+		return err
+	}
 	if m.Role == repDerived {
 		return c.streamDerived(m, w)
 	}
@@ -22638,7 +22650,7 @@ func (c *repCall) streamStored(m *repMember, w io.Writer) error {
 	if size != m.Size {
 		return fmt.Errorf("%w: %x is %d bytes, recipe says %d", errRepMismatch, m.SHA[:6], size, m.Size)
 	}
-	if c.scratch == nil {
+	if c.scratch == nil && size > 0 {
 		c.scratch = make([]byte, 64<<10)
 	}
 	verified := repAlreadyVerified(c.env.Src, m.SHA)
@@ -22687,7 +22699,7 @@ func (c *repCall) streamDerived(m *repMember, w io.Writer) error {
 	if _, err := cw.Write(f.Prefix); err != nil {
 		return err
 	}
-	if err := c.env.run(m.Child, child, c.depth+1, c.path, cw); err != nil {
+	if err := c.env.runWork(m.Child, child, c.depth+1, c.path, cw, c.decodeWork()); err != nil {
 		return fmt.Errorf("child %x: %w", m.Child[:6], err)
 	}
 	for z := f.Zeros; z > 0; {
@@ -23513,6 +23525,9 @@ func unmarshalRepRoot(b []byte) (*repRoot, error) {
 
 const (
 	storeFormatVersionRepresentations = 6
+	storeFormatVersionModel           = 7
+	storeFormatVersionSupported       = storeFormatVersionModel
+	hookRepRootBeforeFormat           = "rep-root-before-format"
 
 	hookRepComponentsStaged  = "rep-components-staged"
 	hookRepComponentsFlushed = "rep-components-flushed"
@@ -23573,11 +23588,19 @@ func (s *Store) ensureRepFormat() error {
 // staged in tmp/, fsynced, renamed and the directories fsynced. A published
 // root is immutable; republishing the same manifest replaces it atomically.
 func (s *Store) publishRepRoot(r *repRoot) error {
+	floor, err := s.repPublicationFloor(r)
+	if err != nil {
+		return err
+	}
+	fireTestHook(hookRepRootBeforeFormat)
 	data, err := r.marshal()
 	if err != nil {
 		return err
 	}
 	if err := s.ensureRepFormat(); err != nil {
+		return err
+	}
+	if err := s.ensureStoreFormat(floor); err != nil {
 		return err
 	}
 	s.rep.mayHaveRoots.Store(true)
@@ -26692,7 +26715,13 @@ func (c *repCall) child(i int) (*repCall, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.env.call(id, rep, c.depth+1, c.path, nil), nil
+	work := c.decodeWork()
+	if err := work.enterMetadata(rep); err != nil {
+		return nil, err
+	}
+	child := c.env.call(id, rep, c.depth+1, c.path, nil)
+	child.work = work
+	return child, nil
 }
 
 // Codec analysis adapts the lab's streaming outputs to production CAS members.
@@ -38931,6 +38960,10 @@ func (repMDmodelDecoder) Decode(c *repCall) error {
 	if err != nil {
 		return err
 	}
+	if err := c.decodeWork().step(int64(len(r.Ops))); err != nil {
+		return err
+	}
+
 	var bufs [3][]byte // residual, base and output chunks, reused by every op
 	for i := range r.Ops {
 		op := &r.Ops[i]
@@ -39180,6 +39213,9 @@ func repMDModelNames(c *repCall) (map[string][2]int64, error) {
 // but not hash-verified on this path (a hash needs a sequential pass); the whole-file path
 // verifies everything.
 func repMDReadModelRange(c *repCall, off, n int64) ([]byte, error) {
+	if c.decodeWork().metadata.Add(int64(len(c.Rep.Recipe))) > 64<<20 {
+		return nil, fmt.Errorf("%w: aggregate range metadata", errRepLimit)
+	}
 	if n > 64<<20 {
 		return nil, errRepLimit
 	}
@@ -39191,6 +39227,13 @@ func repMDReadModelRange(c *repCall, off, n int64) ([]byte, error) {
 	}
 	r, err := repMDparseModelRecipe(c.Rep)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.decodeWork().step(int64(len(r.Ops))); err != nil {
+		return nil, err
+	}
+
+	if err := c.decodeWork().reserveBytes(n); err != nil {
 		return nil, err
 	}
 	out := make([]byte, 0, n)
@@ -39569,4 +39612,94 @@ func (b *repBuilder) encodeModel(src io.ReaderAt, size int64) (*repObject, error
 		out.Indexes = []repIndex{{KeyWidth: 32, Count: count, Ref: id, Owns: true}}
 	}
 	return out, nil
+}
+
+// Aggregate replay bounds are independent of emitted size: repeated empty
+// children must not evade depth/output limits. Atomics cover Model pipe readers.
+// Each call owns a budget; repEnv remains safe for independent reconstructions.
+type repDecodeWork struct {
+	steps, metadata, bytes atomic.Int64
+	maxBytes               int64
+}
+
+func newRepDecodeWork(size int64) *repDecodeWork {
+	// Saturate instead of wrapping for a structurally valid enormous declaration.
+	limit := int64(math.MaxInt64)
+	if size <= (math.MaxInt64-(64<<20))/16 {
+		limit = size*16 + (64 << 20)
+	}
+	return &repDecodeWork{maxBytes: limit}
+}
+func (w *repDecodeWork) step(n int64) error {
+	if n < 0 || w.steps.Add(n) > 1<<20 {
+		return fmt.Errorf("%w: aggregate decoder steps", errRepLimit)
+	}
+	return nil
+}
+func (w *repDecodeWork) enter(r *repObject) error {
+	if err := w.enterMetadata(r); err != nil {
+		return err
+	}
+	return w.reserveBytes(r.Size)
+}
+func (w *repDecodeWork) enterMetadata(r *repObject) error {
+	if err := w.step(1); err != nil {
+		return err
+	}
+	n := int64(len(r.Recipe)) + int64(len(r.Members))*64 + int64(len(r.Indexes))*64
+	if w.metadata.Add(n) > 64<<20 {
+		return fmt.Errorf("%w: aggregate decoder metadata", errRepLimit)
+	}
+	return nil
+}
+func (w *repDecodeWork) reserveBytes(n int64) error {
+	// CAS reservation avoids overflow even for a MaxInt64 declaration.
+	for {
+		old := w.bytes.Load()
+		if n < 0 || n > w.maxBytes-old {
+			return fmt.Errorf("%w: aggregate decoded bytes", errRepLimit)
+		}
+		if w.bytes.CompareAndSwap(old, old+n) {
+			return nil
+		}
+	}
+}
+
+func (c *repCall) decodeWork() *repDecodeWork {
+	if c.work == nil {
+		c.work = newRepDecodeWork(c.Rep.Size)
+	}
+	return c.work
+}
+
+// Publication inspects every derived kind before the durable capability floor.
+func (s *Store) repPublicationFloor(r *repRoot) (int, error) {
+	src := s.newRepSource(r.Descs, nil)
+	defer src.close()
+	env := &repEnv{Src: src, Limits: repProdLimits}
+	reach, err := env.reachable(r.Rep)
+	if err != nil {
+		return 0, err
+	}
+	floor := storeFormatVersionRepresentations
+	for id, role := range reach.Role {
+		if role != repDepRep {
+			continue
+		}
+		obj, err := env.loadRep(id)
+		if err != nil {
+			return 0, err
+		}
+		switch obj.Kind {
+		case repKindConcat, repKindCAR, repKindSQLite, repKindGit, repKindMerkle, repKindGzip, repKindZstd:
+		case repKindModel:
+			floor = max(floor, storeFormatVersionModel)
+		default:
+			return 0, fmt.Errorf("%w: capability kind %d", errRepUnsupported, obj.Kind)
+		}
+	}
+	if floor > storeFormatVersionSupported {
+		return 0, fmt.Errorf("%w: required capability floor %d", errRepUnsupported, floor)
+	}
+	return floor, nil
 }

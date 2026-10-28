@@ -243,6 +243,19 @@ understood by every maintenance command (verify, gc, compact, repack, tier,
 history prune), they are just not created or read. Binaries that predate format 6
 refuse such a store at open.
 
+Model (Safetensors/GGUF) publication raises format **7**, including a Model child
+under another representation. Format-6 binaries refuse these stores even when
+creation is switched off. Retirement does not lower the floor. Old sync/replicate
+clients can use a compatible server; full/delta portable bundles omit optional
+roots and import without inheriting the source capability floor.
+
+Model analysis bounds metadata, candidate bases, tensor counts and inspection
+work, uses 256 KiB residual windows and at most three tensor hops, and falls back
+to CDC for unsupported inputs or failed proof. Reconstruction shares an aggregate
+budget across derived readers: 1,048,576 steps, 64 MiB of recipe/member metadata,
+and at most 16 times the root length plus 64 MiB of decoded intermediate bytes.
+Range reads charge their actual window, not the whole referenced tensor.
+
 A newer binary can open supported older store levels. A feature that requires a
 newer reader raises the store format before publishing state that the old
 reader could misinterpret.

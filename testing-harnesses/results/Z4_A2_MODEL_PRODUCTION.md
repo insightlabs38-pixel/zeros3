@@ -20,3 +20,18 @@ Pending: controlled aggregate-replay reproduction/defense; malformed recipe and
 metadata tests; bounded residual/hop checks; source-prune/base-liveness lifecycle;
 actual old/new operation/crash matrix; independent-family exact full/range reads;
 separate analysis/proof/decode/RSS including retained 1 GiB behavior; final review.
+
+Second checkpoint: floor seven is active in the clean candidate; actual old/new
+operation, snapshot, portable bundle and five SIGKILL matrices passed. Model
+frozen hop vectors, five-revision lifecycle, GGUF/fallback and source-prune/GC/
+repack liveness pass. Retained 1 GiB control: 75.27 MiB peak heap growth, 10.968 s
+analysis+proof (combined test timing, not isolated throughput).
+
+A small repeated empty-output DAG exhausted the test safety ceiling after
+600,001 reads under the original decoder; no existing production limit fired.
+The preserved failing case now returns errRepLimit after about 209,441 reads.
+Aggregate steps/metadata/intermediate bytes are shared across nested pipe readers;
+size reservations cannot overflow. Empty components still verify presence/SHA.
+A range-accounting correction charges actual windows rather than whole tensor
+sizes; a 16 MiB tensor/window-loop regression passes. Full root suite is pending;
+final latency/fuzz/race/integration review remain gates, not completion claims.
