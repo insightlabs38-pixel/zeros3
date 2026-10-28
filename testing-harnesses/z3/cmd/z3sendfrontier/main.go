@@ -14,6 +14,7 @@ import (
 	"zeros3-z3/repz3"
 	"zeros3-z3/repz3/kinds"
 	"zeros3-z3/scientificz3"
+	"zeros3-z3/sendz3"
 )
 
 type input struct {
@@ -117,7 +118,7 @@ func main() {
 		var baseline []int
 		variants := []string{"source-cdc-prod", "source-cdc-4k"}
 		if len(in.Resources) != 0 {
-			variants = append(variants, "native-record-oracle", "native-payload-oracle")
+			variants = append(variants, "native-record-oracle", "native-payload-oracle", "strict-legacy-payload")
 		}
 		for _, v := range variants {
 			key := in.Family + "/" + v
@@ -146,6 +147,8 @@ func main() {
 					b, e = scaled(data, 4<<10)
 				case "native-record-oracle":
 					b, e = native(data, in.Resources)
+				case "strict-legacy-payload":
+					b, e = sendz3.Encode(data)
 				case "native-payload-oracle":
 					b, e = native(data, in.Chunks)
 				default:

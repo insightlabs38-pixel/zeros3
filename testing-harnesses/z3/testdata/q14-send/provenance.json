@@ -1,0 +1,13 @@
+{
+ "executed_producer_sha256": "57d8d04091fd322b0153d5fab9a6035d3ebad80e4ad285a108fff34d4353a601",
+ "portable_reproducer_sha256": "326b76dc6ed87654bc4031da746a601fb0edd3afe3fe1c6a5da664c6c9d07e91",
+ "scope": "Portable reproducer adds cache-prefix substitution, directory setup and daemon liveness check; native data construction unchanged. Tiny fixture construction archived separately.",
+ "go": "go1.27.3 linux/amd64",
+ "fuzz": {
+  "executions": 198770,
+  "seconds": 21.016,
+  "status": "PASS"
+ },
+ "full_lab_test": "PASS",
+ "full_lab_vet": "PASS"
+}

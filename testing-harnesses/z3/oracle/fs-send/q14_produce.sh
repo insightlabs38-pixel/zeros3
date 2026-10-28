@@ -4,6 +4,8 @@
 set -eu
 export Q14_CACHE=${Q14_CACHE:-/workspace/work}
 export LD_LIBRARY_PATH=${Q14_CACHE}/q13-tools/lib/x86_64-linux-gnu:${Q14_CACHE}/q13-tools/usr/lib/x86_64-linux-gnu
+test "$(id -u)" = 0
+mkdir -p "${Q14_CACHE}/q14-probe/run/lock/zfs" "${Q14_CACHE}/q14-probe/mnt"
 mount --make-rprivate /
 mount --bind ${Q14_CACHE}/q14-probe/run /run
 ${Q14_CACHE}/q14-tools/sbin/zfs-fuse --no-daemon --no-kstat-mount --max-arc-size 64 --zfs-prefetch-disable --pidfile /run/q14.pid > ${Q14_CACHE}/q14-probe/daemon.log 2>&1 &
