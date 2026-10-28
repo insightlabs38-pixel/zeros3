@@ -60,3 +60,17 @@ matrices and SHA provenance in testdata/q5-native. Continue Q6 admission planner
 after eligible research merge. Do not restart Q1-Q6.
 All later queue entries remain unfinished. No research promotions/kills yet.
 No new production number ≥8, wire/store version, default or planner decision merged.
+
+## Current durable cursor
+Q8 merged PR #79, 4390079. Q9 preserved as blocked draft PR #80, head 218ad72;
+managed creation remains disabled for whole-file memory debt. Do not restart Q9.
+Q10 active draft PR #81, first checkpoint ddd43d5; native 1 GiB full proof passes,
+9 lab roots match exactly, strict fallbacks and range amplification recorded.
+Finish Q10 gates/report, keep draft unmerged, then Q11 from latest origin/main.
+Q11-Q16 remain unfinished; no second worker and no pause at reminder boundaries.
+
+Q10 complete as bounded draft PR #81: 9 exact lab identities,162 production
+proofs/fallbacks, native1GiB89.3MiBRSS, explicit cold-range amplification.
+EmbeddedZstd/prefix expansion guarded; compatibility54/bundles24/kinds32/
+crash24/rollback23 and full321.583s pass. No draft kinds merged.
+Next Q11 XZ/package Stage A; Q11-Q16 remain unfinished. Do not restart Q9/Q10.
