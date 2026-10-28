@@ -1,0 +1,48 @@
+[
+  {
+    "url": "https://deb.debian.org/debian-debug/pool/main/h/hello/hello-dbgsym_2.10-5_amd64.deb",
+    "file": "hello-dbgsym_2.10-5_amd64.deb",
+    "sha256": "ff8e079d7590228f86fc1c73de8f87a1c0392fff53df51f4d40599f4d2a17a1e",
+    "bytes": 36188,
+    "class": "REAL",
+    "artifacts": [
+      {
+        "file": "usr/lib/debug/.build-id/63/35e3c3c4625b4629b32f23399badeddf2cd413.debug",
+        "sha256": "306fa0d28fc9db99f80c8452db3c04ec8f31d8bed59b4010f8c444ba8857793c",
+        "bytes": 51312
+      }
+    ]
+  },
+  {
+    "url": "https://deb.debian.org/debian-debug/pool/main/h/hello/hello-dbgsym_2.12.3-1_amd64.deb",
+    "file": "hello-dbgsym_2.12.3-1_amd64.deb",
+    "sha256": "5a7183acaa89b6bd9b6ccf7004b6d53fde60d902306f0a44c692ab2100e834c9",
+    "bytes": 69636,
+    "class": "REAL",
+    "artifacts": [
+      {
+        "file": "usr/lib/debug/.build-id/72/a2bdf433aa8e1c8d53bc45579fcf99a2e384f3.debug",
+        "sha256": "f1b8568f16c49b11f306370d5e4fe3a1a421a7ca73b135347b0ad5ecd861caea",
+        "bytes": 90128
+      }
+    ]
+  },
+  {
+    "class": "REAL",
+    "url": "https://www.nuget.org/api/v2/symbolpackage/Newtonsoft.Json/13.0.2",
+    "archive_sha256": "4326672c56f2b066cf0d3fab73203d10993745d04e56b4fa6dad6c37354f0339",
+    "member": "lib/net6.0/Newtonsoft.Json.pdb",
+    "file": "newtonsoft-13.0.2.pdb",
+    "sha256": "229ce2a6c0639080d5e6807c16bd2c4d8c7e616f1afdce256b723325d08333fb",
+    "bytes": 272492
+  },
+  {
+    "class": "REAL",
+    "url": "https://www.nuget.org/api/v2/symbolpackage/Newtonsoft.Json/13.0.3",
+    "archive_sha256": "ce64180876a15cea73e35fe90592c4c5a04f8d370c2a4d5b3d2d9bd600d6e426",
+    "member": "lib/net6.0/Newtonsoft.Json.pdb",
+    "file": "newtonsoft-13.0.3.pdb",
+    "sha256": "71ca768506d094123cab3f401a6f818e08d216da4999f03b0e8ef3d4a9d462b8",
+    "bytes": 272648
+  }
+]

@@ -1,0 +1,704 @@
+{
+  "versions": {
+    "gcc": "gcc (Debian 14.2.0-19) 14.2.0",
+    "clang": "Debian clang version 19.1.7 (3+b1)",
+    "lld-link": "Debian LLD 19.1.7",
+    "dotnet": "8.0.427"
+  },
+  "commands": [
+    [
+      "/usr/bin/gcc",
+      "-g",
+      "-gdwarf-4",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "gcc-dwarf4"
+    ],
+    [
+      "/usr/bin/gcc",
+      "-g",
+      "-gdwarf-5",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "gcc-dwarf5"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "-g",
+      "-gdwarf-5",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "clang-dwarf5"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "--target=x86_64-pc-windows-msvc",
+      "-g",
+      "-gcodeview",
+      "-O1",
+      "-fdebug-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "-c",
+      "sample.c",
+      "-o",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/lld-link-19",
+      "/debug",
+      "/entry:main",
+      "/subsystem:console",
+      "/nodefaultlib",
+      "/Brepro",
+      "/pdbsourcepath:/src",
+      "/pdb:sample.pdb",
+      "/out:sample.exe",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/dotnet/dotnet",
+      "build",
+      "Sample.csproj",
+      "--nologo",
+      "--no-incremental"
+    ],
+    [
+      "/usr/bin/gcc",
+      "-g",
+      "-gdwarf-4",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "gcc-dwarf4"
+    ],
+    [
+      "/usr/bin/gcc",
+      "-g",
+      "-gdwarf-5",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "gcc-dwarf5"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "-g",
+      "-gdwarf-5",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "clang-dwarf5"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "--target=x86_64-pc-windows-msvc",
+      "-g",
+      "-gcodeview",
+      "-O1",
+      "-fdebug-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "-c",
+      "sample.c",
+      "-o",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/lld-link-19",
+      "/debug",
+      "/entry:main",
+      "/subsystem:console",
+      "/nodefaultlib",
+      "/Brepro",
+      "/pdbsourcepath:/src",
+      "/pdb:sample.pdb",
+      "/out:sample.exe",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/dotnet/dotnet",
+      "build",
+      "Sample.csproj",
+      "--nologo",
+      "--no-incremental"
+    ],
+    [
+      "/usr/bin/gcc",
+      "-g",
+      "-gdwarf-4",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "gcc-dwarf4"
+    ],
+    [
+      "/usr/bin/gcc",
+      "-g",
+      "-gdwarf-5",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "gcc-dwarf5"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "-g",
+      "-gdwarf-5",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "clang-dwarf5"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "--target=x86_64-pc-windows-msvc",
+      "-g",
+      "-gcodeview",
+      "-O1",
+      "-fdebug-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "-c",
+      "sample.c",
+      "-o",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/lld-link-19",
+      "/debug",
+      "/entry:main",
+      "/subsystem:console",
+      "/nodefaultlib",
+      "/Brepro",
+      "/pdbsourcepath:/src",
+      "/pdb:sample.pdb",
+      "/out:sample.exe",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/dotnet/dotnet",
+      "build",
+      "Sample.csproj",
+      "--nologo",
+      "--no-incremental"
+    ],
+    [
+      "/usr/bin/gcc",
+      "-g",
+      "-gdwarf-4",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "gcc-dwarf4"
+    ],
+    [
+      "/usr/bin/gcc",
+      "-g",
+      "-gdwarf-5",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "gcc-dwarf5"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "-g",
+      "-gdwarf-5",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "clang-dwarf5"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "--target=x86_64-pc-windows-msvc",
+      "-g",
+      "-gcodeview",
+      "-O1",
+      "-fdebug-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "-c",
+      "sample.c",
+      "-o",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/lld-link-19",
+      "/debug",
+      "/entry:main",
+      "/subsystem:console",
+      "/nodefaultlib",
+      "/Brepro",
+      "/pdbsourcepath:/src",
+      "/pdb:sample.pdb",
+      "/out:sample.exe",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/dotnet/dotnet",
+      "build",
+      "Sample.csproj",
+      "--nologo",
+      "--no-incremental"
+    ],
+    [
+      "/usr/bin/gcc",
+      "-g",
+      "-gdwarf-4",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "gcc-dwarf4"
+    ],
+    [
+      "/usr/bin/gcc",
+      "-g",
+      "-gdwarf-5",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "gcc-dwarf5"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "-g",
+      "-gdwarf-5",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-ffile-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "sample.c",
+      "-o",
+      "clang-dwarf5"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "--target=x86_64-pc-windows-msvc",
+      "-g",
+      "-gcodeview",
+      "-O1",
+      "-fdebug-prefix-map=/workspace/work/q4/controlled/build=/src",
+      "-c",
+      "sample.c",
+      "-o",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/lld-link-19",
+      "/debug",
+      "/entry:main",
+      "/subsystem:console",
+      "/nodefaultlib",
+      "/Brepro",
+      "/pdbsourcepath:/src",
+      "/pdb:sample.pdb",
+      "/out:sample.exe",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/dotnet/dotnet",
+      "build",
+      "Sample.csproj",
+      "--nologo",
+      "--no-incremental"
+    ]
+  ],
+  "files": [
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 0,
+      "file": "rev0/Sample.cs",
+      "bytes": 14234,
+      "sha256": "f6e90e2bc1f3ec6fcac68faf096d3a09f613a570b3085646f0fa80738a02544e"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 0,
+      "file": "rev0/Sample.csproj",
+      "bytes": 272,
+      "sha256": "86751fc013ef340c8fc0986bfe15d72267194a21d2821c0f12c5ece6f455b1c3"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 0,
+      "file": "rev0/clang-dwarf5",
+      "bytes": 42240,
+      "sha256": "f4f00e9f11f870570079c5f991d5434c8346f7807c1e490e215366b8b5e555fa"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 0,
+      "file": "rev0/gcc-dwarf4",
+      "bytes": 53624,
+      "sha256": "10c512fd2d029613d1311b2595f8fd62a772d9409f8781c173b10523a1cc4371"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 0,
+      "file": "rev0/gcc-dwarf5",
+      "bytes": 47480,
+      "sha256": "2da7a184518a2c7e197b4b471af2701ce9cd4f329401f020edeb1f17ba511505"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 0,
+      "file": "rev0/portable.dll",
+      "bytes": 15360,
+      "sha256": "425a175ee650029c128cceaf4a9c31a610941fa92a1339221637222beecafd7b"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 0,
+      "file": "rev0/portable.pdb",
+      "bytes": 21136,
+      "sha256": "9176af8a6edd372875cd8cc263bfaf2b66f58b1f28874d27df24cbd78649dd3a"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 0,
+      "file": "rev0/sample.c",
+      "bytes": 11615,
+      "sha256": "b99b0d079d094a172585057bd0fd4ffcfaf67e8fad606ab7e69b35da8345fb89"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 0,
+      "file": "rev0/sample.exe",
+      "bytes": 5120,
+      "sha256": "59f519456bbc621f05d5e68463feb473a7707a6b6bc6371170d449a10e895266"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 0,
+      "file": "rev0/sample.pdb",
+      "bytes": 118784,
+      "sha256": "90bab240b9f8d3aeb41b8e2488a23bb365cadf524e2cfd5ed2fa2f7e3032da4a"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 1,
+      "file": "rev1/Sample.cs",
+      "bytes": 14234,
+      "sha256": "d7203f296d59af08304054714a3fa85ff50a7c6ab0dbe2da82312ee66f340e82"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 1,
+      "file": "rev1/Sample.csproj",
+      "bytes": 272,
+      "sha256": "86751fc013ef340c8fc0986bfe15d72267194a21d2821c0f12c5ece6f455b1c3"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 1,
+      "file": "rev1/clang-dwarf5",
+      "bytes": 42240,
+      "sha256": "3bfe2e7e27b4939ada0238a1a856038b3570af7e6334f88f4ef18b79ac8064e6"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 1,
+      "file": "rev1/gcc-dwarf4",
+      "bytes": 53624,
+      "sha256": "c6df8f4b5189ff2cd477055d6d6108896b782c350c431a3433c17ad8fd27c593"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 1,
+      "file": "rev1/gcc-dwarf5",
+      "bytes": 47480,
+      "sha256": "3e700840c581f4633666995573d1b6e70db8b21776fbd44f3864cf416eb2932e"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 1,
+      "file": "rev1/portable.dll",
+      "bytes": 15360,
+      "sha256": "62f68ec22e235ea5d4193d305c6721cd9883ee6bbca7b379add6af3deffa6c1d"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 1,
+      "file": "rev1/portable.pdb",
+      "bytes": 21136,
+      "sha256": "6329eccf5ad78a6c5d437560b29a23934b86bbea40626852ea9ca19e7980417c"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 1,
+      "file": "rev1/sample.c",
+      "bytes": 11615,
+      "sha256": "0e5eedfdabfbce3c2c611c93e62a8eb150dc88e4feccc32628e34b862b5cf961"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 1,
+      "file": "rev1/sample.exe",
+      "bytes": 5120,
+      "sha256": "25d76c6833b498cf1f30aed98e4d36c43b16bec24fc62a35b87c01657b6e8318"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 1,
+      "file": "rev1/sample.pdb",
+      "bytes": 118784,
+      "sha256": "2e3300d8acd0dbebf19e43b8b5c1eea468c820b282aee50f347fdaf6d7d3f7de"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 2,
+      "file": "rev2/Sample.cs",
+      "bytes": 14234,
+      "sha256": "28972fe6ca22561bbdb6aaf4e12eecbcc85f292e47da4a0a8cd077d714d0ead3"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 2,
+      "file": "rev2/Sample.csproj",
+      "bytes": 272,
+      "sha256": "86751fc013ef340c8fc0986bfe15d72267194a21d2821c0f12c5ece6f455b1c3"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 2,
+      "file": "rev2/clang-dwarf5",
+      "bytes": 42240,
+      "sha256": "0a9c6a7980d53ea63cf1487831cf5d7156ac774ca668e0f24be163d78947f884"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 2,
+      "file": "rev2/gcc-dwarf4",
+      "bytes": 53624,
+      "sha256": "08d885ece84aed6ca712c379fcbf0c1359eac744b85eefdf215f93d0aefca66b"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 2,
+      "file": "rev2/gcc-dwarf5",
+      "bytes": 47480,
+      "sha256": "aff3435f24d9ece22cdabee03d4ac65c2900f4ad9dc209832f6b72bed70b5cad"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 2,
+      "file": "rev2/portable.dll",
+      "bytes": 15360,
+      "sha256": "824192a6fed4fe3e3c7d66c0b18c251320f51911a41a887e75cc8f2dd88d9459"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 2,
+      "file": "rev2/portable.pdb",
+      "bytes": 21136,
+      "sha256": "3d55735813e0c588dfa46c469bbe360d138190217a33f75d93e668b802842b77"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 2,
+      "file": "rev2/sample.c",
+      "bytes": 11615,
+      "sha256": "fc2b202b1cb3395f4dfb18c5b8f468e65d0ef085fe92b0ca26c9484d218e0587"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 2,
+      "file": "rev2/sample.exe",
+      "bytes": 5120,
+      "sha256": "ebafb2e5677ef4c26ac5086d00a8e09a8a95d3e8168afc6c850d7d49cd07c2c0"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 2,
+      "file": "rev2/sample.pdb",
+      "bytes": 118784,
+      "sha256": "16e8dfb3584c61b2e12ce665ba310955de46f260a14936a7bd1928230743c66b"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 3,
+      "file": "rev3/Sample.cs",
+      "bytes": 14279,
+      "sha256": "6f6465b74a2b2909e1f3a484efd35b6b746428c8b24521b24bbd78f5ac462aa5"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 3,
+      "file": "rev3/Sample.csproj",
+      "bytes": 272,
+      "sha256": "86751fc013ef340c8fc0986bfe15d72267194a21d2821c0f12c5ece6f455b1c3"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 3,
+      "file": "rev3/clang-dwarf5",
+      "bytes": 42336,
+      "sha256": "84a3ea4992e31ec2fcda435986075e32be687fc9b4878bb6e7a855436e71f7e0"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 3,
+      "file": "rev3/gcc-dwarf4",
+      "bytes": 53728,
+      "sha256": "518f0fa895bced47a995efcb22f58346ffb818f9ac27cc2614ababa1ccca26b4"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 3,
+      "file": "rev3/gcc-dwarf5",
+      "bytes": 47592,
+      "sha256": "1018fe9f199325f20d7c0ceb70aac2056a073b512f506553be2b711900dc52ca"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 3,
+      "file": "rev3/portable.dll",
+      "bytes": 15872,
+      "sha256": "59a61e67fe617fa9a61201060b31636276d17ed3b33e6ba896f4898f0309b8f6"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 3,
+      "file": "rev3/portable.pdb",
+      "bytes": 21164,
+      "sha256": "4663be37536d0050948e3c13d038a2c8b34d72fd1450f2417d0f8b44e28c3643"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 3,
+      "file": "rev3/sample.c",
+      "bytes": 11655,
+      "sha256": "3a36368a71a6bc13655b91b39883b58659f155d51716be2319477a2c9761cf59"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 3,
+      "file": "rev3/sample.exe",
+      "bytes": 5120,
+      "sha256": "fc53b2b8daf35bb324e834d70fd73c97e357b0eb73cea13c6864cfbb67691243"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 3,
+      "file": "rev3/sample.pdb",
+      "bytes": 118784,
+      "sha256": "1a84923f315470fe9b244b739c3b99a1a6354aa14416cd0181b776ecb35d56fc"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 4,
+      "file": "rev4/Sample.cs",
+      "bytes": 14293,
+      "sha256": "7ab080570cfb3bc69c0a390f84414b643083e3c2e3a7ec9cf4c7adc4374d7f06"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 4,
+      "file": "rev4/Sample.csproj",
+      "bytes": 272,
+      "sha256": "86751fc013ef340c8fc0986bfe15d72267194a21d2821c0f12c5ece6f455b1c3"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 4,
+      "file": "rev4/clang-dwarf5",
+      "bytes": 42336,
+      "sha256": "84a3ea4992e31ec2fcda435986075e32be687fc9b4878bb6e7a855436e71f7e0"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 4,
+      "file": "rev4/gcc-dwarf4",
+      "bytes": 53728,
+      "sha256": "518f0fa895bced47a995efcb22f58346ffb818f9ac27cc2614ababa1ccca26b4"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 4,
+      "file": "rev4/gcc-dwarf5",
+      "bytes": 47592,
+      "sha256": "1018fe9f199325f20d7c0ceb70aac2056a073b512f506553be2b711900dc52ca"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 4,
+      "file": "rev4/portable.dll",
+      "bytes": 15872,
+      "sha256": "c0bdb51c14a27700ce9297567f2853fc33004314b51db3e985c627a0cce5e9eb"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 4,
+      "file": "rev4/portable.pdb",
+      "bytes": 21168,
+      "sha256": "a0cc7e9957ad2ef3702faf8f924c84c158074d28a119176f2d41d09ac769e0cd"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 4,
+      "file": "rev4/sample.c",
+      "bytes": 11655,
+      "sha256": "3a36368a71a6bc13655b91b39883b58659f155d51716be2319477a2c9761cf59"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 4,
+      "file": "rev4/sample.exe",
+      "bytes": 5120,
+      "sha256": "fc53b2b8daf35bb324e834d70fd73c97e357b0eb73cea13c6864cfbb67691243"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "revision": 4,
+      "file": "rev4/sample.pdb",
+      "bytes": 118784,
+      "sha256": "1a84923f315470fe9b244b739c3b99a1a6354aa14416cd0181b776ecb35d56fc"
+    }
+  ],
+  "edits": [
+    "baseline",
+    "one numeric body edit",
+    "second body edit",
+    "early method/function insertion",
+    "early type insertion"
+  ]
+}
