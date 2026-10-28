@@ -88,3 +88,10 @@ Independent18 native-readable references; no real-history promotion evidence.
 Broad legacy kinds race default600s timeout retained; changed-surface races pass.
 Next Q13 WIM/ESD characterization. Q13-Q16 and useful expansion remain unfinished.
 Draft80/81 helper/LOC accounting corrected (docs only); both stay unmerged.
+
+Q12 merged PR #83,b0fd4fc: scientific profiles remain DEFER; production unchanged.
+Q13 closed DEFER:33 state files(30 distinct),165 rows,733 serialized proofs,
+297 cold ranges. Opaque XPRESS/LZX chunks near tested file-data floor; solid
+reexport gap lacks real-history/decision-cost evidence. Native append already
+shares resources; integrity excludes current XML/header, preserved by whole SHA.
+Full/vet gates pass. Next Q14 FS-send; Q14-Q16/eligible expansion remain unfinished.

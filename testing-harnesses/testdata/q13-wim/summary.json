@@ -1,0 +1,156 @@
+{
+ "none": {
+  "source-cdc-prod": {
+   "Cumulative": 4352920,
+   "Additive": 4352920
+  },
+  "native-resource-oracle": {
+   "Cumulative": 4624240,
+   "Additive": 8977160
+  },
+  "native-chunk-oracle": {
+   "Cumulative": 4624240,
+   "Additive": 8977160
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 4025764,
+   "Additive": null
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 4209357,
+   "Additive": null
+  }
+ },
+ "xpress": {
+  "source-cdc-prod": {
+   "Cumulative": 5007256,
+   "Additive": 5007256
+  },
+  "native-resource-oracle": {
+   "Cumulative": 4673172,
+   "Additive": 9680428
+  },
+  "native-chunk-oracle": {
+   "Cumulative": 4227804,
+   "Additive": 9235060
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 4025764,
+   "Additive": null
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 4209357,
+   "Additive": null
+  }
+ },
+ "lzx": {
+  "source-cdc-prod": {
+   "Cumulative": 4679615,
+   "Additive": 4679615
+  },
+  "native-resource-oracle": {
+   "Cumulative": 4340959,
+   "Additive": 9020574
+  },
+  "native-chunk-oracle": {
+   "Cumulative": 3909513,
+   "Additive": 8589128
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 4025764,
+   "Additive": null
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 4209357,
+   "Additive": null
+  }
+ },
+ "solid-lzms": {
+  "source-cdc-prod": {
+   "Cumulative": 10165498,
+   "Additive": 10165498
+  },
+  "native-resource-oracle": {
+   "Cumulative": 10633596,
+   "Additive": 20799094
+  },
+  "native-chunk-oracle": {
+   "Cumulative": 10633574,
+   "Additive": 20799072
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 4025764,
+   "Additive": null
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 4209357,
+   "Additive": null
+  }
+ },
+ "multi-none": {
+  "source-cdc-prod": {
+   "Cumulative": 4067282,
+   "Additive": 4067282
+  },
+  "native-resource-oracle": {
+   "Cumulative": 4619390,
+   "Additive": 8686672
+  },
+  "native-chunk-oracle": {
+   "Cumulative": 4619390,
+   "Additive": 8686672
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 4025764,
+   "Additive": null
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 4209357,
+   "Additive": null
+  }
+ },
+ "multi-lzx": {
+  "source-cdc-prod": {
+   "Cumulative": 4481942,
+   "Additive": 4481942
+  },
+  "native-resource-oracle": {
+   "Cumulative": 4270682,
+   "Additive": 8752624
+  },
+  "native-chunk-oracle": {
+   "Cumulative": 4313076,
+   "Additive": 8795018
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 4025764,
+   "Additive": null
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 4209357,
+   "Additive": null
+  }
+ },
+ "multi-solid-lzms": {
+  "source-cdc-prod": {
+   "Cumulative": 4058690,
+   "Additive": 4058690
+  },
+  "native-resource-oracle": {
+   "Cumulative": 3831343,
+   "Additive": 7890033
+  },
+  "native-chunk-oracle": {
+   "Cumulative": 3832061,
+   "Additive": 7890751
+  },
+  "logical-cdc-prod": {
+   "Cumulative": 4025764,
+   "Additive": null
+  },
+  "logical-cdc-4k": {
+   "Cumulative": 4209357,
+   "Additive": null
+  }
+ }
+}
