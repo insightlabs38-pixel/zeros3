@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 	"zeros3-z3/admission"
 	"zeros3-z3/lab"
 	"zeros3-z3/repz3"
 	"zeros3-z3/repz3/kinds"
+	"zeros3-z3/scientificz3"
 )
 
 type input struct {
@@ -27,6 +29,8 @@ type row struct {
 	OuterExact                                         bool
 	InteriorProofs                                     []string
 	Objects                                            int
+	Fallback                                           string
+	Detail                                             scientificz3.Stats
 }
 type policy struct {
 	seen map[int]bool
@@ -103,14 +107,14 @@ func main() {
 	enc := json.NewEncoder(os.Stdout)
 	for _, in := range ins {
 		source := read(in.Path, in.SHA256)
-		for _, v := range []string{"source-cdc-prod", "native-span-oracle", "logical-cdc-prod", "logical-cdc-4k"} {
+		for _, v := range []string{"source-cdc-prod", "native-span-oracle", "logical-cdc-prod", "logical-cdc-4k", "native-fine-exact", "planes-codec-exact"} {
 			key := in.Family + "/" + v
 			st := states[key]
 			if st == nil {
 				st = &policy{seen: map[int]bool{}}
 				states[key] = st
 			}
-			out := row{Family: in.Family, File: in.Stage, Class: in.Class_, Variant: v, SHA: in.SHA256, SourceBytes: int64(len(source)), OuterExact: v == "source-cdc-prod" || v == "native-span-oracle"}
+			out := row{Family: in.Family, File: in.Stage, Class: in.Class_, Variant: v, SHA: in.SHA256, SourceBytes: int64(len(source)), OuterExact: v == "source-cdc-prod" || v == "native-span-oracle" || v == "native-fine-exact" || v == "planes-codec-exact"}
 			before := st.cost
 			var datas [][]byte
 			if out.OuterExact {
@@ -130,6 +134,19 @@ func main() {
 					b, e = scaled(data, 4<<10)
 				case "native-span-oracle":
 					b, e = native(data, in.Spans)
+				case "native-fine-exact", "planes-codec-exact":
+					if strings.HasPrefix(in.Family, "hdf5") {
+						b, out.Detail, e = scientificz3.EncodeHDF5(data, v == "planes-codec-exact")
+					} else if strings.HasPrefix(in.Family, "arrow") {
+						b, out.Detail, e = scientificz3.EncodeArrow(data, v == "planes-codec-exact")
+					} else {
+						e = scientificz3.ErrUnsupported
+					}
+					if e != nil {
+						out.Fallback = e.Error()
+						b, e = admission.CDC(data)
+					}
+
 				}
 				must(e)
 				c.Case = in.Family

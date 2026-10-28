@@ -1,0 +1,149 @@
+{
+ "producer": {
+  "h5py": "3.15.1",
+  "hdf5": "1.14.6",
+  "pyarrow": "18.1.0"
+ },
+ "fixtures": [
+  {
+   "file": "hdf5-raw.h5",
+   "format": "hdf5",
+   "supported": true,
+   "sha256": "c414551f3368ec4a298a611502cb74bb72f576f0ca65c7abf11802639885e691",
+   "bytes": 18432,
+   "spans": [
+    [
+     2048,
+     4096
+    ],
+    [
+     6144,
+     4096
+    ],
+    [
+     10240,
+     4096
+    ],
+    [
+     14336,
+     4096
+    ]
+   ]
+  },
+  {
+   "file": "hdf5-gzip.h5",
+   "format": "hdf5",
+   "supported": true,
+   "sha256": "8392dfd86ae04bb58e4114cd396ff7e3c4f6a577d3811ba249973b2d2f284a7d",
+   "bytes": 5301,
+   "spans": [
+    [
+     2048,
+     814
+    ],
+    [
+     2862,
+     813
+    ],
+    [
+     3675,
+     813
+    ],
+    [
+     4488,
+     813
+    ]
+   ]
+  },
+  {
+   "file": "hdf5-unlimited.h5",
+   "format": "hdf5",
+   "supported": false,
+   "sha256": "bb7e95852ee0292a6f0ce0b784ec6336dd261bd4bb9ca23a6518aa72774ca1b0",
+   "bytes": 5301,
+   "spans": [
+    [
+     2048,
+     814
+    ],
+    [
+     2862,
+     813
+    ],
+    [
+     3675,
+     813
+    ],
+    [
+     4488,
+     813
+    ]
+   ]
+  },
+  {
+   "file": "hdf5-legacy.h5",
+   "format": "hdf5",
+   "supported": false,
+   "sha256": "d4a1e131416bc3792cf4f72699642cf01577d1a45b6e512b2e73ce14515c00e9",
+   "bytes": 20400,
+   "spans": [
+    [
+     4016,
+     4096
+    ],
+    [
+     8112,
+     4096
+    ],
+    [
+     12208,
+     4096
+    ],
+    [
+     16304,
+     4096
+    ]
+   ]
+  },
+  {
+   "file": "arrow-plain.arrow",
+   "format": "arrow",
+   "supported": true,
+   "sha256": "19d6164c127bb7a9d54ff6417a36b90d858c379a0f752110ade0c980297c82b6",
+   "bytes": 17634,
+   "spans": null
+  },
+  {
+   "file": "arrow-zstd.arrow",
+   "format": "arrow",
+   "supported": true,
+   "sha256": "86371a4b0566c125aacb41ad8e488a8ac663cb0164279dc3005c197436c4253f",
+   "bytes": 3610,
+   "spans": null
+  },
+  {
+   "file": "arrow-dictionary.arrow",
+   "format": "arrow",
+   "supported": true,
+   "sha256": "3681a0528902436d670465d0cef004ae77ee2c18a07050882936fd61ba281d30",
+   "bytes": 4218,
+   "spans": null
+  },
+  {
+   "file": "arrow-stream.stream",
+   "format": "arrow",
+   "supported": true,
+   "sha256": "525c006b8e8b000289fc8234cd2f9e58f2bcc807027d4e639432ab957a4ecbff",
+   "bytes": 3312,
+   "spans": null
+  },
+  {
+   "file": "arrow-lz4.arrow",
+   "format": "arrow",
+   "supported": true,
+   "sha256": "b3935d767a72134375bfa92ef9ea62853aa9ee6fa5524857e18f7b87355428cb",
+   "bytes": 5986,
+   "spans": null
+  }
+ ]
+}
