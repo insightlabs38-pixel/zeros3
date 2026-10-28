@@ -9,8 +9,9 @@ Merged Q6: PR #77, `701b3610d7b6b173ca6ded997e3db196bc5af28f`.
 PLANNER_NEEDS_MORE_EVIDENCE; canonical 36-case/252-policy evidence retained.
 Q7 active on `z3/storage-convergence`: mechanically shared frontier capture,
 transient component/span/pack proofs and cumulative physical accounting.
-First full run complete; validation and recommendation in progress. No format
-proposal, production modification, or new number. Continue Q8 after Q7 gates.
+Q7 gates pass: NOT_WORTH_COMPLEXITY for current persistent-format change.
+37 actual stages, full costs/range amplification, exact Q6 frontier preserved.
+Checkpoint de9daae/58ef1a5; research-only PR ready. Continue Q8 after merge.
 ELF/PE DEFER: genuine grouped exact gains on controlled histories, mixed C++
 and public losses. Closed recipes/evidence retained; Q6 now captures unified
 physical candidate closures and tests honest late bootstrap/regret policies.
