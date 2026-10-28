@@ -1,0 +1,40 @@
+{
+ "base": "43900798dfaee9da63166bcd2fd6a8960e0a490b",
+ "production_sha256": "36e389f1dad4876cc9c51646619b3687ea41a09ecc8ed0e37b4c8c69f09d3d96",
+ "lab_sources": {
+  "testing-harnesses/z3/sstz3/block.go": "3d44e2ba18292dae3c9bee0b2612e8541557b4de517a933a25d573520a228bcc",
+  "testing-harnesses/z3/sstz3/decode.go": "a4b5cfed49df15b66a8639f5f3c84e5b8019e095a5cde1b085f22383b7cc0eb8",
+  "testing-harnesses/z3/sstz3/doc.go": "04d6377e7bb5c269caf5f8b731a8f12d911ed47957e8c15237f564076841432e",
+  "testing-harnesses/z3/sstz3/encode.go": "c4f70e91814f45a6acf039f678b17489afe49660d99f1d497dca34e6fc1a2126",
+  "testing-harnesses/z3/sstz3/fixture.go": "3853f56751c1f80f41f3f6aa2567d6c601fc8ef4d32a54d4143bf2a1dad859bf",
+  "testing-harnesses/z3/sstz3/format.go": "ae4606748d7192124f31f5c46d25a4720337876e8468da5b41654f7756f1650d",
+  "testing-harnesses/z3/sstz3/recipe.go": "e28a497308c9d40fb6a4c29a86ac79e4882d2a59745d5486caa7d2da38886ace",
+  "testing-harnesses/z3/sstz3/table.go": "e6e680fb08f9284c616dd8543ad4a753c81550f05378dc6eb4c26efb965cabba",
+  "testing-harnesses/z3/sstz3/zstd.go": "25658343e4094ddc73e5fba326b4913b7d52bad3248b738655e8a631869bde22",
+  "testing-harnesses/z3/parquetz3/analyze.go": "5d3b38e4c692d1ace41776a734e215949df4ffb27cce9015b46901c353607aeb",
+  "testing-harnesses/z3/parquetz3/codec.go": "66fdbc7507d572c1879d1bcf2dca8686a4d6dd4dc4aa00697d95e4323ba946ac",
+  "testing-harnesses/z3/parquetz3/decode.go": "cb2cb3b7ca298803d06015700cc7fb3171bcc63094e51f918e19f52c326d3b1c",
+  "testing-harnesses/z3/parquetz3/delta.go": "af1b205d6ed662cb5488818b49833d4ae7b8935045224aa4d7bdf94fae2f20d4",
+  "testing-harnesses/z3/parquetz3/encode.go": "a6acac0210078e9d8e6ee6c16be8a4285b5f38ebca680dae5ce7bbc0fe87401d",
+  "testing-harnesses/z3/parquetz3/meta.go": "c67f1600dfa9d466c392ef135c750429bdeceb33d8fbf3490b4a2ad7f8b13556",
+  "testing-harnesses/z3/parquetz3/page.go": "5fac388c92264453c133dfbf1eb7b0724e3dac7a935e8cceababa5721f5c3dfe",
+  "testing-harnesses/z3/parquetz3/pagebody.go": "a9d9d62b08443baffb44ba29946734907750807a1d4a386c9747050d14fd85ec",
+  "testing-harnesses/z3/parquetz3/recipe.go": "b8ee159170d83dcd42469732abee63acb3c1383a18d264386003e2844f5f7ecc",
+  "testing-harnesses/z3/parquetz3/rle.go": "64715f1f594cbe2e116db744ece7dfdfcb8188dfac6fe9f14cddeb535f5ee3c3",
+  "testing-harnesses/z3/parquetz3/stream.go": "1c176ac3ddc7d51ff2c1cb8c06ed0857a6aa89f6b68c3c3cf9e8370b32127354",
+  "testing-harnesses/z3/snappyz3/fragment.go": "c0b8362ef8df8afa35db9a48320887cecf73451902095941ca3ca05093fa38c8",
+  "testing-harnesses/z3/snappyz3/predict.go": "0cc18266def04e4eae6ab0ae00e7c612148fd7b98ecea48522f4bcb56d56eec2",
+  "testing-harnesses/z3/snappyz3/snappy.go": "a100ffc21a747bf0547b768086360f592b9dfcef8433fdb9068ca8af634858ad",
+  "testing-harnesses/z3/thriftcompactz3/compact.go": "2b62272975f245c33417a4d33490b8067561d74211961c36cbc0f33b94c0e8a4"
+ },
+ "reuse": "type-aware prodcodecport structured and structured-codec modes; reuse existing repZS declarations",
+ "local_guards": [
+  "strict limits",
+  "canonical dictionary/page byte bounds",
+  "framing before allocation",
+  "SST global record cap",
+  "release previous-column decoder dictionary",
+  "stream emitted components to CAS"
+ ],
+ "fixture_contract": "existing envelope magic/version translation only; recipe and object bytes unchanged"
+}
