@@ -1,0 +1,86 @@
+[
+ {
+  "kind": "model",
+  "path": "/workspace/work/q6-public/pythia-14m/step1000.safetensors",
+  "label": "REAL_PRETRAINING_CHECKPOINT",
+  "bytes": 28143920,
+  "sha256": "acc2b8045b54b406bcec99962f91e60202d448a00231669ee3674cab234eb244"
+ },
+ {
+  "kind": "model",
+  "path": "/workspace/work/q6-public/pythia-14m/step2000.safetensors",
+  "label": "REAL_PRETRAINING_CHECKPOINT",
+  "bytes": 28143920,
+  "sha256": "37b7abc5bc4c0a884c8fbf959e0278d549af2fcea8eb40f21e8f56a84ce05ac7"
+ },
+ {
+  "kind": "model",
+  "path": "/workspace/work/q6-public/pythia-14m/step3000.safetensors",
+  "label": "REAL_PRETRAINING_CHECKPOINT",
+  "bytes": 28143920,
+  "sha256": "9ba55ad68bf42d96f696b70bfc38628f75a6dcbfc55d076023018edf252b66ec"
+ },
+ {
+  "kind": "model",
+  "path": "/workspace/work/q9-report-fix/testing-harnesses/testdata/i2-draft/model.gguf",
+  "label": "CONTROLLED_GGUF_FIDELITY_NOT_THROUGHPUT",
+  "bytes": 1376,
+  "sha256": "f96cbc99ef610d944493336bc4d98caf300dcc90276e8f8940c10c1ae05c3c5e"
+ },
+ {
+  "kind": "sst",
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c3/000036.sst",
+  "label": "NATIVE_Q8_LARGEST_PER_CODEC_PRESELECTED",
+  "bytes": 971044,
+  "sha256": "57b851b6e38a25c9876c2d1d33494c4aac80e0b583db82407096e7954bdae7c9"
+ },
+ {
+  "kind": "sst",
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c3/000036.sst",
+  "label": "NATIVE_Q8_LARGEST_PER_CODEC_PRESELECTED",
+  "bytes": 517075,
+  "sha256": "20419b414352b6c4e52f9d4446fe39da8f9ea128c8811c67ba956c42b013c8e2"
+ },
+ {
+  "kind": "sst",
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c3/000036.sst",
+  "label": "NATIVE_Q8_LARGEST_PER_CODEC_PRESELECTED",
+  "bytes": 438195,
+  "sha256": "ed5963453b1c9c21c999467d3cdd7ad07148153836e04028f2b6e3ecb808e891"
+ },
+ {
+  "kind": "parquet",
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d01-snappy/db.parquet",
+  "label": "NATIVE_DUCKDB_PRESELECTED",
+  "bytes": 30164154,
+  "sha256": "87faa9bce9d2c4f3244560bfd4082fffcecaecd5062fda05bdc729ff87f53df1"
+ },
+ {
+  "kind": "parquet",
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d02-zstd/db.parquet",
+  "label": "NATIVE_DUCKDB_PRESELECTED",
+  "bytes": 22914677,
+  "sha256": "c7a74d2b674c402d6e438e4d8175eb9758171a4f289e94d6469c2949d0aee0c7"
+ },
+ {
+  "kind": "parquet",
+  "path": "/workspace/work/q10-large/gib.parquet",
+  "label": "NATIVE_SYNTHETIC_1G_MEMORY_LATENCY_CONTROL",
+  "bytes": 1073741824,
+  "sha256": "c0144382e663a3500e3b85aba7c1d74254fc4cfc110028b8586f5cfb3ff31751"
+ },
+ {
+  "kind": "dex",
+  "path": "/workspace/work/q6-public/fdroid-apk/2.0.2.dex",
+  "label": "REAL_PUBLIC_DEX_OFFLINE_ONLY",
+  "bytes": 9297608,
+  "sha256": "a6aff7e100fb7e33b17fd11b2b594999016e4b099718c6ec393e462d269ac059"
+ },
+ {
+  "kind": "clr",
+  "path": "/workspace/work/q6-public/clr/13.0.4.dll",
+  "label": "REAL_PUBLIC_CLR_OFFLINE_ONLY",
+  "bytes": 717736,
+  "sha256": "12246aa5e14245cbd1a0b8794851defd46e6d782c60eb650ba5aa90ef8447eee"
+ }
+]
