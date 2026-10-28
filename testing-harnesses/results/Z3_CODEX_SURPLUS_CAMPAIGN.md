@@ -2,7 +2,7 @@
 
 Merged Q1: PR #72, `4f97c7beeaad542db854a54aa874f87a6dc6d5ff` (I1A_PARTIAL).
 Merged Q2: PR #73, `bd0562101364b65e7ddec4a33bc89ab7189b6b87` (I1B_COMPLETE).
-Active Q3: `z3/i1c-git-oci`, implementation/economics checkpoint.
+Q3: `z3/i1c-git-oci`, I1C_COMPLETE; final gates pass, ready for merge.
 Q2 checkpoints: `eb07532`, `a0a20ab`, final validation checkpoint in this branch.
 Continue through the entire queue automatically. Hourly wakes are recovery after
 usage limits, never normal batch stop points; an active worker treats a wake as
@@ -37,6 +37,9 @@ hostile CDC fallbacks and public hiredis reexports pass. Reorder shares 5109/521
 components but cumulative additive CDC+representation costs exceed CDC alone.
 BusyBox registry blobs/DiffIDs verified; codec/tar composition works. Generic
 ZIP Concat/Derived adapter passes framing/descriptor/ZIP64/signing/reorder cases.
-Final integration gates are running; then merge eligible Q3 and begin Q4.
+Final integration gates pass: full 179.865s; targeted race 7.436s; black-box
+54/24/32/24; decoder/parser fuzz 180056/103409. Merge Q3 and begin Q4
+`z3/debug-symbol-frontier`. Local checksum-verified .NET 8.0.427 and LLVM19
+tools plus three GCC/Clang/Portable-PDB/MSF controlled build revisions prepared.
 All later queue entries remain unfinished. No research promotions/kills yet.
 No new production number ≥8, wire/store version, default or planner decision merged.

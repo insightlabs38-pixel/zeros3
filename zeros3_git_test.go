@@ -366,3 +366,36 @@ func FuzzRepGitReaderAt(f *testing.F) {
 		}
 	})
 }
+
+func TestRepGitRecipeBoundaries(t *testing.T) {
+	f := repGitFixtures(t)[0]
+	src := newRepMem()
+	for _, object := range f.Objects {
+		src.put(object)
+	}
+	root := src.put(f.Root)
+	call, err := (&repEnv{Src: src, Limits: repProdLimits}).open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, pieces, err := gitTable(call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(id [32]byte) ([]byte, error) { return append([]byte(nil), src.objs[id]...), nil }
+	for _, cap := range []int64{0, 12, 20, int64(len(f.Input) - 1)} {
+		if err := repGitRebuildSeq(meta, pieces, get, &repCapWriter{max: cap}); err == nil {
+			t.Fatalf("write failure at cap %d ignored", cap)
+		}
+	}
+	huge := []byte{repGTmetaMagic, byte(repGTSHA1)}
+	huge = binary.AppendUvarint(huge, 2)
+	huge = binary.AppendUvarint(huge, 1<<32)
+	if err := repGitRebuildSeq(huge, pieces, get, io.Discard); err == nil {
+		t.Fatal("oversized entry count accepted")
+	}
+	extra := append(append([]gitEntry(nil), pieces...), pieces[0])
+	if err := repGitRebuildSeq(meta, extra, get, io.Discard); err == nil {
+		t.Fatal("unused pieces accepted")
+	}
+}
