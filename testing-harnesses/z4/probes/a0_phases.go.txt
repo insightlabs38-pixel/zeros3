@@ -1,0 +1,30 @@
+package main
+import("bytes";"crypto/sha256";"encoding/hex";"encoding/json";"fmt";"io";"os";"path/filepath";"runtime";"strconv";"strings";"sync/atomic";"time")
+type auditPhase struct{NS int64;HeapBefore,HeapPeak,RSSBefore,RSSPeak uint64}
+type auditSink struct{inner chunkSink;NS int64;Calls int;Bytes int64}
+func(a *auditSink)Put(id [32]byte,b []byte)error{t:=time.Now();e:=a.inner.Put(id,b);a.NS+=time.Since(t).Nanoseconds();a.Calls++;a.Bytes+=int64(len(b));return e}
+func(a *auditSink)Flush()error{return a.inner.Flush()};func(a *auditSink)Abort(){a.inner.Abort()}
+func auditRSS()uint64{b,_:=os.ReadFile("/proc/self/status");for _,s:=range strings.Split(string(b),"\n"){if strings.HasPrefix(s,"VmRSS:"){v:=strings.Fields(s);n,_:=strconv.ParseUint(v[1],10,64);return n*1024}};return 0}
+func auditMeasure(fn func())auditPhase{var m runtime.MemStats;runtime.ReadMemStats(&m);out:=auditPhase{HeapBefore:m.HeapAlloc,RSSBefore:auditRSS()};var heap,rss atomic.Uint64;heap.Store(out.HeapBefore);rss.Store(out.RSSBefore);sample:=func(){var m runtime.MemStats;runtime.ReadMemStats(&m);heap.Store(max(heap.Load(),m.HeapAlloc));rss.Store(max(rss.Load(),auditRSS()))};stop,done:=make(chan struct{}),make(chan struct{});go func(){defer close(done);tick:=time.NewTicker(10*time.Millisecond);defer tick.Stop();for{select{case<-stop:return;case<-tick.C:sample()}}}();start:=time.Now();fn();out.NS=time.Since(start).Nanoseconds();close(stop);<-done;sample();out.HeapPeak=heap.Load();out.RSSPeak=rss.Load();return out}
+func auditMust(e error){if e!=nil{panic(e)}}
+type auditCompare struct{src io.ReaderAt;off int64;buf [65536]byte}
+func(w *auditCompare)Write(p []byte)(int,error){total:=len(p);for len(p)>0{n:=min(len(p),len(w.buf));if e:=repReadFullAt(w.src,w.buf[:n],w.off);e!=nil{return 0,e};if !bytes.Equal(p[:n],w.buf[:n]){return 0,fmt.Errorf("decoded bytes differ at %d",w.off)};w.off+=int64(n);p=p[n:]};return total,nil}
+func auditDisk(dir string)int64{var n int64;filepath.Walk(dir,func(_ string,st os.FileInfo,e error)error{if e==nil&&st.Mode().IsRegular(){n+=st.Size()};return e});return n}
+func main(){kind,store,keep:=strings.Cut(os.Args[1],"@");if !keep{var e error;store,e=os.MkdirTemp("","z4-a0-");auditMust(e);defer os.RemoveAll(store)};s,e:=OpenStore(store);auditMust(e);defer s.Close();auditMust(s.CreateBucket("z4"));descs:=map[[32]byte]*repDesc{};source:=s.newRepSource(descs,nil);defer source.close();cat:=newRepCatalog(source);enc:=json.NewEncoder(os.Stdout)
+ for _,path:=range os.Args[2:]{f,e:=os.Open(path);auditMust(e);st,e:=f.Stat();auditMust(e);if st.Size()>1<<30{panic("input bound")};h:=sha256.New();_,e=io.Copy(h,f);auditMust(e);var want [32]byte;h.Sum(want[:0]);phases:=map[string]auditPhase{};var entry *objectEntry
+ phases["authoritative_setup"]=auditMeasure(func(){_,e=f.Seek(0,0);auditMust(e);ing,e:=s.ingestStream(f,true,ingestOptions{size:st.Size()});auditMust(e);ent,e:=s.commitIngested("z4",filepath.Base(path),ing,"application/octet-stream",nil,putCondition{});auditMust(e);entry=ent})
+ b:=s.newRepBuilder(st.Size(),func(id [32]byte)*repDesc{return descs[id]},cat);sink:=&auditSink{inner:b.sink};b.sink=sink;var root *repObject;var id [32]byte;var reach *repReach;var failure error
+ diskBefore:=auditDisk(store);fmt.Fprintln(os.Stderr,"ENCODE",kind,path);runtime.GC();phases["encode_with_cas"]=auditMeasure(func(){root,failure=auditEncode(b,f,st.Size(),kind)})
+ if failure!=nil{auditMust(enc.Encode(map[string]any{"file":path,"kind":kind,"bytes":st.Size(),"sha256":hex.EncodeToString(want[:]),"fallback":failure.Error(),"phases":phases}));b.close();f.Close();continue}
+ phases["finish_root"]=auditMeasure(func(){id,e=b.finishRep(root);auditMust(e)})
+ phases["flush"]=auditMeasure(func(){auditMust(b.flush())})
+ phases["proof"]=auditMeasure(func(){auditMust(b.proof(id,st.Size(),want))})
+ phases["reachability"]=auditMeasure(func(){reach,e=b.env.reachable(id);auditMust(e);for rid:=range b.written{if _,ok:=reach.Role[rid];!ok{panic("hidden dependency")}}})
+ var outer *repRoot
+ phases["outer_root_serialize"]=auditMeasure(func(){r:=&repRoot{ManifestUUID:entry.manifestUUID,ObjSHA:want,ObjSize:st.Size(),Rep:id,Descs:map[[32]byte]*repDesc{}};for _,rid:=range reach.Order{if d:=b.src.desc(rid);d!=nil{r.Descs[rid]=d}};raw,e:=r.marshal();auditMust(e);outer,e=unmarshalRepRoot(raw);auditMust(e)})
+ phases["decode_cold"]=auditMeasure(func(){cold:=s.newRepSource(outer.Descs,nil);defer cold.close();env:=&repEnv{Src:cold,Limits:repProdLimits};w:=&auditCompare{src:f};n,sum,e:=env.reconstruct(id,w);auditMust(e);if n!=st.Size()||sum!=want||w.off!=n{panic("full decode proof")}})
+ phases["publication"]=auditMeasure(func(){auditMust(s.publishRepRoot(outer))})
+ auditMust(enc.Encode(map[string]any{"file":path,"kind":kind,"bytes":st.Size(),"sha256":hex.EncodeToString(want[:]),"root":hex.EncodeToString(id[:]),"exact":true,"phases":phases,"sink_put_ns":sink.NS,"sink_calls":sink.Calls,"sink_logical_bytes":sink.Bytes,"reachable":len(reach.Order),"descriptors":len(b.descs),"disk_before_rep":diskBefore,"disk_after_rep":auditDisk(store)}))
+ for id,d:=range b.descs{descs[id]=d};source.refresh();auditMust(cat.ingest(id));b.close();auditMust(f.Close())
+ }
+}

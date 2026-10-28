@@ -1,0 +1,708 @@
+[
+ {
+  "kind": "clr",
+  "file": "/workspace/work/q6-public/clr/13.0.4.dll",
+  "bytes": 717736,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.003556336,
+    "max_sampled_incremental_rss_mib": 1.29296875,
+    "max_sampled_heap_mib": 0.8218612670898438
+   },
+   "decode_cold": {
+    "median_seconds": 0.076002399,
+    "max_sampled_incremental_rss_mib": 1.32421875,
+    "max_sampled_heap_mib": 32.078125
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.206206688,
+    "max_sampled_incremental_rss_mib": 42.93359375,
+    "max_sampled_heap_mib": 39.185150146484375
+   },
+   "finish_root": {
+    "median_seconds": 2.2114e-05,
+    "max_sampled_incremental_rss_mib": 0.01171875,
+    "max_sampled_heap_mib": 30.32823944091797
+   },
+   "flush": {
+    "median_seconds": 0.004425815,
+    "max_sampled_incremental_rss_mib": 0.390625,
+    "max_sampled_heap_mib": 30.997787475585938
+   },
+   "outer_root_serialize": {
+    "median_seconds": 1.0045e-05,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 24.90373992919922
+   },
+   "proof": {
+    "median_seconds": 0.081347007,
+    "max_sampled_incremental_rss_mib": 2.63671875,
+    "max_sampled_heap_mib": 31.003768920898438
+   },
+   "publication": {
+    "median_seconds": 0.000318558,
+    "max_sampled_incremental_rss_mib": 0.00390625,
+    "max_sampled_heap_mib": 28.146690368652344
+   },
+   "reachability": {
+    "median_seconds": 0.000195504,
+    "max_sampled_incremental_rss_mib": 0.00390625,
+    "max_sampled_heap_mib": 24.890701293945312
+   }
+  },
+  "median_sink_seconds": 0.002678161,
+  "optional_disk_delta_bytes": [
+   940087,
+   940087,
+   940087
+  ]
+ },
+ {
+  "kind": "dex",
+  "file": "/workspace/work/q6-public/fdroid-apk/2.0.2.dex",
+  "bytes": 9297608,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.037643826,
+    "max_sampled_incremental_rss_mib": 1.9765625,
+    "max_sampled_heap_mib": 1.2641983032226562
+   },
+   "decode_cold": {
+    "median_seconds": 0.416855977,
+    "max_sampled_incremental_rss_mib": 51.60546875,
+    "max_sampled_heap_mib": 123.40247344970703
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.744897088,
+    "max_sampled_incremental_rss_mib": 213.69140625,
+    "max_sampled_heap_mib": 200.39297485351562
+   },
+   "finish_root": {
+    "median_seconds": 2.9013e-05,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 157.46990203857422
+   },
+   "flush": {
+    "median_seconds": 0.002161563,
+    "max_sampled_incremental_rss_mib": 0.109375,
+    "max_sampled_heap_mib": 157.6921844482422
+   },
+   "outer_root_serialize": {
+    "median_seconds": 2.5689e-05,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 109.85992431640625
+   },
+   "proof": {
+    "median_seconds": 0.347614891,
+    "max_sampled_incremental_rss_mib": 0.21875,
+    "max_sampled_heap_mib": 157.6981658935547
+   },
+   "publication": {
+    "median_seconds": 0.000356605,
+    "max_sampled_incremental_rss_mib": 0.015625,
+    "max_sampled_heap_mib": 109.3478012084961
+   },
+   "reachability": {
+    "median_seconds": 0.000788903,
+    "max_sampled_incremental_rss_mib": 0.00390625,
+    "max_sampled_heap_mib": 109.84688568115234
+   }
+  },
+  "median_sink_seconds": 0.041520442,
+  "optional_disk_delta_bytes": [
+   12169003,
+   12169003,
+   12169003
+  ]
+ },
+ {
+  "kind": "model",
+  "file": "/workspace/work/q6-public/pythia-14m/step1000.safetensors",
+  "bytes": 28143920,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.12256471,
+    "max_sampled_incremental_rss_mib": 3.30859375,
+    "max_sampled_heap_mib": 2.5755233764648438
+   },
+   "decode_cold": {
+    "median_seconds": 0.10672673,
+    "max_sampled_incremental_rss_mib": 1.453125,
+    "max_sampled_heap_mib": 5.847686767578125
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.140918719,
+    "max_sampled_incremental_rss_mib": 3.19140625,
+    "max_sampled_heap_mib": 4.530113220214844
+   },
+   "finish_root": {
+    "median_seconds": 2.6389e-05,
+    "max_sampled_incremental_rss_mib": 0.0078125,
+    "max_sampled_heap_mib": 1.9400100708007812
+   },
+   "flush": {
+    "median_seconds": 0.002176619,
+    "max_sampled_incremental_rss_mib": 0.1171875,
+    "max_sampled_heap_mib": 2.3571624755859375
+   },
+   "outer_root_serialize": {
+    "median_seconds": 4.3605e-05,
+    "max_sampled_incremental_rss_mib": 0.05859375,
+    "max_sampled_heap_mib": 2.2350234985351562
+   },
+   "proof": {
+    "median_seconds": 0.108032913,
+    "max_sampled_incremental_rss_mib": 1.53125,
+    "max_sampled_heap_mib": 4.0645751953125
+   },
+   "publication": {
+    "median_seconds": 0.000234132,
+    "max_sampled_incremental_rss_mib": 0.01953125,
+    "max_sampled_heap_mib": 2.0050506591796875
+   },
+   "reachability": {
+    "median_seconds": 0.000646459,
+    "max_sampled_incremental_rss_mib": 0.01953125,
+    "max_sampled_heap_mib": 2.1455230712890625
+   }
+  },
+  "median_sink_seconds": 0.022710723,
+  "optional_disk_delta_bytes": [
+   28180298,
+   28180298,
+   28180298
+  ]
+ },
+ {
+  "kind": "model",
+  "file": "/workspace/work/q6-public/pythia-14m/step2000.safetensors",
+  "bytes": 28143920,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.116553236,
+    "max_sampled_incremental_rss_mib": 0.578125,
+    "max_sampled_heap_mib": 2.5419235229492188
+   },
+   "decode_cold": {
+    "median_seconds": 0.201160713,
+    "max_sampled_incremental_rss_mib": 4.1640625,
+    "max_sampled_heap_mib": 5.745033264160156
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.238980776,
+    "max_sampled_incremental_rss_mib": 8.54296875,
+    "max_sampled_heap_mib": 9.559814453125
+   },
+   "finish_root": {
+    "median_seconds": 3.2227e-05,
+    "max_sampled_incremental_rss_mib": 0.00390625,
+    "max_sampled_heap_mib": 2.5304107666015625
+   },
+   "flush": {
+    "median_seconds": 0.00200742,
+    "max_sampled_incremental_rss_mib": 0.046875,
+    "max_sampled_heap_mib": 2.9425277709960938
+   },
+   "outer_root_serialize": {
+    "median_seconds": 9.2579e-05,
+    "max_sampled_incremental_rss_mib": 0.16796875,
+    "max_sampled_heap_mib": 2.2371673583984375
+   },
+   "proof": {
+    "median_seconds": 0.193424853,
+    "max_sampled_incremental_rss_mib": 5.01953125,
+    "max_sampled_heap_mib": 6.68170166015625
+   },
+   "publication": {
+    "median_seconds": 0.000110315,
+    "max_sampled_incremental_rss_mib": 0.109375,
+    "max_sampled_heap_mib": 2.7983322143554688
+   },
+   "reachability": {
+    "median_seconds": 0.001906761,
+    "max_sampled_incremental_rss_mib": 0.0078125,
+    "max_sampled_heap_mib": 2.0844955444335938
+   }
+  },
+  "median_sink_seconds": 0.01599616,
+  "optional_disk_delta_bytes": [
+   28188602,
+   28188602,
+   28188602
+  ]
+ },
+ {
+  "kind": "model",
+  "file": "/workspace/work/q6-public/pythia-14m/step3000.safetensors",
+  "bytes": 28143920,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.119165734,
+    "max_sampled_incremental_rss_mib": 1.33984375,
+    "max_sampled_heap_mib": 2.5926361083984375
+   },
+   "decode_cold": {
+    "median_seconds": 0.272824081,
+    "max_sampled_incremental_rss_mib": 8.66796875,
+    "max_sampled_heap_mib": 10.840164184570312
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.369089165,
+    "max_sampled_incremental_rss_mib": 17.984375,
+    "max_sampled_heap_mib": 21.850784301757812
+   },
+   "finish_root": {
+    "median_seconds": 2.71e-05,
+    "max_sampled_incremental_rss_mib": 0.01953125,
+    "max_sampled_heap_mib": 7.118400573730469
+   },
+   "flush": {
+    "median_seconds": 0.002095768,
+    "max_sampled_incremental_rss_mib": 0.140625,
+    "max_sampled_heap_mib": 7.5166168212890625
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.000308849,
+    "max_sampled_incremental_rss_mib": 0.171875,
+    "max_sampled_heap_mib": 2.9058685302734375
+   },
+   "proof": {
+    "median_seconds": 0.254982433,
+    "max_sampled_incremental_rss_mib": 6.8046875,
+    "max_sampled_heap_mib": 7.5225982666015625
+   },
+   "publication": {
+    "median_seconds": 0.000108433,
+    "max_sampled_incremental_rss_mib": 0.09375,
+    "max_sampled_heap_mib": 3.6835098266601562
+   },
+   "reachability": {
+    "median_seconds": 0.00195723,
+    "max_sampled_incremental_rss_mib": 0.3828125,
+    "max_sampled_heap_mib": 2.8998870849609375
+   }
+  },
+  "median_sink_seconds": 0.017335778,
+  "optional_disk_delta_bytes": [
+   28200088,
+   28200088,
+   28200088
+  ]
+ },
+ {
+  "kind": "model",
+  "file": "/workspace/work/q9-report-fix/testing-harnesses/testdata/i2-draft/model.gguf",
+  "bytes": 1376,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.000452621,
+    "max_sampled_incremental_rss_mib": 0.25,
+    "max_sampled_heap_mib": 3.2794570922851562
+   },
+   "decode_cold": {
+    "median_seconds": 9.0044e-05,
+    "max_sampled_incremental_rss_mib": 0.0078125,
+    "max_sampled_heap_mib": 1.8610916137695312
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.000337707,
+    "max_sampled_incremental_rss_mib": 0.8515625,
+    "max_sampled_heap_mib": 1.45648193359375
+   },
+   "finish_root": {
+    "median_seconds": 2.3835e-05,
+    "max_sampled_incremental_rss_mib": 0.00390625,
+    "max_sampled_heap_mib": 1.4704208374023438
+   },
+   "flush": {
+    "median_seconds": 0.000188582,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 1.5029373168945312
+   },
+   "outer_root_serialize": {
+    "median_seconds": 6.8e-06,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 1.6964035034179688
+   },
+   "proof": {
+    "median_seconds": 0.000103616,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 1.5970687866210938
+   },
+   "publication": {
+    "median_seconds": 2.8563e-05,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 1.875640869140625
+   },
+   "reachability": {
+    "median_seconds": 4.9283e-05,
+    "max_sampled_incremental_rss_mib": 0.03125,
+    "max_sampled_heap_mib": 1.6833648681640625
+   }
+  },
+  "median_sink_seconds": 0.000149674,
+  "optional_disk_delta_bytes": [
+   2178,
+   2178,
+   2178
+  ]
+ },
+ {
+  "kind": "parquet",
+  "file": "/workspace/work/q8-parquet/parquet/duckdb-variants/d01-snappy/db.parquet",
+  "bytes": 30164154,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.132392474,
+    "max_sampled_incremental_rss_mib": 3.515625,
+    "max_sampled_heap_mib": 2.817626953125
+   },
+   "decode_cold": {
+    "median_seconds": 1.02462376,
+    "max_sampled_incremental_rss_mib": 15.84765625,
+    "max_sampled_heap_mib": 17.89545440673828
+   },
+   "encode_with_cas": {
+    "median_seconds": 2.420319466,
+    "max_sampled_incremental_rss_mib": 30.22265625,
+    "max_sampled_heap_mib": 25.170074462890625
+   },
+   "finish_root": {
+    "median_seconds": 8.6159e-05,
+    "max_sampled_incremental_rss_mib": 0.0390625,
+    "max_sampled_heap_mib": 8.677726745605469
+   },
+   "flush": {
+    "median_seconds": 0.001528219,
+    "max_sampled_incremental_rss_mib": 0.08984375,
+    "max_sampled_heap_mib": 8.980003356933594
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.000133059,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 4.1623077392578125
+   },
+   "proof": {
+    "median_seconds": 1.113388306,
+    "max_sampled_incremental_rss_mib": 9.4296875,
+    "max_sampled_heap_mib": 18.722488403320312
+   },
+   "publication": {
+    "median_seconds": 0.000258207,
+    "max_sampled_incremental_rss_mib": 0.00390625,
+    "max_sampled_heap_mib": 4.553199768066406
+   },
+   "reachability": {
+    "median_seconds": 0.006686373,
+    "max_sampled_incremental_rss_mib": 0.08203125,
+    "max_sampled_heap_mib": 4.149269104003906
+   }
+  },
+  "median_sink_seconds": 0.240695537,
+  "optional_disk_delta_bytes": [
+   42019567,
+   42019567,
+   42019567
+  ]
+ },
+ {
+  "kind": "parquet",
+  "file": "/workspace/work/q8-parquet/parquet/duckdb-variants/d02-zstd/db.parquet",
+  "bytes": 22914677,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.101150623,
+    "max_sampled_incremental_rss_mib": 0.6953125,
+    "max_sampled_heap_mib": 3.4395370483398438
+   },
+   "decode_cold": {
+    "median_seconds": 1.511373252,
+    "max_sampled_incremental_rss_mib": 16.4453125,
+    "max_sampled_heap_mib": 48.19844055175781
+   },
+   "encode_with_cas": {
+    "median_seconds": 6.270023884,
+    "max_sampled_incremental_rss_mib": 56.3671875,
+    "max_sampled_heap_mib": 53.46265411376953
+   },
+   "finish_root": {
+    "median_seconds": 0.000107802,
+    "max_sampled_incremental_rss_mib": 0.015625,
+    "max_sampled_heap_mib": 15.996780395507812
+   },
+   "flush": {
+    "median_seconds": 0.001350296,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 16.216278076171875
+   },
+   "outer_root_serialize": {
+    "median_seconds": 9.6194e-05,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 16.36077880859375
+   },
+   "proof": {
+    "median_seconds": 1.587878923,
+    "max_sampled_incremental_rss_mib": 22.59375,
+    "max_sampled_heap_mib": 45.06444549560547
+   },
+   "publication": {
+    "median_seconds": 5.7877e-05,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 41.269248962402344
+   },
+   "reachability": {
+    "median_seconds": 0.003939491,
+    "max_sampled_incremental_rss_mib": 1.453125,
+    "max_sampled_heap_mib": 16.347740173339844
+   }
+  },
+  "median_sink_seconds": 0.048413111,
+  "optional_disk_delta_bytes": [
+   7027590,
+   7027590,
+   7027590
+  ]
+ },
+ {
+  "kind": "parquet",
+  "file": "/workspace/work/q10-large/gib.parquet",
+  "bytes": 1073741824,
+  "samples": 1,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 6.757556882,
+    "max_sampled_incremental_rss_mib": 12.5078125,
+    "max_sampled_heap_mib": 8.742637634277344
+   },
+   "decode_cold": {
+    "median_seconds": 8.509748977,
+    "max_sampled_incremental_rss_mib": 28.9296875,
+    "max_sampled_heap_mib": 57.402984619140625
+   },
+   "encode_with_cas": {
+    "median_seconds": 16.842842172,
+    "max_sampled_incremental_rss_mib": 51.48046875,
+    "max_sampled_heap_mib": 57.88330078125
+   },
+   "finish_root": {
+    "median_seconds": 9.1107e-05,
+    "max_sampled_incremental_rss_mib": 0.02734375,
+    "max_sampled_heap_mib": 30.86571502685547
+   },
+   "flush": {
+    "median_seconds": 0.09507502,
+    "max_sampled_incremental_rss_mib": 0.23828125,
+    "max_sampled_heap_mib": 34.05519104003906
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.000485358,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 16.746139526367188
+   },
+   "proof": {
+    "median_seconds": 9.105745995,
+    "max_sampled_incremental_rss_mib": 5.04296875,
+    "max_sampled_heap_mib": 45.83265686035156
+   },
+   "publication": {
+    "median_seconds": 0.00025327,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 19.00792694091797
+   },
+   "reachability": {
+    "median_seconds": 0.013714113,
+    "max_sampled_incremental_rss_mib": 2.32421875,
+    "max_sampled_heap_mib": 16.72948455810547
+   }
+  },
+  "median_sink_seconds": 2.712693583,
+  "optional_disk_delta_bytes": [
+   1072767789
+  ]
+ },
+ {
+  "kind": "sst",
+  "file": "/workspace/work/q8-sst/rocksdb/chain-none/c3/000036.sst",
+  "bytes": 971044,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.005176581,
+    "max_sampled_incremental_rss_mib": 1.28125,
+    "max_sampled_heap_mib": 0.8262710571289062
+   },
+   "decode_cold": {
+    "median_seconds": 0.004287691,
+    "max_sampled_incremental_rss_mib": 0.40625,
+    "max_sampled_heap_mib": 2.1613235473632812
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.006994362,
+    "max_sampled_incremental_rss_mib": 3.08984375,
+    "max_sampled_heap_mib": 1.0070877075195312
+   },
+   "finish_root": {
+    "median_seconds": 5.6966e-05,
+    "max_sampled_incremental_rss_mib": 0.078125,
+    "max_sampled_heap_mib": 0.8768768310546875
+   },
+   "flush": {
+    "median_seconds": 0.002963617,
+    "max_sampled_incremental_rss_mib": 0.296875,
+    "max_sampled_heap_mib": 1.3850250244140625
+   },
+   "outer_root_serialize": {
+    "median_seconds": 7.822e-06,
+    "max_sampled_incremental_rss_mib": 0.0078125,
+    "max_sampled_heap_mib": 2.1553421020507812
+   },
+   "proof": {
+    "median_seconds": 0.004365883,
+    "max_sampled_incremental_rss_mib": 1.6953125,
+    "max_sampled_heap_mib": 1.9338150024414062
+   },
+   "publication": {
+    "median_seconds": 0.000197557,
+    "max_sampled_incremental_rss_mib": 0.015625,
+    "max_sampled_heap_mib": 1.7608566284179688
+   },
+   "reachability": {
+    "median_seconds": 0.000120141,
+    "max_sampled_incremental_rss_mib": 0.02734375,
+    "max_sampled_heap_mib": 2.142303466796875
+   }
+  },
+  "median_sink_seconds": 0.001950385,
+  "optional_disk_delta_bytes": [
+   979751,
+   979751,
+   979751
+  ]
+ },
+ {
+  "kind": "sst",
+  "file": "/workspace/work/q8-sst/rocksdb/chain-snappy/c3/000036.sst",
+  "bytes": 517075,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.002545704,
+    "max_sampled_incremental_rss_mib": 0.06640625,
+    "max_sampled_heap_mib": 2.74078369140625
+   },
+   "decode_cold": {
+    "median_seconds": 0.006358491,
+    "max_sampled_incremental_rss_mib": 0.0390625,
+    "max_sampled_heap_mib": 1.9891281127929688
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.0151183,
+    "max_sampled_incremental_rss_mib": 1.30859375,
+    "max_sampled_heap_mib": 3.3756484985351562
+   },
+   "finish_root": {
+    "median_seconds": 5.7035e-05,
+    "max_sampled_incremental_rss_mib": 0.015625,
+    "max_sampled_heap_mib": 2.1406936645507812
+   },
+   "flush": {
+    "median_seconds": 5.8128e-05,
+    "max_sampled_incremental_rss_mib": 0.00390625,
+    "max_sampled_heap_mib": 1.4537734985351562
+   },
+   "outer_root_serialize": {
+    "median_seconds": 8.252e-06,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 1.964630126953125
+   },
+   "proof": {
+    "median_seconds": 0.006393484,
+    "max_sampled_incremental_rss_mib": 0.546875,
+    "max_sampled_heap_mib": 1.740447998046875
+   },
+   "publication": {
+    "median_seconds": 4.0751e-05,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 2.0036773681640625
+   },
+   "reachability": {
+    "median_seconds": 0.00010006,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 1.9515914916992188
+   }
+  },
+  "median_sink_seconds": 0.000703679,
+  "optional_disk_delta_bytes": [
+   16548,
+   16548,
+   16548
+  ]
+ },
+ {
+  "kind": "sst",
+  "file": "/workspace/work/q8-sst/rocksdb/chain-zstd/c3/000036.sst",
+  "bytes": 438195,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.002234341,
+    "max_sampled_incremental_rss_mib": 0.3984375,
+    "max_sampled_heap_mib": 2.9815216064453125
+   },
+   "decode_cold": {
+    "median_seconds": 0.123086723,
+    "max_sampled_incremental_rss_mib": 27.33203125,
+    "max_sampled_heap_mib": 85.3172378540039
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.81164581,
+    "max_sampled_incremental_rss_mib": 28.73046875,
+    "max_sampled_heap_mib": 100.99847412109375
+   },
+   "finish_root": {
+    "median_seconds": 0.000232269,
+    "max_sampled_incremental_rss_mib": 0.25,
+    "max_sampled_heap_mib": 4.4435272216796875
+   },
+   "flush": {
+    "median_seconds": 0.000123727,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 4.4614715576171875
+   },
+   "outer_root_serialize": {
+    "median_seconds": 1.332e-05,
+    "max_sampled_incremental_rss_mib": 0.01171875,
+    "max_sampled_heap_mib": 35.88299560546875
+   },
+   "proof": {
+    "median_seconds": 0.166701303,
+    "max_sampled_incremental_rss_mib": 16.18359375,
+    "max_sampled_heap_mib": 92.66020202636719
+   },
+   "publication": {
+    "median_seconds": 6.5449e-05,
+    "max_sampled_incremental_rss_mib": 0.01171875,
+    "max_sampled_heap_mib": 64.10470581054688
+   },
+   "reachability": {
+    "median_seconds": 0.000515975,
+    "max_sampled_incremental_rss_mib": 0.87890625,
+    "max_sampled_heap_mib": 35.924407958984375
+   }
+  },
+  "median_sink_seconds": 0.002434885,
+  "optional_disk_delta_bytes": [
+   160361,
+   160361,
+   160361
+  ]
+ }
+]
