@@ -1,0 +1,13 @@
+{
+ "go": "go1.27.3 linux/amd64",
+ "full_lab_test": "PASS",
+ "full_lab_vet": "PASS",
+ "compiler": "cc (Debian 14.2.0-19) 14.2.0",
+ "native_library_sha256": "027a9864a563f8f3c2f2b5f16319325a90a6b184d6a0bf6f67a4274fad4ebcbb",
+ "native_helper_sha256": "133e18e57118c27219ffb6baf480849301fa5de14e94cf03b828239fcec17a80",
+ "native_source_sha256": "1a48111aba1f0b4497b802cc9d5a878a9da216a1e33f4573d335a041dcdeb651",
+ "generated_field_checks": 576768,
+ "public_field_checks": 10,
+ "public_negative_reads": 2,
+ "public_decode_only": 112
+}
