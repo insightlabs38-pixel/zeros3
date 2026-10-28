@@ -68,3 +68,9 @@ Q10 active draft PR #81, first checkpoint ddd43d5; native 1 GiB full proof passe
 9 lab roots match exactly, strict fallbacks and range amplification recorded.
 Finish Q10 gates/report, keep draft unmerged, then Q11 from latest origin/main.
 Q11-Q16 remain unfinished; no second worker and no pause at reminder boundaries.
+
+Q10 complete as bounded draft PR #81: 9 exact lab identities,162 production
+proofs/fallbacks, native1GiB89.3MiBRSS, explicit cold-range amplification.
+EmbeddedZstd/prefix expansion guarded; compatibility54/bundles24/kinds32/
+crash24/rollback23 and full321.583s pass. No draft kinds merged.
+Next Q11 XZ/package Stage A; Q11-Q16 remain unfinished. Do not restart Q9/Q10.

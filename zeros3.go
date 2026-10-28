@@ -38715,7 +38715,10 @@ func repSSEncode(r io.ReaderAt, size int64, opt repSSOptions, emit repSSEmit) ([
 				return repSSunsupported("key of %d bytes has no internal-key trailer", len(key))
 			}
 			koff = append(koff, len(keys))
-			keys = append(keys, key...)
+			keys, err = repStructuredAppendKey(keys, key, lim.MaxDecoded)
+			if err != nil {
+				return err
+			}
 			vals = append(vals, val)
 			return nil
 		})
@@ -40538,7 +40541,7 @@ func (c *repPQCompressor) Analyze(payload []byte, want int64) (body []byte, rec 
 		return body, repPQCompRec{ID: repPQCompSnapCmds, Cmds: repSNMarshal(cmds)}, nil
 	case repPQCodecZstd:
 		var plain, units bytes.Buffer
-		res, err := repZSParse(bytes.NewReader(payload), &plain, &units, repZSOptions{})
+		res, err := repZSParse(bytes.NewReader(payload), &plain, &units, repZSOptions{repZSLimits: c.zstdLimits()})
 		if err != nil {
 			return nil, rec, repPQcorrupt("zstd page: %v", err)
 		}
@@ -40565,7 +40568,7 @@ func (c *repPQCompressor) replayZstd(w io.Writer, rec repPQCompRec, body []byte)
 	}
 	skel := rec.Zstd[k : k+int(n)]
 	units := rec.Zstd[k+int(n):]
-	_, err := repZSReplay(w, skel, bytes.NewReader(units), bytes.NewReader(body), repZSDefaultLimits())
+	_, err := repZSReplay(w, skel, bytes.NewReader(units), bytes.NewReader(body), c.zstdLimits())
 	return err
 }
 
@@ -45517,4 +45520,18 @@ func (b *repBuilder) encodeStructured(src io.ReaderAt, size int64, k repKind) (*
 		out.Members = append(out.Members, repMember{Role: repStored, SHA: id, Size: n})
 	}
 	return out, nil
+}
+
+// A small prefix-compressed block can otherwise expand into unbounded retained keys.
+func repStructuredAppendKey(keys, key []byte, limit int64) ([]byte, error) {
+	if int64(len(keys))+int64(len(key)) > limit {
+		return nil, repSSErrLimit
+	}
+	return append(keys, key...), nil
+}
+
+// Embedded pages must never inherit the archive codec's generous defaults.
+func (c *repPQCompressor) zstdLimits() repZSLimits {
+	n := c.lim.norm().MaxPage
+	return repZSLimits{MaxFrames: 1, MaxBlocks: 65536, MaxWindow: min(n, 16<<20), MaxFrameDecoded: n, MaxTotalDecoded: n, MaxLiterals: n, MaxSequences: n, MaxSkippable: n, MaxIRBytes: n}
 }

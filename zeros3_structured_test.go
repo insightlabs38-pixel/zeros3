@@ -252,3 +252,35 @@ func FuzzRepStructuredRecipes(f *testing.F) {
 		}
 	})
 }
+
+func TestRepStructuredPrefixExpansionBudget(t *testing.T) {
+	var bw repSSBlockWriter
+	key := bytes.Repeat([]byte{'k'}, 1<<20)
+	for i := 0; i < 20; i++ {
+		key[len(key)-9] = byte(i)
+		if err := bw.Add(key, nil, i == 0, -1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	block := bw.Finish()
+	if len(block) > 2<<20 {
+		t.Fatalf("fixture did not share prefixes: %d", len(block))
+	}
+	var keys []byte
+	var err error
+	_, err = repSSWalkBlock(block, repStructuredSSTLimits(), func(_ int, key, val []byte) error { keys, err = repStructuredAppendKey(keys, key, 16<<20); return err })
+	if !errors.Is(err, repSSErrLimit) {
+		t.Fatalf("prefix expansion did not hit byte budget: %v", err)
+	}
+}
+
+func TestRepStructuredZstdWindowBeforeAllocation(t *testing.T) {
+	// A valid frame header declaring a 128 MiB window; no payload is needed to
+	// reject it under the embedded page's policy before allocating history.
+	payload := []byte{0x28, 0xb5, 0x2f, 0xfd, 0, 0x88}
+	c := repPQNewCompressor(repPQCodecZstd, repStructuredParquetLimits())
+	_, _, err := c.Analyze(payload, 1)
+	if err == nil || !strings.Contains(err.Error(), "window size") {
+		t.Fatalf("embedded frame bound: %v", err)
+	}
+}

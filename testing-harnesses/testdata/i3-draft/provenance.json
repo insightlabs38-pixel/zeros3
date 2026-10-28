@@ -1,6 +1,6 @@
 {
  "base": "43900798dfaee9da63166bcd2fd6a8960e0a490b",
- "production_sha256": "36e389f1dad4876cc9c51646619b3687ea41a09ecc8ed0e37b4c8c69f09d3d96",
+ "production_sha256": "4a9ff21f67a8e7d5bb83b1cbc69b34f8cf25b31ebf0eacb8df0c19c054664424",
  "lab_sources": {
   "testing-harnesses/z3/sstz3/block.go": "3d44e2ba18292dae3c9bee0b2612e8541557b4de517a933a25d573520a228bcc",
   "testing-harnesses/z3/sstz3/decode.go": "a4b5cfed49df15b66a8639f5f3c84e5b8019e095a5cde1b085f22383b7cc0eb8",
@@ -34,7 +34,9 @@
   "framing before allocation",
   "SST global record cap",
   "release previous-column decoder dictionary",
-  "stream emitted components to CAS"
+  "stream emitted components to CAS",
+  "aggregate prefix-expanded SST key scratch",
+  "embedded Zstd page-sized parse and replay limits"
  ],
  "fixture_contract": "existing envelope magic/version translation only; recipe and object bytes unchanged"
 }

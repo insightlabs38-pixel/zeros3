@@ -77,7 +77,7 @@ func must(err error) {
 }
 func main() {
 	if len(os.Args) < 3 || len(os.Args) > 4 {
-		panic("extract lab-directory output-prefix [git|managed|managed-analysis|model-layout|model-codec|managed-codec]")
+		panic("extract lab-directory output-prefix [git|managed|managed-analysis|model-layout|model-codec|managed-codec|structured|structured-codec]")
 	}
 	packagePaths := []string{"zeros3-z3/deflate", "zeros3-z3/ir", "zeros3-z3/zstdz3"}
 	gitMode := len(os.Args) == 4 && os.Args[3] == "git"
