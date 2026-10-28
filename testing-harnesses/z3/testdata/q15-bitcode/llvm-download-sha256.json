@@ -1,0 +1,9 @@
+{
+  "clang-19_19.1.7-3+b1_amd64.deb": "bbb74458d782b7792b61b0eed92746df5e6d033778c045cf8c2b3835b7c4efc4",
+  "lld-19_19.1.7-3+b1_amd64.deb": "756a805e8811d527dd2b5417f016c9342b8631fa9c1ddcd56265c13ae33bf3a4",
+  "libclang-cpp19_19.1.7-3+b1_amd64.deb": "a7d2b6df51050834f6ea5c0d5e34869c2298b0bcdaa91eff17ba3db2cd545c47",
+  "libclang-common-19-dev_19.1.7-3+b1_amd64.deb": "4018e40e2d4144fe38c45822e68cca63c1bf6c7872c3073ebb262ad4b2f9b8bc",
+  "llvm-19_19.1.7-3+b1_amd64.deb": "0b1b7263f4f45e261099240fdbf00fc14b42b88410fd829e041bf83ea45866cb",
+  "llvm-19-runtime_19.1.7-3+b1_amd64.deb": "84a9dfc277f0914cb84e6cb3d139d3eb3dfe19f06670bbdea4241e8e3d921a4e",
+  "llvm-19-linker-tools_19.1.7-3+b1_amd64.deb": "874a0a5cde797cda3e94e9310a0a9958608f526f177637414a8ce9620c804818"
+}

@@ -1,0 +1,32 @@
+[
+ {
+  "tag": "v1.0.0",
+  "commit": "39de5267c092859b4cab4bdf79081e9634b70e39",
+  "repository": "https://github.com/redis/hiredis",
+  "source_class": "REAL_RELEASE_SOURCE_COMPILED_HISTORY"
+ },
+ {
+  "tag": "v1.1.0",
+  "commit": "c14775b4e48334e0262c9f168887578f4a368b5d",
+  "repository": "https://github.com/redis/hiredis",
+  "source_class": "REAL_RELEASE_SOURCE_COMPILED_HISTORY"
+ },
+ {
+  "tag": "v1.2.0",
+  "commit": "60e5075d4ac77424809f855ba3e398df7aacefe8",
+  "repository": "https://github.com/redis/hiredis",
+  "source_class": "REAL_RELEASE_SOURCE_COMPILED_HISTORY"
+ },
+ {
+  "tag": "v1.3.0",
+  "commit": "ccad7ebaf99310957004661d1c5f82d2a33ebd10",
+  "repository": "https://github.com/redis/hiredis",
+  "source_class": "REAL_RELEASE_SOURCE_COMPILED_HISTORY"
+ },
+ {
+  "tag": "v1.4.0",
+  "commit": "67c88a05bb97c40d5c29d0680e51828627e4f362",
+  "repository": "https://github.com/redis/hiredis",
+  "source_class": "REAL_RELEASE_SOURCE_COMPILED_HISTORY"
+ }
+]

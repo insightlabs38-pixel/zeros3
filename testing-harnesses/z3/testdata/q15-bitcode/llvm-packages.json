@@ -1,0 +1,12 @@
+{
+  "source": "https://deb.debian.org/debian/pool/main/l/llvm-toolchain-19/",
+  "packages": [
+    "clang-19_19.1.7-3+b1_amd64.deb",
+    "lld-19_19.1.7-3+b1_amd64.deb",
+    "libclang-cpp19_19.1.7-3+b1_amd64.deb",
+    "libclang-common-19-dev_19.1.7-3+b1_amd64.deb",
+    "llvm-19_19.1.7-3+b1_amd64.deb",
+    "llvm-19-runtime_19.1.7-3+b1_amd64.deb",
+    "llvm-19-linker-tools_19.1.7-3+b1_amd64.deb"
+  ]
+}

@@ -1,0 +1,56 @@
+[
+ {
+  "url": "https://www.sqlite.org/2024/sqlite-amalgamation-3450300.zip",
+  "file": "3450300.zip",
+  "sha256": "ea170e73e447703e8359308ca2e4366a3ae0c4304a8665896f068c736781c651",
+  "bytes": 2733959,
+  "version": 3450300,
+  "members": {
+   "sqlite3.c": {
+    "bytes": 9027389,
+    "sha256": "9ca336fbcbff9f1d78b4f45b6a19583fcc097192310dd2f5f6cd43b9a33d7d69"
+   },
+   "sqlite3.h": {
+    "bytes": 641889,
+    "sha256": "882ad3c0448d0324fb3a6b1a85333a9173d539ac669c9972ae1f03722ff86282"
+   }
+  },
+  "class_": "REAL_RELEASE_SOURCE_COMPILED_BITCODE_NOT_PUBLISHED_BITCODE_HISTORY"
+ },
+ {
+  "url": "https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip",
+  "file": "3460100.zip",
+  "sha256": "77823cb110929c2bcb0f5d48e4833b5c59a8a6e40cdea3936b99e199dbbe5784",
+  "bytes": 2764032,
+  "version": 3460100,
+  "members": {
+   "sqlite3.c": {
+    "bytes": 9089564,
+    "sha256": "6c35bc5f7f85eac9c49928bacbb02bb694b547aabf69197e058cca245ad80e83"
+   },
+   "sqlite3.h": {
+    "bytes": 644069,
+    "sha256": "89b62c671c5964e137409ce034941b7b05a3af2c9875aba41f47f9483d0c2515"
+   }
+  },
+  "class_": "REAL_RELEASE_SOURCE_COMPILED_BITCODE_NOT_PUBLISHED_BITCODE_HISTORY"
+ },
+ {
+  "url": "https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip",
+  "file": "3490100.zip",
+  "sha256": "6cebd1d8403fc58c30e93939b246f3e6e58d0765a5cd50546f16c00fd805d2c3",
+  "bytes": 2826319,
+  "version": 3490100,
+  "members": {
+   "sqlite3.c": {
+    "bytes": 9232683,
+    "sha256": "ff80c36ef1bb44eb357c7ff1d15be77540d41c28fb671088215a6cd12785c5d3"
+   },
+   "sqlite3.h": {
+    "bytes": 658960,
+    "sha256": "88da6f1963bc192dfa18a3a48b423cf1fbbb04f903202efe9a78e3a597473e18"
+   }
+  },
+  "class_": "REAL_RELEASE_SOURCE_COMPILED_BITCODE_NOT_PUBLISHED_BITCODE_HISTORY"
+ }
+]

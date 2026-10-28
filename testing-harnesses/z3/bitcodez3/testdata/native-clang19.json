@@ -1,0 +1,42 @@
+{
+ "sha256": "8f377516c2329525c608f7c701ebda1b7fa7dbbe8a037509d69f4e234f631bb9",
+ "blocks": {
+  "0": 1,
+  "8": 1,
+  "9": 1,
+  "10": 1,
+  "11": 1,
+  "12": 2,
+  "13": 1,
+  "14": 3,
+  "15": 1,
+  "17": 1,
+  "18": 1,
+  "21": 1,
+  "22": 1,
+  "23": 1,
+  "25": 1,
+  "26": 1
+ },
+ "records": {
+  "0": 3,
+  "8": 7,
+  "9": 2,
+  "10": 2,
+  "11": 6,
+  "12": 7,
+  "13": 2,
+  "14": 10,
+  "15": 12,
+  "17": 8,
+  "18": 1,
+  "21": 10,
+  "22": 41,
+  "23": 1,
+  "25": 1,
+  "26": 2
+ },
+ "producer": "Debian clang 19.1.7 (3+b1), x86_64-pc-linux-gnu, O2, g0, no-ident, fno-discard-value-names; source compiled as input.c",
+ "oracle": "llvm-bcanalyzer 19.1.7 independent per-block summary",
+ "class_": "CONTROLLED_C_FIXTURE"
+}
