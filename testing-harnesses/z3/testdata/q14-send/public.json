@@ -1,0 +1,101 @@
+[
+ {
+  "format": "btrfs",
+  "url": "https://raw.githubusercontent.com/kdave/btrfs-progs/afdc3a65e33f4d42f768ad50dca20c32e5ee1496/tests/misc-tests/016-send-clone-src/multi-clone-src-v4.8.2.stream.xz",
+  "file": "btrfs-multi-clone-src-v4.8.2.stream.xz",
+  "bytes": 2688,
+  "sha256": "cf15c61cf823e530dc994f83921638c2998ace3739d1fe2ec0daaad9b1a396e6",
+  "decoded_file": "btrfs-multi-clone-src-v4.8.2.stream",
+  "decoded_bytes": 6299778,
+  "decoded_sha256": "287e316e554a0199c22aaf11d5951e4b1a367519b50c447f4a9e7f30c3e07129",
+  "class_": "REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "format": "zfs",
+  "url": "https://raw.githubusercontent.com/openzfs/zfs/5ebd13aa9a2329cac7bc8b23bfe946a4cde8bb53/tests/zfs-tests/tests/functional/zstream/big-endian-all-drr-types-base-NATIVE.zsend.bz2",
+  "file": "zfs-big-endian-all-drr-types-base-NATIVE.zsend.bz2",
+  "bytes": 7382,
+  "sha256": "291a66d0f1248bb8a2a81c6647859a580514b825c55772cc11c5dce6a32ebec9",
+  "decoded_file": "zfs-big-endian-all-drr-types-base-NATIVE.zsend",
+  "decoded_bytes": 68696,
+  "decoded_sha256": "4cca56f5e796ecf4e6f50c387d7d70ccede325643e5a5d25d8267fc6a70262bb",
+  "class_": "REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "format": "zfs",
+  "url": "https://raw.githubusercontent.com/openzfs/zfs/5ebd13aa9a2329cac7bc8b23bfe946a4cde8bb53/tests/zfs-tests/tests/functional/zstream/big-endian-all-drr-types-base-XDR.zsend.bz2",
+  "file": "zfs-big-endian-all-drr-types-base-XDR.zsend.bz2",
+  "bytes": 7466,
+  "sha256": "4d3709cf0e9f6e5fb69041fdf06a7e77bc5ae4d727ec90d2dbc28800789f2245",
+  "decoded_file": "zfs-big-endian-all-drr-types-base-XDR.zsend",
+  "decoded_bytes": 68192,
+  "decoded_sha256": "6c3f38d71140ed6adf6b0b2110999a21de0e56e10504e98df33d7e5a3da7add5",
+  "class_": "REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "format": "zfs",
+  "url": "https://raw.githubusercontent.com/openzfs/zfs/5ebd13aa9a2329cac7bc8b23bfe946a4cde8bb53/tests/zfs-tests/tests/functional/zstream/big-endian-all-drr-types-incr-NATIVE.zsend.bz2",
+  "file": "zfs-big-endian-all-drr-types-incr-NATIVE.zsend.bz2",
+  "bytes": 40989,
+  "sha256": "5f35da3ad8ce3b9430743569c88074a15e7d71eac7181b922d8f7543f1f70370",
+  "decoded_file": "zfs-big-endian-all-drr-types-incr-NATIVE.zsend",
+  "decoded_bytes": 125584,
+  "decoded_sha256": "a4312b184a5adc33b00009456919afbb8081fb51218846ab22e8725425791f75",
+  "class_": "REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "format": "zfs",
+  "url": "https://raw.githubusercontent.com/openzfs/zfs/5ebd13aa9a2329cac7bc8b23bfe946a4cde8bb53/tests/zfs-tests/tests/functional/zstream/big-endian-all-drr-types-incr-XDR.zsend.bz2",
+  "file": "zfs-big-endian-all-drr-types-incr-XDR.zsend.bz2",
+  "bytes": 41155,
+  "sha256": "cec49e6734aefe89346a0b7f80585114cd650e6df239a3956090de0168c57a65",
+  "decoded_file": "zfs-big-endian-all-drr-types-incr-XDR.zsend",
+  "decoded_bytes": 125068,
+  "decoded_sha256": "a88f06ea19d6e78c0f1da7c98bc87af75821f0c71ab09553101c06072db4b552",
+  "class_": "REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "format": "zfs",
+  "url": "https://raw.githubusercontent.com/openzfs/zfs/5ebd13aa9a2329cac7bc8b23bfe946a4cde8bb53/tests/zfs-tests/tests/functional/zstream/little-endian-all-drr-types-base-NATIVE.zsend.bz2",
+  "file": "zfs-little-endian-all-drr-types-base-NATIVE.zsend.bz2",
+  "bytes": 7491,
+  "sha256": "f3eb0f24add67a15c973f4b9ab92ec9f9cba2001916279bea0427b1eaf1c2aaf",
+  "decoded_file": "zfs-little-endian-all-drr-types-base-NATIVE.zsend",
+  "decoded_bytes": 67672,
+  "decoded_sha256": "3a0d5ae718430c1a366ca0558ba373c0b4e0d1853166556e7351b963f4b10d68",
+  "class_": "REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "format": "zfs",
+  "url": "https://raw.githubusercontent.com/openzfs/zfs/5ebd13aa9a2329cac7bc8b23bfe946a4cde8bb53/tests/zfs-tests/tests/functional/zstream/little-endian-all-drr-types-base-XDR.zsend.bz2",
+  "file": "zfs-little-endian-all-drr-types-base-XDR.zsend.bz2",
+  "bytes": 6979,
+  "sha256": "4cb0fd48e561c6b67f50ed4d4a68d991ff3cc9217b85598e8944b59b9e8f7067",
+  "decoded_file": "zfs-little-endian-all-drr-types-base-XDR.zsend",
+  "decoded_bytes": 68704,
+  "decoded_sha256": "db118403d5d097456dea936dcc22b2e949edecf3f8eb78bef2c8a61830cfc8b3",
+  "class_": "REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "format": "zfs",
+  "url": "https://raw.githubusercontent.com/openzfs/zfs/5ebd13aa9a2329cac7bc8b23bfe946a4cde8bb53/tests/zfs-tests/tests/functional/zstream/little-endian-all-drr-types-incr-NATIVE.zsend.bz2",
+  "file": "zfs-little-endian-all-drr-types-incr-NATIVE.zsend.bz2",
+  "bytes": 43463,
+  "sha256": "d116f6e4eebefac87209118781d7aeafcfbd8f9a049d4b2955e4c37cd11013ce",
+  "decoded_file": "zfs-little-endian-all-drr-types-incr-NATIVE.zsend",
+  "decoded_bytes": 157352,
+  "decoded_sha256": "2c30d1a7892110a3d72b5803174177303c3dc227a5ba7f92f207ac132b4161a4",
+  "class_": "REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "format": "zfs",
+  "url": "https://raw.githubusercontent.com/openzfs/zfs/5ebd13aa9a2329cac7bc8b23bfe946a4cde8bb53/tests/zfs-tests/tests/functional/zstream/little-endian-all-drr-types-incr-XDR.zsend.bz2",
+  "file": "zfs-little-endian-all-drr-types-incr-XDR.zsend.bz2",
+  "bytes": 40759,
+  "sha256": "3ea8a9adce2d4229fcc3f7cd065330f7fba23dfca02311e3838c03b0f99b8811",
+  "decoded_file": "zfs-little-endian-all-drr-types-incr-XDR.zsend",
+  "decoded_bytes": 126628,
+  "decoded_sha256": "845b2727b570ee00f8aa819a8fbb7ef2a39c4ae83929b3992e4feea491d7a3ad",
+  "class_": "REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ }
+]

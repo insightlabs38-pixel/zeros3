@@ -1,0 +1,11 @@
+no pools available
+Defaulting to 4K blocksize (ashift=12) for '/workspace/work/q14-probe/vdev'
+NAME                    USED  AVAIL  REFER  MOUNTPOINT
+zeros3q14/restored@s0   216K      -  3.38M  -
+zeros3q14/restored@s1    88K      -  3.38M  -
+zeros3q14/restored@s2    80K      -  3.50M  -
+zeros3q14/restored@s3      0      -  3.50M  -
+zeros3q14/src@s0        216K      -  3.38M  -
+zeros3q14/src@s1         88K      -  3.38M  -
+zeros3q14/src@s2         80K      -  3.50M  -
+zeros3q14/src@s3           0      -  3.50M  -
