@@ -1,7 +1,8 @@
 # ZeroS3 surplus campaign — live progress
 
 Merged Q1: PR #72, `4f97c7beeaad542db854a54aa874f87a6dc6d5ff` (I1A_PARTIAL).
-Q2 branch: `z3/i1b-codec-kinds`; integration gates pass, ready for merge.
+Merged Q2: PR #73, `bd0562101364b65e7ddec4a33bc89ab7189b6b87` (I1B_COMPLETE).
+Q3: `z3/i1c-git-oci`, I1C_COMPLETE; final gates pass, ready for merge.
 Q2 checkpoints: `eb07532`, `a0a20ab`, final validation checkpoint in this branch.
 Continue through the entire queue automatically. Hourly wakes are recovery after
 usage limits, never normal batch stop points; an active worker treats a wake as
@@ -31,11 +32,14 @@ No test removed/skipped to obtain PASS; namespace interruption now uses a real
 fetch gate instead of a timing assumption, preserving every resume assertion.
 
 ## Next
-Merge Q2 if its reviewed PR body/head match this validated state, preserve branch,
-fetch main and start Q3 `z3/i1c-git-oci`. Implement gp-zlib first via bounded
-ReaderAt parser; no Git executable or GPL generator at decode. Lab idx rebuilding
-currently closes over a pack plan, so that form is not production-portable as-is.
-OCI should compose JSON blobs and exact codec/tar/structured children without a
-new kind. ZIP side study must stay within existing primitives or defer explicitly.
+Q3 implements bounded gp-zlib pack v2/v3 and idx v2; all eight lab vectors,
+hostile CDC fallbacks and public hiredis reexports pass. Reorder shares 5109/5216
+components but cumulative additive CDC+representation costs exceed CDC alone.
+BusyBox registry blobs/DiffIDs verified; codec/tar composition works. Generic
+ZIP Concat/Derived adapter passes framing/descriptor/ZIP64/signing/reorder cases.
+Final integration gates pass: full 179.865s; targeted race 7.436s; black-box
+54/24/32/24; decoder/parser fuzz 180056/103409. Merge Q3 and begin Q4
+`z3/debug-symbol-frontier`. Local checksum-verified .NET 8.0.427 and LLVM19
+tools plus three GCC/Clang/Portable-PDB/MSF controlled build revisions prepared.
 All later queue entries remain unfinished. No research promotions/kills yet.
 No new production number ≥8, wire/store version, default or planner decision merged.

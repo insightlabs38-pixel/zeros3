@@ -280,7 +280,8 @@ func VerifyDiffID(n *Node, lim Limits) string {
 		}
 		zr.Multistream(true)
 		h := sha256.New()
-		if _, err := io.Copy(h, io.LimitReader(zr, lim.MaxInflated+1)); err != nil {
+		defer zr.Close()
+		if n, err := io.Copy(h, io.LimitReader(zr, lim.MaxInflated+1)); err != nil || n > lim.MaxInflated {
 			return "mismatch"
 		}
 		copy(got[:], h.Sum(nil))

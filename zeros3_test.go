@@ -16342,6 +16342,13 @@ func TestReplicate_ResumeAcrossRealProcessInterruption(t *testing.T) {
 	firstAttempt.Process.Kill()
 	firstAttempt.Wait()
 	resumeSource()
+	// The proxy controls only the interrupted attempt. The uninterrupted retry
+	// uses the real source endpoint, preserving its normal streaming transport.
+	for i, arg := range replicateArgs {
+		if arg == sourceURL {
+			replicateArgs[i] = "http://" + srcAddr
+		}
+	}
 
 	if resp := doSignedRequest(t, client, "http://"+dstAddr, signer, http.MethodHead, "/dst/big.bin", nil, nil); resp.StatusCode == http.StatusOK {
 		resp.Body.Close()
@@ -18829,6 +18836,13 @@ func TestReplicateNamespace_ResumeAcrossRealProcessInterruption(t *testing.T) {
 	firstAttempt.Process.Kill()
 	firstAttempt.Wait()
 	resumeSource()
+	// The proxy controls only the interrupted attempt. The uninterrupted retry
+	// uses the real source endpoint, preserving its normal streaming transport.
+	for i, arg := range replicateArgs {
+		if arg == sourceURL {
+			replicateArgs[i] = "http://" + srcAddr
+		}
+	}
 
 	// Second, uninterrupted attempt must complete every object correctly,
 	// resuming from whatever the killed attempt already landed in the

@@ -28,6 +28,9 @@ type Limits struct {
 	MaxEntries int64 // default 1<<20
 	MaxCD      int64 // central directory bytes (default 256 MiB)
 	MaxName    int   // default 4096
+	// Generic ZIP framing opt-ins; the torch.save default remains stored-only.
+	AllowDeflate    bool // preserve method-8 bytes opaquely, never decompress here
+	AllowOpaqueTail bool // preserve a bounded signing/opaque gap before central directory
 }
 
 func (l Limits) norm() Limits {
@@ -47,6 +50,8 @@ func (l Limits) norm() Limits {
 type Member struct {
 	Name         string
 	Flags        uint16
+	Method       uint16
+	PlainSize    uint64 // declared uncompressed size; never an allocation request
 	CRC          uint32
 	HeaderOff    int64 // local header start
 	DataBegin    int64 // first byte of the stored data
@@ -196,13 +201,13 @@ func Parse(r io.ReaderAt, size int64, lim Limits) (*File, error) {
 		if nlen > lim.MaxName || pos+46+nlen+xlen+clen > len(cd) {
 			return nil, fmt.Errorf("%w: central entry %d lengths", ErrFormat, i)
 		}
-		if method != 0 {
+		if method != 0 && !(lim.AllowDeflate && method == 8) {
 			return nil, fmt.Errorf("%w: compression method %d", ErrUnsupported, method)
 		}
 		if le16(h[34:]) != 0 {
 			return nil, fmt.Errorf("%w: multi-disk member", ErrUnsupported)
 		}
-		m := Member{Name: string(h[46 : 46+nlen]), Flags: flags, CRC: uint32(le32(h[16:])),
+		m := Member{Name: string(h[46 : 46+nlen]), Flags: flags, Method: uint16(method), CRC: uint32(le32(h[16:])),
 			CentralBegin: f.CDBegin + int64(pos)}
 		csz, usz, lho := le32(h[20:]), le32(h[24:]), le32(h[42:])
 		ex := h[46+nlen : 46+nlen+xlen]
@@ -236,7 +241,7 @@ func Parse(r io.ReaderAt, size int64, lim Limits) (*File, error) {
 			}
 			ex = ex[4+l:]
 		}
-		if csz != usz {
+		if method == 0 && csz != usz {
 			return nil, fmt.Errorf("%w: stored member with sizes %d/%d", ErrFormat, csz, usz)
 		}
 		if lho > uint64(f.CDBegin) || csz > uint64(f.CDBegin)-lho {
@@ -246,6 +251,7 @@ func Parse(r io.ReaderAt, size int64, lim Limits) (*File, error) {
 			return nil, fmt.Errorf("%w: duplicate member %q", ErrFormat, m.Name)
 		}
 		names[m.Name] = true
+		m.PlainSize = usz
 		m.HeaderOff = int64(lho)
 		m.DataEnd = int64(csz) // size for now
 		m.CentralEnd = f.CDBegin + int64(pos+46+nlen+xlen+clen)
@@ -254,7 +260,7 @@ func Parse(r io.ReaderAt, size int64, lim Limits) (*File, error) {
 		if err != nil {
 			return nil, err
 		}
-		if le32(lb) != sigLocal || uint16(le16(lb[6:])) != flags || le16(lb[8:]) != 0 {
+		if le32(lb) != sigLocal || uint16(le16(lb[6:])) != flags || le16(lb[8:]) != method {
 			return nil, fmt.Errorf("%w: local header of %q", ErrFormat, m.Name)
 		}
 		ln, lx := int(le16(lb[26:])), int(le16(lb[28:]))
@@ -317,7 +323,7 @@ func Parse(r io.ReaderAt, size int64, lim Limits) (*File, error) {
 			} else {
 				cs, us = le64(d[off+4:]), le64(d[off+12:])
 			}
-			if cs != uint64(m.Size()) || us != uint64(m.Size()) {
+			if cs != uint64(m.Size()) || us != m.PlainSize {
 				return nil, fmt.Errorf("%w: descriptor sizes of %q", ErrFormat, m.Name)
 			}
 			m.DescEnd = m.DataEnd + int64(off+4+2*w)
@@ -325,7 +331,7 @@ func Parse(r io.ReaderAt, size int64, lim Limits) (*File, error) {
 		next = m.DescEnd
 		sorted[k] = m
 	}
-	if next != f.CDBegin {
+	if next > f.CDBegin || (next != f.CDBegin && (!lim.AllowOpaqueTail || f.CDBegin-next > lim.MaxCD)) {
 		return nil, fmt.Errorf("%w: %d bytes between the last member and the central directory", ErrUnsupported, f.CDBegin-next)
 	}
 	f.Members = sorted
