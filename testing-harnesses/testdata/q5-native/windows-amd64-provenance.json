@@ -1,0 +1,168 @@
+{
+ "artifacts": [
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "r0",
+   "File": "/workspace/work/q5-go/windows-amd64/std/r0.exe",
+   "Size": 6433280,
+   "SHA256": "a9512b6f40f4c311979f2df24417c310f27c4608e6b73348eee4c4429b233d53"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "r1",
+   "File": "/workspace/work/q5-go/windows-amd64/std/r1.exe",
+   "Size": 6433280,
+   "SHA256": "5b071d229d38e6af00a421700ebcb6b2481d2386b079f85b4426ce732655b35b"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "r2",
+   "File": "/workspace/work/q5-go/windows-amd64/std/r2.exe",
+   "Size": 6433792,
+   "SHA256": "5e935b70c5192a9a273d751d3209b1e85c4faa6e7dfcf95dff5f8060cea4bec0"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "r3",
+   "File": "/workspace/work/q5-go/windows-amd64/std/r3.exe",
+   "Size": 6433792,
+   "SHA256": "50e98e6d45dce83ca71eea34d4e39b38857b5640b1593c435b1091697c12ab37"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "early",
+   "File": "/workspace/work/q5-go/windows-amd64/std/early.exe",
+   "Size": 6434304,
+   "SHA256": "dba96bfcab3db763c2db67a40e21b84728176a49f75a1d530881f66842b2518c"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "swap",
+   "File": "/workspace/work/q5-go/windows-amd64/std/swap.exe",
+   "Size": 6433792,
+   "SHA256": "a0f02ae92cc91188507848cb7d3eb488dcd63b5220858edae8f50e58c4d6b14e"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "data",
+   "File": "/workspace/work/q5-go/windows-amd64/std/data.exe",
+   "Size": 6434304,
+   "SHA256": "5c603a601a54c99603fc3d17e9851f386216dfb8a94c156837ab4d80ea65eb8e"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "deps",
+   "File": "/workspace/work/q5-go/windows-amd64/std/deps.exe",
+   "Size": 6435840,
+   "SHA256": "440c0ff90cafb1b5c0e5e16b21eb83aa338c00baf4bf086bae469b60bbeed433"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "other",
+   "File": "/workspace/work/q5-go/windows-amd64/std/other.exe",
+   "Size": 5591552,
+   "SHA256": "4e7ca42255664341aae37d2c14fcb846c159d070490cb9aa37c7529fd5db653d"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "r0",
+   "File": "/workspace/work/q5-go/windows-amd64/strip/r0.exe",
+   "Size": 4390400,
+   "SHA256": "89cc08873a5b0fb2949d49a55dbe958fd5557b0f8ec2199cbc74ee041abc6d2d"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "r1",
+   "File": "/workspace/work/q5-go/windows-amd64/strip/r1.exe",
+   "Size": 4390400,
+   "SHA256": "7a8c93d922ab3dbcf5654dde86cb674d2179c69e6b683932cd53e33bbcb8431f"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "r2",
+   "File": "/workspace/work/q5-go/windows-amd64/strip/r2.exe",
+   "Size": 4390400,
+   "SHA256": "b3c57da9e0e78674c63b5187361217b1db251a3259dd6f30a24299e295fec019"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "r3",
+   "File": "/workspace/work/q5-go/windows-amd64/strip/r3.exe",
+   "Size": 4390400,
+   "SHA256": "97167cea0637e7379aeb392fd4386b5ac9367f89008b78a0a086b4ef725b2520"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "early",
+   "File": "/workspace/work/q5-go/windows-amd64/strip/early.exe",
+   "Size": 4390912,
+   "SHA256": "fd92e9ce25f0a9c7648d5a87fe8f1113f2a0f4eedb695a8ea918af29f5a8ecd6"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "swap",
+   "File": "/workspace/work/q5-go/windows-amd64/strip/swap.exe",
+   "Size": 4390400,
+   "SHA256": "9b33b23ce56ccff761bc654a119a2a23dcd9257ae41b2447f637fec2a44c0ce1"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "data",
+   "File": "/workspace/work/q5-go/windows-amd64/strip/data.exe",
+   "Size": 4390912,
+   "SHA256": "9599e1de8f1c4eb654ee3bd6646be9e23a929d394babcbaf14849c7de8beb5f2"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "deps",
+   "File": "/workspace/work/q5-go/windows-amd64/strip/deps.exe",
+   "Size": 4391936,
+   "SHA256": "ebc34c6cc736a1bc5e72919d36bd7dd5248aedc46da89fec10ba6be67b8ae2bb"
+  },
+  {
+   "GOOS": "windows",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "other",
+   "File": "/workspace/work/q5-go/windows-amd64/strip/other.exe",
+   "Size": 3814400,
+   "SHA256": "d982b388e470b50aa0ca3d6dd0f1bf7b06a0da87d48933df1a54089bfa505ca1"
+  }
+ ],
+ "host": "linux/amd64",
+ "toolchain": "go version go1.27.3 linux/amd64"
+}
