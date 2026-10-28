@@ -1,0 +1,27 @@
+{
+ "natural_rows": 24,
+ "control_rows": 8,
+ "checks": [
+  "hash rejected",
+  "bound rejected",
+  "AR overflow/span rejected"
+ ],
+ "main_base": "43900798dfaee9da63166bcd2fd6a8960e0a490b",
+ "files": {
+  "testing-harnesses/z3/cmd/z3xzfrontier/main.go": "6cbe7273752bfc9e8a9d4d0dcbf47afeec4c05510185537bdfb8863a0187d2ea",
+  "testing-harnesses/scripts/q11_fetch.py": "7ac4f8633ff561e4640b4c2ced4f9cfdaff8158e6c93a3efe1943d32f099eb7a",
+  "testing-harnesses/scripts/q11_reexport.py": "b0942d7f51ea8101a40720c6b4d312399a98ecbc31bc64604a7932460421794d",
+  "testing-harnesses/scripts/q11_validate.py": "c87240c9f099f3b1182e4d383d6fb42182b72cb332ced0567ba7a076d44bb196",
+  "testing-harnesses/scripts/q11_prepare_xz.py": "1706368ef55bc66a3dc0d8163e1756e12d859e294e6b159b0d4e319634e71dff"
+ },
+ "gates": {
+  "q11-lab-tests": {
+   "sha256": "ff1bf4b2a691a1c2d96b24ea197daf76bf31cf0b0d021e67d05ad9035f30dd20",
+   "tail": "test files]\nok  \tzeros3-z3/cmd/z3wasm\t(cached)\n?   \tzeros3-z3/cmd/z3xzfrontier\t[no test files]\n?   \tzeros3-z3/cmd/z3zstd\t[no test files]\nok  \tzeros3-z3/composez3\t(cached)\nok  \tzeros3-z3/convergence\t(cached)\nok  \tzeros3-z3/corpus\t(cached)\nok  \tzeros3-z3/dagz3\t(cached)\nok  \tzeros3-z3/debugsym\t(cached)\nok  \tzeros3-z3/deflate\t(cached)\nok  \tzeros3-z3/dexz3\t(cached)\nok  \tzeros3-z3/diskimg\t(cached)\n?   \tzeros3-z3/econx\t[no test files]\nok  \tzeros3-z3/elfz3\t(cached)\nok  \tzeros3-z3/eraez3\t(cached)\nok  \tzeros3-z3/frontier\t(cached)\n?   \tzeros3-z3/frontiercapture\t[no test files]\nok  \tzeros3-z3/fstate\t(cached)\nok  \tzeros3-z3/ggufz3\t(cached)\nok  \tzeros3-z3/gitz3\t(cached)\nok  \tzeros3-z3/gopcln\t(cached)\nok  \tzeros3-z3/idxref\t(cached)\nok  \tzeros3-z3/ir\t(cached)\nok  \tzeros3-z3/jvmz3\t(cached)\nok  \tzeros3-z3/lab\t(cached)\nok  \tzeros3-z3/merklez3\t(cached)\nok  \tzeros3-z3/modelz3\t(cached)\nok  \tzeros3-z3/nativerescue\t(cached)\nok  \tzeros3-z3/ociz3\t(cached)\nok  \tzeros3-z3/parquetz3\t(cached)\n?   \tzeros3-z3/pdelta\t[no test files]\nok  \tzeros3-z3/pez3\t(cached)\nok  \tzeros3-z3/prodshadow\t(cached)\nok  \tzeros3-z3/repz3\t(cached)\nok  \tzeros3-z3/repz3/kinds\t(cached)\nok  \tzeros3-z3/snappyz3\t(cached)\nok  \tzeros3-z3/sqlitez3\t(cached)\n?   \tzeros3-z3/srev\t[no test files]\nok  \tzeros3-z3/sstz3\t(cached)\nok  \tzeros3-z3/st\t(cached)\nok  \tzeros3-z3/tarz3\t(cached)\nok  \tzeros3-z3/tdelta\t(cached)\nok  \tzeros3-z3/thriftcompactz3\t(cached)\nok  \tzeros3-z3/torchz3\t(cached)\nok  \tzeros3-z3/wasmz3\t(cached)\nok  \tzeros3-z3/zstdz3\t(cached)\n"
+  },
+  "q11-lab-vet": {
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "tail": ""
+  }
+ }
+}

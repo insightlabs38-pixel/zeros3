@@ -74,3 +74,8 @@ proofs/fallbacks, native1GiB89.3MiBRSS, explicit cold-range amplification.
 EmbeddedZstd/prefix expansion guarded; compatibility54/bundles24/kinds32/
 crash24/rollback23 and full321.583s pass. No draft kinds merged.
 Next Q11 XZ/package Stage A; Q11-Q16 remain unfinished. Do not restart Q9/Q10.
+
+Q11 Stage A closed: NO_XZ_TARGET on6 real release artifacts,24 exact compressed/
+interior rows; separate8-row recompression control cannot rescue history costs.
+No XZ decoder/production change. Continue Q12 scientific/columnar shootout after
+eligible Q11 research merge. Q12-Q16 remain unfinished; drafts80/81 stay unmerged.
