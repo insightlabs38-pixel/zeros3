@@ -96,6 +96,7 @@ func cmdPerf(args []string) error {
 		sz.Head += zs.Head
 		sz.Framing += zs.Framing
 		sz.Snappy += zs.Snappy
+		sz.Zstd += zs.Zstd
 		sz.Explicit += zs.Explicit
 		sz.Groups += zs.Groups
 		sz.Trailers += zs.Trailers
@@ -110,7 +111,7 @@ func cmdPerf(args []string) error {
 	fmt.Printf("encode: %d tables, %.0f MiB in %.1fs = %.0f MiB/s; components %d (%.0f MiB logical, written once per digest); process peak RSS so far %.0f MiB; Go heap in use after %.0f MiB, total allocated %.1f GiB\n",
 		len(files), float64(in)/(1<<20), enc.Seconds(), float64(in)/(1<<20)/enc.Seconds(), comps, float64(compBytes)/(1<<20), float64(vmHWM())/(1<<20), float64(m1.HeapInuse)/(1<<20), float64(m1.TotalAlloc-m0.TotalAlloc)/(1<<30))
 	fmt.Printf("structure: %d blocks (explicit-layout blocks %d), Snappy blocks explicit/go/cpp14/cpp15 %v, %d records; keys %.1f MiB, values %.1f MiB, trailers %.1f MiB (%.1f%% of logical bytes are keys); data blocks %.0f MiB, tail %.1f MiB (%.2f%%)\n", tot.Blocks, tot.ExplicitBlocks, tot.PredBlocks, tot.Records, float64(tot.KeyBytes)/(1<<20), float64(tot.ValueBytes)/(1<<20), float64(tot.TrailerBytes)/(1<<20), 100*float64(tot.KeyBytes)/float64(tot.KeyBytes+tot.ValueBytes), float64(tot.DataBytes)/(1<<20), float64(tot.TailBytes)/(1<<20), 100*float64(tot.TailBytes)/float64(tot.DataBytes+tot.TailBytes))
-	fmt.Printf("recipes: head %d, block framing %d, Snappy %d, explicit layouts %d, group counts %d, sequence/type words %d, digests %d (bytes, all tables)\n", sz.Head, sz.Framing, sz.Snappy, sz.Explicit, sz.Groups, sz.Trailers, sz.Digests)
+	fmt.Printf("recipes: head %d, block framing %d, Snappy %d, Zstd %d, explicit layouts %d, group counts %d, sequence/type words %d, digests %d (bytes, all tables)\n", sz.Head, sz.Framing, sz.Snappy, sz.Zstd, sz.Explicit, sz.Groups, sz.Trailers, sz.Digests)
 	if !*decode {
 		return nil
 	}

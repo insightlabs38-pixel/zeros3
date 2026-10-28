@@ -12,8 +12,9 @@ Mechanically shared frontier capture,
 transient component/span/pack proofs and cumulative physical accounting.
 Q7 gates pass: NOT_WORTH_COMPLEXITY for current persistent-format change.
 37 actual stages, full costs/range amplification, exact Q6 frontier preserved.
-Q8 active: codec-separated native histories; SST audit now labels incomplete
-index coverage instead of implying low unsupported-codec byte share.
+Q8 gates pass: Zstd SST exact in132 six-form replays; delta-length Parquet
+reduces DuckDB REP37.3%;162 proved inputs/fallbacks. Pebble2.1.7 format7
+and LZ4 remain CDC. Ready research merge, then continue Q9 draft-only port.
 ELF/PE DEFER: genuine grouped exact gains on controlled histories, mixed C++
 and public losses. Closed recipes/evidence retained; Q6 now captures unified
 physical candidate closures and tests honest late bootstrap/regret policies.
