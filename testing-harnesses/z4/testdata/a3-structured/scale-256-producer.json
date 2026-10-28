@@ -1,0 +1,10 @@
+{
+  "producer": "pyarrow",
+  "version": "18.1.0",
+  "source_bytes": 268435456,
+  "rows": 66846720,
+  "logical_value_bytes": 267386880,
+  "footer_padding": 1020820,
+  "sha256": "cc3cfc3540e41d6e5e3ff1bca26121c9b522d331a7e28ca77f91f55930b90d18",
+  "class_": "SYNTHETIC_MEMORY_CONTROL"
+}
