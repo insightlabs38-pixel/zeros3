@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/md5"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha3"
 	"crypto/sha512"
@@ -34,6 +35,7 @@ import (
 	"flag"
 	"fmt"
 	"hash"
+	"hash/adler32"
 	"hash/crc32"
 	"io"
 	"io/fs"
@@ -21854,8 +21856,8 @@ func printDeltaStats(w io.Writer, st BundleStats) {
 // All integers are minimal unsigned varints; the object is consumed exactly.
 // A representation is named by the SHA-256 of its serialized bytes and is
 // loaded only after that digest matches. Kind numbers keep fixed headroom:
-// 1 Concat, 2 CAR, 3 SQLite, 4 (Git, reserved), 5 Merkle, 6 Gzip,
-// 7 Zstd. Reserved and unknown kinds fail as unsupported.
+// 1 Concat, 2 CAR, 3 SQLite, 4 Git, 5 Merkle, 6 Gzip,
+// 7 Zstd. Unknown kinds fail as unsupported.
 // =============================================================================
 
 const (
@@ -21899,7 +21901,8 @@ const (
 	repKindConcat repKind = 1
 	repKindCAR    repKind = 2
 	repKindSQLite repKind = 3
-	// 4 is reserved for Git; codec numbers retain their I0 reservations.
+	repKindGit    repKind = 4
+	// Git and codec numbers retain their I0 reservations.
 	repKindMerkle repKind = 5
 	repKindGzip   repKind = 6
 	repKindZstd   repKind = 7
@@ -21907,7 +21910,7 @@ const (
 
 // supported reports whether this build can decode the kind.
 func (k repKind) supported() bool {
-	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindMerkle || k == repKindGzip || k == repKindZstd
+	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd
 }
 
 type repRole uint8
@@ -22400,6 +22403,8 @@ type repDecoder interface {
 // repDecoderFor is the finite kind table: a switch, never a registry.
 func repDecoderFor(k repKind) (repDecoder, bool) {
 	switch k {
+	case repKindGit:
+		return gitDecoder{}, true
 	case repKindCAR:
 		return repCARDecoder{}, true
 	case repKindSQLite:
@@ -36085,6 +36090,1538 @@ func readTable(c *repCall, n int, max int64) ([]byte, error) {
 		buf = append(buf, b...)
 	}
 	return buf, nil
+}
+
+// Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.
+
+// Port source: zeros3-z3/gitz3/delta.go
+func repGTdeltaVarint(d []byte, i int) (uint64, int, error) {
+	var v uint64
+	for shift := uint(0); ; shift += 7 {
+		if i >= len(d) {
+			return 0, i, repGTcorrupt("delta header truncated")
+		}
+		if shift > 56 {
+			return 0, i, repGTcorrupt("delta size varint too long")
+		}
+		c := d[i]
+		i++
+		v |= uint64(c&0x7f) << shift
+		if c&0x80 == 0 {
+			return v, i, nil
+		}
+	}
+}
+
+// Port source: zeros3-z3/gitz3/delta.go
+// ParseDeltaHeader returns the source and target sizes and the header length.
+func repGTParseDeltaHeader(d []byte) (src, tgt uint64, n int, err error) {
+	src, n, err = repGTdeltaVarint(d, 0)
+	if err != nil {
+		return
+	}
+	tgt, n, err = repGTdeltaVarint(d, n)
+	return
+}
+
+// Port source: zeros3-z3/gitz3/delta.go
+// nextOp decodes one op at d[i:]. For a copy it returns (off, size, ins=nil); for
+// an insert the literal slice.
+func repGTnextOp(d []byte, i int) (off, size uint64, ins []byte, next int, err error) {
+	c := d[i]
+	i++
+	switch {
+	case c == 0:
+		return 0, 0, nil, i, repGTcorrupt("delta opcode 0")
+	case c&0x80 != 0:
+		for b := uint(0); b < 4; b++ {
+			if c&(1<<b) != 0 {
+				if i >= len(d) {
+					return 0, 0, nil, i, repGTcorrupt("delta copy truncated")
+				}
+				off |= uint64(d[i]) << (8 * b)
+				i++
+			}
+		}
+		for b := uint(0); b < 3; b++ {
+			if c&(0x10<<b) != 0 {
+				if i >= len(d) {
+					return 0, 0, nil, i, repGTcorrupt("delta copy truncated")
+				}
+				size |= uint64(d[i]) << (8 * b)
+				i++
+			}
+		}
+		if size == 0 {
+			size = 0x10000
+		}
+		return off, size, nil, i, nil
+	default:
+		n := int(c)
+		if i+n > len(d) {
+			return 0, 0, nil, i, repGTcorrupt("delta insert truncated")
+		}
+		return 0, 0, d[i : i+n], i + n, nil
+	}
+}
+
+// Port source: zeros3-z3/gitz3/delta.go
+// ApplyDelta applies a delta to base. maxOut bounds the target size. The
+// target size is rejected up front if the delta is too short to produce it
+// (one copy op byte yields at most 64 KiB), so a hostile header cannot make us
+// allocate more than 64 KiB per delta byte nor more than maxOut.
+func repGTApplyDelta(base, d []byte, maxOut int64) ([]byte, error) {
+	src, tgt, i, err := repGTParseDeltaHeader(d)
+	if err != nil {
+		return nil, err
+	}
+	if src != uint64(len(base)) {
+		return nil, repGTcorrupt("delta source size %d, base %d", src, len(base))
+	}
+	if maxOut > 0 && tgt > uint64(maxOut) {
+		return nil, repGTlimit("delta target %d > %d", tgt, maxOut)
+	}
+	if tgt > uint64(len(d))*0x10000 {
+		return nil, repGTcorrupt("delta target %d impossible from %d delta bytes", tgt, len(d))
+	}
+	out := make([]byte, 0, tgt)
+	for i < len(d) {
+		off, size, ins, nx, err := repGTnextOp(d, i)
+		if err != nil {
+			return nil, err
+		}
+		i = nx
+		if ins != nil {
+			if uint64(len(out))+uint64(len(ins)) > tgt {
+				return nil, repGTcorrupt("delta output exceeds declared target")
+			}
+			out = append(out, ins...)
+			continue
+		}
+		if off > src || size > src-off {
+			return nil, repGTcorrupt("delta copy %d+%d outside base %d", off, size, src)
+		}
+		if uint64(len(out))+size > tgt {
+			return nil, repGTcorrupt("delta output exceeds declared target")
+		}
+		out = append(out, base[off:off+size]...)
+	}
+	if uint64(len(out)) != tgt {
+		return nil, repGTcorrupt("delta produced %d bytes, declared %d", len(out), tgt)
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+var (
+	repGTErrCorrupt     = errors.New("gitz3: corrupt")
+	repGTErrLimit       = errors.New("gitz3: limit exceeded")
+	repGTErrChecksum    = errors.New("gitz3: checksum mismatch")
+	repGTErrThin        = errors.New("gitz3: unresolved delta base (thin pack or cycle)")
+	repGTErrUnsupported = errors.New("gitz3: unsupported")
+	repGTErrMismatch    = errors.New("gitz3: reconstruction mismatch")
+)
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+func repGTcorrupt(f string, a ...any) error {
+	return fmt.Errorf("%w: %s", repGTErrCorrupt, fmt.Sprintf(f, a...))
+}
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+func repGTlimit(f string, a ...any) error {
+	return fmt.Errorf("%w: %s", repGTErrLimit, fmt.Sprintf(f, a...))
+}
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+// Algo is the repository object format.
+type repGTAlgo uint8
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+const (
+	repGTSHA1   repGTAlgo = 1
+	repGTSHA256 repGTAlgo = 2
+)
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+func (a repGTAlgo) Size() int {
+	if a == repGTSHA256 {
+		return 32
+	}
+	return 20
+}
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+func (a repGTAlgo) String() string {
+	if a == repGTSHA256 {
+		return "sha256"
+	}
+	return "sha1"
+}
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+func (a repGTAlgo) New() hash.Hash {
+	if a == repGTSHA256 {
+		return sha256.New()
+	}
+	return sha1.New()
+}
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+func (a repGTAlgo) Sum(b []byte) []byte {
+	h := a.New()
+	h.Write(b)
+	return h.Sum(nil)
+}
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+// Limits bound every parse. Zero fields take the defaults.
+type repGTLimits struct {
+	MaxObjects    int   // entries in a pack / index
+	MaxObjectSize int64 // inflated size of one entry / resolved object
+	MaxInflated   int64 // total inflated bytes over a pack parse or resolve
+	MaxDeltaDepth int   // delta chain depth
+	MaxDeltaOut   int64 // total bytes produced by delta application
+	MaxPack       int64 // input pack bytes
+}
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+func repGTDefaultLimits() repGTLimits {
+	return repGTLimits{MaxObjects: 1 << 22, MaxObjectSize: 256 << 20, MaxInflated: 8 << 30, MaxDeltaDepth: 4096, MaxDeltaOut: 8 << 30, MaxPack: 8 << 30}
+}
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+func (l repGTLimits) norm() repGTLimits {
+	d := repGTDefaultLimits()
+	if l.MaxObjects <= 0 {
+		l.MaxObjects = d.MaxObjects
+	}
+	if l.MaxObjectSize <= 0 {
+		l.MaxObjectSize = d.MaxObjectSize
+	}
+	if l.MaxInflated <= 0 {
+		l.MaxInflated = d.MaxInflated
+	}
+	if l.MaxDeltaDepth <= 0 {
+		l.MaxDeltaDepth = d.MaxDeltaDepth
+	}
+	if l.MaxDeltaOut <= 0 {
+		l.MaxDeltaOut = d.MaxDeltaOut
+	}
+	if l.MaxPack <= 0 {
+		l.MaxPack = d.MaxPack
+	}
+	return l
+}
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+// ObjType is a Git object type (1..4 as in pack entries).
+type repGTObjType uint8
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+const (
+	repGTCommit repGTObjType = 1
+	repGTTree   repGTObjType = 2
+	repGTBlob   repGTObjType = 3
+	repGTTag    repGTObjType = 4
+	// pack entry kinds that are not object types
+	repGTofsDelta = 6
+	repGTrefDelta = 7
+)
+
+// Port source: zeros3-z3/gitz3/gitz3.go
+func (t repGTObjType) String() string {
+	switch t {
+	case repGTCommit:
+		return "commit"
+	case repGTTree:
+		return "tree"
+	case repGTBlob:
+		return "blob"
+	case repGTTag:
+		return "tag"
+	}
+	return fmt.Sprintf("type%d", uint8(t))
+}
+
+// Port source: zeros3-z3/gitz3/idx.go
+// Idx is a parsed pack index v2. Only the fanout, the section geometry and the
+// two trailer checksums are resident; ids, CRCs and offsets are read on demand
+// from the source in bounded pieces and never beyond Size.
+type repGTIdx struct {
+	Algo   repGTAlgo
+	N      int
+	Fanout [256]uint32
+	Size   int64
+	src    io.ReaderAt
+	err    error // first I/O error met by a convenience accessor
+	// section offsets
+	idsOff, crcOff, offOff, big int64
+	bigN                        int64
+	PackSum, IdxSum             []byte
+}
+
+// Port source: zeros3-z3/gitz3/idx.go
+const repGTidxHdr = 8 + 256*4
+
+// Port source: zeros3-z3/gitz3/idx.go
+// idxBuf is the fixed streaming window of ParseIdxAt.
+const repGTidxBuf = 64 << 10
+
+// Port source: zeros3-z3/gitz3/idx.go
+// ParseIdxAt parses and validates the v2 pack index of the size bytes readable
+// from r: magic/version, fanout monotonicity, exact length (including the 64-bit
+// offset table), strictly sorted ids consistent with the fanout, bounded 64-bit
+// offset references, and the index checksum. It streams through fixed windows,
+// never reads past size, and allocates nothing from a declared count. A source
+// shorter than size is ErrCorrupt.
+func repGTParseIdxAt(r io.ReaderAt, size int64, a repGTAlgo, lim repGTLimits) (*repGTIdx, error) {
+	lim = lim.norm()
+	hs := int64(a.Size())
+	if size < repGTidxHdr+2*hs {
+		return nil, repGTcorrupt("idx shorter than fanout+trailer")
+	}
+	src := io.NewSectionReader(r, 0, size)
+	var hdr [repGTidxHdr]byte
+	if err := repGTreadFullAt(src, hdr[:], 0); err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(hdr[:4], []byte{0xff, 't', 'O', 'c'}) {
+		return nil, repGTErrUnsupported // v1 idx has no magic; handled by ParseIdxV1
+	}
+	if binary.BigEndian.Uint32(hdr[4:]) != 2 {
+		return nil, repGTErrUnsupported
+	}
+	x := &repGTIdx{Algo: a, Size: size, src: src}
+	prev := uint32(0)
+	for i := 0; i < 256; i++ {
+		v := binary.BigEndian.Uint32(hdr[8+4*i:])
+		if v < prev {
+			return nil, repGTcorrupt("fanout not monotonic at %d", i)
+		}
+		x.Fanout[i], prev = v, v
+	}
+	if uint64(prev) > uint64(lim.MaxObjects) {
+		return nil, repGTlimit("idx object count %d", prev)
+	}
+	n := int64(prev)
+	x.N = int(n)
+	// n <= MaxObjects, so these products cannot overflow int64.
+	x.idsOff = repGTidxHdr
+	x.crcOff = x.idsOff + n*hs
+	x.offOff = x.crcOff + 4*n
+	x.big = x.offOff + 4*n
+	rest := size - 2*hs - x.big
+	if rest < 0 || rest%8 != 0 {
+		return nil, repGTcorrupt("idx length")
+	}
+	x.bigN = rest / 8
+	buf := make([]byte, repGTidxBuf)
+	// offsets: every 64-bit reference must land inside the 64-bit table
+	maxRef := int64(-1)
+	for done := int64(0); done < n; {
+		m := min(n-done, repGTidxBuf/4)
+		if err := repGTreadFullAt(src, buf[:4*m], x.offOff+4*done); err != nil {
+			return nil, err
+		}
+		for i := int64(0); i < m; i++ {
+			if o := binary.BigEndian.Uint32(buf[4*i:]); o&0x80000000 != 0 {
+				maxRef = max(maxRef, int64(o&0x7fffffff))
+			}
+		}
+		done += m
+	}
+	if maxRef >= x.bigN {
+		return nil, repGTcorrupt("64-bit offset reference %d of %d", maxRef, x.bigN)
+	}
+	// ids: strictly sorted, consistent with the fanout
+	last := make([]byte, hs)
+	pos, b := int64(0), 0
+	for done := int64(0); done < n; {
+		m := min(n-done, repGTidxBuf/hs)
+		if err := repGTreadFullAt(src, buf[:m*hs], x.idsOff+done*hs); err != nil {
+			return nil, err
+		}
+		for i := int64(0); i < m; i++ {
+			id := buf[i*hs : (i+1)*hs]
+			if done+i > 0 && bytes.Compare(last, id) >= 0 {
+				return nil, repGTcorrupt("ids not strictly sorted at %d", done+i)
+			}
+			copy(last, id)
+			// fanout[c] = number of ids whose first byte <= c
+			for b < int(id[0]) {
+				if int64(x.Fanout[b]) != pos {
+					return nil, repGTcorrupt("fanout[%d]=%d, ids say %d", b, x.Fanout[b], pos)
+				}
+				b++
+			}
+			pos++
+		}
+		done += m
+	}
+	for ; b < 256; b++ {
+		if int64(x.Fanout[b]) != pos {
+			return nil, repGTcorrupt("fanout[%d]=%d, ids say %d", b, x.Fanout[b], pos)
+		}
+	}
+	x.PackSum = make([]byte, hs)
+	x.IdxSum = make([]byte, hs)
+	if err := repGTreadFullAt(src, x.PackSum, size-2*hs); err != nil {
+		return nil, err
+	}
+	if err := repGTreadFullAt(src, x.IdxSum, size-hs); err != nil {
+		return nil, err
+	}
+	h := a.New()
+	if got, err := io.CopyBuffer(h, io.NewSectionReader(src, 0, size-hs), buf); err != nil {
+		return nil, err
+	} else if got != size-hs {
+		return nil, repGTcorrupt("source ended at %d of %d bytes", got, size-hs)
+	}
+	if !bytes.Equal(h.Sum(nil), x.IdxSum) {
+		return nil, repGTErrChecksum
+	}
+	return x, nil
+}
+
+// Port source: zeros3-z3/gitz3/idx.go
+// Err returns the first I/O error met by ID, Offset, CRC or Lookup (which return
+// zero values on error so that byte-backed callers keep their shape).
+func (x *repGTIdx) Err() error { return x.err }
+
+// Port source: zeros3-z3/gitz3/idx.go
+func (x *repGTIdx) fail(err error) { x.err = cmp.Or(x.err, err) }
+
+// Port source: zeros3-z3/gitz3/idx.go
+func (x *repGTIdx) check(i int) error {
+	if i < 0 || i >= x.N {
+		return repGTcorrupt("idx position %d of %d", i, x.N)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/gitz3/idx.go
+// ReadID reads the i'th (sorted) id.
+func (x *repGTIdx) ReadID(i int) ([]byte, error) {
+	if err := x.check(i); err != nil {
+		return nil, err
+	}
+	hs := int64(x.Algo.Size())
+	id := make([]byte, hs)
+	return id, repGTreadFullAt(x.src, id, x.idsOff+int64(i)*hs)
+}
+
+// Port source: zeros3-z3/gitz3/idx.go
+// ReadOffset reads the pack offset of the i'th (sorted) id, following the
+// 64-bit table when the 32-bit slot refers to it.
+func (x *repGTIdx) ReadOffset(i int) (int64, error) {
+	if err := x.check(i); err != nil {
+		return 0, err
+	}
+	var w [8]byte
+	if err := repGTreadFullAt(x.src, w[:4], x.offOff+4*int64(i)); err != nil {
+		return 0, err
+	}
+	o := binary.BigEndian.Uint32(w[:4])
+	if o&0x80000000 == 0 {
+		return int64(o), nil
+	}
+	r := int64(o & 0x7fffffff)
+	if r >= x.bigN {
+		return 0, repGTcorrupt("64-bit offset reference %d of %d", r, x.bigN)
+	}
+	if err := repGTreadFullAt(x.src, w[:], x.big+8*r); err != nil {
+		return 0, err
+	}
+	return int64(binary.BigEndian.Uint64(w[:])), nil
+}
+
+// Port source: zeros3-z3/gitz3/idx.go
+// ReadCRC reads the stored CRC-32 of the i'th (sorted) id's pack entry.
+func (x *repGTIdx) ReadCRC(i int) (uint32, error) {
+	if err := x.check(i); err != nil {
+		return 0, err
+	}
+	var w [4]byte
+	err := repGTreadFullAt(x.src, w[:], x.crcOff+4*int64(i))
+	return binary.BigEndian.Uint32(w[:]), err
+}
+
+// Port source: zeros3-z3/gitz3/idx.go
+// ID returns the i'th (sorted) id (nil on error; see Err).
+func (x *repGTIdx) ID(i int) []byte {
+	id, err := x.ReadID(i)
+	if err != nil {
+		x.fail(err)
+		return nil
+	}
+	return id
+}
+
+// Port source: zeros3-z3/gitz3/idx.go
+// Offset returns the pack offset of the i'th (sorted) id (0 on error; see Err).
+func (x *repGTIdx) Offset(i int) int64 {
+	o, err := x.ReadOffset(i)
+	x.fail(err)
+	return o
+}
+
+// Port source: zeros3-z3/gitz3/idx.go
+// CRC returns the stored CRC-32 of the i'th (sorted) id's pack entry (0 on
+// error; see Err).
+func (x *repGTIdx) CRC(i int) uint32 {
+	c, err := x.ReadCRC(i)
+	x.fail(err)
+	return c
+}
+
+// Port source: zeros3-z3/gitz3/idx.go
+// LookupStats counts what a lookup touched.
+type repGTLookupStats struct {
+	Probes  int
+	Touched int // bytes read from the index
+}
+
+// Port source: zeros3-z3/gitz3/idx.go
+// Lookup finds id with the fanout table and a binary search over the sorted
+// ids. It returns the sorted position or -1 (also on an I/O error; see Err).
+func (x *repGTIdx) Lookup(id []byte) (int, repGTLookupStats) {
+	var st repGTLookupStats
+	hs := x.Algo.Size()
+	if len(id) != hs {
+		return -1, st
+	}
+	b := int(id[0])
+	lo := 0
+	if b > 0 {
+		lo = int(x.Fanout[b-1])
+		st.Touched += 4
+	}
+	hi := int(x.Fanout[b])
+	st.Touched += 4
+	for lo < hi {
+		m := (lo + hi) / 2
+		mid, err := x.ReadID(m)
+		if err != nil {
+			x.fail(err)
+			return -1, st
+		}
+		c := bytes.Compare(mid, id)
+		st.Probes++
+		st.Touched += hs
+		switch {
+		case c == 0:
+			st.Touched += 4 + 4 // CRC and 32-bit offset (the CRC is read only to verify; counted)
+			return m, st
+		case c < 0:
+			lo = m + 1
+		default:
+			hi = m
+		}
+	}
+	return -1, st
+}
+
+// Port source: zeros3-z3/gitz3/idx.go
+// CheckAgainstPack verifies that the index describes exactly this pack:
+// matching pack checksum, object set, offsets and CRCs (Pack must be resolved).
+func (x *repGTIdx) CheckAgainstPack(p *repGTPack) error {
+	if !p.resolved {
+		return repGTErrUnsupported
+	}
+	if x.N != len(p.Entries) || !bytes.Equal(x.PackSum, p.Trailer) {
+		return repGTErrMismatch
+	}
+	for i := 0; i < x.N; i++ {
+		id, err := x.ReadID(i)
+		if err != nil {
+			return err
+		}
+		off, err := x.ReadOffset(i)
+		if err != nil {
+			return err
+		}
+		crc, err := x.ReadCRC(i)
+		if err != nil {
+			return err
+		}
+		j := p.IndexOfID(id)
+		if j < 0 || p.Entries[j].Off != off || p.Entries[j].CRC != crc {
+			return repGTErrMismatch
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/gitz3/objects.go
+// CanonHeader returns "<type> <size>\x00".
+func repGTCanonHeader(t repGTObjType, size int64) []byte {
+	b := make([]byte, 0, 24)
+	b = append(b, t.String()...)
+	b = append(b, ' ')
+	b = strconv.AppendInt(b, size, 10)
+	return append(b, 0)
+}
+
+// Port source: zeros3-z3/gitz3/objects.go
+// ObjectID is the native identity of an object.
+func repGTObjectID(a repGTAlgo, t repGTObjType, payload []byte) []byte {
+	h := a.New()
+	h.Write(repGTCanonHeader(t, int64(len(payload))))
+	h.Write(payload)
+	return h.Sum(nil)
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// Entry is one parsed pack entry. Offsets are into the pack source.
+type repGTEntry struct {
+	Off, End   int64  // whole entry [Off,End)
+	Kind       uint8  // 1..4 full object, 6 OFS_DELTA, 7 REF_DELTA
+	Size       int64  // inflated size of the entry's zlib stream (object payload, or delta program)
+	HdrLen     int    // bytes of the type/size varint
+	BaseLen    int    // bytes of the OFS offset / REF id encoding (0 for full objects)
+	BaseOff    int64  // OFS: absolute offset of the base entry
+	BaseRef    []byte // REF: base object id
+	ZOff, ZEnd int64  // zlib stream [ZOff,ZEnd) including header and Adler-32
+	CRC        uint32 // CRC-32 of [Off,End) (what the v2 index stores)
+	// Filled by Resolve.
+	Type  repGTObjType // resolved object type
+	RSize int64        // resolved object size
+	ID    []byte
+	Base  int // index of the base entry, -1 for a full object
+	Depth int
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+func (e *repGTEntry) IsDelta() bool { return e.Kind == repGTofsDelta || e.Kind == repGTrefDelta }
+
+// Port source: zeros3-z3/gitz3/pack.go
+// Pack is a parsed pack: structural metadata plus a bounded random-access source.
+// It never holds the pack bytes; every range is read on demand through the source
+// (a file, a CAS-backed object, a byte slice), and no read can go past Size.
+type repGTPack struct {
+	Algo    repGTAlgo
+	Version uint32
+	Entries []repGTEntry
+	Trailer []byte
+	Lim     repGTLimits
+	Size    int64 // bytes of the pack, trailer included
+
+	src      *io.SectionReader
+	byOff    map[int64]int
+	ids      map[string]int
+	resolved bool
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// ParsePackAt parses the pack structure of the size bytes readable from r:
+// header, every entry header, every zlib stream boundary (each stream is inflated
+// once to find its end, check its declared size and its Adler-32) and the trailer
+// checksum. It reads in bounded pieces (a fixed header window, a fixed streaming
+// buffer), never past size, and allocates nothing from a declared length. It does
+// not resolve deltas; see Resolve. Anything it cannot parse is an error the caller
+// answers by treating the pack as opaque bytes. A source shorter than size is
+// ErrCorrupt.
+func repGTParsePackAt(r io.ReaderAt, size int64, a repGTAlgo, lim repGTLimits) (*repGTPack, error) {
+	lim = lim.norm()
+	hs := int64(a.Size())
+	if size < 0 {
+		return nil, repGTcorrupt("negative pack size")
+	}
+	if size > lim.MaxPack {
+		return nil, repGTlimit("pack %d bytes", size)
+	}
+	if size < 12+hs {
+		return nil, repGTcorrupt("pack shorter than header+trailer")
+	}
+	src := io.NewSectionReader(r, 0, size)
+	var hdr [12]byte
+	if err := repGTreadFullAt(src, hdr[:], 0); err != nil {
+		return nil, err
+	}
+	if string(hdr[:4]) != "PACK" {
+		return nil, repGTcorrupt("pack magic")
+	}
+	ver := binary.BigEndian.Uint32(hdr[4:])
+	if ver != 2 && ver != 3 {
+		return nil, repGTErrUnsupported
+	}
+	n := binary.BigEndian.Uint32(hdr[8:])
+	body := size - hs
+	if int64(n) > int64(lim.MaxObjects) || int64(n) > (body-12)/9 {
+		return nil, repGTlimit("object count %d", n)
+	}
+	h := a.New()
+	if got, err := io.Copy(h, io.NewSectionReader(src, 0, body)); err != nil {
+		return nil, err
+	} else if got != body {
+		return nil, repGTcorrupt("source ended at %d of %d bytes", got, body)
+	}
+	trailer := make([]byte, hs)
+	if err := repGTreadFullAt(src, trailer, body); err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(h.Sum(nil), trailer) {
+		return nil, repGTErrChecksum
+	}
+	p := &repGTPack{Algo: a, Version: ver, Trailer: trailer, Lim: lim, Size: size, src: src, byOff: make(map[int64]int, n)}
+	p.Entries = make([]repGTEntry, 0, n)
+	zr := repGTgetZReader()
+	defer repGTputZReader(zr)
+	var inflated int64
+	off := int64(12)
+	for i := uint32(0); i < n; i++ {
+		e, err := p.parseEntry(off, body, zr)
+		if err != nil {
+			return nil, err
+		}
+		inflated += e.Size
+		if inflated > lim.MaxInflated {
+			return nil, repGTlimit("inflated bytes > %d", lim.MaxInflated)
+		}
+		p.byOff[e.Off] = len(p.Entries)
+		p.Entries = append(p.Entries, e)
+		off = e.End
+	}
+	if off != body {
+		return nil, repGTcorrupt("%d bytes between last entry and trailer", body-off)
+	}
+	return p, nil
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// readFullAt fills b from r at off. A short read is ErrCorrupt (the source is
+// shorter than its declared size); other I/O errors pass through.
+func repGTreadFullAt(r io.ReaderAt, b []byte, off int64) error {
+	n, err := r.ReadAt(b, off)
+	if n == len(b) {
+		return nil
+	}
+	if err == nil || err == io.EOF {
+		return repGTcorrupt("source ended at %d, wanted %d bytes at %d", off+int64(n), len(b), off)
+	}
+	return err
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// ReadAt reads from the pack source; it never reads past Size.
+func (p *repGTPack) ReadAt(b []byte, off int64) (int, error) { return p.src.ReadAt(b, off) }
+
+// Port source: zeros3-z3/gitz3/pack.go
+// Range is a bounded reader over the pack bytes [off,end).
+func (p *repGTPack) Range(off, end int64) (*io.SectionReader, error) {
+	if off < 0 || off > end || end > p.Size {
+		return nil, repGTcorrupt("range [%d,%d) outside pack of %d bytes", off, end, p.Size)
+	}
+	return io.NewSectionReader(p.src, off, end-off), nil
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// Bytes copies the pack bytes [off,end) into memory. For headers, trailers and
+// other small ranges; large ranges should go through Range / WriteRange.
+func (p *repGTPack) Bytes(off, end int64) ([]byte, error) {
+	if off < 0 || off > end || end > p.Size {
+		return nil, repGTcorrupt("range [%d,%d) outside pack of %d bytes", off, end, p.Size)
+	}
+	b := make([]byte, end-off)
+	if err := repGTreadFullAt(p.src, b, off); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// WriteRange streams the pack bytes [off,end) to w.
+func (p *repGTPack) WriteRange(w io.Writer, off, end int64) error {
+	r, err := p.Range(off, end)
+	if err != nil {
+		return err
+	}
+	n, err := io.Copy(w, r)
+	if err == nil && n != end-off {
+		err = repGTcorrupt("source ended at %d of %d", off+n, end)
+	}
+	return err
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// EntryBytes is the exact bytes of entry i (header, base encoding, zlib stream).
+func (p *repGTPack) EntryBytes(i int) ([]byte, error) {
+	return p.Bytes(p.Entries[i].Off, p.Entries[i].End)
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// ZlibBytes is the exact zlib stream of entry i.
+func (p *repGTPack) ZlibBytes(i int) ([]byte, error) {
+	return p.Bytes(p.Entries[i].ZOff, p.Entries[i].ZEnd)
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// HeaderBytes is the entry's type/size varint plus its OFS/REF base encoding.
+func (p *repGTPack) HeaderBytes(i int) ([]byte, error) {
+	return p.Bytes(p.Entries[i].Off, p.Entries[i].ZOff)
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// maxEntryHdr bounds the type/size varint (10) plus an OFS varint (10) or a REF id (32).
+const repGTmaxEntryHdr = 64
+
+// Port source: zeros3-z3/gitz3/pack.go
+func (p *repGTPack) parseEntry(off, body int64, zr *repGTzreader) (repGTEntry, error) {
+	e := repGTEntry{Off: off, Base: -1}
+	if off >= body {
+		return e, repGTcorrupt("entry offset %d at/after trailer", off)
+	}
+	var window [repGTmaxEntryHdr]byte
+	d := window[:min(int64(repGTmaxEntryHdr), body-off)]
+	if err := repGTreadFullAt(p.src, d, off); err != nil {
+		return e, err
+	}
+	i := int64(0)
+	c := d[i]
+	i++
+	e.Kind = (c >> 4) & 7
+	size := uint64(c & 15)
+	shift := uint(4)
+	for c&0x80 != 0 {
+		if i >= int64(len(d)) {
+			return e, repGTcorrupt("entry header truncated")
+		}
+		if shift > 56 {
+			return e, repGTcorrupt("entry size varint too long")
+		}
+		c = d[i]
+		i++
+		size |= uint64(c&0x7f) << shift
+		shift += 7
+	}
+	if size > uint64(p.Lim.MaxObjectSize) {
+		return e, repGTlimit("entry size %d", size)
+	}
+	e.Size = int64(size)
+	e.HdrLen = int(i)
+	switch e.Kind {
+	case 1, 2, 3, 4:
+	case repGTofsDelta:
+		start := i
+		if i >= int64(len(d)) {
+			return e, repGTcorrupt("OFS header truncated")
+		}
+		c = d[i]
+		i++
+		ofs := uint64(c & 0x7f)
+		for c&0x80 != 0 {
+			if i >= int64(len(d)) {
+				return e, repGTcorrupt("OFS header truncated")
+			}
+			if ofs >= 1<<56 {
+				return e, repGTcorrupt("OFS offset overflow")
+			}
+			ofs++
+			c = d[i]
+			i++
+			ofs = ofs<<7 | uint64(c&0x7f)
+		}
+		if ofs == 0 || int64(ofs) > off-12 {
+			return e, repGTcorrupt("OFS base offset %d from %d", ofs, off)
+		}
+		e.BaseOff = off - int64(ofs)
+		e.BaseLen = int(i - start)
+	case repGTrefDelta:
+		hs := int64(p.Algo.Size())
+		if i+hs > int64(len(d)) {
+			return e, repGTcorrupt("REF header truncated")
+		}
+		e.BaseRef = append([]byte(nil), d[i:i+hs]...)
+		i += hs
+		e.BaseLen = int(hs)
+	default:
+		return e, repGTcorrupt("entry type %d", e.Kind)
+	}
+	e.ZOff = off + i
+	zr.reset(p.src, e.ZOff, body, crc32.ChecksumIEEE(d[:i]))
+	zl, err := repGTinflateZlibFrom(zr, e.Size, io.Discard)
+	if err != nil {
+		return e, err
+	}
+	e.ZEnd = e.ZOff + zl
+	e.End = e.ZEnd
+	e.CRC = zr.crcSum()
+	return e, nil
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// zreader is the byte-exact input of the zlib decoder over a ReaderAt range: it
+// reads ahead only inside its own buffer, so the number of bytes the decoder
+// consumed (and their CRC-32) is exact; compress/flate uses it directly because it
+// implements io.ByteReader.
+type repGTzreader struct {
+	r    io.ReaderAt
+	next int64 // source offset of the next byte to buffer
+	end  int64
+	buf  [4 << 10]byte
+	i, n int
+	h    int    // buf[h:i] is consumed but not yet folded into crc
+	crc  uint32 // CRC-32 over the header bytes given to reset plus every consumed byte
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+var repGTzpool = sync.Pool{New: func() any { return new(repGTzreader) }}
+
+// Port source: zeros3-z3/gitz3/pack.go
+func repGTgetZReader() *repGTzreader { return repGTzpool.Get().(*repGTzreader) }
+
+// Port source: zeros3-z3/gitz3/pack.go
+func repGTputZReader(z *repGTzreader) { z.r = nil; repGTzpool.Put(z) }
+
+// Port source: zeros3-z3/gitz3/pack.go
+// reset points z at [off,end) of r; crc seeds the running CRC-32.
+func (z *repGTzreader) reset(r io.ReaderAt, off, end int64, crc uint32) {
+	z.r, z.next, z.end, z.i, z.n, z.h, z.crc = r, off, end, 0, 0, 0, crc
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+func (z *repGTzreader) sync() {
+	z.crc = crc32.Update(z.crc, crc32.IEEETable, z.buf[z.h:z.i])
+	z.h = z.i
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+func (z *repGTzreader) crcSum() uint32 { z.sync(); return z.crc }
+
+// Port source: zeros3-z3/gitz3/pack.go
+// pos is the source offset of the next unconsumed byte.
+func (z *repGTzreader) pos() int64 { return z.next - int64(z.n-z.i) }
+
+// Port source: zeros3-z3/gitz3/pack.go
+func (z *repGTzreader) fill() error {
+	z.sync()
+	z.i, z.n, z.h = 0, 0, 0
+	want := min(int64(len(z.buf)), z.end-z.next)
+	if want <= 0 {
+		return io.ErrUnexpectedEOF
+	}
+	if err := repGTreadFullAt(z.r, z.buf[:want], z.next); err != nil {
+		return err
+	}
+	z.n = int(want)
+	z.next += want
+	return nil
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+func (z *repGTzreader) ReadByte() (byte, error) {
+	if z.i == z.n {
+		if err := z.fill(); err != nil {
+			return 0, err
+		}
+	}
+	c := z.buf[z.i]
+	z.i++
+	return c, nil
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+func (z *repGTzreader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if z.i == z.n {
+		if err := z.fill(); err != nil {
+			return 0, err
+		}
+	}
+	n := copy(p, z.buf[z.i:z.n])
+	z.i += n
+	return n, nil
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+type repGTadlerSink struct {
+	h repGThashAdler
+	n int64
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+type repGThashAdler = interface {
+	io.Writer
+	Sum32() uint32
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+func (s *repGTadlerSink) Write(b []byte) (int, error) { s.n += int64(len(b)); return s.h.Write(b) }
+
+// Port source: zeros3-z3/gitz3/pack.go
+// inflateZlibFrom decodes the zlib stream at z's position into w, requires it to
+// produce exactly want bytes with a valid Adler-32, and returns its length. It
+// consumes no byte beyond the stream and never allocates from the claimed length.
+// On error w may already hold a prefix of the plaintext.
+func repGTinflateZlibFrom(z *repGTzreader, want int64, w io.Writer) (int64, error) {
+	start := z.pos()
+	var hd [2]byte
+	for k := range hd {
+		c, err := z.ReadByte()
+		if err != nil {
+			return 0, repGTcorrupt("zlib stream truncated")
+		}
+		hd[k] = c
+	}
+	cmf, flg := hd[0], hd[1]
+	if cmf&15 != 8 || cmf>>4 > 7 || (uint(cmf)<<8|uint(flg))%31 != 0 || flg&0x20 != 0 {
+		return 0, repGTcorrupt("zlib header %02x%02x", cmf, flg)
+	}
+	fr := flate.NewReader(z)
+	defer fr.Close()
+	sink := &repGTadlerSink{h: adler32.New()}
+	n, err := io.Copy(io.MultiWriter(sink, w), io.LimitReader(fr, want+1))
+	if err != nil {
+		return 0, repGTcorrupt("inflate: %v", err)
+	}
+	if n != want {
+		return 0, repGTcorrupt("inflated %d bytes, header says %d", n, want)
+	}
+	var tr [4]byte
+	for k := range tr {
+		c, err := z.ReadByte()
+		if err != nil {
+			return 0, repGTcorrupt("zlib trailer truncated")
+		}
+		tr[k] = c
+	}
+	if binary.BigEndian.Uint32(tr[:]) != sink.h.Sum32() {
+		return 0, repGTcorrupt("zlib Adler-32")
+	}
+	return z.pos() - start, nil
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// InflateTo streams the zlib plaintext of entry i to w: the object payload of a
+// full entry, the delta program of a delta entry. The stream is verified (declared
+// size, Adler-32, exact extent) as it is written; on error w may already hold a
+// prefix, which the caller must discard.
+func (p *repGTPack) InflateTo(i int, w io.Writer) error {
+	if i < 0 || i >= len(p.Entries) {
+		return repGTcorrupt("entry %d", i)
+	}
+	e := &p.Entries[i]
+	z := repGTgetZReader()
+	defer repGTputZReader(z)
+	z.reset(p.src, e.ZOff, e.ZEnd, 0)
+	n, err := repGTinflateZlibFrom(z, e.Size, w)
+	if err == nil && n != e.ZEnd-e.ZOff {
+		err = repGTcorrupt("entry %d: zlib stream is %d bytes, parsed as %d", i, n, e.ZEnd-e.ZOff)
+	}
+	return err
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// Inflate is InflateTo into memory: the bounded materialisation helper (an entry's
+// inflated size is limited by Limits.MaxObjectSize at parse time). Delta
+// resolution and the lab's component builders still need whole payloads; this is
+// the one place that materialises them.
+func (p *repGTPack) Inflate(i int) ([]byte, error) {
+	e := &p.Entries[i]
+	var buf bytes.Buffer
+	buf.Grow(int(min(e.Size, (e.ZEnd-e.ZOff)*1032+64)))
+	if err := p.InflateTo(i, &buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// ResolveStats summarise a Resolve.
+type repGTResolveStats struct {
+	Full, Delta, MaxDepth int
+	DeltaOut, Inflated    int64
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// Resolve resolves every delta chain (depth-first from the full objects, one
+// chain of payloads in memory at a time) and fills Type, RSize, ID, Base and
+// Depth. Unresolvable deltas (a REF_DELTA base missing from the pack, which
+// includes thin packs and REF cycles) return ErrThin; duplicate object ids are
+// ErrUnsupported; limits are enforced on depth, per-object size, total
+// inflated bytes and total delta output.
+func (p *repGTPack) Resolve() (repGTResolveStats, error) {
+	var st repGTResolveStats
+	lim := p.Lim
+	n := len(p.Entries)
+	ofsKids := map[int][]int{}
+	refWait := map[string][]int{}
+	var roots []int
+	for i := range p.Entries {
+		e := &p.Entries[i]
+		switch e.Kind {
+		case repGTofsDelta:
+			b, ok := p.byOff[e.BaseOff]
+			if !ok {
+				return st, repGTcorrupt("OFS base offset %d is not an entry boundary", e.BaseOff)
+			}
+			e.Base = b
+			ofsKids[b] = append(ofsKids[b], i)
+		case repGTrefDelta:
+			refWait[string(e.BaseRef)] = append(refWait[string(e.BaseRef)], i)
+		default:
+			roots = append(roots, i)
+		}
+	}
+	ids := make(map[string]int, n)
+	done := 0
+	type frame struct {
+		idx     int
+		payload []byte
+		kids    []int
+		next    int
+	}
+	var stack []frame
+	register := func(i int, t repGTObjType, payload []byte, depth int) error {
+		e := &p.Entries[i]
+		e.Type, e.RSize, e.Depth = t, int64(len(payload)), depth
+		e.ID = repGTObjectID(p.Algo, t, payload)
+		if _, dup := ids[string(e.ID)]; dup {
+			return repGTErrUnsupported
+		}
+		ids[string(e.ID)] = i
+		done++
+		if depth > st.MaxDepth {
+			st.MaxDepth = depth
+		}
+		kids := append([]int(nil), ofsKids[i]...)
+		if w, ok := refWait[string(e.ID)]; ok {
+			kids = append(kids, w...)
+			delete(refWait, string(e.ID))
+		}
+		if len(kids) == 0 {
+			return nil
+		}
+		stack = append(stack, frame{idx: i, payload: payload, kids: kids})
+		return nil
+	}
+	for _, r := range roots {
+		e := &p.Entries[r]
+		pl, err := p.Inflate(r)
+		if err != nil {
+			return st, err
+		}
+		st.Inflated += int64(len(pl))
+		st.Full++
+		if err := register(r, repGTObjType(e.Kind), pl, 0); err != nil {
+			return st, err
+		}
+		for len(stack) > 0 {
+			f := &stack[len(stack)-1]
+			if f.next >= len(f.kids) {
+				stack = stack[:len(stack)-1]
+				continue
+			}
+			k := f.kids[f.next]
+			f.next++
+			ke := &p.Entries[k]
+			if depth := p.Entries[f.idx].Depth + 1; depth > lim.MaxDeltaDepth {
+				return st, repGTlimit("delta depth %d", depth)
+			}
+			d, err := p.Inflate(k)
+			if err != nil {
+				return st, err
+			}
+			st.Inflated += int64(len(d))
+			if st.Inflated > lim.MaxInflated {
+				return st, repGTlimit("inflated bytes > %d", lim.MaxInflated)
+			}
+			_, tgt, _, herr := repGTParseDeltaHeader(d)
+			if herr != nil {
+				return st, herr
+			}
+			if tgt > uint64(lim.MaxObjectSize) {
+				return st, repGTlimit("delta target %d", tgt)
+			}
+			if st.DeltaOut += int64(tgt); st.DeltaOut > lim.MaxDeltaOut {
+				return st, repGTlimit("delta output > %d", lim.MaxDeltaOut)
+			}
+			out, err := repGTApplyDelta(f.payload, d, lim.MaxObjectSize)
+			if err != nil {
+				return st, err
+			}
+			ke.Base = f.idx
+			st.Delta++
+			if err := register(k, p.Entries[f.idx].Type, out, p.Entries[f.idx].Depth+1); err != nil {
+				return st, err
+			}
+		}
+	}
+	if done != n {
+		return st, repGTErrThin
+	}
+	p.ids = ids
+	p.resolved = true
+	return st, nil
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// Object materialises the resolved object of entry i (header-less payload),
+// following its delta chain iteratively; cache, if non-nil, memoises payloads
+// by entry.
+func (p *repGTPack) Object(i int, cache map[int][]byte) ([]byte, error) {
+	if !p.resolved {
+		return nil, repGTErrUnsupported
+	}
+	var chain []int
+	cur := i
+	var base []byte
+	for {
+		if b, ok := cache[cur]; ok {
+			base = b
+			break
+		}
+		chain = append(chain, cur)
+		if !p.Entries[cur].IsDelta() {
+			break
+		}
+		if len(chain) > p.Lim.MaxDeltaDepth+1 {
+			return nil, repGTlimit("delta depth")
+		}
+		cur = p.Entries[cur].Base
+	}
+	for k := len(chain) - 1; k >= 0; k-- {
+		j := chain[k]
+		pl, err := p.Inflate(j)
+		if err != nil {
+			return nil, err
+		}
+		if p.Entries[j].IsDelta() {
+			if pl, err = repGTApplyDelta(base, pl, p.Lim.MaxObjectSize); err != nil {
+				return nil, err
+			}
+		}
+		if cache != nil {
+			cache[j] = pl
+		}
+		base = pl
+	}
+	return base, nil
+}
+
+// Port source: zeros3-z3/gitz3/pack.go
+// IndexOfID returns the entry index of an object id, or -1 (after Resolve).
+func (p *repGTPack) IndexOfID(id []byte) int {
+	if i, ok := p.ids[string(id)]; ok {
+		return i
+	}
+	return -1
+}
+
+// Port source: zeros3-z3/gitz3/reads.go
+// Range is [Off, Off+Len) of a file.
+type repGTRange struct{ Off, Len int64 }
+
+// Port source: zeros3-z3/gitz3/reads.go
+// LookupRanges returns the byte ranges of the index a lookup of id reads: the
+// two fanout words, each binary-search probe's id, and the CRC and offset of
+// the hit (CRC is read to verify).
+func (x *repGTIdx) LookupRanges(id []byte) []repGTRange {
+	var rs []repGTRange
+	hs := int64(x.Algo.Size())
+	b := int(id[0])
+	lo := 0
+	if b > 0 {
+		lo = int(x.Fanout[b-1])
+		rs = append(rs, repGTRange{8 + 4*int64(b-1), 4})
+	}
+	rs = append(rs, repGTRange{8 + 4*int64(b), 4})
+	hi := int(x.Fanout[b])
+	for lo < hi {
+		m := (lo + hi) / 2
+		rs = append(rs, repGTRange{int64(x.idsOff) + int64(m)*hs, hs})
+		c := bytes.Compare(x.ID(m), id)
+		switch {
+		case c == 0:
+			rs = append(rs, repGTRange{int64(x.crcOff) + 4*int64(m), 4}, repGTRange{int64(x.offOff) + 4*int64(m), 4})
+			return rs
+		case c < 0:
+			lo = m + 1
+		default:
+			hi = m
+		}
+	}
+	return rs
+}
+
+// Port source: zeros3-z3/gitz3/rep.go
+// Entry modes in the exact recipe.
+const (
+	repGTModeZ = 0 // the entry's zlib stream is stored as bytes (component or inline)
+	repGTModeP = 1 // plaintext component + exact DEFLATE reconstruction (skeleton + units)
+)
+
+// Port source: zeros3-z3/gitz3/rep.go
+var repGTknownZHdr = [][2]byte{{0x78, 0x9c}, {0x78, 0x01}, {0x78, 0x5e}, {0x78, 0xda}}
+
+// Port source: zeros3-z3/gitz3/rep.go
+func repGTzhdrCode(h []byte) (code byte, explicit bool) {
+	for i, k := range repGTknownZHdr {
+		if h[0] == k[0] && h[1] == k[1] {
+			return byte(i), false
+		}
+	}
+	return 7, true
+}
+
+// Port source: zeros3-z3/gitz3/rep.go
+const repGTmetaMagic = 0xA1
+
+// Port source: zeros3-z3/gitz3/rep.go
+func repGTencodeEntryHeader(dst []byte, kind uint8, size int64) []byte {
+	c := kind<<4 | byte(size&15)
+	size >>= 4
+	for size > 0 {
+		dst = append(dst, c|0x80)
+		c = byte(size & 0x7f)
+		size >>= 7
+	}
+	return append(dst, c)
+}
+
+// Port source: zeros3-z3/gitz3/rep.go
+func repGTencodeOfs(dst []byte, ofs uint64) []byte {
+	var tmp [16]byte
+	pos := len(tmp) - 1
+	tmp[pos] = byte(ofs & 127)
+	for ofs >>= 7; ofs > 0; ofs >>= 7 {
+		ofs--
+		pos--
+		tmp[pos] = 128 | byte(ofs&127)
+	}
+	return append(dst, tmp[pos:]...)
+}
+
+// Port source: zeros3-z3/gitz3/rep.go
+type repGTmreader struct {
+	b   []byte
+	pos int
+	err error
+}
+
+// Port source: zeros3-z3/gitz3/rep.go
+func (m *repGTmreader) byte() byte {
+	if m.pos >= len(m.b) {
+		m.err = repGTcorrupt("recipe truncated")
+		return 0
+	}
+	c := m.b[m.pos]
+	m.pos++
+	return c
+}
+
+// Port source: zeros3-z3/gitz3/rep.go
+func (m *repGTmreader) uv(limit uint64) uint64 {
+	v, n := binary.Uvarint(m.b[m.pos:])
+	if n <= 0 || v > limit {
+		m.err = repGTcorrupt("recipe varint")
+		return 0
+	}
+	m.pos += n
+	return v
+}
+
+// Port source: zeros3-z3/gitz3/rep.go
+func (m *repGTmreader) take(n int) []byte {
+	if n < 0 || m.pos+n > len(m.b) {
+		m.err = repGTcorrupt("recipe truncated")
+		return nil
+	}
+	b := m.b[m.pos : m.pos+n]
+	m.pos += n
+	return b
+}
+func repGitRebuildSeq(meta []byte, pieces []gitEntry, get func([32]byte) ([]byte, error), w io.Writer) error {
+	m := &repGTmreader{b: meta}
+	if m.byte() != repGTmetaMagic {
+		return repGTcorrupt("recipe magic")
+	}
+	a := repGTAlgo(m.byte())
+	if a != repGTSHA1 && a != repGTSHA256 {
+		return repGTcorrupt("recipe algo")
+	}
+	ver := m.uv(3)
+	n := m.uv(1 << 32)
+	if m.err != nil {
+		return m.err
+	}
+	h := a.New()
+	out := io.MultiWriter(w, h)
+	var hdr [12]byte
+	copy(hdr[:], "PACK")
+	binary.BigEndian.PutUint32(hdr[4:], uint32(ver))
+	binary.BigEndian.PutUint32(hdr[8:], uint32(n))
+	if _, err := out.Write(hdr[:]); err != nil {
+		return err
+	}
+	off := int64(12)
+	offs := make([]int64, 0, min(n, 1<<20))
+	pi := 0
+	nextPieces := func(k int) ([]gitEntry, error) {
+		if k < 0 || pi+k > len(pieces) {
+			return nil, repGTcorrupt("recipe pieces exhausted")
+		}
+		s := pieces[pi : pi+k]
+		pi += k
+		return s, nil
+	}
+	for i := uint64(0); i < n; i++ {
+		b0 := m.byte()
+		kind, mode, zc := b0&7, int(b0>>3)&1, (b0>>4)&7
+		var zh [2]byte
+		switch {
+		case zc < 4:
+			zh = repGTknownZHdr[zc]
+		case zc == 7:
+			copy(zh[:], m.take(2))
+		default:
+			return repGTcorrupt("zlib header code")
+		}
+		var baseEnc []byte
+		switch kind {
+		case 1, 2, 3, 4:
+		case repGTofsDelta:
+			d := m.uv(i)
+			if d == 0 {
+				return repGTcorrupt("OFS distance")
+			}
+			baseEnc = repGTencodeOfs(nil, uint64(off-offs[i-d]))
+		case repGTrefDelta:
+			baseEnc = append([]byte(nil), m.take(a.Size())...)
+		default:
+			return repGTcorrupt("entry kind")
+		}
+		var size int64
+		var z []byte
+		if mode == repGTModeZ {
+			size = int64(m.uv(1 << 40))
+			if m.err != nil {
+				return m.err
+			}
+			nz := int(m.uv(1 << 20))
+			if m.err != nil {
+				return m.err
+			}
+			ps, err := nextPieces(nz)
+			if err != nil {
+				return err
+			}
+			for _, pc := range ps {
+				b, err := get(pc.sha)
+				if err != nil {
+					return err
+				}
+				if len(b) > 64<<20-len(z) {
+					return repGTlimit("compressed entry exceeds 64 MiB")
+				}
+				z = append(z, b...)
+			}
+		} else {
+			return repGTErrUnsupported // plaintext/set forms remain research-only
+		}
+		offs = append(offs, off)
+		eh := repGTencodeEntryHeader(nil, kind, size)
+		eh = append(eh, baseEnc...)
+		if _, err := out.Write(eh); err != nil {
+			return err
+		}
+		if _, err := out.Write(z); err != nil {
+			return err
+		}
+		off += int64(len(eh) + len(z))
+	}
+	if m.err != nil {
+		return m.err
+	}
+	if m.pos != len(m.b) {
+		return repGTcorrupt("%d trailing recipe bytes", len(m.b)-m.pos)
+	}
+	_, err := w.Write(h.Sum(nil))
+	return err
+}
+
+const maxGitTable = 32 << 20
+
+type gitEntry struct {
+	sha  [32]byte
+	size int64
+}
+
+func gitTable(c *repCall) (meta []byte, tab []gitEntry, err error) {
+	if len(c.Rep.Recipe) != 0 || len(c.Rep.Members) == 0 {
+		return nil, nil, fmt.Errorf("%w: Git representation shape", errRepCorrupt)
+	}
+	t, err := readTable(c, len(c.Rep.Members), maxGitTable)
+	if err != nil {
+		return nil, nil, err
+	}
+	ml, k := binary.Uvarint(t)
+	if k <= 0 || ml > uint64(len(t)-k) {
+		return nil, nil, fmt.Errorf("%w: Git table meta", errRepCorrupt)
+	}
+	meta, t = t[k:k+int(ml)], t[k+int(ml):]
+	n, k := binary.Uvarint(t)
+	if k <= 0 || n > uint64(len(t)-k)/33 {
+		return nil, nil, fmt.Errorf("%w: Git stream table", errRepCorrupt)
+	}
+	out := make([]gitEntry, 0, n)
+	pos := k
+	for i := uint64(0); i < n; i++ {
+		if len(t)-pos < 33 {
+			return nil, nil, fmt.Errorf("%w: Git stream table entry %d", errRepCorrupt, i)
+		}
+		var e gitEntry
+		copy(e.sha[:], t[pos:])
+		pos += 32
+		sz, k := binary.Uvarint(t[pos:])
+		if k <= 0 || sz > 1<<40 {
+			return nil, nil, fmt.Errorf("%w: Git stream length %d", errRepCorrupt, i)
+		}
+		e.size = int64(sz)
+		pos += k
+		out = append(out, e)
+	}
+	if pos != len(t) {
+		return nil, nil, fmt.Errorf("%w: %d bytes after the Git stream table", errRepCorrupt, len(t)-pos)
+	}
+	return meta, out, nil
+}
+
+type gitDecoder struct{}
+
+func (gitDecoder) Decode(c *repCall) error {
+	meta, tab, err := gitTable(c)
+	if err != nil {
+		return err
+	}
+	pieces := tab
+	size := map[[32]byte]int64{}
+	for _, e := range tab {
+		size[e.sha] = e.size
+	}
+	fetched := 0
+	err = repGitRebuildSeq(meta, pieces, func(id [32]byte) ([]byte, error) {
+		fetched++
+		return c.getExact([32]byte(id), size[id])
+	}, c.W)
+	if err == nil && fetched != len(pieces) {
+		return fmt.Errorf("%w: Git recipe consumed %d of %d streams", errRepCorrupt, fetched, len(pieces))
+	}
+	return err
+}
+
+// Expand: the streams are named by the stored table.
+func (gitDecoder) Expand(c *repCall, emit func([32]byte)) error {
+	_, tab, err := gitTable(c)
+	if err != nil {
+		return err
+	}
+	for _, e := range tab {
+		emit(e.sha)
+	}
+	return nil
 }
 
 // =============================================================================

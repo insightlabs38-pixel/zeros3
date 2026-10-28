@@ -73,10 +73,23 @@ func must(err error) {
 	}
 }
 func main() {
-	if len(os.Args) != 3 {
-		panic("extract lab-directory output-prefix")
+	if len(os.Args) < 3 || len(os.Args) > 4 {
+		panic("extract lab-directory output-prefix [git]")
 	}
-	cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "list", "-deps", "-export", "-json", "./deflate", "./ir", "./zstdz3")
+	packagePaths := []string{"zeros3-z3/deflate", "zeros3-z3/ir", "zeros3-z3/zstdz3"}
+	gitMode := len(os.Args) == 4 && os.Args[3] == "git"
+	if len(os.Args) == 4 && !gitMode {
+		panic("unknown extraction mode")
+	}
+	if gitMode {
+		packagePaths = []string{"zeros3-z3/gitz3"}
+		prefixes = map[string]string{"zeros3-z3/gitz3": "repGT"}
+	}
+	args := []string{"list", "-deps", "-export", "-json"}
+	for _, p := range packagePaths {
+		args = append(args, p)
+	}
+	cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), args...)
 	cmd.Dir = os.Args[1]
 	data, err := cmd.Output()
 	must(err)
@@ -94,7 +107,7 @@ func main() {
 	fs := token.NewFileSet()
 	imp := importer.ForCompiler(fs, "gc", func(path string) (io.ReadCloser, error) { return os.Open(metas[path].Export) })
 	var sources []*source
-	for _, path := range []string{"zeros3-z3/deflate", "zeros3-z3/ir", "zeros3-z3/zstdz3"} {
+	for _, path := range packagePaths {
 		m := metas[path]
 		info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
 		var files []*ast.File
@@ -153,6 +166,9 @@ func main() {
 		}
 	}
 	roots := []string{"zeros3-z3/ir:EncodeStream", "zeros3-z3/ir:ReconstructStream", "zeros3-z3/ir:MaterializeRange", "zeros3-z3/ir:ParseRangeIndex", "zeros3-z3/deflate:GzipHeader", "zeros3-z3/zstdz3:Parse", "zeros3-z3/zstdz3:Replay", "zeros3-z3/zstdz3:ReplayFrom"}
+	if gitMode {
+		roots = []string{"zeros3-z3/gitz3:ParsePackAt", "zeros3-z3/gitz3:ParseIdxAt", "zeros3-z3/gitz3:mreader", "zeros3-z3/gitz3:encodeEntryHeader", "zeros3-z3/gitz3:encodeOfs", "zeros3-z3/gitz3:zhdrCode", "zeros3-z3/gitz3:metaMagic", "zeros3-z3/gitz3:ModeZ"}
+	}
 	keep := map[*decl]bool{}
 	var visit func(string)
 	visit = func(k string) {
