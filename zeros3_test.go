@@ -16298,18 +16298,44 @@ func TestReplicate_ResumeAcrossRealProcessInterruption(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	replicateArgs := []string{"replicate", "-from", "http://" + srcAddr, "-to", "http://" + dstAddr, "s3://src/big.bin", "s3://dst/big.bin"}
+	// Gate source fetches so interruption is known to precede commit even
+	// when a loopback 20 MB transfer completes in less than 150 ms.
+	target, err := url.Parse("http://" + srcAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	var blocked atomic.Bool
+	blocked.Store(true)
+	entered := make(chan struct{})
+	var once sync.Once
+	gate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if blocked.Load() && (r.URL.Path == zeros3BulkFetchPath || strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix)) {
+			io.Copy(io.Discard, r.Body)
+			once.Do(func() { close(entered) })
+			<-r.Context().Done()
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	defer gate.Close()
+	replicateArgs := []string{"replicate", "-from", gate.URL, "-to", "http://" + dstAddr, "s3://src/big.bin", "s3://dst/big.bin"}
 
-	// First attempt: a real subprocess, killed shortly after it starts --
-	// well before a 20MB transfer across real HTTP round trips could
-	// plausibly finish -- so it never reaches commit.
+	// Kill a real client process while a source fetch is demonstrably active.
 	firstAttempt := exec.Command(bin, replicateArgs...)
 	if err := firstAttempt.Start(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(150 * time.Millisecond)
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		firstAttempt.Process.Kill()
+		firstAttempt.Wait()
+		t.Fatal("replication never reached gated source fetch")
+	}
 	firstAttempt.Process.Kill()
 	firstAttempt.Wait()
+	blocked.Store(false)
 
 	if resp := doSignedRequest(t, client, "http://"+dstAddr, signer, http.MethodHead, "/dst/big.bin", nil, nil); resp.StatusCode == http.StatusOK {
 		resp.Body.Close()
@@ -26288,15 +26314,36 @@ func TestReplicate_FailureLeavesUploadedChunksReusable_RerunTransfersOnlyRemaini
 	if len(man.Chunks) < 10 {
 		t.Fatalf("need >= 10 chunks, got %d", len(man.Chunks))
 	}
-	// The LAST chunk in dispatch order fails: every other chunk is
-	// already dispatched (and, since runTransferWorkers waits for every
-	// dispatched goroutine before returning, fully finished) by the time
-	// this one fails and cancels -- there is nothing left to cancel.
+	// Fail the final source chunk only after all other destination uploads
+	// finish. Client cancellation alone does not drain remote HTTP handlers.
 	badDigest := man.Chunks[len(man.Chunks)-1].SHA256
+	other := make(map[string]bool)
+	for _, c := range man.Chunks {
+		if c.SHA256 != badDigest {
+			other[c.SHA256] = true
+		}
+	}
+	uploaded := make(chan string, len(man.Chunks)+1)
 
 	var failEnabled int32 = 1
 	srcHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == zeros3SyncChunksPrefix+badDigest && atomic.LoadInt32(&failEnabled) == 1 {
+			seen := make(map[string]bool)
+			deadline := time.NewTimer(10 * time.Second)
+			defer deadline.Stop()
+			for len(seen) < len(other) {
+				select {
+				case sha := <-uploaded:
+					if other[sha] {
+						seen[sha] = true
+					}
+				case <-deadline.C:
+					http.Error(w, "destination uploads did not drain", http.StatusGatewayTimeout)
+					return
+				case <-r.Context().Done():
+					return
+				}
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -26304,7 +26351,17 @@ func TestReplicate_FailureLeavesUploadedChunksReusable_RerunTransfersOnlyRemaini
 	})
 	srcTS := httptest.NewServer(srcHandler)
 	defer srcTS.Close()
-	dstTS := httptest.NewServer(v1OnlyHandler(dstSrv))
+	dstTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v1OnlyHandler(dstSrv).ServeHTTP(w, r)
+		if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix) {
+			sha := strings.TrimPrefix(r.URL.Path, zeros3SyncChunksPrefix)
+			if sum, err := decodeHexSHA256(sha); err == nil {
+				if _, err := dstSrv.store.casRead(sum); err == nil {
+					uploaded <- sha
+				}
+			}
+		}
+	}))
 	defer dstTS.Close()
 
 	cfg := replicateConfig{
@@ -26319,14 +26376,9 @@ func TestReplicate_FailureLeavesUploadedChunksReusable_RerunTransfersOnlyRemaini
 		t.Fatalf("destination must not be committed after a transfer failure")
 	}
 
-	// The deliberately-failing chunk can never have landed; a sibling
-	// chunk still genuinely in flight at the moment cancellation fires may
-	// also be aborted (its own HTTP request shares the same worker-pool
-	// context, per B1.9) -- so "everything except the bad chunk landed" is
-	// not guaranteed, only "the bad chunk didn't, and at least some
-	// others did." Whatever didn't land here is exactly what the rerun
-	// below must (and does) pick back up -- nothing is silently lost or
-	// double-counted.
+	// Measure the durable checkpoint after the destination handlers finish.
+	// The deliberately failing chunk must be missing, and the rerun must
+	// negotiate and transfer exactly the missing occurrences.
 	landed := 0
 	for _, c := range man.Chunks {
 		sum, _ := decodeHexSHA256(c.SHA256)

@@ -244,7 +244,11 @@ func repOpenStore(t *testing.T, mode repMode) *Store {
 // repReadAll reads [start,end] through the production read-path selection.
 func repReadAll(t testing.TB, s *Store, man manifestV1, rng byteRange) []byte {
 	t.Helper()
-	rd := s.openObjectReader(man, rng)
+	return repCollectReader(t, s.openObjectReader(man, rng))
+}
+
+func repCollectReader(t testing.TB, rd objectReader) []byte {
+	t.Helper()
 	defer rd.close()
 	var out []byte
 	for {
@@ -313,8 +317,16 @@ func TestRepSmokeSQLiteRoundTrip(t *testing.T) {
 	if !bytes.Equal(got, db) {
 		t.Fatal("whole read differs")
 	}
-	if s.rep.reads.Load() != 1 {
-		t.Fatalf("representation reads = %d", s.rep.reads.Load())
+	if s.rep.reads.Load() != 0 {
+		t.Fatal("whole GET should use authoritative CDC")
+	}
+	// The whole decoder remains exact and independently available to verification.
+	rd, err := s.repOpenReader(man, byteRange{0, int64(len(db)) - 1})
+	if err != nil || rd == nil {
+		t.Fatalf("direct decoder: %v", err)
+	}
+	if got := repCollectReader(t, rd); !bytes.Equal(got, db) || s.rep.reads.Load() != 1 {
+		t.Fatal("direct representation decoder differs or was not used")
 	}
 	part := repReadAll(t, s, man, byteRange{5000, 9999})
 	if !bytes.Equal(part, db[5000:10000]) || s.rep.rangeReads.Load() != 1 {
@@ -1199,6 +1211,15 @@ func (l *repLab) exact(stage string) VerifyResult {
 		if got := repReadAll(l.t, l.s, man, byteRange{0, int64(len(want)) - 1}); !bytes.Equal(got, want) {
 			l.t.Fatalf("%s: %s representation read differs", stage, key)
 		}
+		if l.s.repMode() == repModePrefer && repHasRoot(l.s, man.ManifestUUID) {
+			rd, err := l.s.repOpenReader(man, byteRange{0, man.TotalLength - 1})
+			if err != nil || rd == nil {
+				l.t.Fatalf("%s: %s direct decoder: %v", stage, key, err)
+			}
+			if got := repCollectReader(l.t, rd); !bytes.Equal(got, want) {
+				l.t.Fatalf("%s: %s direct representation differs", stage, key)
+			}
+		}
 		if len(want) > 12400 {
 			end := min(12345+9999, int64(len(want))-1)
 			if got := repReadAll(l.t, l.s, man, byteRange{12345, end}); !bytes.Equal(got, want[12345:end+1]) {
@@ -1817,13 +1838,13 @@ func TestRepModesAndFallbackCounters(t *testing.T) {
 		if mode == repModePrefer {
 			wantReads = 1
 		}
-		if l.s.rep.reads.Load() != wantReads || l.s.rep.rangeReads.Load() != wantReads {
+		if l.s.rep.reads.Load() != 0 || l.s.rep.rangeReads.Load() != wantReads {
 			t.Fatalf("%s: reads=%d range=%d", mode, l.s.rep.reads.Load(), l.s.rep.rangeReads.Load())
 		}
 		// a root that is gone falls back silently; a damaged one falls back and is counted
 		repCorruptFile(t, l.s.repRootPath(e.manifestUUID), func(b []byte) []byte { b[10] ^= 1; return b })
-		got := repReadAll(t, l.s, man, byteRange{0, int64(len(db)) - 1})
-		if !bytes.Equal(got, db) {
+		got := repReadAll(t, l.s, man, byteRange{100, 5000})
+		if !bytes.Equal(got, db[100:5001]) {
 			t.Fatal("fallback read differs")
 		}
 		if mode == repModePrefer && l.s.rep.fallbacks.Load() != 1 {

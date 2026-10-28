@@ -9177,6 +9177,9 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res.Issues = append(res.Issues, rr.Issues...)
 	res.RepresentationRoots = rr.RepRoots
 	res.RepresentationOrphanRoots = len(rr.RepOrphanRoots)
+	// Verification consumes only membership from here on. Drop the scan's
+	// component-length table before pack and whole-object decoding allocate.
+	rr.ChunkLength = nil
 	s.verifyPacks(deep, &res)
 
 	// --- Deep only: whole-object digest ---
@@ -13301,6 +13304,7 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 		}
 		return
 	}
+	srv.store.tryBuildRep(man)
 	fireTestHook(hookAfterAck)
 	writeSyncJSON(w, http.StatusOK, syncCommitResponse{
 		Bucket: s3Bucket, Key: s3Key, VersionID: entry.manifestUUID, ETag: entry.etag, Size: entry.size,
@@ -20798,6 +20802,7 @@ type bundleImporter struct {
 	staged    []stagedManifest
 	batch     *casBatch
 	committed bool
+	manifests []string // optional backfill; includes reused manifests
 }
 
 func (s *Store) newBundleImporter() *bundleImporter {
@@ -20819,6 +20824,15 @@ func (im *bundleImporter) close() {
 func (im *bundleImporter) descriptor(d snapshotDescriptorV1, f []byte) error {
 	im.frame = append([]byte(nil), f...)
 	im.res.SnapshotID, im.res.Objects = d.SnapshotID, len(d.Entries)
+	if im.s.repMode() != repModeOff {
+		seen := make(map[string]bool)
+		for _, entry := range d.Entries {
+			if !seen[entry.ManifestUUID] {
+				seen[entry.ManifestUUID] = true
+				im.manifests = append(im.manifests, entry.ManifestUUID)
+			}
+		}
+	}
 	existing, rerr := os.ReadFile(im.s.snapshotPath(d.SnapshotID))
 	switch {
 	case rerr == nil && bytes.Equal(existing, f):
@@ -20896,20 +20910,33 @@ func (im *bundleImporter) publish() (BundleImportResult, error) {
 	res.ManifestsImported = len(im.staged)
 	fireTestHook(hookBundleManifestsDone)
 
-	fireTestHook(hookBundleBeforeSnapshot)
-	s.snapshotMu.Lock()
-	defer s.snapshotMu.Unlock()
-	if im.haveSnap {
-		res.SnapshotReused = true
-	} else {
-		if _, serr := os.Stat(s.snapshotPath(res.SnapshotID)); serr == nil {
-			return *res, fmt.Errorf("bundle import: snapshot %s appeared during import", res.SnapshotID)
+	if err := func() error {
+		fireTestHook(hookBundleBeforeSnapshot)
+		s.snapshotMu.Lock()
+		defer s.snapshotMu.Unlock()
+		if im.haveSnap {
+			res.SnapshotReused = true
+		} else {
+			if _, serr := os.Stat(s.snapshotPath(res.SnapshotID)); serr == nil {
+				return fmt.Errorf("bundle import: snapshot %s appeared during import", res.SnapshotID)
+			}
+			if err := s.publishSnapshotFrame(res.SnapshotID, im.frame); err != nil {
+				return err
+			}
 		}
-		if err := s.publishSnapshotFrame(res.SnapshotID, im.frame); err != nil {
-			return *res, err
-		}
+		fireTestHook(hookBundleSnapshotPublished)
+		return nil
+	}(); err != nil {
+		return *res, err
 	}
-	fireTestHook(hookBundleSnapshotPublished)
+	for _, uuid := range im.manifests {
+		man, _, err := s.readManifest(uuid)
+		if err != nil {
+			log.Printf("zeros3: optional representation for imported manifest %s skipped: %v", uuid, err)
+			continue
+		}
+		s.tryBuildRep(man)
+	}
 	return *res, nil
 }
 
@@ -20956,6 +20983,10 @@ func (s *Store) commitStagedManifests(staged []stagedManifest) error {
 
 // importBundleFile imports path into storeDir under exclusive ownership.
 func importBundleFile(storeDir, path string) (BundleImportResult, error) {
+	return importBundleFileMode(storeDir, path, repModeOff)
+}
+
+func importBundleFileMode(storeDir, path string, mode repMode) (BundleImportResult, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return BundleImportResult{}, err
@@ -20971,6 +21002,7 @@ func importBundleFile(storeDir, path string) (BundleImportResult, error) {
 		return BundleImportResult{}, err
 	}
 	defer store.Close()
+	store.setRepMode(mode)
 	if bundleKind(path) == "delta" {
 		return store.importDeltaBundle(f)
 	}
@@ -21073,12 +21105,18 @@ func runBundleImport(args []string) {
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	in := fs.String("in", "", "bundle file to import (.zs3b full or .zs3d delta, detected by magic; a delta needs its base snapshot already in the store)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
+	representations := fs.String("representations", "off", "optional representations: off, shadow or prefer")
 	fs.Parse(args)
 	if *in == "" {
 		fmt.Fprintln(os.Stderr, "zeros3: bundle import: -in is required")
 		os.Exit(2)
 	}
-	res, err := importBundleFile(*storeDir, *in)
+	mode, err := parseRepMode(*representations)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "zeros3: bundle import:", err)
+		os.Exit(2)
+	}
+	res, err := importBundleFileMode(*storeDir, *in, mode)
 	if err != nil {
 		if errors.Is(err, errGCStoreInUse) {
 			fmt.Fprintf(os.Stderr, "zeros3: bundle import: %v -- import requires exclusive access; stop `zeros3 serve`/any other command using this store first\n", err)
@@ -26937,10 +26975,10 @@ func (s *Store) repBuild(man manifestV1) error {
 	return nil
 }
 
-// maybeBuildRep is the one optional hook every ingest path calls between
-// publishing its manifest and committing its namespace root. An analysis,
-// proof or publication failure is logged and counted, never returned.
-func (s *Store) maybeBuildRep(man manifestV1) {
+// tryBuildRep adds only optional state: ingest calls it before namespace
+// publication, transfers after authoritative commit. Failures are logged and
+// counted, never returned to the successful authoritative operation.
+func (s *Store) tryBuildRep(man manifestV1) {
 	if s.repMode() == repModeOff {
 		return
 	}
@@ -26948,7 +26986,13 @@ func (s *Store) maybeBuildRep(man manifestV1) {
 		s.rep.optionalFailures.Add(1)
 		log.Printf("zeros3: optional representation for manifest %s skipped: %v", man.ManifestUUID, err)
 	}
-	fireTestHook(hookRepBeforeNamespace)
+}
+
+func (s *Store) maybeBuildRep(man manifestV1) {
+	s.tryBuildRep(man)
+	if s.repMode() != repModeOff {
+		fireTestHook(hookRepBeforeNamespace)
+	}
 }
 
 // repCloneRoot attaches the representation of an already proven manifest to a
@@ -27465,7 +27509,10 @@ func (s *Store) repOpenReader(man manifestV1, rng byteRange) (objectReader, erro
 // mode allows it and it applies, otherwise (or on any failure before the first
 // byte) the ordinary CDC manifest reader. CDC stays the authority.
 func (s *Store) openObjectReader(man manifestV1, rng byteRange) objectReader {
-	if s.repMode() == repModePrefer {
+	// Whole structured reconstruction is slower than authoritative CDC for
+	// every measured kind. Keep structural decoding for ranges and verification.
+	whole := rng.start == 0 && rng.end == man.TotalLength-1
+	if s.repMode() == repModePrefer && !whole {
 		rd, err := s.repOpenReader(man, rng)
 		if err == nil && rd != nil {
 			return rd
