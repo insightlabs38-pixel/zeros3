@@ -89,6 +89,6 @@ for a decoder that still parses the entire recipe per call.
 ## Gates and carry-forward
 Full lab/root tests and vet pass; changed-package race passes. Delta fuzz973822
 executions/25s; Zstd block fuzz111/26s with native seeds and tight decoded bounds.
-Independent hand-packed delta length/value oracle and native producer files pass.
+Hand-packed/native oracles pass; PyArrow/DuckDB10 files/79 columns match (5 opaque excluded).
 Production diff empty; detailed manifests, audits, costs and fallback reasons in
 `testdata/q8-breadth`. I3 draft may use only the broadened subset proved here.

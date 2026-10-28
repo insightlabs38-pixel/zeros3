@@ -36,7 +36,7 @@ for p in pathlib.Path('/workspace/work/q8-pebble-new').glob('go.*'):
 for name, value in [('frontiers', rows), ('summary', summary), ('provenance', provenance)]:
     with gzip.GzipFile(filename=str(out / (name + '.json.gz')), mode='wb', mtime=0) as f:
         f.write(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
-for name in ['parquet-before.txt', 'parquet-delta.txt', 'parquet-before.json', 'parquet-delta.json', 'parquet-rt.txt', 'sst-final-audit.txt', 'pebble-new-audit.txt', 'zstd-rt.txt', 'duckdb-before-frontiers.jsonl']:
+for name in ['parquet-before.txt', 'parquet-delta.txt', 'parquet-before.json', 'parquet-delta.json', 'parquet-rt.txt', 'sst-final-audit.txt', 'pebble-new-audit.txt', 'zstd-rt.txt', 'duckdb-before-frontiers.jsonl', 'delta-oracle.txt']:
     with gzip.GzipFile(filename=str(out / (name + '.gz')), mode='wb', mtime=0) as f:
         f.write((work / name).read_bytes())
 print(json.dumps(summary, indent=2))
