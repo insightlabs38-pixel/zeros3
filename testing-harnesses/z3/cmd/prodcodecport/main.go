@@ -56,6 +56,9 @@ func key(obj types.Object) string {
 	return ""
 }
 func renamed(obj types.Object) string {
+	if obj != nil && obj.Name() == "init" {
+		return ""
+	}
 	if v, ok := obj.(*types.Var); ok && v.Embedded() && v.Pkg() != nil && prefixes[v.Pkg().Path()] != "" {
 		return prefixes[v.Pkg().Path()] + v.Name()
 	}
@@ -163,6 +166,15 @@ func main() {
 		keep[d] = true
 		for _, dep := range d.deps {
 			visit(dep)
+		}
+	}
+	// Package initialization is semantic even when it has no named callers.
+	for _, d := range declarations {
+		if f, ok := d.node.(*ast.FuncDecl); ok && f.Recv == nil && f.Name.Name == "init" {
+			keep[d] = true
+			for _, dep := range d.deps {
+				visit(dep)
+			}
 		}
 	}
 	for _, r := range roots {

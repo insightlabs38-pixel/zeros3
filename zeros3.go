@@ -26311,6 +26311,7 @@ type repBuilder struct {
 	descs   map[[32]byte]*repDesc
 	written map[[32]byte]struct{}
 	budget  repBudget
+	depth   int // analysis nesting; default 3, decode hard limit remains 4
 	src     *storeRepSource
 	env     *repEnv
 	cat     *repCatalog
@@ -26613,6 +26614,10 @@ func (b *repBuilder) tryChild(src io.ReaderAt, off, esz, padded int64) (repMembe
 	hd := head[:min(n, int(esz))]
 	kind := repKind(0)
 	switch {
+	case bytes.HasPrefix(hd, []byte{0x1f, 0x8b, 8}):
+		kind = repKindGzip
+	case bytes.HasPrefix(hd, []byte{0x28, 0xb5, 0x2f, 0xfd}):
+		kind = repKindZstd
 	case bytes.HasPrefix(hd, []byte(sqliteMagic)):
 		kind = repKindSQLite
 	case bytes.HasPrefix(hd, []byte(merkleMagic)):
@@ -26667,8 +26672,261 @@ func (b *repBuilder) tryChild(src io.ReaderAt, off, esz, padded int64) (repMembe
 	return repMember{Role: repDerived, SHA: framed, Size: padded, Child: id, Frame: repFrame{Zeros: int(padded - esz)}}, true, nil
 }
 
+// child opens a serialized child at the next existing depth (lab Call.Child).
+func (c *repCall) child(i int) (*repCall, error) {
+	if i < 0 || i >= len(c.Rep.Members) || c.Rep.Members[i].Role != repDerived {
+		return nil, repCorrupt("member %d is not derived", i)
+	}
+	id := c.Rep.Members[i].Child
+	rep, err := c.env.load(id, c.depth+1, c.path)
+	if err != nil {
+		return nil, err
+	}
+	return c.env.call(id, rep, c.depth+1, c.path, nil), nil
+}
+
+// Codec analysis adapts the lab's streaming outputs to production CAS members.
+// Plaintext is staged on disk; only the codec window, one unit and metadata live
+// in memory. Temporary files never participate in namespace visibility.
+type repCodecSink struct {
+	b                *repBuilder
+	plain            *os.File
+	max, n           int64
+	digest           hash.Hash
+	crc              uint32
+	meta             []byte
+	units            int
+	descriptionBytes int64
+}
+
+func (s *repCodecSink) Plain(p []byte) error {
+	if int64(len(p)) > s.max-s.n {
+		return fmt.Errorf("%w: codec plaintext exceeds %d bytes", errRepLimit, s.max)
+	}
+	if err := s.b.budget.inspect(int64(len(p))); err != nil {
+		return err
+	}
+	n, err := s.plain.Write(p)
+	if n != 0 {
+		s.digest.Write(p[:n])
+		s.crc = crc32.Update(s.crc, crc32.IEEETable, p[:n])
+		s.n += int64(n)
+	}
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	return err
+}
+func (s *repCodecSink) Write(p []byte) (int, error) {
+	if err := s.Plain(p); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+func (s *repCodecSink) Unit(i int, u []byte) error {
+	if i != s.units {
+		return repCorrupt("codec unit order %d, expected %d", i, s.units)
+	}
+	if len(s.meta) > 32<<20 || len(u) > 1<<20 {
+		return fmt.Errorf("%w: codec unit metadata", errRepLimit)
+	}
+	s.meta = binary.AppendUvarint(s.meta, uint64(len(u)))
+	if len(u) < gzUnitInline {
+		s.meta = append(s.meta, u...)
+	} else {
+		id, err := s.b.putBlob(u)
+		if err != nil {
+			return err
+		}
+		s.meta = append(s.meta, id[:]...)
+	}
+	s.descriptionBytes += int64(len(u))
+	s.units++
+	return nil
+}
+
+// Descriptions may add bounded sidecar overhead, never uncontrolled expansion.
+// CDC remains authoritative; this is not a first-sight net-storage saving claim.
+func (s *repCodecSink) admitDescription(compressed int64, skeleton int) error {
+	cost := s.descriptionBytes + int64(len(s.meta)) + int64(skeleton)
+	if cost > min(int64(64<<20), compressed+64<<10) {
+		return fmt.Errorf("%w: codec description costs %d bytes", errRepUnsupported, cost)
+	}
+	return nil
+}
+
+func (b *repBuilder) codecTemp() (*os.File, error) {
+	return os.CreateTemp(filepath.Join(b.s.root, "tmp"), "rep-codec-*.tmp")
+}
+func repRemoveTemp(f *os.File) { f.Close(); os.Remove(f.Name()) }
+
+// encodeCodecPlain reuses structural analyzers and falls back to a plain CDC
+// concat. The outer decoder always consumes a serialized DERIVED child.
+func (b *repBuilder) encodeCodecPlain(f *os.File, n int64) ([32]byte, error) {
+	if k, ok := repCandidate(f, n); ok {
+		if err := b.budget.attempt(); err != nil {
+			return [32]byte{}, err
+		}
+		child, err := b.encodeKind(k, f, n)
+		if err == nil {
+			return b.finishRep(child)
+		}
+		if b.budget.inspected > repMaxInspect {
+			return [32]byte{}, err
+		}
+	}
+	child := &repObject{Kind: repKindConcat, Size: n}
+	if err := b.putCDC(io.NewSectionReader(f, 0, n), func(id [32]byte, size int64) {
+		child.Members = append(child.Members, repMember{Role: repStored, SHA: id, Size: size})
+	}); err != nil {
+		return [32]byte{}, err
+	}
+	return b.finishRep(child)
+}
+func (b *repBuilder) codecTable(table []byte) ([]repMember, error) {
+	var members []repMember
+	err := b.putCDC(bytes.NewReader(table), func(id [32]byte, n int64) { members = append(members, repMember{Role: repStored, SHA: id, Size: n}) })
+	return members, err
+}
+
+func (b *repBuilder) encodeGzip(src io.ReaderAt, size int64) (*repObject, error) {
+	if err := b.budget.inspect(size); err != nil {
+		return nil, err
+	}
+	header, err := repDFGzipHeader(io.NewSectionReader(src, 0, min(size, int64(maxGzHeader)+1)))
+	if err != nil || len(header) > maxGzHeader {
+		return nil, fmt.Errorf("%w: gzip header", errRepUnsupported)
+	}
+	f, err := b.codecTemp()
+	if err != nil {
+		return nil, err
+	}
+	defer repRemoveTemp(f)
+	var sink *repCodecSink
+	var stats *repIRStreamStats
+	for _, mode := range []string{"", "balanced", "fast"} {
+		if err = f.Truncate(0); err != nil {
+			return nil, err
+		}
+		if _, err = f.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		sink = &repCodecSink{b: b, plain: f, max: min(int64(MaxGzipInflated), size*MaxGzipRatio+4096), digest: sha256.New()}
+		stats, _, err = repIREncodeStream(io.NewSectionReader(src, int64(len(header)), size-int64(len(header))), repIRStreamConfig{Target: 16 << 10, Profile: repIRAutoProfile, Mode: mode}, sink)
+		if err == nil || !errors.Is(err, repIRErrLimit) {
+			break
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: gzip analysis: %v", errRepUnsupported, err)
+	}
+	if int64(len(header))+stats.StreamLen+8 != size {
+		return nil, fmt.Errorf("%w: gzip multi-member or trailing bytes", errRepUnsupported)
+	}
+	var trailer [8]byte
+	if err := repReadFullAt(src, trailer[:], size-8); err != nil {
+		return nil, err
+	}
+	if binary.LittleEndian.Uint32(trailer[:4]) != sink.crc || binary.LittleEndian.Uint32(trailer[4:]) != uint32(sink.n) {
+		return nil, fmt.Errorf("%w: gzip trailer", errRepUnsupported)
+	}
+	if err := sink.admitDescription(size, len(stats.Skeleton)); err != nil {
+		return nil, err
+	}
+	child, err := b.encodeCodecPlain(f, sink.n)
+	if err != nil {
+		return nil, err
+	}
+	table := binary.AppendUvarint(nil, uint64(len(stats.Skeleton)))
+	table = append(table, stats.Skeleton...)
+	table = binary.AppendUvarint(table, uint64(sink.units))
+	table = append(table, sink.meta...)
+	members, err := b.codecTable(table)
+	if err != nil {
+		return nil, err
+	}
+	out := &repObject{Kind: repKindGzip, Size: size, Members: members}
+	var plainSHA [32]byte
+	sink.digest.Sum(plainSHA[:0])
+	out.Members = append(out.Members, repMember{Role: repDerived, SHA: plainSHA, Size: sink.n, Child: child})
+	out.Recipe = binary.AppendUvarint(nil, uint64(len(header)))
+	out.Recipe = append(out.Recipe, header...)
+	out.Recipe = append(out.Recipe, trailer[:]...)
+	out.Recipe = binary.AppendUvarint(out.Recipe, uint64(len(members)))
+	return out, nil
+}
+
+func repZstdLimits() repZSLimits {
+	return repZSLimits{MaxFrames: 4096, MaxBlocks: 1 << 16, MaxWindow: 16 << 20, MaxFrameDecoded: repMaxInspect, MaxTotalDecoded: repMaxInspect, MaxLiterals: repMaxInspect, MaxSequences: 1 << 28, MaxSkippable: 1 << 20, MaxIRBytes: 32 << 20, MaxRatio: MaxZstdRatio}
+}
+func (b *repBuilder) encodeZstd(src io.ReaderAt, size int64) (*repObject, error) {
+	if err := b.budget.inspect(size); err != nil {
+		return nil, err
+	}
+	plain, err := b.codecTemp()
+	if err != nil {
+		return nil, err
+	}
+	defer repRemoveTemp(plain)
+	units, err := b.codecTemp()
+	if err != nil {
+		return nil, err
+	}
+	defer repRemoveTemp(units)
+	sink := &repCodecSink{b: b, plain: plain, max: min(int64(MaxZstdPlain), size*MaxZstdRatio+1<<20), digest: sha256.New()}
+	result, err := repZSParse(io.NewSectionReader(src, 0, size), sink, units, repZSOptions{repZSLimits: repZstdLimits()})
+	if err != nil {
+		return nil, fmt.Errorf("%w: zstd analysis: %v", errRepUnsupported, err)
+	}
+	if _, err := units.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	for i, n := range result.UnitSizes {
+		if n > 1<<20 {
+			return nil, fmt.Errorf("%w: zstd unit length", errRepLimit)
+		}
+		data := make([]byte, n)
+		if _, err := io.ReadFull(units, data); err != nil {
+			return nil, err
+		}
+		if err := sink.Unit(i, data); err != nil {
+			return nil, err
+		}
+	}
+	if err := sink.admitDescription(size, len(result.Raw)); err != nil {
+		return nil, err
+	}
+	child, err := b.encodeCodecPlain(plain, sink.n)
+	if err != nil {
+		return nil, err
+	}
+	table := binary.AppendUvarint(nil, uint64(len(result.Raw)))
+	table = append(table, result.Raw...)
+	table = binary.AppendUvarint(table, uint64(sink.units))
+	table = append(table, sink.meta...)
+	members, err := b.codecTable(table)
+	if err != nil {
+		return nil, err
+	}
+	var plainSHA [32]byte
+	sink.digest.Sum(plainSHA[:0])
+	out := &repObject{Kind: repKindZstd, Size: size, Members: members, Recipe: binary.AppendUvarint(nil, uint64(len(members)))}
+	out.Members = append(out.Members, repMember{Role: repDerived, SHA: plainSHA, Size: sink.n, Child: child})
+	return out, nil
+}
+
 func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObject, error) {
+	if b.depth >= 3 || ((k == repKindGzip || k == repKindZstd) && b.depth >= 2) {
+		return nil, fmt.Errorf("%w: analysis nesting", errRepDepth)
+	}
+	b.depth++
+	defer func() { b.depth-- }()
+
 	switch k {
+	case repKindGzip:
+		return b.encodeGzip(src, size)
+	case repKindZstd:
+		return b.encodeZstd(src, size)
 	case repKindSQLite:
 		return b.encodeSQLite(src, size)
 	case repKindCAR:
@@ -26689,6 +26947,10 @@ func repCandidate(src io.ReaderAt, size int64) (repKind, bool) {
 	n, _ := src.ReadAt(head[:], 0)
 	hd := head[:min(int64(n), size)]
 	switch {
+	case bytes.HasPrefix(hd, []byte{0x1f, 0x8b, 8}):
+		return repKindGzip, true
+	case bytes.HasPrefix(hd, []byte{0x28, 0xb5, 0x2f, 0xfd}):
+		return repKindZstd, true
 	case bytes.HasPrefix(hd, []byte(sqliteMagic)):
 		return repKindSQLite, true
 	case bytes.HasPrefix(hd, []byte(merkleMagic)):
@@ -31910,6 +32172,38 @@ type repIRzdesc struct {
 var repIRzLDesc, repIRzDDesc, repIRzBLDesc repIRzdesc
 
 // Port source: zeros3-z3/ir/ztrees.go
+func init() {
+	sl := make([]uint8, repIRzLCodes+2)
+	for i := range sl {
+		switch {
+		case i < 144:
+			sl[i] = 8
+		case i < 256:
+			sl[i] = 9
+		case i < 280:
+			sl[i] = 7
+		default:
+			sl[i] = 8
+		}
+	}
+	le := make([]uint8, 29)
+	for i := range le {
+		le[i] = uint8(repDFLengthExtraBits(257 + i))
+	}
+	sd := make([]uint8, repIRzDCodes)
+	de := make([]uint8, repIRzDCodes)
+	for i := range sd {
+		sd[i] = 5
+		de[i] = uint8(repDFDistExtraBits(i))
+	}
+	bl := make([]uint8, repIRzBLCodes)
+	bl[16], bl[17], bl[18] = 2, 3, 7
+	repIRzLDesc = repIRzdesc{sl, le, 257, repIRzLCodes, repIRzMaxBits}
+	repIRzDDesc = repIRzdesc{sd, de, 0, repIRzDCodes, repIRzMaxBits}
+	repIRzBLDesc = repIRzdesc{nil, bl, 0, repIRzBLCodes, repIRzMaxBLBits}
+}
+
+// Port source: zeros3-z3/ir/ztrees.go
 type repIRztree struct {
 	freq, ln, dad []int
 	maxCode       int
@@ -33026,7 +33320,32 @@ const (
 )
 
 // Port source: zeros3-z3/zstdz3/fse.go
+// Predefined distributions (RFC 8878 section 3.1.1.3.2.2).
+var (
+	repZSpredLL = []int16{4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1, -1, -1, -1, -1}
+	repZSpredML = []int16{1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1}
+	repZSpredOF = []int16{1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1}
+)
+
+// Port source: zeros3-z3/zstdz3/fse.go
 var repZSpredTables [3]*repZSfseTable
+
+// Port source: zeros3-z3/zstdz3/fse.go
+func init() {
+	for i, d := range []struct {
+		c   []int16
+		acc int
+	}{{repZSpredLL, 6}, {repZSpredOF, 5}, {repZSpredML, 6}} {
+		t, err := repZSbuildFSE(d.c, d.acc)
+		if err != nil {
+			panic("zstdz3: predefined table: " + err.Error())
+		}
+		// Predefined tables are shared across concurrent parser/replay calls.
+		// Publish their encoding indexes fully initialized.
+		t.initEnc()
+		repZSpredTables[i] = t
+	}
+}
 
 // Port source: zeros3-z3/zstdz3/fse.go
 func repZSrleTable(sym uint8) *repZSfseTable {
@@ -35717,7 +36036,7 @@ func (zstdDecoder) Decode(c *repCall) error {
 		done <- err
 	}()
 	ur := &unitReader{c: c, units: units}
-	_, err = repZSReplay(c.W, skel, bufio.NewReaderSize(ur, 1<<16), pr, repZSLimits{})
+	_, err = repZSReplay(c.W, skel, bufio.NewReaderSize(ur, 1<<16), pr, repZstdLimits())
 	pr.CloseWithError(errAbort)
 	if err != nil && ur.err != nil { // a missing or corrupt unit is the cause of a "truncated unit stream"
 		err = fmt.Errorf("%w (replay: %v)", ur.err, err)

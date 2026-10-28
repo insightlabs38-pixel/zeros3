@@ -14,6 +14,7 @@ import (
 
 	"zeros3-z3/repz3"
 	"zeros3-z3/repz3/kinds"
+	"zeros3-z3/zstdz3"
 )
 
 type fixture struct {
@@ -93,6 +94,12 @@ func main() {
 		check(err)
 		fixtures = append(fixtures, freeze(name, "REFERENCE_FIXTURE", data, b))
 	}
+	// Hermetic, pinned compressed container with both structural child families.
+	plainTar := kinds.CompoundChain(32).Stages[0].Data
+	zst, err := zstdz3.Synth(plainTar)
+	check(err)
+	check(os.WriteFile(filepath.Join(dir, "nested.tar"), plainTar, 0644))
+	check(os.WriteFile(filepath.Join(dir, "nested.zst"), zst, 0644))
 	raw, err := json.MarshalIndent(fixtures, "", "  ")
 	check(err)
 	check(os.WriteFile(filepath.Join(dir, "lab-codecs.json"), append(raw, '\n'), 0644))
