@@ -1,0 +1,34 @@
+{
+ "go": "go1.27.3 linux/amd64",
+ "producer_scripts": {
+  "testing-harnesses/z3/oracle/tail/q16_native.py": "23db68f99c7d15bfae60544eaa43701353b6f1f01e52eac65495fa857659c8e8",
+  "testing-harnesses/z3/oracle/tail/q16_onnx_compare.py": "e8e85c8179f3fbc3ee6608c086dfbe245afafe044b3dc2832dbe070622f0e85b",
+  "testing-harnesses/z3/oracle/tail/q16_wal.py": "5a54cf4f53ed06b6ded1ffb694697d93c072b8215d8408a843958ae55b8d11bc",
+  "testing-harnesses/z3/oracle/tail/q16_fixtures.py": "3fa073806df20992fcfdad0a0ab9b402e58672cd32611477917a978a341f4ef7"
+ },
+ "versions": {
+  "brotli": "1.1.0",
+  "fastavro": "1.12.0",
+  "onnx": "1.19.1",
+  "numpy": "2.3.5",
+  "seven_zip": "7-Zip (z) 26.01 (x64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-04-27"
+ },
+ "sqlite": {
+  "sqlite": "3.53.1",
+  "seed_sha256": "bdf635be69850bd3be09c9a2dbeef7ddfb80036bd3ef3381383cd03b61e4a61a",
+  "native_restore_checks": 12
+ },
+ "full_lab_test": "PASS",
+ "full_lab_vet": "PASS",
+ "fuzz_fixed": {
+  "executions": 2000,
+  "seconds": 0.121,
+  "status": "PASS"
+ },
+ "fuzz_timed": {
+  "executions": 27,
+  "seconds": 31.022,
+  "status": "PASS",
+  "limitation": "low mutation count; not treated as broad coverage"
+ }
+}

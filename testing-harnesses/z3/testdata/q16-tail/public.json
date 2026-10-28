@@ -1,0 +1,53 @@
+[
+ {
+  "family": "sqlite",
+  "file": "Chinook_Sqlite.sqlite",
+  "url": "https://raw.githubusercontent.com/lerocha/chinook-database/4a944a942426e1f3263fe539155fb7ef92b04b4a/ChinookDatabase/DataSources/Chinook_Sqlite.sqlite",
+  "class_": "REAL_PUBLIC_DATABASE_SEED_NOT_WAL_HISTORY",
+  "bytes": 1067008,
+  "sha256": "bdf635be69850bd3be09c9a2dbeef7ddfb80036bd3ef3381383cd03b61e4a61a"
+ },
+ {
+  "family": "woff2",
+  "file": "fontawesome-5.15.3.woff2",
+  "url": "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/d79d85c3fad85ad1885e87ed558f4afd6fce8289/webfonts/fa-solid-900.woff2",
+  "class_": "REAL_RELEASE_FONT_HISTORY",
+  "version": "5.15.3",
+  "bytes": 78212,
+  "sha256": "ef2369c82b6ec19bcf4fe76799d94edc43604e164c0f73978059536159845441"
+ },
+ {
+  "family": "woff2",
+  "file": "fontawesome-5.15.4.woff2",
+  "url": "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/7d3d774145ac38663f6d1effc6def0334b68ab7e/webfonts/fa-solid-900.woff2",
+  "class_": "REAL_RELEASE_FONT_HISTORY",
+  "version": "5.15.4",
+  "bytes": 78260,
+  "sha256": "1d0e6c7f6b40b62c10c929739ed76b0adbd9a08591aa95697b6f802c4dc4824f"
+ },
+ {
+  "family": "woff2",
+  "file": "fontawesome-6.0.0.woff2",
+  "url": "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/65f4bdb5025759ba25cd3432568de288b6a67527/webfonts/fa-solid-900.woff2",
+  "class_": "REAL_RELEASE_FONT_HISTORY",
+  "version": "6.0.0",
+  "bytes": 126820,
+  "sha256": "b45ac7ac995d0c83afdd855ab616e30f8bbf7049d61e08ecd20bd6a12bf865aa"
+ },
+ {
+  "family": "onnx",
+  "file": "squeezenet1.0-12.onnx",
+  "url": "https://media.githubusercontent.com/media/onnx/models/c5cae0f1942c8d7727372c7b1f6b485aa39e4421/validated/vision/classification/squeezenet/model/squeezenet1.0-12.onnx",
+  "class_": "REAL_PUBLIC_MODEL_SEED_NOT_REVISION_HISTORY",
+  "bytes": 4952956,
+  "sha256": "dec81a8684617770b3cf13fadc1d92565d1d453d23935fc6388b792d99c992bd"
+ },
+ {
+  "family": "7zip-tool",
+  "file": "7zip_22.01+really26.01+dfsg-0+deb12u1_amd64.deb",
+  "url": "https://deb.debian.org/debian/pool/main/7/7zip/7zip_22.01+really26.01+dfsg-0+deb12u1_amd64.deb",
+  "class_": "NATIVE_PRODUCER_TOOL",
+  "bytes": 1021792,
+  "sha256": "3b182c7983e5261cf003b6d778852fd1fb5274d5fd5d36287a3537c70a5c84b3"
+ }
+]
