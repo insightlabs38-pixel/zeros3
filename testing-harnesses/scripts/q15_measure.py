@@ -7,6 +7,6 @@ inputs=json.loads((cache/'q15-corpus/inputs.json').read_text())
 (work/'inputs.json').write_text(json.dumps(inputs,indent=1))
 subprocess.run([compiler,'-C',str(root/'testing-harnesses/z3'),'build','-o',str(work/'frontier'),'./cmd/z3bitfrontier'],check=True)
 p=subprocess.Popen([str(work/'frontier'),str(work/'inputs.json')],stdout=open(work/'results.jsonl','w'),stderr=open(work/'run.log','w'));start=time.monotonic();_,status,u=os.wait4(p.pid,0);code=os.waitstatus_to_exitcode(status);p.returncode=code
-files=[*sorted((root/'testing-harnesses/z3/bitcodez3').glob('*.go')),root/'testing-harnesses/z3/cmd/z3bitfrontier/main.go',*sorted((root/'testing-harnesses/z3/oracle/bitcode').glob('*'))]
+files=[root/'testing-harnesses/z3/cmd/z3bitframe/main.go',*sorted((root/'testing-harnesses/z3/bitcodez3').glob('*.go')),root/'testing-harnesses/z3/cmd/z3bitfrontier/main.go',*sorted((root/'testing-harnesses/z3/oracle/bitcode').glob('*'))]
 meta=dict(exit=code,seconds=time.monotonic()-start,user_cpu=u.ru_utime,system_cpu=u.ru_stime,maxrss_kib=u.ru_maxrss,inputs=len(inputs),scope='LLVM generic framing and grouped exact byte characterization with CDC baselines, CAS, serialized full proof/reachability, packed costs and fresh-source ranges; not a streaming production decoder',sources={str(f.relative_to(root)):hashlib.sha256(f.read_bytes()).hexdigest() for f in files})
 (work/'resource.json').write_text(json.dumps(meta,indent=1));print(json.dumps(meta));assert code==0

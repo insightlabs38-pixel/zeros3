@@ -51,7 +51,7 @@ func main() {
 			binary.LittleEndian.PutUint64(scratch[16:], uint64(r.Values))
 			shape.Write(scratch[:])
 			values.Write(scratch[:])
-			values.Write([]byte(r.OperandSHA))
+			values.Write(r.OperandSHA[:])
 			count++
 			cursor++
 		}

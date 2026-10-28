@@ -18,7 +18,7 @@ type Record struct {
 	Block, Code, Abbrev uint64
 	Start, End          uint64
 	Values              int
-	OperandSHA          string
+	OperandSHA          [32]byte
 }
 type Block struct {
 	ID               uint64
@@ -37,13 +37,14 @@ type operand struct {
 }
 type abbreviation []operand
 type reader struct {
-	data     []byte
-	pos, end uint64
-	err      error
-	values   int
-	abbrevs  int
-	info     map[uint64][]abbreviation
-	plan     Plan
+	data           []byte
+	pos, end       uint64
+	err            error
+	values         int
+	abbrevs        int
+	abbrevOperands int
+	info           map[uint64][]abbreviation
+	plan           Plan
 }
 
 func (r *reader) fail() {
@@ -100,6 +101,11 @@ func (r *reader) align() {
 func (r *reader) definition() abbreviation {
 	n := r.vbr(5)
 	if n == 0 || n > 256 {
+		r.fail()
+		return nil
+	}
+	r.abbrevOperands += int(n)
+	if r.abbrevOperands > 1<<20 {
 		r.fail()
 		return nil
 	}
@@ -176,7 +182,7 @@ func (r *reader) value(o operand) uint64 {
 	r.fail()
 	return 0
 }
-func (r *reader) record(a abbreviation, plain bool) (uint64, int, string, []uint64) {
+func (r *reader) record(a abbreviation, plain bool) (uint64, int, [32]byte, []uint64) {
 	h := sha256.New()
 	var scratch [8]byte
 	count := 0
@@ -235,9 +241,11 @@ func (r *reader) record(a abbreviation, plain bool) (uint64, int, string, []uint
 	}
 	if len(first) == 0 {
 		r.fail()
-		return 0, 0, "", nil
+		return 0, 0, [32]byte{}, nil
 	}
-	return first[0], count - 1, fmt.Sprintf("%x", h.Sum(nil)), first[1:]
+	var digest [32]byte
+	copy(digest[:], h.Sum(digest[:0]))
+	return first[0], count - 1, digest, first[1:]
 }
 func (r *reader) block(id, width, end uint64, depth int, top bool) {
 	if depth > 32 || width < 2 || width > 32 || len(r.plan.Blocks) > 262144 {

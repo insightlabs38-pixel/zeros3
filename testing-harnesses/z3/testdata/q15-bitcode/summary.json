@@ -1,0 +1,398 @@
+{
+ "inputs": 65,
+ "unique_sources": 56,
+ "rows": 325,
+ "serialized_proofs": 325,
+ "cold_ranges": 975,
+ "negative_checks": [
+  "wrong-source",
+  "missing-file"
+ ],
+ "finals": [
+  {
+   "family": "hiredis-hiredis.c-O0",
+   "variant": "source-cdc-prod",
+   "bytes": 158813,
+   "additive": 158813,
+   "max_range_amplification": 12.2578125
+  },
+  {
+   "family": "hiredis-hiredis.c-O0",
+   "variant": "source-cdc-4k",
+   "bytes": 153909,
+   "additive": 312722,
+   "max_range_amplification": 2.877197265625
+  },
+  {
+   "family": "hiredis-hiredis.c-O0",
+   "variant": "functions",
+   "bytes": 192013,
+   "additive": 350826,
+   "max_range_amplification": 2.509033203125
+  },
+  {
+   "family": "hiredis-hiredis.c-O0",
+   "variant": "leaves",
+   "bytes": 216790,
+   "additive": 375603,
+   "max_range_amplification": 3.8857421875
+  },
+  {
+   "family": "hiredis-hiredis.c-O0",
+   "variant": "records",
+   "bytes": 248772,
+   "additive": 407585,
+   "max_range_amplification": 5.735107421875
+  },
+  {
+   "family": "hiredis-hiredis.c-O2",
+   "variant": "source-cdc-prod",
+   "bytes": 175924,
+   "additive": 175924,
+   "max_range_amplification": 12.4169921875
+  },
+  {
+   "family": "hiredis-hiredis.c-O2",
+   "variant": "source-cdc-4k",
+   "bytes": 165282,
+   "additive": 341206,
+   "max_range_amplification": 3.743408203125
+  },
+  {
+   "family": "hiredis-hiredis.c-O2",
+   "variant": "functions",
+   "bytes": 190514,
+   "additive": 366438,
+   "max_range_amplification": 3.009765625
+  },
+  {
+   "family": "hiredis-hiredis.c-O2",
+   "variant": "leaves",
+   "bytes": 233156,
+   "additive": 409080,
+   "max_range_amplification": 4.58056640625
+  },
+  {
+   "family": "hiredis-hiredis.c-O2",
+   "variant": "records",
+   "bytes": 264976,
+   "additive": 440900,
+   "max_range_amplification": 6.04052734375
+  },
+  {
+   "family": "hiredis-read.c-O0",
+   "variant": "source-cdc-prod",
+   "bytes": 379728,
+   "additive": 379728,
+   "max_range_amplification": 40.45458984375
+  },
+  {
+   "family": "hiredis-read.c-O0",
+   "variant": "source-cdc-4k",
+   "bytes": 411297,
+   "additive": 790517,
+   "max_range_amplification": 3.312255859375
+  },
+  {
+   "family": "hiredis-read.c-O0",
+   "variant": "functions",
+   "bytes": 435896,
+   "additive": 815116,
+   "max_range_amplification": 3.448974609375
+  },
+  {
+   "family": "hiredis-read.c-O0",
+   "variant": "leaves",
+   "bytes": 443285,
+   "additive": 823013,
+   "max_range_amplification": 4.983642578125
+  },
+  {
+   "family": "hiredis-read.c-O0",
+   "variant": "records",
+   "bytes": 486280,
+   "additive": 866008,
+   "max_range_amplification": 6.755126953125
+  },
+  {
+   "family": "hiredis-read.c-O2",
+   "variant": "source-cdc-prod",
+   "bytes": 266074,
+   "additive": 266074,
+   "max_range_amplification": 22.792724609375
+  },
+  {
+   "family": "hiredis-read.c-O2",
+   "variant": "source-cdc-4k",
+   "bytes": 296207,
+   "additive": 561800,
+   "max_range_amplification": 3.416259765625
+  },
+  {
+   "family": "hiredis-read.c-O2",
+   "variant": "functions",
+   "bytes": 287589,
+   "additive": 552743,
+   "max_range_amplification": 5.68603515625
+  },
+  {
+   "family": "hiredis-read.c-O2",
+   "variant": "leaves",
+   "bytes": 309780,
+   "additive": 575854,
+   "max_range_amplification": 5.437255859375
+  },
+  {
+   "family": "hiredis-read.c-O2",
+   "variant": "records",
+   "bytes": 339134,
+   "additive": 605208,
+   "max_range_amplification": 5.171142578125
+  },
+  {
+   "family": "hiredis-sds.c-O0",
+   "variant": "source-cdc-prod",
+   "bytes": 79917,
+   "additive": 79917,
+   "max_range_amplification": 9.6630859375
+  },
+  {
+   "family": "hiredis-sds.c-O0",
+   "variant": "source-cdc-4k",
+   "bytes": 69493,
+   "additive": 149410,
+   "max_range_amplification": 3.27587890625
+  },
+  {
+   "family": "hiredis-sds.c-O0",
+   "variant": "functions",
+   "bytes": 74005,
+   "additive": 153922,
+   "max_range_amplification": 2.302490234375
+  },
+  {
+   "family": "hiredis-sds.c-O0",
+   "variant": "leaves",
+   "bytes": 87495,
+   "additive": 167412,
+   "max_range_amplification": 3.7568359375
+  },
+  {
+   "family": "hiredis-sds.c-O0",
+   "variant": "records",
+   "bytes": 107592,
+   "additive": 187509,
+   "max_range_amplification": 5.33203125
+  },
+  {
+   "family": "hiredis-sds.c-O2",
+   "variant": "source-cdc-prod",
+   "bytes": 91257,
+   "additive": 91257,
+   "max_range_amplification": 16.34765625
+  },
+  {
+   "family": "hiredis-sds.c-O2",
+   "variant": "source-cdc-4k",
+   "bytes": 105559,
+   "additive": 196816,
+   "max_range_amplification": 2.794677734375
+  },
+  {
+   "family": "hiredis-sds.c-O2",
+   "variant": "functions",
+   "bytes": 117877,
+   "additive": 209134,
+   "max_range_amplification": 3.169189453125
+  },
+  {
+   "family": "hiredis-sds.c-O2",
+   "variant": "leaves",
+   "bytes": 130008,
+   "additive": 221265,
+   "max_range_amplification": 4.579833984375
+  },
+  {
+   "family": "hiredis-sds.c-O2",
+   "variant": "records",
+   "bytes": 149544,
+   "additive": 240801,
+   "max_range_amplification": 5.916015625
+  },
+  {
+   "family": "sqlite-O2",
+   "variant": "source-cdc-prod",
+   "bytes": 10324293,
+   "additive": 10324293,
+   "max_range_amplification": 51.211181640625
+  },
+  {
+   "family": "sqlite-O2",
+   "variant": "source-cdc-4k",
+   "bytes": 11693857,
+   "additive": 22018150,
+   "max_range_amplification": 14.646728515625
+  },
+  {
+   "family": "sqlite-O2",
+   "variant": "functions",
+   "bytes": 12153404,
+   "additive": 22477697,
+   "max_range_amplification": 48.583251953125
+  },
+  {
+   "family": "sqlite-O2",
+   "variant": "leaves",
+   "bytes": 13879324,
+   "additive": 24203617,
+   "max_range_amplification": 116.2333984375
+  },
+  {
+   "family": "sqlite-O2",
+   "variant": "records",
+   "bytes": 14970002,
+   "additive": 25294295,
+   "max_range_amplification": 164.13671875
+  },
+  {
+   "family": "controlled-c-O0",
+   "variant": "source-cdc-prod",
+   "bytes": 15939,
+   "additive": 15939,
+   "max_range_amplification": 1.0192307692307692
+  },
+  {
+   "family": "controlled-c-O0",
+   "variant": "source-cdc-4k",
+   "bytes": 15939,
+   "additive": 15939,
+   "max_range_amplification": 1.0192307692307692
+  },
+  {
+   "family": "controlled-c-O0",
+   "variant": "functions",
+   "bytes": 18087,
+   "additive": 34026,
+   "max_range_amplification": 1.0996031746031747
+  },
+  {
+   "family": "controlled-c-O0",
+   "variant": "leaves",
+   "bytes": 19466,
+   "additive": 35405,
+   "max_range_amplification": 1.4924603174603175
+  },
+  {
+   "family": "controlled-c-O0",
+   "variant": "records",
+   "bytes": 22924,
+   "additive": 38863,
+   "max_range_amplification": 1.6674603174603175
+  },
+  {
+   "family": "controlled-c-O2",
+   "variant": "source-cdc-prod",
+   "bytes": 15125,
+   "additive": 15125,
+   "max_range_amplification": 1.0202464788732395
+  },
+  {
+   "family": "controlled-c-O2",
+   "variant": "source-cdc-4k",
+   "bytes": 16418,
+   "additive": 31543,
+   "max_range_amplification": 1.0356514084507042
+  },
+  {
+   "family": "controlled-c-O2",
+   "variant": "functions",
+   "bytes": 17477,
+   "additive": 32602,
+   "max_range_amplification": 1.1193656093489148
+  },
+  {
+   "family": "controlled-c-O2",
+   "variant": "leaves",
+   "bytes": 20349,
+   "additive": 35474,
+   "max_range_amplification": 1.5179465776293823
+  },
+  {
+   "family": "controlled-c-O2",
+   "variant": "records",
+   "bytes": 23505,
+   "additive": 38630,
+   "max_range_amplification": 1.6736227045075125
+  },
+  {
+   "family": "controlled-cc-O0",
+   "variant": "source-cdc-prod",
+   "bytes": 16071,
+   "additive": 16071,
+   "max_range_amplification": 1.0190713101160862
+  },
+  {
+   "family": "controlled-cc-O0",
+   "variant": "source-cdc-4k",
+   "bytes": 16071,
+   "additive": 16071,
+   "max_range_amplification": 1.0190713101160862
+  },
+  {
+   "family": "controlled-cc-O0",
+   "variant": "functions",
+   "bytes": 18315,
+   "additive": 34386,
+   "max_range_amplification": 1.09850863422292
+  },
+  {
+   "family": "controlled-cc-O0",
+   "variant": "leaves",
+   "bytes": 19650,
+   "additive": 35721,
+   "max_range_amplification": 1.4870486656200943
+  },
+  {
+   "family": "controlled-cc-O0",
+   "variant": "records",
+   "bytes": 23052,
+   "additive": 39123,
+   "max_range_amplification": 1.6601255886970172
+  },
+  {
+   "family": "controlled-cc-O2",
+   "variant": "source-cdc-prod",
+   "bytes": 15452,
+   "additive": 15452,
+   "max_range_amplification": 1.0201048951048952
+  },
+  {
+   "family": "controlled-cc-O2",
+   "variant": "source-cdc-4k",
+   "bytes": 16955,
+   "additive": 32407,
+   "max_range_amplification": 1.035402097902098
+  },
+  {
+   "family": "controlled-cc-O2",
+   "variant": "functions",
+   "bytes": 18025,
+   "additive": 33477,
+   "max_range_amplification": 1.117986798679868
+  },
+  {
+   "family": "controlled-cc-O2",
+   "variant": "leaves",
+   "bytes": 20554,
+   "additive": 36006,
+   "max_range_amplification": 1.511963696369637
+  },
+  {
+   "family": "controlled-cc-O2",
+   "variant": "records",
+   "bytes": 23778,
+   "additive": 39230,
+   "max_range_amplification": 1.6658415841584158
+  }
+ ]
+}
