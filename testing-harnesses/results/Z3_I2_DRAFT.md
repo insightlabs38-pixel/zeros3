@@ -8,5 +8,11 @@ all reads are reachable. Root module/dependencies/wire/store/default unchanged.
 Managed decoding is capped32MiB output,128MiB total components,1MiB/component,
 65536 groups and8KiB/node; claimed output size checked before legacy allocation.
 Managed creation is not enabled. Whole-file masked analysis/CLR RSS debt remains.
-Streaming model analyzer, base liveness/hop/range tests and compatibility matrix
-are unfinished. Continue this draft before moving to Q10; never merge it.
+Streaming Model analyzer now uses256KiB windows, exact explicit-SHA bases with
+<=3 operations, header CDC and tensor ranges; five-revision/restart tests pass.
+1GiB chunk-distinct sparse control:76.1MiB peak heap growth/97128KiB RSS,
+12.2s analyzer+CAS+serialized proof (memory control, not real-model economics).
+Managed encoder cores/grouping also ported for offline fidelity; no ordinary
+PUT creates managed representations while whole-file materialization remains.
+Full compatibility/liveness/fuzz gates and final memory characterization remain.
+Continue this draft before moving to Q10; never merge it.

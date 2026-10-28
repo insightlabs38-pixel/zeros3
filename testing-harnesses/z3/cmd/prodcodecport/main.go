@@ -74,11 +74,11 @@ func must(err error) {
 }
 func main() {
 	if len(os.Args) < 3 || len(os.Args) > 4 {
-		panic("extract lab-directory output-prefix [git|managed|model-layout|model-codec|managed-codec]")
+		panic("extract lab-directory output-prefix [git|managed|managed-analysis|model-layout|model-codec|managed-codec]")
 	}
 	packagePaths := []string{"zeros3-z3/deflate", "zeros3-z3/ir", "zeros3-z3/zstdz3"}
 	gitMode := len(os.Args) == 4 && os.Args[3] == "git"
-	managedMode := len(os.Args) == 4 && os.Args[3] == "managed"
+	managedMode := len(os.Args) == 4 && (os.Args[3] == "managed" || os.Args[3] == "managed-analysis")
 	modelMode := len(os.Args) == 4 && os.Args[3] == "model-layout"
 	modelCodecMode := len(os.Args) == 4 && os.Args[3] == "model-codec"
 	managedCodecMode := len(os.Args) == 4 && os.Args[3] == "managed-codec"
@@ -191,6 +191,9 @@ func main() {
 	}
 	if managedMode {
 		roots = []string{"zeros3-z3/dexz3:Decode", "zeros3-z3/clrz3:Decode"}
+		if os.Args[3] == "managed-analysis" {
+			roots = append(roots, "zeros3-z3/dexz3:Parse", "zeros3-z3/dexz3:Encode", "zeros3-z3/clrz3:Parse", "zeros3-z3/clrz3:Encode")
+		}
 	}
 	if modelMode {
 		roots = []string{"zeros3-z3/st:Parse", "zeros3-z3/ggufz3:Parse"}

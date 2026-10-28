@@ -27092,6 +27092,8 @@ func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObj
 	defer func() { b.depth-- }()
 
 	switch k {
+	case repKindModel:
+		return b.encodeModel(src, size)
 	case repKindGit:
 		return b.encodeGit(src, size)
 	case repKindGzip:
@@ -27118,6 +27120,8 @@ func repCandidate(src io.ReaderAt, size int64) (repKind, bool) {
 	n, _ := src.ReadAt(head[:], 0)
 	hd := head[:min(int64(n), size)]
 	switch {
+	case bytes.HasPrefix(hd, []byte("GGUF")) || (len(hd) >= 9 && binary.LittleEndian.Uint64(hd[:8]) <= 16<<20 && binary.LittleEndian.Uint64(hd[:8]) <= uint64(max(0, size-8)) && bytes.HasPrefix(bytes.TrimSpace(hd[8:]), []byte("{"))):
+		return repKindModel, true
 	case bytes.HasPrefix(hd, []byte("PACK")) || bytes.HasPrefix(hd, []byte{0xff, 't', 'O', 'c'}):
 		return repKindGit, true
 	case bytes.HasPrefix(hd, []byte{0x1f, 0x8b, 8}):
@@ -38420,6 +38424,15 @@ func repDXidentMethods(data []byte, f *repDXFile, T, P, S []repDXIdentity) ([]re
 }
 
 // Port source: zeros3-z3/dexz3/ident.go
+// checkUnique rejects a table holding two entries with one identity.
+func repDXcheckUnique(sp repDXSpace, ids []repDXIdentity) error {
+	if err := repIXCheckUnique(sp.String(), ids); err != nil {
+		return fmt.Errorf("%w: %v", repDXErrUnsupported, err)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/dexz3/ident.go
 // idxErr maps a reference-stream error to this package's malformed-input error.
 func repDXidxErr(err error) error {
 	if err == nil {
@@ -38574,6 +38587,31 @@ func repDXwalkInsns(code []byte, n int, fn func(unit int, sp repDXSpace, wide bo
 	return nil
 }
 
+// Port source: zeros3-z3/dexz3/mask.go
+// MaskSlot overwrites a slot's bytes with the canonical mask for its encoding, preserving the
+// byte length so that the surrounding structure still parses. The mask never collides with the
+// "absent" encodings (offset 0, ULEB128p1 0, NO_INDEX) so a decoder can find the slot again.
+func repDXMaskSlot(b []byte, s *repDXSlot) {
+	p := b[s.Off : s.Off+int64(s.Len)]
+	switch s.Enc {
+	case repDXEncU16, repDXEncU32, repDXEncVal:
+		for i := range p {
+			p[i] = 0
+		}
+		if s.Space == repDXSpOffset && s.Enc == repDXEncU32 {
+			p[0] = 1
+		}
+	case repDXEncULEB, repDXEncDelta, repDXEncP1:
+		for i := range p {
+			p[i] = 0x80
+		}
+		p[len(p)-1] = 0
+		if s.Enc == repDXEncP1 || s.Space == repDXSpOffset { // "present" slots decode as the value 1, in the same length
+			p[0] |= 1
+		}
+	}
+}
+
 // Port source: zeros3-z3/dexz3/rep.go
 const (
 	repDXrepMagic  = "DXN1"
@@ -38581,6 +38619,40 @@ const (
 	repDXstreamOff = 5
 	repDXflagAdler = 1 // the original header checksum was valid and is re-verified by Decode
 )
+
+// Port source: zeros3-z3/dexz3/rep.go
+// Config selects the representation parameters.
+type repDXConfig struct {
+	K0 int // identity prefix bytes, 1..4 (default 3)
+	// Auto > 0 (Z3-33): the prefix length of each index space is idxref.AutoK0(entries, Auto);
+	// offsets keep K0.
+	Auto int
+	// Cut returns the exclusive end offsets of the payload groups; secs describe the sections of
+	// the payload (payload coordinates) and the item boundaries a record-aware cutter may use.
+	// nil: one group.
+	Cut func(payload []byte, secs []repDXSec) []int
+}
+
+// Port source: zeros3-z3/dexz3/rep.go
+// Stats are the encoder-side measurements of one representation.
+type repDXStats struct {
+	Slots      [repDXnumSpaces]int // slots per space (offset = SpOffset)
+	StreamLen  [repDXnumStream]int // total reference bytes per stream
+	Collisions [repDXnumSpaces]int // table entries whose K0 prefix is shared
+	Payload    int
+	Comps      int
+}
+
+// Port source: zeros3-z3/dexz3/rep.go
+// Rep is an encoded DEX.
+type repDXRep struct {
+	Meta  []byte
+	Comps [][]byte
+	Stats repDXStats
+	Cuts  []int         // payload offset where each component ends (analysis)
+	Secs  []repDXSec    // sections in payload coordinates (analysis)
+	Refs  []repIXRefRec // every emitted reference (analysis: Z3-33 repeated-reference coders)
+}
 
 // Port source: zeros3-z3/dexz3/rep.go
 // spaceK0 is the prefix length of an index space with n entries.
@@ -38597,6 +38669,166 @@ func repDXspaceOf(s repDXSpace) int { return int(s) - 1 }
 // Port source: zeros3-z3/dexz3/rep.go
 func (f *repDXFile) mapSpan() (int64, int64) {
 	return int64(f.Hdr.MapOff), 4 + 12*int64(len(f.Map))
+}
+
+// Port source: zeros3-z3/dexz3/rep.go
+// Encode builds the representation of data (one DEX in memory). The result is verified by a full
+// Decode before it is returned; any mismatch is ErrUnsupported (the caller falls back to CDC).
+func repDXEncode(f *repDXFile, data []byte, cfg repDXConfig) (*repDXRep, error) {
+	k0 := cfg.K0
+	if k0 == 0 {
+		k0 = 3
+	}
+	if k0 < 1 || k0 > 4 {
+		return nil, fmt.Errorf("dexz3: K0 %d", k0)
+	}
+	w, err := repDXWalk(f, data, repDXWalkOpts{Offsets: true, Debug: true})
+	if err != nil {
+		return nil, err
+	}
+	// identities from the original
+	var tb repDXTables
+	if tb.ID[repDXSpString], err = repDXidentStrings(data, f, w); err != nil {
+		return nil, err
+	}
+	if tb.ID[repDXSpType], err = repDXidentTypes(data, f, tb.ID[repDXSpString]); err != nil {
+		return nil, err
+	}
+	if tb.ID[repDXSpProto], err = repDXidentProtos(data, f, tb.ID[repDXSpType]); err != nil {
+		return nil, err
+	}
+	if tb.ID[repDXSpField], err = repDXidentFields(data, f, tb.ID[repDXSpType], tb.ID[repDXSpString]); err != nil {
+		return nil, err
+	}
+	if tb.ID[repDXSpMethod], err = repDXidentMethods(data, f, tb.ID[repDXSpType], tb.ID[repDXSpProto], tb.ID[repDXSpString]); err != nil {
+		return nil, err
+	}
+	for sp := repDXSpString; sp <= repDXSpMethod; sp++ {
+		if err := repDXcheckUnique(sp, tb.ID[sp]); err != nil {
+			return nil, err
+		}
+	}
+	var pi [repDXnumSpaces]*repIXPrefixIndex
+	var st repDXStats
+	for sp := repDXSpString; sp <= repDXSpMethod; sp++ {
+		pi[sp] = repIXNewPrefixIndex(tb.ID[sp], repDXspaceK0(k0, cfg.Auto, len(tb.ID[sp])))
+		st.Collisions[sp] = pi[sp].Collisions()
+	}
+	// masked payload and per-slot reference bytes
+	masked := append([]byte(nil), data...)
+	mOff, mLen := f.mapSpan()
+	for i := range w.Slots {
+		repDXMaskSlot(masked, &w.Slots[i])
+	}
+	oc := repDXnewOffCoder(f, w, masked, k0)
+	refs := make([]struct {
+		pos int
+		st  int
+		b   []byte
+	}, 0, len(w.Slots))
+	for i := range w.Slots {
+		s := &w.Slots[i]
+		pos := int(s.Off) - repDXHeaderSize
+		if s.Off >= mOff+mLen {
+			pos -= int(mLen)
+		} else if s.Off+int64(s.Len) > mOff {
+			return nil, repDXbad("slot overlaps the map list")
+		}
+		st.Slots[s.Space]++
+		var b []byte
+		var stream int
+		if s.Space == repDXSpOffset {
+			stream = repDXstreamOff
+			if b, err = oc.put(s.Kind, int64(s.Val)); err != nil {
+				return nil, err
+			}
+		} else {
+			stream = repDXspaceOf(s.Space)
+			if b, err = pi[s.Space].Put(nil, s.Val); err != nil {
+				return nil, err
+			}
+		}
+		st.StreamLen[stream] += len(b)
+		refs = append(refs, struct {
+			pos int
+			st  int
+			b   []byte
+		}{pos, stream, b})
+	}
+	// payload: file without header and map list
+	payload := make([]byte, 0, len(data))
+	payload = append(payload, masked[repDXHeaderSize:mOff]...)
+	payload = append(payload, masked[mOff+mLen:]...)
+	st.Payload = len(payload)
+	secs := f.Sections(w, true)
+	ri := 0
+	for si := range secs {
+		sc := &secs[si]
+		sc.Hash = make([]uint64, len(sc.Items))
+		for i, st := range sc.Items {
+			end := sc.End
+			if i+1 < len(sc.Items) {
+				end = sc.Items[i+1]
+			}
+			h := repIXFNV64(repIXFNVInit, payload[st:end])
+			for ri < len(refs) && refs[ri].pos < st {
+				ri++
+			}
+			for j := ri; j < len(refs) && refs[j].pos < end; j++ {
+				h = repIXFNV64(h^uint64(refs[j].st), refs[j].b)
+			}
+			sc.Hash[i] = h
+		}
+	}
+	var cuts []int
+	if cfg.Cut != nil {
+		cuts = cfg.Cut(payload, secs)
+	}
+	if len(cuts) == 0 || cuts[len(cuts)-1] != len(payload) {
+		cuts = append(cuts, len(payload))
+	}
+	// components
+	rep := &repDXRep{Stats: st, Cuts: cuts, Secs: secs}
+	ri, start := 0, 0
+	for _, end := range cuts {
+		if end < start || end > len(payload) {
+			return nil, fmt.Errorf("dexz3: bad cut %d", end)
+		}
+		var streams [repDXnumStream][]byte
+		for ri < len(refs) && refs[ri].pos < end {
+			streams[refs[ri].st] = append(streams[refs[ri].st], refs[ri].b...)
+			rep.Refs = append(rep.Refs, repIXRefRec{Comp: len(rep.Comps), Stream: uint8(refs[ri].st), B: refs[ri].b})
+			ri++
+		}
+		c := repIXPackComp(payload[start:end], streams[:])
+		rep.Comps = append(rep.Comps, c)
+		start = end
+	}
+	rep.Stats.Comps = len(rep.Comps)
+	// meta
+	var flags byte
+	if adler32.Checksum(data[12:]) == f.Hdr.Checksum {
+		flags |= repDXflagAdler
+	}
+	kb := byte(k0)
+	if cfg.Auto > 0 {
+		kb = 0x80 | byte(cfg.Auto)
+	}
+	m := append([]byte(repDXrepMagic), flags, kb)
+	m = append(m, f.Raw[:]...)
+	mapb := make([]byte, mLen)
+	copy(mapb, data[mOff:mOff+mLen])
+	m = append(m, mapb...)
+	rep.Meta = m
+	// self-check
+	got, err := repDXDecode(rep.Meta, rep.Comps)
+	if err != nil {
+		return nil, fmt.Errorf("%w: self-check decode: %v", repDXErrUnsupported, err)
+	}
+	if !bytes.Equal(got, data) {
+		return nil, fmt.Errorf("%w: self-check mismatch", repDXErrUnsupported)
+	}
+	return rep, nil
 }
 
 // Port source: zeros3-z3/dexz3/rep.go
@@ -40606,6 +40838,106 @@ func repCLsortLents(a []repCLlent) {
 	sort.SliceStable(a, func(i, j int) bool { return a[i].off < a[j].off })
 }
 
+// Port source: zeros3-z3/clrz3/decode.go
+// buildSecs describes the payload for the grouping cutters: tables (rows), heaps (entries) and
+// the body area (bodies) are record sections; everything else is plain.
+func repCLbuildSecs(f *repCLFile, d []byte, hv *repCLHeapView, bodies []repCLBodyInfo, pm repCLposMap, plen int) []repIXSec {
+	type cand struct {
+		off, end int64
+		typ      uint16
+		items    []int64
+	}
+	var cs []cand
+	for t := 0; t < repCLNumTables; t++ {
+		tb := &f.Tables[t]
+		if tb.Rows == 0 {
+			continue
+		}
+		it := make([]int64, tb.Rows)
+		for r := range it {
+			it[r] = tb.Off + int64(r)*int64(tb.RowSize)
+		}
+		cs = append(cs, cand{tb.Off, tb.Off + int64(tb.Rows)*int64(tb.RowSize), uint16(0x100 + t), it})
+	}
+	if f.HasStr {
+		var it []int64
+		str := d[f.Str.Off : f.Str.Off+f.Str.Size]
+		for i := range str {
+			if i == 0 || str[i-1] == 0 {
+				it = append(it, f.Str.Off+int64(i))
+			}
+		}
+		cs = append(cs, cand{f.Str.Off, f.Str.Off + f.Str.Size, 0x200, it})
+	}
+	if f.HasBlob {
+		it := make([]int64, len(hv.Blobs))
+		for i, e := range hv.Blobs {
+			it[i] = f.Blob.Off + int64(e.Off)
+		}
+		cs = append(cs, cand{f.Blob.Off, f.Blob.Off + f.Blob.Size, 0x201, it})
+	}
+	if f.HasUS {
+		it := make([]int64, len(hv.USes))
+		for i, e := range hv.USes {
+			it[i] = f.US.Off + int64(e.Off)
+		}
+		cs = append(cs, cand{f.US.Off, f.US.Off + f.US.Size, 0x202, it})
+	}
+	if f.HasGUID {
+		var it []int64
+		for o := int64(0); o < f.GUID.Size; o += 16 {
+			it = append(it, f.GUID.Off+o)
+		}
+		cs = append(cs, cand{f.GUID.Off, f.GUID.Off + f.GUID.Size, 0x203, it})
+	}
+	if len(bodies) > 0 {
+		var it []int64
+		lo, hi := int64(1<<62), int64(0)
+		for _, b := range bodies {
+			if b.Opaque && b.Body.End == 0 {
+				continue
+			}
+			it = append(it, b.Body.Off)
+			lo = min(lo, b.Body.Off)
+			hi = max(hi, b.Body.End)
+		}
+		repCLsortInt64(it)
+		if len(it) > 0 {
+			cs = append(cs, cand{lo, hi, 0x204, it})
+		}
+	}
+	sort.Slice(cs, func(i, j int) bool { return cs[i].off < cs[j].off })
+	var out []repIXSec
+	cur := int64(0)
+	add := func(a, b int64, typ uint16, items []int64) {
+		pa, pb := pm.payload(a), pm.payload(b)
+		if pb <= pa {
+			return
+		}
+		s := repIXSec{Type: typ, Off: pa, End: pb}
+		for _, x := range items {
+			s.Items = append(s.Items, pm.payload(x))
+		}
+		out = append(out, s)
+	}
+	for _, s := range cs {
+		if s.off < cur { // overlapping region: keep the earlier section
+			continue
+		}
+		add(cur, s.off, 0, nil)
+		add(s.off, s.end, s.typ, s.items)
+		cur = s.end
+	}
+	add(cur, int64(f.Size), 0, nil)
+	if len(out) > 0 && out[len(out)-1].End != plen {
+		out[len(out)-1].End = plen
+	}
+	return out
+}
+
+// Port source: zeros3-z3/clrz3/decode.go
+func repCLsortInt64(a []int64) { sort.Slice(a, func(i, j int) bool { return a[i] < a[j] }) }
+
 // Port source: zeros3-z3/clrz3/file.go
 var (
 	// ErrFormat reports a file that is not a well-formed assembly (or a corrupt representation).
@@ -41224,6 +41556,130 @@ func repCLNewHeapView(f *repCLFile, d []byte) (*repCLHeapView, error) {
 		}
 	}
 	return h, nil
+}
+
+// Port source: zeros3-z3/clrz3/heap.go
+// DeriveMarks returns, per blob entry, the signature kind it is normalized as (BlobOpaque if it is
+// not a signature, does not parse exactly or names a reference that does not exist).
+func repCLDeriveMarks(f *repCLFile, d []byte, h *repCLHeapView) []byte {
+	marks := make([]byte, len(h.Blobs))
+	conflict := make([]bool, len(h.Blobs))
+	for t := 0; t < repCLNumTables; t++ {
+		for ci, cd := range repCLschema[t] {
+			if cd.K != repCLKBlob || cd.Sig == repCLSigNone {
+				continue
+			}
+			for r := uint32(1); r <= f.Rows(t); r++ {
+				off := f.Col(d, t, r, ci)
+				i, ok := h.BlobAt[off]
+				if !ok {
+					continue
+				}
+				e := h.Blobs[i]
+				k := repCLKindOf(cd.Sig, h.Blob[e.DataOff:e.DataOff+e.Len])
+				if k == repCLBlobOpaque {
+					continue
+				}
+				if marks[i] != repCLBlobOpaque && marks[i] != k {
+					conflict[i] = true
+				}
+				marks[i] = k
+			}
+		}
+	}
+	for i, e := range h.Blobs {
+		if marks[i] == repCLBlobOpaque {
+			continue
+		}
+		sl, ok := repCLParseSig(marks[i], h.Blob[e.DataOff:e.DataOff+e.Len], true)
+		if ok {
+			for _, s := range sl {
+				t, r, ok2 := repCLRowOf(repCLSetEmbType, s.Val)
+				if !ok2 || t < 0 || r > f.Rows(t) {
+					ok = false
+					break
+				}
+			}
+		}
+		if !ok || conflict[i] {
+			marks[i] = repCLBlobOpaque
+		}
+	}
+	return marks
+}
+
+// Port source: zeros3-z3/clrz3/heap.go
+// ValidateBodies marks a body opaque when a token operand names nothing that exists.
+func repCLValidateBodies(f *repCLFile, d []byte, h *repCLHeapView, bodies []repCLBodyInfo) {
+	okTok := func(set uint8, v uint32, us bool) bool {
+		if us {
+			_, ok := h.USAt[v&0xffffff]
+			return ok
+		}
+		t, r, ok := repCLRowOf(set, v)
+		return ok && (t < 0 || r <= f.Rows(t))
+	}
+	for i := range bodies {
+		b := &bodies[i]
+		if b.Opaque {
+			continue
+		}
+		good := true
+		if b.Body.LocalOff != 0 {
+			good = okTok(repCLSetTokSig, repCLle32(d[b.Body.LocalOff:]), false)
+		}
+		for _, t := range b.Body.Toks {
+			switch t.Class {
+			case repCLTkString:
+				good = good && okTok(0, t.Val, true)
+			case repCLTkMethod:
+				good = good && okTok(repCLSetTokMethod, t.Val, false)
+			case repCLTkField:
+				good = good && okTok(repCLSetTokField, t.Val, false)
+			case repCLTkType:
+				good = good && okTok(repCLSetTokType, t.Val, false)
+			case repCLTkSig:
+				good = good && okTok(repCLSetTokSig, t.Val, false)
+			default:
+				good = good && okTok(repCLSetTokAny, t.Val, false)
+			}
+		}
+		for _, cl := range b.Body.Clauses {
+			if cl.TokOff != 0 {
+				good = good && okTok(repCLSetTokType, cl.TokVal, false)
+			}
+		}
+		b.Opaque = !good
+	}
+	// a body must not lie inside a header region or partly overlap another body; methods that
+	// share one body (same offset) are fine
+	order := make([]int, 0, len(bodies))
+	for i := range bodies {
+		if !bodies[i].Opaque {
+			order = append(order, i)
+		}
+	}
+	sort.SliceStable(order, func(a, b int) bool { return bodies[order[a]].Body.Off < bodies[order[b]].Body.Off })
+	end, off := int64(0), int64(-1)
+	for _, i := range order {
+		b := &bodies[i]
+		bad := false
+		for _, r := range f.Excised {
+			if b.Body.Off < r.End() && r.Off < b.Body.End {
+				bad = true
+			}
+		}
+		if b.Body.Off != off && b.Body.Off < end {
+			bad = true
+		}
+		if bad {
+			b.Opaque, b.Body = true, repCLBody{}
+			continue
+		}
+		if b.Body.Off != off {
+			off, end = b.Body.Off, b.Body.End
+		}
+	}
 }
 
 // Port source: zeros3-z3/clrz3/heap.go
@@ -41884,6 +42340,102 @@ func (c *repCLCtx) Get(src []byte, s *repCLSlot, allBlobs bool) (uint32, []byte,
 const repCLrepMagic = "CLR1"
 
 // Port source: zeros3-z3/clrz3/rep.go
+// Config selects the representation parameters.
+type repCLConfig struct {
+	K0   int // identity prefix bytes, 1..4 (default 3)
+	Auto int // >0: prefix length chosen per candidate table (idxref.AutoK0 with this collision percentage)
+	// Cut returns the exclusive end offsets of the payload groups; secs describe the payload.
+	Cut func(payload []byte, secs []repIXSec) []int
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+// Reference classes (analysis).
+const (
+	repCLClsTable  = iota // simple table index
+	repCLClsCoded         // coded index
+	repCLClsStr           // #Strings
+	repCLClsBlob          // #Blob
+	repCLClsGuid          // #GUID
+	repCLClsSigRef        // type reference embedded in a signature
+	repCLClsToken         // CIL metadata token
+	repCLClsUS            // ldstr
+	repCLClsLayout        // layout items
+	repCLNumClasses
+)
+
+// Port source: zeros3-z3/clrz3/rep.go
+// Stats are the encoder-side measurements of one representation.
+type repCLStats struct {
+	Slots      [repCLNumClasses]int
+	RefBytes   [repCLNumClasses]int
+	StreamLen  [repCLNumStreams]int
+	Payload    int
+	Comps      int
+	Marked     int // signature blobs normalized
+	Blobs      int
+	OpaqueBody int
+	Bodies     int
+	Dups       [4]int // duplicate-identity entries in the string / blob / row / us candidate indexes
+	Collisions int
+	Excised    int
+	RVA        [3]int // method RVAs: predicted from the previous body, null, explicit delta
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+// Rep is an encoded assembly.
+type repCLRep struct {
+	Meta  []byte
+	Comps [][]byte
+	Stats repCLStats
+	Cuts  []int
+	Secs  []repIXSec
+	Refs  []repIXRefRec
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+func repCLslotClass(s *repCLSlot) int {
+	switch s.Sp {
+	case repCLSpStr:
+		return repCLClsStr
+	case repCLSpBlob:
+		return repCLClsBlob
+	case repCLSpGuid:
+		return repCLClsGuid
+	case repCLSpUS:
+		return repCLClsUS
+	case repCLSpLayout:
+		return repCLClsLayout
+	}
+	switch {
+	case s.Table == repCLTabEmb:
+		return repCLClsSigRef
+	case s.Table == repCLTabIL:
+		return repCLClsToken
+	case s.Set < repCLNumTables:
+		return repCLClsTable
+	}
+	return repCLClsCoded
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+// posMap converts file offsets to payload offsets (the excised header regions removed).
+type repCLposMap struct{ regs []repCLRegion }
+
+// Port source: zeros3-z3/clrz3/rep.go
+func (m repCLposMap) payload(off int64) int {
+	n := off
+	for _, r := range m.regs {
+		if r.End() <= off {
+			n -= r.Len
+		}
+	}
+	return int(n)
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+func repCLzz(v int64) uint64 { return repIXZigzag(v) }
+
+// Port source: zeros3-z3/clrz3/rep.go
 // stage orders (table indexes).
 var (
 	repCLstageG0a = []int{repCLTModule, repCLTModuleRef, repCLTAssembly, repCLTAssemblyRef, repCLTFile}
@@ -41894,6 +42446,35 @@ var (
 
 // Port source: zeros3-z3/clrz3/rep.go
 func repCLhasIdentity(t int) bool { return t != repCLTEventMap && t != repCLTPropertyMap }
+
+// Port source: zeros3-z3/clrz3/rep.go
+// computeIdentities fills every identity array in stage order.
+func repCLcomputeIdentities(c *repCLCtx) error {
+	for _, t := range repCLstageG0a {
+		if err := c.ComputeTable(t); err != nil {
+			return err
+		}
+	}
+	for _, t := range repCLstageG0b {
+		if err := c.ComputeTable(t); err != nil {
+			return err
+		}
+	}
+	c.SigReady()
+	for _, t := range repCLstageG1 {
+		if err := c.ComputeTable(t); err != nil {
+			return err
+		}
+	}
+	for _, t := range repCLstageG2 {
+		if repCLhasIdentity(t) {
+			if err := c.ComputeTable(t); err != nil {
+				return err
+			}
+		}
+	}
+	return c.err
+}
 
 // Port source: zeros3-z3/clrz3/rep.go
 // bodyPred is the RVA the layout predicts for the next body: the end of the previous body, past
@@ -41914,6 +42495,357 @@ func repCLoffToRVA(f *repCLFile, off int64) uint32 {
 		}
 	}
 	return 0
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+// Encode builds the representation of data (one assembly in memory). The result is verified by a
+// full Decode before it is returned; a mismatch is ErrUnsupported (the caller keeps CDC).
+func repCLEncode(f *repCLFile, data []byte, cfg repCLConfig) (*repCLRep, error) {
+	k0 := cfg.K0
+	if k0 == 0 {
+		k0 = 3
+	}
+	if k0 < 1 || k0 > 4 {
+		return nil, fmt.Errorf("clrz3: K0 %d", k0)
+	}
+	if f.TabKind != '~' || f.HasPtr {
+		return nil, repCLunsup("uncompressed table stream or indirection tables")
+	}
+	if !f.HasStr || !f.HasBlob {
+		return nil, repCLunsup("missing #Strings or #Blob")
+	}
+	c, err := repCLNewCtx(f, data, k0)
+	if err != nil {
+		return nil, err
+	}
+	c.Auto = cfg.Auto
+	c.Marks = repCLDeriveMarks(f, data, c.HV)
+	bodies := repCLFindBodies(f, data, true)
+	repCLValidateBodies(f, data, c.HV, bodies)
+	slots := repCLTableSlots(f, data)
+	blobSlots := repCLBlobSlots(f, data, c.Blobs, c.Marks)
+	ilSlots := repCLILSlots(data, bodies)
+	if err := c.BuildOwners(); err != nil {
+		return nil, err
+	}
+	extra, err := repCLstrExtra(c, slots)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.SetStrExtra(extra); err != nil {
+		return nil, err
+	}
+	if err := repCLcomputeIdentities(c); err != nil {
+		return nil, err
+	}
+	var st repCLStats
+	st.Blobs = len(c.Blobs)
+	for _, m := range c.Marks {
+		if m != repCLBlobOpaque {
+			st.Marked++
+		}
+	}
+	st.Bodies = len(bodies)
+	for _, b := range bodies {
+		if b.Opaque {
+			st.OpaqueBody++
+		}
+	}
+	pm := repCLposMap{f.Excised}
+	for _, r := range f.Excised {
+		st.Excised += int(r.Len)
+	}
+	all := append(append(append([]repCLSlot(nil), slots...), blobSlots...), ilSlots...)
+	repCLsortSlots(all)
+	if err := repCLcheckSlots(f, all); err != nil {
+		return nil, err
+	}
+
+	type item struct {
+		pos    int
+		stream uint8
+		class  uint8
+		b      []byte
+		off    int64
+	}
+	var items []item
+	emit := func(s *repCLSlot, stream uint8, cls int, b []byte) {
+		items = append(items, item{pm.payload(s.Off), stream, uint8(cls), b, s.Off})
+		st.RefBytes[cls] += len(b)
+		st.StreamLen[stream] += len(b)
+	}
+
+	// layout: child counts, deltas, selectors, marks, body codes
+	rvaPrevEnd := f.CLIOff + 72
+	var prevA, prevFR, prevRes int64
+	bodyOf := map[uint32]*repCLBodyInfo{}
+	for i := range bodies {
+		bodyOf[bodies[i].Row] = &bodies[i]
+	}
+	selfDelta := map[int64]bool{}
+	listNext := func(s *repCLSlot) (uint32, error) {
+		cd := repCLschema[s.Table][s.Col]
+		tb := &f.Tables[s.Table]
+		if s.Row == 1 && s.Val != 1 {
+			return 0, repCLunsup("%s.%s starts at %d", repCLTableName(int(s.Table)), cd.Name, s.Val)
+		}
+		if s.Row < tb.Rows {
+			return f.Col(data, int(s.Table), s.Row+1, int(s.Col)), nil
+		}
+		return f.Rows(cd.T) + 1, nil
+	}
+	for i := range slots {
+		s := &slots[i]
+		if s.Sp == repCLSpLayout {
+			var v uint64
+			switch s.Lay {
+			case repCLLList:
+				nx, err := listNext(s)
+				if err != nil {
+					return nil, err
+				}
+				if nx < s.Val {
+					return nil, repCLunsup("descending child list")
+				}
+				v = uint64(nx - s.Val)
+			case repCLLNestedA:
+				v = repCLzz(int64(s.Val) - prevA)
+				prevA = int64(s.Val)
+			case repCLLNestedB:
+				v = repCLzz(int64(f.Col(data, repCLTNestedClass, s.Row, 0)) - int64(s.Val))
+			case repCLLFieldRVA:
+				v = repCLzz(int64(s.Val) - prevFR)
+				prevFR = int64(s.Val)
+			case repCLLResOff:
+				v = repCLzz(int64(s.Val) - prevRes)
+				prevRes = int64(s.Val)
+			case repCLLRVA:
+				var code uint64
+				bi := bodyOf[s.Row]
+				switch {
+				case s.Val == 0:
+					code = 1 << 1
+					st.RVA[1]++
+				default:
+					pred := repCLbodyPred(f, data, rvaPrevEnd)
+					rc := uint64(0)
+					if s.Val != pred {
+						rc = 2 + repCLzz(int64(s.Val)-int64(pred))
+						st.RVA[2]++
+					} else {
+						st.RVA[0]++
+					}
+					code = rc << 1
+					if bi == nil || bi.Opaque {
+						code |= 1
+					} else {
+						rvaPrevEnd = bi.Body.End
+					}
+				}
+				v = code
+			}
+			st.Slots[repCLClsLayout]++
+			b := binary.AppendUvarint(nil, v)
+			emit(s, repCLStL, repCLClsLayout, b)
+			continue
+		}
+		if s.Self >= 0 && s.Sp == repCLSpRow {
+			t, r, ok := repCLRowOf(s.Set, s.Val)
+			if ok && t == int(s.Self) {
+				sel := binary.AppendUvarint(nil, 1+repCLzz(int64(s.Row)-int64(r)))
+				selfDelta[s.Off] = true
+				st.Slots[repCLClsLayout]++
+				emit(s, repCLStL, repCLClsLayout, sel)
+				continue
+			}
+			sel := []byte{0}
+			st.Slots[repCLClsLayout]++
+			emit(s, repCLStL, repCLClsLayout, sel)
+		}
+	}
+	// the referenced suffix offsets of #Strings: count, then ascending deltas, at the heap start
+	{
+		b := binary.AppendUvarint(nil, uint64(len(extra)))
+		prev := 0
+		for _, o := range extra {
+			b = binary.AppendUvarint(b, uint64(o-prev))
+			prev = o
+		}
+		s := &repCLSlot{Off: f.Str.Off}
+		st.Slots[repCLClsLayout]++
+		emit(s, repCLStL, repCLClsLayout, b)
+	}
+	// signature marks (one item per blob entry, at the entry start)
+	for i, e := range c.Blobs {
+		s := &repCLSlot{Off: f.Blob.Off + int64(e.Off)}
+		st.Slots[repCLClsLayout]++
+		emit(s, repCLStL, repCLClsLayout, binary.AppendUvarint(nil, uint64(c.Marks[i])))
+	}
+	// references
+	for i := range all {
+		s := &all[i]
+		if s.Sp == repCLSpLayout || selfDelta[s.Off] {
+			continue
+		}
+		b, err := c.Put(nil, s, s.Stream >= repCLStG1)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", repCLErrUnsupported, err)
+		}
+		cls := repCLslotClass(s)
+		st.Slots[cls]++
+		emit(s, s.Stream, cls, b)
+	}
+	if c.err != nil {
+		return nil, c.err
+	}
+	st.Dups[0] = c.StrIndex().Duplicates()
+	st.Dups[1] = c.BlobIndex(true).Duplicates()
+	st.Dups[3] = c.USIndex().Duplicates()
+	if ix, ok := c.rowIdx[[2]int{repCLSetCoded0 + repCLCHasCustomAttribute, -1}]; ok {
+		st.Dups[2] = ix.Duplicates()
+	}
+
+	// masked file
+	masked := append([]byte(nil), data...)
+	for i := range all {
+		s := &all[i]
+		switch s.Enc {
+		case repCLEncFixed, repCLEncToken:
+			clear(masked[s.Off : s.Off+int64(s.Len)])
+		case repCLEncCompressed:
+			repCLmaskCompressed(masked[s.Off:s.Off+int64(s.Len)], int(s.Len))
+		}
+	}
+	payload := make([]byte, 0, len(data))
+	pos := int64(0)
+	for _, r := range f.Excised {
+		payload = append(payload, masked[pos:r.Off]...)
+		pos = r.End()
+	}
+	payload = append(payload, masked[pos:]...)
+	st.Payload = len(payload)
+
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].pos != items[j].pos {
+			return items[i].pos < items[j].pos
+		}
+		return items[i].off < items[j].off
+	})
+	secs := repCLbuildSecs(f, data, c.HV, bodies, pm, len(payload))
+	// item hashes: payload bytes plus the reference bytes of the slots inside
+	ri := 0
+	for si := range secs {
+		sc := &secs[si]
+		sc.Hash = make([]uint64, len(sc.Items))
+		for k, a := range sc.Items {
+			end := sc.End
+			if k+1 < len(sc.Items) {
+				end = sc.Items[k+1]
+			}
+			h := repIXFNV64(repIXFNVInit, payload[a:end])
+			for ri < len(items) && items[ri].pos < a {
+				ri++
+			}
+			for j := ri; j < len(items) && items[j].pos < end; j++ {
+				h = repIXFNV64(h^uint64(items[j].stream), items[j].b)
+			}
+			sc.Hash[k] = h
+		}
+	}
+	var cuts []int
+	if cfg.Cut != nil {
+		cuts = cfg.Cut(payload, secs)
+	}
+	if len(cuts) == 0 || cuts[len(cuts)-1] != len(payload) {
+		cuts = append(cuts, len(payload))
+	}
+	rep := &repCLRep{Stats: st, Cuts: cuts, Secs: secs}
+	ri, start := 0, 0
+	for _, end := range cuts {
+		if end < start || end > len(payload) {
+			return nil, fmt.Errorf("clrz3: bad cut %d", end)
+		}
+		var streams [repCLNumStreams][]byte
+		for ri < len(items) && items[ri].pos < end {
+			streams[items[ri].stream] = append(streams[items[ri].stream], items[ri].b...)
+			rep.Refs = append(rep.Refs, repIXRefRec{Comp: len(rep.Comps), Stream: items[ri].stream, Class: items[ri].class, B: items[ri].b})
+			ri++
+		}
+		rep.Comps = append(rep.Comps, repIXPackComp(payload[start:end], streams[:]))
+		start = end
+	}
+	rep.Stats.Comps = len(rep.Comps)
+	// meta
+	m := append([]byte(repCLrepMagic), byte(k0), byte(cfg.Auto))
+	m = binary.AppendUvarint(m, uint64(len(data)))
+	m = binary.AppendUvarint(m, uint64(len(f.Excised)))
+	for _, r := range f.Excised {
+		m = binary.AppendUvarint(m, uint64(r.Off))
+		m = binary.AppendUvarint(m, uint64(r.Len))
+	}
+	for _, r := range f.Excised {
+		m = append(m, data[r.Off:r.End()]...)
+	}
+	rep.Meta = m
+	got, err := repCLDecode(rep.Meta, rep.Comps)
+	if err != nil {
+		return nil, fmt.Errorf("%w: self-check decode: %v", repCLErrUnsupported, err)
+	}
+	if !bytes.Equal(got, data) {
+		return nil, fmt.Errorf("%w: self-check mismatch", repCLErrUnsupported)
+	}
+	return rep, nil
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+// checkSlots rejects slot sets that overlap one another or a header region (a hostile layout: a
+// method body inside the metadata root, two bodies sharing bytes).
+func repCLcheckSlots(f *repCLFile, all []repCLSlot) error {
+	end := int64(0)
+	ri := 0
+	for i := range all {
+		s := &all[i]
+		if s.Len == 0 {
+			continue
+		}
+		if s.Off < end {
+			return repCLunsup("overlapping reference slots at %d", s.Off)
+		}
+		end = s.Off + int64(s.Len)
+		for ri < len(f.Excised) && f.Excised[ri].End() <= s.Off {
+			ri++
+		}
+		if ri < len(f.Excised) && f.Excised[ri].Off < end {
+			return repCLunsup("reference slot at %d inside a header region", s.Off)
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+// strExtra lists, ascending, the #Strings offsets the table slots reference that are not the start
+// of a physical entry.
+func repCLstrExtra(c *repCLCtx, slots []repCLSlot) ([]int, error) {
+	seen := map[int]bool{}
+	for i := range slots {
+		s := &slots[i]
+		if s.Sp != repCLSpStr {
+			continue
+		}
+		o := int(s.Val)
+		if o >= len(c.str) {
+			return nil, repCLunsup("#Strings offset %d outside the heap", o)
+		}
+		if o != 0 && c.str[o-1] != 0 {
+			seen[o] = true
+		}
+	}
+	out := make([]int, 0, len(seen))
+	for o := range seen {
+		out = append(out, o)
+	}
+	sort.Ints(out)
+	return out, nil
 }
 
 // Port source: zeros3-z3/clrz3/schema.go
@@ -42467,6 +43399,62 @@ func repCLParseSig(kind byte, b []byte, strict bool) (slots []repCLSigSlot, ok b
 }
 
 // Port source: zeros3-z3/clrz3/sig.go
+// SniffKind picks the signature family of a MemberRef / StandAloneSig blob from its first byte.
+func repCLSniffKind(b []byte) byte {
+	if len(b) == 0 {
+		return repCLBlobOpaque
+	}
+	switch b[0] & 0x0f {
+	case 0x06:
+		return repCLBlobField
+	case 0x07:
+		return repCLBlobLocal
+	case 0x08:
+		return repCLBlobProp
+	case 0x0a:
+		return repCLBlobInst
+	}
+	if b[0]&0x0f <= 5 {
+		return repCLBlobMethod
+	}
+	return repCLBlobOpaque
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+// KindOf is the blob kind a column of signature family sig gives to blob content b.
+func repCLKindOf(sig repCLSig, b []byte) byte {
+	switch sig {
+	case repCLSigAny:
+		return repCLSniffKind(b)
+	case repCLSigMethod:
+		return repCLBlobMethod
+	case repCLSigField:
+		return repCLBlobField
+	case repCLSigProp:
+		return repCLBlobProp
+	case repCLSigType:
+		return repCLBlobType
+	case repCLSigInst:
+		return repCLBlobInst
+	}
+	return repCLBlobOpaque
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+// maskCompressed overwrites the value bits of an embedded compressed integer and keeps the width
+// prefix, so a masked signature still parses to the same shape.
+func repCLmaskCompressed(b []byte, width int) {
+	switch width {
+	case 1:
+		b[0] = 0
+	case 2:
+		b[0], b[1] = 0x80, 0
+	case 4:
+		b[0], b[1], b[2], b[3] = 0xC0, 0, 0, 0
+	}
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
 // putCompressed writes v in the given width; ok is false when it does not fit.
 func repCLputCompressed(b []byte, width int, v uint32) bool {
 	switch width {
@@ -42890,6 +43878,27 @@ func repCLILSlots(d []byte, bodies []repCLBodyInfo) []repCLSlot {
 	return out
 }
 
+// Port source: zeros3-z3/clrz3/slots.go
+// FindBodies parses the body of every MethodDef with a non-zero RVA. Rows whose RVA is unmapped
+// or whose body does not parse are returned Opaque with a zero Body.
+func repCLFindBodies(f *repCLFile, d []byte, strict bool) []repCLBodyInfo {
+	var out []repCLBodyInfo
+	for r := uint32(1); r <= f.Rows(repCLTMethodDef); r++ {
+		rva := f.Col(d, repCLTMethodDef, r, 0)
+		if rva == 0 {
+			continue
+		}
+		bi := repCLBodyInfo{Row: r}
+		off, _, ok := f.RVAToOff(rva)
+		if ok {
+			bi.Body, ok = repCLParseBody(d, int64(off), strict)
+		}
+		bi.Opaque = !ok
+		out = append(out, bi)
+	}
+	return out
+}
+
 // Port source: zeros3-z3/idxref/idxref.go
 // ErrFormat reports a malformed reference stream or component.
 var repIXErrFormat = errors.New("idxref: malformed representation")
@@ -42915,6 +43924,20 @@ func repIXHash(tag byte, parts ...[]byte) repIXIdentity {
 	var out repIXIdentity
 	h.Sum(out[:0])
 	return out
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// CheckUnique rejects a table with two entries of one identity (ambiguous: nothing may be
+// normalized against it).
+func repIXCheckUnique(what string, ids []repIXIdentity) error {
+	seen := make(map[repIXIdentity]struct{}, len(ids))
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			return fmt.Errorf("duplicate %s identity (ambiguous)", what)
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
 }
 
 // Port source: zeros3-z3/idxref/idxref.go
@@ -43041,6 +44064,33 @@ func repIXZigzag(v int64) uint64 { return uint64(v<<1) ^ uint64(v>>63) }
 func repIXUnzigzag(u uint64) int64 { return int64(u>>1) ^ -int64(u&1) }
 
 // Port source: zeros3-z3/idxref/idxref.go
+// FNV64 continues a 64-bit FNV-1a hash (grouping decisions only, never identity).
+func repIXFNV64(h uint64, b []byte) uint64 {
+	for _, c := range b {
+		h = (h ^ uint64(c)) * 1099511628211
+	}
+	return h
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// FNVInit is the FNV-1a offset basis.
+const repIXFNVInit = 14695981039346656037
+
+// Port source: zeros3-z3/idxref/idxref.go
+// PackComp builds one component: uvarint(len payload), uvarint(len stream i)..., payload, streams.
+func repIXPackComp(payload []byte, streams [][]byte) []byte {
+	c := binary.AppendUvarint(nil, uint64(len(payload)))
+	for _, s := range streams {
+		c = binary.AppendUvarint(c, uint64(len(s)))
+	}
+	c = append(c, payload...)
+	for _, s := range streams {
+		c = append(c, s...)
+	}
+	return c
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
 // SplitComp is the inverse of PackComp for n streams; the component must be consumed exactly.
 func repIXSplitComp(c []byte, n int) (payload []byte, streams [][]byte, err error) {
 	pl, k := binary.Uvarint(c)
@@ -43165,6 +44215,16 @@ func (c *repIXClassIndex) Get(b []byte) (int, []byte, error) {
 		return 0, nil, repIXbad("occurrence number")
 	}
 	return m[j], rest[k:], nil
+}
+
+// Port source: zeros3-z3/idxref/refcoder.go
+// RefRec is one emitted reference (analysis): the component it landed in, its stream and class,
+// and its bytes.
+type repIXRefRec struct {
+	Comp   int
+	Stream uint8
+	Class  uint8
+	B      []byte
 }
 
 // Port source: zeros3-z3/idxref/refcoder.go
@@ -44518,6 +45578,9 @@ func repMDModelNames(c *repCall) (map[string][2]int64, error) {
 	}
 	out := map[string][2]int64{}
 	for _, n := range r.Names {
+		if _, exists := out[n.Name]; exists {
+			return nil, errRepAmbiguous
+		}
 		out[n.Name] = [2]int64{offs[n.Op], r.Ops[n.Op].Size}
 	}
 	return out, nil
@@ -44824,4 +45887,446 @@ func repManagedBounds(c *repCall) error {
 		}
 	}
 	return nil
+}
+
+// ---- Q9 DRAFT ONLY: bounded streaming model analysis -------------------------
+const repModelWindow = 256 << 10
+const repModelDigestHint = "tensor-output-sha256/"
+
+type repModelSpan struct {
+	begin, end          int64
+	name, format, dtype string
+	shape               []uint64
+	width               int
+}
+
+func repModelLayout(src io.ReaderAt, size int64) ([]repModelSpan, error) {
+	var magic [4]byte
+	if err := repReadFullAt(src, magic[:], 0); err != nil {
+		return nil, err
+	}
+	var spans []repModelSpan
+	if string(magic[:]) == "GGUF" {
+		f, e := repGGParse(src, size, repGGLimits{MaxMeta: 16 << 20, MaxTensors: 4096, MaxKV: 65536, MaxString: 1 << 20})
+		if e != nil {
+			return nil, e
+		}
+		for _, seg := range f.Segments() {
+			s := repModelSpan{begin: seg.Begin, end: seg.End, width: 1}
+			if seg.Tensor >= 0 {
+				t := &f.Tensors[seg.Tensor]
+				g := repGGGeom[t.Type]
+				s.name, s.format, s.dtype, s.width = t.Name, "gguf", g.Name, int(g.Bytes)
+				s.shape = append([]uint64(nil), t.Dims...)
+			}
+			spans = append(spans, s)
+		}
+	} else {
+		f, e := repSTParse(src, size, repSTOptions{MaxHeader: 16 << 20, MaxTensors: 4096, MaxDims: 32})
+		if e != nil {
+			return nil, e
+		}
+		for _, seg := range f.Segments() {
+			s := repModelSpan{begin: seg.Off, end: seg.Off + seg.Len, width: 1}
+			if seg.Kind == "tensor" {
+				t, ok := f.Lookup(seg.Name)
+				if !ok {
+					return nil, errRepCorrupt
+				}
+				s.name, s.format, s.dtype, s.width = t.Name, "safetensors", t.DType, max(1, t.Bits/8)
+				for _, v := range t.Shape {
+					s.shape = append(s.shape, uint64(v))
+				}
+			}
+			spans = append(spans, s)
+		}
+	}
+	var pos int64
+	for _, s := range spans {
+		if s.begin != pos || s.end < s.begin || s.end > size || s.width < 1 || s.width > 4096 || len(s.name) > 4096 {
+			return nil, errRepUnsupported
+		}
+		pos = s.end
+	}
+	if pos != size {
+		return nil, repCorrupt("model layout tiling")
+	}
+	return spans, nil
+}
+func repModelKey(s repModelSpan) [32]byte {
+	raw, _ := json.Marshal([]any{s.format, s.name, s.dtype, s.shape})
+	return sha256.Sum256(raw)
+}
+
+// repModelPlaneReader holds one input window and one plane window. The output
+// digest is over original plaintext, before XOR/plane transformation. Previous
+// tensor bytes are read only through the serialized, bounded model range reader.
+type repModelPlaneReader struct {
+	src          io.ReaderAt
+	base         *repCall
+	size, off    int64
+	width, elems int
+	h            hash.Hash
+	out          []byte
+	pos          int
+}
+
+func (r *repModelPlaneReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.pos == len(r.out) {
+		if r.off == r.size {
+			return 0, io.EOF
+		}
+		n := min(int64(r.width*r.elems), r.size-r.off)
+		if n <= 0 || n%int64(r.width) != 0 {
+			return 0, errRepUnsupported
+		}
+		raw := make([]byte, int(n))
+		if err := repReadFullAt(r.src, raw, r.off); err != nil {
+			return 0, err
+		}
+		r.h.Write(raw)
+		if r.base != nil {
+			base, e := repMDReadModelRange(r.base, r.off, n)
+			if e != nil {
+				return 0, e
+			}
+			if len(base) != len(raw) {
+				return 0, errRepMismatch
+			}
+			for i := range raw {
+				raw[i] ^= base[i]
+			}
+		}
+		r.out = repMDPlaneChunks(raw, r.width, r.elems)
+		r.pos = 0
+		r.off += n
+	}
+	n := copy(p, r.out[r.pos:])
+	r.pos += n
+	return n, nil
+}
+func repModelHops(c *repCall) (int, error) {
+	r, e := repMDparseModelRecipe(c.Rep)
+	if e != nil {
+		return 0, e
+	}
+	if len(r.Ops) != 1 {
+		return 0, errRepUnsupported
+	}
+	op := r.Ops[0]
+	switch op.Tag {
+	case repMDopCopy:
+		if c.Rep.Members[op.M].Role != repStored {
+			return 0, errRepUnsupported
+		}
+		return 0, nil
+	case repMDopPlanes:
+		return 1, nil
+	case repMDopXORPlanes:
+		if c.Rep.Members[op.Base].Role == repStored {
+			return 1, nil
+		}
+		ch, e := c.child(op.Base)
+		if e != nil {
+			return 0, e
+		}
+		h, e := repModelHops(ch)
+		return h + 1, e
+	}
+	return 0, errRepUnsupported
+}
+func (b *repBuilder) modelBase(s repModelSpan) (*repCall, [32]byte, bool) {
+	var zero [32]byte
+	if b.cat == nil {
+		return nil, zero, false
+	}
+	key := repModelKey(s)
+	// Basis selection reads up to eight explicit SHA candidates. Their bytes are
+	// XOR inputs; the resulting child must still prove exact through every base.
+	// The catalog's canonical identity resolver retains its ambiguity semantics.
+	entries := b.cat.idx["k8/w32\x00"+string(key[:])]
+	if len(entries) == 0 || len(entries) > 8 {
+		return nil, zero, false
+	}
+	var ids [][32]byte
+	seen := map[[32]byte]bool{}
+	for _, entry := range entries {
+		if !seen[entry.target] {
+			seen[entry.target] = true
+			ids = append(ids, entry.target)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return bytes.Compare(ids[i][:], ids[j][:]) < 0 })
+	var best *repCall
+	var bestSHA [32]byte
+	bestHops := -1
+	for _, id := range ids {
+		r, e := b.env.loadRep(id)
+		if e != nil || r.Kind != repKindModel || r.Size != s.end-s.begin {
+			continue
+		}
+		c := b.env.call(id, r, 1, nil, nil)
+		h, e := repModelHops(c)
+		if e != nil || h >= 3 || h <= bestHops {
+			continue
+		}
+		mr, e := repMDparseModelRecipe(r)
+		if e != nil || len(mr.Names) != 1 || !strings.HasPrefix(mr.Names[0].Name, repModelDigestHint) {
+			continue
+		}
+		sum, e := decodeHexSHA256(strings.TrimPrefix(mr.Names[0].Name, repModelDigestHint))
+		if e != nil {
+			continue
+		}
+		best, bestSHA, bestHops = c, sum, h
+	}
+	return best, bestSHA, best != nil
+}
+
+func (b *repBuilder) encodeModel(src io.ReaderAt, size int64) (*repObject, error) {
+	// Reserve one full source pass before writing anything. An optional base pass
+	// must fit the existing cumulative inspection budget; otherwise reset to planes.
+	if size <= 0 || size > repMaxInspect {
+		return nil, errRepLimit
+	}
+	if e := b.budget.inspect(size); e != nil {
+		return nil, e
+	}
+	spans, e := repModelLayout(src, size)
+	if e != nil {
+		return nil, e
+	}
+	out := &repObject{Kind: repKindModel, Size: size}
+	var ops []repMDModelOp
+	pairs := map[string][32]byte{}
+	addStored := func(id [32]byte, n int64) {
+		m := len(out.Members)
+		out.Members = append(out.Members, repMember{Role: repStored, SHA: id, Size: n})
+		ops = append(ops, repMDModelOp{Tag: repMDopCopy, M: m})
+	}
+	for _, span := range spans {
+		n := span.end - span.begin
+		if n == 0 {
+			continue
+		}
+		section := io.NewSectionReader(src, span.begin, n)
+		if span.name == "" {
+			if e := b.putCDC(section, addStored); e != nil {
+				return nil, e
+			}
+			continue
+		}
+		w := span.width
+		if n%int64(w) != 0 {
+			return nil, errRepUnsupported
+		}
+		elems := max(1, repModelWindow/w)
+		base, baseSHA, found := b.modelBase(span)
+		if found {
+			if n > repMaxInspect-b.budget.inspected {
+				base = nil
+				found = false
+			} else if e := b.budget.inspect(n); e != nil {
+				return nil, e
+			}
+		}
+		rd := &repModelPlaneReader{src: section, base: base, size: n, width: w, elems: elems, h: sha256.New()}
+		rid, e := b.putStream(rd, n)
+		if e != nil {
+			return nil, e
+		}
+		if rd.off != n || rd.pos != len(rd.out) {
+			return nil, errRepShort
+		}
+		var plainSHA [32]byte
+		rd.h.Sum(plainSHA[:0])
+		child := &repObject{Kind: repKindModel, Size: n}
+		op := repMDModelOp{Tag: repMDopPlanes, W: w, E: elems, Name: repModelDigestHint + hex.EncodeToString(plainSHA[:])}
+		if found {
+			child.Members = append(child.Members, repMember{Role: repDerived, SHA: baseSHA, Size: n, Child: base.ID})
+			op.Tag = repMDopXORPlanes
+			op.Base = 0
+		}
+		op.Res = len(child.Members)
+		child.Members = append(child.Members, repMember{Role: repStored, SHA: rid, Size: n})
+		if w == 1 && !found {
+			op.Tag = repMDopCopy
+			op.M = op.Res
+		}
+		child.Recipe = repMDBuildModelRecipe([]repMDModelOp{op})
+		cid, e := b.finishRep(child)
+		if e != nil {
+			return nil, e
+		}
+		m := len(out.Members)
+		out.Members = append(out.Members, repMember{Role: repDerived, SHA: plainSHA, Size: n, Child: cid})
+		ops = append(ops, repMDModelOp{Tag: repMDopCopy, M: m, Name: span.name})
+		key := repModelKey(span)
+		pairs[string(key[:])] = cid
+		if len(ops) > repMDmaxOps {
+			return nil, errRepLimit
+		}
+	}
+	out.Recipe = repMDBuildModelRecipe(ops)
+	if len(pairs) > 0 {
+		index, count, e := repBuildIndex(32, pairs)
+		if e != nil {
+			return nil, e
+		}
+		id, e := b.putBlob(index)
+		if e != nil {
+			return nil, e
+		}
+		out.Indexes = []repIndex{{KeyWidth: 32, Count: count, Ref: id, Owns: true}}
+	}
+	return out, nil
+}
+
+// ---- Q9 DRAFT ONLY: mechanically reused managed grouping ---------------------
+func repManagedCutsOfChunks(chunks [][]byte, base int) []int {
+	var out []int
+	p := base
+	for _, c := range chunks {
+		p += len(c)
+		out = append(out, p)
+	}
+	return out
+}
+
+func repManagedFNV(b []byte) uint64 {
+	h := uint64(14695981039346656037)
+	for _, c := range b {
+		h = (h ^ uint64(c)) * 1099511628211
+	}
+	return h
+}
+
+func repManagedUnitCutBytes(t int) func(p []byte, secs []repIXSec) []int {
+	return func(p []byte, secs []repIXSec) []int {
+		var out []int
+		for _, s := range secs {
+			if len(s.Items) < 2 {
+				out = append(out, repManagedCutsOfChunks(repManagedChunkScaled(p[s.Off:s.End], t/4, t, t*4), s.Off)...)
+				continue
+			}
+			m := uint64(t) * uint64(len(s.Items)) / uint64(s.End-s.Off)
+			if m < 1 {
+				m = 1
+			}
+			// Z3-33: round the modulus to a power of two. The extracted Z3-32 rule used the raw
+			// quotient, so a one-item change moved it (136 -> 135) and re-drew every cut of a
+			// small section.
+			m = 1 << uint(bits.Len64(m*3/2)-1)
+			start := s.Off
+			for i, st := range s.Items {
+				end := s.End
+				if i+1 < len(s.Items) {
+					end = s.Items[i+1]
+				}
+				h := uint64(0)
+				if s.Hash != nil {
+					h = s.Hash[i]
+				} else {
+					h = repManagedFNV(p[st:end])
+				}
+				if h%m == 0 || end-start >= 4*t {
+					out = append(out, end)
+					start = end
+				}
+			}
+			if start < s.End {
+				out = append(out, s.End)
+			}
+		}
+		return out
+	}
+}
+
+func repManagedChunkScaled(b []byte, min, target, max int) [][]byte {
+	bits := 0
+	for 1<<bits < target {
+		bits++
+	}
+	maskS, maskL := uint64(1)<<bits-1, uint64(1)<<(bits-1)-1
+	var out [][]byte
+	for len(b) > 0 {
+		lim := len(b)
+		if lim > max {
+			lim = max
+		}
+		n := lim
+		var h uint64
+		for i := 0; i < lim; i++ {
+			h = (h << 1) + gearTable[b[i]]
+			sz := i + 1
+			if sz < min {
+				continue
+			}
+			m := maskL
+			if sz < target {
+				m = maskS
+			}
+			if h&m == 0 {
+				n = sz
+				break
+			}
+		}
+		out = append(out, b[:n])
+		b = b[n:]
+	}
+	return out
+}
+
+// managedParts persists already-analyzed laboratory parts. No managed creation
+// entry point calls this in ordinary PUT: whole-file encoder materialization is
+// an unresolved integration gate. It supports offline draft fidelity proofs.
+func (b *repBuilder) managedParts(k repKind, size int64, meta []byte, comps [][]byte) (*repObject, error) {
+	r := &repObject{Kind: k, Size: size, Recipe: meta}
+	if k != repKindDEX && k != repKindCLR {
+		return nil, errRepUnsupported
+	}
+	if e := repManagedBounds(&repCall{Rep: r}); e != nil {
+		return nil, e
+	}
+	var node []byte
+	count := 0
+	var total int64
+	flush := func() error {
+		if len(node) == 0 {
+			return nil
+		}
+		id, e := b.putBlob(node)
+		if e != nil {
+			return e
+		}
+		r.Members = append(r.Members, repMember{Role: repStored, SHA: id, Size: int64(len(node))})
+		node = nil
+		count = 0
+		return nil
+	}
+	for _, comp := range comps {
+		n := int64(len(comp))
+		if n <= 0 || n > 1<<20 || total > 128<<20-n {
+			return nil, errRepLimit
+		}
+		total += n
+		id, e := b.putBlob(comp)
+		if e != nil {
+			return nil, e
+		}
+		node = append(node, id[:]...)
+		count++
+		if (int(id[0])<<8|int(id[1]))%64 == 0 || count >= 256 {
+			if e := flush(); e != nil {
+				return nil, e
+			}
+		}
+	}
+	if e := flush(); e != nil {
+		return nil, e
+	}
+	return r, nil
 }

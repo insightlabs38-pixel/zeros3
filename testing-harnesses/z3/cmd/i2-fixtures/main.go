@@ -13,6 +13,7 @@ import (
 	"zeros3-z3/clrz3"
 	"zeros3-z3/dexz3"
 	"zeros3-z3/econx"
+	"zeros3-z3/ggufz3"
 	"zeros3-z3/repz3"
 	"zeros3-z3/repz3/kinds"
 )
@@ -113,6 +114,8 @@ func main() {
 		fixtures = append(fixtures, freeze(fmt.Sprintf("model-hop%d", hop), "SYNTHETIC_FIXTURE", next, b))
 		prev, plain = b, next
 	}
+	gg := ggufz3.Build(3, 32, []ggufz3.BuildTensor{{"quant", []uint64{256, 3}, 14, bytes.Repeat([]byte{7}, 630)}, {"fp32", []uint64{64}, 0, bytes.Repeat([]byte{9}, 256)}})
+	check(os.WriteFile(filepath.Join(dir, "model.gguf"), gg, 0644))
 	f, e := os.Create(filepath.Join(dir, "lab-i2.json.gz"))
 	check(e)
 	gz := gzip.NewWriter(f)
