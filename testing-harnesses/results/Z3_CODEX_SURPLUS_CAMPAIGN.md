@@ -12,9 +12,15 @@ Mechanically shared frontier capture,
 transient component/span/pack proofs and cumulative physical accounting.
 Q7 gates pass: NOT_WORTH_COMPLEXITY for current persistent-format change.
 37 actual stages, full costs/range amplification, exact Q6 frontier preserved.
-Q8 gates pass: Zstd SST exact in132 six-form replays; delta-length Parquet
+Merged Q8: PR #79, `43900798dfaee9da63166bcd2fd6a8960e0a490b`.
+Zstd SST exact in132 six-form replays; delta-length Parquet
 reduces DuckDB REP37.3%;162 proved inputs/fallbacks. Pebble2.1.7 format7
-and LZ4 remain CDC. Ready research merge, then continue Q9 draft-only port.
+and LZ4 remain CDC. Q9 active on `z3/i2-draft-model-managed`, DRAFT_ONLY.
+Q9 draft PR #80: I2_DRAFT_BLOCKED. Model streams256KiB windows,1GiB proof
+83MiB heap/98MiB RSS; exact Pythia1/2/3-hop and retired-base GC/repack pass.
+Managed cores exact/offline only; diagnostics lower DEX/CLR RSS34%/20%, but
+whole-file analysis remains blocked. Full220s/race71s/matrices pass.
+Continue Q10 from main; never merge Q9 or Q10 production drafts.
 ELF/PE DEFER: genuine grouped exact gains on controlled histories, mixed C++
 and public losses. Closed recipes/evidence retained; Q6 now captures unified
 physical candidate closures and tests honest late bootstrap/regret policies.

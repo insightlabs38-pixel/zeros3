@@ -1,0 +1,46 @@
+package main
+import("bytes";"crypto/sha256";"encoding/hex";"encoding/json";"fmt";"io";"os";"path/filepath";"sort";"strings";"runtime";"sync/atomic";"time")
+type probeResult struct{File,Kind,SHA,Root string;Bytes,AnalysisNS int64;Reachable,Descriptors,Hops int;RangeBytes int64;Exact bool;HeapGrowth uint64}
+func probeMust(e error){if e!=nil{panic(e)}}
+func main(){kind,dir,persistent:=strings.Cut(os.Args[1],"@");if !persistent{var e error;dir,e=os.MkdirTemp("","zeros3-i2-probe-");probeMust(e);defer os.RemoveAll(dir)}else{entries,e:=os.ReadDir(dir);if e==nil&&len(entries)!=0{panic("probe store must be new/empty")};if e!=nil&&!os.IsNotExist(e){panic(e)}};s,e:=OpenStore(dir);probeMust(e);defer s.Close();if persistent{probeMust(s.CreateBucket("z3"))};descs:=map[[32]byte]*repDesc{};source:=s.newRepSource(descs,nil);defer source.close();cat:=newRepCatalog(source);enc:=json.NewEncoder(os.Stdout)
+ for _,file:=range os.Args[2:]{currentKind:=kind;if kind=="managed"{if strings.HasSuffix(file,".dex"){currentKind="dex"}else{currentKind="clr"}};f,e:=os.Open(file);probeMust(e);info,e:=f.Stat();probeMust(e);if info.Size()>1<<30{panic("source bound")};h:=sha256.New();_,e=io.Copy(h,f);probeMust(e);var want [32]byte;h.Sum(want[:0]);b:=s.newRepBuilder(info.Size(),func(id [32]byte)*repDesc{return descs[id]},cat);start:=time.Now();var r *repObject;var id [32]byte;var reach *repReach;peak:=probeHeapGrowth(func(){
+ switch currentKind{case "model":r,e=b.encodeModel(f,info.Size());case "dex","clr":if info.Size()>32<<20{panic("managed whole-file offline bound")};data,err:=io.ReadAll(io.NewSectionReader(f,0,info.Size()));probeMust(err);var meta []byte;var comps [][]byte;k:=repKindDEX
+ if currentKind=="dex"{p,err:=repDXParse(bytes.NewReader(data),info.Size(),repDXLimits{MaxFile:32<<20});probeMust(err);parts,err:=repDXEncode(p,data,repDXConfig{K0:3,Cut:repManagedUnitCutBytes(4096)});probeMust(err);meta,comps=parts.Meta,parts.Comps}else{k=repKindCLR;p,err:=repCLParse(bytes.NewReader(data),info.Size(),repCLLimits{});probeMust(err);parts,err:=repCLEncode(p,data,repCLConfig{Auto:12,Cut:repManagedUnitCutBytes(4096)});probeMust(err);meta,comps=parts.Meta,parts.Comps};r,e=b.managedParts(k,info.Size(),meta,comps)
+ default:panic("kind")};probeMust(e);id,e=b.finishRep(r);probeMust(e);probeMust(b.flush());probeMust(b.proof(id,info.Size(),want));reach,e=b.env.reachable(id);probeMust(e);for rid:=range b.written{if _,ok:=reach.Role[rid];!ok{panic(fmt.Sprintf("hidden write %x",rid))}};});out:=probeResult{HeapGrowth:peak,File:filepath.Base(file),Kind:currentKind,SHA:hex.EncodeToString(want[:]),Root:hex.EncodeToString(id[:]),Bytes:info.Size(),Reachable:len(reach.Order),Descriptors:len(b.descs),Exact:true}
+ if currentKind=="model"{call,e:=b.env.open(id);probeMust(e);names,e:=repMDModelNames(call);probeMust(e);var keys []string;for key:=range names{keys=append(keys,key)};sort.Strings(keys);if len(keys)>0{loc:=names[keys[0]];n:=min(int64(4096),loc[1]);got,e:=repMDReadModelRange(call,loc[0],n);probeMust(e);want:=make([]byte,n);probeMust(repReadFullAt(f,want,loc[0]));if !bytes.Equal(got,want){panic("tensor range")};out.RangeBytes=n};for i,m:=range r.Members{if m.Role==repDerived{ch,e:=call.child(i);probeMust(e);h,e:=repModelHops(ch);probeMust(e);out.Hops=max(out.Hops,h)}}}
+ out.AnalysisNS=time.Since(start).Nanoseconds();if persistent{_,e:=f.Seek(0,io.SeekStart);probeMust(e);ing,e:=s.ingestStream(f,true,ingestOptions{size:info.Size()});probeMust(e);entry,e:=s.commitIngested("z3",filepath.Base(file),ing,"application/octet-stream",nil,putCondition{});probeMust(e);root:=&repRoot{ManifestUUID:entry.manifestUUID,ObjSHA:want,ObjSize:info.Size(),Rep:id,Descs:map[[32]byte]*repDesc{}};for _,rid:=range reach.Order{if d:=b.src.desc(rid);d!=nil{root.Descs[rid]=d}};probeMust(s.publishRepRoot(root))};probeMust(enc.Encode(out));for id,d:=range b.descs{descs[id]=d};source.refresh();probeMust(cat.ingest(id));b.close();probeMust(f.Close())
+ }
+}
+
+func probeHeapGrowth(fn func()) uint64 {
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+	var peak atomic.Uint64
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
+				if m.HeapAlloc > peak.Load() {
+					peak.Store(m.HeapAlloc)
+				}
+			}
+		}
+	}()
+	fn()
+ var final runtime.MemStats;runtime.ReadMemStats(&final);if final.HeapAlloc>peak.Load(){peak.Store(final.HeapAlloc)}
+	close(stop)
+	<-done
+	if p := peak.Load(); p > base.HeapAlloc {
+		return p - base.HeapAlloc
+	}
+	return 0
+}

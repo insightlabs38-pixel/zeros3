@@ -64,6 +64,10 @@ var (
 	baseB           string
 	codecFixtureDir string
 	gitFixtureDir   string
+	modelFixtureDir string
+	i1Binary        string
+	managedStoreDir string
+	managedInputs   string
 )
 
 func check(name string, ok bool, detail string, args ...any) {
@@ -303,6 +307,15 @@ func fixtures() []fixture {
 			data, err := os.ReadFile(filepath.Join(gitFixtureDir, name))
 			if err != nil {
 				panic(err)
+			}
+			fx = append(fx, fixture{name, data})
+		}
+	}
+	if modelFixtureDir != "" {
+		for _, name := range []string{"model.gguf", "model.safetensors"} {
+			data, e := os.ReadFile(filepath.Join(modelFixtureDir, name))
+			if e != nil {
+				panic(e)
 			}
 			fx = append(fx, fixture{name, data})
 		}
@@ -856,7 +869,7 @@ func phaseCrash(rounds int) {
 	db := sqliteDB(3000, 4096, 21)
 	tarB := tarOf(map[string][]byte{"app.db": db, "x": []byte("x")}, []string{"x", "app.db"})
 	data := [][]byte{db, tarB, carOf(blocks(2500, 3000, 22)), merkleSnapshot(keysOf(10000, 23), nil)}
-	if codecFixtureDir != "" || gitFixtureDir != "" {
+	if codecFixtureDir != "" || gitFixtureDir != "" || modelFixtureDir != "" {
 		fx := fixtures()
 		data = append([][]byte{fx[len(fx)-2].data, fx[len(fx)-1].data}, data...)
 	}
@@ -1138,6 +1151,10 @@ func main() {
 	crashRounds := flag.Int("crash-rounds", 4, "SIGKILL rounds")
 	flag.StringVar(&gitFixtureDir, "git-fixtures", "", "optional I1C Git pack/idx fixture directory")
 	flag.StringVar(&codecFixtureDir, "codec-fixtures", "", "optional I1B fixture directory: add gzip/zstd nested objects to every phase")
+	flag.StringVar(&modelFixtureDir, "model-fixtures", "", "optional I2 draft model fixture directory")
+	flag.StringVar(&i1Binary, "i1-bin", "", "stable I1 binary for new-kind rollback matrix")
+	flag.StringVar(&managedStoreDir, "managed-store", "", "offline-proved I2 managed fixture store for i2-compat")
+	flag.StringVar(&managedInputs, "managed-inputs", "", "comma-separated original managed inputs")
 	flag.Parse()
 	bin = os.Getenv("ZEROS3_BIN")
 	baseB = os.Getenv("ZEROS3_BASE_BIN")
@@ -1145,7 +1162,7 @@ func main() {
 		fmt.Println("FAIL: ZEROS3_BIN is required")
 		os.Exit(2)
 	}
-	if baseB == "" && (*phase == "all" || *phase == "compat" || *phase == "bundles") {
+	if baseB == "" && (*phase == "all" || *phase == "compat" || *phase == "bundles" || *phase == "i2-delta") {
 		fmt.Println("FAIL: ZEROS3_BASE_BIN (binary built from the commit before I0) is required for the compat phase")
 		os.Exit(2)
 	}
@@ -1156,6 +1173,12 @@ func main() {
 			f()
 		}
 	}
+	if i1Binary != "" || *phase == "i2-compat" {
+		run("i2-compat", phaseI2Compat)
+	}
+	if modelFixtureDir != "" || *phase == "i2-delta" {
+		run("i2-delta", phaseI2Delta)
+	}
 	run("compat", phaseCompat)
 	run("bundles", phaseBundles)
 	run("kinds", phaseKinds)
@@ -1164,5 +1187,187 @@ func main() {
 	run("reads", phaseReads)
 	if failed {
 		os.Exit(1)
+	}
+}
+
+// phaseI2Compat supplements the pre-I0 matrix with the stable I1 reader. Its
+// known store level can carry an unknown optional kind: CDC remains readable,
+// while destructive maintenance must fail closed on the unrecognized graph.
+func phaseI2Compat() {
+	if i1Binary == "" || (modelFixtureDir == "" && managedStoreDir == "") {
+		panic("i2-compat requires -i1-bin and -model-fixtures")
+	}
+	var fx []fixture
+	var dir string
+	var srv *exec.Cmd
+	var addr string
+	var c *s3.Client
+	var e error
+	var wantRoots int
+	if managedStoreDir != "" {
+		dir = managedStoreDir
+		for _, p := range strings.Split(managedInputs, ",") {
+			data, e := os.ReadFile(p)
+			if e != nil {
+				panic(e)
+			}
+			fx = append(fx, fixture{filepath.Base(p), data})
+		}
+		wantRoots = len(fx)
+	} else {
+		for _, name := range []string{"model.gguf", "model.safetensors"} {
+			data, e := os.ReadFile(filepath.Join(modelFixtureDir, name))
+			if e != nil {
+				panic(e)
+			}
+			fx = append(fx, fixture{name, data})
+		}
+		filler := make([]byte, 3<<20)
+		rand.New(rand.NewSource(921)).Read(filler)
+		fx = append(fx, fixture{"filler.bin", filler})
+		dir, e = os.MkdirTemp("", "z3-i2-compat-")
+		if e != nil {
+			panic(e)
+		}
+		defer os.RemoveAll(dir)
+		srv, addr, _ = startServer(bin, dir, "-representations", "prefer")
+		c = newClient(addr)
+		c.CreateBucket(context.Background(), &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+		for _, f := range fx {
+			put(c, f.name, f.data)
+		}
+		stop(srv)
+		wantRoots = len(fx) - 1
+	}
+	verifyDeep("I2 new-kind source full proof", dir, wantRoots)
+	before := dirDigest(dir)
+	for _, mode := range []string{"off", "shadow", "prefer"} {
+		srv, addr, _ = startServer(i1Binary, dir, "-representations", mode)
+		readAllCheck("I1 reads unknown optional I2 kinds in "+mode, newClient(addr), fx)
+		stop(srv)
+		check("I1 opening does not rewrite I2 store ("+mode+")", dirDigest(dir) == before, "store changed")
+	}
+	for _, args := range [][]string{{"verify", "-deep", "-store", dir}, {"gc", "-apply", "-store", dir}, {"repack", "-apply", "-max-live-percent", "100", "-store", dir}} {
+		out, se, err := cli(i1Binary, args...)
+		check("I1 unknown kind fails closed: "+args[0], err != nil, "%s %s", out, se)
+		check("I1 refusal preserves store: "+args[0], dirDigest(dir) == before, "store changed")
+	}
+	verifyDeep("I2 still verifies after I1 refusals", dir, wantRoots)
+	// Lossless compaction may copy known chunks and leave unknown graph chunks
+	// loose. Check the complete graph afterward instead of requiring refusal.
+	out, se, err := cli(i1Binary, "compact", "-store", dir, "-pack-size-mib", "1")
+	check("I1 compaction handles unknown optional graph safely", err == nil || strings.Contains(out+se, "unsupported") || strings.Contains(out+se, "unsafe"), "%s %s", out, se)
+	verifyDeep("I2 graph remains exact after I1 compaction", dir, wantRoots)
+	srv, addr, _ = startServer(i1Binary, dir, "-representations", "prefer")
+	readAllCheck("I1 CDC reads remain exact after compaction", newClient(addr), fx)
+	stop(srv)
+
+	legacy, e := os.MkdirTemp("", "z3-i1-compat-")
+	if e != nil {
+		panic(e)
+	}
+	defer os.RemoveAll(legacy)
+	srv, addr, _ = startServer(i1Binary, legacy, "-representations", "prefer")
+	c = newClient(addr)
+	c.CreateBucket(context.Background(), &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	old := append([]fixture{{"db", sqliteDB(32, 4096, 901)}}, fx...)
+	for _, f := range old {
+		put(c, f.name, f.data)
+	}
+	stop(srv)
+	oldDigest := dirDigest(legacy)
+	for _, mode := range []string{"off", "shadow", "prefer"} {
+		srv, addr, _ = startServer(bin, legacy, "-representations", mode)
+		readAllCheck("I2 reads I1 store in "+mode, newClient(addr), old)
+		stop(srv)
+		check("I2 opening I1 store does not upgrade ("+mode+")", dirDigest(legacy) == oldDigest, "store changed")
+	}
+}
+
+// phaseI2Delta proves portable full+delta transfer from a real Model-base chain;
+// destinations use their ordinary default-off creation policy.
+func phaseI2Delta() {
+	if modelFixtureDir == "" || baseB == "" {
+		panic("i2-delta requires model fixtures and pre-I0 binary")
+	}
+	dir, e := os.MkdirTemp("", "z3-i2-delta-")
+	if e != nil {
+		panic(e)
+	}
+	defer os.RemoveAll(dir)
+	data, e := os.ReadFile(filepath.Join(modelFixtureDir, "model.safetensors"))
+	if e != nil {
+		panic(e)
+	}
+	creds := []string{"-access-key", accessKeyID, "-secret-key", secretAccessKey, "-region", region}
+	srv, addr, _ := startServer(bin, dir, "-representations", "prefer")
+	c := newClient(addr)
+	c.CreateBucket(context.Background(), &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	snapshot := func() string {
+		out, se, err := cli(bin, append([]string{"snapshot", "create", "-json", "-endpoint", "http://" + addr}, append(creds, "s3://"+bucket+"/")...)...)
+		if err != nil {
+			panic(fmt.Sprint(out, se, err))
+		}
+		var v struct {
+			ID string `json:"snapshot_id"`
+		}
+		if e := json.Unmarshal([]byte(out), &v); e != nil || v.ID == "" {
+			panic("snapshot id")
+		}
+		return v.ID
+	}
+	put(c, "weights", data)
+	base := snapshot()
+	updated := append([]byte(nil), data...)
+	updated[len(updated)-1] ^= 3
+	put(c, "weights", updated)
+	target := snapshot()
+	stop(srv)
+	check("delta source retains two Model roots", num(statsOf(bin, dir), "representation_root_count") == 2, "root count")
+	out, se, err := cli(bin, "verify", "-deep", "-store", dir)
+	check("delta source chain full verification", err == nil, "%s %s", out, se)
+	full, delta := filepath.Join(dir, "base.zs3b"), filepath.Join(dir, "delta.zs3d")
+	_, se, err = cli(bin, "bundle", "export", "-store", dir, "-snapshot", base, "-out", full)
+	check("Model full bundle export", err == nil, "%s", se)
+	_, se, err = cli(bin, "bundle", "export", "-store", dir, "-snapshot", target, "-base-snapshot", base, "-out", delta)
+	check("Model delta bundle export", err == nil, "%s", se)
+	verificationBase, e := os.MkdirTemp("", "z3-i2-delta-base-")
+	if e != nil {
+		panic(e)
+	}
+	defer os.RemoveAll(verificationBase)
+	_, se, err = cli(baseB, "bundle", "import", "-store", verificationBase, "-in", full)
+	check("pre-I0 prepares exact delta base", err == nil, "%s", se)
+	for _, file := range []string{full, delta} {
+		args := []string{"bundle", "inspect", "-verify", "-in", file}
+		if file == delta {
+			args = append(args, "-base-store", verificationBase)
+		}
+		_, se, err = cli(baseB, args...)
+		check("pre-I0 verifies Model bundle "+filepath.Ext(file), err == nil, "%s", se)
+	}
+	for _, imp := range []struct{ name, binary string }{{"I2", bin}, {"pre-I0", baseB}} {
+		dst, e := os.MkdirTemp("", "z3-i2-delta-import-")
+		if e != nil {
+			panic(e)
+		}
+		defer os.RemoveAll(dst)
+		_, se, err = cli(imp.binary, "bundle", "import", "-store", dst, "-in", full)
+		check(imp.name+" imports Model base", err == nil, "%s", se)
+		_, se, err = cli(imp.binary, "bundle", "import", "-store", dst, "-in", delta)
+		check(imp.name+" imports Model delta", err == nil, "%s", se)
+		_, e = os.Stat(filepath.Join(dst, "representations"))
+		check(imp.name+" delta import contains no representation state", os.IsNotExist(e), "representations exists")
+		check(imp.name+" delta import remains legacy-readable", formatLevel(dst) < 6, "format%d", formatLevel(dst))
+		srv, addr, _ = startServer(imp.binary, dst)
+		c = newClient(addr)
+		c.CreateBucket(context.Background(), &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+		_, se, err = cli(imp.binary, append([]string{"snapshot", "restore", "-endpoint", "http://" + addr}, append(creds, target, "s3://"+bucket+"/")...)...)
+		check(imp.name+" restores Model delta snapshot", err == nil, "%s", se)
+		readAllCheck(imp.name+" Model delta restored bytes/ranges exact", c, []fixture{{"weights", updated}})
+		stop(srv)
+		_, se, err = cli(imp.binary, "verify", "-deep", "-store", dst)
+		check(imp.name+" delta destination full verification", err == nil, "%s", se)
+		check(imp.name+" default-off restore keeps legacy format", formatLevel(dst) < 6, "format%d", formatLevel(dst))
 	}
 }
