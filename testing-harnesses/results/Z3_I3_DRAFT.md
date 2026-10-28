@@ -12,6 +12,9 @@ The recipe bodies and component bytes remain the lab contracts; only the existin
 lab/production envelope magic and version differ. Nine frozen native fixtures
 match complete production roots byte-for-byte and prove every accessed dependency.
 No new closure, producer executable or external decoder dependency is introduced.
+Production LOC37,850→45,537, net+7,687; 255 added function declarations.
+Two codec families plus six small policy/stream helpers; Snappy/Thrift utilities
+are mechanically extracted. Existing Zstd is reused; no second Zstd core.
 Production remains one stdlib-only zeros3.go; root go.mod/go.sum are unchanged.
 Store/journal/bundle/default policy is unchanged; CDC remains authoritative.
 
