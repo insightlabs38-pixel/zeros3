@@ -1,0 +1,79 @@
+[
+ {
+  "file": "ce.fa",
+  "member": "htslib-0f8bedc11e3ee039060a058b5cd5ec99e0b593a2/test/ce.fa",
+  "sha256": "5eca163c91918ada9774080ee2274208155f4d1b2d00700ee950cdd7b269508c",
+  "bytes": 1060702,
+  "class_": "PUBLIC_HTSLIB_REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "file": "ce#1000.sam",
+  "member": "htslib-0f8bedc11e3ee039060a058b5cd5ec99e0b593a2/test/ce#1000.sam",
+  "sha256": "2558a8bb8fa15001d9856b6c1a0b5f82ee71cb3a751183b49277cd1384f8d366",
+  "bytes": 322632,
+  "class_": "PUBLIC_HTSLIB_REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "file": "ce#5b.sam",
+  "member": "htslib-0f8bedc11e3ee039060a058b5cd5ec99e0b593a2/test/ce#5b.sam",
+  "sha256": "79312ce880070b9a4b193d4c989523626dda43e061211570faf8532ea690e87c",
+  "bytes": 1836,
+  "class_": "PUBLIC_HTSLIB_REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "file": "ce#5b_java.cram",
+  "member": "htslib-0f8bedc11e3ee039060a058b5cd5ec99e0b593a2/test/ce#5b_java.cram",
+  "sha256": "12bb51d85161f18136a4df5f6ad9565bd4148e1e01083a95c2d7a8242b1d75e2",
+  "bytes": 6784,
+  "class_": "PUBLIC_HTSLIB_REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "file": "range.cram",
+  "member": "htslib-0f8bedc11e3ee039060a058b5cd5ec99e0b593a2/test/range.cram",
+  "sha256": "ea9217f5a0dd7e57c0f2a94d55d6285d1e8d35cc741de53f12c19eecd0e84326",
+  "bytes": 11182,
+  "class_": "PUBLIC_HTSLIB_REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "file": "auxf#values_java.cram",
+  "member": "htslib-0f8bedc11e3ee039060a058b5cd5ec99e0b593a2/test/auxf#values_java.cram",
+  "sha256": "e1885105587e59f3e268dfa401eee94ee4057d0accef0ba12b675a27aa092c05",
+  "bytes": 5152,
+  "class_": "PUBLIC_HTSLIB_REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "file": "auxf#values.sam",
+  "member": "htslib-0f8bedc11e3ee039060a058b5cd5ec99e0b593a2/test/auxf#values.sam",
+  "sha256": "03f9187fc491a704f1b14442abf9e644ef4b9530dbfe62a22308e8ddcb2458c4",
+  "bytes": 751,
+  "class_": "PUBLIC_HTSLIB_REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "file": "auxf.fa",
+  "member": "htslib-0f8bedc11e3ee039060a058b5cd5ec99e0b593a2/test/auxf.fa",
+  "sha256": "f334eafb55fd48af94d12ceb96f41051d92b3863a2574c30d7594cce8cdd3ec9",
+  "bytes": 29,
+  "class_": "PUBLIC_HTSLIB_REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "file": "xx#large_aux_java.cram",
+  "member": "htslib-0f8bedc11e3ee039060a058b5cd5ec99e0b593a2/test/xx#large_aux_java.cram",
+  "sha256": "ab178652b846ee71fb986c484523ba09c997cbd6e29b9e0eeb6bc8bc1c92150e",
+  "bytes": 22668,
+  "class_": "PUBLIC_HTSLIB_REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "file": "xx#large_aux.sam",
+  "member": "htslib-0f8bedc11e3ee039060a058b5cd5ec99e0b593a2/test/xx#large_aux.sam",
+  "sha256": "e0a2a36434ec631ef185ff64eff6686efedc5e7237f94d61b94eb03718b37412",
+  "bytes": 905485,
+  "class_": "PUBLIC_HTSLIB_REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ },
+ {
+  "file": "xx.fa",
+  "member": "htslib-0f8bedc11e3ee039060a058b5cd5ec99e0b593a2/test/xx.fa",
+  "sha256": "a1d5ccb865dc067319836cc6e50eb9a176ae3c1917745b93e70a55a83f4cfccb",
+  "bytes": 86,
+  "class_": "PUBLIC_HTSLIB_REFERENCE_FIXTURE_NOT_NATURAL_HISTORY"
+ }
+]

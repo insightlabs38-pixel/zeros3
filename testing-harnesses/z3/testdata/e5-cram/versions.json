@@ -1,0 +1,7 @@
+{
+ "pysam": "0.23.3",
+ "samtools": "1.21",
+ "source_sam_sha256": "2558a8bb8fa15001d9856b6c1a0b5f82ee71cb3a751183b49277cd1384f8d366",
+ "reference_sha256": "5eca163c91918ada9774080ee2274208155f4d1b2d00700ee950cdd7b269508c",
+ "reads_base": 32000
+}

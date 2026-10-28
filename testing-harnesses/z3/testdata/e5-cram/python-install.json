@@ -1,0 +1,80 @@
+{
+  "version": "1",
+  "pip_version": "26.2.1",
+  "install": [
+    {
+      "download_info": {
+        "url": "https://files.pythonhosted.org/packages/df/a6/c100df6c8118b4ce1f9c086bb9cf5bccd4f71d05ceb2ecf474f3b0ea87b8/pysam-0.23.3-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "archive_info": {
+          "hashes": {
+            "sha256": "4099393fc5097b5081c7efaf46b0109e4f0a8ed18f86d497219a8bf739c73992"
+          },
+          "hash": "sha256=4099393fc5097b5081c7efaf46b0109e4f0a8ed18f86d497219a8bf739c73992"
+        }
+      },
+      "is_direct": false,
+      "is_yanked": false,
+      "requested": true,
+      "metadata": {
+        "metadata_version": "2.4",
+        "name": "pysam",
+        "version": "0.23.3",
+        "dynamic": [
+          "author",
+          "classifier",
+          "description",
+          "description-content-type",
+          "home-page",
+          "license-file",
+          "platform"
+        ],
+        "platform": [
+          "POSIX",
+          "UNIX",
+          "MacOS"
+        ],
+        "summary": "Package for reading, manipulating, and writing genomic data",
+        "description": "pysam --- a Python package for reading, manipulating, and writing\ngenomic data sets.\n\npysam is a lightweight wrapper of the HTSlib API and provides facilities\nto read and write SAM/BAM/CRAM/VCF/BCF/BED/GFF/GTF/FASTA/FASTQ files\nas well as access to the command-line functionality of samtools and bcftools.\nThe module supports compression and random access through indexing.\n\nThis module provides a low-level wrapper around HTSlib's C API using Cython\nand a high-level API for convenient access to the data within standard genomic\nfile formats.\n",
+        "description_content_type": "text/x-rst",
+        "home_page": "https://github.com/pysam-developers/pysam",
+        "author": "Andreas Heger",
+        "author_email": "Andreas Heger <andreas.heger@gmail.com>",
+        "license": "MIT License",
+        "license_file": [
+          "COPYING",
+          "AUTHORS"
+        ],
+        "classifier": [
+          "Development Status :: 4 - Beta",
+          "Intended Audience :: Science/Research",
+          "Intended Audience :: Developers",
+          "License :: OSI Approved",
+          "Programming Language :: Python",
+          "Topic :: Software Development",
+          "Topic :: Scientific/Engineering",
+          "Operating System :: POSIX",
+          "Operating System :: Unix",
+          "Operating System :: MacOS"
+        ],
+        "requires_python": ">=3.8",
+        "project_url": [
+          "Documentation, https://pysam.readthedocs.io/",
+          "Release notes, https://pysam.readthedocs.io/en/stable/release.html"
+        ]
+      }
+    }
+  ],
+  "environment": {
+    "implementation_name": "cpython",
+    "implementation_version": "3.12.14",
+    "os_name": "posix",
+    "platform_machine": "x86_64",
+    "platform_release": "6.18.55",
+    "platform_system": "Linux",
+    "platform_version": "#1 SMP Wed Oct 14 19:45:18 UTC 2026",
+    "python_full_version": "3.12.14",
+    "platform_python_implementation": "CPython",
+    "python_version": "3.12",
+    "sys_platform": "linux"
+  }
+}
