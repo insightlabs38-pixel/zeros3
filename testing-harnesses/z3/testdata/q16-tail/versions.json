@@ -1,0 +1,7 @@
+{
+ "brotli": "1.1.0",
+ "fastavro": "1.12.0",
+ "onnx": "1.19.1",
+ "numpy": "2.3.5",
+ "seven_zip": "7-Zip (z) 26.01 (x64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-04-27"
+}

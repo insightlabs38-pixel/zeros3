@@ -1,0 +1,147 @@
+{
+ "producer": "onnx 1.19.1 / protobuf 6.33.0 / numpy 2.3.5",
+ "external_sidecar_sha256": "f65c3b967415d6b3676d07c43e5a721503176be33fa5234f52b8f34016e5cd56",
+ "note": "External sidecar proves native fixture validity here; graph-byte tests intentionally do not copy or resolve it.",
+ "fixtures": [
+  {
+   "file": "dense.onnx",
+   "sha256": "69660e1ddad29477dae7b455a9e0d6e9e392e503b0069d9c66c23da0f3eb476f",
+   "tensors": [
+    {
+     "name": "W",
+     "type": 1,
+     "dims": [
+      16,
+      16
+     ],
+     "raw_bytes": 1024,
+     "raw_sha256": "1daec41e7377d69b9d31b81bf26b1b5d8ad56b384ec5760715a60cd8fa038029",
+     "external": false
+    },
+    {
+     "name": "bias",
+     "type": 1,
+     "dims": [
+      16
+     ],
+     "raw_bytes": 64,
+     "raw_sha256": "58dda328598e2f7fe472621bfc54935aaa354d1a6ebcaf9562cd743fd575eb19",
+     "external": false
+    }
+   ],
+   "native_checker": true
+  },
+  {
+   "file": "reordered.onnx",
+   "sha256": "4e74cdc09d63ecb98fef617a0590e47fa8b3c456a120d9f37189925a34a53ead",
+   "tensors": [
+    {
+     "name": "bias",
+     "type": 1,
+     "dims": [
+      16
+     ],
+     "raw_bytes": 64,
+     "raw_sha256": "58dda328598e2f7fe472621bfc54935aaa354d1a6ebcaf9562cd743fd575eb19",
+     "external": false
+    },
+    {
+     "name": "W",
+     "type": 1,
+     "dims": [
+      16,
+      16
+     ],
+     "raw_bytes": 1024,
+     "raw_sha256": "1daec41e7377d69b9d31b81bf26b1b5d8ad56b384ec5760715a60cd8fa038029",
+     "external": false
+    }
+   ],
+   "native_checker": true
+  },
+  {
+   "file": "typed.onnx",
+   "sha256": "703436c0bfe4476bd6dab4311dd735a4b6290d6b64852bd08333e9a2997204bb",
+   "tensors": [
+    {
+     "name": "W",
+     "type": 1,
+     "dims": [
+      16,
+      16
+     ],
+     "raw_bytes": 0,
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "external": false
+    },
+    {
+     "name": "bias",
+     "type": 1,
+     "dims": [
+      16
+     ],
+     "raw_bytes": 0,
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "external": false
+    }
+   ],
+   "native_checker": true
+  },
+  {
+   "file": "external.onnx",
+   "sha256": "92737a3b4090df131ad36d4dd14a4d4256b93e90fb766009a58d4caa52015812",
+   "tensors": [
+    {
+     "name": "W",
+     "type": 1,
+     "dims": [
+      16,
+      16
+     ],
+     "raw_bytes": 0,
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "external": true
+    },
+    {
+     "name": "bias",
+     "type": 1,
+     "dims": [
+      16
+     ],
+     "raw_bytes": 0,
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "external": true
+    }
+   ],
+   "native_checker": true
+  },
+  {
+   "file": "unknown.onnx",
+   "sha256": "7e916c31953a55c8631ae524303253838550c5974b2a702aa172775efb61d4d9",
+   "tensors": [
+    {
+     "name": "W",
+     "type": 1,
+     "dims": [
+      16,
+      16
+     ],
+     "raw_bytes": 1024,
+     "raw_sha256": "1daec41e7377d69b9d31b81bf26b1b5d8ad56b384ec5760715a60cd8fa038029",
+     "external": false
+    },
+    {
+     "name": "bias",
+     "type": 1,
+     "dims": [
+      16
+     ],
+     "raw_bytes": 64,
+     "raw_sha256": "58dda328598e2f7fe472621bfc54935aaa354d1a6ebcaf9562cd743fd575eb19",
+     "external": false
+    }
+   ],
+   "native_checker": true
+  }
+ ]
+}
