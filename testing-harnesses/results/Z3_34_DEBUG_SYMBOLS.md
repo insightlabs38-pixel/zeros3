@@ -1,6 +1,6 @@
 # Z3-34 — debug-symbol frontier
 
-Status: evidence complete, final lab suite pending; base `f0b34b6`.
+Status: COMPLETE research wave; base `f0b34b6`.
 Verdict: NO_DEBUG_SYMBOL_TARGET ready for promotion. All three targets DEFER.
 Production diff empty; no new kind/wire/default, no large PDB committed.
 
@@ -79,7 +79,8 @@ Canonical exact/hostile/truncation/opaque/CDC controls pass; ELF fixture constru
 shell-extracted from elfz3 tests, adding missing e_version for stdlib validation.
 Controlled 25-artifact full replay and native row counts pass. Parser fuzz:
 213255 initial,352315 bounded/FPM,121172 final valid-ELF-seed cases,25s each.
-Root full/vet pass (cached unchanged production); final lab suite pending.
+Root full/vet pass (cached unchanged production); full lab suite/vet pass.
+Final affected tests/native producer replay pass; gofmt and diff checks pass.
 Reproduce producer: `python3 scripts/q4_debug_builds.py CACHE GCC CLANG LLD DOTNET`.
 Driver: `go run ./cmd/z3debug -target 4096 CACHE/rev{0,1,2,3,4}/portable.pdb`.
 Native: `go run ./cmd/z3debugdwarf FILES`; .NET oracle takes DLL+PDB.
