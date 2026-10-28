@@ -149,6 +149,7 @@ func (d *dict) indexWidth() int {
 // layout is the page-layout recipe of a data page: which hybrid streams follow the
 // standard encoder and which carry their stored run headers.
 type layout struct {
+	Delta   []byte // exact DELTA_LENGTH_BYTE_ARRAY length prefix
 	LvlExpl bool
 	LvlHdrs []uint64
 	LvlPad  []uint32
@@ -163,7 +164,7 @@ type layout struct {
 
 // Explicit reports which hybrid streams of the page carry stored run headers (the rest
 // follow the standard encoder).
-func (l layout) Explicit() (levels, values bool) { return l.LvlExpl, l.ValExpl }
+func (l layout) Explicit() (levels, values bool) { return l.LvlExpl, l.ValExpl || len(l.Delta) > 0 }
 
 // WidthOnly reports a standard run encoding whose index width is stored (a tiny recipe).
 func (l layout) WidthOnly() bool { return l.ValWidth }
@@ -184,6 +185,8 @@ func encodingSupported(c colSpec, enc int32) bool {
 	switch enc {
 	case EncPlain, EncPlainDict, EncRLEDict:
 		return true
+	case EncDeltaLenBA:
+		return c.Phys == TByteArr
 	case EncRLE:
 		return c.Phys == TBoolean
 	case EncByteStrSplt:
@@ -227,6 +230,8 @@ func encodeLevels(pg *Page, c colSpec, defs []uint8, lay layout) ([]byte, bool) 
 // encodeValues returns the value section of a data page.
 func encodeValues(pg *Page, c colSpec, d *dict, pc *pageContent, lay layout) ([]byte, bool) {
 	switch {
+	case pg.Enc == EncDeltaLenBA:
+		return encodeDeltaLength(&pc.vals, lay.Delta)
 	case pg.Enc == EncPlain:
 		return encodePlain(c, &pc.vals), true
 	case dictEnc(pg.Enc):
@@ -315,6 +320,11 @@ func decodePage(pg *Page, c colSpec, d *dict, levels, values []byte, lim Limits)
 		}
 	}
 	switch {
+	case pg.Enc == EncDeltaLenBA:
+		pc.vals, lay.Delta, err = decodeDeltaLength(values, pc.present, lim)
+		if err != nil {
+			return pc, lay, err
+		}
 	case pg.Enc == EncPlain:
 		r, used, err := decodePlain(c, values, pc.present, lim)
 		if err != nil {

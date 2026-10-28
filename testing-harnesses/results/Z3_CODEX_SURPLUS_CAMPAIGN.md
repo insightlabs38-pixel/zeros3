@@ -7,11 +7,14 @@ Merged Q4: PR #75, `1a0879cfa8cc904398df1aec54e3796b046882a4`; all targets DEFER
 Merged Q5: PR #76, `4d2f9593317804a1a8deaab5ca34f5124fb4d735` (ELF/PE DEFER).
 Merged Q6: PR #77, `701b3610d7b6b173ca6ded997e3db196bc5af28f`.
 PLANNER_NEEDS_MORE_EVIDENCE; canonical 36-case/252-policy evidence retained.
-Q7 active on `z3/storage-convergence`: mechanically shared frontier capture,
+Merged Q7: PR #78, `c3efe6c387fcec3c6e37be327a627a83c9aee64d`.
+Mechanically shared frontier capture,
 transient component/span/pack proofs and cumulative physical accounting.
 Q7 gates pass: NOT_WORTH_COMPLEXITY for current persistent-format change.
 37 actual stages, full costs/range amplification, exact Q6 frontier preserved.
-Checkpoint de9daae/58ef1a5; research-only PR ready. Continue Q8 after merge.
+Q8 gates pass: Zstd SST exact in132 six-form replays; delta-length Parquet
+reduces DuckDB REP37.3%;162 proved inputs/fallbacks. Pebble2.1.7 format7
+and LZ4 remain CDC. Ready research merge, then continue Q9 draft-only port.
 ELF/PE DEFER: genuine grouped exact gains on controlled histories, mixed C++
 and public losses. Closed recipes/evidence retained; Q6 now captures unified
 physical candidate closures and tests honest late bootstrap/regret policies.

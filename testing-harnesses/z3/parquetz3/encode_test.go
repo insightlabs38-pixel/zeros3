@@ -37,7 +37,7 @@ func encodeFile(t testing.TB, b []byte, opt Options) ([]byte, store, Stats) {
 	return rec, st, stats
 }
 
-var logicalFixtures = []string{"pa_snappy_v1.parquet", "pa_snappy_v2.parquet", "pa_zstd_v1.parquet", "pa_none_plain.parquet", "pa_bss.parquet",
+var logicalFixtures = []string{"pa_delta.parquet", "pa_snappy_v1.parquet", "pa_snappy_v2.parquet", "pa_zstd_v1.parquet", "pa_none_plain.parquet", "pa_bss.parquet",
 	"pa_rg500.parquet", "pa_nested.parquet", "dd_snappy.parquet", "dd_zstd.parquet", "dd_none.parquet"}
 
 // The whole contract: serialized recipe + stored components + stdlib -> the original bytes.

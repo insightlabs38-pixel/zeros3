@@ -24,7 +24,7 @@ func pqFile(t *testing.T, name string) []byte {
 // components two layouts of the same table share are single objects with two immutable
 // references that outlive the first root and disappear with the last.
 func TestParquetKindIsExactReachableAndShared(t *testing.T) {
-	for _, name := range []string{"pa_snappy_v1.parquet", "pa_snappy_v2.parquet", "pa_zstd_v1.parquet", "pa_none_plain.parquet", "pa_nested.parquet", "dd_snappy.parquet", "dd_zstd.parquet"} {
+	for _, name := range []string{"pa_delta.parquet", "pa_snappy_v1.parquet", "pa_snappy_v2.parquet", "pa_zstd_v1.parquet", "pa_none_plain.parquet", "pa_nested.parquet", "dd_snappy.parquet", "dd_zstd.parquet"} {
 		a := pqFile(t, name)
 		b, _, _, err := EncodeParquet(bytes.NewReader(a), int64(len(a)), parquetz3.Options{Target: 4 << 10})
 		if err != nil {

@@ -1,0 +1,29 @@
+[
+ {
+  "file": "pebble-v7.sst",
+  "sha256": "65dde04c48dbf0025ce73893d81cb5d204f2eb102a22cc8b29a7a5e0bfb4b541",
+  "bytes": 5913,
+  "evidence": "PRODUCER_WORKLOAD",
+  "producer": "Pebble v2.1.7",
+  "operations": "Q6 scaled chain c2",
+  "codec": "zstd"
+ },
+ {
+  "file": "pebble-zstd.sst",
+  "sha256": "d5cdf5e93d730b84aef809dd86d2abe34b05ea87f6a49580b90f89fb17acc913",
+  "bytes": 5821,
+  "evidence": "PRODUCER_WORKLOAD",
+  "producer": "Pebble v1.1.5",
+  "operations": "Q6 scaled chain c2",
+  "codec": "zstd"
+ },
+ {
+  "file": "rocksdb-zstd.sst",
+  "sha256": "e71480149b583b21cad8d043a20220337370672888e0142055f4c42c1b594cd7",
+  "bytes": 6059,
+  "evidence": "PRODUCER_WORKLOAD",
+  "producer": "RocksDB9.8.4/rocksdict0.3.29",
+  "operations": "Q6 scaled chain c2",
+  "codec": "zstd"
+ }
+]

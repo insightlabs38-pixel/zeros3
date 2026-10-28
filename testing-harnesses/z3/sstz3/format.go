@@ -125,6 +125,9 @@ func ReadFooter(r io.ReaderAt, size int64) (Footer, error) {
 			f.Family = FamilyPebble
 		}
 		f.Version = binary.LittleEndian.Uint32(b[41:])
+		if f.Family == FamilyPebble && f.Version > 4 {
+			return f, nil
+		} // future layouts: do not interpret checksum/handles
 		f.Checksum = b[0]
 		if f.Family == FamilyRocksDB && f.Version > 6 {
 			return f, nil // a format this package does not know: Open classifies it Unsupported
