@@ -1,0 +1,222 @@
+[
+ {
+  "file": "/workspace/work/q6-public/pythia-14m/step1000.safetensors",
+  "bytes": 28143920,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.125010115,
+    "max_sampled_incremental_rss_mib": 3.1640625
+   },
+   "decode_cold": {
+    "median_seconds": 0.115199372,
+    "max_sampled_incremental_rss_mib": 0.66015625
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.135996254,
+    "max_sampled_incremental_rss_mib": 7.1328125
+   },
+   "finish_root": {
+    "median_seconds": 3.5733e-05,
+    "max_sampled_incremental_rss_mib": 0.015625
+   },
+   "flush": {
+    "median_seconds": 0.002122016,
+    "max_sampled_incremental_rss_mib": 0.1640625
+   },
+   "outer_root_serialize": {
+    "median_seconds": 3.8107e-05,
+    "max_sampled_incremental_rss_mib": 0.02734375
+   },
+   "proof": {
+    "median_seconds": 0.114677561,
+    "max_sampled_incremental_rss_mib": 2.21875
+   },
+   "publication": {
+    "median_seconds": 0.001389727,
+    "max_sampled_incremental_rss_mib": 0.0390625
+   },
+   "reachability": {
+    "median_seconds": 0.000834404,
+    "max_sampled_incremental_rss_mib": 0.140625
+   }
+  },
+  "optional_disk_delta_bytes": 28180298
+ },
+ {
+  "file": "/workspace/work/q6-public/pythia-14m/step2000.safetensors",
+  "bytes": 28143920,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.123753262,
+    "max_sampled_incremental_rss_mib": 1.39453125
+   },
+   "decode_cold": {
+    "median_seconds": 0.206401754,
+    "max_sampled_incremental_rss_mib": 4.3046875
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.249437002,
+    "max_sampled_incremental_rss_mib": 11.06640625
+   },
+   "finish_root": {
+    "median_seconds": 3.1998e-05,
+    "max_sampled_incremental_rss_mib": 0.0078125
+   },
+   "flush": {
+    "median_seconds": 0.002162315,
+    "max_sampled_incremental_rss_mib": 0.13671875
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.000115975,
+    "max_sampled_incremental_rss_mib": 0.0859375
+   },
+   "proof": {
+    "median_seconds": 0.20398572,
+    "max_sampled_incremental_rss_mib": 5.84375
+   },
+   "publication": {
+    "median_seconds": 0.002877798,
+    "max_sampled_incremental_rss_mib": 0.4609375
+   },
+   "reachability": {
+    "median_seconds": 0.001553641,
+    "max_sampled_incremental_rss_mib": 0.0703125
+   }
+  },
+  "optional_disk_delta_bytes": 28188602
+ },
+ {
+  "file": "/workspace/work/q6-public/pythia-14m/step3000.safetensors",
+  "bytes": 28143920,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.125036924,
+    "max_sampled_incremental_rss_mib": 1.12890625
+   },
+   "decode_cold": {
+    "median_seconds": 0.267934648,
+    "max_sampled_incremental_rss_mib": 7.53515625
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.358118108,
+    "max_sampled_incremental_rss_mib": 13.03125
+   },
+   "finish_root": {
+    "median_seconds": 2.1612e-05,
+    "max_sampled_incremental_rss_mib": 0.00390625
+   },
+   "flush": {
+    "median_seconds": 0.002151614,
+    "max_sampled_incremental_rss_mib": 0.01953125
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.000138688,
+    "max_sampled_incremental_rss_mib": 0.1953125
+   },
+   "proof": {
+    "median_seconds": 0.263582691,
+    "max_sampled_incremental_rss_mib": 6.78515625
+   },
+   "publication": {
+    "median_seconds": 0.005555887,
+    "max_sampled_incremental_rss_mib": 0.75
+   },
+   "reachability": {
+    "median_seconds": 0.002334462,
+    "max_sampled_incremental_rss_mib": 0.3671875
+   }
+  },
+  "optional_disk_delta_bytes": 28200088
+ },
+ {
+  "file": "/workspace/work/q9-report-fix/testing-harnesses/testdata/i2-draft/model.gguf",
+  "bytes": 1376,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.000245128,
+    "max_sampled_incremental_rss_mib": 0.390625
+   },
+   "decode_cold": {
+    "median_seconds": 0.000120571,
+    "max_sampled_incremental_rss_mib": 0.0234375
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.000250206,
+    "max_sampled_incremental_rss_mib": 0.50390625
+   },
+   "finish_root": {
+    "median_seconds": 1.5804e-05,
+    "max_sampled_incremental_rss_mib": 0.0078125
+   },
+   "flush": {
+    "median_seconds": 0.000178668,
+    "max_sampled_incremental_rss_mib": 0.00390625
+   },
+   "outer_root_serialize": {
+    "median_seconds": 8.162e-06,
+    "max_sampled_incremental_rss_mib": 0.015625
+   },
+   "proof": {
+    "median_seconds": 0.000122624,
+    "max_sampled_incremental_rss_mib": 0.03515625
+   },
+   "publication": {
+    "median_seconds": 0.00011339,
+    "max_sampled_incremental_rss_mib": 0.0078125
+   },
+   "reachability": {
+    "median_seconds": 6.8122e-05,
+    "max_sampled_incremental_rss_mib": 0.01171875
+   }
+  },
+  "optional_disk_delta_bytes": 2178
+ },
+ {
+  "file": "/workspace/work/z4-a2/minilm.safetensors",
+  "bytes": 90868376,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.567672949,
+    "max_sampled_incremental_rss_mib": 2.3046875
+   },
+   "decode_cold": {
+    "median_seconds": 0.360721965,
+    "max_sampled_incremental_rss_mib": 22.0859375
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.564407144,
+    "max_sampled_incremental_rss_mib": 6.74609375
+   },
+   "finish_root": {
+    "median_seconds": 1.8598e-05,
+    "max_sampled_incremental_rss_mib": 0.015625
+   },
+   "flush": {
+    "median_seconds": 0.037836002,
+    "max_sampled_incremental_rss_mib": 0.47265625
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.000152199,
+    "max_sampled_incremental_rss_mib": 0.0546875
+   },
+   "proof": {
+    "median_seconds": 0.364829485,
+    "max_sampled_incremental_rss_mib": 33.6484375
+   },
+   "publication": {
+    "median_seconds": 0.001510096,
+    "max_sampled_incremental_rss_mib": 0.1171875
+   },
+   "reachability": {
+    "median_seconds": 0.000883286,
+    "max_sampled_incremental_rss_mib": 0.046875
+   }
+  },
+  "optional_disk_delta_bytes": 91096054
+ }
+]

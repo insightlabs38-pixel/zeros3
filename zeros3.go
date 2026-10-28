@@ -3634,7 +3634,7 @@ func OpenStore(root string) (*Store, error) {
 }
 
 func supportedStoreFormat(v int) bool {
-	return v >= storeFormatVersion && v <= storeFormatVersionRepresentations
+	return v >= storeFormatVersion && v <= storeFormatVersionSupported
 }
 
 func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
@@ -3645,7 +3645,7 @@ func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
 			return storeFormat{}, fmt.Errorf("store: FORMAT.json is corrupt: %w", err)
 		}
 		if !supportedStoreFormat(format.StoreFormatVersion) {
-			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports versions %d through %d)", format.StoreFormatVersion, storeFormatVersion, storeFormatVersionRepresentations)
+			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports versions %d through %d)", format.StoreFormatVersion, storeFormatVersion, storeFormatVersionSupported)
 		}
 		if format.CDCFormatVersion != cdcFormatVersion {
 			return storeFormat{}, fmt.Errorf("store: unsupported CDC format version %d (this build supports version %d)", format.CDCFormatVersion, cdcFormatVersion)
@@ -21906,11 +21906,12 @@ const (
 	repKindMerkle repKind = 5
 	repKindGzip   repKind = 6
 	repKindZstd   repKind = 7
+	repKindModel  repKind = 8
 )
 
 // supported reports whether this build can decode the kind.
 func (k repKind) supported() bool {
-	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd
+	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel
 }
 
 type repRole uint8
@@ -22403,6 +22404,8 @@ type repDecoder interface {
 // repDecoderFor is the finite kind table: a switch, never a registry.
 func repDecoderFor(k repKind) (repDecoder, bool) {
 	switch k {
+	case repKindModel:
+		return repMDmodelDecoder{}, true
 	case repKindGit:
 		return gitDecoder{}, true
 	case repKindCAR:
@@ -22438,6 +22441,7 @@ type repCall struct {
 	path     [][32]byte // ancestors including ID
 	declared map[[32]byte]int64
 	scratch  []byte
+	work     *repDecodeWork // one aggregate budget, shared by derived readers
 }
 
 // loadRep fetches a representation object by digest, verifies the digest and
@@ -22531,8 +22535,16 @@ func (b *repBound) Write(p []byte) (int, error) {
 }
 
 func (e *repEnv) run(id [32]byte, rep *repObject, depth int, path [][32]byte, w io.Writer) error {
+	return e.runWork(id, rep, depth, path, w, newRepDecodeWork(rep.Size))
+}
+
+func (e *repEnv) runWork(id [32]byte, rep *repObject, depth int, path [][32]byte, w io.Writer, work *repDecodeWork) error {
+	if err := work.enter(rep); err != nil {
+		return err
+	}
 	bw := &repBound{w: w, max: rep.Size}
 	c := e.call(id, rep, depth, path, bw)
+	c.work = work
 	var err error
 	if rep.Kind == repKindConcat {
 		err = c.decodeConcat()
@@ -22619,6 +22631,9 @@ func (c *repCall) writeMemberAt(i int, w io.Writer) error {
 }
 
 func (c *repCall) writeMember(m *repMember, w io.Writer) error {
+	if err := c.decodeWork().step(1); err != nil {
+		return err
+	}
 	if m.Role == repDerived {
 		return c.streamDerived(m, w)
 	}
@@ -22635,7 +22650,7 @@ func (c *repCall) streamStored(m *repMember, w io.Writer) error {
 	if size != m.Size {
 		return fmt.Errorf("%w: %x is %d bytes, recipe says %d", errRepMismatch, m.SHA[:6], size, m.Size)
 	}
-	if c.scratch == nil {
+	if c.scratch == nil && size > 0 {
 		c.scratch = make([]byte, 64<<10)
 	}
 	verified := repAlreadyVerified(c.env.Src, m.SHA)
@@ -22684,7 +22699,7 @@ func (c *repCall) streamDerived(m *repMember, w io.Writer) error {
 	if _, err := cw.Write(f.Prefix); err != nil {
 		return err
 	}
-	if err := c.env.run(m.Child, child, c.depth+1, c.path, cw); err != nil {
+	if err := c.env.runWork(m.Child, child, c.depth+1, c.path, cw, c.decodeWork()); err != nil {
 		return fmt.Errorf("child %x: %w", m.Child[:6], err)
 	}
 	for z := f.Zeros; z > 0; {
@@ -23510,6 +23525,9 @@ func unmarshalRepRoot(b []byte) (*repRoot, error) {
 
 const (
 	storeFormatVersionRepresentations = 6
+	storeFormatVersionModel           = 7
+	storeFormatVersionSupported       = storeFormatVersionModel
+	hookRepRootBeforeFormat           = "rep-root-before-format"
 
 	hookRepComponentsStaged  = "rep-components-staged"
 	hookRepComponentsFlushed = "rep-components-flushed"
@@ -23570,11 +23588,19 @@ func (s *Store) ensureRepFormat() error {
 // staged in tmp/, fsynced, renamed and the directories fsynced. A published
 // root is immutable; republishing the same manifest replaces it atomically.
 func (s *Store) publishRepRoot(r *repRoot) error {
+	floor, err := s.repPublicationFloor(r)
+	if err != nil {
+		return err
+	}
+	fireTestHook(hookRepRootBeforeFormat)
 	data, err := r.marshal()
 	if err != nil {
 		return err
 	}
 	if err := s.ensureRepFormat(); err != nil {
+		return err
+	}
+	if err := s.ensureStoreFormat(floor); err != nil {
 		return err
 	}
 	s.rep.mayHaveRoots.Store(true)
@@ -26689,7 +26715,13 @@ func (c *repCall) child(i int) (*repCall, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.env.call(id, rep, c.depth+1, c.path, nil), nil
+	work := c.decodeWork()
+	if err := work.enterMetadata(rep); err != nil {
+		return nil, err
+	}
+	child := c.env.call(id, rep, c.depth+1, c.path, nil)
+	child.work = work
+	return child, nil
 }
 
 // Codec analysis adapts the lab's streaming outputs to production CAS members.
@@ -27082,6 +27114,8 @@ func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObj
 	defer func() { b.depth-- }()
 
 	switch k {
+	case repKindModel:
+		return b.encodeModel(src, size)
 	case repKindGit:
 		return b.encodeGit(src, size)
 	case repKindGzip:
@@ -27108,6 +27142,8 @@ func repCandidate(src io.ReaderAt, size int64) (repKind, bool) {
 	n, _ := src.ReadAt(head[:], 0)
 	hd := head[:min(int64(n), size)]
 	switch {
+	case bytes.HasPrefix(hd, []byte("GGUF")) || (len(hd) >= 9 && binary.LittleEndian.Uint64(hd[:8]) <= 16<<20 && binary.LittleEndian.Uint64(hd[:8]) <= uint64(max(0, size-8)) && bytes.HasPrefix(bytes.TrimSpace(hd[8:]), []byte("{"))):
+		return repKindModel, true
 	case bytes.HasPrefix(hd, []byte("PACK")) || bytes.HasPrefix(hd, []byte{0xff, 't', 'O', 'c'}):
 		return repKindGit, true
 	case bytes.HasPrefix(hd, []byte{0x1f, 0x8b, 8}):
@@ -37847,4 +37883,1823 @@ func main() {
 		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, repack, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, or inspect)\n", cmd)
 		os.Exit(2)
 	}
+}
+
+// ---- Model kind 8: mechanically extracted from immutable draft #80 ----
+// Port source: zeros3-z3/st/st.go
+var (
+	repSTErrMalformed  = errors.New("safetensors: malformed file")
+	repSTErrLimit      = errors.New("safetensors: limit exceeded")
+	repSTErrUnsupDType = errors.New("safetensors: unsupported dtype")
+)
+
+// Port source: zeros3-z3/st/st.go
+// DTypeBits is the element width of every dtype the format defines.
+var repSTDTypeBits = map[string]int{
+	"BOOL": 8, "U8": 8, "I8": 8, "F8_E5M2": 8, "F8_E4M3": 8, "F8_E8M0": 8,
+	"I16": 16, "U16": 16, "F16": 16, "BF16": 16,
+	"I32": 32, "U32": 32, "F32": 32,
+	"C64": 64, "F64": 64, "I64": 64, "U64": 64,
+	"F4": 4, "F6_E2M3": 6, "F6_E3M2": 6,
+}
+
+// Port source: zeros3-z3/st/st.go
+// Options bound the work done on untrusted input.
+type repSTOptions struct {
+	MaxHeader         int64 // header bytes accepted (default 100,000,000, the reference limit)
+	MaxTensors        int   // tensors accepted (default 1<<20)
+	MaxDims           int   // dimensions per tensor (default 32)
+	AllowUnknownDType bool  // keep tensors of unknown dtype as opaque byte ranges
+}
+
+// Port source: zeros3-z3/st/st.go
+func (o repSTOptions) norm() repSTOptions {
+	if o.MaxHeader <= 0 {
+		o.MaxHeader = 100_000_000
+	}
+	if o.MaxTensors <= 0 {
+		o.MaxTensors = 1 << 20
+	}
+	if o.MaxDims <= 0 {
+		o.MaxDims = 32
+	}
+	return o
+}
+
+// Port source: zeros3-z3/st/st.go
+// Tensor is one entry of the header. Begin/End are relative to File.DataStart.
+type repSTTensor struct {
+	Name       string
+	DType      string
+	Shape      []int64
+	Begin, End int64
+	Elems      int64
+	Bits       int // element width; 0 for an unknown dtype
+}
+
+// Port source: zeros3-z3/st/st.go
+// Size is the payload length in bytes.
+func (t *repSTTensor) Size() int64 { return t.End - t.Begin }
+
+// Port source: zeros3-z3/st/st.go
+// File is the structure of one Safetensors file. Header holds the exact header
+// bytes (including any padding), so File can be re-serialised byte for byte.
+type repSTFile struct {
+	Size      int64
+	HeaderLen int64
+	Header    []byte
+	DataStart int64 // 8 + HeaderLen
+	DataLen   int64
+	PadLen    int // trailing JSON whitespace bytes in the header
+	Metadata  map[string]string
+	MetaKeys  []string      // __metadata__ keys in header order
+	Tensors   []repSTTensor // sorted by data offset (file order)
+	JSONOrder []string      // tensor names in header (JSON) order
+	byName    map[string]int
+}
+
+// Port source: zeros3-z3/st/st.go
+// Lookup returns the tensor named name.
+func (f *repSTFile) Lookup(name string) (*repSTTensor, bool) {
+	i, ok := f.byName[name]
+	if !ok {
+		return nil, false
+	}
+	return &f.Tensors[i], true
+}
+
+// Port source: zeros3-z3/st/st.go
+// Parse reads the prefix and header of a Safetensors file of the given size.
+func repSTParse(r io.ReaderAt, size int64, opt repSTOptions) (*repSTFile, error) {
+	opt = opt.norm()
+	if size < 8 {
+		return nil, fmt.Errorf("%w: %d bytes is shorter than the length prefix", repSTErrMalformed, size)
+	}
+	var pre [8]byte
+	if _, err := r.ReadAt(pre[:], 0); err != nil {
+		return nil, err
+	}
+	n := binary.LittleEndian.Uint64(pre[:])
+	if n > uint64(opt.MaxHeader) {
+		return nil, fmt.Errorf("%w: header of %d bytes (limit %d)", repSTErrLimit, n, opt.MaxHeader)
+	}
+	if n > uint64(size-8) {
+		return nil, fmt.Errorf("%w: header length %d exceeds the %d byte file", repSTErrMalformed, n, size)
+	}
+	if n < 2 {
+		return nil, fmt.Errorf("%w: header of %d bytes cannot hold a JSON object", repSTErrMalformed, n)
+	}
+	hdr := make([]byte, n)
+	if _, err := r.ReadAt(hdr, 8); err != nil && !(err == io.EOF && n == uint64(len(hdr))) {
+		return nil, err
+	}
+	f := &repSTFile{Size: size, HeaderLen: int64(n), Header: hdr, DataStart: 8 + int64(n)}
+	f.DataLen = size - f.DataStart
+	if err := f.parseHeader(opt); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// Port source: zeros3-z3/st/st.go
+func repSTisJSONSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+
+// Port source: zeros3-z3/st/st.go
+func (f *repSTFile) parseHeader(opt repSTOptions) error {
+	hdr := f.Header
+	if hdr[0] != '{' {
+		return fmt.Errorf("%w: header does not start with '{'", repSTErrMalformed)
+	}
+	for i := len(hdr) - 1; i >= 0 && repSTisJSONSpace(hdr[i]); i-- {
+		f.PadLen++
+	}
+	dec := json.NewDecoder(bytes.NewReader(hdr))
+	dec.UseNumber()
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return fmt.Errorf("%w: header is not a JSON object", repSTErrMalformed)
+	}
+	f.byName = map[string]int{}
+	seen := map[string]bool{}
+	var tensors []repSTTensor
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("%w: %v", repSTErrMalformed, err)
+		}
+		key, ok := kt.(string)
+		if !ok {
+			return fmt.Errorf("%w: non-string key", repSTErrMalformed)
+		}
+		if seen[key] {
+			return fmt.Errorf("%w: duplicate key %q", repSTErrMalformed, key)
+		}
+		seen[key] = true
+		if key == "__metadata__" {
+			if err := f.parseMetadata(dec, opt); err != nil {
+				return err
+			}
+			continue
+		}
+		if len(tensors) >= opt.MaxTensors {
+			return fmt.Errorf("%w: more than %d tensors", repSTErrLimit, opt.MaxTensors)
+		}
+		t, err := repSTparseTensor(dec, key, opt)
+		if err != nil {
+			return err
+		}
+		tensors = append(tensors, t)
+		f.JSONOrder = append(f.JSONOrder, key)
+	}
+	if t, err := dec.Token(); err != nil || t != json.Delim('}') {
+		return fmt.Errorf("%w: header object not closed", repSTErrMalformed)
+	}
+	if int(dec.InputOffset()) > len(hdr) {
+		return fmt.Errorf("%w: header offset", repSTErrMalformed)
+	}
+	for _, c := range hdr[dec.InputOffset():] {
+		if !repSTisJSONSpace(c) {
+			return fmt.Errorf("%w: data after the header object", repSTErrMalformed)
+		}
+	}
+	return f.validate(tensors, opt)
+}
+
+// Port source: zeros3-z3/st/st.go
+func (f *repSTFile) parseMetadata(dec *json.Decoder, opt repSTOptions) error {
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return fmt.Errorf("%w: __metadata__ is not an object", repSTErrMalformed)
+	}
+	f.Metadata = map[string]string{}
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("%w: %v", repSTErrMalformed, err)
+		}
+		k, _ := kt.(string)
+		vt, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("%w: %v", repSTErrMalformed, err)
+		}
+		v, ok := vt.(string)
+		if !ok {
+			return fmt.Errorf("%w: __metadata__ value for %q is not a string", repSTErrMalformed, k)
+		}
+		if _, dup := f.Metadata[k]; dup {
+			return fmt.Errorf("%w: duplicate __metadata__ key %q", repSTErrMalformed, k)
+		}
+		f.Metadata[k] = v
+		f.MetaKeys = append(f.MetaKeys, k)
+	}
+	if t, err := dec.Token(); err != nil || t != json.Delim('}') {
+		return fmt.Errorf("%w: __metadata__ not closed", repSTErrMalformed)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/st/st.go
+func repSTnonNeg(num json.Number) (int64, error) {
+	s := string(num)
+	if s == "" || len(s) > 19 {
+		return 0, fmt.Errorf("%w: number %q", repSTErrMalformed, s)
+	}
+	for _, c := range []byte(s) {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("%w: number %q is not a non-negative integer", repSTErrMalformed, s)
+		}
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: number %q", repSTErrMalformed, s)
+	}
+	return v, nil
+}
+
+// Port source: zeros3-z3/st/st.go
+func repSTparseTensor(dec *json.Decoder, name string, opt repSTOptions) (repSTTensor, error) {
+	t := repSTTensor{Name: name, Begin: -1}
+	if tk, err := dec.Token(); err != nil || tk != json.Delim('{') {
+		return t, fmt.Errorf("%w: tensor %q is not an object", repSTErrMalformed, name)
+	}
+	var haveD, haveS, haveO bool
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return t, fmt.Errorf("%w: %v", repSTErrMalformed, err)
+		}
+		switch k, _ := kt.(string); k {
+		case "dtype":
+			if haveD {
+				return t, fmt.Errorf("%w: tensor %q repeats dtype", repSTErrMalformed, name)
+			}
+			haveD = true
+			vt, err := dec.Token()
+			s, ok := vt.(string)
+			if err != nil || !ok {
+				return t, fmt.Errorf("%w: tensor %q dtype is not a string", repSTErrMalformed, name)
+			}
+			t.DType = s
+		case "shape":
+			if haveS {
+				return t, fmt.Errorf("%w: tensor %q repeats shape", repSTErrMalformed, name)
+			}
+			haveS = true
+			if tk, err := dec.Token(); err != nil || tk != json.Delim('[') {
+				return t, fmt.Errorf("%w: tensor %q shape is not an array", repSTErrMalformed, name)
+			}
+			t.Shape = []int64{}
+			for dec.More() {
+				if len(t.Shape) >= opt.MaxDims {
+					return t, fmt.Errorf("%w: tensor %q has more than %d dimensions", repSTErrLimit, name, opt.MaxDims)
+				}
+				vt, err := dec.Token()
+				num, ok := vt.(json.Number)
+				if err != nil || !ok {
+					return t, fmt.Errorf("%w: tensor %q shape entry", repSTErrMalformed, name)
+				}
+				d, err := repSTnonNeg(num)
+				if err != nil {
+					return t, err
+				}
+				t.Shape = append(t.Shape, d)
+			}
+			if tk, err := dec.Token(); err != nil || tk != json.Delim(']') {
+				return t, fmt.Errorf("%w: tensor %q shape not closed", repSTErrMalformed, name)
+			}
+		case "data_offsets":
+			if haveO {
+				return t, fmt.Errorf("%w: tensor %q repeats data_offsets", repSTErrMalformed, name)
+			}
+			haveO = true
+			if tk, err := dec.Token(); err != nil || tk != json.Delim('[') {
+				return t, fmt.Errorf("%w: tensor %q data_offsets is not an array", repSTErrMalformed, name)
+			}
+			var o [2]int64
+			for i := 0; i < 2; i++ {
+				vt, err := dec.Token()
+				num, ok := vt.(json.Number)
+				if err != nil || !ok {
+					return t, fmt.Errorf("%w: tensor %q data_offsets must hold two integers", repSTErrMalformed, name)
+				}
+				if o[i], err = repSTnonNeg(num); err != nil {
+					return t, err
+				}
+			}
+			if tk, err := dec.Token(); err != nil || tk != json.Delim(']') {
+				return t, fmt.Errorf("%w: tensor %q data_offsets must hold exactly two integers", repSTErrMalformed, name)
+			}
+			t.Begin, t.End = o[0], o[1]
+		default:
+			return t, fmt.Errorf("%w: tensor %q has unexpected field %q", repSTErrMalformed, name, k)
+		}
+	}
+	if tk, err := dec.Token(); err != nil || tk != json.Delim('}') {
+		return t, fmt.Errorf("%w: tensor %q not closed", repSTErrMalformed, name)
+	}
+	if !haveD || !haveS || !haveO {
+		return t, fmt.Errorf("%w: tensor %q lacks dtype, shape or data_offsets", repSTErrMalformed, name)
+	}
+	return t, nil
+}
+
+// Port source: zeros3-z3/st/st.go
+// elems multiplies a shape with overflow detection.
+func repSTelems(shape []int64) (int64, bool) {
+	n := uint64(1)
+	for _, d := range shape {
+		hi, lo := bits.Mul64(n, uint64(d))
+		if hi != 0 || lo > 1<<62 {
+			return 0, false
+		}
+		n = lo
+	}
+	return int64(n), true
+}
+
+// Port source: zeros3-z3/st/st.go
+func (f *repSTFile) validate(ts []repSTTensor, opt repSTOptions) error {
+	for i := range ts {
+		t := &ts[i]
+		if t.Begin > t.End {
+			return fmt.Errorf("%w: tensor %q has inverted offsets [%d,%d]", repSTErrMalformed, t.Name, t.Begin, t.End)
+		}
+		if t.End > f.DataLen {
+			return fmt.Errorf("%w: tensor %q ends at %d beyond the %d data bytes", repSTErrMalformed, t.Name, t.End, f.DataLen)
+		}
+		n, ok := repSTelems(t.Shape)
+		if !ok {
+			return fmt.Errorf("%w: tensor %q shape overflows", repSTErrMalformed, t.Name)
+		}
+		t.Elems = n
+		b, known := repSTDTypeBits[t.DType]
+		switch {
+		case known:
+			t.Bits = b
+			hi, lo := bits.Mul64(uint64(n), uint64(b))
+			if hi != 0 || lo%8 != 0 || int64(lo/8) != t.End-t.Begin {
+				return fmt.Errorf("%w: tensor %q: %d elements of %s need %d bits, data_offsets give %d bytes", repSTErrMalformed, t.Name, n, t.DType, lo, t.End-t.Begin)
+			}
+		case opt.AllowUnknownDType:
+		default:
+			return fmt.Errorf("%w: tensor %q has dtype %q", repSTErrUnsupDType, t.Name, t.DType)
+		}
+	}
+	sort.SliceStable(ts, func(i, j int) bool {
+		if ts[i].Begin != ts[j].Begin {
+			return ts[i].Begin < ts[j].Begin
+		}
+		if ts[i].End != ts[j].End {
+			return ts[i].End < ts[j].End
+		}
+		return ts[i].Name < ts[j].Name
+	})
+	var next int64
+	for i := range ts {
+		if ts[i].Begin != next {
+			if ts[i].Begin < next {
+				return fmt.Errorf("%w: tensor %q [%d,%d) overlaps the previous tensor (ends at %d)", repSTErrMalformed, ts[i].Name, ts[i].Begin, ts[i].End, next)
+			}
+			return fmt.Errorf("%w: hole of %d bytes before tensor %q", repSTErrMalformed, ts[i].Begin-next, ts[i].Name)
+		}
+		next = ts[i].End
+	}
+	if next != f.DataLen {
+		return fmt.Errorf("%w: tensors cover %d of %d data bytes", repSTErrMalformed, next, f.DataLen)
+	}
+	f.Tensors = ts
+	for i := range ts {
+		f.byName[ts[i].Name] = i
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/st/st.go
+// ReadTensor reads n bytes of t starting at offset off within the tensor.
+func (f *repSTFile) ReadTensor(r io.ReaderAt, t *repSTTensor, off, n int64) ([]byte, error) {
+	if off < 0 || n < 0 || off > t.Size() || n > t.Size()-off {
+		return nil, fmt.Errorf("%w: read [%d,%d) outside tensor %q of %d bytes", repSTErrMalformed, off, off+n, t.Name, t.Size())
+	}
+	b := make([]byte, n)
+	if _, err := r.ReadAt(b, f.DataStart+t.Begin+off); err != nil && !(err == io.EOF && int64(len(b)) == n) {
+		return nil, err
+	}
+	return b, nil
+}
+
+// Port source: zeros3-z3/st/st.go
+// Segment is a contiguous byte range of the file.
+type repSTSegment struct {
+	Kind     string // "prefix" | "header" | "tensor"
+	Name     string
+	Off, Len int64
+}
+
+// Port source: zeros3-z3/st/st.go
+// Segments partitions the file exactly: prefix, header, then every tensor in file order.
+func (f *repSTFile) Segments() []repSTSegment {
+	segs := []repSTSegment{{"prefix", "", 0, 8}, {"header", "", 8, f.HeaderLen}}
+	for i := range f.Tensors {
+		t := &f.Tensors[i]
+		segs = append(segs, repSTSegment{"tensor", t.Name, f.DataStart + t.Begin, t.Size()})
+	}
+	return segs
+}
+
+// Port source: zeros3-z3/st/st.go
+// Rebuild writes the file back from its structure: the exact header bytes and
+// the tensor payloads read from src. The result equals the original bytes.
+func (f *repSTFile) Rebuild(w io.Writer, src io.ReaderAt) error {
+	var pre [8]byte
+	binary.LittleEndian.PutUint64(pre[:], uint64(f.HeaderLen))
+	if _, err := w.Write(pre[:]); err != nil {
+		return err
+	}
+	if _, err := w.Write(f.Header); err != nil {
+		return err
+	}
+	for i := range f.Tensors {
+		t := &f.Tensors[i]
+		if _, err := io.Copy(w, io.NewSectionReader(src, f.DataStart+t.Begin, t.Size())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+var (
+	repGGErrFormat      = errors.New("ggufz3: not a valid GGUF file")
+	repGGErrUnsupported = errors.New("ggufz3: unsupported version or tensor type")
+	repGGErrLimit       = errors.New("ggufz3: limit exceeded")
+)
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// Limits bound every parse.
+type repGGLimits struct {
+	MaxMeta    int64 // bytes from the start of the file through the last tensor info (default 64 MiB)
+	MaxTensors int64 // default 1<<20
+	MaxKV      int64 // default 1<<20
+	MaxString  int64 // default 1<<20 (keys are capped at 1<<12)
+	MaxDepth   int   // array nesting (default 2)
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+func (l repGGLimits) norm() repGGLimits {
+	if l.MaxMeta <= 0 {
+		l.MaxMeta = 64 << 20
+	}
+	if l.MaxTensors <= 0 {
+		l.MaxTensors = 1 << 20
+	}
+	if l.MaxKV <= 0 {
+		l.MaxKV = 1 << 20
+	}
+	if l.MaxString <= 0 {
+		l.MaxString = 1 << 20
+	}
+	if l.MaxDepth <= 0 {
+		l.MaxDepth = 2
+	}
+	return l
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// Value types of the key/value section.
+const (
+	repGGTUint8, repGGTInt8, repGGTUint16, repGGTInt16, repGGTUint32, repGGTInt32, repGGTFloat32, repGGTBool, repGGTString, repGGTArray, repGGTUint64, repGGTInt64, repGGTFloat64 = 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
+)
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+var repGGscalarSize = map[uint32]int64{repGGTUint8: 1, repGGTInt8: 1, repGGTUint16: 2, repGGTInt16: 2, repGGTUint32: 4, repGGTInt32: 4, repGGTFloat32: 4, repGGTBool: 1, repGGTUint64: 8, repGGTInt64: 8, repGGTFloat64: 8}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// KV is one metadata entry. Off/End span the whole entry (key through value).
+type repGGKV struct {
+	Key      string
+	Type     uint32
+	ElemType uint32 // arrays
+	Count    uint64 // arrays: element count
+	Uint     uint64 // integer/bool scalars (sign-extension left to the caller)
+	Str      string // strings up to 256 bytes (longer ones are only spanned)
+	Off, End int64
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// Tensor is one directory entry with its absolute byte span in the file.
+type repGGTensor struct {
+	Index      int
+	Name       string
+	Dims       []uint64
+	Type       uint32
+	RelOffset  uint64
+	Begin, End int64 // absolute span; End-Begin = nbytes from the type's block geometry
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// Size is the tensor payload length.
+func (t *repGGTensor) Size() int64 { return t.End - t.Begin }
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// File is a parsed GGUF structure.
+type repGGFile struct {
+	Version   uint32
+	Size      int64
+	Alignment int64
+	InfoEnd   int64 // end of the last tensor info
+	DataStart int64 // InfoEnd rounded up to Alignment: first byte of the tensor data area
+	KVs       []repGGKV
+	Tensors   []repGGTensor // directory order
+	Order     []int         // indexes of Tensors by ascending Begin
+	DataEnd   int64         // end of the last tensor (== DataStart when there are none)
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// Lookup returns the KV with the key, if any.
+func (f *repGGFile) Lookup(key string) (*repGGKV, bool) {
+	for i := range f.KVs {
+		if f.KVs[i].Key == key {
+			return &f.KVs[i], true
+		}
+	}
+	return nil, false
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// TypeGeom is the block geometry of a ggml tensor type: elements per block and bytes per block.
+type repGGTypeGeom struct {
+	Name  string
+	Elems int64
+	Bytes int64
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// Geom is the finite, explicit table (ggml.h / ggml-common.h block sizes). An absent type is
+// refused with ErrUnsupported, never guessed. Q4_2, Q4_3, Q4_0_4_4/4_8/8_8, IQ4_NL_x_y were
+// removed upstream and are not supported.
+var repGGGeom = map[uint32]repGGTypeGeom{
+	0: {"F32", 1, 4}, 1: {"F16", 1, 2}, 2: {"Q4_0", 32, 18}, 3: {"Q4_1", 32, 20}, 6: {"Q5_0", 32, 22}, 7: {"Q5_1", 32, 24},
+	8: {"Q8_0", 32, 34}, 9: {"Q8_1", 32, 40}, 10: {"Q2_K", 256, 84}, 11: {"Q3_K", 256, 110}, 12: {"Q4_K", 256, 144},
+	13: {"Q5_K", 256, 176}, 14: {"Q6_K", 256, 210}, 15: {"Q8_K", 256, 292}, 16: {"IQ2_XXS", 256, 66}, 17: {"IQ2_XS", 256, 74},
+	18: {"IQ3_XXS", 256, 98}, 19: {"IQ1_S", 256, 50}, 20: {"IQ4_NL", 32, 18}, 21: {"IQ3_S", 256, 110}, 22: {"IQ2_S", 256, 82},
+	23: {"IQ4_XS", 256, 136}, 24: {"I8", 1, 1}, 25: {"I16", 1, 2}, 26: {"I32", 1, 4}, 27: {"I64", 1, 8}, 28: {"F64", 1, 8},
+	29: {"IQ1_M", 256, 56}, 30: {"BF16", 1, 2}, 34: {"TQ1_0", 256, 54}, 35: {"TQ2_0", 256, 66}, 39: {"MXFP4", 32, 17},
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// NBytes is the exact byte size of a tensor of the type with the dims: the element count must
+// be a whole number of blocks, and every product is overflow-checked.
+func repGGNBytes(typ uint32, dims []uint64) (int64, error) {
+	g, ok := repGGGeom[typ]
+	if !ok {
+		return 0, fmt.Errorf("%w: ggml type %d", repGGErrUnsupported, typ)
+	}
+	if len(dims) == 0 {
+		return 0, fmt.Errorf("%w: no dimensions", repGGErrFormat)
+	}
+	n := uint64(1)
+	for _, d := range dims {
+		hi, lo := bits.Mul64(n, d)
+		if hi != 0 || lo > math.MaxInt64 {
+			return 0, fmt.Errorf("%w: element count overflows", repGGErrFormat)
+		}
+		n = lo
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	// ggml requires the innermost dimension to hold whole blocks; ne0 % blck == 0
+	if dims[0]%uint64(g.Elems) != 0 {
+		return 0, fmt.Errorf("%w: dim0 %d is not a multiple of the %s block (%d)", repGGErrFormat, dims[0], g.Name, g.Elems)
+	}
+	blocks := n / uint64(g.Elems)
+	hi, lo := bits.Mul64(blocks, uint64(g.Bytes))
+	if hi != 0 || lo > math.MaxInt64 {
+		return 0, fmt.Errorf("%w: byte size overflows", repGGErrFormat)
+	}
+	return int64(lo), nil
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// reader is a bounded sequential reader over a ReaderAt, refilled in 1 MiB pieces and never
+// past limit; every request is checked against limit before it allocates or reads.
+type repGGreader struct {
+	r     io.ReaderAt
+	pos   int64
+	limit int64
+	buf   []byte
+	bpos  int64 // file offset of buf[0]
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+func (b *repGGreader) need(n int64) ([]byte, error) {
+	if n < 0 || n > b.limit-b.pos {
+		return nil, fmt.Errorf("%w: read of %d bytes at %d runs past the %d-byte bound", repGGErrFormat, n, b.pos, b.limit)
+	}
+	if b.pos < b.bpos || b.pos+n > b.bpos+int64(len(b.buf)) {
+		want := max(n, 1<<20)
+		want = min(want, b.limit-b.pos)
+		nb := make([]byte, want)
+		got, err := b.r.ReadAt(nb, b.pos)
+		if int64(got) < n {
+			if err == nil || err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, fmt.Errorf("%w: %v", repGGErrFormat, err)
+		}
+		b.buf, b.bpos = nb[:got], b.pos
+	}
+	s := b.buf[b.pos-b.bpos : b.pos-b.bpos+n]
+	b.pos += n
+	return s, nil
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+func (b *repGGreader) u32() (uint32, error) {
+	s, err := b.need(4)
+	if err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint32(s), nil
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+func (b *repGGreader) u64() (uint64, error) {
+	s, err := b.need(8)
+	if err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint64(s), nil
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+func (b *repGGreader) str(max int64) (string, error) {
+	n, err := b.u64()
+	if err != nil {
+		return "", err
+	}
+	if n > uint64(max) {
+		return "", fmt.Errorf("%w: string of %d bytes", repGGErrLimit, n)
+	}
+	s, err := b.need(int64(n))
+	return string(s), err
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// skipString advances over a string and returns its length, keeping up to keep bytes.
+func (b *repGGreader) skipString(lim repGGLimits, keep int) (string, error) {
+	n, err := b.u64()
+	if err != nil {
+		return "", err
+	}
+	if n > uint64(lim.MaxString) {
+		return "", fmt.Errorf("%w: string of %d bytes", repGGErrLimit, n)
+	}
+	if int64(n) > b.limit-b.pos {
+		return "", fmt.Errorf("%w: string of %d bytes past the bound", repGGErrFormat, n)
+	}
+	if int(n) <= keep {
+		s, err := b.need(int64(n))
+		return string(s), err
+	}
+	b.pos += int64(n)
+	return "", nil
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// value consumes one value of type t; scalars fill kv.Uint, strings kv.Str, arrays kv.ElemType/Count.
+func (b *repGGreader) value(t uint32, kv *repGGKV, lim repGGLimits, depth int) error {
+	if n, ok := repGGscalarSize[t]; ok {
+		s, err := b.need(n)
+		if err != nil {
+			return err
+		}
+		if depth == 0 {
+			var buf [8]byte
+			copy(buf[:], s)
+			kv.Uint = binary.LittleEndian.Uint64(buf[:])
+		}
+		return nil
+	}
+	switch t {
+	case repGGTString:
+		s, err := b.skipString(lim, 256)
+		if depth == 0 {
+			kv.Str = s
+		}
+		return err
+	case repGGTArray:
+		if depth >= lim.MaxDepth {
+			return fmt.Errorf("%w: array nesting", repGGErrLimit)
+		}
+		et, err := b.u32()
+		if err != nil {
+			return err
+		}
+		cnt, err := b.u64()
+		if err != nil {
+			return err
+		}
+		if depth == 0 {
+			kv.ElemType, kv.Count = et, cnt
+		}
+		if n, ok := repGGscalarSize[et]; ok {
+			// the count must fit the remaining bound before anything is walked or allocated
+			if cnt > uint64(math.MaxInt64)/uint64(n) || int64(cnt)*n > b.limit-b.pos {
+				return fmt.Errorf("%w: array of %d x %d bytes past the bound", repGGErrFormat, cnt, n)
+			}
+			b.pos += int64(cnt) * n
+			return nil
+		}
+		if et != repGGTString && et != repGGTArray {
+			return fmt.Errorf("%w: array element type %d", repGGErrFormat, et)
+		}
+		// every string/array element costs at least 8 bytes
+		if cnt > uint64(b.limit-b.pos)/8 {
+			return fmt.Errorf("%w: array of %d elements past the bound", repGGErrFormat, cnt)
+		}
+		var scratch repGGKV
+		for i := uint64(0); i < cnt; i++ {
+			if err := b.value(et, &scratch, lim, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: value type %d", repGGErrFormat, t)
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// Parse reads the structure of a GGUF file of the given size. It reads only the header
+// (bounded by Limits.MaxMeta), never tensor payloads.
+func repGGParse(r io.ReaderAt, size int64, lim repGGLimits) (*repGGFile, error) {
+	lim = lim.norm()
+	if size < 24 {
+		return nil, fmt.Errorf("%w: %d bytes", repGGErrFormat, size)
+	}
+	b := &repGGreader{r: r, limit: min(size, lim.MaxMeta)}
+	m, err := b.need(4)
+	if err != nil || string(m) != "GGUF" {
+		return nil, fmt.Errorf("%w: bad magic", repGGErrFormat)
+	}
+	f := &repGGFile{Size: size, Alignment: 32}
+	if f.Version, err = b.u32(); err != nil {
+		return nil, err
+	}
+	if f.Version != 2 && f.Version != 3 {
+		return nil, fmt.Errorf("%w: GGUF version %d", repGGErrUnsupported, f.Version)
+	}
+	nt, err := b.u64()
+	if err != nil {
+		return nil, err
+	}
+	nkv, err := b.u64()
+	if err != nil {
+		return nil, err
+	}
+	if nt > uint64(lim.MaxTensors) || nkv > uint64(lim.MaxKV) {
+		return nil, fmt.Errorf("%w: %d tensors, %d key/values", repGGErrLimit, nt, nkv)
+	}
+	// every entry costs at least 12 bytes, so the counts are checked against the bound
+	// before anything is allocated
+	if nkv > uint64(b.limit-b.pos)/12 || nt > uint64(b.limit-b.pos)/24 {
+		return nil, fmt.Errorf("%w: counts exceed the header bound", repGGErrFormat)
+	}
+	f.KVs = make([]repGGKV, 0, nkv)
+	seen := make(map[string]bool, nkv)
+	for i := uint64(0); i < nkv; i++ {
+		var kv repGGKV
+		kv.Off = b.pos
+		if kv.Key, err = b.str(1 << 12); err != nil {
+			return nil, err
+		}
+		if kv.Key == "" || seen[kv.Key] {
+			return nil, fmt.Errorf("%w: empty or duplicate key %q", repGGErrFormat, kv.Key)
+		}
+		seen[kv.Key] = true
+		if kv.Type, err = b.u32(); err != nil {
+			return nil, err
+		}
+		if err = b.value(kv.Type, &kv, lim, 0); err != nil {
+			return nil, err
+		}
+		kv.End = b.pos
+		f.KVs = append(f.KVs, kv)
+	}
+	if kv, ok := f.Lookup("general.alignment"); ok {
+		if kv.Type != repGGTUint32 || kv.Uint == 0 || kv.Uint&(kv.Uint-1) != 0 || kv.Uint > 1<<20 {
+			return nil, fmt.Errorf("%w: general.alignment %d", repGGErrFormat, kv.Uint)
+		}
+		f.Alignment = int64(kv.Uint)
+	}
+	f.Tensors = make([]repGGTensor, 0, nt)
+	names := make(map[string]bool, nt)
+	for i := uint64(0); i < nt; i++ {
+		t := repGGTensor{Index: int(i)}
+		if t.Name, err = b.str(1 << 12); err != nil {
+			return nil, err
+		}
+		if names[t.Name] {
+			return nil, fmt.Errorf("%w: duplicate tensor name %q", repGGErrFormat, t.Name)
+		}
+		names[t.Name] = true
+		nd, err := b.u32()
+		if err != nil {
+			return nil, err
+		}
+		if nd == 0 || nd > 4 {
+			return nil, fmt.Errorf("%w: %d dimensions", repGGErrFormat, nd)
+		}
+		t.Dims = make([]uint64, nd)
+		for j := range t.Dims {
+			if t.Dims[j], err = b.u64(); err != nil {
+				return nil, err
+			}
+		}
+		if t.Type, err = b.u32(); err != nil {
+			return nil, err
+		}
+		if t.RelOffset, err = b.u64(); err != nil {
+			return nil, err
+		}
+		f.Tensors = append(f.Tensors, t)
+	}
+	f.InfoEnd = b.pos
+	f.DataStart = (f.InfoEnd + f.Alignment - 1) / f.Alignment * f.Alignment
+	if f.DataStart > size || f.DataStart < f.InfoEnd {
+		return nil, fmt.Errorf("%w: data area starts at %d, file has %d bytes", repGGErrFormat, f.DataStart, size)
+	}
+	f.DataEnd = f.DataStart
+	for i := range f.Tensors {
+		t := &f.Tensors[i]
+		n, err := repGGNBytes(t.Type, t.Dims)
+		if err != nil {
+			return nil, fmt.Errorf("tensor %q: %w", t.Name, err)
+		}
+		if t.RelOffset%uint64(f.Alignment) != 0 || t.RelOffset > uint64(size-f.DataStart) || uint64(n) > uint64(size-f.DataStart)-t.RelOffset {
+			return nil, fmt.Errorf("%w: tensor %q [%d,+%d) is unaligned or outside the %d-byte data area", repGGErrFormat, t.Name, t.RelOffset, n, size-f.DataStart)
+		}
+		t.Begin = f.DataStart + int64(t.RelOffset)
+		t.End = t.Begin + n
+		f.DataEnd = max(f.DataEnd, t.End)
+	}
+	f.Order = make([]int, len(f.Tensors))
+	for i := range f.Order {
+		f.Order[i] = i
+	}
+	sort.SliceStable(f.Order, func(a, c int) bool { return f.Tensors[f.Order[a]].Begin < f.Tensors[f.Order[c]].Begin })
+	for k := 1; k < len(f.Order); k++ {
+		p, c := &f.Tensors[f.Order[k-1]], &f.Tensors[f.Order[k]]
+		if p.Size() > 0 && c.Size() > 0 && p.End > c.Begin {
+			return nil, fmt.Errorf("%w: tensors %q and %q overlap", repGGErrFormat, p.Name, c.Name)
+		}
+	}
+	return f, nil
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// Segment is one piece of the exact file layout, in file order.
+type repGGSegment struct {
+	Begin, End int64
+	Tensor     int // index into File.Tensors, or -1 for header / alignment gap / tail
+	Kind       string
+}
+
+// Port source: zeros3-z3/ggufz3/gguf.go
+// Segments tiles [0,Size) exactly: the header (magic through the padding that precedes the
+// data area), each tensor, the gaps between tensors and the tail after the last one.
+func (f *repGGFile) Segments() []repGGSegment {
+	segs := []repGGSegment{{0, f.DataStart, -1, "header"}}
+	pos := f.DataStart
+	for _, i := range f.Order {
+		t := &f.Tensors[i]
+		if t.Size() == 0 {
+			continue
+		}
+		if t.Begin > pos {
+			segs = append(segs, repGGSegment{pos, t.Begin, -1, "gap"})
+		}
+		segs = append(segs, repGGSegment{t.Begin, t.End, i, "tensor"})
+		pos = t.End
+	}
+	if pos < f.Size {
+		segs = append(segs, repGGSegment{pos, f.Size, -1, "tail"})
+	}
+	return segs
+}
+
+// ---- Q9 DRAFT ONLY: model recipe adapter, framework names translated ----------
+// Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+// KindModel (Z3-29 laboratory kind 8) is a model artifact - a Safetensors, GGUF or torch ZIP file -
+// as an exact list of operations over ordinary content-addressed members, with no format
+// knowledge in the decoder: the encoder's parser found the framing and tensor spans, the decoder
+// only concatenates and applies residuals. The recipe is
+//
+//	version (1) | uvarint n ops | ops | uvarint n names | names
+//	COPY      0x00 uvarint m                              emit member m (a component, or a child's output)
+//	XORPLANES 0x01 uvarint base, uvarint res, uvarint w, uvarint e
+//	                                                      emit base XOR unplane(res); |base| == |res|
+//	PLANES    0x02 uvarint res, uvarint w, uvarint e      emit unplane(res)
+//	name      uvarint op index | uvarint len | bytes      a tensor-name hint for point reads
+//
+// A residual component is a sequence of chunks of e elements of w bytes; inside a chunk the bytes
+// are separated by position within the element (all byte 0s, then all byte 1s, ...), the layout
+// that DEFLATE under the ordinary pack rule compresses (Z3-10 T0) and that a sequential decoder
+// can verify with one SHA-256 pass. For GGUF an "element" is one quantisation block of w bytes. The
+// base member is exact bytes named by their SHA-256: a STORED component, or a DERIVED member whose
+// child is another KindModel representation of those bytes (a bounded chain through the
+// contract's depth limit). Nothing here names a bucket, key or version.
+const (
+	repMDmodelVer           = 1
+	repMDopCopy        byte = 0
+	repMDopXORPlanes   byte = 1
+	repMDopPlanes      byte = 2
+	repMDmaxOps             = 1 << 16
+	repMDmaxModelW          = 4096
+	repMDmaxChunkBytes      = 16 << 20 // one residual chunk (E elements of W bytes): the only decode-side allocation unit
+)
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+type repMDmodelOp struct {
+	Tag          byte
+	M, Base, Res int
+	W, E         int
+	Size         int64
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+type repMDmodelRecipe struct {
+	Ops   []repMDmodelOp
+	Names []repMDmodelName
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+type repMDmodelName struct {
+	Op   int
+	Name string
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+func repMDuv(b []byte) (uint64, []byte, bool) {
+	v, n := binary.Uvarint(b)
+	if n <= 0 {
+		return 0, b, false
+	}
+	return v, b[n:], true
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+func repMDparseModelRecipe(rep *repObject) (*repMDmodelRecipe, error) {
+	b := rep.Recipe
+	bad := func(f string, a ...any) (*repMDmodelRecipe, error) {
+		return nil, fmt.Errorf("%w: model recipe: %s", errRepCorrupt, fmt.Sprintf(f, a...))
+	}
+	if len(b) < 1 || b[0] != repMDmodelVer {
+		return bad("version")
+	}
+	b = b[1:]
+	n, b, ok := repMDuv(b)
+	if !ok || n > repMDmaxOps || n > uint64(len(b)) {
+		return bad("op count")
+	}
+	r := &repMDmodelRecipe{Ops: make([]repMDmodelOp, 0, n)}
+	nm := len(rep.Members)
+	var total int64
+	size := func(m int) int64 { return rep.Members[m].Size }
+	for i := uint64(0); i < n; i++ {
+		if len(b) < 1 {
+			return bad("truncated op %d", i)
+		}
+		op := repMDmodelOp{Tag: b[0]}
+		b = b[1:]
+		get := func(max int) (int, bool) {
+			var v uint64
+			v, b, ok = repMDuv(b)
+			if !ok || v >= uint64(max) {
+				return 0, false
+			}
+			return int(v), true
+		}
+		switch op.Tag {
+		case repMDopCopy:
+			if op.M, ok = get(nm); !ok {
+				return bad("op %d member", i)
+			}
+			op.Size = size(op.M)
+		case repMDopXORPlanes, repMDopPlanes:
+			if op.Tag == repMDopXORPlanes {
+				if op.Base, ok = get(nm); !ok {
+					return bad("op %d base", i)
+				}
+			}
+			if op.Res, ok = get(nm); !ok {
+				return bad("op %d residual", i)
+			}
+			if op.W, ok = get(repMDmaxModelW + 1); !ok || op.W < 1 {
+				return bad("op %d width", i)
+			}
+			if op.E, ok = get(1 << 28); !ok || op.E < 1 || int64(op.E)*int64(op.W) > repMDmaxChunkBytes {
+				return bad("op %d chunk", i)
+			}
+			op.Size = size(op.Res)
+			if op.Size%int64(op.W) != 0 {
+				return bad("op %d residual %d bytes is not a multiple of %d", i, op.Size, op.W)
+			}
+			if op.Tag == repMDopXORPlanes && size(op.Base) != op.Size {
+				return bad("op %d base is %d bytes, residual %d", i, size(op.Base), op.Size)
+			}
+			if rep.Members[op.Res].Role != repStored {
+				return bad("op %d residual is not a component", i)
+			}
+		default:
+			return bad("op %d tag %d", i, op.Tag)
+		}
+		if total > 1<<62-op.Size {
+			return bad("size overflow")
+		}
+		total += op.Size
+		r.Ops = append(r.Ops, op)
+	}
+	if total != rep.Size {
+		return bad("ops produce %d bytes, representation declares %d", total, rep.Size)
+	}
+	nn, b, ok := repMDuv(b)
+	if !ok || nn > n {
+		return bad("name count")
+	}
+	for i := uint64(0); i < nn; i++ {
+		var o, l uint64
+		if o, b, ok = repMDuv(b); !ok || o >= n {
+			return bad("name %d op", i)
+		}
+		if l, b, ok = repMDuv(b); !ok || l > 4096 || l > uint64(len(b)) {
+			return bad("name %d length", i)
+		}
+		r.Names = append(r.Names, repMDmodelName{int(o), string(b[:l])})
+		b = b[l:]
+	}
+	if len(b) != 0 {
+		return bad("%d trailing bytes", len(b))
+	}
+	return r, nil
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+type repMDmodelDecoder struct{}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+// Expand: every component is a listed member, so there is nothing named only inside another object.
+func (repMDmodelDecoder) Expand(c *repCall, emit func([32]byte)) error {
+	_, err := repMDparseModelRecipe(c.Rep)
+	return err
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+func (repMDmodelDecoder) Decode(c *repCall) error {
+	r, err := repMDparseModelRecipe(c.Rep)
+	if err != nil {
+		return err
+	}
+	if err := c.decodeWork().step(int64(len(r.Ops))); err != nil {
+		return err
+	}
+
+	var bufs [3][]byte // residual, base and output chunks, reused by every op
+	for i := range r.Ops {
+		op := &r.Ops[i]
+		if op.Tag == repMDopCopy {
+			if err := c.writeMemberAt(op.M, c.W); err != nil {
+				return fmt.Errorf("op %d: %w", i, err)
+			}
+			continue
+		}
+		if err := repMDapplyResidual(c, op, c.W, &bufs); err != nil {
+			return fmt.Errorf("op %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+// memberStream reads member m sequentially; on EOF the length and SHA-256 are enforced.
+func repMDmemberStream(c *repCall, m int) io.ReadCloser {
+	mem := &c.Rep.Members[m]
+	if mem.Role == repStored {
+		return &repMDstoredReader{src: c.env.Src, id: mem.SHA, size: mem.Size, h: sha256.New()}
+	}
+	pr, pw := io.Pipe()
+	go func() { pw.CloseWithError(c.writeMemberAt(m, pw)) }()
+	return pr
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+type repMDstoredReader struct {
+	src  repSource
+	id   [32]byte
+	size int64
+	off  int64
+	h    interface {
+		io.Writer
+		Sum([]byte) []byte
+	}
+	checked bool
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+func (s *repMDstoredReader) Close() error { return nil }
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+func (s *repMDstoredReader) Read(p []byte) (int, error) {
+	if !s.checked {
+		got, err := s.src.Size(s.id)
+		if err != nil {
+			return 0, err
+		}
+		if got != s.size {
+			return 0, fmt.Errorf("%w: %x is %d bytes, recipe says %d", errRepMismatch, s.id[:6], got, s.size)
+		}
+		s.checked = true
+	}
+	if s.off == s.size {
+		var sum [32]byte
+		s.h.Sum(sum[:0])
+		if sum != s.id {
+			return 0, fmt.Errorf("%w: %x bytes do not hash to their address", errRepMismatch, s.id[:6])
+		}
+		return 0, io.EOF
+	}
+	n := int(min(int64(len(p)), s.size-s.off))
+	got, err := s.src.ReadAt(s.id, p[:n], s.off)
+	if got != n {
+		if err == nil || err == io.EOF {
+			err = errRepShort
+		}
+		return 0, err
+	}
+	s.h.Write(p[:n])
+	s.off += int64(n)
+	return n, nil
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+func repMDapplyResidual(c *repCall, op *repMDmodelOp, w io.Writer, bufs *[3][]byte) error {
+	res := repMDmemberStream(c, op.Res)
+	defer res.Close()
+	var base io.ReadCloser
+	if op.Tag == repMDopXORPlanes {
+		base = repMDmemberStream(c, op.Base)
+		defer base.Close()
+	}
+	chunk := int64(op.E) * int64(op.W)
+	n0 := int(min(chunk, op.Size))
+	for i := range bufs {
+		if cap(bufs[i]) < n0 {
+			bufs[i] = make([]byte, n0)
+		}
+	}
+	rbuf, bbuf, out := bufs[0][:n0], bufs[1][:n0], bufs[2][:n0]
+	for done := int64(0); done < op.Size; {
+		n := min(chunk, op.Size-done)
+		if _, err := io.ReadFull(res, rbuf[:n]); err != nil {
+			return err
+		}
+		repMDunplane(out[:n], rbuf[:n], op.W)
+		if base != nil {
+			if _, err := io.ReadFull(base, bbuf[:n]); err != nil {
+				return err
+			}
+			for i := int64(0); i < n; i++ {
+				out[i] ^= bbuf[i]
+			}
+		}
+		if got, err := w.Write(out[:n]); err != nil {
+			return err
+		} else if int64(got) != n {
+			return io.ErrShortWrite
+		}
+		done += n
+	}
+	// both streams must now be exactly at their verified end
+	var one [1]byte
+	if _, err := res.Read(one[:]); err != io.EOF {
+		return fmt.Errorf("%w: residual has trailing data", errRepMismatch)
+	}
+	if base != nil {
+		if _, err := base.Read(one[:]); err != io.EOF {
+			if err == nil {
+				err = fmt.Errorf("%w: base has trailing data", errRepMismatch)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+// unplane writes the interleaved form of one chunk (len(src) a multiple of w): src holds the
+// w planes of e = len/w elements back to back.
+func repMDunplane(dst, src []byte, w int) {
+	e := len(src) / w
+	if w == 1 {
+		copy(dst, src)
+		return
+	}
+	for p := 0; p < w; p++ {
+		col := src[p*e : (p+1)*e]
+		for i, v := range col {
+			dst[i*w+p] = v
+		}
+	}
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+// PlaneChunks is the encoder side of the residual layout: it separates b (a multiple of w long)
+// chunk by chunk, e elements per chunk.
+func repMDPlaneChunks(b []byte, w, e int) []byte {
+	out := make([]byte, len(b))
+	if w == 1 {
+		copy(out, b)
+		return out
+	}
+	step := w * e
+	for off := 0; off < len(b); off += step {
+		n := min(step, len(b)-off)
+		ne := n / w
+		src := b[off : off+n]
+		dst := out[off : off+n]
+		for p := 0; p < w; p++ {
+			col := dst[p*ne : (p+1)*ne]
+			for i := range col {
+				col[i] = src[i*w+p]
+			}
+		}
+	}
+	return out
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+// ModelOp is one operation in a recipe under construction.
+type repMDModelOp struct {
+	Tag          byte
+	M, Base, Res int
+	W, E         int
+	Name         string
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+// BuildModelRecipe serialises ops (member indexes refer to the representation's Members).
+func repMDBuildModelRecipe(ops []repMDModelOp) []byte {
+	b := []byte{repMDmodelVer}
+	b = binary.AppendUvarint(b, uint64(len(ops)))
+	for _, o := range ops {
+		b = append(b, o.Tag)
+		switch o.Tag {
+		case repMDopCopy:
+			b = binary.AppendUvarint(b, uint64(o.M))
+		case repMDopXORPlanes:
+			b = binary.AppendUvarint(b, uint64(o.Base))
+			fallthrough
+		case repMDopPlanes:
+			b = binary.AppendUvarint(b, uint64(o.Res))
+			b = binary.AppendUvarint(b, uint64(o.W))
+			b = binary.AppendUvarint(b, uint64(o.E))
+		}
+	}
+	nn := 0
+	for _, o := range ops {
+		if o.Name != "" {
+			nn++
+		}
+	}
+	b = binary.AppendUvarint(b, uint64(nn))
+	for i, o := range ops {
+		if o.Name != "" {
+			b = binary.AppendUvarint(b, uint64(i))
+			b = binary.AppendUvarint(b, uint64(len(o.Name)))
+			b = append(b, o.Name...)
+		}
+	}
+	return b
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+var repMDerrRange = errors.New("kinds: range outside the representation")
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+// ModelNames lists the tensor names the recipe carries, with the byte offset and length each op
+// produces (the point-read index).
+func repMDModelNames(c *repCall) (map[string][2]int64, error) {
+	r, err := repMDparseModelRecipe(c.Rep)
+	if err != nil {
+		return nil, err
+	}
+	offs := make([]int64, len(r.Ops)+1)
+	for i, op := range r.Ops {
+		offs[i+1] = offs[i] + op.Size
+	}
+	out := map[string][2]int64{}
+	for _, n := range r.Names {
+		if _, exists := out[n.Name]; exists {
+			return nil, errRepAmbiguous
+		}
+		out[n.Name] = [2]int64{offs[n.Op], r.Ops[n.Op].Size}
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+// ReadModelRange returns bytes [off, off+n) of an opened KindModel representation touching only the
+// ops (and chunks, and base-chain members) that overlap it. Component bytes are length-checked
+// but not hash-verified on this path (a hash needs a sequential pass); the whole-file path
+// verifies everything.
+func repMDReadModelRange(c *repCall, off, n int64) ([]byte, error) {
+	if c.decodeWork().metadata.Add(int64(len(c.Rep.Recipe))) > 64<<20 {
+		return nil, fmt.Errorf("%w: aggregate range metadata", errRepLimit)
+	}
+	if n > 64<<20 {
+		return nil, errRepLimit
+	}
+	if c.Rep.Kind != repKindModel {
+		return nil, errors.New("kinds: not a model representation")
+	}
+	if off < 0 || n < 0 || off > c.Rep.Size || n > c.Rep.Size-off {
+		return nil, repMDerrRange
+	}
+	r, err := repMDparseModelRecipe(c.Rep)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.decodeWork().step(int64(len(r.Ops))); err != nil {
+		return nil, err
+	}
+
+	if err := c.decodeWork().reserveBytes(n); err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, n)
+	pos := int64(0)
+	for i := range r.Ops {
+		op := &r.Ops[i]
+		lo, hi := max(off, pos), min(off+n, pos+op.Size)
+		if lo < hi {
+			part, err := repMDreadOp(c, op, lo-pos, hi-lo)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, part...)
+		}
+		pos += op.Size
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+func repMDreadMemberRange(c *repCall, m int, off, n int64) ([]byte, error) {
+	mem := &c.Rep.Members[m]
+	if mem.Role == repStored {
+		buf := make([]byte, n)
+		got, err := c.env.Src.ReadAt(mem.SHA, buf, off)
+		if int64(got) != n {
+			if err == nil || err == io.EOF {
+				err = errRepShort
+			}
+			return nil, err
+		}
+		return buf, nil
+	}
+	if len(mem.Frame.Prefix) != 0 || mem.Frame.Zeros != 0 {
+		return nil, errRepUnsupported
+	}
+	ch, err := c.child(m)
+	if err != nil {
+		return nil, err
+	}
+	return repMDReadModelRange(ch, off, n)
+}
+
+// Port source: zeros3-z3/repz3/kinds/model.go
+func repMDreadOp(c *repCall, op *repMDmodelOp, off, n int64) ([]byte, error) {
+	if op.Tag == repMDopCopy {
+		return repMDreadMemberRange(c, op.M, off, n)
+	}
+	w, e := int64(op.W), int64(op.E)
+	chunk := w * e
+	out := make([]byte, 0, n)
+	for cs := off - off%chunk; cs < off+n; cs += chunk {
+		cn := min(chunk, op.Size-cs)
+		ne := cn / w
+		lo, hi := max(off, cs), min(off+n, cs+cn)
+		// elements [ea, eb) of this chunk cover the request; each plane is read for those only
+		ea, eb := (lo-cs)/w, (hi-cs+w-1)/w
+		plain := make([]byte, (eb-ea)*w)
+		for p := int64(0); p < w; p++ {
+			pl, err := repMDreadMemberRange(c, op.Res, cs+p*ne+ea, eb-ea)
+			if err != nil {
+				return nil, err
+			}
+			for i, v := range pl {
+				plain[int64(i)*w+p] = v
+			}
+		}
+		if op.Tag == repMDopXORPlanes {
+			bb, err := repMDreadMemberRange(c, op.Base, cs+ea*w, (eb-ea)*w)
+			if err != nil {
+				return nil, err
+			}
+			for i := range plain {
+				plain[i] ^= bb[i]
+			}
+		}
+		out = append(out, plain[lo-cs-ea*w:hi-cs-ea*w]...)
+	}
+	return out, nil
+}
+
+// ---- Q9 DRAFT ONLY: managed recipe adapters, stricter budgets ----------------
+// Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.
+
+// ---- Bounded streaming model analysis -------------------------
+const repModelWindow = 256 << 10
+const repModelDigestHint = "tensor-output-sha256/"
+
+type repModelSpan struct {
+	begin, end          int64
+	name, format, dtype string
+	shape               []uint64
+	width               int
+}
+
+func repModelLayout(src io.ReaderAt, size int64) ([]repModelSpan, error) {
+	var magic [4]byte
+	if err := repReadFullAt(src, magic[:], 0); err != nil {
+		return nil, err
+	}
+	var spans []repModelSpan
+	if string(magic[:]) == "GGUF" {
+		f, e := repGGParse(src, size, repGGLimits{MaxMeta: 16 << 20, MaxTensors: 4096, MaxKV: 65536, MaxString: 1 << 20})
+		if e != nil {
+			return nil, e
+		}
+		for _, seg := range f.Segments() {
+			s := repModelSpan{begin: seg.Begin, end: seg.End, width: 1}
+			if seg.Tensor >= 0 {
+				t := &f.Tensors[seg.Tensor]
+				g := repGGGeom[t.Type]
+				s.name, s.format, s.dtype, s.width = t.Name, "gguf", g.Name, int(g.Bytes)
+				s.shape = append([]uint64(nil), t.Dims...)
+			}
+			spans = append(spans, s)
+		}
+	} else {
+		f, e := repSTParse(src, size, repSTOptions{MaxHeader: 16 << 20, MaxTensors: 4096, MaxDims: 32})
+		if e != nil {
+			return nil, e
+		}
+		for _, seg := range f.Segments() {
+			s := repModelSpan{begin: seg.Off, end: seg.Off + seg.Len, width: 1}
+			if seg.Kind == "tensor" {
+				t, ok := f.Lookup(seg.Name)
+				if !ok {
+					return nil, errRepCorrupt
+				}
+				s.name, s.format, s.dtype, s.width = t.Name, "safetensors", t.DType, max(1, t.Bits/8)
+				for _, v := range t.Shape {
+					s.shape = append(s.shape, uint64(v))
+				}
+			}
+			spans = append(spans, s)
+		}
+	}
+	var pos int64
+	for _, s := range spans {
+		if s.begin != pos || s.end < s.begin || s.end > size || s.width < 1 || s.width > 4096 || len(s.name) > 4096 {
+			return nil, errRepUnsupported
+		}
+		pos = s.end
+	}
+	if pos != size {
+		return nil, repCorrupt("model layout tiling")
+	}
+	return spans, nil
+}
+func repModelKey(s repModelSpan) [32]byte {
+	raw, _ := json.Marshal([]any{s.format, s.name, s.dtype, s.shape})
+	return sha256.Sum256(raw)
+}
+
+// repModelPlaneReader holds one input window and one plane window. The output
+// digest is over original plaintext, before XOR/plane transformation. Previous
+// tensor bytes are read only through the serialized, bounded model range reader.
+type repModelPlaneReader struct {
+	src          io.ReaderAt
+	base         *repCall
+	size, off    int64
+	width, elems int
+	h            hash.Hash
+	out          []byte
+	pos          int
+}
+
+func (r *repModelPlaneReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.pos == len(r.out) {
+		if r.off == r.size {
+			return 0, io.EOF
+		}
+		n := min(int64(r.width*r.elems), r.size-r.off)
+		if n <= 0 || n%int64(r.width) != 0 {
+			return 0, errRepUnsupported
+		}
+		raw := make([]byte, int(n))
+		if err := repReadFullAt(r.src, raw, r.off); err != nil {
+			return 0, err
+		}
+		r.h.Write(raw)
+		if r.base != nil {
+			base, e := repMDReadModelRange(r.base, r.off, n)
+			if e != nil {
+				return 0, e
+			}
+			if len(base) != len(raw) {
+				return 0, errRepMismatch
+			}
+			for i := range raw {
+				raw[i] ^= base[i]
+			}
+		}
+		r.out = repMDPlaneChunks(raw, r.width, r.elems)
+		r.pos = 0
+		r.off += n
+	}
+	n := copy(p, r.out[r.pos:])
+	r.pos += n
+	return n, nil
+}
+func repModelHops(c *repCall) (int, error) {
+	r, e := repMDparseModelRecipe(c.Rep)
+	if e != nil {
+		return 0, e
+	}
+	if len(r.Ops) != 1 {
+		return 0, errRepUnsupported
+	}
+	op := r.Ops[0]
+	switch op.Tag {
+	case repMDopCopy:
+		if c.Rep.Members[op.M].Role != repStored {
+			return 0, errRepUnsupported
+		}
+		return 0, nil
+	case repMDopPlanes:
+		return 1, nil
+	case repMDopXORPlanes:
+		if c.Rep.Members[op.Base].Role == repStored {
+			return 1, nil
+		}
+		ch, e := c.child(op.Base)
+		if e != nil {
+			return 0, e
+		}
+		h, e := repModelHops(ch)
+		return h + 1, e
+	}
+	return 0, errRepUnsupported
+}
+func (b *repBuilder) modelBase(s repModelSpan) (*repCall, [32]byte, bool) {
+	var zero [32]byte
+	if b.cat == nil {
+		return nil, zero, false
+	}
+	key := repModelKey(s)
+	// Basis selection reads up to eight explicit SHA candidates. Their bytes are
+	// XOR inputs; the resulting child must still prove exact through every base.
+	// The catalog's canonical identity resolver retains its ambiguity semantics.
+	entries := b.cat.idx["k8/w32\x00"+string(key[:])]
+	if len(entries) == 0 || len(entries) > 8 {
+		return nil, zero, false
+	}
+	var ids [][32]byte
+	seen := map[[32]byte]bool{}
+	for _, entry := range entries {
+		if !seen[entry.target] {
+			seen[entry.target] = true
+			ids = append(ids, entry.target)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return bytes.Compare(ids[i][:], ids[j][:]) < 0 })
+	var best *repCall
+	var bestSHA [32]byte
+	bestHops := -1
+	for _, id := range ids {
+		r, e := b.env.loadRep(id)
+		if e != nil || r.Kind != repKindModel || r.Size != s.end-s.begin {
+			continue
+		}
+		c := b.env.call(id, r, 1, nil, nil)
+		h, e := repModelHops(c)
+		if e != nil || h >= 3 || h <= bestHops {
+			continue
+		}
+		mr, e := repMDparseModelRecipe(r)
+		if e != nil || len(mr.Names) != 1 || !strings.HasPrefix(mr.Names[0].Name, repModelDigestHint) {
+			continue
+		}
+		sum, e := decodeHexSHA256(strings.TrimPrefix(mr.Names[0].Name, repModelDigestHint))
+		if e != nil {
+			continue
+		}
+		best, bestSHA, bestHops = c, sum, h
+	}
+	return best, bestSHA, best != nil
+}
+
+func (b *repBuilder) encodeModel(src io.ReaderAt, size int64) (*repObject, error) {
+	// Reserve one full source pass before writing anything. An optional base pass
+	// must fit the existing cumulative inspection budget; otherwise reset to planes.
+	if size <= 0 || size > repMaxInspect {
+		return nil, errRepLimit
+	}
+	if e := b.budget.inspect(size); e != nil {
+		return nil, e
+	}
+	spans, e := repModelLayout(src, size)
+	if e != nil {
+		return nil, e
+	}
+	out := &repObject{Kind: repKindModel, Size: size}
+	var ops []repMDModelOp
+	pairs := map[string][32]byte{}
+	addStored := func(id [32]byte, n int64) {
+		m := len(out.Members)
+		out.Members = append(out.Members, repMember{Role: repStored, SHA: id, Size: n})
+		ops = append(ops, repMDModelOp{Tag: repMDopCopy, M: m})
+	}
+	for _, span := range spans {
+		n := span.end - span.begin
+		if n == 0 {
+			continue
+		}
+		section := io.NewSectionReader(src, span.begin, n)
+		if span.name == "" {
+			if e := b.putCDC(section, addStored); e != nil {
+				return nil, e
+			}
+			continue
+		}
+		w := span.width
+		if n%int64(w) != 0 {
+			return nil, errRepUnsupported
+		}
+		elems := max(1, repModelWindow/w)
+		base, baseSHA, found := b.modelBase(span)
+		if found {
+			if n > repMaxInspect-b.budget.inspected {
+				base = nil
+				found = false
+			} else if e := b.budget.inspect(n); e != nil {
+				return nil, e
+			}
+		}
+		rd := &repModelPlaneReader{src: section, base: base, size: n, width: w, elems: elems, h: sha256.New()}
+		rid, e := b.putStream(rd, n)
+		if e != nil {
+			return nil, e
+		}
+		if rd.off != n || rd.pos != len(rd.out) {
+			return nil, errRepShort
+		}
+		var plainSHA [32]byte
+		rd.h.Sum(plainSHA[:0])
+		child := &repObject{Kind: repKindModel, Size: n}
+		op := repMDModelOp{Tag: repMDopPlanes, W: w, E: elems, Name: repModelDigestHint + hex.EncodeToString(plainSHA[:])}
+		if found {
+			child.Members = append(child.Members, repMember{Role: repDerived, SHA: baseSHA, Size: n, Child: base.ID})
+			op.Tag = repMDopXORPlanes
+			op.Base = 0
+		}
+		op.Res = len(child.Members)
+		child.Members = append(child.Members, repMember{Role: repStored, SHA: rid, Size: n})
+		if w == 1 && !found {
+			op.Tag = repMDopCopy
+			op.M = op.Res
+		}
+		child.Recipe = repMDBuildModelRecipe([]repMDModelOp{op})
+		cid, e := b.finishRep(child)
+		if e != nil {
+			return nil, e
+		}
+		m := len(out.Members)
+		out.Members = append(out.Members, repMember{Role: repDerived, SHA: plainSHA, Size: n, Child: cid})
+		ops = append(ops, repMDModelOp{Tag: repMDopCopy, M: m, Name: span.name})
+		key := repModelKey(span)
+		pairs[string(key[:])] = cid
+		if len(ops) > repMDmaxOps {
+			return nil, errRepLimit
+		}
+	}
+	out.Recipe = repMDBuildModelRecipe(ops)
+	if len(pairs) > 0 {
+		index, count, e := repBuildIndex(32, pairs)
+		if e != nil {
+			return nil, e
+		}
+		id, e := b.putBlob(index)
+		if e != nil {
+			return nil, e
+		}
+		out.Indexes = []repIndex{{KeyWidth: 32, Count: count, Ref: id, Owns: true}}
+	}
+	return out, nil
+}
+
+// Aggregate replay bounds are independent of emitted size: repeated empty
+// children must not evade depth/output limits. Atomics cover Model pipe readers.
+// Each call owns a budget; repEnv remains safe for independent reconstructions.
+type repDecodeWork struct {
+	steps, metadata, bytes atomic.Int64
+	maxBytes               int64
+}
+
+func newRepDecodeWork(size int64) *repDecodeWork {
+	// Saturate instead of wrapping for a structurally valid enormous declaration.
+	limit := int64(math.MaxInt64)
+	if size <= (math.MaxInt64-(64<<20))/16 {
+		limit = size*16 + (64 << 20)
+	}
+	return &repDecodeWork{maxBytes: limit}
+}
+func (w *repDecodeWork) step(n int64) error {
+	if n < 0 || w.steps.Add(n) > 1<<20 {
+		return fmt.Errorf("%w: aggregate decoder steps", errRepLimit)
+	}
+	return nil
+}
+func (w *repDecodeWork) enter(r *repObject) error {
+	if err := w.enterMetadata(r); err != nil {
+		return err
+	}
+	return w.reserveBytes(r.Size)
+}
+func (w *repDecodeWork) enterMetadata(r *repObject) error {
+	if err := w.step(1); err != nil {
+		return err
+	}
+	n := int64(len(r.Recipe)) + int64(len(r.Members))*64 + int64(len(r.Indexes))*64
+	if w.metadata.Add(n) > 64<<20 {
+		return fmt.Errorf("%w: aggregate decoder metadata", errRepLimit)
+	}
+	return nil
+}
+func (w *repDecodeWork) reserveBytes(n int64) error {
+	// CAS reservation avoids overflow even for a MaxInt64 declaration.
+	for {
+		old := w.bytes.Load()
+		if n < 0 || n > w.maxBytes-old {
+			return fmt.Errorf("%w: aggregate decoded bytes", errRepLimit)
+		}
+		if w.bytes.CompareAndSwap(old, old+n) {
+			return nil
+		}
+	}
+}
+
+func (c *repCall) decodeWork() *repDecodeWork {
+	if c.work == nil {
+		c.work = newRepDecodeWork(c.Rep.Size)
+	}
+	return c.work
+}
+
+// Publication inspects every derived kind before the durable capability floor.
+func (s *Store) repPublicationFloor(r *repRoot) (int, error) {
+	src := s.newRepSource(r.Descs, nil)
+	defer src.close()
+	env := &repEnv{Src: src, Limits: repProdLimits}
+	reach, err := env.reachable(r.Rep)
+	if err != nil {
+		return 0, err
+	}
+	floor := storeFormatVersionRepresentations
+	for id, role := range reach.Role {
+		if role != repDepRep {
+			continue
+		}
+		obj, err := env.loadRep(id)
+		if err != nil {
+			return 0, err
+		}
+		switch obj.Kind {
+		case repKindConcat, repKindCAR, repKindSQLite, repKindGit, repKindMerkle, repKindGzip, repKindZstd:
+		case repKindModel:
+			floor = max(floor, storeFormatVersionModel)
+		default:
+			return 0, fmt.Errorf("%w: capability kind %d", errRepUnsupported, obj.Kind)
+		}
+	}
+	if floor > storeFormatVersionSupported {
+		return 0, fmt.Errorf("%w: required capability floor %d", errRepUnsupported, floor)
+	}
+	return floor, nil
 }

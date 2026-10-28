@@ -30492,10 +30492,10 @@ func TestPack_StoreFormatVersionGate(t *testing.T) {
 		t.Fatalf("packed store format = %+v", f)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
-	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 7`), 1), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 8`), 1), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 7") {
+	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 8") {
 		t.Fatalf("unknown future version must be rejected, got %v", err)
 	}
 }
@@ -32560,7 +32560,7 @@ func TestPackCompression_StoreFormatBoundary(t *testing.T) {
 			}
 		})
 	}
-	if supportedStoreFormat(0) || supportedStoreFormat(storeFormatVersionRepresentations+1) || !supportedStoreFormat(storeFormatVersionRepresentations) || !supportedStoreFormat(storeFormatVersionTiers) || !supportedStoreFormat(storeFormatVersion) || !supportedStoreFormat(storeFormatVersionPacked) || !supportedStoreFormat(storeFormatVersionHistoryPrune) {
+	if supportedStoreFormat(0) || supportedStoreFormat(storeFormatVersionSupported+1) || !supportedStoreFormat(storeFormatVersionSupported) || !supportedStoreFormat(storeFormatVersionRepresentations) || !supportedStoreFormat(storeFormatVersionTiers) || !supportedStoreFormat(storeFormatVersion) || !supportedStoreFormat(storeFormatVersionPacked) || !supportedStoreFormat(storeFormatVersionHistoryPrune) {
 		t.Fatal("supported store format range is wrong")
 	}
 }

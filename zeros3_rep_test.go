@@ -573,7 +573,7 @@ func TestRepWireGoldenAndRoundTrip(t *testing.T) {
 }
 
 func TestRepWireKindNumbers(t *testing.T) {
-	want := map[repKind]bool{1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: false, 0: false, 255: false}
+	want := map[repKind]bool{1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: false, 11: false, 12: false, 0: false, 255: false}
 	for k, ok := range want {
 		if k.supported() != ok {
 			t.Fatalf("kind %d supported=%v", k, k.supported())
@@ -585,7 +585,7 @@ func TestRepWireKindNumbers(t *testing.T) {
 			t.Fatalf("kind %d: want unsupported, got %v", k, err)
 		}
 	}
-	if repKindConcat != 1 || repKindCAR != 2 || repKindSQLite != 3 || repKindGit != 4 || repKindMerkle != 5 || repKindGzip != 6 || repKindZstd != 7 {
+	if repKindConcat != 1 || repKindCAR != 2 || repKindSQLite != 3 || repKindGit != 4 || repKindMerkle != 5 || repKindGzip != 6 || repKindZstd != 7 || repKindModel != 8 {
 		t.Fatal("kind numbering moved")
 	}
 }
@@ -612,7 +612,7 @@ func TestRepWireCorruptionMatrix(t *testing.T) {
 	mut("magic", func(b []byte) []byte { b[0] = 'X'; return b }, errRepCorrupt)
 	mut("version", func(b []byte) []byte { b[4] = 2; return b }, errRepUnsupported)
 	mut("kind", func(b []byte) []byte { b[5] = 9; return b }, errRepUnsupported)
-	mut("unassigned kind", func(b []byte) []byte { b[5] = 8; return b }, errRepUnsupported)
+	mut("unintegrated managed kind", func(b []byte) []byte { b[5] = 11; return b }, errRepUnsupported)
 	mut("trailing", func(b []byte) []byte { return append(b, 0) }, errRepCorrupt)
 	mut("role", func(b []byte) []byte { b[9] = 2; return b }, errRepCorrupt)
 	mut("nonminimal size varint", func(b []byte) []byte {
