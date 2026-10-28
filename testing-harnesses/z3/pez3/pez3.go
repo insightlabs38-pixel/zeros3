@@ -73,15 +73,19 @@ type parser struct {
 }
 
 // rvaOff maps an RVA to a file offset and the bytes available from it in the file.
-func (p *parser) rvaOff(rva uint64) (int, int, bool) {
-	for _, s := range p.secs {
+func (p *parser) rvaOff(rva uint64) (int, int, bool) { return RVAOff(p.secs, len(p.data), rva) }
+
+// RVAOff maps an RVA to a file offset and the bytes available from it in the file (the section's
+// raw data; the zero-filled tail of a section is not mapped). It is the mapper shared with clrz3.
+func RVAOff(secs []Section, size int, rva uint64) (int, int, bool) {
+	for _, s := range secs {
 		if s.RawSize > 0 && rva >= uint64(s.RVA) && rva < uint64(s.RVA)+uint64(s.RawSize) {
 			d := rva - uint64(s.RVA)
 			if d >= uint64(s.RawSize) {
 				return 0, 0, false
 			}
 			off := uint64(s.RawOff) + d
-			if off >= uint64(len(p.data)) {
+			if off >= uint64(size) {
 				return 0, 0, false
 			}
 			return int(off), int(uint64(s.RawSize) - d), true
