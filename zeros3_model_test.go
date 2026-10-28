@@ -117,3 +117,45 @@ func TestModelEmptyMembersStillVerifyDependencies(t *testing.T) {
 		})
 	}
 }
+
+func TestModelNestedPublicationRaisesFloor(t *testing.T) {
+	l := newRepLab(t, repModeOff)
+	data := repZ4ModelSafetensors(t, bytes.Repeat([]byte{1, 2, 3, 4}, 16384))
+	l.put("model", data)
+	entry, _ := l.manifest("model")
+	if l.s.format.StoreFormatVersion != 1 {
+		t.Fatal("ordinary off-mode PUT raised format")
+	}
+	b := l.s.newRepBuilder(int64(len(data)), nil, nil)
+	defer b.close()
+	model, err := b.encodeModel(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := b.finishRep(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	outer := &repObject{Kind: repKindConcat, Size: int64(len(data)), Members: []repMember{{Role: repDerived, SHA: sum, Size: int64(len(data)), Child: child}}}
+	id, err := b.finishRep(outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = b.flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err = b.proof(id, int64(len(data)), sum); err != nil {
+		t.Fatal(err)
+	}
+	root := &repRoot{ManifestUUID: entry.manifestUUID, ObjSHA: sum, ObjSize: int64(len(data)), Rep: id, Descs: b.descs}
+	if err = l.s.publishRepRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	if l.s.format.StoreFormatVersion != 7 {
+		t.Fatalf("nested Model floor=%d", l.s.format.StoreFormatVersion)
+	}
+	l.close()
+	l.open()
+	l.exact("nested Model publication restart")
+}

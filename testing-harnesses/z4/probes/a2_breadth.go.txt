@@ -1,0 +1,9 @@
+// Reuses canonical black-box S3 helpers without linking production code.
+package main
+import("context";"os";"path/filepath";"github.com/aws/aws-sdk-go-v2/aws";"github.com/aws/aws-sdk-go-v2/service/s3")
+func main(){bin=os.Args[1];work:=os.Args[2];data,err:=os.ReadFile(os.Args[3]);if err!=nil{panic(err)};dir:=filepath.Join(work,"independent-real")
+ srv,addr,_:=startServer(bin,dir,"-representations","prefer");c:=newClient(addr);_,err=c.CreateBucket(context.Background(),&s3.CreateBucketInput{Bucket:aws.String(bucket)});if err!=nil{panic(err)};put(c,"minilm",data);readAllCheck("independent MiniLM full/range initial",c,[]fixture{{"minilm",data}});stop(srv)
+ check("independent MiniLM published Model root",num(statsOf(bin,dir),"representation_root_count")==1,"missing optional root");check("independent MiniLM floor seven",formatLevel(dir)==7,"format %d",formatLevel(dir))
+ for _,mode:=range []string{"off","shadow","prefer"}{srv,addr,_=startServer(bin,dir,"-representations",mode);readAllCheck("independent MiniLM restart "+mode,newClient(addr),[]fixture{{"minilm",data}});stop(srv)}
+ verifyDeep("independent MiniLM serialized proof",dir,1);if failed{os.Exit(1)}
+}

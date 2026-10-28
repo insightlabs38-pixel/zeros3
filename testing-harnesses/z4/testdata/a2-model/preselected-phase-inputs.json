@@ -1,0 +1,37 @@
+[
+ {
+  "kind": "model",
+  "path": "/workspace/work/q6-public/pythia-14m/step1000.safetensors",
+  "label": "REAL_PRETRAINING_CHECKPOINT",
+  "bytes": 28143920,
+  "sha256": "acc2b8045b54b406bcec99962f91e60202d448a00231669ee3674cab234eb244"
+ },
+ {
+  "kind": "model",
+  "path": "/workspace/work/q6-public/pythia-14m/step2000.safetensors",
+  "label": "REAL_PRETRAINING_CHECKPOINT",
+  "bytes": 28143920,
+  "sha256": "37b7abc5bc4c0a884c8fbf959e0278d549af2fcea8eb40f21e8f56a84ce05ac7"
+ },
+ {
+  "kind": "model",
+  "path": "/workspace/work/q6-public/pythia-14m/step3000.safetensors",
+  "label": "REAL_PRETRAINING_CHECKPOINT",
+  "bytes": 28143920,
+  "sha256": "9ba55ad68bf42d96f696b70bfc38628f75a6dcbfc55d076023018edf252b66ec"
+ },
+ {
+  "kind": "model",
+  "path": "/workspace/work/q9-report-fix/testing-harnesses/testdata/i2-draft/model.gguf",
+  "label": "CONTROLLED_GGUF_FIDELITY_NOT_THROUGHPUT",
+  "bytes": 1376,
+  "sha256": "f96cbc99ef610d944493336bc4d98caf300dcc90276e8f8940c10c1ae05c3c5e"
+ },
+ {
+  "kind": "model",
+  "path": "/workspace/work/z4-a2/minilm.safetensors",
+  "bytes": 90868376,
+  "sha256": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+  "label": "PINNED_INDEPENDENT_REAL_MINILM"
+ }
+]
