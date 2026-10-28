@@ -1,0 +1,48 @@
+{
+ "base": "43900798dfaee9da63166bcd2fd6a8960e0a490b",
+ "production_before_lines": 37850,
+ "modes": [
+  "managed",
+  "model-layout",
+  "model-codec",
+  "managed-codec"
+ ],
+ "extractor": "cmd/prodcodecport",
+ "source_sha256": {
+  "dexz3/dex.go": "5e9037842348993929de5040bc607c97d8659bf2cad2b873467aed5a37f1dc72",
+  "dexz3/ident.go": "44aeb590ecc53a1953030895851e9ecbe3cad246f27f40b0521527dedeffea92",
+  "dexz3/insn.go": "3616776f0498b2e11aa15ec5ca087683af1b2e372f34b4a8c68ecf9e4a8903aa",
+  "dexz3/mask.go": "99cfe891dd413acd93fc4b97cad4fea2c1276cdac70d36776caa29bd4e5a06e4",
+  "dexz3/rep.go": "9727f7e477a4847ad57d740c99c71ffb6ed94919c4790088ddc6c568a5e5ae22",
+  "dexz3/walk.go": "9594fe6348b90365be4579f8f4b7f3b7c04defdb6a419afde2cd4f8fbf559f7b",
+  "clrz3/attrib.go": "a539687d998b1476894d90a4156dd84858d3be7632ce554621f656bd40f62ec1",
+  "clrz3/cil.go": "ff41cb66f68b63397699abe410cd1aae69856b58d361578c7a819003c07594b7",
+  "clrz3/decode.go": "202b93b5d5f1bf932c8912dec64685ae775e1c6791690a3fab34f24c9fa376d6",
+  "clrz3/file.go": "15203bc26a4041988997685fa53d907e483c1dbfe64fa4e9afafc95c27580db1",
+  "clrz3/heap.go": "fe1245e10abad1d2cecd529205566dcd1a0f5b4b93c2d513611a3bbbcf62b2da",
+  "clrz3/ident.go": "2163beb0eca540e16f2fcfdf50014961244cc67272893bdfd8edad83a8c30234",
+  "clrz3/layers.go": "a6682ac8c528fe72636334d7a40acf719773a2895cd8287a78c7492c78d5e65e",
+  "clrz3/rep.go": "2ad540891e3c9d2ad527ff08d042ec776a74dc9786e32d7be0daf68923db0240",
+  "clrz3/schema.go": "1a64a0b8526f0bc4c3fed0897cb46eed448a6fcd1aefbc932821777023c4e2b7",
+  "clrz3/sig.go": "90ff5f15a93684e0302864a3631614efb63765bb176011b8f79e168b200eacaf",
+  "clrz3/slots.go": "d6690c00397bfc08361fec0a300b5b37e7cccb2f68126420549219febbbf85a9",
+  "idxref/idxref.go": "9d8fe13282d0ba589b258d2b44c9833fa6fde64cd79b67f01d62c1c7d3ce65c2",
+  "idxref/refcoder.go": "984d5e9c8b356cb3560a6076e08a38d700a4e9289bc0ccd079ba18cf8c444c9d",
+  "pez3/pez3.go": "93c657405caada3f730d6773b4c42576a32ec919752967644b53590cb7066389",
+  "binref/image.go": "2efed3826c865970f6a1eb1ee965ae992197ad117a3dc282f37de03ca44234c3",
+  "binref/norm.go": "68ee83cd30c661635aee793bedd5db623f63ee4599078269c55fd713937b7375",
+  "binref/x86.go": "88eb30ebd186690290dc50aa09725406b5ff666b49ddc28632079f3e83696a61",
+  "st/build.go": "1f110afbd98a4dc626b0df22f558f86b058d8e492bd275efc1331db66e0bd6c3",
+  "st/st.go": "2569e3f8b8363e3d75ed6ebe9e3dc469fdf5cace95b2adbc71a9d0c7741f2d7a",
+  "ggufz3/build.go": "fab04b6a6e7acd8f7b690491b08997a915a2ddb2c219ce645096a2b5bfee44e3",
+  "ggufz3/gguf.go": "35b55be7c4b93075081ee8fa0854a7b3e379a8359c56d2afdbb906676031a9b0",
+  "repz3/kinds/model.go": "39685e04d49d35d235857f2cfcbdb0f6bb03bfb25edd2a9d1adb7e1c422a1b88",
+  "repz3/kinds/dex.go": "ec13dc3b8701205baaf7db58a72f647d8d556a75cf2b2b509a8588a00e1621c9",
+  "repz3/kinds/clr.go": "c9ec1efe0c97b7e6782d0a05c54c924cae2e4accceb2d640009cafa9dfa89cce"
+ },
+ "deviations": [
+  "framework names translated to existing production runtime",
+  "managed preallocation/group/component budgets tightened",
+  "model operation/range caps and nonempty derived-frame range fallback"
+ ]
+}
