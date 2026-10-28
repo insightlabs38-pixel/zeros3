@@ -159,3 +159,43 @@ func TestModelNestedPublicationRaisesFloor(t *testing.T) {
 	l.open()
 	l.exact("nested Model publication restart")
 }
+
+func TestModelOrdinaryPutCrashPublication(t *testing.T) {
+	for _, point := range []string{hookRepRootBeforeFormat, hookRepRootAfterFormat, hookRepRootBeforeRename, hookRepRootAfterRename, hookRepBeforeNamespace} {
+		t.Run(point, func(t *testing.T) {
+			l := newRepLab(t, repModePrefer)
+			l.put("old", []byte("authoritative old object"))
+			data := repZ4ModelSafetensors(t, bytes.Repeat([]byte{1, 2, 3, 4}, 16384))
+			withTestHook(t, func(p string) {
+				if p == point {
+					panic(simulatedCrash{point: p})
+				}
+			})
+			runExpectingSimulatedCrash(t, func() { _, _ = l.s.PutObject("b", "model", data, "application/octet-stream", nil) })
+			testHook = nil
+			l.close()
+			l.open()
+			wantFloor := 7
+			if point == hookRepRootBeforeFormat {
+				wantFloor = 1
+			}
+			if l.s.format.StoreFormatVersion != wantFloor {
+				t.Fatalf("floor %d, want %d", l.s.format.StoreFormatVersion, wantFloor)
+			}
+			if _, _, err := l.s.GetObject("b", "model"); err == nil {
+				t.Fatal("interrupted PUT became visible before namespace commit")
+			}
+			l.exact("ordinary Model PUT crash preserves prior namespace")
+			l.offline(func() {
+				if _, err := gcCollect(l.dir, true); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if l.s.format.StoreFormatVersion != wantFloor {
+				t.Fatal("GC downgraded floor")
+			}
+			l.put("model", data)
+			l.exact("ordinary Model PUT recovery")
+		})
+	}
+}

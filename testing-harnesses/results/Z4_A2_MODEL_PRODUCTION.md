@@ -46,7 +46,8 @@ checks, 47 actual local floor refusals plus one unavailable pre-I0 CLI flag.
 Full/delta portable imports restore exact bytes without inheriting optional
 roots/floor. Old wire clients sync/replicate through compatible servers.
 Five actual SIGKILL/restart publication boundaries pass; nested Model publication
-has an additional production unit test. Compaction, tier moves, GC, repack,
+has an additional production unit test. Five direct ordinary-PUT crash tests
+also preserve the prior namespace, GC safely and retry exactly. Compaction, tier moves, GC, repack,
 doctor/retirement, snapshot deletion and history pruning preserve exact content.
 
 All three frozen Model-hop vectors are reused unchanged from the draft archive;
