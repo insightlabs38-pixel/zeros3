@@ -61,14 +61,17 @@ func (c *Corpus) greedy(s Stage, have bits) int {
 }
 
 type Result struct {
-	Policy, Case                                                    string
-	Total, CDC, Oracle, Regret                                      int64
-	FirstPremium                                                    float64
-	BadAdmissions, MissedLineages, States, AnalysisCalls            int
-	AnalysisNS, FeatureReads, EarlyReadBytes, BufferedBytes, WallNS int64
-	Choices                                                         []string
-	PerStage                                                        []int64
-	OracleExact                                                     bool
+	LogicalReadBytes, ExtraReadBytes, SketchBytes, SampleStateBytes, MembershipBytes int64
+	BootstrapRedoReadUpper, BootstrapRedoAnalysisNS                                  int64
+	BootstrapRedoCalls, OracleStates                                                 int
+	Policy, Case                                                                     string
+	Total, CDC, Oracle, Regret                                                       int64
+	FirstPremium                                                                     float64
+	BadAdmissions, MissedLineages, States, AnalysisCalls                             int
+	AnalysisNS, FeatureReads, EarlyReadBytes, BufferedBytes, WallNS                  int64
+	Choices                                                                          []string
+	PerStage                                                                         []int64
+	OracleExact                                                                      bool
 }
 type oracleResult struct {
 	cost    int64
@@ -161,17 +164,20 @@ func (c *Corpus) look(f Case, at, depth, width int, have bits) (int, int) {
 	return states[0].first, expanded
 }
 
-// Run keeps only current physical membership and a 64-hash sample per candidate
+// Run requires Corpus.Validate to have succeeded. It keeps only current physical membership and a 64-hash sample per candidate
 // name. Lookahead policies explicitly buffer future objects; streaming policies
 // never inspect future rows. Priors/caps are fixed, not fitted to test outcomes.
 func (c *Corpus) Run(f Case, policy string) (Result, error) {
 	r := Result{Policy: policy, Case: f.Name}
 	oracle := c.oracle(f, 100000)
 	r.Oracle, r.OracleExact = oracle.cost, oracle.exact
+	r.OracleStates = oracle.states
 	start := time.Now()
 	have := makeBits(len(c.Objects))
 	empty := makeBits(len(c.Objects))
 	baseline := makeBits(len(c.Objects))
+	r.MembershipBytes = int64(len(have) * 8)
+	var baselineRead int64
 	samples := map[string][]string{}
 	analyzed := map[int]bool{}
 	for at, s := range f.Stages {
@@ -186,6 +192,7 @@ func (c *Corpus) Run(f Case, policy string) (Result, error) {
 		cc := c.cost(s.Candidates[dc], have)
 		base := c.cost(s.Candidates[dc], baseline)
 		r.CDC += base
+		baselineRead += s.Candidates[dc].ReadBytes
 		apply(s.Candidates[dc], baseline)
 		chosen := c.greedy(s, have)
 		switch policy {
@@ -282,12 +289,35 @@ func (c *Corpus) Run(f Case, policy string) (Result, error) {
 			r.FirstPremium = float64(cost)/float64(base) - 1
 		}
 		r.Total += cost
+		r.LogicalReadBytes += p.ReadBytes
+		// If a declined layout must be reconstructed, bound the extra source
+		// materialization by replaying every earlier chosen object. Full prior
+		// dry-run cost is reported separately, rather than treating a base as free.
+		// This is deliberately a conservative redo scenario, not measured I/O.
+		if chosen != dc && at > 0 && r.Choices[len(r.Choices)-1] == "cdc" {
+			for j := 0; j < at; j++ {
+				old := f.Stages[j]
+				for _, candidate := range old.Candidates {
+					r.BootstrapRedoAnalysisNS += candidate.AnalysisNS
+					r.BootstrapRedoCalls++
+					if candidate.Name == r.Choices[j] {
+						r.BootstrapRedoReadUpper += candidate.ReadBytes
+					}
+				}
+			}
+		}
+
 		r.Choices = append(r.Choices, p.Name)
 		r.PerStage = append(r.PerStage, cost)
 		apply(p, have)
 		for _, p := range s.Candidates {
 			samples[p.Name] = append([]string(nil), p.Sample...)
 		}
+	}
+	r.ExtraReadBytes = r.LogicalReadBytes - baselineRead
+	r.SketchBytes = r.FeatureReads * 32
+	for _, sample := range samples {
+		r.SampleStateBytes += int64(len(sample) * 32)
 	}
 	r.Regret = r.Total - r.Oracle
 	if r.Regret < 0 && r.OracleExact {

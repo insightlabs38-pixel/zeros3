@@ -5,7 +5,10 @@ Merged Q2: PR #73, `bd0562101364b65e7ddec4a33bc89ab7189b6b87` (I1B_COMPLETE).
 Merged Q3: PR #74, `f0b34b6ed9a34dbcef56fd745e0a55f6e65f9e43` (I1C_COMPLETE).
 Merged Q4: PR #75, `1a0879cfa8cc904398df1aec54e3796b046882a4`; all targets DEFER.
 Merged Q5: PR #76, `4d2f9593317804a1a8deaab5ca34f5124fb4d735` (ELF/PE DEFER).
-Active Q6: `z3/lineage-admission-planner`; bounded policy/schema tests pass.
+Q6: `z3/lineage-admission-planner`; checkpoint2df4d24, gates pass.
+PLANNER_NEEDS_MORE_EVIDENCE:36 proved-frontier cases,252 exact policy
+replays. Streaming EV regret10.8%, buffered lookahead near hindsight but
+requires26.8/53.7 MiB and future analyses. Merge research then continue Q7.
 ELF/PE DEFER: genuine grouped exact gains on controlled histories, mixed C++
 and public losses. Closed recipes/evidence retained; Q6 now captures unified
 physical candidate closures and tests honest late bootstrap/regret policies.

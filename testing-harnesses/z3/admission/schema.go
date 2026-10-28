@@ -43,24 +43,29 @@ func (c *Corpus) Validate() error {
 	seen := map[string]bool{}
 	objectIndex := map[string]int{}
 	for index, o := range c.Objects {
-		if !sha(o.SHA) || seen[o.SHA] || o.Raw < 0 || o.Raw > 128<<20 || o.Packed < 0 || o.Packed > o.Raw {
+		if !sha(o.SHA) || seen[o.SHA] || o.Raw < 0 || o.Raw > 128<<20 || o.Packed < 0 || o.Packed > o.Raw || len(o.Role) > 16 {
 			return fmt.Errorf("admission: invalid physical object")
 		}
 		seen[o.SHA] = true
 		objectIndex[o.SHA] = index
 	}
 	for _, f := range c.Cases {
-		if len(f.Stages) < 1 || len(f.Stages) > 64 || f.Class == "" || f.Evidence == "" {
+		switch f.Evidence {
+		case "REAL", "PRODUCER_WORKLOAD", "REAL_REEXPORT", "REFERENCE_FIXTURE", "SYNTHETIC_FIXTURE", "ORACLE", "PAIRWISE_SENSITIVITY":
+		default:
+			return fmt.Errorf("admission: evidence class")
+		}
+		if len(f.Stages) < 1 || len(f.Stages) > 64 || f.Class == "" || f.Evidence == "" || len(f.Name) > 256 || len(f.Class) > 64 || len(f.Evidence) > 64 || len(f.KeyHint) > 1024 {
 			return fmt.Errorf("admission: case bound/provenance")
 		}
 		for _, s := range f.Stages {
-			if !sha(s.InputSHA) || s.Size < 0 || s.Size > 128<<20 || len(s.Candidates) < 1 || len(s.Candidates) > 8 {
+			if !sha(s.InputSHA) || s.Size < 0 || s.Size > 128<<20 || len(s.Candidates) < 1 || len(s.Candidates) > 8 || len(s.Label) > 512 {
 				return fmt.Errorf("admission: stage bound")
 			}
 			names := map[string]bool{}
 			cdc := false
 			for _, p := range s.Candidates {
-				if names[p.Name] || p.ProofSHA != s.InputSHA || !sha(p.Root) || len(p.Objects) > 1<<20 || len(p.Sample) > 64 || p.AnalysisNS < 0 || p.ReadBytes < 0 {
+				if names[p.Name] || p.ProofSHA != s.InputSHA || !sha(p.Root) || len(p.Objects) > 1<<20 || len(p.Sample) > 64 || p.AnalysisNS < 0 || p.ReadBytes < 0 || p.ReadBytes > 1<<40 || len(p.Name) > 128 {
 					return fmt.Errorf("admission: candidate proof/limit")
 				}
 				names[p.Name] = true
@@ -85,7 +90,12 @@ func (c *Corpus) Validate() error {
 				if !foundRoot {
 					return fmt.Errorf("admission: hidden root cost")
 				}
+				lastSample := ""
 				for _, id := range p.Sample {
+					if id <= lastSample {
+						return fmt.Errorf("admission: duplicate/unordered sketch")
+					}
+					lastSample = id
 					if !sha(id) || !seen[id] || !members[objectIndex[id]] {
 						return fmt.Errorf("admission: sample identity")
 					}
