@@ -30,8 +30,8 @@ func load(p string) (d, masked []byte, cat []uint8, err error) {
 func attribRow(title string, a pdelta.Attr) {
 	pc := func(v int) string { return fmt.Sprintf("%5.1f", 100*float64(v)/float64(max(a.Raw, 1))) }
 	resid := a.Removed[wasmz3.CatLiteral] + a.Removed[wasmz3.CatStruct] + a.Removed[wasmz3.CatLen] + a.Removed[wasmz3.CatCustom]
-	fmt.Printf("%-44s raw %8d (%5.1f%% of %d) | code/data %s | structure %s | index %s | addr %s | length %s | custom %s | resid %s\n",
-		title, a.Raw, 100*float64(a.Raw)/float64(max(a.Size, 1)), a.Size,
+	fmt.Printf("%-44s raw %8d (%5.1f%% of %d) masked %5.2f%% | code/data %s | structure %s | index %s | addr %s | length %s | custom %s | resid %s\n",
+		title, a.Raw, 100*float64(a.Raw)/float64(max(a.Size, 1)), a.Size, 100*float64(a.Masked)/float64(max(a.Size, 1)),
 		pc(a.Remaining[wasmz3.CatLiteral]), pc(a.Remaining[wasmz3.CatStruct]), pc(a.Removed[wasmz3.CatIdx]+a.Remaining[wasmz3.CatIdx]), pc(a.Removed[wasmz3.CatAddr]+a.Remaining[wasmz3.CatAddr]),
 		pc(a.Remaining[wasmz3.CatLen]), pc(a.Remaining[wasmz3.CatCustom]), pc(resid))
 }

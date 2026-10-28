@@ -408,3 +408,23 @@ go run ./cmd/z3mb lockin outer,outer+dex-unit-4k FILE... ; rolling 2 REPS FILE..
 ```
 
 Results: `../results/Z3_32_MANAGED_BYTECODE.md`.
+
+## Z3-33 (CLR / .NET and WebAssembly indexed references)
+
+`clrz3` (PE32/PE32+ + CLI + `#~` metadata reader, finite ECMA-335 table schema, signature and CIL walkers, identity resolver, indexed-reference representation; reuses
+`pez3.RVAOff`), `wasmz3` (section directory, index-space slots with exact-width LEB128, instruction walker, representation), `econx` (the grouping cutters, piece packing and
+index-node wrapper of `cmd/z3mb`, extracted mechanically; `UnitCut` rounds its modulus to a power of two), `idxref/refcoder.go` (`AutoK0`, dictionary and recency-cache coders),
+`pdelta.Attribute`, `repz3/kinds/clr.go` (lab `KindCLR` = 12) and the drivers `cmd/z3clr`, `cmd/z3wasm`, `cmd/z3refc`. Pinned real corpora: `realworld/clrwasm.json`
+(`z3clr fetch OUTDIR [FAMILY...]`); controlled producers: `z3clr gen DIR family|thresholds` (.NET SDK 8) and `z3wasm gen DIR` (clang + wasm-ld, rustc). Hermetic tests use test-only
+assembly / module writers and `clrz3/testdata`.
+
+```sh
+go test ./clrz3 ./wasmz3 ./idxref ./econx ./repz3/...
+go test ./clrz3 -run '^$' -fuzz '^FuzzParse$' -fuzztime 25s ; go test ./wasmz3 -run '^$' -fuzz '^FuzzParse$' -fuzztime 25s
+go run ./cmd/z3clr attrib OLD.dll NEW.dll ; go run ./cmd/z3wasm attrib OLD.wasm NEW.wasm        # where the changed bytes are
+go run ./cmd/z3clr econ [-star] [-ref 35] cdc,raw-unit-4k,o-all-4k,n-unit-4k-a12 DLL... ; lockin DLL... ; rolling DLL... ; reads DLL ; perf DLL... ; cover DLL... ; prove DLL...
+go run ./cmd/z3wasm econ [-star] cdc,sections,funcs,raw-unit-4k,n-unit-4k-a12 WASM... ; reads WASM ; perf WASM... ; cover WASM... ; prove WASM...
+go run ./cmd/z3refc dex:FILE clr:FILE wasm:FILE ; go run ./cmd/z3refc dexecon CLASSES.dex...  # repeated-reference coder comparison
+```
+
+Results: `../results/Z3_33_CLR_WASM.md`.

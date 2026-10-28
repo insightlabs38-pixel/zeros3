@@ -261,12 +261,17 @@ func genCmd(args []string) error {
 	}
 	out, which := args[0], args[1]
 	want := map[string]bool{}
+	n := 150
 	for _, a := range args[2:] {
+		if v, ok := strings.CutPrefix(a, "n="); ok {
+			fmt.Sscan(v, &n)
+			continue
+		}
 		want[a] = true
 	}
 	var vs []variant
 	if which == "family" || which == "all" {
-		vs = append(vs, family(150)...)
+		vs = append(vs, family(n)...)
 	}
 	if which == "thresholds" || which == "all" {
 		vs = append(vs, thresholds()...)

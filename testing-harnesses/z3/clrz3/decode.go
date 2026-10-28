@@ -170,9 +170,11 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	for i, e := range c.Blobs {
 		ls = append(ls, lent{f.Blob.Off + int64(e.Off), 2, i})
 	}
+	ls = append(ls, lent{f.Str.Off, 3, 0})
 	sortLents(ls)
 	lv := make([]uint64, len(ls))
 	lin := in[StL]
+	var extra []int
 	for i := range ls {
 		v, n := binary.Uvarint(lin)
 		if n <= 0 {
@@ -180,6 +182,24 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 		}
 		lin = lin[n:]
 		lv[i] = v
+		if ls[i].kind == 3 { // suffix offsets of #Strings: v of them follow as deltas
+			if v > uint64(len(c.str)) {
+				return nil, bad("%d string suffix offsets", v)
+			}
+			prev := 0
+			for k := uint64(0); k < v; k++ {
+				dv, n := binary.Uvarint(lin)
+				if n <= 0 || dv > uint64(len(c.str)) {
+					return nil, bad("layout stream truncated")
+				}
+				lin = lin[n:]
+				prev += int(dv)
+				extra = append(extra, prev)
+			}
+		}
+	}
+	if err := c.SetStrExtra(extra); err != nil {
+		return nil, err
 	}
 	if len(lin) != 0 {
 		return nil, bad("trailing layout bytes")
@@ -190,6 +210,8 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	for i, e := range ls {
 		v := lv[i]
 		switch e.kind {
+		case 3:
+			continue
 		case 2:
 			if v >= uint64(numBlobKinds) {
 				return nil, bad("blob mark %d", v)

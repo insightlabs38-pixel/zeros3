@@ -14,6 +14,7 @@ func init() { cmds["rt"] = rt }
 
 func printStats(st clrz3.Stats) {
 	fmt.Printf("  payload %d comps %d marked %d/%d blobs, opaque bodies %d/%d, dups str/blob/row/us %v\n", st.Payload, st.Comps, st.Marked, st.Blobs, st.OpaqueBody, st.Bodies, st.Dups)
+	fmt.Printf("  method RVAs: %d predicted from the previous body, %d null, %d explicit\n", st.RVA[0], st.RVA[1], st.RVA[2])
 	for c := 0; c < clrz3.NumClasses; c++ {
 		fmt.Printf("    %-7s slots %7d refbytes %8d\n", clrz3.ClassName[c], st.Slots[c], st.RefBytes[c])
 	}

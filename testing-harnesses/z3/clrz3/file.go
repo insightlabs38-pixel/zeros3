@@ -547,3 +547,15 @@ func EncodeCoded(c, table int, row uint32) (uint32, bool) {
 func (f *File) RVAToOff(rva uint32) (off, avail int, ok bool) {
 	return pez3.RVAOff(f.Secs, int(f.Size), uint64(rva))
 }
+
+// PayloadOffset maps a file offset to its offset in the representation payload (the header
+// regions removed).
+func (f *File) PayloadOffset(off int64) int {
+	n := off
+	for _, r := range f.Excised {
+		if r.End() <= off {
+			n -= r.Len
+		}
+	}
+	return int(n)
+}

@@ -345,10 +345,12 @@ type BodyInfo struct {
 // of fat headers and the class tokens of typed catch clauses.
 func ILSlots(d []byte, bodies []BodyInfo) []Slot {
 	var out []Slot
+	seen := map[int64]bool{}
 	for _, bi := range bodies {
-		if bi.Opaque {
-			continue
+		if bi.Opaque || seen[bi.Body.Off] {
+			continue // methods sharing one body are listed once
 		}
+		seen[bi.Body.Off] = true
 		b := &bi.Body
 		if b.LocalOff != 0 {
 			out = append(out, Slot{Off: b.LocalOff, Len: 4, Enc: EncToken, Sp: SpRow, Set: SetTokSig, Stream: StIL, Table: TabIL, Row: bi.Row, Self: -1, Val: le32(d[b.LocalOff:])})

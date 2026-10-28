@@ -204,7 +204,7 @@ func ParseBody(d []byte, off int64, strict bool) (b Body, ok bool) {
 		return b, false
 	}
 	if b.Fat && b.SecOff == -1 {
-		p := (b.End + 3) &^ 3
+		p := b.Off + ((b.End - b.Off + 3) &^ 3) // sections are 4-aligned from the start of the body
 		b.SecOff = p
 		for {
 			if p+4 > n {
@@ -264,8 +264,7 @@ func ParseBody(d []byte, off int64, strict bool) (b Body, ok bool) {
 			if kind&0x80 == 0 {
 				break
 			}
-			p = (p + 3) &^ 3 // successive sections are 4-aligned
-			_ = p
+			p = b.Off + ((p - b.Off + 3) &^ 3)
 		}
 		b.SecEnd = b.End
 	}

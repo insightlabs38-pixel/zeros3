@@ -1,5 +1,7 @@
 package clrz3
 
+import "sort"
+
 // Heap views and the signature marking shared by the representation and the byte attribution.
 
 // HeapView is the entry structure of #Blob and #US.
@@ -127,6 +129,35 @@ func ValidateBodies(f *File, d []byte, h *HeapView, bodies []BodyInfo) {
 			}
 		}
 		b.Opaque = !good
+	}
+	// a body must not lie inside a header region or partly overlap another body; methods that
+	// share one body (same offset) are fine
+	order := make([]int, 0, len(bodies))
+	for i := range bodies {
+		if !bodies[i].Opaque {
+			order = append(order, i)
+		}
+	}
+	sort.SliceStable(order, func(a, b int) bool { return bodies[order[a]].Body.Off < bodies[order[b]].Body.Off })
+	end, off := int64(0), int64(-1)
+	for _, i := range order {
+		b := &bodies[i]
+		bad := false
+		for _, r := range f.Excised {
+			if b.Body.Off < r.End() && r.Off < b.Body.End {
+				bad = true
+			}
+		}
+		if b.Body.Off != off && b.Body.Off < end {
+			bad = true
+		}
+		if bad {
+			b.Opaque, b.Body = true, Body{}
+			continue
+		}
+		if b.Body.Off != off {
+			off, end = b.Body.Off, b.Body.End
+		}
 	}
 }
 

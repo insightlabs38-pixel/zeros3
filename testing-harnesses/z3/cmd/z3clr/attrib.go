@@ -28,8 +28,8 @@ func loadMasked(p string) (d, m []byte, cat []uint8, err error) {
 func attribRow(title string, a pdelta.Attr) {
 	pc := func(v int) string { return fmt.Sprintf("%5.1f", 100*float64(v)/float64(max(a.Raw, 1))) }
 	resid := a.Removed[clrz3.CatLiteral] + a.Removed[clrz3.CatMeta]
-	fmt.Printf("%-38s raw %7d (%5.1f%% of %d) | literal %s | true-meta %s | idx %s | tok %s | rva/layout %s | debug/res/sign %s | resid %s\n",
-		title, a.Raw, 100*float64(a.Raw)/float64(max(a.Size, 1)), a.Size,
+	fmt.Printf("%-38s raw %7d (%5.1f%% of %d) masked %5.2f%% | literal %s | true-meta %s | idx %s | tok %s | rva/layout %s | debug/res/sign %s | resid %s\n",
+		title, a.Raw, 100*float64(a.Raw)/float64(max(a.Size, 1)), a.Size, 100*float64(a.Masked)/float64(max(a.Size, 1)),
 		pc(a.Remaining[clrz3.CatLiteral]), pc(a.Remaining[clrz3.CatMeta]),
 		pc(a.Removed[clrz3.CatIdx]+a.Remaining[clrz3.CatIdx]), pc(a.Removed[clrz3.CatTok]+a.Remaining[clrz3.CatTok]),
 		pc(a.Removed[clrz3.CatLayout]+a.Remaining[clrz3.CatLayout]), pc(a.Remaining[clrz3.CatOther]+a.Removed[clrz3.CatOther]), pc(resid))

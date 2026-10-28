@@ -213,6 +213,7 @@ func wfamily(n int) []wvariant {
 
 // rust family: the same mutations on a second, independent toolchain (rustc cdylib).
 type rcfg struct {
+	Feat      bool // bulk-memory, simd128, reference-types, multivalue, sign-ext, atomics-free feature set at opt-level 3
 	N         int
 	Seed      int
 	BodyEdit  bool
@@ -259,6 +260,12 @@ func (c rcfg) src() string {
 	if c.AddFunc {
 		fmt.Fprintf(&b, "#[no_mangle] pub extern \"C\" fn added(x: i32) -> i32 { x.wrapping_mul(13).wrapping_sub(%d) }\n", c.Seed)
 	}
+	if c.Feat {
+		fmt.Fprintf(&b, "#[no_mangle] pub unsafe extern \"C\" fn blit(d: *mut u8, s: *const u8, n: usize) { core::ptr::copy(s, d, n); core::ptr::write_bytes(d, 7, n / 2); }\n")
+		fmt.Fprintf(&b, "#[no_mangle] pub unsafe extern \"C\" fn sum8(p: *const u8, n: usize) -> u32 { let mut t = 0u32; let mut i = 0; while i < n { t = t.wrapping_add(*p.add(i) as u32 * 3); i += 1; } t }\n")
+		fmt.Fprintf(&b, "#[no_mangle] pub extern \"C\" fn pair(x: i64) -> (i64, i64) { (x.wrapping_mul(3), x ^ 5) }\n")
+		fmt.Fprintf(&b, "#[no_mangle] pub extern \"C\" fn ext(x: i32) -> i32 { (x as i8) as i32 + (x as i16) as i32 }\n")
+	}
 	return b.String()
 }
 
@@ -268,8 +275,15 @@ func (c rcfg) build(dir string) ([]byte, error) {
 		return nil, err
 	}
 	out := filepath.Join(dir, "r.wasm")
-	args := []string{"--target", "wasm32-unknown-unknown", "--crate-type", "cdylib", "-C", "opt-level=2", "-C", "panic=abort", "-C", "strip=symbols",
-		"-C", "codegen-units=1", "-C", "link-arg=--allow-undefined", "--edition", "2021", "-A", "warnings", "-o", out, src}
+	opt := "opt-level=2"
+	var feat []string
+	if c.Feat {
+		opt = "opt-level=3"
+		feat = []string{"-C", "target-feature=+bulk-memory,+simd128,+reference-types,+multivalue,+sign-ext,+nontrapping-fptoint,+mutable-globals"}
+	}
+	args := []string{"--target", "wasm32-unknown-unknown", "--crate-type", "cdylib", "-C", opt, "-C", "panic=abort", "-C", "strip=symbols",
+		"-C", "codegen-units=1", "-C", "link-arg=--allow-undefined", "--edition", "2021", "-A", "warnings"}
+	args = append(append(args, feat...), "-o", out, src)
 	if o, err := exec.Command("rustc", args...).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("rustc: %v\n%s", err, o)
 	}
@@ -291,6 +305,7 @@ func rfamily(n int) []struct {
 		{"rs-addfunc", with(func(c *rcfg) { c.AddFunc = true })},
 		{"rs-earlyfunc", with(func(c *rcfg) { c.EarlyFunc = true })},
 		{"rs-earlyimport", with(func(c *rcfg) { c.EarlyImp = true })},
+		{"rs-feat", with(func(c *rcfg) { c.Feat = true })},
 	}
 }
 
@@ -310,6 +325,13 @@ func genCmd(args []string) error {
 	}
 	defer os.RemoveAll(dir)
 	os.MkdirAll(out, 0o755)
+	// unsupported-feature modules (SYNTHETIC_FIXTURE): a component-model binary and a GC struct type
+	if len(want) == 0 || want["neg-component"] {
+		os.WriteFile(filepath.Join(out, "neg-component.wasm"), append([]byte("\x00asm\x0d\x00\x01\x00"), make([]byte, 64)...), 0o644)
+	}
+	if len(want) == 0 || want["neg-gc"] {
+		os.WriteFile(filepath.Join(out, "neg-gc.wasm"), append([]byte("\x00asm\x01\x00\x00\x00"), 0x01, 0x05, 0x01, 0x5f, 0x01, 0x7f, 0x00), 0o644)
+	}
 	for _, x := range wfamily(300) {
 		if len(want) > 0 && !want[x.Name] {
 			continue

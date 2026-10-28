@@ -68,6 +68,7 @@ type Stats struct {
 	Dups       [4]int // duplicate-identity entries in the string / blob / row / us candidate indexes
 	Collisions int
 	Excised    int
+	RVA        [3]int // method RVAs: predicted from the previous body, null, explicit delta
 }
 
 // Rep is an encoded assembly.
@@ -198,10 +199,10 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 		return nil, unsup("missing #Strings or #Blob")
 	}
 	c, err := NewCtx(f, data, k0)
-	c.Auto = cfg.Auto
 	if err != nil {
 		return nil, err
 	}
+	c.Auto = cfg.Auto
 	c.Marks = DeriveMarks(f, data, c.HV)
 	bodies := FindBodies(f, data, true)
 	ValidateBodies(f, data, c.HV, bodies)
@@ -209,6 +210,13 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 	blobSlots := BlobSlots(f, data, c.Blobs, c.Marks)
 	ilSlots := ILSlots(data, bodies)
 	if err := c.BuildOwners(); err != nil {
+		return nil, err
+	}
+	extra, err := strExtra(c, slots)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.SetStrExtra(extra); err != nil {
 		return nil, err
 	}
 	if err := computeIdentities(c); err != nil {
@@ -233,6 +241,9 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 	}
 	all := append(append(append([]Slot(nil), slots...), blobSlots...), ilSlots...)
 	sortSlots(all)
+	if err := checkSlots(f, all); err != nil {
+		return nil, err
+	}
 
 	type item struct {
 		pos    int
@@ -298,11 +309,15 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 				switch {
 				case s.Val == 0:
 					code = 1 << 1
+					st.RVA[1]++
 				default:
 					pred := bodyPred(f, data, rvaPrevEnd)
 					rc := uint64(0)
 					if s.Val != pred {
 						rc = 2 + zz(int64(s.Val)-int64(pred))
+						st.RVA[2]++
+					} else {
+						st.RVA[0]++
 					}
 					code = rc << 1
 					if bi == nil || bi.Opaque {
@@ -331,6 +346,18 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 			st.Slots[ClsLayout]++
 			emit(s, StL, ClsLayout, sel)
 		}
+	}
+	// the referenced suffix offsets of #Strings: count, then ascending deltas, at the heap start
+	{
+		b := binary.AppendUvarint(nil, uint64(len(extra)))
+		prev := 0
+		for _, o := range extra {
+			b = binary.AppendUvarint(b, uint64(o-prev))
+			prev = o
+		}
+		s := &Slot{Off: f.Str.Off}
+		st.Slots[ClsLayout]++
+		emit(s, StL, ClsLayout, b)
 	}
 	// signature marks (one item per blob entry, at the entry start)
 	for i, e := range c.Blobs {
@@ -452,4 +479,53 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 		return nil, fmt.Errorf("%w: self-check mismatch", ErrUnsupported)
 	}
 	return rep, nil
+}
+
+// checkSlots rejects slot sets that overlap one another or a header region (a hostile layout: a
+// method body inside the metadata root, two bodies sharing bytes).
+func checkSlots(f *File, all []Slot) error {
+	end := int64(0)
+	ri := 0
+	for i := range all {
+		s := &all[i]
+		if s.Len == 0 {
+			continue
+		}
+		if s.Off < end {
+			return unsup("overlapping reference slots at %d", s.Off)
+		}
+		end = s.Off + int64(s.Len)
+		for ri < len(f.Excised) && f.Excised[ri].End() <= s.Off {
+			ri++
+		}
+		if ri < len(f.Excised) && f.Excised[ri].Off < end {
+			return unsup("reference slot at %d inside a header region", s.Off)
+		}
+	}
+	return nil
+}
+
+// strExtra lists, ascending, the #Strings offsets the table slots reference that are not the start
+// of a physical entry.
+func strExtra(c *Ctx, slots []Slot) ([]int, error) {
+	seen := map[int]bool{}
+	for i := range slots {
+		s := &slots[i]
+		if s.Sp != SpStr {
+			continue
+		}
+		o := int(s.Val)
+		if o >= len(c.str) {
+			return nil, unsup("#Strings offset %d outside the heap", o)
+		}
+		if o != 0 && c.str[o-1] != 0 {
+			seen[o] = true
+		}
+	}
+	out := make([]int, 0, len(seen))
+	for o := range seen {
+		out = append(out, o)
+	}
+	sort.Ints(out)
+	return out, nil
 }

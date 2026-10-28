@@ -54,12 +54,13 @@ type Ctx struct {
 	evOwner, propOwner                  []uint32
 	evBuilt, propBuilt                  bool
 
-	rowIdx  map[[2]int]*idxref.ClassIndex
-	strIdx  *idxref.ClassIndex
-	usIdx   *idxref.ClassIndex
-	guidIdx *idxref.ClassIndex
-	blobPre *idxref.ClassIndex
-	blobAll *idxref.ClassIndex
+	rowIdx   map[[2]int]*idxref.ClassIndex
+	StrExtra []int
+	strIdx   *idxref.ClassIndex
+	usIdx    *idxref.ClassIndex
+	guidIdx  *idxref.ClassIndex
+	blobPre  *idxref.ClassIndex
+	blobAll  *idxref.ClassIndex
 
 	err error
 }
@@ -448,35 +449,50 @@ func (c *Ctx) rowIndexEx(set uint8, excl int) (*idxref.ClassIndex, error) {
 	return ix, nil
 }
 
-// StrIndex names every character-start offset of #Strings by the physical entry (the NUL-delimited
-// string) that contains it and the number of bytes skipped into it. A suffix-shared name is thus
-// "the tail of this entry from byte k": it does not move when unrelated entries are inserted, and
-// it needs no occurrence number (several offsets spelling one string are different candidates).
+// StrIndex names the candidates of #Strings: every physical entry (the NUL-delimited string) and
+// the suffix offsets the file really references (StrExtra, carried in the layout stream so the
+// decoder knows them before it reads a reference). A suffix-shared name is "the tail of this
+// entry from byte k"; it does not move when unrelated entries are inserted and needs no occurrence
+// number. The candidate table is therefore the size of the entry list, not of the heap.
 func (c *Ctx) StrIndex() *idxref.ClassIndex {
 	if c.strIdx != nil {
 		return c.strIdx
 	}
 	var handles []int
 	var ids []idxref.Identity
-	start := 0
+	start, xi := 0, 0
 	for i := 0; i <= len(c.str); i++ {
-		if i == len(c.str) || c.str[i] == 0 {
-			entry := c.str[start:i]
-			for o := start; o <= i; o++ {
-				if o < i && c.str[o]&0xC0 == 0x80 {
-					continue
-				}
-				if i-start > 2048 && o != start {
-					break // pathological entry: only its own start is nameable
-				}
+		if i < len(c.str) && c.str[i] != 0 {
+			continue
+		}
+		entry := c.str[start:i]
+		handles = append(handles, start)
+		ids = append(ids, idxref.Hash(tagStr, lp(entry), []byte{0}))
+		for xi < len(c.StrExtra) && c.StrExtra[xi] <= i {
+			if o := c.StrExtra[xi]; o > start {
 				handles = append(handles, o)
 				ids = append(ids, idxref.Hash(tagStr, lp(entry), binary.AppendUvarint(nil, uint64(o-start))))
 			}
-			start = i + 1
+			xi++
 		}
+		start = i + 1
 	}
 	c.strIdx = c.classIndex(handles, ids)
 	return c.strIdx
+}
+
+// SetStrExtra declares the referenced suffix offsets (ascending, each inside an entry, none at an
+// entry start). The decoder takes them from the layout stream.
+func (c *Ctx) SetStrExtra(extra []int) error {
+	prev := 0
+	for _, o := range extra {
+		if o <= prev || o > len(c.str) || (o < len(c.str) && c.str[o]&0xC0 == 0x80) || o == 0 || c.str[o-1] == 0 {
+			return bad("string suffix offset %d", o)
+		}
+		prev = o
+	}
+	c.StrExtra, c.strIdx = extra, nil
+	return nil
 }
 
 // USIndex names the #US entries by their exact bytes.

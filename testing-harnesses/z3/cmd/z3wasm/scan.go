@@ -36,8 +36,12 @@ func scan(args []string) error {
 			continue
 		}
 		var per [wasmz3.NumSpaces]int
+		var fw [6]int // width histogram of the function-index slots
 		for _, s := range m.Slots {
 			per[s.Sp]++
+			if s.Sp == wasmz3.SpFunc {
+				fw[s.W]++
+			}
 		}
 		code, data := int64(0), int64(0)
 		for _, s := range dir.Secs {
@@ -48,8 +52,8 @@ func scan(args []string) error {
 				data = s.Len
 			}
 		}
-		fmt.Printf("%s: %d B code %d data %d custom %d %v\n  types %d imports %d (f/t/m/g/e %v) funcs %d tables %d mems %d globals %d tags %d exports %d elems %d datas %d bodies %d opaque %d names %d\n  slots %d by space %v opaque-why %v\n",
-			p, len(d), code, data, custom, cn, len(m.Types), len(m.Imports), m.NImport, len(m.Funcs), len(m.Tables), len(m.Mems), len(m.Globals), len(m.Tags), len(m.Exports), len(m.Elems), len(m.Datas), len(m.Bodies), m.Opaque, len(m.Names), len(m.Slots), per[1:], m.Why)
+		fmt.Printf("%s: %d B code %d data %d custom %d %v\n  types %d imports %d (f/t/m/g/e %v) funcs %d tables %d mems %d globals %d tags %d exports %d elems %d datas %d bodies %d opaque %d names %d\n  slots %d by space %v opaque-why %v func-slot widths 1/2/3/4/5 = %v\n",
+			p, len(d), code, data, custom, cn, len(m.Types), len(m.Imports), m.NImport, len(m.Funcs), len(m.Tables), len(m.Mems), len(m.Globals), len(m.Tags), len(m.Exports), len(m.Elems), len(m.Datas), len(m.Bodies), m.Opaque, len(m.Names), len(m.Slots), per[1:], m.Why, fw[1:])
 	}
 	return nil
 }

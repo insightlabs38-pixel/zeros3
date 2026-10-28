@@ -111,6 +111,7 @@ func allReps() []econx.Rep {
 		{Name: "meta-sections", Plan: rawCut(econx.Sections())},
 		{Name: "methods", Plan: rawCut(econx.PerItem(0x204))},
 		{Name: "raw-unit-4k", Plan: rawCut(econx.UnitCut(4))},
+		{Name: "raw-unit-2k", Plan: rawCut(econx.UnitCut(2))},
 		{Name: "o-idx-4k", Plan: layerOracle(clrz3.LayerIdx, econx.UnitCut(4))},
 		{Name: "o-idx+tok-4k", Plan: layerOracle(clrz3.LayerIdx|clrz3.LayerTok, econx.UnitCut(4))},
 		{Name: "o-all-4k", Plan: layerOracle(clrz3.LayerAll, econx.UnitCut(4))},

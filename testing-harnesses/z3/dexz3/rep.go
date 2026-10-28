@@ -34,6 +34,9 @@ const (
 // Config selects the representation parameters.
 type Config struct {
 	K0 int // identity prefix bytes, 1..4 (default 3)
+	// Auto > 0 (Z3-33): the prefix length of each index space is idxref.AutoK0(entries, Auto);
+	// offsets keep K0.
+	Auto int
 	// Cut returns the exclusive end offsets of the payload groups; secs describe the sections of
 	// the payload (payload coordinates) and the item boundaries a record-aware cutter may use.
 	// nil: one group.
@@ -54,8 +57,17 @@ type Rep struct {
 	Meta  []byte
 	Comps [][]byte
 	Stats Stats
-	Cuts  []int // payload offset where each component ends (analysis)
-	Secs  []Sec // sections in payload coordinates (analysis)
+	Cuts  []int           // payload offset where each component ends (analysis)
+	Secs  []Sec           // sections in payload coordinates (analysis)
+	Refs  []idxref.RefRec // every emitted reference (analysis: Z3-33 repeated-reference coders)
+}
+
+// spaceK0 is the prefix length of an index space with n entries.
+func spaceK0(k0, auto, n int) int {
+	if auto > 0 {
+		return idxref.AutoK0(n, auto)
+	}
+	return k0
 }
 
 func spaceOf(s Space) int { return int(s) - 1 } // SpString..SpMethod -> 0..4
@@ -103,7 +115,7 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 	var pi [numSpaces]*idxref.PrefixIndex
 	var st Stats
 	for sp := SpString; sp <= SpMethod; sp++ {
-		pi[sp] = idxref.NewPrefixIndex(tb.ID[sp], k0)
+		pi[sp] = idxref.NewPrefixIndex(tb.ID[sp], spaceK0(k0, cfg.Auto, len(tb.ID[sp])))
 		st.Collisions[sp] = pi[sp].Collisions()
 	}
 	// masked payload and per-slot reference bytes
@@ -189,6 +201,7 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 		var streams [numStream][]byte
 		for ri < len(refs) && refs[ri].pos < end {
 			streams[refs[ri].st] = append(streams[refs[ri].st], refs[ri].b...)
+			rep.Refs = append(rep.Refs, idxref.RefRec{Comp: len(rep.Comps), Stream: uint8(refs[ri].st), B: refs[ri].b})
 			ri++
 		}
 		c := idxref.PackComp(payload[start:end], streams[:])
@@ -201,7 +214,11 @@ func Encode(f *File, data []byte, cfg Config) (*Rep, error) {
 	if adler32.Checksum(data[12:]) == f.Hdr.Checksum {
 		flags |= flagAdler
 	}
-	m := append([]byte(repMagic), flags, byte(k0))
+	kb := byte(k0)
+	if cfg.Auto > 0 {
+		kb = 0x80 | byte(cfg.Auto)
+	}
+	m := append([]byte(repMagic), flags, kb)
 	m = append(m, f.Raw[:]...)
 	mapb := make([]byte, mLen)
 	copy(mapb, data[mOff:mOff+mLen])
@@ -234,8 +251,11 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	if len(meta) < len(repMagic)+2+HeaderSize || string(meta[:4]) != repMagic {
 		return nil, bad("representation header")
 	}
-	flags, k0 := meta[4], int(meta[5])
-	if k0 < 1 || k0 > 4 {
+	flags, k0, auto := meta[4], int(meta[5]), 0
+	if k0&0x80 != 0 {
+		auto, k0 = k0&0x7f, 3
+	}
+	if k0 < 1 || k0 > 4 || auto > 100 {
 		return nil, bad("K0 %d", k0)
 	}
 	var raw [HeaderSize]byte
@@ -319,7 +339,7 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	var sr [numStream][]byte
 	copy(sr[:], streams[:])
 	resolve := func(sp Space) error {
-		pi[sp] = idxref.NewPrefixIndex(tb.ID[sp], k0)
+		pi[sp] = idxref.NewPrefixIndex(tb.ID[sp], spaceK0(k0, auto, len(tb.ID[sp])))
 		b := sr[spaceOf(sp)]
 		for i := range w.Slots {
 			s := &w.Slots[i]
