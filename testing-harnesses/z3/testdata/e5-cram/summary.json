@@ -1,0 +1,139 @@
+{
+ "inputs": 25,
+ "unique_sources": 25,
+ "rows": 138,
+ "serialized_proofs": 138,
+ "cold_ranges": 282,
+ "negative_checks": [
+  "wrong-source",
+  "overlap"
+ ],
+ "finals": [
+  {
+   "family": "cram30",
+   "variant": "source-cdc-prod",
+   "bytes": 487391,
+   "additive": 487391,
+   "max_range_amplification": 46.80078125
+  },
+  {
+   "family": "cram30",
+   "variant": "source-cdc-4k",
+   "bytes": 311633,
+   "additive": 798450,
+   "max_range_amplification": 2.805419921875
+  },
+  {
+   "family": "cram30",
+   "variant": "native-block-oracle",
+   "bytes": 331411,
+   "additive": 818802,
+   "max_range_amplification": 8.203857421875
+  },
+  {
+   "family": "cram30",
+   "variant": "native-payload-oracle",
+   "bytes": 373798,
+   "additive": 861189,
+   "max_range_amplification": 8.85888671875
+  },
+  {
+   "family": "cram31",
+   "variant": "source-cdc-prod",
+   "bytes": 498114,
+   "additive": 498114,
+   "max_range_amplification": 27.47607421875
+  },
+  {
+   "family": "cram31",
+   "variant": "source-cdc-4k",
+   "bytes": 325454,
+   "additive": 823029,
+   "max_range_amplification": 2.614990234375
+  },
+  {
+   "family": "cram31",
+   "variant": "native-block-oracle",
+   "bytes": 344104,
+   "additive": 842218,
+   "max_range_amplification": 8.203857421875
+  },
+  {
+   "family": "cram31",
+   "variant": "native-payload-oracle",
+   "bytes": 387287,
+   "additive": 885401,
+   "max_range_amplification": 8.85888671875
+  },
+  {
+   "family": "cram31-noref",
+   "variant": "source-cdc-prod",
+   "bytes": 545142,
+   "additive": 545142,
+   "max_range_amplification": 35.415283203125
+  },
+  {
+   "family": "cram31-noref",
+   "variant": "source-cdc-4k",
+   "bytes": 393643,
+   "additive": 938785,
+   "max_range_amplification": 3.53564453125
+  },
+  {
+   "family": "cram31-noref",
+   "variant": "native-block-oracle",
+   "bytes": 404052,
+   "additive": 949194,
+   "max_range_amplification": 8.161376953125
+  },
+  {
+   "family": "cram31-noref",
+   "variant": "native-payload-oracle",
+   "bytes": 448576,
+   "additive": 993718,
+   "max_range_amplification": 8.8330078125
+  },
+  {
+   "family": "public-htslib-fixtures",
+   "variant": "source-cdc-prod",
+   "bytes": 29309,
+   "additive": 29309,
+   "max_range_amplification": 5.5458984375
+  },
+  {
+   "family": "public-htslib-fixtures",
+   "variant": "source-cdc-4k",
+   "bytes": 30821,
+   "additive": 60130,
+   "max_range_amplification": 2.509765625
+  },
+  {
+   "family": "public-htslib-fixtures",
+   "variant": "native-block-oracle",
+   "bytes": 48921,
+   "additive": 78230,
+   "max_range_amplification": 5.369384765625
+  },
+  {
+   "family": "public-htslib-fixtures",
+   "variant": "native-payload-oracle",
+   "bytes": 61710,
+   "additive": 91019,
+   "max_range_amplification": 5.41650390625
+  },
+  {
+   "family": "reference-artifacts",
+   "variant": "source-cdc-prod",
+   "bytes": 325141,
+   "additive": 325141,
+   "max_range_amplification": 30.224365234375
+  },
+  {
+   "family": "reference-artifacts",
+   "variant": "source-cdc-4k",
+   "bytes": 368490,
+   "additive": 693172,
+   "max_range_amplification": 3.53955078125
+  }
+ ]
+}

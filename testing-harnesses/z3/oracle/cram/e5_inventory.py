@@ -17,14 +17,14 @@ for name,sam,ref in [('ce#5b_java.cram','ce#5b.sam','ce.fa'),('auxf#values_java.
   for a,b in zip(source,records):
    if signature(a)==signature(b):continue
    # Preserve the observed negative: this Java fixture changes H tag types to
-   # signed-byte arrays. Values agree; original SAM tag types do not round-trip.
+   # signed arrays. Bit patterns agree; original SAM tag semantics do not round-trip.
    assert name=='auxf#values_java.cram' and signature(a)[:-1]==signature(b)[:-1],(name,a.query_name)
    old={k:(v,t) for k,v,t in a.get_tags(with_value_type=True) if k not in ['MD','NM']};new={k:(v,t) for k,v,t in b.get_tags(with_value_type=True) if k not in ['MD','NM']};assert set(old)==set(new)
    for tag,(value,typ) in old.items():
     other,other_type=new[tag]
     if str(value)==str(other) and typ==other_type:continue
     # Integer storage widths are not semantic tag-type changes; signature uses
-    # their values. Only the three H conversions caused the failed comparison.
+    # their values. H and unsigned-array conversions caused the failed comparison.
     if str(value)==str(other) and typ in 'cCsSiI' and other_type in 'cCsSiI':continue
     if typ=='H':
      assert other_type=='B' and other.typecode=='b' and bytes.fromhex(value)==other.tobytes()
