@@ -1,0 +1,16 @@
+{
+ "go": "go1.27.3 linux/amd64",
+ "producer_sha256": "1aae5778b6e04f7234c7627f0994a81d2f9e410168d0387c6206c4da915c3304",
+ "compiler_binaries": {
+  "clang-19": "0a3c55936ac43954fbe4914e6e73b577ca9e35e75d89ef13d3e28c187f41ca1a",
+  "llvm-bcanalyzer-19": "fe8a343e8506f2bf7624ef40ddb88f08d716e721b073ec242e5eabb968e5fc8b",
+  "llvm-dis-19": "58295c7460bf8c9b169ab8a5fd08b486156e048590d73f28a37542072d293284"
+ },
+ "full_lab_test": "PASS",
+ "full_lab_vet": "PASS",
+ "fuzz": {
+  "executions": 3103,
+  "seconds": 21.023,
+  "status": "PASS"
+ }
+}

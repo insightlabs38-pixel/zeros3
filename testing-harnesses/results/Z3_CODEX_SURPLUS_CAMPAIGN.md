@@ -106,3 +106,15 @@ sources, 83 exact serialized proofs, 249 ranges, strict/native-oracle parity,
 198,770 fuzz executions. Full-send standalone win is additive storage loss;
 no production changes or generic BASE. See Z3_42_FS_SEND.md and q14-send artifacts.
 Next unfinished queue item is Q15 LLVM bitcode; Q9/Q10 remain blocked drafts.
+
+## Durable cursor — Q15 closed, Q16 next (2026-10-28)
+
+Q15 `z3/llvm-bitcode-frontier`: generic grouping KILL; semantic normalization
+DEFER. Five hiredis and three SQLite source releases plus C/C++ controls produced
+65 bitcodes / 56 unique SHA256s. Strict generic framing matches LLVM's 28,242
+block and 1,854,143 record counts; 325 exact representations / 975 ranges.
+Function grouping costs +17.2% versus CDC overall; every additive layout loses.
+Same-named functions demonstrate operand/ID churn without a defensible generic
+normalization. Complete analysis tests/vet and bounded parser fuzz pass. Production
+untouched. Q16 broad-tail ranking + one deep target is the next unfinished item;
+expansion pool remains available only where evidence justifies useful work.
