@@ -1,6 +1,7 @@
 """Freeze independently produced small native fixtures for the bounded parsers."""
 import hashlib,json,pathlib,sys
 import h5py,numpy as np,pyarrow as pa,pyarrow.ipc as ipc
+assert np.__version__=="2.3.5"
 root=pathlib.Path(sys.argv[1]);root.mkdir(parents=True,exist_ok=True);rows=[]
 def record(p,fmt,supported,spans=None):
  b=p.read_bytes();rows.append(dict(file=p.name,format=fmt,supported=supported,sha256=hashlib.sha256(b).hexdigest(),bytes=len(b),spans=spans))
@@ -24,5 +25,5 @@ for name,table,stream,codec in [('plain',t,False,None),('zstd',t,False,'zstd'),(
   reader=ipc.open_stream(f) if stream else ipc.open_file(f)
   assert reader.read_all().equals(table)
  record(p,'arrow',True)
-(root/'fixtures.json').write_text(json.dumps(dict(producer=dict(h5py=h5py.__version__,hdf5=h5py.version.hdf5_version,pyarrow=pa.__version__),fixtures=rows),indent=1))
+(root/'fixtures.json').write_text(json.dumps(dict(producer=dict(numpy=np.__version__,h5py=h5py.__version__,hdf5=h5py.version.hdf5_version,pyarrow=pa.__version__),fixtures=rows),indent=1))
 print('native fixtures',len(rows))

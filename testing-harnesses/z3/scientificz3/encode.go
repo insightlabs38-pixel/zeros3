@@ -75,6 +75,20 @@ func Encode(data []byte, p *Plan, deep bool) (*kinds.Bundle, Stats, error) {
 	if e := p.validate(len(data)); e != nil {
 		return nil, st, e
 	}
+	// Admission reserves cumulative declared embedded work before decoding any
+	// region. Many tiny compressed buffers must not multiply the per-buffer cap.
+	var decodedWork int64
+	for _, x := range p.Regions {
+		if x.Width < 0 || x.Width > 4096 || x.Decoded < 0 || x.Decoded > MaxRegion {
+			return nil, st, ErrLimit
+		}
+		if deep && x.Codec == "zstd" {
+			if x.Decoded > (1<<30)-decodedWork {
+				return nil, st, ErrLimit
+			}
+			decodedWork += x.Decoded
+		}
+	}
 	r := &repz3.Rep{Kind: repz3.KindConcat, Size: int64(len(data))}
 	var objs [][]byte
 	var kids []*kinds.Bundle
@@ -93,9 +107,6 @@ func Encode(data []byte, p *Plan, deep bool) (*kinds.Bundle, Stats, error) {
 	}
 	off := int64(0)
 	for _, x := range p.Regions {
-		if x.Width < 0 || x.Width > 4096 || x.Decoded < 0 || x.Decoded > MaxRegion {
-			return nil, st, ErrLimit
-		}
 		st.Regions++
 		st.FramingBytes += x.Off - off
 		fine(data[off:x.Off])

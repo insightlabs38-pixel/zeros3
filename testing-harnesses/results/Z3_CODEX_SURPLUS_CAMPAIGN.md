@@ -79,3 +79,12 @@ Q11 Stage A closed: NO_XZ_TARGET on6 real release artifacts,24 exact compressed/
 interior rows; separate8-row recompression control cannot rescue history costs.
 No XZ decoder/production change. Continue Q12 scientific/columnar shootout after
 eligible Q11 research merge. Q12-Q16 remain unfinished; drafts80/81 stay unmerged.
+
+Q11 merged PR #82,596e045: NO_XZ_TARGET for tested histories; no production diff.
+Q12 closed: HDF5/ORC/Arrow DEFER.68 inputs,354 rows,654 serialized proofs,
+762 authenticated cold ranges; full/vet/targeted-race/fuzz pass. Standalone
+controlled gains50–57% remain additive with CDC; no production savings claimed.
+Independent18 native-readable references; no real-history promotion evidence.
+Broad legacy kinds race default600s timeout retained; changed-surface races pass.
+Next Q13 WIM/ESD characterization. Q13-Q16 and useful expansion remain unfinished.
+Draft80/81 helper/LOC accounting corrected (docs only); both stay unmerged.

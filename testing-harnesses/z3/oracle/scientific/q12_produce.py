@@ -5,6 +5,7 @@ All histories here are PRODUCER_WORKLOAD; reexports are explicitly separate.
 import hashlib,json,pathlib,shutil,sys
 import numpy as np
 import h5py,pyorc,pyarrow as pa,pyarrow.ipc as ipc,pyarrow.orc as orc
+assert np.__version__=="2.3.5"
 root=pathlib.Path(sys.argv[1]);root.mkdir(parents=True,exist_ok=True)
 assert h5py.__version__=='3.15.1' and pyorc.__version__=='0.10.0' and pa.__version__=='18.1.0'
 N=262144
@@ -94,5 +95,5 @@ for stage in ['r0','r1-resize']:
   d=f['table'];a=d[:];spans=[(d.id.get_chunk_info(i).byte_offset,d.id.get_chunk_info(i).size) for i in range(d.id.get_num_chunks())]
  record(p,'hdf5-unlimited',stage,'actual native dataset resize' if stage!='r0' else 'unlimited base',spans,a)
 (root/'inputs.json').write_text(json.dumps(rows,indent=1))
-(root/'producers.json').write_text(json.dumps(dict(h5py=h5py.__version__,hdf5=h5py.version.hdf5_version,pyorc=pyorc.__version__,pyarrow=pa.__version__,rows=N,class_='PRODUCER_WORKLOAD_NOT_NATURAL_HISTORY'),indent=1))
+(root/'producers.json').write_text(json.dumps(dict(numpy=np.__version__,h5py=h5py.__version__,hdf5=h5py.version.hdf5_version,pyorc=pyorc.__version__,pyarrow=pa.__version__,rows=N,class_='PRODUCER_WORKLOAD_NOT_NATURAL_HISTORY'),indent=1))
 print('native inputs',len(rows))

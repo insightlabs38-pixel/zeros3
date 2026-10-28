@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -31,6 +32,12 @@ type row struct {
 	Objects                                            int
 	Fallback                                           string
 	Detail                                             scientificz3.Stats
+	Ranges                                             []rangeSample
+	Additive                                           *int64
+}
+type rangeSample struct {
+	Offset, Length, ReadBytes int64
+	Reads, Objects            int
 }
 type policy struct {
 	seen map[int]bool
@@ -107,7 +114,12 @@ func main() {
 	enc := json.NewEncoder(os.Stdout)
 	for _, in := range ins {
 		source := read(in.Path, in.SHA256)
-		for _, v := range []string{"source-cdc-prod", "native-span-oracle", "logical-cdc-prod", "logical-cdc-4k", "native-fine-exact", "planes-codec-exact"} {
+		var baseline []int
+		variants := []string{"source-cdc-prod", "native-span-oracle", "logical-cdc-prod", "logical-cdc-4k", "native-fine-exact", "planes-codec-exact"}
+		if len(in.Oracles) == 0 {
+			variants = []string{"source-cdc-prod", "native-fine-exact", "planes-codec-exact"}
+		}
+		for _, v := range variants {
 			key := in.Family + "/" + v
 			st := states[key]
 			if st == nil {
@@ -157,6 +169,55 @@ func main() {
 				out.LogicalBytes += int64(len(data))
 				out.InteriorProofs = append(out.InteriorProofs, cand.ProofSHA)
 				out.Objects += len(cand.Objects)
+				if v == "source-cdc-prod" {
+					baseline = append([]int(nil), cand.Objects...)
+				}
+				if out.OuterExact {
+					unionKey := in.Family + "/additive/" + v
+					union := states[unionKey]
+					if union == nil {
+						union = &policy{seen: map[int]bool{}}
+						states[unionKey] = union
+					}
+					for _, ids := range [][]int{baseline, cand.Objects} {
+						for _, id := range ids {
+							if !union.seen[id] {
+								union.seen[id] = true
+								union.cost += c.Corpus.Objects[id].Packed + 64
+							}
+						}
+					}
+					value := union.cost
+					out.Additive = &value
+				}
+
+				if out.OuterExact {
+					proofEnv := kinds.NewEnvLimits(c.Store, repz3.Limits{MaxDepth: 4, MaxWhole: scientificz3.MaxRegion})
+					reach, err := proofEnv.Reachable(b.ID)
+					must(err)
+					n := min(int64(4096), int64(len(data)))
+					for _, off := range []int64{0, (int64(len(data)) - n) / 2, int64(len(data)) - n} {
+						c.Store.ResetReads()
+						env := kinds.NewEnvLimits(c.Store, repz3.Limits{MaxDepth: 4, MaxWhole: scientificz3.MaxRegion})
+						call, err := env.Open(b.ID)
+						must(err)
+						got, err := scientificz3.ReadRange(call, off, n)
+						must(err)
+						if !bytes.Equal(got, data[off:off+n]) {
+							panic("cold serialized range mismatch")
+						}
+						reads, touched := c.Store.Touched()
+						sample := rangeSample{Offset: off, Length: n, Reads: reads, Objects: len(touched)}
+						for id, n := range touched {
+							sample.ReadBytes += n
+							if _, ok := reach.Role[id]; !ok {
+								panic("range read unprotected object")
+							}
+						}
+						out.Ranges = append(out.Ranges, sample)
+					}
+				}
+
 				for _, id := range cand.Objects {
 					if !st.seen[id] {
 						st.seen[id] = true
