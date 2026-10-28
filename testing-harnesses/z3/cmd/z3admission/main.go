@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"zeros3-z3/admission"
+	"zeros3-z3/frontiercapture"
 )
 
 func must(e error) {
@@ -28,7 +29,7 @@ func main() {
 	overhead := flag.Int64("object-overhead", -1, "optional physical-object cost sensitivity, bytes")
 	flag.Parse()
 	if *mode == "capture" {
-		c, e := capture(*module, *public, *producer, *git)
+		c, e := frontiercapture.Build(*module, *public, *producer, *git, nil)
 		must(e)
 		f, e := os.Create(*out)
 		must(e)

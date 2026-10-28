@@ -14,11 +14,20 @@ import (
 // Capture prices only objects in a proved serialized dependency closure. The
 // all-candidate generation store is not policy state; missing dependencies are
 // charged from scratch during replay even if generation used an earlier root.
+type Observation struct {
+	Case, Stage, Class, Variant string
+	Data                        []byte
+	Store                       *repz3.MemStore
+	Reach                       *repz3.Reach
+}
+
 type Capture struct {
-	Corpus Corpus
-	Store  *repz3.MemStore
-	index  map[repz3.SHA]int
-	limits repz3.Limits
+	Case, Stage, Class string
+	Observe            func(Observation) error
+	Corpus             Corpus
+	Store              *repz3.MemStore
+	index              map[repz3.SHA]int
+	limits             repz3.Limits
 }
 
 func NewCapture() *Capture {
@@ -77,6 +86,11 @@ func (c *Capture) Variant(name string, data []byte, b *kinds.Bundle, start time.
 	out.Root = fmt.Sprintf("%x", root)
 	out.ProofSHA = fmt.Sprintf("%x", want)
 	out.Sample = Sample(sample)
+	if c.Observe != nil {
+		if e := c.Observe(Observation{c.Case, c.Stage, c.Class, name, data, c.Store, reach}); e != nil {
+			return out, e
+		}
+	}
 	out.AnalysisNS = time.Since(start).Nanoseconds()
 	out.ReadBytes = readBytes
 	return out, nil
