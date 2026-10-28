@@ -4,9 +4,11 @@ Merged Q1: PR #72, `4f97c7beeaad542db854a54aa874f87a6dc6d5ff` (I1A_PARTIAL).
 Merged Q2: PR #73, `bd0562101364b65e7ddec4a33bc89ab7189b6b87` (I1B_COMPLETE).
 Merged Q3: PR #74, `f0b34b6ed9a34dbcef56fd745e0a55f6e65f9e43` (I1C_COMPLETE).
 Merged Q4: PR #75, `1a0879cfa8cc904398df1aec54e3796b046882a4`; all targets DEFER.
-Active Q5: `z3/native-binary-rescue`; checkpoints86737dd/f755c69, gates pass.
+Merged Q5: PR #76, `4d2f9593317804a1a8deaab5ca34f5124fb4d735` (ELF/PE DEFER).
+Active Q6: `z3/lineage-admission-planner`; bounded policy/schema tests pass.
 ELF/PE DEFER: genuine grouped exact gains on controlled histories, mixed C++
-and public losses. Closed recipes/evidence retained; merge then continue Q6.
+and public losses. Closed recipes/evidence retained; Q6 now captures unified
+physical candidate closures and tests honest late bootstrap/regret policies.
 All three debug targets DEFER; controlled wins fail natural-history breadth/
 economics. Exact parsers/grouping/native attribution retained for Q5.
 Q2 checkpoints: `eb07532`, `a0a20ab`, final validation checkpoint in this branch.
