@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -322,5 +323,144 @@ func TestRepI2ManagedEncoderFidelity(t *testing.T) {
 				t.Fatal("managed creation enabled")
 			}
 		})
+	}
+}
+
+func TestRepI2BaseSurvivesRootRetirement(t *testing.T) {
+	l := newRepLab(t, repModePrefer)
+	plain := bytes.Repeat([]byte{0, 60, 1, 60}, 1<<16)
+	l.put("base", repI2Safetensors(t, plain))
+	baseEntry, _ := l.manifest("base")
+	baseRoot := repMustRoot(t, l.s, baseEntry.manifestUUID)
+	plain[111] ^= 3
+	l.put("derived", repI2Safetensors(t, plain))
+	entry, _ := l.manifest("derived")
+	derivedRoot := repMustRoot(t, l.s, entry.manifestUUID)
+	src := l.s.newRepSource(derivedRoot.Descs, nil)
+	env := &repEnv{Src: src, Limits: repProdLimits}
+	call, e := env.open(derivedRoot.Rep)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var tensor *repCall
+	for i, m := range call.Rep.Members {
+		if m.Role == repDerived {
+			tensor, e = call.child(i)
+			if e != nil {
+				t.Fatal(e)
+			}
+			break
+		}
+	}
+	if tensor == nil {
+		t.Fatal("missing tensor")
+	}
+	h, e := repModelHops(tensor)
+	if e != nil || h != 2 {
+		t.Fatalf("expected actual base dependency, hops%d %v", h, e)
+	}
+	reach, e := env.reachable(derivedRoot.Rep)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, ok := reach.Role[baseRoot.Rep]; ok {
+		t.Fatal("derived tensor depends on the entire earlier object")
+	}
+	src.close()
+	if e := l.s.DeleteObject("b", "base"); e != nil {
+		t.Fatal(e)
+	}
+	delete(l.want, "base")
+	l.offline(func() {
+		zero := 0
+		if _, e := pruneHistoryStore(l.dir, historyPruneOptions{Bucket: "b", Key: "base", KeepLast: &zero}, true); e != nil {
+			t.Fatal(e)
+		}
+		if _, e := gcCollect(l.dir, true); e != nil {
+			t.Fatal(e)
+		}
+	})
+	l.exact("base object retired, derived tensor retained")
+	l.offline(func() {
+		if _, e := repackStore(l.dir, repackOptions{TargetBytes: 1 << 20, MaxLivePercent: 100, Compress: true}); e != nil {
+			t.Fatal(e)
+		}
+	})
+	l.exact("base dependencies repacked")
+}
+
+func FuzzRepI2Decode(f *testing.F) {
+	raw, err := repI2FixtureJSON(f)
+	if err != nil {
+		f.Fatal(err)
+	}
+	var fixtures []repLabCodecFixture
+	if err := json.Unmarshal(raw, &fixtures); err != nil {
+		f.Fatal(err)
+	}
+	for i, x := range fixtures {
+		f.Add(x.Root, uint8(i))
+	}
+	f.Fuzz(func(t *testing.T, data []byte, pick uint8) {
+		if len(data) > 1<<20 {
+			return
+		}
+		fixture := fixtures[int(pick)%len(fixtures)]
+		src := newRepMem()
+		for _, object := range fixture.Objects {
+			src.put(object)
+		}
+		root := src.put(data)
+		env := &repEnv{Src: src, Limits: repLimits{MaxDepth: 4, MaxMembers: 4096, MaxRepBytes: 1 << 20, MaxWhole: 2 << 20, MaxObjects: 4096}}
+		env.reconstruct(root, io.Discard)
+		env.reachable(root)
+	})
+}
+
+type repI2NoReadSource struct{}
+
+func (repI2NoReadSource) Size([32]byte) (int64, error) { panic("preallocation guard read source") }
+func (repI2NoReadSource) ReadAt([32]byte, []byte, int64) (int, error) {
+	panic("preallocation guard read source")
+}
+func TestRepI2ManagedEarlyBudgets(t *testing.T) {
+	for _, kind := range []repKind{repKindDEX, repKindCLR} {
+		r := &repObject{Kind: kind, Size: 33 << 20}
+		c := &repCall{Rep: r, env: &repEnv{Src: repI2NoReadSource{}, Limits: repProdLimits}}
+		d, _ := repDecoderFor(kind)
+		if e := d.Decode(c); !errors.Is(e, errRepLimit) {
+			t.Fatalf("size bound: %v", e)
+		}
+		r.Size = 16
+		if kind == repKindDEX {
+			r.Recipe = make([]byte, 6+repDXHeaderSize)
+			binary.LittleEndian.PutUint32(r.Recipe[38:42], 16)
+		} else {
+			r.Recipe = append([]byte("CLR1\x03\x0c"), 16)
+		}
+		r.Members = []repMember{{Role: repStored, Size: 8193}}
+		if e := d.Expand(c, func([32]byte) {}); !errors.Is(e, errRepLimit) {
+			t.Fatalf("node bound: %v", e)
+		}
+	}
+}
+
+type repI2ShortWriter struct{}
+
+func (repI2ShortWriter) Write([]byte) (int, error) { return 0, nil }
+func TestRepI2ShortWriterAndAmbiguousNames(t *testing.T) {
+	src := newRepMem()
+	plain := []byte{0, 1, 2, 3}
+	id := src.put(repMDPlaneChunks(plain, 2, 2))
+	r := &repObject{Kind: repKindModel, Size: 4, Members: []repMember{{Role: repStored, SHA: id, Size: 4}}, Recipe: repMDBuildModelRecipe([]repMDModelOp{{Tag: repMDopPlanes, Res: 0, W: 2, E: 2}})}
+	env := &repEnv{Src: src, Limits: repProdLimits}
+	c := env.call([32]byte{}, r, 1, nil, repI2ShortWriter{})
+	if e := (repMDmodelDecoder{}).Decode(c); !errors.Is(e, io.ErrShortWrite) {
+		t.Fatalf("short writer: %v", e)
+	}
+	r.Size = 8
+	r.Recipe = repMDBuildModelRecipe([]repMDModelOp{{Tag: repMDopCopy, M: 0, Name: "same"}, {Tag: repMDopCopy, M: 0, Name: "same"}})
+	if _, e := repMDModelNames(c); !errors.Is(e, errRepAmbiguous) {
+		t.Fatalf("ambiguous tensor names: %v", e)
 	}
 }

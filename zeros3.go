@@ -38788,7 +38788,7 @@ func repDXEncode(f *repDXFile, data []byte, cfg repDXConfig) (*repDXRep, error) 
 		cuts = append(cuts, len(payload))
 	}
 	// components
-	rep := &repDXRep{Stats: st, Cuts: cuts, Secs: secs}
+	rep := &repDXRep{Stats: st}
 	ri, start := 0, 0
 	for _, end := range cuts {
 		if end < start || end > len(payload) {
@@ -38797,7 +38797,6 @@ func repDXEncode(f *repDXFile, data []byte, cfg repDXConfig) (*repDXRep, error) 
 		var streams [repDXnumStream][]byte
 		for ri < len(refs) && refs[ri].pos < end {
 			streams[refs[ri].st] = append(streams[refs[ri].st], refs[ri].b...)
-			rep.Refs = append(rep.Refs, repIXRefRec{Comp: len(rep.Comps), Stream: uint8(refs[ri].st), B: refs[ri].b})
 			ri++
 		}
 		c := repIXPackComp(payload[start:end], streams[:])
@@ -42759,7 +42758,7 @@ func repCLEncode(f *repCLFile, data []byte, cfg repCLConfig) (*repCLRep, error) 
 	if len(cuts) == 0 || cuts[len(cuts)-1] != len(payload) {
 		cuts = append(cuts, len(payload))
 	}
-	rep := &repCLRep{Stats: st, Cuts: cuts, Secs: secs}
+	rep := &repCLRep{Stats: st}
 	ri, start := 0, 0
 	for _, end := range cuts {
 		if end < start || end > len(payload) {
@@ -42768,7 +42767,6 @@ func repCLEncode(f *repCLFile, data []byte, cfg repCLConfig) (*repCLRep, error) 
 		var streams [repCLNumStreams][]byte
 		for ri < len(items) && items[ri].pos < end {
 			streams[items[ri].stream] = append(streams[items[ri].stream], items[ri].b...)
-			rep.Refs = append(rep.Refs, repIXRefRec{Comp: len(rep.Comps), Stream: items[ri].stream, Class: items[ri].class, B: items[ri].b})
 			ri++
 		}
 		rep.Comps = append(rep.Comps, repIXPackComp(payload[start:end], streams[:]))
@@ -45453,8 +45451,10 @@ func repMDapplyResidual(c *repCall, op *repMDmodelOp, w io.Writer, bufs *[3][]by
 				out[i] ^= bbuf[i]
 			}
 		}
-		if _, err := w.Write(out[:n]); err != nil {
+		if got, err := w.Write(out[:n]); err != nil {
 			return err
+		} else if int64(got) != n {
+			return io.ErrShortWrite
 		}
 		done += n
 	}

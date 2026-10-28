@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -114,8 +115,14 @@ func main() {
 		fixtures = append(fixtures, freeze(fmt.Sprintf("model-hop%d", hop), "SYNTHETIC_FIXTURE", next, b))
 		prev, plain = b, next
 	}
-	gg := ggufz3.Build(3, 32, []ggufz3.BuildTensor{{"quant", []uint64{256, 3}, 14, bytes.Repeat([]byte{7}, 630)}, {"fp32", []uint64{64}, 0, bytes.Repeat([]byte{9}, 256)}})
+	gg := ggufz3.Build(3, 32, []ggufz3.BuildTensor{{Name: "quant", Dims: []uint64{256, 3}, Type: 14, Data: bytes.Repeat([]byte{7}, 630)}, {Name: "fp32", Dims: []uint64{64}, Type: 0, Data: bytes.Repeat([]byte{9}, 256)}})
 	check(os.WriteFile(filepath.Join(dir, "model.gguf"), gg, 0644))
+	plainModel := bytes.Repeat([]byte{0, 60, 1, 60, 2, 60, 3, 60}, 1<<17)
+	hdr := fmt.Sprintf(`{"weights":{"dtype":"BF16","shape":[%d],"data_offsets":[0,%d]}}`, len(plainModel)/2, len(plainModel))
+	stBytes := binary.LittleEndian.AppendUint64(nil, uint64(len(hdr)))
+	stBytes = append(stBytes, hdr...)
+	stBytes = append(stBytes, plainModel...)
+	check(os.WriteFile(filepath.Join(dir, "model.safetensors"), stBytes, 0644))
 	f, e := os.Create(filepath.Join(dir, "lab-i2.json.gz"))
 	check(e)
 	gz := gzip.NewWriter(f)

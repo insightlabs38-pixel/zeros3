@@ -2,7 +2,7 @@
  "base": "43900798dfaee9da63166bcd2fd6a8960e0a490b",
  "production_before_lines": 37850,
  "modes": [
-  "managed",
+  "managed-analysis",
   "model-layout",
   "model-codec",
   "managed-codec"
@@ -43,6 +43,11 @@
  "deviations": [
   "framework names translated to existing production runtime",
   "managed preallocation/group/component budgets tightened",
-  "model operation/range caps and nonempty derived-frame range fallback"
- ]
+  "model operation/range caps and nonempty derived-frame range fallback",
+  "research-only managed Refs/Cuts/Secs diagnostics not retained; all wire roots unchanged",
+  "streaming Model256KiB plane/XOR writer; headers retain production CDC",
+  "at most8 explicit-SHA basis candidates; hop budget3; source/base inspection budget unchanged",
+  "model name ambiguity and short-writer checks tightened"
+ ],
+ "production_after_lines": 46332
 }

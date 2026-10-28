@@ -1,0 +1,36 @@
+--- a/zeros3.go
++++ b/zeros3.go
+@@ -38788,7 +38788,7 @@
+ 		cuts = append(cuts, len(payload))
+ 	}
+ 	// components
+-	rep := &repDXRep{Stats: st}
++	rep := &repDXRep{Stats: st, Cuts: cuts, Secs: secs}
+ 	ri, start := 0, 0
+ 	for _, end := range cuts {
+ 		if end < start || end > len(payload) {
+@@ -38797,6 +38797,7 @@
+ 		var streams [repDXnumStream][]byte
+ 		for ri < len(refs) && refs[ri].pos < end {
+ 			streams[refs[ri].st] = append(streams[refs[ri].st], refs[ri].b...)
++			rep.Refs = append(rep.Refs, repIXRefRec{Comp: len(rep.Comps), Stream: uint8(refs[ri].st), B: refs[ri].b})
+ 			ri++
+ 		}
+ 		c := repIXPackComp(payload[start:end], streams[:])
+@@ -42758,7 +42759,7 @@
+ 	if len(cuts) == 0 || cuts[len(cuts)-1] != len(payload) {
+ 		cuts = append(cuts, len(payload))
+ 	}
+-	rep := &repCLRep{Stats: st}
++	rep := &repCLRep{Stats: st, Cuts: cuts, Secs: secs}
+ 	ri, start := 0, 0
+ 	for _, end := range cuts {
+ 		if end < start || end > len(payload) {
+@@ -42767,6 +42768,7 @@
+ 		var streams [repCLNumStreams][]byte
+ 		for ri < len(items) && items[ri].pos < end {
+ 			streams[items[ri].stream] = append(streams[items[ri].stream], items[ri].b...)
++			rep.Refs = append(rep.Refs, repIXRefRec{Comp: len(rep.Comps), Stream: items[ri].stream, Class: items[ri].class, B: items[ri].b})
+ 			ri++
+ 		}
+ 		rep.Comps = append(rep.Comps, repIXPackComp(payload[start:end], streams[:]))
