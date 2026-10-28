@@ -84,8 +84,9 @@ func cmdAudit(args []string) error {
 			}
 			a.blocks += len(t.Blocks)
 			a.tailBytes += t.Size - t.DataEnd
-			if t.Reject() != nil {
-				return nil
+			supported := t.Reject() == nil
+			if t.DataEnd == 0 {
+				fmt.Printf("%s: coverage incomplete: index/feature fallback; block-byte totals below exclude unknown blocks\n", p)
 			}
 			var n int64
 			for _, h := range t.Blocks {
@@ -97,7 +98,7 @@ func cmdAudit(args []string) error {
 				}
 				a.compBlocks[rb.Comp()]++
 				a.compBytes[rb.Comp()] += int64(h.Size) + 5
-				if !*deep {
+				if !*deep || !supported {
 					continue
 				}
 				dec, _, err := sstz3.DecodeBlock(rb, sstz3.Limits{})
