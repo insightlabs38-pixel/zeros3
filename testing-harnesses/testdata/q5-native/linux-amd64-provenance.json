@@ -1,0 +1,168 @@
+{
+ "artifacts": [
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "r0",
+   "File": "/workspace/work/q5-go/linux-amd64/std/r0",
+   "Size": 6334256,
+   "SHA256": "f74aa5b593b251b602fb2a89e5cd66900d9d21b91d354af81e8772445547bf30"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "r1",
+   "File": "/workspace/work/q5-go/linux-amd64/std/r1",
+   "Size": 6334144,
+   "SHA256": "8d061a0cdd774fa6e7e00f787fad98a314f70d0c4b261556e05432b2df967836"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "r2",
+   "File": "/workspace/work/q5-go/linux-amd64/std/r2",
+   "Size": 6333899,
+   "SHA256": "0d9bac46cb78fc4490d78d57a39ec9c99ca1b2c384a786822eba67f2affa2a5b"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "r3",
+   "File": "/workspace/work/q5-go/linux-amd64/std/r3",
+   "Size": 6334019,
+   "SHA256": "8666292f1cbaf486fbb0b283f39ef8bb50070c71b2fc43a60525bbe716d18125"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "early",
+   "File": "/workspace/work/q5-go/linux-amd64/std/early",
+   "Size": 6334591,
+   "SHA256": "ef93df88559f58c54568e81fa5a1b89d49fc769ac9d923ca31ca50c43c65fe5d"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "swap",
+   "File": "/workspace/work/q5-go/linux-amd64/std/swap",
+   "Size": 6333859,
+   "SHA256": "c219654ce351611ff28b55945b85c9b71323f7e847421be12d81c47a1bf91865"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "data",
+   "File": "/workspace/work/q5-go/linux-amd64/std/data",
+   "Size": 6334080,
+   "SHA256": "5512927ec1c6b9ae32ddb012528afeb7adeecdb1287c028da0eec7aa5486bb78"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "deps",
+   "File": "/workspace/work/q5-go/linux-amd64/std/deps",
+   "Size": 6339865,
+   "SHA256": "2184ecd85dcd92d40078a34979bc8775d0890a53da3bd36162c9a3f2021303bd"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "std",
+   "Rev": "other",
+   "File": "/workspace/work/q5-go/linux-amd64/std/other",
+   "Size": 5525826,
+   "SHA256": "46e4550f3a05a05f52bbd9972554df38ed72ae12aefc44458868341f74a963c1"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "r0",
+   "File": "/workspace/work/q5-go/linux-amd64/strip/r0",
+   "Size": 4251808,
+   "SHA256": "3775165bf7d8c1bedd7f4d41661579bc323185d26302abeb361188369bcaa321"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "r1",
+   "File": "/workspace/work/q5-go/linux-amd64/strip/r1",
+   "Size": 4251808,
+   "SHA256": "98454f2a0c4e897f6f3b7b99f5164e3e3286ce90dc7f45d1c95a8246c237ca30"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "r2",
+   "File": "/workspace/work/q5-go/linux-amd64/strip/r2",
+   "Size": 4251808,
+   "SHA256": "cf5fc0b2cedafe6df081b352030d93849768d6227f836bf1274809d93f4f699d"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "r3",
+   "File": "/workspace/work/q5-go/linux-amd64/strip/r3",
+   "Size": 4251808,
+   "SHA256": "95c77486038b2d305ddc95113db0c1660e73b0854c4b681294df9fa47d0960ea"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "early",
+   "File": "/workspace/work/q5-go/linux-amd64/strip/early",
+   "Size": 4251808,
+   "SHA256": "8d122df53820226170b7839b56ae4f2115caced85888b02289d2ab33f847ee06"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "swap",
+   "File": "/workspace/work/q5-go/linux-amd64/strip/swap",
+   "Size": 4251808,
+   "SHA256": "0bf3194154d8b788efc6a0c9c285ed5de58ca4c42a12698862605bdb2a7a43fb"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "data",
+   "File": "/workspace/work/q5-go/linux-amd64/strip/data",
+   "Size": 4251808,
+   "SHA256": "eefe5bb96e890c43658efe60d1fa93a91503bd11d9d5fb32a2f6e0e47f38e9d9"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "deps",
+   "File": "/workspace/work/q5-go/linux-amd64/strip/deps",
+   "Size": 4255904,
+   "SHA256": "d9aef4002c61e461393872a3b6c4ecefae8966d96175c87894b0e02b51540d5d"
+  },
+  {
+   "GOOS": "linux",
+   "GOARCH": "amd64",
+   "Flags": "strip",
+   "Rev": "other",
+   "File": "/workspace/work/q5-go/linux-amd64/strip/other",
+   "Size": 3702944,
+   "SHA256": "d8794f58c00625839cf73fd255585627e0e6969c07b096609785ee9f465e63e5"
+  }
+ ],
+ "host": "linux/amd64",
+ "toolchain": "go version go1.27.3 linux/amd64"
+}

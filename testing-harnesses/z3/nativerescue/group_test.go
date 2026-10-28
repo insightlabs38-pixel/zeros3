@@ -69,22 +69,113 @@ func TestRecipeHostileBounds(t *testing.T) {
 	}
 }
 func FuzzGroupedNativeDecode(f *testing.F) {
-	for _, b := range fixtures(f) {
-		m, _, _, e := Encode(b, Options{Target: 4096, Compact: true})
+	type fixture struct {
+		meta  []byte
+		comps [][]byte
+	}
+	var all []fixture
+	for _, data := range fixtures(f) {
+		m, cs, _, e := Encode(data, Options{Target: 4096, Compact: true})
 		if e != nil {
 			f.Fatal(e)
 		}
-		f.Add(m, uint8(0))
+		all = append(all, fixture{m, cs})
+		f.Add(m, []byte{}, uint8(len(all)-1))
 	}
-	all := fixtures(f)
-	f.Fuzz(func(t *testing.T, m []byte, pick uint8) {
-		if len(m) > 1<<16 {
+	f.Fuzz(func(t *testing.T, m, mutated []byte, pick uint8) {
+		if len(m) > 1<<16 || len(mutated) > 1<<16 {
 			return
 		}
-		_, cs, _, e := Encode(all[int(pick)%len(all)], Options{Target: 4096, Compact: true})
-		if e != nil {
-			t.Fatal(e)
+		x := all[int(pick)%len(all)]
+		cs := append([][]byte(nil), x.comps...)
+		if len(mutated) > 0 {
+			cs[int(pick)%len(cs)] = mutated
 		}
-		Decode(m, cs)
+		out, _ := Decode(m, cs)
+		if len(out) > MaxNative {
+			t.Fatal("output bound")
+		}
 	})
+}
+
+func TestClosedEnvelopeAndCorruption(t *testing.T) {
+	data := fixtures(t)[0]
+	m, cs, _, e := Encode(data, Options{Target: 4096, Compact: true, Functions: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = Proof(m, cs, data); e != nil {
+		t.Fatal(e)
+	}
+	f, e := Freeze(m, cs)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, b := range f.Objects {
+		if len(b) == 0 {
+			continue
+		}
+		saved := append([]byte(nil), b...)
+		b[0] ^= 1
+		if _, e := Replay(f.Root, f.Get); e == nil {
+			t.Fatal("addressed corruption accepted")
+		}
+		copy(b, saved)
+		break
+	}
+	for id := range f.Objects {
+		if id == f.Root {
+			continue
+		}
+		saved := f.Objects[id]
+		delete(f.Objects, id)
+		if _, e := Replay(f.Root, f.Get); e == nil {
+			t.Fatal("missing dependency accepted")
+		}
+		f.Objects[id] = saved
+		break
+	}
+}
+
+func FuzzFrozenNativeRoot(f *testing.F) {
+	b := fixtures(f)[0]
+	m, cs, _, e := Encode(b, Options{Target: 4096, Compact: true})
+	if e != nil {
+		f.Fatal(e)
+	}
+	frozen, e := Freeze(m, cs)
+	if e != nil {
+		f.Fatal(e)
+	}
+	f.Add(frozen.Objects[frozen.Root])
+	f.Add([]byte("NBF1"))
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		if len(raw) > 1<<16 {
+			return
+		}
+		id := sha256.Sum256(raw)
+		Replay(id, func(want [32]byte) ([]byte, error) {
+			if want == id {
+				return raw, nil
+			}
+			return frozen.Get(want)
+		})
+	})
+}
+
+func TestContentIdentityExact(t *testing.T) {
+	for _, data := range fixtures(t) {
+		for _, class := range []string{"struct", "x86", "full"} {
+			m, cs, st, e := Encode(data, Options{Target: 2048, Selection: class, Identity: "content", Compact: true, Functions: true})
+			if e != nil {
+				t.Fatal(e)
+			}
+			if st.Identity != "content" {
+				t.Fatal("identity selection")
+			}
+			if e = Proof(m, cs, data); e != nil {
+				t.Fatal(e)
+			}
+		}
+	}
 }

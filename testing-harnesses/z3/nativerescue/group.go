@@ -18,11 +18,13 @@ const maxParts = 1 << 18
 // Options selects independent reference classes and grouping, never correctness.
 // Target -1 is production CDC, zero is sections; positive sizes are sensitivity.
 type Options struct {
+	Identity                     string
 	Target                       int
 	Selection                    string
 	Functions, Compact, Separate bool
 }
 type Statistics struct {
+	Identity                string
 	Native                  binref.Stats
 	Parts, RecipeBytes      int
 	Payload, ReferenceBytes int64
@@ -250,7 +252,23 @@ func Encode(data []byte, o Options) ([]byte, [][]byte, Statistics, error) {
 	if e != nil {
 		return nil, nil, st, e
 	}
-	n, _, e := normalize(b, cfg{set, binref.IdentSymbol, "auto"})
+	ident := binref.IdentSymbol
+	// Stripped non-Go binaries have no stable symbol names. Reuse binref's
+	// masked-content identities instead of silently falling back to address offsets.
+	if !o.Separate && len(b.Im.Syms) == 0 && b.Pcln == nil {
+		ident = binref.IdentContent
+	}
+	switch o.Identity {
+	case "", "auto":
+	case "symbol":
+		ident = binref.IdentSymbol
+	case "content":
+		ident = binref.IdentContent
+	default:
+		return nil, nil, st, fmt.Errorf("native: identity option")
+	}
+	st.Identity = ident.String()
+	n, _, e := normalize(b, cfg{set, ident, "auto"})
 	if e != nil {
 		return nil, nil, st, e
 	}
@@ -395,5 +413,10 @@ func Plan(data []byte, o Options) (*lab.Plan, Statistics, error) {
 	if e != nil {
 		return nil, st, e
 	}
-	return econx.RepPlan(m, cs, "native-group", Decode), st, nil
+	if e := Proof(m, cs, data); e != nil {
+		return nil, st, e
+	}
+	p := econx.RepPlan(m, cs, "native-group", Decode)
+	p.MetaBytes = 32 // envelope/object overhead beyond serialized recipe
+	return p, st, nil
 }

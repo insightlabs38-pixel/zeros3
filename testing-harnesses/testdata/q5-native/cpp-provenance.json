@@ -1,0 +1,306 @@
+{
+  "commands": [
+    [
+      "/usr/bin/g++",
+      "-g",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-fno-rtti",
+      "-fno-exceptions",
+      "-ffile-prefix-map=/workspace/work/q5-cpp/build=/src",
+      "sample.cpp",
+      "-o",
+      "gcc-cpp"
+    ],
+    [
+      "objcopy",
+      "--strip-all",
+      "gcc-cpp",
+      "gcc-cpp-strip"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang++-19",
+      "-g",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-fno-rtti",
+      "-fno-exceptions",
+      "-ffile-prefix-map=/workspace/work/q5-cpp/build=/src",
+      "sample.cpp",
+      "-o",
+      "clang-cpp"
+    ],
+    [
+      "objcopy",
+      "--strip-all",
+      "clang-cpp",
+      "clang-cpp-strip"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "--target=x86_64-pc-windows-msvc",
+      "-g",
+      "-gcodeview",
+      "-O1",
+      "-fno-rtti",
+      "-fno-exceptions",
+      "-fdebug-prefix-map=/workspace/work/q5-cpp/build=/src",
+      "-c",
+      "sample.cpp",
+      "-o",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/lld-link-19",
+      "/entry:main",
+      "/subsystem:console",
+      "/nodefaultlib",
+      "/debug",
+      "/Brepro",
+      "/pdbsourcepath:/src",
+      "/pdb:sample.pdb",
+      "/out:sample.exe",
+      "sample.obj"
+    ],
+    [
+      "/usr/bin/g++",
+      "-g",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-fno-rtti",
+      "-fno-exceptions",
+      "-ffile-prefix-map=/workspace/work/q5-cpp/build=/src",
+      "sample.cpp",
+      "-o",
+      "gcc-cpp"
+    ],
+    [
+      "objcopy",
+      "--strip-all",
+      "gcc-cpp",
+      "gcc-cpp-strip"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang++-19",
+      "-g",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-fno-rtti",
+      "-fno-exceptions",
+      "-ffile-prefix-map=/workspace/work/q5-cpp/build=/src",
+      "sample.cpp",
+      "-o",
+      "clang-cpp"
+    ],
+    [
+      "objcopy",
+      "--strip-all",
+      "clang-cpp",
+      "clang-cpp-strip"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "--target=x86_64-pc-windows-msvc",
+      "-g",
+      "-gcodeview",
+      "-O1",
+      "-fno-rtti",
+      "-fno-exceptions",
+      "-fdebug-prefix-map=/workspace/work/q5-cpp/build=/src",
+      "-c",
+      "sample.cpp",
+      "-o",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/lld-link-19",
+      "/entry:main",
+      "/subsystem:console",
+      "/nodefaultlib",
+      "/debug",
+      "/Brepro",
+      "/pdbsourcepath:/src",
+      "/pdb:sample.pdb",
+      "/out:sample.exe",
+      "sample.obj"
+    ],
+    [
+      "/usr/bin/g++",
+      "-g",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-fno-rtti",
+      "-fno-exceptions",
+      "-ffile-prefix-map=/workspace/work/q5-cpp/build=/src",
+      "sample.cpp",
+      "-o",
+      "gcc-cpp"
+    ],
+    [
+      "objcopy",
+      "--strip-all",
+      "gcc-cpp",
+      "gcc-cpp-strip"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang++-19",
+      "-g",
+      "-O1",
+      "-fno-pie",
+      "-no-pie",
+      "-fno-rtti",
+      "-fno-exceptions",
+      "-ffile-prefix-map=/workspace/work/q5-cpp/build=/src",
+      "sample.cpp",
+      "-o",
+      "clang-cpp"
+    ],
+    [
+      "objcopy",
+      "--strip-all",
+      "clang-cpp",
+      "clang-cpp-strip"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/clang-19",
+      "--target=x86_64-pc-windows-msvc",
+      "-g",
+      "-gcodeview",
+      "-O1",
+      "-fno-rtti",
+      "-fno-exceptions",
+      "-fdebug-prefix-map=/workspace/work/q5-cpp/build=/src",
+      "-c",
+      "sample.cpp",
+      "-o",
+      "sample.obj"
+    ],
+    [
+      "/workspace/work/q4/llvm/usr/bin/lld-link-19",
+      "/entry:main",
+      "/subsystem:console",
+      "/nodefaultlib",
+      "/debug",
+      "/Brepro",
+      "/pdbsourcepath:/src",
+      "/pdb:sample.pdb",
+      "/out:sample.exe",
+      "sample.obj"
+    ]
+  ],
+  "files": [
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev0/clang-cpp-strip",
+      "sha256": "a2681c6df622a5d76a26ea56626aad9611a97ec9b91bbb8a39b7784413df7ca6",
+      "bytes": 14288
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev0/sample.cpp",
+      "sha256": "73b000e59c48769c2cafafef4f4d94a4aa8f027ee5910dc1524bf117f260839a",
+      "bytes": 1446
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev0/gcc-cpp",
+      "sha256": "17c985a7cdbdfc1464b24948de4b02f4cd59da6688994b762ebecbb6d28f047c",
+      "bytes": 51808
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev0/clang-cpp",
+      "sha256": "e3b7a23c77a22b8d90fa7bc1e26b6ce9f2ca76f5bee28e2b7634fa80bd7b8c4e",
+      "bytes": 40824
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev0/clang-cpp.exe",
+      "sha256": "dc7346d3388d6b82e447b94232b2aeeb8483807ca729c70cc7f71e11a28eec15",
+      "bytes": 6144
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev0/gcc-cpp-strip",
+      "sha256": "3cc8d6719d5bf901b4d45113ba06962d2999c1e63c0728379dac13f7d7750bc6",
+      "bytes": 14256
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev1/clang-cpp-strip",
+      "sha256": "bab762efac7555a2a5d4a14867fb67e403542cc5b2d5e3c30cef6eec05520be2",
+      "bytes": 14288
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev1/sample.cpp",
+      "sha256": "8d1ec8a128deb63621234545b4f8c1af7cab85f37257190a7e050079bc62e624",
+      "bytes": 1446
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev1/gcc-cpp",
+      "sha256": "ed790597dbabaa9bf494c1dd4e16508a38e166f2679243069595e6ba0eeda99f",
+      "bytes": 51808
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev1/clang-cpp",
+      "sha256": "cdbee72ed2144d4bc2a95917958cc21925f08eb6d3d3734a11eef187fd4c3dcc",
+      "bytes": 40824
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev1/clang-cpp.exe",
+      "sha256": "01336f584a9865a4ee9a34708fd69082e4f320aef81d46c971d6d991e7870c54",
+      "bytes": 6144
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev1/gcc-cpp-strip",
+      "sha256": "7c9c22ef2733f7e9e9022fa874cae76af5c28dc70aeb7b2bbbc2b56d25c118c4",
+      "bytes": 14256
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev2/clang-cpp-strip",
+      "sha256": "2b74b13de85802eff31a702f8431bab8506647a5afd7269e159349299e969e7a",
+      "bytes": 14288
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev2/sample.cpp",
+      "sha256": "5702b3a301d648ad76aad735410b8057c0397ee78463935da1a756fba18ae097",
+      "bytes": 1519
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev2/gcc-cpp",
+      "sha256": "d1974598cbb0dea7f90b046b46973d27209de89f54d446a52d05b710a4decf44",
+      "bytes": 52144
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev2/clang-cpp",
+      "sha256": "e85fa548bd355614fd0de757ea2d356e38ef0306abd5f4e02c7004842b8c2461",
+      "bytes": 40928
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev2/clang-cpp.exe",
+      "sha256": "fe32ac7bb8fce26375d4a1008a7d1a93930bd65a721cc8acb05fadcc342d2ea7",
+      "bytes": 6144
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "rev2/gcc-cpp-strip",
+      "sha256": "6328fab700df2f6536b04b2f69da993d8b0754507e5245d9195b8cca9f1efd07",
+      "bytes": 14256
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "producer": "cmd/z3bin ccorpus at base 1a0879c",
+  "compiler_versions": [
+    "gcc 14.2.0-19",
+    "Debian clang 19.1.7 (3+b1)"
+  ],
+  "flags": [
+    "-O2",
+    "-static",
+    "-fno-pie",
+    "-no-pie",
+    "-fno-asynchronous-unwind-tables",
+    "-Wl,--build-id=none",
+    "optional -s"
+  ],
+  "files": [
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "c-/workspace/work/q4/llvm/usr/bin/clang-19/strip/c2",
+      "bytes": 688592,
+      "sha256": "590eece0cd9eb6026f7d3778fb4a2ef1117375dc1535823bb6b9f0d394d70713"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "c-/workspace/work/q4/llvm/usr/bin/clang-19/strip/c0",
+      "bytes": 688592,
+      "sha256": "e92914b4a9431d04aeda6f3a97cd8e68084661a44e34060484b1601b38a8e134"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "c-/workspace/work/q4/llvm/usr/bin/clang-19/strip/c1",
+      "bytes": 688592,
+      "sha256": "1165c36ad5f5d825bf1e67f89b530406f832d79842c18405b6fe756eb0dcad0f"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "c-/workspace/work/q4/llvm/usr/bin/clang-19/std/c2",
+      "bytes": 771888,
+      "sha256": "16ec06d8321cadcc48d51d3c9cf7d30dd7919cbd8d9ef1e0ad2247ef87967393"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "c-/workspace/work/q4/llvm/usr/bin/clang-19/std/c0",
+      "bytes": 771888,
+      "sha256": "52f92b45b087e0efcf2ab0dc1578c58be5b786bb89a157590df68520210e51c3"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "c-/workspace/work/q4/llvm/usr/bin/clang-19/std/c1",
+      "bytes": 771912,
+      "sha256": "a140612a6a519c0d41ee050ec5230b4dd4373f6cbe8174c83287e35413cc4a24"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "c-gcc/strip/c2",
+      "bytes": 676192,
+      "sha256": "d93b60bbace52980e8e211f432427b2cbb3cc1085485642fb1476f969dd00603"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "c-gcc/strip/c0",
+      "bytes": 676192,
+      "sha256": "ba24665793d218a8760fa309db2f419cd034a60cbba99fb00d8977670acc0d7c"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "c-gcc/strip/c1",
+      "bytes": 676192,
+      "sha256": "c70f44a64577895e69493951915765b9c93e2527e38b9b0990a65eb506400795"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "c-gcc/std/c2",
+      "bytes": 759440,
+      "sha256": "6cf0b3311aead0be4f5939d299b9654f6782a753c158afee15c90142d2e36797"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "c-gcc/std/c0",
+      "bytes": 759440,
+      "sha256": "e04d0b55b58832e1704e5b275408b762b002249e5d93da17ddbb129f776405bd"
+    },
+    {
+      "class": "PRODUCER_WORKLOAD",
+      "file": "c-gcc/std/c1",
+      "bytes": 759464,
+      "sha256": "81f69783a90555d0d5cd7b2cdce203d3e146138bb8ee4c52a5bea1b673a65871"
+    }
+  ]
+}

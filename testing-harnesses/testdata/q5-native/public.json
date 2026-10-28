@@ -1,0 +1,54 @@
+[
+  {
+    "class": "REAL",
+    "url": "https://deb.debian.org/debian/pool/main/h/hello/hello_2.10-5_amd64.deb",
+    "file": "hello_2.10-5_amd64.deb",
+    "sha256": "4536aabbb75ec21ffe161099ee4b97274945770bdb0682e25ec322421211ca5e",
+    "artifacts": [
+      {
+        "file": "usr/bin/hello",
+        "sha256": "bfda3fef063414535d116a04689caf300568e0691318bcf255f932930508311b",
+        "bytes": 35544
+      }
+    ]
+  },
+  {
+    "class": "REAL",
+    "url": "https://deb.debian.org/debian/pool/main/h/hello/hello_2.12.3-1_amd64.deb",
+    "file": "hello_2.12.3-1_amd64.deb",
+    "sha256": "fcd5f5b2169b376ce84d2b541e1e1c2bf5b855eb5e322dd623a88395e2e7458e",
+    "artifacts": [
+      {
+        "file": "usr/bin/hello",
+        "sha256": "5ae9758a83c31370974c8e082688cd0c107e8ca3d712de561bc3309296b2c37e",
+        "bytes": 56056
+      }
+    ]
+  },
+  {
+    "class": "REAL",
+    "url": "https://deb.debian.org/debian/pool/main/b/busybox/busybox_1.37.0-6+b9_amd64.deb",
+    "file": "busybox_1.37.0-6+b9_amd64.deb",
+    "sha256": "b88c3b899e16bf64347d63235128df9efbcf1f964e4841bc9b37d7856bed35bf",
+    "artifacts": [
+      {
+        "file": "usr/bin/busybox",
+        "sha256": "b8744863758c9e192ecc6aa758699b3ee865bf1df3727f7f6eff12021ea51ca3",
+        "bytes": 826128
+      }
+    ]
+  },
+  {
+    "class": "REAL",
+    "url": "https://deb.debian.org/debian/pool/main/b/busybox/busybox_1.38.0-3+b1_amd64.deb",
+    "file": "busybox_1.38.0-3+b1_amd64.deb",
+    "sha256": "13ce710ee3aba29c106f75b9f2a78db0a2821abbdfb896d7de86c18ca1bc5127",
+    "artifacts": [
+      {
+        "file": "usr/bin/busybox",
+        "sha256": "087fb40d34822d188ea069cc59f210bb2e908fb5bbc5d16c161c5a952a021f9d",
+        "bytes": 846600
+      }
+    ]
+  }
+]
