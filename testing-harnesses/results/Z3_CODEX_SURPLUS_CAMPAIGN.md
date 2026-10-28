@@ -3,7 +3,10 @@
 Merged Q1: PR #72, `4f97c7beeaad542db854a54aa874f87a6dc6d5ff` (I1A_PARTIAL).
 Merged Q2: PR #73, `bd0562101364b65e7ddec4a33bc89ab7189b6b87` (I1B_COMPLETE).
 Merged Q3: PR #74, `f0b34b6ed9a34dbcef56fd745e0a55f6e65f9e43` (I1C_COMPLETE).
-Q4: `z3/debug-symbol-frontier`; checkpoints1615cab/5d37f14, gates pass.
+Merged Q4: PR #75, `1a0879cfa8cc904398df1aec54e3796b046882a4`; all targets DEFER.
+Active Q5: `z3/native-binary-rescue`; checkpoints86737dd/f755c69, gates pass.
+ELF/PE DEFER: genuine grouped exact gains on controlled histories, mixed C++
+and public losses. Closed recipes/evidence retained; merge then continue Q6.
 All three debug targets DEFER; controlled wins fail natural-history breadth/
 economics. Exact parsers/grouping/native attribution retained for Q5.
 Q2 checkpoints: `eb07532`, `a0a20ab`, final validation checkpoint in this branch.
@@ -41,7 +44,8 @@ components but cumulative additive CDC+representation costs exceed CDC alone.
 BusyBox registry blobs/DiffIDs verified; codec/tar composition works. Generic
 ZIP Concat/Derived adapter passes framing/descriptor/ZIP64/signing/reorder cases.
 Q3 integration closed (full179.865s; black-box54/24/32/24). Q4 evidence report
-Z3_34_DEBUG_SYMBOLS.md, provenance/metrics under testdata/q4-debug. Research
-gates pass; merge research-only Q4 and continue Q5 native-binary rescue.
+Z3_34_DEBUG_SYMBOLS.md, provenance/metrics under testdata/q4-debug. Q4 is merged. Q5 report Z3_35_NATIVE_BINARY_RESCUE.md; canonical19-way
+matrices and SHA provenance in testdata/q5-native. Continue Q6 admission planner
+after eligible research merge. Do not restart Q1-Q5.
 All later queue entries remain unfinished. No research promotions/kills yet.
 No new production number ≥8, wire/store version, default or planner decision merged.
