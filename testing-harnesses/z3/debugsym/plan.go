@@ -80,3 +80,14 @@ func Proof(p *lab.Plan, want []byte) error {
 	_, e = env.Reachable(id)
 	return e
 }
+
+// Analyze explicitly falls back to authoritative-shaped CDC for unknown,
+// malformed or bounded-out containers; Parse retains strict error evidence.
+func Analyze(data []byte, target int) (*lab.Plan, *Info, bool, error) {
+	p, in, e := Plan(data, target)
+	if e == nil {
+		return p, in, false, nil
+	}
+	p, err := lab.CDCPlan(lab.EconFile{Name: "opaque", Data: data}, "debug-fallback")
+	return p, &Info{Format: "opaque-CDC", Rows: map[string]uint32{}}, true, err
+}

@@ -161,6 +161,25 @@ func parseMSF(r io.ReaderAt, size int64) (*Info, error) {
 	if pos != len(directory) {
 		return nil, bad("MSF trailing directory bytes")
 	}
+	// Only the active FPM copy is authoritative. Unused allocated pages remain
+	// opaque; every page referenced by this directory must be marked allocated.
+	fpm := map[uint32][]byte{}
+	for id := range used {
+		group := id / bs
+		bits, ok := fpm[group]
+		if !ok {
+			var err error
+			bits, err = read(r, size, int64(group*bs+free)*int64(bs), int64(bs))
+			if err != nil {
+				return nil, err
+			}
+			fpm[group] = bits
+		}
+		at := id % bs
+		if bits[at/8]&(1<<(at%8)) != 0 {
+			return nil, bad("MSF referenced page marked free")
+		}
+	}
 	out := &Info{Format: "MSF7", Streams: int(count), Rows: map[string]uint32{}}
 	for id, name := range used {
 		out.Spans = append(out.Spans, Span{int64(id) * int64(bs), int64(id+1) * int64(bs), name})
@@ -168,6 +187,17 @@ func parseMSF(r io.ReaderAt, size int64) (*Info, error) {
 	return out, partition(out, size)
 }
 func parseELF(r io.ReaderAt, size int64) (*Info, error) {
+	h, e := read(r, size, 0, 64)
+	if e != nil {
+		return nil, e
+	}
+	if h[4] != 2 || h[5] != 1 {
+		return nil, bad("only ELF64 little-endian")
+	}
+	off, n, entry := le.Uint64(h[40:]), uint64(le.Uint16(h[60:])), uint64(le.Uint16(h[58:]))
+	if n == 0 || entry < 64 || off > uint64(size) || n*entry > uint64(size)-off {
+		return nil, bad("ELF header table bound")
+	}
 	f, e := elf.NewFile(io.NewSectionReader(r, 0, size))
 	if e != nil {
 		return nil, e
@@ -328,7 +358,7 @@ func parsePortable(r io.ReaderAt, size int64) (*Info, error) {
 		if uint64(n)*uint64(w) > uint64(len(b)-p) {
 			return nil, bad("PDB rows outside stream")
 		}
-		if n > 1<<18 {
+		if n > 1<<18 || uint64(len(units))+uint64(n) > 1<<18 {
 			return nil, bad("PDB row-component limit")
 		}
 		for j := uint32(0); j < n; j++ {

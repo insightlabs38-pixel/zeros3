@@ -24,7 +24,7 @@ func main() {
 			panic(e)
 		}
 		start := time.Now()
-		p, in, e := debugsym.Plan(data, *target)
+		p, in, fallback, e := debugsym.Analyze(data, *target)
 		if e != nil {
 			panic(fmt.Errorf("%s: %w", path, e))
 		}
@@ -32,7 +32,7 @@ func main() {
 			panic(e)
 		}
 		f := lab.EconFile{Name: filepath.Base(path), Data: data}
-		reps := []lab.EconRep{{Name: "cdc", Plan: func(f lab.EconFile) (*lab.Plan, bool, error) { p, e := lab.CDCPlan(f, "debug"); return p, false, e }}, {Name: "debug-struct", Plan: func(lab.EconFile) (*lab.Plan, bool, error) { return p, false, nil }}}
+		reps := []lab.EconRep{{Name: "cdc", Plan: func(f lab.EconFile) (*lab.Plan, bool, error) { p, e := lab.CDCPlan(f, "debug"); return p, false, e }}, {Name: "debug-struct", Plan: func(lab.EconFile) (*lab.Plan, bool, error) { return p, fallback, nil }}}
 		a := stores[0].Run(reps[0], []lab.EconFile{f})
 		b := stores[1].Run(reps[1], []lab.EconFile{f})
 		enc.Encode(map[string]any{"path": path, "sha256": fmt.Sprintf("%x", sha256.Sum256(data)), "bytes": len(data), "format": in.Format, "streams": in.Streams, "rows": in.Rows, "spans": len(in.Spans), "target": *target, "elapsed_ms": time.Since(start).Milliseconds(), "cdc": a, "candidate": b})
