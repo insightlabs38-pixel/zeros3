@@ -1,4 +1,4 @@
-package main
+package frontiercapture
 
 import (
 	"bytes"
@@ -48,6 +48,7 @@ func (b *builder) add(name, class, evidence string, inputs []input, variants []v
 	f := admission.Case{Name: name, Class: class, Evidence: evidence, KeyHint: name}
 	for _, in := range inputs {
 		data := load(in.path)
+		b.c.Case, b.c.Stage, b.c.Class = name, in.label, class
 		s := admission.Stage{Label: in.label, Size: int64(len(data)), InputSHA: fmt.Sprintf("%x", sha256.Sum256(data))}
 		for _, v := range append([]variant{{"cdc", admission.CDC}}, variants...) {
 			start := time.Now()
@@ -67,8 +68,9 @@ func (b *builder) add(name, class, evidence string, inputs []input, variants []v
 	fmt.Fprintf(os.Stderr, "captured %s stages=%d\n", name, len(inputs))
 	return nil
 }
-func capture(module, public, producer, git string) (*admission.Corpus, error) {
+func Build(module, public, producer, git string, observe func(admission.Observation) error) (*admission.Corpus, error) {
 	b := builder{admission.NewCapture()}
+	b.c.Observe = observe
 	var pub []struct {
 		File, Class, SHA256 string
 		Bytes               int64
@@ -226,6 +228,7 @@ func capture(module, public, producer, git string) (*admission.Corpus, error) {
 	f := admission.Case{Name: "merkle-deep-control", Class: "merkle", Evidence: "SYNTHETIC_FIXTURE", KeyHint: "snapshot"}
 	for _, stage := range ch.Stages {
 		data := stage.Data
+		b.c.Case, b.c.Stage, b.c.Class = f.Name, stage.Label, f.Class
 		s := admission.Stage{Label: stage.Label, Size: int64(len(data)), InputSHA: fmt.Sprintf("%x", sha256.Sum256(data))}
 		for _, v := range []variant{{"cdc", admission.CDC}, {"merkle-related", func(d []byte) (*kinds.Bundle, error) { return ch.Encode(b.c.Store, cat, d) }}} {
 			start := time.Now()
