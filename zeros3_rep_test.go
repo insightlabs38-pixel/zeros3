@@ -244,7 +244,11 @@ func repOpenStore(t *testing.T, mode repMode) *Store {
 // repReadAll reads [start,end] through the production read-path selection.
 func repReadAll(t testing.TB, s *Store, man manifestV1, rng byteRange) []byte {
 	t.Helper()
-	rd := s.openObjectReader(man, rng)
+	return repCollectReader(t, s.openObjectReader(man, rng))
+}
+
+func repCollectReader(t testing.TB, rd objectReader) []byte {
+	t.Helper()
 	defer rd.close()
 	var out []byte
 	for {
@@ -313,8 +317,16 @@ func TestRepSmokeSQLiteRoundTrip(t *testing.T) {
 	if !bytes.Equal(got, db) {
 		t.Fatal("whole read differs")
 	}
-	if s.rep.reads.Load() != 1 {
-		t.Fatalf("representation reads = %d", s.rep.reads.Load())
+	if s.rep.reads.Load() != 0 {
+		t.Fatal("whole GET should use authoritative CDC")
+	}
+	// The whole decoder remains exact and independently available to verification.
+	rd, err := s.repOpenReader(man, byteRange{0, int64(len(db)) - 1})
+	if err != nil || rd == nil {
+		t.Fatalf("direct decoder: %v", err)
+	}
+	if got := repCollectReader(t, rd); !bytes.Equal(got, db) || s.rep.reads.Load() != 1 {
+		t.Fatal("direct representation decoder differs or was not used")
 	}
 	part := repReadAll(t, s, man, byteRange{5000, 9999})
 	if !bytes.Equal(part, db[5000:10000]) || s.rep.rangeReads.Load() != 1 {
@@ -1199,6 +1211,15 @@ func (l *repLab) exact(stage string) VerifyResult {
 		if got := repReadAll(l.t, l.s, man, byteRange{0, int64(len(want)) - 1}); !bytes.Equal(got, want) {
 			l.t.Fatalf("%s: %s representation read differs", stage, key)
 		}
+		if l.s.repMode() == repModePrefer && repHasRoot(l.s, man.ManifestUUID) {
+			rd, err := l.s.repOpenReader(man, byteRange{0, man.TotalLength - 1})
+			if err != nil || rd == nil {
+				l.t.Fatalf("%s: %s direct decoder: %v", stage, key, err)
+			}
+			if got := repCollectReader(l.t, rd); !bytes.Equal(got, want) {
+				l.t.Fatalf("%s: %s direct representation differs", stage, key)
+			}
+		}
 		if len(want) > 12400 {
 			end := min(12345+9999, int64(len(want))-1)
 			if got := repReadAll(l.t, l.s, man, byteRange{12345, end}); !bytes.Equal(got, want[12345:end+1]) {
@@ -1782,7 +1803,10 @@ func TestRepFailureAfterOutputStartsDoesNotPanic(t *testing.T) {
 		}
 	}
 	repCorruptFile(t, l.s.chunkPath(victim), func(b []byte) []byte { b[7] ^= 1; return b })
-	rd := l.s.openObjectReader(man, byteRange{0, int64(len(db)) - 1})
+	rd, err := l.s.repOpenReader(man, byteRange{0, int64(len(db)) - 1})
+	if err != nil || rd == nil {
+		t.Fatalf("direct representation decoder: %v", err)
+	}
 	defer rd.close()
 	var got []byte
 	var rerr error
@@ -1817,13 +1841,13 @@ func TestRepModesAndFallbackCounters(t *testing.T) {
 		if mode == repModePrefer {
 			wantReads = 1
 		}
-		if l.s.rep.reads.Load() != wantReads || l.s.rep.rangeReads.Load() != wantReads {
+		if l.s.rep.reads.Load() != 0 || l.s.rep.rangeReads.Load() != wantReads {
 			t.Fatalf("%s: reads=%d range=%d", mode, l.s.rep.reads.Load(), l.s.rep.rangeReads.Load())
 		}
 		// a root that is gone falls back silently; a damaged one falls back and is counted
 		repCorruptFile(t, l.s.repRootPath(e.manifestUUID), func(b []byte) []byte { b[10] ^= 1; return b })
-		got := repReadAll(t, l.s, man, byteRange{0, int64(len(db)) - 1})
-		if !bytes.Equal(got, db) {
+		got := repReadAll(t, l.s, man, byteRange{100, 5000})
+		if !bytes.Equal(got, db[100:5001]) {
 			t.Fatal("fallback read differs")
 		}
 		if mode == repModePrefer && l.s.rep.fallbacks.Load() != 1 {
@@ -2458,7 +2482,10 @@ func TestRepPackedCopyFallback(t *testing.T) {
 	}
 	// without another copy, the representation path fails (CDC still reads the object)
 	_, man := l.manifest("db")
-	rd := l.s.openObjectReader(man, byteRange{0, int64(len(db)) - 1})
+	rd, err := l.s.repOpenReader(man, byteRange{0, int64(len(db)) - 1})
+	if err != nil || rd == nil {
+		t.Fatalf("direct representation decoder: %v", err)
+	}
 	var got []byte
 	for {
 		p, err := rd.next()
@@ -2475,7 +2502,11 @@ func TestRepPackedCopyFallback(t *testing.T) {
 	p := l.s.chunkPath(victim)
 	os.MkdirAll(filepath.Dir(p), 0o755)
 	os.WriteFile(p, data, 0o644)
-	if got := repReadAll(t, l.s, man, byteRange{0, int64(len(db)) - 1}); !bytes.Equal(got, db) {
+	rd, err = l.s.repOpenReader(man, byteRange{0, int64(len(db)) - 1})
+	if err != nil || rd == nil {
+		t.Fatalf("direct decoder after adding valid copy: %v", err)
+	}
+	if got := repCollectReader(t, rd); !bytes.Equal(got, db) {
 		t.Fatal("copy fallback did not serve the valid loose copy")
 	}
 }
@@ -2536,6 +2567,12 @@ func TestRepConcurrentReadsMixedTiers(t *testing.T) {
 				var rd objectReader
 				if g%4 == 3 { // plain CDC reads alongside
 					rd = l.s.newManifestReader(man, rng)
+				} else if g%4 == 0 && rng.start == 0 && rng.end == man.TotalLength-1 {
+					rd, err = l.s.repOpenReader(man, rng)
+					if err != nil || rd == nil {
+						errc <- fmt.Errorf("direct decoder %s: %v", key, err)
+						return
+					}
 				} else {
 					rd = l.s.openObjectReader(man, rng)
 				}
@@ -2602,7 +2639,11 @@ func TestRepConcurrentPutsAndReads(t *testing.T) {
 				errc <- err
 				return
 			}
-			rd := l.s.openObjectReader(man, byteRange{0, int64(len(data)) - 1})
+			rd, err := l.s.repOpenReader(man, byteRange{0, int64(len(data)) - 1})
+			if err != nil || rd == nil {
+				errc <- fmt.Errorf("direct decoder %s: %v", key, err)
+				return
+			}
 			defer rd.close()
 			var got []byte
 			for {
@@ -3406,7 +3447,10 @@ func benchRepPacked(b *testing.B, data []byte, rng func(size int64) byteRange) {
 	b.SetBytes(r.end - r.start + 1)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		rd := s.openObjectReader(man, r)
+		rd, err := s.repOpenReader(man, r)
+		if err != nil || rd == nil {
+			b.Fatalf("direct decoder: %v", err)
+		}
 		for {
 			if _, err := rd.next(); err != nil {
 				break
