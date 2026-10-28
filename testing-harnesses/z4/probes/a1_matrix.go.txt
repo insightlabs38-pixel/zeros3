@@ -1,0 +1,27 @@
+// Reuses the unchanged Z3 black-box fixture/client/process helpers mechanically.
+package main
+import("context";"encoding/json";"fmt";"os";"os/exec";"path/filepath";"github.com/aws/aws-sdk-go-v2/aws";"github.com/aws/aws-sdk-go-v2/service/s3")
+func main(){if os.Args[1]=="snapshots"{a1Snapshots();return};if os.Args[1]=="legacy"{os.Args=append([]string{os.Args[0]},os.Args[2:]...);legacyHarnessMain();return};bin=os.Args[1];work:=os.Args[2];input:=os.Args[3];old:=os.Args[4:];data,e:=os.ReadFile(input);if e!=nil{panic(e)};dir:=filepath.Join(work,"source");if _,e=os.Stat(dir);!os.IsNotExist(e){panic("fresh source required")}
+ srv,addr,_:=startServer(bin,dir,"-representations","prefer");c:=newClient(addr);_,e=c.CreateBucket(context.Background(),&s3.CreateBucketInput{Bucket:aws.String(bucket)});if e!=nil{panic(e)}
+ snapshot:=func()string{out,se,e:=cli(bin,"snapshot","create","-json","-endpoint","http://"+addr,"s3://"+bucket+"/");if e!=nil{panic(se)};var r struct{ID string `json:"snapshot_id"`};if json.Unmarshal([]byte(out),&r)!=nil||r.ID==""{panic(out)};return r.ID}
+ put(c,"weights",data);base:=snapshot();data=append([]byte(nil),data...);data[len(data)-1]^=3;put(c,"weights",data);target:=snapshot();readAllCheck("candidate initial exact GET/ranges",c,[]fixture{{"weights",data}});stop(srv)
+ check("first Model publication raises format 7",formatLevel(dir)==7,"format %d",formatLevel(dir));full,delta:=filepath.Join(work,"base.zs3b"),filepath.Join(work,"delta.zs3d")
+ mustCLI("candidate full export","bundle","export","-store",dir,"-snapshot",base,"-out",full);mustCLI("candidate delta export","bundle","export","-store",dir,"-snapshot",target,"-base-snapshot",base,"-out",delta)
+ mustCLI("candidate compaction prepares real packs","compact","-store",dir,"-pack-size-mib","1")
+ for i,binary:=range append(old,bin){label:=fmt.Sprintf("generation-%d",i);dst:=filepath.Join(work,label);_,se,e:=cli(binary,"bundle","import","-store",dst,"-in",full);check(label+" portable full import",e==nil,"%s",se);_,se,e=cli(binary,"bundle","import","-store",dst,"-in",delta);check(label+" portable delta import",e==nil,"%s",se)
+  check(label+" portable import does not inherit floor",formatLevel(dst)<6,"format %d",formatLevel(dst));ds,da,_:=startServer(binary,dst);dc:=newClient(da);dc.CreateBucket(context.Background(),&s3.CreateBucketInput{Bucket:aws.String(bucket)})
+  _,se,e=cli(binary,"snapshot","restore","-endpoint","http://"+da,target,"s3://"+bucket+"/");check(label+" restore delta",e==nil,"%s",se);readAllCheck(label+" portable exact GET/ranges",dc,[]fixture{{"weights",data}})
+  // Old clients operate against a compatible candidate server, not local files.
+  ss,sa,_:=startServer(bin,dir,"-representations","off")
+  _,se,e=cli(binary,"sync","-endpoint","http://"+sa,input,"s3://"+bucket+"/synced");check(label+" sync client to new server",e==nil,"%s",se)
+  _,se,e=cli(binary,"replicate","-from","http://"+sa,"-to","http://"+da,"s3://"+bucket+"/weights","s3://"+bucket+"/copied");check(label+" replicate client from new server",e==nil,"%s",se)
+  readAllCheck(label+" replicated exact GET/ranges",dc,[]fixture{{"copied",data}});stop(ss);stop(ds)
+ }
+ // Test every maintenance operation on an independent clone, retaining snapshots.
+ ops:=[][]string{{"stats"},{"verify"},{"verify","-deep"},{"gc"},{"gc","-apply"},{"compact","-pack-size-mib","1"},{"repack","-apply","-max-live-percent","100"},{"tier","move","-from","hot","-to","warm","-all","-apply"},{"doctor"},{"doctor","-retire-bad-representations"},{"versions","prune","-bucket",bucket,"-key","weights","-keep-last","0","-apply"}}
+ for i,args:=range ops{d:=filepath.Join(work,fmt.Sprintf("new-maint-%d",i));if out,e:=exec.Command("cp","-a",dir,d).CombinedOutput();e!=nil{panic(string(out))};a:=append(append([]string{},args...),"-store",d);out,se,e:=cli(bin,a...);check(fmt.Sprintf("candidate maintenance %d",i),e==nil,"%s %s",out,se);out,se,e=cli(bin,"verify","-deep","-store",d);check(fmt.Sprintf("candidate post-maint deep %d",i),e==nil,"%s %s",out,se);ss,sa,_:=startServer(bin,d,"-representations","prefer");readAllCheck(fmt.Sprintf("candidate post-maint exact %d",i),newClient(sa),[]fixture{{"weights",data}});stop(ss)}
+ metadata:=map[string]any{"store":dir,"base":base,"target":target,"full":full,"delta":delta,"input":input,"old_binaries":old,"candidate":bin};raw,_:=json.MarshalIndent(metadata,""," ");os.WriteFile(filepath.Join(work,"seed.json"),raw,0644)
+ if failed{os.Exit(1)}
+}
+func a1Snapshots(){work:=os.Args[2];raw,e:=os.ReadFile(filepath.Join(work,"seed.json"));if e!=nil{panic(e)};var m struct{Store,Base,Target,Candidate string;Old []string `json:"old_binaries"`};if json.Unmarshal(raw,&m)!=nil{panic("metadata")};bin=m.Candidate
+ for i,binary:=range append(m.Old,bin){d:=filepath.Join(work,fmt.Sprintf("snapshot-delete-%d",i));if out,e:=exec.Command("cp","-a",m.Store,d).CombinedOutput();e!=nil{panic(string(out))};s,a,_:=startServer(bin,d);out,se,e:=cli(binary,"snapshot","delete","-endpoint","http://"+a,m.Base);check(fmt.Sprintf("client %d snapshot delete through compatible server",i),e==nil,"%s %s",out,se);stop(s);out,se,e=cli(bin,"verify","-deep","-store",d);check(fmt.Sprintf("client %d snapshot delete deep proof",i),e==nil,"%s %s",out,se);check(fmt.Sprintf("client %d delete cannot downgrade floor",i),formatLevel(d)==7,"format %d",formatLevel(d))};if failed{os.Exit(1)}}
