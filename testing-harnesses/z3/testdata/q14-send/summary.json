@@ -1,0 +1,223 @@
+{
+ "inputs": 22,
+ "unique_sources": 18,
+ "rows": 83,
+ "serialized_proofs": 83,
+ "cold_ranges": 249,
+ "negative_checks": [
+  "wrong-source",
+  "overlap"
+ ],
+ "finals": [
+  {
+   "family": "legacy-full-history",
+   "variant": "source-cdc-prod",
+   "bytes": 6435214,
+   "additive": 6435214,
+   "max_range_amplification": 53.42919921875
+  },
+  {
+   "family": "legacy-full-history",
+   "variant": "source-cdc-4k",
+   "bytes": 2603637,
+   "additive": 9038851,
+   "max_range_amplification": 8.979248046875
+  },
+  {
+   "family": "legacy-full-history",
+   "variant": "native-record-oracle",
+   "bytes": 8469413,
+   "additive": 14904627,
+   "max_range_amplification": 32.7587890625
+  },
+  {
+   "family": "legacy-full-history",
+   "variant": "native-payload-oracle",
+   "bytes": 2269389,
+   "additive": 8704603,
+   "max_range_amplification": 32.844970703125
+  },
+  {
+   "family": "legacy-full-history",
+   "variant": "strict-legacy-payload",
+   "bytes": 2269389,
+   "additive": 8704603,
+   "max_range_amplification": 32.844970703125
+  },
+  {
+   "family": "legacy-incremental-chain",
+   "variant": "source-cdc-prod",
+   "bytes": 2248760,
+   "additive": 2248760,
+   "max_range_amplification": 33.869140625
+  },
+  {
+   "family": "legacy-incremental-chain",
+   "variant": "source-cdc-4k",
+   "bytes": 2192840,
+   "additive": 4440845,
+   "max_range_amplification": 8.979248046875
+  },
+  {
+   "family": "legacy-incremental-chain",
+   "variant": "native-record-oracle",
+   "bytes": 2258474,
+   "additive": 4507234,
+   "max_range_amplification": 32.75
+  },
+  {
+   "family": "legacy-incremental-chain",
+   "variant": "native-payload-oracle",
+   "bytes": 2250979,
+   "additive": 4499739,
+   "max_range_amplification": 32.82763671875
+  },
+  {
+   "family": "legacy-incremental-chain",
+   "variant": "strict-legacy-payload",
+   "bytes": 2250979,
+   "additive": 4499739,
+   "max_range_amplification": 32.82763671875
+  },
+  {
+   "family": "legacy-independent-compression",
+   "variant": "source-cdc-prod",
+   "bytes": 4931628,
+   "additive": 4931628,
+   "max_range_amplification": 53.42919921875
+  },
+  {
+   "family": "legacy-independent-compression",
+   "variant": "source-cdc-4k",
+   "bytes": 2452748,
+   "additive": 7384376,
+   "max_range_amplification": 8.177490234375
+  },
+  {
+   "family": "legacy-independent-compression",
+   "variant": "native-record-oracle",
+   "bytes": 6353312,
+   "additive": 11284940,
+   "max_range_amplification": 32.7587890625
+  },
+  {
+   "family": "legacy-independent-compression",
+   "variant": "native-payload-oracle",
+   "bytes": 2132566,
+   "additive": 7064194,
+   "max_range_amplification": 32.844970703125
+  },
+  {
+   "family": "legacy-independent-compression",
+   "variant": "strict-legacy-payload",
+   "bytes": 2132566,
+   "additive": 7064194,
+   "max_range_amplification": 32.844970703125
+  },
+  {
+   "family": "legacy-identical-repeat",
+   "variant": "source-cdc-prod",
+   "bytes": 2115005,
+   "additive": 2115005,
+   "max_range_amplification": 53.42919921875
+  },
+  {
+   "family": "legacy-identical-repeat",
+   "variant": "source-cdc-4k",
+   "bytes": 2172887,
+   "additive": 4287892,
+   "max_range_amplification": 8.1689453125
+  },
+  {
+   "family": "legacy-identical-repeat",
+   "variant": "native-record-oracle",
+   "bytes": 2117754,
+   "additive": 4232759,
+   "max_range_amplification": 32.7587890625
+  },
+  {
+   "family": "legacy-identical-repeat",
+   "variant": "native-payload-oracle",
+   "bytes": 2115244,
+   "additive": 4230249,
+   "max_range_amplification": 32.844970703125
+  },
+  {
+   "family": "legacy-identical-repeat",
+   "variant": "strict-legacy-payload",
+   "bytes": 2115244,
+   "additive": 4230249,
+   "max_range_amplification": 32.844970703125
+  },
+  {
+   "family": "reference-btrfs",
+   "variant": "source-cdc-prod",
+   "bytes": 20296,
+   "additive": 20296,
+   "max_range_amplification": 64.22265625
+  },
+  {
+   "family": "reference-btrfs",
+   "variant": "source-cdc-4k",
+   "bytes": 25752,
+   "additive": 45834,
+   "max_range_amplification": 7.386962890625
+  },
+  {
+   "family": "reference-zfs-big-endian-NATIVE",
+   "variant": "source-cdc-prod",
+   "bytes": 51170,
+   "additive": 51170,
+   "max_range_amplification": 30.671875
+  },
+  {
+   "family": "reference-zfs-big-endian-NATIVE",
+   "variant": "source-cdc-4k",
+   "bytes": 56781,
+   "additive": 107951,
+   "max_range_amplification": 4.1318359375
+  },
+  {
+   "family": "reference-zfs-big-endian-XDR",
+   "variant": "source-cdc-prod",
+   "bytes": 51027,
+   "additive": 51027,
+   "max_range_amplification": 23.912353515625
+  },
+  {
+   "family": "reference-zfs-big-endian-XDR",
+   "variant": "source-cdc-4k",
+   "bytes": 57452,
+   "additive": 108479,
+   "max_range_amplification": 4.157470703125
+  },
+  {
+   "family": "reference-zfs-little-endian-NATIVE",
+   "variant": "source-cdc-prod",
+   "bytes": 53673,
+   "additive": 53673,
+   "max_range_amplification": 30.044189453125
+  },
+  {
+   "family": "reference-zfs-little-endian-NATIVE",
+   "variant": "source-cdc-4k",
+   "bytes": 60401,
+   "additive": 114074,
+   "max_range_amplification": 4.16650390625
+  },
+  {
+   "family": "reference-zfs-little-endian-XDR",
+   "variant": "source-cdc-prod",
+   "bytes": 50420,
+   "additive": 50420,
+   "max_range_amplification": 30.9267578125
+  },
+  {
+   "family": "reference-zfs-little-endian-XDR",
+   "variant": "source-cdc-4k",
+   "bytes": 56271,
+   "additive": 106691,
+   "max_range_amplification": 7.117919921875
+  }
+ ]
+}

@@ -95,3 +95,14 @@ Q13 closed DEFER:33 state files(30 distinct),165 rows,733 serialized proofs,
 reexport gap lacks real-history/decision-cost evidence. Native append already
 shares resources; integrity excludes current XML/header, preserved by whole SHA.
 Full/vet gates pass. Next Q14 FS-send; Q14-Q16/eligible expansion remain unfinished.
+
+## Durable cursor — Q14 closed, Q15 next (2026-10-28)
+
+Q14 `z3/fs-send-frontier`: full-send payload experiment DEFER; incremental-chain
+transform KILL on measured native legacy workloads. Native userspace pool,
+snapshot/send/receive and final tree diff succeeded without host filesystem
+privileges. Modern ZFS/Btrfs remain reference-only DEFER. 22 inputs / 18 unique
+sources, 83 exact serialized proofs, 249 ranges, strict/native-oracle parity,
+198,770 fuzz executions. Full-send standalone win is additive storage loss;
+no production changes or generic BASE. See Z3_42_FS_SEND.md and q14-send artifacts.
+Next unfinished queue item is Q15 LLVM bitcode; Q9/Q10 remain blocked drafts.
