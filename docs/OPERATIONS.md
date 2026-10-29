@@ -256,6 +256,20 @@ budget across derived readers: 1,048,576 steps, 64 MiB of recipe/member metadata
 and at most 16 times the root length plus 64 MiB of decoded intermediate bytes.
 Range reads charge their actual window, not the whole referenced tensor.
 
+Supported SST/Parquet publication raises format **8**, including nested kinds.
+This build retains Model decoding; Model-only format-7 binaries refuse local opens
+of a format-8 store. Supported SST layouts use none/Snappy/Zstd; LevelDB creation,
+Pebble format 7 and unsupported LZ4 remain CDC. Parquet supports the tested flat
+encodings and exact opaque regions; all-opaque/unsupported files use CDC.
+Analysis bounds source and declared decoded inspection to 1 GiB, block/page
+scratch to 16 MiB and components to 32 MiB. Synchronous exact-Zstd inspection
+is capped at 4 MiB decoded /512 frames for SST and 128 MiB /1024 pages for
+Parquet; excess uses CDC.
+Retained SST command/block metadata, Parquet page headers and planned layouts
+have cumulative budgets before retention. These creation caps do not disable
+decoding of existing proven roots. Public GET/ranges may use ordinary
+CDC; private representation range amplification remains workload dependent.
+
 A newer binary can open supported older store levels. A feature that requires a
 newer reader raises the store format before publishing state that the old
 reader could misinterpret.

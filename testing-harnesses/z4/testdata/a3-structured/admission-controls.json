@@ -1,0 +1,34 @@
+[
+ {
+  "kind": "sst",
+  "path": "/workspace/work/z4-a3/scale-32-zstd.sst",
+  "bytes": 1767735,
+  "sha256": "ba784f50566a04c45433e16db5befee8c2e6c5f4734618c2b5b62bb4f0e04bc2",
+  "want_root": false,
+  "class_": "NATIVE_ZSTD_WORK_QUOTA_CONTROL"
+ },
+ {
+  "kind": "parquet",
+  "path": "/workspace/work/z4-a3/scale-256-zstd.parquet",
+  "bytes": 268435456,
+  "sha256": "d68d23d0f8eeed0aa37c897abdff526f0eec9b5350b5fe474a855b3bbf4227a8",
+  "want_root": false,
+  "class_": "NATIVE_ZSTD_WORK_QUOTA_CONTROL"
+ },
+ {
+  "kind": "sst",
+  "path": "/workspace/work/z4-a3/scale-32-none.sst",
+  "bytes": 34349557,
+  "sha256": "d633a7e0f865949dec27e14dda7ab7f5d8eb3433db946963cd26f3a689eaa4c2",
+  "label": "NATIVE_SYNTHETIC_SST_SCALE_CONTROL",
+  "want_root": true
+ },
+ {
+  "kind": "sst",
+  "path": "/workspace/work/z4-a3/scale-256-none.sst",
+  "bytes": 274793190,
+  "sha256": "ef1983916a1fc4c1ee28a022eee39b29ee789934d1c4ddc226cd017c6700dfa4",
+  "label": "NATIVE_SYNTHETIC_SST_SCALE_CONTROL",
+  "want_root": true
+ }
+]

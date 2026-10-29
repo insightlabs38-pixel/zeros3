@@ -14,7 +14,7 @@ schema = pa.schema([("value", pa.int32())])
 def write(padding):
     rng = np.random.RandomState(1039)
     s = schema
-    with pq.ParquetWriter(path, s, compression="snappy", use_dictionary=False,
+    with pq.ParquetWriter(path, s, compression=(sys.argv[3] if len(sys.argv)>3 else "snappy"), use_dictionary=False,
                           store_schema=False, write_statistics=False,
                           data_page_size=1 << 20) as w:
         w.add_key_value_metadata({"zeros3_memory_control": "x" * padding})

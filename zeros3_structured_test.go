@@ -395,3 +395,77 @@ func TestRepStructuredNodeItemTotalOverflow(t *testing.T) {
 		t.Fatal("wrapped 2^64 stream-item total accepted as zero")
 	}
 }
+
+func TestRepStructuredZstdAdmissionBounds(t *testing.T) {
+	for _, limit := range []int64{repStructuredSSTZstdBytes, repStructuredParquetZstdBytes} {
+		used := int64(0)
+		if e := repStructuredZstdInspect(&used, limit-1, limit); e != nil {
+			t.Fatal(e)
+		}
+		if e := repStructuredZstdInspect(&used, 1, limit); e != nil {
+			t.Fatal(e)
+		}
+		if used != limit {
+			t.Fatal("exact boundary not admitted")
+		}
+		if e := repStructuredZstdInspect(&used, 1, limit); !errors.Is(e, errRepLimit) {
+			t.Fatalf("over budget: %v", e)
+		}
+		if used != limit {
+			t.Fatal("failed admission advanced counter")
+		}
+		if e := repStructuredZstdInspect(&used, 1<<63-1, limit); !errors.Is(e, errRepLimit) {
+			t.Fatalf("overflow: %v", e)
+		}
+	}
+}
+
+func TestRepStructuredRetainedMetadataBudget(t *testing.T) {
+	var used int64
+	first := &repSSBlockRec{Cmds: make([]byte, 10<<20)}
+	if e := repSSRetainBlock(&used, first, 16<<20); e != nil {
+		t.Fatal(e)
+	}
+	before := used
+	second := &repSSBlockRec{Zstd: make([]byte, 8<<20)}
+	if e := repSSRetainBlock(&used, second, 16<<20); !errors.Is(e, repSSErrLimit) {
+		t.Fatalf("retained command recipes: %v", e)
+	}
+	if used != before {
+		t.Fatal("rejected SST block retained")
+	}
+	a := &repPQAnalyzer{}
+	page := &repPQPageInfo{Lay: repPQlayout{LvlHdrs: make([]uint64, 1<<20)}}
+	for i := 0; i < 7; i++ {
+		if e := a.retainLayout(page); e != nil {
+			t.Fatal(e)
+		}
+	}
+	before = a.retained
+	if e := a.retainLayout(page); !errors.Is(e, repPQErrLimit) {
+		t.Fatalf("retained page layouts: %v", e)
+	}
+	if a.retained != before {
+		t.Fatal("rejected Parquet layout retained")
+	}
+}
+
+func TestRepStructuredLayoutDetachesPageBacking(t *testing.T) {
+	raw := make([]byte, 16<<20)
+	raw[0] = 42
+	hdrs := make([]uint64, 1<<20)
+	hdrs[0] = 17
+	l := repPQlayout{Delta: raw[:1], LvlHdrs: hdrs[:1], ValHdrs: hdrs[:0]}
+	got := l.retained()
+	raw[0] = 99
+	hdrs[0] = 88
+	if got.Delta[0] != 42 || got.LvlHdrs[0] != 17 {
+		t.Fatal("recipe metadata still aliases page backing")
+	}
+	if got.ValHdrs != nil {
+		t.Fatal("empty metadata retained a backing array")
+	}
+	if cap(got.Delta) > 64 || cap(got.LvlHdrs) > 8 {
+		t.Fatal("short metadata retained whole-page capacity")
+	}
+}

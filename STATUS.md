@@ -26,7 +26,7 @@ deployment shape, and persistent-format versions. For usage, start with
   physical tiers, and content-aware placement.
 - **Experimental, default off:** optional structured representations
   (`zeros3 serve -representations shadow|prefer`) for tar, SQLite, CAR,
-  Merkle snapshots, Git, Gzip/Zstd and Safetensors/GGUF models. The ordinary CDC object stays authoritative; see
+  Merkle snapshots, Git, Gzip/Zstd Safetensors/GGUF models, supported RocksDB/Pebble SST and Parquet pages. The ordinary CDC object stays authoritative; see
   [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 - **Release status:** no stable 1.0 compatibility promise yet. Persistent formats
   are explicitly versioned and fail closed when a binary cannot understand
@@ -118,6 +118,7 @@ understand a required format must refuse the store instead of guessing.
 | 5 | warm/cold physical tier roots |
 | 6 | optional structured representation roots (`store/representations/roots/`) |
 | 7 | Model kind 8 (Safetensors/GGUF); older format-6 binaries refuse the store |
+| 8 | SST kind 9 / Parquet kind 10; Model-only format-7 binaries refuse the store |
 
 Level 6 is raised (together with the level-5 tier roots, if the store has none
 yet) immediately before the first representation root is published, and only
@@ -130,6 +131,10 @@ the root, including a Model nested below another kind. A crash may leave level 7
 without a published accelerator. Binaries supporting only level 6 refuse local
 opens and maintenance; compatible servers still accept older wire clients.
 Portable bundles carry ordinary content without optional roots or their floor.
+
+SST/Parquet publication raises level 8; this build retains Model and every earlier
+decoder. Level-7 binaries refuse a level-8 store before opening its journal.
+Unsupported producer layouts fall back to CDC; enabling a mode is not itself an upgrade.
 
 The version never decreases automatically.
 

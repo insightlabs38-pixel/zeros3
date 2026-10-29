@@ -34,3 +34,26 @@ All structured tests pass after repair (4.177 s). Pre-hardening full suite passe
 (260.207 s); final hardened-source validation and latency decision remain pending.
 All 162 original native regression inputs were recovered by SHA before rerun;
 no old accepted/fallback case is dropped. Original draft #81 is not promoted wholesale.
+
+Latency decision in progress: the first isolated cohort shows 16.487 s optional
+encode for native 1 GiB Parquet, while DuckDB Zstd spends ~6.086 s on 21.85 MiB.
+Metadata parsing is negligible; semantic planning and component/revalidation passes
+account for the work. Admission now caps decoded Zstd work at 4 MiB /512 frames SST and 128 MiB /1024 pages
+Parquet, retaining the 1 GiB overall cap. Over-budget native controls already pass
+successful streaming PUT, exact full/range reads, zero roots and no floor-eight bump.
+Additional ~32/256 MiB native SST controls are admitted and exact.
+
+Final review adds cumulative retained metadata guards before growing SST command/
+block recipes and Parquet headers/layouts. Existing-root decoding is unchanged.
+Boundary tests pass; final-source regression, full suite, compatibility and isolated
+measurements are running. Verdict remains pending; no merge/READY claim yet.
+
+A contended uncapped diagnostic on the native 32 MiB-valued SST spent 84.6 s in
+encoding with high transient heap, motivating the tighter frame/byte admission.
+It and the oversized Parquet remain exact existing roots under the new decoder.
+Short Parquet files exposed a harness-generated malformed negative-start range;
+the existing contract ignores malformed ranges and serves the full object. The
+input and malformed request are retained, the intended positive range is clamped,
+and the oracle now checks the frozen full-object contract. Corrected matrix passes.
+Metadata layout prefixes are detached from whole decoded-page backing arrays
+before retention. This source is frozen for final full/native/race/latency gates.

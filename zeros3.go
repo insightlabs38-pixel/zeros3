@@ -39335,9 +39335,6 @@ func repMDreadOp(c *repCall, op *repMDmodelOp, off, n int64) ([]byte, error) {
 	return out, nil
 }
 
-// ---- Q9 DRAFT ONLY: managed recipe adapters, stricter budgets ----------------
-// Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.
-
 // ---- Bounded streaming model analysis -------------------------
 const repModelWindow = 256 << 10
 const repModelDigestHint = "tensor-output-sha256/"
@@ -40481,6 +40478,7 @@ func (g *repSSgroupBuilder) close() error {
 func repSSEncode(r io.ReaderAt, size int64, opt repSSOptions, emit repSSEmit) ([]byte, repSSSizes, repSSStats, error) {
 	lim := opt.Limits.norm()
 	var st repSSStats
+	var retained int64
 	t, err := repSSOpen(r, size, lim)
 	if err != nil {
 		return nil, repSSSizes{}, st, err
@@ -40563,6 +40561,9 @@ func repSSEncode(r io.ReaderAt, size int64, opt repSSOptions, emit repSSEmit) ([
 			st.Components++
 			st.ComponentsBytes += int64(len(dec))
 			rec.Digests = append(rec.Digests, id)
+			if err := repSSRetainBlock(&retained, &bl, lim.MaxRecipe); err != nil {
+				return nil, repSSSizes{}, st, err
+			}
 			rec.Blocks = append(rec.Blocks, bl)
 			continue
 		}
@@ -40643,6 +40644,9 @@ func repSSEncode(r io.ReaderAt, size int64, opt repSSOptions, emit repSSEmit) ([
 			if err := gb.close(); err != nil {
 				return nil, repSSSizes{}, st, err
 			}
+		}
+		if err := repSSRetainBlock(&retained, &bl, lim.MaxRecipe); err != nil {
+			return nil, repSSSizes{}, st, err
 		}
 		rec.Blocks = append(rec.Blocks, bl)
 	}
@@ -41890,6 +41894,7 @@ type repPQAnalyzer struct {
 	rs    map[int]*repPQrunState // per column, so a level run may span chunks
 	// NoPredict forces explicit compression recipes and explicit layouts (measurement only).
 	NoPredict bool
+	retained  int64 // cumulative retained layout metadata across planning passes
 }
 
 // Port source: zeros3-z3/parquetz3/analyze.go
@@ -42206,6 +42211,9 @@ func (a *repPQAnalyzer) chunkPass(c *repPQChunk, plan *repPQChunkPlan, sk *repPQ
 		}
 		if pass1 {
 			info.Comp.Cmds, info.Comp.Zstd = nil, nil
+			if err := a.retainLayout(&info); err != nil {
+				return err
+			}
 			plan.Pages = append(plan.Pages, info)
 		}
 		return nil
@@ -43288,7 +43296,7 @@ func (e *repPQencoder) chunk(c *repPQChunk) error {
 	sk := &repPQsink{
 		value: func(rec []byte) error { return e.vs[ci].add(rec, 1) },
 		page: func(i int, pi *repPQPageInfo, values []byte, comp repPQCompRec, hdr []byte) error {
-			s := repPQSeg{Col: ci, Hdr: append([]byte(nil), hdr...), Comp: comp.ID, Lay: pi.Lay, Present: pi.Present}
+			s := repPQSeg{Col: ci, Hdr: append([]byte(nil), hdr...), Comp: comp.ID, Lay: pi.Lay.retained(), Present: pi.Present}
 			var err error
 			if repPQcompNeedsMember(comp.ID) {
 				cb := comp.Cmds
@@ -47232,7 +47240,7 @@ func repSCReadSSTRange(c *repCall, off, n int64) ([]byte, repSSRangeStats, error
 	return out.Bytes(), st, err
 }
 
-// Q10 draft policy bounds stored components, metadata and per-page scratch.
+// Structured policy bounds stored components, metadata and per-page scratch.
 func repStructuredSSTLimits() repSSLimits {
 	return repSSLimits{MaxBlocks: 65536, MaxBlockBytes: 16 << 20, MaxDecoded: 16 << 20, MaxEntries: 262144, MaxMeta: 16 << 20, MaxTail: 16 << 20, MaxRecordBytes: 1 << 20, MaxRecipe: 16 << 20}
 }
@@ -47255,6 +47263,7 @@ func (b *repBuilder) encodeStructured(src io.ReaderAt, size int64, k repKind) (*
 	if size < 0 || size > repMaxInspect {
 		return nil, errRepLimit
 	}
+	var zstdWork, zstdFrames, headerWork int64
 	target := 4 << 10
 	if size >= 256<<20 {
 		target = 32 << 10
@@ -47314,6 +47323,14 @@ func (b *repBuilder) encodeStructured(src io.ReaderAt, size int64, k repKind) (*
 			default:
 				return nil, errRepUnsupported
 			}
+			if rb.Comp() == repSSCompZstd {
+				if !repStructuredReserve(&zstdFrames, 1, 512) {
+					return nil, fmt.Errorf("%w: synchronous SST Zstd frame budget", errRepLimit)
+				}
+				if e = repStructuredZstdInspect(&zstdWork, n, repStructuredSSTZstdBytes); e != nil {
+					return nil, e
+				}
+			}
 			if e = b.budget.inspect(n); e != nil {
 				return nil, e
 			}
@@ -47338,10 +47355,21 @@ func (b *repBuilder) encodeStructured(src io.ReaderAt, size int64, k repKind) (*
 		pages := 0
 		for ri := range f.RowGroups {
 			for ci := range f.RowGroups[ri].Chunks {
-				err = f.Pages(src, &f.RowGroups[ri].Chunks[ci], func(p *repPQPage, _ []byte) error {
+				err = f.Pages(src, &f.RowGroups[ri].Chunks[ci], func(p *repPQPage, hdr []byte) error {
+					if !repStructuredReserve(&headerWork, int64(len(hdr)), 16<<20) {
+						return fmt.Errorf("%w: cumulative Parquet page headers", errRepLimit)
+					}
 					pages++
 					if pages > lim.MaxPages {
 						return errRepLimit
+					}
+					if f.RowGroups[ri].Chunks[ci].Codec == repPQCodecZstd {
+						if !repStructuredReserve(&zstdFrames, 1, 1024) {
+							return fmt.Errorf("%w: synchronous Parquet Zstd frame budget", errRepLimit)
+						}
+						if e := repStructuredZstdInspect(&zstdWork, int64(p.Uncomp), repStructuredParquetZstdBytes); e != nil {
+							return e
+						}
 					}
 					remaining -= int64(p.Comp)
 					return b.budget.inspect(int64(p.Uncomp))
@@ -47395,4 +47423,56 @@ func repStructuredAppendKey(keys, key []byte, limit int64) ([]byte, error) {
 func (c *repPQCompressor) zstdLimits() repZSLimits {
 	n := c.lim.norm().MaxPage
 	return repZSLimits{MaxFrames: 1, MaxBlocks: 65536, MaxWindow: min(n, 16<<20), MaxFrameDecoded: n, MaxTotalDecoded: n, MaxLiterals: n, MaxSequences: n, MaxSkippable: n, MaxIRBytes: n}
+}
+
+// Synchronous optional admission limits expensive exact Zstd analysis. This
+// controls new creation only; existing exact roots remain fully decodable.
+const (
+	repStructuredSSTZstdBytes     int64 = 4 << 20
+	repStructuredParquetZstdBytes int64 = 128 << 20
+)
+
+func repStructuredZstdInspect(used *int64, n, limit int64) error {
+	if !repStructuredReserve(used, n, limit) {
+		return fmt.Errorf("%w: synchronous structured Zstd work budget", errRepLimit)
+	}
+	return nil
+}
+
+// Reserve before retaining metadata; a rejected attempt does not advance usage.
+func repStructuredReserve(used *int64, n, limit int64) bool {
+	if *used < 0 || *used > limit || n < 0 || n > limit-*used {
+		return false
+	}
+	*used += n
+	return true
+}
+func repSSRetainBlock(used *int64, b *repSSBlockRec, limit int64) error {
+	cost := int64(128) + int64(len(b.Cmds)) + int64(len(b.Zstd))
+	if b.Explicit != nil {
+		cost += int64(len(b.Explicit.Restarts))*4 + int64(len(b.Explicit.Shared))*4
+	}
+	if !repStructuredReserve(used, cost, limit) {
+		return repSSErrLimit
+	}
+	return nil
+}
+func (a *repPQAnalyzer) retainLayout(p *repPQPageInfo) error {
+	l := &p.Lay
+	cost := int64(256) + int64(len(l.Delta)) + int64(len(l.LvlHdrs)+len(l.ValHdrs))*8 + int64(len(l.LvlPad)+len(l.ValPad))*4
+	if !repStructuredReserve(&a.retained, cost, 64<<20) {
+		return repPQErrLimit
+	}
+	p.Lay = p.Lay.retained()
+	return nil
+}
+
+// Recipe metadata must not pin an entire decoded page behind a short prefix.
+func (l repPQlayout) retained() repPQlayout {
+	l.Delta = append([]byte(nil), l.Delta...)
+	l.LvlHdrs = append([]uint64(nil), l.LvlHdrs...)
+	l.ValHdrs = append([]uint64(nil), l.ValHdrs...)
+	l.LvlPad = append([]uint32(nil), l.LvlPad...)
+	l.ValPad = append([]uint32(nil), l.ValPad...)
+	return l
 }
