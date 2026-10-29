@@ -1,8 +1,13 @@
-# Z4 Frontier Campaign — active progress ledger
+# Z4 Frontier Campaign — runtime interruption checkpoint
 
-Status: **ACTIVE, unfinished**. This is a recovery cursor, not a terminal verdict.
+Status: **RUNTIME INTERRUPTED, unfinished** on 2026-10-29 UTC.
+The execution environment became unavailable. Exec-server transport disconnected;
+recovery timed out after 25 seconds. This is an actual execution blocker, not a
+campaign boundary, approval requirement, or evidence of a five-hour quota.
 Continue the first unfinished item; hourly wakes do not authorize a pause.
-Latest merged main: 90eed88 (A2, PR #92). Active branch: z4/a3-structured-production.
+Latest production main: a19ace98ecb8d417d0c7430dd02c0afe0058d39f (A3, PR #93).
+Local branch z4/a4-managed-streaming was created at that main with a clean tree.
+A4 preparation only: no implementation edits, checkpoint, or claimed verdict.
 Original draft PRs #80/#81 remain open; neither was merged wholesale.
 
 | Item | Durable outcome | PR / state |
@@ -10,8 +15,8 @@ Original draft PRs #80/#81 remain open; neither was merged wholesale.
 | A0 | PRODUCTION_TRANCHE_NEEDS_REWORK; isolated audit and old-retirement evidence | #90 merged |
 | A1 | cumulative store-format capability design; old/new/wire/crash matrix | #91 merged |
 | A2 | MODEL8_PRODUCTION_READY; bounded Model-only extraction | #92 merged |
-| A3 | STRUCTURED9_10_PARTIAL; final gates passed for bounded subset | #93; merge pending |
-| A4 | queued; real managed memory/lookup defects remain | #80 stays draft |
+| A3 | STRUCTURED9_10_PARTIAL; final gates passed for bounded subset | #93 merged |
+| A4 | first unfinished; inspected indexes and streaming design only | #80 stays draft |
 | B1 | similarity/delta CAS decision pending | queued |
 | B2 | representation-authority decision pending; **DRAFT_ONLY** | queued |
 | B3 | cross-format semantic CAS decision pending | queued |
@@ -22,17 +27,21 @@ Original draft PRs #80/#81 remain open; neither was merged wholesale.
 | B8 | convergence / production decision pending | queued |
 | Expansion | useful pool remains authorized after B8 | not started |
 
-Current production kinds are 1–8. Model kind 8 publication requires store floor 7;
-creation defaults off. A3's unmerged candidate adds kinds 9/10 and floor 8 while
-retaining Model and all earlier decoders. No managed kind 11/12 is merged.
+Current production kinds are 1–10. Model kind 8 publication requires store floor 7;
+kinds 9/10 require floor 8. Creation defaults off. All earlier decoders remain.
+No managed kind 11/12 is merged.
 A1 tests show old local binaries refuse newer floors; compatible servers preserve
 older wire clients and portable full/delta bundles omit optional graphs/floors.
 
 Strong evidence: A2 exact independent real MiniLM full/range reads, 153.5 MiB/s
 optional encoding, and fresh 1 GiB proof at 94.74 MiB maximum process RSS.
 A3 preserves all 162 native cases: 66 SST /39 Parquet exact roots with unchanged
-identities, 57 explicit fallbacks. Final frozen-source full/latency gates pass; PR #93 contains the bounded subset.
-Its actual PR/main state decides whether promotion has landed.
+identities, 57 explicit fallbacks. PR #93 merged the bounded subset after final gates.
+A3 full suite: 196.031 seconds; structured race: 13.112 seconds; vet passed.
+Fresh 1 GiB Parquet: 62.51 MiB/s optional encoding, 84.91 MiB maximum RSS.
+Final source SHA-256: 34262c8eda1025bfc6110582cdc6dd193a1455578ed7a3fd89693e552b3164ce.
+A3 checkpoints: cf00639, 5f74649, 44b616f, 3436876.
+Evidence and preserved failures: Z4_A3_STRUCTURED_PRODUCTION.md and its artifacts.
 
 Largest remaining blockers: expensive exact Zstd paths; optional physical growth
 while CDC remains authoritative; managed whole-file copies, reference-state memory
@@ -41,6 +50,12 @@ A3 limits new creation and retained metadata, without invalidating existing root
 No test case is removed to obtain a pass; failing diagnostics and harness contract
 corrections are retained. LOC alone has not rejected any tranche.
 
-Next: close A3's actual remaining gates, then A4, B1–B8 and useful expansion.
-At an actual runtime/usage stop or campaign end, update this file with the exact
-stop reason and final decisions; do not claim queued/draft work complete.
+Resume A4 first: replace quadratic managed indexes while preserving exact wire
+identities, then eliminate whole-artifact copies and unbounded retained references
+using streaming/staged state. Index speed alone does not satisfy the architecture
+gate. Require four-size memory/scaling evidence and malformed-input integrity.
+Then continue B1–B8 and useful expansion; B2 remains DRAFT_ONLY.
+A0–A3 reports and pushed commits are durable; do not restart completed work.
+The existing hourly wake is recovery only; no second worker was started.
+Environment restoration is required to resume builds, tests, and local inspection.
+The campaign is not complete; A4, every B item, and expansion remain unfinished.
