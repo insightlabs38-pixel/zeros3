@@ -147,7 +147,11 @@ func (c *Ctx) strAt(off uint32) []byte {
 
 func (c *Ctx) col(t int, r uint32, ci int) uint32 {
 	if c.source != nil {
-		return c.source.col(c.F, t, r, ci)
+		v := c.source.col(c.F, t, r, ci)
+		if c.source.err != nil && c.err == nil {
+			c.err = c.source.err
+		}
+		return v
 	}
 	return c.F.Col(c.D, t, r, ci)
 }

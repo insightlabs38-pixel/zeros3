@@ -9,6 +9,7 @@ import (
 // 16 MiB. Span views expire on the next source read. Owned metadata heaps use
 // separate checked buffers, never a sparse full-image allocation.
 type clrSource struct {
+	borrow   []byte // decode-only heap aliases into its mutable reconstruction buffer
 	bodyWork int64
 	bodyRefs int64
 	r        io.ReaderAt
@@ -73,6 +74,9 @@ func (s *clrSource) read(b []byte, off int64) {
 func (s *clrSource) owned(off, n int64) ([]byte, error) {
 	if off < 0 || n < 0 || n > 16<<20 || off > s.size || n > s.size-off {
 		return nil, limit("owned heap geometry")
+	}
+	if s.borrow != nil {
+		return s.borrow[off : off+n], nil
 	}
 	b := make([]byte, n)
 	s.read(b, off)

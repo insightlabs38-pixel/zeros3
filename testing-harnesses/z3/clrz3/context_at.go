@@ -1,6 +1,9 @@
 package clrz3
 
-import "zeros3-z3/idxref"
+import (
+	"bytes"
+	"zeros3-z3/idxref"
+)
 
 // newCtxAt owns only bounded metadata heaps and compact identity state.
 func newCtxAt(f *File, s *clrSource, k0 int) (*Ctx, error) {
@@ -105,4 +108,31 @@ func limitedHeapEntries(h []byte) (es []BlobEntry, err error) {
 		p += w + n
 	}
 	return es, nil
+}
+
+// Decode retains aliases into its already bounded reconstruction, so reference
+// restoration remains visible to identity computation without another image.
+func newCtxDecode(f *File, data []byte, k0 int) (*Ctx, error) {
+	source := &clrSource{r: bytes.NewReader(data), size: int64(len(data)), lo: -1, borrow: data}
+	c, e := newCtxAt(f, source, k0)
+	if e != nil {
+		return nil, e
+	}
+	c.D = data
+	c.source = nil
+	return c, nil
+}
+func tableSlotCount(f *File) (int, error) {
+	n := 0
+	for t, tb := range f.Tables {
+		for _, cd := range schema[t] {
+			if cd.K != KConst {
+				if int64(tb.Rows) > int64((2<<20)-n) {
+					return 0, limit("table slot metadata")
+				}
+				n += int(tb.Rows)
+			}
+		}
+	}
+	return n, nil
 }

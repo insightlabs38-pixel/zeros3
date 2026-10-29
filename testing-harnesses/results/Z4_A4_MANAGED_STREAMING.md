@@ -90,7 +90,7 @@ Fresh-process plain controls, OS cache warm; producers/compilers outside measure
 | Newtonsoft 13.0.4 | 717736 | .235 | 22.16 |
 | FSharp.Core | 5726208 | .676 | 37.72 |
 | CoreLib 8.0.33 | 12775936 | 1.617 | 78.48 |
-| Roslyn CSharp 8.0.427 | 18601984 | 2.249 | 104.78 |
+| Roslyn (SDK 8.0.427) | 18601984 | 2.249 | 104.78 |
 
 All four preserve exact metadata and every length-framed component byte versus legacy;
 independent serialized full SHA proofs pass. Legacy encode includes self-proof; its
@@ -110,3 +110,11 @@ also passed under race (485.890 s). Latest budget/stream refinements pass focuse
 Mechanical AST extraction builds a standalone stdlib-only managed port; actual production
 integration, five frozen root vectors, old/new wire/capability/crash gates and final
 native production measurements are still pending. PR #95 stays draft; no managed merge.
+
+Decoder closure checkpoint: CLR borrows its reconstruction heaps under the same metadata
+bounds, tiles payload directly without a second full concatenation, and caches bounded
+method-body parses. DEX preallocates exact slot capacity, uses compact offset state and
+streams budgeted prototype identities. Native Roslyn and DEX independent proofs still pass.
+Codec/kinds suites, focused races and vet pass; an initial wrong package-path invocation
+is retained alongside its successful corrected rerun. Evidence: a4-checkpoint4-evidence.json.gz.
+Production source remains unchanged; all production merge gates are still pending.

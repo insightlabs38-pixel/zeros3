@@ -81,3 +81,32 @@ func (oc *streamOffCoder) put(kind OffKind, pos int64) ([]byte, error) {
 	}
 	return ko.cls.Put(binary.AppendUvarint(nil, 1), o)
 }
+
+// Mechanically reused decoder symbols with compact seen bits.
+func (oc *streamOffCoder) get(kind OffKind, b []byte) (int64, []byte, error) {
+	ko := oc.kinds[kind]
+	u, k := binary.Uvarint(b)
+	if k <= 0 {
+		return 0, nil, bad("offset stream truncated")
+	}
+	b = b[k:]
+	var o int
+	if u&1 == 0 {
+		o = ko.prevNew + int(idxref.Unzigzag(u>>1))
+		if o < 0 || o >= len(ko.list) {
+			return 0, nil, bad("offset ordinal %d outside %d items", o, len(ko.list))
+		}
+		ko.prevNew = o
+		ko.seen[o/64] |= 1 << uint(o%64)
+	} else {
+		if u != 1 || ko.cls == nil {
+			return 0, nil, bad("offset stream symbol")
+		}
+		h, rest, err := ko.cls.Get(b)
+		if err != nil {
+			return 0, nil, idxErr(err)
+		}
+		b, o = rest, h
+	}
+	return ko.list[o], b, nil
+}

@@ -248,6 +248,9 @@ func SplitComp(c []byte) (payload []byte, streams [numStream][]byte, err error) 
 // Decode rebuilds the DEX from Meta and the component bytes (in order). Every length it allocates
 // from is bounded by the component bytes it was handed.
 func Decode(meta []byte, comps [][]byte) ([]byte, error) {
+	if len(meta) > 16<<20 || len(comps) > 1<<16 {
+		return nil, fmt.Errorf("%w: representation metadata/groups", ErrLimit)
+	}
 	if len(meta) < len(repMagic)+2+HeaderSize || string(meta[:4]) != repMagic {
 		return nil, bad("representation header")
 	}
@@ -262,6 +265,9 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	copy(raw[:], meta[6:6+HeaderSize])
 	mapb := meta[6+HeaderSize:]
 	size := int64(le32(raw[32:]))
+	if size > 32<<20 {
+		return nil, fmt.Errorf("%w: output size", ErrLimit)
+	}
 	mOff := int64(le32(raw[52:]))
 	if size < HeaderSize+int64(len(mapb)) || mOff < HeaderSize || mOff+int64(len(mapb)) > size || len(mapb) < 16 {
 		return nil, bad("header/map geometry")
@@ -270,10 +276,19 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	var split [][numStream][]byte
 	var payloads [][]byte
 	var plen int64
+	totalComp := int64(0)
+	var streamLengths [numStream]int
 	for _, c := range comps {
+		if len(c) > 16<<20 || int64(len(c)) > (128<<20)-totalComp {
+			return nil, fmt.Errorf("%w: component bytes", ErrLimit)
+		}
+		totalComp += int64(len(c))
 		p, ss, err := SplitComp(c)
 		if err != nil {
 			return nil, err
+		}
+		for k, part := range ss {
+			streamLengths[k] += len(part)
 		}
 		payloads = append(payloads, p)
 		split = append(split, ss)
@@ -286,6 +301,9 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	copy(buf, raw[:])
 	copy(buf[mOff:], mapb)
 	var streams [numStream][]byte
+	for k, n := range streamLengths {
+		streams[k] = make([]byte, 0, n)
+	}
 	pos := int64(HeaderSize)
 	for i, p := range payloads {
 		for b := p; len(b) > 0; {
@@ -308,12 +326,25 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	w, err := Walk(f, buf, WalkOpts{Masked: true, Offsets: true, Debug: true})
+	if err := managedGeometry(f); err != nil {
+		return nil, err
+	}
+	f.Lim.MaxSlots = 4 << 20
+	slotCount := 0
+	w, err := WalkAtVisit(f, bytes.NewReader(buf), WalkOpts{Masked: true, Offsets: true, Debug: true}, func(Slot) error { slotCount++; return nil })
 	if err != nil {
 		return nil, err
 	}
-	// 1. offsets (item classes come from the masked bytes, so they are built before any write)
-	oc := newOffCoder(f, w, buf, k0)
+	slots := make([]Slot, 0, slotCount)
+	if _, err := walkAtVisit(f, bytes.NewReader(buf), WalkOpts{Masked: true, Offsets: true, Debug: true}, func(s Slot) error { slots = append(slots, s); return nil }, false); err != nil {
+		return nil, err
+	}
+	w.Slots = slots
+	// Offset identities are computed before restoration, over the immutable masked view.
+	oc, err := newOffCoderAt(f, w, bytes.NewReader(buf), k0)
+	if err != nil {
+		return nil, err
+	}
 	osr := streams[streamOff]
 	for i := range w.Slots {
 		s := &w.Slots[i]
@@ -363,28 +394,28 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 		}
 		return nil
 	}
-	if tb.ID[SpString], err = identStrings(buf, f, w); err != nil {
+	if tb.ID[SpString], err = identStringsAt(&walkSource{r: bytes.NewReader(buf), size: size, lo: -1}, f, w); err != nil {
 		return nil, err
 	}
 	if err := resolve(SpString); err != nil {
 		return nil, err
 	}
-	if tb.ID[SpType], err = identTypes(buf, f, tb.ID[SpString]); err != nil {
+	if tb.ID[SpType], err = identTypesAt(&walkSource{r: bytes.NewReader(buf), size: size, lo: -1}, f, tb.ID[SpString]); err != nil {
 		return nil, err
 	}
 	if err := resolve(SpType); err != nil {
 		return nil, err
 	}
-	if tb.ID[SpProto], err = identProtos(buf, f, tb.ID[SpType]); err != nil {
+	if tb.ID[SpProto], err = identProtosAt(&walkSource{r: bytes.NewReader(buf), size: size, lo: -1}, f, tb.ID[SpType]); err != nil {
 		return nil, err
 	}
 	if err := resolve(SpProto); err != nil {
 		return nil, err
 	}
-	if tb.ID[SpField], err = identFields(buf, f, tb.ID[SpType], tb.ID[SpString]); err != nil {
+	if tb.ID[SpField], err = identFieldsAt(&walkSource{r: bytes.NewReader(buf), size: size, lo: -1}, f, tb.ID[SpType], tb.ID[SpString]); err != nil {
 		return nil, err
 	}
-	if tb.ID[SpMethod], err = identMethods(buf, f, tb.ID[SpType], tb.ID[SpProto], tb.ID[SpString]); err != nil {
+	if tb.ID[SpMethod], err = identMethodsAt(&walkSource{r: bytes.NewReader(buf), size: size, lo: -1}, f, tb.ID[SpType], tb.ID[SpProto], tb.ID[SpString]); err != nil {
 		return nil, err
 	}
 	if err := resolve(SpField); err != nil {

@@ -53,6 +53,9 @@ type lent struct {
 // Decode rebuilds the assembly from Meta and the component bytes (in order). Every length it
 // allocates from is bounded by the component bytes it was handed.
 func Decode(meta []byte, comps [][]byte) ([]byte, error) {
+	if len(meta) > 16<<20 || len(comps) > 1<<16 {
+		return nil, limit("representation metadata/groups")
+	}
 	if len(meta) < len(repMagic)+3 || string(meta[:4]) != repMagic {
 		return nil, bad("representation header")
 	}
@@ -72,6 +75,9 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	size, err := rd()
 	if err != nil {
 		return nil, err
+	}
+	if size > 32<<20 {
+		return nil, limit("representation output size")
 	}
 	nreg, err := rd()
 	if err != nil {
@@ -103,10 +109,19 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	var payloads [][]byte
 	var splits [][][]byte
 	var plen int64
+	totalComp := int64(0)
+	var streamLengths [NumStreams]int
 	for _, c := range comps {
+		if len(c) > 16<<20 || int64(len(c)) > (128<<20)-totalComp {
+			return nil, limit("component bytes")
+		}
+		totalComp += int64(len(c))
 		pl, ss, err := idxref.SplitComp(c, NumStreams)
 		if err != nil {
 			return nil, idxErr(err)
+		}
+		for k, part := range ss {
+			streamLengths[k] += len(part)
 		}
 		payloads = append(payloads, pl)
 		splits = append(splits, ss)
@@ -117,23 +132,48 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	}
 	buf := make([]byte, size)
 	var in [NumStreams][]byte
-	{
-		var all []byte
-		for i, pl := range payloads {
-			all = append(all, pl...)
-			for k := range splits[i] {
-				in[k] = append(in[k], splits[i][k]...)
+	for k, n := range streamLengths {
+		in[k] = make([]byte, 0, n)
+	}
+	tilePos, region, within := int64(0), 0, 0
+	for i, part := range payloads {
+		for len(part) > 0 {
+			if region < len(regs) && tilePos == regs[region].Off {
+				r := regs[region]
+				copy(buf[r.Off:r.End()], p[within:within+int(r.Len)])
+				within += int(r.Len)
+				tilePos = r.End()
+				region++
+				continue
 			}
+			end := int64(size)
+			if region < len(regs) {
+				end = regs[region].Off
+			}
+			n := int64(len(part))
+			if n > end-tilePos {
+				n = end - tilePos
+			}
+			if n <= 0 {
+				return nil, bad("payload/header tiling")
+			}
+			copy(buf[tilePos:tilePos+n], part[:n])
+			part = part[n:]
+			tilePos += n
 		}
-		pos, mp := int64(0), p
-		for _, r := range regs {
-			n := copy(buf[pos:r.Off], all)
-			all = all[n:]
-			copy(buf[r.Off:], mp[:r.Len])
-			mp = mp[r.Len:]
-			pos = r.End()
+		for k := range splits[i] {
+			in[k] = append(in[k], splits[i][k]...)
 		}
-		copy(buf[pos:], all)
+	}
+	for region < len(regs) && tilePos == regs[region].Off {
+		r := regs[region]
+		copy(buf[r.Off:r.End()], p[within:within+int(r.Len)])
+		within += int(r.Len)
+		tilePos = r.End()
+		region++
+	}
+	if tilePos != int64(size) || region != len(regs) || within != len(p) {
+		return nil, bad("payload/header tiling")
 	}
 	f, err := Parse(bytes.NewReader(buf), int64(size), Limits{})
 	if err != nil {
@@ -150,12 +190,19 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	if f.TabKind != '~' || f.HasPtr || !f.HasStr || !f.HasBlob {
 		return nil, bad("unsupported structure in a representation")
 	}
-	c, err := NewCtx(f, buf, k0)
+	c, err := newCtxDecode(f, buf, k0)
 	if err != nil {
 		return nil, err
 	}
 	c.Auto = auto
-	slots := TableSlots(f, buf)
+	count, err := tableSlotCount(f)
+	if err != nil {
+		return nil, err
+	}
+	slots, err := compactTableSlots(f, buf, make([]Slot, 0, count))
+	if err != nil {
+		return nil, err
+	}
 
 	// ---- L: layout state ------------------------------------------------------------------
 	var ls []lent
@@ -272,6 +319,8 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 	}
 	// method RVAs and body layout
 	var bodies []BodyInfo
+	bodySource := &clrSource{r: bytes.NewReader(buf), size: int64(len(buf)), lo: -1}
+	bodyCache := make(map[int64]int)
 	prevEnd := f.CLIOff + 72
 	for i, e := range ls {
 		if e.kind != 0 || slots[e.slot].Lay != LRVA {
@@ -306,10 +355,26 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 			if !ok {
 				return nil, bad("method RVA %#x unmapped", rva)
 			}
-			if bi.Body, ok = ParseBody(buf, int64(off), false); !ok {
-				return nil, bad("method body at %#x", rva)
+			if cached, found := bodyCache[int64(off)]; found {
+				bi.Body = bodies[cached].Body
+			} else {
+				bodySource.lo = -1
+				bodySource.buf = bodySource.buf[:0]
+				var parseErr error
+				bi.Body, ok, parseErr = parseBodyAt(bodySource, int64(off), false)
+				if parseErr != nil {
+					return nil, parseErr
+				}
+				if !ok {
+					return nil, bad("method body at %#x", rva)
+				}
+				bodyCache[int64(off)] = len(bodies)
 			}
+
 			prevEnd = bi.Body.End
+		}
+		if len(bodies) >= 1<<18 {
+			return nil, limit("method layout count")
 		}
 		bodies = append(bodies, bi)
 	}

@@ -253,6 +253,9 @@ func (k *walker) fixed(off int64, enc Enc, sp Space, cl Class, optional bool, ki
 	} else {
 		v = le32(k.data.span(off, 4))
 	}
+	if k.data.err != nil {
+		return k.data.err
+	}
 	if sp == SpOffset {
 		if v == 0 {
 			return nil
