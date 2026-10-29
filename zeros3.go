@@ -45101,6 +45101,10 @@ func repPQParseRecipe(b []byte, lim repPQLimits) (*repPQRecipe, error) {
 				r.fail("stream node member %d of %d", m, ndig)
 			}
 			it := r.uv(1 << 60)
+			if it > math.MaxUint64-*total {
+				r.fail("stream item total overflow")
+				return nil
+			}
 			*total += it
 			out = append(out, repPQnodeMember{int(m), it})
 		}

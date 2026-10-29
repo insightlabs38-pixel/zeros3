@@ -21,3 +21,16 @@ retain uninstrumented production-source identity and its own patch provenance.
 Pending: cumulative actual-binary old/new/Model matrix; unsupported cases retained;
 latency/admission decision; malformed recipes/fuzz/race; exact ranges; full suite;
 READY or clean bounded PARTIAL verdict. No production merge claimed yet.
+
+Second checkpoint: cumulative Model/SST/Parquet restart proof and ten ordinary-PUT
+crash gates pass. Real native revisions pass wire/maintenance matrices; an unchanged
+RocksDB carry-forward file is retained as a control alongside a distinct new emission.
+Four older local generations make 63 genuine floor-eight refusals; one pre-I0 CLI
+flag is unavailable, not counted as safe refusal. Portable full/delta bytes remain exact.
+
+Review found a malformed Parquet recipe whose sixteen 2^60 stream counts wrapped
+to zero. A preserved failing regression now rejects through checked uint64 addition.
+All structured tests pass after repair (4.177 s). Pre-hardening full suite passed
+(260.207 s); final hardened-source validation and latency decision remain pending.
+All 162 original native regression inputs were recovered by SHA before rerun;
+no old accepted/fallback case is dropped. Original draft #81 is not promoted wholesale.

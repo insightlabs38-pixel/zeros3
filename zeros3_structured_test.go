@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -282,5 +283,115 @@ func TestRepStructuredZstdWindowBeforeAllocation(t *testing.T) {
 	_, _, err := c.Analyze(payload, 1)
 	if err == nil || !strings.Contains(err.Error(), "window size") {
 		t.Fatalf("embedded frame bound: %v", err)
+	}
+}
+
+func TestRepStructuredOrdinaryPutCrashFloor(t *testing.T) {
+	raw, err := os.ReadFile("testing-harnesses/z4/testdata/a3-structured/lab-structured.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixtures []repLabCodecFixture
+	if err = json.Unmarshal(raw, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []repKind{repKindSST, repKindParquet} {
+		var data []byte
+		for _, f := range fixtures {
+			r, e := unmarshalRep(f.Root, repProdLimits)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if r.Kind == kind {
+				data = f.Input
+				break
+			}
+		}
+		if data == nil {
+			t.Fatal("missing frozen kind")
+		}
+		for _, point := range []string{hookRepRootBeforeFormat, hookRepRootAfterFormat, hookRepRootBeforeRename, hookRepRootAfterRename, hookRepBeforeNamespace} {
+			t.Run(fmt.Sprintf("kind%d/%s", kind, point), func(t *testing.T) {
+				l := newRepLab(t, repModePrefer)
+				l.put("old", []byte("prior authoritative bytes"))
+				withTestHook(t, func(p string) {
+					if p == point {
+						panic(simulatedCrash{point: p})
+					}
+				})
+				runExpectingSimulatedCrash(t, func() { _, _ = l.s.PutObject("b", "new", data, "x", nil) })
+				testHook = nil
+				l.close()
+				l.open()
+				want := 8
+				if point == hookRepRootBeforeFormat {
+					want = 1
+				}
+				if l.s.format.StoreFormatVersion != want {
+					t.Fatalf("floor %d, want %d", l.s.format.StoreFormatVersion, want)
+				}
+				if _, _, e := l.s.GetObject("b", "new"); e == nil {
+					t.Fatal("uncommitted structured object visible")
+				}
+				l.exact("structured PUT crash")
+				l.offline(func() {
+					if _, e := gcCollect(l.dir, true); e != nil {
+						t.Fatal(e)
+					}
+				})
+				if l.s.format.StoreFormatVersion != want {
+					t.Fatal("GC downgraded floor")
+				}
+				l.put("new", data)
+				l.exact("structured retry")
+			})
+		}
+	}
+}
+
+func TestRepStructuredCumulativeModelCompatibility(t *testing.T) {
+	l := newRepLab(t, repModePrefer)
+	l.put("model", repZ4ModelSafetensors(t, bytes.Repeat([]byte{1, 2, 3, 4}, 16384)))
+	if l.s.format.StoreFormatVersion != 7 {
+		t.Fatal("Model floor before structured integration")
+	}
+	raw, e := os.ReadFile("testing-harnesses/z4/testdata/a3-structured/lab-structured.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	var fs []repLabCodecFixture
+	if e = json.Unmarshal(raw, &fs); e != nil {
+		t.Fatal(e)
+	}
+	seen := map[repKind]bool{}
+	for _, f := range fs {
+		r, e := unmarshalRep(f.Root, repProdLimits)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if seen[r.Kind] {
+			continue
+		}
+		seen[r.Kind] = true
+		l.put(fmt.Sprintf("kind-%d", r.Kind), f.Input)
+	}
+	if !seen[repKindSST] || !seen[repKindParquet] || l.s.format.StoreFormatVersion != 8 {
+		t.Fatal("missing cumulative structured floor")
+	}
+	l.exact("Model plus SST plus Parquet")
+	l.close()
+	l.open()
+	l.exact("cumulative decoder restart")
+}
+
+func TestRepStructuredNodeItemTotalOverflow(t *testing.T) {
+	nodes := make([]repPQnodeMember, 16)
+	for i := range nodes {
+		nodes[i] = repPQnodeMember{member: 0, items: 1 << 60}
+	}
+	rec := &repPQRecipe{Cols: []repPQColRec{{Phys: repPQTInt32, HasV: true, Vm: nodes}}, Digests: []repPQID{{}}}
+	raw, _ := rec.Marshal()
+	if _, err := repPQParseRecipe(raw, repStructuredParquetLimits()); err == nil {
+		t.Fatal("wrapped 2^64 stream-item total accepted as zero")
 	}
 }
