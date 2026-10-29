@@ -34,3 +34,43 @@ Runtime recovered after the earlier transport interruption. Fetch, toolchain and
 smoke tests succeeded; no OOM kills recorded. 3.8 GiB free on a 32 GiB filesystem at resume.
 If disk becomes critical, remove only reproducible scratch first; preserve important
 non-reproducible evidence on a separate unmerged backup branch if a stop is unavoidable.
+
+## Second checkpoint: actual streaming/staged prototypes, still unfinished
+
+DEX WalkAt reads 64 KiB source windows, with checked bounded instruction buffers.
+An unchanged pre-streaming walker was mechanically extracted as an error/slot oracle.
+Visit passes retain compact item descriptors and exact masks instead of all Slot records.
+EncodeAt reads original identity fields in windows, hashes masked items without a file
+copy, uses sorted offset lookups/bitsets, spools reference bytes, and emits components.
+The masked view and windowed grouping preserve all legacy cuts and component bytes.
+Component construction is capped at 16 MiB including reference streams; staged references
+are capped at 256 MiB. Partial sink output is never a proof or permission to publish.
+
+Real F-Droid 2.0.2 DEX: 9,297,608 bytes, 2,109 components. Fresh streamed encode
+1.032 s, max RSS 88,801,280 bytes, sampled peak Go heap 78,805,832 bytes.
+Metadata SHA256 1f115a254f969ab7349cee477b7a8703b4b5afbb2db6a979e9c531cec3b31969;
+length-framed component SHA256 d1bcc4a78f83b9fd06aed07f151f3a26fd27284e3b84880a6de305181bdbdbca.
+Both equal the legacy API output. Independent serialized full proof: 0.684 s,
+140,603,392-byte max RSS; exact original SHA256 reproduced. Do not compare streamed
+encode alone against legacy Encode's 1.742 s /347,590,656 RSS including its full proof.
+The initial streamed prototype peaked at 163,323,904 RSS: retained slots/maps were
+real remaining costs, subsequently reduced. All raw intermediate rows are retained.
+
+CLR EncodeTo removes masked/payload copies and component/reference-byte retention,
+with compact sorted temporary reference records. Candidate indexes are resolved one set
+at a time, rather than retaining every overlapping coded/token candidate set.
+This intermediate CLR API still takes a whole original image and retains slot/body state.
+CoreLib 12,775,936 bytes emits 2,949 components; unchanged metadata/component hashes
+and independent full SHA proof pass. Latest plain sample: 1.715 s /183,574,528 RSS.
+Earlier sample was 230,649,856 RSS. This remains a gate failure, not readiness.
+Profiles identify growing table/IL slot arrays, repeated candidate-input arrays and body
+state as further work. Four-size memory evidence and production capability/wire/crash
+checks are not yet complete; production source and managed defaults remain unchanged.
+
+Validation: entire z3 module suite passed before final candidate-cache eviction refinement;
+that refinement passes exact CLR fixture comparisons plus additional race checks.
+DEX/CLR fixture metadata, all component bytes, cuts, Stats, and independent decodes
+match legacy across prefix/cutter settings. Original tests were retained; the noncanonical
+DEX Auto+K0!=3 combination already fails legacy self-proof and the streamed API refuses
+it explicitly. Window geometry, source errors, spool budgets/order and cleanup are tested.
+Full logs, negative samples and source hashes: a4-checkpoint2-evidence.json.gz.

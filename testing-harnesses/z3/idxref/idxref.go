@@ -39,12 +39,15 @@ func Hash(tag byte, parts ...[]byte) Identity {
 // CheckUnique rejects a table with two entries of one identity (ambiguous: nothing may be
 // normalized against it).
 func CheckUnique(what string, ids []Identity) error {
-	seen := make(map[Identity]struct{}, len(ids))
-	for _, id := range ids {
-		if _, dup := seen[id]; dup {
+	order := make([]uint32, len(ids))
+	for i := range order {
+		order[i] = uint32(i)
+	}
+	sort.Slice(order, func(i, j int) bool { return bytes.Compare(ids[order[i]][:], ids[order[j]][:]) < 0 })
+	for i := 1; i < len(order); i++ {
+		if ids[order[i-1]] == ids[order[i]] {
 			return fmt.Errorf("duplicate %s identity (ambiguous)", what)
 		}
-		seen[id] = struct{}{}
 	}
 	return nil
 }
