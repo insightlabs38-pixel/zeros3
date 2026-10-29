@@ -1,0 +1,14 @@
+goos: linux
+goarch: amd64
+pkg: zeros3-z3/idxref
+cpu: AMD EPYC 9V74 80-Core Processor                
+BenchmarkA4DuplicateClassPut/legacy/1024-3         	  401840	       258.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkA4DuplicateClassPut/compact/1024-3        	 5740981	        26.01 ns/op	       0 B/op	       0 allocs/op
+BenchmarkA4DuplicateClassPut/legacy/4096-3         	  119554	      1163 ns/op	       0 B/op	       0 allocs/op
+BenchmarkA4DuplicateClassPut/compact/4096-3        	 3260538	        37.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkA4DuplicateClassPut/legacy/16384-3        	   41462	      3466 ns/op	       0 B/op	       0 allocs/op
+BenchmarkA4DuplicateClassPut/compact/16384-3       	 2212539	        49.25 ns/op	       0 B/op	       0 allocs/op
+BenchmarkA4DuplicateClassPut/legacy/65536-3        	   38750	      9192 ns/op	       0 B/op	       0 allocs/op
+BenchmarkA4DuplicateClassPut/compact/65536-3       	 2153139	        49.90 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	zeros3-z3/idxref	1.655s

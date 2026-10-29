@@ -1,6 +1,10 @@
 package dexz3
 
-import "fmt"
+import (
+	"bytes"
+	"fmt"
+	"io"
+)
 
 // Space is the index space a slot refers to.
 type Space uint8
@@ -113,7 +117,7 @@ type WalkOpts struct {
 }
 
 type cur struct {
-	b   []byte
+	b   *walkSource
 	p   int64
 	end int64
 	err error
@@ -127,6 +131,9 @@ func (c *cur) fail(f string, a ...any) {
 }
 
 func (c *cur) need(n int64) bool {
+	if c.err == nil && c.b.err != nil {
+		c.err = c.b.err
+	}
 	if c.err != nil {
 		return false
 	}
@@ -141,7 +148,7 @@ func (c *cur) u8() uint32 {
 	if !c.need(1) {
 		return 0
 	}
-	v := c.b[c.p]
+	v := c.b.span(c.p, 1)[0]
 	c.p++
 	return uint32(v)
 }
@@ -149,7 +156,7 @@ func (c *cur) u16() uint32 {
 	if !c.need(2) {
 		return 0
 	}
-	v := le16(c.b[c.p:])
+	v := le16(c.b.span(c.p, 2))
 	c.p += 2
 	return v
 }
@@ -157,7 +164,7 @@ func (c *cur) u32() uint32 {
 	if !c.need(4) {
 		return 0
 	}
-	v := le32(c.b[c.p:])
+	v := le32(c.b.span(c.p, 4))
 	c.p += 4
 	return v
 }
@@ -169,7 +176,7 @@ func (c *cur) leb() (v uint32, n int) {
 		if !c.need(1) {
 			return 0, n
 		}
-		b := c.b[c.p]
+		b := c.b.span(c.p, 1)[0]
 		c.p++
 		n++
 		if sh == 28 && b&0xf0 != 0 {
@@ -193,7 +200,7 @@ func (c *cur) sleb() int32 {
 		if !c.need(1) {
 			return 0
 		}
-		b := c.b[c.p]
+		b := c.b.span(c.p, 1)[0]
 		c.p++
 		v |= uint32(b&0x7f) << sh
 		sh += 7
@@ -209,16 +216,19 @@ func (c *cur) sleb() int32 {
 }
 
 type walker struct {
-	data []byte
-	f    *File
-	o    WalkOpts
-	w    *Walked
-	cnt  [numSpaces]uint32
-	err  error
+	visit     func(Slot) error
+	slotCount int
+	metadata  bool
+	data      *walkSource
+	f         *File
+	o         WalkOpts
+	w         *Walked
+	cnt       [numSpaces]uint32
+	err       error
 }
 
 func (k *walker) add(s Slot) error {
-	if len(k.w.Slots) >= k.f.Lim.MaxSlots {
+	if k.slotCount >= k.f.Lim.MaxSlots {
 		return fmt.Errorf("%w: slots", ErrLimit)
 	}
 	if !k.o.Masked && s.Space != SpOffset && s.Space != SpNone && s.Val >= k.cnt[s.Space] {
@@ -226,6 +236,10 @@ func (k *walker) add(s Slot) error {
 	}
 	if !k.o.Masked && s.Space == SpOffset && (int64(s.Val) < HeaderSize || int64(s.Val) >= k.f.Size) {
 		return bad("offset %d outside the file at %d", s.Val, s.Off)
+	}
+	k.slotCount++
+	if k.visit != nil {
+		return k.visit(s)
 	}
 	k.w.Slots = append(k.w.Slots, s)
 	return nil
@@ -235,9 +249,12 @@ func (k *walker) add(s Slot) error {
 func (k *walker) fixed(off int64, enc Enc, sp Space, cl Class, optional bool, kind ...OffKind) error {
 	var v uint32
 	if enc == EncU16 {
-		v = le16(k.data[off:])
+		v = le16(k.data.span(off, 2))
 	} else {
-		v = le32(k.data[off:])
+		v = le32(k.data.span(off, 4))
+	}
+	if k.data.err != nil {
+		return k.data.err
 	}
 	if sp == SpOffset {
 		if v == 0 {
@@ -275,7 +292,22 @@ func Walk(f *File, data []byte, o WalkOpts) (*Walked, error) {
 	if int64(len(data)) != f.Size {
 		return nil, bad("walk: data length %d != %d", len(data), f.Size)
 	}
-	k := &walker{data: data, f: f, o: o, w: &Walked{}}
+	return WalkAt(f, bytes.NewReader(data), o)
+}
+
+// WalkAt enumerates the identical validated structures through bounded input windows.
+// r must provide the immutable bytes described by f; no whole-file buffer is retained.
+func WalkAt(f *File, r io.ReaderAt, o WalkOpts) (*Walked, error) {
+	return walkAtVisit(f, r, o, nil, true)
+}
+
+// WalkAtVisit validates the same structures and visits slots without retaining them.
+func WalkAtVisit(f *File, r io.ReaderAt, o WalkOpts, visit func(Slot) error) (*Walked, error) {
+	return walkAtVisit(f, r, o, visit, true)
+}
+func walkAtVisit(f *File, r io.ReaderAt, o WalkOpts, visit func(Slot) error, metadata bool) (*Walked, error) {
+	source := &walkSource{r: r, size: f.Size, lo: -1}
+	k := &walker{data: source, f: f, o: o, w: &Walked{}, visit: visit, metadata: metadata}
 	k.cnt = [numSpaces]uint32{0, f.Hdr.StringIDs, f.Hdr.TypeIDs, f.Hdr.ProtoIDs, f.Hdr.FieldIDs, f.Hdr.MethodIDs, 0}
 	for _, s := range f.Spans {
 		var err error
@@ -347,6 +379,9 @@ func Walk(f *File, data []byte, o WalkOpts) (*Walked, error) {
 			return nil, err
 		}
 	}
+	if source.err != nil {
+		return nil, source.err
+	}
 	return k.w, nil
 }
 
@@ -379,15 +414,19 @@ func (k *walker) typeLists(s Span) error {
 			}
 			c.p += 2
 		}
-		k.w.Items = append(k.w.Items, Item{TypeTypeList, start, c.p - start})
+		if k.metadata {
+			k.w.Items = append(k.w.Items, Item{TypeTypeList, start, c.p - start})
+		}
 	}
 	return c.err
 }
 
 func (k *walker) stringData(s Span) error {
 	c := k.sectionCur(s)
-	k.w.StrOff = make([]uint32, 0, s.Count)
-	k.w.StrEnd = make([]uint32, 0, s.Count)
+	if k.metadata {
+		k.w.StrOff = make([]uint32, 0, s.Count)
+		k.w.StrEnd = make([]uint32, 0, s.Count)
+	}
 	for i := uint32(0); i < s.Count; i++ {
 		start := c.p
 		c.leb()
@@ -398,14 +437,18 @@ func (k *walker) stringData(s Span) error {
 			if c.p-start > int64(k.f.Lim.MaxStrLen) {
 				return fmt.Errorf("%w: string length", ErrLimit)
 			}
-			b := c.b[c.p]
+			b := c.b.span(c.p, 1)[0]
 			c.p++
 			if b == 0 {
 				break
 			}
 		}
-		k.w.StrOff = append(k.w.StrOff, uint32(start))
-		k.w.StrEnd = append(k.w.StrEnd, uint32(c.p))
+		if k.metadata {
+			k.w.StrOff = append(k.w.StrOff, uint32(start))
+		}
+		if k.metadata {
+			k.w.StrEnd = append(k.w.StrEnd, uint32(c.p))
+		}
 	}
 	return c.err
 }
@@ -450,7 +493,7 @@ func (k *walker) classData(s Span) error {
 				if err := k.add(Slot{Off: off, Val: abs, Prev: prev, Len: uint8(n), Enc: EncDelta, Space: sp, Cls: ClClassData}); err != nil {
 					return err
 				}
-				prev = int32(len(k.w.Slots) - 1)
+				prev = int32(k.slotCount - 1)
 				c.leb() // access_flags
 				if g >= 2 {
 					coff := c.p
@@ -469,7 +512,9 @@ func (k *walker) classData(s Span) error {
 		if c.err != nil {
 			return c.err
 		}
-		k.w.Items = append(k.w.Items, Item{TypeClassData, start, c.p - start})
+		if k.metadata {
+			k.w.Items = append(k.w.Items, Item{TypeClassData, start, c.p - start})
+		}
 	}
 	return c.err
 }
@@ -483,11 +528,11 @@ func (k *walker) codeItems(s Span) error {
 		if !c.need(16) {
 			return c.err
 		}
-		tries := le16(k.data[start+6:])
+		tries := le16(k.data.span(start+6, 2))
 		if err := k.fixed(start+8, EncU32, SpOffset, ClCodeHdr, false, OffDebug); err != nil {
 			return err
 		}
-		isz := le32(k.data[start+12:])
+		isz := le32(k.data.span(start+12, 4))
 		if int64(isz) > int64(lim.MaxCodeUnit) {
 			return fmt.Errorf("%w: insns_size %d", ErrLimit, isz)
 		}
@@ -495,7 +540,10 @@ func (k *walker) codeItems(s Span) error {
 		if !c.need(int64(isz) * 2) {
 			return c.err
 		}
-		ib := k.data[c.p : c.p+int64(isz)*2]
+		ib := k.data.span(c.p, int64(isz)*2)
+		if k.data.err != nil {
+			return k.data.err
+		}
 		base := c.p
 		if err := walkInsns(ib, int(isz), func(u int, sp Space, wide bool) error {
 			n, enc := uint8(2), EncU16
@@ -563,7 +611,9 @@ func (k *walker) codeItems(s Span) error {
 		if c.err != nil {
 			return c.err
 		}
-		k.w.Items = append(k.w.Items, Item{TypeCode, start, c.p - start})
+		if k.metadata {
+			k.w.Items = append(k.w.Items, Item{TypeCode, start, c.p - start})
+		}
 	}
 	return c.err
 }
@@ -614,7 +664,7 @@ func (k *walker) dataItems2(s Span, slots bool) error {
 					return err
 				}
 			}
-			nf, nm, np := le32(k.data[c.p+4:]), le32(k.data[c.p+8:]), le32(k.data[c.p+12:])
+			nf, nm, np := le32(k.data.span(c.p+4, 4)), le32(k.data.span(c.p+8, 4)), le32(k.data.span(c.p+12, 4))
 			c.p += 16
 			tot := uint64(nf) + uint64(nm) + uint64(np)
 			if tot > uint64(c.end-c.p)/8 {
@@ -648,7 +698,9 @@ func (k *walker) dataItems2(s Span, slots bool) error {
 		if c.err != nil {
 			return c.err
 		}
-		k.w.Items = append(k.w.Items, Item{s.Type, start, c.p - start})
+		if k.metadata {
+			k.w.Items = append(k.w.Items, Item{s.Type, start, c.p - start})
+		}
 	}
 	return c.err
 }
@@ -819,7 +871,7 @@ func (k *walker) encValue(c *cur, depth int, slots bool) {
 		var v uint32
 		if !k.o.Masked {
 			for i := int64(0); i < size; i++ {
-				v |= uint32(c.b[c.p+i]) << (8 * uint(i))
+				v |= uint32(c.b.span(c.p+i, 1)[0]) << (8 * uint(i))
 			}
 		}
 		if err := k.add(Slot{Off: c.p, Val: v, Prev: -1, Len: uint8(size), Enc: EncVal, Space: sp, Cls: ClAnno}); err != nil {

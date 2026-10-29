@@ -1,13 +1,12 @@
 # Z4 Frontier Campaign — runtime interruption checkpoint
 
-Status: **RUNTIME INTERRUPTED, unfinished** on 2026-10-29 UTC.
-The execution environment became unavailable. Exec-server transport disconnected;
-recovery timed out after 25 seconds. This is an actual execution blocker, not a
-campaign boundary, approval requirement, or evidence of a five-hour quota.
-Continue the first unfinished item; hourly wakes do not authorize a pause.
-Latest production main: a19ace98ecb8d417d0c7430dd02c0afe0058d39f (A3, PR #93).
-Local branch z4/a4-managed-streaming was created at that main with a clean tree.
-A4 preparation only: no implementation edits, checkpoint, or claimed verdict.
+Status: **PAUSED at user request, unfinished**. A4 production source is checkpointed.
+Fetch, Go toolchain, race smoke and repository checks succeeded. Earlier transport failure
+had no recorded OOM kill; its exact cause is unconfirmed. Do not restart completed work.
+Production main remains e4e5b1b (A3 merged at a19ace9; #94 preserves interruption evidence).
+Active branch z4/a4-managed-streaming. First checkpoint aa5d7d4 fixes exact index lookup;
+second checkpoint 9551dff stages reference bytes; the next checkpoint adds bounded CLR
+source windows, external sorting and four real-size exactness/memory evidence.
 Original draft PRs #80/#81 remain open; neither was merged wholesale.
 
 | Item | Durable outcome | PR / state |
@@ -16,7 +15,7 @@ Original draft PRs #80/#81 remain open; neither was merged wholesale.
 | A1 | cumulative store-format capability design; old/new/wire/crash matrix | #91 merged |
 | A2 | MODEL8_PRODUCTION_READY; bounded Model-only extraction | #92 merged |
 | A3 | STRUCTURED9_10_PARTIAL; final gates passed for bounded subset | #93 merged |
-| A4 | first unfinished; inspected indexes and streaming design only | #80 stays draft |
+| A4 | first unfinished; exact compact indexes and bounded source-window prototypes; production gates pending | #95 draft; #80 stays draft |
 | B1 | similarity/delta CAS decision pending | queued |
 | B2 | representation-authority decision pending; **DRAFT_ONLY** | queued |
 | B3 | cross-format semantic CAS decision pending | queued |
@@ -57,5 +56,20 @@ gate. Require four-size memory/scaling evidence and malformed-input integrity.
 Then continue B1–B8 and useful expansion; B2 remains DRAFT_ONLY.
 A0–A3 reports and pushed commits are durable; do not restart completed work.
 The existing hourly wake is recovery only; no second worker was started.
-Environment restoration is required to resume builds, tests, and local inspection.
+Runtime is available. A4 production integration is not authorized by these partial results.
+If disk becomes critical, remove fully reproducible scratch first. If stopping is unavoidable,
+commit/push all changes and preserve valuable artifacts on an unmerged backup branch.
 The campaign is not complete; A4, every B item, and expansion remain unfinished.
+
+A4 production checkpoint: kinds 11/12, floor 9, default off; PR95 remains draft.
+Native compatibility, 79 old-floor refusals, snapshot and 20 crash cases pass.
+Final isolated 21-sample proof passes; Roslyn encoder/creation RSS 108/149 MiB.
+Native CLR/DEX compatibility, refusal, snapshot, crash, race/vet/fuzz evidence is saved.
+Final A4 diff/architecture review and merge readiness remain unfinished.
+Unmerged runtime backup preserves earlier evidence; see updated A4 report.
+
+Hourly wakeup disabled at user request. Resume A4; do not start B items or merge
+managed production before closing its remaining review gates. Backup branch preserves
+this stop snapshot separately; main and all draft gates remain unchanged.
+
+Final A4 source full suite passes 229.059s; mixed-kind/dependency contracts pass.

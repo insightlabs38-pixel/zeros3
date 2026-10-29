@@ -1,0 +1,12 @@
+{
+  "source_commit": "43dfe4192ef0b25d035fac0850af263a7f866beb",
+  "source_path": "testing-harnesses/testdata/i2-draft/lab-i2.json.gz",
+  "source_gzip_sha256": "6f57c38250992651256505dcdf0494cf3284002d8e97864da8e709c4ed02ab0b",
+  "retained_names": [
+    "fixture-api24.dex",
+    "fixture-api28.dex",
+    "fixture-r0.dll",
+    "fixture-earlytype.dll",
+    "fixture-body.dll"
+  ]
+}

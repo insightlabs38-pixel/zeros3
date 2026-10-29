@@ -7,10 +7,12 @@
 package idxref
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 )
 
 // ErrFormat reports a malformed reference stream or component.
@@ -37,12 +39,15 @@ func Hash(tag byte, parts ...[]byte) Identity {
 // CheckUnique rejects a table with two entries of one identity (ambiguous: nothing may be
 // normalized against it).
 func CheckUnique(what string, ids []Identity) error {
-	seen := make(map[Identity]struct{}, len(ids))
-	for _, id := range ids {
-		if _, dup := seen[id]; dup {
+	order := make([]uint32, len(ids))
+	for i := range order {
+		order[i] = uint32(i)
+	}
+	sort.Slice(order, func(i, j int) bool { return bytes.Compare(ids[order[i]][:], ids[order[j]][:]) < 0 })
+	for i := 1; i < len(order); i++ {
+		if ids[order[i-1]] == ids[order[i]] {
 			return fmt.Errorf("duplicate %s identity (ambiguous)", what)
 		}
-		seen[id] = struct{}{}
 	}
 	return nil
 }
@@ -51,106 +56,83 @@ func CheckUnique(what string, ids []Identity) error {
 // fewest extra bytes that make the prefix unique among the entries sharing those K0 bytes. The
 // decoder owns the same table, so the extra length is implied and no escape marker exists.
 type PrefixIndex struct {
-	k0    int
-	ids   []Identity
-	uniq  map[uint32]uint32
-	multi map[uint32][]uint32
-}
-
-func key(id *Identity, k0 int) uint32 {
-	var k uint32
-	for i := 0; i < k0; i++ {
-		k = k<<8 | uint32(id[i])
-	}
-	return k
+	k0         int
+	ids        []Identity
+	order      []uint32 // lexicographic identity order; no collision buckets or copied candidate lists
+	widths     []uint8  // minimal unique prefix, 33 denotes an ambiguous full identity
+	collisions int
 }
 
 // NewPrefixIndex builds the coder over ids (K0 in 1..4).
 func NewPrefixIndex(ids []Identity, k0 int) *PrefixIndex {
-	p := &PrefixIndex{k0: k0, ids: ids, uniq: make(map[uint32]uint32, len(ids)), multi: map[uint32][]uint32{}}
-	for i := range ids {
-		k := key(&ids[i], k0)
-		if m, ok := p.multi[k]; ok {
-			p.multi[k] = append(m, uint32(i))
-		} else if j, ok := p.uniq[k]; ok {
-			delete(p.uniq, k)
-			p.multi[k] = []uint32{j, uint32(i)}
-		} else {
-			p.uniq[k] = uint32(i)
+	p := &PrefixIndex{k0: k0, ids: ids, order: make([]uint32, len(ids)), widths: make([]uint8, len(ids))}
+	for i := range p.order {
+		p.order[i] = uint32(i)
+	}
+	sort.Slice(p.order, func(i, j int) bool { return bytes.Compare(ids[p.order[i]][:], ids[p.order[j]][:]) < 0 })
+	common := func(a, b uint32) int {
+		n := 0
+		for n < 32 && ids[a][n] == ids[b][n] {
+			n++
+		}
+		return n
+	}
+	for pos, i := range p.order {
+		n := 0
+		if pos > 0 {
+			n = common(i, p.order[pos-1]) + 1
+		}
+		if pos+1 < len(p.order) {
+			if m := common(i, p.order[pos+1]) + 1; m > n {
+				n = m
+			}
+		}
+		if n < k0 {
+			n = k0
+		}
+		p.widths[i] = uint8(n)
+		if n > k0 {
+			p.collisions++
 		}
 	}
 	return p
 }
 
 // Collisions is the number of entries whose K0 prefix is shared with another entry.
-func (p *PrefixIndex) Collisions() int {
-	n := 0
-	for _, c := range p.multi {
-		n += len(c)
-	}
-	return n
-}
+func (p *PrefixIndex) Collisions() int { return p.collisions }
+func (p *PrefixIndex) Len() int        { return len(p.ids) }
 
-// Len is the table size.
-func (p *PrefixIndex) Len() int { return len(p.ids) }
-
-// Put appends the reference to entry i.
+// Put has constant work per reference, even for adversarial colliding prefixes.
 func (p *PrefixIndex) Put(dst []byte, i uint32) ([]byte, error) {
 	if uint64(i) >= uint64(len(p.ids)) {
 		return dst, bad("reference %d outside table of %d", i, len(p.ids))
 	}
-	id := &p.ids[i]
-	k := key(id, p.k0)
-	dst = append(dst, id[:p.k0]...)
-	cands, ok := p.multi[k]
-	if !ok {
-		return dst, nil
+	n := int(p.widths[i])
+	if n > 32 {
+		return append(dst, p.ids[i][:]...), bad("identity not unique")
 	}
-	for e := p.k0; e < 32; e++ {
-		dst = append(dst, id[e])
-		n := 0
-		for _, c := range cands {
-			if string(p.ids[c][:e+1]) == string(id[:e+1]) {
-				n++
-			}
-		}
-		if n == 1 {
-			return dst, nil
-		}
-	}
-	return dst, bad("identity not unique")
+	return append(dst, p.ids[i][:n]...), nil
 }
 
-// Get reads one reference from b and returns the entry index and the remaining bytes.
+// Get narrows a sorted interval without allocating or scanning a collision class.
 func (p *PrefixIndex) Get(b []byte) (uint32, []byte, error) {
 	if len(b) < p.k0 {
 		return 0, nil, bad("reference stream truncated")
 	}
-	var k uint32
-	for i := 0; i < p.k0; i++ {
-		k = k<<8 | uint32(b[i])
-	}
-	if j, ok := p.uniq[k]; ok {
-		return j, b[p.k0:], nil
-	}
-	cands, ok := p.multi[k]
-	if !ok {
-		return 0, nil, bad("reference to an unknown identity")
-	}
-	cur := append([]uint32(nil), cands...)
-	for e := p.k0; e < 32 && len(cur) > 1; e++ {
-		if e >= len(b) {
+	lo, hi := 0, len(p.order)
+	for n := p.k0; n <= 32; n++ {
+		if n > len(b) {
 			return 0, nil, bad("reference stream truncated")
 		}
-		n := cur[:0]
-		for _, c := range cur {
-			if p.ids[c][e] == b[e] {
-				n = append(n, c)
-			}
+		base := lo
+		l := sort.Search(hi-base, func(j int) bool { return bytes.Compare(p.ids[p.order[base+j]][:n], b[:n]) >= 0 }) + base
+		h := sort.Search(hi-l, func(j int) bool { return bytes.Compare(p.ids[p.order[l+j]][:n], b[:n]) > 0 }) + l
+		lo, hi = l, h
+		if hi-lo == 1 {
+			return p.order[lo], b[n:], nil
 		}
-		cur = n
-		if len(cur) == 1 {
-			return cur[0], b[e+1:], nil
+		if lo == hi {
+			break
 		}
 	}
 	return 0, nil, bad("reference to an unknown identity")
@@ -234,71 +216,158 @@ type Sec struct {
 // has several members, the member's occurrence number in handle order. A format that never meets
 // duplicates pays nothing; one that does (JVM constant pools from some producers, shared DEX items)
 // still resolves every reference exactly.
-type ClassIndex struct {
-	pi      *PrefixIndex
-	members [][]int
-	classOf map[int]uint32
+type classHandle struct {
+	h              int
+	class, ordinal uint32
 }
 
-// NewClassIndex groups handles by identity; ids[i] is the identity of handles[i].
+type ClassIndex struct {
+	unique      bool
+	handleOrder []uint32
+	pi          *PrefixIndex
+	members     []int
+	starts      []uint32      // CSR class boundaries, including final sentinel
+	handles     []classHandle // sorted unique handles, exact legacy last-class/first-occurrence semantics
+}
+
+// NewClassIndex groups by identity with sorted compact arrays. Class numbers retain
+// first-identity-occurrence order; members retain their original handle order.
 func NewClassIndex(handles []int, ids []Identity, k0 int) *ClassIndex {
-	c := &ClassIndex{classOf: make(map[int]uint32, len(handles))}
-	idx := make(map[Identity]uint32, len(ids))
-	var cls []Identity
-	for i, id := range ids {
-		n, ok := idx[id]
-		if !ok {
-			n = uint32(len(cls))
-			idx[id] = n
-			cls = append(cls, id)
-			c.members = append(c.members, nil)
-		}
-		c.members[n] = append(c.members[n], handles[i])
-		c.classOf[handles[i]] = n
+	c := &ClassIndex{}
+	order := make([]uint32, len(ids))
+	for i := range order {
+		order[i] = uint32(i)
 	}
+	sort.Slice(order, func(i, j int) bool {
+		a, b := order[i], order[j]
+		n := bytes.Compare(ids[a][:], ids[b][:])
+		return n < 0 || n == 0 && a < b
+	})
+	type group struct{ lo, hi uint32 }
+	unique := 0
+	for i := range order {
+		if i == 0 || ids[order[i-1]] != ids[order[i]] {
+			unique++
+		}
+	}
+	// The common one-identity/one-handle case needs no CSR boundaries or
+	// 16-byte lookup records. Keep only handles plus a sorted permutation.
+	if unique == len(ids) {
+		sort.Slice(order, func(i, j int) bool { return handles[order[i]] < handles[order[j]] })
+		distinct := true
+		for i := 1; i < len(order); i++ {
+			if handles[order[i-1]] == handles[order[i]] {
+				distinct = false
+				break
+			}
+		}
+		if distinct {
+			c.unique = true
+			c.handleOrder = order
+			c.members = append([]int(nil), handles[:len(ids)]...)
+			c.pi = NewPrefixIndex(append([]Identity(nil), ids...), k0)
+			return c
+		}
+		// Repeated handles retain the general legacy last-class/first-occurrence rule.
+		sort.Slice(order, func(i, j int) bool {
+			a, b := order[i], order[j]
+			n := bytes.Compare(ids[a][:], ids[b][:])
+			return n < 0 || n == 0 && a < b
+		})
+	}
+	groups := make([]group, 0, unique)
+	for lo := 0; lo < len(order); {
+		hi := lo + 1
+		for hi < len(order) && ids[order[lo]] == ids[order[hi]] {
+			hi++
+		}
+		groups = append(groups, group{uint32(lo), uint32(hi)})
+		lo = hi
+	}
+	sort.Slice(groups, func(i, j int) bool { return order[groups[i].lo] < order[groups[j].lo] })
+	cls := make([]Identity, len(groups))
+	c.starts = make([]uint32, len(groups)+1)
+	c.members = make([]int, 0, len(ids))
+	c.handles = make([]classHandle, len(ids))
+	for n, g := range groups {
+		cls[n] = ids[order[g.lo]]
+		c.starts[n] = uint32(len(c.members))
+		for ordinal, i := range order[g.lo:g.hi] {
+			c.members = append(c.members, handles[i])
+			c.handles[i] = classHandle{handles[i], uint32(n), uint32(ordinal)}
+		}
+	}
+	c.starts[len(groups)] = uint32(len(c.members))
+	// Stable ordering retains original occurrence order for repeated handles.
+	sort.SliceStable(c.handles, func(i, j int) bool { return c.handles[i].h < c.handles[j].h })
+	out := c.handles[:0]
+	for lo := 0; lo < len(c.handles); {
+		hi := lo + 1
+		for hi < len(c.handles) && c.handles[hi].h == c.handles[lo].h {
+			hi++
+		}
+		selected := c.handles[hi-1]
+		for _, v := range c.handles[lo:hi] {
+			if v.class == selected.class {
+				selected = v
+				break
+			}
+		}
+		out = append(out, selected)
+		lo = hi
+	}
+	c.handles = out
 	c.pi = NewPrefixIndex(cls, k0)
 	return c
 }
 
-// Collisions counts classes whose prefix is shared with another class.
 func (c *ClassIndex) Collisions() int { return c.pi.Collisions() }
+func (c *ClassIndex) Duplicates() int {
+	if c.unique {
+		return 0
+	}
+	return len(c.handles) - (len(c.starts) - 1)
+}
 
-// Duplicates counts handles that share their identity with an earlier handle.
-func (c *ClassIndex) Duplicates() int { return len(c.classOf) - len(c.members) }
-
-// Put appends the reference to handle h.
+// Put resolves a handle in O(log N); duplicate-heavy classes require no scan.
 func (c *ClassIndex) Put(dst []byte, h int) ([]byte, error) {
-	n, ok := c.classOf[h]
-	if !ok {
+	if c.unique {
+		j := sort.Search(len(c.handleOrder), func(i int) bool { return c.members[c.handleOrder[i]] >= h })
+		if j == len(c.handleOrder) || c.members[c.handleOrder[j]] != h {
+			return dst, bad("handle %d is not in the table", h)
+		}
+		return c.pi.Put(dst, c.handleOrder[j])
+	}
+	j := sort.Search(len(c.handles), func(i int) bool { return c.handles[i].h >= h })
+	if j == len(c.handles) || c.handles[j].h != h {
 		return dst, bad("handle %d is not in the table", h)
 	}
-	dst, err := c.pi.Put(dst, n)
+	v := c.handles[j]
+	dst, err := c.pi.Put(dst, v.class)
 	if err != nil {
 		return dst, err
 	}
-	if m := c.members[n]; len(m) > 1 {
-		for j, x := range m {
-			if x == h {
-				return binary.AppendUvarint(dst, uint64(j)), nil
-			}
-		}
+	if c.starts[v.class+1]-c.starts[v.class] > 1 {
+		dst = binary.AppendUvarint(dst, uint64(v.ordinal))
 	}
 	return dst, nil
 }
 
-// Get reads one reference and returns the handle.
 func (c *ClassIndex) Get(b []byte) (int, []byte, error) {
 	n, rest, err := c.pi.Get(b)
 	if err != nil {
 		return 0, nil, err
 	}
-	m := c.members[n]
-	if len(m) == 1 {
-		return m[0], rest, nil
+	if c.unique {
+		return c.members[n], rest, nil
+	}
+	lo, hi := c.starts[n], c.starts[n+1]
+	if hi-lo == 1 {
+		return c.members[lo], rest, nil
 	}
 	j, k := binary.Uvarint(rest)
-	if k <= 0 || j >= uint64(len(m)) {
+	if k <= 0 || j >= uint64(hi-lo) {
 		return 0, nil, bad("occurrence number")
 	}
-	return m[j], rest[k:], nil
+	return c.members[uint64(lo)+j], rest[k:], nil
 }
