@@ -1,6 +1,6 @@
 # Z4 A4 managed streaming — production checkpoint, unfinished
 
-Status: A4 remains active; PR #95 stays DRAFT. No managed merge or final verdict.
+Status: PAUSED at user request; PR #95 stays DRAFT. No final A4 readiness verdict.
 Main e4e5b1b retains kinds 1–10. Working branch adds kinds 11/12, cumulative floor 9,
 default-off creation, earlier decoders and authoritative CDC unchanged.
 
@@ -56,7 +56,7 @@ Roslyn encoding RSS was 125 MiB and creation 195 MiB: this negative is retained.
 Later unique-index/getter source 9c80de34 passed the same 21 exact samples; Roslyn
 encode/proof RSS medians 113/164 MiB. Concurrent checks make its wall times unsuitable
 for an isolated latency claim. Final exact IL-slot allocation lowers one diagnostic
-Roslyn proof to 138 MiB (cold 156 MiB); final isolated medians are still pending.
+Roslyn proof to 138 MiB (cold 156 MiB); final isolated medians are recorded below.
 CDC remains retained; physical representation growth is additive, not storage saving.
 
 Compatibility: native Newtonsoft 13.0.4 ->13.0.3 revisions both represented; portable
@@ -76,3 +76,34 @@ Unmerged branch z4/a4-runtime-backup-20261029 preserves prior interruption evide
 Runtime recovered; latest local source is now checkpointed separately, not merged.
 A0–A3 are complete. Finish A4 gates before any readiness decision; then continue B1–B8.
 B2 remains DRAFT_ONLY. No LOC-only criterion or test-integrity exception was used.
+
+## User-requested stop checkpoint
+
+Final source SHA-256: 64e997ef515c1406f328b2a00517180eca3dcf01287deb0d7dc390b05f45621a.
+Seven preselected inputs x three isolated fresh processes/stores all prove exact;
+roots equal the earlier versions. Warm OS cache; compiler/producer excluded.
+
+| Input MB | Encoder RSS MiB | Creation RSS MiB | Encode /proof /cold seconds |
+|---|---:|---:|---|
+| Newtonsoft 0.72 | 24.90 | 25.48 | .194 /.123 /.122 |
+| FSharp 5.73 | 42.18 | 52.95 | .561 /.360 /.380 |
+| CoreLib 12.78 | 81.55 | 110.07 | 1.327 /.917 /.926 |
+| Roslyn 18.60 | 107.57 | 149.14 | 1.987 /1.451 /1.452 |
+| F-Droid 9.30 (three releases) | 82.83–83.56 | 97.27–98.21 | 1.227–1.330 /.680–.724 /.676–.734 |
+
+Creation includes encoding, proof and publication; cold RSS is separately retained
+(Roslyn 156.38 MiB). Native CLR and DEX revision matrices each pass 87 checks plus
+18 snapshot checks. Each old-generation matrix records 79 actual floor refusals
+and one unsupported CLI; ten final-source real SIGKILL boundaries pass.
+Final source production race passes 4.787s; vet passes; decoder fuzz passes 2,721 runs.
+Every frozen dependency is tested missing/corrupt/truncated, plus short-writer failure.
+Cumulative kinds 8–12 restart proof passes. Its initial harness failure came from
+JSON reusing Input backing arrays held by expected-byte fixtures; allocate a fresh
+fixture slice before decoding the second cohort. Failure and repair remain preserved.
+Evidence: a4-stop-evidence.json.gz. Source and recovery notes are pushed, not merged.
+Hourly automation 6ae1844e1ae08191b077f0fde95b52ac is disabled at user request.
+Resume with A4 final diff/architecture review and any remaining merge gates; keep
+PR95 draft until that review closes. B1–B8 remain queued, B2 DRAFT_ONLY.
+
+Final production-source full suite passes 229.059s. Subsequently added cumulative
+fixture and dependency/writer contracts pass focused in .179s. No checks remain running.

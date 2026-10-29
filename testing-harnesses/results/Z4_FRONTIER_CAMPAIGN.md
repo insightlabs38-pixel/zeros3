@@ -1,6 +1,6 @@
 # Z4 Frontier Campaign — runtime interruption checkpoint
 
-Status: **ACTIVE, unfinished**. Runtime recovered again; A4 production checkpoint in progress.
+Status: **PAUSED at user request, unfinished**. A4 production source is checkpointed.
 Fetch, Go toolchain, race smoke and repository checks succeeded. Earlier transport failure
 had no recorded OOM kill; its exact cause is unconfirmed. Do not restart completed work.
 Production main remains e4e5b1b (A3 merged at a19ace9; #94 preserves interruption evidence).
@@ -63,5 +63,13 @@ The campaign is not complete; A4, every B item, and expansion remain unfinished.
 
 A4 production checkpoint: kinds 11/12, floor 9, default off; PR95 remains draft.
 Native compatibility, 79 old-floor refusals, snapshot and 20 crash cases pass.
-Latest memory refinement needs final isolated measurements and final production checks.
+Final isolated 21-sample proof passes; Roslyn encoder/creation RSS 108/149 MiB.
+Native CLR/DEX compatibility, refusal, snapshot, crash, race/vet/fuzz evidence is saved.
+Final A4 diff/architecture review and merge readiness remain unfinished.
 Unmerged runtime backup preserves earlier evidence; see updated A4 report.
+
+Hourly wakeup disabled at user request. Resume A4; do not start B items or merge
+managed production before closing its remaining review gates. Backup branch preserves
+this stop snapshot separately; main and all draft gates remain unchanged.
+
+Final A4 source full suite passes 229.059s; mixed-kind/dependency contracts pass.

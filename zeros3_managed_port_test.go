@@ -399,3 +399,109 @@ func FuzzRepZ4ManagedDecode(f *testing.F) {
 		env.reachable(root)
 	})
 }
+
+// Exercise every frozen dependency, not just a selected convenient component.
+func TestRepManagedDependencyAndWriterFailures(t *testing.T) {
+	raw, e := repZ4ManagedFixtureJSON(t)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var fs []repLabCodecFixture
+	if e = json.Unmarshal(raw, &fs); e != nil {
+		t.Fatal(e)
+	}
+	for _, f := range fs {
+		t.Run(f.Name, func(t *testing.T) {
+			src := newRepMem()
+			for _, b := range f.Objects {
+				src.put(b)
+			}
+			root := src.put(f.Root)
+			for id, original := range src.objs {
+				for _, mode := range []string{"missing", "corrupt", "truncated"} {
+					switch mode {
+					case "missing":
+						delete(src.objs, id)
+					case "corrupt":
+						b := append([]byte(nil), original...)
+						if len(b) > 0 {
+							b[len(b)/2] ^= 1
+						}
+						src.objs[id] = b
+					case "truncated":
+						if len(original) > 0 {
+							src.objs[id] = original[:len(original)-1]
+						}
+					}
+					env := &repEnv{Src: src, Limits: repProdLimits}
+					if _, _, e := env.reconstruct(root, io.Discard); e == nil {
+						t.Fatalf("accepted %s dependency %x", mode, id)
+					}
+					src.objs[id] = original
+				}
+			}
+			env := &repEnv{Src: src, Limits: repProdLimits}
+			if _, _, e := env.reconstruct(root, repZ4ModelShortWriter{}); e == nil {
+				t.Fatal("accepted short writer")
+			}
+		})
+	}
+}
+
+func TestRepManagedCumulativeCompatibility(t *testing.T) {
+	l := newRepLab(t, repModePrefer)
+	l.put("model", repZ4ModelSafetensors(t, bytes.Repeat([]byte{1, 2, 3, 4}, 16384)))
+	if l.s.format.StoreFormatVersion != 7 {
+		t.Fatal("Model floor before structured integration")
+	}
+	raw, e := os.ReadFile("testing-harnesses/z4/testdata/a3-structured/lab-structured.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	var fs []repLabCodecFixture
+	if e = json.Unmarshal(raw, &fs); e != nil {
+		t.Fatal(e)
+	}
+	seen := map[repKind]bool{}
+	for _, f := range fs {
+		r, e := unmarshalRep(f.Root, repProdLimits)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if seen[r.Kind] {
+			continue
+		}
+		seen[r.Kind] = true
+		l.put(fmt.Sprintf("kind-%d", r.Kind), f.Input)
+	}
+	if !seen[repKindSST] || !seen[repKindParquet] || l.s.format.StoreFormatVersion != 8 {
+		t.Fatal("missing cumulative structured floor")
+	}
+	raw, e = repZ4ManagedFixtureJSON(t)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// The lab retains Input slices as its expected bytes; JSON reuse would overwrite them.
+	fs = nil
+	if e = json.Unmarshal(raw, &fs); e != nil {
+		t.Fatal(e)
+	}
+	for _, f := range fs {
+		r, e := unmarshalRep(f.Root, repProdLimits)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if seen[r.Kind] {
+			continue
+		}
+		seen[r.Kind] = true
+		l.put(fmt.Sprintf("kind-%d", r.Kind), f.Input)
+	}
+	if !seen[repKindDEX] || !seen[repKindCLR] || l.s.format.StoreFormatVersion != 9 {
+		t.Fatal("missing cumulative managed floor")
+	}
+	l.exact("Model plus SST plus Parquet plus DEX plus CLR")
+	l.close()
+	l.open()
+	l.exact("cumulative decoder restart")
+}
