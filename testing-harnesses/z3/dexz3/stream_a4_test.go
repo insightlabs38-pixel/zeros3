@@ -64,3 +64,37 @@ func TestA4StreamSinkFailureCleansSpool(t *testing.T) {
 		t.Fatal("spool leak", err)
 	}
 }
+
+func TestA4DecodeGetterMayReuseBuffer(t *testing.T) {
+	data := fixture(t, "fixture-api28.dex")
+	f, e := parse(data)
+	if e != nil {
+		t.Fatal(e)
+	}
+	rep, e := Encode(f, data, Config{Cut: fixedCut(700)})
+	if e != nil {
+		t.Fatal(e)
+	}
+	var scratch []byte
+	calls := 0
+	got, e := DecodeFrom(rep.Meta, len(rep.Comps), func(i int) ([]byte, error) {
+		calls++
+		clear(scratch)
+		scratch = append(scratch[:0], rep.Comps[i]...)
+		return scratch, nil
+	})
+	if e != nil || !bytes.Equal(got, data) || calls != 2*len(rep.Comps) {
+		t.Fatal("getter full proof", e, calls)
+	}
+	calls = 0
+	_, e = DecodeFrom(rep.Meta, len(rep.Comps), func(i int) ([]byte, error) {
+		calls++
+		if calls > len(rep.Comps) {
+			return nil, io.ErrClosedPipe
+		}
+		return rep.Comps[i], nil
+	})
+	if !errors.Is(e, io.ErrClosedPipe) {
+		t.Fatal("second-pass error lost", e)
+	}
+}

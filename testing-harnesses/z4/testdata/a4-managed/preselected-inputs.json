@@ -1,0 +1,51 @@
+[
+  {
+    "kind": "clr",
+    "label": "Newtonsoft 13.0.4",
+    "path": "/workspace/work/q6-public/clr/13.0.4.dll",
+    "bytes": 717736,
+    "sha256": "12246aa5e14245cbd1a0b8794851defd46e6d782c60eb650ba5aa90ef8447eee"
+  },
+  {
+    "kind": "clr",
+    "label": "FSharp.Core",
+    "path": "/workspace/work/q9-fsharp/canonical-build/out/FSharp.Core.dll",
+    "bytes": 5726208,
+    "sha256": "0fada0afd10d5e0c3e98281084f623ea2a01c17aa2768041be44509f0960c670"
+  },
+  {
+    "kind": "clr",
+    "label": "CoreLib 8.0.33",
+    "path": "/workspace/work/q4/dotnet/shared/Microsoft.NETCore.App/8.0.33/System.Private.CoreLib.dll",
+    "bytes": 12775936,
+    "sha256": "98fec20c823887e41d4fbd2d2e900175e5b1ba7d671e29704c9ce4632dcc5432"
+  },
+  {
+    "kind": "clr",
+    "label": "Roslyn SDK 8.0.427",
+    "path": "/workspace/work/q4/dotnet/sdk/8.0.427/Roslyn/bincore/Microsoft.CodeAnalysis.CSharp.dll",
+    "bytes": 18601984,
+    "sha256": "75970849e4301dcbe69a5c33a16b54a8b0ad8d83ff2dcbb4e0d38e171800f162"
+  },
+  {
+    "kind": "dex",
+    "label": "F-Droid 2.0.0",
+    "path": "/workspace/work/q6-public/fdroid-apk/2.0.0.dex",
+    "bytes": 9299272,
+    "sha256": "263a150125d6ae626da914810dfe7bb653c4fb9dda780b425054da424c307e9e"
+  },
+  {
+    "kind": "dex",
+    "label": "F-Droid 2.0.1",
+    "path": "/workspace/work/q6-public/fdroid-apk/2.0.1.dex",
+    "bytes": 9295512,
+    "sha256": "4cafa3b5bb47b0065ba8311285193d5aff7cdf0e9a388c108ed44d58e1ad47d8"
+  },
+  {
+    "kind": "dex",
+    "label": "F-Droid 2.0.2",
+    "path": "/workspace/work/q6-public/fdroid-apk/2.0.2.dex",
+    "bytes": 9297608,
+    "sha256": "a6aff7e100fb7e33b17fd11b2b594999016e4b099718c6ec393e462d269ac059"
+  }
+]

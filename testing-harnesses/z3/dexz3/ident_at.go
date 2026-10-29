@@ -35,6 +35,7 @@ func identTypesAt(data *walkSource, f *File, S []Identity) ([]Identity, error) {
 // Prototype descriptions are hashed directly; a shared long parameter list
 // never allocates a slice of identity slices, nor bypasses the aggregate budget.
 func identProtosAt(data *walkSource, f *File, T []Identity) ([]Identity, error) {
+	params := &walkSource{r: data.r, size: data.size, lo: -1}
 	off, n := idEntries(f, TypeProtoID, 12)
 	out := make([]Identity, n)
 	for i := int64(0); i < n; i++ {
@@ -51,9 +52,9 @@ func identProtosAt(data *walkSource, f *File, T []Identity) ([]Identity, error) 
 			if uint64(list)+4 > uint64(data.size) {
 				return nil, bad("type_list offset %d", list)
 			}
-			count = le32(data.span(int64(list), 4))
-			if data.err != nil {
-				return nil, data.err
+			count = le32(params.span(int64(list), 4))
+			if params.err != nil {
+				return nil, params.err
 			}
 			if uint64(count)*2 > uint64(data.size)-uint64(list)-4 {
 				return nil, bad("type_list size %d", count)
@@ -71,9 +72,9 @@ func identProtosAt(data *walkSource, f *File, T []Identity) ([]Identity, error) 
 		binary.LittleEndian.PutUint32(length[:], count)
 		h.Write(length[:])
 		for j := uint32(0); j < count; j++ {
-			v := le16(data.span(int64(list)+4+2*int64(j), 2))
-			if data.err != nil {
-				return nil, data.err
+			v := le16(params.span(int64(list)+4+2*int64(j), 2))
+			if params.err != nil {
+				return nil, params.err
 			}
 			if uint64(v) >= uint64(len(T)) {
 				return nil, bad("type_list entry %d out of range", v)

@@ -8,6 +8,8 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"zeros3-z3/econx"
+	"zeros3-z3/idxref"
 )
 
 type failedCLRSource struct{}
@@ -129,5 +131,32 @@ func TestA4DeepIdentityDependencyIsBounded(t *testing.T) {
 	_, e := EncodeAt(f, bytes.NewReader(data), StreamConfig{TempDir: t.TempDir(), Emit: func([]byte) error { emitted++; return nil }})
 	if !errors.Is(e, ErrLimit) || emitted != 0 {
 		t.Fatal("deep identity chain did not fail before output", e, emitted)
+	}
+}
+
+type cappedManagedReader struct {
+	r            io.ReaderAt
+	limit, total int64
+}
+
+func (r *cappedManagedReader) ReadAt(p []byte, off int64) (int, error) {
+	if int64(len(p)) > r.limit-r.total {
+		return 0, io.ErrNoProgress
+	}
+	r.total += int64(len(p))
+	return r.r.ReadAt(p, off)
+}
+func TestA4SeparatedMetadataAndBodyWindowsBoundIO(t *testing.T) {
+	data := build(spec{types: 80, methods: 40, fields: 2, fat: true})
+	f := parse(t, data)
+	reader := &cappedManagedReader{r: bytes.NewReader(data), limit: int64(len(data))*64 + (16 << 20)}
+	var comps [][]byte
+	rep, e := EncodeAt(f, reader, StreamConfig{Auto: 12, TempDir: t.TempDir(), Cut: func(r io.ReaderAt, s []idxref.Sec) ([]int, error) { return econx.UnitCutAt(r, s, 4096) }, Emit: func(b []byte) error { comps = append(comps, append([]byte(nil), b...)); return nil }})
+	if e != nil {
+		t.Fatalf("multi-window managed input exceeded bounded I/O: %v (%d / %d)", e, reader.total, reader.limit)
+	}
+	got, e := Decode(rep.Meta, comps)
+	if e != nil || !bytes.Equal(got, data) {
+		t.Fatal("bounded I/O full proof", e)
 	}
 }

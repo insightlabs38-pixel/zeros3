@@ -265,9 +265,15 @@ func compactILSlotsAt(d *clrSource, bodies []BodyInfo, dst []Slot) ([]Slot, erro
 }
 
 func compactFindBodiesAt(f *File, d *clrSource, strict bool) ([]BodyInfo, error) {
+	bodySource := &clrSource{r: d.r, size: d.size, lo: -1, bodyWork: d.bodyWork, bodyRefs: d.bodyRefs}
+	defer func() { d.bodyWork = bodySource.bodyWork; d.bodyRefs = bodySource.bodyRefs }()
 	count := 0
 	for r := uint32(1); r <= f.Rows(TMethodDef); r++ {
-		if d.col(f, TMethodDef, r, 0) != 0 {
+		rva := d.col(f, TMethodDef, r, 0)
+		if d.err != nil {
+			return nil, d.err
+		}
+		if rva != 0 {
 			count++
 			if count > 1<<18 {
 				return nil, limit("body metadata")
@@ -278,6 +284,9 @@ func compactFindBodiesAt(f *File, d *clrSource, strict bool) ([]BodyInfo, error)
 	cached := make(map[int64]int)
 	for r := uint32(1); r <= f.Rows(TMethodDef); r++ {
 		rva := d.col(f, TMethodDef, r, 0)
+		if d.err != nil {
+			return nil, d.err
+		}
 		if rva == 0 {
 			continue
 		}
@@ -289,7 +298,7 @@ func compactFindBodiesAt(f *File, d *clrSource, strict bool) ([]BodyInfo, error)
 				ok = !out[j].Opaque
 			} else {
 				var err error
-				bi.Body, ok, err = parseBodyAt(d, int64(off), strict)
+				bi.Body, ok, err = parseBodyAt(bodySource, int64(off), strict)
 				if err != nil {
 					return nil, err
 				}
@@ -460,10 +469,17 @@ func buildSecsAt(f *File, d []byte, hv *HeapView, bodies []bodyGeom, pm posMap, 
 	return out
 }
 
-func bodyPredAt(f *File, d *clrSource, prevEnd int64) uint32 {
+func bodyPredAt(f *File, d *clrSource, prevEnd int64) (uint32, error) {
 	p := prevEnd
-	for k := 0; k < 4 && p < d.size && d.span(p, 1)[0] == 0; k++ {
+	for k := 0; k < 4 && p < d.size; k++ {
+		b := d.span(p, 1)
+		if d.err != nil {
+			return 0, d.err
+		}
+		if b[0] != 0 {
+			break
+		}
 		p++
 	}
-	return offToRVA(f, p)
+	return offToRVA(f, p), nil
 }

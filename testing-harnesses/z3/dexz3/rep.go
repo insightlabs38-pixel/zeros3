@@ -248,7 +248,12 @@ func SplitComp(c []byte) (payload []byte, streams [numStream][]byte, err error) 
 // Decode rebuilds the DEX from Meta and the component bytes (in order). Every length it allocates
 // from is bounded by the component bytes it was handed.
 func Decode(meta []byte, comps [][]byte) ([]byte, error) {
-	if len(meta) > 16<<20 || len(comps) > 1<<16 {
+	return DecodeFrom(meta, len(comps), func(i int) ([]byte, error) { return comps[i], nil })
+}
+
+// DecodeFrom consumes groups without retaining a complete input-component set.
+func DecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]byte, error) {
+	if len(meta) > 16<<20 || count < 0 || count > 1<<16 || get == nil {
 		return nil, fmt.Errorf("%w: representation metadata/groups", ErrLimit)
 	}
 	if len(meta) < len(repMagic)+2+HeaderSize || string(meta[:4]) != repMagic {
@@ -273,39 +278,55 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 		return nil, bad("header/map geometry")
 	}
 	// the components must account for every byte of the file before anything is allocated
-	var split [][numStream][]byte
-	var payloads [][]byte
-	var plen int64
-	totalComp := int64(0)
-	var streamLengths [numStream]int
-	for _, c := range comps {
-		if len(c) > 16<<20 || int64(len(c)) > (128<<20)-totalComp {
-			return nil, fmt.Errorf("%w: component bytes", ErrLimit)
-		}
-		totalComp += int64(len(c))
-		p, ss, err := SplitComp(c)
+	var expectedStreams [numStream]int
+	var checkedPayload, checkedBytes int64
+	for i := 0; i < count; i++ {
+		component, err := get(i)
 		if err != nil {
 			return nil, err
 		}
-		for k, part := range ss {
-			streamLengths[k] += len(part)
+		if len(component) > 16<<20 || int64(len(component)) > (128<<20)-checkedBytes {
+			return nil, fmt.Errorf("%w: component bytes", ErrLimit)
 		}
-		payloads = append(payloads, p)
-		split = append(split, ss)
-		plen += int64(len(p))
+		checkedBytes += int64(len(component))
+		payload, streams, err := SplitComp(component)
+		if err != nil {
+			return nil, err
+		}
+		checkedPayload += int64(len(payload))
+		for k, b := range streams {
+			expectedStreams[k] += len(b)
+		}
 	}
-	if plen != size-HeaderSize-int64(len(mapb)) {
-		return nil, bad("payload is %d bytes, the header describes %d", plen, size-HeaderSize-int64(len(mapb)))
+	if checkedPayload != size-HeaderSize-int64(len(mapb)) {
+		return nil, bad("payload is %d bytes, the header describes %d", checkedPayload, size-HeaderSize-int64(len(mapb)))
 	}
 	buf := make([]byte, size)
 	copy(buf, raw[:])
 	copy(buf[mOff:], mapb)
 	var streams [numStream][]byte
-	for k, n := range streamLengths {
+	for k, n := range expectedStreams {
 		streams[k] = make([]byte, 0, n)
 	}
 	pos := int64(HeaderSize)
-	for i, p := range payloads {
+	var plen, totalComp int64
+	for i := 0; i < count; i++ {
+		component, err := get(i)
+		if err != nil {
+			return nil, err
+		}
+		if len(component) > 16<<20 || int64(len(component)) > (128<<20)-totalComp {
+			return nil, fmt.Errorf("%w: component bytes", ErrLimit)
+		}
+		totalComp += int64(len(component))
+		p, ss, err := SplitComp(component)
+		if err != nil {
+			return nil, err
+		}
+		plen += int64(len(p))
+		if plen > size-HeaderSize-int64(len(mapb)) {
+			return nil, bad("excess component payload")
+		}
 		for b := p; len(b) > 0; {
 			if pos == mOff {
 				pos += int64(len(mapb))
@@ -318,8 +339,19 @@ func Decode(meta []byte, comps [][]byte) ([]byte, error) {
 			pos += int64(n)
 			b = b[n:]
 		}
-		for k := range split[i] {
-			streams[k] = append(streams[k], split[i][k]...)
+		for k := range ss {
+			if len(ss[k]) > expectedStreams[k]-len(streams[k]) {
+				return nil, bad("component streams changed")
+			}
+			streams[k] = append(streams[k], ss[k]...)
+		}
+	}
+	if plen != size-HeaderSize-int64(len(mapb)) {
+		return nil, bad("payload is %d bytes, the header describes %d", plen, size-HeaderSize-int64(len(mapb)))
+	}
+	for k, n := range expectedStreams {
+		if len(streams[k]) != n {
+			return nil, bad("component streams changed")
 		}
 	}
 	f, err := Parse(bytes.NewReader(buf), size, Limits{})

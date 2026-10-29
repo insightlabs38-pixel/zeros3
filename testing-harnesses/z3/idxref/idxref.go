@@ -222,10 +222,12 @@ type classHandle struct {
 }
 
 type ClassIndex struct {
-	pi      *PrefixIndex
-	members []int
-	starts  []uint32      // CSR class boundaries, including final sentinel
-	handles []classHandle // sorted unique handles, exact legacy last-class/first-occurrence semantics
+	unique      bool
+	handleOrder []uint32
+	pi          *PrefixIndex
+	members     []int
+	starts      []uint32      // CSR class boundaries, including final sentinel
+	handles     []classHandle // sorted unique handles, exact legacy last-class/first-occurrence semantics
 }
 
 // NewClassIndex groups by identity with sorted compact arrays. Class numbers retain
@@ -247,6 +249,31 @@ func NewClassIndex(handles []int, ids []Identity, k0 int) *ClassIndex {
 		if i == 0 || ids[order[i-1]] != ids[order[i]] {
 			unique++
 		}
+	}
+	// The common one-identity/one-handle case needs no CSR boundaries or
+	// 16-byte lookup records. Keep only handles plus a sorted permutation.
+	if unique == len(ids) {
+		sort.Slice(order, func(i, j int) bool { return handles[order[i]] < handles[order[j]] })
+		distinct := true
+		for i := 1; i < len(order); i++ {
+			if handles[order[i-1]] == handles[order[i]] {
+				distinct = false
+				break
+			}
+		}
+		if distinct {
+			c.unique = true
+			c.handleOrder = order
+			c.members = append([]int(nil), handles[:len(ids)]...)
+			c.pi = NewPrefixIndex(append([]Identity(nil), ids...), k0)
+			return c
+		}
+		// Repeated handles retain the general legacy last-class/first-occurrence rule.
+		sort.Slice(order, func(i, j int) bool {
+			a, b := order[i], order[j]
+			n := bytes.Compare(ids[a][:], ids[b][:])
+			return n < 0 || n == 0 && a < b
+		})
 	}
 	groups := make([]group, 0, unique)
 	for lo := 0; lo < len(order); {
@@ -295,10 +322,22 @@ func NewClassIndex(handles []int, ids []Identity, k0 int) *ClassIndex {
 }
 
 func (c *ClassIndex) Collisions() int { return c.pi.Collisions() }
-func (c *ClassIndex) Duplicates() int { return len(c.handles) - (len(c.starts) - 1) }
+func (c *ClassIndex) Duplicates() int {
+	if c.unique {
+		return 0
+	}
+	return len(c.handles) - (len(c.starts) - 1)
+}
 
 // Put resolves a handle in O(log N); duplicate-heavy classes require no scan.
 func (c *ClassIndex) Put(dst []byte, h int) ([]byte, error) {
+	if c.unique {
+		j := sort.Search(len(c.handleOrder), func(i int) bool { return c.members[c.handleOrder[i]] >= h })
+		if j == len(c.handleOrder) || c.members[c.handleOrder[j]] != h {
+			return dst, bad("handle %d is not in the table", h)
+		}
+		return c.pi.Put(dst, c.handleOrder[j])
+	}
 	j := sort.Search(len(c.handles), func(i int) bool { return c.handles[i].h >= h })
 	if j == len(c.handles) || c.handles[j].h != h {
 		return dst, bad("handle %d is not in the table", h)
@@ -318,6 +357,9 @@ func (c *ClassIndex) Get(b []byte) (int, []byte, error) {
 	n, rest, err := c.pi.Get(b)
 	if err != nil {
 		return 0, nil, err
+	}
+	if c.unique {
+		return c.members[n], rest, nil
 	}
 	lo, hi := c.starts[n], c.starts[n+1]
 	if hi-lo == 1 {

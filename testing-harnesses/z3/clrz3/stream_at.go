@@ -141,6 +141,7 @@ func EncodeAt(f *File, r io.ReaderAt, cfg StreamConfig) (*Rep, error) {
 		st.StreamLen[stream] += len(b)
 	}
 	// layout: child counts, deltas, selectors, marks, body codes
+	layoutSource := &clrSource{r: data.r, size: data.size, lo: -1}
 	rvaPrevEnd := f.CLIOff + 72
 	var prevA, prevFR, prevRes int64
 	bodyOf := map[uint32]*bodyGeom{}
@@ -155,7 +156,8 @@ func EncodeAt(f *File, r io.ReaderAt, cfg StreamConfig) (*Rep, error) {
 			return 0, unsup("%s.%s starts at %d", TableName(int(s.Table)), cd.Name, s.Val)
 		}
 		if s.Row < tb.Rows {
-			return data.col(f, int(s.Table), s.Row+1, int(s.Col)), nil
+			v := data.col(f, int(s.Table), s.Row+1, int(s.Col))
+			return v, data.err
 		}
 		return f.Rows(cd.T) + 1, nil
 	}
@@ -192,7 +194,10 @@ func EncodeAt(f *File, r io.ReaderAt, cfg StreamConfig) (*Rep, error) {
 					code = 1 << 1
 					st.RVA[1]++
 				default:
-					pred := bodyPredAt(f, data, rvaPrevEnd)
+					pred, e := bodyPredAt(f, layoutSource, rvaPrevEnd)
+					if e != nil {
+						return nil, e
+					}
 					rc := uint64(0)
 					if s.Val != pred {
 						rc = 2 + zz(int64(s.Val)-int64(pred))

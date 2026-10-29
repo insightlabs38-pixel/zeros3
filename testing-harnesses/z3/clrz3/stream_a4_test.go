@@ -106,3 +106,37 @@ func TestA4StreamedCLRAtIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestA4DecodeGetterMayReuseBuffer(t *testing.T) {
+	data, e := os.ReadFile("testdata/fixture-body.dll")
+	if e != nil {
+		t.Fatal(e)
+	}
+	f := parse(t, data)
+	rep, e := Encode(f, data, Config{Auto: 12, Cut: cutEvery(512)})
+	if e != nil {
+		t.Fatal(e)
+	}
+	var scratch []byte
+	calls := 0
+	got, e := DecodeFrom(rep.Meta, len(rep.Comps), func(i int) ([]byte, error) {
+		calls++
+		clear(scratch)
+		scratch = append(scratch[:0], rep.Comps[i]...)
+		return scratch, nil
+	})
+	if e != nil || !bytes.Equal(got, data) || calls != 2*len(rep.Comps) {
+		t.Fatal("getter full proof", e, calls)
+	}
+	calls = 0
+	_, e = DecodeFrom(rep.Meta, len(rep.Comps), func(i int) ([]byte, error) {
+		calls++
+		if calls > len(rep.Comps) {
+			return nil, io.ErrClosedPipe
+		}
+		return rep.Comps[i], nil
+	})
+	if !errors.Is(e, io.ErrClosedPipe) {
+		t.Fatal("second-pass error lost", e)
+	}
+}

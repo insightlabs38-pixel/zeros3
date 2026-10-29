@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"cmp"
 	"compress/flate"
+	"container/heap"
 	"context"
 	"crypto/hmac"
 	"crypto/md5"
@@ -21909,11 +21910,13 @@ const (
 	repKindModel   repKind = 8
 	repKindSST     repKind = 9
 	repKindParquet repKind = 10
+	repKindDEX     repKind = 11
+	repKindCLR     repKind = 12
 )
 
 // supported reports whether this build can decode the kind.
 func (k repKind) supported() bool {
-	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet
+	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet || k == repKindDEX || k == repKindCLR
 }
 
 type repRole uint8
@@ -22406,6 +22409,10 @@ type repDecoder interface {
 // repDecoderFor is the finite kind table: a switch, never a registry.
 func repDecoderFor(k repKind) (repDecoder, bool) {
 	switch k {
+	case repKindDEX:
+		return repMCdexDecoder{}, true
+	case repKindCLR:
+		return repMCclrDecoder{}, true
 	case repKindSST:
 		return repSCsstDecoder{}, true
 	case repKindParquet:
@@ -23533,7 +23540,8 @@ const (
 	storeFormatVersionRepresentations = 6
 	storeFormatVersionModel           = 7
 	storeFormatVersionStructured      = 8
-	storeFormatVersionSupported       = storeFormatVersionStructured
+	storeFormatVersionManaged         = 9
+	storeFormatVersionSupported       = storeFormatVersionManaged
 	hookRepRootBeforeFormat           = "rep-root-before-format"
 
 	hookRepComponentsStaged  = "rep-components-staged"
@@ -27121,6 +27129,8 @@ func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObj
 	defer func() { b.depth-- }()
 
 	switch k {
+	case repKindDEX, repKindCLR:
+		return b.encodeManaged(src, size, k)
 	case repKindSST, repKindParquet:
 		return b.encodeStructured(src, size, k)
 	case repKindModel:
@@ -27151,6 +27161,10 @@ func repCandidate(src io.ReaderAt, size int64) (repKind, bool) {
 	n, _ := src.ReadAt(head[:], 0)
 	hd := head[:min(int64(n), size)]
 	switch {
+	case bytes.HasPrefix(hd, []byte("dex\n")):
+		return repKindDEX, true
+	case bytes.HasPrefix(hd, []byte("MZ")):
+		return repKindCLR, true
 	case bytes.HasPrefix(hd, []byte("PAR1")):
 		return repKindParquet, true
 	case bytes.HasPrefix(hd, []byte("GGUF")) || (len(hd) >= 9 && binary.LittleEndian.Uint64(hd[:8]) <= 16<<20 && binary.LittleEndian.Uint64(hd[:8]) <= uint64(max(0, size-8)) && bytes.HasPrefix(bytes.TrimSpace(hd[8:]), []byte("{"))):
@@ -39713,6 +39727,8 @@ func (s *Store) repPublicationFloor(r *repRoot) (int, error) {
 			floor = max(floor, storeFormatVersionModel)
 		case repKindSST, repKindParquet:
 			floor = max(floor, storeFormatVersionStructured)
+		case repKindDEX, repKindCLR:
+			floor = max(floor, storeFormatVersionManaged)
 		default:
 			return 0, fmt.Errorf("%w: capability kind %d", errRepUnsupported, obj.Kind)
 		}
@@ -47475,4 +47491,8589 @@ func (l repPQlayout) retained() repPQlayout {
 	l.LvlPad = append([]uint32(nil), l.LvlPad...)
 	l.ValPad = append([]uint32(nil), l.ValPad...)
 	return l
+}
+
+// ---- Z4 A4 mechanically extracted managed codecs ----
+// Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.
+
+// Port source: zeros3-z3/idxref/idxref.go
+// ErrFormat reports a malformed reference stream or component.
+var repIXErrFormat = errors.New("idxref: malformed representation")
+
+// Port source: zeros3-z3/idxref/idxref.go
+func repIXbad(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repIXErrFormat}, a...)...)
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// Identity is the semantic identity of a table entry: SHA-256 of a tagged, canonical description
+// built from the entry's own content (never from a numeric index).
+type repIXIdentity = [32]byte
+
+// Port source: zeros3-z3/idxref/idxref.go
+// Hash computes the identity of tag | parts...
+func repIXHash(tag byte, parts ...[]byte) repIXIdentity {
+	h := sha256.New()
+	h.Write([]byte{tag})
+	for _, p := range parts {
+		h.Write(p)
+	}
+	var out repIXIdentity
+	h.Sum(out[:0])
+	return out
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// CheckUnique rejects a table with two entries of one identity (ambiguous: nothing may be
+// normalized against it).
+func repIXCheckUnique(what string, ids []repIXIdentity) error {
+	order := make([]uint32, len(ids))
+	for i := range order {
+		order[i] = uint32(i)
+	}
+	sort.Slice(order, func(i, j int) bool { return bytes.Compare(ids[order[i]][:], ids[order[j]][:]) < 0 })
+	for i := 1; i < len(order); i++ {
+		if ids[order[i-1]] == ids[order[i]] {
+			return fmt.Errorf("duplicate %s identity (ambiguous)", what)
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// PrefixIndex codes a reference to table entry i as the first K0 bytes of its identity plus the
+// fewest extra bytes that make the prefix unique among the entries sharing those K0 bytes. The
+// decoder owns the same table, so the extra length is implied and no escape marker exists.
+type repIXPrefixIndex struct {
+	k0         int
+	ids        []repIXIdentity
+	order      []uint32 // lexicographic identity order; no collision buckets or copied candidate lists
+	widths     []uint8  // minimal unique prefix, 33 denotes an ambiguous full identity
+	collisions int
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// NewPrefixIndex builds the coder over ids (K0 in 1..4).
+func repIXNewPrefixIndex(ids []repIXIdentity, k0 int) *repIXPrefixIndex {
+	p := &repIXPrefixIndex{k0: k0, ids: ids, order: make([]uint32, len(ids)), widths: make([]uint8, len(ids))}
+	for i := range p.order {
+		p.order[i] = uint32(i)
+	}
+	sort.Slice(p.order, func(i, j int) bool { return bytes.Compare(ids[p.order[i]][:], ids[p.order[j]][:]) < 0 })
+	common := func(a, b uint32) int {
+		n := 0
+		for n < 32 && ids[a][n] == ids[b][n] {
+			n++
+		}
+		return n
+	}
+	for pos, i := range p.order {
+		n := 0
+		if pos > 0 {
+			n = common(i, p.order[pos-1]) + 1
+		}
+		if pos+1 < len(p.order) {
+			if m := common(i, p.order[pos+1]) + 1; m > n {
+				n = m
+			}
+		}
+		if n < k0 {
+			n = k0
+		}
+		p.widths[i] = uint8(n)
+		if n > k0 {
+			p.collisions++
+		}
+	}
+	return p
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// Collisions is the number of entries whose K0 prefix is shared with another entry.
+func (p *repIXPrefixIndex) Collisions() int { return p.collisions }
+
+// Port source: zeros3-z3/idxref/idxref.go
+func (p *repIXPrefixIndex) Len() int { return len(p.ids) }
+
+// Port source: zeros3-z3/idxref/idxref.go
+// Put has constant work per reference, even for adversarial colliding prefixes.
+func (p *repIXPrefixIndex) Put(dst []byte, i uint32) ([]byte, error) {
+	if uint64(i) >= uint64(len(p.ids)) {
+		return dst, repIXbad("reference %d outside table of %d", i, len(p.ids))
+	}
+	n := int(p.widths[i])
+	if n > 32 {
+		return append(dst, p.ids[i][:]...), repIXbad("identity not unique")
+	}
+	return append(dst, p.ids[i][:n]...), nil
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// Get narrows a sorted interval without allocating or scanning a collision class.
+func (p *repIXPrefixIndex) Get(b []byte) (uint32, []byte, error) {
+	if len(b) < p.k0 {
+		return 0, nil, repIXbad("reference stream truncated")
+	}
+	lo, hi := 0, len(p.order)
+	for n := p.k0; n <= 32; n++ {
+		if n > len(b) {
+			return 0, nil, repIXbad("reference stream truncated")
+		}
+		base := lo
+		l := sort.Search(hi-base, func(j int) bool { return bytes.Compare(p.ids[p.order[base+j]][:n], b[:n]) >= 0 }) + base
+		h := sort.Search(hi-l, func(j int) bool { return bytes.Compare(p.ids[p.order[l+j]][:n], b[:n]) > 0 }) + l
+		lo, hi = l, h
+		if hi-lo == 1 {
+			return p.order[lo], b[n:], nil
+		}
+		if lo == hi {
+			break
+		}
+	}
+	return 0, nil, repIXbad("reference to an unknown identity")
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// Zigzag maps a signed delta to an unsigned varint value and back.
+func repIXZigzag(v int64) uint64 { return uint64(v<<1) ^ uint64(v>>63) }
+
+// Port source: zeros3-z3/idxref/idxref.go
+func repIXUnzigzag(u uint64) int64 { return int64(u>>1) ^ -int64(u&1) }
+
+// Port source: zeros3-z3/idxref/idxref.go
+// FNV64 continues a 64-bit FNV-1a hash (grouping decisions only, never identity).
+func repIXFNV64(h uint64, b []byte) uint64 {
+	for _, c := range b {
+		h = (h ^ uint64(c)) * 1099511628211
+	}
+	return h
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// FNVInit is the FNV-1a offset basis.
+const repIXFNVInit = 14695981039346656037
+
+// Port source: zeros3-z3/idxref/idxref.go
+// PackComp builds one component: uvarint(len payload), uvarint(len stream i)..., payload, streams.
+func repIXPackComp(payload []byte, streams [][]byte) []byte {
+	c := binary.AppendUvarint(nil, uint64(len(payload)))
+	for _, s := range streams {
+		c = binary.AppendUvarint(c, uint64(len(s)))
+	}
+	c = append(c, payload...)
+	for _, s := range streams {
+		c = append(c, s...)
+	}
+	return c
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// SplitComp is the inverse of PackComp for n streams; the component must be consumed exactly.
+func repIXSplitComp(c []byte, n int) (payload []byte, streams [][]byte, err error) {
+	pl, k := binary.Uvarint(c)
+	if k <= 0 {
+		return nil, nil, repIXbad("component header")
+	}
+	c = c[k:]
+	ls := make([]uint64, n)
+	for i := range ls {
+		if ls[i], k = binary.Uvarint(c); k <= 0 {
+			return nil, nil, repIXbad("component header")
+		}
+		c = c[k:]
+	}
+	tot := pl
+	for _, l := range ls {
+		if l > uint64(len(c)) {
+			return nil, nil, repIXbad("component stream length")
+		}
+		tot += l
+		if tot > uint64(len(c)) {
+			return nil, nil, repIXbad("component length")
+		}
+	}
+	if tot != uint64(len(c)) {
+		return nil, nil, repIXbad("component has %d trailing bytes", uint64(len(c))-tot)
+	}
+	payload, c = c[:pl], c[pl:]
+	streams = make([][]byte, n)
+	for i, l := range ls {
+		streams[i], c = c[:l], c[l:]
+	}
+	return payload, streams, nil
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// Sec is one section of a masked payload with the start offsets of its records (items or array
+// rows) and, when known, a digest of each record's bytes and reference bytes. Cutters group
+// records into components at content-defined boundaries.
+type repIXSec struct {
+	Type     uint16
+	Off, End int
+	Items    []int
+	Hash     []uint64
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// ClassIndex names entries (opaque integer handles) whose identities may repeat: the entries with
+// one identity form a class, a reference is the class's prefix (as PrefixIndex) plus, when the class
+// has several members, the member's occurrence number in handle order. A format that never meets
+// duplicates pays nothing; one that does (JVM constant pools from some producers, shared DEX items)
+// still resolves every reference exactly.
+type repIXclassHandle struct {
+	h              int
+	class, ordinal uint32
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+type repIXClassIndex struct {
+	unique      bool
+	handleOrder []uint32
+	pi          *repIXPrefixIndex
+	members     []int
+	starts      []uint32           // CSR class boundaries, including final sentinel
+	handles     []repIXclassHandle // sorted unique handles, exact legacy last-class/first-occurrence semantics
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// NewClassIndex groups by identity with sorted compact arrays. Class numbers retain
+// first-identity-occurrence order; members retain their original handle order.
+func repIXNewClassIndex(handles []int, ids []repIXIdentity, k0 int) *repIXClassIndex {
+	c := &repIXClassIndex{}
+	order := make([]uint32, len(ids))
+	for i := range order {
+		order[i] = uint32(i)
+	}
+	sort.Slice(order, func(i, j int) bool {
+		a, b := order[i], order[j]
+		n := bytes.Compare(ids[a][:], ids[b][:])
+		return n < 0 || n == 0 && a < b
+	})
+	type group struct{ lo, hi uint32 }
+	unique := 0
+	for i := range order {
+		if i == 0 || ids[order[i-1]] != ids[order[i]] {
+			unique++
+		}
+	}
+	// The common one-identity/one-handle case needs no CSR boundaries or
+	// 16-byte lookup records. Keep only handles plus a sorted permutation.
+	if unique == len(ids) {
+		sort.Slice(order, func(i, j int) bool { return handles[order[i]] < handles[order[j]] })
+		distinct := true
+		for i := 1; i < len(order); i++ {
+			if handles[order[i-1]] == handles[order[i]] {
+				distinct = false
+				break
+			}
+		}
+		if distinct {
+			c.unique = true
+			c.handleOrder = order
+			c.members = append([]int(nil), handles[:len(ids)]...)
+			c.pi = repIXNewPrefixIndex(append([]repIXIdentity(nil), ids...), k0)
+			return c
+		}
+		// Repeated handles retain the general legacy last-class/first-occurrence rule.
+		sort.Slice(order, func(i, j int) bool {
+			a, b := order[i], order[j]
+			n := bytes.Compare(ids[a][:], ids[b][:])
+			return n < 0 || n == 0 && a < b
+		})
+	}
+	groups := make([]group, 0, unique)
+	for lo := 0; lo < len(order); {
+		hi := lo + 1
+		for hi < len(order) && ids[order[lo]] == ids[order[hi]] {
+			hi++
+		}
+		groups = append(groups, group{uint32(lo), uint32(hi)})
+		lo = hi
+	}
+	sort.Slice(groups, func(i, j int) bool { return order[groups[i].lo] < order[groups[j].lo] })
+	cls := make([]repIXIdentity, len(groups))
+	c.starts = make([]uint32, len(groups)+1)
+	c.members = make([]int, 0, len(ids))
+	c.handles = make([]repIXclassHandle, len(ids))
+	for n, g := range groups {
+		cls[n] = ids[order[g.lo]]
+		c.starts[n] = uint32(len(c.members))
+		for ordinal, i := range order[g.lo:g.hi] {
+			c.members = append(c.members, handles[i])
+			c.handles[i] = repIXclassHandle{handles[i], uint32(n), uint32(ordinal)}
+		}
+	}
+	c.starts[len(groups)] = uint32(len(c.members))
+	// Stable ordering retains original occurrence order for repeated handles.
+	sort.SliceStable(c.handles, func(i, j int) bool { return c.handles[i].h < c.handles[j].h })
+	out := c.handles[:0]
+	for lo := 0; lo < len(c.handles); {
+		hi := lo + 1
+		for hi < len(c.handles) && c.handles[hi].h == c.handles[lo].h {
+			hi++
+		}
+		selected := c.handles[hi-1]
+		for _, v := range c.handles[lo:hi] {
+			if v.class == selected.class {
+				selected = v
+				break
+			}
+		}
+		out = append(out, selected)
+		lo = hi
+	}
+	c.handles = out
+	c.pi = repIXNewPrefixIndex(cls, k0)
+	return c
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+func (c *repIXClassIndex) Collisions() int { return c.pi.Collisions() }
+
+// Port source: zeros3-z3/idxref/idxref.go
+func (c *repIXClassIndex) Duplicates() int {
+	if c.unique {
+		return 0
+	}
+	return len(c.handles) - (len(c.starts) - 1)
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+// Put resolves a handle in O(log N); duplicate-heavy classes require no scan.
+func (c *repIXClassIndex) Put(dst []byte, h int) ([]byte, error) {
+	if c.unique {
+		j := sort.Search(len(c.handleOrder), func(i int) bool { return c.members[c.handleOrder[i]] >= h })
+		if j == len(c.handleOrder) || c.members[c.handleOrder[j]] != h {
+			return dst, repIXbad("handle %d is not in the table", h)
+		}
+		return c.pi.Put(dst, c.handleOrder[j])
+	}
+	j := sort.Search(len(c.handles), func(i int) bool { return c.handles[i].h >= h })
+	if j == len(c.handles) || c.handles[j].h != h {
+		return dst, repIXbad("handle %d is not in the table", h)
+	}
+	v := c.handles[j]
+	dst, err := c.pi.Put(dst, v.class)
+	if err != nil {
+		return dst, err
+	}
+	if c.starts[v.class+1]-c.starts[v.class] > 1 {
+		dst = binary.AppendUvarint(dst, uint64(v.ordinal))
+	}
+	return dst, nil
+}
+
+// Port source: zeros3-z3/idxref/idxref.go
+func (c *repIXClassIndex) Get(b []byte) (int, []byte, error) {
+	n, rest, err := c.pi.Get(b)
+	if err != nil {
+		return 0, nil, err
+	}
+	if c.unique {
+		return c.members[n], rest, nil
+	}
+	lo, hi := c.starts[n], c.starts[n+1]
+	if hi-lo == 1 {
+		return c.members[lo], rest, nil
+	}
+	j, k := binary.Uvarint(rest)
+	if k <= 0 || j >= uint64(hi-lo) {
+		return 0, nil, repIXbad("occurrence number")
+	}
+	return c.members[uint64(lo)+j], rest[k:], nil
+}
+
+// Port source: zeros3-z3/idxref/refcoder.go
+// RefRec is one emitted reference (analysis): the component it landed in, its stream and class,
+// and its bytes.
+type repIXRefRec struct {
+	Comp   int
+	Stream uint8
+	Class  uint8
+	B      []byte
+}
+
+// Port source: zeros3-z3/idxref/refcoder.go
+// AutoK0 is the identity prefix length for a table of n candidates: the smallest k (1..3) for
+// which a K-byte prefix leaves at most `pct` percent of the candidates sharing it with another
+// (the decoder knows n, so the length is implied).
+func repIXAutoK0(n, pct int) int {
+	cap := uint64(1)
+	for k := 1; k <= 3; k++ {
+		cap <<= 8
+		if uint64(n)*100 <= uint64(pct)*cap {
+			return k
+		}
+	}
+	return 3
+}
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+const repIXsortRunRecords = 4096
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+type repIXsortRef struct {
+	pos, fileOff, dataOff, seq int64
+	n                          uint32
+	stream, class              uint8
+}
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+// SortedRefSpool uses bounded external runs. Its RAM does not scale with the
+// number of references: one 4096-record sorting window, bounded merge cursors,
+// and one record buffer replace the former whole-reference sorting index.
+type repIXSortedRefSpool struct {
+	f                      *os.File
+	w                      *bufio.Writer
+	index                  []repIXsortRef
+	runs                   []string
+	limit, size, chunkSize int64
+	max, count             int
+	sealed                 bool
+}
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+func repIXNewSortedRefSpool(dir string, max int, limit int64) (*repIXSortedRefSpool, error) {
+	if max < 0 || max > 2<<20 || limit < 0 {
+		return nil, repIXbad("sorted reference limits")
+	}
+	f, e := os.CreateTemp(dir, "zeros3-sorted-refs-*")
+	if e != nil {
+		return nil, e
+	}
+	capRecords := max
+	if capRecords > repIXsortRunRecords {
+		capRecords = repIXsortRunRecords
+	}
+	return &repIXSortedRefSpool{f: f, w: bufio.NewWriterSize(f, 64<<10), index: make([]repIXsortRef, 0, capRecords), max: max, limit: limit}, nil
+}
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+func (s *repIXSortedRefSpool) Close() error {
+	name := s.f.Name()
+	first := s.f.Close()
+	for _, name := range append(s.runs, name) {
+		if e := os.Remove(name); e != nil && first == nil {
+			first = e
+		}
+	}
+	return first
+}
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+func (s *repIXSortedRefSpool) Append(pos, fileOff int64, stream, class uint8, b []byte) error {
+	if s.sealed || pos < 0 || fileOff < 0 || s.count >= s.max || len(b) > 16<<20 || s.size > s.limit || int64(len(b)) > s.limit-s.size {
+		return repIXbad("sorted reference limits")
+	}
+	n, e := s.w.Write(b)
+	if e != nil {
+		return e
+	}
+	if n != len(b) {
+		return io.ErrShortWrite
+	}
+	s.index = append(s.index, repIXsortRef{pos, fileOff, s.chunkSize, int64(s.count), uint32(len(b)), stream, class})
+	s.size += int64(len(b))
+	s.chunkSize += int64(len(b))
+	s.count++
+	if len(s.index) == repIXsortRunRecords {
+		return s.flushRun()
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+func (s *repIXSortedRefSpool) flushRun() error {
+	if len(s.index) == 0 {
+		return nil
+	}
+	if e := s.w.Flush(); e != nil {
+		return e
+	}
+	sort.Slice(s.index, func(i, j int) bool {
+		a, b := s.index[i], s.index[j]
+		return a.pos < b.pos || a.pos == b.pos && (a.fileOff < b.fileOff || a.fileOff == b.fileOff && a.seq < b.seq)
+	})
+	run, e := os.CreateTemp(filepath.Dir(s.f.Name()), "zeros3-ref-run-*")
+	if e != nil {
+		return e
+	}
+	s.runs = append(s.runs, run.Name())
+	defer run.Close()
+	w := bufio.NewWriterSize(run, 64<<10)
+	var buf []byte
+	for _, x := range s.index {
+		var h [30]byte
+		binary.LittleEndian.PutUint64(h[:], uint64(x.pos))
+		binary.LittleEndian.PutUint64(h[8:], uint64(x.fileOff))
+		binary.LittleEndian.PutUint64(h[16:], uint64(x.seq))
+		binary.LittleEndian.PutUint32(h[24:], x.n)
+		h[28], h[29] = x.stream, x.class
+		if _, e = w.Write(h[:]); e != nil {
+			return e
+		}
+		if cap(buf) < int(x.n) {
+			buf = make([]byte, x.n)
+		} else {
+			buf = buf[:x.n]
+		}
+		n, e := s.f.ReadAt(buf, x.dataOff)
+		if n != len(buf) {
+			return io.ErrUnexpectedEOF
+		}
+		if e != nil && e != io.EOF {
+			return e
+		}
+		if _, e = w.Write(buf); e != nil {
+			return e
+		}
+	}
+	if e = w.Flush(); e != nil {
+		return e
+	}
+	if e = run.Close(); e != nil {
+		return e
+	}
+	if e = s.f.Truncate(0); e != nil {
+		return e
+	}
+	if _, e = s.f.Seek(0, io.SeekStart); e != nil {
+		return e
+	}
+	s.w.Reset(s.f)
+	s.chunkSize = 0
+	s.index = s.index[:0]
+	return nil
+}
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+type repIXrunCursor struct {
+	f   *os.File
+	r   *bufio.Reader
+	ref repIXsortRef
+}
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+func (c *repIXrunCursor) next() error {
+	var h [30]byte
+	if _, e := io.ReadFull(c.r, h[:]); e != nil {
+		return e
+	}
+	c.ref = repIXsortRef{pos: int64(binary.LittleEndian.Uint64(h[:])), fileOff: int64(binary.LittleEndian.Uint64(h[8:])), seq: int64(binary.LittleEndian.Uint64(h[16:])), n: binary.LittleEndian.Uint32(h[24:]), stream: h[28], class: h[29]}
+	if c.ref.n > 16<<20 || c.ref.pos < 0 || c.ref.fileOff < 0 || c.ref.seq < 0 {
+		return repIXbad("sorted reference run")
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+type repIXrunHeap []*repIXrunCursor
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+func (h repIXrunHeap) Len() int { return len(h) }
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+func (h repIXrunHeap) Less(i, j int) bool {
+	a, b := h[i].ref, h[j].ref
+	return a.pos < b.pos || a.pos == b.pos && (a.fileOff < b.fileOff || a.fileOff == b.fileOff && a.seq < b.seq)
+}
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+func (h repIXrunHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+func (h *repIXrunHeap) Push(x any) { *h = append(*h, x.(*repIXrunCursor)) }
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+func (h *repIXrunHeap) Pop() any { old := *h; x := old[len(old)-1]; *h = old[:len(old)-1]; return x }
+
+// Port source: zeros3-z3/idxref/sorted_spool.go
+func (s *repIXSortedRefSpool) CopySorted(dst *repIXRefSpool) error {
+	if s.sealed {
+		return repIXbad("reference spool already sealed")
+	}
+	s.sealed = true
+	if e := s.flushRun(); e != nil {
+		return e
+	}
+	if len(s.runs) > 512 {
+		return repIXbad("reference run count")
+	}
+	var cursors []*repIXrunCursor
+	defer func() {
+		for _, c := range cursors {
+			c.f.Close()
+		}
+	}()
+	var heads repIXrunHeap
+	for _, name := range s.runs {
+		f, e := os.Open(name)
+		if e != nil {
+			return e
+		}
+		c := &repIXrunCursor{f: f, r: bufio.NewReaderSize(f, 4096)}
+		cursors = append(cursors, c)
+		if e = c.next(); e != nil {
+			return e
+		}
+		heads = append(heads, c)
+	}
+	heap.Init(&heads)
+	var buf []byte
+	for heads.Len() > 0 {
+		c := heads[0]
+		x := c.ref
+		if cap(buf) < int(x.n) {
+			buf = make([]byte, x.n)
+		} else {
+			buf = buf[:x.n]
+		}
+		if _, e := io.ReadFull(c.r, buf); e != nil {
+			return e
+		}
+		if e := dst.Append(x.pos, x.stream, x.class, buf); e != nil {
+			return e
+		}
+		e := c.next()
+		if e == io.EOF {
+			heap.Pop(&heads)
+		} else if e != nil {
+			return e
+		} else {
+			heap.Fix(&heads, 0)
+		}
+	}
+	s.index = nil
+	return nil
+}
+
+// Port source: zeros3-z3/idxref/spool.go
+// RefSpool stages sorted references on disk. Only one bounded record is retained
+// per iterator. Call Close on every exit; callers must not publish partial output.
+type repIXRefSpool struct {
+	writer      *bufio.Writer
+	reader      *bufio.Reader
+	reading     bool
+	f           *os.File
+	size, limit int64
+	last        int64
+	count       int
+	buf         []byte
+}
+
+// Port source: zeros3-z3/idxref/spool.go
+type repIXSpoolRef struct {
+	Pos           int64
+	Stream, Class uint8
+	Bytes         []byte
+}
+
+// Port source: zeros3-z3/idxref/spool.go
+func repIXNewRefSpool(dir string, limit int64) (*repIXRefSpool, error) {
+	if limit < 0 {
+		return nil, repIXbad("reference spool limit")
+	}
+	f, e := os.CreateTemp(dir, "zeros3-refs-*")
+	if e != nil {
+		return nil, e
+	}
+	return &repIXRefSpool{f: f, limit: limit, last: -1, writer: bufio.NewWriterSize(f, 64<<10), reader: bufio.NewReaderSize(f, 64<<10)}, nil
+}
+
+// Port source: zeros3-z3/idxref/spool.go
+func (s *repIXRefSpool) Close() error {
+	name := s.f.Name()
+	e := s.f.Close()
+	r := os.Remove(name)
+	if e != nil {
+		return e
+	}
+	return r
+}
+
+// Port source: zeros3-z3/idxref/spool.go
+func (s *repIXRefSpool) Append(pos int64, stream, class uint8, b []byte) error {
+	if s.reading || pos < 0 || pos < s.last || len(b) > 16<<20 || s.size > s.limit || int64(len(b))+14 > s.limit-s.size {
+		return repIXbad("reference spool limits/order")
+	}
+	var h [14]byte
+	binary.LittleEndian.PutUint64(h[:], uint64(pos))
+	h[8], h[9] = stream, class
+	binary.LittleEndian.PutUint32(h[10:], uint32(len(b)))
+	for _, p := range [][]byte{h[:], b} {
+		n, e := s.writer.Write(p)
+		if e != nil {
+			return e
+		}
+		if n != len(p) {
+			return io.ErrShortWrite
+		}
+	}
+	s.size += int64(len(b)) + 14
+	s.last = pos
+	s.count++
+	return nil
+}
+
+// Port source: zeros3-z3/idxref/spool.go
+func (s *repIXRefSpool) Rewind() error {
+	if e := s.writer.Flush(); e != nil {
+		return e
+	}
+	s.reading = true
+	_, e := s.f.Seek(0, io.SeekStart)
+	s.reader.Reset(s.f)
+	return e
+}
+
+// Port source: zeros3-z3/idxref/spool.go
+func (s *repIXRefSpool) Next() (repIXSpoolRef, error) {
+	if !s.reading {
+		return repIXSpoolRef{}, repIXbad("reference spool not rewound")
+	}
+	var h [14]byte
+	if _, e := io.ReadFull(s.reader, h[:]); e != nil {
+		return repIXSpoolRef{}, e
+	}
+	n := int(binary.LittleEndian.Uint32(h[10:]))
+	if n > 16<<20 {
+		return repIXSpoolRef{}, repIXbad("reference record limit")
+	}
+	if cap(s.buf) < n {
+		s.buf = make([]byte, n)
+	} else {
+		s.buf = s.buf[:n]
+	}
+	if _, e := io.ReadFull(s.reader, s.buf); e != nil {
+		return repIXSpoolRef{}, e
+	}
+	return repIXSpoolRef{int64(binary.LittleEndian.Uint64(h[:])), h[8], h[9], s.buf}, nil
+}
+
+// Port source: zeros3-z3/idxref/window.go
+// Span is an exact file interval. Patch stores a width-preserving reference mask.
+type repIXSpan struct{ Off, Len int64 }
+
+// Port source: zeros3-z3/idxref/window.go
+type repIXPatch struct {
+	Off   int64
+	Bytes [5]byte
+	Len   uint8
+}
+
+// Port source: zeros3-z3/idxref/window.go
+type repIXviewSpan struct{ file, payload, n int64 }
+
+// Port source: zeros3-z3/idxref/window.go
+// WindowView exposes masked bytes with header spans excised. It owns compact
+// structural descriptors, never a file-sized byte copy. The source stays immutable.
+type repIXWindowView struct {
+	r       io.ReaderAt
+	spans   []repIXviewSpan
+	patches []repIXPatch
+	size    int64
+}
+
+// Port source: zeros3-z3/idxref/window.go
+func repIXNewWindowView(r io.ReaderAt, size int64, excised []repIXSpan, patches []repIXPatch) (*repIXWindowView, error) {
+	if size < 0 || len(patches) > 4<<20 || len(excised) > 1<<16 {
+		return nil, repIXbad("masked view limits")
+	}
+	v := &repIXWindowView{r: r, patches: patches}
+	pos := int64(0)
+	for _, x := range excised {
+		if x.Off < pos || x.Off > size || x.Len < 0 || x.Len > size-x.Off {
+			return nil, repIXbad("excised geometry")
+		}
+		if pos < x.Off {
+			v.spans = append(v.spans, repIXviewSpan{pos, v.size, x.Off - pos})
+			v.size += x.Off - pos
+		}
+		pos = x.Off + x.Len
+	}
+	if pos < size {
+		v.spans = append(v.spans, repIXviewSpan{pos, v.size, size - pos})
+		v.size += size - pos
+	}
+	sort.SliceStable(v.patches, func(i, j int) bool { return v.patches[i].Off < v.patches[j].Off })
+	end := int64(0)
+	for _, p := range v.patches {
+		if p.Len == 0 || p.Len > 5 || p.Off < end || p.Off > size || int64(p.Len) > size-p.Off {
+			return nil, repIXbad("mask geometry")
+		}
+		end = p.Off + int64(p.Len)
+	}
+	return v, nil
+}
+
+// Port source: zeros3-z3/idxref/window.go
+func (v *repIXWindowView) Size() int64 { return v.size }
+
+// Port source: zeros3-z3/idxref/window.go
+func (v *repIXWindowView) ReadAt(b []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, fmt.Errorf("negative payload offset")
+	}
+	if len(b) == 0 {
+		return 0, nil
+	}
+	if off >= v.size {
+		return 0, io.EOF
+	}
+	n := 0
+	for n < len(b) && off < v.size {
+		i := sort.Search(len(v.spans), func(i int) bool { return v.spans[i].payload+v.spans[i].n > off })
+		s := v.spans[i]
+		file := s.file + off - s.payload
+		take := int64(len(b) - n)
+		if take > s.n-(off-s.payload) {
+			take = s.n - (off - s.payload)
+		}
+		dst := b[n : n+int(take)]
+		got, err := v.r.ReadAt(dst, file)
+		if got != len(dst) {
+			return n + got, io.ErrUnexpectedEOF
+		}
+		if err != nil && err != io.EOF {
+			return n + got, err
+		}
+		j := sort.Search(len(v.patches), func(j int) bool { return v.patches[j].Off+int64(v.patches[j].Len) > file })
+		for ; j < len(v.patches) && v.patches[j].Off < file+take; j++ {
+			p := &v.patches[j]
+			a, z := p.Off, p.Off+int64(p.Len)
+			if a < file {
+				a = file
+			}
+			if z > file+take {
+				z = file + take
+			}
+			copy(dst[a-file:z-file], p.Bytes[a-p.Off:z-p.Off])
+		}
+		n += int(take)
+		off += take
+	}
+	if n < len(b) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// Port source: zeros3-z3/idxref/window.go
+// FNVRange hashes a range in bounded windows, identical to FNV64 over its bytes.
+func repIXFNVRange(r io.ReaderAt, start, end int64, scratch []byte) (uint64, error) {
+	if start < 0 || end < start || len(scratch) == 0 {
+		return 0, repIXbad("hash range")
+	}
+	h := uint64(repIXFNVInit)
+	for start < end {
+		n := int64(len(scratch))
+		if n > end-start {
+			n = end - start
+		}
+		b := scratch[:n]
+		got, err := r.ReadAt(b, start)
+		if got != len(b) {
+			return 0, io.ErrUnexpectedEOF
+		}
+		if err != nil && err != io.EOF {
+			return 0, err
+		}
+		h = repIXFNV64(h, b)
+		start += n
+	}
+	return h, nil
+}
+
+// Port source: zeros3-z3/dexz3/dex.go
+var (
+	repDXErrFormat      = errors.New("dexz3: malformed DEX")
+	repDXErrUnsupported = errors.New("dexz3: unsupported DEX feature")
+	repDXErrLimit       = errors.New("dexz3: limit exceeded")
+)
+
+// Port source: zeros3-z3/dexz3/dex.go
+// Limits bound every parse; zero fields take the defaults.
+type repDXLimits struct {
+	MaxFile     int64 // default 512 MiB
+	MaxStrings  int   // 4 Mi
+	MaxIDs      int   // types/protos/fields/methods/classes: 1 Mi
+	MaxMap      int   // 64
+	MaxStrLen   int   // MUTF-8 bytes per string: 1 Mi
+	MaxLEB      int   // ULEB/SLEB bytes: 5
+	MaxCodeUnit int   // insns units per method: 1 Mi
+	MaxTries    int   // 64 Ki
+	MaxHandlers int   // 64 Ki
+	MaxMembers  int   // class_data members per class: 256 Ki
+	MaxSlots    int   // 64 Mi
+	MaxDepth    int   // encoded value / annotation nesting: 32
+	MaxDebugOps int   // 1 Mi
+	MaxItems    int   // per section: 8 Mi
+}
+
+// Port source: zeros3-z3/dexz3/dex.go
+func (l repDXLimits) norm() repDXLimits {
+	d := func(v *int, x int) {
+		if *v <= 0 {
+			*v = x
+		}
+	}
+	if l.MaxFile <= 0 {
+		l.MaxFile = 512 << 20
+	}
+	d(&l.MaxStrings, 4<<20)
+	d(&l.MaxIDs, 1<<20)
+	d(&l.MaxMap, 64)
+	d(&l.MaxStrLen, 1<<20)
+	d(&l.MaxLEB, 5)
+	d(&l.MaxCodeUnit, 1<<20)
+	d(&l.MaxTries, 1<<16)
+	d(&l.MaxHandlers, 1<<16)
+	d(&l.MaxMembers, 1<<18)
+	d(&l.MaxSlots, 64<<20)
+	d(&l.MaxDepth, 32)
+	d(&l.MaxDebugOps, 1<<20)
+	d(&l.MaxItems, 8<<20)
+	return l
+}
+
+// Port source: zeros3-z3/dexz3/dex.go
+// Map item type codes.
+const (
+	repDXTypeHeader       = 0x0000
+	repDXTypeStringID     = 0x0001
+	repDXTypeTypeID       = 0x0002
+	repDXTypeProtoID      = 0x0003
+	repDXTypeFieldID      = 0x0004
+	repDXTypeMethodID     = 0x0005
+	repDXTypeClassDef     = 0x0006
+	repDXTypeCallSiteID   = 0x0007
+	repDXTypeMethodHandle = 0x0008
+	repDXTypeMapList      = 0x1000
+	repDXTypeTypeList     = 0x1001
+	repDXTypeAnnoSetRef   = 0x1002
+	repDXTypeAnnoSet      = 0x1003
+	repDXTypeClassData    = 0x2000
+	repDXTypeCode         = 0x2001
+	repDXTypeStringData   = 0x2002
+	repDXTypeDebugInfo    = 0x2003
+	repDXTypeAnnotation   = 0x2004
+	repDXTypeEncodedArray = 0x2005
+	repDXTypeAnnoDir      = 0x2006
+	repDXTypeHiddenAPI    = 0xF000
+	repDXTypeGap          = 0xFFFF // synthetic: bytes between mapped sections (opaque)
+)
+
+// Port source: zeros3-z3/dexz3/dex.go
+const (
+	repDXHeaderSize = 112
+	repDXNoIndex    = 0xFFFFFFFF
+	repDXendianTag  = 0x12345678
+)
+
+// Port source: zeros3-z3/dexz3/dex.go
+// Header is the decoded fixed header (the raw bytes are kept in File.Raw).
+type repDXHeader struct {
+	Magic                   [8]byte
+	Checksum                uint32
+	Signature               [20]byte
+	FileSize, HeaderSize    uint32
+	EndianTag               uint32
+	LinkSize, LinkOff       uint32
+	MapOff                  uint32
+	StringIDs, StringIDsOff uint32
+	TypeIDs, TypeIDsOff     uint32
+	ProtoIDs, ProtoIDsOff   uint32
+	FieldIDs, FieldIDsOff   uint32
+	MethodIDs, MethodIDsOff uint32
+	ClassDefs, ClassDefsOff uint32
+	DataSize, DataOff       uint32
+}
+
+// Port source: zeros3-z3/dexz3/dex.go
+// MapItem is one map_list entry.
+type repDXMapItem struct {
+	Type   uint16
+	Count  uint32
+	Offset uint32
+}
+
+// Port source: zeros3-z3/dexz3/dex.go
+// Span is one piece of the exact partition of the file.
+type repDXSpan struct {
+	Type  uint16 // map type, TypeGap for unmapped bytes
+	Off   int64
+	Len   int64
+	Count uint32 // items the map declares (0 for gaps)
+}
+
+// Port source: zeros3-z3/dexz3/dex.go
+// File is a parsed DEX. All tables are immutable after Parse.
+type repDXFile struct {
+	Size    int64
+	Version int // 35..41
+	Hdr     repDXHeader
+	Raw     [repDXHeaderSize]byte
+	Map     []repDXMapItem
+	Spans   []repDXSpan // exact partition, file order
+	Lim     repDXLimits
+}
+
+// Port source: zeros3-z3/dexz3/dex.go
+// Section returns the span of the given map type (ok=false when absent).
+func (f *repDXFile) Section(t uint16) (repDXSpan, bool) {
+	for _, s := range f.Spans {
+		if s.Type == t {
+			return s, true
+		}
+	}
+	return repDXSpan{}, false
+}
+
+// Port source: zeros3-z3/dexz3/dex.go
+// rd is a bounded windowed reader over an io.ReaderAt.
+type repDXrd struct {
+	r    io.ReaderAt
+	size int64
+	buf  []byte
+	base int64
+}
+
+// Port source: zeros3-z3/dexz3/dex.go
+const repDXwinSize = 1 << 20
+
+// Port source: zeros3-z3/dexz3/dex.go
+func (x *repDXrd) get(off int64, n int) ([]byte, error) {
+	if off < 0 || n < 0 || off > x.size || int64(n) > x.size-off {
+		return nil, fmt.Errorf("%w: range %d+%d outside %d", repDXErrFormat, off, n, x.size)
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	if off >= x.base && off+int64(n) <= x.base+int64(len(x.buf)) {
+		return x.buf[off-x.base : off-x.base+int64(n)], nil
+	}
+	if n > repDXwinSize {
+		b := make([]byte, n)
+		if _, err := x.r.ReadAt(b, off); err != nil && !(err == io.EOF) {
+			return nil, err
+		}
+		return b, nil
+	}
+	w := int64(repDXwinSize)
+	if w > x.size-off {
+		w = x.size - off
+	}
+	if cap(x.buf) < int(w) {
+		x.buf = make([]byte, repDXwinSize)
+	}
+	x.buf = x.buf[:w]
+	if _, err := x.r.ReadAt(x.buf, off); err != nil && err != io.EOF {
+		x.buf = x.buf[:0]
+		return nil, err
+	}
+	x.base = off
+	return x.buf[:n], nil
+}
+
+// Port source: zeros3-z3/dexz3/dex.go
+func repDXle16(b []byte) uint32 { return uint32(binary.LittleEndian.Uint16(b)) }
+
+// Port source: zeros3-z3/dexz3/dex.go
+func repDXle32(b []byte) uint32 { return binary.LittleEndian.Uint32(b) }
+
+// Port source: zeros3-z3/dexz3/dex.go
+func repDXbad(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repDXErrFormat}, a...)...)
+}
+
+// Port source: zeros3-z3/dexz3/dex.go
+// fixedSize is the byte length of one entry of the fixed-size ID sections.
+func repDXfixedSize(t uint16) int64 {
+	switch t {
+	case repDXTypeStringID, repDXTypeTypeID, repDXTypeCallSiteID:
+		return 4
+	case repDXTypeProtoID:
+		return 12
+	case repDXTypeFieldID, repDXTypeMethodID, repDXTypeMethodHandle:
+		return 8
+	case repDXTypeClassDef:
+		return 32
+	}
+	return 0
+}
+
+// Port source: zeros3-z3/dexz3/dex.go
+// Parse validates header, map list and the ID tables and returns the exact partition.
+func repDXParse(r io.ReaderAt, size int64, lim repDXLimits) (*repDXFile, error) {
+	lim = lim.norm()
+	if size < repDXHeaderSize {
+		return nil, repDXbad("short file %d", size)
+	}
+	if size > lim.MaxFile || size > 1<<32-1 {
+		return nil, fmt.Errorf("%w: file %d bytes", repDXErrLimit, size)
+	}
+	x := &repDXrd{r: r, size: size}
+	hb, err := x.get(0, repDXHeaderSize)
+	if err != nil {
+		return nil, err
+	}
+	f := &repDXFile{Size: size, Lim: lim}
+	copy(f.Raw[:], hb)
+	h := &f.Hdr
+	copy(h.Magic[:], hb[0:8])
+	if string(h.Magic[:4]) != "dex\n" || h.Magic[7] != 0 {
+		return nil, repDXbad("magic % x", h.Magic[:])
+	}
+	v := 0
+	for _, c := range h.Magic[4:7] {
+		if c < '0' || c > '9' {
+			return nil, repDXbad("version % x", h.Magic[4:7])
+		}
+		v = v*10 + int(c-'0')
+	}
+	if v < 35 || v > 41 {
+		return nil, fmt.Errorf("%w: version %d", repDXErrUnsupported, v)
+	}
+	f.Version = v
+	h.Checksum = repDXle32(hb[8:])
+	copy(h.Signature[:], hb[12:32])
+	u := func(i int) uint32 { return repDXle32(hb[32+4*i:]) }
+	h.FileSize, h.HeaderSize, h.EndianTag = u(0), u(1), u(2)
+	h.LinkSize, h.LinkOff, h.MapOff = u(3), u(4), u(5)
+	h.StringIDs, h.StringIDsOff = u(6), u(7)
+	h.TypeIDs, h.TypeIDsOff = u(8), u(9)
+	h.ProtoIDs, h.ProtoIDsOff = u(10), u(11)
+	h.FieldIDs, h.FieldIDsOff = u(12), u(13)
+	h.MethodIDs, h.MethodIDsOff = u(14), u(15)
+	h.ClassDefs, h.ClassDefsOff = u(16), u(17)
+	h.DataSize, h.DataOff = u(18), u(19)
+	if int64(h.FileSize) != size {
+		return nil, repDXbad("file_size %d != %d", h.FileSize, size)
+	}
+	if h.HeaderSize != repDXHeaderSize {
+		return nil, repDXbad("header_size %d", h.HeaderSize)
+	}
+	if h.EndianTag != repDXendianTag {
+		return nil, fmt.Errorf("%w: endian_tag %#x", repDXErrUnsupported, h.EndianTag)
+	}
+	if h.LinkSize != 0 || h.LinkOff != 0 {
+		return nil, fmt.Errorf("%w: link section", repDXErrUnsupported)
+	}
+	if int64(h.DataOff) > size || int64(h.DataSize) > size-int64(h.DataOff) {
+		return nil, repDXbad("data section %d+%d", h.DataOff, h.DataSize)
+	}
+	counts := []struct {
+		n   uint32
+		max int
+		w   string
+	}{{h.StringIDs, lim.MaxStrings, "string_ids"}, {h.TypeIDs, lim.MaxIDs, "type_ids"}, {h.ProtoIDs, lim.MaxIDs, "proto_ids"},
+		{h.FieldIDs, lim.MaxIDs, "field_ids"}, {h.MethodIDs, lim.MaxIDs, "method_ids"}, {h.ClassDefs, lim.MaxIDs, "class_defs"}}
+	for _, c := range counts {
+		if int64(c.n) > int64(c.max) {
+			return nil, fmt.Errorf("%w: %s %d", repDXErrLimit, c.w, c.n)
+		}
+	}
+	// map list
+	if h.MapOff < repDXHeaderSize || h.MapOff%4 != 0 || int64(h.MapOff)+4 > size {
+		return nil, repDXbad("map_off %d", h.MapOff)
+	}
+	nb, err := x.get(int64(h.MapOff), 4)
+	if err != nil {
+		return nil, err
+	}
+	mn := int(repDXle32(nb))
+	if mn <= 0 || mn > lim.MaxMap {
+		return nil, repDXbad("map size %d", mn)
+	}
+	mb, err := x.get(int64(h.MapOff)+4, mn*12)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[uint16]bool{}
+	var prev int64 = -1
+	for i := 0; i < mn; i++ {
+		e := mb[12*i:]
+		it := repDXMapItem{Type: uint16(repDXle16(e)), Count: repDXle32(e[4:]), Offset: repDXle32(e[8:])}
+		if repDXle16(e[2:]) != 0 {
+			return nil, repDXbad("map unused field")
+		}
+		if seen[it.Type] {
+			return nil, repDXbad("duplicate map type %#x", it.Type)
+		}
+		seen[it.Type] = true
+		if int64(it.Offset) <= prev || int64(it.Offset) > size {
+			return nil, repDXbad("map offsets not increasing: %#x@%d", it.Type, it.Offset)
+		}
+		prev = int64(it.Offset)
+		f.Map = append(f.Map, it)
+	}
+	if f.Map[0].Type != repDXTypeHeader || f.Map[0].Offset != 0 || f.Map[0].Count != 1 {
+		return nil, repDXbad("map does not start with the header")
+	}
+	last := f.Map[mn-1]
+	if last.Type != repDXTypeMapList || last.Count != 1 || last.Offset != h.MapOff {
+		return nil, repDXbad("map does not end with the map list")
+	}
+	if int64(h.MapOff)+4+int64(mn)*12 > size {
+		return nil, repDXbad("map list outside file")
+	}
+	// header/ID table agreement with the map
+	agree := func(t uint16, cnt, off uint32) error {
+		for _, m := range f.Map {
+			if m.Type == t {
+				if m.Count != cnt || m.Offset != off {
+					return repDXbad("map %#x (%d@%d) vs header (%d@%d)", t, m.Count, m.Offset, cnt, off)
+				}
+				return nil
+			}
+		}
+		if cnt != 0 {
+			return repDXbad("header declares %#x (%d@%d) but the map has none", t, cnt, off)
+		}
+		return nil
+	}
+	for _, a := range []struct {
+		t        uint16
+		cnt, off uint32
+	}{{repDXTypeStringID, h.StringIDs, h.StringIDsOff}, {repDXTypeTypeID, h.TypeIDs, h.TypeIDsOff}, {repDXTypeProtoID, h.ProtoIDs, h.ProtoIDsOff},
+		{repDXTypeFieldID, h.FieldIDs, h.FieldIDsOff}, {repDXTypeMethodID, h.MethodIDs, h.MethodIDsOff}, {repDXTypeClassDef, h.ClassDefs, h.ClassDefsOff}} {
+		if err := agree(a.t, a.cnt, a.off); err != nil {
+			return nil, err
+		}
+	}
+	// exact partition: each mapped section runs to the next one; the last (map) has a known extent
+	for i, m := range f.Map {
+		end := size
+		if i+1 < len(f.Map) {
+			end = int64(f.Map[i+1].Offset)
+		}
+		off := int64(m.Offset)
+		switch {
+		case m.Type == repDXTypeHeader:
+			end = repDXHeaderSize
+			if i+1 < len(f.Map) && int64(f.Map[i+1].Offset) < repDXHeaderSize {
+				return nil, repDXbad("section inside header")
+			}
+		case m.Type == repDXTypeMapList:
+			end = off + 4 + int64(mn)*12
+		case repDXfixedSize(m.Type) > 0:
+			w := repDXfixedSize(m.Type)
+			if int64(m.Count) > (size-off)/w {
+				return nil, repDXbad("section %#x count %d overflows", m.Type, m.Count)
+			}
+			end = off + int64(m.Count)*w
+			if i+1 < len(f.Map) && end > int64(f.Map[i+1].Offset) {
+				return nil, repDXbad("section %#x overlaps the next", m.Type)
+			}
+		}
+		if end < off || end > size {
+			return nil, repDXbad("section %#x extent", m.Type)
+		}
+		if m.Count > uint32(lim.MaxItems) {
+			return nil, fmt.Errorf("%w: section %#x count %d", repDXErrLimit, m.Type, m.Count)
+		}
+		f.Spans = append(f.Spans, repDXSpan{Type: m.Type, Off: off, Len: end - off, Count: m.Count})
+	}
+	// gaps (alignment padding after fixed sections, trailing bytes) become explicit opaque spans
+	var out []repDXSpan
+	var pos int64
+	for _, s := range f.Spans {
+		if s.Off < pos {
+			return nil, repDXbad("overlapping sections at %d", s.Off)
+		}
+		if s.Off > pos {
+			out = append(out, repDXSpan{Type: repDXTypeGap, Off: pos, Len: s.Off - pos})
+		}
+		out = append(out, s)
+		pos = s.Off + s.Len
+	}
+	if pos < size {
+		out = append(out, repDXSpan{Type: repDXTypeGap, Off: pos, Len: size - pos})
+	}
+	f.Spans = out
+	// the data section must lie inside the file and contain every data item section
+	sort.SliceStable(f.Spans, func(i, j int) bool { return f.Spans[i].Off < f.Spans[j].Off })
+	return f, nil
+}
+
+// Port source: zeros3-z3/dexz3/ident.go
+// Identity is the DEX-native semantic identity of an indexed entity: a SHA-256 over a canonical
+// description built from the target's own content, never from a numeric table index.
+//
+//	string  H("S" | string_data_item bytes)                        exact MUTF-8 incl. its length prefix
+//	type    H("T" | string identity of the descriptor)
+//	proto   H("P" | return type | n | parameter types...)         shorty is derived, not identity
+//	field   H("F" | class type | field type | name string)
+//	method  H("M" | class type | proto | name string)
+type repDXIdentity = repIXIdentity
+
+// Port source: zeros3-z3/dexz3/ident.go
+func repDXhash(tag byte, parts ...[]byte) repDXIdentity { return repIXHash(tag, parts...) }
+
+// Port source: zeros3-z3/dexz3/ident.go
+// Tables holds the identity of every entry of the five index spaces.
+type repDXTables struct {
+	ID [repDXnumSpaces][]repDXIdentity
+}
+
+// Port source: zeros3-z3/dexz3/ident.go
+func (t *repDXTables) lookup(sp repDXSpace, i uint32) (repDXIdentity, error) {
+	if int(sp) >= len(t.ID) || uint64(i) >= uint64(len(t.ID[sp])) {
+		return repDXIdentity{}, repDXbad("%s index %d out of range", sp, i)
+	}
+	return t.ID[sp][i], nil
+}
+
+// Port source: zeros3-z3/dexz3/ident.go
+func (f *repDXFile) idSpan(t uint16) (repDXSpan, bool) { return f.Section(t) }
+
+// Port source: zeros3-z3/dexz3/ident.go
+func repDXidEntries(f *repDXFile, t uint16, w int64) (int64, int64) {
+	s, ok := f.idSpan(t)
+	if !ok {
+		return 0, 0
+	}
+	return s.Off, int64(s.Count)
+}
+
+// Port source: zeros3-z3/dexz3/ident.go
+// checkUnique rejects a table holding two entries with one identity.
+func repDXcheckUnique(sp repDXSpace, ids []repDXIdentity) error {
+	if err := repIXCheckUnique(sp.String(), ids); err != nil {
+		return fmt.Errorf("%w: %v", repDXErrUnsupported, err)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/dexz3/ident.go
+// idxErr maps a reference-stream error to this package's malformed-input error.
+func repDXidxErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %v", repDXErrFormat, err)
+}
+
+// Port source: zeros3-z3/dexz3/ident_at.go
+// Mechanically adapted identity functions; canonical hashes are unchanged.
+func repDXidentStringsAt(data *repDXwalkSource, f *repDXFile, w *repDXWalked) ([]repDXIdentity, error) {
+	if uint32(len(w.StrOff)) != f.Hdr.StringIDs {
+		return nil, repDXbad("string_data items %d != string_ids %d", len(w.StrOff), f.Hdr.StringIDs)
+	}
+	out := make([]repDXIdentity, len(w.StrOff))
+	for i := range out {
+		out[i] = repDXhash('S', data.span(int64(w.StrOff[i]), int64(w.StrEnd[i]-w.StrOff[i])))
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/dexz3/ident_at.go
+func repDXidentTypesAt(data *repDXwalkSource, f *repDXFile, S []repDXIdentity) ([]repDXIdentity, error) {
+	off, n := repDXidEntries(f, repDXTypeTypeID, 4)
+	out := make([]repDXIdentity, n)
+	for i := int64(0); i < n; i++ {
+		v := repDXle32(data.span(off+4*i, 4))
+		if uint64(v) >= uint64(len(S)) {
+			return nil, repDXbad("type %d descriptor %d out of range", i, v)
+		}
+		out[i] = repDXhash('T', S[v][:])
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/dexz3/ident_at.go
+// typeListIdent returns the parameter identities of the type_list at off (0 = empty).
+// Prototype descriptions are hashed directly; a shared long parameter list
+// never allocates a slice of identity slices, nor bypasses the aggregate budget.
+func repDXidentProtosAt(data *repDXwalkSource, f *repDXFile, T []repDXIdentity) ([]repDXIdentity, error) {
+	params := &repDXwalkSource{r: data.r, size: data.size, lo: -1}
+	off, n := repDXidEntries(f, repDXTypeProtoID, 12)
+	out := make([]repDXIdentity, n)
+	for i := int64(0); i < n; i++ {
+		e := data.span(off+12*i, 12)
+		ret, list := repDXle32(e[4:]), repDXle32(e[8:])
+		if data.err != nil {
+			return nil, data.err
+		}
+		if uint64(ret) >= uint64(len(T)) {
+			return nil, repDXbad("proto %d return type %d", i, ret)
+		}
+		count := uint32(0)
+		if list != 0 {
+			if uint64(list)+4 > uint64(data.size) {
+				return nil, repDXbad("type_list offset %d", list)
+			}
+			count = repDXle32(params.span(int64(list), 4))
+			if params.err != nil {
+				return nil, params.err
+			}
+			if uint64(count)*2 > uint64(data.size)-uint64(list)-4 {
+				return nil, repDXbad("type_list size %d", count)
+			}
+		}
+		cost := int64(count)*32 + 37
+		if cost > data.size*16+(64<<20)-data.identityWork {
+			return nil, fmt.Errorf("%w: aggregate prototype identity bytes", repDXErrLimit)
+		}
+		data.identityWork += cost
+		h := sha256.New()
+		h.Write([]byte{'P'})
+		h.Write(T[ret][:])
+		var length [4]byte
+		binary.LittleEndian.PutUint32(length[:], count)
+		h.Write(length[:])
+		for j := uint32(0); j < count; j++ {
+			v := repDXle16(params.span(int64(list)+4+2*int64(j), 2))
+			if params.err != nil {
+				return nil, params.err
+			}
+			if uint64(v) >= uint64(len(T)) {
+				return nil, repDXbad("type_list entry %d out of range", v)
+			}
+			h.Write(T[v][:])
+		}
+		h.Sum(out[i][:0])
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/dexz3/ident_at.go
+func repDXidentFieldsAt(data *repDXwalkSource, f *repDXFile, T, S []repDXIdentity) ([]repDXIdentity, error) {
+	off, n := repDXidEntries(f, repDXTypeFieldID, 8)
+	out := make([]repDXIdentity, n)
+	for i := int64(0); i < n; i++ {
+		e := data.span(off+8*i, 8)
+		c, ty, nm := repDXle16(e), repDXle16(e[2:]), repDXle32(e[4:])
+		if uint64(c) >= uint64(len(T)) || uint64(ty) >= uint64(len(T)) || uint64(nm) >= uint64(len(S)) {
+			return nil, repDXbad("field %d references out of range", i)
+		}
+		out[i] = repDXhash('F', T[c][:], T[ty][:], S[nm][:])
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/dexz3/ident_at.go
+func repDXidentMethodsAt(data *repDXwalkSource, f *repDXFile, T, P, S []repDXIdentity) ([]repDXIdentity, error) {
+	off, n := repDXidEntries(f, repDXTypeMethodID, 8)
+	out := make([]repDXIdentity, n)
+	for i := int64(0); i < n; i++ {
+		e := data.span(off+8*i, 8)
+		c, pr, nm := repDXle16(e), repDXle16(e[2:]), repDXle32(e[4:])
+		if uint64(c) >= uint64(len(T)) || uint64(pr) >= uint64(len(P)) || uint64(nm) >= uint64(len(S)) {
+			return nil, repDXbad("method %d references out of range", i)
+		}
+		out[i] = repDXhash('M', T[c][:], P[pr][:], S[nm][:])
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/dexz3/insn.go
+// Dalvik instruction widths and index-bearing operands (the finite table for DEX 035-041).
+// width is in 16-bit code units; 0 marks an opcode that is not valid in a DEX file.
+type repDXopInfo struct {
+	width uint8
+	space [2]repDXSpace // index space of the (up to) two operands
+	pos   [2]uint8      // code-unit position of each operand
+	wide  bool          // first operand is 32 bits (const-string/jumbo)
+}
+
+// Port source: zeros3-z3/dexz3/insn.go
+var repDXops [256]repDXopInfo
+
+// Port source: zeros3-z3/dexz3/insn.go
+func init() {
+	set := func(lo, hi int, w uint8) {
+		for i := lo; i <= hi; i++ {
+			repDXops[i].width = w
+		}
+	}
+	ref := func(lo, hi int, w uint8, sp repDXSpace) {
+		for i := lo; i <= hi; i++ {
+			repDXops[i] = repDXopInfo{width: w, space: [2]repDXSpace{sp, repDXSpNone}, pos: [2]uint8{1, 0}}
+		}
+	}
+	set(0x00, 0x00, 1) // nop (payload pseudo-instructions are recognised by the walker)
+	set(0x01, 0x01, 1)
+	set(0x02, 0x02, 2)
+	set(0x03, 0x03, 3)
+	set(0x04, 0x04, 1)
+	set(0x05, 0x05, 2)
+	set(0x06, 0x06, 3)
+	set(0x07, 0x07, 1)
+	set(0x08, 0x08, 2)
+	set(0x09, 0x09, 3)
+	set(0x0a, 0x11, 1) // move-result*, move-exception, return*
+	set(0x12, 0x12, 1) // const/4
+	set(0x13, 0x13, 2) // const/16
+	set(0x14, 0x14, 3) // const
+	set(0x15, 0x16, 2) // const/high16, const-wide/16
+	set(0x17, 0x17, 3) // const-wide/32
+	set(0x18, 0x18, 5) // const-wide
+	set(0x19, 0x19, 2) // const-wide/high16
+	ref(0x1a, 0x1a, 2, repDXSpString)
+	ref(0x1b, 0x1b, 3, repDXSpString)
+	repDXops[0x1b].wide = true
+	ref(0x1c, 0x1c, 2, repDXSpType) // const-class
+	set(0x1d, 0x1e, 1)              // monitor-*
+	ref(0x1f, 0x20, 2, repDXSpType) // check-cast, instance-of
+	set(0x21, 0x21, 1)              // array-length
+	ref(0x22, 0x23, 2, repDXSpType) // new-instance, new-array
+	ref(0x24, 0x25, 3, repDXSpType) // filled-new-array(/range)
+	set(0x26, 0x26, 3)              // fill-array-data
+	set(0x27, 0x27, 1)              // throw
+	set(0x28, 0x28, 1)              // goto
+	set(0x29, 0x29, 2)              // goto/16
+	set(0x2a, 0x2a, 3)              // goto/32
+	set(0x2b, 0x2c, 3)              // packed-switch, sparse-switch
+	set(0x2d, 0x31, 2)              // cmp*
+	set(0x32, 0x3d, 2)              // if-*, if-*z
+	set(0x44, 0x51, 2)              // aget/aput
+	ref(0x52, 0x5f, 2, repDXSpField)
+	ref(0x60, 0x6d, 2, repDXSpField)
+	ref(0x6e, 0x72, 3, repDXSpMethod)
+	ref(0x74, 0x78, 3, repDXSpMethod)
+	set(0x7b, 0x8f, 1)
+	set(0x90, 0xaf, 2)
+	set(0xb0, 0xcf, 1)
+	set(0xd0, 0xe2, 2)
+	repDXops[0xfa] = repDXopInfo{width: 4, space: [2]repDXSpace{repDXSpMethod, repDXSpProto}, pos: [2]uint8{1, 3}}
+	repDXops[0xfb] = repDXopInfo{width: 4, space: [2]repDXSpace{repDXSpMethod, repDXSpProto}, pos: [2]uint8{1, 3}}
+	// invoke-custom, const-method-handle: call-site / method-handle tables are not modelled -> operands stay raw
+	set(0xfc, 0xfd, 3)
+	set(0xfe, 0xfe, 2)
+	ref(0xff, 0xff, 2, repDXSpProto) // const-method-type
+}
+
+// Port source: zeros3-z3/dexz3/insn.go
+// payload pseudo-instruction identifiers (first code unit of a nop-prefixed payload)
+const (
+	repDXpayloadPacked = 0x0100
+	repDXpayloadSparse = 0x0200
+	repDXpayloadArray  = 0x0300
+)
+
+// Port source: zeros3-z3/dexz3/insn.go
+// WalkInsns calls fn(unitIndex, space, width32) for every index-bearing operand of an instruction
+// stream (units are the little-endian 16-bit code units). Malformed streams return ErrFormat.
+func repDXwalkInsns(code []byte, n int, fn func(unit int, sp repDXSpace, wide bool) error) error {
+	if len(code) < 2*n {
+		return repDXbad("insns truncated")
+	}
+	u16 := func(i int) uint32 { return repDXle16(code[2*i:]) }
+	for i := 0; i < n; {
+		w := u16(i)
+		op := int(w & 0xff)
+		if op == 0 && w != 0 { // pseudo payload
+			var units uint64
+			switch w {
+			case repDXpayloadPacked:
+				if i+2 > n {
+					return repDXbad("payload truncated")
+				}
+				units = uint64(u16(i+1))*2 + 4
+			case repDXpayloadSparse:
+				if i+2 > n {
+					return repDXbad("payload truncated")
+				}
+				units = uint64(u16(i+1))*4 + 2
+			case repDXpayloadArray:
+				if i+4 > n {
+					return repDXbad("payload truncated")
+				}
+				ew, sz := uint64(u16(i+1)), uint64(u16(i+2))|uint64(u16(i+3))<<16
+				units = (sz*ew+1)/2 + 4
+				if ew > 8 {
+					return repDXbad("array payload element width %d", ew)
+				}
+			default:
+				return repDXbad("unknown pseudo-instruction %#x", w)
+			}
+			if units > uint64(n-i) {
+				return repDXbad("payload overruns")
+			}
+			i += int(units)
+			continue
+		}
+		oi := &repDXops[op]
+		if oi.width == 0 {
+			return repDXbad("invalid opcode %#x", op)
+		}
+		if i+int(oi.width) > n {
+			return repDXbad("instruction overruns")
+		}
+		for k := 0; k < 2; k++ {
+			if oi.space[k] != repDXSpNone {
+				if err := fn(i+int(oi.pos[k]), oi.space[k], oi.wide && k == 0); err != nil {
+					return err
+				}
+			}
+		}
+		i += int(oi.width)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/dexz3/mask.go
+// MaskSlot overwrites a slot's bytes with the canonical mask for its encoding, preserving the
+// byte length so that the surrounding structure still parses. The mask never collides with the
+// "absent" encodings (offset 0, ULEB128p1 0, NO_INDEX) so a decoder can find the slot again.
+func repDXMaskSlot(b []byte, s *repDXSlot) {
+	p := b[s.Off : s.Off+int64(s.Len)]
+	switch s.Enc {
+	case repDXEncU16, repDXEncU32, repDXEncVal:
+		for i := range p {
+			p[i] = 0
+		}
+		if s.Space == repDXSpOffset && s.Enc == repDXEncU32 {
+			p[0] = 1
+		}
+	case repDXEncULEB, repDXEncDelta, repDXEncP1:
+		for i := range p {
+			p[i] = 0x80
+		}
+		p[len(p)-1] = 0
+		if s.Enc == repDXEncP1 || s.Space == repDXSpOffset { // "present" slots decode as the value 1, in the same length
+			p[0] |= 1
+		}
+	}
+}
+
+// Port source: zeros3-z3/dexz3/offset_at.go
+type repDXstreamOffCoder struct {
+	kinds [repDXnumOffKinds]*repDXstreamOffKind
+}
+
+// Port source: zeros3-z3/dexz3/offset_at.go
+type repDXstreamOffKind struct {
+	list    []int64
+	seen    []uint64
+	prevNew int
+	cls     *repIXClassIndex
+}
+
+// Port source: zeros3-z3/dexz3/offset_at.go
+// Mechanically adapted offset identities; one scratch window replaces masked whole bytes.
+func repDXnewOffCoderAt(f *repDXFile, w *repDXWalked, masked io.ReaderAt, k0 int) (*repDXstreamOffCoder, error) {
+	scratch := make([]byte, 64<<10)
+	oc := &repDXstreamOffCoder{}
+	type tab struct {
+		list []int64
+		cls  *repIXClassIndex
+	}
+	byType := map[uint16]*tab{}
+	for k := repDXOffKind(1); k < repDXnumOffKinds; k++ {
+		t := repDXOffTarget[k]
+		tb := byType[t]
+		if tb == nil {
+			tb = &tab{}
+			var end []int64
+			for _, it := range w.Items {
+				if it.Type == t {
+					tb.list = append(tb.list, it.Off)
+					end = append(end, it.Off+it.Len)
+				}
+			}
+			if t == repDXTypeStringData {
+				for i, o := range w.StrOff {
+					tb.list = append(tb.list, int64(o))
+					end = append(end, int64(w.StrEnd[i]))
+				}
+			}
+			if !sort.SliceIsSorted(tb.list, func(i, j int) bool { return tb.list[i] < tb.list[j] }) {
+				return nil, repDXbad("offset items not sorted")
+			}
+			hs := make([]int, len(tb.list))
+			ids := make([]repDXIdentity, len(tb.list))
+			for i, o := range tb.list {
+
+				hs[i] = i
+				h := sha256.New()
+				h.Write([]byte{'O', byte(t), byte(t >> 8)})
+				if _, err := io.CopyBuffer(h, io.NewSectionReader(masked, o, end[i]-o), scratch); err != nil {
+					return nil, err
+				}
+				h.Sum(ids[i][:0])
+			}
+			tb.cls = repIXNewClassIndex(hs, ids, k0)
+			byType[t] = tb
+		}
+		oc.kinds[k] = &repDXstreamOffKind{list: tb.list, seen: make([]uint64, (len(tb.list)+63)/64), prevNew: -1, cls: tb.cls}
+	}
+	return oc, nil
+}
+
+// Port source: zeros3-z3/dexz3/offset_at.go
+func (oc *repDXstreamOffCoder) put(kind repDXOffKind, pos int64) ([]byte, error) {
+	ko := oc.kinds[kind]
+	o := sort.Search(len(ko.list), func(i int) bool { return ko.list[i] >= pos })
+	ok := o < len(ko.list) && ko.list[o] == pos
+	if !ok {
+		return nil, repDXbad("offset %d is not the start of a %#x item", pos, repDXOffTarget[kind])
+	}
+	if ko.seen[o/64]&(1<<uint(o%64)) == 0 {
+		ko.seen[o/64] |= 1 << uint(o%64)
+		d := o - ko.prevNew
+		ko.prevNew = o
+		return binary.AppendUvarint(nil, repIXZigzag(int64(d))<<1), nil
+	}
+	return ko.cls.Put(binary.AppendUvarint(nil, 1), o)
+}
+
+// Port source: zeros3-z3/dexz3/offset_at.go
+// Mechanically reused decoder symbols with compact seen bits.
+func (oc *repDXstreamOffCoder) get(kind repDXOffKind, b []byte) (int64, []byte, error) {
+	ko := oc.kinds[kind]
+	u, k := binary.Uvarint(b)
+	if k <= 0 {
+		return 0, nil, repDXbad("offset stream truncated")
+	}
+	b = b[k:]
+	var o int
+	if u&1 == 0 {
+		o = ko.prevNew + int(repIXUnzigzag(u>>1))
+		if o < 0 || o >= len(ko.list) {
+			return 0, nil, repDXbad("offset ordinal %d outside %d items", o, len(ko.list))
+		}
+		ko.prevNew = o
+		ko.seen[o/64] |= 1 << uint(o%64)
+	} else {
+		if u != 1 || ko.cls == nil {
+			return 0, nil, repDXbad("offset stream symbol")
+		}
+		h, rest, err := ko.cls.Get(b)
+		if err != nil {
+			return 0, nil, repDXidxErr(err)
+		}
+		b, o = rest, h
+	}
+	return ko.list[o], b, nil
+}
+
+// Port source: zeros3-z3/dexz3/rep.go
+const (
+	repDXrepMagic  = "DXN1"
+	repDXnumStream = 6 // string, type, proto, field, method, offset
+	repDXstreamOff = 5
+	repDXflagAdler = 1 // the original header checksum was valid and is re-verified by Decode
+)
+
+// Port source: zeros3-z3/dexz3/rep.go
+// Stats are the encoder-side measurements of one representation.
+type repDXStats struct {
+	Slots      [repDXnumSpaces]int // slots per space (offset = SpOffset)
+	StreamLen  [repDXnumStream]int // total reference bytes per stream
+	Collisions [repDXnumSpaces]int // table entries whose K0 prefix is shared
+	Payload    int
+	Comps      int
+}
+
+// Port source: zeros3-z3/dexz3/rep.go
+// Rep is an encoded DEX.
+type repDXRep struct {
+	Meta  []byte
+	Comps [][]byte
+	Stats repDXStats
+	Cuts  []int         // payload offset where each component ends (analysis)
+	Secs  []repDXSec    // sections in payload coordinates (analysis)
+	Refs  []repIXRefRec // every emitted reference (analysis: Z3-33 repeated-reference coders)
+}
+
+// Port source: zeros3-z3/dexz3/rep.go
+// spaceK0 is the prefix length of an index space with n entries.
+func repDXspaceK0(k0, auto, n int) int {
+	if auto > 0 {
+		return repIXAutoK0(n, auto)
+	}
+	return k0
+}
+
+// Port source: zeros3-z3/dexz3/rep.go
+func repDXspaceOf(s repDXSpace) int { return int(s) - 1 }
+
+// Port source: zeros3-z3/dexz3/rep.go
+func (f *repDXFile) mapSpan() (int64, int64) {
+	return int64(f.Hdr.MapOff), 4 + 12*int64(len(f.Map))
+}
+
+// Port source: zeros3-z3/dexz3/rep.go
+// SplitComp splits one component into its payload and reference streams.
+func repDXSplitComp(c []byte) (payload []byte, streams [repDXnumStream][]byte, err error) {
+	p, ss, err := repIXSplitComp(c, repDXnumStream)
+	if err != nil {
+		return nil, streams, repDXidxErr(err)
+	}
+	copy(streams[:], ss)
+	return p, streams, nil
+}
+
+// Port source: zeros3-z3/dexz3/rep.go
+// Decode rebuilds the DEX from Meta and the component bytes (in order). Every length it allocates
+// from is bounded by the component bytes it was handed.
+func repDXDecode(meta []byte, comps [][]byte) ([]byte, error) {
+	return repDXDecodeFrom(meta, len(comps), func(i int) ([]byte, error) { return comps[i], nil })
+}
+
+// Port source: zeros3-z3/dexz3/rep.go
+// DecodeFrom consumes groups without retaining a complete input-component set.
+func repDXDecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]byte, error) {
+	if len(meta) > 16<<20 || count < 0 || count > 1<<16 || get == nil {
+		return nil, fmt.Errorf("%w: representation metadata/groups", repDXErrLimit)
+	}
+	if len(meta) < len(repDXrepMagic)+2+repDXHeaderSize || string(meta[:4]) != repDXrepMagic {
+		return nil, repDXbad("representation header")
+	}
+	flags, k0, auto := meta[4], int(meta[5]), 0
+	if k0&0x80 != 0 {
+		auto, k0 = k0&0x7f, 3
+	}
+	if k0 < 1 || k0 > 4 || auto > 100 {
+		return nil, repDXbad("K0 %d", k0)
+	}
+	var raw [repDXHeaderSize]byte
+	copy(raw[:], meta[6:6+repDXHeaderSize])
+	mapb := meta[6+repDXHeaderSize:]
+	size := int64(repDXle32(raw[32:]))
+	if size > 32<<20 {
+		return nil, fmt.Errorf("%w: output size", repDXErrLimit)
+	}
+	mOff := int64(repDXle32(raw[52:]))
+	if size < repDXHeaderSize+int64(len(mapb)) || mOff < repDXHeaderSize || mOff+int64(len(mapb)) > size || len(mapb) < 16 {
+		return nil, repDXbad("header/map geometry")
+	}
+	// the components must account for every byte of the file before anything is allocated
+	var expectedStreams [repDXnumStream]int
+	var checkedPayload, checkedBytes int64
+	for i := 0; i < count; i++ {
+		component, err := get(i)
+		if err != nil {
+			return nil, err
+		}
+		if len(component) > 16<<20 || int64(len(component)) > (128<<20)-checkedBytes {
+			return nil, fmt.Errorf("%w: component bytes", repDXErrLimit)
+		}
+		checkedBytes += int64(len(component))
+		payload, streams, err := repDXSplitComp(component)
+		if err != nil {
+			return nil, err
+		}
+		checkedPayload += int64(len(payload))
+		for k, b := range streams {
+			expectedStreams[k] += len(b)
+		}
+	}
+	if checkedPayload != size-repDXHeaderSize-int64(len(mapb)) {
+		return nil, repDXbad("payload is %d bytes, the header describes %d", checkedPayload, size-repDXHeaderSize-int64(len(mapb)))
+	}
+	buf := make([]byte, size)
+	copy(buf, raw[:])
+	copy(buf[mOff:], mapb)
+	var streams [repDXnumStream][]byte
+	for k, n := range expectedStreams {
+		streams[k] = make([]byte, 0, n)
+	}
+	pos := int64(repDXHeaderSize)
+	var plen, totalComp int64
+	for i := 0; i < count; i++ {
+		component, err := get(i)
+		if err != nil {
+			return nil, err
+		}
+		if len(component) > 16<<20 || int64(len(component)) > (128<<20)-totalComp {
+			return nil, fmt.Errorf("%w: component bytes", repDXErrLimit)
+		}
+		totalComp += int64(len(component))
+		p, ss, err := repDXSplitComp(component)
+		if err != nil {
+			return nil, err
+		}
+		plen += int64(len(p))
+		if plen > size-repDXHeaderSize-int64(len(mapb)) {
+			return nil, repDXbad("excess component payload")
+		}
+		for b := p; len(b) > 0; {
+			if pos == mOff {
+				pos += int64(len(mapb))
+			}
+			lim := size
+			if pos < mOff {
+				lim = mOff
+			}
+			n := copy(buf[pos:lim], b)
+			pos += int64(n)
+			b = b[n:]
+		}
+		for k := range ss {
+			if len(ss[k]) > expectedStreams[k]-len(streams[k]) {
+				return nil, repDXbad("component streams changed")
+			}
+			streams[k] = append(streams[k], ss[k]...)
+		}
+	}
+	if plen != size-repDXHeaderSize-int64(len(mapb)) {
+		return nil, repDXbad("payload is %d bytes, the header describes %d", plen, size-repDXHeaderSize-int64(len(mapb)))
+	}
+	for k, n := range expectedStreams {
+		if len(streams[k]) != n {
+			return nil, repDXbad("component streams changed")
+		}
+	}
+	f, err := repDXParse(bytes.NewReader(buf), size, repDXLimits{})
+	if err != nil {
+		return nil, err
+	}
+	if err := repDXmanagedGeometry(f); err != nil {
+		return nil, err
+	}
+	f.Lim.MaxSlots = 4 << 20
+	slotCount := 0
+	w, err := repDXWalkAtVisit(f, bytes.NewReader(buf), repDXWalkOpts{Masked: true, Offsets: true, Debug: true}, func(repDXSlot) error { slotCount++; return nil })
+	if err != nil {
+		return nil, err
+	}
+	slots := make([]repDXSlot, 0, slotCount)
+	if _, err := repDXwalkAtVisit(f, bytes.NewReader(buf), repDXWalkOpts{Masked: true, Offsets: true, Debug: true}, func(s repDXSlot) error { slots = append(slots, s); return nil }, false); err != nil {
+		return nil, err
+	}
+	w.Slots = slots
+	// Offset identities are computed before restoration, over the immutable masked view.
+	oc, err := repDXnewOffCoderAt(f, w, bytes.NewReader(buf), k0)
+	if err != nil {
+		return nil, err
+	}
+	osr := streams[repDXstreamOff]
+	for i := range w.Slots {
+		s := &w.Slots[i]
+		if s.Space != repDXSpOffset {
+			continue
+		}
+		var pos int64
+		var err error
+		if pos, osr, err = oc.get(s.Kind, osr); err != nil {
+			return nil, err
+		}
+		s.Val = uint32(pos)
+		if err := repDXputSlot(buf, s, s.Val); err != nil {
+			return nil, err
+		}
+	}
+	if len(osr) != 0 {
+		return nil, repDXbad("trailing offset bytes")
+	}
+	// 2. index spaces in dependency order
+	var tb repDXTables
+	var pi [repDXnumSpaces]*repIXPrefixIndex
+	var sr [repDXnumStream][]byte
+	copy(sr[:], streams[:])
+	resolve := func(sp repDXSpace) error {
+		pi[sp] = repIXNewPrefixIndex(tb.ID[sp], repDXspaceK0(k0, auto, len(tb.ID[sp])))
+		b := sr[repDXspaceOf(sp)]
+		for i := range w.Slots {
+			s := &w.Slots[i]
+			if s.Space != sp {
+				continue
+			}
+			v, rest, err := pi[sp].Get(b)
+			if err != nil {
+				return repDXidxErr(err)
+			}
+			b = rest
+			s.Val = v
+			if s.Enc != repDXEncDelta {
+				if err := repDXputSlot(buf, s, v); err != nil {
+					return err
+				}
+			}
+		}
+		if len(b) != 0 {
+			return repDXbad("trailing %s reference bytes", sp)
+		}
+		return nil
+	}
+	if tb.ID[repDXSpString], err = repDXidentStringsAt(&repDXwalkSource{r: bytes.NewReader(buf), size: size, lo: -1}, f, w); err != nil {
+		return nil, err
+	}
+	if err := resolve(repDXSpString); err != nil {
+		return nil, err
+	}
+	if tb.ID[repDXSpType], err = repDXidentTypesAt(&repDXwalkSource{r: bytes.NewReader(buf), size: size, lo: -1}, f, tb.ID[repDXSpString]); err != nil {
+		return nil, err
+	}
+	if err := resolve(repDXSpType); err != nil {
+		return nil, err
+	}
+	if tb.ID[repDXSpProto], err = repDXidentProtosAt(&repDXwalkSource{r: bytes.NewReader(buf), size: size, lo: -1}, f, tb.ID[repDXSpType]); err != nil {
+		return nil, err
+	}
+	if err := resolve(repDXSpProto); err != nil {
+		return nil, err
+	}
+	if tb.ID[repDXSpField], err = repDXidentFieldsAt(&repDXwalkSource{r: bytes.NewReader(buf), size: size, lo: -1}, f, tb.ID[repDXSpType], tb.ID[repDXSpString]); err != nil {
+		return nil, err
+	}
+	if tb.ID[repDXSpMethod], err = repDXidentMethodsAt(&repDXwalkSource{r: bytes.NewReader(buf), size: size, lo: -1}, f, tb.ID[repDXSpType], tb.ID[repDXSpProto], tb.ID[repDXSpString]); err != nil {
+		return nil, err
+	}
+	if err := resolve(repDXSpField); err != nil {
+		return nil, err
+	}
+	if err := resolve(repDXSpMethod); err != nil {
+		return nil, err
+	}
+	// 3. delta-coded members
+	for i := range w.Slots {
+		s := &w.Slots[i]
+		if s.Enc != repDXEncDelta {
+			continue
+		}
+		var prev uint32
+		if s.Prev >= 0 {
+			prev = w.Slots[s.Prev].Val
+			if s.Val <= prev {
+				return nil, repDXbad("class_data members not increasing")
+			}
+		}
+		if err := repDXputSlot(buf, s, s.Val-prev); err != nil {
+			return nil, err
+		}
+	}
+	if flags&repDXflagAdler != 0 && adler32.Checksum(buf[12:]) != repDXle32(buf[8:]) {
+		return nil, repDXbad("header checksum does not match the rebuilt file")
+	}
+	return buf, nil
+}
+
+// Port source: zeros3-z3/dexz3/rep.go
+// putSlot writes value v into the slot's bytes using the slot's own length.
+func repDXputSlot(b []byte, s *repDXSlot, v uint32) error {
+	p := b[s.Off : s.Off+int64(s.Len)]
+	switch s.Enc {
+	case repDXEncU16:
+		if v > 0xFFFF {
+			return repDXbad("value %d does not fit 16 bits", v)
+		}
+		binary.LittleEndian.PutUint16(p, uint16(v))
+	case repDXEncU32:
+		binary.LittleEndian.PutUint32(p, v)
+	case repDXEncVal:
+		if len(p) < 4 && v>>(8*uint(len(p))) != 0 {
+			return repDXbad("value %d does not fit %d bytes", v, len(p))
+		}
+		for i := range p {
+			p[i] = byte(v >> (8 * uint(i)))
+		}
+	case repDXEncP1, repDXEncULEB, repDXEncDelta:
+		if s.Enc == repDXEncP1 {
+			if v == repDXNoIndex {
+				return repDXbad("index overflow")
+			}
+			v++
+		}
+		n := len(p)
+		if n < 5 && uint64(v)>>(7*uint(n)) != 0 {
+			return repDXbad("value %d does not fit ULEB128 of %d bytes", v, n)
+		}
+		for i := 0; i < n; i++ {
+			c := byte(v>>(7*uint(i))) & 0x7f
+			if i < n-1 {
+				c |= 0x80
+			}
+			p[i] = c
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/dexz3/rep.go
+// Sec is one section of the file (or of the payload) with its record boundaries; see idxref.Sec.
+type repDXSec = repIXSec
+
+// Port source: zeros3-z3/dexz3/rep.go
+// Sections lists the spans of the file with their item boundaries. With payload set, coordinates
+// are those of the payload (file without header and map list) and those two spans are omitted.
+func (f *repDXFile) Sections(w *repDXWalked, payload bool) []repDXSec {
+	mOff, mLen := f.mapSpan()
+	conv := func(o int64) int {
+		if !payload {
+			return int(o)
+		}
+		o -= repDXHeaderSize
+		if o+repDXHeaderSize >= mOff+mLen {
+			o -= mLen
+		}
+		return int(o)
+	}
+	items := map[uint16][]int{}
+	for _, it := range w.Items {
+		items[it.Type] = append(items[it.Type], conv(it.Off))
+	}
+	for _, o := range w.StrOff {
+		items[repDXTypeStringData] = append(items[repDXTypeStringData], conv(int64(o)))
+	}
+	var out []repDXSec
+	for _, sp := range f.Spans {
+		if sp.Len == 0 || payload && (sp.Type == repDXTypeHeader || sp.Type == repDXTypeMapList) {
+			continue
+		}
+		sc := repDXSec{Type: sp.Type, Off: conv(sp.Off), End: conv(sp.Off+sp.Len-1) + 1, Items: items[sp.Type]}
+		if rw := repDXfixedSize(sp.Type); rw > 0 && sp.Type != repDXTypeMapList {
+			sc.Items = nil
+			for o := int64(0); o < sp.Len; o += rw {
+				sc.Items = append(sc.Items, conv(sp.Off+o))
+			}
+		}
+		out = append(out, sc)
+	}
+	return out
+}
+
+// Port source: zeros3-z3/dexz3/source.go
+// walkSource retains one 64 KiB window. Larger individual instruction arrays are
+// bounded by the existing MaxCodeUnit parser limit and released by the caller.
+// A read failure is latched and returned by WalkAt; zero padding never authorizes output.
+type repDXwalkSource struct {
+	identityWork int64
+	r            io.ReaderAt
+	size         int64
+	lo           int64
+	buf          []byte
+	err          error
+}
+
+// Port source: zeros3-z3/dexz3/source.go
+func (s *repDXwalkSource) span(off, n int64) []byte {
+	if n < 0 || n > 2<<20 || off < 0 || off > s.size || n > s.size-off {
+		if s.err == nil {
+			s.err = fmt.Errorf("%w: source span %d+%d", repDXErrLimit, off, n)
+		}
+		// Parser call sites request fixed-width values or already-bounded instructions.
+		// Invalid sizes cannot reach a slicing caller through the checked walker.
+		return make([]byte, 4)
+	}
+	if n == 0 {
+		return nil
+	}
+	if off >= s.lo && off+n <= s.lo+int64(len(s.buf)) {
+		return s.buf[off-s.lo : off-s.lo+n]
+	}
+	if n > 64<<10 {
+		b := make([]byte, n)
+		s.read(b, off)
+		return b
+	}
+	lo := off &^ int64((64<<10)-1)
+	size := int64(64 << 10)
+	if size > s.size-lo {
+		size = s.size - lo
+	}
+	if off+n > lo+size {
+		lo = off
+		size = int64(64 << 10)
+		if size > s.size-lo {
+			size = s.size - lo
+		}
+	}
+	if cap(s.buf) < int(size) {
+		s.buf = make([]byte, size)
+	} else {
+		s.buf = s.buf[:size]
+	}
+	s.lo = lo
+	s.read(s.buf, lo)
+	return s.buf[off-lo : off-lo+n]
+}
+
+// Port source: zeros3-z3/dexz3/source.go
+func (s *repDXwalkSource) read(b []byte, off int64) {
+	n, err := s.r.ReadAt(b, off)
+	if n != len(b) || err != nil && err != io.EOF {
+		clear(b[n:])
+		if s.err == nil {
+			s.err = fmt.Errorf("dexz3: source read at %d: %w", off, io.ErrUnexpectedEOF)
+			if err != nil {
+				s.err = fmt.Errorf("dexz3: source read at %d: %w", off, err)
+			}
+		}
+	}
+}
+
+// Port source: zeros3-z3/dexz3/stream.go
+// StreamConfig keeps the existing identity/cutter parameters. Emit must copy or
+// persist each component synchronously; no root may be published before full proof.
+type repDXStreamConfig struct {
+	K0, Auto int
+	TempDir  string
+	Observe  func(string)
+	Cut      func(io.ReaderAt, []repDXSec) ([]int, error)
+	Emit     func([]byte) error
+}
+
+// Port source: zeros3-z3/dexz3/stream.go
+// EncodeAt stages reference bytes on disk and emits bounded components. It does
+// not retain input bytes, masked copies, reference slices, or output components.
+func repDXEncodeAt(f *repDXFile, r io.ReaderAt, cfg repDXStreamConfig) (*repDXRep, error) {
+	if err := repDXmanagedGeometry(f); err != nil {
+		return nil, err
+	}
+	data := &repDXwalkSource{r: r, size: f.Size, lo: -1}
+	if cfg.Emit == nil {
+		return nil, repDXbad("missing component sink")
+	}
+	spool, err := repIXNewRefSpool(cfg.TempDir, 256<<20)
+	if err != nil {
+		return nil, err
+	}
+	defer spool.Close()
+	scratch := make([]byte, 64<<10)
+
+	k0 := cfg.K0
+	if k0 == 0 {
+		k0 = 3
+	}
+	if k0 < 1 || k0 > 4 {
+		return nil, fmt.Errorf("dexz3: K0 %d", k0)
+	}
+	if cfg.Auto < 0 || cfg.Auto > 100 || cfg.Auto > 0 && k0 != 3 {
+		return nil, fmt.Errorf("%w: noncanonical automatic-prefix parameters", repDXErrUnsupported)
+	}
+	slotCount := 0
+	w, err := repDXWalkAtVisit(f, r, repDXWalkOpts{Offsets: true, Debug: true}, func(repDXSlot) error {
+		slotCount++
+		if slotCount > 4<<20 {
+			return fmt.Errorf("%w: patch count", repDXErrLimit)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("walk")
+	}
+	// identities from the original
+	var tb repDXTables
+	if tb.ID[repDXSpString], err = repDXidentStringsAt(data, f, w); err != nil {
+		return nil, err
+	}
+	if tb.ID[repDXSpType], err = repDXidentTypesAt(data, f, tb.ID[repDXSpString]); err != nil {
+		return nil, err
+	}
+	if tb.ID[repDXSpProto], err = repDXidentProtosAt(data, f, tb.ID[repDXSpType]); err != nil {
+		return nil, err
+	}
+	if tb.ID[repDXSpField], err = repDXidentFieldsAt(data, f, tb.ID[repDXSpType], tb.ID[repDXSpString]); err != nil {
+		return nil, err
+	}
+	if tb.ID[repDXSpMethod], err = repDXidentMethodsAt(data, f, tb.ID[repDXSpType], tb.ID[repDXSpProto], tb.ID[repDXSpString]); err != nil {
+		return nil, err
+	}
+	for sp := repDXSpString; sp <= repDXSpMethod; sp++ {
+		if err := repDXcheckUnique(sp, tb.ID[sp]); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("identities")
+	}
+	var pi [repDXnumSpaces]*repIXPrefixIndex
+	var st repDXStats
+	for sp := repDXSpString; sp <= repDXSpMethod; sp++ {
+		pi[sp] = repIXNewPrefixIndex(tb.ID[sp], repDXspaceK0(k0, cfg.Auto, len(tb.ID[sp])))
+		st.Collisions[sp] = pi[sp].Collisions()
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("prefixes")
+	}
+	// masked payload and per-slot reference bytes
+	mOff, mLen := f.mapSpan()
+	patches := make([]repIXPatch, slotCount)
+	patchIndex := 0
+	if _, err := repDXwalkAtVisit(f, r, repDXWalkOpts{Offsets: true, Debug: true}, func(s repDXSlot) error {
+		if patchIndex >= len(patches) {
+			return repDXbad("source changed during analysis")
+		}
+		var b [5]byte
+		local := s
+		local.Off = 0
+		repDXMaskSlot(b[:s.Len], &local)
+		patches[patchIndex] = repIXPatch{Off: s.Off, Len: s.Len, Bytes: b}
+		patchIndex++
+		return nil
+	}, false); err != nil {
+		return nil, err
+	}
+	if patchIndex != len(patches) {
+		return nil, repDXbad("source changed during analysis")
+	}
+	masked, err := repIXNewWindowView(r, f.Size, nil, patches)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("patches")
+	}
+	oc, err := repDXnewOffCoderAt(f, w, masked, k0)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("offsets")
+	}
+	payload, err := repIXNewWindowView(r, f.Size, []repIXSpan{{Off: 0, Len: repDXHeaderSize}, {Off: mOff, Len: mLen}}, patches)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := repDXwalkAtVisit(f, r, repDXWalkOpts{Offsets: true, Debug: true}, func(slot repDXSlot) error {
+		s := &slot
+		pos := int(s.Off) - repDXHeaderSize
+		if s.Off >= mOff+mLen {
+			pos -= int(mLen)
+		} else if s.Off+int64(s.Len) > mOff {
+			return repDXbad("slot overlaps the map list")
+		}
+		st.Slots[s.Space]++
+		var b []byte
+		var stream int
+		if s.Space == repDXSpOffset {
+			stream = repDXstreamOff
+			if b, err = oc.put(s.Kind, int64(s.Val)); err != nil {
+				return err
+			}
+		} else {
+			stream = repDXspaceOf(s.Space)
+			if b, err = pi[s.Space].Put(nil, s.Val); err != nil {
+				return err
+			}
+		}
+		st.StreamLen[stream] += len(b)
+		if err := spool.Append(int64(pos), uint8(stream), 0, b); err != nil {
+			return err
+		}
+		return nil
+	}, false); err != nil {
+		return nil, err
+	}
+	if data.err != nil {
+		return nil, data.err
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("references")
+	}
+	st.Payload = int(payload.Size())
+	secs := f.Sections(w, true)
+	if err := spool.Rewind(); err != nil {
+		return nil, err
+	}
+	ref, readErr := spool.Next()
+	if readErr != nil && readErr != io.EOF {
+		return nil, readErr
+	}
+	for si := range secs {
+		sc := &secs[si]
+		sc.Hash = make([]uint64, len(sc.Items))
+		for i, st := range sc.Items {
+			end := sc.End
+			if i+1 < len(sc.Items) {
+				end = sc.Items[i+1]
+			}
+			h, err := repIXFNVRange(payload, int64(st), int64(end), scratch)
+			if err != nil {
+				return nil, err
+			}
+			for readErr == nil && ref.Pos < int64(st) {
+				ref, readErr = spool.Next()
+			}
+			for readErr == nil && ref.Pos < int64(end) {
+				h = repIXFNV64(h^uint64(ref.Stream), ref.Bytes)
+				ref, readErr = spool.Next()
+			}
+			if readErr != nil && readErr != io.EOF {
+				return nil, readErr
+			}
+			sc.Hash[i] = h
+		}
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("hashes")
+	}
+	var cuts []int
+	if cfg.Cut != nil {
+		cuts, err = cfg.Cut(payload, secs)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(cuts) == 0 || cuts[len(cuts)-1] != int(payload.Size()) {
+		cuts = append(cuts, int(payload.Size()))
+	}
+	// components
+	rep := &repDXRep{Stats: st, Cuts: cuts, Secs: secs}
+	if err := spool.Rewind(); err != nil {
+		return nil, err
+	}
+	ref, readErr = spool.Next()
+	if readErr != nil && readErr != io.EOF {
+		return nil, readErr
+	}
+	start := 0
+	for _, end := range cuts {
+		if end < start || end > int(payload.Size()) {
+			return nil, fmt.Errorf("dexz3: bad cut %d", end)
+		}
+		if end-start > 16<<20 {
+			return nil, repDXbad("component payload limit")
+		}
+		refBytes := 0
+		var streams [repDXnumStream][]byte
+		for readErr == nil && ref.Pos < int64(end) {
+			if len(ref.Bytes) > (16<<20)-(end-start)-refBytes-128 {
+				return nil, repDXbad("component references limit")
+			}
+			refBytes += len(ref.Bytes)
+			streams[ref.Stream] = append(streams[ref.Stream], ref.Bytes...)
+			ref, readErr = spool.Next()
+		}
+		if readErr != nil && readErr != io.EOF {
+			return nil, readErr
+		}
+		if end-start > 16<<20 {
+			return nil, repDXbad("component payload limit")
+		}
+		p := make([]byte, end-start)
+		if _, err := payload.ReadAt(p, int64(start)); err != nil {
+			return nil, err
+		}
+		component := repIXPackComp(p, streams[:])
+		if len(component) > 16<<20 {
+			return nil, repDXbad("component limit")
+		}
+		if err := cfg.Emit(component); err != nil {
+			return nil, err
+		}
+		rep.Stats.Comps++
+		start = end
+	}
+
+	if cfg.Observe != nil {
+		cfg.Observe("emitted")
+	}
+	// meta; Adler is streamed independently, preserving the original flag.
+	var flags byte
+	ad := adler32.New()
+	if _, err := io.CopyBuffer(ad, io.NewSectionReader(r, 12, f.Size-12), scratch); err != nil {
+		return nil, err
+	}
+	if ad.Sum32() == f.Hdr.Checksum {
+		flags |= repDXflagAdler
+	}
+	kb := byte(k0)
+	if cfg.Auto > 0 {
+		kb = 0x80 | byte(cfg.Auto)
+	}
+	m := append([]byte(repDXrepMagic), flags, kb)
+	m = append(m, f.Raw[:]...)
+	mapb := make([]byte, mLen)
+	if _, err := r.ReadAt(mapb, mOff); err != nil {
+		return nil, err
+	}
+	m = append(m, mapb...)
+	rep.Meta = m
+	// Sink output is untrusted until the caller performs the independent full proof.
+	return rep, nil
+}
+
+// Port source: zeros3-z3/dexz3/stream.go
+func repDXmanagedGeometry(f *repDXFile) error {
+	if f.Size <= 0 || f.Size > 32<<20 {
+		return fmt.Errorf("%w: managed creation source size", repDXErrLimit)
+	}
+	ids := uint64(f.Hdr.StringIDs) + uint64(f.Hdr.TypeIDs) + uint64(f.Hdr.ProtoIDs) + uint64(f.Hdr.FieldIDs) + uint64(f.Hdr.MethodIDs)
+	if ids > 1<<20 {
+		return fmt.Errorf("%w: aggregate identity count", repDXErrLimit)
+	}
+	mapped := uint64(0)
+	for _, m := range f.Map {
+		mapped += uint64(m.Count)
+		if mapped > 1<<20 {
+			return fmt.Errorf("%w: aggregate item count", repDXErrLimit)
+		}
+	}
+
+	return nil
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+// Space is the index space a slot refers to.
+type repDXSpace uint8
+
+// Port source: zeros3-z3/dexz3/walk.go
+const (
+	repDXSpNone repDXSpace = iota
+	repDXSpString
+	repDXSpType
+	repDXSpProto
+	repDXSpField
+	repDXSpMethod
+	repDXSpOffset // a file offset of an item (not an index space)
+	repDXnumSpaces
+)
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (s repDXSpace) String() string {
+	return [...]string{"none", "string", "type", "proto", "field", "method", "offset"}[s]
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+// Enc is how a slot's value is stored in the file.
+type repDXEnc uint8
+
+// Port source: zeros3-z3/dexz3/walk.go
+const (
+	repDXEncU16   repDXEnc = iota // fixed 2 bytes
+	repDXEncU32                   // fixed 4 bytes
+	repDXEncULEB                  // ULEB128, Len bytes
+	repDXEncP1                    // ULEB128 holding value+1 (0 = none), Len bytes
+	repDXEncVal                   // encoded_value payload: Len little-endian bytes, zero extended
+	repDXEncDelta                 // ULEB128 holding the difference to the previous slot of the group
+)
+
+// Port source: zeros3-z3/dexz3/walk.go
+// Class names the structure a slot lives in (attribution and per-class switches).
+type repDXClass uint8
+
+// Port source: zeros3-z3/dexz3/walk.go
+const (
+	repDXClIDTab repDXClass = iota
+	repDXClClassDef
+	repDXClTypeList
+	repDXClClassData
+	repDXClInsn
+	repDXClHandler
+	repDXClCodeHdr
+	repDXClDebug
+	repDXClAnno
+	repDXnumClasses
+)
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (c repDXClass) String() string {
+	return [...]string{"idtab", "classdef", "typelist", "classdata", "insn", "handler", "codehdr", "debug", "anno"}[c]
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+// Slot is one index- or offset-bearing field.
+type repDXSlot struct {
+	Off   int64
+	Val   uint32 // absolute value: index, or file offset (0 when walking masked bytes)
+	Prev  int32  // EncDelta: previous slot of the same group, -1 for the first
+	Len   uint8
+	Enc   repDXEnc
+	Space repDXSpace
+	Cls   repDXClass
+	Kind  repDXOffKind // offset slots: which field this is (the target section follows from it)
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+// OffKind names an offset field site; the target is always the start of an item of OffTarget[kind].
+type repDXOffKind uint8
+
+// Port source: zeros3-z3/dexz3/walk.go
+const (
+	repDXOffNone repDXOffKind = iota
+	repDXOffString
+	repDXOffParams
+	repDXOffIface
+	repDXOffClassAnno
+	repDXOffClassData
+	repDXOffStatic
+	repDXOffCode
+	repDXOffDebug
+	repDXOffDirClass
+	repDXOffDirField
+	repDXOffDirMethod
+	repDXOffDirParam
+	repDXOffSetEntry
+	repDXOffRefEntry
+	repDXnumOffKinds
+)
+
+// Port source: zeros3-z3/dexz3/walk.go
+// OffTarget is the map type of the items an offset kind points at.
+var repDXOffTarget = [repDXnumOffKinds]uint16{0, repDXTypeStringData, repDXTypeTypeList, repDXTypeTypeList, repDXTypeAnnoDir, repDXTypeClassData, repDXTypeEncodedArray,
+	repDXTypeCode, repDXTypeDebugInfo, repDXTypeAnnoSet, repDXTypeAnnoSet, repDXTypeAnnoSet, repDXTypeAnnoSetRef, repDXTypeAnnotation, repDXTypeAnnoSet}
+
+// Port source: zeros3-z3/dexz3/walk.go
+// Item is one counted data item of a map section (units for structural segmentation).
+type repDXItem struct {
+	Type uint16
+	Off  int64
+	Len  int64
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+// Walked is the result of walking one DEX.
+type repDXWalked struct {
+	Slots []repDXSlot
+	Items []repDXItem // code, class_data, debug_info, type_list, annotation..., file order
+	// StrOff[i] is the start of string_data item i, StrEnd[i] its end (exclusive).
+	StrOff, StrEnd []uint32
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+// WalkOpts selects what the walker enumerates.
+type repDXWalkOpts struct {
+	Masked  bool // the bytes are a masked payload: do not bound-check values, tolerate zeros
+	Offsets bool // enumerate offset slots (needed only to attribute or normalize offsets)
+	Debug   bool // enumerate debug_info and annotation structures
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+type repDXcur struct {
+	b   *repDXwalkSource
+	p   int64
+	end int64
+	err error
+	lim *repDXLimits
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (c *repDXcur) fail(f string, a ...any) {
+	if c.err == nil {
+		c.err = fmt.Errorf("%w: "+f, append([]any{repDXErrFormat}, a...)...)
+	}
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (c *repDXcur) need(n int64) bool {
+	if c.err == nil && c.b.err != nil {
+		c.err = c.b.err
+	}
+	if c.err != nil {
+		return false
+	}
+	if n < 0 || c.p < 0 || c.p > c.end || n > c.end-c.p {
+		c.fail("read %d at %d past %d", n, c.p, c.end)
+		return false
+	}
+	return true
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (c *repDXcur) u8() uint32 {
+	if !c.need(1) {
+		return 0
+	}
+	v := c.b.span(c.p, 1)[0]
+	c.p++
+	return uint32(v)
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (c *repDXcur) u16() uint32 {
+	if !c.need(2) {
+		return 0
+	}
+	v := repDXle16(c.b.span(c.p, 2))
+	c.p += 2
+	return v
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (c *repDXcur) u32() uint32 {
+	if !c.need(4) {
+		return 0
+	}
+	v := repDXle32(c.b.span(c.p, 4))
+	c.p += 4
+	return v
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+// leb reads a ULEB128 of at most 5 bytes; it returns the value and its byte length.
+func (c *repDXcur) leb() (v uint32, n int) {
+	var sh uint
+	for n < c.lim.MaxLEB {
+		if !c.need(1) {
+			return 0, n
+		}
+		b := c.b.span(c.p, 1)[0]
+		c.p++
+		n++
+		if sh == 28 && b&0xf0 != 0 {
+			c.fail("ULEB128 overflows 32 bits")
+			return 0, n
+		}
+		v |= uint32(b&0x7f) << sh
+		if b&0x80 == 0 {
+			return v, n
+		}
+		sh += 7
+	}
+	c.fail("ULEB128 longer than %d bytes", c.lim.MaxLEB)
+	return 0, n
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (c *repDXcur) sleb() int32 {
+	var v uint32
+	var sh uint
+	for n := 0; n < c.lim.MaxLEB; n++ {
+		if !c.need(1) {
+			return 0
+		}
+		b := c.b.span(c.p, 1)[0]
+		c.p++
+		v |= uint32(b&0x7f) << sh
+		sh += 7
+		if b&0x80 == 0 {
+			if sh < 32 && b&0x40 != 0 {
+				v |= ^uint32(0) << sh
+			}
+			return int32(v)
+		}
+	}
+	c.fail("SLEB128 too long")
+	return 0
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+type repDXwalker struct {
+	visit     func(repDXSlot) error
+	slotCount int
+	metadata  bool
+	data      *repDXwalkSource
+	f         *repDXFile
+	o         repDXWalkOpts
+	w         *repDXWalked
+	cnt       [repDXnumSpaces]uint32
+	err       error
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) add(s repDXSlot) error {
+	if k.slotCount >= k.f.Lim.MaxSlots {
+		return fmt.Errorf("%w: slots", repDXErrLimit)
+	}
+	if !k.o.Masked && s.Space != repDXSpOffset && s.Space != repDXSpNone && s.Val >= k.cnt[s.Space] {
+		return repDXbad("%s index %d >= %d at %d", s.Space, s.Val, k.cnt[s.Space], s.Off)
+	}
+	if !k.o.Masked && s.Space == repDXSpOffset && (int64(s.Val) < repDXHeaderSize || int64(s.Val) >= k.f.Size) {
+		return repDXbad("offset %d outside the file at %d", s.Val, s.Off)
+	}
+	k.slotCount++
+	if k.visit != nil {
+		return k.visit(s)
+	}
+	k.w.Slots = append(k.w.Slots, s)
+	return nil
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+// fixed adds a fixed-width slot reading the value from the bytes (value NoIndex = absent).
+func (k *repDXwalker) fixed(off int64, enc repDXEnc, sp repDXSpace, cl repDXClass, optional bool, kind ...repDXOffKind) error {
+	var v uint32
+	if enc == repDXEncU16 {
+		v = repDXle16(k.data.span(off, 2))
+	} else {
+		v = repDXle32(k.data.span(off, 4))
+	}
+	if k.data.err != nil {
+		return k.data.err
+	}
+	if sp == repDXSpOffset {
+		if v == 0 {
+			return nil
+		}
+		if !k.o.Offsets {
+			return nil
+		}
+	} else if enc == repDXEncU32 && v == repDXNoIndex {
+		if !optional {
+			return repDXbad("NO_INDEX where an index is required at %d", off)
+		}
+		return nil
+	}
+	n := uint8(2)
+	if enc == repDXEncU32 {
+		n = 4
+	}
+	if k.o.Masked {
+		v = 0
+	}
+	sl := repDXSlot{Off: off, Val: v, Prev: -1, Len: n, Enc: enc, Space: sp, Cls: cl}
+	if len(kind) > 0 {
+		sl.Kind = kind[0]
+	}
+	return k.add(sl)
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) sectionCur(s repDXSpan) *repDXcur {
+	return &repDXcur{b: k.data, p: s.Off, end: s.Off + s.Len, lim: &k.f.Lim}
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+// WalkAtVisit validates the same structures and visits slots without retaining them.
+func repDXWalkAtVisit(f *repDXFile, r io.ReaderAt, o repDXWalkOpts, visit func(repDXSlot) error) (*repDXWalked, error) {
+	return repDXwalkAtVisit(f, r, o, visit, true)
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func repDXwalkAtVisit(f *repDXFile, r io.ReaderAt, o repDXWalkOpts, visit func(repDXSlot) error, metadata bool) (*repDXWalked, error) {
+	source := &repDXwalkSource{r: r, size: f.Size, lo: -1}
+	k := &repDXwalker{data: source, f: f, o: o, w: &repDXWalked{}, visit: visit, metadata: metadata}
+	k.cnt = [repDXnumSpaces]uint32{0, f.Hdr.StringIDs, f.Hdr.TypeIDs, f.Hdr.ProtoIDs, f.Hdr.FieldIDs, f.Hdr.MethodIDs, 0}
+	for _, s := range f.Spans {
+		var err error
+		switch s.Type {
+		case repDXTypeStringID:
+			err = k.idTable(s, 4, func(off int64) error {
+				return k.fixed(off, repDXEncU32, repDXSpOffset, repDXClIDTab, false, repDXOffString)
+			})
+		case repDXTypeTypeID:
+			err = k.idTable(s, 4, func(off int64) error { return k.fixed(off, repDXEncU32, repDXSpString, repDXClIDTab, false) })
+		case repDXTypeProtoID:
+			err = k.idTable(s, 12, func(off int64) error {
+				if e := k.fixed(off, repDXEncU32, repDXSpString, repDXClIDTab, false); e != nil {
+					return e
+				}
+				if e := k.fixed(off+4, repDXEncU32, repDXSpType, repDXClIDTab, false); e != nil {
+					return e
+				}
+				return k.fixed(off+8, repDXEncU32, repDXSpOffset, repDXClIDTab, false, repDXOffParams)
+			})
+		case repDXTypeFieldID:
+			err = k.idTable(s, 8, func(off int64) error {
+				if e := k.fixed(off, repDXEncU16, repDXSpType, repDXClIDTab, false); e != nil {
+					return e
+				}
+				if e := k.fixed(off+2, repDXEncU16, repDXSpType, repDXClIDTab, false); e != nil {
+					return e
+				}
+				return k.fixed(off+4, repDXEncU32, repDXSpString, repDXClIDTab, false)
+			})
+		case repDXTypeMethodID:
+			err = k.idTable(s, 8, func(off int64) error {
+				if e := k.fixed(off, repDXEncU16, repDXSpType, repDXClIDTab, false); e != nil {
+					return e
+				}
+				if e := k.fixed(off+2, repDXEncU16, repDXSpProto, repDXClIDTab, false); e != nil {
+					return e
+				}
+				return k.fixed(off+4, repDXEncU32, repDXSpString, repDXClIDTab, false)
+			})
+		case repDXTypeClassDef:
+			err = k.idTable(s, 32, func(off int64) error {
+				for _, a := range []struct {
+					d    int64
+					sp   repDXSpace
+					opt  bool
+					kind repDXOffKind
+				}{{0, repDXSpType, false, 0}, {8, repDXSpType, true, 0}, {12, repDXSpOffset, true, repDXOffIface}, {16, repDXSpString, true, 0}, {20, repDXSpOffset, true, repDXOffClassAnno}, {24, repDXSpOffset, true, repDXOffClassData}, {28, repDXSpOffset, true, repDXOffStatic}} {
+					if e := k.fixed(off+a.d, repDXEncU32, a.sp, repDXClClassDef, a.opt, a.kind); e != nil {
+						return e
+					}
+				}
+				return nil
+			})
+		case repDXTypeTypeList:
+			err = k.typeLists(s)
+		case repDXTypeClassData:
+			err = k.classData(s)
+		case repDXTypeCode:
+			err = k.codeItems(s)
+		case repDXTypeStringData:
+			err = k.stringData(s)
+		case repDXTypeDebugInfo, repDXTypeAnnotation, repDXTypeEncodedArray, repDXTypeAnnoSet, repDXTypeAnnoSetRef, repDXTypeAnnoDir:
+			if o.Debug {
+				err = k.dataItems(s)
+			} else {
+				err = k.itemsOnly(s)
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	if source.err != nil {
+		return nil, source.err
+	}
+	return k.w, nil
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) idTable(s repDXSpan, w int64, one func(off int64) error) error {
+	for i := int64(0); i < int64(s.Count); i++ {
+		if err := one(s.Off + i*w); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func repDXalign(p, a int64) int64 { return (p + a - 1) &^ (a - 1) }
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) typeLists(s repDXSpan) error {
+	c := k.sectionCur(s)
+	for i := uint32(0); i < s.Count; i++ {
+		c.p = repDXalign(c.p, 4)
+		start := c.p
+		n := c.u32()
+		if c.err != nil {
+			return c.err
+		}
+		if int64(n) > (c.end-c.p)/2 {
+			return repDXbad("type_list size %d", n)
+		}
+		for j := uint32(0); j < n; j++ {
+			if err := k.fixed(c.p, repDXEncU16, repDXSpType, repDXClTypeList, false); err != nil {
+				return err
+			}
+			c.p += 2
+		}
+		if k.metadata {
+			k.w.Items = append(k.w.Items, repDXItem{repDXTypeTypeList, start, c.p - start})
+		}
+	}
+	return c.err
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) stringData(s repDXSpan) error {
+	c := k.sectionCur(s)
+	if k.metadata {
+		k.w.StrOff = make([]uint32, 0, s.Count)
+		k.w.StrEnd = make([]uint32, 0, s.Count)
+	}
+	for i := uint32(0); i < s.Count; i++ {
+		start := c.p
+		c.leb()
+		for {
+			if !c.need(1) {
+				return c.err
+			}
+			if c.p-start > int64(k.f.Lim.MaxStrLen) {
+				return fmt.Errorf("%w: string length", repDXErrLimit)
+			}
+			b := c.b.span(c.p, 1)[0]
+			c.p++
+			if b == 0 {
+				break
+			}
+		}
+		if k.metadata {
+			k.w.StrOff = append(k.w.StrOff, uint32(start))
+		}
+		if k.metadata {
+			k.w.StrEnd = append(k.w.StrEnd, uint32(c.p))
+		}
+	}
+	return c.err
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) classData(s repDXSpan) error {
+	c := k.sectionCur(s)
+	for i := uint32(0); i < s.Count; i++ {
+		start := c.p
+		var sizes [4]uint32
+		for j := range sizes {
+			sizes[j], _ = c.leb()
+		}
+		if c.err != nil {
+			return c.err
+		}
+		tot := uint64(sizes[0]) + uint64(sizes[1]) + uint64(sizes[2]) + uint64(sizes[3])
+		if tot > uint64(k.f.Lim.MaxMembers) {
+			return fmt.Errorf("%w: class_data members %d", repDXErrLimit, tot)
+		}
+		for g := 0; g < 4; g++ {
+			prev := int32(-1)
+			var abs uint32
+			for m := uint32(0); m < sizes[g]; m++ {
+				off := c.p
+				d, n := c.leb()
+				if c.err != nil {
+					return c.err
+				}
+				sp := repDXSpField
+				if g >= 2 {
+					sp = repDXSpMethod
+				}
+				if !k.o.Masked {
+					if m > 0 && d == 0 {
+						return repDXbad("class_data member delta 0 at %d", off)
+					}
+					if uint64(abs)+uint64(d) > 1<<32-1 {
+						return repDXbad("class_data index overflow")
+					}
+					abs += d
+				}
+				if err := k.add(repDXSlot{Off: off, Val: abs, Prev: prev, Len: uint8(n), Enc: repDXEncDelta, Space: sp, Cls: repDXClClassData}); err != nil {
+					return err
+				}
+				prev = int32(k.slotCount - 1)
+				c.leb() // access_flags
+				if g >= 2 {
+					coff := c.p
+					v, n := c.leb()
+					if c.err != nil {
+						return c.err
+					}
+					if v != 0 && k.o.Offsets {
+						if err := k.add(repDXSlot{Off: coff, Val: v, Prev: -1, Len: uint8(n), Enc: repDXEncULEB, Space: repDXSpOffset, Cls: repDXClClassData, Kind: repDXOffCode}); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+		if c.err != nil {
+			return c.err
+		}
+		if k.metadata {
+			k.w.Items = append(k.w.Items, repDXItem{repDXTypeClassData, start, c.p - start})
+		}
+	}
+	return c.err
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) codeItems(s repDXSpan) error {
+	c := k.sectionCur(s)
+	lim := &k.f.Lim
+	for i := uint32(0); i < s.Count; i++ {
+		c.p = repDXalign(c.p, 4)
+		start := c.p
+		if !c.need(16) {
+			return c.err
+		}
+		tries := repDXle16(k.data.span(start+6, 2))
+		if err := k.fixed(start+8, repDXEncU32, repDXSpOffset, repDXClCodeHdr, false, repDXOffDebug); err != nil {
+			return err
+		}
+		isz := repDXle32(k.data.span(start+12, 4))
+		if int64(isz) > int64(lim.MaxCodeUnit) {
+			return fmt.Errorf("%w: insns_size %d", repDXErrLimit, isz)
+		}
+		c.p = start + 16
+		if !c.need(int64(isz) * 2) {
+			return c.err
+		}
+		ib := k.data.span(c.p, int64(isz)*2)
+		if k.data.err != nil {
+			return k.data.err
+		}
+		base := c.p
+		if err := repDXwalkInsns(ib, int(isz), func(u int, sp repDXSpace, wide bool) error {
+			n, enc := uint8(2), repDXEncU16
+			var v uint32
+			if wide {
+				n, enc = 4, repDXEncU32
+				v = repDXle32(ib[2*u:])
+			} else {
+				v = repDXle16(ib[2*u:])
+			}
+			if k.o.Masked {
+				v = 0
+			}
+			return k.add(repDXSlot{Off: base + int64(2*u), Val: v, Prev: -1, Len: n, Enc: enc, Space: sp, Cls: repDXClInsn})
+		}); err != nil {
+			return err
+		}
+		c.p += int64(isz) * 2
+		if tries != 0 {
+			if int(tries) > lim.MaxTries {
+				return fmt.Errorf("%w: tries %d", repDXErrLimit, tries)
+			}
+			if isz%2 == 1 {
+				c.p += 2
+			}
+			if !c.need(int64(tries) * 8) {
+				return c.err
+			}
+			c.p += int64(tries) * 8
+			hn, _ := c.leb()
+			if int(hn) > lim.MaxHandlers {
+				return fmt.Errorf("%w: handlers %d", repDXErrLimit, hn)
+			}
+			for h := uint32(0); h < hn; h++ {
+				sz := c.sleb()
+				if c.err != nil {
+					return c.err
+				}
+				np := int64(sz)
+				if np < 0 {
+					np = -np
+				}
+				if np > int64(lim.MaxHandlers) {
+					return fmt.Errorf("%w: handler pairs %d", repDXErrLimit, np)
+				}
+				for j := int64(0); j < np; j++ {
+					off := c.p
+					v, n := c.leb()
+					if c.err != nil {
+						return c.err
+					}
+					if k.o.Masked {
+						v = 0
+					}
+					if err := k.add(repDXSlot{Off: off, Val: v, Prev: -1, Len: uint8(n), Enc: repDXEncULEB, Space: repDXSpType, Cls: repDXClHandler}); err != nil {
+						return err
+					}
+					c.leb()
+				}
+				if sz <= 0 {
+					c.leb()
+				}
+			}
+		}
+		if c.err != nil {
+			return c.err
+		}
+		if k.metadata {
+			k.w.Items = append(k.w.Items, repDXItem{repDXTypeCode, start, c.p - start})
+		}
+	}
+	return c.err
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+// itemsOnly records item boundaries of sections whose slots are not enumerated (opaque payload).
+func (k *repDXwalker) itemsOnly(s repDXSpan) error { return k.dataItems2(s, false) }
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) dataItems(s repDXSpan) error { return k.dataItems2(s, true) }
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) dataItems2(s repDXSpan, slots bool) error {
+	c := k.sectionCur(s)
+	for i := uint32(0); i < s.Count; i++ {
+		switch s.Type {
+		case repDXTypeAnnoSet, repDXTypeAnnoSetRef, repDXTypeAnnoDir:
+			c.p = repDXalign(c.p, 4)
+		}
+		start := c.p
+		switch s.Type {
+		case repDXTypeDebugInfo:
+			k.debugInfo(c, slots)
+		case repDXTypeAnnotation:
+			c.u8()
+			k.encAnnotation(c, 0, slots)
+		case repDXTypeEncodedArray:
+			k.encArray(c, 0, slots)
+		case repDXTypeAnnoSet, repDXTypeAnnoSetRef:
+			n := c.u32()
+			if int64(n) > (c.end-c.p)/4 {
+				c.fail("annotation set size %d", n)
+			}
+			for j := uint32(0); j < n && c.err == nil; j++ {
+				if slots && k.o.Offsets {
+					kd := repDXOffSetEntry
+					if s.Type == repDXTypeAnnoSetRef {
+						kd = repDXOffRefEntry
+					}
+					if err := k.fixed(c.p, repDXEncU32, repDXSpOffset, repDXClAnno, false, kd); err != nil {
+						return err
+					}
+				}
+				c.p += 4
+			}
+		case repDXTypeAnnoDir:
+			if !c.need(16) {
+				return c.err
+			}
+			if slots && k.o.Offsets {
+				if err := k.fixed(c.p, repDXEncU32, repDXSpOffset, repDXClAnno, false, repDXOffDirClass); err != nil {
+					return err
+				}
+			}
+			nf, nm, np := repDXle32(k.data.span(c.p+4, 4)), repDXle32(k.data.span(c.p+8, 4)), repDXle32(k.data.span(c.p+12, 4))
+			c.p += 16
+			tot := uint64(nf) + uint64(nm) + uint64(np)
+			if tot > uint64(c.end-c.p)/8 {
+				c.fail("annotation directory size")
+			}
+			for j := uint64(0); j < tot && c.err == nil; j++ {
+				if slots {
+					sp := repDXSpField
+					if j >= uint64(nf) {
+						sp = repDXSpMethod
+					}
+					if err := k.fixed(c.p, repDXEncU32, sp, repDXClAnno, false); err != nil {
+						return err
+					}
+					if k.o.Offsets {
+						kd := repDXOffDirField
+						if j >= uint64(nf) {
+							kd = repDXOffDirMethod
+						}
+						if j >= uint64(nf)+uint64(nm) {
+							kd = repDXOffDirParam
+						}
+						if err := k.fixed(c.p+4, repDXEncU32, repDXSpOffset, repDXClAnno, false, kd); err != nil {
+							return err
+						}
+					}
+				}
+				c.p += 8
+			}
+		}
+		if c.err != nil {
+			return c.err
+		}
+		if k.metadata {
+			k.w.Items = append(k.w.Items, repDXItem{s.Type, start, c.p - start})
+		}
+	}
+	return c.err
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+// p1 adds a ULEB128p1 string/type slot (value 0 = none).
+func (k *repDXwalker) leb1(c *repDXcur, sp repDXSpace, cl repDXClass, slots bool) {
+	off := c.p
+	v, n := c.leb()
+	if c.err != nil || !slots {
+		return
+	}
+	if v == 0 && (n == 1 || !k.o.Masked) {
+		if n != 1 {
+			c.fail("non-canonical NO_INDEX at %d", off)
+		}
+		return
+	}
+	if k.o.Masked {
+		v = 0
+	} else {
+		v--
+	}
+	if err := k.add(repDXSlot{Off: off, Val: v, Prev: -1, Len: uint8(n), Enc: repDXEncP1, Space: sp, Cls: cl}); err != nil {
+		c.fail("%v", err)
+	}
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) lebSlot(c *repDXcur, sp repDXSpace, cl repDXClass, slots bool) {
+	off := c.p
+	v, n := c.leb()
+	if c.err != nil || !slots {
+		return
+	}
+	if k.o.Masked {
+		v = 0
+	}
+	if err := k.add(repDXSlot{Off: off, Val: v, Prev: -1, Len: uint8(n), Enc: repDXEncULEB, Space: sp, Cls: cl}); err != nil {
+		c.fail("%v", err)
+	}
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) debugInfo(c *repDXcur, slots bool) {
+	c.leb()
+	np, _ := c.leb()
+	if int64(np) > c.end-c.p {
+		c.fail("debug parameters")
+		return
+	}
+	for i := uint32(0); i < np && c.err == nil; i++ {
+		k.leb1(c, repDXSpString, repDXClDebug, slots)
+	}
+	for ops := 0; c.err == nil; ops++ {
+		if ops > k.f.Lim.MaxDebugOps {
+			c.fail("debug opcodes")
+			return
+		}
+		switch op := c.u8(); {
+		case c.err != nil:
+		case op == 0:
+			return
+		case op == 1, op == 5, op == 6:
+			c.leb()
+		case op == 2:
+			c.sleb()
+		case op == 3, op == 4:
+			c.leb()
+			k.leb1(c, repDXSpString, repDXClDebug, slots)
+			k.leb1(c, repDXSpType, repDXClDebug, slots)
+			if op == 4 {
+				k.leb1(c, repDXSpString, repDXClDebug, slots)
+			}
+		case op == 9:
+			k.leb1(c, repDXSpString, repDXClDebug, slots)
+		}
+	}
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) encAnnotation(c *repDXcur, depth int, slots bool) {
+	if depth > k.f.Lim.MaxDepth {
+		c.fail("annotation nesting")
+		return
+	}
+	k.lebSlot(c, repDXSpType, repDXClAnno, slots)
+	n, _ := c.leb()
+	if int64(n) > c.end-c.p {
+		c.fail("annotation elements")
+		return
+	}
+	for i := uint32(0); i < n && c.err == nil; i++ {
+		k.lebSlot(c, repDXSpString, repDXClAnno, slots)
+		k.encValue(c, depth+1, slots)
+	}
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) encArray(c *repDXcur, depth int, slots bool) {
+	if depth > k.f.Lim.MaxDepth {
+		c.fail("array nesting")
+		return
+	}
+	n, _ := c.leb()
+	if int64(n) > c.end-c.p {
+		c.fail("array size")
+		return
+	}
+	for i := uint32(0); i < n && c.err == nil; i++ {
+		k.encValue(c, depth+1, slots)
+	}
+}
+
+// Port source: zeros3-z3/dexz3/walk.go
+func (k *repDXwalker) encValue(c *repDXcur, depth int, slots bool) {
+	hb := c.u8()
+	if c.err != nil {
+		return
+	}
+	t, arg := hb&0x1f, int64(hb>>5)
+	size := arg + 1
+	sp := repDXSpNone
+	switch t {
+	case 0x00:
+		if arg != 0 {
+			c.fail("byte value arg")
+		}
+	case 0x02, 0x03:
+		if arg > 1 {
+			c.fail("short/char arg")
+		}
+	case 0x04, 0x10:
+		if arg > 3 {
+			c.fail("int/float arg")
+		}
+	case 0x06, 0x11:
+	case 0x15:
+		sp = repDXSpProto
+	case 0x16:
+		// method handle table not modelled: raw
+		if arg > 3 {
+			c.fail("handle arg")
+		}
+	case 0x17:
+		sp = repDXSpString
+	case 0x18:
+		sp = repDXSpType
+	case 0x19, 0x1b:
+		sp = repDXSpField
+	case 0x1a:
+		sp = repDXSpMethod
+	case 0x1c, 0x1d, 0x1e, 0x1f:
+		if (t != 0x1f && arg != 0) || (t == 0x1f && arg > 1) {
+			c.fail("value arg")
+		}
+		switch t {
+		case 0x1c:
+			k.encArray(c, depth, slots)
+		case 0x1d:
+			k.encAnnotation(c, depth, slots)
+		}
+		return
+	default:
+		c.fail("encoded value type %#x", t)
+	}
+	if sp != repDXSpNone && arg > 3 {
+		c.fail("index value arg")
+	}
+	if c.err != nil || !c.need(size) {
+		return
+	}
+	if sp != repDXSpNone && slots {
+		var v uint32
+		if !k.o.Masked {
+			for i := int64(0); i < size; i++ {
+				v |= uint32(c.b.span(c.p+i, 1)[0]) << (8 * uint(i))
+			}
+		}
+		if err := k.add(repDXSlot{Off: c.p, Val: v, Prev: -1, Len: uint8(size), Enc: repDXEncVal, Space: sp, Cls: repDXClAnno}); err != nil {
+			c.fail("%v", err)
+		}
+	}
+	c.p += size
+}
+
+// Port source: zeros3-z3/clrz3/cil.go
+type repCLopd int8
+
+// Port source: zeros3-z3/clrz3/cil.go
+const (
+	repCLoBad repCLopd = iota - 1
+	repCLoNone
+	repCLoI1
+	repCLoU1
+	repCLoU2
+	repCLoI4
+	repCLoI8
+	repCLoR4
+	repCLoR8
+	repCLoBr4 // 4-byte branch displacement (raw)
+	repCLoSwitch
+	repCLoMethod
+	repCLoField
+	repCLoType
+	repCLoSig
+	repCLoString
+	repCLoTok
+)
+
+// Port source: zeros3-z3/clrz3/cil.go
+var repCLopd1 [256]repCLopd
+
+// Port source: zeros3-z3/clrz3/cil.go
+var repCLopd2 [32]repCLopd
+
+// Port source: zeros3-z3/clrz3/cil.go
+func init() {
+	for i := range repCLopd1 {
+		repCLopd1[i] = repCLoBad
+	}
+	for i := range repCLopd2 {
+		repCLopd2[i] = repCLoBad
+	}
+	set := func(o repCLopd, ops ...int) {
+		for _, op := range ops {
+			repCLopd1[op] = o
+		}
+	}
+	rng := func(o repCLopd, a, b int) {
+		for i := a; i <= b; i++ {
+			repCLopd1[i] = o
+		}
+	}
+	rng(repCLoNone, 0x00, 0x0d) // nop, break, ldarg.0-3, ldloc.0-3, stloc.0-3
+	rng(repCLoU1, 0x0e, 0x13)   // ldarg.s .. stloc.s
+	rng(repCLoNone, 0x14, 0x1e) // ldnull, ldc.i4.m1 .. ldc.i4.8
+	set(repCLoI1, 0x1f)
+	set(repCLoI4, 0x20)
+	set(repCLoI8, 0x21)
+	set(repCLoR4, 0x22)
+	set(repCLoR8, 0x23)
+	rng(repCLoNone, 0x25, 0x26)
+	set(repCLoMethod, 0x27, 0x28)
+	set(repCLoSig, 0x29)
+	set(repCLoNone, 0x2a)
+	rng(repCLoI1, 0x2b, 0x37) // br.s .. blt.un.s
+	rng(repCLoBr4, 0x38, 0x44)
+	set(repCLoSwitch, 0x45)
+	rng(repCLoNone, 0x46, 0x6e)
+	set(repCLoMethod, 0x6f)
+	set(repCLoType, 0x70, 0x71)
+	set(repCLoString, 0x72)
+	set(repCLoMethod, 0x73)
+	set(repCLoType, 0x74, 0x75)
+	set(repCLoNone, 0x76)
+	set(repCLoType, 0x79)
+	set(repCLoNone, 0x7a)
+	rng(repCLoField, 0x7b, 0x80)
+	set(repCLoType, 0x81)
+	rng(repCLoNone, 0x82, 0x8b)
+	set(repCLoType, 0x8c, 0x8d)
+	set(repCLoNone, 0x8e)
+	set(repCLoType, 0x8f)
+	rng(repCLoNone, 0x90, 0xa2)
+	set(repCLoType, 0xa3, 0xa4, 0xa5)
+	rng(repCLoNone, 0xb3, 0xba)
+	set(repCLoType, 0xc2)
+	set(repCLoNone, 0xc3)
+	set(repCLoType, 0xc6)
+	set(repCLoTok, 0xd0)
+	rng(repCLoNone, 0xd1, 0xdc)
+	set(repCLoBr4, 0xdd)
+	set(repCLoI1, 0xde)
+	rng(repCLoNone, 0xdf, 0xe0)
+	// 0xFE prefix
+	for _, op := range []int{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x0f, 0x11, 0x13, 0x14, 0x17, 0x18, 0x1a, 0x1d, 0x1e} {
+		repCLopd2[op] = repCLoNone
+	}
+	repCLopd2[0x06], repCLopd2[0x07] = repCLoMethod, repCLoMethod
+	for _, op := range []int{0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e} {
+		repCLopd2[op] = repCLoU2
+	}
+	repCLopd2[0x12], repCLopd2[0x19] = repCLoU1, repCLoU1
+	repCLopd2[0x15], repCLopd2[0x16], repCLopd2[0x1c] = repCLoType, repCLoType, repCLoType
+}
+
+// Port source: zeros3-z3/clrz3/cil.go
+// Token operand classes.
+const (
+	repCLTkMethod = iota + 1
+	repCLTkField
+	repCLTkType
+	repCLTkSig
+	repCLTkString
+	repCLTkAny
+)
+
+// Port source: zeros3-z3/clrz3/cil.go
+// TokSlot is one token operand of a method body.
+type repCLTokSlot struct {
+	Off   int64 // file offset of the 4-byte operand
+	Class uint8
+	Val   uint32
+}
+
+// Port source: zeros3-z3/clrz3/cil.go
+// Body is a parsed method body.
+type repCLBody struct {
+	Off, End int64 // whole body including header and extra sections
+	Fat      bool
+	HdrLen   int
+	CodeOff  int64
+	CodeLen  int
+	MaxStack uint16
+	LocalOff int64 // file offset of the LocalVarSigTok operand (fat only), 0 if none
+	LocalTok uint32
+	Clauses  []repCLClause
+	Toks     []repCLTokSlot // metadata tokens of the code
+	SecOff   int64
+	SecEnd   int64
+}
+
+// Port source: zeros3-z3/clrz3/cil.go
+// Clause is one exception-handling clause.
+type repCLClause struct {
+	Flags      uint32
+	TokOff     int64 // offset of the class token (typed catch) or 0
+	TokVal     uint32
+	Off        int64
+	Fat        bool
+	TryOff     uint32
+	TryLen     uint32
+	HandlerOff uint32
+	HandlerLen uint32
+}
+
+// Port source: zeros3-z3/clrz3/cil.go
+const (
+	repCLmaxCode    = 1 << 26
+	repCLmaxClauses = 1 << 16
+)
+
+// Port source: zeros3-z3/clrz3/cil.go
+// ParseBody parses the method body at file offset off. A body that does not parse exactly makes
+// ok false; the caller keeps it opaque. strict also checks the shape of every token operand (a
+// masked file is parsed non-strictly: its token values are zero).
+func repCLParseBody(d []byte, off int64, strict bool) (b repCLBody, ok bool) {
+	n := int64(len(d))
+	if off < 0 || off >= n {
+		return b, false
+	}
+	h := d[off]
+	b.Off = off
+	switch h & 3 {
+	case 2:
+		b.HdrLen = 1
+		b.CodeLen = int(h >> 2)
+	case 3:
+		if off+12 > n {
+			return b, false
+		}
+		fl := binary.LittleEndian.Uint16(d[off:])
+		if fl>>12 != 3 {
+			return b, false
+		}
+		b.Fat = true
+		b.HdrLen = 12
+		b.MaxStack = binary.LittleEndian.Uint16(d[off+2:])
+		cl := binary.LittleEndian.Uint32(d[off+4:])
+		if cl > repCLmaxCode {
+			return b, false
+		}
+		b.CodeLen = int(cl)
+		b.LocalOff = off + 8
+		b.LocalTok = binary.LittleEndian.Uint32(d[off+8:])
+		if strict && b.LocalTok != 0 && b.LocalTok>>24 != 0x11 {
+			return b, false
+		}
+		if fl&0x08 != 0 {
+			b.SecOff = -1 // present; located below
+		}
+	default:
+		return b, false
+	}
+	b.CodeOff = off + int64(b.HdrLen)
+	if b.CodeOff+int64(b.CodeLen) > n {
+		return b, false
+	}
+	b.End = b.CodeOff + int64(b.CodeLen)
+	if !b.walkCode(d, strict) {
+		return b, false
+	}
+	if b.Fat && b.SecOff == -1 {
+		p := b.Off + ((b.End - b.Off + 3) &^ 3) // sections are 4-aligned from the start of the body
+		b.SecOff = p
+		for {
+			if p+4 > n {
+				return b, false
+			}
+			kind := d[p]
+			var size int64
+			if kind&0x40 != 0 {
+				size = int64(d[p+1]) | int64(d[p+2])<<8 | int64(d[p+3])<<16
+			} else {
+				size = int64(d[p+1])
+			}
+			if size < 4 || p+size > n {
+				return b, false
+			}
+			switch kind & 0x3f {
+			case 1: // EH table
+				esz := int64(12)
+				if kind&0x40 != 0 {
+					esz = 24
+				}
+				if (size-4)%esz != 0 || (size-4)/esz > repCLmaxClauses {
+					return b, false
+				}
+				for q := p + 4; q < p+size; q += esz {
+					c := repCLClause{Off: q, Fat: kind&0x40 != 0}
+					if c.Fat {
+						c.Flags = binary.LittleEndian.Uint32(d[q:])
+						c.TryOff = binary.LittleEndian.Uint32(d[q+4:])
+						c.TryLen = binary.LittleEndian.Uint32(d[q+8:])
+						c.HandlerOff = binary.LittleEndian.Uint32(d[q+12:])
+						c.HandlerLen = binary.LittleEndian.Uint32(d[q+16:])
+						if c.Flags == 0 {
+							c.TokOff, c.TokVal = q+20, binary.LittleEndian.Uint32(d[q+20:])
+						}
+					} else {
+						c.Flags = uint32(binary.LittleEndian.Uint16(d[q:]))
+						c.TryOff = uint32(binary.LittleEndian.Uint16(d[q+2:]))
+						c.TryLen = uint32(d[q+4])
+						c.HandlerOff = uint32(binary.LittleEndian.Uint16(d[q+5:]))
+						c.HandlerLen = uint32(d[q+7])
+						if c.Flags == 0 {
+							c.TokOff, c.TokVal = q+8, binary.LittleEndian.Uint32(d[q+8:])
+						}
+					}
+					if strict && c.Flags == 0 && !repCLvalidTok(c.TokVal, repCLTkType) {
+						return b, false
+					}
+					b.Clauses = append(b.Clauses, c)
+				}
+			case 2: // optional IL table (obsolete)
+			default:
+				return b, false
+			}
+			p += size
+			b.End = p
+			if kind&0x80 == 0 {
+				break
+			}
+			p = b.Off + ((p - b.Off + 3) &^ 3)
+		}
+		b.SecEnd = b.End
+	}
+	return b, true
+}
+
+// Port source: zeros3-z3/clrz3/cil.go
+// validTok reports whether v is a plausible token of the operand class (table in the class set,
+// non-zero row, string offsets are checked by the caller against the heap).
+func repCLvalidTok(v uint32, class uint8) bool {
+	t, r := v>>24, v&0xffffff
+	switch class {
+	case repCLTkString:
+		return t == 0x70
+	case repCLTkSig:
+		return t == 0x11 && r != 0
+	case repCLTkMethod:
+		return (t == repCLTMethodDef || t == repCLTMemberRef || t == repCLTMethodSpec) && r != 0
+	case repCLTkField:
+		return (t == repCLTField || t == repCLTMemberRef) && r != 0
+	case repCLTkType:
+		return (t == repCLTTypeDef || t == repCLTTypeRef || t == repCLTTypeSpec) && r != 0
+	case repCLTkAny:
+		return (t == repCLTTypeDef || t == repCLTTypeRef || t == repCLTTypeSpec || t == repCLTField || t == repCLTMethodDef || t == repCLTMemberRef || t == repCLTMethodSpec) && r != 0
+	}
+	return false
+}
+
+// Port source: zeros3-z3/clrz3/cil.go
+func (b *repCLBody) walkCode(d []byte, strict bool) bool {
+	p, end := b.CodeOff, b.CodeOff+int64(b.CodeLen)
+	for p < end {
+		op := d[p]
+		p++
+		var o repCLopd
+		if op == 0xfe {
+			if p >= end {
+				return false
+			}
+			op2 := d[p]
+			p++
+			if int(op2) >= len(repCLopd2) {
+				return false
+			}
+			o = repCLopd2[op2]
+		} else {
+			o = repCLopd1[op]
+		}
+		var sz int64
+		cls := uint8(0)
+		switch o {
+		case repCLoBad:
+			return false
+		case repCLoNone:
+		case repCLoI1, repCLoU1:
+			sz = 1
+		case repCLoU2:
+			sz = 2
+		case repCLoI4, repCLoR4, repCLoBr4:
+			sz = 4
+		case repCLoI8, repCLoR8:
+			sz = 8
+		case repCLoSwitch:
+			if p+4 > end {
+				return false
+			}
+			n := int64(binary.LittleEndian.Uint32(d[p:]))
+			if n > (end-p-4)/4 {
+				return false
+			}
+			sz = 4 + 4*n
+		case repCLoMethod:
+			sz, cls = 4, repCLTkMethod
+		case repCLoField:
+			sz, cls = 4, repCLTkField
+		case repCLoType:
+			sz, cls = 4, repCLTkType
+		case repCLoSig:
+			sz, cls = 4, repCLTkSig
+		case repCLoString:
+			sz, cls = 4, repCLTkString
+		case repCLoTok:
+			sz, cls = 4, repCLTkAny
+		}
+		if p+sz > end {
+			return false
+		}
+		if cls != 0 {
+			v := binary.LittleEndian.Uint32(d[p:])
+			if strict && !repCLvalidTok(v, cls) {
+				return false
+			}
+			b.Toks = append(b.Toks, repCLTokSlot{p, cls, v})
+		}
+		p += sz
+	}
+	return true
+}
+
+// Port source: zeros3-z3/clrz3/compact.go
+// Mechanically extracted collectors with checked sizing passes; slot semantics unchanged.
+func repCLcompactTableSlots(f *repCLFile, d []byte, dst []repCLSlot) ([]repCLSlot, error) {
+	count := 0
+	for t, tb := range f.Tables {
+		for _, cd := range repCLschema[t] {
+			if cd.K != repCLKConst {
+				if uint64(tb.Rows) > uint64((2<<20)-count) {
+					return nil, repCLlimit("table slot metadata")
+				}
+				count += int(tb.Rows)
+			}
+		}
+	}
+	if cap(dst)-len(dst) < count {
+		return nil, repCLlimit("slot capacity")
+	}
+	out := dst
+	for t := 0; t < repCLNumTables; t++ {
+		tb := &f.Tables[t]
+		if tb.Rows == 0 {
+			continue
+		}
+		for c, cd := range repCLschema[t] {
+			if cd.K == repCLKConst {
+				continue
+			}
+			cl := tb.Cols[c]
+			s := repCLSlot{Len: uint8(cl.W), Table: uint8(t), Col: uint8(c), Self: -1, Stream: repCLcolStream(t, cd)}
+			switch cd.K {
+			case repCLKStr:
+				s.Sp = repCLSpStr
+			case repCLKGuid:
+				s.Sp = repCLSpGuid
+			case repCLKBlob:
+				s.Sp = repCLSpBlob
+			case repCLKTable:
+				if t == repCLTNestedClass {
+					s.Sp, s.Stream = repCLSpLayout, repCLStL
+					s.Lay = repCLLNestedA
+					if c == 1 {
+						s.Lay = repCLLNestedB
+					}
+				} else {
+					s.Sp, s.Set = repCLSpRow, uint8(cd.T)
+				}
+			case repCLKCoded:
+				s.Sp, s.Set = repCLSpRow, uint8(repCLSetCoded0+cd.T)
+				if t == repCLTTypeRef || t == repCLTExportedType {
+					s.Self = int8(t)
+				}
+			case repCLKList:
+				s.Sp, s.Stream, s.Lay = repCLSpLayout, repCLStL, repCLLList
+			case repCLKRVA:
+				s.Sp, s.Stream = repCLSpLayout, repCLStL
+				switch t {
+				case repCLTMethodDef:
+					s.Lay = repCLLRVA
+				case repCLTFieldRVA:
+					s.Lay = repCLLFieldRVA
+				default:
+					s.Lay = repCLLResOff
+				}
+			}
+			for r := uint32(1); r <= tb.Rows; r++ {
+				x := s
+				x.Row = r
+				x.Off = tb.Off + int64(r-1)*int64(tb.RowSize) + int64(cl.Off)
+				if cl.W == 2 {
+					x.Val = uint32(repCLle16(d[x.Off:]))
+				} else {
+					x.Val = repCLle32(d[x.Off:])
+				}
+				out = append(out, x)
+			}
+		}
+	}
+	repCLsortSlots(out)
+	return out, nil
+}
+
+// Port source: zeros3-z3/clrz3/context_at.go
+// newCtxAt owns only bounded metadata heaps and compact identity state.
+func repCLnewCtxAt(f *repCLFile, s *repCLclrSource, k0 int) (*repCLCtx, error) {
+	rows := int64(0)
+	for _, t := range f.Tables {
+		rows += int64(t.Rows)
+		if rows > 1<<20 {
+			return nil, repCLlimit("aggregate identity rows")
+		}
+	}
+	heapBytes := f.Str.Size + f.Blob.Size + f.US.Size + f.GUID.Size
+	if heapBytes < 0 || heapBytes > 32<<20 {
+		return nil, repCLlimit("aggregate metadata heaps")
+	}
+	c := &repCLCtx{F: f, source: s, K0: k0, rowIdx: map[[2]int]*repIXClassIndex{}, workLimit: f.Size*16 + (64 << 20)}
+	var err error
+	if f.HasStr {
+		c.str, err = s.owned(f.Str.Off, f.Str.Size)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := c.prepareStringBounds(); err != nil {
+		return nil, err
+	}
+	hv := &repCLHeapView{}
+	if f.HasBlob {
+		hv.Blob, err = s.owned(f.Blob.Off, f.Blob.Size)
+		if err != nil {
+			return nil, err
+		}
+		hv.Blobs, err = repCLlimitedHeapEntries(hv.Blob)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if f.HasUS {
+		hv.US, err = s.owned(f.US.Off, f.US.Size)
+		if err != nil {
+			return nil, err
+		}
+		hv.USes, err = repCLlimitedHeapEntries(hv.US)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if heapBytes+33*rows+94*int64(len(hv.Blobs))+60*int64(len(hv.USes)) > 64<<20 {
+		return nil, repCLlimit("aggregate context metadata")
+	}
+	hv.BlobAt = make(map[uint32]int, len(hv.Blobs))
+	for i, e := range hv.Blobs {
+		hv.BlobAt[e.Off] = i
+	}
+	hv.USAt = make(map[uint32]int, len(hv.USes))
+	for i, e := range hv.USes {
+		hv.USAt[e.Off] = i
+	}
+	c.HV, c.blob, c.us, c.Blobs, c.USes, c.blobAt, c.usAt = hv, hv.Blob, hv.US, hv.Blobs, hv.USes, hv.BlobAt, hv.USAt
+	if f.HasGUID {
+		c.guid, err = s.owned(f.GUID.Off, f.GUID.Size)
+		if err != nil {
+			return nil, err
+		}
+		if len(c.guid)%16 != 0 {
+			return nil, repCLunsup("#GUID size %d", len(c.guid))
+		}
+	}
+	for t := 0; t < repCLNumTables; t++ {
+		n := int(f.Tables[t].Rows)
+		c.IDs[t] = make([]repIXIdentity, n)
+		c.state[t] = make([]uint8, n)
+	}
+	c.Marks = make([]byte, len(c.Blobs))
+	c.blobID = make([]repIXIdentity, len(c.Blobs))
+	c.blobDone = make([]uint8, len(c.Blobs))
+	return c, nil
+}
+
+// Port source: zeros3-z3/clrz3/context_at.go
+// Mechanically adapted canonical heap walk with a checked entry budget.
+func repCLlimitedHeapEntries(h []byte) (es []repCLBlobEntry, err error) {
+	p := 0
+	for p < len(h) {
+		c := h[p]
+		var n, w int
+		switch {
+		case c&0x80 == 0:
+			n, w = int(c), 1
+		case c&0xC0 == 0x80 && p+2 <= len(h):
+			n, w = int(c&0x3f)<<8|int(h[p+1]), 2
+		case c&0xE0 == 0xC0 && p+4 <= len(h):
+			n, w = int(c&0x1f)<<24|int(h[p+1])<<16|int(h[p+2])<<8|int(h[p+3]), 4
+		default:
+			return nil, repCLunsup("heap does not end on an entry boundary")
+		}
+		if p+w+n > len(h) {
+			return nil, repCLunsup("heap does not end on an entry boundary")
+		}
+		if len(es) >= 1<<18 {
+			return nil, repCLlimit("heap entry count")
+		}
+		es = append(es, repCLBlobEntry{uint32(p), uint32(p + w), uint32(n)})
+		p += w + n
+	}
+	return es, nil
+}
+
+// Port source: zeros3-z3/clrz3/context_at.go
+// Decode retains aliases into its already bounded reconstruction, so reference
+// restoration remains visible to identity computation without another image.
+func repCLnewCtxDecode(f *repCLFile, data []byte, k0 int) (*repCLCtx, error) {
+	source := &repCLclrSource{r: bytes.NewReader(data), size: int64(len(data)), lo: -1, borrow: data}
+	c, e := repCLnewCtxAt(f, source, k0)
+	if e != nil {
+		return nil, e
+	}
+	c.D = data
+	c.source = nil
+	return c, nil
+}
+
+// Port source: zeros3-z3/clrz3/context_at.go
+func repCLtableSlotCount(f *repCLFile) (int, error) {
+	n := 0
+	for t, tb := range f.Tables {
+		for _, cd := range repCLschema[t] {
+			if cd.K != repCLKConst {
+				if int64(tb.Rows) > int64((2<<20)-n) {
+					return 0, repCLlimit("table slot metadata")
+				}
+				n += int(tb.Rows)
+			}
+		}
+	}
+	return n, nil
+}
+
+// Port source: zeros3-z3/clrz3/decode.go
+func repCLunzz(u uint64) int64 { return repIXUnzigzag(u) }
+
+// Port source: zeros3-z3/clrz3/decode.go
+func repCLidxErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %v", repCLErrFormat, err)
+}
+
+// Port source: zeros3-z3/clrz3/decode.go
+// writeSlot stores v into the slot's bytes with the width the mask preserved.
+func repCLwriteSlot(buf []byte, s *repCLSlot, v uint32) error {
+	b := buf[s.Off : s.Off+int64(s.Len)]
+	switch s.Enc {
+	case repCLEncFixed:
+		switch s.Len {
+		case 2:
+			if v > 0xffff {
+				return repCLbad("value %d does not fit the 2-byte slot at %d", v, s.Off)
+			}
+			binary.LittleEndian.PutUint16(b, uint16(v))
+		case 4:
+			binary.LittleEndian.PutUint32(b, v)
+		default:
+			return repCLbad("slot width %d", s.Len)
+		}
+	case repCLEncToken:
+		binary.LittleEndian.PutUint32(b, v)
+	case repCLEncCompressed:
+		if !repCLputCompressed(b, int(s.Len), v) {
+			return repCLbad("value %d does not fit the %d-byte compressed integer at %d", v, s.Len, s.Off)
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/clrz3/decode.go
+type repCLlent struct {
+	off  int64
+	kind int // 0 layout slot, 1 selector, 2 blob mark
+	slot int
+}
+
+// Port source: zeros3-z3/clrz3/decode.go
+// Decode rebuilds the assembly from Meta and the component bytes (in order). Every length it
+// allocates from is bounded by the component bytes it was handed.
+func repCLDecode(meta []byte, comps [][]byte) ([]byte, error) {
+	return repCLDecodeFrom(meta, len(comps), func(i int) ([]byte, error) { return comps[i], nil })
+}
+
+// Port source: zeros3-z3/clrz3/decode.go
+// DecodeFrom consumes one component at a time. A getter may reuse its buffer on
+// the next call. Components must be immutable across the two bounded passes;
+// no complete input-component set is retained by reconstruction.
+func repCLDecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]byte, error) {
+	if len(meta) > 16<<20 || count < 0 || count > 1<<16 || get == nil {
+		return nil, repCLlimit("representation metadata/groups")
+	}
+	if len(meta) < len(repCLrepMagic)+3 || string(meta[:4]) != repCLrepMagic {
+		return nil, repCLbad("representation header")
+	}
+	k0, auto := int(meta[4]), int(meta[5])
+	if k0 < 1 || k0 > 4 || auto > 100 {
+		return nil, repCLbad("K0 %d auto %d", k0, auto)
+	}
+	p := meta[6:]
+	rd := func() (uint64, error) {
+		v, n := binary.Uvarint(p)
+		if n <= 0 {
+			return 0, repCLbad("meta header")
+		}
+		p = p[n:]
+		return v, nil
+	}
+	size, err := rd()
+	if err != nil {
+		return nil, err
+	}
+	if size > 32<<20 {
+		return nil, repCLlimit("representation output size")
+	}
+	nreg, err := rd()
+	if err != nil {
+		return nil, err
+	}
+	if nreg > 16 || size > 1<<31 {
+		return nil, repCLbad("meta header")
+	}
+	regs := make([]repCLRegion, nreg)
+	var exc int64
+	for i := range regs {
+		o, err := rd()
+		if err != nil {
+			return nil, err
+		}
+		l, err := rd()
+		if err != nil {
+			return nil, err
+		}
+		if o > size || l > size-o || (i > 0 && int64(o) < regs[i-1].End()) {
+			return nil, repCLbad("meta region")
+		}
+		regs[i] = repCLRegion{int64(o), int64(l)}
+		exc += int64(l)
+	}
+	if int64(len(p)) != exc {
+		return nil, repCLbad("meta carries %d region bytes, expected %d", len(p), exc)
+	}
+	// Preflight payload geometry and exact stream capacity without retaining groups.
+	var expectedStreams [repCLNumStreams]int
+	var checkedPayload, checkedBytes int64
+	for i := 0; i < count; i++ {
+		component, err := get(i)
+		if err != nil {
+			return nil, err
+		}
+		if len(component) > 16<<20 || int64(len(component)) > (128<<20)-checkedBytes {
+			return nil, repCLlimit("component bytes")
+		}
+		checkedBytes += int64(len(component))
+		payload, streams, err := repIXSplitComp(component, repCLNumStreams)
+		if err != nil {
+			return nil, repCLidxErr(err)
+		}
+		checkedPayload += int64(len(payload))
+		for k, b := range streams {
+			expectedStreams[k] += len(b)
+		}
+	}
+	if checkedPayload != int64(size)-exc {
+		return nil, repCLbad("payload is %d bytes, the header describes %d", checkedPayload, int64(size)-exc)
+	}
+	buf := make([]byte, size)
+	var in [repCLNumStreams][]byte
+	for k, n := range expectedStreams {
+		in[k] = make([]byte, 0, n)
+	}
+	tilePos, region, within := int64(0), 0, 0
+	var plen, totalComp int64
+	for i := 0; i < count; i++ {
+		component, err := get(i)
+		if err != nil {
+			return nil, err
+		}
+		if len(component) > 16<<20 || int64(len(component)) > (128<<20)-totalComp {
+			return nil, repCLlimit("component bytes")
+		}
+		totalComp += int64(len(component))
+		part, streams, err := repIXSplitComp(component, repCLNumStreams)
+		if err != nil {
+			return nil, repCLidxErr(err)
+		}
+		plen += int64(len(part))
+		if plen > int64(size)-exc {
+			return nil, repCLbad("excess component payload")
+		}
+		for len(part) > 0 {
+			if region < len(regs) && tilePos == regs[region].Off {
+				r := regs[region]
+				copy(buf[r.Off:r.End()], p[within:within+int(r.Len)])
+				within += int(r.Len)
+				tilePos = r.End()
+				region++
+				continue
+			}
+			end := int64(size)
+			if region < len(regs) {
+				end = regs[region].Off
+			}
+			n := int64(len(part))
+			if n > end-tilePos {
+				n = end - tilePos
+			}
+			if n <= 0 {
+				return nil, repCLbad("payload/header tiling")
+			}
+			copy(buf[tilePos:tilePos+n], part[:n])
+			part = part[n:]
+			tilePos += n
+		}
+		for k := range streams {
+			if len(streams[k]) > expectedStreams[k]-len(in[k]) {
+				return nil, repCLbad("component streams changed")
+			}
+			in[k] = append(in[k], streams[k]...)
+		}
+	}
+	if plen != int64(size)-exc {
+		return nil, repCLbad("payload is %d bytes, the header describes %d", plen, int64(size)-exc)
+	}
+	for region < len(regs) && tilePos == regs[region].Off {
+		r := regs[region]
+		copy(buf[r.Off:r.End()], p[within:within+int(r.Len)])
+		within += int(r.Len)
+		tilePos = r.End()
+		region++
+	}
+	for k, n := range expectedStreams {
+		if len(in[k]) != n {
+			return nil, repCLbad("component streams changed")
+		}
+	}
+	if tilePos != int64(size) || region != len(regs) || within != len(p) {
+		return nil, repCLbad("payload/header tiling")
+	}
+	f, err := repCLParse(bytes.NewReader(buf), int64(size), repCLLimits{})
+	if err != nil {
+		return nil, err
+	}
+	if len(f.Excised) != len(regs) {
+		return nil, repCLbad("header regions differ")
+	}
+	for i := range regs {
+		if f.Excised[i] != regs[i] {
+			return nil, repCLbad("header regions differ")
+		}
+	}
+	if f.TabKind != '~' || f.HasPtr || !f.HasStr || !f.HasBlob {
+		return nil, repCLbad("unsupported structure in a representation")
+	}
+	c, err := repCLnewCtxDecode(f, buf, k0)
+	if err != nil {
+		return nil, err
+	}
+	c.Auto = auto
+	slotCount, err := repCLtableSlotCount(f)
+	if err != nil {
+		return nil, err
+	}
+	slots, err := repCLcompactTableSlots(f, buf, make([]repCLSlot, 0, slotCount))
+	if err != nil {
+		return nil, err
+	}
+
+	// ---- L: layout state ------------------------------------------------------------------
+	var ls []repCLlent
+	for i := range slots {
+		s := &slots[i]
+		if s.Sp == repCLSpLayout {
+			ls = append(ls, repCLlent{s.Off, 0, i})
+		} else if s.Self >= 0 && s.Sp == repCLSpRow {
+			ls = append(ls, repCLlent{s.Off, 1, i})
+		}
+	}
+	for i, e := range c.Blobs {
+		ls = append(ls, repCLlent{f.Blob.Off + int64(e.Off), 2, i})
+	}
+	ls = append(ls, repCLlent{f.Str.Off, 3, 0})
+	repCLsortLents(ls)
+	lv := make([]uint64, len(ls))
+	lin := in[repCLStL]
+	var extra []int
+	for i := range ls {
+		v, n := binary.Uvarint(lin)
+		if n <= 0 {
+			return nil, repCLbad("layout stream truncated")
+		}
+		lin = lin[n:]
+		lv[i] = v
+		if ls[i].kind == 3 { // suffix offsets of #Strings: v of them follow as deltas
+			if v > uint64(len(c.str)) {
+				return nil, repCLbad("%d string suffix offsets", v)
+			}
+			prev := 0
+			for k := uint64(0); k < v; k++ {
+				dv, n := binary.Uvarint(lin)
+				if n <= 0 || dv > uint64(len(c.str)) {
+					return nil, repCLbad("layout stream truncated")
+				}
+				lin = lin[n:]
+				prev += int(dv)
+				extra = append(extra, prev)
+			}
+		}
+	}
+	if err := c.SetStrExtra(extra); err != nil {
+		return nil, err
+	}
+	if len(lin) != 0 {
+		return nil, repCLbad("trailing layout bytes")
+	}
+	selfDone := map[int64]bool{}
+	run := map[[2]uint8]uint32{}
+	var prevA, curA, prevFR, prevRes int64
+	for i, e := range ls {
+		v := lv[i]
+		switch e.kind {
+		case 3:
+			continue
+		case 2:
+			if v >= uint64(repCLnumBlobKinds) {
+				return nil, repCLbad("blob mark %d", v)
+			}
+			c.Marks[e.slot] = byte(v)
+		case 1:
+			if v == 0 {
+				continue
+			}
+			s := &slots[e.slot]
+			row := int64(s.Row) - repCLunzz(v-1)
+			if row < 1 || row > int64(f.Rows(int(s.Self))) {
+				return nil, repCLbad("self reference to row %d", row)
+			}
+			cv, ok := repCLEncodeCoded(int(s.Set)-repCLSetCoded0, int(s.Self), uint32(row))
+			if !ok || repCLwriteSlot(buf, s, cv) != nil {
+				return nil, repCLbad("self reference does not fit")
+			}
+			selfDone[s.Off] = true
+		default:
+			s := &slots[e.slot]
+			var val int64
+			switch s.Lay {
+			case repCLLList:
+				k := [2]uint8{s.Table, s.Col}
+				if _, ok := run[k]; !ok {
+					run[k] = 1
+				}
+				val = int64(run[k])
+				run[k] += uint32(v)
+			case repCLLNestedA:
+				prevA += repCLunzz(v)
+				curA, val = prevA, prevA
+			case repCLLNestedB:
+				val = curA - repCLunzz(v)
+			case repCLLFieldRVA:
+				prevFR += repCLunzz(v)
+				val = prevFR
+			case repCLLResOff:
+				prevRes += repCLunzz(v)
+				val = prevRes
+			case repCLLRVA:
+				continue // restored below, in row order, with the body layout
+			}
+			if val < 0 || val > 0xffffffff {
+				return nil, repCLbad("layout value %d", val)
+			}
+			if err := repCLwriteSlot(buf, s, uint32(val)); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for k, v := range run {
+		cd := repCLschema[k[0]][k[1]]
+		if v != f.Rows(cd.T)+1 {
+			return nil, repCLbad("child list of %s.%s ends at %d, expected %d", repCLTableName(int(k[0])), cd.Name, v, f.Rows(cd.T)+1)
+		}
+	}
+	// method RVAs and body layout
+	var bodies []repCLBodyInfo
+	bodySource := &repCLclrSource{r: bytes.NewReader(buf), size: int64(len(buf)), lo: -1}
+	bodyCache := make(map[int64]int)
+	prevEnd := f.CLIOff + 72
+	for i, e := range ls {
+		if e.kind != 0 || slots[e.slot].Lay != repCLLRVA {
+			continue
+		}
+		s := &slots[e.slot]
+		code := lv[i]
+		opaque, rc := code&1 != 0, code>>1
+		var rva uint32
+		switch {
+		case rc == 1:
+			rva = 0
+		default:
+			pred := int64(repCLbodyPred(f, buf, prevEnd))
+			if rc >= 2 {
+				pred += repCLunzz(rc - 2)
+			}
+			if pred < 1 || pred > 0xffffffff {
+				return nil, repCLbad("method RVA %d", pred)
+			}
+			rva = uint32(pred)
+		}
+		if err := repCLwriteSlot(buf, s, rva); err != nil {
+			return nil, err
+		}
+		if rva == 0 {
+			continue
+		}
+		bi := repCLBodyInfo{Row: s.Row, Opaque: opaque}
+		if !opaque {
+			off, _, ok := f.RVAToOff(rva)
+			if !ok {
+				return nil, repCLbad("method RVA %#x unmapped", rva)
+			}
+			if cached, found := bodyCache[int64(off)]; found {
+				bi.Body = bodies[cached].Body
+			} else {
+				bodySource.lo = -1
+				bodySource.buf = bodySource.buf[:0]
+				var parseErr error
+				bi.Body, ok, parseErr = repCLparseBodyAt(bodySource, int64(off), false)
+				if parseErr != nil {
+					return nil, parseErr
+				}
+				if !ok {
+					return nil, repCLbad("method body at %#x", rva)
+				}
+				bodyCache[int64(off)] = len(bodies)
+			}
+
+			prevEnd = bi.Body.End
+		}
+		if len(bodies) >= 1<<18 {
+			return nil, repCLlimit("method layout count")
+		}
+		bodies = append(bodies, bi)
+	}
+	if err := c.BuildOwners(); err != nil {
+		return nil, err
+	}
+
+	// ---- reference stages -----------------------------------------------------------------
+	pos := [repCLNumStreams][]byte{}
+	copy(pos[:], in[:])
+	take := func(all []repCLSlot, allBlobs bool, keep func(*repCLSlot) bool) error {
+		for i := range all {
+			s := &all[i]
+			if s.Sp == repCLSpLayout || selfDone[s.Off] || !keep(s) {
+				continue
+			}
+			v, rest, err := c.Get(pos[s.Stream], s, allBlobs)
+			if err != nil {
+				return repCLidxErr(err)
+			}
+			pos[s.Stream] = rest
+			if err := repCLwriteSlot(buf, s, v); err != nil {
+				return err
+			}
+		}
+		return c.err
+	}
+	stream := func(st uint8) func(*repCLSlot) bool { return func(s *repCLSlot) bool { return s.Stream == st } }
+	for _, g := range []struct {
+		st     uint8
+		tables []int
+	}{{repCLStG0a, repCLstageG0a}, {repCLStG0b, repCLstageG0b}} {
+		for _, t := range g.tables {
+			tt, st := t, g.st
+			if err := take(slots, false, func(s *repCLSlot) bool { return s.Stream == st && int(s.Table) == tt }); err != nil {
+				return nil, err
+			}
+			if err := c.ComputeTable(t); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := take(repCLBlobSlots(f, buf, c.Blobs, c.Marks), true, func(*repCLSlot) bool { return true }); err != nil {
+		return nil, err
+	}
+	c.SigReady()
+	if err := take(slots, true, stream(repCLStG1)); err != nil {
+		return nil, err
+	}
+	for _, t := range repCLstageG1 {
+		if err := c.ComputeTable(t); err != nil {
+			return nil, err
+		}
+	}
+	for _, t := range repCLstageG2 {
+		tt := t
+		if err := take(slots, true, func(s *repCLSlot) bool { return s.Stream == repCLStG2 && int(s.Table) == tt }); err != nil {
+			return nil, err
+		}
+		if repCLhasIdentity(t) {
+			if err := c.ComputeTable(t); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := take(slots, true, stream(repCLStR)); err != nil {
+		return nil, err
+	}
+	// Preallocate the bounded IL slot vector once rather than growing multiple
+	// overlapping backing arrays during independent production proof.
+	ilCount := 0
+	for _, bi := range bodies {
+		if bi.Opaque {
+			continue
+		}
+		n := len(bi.Body.Toks) + len(bi.Body.Clauses)
+		if bi.Body.LocalOff != 0 {
+			n++
+		}
+		if n > (2<<20)-ilCount {
+			return nil, repCLlimit("IL slot metadata")
+		}
+		ilCount += n
+	}
+	ilSlots, err := repCLcompactILSlotsAt(bodySource, bodies, make([]repCLSlot, 0, ilCount))
+	if err != nil {
+		return nil, err
+	}
+	if err := take(ilSlots, true, func(*repCLSlot) bool { return true }); err != nil {
+		return nil, err
+	}
+	for st := range pos {
+		if st != repCLStL && len(pos[st]) != 0 {
+			return nil, repCLbad("%d unread bytes in stream %s", len(pos[st]), repCLStreamName[st])
+		}
+	}
+	return buf, nil
+}
+
+// Port source: zeros3-z3/clrz3/decode.go
+func repCLsortLents(a []repCLlent) {
+	sort.SliceStable(a, func(i, j int) bool { return a[i].off < a[j].off })
+}
+
+// Port source: zeros3-z3/clrz3/decode.go
+func repCLsortInt64(a []int64) { sort.Slice(a, func(i, j int) bool { return a[i] < a[j] }) }
+
+// Port source: zeros3-z3/clrz3/file.go
+var (
+	// ErrFormat reports a file that is not a well-formed assembly (or a corrupt representation).
+	repCLErrFormat = errors.New("clrz3: malformed")
+	// ErrUnsupported reports legal structure this package does not represent (the caller keeps CDC).
+	repCLErrUnsupported = errors.New("clrz3: unsupported")
+	// ErrLimit reports a bound exceeded.
+	repCLErrLimit = errors.New("clrz3: limit exceeded")
+)
+
+// Port source: zeros3-z3/clrz3/file.go
+func repCLbad(f string, a ...any) error {
+	return fmt.Errorf("%w: %s", repCLErrFormat, fmt.Sprintf(f, a...))
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+func repCLunsup(f string, a ...any) error {
+	return fmt.Errorf("%w: %s", repCLErrUnsupported, fmt.Sprintf(f, a...))
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+func repCLlimit(f string, a ...any) error {
+	return fmt.Errorf("%w: %s", repCLErrLimit, fmt.Sprintf(f, a...))
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// Limits bounds what Parse accepts.
+type repCLLimits struct {
+	MaxStreams int   // metadata streams (default 32)
+	MaxRows    int64 // rows in one table (default 1<<24, the token row space)
+	MaxHdr     int64 // bytes of PE headers (default 4096)
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+func (l *repCLLimits) fill() {
+	if l.MaxStreams == 0 {
+		l.MaxStreams = 32
+	}
+	if l.MaxRows == 0 {
+		l.MaxRows = 1 << 24
+	}
+	if l.MaxHdr == 0 {
+		l.MaxHdr = 4096
+	}
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// Region is a byte range of the file.
+type repCLRegion struct{ Off, Len int64 }
+
+// Port source: zeros3-z3/clrz3/file.go
+func (r repCLRegion) End() int64 { return r.Off + r.Len }
+
+// Port source: zeros3-z3/clrz3/file.go
+// Stream is one metadata stream (heap or table stream).
+type repCLStream struct {
+	Name   string
+	HdrOff int64
+	Off    int64 // absolute file offset
+	Size   int64
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// ColLayout is the byte position and width of a column inside a row.
+type repCLColLayout struct{ Off, W int }
+
+// Port source: zeros3-z3/clrz3/file.go
+// Table is the geometry of one metadata table.
+type repCLTable struct {
+	Rows    uint32
+	Off     int64
+	RowSize int
+	Cols    []repCLColLayout
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// CLIHeader is the IMAGE_COR20_HEADER.
+type repCLCLIHeader struct {
+	Cb                          uint32
+	Major, Minor                uint16
+	MetaRVA, MetaSize           uint32
+	Flags                       uint32
+	Entry                       uint32
+	ResRVA, ResSize             uint32
+	SNRVA, SNSize               uint32
+	VTableRVA, VTableSize       uint32
+	ManagedNativeRVA, ManagedNS uint32
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// File is the parsed geometry of one assembly.
+type repCLFile struct {
+	Size          int64
+	PE32Plus      bool
+	Machine       uint16
+	Secs          []repPESection
+	SizeOfHeaders int64
+	Dirs          [16][2]uint32
+	CertOff       int64 // security directory (file offset) and size, 0 if none
+	CertSize      int64
+	CLIOff        int64
+	CLI           repCLCLIHeader
+	MetaOff       int64
+	MetaVer       string
+	Streams       []repCLStream
+	Tab           repCLStream
+	Str, US, GUID repCLStream
+	Blob          repCLStream
+	HasStr        bool
+	HasUS         bool
+	HasGUID       bool
+	HasBlob       bool
+	TabKind       byte // '~' compressed, '-' uncompressed
+	HeapSizes     byte
+	Valid         uint64
+	Tables        [repCLNumTables]repCLTable
+	TabData       int64 // file offset of the first table row
+	TabEnd        int64 // file offset after the last table row
+	Excised       []repCLRegion
+	HasPtr        bool
+
+	strW, guidW, blobW int
+	tabW               [repCLNumTables]int
+	codedW             [repCLNumCoded]int
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+func repCLle16(b []byte) uint16 { return binary.LittleEndian.Uint16(b) }
+
+// Port source: zeros3-z3/clrz3/file.go
+func repCLle32(b []byte) uint32 { return binary.LittleEndian.Uint32(b) }
+
+// Port source: zeros3-z3/clrz3/file.go
+func repCLreadAt(ra io.ReaderAt, size, off int64, n int) ([]byte, error) {
+	if off < 0 || n < 0 || off > size || int64(n) > size-off {
+		return nil, repCLbad("read of %d bytes at %d outside the %d-byte file", n, off, size)
+	}
+	b := make([]byte, n)
+	if _, err := ra.ReadAt(b, off); err != nil && !(err == io.EOF && n == len(b)) {
+		return nil, err
+	}
+	return b, nil
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// Parse validates the PE/CLI/metadata geometry of an assembly.
+func repCLParse(ra io.ReaderAt, size int64, lim repCLLimits) (*repCLFile, error) {
+	lim.fill()
+	f := &repCLFile{Size: size}
+	dos, err := repCLreadAt(ra, size, 0, 0x40)
+	if err != nil || dos[0] != 'M' || dos[1] != 'Z' {
+		return nil, repCLbad("no DOS header")
+	}
+	pe := int64(repCLle32(dos[0x3c:]))
+	hdr, err := repCLreadAt(ra, size, pe, 24)
+	if err != nil || string(hdr[:4]) != "PE\x00\x00" {
+		return nil, repCLbad("no PE signature")
+	}
+	f.Machine = repCLle16(hdr[4:])
+	nsec := int(repCLle16(hdr[6:]))
+	optSize := int64(repCLle16(hdr[20:]))
+	if nsec == 0 || nsec > 96 {
+		return nil, repCLbad("%d sections", nsec)
+	}
+	if optSize < 96 || optSize > 1024 {
+		return nil, repCLbad("optional header of %d bytes", optSize)
+	}
+	opt, err := repCLreadAt(ra, size, pe+24, int(optSize))
+	if err != nil {
+		return nil, err
+	}
+	var dirOff int
+	switch repCLle16(opt) {
+	case 0x10b:
+		dirOff = 96
+	case 0x20b:
+		f.PE32Plus = true
+		dirOff = 112
+	default:
+		return nil, repCLbad("optional header magic %#x", repCLle16(opt))
+	}
+	f.SizeOfHeaders = int64(repCLle32(opt[60:]))
+	nrva := int(repCLle32(opt[dirOff-4:]))
+	if nrva > 16 || int64(dirOff+8*nrva) > optSize {
+		return nil, repCLbad("%d data directories", nrva)
+	}
+	for i := 0; i < nrva; i++ {
+		f.Dirs[i] = [2]uint32{repCLle32(opt[dirOff+8*i:]), repCLle32(opt[dirOff+8*i+4:])}
+	}
+	secOff := pe + 24 + optSize
+	sh, err := repCLreadAt(ra, size, secOff, 40*nsec)
+	if err != nil {
+		return nil, err
+	}
+	for i := 0; i < nsec; i++ {
+		b := sh[40*i:]
+		name := string(b[:8])
+		for j := 0; j < 8; j++ {
+			if b[j] == 0 {
+				name = string(b[:j])
+				break
+			}
+		}
+		s := repPESection{Name: name, VSize: repCLle32(b[8:]), RVA: repCLle32(b[12:]), RawSize: repCLle32(b[16:]), RawOff: repCLle32(b[20:]), Chr: repCLle32(b[36:])}
+		if s.RawSize > 0 && (int64(s.RawOff) > size || int64(s.RawSize) > size-int64(s.RawOff)) {
+			return nil, repCLbad("section %q outside the file", name)
+		}
+		f.Secs = append(f.Secs, s)
+	}
+	hdrEnd := secOff + int64(40*nsec)
+	if f.SizeOfHeaders < hdrEnd || f.SizeOfHeaders > lim.MaxHdr || f.SizeOfHeaders > size {
+		return nil, repCLbad("SizeOfHeaders %d", f.SizeOfHeaders)
+	}
+	for _, s := range f.Secs {
+		if s.RawSize > 0 && int64(s.RawOff) < f.SizeOfHeaders {
+			return nil, repCLunsup("section data inside the header area")
+		}
+	}
+	if d := f.Dirs[4]; d[0] != 0 && d[1] != 0 {
+		f.CertOff, f.CertSize = int64(d[0]), int64(d[1])
+	}
+	cliRVA, cliSize := f.Dirs[14][0], f.Dirs[14][1]
+	if cliRVA == 0 || cliSize < 72 {
+		return nil, repCLbad("no CLI header")
+	}
+	off, avail, ok := repPERVAOff(f.Secs, int(size), uint64(cliRVA))
+	if !ok || avail < 72 {
+		return nil, repCLbad("CLI header RVA %#x unmapped", cliRVA)
+	}
+	f.CLIOff = int64(off)
+	cb, err := repCLreadAt(ra, size, f.CLIOff, 72)
+	if err != nil {
+		return nil, err
+	}
+	f.CLI = repCLCLIHeader{Cb: repCLle32(cb), Major: repCLle16(cb[4:]), Minor: repCLle16(cb[6:]), MetaRVA: repCLle32(cb[8:]), MetaSize: repCLle32(cb[12:]), Flags: repCLle32(cb[16:]),
+		Entry: repCLle32(cb[20:]), ResRVA: repCLle32(cb[24:]), ResSize: repCLle32(cb[28:]), SNRVA: repCLle32(cb[32:]), SNSize: repCLle32(cb[36:]),
+		VTableRVA: repCLle32(cb[48:]), VTableSize: repCLle32(cb[52:]), ManagedNativeRVA: repCLle32(cb[64:]), ManagedNS: repCLle32(cb[68:])}
+	if f.CLI.Cb < 72 {
+		return nil, repCLbad("CLI header cb %d", f.CLI.Cb)
+	}
+	moff, mavail, ok := repPERVAOff(f.Secs, int(size), uint64(f.CLI.MetaRVA))
+	if !ok || int64(mavail) < int64(f.CLI.MetaSize) || f.CLI.MetaSize < 32 {
+		return nil, repCLbad("metadata RVA %#x size %d unmapped", f.CLI.MetaRVA, f.CLI.MetaSize)
+	}
+	f.MetaOff = int64(moff)
+	if err := f.parseRoot(ra, lim); err != nil {
+		return nil, err
+	}
+	if err := f.parseTables(ra, lim); err != nil {
+		return nil, err
+	}
+	f.Excised = []repCLRegion{{0, f.SizeOfHeaders}, {f.CLIOff, 72}}
+	rootEnd := f.MetaOff + f.rootLen()
+	f.Excised = append(f.Excised, repCLRegion{f.MetaOff, rootEnd - f.MetaOff}, repCLRegion{f.Tab.Off, f.TabData - f.Tab.Off})
+	// the excised areas must be disjoint and ascending once sorted
+	repCLsortRegions(f.Excised)
+	for i := 1; i < len(f.Excised); i++ {
+		if f.Excised[i].Off < f.Excised[i-1].End() {
+			return nil, repCLunsup("header regions overlap")
+		}
+	}
+	return f, nil
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+func repCLsortRegions(r []repCLRegion) {
+	for i := 1; i < len(r); i++ {
+		for j := i; j > 0 && r[j].Off < r[j-1].Off; j-- {
+			r[j], r[j-1] = r[j-1], r[j]
+		}
+	}
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// rootLen is the byte length of the metadata root plus the stream headers.
+func (f *repCLFile) rootLen() int64 {
+	end := int64(0)
+	for _, s := range f.Streams {
+		n := int64(len(s.Name)) + 1
+		n = (n + 3) &^ 3
+		if e := s.HdrOff + 8 + n - f.MetaOff; e > end {
+			end = e
+		}
+	}
+	return end
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+func (f *repCLFile) parseRoot(ra io.ReaderAt, lim repCLLimits) error {
+	b, err := repCLreadAt(ra, f.Size, f.MetaOff, 16)
+	if err != nil {
+		return err
+	}
+	if repCLle32(b) != 0x424A5342 {
+		return repCLbad("metadata signature %#x", repCLle32(b))
+	}
+	vlen := int64(repCLle32(b[12:]))
+	if vlen > 256 || vlen%4 != 0 {
+		return repCLbad("metadata version length %d", vlen)
+	}
+	vb, err := repCLreadAt(ra, f.Size, f.MetaOff+16, int(vlen)+4)
+	if err != nil {
+		return err
+	}
+	f.MetaVer = string(vb[:vlen])
+	for i := 0; i < int(vlen); i++ {
+		if vb[i] == 0 {
+			f.MetaVer = string(vb[:i])
+			break
+		}
+	}
+	ns := int(repCLle16(vb[vlen+2:]))
+	if ns > lim.MaxStreams {
+		return repCLlimit("%d metadata streams", ns)
+	}
+	pos := f.MetaOff + 16 + vlen + 4
+	for i := 0; i < ns; i++ {
+		h, err := repCLreadAt(ra, f.Size, pos, 8)
+		if err != nil {
+			return err
+		}
+		off, sz := int64(repCLle32(h)), int64(repCLle32(h[4:]))
+		nb, err := repCLreadAt(ra, f.Size, pos+8, int(min(36, f.Size-pos-8)))
+		if err != nil {
+			return err
+		}
+		n := 0
+		for n < len(nb) && nb[n] != 0 {
+			n++
+		}
+		if n == len(nb) || n > 32 {
+			return repCLbad("stream name")
+		}
+		s := repCLStream{Name: string(nb[:n]), HdrOff: pos, Off: f.MetaOff + off, Size: sz}
+		if off < 0 || sz < 0 || s.Off > f.Size || sz > f.Size-s.Off || off > int64(f.CLI.MetaSize) {
+			return repCLbad("stream %q outside the file", s.Name)
+		}
+		f.Streams = append(f.Streams, s)
+		pos += 8 + int64((n+1+3)&^3)
+	}
+	for i := range f.Streams {
+		s := f.Streams[i]
+		switch s.Name {
+		case "#~", "#-":
+			if f.TabKind != 0 {
+				return repCLunsup("two table streams")
+			}
+			f.Tab, f.TabKind = s, s.Name[1]
+		case "#Strings":
+			f.Str, f.HasStr = s, true
+		case "#US":
+			f.US, f.HasUS = s, true
+		case "#GUID":
+			f.GUID, f.HasGUID = s, true
+		case "#Blob":
+			f.Blob, f.HasBlob = s, true
+		}
+	}
+	if f.TabKind == 0 {
+		return repCLbad("no table stream")
+	}
+	// streams must not overlap one another
+	for i := range f.Streams {
+		for j := i + 1; j < len(f.Streams); j++ {
+			a, c := f.Streams[i], f.Streams[j]
+			if a.Size > 0 && c.Size > 0 && a.Off < c.Off+c.Size && c.Off < a.Off+a.Size {
+				return repCLunsup("overlapping streams %s %s", a.Name, c.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+func (f *repCLFile) parseTables(ra io.ReaderAt, lim repCLLimits) error {
+	t := f.Tab
+	if t.Size < 24 {
+		return repCLbad("table stream of %d bytes", t.Size)
+	}
+	h, err := repCLreadAt(ra, f.Size, t.Off, 24)
+	if err != nil {
+		return err
+	}
+	f.HeapSizes = h[6]
+	f.Valid = binary.LittleEndian.Uint64(h[8:])
+	if f.HeapSizes&0x40 != 0 {
+		return repCLunsup("extra data in the table stream header")
+	}
+	if f.Valid>>repCLNumTables != 0 {
+		return repCLunsup("tables beyond %d (valid mask %#x)", repCLNumTables-1, f.Valid)
+	}
+	nv := bits.OnesCount64(f.Valid)
+	hdrLen := int64(24 + 4*nv)
+	if hdrLen > t.Size {
+		return repCLbad("table row counts outside the stream")
+	}
+	rb, err := repCLreadAt(ra, f.Size, t.Off+24, 4*nv)
+	if err != nil {
+		return err
+	}
+	k := 0
+	for i := 0; i < repCLNumTables; i++ {
+		if f.Valid>>uint(i)&1 == 0 {
+			continue
+		}
+		n := int64(repCLle32(rb[4*k:]))
+		k++
+		if n > lim.MaxRows {
+			return repCLlimit("table %s has %d rows", repCLTableName(i), n)
+		}
+		f.Tables[i].Rows = uint32(n)
+		if repCLisPtr(i) && n > 0 {
+			f.HasPtr = true
+		}
+	}
+	f.strW, f.guidW, f.blobW = 2, 2, 2
+	if f.HeapSizes&1 != 0 {
+		f.strW = 4
+	}
+	if f.HeapSizes&2 != 0 {
+		f.guidW = 4
+	}
+	if f.HeapSizes&4 != 0 {
+		f.blobW = 4
+	}
+	for i := 0; i < repCLNumTables; i++ {
+		f.tabW[i] = 2
+		if f.Tables[i].Rows >= 1<<16 {
+			f.tabW[i] = 4
+		}
+	}
+	for c := 0; c < repCLNumCoded; c++ {
+		var mx uint32
+		for _, tb := range repCLcoded[c].tabs {
+			if tb >= 0 && f.Tables[tb].Rows > mx {
+				mx = f.Tables[tb].Rows
+			}
+		}
+		f.codedW[c] = 2
+		if uint64(mx) >= 1<<uint(16-repCLcoded[c].bits) {
+			f.codedW[c] = 4
+		}
+	}
+	pos := t.Off + hdrLen
+	f.TabData = pos
+	for i := 0; i < repCLNumTables; i++ {
+		tb := &f.Tables[i]
+		o := 0
+		for _, c := range repCLschema[i] {
+			w := f.colWidth(c)
+			tb.Cols = append(tb.Cols, repCLColLayout{o, w})
+			o += w
+		}
+		tb.RowSize, tb.Off = o, pos
+		if tb.Rows == 0 {
+			continue
+		}
+		sz := uint64(tb.Rows) * uint64(o)
+		if sz > uint64(t.Off+t.Size-pos) {
+			return repCLbad("table %s of %d rows runs past the stream", repCLTableName(i), tb.Rows)
+		}
+		pos += int64(sz)
+	}
+	f.TabEnd = pos
+	return nil
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+func (f *repCLFile) colWidth(c repCLColDef) int {
+	switch c.K {
+	case repCLKConst, repCLKRVA:
+		return c.W
+	case repCLKStr:
+		return f.strW
+	case repCLKGuid:
+		return f.guidW
+	case repCLKBlob:
+		return f.blobW
+	case repCLKTable, repCLKList:
+		return f.tabW[c.T]
+	case repCLKCoded:
+		return f.codedW[c.T]
+	}
+	return 0
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// Rows is the row count of table t.
+func (f *repCLFile) Rows(t int) uint32 { return f.Tables[t].Rows }
+
+// Port source: zeros3-z3/clrz3/file.go
+// CodedWidth is the byte width of a coded-index family in this file.
+func (f *repCLFile) CodedWidth(c int) int { return f.codedW[c] }
+
+// Port source: zeros3-z3/clrz3/file.go
+// HeapWidths returns the byte widths of #Strings, #GUID and #Blob indexes.
+func (f *repCLFile) HeapWidths() (str, guid, blob int) { return f.strW, f.guidW, f.blobW }
+
+// Port source: zeros3-z3/clrz3/file.go
+// IndexWidth is the byte width of a simple index into table t.
+func (f *repCLFile) IndexWidth(t int) int { return f.tabW[t] }
+
+// Port source: zeros3-z3/clrz3/file.go
+// RowOff is the file offset of row r (1-based) of table t.
+func (f *repCLFile) RowOff(t int, r uint32) int64 {
+	return f.Tables[t].Off + int64(r-1)*int64(f.Tables[t].RowSize)
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// Col reads column c of row r (1-based) of table t from data.
+func (f *repCLFile) Col(data []byte, t int, r uint32, c int) uint32 {
+	cl := f.Tables[t].Cols[c]
+	o := f.RowOff(t, r) + int64(cl.Off)
+	if cl.W == 2 {
+		return uint32(repCLle16(data[o:]))
+	}
+	return repCLle32(data[o:])
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// PutCol writes column c of row r of table t into data (width as in the file; a value that does
+// not fit is an error).
+func (f *repCLFile) PutCol(data []byte, t int, r uint32, c int, v uint32) error {
+	cl := f.Tables[t].Cols[c]
+	o := f.RowOff(t, r) + int64(cl.Off)
+	if cl.W == 2 {
+		if v > 0xffff {
+			return repCLbad("value %d does not fit a 2-byte %s.%s", v, repCLTableName(t), repCLschema[t][c].Name)
+		}
+		binary.LittleEndian.PutUint16(data[o:], uint16(v))
+		return nil
+	}
+	binary.LittleEndian.PutUint32(data[o:], v)
+	return nil
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// DecodeCoded splits a coded-index value into its target table and row. ok is false for a tag
+// that names no table. A zero value is the null reference (table -1, row 0).
+func repCLDecodeCoded(c int, v uint32) (table int, row uint32, ok bool) {
+	d := &repCLcoded[c]
+	tag := int(v & (1<<uint(d.bits) - 1))
+	row = v >> uint(d.bits)
+	if tag >= len(d.tabs) || d.tabs[tag] < 0 {
+		return -1, row, false
+	}
+	return d.tabs[tag], row, true
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// EncodeCoded is the inverse of DecodeCoded.
+func repCLEncodeCoded(c, table int, row uint32) (uint32, bool) {
+	d := &repCLcoded[c]
+	for tag, t := range d.tabs {
+		if t == table {
+			if uint64(row)<<uint(d.bits) > 0xffffffff {
+				return 0, false
+			}
+			return row<<uint(d.bits) | uint32(tag), true
+		}
+	}
+	return 0, false
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// RVAToOff maps an RVA to a file offset and the bytes available from it.
+func (f *repCLFile) RVAToOff(rva uint32) (off, avail int, ok bool) {
+	return repPERVAOff(f.Secs, int(f.Size), uint64(rva))
+}
+
+// Port source: zeros3-z3/clrz3/file.go
+// PayloadOffset maps a file offset to its offset in the representation payload (the header
+// regions removed).
+func (f *repCLFile) PayloadOffset(off int64) int {
+	n := off
+	for _, r := range f.Excised {
+		if r.End() <= off {
+			n -= r.Len
+		}
+	}
+	return int(n)
+}
+
+// Port source: zeros3-z3/clrz3/heap.go
+// HeapView is the entry structure of #Blob and #US.
+type repCLHeapView struct {
+	Blob, US     []byte
+	Blobs, USes  []repCLBlobEntry
+	BlobAt, USAt map[uint32]int
+}
+
+// Port source: zeros3-z3/clrz3/heap.go
+// BlobBytes returns the content of the blob entry at heap offset off.
+func (h *repCLHeapView) BlobBytes(off uint32) ([]byte, bool) {
+	i, ok := h.BlobAt[off]
+	if !ok {
+		return nil, false
+	}
+	e := h.Blobs[i]
+	return h.Blob[e.DataOff : e.DataOff+e.Len], true
+}
+
+// Port source: zeros3-z3/clrz3/helpers_at.go
+// Mechanically adapted collectors retain canonical token/signature validation.
+func repCLderiveMarksAt(c *repCLCtx) []byte {
+	f, h := c.F, c.HV
+	marks := make([]byte, len(h.Blobs))
+	conflict := make([]bool, len(h.Blobs))
+	for t := 0; t < repCLNumTables; t++ {
+		for ci, cd := range repCLschema[t] {
+			if cd.K != repCLKBlob || cd.Sig == repCLSigNone {
+				continue
+			}
+			for r := uint32(1); r <= f.Rows(t); r++ {
+				off := c.col(t, r, ci)
+				i, ok := h.BlobAt[off]
+				if !ok {
+					continue
+				}
+				e := h.Blobs[i]
+				k := repCLKindOf(cd.Sig, h.Blob[e.DataOff:e.DataOff+e.Len])
+				if k == repCLBlobOpaque {
+					continue
+				}
+				if marks[i] != repCLBlobOpaque && marks[i] != k {
+					conflict[i] = true
+				}
+				marks[i] = k
+			}
+		}
+	}
+	for i, e := range h.Blobs {
+		if marks[i] == repCLBlobOpaque {
+			continue
+		}
+		sl, ok := repCLParseSig(marks[i], h.Blob[e.DataOff:e.DataOff+e.Len], true)
+		if ok {
+			for _, s := range sl {
+				t, r, ok2 := repCLRowOf(repCLSetEmbType, s.Val)
+				if !ok2 || t < 0 || r > f.Rows(t) {
+					ok = false
+					break
+				}
+			}
+		}
+		if !ok || conflict[i] {
+			marks[i] = repCLBlobOpaque
+		}
+	}
+	return marks
+}
+
+// Port source: zeros3-z3/clrz3/helpers_at.go
+// ValidateBodies marks a body opaque when a token operand names nothing that exists.
+func repCLvalidateBodiesAt(f *repCLFile, s *repCLclrSource, h *repCLHeapView, bodies []repCLBodyInfo) {
+	okTok := func(set uint8, v uint32, us bool) bool {
+		if us {
+			_, ok := h.USAt[v&0xffffff]
+			return ok
+		}
+		t, r, ok := repCLRowOf(set, v)
+		return ok && (t < 0 || r <= f.Rows(t))
+	}
+	for i := range bodies {
+		b := &bodies[i]
+		if b.Opaque {
+			continue
+		}
+		good := true
+		if b.Body.LocalOff != 0 {
+			good = okTok(repCLSetTokSig, b.Body.LocalTok, false)
+		}
+		for _, t := range b.Body.Toks {
+			switch t.Class {
+			case repCLTkString:
+				good = good && okTok(0, t.Val, true)
+			case repCLTkMethod:
+				good = good && okTok(repCLSetTokMethod, t.Val, false)
+			case repCLTkField:
+				good = good && okTok(repCLSetTokField, t.Val, false)
+			case repCLTkType:
+				good = good && okTok(repCLSetTokType, t.Val, false)
+			case repCLTkSig:
+				good = good && okTok(repCLSetTokSig, t.Val, false)
+			default:
+				good = good && okTok(repCLSetTokAny, t.Val, false)
+			}
+		}
+		for _, cl := range b.Body.Clauses {
+			if cl.TokOff != 0 {
+				good = good && okTok(repCLSetTokType, cl.TokVal, false)
+			}
+		}
+		b.Opaque = !good
+	}
+	// a body must not lie inside a header region or partly overlap another body; methods that
+	// share one body (same offset) are fine
+	order := make([]int, 0, len(bodies))
+	for i := range bodies {
+		if !bodies[i].Opaque {
+			order = append(order, i)
+		}
+	}
+	sort.SliceStable(order, func(a, b int) bool { return bodies[order[a]].Body.Off < bodies[order[b]].Body.Off })
+	end, off := int64(0), int64(-1)
+	for _, i := range order {
+		b := &bodies[i]
+		bad := false
+		for _, r := range f.Excised {
+			if b.Body.Off < r.End() && r.Off < b.Body.End {
+				bad = true
+			}
+		}
+		if b.Body.Off != off && b.Body.Off < end {
+			bad = true
+		}
+		if bad {
+			b.Opaque, b.Body = true, repCLBody{}
+			continue
+		}
+		if b.Body.Off != off {
+			off, end = b.Body.Off, b.Body.End
+		}
+	}
+}
+
+// Port source: zeros3-z3/clrz3/helpers_at.go
+// BlobBytes returns the content of the blob entry at heap offset off.
+func repCLcompactTableSlotsAt(f *repCLFile, d *repCLclrSource, dst []repCLSlot) ([]repCLSlot, error) {
+	count := 0
+	for t, tb := range f.Tables {
+		for _, cd := range repCLschema[t] {
+			if cd.K != repCLKConst {
+				if uint64(tb.Rows) > uint64((2<<20)-count) {
+					return nil, repCLlimit("table slot metadata")
+				}
+				count += int(tb.Rows)
+			}
+		}
+	}
+	if cap(dst)-len(dst) < count {
+		return nil, repCLlimit("slot capacity")
+	}
+	out := dst
+	for t := 0; t < repCLNumTables; t++ {
+		tb := &f.Tables[t]
+		if tb.Rows == 0 {
+			continue
+		}
+		for c, cd := range repCLschema[t] {
+			if cd.K == repCLKConst {
+				continue
+			}
+			cl := tb.Cols[c]
+			s := repCLSlot{Len: uint8(cl.W), Table: uint8(t), Col: uint8(c), Self: -1, Stream: repCLcolStream(t, cd)}
+			switch cd.K {
+			case repCLKStr:
+				s.Sp = repCLSpStr
+			case repCLKGuid:
+				s.Sp = repCLSpGuid
+			case repCLKBlob:
+				s.Sp = repCLSpBlob
+			case repCLKTable:
+				if t == repCLTNestedClass {
+					s.Sp, s.Stream = repCLSpLayout, repCLStL
+					s.Lay = repCLLNestedA
+					if c == 1 {
+						s.Lay = repCLLNestedB
+					}
+				} else {
+					s.Sp, s.Set = repCLSpRow, uint8(cd.T)
+				}
+			case repCLKCoded:
+				s.Sp, s.Set = repCLSpRow, uint8(repCLSetCoded0+cd.T)
+				if t == repCLTTypeRef || t == repCLTExportedType {
+					s.Self = int8(t)
+				}
+			case repCLKList:
+				s.Sp, s.Stream, s.Lay = repCLSpLayout, repCLStL, repCLLList
+			case repCLKRVA:
+				s.Sp, s.Stream = repCLSpLayout, repCLStL
+				switch t {
+				case repCLTMethodDef:
+					s.Lay = repCLLRVA
+				case repCLTFieldRVA:
+					s.Lay = repCLLFieldRVA
+				default:
+					s.Lay = repCLLResOff
+				}
+			}
+			for r := uint32(1); r <= tb.Rows; r++ {
+				x := s
+				x.Row = r
+				x.Off = tb.Off + int64(r-1)*int64(tb.RowSize) + int64(cl.Off)
+				if cl.W == 2 {
+					x.Val = uint32(uint16(d.col(f, t, r, c)))
+				} else {
+					x.Val = d.col(f, t, r, c)
+				}
+				out = append(out, x)
+			}
+		}
+	}
+	repCLsortSlots(out)
+	return out, nil
+}
+
+// Port source: zeros3-z3/clrz3/helpers_at.go
+func repCLcompactILSlotsAt(d *repCLclrSource, bodies []repCLBodyInfo, dst []repCLSlot) ([]repCLSlot, error) {
+	count := 0
+	for _, bi := range bodies {
+		if bi.Opaque {
+			continue
+		}
+		n := len(bi.Body.Toks) + len(bi.Body.Clauses)
+		if bi.Body.LocalOff != 0 {
+			n++
+		}
+		if n > (2<<20)-count {
+			return nil, repCLlimit("IL slot metadata")
+		}
+		count += n
+	}
+	if cap(dst)-len(dst) < count {
+		return nil, repCLlimit("slot capacity")
+	}
+	out := dst
+	seen := map[int64]bool{}
+	for _, bi := range bodies {
+		if bi.Opaque || seen[bi.Body.Off] {
+			continue // methods sharing one body are listed once
+		}
+		seen[bi.Body.Off] = true
+		b := &bi.Body
+		if b.LocalOff != 0 {
+			out = append(out, repCLSlot{Off: b.LocalOff, Len: 4, Enc: repCLEncToken, Sp: repCLSpRow, Set: repCLSetTokSig, Stream: repCLStIL, Table: repCLTabIL, Row: bi.Row, Self: -1, Val: b.LocalTok})
+		}
+		for _, t := range b.Toks {
+			s := repCLSlot{Off: t.Off, Len: 4, Enc: repCLEncToken, Stream: repCLStIL, Table: repCLTabIL, Row: bi.Row, Self: -1, Val: t.Val}
+			switch t.Class {
+			case repCLTkString:
+				s.Sp = repCLSpUS
+			case repCLTkMethod:
+				s.Sp, s.Set = repCLSpRow, repCLSetTokMethod
+			case repCLTkField:
+				s.Sp, s.Set = repCLSpRow, repCLSetTokField
+			case repCLTkType:
+				s.Sp, s.Set = repCLSpRow, repCLSetTokType
+			case repCLTkSig:
+				s.Sp, s.Set = repCLSpRow, repCLSetTokSig
+			default:
+				s.Sp, s.Set = repCLSpRow, repCLSetTokAny
+			}
+			out = append(out, s)
+		}
+		for _, c := range b.Clauses {
+			if c.TokOff != 0 {
+				out = append(out, repCLSlot{Off: c.TokOff, Len: 4, Enc: repCLEncToken, Sp: repCLSpRow, Set: repCLSetTokType, Stream: repCLStIL, Table: repCLTabIL, Row: bi.Row, Self: -1, Val: c.TokVal})
+			}
+		}
+	}
+	repCLsortSlots(out)
+	return out, nil
+}
+
+// Port source: zeros3-z3/clrz3/helpers_at.go
+func repCLcompactFindBodiesAt(f *repCLFile, d *repCLclrSource, strict bool) ([]repCLBodyInfo, error) {
+	bodySource := &repCLclrSource{r: d.r, size: d.size, lo: -1, bodyWork: d.bodyWork, bodyRefs: d.bodyRefs}
+	defer func() { d.bodyWork = bodySource.bodyWork; d.bodyRefs = bodySource.bodyRefs }()
+	count := 0
+	for r := uint32(1); r <= f.Rows(repCLTMethodDef); r++ {
+		rva := d.col(f, repCLTMethodDef, r, 0)
+		if d.err != nil {
+			return nil, d.err
+		}
+		if rva != 0 {
+			count++
+			if count > 1<<18 {
+				return nil, repCLlimit("body metadata")
+			}
+		}
+	}
+	out := make([]repCLBodyInfo, 0, count)
+	cached := make(map[int64]int)
+	for r := uint32(1); r <= f.Rows(repCLTMethodDef); r++ {
+		rva := d.col(f, repCLTMethodDef, r, 0)
+		if d.err != nil {
+			return nil, d.err
+		}
+		if rva == 0 {
+			continue
+		}
+		bi := repCLBodyInfo{Row: r}
+		off, _, ok := f.RVAToOff(rva)
+		if ok {
+			if j, found := cached[int64(off)]; found {
+				bi.Body = out[j].Body
+				ok = !out[j].Opaque
+			} else {
+				var err error
+				bi.Body, ok, err = repCLparseBodyAt(bodySource, int64(off), strict)
+				if err != nil {
+					return nil, err
+				}
+				cached[int64(off)] = len(out)
+			}
+		}
+		bi.Opaque = !ok
+		out = append(out, bi)
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/clrz3/helpers_at.go
+func repCLcompactBlobSlotsAt(f *repCLFile, d *repCLclrSource, blob []byte, es []repCLBlobEntry, marks []byte, dst []repCLSlot) []repCLSlot {
+	out := dst
+	if !f.HasBlob {
+		return dst
+	}
+	h := blob
+	for i, e := range es {
+		if marks[i] == repCLBlobOpaque {
+			continue
+		}
+		sl, ok := repCLParseSig(marks[i], h[e.DataOff:e.DataOff+e.Len], false)
+		if !ok {
+			continue
+		}
+		for _, s := range sl {
+			out = append(out, repCLSlot{Off: f.Blob.Off + int64(e.DataOff) + int64(s.Off), Len: uint8(s.Width), Enc: repCLEncCompressed, Sp: repCLSpRow,
+				Set: repCLSetEmbType, Stream: repCLStE, Table: repCLTabEmb, Self: -1, Val: s.Val})
+		}
+	}
+	return out
+}
+
+// Port source: zeros3-z3/clrz3/helpers_at.go
+func repCLcountCompactSlotsAt(f *repCLFile, d *repCLclrSource, blob []byte, es []repCLBlobEntry, marks []byte, bodies []repCLBodyInfo) (int, error) {
+	count := 0
+	add := func(n int) bool {
+		if n < 0 || n > (2<<20)-count {
+			return false
+		}
+		count += n
+		return true
+	}
+	for t, tb := range f.Tables {
+		for _, cd := range repCLschema[t] {
+			if cd.K != repCLKConst && !add(int(tb.Rows)) {
+				return 0, repCLlimit("slot metadata")
+			}
+		}
+	}
+	for _, bi := range bodies {
+		if bi.Opaque {
+			continue
+		}
+		if !add(len(bi.Body.Toks) + len(bi.Body.Clauses)) {
+			return 0, repCLlimit("IL metadata")
+		}
+		if bi.Body.LocalOff != 0 && !add(1) {
+			return 0, repCLlimit("IL metadata")
+		}
+	}
+	if f.HasBlob {
+		h := blob
+		for i, e := range es {
+			if marks[i] == repCLBlobOpaque {
+				continue
+			}
+			sl, ok := repCLParseSig(marks[i], h[e.DataOff:e.DataOff+e.Len], false)
+			if ok && !add(len(sl)) {
+				return 0, repCLlimit("signature metadata")
+			}
+		}
+	}
+	return count, nil
+}
+
+// Port source: zeros3-z3/clrz3/helpers_at.go
+func repCLbuildSecsAt(f *repCLFile, d []byte, hv *repCLHeapView, bodies []repCLbodyGeom, pm repCLposMap, plen int) []repIXSec {
+	type cand struct {
+		off, end int64
+		typ      uint16
+		items    []int64
+	}
+	var cs []cand
+	for t := 0; t < repCLNumTables; t++ {
+		tb := &f.Tables[t]
+		if tb.Rows == 0 {
+			continue
+		}
+		it := make([]int64, tb.Rows)
+		for r := range it {
+			it[r] = tb.Off + int64(r)*int64(tb.RowSize)
+		}
+		cs = append(cs, cand{tb.Off, tb.Off + int64(tb.Rows)*int64(tb.RowSize), uint16(0x100 + t), it})
+	}
+	if f.HasStr {
+		var it []int64
+		str := d
+		for i := range str {
+			if i == 0 || str[i-1] == 0 {
+				it = append(it, f.Str.Off+int64(i))
+			}
+		}
+		cs = append(cs, cand{f.Str.Off, f.Str.Off + f.Str.Size, 0x200, it})
+	}
+	if f.HasBlob {
+		it := make([]int64, len(hv.Blobs))
+		for i, e := range hv.Blobs {
+			it[i] = f.Blob.Off + int64(e.Off)
+		}
+		cs = append(cs, cand{f.Blob.Off, f.Blob.Off + f.Blob.Size, 0x201, it})
+	}
+	if f.HasUS {
+		it := make([]int64, len(hv.USes))
+		for i, e := range hv.USes {
+			it[i] = f.US.Off + int64(e.Off)
+		}
+		cs = append(cs, cand{f.US.Off, f.US.Off + f.US.Size, 0x202, it})
+	}
+	if f.HasGUID {
+		var it []int64
+		for o := int64(0); o < f.GUID.Size; o += 16 {
+			it = append(it, f.GUID.Off+o)
+		}
+		cs = append(cs, cand{f.GUID.Off, f.GUID.Off + f.GUID.Size, 0x203, it})
+	}
+	if len(bodies) > 0 {
+		var it []int64
+		lo, hi := int64(1<<62), int64(0)
+		for _, b := range bodies {
+			if b.Opaque && b.End == 0 {
+				continue
+			}
+			it = append(it, b.Off)
+			lo = min(lo, b.Off)
+			hi = max(hi, b.End)
+		}
+		repCLsortInt64(it)
+		if len(it) > 0 {
+			cs = append(cs, cand{lo, hi, 0x204, it})
+		}
+	}
+	sort.Slice(cs, func(i, j int) bool { return cs[i].off < cs[j].off })
+	var out []repIXSec
+	cur := int64(0)
+	add := func(a, b int64, typ uint16, items []int64) {
+		pa, pb := pm.payload(a), pm.payload(b)
+		if pb <= pa {
+			return
+		}
+		s := repIXSec{Type: typ, Off: pa, End: pb}
+		for _, x := range items {
+			s.Items = append(s.Items, pm.payload(x))
+		}
+		out = append(out, s)
+	}
+	for _, s := range cs {
+		if s.off < cur { // overlapping region: keep the earlier section
+			continue
+		}
+		add(cur, s.off, 0, nil)
+		add(s.off, s.end, s.typ, s.items)
+		cur = s.end
+	}
+	add(cur, int64(f.Size), 0, nil)
+	if len(out) > 0 && out[len(out)-1].End != plen {
+		out[len(out)-1].End = plen
+	}
+	return out
+}
+
+// Port source: zeros3-z3/clrz3/helpers_at.go
+func repCLbodyPredAt(f *repCLFile, d *repCLclrSource, prevEnd int64) (uint32, error) {
+	p := prevEnd
+	for k := 0; k < 4 && p < d.size; k++ {
+		b := d.span(p, 1)
+		if d.err != nil {
+			return 0, d.err
+		}
+		if b[0] != 0 {
+			break
+		}
+		p++
+	}
+	return repCLoffToRVA(f, p), nil
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+const (
+	repCLtagStr   = 0x51
+	repCLtagGuid  = 0x52
+	repCLtagUS    = 0x53
+	repCLtagBlob  = 0x54
+	repCLtagSig   = 0x55
+	repCLtagNull  = 0x56
+	repCLtagRow   = 0x60 // + table
+	repCLmaxStrHp = 8 << 20
+)
+
+// Port source: zeros3-z3/clrz3/ident.go
+// Ctx is the identity context of one file: the bytes (original, or progressively restored by the
+// decoder), heap views, per-table identity arrays and the candidate indexes.
+type repCLCtx struct {
+	strEnds             []uint32
+	workLimit, workUsed int64
+	idDepth             int
+	F                   *repCLFile
+	D                   []byte
+	source              *repCLclrSource
+	K0                  int
+	Auto                int
+
+	str, blob, us, guid []byte
+	HV                  *repCLHeapView
+	Blobs               []repCLBlobEntry
+	USes                []repCLBlobEntry
+	Marks               []byte
+	blobAt              map[uint32]int
+	usAt                map[uint32]int
+
+	IDs       [repCLNumTables][]repIXIdentity
+	state     [repCLNumTables][]uint8 // 0 new, 1 computing, 2 done
+	ready     [repCLNumTables]bool
+	computing [repCLNumTables]bool
+	blobID    []repIXIdentity
+	blobDone  []uint8
+	sigReady  bool
+
+	fieldOwner, methodOwner, paramOwner []uint32
+	nestedOf                            []uint32
+	evOwner, propOwner                  []uint32
+	evBuilt, propBuilt                  bool
+
+	rowIdx   map[[2]int]*repIXClassIndex
+	StrExtra []int
+	strIdx   *repIXClassIndex
+	usIdx    *repIXClassIndex
+	guidIdx  *repIXClassIndex
+	blobPre  *repIXClassIndex
+	blobAll  *repIXClassIndex
+
+	err error
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+var repCLnullID = repIXHash(repCLtagNull)
+
+// Port source: zeros3-z3/clrz3/ident.go
+func (c *repCLCtx) fail(f string, a ...any) {
+	if c.err == nil {
+		c.err = repCLunsup(f, a...)
+	}
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+func repCLlp(b []byte) []byte { return append(binary.AppendUvarint(nil, uint64(len(b))), b...) }
+
+// Port source: zeros3-z3/clrz3/ident.go
+// strAt returns the NUL-terminated string at heap offset off.
+func (c *repCLCtx) strAt(off uint32) []byte {
+	if c.err != nil {
+		return nil
+	}
+	if uint64(off) >= uint64(len(c.str)) {
+		if off == 0 && len(c.str) == 0 {
+			return nil
+		}
+		c.fail("#Strings offset %d outside the heap", off)
+		return nil
+	}
+	if c.strEnds != nil {
+		j := sort.Search(len(c.strEnds), func(i int) bool { return c.strEnds[i] >= off })
+		if j == len(c.strEnds) {
+			c.fail("unterminated #Strings entry at %d", off)
+			return nil
+		}
+		n := int(c.strEnds[j] - off)
+		if !c.chargeIdentity(n) {
+			return nil
+		}
+		return c.str[off:c.strEnds[j]]
+	}
+	b := c.str[off:]
+	for i, x := range b {
+		if x == 0 {
+			return b[:i]
+		}
+	}
+	c.fail("unterminated #Strings entry at %d", off)
+	return nil
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+func (c *repCLCtx) col(t int, r uint32, ci int) uint32 {
+	if c.source != nil {
+		v := c.source.col(c.F, t, r, ci)
+		if c.source.err != nil && c.err == nil {
+			c.err = c.source.err
+		}
+		return v
+	}
+	return c.F.Col(c.D, t, r, ci)
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+func (c *repCLCtx) strCol(t int, r uint32, ci int) []byte { return repCLlp(c.strAt(c.col(t, r, ci))) }
+
+// Port source: zeros3-z3/clrz3/ident.go
+// blobCol returns the identity of the blob entry a column points to.
+func (c *repCLCtx) blobCol(t int, r uint32, ci int) []byte {
+	id := c.blobIdentity(c.col(t, r, ci))
+	return id[:]
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// BlobBytes returns the content of the blob entry at heap offset off.
+func (c *repCLCtx) BlobBytes(off uint32) ([]byte, bool) {
+	i, ok := c.blobAt[off]
+	if !ok {
+		return nil, false
+	}
+	e := c.Blobs[i]
+	return c.blob[e.DataOff : e.DataOff+e.Len], true
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// blobIdentity: an opaque blob is named by its bytes; a marked signature by its bytes with each
+// embedded type reference replaced by the identity of the type it names.
+func (c *repCLCtx) blobIdentity(off uint32) repIXIdentity {
+	i, ok := c.blobAt[off]
+	if !ok {
+		c.fail("#Blob offset %d is not an entry", off)
+		return repIXIdentity{}
+	}
+	return c.entryIdentity(i)
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+func (c *repCLCtx) entryIdentity(i int) repIXIdentity {
+	if c.blobDone[i] == 2 {
+		return c.blobID[i]
+	}
+	e := c.Blobs[i]
+	b := c.blob[e.DataOff : e.DataOff+e.Len]
+	if !c.chargeIdentity(len(b)) {
+		return repIXIdentity{}
+	}
+	m := c.Marks[i]
+	if m == repCLBlobOpaque {
+		c.blobID[i] = repIXHash(repCLtagBlob, b)
+		c.blobDone[i] = 2
+		return c.blobID[i]
+	}
+	if !c.sigReady {
+		c.fail("signature identity before the signature references are resolved")
+		return repIXIdentity{}
+	}
+	sl, ok := repCLParseSig(m, b, false)
+	if !ok {
+		c.fail("marked blob %d does not parse", i)
+		return repIXIdentity{}
+	}
+	if !c.chargeIdentity(32 * len(sl)) {
+		return repIXIdentity{}
+	}
+	var n []byte
+	p := 0
+	for _, s := range sl {
+		n = append(n, b[p:s.Off]...)
+		t, r, ok := repCLRowOf(repCLSetEmbType, s.Val)
+		if !ok || t < 0 {
+			c.fail("embedded reference %#x", s.Val)
+			return repIXIdentity{}
+		}
+		id := c.id(t, r)
+		n = append(n, id[:]...)
+		p = s.Off + s.Width
+	}
+	n = append(n, b[p:]...)
+	c.blobID[i] = repIXHash(repCLtagSig, []byte{m}, n)
+	c.blobDone[i] = 2
+	return c.blobID[i]
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// id returns the identity of row r (1-based) of table t, computing it on demand.
+func (c *repCLCtx) id(t int, r uint32) repIXIdentity {
+	if c.err != nil {
+		return repIXIdentity{}
+	}
+	if t < 0 || t >= repCLNumTables || r == 0 || r > c.F.Tables[t].Rows {
+		c.fail("row %d of table %d", r, t)
+		return repIXIdentity{}
+	}
+	if !c.ready[t] && !c.computing[t] {
+		c.fail("identity of %s needed before its stage", repCLTableName(t))
+		return repIXIdentity{}
+	}
+	switch c.state[t][r-1] {
+	case 2:
+		return c.IDs[t][r-1]
+	case 1:
+		c.fail("identity cycle at %s row %d", repCLTableName(t), r)
+		return repIXIdentity{}
+	}
+	if c.idDepth >= 256 {
+		c.err = repCLlimit("identity dependency depth")
+		return repIXIdentity{}
+	}
+	c.idDepth++
+	defer func() { c.idDepth-- }()
+	c.state[t][r-1] = 1
+	id := c.key(t, r)
+	c.state[t][r-1] = 2
+	c.IDs[t][r-1] = id
+	return id
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// refKey is the identity of the row a stored number names (null = the null identity).
+func (c *repCLCtx) refKey(set uint8, v uint32) []byte {
+	t, r, ok := repCLRowOf(set, v)
+	if !ok {
+		c.fail("reference %#x outside set %d", v, set)
+		return repCLnullID[:]
+	}
+	if t < 0 {
+		return repCLnullID[:]
+	}
+	id := c.id(t, r)
+	return id[:]
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+func (c *repCLCtx) codedKey(fam int, t int, r uint32, ci int) []byte {
+	return c.refKey(uint8(repCLSetCoded0+fam), c.col(t, r, ci))
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+func (c *repCLCtx) simpleKey(target int, t int, r uint32, ci int) []byte {
+	return c.refKey(uint8(target), c.col(t, r, ci))
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+func repCLu32(v uint32) []byte { return binary.LittleEndian.AppendUint32(nil, v) }
+
+// Port source: zeros3-z3/clrz3/ident.go
+// key is the semantic identity definition of each table.
+func (c *repCLCtx) key(t int, r uint32) repIXIdentity {
+	tag := byte(repCLtagRow + t)
+	switch t {
+	case repCLTModule:
+		return repIXHash(tag, c.strCol(t, r, 1))
+	case repCLTModuleRef, repCLTFile:
+		ci := 0
+		if t == repCLTFile {
+			ci = 1
+		}
+		return repIXHash(tag, c.strCol(t, r, ci))
+	case repCLTAssembly:
+		return repIXHash(tag, c.strCol(t, r, 7), c.strCol(t, r, 8), c.blobCol(t, r, 6))
+	case repCLTAssemblyRef:
+		return repIXHash(tag, c.strCol(t, r, 6), c.strCol(t, r, 7), c.blobCol(t, r, 5))
+	case repCLTTypeRef:
+		return repIXHash(tag, c.codedKey(repCLCResolutionScope, t, r, 0), c.strCol(t, r, 2), c.strCol(t, r, 1))
+	case repCLTTypeDef:
+		var enc []byte
+		if e := c.nested(r); e != 0 {
+			id := c.id(repCLTTypeDef, e)
+			enc = id[:]
+		}
+		return repIXHash(tag, c.strCol(t, r, 2), c.strCol(t, r, 1), enc)
+	case repCLTExportedType:
+		return repIXHash(tag, c.strCol(t, r, 3), c.strCol(t, r, 2), c.codedKey(repCLCImplementation, t, r, 4))
+	case repCLTManifestResource:
+		return repIXHash(tag, c.strCol(t, r, 2), c.codedKey(repCLCImplementation, t, r, 3))
+	case repCLTTypeSpec, repCLTStandAloneSig:
+		return repIXHash(tag, c.blobCol(t, r, 0))
+	case repCLTField:
+		o := c.id(repCLTTypeDef, c.owner(c.fieldOwner, r))
+		return repIXHash(tag, o[:], c.strCol(t, r, 1), c.blobCol(t, r, 2))
+	case repCLTMethodDef:
+		o := c.id(repCLTTypeDef, c.owner(c.methodOwner, r))
+		return repIXHash(tag, o[:], c.strCol(t, r, 3), c.blobCol(t, r, 4))
+	case repCLTParam:
+		o := c.id(repCLTMethodDef, c.owner(c.paramOwner, r))
+		return repIXHash(tag, o[:], repCLu32(c.col(t, r, 1)))
+	case repCLTInterfaceImpl:
+		return repIXHash(tag, c.simpleKey(repCLTTypeDef, t, r, 0), c.codedKey(repCLCTypeDefOrRef, t, r, 1))
+	case repCLTMemberRef:
+		return repIXHash(tag, c.codedKey(repCLCMemberRefParent, t, r, 0), c.strCol(t, r, 1), c.blobCol(t, r, 2))
+	case repCLTEvent:
+		c.buildMap(repCLTEventMap, repCLTEvent, &c.evOwner, &c.evBuilt)
+		o := c.id(repCLTTypeDef, c.owner(c.evOwner, r))
+		return repIXHash(tag, o[:], c.strCol(t, r, 1), c.codedKey(repCLCTypeDefOrRef, t, r, 2))
+	case repCLTProperty:
+		c.buildMap(repCLTPropertyMap, repCLTProperty, &c.propOwner, &c.propBuilt)
+		o := c.id(repCLTTypeDef, c.owner(c.propOwner, r))
+		return repIXHash(tag, o[:], c.strCol(t, r, 1), c.blobCol(t, r, 2))
+	case repCLTGenericParam:
+		return repIXHash(tag, c.codedKey(repCLCTypeOrMethodDef, t, r, 2), repCLu32(c.col(t, r, 0)))
+	case repCLTGenericParamConstraint:
+		return repIXHash(tag, c.simpleKey(repCLTGenericParam, t, r, 0), c.codedKey(repCLCTypeDefOrRef, t, r, 1))
+	case repCLTMethodSpec:
+		return repIXHash(tag, c.codedKey(repCLCMethodDefOrRef, t, r, 0), c.blobCol(t, r, 1))
+	case repCLTDeclSecurity:
+		return repIXHash(tag, repCLu32(c.col(t, r, 0)), c.codedKey(repCLCHasDeclSecurity, t, r, 1), c.blobCol(t, r, 2))
+	}
+	c.fail("no identity for table %s", repCLTableName(t))
+	return repIXIdentity{}
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+func (c *repCLCtx) owner(a []uint32, r uint32) uint32 {
+	if int(r) > len(a) || a[r-1] == 0 {
+		c.fail("row %d has no owner", r)
+		return 0
+	}
+	return a[r-1]
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+func (c *repCLCtx) nested(r uint32) uint32 {
+	if int(r) > len(c.nestedOf) {
+		return 0
+	}
+	return c.nestedOf[r-1]
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// BuildOwners derives the owner of every Field, MethodDef and Param row and the enclosing type of
+// every nested TypeDef from the (layout) list-start and NestedClass columns.
+func (c *repCLCtx) BuildOwners() error {
+	f := c.F
+	spread := func(parent, list, child int) ([]uint32, error) {
+		out := make([]uint32, f.Rows(child))
+		np := f.Rows(parent)
+		for p := uint32(1); p <= np; p++ {
+			lo := c.col(parent, p, list)
+			hi := uint32(f.Rows(child)) + 1
+			if p < np {
+				hi = c.col(parent, p+1, list)
+			}
+			if lo < 1 || hi < lo || hi > f.Rows(child)+1 {
+				return nil, repCLunsup("%s list %d..%d of %d", repCLTableName(parent), lo, hi, f.Rows(child))
+			}
+			for x := lo; x < hi; x++ {
+				out[x-1] = p
+			}
+		}
+		return out, nil
+	}
+	var err error
+	if c.fieldOwner, err = spread(repCLTTypeDef, 4, repCLTField); err != nil {
+		return err
+	}
+	if c.methodOwner, err = spread(repCLTTypeDef, 5, repCLTMethodDef); err != nil {
+		return err
+	}
+	if c.paramOwner, err = spread(repCLTMethodDef, 5, repCLTParam); err != nil {
+		return err
+	}
+	c.nestedOf = make([]uint32, f.Rows(repCLTTypeDef))
+	for r := uint32(1); r <= f.Rows(repCLTNestedClass); r++ {
+		n, e := c.col(repCLTNestedClass, r, 0), c.col(repCLTNestedClass, r, 1)
+		if n == 0 || n > f.Rows(repCLTTypeDef) || e == 0 || e > f.Rows(repCLTTypeDef) || c.nestedOf[n-1] != 0 {
+			return repCLunsup("NestedClass row %d", r)
+		}
+		c.nestedOf[n-1] = e
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// buildMap derives event / property owners from EventMap / PropertyMap (resolved key columns).
+func (c *repCLCtx) buildMap(mt, child int, dst *[]uint32, built *bool) {
+	if *built {
+		return
+	}
+	*built = true
+	f := c.F
+	out := make([]uint32, f.Rows(child))
+	n := f.Rows(mt)
+	for p := uint32(1); p <= n; p++ {
+		lo := c.col(mt, p, 1)
+		hi := f.Rows(child) + 1
+		if p < n {
+			hi = c.col(mt, p+1, 1)
+		}
+		if lo < 1 || hi < lo || hi > f.Rows(child)+1 {
+			c.fail("%s list %d..%d", repCLTableName(mt), lo, hi)
+			return
+		}
+		par := c.col(mt, p, 0)
+		for x := lo; x < hi; x++ {
+			out[x-1] = par
+		}
+	}
+	*dst = out
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// ComputeTable fills the identity array of table t (every key column it reads must be restored).
+func (c *repCLCtx) ComputeTable(t int) error {
+	c.computing[t] = true
+	for r := uint32(1); r <= c.F.Tables[t].Rows; r++ {
+		c.id(t, r)
+		if c.err != nil {
+			break
+		}
+	}
+	c.computing[t] = false
+	c.ready[t] = true
+	return c.err
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// SetReady marks a table whose identities nobody asks for as available (no key columns).
+func (c *repCLCtx) SetReady(t int) { c.ready[t] = true }
+
+// Port source: zeros3-z3/clrz3/ident.go
+func (c *repCLCtx) classIndex(handles []int, ids []repIXIdentity) *repIXClassIndex {
+	k := c.K0
+	if c.Auto > 0 {
+		k = repIXAutoK0(len(ids), c.Auto)
+	}
+	return repIXNewClassIndex(handles, ids, k)
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// RowIndex is the candidate index of a row reference set (the null reference plus every row of
+// the set's tables).
+func (c *repCLCtx) RowIndex(set uint8) (*repIXClassIndex, error) { return c.rowIndexEx(set, -1) }
+
+// Port source: zeros3-z3/clrz3/ident.go
+// rowIndexEx is RowIndex without the rows of table excl (a self-capable coded slot names its own
+// table through the layout stream, never through the candidate index).
+func (c *repCLCtx) rowIndexEx(set uint8, excl int) (*repIXClassIndex, error) {
+	key := [2]int{int(set), excl}
+	if ix, ok := c.rowIdx[key]; ok {
+		return ix, nil
+	}
+	candidates := 1
+	for _, t := range repCLSetTables(set) {
+		if t != excl {
+			candidates += int(c.F.Tables[t].Rows)
+		}
+	}
+	handles := make([]int, 1, candidates)
+	ids := make([]repIXIdentity, 1, candidates)
+	ids[0] = repCLnullID
+	for _, t := range repCLSetTables(set) {
+		if t == excl {
+			continue
+		}
+		if !c.ready[t] {
+			return nil, repCLunsup("candidate set %d needs table %s", set, repCLTableName(t))
+		}
+		for r := uint32(1); r <= c.F.Tables[t].Rows; r++ {
+			handles = append(handles, t<<24|int(r))
+			ids = append(ids, c.IDs[t][r-1])
+		}
+	}
+	ix := c.classIndex(handles, ids)
+	c.rowIdx[key] = ix
+	return ix, nil
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// StrIndex names the candidates of #Strings: every physical entry (the NUL-delimited string) and
+// the suffix offsets the file really references (StrExtra, carried in the layout stream so the
+// decoder knows them before it reads a reference). A suffix-shared name is "the tail of this
+// entry from byte k"; it does not move when unrelated entries are inserted and needs no occurrence
+// number. The candidate table is therefore the size of the entry list, not of the heap.
+func (c *repCLCtx) StrIndex() *repIXClassIndex {
+	if c.strIdx != nil {
+		return c.strIdx
+	}
+	var handles []int
+	var ids []repIXIdentity
+	start, xi := 0, 0
+	for i := 0; i <= len(c.str); i++ {
+		if i < len(c.str) && c.str[i] != 0 {
+			continue
+		}
+		entry := c.str[start:i]
+		handles = append(handles, start)
+		if !c.chargeIdentity(len(entry)) {
+			return repIXNewClassIndex(nil, nil, c.K0)
+		}
+		ids = append(ids, repIXHash(repCLtagStr, repCLlp(entry), []byte{0}))
+		for xi < len(c.StrExtra) && c.StrExtra[xi] <= i {
+			if o := c.StrExtra[xi]; o > start {
+				handles = append(handles, o)
+				if !c.chargeIdentity(len(entry)) {
+					return repIXNewClassIndex(nil, nil, c.K0)
+				}
+				ids = append(ids, repIXHash(repCLtagStr, repCLlp(entry), binary.AppendUvarint(nil, uint64(o-start))))
+			}
+			xi++
+		}
+		start = i + 1
+	}
+	c.strIdx = c.classIndex(handles, ids)
+	return c.strIdx
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// SetStrExtra declares the referenced suffix offsets (ascending, each inside an entry, none at an
+// entry start). The decoder takes them from the layout stream.
+func (c *repCLCtx) SetStrExtra(extra []int) error {
+	prev := 0
+	for _, o := range extra {
+		if o <= prev || o > len(c.str) || (o < len(c.str) && c.str[o]&0xC0 == 0x80) || o == 0 || c.str[o-1] == 0 {
+			return repCLbad("string suffix offset %d", o)
+		}
+		prev = o
+	}
+	c.StrExtra, c.strIdx = extra, nil
+	return nil
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// USIndex names the #US entries by their exact bytes.
+func (c *repCLCtx) USIndex() *repIXClassIndex {
+	if c.usIdx != nil {
+		return c.usIdx
+	}
+	handles := make([]int, len(c.USes))
+	ids := make([]repIXIdentity, len(c.USes))
+	for i, e := range c.USes {
+		handles[i] = int(e.Off)
+		ids[i] = repIXHash(repCLtagUS, c.us[e.DataOff:e.DataOff+e.Len])
+	}
+	c.usIdx = c.classIndex(handles, ids)
+	return c.usIdx
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// GuidIndex names #GUID ordinals (0 = null) by their bytes.
+func (c *repCLCtx) GuidIndex() *repIXClassIndex {
+	if c.guidIdx != nil {
+		return c.guidIdx
+	}
+	n := len(c.guid) / 16
+	handles := []int{0}
+	ids := []repIXIdentity{repCLnullID}
+	for i := 0; i < n; i++ {
+		handles = append(handles, i+1)
+		ids = append(ids, repIXHash(repCLtagGuid, c.guid[16*i:16*i+16]))
+	}
+	c.guidIdx = c.classIndex(handles, ids)
+	return c.guidIdx
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// BlobIndex names blob entries. Before the signature references exist (stages that run first)
+// only unmarked entries, named by their bytes, can be targets; afterwards every entry.
+func (c *repCLCtx) BlobIndex(all bool) *repIXClassIndex {
+	if !all && c.blobPre != nil {
+		return c.blobPre
+	}
+	if all && c.blobAll != nil {
+		return c.blobAll
+	}
+	var handles []int
+	var ids []repIXIdentity
+	for i, e := range c.Blobs {
+		if !all && c.Marks[i] != repCLBlobOpaque {
+			continue
+		}
+		handles = append(handles, int(e.Off))
+		ids = append(ids, c.entryIdentity(i))
+	}
+	ix := c.classIndex(handles, ids)
+	if all {
+		c.blobAll = ix
+	} else {
+		c.blobPre = ix
+	}
+	return ix
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// SigReady declares every embedded signature reference restored: marked blobs can be named.
+func (c *repCLCtx) SigReady() { c.sigReady = true }
+
+// Port source: zeros3-z3/clrz3/ident.go
+// Put appends the reference for slot s (encoder side; s.Val is the original number).
+func (c *repCLCtx) Put(dst []byte, s *repCLSlot, allBlobs bool) ([]byte, error) {
+	if c.err != nil {
+		return dst, c.err
+	}
+	switch s.Sp {
+	case repCLSpStr:
+		ix := c.StrIndex()
+		if c.err != nil {
+			return dst, c.err
+		}
+		return ix.Put(dst, int(s.Val))
+	case repCLSpGuid:
+		ix := c.GuidIndex()
+		if c.err != nil {
+			return dst, c.err
+		}
+		return ix.Put(dst, int(s.Val))
+	case repCLSpUS:
+		ix := c.USIndex()
+		if c.err != nil {
+			return dst, c.err
+		}
+		return ix.Put(dst, int(s.Val&0xffffff))
+	case repCLSpBlob:
+		ix := c.BlobIndex(allBlobs)
+		if c.err != nil {
+			return dst, c.err
+		}
+		return ix.Put(dst, int(s.Val))
+	case repCLSpRow:
+		t, r, ok := repCLRowOf(s.Set, s.Val)
+		if !ok {
+			return dst, repCLbad("slot at %d: value %#x is outside set %d", s.Off, s.Val, s.Set)
+		}
+		ix, err := c.rowIndexEx(s.Set, int(s.Self))
+		if err != nil {
+			return dst, err
+		}
+		h := 0
+		if t >= 0 {
+			if r > c.F.Tables[t].Rows {
+				return dst, repCLbad("slot at %d: row %d of %s beyond %d", s.Off, r, repCLTableName(t), c.F.Tables[t].Rows)
+			}
+			h = t<<24 | int(r)
+		}
+		return ix.Put(dst, h)
+	}
+	return dst, fmt.Errorf("clrz3: Put of space %d", s.Sp)
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// Get reads one reference for slot s (decoder side) and returns the number to store.
+func (c *repCLCtx) Get(src []byte, s *repCLSlot, allBlobs bool) (uint32, []byte, error) {
+	switch s.Sp {
+	case repCLSpStr:
+		h, rest, err := c.StrIndex().Get(src)
+		return uint32(h), rest, err
+	case repCLSpGuid:
+		h, rest, err := c.GuidIndex().Get(src)
+		return uint32(h), rest, err
+	case repCLSpUS:
+		h, rest, err := c.USIndex().Get(src)
+		return 0x70000000 | uint32(h), rest, err
+	case repCLSpBlob:
+		h, rest, err := c.BlobIndex(allBlobs).Get(src)
+		return uint32(h), rest, err
+	case repCLSpRow:
+		ix, err := c.rowIndexEx(s.Set, int(s.Self))
+		if err != nil {
+			return 0, nil, err
+		}
+		h, rest, err := ix.Get(src)
+		if err != nil {
+			return 0, nil, err
+		}
+		if h == 0 {
+			return 0, rest, nil
+		}
+		v, ok := repCLValOf(s.Set, h>>24, uint32(h&0xffffff))
+		if !ok {
+			return 0, nil, repCLbad("target %d/%d is not in set %d", h>>24, h&0xffffff, s.Set)
+		}
+		return v, rest, nil
+	}
+	return 0, nil, fmt.Errorf("clrz3: Get of space %d", s.Sp)
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+// Identity work is charged by canonical content bytes, including repeated suffix
+// names. A shared long string cannot force quadratic hashing or allocation.
+func (c *repCLCtx) chargeIdentity(n int) bool {
+	if c.err != nil {
+		return false
+	}
+	if c.workLimit == 0 {
+		return true
+	}
+	cost := int64(n) + 1
+	if cost > c.workLimit-c.workUsed {
+		c.err = repCLlimit("aggregate identity byte work")
+		return false
+	}
+	c.workUsed += cost
+	return true
+}
+
+// Port source: zeros3-z3/clrz3/ident.go
+func (c *repCLCtx) prepareStringBounds() error {
+	count := 0
+	for _, b := range c.str {
+		if b == 0 {
+			count++
+			if count > 1<<18 {
+				return repCLlimit("string entry count")
+			}
+		}
+	}
+	c.strEnds = make([]uint32, 0, count)
+	for i, b := range c.str {
+		if b == 0 {
+			c.strEnds = append(c.strEnds, uint32(i))
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+const repCLrepMagic = "CLR1"
+
+// Port source: zeros3-z3/clrz3/rep.go
+// Reference classes (analysis).
+const (
+	repCLClsTable  = iota // simple table index
+	repCLClsCoded         // coded index
+	repCLClsStr           // #Strings
+	repCLClsBlob          // #Blob
+	repCLClsGuid          // #GUID
+	repCLClsSigRef        // type reference embedded in a signature
+	repCLClsToken         // CIL metadata token
+	repCLClsUS            // ldstr
+	repCLClsLayout        // layout items
+	repCLNumClasses
+)
+
+// Port source: zeros3-z3/clrz3/rep.go
+// Stats are the encoder-side measurements of one representation.
+type repCLStats struct {
+	Slots      [repCLNumClasses]int
+	RefBytes   [repCLNumClasses]int
+	StreamLen  [repCLNumStreams]int
+	Payload    int
+	Comps      int
+	Marked     int // signature blobs normalized
+	Blobs      int
+	OpaqueBody int
+	Bodies     int
+	Dups       [4]int // duplicate-identity entries in the string / blob / row / us candidate indexes
+	Collisions int
+	Excised    int
+	RVA        [3]int // method RVAs: predicted from the previous body, null, explicit delta
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+// Rep is an encoded assembly.
+type repCLRep struct {
+	Meta  []byte
+	Comps [][]byte
+	Stats repCLStats
+	Cuts  []int
+	Secs  []repIXSec
+	Refs  []repIXRefRec
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+func repCLslotClass(s *repCLSlot) int {
+	switch s.Sp {
+	case repCLSpStr:
+		return repCLClsStr
+	case repCLSpBlob:
+		return repCLClsBlob
+	case repCLSpGuid:
+		return repCLClsGuid
+	case repCLSpUS:
+		return repCLClsUS
+	case repCLSpLayout:
+		return repCLClsLayout
+	}
+	switch {
+	case s.Table == repCLTabEmb:
+		return repCLClsSigRef
+	case s.Table == repCLTabIL:
+		return repCLClsToken
+	case s.Set < repCLNumTables:
+		return repCLClsTable
+	}
+	return repCLClsCoded
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+// posMap converts file offsets to payload offsets (the excised header regions removed).
+type repCLposMap struct{ regs []repCLRegion }
+
+// Port source: zeros3-z3/clrz3/rep.go
+func (m repCLposMap) payload(off int64) int {
+	n := off
+	for _, r := range m.regs {
+		if r.End() <= off {
+			n -= r.Len
+		}
+	}
+	return int(n)
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+func repCLzz(v int64) uint64 { return repIXZigzag(v) }
+
+// Port source: zeros3-z3/clrz3/rep.go
+// stage orders (table indexes).
+var (
+	repCLstageG0a = []int{repCLTModule, repCLTModuleRef, repCLTAssembly, repCLTAssemblyRef, repCLTFile}
+	repCLstageG0b = []int{repCLTTypeRef, repCLTTypeDef, repCLTExportedType, repCLTManifestResource}
+	repCLstageG1  = []int{repCLTTypeSpec}
+	repCLstageG2  = []int{repCLTField, repCLTMethodDef, repCLTParam, repCLTInterfaceImpl, repCLTMemberRef, repCLTDeclSecurity, repCLTStandAloneSig, repCLTEventMap, repCLTEvent, repCLTPropertyMap, repCLTProperty, repCLTGenericParam, repCLTMethodSpec, repCLTGenericParamConstraint}
+)
+
+// Port source: zeros3-z3/clrz3/rep.go
+func repCLhasIdentity(t int) bool { return t != repCLTEventMap && t != repCLTPropertyMap }
+
+// Port source: zeros3-z3/clrz3/rep.go
+// computeIdentities fills every identity array in stage order.
+func repCLcomputeIdentities(c *repCLCtx) error {
+	for _, t := range repCLstageG0a {
+		if err := c.ComputeTable(t); err != nil {
+			return err
+		}
+	}
+	for _, t := range repCLstageG0b {
+		if err := c.ComputeTable(t); err != nil {
+			return err
+		}
+	}
+	c.SigReady()
+	for _, t := range repCLstageG1 {
+		if err := c.ComputeTable(t); err != nil {
+			return err
+		}
+	}
+	for _, t := range repCLstageG2 {
+		if repCLhasIdentity(t) {
+			if err := c.ComputeTable(t); err != nil {
+				return err
+			}
+		}
+	}
+	return c.err
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+// bodyPred is the RVA the layout predicts for the next body: the end of the previous body, past
+// zero padding.
+func repCLbodyPred(f *repCLFile, d []byte, prevEnd int64) uint32 {
+	p := prevEnd
+	for k := 0; k < 4 && p < int64(len(d)) && d[p] == 0; k++ {
+		p++
+	}
+	return repCLoffToRVA(f, p)
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+func repCLoffToRVA(f *repCLFile, off int64) uint32 {
+	for _, s := range f.Secs {
+		if s.RawSize > 0 && off >= int64(s.RawOff) && off < int64(s.RawOff)+int64(s.RawSize) {
+			return uint32(off-int64(s.RawOff)) + s.RVA
+		}
+	}
+	return 0
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+// checkSlots rejects slot sets that overlap one another or a header region (a hostile layout: a
+// method body inside the metadata root, two bodies sharing bytes).
+func repCLcheckSlots(f *repCLFile, all []repCLSlot) error {
+	end := int64(0)
+	ri := 0
+	for i := range all {
+		s := &all[i]
+		if s.Len == 0 {
+			continue
+		}
+		if s.Off < end {
+			return repCLunsup("overlapping reference slots at %d", s.Off)
+		}
+		end = s.Off + int64(s.Len)
+		for ri < len(f.Excised) && f.Excised[ri].End() <= s.Off {
+			ri++
+		}
+		if ri < len(f.Excised) && f.Excised[ri].Off < end {
+			return repCLunsup("reference slot at %d inside a header region", s.Off)
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/clrz3/rep.go
+// strExtra lists, ascending, the #Strings offsets the table slots reference that are not the start
+// of a physical entry.
+func repCLstrExtra(c *repCLCtx, slots []repCLSlot) ([]int, error) {
+	seen := map[int]bool{}
+	for i := range slots {
+		s := &slots[i]
+		if s.Sp != repCLSpStr {
+			continue
+		}
+		o := int(s.Val)
+		if o >= len(c.str) {
+			return nil, repCLunsup("#Strings offset %d outside the heap", o)
+		}
+		if o != 0 && c.str[o-1] != 0 {
+			seen[o] = true
+		}
+	}
+	out := make([]int, 0, len(seen))
+	for o := range seen {
+		out = append(out, o)
+	}
+	sort.Ints(out)
+	return out, nil
+}
+
+// Port source: zeros3-z3/clrz3/schema.go
+const (
+	repCLTModule = iota
+	repCLTTypeRef
+	repCLTTypeDef
+	repCLTFieldPtr
+	repCLTField
+	repCLTMethodPtr
+	repCLTMethodDef
+	repCLTParamPtr
+	repCLTParam
+	repCLTInterfaceImpl
+	repCLTMemberRef
+	repCLTConstant
+	repCLTCustomAttribute
+	repCLTFieldMarshal
+	repCLTDeclSecurity
+	repCLTClassLayout
+	repCLTFieldLayout
+	repCLTStandAloneSig
+	repCLTEventMap
+	repCLTEventPtr
+	repCLTEvent
+	repCLTPropertyMap
+	repCLTPropertyPtr
+	repCLTProperty
+	repCLTMethodSemantics
+	repCLTMethodImpl
+	repCLTModuleRef
+	repCLTTypeSpec
+	repCLTImplMap
+	repCLTFieldRVA
+	repCLTEncLog
+	repCLTEncMap
+	repCLTAssembly
+	repCLTAssemblyProcessor
+	repCLTAssemblyOS
+	repCLTAssemblyRef
+	repCLTAssemblyRefProcessor
+	repCLTAssemblyRefOS
+	repCLTFile
+	repCLTExportedType
+	repCLTManifestResource
+	repCLTNestedClass
+	repCLTGenericParam
+	repCLTMethodSpec
+	repCLTGenericParamConstraint
+	repCLNumTables
+)
+
+// Port source: zeros3-z3/clrz3/schema.go
+var repCLtableNames = [repCLNumTables]string{"Module", "TypeRef", "TypeDef", "FieldPtr", "Field", "MethodPtr", "MethodDef", "ParamPtr", "Param",
+	"InterfaceImpl", "MemberRef", "Constant", "CustomAttribute", "FieldMarshal", "DeclSecurity", "ClassLayout", "FieldLayout",
+	"StandAloneSig", "EventMap", "EventPtr", "Event", "PropertyMap", "PropertyPtr", "Property", "MethodSemantics", "MethodImpl",
+	"ModuleRef", "TypeSpec", "ImplMap", "FieldRVA", "EncLog", "EncMap", "Assembly", "AssemblyProcessor", "AssemblyOS",
+	"AssemblyRef", "AssemblyRefProcessor", "AssemblyRefOS", "File", "ExportedType", "ManifestResource", "NestedClass",
+	"GenericParam", "MethodSpec", "GenericParamConstraint"}
+
+// Port source: zeros3-z3/clrz3/schema.go
+// TableName is the ECMA name of table t.
+func repCLTableName(t int) string {
+	if t >= 0 && t < repCLNumTables {
+		return repCLtableNames[t]
+	}
+	return "?"
+}
+
+// Port source: zeros3-z3/clrz3/schema.go
+// Coded-index families.
+const (
+	repCLCTypeDefOrRef = iota
+	repCLCHasConstant
+	repCLCHasCustomAttribute
+	repCLCHasFieldMarshal
+	repCLCHasDeclSecurity
+	repCLCMemberRefParent
+	repCLCHasSemantics
+	repCLCMethodDefOrRef
+	repCLCMemberForwarded
+	repCLCImplementation
+	repCLCCustomAttributeType
+	repCLCResolutionScope
+	repCLCTypeOrMethodDef
+	repCLNumCoded
+)
+
+// Port source: zeros3-z3/clrz3/schema.go
+type repCLcodedDef struct {
+	bits int
+	tabs []int // -1: unused tag
+}
+
+// Port source: zeros3-z3/clrz3/schema.go
+var repCLcoded = [repCLNumCoded]repCLcodedDef{
+	repCLCTypeDefOrRef:        {2, []int{repCLTTypeDef, repCLTTypeRef, repCLTTypeSpec}},
+	repCLCHasConstant:         {2, []int{repCLTField, repCLTParam, repCLTProperty}},
+	repCLCHasCustomAttribute:  {5, []int{repCLTMethodDef, repCLTField, repCLTTypeRef, repCLTTypeDef, repCLTParam, repCLTInterfaceImpl, repCLTMemberRef, repCLTModule, repCLTDeclSecurity, repCLTProperty, repCLTEvent, repCLTStandAloneSig, repCLTModuleRef, repCLTTypeSpec, repCLTAssembly, repCLTAssemblyRef, repCLTFile, repCLTExportedType, repCLTManifestResource, repCLTGenericParam, repCLTGenericParamConstraint, repCLTMethodSpec}},
+	repCLCHasFieldMarshal:     {1, []int{repCLTField, repCLTParam}},
+	repCLCHasDeclSecurity:     {2, []int{repCLTTypeDef, repCLTMethodDef, repCLTAssembly}},
+	repCLCMemberRefParent:     {3, []int{repCLTTypeDef, repCLTTypeRef, repCLTModuleRef, repCLTMethodDef, repCLTTypeSpec}},
+	repCLCHasSemantics:        {1, []int{repCLTEvent, repCLTProperty}},
+	repCLCMethodDefOrRef:      {1, []int{repCLTMethodDef, repCLTMemberRef}},
+	repCLCMemberForwarded:     {1, []int{repCLTField, repCLTMethodDef}},
+	repCLCImplementation:      {2, []int{repCLTFile, repCLTAssemblyRef, repCLTExportedType}},
+	repCLCCustomAttributeType: {3, []int{-1, -1, repCLTMethodDef, repCLTMemberRef, -1}},
+	repCLCResolutionScope:     {2, []int{repCLTModule, repCLTModuleRef, repCLTAssemblyRef, repCLTTypeRef}},
+	repCLCTypeOrMethodDef:     {1, []int{repCLTTypeDef, repCLTMethodDef}},
+}
+
+// Port source: zeros3-z3/clrz3/schema.go
+// ColKind is the semantic class of one table column.
+type repCLColKind uint8
+
+// Port source: zeros3-z3/clrz3/schema.go
+const (
+	repCLKConst repCLColKind = iota // fixed-width scalar: flags, versions, sizes
+	repCLKStr                       // #Strings offset
+	repCLKGuid                      // #GUID ordinal
+	repCLKBlob                      // #Blob offset
+	repCLKTable                     // simple index into one table
+	repCLKCoded                     // coded index
+	repCLKList                      // list-start index into a child table (layout)
+	repCLKRVA                       // method / field RVA (layout)
+)
+
+// Port source: zeros3-z3/clrz3/schema.go
+// Sig is the signature family a blob column carries.
+type repCLSig uint8
+
+// Port source: zeros3-z3/clrz3/schema.go
+const (
+	repCLSigNone   repCLSig = iota // opaque blob
+	repCLSigAny                    // method or field signature (MemberRef) / local, method or field (StandAloneSig)
+	repCLSigMethod                 // MethodDefSig
+	repCLSigField                  // FieldSig
+	repCLSigProp                   // PropertySig
+	repCLSigType                   // TypeSpec blob
+	repCLSigInst                   // MethodSpec instantiation
+)
+
+// Port source: zeros3-z3/clrz3/schema.go
+// ColDef describes one column. Key columns define the semantic identity of the row; the other
+// columns are resolved after every identity exists.
+type repCLColDef struct {
+	Name string
+	K    repCLColKind
+	W    int // KConst width
+	T    int // KTable / KList target table, KCoded family
+	Key  bool
+	Sig  repCLSig
+}
+
+// Port source: zeros3-z3/clrz3/schema.go
+func repCLcc(n string, w int) repCLColDef { return repCLColDef{Name: n, K: repCLKConst, W: w} }
+
+// Port source: zeros3-z3/clrz3/schema.go
+func repCLcs(n string, key bool) repCLColDef { return repCLColDef{Name: n, K: repCLKStr, Key: key} }
+
+// Port source: zeros3-z3/clrz3/schema.go
+func repCLcg(n string) repCLColDef { return repCLColDef{Name: n, K: repCLKGuid} }
+
+// Port source: zeros3-z3/clrz3/schema.go
+func repCLcb(n string, key bool, s repCLSig) repCLColDef {
+	return repCLColDef{Name: n, K: repCLKBlob, Key: key, Sig: s}
+}
+
+// Port source: zeros3-z3/clrz3/schema.go
+func repCLct(n string, t int, key bool) repCLColDef {
+	return repCLColDef{Name: n, K: repCLKTable, T: t, Key: key}
+}
+
+// Port source: zeros3-z3/clrz3/schema.go
+func repCLcd(n string, c int, key bool) repCLColDef {
+	return repCLColDef{Name: n, K: repCLKCoded, T: c, Key: key}
+}
+
+// Port source: zeros3-z3/clrz3/schema.go
+func repCLcl(n string, t int) repCLColDef { return repCLColDef{Name: n, K: repCLKList, T: t} }
+
+// Port source: zeros3-z3/clrz3/schema.go
+func repCLcr(n string) repCLColDef { return repCLColDef{Name: n, K: repCLKRVA, W: 4} }
+
+// Port source: zeros3-z3/clrz3/schema.go
+var repCLschema = [repCLNumTables][]repCLColDef{
+	repCLTModule:          {repCLcc("Generation", 2), repCLcs("Name", true), repCLcg("Mvid"), repCLcg("EncId"), repCLcg("EncBaseId")},
+	repCLTTypeRef:         {repCLcd("ResolutionScope", repCLCResolutionScope, true), repCLcs("TypeName", true), repCLcs("TypeNamespace", true)},
+	repCLTTypeDef:         {repCLcc("Flags", 4), repCLcs("TypeName", true), repCLcs("TypeNamespace", true), repCLcd("Extends", repCLCTypeDefOrRef, false), repCLcl("FieldList", repCLTField), repCLcl("MethodList", repCLTMethodDef)},
+	repCLTFieldPtr:        {repCLct("Field", repCLTField, false)},
+	repCLTField:           {repCLcc("Flags", 2), repCLcs("Name", true), repCLcb("Signature", true, repCLSigField)},
+	repCLTMethodPtr:       {repCLct("Method", repCLTMethodDef, false)},
+	repCLTMethodDef:       {repCLcr("RVA"), repCLcc("ImplFlags", 2), repCLcc("Flags", 2), repCLcs("Name", true), repCLcb("Signature", true, repCLSigMethod), repCLcl("ParamList", repCLTParam)},
+	repCLTParamPtr:        {repCLct("Param", repCLTParam, false)},
+	repCLTParam:           {repCLcc("Flags", 2), repCLcc("Sequence", 2), repCLcs("Name", false)},
+	repCLTInterfaceImpl:   {repCLct("Class", repCLTTypeDef, true), repCLcd("Interface", repCLCTypeDefOrRef, true)},
+	repCLTMemberRef:       {repCLcd("Class", repCLCMemberRefParent, true), repCLcs("Name", true), repCLcb("Signature", true, repCLSigAny)},
+	repCLTConstant:        {repCLcc("Type", 2), repCLcd("Parent", repCLCHasConstant, false), repCLcb("Value", false, repCLSigNone)},
+	repCLTCustomAttribute: {repCLcd("Parent", repCLCHasCustomAttribute, false), repCLcd("Type", repCLCCustomAttributeType, false), repCLcb("Value", false, repCLSigNone)},
+	repCLTFieldMarshal:    {repCLcd("Parent", repCLCHasFieldMarshal, false), repCLcb("NativeType", false, repCLSigNone)},
+	repCLTDeclSecurity:    {repCLcc("Action", 2), repCLcd("Parent", repCLCHasDeclSecurity, true), repCLcb("PermissionSet", true, repCLSigNone)},
+	repCLTClassLayout:     {repCLcc("PackingSize", 2), repCLcc("ClassSize", 4), repCLct("Parent", repCLTTypeDef, false)},
+	repCLTFieldLayout:     {repCLcc("Offset", 4), repCLct("Field", repCLTField, false)},
+	repCLTStandAloneSig:   {repCLcb("Signature", true, repCLSigAny)},
+	repCLTEventMap:        {repCLct("Parent", repCLTTypeDef, true), repCLcl("EventList", repCLTEvent)},
+	repCLTEventPtr:        {repCLct("Event", repCLTEvent, false)},
+	repCLTEvent:           {repCLcc("EventFlags", 2), repCLcs("Name", true), repCLcd("EventType", repCLCTypeDefOrRef, true)},
+	repCLTPropertyMap:     {repCLct("Parent", repCLTTypeDef, true), repCLcl("PropertyList", repCLTProperty)},
+	repCLTPropertyPtr:     {repCLct("Property", repCLTProperty, false)},
+	repCLTProperty:        {repCLcc("Flags", 2), repCLcs("Name", true), repCLcb("Type", true, repCLSigProp)},
+	repCLTMethodSemantics: {repCLcc("Semantics", 2), repCLct("Method", repCLTMethodDef, false), repCLcd("Association", repCLCHasSemantics, false)},
+	repCLTMethodImpl:      {repCLct("Class", repCLTTypeDef, false), repCLcd("MethodBody", repCLCMethodDefOrRef, false), repCLcd("MethodDeclaration", repCLCMethodDefOrRef, false)},
+	repCLTModuleRef:       {repCLcs("Name", true)},
+	repCLTTypeSpec:        {repCLcb("Signature", true, repCLSigType)},
+	repCLTImplMap:         {repCLcc("MappingFlags", 2), repCLcd("MemberForwarded", repCLCMemberForwarded, false), repCLcs("ImportName", false), repCLct("ImportScope", repCLTModuleRef, false)},
+	repCLTFieldRVA:        {repCLcr("RVA"), repCLct("Field", repCLTField, false)},
+	repCLTEncLog:          {repCLcc("Token", 4), repCLcc("FuncCode", 4)},
+	repCLTEncMap:          {repCLcc("Token", 4)},
+	repCLTAssembly: {repCLcc("HashAlgId", 4), repCLcc("MajorVersion", 2), repCLcc("MinorVersion", 2), repCLcc("BuildNumber", 2), repCLcc("RevisionNumber", 2), repCLcc("Flags", 4),
+		repCLcb("PublicKey", true, repCLSigNone), repCLcs("Name", true), repCLcs("Culture", true)},
+	repCLTAssemblyProcessor: {repCLcc("Processor", 4)},
+	repCLTAssemblyOS:        {repCLcc("OSPlatformID", 4), repCLcc("OSMajorVersion", 4), repCLcc("OSMinorVersion", 4)},
+	repCLTAssemblyRef: {repCLcc("MajorVersion", 2), repCLcc("MinorVersion", 2), repCLcc("BuildNumber", 2), repCLcc("RevisionNumber", 2), repCLcc("Flags", 4),
+		repCLcb("PublicKeyOrToken", true, repCLSigNone), repCLcs("Name", true), repCLcs("Culture", true), repCLcb("HashValue", false, repCLSigNone)},
+	repCLTAssemblyRefProcessor:   {repCLcc("Processor", 4), repCLct("AssemblyRef", repCLTAssemblyRef, false)},
+	repCLTAssemblyRefOS:          {repCLcc("OSPlatformId", 4), repCLcc("OSMajorVersion", 4), repCLcc("OSMinorVersion", 4), repCLct("AssemblyRef", repCLTAssemblyRef, false)},
+	repCLTFile:                   {repCLcc("Flags", 4), repCLcs("Name", true), repCLcb("HashValue", false, repCLSigNone)},
+	repCLTExportedType:           {repCLcc("Flags", 4), repCLcc("TypeDefId", 4), repCLcs("TypeName", true), repCLcs("TypeNamespace", true), repCLcd("Implementation", repCLCImplementation, true)},
+	repCLTManifestResource:       {repCLcr("Offset"), repCLcc("Flags", 4), repCLcs("Name", true), repCLcd("Implementation", repCLCImplementation, true)},
+	repCLTNestedClass:            {repCLct("NestedClass", repCLTTypeDef, false), repCLct("EnclosingClass", repCLTTypeDef, false)},
+	repCLTGenericParam:           {repCLcc("Number", 2), repCLcc("Flags", 2), repCLcd("Owner", repCLCTypeOrMethodDef, true), repCLcs("Name", false)},
+	repCLTMethodSpec:             {repCLcd("Method", repCLCMethodDefOrRef, true), repCLcb("Instantiation", true, repCLSigInst)},
+	repCLTGenericParamConstraint: {repCLct("Owner", repCLTGenericParam, true), repCLcd("Constraint", repCLCTypeDefOrRef, true)},
+}
+
+// Port source: zeros3-z3/clrz3/schema.go
+// isPtr reports the indirection tables of the uncompressed (#-) layout.
+func repCLisPtr(t int) bool {
+	switch t {
+	case repCLTFieldPtr, repCLTMethodPtr, repCLTParamPtr, repCLTEventPtr, repCLTPropertyPtr:
+		return true
+	}
+	return false
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+// Blob kinds as recorded in the layout stream (0 = opaque).
+const (
+	repCLBlobOpaque byte = iota
+	repCLBlobMethod
+	repCLBlobField
+	repCLBlobLocal
+	repCLBlobProp
+	repCLBlobType
+	repCLBlobInst
+	repCLnumBlobKinds
+)
+
+// Port source: zeros3-z3/clrz3/sig.go
+// SigSlot is an embedded type reference inside a signature blob.
+type repCLSigSlot struct {
+	Off   int    // byte offset in the blob content
+	Width int    // 1, 2 or 4 bytes of compressed integer
+	Val   uint32 // TypeDefOrRef coded value (row<<2 | tag)
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+const (
+	repCLmaxSigDepth = 48
+	repCLmaxSigSlots = 1 << 16
+)
+
+// Port source: zeros3-z3/clrz3/sig.go
+type repCLsigp struct {
+	strict bool // check the values of embedded references (a masked blob has zeros there)
+	b      []byte
+	p      int
+	slots  []repCLSigSlot
+	depth  int
+	bad    bool
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+func (s *repCLsigp) fail() { s.bad = true }
+
+// Port source: zeros3-z3/clrz3/sig.go
+func (s *repCLsigp) byte() byte {
+	if s.bad || s.p >= len(s.b) {
+		s.bad = true
+		return 0
+	}
+	c := s.b[s.p]
+	s.p++
+	return c
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+func (s *repCLsigp) peek() byte {
+	if s.bad || s.p >= len(s.b) {
+		return 0xff
+	}
+	return s.b[s.p]
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+// cu reads a compressed unsigned integer and returns its value and encoded width.
+func (s *repCLsigp) cu() (uint32, int) {
+	if s.bad || s.p >= len(s.b) {
+		s.bad = true
+		return 0, 0
+	}
+	c := s.b[s.p]
+	switch {
+	case c&0x80 == 0:
+		s.p++
+		return uint32(c), 1
+	case c&0xC0 == 0x80:
+		if s.p+2 > len(s.b) {
+			s.bad = true
+			return 0, 0
+		}
+		v := uint32(c&0x3f)<<8 | uint32(s.b[s.p+1])
+		s.p += 2
+		return v, 2
+	case c&0xE0 == 0xC0:
+		if s.p+4 > len(s.b) {
+			s.bad = true
+			return 0, 0
+		}
+		v := uint32(c&0x1f)<<24 | uint32(s.b[s.p+1])<<16 | uint32(s.b[s.p+2])<<8 | uint32(s.b[s.p+3])
+		s.p += 4
+		return v, 4
+	}
+	s.bad = true
+	return 0, 0
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+// count reads a compressed count that must be plausible for the bytes that remain.
+func (s *repCLsigp) count() int {
+	v, _ := s.cu()
+	if s.bad || uint64(v) > uint64(len(s.b)-s.p) {
+		s.bad = true
+		return 0
+	}
+	return int(v)
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+func (s *repCLsigp) typeRef() {
+	at := s.p
+	v, w := s.cu()
+	if s.bad {
+		return
+	}
+	if s.strict && (v&3 == 3 || v>>2 == 0) {
+		s.bad = true
+		return
+	}
+	if len(s.slots) >= repCLmaxSigSlots {
+		s.bad = true
+		return
+	}
+	s.slots = append(s.slots, repCLSigSlot{at, w, v})
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+func (s *repCLsigp) customMods() {
+	for !s.bad {
+		c := s.peek()
+		if c != 0x1f && c != 0x20 {
+			return
+		}
+		s.p++
+		s.typeRef()
+	}
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+func (s *repCLsigp) typ() {
+	if s.bad {
+		return
+	}
+	if s.depth++; s.depth > repCLmaxSigDepth {
+		s.bad = true
+		return
+	}
+	defer func() { s.depth-- }()
+	e := s.byte()
+	switch {
+	case e >= 0x02 && e <= 0x0e, e == 0x16, e == 0x18, e == 0x19, e == 0x1c:
+	case e == 0x0f: // PTR
+		s.customMods()
+		if s.peek() == 0x01 {
+			s.p++
+		} else {
+			s.typ()
+		}
+	case e == 0x10: // BYREF
+		s.typ()
+	case e == 0x11, e == 0x12:
+		s.typeRef()
+	case e == 0x13, e == 0x1e: // VAR, MVAR
+		s.cu()
+	case e == 0x14: // ARRAY
+		s.typ()
+		s.cu() // rank
+		for i, n := 0, s.count(); i < n && !s.bad; i++ {
+			s.cu()
+		}
+		for i, n := 0, s.count(); i < n && !s.bad; i++ {
+			s.cu()
+		}
+	case e == 0x15: // GENERICINST
+		if c := s.byte(); c != 0x11 && c != 0x12 {
+			s.bad = true
+			return
+		}
+		s.typeRef()
+		n := s.count()
+		if n == 0 {
+			s.bad = true
+		}
+		for i := 0; i < n && !s.bad; i++ {
+			s.typ()
+		}
+	case e == 0x1b: // FNPTR
+		s.method()
+	case e == 0x1d: // SZARRAY
+		s.customMods()
+		s.typ()
+	default:
+		s.bad = true
+	}
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+// param is Param / RetType: CustomMod* (BYREF? Type | TYPEDBYREF | VOID).
+func (s *repCLsigp) param(ret bool) {
+	s.customMods()
+	switch s.peek() {
+	case 0x10:
+		s.p++
+		s.typ()
+	case 0x16:
+		s.p++
+	case 0x01:
+		if !ret {
+			s.bad = true
+		}
+		s.p++
+	default:
+		s.typ()
+	}
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+func (s *repCLsigp) method() {
+	if s.depth++; s.depth > repCLmaxSigDepth {
+		s.bad = true
+		return
+	}
+	defer func() { s.depth-- }()
+	cc := s.byte()
+	if cc&0x0f > 5 || cc&0x0f == 0x06 {
+		s.bad = true
+		return
+	}
+	if cc&0x10 != 0 {
+		s.cu() // generic parameter count
+	}
+	n := s.count()
+	s.param(true)
+	for i := 0; i < n && !s.bad; i++ {
+		if s.peek() == 0x41 { // SENTINEL
+			s.p++
+		}
+		s.param(false)
+	}
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+// ParseSig walks a signature blob of the given kind and returns the embedded type references
+// (strict also checks that each is a plausible TypeDef/TypeRef/TypeSpec coded value).
+// ok is false when the blob is not exactly one well-formed signature of that kind.
+func repCLParseSig(kind byte, b []byte, strict bool) (slots []repCLSigSlot, ok bool) {
+	s := &repCLsigp{b: b, strict: strict}
+	switch kind {
+	case repCLBlobMethod:
+		s.method()
+	case repCLBlobField:
+		if s.byte() != 0x06 {
+			return nil, false
+		}
+		s.customMods()
+		s.typ()
+	case repCLBlobLocal:
+		if s.byte() != 0x07 {
+			return nil, false
+		}
+		for i, n := 0, s.count(); i < n && !s.bad; i++ {
+			for !s.bad {
+				c := s.peek()
+				if c == 0x1f || c == 0x20 {
+					s.p++
+					s.typeRef()
+				} else if c == 0x45 {
+					s.p++
+				} else {
+					break
+				}
+			}
+			if s.peek() == 0x10 {
+				s.p++
+			}
+			if s.peek() == 0x16 {
+				s.p++
+			} else {
+				s.typ()
+			}
+		}
+	case repCLBlobProp:
+		if c := s.byte(); c&0x0f != 0x08 {
+			return nil, false
+		}
+		n := s.count()
+		s.param(false)
+		for i := 0; i < n && !s.bad; i++ {
+			s.param(false)
+		}
+	case repCLBlobType:
+		s.typ()
+	case repCLBlobInst:
+		if s.byte() != 0x0a {
+			return nil, false
+		}
+		n := s.count()
+		if n == 0 {
+			return nil, false
+		}
+		for i := 0; i < n && !s.bad; i++ {
+			s.typ()
+		}
+	default:
+		return nil, false
+	}
+	if s.bad || s.p != len(b) {
+		return nil, false
+	}
+	return s.slots, true
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+// SniffKind picks the signature family of a MemberRef / StandAloneSig blob from its first byte.
+func repCLSniffKind(b []byte) byte {
+	if len(b) == 0 {
+		return repCLBlobOpaque
+	}
+	switch b[0] & 0x0f {
+	case 0x06:
+		return repCLBlobField
+	case 0x07:
+		return repCLBlobLocal
+	case 0x08:
+		return repCLBlobProp
+	case 0x0a:
+		return repCLBlobInst
+	}
+	if b[0]&0x0f <= 5 {
+		return repCLBlobMethod
+	}
+	return repCLBlobOpaque
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+// KindOf is the blob kind a column of signature family sig gives to blob content b.
+func repCLKindOf(sig repCLSig, b []byte) byte {
+	switch sig {
+	case repCLSigAny:
+		return repCLSniffKind(b)
+	case repCLSigMethod:
+		return repCLBlobMethod
+	case repCLSigField:
+		return repCLBlobField
+	case repCLSigProp:
+		return repCLBlobProp
+	case repCLSigType:
+		return repCLBlobType
+	case repCLSigInst:
+		return repCLBlobInst
+	}
+	return repCLBlobOpaque
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+// maskCompressed overwrites the value bits of an embedded compressed integer and keeps the width
+// prefix, so a masked signature still parses to the same shape.
+func repCLmaskCompressed(b []byte, width int) {
+	switch width {
+	case 1:
+		b[0] = 0
+	case 2:
+		b[0], b[1] = 0x80, 0
+	case 4:
+		b[0], b[1], b[2], b[3] = 0xC0, 0, 0, 0
+	}
+}
+
+// Port source: zeros3-z3/clrz3/sig.go
+// putCompressed writes v in the given width; ok is false when it does not fit.
+func repCLputCompressed(b []byte, width int, v uint32) bool {
+	switch width {
+	case 1:
+		if v >= 0x80 {
+			return false
+		}
+		b[0] = byte(v)
+	case 2:
+		if v >= 0x4000 {
+			return false
+		}
+		b[0], b[1] = 0x80|byte(v>>8), byte(v)
+	case 4:
+		if v >= 0x20000000 {
+			return false
+		}
+		b[0], b[1], b[2], b[3] = 0xC0|byte(v>>24), byte(v>>16), byte(v>>8), byte(v)
+	default:
+		return false
+	}
+	return true
+}
+
+// Port source: zeros3-z3/clrz3/slots.go
+// Enc is how a slot's number is stored.
+type repCLEnc uint8
+
+// Port source: zeros3-z3/clrz3/slots.go
+const (
+	repCLEncFixed      repCLEnc = iota // little-endian, Len bytes (table / coded / heap index, RVA)
+	repCLEncCompressed                 // ECMA compressed unsigned integer inside a signature blob
+	repCLEncToken                      // 4-byte CIL metadata token (table byte << 24 | row)
+	repCLEncNone                       // layout item with no bytes of its own (blob mark)
+)
+
+// Port source: zeros3-z3/clrz3/slots.go
+// Space is what the number refers to.
+type repCLSpace uint8
+
+// Port source: zeros3-z3/clrz3/slots.go
+const (
+	repCLSpStr    repCLSpace = iota + 1 // #Strings byte offset
+	repCLSpGuid                         // #GUID 1-based ordinal
+	repCLSpUS                           // #US byte offset (ldstr token low 24 bits)
+	repCLSpBlob                         // #Blob byte offset
+	repCLSpRow                          // metadata row: simple index, coded index or token
+	repCLSpLayout                       // layout state (list start, RVA, nested-class pair, blob mark)
+)
+
+// Port source: zeros3-z3/clrz3/slots.go
+// Lay is the kind of a layout slot.
+type repCLLay uint8
+
+// Port source: zeros3-z3/clrz3/slots.go
+const (
+	repCLLNone     repCLLay = iota
+	repCLLList              // child-list start index (TypeDef.FieldList ...)
+	repCLLRVA               // MethodDef.RVA
+	repCLLFieldRVA          // FieldRVA.RVA
+	repCLLResOff            // ManifestResource.Offset
+	repCLLNestedA           // NestedClass.NestedClass
+	repCLLNestedB           // NestedClass.EnclosingClass
+	repCLLMark              // blob heap entry: signature kind mark
+)
+
+// Port source: zeros3-z3/clrz3/slots.go
+// Component streams (every group carries one byte string per stream).
+const (
+	repCLStG0a = iota // Module, ModuleRef, Assembly, AssemblyRef, File key slots
+	repCLStG0b        // TypeRef, TypeDef, ExportedType, ManifestResource key slots
+	repCLStE          // type references embedded in signature blobs
+	repCLStG1         // TypeSpec
+	repCLStG2         // remaining key-bearing tables
+	repCLStR          // every other table slot
+	repCLStIL         // CIL tokens
+	repCLStL          // layout items
+	repCLNumStreams
+)
+
+// Port source: zeros3-z3/clrz3/slots.go
+// StreamName names a component stream.
+var repCLStreamName = [repCLNumStreams]string{"keys0a", "keys0b", "sigrefs", "typespec", "keys2", "rest", "il", "layout"}
+
+// Port source: zeros3-z3/clrz3/slots.go
+// Reference sets (candidate target tables of a row reference).
+const (
+	repCLSetCoded0    = 64 // + coded family
+	repCLSetTokMethod = 96 + iota - 1
+	repCLSetTokField
+	repCLSetTokType
+	repCLSetTokSig
+	repCLSetTokAny
+	repCLSetEmbType
+	repCLnumSets
+)
+
+// Port source: zeros3-z3/clrz3/slots.go
+// Slot is one reference or layout item.
+type repCLSlot struct {
+	Off    int64
+	Len    uint8
+	Enc    repCLEnc
+	Sp     repCLSpace
+	Lay    repCLLay
+	Set    uint8 // SpRow: candidate set (a table number, SetCoded0+family, or a token/embedded set)
+	Stream uint8
+	Table  uint8 // owning table; 0xff blob-embedded, 0xfe IL
+	Col    uint8
+	Row    uint32
+	Self   int8   // coded slot that may point into its own table (delta-coded in the layout stream), else -1
+	Val    uint32 // the number as found in the file
+}
+
+// Port source: zeros3-z3/clrz3/slots.go
+const (
+	repCLTabEmb = 0xff
+	repCLTabIL  = 0xfe
+)
+
+// Port source: zeros3-z3/clrz3/slots.go
+// SetTables lists the tables a reference set can name.
+func repCLSetTables(s uint8) []int {
+	switch {
+	case s < repCLNumTables:
+		return []int{int(s)}
+	case s >= repCLSetCoded0 && s < repCLSetCoded0+repCLNumCoded:
+		var out []int
+		for _, t := range repCLcoded[s-repCLSetCoded0].tabs {
+			if t >= 0 {
+				out = append(out, t)
+			}
+		}
+		return out
+	}
+	switch s {
+	case repCLSetTokMethod:
+		return []int{repCLTMethodDef, repCLTMemberRef, repCLTMethodSpec}
+	case repCLSetTokField:
+		return []int{repCLTField, repCLTMemberRef}
+	case repCLSetTokType:
+		return []int{repCLTTypeDef, repCLTTypeRef, repCLTTypeSpec}
+	case repCLSetTokSig:
+		return []int{repCLTStandAloneSig}
+	case repCLSetTokAny:
+		return []int{repCLTTypeDef, repCLTTypeRef, repCLTTypeSpec, repCLTField, repCLTMethodDef, repCLTMemberRef, repCLTMethodSpec}
+	case repCLSetEmbType:
+		return []int{repCLTTypeDef, repCLTTypeRef}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/clrz3/slots.go
+// RowOf resolves a stored number to (table, row). A zero number is the null reference
+// (table -1, row 0, ok). ok is false when the number names no table of the set.
+func repCLRowOf(set uint8, v uint32) (table int, row uint32, ok bool) {
+	if v == 0 {
+		return -1, 0, true
+	}
+	switch {
+	case set < repCLNumTables:
+		return int(set), v, true
+	case set >= repCLSetCoded0 && set < repCLSetCoded0+repCLNumCoded, set == repCLSetEmbType:
+		fam := int(set) - repCLSetCoded0
+		if set == repCLSetEmbType {
+			fam = repCLCTypeDefOrRef
+		}
+		t, r, ok := repCLDecodeCoded(fam, v)
+		if !ok || r == 0 {
+			return -1, 0, false
+		}
+		if set == repCLSetEmbType && t == repCLTTypeSpec {
+			return -1, 0, false
+		}
+		return t, r, true
+	}
+	t, r := int(v>>24), v&0xffffff
+	if r == 0 {
+		return -1, 0, false
+	}
+	for _, x := range repCLSetTables(set) {
+		if x == t {
+			return t, r, true
+		}
+	}
+	return -1, 0, false
+}
+
+// Port source: zeros3-z3/clrz3/slots.go
+// ValOf is the inverse of RowOf.
+func repCLValOf(set uint8, table int, row uint32) (uint32, bool) {
+	if row == 0 {
+		return 0, true
+	}
+	switch {
+	case set < repCLNumTables:
+		if int(set) != table {
+			return 0, false
+		}
+		return row, true
+	case set >= repCLSetCoded0 && set < repCLSetCoded0+repCLNumCoded, set == repCLSetEmbType:
+		fam := int(set) - repCLSetCoded0
+		if set == repCLSetEmbType {
+			fam = repCLCTypeDefOrRef
+		}
+		return repCLEncodeCoded(fam, table, row)
+	}
+	for _, x := range repCLSetTables(set) {
+		if x == table {
+			if row > 0xffffff {
+				return 0, false
+			}
+			return uint32(table)<<24 | row, true
+		}
+	}
+	return 0, false
+}
+
+// Port source: zeros3-z3/clrz3/slots.go
+func repCLkeyStream(t int) uint8 {
+	switch t {
+	case repCLTModule, repCLTModuleRef, repCLTAssembly, repCLTAssemblyRef, repCLTFile:
+		return repCLStG0a
+	case repCLTTypeRef, repCLTTypeDef, repCLTExportedType, repCLTManifestResource:
+		return repCLStG0b
+	case repCLTTypeSpec:
+		return repCLStG1
+	}
+	return repCLStG2
+}
+
+// Port source: zeros3-z3/clrz3/slots.go
+func repCLcolStream(t int, c repCLColDef) uint8 {
+	if !c.Key {
+		return repCLStR
+	}
+	return repCLkeyStream(t)
+}
+
+// Port source: zeros3-z3/clrz3/slots.go
+func repCLsortSlots(s []repCLSlot) {
+	sort.SliceStable(s, func(i, j int) bool { return s[i].Off < s[j].Off })
+}
+
+// Port source: zeros3-z3/clrz3/slots.go
+// BlobEntry is one length-prefixed entry of #Blob or #US (heap-relative offsets).
+type repCLBlobEntry struct {
+	Off     uint32 // offset of the length prefix
+	DataOff uint32
+	Len     uint32
+}
+
+// Port source: zeros3-z3/clrz3/slots.go
+// BlobSlots lists the type references embedded in the blobs marked as signatures. marks is
+// indexed like entries; the blob heap is read from d.
+func repCLBlobSlots(f *repCLFile, d []byte, es []repCLBlobEntry, marks []byte) []repCLSlot {
+	var out []repCLSlot
+	if !f.HasBlob {
+		return nil
+	}
+	h := d[f.Blob.Off : f.Blob.Off+f.Blob.Size]
+	for i, e := range es {
+		if marks[i] == repCLBlobOpaque {
+			continue
+		}
+		sl, ok := repCLParseSig(marks[i], h[e.DataOff:e.DataOff+e.Len], false)
+		if !ok {
+			continue
+		}
+		for _, s := range sl {
+			out = append(out, repCLSlot{Off: f.Blob.Off + int64(e.DataOff) + int64(s.Off), Len: uint8(s.Width), Enc: repCLEncCompressed, Sp: repCLSpRow,
+				Set: repCLSetEmbType, Stream: repCLStE, Table: repCLTabEmb, Self: -1, Val: s.Val})
+		}
+	}
+	return out
+}
+
+// Port source: zeros3-z3/clrz3/slots.go
+// BodyInfo is one method body with its owner and encoding state.
+type repCLBodyInfo struct {
+	Row    uint32 // MethodDef row
+	Body   repCLBody
+	Opaque bool
+}
+
+// Port source: zeros3-z3/clrz3/source.go
+// clrSource retains a 64 KiB field window; larger single records are bounded at
+// 16 MiB. Span views expire on the next source read. Owned metadata heaps use
+// separate checked buffers, never a sparse full-image allocation.
+type repCLclrSource struct {
+	borrow   []byte // decode-only heap aliases into its mutable reconstruction buffer
+	bodyWork int64
+	bodyRefs int64
+	r        io.ReaderAt
+	size, lo int64
+	buf      []byte
+	err      error
+}
+
+// Port source: zeros3-z3/clrz3/source.go
+func (s *repCLclrSource) ReadAt(b []byte, off int64) (int, error) { return s.r.ReadAt(b, off) }
+
+// Port source: zeros3-z3/clrz3/source.go
+func (s *repCLclrSource) span(off, n int64) []byte {
+	if off < 0 || n < 0 || n > 16<<20 || off > s.size || n > s.size-off {
+		if s.err == nil {
+			s.err = repCLlimit("source span %d+%d", off, n)
+		}
+		return make([]byte, 4)
+	}
+	if n == 0 {
+		return nil
+	}
+	if off >= s.lo && off+n <= s.lo+int64(len(s.buf)) {
+		return s.buf[off-s.lo : off-s.lo+n]
+	}
+	if n > 64<<10 {
+		b := make([]byte, n)
+		s.read(b, off)
+		return b
+	}
+	lo := off &^ int64((64<<10)-1)
+	length := int64(64 << 10)
+	if length > s.size-lo {
+		length = s.size - lo
+	}
+	if off+n > lo+length {
+		lo = off
+		length = int64(64 << 10)
+		if length > s.size-lo {
+			length = s.size - lo
+		}
+	}
+	if cap(s.buf) < int(length) {
+		s.buf = make([]byte, length)
+	} else {
+		s.buf = s.buf[:length]
+	}
+	s.lo = lo
+	s.read(s.buf, lo)
+	return s.buf[off-lo : off-lo+n]
+}
+
+// Port source: zeros3-z3/clrz3/source.go
+func (s *repCLclrSource) read(b []byte, off int64) {
+	n, e := s.r.ReadAt(b, off)
+	if n != len(b) || e != nil && e != io.EOF {
+		if s.err == nil {
+			if e != nil {
+				s.err = e
+			} else {
+				s.err = io.ErrUnexpectedEOF
+			}
+		}
+		clear(b[n:])
+	}
+}
+
+// Port source: zeros3-z3/clrz3/source.go
+func (s *repCLclrSource) owned(off, n int64) ([]byte, error) {
+	if off < 0 || n < 0 || n > 16<<20 || off > s.size || n > s.size-off {
+		return nil, repCLlimit("owned heap geometry")
+	}
+	if s.borrow != nil {
+		return s.borrow[off : off+n], nil
+	}
+	b := make([]byte, n)
+	s.read(b, off)
+	return b, s.err
+}
+
+// Port source: zeros3-z3/clrz3/source.go
+func (s *repCLclrSource) col(f *repCLFile, t int, r uint32, c int) uint32 {
+	cl := f.Tables[t].Cols[c]
+	p := s.span(f.RowOff(t, r)+int64(cl.Off), int64(cl.W))
+	if cl.W == 2 {
+		return uint32(binary.LittleEndian.Uint16(p))
+	}
+	return binary.LittleEndian.Uint32(p)
+}
+
+// Port source: zeros3-z3/clrz3/source.go
+// parseBodyAt first establishes a bounded record extent, then delegates all CIL,
+// token, EH and malformed-byte validation to the unchanged canonical ParseBody.
+func repCLparseBodyAt(s *repCLclrSource, off int64, strict bool) (repCLBody, bool, error) {
+	if off < 0 || off >= s.size {
+		return repCLBody{}, false, nil
+	}
+	available := s.size - off
+	take := int64(12)
+	if take > available {
+		take = available
+	}
+	head := s.span(off, take)
+	if s.err != nil {
+		return repCLBody{}, false, s.err
+	}
+	extent := take
+	if head[0]&3 == 2 {
+		extent = 1 + int64(head[0]>>2)
+	} else if head[0]&3 == 3 && take >= 12 {
+		flags := binary.LittleEndian.Uint16(head)
+		code := int64(binary.LittleEndian.Uint32(head[4:]))
+		if flags>>12 == 3 && code <= repCLmaxCode {
+			if code > 1<<20 {
+				return repCLBody{}, false, repCLlimit("method code window")
+			}
+			extent = 12 + code
+			if extent > 16<<20 {
+				return repCLBody{}, false, repCLlimit("method body window")
+			}
+			if extent <= available && flags&8 != 0 {
+				p := (extent + 3) &^ 3
+				for sections := 0; ; sections++ {
+					if sections >= 1024 || p > 16<<20 {
+						return repCLBody{}, false, repCLlimit("method sections")
+					}
+					if p > available || available-p < 4 {
+						extent = available
+						break
+					}
+					h := s.span(off+p, 4)
+					if s.err != nil {
+						return repCLBody{}, false, s.err
+					}
+					kind := h[0]
+					n := int64(h[1])
+					if kind&0x40 != 0 {
+						n |= int64(h[2])<<8 | int64(h[3])<<16
+					}
+					extent = p + 4
+					if n < 4 {
+						break
+					}
+					if n > available-p {
+						extent = available
+						break
+					}
+					extent = p + n
+					if extent > 16<<20 {
+						return repCLBody{}, false, repCLlimit("method section window")
+					}
+					if kind&0x80 == 0 {
+						break
+					}
+					p = (extent + 3) &^ 3
+				}
+			}
+		}
+	}
+	if extent > available {
+		extent = available
+	}
+	if extent > 16<<20 {
+		return repCLBody{}, false, repCLlimit("method window")
+	}
+	if extent > s.size*16+(64<<20)-s.bodyWork {
+		return repCLBody{}, false, repCLlimit("aggregate method inspection")
+	}
+	s.bodyWork += extent
+	raw := s.span(off, extent)
+	if s.err != nil {
+		return repCLBody{}, false, s.err
+	}
+	b, ok := repCLParseBody(raw, 0, strict)
+	refs := int64(len(b.Toks) + len(b.Clauses))
+	if refs > (1<<20)-s.bodyRefs {
+		return repCLBody{}, false, repCLlimit("aggregate method references")
+	}
+	s.bodyRefs += refs
+	b.Off = off
+	if b.CodeOff != 0 {
+		b.CodeOff += off
+	}
+	if b.End != 0 {
+		b.End += off
+	}
+	if b.LocalOff != 0 {
+		b.LocalOff += off
+	}
+	if b.SecOff > 0 {
+		b.SecOff += off
+	}
+	if b.SecEnd != 0 {
+		b.SecEnd += off
+	}
+	for i := range b.Toks {
+		b.Toks[i].Off += off
+	}
+	for i := range b.Clauses {
+		b.Clauses[i].Off += off
+		if b.Clauses[i].TokOff != 0 {
+			b.Clauses[i].TokOff += off
+		}
+	}
+	return b, ok, nil
+}
+
+// Port source: zeros3-z3/clrz3/stream.go
+// StreamConfig emits bounded components and spools sorted reference bytes.
+type repCLStreamConfig struct {
+	K0, Auto int
+	TempDir  string
+	Observe  func(string)
+	Cut      func(io.ReaderAt, []repIXSec) ([]int, error)
+	Emit     func([]byte) error
+}
+
+// Port source: zeros3-z3/clrz3/stream_at.go
+type repCLbodyGeom struct {
+	Row      uint32
+	Off, End int64
+	Opaque   bool
+}
+
+// Port source: zeros3-z3/clrz3/stream_at.go
+// EncodeAt owns bounded metadata, reads source windows and emits exact components.
+func repCLEncodeAt(f *repCLFile, r io.ReaderAt, cfg repCLStreamConfig) (*repCLRep, error) {
+	if f.Size <= 0 || f.Size > 32<<20 {
+		return nil, fmt.Errorf("%w: managed creation source size", repCLErrLimit)
+	}
+	data := &repCLclrSource{r: r, size: f.Size, lo: -1}
+	if cfg.Emit == nil {
+		return nil, repCLbad("missing component sink")
+	}
+	source := data
+	scratch := make([]byte, 64<<10)
+	spool, err := repIXNewRefSpool(cfg.TempDir, 256<<20)
+	if err != nil {
+		return nil, err
+	}
+	defer spool.Close()
+
+	k0 := cfg.K0
+	if k0 == 0 {
+		k0 = 3
+	}
+	if k0 < 1 || k0 > 4 {
+		return nil, fmt.Errorf("clrz3: K0 %d", k0)
+	}
+	if f.TabKind != '~' || f.HasPtr {
+		return nil, repCLunsup("uncompressed table stream or indirection tables")
+	}
+	if !f.HasStr || !f.HasBlob {
+		return nil, repCLunsup("missing #Strings or #Blob")
+	}
+	c, err := repCLnewCtxAt(f, data, k0)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("context")
+	}
+	c.Auto = cfg.Auto
+	c.Marks = repCLderiveMarksAt(c)
+	bodies, err := repCLcompactFindBodiesAt(f, data, true)
+	if err != nil {
+		return nil, err
+	}
+	repCLvalidateBodiesAt(f, data, c.HV, bodies)
+	capacity, err := repCLcountCompactSlotsAt(f, data, c.blob, c.Blobs, c.Marks, bodies)
+	if err != nil {
+		return nil, err
+	}
+	all, err := repCLcompactTableSlotsAt(f, data, make([]repCLSlot, 0, capacity))
+	if err != nil {
+		return nil, err
+	}
+	all = repCLcompactBlobSlotsAt(f, data, c.blob, c.Blobs, c.Marks, all)
+	all, err = repCLcompactILSlotsAt(data, bodies, all)
+	if err != nil {
+		return nil, err
+	}
+	geoms := make([]repCLbodyGeom, len(bodies))
+	for i, b := range bodies {
+		geoms[i] = repCLbodyGeom{Row: b.Row, Off: b.Body.Off, End: b.Body.End, Opaque: b.Opaque}
+	}
+	bodies = nil
+	if cfg.Observe != nil {
+		cfg.Observe("slots")
+	}
+	if err := c.BuildOwners(); err != nil {
+		return nil, err
+	}
+	extra, err := repCLstrExtra(c, all)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.SetStrExtra(extra); err != nil {
+		return nil, err
+	}
+	if err := repCLcomputeIdentities(c); err != nil {
+		return nil, err
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("identities")
+	}
+	var st repCLStats
+	st.Blobs = len(c.Blobs)
+	for _, m := range c.Marks {
+		if m != repCLBlobOpaque {
+			st.Marked++
+		}
+	}
+	st.Bodies = len(geoms)
+	for _, b := range geoms {
+		if b.Opaque {
+			st.OpaqueBody++
+		}
+	}
+	pm := repCLposMap{f.Excised}
+	for _, r := range f.Excised {
+		st.Excised += int(r.Len)
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("all-slots")
+	}
+	repCLsortSlots(all)
+	if err := repCLcheckSlots(f, all); err != nil {
+		return nil, err
+	}
+
+	maxReferences := len(all) + len(c.Blobs) + 1
+	for _, s := range all {
+		if s.Self >= 0 && s.Sp == repCLSpRow {
+			maxReferences++
+		}
+	}
+	sorted, err := repIXNewSortedRefSpool(cfg.TempDir, maxReferences, 256<<20)
+	if err != nil {
+		return nil, err
+	}
+	defer sorted.Close()
+	var emitErr error
+	emit := func(s *repCLSlot, stream uint8, cls int, b []byte) {
+		if emitErr != nil {
+			return
+		}
+		emitErr = sorted.Append(int64(pm.payload(s.Off)), s.Off, stream, uint8(cls), b)
+		st.RefBytes[cls] += len(b)
+		st.StreamLen[stream] += len(b)
+	}
+	// layout: child counts, deltas, selectors, marks, body codes
+	layoutSource := &repCLclrSource{r: data.r, size: data.size, lo: -1}
+	rvaPrevEnd := f.CLIOff + 72
+	var prevA, prevFR, prevRes int64
+	bodyOf := map[uint32]*repCLbodyGeom{}
+	for i := range geoms {
+		bodyOf[geoms[i].Row] = &geoms[i]
+	}
+	selfDelta := map[int64]bool{}
+	listNext := func(s *repCLSlot) (uint32, error) {
+		cd := repCLschema[s.Table][s.Col]
+		tb := &f.Tables[s.Table]
+		if s.Row == 1 && s.Val != 1 {
+			return 0, repCLunsup("%s.%s starts at %d", repCLTableName(int(s.Table)), cd.Name, s.Val)
+		}
+		if s.Row < tb.Rows {
+			v := data.col(f, int(s.Table), s.Row+1, int(s.Col))
+			return v, data.err
+		}
+		return f.Rows(cd.T) + 1, nil
+	}
+	for i := range all {
+		s := &all[i]
+		if s.Sp == repCLSpLayout {
+			var v uint64
+			switch s.Lay {
+			case repCLLList:
+				nx, err := listNext(s)
+				if err != nil {
+					return nil, err
+				}
+				if nx < s.Val {
+					return nil, repCLunsup("descending child list")
+				}
+				v = uint64(nx - s.Val)
+			case repCLLNestedA:
+				v = repCLzz(int64(s.Val) - prevA)
+				prevA = int64(s.Val)
+			case repCLLNestedB:
+				v = repCLzz(int64(data.col(f, repCLTNestedClass, s.Row, 0)) - int64(s.Val))
+			case repCLLFieldRVA:
+				v = repCLzz(int64(s.Val) - prevFR)
+				prevFR = int64(s.Val)
+			case repCLLResOff:
+				v = repCLzz(int64(s.Val) - prevRes)
+				prevRes = int64(s.Val)
+			case repCLLRVA:
+				var code uint64
+				bi := bodyOf[s.Row]
+				switch {
+				case s.Val == 0:
+					code = 1 << 1
+					st.RVA[1]++
+				default:
+					pred, e := repCLbodyPredAt(f, layoutSource, rvaPrevEnd)
+					if e != nil {
+						return nil, e
+					}
+					rc := uint64(0)
+					if s.Val != pred {
+						rc = 2 + repCLzz(int64(s.Val)-int64(pred))
+						st.RVA[2]++
+					} else {
+						st.RVA[0]++
+					}
+					code = rc << 1
+					if bi == nil || bi.Opaque {
+						code |= 1
+					} else {
+						rvaPrevEnd = bi.End
+					}
+				}
+				v = code
+			}
+			st.Slots[repCLClsLayout]++
+			b := binary.AppendUvarint(nil, v)
+			emit(s, repCLStL, repCLClsLayout, b)
+			continue
+		}
+		if s.Self >= 0 && s.Sp == repCLSpRow {
+			t, r, ok := repCLRowOf(s.Set, s.Val)
+			if ok && t == int(s.Self) {
+				sel := binary.AppendUvarint(nil, 1+repCLzz(int64(s.Row)-int64(r)))
+				selfDelta[s.Off] = true
+				st.Slots[repCLClsLayout]++
+				emit(s, repCLStL, repCLClsLayout, sel)
+				continue
+			}
+			sel := []byte{0}
+			st.Slots[repCLClsLayout]++
+			emit(s, repCLStL, repCLClsLayout, sel)
+		}
+	}
+	// the referenced suffix offsets of #Strings: count, then ascending deltas, at the heap start
+	{
+		b := binary.AppendUvarint(nil, uint64(len(extra)))
+		prev := 0
+		for _, o := range extra {
+			b = binary.AppendUvarint(b, uint64(o-prev))
+			prev = o
+		}
+		s := &repCLSlot{Off: f.Str.Off}
+		st.Slots[repCLClsLayout]++
+		emit(s, repCLStL, repCLClsLayout, b)
+	}
+	// signature marks (one item per blob entry, at the entry start)
+	for i, e := range c.Blobs {
+		s := &repCLSlot{Off: f.Blob.Off + int64(e.Off)}
+		st.Slots[repCLClsLayout]++
+		emit(s, repCLStL, repCLClsLayout, binary.AppendUvarint(nil, uint64(c.Marks[i])))
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("layout")
+	}
+	// Resolve one bounded candidate set at a time; spool order restores the exact
+	// legacy positional reference order. Avoid retaining overlapping token sets.
+	clearIndexes := func() {
+		c.rowIdx = map[[2]int]*repIXClassIndex{}
+		c.strIdx = nil
+		c.usIdx = nil
+		c.guidIdx = nil
+		c.blobPre = nil
+		c.blobAll = nil
+	}
+	refKey := func(s *repCLSlot) uint64 {
+		flag := uint64(0)
+		if s.Sp == repCLSpBlob && s.Stream >= repCLStG1 {
+			flag = 1
+		}
+		return uint64(s.Sp)<<24 | uint64(s.Set)<<16 | uint64(uint8(s.Self+1))<<8 | flag
+	}
+	refOrder := make([]uint32, 0, len(all))
+	for i, s := range all {
+		if s.Sp != repCLSpLayout && !selfDelta[s.Off] {
+			refOrder = append(refOrder, uint32(i))
+		}
+	}
+	sort.Slice(refOrder, func(i, j int) bool { return refKey(&all[refOrder[i]]) < refKey(&all[refOrder[j]]) })
+	lastKey := ^uint64(0)
+	// references
+	for _, i := range refOrder {
+		s := &all[i]
+		key := refKey(s)
+		if key != lastKey {
+			clearIndexes()
+			lastKey = key
+		}
+		if s.Sp == repCLSpLayout || selfDelta[s.Off] {
+			continue
+		}
+		b, err := c.Put(nil, s, s.Stream >= repCLStG1)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", repCLErrUnsupported, err)
+		}
+		cls := repCLslotClass(s)
+		st.Slots[cls]++
+		emit(s, s.Stream, cls, b)
+		if ix, ok := c.rowIdx[[2]int{repCLSetCoded0 + repCLCHasCustomAttribute, -1}]; ok {
+			st.Dups[2] = ix.Duplicates()
+		}
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("references")
+	}
+	if data.err != nil {
+		return nil, data.err
+	}
+	if c.err != nil {
+		return nil, c.err
+	}
+	clearIndexes()
+	st.Dups[0] = c.StrIndex().Duplicates()
+	clearIndexes()
+	st.Dups[1] = c.BlobIndex(true).Duplicates()
+	clearIndexes()
+	st.Dups[3] = c.USIndex().Duplicates()
+	clearIndexes()
+
+	if emitErr != nil {
+		return nil, emitErr
+	}
+	if err := sorted.CopySorted(spool); err != nil {
+		return nil, err
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("sorted-spool")
+	}
+	patches := make([]repIXPatch, 0, len(all))
+	for _, s := range all {
+		if s.Len == 0 {
+			continue
+		}
+		if s.Len > 5 {
+			return nil, repCLunsup("mask width")
+		}
+		var b [5]byte
+		if s.Enc == repCLEncCompressed {
+			repCLmaskCompressed(b[:s.Len], int(s.Len))
+		}
+		patches = append(patches, repIXPatch{Off: s.Off, Len: s.Len, Bytes: b})
+	}
+	excised := make([]repIXSpan, len(f.Excised))
+	for i, r := range f.Excised {
+		excised[i] = repIXSpan{Off: r.Off, Len: r.Len}
+	}
+	payload, err := repIXNewWindowView(source, data.size, excised, patches)
+	if err != nil {
+		return nil, err
+	}
+	st.Payload = int(payload.Size())
+	secs := repCLbuildSecsAt(f, c.str, c.HV, geoms, pm, int(payload.Size()))
+	// item hashes: payload bytes plus the reference bytes of the slots inside
+	if err := spool.Rewind(); err != nil {
+		return nil, err
+	}
+	ref, readErr := spool.Next()
+	if readErr != nil && readErr != io.EOF {
+		return nil, readErr
+	}
+	for si := range secs {
+		sc := &secs[si]
+		sc.Hash = make([]uint64, len(sc.Items))
+		for k, a := range sc.Items {
+			end := sc.End
+			if k+1 < len(sc.Items) {
+				end = sc.Items[k+1]
+			}
+			h, err := repIXFNVRange(payload, int64(a), int64(end), scratch)
+			if err != nil {
+				return nil, err
+			}
+			for readErr == nil && ref.Pos < int64(a) {
+				ref, readErr = spool.Next()
+			}
+			for readErr == nil && ref.Pos < int64(end) {
+				h = repIXFNV64(h^uint64(ref.Stream), ref.Bytes)
+				ref, readErr = spool.Next()
+			}
+			if readErr != nil && readErr != io.EOF {
+				return nil, readErr
+			}
+			sc.Hash[k] = h
+		}
+	}
+	if cfg.Observe != nil {
+		cfg.Observe("hashes")
+	}
+	var cuts []int
+	if cfg.Cut != nil {
+		cuts, err = cfg.Cut(payload, secs)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(cuts) == 0 || cuts[len(cuts)-1] != int(payload.Size()) {
+		cuts = append(cuts, int(payload.Size()))
+	}
+	rep := &repCLRep{Stats: st, Cuts: cuts, Secs: secs}
+	if err := spool.Rewind(); err != nil {
+		return nil, err
+	}
+	ref, readErr = spool.Next()
+	if readErr != nil && readErr != io.EOF {
+		return nil, readErr
+	}
+	start := 0
+	for _, end := range cuts {
+		if end < start || end > int(payload.Size()) {
+			return nil, fmt.Errorf("clrz3: bad cut %d", end)
+		}
+		if end-start > 16<<20 {
+			return nil, repCLbad("component payload limit")
+		}
+		var streams [repCLNumStreams][]byte
+		refBytes := 0
+		for readErr == nil && ref.Pos < int64(end) {
+			if len(ref.Bytes) > (16<<20)-(end-start)-refBytes-128 {
+				return nil, repCLbad("component reference limit")
+			}
+			refBytes += len(ref.Bytes)
+			streams[ref.Stream] = append(streams[ref.Stream], ref.Bytes...)
+			ref, readErr = spool.Next()
+		}
+		if readErr != nil && readErr != io.EOF {
+			return nil, readErr
+		}
+		p := make([]byte, end-start)
+		if _, err := payload.ReadAt(p, int64(start)); err != nil {
+			return nil, err
+		}
+		component := repIXPackComp(p, streams[:])
+		if len(component) > 16<<20 {
+			return nil, repCLbad("component limit")
+		}
+		if err := cfg.Emit(component); err != nil {
+			return nil, err
+		}
+		rep.Stats.Comps++
+		start = end
+	}
+
+	if cfg.Observe != nil {
+		cfg.Observe("emitted")
+	}
+	// meta
+	m := append([]byte(repCLrepMagic), byte(k0), byte(cfg.Auto))
+	m = binary.AppendUvarint(m, uint64(data.size))
+	m = binary.AppendUvarint(m, uint64(len(f.Excised)))
+	for _, r := range f.Excised {
+		m = binary.AppendUvarint(m, uint64(r.Off))
+		m = binary.AppendUvarint(m, uint64(r.Len))
+	}
+	for _, r := range f.Excised {
+		m = append(m, data.span(r.Off, r.Len)...)
+	}
+	rep.Meta = m
+	if data.err != nil {
+		return nil, data.err
+	}
+	// Caller must perform an independent exact full proof before publication.
+	return rep, nil
+}
+
+// Port source: zeros3-z3/pez3/pez3.go
+// Section is the lab's view of a section header.
+type repPESection struct {
+	Name                             string
+	VSize, RVA, RawSize, RawOff, Chr uint32
+}
+
+// Port source: zeros3-z3/pez3/pez3.go
+// RVAOff maps an RVA to a file offset and the bytes available from it in the file (the section's
+// raw data; the zero-filled tail of a section is not mapped). It is the mapper shared with clrz3.
+func repPERVAOff(secs []repPESection, size int, rva uint64) (int, int, bool) {
+	for _, s := range secs {
+		if s.RawSize > 0 && rva >= uint64(s.RVA) && rva < uint64(s.RVA)+uint64(s.RawSize) {
+			d := rva - uint64(s.RVA)
+			if d >= uint64(s.RawSize) {
+				return 0, 0, false
+			}
+			off := uint64(s.RawOff) + d
+			if off >= uint64(size) {
+				return 0, 0, false
+			}
+			return int(off), int(uint64(s.RawSize) - d), true
+		}
+	}
+	return 0, 0, false
+}
+
+// Port source: zeros3-z3/econx/window.go
+// UnitCutAt is UnitCutBytes over an immutable windowed payload. Raw regions read
+// at most 4*target bytes; record regions use the identical precomputed hashes.
+func repMCUnitCutAt(r io.ReaderAt, secs []repIXSec, t int) ([]int, error) {
+	if t < 4 || t > 1<<20 || t&(t-1) != 0 {
+		return nil, fmt.Errorf("invalid unit target %d", t)
+	}
+	var out []int
+	scratch := make([]byte, 4*t)
+	for _, s := range secs {
+		if s.Off < 0 || s.End < s.Off {
+			return nil, fmt.Errorf("invalid section")
+		}
+		if len(s.Items) < 2 {
+			for off := s.Off; off < s.End; {
+				n := s.End - off
+				if n > len(scratch) {
+					n = len(scratch)
+				}
+				got, err := r.ReadAt(scratch[:n], int64(off))
+				if got != n {
+					return nil, io.ErrUnexpectedEOF
+				}
+				if err != nil && err != io.EOF {
+					return nil, err
+				}
+				n = len(repManagedLabChunkScaled(scratch[:n], t/4, t, 4*t)[0])
+				off += n
+				out = append(out, off)
+			}
+			continue
+		}
+		if s.End == s.Off || s.Hash != nil && len(s.Hash) != len(s.Items) {
+			return nil, fmt.Errorf("invalid record section")
+		}
+		m := uint64(t) * uint64(len(s.Items)) / uint64(s.End-s.Off)
+		if m < 1 {
+			m = 1
+		}
+		m = 1 << uint(bits.Len64(m*3/2)-1)
+		start := s.Off
+		for i, st := range s.Items {
+			end := s.End
+			if i+1 < len(s.Items) {
+				end = s.Items[i+1]
+			}
+			if st < s.Off || end < st || end > s.End {
+				return nil, fmt.Errorf("invalid record")
+			}
+			var h uint64
+			if s.Hash != nil {
+				h = s.Hash[i]
+			} else {
+				var err error
+				h, err = repIXFNVRange(r, int64(st), int64(end), scratch)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if h%m == 0 || end-start >= 4*t {
+				out = append(out, end)
+				start = end
+			}
+		}
+		if start < s.End {
+			out = append(out, s.End)
+		}
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/lab/cdc.go
+// CDC v1 as implemented by zeros3.go (section 3). This is a verbatim copy of
+// the production algorithm so that "current ZeroS3" in the laboratory means
+// the real chunker. TestCDCMatchesProduction compiles zeros3.go itself and
+// compares chunk boundaries and constants, so drift in either direction fails
+// a test rather than silently skewing results.
+const (
+	repManagedLabcdcMinChunkSize    = 16 * 1024
+	repManagedLabcdcTargetChunkSize = 64 * 1024
+	repManagedLabcdcMaxChunkSize    = 256 * 1024
+	repManagedLabcdcMaskS           = (1 << 16) - 1
+	repManagedLabcdcMaskL           = (1 << 15) - 1
+	repManagedLabcdcGearSeed        = "ZeroS3/CDCv1/GearTable"
+)
+
+// Port source: zeros3-z3/lab/cdc.go
+var repManagedLabgearTable = repManagedLabbuildGearTable()
+
+// Port source: zeros3-z3/lab/cdc.go
+func repManagedLabbuildGearTable() [256]uint64 {
+	var t [256]uint64
+	for i := 0; i < 256; i++ {
+		h := sha256.Sum256([]byte(fmt.Sprintf("%s/%d", repManagedLabcdcGearSeed, i)))
+		t[i] = binary.BigEndian.Uint64(h[:8])
+	}
+	return t
+}
+
+// Port source: zeros3-z3/lab/export.go
+// ChunkScaled is the same gear CDC with scaled parameters (sensitivity runs; moved here from
+// cmd/z3bin unchanged so later studies share it). target must be a power of two.
+func repManagedLabChunkScaled(b []byte, min, target, max int) [][]byte {
+	bits := 0
+	for 1<<bits < target {
+		bits++
+	}
+	maskS, maskL := uint64(1)<<bits-1, uint64(1)<<(bits-1)-1
+	var out [][]byte
+	for len(b) > 0 {
+		lim := len(b)
+		if lim > max {
+			lim = max
+		}
+		n := lim
+		var h uint64
+		for i := 0; i < lim; i++ {
+			h = (h << 1) + repManagedLabgearTable[b[i]]
+			sz := i + 1
+			if sz < min {
+				continue
+			}
+			m := maskL
+			if sz < target {
+				m = maskS
+			}
+			if h&m == 0 {
+				n = sz
+				break
+			}
+		}
+		out = append(out, b[:n])
+		b = b[n:]
+	}
+	return out
+}
+
+// ---- Z4 A4 managed store adapters ----
+// ---- Exact managed recipe adapters and decoder budgets -----------------------
+// Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.
+
+// Port source: zeros3-z3/repz3/kinds/clr.go
+// MaxCLRGroups bounds one representation (a 32 MiB assembly in 1 KiB groups).
+const repMCmaxCLRGroups = 1 << 16
+
+// Port source: zeros3-z3/repz3/kinds/clr.go
+type repMCclrDecoder struct{}
+
+// Port source: zeros3-z3/repz3/kinds/clr.go
+// clrGroups reads the member nodes and returns the digests of the component groups in order.
+func repMCclrGroups(c *repCall) ([][32]byte, error) {
+	if e := repManagedBounds(c); e != nil {
+		return nil, e
+	}
+	var ids [][32]byte
+	for i := range c.Rep.Members {
+		m := &c.Rep.Members[i]
+		if m.Role != repStored {
+			return nil, fmt.Errorf("%w: CLR member %d is not a stored node", errRepCorrupt, i)
+		}
+		if m.Size <= 0 || m.Size > 8192 {
+			return nil, fmt.Errorf("%w: managed node bytes", errRepLimit)
+		}
+		nb, err := c.get(m.SHA)
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(nb)) != m.Size {
+			return nil, repCorrupt("managed node size")
+		}
+		if len(nb) == 0 || len(nb)%32 != 0 || len(ids)+len(nb)/32 > repMCmaxCLRGroups {
+			return nil, fmt.Errorf("%w: CLR index node %d of %d bytes", errRepCorrupt, i, len(nb))
+		}
+		for o := 0; o < len(nb); o += 32 {
+			var id [32]byte
+			copy(id[:], nb[o:])
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+// Port source: zeros3-z3/repz3/kinds/clr.go
+func (repMCclrDecoder) Decode(c *repCall) error {
+	ids, err := repMCclrGroups(c)
+	if err != nil {
+		return err
+	}
+	var total int64
+	for _, id := range ids {
+		n, e := c.env.Src.Size(id)
+		if e != nil {
+			return e
+		}
+		if n <= 0 || n > 16<<20 || total > (128<<20)-n {
+			return fmt.Errorf("%w: managed component budget", errRepLimit)
+		}
+		total += n
+	}
+	out, err := repCLDecodeFrom(c.Rep.Recipe, len(ids), func(i int) ([]byte, error) { return c.get(ids[i]) })
+	if err != nil {
+		if errors.Is(err, repCLErrFormat) || errors.Is(err, repCLErrUnsupported) || errors.Is(err, repCLErrLimit) {
+			return fmt.Errorf("%w: %v", errRepCorrupt, err)
+		}
+		return err
+	}
+	if int64(len(out)) != c.Rep.Size {
+		return errRepMismatch
+	}
+	n, err := c.W.Write(out)
+	if err == nil && n != len(out) {
+		return io.ErrShortWrite
+	}
+	return err
+}
+
+// Port source: zeros3-z3/repz3/kinds/clr.go
+// Expand names the component groups (the members are the nodes; the groups are only in them).
+func (repMCclrDecoder) Expand(c *repCall, emit func([32]byte)) error {
+	ids, err := repMCclrGroups(c)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		emit(id)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/repz3/kinds/dex.go
+// MaxDEXGroups bounds one representation (a 32 MiB DEX in 1 KiB groups).
+const repMCmaxDEXGroups = 1 << 16
+
+// Port source: zeros3-z3/repz3/kinds/dex.go
+type repMCdexDecoder struct{}
+
+// Port source: zeros3-z3/repz3/kinds/dex.go
+// dexGroups reads the member nodes and returns the digests of the component groups in order.
+func repMCdexGroups(c *repCall) ([][32]byte, error) {
+	if e := repManagedBounds(c); e != nil {
+		return nil, e
+	}
+	var ids [][32]byte
+	for i := range c.Rep.Members {
+		m := &c.Rep.Members[i]
+		if m.Role != repStored {
+			return nil, fmt.Errorf("%w: DEX member %d is not a stored node", errRepCorrupt, i)
+		}
+		if m.Size <= 0 || m.Size > 8192 {
+			return nil, fmt.Errorf("%w: managed node bytes", errRepLimit)
+		}
+		nb, err := c.get(m.SHA)
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(nb)) != m.Size {
+			return nil, repCorrupt("managed node size")
+		}
+		if len(nb) == 0 || len(nb)%32 != 0 || len(ids)+len(nb)/32 > repMCmaxDEXGroups {
+			return nil, fmt.Errorf("%w: DEX index node %d of %d bytes", errRepCorrupt, i, len(nb))
+		}
+		for o := 0; o < len(nb); o += 32 {
+			var id [32]byte
+			copy(id[:], nb[o:])
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+// Port source: zeros3-z3/repz3/kinds/dex.go
+func (repMCdexDecoder) Decode(c *repCall) error {
+	ids, err := repMCdexGroups(c)
+	if err != nil {
+		return err
+	}
+	var total int64
+	for _, id := range ids {
+		n, e := c.env.Src.Size(id)
+		if e != nil {
+			return e
+		}
+		if n <= 0 || n > 16<<20 || total > (128<<20)-n {
+			return fmt.Errorf("%w: managed component budget", errRepLimit)
+		}
+		total += n
+	}
+	out, err := repDXDecodeFrom(c.Rep.Recipe, len(ids), func(i int) ([]byte, error) { return c.get(ids[i]) })
+	if err != nil {
+		if errors.Is(err, repDXErrFormat) || errors.Is(err, repDXErrUnsupported) || errors.Is(err, repDXErrLimit) {
+			return fmt.Errorf("%w: %v", errRepCorrupt, err)
+		}
+		return err
+	}
+	if int64(len(out)) != c.Rep.Size {
+		return errRepMismatch
+	}
+	n, err := c.W.Write(out)
+	if err == nil && n != len(out) {
+		return io.ErrShortWrite
+	}
+	return err
+}
+
+// Port source: zeros3-z3/repz3/kinds/dex.go
+// Expand names the component groups (the members are the nodes; the groups are only in them).
+func (repMCdexDecoder) Expand(c *repCall, emit func([32]byte)) error {
+	ids, err := repMCdexGroups(c)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		emit(id)
+	}
+	return nil
+}
+
+// repManagedBounds runs before group discovery and before the legacy decoder
+// can allocate its whole output. Managed creation is not enabled by this draft.
+func repManagedBounds(c *repCall) error {
+	if c.Rep.Size <= 0 || c.Rep.Size > 32<<20 || len(c.Rep.Recipe) > 16<<20 {
+		return fmt.Errorf("%w: managed representation bounds", errRepLimit)
+	}
+	r := c.Rep.Recipe
+	if c.Rep.Kind == repKindDEX {
+		if len(r) < 6+repDXHeaderSize || int64(binary.LittleEndian.Uint32(r[38:42])) != c.Rep.Size {
+			return repCorrupt("DEX output size")
+		}
+	}
+	if c.Rep.Kind == repKindCLR {
+		if len(r) < 7 {
+			return repCorrupt("CLR recipe")
+		}
+		n, k := binary.Uvarint(r[6:])
+		if k <= 0 || n != uint64(c.Rep.Size) {
+			return repCorrupt("CLR output size")
+		}
+	}
+	return nil
+}
+
+// repManagedInput charges the ordinary analysis I/O budget through every source
+// window, including replays; optional managed creation cannot hide rescans.
+type repManagedInput struct {
+	b *repBuilder
+	r io.ReaderAt
+}
+
+func (r repManagedInput) ReadAt(p []byte, off int64) (int, error) {
+	if err := r.b.budget.inspect(int64(len(p))); err != nil {
+		return 0, err
+	}
+	return r.r.ReadAt(p, off)
+}
+
+// encodeManaged emits groups directly into the ordinary CAS batch. Node cuts
+// preserve the draft's content-defined framing. repBuild performs the independent
+// production Source proof before the cumulative capability floor/root publication.
+func (b *repBuilder) encodeManaged(src io.ReaderAt, size int64, k repKind) (*repObject, error) {
+	if k != repKindDEX && k != repKindCLR {
+		return nil, errRepUnsupported
+	}
+	if size <= 0 || size > 32<<20 {
+		return nil, fmt.Errorf("%w: managed source size", errRepLimit)
+	}
+	input := repManagedInput{b: b, r: src}
+	r := &repObject{Kind: k, Size: size}
+	var node []byte
+	count, groups := 0, 0
+	var total int64
+	flush := func() error {
+		if len(node) == 0 {
+			return nil
+		}
+		id, e := b.putBlob(node)
+		if e != nil {
+			return e
+		}
+		r.Members = append(r.Members, repMember{Role: repStored, SHA: id, Size: int64(len(node))})
+		node = nil
+		count = 0
+		return nil
+	}
+	emit := func(comp []byte) error {
+		n := int64(len(comp))
+		if n <= 0 || n > 16<<20 || n > (128<<20)-total || groups >= 1<<16 {
+			return fmt.Errorf("%w: managed group bytes/count", errRepLimit)
+		}
+		total += n
+		groups++
+		id, e := b.putBlob(comp)
+		if e != nil {
+			return e
+		}
+		node = append(node, id[:]...)
+		count++
+		if (int(id[0])<<8|int(id[1]))%64 == 0 || count >= 256 {
+			return flush()
+		}
+		return nil
+	}
+	var err error
+	switch k {
+	case repKindDEX:
+		f, e := repDXParse(input, size, repDXLimits{MaxFile: 32 << 20})
+		if e != nil {
+			err = e
+			break
+		}
+		rep, e := repDXEncodeAt(f, input, repDXStreamConfig{Auto: 12, TempDir: filepath.Join(b.s.root, "tmp"), Cut: func(r io.ReaderAt, s []repDXSec) ([]int, error) { return repMCUnitCutAt(r, s, 4096) }, Emit: emit})
+		if e != nil {
+			err = e
+			break
+		}
+		r.Recipe = rep.Meta
+	case repKindCLR:
+		f, e := repCLParse(input, size, repCLLimits{})
+		if e != nil {
+			err = e
+			break
+		}
+		rep, e := repCLEncodeAt(f, input, repCLStreamConfig{Auto: 12, TempDir: filepath.Join(b.s.root, "tmp"), Cut: func(r io.ReaderAt, s []repIXSec) ([]int, error) { return repMCUnitCutAt(r, s, 4096) }, Emit: emit})
+		if e != nil {
+			err = e
+			break
+		}
+		r.Recipe = rep.Meta
+	}
+	if err != nil {
+		if errors.Is(err, repDXErrLimit) || errors.Is(err, repCLErrLimit) {
+			return nil, fmt.Errorf("%w: managed analysis: %v", errRepLimit, err)
+		}
+		if errors.Is(err, repDXErrFormat) || errors.Is(err, repDXErrUnsupported) || errors.Is(err, repCLErrFormat) || errors.Is(err, repCLErrUnsupported) {
+			return nil, fmt.Errorf("%w: managed analysis: %v", errRepUnsupported, err)
+		}
+		return nil, err
+	}
+	if err = flush(); err != nil {
+		return nil, err
+	}
+	if err = repManagedBounds(&repCall{Rep: r}); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
