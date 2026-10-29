@@ -1,6 +1,6 @@
 # Z4 Frontier Campaign — runtime interruption checkpoint
 
-Status: **ACTIVE, unfinished**. Runtime connection recovered; execution resumed.
+Status: **INTERRUPTED, unfinished**. Execution environment is unavailable again.
 Fetch, Go toolchain, race smoke and repository checks succeeded. Earlier transport failure
 had no recorded OOM kill; its exact cause is unconfirmed. Do not restart completed work.
 Production main remains e4e5b1b (A3 merged at a19ace9; #94 preserves interruption evidence).
@@ -56,7 +56,18 @@ gate. Require four-size memory/scaling evidence and malformed-input integrity.
 Then continue B1–B8 and useful expansion; B2 remains DRAFT_ONLY.
 A0–A3 reports and pushed commits are durable; do not restart completed work.
 The existing hourly wake is recovery only; no second worker was started.
-Runtime is available. A4 production integration is not authorized by these partial results.
+Runtime is unavailable. Final A4 production gates remain incomplete.
 If disk becomes critical, remove fully reproducible scratch first. If stopping is unavoidable,
 commit/push all changes and preserve valuable artifacts on an unmerged backup branch.
 The campaign is not complete; A4, every B item, and expansion remain unfinished.
+
+Latest pushed A4 checkpoint: 450bd56622417dd0793bc1e42c7c9ec861f9de32 (#95 DRAFT).
+Later production port and memory refinements remain UNCOMMITTED in the workspace.
+Captured source 08e72b3d passed 21 exact native samples (7 inputs x 3 fresh stores),
+with deterministic roots and floor-9 cold proof/publication. Roslyn creation RSS
+was about 195 MiB; latest getter/unique-index refinements are not measured.
+Earlier full suite passed in 194.596 seconds before latest refinements.
+Final memory, compatibility, refusal, crash and full/race/vet/fuzz gates remain.
+This unmerged branch backs up evidence only, NOT the uncommitted source.
+Recovery: ../z4/a4-runtime-backup/RECOVERY.md
+Metrics: ../z4/a4-runtime-backup/captured-production-summary.json
