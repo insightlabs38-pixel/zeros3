@@ -34352,6 +34352,9 @@ func TestBulkFetch_SendsOnlyLogicalBytesFromAnyRepresentation(t *testing.T) {
 	if int64(frame.Len()) != bulkFrameSize(bulkKindData, want) || int64(frame.Len()) != int64(bulkHeaderLen+bulkDescLen*len(want))+logical {
 		t.Fatalf("frame is %d bytes for %d logical", frame.Len(), logical)
 	}
+	// Body EOF can precede the server wrapper's final counter update. Close
+	// joins outstanding handlers before inspecting their completed bookkeeping.
+	n.ts.Close()
 	if n.cnt.n(bulkFetchKey) != 1 {
 		t.Fatalf("fetch requests = %d", n.cnt.n(bulkFetchKey))
 	}
