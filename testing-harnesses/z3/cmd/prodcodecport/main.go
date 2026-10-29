@@ -78,12 +78,17 @@ func main() {
 	}
 	packagePaths := []string{"zeros3-z3/deflate", "zeros3-z3/ir", "zeros3-z3/zstdz3"}
 	gitMode := len(os.Args) == 4 && os.Args[3] == "git"
-	if len(os.Args) == 4 && !gitMode {
+	managedMode := len(os.Args) == 4 && os.Args[3] == "managed"
+	if len(os.Args) == 4 && !gitMode && !managedMode {
 		panic("unknown extraction mode")
 	}
 	if gitMode {
 		packagePaths = []string{"zeros3-z3/gitz3"}
 		prefixes = map[string]string{"zeros3-z3/gitz3": "repGT"}
+	}
+	if managedMode {
+		packagePaths = []string{"zeros3-z3/idxref", "zeros3-z3/dexz3", "zeros3-z3/clrz3", "zeros3-z3/pez3", "zeros3-z3/econx", "zeros3-z3/lab"}
+		prefixes = map[string]string{"zeros3-z3/idxref": "repIX", "zeros3-z3/dexz3": "repDX", "zeros3-z3/clrz3": "repCL", "zeros3-z3/pez3": "repPE", "zeros3-z3/econx": "repMC", "zeros3-z3/lab": "repManagedLab"}
 	}
 	args := []string{"list", "-deps", "-export", "-json"}
 	for _, p := range packagePaths {
@@ -168,6 +173,9 @@ func main() {
 	roots := []string{"zeros3-z3/ir:EncodeStream", "zeros3-z3/ir:ReconstructStream", "zeros3-z3/ir:MaterializeRange", "zeros3-z3/ir:ParseRangeIndex", "zeros3-z3/deflate:GzipHeader", "zeros3-z3/zstdz3:Parse", "zeros3-z3/zstdz3:Replay", "zeros3-z3/zstdz3:ReplayFrom"}
 	if gitMode {
 		roots = []string{"zeros3-z3/gitz3:ParsePackAt", "zeros3-z3/gitz3:ParseIdxAt", "zeros3-z3/gitz3:mreader", "zeros3-z3/gitz3:encodeEntryHeader", "zeros3-z3/gitz3:encodeOfs", "zeros3-z3/gitz3:zhdrCode", "zeros3-z3/gitz3:metaMagic", "zeros3-z3/gitz3:ModeZ"}
+	}
+	if managedMode {
+		roots = []string{"zeros3-z3/dexz3:Parse", "zeros3-z3/dexz3:EncodeAt", "zeros3-z3/dexz3:Decode", "zeros3-z3/clrz3:Parse", "zeros3-z3/clrz3:EncodeAt", "zeros3-z3/clrz3:Decode", "zeros3-z3/econx:UnitCutAt"}
 	}
 	keep := map[*decl]bool{}
 	var visit func(string)

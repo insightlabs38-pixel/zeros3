@@ -9,11 +9,12 @@ import (
 // bounded by the existing MaxCodeUnit parser limit and released by the caller.
 // A read failure is latched and returned by WalkAt; zero padding never authorizes output.
 type walkSource struct {
-	r    io.ReaderAt
-	size int64
-	lo   int64
-	buf  []byte
-	err  error
+	identityWork int64
+	r            io.ReaderAt
+	size         int64
+	lo           int64
+	buf          []byte
+	err          error
 }
 
 func (s *walkSource) span(off, n int64) []byte {

@@ -1,5 +1,11 @@
 package dexz3
 
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+)
+
 // Mechanically adapted identity functions; canonical hashes are unchanged.
 func identStringsAt(data *walkSource, f *File, w *Walked) ([]Identity, error) {
 	if uint32(len(w.StrOff)) != f.Hdr.StringIDs {
@@ -26,44 +32,55 @@ func identTypesAt(data *walkSource, f *File, S []Identity) ([]Identity, error) {
 }
 
 // typeListIdent returns the parameter identities of the type_list at off (0 = empty).
-func typeListAt(data *walkSource, off uint32, T []Identity) ([][]byte, error) {
-	if off == 0 {
-		return nil, nil
-	}
-	if uint64(off)+4 > uint64(data.size) {
-		return nil, bad("type_list offset %d", off)
-	}
-	n := le32(data.span(int64(off), 4))
-	if uint64(n)*2 > uint64(data.size)-uint64(off)-4 {
-		return nil, bad("type_list size %d", n)
-	}
-	out := make([][]byte, n)
-	for j := uint32(0); j < n; j++ {
-		v := le16(data.span(int64(off)+4+2*int64(j), 2))
-		if uint64(v) >= uint64(len(T)) {
-			return nil, bad("type_list entry %d out of range", v)
-		}
-		out[j] = T[v][:]
-	}
-	return out, nil
-}
-
+// Prototype descriptions are hashed directly; a shared long parameter list
+// never allocates a slice of identity slices, nor bypasses the aggregate budget.
 func identProtosAt(data *walkSource, f *File, T []Identity) ([]Identity, error) {
 	off, n := idEntries(f, TypeProtoID, 12)
 	out := make([]Identity, n)
 	for i := int64(0); i < n; i++ {
 		e := data.span(off+12*i, 12)
-		ret := le32(e[4:])
+		ret, list := le32(e[4:]), le32(e[8:])
+		if data.err != nil {
+			return nil, data.err
+		}
 		if uint64(ret) >= uint64(len(T)) {
 			return nil, bad("proto %d return type %d", i, ret)
 		}
-		ps, err := typeListAt(data, le32(e[8:]), T)
-		if err != nil {
-			return nil, err
+		count := uint32(0)
+		if list != 0 {
+			if uint64(list)+4 > uint64(data.size) {
+				return nil, bad("type_list offset %d", list)
+			}
+			count = le32(data.span(int64(list), 4))
+			if data.err != nil {
+				return nil, data.err
+			}
+			if uint64(count)*2 > uint64(data.size)-uint64(list)-4 {
+				return nil, bad("type_list size %d", count)
+			}
 		}
-		parts := [][]byte{T[ret][:], u32le(uint32(len(ps)))}
-		parts = append(parts, ps...)
-		out[i] = hash('P', parts...)
+		cost := int64(count)*32 + 37
+		if cost > data.size*16+(64<<20)-data.identityWork {
+			return nil, fmt.Errorf("%w: aggregate prototype identity bytes", ErrLimit)
+		}
+		data.identityWork += cost
+		h := sha256.New()
+		h.Write([]byte{'P'})
+		h.Write(T[ret][:])
+		var length [4]byte
+		binary.LittleEndian.PutUint32(length[:], count)
+		h.Write(length[:])
+		for j := uint32(0); j < count; j++ {
+			v := le16(data.span(int64(list)+4+2*int64(j), 2))
+			if data.err != nil {
+				return nil, data.err
+			}
+			if uint64(v) >= uint64(len(T)) {
+				return nil, bad("type_list entry %d out of range", v)
+			}
+			h.Write(T[v][:])
+		}
+		h.Sum(out[i][:0])
 	}
 	return out, nil
 }

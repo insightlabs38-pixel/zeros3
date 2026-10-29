@@ -55,18 +55,31 @@ func EncodeTo(f *File, data []byte, cfg StreamConfig) (*Rep, error) {
 	}
 	c.Auto = cfg.Auto
 	c.Marks = DeriveMarks(f, data, c.HV)
-	bodies := FindBodies(f, data, true)
+	bodies, err := compactFindBodies(f, data, true)
+	if err != nil {
+		return nil, err
+	}
 	ValidateBodies(f, data, c.HV, bodies)
-	slots := TableSlots(f, data)
-	blobSlots := BlobSlots(f, data, c.Blobs, c.Marks)
-	ilSlots := ILSlots(data, bodies)
+	capacity, err := countCompactSlots(f, data, c.Blobs, c.Marks, bodies)
+	if err != nil {
+		return nil, err
+	}
+	all, err := compactTableSlots(f, data, make([]Slot, 0, capacity))
+	if err != nil {
+		return nil, err
+	}
+	all = compactBlobSlots(f, data, c.Blobs, c.Marks, all)
+	all, err = compactILSlots(data, bodies, all)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.Observe != nil {
 		cfg.Observe("slots")
 	}
 	if err := c.BuildOwners(); err != nil {
 		return nil, err
 	}
-	extra, err := strExtra(c, slots)
+	extra, err := strExtra(c, all)
 	if err != nil {
 		return nil, err
 	}
@@ -96,12 +109,6 @@ func EncodeTo(f *File, data []byte, cfg StreamConfig) (*Rep, error) {
 	for _, r := range f.Excised {
 		st.Excised += int(r.Len)
 	}
-	all := make([]Slot, 0, len(slots)+len(blobSlots)+len(ilSlots))
-	all = append(all, slots...)
-	all = append(all, blobSlots...)
-	all = append(all, ilSlots...)
-	blobSlots = nil
-	ilSlots = nil
 	if cfg.Observe != nil {
 		cfg.Observe("all-slots")
 	}
@@ -110,7 +117,13 @@ func EncodeTo(f *File, data []byte, cfg StreamConfig) (*Rep, error) {
 		return nil, err
 	}
 
-	sorted, err := idxref.NewSortedRefSpool(cfg.TempDir, 2*len(all)+len(c.Blobs)+1, 256<<20)
+	maxReferences := len(all) + len(c.Blobs) + 1
+	for _, s := range all {
+		if s.Self >= 0 && s.Sp == SpRow {
+			maxReferences++
+		}
+	}
+	sorted, err := idxref.NewSortedRefSpool(cfg.TempDir, maxReferences, 256<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -143,8 +156,8 @@ func EncodeTo(f *File, data []byte, cfg StreamConfig) (*Rep, error) {
 		}
 		return f.Rows(cd.T) + 1, nil
 	}
-	for i := range slots {
-		s := &slots[i]
+	for i := range all {
+		s := &all[i]
 		if s.Sp == SpLayout {
 			var v uint64
 			switch s.Lay {

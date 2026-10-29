@@ -3,6 +3,7 @@ package clrz3
 import (
 	"encoding/binary"
 	"fmt"
+	"sort"
 
 	"zeros3-z3/idxref"
 )
@@ -28,10 +29,14 @@ const (
 // Ctx is the identity context of one file: the bytes (original, or progressively restored by the
 // decoder), heap views, per-table identity arrays and the candidate indexes.
 type Ctx struct {
-	F    *File
-	D    []byte
-	K0   int
-	Auto int
+	strEnds             []uint32
+	workLimit, workUsed int64
+	idDepth             int
+	F                   *File
+	D                   []byte
+	source              *clrSource
+	K0                  int
+	Auto                int
 
 	str, blob, us, guid []byte
 	HV                  *HeapView
@@ -108,12 +113,27 @@ func lp(b []byte) []byte { return append(binary.AppendUvarint(nil, uint64(len(b)
 
 // strAt returns the NUL-terminated string at heap offset off.
 func (c *Ctx) strAt(off uint32) []byte {
+	if c.err != nil {
+		return nil
+	}
 	if uint64(off) >= uint64(len(c.str)) {
 		if off == 0 && len(c.str) == 0 {
 			return nil
 		}
 		c.fail("#Strings offset %d outside the heap", off)
 		return nil
+	}
+	if c.strEnds != nil {
+		j := sort.Search(len(c.strEnds), func(i int) bool { return c.strEnds[i] >= off })
+		if j == len(c.strEnds) {
+			c.fail("unterminated #Strings entry at %d", off)
+			return nil
+		}
+		n := int(c.strEnds[j] - off)
+		if !c.chargeIdentity(n) {
+			return nil
+		}
+		return c.str[off:c.strEnds[j]]
 	}
 	b := c.str[off:]
 	for i, x := range b {
@@ -125,7 +145,12 @@ func (c *Ctx) strAt(off uint32) []byte {
 	return nil
 }
 
-func (c *Ctx) col(t int, r uint32, ci int) uint32 { return c.F.Col(c.D, t, r, ci) }
+func (c *Ctx) col(t int, r uint32, ci int) uint32 {
+	if c.source != nil {
+		return c.source.col(c.F, t, r, ci)
+	}
+	return c.F.Col(c.D, t, r, ci)
+}
 
 func (c *Ctx) strCol(t int, r uint32, ci int) []byte { return lp(c.strAt(c.col(t, r, ci))) }
 
@@ -162,6 +187,9 @@ func (c *Ctx) entryIdentity(i int) idxref.Identity {
 	}
 	e := c.Blobs[i]
 	b := c.blob[e.DataOff : e.DataOff+e.Len]
+	if !c.chargeIdentity(len(b)) {
+		return idxref.Identity{}
+	}
 	m := c.Marks[i]
 	if m == BlobOpaque {
 		c.blobID[i] = idxref.Hash(tagBlob, b)
@@ -175,6 +203,9 @@ func (c *Ctx) entryIdentity(i int) idxref.Identity {
 	sl, ok := ParseSig(m, b, false)
 	if !ok {
 		c.fail("marked blob %d does not parse", i)
+		return idxref.Identity{}
+	}
+	if !c.chargeIdentity(32 * len(sl)) {
 		return idxref.Identity{}
 	}
 	var n []byte
@@ -198,6 +229,9 @@ func (c *Ctx) entryIdentity(i int) idxref.Identity {
 
 // id returns the identity of row r (1-based) of table t, computing it on demand.
 func (c *Ctx) id(t int, r uint32) idxref.Identity {
+	if c.err != nil {
+		return idxref.Identity{}
+	}
 	if t < 0 || t >= NumTables || r == 0 || r > c.F.Tables[t].Rows {
 		c.fail("row %d of table %d", r, t)
 		return idxref.Identity{}
@@ -213,6 +247,12 @@ func (c *Ctx) id(t int, r uint32) idxref.Identity {
 		c.fail("identity cycle at %s row %d", TableName(t), r)
 		return idxref.Identity{}
 	}
+	if c.idDepth >= 256 {
+		c.err = limit("identity dependency depth")
+		return idxref.Identity{}
+	}
+	c.idDepth++
+	defer func() { c.idDepth-- }()
 	c.state[t][r-1] = 1
 	id := c.key(t, r)
 	c.state[t][r-1] = 2
@@ -399,6 +439,9 @@ func (c *Ctx) ComputeTable(t int) error {
 	c.computing[t] = true
 	for r := uint32(1); r <= c.F.Tables[t].Rows; r++ {
 		c.id(t, r)
+		if c.err != nil {
+			break
+		}
 	}
 	c.computing[t] = false
 	c.ready[t] = true
@@ -430,8 +473,15 @@ func (c *Ctx) rowIndexEx(set uint8, excl int) (*idxref.ClassIndex, error) {
 	if ix, ok := c.rowIdx[key]; ok {
 		return ix, nil
 	}
-	handles := []int{0}
-	ids := []idxref.Identity{nullID}
+	candidates := 1
+	for _, t := range SetTables(set) {
+		if t != excl {
+			candidates += int(c.F.Tables[t].Rows)
+		}
+	}
+	handles := make([]int, 1, candidates)
+	ids := make([]idxref.Identity, 1, candidates)
+	ids[0] = nullID
 	for _, t := range SetTables(set) {
 		if t == excl {
 			continue
@@ -467,10 +517,16 @@ func (c *Ctx) StrIndex() *idxref.ClassIndex {
 		}
 		entry := c.str[start:i]
 		handles = append(handles, start)
+		if !c.chargeIdentity(len(entry)) {
+			return idxref.NewClassIndex(nil, nil, c.K0)
+		}
 		ids = append(ids, idxref.Hash(tagStr, lp(entry), []byte{0}))
 		for xi < len(c.StrExtra) && c.StrExtra[xi] <= i {
 			if o := c.StrExtra[xi]; o > start {
 				handles = append(handles, o)
+				if !c.chargeIdentity(len(entry)) {
+					return idxref.NewClassIndex(nil, nil, c.K0)
+				}
 				ids = append(ids, idxref.Hash(tagStr, lp(entry), binary.AppendUvarint(nil, uint64(o-start))))
 			}
 			xi++
@@ -558,15 +614,34 @@ func (c *Ctx) SigReady() { c.sigReady = true }
 
 // Put appends the reference for slot s (encoder side; s.Val is the original number).
 func (c *Ctx) Put(dst []byte, s *Slot, allBlobs bool) ([]byte, error) {
+	if c.err != nil {
+		return dst, c.err
+	}
 	switch s.Sp {
 	case SpStr:
-		return c.StrIndex().Put(dst, int(s.Val))
+		ix := c.StrIndex()
+		if c.err != nil {
+			return dst, c.err
+		}
+		return ix.Put(dst, int(s.Val))
 	case SpGuid:
-		return c.GuidIndex().Put(dst, int(s.Val))
+		ix := c.GuidIndex()
+		if c.err != nil {
+			return dst, c.err
+		}
+		return ix.Put(dst, int(s.Val))
 	case SpUS:
-		return c.USIndex().Put(dst, int(s.Val&0xffffff))
+		ix := c.USIndex()
+		if c.err != nil {
+			return dst, c.err
+		}
+		return ix.Put(dst, int(s.Val&0xffffff))
 	case SpBlob:
-		return c.BlobIndex(allBlobs).Put(dst, int(s.Val))
+		ix := c.BlobIndex(allBlobs)
+		if c.err != nil {
+			return dst, c.err
+		}
+		return ix.Put(dst, int(s.Val))
 	case SpRow:
 		t, r, ok := RowOf(s.Set, s.Val)
 		if !ok {
@@ -622,4 +697,40 @@ func (c *Ctx) Get(src []byte, s *Slot, allBlobs bool) (uint32, []byte, error) {
 		return v, rest, nil
 	}
 	return 0, nil, fmt.Errorf("clrz3: Get of space %d", s.Sp)
+}
+
+// Identity work is charged by canonical content bytes, including repeated suffix
+// names. A shared long string cannot force quadratic hashing or allocation.
+func (c *Ctx) chargeIdentity(n int) bool {
+	if c.err != nil {
+		return false
+	}
+	if c.workLimit == 0 {
+		return true
+	}
+	cost := int64(n) + 1
+	if cost > c.workLimit-c.workUsed {
+		c.err = limit("aggregate identity byte work")
+		return false
+	}
+	c.workUsed += cost
+	return true
+}
+func (c *Ctx) prepareStringBounds() error {
+	count := 0
+	for _, b := range c.str {
+		if b == 0 {
+			count++
+			if count > 1<<18 {
+				return limit("string entry count")
+			}
+		}
+	}
+	c.strEnds = make([]uint32, 0, count)
+	for i, b := range c.str {
+		if b == 0 {
+			c.strEnds = append(c.strEnds, uint32(i))
+		}
+	}
+	return nil
 }

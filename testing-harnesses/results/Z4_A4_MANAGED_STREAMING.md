@@ -74,3 +74,39 @@ match legacy across prefix/cutter settings. Original tests were retained; the no
 DEX Auto+K0!=3 combination already fails legacy self-proof and the streamed API refuses
 it explicitly. Window geometry, source errors, spool budgets/order and cleanup are tested.
 Full logs, negative samples and source hashes: a4-checkpoint2-evidence.json.gz.
+
+## Third checkpoint: CLR source windows and four real sizes
+
+EncodeAt now owns bounded metadata heaps and reads method records through ReaderAt;
+no full source image, full masked image, payload copy, or output list is retained.
+Compact sizing passes allocate slots once; method tokens/clauses are released after
+slot discovery in favor of small body geometry. Overlapping candidate sets are evicted.
+Reference sorting now uses 4096-record external runs (up to 512 merge cursors, 4 KiB
+each) and one bounded record buffer, replacing the full-reference sorting index.
+Fresh-process plain controls, OS cache warm; producers/compilers outside measurement:
+
+| Real CLR input | Bytes | Encode s | Process max RSS MiB |
+|---|---:|---:|---:|
+| Newtonsoft 13.0.4 | 717736 | .235 | 22.16 |
+| FSharp.Core | 5726208 | .676 | 37.72 |
+| CoreLib 8.0.33 | 12775936 | 1.617 | 78.48 |
+| Roslyn CSharp 8.0.427 | 18601984 | 2.249 | 104.78 |
+
+All four preserve exact metadata and every length-framed component byte versus legacy;
+independent serialized full SHA proofs pass. Legacy encode includes self-proof; its
+Roslyn RSS 409.56 MiB is not an encode-only timing comparison. Prior negative samples
+remain in evidence. Controls are single fresh-process samples, not statistical medians.
+Creation remains bounded to 32 MiB source, metadata heaps 32 MiB aggregate /16 MiB each,
+1M aggregate identity rows, 256K heap entries and 64 MiB estimated context metadata.
+Method code is capped at 1 MiB, record windows 16 MiB, cumulative method inspection
+16*source+64 MiB and 1M token/clause records; shared bodies are parsed once.
+Canonical identity bytes are charged (including repeated long suffix names), and
+identity dependency depth is bounded at 256. DEX prototypes hash parameter descriptions
+incrementally under an aggregate byte budget, avoiding identity-slice expansion.
+Adversarial tests cover shared bodies, repeated long suffixes, shared large prototypes,
+identity depth, metadata count limits, source I/O failure and external merge ordering.
+The full module suite, focused races and vet pass; the unchanged deep prefix oracle
+also passed under race (485.890 s). Latest budget/stream refinements pass focused tests.
+Mechanical AST extraction builds a standalone stdlib-only managed port; actual production
+integration, five frozen root vectors, old/new wire/capability/crash gates and final
+native production measurements are still pending. PR #95 stays draft; no managed merge.

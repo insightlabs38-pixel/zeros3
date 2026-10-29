@@ -3,7 +3,9 @@ package idxref
 import (
 	"bytes"
 	"io"
+	"math/rand"
 	"os"
+	"sort"
 	"testing"
 )
 
@@ -94,5 +96,67 @@ func TestSortedRefSpoolPreservesStableTieOrder(t *testing.T) {
 	}
 	if a.index != nil {
 		t.Fatal("retained sort index")
+	}
+}
+
+func TestSortedRefSpoolExternalRuns(t *testing.T) {
+	dir := t.TempDir()
+	const n = 12345
+	src, e := NewSortedRefSpool(dir, n, 1<<20)
+	if e != nil {
+		t.Fatal(e)
+	}
+	dst, e := NewRefSpool(dir, 1<<20)
+	if e != nil {
+		t.Fatal(e)
+	}
+	type rec struct {
+		pos, off int64
+		seq      int
+		value    byte
+	}
+	order := make([]rec, n)
+	rng := rand.New(rand.NewSource(4106))
+	for i := range order {
+		order[i] = rec{int64(rng.Intn(5)), int64(rng.Intn(3)), i, byte(i % 251)}
+		x := order[i]
+		if e = src.Append(x.pos, x.off, 1, 2, []byte{x.value}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := order[i], order[j]
+		return a.pos < b.pos || a.pos == b.pos && a.off < b.off
+	})
+	if cap(src.index) > sortRunRecords {
+		t.Fatal("whole-reference sorting index retained")
+	}
+	if e = src.CopySorted(dst); e != nil {
+		t.Fatal(e)
+	}
+	if len(src.runs) != 4 {
+		t.Fatal("did not exercise four external runs")
+	}
+	if e = dst.Rewind(); e != nil {
+		t.Fatal(e)
+	}
+	for _, x := range order {
+		v, e := dst.Next()
+		if e != nil || v.Pos != x.pos || !bytes.Equal(v.Bytes, []byte{x.value}) {
+			t.Fatal("external ordering", x, v, e)
+		}
+	}
+	if _, e = dst.Next(); e != io.EOF {
+		t.Fatal("extra records", e)
+	}
+	if e = src.Close(); e != nil {
+		t.Fatal(e)
+	}
+	if e = dst.Close(); e != nil {
+		t.Fatal(e)
+	}
+	entries, e := os.ReadDir(dir)
+	if e != nil || len(entries) != 0 {
+		t.Fatal("external run leak", e)
 	}
 }

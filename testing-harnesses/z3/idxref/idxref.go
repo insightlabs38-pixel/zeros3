@@ -241,26 +241,29 @@ func NewClassIndex(handles []int, ids []Identity, k0 int) *ClassIndex {
 		n := bytes.Compare(ids[a][:], ids[b][:])
 		return n < 0 || n == 0 && a < b
 	})
-	type group struct {
-		lo, hi int
-		first  uint32
+	type group struct{ lo, hi uint32 }
+	unique := 0
+	for i := range order {
+		if i == 0 || ids[order[i-1]] != ids[order[i]] {
+			unique++
+		}
 	}
-	groups := make([]group, 0)
+	groups := make([]group, 0, unique)
 	for lo := 0; lo < len(order); {
 		hi := lo + 1
 		for hi < len(order) && ids[order[lo]] == ids[order[hi]] {
 			hi++
 		}
-		groups = append(groups, group{lo, hi, order[lo]})
+		groups = append(groups, group{uint32(lo), uint32(hi)})
 		lo = hi
 	}
-	sort.Slice(groups, func(i, j int) bool { return groups[i].first < groups[j].first })
+	sort.Slice(groups, func(i, j int) bool { return order[groups[i].lo] < order[groups[j].lo] })
 	cls := make([]Identity, len(groups))
 	c.starts = make([]uint32, len(groups)+1)
 	c.members = make([]int, 0, len(ids))
 	c.handles = make([]classHandle, len(ids))
 	for n, g := range groups {
-		cls[n] = ids[g.first]
+		cls[n] = ids[order[g.lo]]
 		c.starts[n] = uint32(len(c.members))
 		for ordinal, i := range order[g.lo:g.hi] {
 			c.members = append(c.members, handles[i])

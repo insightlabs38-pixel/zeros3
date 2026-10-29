@@ -20,6 +20,20 @@ type StreamConfig struct {
 // EncodeAt stages reference bytes on disk and emits bounded components. It does
 // not retain input bytes, masked copies, reference slices, or output components.
 func EncodeAt(f *File, r io.ReaderAt, cfg StreamConfig) (*Rep, error) {
+	if f.Size <= 0 || f.Size > 32<<20 {
+		return nil, fmt.Errorf("%w: managed creation source size", ErrLimit)
+	}
+	ids := uint64(f.Hdr.StringIDs) + uint64(f.Hdr.TypeIDs) + uint64(f.Hdr.ProtoIDs) + uint64(f.Hdr.FieldIDs) + uint64(f.Hdr.MethodIDs)
+	if ids > 1<<20 {
+		return nil, fmt.Errorf("%w: aggregate identity count", ErrLimit)
+	}
+	mapped := uint64(0)
+	for _, m := range f.Map {
+		mapped += uint64(m.Count)
+		if mapped > 1<<20 {
+			return nil, fmt.Errorf("%w: aggregate item count", ErrLimit)
+		}
+	}
 	data := &walkSource{r: r, size: f.Size, lo: -1}
 	if cfg.Emit == nil {
 		return nil, bad("missing component sink")

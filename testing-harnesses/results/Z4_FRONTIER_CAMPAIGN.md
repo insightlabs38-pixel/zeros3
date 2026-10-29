@@ -5,7 +5,8 @@ Fetch, Go toolchain, race smoke and repository checks succeeded. Earlier transpo
 had no recorded OOM kill; its exact cause is unconfirmed. Do not restart completed work.
 Production main remains e4e5b1b (A3 merged at a19ace9; #94 preserves interruption evidence).
 Active branch z4/a4-managed-streaming. First checkpoint aa5d7d4 fixes exact index lookup;
-second checkpoint adds windowed/staged prototypes with real negative and positive evidence.
+second checkpoint 9551dff stages reference bytes; the next checkpoint adds bounded CLR
+source windows, external sorting and four real-size exactness/memory evidence.
 Original draft PRs #80/#81 remain open; neither was merged wholesale.
 
 | Item | Durable outcome | PR / state |
@@ -14,7 +15,7 @@ Original draft PRs #80/#81 remain open; neither was merged wholesale.
 | A1 | cumulative store-format capability design; old/new/wire/crash matrix | #91 merged |
 | A2 | MODEL8_PRODUCTION_READY; bounded Model-only extraction | #92 merged |
 | A3 | STRUCTURED9_10_PARTIAL; final gates passed for bounded subset | #93 merged |
-| A4 | first unfinished; exact compact indexes and staged prototypes, CLR memory gate open | research branch; #80 stays draft |
+| A4 | first unfinished; exact compact indexes and bounded source-window prototypes; production gates pending | #95 draft; #80 stays draft |
 | B1 | similarity/delta CAS decision pending | queued |
 | B2 | representation-authority decision pending; **DRAFT_ONLY** | queued |
 | B3 | cross-format semantic CAS decision pending | queued |

@@ -122,12 +122,21 @@ func main() {
 			return nil
 		}
 		if filepath.Ext(path) == ".dll" {
-			data, e := os.ReadFile(path)
-			must(e)
+			var data []byte
+			if mode != "stream-at" {
+				data, e = os.ReadFile(path)
+				must(e)
+			}
 			f, e := clrz3.Parse(file, info.Size(), clrz3.Limits{})
 			must(e)
-			if mode == "stream" {
-				rep, e := clrz3.EncodeTo(f, data, clrz3.StreamConfig{Auto: 12, TempDir: dir, Observe: func(phase string) {
+			if mode == "stream" || mode == "stream-at" {
+				encode := func(f *clrz3.File, data []byte, cfg clrz3.StreamConfig) (*clrz3.Rep, error) {
+					if mode == "stream-at" {
+						return clrz3.EncodeAt(f, file, cfg)
+					}
+					return clrz3.EncodeTo(f, data, cfg)
+				}
+				rep, e := encode(f, data, clrz3.StreamConfig{Auto: 12, TempDir: dir, Observe: func(phase string) {
 					if os.Getenv("Z4_PROFILE") == "1" {
 						var m runtime.MemStats
 						runtime.ReadMemStats(&m)
