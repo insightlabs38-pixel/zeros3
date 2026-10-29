@@ -21903,15 +21903,17 @@ const (
 	repKindSQLite repKind = 3
 	repKindGit    repKind = 4
 	// Git and codec numbers retain their I0 reservations.
-	repKindMerkle repKind = 5
-	repKindGzip   repKind = 6
-	repKindZstd   repKind = 7
-	repKindModel  repKind = 8
+	repKindMerkle  repKind = 5
+	repKindGzip    repKind = 6
+	repKindZstd    repKind = 7
+	repKindModel   repKind = 8
+	repKindSST     repKind = 9
+	repKindParquet repKind = 10
 )
 
 // supported reports whether this build can decode the kind.
 func (k repKind) supported() bool {
-	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel
+	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet
 }
 
 type repRole uint8
@@ -22404,6 +22406,10 @@ type repDecoder interface {
 // repDecoderFor is the finite kind table: a switch, never a registry.
 func repDecoderFor(k repKind) (repDecoder, bool) {
 	switch k {
+	case repKindSST:
+		return repSCsstDecoder{}, true
+	case repKindParquet:
+		return repSCparquetDecoder{}, true
 	case repKindModel:
 		return repMDmodelDecoder{}, true
 	case repKindGit:
@@ -23526,7 +23532,8 @@ func unmarshalRepRoot(b []byte) (*repRoot, error) {
 const (
 	storeFormatVersionRepresentations = 6
 	storeFormatVersionModel           = 7
-	storeFormatVersionSupported       = storeFormatVersionModel
+	storeFormatVersionStructured      = 8
+	storeFormatVersionSupported       = storeFormatVersionStructured
 	hookRepRootBeforeFormat           = "rep-root-before-format"
 
 	hookRepComponentsStaged  = "rep-components-staged"
@@ -27114,6 +27121,8 @@ func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObj
 	defer func() { b.depth-- }()
 
 	switch k {
+	case repKindSST, repKindParquet:
+		return b.encodeStructured(src, size, k)
 	case repKindModel:
 		return b.encodeModel(src, size)
 	case repKindGit:
@@ -27142,6 +27151,8 @@ func repCandidate(src io.ReaderAt, size int64) (repKind, bool) {
 	n, _ := src.ReadAt(head[:], 0)
 	hd := head[:min(int64(n), size)]
 	switch {
+	case bytes.HasPrefix(hd, []byte("PAR1")):
+		return repKindParquet, true
 	case bytes.HasPrefix(hd, []byte("GGUF")) || (len(hd) >= 9 && binary.LittleEndian.Uint64(hd[:8]) <= 16<<20 && binary.LittleEndian.Uint64(hd[:8]) <= uint64(max(0, size-8)) && bytes.HasPrefix(bytes.TrimSpace(hd[8:]), []byte("{"))):
 		return repKindModel, true
 	case bytes.HasPrefix(hd, []byte("PACK")) || bytes.HasPrefix(hd, []byte{0xff, 't', 'O', 'c'}):
@@ -27158,6 +27169,15 @@ func repCandidate(src io.ReaderAt, size int64) (repKind, bool) {
 		return repKindConcat, true
 	case carSniff(hd):
 		return repKindCAR, true
+	}
+	if size >= 8 {
+		var tail [8]byte
+		if n, _ := src.ReadAt(tail[:], size-8); n == 8 {
+			magic := binary.LittleEndian.Uint64(tail[:])
+			if magic == repSSblockBasedMagic || magic == repSSpebbleMagic {
+				return repKindSST, true
+			}
+		}
 	}
 	return 0, false
 }
@@ -39315,9 +39335,6 @@ func repMDreadOp(c *repCall, op *repMDmodelOp, off, n int64) ([]byte, error) {
 	return out, nil
 }
 
-// ---- Q9 DRAFT ONLY: managed recipe adapters, stricter budgets ----------------
-// Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.
-
 // ---- Bounded streaming model analysis -------------------------
 const repModelWindow = 256 << 10
 const repModelDigestHint = "tensor-output-sha256/"
@@ -39694,6 +39711,8 @@ func (s *Store) repPublicationFloor(r *repRoot) (int, error) {
 		case repKindConcat, repKindCAR, repKindSQLite, repKindGit, repKindMerkle, repKindGzip, repKindZstd:
 		case repKindModel:
 			floor = max(floor, storeFormatVersionModel)
+		case repKindSST, repKindParquet:
+			floor = max(floor, storeFormatVersionStructured)
 		default:
 			return 0, fmt.Errorf("%w: capability kind %d", errRepUnsupported, obj.Kind)
 		}
@@ -39702,4 +39721,7758 @@ func (s *Store) repPublicationFloor(r *repRoot) (int, error) {
 		return 0, fmt.Errorf("%w: required capability floor %d", errRepUnsupported, floor)
 	}
 	return floor, nil
+}
+
+// ---- Mechanically extracted structured codec cores from immutable #81 ---- -----------
+// Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.
+
+// Port source: zeros3-z3/sstz3/block.go
+// Layout describes how a decoded block frames its entries. A block that matches the
+// table's derived layout (restarts at every RestartInterval-th entry, every
+// non-restart entry sharing the maximal prefix with its predecessor) needs no
+// stored layout at all.
+type repSSLayout struct {
+	Entries    int
+	RestartIdx []int // entry index of every restart
+	Shared     []int // shared-prefix length of every entry
+	HashIndex  bool  // RocksDB data block hash index flag (unsupported)
+}
+
+// Port source: zeros3-z3/sstz3/block.go
+// WalkBlock validates a decoded block (entries, restart array, restart count) and
+// calls fn for every entry in order with its full key (valid only during the call)
+// and value (aliases b). It rejects bad varints, arithmetic overflow, entries or
+// restarts outside the payload, a shared length above the previous key's length,
+// restarts that are not strictly increasing entry boundaries (the first at 0), and a
+// truncated restart array. fn may be nil.
+func repSSWalkBlock(b []byte, lim repSSLimits, fn func(i int, key, val []byte) error) (*repSSLayout, error) {
+	lim = lim.norm()
+	if len(b) < 4 {
+		return nil, repSScorrupt("block of %d bytes", len(b))
+	}
+	nr := binary.LittleEndian.Uint32(b[len(b)-4:])
+	l := &repSSLayout{}
+	if nr&(1<<31) != 0 { // RocksDB: data-block hash index appended after the restarts
+		l.HashIndex = true
+		return l, repSSunsupported("data block hash index")
+	}
+	if nr == 0 || uint64(nr) > uint64(len(b)-4)/4 || int64(nr) > int64(lim.MaxEntries) {
+		return nil, repSScorrupt("restart count %d in a block of %d bytes", nr, len(b))
+	}
+	payload := len(b) - 4 - 4*int(nr)
+	if payload < 0 {
+		return nil, repSScorrupt("restart array exceeds the block")
+	}
+	restarts := make([]uint32, nr)
+	for i := range restarts {
+		restarts[i] = binary.LittleEndian.Uint32(b[payload+4*i:])
+		if int64(restarts[i]) > int64(payload) || (i > 0 && restarts[i] <= restarts[i-1]) || (i == 0 && restarts[i] != 0) {
+			return nil, repSScorrupt("restart %d offset %d (payload %d)", i, restarts[i], payload)
+		}
+	}
+	var key []byte
+	pos, ri := 0, 0
+	for pos < payload {
+		isRestart := ri < len(restarts) && int(restarts[ri]) == pos
+		if ri < len(restarts) && int(restarts[ri]) < pos {
+			return nil, repSScorrupt("restart %d is inside an entry", ri)
+		}
+		shared, n1 := binary.Uvarint(b[pos:payload])
+		if n1 <= 0 {
+			return nil, repSScorrupt("shared length varint at %d", pos)
+		}
+		nonShared, n2 := binary.Uvarint(b[pos+n1 : payload])
+		if n2 <= 0 {
+			return nil, repSScorrupt("non-shared length varint at %d", pos)
+		}
+		vlen, n3 := binary.Uvarint(b[pos+n1+n2 : payload])
+		if n3 <= 0 {
+			return nil, repSScorrupt("value length varint at %d", pos)
+		}
+		hdr := pos + n1 + n2 + n3
+		if shared > uint64(len(key)) || (isRestart && shared != 0) {
+			return nil, repSScorrupt("shared length %d with previous key of %d at %d", shared, len(key), pos)
+		}
+		if nonShared > uint64(lim.MaxRecordBytes) || vlen > uint64(lim.MaxRecordBytes) ||
+			nonShared > uint64(payload-hdr) || vlen > uint64(payload-hdr)-nonShared {
+			return nil, repSScorrupt("entry at %d exceeds the block", pos)
+		}
+		if l.Entries >= lim.MaxEntries {
+			return nil, repSSErrLimit
+		}
+		if isRestart {
+			l.RestartIdx = append(l.RestartIdx, l.Entries)
+			ri++
+		}
+		key = append(key[:shared], b[hdr:hdr+int(nonShared)]...)
+		val := b[hdr+int(nonShared) : hdr+int(nonShared)+int(vlen)]
+		l.Shared = append(l.Shared, int(shared))
+		if fn != nil {
+			if err := fn(l.Entries, key, val); err != nil {
+				return nil, err
+			}
+		}
+		l.Entries++
+		pos = hdr + int(nonShared) + int(vlen)
+	}
+	if pos != payload {
+		return nil, repSScorrupt("entries end at %d, payload ends at %d", pos, payload)
+	}
+	if ri != len(restarts) && !(payload == 0 && nr == 1) {
+		return nil, repSScorrupt("%d restarts do not sit on entry boundaries", len(restarts)-ri)
+	}
+	if l.Entries == 0 && (nr != 1 || payload != 0) {
+		return nil, repSScorrupt("empty block with %d restarts", nr)
+	}
+	return l, nil
+}
+
+// Port source: zeros3-z3/sstz3/block.go
+// derives reports whether the block's framing equals the one derived from the
+// table's restart interval r and maximal prefix sharing, given the entries' keys.
+// keys is called with every entry index in order.
+func (l *repSSLayout) derivesFrom(r int, keyAt func(i int) []byte) bool {
+	if r <= 0 {
+		return false
+	}
+	for k, idx := range l.RestartIdx {
+		if idx != k*r {
+			return false
+		}
+	}
+	if len(l.RestartIdx) != (l.Entries+r-1)/r && l.Entries > 0 {
+		return false
+	}
+	var prev []byte
+	for i := 0; i < l.Entries; i++ {
+		k := keyAt(i)
+		want := 0
+		if i%r != 0 {
+			want = repSScommonPrefix(prev, k)
+		}
+		if l.Shared[i] != want {
+			return false
+		}
+		prev = k
+	}
+	return true
+}
+
+// Port source: zeros3-z3/sstz3/block.go
+func repSScommonPrefix(a, b []byte) int {
+	n := min(len(a), len(b))
+	i := 0
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	return i
+}
+
+// Port source: zeros3-z3/sstz3/block.go
+// BlockWriter rebuilds the exact bytes of a decoded block from full keys and values.
+type repSSBlockWriter struct {
+	buf      []byte
+	restarts []uint32
+	prev     []byte
+	n        int
+}
+
+// Port source: zeros3-z3/sstz3/block.go
+// Reset starts a new block, reusing buffers.
+func (w *repSSBlockWriter) Reset() {
+	w.buf, w.restarts, w.prev, w.n = w.buf[:0], w.restarts[:0], w.prev[:0], 0
+}
+
+// Port source: zeros3-z3/sstz3/block.go
+// Add appends one entry. restart forces a restart point; shared < 0 means the maximal
+// common prefix with the previous key (0 at a restart); otherwise the stored value is
+// used and must not exceed the previous key's length.
+func (w *repSSBlockWriter) Add(key, val []byte, restart bool, shared int) error {
+	if restart {
+		w.restarts = append(w.restarts, uint32(len(w.buf)))
+		shared = 0
+	} else if shared < 0 {
+		shared = repSScommonPrefix(w.prev, key)
+	}
+	if shared > len(w.prev) || shared > len(key) {
+		return repSScorrupt("shared length %d above key lengths %d/%d", shared, len(w.prev), len(key))
+	}
+	if int64(len(w.buf))+int64(len(key))+int64(len(val))+30 > math.MaxUint32 {
+		return repSSErrLimit
+	}
+	w.buf = binary.AppendUvarint(w.buf, uint64(shared))
+	w.buf = binary.AppendUvarint(w.buf, uint64(len(key)-shared))
+	w.buf = binary.AppendUvarint(w.buf, uint64(len(val)))
+	w.buf = append(w.buf, key[shared:]...)
+	w.buf = append(w.buf, val...)
+	w.prev = append(w.prev[:0], key...)
+	w.n++
+	return nil
+}
+
+// Port source: zeros3-z3/sstz3/block.go
+// Finish appends the restart array and count and returns the block bytes (valid until
+// the next Reset).
+func (w *repSSBlockWriter) Finish() []byte {
+	if len(w.restarts) == 0 { // an empty block still has one restart at 0
+		w.restarts = append(w.restarts, 0)
+	}
+	for _, r := range w.restarts {
+		w.buf = binary.LittleEndian.AppendUint32(w.buf, r)
+	}
+	w.buf = binary.LittleEndian.AppendUint32(w.buf, uint32(len(w.restarts)))
+	return w.buf
+}
+
+// Port source: zeros3-z3/sstz3/decode.go
+// Getter fetches a component by digest. The caller is responsible for checking the
+// bytes against the digest and the declared length before returning them.
+type repSSGetter func(id repSSID) ([]byte, error)
+
+// Port source: zeros3-z3/sstz3/decode.go
+// RangeStats reports what a ranged decode touched.
+type repSSRangeStats struct {
+	Blocks     int // data blocks rebuilt
+	Components int // component fetches
+	Bytes      int64
+	Records    int64 // records parsed (including those skipped to reach the first block)
+}
+
+// Port source: zeros3-z3/sstz3/decode.go
+type repSScursor struct {
+	rec      *repSSRecipe
+	get      repSSGetter
+	lim      repSSLimits
+	S        int
+	g        int    // current group
+	left     uint32 // records left in the group
+	comp     [3][]byte
+	rix      int64 // global record index
+	st       *repSSRangeStats
+	started  bool
+	nextAuto bool
+}
+
+// Port source: zeros3-z3/sstz3/decode.go
+func (c *repSScursor) load(g int) error {
+	if g >= len(c.rec.Groups) {
+		return repSSrecipeErr("records beyond the last group")
+	}
+	for s := 0; s < c.S; s++ {
+		b, err := c.get(c.rec.Digests[g*c.S+s])
+		if err != nil {
+			return err
+		}
+		if int64(len(b)) > c.lim.MaxDecoded {
+			return repSSErrLimit
+		}
+		c.comp[s] = b
+		c.st.Components++
+		c.st.Bytes += int64(len(b))
+	}
+	c.g, c.left, c.started = g, c.rec.Groups[g], true
+	return nil
+}
+
+// Port source: zeros3-z3/sstz3/decode.go
+func repSStakeLen(b *[]byte, max int64) ([]byte, error) {
+	n, k := binary.Uvarint(*b)
+	if k <= 0 || n > uint64(max) || n > uint64(len(*b)-k) {
+		return nil, repSScorrupt("record length in a component")
+	}
+	v := (*b)[k : k+int(n)]
+	*b = (*b)[k+int(n):]
+	return v, nil
+}
+
+// Port source: zeros3-z3/sstz3/decode.go
+// next returns the next record's user key, trailer and value.
+func (c *repSScursor) next() (ukey []byte, trailer uint64, val []byte, err error) {
+	if !c.started || c.left == 0 {
+		if c.started {
+			for s := 0; s < c.S; s++ {
+				if len(c.comp[s]) != 0 {
+					return nil, 0, nil, repSScorrupt("group %d has trailing bytes", c.g)
+				}
+			}
+		}
+		ng := 0
+		if c.started {
+			ng = c.g + 1
+		}
+		if err = c.load(ng); err != nil {
+			return
+		}
+	}
+	m := c.lim.MaxRecordBytes
+	f := c.rec.Form
+	switch f {
+	case repSSFormUKV, repSSFormFull:
+		if ukey, err = repSStakeLen(&c.comp[0], m); err != nil {
+			return
+		}
+		if f == repSSFormFull {
+			if len(c.comp[0]) < 8 {
+				return nil, 0, nil, repSScorrupt("truncated trailer")
+			}
+			trailer = binary.LittleEndian.Uint64(c.comp[0])
+			c.comp[0] = c.comp[0][8:]
+		}
+		val, err = repSStakeLen(&c.comp[0], m)
+	case repSSFormKV, repSSFormKTV, repSSFormKVT:
+		if ukey, err = repSStakeLen(&c.comp[0], m); err != nil {
+			return
+		}
+		switch f {
+		case repSSFormKTV:
+			if len(c.comp[0]) < 8 {
+				return nil, 0, nil, repSScorrupt("truncated trailer")
+			}
+			trailer = binary.LittleEndian.Uint64(c.comp[0])
+			c.comp[0] = c.comp[0][8:]
+		case repSSFormKVT:
+			if len(c.comp[2]) < 8 {
+				return nil, 0, nil, repSScorrupt("truncated trailer")
+			}
+			trailer = binary.LittleEndian.Uint64(c.comp[2])
+			c.comp[2] = c.comp[2][8:]
+		}
+		val, err = repSStakeLen(&c.comp[1], m)
+	}
+	if err != nil {
+		return
+	}
+	if c.rec.Form.trailersInRecipe() {
+		if c.rix >= int64(len(c.rec.Trailers)) {
+			return nil, 0, nil, repSSrecipeErr("trailer index")
+		}
+		trailer = c.rec.Trailers[c.rix]
+	}
+	c.rix++
+	c.left--
+	c.st.Records++
+	return
+}
+
+// Port source: zeros3-z3/sstz3/decode.go
+// Decode rebuilds the original table from the serialized recipe (head and digests) and
+// the components, writing it to w. It reads components lazily in file order and holds
+// one group (a few components) and one data block.
+func repSSDecode(w io.Writer, recipe []byte, get repSSGetter, lim repSSLimits) error {
+	_, err := repSSDecodeRange(w, recipe, get, 0, -1, lim)
+	return err
+}
+
+// Port source: zeros3-z3/sstz3/decode.go
+// DecodeRange writes bytes [off, off+n) of the original table (n < 0: to the end). Only
+// the data blocks overlapping the range are rebuilt, and only the groups holding their
+// records are fetched; the tail component is fetched only if the range reaches it.
+func repSSDecodeRange(w io.Writer, recipe []byte, get repSSGetter, off, n int64, lim repSSLimits) (repSSRangeStats, error) {
+	var st repSSRangeStats
+	lim = lim.norm()
+	rec, err := repSSParseRecipe(recipe, lim)
+	if err != nil {
+		return st, err
+	}
+	if off < 0 || off > rec.Size {
+		return st, repSSErrLimit
+	}
+	if n < 0 || n > rec.Size-off {
+		n = rec.Size - off
+	}
+	if n == 0 {
+		return st, nil
+	}
+	end := off + n
+	dataEnd := rec.Size - rec.TailLen
+	// physical offsets of the blocks
+	starts := make([]int64, len(rec.Blocks)+1)
+	for i := range rec.Blocks {
+		starts[i+1] = starts[i] + int64(rec.Blocks[i].CSize) + repSStrailerLen
+	}
+	first := sort.Search(len(rec.Blocks), func(i int) bool { return starts[i+1] > off })
+	cur := &repSScursor{rec: rec, get: get, lim: lim, S: rec.Form.streams(), st: &st}
+	var bw repSSBlockWriter
+	var key []byte
+	var payload bytes.Buffer
+	if rec.Form != repSSFormBlocks && first < len(rec.Blocks) && off < dataEnd && n > 0 {
+		var r0 int64
+		for i := 0; i < first; i++ {
+			r0 += int64(rec.Blocks[i].Entries)
+		}
+		// locate the group of record r0 and skip to it
+		var acc int64
+		g := 0
+		for g < len(rec.Groups) && acc+int64(rec.Groups[g]) <= r0 {
+			acc += int64(rec.Groups[g])
+			g++
+		}
+		if g < len(rec.Groups) {
+			if err := cur.load(g); err != nil {
+				return st, err
+			}
+			cur.rix = acc
+			for ; acc < r0; acc++ {
+				if _, _, _, err := cur.next(); err != nil {
+					return st, err
+				}
+			}
+		}
+	}
+	var written int64
+	pos := starts[first]
+	lastBlock := -1
+	for bi := first; bi < len(rec.Blocks) && pos < end && pos < dataEnd; bi++ {
+		bl := &rec.Blocks[bi]
+		var raw []byte
+		if rec.Form == repSSFormBlocks {
+			b, err := get(rec.Digests[bi])
+			if err != nil {
+				return st, err
+			}
+			st.Components++
+			st.Bytes += int64(len(b))
+			if uint64(len(b)) != bl.Decoded {
+				return st, repSScorrupt("block %d component has %d bytes, recipe says %d", bi, len(b), bl.Decoded)
+			}
+			raw = b
+		} else {
+			bw.Reset()
+			r := int(rec.RestartInterval)
+			ri := 0
+			for i := 0; i < int(bl.Entries); i++ {
+				uk, tr, val, err := cur.next()
+				if err != nil {
+					return st, err
+				}
+				key = append(append(key[:0], uk...), 0, 0, 0, 0, 0, 0, 0, 0)
+				binary.LittleEndian.PutUint64(key[len(uk):], tr)
+				restart, shared := false, -1
+				if ex := bl.Explicit; ex != nil {
+					if ri < len(ex.Restarts) && int(ex.Restarts[ri]) == i {
+						restart = true
+						ri++
+					}
+					shared = int(ex.Shared[i])
+				} else {
+					if r == 0 {
+						return st, repSSrecipeErr("restart interval 0")
+					}
+					restart = i%r == 0
+				}
+				if err := bw.Add(key, val, restart, shared); err != nil {
+					return st, err
+				}
+			}
+			raw = bw.Finish()
+		}
+		st.Blocks++
+		payload.Reset()
+		switch bl.Trailer[0] {
+		case repSSCompZstd:
+			if err := repSSreplayZstdBlock(&payload, bl.Zstd, raw, lim); err != nil {
+				return st, err
+			}
+		case repSSCompNone:
+			payload.Write(raw)
+		case repSSCompSnappy:
+			switch {
+			case bl.Pred == repSSPredGo && len(raw) <= repSNMaxPredict:
+				payload.Write(repSNEncodeRef(raw))
+			case bl.Pred == repSSPredCPP && len(raw) <= repSNMaxPredict:
+				payload.Write(repSNEncodeCPP(raw))
+			case bl.Pred == repSSPredCPP15 && len(raw) <= repSNMaxPredict:
+				payload.Write(repSNEncodeCPP15(raw))
+			case bl.Pred != 0:
+				return st, repSSrecipeErr("block %d predicted at %d bytes", bi, len(raw))
+			default:
+				cmds, err := repSSsnappyCmds(bl, int64(len(raw)), lim)
+				if err != nil {
+					return st, err
+				}
+				if err := repSNReplay(&payload, raw, cmds); err != nil {
+					return st, err
+				}
+			}
+		default:
+			return st, repSSrecipeErr("compression type %d", bl.Trailer[0])
+		}
+		if uint64(payload.Len()) != bl.CSize {
+			return st, repSScorrupt("block %d rebuilt to %d bytes, recipe says %d", bi, payload.Len(), bl.CSize)
+		}
+		payload.Write(bl.Trailer[:])
+		b := payload.Bytes()
+		lo, hi := max(off, pos)-pos, min(end, pos+int64(len(b)))-pos
+		if hi > lo {
+			if _, err := w.Write(b[lo:hi]); err != nil {
+				return st, err
+			}
+			written += hi - lo
+		}
+		pos += int64(len(b))
+		lastBlock = bi
+	}
+	if rec.Form != repSSFormBlocks && lastBlock == len(rec.Blocks)-1 && len(rec.Blocks) > 0 && cur.started {
+		// the whole data region was rebuilt: every record of every group must be consumed
+		if cur.left != 0 || cur.g != len(rec.Groups)-1 {
+			return st, repSScorrupt("%d records left over", cur.left)
+		}
+		for s := 0; s < cur.S; s++ {
+			if len(cur.comp[s]) != 0 {
+				return st, repSScorrupt("last group has trailing bytes")
+			}
+		}
+	}
+	if end > dataEnd && n > 0 {
+		t, err := get(rec.Digests[len(rec.Digests)-1])
+		if err != nil {
+			return st, err
+		}
+		st.Components++
+		st.Bytes += int64(len(t))
+		if int64(len(t)) != rec.TailLen {
+			return st, repSScorrupt("tail component has %d bytes, recipe says %d", len(t), rec.TailLen)
+		}
+		lo := max(off, dataEnd) - dataEnd
+		if _, err := w.Write(t[lo : end-dataEnd]); err != nil {
+			return st, err
+		}
+		written += end - dataEnd - lo
+	}
+	if written != n {
+		return st, repSScorrupt("wrote %d of %d bytes", written, n)
+	}
+	return st, nil
+}
+
+// Port source: zeros3-z3/sstz3/doc.go
+var (
+	// ErrCorrupt reports bytes that violate the table or block format.
+	repSSErrCorrupt = errors.New("sstz3: corrupt table")
+	// ErrUnsupported reports a well-formed table (or feature) the exact representation
+	// does not express; the caller falls back to ordinary CDC.
+	repSSErrUnsupported = errors.New("sstz3: unsupported table")
+	// ErrLimit reports that a configured bound would be exceeded.
+	repSSErrLimit = errors.New("sstz3: limit exceeded")
+	// ErrRecipe reports a malformed serialized recipe.
+	repSSErrRecipe = errors.New("sstz3: malformed recipe")
+)
+
+// Port source: zeros3-z3/sstz3/doc.go
+func repSScorrupt(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repSSErrCorrupt}, a...)...)
+}
+
+// Port source: zeros3-z3/sstz3/doc.go
+func repSSunsupported(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repSSErrUnsupported}, a...)...)
+}
+
+// Port source: zeros3-z3/sstz3/doc.go
+func repSSrecipeErr(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repSSErrRecipe}, a...)...)
+}
+
+// Port source: zeros3-z3/sstz3/doc.go
+// Limits bound every parse. The zero value selects the defaults.
+type repSSLimits struct {
+	MaxBlocks      int   // data blocks per table (default 1<<20)
+	MaxBlockBytes  int64 // one stored block payload (default 16 MiB)
+	MaxDecoded     int64 // one decompressed block (default 64 MiB)
+	MaxEntries     int   // entries per block (default 1<<22)
+	MaxMeta        int64 // one metadata block read by Open (default 64 MiB)
+	MaxTail        int64 // opaque tail span (default 256 MiB)
+	MaxRecordBytes int64 // one key or value (default 64 MiB)
+	MaxRecipe      int64 // recipe head bytes (default 256 MiB)
+}
+
+// Port source: zeros3-z3/sstz3/doc.go
+func (l repSSLimits) norm() repSSLimits {
+	if l.MaxBlocks <= 0 {
+		l.MaxBlocks = 1 << 20
+	}
+	if l.MaxBlockBytes <= 0 {
+		l.MaxBlockBytes = 16 << 20
+	}
+	if l.MaxDecoded <= 0 {
+		l.MaxDecoded = 64 << 20
+	}
+	if l.MaxEntries <= 0 {
+		l.MaxEntries = 1 << 22
+	}
+	if l.MaxMeta <= 0 {
+		l.MaxMeta = 64 << 20
+	}
+	if l.MaxTail <= 0 {
+		l.MaxTail = 256 << 20
+	}
+	if l.MaxRecordBytes <= 0 {
+		l.MaxRecordBytes = 64 << 20
+	}
+	if l.MaxRecipe <= 0 {
+		l.MaxRecipe = 256 << 20
+	}
+	return l
+}
+
+// Port source: zeros3-z3/sstz3/encode.go
+// Cutter decides group boundaries from the records alone: Cut is called after every
+// record with its user key and value length and returns true to close the group after
+// it. A cutter must depend on nothing else (no position in the file, no block
+// boundary), so an inserted or removed record moves no other boundary.
+type repSSCutter interface {
+	Cut(ukey []byte, vlen int) bool
+}
+
+// Port source: zeros3-z3/sstz3/encode.go
+// HashCutter closes a group after a record with probability (record bytes)/Target,
+// decided by a hash of the user key, and unconditionally once the group reaches Max.
+type repSSHashCutter struct {
+	Target, Max int
+	cur         int
+}
+
+// Port source: zeros3-z3/sstz3/encode.go
+// Cut implements Cutter.
+func (c *repSSHashCutter) Cut(ukey []byte, vlen int) bool {
+	sz := len(ukey) + vlen + 4
+	c.cur += sz
+	if c.cur >= c.Max || sz >= c.Target {
+		c.cur = 0
+		return true
+	}
+	h := uint64(14695981039346656037)
+	for _, b := range ukey {
+		h = (h ^ uint64(b)) * 1099511628211
+	}
+	h ^= h >> 29
+	h *= 0xbf58476d1ce4e5b9
+	h ^= h >> 32
+	if h < uint64(sz)*(math.MaxUint64/uint64(c.Target)) {
+		c.cur = 0
+		return true
+	}
+	return false
+}
+
+// Port source: zeros3-z3/sstz3/encode.go
+// Options configures Encode.
+type repSSOptions struct {
+	Form   repSSForm
+	Cutter repSSCutter // nil: one group per data block
+	Limits repSSLimits
+	// NoPredict forces explicit Snappy command recipes (measurement only).
+	NoPredict bool
+}
+
+// Port source: zeros3-z3/sstz3/encode.go
+// Emit receives every component Encode produces, once per occurrence (the caller
+// deduplicates by id). class is "block", "group", "keys", "vals", "trl" or "tail". The
+// bytes are only valid during the call.
+type repSSEmit func(class string, id repSSID, data []byte) error
+
+// Port source: zeros3-z3/sstz3/encode.go
+// Stats describes one encoding.
+type repSSStats struct {
+	Blocks, ExplicitBlocks      int
+	CompBlocks                  [8]int
+	Records                     int64
+	Groups                      int
+	KeyBytes, ValueBytes        int64 // user keys, values
+	TrailerBytes                int64 // 8 per record
+	DataBytes, TailBytes        int64
+	DecodedBytes                int64
+	SnappyCmds                  int64
+	PredBlocks                  [4]int // Snappy blocks: explicit, Go-, C++1.1.10-, C++15-predicted
+	Footer                      repSSFooter
+	RestartInterval             int
+	Components, ComponentsBytes int64
+}
+
+// Port source: zeros3-z3/sstz3/encode.go
+type repSSgroupBuilder struct {
+	form repSSForm
+	emit repSSEmit
+	buf  [3][]byte
+	n    uint32
+	rec  *repSSRecipe
+	st   *repSSStats
+}
+
+// Port source: zeros3-z3/sstz3/encode.go
+func (g *repSSgroupBuilder) add(ukey []byte, trailer uint64, val []byte) {
+	var t [8]byte
+	binary.LittleEndian.PutUint64(t[:], trailer)
+	switch g.form {
+	case repSSFormUKV:
+		g.buf[0] = repSSappendRec(g.buf[0], ukey, nil, val)
+	case repSSFormFull:
+		g.buf[0] = repSSappendRec(g.buf[0], ukey, t[:], val)
+	case repSSFormKV:
+		g.buf[0] = repSSappendRec(g.buf[0], ukey, nil, nil)
+		g.buf[1] = repSSappendRec(g.buf[1], nil, nil, val)
+	case repSSFormKTV:
+		g.buf[0] = repSSappendRec(g.buf[0], ukey, t[:], nil)
+		g.buf[1] = repSSappendRec(g.buf[1], nil, nil, val)
+	case repSSFormKVT:
+		g.buf[0] = repSSappendRec(g.buf[0], ukey, nil, nil)
+		g.buf[1] = repSSappendRec(g.buf[1], nil, nil, val)
+		g.buf[2] = append(g.buf[2], t[:]...)
+	}
+	if g.form.trailersInRecipe() {
+		g.rec.Trailers = append(g.rec.Trailers, trailer)
+	}
+	g.n++
+}
+
+// Port source: zeros3-z3/sstz3/encode.go
+// appendRec appends uvarint(len key) key trailer uvarint(len val) val, leaving out the
+// parts that are nil (key nil: no key part; val nil: no value part).
+func repSSappendRec(b []byte, key, trailer, val []byte) []byte {
+	if key != nil {
+		b = binary.AppendUvarint(b, uint64(len(key)))
+		b = append(b, key...)
+		b = append(b, trailer...)
+	}
+	if val != nil || key == nil {
+		b = binary.AppendUvarint(b, uint64(len(val)))
+		b = append(b, val...)
+	}
+	return b
+}
+
+// Port source: zeros3-z3/sstz3/encode.go
+func (g *repSSgroupBuilder) close() error {
+	if g.n == 0 {
+		return nil
+	}
+	names := [...]string{"group", "", ""}
+	switch g.form {
+	case repSSFormKV, repSSFormKTV:
+		names = [3]string{"keys", "vals", ""}
+	case repSSFormKVT:
+		names = [3]string{"keys", "vals", "trl"}
+	}
+	for s := 0; s < g.form.streams(); s++ {
+		id := sha256.Sum256(g.buf[s])
+		if err := g.emit(names[s], id, g.buf[s]); err != nil {
+			return err
+		}
+		g.st.Components++
+		g.st.ComponentsBytes += int64(len(g.buf[s]))
+		g.rec.Digests = append(g.rec.Digests, id)
+		g.buf[s] = g.buf[s][:0]
+	}
+	g.rec.Groups = append(g.rec.Groups, g.n)
+	g.st.Groups++
+	g.n = 0
+	return nil
+}
+
+// Port source: zeros3-z3/sstz3/encode.go
+// Encode analyses one table and produces its serialized recipe plus components (via
+// emit). The table is read through r only; at most one data block, one group and the
+// recipe are held in memory. A table or feature the representation does not express
+// returns an error wrapping ErrUnsupported (the caller keeps ordinary CDC): there is
+// never a partial result.
+func repSSEncode(r io.ReaderAt, size int64, opt repSSOptions, emit repSSEmit) ([]byte, repSSSizes, repSSStats, error) {
+	lim := opt.Limits.norm()
+	var st repSSStats
+	var retained int64
+	t, err := repSSOpen(r, size, lim)
+	if err != nil {
+		return nil, repSSSizes{}, st, err
+	}
+	if err := t.Reject(); err != nil {
+		return nil, repSSSizes{}, st, err
+	}
+	if opt.Form > repSSmaxForm {
+		return nil, repSSSizes{}, st, repSSunsupported("form %d", opt.Form)
+	}
+	st.Footer = t.Footer
+	rec := &repSSRecipe{Form: opt.Form, Size: size, TailLen: size - t.DataEnd}
+	if rec.TailLen > lim.MaxTail {
+		return nil, repSSSizes{}, st, repSSErrLimit
+	}
+	logical := opt.Form != repSSFormBlocks
+	if logical {
+		ri, err := repSSrestartInterval(r, size, t, lim)
+		if err != nil {
+			return nil, repSSSizes{}, st, err
+		}
+		rec.RestartInterval = uint32(ri)
+		st.RestartInterval = ri
+	}
+	gb := &repSSgroupBuilder{form: opt.Form, emit: emit, rec: rec, st: &st}
+	var (
+		keys  []byte
+		koff  []int
+		vals  [][]byte
+		bw    repSSBlockWriter
+		check bytes.Buffer
+	)
+	for _, h := range t.Blocks {
+		rb, err := repSSReadBlock(r, size, h, t.Footer.Checksum, true, lim)
+		if err != nil {
+			return nil, repSSSizes{}, st, err
+		}
+		dec, cmds, err := repSSDecodeBlock(rb, lim)
+		if err != nil {
+			return nil, repSSSizes{}, st, err
+		}
+		bl := repSSBlockRec{CSize: h.Size, Trailer: rb.Trailer}
+		st.Blocks++
+		st.CompBlocks[rb.Comp()&7]++
+		st.DataBytes += int64(h.Size) + repSStrailerLen
+		st.DecodedBytes += int64(len(dec))
+		if rb.Comp() == repSSCompZstd {
+			_, bl.Zstd, err = repSSanalyzeZstdBlock(rb.Payload, lim)
+			if err != nil {
+				return nil, repSSSizes{}, st, err
+			}
+		}
+		if rb.Comp() == repSSCompSnappy {
+			st.SnappyCmds += int64(len(cmds))
+			if !opt.NoPredict && len(dec) <= repSNMaxPredict {
+				for p, f := range [...]func([]byte) []byte{repSSPredGo: repSNEncodeRef, repSSPredCPP: repSNEncodeCPP, repSSPredCPP15: repSNEncodeCPP15} {
+					if f != nil && bytes.Equal(f(dec), rb.Payload) {
+						bl.Pred = uint8(p)
+						break
+					}
+				}
+			}
+			switch {
+			case bl.Pred != 0:
+			default:
+				bl.Cmds = repSNMarshal(cmds)
+				check.Reset()
+				if err := repSNReplay(&check, dec, cmds); err != nil || !bytes.Equal(check.Bytes(), rb.Payload) {
+					return nil, repSSSizes{}, st, repSSunsupported("snappy replay of block at %d is not exact", h.Off)
+				}
+			}
+			st.PredBlocks[bl.Pred]++
+		}
+		if !logical {
+			bl.Decoded = uint64(len(dec))
+			id := sha256.Sum256(dec)
+			if err := emit("block", id, dec); err != nil {
+				return nil, repSSSizes{}, st, err
+			}
+			st.Components++
+			st.ComponentsBytes += int64(len(dec))
+			rec.Digests = append(rec.Digests, id)
+			if err := repSSRetainBlock(&retained, &bl, lim.MaxRecipe); err != nil {
+				return nil, repSSSizes{}, st, err
+			}
+			rec.Blocks = append(rec.Blocks, bl)
+			continue
+		}
+		keys, koff, vals = keys[:0], koff[:0], vals[:0]
+		lay, err := repSSWalkBlock(dec, lim, func(_ int, key, val []byte) error {
+			if len(key) < 8 {
+				return repSSunsupported("key of %d bytes has no internal-key trailer", len(key))
+			}
+			koff = append(koff, len(keys))
+			keys, err = repStructuredAppendKey(keys, key, lim.MaxDecoded)
+			if err != nil {
+				return err
+			}
+			vals = append(vals, val)
+			return nil
+		})
+		if err != nil {
+			return nil, repSSSizes{}, st, err
+		}
+		if st.Records+int64(lay.Entries) > 2<<20 {
+			return nil, repSSSizes{}, st, repSSErrLimit
+		}
+
+		koff = append(koff, len(keys))
+		keyAt := func(i int) []byte { return keys[koff[i]:koff[i+1]] }
+		bl.Entries = uint32(lay.Entries)
+		derived := lay.derivesFrom(int(rec.RestartInterval), keyAt)
+		if derived {
+			bw.Reset()
+			for i := 0; i < lay.Entries; i++ {
+				if bw.Add(keyAt(i), vals[i], i%int(rec.RestartInterval) == 0, -1) != nil {
+					derived = false
+					break
+				}
+			}
+			derived = derived && bytes.Equal(bw.Finish(), dec)
+		}
+		if !derived {
+			ex := &repSSExplicit{}
+			for _, x := range lay.RestartIdx {
+				ex.Restarts = append(ex.Restarts, uint32(x))
+			}
+			for _, x := range lay.Shared {
+				ex.Shared = append(ex.Shared, uint32(x))
+			}
+			bw.Reset()
+			ri := 0
+			for i := 0; i < lay.Entries; i++ {
+				isR := ri < len(lay.RestartIdx) && lay.RestartIdx[ri] == i
+				if isR {
+					ri++
+				}
+				if bw.Add(keyAt(i), vals[i], isR, lay.Shared[i]) != nil {
+					return nil, repSSSizes{}, st, repSSunsupported("block at %d cannot be rebuilt", h.Off)
+				}
+			}
+			if !bytes.Equal(bw.Finish(), dec) {
+				return nil, repSSSizes{}, st, repSSunsupported("block at %d is not canonically encoded", h.Off)
+			}
+			bl.Explicit = ex
+			st.ExplicitBlocks++
+		}
+		for i := 0; i < lay.Entries; i++ {
+			k := keyAt(i)
+			uk, tr := k[:len(k)-8], binary.LittleEndian.Uint64(k[len(k)-8:])
+			gb.add(uk, tr, vals[i])
+			st.Records++
+			st.KeyBytes += int64(len(uk))
+			st.ValueBytes += int64(len(vals[i]))
+			st.TrailerBytes += 8
+			if opt.Cutter != nil && opt.Cutter.Cut(uk, len(vals[i])) {
+				if err := gb.close(); err != nil {
+					return nil, repSSSizes{}, st, err
+				}
+			}
+		}
+		if opt.Cutter == nil {
+			if err := gb.close(); err != nil {
+				return nil, repSSSizes{}, st, err
+			}
+		}
+		if err := repSSRetainBlock(&retained, &bl, lim.MaxRecipe); err != nil {
+			return nil, repSSSizes{}, st, err
+		}
+		rec.Blocks = append(rec.Blocks, bl)
+	}
+	if err := gb.close(); err != nil {
+		return nil, repSSSizes{}, st, err
+	}
+	tail := make([]byte, rec.TailLen)
+	if err := repSSreadFull(r, tail, t.DataEnd); err != nil {
+		return nil, repSSSizes{}, st, err
+	}
+	id := sha256.Sum256(tail)
+	if err := emit("tail", id, tail); err != nil {
+		return nil, repSSSizes{}, st, err
+	}
+	st.Components++
+	st.ComponentsBytes += int64(len(tail))
+	st.TailBytes = int64(len(tail))
+	rec.Digests = append(rec.Digests, id)
+	b, sz := rec.Marshal()
+	if _, err := repSSParseRecipe(b, lim); err != nil {
+		return nil, repSSSizes{}, st, err
+	}
+	return b, sz, st, nil
+}
+
+// Port source: zeros3-z3/sstz3/encode.go
+// restartInterval finds the table's restart interval: the entry distance between the
+// first two restarts of the first block that has two. Tables whose blocks all have one
+// restart use the LevelDB default of 16 (such blocks conform trivially or are stored
+// explicitly).
+func repSSrestartInterval(r io.ReaderAt, size int64, t *repSSTable, lim repSSLimits) (int, error) {
+	for _, h := range t.Blocks {
+		rb, err := repSSReadBlock(r, size, h, t.Footer.Checksum, false, lim)
+		if err != nil {
+			return 0, err
+		}
+		dec, _, err := repSSDecodeBlock(rb, lim)
+		if err != nil {
+			return 0, err
+		}
+		lay, err := repSSWalkBlock(dec, lim, nil)
+		if err != nil {
+			return 0, err
+		}
+		if len(lay.RestartIdx) >= 2 {
+			return lay.RestartIdx[1] - lay.RestartIdx[0], nil
+		}
+	}
+	return 16, nil
+}
+
+// Port source: zeros3-z3/sstz3/format.go
+// Family is the footer family; it selects how a footer is read and nothing else.
+type repSSFamily uint8
+
+// Port source: zeros3-z3/sstz3/format.go
+const (
+	repSSFamilyLegacy       repSSFamily = 1 // 48-byte footer, magic 0xdb4775248b80fb57: LevelDB, RocksDB format_version 0
+	repSSFamilyRocksDB      repSSFamily = 2 // 53-byte footer, BlockBasedTable magic: RocksDB format_version 1-6
+	repSSFamilyPebble       repSSFamily = 3 // 53-byte footer, Pebble magic: Pebble-native table formats
+	repSSlegacyMagic                    = 0xdb4775248b80fb57
+	repSSblockBasedMagic                = 0x88e241b785f4cff7
+	repSSpebbleMagic                    = 0xb3aa9ff0b3aa9ff0 // bytes f0 9f aa b3 f0 9f aa b3, little endian
+	repSStrailerLen                     = 5
+	repSSlegacyFooterLen                = 48
+	repSSversionedFooterLen             = 53
+	repSSmaxHandleLen                   = 20
+)
+
+// Port source: zeros3-z3/sstz3/format.go
+func (f repSSFamily) String() string {
+	switch f {
+	case repSSFamilyLegacy:
+		return "legacy"
+	case repSSFamilyRocksDB:
+		return "rocksdb"
+	case repSSFamilyPebble:
+		return "pebble"
+	}
+	return "?"
+}
+
+// Port source: zeros3-z3/sstz3/format.go
+// Checksum types as written in versioned footers (RocksDB numbering; Pebble uses 1 for
+// CRC32C as well).
+const (
+	repSSCksumNone  = 0
+	repSSCksumCRC32 = 1
+	repSSCksumXXH32 = 2
+	repSSCksumXXH64 = 3
+	repSSCksumXXH3  = 4
+)
+
+// Port source: zeros3-z3/sstz3/format.go
+// Block compression types (the trailer's first byte).
+const (
+	repSSCompNone   = 0
+	repSSCompSnappy = 1
+	repSSCompZlib   = 2
+	repSSCompBZip2  = 3
+	repSSCompLZ4    = 4
+	repSSCompLZ4HC  = 5
+	repSSCompXpress = 6
+	repSSCompZstd   = 7
+)
+
+// Port source: zeros3-z3/sstz3/format.go
+// Handle locates a block: Size excludes the 5-byte trailer.
+type repSSHandle struct{ Off, Size uint64 }
+
+// Port source: zeros3-z3/sstz3/format.go
+// Footer is the decoded footer.
+type repSSFooter struct {
+	Family    repSSFamily
+	Version   uint32 // format version (0 for the legacy footer)
+	Checksum  uint8
+	Metaindex repSSHandle
+	Index     repSSHandle // zero when IndexInMeta
+	Len       int
+	// BaseContext is RocksDB format 6's per-file context checksum seed.
+	BaseContext uint32
+	IndexInMeta bool // RocksDB format >= 6: the index handle lives in the metaindex
+}
+
+// Port source: zeros3-z3/sstz3/format.go
+func repSSgetHandle(b []byte) (repSSHandle, int, bool) {
+	off, n1 := binary.Uvarint(b)
+	if n1 <= 0 {
+		return repSSHandle{}, 0, false
+	}
+	sz, n2 := binary.Uvarint(b[n1:])
+	if n2 <= 0 {
+		return repSSHandle{}, 0, false
+	}
+	return repSSHandle{off, sz}, n1 + n2, true
+}
+
+// Port source: zeros3-z3/sstz3/format.go
+// ReadFooter reads and decodes the footer of a table of the given size.
+func repSSReadFooter(r io.ReaderAt, size int64) (repSSFooter, error) {
+	if size < repSSlegacyFooterLen {
+		return repSSFooter{}, repSScorrupt("file of %d bytes has no footer", size)
+	}
+	var m [8]byte
+	if err := repSSreadFull(r, m[:], size-8); err != nil {
+		return repSSFooter{}, err
+	}
+	magic := binary.LittleEndian.Uint64(m[:])
+	var f repSSFooter
+	switch magic {
+	case repSSlegacyMagic:
+		var b [repSSlegacyFooterLen]byte
+		if err := repSSreadFull(r, b[:], size-repSSlegacyFooterLen); err != nil {
+			return f, err
+		}
+		f.Family, f.Len = repSSFamilyLegacy, repSSlegacyFooterLen
+		f.Checksum = repSSCksumCRC32
+		mh, n, ok := repSSgetHandle(b[:])
+		if !ok {
+			return f, repSScorrupt("metaindex handle")
+		}
+		ih, _, ok := repSSgetHandle(b[n:40])
+		if !ok {
+			return f, repSScorrupt("index handle")
+		}
+		f.Metaindex, f.Index = mh, ih
+	case repSSblockBasedMagic, repSSpebbleMagic:
+		if size < repSSversionedFooterLen {
+			return f, repSScorrupt("file of %d bytes has no versioned footer", size)
+		}
+		var b [repSSversionedFooterLen]byte
+		if err := repSSreadFull(r, b[:], size-repSSversionedFooterLen); err != nil {
+			return f, err
+		}
+		f.Family, f.Len = repSSFamilyRocksDB, repSSversionedFooterLen
+		if magic == repSSpebbleMagic {
+			f.Family = repSSFamilyPebble
+		}
+		f.Version = binary.LittleEndian.Uint32(b[41:])
+		if f.Family == repSSFamilyPebble && f.Version > 4 {
+			return f, nil
+		} // future layouts: do not interpret checksum/handles
+		f.Checksum = b[0]
+		if f.Family == repSSFamilyRocksDB && f.Version > 6 {
+			return f, nil // a format this package does not know: Open classifies it Unsupported
+		}
+		if f.Family == repSSFamilyRocksDB && f.Version >= 6 {
+			if b[1] != 0x3e || b[2] != 0x00 || b[3] != 0x7a || b[4] != 0x00 {
+				return f, repSScorrupt("format 6 extended magic")
+			}
+			f.BaseContext = binary.LittleEndian.Uint32(b[9:])
+			msz := uint64(binary.LittleEndian.Uint32(b[13:]))
+			// the metaindex block is the last block before the footer
+			end := uint64(size) - repSSversionedFooterLen
+			if msz+repSStrailerLen > end {
+				return f, repSScorrupt("metaindex size %d", msz)
+			}
+			f.Metaindex = repSSHandle{end - msz - repSStrailerLen, msz}
+			f.IndexInMeta = true
+		} else {
+			mh, n, ok := repSSgetHandle(b[1:41])
+			if !ok {
+				return f, repSScorrupt("metaindex handle")
+			}
+			ih, _, ok := repSSgetHandle(b[1+n : 41])
+			if !ok {
+				return f, repSScorrupt("index handle")
+			}
+			f.Metaindex, f.Index = mh, ih
+		}
+	default:
+		return f, repSSunsupported("magic %#x", magic)
+	}
+	return f, nil
+}
+
+// Port source: zeros3-z3/sstz3/format.go
+func repSSreadFull(r io.ReaderAt, p []byte, off int64) error {
+	n, err := r.ReadAt(p, off)
+	if n == len(p) {
+		return nil
+	}
+	if err == nil || err == io.EOF {
+		err = io.ErrUnexpectedEOF
+	}
+	return err
+}
+
+// Port source: zeros3-z3/sstz3/format.go
+// RawBlock is a block as stored.
+type repSSRawBlock struct {
+	Payload []byte // stored (possibly compressed) bytes, without the trailer
+	Trailer [repSStrailerLen]byte
+}
+
+// Port source: zeros3-z3/sstz3/format.go
+// Comp is the compression type byte.
+func (b *repSSRawBlock) Comp() uint8 { return b.Trailer[0] }
+
+// Port source: zeros3-z3/sstz3/format.go
+// ReadBlock reads the block at h, checking the handle against the file size and the
+// limits before allocating. The trailer's checksum is verified when verify is set and
+// the checksum type is CRC32C (the only one portable without further code).
+func repSSReadBlock(r io.ReaderAt, size int64, h repSSHandle, cksum uint8, verify bool, lim repSSLimits) (*repSSRawBlock, error) {
+	lim = lim.norm()
+	if h.Size > uint64(lim.MaxBlockBytes) || h.Off > uint64(size) || h.Size+repSStrailerLen > uint64(size)-h.Off {
+		return nil, repSScorrupt("block handle %d+%d in a file of %d", h.Off, h.Size, size)
+	}
+	buf := make([]byte, h.Size+repSStrailerLen)
+	if err := repSSreadFull(r, buf, int64(h.Off)); err != nil {
+		return nil, err
+	}
+	b := &repSSRawBlock{Payload: buf[:h.Size]}
+	copy(b.Trailer[:], buf[h.Size:])
+	if verify && cksum == repSSCksumCRC32 {
+		c := crc32.Update(crc32.Checksum(b.Payload, repSScastagnoli), repSScastagnoli, b.Trailer[:1])
+		c = (c>>15 | c<<17) + 0xa282ead8
+		if c != binary.LittleEndian.Uint32(b.Trailer[1:]) {
+			return nil, repSScorrupt("block at %d: checksum mismatch", h.Off)
+		}
+	}
+	return b, nil
+}
+
+// Port source: zeros3-z3/sstz3/format.go
+var repSScastagnoli = crc32.MakeTable(crc32.Castagnoli)
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// ID is the SHA-256 identity of a component.
+type repSSID = [32]byte
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// Form selects how logical records are spread over components.
+type repSSForm uint8
+
+// Port source: zeros3-z3/sstz3/recipe.go
+const (
+	// FormBlocks keeps each data block's exact decoded bytes as one component (the
+	// structural baseline: no entry-level detachment).
+	repSSFormBlocks repSSForm = 0
+	// FormUKV: one component per group of records, user key + value; the internal-key
+	// trailers (sequence/type) live in the recipe.
+	repSSFormUKV repSSForm = 1
+	// FormFull: one component per group, user key + trailer + value ("full-entry").
+	repSSFormFull repSSForm = 2
+	// FormKV: a key component and a value component per group; trailers in the recipe.
+	repSSFormKV repSSForm = 3
+	// FormKTV: key+trailer component and value component per group.
+	repSSFormKTV repSSForm = 4
+	// FormKVT: key, value and trailer components per group.
+	repSSFormKVT repSSForm = 5
+	repSSmaxForm           = repSSFormKVT
+)
+
+// Port source: zeros3-z3/sstz3/recipe.go
+func (l repSSForm) String() string {
+	return [...]string{"blocks", "ukv", "full", "kv", "ktv", "kvt"}[l]
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// streams reports how many components a group of the layout occupies.
+func (l repSSForm) streams() int {
+	switch l {
+	case repSSFormKV, repSSFormKTV:
+		return 2
+	case repSSFormKVT:
+		return 3
+	}
+	return 1
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// trailersInRecipe reports whether the sequence/type words are recipe bytes.
+func (l repSSForm) trailersInRecipe() bool { return l == repSSFormUKV || l == repSSFormKV }
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// Snappy predictors: deterministic reference encoders whose output is compared with the stored block.
+const (
+	repSSPredGo    = 1 // snappyz3.EncodeRef
+	repSSPredCPP   = 2 // snappyz3.EncodeCPP (snappy 1.1.10)
+	repSSPredCPP15 = 3 // snappyz3.EncodeCPP15 (RocksDB 9.8.4 bundled snappy)
+)
+
+// Port source: zeros3-z3/sstz3/recipe.go
+const repSSrecipeVersion = 1
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// BlockRec is the per-block physical framing.
+type repSSBlockRec struct {
+	Zstd     []byte // exact zstd skeleton/units and original size prefix
+	CSize    uint64 // stored payload bytes (without the trailer)
+	Trailer  [repSStrailerLen]byte
+	Entries  uint32 // logical layouts
+	Decoded  uint64 // FormBlocks: decoded block length
+	Explicit *repSSExplicit
+	Cmds     []byte // snappyz3 recipe (Snappy blocks that no reference encoder reproduces)
+	Pred     uint8  // Snappy: 0 explicit commands, PredGo or PredCPP when that reference encoder reproduces the block
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// Explicit is a block layout that does not follow the table's derived framing.
+type repSSExplicit struct {
+	Restarts []uint32 // entry index of every restart
+	Shared   []uint32 // shared prefix length of every entry
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// Recipe is the decoded serialized description of one table.
+type repSSRecipe struct {
+	Form            repSSForm
+	Size            int64
+	RestartInterval uint32
+	Blocks          []repSSBlockRec
+	Groups          []uint32 // records per group
+	Trailers        []uint64 // one per record when trailersInRecipe
+	TailLen         int64
+	Digests         []repSSID // groups x streams..., then the tail
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// Sizes is the byte accounting of a serialized recipe.
+type repSSSizes struct {
+	Head, Framing, Snappy, Zstd, Explicit, Groups, Trailers, Digests int64
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+func (s repSSSizes) Total() int64 {
+	return s.Head + s.Framing + s.Snappy + s.Zstd + s.Explicit + s.Groups + s.Trailers + s.Digests
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+func repSSappendUv(b []byte, v uint64) []byte { return binary.AppendUvarint(b, v) }
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// Marshal serialises the recipe: head fields then the digests.
+func (r *repSSRecipe) Marshal() ([]byte, repSSSizes) {
+	var s repSSSizes
+	b := []byte{repSSrecipeVersion, byte(r.Form)}
+	b = repSSappendUv(b, uint64(r.Size))
+	b = repSSappendUv(b, uint64(r.RestartInterval))
+	b = repSSappendUv(b, uint64(len(r.Blocks)))
+	s.Head = int64(len(b))
+	for i := range r.Blocks {
+		bl := &r.Blocks[i]
+		n0 := len(b)
+		b = repSSappendUv(b, bl.CSize)
+		b = append(b, bl.Trailer[:]...)
+		if r.Form == repSSFormBlocks {
+			b = repSSappendUv(b, bl.Decoded)
+		} else {
+			e := uint64(bl.Entries) << 1
+			if bl.Explicit != nil {
+				e |= 1
+			}
+			b = repSSappendUv(b, e)
+		}
+		s.Framing += int64(len(b) - n0)
+		if bl.Explicit != nil {
+			n1 := len(b)
+			b = repSSappendUv(b, uint64(len(bl.Explicit.Restarts)))
+			prev := uint32(0)
+			for _, x := range bl.Explicit.Restarts {
+				b = repSSappendUv(b, uint64(x-prev))
+				prev = x
+			}
+			for _, x := range bl.Explicit.Shared {
+				b = repSSappendUv(b, uint64(x))
+			}
+			s.Explicit += int64(len(b) - n1)
+		}
+		if bl.Trailer[0] == repSSCompZstd {
+			n := len(b)
+			b = repSSappendUv(b, uint64(len(bl.Zstd)))
+			b = append(b, bl.Zstd...)
+			s.Zstd += int64(len(b) - n)
+		}
+		if bl.Trailer[0] == repSSCompSnappy {
+			n1 := len(b)
+			if bl.Pred != 0 {
+				b = repSSappendUv(b, uint64(bl.Pred-1))
+			} else {
+				b = repSSappendUv(b, uint64(len(bl.Cmds))+3)
+				b = append(b, bl.Cmds...)
+			}
+			s.Snappy += int64(len(b) - n1)
+		}
+	}
+	if r.Form != repSSFormBlocks {
+		n0 := len(b)
+		b = repSSappendUv(b, uint64(len(r.Groups)))
+		for _, g := range r.Groups {
+			b = repSSappendUv(b, uint64(g))
+		}
+		s.Groups = int64(len(b) - n0)
+	}
+	if r.Form.trailersInRecipe() {
+		n0 := len(b)
+		b = repSSappendTrailers(b, r.Trailers)
+		s.Trailers = int64(len(b) - n0)
+	}
+	n0 := len(b)
+	b = repSSappendUv(b, uint64(r.TailLen))
+	s.Framing += int64(len(b) - n0)
+	for _, d := range r.Digests {
+		b = append(b, d[:]...)
+	}
+	s.Digests = int64(len(r.Digests) * 32)
+	return b, s
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// appendTrailers codes the sequence/type words: first the type bytes as (value, run)
+// pairs, then the sequence numbers as zigzag deltas.
+func repSSappendTrailers(b []byte, tr []uint64) []byte {
+	var runs [][2]uint64
+	for _, t := range tr {
+		k := t & 0xff
+		if n := len(runs); n > 0 && runs[n-1][0] == k {
+			runs[n-1][1]++
+		} else {
+			runs = append(runs, [2]uint64{k, 1})
+		}
+	}
+	b = repSSappendUv(b, uint64(len(runs)))
+	for _, r := range runs {
+		b = append(b, byte(r[0]))
+		b = repSSappendUv(b, r[1])
+	}
+	prev := int64(0)
+	for _, t := range tr {
+		s := int64(t >> 8)
+		d := s - prev
+		b = repSSappendUv(b, uint64(d<<1)^uint64(d>>63))
+		prev = s
+	}
+	return b
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+type repSSrd struct {
+	b   []byte
+	pos int
+	err error
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+func (r *repSSrd) fail(f string, a ...any) {
+	if r.err == nil {
+		r.err = repSSrecipeErr(f, a...)
+	}
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+func (r *repSSrd) uv(max uint64) uint64 {
+	if r.err != nil {
+		return 0
+	}
+	v, n := binary.Uvarint(r.b[r.pos:])
+	if n <= 0 || n != repSSuvLen(v) {
+		r.fail("varint at %d", r.pos)
+		return 0
+	}
+	if v > max {
+		r.fail("value %d above %d at %d", v, max, r.pos)
+		return 0
+	}
+	r.pos += n
+	return v
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+func (r *repSSrd) take(n uint64) []byte {
+	if r.err != nil {
+		return nil
+	}
+	if n > uint64(len(r.b)-r.pos) {
+		r.fail("%d bytes at %d exceed the recipe", n, r.pos)
+		return nil
+	}
+	s := r.b[r.pos : r.pos+int(n)]
+	r.pos += int(n)
+	return s
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+func repSSuvLen(v uint64) int {
+	var b [binary.MaxVarintLen64]byte
+	return binary.PutUvarint(b[:], v)
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// ParseRecipe parses and bounds-checks a serialized recipe (head and digests). It
+// allocates nothing from a declared count beyond what the remaining bytes could hold.
+func repSSParseRecipe(b []byte, lim repSSLimits) (*repSSRecipe, error) {
+	lim = lim.norm()
+	if int64(len(b)) > lim.MaxRecipe {
+		return nil, repSSErrLimit
+	}
+	if len(b) < 2 || b[0] != repSSrecipeVersion {
+		return nil, repSSrecipeErr("version")
+	}
+	if repSSForm(b[1]) > repSSmaxForm {
+		return nil, repSSrecipeErr("layout %d", b[1])
+	}
+	r := &repSSrd{b: b, pos: 2}
+	rec := &repSSRecipe{Form: repSSForm(b[1])}
+	rec.Size = int64(r.uv(math.MaxInt64))
+	rec.RestartInterval = uint32(r.uv(1 << 20))
+	nb := r.uv(uint64(lim.MaxBlocks))
+	if r.err == nil && nb > uint64(len(b)-r.pos)/7 {
+		r.fail("%d blocks cannot fit in the recipe", nb)
+	}
+	if r.err == nil {
+		rec.Blocks = make([]repSSBlockRec, 0, nb)
+	}
+	var totalEntries, totalSize uint64
+	for i := uint64(0); i < nb && r.err == nil; i++ {
+		var bl repSSBlockRec
+		bl.CSize = r.uv(uint64(lim.MaxBlockBytes))
+		copy(bl.Trailer[:], r.take(repSStrailerLen))
+		if rec.Form == repSSFormBlocks {
+			bl.Decoded = r.uv(uint64(lim.MaxDecoded))
+		} else {
+			e := r.uv(uint64(lim.MaxEntries)<<1 | 1)
+			bl.Entries = uint32(e >> 1)
+			totalEntries += e >> 1
+			if totalEntries > 2<<20 {
+				r.fail("table record budget")
+				break
+			}
+			if e&1 != 0 {
+				ex := &repSSExplicit{}
+				nr := r.uv(uint64(bl.Entries) + 1)
+				if r.err == nil && nr > uint64(len(b)-r.pos) {
+					r.fail("restart list")
+				}
+				prev := uint64(0)
+				for k := uint64(0); k < nr && r.err == nil; k++ {
+					prev += r.uv(uint64(bl.Entries))
+					ex.Restarts = append(ex.Restarts, uint32(prev))
+				}
+				if r.err == nil && uint64(bl.Entries) > uint64(len(b)-r.pos) {
+					r.fail("shared list")
+				}
+				for k := uint32(0); k < bl.Entries && r.err == nil; k++ {
+					ex.Shared = append(ex.Shared, uint32(r.uv(uint64(lim.MaxRecordBytes))))
+				}
+				bl.Explicit = ex
+			}
+		}
+		if bl.Trailer[0] == repSSCompSnappy {
+			n := r.uv(uint64(len(b)) + 3)
+			if n < 3 {
+				bl.Pred = uint8(n) + 1
+			} else {
+				bl.Cmds = r.take(n - 3)
+			}
+		} else if bl.Trailer[0] == repSSCompZstd {
+			bl.Zstd = r.take(r.uv(uint64(lim.MaxRecipe)))
+		} else if bl.Trailer[0] != repSSCompNone {
+			r.fail("compression type %d", bl.Trailer[0])
+		}
+		totalSize += bl.CSize + repSStrailerLen
+		rec.Blocks = append(rec.Blocks, bl)
+	}
+	if r.err != nil {
+		return nil, r.err
+	}
+	if rec.Form != repSSFormBlocks {
+		ng := r.uv(totalEntries)
+		if r.err == nil && ng > uint64(len(b)-r.pos) {
+			r.fail("%d groups cannot fit in the recipe", ng)
+		}
+		var sum uint64
+		for i := uint64(0); i < ng && r.err == nil; i++ {
+			g := r.uv(totalEntries)
+			if g == 0 {
+				r.fail("empty group")
+			}
+			sum += g
+			rec.Groups = append(rec.Groups, uint32(g))
+		}
+		if r.err == nil && sum != totalEntries {
+			r.fail("groups hold %d records, blocks hold %d", sum, totalEntries)
+		}
+		if rec.Form.trailersInRecipe() && r.err == nil {
+			rec.Trailers = repSSreadTrailers(r, int(totalEntries))
+		}
+	}
+	rec.TailLen = int64(r.uv(uint64(lim.MaxTail)))
+	if r.err != nil {
+		return nil, r.err
+	}
+	if totalSize > uint64(math.MaxInt64) || int64(totalSize)+rec.TailLen != rec.Size {
+		return nil, repSSrecipeErr("blocks (%d) and tail (%d) do not add up to the size %d", totalSize, rec.TailLen, rec.Size)
+	}
+	n := rec.members()
+	if uint64(len(b)-r.pos) != 32*uint64(n) {
+		return nil, repSSrecipeErr("%d digest bytes, expected %d", len(b)-r.pos, 32*n)
+	}
+	rec.Digests = make([]repSSID, n)
+	for i := range rec.Digests {
+		copy(rec.Digests[i][:], b[r.pos+32*i:])
+	}
+	return rec, nil
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+func repSSreadTrailers(r *repSSrd, n int) []uint64 {
+	nr := r.uv(uint64(n))
+	if r.err == nil && nr > uint64(len(r.b)-r.pos)/2 {
+		r.fail("trailer runs")
+		return nil
+	}
+	kinds := make([]byte, 0, n)
+	var tot uint64
+	for i := uint64(0); i < nr && r.err == nil; i++ {
+		k := r.take(1)
+		run := r.uv(uint64(n))
+		if r.err != nil {
+			return nil
+		}
+		tot += run
+		if tot > uint64(n) || run == 0 {
+			r.fail("trailer run")
+			return nil
+		}
+		for j := uint64(0); j < run; j++ {
+			kinds = append(kinds, k[0])
+		}
+	}
+	if r.err == nil && tot != uint64(n) {
+		r.fail("trailer runs cover %d of %d records", tot, n)
+	}
+	out := make([]uint64, 0, n)
+	prev := int64(0)
+	for i := 0; i < n && r.err == nil; i++ {
+		z := r.uv(math.MaxUint64)
+		d := int64(z>>1) ^ -int64(z&1)
+		prev += d
+		if prev < 0 || prev >= 1<<56 {
+			r.fail("sequence number")
+			return nil
+		}
+		out = append(out, uint64(prev)<<8|uint64(kinds[i]))
+	}
+	return out
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// members is the number of digests the recipe lists.
+func (r *repSSRecipe) members() int {
+	if r.Form == repSSFormBlocks {
+		return len(r.Blocks) + 1
+	}
+	return len(r.Groups)*r.Form.streams() + 1
+}
+
+// Port source: zeros3-z3/sstz3/recipe.go
+// snappyCmds decodes a block's Snappy command recipe for a block of the given decoded length.
+func repSSsnappyCmds(bl *repSSBlockRec, decoded int64, lim repSSLimits) ([]repSNCmd, error) {
+	return repSNUnmarshal(bl.Cmds, decoded, repSNLimits{MaxDecoded: lim.norm().MaxDecoded})
+}
+
+// Port source: zeros3-z3/sstz3/table.go
+// Class is the support classification of a table feature.
+type repSSClass uint8
+
+// Port source: zeros3-z3/sstz3/table.go
+const (
+	repSSSupported   repSSClass = 1 // understood: parsed and re-expressed
+	repSSOpaque      repSSClass = 2 // preserved as exact bytes without being understood
+	repSSUnsupported repSSClass = 3 // the table is rejected (ordinary CDC fallback)
+)
+
+// Port source: zeros3-z3/sstz3/table.go
+func (c repSSClass) String() string {
+	switch c {
+	case repSSSupported:
+		return "SUPPORTED"
+	case repSSOpaque:
+		return "OPAQUE_PRESERVED"
+	case repSSUnsupported:
+		return "UNSUPPORTED_FALLBACK"
+	}
+	return "?"
+}
+
+// Port source: zeros3-z3/sstz3/table.go
+// Feature is one classified property of a table.
+type repSSFeature struct {
+	Name   string
+	Class  repSSClass
+	Detail string
+}
+
+// Port source: zeros3-z3/sstz3/table.go
+// Table is the parsed skeleton of one SST: footer, metadata names, properties and the
+// ordered list of data block handles. Data blocks are not read by Open.
+type repSSTable struct {
+	Size     int64
+	Footer   repSSFooter
+	Meta     map[string]repSSHandle // metaindex entries
+	Props    map[string][]byte      // properties block
+	Blocks   []repSSHandle          // data blocks in file order, contiguous from offset 0
+	DataEnd  int64                  // end of the last data block (its trailer included)
+	Features []repSSFeature
+
+	twoLevel bool
+	keep     bool
+
+	// IndexKeys (OpenKeys only) are the separator keys of the data-block index, one per
+	// data block; IndexUserKeys says they are user keys (RocksDB) rather than internal keys.
+	IndexKeys     [][]byte
+	IndexUserKeys bool
+}
+
+// Port source: zeros3-z3/sstz3/table.go
+// Reject returns the first Unsupported feature as an error, or nil.
+func (t *repSSTable) Reject() error {
+	for _, f := range t.Features {
+		if f.Class == repSSUnsupported {
+			return repSSunsupported("%s: %s", f.Name, f.Detail)
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/sstz3/table.go
+// PropUint returns an integer property (varint-encoded).
+func (t *repSSTable) PropUint(name string) (uint64, bool) {
+	b, ok := t.Props[name]
+	if !ok {
+		return 0, false
+	}
+	v, n := binary.Uvarint(b)
+	if n <= 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+// Port source: zeros3-z3/sstz3/table.go
+// Prop returns a string property.
+func (t *repSSTable) Prop(name string) string { return string(t.Props[name]) }
+
+// Port source: zeros3-z3/sstz3/table.go
+// DecodeBlock decompresses a raw block. Snappy returns the exact command recipe. Any
+// Zstd uses the shared exact frame substrate; other codecs remain Unsupported.
+func repSSDecodeBlock(b *repSSRawBlock, lim repSSLimits) (decoded []byte, cmds []repSNCmd, err error) {
+	lim = lim.norm()
+	switch b.Comp() {
+	case repSSCompNone:
+		return b.Payload, nil, nil
+	case repSSCompZstd:
+		d, _, e := repSSanalyzeZstdBlock(b.Payload, lim)
+		return d, nil, e
+	case repSSCompSnappy:
+		d, c, err := repSNParse(b.Payload, repSNLimits{MaxDecoded: lim.MaxDecoded})
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: snappy block: %v", repSSErrUnsupported, err)
+		}
+		return d, c, nil
+	}
+	return nil, nil, repSSunsupported("compression type %d", b.Comp())
+}
+
+// Port source: zeros3-z3/sstz3/table.go
+// walkMeta decodes a metadata block (uncompressed, or Snappy for the index) and walks
+// its key/value entries.
+func repSSwalkMeta(r io.ReaderAt, size int64, h repSSHandle, cksum uint8, lim repSSLimits, fn func(key, val []byte, restart bool) error) error {
+	if h.Size > uint64(lim.MaxMeta) {
+		return repSSErrLimit
+	}
+	rb, err := repSSReadBlock(r, size, h, cksum, true, lim)
+	if err != nil {
+		return err
+	}
+	dec, _, err := repSSDecodeBlock(rb, lim)
+	if err != nil {
+		return err
+	}
+	var lay *repSSLayout
+	lay, err = repSSWalkBlock(dec, lim, nil)
+	if err != nil {
+		return err
+	}
+	isRestart := map[int]bool{}
+	for _, i := range lay.RestartIdx {
+		isRestart[i] = true
+	}
+	_, err = repSSWalkBlock(dec, lim, func(i int, key, val []byte) error { return fn(key, val, isRestart[i]) })
+	return err
+}
+
+// Port source: zeros3-z3/sstz3/table.go
+func repSSOpen(r io.ReaderAt, size int64, lim repSSLimits) (*repSSTable, error) {
+	return repSSopen(r, size, lim, false)
+}
+
+// Port source: zeros3-z3/sstz3/table.go
+func repSSopen(r io.ReaderAt, size int64, lim repSSLimits, keep bool) (*repSSTable, error) {
+	lim = lim.norm()
+	f, err := repSSReadFooter(r, size)
+	if err != nil {
+		return nil, err
+	}
+	t := &repSSTable{Size: size, Footer: f, Meta: map[string]repSSHandle{}, Props: map[string][]byte{}, keep: keep}
+	add := func(n string, c repSSClass, d string) { t.Features = append(t.Features, repSSFeature{n, c, d}) }
+	switch f.Family {
+	case repSSFamilyLegacy:
+		add("footer", repSSSupported, "legacy 48-byte, masked CRC32C")
+	case repSSFamilyRocksDB:
+		c := repSSSupported
+		if f.Version > 6 {
+			c = repSSUnsupported
+		}
+		add("footer", c, fmt.Sprintf("rocksdb format_version %d, checksum type %d", f.Version, f.Checksum))
+	case repSSFamilyPebble:
+		c := repSSSupported
+		if f.Version < 1 || f.Version > 4 {
+			c = repSSUnsupported
+		}
+		if c == repSSUnsupported {
+			add("footer", c, fmt.Sprintf("pebble table format %d; footer layout unknown", f.Version))
+		} else {
+			add("footer", c, fmt.Sprintf("pebble table format %d, checksum type %d", f.Version, f.Checksum))
+		}
+	}
+	if f.Checksum != repSSCksumCRC32 && !(f.Family == repSSFamilyPebble && f.Version > 4) {
+		add("checksum", repSSOpaque, fmt.Sprintf("type %d: trailers preserved verbatim, not verified", f.Checksum))
+	}
+	if err := t.Reject(); err != nil {
+		return t, nil
+	}
+	if f.Metaindex.Off > uint64(size) {
+		return nil, repSScorrupt("metaindex handle")
+	}
+	var propsH repSSHandle
+	var haveProps bool
+	err = repSSwalkMeta(r, size, f.Metaindex, f.Checksum, lim, func(key, val []byte, _ bool) error {
+		h, n, ok := repSSgetHandle(val)
+		if !ok || n != len(val) {
+			return repSScorrupt("metaindex handle for %q", key)
+		}
+		name := string(key)
+		if _, dup := t.Meta[name]; dup {
+			return repSScorrupt("duplicate metaindex name %q", name)
+		}
+		t.Meta[name] = h
+		if name == "rocksdb.properties" {
+			propsH, haveProps = h, true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if haveProps {
+		err = repSSwalkMeta(r, size, propsH, f.Checksum, lim, func(key, val []byte, _ bool) error {
+			t.Props[string(key)] = append([]byte(nil), val...)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	// metadata blocks by name
+	names := make([]string, 0, len(t.Meta))
+	for n := range t.Meta {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		switch {
+		case n == "rocksdb.properties":
+			add("properties", repSSOpaque, "block preserved")
+		case n == "rocksdb.index":
+			// RocksDB format 6: the index handle
+		case strings.HasPrefix(n, "fullfilter.") || strings.HasPrefix(n, "filter."):
+			add("filter", repSSOpaque, n)
+		case strings.HasPrefix(n, "partitionedfilter."):
+			add("filter", repSSUnsupported, "partitioned filter: "+n)
+		case n == "rocksdb.range_del" || n == "rocksdb.range_del2":
+			add("range-deletion", repSSOpaque, n)
+		case n == "pebble.range_key":
+			add("range-keys", repSSOpaque, n)
+		case n == "pebble.value_index":
+			add("value-blocks", repSSOpaque, "separated value region preserved in the tail; data-block value handles are values")
+		case n == "rocksdb.compression_dict":
+			add("compression-dictionary", repSSUnsupported, n)
+		case strings.HasPrefix(n, "pebble.") || strings.HasPrefix(n, "rocksdb."):
+			add("metablock", repSSOpaque, n)
+		default:
+			add("metablock", repSSOpaque, n)
+		}
+	}
+	if it, ok := t.PropUint("rocksdb.block.based.table.index.type"); ok && it != 0 {
+		if it == 2 {
+			t.twoLevel = true
+			add("index-type", repSSOpaque, "two-level index: partitions traversed, every index block preserved in the tail")
+		} else {
+			add("index-type", repSSUnsupported, fmt.Sprintf("index type %d (hash or first-key index)", it))
+		}
+	}
+	if d, ok := t.PropUint("rocksdb.data.block.index.type"); ok && d != 0 {
+		add("data-block-index", repSSUnsupported, "hash index")
+	}
+	if t.Prop("rocksdb.compression_options") != "" && strings.Contains(t.Prop("rocksdb.compression_options"), "max_dict_bytes=") &&
+		!strings.Contains(t.Prop("rocksdb.compression_options"), "max_dict_bytes=0") {
+		add("compression-dictionary", repSSUnsupported, "dictionary compression enabled")
+	}
+	if err := t.Reject(); err != nil {
+		return t, nil
+	}
+	// index (one level, or a two-level index whose top level lists index partitions)
+	ih := f.Index
+	if f.IndexInMeta {
+		h, ok := t.Meta["rocksdb.index"]
+		if !ok {
+			return nil, repSScorrupt("format 6 table without an index handle")
+		}
+		ih = h
+	}
+	delta := false
+	if v, ok := t.PropUint("rocksdb.index.value.is.delta.encoded"); ok && v != 0 {
+		delta = true
+	}
+	if v, ok := t.PropUint("rocksdb.index.key.is.user.key"); ok && v != 0 {
+		t.IndexUserKeys = true
+	}
+	var pos uint64
+	collect := func(h repSSHandle) error {
+		return repSSwalkIndex(r, size, h, f.Checksum, delta, lim, func(key []byte, dh repSSHandle) error {
+			if t.keep {
+				t.IndexKeys = append(t.IndexKeys, append([]byte(nil), key...))
+			}
+			if len(t.Blocks) >= lim.MaxBlocks {
+				return repSSErrLimit
+			}
+			if dh.Off != pos {
+				return repSSunsupported("data blocks are not contiguous: block %d at %d, expected %d", len(t.Blocks), dh.Off, pos)
+			}
+			if dh.Size > uint64(lim.MaxBlockBytes) || dh.Size+repSStrailerLen > uint64(size)-pos {
+				return repSScorrupt("data block %d handle", len(t.Blocks))
+			}
+			pos = dh.Off + dh.Size + repSStrailerLen
+			t.Blocks = append(t.Blocks, dh)
+			return nil
+		})
+	}
+	if t.twoLevel {
+		var parts []repSSHandle
+		err = repSSwalkIndex(r, size, ih, f.Checksum, delta, lim, func(_ []byte, h repSSHandle) error {
+			if len(parts) >= lim.MaxBlocks {
+				return repSSErrLimit
+			}
+			parts = append(parts, h)
+			return nil
+		})
+		for i := 0; err == nil && i < len(parts); i++ {
+			err = collect(parts[i])
+		}
+	} else {
+		err = collect(ih)
+	}
+	if err != nil {
+		if errors.Is(err, repSSErrUnsupported) {
+			add("data-layout", repSSUnsupported, err.Error())
+			return t, nil
+		}
+		return nil, err
+	}
+	t.DataEnd = int64(pos)
+	if int64(pos) > size-int64(f.Len) {
+		return nil, repSScorrupt("data blocks end at %d, footer starts at %d", pos, size-int64(f.Len))
+	}
+	if n, ok := t.PropUint("rocksdb.num.data.blocks"); ok && n != uint64(len(t.Blocks)) {
+		return nil, repSScorrupt("index lists %d data blocks, properties say %d", len(t.Blocks), n)
+	}
+	add("data-blocks", repSSSupported, fmt.Sprintf("%d contiguous blocks", len(t.Blocks)))
+	return t, nil
+}
+
+// Port source: zeros3-z3/sstz3/table.go
+// walkIndex walks an index block (plain LevelDB entries, or RocksDB's value-delta
+// encoding in which entries carry no value length and non-restart handles are signed
+// size deltas) and reports every block handle.
+func repSSwalkIndex(r io.ReaderAt, size int64, h repSSHandle, cksum uint8, delta bool, lim repSSLimits, fn func([]byte, repSSHandle) error) error {
+	if !delta {
+		return repSSwalkMeta(r, size, h, cksum, lim, func(key, val []byte, _ bool) error {
+			dh, n, ok := repSSgetHandle(val)
+			if !ok {
+				return repSScorrupt("index handle")
+			}
+			if n != len(val) {
+				return repSSunsupported("index value with trailing bytes")
+			}
+			return fn(key, dh)
+		})
+	}
+	if h.Size > uint64(lim.MaxMeta) {
+		return repSSErrLimit
+	}
+	rb, err := repSSReadBlock(r, size, h, cksum, true, lim)
+	if err != nil {
+		return err
+	}
+	b, _, err := repSSDecodeBlock(rb, lim)
+	if err != nil {
+		return err
+	}
+	if len(b) < 8 {
+		return repSScorrupt("index block of %d bytes", len(b))
+	}
+	nr := binary.LittleEndian.Uint32(b[len(b)-4:])
+	if nr == 0 || uint64(nr) > uint64(len(b)-4)/4 {
+		return repSScorrupt("index restart count")
+	}
+	payload := len(b) - 4 - 4*int(nr)
+	restart := map[int]bool{}
+	for i := 0; i < int(nr); i++ {
+		o := int(binary.LittleEndian.Uint32(b[payload+4*i:]))
+		if o > payload {
+			return repSScorrupt("index restart offset")
+		}
+		restart[o] = true
+	}
+	var prev repSSHandle
+	var key []byte
+	first := true
+	for pos := 0; pos < payload; {
+		start := pos
+		shared, n1 := binary.Uvarint(b[pos:payload])
+		if n1 <= 0 {
+			return repSScorrupt("index entry")
+		}
+		pos += n1
+		ns, n2 := binary.Uvarint(b[pos:payload])
+		if n2 <= 0 || ns > uint64(payload-pos-n2) || shared > uint64(len(key)) {
+			return repSScorrupt("index entry key")
+		}
+		key = append(key[:shared], b[pos+n2:pos+n2+int(ns)]...)
+		pos += n2 + int(ns)
+		var dh repSSHandle
+		if restart[start] || first {
+			hh, n, ok := repSSgetHandle(b[pos:payload])
+			if !ok {
+				return repSScorrupt("index handle")
+			}
+			dh, pos = hh, pos+n
+		} else {
+			d, n := binary.Varint(b[pos:payload])
+			if n <= 0 {
+				return repSScorrupt("delta-encoded index value")
+			}
+			sz := int64(prev.Size) + d
+			if sz < 0 {
+				return repSScorrupt("delta-encoded index size")
+			}
+			dh, pos = repSSHandle{prev.Off + prev.Size + repSStrailerLen, uint64(sz)}, pos+n
+		}
+		first = false
+		prev = dh
+		if err := fn(key, dh); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/sstz3/zstd.go
+// Frame analysis/replay mechanically extracted from parquetz3/codec.go. Only
+// error/return types and the tighter per-SST-block budgets differ.
+func repSSzstdLimits(lim repSSLimits) repZSLimits {
+	lim = lim.norm()
+	return repZSLimits{MaxFrames: 1, MaxBlocks: 1 << 16, MaxWindow: lim.MaxDecoded, MaxFrameDecoded: lim.MaxDecoded, MaxTotalDecoded: lim.MaxDecoded, MaxLiterals: lim.MaxDecoded, MaxSequences: lim.MaxDecoded, MaxIRBytes: lim.MaxRecipe, MaxSkippable: lim.MaxBlockBytes}
+}
+
+// Port source: zeros3-z3/sstz3/zstd.go
+func repSSanalyzeZstdFrame(payload []byte, want int64, lim repSSLimits) ([]byte, []byte, error) {
+	var plain, units bytes.Buffer
+	res, err := repZSParse(bytes.NewReader(payload), &plain, &units, repZSOptions{repZSLimits: repSSzstdLimits(lim)})
+	if err != nil {
+		return nil, nil, repSScorrupt("zstd block: %v", err)
+	}
+	if int64(plain.Len()) != want {
+		return nil, nil, repSScorrupt("zstd block decodes to %d bytes, header says %d", plain.Len(), want)
+	}
+	z := repSSappendUv(nil, uint64(len(res.Raw)))
+	z = append(append(z, res.Raw...), units.Bytes()...)
+	recipe := z
+	var out bytes.Buffer
+	if err := repSSreplayZstdFrame(&out, recipe, plain.Bytes(), lim); err != nil || !bytes.Equal(out.Bytes(), payload) {
+		return nil, nil, fmt.Errorf("%w: zstd replay differs from the block (%v)", repSSErrUnsupported, err)
+	}
+	return plain.Bytes(), recipe, nil
+}
+
+// Port source: zeros3-z3/sstz3/zstd.go
+func repSSreplayZstdFrame(w io.Writer, recipe []byte, body []byte, lim repSSLimits) error {
+	n, k := binary.Uvarint(recipe)
+	if k <= 0 || n > uint64(len(recipe)-k) {
+		return repSSrecipeErr("zstd recipe")
+	}
+	skel := recipe[k : k+int(n)]
+	units := recipe[k+int(n):]
+	_, err := repZSReplay(w, skel, bytes.NewReader(units), bytes.NewReader(body), repSSzstdLimits(lim))
+	return err
+}
+
+// Port source: zeros3-z3/sstz3/zstd.go
+// RocksDB/Pebble format-2 compression adds a varint decoded length before the
+// standard frame. Its original bytes are retained, including varint spelling.
+func repSSanalyzeZstdBlock(payload []byte, lim repSSLimits) ([]byte, []byte, error) {
+	lim = lim.norm()
+	n, k := binary.Uvarint(payload)
+	if k <= 0 || n == 0 || n > uint64(lim.MaxDecoded) {
+		return nil, nil, repSSunsupported("zstd block decoded-size prefix")
+	}
+	plain, frame, e := repSSanalyzeZstdFrame(payload[k:], int64(n), lim)
+	if e != nil {
+		return nil, nil, e
+	}
+	recipe := repSSappendUv(nil, uint64(k))
+	recipe = append(recipe, payload[:k]...)
+	recipe = append(recipe, frame...)
+	return plain, recipe, nil
+}
+
+// Port source: zeros3-z3/sstz3/zstd.go
+func repSSreplayZstdBlock(w io.Writer, recipe, plain []byte, lim repSSLimits) error {
+	n, k := binary.Uvarint(recipe)
+	if k <= 0 || n == 0 || n > 10 || n > uint64(len(recipe)-k) {
+		return repSSrecipeErr("zstd prefix recipe")
+	}
+	prefix := recipe[k : k+int(n)]
+	want, l := binary.Uvarint(prefix)
+	if l != len(prefix) || want != uint64(len(plain)) {
+		return repSSrecipeErr("zstd decoded size")
+	}
+	if n, e := w.Write(prefix); e != nil {
+		return e
+	} else if n != len(prefix) {
+		return io.ErrShortWrite
+	}
+	return repSSreplayZstdFrame(w, recipe[k+int(n):], plain, lim)
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// Page and chunk modes of the analysis.
+const (
+	repPQModeOpaque uint8 = iota // payload kept as bytes (nothing decoded)
+	repPQModeData                // v1 or v2 data page decoded to logical values and levels
+	repPQModeDict                // dictionary page
+)
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// Dictionary modes of a chunk.
+const (
+	repPQDictNone      uint8 = iota
+	repPQDictPredicted       // the dictionary is the first N distinct values of the chunk's value stream
+	repPQDictExplicit        // the dictionary page body is a component
+)
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// PageInfo is the verified analysis of one page.
+type repPQPageInfo struct {
+	Page         repPQPage
+	Mode         uint8
+	Comp         repPQCompRec // Cmds/Zstd cleared after sizing in pass 1
+	CompRecBytes int          // bytes of the explicit compression recipe (0 for predictors)
+	Lay          repPQlayout
+	Present      int
+	Body         int64 // uncompressed body bytes (levels + values)
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// ChunkPlan is the verified plan of one column chunk.
+type repPQChunkPlan struct {
+	Chunk       *repPQChunk
+	Opaque      bool
+	Reason      string
+	Pages       []repPQPageInfo
+	DictMode    uint8
+	DictEntries int
+	dict        *repPQdict
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// sink receives the logical content of a chunk in pass 2.
+type repPQsink struct {
+	value func(rec []byte) error
+	level func(rec []byte, items int) error
+	page  func(i int, pi *repPQPageInfo, body []byte, comp repPQCompRec, hdr []byte) error
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// Analyzer verifies chunks of one open file.
+type repPQAnalyzer struct {
+	F     *repPQFile
+	R     io.ReaderAt
+	Lim   repPQLimits
+	comps map[int]*repPQCompressor
+	rs    map[int]*repPQrunState // per column, so a level run may span chunks
+	// NoPredict forces explicit compression recipes and explicit layouts (measurement only).
+	NoPredict bool
+	retained  int64 // cumulative retained layout metadata across planning passes
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// NewAnalyzer prepares an analyzer for f.
+func repPQNewAnalyzer(r io.ReaderAt, f *repPQFile, lim repPQLimits) *repPQAnalyzer {
+	return &repPQAnalyzer{F: f, R: r, Lim: lim.norm(), comps: map[int]*repPQCompressor{}, rs: map[int]*repPQrunState{}}
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+func (a *repPQAnalyzer) comp(codec int) *repPQCompressor {
+	c := a.comps[codec]
+	if c == nil {
+		c = repPQNewCompressor(codec, a.Lim)
+		c.NoPredict = a.NoPredict
+		a.comps[codec] = c
+	}
+	return c
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// Runs is the level-run state of a column (pass 2).
+func (a *repPQAnalyzer) Runs(col int) *repPQrunState {
+	r := a.rs[col]
+	if r == nil {
+		r = &repPQrunState{}
+		a.rs[col] = r
+	}
+	return r
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+func (a *repPQAnalyzer) spec(col int) repPQcolSpec {
+	c := a.F.Columns[col]
+	return repPQcolSpec{Phys: c.Phys, TypeLen: c.TypeLen, MaxDef: c.MaxDef}
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// ChunkSupport reports why a chunk cannot be decoded logically ("" when it can).
+func (a *repPQAnalyzer) ChunkSupport(c *repPQChunk) string {
+	col := a.F.Columns[c.Col]
+	spec := a.spec(c.Col)
+	switch {
+	case col.MaxRep > 0:
+		return "repeated (nested) column"
+	case col.MaxDef > 8:
+		return "definition levels above 8"
+	case !repPQCodecs(c.Codec):
+		return "codec " + repPQCodecName(c.Codec)
+	case c.NumValues > 1<<40:
+		return "huge chunk"
+	}
+	for _, e := range c.Encodings {
+		if e != repPQEncRLE && e != repPQEncBitPacked && !repPQencodingSupported(spec, e) {
+			return fmt.Sprintf("encoding %s", repPQEncodingName(e))
+		}
+	}
+	return ""
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// EncodingName names an encoding for audits.
+func repPQEncodingName(e int32) string {
+	n := map[int32]string{0: "PLAIN", 2: "PLAIN_DICTIONARY", 3: "RLE", 4: "BIT_PACKED", 5: "DELTA_BINARY_PACKED", 6: "DELTA_LENGTH_BYTE_ARRAY", 7: "DELTA_BYTE_ARRAY", 8: "RLE_DICTIONARY", 9: "BYTE_STREAM_SPLIT"}
+	if s, ok := n[e]; ok {
+		return s
+	}
+	return fmt.Sprint("ENC", e)
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// splitBody separates the level bytes from the value section of an uncompressed body
+// (v1: the level stream is length-prefixed at the front; v2: the header gives its length,
+// and the caller passes the value section separately).
+func repPQsplitV1(c repPQcolSpec, body []byte) (levels, values []byte, err error) {
+	if c.MaxDef == 0 {
+		return nil, body, nil
+	}
+	if len(body) < 4 {
+		return nil, nil, repPQcorrupt("v1 level length prefix")
+	}
+	l := int64(uint32(body[0]) | uint32(body[1])<<8 | uint32(body[2])<<16 | uint32(body[3])<<24)
+	if l > int64(len(body)-4) {
+		return nil, nil, repPQcorrupt("v1 level stream of %d bytes in a body of %d", l, len(body))
+	}
+	return body[:4+l], body[4+l:], nil
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// readPage fetches a page's payload and decompresses it with exact-replay analysis. For
+// v2 pages the level bytes are returned apart and only the value section is compressed.
+func (a *repPQAnalyzer) readPage(c *repPQChunk, p *repPQPage, spec repPQcolSpec) (levels, values []byte, rec repPQCompRec, err error) {
+	payload, err := repPQReadPayload(a.R, p)
+	if err != nil {
+		return nil, nil, rec, err
+	}
+	cp := a.comp(c.Codec)
+	if p.Type == repPQPageDataV2 {
+		if p.RepLen != 0 {
+			return nil, nil, rec, repPQunsupported("repetition levels in a flat column")
+		}
+		lv := int64(p.DefLen)
+		if (spec.MaxDef == 0) != (lv == 0) {
+			return nil, nil, rec, repPQcorrupt("v2 page level bytes %d for max definition level %d", lv, spec.MaxDef)
+		}
+		sect := payload[lv:]
+		if !p.IsComp {
+			return payload[:lv], sect, repPQCompRec{ID: repPQCompNone}, nil
+		}
+		body, rec, err := cp.Analyze(sect, int64(p.Uncomp)-lv)
+		return payload[:lv], body, rec, err
+	}
+	body, rec, err := cp.Analyze(payload, int64(p.Uncomp))
+	if err != nil {
+		return nil, nil, rec, err
+	}
+	if p.Type == repPQPageDict {
+		return nil, body, rec, nil
+	}
+	lv, vals, err := repPQsplitV1(spec, body)
+	return lv, vals, rec, err
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+func repPQsameBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// Chunk analyses one column chunk: it decides logical or opaque, verifies every page's
+// layout predictor and compression recipe by re-encoding and comparing bytes, and, when
+// sk is set (pass 2), delivers the logical content to the sink in file order. The plan is
+// the same with and without a sink.
+func (a *repPQAnalyzer) Chunk(c *repPQChunk, plan *repPQChunkPlan, sk *repPQsink) (*repPQChunkPlan, error) {
+	if plan == nil {
+		plan = &repPQChunkPlan{Chunk: c}
+		if why := a.ChunkSupport(c); why != "" {
+			plan.Opaque, plan.Reason = true, why
+			return plan, nil
+		}
+		err := a.chunkPass(c, plan, nil)
+		var ue *repPQopaqueErr
+		if errors.As(err, &ue) {
+			*plan = repPQChunkPlan{Chunk: c, Opaque: true, Reason: ue.why}
+			return plan, nil
+		}
+		return plan, err
+	}
+	if plan.Opaque {
+		return plan, nil
+	}
+	return plan, a.chunkPass(c, plan, sk)
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// opaqueErr marks "this chunk cannot be a logical chunk" (as opposed to a corrupt file).
+type repPQopaqueErr struct{ why string }
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+func (e *repPQopaqueErr) Error() string { return "opaque chunk: " + e.why }
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+func repPQopq(f string, a ...any) error { return &repPQopaqueErr{fmt.Sprintf(f, a...)} }
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+func (a *repPQAnalyzer) chunkPass(c *repPQChunk, plan *repPQChunkPlan, sk *repPQsink) error {
+	spec := a.spec(c.Col)
+	pass1 := plan.Pages == nil
+	var d *repPQdict
+	rs := a.Runs(c.Col)
+	nextIdx, firstPlain, predicted := 0, false, true
+	pi := 0
+	if !pass1 {
+		d = plan.dict
+	}
+	err := a.F.Pages(a.R, c, func(p *repPQPage, hdr []byte) error {
+		defer func() { pi++ }()
+		if pass1 && pi >= a.Lim.MaxPages {
+			return repPQlimitErr("pages")
+		}
+		levels, values, rec, err := a.readPage(c, p, spec)
+		if err != nil {
+			if errors.Is(err, repPQErrUnsupported) || errors.Is(err, repPQErrCorrupt) {
+				return repPQopq("page %d: %v", pi, err)
+			}
+			return err
+		}
+		info := repPQPageInfo{Page: *p, Comp: rec}
+		if rec.ID == repPQCompSnapCmds {
+			info.CompRecBytes = len(rec.Cmds)
+		}
+		if rec.ID == repPQCompZstd {
+			info.CompRecBytes = len(rec.Zstd)
+		}
+		switch p.Type {
+		case repPQPageDict:
+			if pi != 0 || d != nil && pass1 {
+				return repPQopq("dictionary page is not the first page")
+			}
+			if p.NumValues > repPQMaxPageValues || spec.Phys == repPQTBoolean {
+				return repPQopq("dictionary of %d values for type %d", p.NumValues, spec.Phys)
+			}
+			if int64(len(values)) > a.Lim.MaxDict {
+				return repPQopq("dictionary of %d bytes", len(values))
+			}
+			r, used, err := repPQdecodePlain(spec, values, int(p.NumValues), a.Lim)
+			if err != nil || used != len(values) {
+				return repPQopq("dictionary page body: %v", err)
+			}
+			if p.Enc != repPQEncPlain && p.Enc != repPQEncPlainDict {
+				return repPQopq("dictionary page encoding %s", repPQEncodingName(p.Enc))
+			}
+			if pass1 {
+				d = repPQnewDict(r)
+				plan.dict = d
+				plan.DictEntries = r.n
+			}
+			info.Mode = repPQModeDict
+			info.Body = int64(len(values))
+		case repPQPageData, repPQPageDataV2:
+			if p.Type == repPQPageData && spec.MaxDef > 0 && p.DefEnc != repPQEncRLE {
+				return repPQopq("definition levels use encoding %s", repPQEncodingName(p.DefEnc))
+			}
+			if !repPQencodingSupported(spec, p.Enc) {
+				return repPQopq("page encoding %s", repPQEncodingName(p.Enc))
+			}
+			pc, lay, err := repPQdecodePage(p, spec, d, levels, values, a.Lim)
+			if err != nil {
+				if errors.Is(err, repPQErrUnsupported) {
+					return repPQopq("page %d: %v", pi, err)
+				}
+				return repPQopq("page %d does not decode: %v", pi, err)
+			}
+			if p.Type == repPQPageDataV2 && int(p.NumNulls) != pc.n-pc.present {
+				return repPQopq("v2 num_nulls %d, levels say %d", p.NumNulls, pc.n-pc.present)
+			}
+			std := repPQlayout{}
+			if a.NoPredict {
+				std = lay
+				std.LvlExpl, std.ValExpl = spec.MaxDef > 0, repPQdictEnc(p.Enc) || p.Enc == repPQEncRLE
+			}
+			lb, ok1 := repPQencodeLevels(p, spec, pc.defs, std)
+			vb, ok2 := repPQencodeValues(p, spec, d, &pc, std)
+			if !ok1 || !ok2 || !repPQsameBytes(lb, levels) || !repPQsameBytes(vb, values) {
+				ex := lay
+				ex.LvlExpl = spec.MaxDef > 0 && (!ok1 || !repPQsameBytes(lb, levels))
+				lb, ok1 = repPQencodeLevels(p, spec, pc.defs, ex)
+				isIdx := repPQdictEnc(p.Enc) || p.Enc == repPQEncRLE
+				// values: the standard encoder with the stored width first, the run headers last
+				ex.ValExpl, ex.ValWidth = false, isIdx && !a.NoPredict
+				vb, ok2 = repPQencodeValues(p, spec, d, &pc, ex)
+				if !ok2 || !repPQsameBytes(vb, values) {
+					ex.ValExpl, ex.ValWidth = isIdx, false
+					vb, ok2 = repPQencodeValues(p, spec, d, &pc, ex)
+				}
+				if !ok1 || !ok2 || !repPQsameBytes(lb, levels) || !repPQsameBytes(vb, values) {
+					return repPQopq("page %d layout is not reproducible", pi)
+				}
+				std = ex
+			}
+			if !std.LvlExpl {
+				std.LvlHdrs, std.LvlPad = nil, nil
+			}
+			if !std.ValExpl {
+				std.ValHdrs, std.ValPad = nil, nil
+				if !std.ValWidth {
+					std.ValBW = 0
+				}
+			}
+			info.Lay, info.Present, info.Mode = std, pc.present, repPQModeData
+			info.Body = int64(len(lb) + len(vb))
+			if p.Type == repPQPageDataV2 && (int64(p.Uncomp) != info.Body || int(p.DefLen) != len(lb)) {
+				return repPQopq("v2 page sizes disagree with its header")
+			}
+			if p.Type == repPQPageData && int64(p.Uncomp) != info.Body {
+				return repPQopq("v1 page body %d bytes, header says %d", info.Body, p.Uncomp)
+			}
+			if repPQdictEnc(p.Enc) {
+				if firstPlain {
+					predicted = false
+				}
+				if pass1 {
+					for i := 0; i < pc.vals.n; i++ {
+						ix := int(d.idx[string(pc.vals.at(i))])
+						if ix > nextIdx {
+							predicted = false
+						} else if ix == nextIdx {
+							nextIdx++
+						}
+					}
+				}
+			} else {
+				firstPlain = true
+			}
+			if sk != nil {
+				if err := repPQfeed(sk, spec, &pc, rs); err != nil {
+					return err
+				}
+			}
+		default:
+			return repPQopq("page type %d", p.Type)
+		}
+		if sk != nil && sk.page != nil {
+			if err := sk.page(pi, &info, values, rec, hdr); err != nil {
+				return err
+			}
+		}
+		if pass1 {
+			info.Comp.Cmds, info.Comp.Zstd = nil, nil
+			if err := a.retainLayout(&info); err != nil {
+				return err
+			}
+			plan.Pages = append(plan.Pages, info)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if pass1 {
+		if len(plan.Pages) == 0 && c.TotalComp > 0 {
+			return repPQopq("no pages")
+		}
+		var vals int64
+		for i := range plan.Pages {
+			if plan.Pages[i].Mode == repPQModeData {
+				vals += int64(plan.Pages[i].Page.NumValues)
+			}
+		}
+		if vals != c.NumValues {
+			return repPQopq("pages hold %d values, the chunk says %d", vals, c.NumValues)
+		}
+		if d != nil {
+			if nextIdx == 0 && d.vals.n > 0 || nextIdx != d.vals.n || d.dup {
+				predicted = false
+			}
+			plan.DictMode = repPQDictExplicit
+			if predicted && !a.NoPredict {
+				plan.DictMode = repPQDictPredicted
+			}
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// feed delivers a page's content to the sink: level runs (across pages through rs) and values.
+func repPQfeed(sk *repPQsink, spec repPQcolSpec, pc *repPQpageContent, rs *repPQrunState) error {
+	if spec.MaxDef > 0 && sk.level != nil {
+		for _, d := range pc.defs {
+			if err := rs.add(int(d), sk.level); err != nil {
+				return err
+			}
+		}
+	}
+	if sk.value != nil {
+		for i := 0; i < pc.vals.n; i++ {
+			if err := sk.value(pc.vals.at(i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// Content delivers the logical content of a chunk in file order: every value record in
+// canonical form and every level run (the null structure). It reports opaque=true, and
+// delivers nothing, for a chunk that cannot be decoded logically.
+func (a *repPQAnalyzer) Content(c *repPQChunk, value func(rec []byte) error, level func(rec []byte, items int) error) (opaque bool, err error) {
+	plan, err := a.Chunk(c, nil, nil)
+	if err != nil || plan.Opaque {
+		return plan != nil && plan.Opaque, err
+	}
+	sk := &repPQsink{value: value, level: level}
+	if _, err = a.Chunk(c, plan, sk); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// Port source: zeros3-z3/parquetz3/analyze.go
+// FinishColumn flushes the level run still open at the end of a column.
+func (a *repPQAnalyzer) FinishColumn(col int, level func(rec []byte, items int) error) error {
+	return a.Runs(col).finish(level)
+}
+
+// Port source: zeros3-z3/parquetz3/codec.go
+// Compression replay. A page payload is a function of its decoded body only through the
+// producer's encoder, which is not reproducible in general, so every page carries a
+// CompRec: either a small predictor id (the reference encoder, run on the body, gives the
+// payload byte for byte) or the explicit description of the stored stream (Snappy
+// commands; the zstdz3 skeleton and units). A predictor id is recorded only after the
+// predictor's output was compared with the original payload (the Z3-30 rule).
+const (
+	repPQCompNone     = 0 // UNCOMPRESSED: payload == body
+	repPQCompSnapCmds = 1 // explicit Snappy commands
+	repPQCompSnapRef  = 2 // golang/snappy, fragment by fragment
+	repPQCompSnapCPP  = 3 // C++ snappy 1.1.x, 14-bit hash
+	repPQCompSnapCPP5 = 4 // C++ snappy with a 15-bit hash
+	repPQCompZstd     = 5 // zstdz3 skeleton + units
+	repPQCompSnapCRC  = 6 // C++ snappy 1.2.x built with CRC32C table hashing (DuckDB 2.0.0)
+	repPQcompMax      = 6
+)
+
+// Port source: zeros3-z3/parquetz3/codec.go
+// CompName is the audit name of a compression id.
+func repPQCompName(id int) string {
+	return [...]string{"none", "snappy-explicit", "snappy-go", "snappy-cpp14", "snappy-cpp15", "zstd-explicit", "snappy-cpp-crc15"}[id]
+}
+
+// Port source: zeros3-z3/parquetz3/codec.go
+// CompRec describes how to rebuild a page's compressed payload from its body.
+type repPQCompRec struct {
+	ID    uint8
+	Cmds  []byte // CompSnapCmds: snappyz3.Marshal of the commands
+	Zstd  []byte // CompZstd: uvarint(len skeleton) | skeleton | units
+	hints int
+}
+
+// Port source: zeros3-z3/parquetz3/codec.go
+func repPQsnapEncoder(id uint8) func([]byte) []byte {
+	switch id {
+	case repPQCompSnapRef:
+		return repSNEncodeRef
+	case repPQCompSnapCPP:
+		return repSNEncodeCPP
+	case repPQCompSnapCPP5:
+		return repSNEncodeCPP15
+	case repPQCompSnapCRC:
+		return repSNEncodeCPPCRC(15)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/codec.go
+// Codecs reports whether the representation can replay a Parquet codec.
+func repPQCodecs(codec int) bool {
+	return codec == repPQCodecNone || codec == repPQCodecSnappy || codec == repPQCodecZstd
+}
+
+// Port source: zeros3-z3/parquetz3/codec.go
+// CodecName names a Parquet codec for audits.
+func repPQCodecName(c int) string {
+	n := [...]string{"UNCOMPRESSED", "SNAPPY", "GZIP", "LZO", "BROTLI", "LZ4", "ZSTD", "LZ4_RAW"}
+	if c >= 0 && c < len(n) {
+		return n[c]
+	}
+	return fmt.Sprint("CODEC", c)
+}
+
+// Port source: zeros3-z3/parquetz3/codec.go
+// Compressor analyses and replays page payloads for one codec; it keeps the last
+// predictor that worked as the first one to try (a producer uses one encoder).
+type repPQCompressor struct {
+	Codec int
+	// NoPredict skips the predictors: Snappy pages get explicit commands (measurement only).
+	NoPredict bool
+	lim       repPQLimits
+	last      uint8
+}
+
+// Port source: zeros3-z3/parquetz3/codec.go
+// NewCompressor returns a compressor for a supported codec.
+func repPQNewCompressor(codec int, lim repPQLimits) *repPQCompressor {
+	return &repPQCompressor{Codec: codec, lim: lim.norm(), last: repPQCompSnapCPP}
+}
+
+// Port source: zeros3-z3/parquetz3/codec.go
+// Analyze decompresses payload (which must hold exactly want bytes) and describes how to
+// rebuild it. The returned recipe is verified: Replay(rec, body) equals payload.
+func (c *repPQCompressor) Analyze(payload []byte, want int64) (body []byte, rec repPQCompRec, err error) {
+	switch c.Codec {
+	case repPQCodecNone:
+		if int64(len(payload)) != want {
+			return nil, rec, repPQcorrupt("uncompressed page of %d bytes declares %d", len(payload), want)
+		}
+		return payload, repPQCompRec{ID: repPQCompNone}, nil
+	case repPQCodecSnappy:
+		body, cmds, err := repSNParse(payload, repSNLimits{MaxDecoded: c.lim.MaxPage})
+		if err != nil {
+			return nil, rec, repPQcorrupt("snappy page: %v", err)
+		}
+		if int64(len(body)) != want {
+			return nil, rec, repPQcorrupt("snappy page decodes to %d bytes, header says %d", len(body), want)
+		}
+		order := [4]uint8{repPQCompSnapCPP, repPQCompSnapCPP5, repPQCompSnapCRC, repPQCompSnapRef}
+		if c.NoPredict {
+			order = [4]uint8{}
+		}
+		for i, id := range order {
+			if id == c.last {
+				order[0], order[i] = order[i], order[0]
+			}
+		}
+		for _, id := range order {
+			if id != 0 && bytes.Equal(repSNEncodeFragments(body, repPQsnapEncoder(id)), payload) {
+				c.last = id
+				return body, repPQCompRec{ID: id}, nil
+			}
+		}
+		return body, repPQCompRec{ID: repPQCompSnapCmds, Cmds: repSNMarshal(cmds)}, nil
+	case repPQCodecZstd:
+		var plain, units bytes.Buffer
+		res, err := repZSParse(bytes.NewReader(payload), &plain, &units, repZSOptions{repZSLimits: c.zstdLimits()})
+		if err != nil {
+			return nil, rec, repPQcorrupt("zstd page: %v", err)
+		}
+		if int64(plain.Len()) != want {
+			return nil, rec, repPQcorrupt("zstd page decodes to %d bytes, header says %d", plain.Len(), want)
+		}
+		z := repPQappendUv(nil, uint64(len(res.Raw)))
+		z = append(append(z, res.Raw...), units.Bytes()...)
+		rec = repPQCompRec{ID: repPQCompZstd, Zstd: z}
+		var out bytes.Buffer
+		if err := c.replayZstd(&out, rec, plain.Bytes()); err != nil || !bytes.Equal(out.Bytes(), payload) {
+			return nil, rec, fmt.Errorf("%w: zstd replay differs from the page (%v)", repPQErrUnsupported, err)
+		}
+		return plain.Bytes(), rec, nil
+	}
+	return nil, rec, repPQunsupported("codec %s", repPQCodecName(c.Codec))
+}
+
+// Port source: zeros3-z3/parquetz3/codec.go
+func (c *repPQCompressor) replayZstd(w io.Writer, rec repPQCompRec, body []byte) error {
+	n, k := repPQreadUv(rec.Zstd)
+	if k <= 0 || n > uint64(len(rec.Zstd)-k) {
+		return repPQrecipeErr("zstd recipe")
+	}
+	skel := rec.Zstd[k : k+int(n)]
+	units := rec.Zstd[k+int(n):]
+	_, err := repZSReplay(w, skel, bytes.NewReader(units), bytes.NewReader(body), c.zstdLimits())
+	return err
+}
+
+// Port source: zeros3-z3/parquetz3/codec.go
+// Replay rebuilds the compressed payload of body described by rec.
+func (c *repPQCompressor) Replay(rec repPQCompRec, body []byte) ([]byte, error) {
+	switch rec.ID {
+	case repPQCompNone:
+		return body, nil
+	case repPQCompSnapRef, repPQCompSnapCPP, repPQCompSnapCPP5, repPQCompSnapCRC:
+		return repSNEncodeFragments(body, repPQsnapEncoder(rec.ID)), nil
+	case repPQCompSnapCmds:
+		cmds, err := repSNUnmarshal(rec.Cmds, int64(len(body)), repSNLimits{MaxDecoded: c.lim.MaxPage})
+		if err != nil {
+			return nil, repPQrecipeErr("snappy commands: %v", err)
+		}
+		var out bytes.Buffer
+		if err := repSNReplay(&out, body, cmds); err != nil {
+			return nil, repPQrecipeErr("snappy replay: %v", err)
+		}
+		return out.Bytes(), nil
+	case repPQCompZstd:
+		var out bytes.Buffer
+		if err := c.replayZstd(&out, rec, body); err != nil {
+			return nil, repPQrecipeErr("zstd replay: %v", err)
+		}
+		return out.Bytes(), nil
+	}
+	return nil, repPQrecipeErr("compression id %d", rec.ID)
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+// levelReader expands a column's level-run stream into definition levels.
+type repPQlevelReader struct {
+	cur    *repPQcursor
+	level  uint8
+	remain uint64
+	maxDef int
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+func (lr *repPQlevelReader) seek(pos uint64) error {
+	skip, err := lr.cur.seek(pos)
+	if err != nil {
+		return err
+	}
+	lr.remain = 0
+	rec, items, err := lr.cur.next()
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	v, _ := repPQreadUv(rec)
+	lr.level, lr.remain = uint8(v&15), items-skip
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+func (lr *repPQlevelReader) read(n int) ([]uint8, error) {
+	out := make([]uint8, 0, n)
+	for len(out) < n {
+		if lr.remain == 0 {
+			rec, items, err := lr.cur.next()
+			if errors.Is(err, io.EOF) {
+				return nil, repPQrecipeErr("the level stream ends before the page does")
+			}
+			if err != nil {
+				return nil, err
+			}
+			v, _ := repPQreadUv(rec)
+			if int(v&15) > lr.maxDef {
+				return nil, repPQrecipeErr("definition level %d above %d", v&15, lr.maxDef)
+			}
+			lr.level, lr.remain = uint8(v&15), items
+			continue
+		}
+		take := min(lr.remain, uint64(n-len(out)))
+		for i := uint64(0); i < take; i++ {
+			out = append(out, lr.level)
+		}
+		lr.remain -= take
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+type repPQcolState struct {
+	spec  repPQcolSpec
+	v     *repPQcursor
+	l     *repPQlevelReader
+	vnext uint64 // position the value cursor is at (valid when v != nil)
+	lnext uint64
+	// the dictionary of the chunk being rebuilt; an older one is dropped when the next
+	// dictionary page of the column is reached, so memory follows one chunk, not the file
+	dictSeg int
+	dict    *repPQdict
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+type repPQdecoder struct {
+	rec       *repPQRecipe
+	get       repPQGetter
+	lim       repPQLimits
+	stats     repPQRangeStats
+	cols      []repPQcolState
+	activeCol int // release old-column dictionaries; reconstruct on demand
+	cp        *repPQCompressor
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+func repPQnewDecoder(rec *repPQRecipe, get repPQGetter, lim repPQLimits) *repPQdecoder {
+	d := &repPQdecoder{activeCol: -1, rec: rec, lim: lim.norm(), cp: repPQNewCompressor(repPQCodecNone, lim)}
+	d.get = get
+	d.cols = make([]repPQcolState, len(rec.Cols))
+	for i := range rec.Cols {
+		c := &rec.Cols[i]
+		d.cols[i].spec = repPQcolSpec{Phys: c.Phys, TypeLen: c.TypeLen, MaxDef: c.MaxDef}
+		d.cols[i].dictSeg = -1
+	}
+	return d
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+func (d *repPQdecoder) fetch(member int, want int64) ([]byte, error) {
+	b, err := d.get(d.rec.Digests[member])
+	if err != nil {
+		return nil, err
+	}
+	if want >= 0 && int64(len(b)) != want {
+		return nil, repPQrecipeErr("component %x is %d bytes, expected %d", d.rec.Digests[member][:6], len(b), want)
+	}
+	d.stats.Components++
+	d.stats.Bytes += int64(len(b))
+	return b, nil
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+// position makes the column's cursors read from the given item positions.
+func (d *repPQdecoder) position(ci int, vpos, lpos uint64, needLevels bool) error {
+	cs := &d.cols[ci]
+	col := &d.rec.Cols[ci]
+	if cs.v == nil {
+		cs.v = repPQnewCursor(d.get, &col.V, cs.spec.valueParser(), &d.stats)
+		cs.vnext = 0
+		if vpos != 0 {
+			cs.vnext = ^uint64(0)
+		}
+	}
+	if cs.vnext != vpos {
+		if _, err := cs.v.seek(vpos); err != nil {
+			return err
+		}
+		cs.vnext = vpos
+	}
+	if needLevels {
+		if cs.l == nil {
+			cs.l = &repPQlevelReader{cur: repPQnewCursor(d.get, &col.L, repPQparseRun, &d.stats), maxDef: col.MaxDef}
+			cs.lnext = 0
+			if lpos != 0 {
+				cs.lnext = ^uint64(0)
+			}
+		}
+		if cs.lnext != lpos {
+			if err := cs.l.seek(lpos); err != nil {
+				return err
+			}
+			cs.lnext = lpos
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+func (d *repPQdecoder) readValues(cs *repPQcolState, k int) (repPQrecs, error) {
+	r := repPQnewRecs(cs.spec)
+	for i := 0; i < k; i++ {
+		rec, _, err := cs.v.next()
+		if errors.Is(err, io.EOF) {
+			return r, repPQrecipeErr("the value stream ends before the page does")
+		}
+		if err != nil {
+			return r, err
+		}
+		if cs.spec.Phys == repPQTBoolean && rec[0] > 1 {
+			return r, repPQrecipeErr("boolean value %d is not 0 or 1", rec[0])
+		}
+		if int64(len(r.buf))+int64(len(rec)) > d.lim.MaxPage {
+			return r, repPQlimitErr("canonical page bytes")
+		}
+		r.add(rec)
+	}
+	cs.vnext += uint64(k)
+	return r, nil
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+// dictOf returns the dictionary governing a data page (building it on first use).
+func (d *repPQdecoder) dictOf(si int) (*repPQdict, error) {
+	if si < 0 {
+		return nil, nil
+	}
+	s := &d.rec.Segs[si]
+	cs := &d.cols[s.Col]
+	if cs.dictSeg == si {
+		return cs.dict, nil
+	}
+	n := int(s.Page.NumValues)
+	if n > repPQMaxPageValues {
+		return nil, repPQlimitErr("dictionary of %d entries", n)
+	}
+	var vals repPQrecs
+	if s.DictExplicit {
+		b, err := d.fetch(s.Member, -1)
+		if err != nil {
+			return nil, err
+		}
+		r, used, err := repPQdecodePlain(cs.spec, b, n, d.lim)
+		if err != nil || used != len(b) {
+			return nil, repPQrecipeErr("dictionary component: %v", err)
+		}
+		vals = r
+	} else {
+		// the dictionary is the first N distinct values of the chunk's value stream
+		cur := repPQnewCursor(d.get, &d.rec.Cols[s.Col].V, cs.spec.valueParser(), &d.stats)
+		if _, err := cur.seek(s.VPos); err != nil {
+			return nil, err
+		}
+		vals = repPQnewRecs(cs.spec)
+		seen := make(map[string]struct{}, min(n, 1<<16))
+		for vals.n < n {
+			rec, _, err := cur.next()
+			if errors.Is(err, io.EOF) {
+				return nil, repPQrecipeErr("the value stream holds fewer than %d distinct values", n)
+			}
+			if err != nil {
+				return nil, err
+			}
+			if _, ok := seen[string(rec)]; !ok {
+				seen[string(rec)] = struct{}{}
+				vals.add(rec)
+				if int64(len(vals.buf)) > d.lim.MaxDict {
+					return nil, repPQlimitErr("dictionary above %d bytes", d.lim.MaxDict)
+				}
+			}
+		}
+	}
+	dd := repPQnewDict(vals)
+	cs.dictSeg, cs.dict = si, dd
+	return dd, nil
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+func (d *repPQdecoder) compRec(s *repPQSeg) (repPQCompRec, error) {
+	rec := repPQCompRec{ID: s.Comp}
+	if s.Comp > repPQcompMax {
+		return rec, repPQrecipeErr("compression id %d", s.Comp)
+	}
+	if repPQcompNeedsMember(s.Comp) {
+		b, err := d.fetch(s.CompMember, -1)
+		if err != nil {
+			return rec, err
+		}
+		if s.Comp == repPQCompSnapCmds {
+			rec.Cmds = b
+		} else {
+			rec.Zstd = b
+		}
+	}
+	return rec, nil
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+// page rebuilds the bytes of a logical page segment (raw header + payload).
+func (d *repPQdecoder) page(si int) ([]byte, error) {
+	s := &d.rec.Segs[si]
+	if d.activeCol != s.Col {
+		if d.activeCol >= 0 {
+			prev := &d.cols[d.activeCol]
+			prev.dict = nil
+			prev.dictSeg = -1
+		}
+		d.activeCol = s.Col
+	}
+	cs := &d.cols[s.Col]
+	pg := s.Page
+	rec, err := d.compRec(s)
+	if err != nil {
+		return nil, err
+	}
+	var levels, values []byte
+	if s.Kind == repPQSegDict {
+		if s.DictExplicit {
+			if values, err = d.fetch(s.Member, -1); err != nil {
+				return nil, err
+			}
+		} else {
+			dd, err := d.dictOf(si)
+			if err != nil {
+				return nil, err
+			}
+			values = repPQencodePlain(cs.spec, &dd.vals)
+		}
+		d.stats.Pages++
+	} else {
+		n := int(pg.NumValues)
+		if n > repPQMaxPageValues {
+			return nil, repPQlimitErr("page of %d values", n)
+		}
+		dd, err := d.dictOf(s.DictSeg)
+		if err != nil {
+			return nil, err
+		}
+		col := &d.rec.Cols[s.Col]
+		if err := d.position(s.Col, s.VPos, s.LPos, col.MaxDef > 0); err != nil {
+			return nil, err
+		}
+		pc := repPQpageContent{n: n, present: s.Present}
+		if col.MaxDef > 0 {
+			if pc.defs, err = cs.l.read(n); err != nil {
+				return nil, err
+			}
+			cs.lnext += uint64(n)
+			pc.present = 0
+			for _, v := range pc.defs {
+				if int(v) == col.MaxDef {
+					pc.present++
+				}
+			}
+			if pc.present != s.Present {
+				return nil, repPQrecipeErr("page holds %d non-null values, the recipe says %d", pc.present, s.Present)
+			}
+		}
+		if pc.vals, err = d.readValues(cs, pc.present); err != nil {
+			return nil, err
+		}
+		var ok1, ok2 bool
+		levels, ok1 = repPQencodeLevels(pg, cs.spec, pc.defs, s.Lay)
+		values, ok2 = repPQencodeValues(pg, cs.spec, dd, &pc, s.Lay)
+		if !ok1 || !ok2 {
+			return nil, repPQrecipeErr("page layout does not apply to its values")
+		}
+		d.stats.Pages++
+	}
+	var payload []byte
+	if pg.Type == repPQPageDataV2 {
+		v, err := d.cp.Replay(rec, values)
+		if err != nil {
+			return nil, err
+		}
+		payload = append(append(make([]byte, 0, len(levels)+len(v)), levels...), v...)
+	} else {
+		body := values
+		if len(levels) > 0 {
+			body = append(append(make([]byte, 0, len(levels)+len(values)), levels...), values...)
+		}
+		if payload, err = d.cp.Replay(rec, body); err != nil {
+			return nil, err
+		}
+	}
+	if int64(len(payload)) != int64(pg.Comp) {
+		return nil, repPQrecipeErr("page payload is %d bytes, its header says %d", len(payload), pg.Comp)
+	}
+	return append(append(make([]byte, 0, len(s.Hdr)+len(payload)), s.Hdr...), payload...), nil
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+// seg rebuilds the bytes of one segment.
+func (d *repPQdecoder) seg(si int) ([]byte, error) {
+	s := &d.rec.Segs[si]
+	switch s.Kind {
+	case repPQSegFrame:
+		return s.Frame, nil
+	case repPQSegFrameComp:
+		return d.fetch(s.Member, s.Len)
+	case repPQSegOpaque:
+		b, err := d.fetch(s.Member, int64(s.Page.Comp))
+		if err != nil {
+			return nil, err
+		}
+		return append(append(make([]byte, 0, len(s.Hdr)+len(b)), s.Hdr...), b...), nil
+	}
+	return d.page(si)
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+// Decode writes the exact original file to w from the serialized recipe and the
+// components it names; nothing else is consulted.
+func repPQDecode(w io.Writer, recipe []byte, get repPQGetter, lim repPQLimits) error {
+	rec, err := repPQParseRecipe(recipe, lim)
+	if err != nil {
+		return err
+	}
+	_, err = repPQdecodeRange(w, rec, get, 0, rec.Size, lim)
+	return err
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+// DecodeRange writes bytes [off, off+n) of the file, reconstructing only the segments
+// that overlap the range (a page is the unit) and reports what it fetched.
+func repPQDecodeRange(w io.Writer, recipe []byte, get repPQGetter, off, n int64, lim repPQLimits) (repPQRangeStats, error) {
+	rec, err := repPQParseRecipe(recipe, lim)
+	if err != nil {
+		return repPQRangeStats{}, err
+	}
+	return repPQdecodeRange(w, rec, get, off, n, lim)
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+func repPQdecodeRange(w io.Writer, rec *repPQRecipe, get repPQGetter, off, n int64, lim repPQLimits) (repPQRangeStats, error) {
+	if off < 0 || n < 0 || off > rec.Size || n > rec.Size-off {
+		return repPQRangeStats{}, repPQrecipeErr("range [%d,+%d) outside the %d byte file", off, n, rec.Size)
+	}
+	d := repPQnewDecoder(rec, get, lim)
+	end := off + n
+	// first overlapping segment by binary search over the derived offsets
+	lo, hi := 0, len(rec.Segs)
+	for lo < hi {
+		m := (lo + hi) / 2
+		if rec.Segs[m].Off+rec.Segs[m].Total <= off {
+			lo = m + 1
+		} else {
+			hi = m
+		}
+	}
+	for si := lo; si < len(rec.Segs) && rec.Segs[si].Off < end; si++ {
+		s := &rec.Segs[si]
+		if s.Total == 0 {
+			continue
+		}
+		b, err := d.seg(si)
+		if err != nil {
+			return d.stats, err
+		}
+		if int64(len(b)) != s.Total {
+			return d.stats, repPQrecipeErr("segment %d rebuilt as %d bytes, expected %d", si, len(b), s.Total)
+		}
+		a, z := max(off, s.Off)-s.Off, min(end, s.Off+s.Total)-s.Off
+		if _, err := w.Write(b[a:z]); err != nil {
+			return d.stats, err
+		}
+	}
+	return d.stats, nil
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+// Components calls emit with the digest of every leaf group named by the stream nodes (the
+// components reachable only through a node); get fetches the nodes.
+func repPQComponents(recipe []byte, get repPQGetter, lim repPQLimits, emit func(repPQID)) error {
+	rec, err := repPQParseRecipe(recipe, lim)
+	if err != nil {
+		return err
+	}
+	for ci := range rec.Cols {
+		for _, st := range []*repPQstreamRef{&rec.Cols[ci].V, &rec.Cols[ci].L} {
+			for _, nr := range st.nodes {
+				b, err := get(nr.id)
+				if err != nil {
+					return err
+				}
+				ents, err := repPQparseNode(b, repPQnodeMax*4)
+				if err != nil {
+					return err
+				}
+				for _, e := range ents {
+					emit(e.id)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/delta.go
+// deltaLengths decodes the DELTA_BINARY_PACKED length prefix. It retains the
+// original prefix for replay, so block geometry, widths and padding stay exact.
+// It deliberately bounds one page to 1M values and 64K-value blocks.
+func repPQdeltaLengths(b []byte, count int) ([]int, int, error) {
+	if count < 0 || count > 1<<20 {
+		return nil, 0, repPQunsupported("delta length count")
+	}
+	pos := 0
+	uv := func() (uint64, bool) {
+		if pos >= len(b) {
+			return 0, false
+		}
+		v, n := binary.Uvarint(b[pos:])
+		if n <= 0 {
+			return 0, false
+		}
+		pos += n
+		return v, true
+	}
+	sv := func() (int64, bool) {
+		if pos >= len(b) {
+			return 0, false
+		}
+		v, n := binary.Varint(b[pos:])
+		if n <= 0 {
+			return 0, false
+		}
+		pos += n
+		return v, true
+	}
+	block, ok := uv()
+	if !ok || block == 0 || block > 65536 || block%128 != 0 {
+		return nil, 0, repPQcorrupt("delta block size")
+	}
+	minis, ok := uv()
+	if !ok || minis == 0 || minis > block || block%minis != 0 || (block/minis)%32 != 0 {
+		return nil, 0, repPQcorrupt("delta miniblocks")
+	}
+	total, ok := uv()
+	if !ok || total != uint64(count) {
+		return nil, 0, repPQcorrupt("delta value count")
+	}
+	if count == 0 {
+		return nil, pos, nil
+	}
+	first, ok := sv()
+	if !ok || first < 0 || first > 1<<31-1 {
+		return nil, 0, repPQcorrupt("delta first length")
+	}
+	out := make([]int, 0, count)
+	out = append(out, int(first))
+	last := first
+	per := int(block / minis)
+	for len(out) < count {
+		mind, ok := sv()
+		if !ok || mind < -1<<31 || mind > 1<<31-1 {
+			return nil, 0, repPQcorrupt("delta minimum")
+		}
+		if int(minis) > len(b)-pos {
+			return nil, 0, repPQcorrupt("delta widths")
+		}
+		widths := b[pos : pos+int(minis)]
+		pos += int(minis)
+		for _, width := range widths {
+			if width > 32 {
+				return nil, 0, repPQcorrupt("delta length bit width")
+			}
+			size := per * int(width) / 8
+			if size > len(b)-pos {
+				return nil, 0, repPQcorrupt("delta packed values")
+			}
+			packed := b[pos : pos+size]
+			pos += size
+			for j := 0; j < per && len(out) < count; j++ {
+				var v uint64
+				for bit := 0; bit < int(width); bit++ {
+					at := j*int(width) + bit
+					v |= uint64(packed[at/8]>>uint(at%8)&1) << uint(bit)
+				}
+				// Parquet INT32 delta arithmetic wraps modulo 2^32. Lengths themselves
+				// must remain nonnegative; signed overflow cannot allocate a huge record.
+				last = int64(int32(uint32(last) + uint32(mind) + uint32(v)))
+				if last < 0 {
+					return nil, 0, repPQcorrupt("negative delta length")
+				}
+				out = append(out, int(last))
+			}
+		}
+	}
+	return out, pos, nil
+}
+
+// Port source: zeros3-z3/parquetz3/delta.go
+func repPQdecodeDeltaLength(b []byte, count int, lim repPQLimits) (repPQrecs, []byte, error) {
+	lim = lim.norm()
+	r := repPQnewRecs(repPQcolSpec{Phys: repPQTByteArr})
+	lengths, used, e := repPQdeltaLengths(b, count)
+	if e != nil {
+		return r, nil, e
+	}
+	pos := used
+	for _, n := range lengths {
+		if n > lim.MaxValue || n > len(b)-pos {
+			return r, nil, repPQcorrupt("delta string length")
+		}
+		r.buf = binary.LittleEndian.AppendUint32(r.buf, uint32(n))
+		r.buf = append(r.buf, b[pos:pos+n]...)
+		pos += n
+		r.ends = append(r.ends, len(r.buf))
+		r.n++
+	}
+	if pos != len(b) {
+		return r, nil, repPQcorrupt("delta trailing bytes")
+	}
+	return r, append([]byte(nil), b[:used]...), nil
+}
+
+// Port source: zeros3-z3/parquetz3/delta.go
+func repPQencodeDeltaLength(r *repPQrecs, prefix []byte) ([]byte, bool) {
+	lengths, used, e := repPQdeltaLengths(prefix, r.n)
+	if e != nil || used != len(prefix) {
+		return nil, false
+	}
+	out := append([]byte(nil), prefix...)
+	for i, n := range lengths {
+		value := r.at(i)
+		if len(value) < 4 || int(binary.LittleEndian.Uint32(value)) != n || len(value) != n+4 {
+			return nil, false
+		}
+		out = append(out, value[4:]...)
+	}
+	return out, true
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+// Options configures Encode.
+type repPQOptions struct {
+	Limits repPQLimits
+	// Target is the leaf group size in bytes for CutContent (default 8 KiB).
+	Target int
+	// Cut selects how a column stream is cut into groups (default CutContent).
+	Cut        repPQCutMode
+	FixedCount int // CutFixed: records per group
+	// NoPredict forces explicit compression recipes, layouts and dictionaries (measurement only).
+	NoPredict bool
+	// FrameInline is the largest framing region kept inline in the recipe (default 16 KiB).
+	FrameInline int
+	// ColumnClasses labels value and level components "val:<column>" / "lvl:<column>" instead
+	// of "val" / "lvl" (accounting only; identity and bytes are unchanged).
+	ColumnClasses bool
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+func (o *repPQOptions) norm() {
+	if o.Target <= 0 {
+		o.Target = 8 << 10
+	}
+	if o.FrameInline <= 0 {
+		o.FrameInline = 16 << 10
+	}
+	if o.FixedCount <= 0 {
+		o.FixedCount = 256
+	}
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+// Stats describes one encoding.
+type repPQStats struct {
+	FileBytes                                    int64
+	LogicalChunks, OpaqueChunks                  int
+	LogicalBytes, OpaqueBytes                    int64 // chunk bytes (headers included)
+	OpaqueWhy                                    map[string]int64
+	Pages, LogicalPages                          int
+	PagePayload                                  int64 // payload bytes of logical pages
+	CompPages                                    map[string]int
+	CompBytes                                    map[string]int64 // payload bytes by compression id
+	CompRecBytes                                 int64            // explicit compression recipe bytes
+	LayoutStd, LayoutLvl, LayoutVal, LayoutWidth int
+	DictPredicted, DictExplicit                  int
+	ValueGroups, LevelGroups                     int64
+	ValueRecords, LevelRecords                   int64
+	ValueBytes, LevelBytes                       int64 // logical stream bytes
+	Nodes                                        int
+	Members                                      int
+	ClassBytes                                   map[string]int64 // unique component bytes by class
+	ClassCount                                   map[string]int
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+// Encode analyses one Parquet file and returns the serialized recipe (head and member
+// table) and the components it needs (through emit). An error wrapping ErrUnsupported,
+// ErrCorrupt or ErrLimit means the file is not expressible and should be stored by CDC.
+func repPQEncode(r io.ReaderAt, size int64, opt repPQOptions, emit repPQEmit) ([]byte, repPQSizes, repPQStats, error) {
+	opt.norm()
+	st := repPQStats{FileBytes: size, OpaqueWhy: map[string]int64{}, CompPages: map[string]int{}, CompBytes: map[string]int64{},
+		ClassBytes: map[string]int64{}, ClassCount: map[string]int{}}
+	f, err := repPQOpen(r, size, opt.Limits)
+	if err != nil {
+		return nil, repPQSizes{}, st, err
+	}
+	spans, err := f.Spans()
+	if err != nil {
+		return nil, repPQSizes{}, st, err
+	}
+	e := &repPQencoder{f: f, r: r, opt: &opt, st: &st, user: emit, members: map[repPQID]int{}, seen: map[repPQID]bool{}}
+	e.an = repPQNewAnalyzer(r, f, opt.Limits)
+	e.an.NoPredict = opt.NoPredict
+	e.rec = &repPQRecipe{Size: size, Cols: make([]repPQColRec, len(f.Columns))}
+	e.vs = make([]*repPQstreamWriter, len(f.Columns))
+	e.ls = make([]*repPQstreamWriter, len(f.Columns))
+	for i, c := range f.Columns {
+		e.rec.Cols[i] = repPQColRec{Phys: c.Phys, TypeLen: c.TypeLen, MaxDef: c.MaxDef}
+	}
+	for _, s := range spans {
+		if err := e.span(s); err != nil {
+			return nil, repPQSizes{}, st, err
+		}
+	}
+	if st.LogicalChunks == 0 {
+		return nil, repPQSizes{}, st, repPQunsupported("no column chunk is logically decodable")
+	}
+	for ci := range e.rec.Cols {
+		c := &e.rec.Cols[ci]
+		if e.vs[ci] == nil {
+			continue
+		}
+		if c.HasL {
+			if err := e.an.Runs(ci).finish(e.ls[ci].addRun); err != nil {
+				return nil, repPQSizes{}, st, err
+			}
+		}
+		for _, sw := range []struct {
+			w  *repPQstreamWriter
+			to *[]repPQnodeMember
+		}{{e.vs[ci], &c.Vm}, {e.ls[ci], &c.Lm}} {
+			if sw.w == nil {
+				continue
+			}
+			if err := sw.w.finish(); err != nil {
+				return nil, repPQSizes{}, st, err
+			}
+			for _, n := range sw.w.nodes {
+				*sw.to = append(*sw.to, repPQnodeMember{e.member(n.id), n.items})
+			}
+			st.Nodes += len(sw.w.nodes)
+		}
+		st.ValueGroups += e.vs[ci].Groups
+		st.ValueRecords += e.vs[ci].Records
+		st.ValueBytes += e.vs[ci].GroupBytes
+		if e.ls[ci] != nil {
+			st.LevelGroups += e.ls[ci].Groups
+			st.LevelRecords += e.ls[ci].Records
+			st.LevelBytes += e.ls[ci].GroupBytes
+		}
+	}
+	e.rec.Digests = e.digests
+	st.Members = len(e.digests)
+	b, sz := e.rec.Marshal()
+	return b, sz, st, nil
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+type repPQencoder struct {
+	f       *repPQFile
+	r       io.ReaderAt
+	opt     *repPQOptions
+	st      *repPQStats
+	an      *repPQAnalyzer
+	user    repPQEmit
+	rec     *repPQRecipe
+	vs, ls  []*repPQstreamWriter
+	members map[repPQID]int
+	digests []repPQID
+	seen    map[repPQID]bool
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+func (s *repPQstreamWriter) addRun(rec []byte, items int) error { return s.add(rec, items) }
+
+// Port source: zeros3-z3/parquetz3/encode.go
+// out forwards a component to the caller and accounts its class once per unique digest.
+func (e *repPQencoder) out(class string, id repPQID, data []byte) error {
+	if !e.seen[id] {
+		e.seen[id] = true
+		e.st.ClassBytes[class] += int64(len(data))
+		e.st.ClassCount[class]++
+	}
+	return e.user(class, id, data)
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+func (e *repPQencoder) member(id repPQID) int {
+	if i, ok := e.members[id]; ok {
+		return i
+	}
+	e.members[id] = len(e.digests)
+	e.digests = append(e.digests, id)
+	return len(e.digests) - 1
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+func (e *repPQencoder) component(class string, b []byte) (int, error) {
+	id := repPQID(sha256.Sum256(b))
+	if err := e.out(class, id, b); err != nil {
+		return 0, err
+	}
+	return e.member(id), nil
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+func (e *repPQencoder) read(off, n int64) ([]byte, error) {
+	if n < 0 || n > e.opt.Limits.norm().MaxPage {
+		return nil, repPQlimitErr("frame bytes")
+	}
+	b := make([]byte, n)
+	if err := repPQreadFull(e.r, b, off); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+func (e *repPQencoder) span(s repPQSpan) error {
+	switch s.Kind {
+	case repPQSpanChunk:
+		return e.chunk(s.Chunk)
+	}
+	b, err := e.read(s.Off, s.Len)
+	if err != nil {
+		return err
+	}
+	if int64(len(b)) <= int64(e.opt.FrameInline) {
+		e.rec.Segs = append(e.rec.Segs, repPQSeg{Kind: repPQSegFrame, Frame: b})
+		return nil
+	}
+	m, err := e.component("frame", b)
+	if err != nil {
+		return err
+	}
+	e.rec.Segs = append(e.rec.Segs, repPQSeg{Kind: repPQSegFrameComp, Member: m, Len: s.Len})
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+func (e *repPQencoder) streams(ci int) error {
+	if e.vs[ci] != nil {
+		return nil
+	}
+	col := &e.rec.Cols[ci]
+	vc, lc := "val", "lvl"
+	if e.opt.ColumnClasses {
+		vc, lc = "val:"+e.f.Columns[ci].Name, "lvl:"+e.f.Columns[ci].Name
+	}
+	e.vs[ci] = repPQnewStream(vc, e.opt, e.out)
+	col.HasV = true
+	if col.MaxDef > 0 {
+		e.ls[ci] = repPQnewStream(lc, e.opt, e.out)
+		col.HasL = true
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+func (e *repPQencoder) chunk(c *repPQChunk) error {
+	plan, err := e.an.Chunk(c, nil, nil)
+	if err != nil {
+		return err
+	}
+	if plan.Opaque {
+		return e.opaque(c, plan)
+	}
+	ci := c.Col
+	if err := e.streams(ci); err != nil {
+		return err
+	}
+	e.st.LogicalChunks++
+	e.st.LogicalBytes += c.TotalComp
+	switch plan.DictMode {
+	case repPQDictPredicted:
+		e.st.DictPredicted++
+	case repPQDictExplicit:
+		e.st.DictExplicit++
+	}
+	col := &e.rec.Cols[ci]
+	sk := &repPQsink{
+		value: func(rec []byte) error { return e.vs[ci].add(rec, 1) },
+		page: func(i int, pi *repPQPageInfo, values []byte, comp repPQCompRec, hdr []byte) error {
+			s := repPQSeg{Col: ci, Hdr: append([]byte(nil), hdr...), Comp: comp.ID, Lay: pi.Lay.retained(), Present: pi.Present}
+			var err error
+			if repPQcompNeedsMember(comp.ID) {
+				cb := comp.Cmds
+				if comp.ID == repPQCompZstd {
+					cb = comp.Zstd
+				}
+				if s.CompMember, err = e.component("crec", cb); err != nil {
+					return err
+				}
+				e.st.CompRecBytes += int64(len(cb))
+			}
+			e.st.Pages++
+			e.st.LogicalPages++
+			e.st.PagePayload += int64(pi.Page.Comp)
+			e.st.CompPages[repPQCompName(int(comp.ID))]++
+			e.st.CompBytes[repPQCompName(int(comp.ID))] += int64(pi.Page.Comp)
+			if pi.Mode == repPQModeDict {
+				s.Kind = repPQSegDict
+				if plan.DictMode == repPQDictExplicit {
+					s.DictExplicit = true
+					if s.Member, err = e.component("dict", values); err != nil {
+						return err
+					}
+				}
+			} else {
+				s.Kind = repPQSegData
+				l, v := pi.Lay.Explicit()
+				switch {
+				case pi.Lay.WidthOnly() && !l:
+					e.st.LayoutWidth++
+				case l || v:
+					if l {
+						e.st.LayoutLvl++
+					}
+					if v {
+						e.st.LayoutVal++
+					}
+				default:
+					e.st.LayoutStd++
+				}
+			}
+			e.rec.Segs = append(e.rec.Segs, s)
+			if err := e.vs[ci].endPage(); err != nil {
+				return err
+			}
+			if e.ls[ci] != nil {
+				return e.ls[ci].endPage()
+			}
+			return nil
+		},
+	}
+	if col.HasL {
+		sk.level = e.ls[ci].addRun
+	}
+	_, err = e.an.Chunk(c, plan, sk)
+	return err
+}
+
+// Port source: zeros3-z3/parquetz3/encode.go
+// opaque stores the pages of a chunk that cannot be decoded: raw headers inline, every
+// payload one component.
+func (e *repPQencoder) opaque(c *repPQChunk, plan *repPQChunkPlan) error {
+	e.st.OpaqueChunks++
+	e.st.OpaqueBytes += c.TotalComp
+	why := plan.Reason
+	if len(why) > 60 {
+		why = why[:60]
+	}
+	e.st.OpaqueWhy[why] += c.TotalComp
+	return e.f.Pages(e.r, c, func(p *repPQPage, hdr []byte) error {
+		b, err := repPQReadPayload(e.r, p)
+		if err != nil {
+			return err
+		}
+		m, err := e.component("opq", b)
+		if err != nil {
+			return err
+		}
+		e.st.Pages++
+		e.rec.Segs = append(e.rec.Segs, repPQSeg{Kind: repPQSegOpaque, Hdr: append([]byte(nil), hdr...), Member: m})
+		return nil
+	})
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// Physical types, encodings, codecs and page types (parquet.thrift enum values).
+const (
+	repPQTBoolean  = 0
+	repPQTInt32    = 1
+	repPQTInt64    = 2
+	repPQTInt96    = 3
+	repPQTFloat    = 4
+	repPQTDouble   = 5
+	repPQTByteArr  = 6
+	repPQTFixedLen = 7
+
+	repPQEncPlain       = 0
+	repPQEncPlainDict   = 2
+	repPQEncRLE         = 3
+	repPQEncBitPacked   = 4
+	repPQEncDeltaBin    = 5
+	repPQEncDeltaLenBA  = 6
+	repPQEncDeltaBA     = 7
+	repPQEncRLEDict     = 8
+	repPQEncByteStrSplt = 9
+
+	repPQCodecNone   = 0
+	repPQCodecSnappy = 1
+	repPQCodecGzip   = 2
+	repPQCodecLZO    = 3
+	repPQCodecBrotli = 4
+	repPQCodecLZ4    = 5
+	repPQCodecZstd   = 6
+	repPQCodecLZ4Raw = 7
+
+	repPQPageData   = 0
+	repPQPageIndex  = 1
+	repPQPageDict   = 2
+	repPQPageDataV2 = 3
+)
+
+// Port source: zeros3-z3/parquetz3/meta.go
+var (
+	// ErrCorrupt reports a file that violates the format (or a recipe that does).
+	repPQErrCorrupt = errors.New("parquetz3: corrupt")
+	// ErrUnsupported reports a valid-looking construct outside the implemented subset.
+	// Encode returns it for "use CDC": it is never decoded on a best-effort basis.
+	repPQErrUnsupported = errors.New("parquetz3: unsupported feature")
+	// ErrLimit reports that a configured bound would be exceeded.
+	repPQErrLimit = errors.New("parquetz3: limit exceeded")
+	// ErrRecipe reports a malformed or inconsistent recipe.
+	repPQErrRecipe = errors.New("parquetz3: malformed recipe")
+)
+
+// Port source: zeros3-z3/parquetz3/meta.go
+func repPQcorrupt(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repPQErrCorrupt}, a...)...)
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+func repPQunsupported(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repPQErrUnsupported}, a...)...)
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+func repPQlimitErr(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repPQErrLimit}, a...)...)
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// wrapTC puts a Compact Thrift error in this package's classes while keeping the original
+// in the chain (Pages tells "need more header bytes" from corruption with errors.Is).
+func repPQwrapTC(err error) error {
+	switch {
+	case err == nil, errors.Is(err, repPQErrCorrupt), errors.Is(err, repPQErrUnsupported), errors.Is(err, repPQErrLimit):
+		return err
+	case errors.Is(err, repTCErrLimit):
+		return fmt.Errorf("%w: %w", repPQErrLimit, err)
+	}
+	return fmt.Errorf("%w: %w", repPQErrCorrupt, err)
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+func repPQrecipeErr(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repPQErrRecipe}, a...)...)
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// Limits bound every parse and every allocation. The zero value selects the defaults.
+type repPQLimits struct {
+	MaxFooter    int64 // FileMetaData bytes (default 64 MiB)
+	MaxRowGroups int   // default 1<<20
+	MaxColumns   int   // schema elements / leaf columns (default 1<<14)
+	MaxChunks    int   // row groups x columns (default 1<<22)
+	MaxPages     int   // pages of one file (default 1<<24)
+	MaxHeader    int   // bytes of one PageHeader (default 1 MiB)
+	MaxPage      int64 // compressed or uncompressed bytes of one page (default 128 MiB)
+	MaxValue     int   // bytes of one BYTE_ARRAY value kept logical (default 4 MiB; larger: the chunk is opaque)
+	MaxDict      int64 // bytes of one chunk's dictionary page (default 128 MiB)
+	Thrift       repTCLimits
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+func (l repPQLimits) norm() repPQLimits {
+	if l.MaxFooter <= 0 {
+		l.MaxFooter = 64 << 20
+	}
+	if l.MaxRowGroups <= 0 {
+		l.MaxRowGroups = 1 << 20
+	}
+	if l.MaxColumns <= 0 {
+		l.MaxColumns = 1 << 14
+	}
+	if l.MaxChunks <= 0 {
+		l.MaxChunks = 1 << 22
+	}
+	if l.MaxPages <= 0 {
+		l.MaxPages = 1 << 24
+	}
+	if l.MaxHeader <= 0 {
+		l.MaxHeader = 1 << 20
+	}
+	if l.MaxPage <= 0 {
+		l.MaxPage = 128 << 20
+	}
+	if l.MaxValue <= 0 {
+		l.MaxValue = 4 << 20
+	}
+	if l.MaxDict <= 0 {
+		l.MaxDict = 128 << 20
+	}
+	return l
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// Column is one leaf column of the schema.
+type repPQColumn struct {
+	Path           []string
+	Name           string
+	Phys           int
+	TypeLen        int
+	MaxDef, MaxRep int
+	Converted      int32  // ConvertedType, -1 when absent
+	Logical        string // LogicalType union member, "" when absent
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// Chunk is one column chunk of one row group.
+type repPQChunk struct {
+	RG, Col             int
+	Codec               int
+	Encodings           []int32
+	NumValues           int64
+	DictOff, DataOff    int64 // -1 when absent
+	Start, End          int64 // the exact page span [Start, End)
+	TotalComp, TotalUnc int64
+	FilePath            string
+	HasStats            bool
+	HasEncStats         bool
+	HasSizeStats        bool
+	ColIdx, OffIdx      [2]int64 // offset, length; -1 when absent
+	Bloom               [2]int64
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// RowGroup is one row group.
+type repPQRowGroup struct {
+	NumRows int64
+	Chunks  []repPQChunk
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// File is the parsed footer of a Parquet file. FooterOff..Size-8 is the FileMetaData.
+type repPQFile struct {
+	Size      int64
+	FooterOff int64
+	FooterLen int
+	Version   int32
+	CreatedBy string
+	NumRows   int64
+	KVCount   int
+	Columns   []repPQColumn
+	RowGroups []repPQRowGroup
+	Raw       []byte // the FileMetaData bytes (kept: the footer is opaque framing)
+	lim       repPQLimits
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+func repPQreadFull(r io.ReaderAt, p []byte, off int64) error {
+	n, err := r.ReadAt(p, off)
+	if n == len(p) {
+		return nil
+	}
+	if err == nil || err == io.EOF {
+		err = io.ErrUnexpectedEOF
+	}
+	return err
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// Open parses the footer of the Parquet file in r (size bytes). It reads the first four
+// bytes, the last eight and the FileMetaData; no page is touched.
+func repPQOpen(r io.ReaderAt, size int64, lim repPQLimits) (*repPQFile, error) {
+	lim = lim.norm()
+	if size < 12 {
+		return nil, repPQcorrupt("%d bytes is too short for a Parquet file", size)
+	}
+	var head [4]byte
+	if err := repPQreadFull(r, head[:], 0); err != nil {
+		return nil, err
+	}
+	var tail [8]byte
+	if err := repPQreadFull(r, tail[:], size-8); err != nil {
+		return nil, err
+	}
+	if string(tail[4:]) == "PARE" || string(head[:]) == "PARE" {
+		return nil, repPQunsupported("encrypted footer (PARE)")
+	}
+	if string(head[:]) != "PAR1" || string(tail[4:]) != "PAR1" {
+		return nil, repPQcorrupt("bad PAR1 magic")
+	}
+	fl := int64(binary.LittleEndian.Uint32(tail[:4]))
+	if fl == 0 || fl > size-12 {
+		return nil, repPQcorrupt("footer length %d in a %d byte file", fl, size)
+	}
+	if fl > lim.MaxFooter {
+		return nil, repPQlimitErr("footer of %d bytes", fl)
+	}
+	raw := make([]byte, fl)
+	if err := repPQreadFull(r, raw, size-8-fl); err != nil {
+		return nil, err
+	}
+	f := &repPQFile{Size: size, FooterOff: size - 8 - fl, FooterLen: int(fl), Raw: raw, lim: lim}
+	if err := f.parseMeta(raw); err != nil {
+		return nil, err
+	}
+	if err := f.validate(); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+type repPQschemaElem struct {
+	typ, typeLen, rep, nch, conv int32
+	name                         string
+	logical                      string
+	hasType, hasRep              bool
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+const repPQmaxSchemaDepth = 32
+
+// Port source: zeros3-z3/parquetz3/meta.go
+var repPQlogicalNames = map[int16]string{1: "STRING", 2: "MAP", 3: "LIST", 4: "ENUM", 5: "DECIMAL", 6: "DATE", 7: "TIME", 8: "TIMESTAMP", 10: "INTEGER", 11: "UNKNOWN", 12: "JSON", 13: "BSON", 14: "UUID", 15: "FLOAT16"}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+func (f *repPQFile) parseMeta(raw []byte) error {
+	r := repTCNewReader(raw, f.lim.Thrift)
+	var elems []repPQschemaElem
+	err := r.Struct(func(id int16, t repTCType) error {
+		switch {
+		case id == 1 && t == repTCI32:
+			v, err := r.I32()
+			f.Version = v
+			return err
+		case id == 2 && t == repTCList:
+			et, n, err := r.ListHeader()
+			if err != nil {
+				return err
+			}
+			if et != repTCStruct {
+				return repPQcorrupt("schema is not a list of structs")
+			}
+			if n > f.lim.MaxColumns*2+1 {
+				return repPQlimitErr("%d schema elements", n)
+			}
+			elems = make([]repPQschemaElem, 0, min(n, 1024))
+			for i := 0; i < n; i++ {
+				e, err := repPQparseSchemaElem(r)
+				if err != nil {
+					return err
+				}
+				elems = append(elems, e)
+			}
+			return nil
+		case id == 3 && t == repTCI64:
+			v, err := r.I64()
+			f.NumRows = v
+			return err
+		case id == 4 && t == repTCList:
+			et, n, err := r.ListHeader()
+			if err != nil {
+				return err
+			}
+			if et != repTCStruct {
+				return repPQcorrupt("row_groups is not a list of structs")
+			}
+			if n > f.lim.MaxRowGroups {
+				return repPQlimitErr("%d row groups", n)
+			}
+			f.RowGroups = make([]repPQRowGroup, 0, min(n, 1024))
+			for i := 0; i < n; i++ {
+				rg, err := f.parseRowGroup(r, i)
+				if err != nil {
+					return err
+				}
+				f.RowGroups = append(f.RowGroups, rg)
+			}
+			return nil
+		case id == 5 && t == repTCList:
+			et, n, err := r.ListHeader()
+			if err != nil {
+				return err
+			}
+			f.KVCount = n
+			for i := 0; i < n; i++ {
+				if err := r.Skip(et); err != nil {
+					return err
+				}
+			}
+			return nil
+		case id == 6 && t == repTCBinary:
+			b, err := r.Binary()
+			f.CreatedBy = string(b)
+			return err
+		}
+		return r.Skip(t)
+	})
+	if err != nil {
+		return repPQwrapTC(err)
+	}
+	if r.Remaining() != 0 {
+		return repPQcorrupt("%d bytes after the FileMetaData struct", r.Remaining())
+	}
+	return f.buildColumns(elems)
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+func repPQparseSchemaElem(r *repTCReader) (repPQschemaElem, error) {
+	e := repPQschemaElem{conv: -1}
+	err := r.Struct(func(id int16, t repTCType) error {
+		var err error
+		switch {
+		case id == 1 && t == repTCI32:
+			e.typ, err = r.I32()
+			e.hasType = true
+		case id == 2 && t == repTCI32:
+			e.typeLen, err = r.I32()
+		case id == 3 && t == repTCI32:
+			e.rep, err = r.I32()
+			e.hasRep = true
+		case id == 4 && t == repTCBinary:
+			var b []byte
+			b, err = r.Binary()
+			e.name = string(b)
+		case id == 5 && t == repTCI32:
+			e.nch, err = r.I32()
+		case id == 6 && t == repTCI32:
+			e.conv, err = r.I32()
+		case id == 10 && t == repTCStruct:
+			err = r.Struct(func(uid int16, ut repTCType) error {
+				if n, ok := repPQlogicalNames[uid]; ok && e.logical == "" {
+					e.logical = n
+				}
+				return r.Skip(ut)
+			})
+		default:
+			err = r.Skip(t)
+		}
+		return err
+	})
+	return e, err
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// buildColumns flattens the depth-first schema into leaf columns with their levels.
+func (f *repPQFile) buildColumns(el []repPQschemaElem) error {
+	if len(el) == 0 {
+		return repPQcorrupt("empty schema")
+	}
+	root := el[0]
+	if root.nch < 0 || int(root.nch) > len(el)-1 {
+		return repPQcorrupt("root has %d children in a schema of %d elements", root.nch, len(el))
+	}
+	type frame struct {
+		left     int32
+		def, rep int
+	}
+	stack := []frame{{left: root.nch}}
+	var path []string // names of the open groups: len(path) == len(stack)-1
+	for i := 1; i < len(el); i++ {
+		for len(stack) > 1 && stack[len(stack)-1].left == 0 {
+			stack = stack[:len(stack)-1]
+			path = path[:len(path)-1]
+		}
+		if stack[len(stack)-1].left == 0 {
+			return repPQcorrupt("schema element %d is outside the tree", i)
+		}
+		top := &stack[len(stack)-1]
+		top.left--
+		e := el[i]
+		def, rep := top.def, top.rep
+		switch {
+		case !e.hasRep || e.rep == 0:
+		case e.rep == 1:
+			def++
+		case e.rep == 2:
+			def++
+			rep++
+		default:
+			return repPQcorrupt("repetition type %d", e.rep)
+		}
+		if e.nch < 0 || int(e.nch) > len(el)-i-1 {
+			return repPQcorrupt("element %d declares %d children", i, e.nch)
+		}
+		if e.nch > 0 {
+			if len(stack) >= repPQmaxSchemaDepth {
+				return repPQlimitErr("schema nesting")
+			}
+			stack = append(stack, frame{left: e.nch, def: def, rep: rep})
+			path = append(path, e.name)
+			continue
+		}
+		if !e.hasType {
+			return repPQcorrupt("leaf %q has no physical type", e.name)
+		}
+		if len(f.Columns) >= f.lim.MaxColumns {
+			return repPQlimitErr("more than %d columns", f.lim.MaxColumns)
+		}
+		p := append(append([]string(nil), path...), e.name)
+		f.Columns = append(f.Columns, repPQColumn{Path: p, Name: strings.Join(p, "."), Phys: int(e.typ), TypeLen: int(e.typeLen), MaxDef: def, MaxRep: rep, Converted: e.conv, Logical: e.logical})
+	}
+	for len(stack) > 0 && stack[len(stack)-1].left == 0 {
+		stack = stack[:len(stack)-1]
+	}
+	if len(stack) != 0 {
+		return repPQcorrupt("schema ends with unfilled groups")
+	}
+	if len(f.Columns) == 0 {
+		return repPQcorrupt("schema has no leaf columns")
+	}
+	for _, c := range f.Columns {
+		if c.Phys < repPQTBoolean || c.Phys > repPQTFixedLen {
+			return repPQcorrupt("physical type %d", c.Phys)
+		}
+		if c.Phys == repPQTFixedLen && (c.TypeLen <= 0 || c.TypeLen > 1<<20) {
+			return repPQcorrupt("fixed length %d", c.TypeLen)
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+func (f *repPQFile) parseRowGroup(r *repTCReader, idx int) (repPQRowGroup, error) {
+	rg := repPQRowGroup{}
+	err := r.Struct(func(id int16, t repTCType) error {
+		switch {
+		case id == 1 && t == repTCList:
+			et, n, err := r.ListHeader()
+			if err != nil {
+				return err
+			}
+			if et != repTCStruct {
+				return repPQcorrupt("columns is not a list of structs")
+			}
+			if n > f.lim.MaxColumns {
+				return repPQlimitErr("%d chunks in a row group", n)
+			}
+			rg.Chunks = make([]repPQChunk, 0, min(n, 256))
+			for i := 0; i < n; i++ {
+				c, err := repPQparseChunk(r)
+				if err != nil {
+					return err
+				}
+				c.RG, c.Col = idx, i
+				rg.Chunks = append(rg.Chunks, c)
+			}
+			return nil
+		case id == 3 && t == repTCI64:
+			v, err := r.I64()
+			rg.NumRows = v
+			return err
+		}
+		return r.Skip(t)
+	})
+	return rg, err
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+func repPQparseChunk(r *repTCReader) (repPQChunk, error) {
+	c := repPQChunk{DictOff: -1, DataOff: -1, ColIdx: [2]int64{-1, -1}, OffIdx: [2]int64{-1, -1}, Bloom: [2]int64{-1, -1}}
+	err := r.Struct(func(id int16, t repTCType) error {
+		var err error
+		switch {
+		case id == 1 && t == repTCBinary:
+			var b []byte
+			b, err = r.Binary()
+			c.FilePath = string(b)
+		case id == 3 && t == repTCStruct:
+			err = repPQparseColumnMeta(r, &c)
+		case id == 4 && t == repTCI64:
+			c.OffIdx[0], err = r.I64()
+		case id == 5 && t == repTCI32:
+			var v int32
+			v, err = r.I32()
+			c.OffIdx[1] = int64(v)
+		case id == 6 && t == repTCI64:
+			c.ColIdx[0], err = r.I64()
+		case id == 7 && t == repTCI32:
+			var v int32
+			v, err = r.I32()
+			c.ColIdx[1] = int64(v)
+		case id == 8 || id == 9:
+			err = repPQunsupported("encrypted column chunk")
+		default:
+			err = r.Skip(t)
+		}
+		return err
+	})
+	return c, err
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+func repPQparseColumnMeta(r *repTCReader, c *repPQChunk) error {
+	return r.Struct(func(id int16, t repTCType) error {
+		var err error
+		switch {
+		case id == 2 && t == repTCList:
+			et, n, err := r.ListHeader()
+			if err != nil {
+				return err
+			}
+			if et != repTCI32 || n > 64 {
+				return repPQcorrupt("encodings list")
+			}
+			for i := 0; i < n; i++ {
+				v, err := r.I32()
+				if err != nil {
+					return err
+				}
+				c.Encodings = append(c.Encodings, v)
+			}
+			return nil
+		case id == 4 && t == repTCI32:
+			var v int32
+			v, err = r.I32()
+			c.Codec = int(v)
+		case id == 5 && t == repTCI64:
+			c.NumValues, err = r.I64()
+		case id == 6 && t == repTCI64:
+			c.TotalUnc, err = r.I64()
+		case id == 7 && t == repTCI64:
+			c.TotalComp, err = r.I64()
+		case id == 9 && t == repTCI64:
+			c.DataOff, err = r.I64()
+		case id == 11 && t == repTCI64:
+			c.DictOff, err = r.I64()
+		case id == 12 && t == repTCStruct:
+			c.HasStats = true
+			err = r.Skip(t)
+		case id == 13 && t == repTCList:
+			c.HasEncStats = true
+			err = r.Skip(t)
+		case id == 14 && t == repTCI64:
+			c.Bloom[0], err = r.I64()
+		case id == 15 && t == repTCI32:
+			var v int32
+			v, err = r.I32()
+			c.Bloom[1] = int64(v)
+		case id == 16 && t == repTCStruct:
+			c.HasSizeStats = true
+			err = r.Skip(t)
+		default:
+			err = r.Skip(t)
+		}
+		return err
+	})
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// validate checks every offset and size the footer declares against the file.
+func (f *repPQFile) validate() error {
+	lim := f.lim
+	total := 0
+	for gi := range f.RowGroups {
+		rg := &f.RowGroups[gi]
+		if len(rg.Chunks) != len(f.Columns) {
+			return repPQcorrupt("row group %d has %d chunks for %d columns", gi, len(rg.Chunks), len(f.Columns))
+		}
+		total += len(rg.Chunks)
+		if total > lim.MaxChunks {
+			return repPQlimitErr("more than %d column chunks", lim.MaxChunks)
+		}
+		for ci := range rg.Chunks {
+			c := &rg.Chunks[ci]
+			if c.FilePath != "" {
+				return repPQunsupported("column chunk %d/%d is in another file", gi, ci)
+			}
+			if c.DataOff < 0 {
+				return repPQcorrupt("chunk %d/%d has no data page offset", gi, ci)
+			}
+			c.Start = c.DataOff
+			if c.DictOff > 0 && (c.DictOff < c.Start || c.Start <= 0) {
+				c.Start = c.DictOff // an unset (0) data_page_offset must not hide a dictionary offset
+			}
+			if c.TotalComp < 0 || c.NumValues < 0 {
+				return repPQcorrupt("chunk %d/%d has negative sizes", gi, ci)
+			}
+			if c.Start < 4 || c.Start > f.FooterOff || c.TotalComp > f.FooterOff-c.Start {
+				return repPQcorrupt("chunk %d/%d spans [%d,+%d) outside the data area [4,%d)", gi, ci, c.Start, c.TotalComp, f.FooterOff)
+			}
+			c.End = c.Start + c.TotalComp
+			for _, rg := range [][2]int64{c.ColIdx, c.OffIdx, c.Bloom} {
+				// a bloom filter may declare an offset without a length (the length is then unknown)
+				if rg[0] >= 0 && (rg[0] < 4 || rg[0] > f.FooterOff || rg[1] > f.FooterOff-rg[0]) {
+					return repPQcorrupt("chunk %d/%d has an index or filter outside the file", gi, ci)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// SpanKind classifies an exact span of the file.
+type repPQSpanKind uint8
+
+// Port source: zeros3-z3/parquetz3/meta.go
+const (
+	repPQSpanMagic  repPQSpanKind = iota // the 4-byte head
+	repPQSpanChunk                       // a column chunk's pages (headers and payloads)
+	repPQSpanGap                         // bytes between chunks: page indexes, bloom filters, anything else
+	repPQSpanFooter                      // FileMetaData, footer length, tail magic
+)
+
+// Port source: zeros3-z3/parquetz3/meta.go
+func (k repPQSpanKind) String() string { return [...]string{"magic", "chunk", "gap", "footer"}[k] }
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// Span is one non-overlapping piece of the file; the spans of a file tile [0, Size).
+type repPQSpan struct {
+	Off, Len int64
+	Kind     repPQSpanKind
+	Chunk    *repPQChunk // for SpanChunk
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// Spans decomposes the file into exact spans in file order: head, column chunks (sorted
+// by offset), the gaps between them and the footer. Chunks that overlap are an error.
+func (f *repPQFile) Spans() ([]repPQSpan, error) {
+	var cs []*repPQChunk
+	for gi := range f.RowGroups {
+		for ci := range f.RowGroups[gi].Chunks {
+			cs = append(cs, &f.RowGroups[gi].Chunks[ci])
+		}
+	}
+	sort.SliceStable(cs, func(i, j int) bool { return cs[i].Start < cs[j].Start })
+	out := []repPQSpan{{0, 4, repPQSpanMagic, nil}}
+	pos := int64(4)
+	for _, c := range cs {
+		if c.TotalComp == 0 {
+			continue
+		}
+		if c.Start < pos {
+			return nil, repPQunsupported("column chunks overlap at offset %d", c.Start)
+		}
+		if c.Start > pos {
+			out = append(out, repPQSpan{pos, c.Start - pos, repPQSpanGap, nil})
+		}
+		out = append(out, repPQSpan{c.Start, c.TotalComp, repPQSpanChunk, c})
+		pos = c.End
+	}
+	if pos > f.FooterOff {
+		return nil, repPQcorrupt("chunks run into the footer")
+	}
+	if pos < f.FooterOff {
+		out = append(out, repPQSpan{pos, f.FooterOff - pos, repPQSpanGap, nil})
+	}
+	out = append(out, repPQSpan{f.FooterOff, f.Size - f.FooterOff, repPQSpanFooter, nil})
+	return out, nil
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// Page is one parsed PageHeader plus where it sits in the file.
+type repPQPage struct {
+	Off       int64 // offset of the raw header
+	HdrLen    int   // bytes of the raw header
+	Type      int32
+	Uncomp    int32
+	Comp      int32
+	HasCRC    bool
+	CRC       int32
+	NumValues int32
+	Enc       int32
+	DefEnc    int32
+	RepEnc    int32
+	NumNulls  int32 // v2
+	NumRows   int32 // v2
+	DefLen    int32 // v2
+	RepLen    int32 // v2
+	IsComp    bool  // v2 is_compressed (true when absent)
+	HasStats  bool
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// PayloadOff is the offset of the page's payload.
+func (p *repPQPage) PayloadOff() int64 { return p.Off + int64(p.HdrLen) }
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// End is the offset after the payload.
+func (p *repPQPage) End() int64 { return p.PayloadOff() + int64(p.Comp) }
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// ParsePageHeader parses one PageHeader from b (which may extend past it) and returns
+// the page and the header length. ErrShort-wrapping errors mean b ended inside it.
+func repPQParsePageHeader(b []byte, lim repPQLimits) (*repPQPage, error) {
+	lim = lim.norm()
+	r := repTCNewReader(b, lim.Thrift)
+	p := &repPQPage{IsComp: true}
+	var have [4]bool // type, uncompressed, compressed, one of the page-type structs
+	err := r.Struct(func(id int16, t repTCType) error {
+		var err error
+		switch {
+		case id == 1 && t == repTCI32:
+			p.Type, err = r.I32()
+			have[0] = true
+		case id == 2 && t == repTCI32:
+			p.Uncomp, err = r.I32()
+			have[1] = true
+		case id == 3 && t == repTCI32:
+			p.Comp, err = r.I32()
+			have[2] = true
+		case id == 4 && t == repTCI32:
+			p.CRC, err = r.I32()
+			p.HasCRC = true
+		case id == 5 && t == repTCStruct:
+			have[3] = true
+			err = r.Struct(func(id int16, t repTCType) error {
+				var err error
+				switch {
+				case id == 1 && t == repTCI32:
+					p.NumValues, err = r.I32()
+				case id == 2 && t == repTCI32:
+					p.Enc, err = r.I32()
+				case id == 3 && t == repTCI32:
+					p.DefEnc, err = r.I32()
+				case id == 4 && t == repTCI32:
+					p.RepEnc, err = r.I32()
+				case id == 5 && t == repTCStruct:
+					p.HasStats = true
+					err = r.Skip(t)
+				default:
+					err = r.Skip(t)
+				}
+				return err
+			})
+		case id == 6 && t == repTCStruct:
+			have[3] = true
+			err = r.Skip(t)
+		case id == 7 && t == repTCStruct:
+			have[3] = true
+			err = r.Struct(func(id int16, t repTCType) error {
+				var err error
+				switch {
+				case id == 1 && t == repTCI32:
+					p.NumValues, err = r.I32()
+				case id == 2 && t == repTCI32:
+					p.Enc, err = r.I32()
+				default:
+					err = r.Skip(t)
+				}
+				return err
+			})
+		case id == 8 && t == repTCStruct:
+			have[3] = true
+			err = r.Struct(func(id int16, t repTCType) error {
+				var err error
+				switch {
+				case id == 1 && t == repTCI32:
+					p.NumValues, err = r.I32()
+				case id == 2 && t == repTCI32:
+					p.NumNulls, err = r.I32()
+				case id == 3 && t == repTCI32:
+					p.NumRows, err = r.I32()
+				case id == 4 && t == repTCI32:
+					p.Enc, err = r.I32()
+				case id == 5 && t == repTCI32:
+					p.DefLen, err = r.I32()
+				case id == 6 && t == repTCI32:
+					p.RepLen, err = r.I32()
+				case id == 7 && (t == repTCBoolTrue || t == repTCBoolFalse):
+					p.IsComp = t == repTCBoolTrue
+				case id == 8 && t == repTCStruct:
+					p.HasStats = true
+					err = r.Skip(t)
+				default:
+					err = r.Skip(t)
+				}
+				return err
+			})
+		default:
+			err = r.Skip(t)
+		}
+		return err
+	})
+	if err != nil {
+		return nil, repPQwrapTC(err)
+	}
+	if !have[0] || !have[1] || !have[2] || !have[3] {
+		return nil, repPQcorrupt("PageHeader lacks type, sizes or its page-type struct")
+	}
+	p.HdrLen = r.Pos()
+	if p.Type < repPQPageData || p.Type > repPQPageDataV2 {
+		return nil, repPQcorrupt("page type %d", p.Type)
+	}
+	if p.Uncomp < 0 || p.Comp < 0 || int64(p.Uncomp) > lim.MaxPage || int64(p.Comp) > lim.MaxPage {
+		return nil, repPQlimitErr("page of %d/%d bytes", p.Comp, p.Uncomp)
+	}
+	if p.NumValues < 0 {
+		return nil, repPQcorrupt("page of %d values", p.NumValues)
+	}
+	if p.Type == repPQPageDataV2 {
+		if p.DefLen < 0 || p.RepLen < 0 || int64(p.DefLen)+int64(p.RepLen) > int64(p.Uncomp) || int64(p.DefLen)+int64(p.RepLen) > int64(p.Comp) {
+			return nil, repPQcorrupt("v2 level lengths %d+%d in a page of %d/%d", p.DefLen, p.RepLen, p.Comp, p.Uncomp)
+		}
+	}
+	return p, nil
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// Pages walks the pages of a chunk in file order. The pages must tile [Start, End)
+// exactly; a header or payload that crosses End is an error. fn gets the page with
+// Off/HdrLen set; the raw header is hdr (valid only during the call).
+func (f *repPQFile) Pages(r io.ReaderAt, c *repPQChunk, fn func(p *repPQPage, hdr []byte) error) error {
+	off := c.Start
+	win := make([]byte, 0, 512)
+	n := 0
+	for off < c.End {
+		if n++; n > f.lim.MaxPages {
+			return repPQlimitErr("more than %d pages", f.lim.MaxPages)
+		}
+		want := 512
+		var p *repPQPage
+		for {
+			w := int64(want)
+			if w > c.End-off {
+				w = c.End - off
+			}
+			if int64(cap(win)) < w {
+				win = make([]byte, 0, w)
+			}
+			win = win[:w]
+			if err := repPQreadFull(r, win, off); err != nil {
+				return err
+			}
+			var err error
+			p, err = repPQParsePageHeader(win, f.lim)
+			if err == nil {
+				break
+			}
+			if errors.Is(err, repTCErrShort) && w < c.End-off && want < f.lim.MaxHeader {
+				want = min(want*4, f.lim.MaxHeader)
+				continue
+			}
+			if errors.Is(err, repTCErrShort) {
+				return repPQcorrupt("page header at %d runs past its column chunk", off)
+			}
+			return err
+		}
+		p.Off = off
+		if p.End() > c.End || p.End() < p.Off {
+			return repPQcorrupt("page at %d (%d header + %d payload bytes) runs past its chunk end %d", off, p.HdrLen, p.Comp, c.End)
+		}
+		if err := fn(p, win[:p.HdrLen]); err != nil {
+			return err
+		}
+		off = p.End()
+	}
+	if off != c.End {
+		return repPQcorrupt("pages end at %d, chunk ends at %d", off, c.End)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/meta.go
+// ReadPayload reads the compressed payload of p.
+func repPQReadPayload(r io.ReaderAt, p *repPQPage) ([]byte, error) {
+	b := make([]byte, p.Comp)
+	if err := repPQreadFull(r, b, p.PayloadOff()); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// MaxPageValues bounds the level records of one page (a hostile num_values never sizes an
+// allocation beyond it).
+const repPQMaxPageValues = 1 << 20
+
+// Port source: zeros3-z3/parquetz3/page.go
+// colSpec is what page coding needs to know about a flat (non-repeated) column.
+type repPQcolSpec struct {
+	Phys, TypeLen, MaxDef int
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// width is the byte width of one canonical record for fixed-size types (a BOOLEAN is one
+// byte, 0 or 1); 0 for BYTE_ARRAY, whose records are uint32 length + bytes (the PLAIN form).
+func (c repPQcolSpec) width() int {
+	switch c.Phys {
+	case repPQTBoolean:
+		return 1
+	case repPQTInt32, repPQTFloat:
+		return 4
+	case repPQTInt64, repPQTDouble:
+		return 8
+	case repPQTInt96:
+		return 12
+	case repPQTFixedLen:
+		return c.TypeLen
+	}
+	return 0
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+func (c repPQcolSpec) levelBW() int { return bits.Len(uint(c.MaxDef)) }
+
+// Port source: zeros3-z3/parquetz3/page.go
+// recs is a list of canonical value records.
+type repPQrecs struct {
+	fixed int
+	buf   []byte
+	ends  []int // end offset of every record when fixed == 0
+	n     int
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+func repPQnewRecs(c repPQcolSpec) repPQrecs { return repPQrecs{fixed: c.width()} }
+
+// Port source: zeros3-z3/parquetz3/page.go
+func (r *repPQrecs) at(i int) []byte {
+	if r.fixed > 0 {
+		return r.buf[i*r.fixed : (i+1)*r.fixed]
+	}
+	s := 0
+	if i > 0 {
+		s = r.ends[i-1]
+	}
+	return r.buf[s:r.ends[i]]
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+func (r *repPQrecs) add(b []byte) {
+	r.buf = append(r.buf, b...)
+	if r.fixed == 0 {
+		r.ends = append(r.ends, len(r.buf))
+	}
+	r.n++
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// decodePlain decodes n PLAIN values from b; used is the bytes consumed.
+func repPQdecodePlain(c repPQcolSpec, b []byte, n int, lim repPQLimits) (r repPQrecs, used int, err error) {
+	r = repPQnewRecs(c)
+	switch {
+	case c.Phys == repPQTBoolean:
+		need := (n + 7) / 8
+		if need > len(b) {
+			return r, 0, repPQcorrupt("boolean page of %d values in %d bytes", n, len(b))
+		}
+		r.buf = make([]byte, n)
+		for i := 0; i < n; i++ {
+			r.buf[i] = b[i>>3] >> uint(i&7) & 1
+		}
+		r.n = n
+		return r, need, nil
+	case r.fixed > 0:
+		if n > len(b)/r.fixed {
+			return r, 0, repPQcorrupt("%d values of %d bytes in %d bytes", n, r.fixed, len(b))
+		}
+		r.buf = b[:n*r.fixed]
+		r.n = n
+		return r, n * r.fixed, nil
+	}
+	pos := 0
+	for i := 0; i < n; i++ {
+		if len(b)-pos < 4 {
+			return r, 0, repPQcorrupt("byte array length")
+		}
+		l := int(binary.LittleEndian.Uint32(b[pos:]))
+		if l < 0 || l > len(b)-pos-4 {
+			return r, 0, repPQcorrupt("byte array of %d bytes in %d", l, len(b)-pos-4)
+		}
+		if l > lim.MaxValue {
+			return r, 0, repPQunsupported("value of %d bytes exceeds the logical limit %d", l, lim.MaxValue)
+		}
+		pos += 4 + l
+		r.ends = append(r.ends, pos)
+	}
+	r.buf = b[:pos]
+	r.n = n
+	return r, pos, nil
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// encodePlain is the PLAIN form of r.
+func repPQencodePlain(c repPQcolSpec, r *repPQrecs) []byte {
+	if c.Phys != repPQTBoolean {
+		return r.buf
+	}
+	out := make([]byte, (r.n+7)/8)
+	for i := 0; i < r.n; i++ {
+		if r.buf[i] != 0 {
+			out[i>>3] |= 1 << uint(i&7)
+		}
+	}
+	return out
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// dict is a decoded dictionary page.
+type repPQdict struct {
+	vals repPQrecs
+	idx  map[string]uint32
+	dup  bool // two entries are equal: indices cannot be recomputed from values
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+func repPQnewDict(r repPQrecs) *repPQdict {
+	d := &repPQdict{vals: r, idx: make(map[string]uint32, r.n)}
+	for i := 0; i < r.n; i++ {
+		k := string(r.at(i))
+		if _, ok := d.idx[k]; ok {
+			d.dup = true
+		}
+		d.idx[k] = uint32(i)
+	}
+	return d
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+func (d *repPQdict) indexWidth() int {
+	if d.vals.n <= 1 {
+		return 0
+	}
+	return bits.Len(uint(d.vals.n - 1))
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// layout is the page-layout recipe of a data page: which hybrid streams follow the
+// standard encoder and which carry their stored run headers.
+type repPQlayout struct {
+	Delta   []byte // exact DELTA_LENGTH_BYTE_ARRAY length prefix
+	LvlExpl bool
+	LvlHdrs []uint64
+	LvlPad  []uint32
+	ValExpl bool
+	// ValWidth: the standard run encoder with a stored index width (a writer that sizes the
+	// width from the dictionary as it stood when the page was cut, not from the final one).
+	ValWidth bool
+	ValBW    int
+	ValHdrs  []uint64
+	ValPad   []uint32
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// Explicit reports which hybrid streams of the page carry stored run headers (the rest
+// follow the standard encoder).
+func (l repPQlayout) Explicit() (levels, values bool) {
+	return l.LvlExpl, l.ValExpl || len(l.Delta) > 0
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// WidthOnly reports a standard run encoding whose index width is stored (a tiny recipe).
+func (l repPQlayout) WidthOnly() bool { return l.ValWidth }
+
+// Port source: zeros3-z3/parquetz3/page.go
+// pageContent is the logical content of a data page.
+type repPQpageContent struct {
+	n       int // level records (the header's num_values)
+	defs    []uint8
+	present int
+	vals    repPQrecs
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// encodingKind classifies how a page encoding stores values.
+func repPQdictEnc(e int32) bool { return e == repPQEncPlainDict || e == repPQEncRLEDict }
+
+// Port source: zeros3-z3/parquetz3/page.go
+// pageSupported reports whether a data/dictionary page encoding of a column is handled.
+func repPQencodingSupported(c repPQcolSpec, enc int32) bool {
+	switch enc {
+	case repPQEncPlain, repPQEncPlainDict, repPQEncRLEDict:
+		return true
+	case repPQEncDeltaLenBA:
+		return c.Phys == repPQTByteArr
+	case repPQEncRLE:
+		return c.Phys == repPQTBoolean
+	case repPQEncByteStrSplt:
+		return c.Phys != repPQTBoolean && c.Phys != repPQTByteArr
+	}
+	return false
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+func repPQdefsToU32(d []uint8) []uint32 {
+	o := make([]uint32, len(d))
+	for i, v := range d {
+		o[i] = uint32(v)
+	}
+	return o
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// hybridPart encodes values with the layout part (standard unless explicit).
+func repPQhybridPart(vals []uint32, bw int, expl bool, hdrs []uint64, pad []uint32) ([]byte, bool) {
+	if expl {
+		return repPQhybridEncodeRuns(vals, bw, hdrs, pad)
+	}
+	return repPQhybridEncodeStd(vals, bw), true
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// encodeLevels returns the definition-level bytes of a page (nil without levels): a v1
+// page prefixes the hybrid stream with its uint32 length, a v2 page stores it raw.
+func repPQencodeLevels(pg *repPQPage, c repPQcolSpec, defs []uint8, lay repPQlayout) ([]byte, bool) {
+	if c.MaxDef == 0 {
+		return nil, true
+	}
+	h, ok := repPQhybridPart(repPQdefsToU32(defs), c.levelBW(), lay.LvlExpl, lay.LvlHdrs, lay.LvlPad)
+	if !ok {
+		return nil, false
+	}
+	if pg.Type == repPQPageDataV2 {
+		return h, true
+	}
+	return append(binary.LittleEndian.AppendUint32(make([]byte, 0, 4+len(h)), uint32(len(h))), h...), true
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// encodeValues returns the value section of a data page.
+func repPQencodeValues(pg *repPQPage, c repPQcolSpec, d *repPQdict, pc *repPQpageContent, lay repPQlayout) ([]byte, bool) {
+	switch {
+	case pg.Enc == repPQEncDeltaLenBA:
+		return repPQencodeDeltaLength(&pc.vals, lay.Delta)
+	case pg.Enc == repPQEncPlain:
+		return repPQencodePlain(c, &pc.vals), true
+	case repPQdictEnc(pg.Enc):
+		if d == nil || d.dup {
+			return nil, false
+		}
+		idx := make([]uint32, pc.vals.n)
+		for i := range idx {
+			v, ok := d.idx[string(pc.vals.at(i))]
+			if !ok {
+				return nil, false
+			}
+			idx[i] = v
+		}
+		bw := d.indexWidth()
+		if lay.ValExpl || lay.ValWidth {
+			bw = lay.ValBW
+		}
+		if bw > 32 {
+			return nil, false
+		}
+		h, ok := repPQhybridPart(idx, bw, lay.ValExpl, lay.ValHdrs, lay.ValPad)
+		return append([]byte{byte(bw)}, h...), ok
+	case pg.Enc == repPQEncRLE && c.Phys == repPQTBoolean:
+		idx := make([]uint32, pc.vals.n)
+		for i := range idx {
+			idx[i] = uint32(pc.vals.buf[i] & 1)
+		}
+		h, ok := repPQhybridPart(idx, 1, lay.ValExpl, lay.ValHdrs, lay.ValPad)
+		return append(binary.LittleEndian.AppendUint32(nil, uint32(len(h))), h...), ok
+	case pg.Enc == repPQEncByteStrSplt:
+		w := c.width()
+		if w == 0 || c.Phys == repPQTBoolean {
+			return nil, false
+		}
+		out := make([]byte, len(pc.vals.buf))
+		n := pc.vals.n
+		for i := 0; i < n; i++ {
+			for j := 0; j < w; j++ {
+				out[j*n+i] = pc.vals.buf[i*w+j]
+			}
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// decodePage decodes the logical content of a data page from its uncompressed level
+// bytes and value section (for v1 pages levels holds the prefixed hybrid stream at the
+// start of the body and values the rest), recording the layout the page uses.
+func repPQdecodePage(pg *repPQPage, c repPQcolSpec, d *repPQdict, levels, values []byte, lim repPQLimits) (pc repPQpageContent, lay repPQlayout, err error) {
+	n := int(pg.NumValues)
+	if n > repPQMaxPageValues {
+		return pc, lay, repPQlimitErr("page of %d values", n)
+	}
+	pc.n = n
+	pc.present = n
+	if c.MaxDef > 0 {
+		var hb []byte
+		if pg.Type == repPQPageDataV2 {
+			hb = levels
+		} else {
+			if len(levels) < 4 {
+				return pc, lay, repPQcorrupt("level length prefix")
+			}
+			hb = levels[4:]
+		}
+		dv, hdrs, pad, used, err := repPQhybridDecode(hb, c.levelBW(), n)
+		if err != nil {
+			return pc, lay, err
+		}
+		if used != len(hb) {
+			return pc, lay, repPQcorrupt("%d trailing level bytes", len(hb)-used)
+		}
+		lay.LvlHdrs, lay.LvlPad = hdrs, pad
+		pc.defs = make([]uint8, n)
+		pc.present = 0
+		for i, v := range dv {
+			if int(v) > c.MaxDef {
+				return pc, lay, repPQcorrupt("definition level %d above %d", v, c.MaxDef)
+			}
+			pc.defs[i] = uint8(v)
+			if int(v) == c.MaxDef {
+				pc.present++
+			}
+		}
+	}
+	switch {
+	case pg.Enc == repPQEncDeltaLenBA:
+		pc.vals, lay.Delta, err = repPQdecodeDeltaLength(values, pc.present, lim)
+		if err != nil {
+			return pc, lay, err
+		}
+	case pg.Enc == repPQEncPlain:
+		r, used, err := repPQdecodePlain(c, values, pc.present, lim)
+		if err != nil {
+			return pc, lay, err
+		}
+		if used != len(values) {
+			return pc, lay, repPQcorrupt("%d trailing value bytes", len(values)-used)
+		}
+		pc.vals = r
+	case repPQdictEnc(pg.Enc):
+		if d == nil {
+			return pc, lay, repPQcorrupt("dictionary-encoded page without a dictionary")
+		}
+		if len(values) < 1 {
+			return pc, lay, repPQcorrupt("dictionary index width")
+		}
+		bw := int(values[0])
+		idx, hdrs, pad, used, err := repPQhybridDecode(values[1:], bw, pc.present)
+		if err != nil {
+			return pc, lay, err
+		}
+		if used+1 != len(values) {
+			return pc, lay, repPQcorrupt("%d trailing index bytes", len(values)-1-used)
+		}
+		lay.ValBW, lay.ValHdrs, lay.ValPad = bw, hdrs, pad
+		pc.vals = repPQnewRecs(c)
+		for _, ix := range idx {
+			if int(ix) >= d.vals.n {
+				return pc, lay, repPQcorrupt("dictionary index %d of %d", ix, d.vals.n)
+			}
+			value := d.vals.at(int(ix))
+			if int64(len(pc.vals.buf))+int64(len(value)) > lim.MaxPage {
+				return pc, lay, repPQlimitErr("canonical dictionary page bytes")
+			}
+			pc.vals.add(d.vals.at(int(ix)))
+		}
+	case pg.Enc == repPQEncRLE && c.Phys == repPQTBoolean:
+		if len(values) < 4 {
+			return pc, lay, repPQcorrupt("RLE boolean length")
+		}
+		l := int(binary.LittleEndian.Uint32(values))
+		if l < 0 || l > len(values)-4 || l != len(values)-4 {
+			return pc, lay, repPQcorrupt("RLE boolean length %d in %d bytes", l, len(values)-4)
+		}
+		idx, hdrs, pad, used, err := repPQhybridDecode(values[4:], 1, pc.present)
+		if err != nil {
+			return pc, lay, err
+		}
+		if used != l {
+			return pc, lay, repPQcorrupt("%d trailing RLE boolean bytes", l-used)
+		}
+		lay.ValBW, lay.ValHdrs, lay.ValPad = 1, hdrs, pad
+		pc.vals = repPQnewRecs(c)
+		pc.vals.buf = make([]byte, len(idx))
+		for i, v := range idx {
+			pc.vals.buf[i] = byte(v)
+		}
+		pc.vals.n = len(idx)
+	case pg.Enc == repPQEncByteStrSplt:
+		w := c.width()
+		if w == 0 || c.Phys == repPQTBoolean || len(values) != w*pc.present {
+			return pc, lay, repPQcorrupt("byte-stream-split page of %d bytes for %d values", len(values), pc.present)
+		}
+		pc.vals = repPQnewRecs(c)
+		pc.vals.buf = make([]byte, len(values))
+		for i := 0; i < pc.present; i++ {
+			for j := 0; j < w; j++ {
+				pc.vals.buf[i*w+j] = values[j*pc.present+i]
+			}
+		}
+		pc.vals.n = pc.present
+	default:
+		return pc, lay, repPQunsupported("page encoding %d for physical type %d", pg.Enc, c.Phys)
+	}
+	return pc, lay, nil
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// runState builds the canonical level stream: one record per run of equal definition
+// levels, uvarint(run length << 4 | level), so any record can be read without its
+// neighbours (MaxDef is capped at 8 for logical columns). A run may span pages, so the
+// state lives per column.
+type repPQrunState struct {
+	init       bool
+	level, run int
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+func (st *repPQrunState) emit(fn func(rec []byte, items int) error) error {
+	var tmp [10]byte
+	return fn(binary.AppendUvarint(tmp[:0], uint64(st.run)<<4|uint64(st.level)), st.run)
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// add feeds one definition level; a closed run is passed to fn.
+func (st *repPQrunState) add(lv int, fn func(rec []byte, items int) error) error {
+	if !st.init {
+		st.init, st.level, st.run = true, lv, 0
+	}
+	if lv != st.level {
+		if err := st.emit(fn); err != nil {
+			return err
+		}
+		st.level, st.run = lv, 0
+	}
+	st.run++
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/page.go
+// finish flushes the last run.
+func (st *repPQrunState) finish(fn func(rec []byte, items int) error) error {
+	if !st.init {
+		return nil
+	}
+	st.init = false
+	return st.emit(fn)
+}
+
+// Port source: zeros3-z3/parquetz3/pagebody.go
+// PageBody returns the uncompressed body of a page (v1: the whole body; v2: the level
+// bytes followed by the decompressed value section) and the codec recipe that rebuilds
+// the stored payload from it. The recipe is verified. It is the "decompressed page"
+// view used by the structural baselines and by the logical representation's analyzer.
+func (a *repPQAnalyzer) PageBody(c *repPQChunk, p *repPQPage) ([]byte, repPQCompRec, error) {
+	payload, err := repPQReadPayload(a.R, p)
+	if err != nil {
+		return nil, repPQCompRec{}, err
+	}
+	if p.Type != repPQPageDataV2 {
+		return a.comp(c.Codec).Analyze(payload, int64(p.Uncomp))
+	}
+	lv := int64(p.DefLen) + int64(p.RepLen)
+	if !p.IsComp {
+		return payload, repPQCompRec{ID: repPQCompNone}, nil
+	}
+	vals, rec, err := a.comp(c.Codec).Analyze(payload[lv:], int64(p.Uncomp)-lv)
+	if err != nil {
+		return nil, rec, err
+	}
+	return append(append(make([]byte, 0, int64(len(vals))+lv), payload[:lv]...), vals...), rec, nil
+}
+
+// Port source: zeros3-z3/parquetz3/pagebody.go
+// PagePayload rebuilds the stored payload of page p from its body and codec recipe.
+func (a *repPQAnalyzer) PagePayload(p *repPQPage, body []byte, rec repPQCompRec) ([]byte, error) {
+	cp := a.comp(repPQCodecNone)
+	if p.Type != repPQPageDataV2 {
+		return cp.Replay(rec, body)
+	}
+	lv := int64(p.DefLen) + int64(p.RepLen)
+	if lv > int64(len(body)) {
+		return nil, repPQcorrupt("v2 level bytes %d beyond the body", lv)
+	}
+	v, err := cp.Replay(rec, body[lv:])
+	if err != nil {
+		return nil, err
+	}
+	return append(append(make([]byte, 0, int64(len(v))+lv), body[:lv]...), v...), nil
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+// Segment kinds of the recipe: the file is the concatenation of its segments in order.
+const (
+	repPQSegFrame     uint8 = 1 // opaque framing bytes, inline (magic, small gaps, the footer)
+	repPQSegFrameComp uint8 = 2 // opaque framing bytes as a component (page index, bloom filter, a big footer)
+	repPQSegOpaque    uint8 = 3 // a page of an opaque chunk: raw header inline, payload a component
+	repPQSegData      uint8 = 4 // a logical data page: raw header inline, body from the column streams
+	repPQSegDict      uint8 = 5 // a logical dictionary page
+)
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+// Seg is one segment of the recipe.
+type repPQSeg struct {
+	Kind         uint8
+	Frame        []byte // SegFrame
+	Member       int    // SegFrameComp / SegOpaque payload; SegDict explicit dictionary body
+	Len          int64  // SegFrameComp length
+	Col          int    // SegData / SegDict
+	Hdr          []byte // raw PageHeader bytes (SegOpaque, SegData, SegDict)
+	Comp         uint8  // compression id
+	CompMember   int    // member of the explicit compression recipe (CompSnapCmds, CompZstd)
+	Lay          repPQlayout
+	Present      int  // non-null values of a SegData page
+	DictExplicit bool // SegDict: the dictionary body is a component
+
+	// derived by ParseRecipe (never serialized)
+	Page       *repPQPage
+	Off, Total int64
+	VPos, LPos uint64
+	DictSeg    int
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+// ColRec is the column table entry: the physical type and the roots of the column's value
+// and level streams.
+type repPQColRec struct {
+	Phys, TypeLen, MaxDef int
+	HasV, HasL            bool
+	Vm, Lm                []repPQnodeMember // member index of every root node
+	V, L                  repPQstreamRef    // resolved by ParseRecipe
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+type repPQnodeMember struct {
+	member int
+	items  uint64
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+// Recipe is the decoded representation head plus its member table.
+type repPQRecipe struct {
+	Size    int64
+	Cols    []repPQColRec
+	Segs    []repPQSeg
+	Digests []repPQID
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+// Sizes breaks the serialized recipe head down by purpose (bytes).
+type repPQSizes struct {
+	Frames   int64 // inline opaque framing (magic, footer, small gaps)
+	Headers  int64 // raw page headers, with their length prefixes
+	Layout   int64 // per-page flags, non-null counts and explicit layouts
+	CompRefs int64 // compression ids and member references
+	Columns  int64 // column table and stream roots
+	Other    int64 // version, counts, segment kinds, framing references
+	Digests  int64 // the member table (32 B per member)
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+// Total is the whole recipe including the member table.
+func (s repPQSizes) Total() int64 {
+	return s.Frames + s.Headers + s.Layout + s.CompRefs + s.Columns + s.Other + s.Digests
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+const repPQrecipeVersion = 1
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+func repPQappendExplicit(b []byte, hdrs []uint64, pad []uint32, bw int) []byte {
+	b = binary.AppendUvarint(b, uint64(len(hdrs)))
+	for _, h := range hdrs {
+		b = binary.AppendUvarint(b, h)
+	}
+	b = binary.AppendUvarint(b, uint64(len(pad)))
+	var w repPQbitWriter
+	for _, v := range pad {
+		w.put(v, bw)
+	}
+	w.flush()
+	return append(b, w.out...)
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+func repPQflagsOf(s *repPQSeg) byte {
+	f := s.Comp << 2
+	if s.Lay.LvlExpl {
+		f |= 1
+	}
+	if s.Lay.ValExpl {
+		f |= 2
+	}
+	if s.DictExplicit {
+		f |= 64
+	}
+	if s.Lay.ValWidth {
+		f |= 128
+	}
+	return f
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+func repPQcompNeedsMember(id uint8) bool { return id == repPQCompSnapCmds || id == repPQCompZstd }
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+// Marshal serializes the recipe: the head, then the member table.
+func (r *repPQRecipe) Marshal() ([]byte, repPQSizes) {
+	var sz repPQSizes
+	b := []byte{repPQrecipeVersion}
+	b = binary.AppendUvarint(b, uint64(r.Size))
+	b = binary.AppendUvarint(b, uint64(len(r.Digests)))
+	b = binary.AppendUvarint(b, uint64(len(r.Cols)))
+	mark := len(b)
+	for i := range r.Cols {
+		c := &r.Cols[i]
+		b = append(b, byte(c.Phys))
+		b = binary.AppendUvarint(b, uint64(c.TypeLen))
+		fl := byte(c.MaxDef)
+		if c.HasV {
+			fl |= 0x40
+		}
+		if c.HasL {
+			fl |= 0x80
+		}
+		b = append(b, fl)
+		for _, st := range [2]struct {
+			has bool
+			n   []repPQnodeMember
+		}{{c.HasV, c.Vm}, {c.HasL, c.Lm}} {
+			if !st.has {
+				continue
+			}
+			b = binary.AppendUvarint(b, uint64(len(st.n)))
+			for _, n := range st.n {
+				b = binary.AppendUvarint(b, uint64(n.member))
+				b = binary.AppendUvarint(b, n.items)
+			}
+		}
+	}
+	sz.Columns = int64(len(b) - mark)
+	b = binary.AppendUvarint(b, uint64(len(r.Segs)))
+	for i := range r.Segs {
+		s := &r.Segs[i]
+		start := len(b)
+		b = append(b, s.Kind)
+		switch s.Kind {
+		case repPQSegFrame:
+			b = binary.AppendUvarint(b, uint64(len(s.Frame)))
+			b = append(b, s.Frame...)
+			sz.Frames += int64(len(b) - start - 1)
+		case repPQSegFrameComp:
+			b = binary.AppendUvarint(binary.AppendUvarint(b, uint64(s.Member)), uint64(s.Len))
+		case repPQSegOpaque:
+			b = binary.AppendUvarint(b, uint64(len(s.Hdr)))
+			b = append(b, s.Hdr...)
+			sz.Headers += int64(len(b) - start - 1)
+			b = binary.AppendUvarint(b, uint64(s.Member))
+		case repPQSegData, repPQSegDict:
+			b = binary.AppendUvarint(b, uint64(s.Col))
+			m := len(b)
+			b = binary.AppendUvarint(b, uint64(len(s.Hdr)))
+			b = append(b, s.Hdr...)
+			sz.Headers += int64(len(b) - m)
+			m = len(b)
+			b = append(b, repPQflagsOf(s))
+			if repPQcompNeedsMember(s.Comp) {
+				b = binary.AppendUvarint(b, uint64(s.CompMember))
+			}
+			sz.CompRefs += int64(len(b) - m)
+			m = len(b)
+			if s.Kind == repPQSegDict {
+				if s.DictExplicit {
+					b = binary.AppendUvarint(b, uint64(s.Member))
+				}
+			} else {
+				col := &r.Cols[s.Col]
+				if col.MaxDef > 0 {
+					b = binary.AppendUvarint(b, uint64(s.Present))
+					if s.Lay.LvlExpl {
+						b = repPQappendExplicit(b, s.Lay.LvlHdrs, s.Lay.LvlPad, bits.Len(uint(col.MaxDef)))
+					}
+				}
+				if len(s.Lay.Delta) > 0 {
+					b = repPQappendUv(b, uint64(len(s.Lay.Delta)))
+					b = append(b, s.Lay.Delta...)
+				}
+				if s.Lay.ValWidth {
+					b = append(b, byte(s.Lay.ValBW))
+				}
+				if s.Lay.ValExpl {
+					b = append(b, byte(s.Lay.ValBW))
+					b = repPQappendExplicit(b, s.Lay.ValHdrs, s.Lay.ValPad, s.Lay.ValBW)
+				}
+			}
+			sz.Layout += int64(len(b) - m)
+		}
+	}
+	sz.Other = int64(len(b)) - sz.Frames - sz.Headers - sz.Layout - sz.CompRefs - sz.Columns
+	sz.Digests = 32 * int64(len(r.Digests))
+	for _, d := range r.Digests {
+		b = append(b, d[:]...)
+	}
+	return b, sz
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+type repPQrrd struct {
+	b   []byte
+	pos int
+	err error
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+func (r *repPQrrd) fail(f string, a ...any) {
+	if r.err == nil {
+		r.err = repPQrecipeErr(f, a...)
+	}
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+func (r *repPQrrd) uv(max uint64) uint64 {
+	if r.err != nil {
+		return 0
+	}
+	v, k := repPQreadUv(r.b[r.pos:])
+	if k <= 0 {
+		r.fail("varint at %d", r.pos)
+		return 0
+	}
+	r.pos += k
+	if v > max {
+		r.fail("value %d above %d at %d", v, max, r.pos)
+		return 0
+	}
+	return v
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+func (r *repPQrrd) byte() byte {
+	if r.err != nil || r.pos >= len(r.b) {
+		r.fail("recipe ends early")
+		return 0
+	}
+	c := r.b[r.pos]
+	r.pos++
+	return c
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+func (r *repPQrrd) take(n uint64) []byte {
+	if r.err != nil {
+		return nil
+	}
+	if n > uint64(len(r.b)-r.pos) {
+		r.fail("%d bytes at %d beyond the recipe", n, r.pos)
+		return nil
+	}
+	p := r.b[r.pos : r.pos+int(n)]
+	r.pos += int(n)
+	return p
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+func (r *repPQrrd) explicit(bw int, maxHdrs uint64) (hdrs []uint64, pad []uint32) {
+	n := r.uv(maxHdrs)
+	if n > uint64(len(r.b)-r.pos) {
+		r.fail("%d run headers in %d bytes", n, len(r.b)-r.pos)
+		return
+	}
+	hdrs = make([]uint64, 0, n)
+	for i := uint64(0); i < n; i++ {
+		hdrs = append(hdrs, r.uv(1<<32-1))
+	}
+	np := r.uv(1 << 24)
+	if bw == 0 && np != 0 || np*uint64(bw) > uint64(len(r.b)-r.pos)*8 {
+		r.fail("%d pad values of width %d", np, bw)
+		return
+	}
+	p := r.take((np*uint64(bw) + 7) / 8)
+	for i := uint64(0); i < np && r.err == nil; i++ {
+		pad = append(pad, repPQunpack(p, int(i), bw))
+	}
+	return
+}
+
+// Port source: zeros3-z3/parquetz3/recipe.go
+// ParseRecipe decodes and validates a recipe (head followed by the member table): every
+// count is bounded, every member index and page header is checked, and the segment
+// lengths must add up to the declared size.
+func repPQParseRecipe(b []byte, lim repPQLimits) (*repPQRecipe, error) {
+	lim = lim.norm()
+	r := &repPQrrd{b: b}
+	if v := r.byte(); r.err == nil && v != repPQrecipeVersion {
+		return nil, repPQrecipeErr("version %d", v)
+	}
+	out := &repPQRecipe{Size: int64(r.uv(1 << 62))}
+	ndig := r.uv(1 << 24)
+	ncols := r.uv(uint64(lim.MaxColumns))
+	if r.err != nil {
+		return nil, r.err
+	}
+	if ndig*32 > uint64(len(b)) {
+		return nil, repPQrecipeErr("%d members do not fit", ndig)
+	}
+	node := func(has bool, total *uint64) []repPQnodeMember {
+		if !has {
+			return nil
+		}
+		n := r.uv(1 << 22)
+		if n > uint64(len(b)-r.pos) {
+			r.fail("%d stream nodes in %d bytes", n, len(b)-r.pos)
+			return nil
+		}
+		out := make([]repPQnodeMember, 0, n)
+		for i := uint64(0); i < n && r.err == nil; i++ {
+			m := r.uv(ndig)
+			if m >= ndig {
+				r.fail("stream node member %d of %d", m, ndig)
+			}
+			it := r.uv(1 << 60)
+			if it > math.MaxUint64-*total {
+				r.fail("stream item total overflow")
+				return nil
+			}
+			*total += it
+			out = append(out, repPQnodeMember{int(m), it})
+		}
+		return out
+	}
+	var vtot, ltot []uint64
+	for i := uint64(0); i < ncols && r.err == nil; i++ {
+		var c repPQColRec
+		c.Phys = int(r.byte())
+		c.TypeLen = int(r.uv(1 << 20))
+		fl := r.byte()
+		c.MaxDef, c.HasV, c.HasL = int(fl&0x3f), fl&0x40 != 0, fl&0x80 != 0
+		if r.err == nil && (c.Phys > repPQTFixedLen || c.MaxDef > 8 || c.HasL && c.MaxDef == 0 || c.Phys == repPQTFixedLen && c.TypeLen == 0) {
+			r.fail("column %d: type %d, max definition level %d", i, c.Phys, c.MaxDef)
+		}
+		var vt, lt uint64
+		c.Vm = node(c.HasV, &vt)
+		c.Lm = node(c.HasL, &lt)
+		vtot, ltot = append(vtot, vt), append(ltot, lt)
+		out.Cols = append(out.Cols, c)
+	}
+	nsegs := r.uv(1 << 24)
+	if nsegs > uint64(len(b)) {
+		r.fail("%d segments in %d bytes", nsegs, len(b))
+	}
+	out.Segs = make([]repPQSeg, 0, min(nsegs, 1<<16))
+	vpos := make([]uint64, len(out.Cols))
+	lpos := make([]uint64, len(out.Cols))
+	lastDict := make([]int, len(out.Cols))
+	for i := range lastDict {
+		lastDict[i] = -1
+	}
+	var off int64
+	pages := 0
+	for i := uint64(0); i < nsegs && r.err == nil; i++ {
+		s := repPQSeg{Kind: r.byte(), DictSeg: -1}
+		switch s.Kind {
+		case repPQSegFrame:
+			s.Frame = r.take(r.uv(uint64(lim.MaxFooter)))
+			s.Total = int64(len(s.Frame))
+		case repPQSegFrameComp:
+			s.Member = int(r.uv(ndig))
+			s.Len = int64(r.uv(1 << 40))
+			s.Total = s.Len
+		case repPQSegOpaque, repPQSegData, repPQSegDict:
+			if s.Kind != repPQSegOpaque {
+				c := r.uv(uint64(len(out.Cols)))
+				if r.err == nil && int(c) >= len(out.Cols) {
+					r.fail("segment %d names column %d", i, c)
+				}
+				s.Col = int(c)
+			}
+			s.Hdr = r.take(r.uv(uint64(lim.MaxHeader)))
+			if r.err != nil {
+				break
+			}
+			pg, err := repPQParsePageHeader(s.Hdr, lim)
+			if err != nil || pg.HdrLen != len(s.Hdr) {
+				r.fail("segment %d: page header (%v)", i, err)
+				break
+			}
+			s.Page = pg
+			s.Total = int64(pg.HdrLen) + int64(pg.Comp)
+			if pages++; pages > lim.MaxPages {
+				r.fail("more than %d pages", lim.MaxPages)
+			}
+			if s.Kind == repPQSegOpaque {
+				s.Member = int(r.uv(ndig))
+				break
+			}
+			fl := r.byte()
+			s.Comp = fl >> 2 & 15
+			s.DictExplicit = fl&64 != 0
+			s.Lay.LvlExpl, s.Lay.ValExpl, s.Lay.ValWidth = fl&1 != 0, fl&2 != 0, fl&128 != 0
+			if r.err == nil && (s.Comp > repPQcompMax || s.Lay.ValExpl && s.Lay.ValWidth) {
+				r.fail("segment %d: flags %02x", i, fl)
+			}
+			if repPQcompNeedsMember(s.Comp) {
+				s.CompMember = int(r.uv(ndig))
+			}
+			col := &out.Cols[s.Col]
+			if s.Kind == repPQSegDict {
+				if pg.Type != repPQPageDict {
+					r.fail("segment %d: a dictionary segment with page type %d", i, pg.Type)
+				}
+				if s.DictExplicit {
+					s.Member = int(r.uv(ndig))
+				}
+				if !col.HasV {
+					r.fail("segment %d: dictionary of a column without values", i)
+				}
+				s.VPos = vpos[s.Col]
+				lastDict[s.Col] = int(i)
+				break
+			}
+			if pg.Type != repPQPageData && pg.Type != repPQPageDataV2 || !col.HasV {
+				r.fail("segment %d: a data segment with page type %d", i, pg.Type)
+				break
+			}
+			n := uint64(pg.NumValues)
+			s.Present = int(n)
+			if col.MaxDef > 0 {
+				if !col.HasL {
+					r.fail("segment %d: levels of a column without a level stream", i)
+					break
+				}
+				s.Present = int(r.uv(n))
+				if s.Lay.LvlExpl {
+					s.Lay.LvlHdrs, s.Lay.LvlPad = r.explicit(bits.Len(uint(col.MaxDef)), 1<<22)
+				}
+			} else if s.Lay.LvlExpl {
+				r.fail("segment %d: explicit levels without levels", i)
+			}
+			if s.Page.Enc == repPQEncDeltaLenBA {
+				s.Lay.Delta = r.take(r.uv(uint64(lim.MaxPage)))
+			}
+			if s.Lay.ValWidth {
+				s.Lay.ValBW = int(r.byte())
+				if s.Lay.ValBW > 32 {
+					r.fail("segment %d: index width %d", i, s.Lay.ValBW)
+				}
+			}
+			if s.Lay.ValExpl {
+				s.Lay.ValBW = int(r.byte())
+				if s.Lay.ValBW > 32 {
+					r.fail("segment %d: index width %d", i, s.Lay.ValBW)
+				}
+				s.Lay.ValHdrs, s.Lay.ValPad = r.explicit(s.Lay.ValBW, 1<<22)
+			}
+			s.VPos, s.LPos, s.DictSeg = vpos[s.Col], lpos[s.Col], lastDict[s.Col]
+			vpos[s.Col] += uint64(s.Present)
+			if col.MaxDef > 0 {
+				lpos[s.Col] += n
+			}
+		default:
+			r.fail("segment %d: kind %d", i, s.Kind)
+		}
+		s.Off = off
+		off += s.Total
+		if r.err != nil {
+			break
+		}
+		if off > out.Size {
+			r.fail("segments run past the declared size %d", out.Size)
+		}
+		out.Segs = append(out.Segs, s)
+	}
+	if r.err != nil {
+		return nil, r.err
+	}
+	if off != out.Size {
+		return nil, repPQrecipeErr("segments add up to %d bytes, the recipe declares %d", off, out.Size)
+	}
+	for i := range out.Cols {
+		if out.Cols[i].HasV && vpos[i] != vtot[i] {
+			return nil, repPQrecipeErr("column %d: pages consume %d values, the stream holds %d", i, vpos[i], vtot[i])
+		}
+		if out.Cols[i].HasL && lpos[i] != ltot[i] {
+			return nil, repPQrecipeErr("column %d: pages consume %d levels, the stream holds %d", i, lpos[i], ltot[i])
+		}
+		out.Cols[i].V.total, out.Cols[i].L.total = vtot[i], ltot[i]
+	}
+	rest := b[r.pos:]
+	if uint64(len(rest)) != 32*ndig {
+		return nil, repPQrecipeErr("%d bytes after the head, %d members declared", len(rest), ndig)
+	}
+	out.Digests = make([]repPQID, ndig)
+	for i := range out.Digests {
+		copy(out.Digests[i][:], rest[32*i:])
+	}
+	check := func(m int, what string) error {
+		if m < 0 || m >= len(out.Digests) {
+			return repPQrecipeErr("%s member %d", what, m)
+		}
+		return nil
+	}
+	for i := range out.Segs {
+		s := &out.Segs[i]
+		switch s.Kind {
+		case repPQSegFrameComp, repPQSegOpaque:
+			if err := check(s.Member, "payload"); err != nil {
+				return nil, err
+			}
+		case repPQSegDict:
+			if s.DictExplicit {
+				if err := check(s.Member, "dictionary"); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if (s.Kind == repPQSegData || s.Kind == repPQSegDict) && repPQcompNeedsMember(s.Comp) {
+			if err := check(s.CompMember, "compression"); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for i := range out.Cols {
+		c := &out.Cols[i]
+		for _, st := range []struct {
+			m  []repPQnodeMember
+			to *repPQstreamRef
+		}{{c.Vm, &c.V}, {c.Lm, &c.L}} {
+			for _, n := range st.m {
+				st.to.nodes = append(st.to.nodes, repPQnodeRef{out.Digests[n.member], n.items})
+			}
+		}
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+func repPQappendUv(b []byte, v uint64) []byte { return binary.AppendUvarint(b, v) }
+
+// Port source: zeros3-z3/parquetz3/rle.go
+// readUv decodes a minimal uvarint; k <= 0 reports a short, overlong or non-minimal one.
+func repPQreadUv(b []byte) (uint64, int) {
+	v, k := binary.Uvarint(b)
+	if k > 0 && k != repPQuvLen(v) {
+		return 0, -1
+	}
+	return v, k
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+func repPQuvLen(v uint64) int { return (bits.Len64(v|1) + 6) / 7 }
+
+// Port source: zeros3-z3/parquetz3/rle.go
+// hybridDecode decodes up to n values of bit width bw from b. It returns the values, the
+// run headers exactly as stored (so an unusual layout can be replayed) and the bytes used.
+// The final bit-packed run may carry padding values past n (a producer may pad to a full
+// block with stale data, not only to a group of eight); they are returned in pad.
+func repPQhybridDecode(b []byte, bw, n int) (vals []uint32, hdrs []uint64, pad []uint32, used int, err error) {
+	if bw < 0 || bw > 32 {
+		return nil, nil, nil, 0, repPQcorrupt("bit width %d", bw)
+	}
+	vals = make([]uint32, 0, min(n, 1<<16))
+	vb := (bw + 7) / 8
+	for len(vals) < n {
+		h, k := repPQreadUv(b[used:])
+		if k <= 0 {
+			return nil, nil, nil, 0, repPQcorrupt("run header")
+		}
+		if h > 1<<32-1 {
+			return nil, nil, nil, 0, repPQcorrupt("run header %d", h)
+		}
+		used += k
+		hdrs = append(hdrs, h)
+		if h&1 == 1 {
+			groups := int(h >> 1)
+			if groups == 0 {
+				return nil, nil, nil, 0, repPQcorrupt("empty bit-packed run")
+			}
+			need := groups * bw
+			if need > len(b)-used {
+				return nil, nil, nil, 0, repPQcorrupt("bit-packed run of %d groups in %d bytes", groups, len(b)-used)
+			}
+			p := b[used : used+need]
+			used += need
+			total := groups * 8
+			if bw == 0 { // zero-width values carry no bytes: nothing to loop over beyond n
+				for len(vals) < n && total > 0 {
+					vals = append(vals, 0)
+					total--
+				}
+				continue
+			}
+			for i := 0; i < total; i++ {
+				v := repPQunpack(p, i, bw)
+				if len(vals) < n {
+					vals = append(vals, v)
+				} else {
+					pad = append(pad, v)
+				}
+			}
+			continue
+		}
+		cnt := int(h >> 1)
+		if cnt == 0 {
+			return nil, nil, nil, 0, repPQcorrupt("empty RLE run")
+		}
+		if vb > len(b)-used {
+			return nil, nil, nil, 0, repPQcorrupt("RLE run value")
+		}
+		var v uint32
+		for i := 0; i < vb; i++ {
+			v |= uint32(b[used+i]) << (8 * uint(i))
+		}
+		if bw < 32 && v>>uint(bw) != 0 {
+			return nil, nil, nil, 0, repPQcorrupt("RLE value %d exceeds %d bits", v, bw)
+		}
+		used += vb
+		take := min(cnt, n-len(vals))
+		for i := 0; i < take; i++ {
+			vals = append(vals, v)
+		}
+		if cnt > take {
+			return nil, nil, nil, 0, repPQcorrupt("RLE run overshoots the value count")
+		}
+	}
+	return vals, hdrs, pad, used, nil
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+// unpack reads value i of width bw (LSB-first) from p.
+func repPQunpack(p []byte, i, bw int) uint32 {
+	var v uint64
+	bit := i * bw
+	for j := 0; j < bw; {
+		by := p[(bit+j)>>3]
+		off := (bit + j) & 7
+		take := min(8-off, bw-j)
+		v |= uint64((by>>uint(off))&(1<<uint(take)-1)) << uint(j)
+		j += take
+	}
+	return uint32(v)
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+// bitWriter appends values LSB-first.
+type repPQbitWriter struct {
+	out  []byte
+	acc  uint64
+	nacc int
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+func (w *repPQbitWriter) put(v uint32, bw int) {
+	w.acc |= uint64(v) << uint(w.nacc)
+	w.nacc += bw
+	for w.nacc >= 8 {
+		w.out = append(w.out, byte(w.acc))
+		w.acc >>= 8
+		w.nacc -= 8
+	}
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+func (w *repPQbitWriter) flush() {
+	if w.nacc > 0 {
+		w.out = append(w.out, byte(w.acc))
+		w.acc, w.nacc = 0, 0
+	}
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+// rleEnc is the parquet-cpp/Arrow RleEncoder: values are buffered eight at a time, a run
+// of at least eight equal values is written RLE, everything else bit-packed in literal
+// runs of at most 63 groups behind a one-byte indicator. It is a PREDICTOR: a stream is
+// recorded as "standard" only when this encoder reproduced it exactly.
+type repPQrleEnc struct {
+	bw       int
+	w        repPQbitWriter
+	buf      [8]uint32
+	nbuf     int
+	cur      uint32
+	repeat   int
+	literal  int
+	indicate int // index in w.out of the reserved indicator byte, -1 if none
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+func repPQnewRLEEnc(bw int) *repPQrleEnc { return &repPQrleEnc{bw: bw, indicate: -1} }
+
+// Port source: zeros3-z3/parquetz3/rle.go
+func (e *repPQrleEnc) put(v uint32) {
+	if e.cur == v {
+		e.repeat++
+		if e.repeat > 8 {
+			return
+		}
+	} else {
+		if e.repeat >= 8 {
+			e.flushRepeated()
+		}
+		e.repeat = 1
+		e.cur = v
+	}
+	e.buf[e.nbuf] = v
+	e.nbuf++
+	if e.nbuf == 8 {
+		e.flushBuffered(false)
+	}
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+func (e *repPQrleEnc) flushBuffered(done bool) {
+	if e.repeat >= 8 {
+		e.nbuf = 0
+		if e.literal != 0 {
+			e.flushLiteral(true)
+		}
+		return
+	}
+	e.literal += e.nbuf
+	groups := e.literal / 8
+	if groups+1 >= 1<<6 {
+		e.flushLiteral(true)
+	} else {
+		e.flushLiteral(done)
+	}
+	e.repeat = 0
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+func (e *repPQrleEnc) flushLiteral(update bool) {
+	if e.indicate < 0 {
+		e.indicate = len(e.w.out)
+		e.w.out = append(e.w.out, 0)
+	}
+	for i := 0; i < e.nbuf; i++ {
+		e.w.put(e.buf[i], e.bw)
+	}
+	e.nbuf = 0
+	if update {
+		groups := (e.literal + 7) / 8
+		e.w.out[e.indicate] = byte(groups<<1 | 1)
+		e.indicate = -1
+		e.literal = 0
+	}
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+func (e *repPQrleEnc) flushRepeated() {
+	e.w.out = binary.AppendUvarint(e.w.out, uint64(e.repeat)<<1)
+	vb := (e.bw + 7) / 8
+	for i := 0; i < vb; i++ {
+		e.w.out = append(e.w.out, byte(e.cur>>(8*uint(i))))
+	}
+	e.nbuf = 0
+	e.repeat = 0
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+func (e *repPQrleEnc) finish() []byte {
+	if e.literal > 0 || e.repeat > 0 || e.nbuf > 0 {
+		allRepeat := e.literal == 0 && (e.repeat == e.nbuf || e.nbuf == 0)
+		if e.repeat > 0 && allRepeat {
+			e.flushRepeated()
+		} else {
+			for ; e.nbuf != 0 && e.nbuf < 8; e.nbuf++ {
+				e.buf[e.nbuf] = 0
+			}
+			e.literal += e.nbuf
+			e.flushLiteral(true)
+			e.repeat = 0
+		}
+	}
+	e.w.flush()
+	return e.w.out
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+// hybridEncodeStd encodes vals with the standard predictor.
+func repPQhybridEncodeStd(vals []uint32, bw int) []byte {
+	e := repPQnewRLEEnc(bw)
+	for _, v := range vals {
+		e.put(v)
+	}
+	return e.finish()
+}
+
+// Port source: zeros3-z3/parquetz3/rle.go
+// hybridEncodeRuns encodes vals under explicit run headers (as returned by hybridDecode):
+// a bit-packed header takes groups*8 values, then pad values, then zeros; an RLE header
+// repeats the next value. It returns ok=false when the headers do not fit vals and pad.
+func repPQhybridEncodeRuns(vals []uint32, bw int, hdrs []uint64, pad []uint32) ([]byte, bool) {
+	var w repPQbitWriter
+	vb := (bw + 7) / 8
+	pos, pp := 0, 0
+	for _, h := range hdrs {
+		w.out = binary.AppendUvarint(w.out, h)
+		if h&1 == 1 {
+			total := int(h>>1) * 8
+			if bw == 0 { // zero-width values occupy no bytes: only the count matters
+				pos += min(total, len(vals)-pos)
+				continue
+			}
+			for i := 0; i < total; i++ {
+				v := uint32(0)
+				switch {
+				case pos < len(vals):
+					v = vals[pos]
+					pos++
+				case pp < len(pad):
+					v = pad[pp]
+					pp++
+				}
+				w.put(v, bw)
+			}
+			w.flush()
+			continue
+		}
+		cnt := int(h >> 1)
+		if pos+cnt > len(vals) {
+			return nil, false
+		}
+		v := vals[pos]
+		for i := 1; i < cnt; i++ {
+			if vals[pos+i] != v {
+				return nil, false
+			}
+		}
+		pos += cnt
+		for i := 0; i < vb; i++ {
+			w.out = append(w.out, byte(v>>(8*uint(i))))
+		}
+	}
+	return w.out, pos == len(vals) && pp == len(pad)
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// ID is the SHA-256 identity of one component.
+type repPQID = [32]byte
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// Emit receives every component Encode produces, once per occurrence (the caller
+// deduplicates by id). class is "val", "lvl", "node", "dict", "crec", "frame" or "opq".
+// The bytes are only valid during the call.
+type repPQEmit func(class string, id repPQID, data []byte) error
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// Getter fetches one component by digest (whole component, as the generic layer does).
+type repPQGetter func(id repPQID) ([]byte, error)
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// CutMode selects how a column's record stream is cut into leaf groups.
+type repPQCutMode uint8
+
+// Port source: zeros3-z3/parquetz3/stream.go
+const (
+	// CutContent cuts at record boundaries where a rolling hash of the preceding bytes
+	// fires, never before Target/4 or after 4*Target bytes. It depends on content only,
+	// so an inserted or removed value moves no boundary far from the edit, and it does
+	// not know where pages or row groups end.
+	repPQCutContent repPQCutMode = iota
+	repPQCutFixed                // every FixedCount records (position dependent: the negative reference)
+	repPQCutPage                 // one group per page (the physical-page baseline over the logical stream)
+	repPQCutRecord               // one group per record (the object-count extreme; an oracle, not a design)
+)
+
+// Port source: zeros3-z3/parquetz3/stream.go
+var repPQgear = func() (t [256]uint64) {
+	x := uint64(0x9e3779b97f4a7c15)
+	for i := range t {
+		x += 0x9e3779b97f4a7c15
+		z := x
+		z = (z ^ z>>30) * 0xbf58476d1ce4e5b9
+		z = (z ^ z>>27) * 0x94d049bb133111eb
+		t[i] = z ^ z>>31
+	}
+	return
+}()
+
+// Port source: zeros3-z3/parquetz3/stream.go
+type repPQcutter struct {
+	mode        repPQCutMode
+	min, max, p uint64
+	fixed       int
+	h           uint64
+	cur         uint64
+	n           int
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func repPQnewCutter(o *repPQOptions) repPQcutter {
+	t := uint64(o.Target)
+	return repPQcutter{mode: o.Cut, min: t / 4, max: 4 * t, p: max(t*3/4, 1), fixed: max(o.FixedCount, 1)}
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// feed is called once per record, after it was appended; it reports whether the group
+// closes after this record.
+func (c *repPQcutter) feed(rec []byte) bool {
+	switch c.mode {
+	case repPQCutRecord:
+		return true
+	case repPQCutFixed:
+		c.n++
+		if c.n >= c.fixed {
+			c.n = 0
+			return true
+		}
+		return false
+	case repPQCutPage:
+		return false
+	}
+	pending := false
+	pos := c.cur
+	for _, b := range rec {
+		c.h = c.h<<1 + repPQgear[b]
+		pos++
+		if pos >= c.min && uint64(uint32(c.h>>32))%c.p == 0 {
+			pending = true
+		}
+	}
+	c.cur = pos
+	if pending || c.cur >= c.max {
+		c.cur = 0
+		return true
+	}
+	return false
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// Node fan-out: a node lists the digests of consecutive leaf groups and is itself cut by
+// the digest of the last group it holds, so a changed group changes one node and shifts
+// no other.
+const (
+	repPQnodeMin = 8
+	repPQnodeAvg = 64
+	repPQnodeMax = 256
+)
+
+// Port source: zeros3-z3/parquetz3/stream.go
+type repPQentry struct {
+	id    repPQID
+	items uint64
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+type repPQnodeRef struct {
+	id    repPQID
+	items uint64
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// streamWriter builds one record stream: leaf groups, nodes over them, and the list of
+// nodes the recipe references.
+type repPQstreamWriter struct {
+	class string
+	cut   repPQcutter
+	buf   []byte
+	items uint64
+	ents  []repPQentry
+	nodes []repPQnodeRef
+	emit  repPQEmit
+	// accounting
+	Groups, Records int64
+	GroupBytes      int64
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func repPQnewStream(class string, o *repPQOptions, emit repPQEmit) *repPQstreamWriter {
+	return &repPQstreamWriter{class: class, cut: repPQnewCutter(o), emit: emit}
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func (s *repPQstreamWriter) add(rec []byte, items int) error {
+	s.buf = append(s.buf, rec...)
+	s.items += uint64(items)
+	s.Records++
+	if s.cut.feed(rec) {
+		return s.closeGroup()
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// endPage closes the group at a page boundary in CutPage mode.
+func (s *repPQstreamWriter) endPage() error {
+	if s.cut.mode == repPQCutPage {
+		return s.closeGroup()
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func (s *repPQstreamWriter) closeGroup() error {
+	if len(s.buf) == 0 {
+		return nil
+	}
+	id := repPQID(sha256.Sum256(s.buf))
+	if err := s.emit(s.class, id, s.buf); err != nil {
+		return err
+	}
+	s.Groups++
+	s.GroupBytes += int64(len(s.buf))
+	s.ents = append(s.ents, repPQentry{id, s.items})
+	s.buf, s.items = s.buf[:0], 0
+	if len(s.ents) >= repPQnodeMax || len(s.ents) >= repPQnodeMin && id[0]&(repPQnodeAvg-1) == 0 {
+		return s.closeNode()
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func (s *repPQstreamWriter) closeNode() error {
+	if len(s.ents) == 0 {
+		return nil
+	}
+	b := binary.AppendUvarint(nil, uint64(len(s.ents)))
+	var total uint64
+	for _, e := range s.ents {
+		b = append(b, e.id[:]...)
+		b = binary.AppendUvarint(b, e.items)
+		total += e.items
+	}
+	id := repPQID(sha256.Sum256(b))
+	if err := s.emit("node", id, b); err != nil {
+		return err
+	}
+	s.nodes = append(s.nodes, repPQnodeRef{id, total})
+	s.ents = s.ents[:0]
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func (s *repPQstreamWriter) finish() error {
+	if err := s.closeGroup(); err != nil {
+		return err
+	}
+	return s.closeNode()
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// parseNode decodes a node component into its entries.
+func repPQparseNode(b []byte, maxEnt int) ([]repPQentry, error) {
+	n, k := repPQreadUv(b)
+	if k <= 0 || n > uint64(maxEnt) || n > uint64(len(b)) {
+		return nil, repPQrecipeErr("node entry count")
+	}
+	pos := k
+	out := make([]repPQentry, 0, n)
+	for i := uint64(0); i < n; i++ {
+		if len(b)-pos < 33 {
+			return nil, repPQrecipeErr("node entry %d is cut short", i)
+		}
+		var e repPQentry
+		copy(e.id[:], b[pos:])
+		pos += 32
+		it, k := repPQreadUv(b[pos:])
+		if k <= 0 {
+			return nil, repPQrecipeErr("node entry %d item count", i)
+		}
+		pos += k
+		e.items = it
+		out = append(out, e)
+	}
+	if pos != len(b) {
+		return nil, repPQrecipeErr("%d bytes after the node entries", len(b)-pos)
+	}
+	return out, nil
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// RangeStats counts what a read fetched.
+type repPQRangeStats struct {
+	Components int   // components fetched (nodes, groups, frames, payloads)
+	Bytes      int64 // their sizes
+	Nodes      int
+	Pages      int // pages reconstructed
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+type repPQstreamRef struct {
+	nodes []repPQnodeRef // digests resolved through the member table by the recipe parser
+	total uint64
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// parseRec returns the byte length and item count of the record at the start of b.
+type repPQparseRec func(b []byte) (n int, items uint64, ok bool)
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func repPQparseFixed(w int) repPQparseRec {
+	return func(b []byte) (int, uint64, bool) { return w, 1, len(b) >= w }
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func repPQparseVarlen(b []byte) (int, uint64, bool) {
+	if len(b) < 4 {
+		return 0, 0, false
+	}
+	n := 4 + uint64(binary.LittleEndian.Uint32(b))
+	return int(n), 1, n <= uint64(len(b))
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func repPQparseRun(b []byte) (int, uint64, bool) {
+	v, k := repPQreadUv(b)
+	return k, v >> 4, k > 0
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func (c repPQcolSpec) valueParser() repPQparseRec {
+	if c.Phys == repPQTByteArr {
+		return repPQparseVarlen
+	}
+	return repPQparseFixed(c.width())
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// cursor reads a stream record by record, fetching nodes and groups on demand.
+type repPQcursor struct {
+	get   repPQGetter
+	ref   *repPQstreamRef
+	parse repPQparseRec
+	stats *repPQRangeStats
+	ni    int // current node
+	ents  []repPQentry
+	ei    int // current group of the node
+	grp   []byte
+	gp    int
+	have  bool // a node is loaded
+	eof   bool
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func repPQnewCursor(get repPQGetter, ref *repPQstreamRef, parse repPQparseRec, st *repPQRangeStats) *repPQcursor {
+	return &repPQcursor{get: get, ref: ref, parse: parse, stats: st}
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func (c *repPQcursor) fetch(id repPQID) ([]byte, error) {
+	b, err := c.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if c.stats != nil {
+		c.stats.Components++
+		c.stats.Bytes += int64(len(b))
+	}
+	return b, nil
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func (c *repPQcursor) loadNode(n int) error {
+	b, err := c.fetch(c.ref.nodes[n].id)
+	if err != nil {
+		return err
+	}
+	if c.stats != nil {
+		c.stats.Nodes++
+	}
+	ents, err := repPQparseNode(b, repPQnodeMax*4)
+	if err != nil {
+		return err
+	}
+	var sum uint64
+	for _, e := range ents {
+		sum += e.items
+	}
+	if sum != c.ref.nodes[n].items {
+		return repPQrecipeErr("node %d holds %d items, the recipe says %d", n, sum, c.ref.nodes[n].items)
+	}
+	c.ni, c.ents, c.have = n, ents, true
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+func (c *repPQcursor) loadGroup(i int) error {
+	b, err := c.fetch(c.ents[i].id)
+	if err != nil {
+		return err
+	}
+	c.ei, c.grp, c.gp = i, b, 0
+	return nil
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// next returns the next record (valid until the next call) and its item count; io.EOF at
+// the end of the stream.
+func (c *repPQcursor) next() ([]byte, uint64, error) {
+	for {
+		if c.gp < len(c.grp) {
+			n, it, ok := c.parse(c.grp[c.gp:])
+			if !ok || n <= 0 {
+				return nil, 0, repPQrecipeErr("record of a group is cut short")
+			}
+			rec := c.grp[c.gp : c.gp+n]
+			c.gp += n
+			return rec, it, nil
+		}
+		if c.eof {
+			return nil, 0, io.EOF
+		}
+		var err error
+		switch {
+		case !c.have:
+			if len(c.ref.nodes) == 0 {
+				c.eof = true
+				continue
+			}
+			if err = c.loadNode(0); err == nil && len(c.ents) > 0 {
+				err = c.loadGroup(0)
+			}
+		case c.ei+1 < len(c.ents):
+			err = c.loadGroup(c.ei + 1)
+		case c.ni+1 < len(c.ref.nodes):
+			if err = c.loadNode(c.ni + 1); err == nil && len(c.ents) > 0 {
+				err = c.loadGroup(0)
+			}
+		default:
+			c.eof, c.grp, c.gp = true, nil, 0
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+}
+
+// Port source: zeros3-z3/parquetz3/stream.go
+// seek positions the cursor so that next returns the record holding item number item
+// (0-based); skip is how many items of that record lie before it (a level run may be
+// entered in the middle). Seeking to the end of the stream leaves next at io.EOF.
+func (c *repPQcursor) seek(item uint64) (skip uint64, err error) {
+	c.have, c.eof, c.grp, c.gp = false, false, nil, 0
+	var base uint64
+	for n := range c.ref.nodes {
+		if base+c.ref.nodes[n].items <= item {
+			base += c.ref.nodes[n].items
+			continue
+		}
+		if err := c.loadNode(n); err != nil {
+			return 0, err
+		}
+		for i := range c.ents {
+			if base+c.ents[i].items <= item {
+				base += c.ents[i].items
+				continue
+			}
+			if err := c.loadGroup(i); err != nil {
+				return 0, err
+			}
+			for c.gp < len(c.grp) {
+				n, it, ok := c.parse(c.grp[c.gp:])
+				if !ok || n <= 0 {
+					return 0, repPQrecipeErr("record of a group is cut short")
+				}
+				if base+it > item {
+					return item - base, nil
+				}
+				base += it
+				c.gp += n
+			}
+		}
+		return 0, repPQrecipeErr("node holds fewer items than the recipe says")
+	}
+	if base != item {
+		return 0, repPQrecipeErr("seek to item %d beyond the stream's %d", item, base)
+	}
+	c.have, c.eof = true, true
+	return 0, nil
+}
+
+// Port source: zeros3-z3/snappyz3/fragment.go
+// FragmentSize is the fragment size of both encoders.
+const repSNFragmentSize = 1 << 16
+
+// Port source: zeros3-z3/snappyz3/fragment.go
+// EncodeFragments compresses src fragment by fragment with enc (one of EncodeRef,
+// EncodeCPP, EncodeCPP15; each returns a complete block with its own length prefix,
+// which is replaced by one prefix for the whole input).
+func repSNEncodeFragments(src []byte, enc func([]byte) []byte) []byte {
+	out := binary.AppendUvarint(make([]byte, 0, len(src)/2+16), uint64(len(src)))
+	for len(src) > 0 {
+		n := min(len(src), repSNFragmentSize)
+		b := enc(src[:n])
+		_, k := binary.Uvarint(b)
+		out = append(out, b[k:]...)
+		src = src[n:]
+	}
+	return out
+}
+
+// Port source: zeros3-z3/snappyz3/fragment.go
+// EncodeCPPCRC is the C++ snappy 1.2.x encoder as built with SSE4.2/CRC32 hashing
+// (SNAPPY_HAVE_X86_CRC32: the table index is CRC32C(mask, bytes) instead of the
+// multiplicative hash); top is kMaxHashTableBits (15 in 1.2.x).
+func repSNEncodeCPPCRC(top uint) func([]byte) []byte {
+	return func(src []byte) []byte {
+		return repSNencodeCPPHash(src, top, func(u, mask uint32) uint32 {
+			var b [4]byte
+			b[0], b[1], b[2], b[3] = byte(u), byte(u>>8), byte(u>>16), byte(u>>24)
+			raw := ^crc32.Update(^(2 * mask), repSNcastagnoli, b[:])
+			return (raw >> 1) & mask
+		})
+	}
+}
+
+// Port source: zeros3-z3/snappyz3/fragment.go
+var repSNcastagnoli = crc32.MakeTable(crc32.Castagnoli)
+
+// Port source: zeros3-z3/snappyz3/predict.go
+const (
+	repSNtagLiteral = 0x00
+	repSNtagCopy1   = 0x01
+	repSNtagCopy2   = 0x02
+)
+
+// Port source: zeros3-z3/snappyz3/predict.go
+func repSNload32(b []byte, i int) uint32 {
+	return uint32(b[i]) | uint32(b[i+1])<<8 | uint32(b[i+2])<<16 | uint32(b[i+3])<<24
+}
+
+// Port source: zeros3-z3/snappyz3/predict.go
+func repSNload64(b []byte, i int) uint64 {
+	return uint64(repSNload32(b, i)) | uint64(repSNload32(b, i+4))<<32
+}
+
+// Port source: zeros3-z3/snappyz3/predict.go
+func repSNhash(u, shift uint32) uint32 { return (u * 0x1e35a7bd) >> shift }
+
+// Port source: zeros3-z3/snappyz3/predict.go
+func repSNemitLiteral(dst, lit []byte) int {
+	i, n := 0, uint(len(lit)-1)
+	switch {
+	case n < 60:
+		dst[0] = uint8(n)<<2 | repSNtagLiteral
+		i = 1
+	case n < 1<<8:
+		dst[0] = 60<<2 | repSNtagLiteral
+		dst[1] = uint8(n)
+		i = 2
+	default:
+		dst[0] = 61<<2 | repSNtagLiteral
+		dst[1] = uint8(n)
+		dst[2] = uint8(n >> 8)
+		i = 3
+	}
+	return i + copy(dst[i:], lit)
+}
+
+// Port source: zeros3-z3/snappyz3/predict.go
+func repSNemitCopy(dst []byte, offset, length int) int {
+	i := 0
+	for length >= 68 {
+		dst[i+0] = 63<<2 | repSNtagCopy2
+		dst[i+1] = uint8(offset)
+		dst[i+2] = uint8(offset >> 8)
+		i += 3
+		length -= 64
+	}
+	if length > 64 {
+		dst[i+0] = 59<<2 | repSNtagCopy2
+		dst[i+1] = uint8(offset)
+		dst[i+2] = uint8(offset >> 8)
+		i += 3
+		length -= 60
+	}
+	if length >= 12 || offset >= 2048 {
+		dst[i+0] = uint8(length-1)<<2 | repSNtagCopy2
+		dst[i+1] = uint8(offset)
+		dst[i+2] = uint8(offset >> 8)
+		return i + 3
+	}
+	dst[i+0] = uint8(offset>>8)<<5 | uint8(length-4)<<2 | repSNtagCopy1
+	dst[i+1] = uint8(offset)
+	return i + 2
+}
+
+// Port source: zeros3-z3/snappyz3/predict.go
+func repSNencodeBlock(dst, src []byte) (d int) {
+	const (
+		inputMargin            = 16 - 1
+		minNonLiteralBlockSize = 1 + 1 + inputMargin
+		maxTableSize           = 1 << 14
+		tableMask              = maxTableSize - 1
+	)
+	if len(src) < minNonLiteralBlockSize {
+		return repSNemitLiteral(dst, src)
+	}
+	shift := uint32(32 - 8)
+	for tableSize := 1 << 8; tableSize < maxTableSize && tableSize < len(src); tableSize *= 2 {
+		shift--
+	}
+	var table [maxTableSize]uint16
+	sLimit := len(src) - inputMargin
+	nextEmit := 0
+	s := 1
+	nextHash := repSNhash(repSNload32(src, s), shift)
+	for {
+		skip := 32
+		nextS := s
+		candidate := 0
+		for {
+			s = nextS
+			bytesBetweenHashLookups := skip >> 5
+			nextS = s + bytesBetweenHashLookups
+			skip += bytesBetweenHashLookups
+			if nextS > sLimit {
+				goto emitRemainder
+			}
+			candidate = int(table[nextHash&tableMask])
+			table[nextHash&tableMask] = uint16(s)
+			nextHash = repSNhash(repSNload32(src, nextS), shift)
+			if repSNload32(src, s) == repSNload32(src, candidate) {
+				break
+			}
+		}
+		d += repSNemitLiteral(dst[d:], src[nextEmit:s])
+		for {
+			base := s
+			s += 4
+			for i := candidate + 4; s < len(src) && src[i] == src[s]; i, s = i+1, s+1 {
+			}
+			d += repSNemitCopy(dst[d:], base-candidate, s-base)
+			nextEmit = s
+			if s >= sLimit {
+				goto emitRemainder
+			}
+			x := repSNload64(src, s-1)
+			prevHash := repSNhash(uint32(x>>0), shift)
+			table[prevHash&tableMask] = uint16(s - 1)
+			currHash := repSNhash(uint32(x>>8), shift)
+			candidate = int(table[currHash&tableMask])
+			table[currHash&tableMask] = uint16(s)
+			if uint32(x>>8) != repSNload32(src, candidate) {
+				nextHash = repSNhash(uint32(x>>16), shift)
+				s++
+				break
+			}
+		}
+	}
+emitRemainder:
+	if nextEmit < len(src) {
+		d += repSNemitLiteral(dst[d:], src[nextEmit:])
+	}
+	return d
+}
+
+// Port source: zeros3-z3/snappyz3/predict.go
+// EncodeRef compresses src with the reference algorithm as one block (the callers'
+// blocks are below the 64 KiB fragment size of the C++ encoder; larger inputs are not
+// predicted).
+func repSNEncodeRef(src []byte) []byte {
+	if len(src) == 0 {
+		return []byte{0}
+	}
+	dst := make([]byte, binary.MaxVarintLen32+len(src)+len(src)/6+32)
+	d := binary.PutUvarint(dst, uint64(len(src)))
+	d += repSNencodeBlock(dst[d:], src)
+	return dst[:d]
+}
+
+// Port source: zeros3-z3/snappyz3/predict.go
+// MaxPredict is the largest input EncodeRef is used for.
+const repSNMaxPredict = 1 << 16
+
+// Port source: zeros3-z3/snappyz3/predict.go
+func repSNhashMask(u uint32, mask uint32, top uint) uint32 {
+	return ((u * 0x1e35a7bd) >> (32 - top)) & mask
+}
+
+// Port source: zeros3-z3/snappyz3/predict.go
+// EncodeCPP compresses src as one block the way snappy 1.1.10's CompressFragment does
+// (the library LevelDB links on current distributions). It differs from EncodeRef in the
+// hash: the top 14 bits of the product masked to the table size rather than the top
+// log2(table size) bits. Like EncodeRef it is only a predictor.
+func repSNEncodeCPP(src []byte) []byte { return repSNencodeCPP(src, 14) }
+
+// Port source: zeros3-z3/snappyz3/predict.go
+// EncodeCPP15 is EncodeCPP with a 15-bit hash, which is what the snappy bundled with
+// RocksDB 9.8.4 (rocksdict 0.3.29) uses: the same algorithm, hashing the top 15 bits of
+// the product masked to the table size (found by comparing the 8 443 Snappy blocks of
+// one RocksDB table set against hash widths 12-17).
+func repSNEncodeCPP15(src []byte) []byte { return repSNencodeCPP(src, 15) }
+
+// Port source: zeros3-z3/snappyz3/predict.go
+func repSNencodeCPP(src []byte, top uint) []byte {
+	return repSNencodeCPPHash(src, top, func(u, mask uint32) uint32 { return repSNhashMask(u, mask, top) })
+}
+
+// Port source: zeros3-z3/snappyz3/predict.go
+// encodeCPPHash is encodeCPP with the hash-table index function supplied (u is the four
+// bytes, mask the table size minus one).
+func repSNencodeCPPHash(src []byte, top uint, hf func(u, mask uint32) uint32) []byte {
+	n := len(src)
+	dst := make([]byte, binary.MaxVarintLen32+n+n/6+64)
+	d := binary.PutUvarint(dst, uint64(n))
+	if n == 0 {
+		return dst[:d]
+	}
+	if n < 15 {
+		d += repSNemitLiteral(dst[d:], src)
+		return dst[:d]
+	}
+	tableSize := 256
+	for tableSize < 1<<top && tableSize < n {
+		tableSize *= 2
+	}
+	mask := uint32(tableSize - 1)
+	table := make([]uint16, tableSize)
+	buf := append(append(make([]byte, 0, n+16), src...), make([]byte, 16)...) // loads may run 15 bytes past ip_limit
+	ipLimit := n - 15
+	ip, nextEmit := 0, 0
+	preload := repSNload32(buf, 1)
+	for {
+		nextEmit = ip
+		ip++
+		data := repSNload64(buf, ip)
+		skip := uint32(32)
+		cand := 0
+		found := false
+		if ipLimit-ip >= 16 {
+			delta := ip
+		scan:
+			for j := 0; j < 4; j++ {
+				for k := 0; k < 4; k++ {
+					i := 4*j + k
+					dword := uint32(data)
+					if i == 0 {
+						dword = preload
+					}
+					h := hf(dword, mask)
+					cand = int(table[h])
+					table[h] = uint16(delta + i)
+					if repSNload32(buf, cand) == dword {
+						d += repSNemitLiteral(dst[d:], src[nextEmit:ip+i])
+						ip += i
+						found = true
+						break scan
+					}
+					data >>= 8
+				}
+				data = repSNload64(buf, ip+4*j+4)
+			}
+			if !found {
+				ip += 16
+				skip += 16
+			}
+		}
+		if !found {
+			for {
+				data = repSNload64(buf, ip)
+				h := hf(uint32(data), mask)
+				step := skip >> 5
+				skip += step
+				nextIP := ip + int(step)
+				if nextIP > ipLimit {
+					ip = nextEmit
+					goto remainder
+				}
+				cand = int(table[h])
+				table[h] = uint16(ip)
+				if uint32(data) == repSNload32(buf, cand) {
+					break
+				}
+				ip = nextIP
+			}
+			d += repSNemitLiteral(dst[d:], src[nextEmit:ip])
+		}
+		for {
+			base := ip
+			l := 4
+			for ip+l < n && src[cand+l] == src[ip+l] {
+				l++
+			}
+			ip += l
+			d += repSNemitCopy(dst[d:], base-cand, l)
+			if ip >= ipLimit {
+				goto remainder
+			}
+			data = repSNload64(buf, ip)
+			table[hf(repSNload32(buf, ip-1), mask)] = uint16(ip - 1)
+			h := hf(uint32(data), mask)
+			cand = int(table[h])
+			table[h] = uint16(ip)
+			if uint32(data) != repSNload32(buf, cand) {
+				break
+			}
+		}
+		preload = uint32(data >> 8)
+	}
+remainder:
+	if ip < n {
+		d += repSNemitLiteral(dst[d:], src[ip:])
+	}
+	return dst[:d]
+}
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+var (
+	repSNErrCorrupt  = errors.New("snappyz3: corrupt stream")
+	repSNErrLimit    = errors.New("snappyz3: limit exceeded")
+	repSNErrRecipe   = errors.New("snappyz3: malformed recipe")
+	repSNErrMismatch = errors.New("snappyz3: recipe does not describe the decoded bytes")
+	repSNErrNoncanon = errors.New("snappyz3: non-canonical framing")
+)
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+func repSNcorrupt(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repSNErrCorrupt}, a...)...)
+}
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+// Limits bound a parse. The zero value selects the defaults.
+type repSNLimits struct {
+	MaxDecoded  int64 // decoded bytes of one block (default 64 MiB)
+	MaxCommands int   // commands of one block (default 1<<24)
+}
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+func (l repSNLimits) norm() repSNLimits {
+	if l.MaxDecoded <= 0 {
+		l.MaxDecoded = 64 << 20
+	}
+	if l.MaxCommands <= 0 {
+		l.MaxCommands = 1 << 24
+	}
+	return l
+}
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+// Command kinds.
+const (
+	repSNLiteral uint8 = 0
+	repSNCopy1   uint8 = 1 // 2-byte tag form: length 4..11, offset < 2048
+	repSNCopy2   uint8 = 2 // 3-byte form: length 1..64, offset < 65536
+	repSNCopy4   uint8 = 3 // 5-byte form: length 1..64, offset < 2^32
+)
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+// Cmd is one command. For a literal Form is the number of extra length bytes (0-4)
+// the stream used; for a copy it is unused.
+type repSNCmd struct {
+	Kind uint8
+	Form uint8
+	Len  uint32
+	Off  uint32
+}
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+// minForm is the fewest extra length bytes a literal of n bytes can use.
+func repSNminForm(n uint32) uint8 {
+	switch {
+	case n-1 < 60:
+		return 0
+	case n-1 < 1<<8:
+		return 1
+	case n-1 < 1<<16:
+		return 2
+	case n-1 < 1<<24:
+		return 3
+	}
+	return 4
+}
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+// Parse strictly decodes one Snappy block. It returns the decoded bytes and the
+// commands that produce them. Nothing is allocated from the declared length beyond
+// lim.MaxDecoded and the remaining input (a literal-free copy bomb is bounded by
+// MaxDecoded; a declared length larger than what the input can possibly expand to
+// is rejected up front).
+func repSNParse(src []byte, lim repSNLimits) (decoded []byte, cmds []repSNCmd, err error) {
+	lim = lim.norm()
+	ulen, n := binary.Uvarint(src)
+	if n <= 0 || n > 5 || ulen > 1<<32-1 {
+		return nil, nil, repSNcorrupt("length prefix")
+	}
+	if n != repSNuvLen(ulen) {
+		return nil, nil, fmt.Errorf("%w: length prefix is not minimal", repSNErrNoncanon)
+	}
+	if int64(ulen) > lim.MaxDecoded {
+		return nil, nil, fmt.Errorf("%w: declared length %d", repSNErrLimit, ulen)
+	}
+	// every input byte can produce at most 64 output bytes (a 2-byte copy1 yields 11, a
+	// 3-byte copy2 yields 64): this rejects absurd declared lengths before allocating.
+	if ulen > uint64(len(src)-n)*64 {
+		return nil, nil, repSNcorrupt("declared length %d cannot come from %d input bytes", ulen, len(src)-n)
+	}
+	out := make([]byte, 0, ulen)
+	s := n
+	for s < len(src) {
+		if len(cmds) >= lim.MaxCommands {
+			return nil, nil, fmt.Errorf("%w: commands", repSNErrLimit)
+		}
+		tag := src[s]
+		s++
+		var c repSNCmd
+		switch tag & 3 {
+		case 0:
+			ln := uint32(tag >> 2)
+			form := uint8(0)
+			if ln >= 60 {
+				form = uint8(ln - 59)
+				if s+int(form) > len(src) {
+					return nil, nil, repSNcorrupt("truncated literal length")
+				}
+				ln = 0
+				for i := 0; i < int(form); i++ {
+					ln |= uint32(src[s+i]) << (8 * i)
+				}
+				s += int(form)
+			}
+			if ln == 1<<32-1 {
+				return nil, nil, repSNcorrupt("literal length overflow")
+			}
+			ln++
+			if uint64(ln) > uint64(len(src)-s) {
+				return nil, nil, repSNcorrupt("literal of %d bytes with %d input left", ln, len(src)-s)
+			}
+			if uint64(len(out))+uint64(ln) > ulen {
+				return nil, nil, repSNcorrupt("literal overruns the declared length")
+			}
+			out = append(out, src[s:s+int(ln)]...)
+			s += int(ln)
+			c = repSNCmd{Kind: repSNLiteral, Form: form, Len: ln}
+		case 1:
+			if s >= len(src) {
+				return nil, nil, repSNcorrupt("truncated copy1")
+			}
+			c = repSNCmd{Kind: repSNCopy1, Len: 4 + uint32(tag>>2)&7, Off: uint32(tag>>5)<<8 | uint32(src[s])}
+			s++
+		case 2:
+			if s+2 > len(src) {
+				return nil, nil, repSNcorrupt("truncated copy2")
+			}
+			c = repSNCmd{Kind: repSNCopy2, Len: 1 + uint32(tag>>2), Off: uint32(binary.LittleEndian.Uint16(src[s:]))}
+			s += 2
+		default:
+			if s+4 > len(src) {
+				return nil, nil, repSNcorrupt("truncated copy4")
+			}
+			c = repSNCmd{Kind: repSNCopy4, Len: 1 + uint32(tag>>2), Off: binary.LittleEndian.Uint32(src[s:])}
+			s += 4
+		}
+		if c.Kind != repSNLiteral {
+			if c.Off == 0 || uint64(c.Off) > uint64(len(out)) {
+				return nil, nil, repSNcorrupt("copy offset %d with %d bytes produced", c.Off, len(out))
+			}
+			if uint64(len(out))+uint64(c.Len) > ulen {
+				return nil, nil, repSNcorrupt("copy overruns the declared length")
+			}
+			for i := uint32(0); i < c.Len; i++ { // byte by byte: copies may overlap
+				out = append(out, out[len(out)-int(c.Off)])
+			}
+		}
+		cmds = append(cmds, c)
+	}
+	if uint64(len(out)) != ulen {
+		return nil, nil, repSNcorrupt("decoded %d bytes, declared %d", len(out), ulen)
+	}
+	return out, cmds, nil
+}
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+func repSNuvLen(v uint64) int {
+	var b [binary.MaxVarintLen64]byte
+	return binary.PutUvarint(b[:], v)
+}
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+// Marshal serialises commands compactly. Each command is uvarint(len<<3 | code) and,
+// for copies, uvarint(offset). Codes: 0 literal in its minimal form, 1/2/3 copy1/2/4,
+// 4-7 a literal using a non-minimal form of 1-4 extra length bytes. The decoded length
+// is not stored (the caller knows it), and neither is the command count: the list ends
+// when the lengths sum to the decoded length.
+func repSNMarshal(cmds []repSNCmd) []byte {
+	b := make([]byte, 0, len(cmds)*3)
+	for _, c := range cmds {
+		code := uint64(c.Kind)
+		if c.Kind == repSNLiteral && c.Form != repSNminForm(c.Len) {
+			code = 3 + uint64(c.Form)
+		}
+		b = binary.AppendUvarint(b, uint64(c.Len)<<3|code)
+		if c.Kind != repSNLiteral {
+			b = binary.AppendUvarint(b, uint64(c.Off))
+		}
+	}
+	return b
+}
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+// Unmarshal parses a recipe describing exactly decodedLen bytes; it must be consumed
+// exactly. Counts and lengths are validated before any allocation.
+func repSNUnmarshal(b []byte, decodedLen int64, lim repSNLimits) ([]repSNCmd, error) {
+	lim = lim.norm()
+	if decodedLen < 0 || decodedLen > lim.MaxDecoded {
+		return nil, fmt.Errorf("%w: decoded length %d", repSNErrLimit, decodedLen)
+	}
+	var cmds []repSNCmd
+	var total int64
+	for total < decodedLen {
+		if len(cmds) >= lim.MaxCommands {
+			return nil, fmt.Errorf("%w: commands", repSNErrLimit)
+		}
+		t, n := binary.Uvarint(b)
+		if n <= 0 || n != repSNuvLen(t) {
+			return nil, fmt.Errorf("%w: command header", repSNErrRecipe)
+		}
+		b = b[n:]
+		code, ln := uint8(t&7), t>>3
+		if ln == 0 || ln > 1<<32-1 || int64(ln) > decodedLen-total {
+			return nil, fmt.Errorf("%w: command length %d", repSNErrRecipe, ln)
+		}
+		c := repSNCmd{Len: uint32(ln)}
+		switch {
+		case code == 0:
+			c.Kind, c.Form = repSNLiteral, repSNminForm(c.Len)
+		case code <= 3:
+			c.Kind = code
+		default:
+			c.Kind, c.Form = repSNLiteral, code-3
+			if c.Form == repSNminForm(c.Len) {
+				return nil, fmt.Errorf("%w: redundant literal form", repSNErrRecipe)
+			}
+			if c.Form < repSNminForm(c.Len) {
+				return nil, fmt.Errorf("%w: literal length %d does not fit %d extra bytes", repSNErrRecipe, c.Len, c.Form)
+			}
+		}
+		if c.Kind != repSNLiteral {
+			off, m := binary.Uvarint(b)
+			if m <= 0 || m != repSNuvLen(off) || off == 0 || off > 1<<32-1 {
+				return nil, fmt.Errorf("%w: offset", repSNErrRecipe)
+			}
+			b = b[m:]
+			c.Off = uint32(off)
+			if err := repSNcheckCopyForm(c); err != nil {
+				return nil, err
+			}
+		}
+		total += int64(c.Len)
+		cmds = append(cmds, c)
+	}
+	if len(b) != 0 {
+		return nil, fmt.Errorf("%w: %d trailing bytes", repSNErrRecipe, len(b))
+	}
+	return cmds, nil
+}
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+func repSNcheckCopyForm(c repSNCmd) error {
+	switch c.Kind {
+	case repSNCopy1:
+		if c.Len < 4 || c.Len > 11 || c.Off >= 2048 {
+			return fmt.Errorf("%w: copy1 length %d offset %d", repSNErrRecipe, c.Len, c.Off)
+		}
+	case repSNCopy2:
+		if c.Len > 64 || c.Off > 0xffff {
+			return fmt.Errorf("%w: copy2 length %d offset %d", repSNErrRecipe, c.Len, c.Off)
+		}
+	case repSNCopy4:
+		if c.Len > 64 {
+			return fmt.Errorf("%w: copy4 length %d", repSNErrRecipe, c.Len)
+		}
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/snappyz3/snappy.go
+// Replay writes the original compressed block from the decoded child and the
+// commands. It verifies that each copy equals the child at that position (so the
+// replayed stream decodes to exactly child) and that the commands cover the child
+// exactly. Output is written progressively; on error the caller discards it.
+func repSNReplay(w io.Writer, child []byte, cmds []repSNCmd) error {
+	var hdr [binary.MaxVarintLen32]byte
+	n := binary.PutUvarint(hdr[:], uint64(len(child)))
+	if uint64(len(child)) > 1<<32-1 {
+		return fmt.Errorf("%w: child of %d bytes", repSNErrLimit, len(child))
+	}
+	if _, err := w.Write(hdr[:n]); err != nil {
+		return err
+	}
+	pos := 0
+	var buf [8]byte
+	for i, c := range cmds {
+		if c.Len == 0 || uint64(c.Len) > uint64(len(child)-pos) {
+			return fmt.Errorf("%w: command %d overruns the child", repSNErrMismatch, i)
+		}
+		end := pos + int(c.Len)
+		switch c.Kind {
+		case repSNLiteral:
+			if c.Form > 4 || c.Form < repSNminForm(c.Len) {
+				return fmt.Errorf("%w: command %d literal form", repSNErrRecipe, i)
+			}
+			l1 := c.Len - 1
+			var h []byte
+			if c.Form == 0 {
+				buf[0] = byte(l1) << 2
+				h = buf[:1]
+			} else {
+				buf[0] = byte(59+c.Form) << 2
+				for k := 0; k < int(c.Form); k++ {
+					buf[1+k] = byte(l1 >> (8 * k))
+				}
+				h = buf[:1+c.Form]
+			}
+			if _, err := w.Write(h); err != nil {
+				return err
+			}
+			if _, err := w.Write(child[pos:end]); err != nil {
+				return err
+			}
+		case repSNCopy1, repSNCopy2, repSNCopy4:
+			if err := repSNcheckCopyForm(c); err != nil {
+				return err
+			}
+			if c.Off == 0 || uint64(c.Off) > uint64(pos) {
+				return fmt.Errorf("%w: command %d offset %d at %d", repSNErrMismatch, i, c.Off, pos)
+			}
+			for k := pos; k < end; k++ {
+				if child[k] != child[k-int(c.Off)] {
+					return fmt.Errorf("%w: command %d copy differs from the child at %d", repSNErrMismatch, i, k)
+				}
+			}
+			var h []byte
+			switch c.Kind {
+			case repSNCopy1:
+				buf[0] = byte(c.Off>>8)<<5 | byte(c.Len-4)<<2 | 1
+				buf[1] = byte(c.Off)
+				h = buf[:2]
+			case repSNCopy2:
+				buf[0] = byte(c.Len-1)<<2 | 2
+				binary.LittleEndian.PutUint16(buf[1:], uint16(c.Off))
+				h = buf[:3]
+			default:
+				buf[0] = byte(c.Len-1)<<2 | 3
+				binary.LittleEndian.PutUint32(buf[1:], c.Off)
+				h = buf[:5]
+			}
+			if _, err := w.Write(h); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("%w: command %d kind %d", repSNErrRecipe, i, c.Kind)
+		}
+		pos = end
+	}
+	if pos != len(child) {
+		return fmt.Errorf("%w: commands cover %d of %d bytes", repSNErrMismatch, pos, len(child))
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+var (
+	// ErrShort reports that the buffer ended inside a value.
+	repTCErrShort = errors.New("thriftcompactz3: truncated")
+	// ErrCorrupt reports bytes that are not a valid Compact Protocol value.
+	repTCErrCorrupt = errors.New("thriftcompactz3: corrupt")
+	// ErrLimit reports that a configured bound would be exceeded.
+	repTCErrLimit = errors.New("thriftcompactz3: limit exceeded")
+)
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+func repTCcorrupt(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{repTCErrCorrupt}, a...)...)
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// Type is a Compact Protocol type id as it appears in a field or element header.
+type repTCType uint8
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// Compact type ids (the boolean pair is a field-header-only encoding).
+const (
+	repTCStop      repTCType = 0
+	repTCBoolTrue  repTCType = 1
+	repTCBoolFalse repTCType = 2
+	repTCByte      repTCType = 3
+	repTCI16       repTCType = 4
+	repTCI32       repTCType = 5
+	repTCI64       repTCType = 6
+	repTCDouble    repTCType = 7
+	repTCBinary    repTCType = 8
+	repTCList      repTCType = 9
+	repTCSet       repTCType = 10
+	repTCMap       repTCType = 11
+	repTCStruct    repTCType = 12
+)
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// Limits bound a parse. The zero value selects the defaults.
+type repTCLimits struct {
+	MaxDepth     int // struct/container nesting (default 16)
+	MaxContainer int // elements of one list/set/map (default 1<<22)
+	MaxBinary    int // bytes of one string/binary (default 64 MiB)
+	MaxFields    int // fields of one struct, unknown ones included (default 4096)
+	MaxValues    int // values (fields + elements) skipped or read in one Reader (default 1<<26)
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+func (l repTCLimits) norm() repTCLimits {
+	if l.MaxDepth <= 0 {
+		l.MaxDepth = 16
+	}
+	if l.MaxContainer <= 0 {
+		l.MaxContainer = 1 << 22
+	}
+	if l.MaxBinary <= 0 {
+		l.MaxBinary = 64 << 20
+	}
+	if l.MaxFields <= 0 {
+		l.MaxFields = 4096
+	}
+	if l.MaxValues <= 0 {
+		l.MaxValues = 1 << 26
+	}
+	return l
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// Reader decodes one buffer. It is not safe for concurrent use.
+type repTCReader struct {
+	b      []byte
+	pos    int
+	lim    repTCLimits
+	depth  int
+	values int
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// NewReader reads b from the start.
+func repTCNewReader(b []byte, lim repTCLimits) *repTCReader {
+	return &repTCReader{b: b, lim: lim.norm()}
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// Pos is the number of bytes consumed so far.
+func (r *repTCReader) Pos() int { return r.pos }
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// Remaining is the number of unread bytes.
+func (r *repTCReader) Remaining() int { return len(r.b) - r.pos }
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+func (r *repTCReader) count() error {
+	r.values++
+	if r.values > r.lim.MaxValues {
+		return fmt.Errorf("%w: more than %d values", repTCErrLimit, r.lim.MaxValues)
+	}
+	return nil
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+func (r *repTCReader) byte() (byte, error) {
+	if r.pos >= len(r.b) {
+		return 0, repTCErrShort
+	}
+	c := r.b[r.pos]
+	r.pos++
+	return c, nil
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+func (r *repTCReader) uvarint(maxBytes int) (uint64, error) {
+	var v uint64
+	for i := 0; i < maxBytes; i++ {
+		c, err := r.byte()
+		if err != nil {
+			return 0, err
+		}
+		v |= uint64(c&0x7f) << (7 * uint(i))
+		if c < 0x80 {
+			if i == maxBytes-1 && maxBytes == 10 && c > 1 {
+				return 0, repTCcorrupt("varint overflows 64 bits")
+			}
+			return v, nil
+		}
+	}
+	return 0, repTCcorrupt("varint longer than %d bytes", maxBytes)
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+func repTCunzig32(u uint64) int32 { return int32(uint32(u>>1) ^ -uint32(u&1)) }
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+func repTCunzig64(u uint64) int64 { return int64(u>>1) ^ -int64(u&1) }
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// I16 reads a zigzag i16 value.
+func (r *repTCReader) I16() (int16, error) {
+	u, err := r.uvarint(3)
+	if err != nil {
+		return 0, err
+	}
+	v := repTCunzig32(u)
+	if v < -1<<15 || v >= 1<<15 {
+		return 0, repTCcorrupt("i16 out of range")
+	}
+	return int16(v), nil
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// I32 reads a zigzag i32 value.
+func (r *repTCReader) I32() (int32, error) {
+	u, err := r.uvarint(5)
+	if err != nil {
+		return 0, err
+	}
+	if u > 1<<32-1 {
+		return 0, repTCcorrupt("i32 out of range")
+	}
+	return repTCunzig32(u), nil
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// I64 reads a zigzag i64 value.
+func (r *repTCReader) I64() (int64, error) {
+	u, err := r.uvarint(10)
+	if err != nil {
+		return 0, err
+	}
+	return repTCunzig64(u), nil
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// Byte reads one raw byte value (Thrift i8).
+func (r *repTCReader) Byte() (int8, error) {
+	c, err := r.byte()
+	return int8(c), err
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// Binary reads a length-prefixed string/binary. The result aliases the buffer.
+func (r *repTCReader) Binary() ([]byte, error) {
+	n, err := r.uvarint(5)
+	if err != nil {
+		return nil, err
+	}
+	if n > uint64(r.lim.MaxBinary) {
+		return nil, fmt.Errorf("%w: binary of %d bytes", repTCErrLimit, n)
+	}
+	if n > uint64(r.Remaining()) {
+		return nil, repTCErrShort
+	}
+	b := r.b[r.pos : r.pos+int(n)]
+	r.pos += int(n)
+	return b, nil
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// ListHeader reads a list or set header: the element type and count. The count is
+// checked against the bytes that remain (every element takes at least one byte), so a
+// hostile count never reaches an allocation.
+func (r *repTCReader) ListHeader() (repTCType, int, error) {
+	h, err := r.byte()
+	if err != nil {
+		return 0, 0, err
+	}
+	n := uint64(h >> 4)
+	if n == 15 {
+		if n, err = r.uvarint(5); err != nil {
+			return 0, 0, err
+		}
+	}
+	et := repTCType(h & 0x0f)
+	if !repTCvalidElem(et) {
+		return 0, 0, repTCcorrupt("list element type %d", et)
+	}
+	if n > uint64(r.lim.MaxContainer) {
+		return 0, 0, fmt.Errorf("%w: list of %d elements", repTCErrLimit, n)
+	}
+	if n > uint64(r.Remaining()) {
+		return 0, 0, fmt.Errorf("%w: %d elements in %d bytes", repTCErrShort, n, r.Remaining())
+	}
+	return et, int(n), nil
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+func repTCvalidElem(t repTCType) bool { return t >= repTCBoolTrue && t <= repTCStruct }
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// Bool reads one boolean list element (a single byte; 1 is true).
+func (r *repTCReader) Bool() (bool, error) {
+	c, err := r.byte()
+	return c == 1, err
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// Struct reads one struct. fn is called for every field with its id and type and must
+// consume the field's value (with the typed readers, Skip, or a nested Struct); a
+// handler that consumes nothing is an error. Boolean fields carry their value in the
+// type (BoolTrue/BoolFalse) and consume no bytes. The number of fields, the nesting
+// depth and the total number of values are bounded.
+func (r *repTCReader) Struct(fn func(id int16, t repTCType) error) error {
+	if r.depth >= r.lim.MaxDepth {
+		return fmt.Errorf("%w: nesting deeper than %d", repTCErrLimit, r.lim.MaxDepth)
+	}
+	r.depth++
+	defer func() { r.depth-- }()
+	var id int16
+	for n := 0; ; n++ {
+		if n >= r.lim.MaxFields {
+			return fmt.Errorf("%w: more than %d fields", repTCErrLimit, r.lim.MaxFields)
+		}
+		h, err := r.byte()
+		if err != nil {
+			return err
+		}
+		if h == 0 {
+			return nil
+		}
+		t := repTCType(h & 0x0f)
+		if d := int16(h >> 4); d != 0 {
+			if int(id)+int(d) > 1<<15-1 {
+				return repTCcorrupt("field id overflow")
+			}
+			id += d
+		} else {
+			v, err := r.I16()
+			if err != nil {
+				return err
+			}
+			id = v
+		}
+		if !repTCvalidElem(t) {
+			return repTCcorrupt("field %d has type %d", id, t)
+		}
+		if err := r.count(); err != nil {
+			return err
+		}
+		before := r.pos
+		if err := fn(id, t); err != nil {
+			return err
+		}
+		if r.pos == before && t != repTCBoolTrue && t != repTCBoolFalse {
+			return repTCcorrupt("field %d (type %d) was not consumed", id, t)
+		}
+	}
+}
+
+// Port source: zeros3-z3/thriftcompactz3/compact.go
+// Skip consumes one value of type t.
+func (r *repTCReader) Skip(t repTCType) error {
+	if r.depth >= r.lim.MaxDepth {
+		return fmt.Errorf("%w: nesting deeper than %d", repTCErrLimit, r.lim.MaxDepth)
+	}
+	if err := r.count(); err != nil {
+		return err
+	}
+	switch t {
+	case repTCBoolTrue, repTCBoolFalse:
+		return nil
+	case repTCByte:
+		_, err := r.byte()
+		return err
+	case repTCI16, repTCI32, repTCI64:
+		_, err := r.uvarint(10)
+		return err
+	case repTCDouble:
+		if r.Remaining() < 8 {
+			return repTCErrShort
+		}
+		r.pos += 8
+		return nil
+	case repTCBinary:
+		_, err := r.Binary()
+		return err
+	case repTCList, repTCSet:
+		et, n, err := r.ListHeader()
+		if err != nil {
+			return err
+		}
+		r.depth++
+		defer func() { r.depth-- }()
+		for i := 0; i < n; i++ {
+			if et == repTCBoolTrue || et == repTCBoolFalse {
+				if _, err := r.byte(); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := r.Skip(et); err != nil {
+				return err
+			}
+		}
+		return nil
+	case repTCMap:
+		n, err := r.uvarint(5)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+		if n > uint64(r.lim.MaxContainer) {
+			return fmt.Errorf("%w: map of %d entries", repTCErrLimit, n)
+		}
+		if 2*n > uint64(r.Remaining()) {
+			return fmt.Errorf("%w: %d entries in %d bytes", repTCErrShort, n, r.Remaining())
+		}
+		h, err := r.byte()
+		if err != nil {
+			return err
+		}
+		kt, vt := repTCType(h>>4), repTCType(h&0x0f)
+		if !repTCvalidElem(kt) || !repTCvalidElem(vt) {
+			return repTCcorrupt("map types %d,%d", kt, vt)
+		}
+		r.depth++
+		defer func() { r.depth-- }()
+		for i := uint64(0); i < n; i++ {
+			for _, et := range [2]repTCType{kt, vt} {
+				if et == repTCBoolTrue || et == repTCBoolFalse {
+					if _, err := r.byte(); err != nil {
+						return err
+					}
+				} else if err := r.Skip(et); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	case repTCStruct:
+		return r.Struct(func(_ int16, ft repTCType) error { return r.Skip(ft) })
+	}
+	return repTCcorrupt("type %d", t)
+}
+
+// ---- Q10 DRAFT ONLY: existing structured recipe adapters --------------------
+// Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.
+
+// Port source: zeros3-z3/repz3/kinds/parquet.go
+type repSCparquetDecoder struct{}
+
+// Port source: zeros3-z3/repz3/kinds/parquet.go
+func repSCparquetRecipe(c *repCall) ([]byte, error) {
+	if len(c.Rep.Members) > 1<<18 || len(c.Rep.Recipe) > 16<<20 {
+		return nil, errRepLimit
+	}
+	rec := append([]byte(nil), c.Rep.Recipe...)
+	for i := range c.Rep.Members {
+		if c.Rep.Members[i].Role != repStored {
+			return nil, fmt.Errorf("%w: Parquet member %d is not a stored component", errRepCorrupt, i)
+		}
+		rec = append(rec, c.Rep.Members[i].SHA[:]...)
+	}
+	parsed, err := repPQParseRecipe(rec, repStructuredParquetLimits())
+	if err != nil {
+		return nil, err
+	}
+	if parsed.Size != c.Rep.Size {
+		return nil, errRepCorrupt
+	}
+	return rec, nil
+}
+
+// Port source: zeros3-z3/repz3/kinds/parquet.go
+func (repSCparquetDecoder) Decode(c *repCall) error {
+	rec, err := repSCparquetRecipe(c)
+	if err != nil {
+		return err
+	}
+	return repPQDecode(c.W, rec, func(id repPQID) ([]byte, error) { return c.structuredGet(id) }, repStructuredParquetLimits())
+}
+
+// Port source: zeros3-z3/repz3/kinds/parquet.go
+// Expand names the leaf groups (the members are listed; the groups are only in the nodes).
+func (repSCparquetDecoder) Expand(c *repCall, emit func([32]byte)) error {
+	rec, err := repSCparquetRecipe(c)
+	if err != nil {
+		return err
+	}
+	return repPQComponents(rec, func(id repPQID) ([]byte, error) { return c.structuredGet(id) }, repStructuredParquetLimits(), func(id repPQID) { emit(id) })
+}
+
+// Port source: zeros3-z3/repz3/kinds/parquet.go
+// ReadParquetRange returns bytes [off, off+n) of an opened Parquet representation,
+// rebuilding only the segments (pages) that overlap the range.
+func repSCReadParquetRange(c *repCall, off, n int64) ([]byte, repPQRangeStats, error) {
+	if n < 0 || n > 64<<20 {
+		return nil, repPQRangeStats{}, errRepLimit
+	}
+	if c.Rep.Kind != repKindParquet {
+		return nil, repPQRangeStats{}, errors.New("kinds: not a Parquet representation")
+	}
+	rec, err := repSCparquetRecipe(c)
+	if err != nil {
+		return nil, repPQRangeStats{}, err
+	}
+	var out bytes.Buffer
+	st, err := repPQDecodeRange(&out, rec, func(id repPQID) ([]byte, error) { return c.structuredGet(id) }, off, n, repStructuredParquetLimits())
+	return out.Bytes(), st, err
+}
+
+// Port source: zeros3-z3/repz3/kinds/sst.go
+type repSCsstDecoder struct{}
+
+// Port source: zeros3-z3/repz3/kinds/sst.go
+func repSCsstRecipe(c *repCall) ([]byte, error) {
+	if len(c.Rep.Members) > 1<<18 || len(c.Rep.Recipe) > 16<<20 {
+		return nil, errRepLimit
+	}
+	rec := append([]byte(nil), c.Rep.Recipe...)
+	for i := range c.Rep.Members {
+		if c.Rep.Members[i].Role != repStored {
+			return nil, fmt.Errorf("%w: SST member %d is not a stored component", errRepCorrupt, i)
+		}
+		rec = append(rec, c.Rep.Members[i].SHA[:]...)
+	}
+	parsed, err := repSSParseRecipe(rec, repStructuredSSTLimits())
+	if err != nil {
+		return nil, err
+	}
+	if parsed.Size != c.Rep.Size {
+		return nil, errRepCorrupt
+	}
+	return rec, nil
+}
+
+// Port source: zeros3-z3/repz3/kinds/sst.go
+func (repSCsstDecoder) Decode(c *repCall) error {
+	rec, err := repSCsstRecipe(c)
+	if err != nil {
+		return err
+	}
+	return repSSDecode(c.W, rec, func(id repSSID) ([]byte, error) { return c.structuredGet(id) }, repStructuredSSTLimits())
+}
+
+// Port source: zeros3-z3/repz3/kinds/sst.go
+// Expand: every component is a listed member, so there is nothing to discover.
+func (repSCsstDecoder) Expand(c *repCall, emit func([32]byte)) error {
+	_, err := repSCsstRecipe(c)
+	return err
+}
+
+// Port source: zeros3-z3/repz3/kinds/sst.go
+// ReadSSTRange returns bytes [off, off+n) of an opened SST representation, rebuilding only
+// the data blocks that overlap the range from the groups holding their records.
+func repSCReadSSTRange(c *repCall, off, n int64) ([]byte, repSSRangeStats, error) {
+	if n < 0 || n > 64<<20 {
+		return nil, repSSRangeStats{}, errRepLimit
+	}
+	if c.Rep.Kind != repKindSST {
+		return nil, repSSRangeStats{}, errors.New("kinds: not an SST representation")
+	}
+	rec, err := repSCsstRecipe(c)
+	if err != nil {
+		return nil, repSSRangeStats{}, err
+	}
+	var out bytes.Buffer
+	st, err := repSSDecodeRange(&out, rec, func(id repSSID) ([]byte, error) { return c.structuredGet(id) }, off, n, repStructuredSSTLimits())
+	return out.Bytes(), st, err
+}
+
+// Structured policy bounds stored components, metadata and per-page scratch.
+func repStructuredSSTLimits() repSSLimits {
+	return repSSLimits{MaxBlocks: 65536, MaxBlockBytes: 16 << 20, MaxDecoded: 16 << 20, MaxEntries: 262144, MaxMeta: 16 << 20, MaxTail: 16 << 20, MaxRecordBytes: 1 << 20, MaxRecipe: 16 << 20}
+}
+func repStructuredParquetLimits() repPQLimits {
+	return repPQLimits{MaxFooter: 16 << 20, MaxRowGroups: 4096, MaxColumns: 1024, MaxChunks: 65536, MaxPages: 65536, MaxHeader: 65536, MaxPage: 16 << 20, MaxValue: 1 << 20, MaxDict: 16 << 20, Thrift: repTCLimits{MaxDepth: 16, MaxContainer: 65536, MaxBinary: 16 << 20, MaxFields: 4096, MaxValues: 262144}}
+}
+func (c *repCall) structuredGet(id [32]byte) ([]byte, error) {
+	n, err := c.env.Src.Size(id)
+	if err != nil {
+		return nil, err
+	}
+	if n < 0 || n > 32<<20 {
+		return nil, errRepLimit
+	}
+	return c.get(id)
+}
+
+// The lab Bundle's whole-corpus byte retention is replaced by immediate CAS writes.
+func (b *repBuilder) encodeStructured(src io.ReaderAt, size int64, k repKind) (*repObject, error) {
+	if size < 0 || size > repMaxInspect {
+		return nil, errRepLimit
+	}
+	var zstdWork, zstdFrames, headerWork int64
+	target := 4 << 10
+	if size >= 256<<20 {
+		target = 32 << 10
+	} // bound large-file group metadata
+	sizes := map[[32]byte]int64{}
+	emit := func(_ string, id [32]byte, data []byte) error {
+		if len(data) > 32<<20 || len(sizes) >= 1<<18 {
+			return errRepLimit
+		}
+		if _, ok := sizes[id]; ok {
+			return nil
+		}
+		if sha256.Sum256(data) != id {
+			return errRepCorrupt
+		}
+		got, err := b.putBlob(data)
+		if err != nil {
+			return err
+		}
+		if got != id {
+			return errRepCorrupt
+		}
+		sizes[id] = int64(len(data))
+		return nil
+	}
+	var rec []byte
+	var ids [][32]byte
+	if k == repKindSST {
+		lim := repStructuredSSTLimits()
+		t, err := repSSOpen(src, size, lim)
+		if err != nil {
+			return nil, err
+		}
+		if t.Footer.Family == repSSFamilyLegacy {
+			return nil, errRepUnsupported
+		}
+		if err = t.Reject(); err != nil {
+			return nil, err
+		}
+		if err = b.budget.inspect(size - t.DataEnd); err != nil {
+			return nil, err
+		}
+		for _, h := range t.Blocks {
+			rb, e := repSSReadBlock(src, size, h, t.Footer.Checksum, true, lim)
+			if e != nil {
+				return nil, e
+			}
+			n := int64(len(rb.Payload))
+			switch rb.Comp() {
+			case repSSCompNone:
+			case repSSCompSnappy, repSSCompZstd:
+				v, z := binary.Uvarint(rb.Payload)
+				if z <= 0 || v > uint64(lim.MaxDecoded) {
+					return nil, errRepLimit
+				}
+				n = int64(v)
+			default:
+				return nil, errRepUnsupported
+			}
+			if rb.Comp() == repSSCompZstd {
+				if !repStructuredReserve(&zstdFrames, 1, 512) {
+					return nil, fmt.Errorf("%w: synchronous SST Zstd frame budget", errRepLimit)
+				}
+				if e = repStructuredZstdInspect(&zstdWork, n, repStructuredSSTZstdBytes); e != nil {
+					return nil, e
+				}
+			}
+			if e = b.budget.inspect(n); e != nil {
+				return nil, e
+			}
+		}
+		raw, _, _, err := repSSEncode(src, size, repSSOptions{Form: repSSFormUKV, Cutter: &repSSHashCutter{Target: target, Max: 64 << 10}, Limits: lim}, emit)
+		if err != nil {
+			return nil, err
+		}
+		pr, err := repSSParseRecipe(raw, lim)
+		if err != nil {
+			return nil, err
+		}
+		rec = raw
+		ids = pr.Digests
+	} else {
+		lim := repStructuredParquetLimits()
+		f, err := repPQOpen(src, size, lim)
+		if err != nil {
+			return nil, err
+		}
+		remaining := size
+		pages := 0
+		for ri := range f.RowGroups {
+			for ci := range f.RowGroups[ri].Chunks {
+				err = f.Pages(src, &f.RowGroups[ri].Chunks[ci], func(p *repPQPage, hdr []byte) error {
+					if !repStructuredReserve(&headerWork, int64(len(hdr)), 16<<20) {
+						return fmt.Errorf("%w: cumulative Parquet page headers", errRepLimit)
+					}
+					pages++
+					if pages > lim.MaxPages {
+						return errRepLimit
+					}
+					if f.RowGroups[ri].Chunks[ci].Codec == repPQCodecZstd {
+						if !repStructuredReserve(&zstdFrames, 1, 1024) {
+							return fmt.Errorf("%w: synchronous Parquet Zstd frame budget", errRepLimit)
+						}
+						if e := repStructuredZstdInspect(&zstdWork, int64(p.Uncomp), repStructuredParquetZstdBytes); e != nil {
+							return e
+						}
+					}
+					remaining -= int64(p.Comp)
+					return b.budget.inspect(int64(p.Uncomp))
+				})
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		if remaining < 0 {
+			return nil, errRepCorrupt
+		}
+		if err = b.budget.inspect(remaining); err != nil {
+			return nil, err
+		}
+		raw, _, _, err := repPQEncode(src, size, repPQOptions{Limits: lim, Target: target}, emit)
+		if err != nil {
+			return nil, err
+		}
+		pr, err := repPQParseRecipe(raw, lim)
+		if err != nil {
+			return nil, err
+		}
+		rec = raw
+		ids = pr.Digests
+	}
+	head := len(rec) - 32*len(ids)
+	if head < 0 || head > 16<<20 || len(ids) > 1<<18 {
+		return nil, errRepLimit
+	}
+	out := &repObject{Kind: k, Size: size, Recipe: rec[:head:head]}
+	for _, id := range ids {
+		n, ok := sizes[id]
+		if !ok {
+			return nil, errRepCorrupt
+		}
+		out.Members = append(out.Members, repMember{Role: repStored, SHA: id, Size: n})
+	}
+	return out, nil
+}
+
+// A small prefix-compressed block can otherwise expand into unbounded retained keys.
+func repStructuredAppendKey(keys, key []byte, limit int64) ([]byte, error) {
+	if int64(len(keys))+int64(len(key)) > limit {
+		return nil, repSSErrLimit
+	}
+	return append(keys, key...), nil
+}
+
+// Embedded pages must never inherit the archive codec's generous defaults.
+func (c *repPQCompressor) zstdLimits() repZSLimits {
+	n := c.lim.norm().MaxPage
+	return repZSLimits{MaxFrames: 1, MaxBlocks: 65536, MaxWindow: min(n, 16<<20), MaxFrameDecoded: n, MaxTotalDecoded: n, MaxLiterals: n, MaxSequences: n, MaxSkippable: n, MaxIRBytes: n}
+}
+
+// Synchronous optional admission limits expensive exact Zstd analysis. This
+// controls new creation only; existing exact roots remain fully decodable.
+const (
+	repStructuredSSTZstdBytes     int64 = 4 << 20
+	repStructuredParquetZstdBytes int64 = 128 << 20
+)
+
+func repStructuredZstdInspect(used *int64, n, limit int64) error {
+	if !repStructuredReserve(used, n, limit) {
+		return fmt.Errorf("%w: synchronous structured Zstd work budget", errRepLimit)
+	}
+	return nil
+}
+
+// Reserve before retaining metadata; a rejected attempt does not advance usage.
+func repStructuredReserve(used *int64, n, limit int64) bool {
+	if *used < 0 || *used > limit || n < 0 || n > limit-*used {
+		return false
+	}
+	*used += n
+	return true
+}
+func repSSRetainBlock(used *int64, b *repSSBlockRec, limit int64) error {
+	cost := int64(128) + int64(len(b.Cmds)) + int64(len(b.Zstd))
+	if b.Explicit != nil {
+		cost += int64(len(b.Explicit.Restarts))*4 + int64(len(b.Explicit.Shared))*4
+	}
+	if !repStructuredReserve(used, cost, limit) {
+		return repSSErrLimit
+	}
+	return nil
+}
+func (a *repPQAnalyzer) retainLayout(p *repPQPageInfo) error {
+	l := &p.Lay
+	cost := int64(256) + int64(len(l.Delta)) + int64(len(l.LvlHdrs)+len(l.ValHdrs))*8 + int64(len(l.LvlPad)+len(l.ValPad))*4
+	if !repStructuredReserve(&a.retained, cost, 64<<20) {
+		return repPQErrLimit
+	}
+	p.Lay = p.Lay.retained()
+	return nil
+}
+
+// Recipe metadata must not pin an entire decoded page behind a short prefix.
+func (l repPQlayout) retained() repPQlayout {
+	l.Delta = append([]byte(nil), l.Delta...)
+	l.LvlHdrs = append([]uint64(nil), l.LvlHdrs...)
+	l.ValHdrs = append([]uint64(nil), l.ValHdrs...)
+	l.LvlPad = append([]uint32(nil), l.LvlPad...)
+	l.ValPad = append([]uint32(nil), l.ValPad...)
+	return l
 }

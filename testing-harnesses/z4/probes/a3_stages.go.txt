@@ -1,0 +1,8 @@
+// Single analyzer goroutine only. The sampler does not invoke instrumented code.
+// Exclusive wall time removes nested spans, so categories do not double count.
+type auditFrame struct{tag string;start time.Time;children int64}
+var auditActive bool
+var auditStack []auditFrame
+var auditTotals map[string]int64
+func auditPQStage(planning bool)string{if planning{return "semantic_planning"};return "components"}
+func auditEnter(tag string)func(){if !auditActive{return func(){}};auditStack=append(auditStack,auditFrame{tag:tag,start:time.Now()});return func(){n:=len(auditStack)-1;f:=auditStack[n];elapsed:=time.Since(f.start).Nanoseconds();auditTotals[f.tag]+=elapsed-f.children;auditStack=auditStack[:n];if n>0{auditStack[n-1].children+=elapsed}}}

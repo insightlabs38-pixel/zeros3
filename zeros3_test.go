@@ -30492,10 +30492,10 @@ func TestPack_StoreFormatVersionGate(t *testing.T) {
 		t.Fatalf("packed store format = %+v", f)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
-	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 8`), 1), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 9`), 1), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 8") {
+	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 9") {
 		t.Fatalf("unknown future version must be rejected, got %v", err)
 	}
 }
@@ -34352,6 +34352,9 @@ func TestBulkFetch_SendsOnlyLogicalBytesFromAnyRepresentation(t *testing.T) {
 	if int64(frame.Len()) != bulkFrameSize(bulkKindData, want) || int64(frame.Len()) != int64(bulkHeaderLen+bulkDescLen*len(want))+logical {
 		t.Fatalf("frame is %d bytes for %d logical", frame.Len(), logical)
 	}
+	// Body EOF can precede the server wrapper's final counter update. Close
+	// joins outstanding handlers before inspecting their completed bookkeeping.
+	n.ts.Close()
 	if n.cnt.n(bulkFetchKey) != 1 {
 		t.Fatalf("fetch requests = %d", n.cnt.n(bulkFetchKey))
 	}

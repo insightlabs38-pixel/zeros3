@@ -1,0 +1,11 @@
+{
+ "producer": "RocksDB",
+ "version": "9.8.4",
+ "binding": "rocksdict 0.3.29",
+ "target_value_mib": 32,
+ "rows": 32768,
+ "codec": "zstd",
+ "bytes": 1767735,
+ "sha256": "ba784f50566a04c45433e16db5befee8c2e6c5f4734618c2b5b62bb4f0e04bc2",
+ "class_": "NATIVE_SYNTHETIC_MEMORY_ADMISSION_CONTROL"
+}

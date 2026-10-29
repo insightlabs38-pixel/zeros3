@@ -446,7 +446,7 @@ func get(c *s3.Client, key string, rng string) ([]byte, error) {
 
 func ranges(size int) []string {
 	clamp := func(a, n int) string { return fmt.Sprintf("bytes=%d-%d", a, min(a+n-1, size-1)) }
-	rs := []string{"bytes=0-99", fmt.Sprintf("bytes=%d-", size-700), "bytes=-333"}
+	rs := []string{"bytes=0-99", fmt.Sprintf("bytes=%d-", max(0, size-700)), "bytes=-333"}
 	if size > 20000 {
 		rs = append(rs, "bytes=4096-12287", clamp(size/3, 65536))
 	}
@@ -479,6 +479,13 @@ func readAllCheck(label string, c *s3.Client, fx []fixture) {
 		if err != nil || !bytes.Equal(got, f.data) {
 			ok, bad = false, f.name
 			break
+		}
+		if len(f.data) < 700 {
+			badRange := fmt.Sprintf("bytes=%d-", len(f.data)-700)
+			if got, err := get(c, f.name, badRange); err != nil || !bytes.Equal(got, f.data) {
+				ok, bad = false, f.name+" malformed range did not serve full object "+badRange
+				break
+			}
 		}
 		for _, r := range ranges(len(f.data)) {
 			got, err := get(c, f.name, r)

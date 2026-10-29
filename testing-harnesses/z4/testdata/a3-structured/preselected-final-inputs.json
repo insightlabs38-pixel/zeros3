@@ -1,0 +1,72 @@
+[
+ {
+  "kind": "sst",
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c3/000036.sst",
+  "label": "NATIVE_Q8_LARGEST_PER_CODEC_PRESELECTED",
+  "bytes": 971044,
+  "sha256": "57b851b6e38a25c9876c2d1d33494c4aac80e0b583db82407096e7954bdae7c9"
+ },
+ {
+  "kind": "sst",
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c3/000036.sst",
+  "label": "NATIVE_Q8_LARGEST_PER_CODEC_PRESELECTED",
+  "bytes": 517075,
+  "sha256": "20419b414352b6c4e52f9d4446fe39da8f9ea128c8811c67ba956c42b013c8e2"
+ },
+ {
+  "kind": "sst",
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c3/000036.sst",
+  "label": "NATIVE_Q8_LARGEST_PER_CODEC_PRESELECTED",
+  "bytes": 438195,
+  "sha256": "ed5963453b1c9c21c999467d3cdd7ad07148153836e04028f2b6e3ecb808e891"
+ },
+ {
+  "kind": "parquet",
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d01-snappy/db.parquet",
+  "label": "NATIVE_DUCKDB_PRESELECTED",
+  "bytes": 30164154,
+  "sha256": "87faa9bce9d2c4f3244560bfd4082fffcecaecd5062fda05bdc729ff87f53df1"
+ },
+ {
+  "kind": "parquet",
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d02-zstd/db.parquet",
+  "label": "NATIVE_DUCKDB_PRESELECTED",
+  "bytes": 22914677,
+  "sha256": "c7a74d2b674c402d6e438e4d8175eb9758171a4f289e94d6469c2949d0aee0c7"
+ },
+ {
+  "kind": "parquet",
+  "path": "/workspace/work/q10-large/gib.parquet",
+  "label": "NATIVE_SYNTHETIC_1G_MEMORY_LATENCY_CONTROL",
+  "bytes": 1073741824,
+  "sha256": "c0144382e663a3500e3b85aba7c1d74254fc4cfc110028b8586f5cfb3ff31751"
+ },
+ {
+  "kind": "parquet",
+  "path": "/workspace/work/z4-a3/scale-32.parquet",
+  "bytes": 33554432,
+  "sha256": "e9f0fa7c7082af2a1ab0923e16100fc548af3aa5302bc01bd7eadf64a702b907",
+  "label": "NATIVE_SYNTHETIC_MEMORY_LATENCY_CONTROL"
+ },
+ {
+  "kind": "parquet",
+  "path": "/workspace/work/z4-a3/scale-256.parquet",
+  "bytes": 268435456,
+  "sha256": "cc3cfc3540e41d6e5e3ff1bca26121c9b522d331a7e28ca77f91f55930b90d18",
+  "label": "NATIVE_SYNTHETIC_MEMORY_LATENCY_CONTROL"
+ },
+ {
+  "kind": "sst",
+  "path": "/workspace/work/z4-a3/scale-32-none.sst",
+  "bytes": 34349557,
+  "sha256": "d633a7e0f865949dec27e14dda7ab7f5d8eb3433db946963cd26f3a689eaa4c2",
+  "label": "NATIVE_SYNTHETIC_SST_SCALE_CONTROL"
+ },
+ {
+  "kind": "sst",
+  "path": "/workspace/work/z4-a3/scale-256-none.sst",
+  "bytes": 274793190,
+  "sha256": "ef1983916a1fc4c1ee28a022eee39b29ee789934d1c4ddc226cd017c6700dfa4",
+  "label": "NATIVE_SYNTHETIC_SST_SCALE_CONTROL"
+ }
+]

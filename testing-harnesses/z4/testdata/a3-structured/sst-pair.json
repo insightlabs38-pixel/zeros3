@@ -1,0 +1,20 @@
+[
+ {
+  "revision": "c0",
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c0/000010.sst",
+  "bytes": 483310,
+  "sha256": "d6a18fc9d036e5da4819f79220fd278293e148b1d1d0969ba221212e5720e78b"
+ },
+ {
+  "revision": "c1",
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c1/000010.sst",
+  "bytes": 483310,
+  "sha256": "d6a18fc9d036e5da4819f79220fd278293e148b1d1d0969ba221212e5720e78b"
+ },
+ {
+  "revision": "c1-new-emission",
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c1/000018.sst",
+  "bytes": 482129,
+  "sha256": "b87bcabe4e08dc5b826a613c98aa98b4827254ea77a3576ea1a3ec8a0c9dde88"
+ }
+]

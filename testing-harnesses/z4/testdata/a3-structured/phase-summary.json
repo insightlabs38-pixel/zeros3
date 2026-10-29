@@ -1,0 +1,659 @@
+[
+ {
+  "path": "/workspace/work/q10-large/gib.parquet",
+  "bytes": 1073741824,
+  "samples": 1,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 6.580814366,
+    "max_sampled_incremental_rss_mib": 13.10546875,
+    "max_sampled_heap_mib": 7.9191741943359375
+   },
+   "decode_cold": {
+    "median_seconds": 9.368097474,
+    "max_sampled_incremental_rss_mib": 33.53125,
+    "max_sampled_heap_mib": 52.44153594970703
+   },
+   "encode_with_cas": {
+    "median_seconds": 16.381636152,
+    "max_sampled_incremental_rss_mib": 64.671875,
+    "max_sampled_heap_mib": 75.77716827392578
+   },
+   "finish_root": {
+    "median_seconds": 0.000114582,
+    "max_sampled_incremental_rss_mib": 0.015625,
+    "max_sampled_heap_mib": 25.008026123046875
+   },
+   "flush": {
+    "median_seconds": 0.094287807,
+    "max_sampled_incremental_rss_mib": 0.3046875,
+    "max_sampled_heap_mib": 28.19744110107422
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.000531467,
+    "max_sampled_incremental_rss_mib": 0.00390625,
+    "max_sampled_heap_mib": 14.133872985839844
+   },
+   "proof": {
+    "median_seconds": 9.946723672,
+    "max_sampled_incremental_rss_mib": 1.00390625,
+    "max_sampled_heap_mib": 40.04216766357422
+   },
+   "publication": {
+    "median_seconds": 0.014160601,
+    "max_sampled_incremental_rss_mib": 0.21484375,
+    "max_sampled_heap_mib": 28.269630432128906
+   },
+   "reachability": {
+    "median_seconds": 0.015248778,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 21.1380615234375
+   }
+  },
+  "profiled_exclusive_stage_seconds": {
+   "cas": 2.597858767,
+   "components": 9.751740215,
+   "other": 0.028805036,
+   "parse": 0.004076734,
+   "semantic_codec": 0.814516378,
+   "semantic_planning": 3.18369424
+  },
+  "max_process_rss_mib": 84.91015625,
+  "optional_disk_growth_bytes": [
+   1072767789
+  ]
+ },
+ {
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d01-snappy/db.parquet",
+  "bytes": 30164154,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.138709075,
+    "max_sampled_incremental_rss_mib": 3.42578125,
+    "max_sampled_heap_mib": 2.81982421875
+   },
+   "decode_cold": {
+    "median_seconds": 1.039355202,
+    "max_sampled_incremental_rss_mib": 14.72265625,
+    "max_sampled_heap_mib": 17.92724609375
+   },
+   "encode_with_cas": {
+    "median_seconds": 2.352190993,
+    "max_sampled_incremental_rss_mib": 30.5078125,
+    "max_sampled_heap_mib": 22.465904235839844
+   },
+   "finish_root": {
+    "median_seconds": 5.9519e-05,
+    "max_sampled_incremental_rss_mib": 0.00390625,
+    "max_sampled_heap_mib": 5.556396484375
+   },
+   "flush": {
+    "median_seconds": 0.001645575,
+    "max_sampled_incremental_rss_mib": 0.09765625,
+    "max_sampled_heap_mib": 5.857513427734375
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.000179889,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 3.7019424438476562
+   },
+   "proof": {
+    "median_seconds": 1.08829044,
+    "max_sampled_incremental_rss_mib": 6.13671875,
+    "max_sampled_heap_mib": 15.116004943847656
+   },
+   "publication": {
+    "median_seconds": 0.006309124,
+    "max_sampled_incremental_rss_mib": 0.2890625,
+    "max_sampled_heap_mib": 6.3528900146484375
+   },
+   "reachability": {
+    "median_seconds": 0.006405108,
+    "max_sampled_incremental_rss_mib": 0.08984375,
+    "max_sampled_heap_mib": 4.919136047363281
+   }
+  },
+  "profiled_exclusive_stage_seconds": {
+   "cas": 0.229538128,
+   "components": 1.093018002,
+   "other": 0.000766346,
+   "parse": 0.000169324,
+   "semantic_codec": 0.00306055,
+   "semantic_planning": 0.909220043
+  },
+  "max_process_rss_mib": 41.9921875,
+  "optional_disk_growth_bytes": [
+   42019567,
+   42019567,
+   42019567
+  ]
+ },
+ {
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d02-zstd/db.parquet",
+  "bytes": 22914677,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.101607214,
+    "max_sampled_incremental_rss_mib": 2.84375,
+    "max_sampled_heap_mib": 2.2646713256835938
+   },
+   "decode_cold": {
+    "median_seconds": 1.612198184,
+    "max_sampled_incremental_rss_mib": 10.36328125,
+    "max_sampled_heap_mib": 46.676025390625
+   },
+   "encode_with_cas": {
+    "median_seconds": 6.371733928,
+    "max_sampled_incremental_rss_mib": 57.6875,
+    "max_sampled_heap_mib": 52.53321838378906
+   },
+   "finish_root": {
+    "median_seconds": 0.000133911,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 15.384803771972656
+   },
+   "flush": {
+    "median_seconds": 0.002878923,
+    "max_sampled_incremental_rss_mib": 0.06640625,
+    "max_sampled_heap_mib": 15.882743835449219
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.000140802,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 15.709930419921875
+   },
+   "proof": {
+    "median_seconds": 1.604121034,
+    "max_sampled_incremental_rss_mib": 22.89453125,
+    "max_sampled_heap_mib": 45.017784118652344
+   },
+   "publication": {
+    "median_seconds": 0.005089892,
+    "max_sampled_incremental_rss_mib": 0.0859375,
+    "max_sampled_heap_mib": 16.88115692138672
+   },
+   "reachability": {
+    "median_seconds": 0.004892967,
+    "max_sampled_incremental_rss_mib": 0.37109375,
+    "max_sampled_heap_mib": 15.696891784667969
+   }
+  },
+  "profiled_exclusive_stage_seconds": {
+   "cas": 0.231177548,
+   "components": 3.148753159,
+   "other": 0.000934676,
+   "parse": 0.0001608,
+   "semantic_planning": 2.948698606
+  },
+  "max_process_rss_mib": 68.79296875,
+  "optional_disk_growth_bytes": [
+   49022184,
+   49022184,
+   49022184
+  ]
+ },
+ {
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c3/000036.sst",
+  "bytes": 971044,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.004513238,
+    "max_sampled_incremental_rss_mib": 1.078125,
+    "max_sampled_heap_mib": 0.8300628662109375
+   },
+   "decode_cold": {
+    "median_seconds": 0.004458928,
+    "max_sampled_incremental_rss_mib": 0.4921875,
+    "max_sampled_heap_mib": 2.1920318603515625
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.006498216,
+    "max_sampled_incremental_rss_mib": 3.30078125,
+    "max_sampled_heap_mib": 1.654144287109375
+   },
+   "finish_root": {
+    "median_seconds": 0.000100561,
+    "max_sampled_incremental_rss_mib": 0.078125,
+    "max_sampled_heap_mib": 1.660125732421875
+   },
+   "flush": {
+    "median_seconds": 0.00336077,
+    "max_sampled_incremental_rss_mib": 0.38671875,
+    "max_sampled_heap_mib": 1.3804092407226562
+   },
+   "outer_root_serialize": {
+    "median_seconds": 1.1067e-05,
+    "max_sampled_incremental_rss_mib": 0.015625,
+    "max_sampled_heap_mib": 1.6076812744140625
+   },
+   "proof": {
+    "median_seconds": 0.004697555,
+    "max_sampled_incremental_rss_mib": 1.51953125,
+    "max_sampled_heap_mib": 2.770660400390625
+   },
+   "publication": {
+    "median_seconds": 0.000360531,
+    "max_sampled_incremental_rss_mib": 0.04296875,
+    "max_sampled_heap_mib": 2.47894287109375
+   },
+   "reachability": {
+    "median_seconds": 0.000188824,
+    "max_sampled_incremental_rss_mib": 0.07421875,
+    "max_sampled_heap_mib": 2.580352783203125
+   }
+  },
+  "profiled_exclusive_stage_seconds": {
+   "cas": 0.003640435,
+   "components": 0.00329066,
+   "other": 0.000550265,
+   "parse": 0.000104097,
+   "semantic_codec": 1.223e-05,
+   "semantic_records": 0.00079098
+  },
+  "max_process_rss_mib": 14.35546875,
+  "optional_disk_growth_bytes": [
+   979751,
+   979751,
+   979751
+  ]
+ },
+ {
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c3/000036.sst",
+  "bytes": 517075,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.002517615,
+    "max_sampled_incremental_rss_mib": 1.27734375,
+    "max_sampled_heap_mib": 0.8203506469726562
+   },
+   "decode_cold": {
+    "median_seconds": 0.007066869,
+    "max_sampled_incremental_rss_mib": 0.33984375,
+    "max_sampled_heap_mib": 2.9784469604492188
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.017141853,
+    "max_sampled_incremental_rss_mib": 4.484375,
+    "max_sampled_heap_mib": 3.3112030029296875
+   },
+   "finish_root": {
+    "median_seconds": 4.4056e-05,
+    "max_sampled_incremental_rss_mib": 0.02734375,
+    "max_sampled_heap_mib": 1.7229156494140625
+   },
+   "flush": {
+    "median_seconds": 0.002976919,
+    "max_sampled_incremental_rss_mib": 0.16015625,
+    "max_sampled_heap_mib": 2.2288742065429688
+   },
+   "outer_root_serialize": {
+    "median_seconds": 8.232e-06,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 2.771453857421875
+   },
+   "proof": {
+    "median_seconds": 0.007759017,
+    "max_sampled_incremental_rss_mib": 0.25,
+    "max_sampled_heap_mib": 2.5474700927734375
+   },
+   "publication": {
+    "median_seconds": 0.000383595,
+    "max_sampled_incremental_rss_mib": 0.19140625,
+    "max_sampled_heap_mib": 2.9844284057617188
+   },
+   "reachability": {
+    "median_seconds": 0.000134552,
+    "max_sampled_incremental_rss_mib": 0.00390625,
+    "max_sampled_heap_mib": 2.7584152221679688
+   }
+  },
+  "profiled_exclusive_stage_seconds": {
+   "cas": 0.002270418,
+   "components": 0.003061084,
+   "other": 0.000258548,
+   "parse": 7.6643e-05,
+   "semantic_codec": 0.01236221,
+   "semantic_records": 0.000495844
+  },
+  "max_process_rss_mib": 14.00390625,
+  "optional_disk_growth_bytes": [
+   978296,
+   978296,
+   978296
+  ]
+ },
+ {
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c3/000036.sst",
+  "bytes": 438195,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.00247337,
+    "max_sampled_incremental_rss_mib": 1.24609375,
+    "max_sampled_heap_mib": 0.8114852905273438
+   },
+   "decode_cold": {
+    "median_seconds": 0.129061055,
+    "max_sampled_incremental_rss_mib": 29.21875,
+    "max_sampled_heap_mib": 74.54497528076172
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.761897086,
+    "max_sampled_incremental_rss_mib": 41.140625,
+    "max_sampled_heap_mib": 130.5080108642578
+   },
+   "finish_root": {
+    "median_seconds": 0.000278328,
+    "max_sampled_incremental_rss_mib": 0.36328125,
+    "max_sampled_heap_mib": 14.214958190917969
+   },
+   "flush": {
+    "median_seconds": 0.003076148,
+    "max_sampled_incremental_rss_mib": 0.56640625,
+    "max_sampled_heap_mib": 14.220939636230469
+   },
+   "outer_root_serialize": {
+    "median_seconds": 9.123e-06,
+    "max_sampled_incremental_rss_mib": 0.015625,
+    "max_sampled_heap_mib": 4.3294677734375
+   },
+   "proof": {
+    "median_seconds": 0.139704173,
+    "max_sampled_incremental_rss_mib": 17.6796875,
+    "max_sampled_heap_mib": 50.6636962890625
+   },
+   "publication": {
+    "median_seconds": 0.001015603,
+    "max_sampled_incremental_rss_mib": 1.10546875,
+    "max_sampled_heap_mib": 70.64227294921875
+   },
+   "reachability": {
+    "median_seconds": 0.000821452,
+    "max_sampled_incremental_rss_mib": 0.984375,
+    "max_sampled_heap_mib": 8.624214172363281
+   }
+  },
+  "profiled_exclusive_stage_seconds": {
+   "cas": 0.01007213,
+   "components": 0.006564481,
+   "other": 0.000408353,
+   "parse": 9.2847e-05,
+   "semantic_codec": 0.771271616,
+   "semantic_records": 0.001570375
+  },
+  "max_process_rss_mib": 51.6796875,
+  "optional_disk_growth_bytes": [
+   1122109,
+   1122109,
+   1122109
+  ]
+ },
+ {
+  "path": "/workspace/work/z4-a3/scale-256-none.sst",
+  "bytes": 274793190,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 1.69874634,
+    "max_sampled_incremental_rss_mib": 6.65234375,
+    "max_sampled_heap_mib": 4.1414947509765625
+   },
+   "decode_cold": {
+    "median_seconds": 0.659143215,
+    "max_sampled_incremental_rss_mib": 16.48828125,
+    "max_sampled_heap_mib": 42.808021545410156
+   },
+   "encode_with_cas": {
+    "median_seconds": 1.763182463,
+    "max_sampled_incremental_rss_mib": 33.26171875,
+    "max_sampled_heap_mib": 34.14845275878906
+   },
+   "finish_root": {
+    "median_seconds": 0.006249884,
+    "max_sampled_incremental_rss_mib": 2.12890625,
+    "max_sampled_heap_mib": 22.139938354492188
+   },
+   "flush": {
+    "median_seconds": 0.010036094,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 22.145919799804688
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.000210326,
+    "max_sampled_incremental_rss_mib": 0.00390625,
+    "max_sampled_heap_mib": 15.617324829101562
+   },
+   "proof": {
+    "median_seconds": 0.607840872,
+    "max_sampled_incremental_rss_mib": 19.09375,
+    "max_sampled_heap_mib": 34.18738555908203
+   },
+   "publication": {
+    "median_seconds": 0.014635073,
+    "max_sampled_incremental_rss_mib": 6.1875,
+    "max_sampled_heap_mib": 27.08587646484375
+   },
+   "reachability": {
+    "median_seconds": 0.014078837,
+    "max_sampled_incremental_rss_mib": 8.19921875,
+    "max_sampled_heap_mib": 33.40082550048828
+   }
+  },
+  "profiled_exclusive_stage_seconds": {
+   "cas": 0.688755586,
+   "components": 0.733022074,
+   "other": 0.132909311,
+   "parse": 0.0241873,
+   "semantic_codec": 0.007829079,
+   "semantic_records": 0.202090425
+  },
+  "max_process_rss_mib": 54.66796875,
+  "optional_disk_growth_bytes": [
+   273378662,
+   273378662,
+   273378662
+  ]
+ },
+ {
+  "path": "/workspace/work/z4-a3/scale-256.parquet",
+  "bytes": 268435456,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 1.660328922,
+    "max_sampled_incremental_rss_mib": 7.08203125,
+    "max_sampled_heap_mib": 4.765083312988281
+   },
+   "decode_cold": {
+    "median_seconds": 2.479611432,
+    "max_sampled_incremental_rss_mib": 29.6640625,
+    "max_sampled_heap_mib": 36.54374694824219
+   },
+   "encode_with_cas": {
+    "median_seconds": 4.548585419,
+    "max_sampled_incremental_rss_mib": 45.9140625,
+    "max_sampled_heap_mib": 49.76024627685547
+   },
+   "finish_root": {
+    "median_seconds": 0.101009042,
+    "max_sampled_incremental_rss_mib": 0.1484375,
+    "max_sampled_heap_mib": 18.313095092773438
+   },
+   "flush": {
+    "median_seconds": 2.534e-06,
+    "max_sampled_incremental_rss_mib": 0.0078125,
+    "max_sampled_heap_mib": 17.01007843017578
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.00019988,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 5.837005615234375
+   },
+   "proof": {
+    "median_seconds": 2.988823326,
+    "max_sampled_incremental_rss_mib": 23.25390625,
+    "max_sampled_heap_mib": 32.136016845703125
+   },
+   "publication": {
+    "median_seconds": 0.003307163,
+    "max_sampled_incremental_rss_mib": 0.54296875,
+    "max_sampled_heap_mib": 15.541755676269531
+   },
+   "reachability": {
+    "median_seconds": 0.003888436,
+    "max_sampled_incremental_rss_mib": 1.7109375,
+    "max_sampled_heap_mib": 6.568000793457031
+   }
+  },
+  "profiled_exclusive_stage_seconds": {
+   "cas": 0.639695103,
+   "components": 2.775395915,
+   "other": 0.004939284,
+   "parse": 0.000604577,
+   "semantic_codec": 0.337639643,
+   "semantic_planning": 1.091808722
+  },
+  "max_process_rss_mib": 59.328125,
+  "optional_disk_growth_bytes": [
+   268977540,
+   268977540,
+   268977540
+  ]
+ },
+ {
+  "path": "/workspace/work/z4-a3/scale-32-none.sst",
+  "bytes": 34349557,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.133853973,
+    "max_sampled_incremental_rss_mib": 2.23046875,
+    "max_sampled_heap_mib": 1.5118637084960938
+   },
+   "decode_cold": {
+    "median_seconds": 0.162425603,
+    "max_sampled_incremental_rss_mib": 9.52734375,
+    "max_sampled_heap_mib": 12.184944152832031
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.367525963,
+    "max_sampled_incremental_rss_mib": 14.2890625,
+    "max_sampled_heap_mib": 13.342430114746094
+   },
+   "finish_root": {
+    "median_seconds": 0.002382784,
+    "max_sampled_incremental_rss_mib": 0.8125,
+    "max_sampled_heap_mib": 8.62628173828125
+   },
+   "flush": {
+    "median_seconds": 0.00112709,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 8.780426025390625
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.000133591,
+    "max_sampled_incremental_rss_mib": 0.02734375,
+    "max_sampled_heap_mib": 5.630256652832031
+   },
+   "proof": {
+    "median_seconds": 0.164112113,
+    "max_sampled_incremental_rss_mib": 8.24609375,
+    "max_sampled_heap_mib": 12.326309204101562
+   },
+   "publication": {
+    "median_seconds": 0.007467715,
+    "max_sampled_incremental_rss_mib": 0.890625,
+    "max_sampled_heap_mib": 7.157188415527344
+   },
+   "reachability": {
+    "median_seconds": 0.006435047,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 6.079795837402344
+   }
+  },
+  "profiled_exclusive_stage_seconds": {
+   "cas": 0.210077485,
+   "components": 0.113099809,
+   "other": 0.018395093,
+   "parse": 0.002017585,
+   "semantic_codec": 0.000999507,
+   "semantic_records": 0.025936596
+  },
+  "max_process_rss_mib": 25.73828125,
+  "optional_disk_growth_bytes": [
+   34515831,
+   34515831,
+   34515831
+  ]
+ },
+ {
+  "path": "/workspace/work/z4-a3/scale-32.parquet",
+  "bytes": 33554432,
+  "samples": 3,
+  "phases": {
+   "authoritative_setup": {
+    "median_seconds": 0.148139344,
+    "max_sampled_incremental_rss_mib": 3.484375,
+    "max_sampled_heap_mib": 2.8863677978515625
+   },
+   "decode_cold": {
+    "median_seconds": 0.455790649,
+    "max_sampled_incremental_rss_mib": 23.09375,
+    "max_sampled_heap_mib": 25.512420654296875
+   },
+   "encode_with_cas": {
+    "median_seconds": 0.768571827,
+    "max_sampled_incremental_rss_mib": 29.91015625,
+    "max_sampled_heap_mib": 29.532730102539062
+   },
+   "finish_root": {
+    "median_seconds": 5.8698e-05,
+    "max_sampled_incremental_rss_mib": 0.0,
+    "max_sampled_heap_mib": 6.2430572509765625
+   },
+   "flush": {
+    "median_seconds": 0.00143662,
+    "max_sampled_incremental_rss_mib": 0.140625,
+    "max_sampled_heap_mib": 6.498268127441406
+   },
+   "outer_root_serialize": {
+    "median_seconds": 0.000153851,
+    "max_sampled_incremental_rss_mib": 0.00390625,
+    "max_sampled_heap_mib": 3.3742218017578125
+   },
+   "proof": {
+    "median_seconds": 0.564489655,
+    "max_sampled_incremental_rss_mib": 8.37109375,
+    "max_sampled_heap_mib": 20.319976806640625
+   },
+   "publication": {
+    "median_seconds": 0.003468672,
+    "max_sampled_incremental_rss_mib": 0.015625,
+    "max_sampled_heap_mib": 9.4139404296875
+   },
+   "reachability": {
+    "median_seconds": 0.00438725,
+    "max_sampled_incremental_rss_mib": 1.50390625,
+    "max_sampled_heap_mib": 3.3601913452148438
+   }
+  },
+  "profiled_exclusive_stage_seconds": {
+   "cas": 0.206424157,
+   "components": 0.409542098,
+   "other": 0.004863307,
+   "parse": 0.000764837,
+   "semantic_codec": 0.060853547,
+   "semantic_planning": 0.167340514
+  },
+  "max_process_rss_mib": 42.8046875,
+  "optional_disk_growth_bytes": [
+   33302518,
+   33302518,
+   33302518
+  ]
+ }
+]

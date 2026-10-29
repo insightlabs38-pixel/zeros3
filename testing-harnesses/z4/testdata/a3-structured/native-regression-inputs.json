@@ -1,0 +1,1622 @@
+[
+ {
+  "kind": "sst",
+  "case": 0,
+  "path": "/workspace/work/q8-sst/pebble/chain-none/c2/000007.sst",
+  "sha256": "8e130040529df2a42d315ffe8ab00c6ca45be5edc58f4c523591f93a7bb2ebe6",
+  "bytes": 484780,
+  "expected_exact": true,
+  "expected_root": "2f2b98b4e4a8ae85c3475e9cd9e795b1456f9eea2a0bc5690f1516e4df9323fd",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 1,
+  "path": "/workspace/work/q8-sst/pebble/chain-none/c2/000007.sst",
+  "sha256": "8e130040529df2a42d315ffe8ab00c6ca45be5edc58f4c523591f93a7bb2ebe6",
+  "bytes": 484780,
+  "expected_exact": true,
+  "expected_root": "2f2b98b4e4a8ae85c3475e9cd9e795b1456f9eea2a0bc5690f1516e4df9323fd",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 2,
+  "path": "/workspace/work/q8-sst/pebble/chain-none/c2/000009.sst",
+  "sha256": "a85390287fb595e59e753f6f3557754554fa543aba7dc5fab218c631b044efbc",
+  "bytes": 487489,
+  "expected_exact": true,
+  "expected_root": "1034212fe9739d64dc3e7249894de953015f5dd38a0d8b3277e04704ffed1d2d",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 3,
+  "path": "/workspace/work/q8-sst/pebble/chain-none/c2/000007.sst",
+  "sha256": "8e130040529df2a42d315ffe8ab00c6ca45be5edc58f4c523591f93a7bb2ebe6",
+  "bytes": 484780,
+  "expected_exact": true,
+  "expected_root": "2f2b98b4e4a8ae85c3475e9cd9e795b1456f9eea2a0bc5690f1516e4df9323fd",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 4,
+  "path": "/workspace/work/q8-sst/pebble/chain-none/c2/000009.sst",
+  "sha256": "a85390287fb595e59e753f6f3557754554fa543aba7dc5fab218c631b044efbc",
+  "bytes": 487489,
+  "expected_exact": true,
+  "expected_root": "1034212fe9739d64dc3e7249894de953015f5dd38a0d8b3277e04704ffed1d2d",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 5,
+  "path": "/workspace/work/q8-sst/pebble/chain-none/c2/000011.sst",
+  "sha256": "61eee5df37d57521617b381d89c396d1bbc921f800d7d354adefa48f04aa46a0",
+  "bytes": 12541,
+  "expected_exact": true,
+  "expected_root": "879457cba7b280ed4bdedb67e2d86e2047c4c8fc2ce2b542b476c38a21e8185c",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 6,
+  "path": "/workspace/work/q8-sst/pebble/chain-none/c3/000014.sst",
+  "sha256": "b486e69c6d96b437a44256385f9e2f2311f731a87d778d0344889e9bb0b93160",
+  "bytes": 979582,
+  "expected_exact": true,
+  "expected_root": "1912c79edcf8c216dfd718da521b978833113edd965b3eb81f5bdce0c10add2e",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 7,
+  "path": "/workspace/work/q8-sst/pebble/chain-none/c4/000017.sst",
+  "sha256": "6b92ab39afa132b6ae4cb606757acfb26d8e0a758bba6a26e422f2b9b1b31bf3",
+  "bytes": 964401,
+  "expected_exact": true,
+  "expected_root": "89048b34a59603691487bcdbea45fd85f1c8ebcf21f21a405b57029d357e66a9",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 8,
+  "path": "/workspace/work/q8-sst/pebble/chain-none/c7/000020.sst",
+  "sha256": "88e01b032bf8ff7ea1be7fa9d096366b08359de731c66993815f0d5b8a41923c",
+  "bytes": 966431,
+  "expected_exact": true,
+  "expected_root": "74b97e79deb67ce8438d2f2c563aebcd47dee422a01c314f462bb2f0129048f7",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 9,
+  "path": "/workspace/work/q8-sst/pebble/chain-none/c7/000020.sst",
+  "sha256": "88e01b032bf8ff7ea1be7fa9d096366b08359de731c66993815f0d5b8a41923c",
+  "bytes": 966431,
+  "expected_exact": true,
+  "expected_root": "74b97e79deb67ce8438d2f2c563aebcd47dee422a01c314f462bb2f0129048f7",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 10,
+  "path": "/workspace/work/q8-sst/pebble/chain-none/c7/000020.sst",
+  "sha256": "88e01b032bf8ff7ea1be7fa9d096366b08359de731c66993815f0d5b8a41923c",
+  "bytes": 966431,
+  "expected_exact": true,
+  "expected_root": "74b97e79deb67ce8438d2f2c563aebcd47dee422a01c314f462bb2f0129048f7",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 11,
+  "path": "/workspace/work/q8-sst/pebble/chain-snappy/c2/000007.sst",
+  "sha256": "096756b125c6301bd6b92a4cff323633fd113e74fdb19c2e452beb8ae51e1ca0",
+  "bytes": 330193,
+  "expected_exact": true,
+  "expected_root": "547b2a4826c519f30c0f93c23ab80bde104a9544dad6545dd61a3eeba711deda",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 12,
+  "path": "/workspace/work/q8-sst/pebble/chain-snappy/c2/000007.sst",
+  "sha256": "096756b125c6301bd6b92a4cff323633fd113e74fdb19c2e452beb8ae51e1ca0",
+  "bytes": 330193,
+  "expected_exact": true,
+  "expected_root": "547b2a4826c519f30c0f93c23ab80bde104a9544dad6545dd61a3eeba711deda",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 13,
+  "path": "/workspace/work/q8-sst/pebble/chain-snappy/c2/000009.sst",
+  "sha256": "9617fbaeeda1d0ac285b8277e626602428d8b2974047d6c46217e3bdaf75e20f",
+  "bytes": 191546,
+  "expected_exact": true,
+  "expected_root": "5e4470204777539d24db879971a49ec34de3ad7427245f4fa5ba006aef7735b6",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 14,
+  "path": "/workspace/work/q8-sst/pebble/chain-snappy/c2/000007.sst",
+  "sha256": "096756b125c6301bd6b92a4cff323633fd113e74fdb19c2e452beb8ae51e1ca0",
+  "bytes": 330193,
+  "expected_exact": true,
+  "expected_root": "547b2a4826c519f30c0f93c23ab80bde104a9544dad6545dd61a3eeba711deda",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 15,
+  "path": "/workspace/work/q8-sst/pebble/chain-snappy/c2/000009.sst",
+  "sha256": "9617fbaeeda1d0ac285b8277e626602428d8b2974047d6c46217e3bdaf75e20f",
+  "bytes": 191546,
+  "expected_exact": true,
+  "expected_root": "5e4470204777539d24db879971a49ec34de3ad7427245f4fa5ba006aef7735b6",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 16,
+  "path": "/workspace/work/q8-sst/pebble/chain-snappy/c2/000011.sst",
+  "sha256": "17398ca25091c5229da616c9744ceed2282d896cfbd60fa3dc9b1dd9c579f7be",
+  "bytes": 6665,
+  "expected_exact": true,
+  "expected_root": "5f7e8bb7ccf465b3717cb116e55e18f6971f464d87a2f078614c1b1f7f4c3e64",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 17,
+  "path": "/workspace/work/q8-sst/pebble/chain-snappy/c3/000014.sst",
+  "sha256": "9901737d7307a358522bb7c6c93a40fcf00874eddbefa4d71079cb6d378134b0",
+  "bytes": 519865,
+  "expected_exact": true,
+  "expected_root": "cf296a5f7155ad68b465ce539619d3e390c17fbb98f2d47d3316146ce6cec71b",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 18,
+  "path": "/workspace/work/q8-sst/pebble/chain-snappy/c4/000017.sst",
+  "sha256": "8907889706bb7b0c2f03fbbf54e3f95d7de0728119d40aabe7b3963dded426a8",
+  "bytes": 513261,
+  "expected_exact": true,
+  "expected_root": "70ff508a32b41d604a6244b8ed33a09c547a8ebdcebf2b56c50a5f5efcd2e5ed",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 19,
+  "path": "/workspace/work/q8-sst/pebble/chain-snappy/c7/000020.sst",
+  "sha256": "1e109ac3895b95b1b063dd31b06afa65d18cbcaaa5fa2d1fc1eece7411337a3c",
+  "bytes": 514249,
+  "expected_exact": true,
+  "expected_root": "b0cd9463af59fd7b1e30c19b389ce1dc968279d7029bb5684538dd764e6a6a67",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 20,
+  "path": "/workspace/work/q8-sst/pebble/chain-snappy/c7/000020.sst",
+  "sha256": "1e109ac3895b95b1b063dd31b06afa65d18cbcaaa5fa2d1fc1eece7411337a3c",
+  "bytes": 514249,
+  "expected_exact": true,
+  "expected_root": "b0cd9463af59fd7b1e30c19b389ce1dc968279d7029bb5684538dd764e6a6a67",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 21,
+  "path": "/workspace/work/q8-sst/pebble/chain-snappy/c7/000020.sst",
+  "sha256": "1e109ac3895b95b1b063dd31b06afa65d18cbcaaa5fa2d1fc1eece7411337a3c",
+  "bytes": 514249,
+  "expected_exact": true,
+  "expected_root": "b0cd9463af59fd7b1e30c19b389ce1dc968279d7029bb5684538dd764e6a6a67",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 22,
+  "path": "/workspace/work/q8-sst/pebble/chain-zstd/c2/000007.sst",
+  "sha256": "ffa52e90742f8469237a781f80376ca9ee6c7f49f8d4b951fcdaa5bc3d37d9c4",
+  "bytes": 295810,
+  "expected_exact": true,
+  "expected_root": "6b03ae23762868f0ea0db926b550800cb654d215efc9aec1e47bad630c136d7d",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 23,
+  "path": "/workspace/work/q8-sst/pebble/chain-zstd/c2/000007.sst",
+  "sha256": "ffa52e90742f8469237a781f80376ca9ee6c7f49f8d4b951fcdaa5bc3d37d9c4",
+  "bytes": 295810,
+  "expected_exact": true,
+  "expected_root": "6b03ae23762868f0ea0db926b550800cb654d215efc9aec1e47bad630c136d7d",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 24,
+  "path": "/workspace/work/q8-sst/pebble/chain-zstd/c2/000009.sst",
+  "sha256": "d22827cfe06a5adf10e7e033eb897a4a8f18a5dd82b5b8f14a1fc028678ed33c",
+  "bytes": 150827,
+  "expected_exact": true,
+  "expected_root": "e4d135dcc912c7e54e44163ce86ac92526b6348874a020d3cce9a3e83ba268b3",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 25,
+  "path": "/workspace/work/q8-sst/pebble/chain-zstd/c2/000007.sst",
+  "sha256": "ffa52e90742f8469237a781f80376ca9ee6c7f49f8d4b951fcdaa5bc3d37d9c4",
+  "bytes": 295810,
+  "expected_exact": true,
+  "expected_root": "6b03ae23762868f0ea0db926b550800cb654d215efc9aec1e47bad630c136d7d",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 26,
+  "path": "/workspace/work/q8-sst/pebble/chain-zstd/c2/000009.sst",
+  "sha256": "d22827cfe06a5adf10e7e033eb897a4a8f18a5dd82b5b8f14a1fc028678ed33c",
+  "bytes": 150827,
+  "expected_exact": true,
+  "expected_root": "e4d135dcc912c7e54e44163ce86ac92526b6348874a020d3cce9a3e83ba268b3",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 27,
+  "path": "/workspace/work/q8-sst/pebble/chain-zstd/c2/000011.sst",
+  "sha256": "d5cdf5e93d730b84aef809dd86d2abe34b05ea87f6a49580b90f89fb17acc913",
+  "bytes": 5821,
+  "expected_exact": true,
+  "expected_root": "e7d3cc276e9dbc0033798b10aeb3e8e621a80e7597df9faf2306b1fa99e0f093",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 28,
+  "path": "/workspace/work/q8-sst/pebble/chain-zstd/c3/000014.sst",
+  "sha256": "29a49ca5434c9cfcf3b0d82e3f55102ac11d20c28e3529a7823abf34ed302b79",
+  "bytes": 443073,
+  "expected_exact": true,
+  "expected_root": "be07c7ed96cd7b294f57b7ad3ec1a372c0b482e3342748999677ac6044644c44",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 29,
+  "path": "/workspace/work/q8-sst/pebble/chain-zstd/c4/000017.sst",
+  "sha256": "27164b7bdac5c188aa29da8f53e8881266ea681fb27adaff2a91563f0341f7f6",
+  "bytes": 435934,
+  "expected_exact": true,
+  "expected_root": "01f3ea57b1d1a9d917f8507ab9647049f8a94c31bb4e3c668677d9f8b3a68c6f",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 30,
+  "path": "/workspace/work/q8-sst/pebble/chain-zstd/c7/000020.sst",
+  "sha256": "3cfbf9b6fe6a98faac55ce1fdcf2ba46a43e3c637c68296f07da02197a1d69fd",
+  "bytes": 436720,
+  "expected_exact": true,
+  "expected_root": "d278c496dafadc462570263f45e14a1e8c836dc840890f759bbf064518b56d7a",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 31,
+  "path": "/workspace/work/q8-sst/pebble/chain-zstd/c7/000020.sst",
+  "sha256": "3cfbf9b6fe6a98faac55ce1fdcf2ba46a43e3c637c68296f07da02197a1d69fd",
+  "bytes": 436720,
+  "expected_exact": true,
+  "expected_root": "d278c496dafadc462570263f45e14a1e8c836dc840890f759bbf064518b56d7a",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 32,
+  "path": "/workspace/work/q8-sst/pebble/chain-zstd/c7/000020.sst",
+  "sha256": "3cfbf9b6fe6a98faac55ce1fdcf2ba46a43e3c637c68296f07da02197a1d69fd",
+  "bytes": 436720,
+  "expected_exact": true,
+  "expected_root": "d278c496dafadc462570263f45e14a1e8c836dc840890f759bbf064518b56d7a",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 33,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-lz4/c2/000010.sst",
+  "sha256": "281072ec1c9966edc543cc818d9bcad10b071bb841638c5692bf7b36fac0c2a3",
+  "bytes": 313638,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: data-layout: sstz3: unsupported table: compression type 4"
+ },
+ {
+  "kind": "sst",
+  "case": 34,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-lz4/c2/000010.sst",
+  "sha256": "281072ec1c9966edc543cc818d9bcad10b071bb841638c5692bf7b36fac0c2a3",
+  "bytes": 313638,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: data-layout: sstz3: unsupported table: compression type 4"
+ },
+ {
+  "kind": "sst",
+  "case": 35,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-lz4/c2/000018.sst",
+  "sha256": "338a1311682b96812258408b25d59c84100c804a3c745005e41155e07563cc18",
+  "bytes": 225586,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: data-layout: sstz3: unsupported table: compression type 4"
+ },
+ {
+  "kind": "sst",
+  "case": 36,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-lz4/c2/000010.sst",
+  "sha256": "281072ec1c9966edc543cc818d9bcad10b071bb841638c5692bf7b36fac0c2a3",
+  "bytes": 313638,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: data-layout: sstz3: unsupported table: compression type 4"
+ },
+ {
+  "kind": "sst",
+  "case": 37,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-lz4/c2/000018.sst",
+  "sha256": "338a1311682b96812258408b25d59c84100c804a3c745005e41155e07563cc18",
+  "bytes": 225586,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: data-layout: sstz3: unsupported table: compression type 4"
+ },
+ {
+  "kind": "sst",
+  "case": 38,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-lz4/c2/000026.sst",
+  "sha256": "7e7760a321c2aa7a300cb884226b0ddf5441fd4c4ba2043b6e07e1c60798f216",
+  "bytes": 7162,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "representation: unsupported version or kind"
+ },
+ {
+  "kind": "sst",
+  "case": 39,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-lz4/c3/000036.sst",
+  "sha256": "80f725aa1f1b4032d0987551996b4c76922d1203d24a402005dfec1f3bbf007e",
+  "bytes": 537543,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: data-layout: sstz3: unsupported table: compression type 4"
+ },
+ {
+  "kind": "sst",
+  "case": 40,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-lz4/c4/000046.sst",
+  "sha256": "184f5888278f711dff2e57db41aa3ac3f5663fa5cf043616a5d0235e12bd179d",
+  "bytes": 529590,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: data-layout: sstz3: unsupported table: compression type 4"
+ },
+ {
+  "kind": "sst",
+  "case": 41,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-lz4/c5/000056.sst",
+  "sha256": "0fc9924bf70d0180b6a4e667923511d312d7093f1426fbb26ff4ffb110e2d627",
+  "bytes": 530744,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: data-layout: sstz3: unsupported table: compression type 4"
+ },
+ {
+  "kind": "sst",
+  "case": 42,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-lz4/c6/000067.sst",
+  "sha256": "1fb7a9771b5d45f4a8f1e0f4e17f51b300fde51ab76e04dbcc7a8b3db18fd7e7",
+  "bytes": 530744,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: data-layout: sstz3: unsupported table: compression type 4"
+ },
+ {
+  "kind": "sst",
+  "case": 43,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-lz4/c7/000078.sst",
+  "sha256": "32310d6d06e55eb7e9682c65978d4bad97a02483f75a829d7b6029b67c782d24",
+  "bytes": 530744,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: data-layout: sstz3: unsupported table: compression type 4"
+ },
+ {
+  "kind": "sst",
+  "case": 44,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c2/000010.sst",
+  "sha256": "d6a18fc9d036e5da4819f79220fd278293e148b1d1d0969ba221212e5720e78b",
+  "bytes": 483310,
+  "expected_exact": true,
+  "expected_root": "77d0b30c2202b85737a7abdf2dff097f785d0bde9e27733ed20961e1567092eb",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 45,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c2/000010.sst",
+  "sha256": "d6a18fc9d036e5da4819f79220fd278293e148b1d1d0969ba221212e5720e78b",
+  "bytes": 483310,
+  "expected_exact": true,
+  "expected_root": "77d0b30c2202b85737a7abdf2dff097f785d0bde9e27733ed20961e1567092eb",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 46,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c2/000018.sst",
+  "sha256": "b87bcabe4e08dc5b826a613c98aa98b4827254ea77a3576ea1a3ec8a0c9dde88",
+  "bytes": 482129,
+  "expected_exact": true,
+  "expected_root": "7dbb1c73fce1374c6c62fc245b77a055cc961c050d81746b0f587a11d96f5bab",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 47,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c2/000010.sst",
+  "sha256": "d6a18fc9d036e5da4819f79220fd278293e148b1d1d0969ba221212e5720e78b",
+  "bytes": 483310,
+  "expected_exact": true,
+  "expected_root": "77d0b30c2202b85737a7abdf2dff097f785d0bde9e27733ed20961e1567092eb",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 48,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c2/000018.sst",
+  "sha256": "b87bcabe4e08dc5b826a613c98aa98b4827254ea77a3576ea1a3ec8a0c9dde88",
+  "bytes": 482129,
+  "expected_exact": true,
+  "expected_root": "7dbb1c73fce1374c6c62fc245b77a055cc961c050d81746b0f587a11d96f5bab",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 49,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c2/000026.sst",
+  "sha256": "53423c5c303a4dcd69ccd45b554cc4857f5a66adbcc6de262ecda2c5b2e05894",
+  "bytes": 12755,
+  "expected_exact": true,
+  "expected_root": "1eabc120b5e869835315ab34a1cd69f03e67cefeb742d879af0cb15da904b615",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 50,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c3/000036.sst",
+  "sha256": "57b851b6e38a25c9876c2d1d33494c4aac80e0b583db82407096e7954bdae7c9",
+  "bytes": 971044,
+  "expected_exact": true,
+  "expected_root": "24fa462fd4a39bccfad71252cb160af223f61e22ae1b3b759924b0ce5128315c",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 51,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c4/000046.sst",
+  "sha256": "e7b793be9805e20e589a0900c17c822c51fcad3ec27bb2b04f4a68cf19bca9e3",
+  "bytes": 956090,
+  "expected_exact": true,
+  "expected_root": "49c859754f731c259d24dab4721d21002178609d9d09f18117d07ef96e54a220",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 52,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c5/000056.sst",
+  "sha256": "8033c1273250a84332b10afd3fde1d2038c0bafdc1358a4e9bf4916692ec0f58",
+  "bytes": 958095,
+  "expected_exact": true,
+  "expected_root": "f3c3e67ddb7d09db3b7ca0d80d2596badae9513711d7dc5533020e844f195b65",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 53,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c6/000067.sst",
+  "sha256": "bc37679f8fa88b2a90c02ed183b2a6002c5e4dc88745ab539e22cec919ae6a87",
+  "bytes": 958095,
+  "expected_exact": true,
+  "expected_root": "cbe6b75347a4800c5226374836ada0c0ff86c314ea8b2c29ebf553fe38e38287",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 54,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-none/c7/000078.sst",
+  "sha256": "4f025070a76d48387f67b72e84846a3aa0a820950ae85719c9307cd071d95bf2",
+  "bytes": 958095,
+  "expected_exact": true,
+  "expected_root": "9deed1432574ad50c28a180831997cd4fb4201e27f1e8195b22dfa2eab261114",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 55,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c2/000010.sst",
+  "sha256": "56b9aa953c4739bb6d12d148eca88c8f205b8eeb2ed84244e335452910072211",
+  "bytes": 327468,
+  "expected_exact": true,
+  "expected_root": "989f7d2328f84f2d77dfefc65e548cf09d0a4b824d4ba8d8b97d52c7a840e687",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 56,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c2/000010.sst",
+  "sha256": "56b9aa953c4739bb6d12d148eca88c8f205b8eeb2ed84244e335452910072211",
+  "bytes": 327468,
+  "expected_exact": true,
+  "expected_root": "989f7d2328f84f2d77dfefc65e548cf09d0a4b824d4ba8d8b97d52c7a840e687",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 57,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c2/000018.sst",
+  "sha256": "8603de7d2639195e1e07a2ba897d4c15617b5f815bf636e875b6a6354eda88f8",
+  "bytes": 189033,
+  "expected_exact": true,
+  "expected_root": "34caca3d760889cb6ef252e3c2a81e6b9af6a5343b3fb44418eff0892a46fff0",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 58,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c2/000010.sst",
+  "sha256": "56b9aa953c4739bb6d12d148eca88c8f205b8eeb2ed84244e335452910072211",
+  "bytes": 327468,
+  "expected_exact": true,
+  "expected_root": "989f7d2328f84f2d77dfefc65e548cf09d0a4b824d4ba8d8b97d52c7a840e687",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 59,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c2/000018.sst",
+  "sha256": "8603de7d2639195e1e07a2ba897d4c15617b5f815bf636e875b6a6354eda88f8",
+  "bytes": 189033,
+  "expected_exact": true,
+  "expected_root": "34caca3d760889cb6ef252e3c2a81e6b9af6a5343b3fb44418eff0892a46fff0",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 60,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c2/000026.sst",
+  "sha256": "4720fb7044413420d0325a0916c8dc9c2e709e9bd3502c01371a442e5e59a5b4",
+  "bytes": 6941,
+  "expected_exact": true,
+  "expected_root": "5f447cbc246fb02db95a44689926109a9e28fbff24b0a18dd60d3252f7fc4404",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 61,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c3/000036.sst",
+  "sha256": "20419b414352b6c4e52f9d4446fe39da8f9ea128c8811c67ba956c42b013c8e2",
+  "bytes": 517075,
+  "expected_exact": true,
+  "expected_root": "68de6bfbd188317eaf3df83d008ee20076fb90aa1599688256eeedb8332e782e",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 62,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c4/000046.sst",
+  "sha256": "f2559933354606ed480b6aac4273ee3f69b912f31d891f5209c173c36eaf29bc",
+  "bytes": 507839,
+  "expected_exact": true,
+  "expected_root": "3a497ecf6e07b56fd8621346283832f34c7b938462e2c0a9e72012f993804775",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 63,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c5/000056.sst",
+  "sha256": "dd8e416cbd063035f783610553cfc126196f0fb9050e1e09586435370637e352",
+  "bytes": 509114,
+  "expected_exact": true,
+  "expected_root": "2d03069035844b20fd285e06a8d0d9ac03183ae43a4fa26ca2abc5ff59746de9",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 64,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c6/000067.sst",
+  "sha256": "43acf0c2fab230a030dcff905e791bcb50cecee3c1cf62fe0ebdc28164115064",
+  "bytes": 509114,
+  "expected_exact": true,
+  "expected_root": "130f4c9483f7bce6f97eb877bb4b19627c5a2aad2712e536e047be999e23b715",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 65,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-snappy/c7/000078.sst",
+  "sha256": "a2d5282ab7129f3745bc7396309254e86f5b3128c3fb904af2cb213bbad5ce72",
+  "bytes": 509114,
+  "expected_exact": true,
+  "expected_root": "0b77541b90f6b40e1cb85b882d312fbe0b63cfae7dee27ffb3d064daefd33c6a",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 66,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c2/000010.sst",
+  "sha256": "e77c0a8fe089fd93045918b0d427008073acc6a0971a81a33c9e5aa6a26d3091",
+  "bytes": 292324,
+  "expected_exact": true,
+  "expected_root": "7e182d056103157fe7d4137e44695e6cadcf741e9529c9577acd953b90fec4bc",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 67,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c2/000010.sst",
+  "sha256": "e77c0a8fe089fd93045918b0d427008073acc6a0971a81a33c9e5aa6a26d3091",
+  "bytes": 292324,
+  "expected_exact": true,
+  "expected_root": "7e182d056103157fe7d4137e44695e6cadcf741e9529c9577acd953b90fec4bc",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 68,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c2/000018.sst",
+  "sha256": "ca01cb69cb07de0493e3d2529c3c26d9c8f9da9c32cedb9c91cff8b37b623cab",
+  "bytes": 147005,
+  "expected_exact": true,
+  "expected_root": "d2b8e5d8054a379e9a43ae0b59bf3686f273b45e45d4c7fbe616daefb19e7408",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 69,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c2/000010.sst",
+  "sha256": "e77c0a8fe089fd93045918b0d427008073acc6a0971a81a33c9e5aa6a26d3091",
+  "bytes": 292324,
+  "expected_exact": true,
+  "expected_root": "7e182d056103157fe7d4137e44695e6cadcf741e9529c9577acd953b90fec4bc",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 70,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c2/000018.sst",
+  "sha256": "ca01cb69cb07de0493e3d2529c3c26d9c8f9da9c32cedb9c91cff8b37b623cab",
+  "bytes": 147005,
+  "expected_exact": true,
+  "expected_root": "d2b8e5d8054a379e9a43ae0b59bf3686f273b45e45d4c7fbe616daefb19e7408",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 71,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c2/000026.sst",
+  "sha256": "e71480149b583b21cad8d043a20220337370672888e0142055f4c42c1b594cd7",
+  "bytes": 6059,
+  "expected_exact": true,
+  "expected_root": "997de491cc4bfe393ccbdfc41fe56ac9da47973988f54315c909f5af4cebe4f9",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 72,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c3/000036.sst",
+  "sha256": "ed5963453b1c9c21c999467d3cdd7ad07148153836e04028f2b6e3ecb808e891",
+  "bytes": 438195,
+  "expected_exact": true,
+  "expected_root": "8a8e597743bee35f946b086f2790f5e3aec07e9d593bcafca9262ae9e195e652",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 73,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c4/000046.sst",
+  "sha256": "15942b6c5727864c1a919616fcc630891450816e13146f9d0c53f64b9468f018",
+  "bytes": 431481,
+  "expected_exact": true,
+  "expected_root": "31d53b02d36288f46b24bc1af534143ea02bf2c00193f1bec97cfba5435e29b7",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 74,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c5/000056.sst",
+  "sha256": "071d4cb5364b1872565a047ef1ae98f81ecf78038a5dbdcfd7a2240c33ddb324",
+  "bytes": 432434,
+  "expected_exact": true,
+  "expected_root": "a2fc43ee494f67d951d8af3dc4e7a35a8ba7b8d3a5a5e7e27fd6f3a50776e155",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 75,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c6/000067.sst",
+  "sha256": "7bdcdb845cd2928d278aa65ecf80b458628b7462d9b9bcd773c152b0342cac3b",
+  "bytes": 432434,
+  "expected_exact": true,
+  "expected_root": "cbe93bfdddfcc605a2e401305f2f0d035b98c03cc0f6af323bfdd95e4b188134",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 76,
+  "path": "/workspace/work/q8-sst/rocksdb/chain-zstd/c7/000078.sst",
+  "sha256": "162e141996f4f347db0d4a97724f72ccd5b699bc72d0cb506004804063599c9a",
+  "bytes": 432434,
+  "expected_exact": true,
+  "expected_root": "53ea2688310c7a2ffd394b02704d9f59ad96d2e520c623076ce9fc23b0c2489c",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "sst",
+  "case": 77,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-none/c2/000006.sst",
+  "sha256": "4af8beb8cf56d1547aa82c1d0ad72b927f6202b9f5968998c07b1806866dac13",
+  "bytes": 485911,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 78,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-none/c2/000006.sst",
+  "sha256": "4af8beb8cf56d1547aa82c1d0ad72b927f6202b9f5968998c07b1806866dac13",
+  "bytes": 485911,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 79,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-none/c2/000008.sst",
+  "sha256": "fed8889a1358e8c83d5c3200df0349a844f89460a2916ed7806c862b59632572",
+  "bytes": 480995,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 80,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-none/c2/000006.sst",
+  "sha256": "4af8beb8cf56d1547aa82c1d0ad72b927f6202b9f5968998c07b1806866dac13",
+  "bytes": 485911,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 81,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-none/c2/000008.sst",
+  "sha256": "fed8889a1358e8c83d5c3200df0349a844f89460a2916ed7806c862b59632572",
+  "bytes": 480995,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 82,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-none/c2/000010.sst",
+  "sha256": "6266a3a2af1647163429ddce143e69ec76adee686bf322d6079c1b7c560678cc",
+  "bytes": 12914,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 83,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-none/c3/000013.sst",
+  "sha256": "ad22c6a7d918b906093440cc2e5a05eb8c94efe7a4513bc6a00f994f9002a796",
+  "bytes": 966053,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 84,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-none/c4/000016.sst",
+  "sha256": "d50e21664df84a1bbcd119587320946204cfd22c61da2b4f169d68ab75cc9b8f",
+  "bytes": 951048,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 85,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-none/c7/000019.sst",
+  "sha256": "7dc0e948da0a4df51bc8658bca57d0bcb9f242cb1740deb145e1de54995d71dd",
+  "bytes": 953136,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 86,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-none/c7/000019.sst",
+  "sha256": "7dc0e948da0a4df51bc8658bca57d0bcb9f242cb1740deb145e1de54995d71dd",
+  "bytes": 953136,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 87,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-none/c7/000019.sst",
+  "sha256": "7dc0e948da0a4df51bc8658bca57d0bcb9f242cb1740deb145e1de54995d71dd",
+  "bytes": 953136,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 88,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-snappy/c2/000006.sst",
+  "sha256": "299f188e9eec267a2a0f6e0258f8a7d2b710ea8ad3411169028af32e43582584",
+  "bytes": 336062,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 89,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-snappy/c2/000006.sst",
+  "sha256": "299f188e9eec267a2a0f6e0258f8a7d2b710ea8ad3411169028af32e43582584",
+  "bytes": 336062,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 90,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-snappy/c2/000008.sst",
+  "sha256": "fa5a73dcc067ae92fe45b025c8b9fe66468e3f67fb6b8bb223673f10c4dbd150",
+  "bytes": 197925,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 91,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-snappy/c2/000006.sst",
+  "sha256": "299f188e9eec267a2a0f6e0258f8a7d2b710ea8ad3411169028af32e43582584",
+  "bytes": 336062,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 92,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-snappy/c2/000008.sst",
+  "sha256": "fa5a73dcc067ae92fe45b025c8b9fe66468e3f67fb6b8bb223673f10c4dbd150",
+  "bytes": 197925,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 93,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-snappy/c2/000010.sst",
+  "sha256": "e610cdee3456f20ea0bc7ab2c5eade595467c26e3cb996223335cb69bc750f22",
+  "bytes": 6958,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 94,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-snappy/c3/000013.sst",
+  "sha256": "7180214d4f032cde48f1ee9eaeee1f9b32b312148a19c05ead19551c69739446",
+  "bytes": 532068,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 95,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-snappy/c4/000016.sst",
+  "sha256": "1ecbac65ea4755a9820a3e212c277786dbdcd11f3ce7af2003dccf32f91b02e3",
+  "bytes": 522923,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 96,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-snappy/c7/000019.sst",
+  "sha256": "28dc0d64c134800ad6e51d6f366cc5c5d65a77ff9883f7658e8f004f38efedf9",
+  "bytes": 524634,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 97,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-snappy/c7/000019.sst",
+  "sha256": "28dc0d64c134800ad6e51d6f366cc5c5d65a77ff9883f7658e8f004f38efedf9",
+  "bytes": 524634,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 98,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-snappy/c7/000019.sst",
+  "sha256": "28dc0d64c134800ad6e51d6f366cc5c5d65a77ff9883f7658e8f004f38efedf9",
+  "bytes": 524634,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 99,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-zstd/c2/000006.sst",
+  "sha256": "3b80b6d6f025c89b1ec28469c26d425cdafdcdeed78dc110debc0cb3f6432c5a",
+  "bytes": 298746,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 100,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-zstd/c2/000006.sst",
+  "sha256": "3b80b6d6f025c89b1ec28469c26d425cdafdcdeed78dc110debc0cb3f6432c5a",
+  "bytes": 298746,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 101,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-zstd/c2/000008.sst",
+  "sha256": "e3142b6458536e7e6f1bb1ce36f9fd3fee01c3058a3ddc2dba268c5f50118182",
+  "bytes": 154817,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 102,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-zstd/c2/000006.sst",
+  "sha256": "3b80b6d6f025c89b1ec28469c26d425cdafdcdeed78dc110debc0cb3f6432c5a",
+  "bytes": 298746,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 103,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-zstd/c2/000008.sst",
+  "sha256": "e3142b6458536e7e6f1bb1ce36f9fd3fee01c3058a3ddc2dba268c5f50118182",
+  "bytes": 154817,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 104,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-zstd/c2/000010.sst",
+  "sha256": "65dde04c48dbf0025ce73893d81cb5d204f2eb102a22cc8b29a7a5e0bfb4b541",
+  "bytes": 5913,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 105,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-zstd/c3/000013.sst",
+  "sha256": "431194d0e410fed03fc511f4b64d4fed7fe7a6888093a3acd25bd90b75c6fa48",
+  "bytes": 451425,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 106,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-zstd/c4/000016.sst",
+  "sha256": "9f11c90dbae7d7c636465121a9411eb6fcd0e88da206cf35f6ea56f743e9c4aa",
+  "bytes": 442601,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 107,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-zstd/c7/000019.sst",
+  "sha256": "f2672aa7191bb17b46e16ad28012dd47ced275f883e88ee2e693f9cc6c8b8a24",
+  "bytes": 443870,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 108,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-zstd/c7/000019.sst",
+  "sha256": "f2672aa7191bb17b46e16ad28012dd47ced275f883e88ee2e693f9cc6c8b8a24",
+  "bytes": 443870,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "sst",
+  "case": 109,
+  "path": "/workspace/work/q8-sst-new/pebble/chain-zstd/c7/000019.sst",
+  "sha256": "f2672aa7191bb17b46e16ad28012dd47ced275f883e88ee2e693f9cc6c8b8a24",
+  "bytes": 443870,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "sstz3: unsupported table: footer: pebble table format 7; footer layout unknown"
+ },
+ {
+  "kind": "parquet",
+  "case": 0,
+  "path": "/workspace/work/q8-parquet/parquet/controls/x01-gzip/db.parquet",
+  "sha256": "78b5e99efaaa55d7b53bf13d93c869c505701fa525b4064cc7d5d93bff08432d",
+  "bytes": 7238515,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: unsupported feature: no column chunk is logically decodable"
+ },
+ {
+  "kind": "parquet",
+  "case": 1,
+  "path": "/workspace/work/q8-parquet/parquet/controls/x02-delta/db.parquet",
+  "sha256": "3f4e40ce6740e5398c05769d914d167eaf43b995550d1c34ad38ca342e50f329",
+  "bytes": 6316543,
+  "expected_exact": true,
+  "expected_root": "618c3fc15ce88202abc9e9f96cef9267e505f3c5cc763abe1f01067024e14859",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 2,
+  "path": "/workspace/work/q8-parquet/parquet/controls/x03-nested/db.parquet",
+  "sha256": "3e9c5d654ca1ed551411f173c6fd507847e985565af26b3ab89de962e4799efc",
+  "bytes": 225949,
+  "expected_exact": true,
+  "expected_root": "44cb93d0134bb05ec912c3ad8664331099c8a84ef21bdea0a2ed7f199c7a5876",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 3,
+  "path": "/workspace/work/q8-parquet/parquet/controls/x04-lz4/db.parquet",
+  "sha256": "d8f01b38b1e3b451f08847c45d6691e3b8660efe9222596d531218f218ae894f",
+  "bytes": 8885595,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: unsupported feature: no column chunk is logically decodable"
+ },
+ {
+  "kind": "parquet",
+  "case": 4,
+  "path": "/workspace/work/q8-parquet/parquet/controls/x05-page-index-checksum/db.parquet",
+  "sha256": "d63af2b7c16b19996ac262a998b728752e5d7e1c54ad0c7a0af89a2941f1fbb8",
+  "bytes": 8703059,
+  "expected_exact": true,
+  "expected_root": "89dd081b3e09415dbe2cba085d8f65c950fbd63fbbdde842a9d75e7352e96729",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 5,
+  "path": "/workspace/work/q8-parquet/parquet/controls/x06-no-statistics/db.parquet",
+  "sha256": "6bd5f8f24f46977da8ecd6e429299b128329d15c4a084c5576698a970c64a2be",
+  "bytes": 8700665,
+  "expected_exact": true,
+  "expected_root": "4493e940b02bd6c0954bc35aca0a098fcc1834522386a7691cc1484ec2bb8124",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 6,
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d01-snappy/db.parquet",
+  "sha256": "87faa9bce9d2c4f3244560bfd4082fffcecaecd5062fda05bdc729ff87f53df1",
+  "bytes": 30164154,
+  "expected_exact": true,
+  "expected_root": "31811400cfeacfd5ea5cf6c25d1c9615bb42383f7c5acf090fd166eb33b11a6b",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 7,
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d02-zstd/db.parquet",
+  "sha256": "c7a74d2b674c402d6e438e4d8175eb9758171a4f289e94d6469c2949d0aee0c7",
+  "bytes": 22914677,
+  "expected_exact": true,
+  "expected_root": "8dd97d5d57d95d5f7ba13f65b2b4f3d03e2915ad4da40421607b5d9c66479eeb",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 8,
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d03-uncompressed/db.parquet",
+  "sha256": "6a5e9faf39de4029205809743b38831b11c166d37fcf44874de6ad32a0947b60",
+  "bytes": 38715157,
+  "expected_exact": true,
+  "expected_root": "db11d394a14cd9de43ae8602860d63130bfafc57aadde4d0aa2e38efd17174db",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 9,
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d04-row-group-100k/db.parquet",
+  "sha256": "6e192d5bdc92d9c2ea04976f43cc579765f6e48e5dabffccb0d913b01ac7c819",
+  "bytes": 30156221,
+  "expected_exact": true,
+  "expected_root": "d33303e98c763f70258a2b5a2cb84408341e475e64c6813fc109d870cdc758cb",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 10,
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d01-snappy/db.parquet",
+  "sha256": "87faa9bce9d2c4f3244560bfd4082fffcecaecd5062fda05bdc729ff87f53df1",
+  "bytes": 30164154,
+  "expected_exact": true,
+  "expected_root": "31811400cfeacfd5ea5cf6c25d1c9615bb42383f7c5acf090fd166eb33b11a6b",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 11,
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d06-v2/db.parquet",
+  "sha256": "e635ca132e95e0aefbe02e6d1fd25120cf3c3017d17f6b373e11bcebb6cf4eb9",
+  "bytes": 23378578,
+  "expected_exact": true,
+  "expected_root": "11ec31a23e84228a6dcf95fcd427b5cff6f8fdd774e5a6f66c017a107c7bf36b",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 12,
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d08-update-one-value/db.parquet",
+  "sha256": "297637443995bf03ab1993cd65c6f83f6d72cbbe04e14aae8998fcceb3d0c68c",
+  "bytes": 30164154,
+  "expected_exact": true,
+  "expected_root": "fc94d89b70ce315cbea07375c8be82c7b6c59caea55375753069826e311d7ca4",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 13,
+  "path": "/workspace/work/q8-parquet/parquet/duckdb-variants/d09-delete-4k-middle/db.parquet",
+  "sha256": "71809c127cad196fb1c44f49228d62fd12a50a8bb279b068bdda69f5c2ebbdd6",
+  "bytes": 29862740,
+  "expected_exact": true,
+  "expected_root": "f4c59e854c2501ae586e859a0d620122d5009afd14425f920d01763cc3959ee7",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 14,
+  "path": "/workspace/work/q8-parquet/parquet/pyarrow-chain/c0/db.parquet",
+  "sha256": "e1bdd46cad23aca79ffa5f74554d01f1e732618911e1411d3ed4921ae7b403f3",
+  "bytes": 34804160,
+  "expected_exact": true,
+  "expected_root": "5d601e4b28ac8fba2af6fa3799b0610d1148611c7e163834090415deb216a7e7",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 15,
+  "path": "/workspace/work/q8-parquet/parquet/pyarrow-chain/c1/db.parquet",
+  "sha256": "31322eb68d7b15dfd97841d3bfc9e9f41b86d479228e310d013526879d79db35",
+  "bytes": 35488672,
+  "expected_exact": true,
+  "expected_root": "30df3d3250f9199b59099043ec2f821e1d51b6519655577f2c534102b6c3054d",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 16,
+  "path": "/workspace/work/q8-parquet/parquet/pyarrow-chain/c2/db.parquet",
+  "sha256": "e20a97a8474c6831c30dd9d0af5dbd26fe18f5b04e3f0c3a12cf19643e9ec8ca",
+  "bytes": 35488672,
+  "expected_exact": true,
+  "expected_root": "e681998b13d0c72c1d24d1123b458bb463d92809834f3e1cc599c3eb52757799",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 17,
+  "path": "/workspace/work/q8-parquet/parquet/pyarrow-chain/c3/db.parquet",
+  "sha256": "d21808ab88722d68fb3932d3a9381ebf3ab91819c0cbb8cec7c13fdd97b29ca6",
+  "bytes": 35233152,
+  "expected_exact": true,
+  "expected_root": "2fbbbf2e78bc7229c048f8cbe846c3b81612eebdb30b45dcf40aa582fc193e25",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 18,
+  "path": "/workspace/work/q8-parquet/parquet/pyarrow-chain/c4/db.parquet",
+  "sha256": "3ddd1dcd59adcff6bd60899638a5a14ac582a406d87d8389cba68a793d95d983",
+  "bytes": 35928108,
+  "expected_exact": true,
+  "expected_root": "8c47202706e1179089911a983e7c552ede471c61dc0af7902812b9c7b4892bd5",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 19,
+  "path": "/workspace/work/q8-parquet/parquet/pyarrow-chain/c5/db.parquet",
+  "sha256": "8a7f30835c7e2887cc0676d6ad5813c8a76f21a2a7bdbb811217bf080e06c87d",
+  "bytes": 35409978,
+  "expected_exact": true,
+  "expected_root": "59d7efbcbbd6513134c7c6065fb11a55f25f179136c785c543629a419ea51b75",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 20,
+  "path": "/workspace/work/q8-parquet/parquet/pyarrow-chain/c6/db.parquet",
+  "sha256": "50921027b505a50cef9ca8a59cfc7f78e0d1760cb3d1d0f80222d310bae4ebc8",
+  "bytes": 35409978,
+  "expected_exact": true,
+  "expected_root": "349da2c43dfa67da58d5d44a8de9b5c0fecdd688684890ef2041b0de77a5a2c6",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 21,
+  "path": "/workspace/work/q8-parquet/parquet/pyarrow-chain/c7/db.parquet",
+  "sha256": "ee34883b16822d0e4a226c3a7e479cd289f96fe9cdc3f32af760b6bd44ae9579",
+  "bytes": 36116319,
+  "expected_exact": true,
+  "expected_root": "475f86061586fcdadc6fb3a2bec88b89fb6825d2f8ff7695af1ca0df7069a871",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 22,
+  "path": "/workspace/work/q8-parquet/ref/alltypes_dictionary.parquet",
+  "sha256": "7b58c33503858c533e1521b3022b85a0de23e5a144420d7a3c1c426929e5f6fb",
+  "bytes": 1698,
+  "expected_exact": true,
+  "expected_root": "3f1c1a3ed07e54da7f75efccba88fa890947600317c51b5fb59a1762d05f09b7",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 23,
+  "path": "/workspace/work/q8-parquet/ref/alltypes_plain.parquet",
+  "sha256": "12a618d20a59ee0967fef45e7ec1ff6d451e724838edc1bbeac780ca15e8fcc4",
+  "bytes": 1851,
+  "expected_exact": true,
+  "expected_root": "baaa93cdf86c6d21a050976ef5d21e27aef7cf4a911f0457681cbe4183fbe908",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 24,
+  "path": "/workspace/work/q8-parquet/ref/alltypes_plain.snappy.parquet",
+  "sha256": "9f8c5d74012498235eea4431035484dc61a76f8ad2b2b9cb5ac6972db43de591",
+  "bytes": 1736,
+  "expected_exact": true,
+  "expected_root": "5a1a9d0e2c2ebd47d451effae8e913f531c7573ff0051e63cebce6d630dc3ca0",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 25,
+  "path": "/workspace/work/q8-parquet/ref/alltypes_tiny_pages.parquet",
+  "sha256": "f7a7678a53bfdb434d9a51f7f42a71365eae807b3f8e16bfcad67cd623748228",
+  "bytes": 454233,
+  "expected_exact": true,
+  "expected_root": "b7af0b9325dc1061b13710bbac0834775dc9b81642bb5d4b1580da3950e71a48",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 26,
+  "path": "/workspace/work/q8-parquet/ref/alltypes_tiny_pages_plain.parquet",
+  "sha256": "230de2820634cc7cffb1a654315dccb2fbbd5cfc66387c1f372263d54672fa71",
+  "bytes": 811756,
+  "expected_exact": true,
+  "expected_root": "1b062d3d9eb07e38029a31378c62dec4de9b9ce4ef91283378a3b3c2bb352c3d",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 27,
+  "path": "/workspace/work/q8-parquet/ref/binary.parquet",
+  "sha256": "b48b756e48a13f58e1234a8588c507a06a7a9bcdfb63994c86fe19d22864be8b",
+  "bytes": 478,
+  "expected_exact": true,
+  "expected_root": "07f0e57b7cdd27059512fe9735fa8fbe45483ebe76b1026cb9b5cbdc4e86bb37",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 28,
+  "path": "/workspace/work/q8-parquet/ref/byte_stream_split.zstd.parquet",
+  "sha256": "64df58cf9a13672749cf8c852840553301f48cc45604c68b62ea8dc9437671b5",
+  "bytes": 4104,
+  "expected_exact": true,
+  "expected_root": "10e4c22dc5a3f53725c27d72760fd56197710ae0dc0cb320c00311f010960d9d",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 29,
+  "path": "/workspace/work/q8-parquet/ref/byte_stream_split_extended.gzip.parquet",
+  "sha256": "86a96259c2c82e50aa2826b91d6de9514e538235343eed9c2a98318424b46cd8",
+  "bytes": 15659,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: unsupported feature: no column chunk is logically decodable"
+ },
+ {
+  "kind": "parquet",
+  "case": 30,
+  "path": "/workspace/work/q8-parquet/ref/column_chunk_key_value_metadata.parquet",
+  "sha256": "21d0e70a750f70428ddda3ea68640c3e5753eab2311fddb1a1aefcbe428e61d0",
+  "bytes": 400,
+  "expected_exact": true,
+  "expected_root": "f4dabda42a4428227e813ed25296c86362c3c62178df83d4b280452b8b907b6c",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 31,
+  "path": "/workspace/work/q8-parquet/ref/concatenated_gzip_members.parquet",
+  "sha256": "92b6af9b766dc3e46413794ed4df009e0584b8fdca106ade1a9a1ed955d32771",
+  "bytes": 1647,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: unsupported feature: no column chunk is logically decodable"
+ },
+ {
+  "kind": "parquet",
+  "case": 32,
+  "path": "/workspace/work/q8-parquet/ref/data_index_bloom_encoding_stats.parquet",
+  "sha256": "66d53151197819919343972c997837845503ce82665c9c4481c866ef57dde0eb",
+  "bytes": 1643,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: unsupported feature: no column chunk is logically decodable"
+ },
+ {
+  "kind": "parquet",
+  "case": 33,
+  "path": "/workspace/work/q8-parquet/ref/datapage_v2.snappy.parquet",
+  "sha256": "44f29191b5fa8cfe0ab848495bd8ef89344ac0d8f87b3dff12e267631e2b5c03",
+  "bytes": 1165,
+  "expected_exact": true,
+  "expected_root": "dca6e68bebb1686e087a5fc23ec7ba99b286fc3c5f6ba395b1183a2e48e9088f",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 34,
+  "path": "/workspace/work/q8-parquet/ref/delta_binary_packed.parquet",
+  "sha256": "d1c2173fe97255959e3d087b3fa5b7b5c27b2aac135337b2896772d7bbdc31b4",
+  "bytes": 72971,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: unsupported feature: no column chunk is logically decodable"
+ },
+ {
+  "kind": "parquet",
+  "case": 35,
+  "path": "/workspace/work/q8-parquet/ref/delta_byte_array.parquet",
+  "sha256": "a400b789aef5cde88551f25cdd9bba8f0ff0fe01c48ddc5303c26edf119ee279",
+  "bytes": 68353,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: unsupported feature: no column chunk is logically decodable"
+ },
+ {
+  "kind": "parquet",
+  "case": 36,
+  "path": "/workspace/work/q8-parquet/ref/delta_encoding_optional_column.parquet",
+  "sha256": "71f8f00b00ecc132a1cc5d534acca900d02d0fe4ba3525607b03b2bd06a56f1a",
+  "bytes": 11567,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: unsupported feature: no column chunk is logically decodable"
+ },
+ {
+  "kind": "parquet",
+  "case": 37,
+  "path": "/workspace/work/q8-parquet/ref/delta_encoding_required_column.parquet",
+  "sha256": "36ddcb79799d56d5098f4cdb42777873a5ddd9ae6f40d8cfa316abafde6c658a",
+  "bytes": 13528,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: unsupported feature: no column chunk is logically decodable"
+ },
+ {
+  "kind": "parquet",
+  "case": 38,
+  "path": "/workspace/work/q8-parquet/ref/delta_length_byte_array.parquet",
+  "sha256": "efef768997748d27596a5c001ccd24eae42adf2825ca4d909e8fa8eb1d89f386",
+  "bytes": 3072,
+  "expected_exact": true,
+  "expected_root": "4e045e9fbe127d6a5edebe122dd7c4ef47b00c16b04c8f3952cd02b2be037684",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 39,
+  "path": "/workspace/work/q8-parquet/ref/fixed_length_byte_array.parquet",
+  "sha256": "a5a24cfabf2d8882db861502a0fe1e4539a80772f472f014637a0d01519836a7",
+  "bytes": 4437,
+  "expected_exact": true,
+  "expected_root": "7ae983cb53b4738bb833b9643170eb56be6507b2f90d81af4d8fde0503a1df0d",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 40,
+  "path": "/workspace/work/q8-parquet/ref/int32_decimal.parquet",
+  "sha256": "3441daea2c44032a78a3615b82373f34575ba7d820541e821f86d8cc143653f9",
+  "bytes": 478,
+  "expected_exact": true,
+  "expected_root": "fcdd9b2189b15133359874b91c35355e3617b67d1d7ce2c74d2f241ddd6221c3",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 41,
+  "path": "/workspace/work/q8-parquet/ref/int96_from_spark.parquet",
+  "sha256": "e769aaa996dee57f1104470dcce16d6871cd720d314c13361db16bf9e49f5c97",
+  "bytes": 495,
+  "expected_exact": true,
+  "expected_root": "96a35c97c36250798241661ba293058bea888352fa43f1ca1bdc929e2b757a21",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 42,
+  "path": "/workspace/work/q8-parquet/ref/large_string_map.brotli.parquet",
+  "sha256": "1ce6839f093ebc0699b1e2769ed04036bab40405bacbb5dacdd376dd94c13451",
+  "bytes": 4325,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: limit exceeded: page of 1627/1073741828 bytes"
+ },
+ {
+  "kind": "parquet",
+  "case": 43,
+  "path": "/workspace/work/q8-parquet/ref/lz4_raw_compressed.parquet",
+  "sha256": "d509774f6ba2f7fa2984308e64509c97a7a69ab94d5ab017211219b9812ef551",
+  "bytes": 797,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: unsupported feature: no column chunk is logically decodable"
+ },
+ {
+  "kind": "parquet",
+  "case": 44,
+  "path": "/workspace/work/q8-parquet/ref/lz4_raw_compressed_larger.parquet",
+  "sha256": "2c65cd301a9d8b4b4ff408089113ed5a91a99aaeb70ecf587018f3c4f6c1d01e",
+  "bytes": 380836,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: unsupported feature: no column chunk is logically decodable"
+ },
+ {
+  "kind": "parquet",
+  "case": 45,
+  "path": "/workspace/work/q8-parquet/ref/nested_lists.snappy.parquet",
+  "sha256": "2cb2cc0564486a28550429a8b6d0907bbb41e138546797bc91a4ebd850edd5a5",
+  "bytes": 881,
+  "expected_exact": true,
+  "expected_root": "1392fcf96f4c6e0b4a094193db6e9511f8b1e49d90bc24c8da353f02f9fe207c",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 46,
+  "path": "/workspace/work/q8-parquet/ref/nested_structs.rust.parquet",
+  "sha256": "48427178bfef9e6edd9018f2ef7b084077c00057234a780271a8220ca53b33da",
+  "bytes": 53040,
+  "expected_exact": true,
+  "expected_root": "142ef9369a7b165928eb160cc025b29d83e3d9d0104dafae24f2fc146c8d7c38",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 47,
+  "path": "/workspace/work/q8-parquet/ref/nulls.snappy.parquet",
+  "sha256": "40192e879fe7905d1341b495d06f8470e2fd02608bf8f9e6a71b2b774acc5252",
+  "bytes": 461,
+  "expected_exact": true,
+  "expected_root": "cedabef35c5f2ab1d0311fe295b534ab7db2f8dd544dbf32436f18a66ebc9f15",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 48,
+  "path": "/workspace/work/q8-parquet/ref/page_v2_empty_compressed.parquet",
+  "sha256": "5d56ca84e4fc4e77fdc713dbb9aff6f3a6c4727083628945ea5cfcb39b56aa65",
+  "bytes": 504,
+  "expected_exact": true,
+  "expected_root": "47d59752fe8cade67bbed341ddceb8cec941c8f2ef75a6c28d6becd219f82fbc",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 49,
+  "path": "/workspace/work/q8-parquet/ref/plain-dict-uncompressed-checksum.parquet",
+  "sha256": "4c8abc17ad0354dc540b0ad2c519d998ffb4a1a5997471b4313864852d82dccc",
+  "bytes": 816,
+  "expected_exact": true,
+  "expected_root": "5723d681356ac6ff14d6756ab01558337128c24450e9fc912bb9e9d261a2caaa",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 50,
+  "path": "/workspace/work/q8-parquet/ref/repeated_no_annotation.parquet",
+  "sha256": "97d35acb9721e40fc0f66fba916a442c4a1cf77a35992dc891ad0cdcc5a24cfb",
+  "bytes": 662,
+  "expected_exact": true,
+  "expected_root": "1b2b312927b58de57b91411f97ee4f8657629862691873981cf887677edac4b2",
+  "expected_fallback": ""
+ },
+ {
+  "kind": "parquet",
+  "case": 51,
+  "path": "/workspace/work/q8-parquet/ref/rle_boolean_encoding.parquet",
+  "sha256": "585e22b54c482befc54fc6caaea5efce788f1d0737505c2d8b121da8ac0c7d76",
+  "bytes": 192,
+  "expected_exact": false,
+  "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+  "expected_fallback": "parquetz3: unsupported feature: no column chunk is logically decodable"
+ }
+]
