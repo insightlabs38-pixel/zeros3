@@ -49,3 +49,12 @@ and A3's expensive exact Zstd paths. Existing managed limits were preserved;
 no performance result implies physical storage convergence while CDC is retained.
 Next allocation should begin with B1 similarity/delta CAS. B2 remains DRAFT_ONLY.
 Do not start B work or re-enable the hourly wake without a new user instruction.
+
+B1 qualified research: [similarity/delta CAS report](Z4_B1_SIMILARITY_DELTA_CAS.md),
+[PR #96](https://github.com/insightlabs38-pixel/zeros3/pull/96), verdict
+`SIMILARITY_LAYER_READY_FOR_PROTOTYPE`. Exact codecs, bounded discovery, charged
+retained closures, 10M-chunk index experiments and structural hybrids are research
+only; production source/authority unchanged. B1 does not supersede remaining #80/#81
+research. Read amplification, numeric discovery and index lifecycle remain debts.
+B2 authority prototype is the recommended next allocation, DRAFT_ONLY; not started.
+The hourly routine remains disabled. Stop after B1; B2–B8 require new allocation.

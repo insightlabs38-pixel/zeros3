@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Inventory cached B1 artifacts and create deterministic controls; no producers."""
-import argparse,glob,hashlib,json,pathlib,random,subprocess
+import argparse,glob,hashlib,json,pathlib,random,subprocess,gzip
 p=argparse.ArgumentParser();p.add_argument('--work',default='/workspace/work');a=p.parse_args();w=pathlib.Path(a.work);out=w/'z4-b1';out.mkdir(exist_ok=True);families=[]
 def add(name,kind,paths):
  paths=[str(x) for x in paths]
@@ -51,4 +51,9 @@ inv=[]
 for f in families:
  for path in f['Paths']:
   q=pathlib.Path(path);h=hashlib.sha256(q.read_bytes()).hexdigest();inv.append(dict(family=f['Name'],kind=f['Kind'],path=path,bytes=q.stat().st_size,sha256=h))
+evidence=pathlib.Path(__file__).with_name('evidence.json.gz')
+if evidence.exists():
+ expected=json.loads(gzip.decompress(evidence.read_bytes()))['inventory']
+ key=lambda rows:[(x['family'],x['bytes'],x['sha256']) for x in rows]
+ if key(inv)!=key(expected):raise RuntimeError('pinned B1 corpus drift: preserve diagnostics and compare inventory before accepting new artifacts')
 (out/'inventory.json').write_text(json.dumps(inv,indent=2)+'\n');print(len(families),'families',len(inv),'inputs',sum(x['bytes'] for x in inv),'bytes')

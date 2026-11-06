@@ -34,14 +34,16 @@ for mode,dest in [('cdc',normal),('components',components)]:
   dest.append(x);closures.append(dict(family=x['Family'],mode=mode,objects=len(heads),max_depth=max(depth.values(),default=0),fanout=dict(fan),wire_bytes=sum(map(len,files.values()))))
 assert len(normal)==16 and len(components)==10,(len(normal),len(components))
 evidence=dict(normal=normal,components=components,closures=closures,inventory=json.load(open(w/'inventory.json')))
-patterns=['scale-final-*.json','hash-*.json','quality-final.jsonl','numeric-v4.jsonl','structural.jsonl','extra-structural.jsonl','aggregation.jsonl','depth?.jsonl','bench-*.jsonl','*-cdc.replay.jsonl','*-components.replay.jsonl','model-cold-qualified.jsonl','git-structural.jsonl']
+patterns=['scale-final-*.json','hash-*.json','quality-final.jsonl','numeric-v4.jsonl','structural.jsonl','extra-structural.jsonl','aggregation.jsonl','depth?.jsonl','bench-*.jsonl','*-cdc.replay.jsonl','*-components.replay.jsonl','model-cold-qualified.jsonl','git-structural.jsonl','baseline-ranges.jsonl']
 for pattern in patterns:
  for path in sorted(w.glob(pattern)):evidence[path.name]=rows(path)
 for path in sorted(w.glob('*.time')):evidence[path.name]=path.read_text()
 for path in sorted(w.glob('*tests.log'))+sorted(w.glob('*vet.log'))+sorted(w.glob('*fuzz.log'))+sorted(w.glob('*race.log')):evidence[path.name]=path.read_text()
-evidence['diagnostics']={'initial_measurement_launch':'/usr/bin/time unavailable (exit127); replaced by isolated resource.getrusage child wrapper; no PASS inferred','model_cold_pre_no_base_control':rows(w/'model-cold.jsonl'),'model_cold_with_no_base_control':rows(w/'model-cold-v4.jsonl')}
-evidence['accounting-before-repair.log']=(w/'accounting-before-repair.log').read_text()
-evidence['scratch-isolation.json']=json.load(open(w/'scratch-isolation.json'))
+evidence['diagnostics']={'initial_measurement_launch':'/usr/bin/time unavailable (exit127); replaced by isolated resource.getrusage child wrapper; no PASS inferred','model_cold_pre_no_base_control':rows(w/'model-cold.jsonl') if (w/'model-cold.jsonl').exists() else [],'model_cold_with_no_base_control':rows(w/'model-cold-v4.jsonl') if (w/'model-cold-v4.jsonl').exists() else []}
+evidence['accounting-before-repair.log']=(w/'accounting-before-repair.log').read_text() if (w/'accounting-before-repair.log').exists() else ''
+evidence['scratch-isolation.json']=json.load(open(w/'scratch-isolation.json')) if (w/'scratch-isolation.json').exists() else []
+for name in ['dependency-checks.log','format-checks.log','git-oracle.log','corpus-verification.log']:
+ if (w/name).exists():evidence[name]=(w/name).read_text()
 evidence['source_sha256']={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for folder in ['testing-harnesses/z3/simdelta','testing-harnesses/z3/cmd/z4similarity'] for p in pathlib.Path(folder).glob('*.go')}
 (out/'evidence.json.gz').write_bytes(gzip.compress(json.dumps(evidence,sort_keys=True,separators=(',',':')).encode(),mtime=0))
 # A pinned real CLR revision, complete root list and all dependency closure bytes,

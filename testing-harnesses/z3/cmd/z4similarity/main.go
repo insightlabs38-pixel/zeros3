@@ -74,6 +74,7 @@ func main() {
 	numericOnly := flag.Bool("numeric", false, "aligned numeric upper-bound experiment")
 	exportOnly := flag.Bool("export-struct", false, "export existing proved structural closures")
 	qualityOnly := flag.Bool("quality", false, "sampled discovery oracle")
+	baseline := flag.Bool("baseline-ranges", false, "CDC and fine-CDC range comparison")
 	bench := flag.String("bench", "", "isolated sampled codec measurement")
 	depthCap := flag.Int("depth", 2, "maximum admitted dependency depth (0..4)")
 	cold := flag.Bool("cold", false, "include expensive predictive residual encoder")
@@ -108,7 +109,9 @@ func main() {
 		return
 	}
 	for _, f := range families {
-		if *bench != "" {
+		if *baseline {
+			baselineRanges(f)
+		} else if *bench != "" {
 			benchCodec(f, *bench)
 		} else if *numericOnly {
 			numericOracle(f)
