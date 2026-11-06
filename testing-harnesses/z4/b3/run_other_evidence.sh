@@ -1,6 +1,6 @@
 #!/bin/bash
 # Git/tar/OCI and columnar evidence. usage: run_other_evidence.sh BIN REPO WORKDIR
-set -e
+set -euo pipefail
 BIN=$1; REPO=$2; W=$3; D=$(dirname "$0"); M="python3 $D/measure.py"; V="python3 $D/verify_replay.py"
 mkdir -p $W; cd $W
 # ---- Git/tar/OCI: five pinned revisions of this repository, six packagings each ----
@@ -14,7 +14,7 @@ $M $BIN files -store g_all $ALL > g_all.log 2>&1
 $M $BIN files -store g_T $T > g_T.log 2>&1
 $M $BIN files -store g_P $P > g_P.log 2>&1
 $BIN cdc $FILES > g_cdc.log 2>&1
-rm -rf g_out; $V $BIN g_all g_out $FILES > g_verify.log 2>&1 || true
+rm -rf g_out; $V $BIN g_all g_out $FILES > g_verify.log 2>&1
 # ---- columnar: three profiles, eight files each ----
 python3 $D/make_columnar_corpus.py col > col_corpus.log 2>&1
 for prof in req opt hard; do
@@ -25,7 +25,7 @@ for prof in req opt hard; do
   $BIN files -store c_A_$prof $ARW > c_A_$prof.log 2>&1
   $BIN files -store c_P_$prof $PQ > c_P_$prof.log 2>&1
   $BIN cdc $(echo $ARW $PQ | tr ' ' '\n' | sed 's/^[a-z]*://') > c_cdc_$prof.log 2>&1
-  $V $BIN c_$prof c_out_$prof $(echo $ARW $PQ | tr ' ' '\n' | sed 's/^[a-z]*://') > c_verify_$prof.log 2>&1 || true
+  $V $BIN c_$prof c_out_$prof $(echo $ARW $PQ | tr ' ' '\n' | sed 's/^[a-z]*://') > c_verify_$prof.log 2>&1
 done
 $BIN pq-oracle col/req.pq_default_snappy_dict.parquet col/req.pq_zstd_dict.parquet col/req.pq_plain_snappy.parquet col/req.orc_zlib.orc col/req.orc_none.orc > pq_oracle.log 2>&1
 $BIN pq-values -store c_req col/req.pq_default_snappy_dict.parquet col/req.pq_zstd_dict.parquet col/req.pq_plain_snappy.parquet > pq_values.log 2>&1
