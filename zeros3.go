@@ -14925,7 +14925,7 @@ func (srv *Server) handleBulkNegotiate(w http.ResponseWriter, r *http.Request, r
 		if rec.dup {
 			continue
 		}
-		if _, err := srv.store.casStat(rec.sum); err != nil {
+		if _, err := srv.store.casStatOrVirtual(rec.sum); err != nil {
 			missing = append(missing, rec)
 			total += int64(rec.length)
 		}
@@ -14952,7 +14952,7 @@ func (srv *Server) handleBulkFetch(w http.ResponseWriter, r *http.Request, rawPa
 	}
 	var total int64
 	for _, rec := range recs {
-		n, err := srv.store.casStat(rec.sum)
+		n, err := srv.store.casStatOrVirtual(rec.sum)
 		if err != nil {
 			writeSyncError(w, http.StatusNotFound, "NoSuchChunk", fmt.Sprintf("chunk %x is not available: %v", rec.sum, err))
 			return
@@ -14963,7 +14963,7 @@ func (srv *Server) handleBulkFetch(w http.ResponseWriter, r *http.Request, rawPa
 		}
 		total += n
 	}
-	data, err := srv.store.casRead(recs[0].sum)
+	data, _, err := srv.store.casReadOrVirtual(recs[0].sum)
 	if err != nil {
 		writeSyncError(w, http.StatusNotFound, "NoSuchChunk", fmt.Sprintf("chunk %x is not available or corrupt: %v", recs[0].sum, err))
 		return
@@ -14977,7 +14977,7 @@ func (srv *Server) handleBulkFetch(w http.ResponseWriter, r *http.Request, rawPa
 	}
 	for i, rec := range recs {
 		if i > 0 {
-			if data, err = srv.store.casRead(rec.sum); err != nil || len(data) != rec.length {
+			if data, _, err = srv.store.casReadOrVirtual(rec.sum); err != nil || len(data) != rec.length {
 				log.Printf("zeros3: bulk fetch aborted mid-stream at chunk %x: %v", rec.sum, err)
 				return
 			}
@@ -19345,6 +19345,9 @@ func printVerifyHuman(w io.Writer, r VerifyResult) {
 	if r.PacksChecked > 0 {
 		fmt.Fprintf(w, "packs            %d checked\n", r.PacksChecked)
 	}
+	if r.AuthorityBodies > 0 || r.AuthorityOrphans > 0 {
+		fmt.Fprintf(w, "authority        %d live bodies | %d verified exact | %d orphan bodies\n", r.AuthorityBodies, r.AuthoritiesVerified, r.AuthorityOrphans)
+	}
 	if r.RepresentationRoots > 0 || r.RepresentationOrphanRoots > 0 {
 		fmt.Fprintf(w, "representations  %d live roots | %d verified exact | %d orphan roots\n", r.RepresentationRoots, r.RepresentationsVerified, r.RepresentationOrphanRoots)
 	}
@@ -19963,6 +19966,9 @@ func printGCHuman(w io.Writer, r GCResult) {
 	fmt.Fprintf(w, "live set         ok=%v\n", r.LiveSetOK)
 	fmt.Fprintf(w, "chunks           %d scanned | %d reachable | %d unreachable\n", r.ChunksScanned, r.ChunksReachable, r.ChunksUnreachable)
 	fmt.Fprintf(w, "manifests        %d scanned | %d unreachable\n", r.ManifestsScanned, r.ManifestsUnreachable)
+	if r.AuthorityOrphanBodies > 0 {
+		fmt.Fprintf(w, "authority        %d orphan bodies | %d deleted\n", r.AuthorityOrphanBodies, r.AuthorityBodiesDeleted)
+	}
 	if r.RepresentationOrphanRoots > 0 {
 		fmt.Fprintf(w, "representations  %d orphan roots | %d deleted\n", r.RepresentationOrphanRoots, r.RepresentationRootsDeleted)
 	}
@@ -38817,6 +38823,9 @@ func (s *Store) authPublish(rec *authRecord) error {
 	if err != nil {
 		return err
 	}
+	if err := s.authCheckClosure(rec); err != nil {
+		return err
+	}
 	fireTestHook(hookAuthBeforeFormat)
 	if err := s.ensureAuthFormat(); err != nil {
 		return err
@@ -38882,6 +38891,35 @@ func (s *Store) authPublish(rec *authRecord) error {
 	return nil
 }
 
+// authCheckClosure refuses to commit a record whose required closure is not
+// already durable: every base needs its own committed record of the declared
+// size and a lower depth, and every component chunk must exist at its length.
+func (s *Store) authCheckClosure(rec *authRecord) error {
+	for _, b := range rec.Bases {
+		br, err := s.authLoad(b.SHA)
+		if err != nil {
+			return err
+		}
+		if br == nil {
+			return fmt.Errorf("%w: base %x has no committed record", errAuthMissing, b.SHA[:6])
+		}
+		if br.Size != b.Size || br.Depth >= rec.Depth {
+			return fmt.Errorf("%w: base %x size or depth inconsistent", errAuthCorrupt, b.SHA[:6])
+		}
+	}
+	chunks, err := s.authRecordChunks(rec)
+	if err != nil {
+		return err
+	}
+	for _, c := range chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		if n, err := s.casStat(sum); err != nil || n != c.Length {
+			return fmt.Errorf("%w: component %s is not durable", errAuthMissing, c.SHA256[:12])
+		}
+	}
+	return nil
+}
+
 func (s *Store) authInvalidate() {
 	s.auth.vmu.Lock()
 	s.auth.vidx = nil
@@ -38923,7 +38961,14 @@ type authCtx struct {
 	overlay map[[32]byte]*authRecord
 	// fetched counts logical CAS bytes read, the unit of read amplification.
 	fetched int64
+	// pieces is a request-local FIFO of verified chunks shared by every body of
+	// the closure (a base chunk is often read through several dependents).
+	pieces     map[[32]byte][]byte
+	pieceOrder [][32]byte
+	pieceBytes int64
 }
+
+const authPieceCacheBytes = 48 << 20
 
 func (s *Store) newAuthCtx() *authCtx {
 	return &authCtx{s: s, open: map[[32]byte]authBody{}, path: map[[32]byte]bool{}, budget: authDefaultBudget}
@@ -38986,6 +39031,9 @@ func (c *authCtx) body(sha [32]byte, want int64, depth int) (authBody, *authReco
 }
 
 func (c *authCtx) readPiece(p authPiece) ([]byte, error) {
+	if d, ok := c.pieces[p.SHA]; ok {
+		return d, nil
+	}
 	data, err := c.s.casRead(p.SHA)
 	if err != nil {
 		return nil, err
@@ -38994,6 +39042,18 @@ func (c *authCtx) readPiece(p authPiece) ([]byte, error) {
 		return nil, fmt.Errorf("%w: chunk %x is %d bytes, record says %d", errAuthCorrupt, p.SHA[:6], len(data), p.Len)
 	}
 	c.fetched += p.Len
+	if c.pieces == nil {
+		c.pieces = map[[32]byte][]byte{}
+	}
+	for c.pieceBytes+p.Len > authPieceCacheBytes && len(c.pieceOrder) > 0 {
+		old := c.pieceOrder[0]
+		c.pieceOrder = c.pieceOrder[1:]
+		c.pieceBytes -= int64(len(c.pieces[old]))
+		delete(c.pieces, old)
+	}
+	c.pieces[p.SHA] = data
+	c.pieceOrder = append(c.pieceOrder, p.SHA)
+	c.pieceBytes += p.Len
 	return data, nil
 }
 
@@ -39105,8 +39165,8 @@ type authDeltaBody struct {
 	hdr    xdHeader
 	blob   *pieceSeq
 	bases  []authBody
-	frameI int
-	frame  []xdOp
+	frames map[int][]xdOp // small FIFO of decoded frames (range reads revisit neighbours)
+	order  []int
 }
 
 func (c *authCtx) newDelta(rec *authRecord, depth int) (authBody, error) {
@@ -39133,7 +39193,7 @@ func (c *authCtx) newDelta(rec *authRecord, depth int) (authBody, error) {
 	if hdr.total != blob.size || hdr.size != rec.Size || hdr.sha != rec.SHA || len(hdr.bases) != len(rec.Bases) || len(hdr.bases) == 0 {
 		return nil, fmt.Errorf("%w: envelope does not match its record", errAuthCorrupt)
 	}
-	d := &authDeltaBody{c: c, rec: rec, hdr: hdr, blob: blob, frameI: -1}
+	d := &authDeltaBody{c: c, rec: rec, hdr: hdr, blob: blob, frames: map[int][]xdOp{}}
 	maxDepth := 0
 	for i, br := range hdr.bases {
 		if br != rec.Bases[i] {
@@ -39155,8 +39215,8 @@ func (c *authCtx) newDelta(rec *authRecord, depth int) (authBody, error) {
 func (d *authDeltaBody) Size() int64 { return d.rec.Size }
 
 func (d *authDeltaBody) loadFrame(i int) ([]xdOp, error) {
-	if d.frameI == i {
-		return d.frame, nil
+	if ops, ok := d.frames[i]; ok {
+		return ops, nil
 	}
 	f := d.hdr.frames[i]
 	buf := make([]byte, f.plen)
@@ -39167,7 +39227,12 @@ func (d *authDeltaBody) loadFrame(i int) ([]xdOp, error) {
 	if err != nil {
 		return nil, err
 	}
-	d.frameI, d.frame = i, ops
+	if len(d.order) >= 16 {
+		delete(d.frames, d.order[0])
+		d.order = d.order[1:]
+	}
+	d.frames[i] = ops
+	d.order = append(d.order, i)
 	return ops, nil
 }
 
@@ -39272,9 +39337,14 @@ func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, err
 		return nil, fmt.Errorf("%w: record is %d bytes, manifest says %d", errAuthMismatch, rec.Size, man.TotalLength)
 	}
 	whole := rng.start == 0 && rng.end == man.TotalLength-1
-	if rec.Form == authFormRep && whole {
+	if rec.Form == authFormRep {
+		// Whole reads stream; ranges use the kind's native range decoder when it has one.
 		if rd, err := s.repOpenRootReader(rec.Root, rng); rd != nil || err != nil {
-			s.auth.reads.Add(1)
+			if whole {
+				s.auth.reads.Add(1)
+			} else {
+				s.auth.rangeReads.Add(1)
+			}
 			return rd, err
 		}
 	}
@@ -39501,17 +39571,19 @@ func (s *Store) verifyBodiesDeep(rr reachabilityResult, res *VerifyResult) {
 
 // AuthPolicy controls which exact physical form may become authoritative.
 type AuthPolicy struct {
-	Order      string  `json:"order"`        // "oldest": earlier versions are bases; "newest": newer versions are bases
-	MaxDepth   int     `json:"max_depth"`    // delta nesting bound (default 2, hard 4)
-	MaxBases   int     `json:"max_bases"`    // bases per delta (default 2, hard 4)
-	Candidates int     `json:"candidates"`   // trial base objects per target (default 4, max 8)
-	MinSaving  float64 `json:"min_saving"`   // fraction of the object's unshared CDC bytes that must be freed net
-	MaxReadAmp float64 `json:"max_read_amp"` // measured 4 KiB cold-read amplification allowed relative to CDC (0 = archive, unlimited)
-	AllowRep   bool    `json:"allow_rep"`
-	AllowDelta bool    `json:"allow_delta"`
-	MinObject  int64   `json:"min_object"`
-	FrameSpan  int64   `json:"frame_span"`
-	Apply      bool    `json:"apply"`
+	Order       string  `json:"order"`        // "oldest": earlier versions are bases; "newest": newer versions are bases
+	MaxDepth    int     `json:"max_depth"`    // delta nesting bound (default 2, hard 4)
+	MaxBases    int     `json:"max_bases"`    // bases per delta (default 2, hard 4)
+	Candidates  int     `json:"candidates"`   // trial base objects per target (default 4, max 8)
+	MinSaving   float64 `json:"min_saving"`   // fraction of the object's unshared CDC bytes that must be freed net
+	MaxReadAmp  float64 `json:"max_read_amp"` // measured 4 KiB cold-read amplification allowed relative to CDC (0 = archive, unlimited)
+	Strategy    string  `json:"strategy"`     // "" or "best": plan delta-only and rep-only, apply the cheaper; "mixed": per-object choice
+	AllowRep    bool    `json:"allow_rep"`
+	AllowDelta  bool    `json:"allow_delta"`
+	MinObject   int64   `json:"min_object"`
+	MinRepGroup int     `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
+	FrameSpan   int64   `json:"frame_span"`
+	Apply       bool    `json:"apply"`
 }
 
 func (p AuthPolicy) norm() AuthPolicy {
@@ -39532,6 +39604,9 @@ func (p AuthPolicy) norm() AuthPolicy {
 	p.Candidates = min(p.Candidates, 8)
 	if p.MinObject <= 0 {
 		p.MinObject = 4096
+	}
+	if p.MinRepGroup <= 0 {
+		p.MinRepGroup = 2
 	}
 	if p.FrameSpan <= 0 {
 		p.FrameSpan = 128 << 10
@@ -39796,6 +39871,7 @@ type authMigrator struct {
 	sketch map[int][]uint64
 	done   []int // order indexes of objects eligible as bases (processed or bodied)
 	repC   map[int]*authRepCand
+	byKey  map[string][]int // bucket/key -> admitted-or-eligible base indexes
 	depth  map[int]int
 	rep    AuthReport
 }
@@ -39805,9 +39881,38 @@ type authMigrator struct {
 // (components for rep candidates may be staged and are collectible garbage).
 func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	pol = pol.norm()
+	if (pol.Strategy == "" || pol.Strategy == "best") && pol.AllowRep && pol.AllowDelta {
+		total := func(r AuthReport) (n int64) {
+			for _, p := range r.Plans {
+				if strings.HasSuffix(p.Form, "?") {
+					n += p.AddedBytes
+				} else {
+					n += p.CDCBytes
+				}
+			}
+			return n
+		}
+		dp, rp := pol, pol
+		dp.AllowRep, dp.Apply, dp.Strategy = false, false, "forced"
+		rp.AllowDelta, rp.Apply, rp.Strategy = false, false, "forced"
+		dr, err := s.AuthorityMigrate(dp)
+		if err != nil {
+			return dr, err
+		}
+		rr, err := s.AuthorityMigrate(rp)
+		if err != nil {
+			return rr, err
+		}
+		pol.Strategy = "forced"
+		if total(rr) < total(dr) {
+			pol.AllowDelta = false
+		} else {
+			pol.AllowRep = false
+		}
+	}
 	t0 := time.Now()
 	m := &authMigrator{s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
-		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}}
+		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, byKey: map[string][]int{}}
 	lms := s.liveManifests()
 	for _, lm := range lms {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
@@ -39880,7 +39985,9 @@ type authRepCand struct {
 // across versions) beats the group's unshared CDC bytes: a lone first-sight
 // representation is usually larger than CDC, its value is the reuse.
 func (m *authMigrator) planRepGroups() {
-	groups := map[repKind][]int{}
+	// A lone first-sight object cannot amortize its components: kinds seen once are not even built.
+	kinds := map[int]repKind{}
+	count := map[repKind]int{}
 	for i, o := range m.order {
 		if o.hasRec || o.man.TotalLength < m.pol.MinObject || o.man.TotalLength > repMaxInspect {
 			continue
@@ -39889,6 +39996,15 @@ func (m *authMigrator) planRepGroups() {
 		kind, ok := repCandidate(ra, o.man.TotalLength)
 		ra.close()
 		if !ok || kind == repKindGzip || kind == repKindZstd {
+			continue
+		}
+		kinds[i] = kind
+		count[kind]++
+	}
+	groups := map[repKind][]int{}
+	for i, o := range m.order {
+		kind, ok := kinds[i]
+		if !ok || count[kind] < m.pol.MinRepGroup {
 			continue
 		}
 		root, err := m.s.repConstruct(o.man)
@@ -39937,6 +40053,8 @@ func (m *authMigrator) recDepth(sha [32]byte) int {
 
 func (m *authMigrator) addBase(i int) {
 	m.done = append(m.done, i)
+	k := m.order[i].bucket + "\x00" + m.order[i].key
+	m.byKey[k] = append(m.byKey[k], i)
 	if sk := m.sketch[i]; sk != nil {
 		for _, f := range sk {
 			p := m.index[f]
@@ -39957,10 +40075,8 @@ func (m *authMigrator) candidates(i int, sk []uint64) []int {
 		}
 	}
 	// Same-key neighbours are always worth a trial: version histories are the common case.
-	for _, j := range m.done {
-		if m.order[j].bucket == m.order[i].bucket && m.order[j].key == m.order[i].key {
-			score[j] += 1
-		}
+	for _, j := range m.byKey[m.order[i].bucket+"\x00"+m.order[i].key] {
+		score[j] += 1
 	}
 	type cs struct{ j, n int }
 	var all []cs
@@ -40148,6 +40264,8 @@ func (m *authMigrator) process(i int, o *authObj) error {
 		if best != nil && choice == "delta" {
 			plan.Depth, plan.Bases = best.plan.Depth, best.plan.Bases
 		}
+		m.depth[i] = plan.Depth
+		m.release(o)
 		finish(plan)
 		m.addBase(i)
 		return nil
@@ -40398,12 +40516,12 @@ func AuthTransferMode(src, dst AuthCaps) string {
 const authXferMagic = "ZS3C\x01"
 
 // authClosureOrder returns the content hashes of sha's closure, bases first.
-func (s *Store) authClosureOrder(sha [32]byte) ([]*authRecord, error) {
+func (s *Store) authClosureOrder(sha [32]byte, destHas func([32]byte) bool) ([]*authRecord, error) {
 	var out []*authRecord
 	seen := map[[32]byte]bool{}
 	var walk func(h [32]byte, depth int) error
 	walk = func(h [32]byte, depth int) error {
-		if seen[h] {
+		if seen[h] || (depth > 1 && destHas != nil && destHas(h)) {
 			return nil
 		}
 		if depth > authHardDepth+1 {
@@ -40428,12 +40546,19 @@ func (s *Store) authClosureOrder(sha [32]byte) ([]*authRecord, error) {
 	return out, walk(sha, 1)
 }
 
+// authRecordChunks lists the record's own components (not its bases').
 func (s *Store) authRecordChunks(rec *authRecord) ([]chunkRef, error) {
-	var res reachabilityResult
-	a := s.newAuthReachCtx(&res)
-	var cs []chunkRef
-	if _, err := a.mark(rec.SHA, func(c []chunkRef) { cs = append(cs, c...) }, map[[32]byte]bool{}, 1); err != nil {
-		return nil, err
+	switch rec.Form {
+	case authFormRep:
+		cl, err := s.repClosureOf(rec.Root)
+		if err != nil {
+			return nil, err
+		}
+		return cl.chunks, nil
+	}
+	cs := make([]chunkRef, 0, len(rec.Pieces))
+	for _, p := range rec.Pieces {
+		cs = append(cs, chunkRef{SHA256: hex.EncodeToString(p.SHA[:]), Length: p.Len})
 	}
 	return cs, nil
 }
@@ -40441,7 +40566,14 @@ func (s *Store) authRecordChunks(rec *authRecord) ([]chunkRef, error) {
 // ExportAuthorityClosure streams the complete authoritative closure of one
 // content (every record, base and component chunk) in a self-verifying frame.
 func (s *Store) ExportAuthorityClosure(sha [32]byte, w io.Writer) error {
-	recs, err := s.authClosureOrder(sha)
+	return s.ExportAuthorityClosureThin(sha, nil, w)
+}
+
+// ExportAuthorityClosureThin omits every base (and its own closure) the
+// destination already holds. The importer refuses a thin stream whose omitted
+// base is absent, and the sender then falls back to the full closure.
+func (s *Store) ExportAuthorityClosureThin(sha [32]byte, destHas func([32]byte) bool, w io.Writer) error {
+	recs, err := s.authClosureOrder(sha, destHas)
 	if err != nil {
 		return err
 	}
@@ -40574,6 +40706,20 @@ func (s *Store) ImportAuthorityClosure(r io.Reader) error {
 		return err
 	}
 	fireTestHook(hookAuthImportChunks)
+	inStream := map[[32]byte]bool{}
+	for _, rec := range recs {
+		inStream[rec.SHA] = true
+	}
+	for _, rec := range recs {
+		for _, b := range rec.Bases {
+			if inStream[b.SHA] {
+				continue
+			}
+			if held, err := s.authLoad(b.SHA); err != nil || held == nil || held.Size != b.Size {
+				return fmt.Errorf("import closure: %w: thin stream needs base %x the destination does not hold", errAuthMissing, b.SHA[:6])
+			}
+		}
+	}
 	for _, rec := range recs {
 		if cur, err := s.authLoad(rec.SHA); err != nil {
 			return err
@@ -40751,6 +40897,18 @@ func (s *Store) authHasVirtualChunk(sum [32]byte) bool {
 	}
 	_, ok := s.authVirtualIndex()[sum]
 	return ok
+}
+
+// casStatOrVirtual is casStat that also accepts a chunk only an authoritative body holds.
+func (s *Store) casStatOrVirtual(sum [32]byte) (int64, error) {
+	n, err := s.casStat(sum)
+	if err == nil || !s.auth.mayHave.Load() {
+		return n, err
+	}
+	if loc, ok := s.authVirtualIndex()[sum]; ok {
+		return loc.ln, nil
+	}
+	return n, err
 }
 
 // casReadOrVirtual is casRead that falls back to slicing the chunk out of the

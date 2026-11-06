@@ -346,12 +346,18 @@ func TestB2Economics(t *testing.T) {
 			}
 			for _, v := range []variant{
 				{"auth-archive-oldest", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true}},
+				{"auth-mixed-oldest", AuthPolicy{Strategy: "mixed", Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true}},
 				{"auth-archive-newest", AuthPolicy{Order: "newest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true}},
 				{"auth-archive-depth4", AuthPolicy{Order: "oldest", MaxDepth: 4, MaxBases: 4, Candidates: 8, AllowRep: true, AllowDelta: true}},
 				{"auth-delta-only", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true}},
+				{"auth-delta-frame16k", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true, FrameSpan: 16 << 10}},
+				{"auth-delta-frame1m", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true, FrameSpan: 1 << 20}},
 				{"auth-rep-only", AuthPolicy{Order: "oldest", AllowRep: true}},
 				{"auth-hot-hybrid", AuthPolicy{Order: "newest", MaxDepth: 2, MaxBases: 2, MinSaving: 0.10, MaxReadAmp: 2, AllowRep: true, AllowDelta: true}},
 			} {
+				if only := os.Getenv("ZEROS3_B2_VARIANTS"); only != "" && !strings.Contains(","+only+",", ","+v.name+",") {
+					continue
+				}
 				dir := filepath.Join(base, v.name)
 				if err := econCopyTree(cdcDir, dir); err != nil {
 					t.Fatal(err)

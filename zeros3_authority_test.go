@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -196,7 +199,6 @@ func authHistory(seed uint64, n, size int) [][]byte {
 	}
 	return out
 }
-
 
 func TestXDeltaRoundTripAndRejection(t *testing.T) {
 	hist := authHistory(11, 3, 400_000)
@@ -742,6 +744,24 @@ func TestAuthorityCorruptComponentFailsClosedNeverWrongBytes(t *testing.T) {
 	}
 }
 
+// rawPublish writes a record without the commit-time closure checks, to plant states
+// a correct writer could never produce (over-deep chains, cycles).
+func rawPublish(t *testing.T, s *Store, rec *authRecord) {
+	t.Helper()
+	data, err := rec.marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ensureAuthFormat(); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(s.authDir(), 0o755)
+	s.auth.mayHave.Store(true)
+	if err := os.WriteFile(s.authPath(rec.SHA), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAuthorityGraphLimits(t *testing.T) {
 	l := newAuthLab(t)
 	hist := authHistory(91, 7, 300_000)
@@ -768,9 +788,7 @@ func TestAuthorityGraphLimits(t *testing.T) {
 			ps, _ := s.authWritePieces(blob)
 			d := byte(min(i, authHardDepth))
 			rec := &authRecord{SHA: sum, Size: int64(len(v)), Gen: 1, Form: authFormDelta, Depth: d, Bases: refs, Pieces: ps}
-			if err := s.authPublish(rec); err != nil {
-				t.Fatal(err)
-			}
+			rawPublish(t, s, rec)
 		}
 		prev, prevSHA = v, sum
 	}
@@ -800,12 +818,8 @@ func TestAuthorityCycleRejected(t *testing.T) {
 	blobB, refsB, _ := xdEncode([]xdSrc{{shaA, a}}, b, 64<<10)
 	psA, _ := l.s.authWritePieces(blobA)
 	psB, _ := l.s.authWritePieces(blobB)
-	if err := l.s.authPublish(&authRecord{SHA: shaA, Size: int64(len(a)), Gen: 1, Form: authFormDelta, Depth: 2, Bases: refsA, Pieces: psA}); err != nil {
-		t.Fatal(err)
-	}
-	if err := l.s.authPublish(&authRecord{SHA: shaB, Size: int64(len(b)), Gen: 1, Form: authFormDelta, Depth: 2, Bases: refsB, Pieces: psB}); err != nil {
-		t.Fatal(err)
-	}
+	rawPublish(t, l.s, &authRecord{SHA: shaA, Size: int64(len(a)), Gen: 1, Form: authFormDelta, Depth: 2, Bases: refsA, Pieces: psA})
+	rawPublish(t, l.s, &authRecord{SHA: shaB, Size: int64(len(b)), Gen: 1, Form: authFormDelta, Depth: 2, Bases: refsB, Pieces: psB})
 	ctx := l.s.newAuthCtx()
 	if _, _, err := ctx.body(shaA, 0, 1); err == nil {
 		t.Fatal("cyclic delta graph resolved")
@@ -902,7 +916,7 @@ func TestAuthorityOldBinaryRefusesAndLeavesStoreUntouched(t *testing.T) {
 	for _, args := range [][]string{
 		{"stats", "-store", l.dir}, {"verify", "-store", l.dir}, {"doctor", "-store", l.dir}, {"gc", "-store", l.dir, "-apply"},
 		{"compact", "-store", l.dir}, {"repack", "-store", l.dir, "-apply"}, {"serve", "-store", l.dir, "-addr", "127.0.0.1:0"},
-		{"versions", "-store", l.dir, "-bucket", "b", "-key", "k0"}, 
+		{"versions", "-store", l.dir, "-bucket", "b", "-key", "k0"},
 	} {
 		out, errOut, code := runZeros3CLI(t, old, args...)
 		if code == 0 || !strings.Contains(out+errOut, "unsupported store format version 10") {
@@ -1308,3 +1322,484 @@ func TestAuthorityConcurrentOperations(t *testing.T) {
 }
 
 func sumSlice(b []byte) []byte { h := sha256.Sum256(b); return h[:] }
+
+func TestAuthorityThinClosureUsesDestinationBasesAndFallsBack(t *testing.T) {
+	l := authMigratedLab(t)
+	sha3, _ := decodeHexSHA256(l.man("k3").ObjectSHA256)
+	sha2, _ := decodeHexSHA256(l.man("k2").ObjectSHA256)
+	var full, thin bytes.Buffer
+	if err := l.s.ExportAuthorityClosure(sha3, &full); err != nil {
+		t.Fatal(err)
+	}
+	// Destination already holds k2's closure, which is k3's base.
+	d := newAuthLab(t)
+	var k2 bytes.Buffer
+	if err := l.s.ExportAuthorityClosure(sha2, &k2); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.s.ImportAuthorityClosure(&k2); err != nil {
+		t.Fatal(err)
+	}
+	have := func(h [32]byte) bool { r, _ := d.s.authLoad(h); return r != nil }
+	if err := l.s.ExportAuthorityClosureThin(sha3, have, &thin); err != nil {
+		t.Fatal(err)
+	}
+	if thin.Len() >= full.Len() {
+		t.Fatalf("thin closure %d not smaller than full %d", thin.Len(), full.Len())
+	}
+	if err := d.s.ImportAuthorityClosure(&thin); err != nil {
+		t.Fatalf("thin import: %v", err)
+	}
+	d.put("k3", l.want["k3"])
+	if got := d.read("k3", byteRange{0, int64(len(l.want["k3"])) - 1}); !bytes.Equal(got, l.want["k3"]) {
+		t.Fatal("thin-installed object differs")
+	}
+	// A destination without the base refuses the thin stream cleanly; the full closure then works.
+	thin.Reset()
+	l.s.ExportAuthorityClosureThin(sha3, have, &thin)
+	e := newAuthLab(t)
+	if err := e.s.ImportAuthorityClosure(&thin); !errors.Is(err, errAuthMissing) {
+		t.Fatalf("thin stream without its base: %v", err)
+	}
+	if files, _ := e.s.authFiles(); len(files) != 0 {
+		t.Fatal("refused thin import published records")
+	}
+	if err := e.s.ImportAuthorityClosure(&full); err != nil {
+		t.Fatalf("full fallback: %v", err)
+	}
+	e.verifyOK("fallback")
+}
+
+// Replication reads retired-CDC source objects through the virtual chunk index and
+// delivers exact bytes to both a new-format destination and an old binary.
+func TestAuthorityReplicationToNewAndOldDestinations(t *testing.T) {
+	old := buildOldBinary(t)
+	l := authMigratedLab(t)
+	l.reclaim()
+	for _, k := range []string{"k1", "k3"} { // chunks of these are physically gone
+		man := l.man(k)
+		gone := 0
+		for _, c := range man.Chunks {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			if _, err := l.s.casStat(sum); err != nil {
+				gone++
+			}
+		}
+		if gone == 0 {
+			t.Fatalf("%s kept all its CDC chunks", k)
+		}
+	}
+	creds := Credentials{AccessKeyID: "AKIASYNCTESTACCESSKEY1", SecretAccessKey: "SyncTestSecretKeyForZeroS3M6Tests0123456"}
+	srcTS := httptest.NewServer(NewServer(l.s, creds, "us-east-1"))
+	defer srcTS.Close()
+	run := func(dstEndpoint string, dstCreds Credentials, client *http.Client, tag string) {
+		for key, want := range l.want {
+			cfg := replicateConfig{
+				Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "b", Key: key, Creds: creds, Region: "us-east-1", HTTPClient: srcTS.Client()},
+				Dest:   syncClientConfig{Endpoint: dstEndpoint, Bucket: "dst", Key: key, Creds: dstCreds, Region: "us-east-1", HTTPClient: client},
+			}
+			if _, err := replicateObject(cfg); err != nil {
+				t.Fatalf("%s: replicate %s: %v", tag, key, err)
+			}
+			signer := testSigner{accessKey: dstCreds.AccessKeyID, secretKey: dstCreds.SecretAccessKey, region: "us-east-1"}
+			r := doSignedRequest(t, client, dstEndpoint, signer, http.MethodGet, "/dst/"+key, nil, nil)
+			got, _ := io.ReadAll(r.Body)
+			r.Body.Close()
+			if r.StatusCode != 200 || !bytes.Equal(got, want) {
+				t.Fatalf("%s: %s differs after replication (status %d)", tag, key, r.StatusCode)
+			}
+		}
+	}
+	// new-format destination (in-process server)
+	dstDir := t.TempDir()
+	dst, _ := OpenStore(dstDir)
+	defer dst.Close()
+	dst.CreateBucket("dst")
+	dstTS := httptest.NewServer(NewServer(dst, creds, "us-east-1"))
+	defer dstTS.Close()
+	run(dstTS.URL, creds, dstTS.Client(), "new-destination")
+	// old binary destination
+	oldDir := t.TempDir()
+	addr := freeTCPAddr(t)
+	cmd := exec.Command(old, "-store", oldDir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	waitForZeros3Serve(t, addr)
+	oc := &http.Client{}
+	oldCreds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	r := doSignedRequest(t, oc, "http://"+addr, testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}, http.MethodPut, "/dst", nil, nil)
+	r.Body.Close()
+	run("http://"+addr, oldCreds, oc, "old-binary-destination")
+}
+
+// Syncing a new revision into a store whose older revisions are body-only: shared chunks
+// are recognised through the virtual index and re-materialized physically at commit.
+func TestAuthoritySyncIntoBodyOnlyDestination(t *testing.T) {
+	hist := authHistory(141, 5, 1_000_000)
+	creds := Credentials{AccessKeyID: "AKIASYNCTESTACCESSKEY1", SecretAccessKey: "SyncTestSecretKeyForZeroS3M6Tests0123456"}
+	dstLab := newAuthLab(t)
+	for i := 0; i < 4; i++ {
+		dstLab.put("k"+string(rune('0'+i)), hist[i])
+	}
+	dstLab.migrate(AuthPolicy{MinSaving: 0.05})
+	dstLab.reclaim()
+	srcLab := newAuthLab(t)
+	srcLab.put("k4", hist[4])
+	srcTS := httptest.NewServer(NewServer(srcLab.s, creds, "us-east-1"))
+	defer srcTS.Close()
+	dstTS := httptest.NewServer(NewServer(dstLab.s, creds, "us-east-1"))
+	defer dstTS.Close()
+	cfg := replicateConfig{
+		Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "b", Key: "k4", Creds: creds, Region: "us-east-1", HTTPClient: srcTS.Client()},
+		Dest:   syncClientConfig{Endpoint: dstTS.URL, Bucket: "b", Key: "k4", Creds: creds, Region: "us-east-1", HTTPClient: dstTS.Client()},
+	}
+	st, err := replicateObject(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("uploaded %d of %d logical bytes (shared chunks recognised via bodies)", st.UploadedBytes, st.LogicalBytes)
+	dstLab.want["k4"] = hist[4]
+	dstLab.exact("after-sync")
+	dstLab.verifyOK("after-sync")
+	dstLab.reclaim()
+	dstLab.exact("after-sync-gc")
+}
+
+func FuzzAuthRecord(f *testing.F) {
+	a := genRandomBytes(1, 50_000)
+	b := authVersion(a, 2)
+	blob, refs, _ := xdEncode([]xdSrc{{sha256.Sum256(a), a}}, b, 16<<10)
+	d := &authRecord{SHA: sha256.Sum256(b), Size: int64(len(b)), Gen: 1, Form: authFormDelta, Depth: 1, Bases: refs, Pieces: []authPiece{{sha256.Sum256(blob), int64(min(len(blob), maxPackedChunkBytes))}}}
+	p := &authRecord{SHA: sha256.Sum256(a), Size: int64(len(a)), Gen: 3, Form: authFormPin, Pieces: []authPiece{{sha256.Sum256(a), int64(len(a))}}}
+	for _, r := range []*authRecord{d, p} {
+		if raw, err := r.marshal(); err == nil {
+			f.Add(raw)
+		}
+	}
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		if r, err := unmarshalAuthRecord(raw); err == nil {
+			again, err := r.marshal()
+			if err != nil {
+				return
+			}
+			if r2, err := unmarshalAuthRecord(again); err != nil || r2.SHA != r.SHA || r2.Size != r.Size || len(r2.Pieces) != len(r.Pieces) {
+				t.Fatalf("round trip of a parsed record changed it: %v", err)
+			}
+		}
+	})
+}
+
+func FuzzXDeltaEnvelope(f *testing.F) {
+	a := genRandomBytes(3, 60_000)
+	b := authVersion(a, 4)
+	blob, _, _ := xdEncode([]xdSrc{{sha256.Sum256(a), a}}, b, 8<<10)
+	f.Add(blob)
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		h, more, err := xdParseHeader(raw)
+		if err != nil || more {
+			return
+		}
+		for i := range h.frames {
+			fr := h.frames[i]
+			if fr.poff < 0 || fr.plen < 0 || fr.poff+fr.plen > int64(len(raw)) {
+				continue
+			}
+			ops, err := xdDecodeFrame(&h, i, raw[fr.poff:fr.poff+fr.plen])
+			if err != nil {
+				continue
+			}
+			var n int64
+			for _, o := range ops {
+				n += o.n
+				if o.base >= len(h.bases) || (o.base >= 0 && o.off+o.n > h.bases[o.base].Size) {
+					t.Fatal("accepted op outside its base")
+				}
+			}
+			if n != fr.span {
+				t.Fatal("accepted frame with wrong span")
+			}
+		}
+	})
+}
+
+// The full operator workflow through real binaries: migrate, gc, repack, then
+// a fresh server answers whole and ranged S3 GETs from bodies alone.
+func TestAuthorityCLIWorkflowAndHTTPReads(t *testing.T) {
+	bin := buildZeros3Binary(t)
+	l := authHistoryLab(t, 151, 4, 1_500_000)
+	l.close()
+	if _, err := compactStore(l.dir, authCompactOpts()); err != nil {
+		t.Fatal(err)
+	}
+	before := dirBytes(t, l.dir)
+	out, errOut, code := runZeros3CLI(t, bin, "authority", "migrate", "-store", l.dir, "-apply", "-max-read-amp", "0", "-min-saving", "0.05")
+	if code != 0 {
+		t.Fatalf("migrate: %s %s", out, errOut)
+	}
+	var rep AuthReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil || rep.Admitted < 3 {
+		t.Fatalf("report %v admitted=%d", err, rep.Admitted)
+	}
+	if out, errOut, code = runZeros3CLI(t, bin, "authority", "status", "-store", l.dir); code != 0 || !strings.Contains(out, `"delta": 3`) {
+		t.Fatalf("status: %d %s %s", code, out, errOut)
+	}
+	for _, args := range [][]string{{"gc", "-store", l.dir, "-apply"}, {"repack", "-store", l.dir, "-apply", "-max-live-percent", "100"}, {"verify", "-store", l.dir, "-deep"}} {
+		if out, errOut, code = runZeros3CLI(t, bin, args...); code != 0 {
+			t.Fatalf("%v: %s %s", args, out, errOut)
+		}
+	}
+	if after := dirBytes(t, l.dir); after >= before*7/10 {
+		t.Fatalf("physical %d -> %d", before, after)
+	}
+	addr := freeTCPAddr(t)
+	cmd := exec.Command(bin, "-store", l.dir, "-addr", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	waitForZeros3Serve(t, addr)
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	c := &http.Client{}
+	for key, want := range l.want {
+		r := doSignedRequest(t, c, "http://"+addr, signer, http.MethodGet, "/b/"+key, nil, nil)
+		got, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if r.StatusCode != 200 || !bytes.Equal(got, want) {
+			t.Fatalf("GET %s: status %d, exact=%v", key, r.StatusCode, bytes.Equal(got, want))
+		}
+		r = doSignedRequest(t, c, "http://"+addr, signer, http.MethodGet, "/b/"+key, nil, map[string]string{"Range": "bytes=700000-765535"})
+		got, _ = io.ReadAll(r.Body)
+		r.Body.Close()
+		if r.StatusCode != 206 || !bytes.Equal(got, want[700000:765536]) {
+			t.Fatalf("ranged GET %s: status %d", key, r.StatusCode)
+		}
+		hr := doSignedRequest(t, c, "http://"+addr, signer, http.MethodHead, "/b/"+key, nil, nil)
+		hr.Body.Close()
+		md5sum := md5.Sum(want)
+		if hr.StatusCode != 200 || strings.Trim(hr.Header.Get("ETag"), `"`) != hex.EncodeToString(md5sum[:]) {
+			t.Fatalf("HEAD %s etag %q", key, hr.Header.Get("ETag"))
+		}
+	}
+}
+
+// Every existing structural kind can be the authoritative body (forced admission regardless of
+// economics): exact whole/range reads, retired CDC and deep verify, plus revert.
+func TestAuthorityRepFormAcrossStructuralKinds(t *testing.T) {
+	l := newAuthLab(t)
+	for _, f := range repFixtures(t) {
+		l.put(f.name, f.data)
+	}
+	// Frozen SST/Parquet (A3) and Model (A2) lab inputs cover kinds 8-10.
+	kinds := map[repKind]bool{}
+	loadFrozen := func(raw []byte) {
+		var fs []repLabCodecFixture
+		if err := json.Unmarshal(raw, &fs); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range fs {
+			if r, err := unmarshalRep(f.Root, repProdLimits); err == nil && !kinds[r.Kind] && len(f.Input) > 0 {
+				kinds[r.Kind] = true
+				l.put(fmt.Sprintf("frozen-kind%d", r.Kind), f.Input)
+			}
+		}
+	}
+	if raw, err := os.ReadFile("testing-harnesses/z4/testdata/a3-structured/lab-structured.json"); err == nil {
+		loadFrozen(raw)
+	}
+	if raw, err := repZ4ModelFixtureJSON(t); err == nil {
+		loadFrozen(raw)
+	}
+	l.close()
+	if _, err := compactStore(l.dir, authCompactOpts()); err != nil {
+		t.Fatal(err)
+	}
+	l.open()
+	rep := l.migrate(AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, MinObject: 1, MinRepGroup: 1})
+	forms := map[string]int{}
+	for _, p := range rep.Plans {
+		forms[p.Form]++
+	}
+	if forms["rep"] < 7+len(kinds) {
+		t.Fatalf("rep admissions: %v (frozen kinds %v)", forms, kinds)
+	}
+	t.Logf("rep-form admissions %v; frozen kinds covered %v", forms, kinds)
+	l.exact("rep-authority")
+	l.reclaim()
+	l.exact("rep-reclaimed")
+	l.verifyOK("rep-reclaimed")
+	st, _ := l.s.AuthorityStatus()
+	if st.ByForm["rep"] < 7 {
+		t.Fatalf("status %+v", st)
+	}
+	for pass := 0; pass < 2; pass++ {
+		for k := range l.want {
+			sha, _ := decodeHexSHA256(l.man(k).ObjectSHA256)
+			if err := l.s.AuthorityRevert(sha); err != nil {
+				t.Fatalf("revert %s: %v", k, err)
+			}
+		}
+	}
+	l.exact("rep-reverted")
+}
+
+// A damaged delta component is repaired by digest from a peer that holds the native closure;
+// a peer that only holds ordinary objects cannot supply it, leaving the object unrecoverable
+// by chunk repair (object-level repair from exact bytes is the remaining path).
+func TestAuthorityPeerAssistedComponentRepair(t *testing.T) {
+	creds := Credentials{AccessKeyID: "AKIASYNCTESTACCESSKEY1", SecretAccessKey: "SyncTestSecretKeyForZeroS3M6Tests0123456"}
+	l := authMigratedLab(t)
+	files, _ := l.s.authFiles()
+	var rec *authRecord
+	for _, f := range files {
+		if r := mustLoad(t, l.s, f); r.Form == authFormDelta && r.Depth == 2 {
+			rec = r
+		}
+	}
+	if rec == nil {
+		t.Fatal("no depth-2 delta")
+	}
+	var buf bytes.Buffer
+	if err := l.s.ExportAuthorityClosure(rec.SHA, &buf); err != nil {
+		t.Fatal(err)
+	}
+	peer := newAuthLab(t)
+	if err := peer.s.ImportAuthorityClosure(&buf); err != nil {
+		t.Fatal(err)
+	}
+	peerTS := httptest.NewServer(NewServer(peer.s, creds, "us-east-1"))
+	defer peerTS.Close()
+	// The local CDC copy is retired first (loose store: gc alone deletes it) so the component is the only source.
+	l.offline(func() {
+		if _, err := gcCollect(l.dir, true); err != nil {
+			t.Fatal(err)
+		}
+	})
+	victim := hex.EncodeToString(rec.Pieces[0].SHA[:])
+	l.close()
+	deleteChunkOnDiskDir(t, l.dir, victim)
+	l.open()
+	rr, _ := l.s.computeReachability(false)
+	if rr.OK() {
+		t.Fatal("a missing authoritative component must be detected")
+	}
+	stats, err := l.s.repairFromPeer(repairConfig{Peer: mustPeerConfig(peerTS, creds, "us-east-1")})
+	if err != nil || stats.Repaired != 1 || !stats.PostRepairOK {
+		t.Fatalf("component repair: %+v err=%v", stats, err)
+	}
+	l.exact("component-repaired")
+	l.verifyOK("component-repaired")
+	// An ordinary-object peer cannot supply the delta component: explicit unresolved state.
+	l.close()
+	deleteChunkOnDiskDir(t, l.dir, victim)
+	l.open()
+	plain := newAuthLab(t)
+	plainTS := httptest.NewServer(NewServer(plain.s, creds, "us-east-1"))
+	defer plainTS.Close()
+	stats, err = l.s.repairFromPeer(repairConfig{Peer: mustPeerConfig(plainTS, creds, "us-east-1")})
+	if err == nil && (stats.Unresolved != 1 || stats.PostRepairOK) {
+		t.Fatalf("peer without the component must leave it unresolved: %+v", stats)
+	}
+	if res, _ := l.s.Verify(true); res.OK() {
+		t.Fatal("verify must stay failing while a component is unrecoverable")
+	}
+}
+
+func deleteChunkOnDiskDir(t *testing.T, dir, hexSum string) {
+	t.Helper()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	sum, _ := decodeHexSHA256(hexSum)
+	if loc, ok := s.packLookup(sum); ok { // packed: rewrite the pack without the record is out of scope; corrupt it in place
+		_ = loc
+		t.Fatalf("component is packed; fixture must keep it loose")
+	}
+	if err := os.Remove(s.chunkPath(sum)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAuthorityPublishRefusesIncompleteClosure(t *testing.T) {
+	l := newAuthLab(t)
+	a := genRandomBytes(201, 200_000)
+	b := authVersion(a, 9)
+	shaA, shaB := sha256.Sum256(a), sha256.Sum256(b)
+	blob, refs, _ := xdEncode([]xdSrc{{shaA, a}}, b, 64<<10)
+	ps, _ := l.s.authWritePieces(blob)
+	rec := &authRecord{SHA: shaB, Size: int64(len(b)), Gen: 1, Form: authFormDelta, Depth: 1, Bases: refs, Pieces: ps}
+	if err := l.s.authPublish(rec); !errors.Is(err, errAuthMissing) {
+		t.Fatalf("delta without a committed base published: %v", err)
+	}
+	if _, err := os.Stat(l.s.authPath(shaB)); err == nil {
+		t.Fatal("record file exists after refused publication")
+	}
+	// A pin whose component chunk is absent is refused too.
+	missing := authPiece{sha256.Sum256([]byte("absent")), 6}
+	if err := l.s.authPublish(&authRecord{SHA: shaA, Size: 6, Gen: 1, Form: authFormPin, Pieces: []authPiece{missing}}); !errors.Is(err, errAuthMissing) {
+		t.Fatalf("pin with a missing chunk published: %v", err)
+	}
+	if _, err := os.Stat(l.s.authDir()); err == nil {
+		if files, _ := l.s.authFiles(); len(files) != 0 {
+			t.Fatal("records exist")
+		}
+	}
+	if l.s.format.StoreFormatVersion >= storeFormatVersionAuthority {
+		t.Fatal("a refused publication raised the store floor")
+	}
+}
+
+// Bases survive the retirement of every namespace entry and manifest that named them, while a
+// live dependent needs them; when the last dependent goes, the whole chain is reclaimed.
+func TestAuthorityBaseRetentionAfterNamespacePruning(t *testing.T) {
+	l := newAuthLab(t)
+	hist := authHistory(171, 5, 900_000)
+	for _, v := range hist { // one key overwritten: older revisions live only in retained history
+		if _, err := l.s.PutObject("b", "doc", v, "application/octet-stream", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.want["doc"] = hist[4]
+	l.migrate(AuthPolicy{MinSaving: 0.05, MaxDepth: 2, Order: "oldest"})
+	st, _ := l.s.AuthorityStatus()
+	if st.Records < 4 {
+		t.Fatalf("status %+v", st)
+	}
+	keep := 0
+	res, err := l.s.PlanHistoryPrune(historyPruneOptions{Bucket: "b", Key: "doc", KeepLast: &keep})
+	if err != nil || len(res.Versions) != 4 {
+		t.Fatalf("plan prune: %v %d", err, len(res.Versions))
+	}
+	if err := l.s.ApplyHistoryPrune(&res); err != nil {
+		t.Fatal(err)
+	}
+	l.reclaim()
+	l.exact("pruned")
+	l.verifyOK("pruned")
+	after, _ := l.s.AuthorityStatus()
+	if after.Records == 0 || after.Records >= st.Records+1 {
+		t.Fatalf("records %d -> %d", st.Records, after.Records)
+	}
+	// Only the closure of the live revision remains: some body has no manifest of its own.
+	rr, _ := l.s.computeReachability(false)
+	if rr.AuthManifests != 1 || rr.AuthPins+rr.AuthReps+rr.AuthDeltas < 2 {
+		t.Fatalf("expected a closure of >=2 bodies behind one manifest, got manifests=%d bodies=%d", rr.AuthManifests, rr.AuthPins+rr.AuthReps+rr.AuthDeltas)
+	}
+	// Replace the live revision with unrelated content: the retired chain is reclaimed entirely.
+	l.put("doc", genRandomBytes(172, 300_000))
+	keep = 0
+	res, _ = l.s.PlanHistoryPrune(historyPruneOptions{Bucket: "b", Key: "doc", KeepLast: &keep})
+	l.s.ApplyHistoryPrune(&res)
+	l.reclaim()
+	final, _ := l.s.AuthorityStatus()
+	if final.Records != 0 {
+		t.Fatalf("%d body records outlived every dependent", final.Records)
+	}
+	l.exact("chain-reclaimed")
+	if gc := l.reclaim(); gc.ChunksUnreachable != 0 {
+		t.Fatalf("unreachable chunks remain: %d", gc.ChunksUnreachable)
+	}
+}
