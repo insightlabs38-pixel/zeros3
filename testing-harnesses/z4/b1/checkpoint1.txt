@@ -1,0 +1,9 @@
+Checkpoint 1: authenticated residual/COPY-ADD codec, compact bounded matcher,
+three global/local feature families plus superfeatures, bounded hash postings,
+serialized sorted ReaderAt tables, exact cold graph replay and cost harness.
+80 randomized fixtures x7 codecs, truncation/corruption/cycle/depth/work tests PASS.
+Decoder fuzz: 276609 executions /8s PASS. Focused gitz3/pdelta PASS; vet PASS.
+Initial pilot (before compact matcher): CLR authoritative/CDC0.839,
+hiredis bitcode0.660, synthetic edited binaries0.588; not final qualification.
+All four indexes and retained dependencies charged. Pdelta remains estimate only.
+No production files changed; no verdict or production readiness claim yet.
