@@ -89,13 +89,18 @@ func model8Chain(paths []string) (inc []int64, total int64, exact bool, err erro
 			return nil, 0, false, e
 		}
 		add(cb, rawBases(x))
-		b1, t1 := enc(modelz3.Policy{Planes: true}, nil)
-		add(b1, t1)
+		big := x.sz > 600<<20 // the lab encoder holds whole tensors: limit candidates on large files
+		if !big {
+			b1, t1 := enc(modelz3.Policy{Planes: true}, nil)
+			add(b1, t1)
+		}
 		if i > 0 {
-			b2, t2 := enc(hops(2), []map[string]*modelz3.BaseTensor{anchor})
-			add(b2, t2)
-			b3, t3 := enc(hops(3), []map[string]*modelz3.BaseTensor{prev})
-			add(b3, t3)
+			if !big {
+				b2, t2 := enc(hops(2), []map[string]*modelz3.BaseTensor{anchor})
+				add(b2, t2)
+				b3, t3 := enc(hops(3), []map[string]*modelz3.BaseTensor{prev})
+				add(b3, t3)
+			}
 			b4, t4 := enc(hops(3), []map[string]*modelz3.BaseTensor{anchor, prev})
 			add(b4, t4)
 		}

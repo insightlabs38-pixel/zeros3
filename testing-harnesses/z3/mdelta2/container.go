@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"zeros3-z3/simdelta"
 )
 
 // A container is one stored model state. Every used base is named by SHA-256 and length;
@@ -16,6 +18,7 @@ const (
 	magic       = "ZB5C1"
 	ModeCoded   = 0
 	ModeCopy    = 1
+	ModeQuant   = 2
 	MaxBases    = 3
 	MaxDepth    = 4
 	maxTensors  = 1 << 20
@@ -50,6 +53,7 @@ type Seg struct {
 	Refs   []BaseRef
 	Coder  uint8
 	Stream []byte
+	Q      []byte // ModeQuant: typed quantized-lane stream (see quantplan.go)
 }
 
 // TRec describes one tensor payload.
@@ -71,7 +75,10 @@ type Container struct {
 	FileSHA SHA
 	FileLen int64
 	Bases   []BaseInfo
-	Gaps    []byte // concatenated header/padding bytes
+	Gaps    []byte // concatenated header/padding bytes (resolved)
+	GapsLen int64
+	GapSlot uint8  // base slot whose gaps predict ours (GapWire != nil)
+	GapWire []byte // simdelta program over the base's gaps
 	TailGap int64
 	T       []TRec
 }
@@ -91,7 +98,13 @@ func (c *Container) Marshal() []byte {
 		b = binary.AppendUvarint(b, uint64(x.Len))
 	}
 	gz := Deflate(c.Gaps)
-	if len(gz) >= len(c.Gaps) {
+	if c.GapWire != nil {
+		b = append(b, 2)
+		b = binary.AppendUvarint(b, uint64(c.GapsLen))
+		b = append(b, c.GapSlot)
+		b = binary.AppendUvarint(b, uint64(len(c.GapWire)))
+		b = append(b, c.GapWire...)
+	} else if len(gz) >= len(c.Gaps) {
 		b = append(b, 0)
 		b = binary.AppendUvarint(b, uint64(len(c.Gaps)))
 		b = append(b, c.Gaps...)
@@ -123,6 +136,10 @@ func (c *Container) Marshal() []byte {
 				b = binary.AppendUvarint(b, uint64(r.TIdx))
 				b = binary.LittleEndian.AppendUint32(b, r.Tag)
 				b = binary.AppendVarint(b, r.Off)
+			}
+			if s.Mode == ModeQuant {
+				b = binary.AppendUvarint(b, uint64(len(s.Q)))
+				b = append(b, s.Q...)
 			}
 			if s.Mode == ModeCoded {
 				pm := s.Params.Marshal()
@@ -220,8 +237,18 @@ func ParseContainer(b []byte) (*Container, error) {
 			}
 			c.Gaps = g
 		}
+	} else if flag == 2 {
+		c.GapsLen = int64(gl)
+		c.GapSlot = r.byte1()
+		if int(c.GapSlot) >= nb {
+			return nil, ErrFormat
+		}
+		c.GapWire = append([]byte(nil), r.raw(r.u())...)
 	} else {
 		return nil, ErrFormat
+	}
+	if flag != 2 {
+		c.GapsLen = int64(len(c.Gaps))
 	}
 	c.TailGap = int64(r.u())
 	nt := r.u()
@@ -266,7 +293,7 @@ func ParseContainer(b []byte) (*Container, error) {
 			var s Seg
 			m := r.byte1()
 			s.Mode, s.Narrow = m&3, DType(m>>2)
-			if s.Mode > ModeCopy || s.Narrow > DQOther {
+			if s.Mode > ModeQuant || s.Narrow > DQOther {
 				return nil, ErrFormat
 			}
 			if nseg > 1 {
@@ -291,6 +318,9 @@ func ParseContainer(b []byte) (*Container, error) {
 					return nil, ErrFormat
 				}
 				s.Refs = append(s.Refs, br)
+			}
+			if s.Mode == ModeQuant {
+				s.Q = r.raw(r.u())
 			}
 			if s.Mode == ModeCoded {
 				pl := r.u()
@@ -337,7 +367,7 @@ func ParseContainer(b []byte) (*Container, error) {
 	if r.pos != len(b) {
 		return nil, ErrFormat
 	}
-	if int64(len(c.Gaps)) != gapSum || total+gapSum != c.FileLen || c.FileLen > maxOutBytes {
+	if c.GapsLen != gapSum || total+gapSum != c.FileLen || c.FileLen > maxOutBytes {
 		return nil, ErrFormat
 	}
 	return c, nil
@@ -346,6 +376,29 @@ func ParseContainer(b []byte) (*Container, error) {
 // Resolver supplies decoded tensor payloads of named bases (file dtype, whole tensor).
 type Resolver interface {
 	Tensor(base SHA, idx int) (DType, []byte, error)
+	Gaps(base SHA) ([]byte, error)
+}
+
+// resolveGaps materializes delta-coded header bytes from the named base's gaps.
+func (c *Container) resolveGaps(rv Resolver) error {
+	if c.GapWire == nil || c.Gaps != nil {
+		return nil
+	}
+	bg, err := rv.Gaps(c.Bases[c.GapSlot].SHA)
+	if err != nil {
+		return err
+	}
+	g, err := simdelta.Decode(c.GapWire, func(id [32]byte) ([]byte, error) {
+		if sum(bg) != id {
+			return nil, ErrIdentity
+		}
+		return bg, nil
+	})
+	if err != nil || int64(len(g)) != c.GapsLen {
+		return ErrFormat
+	}
+	c.Gaps = g
+	return nil
 }
 
 // DecodeTensor reconstructs payload i of the container.
@@ -414,6 +467,9 @@ func (c *Container) decodeSeg(t *TRec, s *Seg, rv Resolver) ([]byte, error) {
 		_ = fw
 		return append([]byte(nil), bv.Data...), nil
 	}
+	if s.Mode == ModeQuant {
+		return c.decodeQuant(t, s, rv)
+	}
 	p := s.Params
 	if p.Kind != KNone && int(p.NB) != len(s.Refs) {
 		return nil, ErrFormat
@@ -457,6 +513,9 @@ func segShape(shape []int64, elems int64) []int64 {
 
 // DecodeTo reconstructs the whole file into w and verifies length and SHA-256.
 func (c *Container) DecodeTo(w io.Writer, rv Resolver) error {
+	if err := c.resolveGaps(rv); err != nil {
+		return err
+	}
 	h := sha256.New()
 	var n int64
 	emit := func(b []byte) error {
@@ -513,4 +572,72 @@ func Decode(container []byte, rv Resolver) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// ReadRange writes bytes [off, off+n) of the reconstructed file, decoding only the segments
+// that overlap the range. It verifies segment boundaries, not the whole-file digest (a digest
+// needs a sequential pass), and reports the payload bytes it had to reconstruct.
+func (c *Container) ReadRange(w io.Writer, off, n int64, rv Resolver) (decoded int64, err error) {
+	if off < 0 || n < 0 || off+n > c.FileLen {
+		return 0, ErrFormat
+	}
+	if err := c.resolveGaps(rv); err != nil {
+		return 0, err
+	}
+	pos, gp := int64(0), int64(0)
+	end := off + n
+	emit := func(b []byte, at int64) error {
+		lo, hi := off-at, end-at
+		if lo < 0 {
+			lo = 0
+		}
+		if hi > int64(len(b)) {
+			hi = int64(len(b))
+		}
+		if hi <= lo {
+			return nil
+		}
+		k, err := w.Write(b[lo:hi])
+		if err == nil && int64(k) != hi-lo {
+			err = io.ErrShortWrite
+		}
+		return err
+	}
+	for i := range c.T {
+		t := &c.T[i]
+		g := t.GapBefore
+		if g > 0 {
+			if pos < end && pos+g > off {
+				if err := emit(c.Gaps[gp:gp+g], pos); err != nil {
+					return decoded, err
+				}
+			}
+			pos += g
+			gp += g
+		}
+		tw := int64(t.DType.Width())
+		sp := pos
+		for si := range t.Segs {
+			s := &t.Segs[si]
+			sl := s.Elems * tw
+			if sp < end && sp+sl > off {
+				b, err := c.decodeSeg(t, s, rv)
+				if err != nil {
+					return decoded, err
+				}
+				decoded += int64(len(b))
+				if err := emit(b, sp); err != nil {
+					return decoded, err
+				}
+			}
+			sp += sl
+		}
+		pos += t.Len
+	}
+	if pos < end && gp < int64(len(c.Gaps)) {
+		if err := emit(c.Gaps[gp:], pos); err != nil {
+			return decoded, err
+		}
+	}
+	return decoded, nil
 }

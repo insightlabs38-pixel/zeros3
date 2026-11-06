@@ -1,51 +1,49 @@
 package main
 
 import (
+	"encoding/json"
+	"flag"
 	"fmt"
 	"math"
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"zeros3-z3/mdelta2"
 )
 
-// cmdExplore: explore TARGET BASE [BASE2]  -> per-predictor totals (DEFLATE-of-planes cost and ideal ctx bound).
+// cmdExplore evaluates the whole predictor ladder per tensor: explore [-json f] [-low 1,2,4,8,16,32] TARGET BASE [BASE2 [BASE3]]
+// Costs are NRC-proxy bytes for ranking and real coded bytes (best of flate/NRC) for the per-tensor winner.
 func cmdExplore(args []string) {
-	t, err := mdelta2.Open(args[0])
+	fl := flag.NewFlagSet("explore", flag.ExitOnError)
+	jsonOut := fl.String("json", "", "write per-tensor results")
+	lowS := fl.String("low", "1,2,4,8,16,32", "low-rank ladder")
+	maxLow := fl.Int("maxlow", 24<<20, "max elements for low-rank fitting")
+	fl.Parse(args)
+	paths := fl.Args()
+	t, err := mdelta2.Open(paths[0])
 	must(err)
 	var bs []*mdelta2.Model
-	for _, p := range args[1:] {
-		if _, err := strconv.Atoi(p); err == nil {
-			continue
-		}
+	for _, p := range paths[1:] {
 		b, err := mdelta2.Open(p)
 		must(err)
 		bs = append(bs, b)
 	}
-	rankMax := 16
-	type row struct {
-		name string
-		z, h int64
+	ranks := parseInts(*lowS)
+	type tres struct {
+		Name    string             `json:"name"`
+		DType   string             `json:"dtype"`
+		Elems   int                `json:"elems"`
+		Raw     int                `json:"raw_bytes"`
+		Direct  int                `json:"direct"`
+		Proxy   map[string]float64 `json:"proxy"`
+		Best    string             `json:"best"`
+		BestEnc int                `json:"best_coded"`
 	}
-	var mu sync.Mutex
-	tot := map[string]*[3]float64{}
-	nrcTot := map[string]float64{}
-	best := 0.0
-	rawTot := 0.0
-	add := func(name string, z int, h float64, par int) {
-		mu.Lock()
-		defer mu.Unlock()
-		r := tot[name]
-		if r == nil {
-			r = new([3]float64)
-			tot[name] = r
-		}
-		r[0] += float64(z + par)
-		r[1] += h + float64(par)
-	}
+	results := make([]tres, len(t.Tensors))
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	t0 := time.Now()
@@ -54,21 +52,27 @@ func cmdExplore(args []string) {
 		go func() {
 			defer wg.Done()
 			for ti := range jobs {
-				tt := &t.Tensors[ti]
+				tt := t.Tensors[ti]
 				if !tt.DType.IsFloat() {
 					continue
 				}
-				w := tt.DType.Width()
 				tdata, _ := t.Read(ti)
-				if tt.DType == mdelta2.DF32 {
+				cd := tt.DType
+				if cd == mdelta2.DF32 {
 					if nd, ok := mdelta2.Narrow(tdata, mdelta2.DF16); ok {
-						tdata = nd
-						ttc := *tt
-						ttc.DType = mdelta2.DF16
-						tt = &ttc
-						w = 2
+						tdata, cd = nd, mdelta2.DF16
 					}
 				}
+				w := cd.Width()
+				r := tres{Name: tt.Name, DType: cd.String(), Elems: int(tt.Elems()), Raw: len(tdata), Proxy: map[string]float64{}}
+				zero := make([]byte, len(tdata))
+				dsz := 1 << 60
+				for _, c := range []int{mdelta2.CFlate, mdelta2.CNRC} {
+					if s, _ := mdelta2.EncodeResidual(c, cd, mdelta2.RXor, tdata, zero); len(s) < dsz {
+						dsz = len(s)
+					}
+				}
+				r.Direct = dsz
 				var bases []mdelta2.Base
 				ok := true
 				for _, b := range bs {
@@ -80,66 +84,65 @@ func cmdExplore(args []string) {
 					d, _ := b.Read(bi)
 					bases = append(bases, mdelta2.Base{DT: b.Tensors[bi].DType, Data: d})
 				}
-				n := int(tt.Elems())
-				rawz := mdelta2.PlaneDeflate(tdata, w)
-				mu.Lock()
-				rawTot += float64(len(tdata))
-				mu.Unlock()
-				cands := map[string][4]float64{} // name -> deflate, h, params, nrc
-				cands["direct+planes"] = [4]float64{float64(rawz), mdelta2.HCtx(mdelta2.Planes(tdata, w)), 0, float64(rawz)}
+				type cand struct {
+					name string
+					p    *mdelta2.Params
+				}
+				var cs []cand
 				if ok && len(bases) > 0 {
-					res := func(name string, p *mdelta2.Params) {
-						pred, err := mdelta2.Predict(p, tt.DType, tt.Shape, bases)
-						if err != nil {
-							return
-						}
-						r := mdelta2.MakeResidual(p.Res, w, tdata, pred)
-						cands[name] = [4]float64{float64(mdelta2.PlaneDeflate(r, w)), mdelta2.HCtx(mdelta2.Planes(r, w)), float64(len(p.Marshal())), float64(len(mdelta2.NRCEncode(tt.DType, r, pred)))}
-					}
-					res("id-key", &mdelta2.Params{Kind: mdelta2.KID, Res: mdelta2.RKey, NB: 1, Prec: 4})
-					res("id-xor", &mdelta2.Params{Kind: mdelta2.KID, Res: mdelta2.RXor, NB: 1, Prec: 4})
-					res("id-sub", &mdelta2.Params{Kind: mdelta2.KID, Res: mdelta2.RSub, NB: 1, Prec: 4})
-					res("aff-tensor", mdelta2.FitAffine(tt.DType, tt.Shape, mdelta2.GTensor, 0, 0, 4, bases[0], tdata))
-					res("aff-row", mdelta2.FitAffine(tt.DType, tt.Shape, mdelta2.GRow, 0, 0, 4, bases[0], tdata))
-					res("aff-blk4096", mdelta2.FitAffine(tt.DType, tt.Shape, mdelta2.GBlock, 4096, 0, 4, bases[0], tdata))
-					res("aff-blk256", mdelta2.FitAffine(tt.DType, tt.Shape, mdelta2.GBlock, 256, 0, 4, bases[0], tdata))
-					if len(bases) > 1 {
-						res("lin2-tensor", mdelta2.FitLin(tt.DType, tt.Shape, mdelta2.GTensor, 4, bases[:2], tdata))
-						res("lin2-row", mdelta2.FitLin(tt.DType, tt.Shape, mdelta2.GRow, 4, bases[:2], tdata))
-					}
-					if len(tt.Shape) == 2 && tt.Shape[0] >= 32 && tt.Shape[1] >= 32 && n <= 24<<20 {
-						for _, r := range []int{1, 4, rankMax} {
-							res("low"+strconv.Itoa(r), mdelta2.LowRankFit(tt.DType, tt.Shape, r, 4, bases[0], tdata, 2, 1))
+					cs = append(cs, cand{"id-key", &mdelta2.Params{Kind: mdelta2.KID, Res: mdelta2.RKey, NB: 1, Prec: 4}},
+						cand{"id-xor", &mdelta2.Params{Kind: mdelta2.KID, Res: mdelta2.RXor, NB: 1, Prec: 4}},
+						cand{"id-sub", &mdelta2.Params{Kind: mdelta2.KID, Res: mdelta2.RSub, NB: 1, Prec: 4}},
+						cand{"aff-tensor-ls", mdelta2.FitAffine(cd, tt.Shape, mdelta2.GTensor, 0, 0, 4, bases[0], tdata)},
+						cand{"aff-tensor", mdelta2.FitAffineRobust(cd, tt.Shape, mdelta2.GTensor, 0, 4, bases[0], tdata)},
+						cand{"aff-row", mdelta2.FitAffineRobust(cd, tt.Shape, mdelta2.GRow, 0, 4, bases[0], tdata)},
+						cand{"aff-blk4096", mdelta2.FitAffineRobust(cd, tt.Shape, mdelta2.GBlock, 4096, 4, bases[0], tdata)},
+						cand{"aff-blk256", mdelta2.FitAffineRobust(cd, tt.Shape, mdelta2.GBlock, 256, 4, bases[0], tdata)})
+					if len(tt.Shape) == 2 && tt.Shape[0] >= 16 && tt.Shape[1] >= 16 && int(tt.Elems()) <= *maxLow {
+						for _, rk := range ranks {
+							cs = append(cs, cand{"low" + strconv.Itoa(rk), mdelta2.LowRankFit(cd, tt.Shape, rk, 4, bases[0], tdata, 3, 1)})
 						}
 					}
-				}
-				bz := 1e18
-				mu.Lock()
-				for nme, c := range cands {
-					add2 := func() {}
-					_ = add2
-					r := tot[nme]
-					if r == nil {
-						r = new([3]float64)
-						tot[nme] = r
+					if len(bases) >= 2 {
+						cs = append(cs, cand{"lin2", mdelta2.FitLin(cd, tt.Shape, mdelta2.GTensor, 4, bases[:2], tdata)},
+							cand{"lin2-row", mdelta2.FitLin(cd, tt.Shape, mdelta2.GRow, 4, bases[:2], tdata)})
 					}
-					r[0] += c[0] + c[2]
-					r[1] += c[1] + c[2]
-					nrcTot[nme] += math.Min(c[3], c[0]) + c[2]
-					if c[0]+c[2] < bz {
-						bz = c[0] + c[2]
+					if len(bases) >= 3 {
+						cs = append(cs, cand{"lin3", mdelta2.FitLin(cd, tt.Shape, mdelta2.GTensor, 4, bases[:3], tdata)})
 					}
 				}
-				// tensors with no applicable candidate use direct for every predictor row
-				for nme := range tot {
-					if _, has := cands[nme]; !has {
-						tot[nme][0] += cands["direct+planes"][0]
-						tot[nme][1] += cands["direct+planes"][1]
-						nrcTot[nme] += cands["direct+planes"][0]
+				best, bp := "direct", float64(r.Direct)
+				var bestC *cand
+				for i := range cs {
+					c := &cs[i]
+					pred, err := mdelta2.Predict(c.p, cd, tt.Shape, bases)
+					if err != nil {
+						continue
+					}
+					res := mdelta2.MakeResidual(c.p.Res, w, tdata, pred)
+					px := mdelta2.NRCProxy(cd, res, pred) + float64(len(c.p.Marshal()))
+					r.Proxy[c.name] = px
+					if px < bp {
+						best, bp, bestC = c.name, px, c
 					}
 				}
-				best += bz
-				mu.Unlock()
+				r.Best, r.BestEnc = best, r.Direct
+				if bestC != nil {
+					pred, _ := mdelta2.Predict(bestC.p, cd, tt.Shape, bases)
+					res := mdelta2.MakeResidual(bestC.p.Res, w, tdata, pred)
+					e := 1 << 60
+					for _, c := range []int{mdelta2.CFlate, mdelta2.CNRC} {
+						if s, ok := mdelta2.EncodeResidual(c, cd, bestC.p.Res, res, pred); ok && len(s) < e {
+							e = len(s)
+						}
+					}
+					if e+len(bestC.p.Marshal()) < r.Direct {
+						r.BestEnc = e + len(bestC.p.Marshal())
+					} else {
+						r.Best = "direct"
+					}
+				}
+				results[ti] = r
 			}
 		}()
 	}
@@ -148,15 +151,46 @@ func cmdExplore(args []string) {
 	}
 	close(jobs)
 	wg.Wait()
-	_ = add
+	// aggregate
+	tot := map[string]float64{}
+	wins := map[string]int{}
+	var raw, direct, best float64
+	var rows []tres
+	for _, r := range results {
+		if r.Elems == 0 {
+			continue
+		}
+		rows = append(rows, r)
+		raw += float64(r.Raw)
+		direct += float64(r.Direct)
+		best += float64(r.BestEnc)
+		wins[r.Best]++
+		for k, v := range r.Proxy {
+			tot[k] += math.Min(v, float64(r.Direct))
+		}
+		for k := range tot {
+			if _, ok := r.Proxy[k]; !ok {
+				tot[k] += float64(r.Direct)
+			}
+		}
+	}
 	names := make([]string, 0, len(tot))
 	for k := range tot {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	fmt.Fprintf(os.Stdout, "target %s (%d bytes of float tensors), %.1fs\n", args[0], int64(rawTot), time.Since(t0).Seconds())
+	fmt.Printf("target %s bases %d float bytes %.0f  (%.1fs)\n  direct %.0f (%.3f)\n", paths[0], len(bs), raw, time.Since(t0).Seconds(), direct, direct/raw)
 	for _, k := range names {
-		fmt.Printf("  %-14s deflate %11.0f (%.3f)  idealCtx %11.0f (%.3f)  nrc %11.0f (%.3f)\n", k, tot[k][0], tot[k][0]/rawTot, tot[k][1], tot[k][1]/rawTot, nrcTot[k], nrcTot[k]/rawTot)
+		fmt.Printf("  %-14s proxy-if-accepted %12.0f (%.3f)\n", k, tot[k], tot[k]/raw)
 	}
-	fmt.Printf("  %-14s deflate %12.0f (%.3f)\n", "BEST-PER-TENSOR", best, best/rawTot)
+	var ws []string
+	for k, v := range wins {
+		ws = append(ws, fmt.Sprintf("%s:%d", k, v))
+	}
+	sort.Strings(ws)
+	fmt.Printf("  BEST-PER-TENSOR coded %.0f (%.3f of raw, %.3f of direct); winners %s\n", best, best/raw, best/direct, strings.Join(ws, " "))
+	if *jsonOut != "" {
+		b, _ := json.MarshalIndent(map[string]any{"args": paths, "raw": raw, "direct": direct, "best": best, "tensors": rows}, "", " ")
+		os.WriteFile(*jsonOut, b, 0o644)
+	}
 }

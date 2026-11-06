@@ -110,8 +110,20 @@ func cmdFamily(args []string) {
 	coders := fl.String("coders", "1,2", "coder ids")
 	parents := fl.String("parents", "", "explicit parents per state, e.g. '-;0;0,1;1' (oracle/re-rooting)")
 	jsonOut := fl.String("json", "", "write JSON result here")
+	hfmap := fl.Bool("hfmap", false, "map GGUF tensor names to Safetensors names for float->quantized reproduction")
+	heads := fl.String("heads", "0,0", "llama q/k permutation heads (n_head,n_kv); 0 = none")
 	fl.Parse(args)
 	opt := mdelta2.EncOpts{Narrow: *narrow, Affine: *aff, Low: parseInts(*low), Lin: *lin, Segments: *seg, Coders: parseInts(*coders)}
+	hv := parseInts(*heads)
+	opt.Hint = func(name string) mdelta2.PermHint {
+		switch {
+		case hv[0] > 0 && strings.Contains(name, "attn_q."):
+			return mdelta2.PermHint{Kind: 1, Heads: hv[0]}
+		case hv[1] > 0 && strings.Contains(name, "attn_k."):
+			return mdelta2.PermHint{Kind: 1, Heads: hv[1]}
+		}
+		return mdelta2.PermHint{}
+	}
 	paths := fl.Args()
 	store := mdelta2.StoreDir{Dir: *storeDir}
 	var models []*mdelta2.Model
@@ -179,6 +191,11 @@ func cmdFamily(args []string) {
 			for s, b := range bases {
 				if j, ok := b.M.Index(m.Tensors[ti].Name); ok {
 					singles = append(singles, mdelta2.Pick{Slot: s, TIdx: j})
+				}
+				if *hfmap && m.Format == "gguf" && b.M.Format == "st" {
+					if j, ok := b.M.Index(hfOf(m.Tensors[ti].Name)); ok {
+						singles = append(singles, mdelta2.Pick{Slot: s, TIdx: j})
+					}
 				}
 			}
 			for _, pk := range singles {

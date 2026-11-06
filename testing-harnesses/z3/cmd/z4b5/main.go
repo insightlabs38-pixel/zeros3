@@ -21,6 +21,18 @@ func main() {
 	switch os.Args[1] {
 	case "explore":
 		cmdExplore(os.Args[2:])
+	case "quant-repro":
+		cmdQuantRepro(os.Args[2:])
+	case "inv":
+		cmdInv(os.Args[2:])
+	case "discover":
+		cmdDiscover(os.Args[2:])
+	case "controls":
+		cmdControls(os.Args[2:])
+	case "coderbench":
+		cmdCoderBench(os.Args[2:])
+	case "sparse":
+		cmdSparse(os.Args[2:])
 	case "family":
 		cmdFamily(os.Args[2:])
 	case "cdc":

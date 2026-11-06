@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"zeros3-z3/simdelta"
 )
 
 // Pick names one base tensor.
@@ -22,6 +24,8 @@ type EncOpts struct {
 	Segments bool  // per-segment (block) base choice
 	SegElems int   // segment size in elements (default 1<<20)
 	Workers  int
+	// Hint supplies the converter's tensor reordering for float->quantized reproduction.
+	Hint func(name string) PermHint
 }
 
 type BaseSrc struct {
@@ -59,6 +63,9 @@ type option struct {
 
 // nrcProxy estimates NRC payload bytes (shift mode, one context) from a histogram: entropy of the
 // shifted bit-length symbol plus raw mantissa bits; no allocation of a stream.
+// NRCProxy is the entropy-based NRC size estimate.
+func NRCProxy(d DType, resid, pred []byte) float64 { return nrcProxy(d, resid, pred) }
+
 func nrcProxy(d DType, resid, pred []byte) float64 {
 	w := d.Width()
 	n := len(resid) / w
@@ -166,7 +173,7 @@ func (pl *planner) options(cd DType, shape []int64, data []byte, picks [][]Pick,
 			out = append(out, option{name: "id-xor", p: &Params{Kind: KID, Res: RXor, NB: 1, Prec: 4}, picks: ps, nbases: bs})
 			if cd.IsFloat() && pl.o.Affine {
 				for _, g := range []Gran{GTensor, GRow} {
-					out = append(out, option{name: "aff", p: FitAffine(cd, shape, g, 0, 0, 4, bs[0], data), picks: ps, nbases: bs})
+					out = append(out, option{name: "aff", p: FitAffineRobust(cd, shape, g, 0, 4, bs[0], data), picks: ps, nbases: bs})
 				}
 			}
 			if cd.IsFloat() && len(pl.o.Low) > 0 && len(shape) == 2 && shape[0] >= 16 && shape[1] >= 16 && int(shape[0]*shape[1]) <= 48<<20 {
@@ -251,9 +258,20 @@ func EncodeModel(m *Model, bases []BaseSrc, cands func(ti int) [][]Pick, o EncOp
 		order[i] = i
 	}
 	sortBy(order, func(a, b int) bool { return m.Tensors[a].Begin < m.Tensors[b].Begin })
-	c := &Container{FileLen: m.Size, Gaps: gaps}
+	c := &Container{FileLen: m.Size, Gaps: gaps, GapsLen: int64(len(gaps))}
 	for _, b := range bases {
 		c.Bases = append(c.Bases, BaseInfo{b.SHA, b.Len})
+	}
+	// header/padding bytes: delta against the best base's own gaps when that is smaller
+	bestGap := len(Deflate(gaps))
+	for si, b := range bases {
+		bg, _, err := b.M.Gaps()
+		if err != nil || len(bg) == 0 || len(gaps) == 0 {
+			continue
+		}
+		if w, err := simdelta.Encode("adaptive", [][]byte{bg}, gaps); err == nil && len(w)+8 < bestGap {
+			bestGap, c.GapWire, c.GapSlot = len(w)+8, w, uint8(si)
+		}
 	}
 	// the file digest
 	fb := make([]byte, m.Size)
@@ -335,6 +353,9 @@ func (pl *planner) planTensor(ti int, picks [][]Pick) (TRec, TStat, error) {
 			st.EncMS = time.Since(t0).Milliseconds()
 			return rec, st, nil
 		}
+	}
+	if t.DType.IsQuant() {
+		return pl.planQuant(ti, t, data, picks, rec, st, t0)
 	}
 	cd := t.DType
 	narrowed := DType(0)
@@ -436,4 +457,73 @@ func (r ModelResolver) Tensor(base SHA, idx int) (DType, []byte, error) {
 	}
 	d, err := m.Read(idx)
 	return m.Tensors[idx].DType, d, err
+}
+
+func (r ModelResolver) Gaps(base SHA) ([]byte, error) {
+	m, ok := r[base]
+	if !ok {
+		return nil, ErrMissing
+	}
+	g, _, err := m.Gaps()
+	return g, err
+}
+
+// planQuant chooses among typed quantized-lane streams for a block-quantized tensor.
+func (pl *planner) planQuant(ti int, t *Tensor, data []byte, picks [][]Pick, rec TRec, st TStat, t0 time.Time) (TRec, TStat, error) {
+	best := Seg{Elems: int64(len(data)), Mode: ModeQuant, Q: nil}
+	var hint PermHint
+	if pl.o.Hint != nil {
+		hint = pl.o.Hint(t.Name)
+	}
+	for k, v := range quantCandidates(t.DType, data, nil, hint, t.Shape, nil) {
+		_ = k
+		best.Q = v
+	}
+	bestMode := "quant:fields"
+	for _, ps := range picks {
+		if len(ps) != 1 {
+			continue
+		}
+		bm := pl.bases[ps[0].Slot].M
+		bt := &bm.Tensors[ps[0].TIdx]
+		bd, err := bm.Read(ps[0].TIdx)
+		if err != nil {
+			continue
+		}
+		var fb *Base
+		var same []byte
+		switch {
+		case bt.DType == t.DType:
+			same = bd
+		case bt.DType.IsFloat():
+			fb = &Base{DT: bt.DType, Data: bd}
+		default:
+			continue
+		}
+		for name, q := range quantCandidates(t.DType, data, fb, hint, t.Shape, same) {
+			if name == "fields" {
+				continue
+			}
+			if len(q)+8 < len(best.Q)+len(best.Refs)*8 {
+				best.Q, bestMode = q, "quant:"+name
+				best.Refs = []BaseRef{{Slot: uint8(ps[0].Slot), TIdx: uint32(ps[0].TIdx), Tag: tag(bd)}}
+			}
+		}
+	}
+	rec.Segs = []Seg{best}
+	st.Mode, st.Bytes = bestMode, len(best.Q)+len(best.Refs)*8
+	st.EncMS = time.Since(t0).Milliseconds()
+	return rec, st, nil
+}
+
+// ShiftHist is the histogram of NRC shift-mode symbols (bit length + relative exponent).
+func ShiftHist(d DType, resid, pred []byte) []float64 {
+	w := d.Width()
+	n := len(resid) / w
+	er, _ := exps(d, pred)
+	h := make([]float64, nrcSyms)
+	for i := 0; i < n; i++ {
+		h[bitlen(le(resid, w, i))+int(er[i])]++
+	}
+	return h
 }

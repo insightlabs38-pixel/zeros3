@@ -2,6 +2,7 @@ package mdelta2
 
 import (
 	"bytes"
+	"math"
 	"math/rand"
 	"testing"
 )
@@ -80,6 +81,11 @@ func TestCodersRoundTrip(t *testing.T) {
 				}
 				putLE(res, w, i, v&mask(w))
 			}
+			if n > 1000 { // long zero/one runs exercise multi-byte run lengths (regression: 0xff run bytes)
+				for i := 0; i < n/2; i++ {
+					putLE(res, w, i, 0)
+				}
+			}
 			for c := 0; c < numCoder; c++ {
 				p, ok := EncodeResidual(c, d, RXor, res, pred)
 				if !ok {
@@ -96,6 +102,33 @@ func TestCodersRoundTrip(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+func TestFastConversionsMatchReference(t *testing.T) {
+	for h := uint32(0); h < 65536; h++ {
+		if x := f16ToF64(h); x == x {
+			if got, want := f16ToF32(h), math.Float32bits(float32(x)); got != want {
+				t.Fatalf("f16ToF32 %x: %x != %x", h, got, want)
+			}
+		}
+	}
+	rng := rand.New(rand.NewSource(4))
+	for i := 0; i < 3000000; i++ {
+		b := rng.Uint32()
+		if i%3 == 0 {
+			b &^= 0x1fff // exact halves and ties
+		}
+		x := math.Float32frombits(b)
+		if x != x {
+			continue
+		}
+		if got, want := f32ToF16(b), f64ToF16(float64(x)); got != want {
+			t.Fatalf("f32ToF16 %x: %x != %x", b, got, want)
+		}
+		if got, want := f32ToBF16(b), f64ToBF16(float64(x)); got != want {
+			t.Fatalf("f32ToBF16 %x: %x != %x", b, got, want)
 		}
 	}
 }

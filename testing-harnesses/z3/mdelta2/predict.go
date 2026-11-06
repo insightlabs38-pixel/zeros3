@@ -145,6 +145,16 @@ func idPred(tdt DType, b Base, i int) uint32 {
 	if b.DT == tdt {
 		return le(b.Data, tdt.Width(), i)
 	}
+	switch {
+	case b.DT == DF32 && tdt == DF16:
+		return f32ToF16(binary.LittleEndian.Uint32(b.Data[4*i:]))
+	case b.DT == DF32 && tdt == DBF16:
+		return f32ToBF16(binary.LittleEndian.Uint32(b.Data[4*i:]))
+	case b.DT == DF16 && tdt == DF32:
+		return f16ToF32(uint32(binary.LittleEndian.Uint16(b.Data[2*i:])))
+	case b.DT == DBF16 && tdt == DF32:
+		return uint32(binary.LittleEndian.Uint16(b.Data[2*i:])) << 16
+	}
 	return fromF64(tdt, b.at(i))
 }
 
@@ -175,6 +185,10 @@ func Predict(p *Params, tdt DType, shape []int64, bases []Base) ([]byte, error) 
 	case KNone:
 		return out, nil // zero prediction
 	case KID:
+		if bases[0].DT == tdt {
+			copy(out, bases[0].Data)
+			break
+		}
 		for i := 0; i < n; i++ {
 			putLE(out, w, i, idPred(tdt, bases[0], i))
 		}
@@ -267,40 +281,129 @@ func affBlock(p *Params, rows, cols, n int) int {
 
 // MakeResidual converts (target, prediction) to residual words (same width as target).
 func MakeResidual(res Residual, w int, target, pred []byte) []byte {
-	n := len(target) / w
 	out := make([]byte, len(target))
-	for i := 0; i < n; i++ {
-		t, p := le(target, w, i), le(pred, w, i)
-		var r uint32
-		switch res {
-		case RKey:
-			r = zigzag((key(t, w)-key(p, w))&mask(w), w)
-		case RXor:
-			r = t ^ p
-		default:
-			r = zigzag((t-p)&mask(w), w)
+	switch w {
+	case 4:
+		for i := 0; i+4 <= len(target); i += 4 {
+			t, p := binary.LittleEndian.Uint32(target[i:]), binary.LittleEndian.Uint32(pred[i:])
+			var r uint32
+			switch res {
+			case RKey:
+				r = zigzag4(key4(t) - key4(p))
+			case RXor:
+				r = t ^ p
+			default:
+				r = zigzag4(t - p)
+			}
+			binary.LittleEndian.PutUint32(out[i:], r)
 		}
-		putLE(out, w, i, r)
+	case 2:
+		for i := 0; i+2 <= len(target); i += 2 {
+			t, p := binary.LittleEndian.Uint16(target[i:]), binary.LittleEndian.Uint16(pred[i:])
+			var r uint16
+			switch res {
+			case RKey:
+				r = zigzag2(key2(t) - key2(p))
+			case RXor:
+				r = t ^ p
+			default:
+				r = zigzag2(t - p)
+			}
+			binary.LittleEndian.PutUint16(out[i:], r)
+		}
+	default:
+		for i := range target {
+			t, p := uint32(target[i]), uint32(pred[i])
+			var r uint32
+			switch res {
+			case RKey:
+				r = zigzag((key(t, 1)-key(p, 1))&0xff, 1)
+			case RXor:
+				r = t ^ p
+			default:
+				r = zigzag((t-p)&0xff, 1)
+			}
+			out[i] = byte(r)
+		}
 	}
 	return out
 }
 
 // ApplyResidual inverts MakeResidual.
 func ApplyResidual(res Residual, w int, resid, pred []byte) []byte {
-	n := len(resid) / w
 	out := make([]byte, len(resid))
-	for i := 0; i < n; i++ {
-		r, p := le(resid, w, i), le(pred, w, i)
-		var t uint32
-		switch res {
-		case RKey:
-			t = unkey((key(p, w)+unzigzag(r, w))&mask(w), w)
-		case RXor:
-			t = r ^ p
-		default:
-			t = (p + unzigzag(r, w)) & mask(w)
+	switch w {
+	case 4:
+		for i := 0; i+4 <= len(resid); i += 4 {
+			r, p := binary.LittleEndian.Uint32(resid[i:]), binary.LittleEndian.Uint32(pred[i:])
+			var t uint32
+			switch res {
+			case RKey:
+				t = unkey4(key4(p) + unzigzag4(r))
+			case RXor:
+				t = r ^ p
+			default:
+				t = p + unzigzag4(r)
+			}
+			binary.LittleEndian.PutUint32(out[i:], t)
 		}
-		putLE(out, w, i, t)
+	case 2:
+		for i := 0; i+2 <= len(resid); i += 2 {
+			r, p := binary.LittleEndian.Uint16(resid[i:]), binary.LittleEndian.Uint16(pred[i:])
+			var t uint16
+			switch res {
+			case RKey:
+				t = unkey2(key2(p) + unzigzag2(r))
+			case RXor:
+				t = r ^ p
+			default:
+				t = p + unzigzag2(r)
+			}
+			binary.LittleEndian.PutUint16(out[i:], t)
+		}
+	default:
+		for i := range resid {
+			r, p := uint32(resid[i]), uint32(pred[i])
+			var t uint32
+			switch res {
+			case RKey:
+				t = unkey((key(p, 1)+unzigzag(r, 1))&0xff, 1)
+			case RXor:
+				t = r ^ p
+			default:
+				t = (p + unzigzag(r, 1)) & 0xff
+			}
+			out[i] = byte(t)
+		}
 	}
 	return out
 }
+
+func key4(b uint32) uint32 {
+	if b&0x80000000 != 0 {
+		return ^b
+	}
+	return b | 0x80000000
+}
+func unkey4(k uint32) uint32 {
+	if k&0x80000000 != 0 {
+		return k &^ 0x80000000
+	}
+	return ^k
+}
+func key2(b uint16) uint16 {
+	if b&0x8000 != 0 {
+		return ^b
+	}
+	return b | 0x8000
+}
+func unkey2(k uint16) uint16 {
+	if k&0x8000 != 0 {
+		return k &^ 0x8000
+	}
+	return ^k
+}
+func zigzag4(d uint32) uint32   { x := int32(d); return uint32(x<<1) ^ uint32(x>>31) }
+func unzigzag4(z uint32) uint32 { return (z >> 1) ^ -(z & 1) }
+func zigzag2(d uint16) uint16   { x := int16(d); return uint16(x<<1) ^ uint16(x>>15) }
+func unzigzag2(z uint16) uint16 { return (z >> 1) ^ -(z & 1) }

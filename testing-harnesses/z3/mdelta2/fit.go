@@ -404,3 +404,70 @@ func jacobiEig(A []float64, k int) ([]float64, []float64) {
 	}
 	return ev, v
 }
+
+// groupCost is the sum of residual bit lengths of predicting target elements [lo,hi) (stride s)
+// with pred = a*base + c: a cheap monotone proxy for coded size.
+func groupCost(tdt DType, base Base, target []byte, lo, hi, stride int, a, c float32) int {
+	w := tdt.Width()
+	cost := 0
+	for i := lo; i < hi; i += stride {
+		b := base.at(i)
+		var pv uint32
+		if x := b; finite(x) {
+			y := float64(float64(a)*x) + float64(c)
+			if finite(y) {
+				pv = fromF64(tdt, y)
+			} else {
+				pv = idPred(tdt, base, i)
+			}
+		} else {
+			pv = idPred(tdt, base, i)
+		}
+		cost += bitlen(zigzag((key(le(target, w, i), w)-key(pv, w))&mask(w), w))
+	}
+	return cost
+}
+
+// FitAffineRobust chooses per group among identity, least-squares, scale-only and offset-only
+// coefficients by the residual bit-length proxy instead of squared error (squared error is
+// dominated by the few large movers and loses to identity on the typical element).
+func FitAffineRobust(tdt DType, shape []int64, g Gran, block int, prec uint8, base Base, target []byte) *Params {
+	w := tdt.Width()
+	n := len(target) / w
+	rows, cols := 1, n
+	if len(shape) > 0 && shape[len(shape)-1] > 0 {
+		cols = int(shape[len(shape)-1])
+		rows = n / cols
+	}
+	p := &Params{Kind: KAff, Res: RKey, Gran: g, Block: uint32(block), NB: 1, Prec: prec}
+	blk := affBlock(p, rows, cols, n)
+	nb := (n + blk - 1) / blk
+	p.Coef = make([]float32, 2*nb)
+	for k := 0; k < nb; k++ {
+		lo, hi := k*blk, (k+1)*blk
+		if hi > n {
+			hi = n
+		}
+		stride := 1
+		if hi-lo > 1<<15 {
+			stride = (hi - lo) >> 15
+		}
+		var s sums
+		for i := lo; i < hi; i += stride {
+			s.add(base.at(i), toF64(tdt, le(target, w, i)))
+		}
+		type cand struct{ a, c float32 }
+		a0, c0 := s.solve(0)
+		as, _ := s.solve(1)
+		_, co := s.solve(2)
+		cands := []cand{{1, 0}, {roundCoef(a0, prec), roundCoef(c0, prec)}, {roundCoef(as, prec), 0}, {1, roundCoef(co, prec)}}
+		best, bc := cands[0], groupCost(tdt, base, target, lo, hi, stride, 1, 0)
+		for _, c := range cands[1:] {
+			if cc := groupCost(tdt, base, target, lo, hi, stride, c.a, c.c); cc < bc {
+				best, bc = c, cc
+			}
+		}
+		p.Coef[2*k], p.Coef[2*k+1] = best.a, best.c
+	}
+	return p
+}

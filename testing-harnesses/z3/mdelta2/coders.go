@@ -243,24 +243,28 @@ func riceDecode(w int, payload []byte, n int) ([]byte, error) {
 	return out, nil
 }
 
-// ---- bitplane run-length: for each bit plane (MSB first) alternating run lengths of 0s and 1s.
+// ---- bitplane run-length: per plane (MSB first) a run count, then alternating 0/1 run lengths.
 
 func bprleEncode(w int, resid []byte) []byte {
 	n := len(resid) / w
 	var out []byte
 	for p := 8*w - 1; p >= 0; p-- {
-		cur, run := uint32(0), 0
+		var runs []uint64
+		cur, run := uint32(0), uint64(0)
 		for i := 0; i < n; i++ {
 			b := le(resid, w, i) >> uint(p) & 1
 			if b == cur {
 				run++
 				continue
 			}
-			out = binary.AppendUvarint(out, uint64(run))
+			runs = append(runs, run)
 			cur, run = b, 1
 		}
-		out = binary.AppendUvarint(out, uint64(run))
-		out = append(out, 0xff) // plane terminator (run varint never starts with 0xff 0xff.. as a lone byte is invalid)
+		runs = append(runs, run)
+		out = binary.AppendUvarint(out, uint64(len(runs)))
+		for _, r := range runs {
+			out = binary.AppendUvarint(out, r)
+		}
 	}
 	return out
 }
@@ -269,15 +273,13 @@ func bprleDecode(w int, payload []byte, n int) ([]byte, error) {
 	out := make([]byte, n*w)
 	pos := 0
 	for p := 8*w - 1; p >= 0; p-- {
+		cnt, k := binary.Uvarint(payload[pos:])
+		if k <= 0 || cnt > uint64(n)+1 {
+			return nil, ErrCorrupt
+		}
+		pos += k
 		cur, i := uint32(0), 0
-		for {
-			if pos >= len(payload) {
-				return nil, ErrCorrupt
-			}
-			if payload[pos] == 0xff {
-				pos++
-				break
-			}
+		for r := uint64(0); r < cnt; r++ {
 			run, k := binary.Uvarint(payload[pos:])
 			if k <= 0 || run > uint64(n-i) {
 				return nil, ErrCorrupt

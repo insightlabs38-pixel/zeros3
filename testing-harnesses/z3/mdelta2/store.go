@@ -112,3 +112,22 @@ func (s StoreDir) Replay(id SHA) ([]byte, *StoreResolver, error) {
 }
 
 func FileSHA(b []byte) SHA { return sha256.Sum256(b) }
+
+func (r *StoreResolver) Gaps(base SHA) ([]byte, error) {
+	for _, s := range r.stack {
+		if s == base {
+			return nil, ErrCycle
+		}
+	}
+	if len(r.stack) >= r.MaxDepth {
+		return nil, ErrDepth
+	}
+	c, err := r.load(base)
+	if err != nil {
+		return nil, err
+	}
+	r.stack = append(r.stack, base)
+	err = c.resolveGaps(r)
+	r.stack = r.stack[:len(r.stack)-1]
+	return c.Gaps, err
+}

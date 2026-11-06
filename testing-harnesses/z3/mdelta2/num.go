@@ -203,3 +203,72 @@ func Widen(src []byte, from DType) []byte {
 	}
 	return dst
 }
+
+// BF16Bits rounds a float64 to bfloat16 bits (round to nearest even via float32).
+func BF16Bits(x float64) uint32 { return f64ToBF16(x) }
+
+// f32ToF16 rounds float32 bits to nearest-even half precision using integer arithmetic only.
+func f32ToF16(b uint32) uint32 {
+	sign := (b >> 16) & 0x8000
+	exp := int(b>>23) & 0xff
+	man := b & 0x7fffff
+	if exp == 255 {
+		if man == 0 {
+			return sign | 0x7c00
+		}
+		return sign | 0x7e00 | man>>13
+	}
+	e := exp - 127 + 15
+	if e >= 31 {
+		return sign | 0x7c00
+	}
+	if e <= 0 {
+		if e < -10 {
+			return sign
+		}
+		man |= 0x800000
+		shift := uint(14 - e)
+		half := man >> shift
+		rem := man & (1<<shift - 1)
+		mid := uint32(1) << (shift - 1)
+		if rem > mid || (rem == mid && half&1 == 1) {
+			half++
+		}
+		return sign | half
+	}
+	half := uint32(e)<<10 | man>>13
+	rem := man & 0x1fff
+	if rem > 0x1000 || (rem == 0x1000 && half&1 == 1) {
+		half++
+	}
+	return sign | half
+}
+
+// f16ToF32 widens half-precision bits exactly with integer arithmetic.
+func f16ToF32(h uint32) uint32 {
+	sign := (h & 0x8000) << 16
+	exp := (h >> 10) & 0x1f
+	man := h & 0x3ff
+	switch {
+	case exp == 0:
+		if man == 0 {
+			return sign
+		}
+		e := uint32(127 - 15 + 1)
+		for man&0x400 == 0 {
+			man <<= 1
+			e--
+		}
+		return sign | e<<23 | (man&0x3ff)<<13
+	case exp == 31:
+		return sign | 0x7f800000 | man<<13
+	}
+	return sign | (exp+127-15)<<23 | man<<13
+}
+
+func f32ToBF16(b uint32) uint32 {
+	if b&0x7fffffff > 0x7f800000 {
+		return b>>16 | 0x40
+	}
+	return (b + 0x7fff + (b >> 16 & 1)) >> 16
+}
