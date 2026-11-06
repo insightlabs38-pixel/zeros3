@@ -1,0 +1,205 @@
+package mdelta2
+
+import (
+	"encoding/binary"
+	"math"
+)
+
+// Deterministic element arithmetic. Floating-point is used only to form a prediction; every
+// prediction is mapped to a bit pattern and the residual is an exact bijective difference of
+// order-preserving integer keys, so any prediction (including NaN-derived ones) is exact.
+// Explicit float64() conversions forbid fused multiply-add on every architecture.
+
+func le(b []byte, w int, i int) uint32 {
+	switch w {
+	case 4:
+		return binary.LittleEndian.Uint32(b[4*i:])
+	case 2:
+		return uint32(binary.LittleEndian.Uint16(b[2*i:]))
+	}
+	return uint32(b[i])
+}
+
+func putLE(b []byte, w int, i int, v uint32) {
+	switch w {
+	case 4:
+		binary.LittleEndian.PutUint32(b[4*i:], v)
+	case 2:
+		binary.LittleEndian.PutUint16(b[2*i:], uint16(v))
+	default:
+		b[i] = byte(v)
+	}
+}
+
+func mask(w int) uint32 {
+	if w >= 4 {
+		return 0xFFFFFFFF
+	}
+	return 1<<(8*uint(w)) - 1
+}
+
+// key maps a bit pattern to an unsigned integer that is monotone in the float order (negative
+// values below positive ones); it is a bijection on w-byte patterns.
+func key(bits uint32, w int) uint32 {
+	s := uint32(1) << (8*uint(w) - 1)
+	if bits&s != 0 {
+		return (^bits) & mask(w)
+	}
+	return bits | s
+}
+
+func unkey(k uint32, w int) uint32 {
+	s := uint32(1) << (8*uint(w) - 1)
+	if k&s != 0 {
+		return k &^ s
+	}
+	return (^k) & mask(w)
+}
+
+func zigzag(d uint32, w int) uint32 { // d is a w-byte two's complement difference
+	if w >= 4 {
+		x := int32(d)
+		return uint32(x<<1) ^ uint32(x>>31)
+	}
+	x := int32(d<<(32-8*uint(w))) >> (32 - 8*uint(w)) // sign-extend
+	return (uint32(x<<1) ^ uint32(x>>31)) & mask(w)
+}
+
+func unzigzag(z uint32, w int) uint32 {
+	x := int32(z>>1) ^ -int32(z&1)
+	return uint32(x) & mask(w)
+}
+
+// f16ToF64 / bf16 conversions (exact).
+func f16ToF64(h uint32) float64 {
+	s := (h >> 15) & 1
+	e := (h >> 10) & 0x1f
+	m := h & 0x3ff
+	var v float64
+	switch {
+	case e == 0:
+		v = math.Ldexp(float64(m), -24)
+	case e == 31:
+		if m == 0 {
+			v = math.Inf(1)
+		} else {
+			v = math.NaN()
+		}
+	default:
+		v = math.Ldexp(float64(m|0x400), int(e)-25)
+	}
+	if s != 0 {
+		v = -v
+	}
+	return v
+}
+
+// f64ToF16 rounds to nearest even; non-finite or overflowing values map to inf/NaN patterns.
+func f64ToF16(x float64) uint32 {
+	if x != x {
+		return 0x7e00
+	}
+	var s uint32
+	if math.Signbit(x) {
+		s, x = 0x8000, -x
+	}
+	if math.IsInf(x, 0) || x >= 65520 {
+		return s | 0x7c00
+	}
+	if x < math.Ldexp(1, -24)/2 || x == 0 {
+		return s
+	}
+	fr, ex := math.Frexp(x) // x = fr * 2^ex, fr in [0.5,1)
+	e := ex + 14            // biased exponent for a normal number
+	if e <= 0 {             // subnormal: scale to units of 2^-24
+		m := roundEven(math.Ldexp(x, 24))
+		return s | uint32(m)
+	}
+	m := roundEven(math.Ldexp(fr, 11)) // 1024..2048
+	if m == 2048 {
+		m, e = 1024, e+1
+	}
+	if e >= 31 {
+		return s | 0x7c00
+	}
+	return s | uint32(e)<<10 | uint32(m-1024)
+}
+
+func roundEven(x float64) uint64 { return uint64(math.RoundToEven(x)) }
+
+func f64ToBF16(x float64) uint32 {
+	f := float32(x)
+	b := math.Float32bits(f)
+	if f != f {
+		return 0x7fc0
+	}
+	r := b + 0x7fff + ((b >> 16) & 1)
+	return r >> 16
+}
+
+// toF64 decodes bits of dtype to float64 (exact).
+func toF64(d DType, bits uint32) float64 {
+	switch d {
+	case DF32:
+		return float64(math.Float32frombits(bits))
+	case DBF16:
+		return float64(math.Float32frombits(bits << 16))
+	}
+	return f16ToF64(bits)
+}
+
+// fromF64 rounds a float64 prediction to dtype bits.
+func fromF64(d DType, x float64) uint32 {
+	switch d {
+	case DF32:
+		return math.Float32bits(float32(x))
+	case DBF16:
+		return f64ToBF16(x)
+	}
+	return f64ToF16(x)
+}
+
+func finite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
+
+// Narrow converts an F32 payload to F16 or BF16 words when every element round-trips bit
+// exactly (widen(narrow(x)) == x); ok=false otherwise. NaN payloads that do not survive make a
+// tensor non-narrowable rather than approximate.
+func Narrow(src []byte, to DType) (dst []byte, ok bool) {
+	n := len(src) / 4
+	dst = make([]byte, 2*n)
+	for i := 0; i < n; i++ {
+		b := binary.LittleEndian.Uint32(src[4*i:])
+		var h uint32
+		if to == DBF16 {
+			if b&0xffff != 0 {
+				return nil, false
+			}
+			h = b >> 16
+		} else {
+			x := math.Float32frombits(b)
+			h = f64ToF16(float64(x))
+			if math.Float32bits(float32(f16ToF64(h))) != b {
+				return nil, false
+			}
+		}
+		binary.LittleEndian.PutUint16(dst[2*i:], uint16(h))
+	}
+	return dst, true
+}
+
+// Widen is the exact inverse of Narrow.
+func Widen(src []byte, from DType) []byte {
+	n := len(src) / 2
+	dst := make([]byte, 4*n)
+	for i := 0; i < n; i++ {
+		h := uint32(binary.LittleEndian.Uint16(src[2*i:]))
+		var b uint32
+		if from == DBF16 {
+			b = h << 16
+		} else {
+			b = math.Float32bits(float32(f16ToF64(h)))
+		}
+		binary.LittleEndian.PutUint32(dst[4*i:], b)
+	}
+	return dst
+}
