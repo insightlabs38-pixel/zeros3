@@ -1803,3 +1803,56 @@ func TestAuthorityBaseRetentionAfterNamespacePruning(t *testing.T) {
 		t.Fatalf("unreachable chunks remain: %d", gc.ChunksUnreachable)
 	}
 }
+
+// Copy and restore of body-only content (its CDC chunks physically gone) succeed without
+// materializing chunks, produce a second manifest served by the same record, and a copy
+// whose source closure is broken is refused before anything becomes visible.
+func TestAuthorityCopyAndRestoreOfBodyOnlyContent(t *testing.T) {
+	l := newAuthLab(t)
+	hist := authHistory(181, 4, 800_000)
+	for _, v := range hist { // one key: older revisions only in history
+		if _, err := l.s.PutObject("b", "doc", v, "application/octet-stream", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.migrate(AuthPolicy{MinSaving: 0.05})
+	l.reclaim()
+	l.want["doc"] = hist[3]
+	if _, _, err := l.s.CopyObject(CopyObjectRequest{SrcBucket: "b", SrcKey: "doc", DstBucket: "b", DstKey: "doc-copy"}); err != nil {
+		t.Fatalf("copy of body-only object: %v", err)
+	}
+	l.want["doc-copy"] = hist[3]
+	vs, _, err := l.s.ListVersions("b", "doc")
+	if err != nil || len(vs) < 3 {
+		t.Fatalf("versions: %v %d", err, len(vs))
+	}
+	var vid string
+	for _, v := range vs {
+		if v.size == int64(len(hist[1])) {
+			vid = v.versionID
+		}
+	}
+	if vid == "" {
+		t.Fatal("version to restore not found")
+	}
+	if _, _, err := l.s.RestoreObjectVersion("b", "doc", vid); err != nil {
+		t.Fatalf("restore of a body-only historical version: %v", err)
+	}
+	l.want["doc"] = hist[1]
+	l.exact("copy-restore")
+	l.verifyOK("copy-restore")
+	// Breaking the shared closure refuses a further copy without publishing anything.
+	sha, _ := decodeHexSHA256(l.man("doc-copy").ObjectSHA256)
+	rec := mustLoad(t, l.s, sha)
+	for _, b := range rec.Bases {
+		os.Remove(l.s.authPath(b.SHA))
+	}
+	if len(rec.Bases) > 0 {
+		if _, _, err := l.s.CopyObject(CopyObjectRequest{SrcBucket: "b", SrcKey: "doc-copy", DstBucket: "b", DstKey: "doc-copy2"}); err == nil {
+			t.Fatal("copy accepted a source whose authoritative closure is broken")
+		}
+		if _, _, err := l.s.HeadObject("b", "doc-copy2"); err == nil {
+			t.Fatal("refused copy became visible")
+		}
+	}
+}

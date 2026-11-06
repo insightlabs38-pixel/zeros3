@@ -189,6 +189,46 @@ func econBreakdown(t *testing.T, dir string) map[string]int64 {
 	return out
 }
 
+// econBlast measures reliability blast radius: how many live contents become
+// unreadable if one physical chunk is lost (max and mean over the chunks any
+// live content needs), compared with CDC where a chunk is lost only for the
+// contents that list it.
+func econBlast(s *Store) (maxN int, mean float64, chunks int) {
+	deps := map[string]int{}
+	seen := map[[32]byte]bool{}
+	for _, lm := range s.liveManifests() {
+		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
+		if err != nil || seen[sha] {
+			continue
+		}
+		seen[sha] = true
+		var cs []chunkRef
+		var res reachabilityResult
+		a := s.newAuthReachCtx(&res)
+		if rec, _ := s.authLoad(sha); rec != nil {
+			a.mark(sha, func(c []chunkRef) { cs = append(cs, c...) }, map[[32]byte]bool{}, 1)
+		} else {
+			cs = lm.man.Chunks
+		}
+		uniq := map[string]bool{}
+		for _, c := range cs {
+			if !uniq[c.SHA256] {
+				uniq[c.SHA256] = true
+				deps[c.SHA256]++
+			}
+		}
+	}
+	var tot int
+	for _, n := range deps {
+		maxN = max(maxN, n)
+		tot += n
+	}
+	if len(deps) > 0 {
+		mean = float64(tot) / float64(len(deps))
+	}
+	return maxN, mean, len(deps)
+}
+
 func econCDCAmp(man manifestV1, off, n int64) int64 {
 	var pos, fetched int64
 	for _, c := range man.Chunks {
@@ -355,7 +395,11 @@ func TestB2Economics(t *testing.T) {
 				{"auth-rep-only", AuthPolicy{Order: "oldest", AllowRep: true}},
 				{"auth-hot-hybrid", AuthPolicy{Order: "newest", MaxDepth: 2, MaxBases: 2, MinSaving: 0.10, MaxReadAmp: 2, AllowRep: true, AllowDelta: true}},
 			} {
-				if only := os.Getenv("ZEROS3_B2_VARIANTS"); only != "" && !strings.Contains(","+only+",", ","+v.name+",") {
+				only := os.Getenv("ZEROS3_B2_VARIANTS")
+				if strings.Contains(v.name, "frame") && !strings.Contains(","+only+",", ","+v.name+",") {
+					continue // optional range-granularity experiments run only when named
+				}
+				if only != "" && !strings.Contains(","+only+",", ","+v.name+",") {
 					continue
 				}
 				dir := filepath.Join(base, v.name)
@@ -380,8 +424,9 @@ func TestB2Economics(t *testing.T) {
 				t1 = time.Now()
 				vr, _ := s.Verify(true)
 				verify := time.Since(t1).Seconds()
+				bmax, bmean, bch := econBlast(s)
 				s.Close()
-				econEmit(t, econRow{"family": fam.name, "scenario": v.name, "recovery": true, "reachability_s": reach, "reach_ok": rr.OK(), "deep_verify_s": verify, "verify_ok": vr.OK(), "bodies": rr.AuthPins + rr.AuthReps + rr.AuthDeltas})
+				econEmit(t, econRow{"family": fam.name, "scenario": v.name, "recovery": true, "reachability_s": reach, "reach_ok": rr.OK(), "deep_verify_s": verify, "verify_ok": vr.OK(), "bodies": rr.AuthPins + rr.AuthReps + rr.AuthDeltas, "blast_max": bmax, "blast_mean": bmean, "chunks": bch})
 				cold := econReads(t, dir, 0, true)
 				econEmit(t, econRow{"family": fam.name, "scenario": v.name, "reads": "cold", "stats": cold})
 				warm := econReads(t, dir, 256, false)
@@ -389,6 +434,12 @@ func TestB2Economics(t *testing.T) {
 				if !cold.Exact || !warm.Exact {
 					t.Fatalf("%s: inexact reads", v.name)
 				}
+			}
+			{
+				s, _ := OpenStore(cdcDir)
+				bmax, bmean, bch := econBlast(s)
+				s.Close()
+				econEmit(t, econRow{"family": fam.name, "scenario": "cdc", "recovery": true, "blast_max": bmax, "blast_mean": bmean, "chunks": bch})
 			}
 			econEmit(t, econRow{"family": fam.name, "scenario": "cdc", "reads": "cold", "stats": econReads(t, cdcDir, 0, true)})
 			econEmit(t, econRow{"family": fam.name, "scenario": "cdc", "reads": "warm", "stats": econReads(t, cdcDir, 0, false)})

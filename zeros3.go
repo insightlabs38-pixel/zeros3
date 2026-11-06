@@ -37999,10 +37999,14 @@ const (
 	xdMaxObject = int64(256) << 20
 	xdMaxBases  = 4
 	xdMaxOps    = 1 << 22
-	xdMaxFrames = 1 << 20
-	xdMinCopy   = 12
-	xdWindow    = 16
-	xdPieceSize = 256 << 10
+	xdMaxFrames = 1 << 18
+	// xdMaxProgram bounds one frame's inflated program: a hostile envelope cannot
+	// expand into more than this regardless of the span it claims.
+	xdMaxProgram = 64 << 20
+	xdLitSplit   = 4 << 20
+	xdMinCopy    = 12
+	xdWindow     = 16
+	xdPieceSize  = 32 << 10
 )
 
 var errDelta = errors.New("delta: invalid or unsupported envelope")
@@ -38259,9 +38263,18 @@ func xdEncode(bases []xdSrc, target []byte, frameSpan int64) ([]byte, []xdBaseRe
 	}
 	for _, o := range ops {
 		if o.base < 0 {
-			prog = append(prog, 0)
-			prog = binary.AppendUvarint(prog, uint64(o.n))
-			prog = append(prog, o.lit...)
+			for lit := o.lit; len(lit) > 0; {
+				n := min(len(lit), xdLitSplit)
+				prog = append(prog, 0)
+				prog = binary.AppendUvarint(prog, uint64(n))
+				prog = append(prog, lit[:n]...)
+				span += int64(n)
+				lit = lit[n:]
+				if span >= frameSpan || len(prog) >= xdLitSplit {
+					closeFrame()
+				}
+			}
+			continue
 		} else {
 			prog = append(prog, 1)
 			prog = binary.AppendUvarint(prog, uint64(used[o.base]))
@@ -38415,7 +38428,7 @@ func xdDecodeFrame(h *xdHeader, i int, payload []byte) ([]xdOp, error) {
 	prog := payload
 	if f.mode == 1 {
 		var err error
-		if prog, err = xdInflate(payload, 8*f.span+(64<<10)); err != nil {
+		if prog, err = xdInflate(payload, min(8*f.span+(64<<10), xdMaxProgram)); err != nil {
 			return nil, err
 		}
 	}
