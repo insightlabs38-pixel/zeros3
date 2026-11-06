@@ -56,75 +56,7 @@ func deriveMarksAt(c *Ctx) []byte {
 
 // ValidateBodies marks a body opaque when a token operand names nothing that exists.
 func validateBodiesAt(f *File, s *clrSource, h *HeapView, bodies []BodyInfo) {
-	okTok := func(set uint8, v uint32, us bool) bool {
-		if us {
-			_, ok := h.USAt[v&0xffffff]
-			return ok
-		}
-		t, r, ok := RowOf(set, v)
-		return ok && (t < 0 || r <= f.Rows(t))
-	}
-	for i := range bodies {
-		b := &bodies[i]
-		if b.Opaque {
-			continue
-		}
-		good := true
-		if b.Body.LocalOff != 0 {
-			good = okTok(SetTokSig, b.Body.LocalTok, false)
-		}
-		for _, t := range b.Body.Toks {
-			switch t.Class {
-			case TkString:
-				good = good && okTok(0, t.Val, true)
-			case TkMethod:
-				good = good && okTok(SetTokMethod, t.Val, false)
-			case TkField:
-				good = good && okTok(SetTokField, t.Val, false)
-			case TkType:
-				good = good && okTok(SetTokType, t.Val, false)
-			case TkSig:
-				good = good && okTok(SetTokSig, t.Val, false)
-			default:
-				good = good && okTok(SetTokAny, t.Val, false)
-			}
-		}
-		for _, cl := range b.Body.Clauses {
-			if cl.TokOff != 0 {
-				good = good && okTok(SetTokType, cl.TokVal, false)
-			}
-		}
-		b.Opaque = !good
-	}
-	// a body must not lie inside a header region or partly overlap another body; methods that
-	// share one body (same offset) are fine
-	order := make([]int, 0, len(bodies))
-	for i := range bodies {
-		if !bodies[i].Opaque {
-			order = append(order, i)
-		}
-	}
-	sort.SliceStable(order, func(a, b int) bool { return bodies[order[a]].Body.Off < bodies[order[b]].Body.Off })
-	end, off := int64(0), int64(-1)
-	for _, i := range order {
-		b := &bodies[i]
-		bad := false
-		for _, r := range f.Excised {
-			if b.Body.Off < r.End() && r.Off < b.Body.End {
-				bad = true
-			}
-		}
-		if b.Body.Off != off && b.Body.Off < end {
-			bad = true
-		}
-		if bad {
-			b.Opaque, b.Body = true, Body{}
-			continue
-		}
-		if b.Body.Off != off {
-			off, end = b.Body.Off, b.Body.End
-		}
-	}
+	validatePhysicalBodies(f, h, bodies, func(b *BodyInfo) uint32 { return b.Body.LocalTok })
 }
 
 // BlobBytes returns the content of the blob entry at heap offset off.

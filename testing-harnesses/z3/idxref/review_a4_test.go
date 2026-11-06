@@ -10,7 +10,7 @@ import (
 )
 
 func TestA4ComponentLengthOverflow(t *testing.T) {
-	for _, n := range []int{1, 6, 9} {
+	for _, n := range []int{1, 6, 8, 9} {
 		t.Run(string(rune('a'+n)), func(t *testing.T) {
 			// MaxUint64 payload plus one stream byte used to wrap to zero.
 			b := binary.AppendUvarint(nil, ^uint64(0))

@@ -121,3 +121,28 @@ func TestA4SharedReferenceDenseBodyCountsOnce(t *testing.T) {
 		t.Fatalf("shared reference budget: %d %v", count, e)
 	}
 }
+
+func TestA4SharedBodyValidationVisitsOnce(t *testing.T) {
+	const aliases = 8192
+	f := &File{}
+	f.Tables[TMethodDef].Rows = 1
+	f.Tables[TStandAloneSig].Rows = 1
+	tokens := make([]TokSlot, 65536)
+	for i := range tokens {
+		tokens[i] = TokSlot{Off: 100 + int64(i)*5, Class: TkMethod, Val: 0x06000001}
+	}
+	bodies := make([]BodyInfo, aliases)
+	for i := range bodies {
+		bodies[i] = BodyInfo{Row: uint32(i + 1), Body: Body{Off: 80, End: 400000, LocalOff: 88, Toks: tokens}}
+	}
+	visits := 0
+	validatePhysicalBodies(f, &HeapView{}, bodies, func(*BodyInfo) uint32 { visits++; return 0x11000001 })
+	if visits != 1 {
+		t.Fatalf("one shared physical body validated %d times", visits)
+	}
+	for _, b := range bodies {
+		if b.Opaque {
+			t.Fatal("valid alias became opaque")
+		}
+	}
+}

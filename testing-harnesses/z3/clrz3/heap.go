@@ -90,6 +90,12 @@ func DeriveMarks(f *File, d []byte, h *HeapView) []byte {
 
 // ValidateBodies marks a body opaque when a token operand names nothing that exists.
 func ValidateBodies(f *File, d []byte, h *HeapView, bodies []BodyInfo) {
+	validatePhysicalBodies(f, h, bodies, func(b *BodyInfo) uint32 { return le32(d[b.Body.LocalOff:]) })
+}
+
+// Token validity depends on the physical body and metadata, never its method
+// aliases. Validate once per offset; overlap validation still checks every row.
+func validatePhysicalBodies(f *File, h *HeapView, bodies []BodyInfo, localToken func(*BodyInfo) uint32) {
 	okTok := func(set uint8, v uint32, us bool) bool {
 		if us {
 			_, ok := h.USAt[v&0xffffff]
@@ -98,14 +104,19 @@ func ValidateBodies(f *File, d []byte, h *HeapView, bodies []BodyInfo) {
 		t, r, ok := RowOf(set, v)
 		return ok && (t < 0 || r <= f.Rows(t))
 	}
+	checked := make(map[int64]bool)
 	for i := range bodies {
 		b := &bodies[i]
 		if b.Opaque {
 			continue
 		}
+		if good, ok := checked[b.Body.Off]; ok {
+			b.Opaque = !good
+			continue
+		}
 		good := true
 		if b.Body.LocalOff != 0 {
-			good = okTok(SetTokSig, le32(d[b.Body.LocalOff:]), false)
+			good = okTok(SetTokSig, localToken(b), false)
 		}
 		for _, t := range b.Body.Toks {
 			switch t.Class {
@@ -128,6 +139,7 @@ func ValidateBodies(f *File, d []byte, h *HeapView, bodies []BodyInfo) {
 				good = good && okTok(SetTokType, cl.TokVal, false)
 			}
 		}
+		checked[b.Body.Off] = good
 		b.Opaque = !good
 	}
 	// a body must not lie inside a header region or partly overlap another body; methods that

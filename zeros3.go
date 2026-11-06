@@ -52725,6 +52725,87 @@ type repCLHeapView struct {
 }
 
 // Port source: zeros3-z3/clrz3/heap.go
+// Token validity depends on the physical body and metadata, never its method
+// aliases. Validate once per offset; overlap validation still checks every row.
+func repCLvalidatePhysicalBodies(f *repCLFile, h *repCLHeapView, bodies []repCLBodyInfo, localToken func(*repCLBodyInfo) uint32) {
+	okTok := func(set uint8, v uint32, us bool) bool {
+		if us {
+			_, ok := h.USAt[v&0xffffff]
+			return ok
+		}
+		t, r, ok := repCLRowOf(set, v)
+		return ok && (t < 0 || r <= f.Rows(t))
+	}
+	checked := make(map[int64]bool)
+	for i := range bodies {
+		b := &bodies[i]
+		if b.Opaque {
+			continue
+		}
+		if good, ok := checked[b.Body.Off]; ok {
+			b.Opaque = !good
+			continue
+		}
+		good := true
+		if b.Body.LocalOff != 0 {
+			good = okTok(repCLSetTokSig, localToken(b), false)
+		}
+		for _, t := range b.Body.Toks {
+			switch t.Class {
+			case repCLTkString:
+				good = good && okTok(0, t.Val, true)
+			case repCLTkMethod:
+				good = good && okTok(repCLSetTokMethod, t.Val, false)
+			case repCLTkField:
+				good = good && okTok(repCLSetTokField, t.Val, false)
+			case repCLTkType:
+				good = good && okTok(repCLSetTokType, t.Val, false)
+			case repCLTkSig:
+				good = good && okTok(repCLSetTokSig, t.Val, false)
+			default:
+				good = good && okTok(repCLSetTokAny, t.Val, false)
+			}
+		}
+		for _, cl := range b.Body.Clauses {
+			if cl.TokOff != 0 {
+				good = good && okTok(repCLSetTokType, cl.TokVal, false)
+			}
+		}
+		checked[b.Body.Off] = good
+		b.Opaque = !good
+	}
+	// a body must not lie inside a header region or partly overlap another body; methods that
+	// share one body (same offset) are fine
+	order := make([]int, 0, len(bodies))
+	for i := range bodies {
+		if !bodies[i].Opaque {
+			order = append(order, i)
+		}
+	}
+	sort.SliceStable(order, func(a, b int) bool { return bodies[order[a]].Body.Off < bodies[order[b]].Body.Off })
+	end, off := int64(0), int64(-1)
+	for _, i := range order {
+		b := &bodies[i]
+		bad := false
+		for _, r := range f.Excised {
+			if b.Body.Off < r.End() && r.Off < b.Body.End {
+				bad = true
+			}
+		}
+		if b.Body.Off != off && b.Body.Off < end {
+			bad = true
+		}
+		if bad {
+			b.Opaque, b.Body = true, repCLBody{}
+			continue
+		}
+		if b.Body.Off != off {
+			off, end = b.Body.Off, b.Body.End
+		}
+	}
+}
+
+// Port source: zeros3-z3/clrz3/heap.go
 // BlobBytes returns the content of the blob entry at heap offset off.
 func (h *repCLHeapView) BlobBytes(off uint32) ([]byte, bool) {
 	i, ok := h.BlobAt[off]
@@ -52788,75 +52869,7 @@ func repCLderiveMarksAt(c *repCLCtx) []byte {
 // Port source: zeros3-z3/clrz3/helpers_at.go
 // ValidateBodies marks a body opaque when a token operand names nothing that exists.
 func repCLvalidateBodiesAt(f *repCLFile, s *repCLclrSource, h *repCLHeapView, bodies []repCLBodyInfo) {
-	okTok := func(set uint8, v uint32, us bool) bool {
-		if us {
-			_, ok := h.USAt[v&0xffffff]
-			return ok
-		}
-		t, r, ok := repCLRowOf(set, v)
-		return ok && (t < 0 || r <= f.Rows(t))
-	}
-	for i := range bodies {
-		b := &bodies[i]
-		if b.Opaque {
-			continue
-		}
-		good := true
-		if b.Body.LocalOff != 0 {
-			good = okTok(repCLSetTokSig, b.Body.LocalTok, false)
-		}
-		for _, t := range b.Body.Toks {
-			switch t.Class {
-			case repCLTkString:
-				good = good && okTok(0, t.Val, true)
-			case repCLTkMethod:
-				good = good && okTok(repCLSetTokMethod, t.Val, false)
-			case repCLTkField:
-				good = good && okTok(repCLSetTokField, t.Val, false)
-			case repCLTkType:
-				good = good && okTok(repCLSetTokType, t.Val, false)
-			case repCLTkSig:
-				good = good && okTok(repCLSetTokSig, t.Val, false)
-			default:
-				good = good && okTok(repCLSetTokAny, t.Val, false)
-			}
-		}
-		for _, cl := range b.Body.Clauses {
-			if cl.TokOff != 0 {
-				good = good && okTok(repCLSetTokType, cl.TokVal, false)
-			}
-		}
-		b.Opaque = !good
-	}
-	// a body must not lie inside a header region or partly overlap another body; methods that
-	// share one body (same offset) are fine
-	order := make([]int, 0, len(bodies))
-	for i := range bodies {
-		if !bodies[i].Opaque {
-			order = append(order, i)
-		}
-	}
-	sort.SliceStable(order, func(a, b int) bool { return bodies[order[a]].Body.Off < bodies[order[b]].Body.Off })
-	end, off := int64(0), int64(-1)
-	for _, i := range order {
-		b := &bodies[i]
-		bad := false
-		for _, r := range f.Excised {
-			if b.Body.Off < r.End() && r.Off < b.Body.End {
-				bad = true
-			}
-		}
-		if b.Body.Off != off && b.Body.Off < end {
-			bad = true
-		}
-		if bad {
-			b.Opaque, b.Body = true, repCLBody{}
-			continue
-		}
-		if b.Body.Off != off {
-			off, end = b.Body.Off, b.Body.End
-		}
-	}
+	repCLvalidatePhysicalBodies(f, h, bodies, func(b *repCLBodyInfo) uint32 { return b.Body.LocalTok })
 }
 
 // Port source: zeros3-z3/clrz3/helpers_at.go
@@ -55876,7 +55889,7 @@ func repMCclrGroups(c *repCall) ([][32]byte, error) {
 		if m.Size <= 0 || m.Size > 8192 {
 			return nil, fmt.Errorf("%w: managed node bytes", errRepLimit)
 		}
-		nb, err := c.get(m.SHA)
+		nb, err := repManagedReadNode(c, m)
 		if err != nil {
 			return nil, err
 		}
@@ -55912,7 +55925,10 @@ func (repMCclrDecoder) Decode(c *repCall) error {
 		}
 		total += n
 	}
-	out, err := repCLDecodeFrom(c.Rep.Recipe, len(ids), func(i int) ([]byte, error) { return c.get(ids[i]) })
+	if e := c.decodeWork().reserveBytes(2 * total); e != nil {
+		return e
+	}
+	out, err := repCLDecodeFrom(c.Rep.Recipe, len(ids), func(i int) ([]byte, error) { return repManagedReadGroup(c, ids[i]) })
 	if err != nil {
 		if errors.Is(err, repCLErrFormat) || errors.Is(err, repCLErrUnsupported) || errors.Is(err, repCLErrLimit) {
 			return fmt.Errorf("%w: %v", errRepCorrupt, err)
@@ -55964,7 +55980,7 @@ func repMCdexGroups(c *repCall) ([][32]byte, error) {
 		if m.Size <= 0 || m.Size > 8192 {
 			return nil, fmt.Errorf("%w: managed node bytes", errRepLimit)
 		}
-		nb, err := c.get(m.SHA)
+		nb, err := repManagedReadNode(c, m)
 		if err != nil {
 			return nil, err
 		}
@@ -56000,7 +56016,10 @@ func (repMCdexDecoder) Decode(c *repCall) error {
 		}
 		total += n
 	}
-	out, err := repDXDecodeFrom(c.Rep.Recipe, len(ids), func(i int) ([]byte, error) { return c.get(ids[i]) })
+	if e := c.decodeWork().reserveBytes(2 * total); e != nil {
+		return e
+	}
+	out, err := repDXDecodeFrom(c.Rep.Recipe, len(ids), func(i int) ([]byte, error) { return repManagedReadGroup(c, ids[i]) })
 	if err != nil {
 		if errors.Is(err, repDXErrFormat) || errors.Is(err, repDXErrUnsupported) || errors.Is(err, repDXErrLimit) {
 			return fmt.Errorf("%w: %v", errRepCorrupt, err)
@@ -56157,4 +56176,22 @@ func (b *repBuilder) encodeManaged(src io.ReaderAt, size int64, k repKind) (*rep
 		return nil, err
 	}
 	return r, nil
+}
+
+// Charge managed node traversal and both component passes to the caller's shared
+// budget. Duplicate empty groups must not hide replay work behind tiny output.
+func repManagedReadNode(c *repCall, m *repMember) ([]byte, error) {
+	if e := c.decodeWork().step(1 + m.Size/32); e != nil {
+		return nil, e
+	}
+	if e := c.decodeWork().reserveBytes(m.Size); e != nil {
+		return nil, e
+	}
+	return c.get(m.SHA)
+}
+func repManagedReadGroup(c *repCall, id [32]byte) ([]byte, error) {
+	if e := c.decodeWork().step(1); e != nil {
+		return nil, e
+	}
+	return c.get(id)
 }

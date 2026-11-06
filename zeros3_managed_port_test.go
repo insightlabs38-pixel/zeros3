@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -567,7 +568,7 @@ func TestRepManagedNestedPublicationFloor(t *testing.T) {
 }
 
 func TestRepManagedComponentLengthOverflow(t *testing.T) {
-	for _, n := range []int{6, 9} {
+	for _, n := range []int{6, 8, 9} {
 		b := binary.AppendUvarint(nil, ^uint64(0))
 		for i := 0; i < n; i++ {
 			b = binary.AppendUvarint(b, 1)
@@ -576,5 +577,64 @@ func TestRepManagedComponentLengthOverflow(t *testing.T) {
 		if _, _, e := repIXSplitComp(b, n); e == nil {
 			t.Fatal("accepted component length overflow")
 		}
+	}
+}
+
+// Empty groups are legal legacy framing. Replaying the same compact child must
+// share the root's work budget rather than replaying its group table unchecked.
+func TestRepManagedNestedGroupWorkBudget(t *testing.T) {
+	raw, e := repZ4ManagedFixtureJSON(t)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var fs []repLabCodecFixture
+	if e = json.Unmarshal(raw, &fs); e != nil {
+		t.Fatal(e)
+	}
+	for _, kind := range []repKind{repKindDEX, repKindCLR} {
+		t.Run(fmt.Sprint(kind), func(t *testing.T) {
+			var fixture *repLabCodecFixture
+			var child *repObject
+			for i := range fs {
+				r, e := unmarshalRep(fs[i].Root, repProdLimits)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if r.Kind == kind {
+					fixture = &fs[i]
+					child = r
+					break
+				}
+			}
+			if fixture == nil {
+				t.Fatal("missing kind")
+			}
+			src := newRepMem()
+			for _, b := range fixture.Objects {
+				src.put(b)
+			}
+			streams := repCLNumStreams
+			if kind == repKindDEX {
+				streams = repDXnumStream
+			}
+			empty := src.put(make([]byte, streams+1))
+			node := bytes.Repeat(empty[:], 256)
+			nodeID := src.put(node)
+			nodes := make([]repMember, 128)
+			for i := range nodes {
+				nodes[i] = repMember{Role: repStored, SHA: nodeID, Size: int64(len(node))}
+			}
+			child.Members = append(nodes, child.Members...)
+			childID := src.putRep(child)
+			sum := sha256.Sum256(fixture.Input)
+			parent := &repObject{Kind: repKindConcat, Size: 12 * int64(len(fixture.Input))}
+			for i := 0; i < 12; i++ {
+				parent.Members = append(parent.Members, repMember{Role: repDerived, SHA: sum, Size: int64(len(fixture.Input)), Child: childID})
+			}
+			id := src.putRep(parent)
+			if _, _, e := src.env(repProdLimits).reconstruct(id, io.Discard); !errors.Is(e, errRepLimit) {
+				t.Fatalf("unchecked nested group replay: %v", e)
+			}
+		})
 	}
 }
