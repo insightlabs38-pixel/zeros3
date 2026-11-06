@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Inventory cached B1 artifacts and create deterministic controls; no producers."""
-import argparse,glob,hashlib,json,pathlib,random
+import argparse,glob,hashlib,json,pathlib,random,subprocess
 p=argparse.ArgumentParser();p.add_argument('--work',default='/workspace/work');a=p.parse_args();w=pathlib.Path(a.work);out=w/'z4-b1';out.mkdir(exist_ok=True);families=[]
 def add(name,kind,paths):
  paths=[str(x) for x in paths]
@@ -17,9 +17,20 @@ for engine in ['rocksdb','pebble']:
  paths=[]
  for v in range(4):paths.extend(sorted((w/f'q6-sst/{engine}/chain/c{v}').glob('*.sst')))
  add(engine+'-sst','PRODUCER_WORKLOAD',paths)
-add('oci-transport','REAL_RELEASE_COMPRESSED_TRANSPORT',[w/'q6-producers'/f'oci-{v}.zst' for v in ['1.36.1','1.37.0']])
+add('oci-transport','REAL_REEXPORT_OF_REAL_OCI_HISTORY',[w/'q6-producers'/f'oci-{v}.zst' for v in ['1.36.1','1.37.0']])
 add('source-archives','REAL_RELEASE',[w/'q11-download'/f'coreutils-{v}.tar' for v in ['9.5','9.6','9.7']])
-add('git-repack','SAME_HISTORY_REENCODING',[pathlib.Path('/workspace/zeros3/testing-harnesses/z3/gitz3/testdata')/f'sha1-{v}.pack' for v in ['v1','ref','ofs']])
+add('git-repack','REAL_HISTORY_REEXPORT',[pathlib.Path('/workspace/zeros3/work/i1c/corpus')/f'hiredis-{v}.pack' for v in ['full','reordered','delta']])
+# Cheap cached Git subset exports supply actual commit progression, separately
+# from the already preserved same-history repack controls above.
+pins=['39de5267c092859b4cab4bdf79081e9634b70e39','c14775b4e48334e0262c9f168887578f4a368b5d','60e5075d4ac77424809f855ba3e398df7aacefe8']
+paths=[]
+for i,pin in enumerate(pins):
+ q=out/f'hiredis-history-{i}.pack'
+ if not q.exists():
+  with q.open('wb') as dest:subprocess.run(['git','-C',str(w/'i1c-hiredis.git'),'pack-objects','--stdout','--revs','--window=10','--depth=50'],input=(pin+'\n').encode(),stdout=dest,check=True)
+ paths.append(q)
+add('git-history','REAL_PINNED_COMMIT_SUBSET_EXPORT',paths)
+(out/'git-pins.json').write_text(json.dumps(dict(pins=pins,git_version=subprocess.check_output(['git','--version'],text=True).strip()),indent=2)+'\n')
 # Distinct branches, sparse edits, insertions, moved regions, high entropy and
 # deliberately similar edges. These are controls, not real workload evidence.
 r=random.Random(811);base=r.randbytes(256*1024);b=bytearray(base)

@@ -5,12 +5,10 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha256"
-
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
-
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -30,7 +28,12 @@ type Input struct {
 	Path, SHA256 string
 	Bytes        int
 }
+type StageCost struct {
+	Revision                                         int
+	InputBytes, CDC, FineCDC, Standalone, IndexBytes int64
+}
 type Row struct {
+	Stages                                                                                   []StageCost
 	Family, Kind, Mode                                                                       string
 	Inputs                                                                                   []Input
 	Revisions, Chunks, Unique, Deltas, Multi, MaxDepth                                       int
@@ -46,13 +49,12 @@ type Row struct {
 type object struct {
 	Data, Wire []byte
 	Depth      int
-	Features   []uint64
-	Offset     int
 }
 type manifest struct {
-	Roots  [][][32]byte
-	Hashes [][32]byte
-	Sizes  []int
+	Structural bool
+	Roots      [][][32]byte
+	Hashes     [][32]byte
+	Sizes      []int
 }
 
 func must(e error) {
@@ -62,14 +64,34 @@ func must(e error) {
 }
 func emit(v any) { must(json.NewEncoder(os.Stdout).Encode(v)) }
 func main() {
+	defer heapSampler()()
 	manifestPath := flag.String("manifest", "", "JSON corpus manifest")
 	out := flag.String("out", "", "exact replay store directory")
+	hashIndex := flag.Bool("hash-index", false, "hash index scale control")
 	scale := flag.Int("scale", 0, "synthetic indexed chunks (four features each)")
+	aggregateDir := flag.String("aggregate", "", "physical aggregation experiment on an exported store")
 	replay := flag.String("replay", "", "replay exported family directory")
-	mode := flag.String("mode", "cdc", "cdc or local-4k")
+	numericOnly := flag.Bool("numeric", false, "aligned numeric upper-bound experiment")
+	exportOnly := flag.Bool("export-struct", false, "export existing proved structural closures")
+	qualityOnly := flag.Bool("quality", false, "sampled discovery oracle")
+	bench := flag.String("bench", "", "isolated sampled codec measurement")
+	depthCap := flag.Int("depth", 2, "maximum admitted dependency depth (0..4)")
+	cold := flag.Bool("cold", false, "include expensive predictive residual encoder")
+	mode := flag.String("mode", "cdc", "cdc, fixed64, local-4k or components")
 	flag.Parse()
+	if *depthCap < 0 || *depthCap > 4 {
+		panic("dependency depth bound")
+	}
 	if *scale > 0 {
-		indexScale(*scale)
+		if *hashIndex {
+			hashScale(*scale)
+		} else {
+			indexScale(*scale)
+		}
+		return
+	}
+	if *aggregateDir != "" {
+		aggregate(*aggregateDir)
 		return
 	}
 	if *replay != "" {
@@ -81,18 +103,31 @@ func main() {
 	must(e)
 	must(json.Unmarshal(b, &families))
 	must(os.MkdirAll(*out, 0755))
+	if *exportOnly {
+		exportStructural(families, *out)
+		return
+	}
 	for _, f := range families {
-		run(f, *out, *mode)
+		if *bench != "" {
+			benchCodec(f, *bench)
+		} else if *numericOnly {
+			numericOracle(f)
+		} else if *qualityOnly {
+			quality(f)
+		} else {
+			run(f, *out, *mode, *cold, *depthCap)
+		}
 	}
 }
-func run(f Family, dir, mode string) {
+func run(f Family, dir, mode string, cold bool, depthCap int) {
 	r := Row{Family: f.Name, Kind: f.Kind, Mode: mode, Algorithms: map[string]int64{}, Wins: map[string]int{}, Discovery: map[string]int{}, Ranges: map[string]float64{}}
 	var objs []object
 	ids := map[[32]byte]int{}
 	cdcSeen, fineSeen := map[[32]byte]bool{}, map[[32]byte]bool{}
-	indexes := []*simdelta.Index{simdelta.NewIndex(), simdelta.NewIndex(), simdelta.NewIndex(), simdelta.NewIndex()}
-	names := []string{"bottom16", "super4", "edges2", "local64"}
+	indexes := []*simdelta.Index{simdelta.NewIndex(), simdelta.NewIndex(), simdelta.NewIndex(), simdelta.NewIndex(), simdelta.NewIndex(), simdelta.NewIndex()}
+	names := []string{"bottom16", "super4", "edges2", "local64", "coarse16", "sign8"}
 	var m manifest
+	m.Structural = mode == "components"
 	var depthRead int64
 	start := time.Now()
 	for _, path := range f.Paths {
@@ -121,6 +156,19 @@ func run(f Family, dir, mode string) {
 			}
 		}
 		chunks := cdc
+		if mode == "components" {
+			chunks = structuralChunks(data)
+		}
+		if mode == "fixed64" {
+			chunks = nil
+			for i := 0; i < len(data); i += 65536 {
+				end := i + 65536
+				if end > len(data) {
+					end = len(data)
+				}
+				chunks = append(chunks, data[i:end])
+			}
+		}
 		if mode == "local-4k" {
 			chunks = lab.ChunkScaled(data, 1024, 4096, 16<<10)
 		}
@@ -134,7 +182,11 @@ func run(f Family, dir, mode string) {
 				continue
 			}
 			features := simdelta.Features(target, 16)
-			sets := [][]uint64{features, simdelta.Superfeatures(features), simdelta.Edges(target), simdelta.BlockFeatures(target)}
+			sets := [][]uint64{features, simdelta.Superfeatures(features), simdelta.Edges(target), simdelta.BlockFeatures(target), simdelta.CoarseFeatures(target), simdelta.SignFeatures(target)}
+			if !cold {
+				sets[4] = nil
+				sets[5] = nil
+			}
 			candidates := map[int]int{}
 			qtime := time.Now()
 			for i, x := range indexes {
@@ -150,7 +202,7 @@ func run(f Family, dir, mode string) {
 			r.QueryMS += float64(time.Since(qtime).Microseconds()) / 1000
 			ranked := make([]int, 0, len(candidates))
 			for id := range candidates {
-				if objs[id].Depth < 2 {
+				if objs[id].Depth < depthCap {
 					ranked = append(ranked, id)
 				}
 			}
@@ -174,7 +226,15 @@ func run(f Family, dir, mode string) {
 			for _, id := range ranked {
 				w, e := simdelta.Encode("adaptive", [][]byte{objs[id].Data}, target)
 				must(e)
-				scores = append(scores, scored{id, len(w)})
+				score := len(w)
+				if cold {
+					res, e := simdelta.Encode("xor", [][]byte{objs[id].Data}, target)
+					must(e)
+					if len(res) < score {
+						score = len(res)
+					}
+				}
+				scores = append(scores, scored{id, score})
 				if len(w) < len(best) {
 					best = w
 					bestDepth = objs[id].Depth + 1
@@ -192,14 +252,20 @@ func run(f Family, dir, mode string) {
 			}
 			for _, a := range simdelta.Algorithms {
 				w := direct
-				if a != "direct" && len(top) > 0 {
+				if a != "direct" && len(top) > 0 && ((a != "pxr" && a != "predict") || cold) {
 					w, e = simdelta.Encode(a, [][]byte{objs[top[0]].Data}, target)
+					must(e)
+				}
+				if a == "predict" && cold {
+					w, e = simdelta.Encode(a, nil, target)
 					must(e)
 				}
 				r.Algorithms[a] += int64(len(w) + 96)
 				if len(w) < len(best) {
 					best = w
-					bestDepth = objs[top[0]].Depth + 1
+					if len(top) > 0 {
+						bestDepth = objs[top[0]].Depth + 1
+					}
 					winner = a
 				}
 			}
@@ -232,6 +298,17 @@ func run(f Family, dir, mode string) {
 			}
 			hd, e := simdelta.Inspect(best)
 			must(e)
+			bestDepth = 0
+			for _, base := range hd.Bases {
+				id, ok := ids[base]
+				if !ok {
+					panic("selected missing base")
+				}
+				d := objs[id].Depth + 1
+				if d > bestDepth {
+					bestDepth = d
+				}
+			}
 			if len(hd.Bases) > 0 {
 				r.Deltas++
 			}
@@ -249,7 +326,7 @@ func run(f Family, dir, mode string) {
 			}
 			id := len(objs)
 			ids[h] = id
-			objs = append(objs, object{append([]byte{}, target...), best, bestDepth, features, 0})
+			objs = append(objs, object{append([]byte{}, target...), best, bestDepth})
 			for i, x := range indexes {
 				x.Add(uint32(id), sets[i])
 			}
@@ -257,6 +334,7 @@ func run(f Family, dir, mode string) {
 		m.Roots = append(m.Roots, roots)
 		m.Hashes = append(m.Hashes, sum)
 		m.Sizes = append(m.Sizes, len(data))
+		r.Stages = append(r.Stages, StageCost{Revision: r.Revisions - 1, InputBytes: int64(len(data)), CDC: r.CDC, FineCDC: r.FineCDC, Standalone: r.Standalone + r.RootBytes, IndexBytes: r.IndexBytes})
 	}
 	r.EncodeMS = float64(time.Since(start).Microseconds()) / 1000
 	r.Unique = len(objs)
@@ -265,13 +343,13 @@ func run(f Family, dir, mode string) {
 	r.Additive = r.CDC + r.Authoritative
 	r.Migration = r.Additive
 	storeDir := filepath.Join(dir, f.Name+"-"+mode)
-	must(os.MkdirAll(storeDir, 0755))
+
+	objects := make(map[[32]byte][]byte, len(ids))
 	for h, id := range ids {
-		must(os.WriteFile(filepath.Join(storeDir, hex.EncodeToString(h[:])+".delta"), objs[id].Wire, 0644))
+		objects[h] = objs[id].Wire
 	}
-	mb, e := json.Marshal(m)
-	must(e)
-	must(os.WriteFile(filepath.Join(storeDir, "roots.json"), mb, 0644))
+	must(exportStore(storeDir, objects, m))
+
 	r.Archive = storeDir
 	// Cold decoding: no decoded-object cache. Measure closure bytes repeatedly.
 	get := func(h [32]byte) ([]byte, error) {
@@ -300,30 +378,42 @@ func run(f Family, dir, mode string) {
 	if r.Raw > 0 {
 		r.Ranges["whole_wire_amplification"] = float64(depthRead) / float64(r.Raw)
 	}
+
 	for _, n := range []int{4096, 65536, 1048576} {
 		var fetched, logical int64
-		for _, roots := range m.Roots {
-			left := n
-			for _, h := range roots {
-				if left <= 0 {
-					break
+		for rev, roots := range m.Roots {
+			for _, position := range []int{0, m.Sizes[rev] / 2, max(0, m.Sizes[rev]-n)} {
+				left := n
+				skip := position
+				for _, h := range roots {
+					hd, e := simdelta.Inspect(objs[ids[h]].Wire)
+					must(e)
+					if skip >= hd.Size {
+						skip -= hd.Size
+						continue
+					}
+					if left <= 0 {
+						break
+					}
+					before := depthRead
+					b, e := simdelta.Resolve(h, get, 4, int64(simdelta.MaxBytes)*64)
+					must(e)
+					take := len(b) - skip
+					if take > left {
+						take = left
+					}
+					left -= take
+					logical += int64(take)
+					fetched += depthRead - before
+					skip = 0
 				}
-				before := depthRead
-				b, e := simdelta.Resolve(h, get, 4, int64(simdelta.MaxBytes)*64)
-				must(e)
-				take := len(b)
-				if take > left {
-					take = left
-				}
-				left -= take
-				logical += int64(take)
-				fetched += depthRead - before
 			}
 		}
 		if logical > 0 {
 			r.Ranges[fmt.Sprint(n)] = float64(fetched) / float64(logical)
 		}
 	}
+
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	r.Heap = mem.HeapAlloc
@@ -343,16 +433,21 @@ func replayStore(dir string) {
 		return b, e
 	}
 	for i, root := range m.Roots {
+		var native bytes.Buffer
 		hs := sha256.New()
 		n := 0
 		for _, h := range root {
 			b, e := simdelta.Resolve(h, get, 4, int64(simdelta.MaxBytes)*64)
 			must(e)
 			hs.Write(b)
+			native.Write(b)
 			n += len(b)
 		}
 		if n != m.Sizes[i] || !bytes.Equal(hs.Sum(nil), m.Hashes[i][:]) {
 			panic("independent replay mismatch")
+		}
+		if m.Structural {
+			must(verifyStructural(native.Bytes()))
 		}
 	}
 	var mem runtime.MemStats

@@ -2,10 +2,12 @@ package simdelta
 
 import (
 	"bytes"
+	"compress/flate"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"math/rand"
+	"sync"
 	"testing"
 )
 
@@ -173,5 +175,148 @@ func TestMalformedBounds(t *testing.T) {
 	w = binary.AppendUvarint(w, ^uint64(0))
 	if _, e := Decode(w, nil); e == nil {
 		t.Fatal("overflow")
+	}
+}
+
+func TestEmptyAndMaximum(t *testing.T) {
+	for _, a := range Algorithms {
+		for _, b := range [][]byte{nil, []byte("small")} {
+			w, e := Encode(a, [][]byte{b}, nil)
+			if e != nil {
+				t.Fatal(a, e)
+			}
+			out, e := Decode(w, func([32]byte) ([]byte, error) { return b, nil })
+			if e != nil || len(out) != 0 {
+				t.Fatal(a, e)
+			}
+		}
+	}
+	base := bytes.Repeat([]byte("large adversarial repeated pattern"), MaxBytes/34+1)
+	base = base[:MaxBytes]
+	target := append([]byte{}, base...)
+	target[MaxBytes-1] ^= 1
+	w, e := Encode("adaptive", [][]byte{base, base, base, base}, target)
+	if e != nil {
+		t.Fatal(e)
+	}
+	out, e := Decode(w, func([32]byte) ([]byte, error) { return base, nil })
+	if e != nil || !bytes.Equal(out, target) {
+		t.Fatal(e)
+	}
+}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(b []byte) (int, error) { return len(b) - 1, nil }
+func TestShortWriter(t *testing.T) {
+	if e := WriteTable(shortWriter{}, []Posting{{1, 2}}); e == nil {
+		t.Fatal("short write accepted")
+	}
+}
+func TestFeaturesDisplacement(t *testing.T) {
+	rng := rand.New(rand.NewSource(21))
+	b := make([]byte, 65536)
+	rng.Read(b)
+	shifted := append([]byte("prefix"), b...)
+	x := NewIndex()
+	x.Add(3, Features(b, 16))
+	q := x.Query(Features(shifted, 16), 1)
+	if len(q) != 1 || q[0].ID != 3 {
+		t.Fatal("boundary displacement recall", q)
+	}
+}
+
+func TestRepeatedIdentityAndDepthFour(t *testing.T) {
+	x := NewIndex()
+	x.Add(1, []uint64{9})
+	x.Add(2, []uint64{9})
+	x.Add(1, []uint64{9})
+	for _, c := range x.Query([]uint64{9}, 2) {
+		if c.Hits != 1 {
+			t.Fatal("duplicate biased score", c)
+		}
+	}
+	store := map[[32]byte][]byte{}
+	base := bytes.Repeat([]byte("chain"), 100)
+	w, _ := Encode("direct", nil, base)
+	store[sha256.Sum256(base)] = w
+	for i := 0; i < 4; i++ {
+		target := append([]byte{}, base...)
+		target[i] ^= byte(i + 1)
+		w, e := Encode("xor", [][]byte{base}, target)
+		if e != nil {
+			t.Fatal(e)
+		}
+		store[sha256.Sum256(target)] = w
+		base = target
+	}
+	root := sha256.Sum256(base)
+	get := func(h [32]byte) ([]byte, error) {
+		b, ok := store[h]
+		if !ok {
+			return nil, fmt.Errorf("missing")
+		}
+		return b, nil
+	}
+	if _, e := Resolve(root, get, 4, int64(5*len(base))); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := Resolve(root, get, 3, int64(5*len(base))); e == nil {
+		t.Fatal("depth 3")
+	}
+	if _, e := Resolve(root, get, 4, int64(5*len(base)-1)); e == nil {
+		t.Fatal("repeated work")
+	}
+	// Explicit flattening removes all historical dependencies and tolerates GC of them.
+	direct, _ := Encode("direct", nil, base)
+	store = map[[32]byte][]byte{root: direct}
+	if out, e := Resolve(root, get, 0, int64(len(base))); e != nil || !bytes.Equal(out, base) {
+		t.Fatal("flatten", e)
+	}
+}
+
+func TestPooledCompressionWireIdentity(t *testing.T) {
+	for _, b := range [][]byte{nil, bytes.Repeat([]byte("compressor reuse preserves immutable serialized bytes"), 1000), []byte("tiny")} {
+		var out bytes.Buffer
+		w, _ := flate.NewWriter(&out, 6)
+		w.Write(b)
+		w.Close()
+		for i := 0; i < 3; i++ {
+			if !bytes.Equal(zip(b), out.Bytes()) {
+				t.Fatal("compressor reuse changed wire")
+			}
+		}
+	}
+}
+
+func TestConcurrentCompressorReuse(t *testing.T) {
+	base := bytes.Repeat([]byte("shared immutable base"), 1200)
+	target := append([]byte("inserted"), base...)
+	var wg sync.WaitGroup
+	errors := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for n := 0; n < 12; n++ {
+				for _, a := range []string{"direct", "adaptive", "plane"} {
+					w, e := Encode(a, [][]byte{base}, target)
+					if e != nil {
+						errors <- e
+						return
+					}
+					out, e := Decode(w, func([32]byte) ([]byte, error) { return base, nil })
+					if e != nil || !bytes.Equal(out, target) {
+						errors <- fmt.Errorf("concurrent %s: %v", a, e)
+						return
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errors)
+	for e := range errors {
+		t.Fatal(e)
 	}
 }

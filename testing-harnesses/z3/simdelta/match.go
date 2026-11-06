@@ -190,3 +190,38 @@ func BlockFeatures(b []byte) []uint64 {
 	}
 	return out
 }
+
+// CoarseFeatures ignore two low bits of every fourth byte, at all alignments.
+// These are lossy discovery hints for unstable numeric bit patterns only.
+// Exact envelope hashes still authenticate all reconstructed bytes.
+func CoarseFeatures(b []byte) []uint64 {
+	var f []uint64
+	for phase := 0; phase < 4; phase++ {
+		p := make([]byte, 0, len(b)/4)
+		for i := phase; i < len(b); i += 4 {
+			p = append(p, b[i]&0xfc)
+		}
+		f = append(f, Features(p, 4)...)
+	}
+	return f
+}
+
+// SignFeatures are eight LSH bands of sampled positional sign bits. Unlike
+// substring sketches they tolerate isolated numeric changes, but require
+// comparable alignment and length. Candidate references remain exact bytes.
+func SignFeatures(b []byte) []uint64 {
+	if len(b) < 256 {
+		return nil
+	}
+	var sketch uint64
+	for i := 0; i < 64; i++ {
+		off := i * (len(b) - 4) / 63
+		off -= off % 4
+		sketch |= uint64(b[off+3]>>7) << i
+	}
+	var out []uint64
+	for band := 0; band < 8; band++ {
+		out = append(out, mix(0x5353474e00000000|uint64(band)<<8|(sketch>>uint(band*8))&255))
+	}
+	return out
+}

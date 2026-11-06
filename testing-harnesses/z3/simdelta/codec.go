@@ -10,21 +10,28 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"zeros3-z3/gitz3"
+	"zeros3-z3/tdelta"
 )
 
 const MaxBytes = 16 << 20
 const MaxBases = 4
 
-var Algorithms = []string{"direct", "xor", "sparse-xor", "changed", "rolling", "git", "adaptive"}
+var Algorithms = []string{"direct", "xor", "sparse-xor", "changed", "rolling", "git", "adaptive", "plane", "pxr", "predict"}
 var bad = errors.New("invalid similarity delta")
+
+var compressors = sync.Pool{New: func() any { w, _ := flate.NewWriter(io.Discard, 6); return w }}
 
 func zip(b []byte) []byte {
 	var out bytes.Buffer
-	w, _ := flate.NewWriter(&out, 6)
+	w := compressors.Get().(*flate.Writer)
+	w.Reset(&out)
 	_, _ = w.Write(b)
 	_ = w.Close()
+	w.Reset(io.Discard)
+	compressors.Put(w)
 	return out.Bytes()
 }
 
@@ -66,9 +73,15 @@ func Encode(algorithm string, bases [][]byte, target []byte) ([]byte, error) {
 	var p []byte
 	used := make([]bool, len(bases))
 	switch algorithm {
+	case "predict":
+		var e error
+		p, e = tdelta.EncodePXR(nil, target, 4)
+		if e != nil {
+			return nil, e
+		}
 	case "direct":
 		p = target
-	case "xor", "sparse-xor", "changed":
+	case "xor", "sparse-xor", "changed", "plane", "pxr":
 		if len(bases) == 0 {
 			return nil, bad
 		}
@@ -77,6 +90,20 @@ func Encode(algorithm string, bases [][]byte, target []byte) ([]byte, error) {
 		copy(x, bases[0])
 		for i := range x {
 			x[i] ^= target[i]
+		}
+		if algorithm == "plane" || algorithm == "pxr" {
+			padded := make([]byte, len(target))
+			copy(padded, bases[0])
+			var e error
+			if algorithm == "pxr" {
+				p, e = tdelta.EncodePXR(padded, target, 4)
+			} else {
+				p, e = tdelta.Encode(tdelta.Plane, padded, target, 4)
+			}
+			if e != nil {
+				return nil, e
+			}
+			break
 		}
 		if algorithm == "xor" {
 			p = x
@@ -344,17 +371,36 @@ func Decode(wire []byte, get func([32]byte) ([]byte, error)) ([]byte, error) {
 	}
 	var out []byte
 	switch h.Algorithm {
+	case "predict":
+		if len(bases) != 0 {
+			return nil, bad
+		}
+		out, e = tdelta.DecodePXR(nil, p, h.Size, 4)
+		if e != nil {
+			return nil, e
+		}
 	case "direct":
 		if len(bases) != 0 || len(p) != h.Size {
 			return nil, bad
 		}
 		out = append([]byte{}, p...)
-	case "xor", "sparse-xor", "changed":
+	case "xor", "sparse-xor", "changed", "plane", "pxr":
 		if len(bases) != 1 {
 			return nil, bad
 		}
 		out = make([]byte, h.Size)
 		copy(out, bases[0])
+		if h.Algorithm == "plane" || h.Algorithm == "pxr" {
+			if h.Algorithm == "pxr" {
+				out, e = tdelta.DecodePXR(out, p, h.Size, 4)
+			} else {
+				out, e = tdelta.Decode(tdelta.Plane, out, p, h.Size, 4)
+			}
+			if e != nil {
+				return nil, e
+			}
+			break
+		}
 		if h.Algorithm == "xor" {
 			if len(p) != len(out) {
 				return nil, bad

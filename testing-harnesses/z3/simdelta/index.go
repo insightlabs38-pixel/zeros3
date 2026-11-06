@@ -22,7 +22,14 @@ func NewIndex() *Index { return &Index{map[uint64][]uint32{}, map[uint32]bool{}}
 func (x *Index) Add(id uint32, f []uint64) {
 	for _, h := range f {
 		p := x.Buckets[h]
-		if len(p) > 0 && p[len(p)-1] == id {
+		duplicate := false
+		for _, prior := range p {
+			if prior == id {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
 			continue
 		}
 		if len(p) == 64 {
