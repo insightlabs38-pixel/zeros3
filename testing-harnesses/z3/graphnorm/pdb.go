@@ -184,7 +184,11 @@ type pdbSeg struct {
 }
 
 // EncodePDB factors a Portable PDB. choose=false forces raw columns (no predictor search).
-func EncodePDB(d []byte, search bool) (*PDBEncoding, error) {
+func EncodePDB(d []byte, search bool) (*PDBEncoding, error) { return EncodePDBWith(d, search, nil) }
+
+// EncodePDBWith additionally accepts predictor choices learned on other revisions (keyed
+// "Table.Column"); learned choices are used instead of searching when present.
+func EncodePDBWith(d []byte, search bool, learned map[string]int) (*PDBEncoding, error) {
 	tables, streams, _, err := parsePDB(d)
 	if err != nil {
 		return nil, err
@@ -264,7 +268,11 @@ func EncodePDB(d []byte, search bool) (*PDBEncoding, error) {
 				choice := ColChoice{Table: t.Name, Col: col.Name, RawBytes: len(raw), DeltaBytes: len(dl)}
 				use := PredRaw
 				body := raw
-				if search && packedLenOf(dl) < packedLenOf(raw) {
+				if lp, ok := learned[t.Name+"."+col.Name]; ok {
+					if lp == PredDelta {
+						use, body = PredDelta, dl
+					}
+				} else if search && packedLenOf(dl) < packedLenOf(raw) {
 					use, body = PredDelta, dl
 				}
 				choice.Chosen = use

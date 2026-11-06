@@ -30,6 +30,7 @@ func PolicyFromBits(n int) Policy {
 type TmplStats struct {
 	Ops, Sym, Unusable int
 	ExtKeys            [NumTabs]int
+	Ext                [NumTabs][]Key // per-template extern lists (not summed)
 	ByKind             [8]int
 }
 
@@ -674,6 +675,7 @@ func (L *LLVM) BuildFuncTemplate(f lfunc, pol Policy) (tmpl []byte, st TmplStats
 	body := b.out
 	for t := range b.ext {
 		b.st.ExtKeys[t] = len(b.ext[t])
+		b.st.Ext[t] = b.ext[t]
 	}
 	var head []byte
 	head = append(head, OpExt)

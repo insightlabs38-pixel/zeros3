@@ -33,6 +33,14 @@ func main() {
 		n := 0
 		fmt.Sscan(os.Args[2], &n)
 		cmdPolicy(n, os.Args[3:])
+	case "perf":
+		cmdPerf(os.Args[2:])
+	case "wasm":
+		cmdWasm(os.Args[2:])
+	case "prog-store":
+		cmdProgStore(os.Args[2], os.Args[3], os.Args[4:])
+	case "prog-replay":
+		cmdProgReplay(os.Args[2], os.Args[3])
 	case "llvm-store":
 		cmdStore(os.Args[2], graphnorm.PolicyAll, os.Args[3:])
 	case "llvm-replay":

@@ -59,6 +59,36 @@ func cmdPDB(files []string) {
 	}
 	fmt.Printf("%-24s %9d %9d %9d %9d %9d\n", "CUMULATIVE", prod.Total, fine.Total, b1, raw.Total, srch.Total)
 	_ = simdelta.Algorithms
+	// held-out: learn predictors on the first two revisions only, apply to the rest
+	learned := map[string]int{}
+	for i := 0; i < 2 && i < len(data); i++ {
+		e, err := graphnorm.EncodePDB(data[i], true)
+		must(err)
+		for _, c := range e.Cols {
+			if c.Chosen == graphnorm.PredDelta || i == 0 {
+				learned[c.Table+"."+c.Col] = c.Chosen
+			}
+		}
+	}
+	held := graphnorm.NewArchive(2)
+	diff := 0
+	for i, d := range data {
+		e, err := graphnorm.EncodePDBWith(d, false, learned)
+		must(err)
+		pdbArchiveCost(held, e)
+		if i >= 2 {
+			es, _ := graphnorm.EncodePDB(d, true)
+			for k := range es.Cols {
+				if es.Cols[k].Chosen != e.Cols[k].Chosen {
+					diff++
+				}
+			}
+		}
+	}
+	fmt.Printf("held-out predictors (learned on first 2 revisions): cumulative=%d (search per file=%d); column choices differing on held-out files: %d\n", held.Total, srch.Total, diff)
+	for _, c := range func() []graphnorm.ColChoice { e, _ := graphnorm.EncodePDB(data[0], true); return e.Cols }() {
+		fmt.Printf("  %-26s %-16s raw=%-7d delta=%-7d -> %s\n", c.Table, c.Col, c.RawBytes, c.DeltaBytes, map[int]string{0: "raw", 1: "delta"}[c.Chosen])
+	}
 }
 
 func cmdDEX(files []string) {
@@ -113,4 +143,60 @@ func cmdCLR(files []string) {
 		fmt.Printf("%-14s %10d %10d %10d %10d\n", filepath.Base(f), ip, ifn, best, spec[i])
 	}
 	fmt.Printf("%-14s %10d %10d %10d %10d\n", "CUMULATIVE", prod.Total, fine.Total, b1, spec[len(spec)-1])
+}
+
+// cmdWasm: negative/difficult control. Exact wasm reconstruction is NOT implemented; the
+// oracle charges abstracted function bodies plus two bytes per rewritten call immediate.
+func cmdWasm(files []string) {
+	prod, fine := semcas.ProdCDC(), semcas.FineCDC()
+	whole := graphnorm.NewArchive(2)
+	rawS, absS := graphnorm.NewCAS(), graphnorm.NewCAS()
+	var b1 int64
+	var prevRaw, prevAbs map[string]string
+	fmt.Printf("%-14s %9s %9s %9s %10s %10s  bodies same-name rawEq absEq\n", "revision", "prodCDC", "fineCDC", "B1whole", "rawBodies", "absOracle")
+	for i, f := range files {
+		d, err := os.ReadFile(f)
+		must(err)
+		ip, ifn := prod.Add(d), fine.Add(d)
+		bw := whole.Put("w", d) + whole.Ref(1)
+		best := ifn
+		if i > 0 && bw < best {
+			best = bw
+		}
+		b1 += best
+		m, err := graphnorm.ParseWasm(d)
+		must(err)
+		namer := m.Namer(0)
+		curRaw, curAbs := map[string]string{}, map[string]string{}
+		var rawInc, absInc int64
+		unsupported := 0
+		for j, b := range m.Bodies {
+			rawInc += rawS.Put(b) + rawS.Ref(1)
+			ab, calls, ok := graphnorm.AbstractBody(b, namer)
+			if !ok {
+				unsupported++
+				ab = b
+			}
+			absInc += absS.Put(ab) + absS.Ref(1) + int64(2*calls)
+			if m.Names[j] != "" {
+				curRaw[m.Names[j]] = string(b)
+				curAbs[m.Names[j]] = string(ab)
+			}
+		}
+		same, reqE, aeqE := 0, 0, 0
+		for n, rb := range curRaw {
+			if pr, ok := prevRaw[n]; ok {
+				same++
+				if pr == rb {
+					reqE++
+				}
+				if prevAbs[n] == curAbs[n] {
+					aeqE++
+				}
+			}
+		}
+		fmt.Printf("%-14s %9d %9d %9d %10d %10d  %d %d %d %d (unsupported bodies %d)\n", filepath.Base(f), ip, ifn, best, rawInc, absInc, len(m.Bodies), same, reqE, aeqE, unsupported)
+		prevRaw, prevAbs = curRaw, curAbs
+	}
+	fmt.Printf("%-14s %9d %9d %9d %10d %10d\n", "CUMULATIVE", prod.Total, fine.Total, b1, rawS.Total, absS.Total)
 }

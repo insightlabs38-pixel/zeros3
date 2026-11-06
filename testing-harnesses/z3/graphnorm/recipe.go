@@ -113,3 +113,78 @@ func (r *LLVMRecipe) Replay(get func([32]byte) ([]byte, error)) ([]byte, error) 
 	}
 	return out, nil
 }
+
+// ProgRecipe is the root for program-style artifacts (PDB, DEX): one program plus the blobs
+// its COPY/STREAM ops reference, all stored as content-addressed objects.
+type ProgRecipe struct {
+	Size  uint64
+	SHA   [32]byte
+	Prog  [32]byte
+	Blobs [][32]byte
+}
+
+const progMagic = "ZB4P"
+
+func (r *ProgRecipe) Marshal() []byte {
+	b := []byte(progMagic)
+	b = binary.AppendUvarint(b, r.Size)
+	b = append(b, r.SHA[:]...)
+	b = append(b, r.Prog[:]...)
+	b = binary.AppendUvarint(b, uint64(len(r.Blobs)))
+	for _, x := range r.Blobs {
+		b = append(b, x[:]...)
+	}
+	return b
+}
+
+func ParseProgRecipe(b []byte) (*ProgRecipe, error) {
+	if len(b) < 4 || string(b[:4]) != progMagic {
+		return nil, errRecipe
+	}
+	r := &opReader{b: b, pos: 4}
+	rc := &ProgRecipe{Size: r.uv()}
+	copy(rc.SHA[:], r.bytes(32))
+	copy(rc.Prog[:], r.bytes(32))
+	n := r.uv()
+	if r.err != nil || n > 64 {
+		return nil, errRecipe
+	}
+	for i := uint64(0); i < n; i++ {
+		var x [32]byte
+		copy(x[:], r.bytes(32))
+		rc.Blobs = append(rc.Blobs, x)
+	}
+	if r.err != nil || r.pos != len(b) || rc.Size > MaxOut || !bytes.Equal(rc.Marshal(), b) {
+		return nil, errRecipe
+	}
+	return rc, nil
+}
+
+func (r *ProgRecipe) Replay(get func([32]byte) ([]byte, error)) ([]byte, error) {
+	budget := int64(1) << 30
+	resolve := func(ref [32]byte) ([]byte, error) { return simdelta.Resolve(ref, get, 2, budget) }
+	prog, err := resolve(r.Prog)
+	if err != nil {
+		return nil, err
+	}
+	m := NewByteMachine()
+	m.Limit = int(min(r.Size, MaxOut))
+	for _, x := range r.Blobs {
+		b, err := resolve(x)
+		if err != nil {
+			return nil, err
+		}
+		m.Blobs = append(m.Blobs, b)
+	}
+	if err := m.Exec(prog); err != nil {
+		return nil, err
+	}
+	if err := m.Finish(); err != nil {
+		return nil, err
+	}
+	out := m.Output()
+	if uint64(len(out)) != r.Size || sha256.Sum256(out) != r.SHA {
+		return nil, errors.New("graphnorm: replay digest/length mismatch")
+	}
+	return out, nil
+}

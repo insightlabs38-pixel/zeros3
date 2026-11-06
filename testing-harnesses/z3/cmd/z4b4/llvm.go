@@ -116,5 +116,5 @@ func cmdLLVM(files []string) {
 		fmt.Printf("%-28s %10d %10d %10d %10d %10d %10d %10d %10d  strong: fn=%d skel=%d idtab=%d refs=%d | +delta: fn=%d skel=%d idtab=%d refs=%d\n", filepath.Base(files[i]), ip, ifn, b1, ino, ia, ih, ihr, ihn, bd.fn, bd.skel, bd.idtab, bd.refs, bh.fn, bh.skel, bh.idtab, bh.refs)
 	}
 	fmt.Printf("%-28s %10d %10d %10d %10d %10d %10d %10d %10d\n", "CUMULATIVE", cumP, cumF, b1Total, none.Total, all.Total, hyb.Total, hybR.Total, hybN.Total)
-	fmt.Printf("objects: noNorm=%d strong=%d\n", none.Objects, all.Objects)
+	fmt.Printf("objects: noNorm=%d strong=%d | hybrid objects=%d of which B1 deltas=%d (saved %d B vs direct) | noNorm hybrid objects=%d deltas=%d\n", none.Objects, all.Objects, hyb.Objects, hyb.Deltas, hyb.DeltaSav, hybN.Objects, hybN.Deltas)
 }

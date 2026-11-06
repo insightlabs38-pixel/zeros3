@@ -63,3 +63,62 @@ func cmdReplay(dir, out string) {
 		fmt.Printf("%s %d bytes ok\n", e.Name(), len(data))
 	}
 }
+
+// cmdProgStore persists PDB or DEX histories as program + blob objects with B1 deltas.
+func cmdProgStore(kind, dir string, files []string) {
+	a := graphnorm.NewArchive(2)
+	a.Dir = dir
+	must(os.MkdirAll(filepath.Join(dir, "recipes"), 0o755))
+	manifest := ""
+	for i, f := range files {
+		d, err := os.ReadFile(f)
+		must(err)
+		var prog []byte
+		var blobs [][]byte
+		var keys []string
+		switch kind {
+		case "pdb":
+			e, err := graphnorm.EncodePDB(d, true)
+			must(err)
+			prog, blobs = e.Program, e.Blobs
+			keys = append(keys, "cols")
+			for _, n := range e.Names {
+				keys = append(keys, "heap"+n)
+			}
+		case "dex":
+			e, err := graphnorm.EncodeDEX(d, true)
+			must(err)
+			prog, blobs, keys = e.Program, e.Blobs, []string{"cols", "data"}
+		}
+		rc := &graphnorm.ProgRecipe{Size: uint64(len(d)), SHA: sha256.Sum256(d), Prog: sha256.Sum256(prog)}
+		a.Put("prog", prog)
+		for j, b := range blobs {
+			a.Put(keys[j], b)
+			rc.Blobs = append(rc.Blobs, sha256.Sum256(b))
+		}
+		name := fmt.Sprintf("rev%02d", i)
+		must(os.WriteFile(filepath.Join(dir, "recipes", name), rc.Marshal(), 0o644))
+		manifest += fmt.Sprintf("%s %s %d %s\n", name, hex.EncodeToString(rc.SHA[:]), len(d), filepath.Base(f))
+	}
+	must(os.WriteFile(filepath.Join(dir, "MANIFEST"), []byte(manifest), 0o644))
+	fmt.Printf("stored %d revisions, %d objects, charged %d bytes\n", len(files), a.Objects, a.Total)
+}
+
+func cmdProgReplay(dir, out string) {
+	must(os.MkdirAll(out, 0o755))
+	ents, err := os.ReadDir(filepath.Join(dir, "recipes"))
+	must(err)
+	get := func(s [32]byte) ([]byte, error) {
+		return os.ReadFile(filepath.Join(dir, "objs", hex.EncodeToString(s[:])))
+	}
+	for _, e := range ents {
+		b, err := os.ReadFile(filepath.Join(dir, "recipes", e.Name()))
+		must(err)
+		rc, err := graphnorm.ParseProgRecipe(b)
+		must(err)
+		data, err := rc.Replay(get)
+		must(err)
+		must(os.WriteFile(filepath.Join(out, e.Name()), data, 0o644))
+		fmt.Printf("%s %d bytes ok\n", e.Name(), len(data))
+	}
+}
