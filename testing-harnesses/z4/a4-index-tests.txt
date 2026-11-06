@@ -1,0 +1,3 @@
+ok  	zeros3-z3/idxref	30.081s
+ok  	zeros3-z3/dexz3	2.250s
+ok  	zeros3-z3/clrz3	1.175s

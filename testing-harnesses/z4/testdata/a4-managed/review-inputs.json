@@ -1,0 +1,86 @@
+[
+ {
+  "kind": "clr",
+  "label": "Newtonsoft 13.0.4",
+  "path": "/workspace/work/q6-public/clr/13.0.4.dll",
+  "bytes": 717736,
+  "sha256": "12246aa5e14245cbd1a0b8794851defd46e6d782c60eb650ba5aa90ef8447eee"
+ },
+ {
+  "kind": "clr",
+  "label": "FSharp.Core",
+  "path": "/workspace/work/q9-fsharp/canonical-build/out/FSharp.Core.dll",
+  "bytes": 5726208,
+  "sha256": "0fada0afd10d5e0c3e98281084f623ea2a01c17aa2768041be44509f0960c670"
+ },
+ {
+  "kind": "clr",
+  "label": "CoreLib 8.0.33",
+  "path": "/workspace/work/q4/dotnet/shared/Microsoft.NETCore.App/8.0.33/System.Private.CoreLib.dll",
+  "bytes": 12775936,
+  "sha256": "98fec20c823887e41d4fbd2d2e900175e5b1ba7d671e29704c9ce4632dcc5432"
+ },
+ {
+  "kind": "clr",
+  "label": "Roslyn SDK 8.0.427",
+  "path": "/workspace/work/q4/dotnet/sdk/8.0.427/Roslyn/bincore/Microsoft.CodeAnalysis.CSharp.dll",
+  "bytes": 18601984,
+  "sha256": "75970849e4301dcbe69a5c33a16b54a8b0ad8d83ff2dcbb4e0d38e171800f162"
+ },
+ {
+  "kind": "dex",
+  "label": "F-Droid 2.0.0",
+  "path": "/workspace/work/q6-public/fdroid-apk/2.0.0.dex",
+  "bytes": 9299272,
+  "sha256": "263a150125d6ae626da914810dfe7bb653c4fb9dda780b425054da424c307e9e"
+ },
+ {
+  "kind": "dex",
+  "label": "F-Droid 2.0.1",
+  "path": "/workspace/work/q6-public/fdroid-apk/2.0.1.dex",
+  "bytes": 9295512,
+  "sha256": "4cafa3b5bb47b0065ba8311285193d5aff7cdf0e9a388c108ed44d58e1ad47d8"
+ },
+ {
+  "kind": "dex",
+  "label": "F-Droid 2.0.2",
+  "path": "/workspace/work/q6-public/fdroid-apk/2.0.2.dex",
+  "bytes": 9297608,
+  "sha256": "a6aff7e100fb7e33b17fd11b2b594999016e4b099718c6ec393e462d269ac059"
+ },
+ {
+  "kind": "clr",
+  "label": "dense-128",
+  "path": "/workspace/work/z4-a4-review/dense-128.dll",
+  "bytes": 526336,
+  "sha256": "834120bce36c4ced3fbf0d259c97df5eee26847903ab0bda36e2c457d16ea111"
+ },
+ {
+  "kind": "clr",
+  "label": "dense-512",
+  "path": "/workspace/work/z4-a4-review/dense-512.dll",
+  "bytes": 2142208,
+  "sha256": "6c633203dfda3204bdebbda496a4b2eaa1740841c527481db7bf73d22a4cacc6"
+ },
+ {
+  "kind": "clr",
+  "label": "dense-1024",
+  "path": "/workspace/work/z4-a4-review/dense-1024.dll",
+  "bytes": 4302336,
+  "sha256": "056b0093b7069db25b81e582c1fd1b21b6fa8c27b7f0bbbf718e0bde8fcd0297"
+ },
+ {
+  "kind": "clr",
+  "label": "near-32m",
+  "path": "/workspace/work/z4-a4-review/near-32m.dll",
+  "bytes": 33550336,
+  "sha256": "1039e7b7a5ded2dfe3ef24b378cbea7322ab948a8ffafa4eb5afa029b3671b32"
+ },
+ {
+  "kind": "clr",
+  "label": "shared-dense",
+  "path": "/workspace/work/z4-a4-review/shared-dense.dll",
+  "bytes": 491520,
+  "sha256": "bca5187acaf1a03a9c54314ac7acd14392cf6ecad43a5735625139e831ff0c69"
+ }
+]
