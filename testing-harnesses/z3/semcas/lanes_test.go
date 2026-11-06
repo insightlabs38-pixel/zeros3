@@ -187,3 +187,59 @@ func FuzzParseONNX(f *testing.F) {
 		}
 	})
 }
+
+// Partial reads must equal the original bytes for every derivation shape.
+func TestRangeReadsMatchOriginal(t *testing.T) {
+	s := newStore(t)
+	opt := DefaultOptions()
+	opt.MinBytes = 64
+	p := NewPlanner(s, opt)
+	// base BF16 and derived F16, Q8_0, transposed F32 and row-permuted F16 variants
+	rng := newRand(5)
+	rows, cols := 64, 96
+	bf := make([]byte, 2*rows*cols)
+	for i := 0; i < rows*cols; i++ {
+		binaryPut16(bf[2*i:], f32toBF16(math.Float32bits(float32(rng.NormFloat64()*0.05))))
+	}
+	files := map[string][]byte{}
+	mk := func(name string, dt int, shape []uint64, payload []byte) {
+		var b Builder
+		pl, err := p.Place(&TInfo{DType: dt, Shape: shape}, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Lit([]byte("HDR"))
+		b.Ref(pl.CID, name)
+		b.Lit([]byte("TAIL"))
+		file := append(append([]byte("HDR"), payload...), "TAIL"...)
+		b.R.Size, b.R.SHA = int64(len(file)), PayloadSHA(file)
+		files[name] = file
+		s.PutRecipe(&b.R)
+		t.Logf("%s placed as %s", name, pl.How)
+	}
+	mk("bf16", DBF16, []uint64{64, 96}, bf)
+	f32, _ := convert(bf, DBF16, DF32)
+	f16, _ := convert(bf, DBF16, DF16)
+	mk("f16", DF16, []uint64{64, 96}, f16)
+	q8, _ := (&Op{Kind: OpQ8_0}).Apply([][]byte{f32})
+	mk("q8", DQBase+8, []uint64{64, 96}, q8)
+	tr, _ := (&Op{Kind: OpPerm, Elem: 4, Dims: []uint64{64, 96}, Axes: []uint8{1, 0}}).Apply([][]byte{f32})
+	mk("f32T", DF32, []uint64{96, 64}, tr)
+	g, _ := (&Op{Kind: OpPerm, Elem: 2 * 96, Dims: []uint64{4, 2, 8}, Axes: []uint8{0, 2, 1}}).Apply([][]byte{f16})
+	mk("f16perm", DF16, []uint64{64, 96}, g)
+	for name, file := range files {
+		rc, err := s.GetRecipe(PayloadSHA(file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for it := 0; it < 300; it++ {
+			off := int64(rng.Intn(len(file)))
+			n := int64(rng.Intn(min(len(file)-int(off), 3000)) + 0)
+			var io IO
+			got, err := s.ReadRange(rc, off, n, &io)
+			if err != nil || !bytes.Equal(got, file[off:off+n]) {
+				t.Fatalf("%s range %d+%d: %v", name, off, n, err)
+			}
+		}
+	}
+}

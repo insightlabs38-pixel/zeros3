@@ -50,10 +50,6 @@ type Planner struct {
 	// exclude, when set, hides components from parent search (used while rebasing).
 	exclude func(ID) bool
 	rebase  bool
-	// only/dry support edge-cost evaluation: restrict the parent and write nothing.
-	only    *Record
-	dry     bool
-	acceptF float64
 }
 
 func NewPlanner(s *Store, o Options) *Planner {
@@ -314,7 +310,7 @@ func (p *Planner) tryRelation(d *Desc, t *TInfo, payload []byte) (*Record, strin
 	var cs []cand
 	for _, id := range cands {
 		pr := p.S.Rec(id)
-		if (pr.Derived() && p.only == nil) || (p.exclude != nil && p.exclude(id)) {
+		if pr.Derived() || (p.exclude != nil && p.exclude(id)) {
 			continue // bases are raw components only: keeps depth 1 and avoids chains through residuals
 		}
 		pd := int(pr.Desc.DType)
@@ -345,17 +341,10 @@ func (p *Planner) tryRelation(d *Desc, t *TInfo, payload []byte) (*Record, strin
 	if len(cs) > p.Opt.MaxCandidates {
 		cs = cs[:p.Opt.MaxCandidates]
 	}
-	if p.only != nil {
-		cs = []cand{{p.only, 0}}
-	}
 	rawCost := float64(len(payload)) + 96
 	rb := rowBytes(d)
 	var best *Record
-	frac := p.Opt.AcceptFrac
-	if p.acceptF > 0 {
-		frac = p.acceptF
-	}
-	bestCost := rawCost * frac
+	bestCost := rawCost * p.Opt.AcceptFrac
 	bestHow := ""
 	var trows map[uint64][]int
 	if rb > 0 && len(payload)%rb == 0 {
@@ -445,12 +434,6 @@ func (p *Planner) tryRelation(d *Desc, t *TInfo, payload []byte) (*Record, strin
 	}
 	if best == nil {
 		return nil, ""
-	}
-	if p.dry {
-		if len(best.Patches) > 0 {
-			bestHow += "+residual"
-		}
-		return best, bestHow
 	}
 	// persist the winner (probe records were not written)
 	r, err := p.put(*d, best.Parents, best.Ops, best.Patches, payload)
@@ -577,188 +560,6 @@ func (p *Planner) Optimize(rounds int) (RebaseStats, error) {
 		}
 	}
 	return st, nil
-}
-
-// RegroupStats summarizes the offline group-aware re-rooting pass.
-type RegroupStats struct {
-	Clusters, Members, Rerooted, Derived int
-	RawBefore, RawAfter                  int64
-}
-
-// Regroup is the offline oracle for collections: tensors whose payloads are related
-// (same element count, close signature) form a cluster; for each cluster every member is
-// tried as the single raw root with all other members derived from it (star, depth 1),
-// and the cheapest root is installed. This undoes first-seen ordering effects.
-func (p *Planner) Regroup() (RegroupStats, error) {
-	var st RegroupStats
-	byN := map[uint64][]*Record{}
-	for _, r := range p.S.All() {
-		if r.Desc.Kind != KindTensor || int(r.PayloadLen) < p.Opt.MinBytes {
-			continue
-		}
-		if n, err := r.Desc.Elems(); err == nil {
-			byN[n] = append(byN[n], r)
-		}
-	}
-	seen := map[ID]bool{}
-	for _, group := range byN {
-		for _, seed := range group {
-			if seen[seed.CID] {
-				continue
-			}
-			ss, ok := p.sigOf(seed)
-			if !ok {
-				continue
-			}
-			cl := []*Record{seed}
-			seen[seed.CID] = true
-			for _, o := range group {
-				if seen[o.CID] {
-					continue
-				}
-				if os, ok := p.sigOf(o); ok && SigDist(ss, os) < 0.025 {
-					cl = append(cl, o)
-					seen[o.CID] = true
-				}
-			}
-			if len(cl) < 2 || len(cl) > 16 {
-				continue
-			}
-			st.Clusters++
-			st.Members += len(cl)
-			if err := p.regroupCluster(cl, &st); err != nil {
-				return st, err
-			}
-		}
-	}
-	return st, nil
-}
-
-func (p *Planner) regroupCluster(cl []*Record, st *RegroupStats) error {
-	n := len(cl)
-	raw := make([]float64, n)
-	for i, r := range cl {
-		raw[i] = float64(r.PayloadLen) + 96
-	}
-	edge := make([][]float64, n)
-	save := p.dry
-	p.dry, p.exclude, p.acceptF = true, nil, 0.9
-	defer func() { p.dry, p.only, p.acceptF = save, nil, 0 }()
-	for i := range edge {
-		edge[i] = make([]float64, n)
-		for j := range edge[i] {
-			edge[i][j] = raw[j]
-			if i == j {
-				continue
-			}
-			pay, err := p.parentPayload(cl[j].CID)
-			if err != nil {
-				return err
-			}
-			d := cl[j].Desc
-			// parent is the unmodified raw-equivalent payload of i
-			p.only = cl[i]
-			if rec, _ := p.tryLayoutOnly(&d, pay, cl[i]); rec != nil {
-				edge[i][j] = float64(len(rec.Marshal()))
-				continue
-			}
-			if rec, _ := p.tryRelation(&d, &TInfo{DType: int(d.DType), Shape: d.Shape}, pay); rec != nil {
-				if c := float64(len(rec.Marshal())); c < raw[j] {
-					edge[i][j] = c
-				}
-			}
-		}
-	}
-	best, bestCost := -1, 0.0
-	cur := 0.0
-	for j, r := range cl {
-		if r.Derived() {
-			cur += float64(len(r.Marshal()))
-		} else {
-			cur += raw[j]
-		}
-	}
-	for i := range cl {
-		c := 0.0
-		for j := range cl {
-			if i == j {
-				c += raw[j]
-			} else {
-				c += edge[i][j]
-			}
-		}
-		if best < 0 || c < bestCost {
-			best, bestCost = i, c
-		}
-	}
-	if bestCost >= cur*0.995 {
-		return nil
-	}
-	// apply: root raw first, then every other member from the root (or raw)
-	p.dry, p.only = false, nil
-	root := cl[best]
-	if root.Derived() {
-		if err := p.S.Materialize(root.CID); err != nil {
-			return err
-		}
-		st.Rerooted++
-	}
-	p.rebase = true
-	defer func() { p.rebase = false }()
-	for j, r := range cl {
-		if j == best {
-			continue
-		}
-		pay, err := p.parentPayload(r.CID)
-		if err != nil {
-			return err
-		}
-		d := r.Desc
-		p.only = p.S.Rec(root.CID)
-		p.acceptF = 0.9
-		nr, _ := p.tryLayoutOnly(&d, pay, root)
-		if nr == nil {
-			nr, _ = p.tryRelation(&d, &TInfo{DType: int(d.DType), Shape: d.Shape}, pay)
-		}
-		p.only = nil
-		if nr != nil {
-			st.Derived++
-		} else if r.Derived() {
-			if err := p.S.Materialize(r.CID); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// tryLayoutOnly is tryLayout restricted to one parent record.
-func (p *Planner) tryLayoutOnly(d *Desc, payload []byte, parent *Record) (*Record, string) {
-	if parent.Desc.DType != d.DType {
-		return nil, ""
-	}
-	if w := ElemBytes(int(d.DType)); w > 0 {
-		for _, c := range layoutCandidates(d, w) {
-			c := c
-			out, err := c.Apply([][]byte{payload})
-			if err != nil || PayloadSHA(out) != parent.Payload {
-				continue
-			}
-			inv := InvertPerm(c)
-			if p.dry {
-				r := &Record{Desc: *d, PayloadLen: int64(len(payload)), Payload: PayloadSHA(payload), Parents: []ID{parent.CID}, Ops: []Op{inv}}
-				r.CID = CID(&r.Desc, r.PayloadLen, r.Payload)
-				return r, "layout"
-			}
-			if r, err := p.put(*d, []ID{parent.CID}, []Op{inv}, nil, payload); err == nil {
-				return r, "layout"
-			}
-		}
-	}
-	if PayloadSHA(payload) == parent.Payload && !p.dry {
-		return nil, ""
-	}
-	return nil, ""
 }
 
 // rowGatherIndex finds, for every row of target, an unused identical row of parent; it

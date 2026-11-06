@@ -11,17 +11,20 @@ import (
 
 // Derivation operation kinds.
 const (
-	OpPerm    = 1  // reshape input to Dims then transpose by Axes; params: elem, dims, axes
-	OpBswap   = 2  // reverse bytes within each Width-byte element
-	OpConvert = 3  // float/int element conversion From -> To
-	OpQ8_0    = 4  // GGML Q8_0 quantization of F32 input
-	OpSlice   = 5  // bytes [Off, Off+Len) of the single input
-	OpConcat  = 6  // inputs appended in order
-	OpQ4_0    = 7  // GGML Q4_0 quantization of F32 input
-	OpGather  = 8  // output row i = input row Idx[i]; rows are Elem bytes
-	OpDeflate = 9  // raw DEFLATE stream replayed from the parent plaintext and Aux residual
-	OpRecipe  = 10 // output = replay of the Recipe held in Aux (components referenced by CID)
-	OpPrepend = 11 // Aux literal followed by the parent payload
+	OpPerm         = 1  // reshape input to Dims then transpose by Axes; params: elem, dims, axes
+	OpBswap        = 2  // reverse bytes within each Width-byte element
+	OpConvert      = 3  // float/int element conversion From -> To
+	OpQ8_0         = 4  // GGML Q8_0 quantization of F32 input
+	OpSlice        = 5  // bytes [Off, Off+Len) of the single input
+	OpConcat       = 6  // inputs appended in order
+	OpQ4_0         = 7  // GGML Q4_0 quantization of F32 input
+	OpGather       = 8  // output row i = input row Idx[i]; rows are Elem bytes
+	OpDeflate      = 9  // raw DEFLATE stream replayed from the parent plaintext and Aux residual
+	OpRecipe       = 10 // output = replay of the Recipe held in Aux (components referenced by CID)
+	OpPrepend      = 11 // Aux literal followed by the parent payload
+	OpPlainOffsets = 12 // length-prefixed value stream -> Arrow int32 offsets (n+1)
+	OpPlainData    = 13 // length-prefixed value stream -> concatenated value bytes
+	OpParquet      = 14 // exact Parquet replay (kind-10 codec) of Aux recipe over the parent components
 )
 
 // MaxOutput bounds any materialized derived payload (budget for hostile records).
@@ -57,6 +60,12 @@ func (o *Op) String() string {
 		return fmt.Sprintf("slice[%d+%d]", o.Off, o.Len)
 	case OpConcat:
 		return "concat"
+	case OpPlainOffsets:
+		return "plain>offsets"
+	case OpPlainData:
+		return "plain>data"
+	case OpParquet:
+		return fmt.Sprintf("parquet(recipe %dB)", len(o.Aux))
 	case OpDeflate:
 		return fmt.Sprintf("deflate(res %dB)", len(o.Aux))
 	case OpRecipe:
@@ -85,7 +94,7 @@ func (o *Op) marshal(b []byte) []byte {
 	case OpSlice:
 		b = binary.AppendUvarint(b, o.Off)
 		b = binary.AppendUvarint(b, o.Len)
-	case OpDeflate, OpRecipe, OpPrepend:
+	case OpDeflate, OpRecipe, OpPrepend, OpParquet:
 		b = binary.AppendUvarint(b, uint64(len(o.Aux)))
 		b = append(b, o.Aux...)
 	case OpGather:
@@ -160,7 +169,7 @@ func parseOp(b []byte) (Op, int, error) {
 		if o.Len, err = u(); err != nil {
 			return o, 0, err
 		}
-	case OpDeflate, OpRecipe, OpPrepend:
+	case OpDeflate, OpRecipe, OpPrepend, OpParquet:
 		if v, err = u(); err != nil || v > uint64(len(b)-pos) {
 			return o, 0, errors.New("semcas: bad aux length")
 		}
@@ -181,7 +190,7 @@ func parseOp(b []byte) (Op, int, error) {
 			}
 			o.Idx = append(o.Idx, uint32(x))
 		}
-	case OpQ8_0, OpQ4_0, OpConcat:
+	case OpQ8_0, OpQ4_0, OpConcat, OpPlainOffsets, OpPlainData:
 	default:
 		return o, 0, fmt.Errorf("semcas: unknown op %d", o.Kind)
 	}
@@ -229,6 +238,9 @@ func (o *Op) Apply(in [][]byte) ([]byte, error) {
 	if o.Kind == OpRecipe {
 		return nil, errors.New("semcas: recipe op is resolved by the store")
 	}
+	if o.Kind == OpParquet {
+		return parquetReplay(o.Aux, in)
+	}
 	if len(in) != 1 {
 		return nil, fmt.Errorf("semcas: op %s needs one input", o)
 	}
@@ -241,6 +253,8 @@ func (o *Op) Apply(in [][]byte) ([]byte, error) {
 		return append(append([]byte(nil), o.Aux...), b...), nil
 	case OpDeflate:
 		return inflateReplay(b, o.Aux)
+	case OpPlainOffsets, OpPlainData:
+		return plainSplit(b, o.Kind == OpPlainOffsets)
 	case OpPerm:
 		return permute(b, o.Elem, o.Dims, o.Axes)
 	case OpBswap:
@@ -681,4 +695,37 @@ func parsePatches(b []byte, outLen uint64) ([]Patch, int, error) {
 		return nil, 0, errors.New("semcas: unsorted patches")
 	}
 	return ps, pos, nil
+}
+
+// plainSplit decodes a Parquet PLAIN byte-array stream (u32 length + bytes per value).
+func plainSplit(b []byte, offsets bool) ([]byte, error) {
+	var out []byte
+	if offsets {
+		out = binary.LittleEndian.AppendUint32(out, 0)
+	}
+	pos, total := 0, uint64(0)
+	for pos < len(b) {
+		if len(b)-pos < 4 {
+			return nil, errors.New("semcas: truncated byte-array stream")
+		}
+		n := int(binary.LittleEndian.Uint32(b[pos:]))
+		pos += 4
+		if n > len(b)-pos {
+			return nil, errors.New("semcas: byte-array value past stream end")
+		}
+		if offsets {
+			total += uint64(n)
+			if total > math.MaxInt32 {
+				return nil, errors.New("semcas: offsets exceed int32")
+			}
+			out = binary.LittleEndian.AppendUint32(out, uint32(total))
+		} else {
+			out = append(out, b[pos:pos+n]...)
+		}
+		pos += n
+		if int64(len(out)) > MaxOutput {
+			return nil, errBudget
+		}
+	}
+	return out, nil
 }

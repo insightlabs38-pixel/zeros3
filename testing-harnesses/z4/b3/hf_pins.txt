@@ -1,0 +1,10 @@
+EleutherAI/pythia-14m          cf967c0a9a04383db6f7b1108d86b2962634b4ac  model.safetensors, pytorch_model.bin
+HuggingFaceTB/SmolLM2-135M-Instruct  12fd25f77366fa6b3b4b768ec3050bf629380bac  model.safetensors, onnx/model.onnx, onnx/model_fp16.onnx
+bartowski/SmolLM2-135M-Instruct-GGUF 09816acd5d99df7be770d85ea30822623dab342c  SmolLM2-135M-Instruct-f16.gguf, SmolLM2-135M-Instruct-Q8_0.gguf
+f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57  smol/f16.gguf
+1e790f1d6fac94097a6516ed1f07c29049097271d536d538562cd31ffc011a71  smol/model.onnx
+5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c  smol/model.safetensors
+e85e706ce14a3499e1f698c0d638b430df75b5f67131d1516bd0d46b844dfb2e  smol/model_fp16.onnx
+5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83  smol/q8_0.gguf
+116a02532db461f91386a5b20f942ff2c8d4de7341e21b55caafc3d7b25f49a1  pythia/model.safetensors
+81876076d0fed0edd03954452becbe9e488a0977abc01d30188fc399ead4d7fd  pythia/pytorch_model.bin

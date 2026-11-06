@@ -15,7 +15,7 @@ import (
 // Limits for closure resolution; hostile records fail closed.
 const (
 	MaxDepth  = 4
-	MaxFanout = 64
+	MaxFanout = 1024
 	RecMagic  = "ZSC1"
 )
 

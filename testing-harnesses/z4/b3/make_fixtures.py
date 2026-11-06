@@ -24,3 +24,28 @@ q8 = gguf.quants.quantize(x, gguf.GGMLQuantizationType.Q8_0)
 q4 = gguf.quants.quantize(x, gguf.GGMLQuantizationType.Q4_0)
 json.dump({'x': x.tobytes().hex(), 'q8_0': q8.tobytes().hex(), 'q4_0': q4.tobytes().hex()}, open(f'{out}/quant_vectors.json', 'w'))
 print('ok')
+
+# ---- container fixtures: tar, tar.gz, git pack (no deltas), arrow, parquet ----
+import subprocess, tarfile, io, gzip, shutil, tempfile, pyarrow as pa, pyarrow.parquet as pq
+files = {f'src/f{i}.txt': (f'file {i}\n' * (50 + 7 * i)).encode() for i in range(6)}
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode='w', format=tarfile.USTAR_FORMAT) as t:
+    for n, d in files.items():
+        ti = tarfile.TarInfo(n); ti.size = len(d); ti.mtime = 0; t.addfile(ti, io.BytesIO(d))
+open(f'{out}/tiny.tar', 'wb').write(buf.getvalue())
+open(f'{out}/tiny.tar.gz', 'wb').write(gzip.compress(buf.getvalue(), 6, mtime=0))
+tmp = tempfile.mkdtemp()
+subprocess.run(['git', 'init', '-q', tmp], check=True)
+ids = []
+for n, d in files.items():
+    ids.append(subprocess.run(['git', 'hash-object', '-w', '--stdin'], cwd=tmp, input=d, capture_output=True, check=True).stdout)
+pk = subprocess.run(['git', 'pack-objects', '--stdout', '--window=0', '--depth=0'], cwd=tmp, input=b''.join(i for i in ids), capture_output=True, check=True).stdout
+open(f'{out}/tiny.pack', 'wb').write(pk)
+shutil.rmtree(tmp)
+tbl = pa.table({'a': pa.array(list(range(1000)), pa.int64()), 'b': pa.array([i * 0.5 for i in range(1000)], pa.float64()), 's': pa.array([f'v{i % 17}' for i in range(1000)])})
+with pa.ipc.new_file(f'{out}/tiny.arrow', tbl.schema) as w:
+    for b in tbl.to_batches(max_chunksize=300): w.write_batch(b)
+pq.write_table(tbl, f'{out}/tiny_plain.parquet', compression='none', use_dictionary=False, row_group_size=400)
+pq.write_table(tbl, f'{out}/tiny_snappy.parquet')
+json.dump({'files': {k: v.hex() for k, v in files.items() if False}}, open(f'{out}/files.json', 'w'))
+print('containers ok')
