@@ -30492,10 +30492,10 @@ func TestPack_StoreFormatVersionGate(t *testing.T) {
 		t.Fatalf("packed store format = %+v", f)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
-	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 10`), 1), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "FORMAT.json"), bytes.Replace(b, []byte(`"store_format_version": 2`), []byte(`"store_format_version": 99`), 1), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 10") {
+	if _, err := OpenStore(dir); err == nil || !strings.Contains(err.Error(), "unsupported store format version 99") {
 		t.Fatalf("unknown future version must be rejected, got %v", err)
 	}
 }
