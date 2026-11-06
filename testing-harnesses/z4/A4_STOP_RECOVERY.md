@@ -1,3 +1,7 @@
+> Historical 2026-10-29 stop record. Superseded by the completed A4 qualification
+> in `testing-harnesses/results/Z4_A4_MANAGED_STREAMING.md` and PR #95.
+> Hashes and unfinished gates below describe that historical checkpoint only.
+
 # A4 stop and recovery
 
 Campaign paused at the user's explicit request on 2026-10-29.

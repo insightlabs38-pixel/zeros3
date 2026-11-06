@@ -1,109 +1,96 @@
-# Z4 A4 managed streaming — production checkpoint, unfinished
+# Z4 A4 final architecture review and qualification
 
-Status: PAUSED at user request; PR #95 stays DRAFT. No final A4 readiness verdict.
-Main e4e5b1b retains kinds 1–10. Working branch adds kinds 11/12, cumulative floor 9,
-default-off creation, earlier decoders and authoritative CDC unchanged.
+Verdict: **MANAGED11_12_PRODUCTION_READY** for the bounded supported subset.
+Integration: PR #95, normal merge authorized after the gates below; see its live merge state.
+Production source SHA-256: ac29a5646dd32a7c388a7325aa8929f3d5087cf3d362fee205d63b74f6b6f493.
+Source repair checkpoints: 169f972, bef0b08, ff23f24, a345c2f; earlier A4 work retained.
+No original draft was merged wholesale. No LOC threshold determined this decision.
 
-## Architecture and exactness
+## Architecture decision
 
-PrefixIndex uses sorted original-index arrays and precomputed unique prefix widths:
-Put O(1), Get O(32 log N), no candidate scan/allocation. ClassIndex uses compact
-CSR/general lookup or unique-class handle permutations; Put O(log N), constructor
-O(N log N). Original class/member order and repeated-handle semantics are preserved.
-Mechanically preserved legacy oracles cover deep collisions, ambiguous/repeated IDs,
-all prefix widths, duplicate classes, malformed/truncated streams and trailing bytes.
-Legacy duplicate Put at 65,536 entries was 9,192 ns versus 49.90 ns compact (indicative).
+DEX/CLR creation uses ReaderAt windows, compact identity arrays, staged references,
+external stable sorting and bounded direct component emission. It retains neither
+original + masked file copies nor all output components. Decoder getters use two
+bounded passes; reconstruction remains one <=32 MiB image with borrowed CLR heaps.
+Prefix construction/lookup is O(N log N) /O(32 log N); Put is constant work.
+ClassIndex uses sorted handle lookup, exact occurrence ranks and compact CSR/unique
+paths; no duplicate-class scan. Differential legacy oracles preserve collisions,
+ambiguous IDs, repeated handles, class order, reference bytes and five frozen roots.
+Physical CLR bodies are parsed, sized and token-validated once despite method aliases.
+Shared decode budgets now charge node traversal, group reads and both input passes.
+No mutable global analyzer state, production subprocess or new external dependency.
+The one-file stdlib production layout and mechanically reproducible port are retained.
 
-DEX uses 64 KiB source windows, bounded instruction buffers, staged multi-pass slots,
-masked ReaderAt spans and direct component emission. CLR loads bounded heaps, uses
-separate metadata/body/layout source windows, compact identities, bounded signature
-walks and disk-backed stable reference ordering (position/file offset/sequence).
-External sorting uses 4,096-record runs, bounded merge cursors and one record buffer.
-No encoder retains original + masked + payload copies or all emitted components.
-Decoder getters preflight and consume groups in two bounded passes without retaining
-all component inputs. CLR reconstruction borrows heap aliases and allocates exact
-IL slot capacity once. Layout/reference semantics and immutable recipe framing remain.
+Creation remains off by default; ordinary SHA-256/CDC and journal authority remain.
+Managed kinds 11/12 require cumulative floor 9, including nested roots. Floors 6–8
+and kinds 1–10 retain their decoders. Unsupported features and exhausted budgets
+fall back to CDC; optional success is not required for PUT success.
+Existing caps remain: 32 MiB source/output; 16 MiB/group, 128 MiB aggregate groups;
+65,536 groups; bounded heaps/rows/signatures/depth and 1 GiB source inspection.
+No supported-input cap was reduced or raised to obtain this qualification.
 
-Creation: source <=32 MiB, group <=16 MiB, aggregate groups <=128 MiB, <=65,536 groups.
-CLR heaps <=16 MiB each /32 MiB aggregate; <=1M identity rows, <=256K heap entries,
-64 MiB estimated context metadata; identity recursion <=256. Method code <=1 MiB,
-record <=16 MiB, inspection <=16*source+64 MiB, aggregate token/clause count <=1M.
-DEX identity/item counts, prototype hash work, slot/reference counts are bounded.
-Production source inspection stays at the existing 1 GiB budget; fallback preserves PUT.
+## Actual repairs from this independent review
 
-## Production port and discovered defects
+| Failure | Repair / durable reproducer |
+|---|---|
+| Component length sum wrapped into a slice panic | subtraction-before-addition checks; overflow regression |
+| CLR child counts silently truncated at 32 bits | checked against remaining child rows before conversion |
+| Decoder signature-slot expansion lacked the encoder's aggregate bound | checked sizing before allocation |
+| Plain/sorted spools accepted missing complete records as EOF/success | expected record counts checked |
+| Mask/hash/cutter reads replaced cancellation with unexpected EOF | original non-EOF I/O errors preserved |
+| Shared body slots charged once per method, falsely exceeding 2M slots | one physical-body sizing helper |
+| Token validation repeated for every method alias | shared validator caches physical-body validity |
+| Legal empty groups bypassed nested replay accounting | shared step/byte budgets cover nodes and both passes |
+| Existing real-process fork resume raced an identical in-flight commit | one equivalent-content retry with an atomic precondition |
 
-AST/shell extraction ports reachable declarations; frozen draft adapter/node framing
-is reused mechanically. Five immutable managed roots roundtrip and encoder roots
-remain byte-identical. Lifecycle covers full/ranges, off/shadow/prefer, maintenance,
-restart, floor 9 and temporary spool cleanup. Malformed candidates fall back safely.
+The fork failure occurred in the first full suite (529.002s), was reproduced without
+sleeps, then repaired. Different/later writers and ordinary replication still conflict.
+No canonical test was skipped or weakened; failed diagnostics and setup mistakes remain.
+The shared-body counterexample has 8,192 aliases and 65,536 physical token references:
+the preceding source spent 11.0s and fell back; final encoding is .112s median, exact.
 
-The first real CDC-manifest production probe exhausted 1 GiB inspection on a 718 KiB
-CLR input: metadata and method-body windows evicted each other. Separate caches fixed
-this to 5,063,041 inspected bytes without raising the budget. A checked I/O regression
-also caught swallowed DEX parameter-source errors; diagnostics and repair are retained.
-Synthetic multiwindow methods, source errors and shared-body/prototype tests pass.
-Future-kind/version test boundaries were updated because kinds 11/12 and floor 9 are
-now implemented locally. No cases were removed; original failed suite is preserved.
+## Final isolated measurements
 
-## Measured evidence and pending gates
+Three fresh processes/stores per input, warm/unflushed OS cache; compiler/producer
+excluded; actual CDC manifest ReaderAt. Values are medians of per-run phase peaks.
 
-Four native CLR raw-source sizes (0.72/5.73/12.78/18.60 MB) previously proved exact
-with RSS 22.16/37.72/78.48/104.78 MiB; these are not production-path medians.
-Earlier production source 08e72b3d passed 21 exact native fresh-process/store samples
-(7 inputs x 3), deterministic roots, independent cold full-SHA proof and floor 9.
-Roslyn encoding RSS was 125 MiB and creation 195 MiB: this negative is retained.
-Later unique-index/getter source 9c80de34 passed the same 21 exact samples; Roslyn
-encode/proof RSS medians 113/164 MiB. Concurrent checks make its wall times unsuitable
-for an isolated latency claim. Final exact IL-slot allocation lowers one diagnostic
-Roslyn proof to 138 MiB (cold 156 MiB); final isolated medians are recorded below.
-CDC remains retained; physical representation growth is additive, not storage saving.
+| Input MB | Encode RSS /creation RSS MiB | Encode /proof /cold seconds |
+|---|---:|---:|
+| Newtonsoft 0.72 | 22.88 /25.60 | .229 /.126 /.133 |
+| FSharp 5.73 | 43.28 /51.43 | .587 /.397 /.430 |
+| CoreLib 12.78 | 81.42 /113.70 | 1.369 /1.008 /.972 |
+| Roslyn 18.60 | 107.62 /144.97 | 2.052 /1.428 /1.485 |
+| F-Droid three 9.30 MB revisions | 83.47–85.33 /96.50–98.18 | 1.144–1.231 /.626–.647 /.624–.733 |
+| Dense 0.53 /2.14 /4.30 MB | 20.27 /22.80; 51.69 /51.69; 80.59 /86.43 | raw phases in evidence |
+| 32 MiB overlay on real Newtonsoft | 29.43 /77.34 | .333 /.189 /.181 |
+| 0.49 MB shared-body control | 23.41 /23.77 | .112 /.049 /.047 |
 
-Compatibility: native Newtonsoft 13.0.4 ->13.0.3 revisions both represented; portable
-full/delta bundles, old clients against compatible server, maintenance and six
-snapshot-delete generations pass. Five old binary generations: 79 floor-9 refusals
-plus one unsupported old CLI case; before/after file digests preserve nonmutation.
-Ten ordinary PUT panic/restart/GC/retry cases and ten real SIGKILL publication
-boundaries pass. Crash matrices were run before the final IL allocation refinement.
-Focused production exactness tests and relevant index/cache/getter races pass.
-Latest library suites pass (CLR 3.906s, DEX 11.321s, indexes 45.152s).
-An earlier production full suite passed 194.596s before latest refinements; later
-full suite, final isolated native measurements and final race/vet/fuzz are pending.
+Roslyn prior A4: 107.57 /149.14 MiB; earlier negative creation ~195 MiB retained.
+Fresh preceding-checkpoint recheck: 110.61 /149.06 MiB, 2.054s encode /1.540s proof.
+Paired timing checks explain initial variation; final results show no material regression.
+Largest process RSS observed across all 36 final trials: 161.86 MiB (includes cold read).
+Go heap per phase and process high-water marks are retained, not inferred from RSS.
+Separate 10ms temp monitoring: max managed staging 41.48 MiB /all staging 44.24 MiB;
+normal/failure cleanup passes. Sampling can miss short peaks; monitored times are not latency claims.
+All 36 full/cold SHA/byte proofs pass. Eleven existing input roots are unchanged;
+the new formerly rejected shared-body root is deterministic. CDC growth stays additive.
 
-Durable checkpoints: aa5d7d4, 9551dff, c8e54b2, 450bd56 and this production checkpoint.
-Evidence: a4-production-checkpoint-evidence.json.gz and mechanically reusable scripts.
-Unmerged branch z4/a4-runtime-backup-20261029 preserves prior interruption evidence.
-Runtime recovered; latest local source is now checkpointed separately, not merged.
-A0–A3 are complete. Finish A4 gates before any readiness decision; then continue B1–B8.
-B2 remains DRAFT_ONLY. No LOC-only criterion or test-integrity exception was used.
+## Validation, decision and remaining debt
 
-## User-requested stop checkpoint
-
-Final source SHA-256: 64e997ef515c1406f328b2a00517180eca3dcf01287deb0d7dc390b05f45621a.
-Seven preselected inputs x three isolated fresh processes/stores all prove exact;
-roots equal the earlier versions. Warm OS cache; compiler/producer excluded.
-
-| Input MB | Encoder RSS MiB | Creation RSS MiB | Encode /proof /cold seconds |
-|---|---:|---:|---|
-| Newtonsoft 0.72 | 24.90 | 25.48 | .194 /.123 /.122 |
-| FSharp 5.73 | 42.18 | 52.95 | .561 /.360 /.380 |
-| CoreLib 12.78 | 81.55 | 110.07 | 1.327 /.917 /.926 |
-| Roslyn 18.60 | 107.57 | 149.14 | 1.987 /1.451 /1.452 |
-| F-Droid 9.30 (three releases) | 82.83–83.56 | 97.27–98.21 | 1.227–1.330 /.680–.724 /.676–.734 |
-
-Creation includes encoding, proof and publication; cold RSS is separately retained
-(Roslyn 156.38 MiB). Native CLR and DEX revision matrices each pass 87 checks plus
-18 snapshot checks. Each old-generation matrix records 79 actual floor refusals
-and one unsupported CLI; ten final-source real SIGKILL boundaries pass.
-Final source production race passes 4.787s; vet passes; decoder fuzz passes 2,721 runs.
-Every frozen dependency is tested missing/corrupt/truncated, plus short-writer failure.
-Cumulative kinds 8–12 restart proof passes. Its initial harness failure came from
-JSON reusing Input backing arrays held by expected-byte fixtures; allocate a fresh
-fixture slice before decoding the second cohort. Failure and repair remain preserved.
-Evidence: a4-stop-evidence.json.gz. Source and recovery notes are pushed, not merged.
-Hourly automation 6ae1844e1ae08191b077f0fde95b52ac is disabled at user request.
-Resume with A4 final diff/architecture review and any remaining merge gates; keep
-PR95 draft until that review closes. B1–B8 remain queued, B2 DRAFT_ONLY.
-
-Final production-source full suite passes 229.059s. Subsequently added cumulative
-fixture and dependency/writer contracts pass focused in .179s. No checks remain running.
+Final root `go test ./...`: 324.344s PASS, including all added tests; analysis suite PASS.
+Both vets, formatting, one-production-file and stdlib dependency checks pass.
+Focused root race: 10.981s; analysis CLR/index/DEX races: 3.530 /3.960 /2.116s PASS.
+Final managed-root fuzz 10,611 runs; CLR decode/parser 19,150 /16,774; unchanged DEX 56,106 PASS.
+Each native CLR/DEX matrix: 87 checks +18 snapshot checks; five old generations each
+produce 79 floor refusals +1 separate unsupported CLI case with before/after digests.
+Portable full/delta, replication, restart/full/range reads, GC, repack, pruning, doctor,
+compact and tier operations pass. Mixed kinds, nested floor 9 and dependency closure pass.
+Ten ordinary PUT interruption/retry cases, ten publication SIGKILL cases and two actual
+mid-spool kills pass; CDC survives, old floor remains 1 before publication, GC removes spools.
+Missing/corrupt/truncated dependencies, short writers, temporary I/O and cancellation pass.
+No material architecture/correctness gate remains unverified. Proceed with normal #95 merge.
+Post-B8 debt: opt-in synchronous CPU/I/O, metadata RSS, <=32 MiB full reconstruction,
+private-range amplification and additive storage. These are bounded tradeoffs, not new DEFER/KILL decisions.
+Evidence: ../z4/a4-integration-evidence.json.gz; failures/history: a4-final-review-evidence.json.gz.
+Reproduction: ../z4/scripts/a4_review_{corpus,measure,summarize,midkill}.py plus existing A4 probes/matrices.
+B1 similarity/delta CAS is the next recommended research item; it was not started.
