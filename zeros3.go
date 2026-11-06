@@ -16140,8 +16140,20 @@ func executeReplicationPlan(p replicationPlan) (syncStats, error) {
 	destCommitCfg := cfg.Dest
 	destCommitCfg.ContentType = p.desc.ContentType
 	destCommitCfg.Metadata = p.desc.Metadata
-	if _, err := commitSyncObject(destCommitCfg, p.plan, p.pre); err != nil {
-		return syncStats{}, fmt.Errorf("replicate: %w", err)
+	_, commitErr := commitSyncObject(destCommitCfg, p.plan, p.pre)
+	// A killed fork client may leave a server-side commit in flight. One
+	// equivalent-content recheck closes that resume race, while the retried
+	// commit still atomically rejects a later writer. Ordinary sync is unchanged.
+	if errors.Is(commitErr, errSyncRemoteConflict) && cfg.DestMustBeAbsent {
+		exists, etag, headErr := headSyncDestination(cfg.Dest)
+		if headErr != nil {
+			commitErr = headErr
+		} else if exists && etag == p.desc.ETag {
+			_, commitErr = commitSyncObject(destCommitCfg, p.plan, syncPrecondition{expectedETag: etag})
+		}
+	}
+	if commitErr != nil {
+		return syncStats{}, fmt.Errorf("replicate: %w", commitErr)
 	}
 
 	stats := syncStats{
@@ -56018,7 +56030,7 @@ func (repMCdexDecoder) Expand(c *repCall, emit func([32]byte)) error {
 }
 
 // repManagedBounds runs before group discovery and before the legacy decoder
-// can allocate its whole output. Managed creation is not enabled by this draft.
+// allocates its bounded reconstruction. Creation stays opt-in and proof-gated.
 func repManagedBounds(c *repCall) error {
 	if c.Rep.Size <= 0 || c.Rep.Size > 32<<20 || len(c.Rep.Recipe) > 16<<20 {
 		return fmt.Errorf("%w: managed representation bounds", errRepLimit)
