@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -504,4 +505,76 @@ func TestRepManagedCumulativeCompatibility(t *testing.T) {
 	l.close()
 	l.open()
 	l.exact("cumulative decoder restart")
+}
+
+func TestRepManagedNestedPublicationFloor(t *testing.T) {
+	raw, e := repZ4ManagedFixtureJSON(t)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var fs []repLabCodecFixture
+	if e = json.Unmarshal(raw, &fs); e != nil {
+		t.Fatal(e)
+	}
+	for _, fixture := range fs {
+		t.Run(fixture.Name, func(t *testing.T) {
+			expected, e := unmarshalRep(fixture.Root, repProdLimits)
+			if e != nil {
+				t.Fatal(e)
+			}
+			l := newRepLab(t, repModeOff)
+			data := fixture.Input
+			l.put("model", data)
+			entry, _ := l.manifest("model")
+			if l.s.format.StoreFormatVersion != 1 {
+				t.Fatal("ordinary off-mode PUT raised format")
+			}
+			b := l.s.newRepBuilder(int64(len(data)), nil, nil)
+			defer b.close()
+			model, err := b.encodeManaged(bytes.NewReader(data), int64(len(data)), expected.Kind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			child, err := b.finishRep(model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sum := sha256.Sum256(data)
+			outer := &repObject{Kind: repKindConcat, Size: int64(len(data)), Members: []repMember{{Role: repDerived, SHA: sum, Size: int64(len(data)), Child: child}}}
+			id, err := b.finishRep(outer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = b.flush(); err != nil {
+				t.Fatal(err)
+			}
+			if err = b.proof(id, int64(len(data)), sum); err != nil {
+				t.Fatal(err)
+			}
+			root := &repRoot{ManifestUUID: entry.manifestUUID, ObjSHA: sum, ObjSize: int64(len(data)), Rep: id, Descs: b.descs}
+			if err = l.s.publishRepRoot(root); err != nil {
+				t.Fatal(err)
+			}
+			if l.s.format.StoreFormatVersion != 9 {
+				t.Fatalf("nested managed floor=%d", l.s.format.StoreFormatVersion)
+			}
+			l.close()
+			l.open()
+			l.exact("nested managed publication restart")
+
+		})
+	}
+}
+
+func TestRepManagedComponentLengthOverflow(t *testing.T) {
+	for _, n := range []int{6, 9} {
+		b := binary.AppendUvarint(nil, ^uint64(0))
+		for i := 0; i < n; i++ {
+			b = binary.AppendUvarint(b, 1)
+		}
+		b = append(b, make([]byte, n-1)...)
+		if _, _, e := repIXSplitComp(b, n); e == nil {
+			t.Fatal("accepted component length overflow")
+		}
+	}
 }

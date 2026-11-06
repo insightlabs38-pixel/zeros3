@@ -110,11 +110,11 @@ func (s *SortedRefSpool) flushRun() error {
 			buf = buf[:x.n]
 		}
 		n, e := s.f.ReadAt(buf, x.dataOff)
-		if n != len(buf) {
-			return io.ErrUnexpectedEOF
-		}
 		if e != nil && e != io.EOF {
 			return e
+		}
+		if n != len(buf) {
+			return io.ErrUnexpectedEOF
 		}
 		if _, e = w.Write(buf); e != nil {
 			return e
@@ -199,6 +199,7 @@ func (s *SortedRefSpool) CopySorted(dst *RefSpool) error {
 	}
 	heap.Init(&heads)
 	var buf []byte
+	copied := 0
 	for heads.Len() > 0 {
 		c := heads[0]
 		x := c.ref
@@ -213,6 +214,7 @@ func (s *SortedRefSpool) CopySorted(dst *RefSpool) error {
 		if e := dst.Append(x.pos, x.stream, x.class, buf); e != nil {
 			return e
 		}
+		copied++
 		e := c.next()
 		if e == io.EOF {
 			heap.Pop(&heads)
@@ -221,6 +223,9 @@ func (s *SortedRefSpool) CopySorted(dst *RefSpool) error {
 		} else {
 			heap.Fix(&heads, 0)
 		}
+	}
+	if copied != s.count {
+		return io.ErrUnexpectedEOF
 	}
 	s.index = nil
 	return nil

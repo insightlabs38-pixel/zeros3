@@ -323,6 +323,11 @@ func DecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]byte, 
 					run[k] = 1
 				}
 				val = int64(run[k])
+				cd := schema[s.Table][s.Col]
+				end := uint64(f.Rows(cd.T)) + 1
+				if uint64(run[k]) > end || v > end-uint64(run[k]) {
+					return nil, bad("child list count overflow")
+				}
 				run[k] += uint32(v)
 			case LNestedA:
 				prevA += unzz(v)
@@ -417,6 +422,30 @@ func DecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]byte, 
 		return nil, err
 	}
 
+	// Preallocate the bounded IL slot vector once rather than growing multiple
+	// overlapping backing arrays during independent production proof.
+	ilCount := 0
+	for _, bi := range bodies {
+		if bi.Opaque {
+			continue
+		}
+		n := len(bi.Body.Toks) + len(bi.Body.Clauses)
+		if bi.Body.LocalOff != 0 {
+			n++
+		}
+		if n > (2<<20)-ilCount {
+			return nil, limit("IL slot metadata")
+		}
+		ilCount += n
+	}
+	// Apply the same aggregate slot budget as creation before signature-slot
+	// allocation. Per-signature bounds alone do not bound the combined heap.
+	capacity, err := countCompactSlots(f, buf, c.Blobs, c.Marks, bodies)
+	if err != nil {
+		return nil, err
+	}
+	blobSlots := compactBlobSlots(f, buf, c.Blobs, c.Marks, make([]Slot, 0, capacity-slotCount-ilCount))
+
 	// ---- reference stages -----------------------------------------------------------------
 	pos := [NumStreams][]byte{}
 	copy(pos[:], in[:])
@@ -452,7 +481,7 @@ func DecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]byte, 
 			}
 		}
 	}
-	if err := take(BlobSlots(f, buf, c.Blobs, c.Marks), true, func(*Slot) bool { return true }); err != nil {
+	if err := take(blobSlots, true, func(*Slot) bool { return true }); err != nil {
 		return nil, err
 	}
 	c.SigReady()
@@ -477,22 +506,6 @@ func DecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]byte, 
 	}
 	if err := take(slots, true, stream(StR)); err != nil {
 		return nil, err
-	}
-	// Preallocate the bounded IL slot vector once rather than growing multiple
-	// overlapping backing arrays during independent production proof.
-	ilCount := 0
-	for _, bi := range bodies {
-		if bi.Opaque {
-			continue
-		}
-		n := len(bi.Body.Toks) + len(bi.Body.Clauses)
-		if bi.Body.LocalOff != 0 {
-			n++
-		}
-		if n > (2<<20)-ilCount {
-			return nil, limit("IL slot metadata")
-		}
-		ilCount += n
 	}
 	ilSlots, err := compactILSlotsAt(bodySource, bodies, make([]Slot, 0, ilCount))
 	if err != nil {

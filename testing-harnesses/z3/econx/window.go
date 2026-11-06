@@ -27,11 +27,11 @@ func UnitCutAt(r io.ReaderAt, secs []idxref.Sec, t int) ([]int, error) {
 					n = len(scratch)
 				}
 				got, err := r.ReadAt(scratch[:n], int64(off))
-				if got != n {
-					return nil, io.ErrUnexpectedEOF
-				}
 				if err != nil && err != io.EOF {
 					return nil, err
+				}
+				if got != n {
+					return nil, io.ErrUnexpectedEOF
 				}
 				n = len(lab.ChunkScaled(scratch[:n], t/4, t, 4*t)[0])
 				off += n

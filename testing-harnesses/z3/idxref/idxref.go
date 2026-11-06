@@ -180,9 +180,12 @@ func SplitComp(c []byte, n int) (payload []byte, streams [][]byte, err error) {
 		}
 		c = c[k:]
 	}
+	if pl > uint64(len(c)) {
+		return nil, nil, bad("component payload length")
+	}
 	tot := pl
 	for _, l := range ls {
-		if l > uint64(len(c)) {
+		if l > uint64(len(c))-tot {
 			return nil, nil, bad("component stream length")
 		}
 		tot += l

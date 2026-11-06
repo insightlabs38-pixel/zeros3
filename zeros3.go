@@ -47682,9 +47682,12 @@ func repIXSplitComp(c []byte, n int) (payload []byte, streams [][]byte, err erro
 		}
 		c = c[k:]
 	}
+	if pl > uint64(len(c)) {
+		return nil, nil, repIXbad("component payload length")
+	}
 	tot := pl
 	for _, l := range ls {
-		if l > uint64(len(c)) {
+		if l > uint64(len(c))-tot {
 			return nil, nil, repIXbad("component stream length")
 		}
 		tot += l
@@ -48018,11 +48021,11 @@ func (s *repIXSortedRefSpool) flushRun() error {
 			buf = buf[:x.n]
 		}
 		n, e := s.f.ReadAt(buf, x.dataOff)
-		if n != len(buf) {
-			return io.ErrUnexpectedEOF
-		}
 		if e != nil && e != io.EOF {
 			return e
+		}
+		if n != len(buf) {
+			return io.ErrUnexpectedEOF
 		}
 		if _, e = w.Write(buf); e != nil {
 			return e
@@ -48120,6 +48123,7 @@ func (s *repIXSortedRefSpool) CopySorted(dst *repIXRefSpool) error {
 	}
 	heap.Init(&heads)
 	var buf []byte
+	copied := 0
 	for heads.Len() > 0 {
 		c := heads[0]
 		x := c.ref
@@ -48134,6 +48138,7 @@ func (s *repIXSortedRefSpool) CopySorted(dst *repIXRefSpool) error {
 		if e := dst.Append(x.pos, x.stream, x.class, buf); e != nil {
 			return e
 		}
+		copied++
 		e := c.next()
 		if e == io.EOF {
 			heap.Pop(&heads)
@@ -48142,6 +48147,9 @@ func (s *repIXSortedRefSpool) CopySorted(dst *repIXRefSpool) error {
 		} else {
 			heap.Fix(&heads, 0)
 		}
+	}
+	if copied != s.count {
+		return io.ErrUnexpectedEOF
 	}
 	s.index = nil
 	return nil
@@ -48158,6 +48166,7 @@ type repIXRefSpool struct {
 	size, limit int64
 	last        int64
 	count       int
+	readCount   int
 	buf         []byte
 }
 
@@ -48221,6 +48230,7 @@ func (s *repIXRefSpool) Rewind() error {
 		return e
 	}
 	s.reading = true
+	s.readCount = 0
 	_, e := s.f.Seek(0, io.SeekStart)
 	s.reader.Reset(s.f)
 	return e
@@ -48233,6 +48243,9 @@ func (s *repIXRefSpool) Next() (repIXSpoolRef, error) {
 	}
 	var h [14]byte
 	if _, e := io.ReadFull(s.reader, h[:]); e != nil {
+		if e == io.EOF && s.readCount < s.count {
+			e = io.ErrUnexpectedEOF
+		}
 		return repIXSpoolRef{}, e
 	}
 	n := int(binary.LittleEndian.Uint32(h[10:]))
@@ -48247,6 +48260,7 @@ func (s *repIXRefSpool) Next() (repIXSpoolRef, error) {
 	if _, e := io.ReadFull(s.reader, s.buf); e != nil {
 		return repIXSpoolRef{}, e
 	}
+	s.readCount++
 	return repIXSpoolRef{int64(binary.LittleEndian.Uint64(h[:])), h[8], h[9], s.buf}, nil
 }
 
@@ -48331,11 +48345,11 @@ func (v *repIXWindowView) ReadAt(b []byte, off int64) (int, error) {
 		}
 		dst := b[n : n+int(take)]
 		got, err := v.r.ReadAt(dst, file)
-		if got != len(dst) {
-			return n + got, io.ErrUnexpectedEOF
-		}
 		if err != nil && err != io.EOF {
 			return n + got, err
+		}
+		if got != len(dst) {
+			return n + got, io.ErrUnexpectedEOF
 		}
 		j := sort.Search(len(v.patches), func(j int) bool { return v.patches[j].Off+int64(v.patches[j].Len) > file })
 		for ; j < len(v.patches) && v.patches[j].Off < file+take; j++ {
@@ -48372,11 +48386,11 @@ func repIXFNVRange(r io.ReaderAt, start, end int64, scratch []byte) (uint64, err
 		}
 		b := scratch[:n]
 		got, err := r.ReadAt(b, start)
-		if got != len(b) {
-			return 0, io.ErrUnexpectedEOF
-		}
 		if err != nil && err != io.EOF {
 			return 0, err
+		}
+		if got != len(b) {
+			return 0, io.ErrUnexpectedEOF
 		}
 		h = repIXFNV64(h, b)
 		start += n
@@ -51361,6 +51375,72 @@ func repCLcompactTableSlots(f *repCLFile, d []byte, dst []repCLSlot) ([]repCLSlo
 	return out, nil
 }
 
+// Port source: zeros3-z3/clrz3/compact.go
+func repCLcompactBlobSlots(f *repCLFile, d []byte, es []repCLBlobEntry, marks []byte, dst []repCLSlot) []repCLSlot {
+	out := dst
+	if !f.HasBlob {
+		return dst
+	}
+	h := d[f.Blob.Off : f.Blob.Off+f.Blob.Size]
+	for i, e := range es {
+		if marks[i] == repCLBlobOpaque {
+			continue
+		}
+		sl, ok := repCLParseSig(marks[i], h[e.DataOff:e.DataOff+e.Len], false)
+		if !ok {
+			continue
+		}
+		for _, s := range sl {
+			out = append(out, repCLSlot{Off: f.Blob.Off + int64(e.DataOff) + int64(s.Off), Len: uint8(s.Width), Enc: repCLEncCompressed, Sp: repCLSpRow,
+				Set: repCLSetEmbType, Stream: repCLStE, Table: repCLTabEmb, Self: -1, Val: s.Val})
+		}
+	}
+	return out
+}
+
+// Port source: zeros3-z3/clrz3/compact.go
+func repCLcountCompactSlots(f *repCLFile, d []byte, es []repCLBlobEntry, marks []byte, bodies []repCLBodyInfo) (int, error) {
+	count := 0
+	add := func(n int) bool {
+		if n < 0 || n > (2<<20)-count {
+			return false
+		}
+		count += n
+		return true
+	}
+	for t, tb := range f.Tables {
+		for _, cd := range repCLschema[t] {
+			if cd.K != repCLKConst && !add(int(tb.Rows)) {
+				return 0, repCLlimit("slot metadata")
+			}
+		}
+	}
+	for _, bi := range bodies {
+		if bi.Opaque {
+			continue
+		}
+		if !add(len(bi.Body.Toks) + len(bi.Body.Clauses)) {
+			return 0, repCLlimit("IL metadata")
+		}
+		if bi.Body.LocalOff != 0 && !add(1) {
+			return 0, repCLlimit("IL metadata")
+		}
+	}
+	if f.HasBlob {
+		h := d[f.Blob.Off : f.Blob.Off+f.Blob.Size]
+		for i, e := range es {
+			if marks[i] == repCLBlobOpaque {
+				continue
+			}
+			sl, ok := repCLParseSig(marks[i], h[e.DataOff:e.DataOff+e.Len], false)
+			if ok && !add(len(sl)) {
+				return 0, repCLlimit("signature metadata")
+			}
+		}
+	}
+	return count, nil
+}
+
 // Port source: zeros3-z3/clrz3/context_at.go
 // newCtxAt owns only bounded metadata heaps and compact identity state.
 func repCLnewCtxAt(f *repCLFile, s *repCLclrSource, k0 int) (*repCLCtx, error) {
@@ -51818,6 +51898,11 @@ func repCLDecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]b
 					run[k] = 1
 				}
 				val = int64(run[k])
+				cd := repCLschema[s.Table][s.Col]
+				end := uint64(f.Rows(cd.T)) + 1
+				if uint64(run[k]) > end || v > end-uint64(run[k]) {
+					return nil, repCLbad("child list count overflow")
+				}
 				run[k] += uint32(v)
 			case repCLLNestedA:
 				prevA += repCLunzz(v)
@@ -51912,6 +51997,30 @@ func repCLDecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]b
 		return nil, err
 	}
 
+	// Preallocate the bounded IL slot vector once rather than growing multiple
+	// overlapping backing arrays during independent production proof.
+	ilCount := 0
+	for _, bi := range bodies {
+		if bi.Opaque {
+			continue
+		}
+		n := len(bi.Body.Toks) + len(bi.Body.Clauses)
+		if bi.Body.LocalOff != 0 {
+			n++
+		}
+		if n > (2<<20)-ilCount {
+			return nil, repCLlimit("IL slot metadata")
+		}
+		ilCount += n
+	}
+	// Apply the same aggregate slot budget as creation before signature-slot
+	// allocation. Per-signature bounds alone do not bound the combined heap.
+	capacity, err := repCLcountCompactSlots(f, buf, c.Blobs, c.Marks, bodies)
+	if err != nil {
+		return nil, err
+	}
+	blobSlots := repCLcompactBlobSlots(f, buf, c.Blobs, c.Marks, make([]repCLSlot, 0, capacity-slotCount-ilCount))
+
 	// ---- reference stages -----------------------------------------------------------------
 	pos := [repCLNumStreams][]byte{}
 	copy(pos[:], in[:])
@@ -51947,7 +52056,7 @@ func repCLDecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]b
 			}
 		}
 	}
-	if err := take(repCLBlobSlots(f, buf, c.Blobs, c.Marks), true, func(*repCLSlot) bool { return true }); err != nil {
+	if err := take(blobSlots, true, func(*repCLSlot) bool { return true }); err != nil {
 		return nil, err
 	}
 	c.SigReady()
@@ -51972,22 +52081,6 @@ func repCLDecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]b
 	}
 	if err := take(slots, true, stream(repCLStR)); err != nil {
 		return nil, err
-	}
-	// Preallocate the bounded IL slot vector once rather than growing multiple
-	// overlapping backing arrays during independent production proof.
-	ilCount := 0
-	for _, bi := range bodies {
-		if bi.Opaque {
-			continue
-		}
-		n := len(bi.Body.Toks) + len(bi.Body.Clauses)
-		if bi.Body.LocalOff != 0 {
-			n++
-		}
-		if n > (2<<20)-ilCount {
-			return nil, repCLlimit("IL slot metadata")
-		}
-		ilCount += n
 	}
 	ilSlots, err := repCLcompactILSlotsAt(bodySource, bodies, make([]repCLSlot, 0, ilCount))
 	if err != nil {
@@ -54893,31 +54986,6 @@ type repCLBlobEntry struct {
 }
 
 // Port source: zeros3-z3/clrz3/slots.go
-// BlobSlots lists the type references embedded in the blobs marked as signatures. marks is
-// indexed like entries; the blob heap is read from d.
-func repCLBlobSlots(f *repCLFile, d []byte, es []repCLBlobEntry, marks []byte) []repCLSlot {
-	var out []repCLSlot
-	if !f.HasBlob {
-		return nil
-	}
-	h := d[f.Blob.Off : f.Blob.Off+f.Blob.Size]
-	for i, e := range es {
-		if marks[i] == repCLBlobOpaque {
-			continue
-		}
-		sl, ok := repCLParseSig(marks[i], h[e.DataOff:e.DataOff+e.Len], false)
-		if !ok {
-			continue
-		}
-		for _, s := range sl {
-			out = append(out, repCLSlot{Off: f.Blob.Off + int64(e.DataOff) + int64(s.Off), Len: uint8(s.Width), Enc: repCLEncCompressed, Sp: repCLSpRow,
-				Set: repCLSetEmbType, Stream: repCLStE, Table: repCLTabEmb, Self: -1, Val: s.Val})
-		}
-	}
-	return out
-}
-
-// Port source: zeros3-z3/clrz3/slots.go
 // BodyInfo is one method body with its owner and encoding state.
 type repCLBodyInfo struct {
 	Row    uint32 // MethodDef row
@@ -55652,11 +55720,11 @@ func repMCUnitCutAt(r io.ReaderAt, secs []repIXSec, t int) ([]int, error) {
 					n = len(scratch)
 				}
 				got, err := r.ReadAt(scratch[:n], int64(off))
-				if got != n {
-					return nil, io.ErrUnexpectedEOF
-				}
 				if err != nil && err != io.EOF {
 					return nil, err
+				}
+				if got != n {
+					return nil, io.ErrUnexpectedEOF
 				}
 				n = len(repManagedLabChunkScaled(scratch[:n], t/4, t, 4*t)[0])
 				off += n

@@ -76,11 +76,11 @@ func (v *WindowView) ReadAt(b []byte, off int64) (int, error) {
 		}
 		dst := b[n : n+int(take)]
 		got, err := v.r.ReadAt(dst, file)
-		if got != len(dst) {
-			return n + got, io.ErrUnexpectedEOF
-		}
 		if err != nil && err != io.EOF {
 			return n + got, err
+		}
+		if got != len(dst) {
+			return n + got, io.ErrUnexpectedEOF
 		}
 		j := sort.Search(len(v.patches), func(j int) bool { return v.patches[j].Off+int64(v.patches[j].Len) > file })
 		for ; j < len(v.patches) && v.patches[j].Off < file+take; j++ {
@@ -116,11 +116,11 @@ func FNVRange(r io.ReaderAt, start, end int64, scratch []byte) (uint64, error) {
 		}
 		b := scratch[:n]
 		got, err := r.ReadAt(b, start)
-		if got != len(b) {
-			return 0, io.ErrUnexpectedEOF
-		}
 		if err != nil && err != io.EOF {
 			return 0, err
+		}
+		if got != len(b) {
+			return 0, io.ErrUnexpectedEOF
 		}
 		h = FNV64(h, b)
 		start += n
