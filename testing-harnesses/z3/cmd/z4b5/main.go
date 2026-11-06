@@ -33,6 +33,10 @@ func main() {
 		cmdCoderBench(os.Args[2:])
 	case "sparse":
 		cmdSparse(os.Args[2:])
+	case "b1":
+		cmdB1(os.Args[2:])
+	case "matrix":
+		cmdMatrix(os.Args[2:])
 	case "family":
 		cmdFamily(os.Args[2:])
 	case "cdc":
