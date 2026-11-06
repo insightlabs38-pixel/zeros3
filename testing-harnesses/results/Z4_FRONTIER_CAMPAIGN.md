@@ -14,7 +14,7 @@ Hourly automation remains disabled; no new autonomous routine was created.
 | B1 | SIMILARITY_LAYER_READY_FOR_PROTOTYPE; generic similarity delta CAS research | #96 merged |
 | B2 | REP_AUTHORITY_VIABLE_FOR_SELECTED_KINDS; floor-10 prototype | #97 draft, unmerged, DRAFT_ONLY |
 | B3 | CROSS_FORMAT_CAS_NICHE; typed semantic components, tensor/Git-tar-OCI/columnar lanes | research-only branch `z4/cross-format-semantic-cas` |
-| B4 | graph normalization/reversible synthesis | not started |
+| B4 | GRAPH_NORMALIZATION_PARTIAL; exact graph identity + reversible VM + synthesis; LLVM/PDB win, DEX/Wasm do not | #99 (research-only) |
 | B5 | Model delta 2.0 | not started |
 | B6 | consumer-ranked hard codecs | not started |
 | B7 | causal planner under new economics | not started |
@@ -58,3 +58,11 @@ only; production source/authority unchanged. B1 does not supersede remaining #80
 research. Read amplification, numeric discovery and index lifecycle remain debts.
 B2 authority prototype is the recommended next allocation, DRAFT_ONLY; not started.
 The hourly routine remains disabled. Stop after B1; B2–B8 require new allocation.
+
+B4 qualified research: [graph normalization report](Z4_B4_GRAPH_NORMALIZATION.md), verdict
+`GRAPH_NORMALIZATION_PARTIAL`. Exact SCC-aware graph identities, a bounded reversible transform VM and
+cost-driven synthesis beat CDC and B1 on LLVM bitcode (SQLite 6 releases: 0.51x CDC, 0.68x B1) and Portable
+PDB (Newtonsoft 5 releases: 0.41x CDC, 0.66x B1) with fresh-process byte-exact replay (26/26 artifacts);
+bespoke DEX remains better (0.49 vs 0.70 of CDC), Wasm is a negative control. Research only; production
+source, B2 authority and the capability floor are unchanged. Open: module-skeleton ID normalization,
+DWARF/ELF adapters, sequence-point line op, piece-indexed range reads. Stop after B4; B5 not started.
