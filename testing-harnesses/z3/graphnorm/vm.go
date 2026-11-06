@@ -1,6 +1,7 @@
 package graphnorm
 
 import (
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -31,6 +32,9 @@ const (
 	OpPatch   = 0x1A // backOffset(uvarint from end), n, bytes
 	OpZero    = 0x1B // n
 	OpAlign   = 0x1C // alignment (bytes), fill byte
+	OpDerive  = 0x1F // kind(0 adler32 LE,1 crc32 LE,2 sha1,3 sha256,4 adler32 BE,5 crc32 BE), patchOff, fromOff: patch checksum of out[fromOff:] at patchOff
+	OpStream  = 0x1D // blobIndex, off: position the column-stream cursor
+	OpTable   = 0x1E // nrows, ncols, (width, predictor)*: expand column-major varint streams to fixed-width rows
 	OpEnter   = 0x02 // blockID, width
 	OpEnd     = 0x03
 	OpDefAbb  = 0x04 // nops, (flags|enc, value/width)*
@@ -125,6 +129,8 @@ type Machine struct {
 	mark   int
 	ops    int
 	topAbb uint64 // abbrev width at top level (2)
+	sblob  []byte
+	spos   int
 }
 
 type extEnt struct {
@@ -523,6 +529,67 @@ func (m *Machine) exec(r *opReader, prog []byte) error {
 					return errors.New("vm: out limit")
 				}
 			}
+		case OpDerive:
+			kind := r.byte()
+			patch, from := r.uv(), r.uv()
+			if r.err != nil {
+				break
+			}
+			if err := m.bytesOK(); err != nil {
+				return err
+			}
+			if from > uint64(len(m.W.b)) {
+				return errors.New("vm: derive range")
+			}
+			var sum []byte
+			data := m.W.b[from:]
+			switch kind {
+			case 0, 4: // adler32: little-endian (DEX) / big-endian (zlib)
+				var b [4]byte
+				if kind == 0 {
+					binary.LittleEndian.PutUint32(b[:], adler32.Checksum(data))
+				} else {
+					binary.BigEndian.PutUint32(b[:], adler32.Checksum(data))
+				}
+				sum = b[:]
+			case 1, 5: // crc32 little-endian / big-endian
+				var b [4]byte
+				if kind == 1 {
+					binary.LittleEndian.PutUint32(b[:], crc32.ChecksumIEEE(data))
+				} else {
+					binary.BigEndian.PutUint32(b[:], crc32.ChecksumIEEE(data))
+				}
+				sum = b[:]
+			case 2:
+				h := sha1.Sum(data)
+				sum = h[:]
+			case 3:
+				h := sha256.Sum256(data)
+				sum = h[:]
+			default:
+				return errors.New("vm: derive kind")
+			}
+			if patch > uint64(len(m.W.b)) || uint64(len(sum)) > uint64(len(m.W.b))-patch {
+				return errors.New("vm: derive patch range")
+			}
+			copy(m.W.b[patch:], sum)
+		case OpStream:
+			bi, off := r.uv(), r.uv()
+			if r.err != nil {
+				break
+			}
+			if bi >= uint64(len(m.Blobs)) || off > uint64(len(m.Blobs[bi])) {
+				return errors.New("vm: stream position")
+			}
+			m.sblob, m.spos = m.Blobs[bi], int(off)
+		case OpTable:
+			nrows, ncols := r.uv(), r.uv()
+			if r.err != nil {
+				break
+			}
+			if err := m.table(r, nrows, ncols); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("vm: unknown op 0x%02x", op)
 		}
@@ -759,4 +826,70 @@ func appendLEB(b []byte, v uint64, signed bool, minBytes int) []byte {
 		}
 		return append(b, pad)
 	}
+}
+
+// Column predictors for OpTable.
+const (
+	PredRaw   = 0 // stored value is the field
+	PredDelta = 1 // stored value is zigzag(field - previous field in the column)
+)
+
+func unzig(v uint64) int64 { return int64(v>>1) ^ -int64(v&1) }
+func Zig(d int64) uint64   { return uint64(d<<1) ^ uint64(d>>63) }
+
+func (m *Machine) table(r *opReader, nrows, ncols uint64) error {
+	if ncols == 0 || ncols > 32 || nrows > MaxOut/ncols {
+		return errors.New("vm: table shape")
+	}
+	type col struct{ w, pred int }
+	cols := make([]col, ncols)
+	rowW := 0
+	for i := range cols {
+		w, p := int(r.byte()), int(r.byte())
+		if w < 1 || w > 8 || p > PredDelta {
+			return errors.New("vm: table column")
+		}
+		cols[i] = col{w, p}
+		rowW += w
+	}
+	if r.err != nil {
+		return r.err
+	}
+	if uint64(len(m.W.b))+nrows*uint64(rowW) > MaxOut {
+		return errors.New("vm: out limit")
+	}
+	if err := m.bytesOK(); err != nil {
+		return err
+	}
+	if nrows*ncols > uint64(len(m.sblob)-m.spos) {
+		return errors.New("vm: column stream too short")
+	}
+	vals := make([][]uint64, ncols)
+	for c := range vals {
+		vals[c] = make([]uint64, nrows)
+		var prev uint64
+		for i := uint64(0); i < nrows; i++ {
+			v, n := binary.Uvarint(m.sblob[m.spos:])
+			if n <= 0 {
+				return errors.New("vm: column stream varint")
+			}
+			m.spos += n
+			if cols[c].pred == PredDelta {
+				v = prev + uint64(unzig(v))
+				prev = v
+			}
+			if cols[c].w < 8 && v>>(8*uint(cols[c].w)) != 0 {
+				return errors.New("vm: column value overflows width")
+			}
+			vals[c][i] = v
+		}
+	}
+	var tmp [8]byte
+	for i := uint64(0); i < nrows; i++ {
+		for c := range cols {
+			binary.LittleEndian.PutUint64(tmp[:], vals[c][i])
+			m.W.b = append(m.W.b, tmp[:cols[c].w]...)
+		}
+	}
+	return nil
 }

@@ -56,3 +56,6 @@ func (c *CAS) Chunked(data []byte, min, tgt, max int) (inc int64) {
 
 // Whole stores one blob with one reference (a function template, a small table).
 func (c *CAS) Whole(b []byte) int64 { return c.Put(b) + c.Ref(1) }
+
+// packedLenOf is the pack-compressor size of b (column predictor selection criterion).
+func packedLenOf(b []byte) int64 { return lab.PackedLen(b) }

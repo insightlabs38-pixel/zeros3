@@ -23,6 +23,12 @@ func main() {
 	switch os.Args[1] {
 	case "llvm":
 		cmdLLVM(os.Args[2:])
+	case "pdb":
+		cmdPDB(os.Args[2:])
+	case "dex":
+		cmdDEX(os.Args[2:])
+	case "clr":
+		cmdCLR(os.Args[2:])
 	case "llvm-store":
 		cmdStore(os.Args[2], graphnorm.PolicyAll, os.Args[3:])
 	case "llvm-replay":
