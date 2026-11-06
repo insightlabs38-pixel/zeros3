@@ -60,6 +60,7 @@ type LLVM struct {
 	Graph    *Graph
 	Ident    *Idents
 	nVals    int
+	mdBase   int
 	info     map[uint64][]Abbrev
 }
 
@@ -495,7 +496,84 @@ func (L *LLVM) buildGraph() {
 	fill(0, d.val, len(L.Vals))
 	fill(1, d.ty, len(L.Types))
 	fill(2, d.lst, len(L.Lists))
+	L.mdBase = d.md
 	fill(3, d.md, len(L.MDs))
+	L.disambiguateMD()
+}
+
+// disambiguateMD gives structurally identical distinct metadata nodes (every loop id is
+// `distinct !{self, ...}`) a context identity: the first function that references the node and
+// the node's ordinal among that function's duplicate references. This is the referrer-side
+// refinement the in-edge-aware identity engine performs generically; here the referrers are
+// function bodies, which are not nodes of the module graph.
+func (L *LLVM) disambiguateMD() {
+	keys := L.Keys[3]
+	cnt := map[Key]int{}
+	for _, k := range keys {
+		cnt[k]++
+	}
+	isDup := func(i int) bool { return cnt[keys[i]] > 1 || L.Ident.Ambig[L.mdBase+i] != AmbigNone }
+	any := false
+	for i := range keys {
+		if isDup(i) {
+			any = true
+			break
+		}
+	}
+	if !any {
+		return
+	}
+	type use struct {
+		fn  string
+		ord int
+	}
+	first := map[int]use{}
+	for _, f := range L.Funcs {
+		name := L.Vals[f.val].name
+		if name == "" {
+			continue
+		}
+		ord := 0
+		for _, it := range f.blk.Items {
+			if it.Kind != ItemBlock || it.Blk.ID != blkMetaAtt {
+				continue
+			}
+			for _, ai := range it.Blk.Items {
+				if ai.Kind != ItemRec || ai.Rec.Code != 11 {
+					continue
+				}
+				ops := ai.Rec.Ops
+				if len(ops)%2 == 1 {
+					ops = ops[1:]
+				}
+				for k := 1; k < len(ops); k += 2 {
+					md := int(min(ops[k], 1<<30))
+					if md < len(keys) && isDup(md) {
+						if _, ok := first[md]; !ok {
+							first[md] = use{name, ord}
+							ord++
+						}
+					}
+				}
+			}
+		}
+	}
+	for md, u := range first {
+		h := hash2([]byte("mdctx"), keys[md][:], []byte(u.fn), u32(uint32(u.ord)))
+		copy(keys[md][:], h[:KeyLen])
+	}
+	L.Dup[3] = map[Key]bool{}
+	seen := map[Key]int{}
+	for i, k := range keys {
+		seen[k]++
+		if seen[k] > 1 {
+			L.Dup[3][k] = true
+		}
+		// nodes that remain ambiguous and were not given a context stay unusable
+		if _, ok := first[i]; !ok && isDup(i) {
+			L.Dup[3][k] = true
+		}
+	}
 }
 
 func (L *LLVM) valNode(v lval, d gdom, tyE func(uint16, uint64) Edge, valE func(uint16, uint64) Edge) Node {

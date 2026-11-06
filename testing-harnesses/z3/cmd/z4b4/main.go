@@ -29,6 +29,10 @@ func main() {
 		cmdDEX(os.Args[2:])
 	case "clr":
 		cmdCLR(os.Args[2:])
+	case "policy":
+		n := 0
+		fmt.Sscan(os.Args[2], &n)
+		cmdPolicy(n, os.Args[3:])
 	case "llvm-store":
 		cmdStore(os.Args[2], graphnorm.PolicyAll, os.Args[3:])
 	case "llvm-replay":

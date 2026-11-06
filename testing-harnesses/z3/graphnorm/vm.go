@@ -131,6 +131,14 @@ type Machine struct {
 	topAbb uint64 // abbrev width at top level (2)
 	sblob  []byte
 	spos   int
+	Limit  int // maximum output bytes (0 = MaxOut)
+}
+
+func (m *Machine) limit() int {
+	if m.Limit > 0 && m.Limit < MaxOut {
+		return m.Limit
+	}
+	return MaxOut
 }
 
 type extEnt struct {
@@ -273,7 +281,7 @@ func (m *Machine) Exec(prog []byte) error {
 func (m *Machine) exec(r *opReader, prog []byte) error {
 	for r.pos < len(prog) && r.err == nil {
 		m.ops++
-		if m.ops > MaxOps || len(m.W.b) > MaxOut {
+		if m.ops > MaxOps || len(m.W.b) > m.limit() {
 			return errors.New("vm: work limit")
 		}
 		op := r.byte()
@@ -514,7 +522,7 @@ func (m *Machine) exec(r *opReader, prog []byte) error {
 			copy(m.W.b[uint64(len(m.W.b))-back:], b)
 		case OpZero:
 			n := r.uv()
-			if n > MaxOut || len(m.W.b)+int(n) > MaxOut {
+			if n > uint64(m.limit()) || len(m.W.b)+int(n) > m.limit() {
 				return errors.New("vm: zero run too large")
 			}
 			m.W.b = append(m.W.b, make([]byte, n)...)
@@ -525,7 +533,7 @@ func (m *Machine) exec(r *opReader, prog []byte) error {
 			}
 			for uint64(len(m.W.b))%a != 0 {
 				m.W.b = append(m.W.b, fill)
-				if len(m.W.b) > MaxOut {
+				if len(m.W.b) > m.limit() {
 					return errors.New("vm: out limit")
 				}
 			}
@@ -615,7 +623,7 @@ func (m *Machine) copyRange(bi, off, n uint64) error {
 	if err := m.bytesOK(); err != nil {
 		return err
 	}
-	if uint64(len(m.W.b))+n > MaxOut {
+	if uint64(len(m.W.b))+n > uint64(m.limit()) {
 		return errors.New("vm: out limit")
 	}
 	m.W.b = append(m.W.b, b[off:off+n]...)
@@ -838,7 +846,7 @@ func unzig(v uint64) int64 { return int64(v>>1) ^ -int64(v&1) }
 func Zig(d int64) uint64   { return uint64(d<<1) ^ uint64(d>>63) }
 
 func (m *Machine) table(r *opReader, nrows, ncols uint64) error {
-	if ncols == 0 || ncols > 32 || nrows > MaxOut/ncols {
+	if ncols == 0 || ncols > 32 || nrows > uint64(m.limit())/ncols {
 		return errors.New("vm: table shape")
 	}
 	type col struct{ w, pred int }
@@ -855,7 +863,7 @@ func (m *Machine) table(r *opReader, nrows, ncols uint64) error {
 	if r.err != nil {
 		return r.err
 	}
-	if uint64(len(m.W.b))+nrows*uint64(rowW) > MaxOut {
+	if uint64(len(m.W.b))+nrows*uint64(rowW) > uint64(m.limit()) {
 		return errors.New("vm: out limit")
 	}
 	if err := m.bytesOK(); err != nil {

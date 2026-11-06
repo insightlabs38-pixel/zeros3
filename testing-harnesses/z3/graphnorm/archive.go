@@ -20,8 +20,9 @@ type Archive struct {
 	Total    int64
 	Objects  int
 	Deltas   int
-	DeltaSav int64  // bytes saved relative to direct storage
-	Probe    int    // latest versions tried as bases
+	DeltaSav int64 // bytes saved relative to direct storage
+	Probe    int   // latest versions tried as bases
+	recipes  map[[32]byte]bool
 	Dir      string // when set, every stored object is persisted as a simdelta wire
 }
 
@@ -86,3 +87,15 @@ func (a *Archive) Put(key string, data []byte) int64 {
 }
 
 func (a *Archive) Ref(n int) int64 { a.Total += int64(n) * RefCost; return int64(n) * RefCost }
+
+// SeenRecipe reports whether an identical recipe was already stored, and records it.
+func (a *Archive) SeenRecipe(sum [32]byte) bool {
+	if a.recipes == nil {
+		a.recipes = map[[32]byte]bool{}
+	}
+	if a.recipes[sum] {
+		return true
+	}
+	a.recipes[sum] = true
+	return false
+}

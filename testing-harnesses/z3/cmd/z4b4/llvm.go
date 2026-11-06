@@ -58,9 +58,13 @@ func archiveCost(a *graphnorm.Archive, e *graphnorm.LLVMEncoding, deltaRecipe bo
 		}
 	}
 	bd.idtab = a.Put("idtab", e.IDTab)
-	if deltaRecipe {
+	rsum := sha256.Sum256(recipe)
+	switch {
+	case a.SeenRecipe(rsum):
+		bd.refs = a.Ref(1) // identical artifact: only a root reference
+	case deltaRecipe:
 		bd.refs = a.Put("recipe", recipe) + a.Ref(1)
-	} else {
+	default:
 		bd.refs = a.Ref(steps+1) + a.Ref(1)
 	}
 	inc = bd.fn + bd.skel + bd.idtab + bd.refs

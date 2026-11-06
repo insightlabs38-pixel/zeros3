@@ -1,6 +1,7 @@
 package graphnorm
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -66,6 +67,9 @@ func ParseLLVMRecipe(b []byte) (*LLVMRecipe, error) {
 		rc.Steps = append(rc.Steps, s)
 	}
 	if r.err != nil || r.pos != len(b) || rc.Size > MaxOut {
+		return nil, errRecipe
+	}
+	if !bytes.Equal(rc.Marshal(), b) { // reject non-minimal varints: one canonical wire form
 		return nil, errRecipe
 	}
 	return rc, nil

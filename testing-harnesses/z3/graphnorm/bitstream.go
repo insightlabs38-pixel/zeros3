@@ -347,7 +347,7 @@ func (r *bitReader) record(id uint64, abbrevs []Abbrev) *Record {
 				return nil
 			}
 			if elt.Enc == encFixed && elt.Width == 0 || elt.Enc == encVBR && elt.Width == 0 {
-				if n > 1<<24 {
+				if n > 1<<16 {
 					r.fail("zero-width array")
 					return nil
 				}
