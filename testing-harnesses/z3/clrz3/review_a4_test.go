@@ -102,3 +102,22 @@ func TestA4AggregateSignatureSlots(t *testing.T) {
 		t.Fatalf("aggregate signature limit: %v", e)
 	}
 }
+
+func TestA4SharedReferenceDenseBodyCountsOnce(t *testing.T) {
+	const n = 1 << 16
+	tokens := make([]TokSlot, n)
+	for i := range tokens {
+		tokens[i] = TokSlot{Off: 100 + int64(i)*5, Val: 0x06000001, Class: TkMethod}
+	}
+	bodies := make([]BodyInfo, 64)
+	for i := range bodies {
+		bodies[i] = BodyInfo{Row: uint32(i + 1), Body: Body{Off: 100, Toks: tokens}}
+	}
+	got, e := compactILSlotsAt(nil, bodies, make([]Slot, 0, n))
+	if e != nil || len(got) != n {
+		t.Fatalf("one physical body referenced by 64 methods: slots=%d error=%v", len(got), e)
+	}
+	if count, e := countCompactSlotsAt(&File{}, nil, nil, nil, nil, bodies); e != nil || count != n {
+		t.Fatalf("shared reference budget: %d %v", count, e)
+	}
+}

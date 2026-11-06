@@ -51427,17 +51427,12 @@ func repCLcountCompactSlots(f *repCLFile, d []byte, es []repCLBlobEntry, marks [
 			}
 		}
 	}
-	for _, bi := range bodies {
-		if bi.Opaque {
-			continue
-		}
-		if !add(len(bi.Body.Toks) + len(bi.Body.Clauses)) {
-			return 0, repCLlimit("IL metadata")
-		}
-		if bi.Body.LocalOff != 0 && !add(1) {
-			return 0, repCLlimit("IL metadata")
-		}
+	bodySlots, err := repCLcompactBodySlotCount(bodies, (2<<20)-count)
+	if err != nil {
+		return 0, err
 	}
+	count += bodySlots
+
 	if f.HasBlob {
 		h := d[f.Blob.Off : f.Blob.Off+f.Blob.Size]
 		for i, e := range es {
@@ -51449,6 +51444,37 @@ func repCLcountCompactSlots(f *repCLFile, d []byte, es []repCLBlobEntry, marks [
 				return 0, repCLlimit("signature metadata")
 			}
 		}
+	}
+	return count, nil
+}
+
+// Port source: zeros3-z3/clrz3/compact.go
+// Count actual physical IL slots, not the number of methods sharing a body.
+// This is the same first-occurrence rule used by both compact emit passes.
+func repCLcompactBodySlotCount(bodies []repCLBodyInfo, budget int) (int, error) {
+	if budget < 0 {
+		return 0, repCLlimit("IL slot metadata")
+	}
+	seen := make(map[int64]bool)
+	count := 0
+	for _, bi := range bodies {
+		if bi.Opaque || seen[bi.Body.Off] {
+			continue
+		}
+		seen[bi.Body.Off] = true
+		n := len(bi.Body.Toks)
+		if bi.Body.LocalOff != 0 {
+			n++
+		}
+		for _, cl := range bi.Body.Clauses {
+			if cl.TokOff != 0 {
+				n++
+			}
+		}
+		if n > budget-count {
+			return 0, repCLlimit("IL slot metadata")
+		}
+		count += n
 	}
 	return count, nil
 }
@@ -52011,19 +52037,9 @@ func repCLDecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]b
 
 	// Preallocate the bounded IL slot vector once rather than growing multiple
 	// overlapping backing arrays during independent production proof.
-	ilCount := 0
-	for _, bi := range bodies {
-		if bi.Opaque {
-			continue
-		}
-		n := len(bi.Body.Toks) + len(bi.Body.Clauses)
-		if bi.Body.LocalOff != 0 {
-			n++
-		}
-		if n > (2<<20)-ilCount {
-			return nil, repCLlimit("IL slot metadata")
-		}
-		ilCount += n
+	ilCount, err := repCLcompactBodySlotCount(bodies, 2<<20)
+	if err != nil {
+		return nil, err
 	}
 	// Apply the same aggregate slot budget as creation before signature-slot
 	// allocation. Per-signature bounds alone do not bound the combined heap.
@@ -52926,19 +52942,9 @@ func repCLcompactTableSlotsAt(f *repCLFile, d *repCLclrSource, dst []repCLSlot) 
 
 // Port source: zeros3-z3/clrz3/helpers_at.go
 func repCLcompactILSlotsAt(d *repCLclrSource, bodies []repCLBodyInfo, dst []repCLSlot) ([]repCLSlot, error) {
-	count := 0
-	for _, bi := range bodies {
-		if bi.Opaque {
-			continue
-		}
-		n := len(bi.Body.Toks) + len(bi.Body.Clauses)
-		if bi.Body.LocalOff != 0 {
-			n++
-		}
-		if n > (2<<20)-count {
-			return nil, repCLlimit("IL slot metadata")
-		}
-		count += n
+	count, err := repCLcompactBodySlotCount(bodies, 2<<20)
+	if err != nil {
+		return nil, err
 	}
 	if cap(dst)-len(dst) < count {
 		return nil, repCLlimit("slot capacity")
@@ -53070,17 +53076,12 @@ func repCLcountCompactSlotsAt(f *repCLFile, d *repCLclrSource, blob []byte, es [
 			}
 		}
 	}
-	for _, bi := range bodies {
-		if bi.Opaque {
-			continue
-		}
-		if !add(len(bi.Body.Toks) + len(bi.Body.Clauses)) {
-			return 0, repCLlimit("IL metadata")
-		}
-		if bi.Body.LocalOff != 0 && !add(1) {
-			return 0, repCLlimit("IL metadata")
-		}
+	bodySlots, err := repCLcompactBodySlotCount(bodies, (2<<20)-count)
+	if err != nil {
+		return 0, err
 	}
+	count += bodySlots
+
 	if f.HasBlob {
 		h := blob
 		for i, e := range es {

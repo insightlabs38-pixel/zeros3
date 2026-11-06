@@ -424,19 +424,9 @@ func DecodeFrom(meta []byte, count int, get func(int) ([]byte, error)) ([]byte, 
 
 	// Preallocate the bounded IL slot vector once rather than growing multiple
 	// overlapping backing arrays during independent production proof.
-	ilCount := 0
-	for _, bi := range bodies {
-		if bi.Opaque {
-			continue
-		}
-		n := len(bi.Body.Toks) + len(bi.Body.Clauses)
-		if bi.Body.LocalOff != 0 {
-			n++
-		}
-		if n > (2<<20)-ilCount {
-			return nil, limit("IL slot metadata")
-		}
-		ilCount += n
+	ilCount, err := compactBodySlotCount(bodies, 2<<20)
+	if err != nil {
+		return nil, err
 	}
 	// Apply the same aggregate slot budget as creation before signature-slot
 	// allocation. Per-signature bounds alone do not bound the combined heap.

@@ -208,19 +208,9 @@ func compactTableSlotsAt(f *File, d *clrSource, dst []Slot) ([]Slot, error) {
 }
 
 func compactILSlotsAt(d *clrSource, bodies []BodyInfo, dst []Slot) ([]Slot, error) {
-	count := 0
-	for _, bi := range bodies {
-		if bi.Opaque {
-			continue
-		}
-		n := len(bi.Body.Toks) + len(bi.Body.Clauses)
-		if bi.Body.LocalOff != 0 {
-			n++
-		}
-		if n > (2<<20)-count {
-			return nil, limit("IL slot metadata")
-		}
-		count += n
+	count, err := compactBodySlotCount(bodies, 2<<20)
+	if err != nil {
+		return nil, err
 	}
 	if cap(dst)-len(dst) < count {
 		return nil, limit("slot capacity")
@@ -349,17 +339,12 @@ func countCompactSlotsAt(f *File, d *clrSource, blob []byte, es []BlobEntry, mar
 			}
 		}
 	}
-	for _, bi := range bodies {
-		if bi.Opaque {
-			continue
-		}
-		if !add(len(bi.Body.Toks) + len(bi.Body.Clauses)) {
-			return 0, limit("IL metadata")
-		}
-		if bi.Body.LocalOff != 0 && !add(1) {
-			return 0, limit("IL metadata")
-		}
+	bodySlots, err := compactBodySlotCount(bodies, (2<<20)-count)
+	if err != nil {
+		return 0, err
 	}
+	count += bodySlots
+
 	if f.HasBlob {
 		h := blob
 		for i, e := range es {
