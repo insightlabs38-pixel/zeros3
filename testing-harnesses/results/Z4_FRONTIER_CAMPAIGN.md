@@ -14,7 +14,7 @@ Hourly automation remains disabled; no new autonomous routine was created.
 | B1 | SIMILARITY_LAYER_READY_FOR_PROTOTYPE; generic similarity delta CAS research | #96 merged |
 | B2 | REP_AUTHORITY_VIABLE_FOR_SELECTED_KINDS; floor-10 prototype | #97 draft, unmerged, DRAFT_ONLY |
 | B3 | CROSS_FORMAT_CAS_NICHE; typed semantic components, tensor/Git-tar-OCI/columnar lanes | research-only branch `z4/cross-format-semantic-cas` |
-| B4 | GRAPH_NORMALIZATION_PARTIAL; exact graph identity + reversible VM + synthesis; LLVM/PDB win, DEX/Wasm do not | research-only branch `z4/graph-normalization` |
+| B4 | GRAPH_NORMALIZATION_PARTIAL; exact graph identity + reversible VM + synthesis; LLVM/PDB win, DEX/Wasm do not | #99 (research-only) |
 | B5 | Model delta 2.0 | not started |
 | B6 | consumer-ranked hard codecs | not started |
 | B7 | causal planner under new economics | not started |
