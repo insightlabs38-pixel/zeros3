@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"strconv"
 
 	"zeros3-z3/mdelta2"
 	"zeros3-z3/modelz3"
@@ -15,7 +16,7 @@ import (
 // with its strongest bounded policy (per revision best of CDC, structural planes, anchor, previous,
 // hybrid; hops <= 3) over ordered files. Returns per-state incremental charged bytes (pack rule +
 // recipe) and exactness.
-func model8Chain(paths []string) (inc []int64, total int64, exact bool, err error) {
+func model8Chain(paths []string, fixed bool) (inc []int64, total int64, exact bool, err error) {
 	type f struct {
 		src *modelz3.Src
 		lay *modelz3.Layout
@@ -84,18 +85,20 @@ func model8Chain(paths []string) (inc []int64, total int64, exact bool, err erro
 		}
 		all := make([]byte, x.sz)
 		x.fh.ReadAt(all, 0)
-		cb, e := kinds.CDC(all)
-		if e != nil {
-			return nil, 0, false, e
+		if !fixed { // the greedy policy may pick CDC at first sight, which locks later deltas out (Z3-28)
+			cb, e := kinds.CDC(all)
+			if e != nil {
+				return nil, 0, false, e
+			}
+			add(cb, rawBases(x))
 		}
-		add(cb, rawBases(x))
-		big := x.sz > 300<<20 // the lab encoder holds whole tensors: limit candidates on large files
-		if !big {
+		big := x.sz > m8BigBytes() // the lab encoder holds whole tensors: limit candidates on large files
+		if !big || fixed {
 			b1, t1 := enc(modelz3.Policy{Planes: true}, nil)
 			add(b1, t1)
 		}
 		if i > 0 {
-			if !big {
+			if !big && !fixed {
 				b2, t2 := enc(hops(2), []map[string]*modelz3.BaseTensor{anchor})
 				add(b2, t2)
 				b3, t3 := enc(hops(3), []map[string]*modelz3.BaseTensor{prev})
@@ -141,4 +144,13 @@ func model8Chain(paths []string) (inc []int64, total int64, exact bool, err erro
 		}
 	}
 	return inc, total, exact, nil
+}
+
+// m8BigBytes: files above this size get only the CDC and anchor|previous candidates (memory).
+// Z4B5_M8BIG_MB overrides the 600 MB default used by the Z3-29 study.
+func m8BigBytes() int64 {
+	if v, err := strconv.Atoi(os.Getenv("Z4B5_M8BIG_MB")); err == nil && v > 0 {
+		return int64(v) << 20
+	}
+	return 600 << 20
 }

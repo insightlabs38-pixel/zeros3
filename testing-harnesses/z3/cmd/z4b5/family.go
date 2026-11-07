@@ -357,9 +357,16 @@ func cmdCDCBase(args []string) {
 }
 
 func cmdModel8(args []string) {
-	inc, tot, exact, err := model8Chain(args)
+	// two bounded Z3-29 policies: greedy per revision (CDC allowed) and the fixed structural anchor|previous policy
+	incG, totG, exG, err := model8Chain(args, false)
 	must(err)
-	b, _ := json.Marshal(map[string]any{"model8_inc": inc, "model8_total": tot, "exact": exact})
+	incF, totF, exF, err := model8Chain(args, true)
+	must(err)
+	best, inc := totG, incG
+	if totF < best {
+		best, inc = totF, incF
+	}
+	b, _ := json.Marshal(map[string]any{"model8_inc": inc, "model8_total": best, "greedy_total": totG, "fixed_total": totF, "exact": exG && exF})
 	fmt.Println(string(b))
 }
 

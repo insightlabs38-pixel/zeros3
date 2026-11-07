@@ -44,6 +44,10 @@ res['quant_text'] = {os.path.basename(p): open(p).read() for p in glob.glob(os.p
 res['quant_verify'] = {os.path.basename(p): load(p) for p in glob.glob(os.path.join(qd, '*.verify.json'))}
 for p in glob.glob(os.path.join(qd, 'cdc_*.jsonl')):
     res['quant']['cdc_' + os.path.basename(p)[4:-6]] = [json.loads(l) for l in open(p)]
+res['perf'] = {os.path.basename(p): open(p).read() for p in glob.glob(os.path.join(out, 'perf', '*')) if os.path.isfile(p) and os.path.getsize(p) < 300000}
+res['crossdtype'] = load(os.path.join(out, 'crossdtype', 'f32_to_f16.json'))
+res['text'] = {os.path.basename(p): open(p).read() for p in glob.glob(os.path.join(ev, '*.txt')) if os.path.getsize(p) < 100000}
+res['status'] = open(os.path.join(out, 'status.txt')).read()
 with gzip.open(evidence, 'wt') as g: json.dump(res, g)
 print('%-11s %9s %9s %9s %9s %9s %9s %9s %9s %9s %9s' % ('family', 'raw MB', 'CDCprod', 'CDCfine', 'Model8', 'B1gen', 'B1pxr', 'direct', 'first', 'prev', 'best'))
 for fam, f in res['families'].items():
