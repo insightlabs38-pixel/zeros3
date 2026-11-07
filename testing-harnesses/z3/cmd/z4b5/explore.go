@@ -67,8 +67,8 @@ func cmdExplore(args []string) {
 				r := tres{Name: tt.Name, DType: cd.String(), Elems: int(tt.Elems()), Raw: len(tdata), Proxy: map[string]float64{}}
 				zero := make([]byte, len(tdata))
 				dsz := 1 << 60
-				for _, c := range []int{mdelta2.CFlate, mdelta2.CNRC} {
-					if s, _ := mdelta2.EncodeResidual(c, cd, mdelta2.RXor, tdata, zero); len(s) < dsz {
+				for _, c := range []int{mdelta2.CFlate, mdelta2.CNRC, mdelta2.CFPE} {
+					if s, _ := mdelta2.EncodeResidual(c, cd, mdelta2.RXor, tdata, zero); s != nil && len(s) < dsz {
 						dsz = len(s)
 					}
 				}

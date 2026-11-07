@@ -17,10 +17,11 @@ const (
 	CRice    = 3 // adaptive Golomb-Rice
 	CBPRLE   = 4 // bitplane run-length
 	CPXR     = 5 // existing adaptive range coder (only for XOR residuals)
-	numCoder = 6
+	CFPE     = 6 // exponent rANS + raw sign/mantissa bits (first-sight coder for raw float words)
+	numCoder = 7
 )
 
-var CoderNames = [...]string{"raw", "flate-planes", "nrc-rans", "rice", "bitplane-rle", "pxr"}
+var CoderNames = [...]string{"raw", "flate-planes", "nrc-rans", "rice", "bitplane-rle", "pxr", "fpe"}
 
 func inflateLimit(b []byte, limit int) ([]byte, error) {
 	out, err := io.ReadAll(io.LimitReader(flate.NewReader(bytes.NewReader(b)), int64(limit)+1))
@@ -45,6 +46,15 @@ func EncodeResidual(c int, d DType, res Residual, resid, pred []byte) ([]byte, b
 		return riceEncode(w, resid), true
 	case CBPRLE:
 		return bprleEncode(w, resid), true
+	case CFPE:
+		if res != RXor {
+			return nil, false
+		}
+		tgt := make([]byte, len(resid))
+		for i := range tgt {
+			tgt[i] = resid[i] ^ pred[i]
+		}
+		return fpeEncode(d, tgt)
 	case CPXR:
 		if res != RXor {
 			return nil, false
@@ -84,6 +94,18 @@ func DecodeResidual(c int, d DType, res Residual, payload, pred []byte, n int) (
 		return riceDecode(w, payload, n)
 	case CBPRLE:
 		return bprleDecode(w, payload, n)
+	case CFPE:
+		if res != RXor {
+			return nil, ErrCorrupt
+		}
+		t, err := fpeDecode(d, payload, n)
+		if err != nil {
+			return nil, err
+		}
+		for i := range t {
+			t[i] ^= pred[i]
+		}
+		return t, nil
 	case CPXR:
 		if res != RXor {
 			return nil, ErrCorrupt

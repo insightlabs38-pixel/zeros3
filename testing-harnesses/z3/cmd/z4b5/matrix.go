@@ -63,6 +63,9 @@ func cmdMatrix(args []string) {
 						}
 					}
 					dc := float64(mdelta2.PlaneDeflate(td, cd.Width()))
+					if f, ok := mdelta2.EncodeResidual(mdelta2.CFPE, cd, mdelta2.RXor, td, make([]byte, len(td))); ok && float64(len(f)) < dc {
+						dc = float64(len(f))
+					}
 					costs := make([]float64, n)
 					for i := 0; i < n; i++ {
 						if i == j {

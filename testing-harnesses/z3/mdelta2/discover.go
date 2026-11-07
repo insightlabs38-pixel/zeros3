@@ -245,7 +245,11 @@ func DirectCost(t *PT) float64 {
 	if !t.DT.IsFloat() {
 		return float64(len(t.Data))
 	}
-	return float64(PlaneDeflate(t.Data, t.DT.Width()))
+	best := float64(PlaneDeflate(t.Data, t.DT.Width()))
+	if f, ok := EncodeResidual(CFPE, t.DT, RXor, t.Data, make([]byte, len(t.Data))); ok && float64(len(f)) < best {
+		best = float64(len(f))
+	}
+	return best
 }
 
 var _ = binary.LittleEndian

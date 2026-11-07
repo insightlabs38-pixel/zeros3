@@ -156,7 +156,7 @@ type planner struct {
 
 func (o *EncOpts) coders() []int {
 	if len(o.Coders) == 0 {
-		return []int{CFlate, CNRC}
+		return []int{CFlate, CNRC, CFPE}
 	}
 	return o.Coders
 }

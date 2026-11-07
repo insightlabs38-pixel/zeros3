@@ -111,6 +111,9 @@ func cmdSparse(args []string) {
 		res := mdelta2.MakeResidual(mdelta2.RKey, w, tn, pred)
 		zero := make([]byte, len(tn))
 		direct := len(mdelta2.Deflate(planesJoin(tn, w)))
+		if f, ok := mdelta2.EncodeResidual(mdelta2.CFPE, cd, mdelta2.RXor, tn, make([]byte, len(tn))); ok && len(f) < direct {
+			direct = len(f)
+		}
 		if direct > len(tn) {
 			direct = len(tn)
 		}

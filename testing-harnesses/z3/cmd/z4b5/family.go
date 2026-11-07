@@ -109,7 +109,7 @@ func cmdFamily(args []string) {
 	lin := fl.Bool("lin", false, "multi-base linear")
 	seg := fl.Bool("seg", false, "per-segment base choice")
 	rangeSeg := fl.Int("rangeseg", 0, "force independent segments of this many elements (range-read bound)")
-	coders := fl.String("coders", "1,2", "coder ids")
+	coders := fl.String("coders", "1,2,6", "coder ids")
 	parents := fl.String("parents", "", "explicit parents per state, e.g. '-;0;0,1;1' (oracle/re-rooting)")
 	jsonOut := fl.String("json", "", "write JSON result here")
 	disc := fl.Bool("disc", false, "content-based candidate discovery (ignore names): best same-size tensor per base by numerical sketch")
