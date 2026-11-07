@@ -26,6 +26,7 @@ type Config struct {
 	HotAmp64Cap                       float64 // hot-tier constraint on 64 KiB range amplification (0 = off)
 	MemFactor                         float64 // modelled analysis RSS as multiple of object size
 	SkipValidate                      bool    // oracle enumeration only: skip per-event store audit
+	ValidateEvery                     int     // audit the store every N events (0/1 = every event); always audited at Finish
 	Prices                            PriceBook
 }
 
@@ -76,12 +77,14 @@ type Ledger struct {
 	MaxDepth, MaxFanout, MaxBlast                    int
 	Objects, RepObjects, Sidecars                    int
 	StatePeakBytes                                   int
+	HotViolations                                    int // reads of hot objects served from a form above the 64 KiB amplification cap
 	ByteDays                                         float64
 	ReadsByTier                                      map[string]int64
 	WallNS                                           int64
 	Decisions                                        []DecisionRec
 	Digest                                           string
 	PerLineageBytes                                  map[string]int64
+	FirstScheme                                      map[string]string // lineage -> scheme of its first stored object
 	FinalSchemes                                     map[string]int
 }
 
@@ -481,7 +484,7 @@ type Runner struct {
 func NewRunner(w *World, p Policy, cfg Config) *Runner {
 	r := &runner{w: w, cfg: cfg, pol: p, st: NewStore(cfg.Overhead, cfg.Capacity), objLin: map[int]int{}, objStage: map[int]int{},
 		arrived: map[int]bool{}, stageObj: map[[2]int]int{}, analyzed: map[[2]string]bool{},
-		led: &Ledger{Policy: p.Name(), World: w.Name, PerLineageBytes: map[string]int64{}, FinalSchemes: map[string]int{}, ReadsByTier: map[string]int64{}}}
+		led: &Ledger{Policy: p.Name(), World: w.Name, PerLineageBytes: map[string]int64{}, FirstScheme: map[string]string{}, FinalSchemes: map[string]int{}, ReadsByTier: map[string]int64{}}}
 	r.h = sha256.New()
 	return &Runner{r: r, env: &Env{r}, lastSeq: -1, lastDay: -1}
 }
@@ -525,7 +528,7 @@ func (x *Runner) Step(ev Event) error {
 	default:
 		return fmt.Errorf("planner2: unknown event kind %d", ev.Kind)
 	}
-	if !r.cfg.SkipValidate {
+	if !r.cfg.SkipValidate && (r.cfg.ValidateEvery <= 1 || ev.Seq%r.cfg.ValidateEvery == 0) {
 		if err := r.st.Validate(); err != nil {
 			return err
 		}
@@ -540,6 +543,11 @@ func (x *Runner) Step(ev Event) error {
 func (x *Runner) Store() *Store { return x.r.st }
 
 func (x *Runner) Finish() *Ledger {
+	if !x.r.cfg.SkipValidate {
+		if err := x.r.st.Validate(); err != nil {
+			panic(err)
+		}
+	}
 	x.r.finish()
 	return x.r.led
 }
@@ -621,6 +629,9 @@ func (r *runner) arrive(env *Env, ev Event) error {
 		return err
 	}
 	r.led.Objects++
+	if st == 0 {
+		r.led.FirstScheme[l.Name()] = obj.Primary.Scheme
+	}
 	rec := DecisionRec{Seq: ev.Seq, Day: ev.Day, Obj: ev.Obj, Kind: "store", Scheme: scheme, Form: form, Marginal: marg, Reason: reason, Sidecar: d.Sidecar}
 	r.log(rec)
 	for _, a := range d.Defer {
@@ -740,6 +751,9 @@ func (r *runner) read(env *Env, ev Event) error {
 	logical := rd
 	if rd == 0 || rd > o.Size {
 		logical = o.Size
+	}
+	if o.Tier == "hot" && r.cfg.HotAmp64Cap > 0 && rd > 0 && amp > r.cfg.HotAmp64Cap && o.Primary.Scheme != CDC {
+		r.led.HotViolations++
 	}
 	served := int64(float64(logical) * amp)
 	if rd == 0 {
@@ -876,11 +890,17 @@ func (r *runner) finish() {
 		}
 	}
 	for li, l := range r.w.Lineages {
+		seen := map[CompID]bool{}
 		var n int64
 		for t := 0; t < l.Len(); t++ {
 			if id, ok := r.stageObj[[2]int{li, t}]; ok {
 				if o, ok := r.st.Obj(id); ok && o.Attached {
-					n += o.Primary.OwnBytes()
+					for _, c := range o.Primary.Comps {
+						if !seen[c.ID] {
+							seen[c.ID] = true
+							n += c.Bytes + r.st.Overhead
+						}
+					}
 				}
 			}
 		}
@@ -942,6 +962,30 @@ func (e *Env) sizeOf(acts []Action) int64 {
 	for _, a := range acts {
 		if o, ok := e.r.st.Obj(a.Obj); ok {
 			n += o.Size
+		}
+	}
+	return n
+}
+
+// ReleasableSet is the physical bytes freed if every object in ids were detached:
+// components whose references all come from the set.
+func (e *Env) ReleasableSet(ids []int) int64 {
+	in := map[int]bool{}
+	for _, id := range ids {
+		in[id] = true
+	}
+	cnt := map[CompID]int{}
+	for _, id := range ids {
+		if o, ok := e.r.st.Obj(id); ok && o.Attached {
+			for _, c := range o.Primary.Comps {
+				cnt[c.ID]++
+			}
+		}
+	}
+	var n int64
+	for id, k := range cnt {
+		if p := e.r.st.comp[id]; p != nil && p.refs == k {
+			n += p.bytes + e.r.st.Overhead
 		}
 	}
 	return n

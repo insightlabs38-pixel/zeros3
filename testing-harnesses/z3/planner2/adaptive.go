@@ -21,6 +21,7 @@ type AParams struct {
 	PUTAnalyzeMS                                           float64 // analyse on the PUT path only when the estimate is below this
 	ColdAge                                                int     // days before archival analysis of CDC objects
 	MaxMoves                                               int     // group local-search move budget
+	FixedCap                                               bool    // PremiumCap is part of the policy definition, not tuned
 	QueuePerTick                                           int
 	Margin                                                 float64 // required net benefit as a fraction of the object size
 }
@@ -76,10 +77,19 @@ type aState struct {
 	LastTick int                 `json:"lasttick"`
 }
 
+// PredRec records one prediction for post-hoc calibration (not persisted state).
+type PredRec struct {
+	Obj         int
+	Scheme      string
+	Rho, Q, Net float64
+	Admitted    bool
+}
+
 type Adaptive struct {
 	P     AParams
 	Prior Prior
 	S     aState
+	Trace []PredRec `json:"-"`
 }
 
 func NewAdaptive(p AParams, pr Prior) *Adaptive {
@@ -322,6 +332,7 @@ func (a *Adaptive) Arrive(env *Env, ar Arrival) Decision {
 		}
 		best.prem = prem
 		best.net = prem - g + readCost
+		a.Trace = append(a.Trace, PredRec{Obj: ar.Obj, Scheme: s.Name, Rho: rhoS, Q: q})
 		// investment cap: premium over CDC may not exceed PremiumCap of the standalone CDC size
 		if prem > a.P.PremiumCap*float64(stdC) {
 			best.net = math.Inf(1)
@@ -335,6 +346,11 @@ func (a *Adaptive) Arrive(env *Env, ar Arrival) Decision {
 	out.Scheme, out.Reason = CDC, "cdc"
 	if len(all) > 0 && all[0].net < -a.P.Margin*float64(ar.Size) {
 		out.Scheme, out.Form, out.Reason = all[0].scheme, all[0].form, fmt.Sprintf("ev %.0f", all[0].net)
+		for i := range a.Trace {
+			if a.Trace[i].Obj == ar.Obj && a.Trace[i].Scheme == out.Scheme {
+				a.Trace[i].Admitted, a.Trace[i].Net = true, all[0].net
+			}
+		}
 	}
 	// a rep that CDC cannot match but whose base is not stored: group bootstrap
 	if a.P.Group && out.Scheme == CDC && n > 0 {
@@ -514,17 +530,20 @@ func mustScheme(env *Env, id int) string {
 	return o.Scheme
 }
 
-// maintain queues archival analysis of cold CDC objects (bounded by QueuePerTick).
+// maintain queues archival analysis of cold CDC lineages. The decision is made per
+// lineage and priced: freed CDC bytes minus the expected representation bytes minus
+// the I/O and CPU of analysis and migration, all in stored-byte equivalents.
 func (a *Adaptive) maintain(env *Env, ev Event) []Action {
 	if !a.P.Defer && !a.P.Group {
 		return nil
 	}
-	type c struct {
-		id   int
-		prio float64
-		s    string
+	cfg := env.Config()
+	bv := cfg.Prices.ByteValue()
+	if bv <= 0 {
+		return nil
 	}
-	var cs []c
+	groups := map[string][]int{}
+	var order []string
 	for _, id := range env.Objects() {
 		o, _ := env.Obj(id)
 		if !o.Live || o.Scheme != CDC {
@@ -534,54 +553,76 @@ func (a *Adaptive) maintain(env *Env, ev Event) []Action {
 		if !cold || (a.P.Read && o.Tier == "hot") {
 			continue
 		}
-		caps, err := env.Caps(id)
+		k := a.S.ObjKey[id]
+		if _, ok := groups[k]; !ok {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], id)
+	}
+	type pick struct {
+		ids  []int
+		s    string
+		prio float64
+	}
+	var picks []pick
+	for _, k := range order {
+		ids := groups[k]
+		caps, err := env.Caps(ids[0])
 		if err != nil {
 			continue
 		}
-		sig := signature(caps)
-		cl := a.cls(sig)
+		cl := a.cls(signature(caps))
+		free := float64(env.ReleasableSet(ids))
 		for _, s := range caps {
-			if s.Name == CDC || !s.Ready || env.Analyzed(id, s.Name) {
+			if s.Name == CDC || !s.Ready {
 				continue
 			}
-			key := fmt.Sprintf("%d|%s", id, s.Name)
-			if a.S.Pending[key] > 0 {
+			pending := false
+			var size int64
+			var expRep, cpu float64
+			ratio := a.Prior.Ratio
+			if a.P.Class && cl.Ratio.N > 0 {
+				ratio = cl.Ratio.est(a.Prior.Ratio, a.P.K)
+			}
+			rho := a.rhoS(cl, a.S.Lin[k], s.Name, Probe{}, false)
+			if a.S.Lin[k] == nil {
+				rho = a.Prior.RhoRep
+			}
+			for i, id := range ids {
+				o, _ := env.Obj(id)
+				if a.S.Pending[fmt.Sprintf("%d|%s", id, s.Name)] > 0 {
+					pending = true
+				}
+				size += o.Size
+				own := float64(o.OwnBytes)
+				if i == 0 {
+					expRep += ratio * own
+				} else {
+					expRep += ratio * own * (1 - rho)
+				}
+				cpu += float64(o.Size) / (1 << 20) / math.Max(s.AnalysisMiBs, 0.1) * 2 / 3600 * cfg.Prices.CPUUSDCoreHour
+			}
+			if pending {
 				continue
 			}
-			lk := a.S.ObjKey[id]
-			ls := a.S.Lin[lk]
-			if ls == nil {
-				continue
+			io := (2*float64(size) + expRep) * cfg.Prices.MigrateIOUSDGB / 1e9
+			net := free - expRep - (io+cpu)/bv
+			if net > a.P.Margin*float64(size) && net > 0 {
+				picks = append(picks, pick{ids, s.Name, net / float64(size)})
 			}
-			q := a.Prior.Q
-			rhoC := a.Prior.RhoCDC
-			if a.P.Class {
-				rhoC = cl.RhoCDC.est(a.Prior.RhoCDC, a.P.K)
-			}
-			stdC := float64(o.Size) * 0.6
-			g := a.expectedNet(env, cl, ls, ls.N, q, rhoC, int64(stdC), a.Prior.Ratio, s, env.Config(), 1, math.Inf(1))
-			// archival value: an existing CDC object is replaced; frees its releasable bytes
-			free := float64(env.Releasable(id))
-			cs = append(cs, c{id, g + 0.0*free, s.Name})
 		}
 	}
-	sort.SliceStable(cs, func(i, j int) bool {
-		if cs[i].prio != cs[j].prio {
-			return cs[i].prio > cs[j].prio
-		}
-		return cs[i].id < cs[j].id
-	})
-	var acts []Action
+	sort.SliceStable(picks, func(i, j int) bool { return picks[i].prio > picks[j].prio })
 	limit := a.P.QueuePerTick
 	if limit <= 0 {
 		limit = 4
 	}
-	for i := 0; i < len(cs) && i < limit; i++ {
-		if cs[i].prio <= 0 {
-			break
+	var acts []Action
+	for i := 0; i < len(picks) && len(acts) < limit; i++ {
+		for _, id := range picks[i].ids {
+			a.S.Pending[fmt.Sprintf("%d|%s", id, picks[i].s)]++
+			acts = append(acts, Action{Kind: ActEnqueue, Obj: id, Scheme: picks[i].s, Priority: picks[i].prio, Reason: "archive"})
 		}
-		a.S.Pending[fmt.Sprintf("%d|%s", cs[i].id, cs[i].s)]++
-		acts = append(acts, Action{Kind: ActEnqueue, Obj: cs[i].id, Scheme: cs[i].s, Priority: cs[i].prio, Reason: "archive"})
 	}
 	return acts
 }

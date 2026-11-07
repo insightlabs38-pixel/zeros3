@@ -427,3 +427,26 @@ func FoldOf(folds map[string][]string, l Lineage) string {
 	}
 	return ""
 }
+
+// Truncate returns a view of the first n stages of a lineage (history-length sensitivity).
+func Truncate(l Lineage, n int) Lineage {
+	if n >= l.Len() {
+		return l
+	}
+	switch x := l.(type) {
+	case *SeriesLineage:
+		c := &SeriesLineage{H: x.H, hint: x.hint}
+		c.H.Stages = c.H.Stages[:n]
+		c.H.Schemes = append([]seriesScheme(nil), x.H.Schemes...)
+		for i := range c.H.Schemes {
+			c.H.Schemes[i].Inc = c.H.Schemes[i].Inc[:n]
+			c.H.Schemes[i].Std = c.H.Schemes[i].Std[:n]
+		}
+		return c
+	case *Z3Lineage:
+		c := &Z3Lineage{C: x.C, Corp: x.Corp, hint: x.hint}
+		c.C.Stages = c.C.Stages[:n]
+		return c
+	}
+	return l
+}

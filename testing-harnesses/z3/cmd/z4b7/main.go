@@ -13,7 +13,12 @@ import (
 var (
 	series   = flag.String("series", "../z4/b7/series.json", "captured Z4 series")
 	frontier = flag.String("frontier", "../testdata/q6-admission/frontier.json.gz", "Z3-36 frontier")
-	mode     = flag.String("mode", "explore", "explore")
+	mode     = flag.String("mode", "explore", "explore|eval|summarize")
+	protoP   = flag.String("protocol", "../z4/b7/protocol.json", "preregistered protocol")
+	out      = flag.String("out", "../z4/b7/rows.json.gz", "eval rows output / summarize input")
+	workers  = flag.Int("workers", 4, "parallel workers")
+	seedsN   = flag.Int("seeds", 8, "number of protocol seeds to use")
+	scenFlag = flag.String("scenarios", "", "comma list of scenario prefixes (default all)")
 	only     = flag.String("only", "", "lineage name substring")
 )
 
@@ -48,6 +53,12 @@ func main() {
 	switch *mode {
 	case "explore":
 		explore(lins)
+	case "eval":
+		evalAll(lins)
+	case "summarize":
+		summarize()
+	case "exp":
+		expAll(lins)
 	default:
 		die(fmt.Errorf("unknown mode"))
 	}
