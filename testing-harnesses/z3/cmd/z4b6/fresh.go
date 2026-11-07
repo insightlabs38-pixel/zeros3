@@ -52,7 +52,9 @@ func unpack(args []string) error {
 	if err != nil {
 		return err
 	}
-	get := func(id [32]byte) ([]byte, error) { return os.ReadFile(filepath.Join(dir, "c", hex.EncodeToString(id[:]))) }
+	get := func(id [32]byte) ([]byte, error) {
+		return os.ReadFile(filepath.Join(dir, "c", hex.EncodeToString(id[:])))
+	}
 	f, err := os.Create(out)
 	if err != nil {
 		return err

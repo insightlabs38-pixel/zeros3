@@ -16,8 +16,8 @@ const (
 
 // Chunker names a splitting policy.
 type Chunker struct {
-	Name           string
-	Min, Tgt, Max  int // zero Tgt = whole object
+	Name          string
+	Min, Tgt, Max int // zero Tgt = whole object
 }
 
 var (

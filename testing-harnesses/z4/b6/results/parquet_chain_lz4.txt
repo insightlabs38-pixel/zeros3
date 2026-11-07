@@ -1,0 +1,31 @@
+chain cdc done
+chain dpages done
+chain logical done
+
+pyarrow-chain chain, incremental cost per revision (packed)
+| revision | cdc | dpages | logical |
+|---|---:|---:|---:|
+| c0: base | 29.7M | 24.2M | 23.5M |
+| c1: append 8000 rows | 770.3K | 553.9K | 584.1K |
+| c2: update 200 sparse values | 3538.5K | 3237.7K | 1578.3K |
+| c3: retention: delete the first 3000 rows | 15.9M | 24.3M | 106.2K |
+| c4: append 8000 rows | 1149.1K | 870.0K | 584.0K |
+| c5: compaction rewrite, 100k row groups | 13.1M | 18.4M | 30.0K |
+| c6: update 400 sparse values | 3598.1K | 3268.9K | 2229.3K |
+| c7: append 8000 rows + metadata tag | 1285.1K | 1329.0K | 565.5K |
+| **total (cumulative retained)** | **68.9M** | **76.0M** | **29.0M** |
+
+pyarrow-chain chain, rolling cost per revision (packed)
+| revision | cdc | dpages | logical |
+|---|---:|---:|---:|
+| c0: base | 29.7M | 24.2M | 23.5M |
+| c1: append 8000 rows | 770.3K | 553.9K | 584.1K |
+| c2: update 200 sparse values | 3538.5K | 3237.7K | 1578.3K |
+| c3: retention: delete the first 3000 rows | 15.9M | 24.3M | 106.2K |
+| c4: append 8000 rows | 1149.1K | 870.0K | 584.0K |
+| c5: compaction rewrite, 100k row groups | 14.0M | 18.4M | 30.0K |
+| c6: update 400 sparse values | 3598.1K | 3268.9K | 2229.3K |
+| c7: append 8000 rows + metadata tag | 1285.1K | 1329.0K | 565.5K |
+| **total (live state only)** | **69.8M** | **76.0M** | **29.0M** |
+
+lock-in (cumulative retained): all CDC 68.9M | logical from first sight 29.0M | greedy per-file 29.0M (logical,logical,logical,logical,logical,logical,logical,logical) | hindsight 29.0M

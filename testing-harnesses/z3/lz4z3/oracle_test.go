@@ -45,3 +45,25 @@ func atoi(s string) int {
 	}
 	return n
 }
+
+// TestHCStress reproduces python-lz4 high-compression blocks (B6_LZ4HC = gen_hc_stress.py output).
+func TestHCStress(t *testing.T) {
+	dir := os.Getenv("B6_LZ4HC")
+	if dir == "" {
+		t.Skip("B6_LZ4HC not set")
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "hc*.lz4"))
+	for _, f := range files {
+		blk, _ := os.ReadFile(f)
+		plain, seqs, err := Decode(blk, -1, Limits{})
+		if err != nil {
+			t.Fatal(f, err)
+		}
+		lv := int(filepath.Base(f)[2] - '0')
+		got, ok := HCSeqs(plain, lv)
+		if !ok || commonPrefix(got, seqs) != len(seqs) || len(got) != len(seqs) {
+			t.Errorf("%s: level %d sequences differ", filepath.Base(f), lv)
+		}
+	}
+	t.Logf("%d HC blocks", len(files))
+}

@@ -1,6 +1,9 @@
 package lz4z3
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"sync"
+)
 
 // Predictor ids: deterministic reference encoders. They are re-implementations of the public
 // LZ4 fast algorithm (greedy, one-entry hash table, acceleration skip); they are verified
@@ -98,8 +101,13 @@ func fastSeqs(src []byte, accel int, u16, h4 bool, target []Seq) ([]Seq, bool) {
 	if n >= mfLimit+1 {
 		mflimitPlusOne := n - mfLimit + 1
 		matchlimit := n - lastLiterals
-		var t32 [1 << hashLog]uint32
-		var t16 [1 << (hashLog + 1)]uint16
+		sc := fastPool.Get().(*fastScratch)
+		defer fastPool.Put(sc)
+		sc.gen++
+		if sc.gen == 0 { // stamp wrapped: clear once
+			*sc = fastScratch{gen: 1}
+		}
+		gen := sc.gen
 		hashAt := func(p int) uint32 {
 			if h4 {
 				return (binary.LittleEndian.Uint32(src[p:]) * 2654435761) >> (32 - (hashLog + 1))
@@ -107,16 +115,20 @@ func fastSeqs(src []byte, accel int, u16, h4 bool, target []Seq) ([]Seq, bool) {
 			return hash5(binary.LittleEndian.Uint64(src[p:]), hashLog)
 		}
 		get := func(h uint32) int {
-			if u16 {
-				return int(t16[h])
+			if sc.stamp[h] != gen {
+				return 0
 			}
-			return int(t32[h])
+			if u16 {
+				return int(uint16(sc.pos[h]))
+			}
+			return int(sc.pos[h])
 		}
 		put := func(h uint32, p int) {
+			sc.stamp[h] = gen
 			if u16 {
-				t16[h] = uint16(p)
+				sc.pos[h] = uint32(uint16(p))
 			} else {
-				t32[h] = uint32(p)
+				sc.pos[h] = uint32(p)
 			}
 		}
 		ip := 0
@@ -189,3 +201,13 @@ func count(src []byte, p, m, limit int) int {
 	}
 	return c
 }
+
+// fastScratch holds the predictor hash table; entries are valid only when their stamp equals the
+// current generation, so a failed attempt costs no table clearing.
+type fastScratch struct {
+	pos   [1 << (hashLog + 1)]uint32
+	stamp [1 << (hashLog + 1)]uint32
+	gen   uint32
+}
+
+var fastPool = sync.Pool{New: func() any { return new(fastScratch) }}

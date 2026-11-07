@@ -1,6 +1,9 @@
 package lz4z3
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"sync"
+)
 
 // LZ4HC (hash-chain, levels 3..8) reference encoder re-implementation. Level 9 enables the
 // repeated-pattern shortcut of the reference; it is not modelled (see HCSeqs). Levels >= 10 use
@@ -23,7 +26,9 @@ func HCAttempts(level int) int {
 type hcState struct {
 	src      []byte
 	hash     [1 << hcHashLog]uint32
-	chain    [1 << 16]uint16
+	hstamp   [1 << hcHashLog]uint32 // generation of each hash slot: stale slots read as empty
+	chain    [1 << 16]uint16        // always written before it is read within one run
+	gen      uint32
 	next     uint32
 	attempts int
 	pa       bool // pattern analysis (levels with more than 128 attempts)
@@ -37,14 +42,21 @@ func (h *hcState) insert(ip int) {
 	target := uint32(ip) + hcStart
 	for idx := h.next; idx < target; idx++ {
 		hh := h.hashAt(int(idx - hcStart))
-		delta := idx - h.hash[hh]
+		delta := idx - h.head(hh)
 		if delta > maxOff {
 			delta = maxOff
 		}
 		h.chain[uint16(idx)] = uint16(delta)
-		h.hash[hh] = idx
+		h.hash[hh], h.hstamp[hh] = idx, h.gen
 	}
 	h.next = target
+}
+
+func (h *hcState) head(hh uint32) uint32 {
+	if h.hstamp[hh] != h.gen {
+		return 0
+	}
+	return h.hash[hh]
 }
 
 // wider mirrors LZ4HC_InsertAndGetWiderMatch (no dictionary, no chain swap, no pattern analysis).
@@ -60,7 +72,7 @@ func (h *hcState) wider(ip, lowLimit, highLimit, longest int) (best, matchPos, s
 	pattern := binary.LittleEndian.Uint32(src[ip:])
 	repeat, srcPatLen := repUntested, 0
 	h.insert(ip)
-	mi := h.hash[h.hashAt(ip)]
+	mi := h.head(h.hashAt(ip))
 	matchPos, startPos = -1, -1
 	for mi >= lowest && attempts > 0 {
 		attempts--
@@ -140,10 +152,13 @@ func hcSeqs(src []byte, level int, target []Seq) (seqs []Seq, aborted, ok bool) 
 	n := len(src)
 	anchor := 0
 	if n >= mfLimit+1 {
-		h := &hcState{src: src, next: hcStart, attempts: att, pa: att > hcMaxAttempt}
-		for i := range h.chain {
-			h.chain[i] = 0xFFFF
+		h := hcPool.Get().(*hcState)
+		defer hcPool.Put(h)
+		h.gen++
+		if h.gen == 0 {
+			*h = hcState{gen: 1}
 		}
+		h.src, h.next, h.attempts, h.pa = src, hcStart, att, att > hcMaxAttempt
 		mflimit := n - mfLimit
 		matchlimit := n - lastLiterals
 		ip := 0
@@ -296,3 +311,5 @@ func reverseCountPattern(src []byte, p, lowest int, pattern uint32) int {
 	}
 	return start - p
 }
+
+var hcPool = sync.Pool{New: func() any { return new(hcState) }}

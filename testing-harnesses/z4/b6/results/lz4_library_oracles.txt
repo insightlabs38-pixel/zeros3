@@ -1,0 +1,3 @@
+    oracle_test.go:38: 48 fixtures, 0 mismatches
+    oracle_test.go:68: 480 HC blocks
+ok  	zeros3-z3/lz4z3	0.308s

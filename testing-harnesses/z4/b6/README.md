@@ -23,6 +23,7 @@ z3sst econ -corpus CORPUS -prod rocksdb -reps cdc,blocks,ukv -creps cdc,blocks,u
 z3sst rt DIR; z3parquet rt -fam pyarrow-chain; z3parquet chain -fam pyarrow-chain              # in-process round trips
 z4b6 sqfs ROOT FAMILY...; z4b6 lz4frames FILES; z4b6 lz4blocks DIR...                          # SquashFS economics, frames, producer matrix
 verify_fresh.sh z4b6 sst|parquet|sqfs SCRATCH FILES...                                         # fresh-process pack/unpack + sha256sum
-go test ./lz4z3 ./sqfsz3 ./sstz3 ./parquetz3 (B6_LZ4FX=DIR adds the 48 python-lz4 library fixtures)
+go test ./lz4z3 ./sqfsz3 ./sstz3 ./parquetz3   (B6_LZ4FX=DIR adds the 48 python-lz4 fixtures, B6_LZ4HC=DIR the 480 `gen_hc_stress.py` HC blocks)
+run_evidence.sh BIN SST PQ SQ WIMX W2 FRAMES BLOCKS SCRATCH   (regenerates results/; RESUME=1 skips the long SST round-trips)
 ```
 `results/` holds the compact raw outputs the report quotes.
