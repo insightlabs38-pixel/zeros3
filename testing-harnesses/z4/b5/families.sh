@@ -13,11 +13,11 @@ sm_q5i=$G/gguf-smollm2__qf-inst-Q5_K_M.gguf; sm_q5b=$G/gguf-smollm2__qf-base-Q5_
 sm_q4i=$G/gguf-smollm2__qf-inst-Q4_K_M.gguf; sm_q4b=$G/gguf-smollm2__qf-base-Q4_K_M.gguf
 sm_q6i=$G/gguf-smollm2__qf-inst-Q6_K.gguf; sm_q6b=$G/gguf-smollm2__qf-base-Q6_K.gguf
 fam_smolq="$D/smollm2/base.safetensors $D/smollm2/instruct.safetensors $sm_q8i $sm_q8b $sm_bwi $sm_q5i $sm_q5b $sm_q4i $sm_q4b $sm_q6i $sm_q6b"
-par_smolq="-;-;1;0,2;1,2;1,2;0,3;1,5;0,6;1,7;0,8"
+par_smolq="-;0;1;0,2;1,2;1,2;0,3,5;1,2,5;0,3,7;1,2,7;0,3,9"
 fam_smolqonly="$sm_q8i $sm_q8b $sm_q5i $sm_q5b $sm_q4i $sm_q4b $sm_q6i $sm_q6b"
-par_smolqonly="-;0;0;2,1;2;4,3;4;6,5"
+par_smolqonly="-;0;0;1,2;0,2;1,3,4;0,4;1,5,6"
 fam_qwenq="$D/qwen05/base.safetensors $D/qwen05/instruct.safetensors $G/gguf-qwen05__qf-base-Q4_K_M.gguf $G/gguf-qwen05__qf-inst-Q4_K_M.gguf"
-par_qwenq="-;-;0;1,2"
+par_qwenq="-;0;0;1,2"
 fam_qwenqonly="$G/gguf-qwen05__qf-inst-Q4_K_M.gguf $G/gguf-qwen05__qf-base-Q4_K_M.gguf"
 par_qwenqonly="-;0"
 fam_qwenabl="$D/qwen05/instruct.safetensors $D/qwen05/abliterated.safetensors"

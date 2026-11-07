@@ -89,7 +89,7 @@ func model8Chain(paths []string) (inc []int64, total int64, exact bool, err erro
 			return nil, 0, false, e
 		}
 		add(cb, rawBases(x))
-		big := x.sz > 600<<20 // the lab encoder holds whole tensors: limit candidates on large files
+		big := x.sz > 300<<20 // the lab encoder holds whole tensors: limit candidates on large files
 		if !big {
 			b1, t1 := enc(modelz3.Policy{Planes: true}, nil)
 			add(b1, t1)

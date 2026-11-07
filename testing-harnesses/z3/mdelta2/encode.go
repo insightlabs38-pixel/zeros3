@@ -26,6 +26,9 @@ type EncOpts struct {
 	Workers  int
 	// Hint supplies the converter's tensor reordering for float->quantized reproduction.
 	Hint func(name string) PermHint
+	// RangeSeg forces tensors above this many elements into independent segments of that size
+	// (bounded range-read amplification at a small coding cost). 0 = off.
+	RangeSeg int
 }
 
 type BaseSrc struct {
@@ -458,7 +461,17 @@ func (pl *planner) planTensor0(ti int, picks [][]Pick, t0 time.Time) (TRec, TSta
 	whole, wholeCost := pl.planSeg(cd, tshape, data, ok, getBase, 0, nElems)
 	best := []Seg{whole}
 	bestCost := wholeCost
-	if pl.o.Segments && len(ok) > 1 && nElems >= 2*pl.o.SegElems {
+	if pl.o.RangeSeg > 0 && nElems > pl.o.RangeSeg {
+		var segs []Seg
+		cost := 0
+		for _, r := range segLayout(t, nElems, pl.o.RangeSeg) {
+			w := cd.Width()
+			s, c := pl.planSeg(cd, segShape(tshape, int64(r[1]-r[0])), data[r[0]*w:r[1]*w], ok, getBase, r[0], r[1])
+			segs = append(segs, s)
+			cost += c + 3
+		}
+		best, bestCost = segs, cost
+	} else if pl.o.Segments && len(ok) > 1 && nElems >= 2*pl.o.SegElems {
 		var segs []Seg
 		cost := 0
 		for _, r := range segLayout(t, nElems, pl.o.SegElems) {
@@ -512,6 +525,19 @@ func (r ModelResolver) Tensor(base SHA, idx int) (DType, []byte, error) {
 	}
 	d, err := m.Read(idx)
 	return m.Tensors[idx].DType, d, err
+}
+
+func (r ModelResolver) Window(base SHA, idx int, lo, hi int64) (DType, []byte, error) {
+	m, ok := r[base]
+	if !ok {
+		return 0, nil, ErrMissing
+	}
+	if idx < 0 || idx >= len(m.Tensors) || lo < 0 || hi < lo || hi > m.Tensors[idx].Size() {
+		return 0, nil, ErrFormat
+	}
+	b := make([]byte, hi-lo)
+	_, err := m.ReadAt(b, m.Tensors[idx].Begin+lo)
+	return m.Tensors[idx].DType, b, err
 }
 
 func (r ModelResolver) Gaps(base SHA) ([]byte, error) {

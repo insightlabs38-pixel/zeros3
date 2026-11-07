@@ -101,7 +101,7 @@ func allCands(bases []BaseSrc, m *Model, lin bool) func(int) [][]Pick {
 	}
 }
 
-var fullOpts = EncOpts{Narrow: true, Affine: true, Low: []int{1, 4}, Lin: true, Segments: true, SegElems: 512, Coders: []int{CFlate, CNRC, CRice, CBPRLE, CPXR}, Workers: 2}
+var fullOpts = EncOpts{Narrow: true, Affine: true, Low: []int{1, 4}, Lin: true, Segments: true, SegElems: 512, RangeSeg: 512, Coders: []int{CFlate, CNRC, CRice, CBPRLE, CPXR}, Workers: 2}
 
 // encodeChain stores 3 states (root, +edit, +edit) into dir and returns their paths, containers.
 func encodeChain(t *testing.T) (dir string, ms []*Model, conts [][]byte) {
@@ -457,6 +457,10 @@ type stubBase struct {
 
 func (s stubRV) Tensor(b SHA, i int) (DType, []byte, error) { x := s[b]; return x.dt, x.data[i], nil }
 func (s stubRV) Gaps(SHA) ([]byte, error)                   { return nil, ErrMissing }
+func (s stubRV) Window(b SHA, i int, lo, hi int64) (DType, []byte, error) {
+	x := s[b]
+	return x.dt, x.data[i][lo:hi], nil
+}
 
 // TestForcedPredictorCoderMatrix drives every predictor family x residual mode x dtype x coder through
 // serialization (Marshal/Parse) and the real segment decoder, with special values in the target.

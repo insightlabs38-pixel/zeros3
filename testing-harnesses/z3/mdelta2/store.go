@@ -31,6 +31,7 @@ type StoreResolver struct {
 	cacheSz  int64
 	stack    []SHA
 	Reads    int64 // container bytes read from the store
+	Decoded  int64 // base tensor bytes reconstructed on behalf of dependents
 	Loads    int
 }
 
@@ -90,6 +91,7 @@ func (r *StoreResolver) Tensor(base SHA, idx int) (DType, []byte, error) {
 	if err != nil {
 		return 0, nil, err
 	}
+	r.Decoded += int64(len(d))
 	if r.cacheSz+int64(len(d)) <= r.CacheCap {
 		r.cache[k] = d
 		r.cacheSz += int64(len(d))
@@ -130,4 +132,37 @@ func (r *StoreResolver) Gaps(base SHA) ([]byte, error) {
 	err = c.resolveGaps(r)
 	r.stack = r.stack[:len(r.stack)-1]
 	return c.Gaps, err
+}
+
+// LoadContainer parses a stored container (exported for range-read measurement).
+func (r *StoreResolver) LoadContainer(id SHA) (*Container, error) {
+	c, err := r.load(id)
+	r.stack = []SHA{id}
+	return c, err
+}
+
+func (r *StoreResolver) Window(base SHA, idx int, lo, hi int64) (DType, []byte, error) {
+	for _, s := range r.stack {
+		if s == base {
+			return 0, nil, ErrCycle
+		}
+	}
+	if len(r.stack) >= r.MaxDepth {
+		return 0, nil, ErrDepth
+	}
+	c, err := r.load(base)
+	if err != nil {
+		return 0, nil, err
+	}
+	if idx < 0 || idx >= len(c.T) {
+		return 0, nil, ErrFormat
+	}
+	if hi == lo {
+		return c.T[idx].DType, nil, nil
+	}
+	r.stack = append(r.stack, base)
+	d, err := c.DecodeWindow(idx, lo, hi, r)
+	r.stack = r.stack[:len(r.stack)-1]
+	r.Decoded += int64(len(d))
+	return c.T[idx].DType, d, err
 }

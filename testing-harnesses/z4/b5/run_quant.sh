@@ -4,7 +4,7 @@ set -euo pipefail
 BIN=$1; OUT=$2; HERE=$(cd "$(dirname "$0")" && pwd); source "$HERE/families.sh"; mkdir -p "$OUT/quant"
 run() { # name files parents heads hfmap
   n=$1; files=$2; par=$3; heads=$4; hf=$5; S="$OUT/quant/store_$n"
-  [ -s "$OUT/quant/$n.verify.json" ] && return 0
+  [ -s "$OUT/quant/$n.verify.json" ] && [ "${FORCE:-0}" = 0 ] && return 0
   rm -rf "$S" "$OUT/quant/replay_$n"
   $BIN family -policy explicit -parents "$par" -heads $heads $hf -store "$S" -json "$OUT/quant/$n.json" $files > "$OUT/quant/$n.log"
   (cd / && $BIN replay -store "$S" -out "$OUT/quant/replay_$n") > "$OUT/quant/$n.replay.jsonl"

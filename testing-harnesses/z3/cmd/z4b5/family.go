@@ -108,6 +108,7 @@ func cmdFamily(args []string) {
 	low := fl.String("low", "", "low-rank ladder, e.g. 1,4,16")
 	lin := fl.Bool("lin", false, "multi-base linear")
 	seg := fl.Bool("seg", false, "per-segment base choice")
+	rangeSeg := fl.Int("rangeseg", 0, "force independent segments of this many elements (range-read bound)")
 	coders := fl.String("coders", "1,2", "coder ids")
 	parents := fl.String("parents", "", "explicit parents per state, e.g. '-;0;0,1;1' (oracle/re-rooting)")
 	jsonOut := fl.String("json", "", "write JSON result here")
@@ -115,7 +116,7 @@ func cmdFamily(args []string) {
 	hfmap := fl.Bool("hfmap", false, "map GGUF tensor names to Safetensors names for float->quantized reproduction")
 	heads := fl.String("heads", "0,0", "llama q/k permutation heads (n_head,n_kv); 0 = none")
 	fl.Parse(args)
-	opt := mdelta2.EncOpts{Narrow: *narrow, Affine: *aff, Low: parseInts(*low), Lin: *lin, Segments: *seg, Coders: parseInts(*coders)}
+	opt := mdelta2.EncOpts{Narrow: *narrow, Affine: *aff, Low: parseInts(*low), Lin: *lin, Segments: *seg, Coders: parseInts(*coders), RangeSeg: *rangeSeg}
 	hv := parseInts(*heads)
 	opt.Hint = func(name string) mdelta2.PermHint {
 		switch {
@@ -335,6 +336,7 @@ func cmdFamily(args []string) {
 	mb, _ := json.MarshalIndent(manifest, "", " ")
 	os.WriteFile(filepath.Join(*storeDir, "manifest.json"), mb, 0o644)
 	fmt.Printf("TOTAL policy=%s charged=%d\n", *policy, total)
+	printRSS("family")
 	if *jsonOut != "" {
 		jb, _ := json.MarshalIndent(map[string]any{"policy": *policy, "opts": os.Args, "states": outs, "total": total}, "", " ")
 		os.WriteFile(*jsonOut, jb, 0o644)
@@ -386,4 +388,5 @@ func cmdReplay(args []string) {
 		must(os.WriteFile(filepath.Join(*out, e.SHA), b, 0o644))
 		fmt.Printf("{\"sha256\":%q,\"bytes\":%d,\"ms\":%d,\"store_read\":%d,\"loads\":%d}\n", e.SHA, len(b), time.Since(t0).Milliseconds(), r.Reads, r.Loads)
 	}
+	printRSS("replay")
 }

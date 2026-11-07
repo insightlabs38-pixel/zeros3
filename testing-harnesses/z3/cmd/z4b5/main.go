@@ -37,6 +37,8 @@ func main() {
 		cmdB1(os.Args[2:])
 	case "matrix":
 		cmdMatrix(os.Args[2:])
+	case "ranges":
+		cmdRanges(os.Args[2:])
 	case "family":
 		cmdFamily(os.Args[2:])
 	case "cdc":

@@ -377,6 +377,8 @@ func ParseContainer(b []byte) (*Container, error) {
 type Resolver interface {
 	Tensor(base SHA, idx int) (DType, []byte, error)
 	Gaps(base SHA) ([]byte, error)
+	// Window returns bytes [lo,hi) of base tensor idx, decoding only what overlaps (range reads).
+	Window(base SHA, idx int, lo, hi int64) (DType, []byte, error)
 }
 
 // resolveGaps materializes delta-coded header bytes from the named base's gaps.
@@ -423,8 +425,20 @@ func (c *Container) DecodeTensor(i int, rv Resolver) ([]byte, error) {
 	return out, nil
 }
 
-func (c *Container) baseView(s *Seg, k int, elems int64, tdt DType, rv Resolver) (Base, error) {
+func (c *Container) baseView(s *Seg, k int, elems int64, tdt DType, rv Resolver, win bool) (Base, error) {
 	r := s.Refs[k]
+	if win { // range mode: no whole-tensor tag check (identity is established by full decodes)
+		dt, _, err := rv.Window(c.Bases[r.Slot].SHA, int(r.TIdx), 0, 0)
+		if err != nil {
+			return Base{}, err
+		}
+		bw := int64(dt.Width())
+		_, data, err := rv.Window(c.Bases[r.Slot].SHA, int(r.TIdx), r.Off*bw, (r.Off+elems)*bw)
+		if err != nil {
+			return Base{}, err
+		}
+		return Base{DT: dt, Data: data}, nil
+	}
 	dt, data, err := rv.Tensor(c.Bases[r.Slot].SHA, int(r.TIdx))
 	if err != nil {
 		return Base{}, err
@@ -443,6 +457,10 @@ func (c *Container) baseView(s *Seg, k int, elems int64, tdt DType, rv Resolver)
 }
 
 func (c *Container) decodeSeg(t *TRec, s *Seg, rv Resolver) ([]byte, error) {
+	return c.decodeSegW(t, s, rv, false)
+}
+
+func (c *Container) decodeSegW(t *TRec, s *Seg, rv Resolver, win bool) ([]byte, error) {
 	cd := t.DType
 	if s.Narrow != 0 {
 		cd = s.Narrow
@@ -457,7 +475,7 @@ func (c *Container) decodeSeg(t *TRec, s *Seg, rv Resolver) ([]byte, error) {
 			return nil, ErrFormat
 		}
 		fw := t.DType.Width()
-		bv, err := c.baseView(s, 0, s.Elems, t.DType, rv)
+		bv, err := c.baseView(s, 0, s.Elems, t.DType, rv, win)
 		if err != nil {
 			return nil, err
 		}
@@ -476,7 +494,7 @@ func (c *Container) decodeSeg(t *TRec, s *Seg, rv Resolver) ([]byte, error) {
 	}
 	var bases []Base
 	for k := range s.Refs {
-		bv, err := c.baseView(s, k, s.Elems, cd, rv)
+		bv, err := c.baseView(s, k, s.Elems, cd, rv, win)
 		if err != nil {
 			return nil, err
 		}
@@ -621,7 +639,7 @@ func (c *Container) ReadRange(w io.Writer, off, n int64, rv Resolver) (decoded i
 			s := &t.Segs[si]
 			sl := s.Elems * tw
 			if sp < end && sp+sl > off {
-				b, err := c.decodeSeg(t, s, rv)
+				b, err := c.decodeSegW(t, s, rv, true)
 				if err != nil {
 					return decoded, err
 				}
@@ -640,4 +658,38 @@ func (c *Container) ReadRange(w io.Writer, off, n int64, rv Resolver) (decoded i
 		}
 	}
 	return decoded, nil
+}
+
+// DecodeWindow reconstructs bytes [lo,hi) of tensor idx, decoding only overlapping segments.
+func (c *Container) DecodeWindow(idx int, lo, hi int64, rv Resolver) ([]byte, error) {
+	if idx < 0 || idx >= len(c.T) {
+		return nil, ErrFormat
+	}
+	t := &c.T[idx]
+	if lo < 0 || hi < lo || hi > t.Len {
+		return nil, ErrFormat
+	}
+	w := int64(t.DType.Width())
+	out := make([]byte, 0, hi-lo)
+	pos := int64(0)
+	for si := range t.Segs {
+		s := &t.Segs[si]
+		sl := s.Elems * w
+		if pos < hi && pos+sl > lo && hi > lo {
+			b, err := c.decodeSegW(t, s, rv, true)
+			if err != nil {
+				return nil, err
+			}
+			a, z := lo-pos, hi-pos
+			if a < 0 {
+				a = 0
+			}
+			if z > sl {
+				z = sl
+			}
+			out = append(out, b[a:z]...)
+		}
+		pos += sl
+	}
+	return out, nil
 }
