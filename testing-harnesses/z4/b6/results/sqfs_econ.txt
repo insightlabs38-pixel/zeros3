@@ -1,0 +1,48 @@
+three_lz4        cdc16/64/256  CDC-of-image 24.56M  exact-lz4-decoded+CDC 17.39M (70.8%) = chunks 17.26M + recipe/verbatim 0.14M  analyze 12 MiB/s
+    0.160.0: raw 12.07M -> rep 9.88M (blocks 262 pred 262 hyb 0 expl 0; recipe 41866B)
+    0.161.0: raw 3.28M -> rep 1.83M (blocks 247 pred 247 hyb 0 expl 0; recipe 41182B)
+    0.162.0: raw 3.87M -> rep 2.61M (blocks 188 pred 188 hyb 0 expl 0; recipe 41803B)
+    0.163.0: raw 2.65M -> rep 1.65M (blocks 188 pred 188 hyb 0 expl 0; recipe 39847B)
+    0.164.0: raw 2.70M -> rep 1.43M (blocks 189 pred 189 hyb 0 expl 0; recipe 39237B)
+three_lz4        cdc1/4/16     CDC-of-image 22.61M  exact-lz4-decoded+CDC 17.23M (76.2%) = chunks 17.09M + recipe/verbatim 0.14M  analyze 12 MiB/s
+    0.160.0: raw 12.81M -> rep 12.59M (blocks 262 pred 262 hyb 0 expl 0; recipe 41866B)
+    0.161.0: raw 2.40M -> rep 0.92M (blocks 247 pred 247 hyb 0 expl 0; recipe 41182B)
+    0.162.0: raw 3.30M -> rep 2.12M (blocks 188 pred 188 hyb 0 expl 0; recipe 41803B)
+    0.163.0: raw 2.16M -> rep 0.87M (blocks 188 pred 188 hyb 0 expl 0; recipe 39847B)
+    0.164.0: raw 1.94M -> rep 0.73M (blocks 189 pred 189 hyb 0 expl 0; recipe 39237B)
+typescript_lz4   cdc16/64/256  CDC-of-image 34.84M  exact-lz4-decoded+CDC 23.68M (68.0%) = chunks 23.66M + recipe/verbatim 0.02M  analyze 9 MiB/s
+    5.3.3: raw 8.76M -> rep 6.24M (blocks 256 pred 256 hyb 0 expl 0; recipe 8646B)
+    5.4.5: raw 8.56M -> rep 5.38M (blocks 258 pred 258 hyb 0 expl 0; recipe 10804B)
+    5.5.4: raw 4.92M -> rep 3.28M (blocks 178 pred 178 hyb 0 expl 0; recipe 8735B)
+    5.6.3: raw 6.27M -> rep 4.36M (blocks 181 pred 181 hyb 0 expl 0; recipe 9975B)
+    5.7.3: raw 6.33M -> rep 4.42M (blocks 184 pred 184 hyb 0 expl 0; recipe 8665B)
+typescript_lz4   cdc1/4/16     CDC-of-image 36.31M  exact-lz4-decoded+CDC 19.78M (54.5%) = chunks 19.75M + recipe/verbatim 0.02M  analyze 10 MiB/s
+    5.3.3: raw 9.42M -> rep 7.82M (blocks 256 pred 256 hyb 0 expl 0; recipe 8646B)
+    5.4.5: raw 8.27M -> rep 2.93M (blocks 258 pred 258 hyb 0 expl 0; recipe 10804B)
+    5.5.4: raw 5.06M -> rep 3.02M (blocks 178 pred 178 hyb 0 expl 0; recipe 8735B)
+    5.6.3: raw 6.77M -> rep 3.51M (blocks 181 pred 181 hyb 0 expl 0; recipe 9975B)
+    5.7.3: raw 6.80M -> rep 2.49M (blocks 184 pred 184 hyb 0 expl 0; recipe 8665B)
+three_lz4hc      cdc16/64/256  CDC-of-image 21.71M  exact-lz4-decoded+CDC 47.30M (217.9%) = chunks 17.26M + recipe/verbatim 30.04M  analyze 6 MiB/s
+    0.160.0: raw 10.84M -> rep 17.38M (blocks 262 pred 0 hyb 251 expl 11; recipe 10449055B)
+    0.161.0: raw 2.91M -> rep 8.96M (blocks 247 pred 0 hyb 233 expl 14; recipe 9958742B)
+    0.162.0: raw 3.33M -> rep 7.69M (blocks 188 pred 0 hyb 179 expl 9; recipe 7070565B)
+    0.163.0: raw 2.43M -> rep 6.73M (blocks 188 pred 0 hyb 178 expl 10; recipe 7075590B)
+    0.164.0: raw 2.20M -> rep 6.53M (blocks 189 pred 0 hyb 180 expl 9; recipe 7082864B)
+three_lz4hc      cdc1/4/16     CDC-of-image 18.77M  exact-lz4-decoded+CDC 47.13M (251.1%) = chunks 17.09M + recipe/verbatim 30.04M  analyze 6 MiB/s
+    0.160.0: raw 10.87M -> rep 20.09M (blocks 262 pred 0 hyb 251 expl 11; recipe 10449055B)
+    0.161.0: raw 1.91M -> rep 8.05M (blocks 247 pred 0 hyb 233 expl 14; recipe 9958742B)
+    0.162.0: raw 2.81M -> rep 7.21M (blocks 188 pred 0 hyb 179 expl 9; recipe 7070565B)
+    0.163.0: raw 1.64M -> rep 5.95M (blocks 188 pred 0 hyb 178 expl 10; recipe 7075590B)
+    0.164.0: raw 1.52M -> rep 5.82M (blocks 189 pred 0 hyb 180 expl 9; recipe 7082864B)
+typescript_lz4hc cdc16/64/256  CDC-of-image 28.13M  exact-lz4-decoded+CDC 47.82M (170.0%) = chunks 23.66M + recipe/verbatim 24.16M  analyze 5 MiB/s
+    5.3.3: raw 7.00M -> rep 12.03M (blocks 256 pred 0 hyb 246 expl 10; recipe 7607271B)
+    5.4.5: raw 6.85M -> rep 11.23M (blocks 258 pred 0 hyb 242 expl 16; recipe 7687773B)
+    5.5.4: raw 4.15M -> rep 7.33M (blocks 178 pred 0 hyb 170 expl 8; recipe 5308617B)
+    5.6.3: raw 5.01M -> rep 8.56M (blocks 181 pred 0 hyb 174 expl 7; recipe 5480729B)
+    5.7.3: raw 5.12M -> rep 8.66M (blocks 184 pred 1 hyb 171 expl 12; recipe 5553809B)
+typescript_lz4hc cdc1/4/16     CDC-of-image 27.78M  exact-lz4-decoded+CDC 43.91M (158.1%) = chunks 19.75M + recipe/verbatim 24.16M  analyze 5 MiB/s
+    5.3.3: raw 7.24M -> rep 13.61M (blocks 256 pred 0 hyb 246 expl 10; recipe 7607271B)
+    5.4.5: raw 6.24M -> rep 8.79M (blocks 258 pred 0 hyb 242 expl 16; recipe 7687773B)
+    5.5.4: raw 3.90M -> rep 7.08M (blocks 178 pred 0 hyb 170 expl 8; recipe 5308617B)
+    5.6.3: raw 5.18M -> rep 7.71M (blocks 181 pred 0 hyb 174 expl 7; recipe 5480729B)
+    5.7.3: raw 5.22M -> rep 6.73M (blocks 184 pred 1 hyb 171 expl 12; recipe 5553809B)

@@ -1,0 +1,24 @@
+rocksdb/blocks   files=59 bad=0 in=207 MiB comps=72318 payload=340.1 MiB recipe=3.30 MiB enc=10 MiB/s dec=47 MiB/s
+    snappy blocks explicit/go/cpp14/cpp15: [0 0 0 0]
+    lz4 blocks explicit/predicted/hybrid: [0 70230 0]; lz4 recipe bytes 491610
+    recipe: framing 653484 snappy 0 zstd 0 explicit 0 groups 0 trailers 0 digests 2314176; 72259 blocks, 0.0 snappy cmds/block
+rocksdb/full     files=59 bad=0 in=207 MiB comps=39982 payload=345.3 MiB recipe=2.29 MiB enc=6 MiB/s dec=47 MiB/s
+    snappy blocks explicit/go/cpp14/cpp15: [0 0 0 0]
+    lz4 blocks explicit/predicted/hybrid: [0 70230 0]; lz4 recipe bytes 491610
+    recipe: framing 584950 snappy 0 zstd 0 explicit 0 groups 41282 trailers 0 digests 1279424; 72259 blocks, 0.0 snappy cmds/block
+rocksdb/ktv      files=59 bad=0 in=207 MiB comps=76708 payload=331.1 MiB recipe=3.51 MiB enc=6 MiB/s dec=45 MiB/s
+    snappy blocks explicit/go/cpp14/cpp15: [0 0 0 0]
+    lz4 blocks explicit/predicted/hybrid: [0 70230 0]; lz4 recipe bytes 491610
+    recipe: framing 584950 snappy 0 zstd 0 explicit 0 groups 41282 trailers 0 digests 2556960; 72259 blocks, 0.0 snappy cmds/block
+rocksdb/kv       files=59 bad=0 in=207 MiB comps=76708 payload=325.0 MiB recipe=4.28 MiB enc=6 MiB/s dec=46 MiB/s
+    snappy blocks explicit/go/cpp14/cpp15: [0 0 0 0]
+    lz4 blocks explicit/predicted/hybrid: [0 70230 0]; lz4 recipe bytes 491610
+    recipe: framing 584950 snappy 0 zstd 0 explicit 0 groups 41282 trailers 809433 digests 2556960; 72259 blocks, 0.0 snappy cmds/block
+rocksdb/kvt      files=59 bad=0 in=207 MiB comps=81516 payload=328.2 MiB recipe=4.72 MiB enc=6 MiB/s dec=44 MiB/s
+    snappy blocks explicit/go/cpp14/cpp15: [0 0 0 0]
+    lz4 blocks explicit/predicted/hybrid: [0 70230 0]; lz4 recipe bytes 491610
+    recipe: framing 584950 snappy 0 zstd 0 explicit 0 groups 41282 trailers 0 digests 3834496; 72259 blocks, 0.0 snappy cmds/block
+rocksdb/ukv      files=59 bad=0 in=207 MiB comps=39982 payload=339.1 MiB recipe=3.06 MiB enc=6 MiB/s dec=47 MiB/s
+    snappy blocks explicit/go/cpp14/cpp15: [0 0 0 0]
+    lz4 blocks explicit/predicted/hybrid: [0 70230 0]; lz4 recipe bytes 491610
+    recipe: framing 584950 snappy 0 zstd 0 explicit 0 groups 41282 trailers 809433 digests 1279424; 72259 blocks, 0.0 snappy cmds/block

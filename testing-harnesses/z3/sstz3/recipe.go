@@ -61,6 +61,7 @@ const recipeVersion = 1
 // BlockRec is the per-block physical framing.
 type BlockRec struct {
 	Zstd     []byte // exact zstd skeleton/units and original size prefix
+	LZ4      []byte // exact lz4 recipe (Z4-B6): size prefix | lz4z3 recipe
 	CSize    uint64 // stored payload bytes (without the trailer)
 	Trailer  [trailerLen]byte
 	Entries  uint32 // logical layouts
@@ -90,11 +91,11 @@ type Recipe struct {
 
 // Sizes is the byte accounting of a serialized recipe.
 type Sizes struct {
-	Head, Framing, Snappy, Zstd, Explicit, Groups, Trailers, Digests int64
+	Head, Framing, Snappy, Zstd, LZ4, Explicit, Groups, Trailers, Digests int64
 }
 
 func (s Sizes) Total() int64 {
-	return s.Head + s.Framing + s.Snappy + s.Zstd + s.Explicit + s.Groups + s.Trailers + s.Digests
+	return s.Head + s.Framing + s.Snappy + s.Zstd + s.LZ4 + s.Explicit + s.Groups + s.Trailers + s.Digests
 }
 
 func appendUv(b []byte, v uint64) []byte { return binary.AppendUvarint(b, v) }
@@ -140,6 +141,12 @@ func (r *Recipe) Marshal() ([]byte, Sizes) {
 			b = appendUv(b, uint64(len(bl.Zstd)))
 			b = append(b, bl.Zstd...)
 			s.Zstd += int64(len(b) - n)
+		}
+		if bl.Trailer[0] == CompLZ4 || bl.Trailer[0] == CompLZ4HC {
+			n := len(b)
+			b = appendUv(b, uint64(len(bl.LZ4)))
+			b = append(b, bl.LZ4...)
+			s.LZ4 += int64(len(b) - n)
 		}
 		if bl.Trailer[0] == CompSnappy {
 			n1 := len(b)
@@ -311,6 +318,8 @@ func ParseRecipe(b []byte, lim Limits) (*Recipe, error) {
 			}
 		} else if bl.Trailer[0] == CompZstd {
 			bl.Zstd = r.take(r.uv(uint64(lim.MaxRecipe)))
+		} else if bl.Trailer[0] == CompLZ4 || bl.Trailer[0] == CompLZ4HC {
+			bl.LZ4 = r.take(r.uv(uint64(lim.MaxRecipe)))
 		} else if bl.Trailer[0] != CompNone {
 			r.fail("compression type %d", bl.Trailer[0])
 		}

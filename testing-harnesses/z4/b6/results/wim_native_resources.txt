@@ -1,0 +1,5 @@
+{"path": "/root/b6cache/wimx/../wim/w7/x_Win7PE_B7062/BOOT.WIM", "resources": 4994, "data_res": 4993, "comp": 129125019, "orig": 353078897, "hdr_flags": "0x40082"}
+{"path": "/root/b6cache/wimx/../wim/w7/x_Win7PE_B7070/BOOT.WIM", "resources": 4997, "data_res": 4996, "comp": 128911964, "orig": 351486765, "hdr_flags": "0x40082", "new_res": 4353, "new_comp": 114832027, "new_orig": 296213842}
+{"path": "/root/b6cache/wimx/../wim/w7/x_Win7PE_B7077/BOOT.WIM", "resources": 5041, "data_res": 5040, "comp": 129421485, "orig": 357593253, "hdr_flags": "0x40082", "new_res": 4380, "new_comp": 114515822, "new_orig": 299614168}
+{"path": "/root/b6cache/wimx/../wim/w7/x_Win7PE_B7100_x86/BOOT.WIM", "resources": 4645, "data_res": 4644, "comp": 113019627, "orig": 309101749, "hdr_flags": "0x40082", "new_res": 4059, "new_comp": 99710474, "new_orig": 265252046}
+{"path": "/root/b6cache/wimx/../wim/w7/x_Win7PE_B7229/BOOT.WIM", "resources": 5117, "data_res": 5116, "comp": 129835244, "orig": 357696785, "hdr_flags": "0x40082", "new_res": 4542, "new_comp": 116739035, "new_orig": 315152243}

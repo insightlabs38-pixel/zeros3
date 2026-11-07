@@ -1,0 +1,74 @@
+[
+ {
+  "file": "py_default_5000.lz4",
+  "sha256_decoded": "d562f7fa6cc9164d05bfbe09ca1dd33c52db5dc7708beb9d36caf6b5de4247c1",
+  "decoded": 5000,
+  "producer": "python-lz4 4.4.5 (lz4 library, LZ4_compress_default)",
+  "predictor": "default5",
+  "accel": 1
+ },
+ {
+  "file": "py_default_70000.lz4",
+  "sha256_decoded": "c0cf85d161862096be87c959877501195e1a5682afae1266bb2b818aa3e1dd2c",
+  "decoded": 70000,
+  "producer": "python-lz4 4.4.5 (u32 table)",
+  "predictor": "default5",
+  "accel": 1
+ },
+ {
+  "file": "py_fast9_9000.lz4",
+  "sha256_decoded": "c795c5eb220246173cae7f112b07f2d4177b89b28331d068bcd39e5a5abbae42",
+  "decoded": 9000,
+  "producer": "python-lz4 4.4.5 acceleration=9",
+  "predictor": "default5",
+  "accel": 9
+ },
+ {
+  "file": "cli_B4_BX_frame.lz4",
+  "sha256_decoded": "70dbaac0d37ab2e03851a643eadf603be6e7fce0460e00b2ecfb8426b1298812",
+  "decoded": 140000,
+  "producer": "lz4 CLI 1.9.4 -1 -B4 -BX (frame)",
+  "predictor": "default",
+  "accel": 1
+ },
+ {
+  "file": "cli_hc9_BD_frame.lz4",
+  "sha256_decoded": "06104742efe1ae14026b277260ddb735fe0d306d3f33b302ab9c20aa48a911f5",
+  "decoded": 30000,
+  "producer": "lz4 CLI 1.9.4 -9 -BD (HC, linked blocks)",
+  "predictor": "explicit",
+  "accel": 0
+ },
+ {
+  "file": "cli_skippable_tail.lz4",
+  "sha256_decoded": "",
+  "decoded": -1,
+  "producer": "lz4 CLI frame behind a skippable frame, with an opaque tail",
+  "predictor": "default",
+  "accel": 1
+ },
+ {
+  "file": "py_hc9_pattern_9000.lz4",
+  "sha256_decoded": "3732a0f933426e05ee536dcb65f861117d8d54200ca6cc7ee280774628de55e6",
+  "decoded": 9000,
+  "producer": "python-lz4 4.4.5 high_compression level 9",
+  "predictor": "hc",
+  "accel": 9
+ },
+ {
+  "file": "py_hc3_pattern_9000.lz4",
+  "sha256_decoded": "22a4729e0fd9f3b147d9aa0ea3b025d608649768addb554b345c09eff5d5e77a",
+  "decoded": 9000,
+  "producer": "python-lz4 4.4.5 high_compression level 3",
+  "predictor": "hc",
+  "accel": 3
+ },
+ {
+  "file": "py_hc9_pattern_70000.lz4",
+  "sha256_decoded": "76719f5cef4dc0844286df9e8efdb7509cdf81e0c71cc2f47b9b2c24cd9ea503",
+  "decoded": 70000,
+  "producer": "python-lz4 4.4.5 high_compression level 9",
+  "predictor": "hc",
+  "accel": 9
+ }
+]

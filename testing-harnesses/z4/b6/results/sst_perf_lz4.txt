@@ -1,0 +1,4 @@
+encode: 174 tables, 631 MiB in 28.3s = 22 MiB/s; components 114491 (970 MiB logical, written once per digest); process peak RSS so far 32 MiB; Go heap in use after 18 MiB, total allocated 9.0 GiB
+structure: 206426 blocks (explicit-layout blocks 0), Snappy blocks explicit/go/cpp14/cpp15 [0 0 0 0], 2300490 records; keys 24.4 MiB, values 936.2 MiB, trailers 17.6 MiB (2.5% of logical bytes are keys); data blocks 626 MiB, tail 4.2 MiB (0.67%)
+recipes: head 1550, block framing 1671224, Snappy 0, Zstd 0, explicit layouts 0, group counts 118162, sequence/type words 2301239, digests 3663712 (bytes, all tables)
+decode: 631 MiB in 5.3s = 119 MiB/s (components read from disk files, SHA-256 of every output compared); process peak RSS 58 MiB

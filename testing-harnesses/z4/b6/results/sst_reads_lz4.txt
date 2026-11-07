@@ -1,0 +1,7 @@
+| producer | request | CDC fetch (chunks) | representation fetch | components | packed bytes | logical comp bytes | read ms |
+|---|---|---|---|---:|---:|---:|---:|
+| rocksdb | whole 4190.7 KiB | 4190.7 KiB (64) | 7167.0 KiB | 736 | 3112.8 KiB | 7030.3 KiB | 63.0 |
+| rocksdb | 4 KiB inside one block | 151.4 KiB (2) | 100.2 KiB | 2 | 7658 B | 31.9 KiB | 1.5 |
+| rocksdb | 4 KiB across two blocks | 151.4 KiB (2) | 102.5 KiB | 3 | 8397 B | 34.2 KiB | 0.8 |
+| rocksdb | point lookup (index + 1 block) | 40.7 KiB (1) | 94.3 KiB | 3 | 22.4 KiB | 26.0 KiB | 2.2 |
+|  | lookup detail | index read through the tail: 5 reads, 20.8 KiB | block 0 of 1420 | 2 groups | | | |

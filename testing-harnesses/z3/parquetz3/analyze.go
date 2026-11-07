@@ -245,6 +245,9 @@ func (a *Analyzer) chunkPass(c *Chunk, plan *ChunkPlan, sk *sink) error {
 		if rec.ID == CompZstd {
 			info.CompRecBytes = len(rec.Zstd)
 		}
+		if rec.ID == CompLZ4Rec {
+			info.CompRecBytes = len(rec.LZ4)
+		}
 		switch p.Type {
 		case PageDict:
 			if pi != 0 || d != nil && pass1 {

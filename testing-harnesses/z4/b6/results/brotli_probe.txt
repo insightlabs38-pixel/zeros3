@@ -1,0 +1,20 @@
+dist__fonts__KaTeX_AMS-Regular.woff2               27987 B reproduced by (quality, lgwin, mode) = (11, 22, 2)
+dist__fonts__KaTeX_Caligraphic-Bold.woff2           6829 B reproduced by (quality, lgwin, mode) = (11, 22, 2)
+dist__fonts__KaTeX_Caligraphic-Regular.woff2        6823 B reproduced by (quality, lgwin, mode) = (11, 22, 2)
+dist__fonts__KaTeX_Fraktur-Bold.woff2              11261 B reproduced by (quality, lgwin, mode) = (11, 22, 2)
+webfonts__fa-brands-400.woff2                     118410 B reproduced by (quality, lgwin, mode) = None
+webfonts__fa-regular-400.woff2                     25398 B reproduced by (quality, lgwin, mode) = None
+webfonts__fa-solid-900.woff2                      158145 B reproduced by (quality, lgwin, mode) = None
+webfonts__fa-v4compatibility.woff2                  4726 B reproduced by (quality, lgwin, mode) = None
+font__fonts__bootstrap-icons.woff2                130310 B reproduced by (quality, lgwin, mode) = None
+iconfont__material-icons-outlined.woff2           155200 B reproduced by (quality, lgwin, mode) = (11, 22, 2)
+iconfont__material-icons-round.woff2              173542 B reproduced by (quality, lgwin, mode) = (11, 22, 2)
+iconfont__material-icons-sharp.woff2              135909 B reproduced by (quality, lgwin, mode) = (11, 22, 2)
+iconfont__material-icons-two-tone.woff2           215621 B reproduced by (quality, lgwin, mode) = (11, 22, 2)
+files__inter-latin-400-normal.woff2                23593 B reproduced by (quality, lgwin, mode) = (11, 22, 2)
+files__inter-cyrillic-700-normal.woff2              7908 B reproduced by (quality, lgwin, mode) = (11, 22, 2)
+woff2: 10 of 15 streams reproduced
+arrow brotli(level 8)     1000 B ->     434 B; google brotli quality 8 lgwin 22 reproduces: True
+arrow brotli(level 8)    50000 B ->   20215 B; google brotli quality 8 lgwin 22 reproduces: True
+arrow brotli(level 8)   300000 B ->  122535 B; google brotli quality 8 lgwin 22 reproduces: True
+arrow brotli(level 8)  1048576 B ->  413383 B; google brotli quality 8 lgwin 22 reproduces: True

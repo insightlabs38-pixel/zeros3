@@ -1,0 +1,15 @@
+| group | class | files (unsupported) | MiB | framing | page hdrs | predicted payload | explicit payload | opaque payload | unsupported file |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| pyarrow-chain | PRODUCER_WORKLOAD | 8 (0) | 275.17 | 0.0% | 0.0% | 99.9% | 0.0% | 0.0% | 0.0% |
+
+#### pyarrow-chain (8 files, 2475 pages, 590 chunks)
+creators map[parquet-cpp-arrow:8], format versions map[2:8], v1/v2 data pages 1944/0, page CRC 0, page stats 1944
+chunk features map[dictionary_page:531 encoding_stats:590 size_stats:590 stats:590]; index/bloom bytes declared 0.00 of 275.17 (0.0%); gaps 0.0%; footer 0.0%
+codecs (compressed chunk bytes): LZ4_RAW 100.0%  
+| codec / page / encoding | pages | payload MiB | % file |
+|---|---:|---:|---:|
+| LZ4_RAW DICT | 531 | 183.02 | 66.5% |
+| LZ4_RAW V1 PLAIN | 352 | 45.20 | 16.4% |
+| LZ4_RAW V1 RLE_DICTIONARY | 1592 | 46.77 | 17.0% |
+compression replay: lz4-default 2475 pages 100.0% of replayed payload bytes; explicit recipe bytes 0.00 (0.0% of file)
+layout: 1396 pages standard, 548 with a stored index width only, 0 explicit level streams, 0 explicit value/index streams; dictionary chunks map[predicted:531] (bytes map[predicted:288047951])

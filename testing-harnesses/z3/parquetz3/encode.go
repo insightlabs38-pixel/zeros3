@@ -250,6 +250,9 @@ func (e *encoder) chunk(c *Chunk) error {
 				if comp.ID == CompZstd {
 					cb = comp.Zstd
 				}
+				if comp.ID == CompLZ4Rec {
+					cb = comp.LZ4
+				}
 				if s.CompMember, err = e.component("crec", cb); err != nil {
 					return err
 				}

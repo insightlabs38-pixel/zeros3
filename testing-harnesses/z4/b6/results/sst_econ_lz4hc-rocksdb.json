@@ -1,0 +1,900 @@
+{
+ "producer": "rocksdb",
+ "target": 8192,
+ "first": {},
+ "variants": null,
+ "chain": [
+  {
+   "rev": "c0",
+   "class": "PRODUCER_WORKLOAD",
+   "raw": 27164686,
+   "incr": {
+    "blocks": {
+     "raw": 27164686,
+     "pack": 27616948,
+     "new": 27164326,
+     "packedNew": 26759396,
+     "meta": 368,
+     "refs": 8929,
+     "newComps": 8929,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "seg": 26759396
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 27164686,
+     "pack": 21076918,
+     "new": 27164686,
+     "packedNew": 21043606,
+     "meta": 0,
+     "refs": 347,
+     "newComps": 347,
+     "fallback": 0,
+     "files": 7,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 27164686,
+     "pack": 23801875,
+     "new": 44102419,
+     "packedNew": 23089574,
+     "meta": 237389,
+     "refs": 4947,
+     "newComps": 4947,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "group": 22838249,
+      "tail": 251325
+     },
+     "exact": true
+    }
+   },
+   "rolling": {
+    "blocks": {
+     "raw": 27164686,
+     "pack": 27616948,
+     "new": 27164326,
+     "packedNew": 26759396,
+     "meta": 368,
+     "refs": 8929,
+     "newComps": 8929,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "seg": 26759396
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 27164686,
+     "pack": 21076918,
+     "new": 27164686,
+     "packedNew": 21043606,
+     "meta": 0,
+     "refs": 347,
+     "newComps": 347,
+     "fallback": 0,
+     "files": 7,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 27164686,
+     "pack": 23801875,
+     "new": 44102419,
+     "packedNew": 23089574,
+     "meta": 237389,
+     "refs": 4947,
+     "newComps": 4947,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "group": 22838249,
+      "tail": 251325
+     },
+     "exact": true
+    }
+   },
+   "cumulative": {
+    "blocks": 27616948,
+    "cdc": 21076918,
+    "ukv": 23801875
+   },
+   "other": {
+    "raw": 76901,
+    "pack": 13496,
+    "new": 76901,
+    "packedNew": 12920,
+    "meta": 0,
+    "refs": 6,
+    "newComps": 6,
+    "fallback": 0,
+    "files": 7,
+    "exact": true
+   }
+  },
+  {
+   "rev": "c1",
+   "class": "PRODUCER_WORKLOAD",
+   "raw": 27365016,
+   "incr": {
+    "blocks": {
+     "raw": 27365016,
+     "pack": 200650,
+     "new": 200330,
+     "packedNew": 188938,
+     "meta": 0,
+     "refs": 122,
+     "newComps": 122,
+     "fallback": 0,
+     "files": 8,
+     "classes": {
+      "seg": 188938
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 27365016,
+     "pack": 142777,
+     "new": 200330,
+     "packedNew": 142297,
+     "meta": 0,
+     "refs": 5,
+     "newComps": 5,
+     "fallback": 0,
+     "files": 8,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 27365016,
+     "pack": 127527,
+     "new": 479118,
+     "packedNew": 118555,
+     "meta": 3884,
+     "refs": 53,
+     "newComps": 53,
+     "fallback": 0,
+     "files": 8,
+     "classes": {
+      "group": 116409,
+      "tail": 2146
+     },
+     "exact": true
+    }
+   },
+   "rolling": {
+    "blocks": {
+     "raw": 27365016,
+     "pack": 200650,
+     "new": 200330,
+     "packedNew": 188938,
+     "meta": 0,
+     "refs": 122,
+     "newComps": 122,
+     "fallback": 0,
+     "files": 8,
+     "classes": {
+      "seg": 188938
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 27365016,
+     "pack": 142777,
+     "new": 200330,
+     "packedNew": 142297,
+     "meta": 0,
+     "refs": 5,
+     "newComps": 5,
+     "fallback": 0,
+     "files": 8,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 27365016,
+     "pack": 127527,
+     "new": 479118,
+     "packedNew": 118555,
+     "meta": 3884,
+     "refs": 53,
+     "newComps": 53,
+     "fallback": 0,
+     "files": 8,
+     "classes": {
+      "group": 116409,
+      "tail": 2146
+     },
+     "exact": true
+    }
+   },
+   "cumulative": {
+    "blocks": 27817598,
+    "cdc": 21219695,
+    "ukv": 23929402
+   },
+   "other": {
+    "raw": 111521,
+    "pack": 9503,
+    "new": 36495,
+    "packedNew": 9023,
+    "meta": 0,
+    "refs": 5,
+    "newComps": 4,
+    "fallback": 0,
+    "files": 9,
+    "exact": true
+   }
+  },
+  {
+   "rev": "c2",
+   "class": "PRODUCER_WORKLOAD",
+   "raw": 27677435,
+   "incr": {
+    "blocks": {
+     "raw": 27677435,
+     "pack": 315690,
+     "new": 312419,
+     "packedNew": 306186,
+     "meta": 0,
+     "refs": 99,
+     "newComps": 99,
+     "fallback": 0,
+     "files": 9,
+     "classes": {
+      "seg": 306186
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 27677435,
+     "pack": 267639,
+     "new": 312419,
+     "packedNew": 267159,
+     "meta": 0,
+     "refs": 5,
+     "newComps": 5,
+     "fallback": 0,
+     "files": 9,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 27677435,
+     "pack": 289876,
+     "new": 500234,
+     "packedNew": 281667,
+     "meta": 2545,
+     "refs": 59,
+     "newComps": 59,
+     "fallback": 0,
+     "files": 9,
+     "classes": {
+      "group": 279667,
+      "tail": 2000
+     },
+     "exact": true
+    }
+   },
+   "rolling": {
+    "blocks": {
+     "raw": 27677435,
+     "pack": 315690,
+     "new": 312419,
+     "packedNew": 306186,
+     "meta": 0,
+     "refs": 99,
+     "newComps": 99,
+     "fallback": 0,
+     "files": 9,
+     "classes": {
+      "seg": 306186
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 27677435,
+     "pack": 267639,
+     "new": 312419,
+     "packedNew": 267159,
+     "meta": 0,
+     "refs": 5,
+     "newComps": 5,
+     "fallback": 0,
+     "files": 9,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 27677435,
+     "pack": 289876,
+     "new": 500234,
+     "packedNew": 281667,
+     "meta": 2545,
+     "refs": 59,
+     "newComps": 59,
+     "fallback": 0,
+     "files": 9,
+     "classes": {
+      "group": 279667,
+      "tail": 2000
+     },
+     "exact": true
+    }
+   },
+   "cumulative": {
+    "blocks": 28133288,
+    "cdc": 21487334,
+    "ukv": 24219278
+   },
+   "other": {
+    "raw": 139515,
+    "pack": 6765,
+    "new": 29041,
+    "packedNew": 6285,
+    "meta": 0,
+    "refs": 5,
+    "newComps": 3,
+    "fallback": 0,
+    "files": 10,
+    "exact": true
+   }
+  },
+  {
+   "rev": "c3",
+   "class": "PRODUCER_WORKLOAD",
+   "raw": 27487056,
+   "incr": {
+    "blocks": {
+     "raw": 27487056,
+     "pack": 27923771,
+     "new": 27486260,
+     "packedNew": 27040435,
+     "meta": 808,
+     "refs": 9193,
+     "newComps": 9193,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "seg": 27040435
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 27487056,
+     "pack": 21226416,
+     "new": 27340724,
+     "packedNew": 21193104,
+     "meta": 0,
+     "refs": 347,
+     "newComps": 342,
+     "fallback": 0,
+     "files": 7,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 27487056,
+     "pack": 5665642,
+     "new": 13152362,
+     "packedNew": 4932567,
+     "meta": 245203,
+     "refs": 5082,
+     "newComps": 1171,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "group": 4825991,
+      "tail": 106576
+     },
+     "exact": true
+    }
+   },
+   "rolling": {
+    "blocks": {
+     "raw": 27487056,
+     "pack": 27923771,
+     "new": 27486260,
+     "packedNew": 27040435,
+     "meta": 808,
+     "refs": 9193,
+     "newComps": 9193,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "seg": 27040435
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 27487056,
+     "pack": 21226416,
+     "new": 27340724,
+     "packedNew": 21193104,
+     "meta": 0,
+     "refs": 347,
+     "newComps": 342,
+     "fallback": 0,
+     "files": 7,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 27487056,
+     "pack": 5665642,
+     "new": 13152362,
+     "packedNew": 4932567,
+     "meta": 245203,
+     "refs": 5082,
+     "newComps": 1171,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "group": 4825991,
+      "tail": 106576
+     },
+     "exact": true
+    }
+   },
+   "cumulative": {
+    "blocks": 56057059,
+    "cdc": 42713750,
+    "ukv": 29884920
+   },
+   "other": {
+    "raw": 204822,
+    "pack": 12654,
+    "new": 66453,
+    "packedNew": 11982,
+    "meta": 0,
+    "refs": 7,
+    "newComps": 5,
+    "fallback": 0,
+    "files": 11,
+    "exact": true
+   }
+  },
+  {
+   "rev": "c4",
+   "class": "PRODUCER_WORKLOAD",
+   "raw": 26971982,
+   "incr": {
+    "blocks": {
+     "raw": 26971982,
+     "pack": 27402680,
+     "new": 26971141,
+     "packedNew": 26538307,
+     "meta": 853,
+     "refs": 8995,
+     "newComps": 8995,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "seg": 26538307
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 26971982,
+     "pack": 20861636,
+     "new": 26808476,
+     "packedNew": 20828420,
+     "meta": 0,
+     "refs": 346,
+     "newComps": 340,
+     "fallback": 0,
+     "files": 7,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 26971982,
+     "pack": 4970305,
+     "new": 12699181,
+     "packedNew": 4252658,
+     "meta": 240047,
+     "refs": 4975,
+     "newComps": 1046,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "group": 4146009,
+      "tail": 106649
+     },
+     "exact": true
+    }
+   },
+   "rolling": {
+    "blocks": {
+     "raw": 26971982,
+     "pack": 27402680,
+     "new": 26971141,
+     "packedNew": 26538307,
+     "meta": 853,
+     "refs": 8995,
+     "newComps": 8995,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "seg": 26538307
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 26971982,
+     "pack": 20878810,
+     "new": 26825650,
+     "packedNew": 20845594,
+     "meta": 0,
+     "refs": 346,
+     "newComps": 341,
+     "fallback": 0,
+     "files": 7,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 26971982,
+     "pack": 4988912,
+     "new": 12739101,
+     "packedNew": 4271265,
+     "meta": 240047,
+     "refs": 4975,
+     "newComps": 1052,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "group": 4164616,
+      "tail": 106649
+     },
+     "exact": true
+    }
+   },
+   "cumulative": {
+    "blocks": 83459739,
+    "cdc": 63575386,
+    "ukv": 34855225
+   },
+   "other": {
+    "raw": 267478,
+    "pack": 9856,
+    "new": 65396,
+    "packedNew": 9184,
+    "meta": 0,
+    "refs": 7,
+    "newComps": 3,
+    "fallback": 0,
+    "files": 12,
+    "exact": true
+   }
+  },
+  {
+   "rev": "c5",
+   "class": "PRODUCER_WORKLOAD",
+   "raw": 26937007,
+   "incr": {
+    "blocks": {
+     "raw": 26937007,
+     "pack": 27371732,
+     "new": 26936280,
+     "packedNew": 26507665,
+     "meta": 739,
+     "refs": 8993,
+     "newComps": 8993,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "seg": 26507665
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 26937007,
+     "pack": 20873992,
+     "new": 26790675,
+     "packedNew": 20840680,
+     "meta": 0,
+     "refs": 347,
+     "newComps": 342,
+     "fallback": 0,
+     "files": 7,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 26937007,
+     "pack": 3530855,
+     "new": 7578523,
+     "packedNew": 2813426,
+     "meta": 240021,
+     "refs": 4973,
+     "newComps": 589,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "group": 2706696,
+      "tail": 106730
+     },
+     "exact": true
+    }
+   },
+   "rolling": {
+    "blocks": {
+     "raw": 26937007,
+     "pack": 27371732,
+     "new": 26936280,
+     "packedNew": 26507665,
+     "meta": 739,
+     "refs": 8993,
+     "newComps": 8993,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "seg": 26507665
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 26937007,
+     "pack": 20873992,
+     "new": 26790675,
+     "packedNew": 20840680,
+     "meta": 0,
+     "refs": 347,
+     "newComps": 342,
+     "fallback": 0,
+     "files": 7,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 26937007,
+     "pack": 3543060,
+     "new": 7604176,
+     "packedNew": 2825631,
+     "meta": 240021,
+     "refs": 4973,
+     "newComps": 592,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "group": 2718901,
+      "tail": 106730
+     },
+     "exact": true
+    }
+   },
+   "cumulative": {
+    "blocks": 110831471,
+    "cdc": 84449378,
+    "ukv": 38386080
+   },
+   "other": {
+    "raw": 330385,
+    "pack": 9815,
+    "new": 65430,
+    "packedNew": 9335,
+    "meta": 0,
+    "refs": 5,
+    "newComps": 3,
+    "fallback": 0,
+    "files": 13,
+    "exact": true
+   }
+  },
+  {
+   "rev": "c6",
+   "class": "PRODUCER_WORKLOAD",
+   "raw": 26937007,
+   "incr": {
+    "blocks": {
+     "raw": 26937007,
+     "pack": 27371665,
+     "new": 26936280,
+     "packedNew": 26507598,
+     "meta": 739,
+     "refs": 8993,
+     "newComps": 8993,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "seg": 26507598
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 26937007,
+     "pack": 20845516,
+     "new": 26762390,
+     "packedNew": 20812300,
+     "meta": 0,
+     "refs": 346,
+     "newComps": 340,
+     "fallback": 0,
+     "files": 7,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 26937007,
+     "pack": 824156,
+     "new": 128913,
+     "packedNew": 106727,
+     "meta": 240021,
+     "refs": 4973,
+     "newComps": 7,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "tail": 106727
+     },
+     "exact": true
+    }
+   },
+   "rolling": {
+    "blocks": {
+     "raw": 26937007,
+     "pack": 27371665,
+     "new": 26936280,
+     "packedNew": 26507598,
+     "meta": 739,
+     "refs": 8993,
+     "newComps": 8993,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "seg": 26507598
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 26937007,
+     "pack": 20845516,
+     "new": 26762390,
+     "packedNew": 20812300,
+     "meta": 0,
+     "refs": 346,
+     "newComps": 340,
+     "fallback": 0,
+     "files": 7,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 26937007,
+     "pack": 824156,
+     "new": 128913,
+     "packedNew": 106727,
+     "meta": 240021,
+     "refs": 4973,
+     "newComps": 7,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "tail": 106727
+     },
+     "exact": true
+    }
+   },
+   "cumulative": {
+    "blocks": 138203136,
+    "cdc": 105294894,
+    "ukv": 39210236
+   },
+   "other": {
+    "raw": 393596,
+    "pack": 12496,
+    "new": 65733,
+    "packedNew": 11824,
+    "meta": 0,
+    "refs": 7,
+    "newComps": 4,
+    "fallback": 0,
+    "files": 15,
+    "exact": true
+   }
+  },
+  {
+   "rev": "c7",
+   "class": "PRODUCER_WORKLOAD",
+   "raw": 26937014,
+   "incr": {
+    "blocks": {
+     "raw": 26937014,
+     "pack": 27371676,
+     "new": 26936287,
+     "packedNew": 26507609,
+     "meta": 739,
+     "refs": 8993,
+     "newComps": 8993,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "seg": 26507609
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 26937014,
+     "pack": 20845286,
+     "new": 26762397,
+     "packedNew": 20812070,
+     "meta": 0,
+     "refs": 346,
+     "newComps": 340,
+     "fallback": 0,
+     "files": 7,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 26937014,
+     "pack": 824168,
+     "new": 128920,
+     "packedNew": 106739,
+     "meta": 240021,
+     "refs": 4973,
+     "newComps": 7,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "tail": 106739
+     },
+     "exact": true
+    }
+   },
+   "rolling": {
+    "blocks": {
+     "raw": 26937014,
+     "pack": 27371676,
+     "new": 26936287,
+     "packedNew": 26507609,
+     "meta": 739,
+     "refs": 8993,
+     "newComps": 8993,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "seg": 26507609
+     },
+     "exact": true
+    },
+    "cdc": {
+     "raw": 26937014,
+     "pack": 20845286,
+     "new": 26762397,
+     "packedNew": 20812070,
+     "meta": 0,
+     "refs": 346,
+     "newComps": 340,
+     "fallback": 0,
+     "files": 7,
+     "exact": true
+    },
+    "ukv": {
+     "raw": 26937014,
+     "pack": 824168,
+     "new": 128920,
+     "packedNew": 106739,
+     "meta": 240021,
+     "refs": 4973,
+     "newComps": 7,
+     "fallback": 0,
+     "files": 7,
+     "classes": {
+      "tail": 106739
+     },
+     "exact": true
+    }
+   },
+   "cumulative": {
+    "blocks": 165574812,
+    "cdc": 126140180,
+    "ukv": 40034404
+   },
+   "other": {
+    "raw": 457709,
+    "pack": 12493,
+    "new": 65756,
+    "packedNew": 11821,
+    "meta": 0,
+    "refs": 7,
+    "newComps": 4,
+    "fallback": 0,
+    "files": 17,
+    "exact": true
+   }
+  }
+ ]
+}

@@ -44,6 +44,7 @@ func cmdRT(args []string) error {
 		sz                         sstz3.Sizes
 		cmds, blocks               int64
 		pred                       [4]int
+		lz4                        [3]int
 	}
 	res := map[string]*agg{}
 	for _, p := range tableFiles(fs.Args()) {
@@ -85,6 +86,10 @@ func cmdRT(args []string) error {
 			a.sz.Framing += sz.Framing
 			a.sz.Snappy += sz.Snappy
 			a.sz.Zstd += sz.Zstd
+			a.sz.LZ4 += sz.LZ4
+			for i := range a.lz4 {
+				a.lz4[i] += es.LZ4Kinds[i]
+			}
 			a.sz.Explicit += sz.Explicit
 			a.sz.Groups += sz.Groups
 			a.sz.Trailers += sz.Trailers
@@ -127,6 +132,9 @@ func cmdRT(args []string) error {
 		fmt.Printf("%-16s files=%d bad=%d in=%.0f MiB comps=%d payload=%.1f MiB recipe=%.2f MiB enc=%.0f MiB/s dec=%.0f MiB/s\n", k, a.files, a.bad, float64(a.bytes)/(1<<20), a.comps,
 			float64(a.payload)/(1<<20), float64(a.rec)/(1<<20), float64(a.bytes)/(1<<20)/a.enc.Seconds(), float64(a.bytes)/(1<<20)/a.dec.Seconds())
 		fmt.Printf("    snappy blocks explicit/go/cpp14/cpp15: %v\n", a.pred)
+		if a.lz4 != [3]int{} || a.sz.LZ4 != 0 {
+			fmt.Printf("    lz4 blocks explicit/predicted/hybrid: %v; lz4 recipe bytes %d\n", a.lz4, a.sz.LZ4)
+		}
 		fmt.Printf("    recipe: framing %d snappy %d zstd %d explicit %d groups %d trailers %d digests %d; %d blocks, %.1f snappy cmds/block\n", a.sz.Framing, a.sz.Snappy, a.sz.Zstd, a.sz.Explicit, a.sz.Groups, a.sz.Trailers, a.sz.Digests, a.blocks, float64(a.cmds)/float64(a.blocks))
 	}
 	if failed > 0 {

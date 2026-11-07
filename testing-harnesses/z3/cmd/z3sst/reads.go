@@ -52,10 +52,11 @@ func cmdReads(args []string) error {
 	root := fs.String("corpus", filepath.Join(os.Getenv("HOME"), ".cache", "z3-sst", "corpus"), "corpus root")
 	target := fs.Int("target", 8<<10, "group target bytes")
 	form := fs.Int("form", int(sstz3.FormUKV), "representation form")
+	prods := fs.String("prod", "leveldb,rocksdb,pebble", "producers")
 	fs.Parse(args)
 	fmt.Println("| producer | request | CDC fetch (chunks) | representation fetch | components | packed bytes | logical comp bytes | read ms |")
 	fmt.Println("|---|---|---|---|---:|---:|---:|---:|")
-	for _, prod := range []string{"leveldb", "rocksdb", "pebble"} {
+	for _, prod := range strings.Split(*prods, ",") {
 		tables, _, err := loadRev(filepath.Join(*root, prod, "chain", "c0"))
 		if err != nil {
 			return err

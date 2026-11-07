@@ -1,0 +1,49 @@
+
+### rocksdb variants: cost of the revision added to a store holding r0 (packed bytes, 96 B/ref, group target 8 KiB)
+| variant | cdc | blocks | ukv |
+|---|---:|---:|---:|
+| r0 (first sight) | 20.6M | 26.6M | 22.7M |
+| n01-wholesale | 20.3M | 26.2M | 20.2M |
+| n02-randvals | 41.8M | 42.6M | 42.2M |
+| n03-unrelated | 20.5M | 25.5M | 22.2M |
+| n04-rekey | 20.5M | 26.6M | 22.7M |
+| v01-append-flush | 147.1K | 188.0K | 124.5K |
+| v02-update-flush | 177.8K | 225.1K | 187.0K |
+| v03-update-compact | 20.4M | 26.5M | 3136.4K |
+| v04-insert-compact | 20.6M | 26.8M | 4554.6K |
+| v05-delete-compact | 20.1M | 25.9M | 5157.7K |
+| v06-recompact | 20.4M | 26.5M | 801.8K |
+| v09-reexport | 20.5M | 26.6M | 944.9K |
+| v10-churn | 20.5M | 26.5M | 16.0M |
+| x01-reexport-half | 20.5M | 26.6M | 1029.5K |
+| x02-reexport-double | 20.5M | 26.6M | 966.8K |
+
+### rocksdb chain, incremental cost per state (packed bytes)
+| state | cdc | blocks | ukv |
+|---|---:|---:|---:|
+| c0 | 20.6M | 26.6M | 22.7M |
+| c1 | 147.1K | 188.0K | 124.5K |
+| c2 | 276.6K | 312.5K | 283.1K |
+| c3 | 20.7M | 26.9M | 5581.9K |
+| c4 | 20.5M | 26.4M | 4826.5K |
+| c5 | 20.4M | 26.4M | 3451.3K |
+| c6 | 20.4M | 26.4M | 810.7K |
+| c7 | 20.4M | 26.4M | 810.2K |
+
+### rocksdb chain, rolling cost per state (packed bytes)
+| state | cdc | blocks | ukv |
+|---|---:|---:|---:|
+| c0 | 20.6M | 26.6M | 22.7M |
+| c1 | 147.1K | 188.0K | 124.5K |
+| c2 | 276.6K | 312.5K | 283.1K |
+| c3 | 20.7M | 26.9M | 5581.9K |
+| c4 | 20.5M | 26.4M | 4857.6K |
+| c5 | 20.4M | 26.4M | 3462.7K |
+| c6 | 20.4M | 26.4M | 810.7K |
+| c7 | 20.4M | 26.4M | 810.2K |
+
+### rocksdb chain totals (packed)
+| state | cdc | blocks | ukv |
+|---|---:|---:|---:|
+| cumulative retained | 123.6M | 159.5M | 38.2M |
+| rolling (live state only) | 123.6M | 159.5M | 38.3M |

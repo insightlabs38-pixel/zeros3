@@ -25,5 +25,23 @@
   "producer": "RocksDB9.8.4/rocksdict0.3.29",
   "operations": "Q6 scaled chain c2",
   "codec": "zstd"
+ },
+ {
+  "file": "rocksdb_lz4_small.sst",
+  "sha256": "7634de48d98ad142e309556ef298794911f68269c6de1e8ef251c19c4b472edc",
+  "bytes": 51702,
+  "evidence": "PRODUCER_WORKLOAD",
+  "producer": "RocksDB 9.8.4 (rocksdict 0.3.29), block_size 1024, bloom 10",
+  "operations": "600 compressible key/value puts, one flush (B6)",
+  "codec": "lz4"
+ },
+ {
+  "file": "rocksdb_lz4hc_small.sst",
+  "sha256": "547fe161f5c0ecba8a77c5a6bef01787878f27688c31706851465172ac7d1b70",
+  "bytes": 49592,
+  "evidence": "PRODUCER_WORKLOAD",
+  "producer": "RocksDB 9.8.4 (rocksdict 0.3.29), block_size 1024, bloom 10",
+  "operations": "600 compressible key/value puts, one flush (B6)",
+  "codec": "lz4hc"
  }
 ]

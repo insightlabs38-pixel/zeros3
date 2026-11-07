@@ -223,9 +223,12 @@ func (d *decoder) compRec(s *Seg) (CompRec, error) {
 		if err != nil {
 			return rec, err
 		}
-		if s.Comp == CompSnapCmds {
+		switch s.Comp {
+		case CompSnapCmds:
 			rec.Cmds = b
-		} else {
+		case CompLZ4Rec:
+			rec.LZ4 = b
+		default:
 			rec.Zstd = b
 		}
 	}

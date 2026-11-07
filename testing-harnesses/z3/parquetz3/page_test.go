@@ -175,6 +175,7 @@ func TestProducerPagesAreExactlyReplayable(t *testing.T) {
 		"pa_snappy_v1.parquet":  {comp: CompSnapCPP},
 		"pa_snappy_v2.parquet":  {comp: CompSnapCPP},
 		"pa_zstd_v1.parquet":    {comp: CompZstd},
+		"pa_lz4_raw.parquet":    {comp: CompLZ4Def},
 		"pa_none_plain.parquet": {comp: CompNone},
 		"pa_bss.parquet":        {comp: CompSnapCPP},
 		"pa_rg500.parquet":      {comp: CompSnapCPP},
