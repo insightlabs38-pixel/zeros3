@@ -3,7 +3,7 @@
 set -euo pipefail
 BIN=$1; OUT=$2; HERE=$(cd "$(dirname "$0")" && pwd); source "$HERE/families.sh"; mkdir -p "$OUT/perf"; D=${D:-/home/user/b5data}
 P=$D/pythia70m; S=$D/smollm2; Q=$D/qwen05
-cb() { n=$1; shift; $BIN coderbench -json "$OUT/perf/coder_$n.json" -label $n "$@" > "$OUT/perf/coder_$n.txt"; }
+cb() { n=$1; shift; [ -s "$OUT/perf/coder_$n.json" ] && return 0; $BIN coderbench -json "$OUT/perf/coder_$n.json" -label $n "$@" > "$OUT/perf/coder_$n.txt"; }
 cb pythia70m_1000step $P/step101000.safetensors $P/step100000.safetensors
 cb smollm2_instruct_vs_base $S/instruct.safetensors $S/base.safetensors
 cb smollm2_shakespeare_vs_base $S/shakespeare.safetensors $S/base.safetensors

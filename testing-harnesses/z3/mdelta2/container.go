@@ -411,6 +411,9 @@ func (c *Container) DecodeTensor(i int, rv Resolver) ([]byte, error) {
 	t := &c.T[i]
 	w := t.DType.Width()
 	out := make([]byte, 0, t.Len)
+	if len(t.Segs) > 1 { // segments of one tensor share their base tensors: decode each base tensor once
+		rv = &memoResolver{Resolver: rv, m: map[memoKey][]byte{}, dt: map[memoKey]DType{}, tg: map[memoKey]uint32{}}
+	}
 	for si := range t.Segs {
 		s := &t.Segs[si]
 		bytes, err := c.decodeSeg(t, s, rv)
@@ -443,7 +446,13 @@ func (c *Container) baseView(s *Seg, k int, elems int64, tdt DType, rv Resolver,
 	if err != nil {
 		return Base{}, err
 	}
-	if tag(data) != r.Tag {
+	tg := uint32(0)
+	if mr, ok := rv.(*memoResolver); ok {
+		tg = mr.tag(c.Bases[r.Slot].SHA, int(r.TIdx), data)
+	} else {
+		tg = tag(data)
+	}
+	if tg != r.Tag {
 		return Base{}, ErrIdentity
 	}
 	w := int64(dt.Width())
@@ -692,4 +701,40 @@ func (c *Container) DecodeWindow(idx int, lo, hi int64, rv Resolver) ([]byte, er
 		pos += sl
 	}
 	return out, nil
+}
+
+type memoKey struct {
+	b SHA
+	i int
+}
+
+// memoResolver caches whole base tensors for the duration of one target tensor's decode.
+type memoResolver struct {
+	Resolver
+	m  map[memoKey][]byte
+	dt map[memoKey]DType
+	tg map[memoKey]uint32
+}
+
+// tag hashes a base tensor once per target tensor, not once per segment.
+func (r *memoResolver) tag(b SHA, i int, data []byte) uint32 {
+	k := memoKey{b, i}
+	if v, ok := r.tg[k]; ok {
+		return v
+	}
+	v := tag(data)
+	r.tg[k] = v
+	return v
+}
+
+func (r *memoResolver) Tensor(b SHA, i int) (DType, []byte, error) {
+	k := memoKey{b, i}
+	if d, ok := r.m[k]; ok {
+		return r.dt[k], d, nil
+	}
+	dt, d, err := r.Resolver.Tensor(b, i)
+	if err == nil {
+		r.m[k], r.dt[k] = d, dt
+	}
+	return dt, d, err
 }

@@ -39,6 +39,7 @@ func renameLayers(name string, nLayers int) string {
 func cmdDiscover(args []string) {
 	fl := flag.NewFlagSet("discover", flag.ExitOnError)
 	rename := fl.Int("rename", 0, "rotate layer numbers of the TARGET names modulo N (misleading-name control)")
+	rowperm := fl.Bool("rowperm", false, "reverse the row order of every TARGET tensor (layout-change control); also reports the cost with perfect row alignment")
 	minElems := fl.Int("min", 4096, "ignore tensors smaller than this")
 	jsonOut := fl.String("json", "", "write aggregates here")
 	fl.Parse(args)
@@ -57,6 +58,9 @@ func cmdDiscover(args []string) {
 			must(err)
 			if rn > 0 {
 				t.Name = renameLayers(t.Name, rn)
+			}
+			if mi < 0 && *rowperm && len(t.Shape) == 2 {
+				d = reverseRows(d, int(t.Shape[0]), int(t.Shape[1])*t.DType.Width())
 			}
 			out = append(out, mdelta2.NewPT(mi, i, &t, d))
 		}
@@ -87,6 +91,25 @@ func cmdDiscover(args []string) {
 		gts[ti] = g
 		oracle += g.best
 		direct += g.direct
+	}
+	if *rowperm {
+		var al float64
+		for ti, t := range tg {
+			if len(t.Shape) != 2 {
+				al += gts[ti].best
+				continue
+			}
+			u := *t
+			u.Data = reverseRows(t.Data, int(t.Shape[0]), int(t.Shape[1])*t.DT.Width())
+			b := gts[ti].direct
+			for _, p := range pool {
+				if c := mdelta2.PairCost(&u, p); c < b {
+					b = c
+				}
+			}
+			al += b
+		}
+		fmt.Printf("row-permuted target: best exact cost with identity prediction %.0f; bound if the row permutation were known (B3-style gather) %.0f; direct %.0f\n", oracle, al, direct)
 	}
 	var aggs []discAgg
 	for _, method := range mdelta2.DiscMethods {
@@ -140,4 +163,12 @@ func cmdDiscover(args []string) {
 		b, _ := json.MarshalIndent(map[string]any{"target": paths[0], "pool": paths[1:], "rename": *rename, "direct": direct, "oracle": oracle, "methods": aggs}, "", " ")
 		os.WriteFile(*jsonOut, b, 0o644)
 	}
+}
+
+func reverseRows(d []byte, rows, rowBytes int) []byte {
+	out := make([]byte, len(d))
+	for r := 0; r < rows; r++ {
+		copy(out[(rows-1-r)*rowBytes:], d[r*rowBytes:(r+1)*rowBytes])
+	}
+	return out
 }

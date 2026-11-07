@@ -154,6 +154,13 @@ func cmdSparse(args []string) {
 				r.B1Sparse = len(wire)
 			}
 		}
+		// simdelta caps inputs at 16 MiB: a tensor it cannot encode is charged at its direct cost
+		if r.B1Adaptive == 0 {
+			r.B1Adaptive = direct
+		}
+		if r.B1Sparse == 0 {
+			r.B1Sparse = direct
+		}
 		cands := map[string]int{"flate-planes": r.Plane, "nrc-whole": r.NRC, "row-sparse": r.RowSparse, "block-sparse": r.BlockSparse, "coo": r.COO, "b1-adaptive": r.B1Adaptive, "b1-sparse-xor": r.B1Sparse}
 		r.Best, r.BestBytes = "direct", direct
 		keys := make([]string, 0, len(cands))
