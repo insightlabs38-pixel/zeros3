@@ -57,6 +57,20 @@ func Analyze(plain []byte, seqs []Seq, independent bool) Recipe {
 			}
 		}
 	}
+	for lv := 3; lv <= 9; lv++ { // LZ4HC hash-chain levels
+		if k, ok := predictPrefix(PredHC, plain, lv, seqs); ok {
+			if k == len(seqs) {
+				r := Recipe{Kind: KindPredicted, Pred: PredHC, Accel: lv}
+				if n := len(r.Marshal()); n < bestLen {
+					best = r
+				}
+				return best
+			}
+			if k > bestPrefix {
+				bestPrefix, bestP = k, Recipe{Kind: KindHybrid, Pred: PredHC, Accel: lv, Prefix: k, Seqs: seqs[k:]}
+			}
+		}
+	}
 	if bestPrefix > 0 {
 		if n := len(bestP.Marshal()); n < bestLen {
 			best = bestP

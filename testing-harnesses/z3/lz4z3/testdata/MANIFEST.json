@@ -46,5 +46,29 @@
   "producer": "lz4 CLI frame behind a skippable frame, with an opaque tail",
   "predictor": "default",
   "accel": 1
+ },
+ {
+  "file": "py_hc9_pattern_9000.lz4",
+  "sha256_decoded": "3732a0f933426e05ee536dcb65f861117d8d54200ca6cc7ee280774628de55e6",
+  "decoded": 9000,
+  "producer": "python-lz4 4.4.5 high_compression level 9",
+  "predictor": "hc",
+  "accel": 9
+ },
+ {
+  "file": "py_hc3_pattern_9000.lz4",
+  "sha256_decoded": "22a4729e0fd9f3b147d9aa0ea3b025d608649768addb554b345c09eff5d5e77a",
+  "decoded": 9000,
+  "producer": "python-lz4 4.4.5 high_compression level 3",
+  "predictor": "hc",
+  "accel": 3
+ },
+ {
+  "file": "py_hc9_pattern_70000.lz4",
+  "sha256_decoded": "76719f5cef4dc0844286df9e8efdb7509cdf81e0c71cc2f47b9b2c24cd9ea503",
+  "decoded": 70000,
+  "producer": "python-lz4 4.4.5 high_compression level 9",
+  "predictor": "hc",
+  "accel": 9
  }
 ]

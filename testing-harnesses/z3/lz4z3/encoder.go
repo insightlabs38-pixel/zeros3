@@ -10,6 +10,7 @@ const (
 	PredDefault  = 1 // lz4 <= 1.9.4 fast_extState: u16 table + 4-byte hash (13 bits) below 64 KiB, u32 + 5-byte hash otherwise
 	PredContinue = 2 // LZ4_compress_fast_continue on a fresh stream (RocksDB): always u32 table + 5-byte hash
 	PredDefault5 = 3 // fast_extState with a 5-byte hash (12 bits) in the u16 table too (python-lz4 4.4.x bundled library)
+	PredHC       = 4 // LZ4HC hash-chain encoder; Accel carries the compression level 3..9 (hc.go)
 )
 
 const (
@@ -32,6 +33,9 @@ func Predict(id int, plain []byte, accel int) ([]Seq, bool) {
 	case PredDefault5:
 		u16 = len(plain) < 65547
 	case PredContinue:
+	case PredHC:
+		s, ok := HCSeqs(plain, accel)
+		return s, ok
 	default:
 		return nil, false
 	}
@@ -50,6 +54,15 @@ func predictPrefix(id int, plain []byte, accel int, target []Seq) (int, bool) {
 	case PredDefault5:
 		u16 = len(plain) < 65547
 	case PredContinue:
+	case PredHC:
+		s, aborted, ok := hcSeqs(plain, accel, target)
+		if !ok {
+			return 0, false
+		}
+		if aborted {
+			return len(s), true
+		}
+		return commonPrefix(s, target), true
 	default:
 		return 0, false
 	}

@@ -34,7 +34,7 @@ func fixtures(t *testing.T) []fixture {
 }
 
 func predID(s string) int {
-	return map[string]int{"default": PredDefault, "default5": PredDefault5, "continue": PredContinue}[s]
+	return map[string]int{"default": PredDefault, "default5": PredDefault5, "continue": PredContinue, "hc": PredHC}[s]
 }
 
 // Raw blocks written by the C library reproduce through the predictor registry byte for byte.
@@ -84,7 +84,7 @@ func replayAll(t *testing.T, data []byte) (FrameStats, []byte) {
 func TestLibraryFrames(t *testing.T) {
 	want := map[string][3]int{ // predicted, hybrid, explicit blocks
 		"cli_B4_BX_frame.lz4":    {3, 0, 0},
-		"cli_hc9_BD_frame.lz4":   {0, 1, 0},
+		"cli_hc9_BD_frame.lz4":   {1, 0, 0},
 		"cli_skippable_tail.lz4": {1, 0, 0},
 	}
 	for _, f := range fixtures(t) {
