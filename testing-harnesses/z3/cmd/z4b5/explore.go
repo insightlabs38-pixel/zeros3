@@ -156,6 +156,12 @@ func cmdExplore(args []string) {
 	wins := map[string]int{}
 	var raw, direct, best float64
 	var rows []tres
+	allKeys := map[string]bool{}
+	for _, r := range results {
+		for k := range r.Proxy {
+			allKeys[k] = true
+		}
+	}
 	for _, r := range results {
 		if r.Elems == 0 {
 			continue
@@ -165,11 +171,10 @@ func cmdExplore(args []string) {
 		direct += float64(r.Direct)
 		best += float64(r.BestEnc)
 		wins[r.Best]++
-		for k, v := range r.Proxy {
-			tot[k] += math.Min(v, float64(r.Direct))
-		}
-		for k := range tot {
-			if _, ok := r.Proxy[k]; !ok {
+		for k := range allKeys {
+			if v, ok := r.Proxy[k]; ok {
+				tot[k] += math.Min(v, float64(r.Direct))
+			} else {
 				tot[k] += float64(r.Direct)
 			}
 		}

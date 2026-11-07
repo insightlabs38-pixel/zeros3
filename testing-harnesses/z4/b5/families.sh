@@ -7,3 +7,16 @@ fam_smollm2="$D/smollm2/base.safetensors $D/smollm2/sft_only.safetensors $D/smol
 fam_qwen05="$D/qwen05/base.safetensors $D/qwen05/instruct.safetensors $D/qwen05/coder.safetensors $D/qwen05/abliterated.safetensors $D/qwen05/unsloth_instruct.safetensors"
 fam_gpt2="$D/gpt2/base.safetensors $D/gpt2/imdb.safetensors $D/gpt2/imdb_pos.safetensors"
 fam_smollm2ctl="$D/smollm2/base.safetensors $D/controls/lora.safetensors $D/controls/rows.safetensors $D/controls/scale.safetensors $D/controls/dense-tiny.safetensors"
+G=$D/gguf
+sm_q8i=$G/gguf-smollm2__qf-inst-Q8_0.gguf; sm_q8b=$G/gguf-smollm2__qf-base-Q8_0.gguf; sm_bwi=$G/gguf-smollm2-bartowski__bw-inst-Q8_0.gguf
+sm_q5i=$G/gguf-smollm2__qf-inst-Q5_K_M.gguf; sm_q5b=$G/gguf-smollm2__qf-base-Q5_K_M.gguf
+sm_q4i=$G/gguf-smollm2__qf-inst-Q4_K_M.gguf; sm_q4b=$G/gguf-smollm2__qf-base-Q4_K_M.gguf
+sm_q6i=$G/gguf-smollm2__qf-inst-Q6_K.gguf; sm_q6b=$G/gguf-smollm2__qf-base-Q6_K.gguf
+fam_smolq="$D/smollm2/base.safetensors $D/smollm2/instruct.safetensors $sm_q8i $sm_q8b $sm_bwi $sm_q5i $sm_q5b $sm_q4i $sm_q4b $sm_q6i $sm_q6b"
+par_smolq="-;-;1;0,2;1,2;1,2;0,3;1,5;0,6;1,7;0,8"
+fam_smolqonly="$sm_q8i $sm_q8b $sm_q5i $sm_q5b $sm_q4i $sm_q4b $sm_q6i $sm_q6b"
+par_smolqonly="-;0;0;2,1;2;4,3;4;6,5"
+fam_qwenq="$D/qwen05/base.safetensors $D/qwen05/instruct.safetensors $G/gguf-qwen05__qf-base-Q4_K_M.gguf $G/gguf-qwen05__qf-inst-Q4_K_M.gguf"
+par_qwenq="-;-;0;1,2"
+fam_qwenqonly="$G/gguf-qwen05__qf-inst-Q4_K_M.gguf $G/gguf-qwen05__qf-base-Q4_K_M.gguf"
+par_qwenqonly="-;0"
