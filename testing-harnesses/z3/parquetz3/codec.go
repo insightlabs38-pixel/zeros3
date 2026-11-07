@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"zeros3-z3/lz4z3"
 	"zeros3-z3/snappyz3"
 	"zeros3-z3/zstdz3"
 )
@@ -16,19 +17,23 @@ import (
 // commands; the zstdz3 skeleton and units). A predictor id is recorded only after the
 // predictor's output was compared with the original payload (the Z3-30 rule).
 const (
-	CompNone     = 0 // UNCOMPRESSED: payload == body
-	CompSnapCmds = 1 // explicit Snappy commands
-	CompSnapRef  = 2 // golang/snappy, fragment by fragment
-	CompSnapCPP  = 3 // C++ snappy 1.1.x, 14-bit hash
-	CompSnapCPP5 = 4 // C++ snappy with a 15-bit hash
-	CompZstd     = 5 // zstdz3 skeleton + units
-	CompSnapCRC  = 6 // C++ snappy 1.2.x built with CRC32C table hashing (DuckDB 2.0.0)
-	compMax      = 6
+	CompNone     = 0  // UNCOMPRESSED: payload == body
+	CompSnapCmds = 1  // explicit Snappy commands
+	CompSnapRef  = 2  // golang/snappy, fragment by fragment
+	CompSnapCPP  = 3  // C++ snappy 1.1.x, 14-bit hash
+	CompSnapCPP5 = 4  // C++ snappy with a 15-bit hash
+	CompZstd     = 5  // zstdz3 skeleton + units
+	CompSnapCRC  = 6  // C++ snappy 1.2.x built with CRC32C table hashing (DuckDB 2.0.0)
+	CompLZ4Rec   = 7  // Z4-B6: lz4z3 recipe member (explicit sequences, hybrid, or a predictor with acceleration != 1)
+	CompLZ4Def   = 8  // lz4z3.PredDefault, acceleration 1
+	CompLZ4Cont  = 9  // lz4z3.PredContinue, acceleration 1
+	CompLZ4Def5  = 10 // lz4z3.PredDefault5, acceleration 1
+	compMax      = 10
 )
 
 // CompName is the audit name of a compression id.
 func CompName(id int) string {
-	return [...]string{"none", "snappy-explicit", "snappy-go", "snappy-cpp14", "snappy-cpp15", "zstd-explicit", "snappy-cpp-crc15"}[id]
+	return [...]string{"none", "snappy-explicit", "snappy-go", "snappy-cpp14", "snappy-cpp15", "zstd-explicit", "snappy-cpp-crc15", "lz4-recipe", "lz4-default", "lz4-continue", "lz4-default5"}[id]
 }
 
 // CompRec describes how to rebuild a page's compressed payload from its body.
@@ -36,6 +41,7 @@ type CompRec struct {
 	ID    uint8
 	Cmds  []byte // CompSnapCmds: snappyz3.Marshal of the commands
 	Zstd  []byte // CompZstd: uvarint(len skeleton) | skeleton | units
+	LZ4   []byte // CompLZ4Rec: lz4z3.Recipe.Marshal
 	hints int
 }
 
@@ -55,7 +61,7 @@ func snapEncoder(id uint8) func([]byte) []byte {
 
 // Codecs reports whether the representation can replay a Parquet codec.
 func Codecs(codec int) bool {
-	return codec == CodecNone || codec == CodecSnappy || codec == CodecZstd
+	return codec == CodecNone || codec == CodecSnappy || codec == CodecZstd || codec == CodecLZ4Raw
 }
 
 // CodecName names a Parquet codec for audits.
@@ -132,8 +138,48 @@ func (c *Compressor) Analyze(payload []byte, want int64) (body []byte, rec CompR
 			return nil, rec, fmt.Errorf("%w: zstd replay differs from the page (%v)", ErrUnsupported, err)
 		}
 		return plain.Bytes(), rec, nil
+	case CodecLZ4Raw:
+		body, seqs, err := lz4z3.Decode(payload, int(want), lz4z3.Limits{MaxDecoded: int(c.lim.MaxPage)})
+		if err != nil {
+			return nil, rec, corrupt("lz4_raw page: %v", err)
+		}
+		rc := lz4z3.Analyze(body, seqs, true)
+		if rep, e := rc.Replay(nil, body, lz4z3.Limits{MaxDecoded: int(c.lim.MaxPage)}); e != nil || !bytes.Equal(rep, payload) {
+			return nil, rec, fmt.Errorf("%w: lz4 recipe differs from the page (%v)", ErrUnsupported, e)
+		}
+		if rc.Kind == lz4z3.KindPredicted && rc.Accel == 1 {
+			switch rc.Pred {
+			case lz4z3.PredDefault:
+				return body, CompRec{ID: CompLZ4Def}, nil
+			case lz4z3.PredContinue:
+				return body, CompRec{ID: CompLZ4Cont}, nil
+			case lz4z3.PredDefault5:
+				return body, CompRec{ID: CompLZ4Def5}, nil
+			}
+		}
+		return body, CompRec{ID: CompLZ4Rec, LZ4: rc.Marshal()}, nil
 	}
 	return nil, rec, unsupported("codec %s", CodecName(c.Codec))
+}
+
+func (c *Compressor) replayLZ4(rec CompRec, body []byte) ([]byte, error) {
+	lim := lz4z3.Limits{MaxDecoded: int(c.lim.MaxPage)}
+	var r lz4z3.Recipe
+	switch rec.ID {
+	case CompLZ4Def:
+		r = lz4z3.Recipe{Kind: lz4z3.KindPredicted, Pred: lz4z3.PredDefault, Accel: 1}
+	case CompLZ4Cont:
+		r = lz4z3.Recipe{Kind: lz4z3.KindPredicted, Pred: lz4z3.PredContinue, Accel: 1}
+	case CompLZ4Def5:
+		r = lz4z3.Recipe{Kind: lz4z3.KindPredicted, Pred: lz4z3.PredDefault5, Accel: 1}
+	default:
+		var n int
+		var err error
+		if r, n, err = lz4z3.Unmarshal(rec.LZ4, lim); err != nil || n != len(rec.LZ4) {
+			return nil, recipeErr("lz4 recipe: %v", err)
+		}
+	}
+	return r.Replay(nil, body, lim)
 }
 
 func (c *Compressor) replayZstd(w io.Writer, rec CompRec, body []byte) error {
@@ -170,6 +216,8 @@ func (c *Compressor) Replay(rec CompRec, body []byte) ([]byte, error) {
 			return nil, recipeErr("zstd replay: %v", err)
 		}
 		return out.Bytes(), nil
+	case CompLZ4Rec, CompLZ4Def, CompLZ4Cont, CompLZ4Def5:
+		return c.replayLZ4(rec, body)
 	}
 	return nil, recipeErr("compression id %d", rec.ID)
 }

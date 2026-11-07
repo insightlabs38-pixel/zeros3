@@ -106,7 +106,7 @@ func flagsOf(s *Seg) byte {
 	return f
 }
 
-func compNeedsMember(id uint8) bool { return id == CompSnapCmds || id == CompZstd }
+func compNeedsMember(id uint8) bool { return id == CompSnapCmds || id == CompZstd || id == CompLZ4Rec }
 
 // Marshal serializes the recipe: the head, then the member table.
 func (r *Recipe) Marshal() ([]byte, Sizes) {

@@ -96,6 +96,7 @@ type Stats struct {
 	DecodedBytes                int64
 	SnappyCmds                  int64
 	PredBlocks                  [4]int // Snappy blocks: explicit, Go-, C++1.1.10-, C++15-predicted
+	LZ4Kinds                    [3]int // LZ4 blocks: lz4z3 explicit, predicted, hybrid recipes
 	Footer                      Footer
 	RestartInterval             int
 	Components, ComponentsBytes int64
@@ -255,11 +256,20 @@ func Encode(r io.ReaderAt, size int64, opt Options, emit Emit) ([]byte, Sizes, S
 		if err != nil {
 			return nil, Sizes{}, st, err
 		}
-		dec, cmds, err := DecodeBlock(rb, lim)
+		var dec []byte
+		var cmds []snappyz3.Cmd
+		bl := BlockRec{CSize: h.Size, Trailer: rb.Trailer}
+		if rb.Comp() == CompLZ4 || rb.Comp() == CompLZ4HC { // decode and recipe in one pass
+			dec, bl.LZ4, err = analyzeLZ4Block(rb.Payload, lim)
+			if err == nil {
+				st.LZ4Kinds[lz4Kind(bl.LZ4)]++
+			}
+		} else {
+			dec, cmds, err = DecodeBlock(rb, lim)
+		}
 		if err != nil {
 			return nil, Sizes{}, st, err
 		}
-		bl := BlockRec{CSize: h.Size, Trailer: rb.Trailer}
 		st.Blocks++
 		st.CompBlocks[rb.Comp()&7]++
 		st.DataBytes += int64(h.Size) + trailerLen

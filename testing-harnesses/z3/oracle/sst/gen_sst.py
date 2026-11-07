@@ -167,7 +167,7 @@ for fam in plan["families"]:
             continue
         if c == "newdb":
             eng.close(); shutil.rmtree(path, ignore_errors=True)
-            eng.codec = "snappy"
+            eng.codec = os.environ.get("SST_CODEC", "snappy")  # B6: lz4/lz4hc chains reuse the same operation logs
             if "codec" in st:
                 if st["codec"] not in eng.codecs:
                     skip = True
