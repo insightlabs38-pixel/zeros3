@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -45,6 +46,9 @@ func main() {
 		if !f.IsDir() {
 			continue
 		}
+		if len(os.Args) > 3 && os.Args[3] != f.Name() {
+			continue
+		}
 		vdirs, _ := os.ReadDir(filepath.Join(root, f.Name()))
 		var vers []string
 		for _, v := range vdirs {
@@ -65,18 +69,21 @@ func main() {
 				st := b6cost.NewStore()
 				r := row{Family: f.Name(), View: view, Chunker: ch.Name, Versions: len(vers)}
 				for i, v := range vers {
-					files, _ := os.ReadDir(filepath.Join(root, f.Name(), v, view))
 					var inc int64
-					for _, fe := range files {
-						b, err := os.ReadFile(filepath.Join(root, f.Name(), v, view, fe.Name()))
+					filepath.WalkDir(filepath.Join(root, f.Name(), v, view), func(p string, de fs.DirEntry, err error) error {
+						if err != nil || de.IsDir() {
+							return nil
+						}
+						b, err := os.ReadFile(p)
 						if err != nil {
-							panic(err)
+							return nil // dangling links and sockets carry no bytes
 						}
 						inc += st.Add(ch, b)
 						if i == 0 {
 							r.Files++
 						}
-					}
+						return nil
+					})
 					if i == 0 {
 						r.FirstSight = inc
 					}
