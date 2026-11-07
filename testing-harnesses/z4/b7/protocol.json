@@ -1,0 +1,27 @@
+{
+ "version": 1,
+ "note": "Preregistered before any held-out policy evaluation (see git history: this file is committed before results exist).",
+ "folds": {
+  "sst":      ["sst-*", "oneoff-sst-*", "b1-rocksdb-sst", "b1-pebble-sst", "z3:rocksdb-native-state", "z3:pebble-native-state"],
+  "parquet":  ["parquet-lz4-chain", "b1-parquet-chain", "z3:parquet-native-layouts"],
+  "managed":  ["b1-clr-newtonsoft", "b1-dex-fdroid", "b4-*", "z3:clr-public", "z3:fdroid-apk-public"],
+  "archive":  ["sqfs-*", "b1-source-archives", "b1-git-*", "b1-oci-transport", "z3:git-hiredis-reexport", "z3:car-public-repack", "z3:oci-gzip-busybox", "z3:oci-zstd-busybox", "z3:merkle-deep-control", "z3:sqlite-native"],
+  "model":    ["b5-*", "b1-model-pythia", "b3-*", "z3:pythia14m-training"]
+ },
+ "split": "leave-one-fold-out: priors, thresholds and policy hyperparameters are chosen on the other four folds only; reported numbers are the held-out fold; within a stream all learning is prequential (predict, then observe).",
+ "grids": {
+  "premium_cap": [0.0, 0.05, 0.10, 0.25, 0.5],
+  "prior_strength": [1, 2, 4, 8],
+  "min_conf": [0.0, 0.2, 0.4, 0.6],
+  "invest_horizon": [1, 2, 3, 4]
+ },
+ "seeds": [11, 23, 37, 41, 53, 67, 71, 83],
+ "price_books": {
+  "A_storage": {"storage_usd_gb_month": 0.023, "horizon_months": 12, "read_io_usd_gb": 0.01, "cpu_usd_core_hour": 0.04, "migrate_io_usd_gb": 0.02},
+  "B_io_heavy": {"storage_usd_gb_month": 0.0045, "horizon_months": 12, "read_io_usd_gb": 0.05, "cpu_usd_core_hour": 0.08, "migrate_io_usd_gb": 0.05}
+ },
+ "constraints": {"depth_cap": 4, "fanout_cap": 8, "hot_range64k_amp_cap": 4.0, "temp_space_fraction_of_live": 1.0},
+ "promotion_rule": "PLANNER2_CAUSAL_PROMOTE iff the combined causal policy has lower mean operational cost than the best simple baseline (always-cdc, greedy, premium-cap-0.10, z3-expected-value) on >=4 of 5 held-out folds under BOTH price books, with mean relative improvement >=5% and no held-out fold more than 3% worse than always-cdc. SPECIALIZED iff it wins on >=2 folds but not the above. Otherwise NOT_JUSTIFIED.",
+ "oracle": "exhaustive scheme-sequence search for chain histories (<=4^8 sequences); admission.Corpus oracle (B&B, 100000-state cap) for Z3-36 object frontier; both are migration-free storage lower bounds.",
+ "simulated_events": "retention, reads and tick schedules are SIMULATED and labeled; arrival order and per-stage costs are real chronology/evidence."
+}
