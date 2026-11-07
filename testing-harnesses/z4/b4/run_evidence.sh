@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # usage: run_evidence.sh WORKDIR (after build_corpus.sh and q6_fetch_frontier_inputs.py into WORKDIR/q6)
 W=$(realpath "$1"); Z=$(cd "$(dirname "$0")/../../z3" && pwd); cd "$Z"; go build -o "$W/z4b4" ./cmd/z4b4
 B=$W/bc; C=$W/ctl; P=$W/pdb; Q=$W/q6
@@ -15,5 +16,5 @@ run "$W/z4b4" wasm $C/wasm/base.wasm $C/wasm/early.wasm $C/wasm/late.wasm $C/was
 run "$W/z4b4" perf $B/sqlite-3490100-O2.bc
 mkdir -p $W/ctlroot; ln -sfn $B $W/ctlroot/bc
 echo "### go test (real graph matching, retention, fixtures)"
-B4_CORPUS=$W go test ./graphnorm -v -run 'RealFunctionGraphMatching|MatchRetention|Renumbering|BitFlips|PDBLineOracle|TableStability' 2>&1 | grep -E "^\s+[a-z_]+\.go|^(---|ok|FAIL)"
+"$(dirname "$0")/run_gotest.sh" "$W"
 } 2>&1
