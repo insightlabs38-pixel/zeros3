@@ -29,9 +29,21 @@ type EncOpts struct {
 }
 
 type BaseSrc struct {
-	SHA SHA
-	Len int64
-	M   *Model
+	SHA      SHA
+	Len      int64
+	M        *Model
+	TDepth   []int // base-hop depth of every tensor of this base (nil = all 0)
+	GapDepth int   // hop depth of this base's header bytes (delta chain)
+}
+
+// MaxHops is the bound on base hops per tensor (StoreResolver refuses deeper chains).
+const MaxHops = MaxDepth - 1
+
+func (b BaseSrc) depth(i int) int {
+	if b.TDepth == nil || i >= len(b.TDepth) {
+		return 0
+	}
+	return b.TDepth[i]
 }
 
 // TStat is the per-tensor outcome.
@@ -44,6 +56,7 @@ type TStat struct {
 	Segs     int
 	EncMS    int64
 	Narrowed bool
+	Depth    int
 }
 
 type Stats struct {
@@ -51,6 +64,8 @@ type Stats struct {
 	Total      int
 	ModeBytes  map[string]int
 	EncodeSecs float64
+	TDepth     []int // per tensor (model order)
+	GapDepth   int
 }
 
 type option struct {
@@ -264,13 +279,18 @@ func EncodeModel(m *Model, bases []BaseSrc, cands func(ti int) [][]Pick, o EncOp
 	}
 	// header/padding bytes: delta against the best base's own gaps when that is smaller
 	bestGap := len(Deflate(gaps))
+	gapDepth := 0
 	for si, b := range bases {
+		if b.GapDepth+1 > MaxHops {
+			continue
+		}
 		bg, _, err := b.M.Gaps()
 		if err != nil || len(bg) == 0 || len(gaps) == 0 {
 			continue
 		}
 		if w, err := simdelta.Encode("adaptive", [][]byte{bg}, gaps); err == nil && len(w)+8 < bestGap {
 			bestGap, c.GapWire, c.GapSlot = len(w)+8, w, uint8(si)
+			gapDepth = b.GapDepth + 1
 		}
 	}
 	// the file digest
@@ -318,6 +338,11 @@ func EncodeModel(m *Model, bases []BaseSrc, cands func(ti int) [][]Pick, o EncOp
 	}
 	c.TailGap = m.Size - prev
 	st := &Stats{T: stats, ModeBytes: map[string]int{}}
+	st.GapDepth = gapDepth
+	st.TDepth = make([]int, len(stats))
+	for i, ts := range stats {
+		st.TDepth[order[i]] = ts.Depth
+	}
 	for _, s := range stats {
 		st.Total += s.Bytes
 		st.ModeBytes[s.Mode] += s.Bytes
@@ -330,6 +355,36 @@ func EncodeModel(m *Model, bases []BaseSrc, cands func(ti int) [][]Pick, o EncOp
 // planTensor decides one tensor (all of: copy, narrowing, whole-tensor vs segmented prediction).
 func (pl *planner) planTensor(ti int, picks [][]Pick) (TRec, TStat, error) {
 	t0 := time.Now()
+	picks = pl.depthOK(picks)
+	rec, st, err := pl.planTensor0(ti, picks, t0)
+	for _, sg := range rec.Segs {
+		for _, r := range sg.Refs {
+			if d := pl.bases[r.Slot].depth(int(r.TIdx)) + 1; d > st.Depth {
+				st.Depth = d
+			}
+		}
+	}
+	return rec, st, err
+}
+
+// depthOK drops candidates that would exceed the hop bound.
+func (pl *planner) depthOK(picks [][]Pick) [][]Pick {
+	var out [][]Pick
+	for _, ps := range picks {
+		ok := true
+		for _, p := range ps {
+			if pl.bases[p.Slot].depth(p.TIdx)+1 > MaxHops {
+				ok = false
+			}
+		}
+		if ok {
+			out = append(out, ps)
+		}
+	}
+	return out
+}
+
+func (pl *planner) planTensor0(ti int, picks [][]Pick, t0 time.Time) (TRec, TStat, error) {
 	t := &pl.m.Tensors[ti]
 	data, err := pl.m.Read(ti)
 	if err != nil {

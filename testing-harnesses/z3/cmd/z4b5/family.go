@@ -31,6 +31,7 @@ type stateOut struct {
 	NCopy     int            `json:"n_copy"`
 	NDirect   int            `json:"n_direct"`
 	NPred     int            `json:"n_pred"`
+	MaxDepth  int            `json:"max_depth"`
 }
 
 // chargeContainer is the B1 accounting unit: production pack rule, 96 B record+locator, 36 B root reference.
@@ -130,6 +131,8 @@ func cmdFamily(args []string) {
 	var shas []mdelta2.SHA
 	var sks [][]float64
 	var outs []stateOut
+	var depths [][]int
+	var gdepths []int
 	manifest := []map[string]any{}
 	var total int64
 	for i, p := range paths {
@@ -179,7 +182,7 @@ func cmdFamily(args []string) {
 		}
 		var bases []mdelta2.BaseSrc
 		for _, j := range parentIdx {
-			bases = append(bases, mdelta2.BaseSrc{SHA: shas[j], Len: models[j].Size, M: models[j]})
+			bases = append(bases, mdelta2.BaseSrc{SHA: shas[j], Len: models[j].Size, M: models[j], TDepth: depths[j], GapDepth: gdepths[j]})
 		}
 		o := opt
 		if *policy == "lin2" || *policy == "pool3lin" {
@@ -216,6 +219,14 @@ func cmdFamily(args []string) {
 		t0 := time.Now()
 		cb, st, err := mdelta2.EncodeModel(m, bases, cands, o)
 		must(err)
+		depths = append(depths, st.TDepth)
+		gdepths = append(gdepths, st.GapDepth)
+		maxd := 0
+		for _, d := range st.TDepth {
+			if d > maxd {
+				maxd = d
+			}
+		}
 		// proof before accept: decode with the original base files and compare digests
 		rv := mdelta2.ModelResolver{}
 		for _, b := range bases {
@@ -228,7 +239,7 @@ func cmdFamily(args []string) {
 		c, perr := mdelta2.ParseContainer(cb)
 		must(perr)
 		must(store.Put(c, cb))
-		so := stateOut{File: filepath.Base(p), Raw: m.Size, Container: len(cb), Charged: chargeContainer(cb), Bases: parentIdx, ModeBytes: st.ModeBytes, EncSecs: time.Since(t0).Seconds(), Exact: exact, DecMS: dec.Milliseconds()}
+		so := stateOut{File: filepath.Base(p), Raw: m.Size, Container: len(cb), Charged: chargeContainer(cb), Bases: parentIdx, ModeBytes: st.ModeBytes, MaxDepth: maxd, EncSecs: time.Since(t0).Seconds(), Exact: exact, DecMS: dec.Milliseconds()}
 		for _, ts := range st.T {
 			switch {
 			case ts.Mode == "copy":
