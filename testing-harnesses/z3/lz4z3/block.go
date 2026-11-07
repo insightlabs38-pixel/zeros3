@@ -1,5 +1,7 @@
 package lz4z3
 
+import "bytes"
+
 // Seq is one LZ4 sequence: Lit literal bytes, then a match of Match bytes (>= 4) at Off.
 // The final sequence of a block has Match == 0 and Off == 0.
 type Seq struct {
@@ -87,8 +89,12 @@ func DecodeH(block, hist []byte, want int, lim Limits) ([]byte, []Seq, error) {
 		if ml < 0 || len(out)-nh+ml > lim.MaxDecoded {
 			return nil, nil, ErrLimit
 		}
-		for i := 0; i < ml; i++ { // overlap-safe forward copy
-			out = append(out, out[len(out)-off])
+		if off >= ml {
+			out = append(out, out[len(out)-off:len(out)-off+ml]...)
+		} else {
+			for i := 0; i < ml; i++ { // overlapping copy repeats the last 'off' bytes
+				out = append(out, out[len(out)-off])
+			}
 		}
 		seqs = append(seqs, Seq{Lit: lit, Match: ml, Off: off})
 	}
@@ -172,16 +178,22 @@ func BuildH(hist, plain []byte, seqs []Seq) ([]byte, error) {
 			if s.Match > len(plain)-pos {
 				return nil, recipeErr("sequence %d: match runs past the payload", i)
 			}
-			for j := 0; j < s.Match; j++ { // the payload must contain the copy the block implies
-				k := pos + j - s.Off
-				src := byte(0)
-				if k >= 0 {
-					src = plain[k]
-				} else {
-					src = hist[nh+k]
-				}
-				if plain[pos+j] != src {
+			if pos >= s.Off && s.Off >= s.Match {
+				if !bytes.Equal(plain[pos:pos+s.Match], plain[pos-s.Off:pos-s.Off+s.Match]) {
 					return nil, recipeErr("sequence %d: payload differs from the match source", i)
+				}
+			} else {
+				for j := 0; j < s.Match; j++ { // the payload must contain the copy the block implies
+					k := pos + j - s.Off
+					src := byte(0)
+					if k >= 0 {
+						src = plain[k]
+					} else {
+						src = hist[nh+k]
+					}
+					if plain[pos+j] != src {
+						return nil, recipeErr("sequence %d: payload differs from the match source", i)
+					}
 				}
 			}
 			out = append(out, byte(s.Off), byte(s.Off>>8))

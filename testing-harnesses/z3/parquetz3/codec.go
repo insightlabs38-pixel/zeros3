@@ -143,19 +143,17 @@ func (c *Compressor) Analyze(payload []byte, want int64) (body []byte, rec CompR
 		if err != nil {
 			return nil, rec, corrupt("lz4_raw page: %v", err)
 		}
+		for _, p := range [...]struct {
+			id   int
+			comp uint8
+		}{{lz4z3.PredDefault, CompLZ4Def}, {lz4z3.PredContinue, CompLZ4Cont}, {lz4z3.PredDefault5, CompLZ4Def5}} {
+			if b, ok := lz4z3.PredictBlock(p.id, body, 1); ok && bytes.Equal(b, payload) {
+				return body, CompRec{ID: p.comp}, nil // inline id: no recipe member
+			}
+		}
 		rc := lz4z3.Analyze(body, seqs, true)
 		if rep, e := rc.Replay(nil, body, lz4z3.Limits{MaxDecoded: int(c.lim.MaxPage)}); e != nil || !bytes.Equal(rep, payload) {
 			return nil, rec, fmt.Errorf("%w: lz4 recipe differs from the page (%v)", ErrUnsupported, e)
-		}
-		if rc.Kind == lz4z3.KindPredicted && rc.Accel == 1 {
-			switch rc.Pred {
-			case lz4z3.PredDefault:
-				return body, CompRec{ID: CompLZ4Def}, nil
-			case lz4z3.PredContinue:
-				return body, CompRec{ID: CompLZ4Cont}, nil
-			case lz4z3.PredDefault5:
-				return body, CompRec{ID: CompLZ4Def5}, nil
-			}
 		}
 		return body, CompRec{ID: CompLZ4Rec, LZ4: rc.Marshal()}, nil
 	}
