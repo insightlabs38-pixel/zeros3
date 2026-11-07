@@ -1,0 +1,143 @@
+
+-- candidate "auto" vs best simple baseline per held-out fold (mean cost ratio vs always-cdc)
+  A_storage  archive  cand 0.804 best-simple 0.856 (expected-value) WIN   rel.improvement +6.0%
+  A_storage  managed  cand 0.842 best-simple 1.000 (always-cdc) WIN   rel.improvement +15.8%
+  A_storage  model    cand 0.705 best-simple 0.700 (premium-cap) lose  rel.improvement -0.7%
+  A_storage  parquet  cand 0.625 best-simple 0.633 (expected-value) WIN   rel.improvement +1.3%
+  A_storage  sst      cand 0.502 best-simple 0.561 (expected-value) WIN   rel.improvement +10.6%
+  B_io_heavy archive  cand 0.989 best-simple 1.000 (always-cdc) WIN   rel.improvement +1.1%
+  B_io_heavy managed  cand 1.087 best-simple 1.000 (always-cdc) lose  rel.improvement -8.7%
+  B_io_heavy model    cand 0.781 best-simple 0.767 (premium-cap) lose  rel.improvement -1.9%
+  B_io_heavy parquet  cand 0.798 best-simple 0.804 (expected-value) WIN   rel.improvement +0.8%
+  B_io_heavy sst      cand 0.609 best-simple 0.668 (expected-value) WIN   rel.improvement +8.9%
+  wins A=4 B=3 of 5; mean rel.improvement +3.3%; worst fold ratio A=0.842 B=1.087 => promote-rule=false, >=2-folds=true
+
+-- candidate "combined" vs best simple baseline per held-out fold (mean cost ratio vs always-cdc)
+  A_storage  archive  cand 1.035 best-simple 0.856 (expected-value) lose  rel.improvement -20.9%
+  A_storage  managed  cand 1.125 best-simple 1.000 (always-cdc) lose  rel.improvement -12.5%
+  A_storage  model    cand 0.968 best-simple 0.700 (premium-cap) lose  rel.improvement -38.4%
+  A_storage  parquet  cand 1.580 best-simple 0.633 (expected-value) lose  rel.improvement -149.4%
+  A_storage  sst      cand 0.849 best-simple 0.561 (expected-value) lose  rel.improvement -51.3%
+  B_io_heavy archive  cand 2.334 best-simple 1.000 (always-cdc) lose  rel.improvement -133.4%
+  B_io_heavy managed  cand 3.479 best-simple 1.000 (always-cdc) lose  rel.improvement -247.9%
+  B_io_heavy model    cand 1.933 best-simple 0.767 (premium-cap) lose  rel.improvement -152.2%
+  B_io_heavy parquet  cand 7.991 best-simple 0.804 (expected-value) lose  rel.improvement -894.0%
+  B_io_heavy sst      cand 3.133 best-simple 0.668 (expected-value) lose  rel.improvement -369.0%
+  wins A=0 B=0 of 5; mean rel.improvement -206.9%; worst fold ratio A=1.580 B=7.991 => promote-rule=false, >=2-folds=false
+
+-- candidate "class-prior" vs best simple baseline per held-out fold (mean cost ratio vs always-cdc)
+  A_storage  archive  cand 0.804 best-simple 0.856 (expected-value) WIN   rel.improvement +6.0%
+  A_storage  managed  cand 0.842 best-simple 1.000 (always-cdc) WIN   rel.improvement +15.8%
+  A_storage  model    cand 0.719 best-simple 0.700 (premium-cap) lose  rel.improvement -2.7%
+  A_storage  parquet  cand 0.625 best-simple 0.633 (expected-value) WIN   rel.improvement +1.3%
+  A_storage  sst      cand 0.502 best-simple 0.561 (expected-value) WIN   rel.improvement +10.6%
+  B_io_heavy archive  cand 0.989 best-simple 1.000 (always-cdc) WIN   rel.improvement +1.1%
+  B_io_heavy managed  cand 1.087 best-simple 1.000 (always-cdc) lose  rel.improvement -8.7%
+  B_io_heavy model    cand 0.792 best-simple 0.767 (premium-cap) lose  rel.improvement -3.3%
+  B_io_heavy parquet  cand 0.798 best-simple 0.804 (expected-value) WIN   rel.improvement +0.8%
+  B_io_heavy sst      cand 0.609 best-simple 0.668 (expected-value) WIN   rel.improvement +8.9%
+  wins A=4 B=3 of 5; mean rel.improvement +3.0%; worst fold ratio A=0.842 B=1.087 => promote-rule=false, >=2-folds=true
+
+-- candidate "lifetime" vs best simple baseline per held-out fold (mean cost ratio vs always-cdc)
+  A_storage  archive  cand 0.804 best-simple 0.856 (expected-value) WIN   rel.improvement +6.0%
+  A_storage  managed  cand 0.849 best-simple 1.000 (always-cdc) WIN   rel.improvement +15.1%
+  A_storage  model    cand 0.681 best-simple 0.700 (premium-cap) WIN   rel.improvement +2.7%
+  A_storage  parquet  cand 0.626 best-simple 0.633 (expected-value) WIN   rel.improvement +1.2%
+  A_storage  sst      cand 0.502 best-simple 0.561 (expected-value) WIN   rel.improvement +10.6%
+  B_io_heavy archive  cand 0.990 best-simple 1.000 (always-cdc) WIN   rel.improvement +1.0%
+  B_io_heavy managed  cand 1.094 best-simple 1.000 (always-cdc) lose  rel.improvement -9.4%
+  B_io_heavy model    cand 0.754 best-simple 0.767 (premium-cap) WIN   rel.improvement +1.6%
+  B_io_heavy parquet  cand 0.801 best-simple 0.804 (expected-value) WIN   rel.improvement +0.4%
+  B_io_heavy sst      cand 0.610 best-simple 0.668 (expected-value) WIN   rel.improvement +8.7%
+  wins A=5 B=4 of 5; mean rel.improvement +3.8%; worst fold ratio A=0.849 B=1.094 => promote-rule=false, >=2-folds=true
+
+-- candidate "sim-conf" vs best simple baseline per held-out fold (mean cost ratio vs always-cdc)
+  A_storage  archive  cand 0.809 best-simple 0.856 (expected-value) WIN   rel.improvement +5.4%
+  A_storage  managed  cand 0.839 best-simple 1.000 (always-cdc) WIN   rel.improvement +16.1%
+  A_storage  model    cand 0.704 best-simple 0.700 (premium-cap) lose  rel.improvement -0.6%
+  A_storage  parquet  cand 0.632 best-simple 0.633 (expected-value) WIN   rel.improvement +0.3%
+  A_storage  sst      cand 0.504 best-simple 0.561 (expected-value) WIN   rel.improvement +10.1%
+  B_io_heavy archive  cand 1.003 best-simple 1.000 (always-cdc) lose  rel.improvement -0.3%
+  B_io_heavy managed  cand 1.178 best-simple 1.000 (always-cdc) lose  rel.improvement -17.8%
+  B_io_heavy model    cand 0.780 best-simple 0.767 (premium-cap) lose  rel.improvement -1.7%
+  B_io_heavy parquet  cand 0.847 best-simple 0.804 (expected-value) lose  rel.improvement -5.4%
+  B_io_heavy sst      cand 0.632 best-simple 0.668 (expected-value) WIN   rel.improvement +5.4%
+  wins A=4 B=1 of 5; mean rel.improvement +1.1%; worst fold ratio A=0.839 B=1.178 => promote-rule=false, >=2-folds=true
+
+-- candidate "cons-group" vs best simple baseline per held-out fold (mean cost ratio vs always-cdc)
+  A_storage  archive  cand 0.932 best-simple 0.856 (expected-value) lose  rel.improvement -9.0%
+  A_storage  managed  cand 1.009 best-simple 1.000 (always-cdc) lose  rel.improvement -0.9%
+  A_storage  model    cand 0.695 best-simple 0.700 (premium-cap) WIN   rel.improvement +0.6%
+  A_storage  parquet  cand 0.655 best-simple 0.633 (expected-value) lose  rel.improvement -3.4%
+  A_storage  sst      cand 0.652 best-simple 0.561 (expected-value) lose  rel.improvement -16.1%
+  B_io_heavy archive  cand 1.205 best-simple 1.000 (always-cdc) lose  rel.improvement -20.5%
+  B_io_heavy managed  cand 1.582 best-simple 1.000 (always-cdc) lose  rel.improvement -58.2%
+  B_io_heavy model    cand 0.930 best-simple 0.767 (premium-cap) lose  rel.improvement -21.3%
+  B_io_heavy parquet  cand 0.870 best-simple 0.804 (expected-value) lose  rel.improvement -8.2%
+  B_io_heavy sst      cand 1.330 best-simple 0.668 (expected-value) lose  rel.improvement -99.1%
+  wins A=1 B=0 of 5; mean rel.improvement -23.6%; worst fold ratio A=1.009 B=1.582 => promote-rule=false, >=2-folds=false
+
+-- candidate "combined-no-defer" vs best simple baseline per held-out fold (mean cost ratio vs always-cdc)
+  A_storage  archive  cand 0.811 best-simple 0.856 (expected-value) WIN   rel.improvement +5.2%
+  A_storage  managed  cand 1.019 best-simple 1.000 (always-cdc) lose  rel.improvement -1.9%
+  A_storage  model    cand 0.821 best-simple 0.700 (premium-cap) lose  rel.improvement -17.4%
+  A_storage  parquet  cand 0.632 best-simple 0.633 (expected-value) WIN   rel.improvement +0.3%
+  A_storage  sst      cand 0.504 best-simple 0.561 (expected-value) WIN   rel.improvement +10.1%
+  B_io_heavy archive  cand 1.010 best-simple 1.000 (always-cdc) lose  rel.improvement -1.0%
+  B_io_heavy managed  cand 1.235 best-simple 1.000 (always-cdc) lose  rel.improvement -23.5%
+  B_io_heavy model    cand 1.418 best-simple 0.767 (premium-cap) lose  rel.improvement -85.0%
+  B_io_heavy parquet  cand 0.847 best-simple 0.804 (expected-value) lose  rel.improvement -5.4%
+  B_io_heavy sst      cand 0.631 best-simple 0.668 (expected-value) WIN   rel.improvement +5.5%
+  wins A=3 B=1 of 5; mean rel.improvement -11.3%; worst fold ratio A=1.019 B=1.418 => promote-rule=false, >=2-folds=true
+
+-- mean cost ratio vs always-cdc over all held-out worlds, 95% bootstrap CI over worlds
+  greedy             A_storage  n=160 mean 0.877 CI [0.852, 0.901]
+  greedy             B_io_heavy n=160 mean 1.001 CI [0.974, 1.029]
+  premium-cap        A_storage  n=160 mean 0.816 CI [0.794, 0.839]
+  premium-cap        B_io_heavy n=160 mean 0.947 CI [0.920, 0.977]
+  expected-value     A_storage  n=160 mean 0.753 CI [0.724, 0.784]
+  expected-value     B_io_heavy n=160 mean 0.898 CI [0.861, 0.935]
+  late-bootstrap     A_storage  n= 80 mean 0.894 CI [0.862, 0.928]
+  late-bootstrap     B_io_heavy n= 80 mean 1.019 CI [0.987, 1.057]
+  cons               A_storage  n=160 mean 0.879 CI [0.855, 0.903]
+  cons               B_io_heavy n=160 mean 1.023 CI [0.998, 1.050]
+  cons-group         A_storage  n=160 mean 0.789 CI [0.761, 0.819]
+  cons-group         B_io_heavy n=160 mean 1.183 CI [1.137, 1.232]
+  class-prior        A_storage  n=160 mean 0.698 CI [0.676, 0.721]
+  class-prior        B_io_heavy n=160 mean 0.855 CI [0.822, 0.888]
+  lifetime           A_storage  n=160 mean 0.692 CI [0.670, 0.715]
+  lifetime           B_io_heavy n=160 mean 0.850 CI [0.817, 0.884]
+  sim-conf           A_storage  n=160 mean 0.698 CI [0.675, 0.722]
+  sim-conf           B_io_heavy n=160 mean 0.888 CI [0.849, 0.930]
+  read-ev            A_storage  n=160 mean 0.727 CI [0.703, 0.749]
+  read-ev            B_io_heavy n=160 mean 0.871 CI [0.844, 0.898]
+  deferred           A_storage  n= 80 mean 1.113 CI [1.051, 1.179]
+  deferred           B_io_heavy n= 80 mean 3.335 CI [2.780, 3.923]
+  combined           A_storage  n=160 mean 1.111 CI [1.072, 1.156]
+  combined           B_io_heavy n=160 mean 3.774 CI [3.348, 4.209]
+  combined-no-defer  A_storage  n=160 mean 0.758 CI [0.728, 0.788]
+  combined-no-defer  B_io_heavy n=160 mean 1.028 CI [0.979, 1.081]
+  auto               A_storage  n=160 mean 0.696 CI [0.674, 0.718]
+  auto               B_io_heavy n=160 mean 0.853 CI [0.820, 0.885]
+
+-- worst single worlds (cost ratio vs always-cdc, book A)
+  greedy           1.144 in managed/S3-hot-reads/seed 37
+  expected-value   1.269 in managed/S3-hot-reads/seed 23
+  class-prior      1.119 in managed/S3-hot-reads/seed 41
+  auto             1.119 in managed/S3-hot-reads/seed 41
+  combined         2.039 in parquet/S3-hot-reads/seed 23
+
+-- lineage-level adverse outcomes, S1 (sum over folds+seeds) and storage regret vs static clairvoyant optimum (seed0 worlds)
+  policy                  bad   missed      ffs  bytes/cdc    regret%
+  greedy                    0       69        0      0.745     23.70%
+  premium-cap              24       41       24      0.670     11.20%
+  late-bootstrap            5       70        1      0.745     23.74%
+  expected-value           35       25       26      0.656      9.02%
+  cons                      0       69        0      0.746     23.76%
+  cons-group                0       28        0      0.631      4.82%
+  class-prior              28       13       28      0.701     10.41%
+  lifetime                 28       13       28      0.645      8.64%
+  sim-conf                 27       13       27      0.654      8.59%
+  combined                  8       47        8      0.794     33.87%
+  combined-no-defer        34       18       27      0.677     16.85%
+  auto                     28       12       28      0.682     13.27%

@@ -1,0 +1,2 @@
+
+=== A. Z3-36 policies under old vs new candidate architecture (arrivals only, storage bytes, exact oracle)

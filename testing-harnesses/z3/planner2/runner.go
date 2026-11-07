@@ -26,6 +26,7 @@ type Config struct {
 	HotAmp64Cap                       float64 // hot-tier constraint on 64 KiB range amplification (0 = off)
 	MemFactor                         float64 // modelled analysis RSS as multiple of object size
 	SkipValidate                      bool    // oracle enumeration only: skip per-event store audit
+	SpecFactor                        float64 // >1: migrations stage this multiple of the final bytes transiently (B2 measured 3-4x)
 	ValidateEvery                     int     // audit the store every N events (0/1 = every event); always audited at Finish
 	Prices                            PriceBook
 }
@@ -73,6 +74,7 @@ type Ledger struct {
 	Migrations, FailedMigrations, Reverts, Rebases   int
 	Reopts, RejectedSpace, RejectedBudget            int
 	RejectedUnanalyzed, RejectedInvalid              int
+	PutRejected                                      int // PUTs refused because even CDC no longer fits
 	Enqueued, Completed, Cancelled, Expired          int
 	MaxDepth, MaxFanout, MaxBlast                    int
 	Objects, RepObjects, Sidecars                    int
@@ -104,28 +106,29 @@ type taskRec struct {
 }
 
 type runner struct {
-	w         *World
-	cfg       Config
-	st        *Store
-	pol       Policy
-	led       *Ledger
-	objLin    map[int]int // object -> lineage index (runner truth)
-	objStage  map[int]int
-	arrived   map[int]bool
-	live      map[int][]int // lineage -> stage -> obj  (stage index)
-	stageObj  map[[2]int]int
-	analyzed  map[[2]string]bool // (obj,scheme) charged once
-	anaCache  map[[2]string]bool
-	cdcSketch []sk
-	day, seq  int
-	win       Budget // remaining window budget
-	putLeft   int64
-	inTick    bool
-	queue     []taskRec
-	migTry    int
-	sketches  map[int]map[string][]string
-	lastProbe map[int]bool
-	h         hash.Hash
+	w           *World
+	cfg         Config
+	st          *Store
+	pol         Policy
+	led         *Ledger
+	objLin      map[int]int // object -> lineage index (runner truth)
+	objStage    map[int]int
+	arrived     map[int]bool
+	live        map[int][]int // lineage -> stage -> obj  (stage index)
+	stageObj    map[[2]int]int
+	analyzed    map[[2]string]bool // (obj,scheme) charged once
+	anaCache    map[[2]string]bool
+	cdcSketch   []sk
+	day, seq    int
+	win         Budget // remaining window budget
+	putLeft     int64
+	inTick      bool
+	queue       []taskRec
+	migTry      int
+	sketches    map[int]map[string][]string
+	lastProbe   map[int]bool
+	h           hash.Hash
+	rejectedObj map[int]bool
 }
 
 type sk struct {
@@ -486,6 +489,7 @@ func NewRunner(w *World, p Policy, cfg Config) *Runner {
 		arrived: map[int]bool{}, stageObj: map[[2]int]int{}, analyzed: map[[2]string]bool{},
 		led: &Ledger{Policy: p.Name(), World: w.Name, PerLineageBytes: map[string]int64{}, FirstScheme: map[string]string{}, FinalSchemes: map[string]int{}, ReadsByTier: map[string]int64{}}}
 	r.h = sha256.New()
+	r.rejectedObj = map[int]bool{}
 	return &Runner{r: r, env: &Env{r}, lastSeq: -1, lastDay: -1}
 }
 
@@ -616,7 +620,11 @@ func (r *runner) arrive(env *Env, ev Event) error {
 		primary, side = r.mustCDC(env, ev.Obj), nil
 		marg = r.st.Marginal(primary)
 		if err2 := r.attachAll(ev.Obj, primary, nil); err2 != nil {
-			return fmt.Errorf("planner2: cannot store even the CDC fallback: %w", err2)
+			// out of space even for CDC: the PUT is refused (507); counted as a service failure
+			r.led.PutRejected++
+			r.rejectedObj[ev.Obj] = true
+			r.log(DecisionRec{Seq: ev.Seq, Day: ev.Day, Obj: ev.Obj, Kind: "put-rejected", Reason: err2.Error()})
+			return nil
 		}
 		scheme, form, d.Sidecar = CDC, primary.Form, false
 	}
@@ -693,6 +701,9 @@ func (r *runner) track() {
 
 func (r *runner) del(env *Env, ev Event) error {
 	o, ok := r.st.Obj(ev.Obj)
+	if !ok && r.rejectedObj[ev.Obj] {
+		return nil
+	}
 	if !ok || !o.Live {
 		return fmt.Errorf("planner2: delete of absent object %d", ev.Obj)
 	}

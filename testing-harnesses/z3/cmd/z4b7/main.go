@@ -59,6 +59,13 @@ func main() {
 		summarize()
 	case "exp":
 		expAll(lins)
+	case "frontier":
+		frontierReport(lins)
+	case "verdict":
+		verdict()
+	case "b2":
+		e := newExp(lins)
+		e.expB2()
 	default:
 		die(fmt.Errorf("unknown mode"))
 	}

@@ -106,6 +106,7 @@ func Scenarios() []Scenario {
 // Row is one (fold, scenario, seed, policy) outcome over a fold world.
 type Row struct {
 	Fold, Scenario, Policy                                 string
+	Book                                                   string // price book the policy PLANNED under; Cost[Book] is priced with the same book
 	Seed                                                   int64
 	Cost                                                   map[string]float64 // dollars per price book
 	Storage                                                map[string]float64
@@ -117,6 +118,7 @@ type Row struct {
 	MigrateMS                                              float64
 	Migrations, Failed, Reverts, Rebases, Reopts           int
 	Rejected                                               int
+	PutRejected                                            int
 	Enqueued, Completed, Expired, Cancelled                int
 	HotViol                                                int
 	MaxDepth, MaxFanout, MaxBlast                          int
@@ -225,12 +227,12 @@ func RunJob(j Job) ([]Row, error) {
 	var rows []Row
 	for _, name := range j.Policies {
 		led := leds[name]
-		r := Row{Fold: j.Fold, Scenario: j.Scenario.Name, Policy: name, Seed: j.Seed, Cost: map[string]float64{}, Storage: map[string]float64{},
+		r := Row{Fold: j.Fold, Scenario: j.Scenario.Name, Policy: name, Seed: j.Seed, Book: sortedKey(j.Books), Cost: map[string]float64{}, Storage: map[string]float64{},
 			FinalPhys: led.FinalPhys, Peak: led.Peak, Pinned: led.Pinned, ByteDays: led.ByteDays, Served: led.ServedBytes, Logical: led.LogicalReadBytes,
 			Decode: led.DecodeSeconds, AnalysisMSSync: led.AnalysisMSSync, AnalysisMSBg: led.AnalysisMSBg, ProbeMS: led.ProbeMS, MigrateMS: led.MigrateMS,
 			Migrations: led.Migrations, Failed: led.FailedMigrations, Reverts: led.Reverts, Rebases: led.Rebases, Reopts: led.Reopts,
-			Rejected: led.RejectedBudget + led.RejectedInvalid + led.RejectedSpace + led.RejectedUnanalyzed,
-			Enqueued: led.Enqueued, Completed: led.Completed, Expired: led.Expired, Cancelled: led.Cancelled, HotViol: led.HotViolations,
+			Rejected:    led.RejectedBudget + led.RejectedInvalid + led.RejectedSpace + led.RejectedUnanalyzed,
+			PutRejected: led.PutRejected, Enqueued: led.Enqueued, Completed: led.Completed, Expired: led.Expired, Cancelled: led.Cancelled, HotViol: led.HotViolations,
 			MaxDepth: led.MaxDepth, MaxFanout: led.MaxFanout, MaxBlast: led.MaxBlast, RepObjects: led.RepObjects, Objects: led.Objects,
 			StateBytes: led.StatePeakBytes, WallMS: float64(led.WallNS) / 1e6, OracleCost: or, OracleBytes: orBytes, OracleExact: exact && j.Oracle}
 		for bn, pb := range j.Books {
@@ -342,7 +344,7 @@ func Others(folds map[string][]Lineage, except string) []Lineage { return others
 // Tune selects the numeric parameters of each adaptive policy by coordinate search
 // using ONLY the training folds (inner leave-one-fold-out priors). The objective is
 // the mean cost ratio versus all-CDC averaged over the price books.
-func Tune(p *Protocol, folds map[string][]Lineage, heldOut string, policies []string, base Config, workers int) (map[string]AParams, map[string]float64, error) {
+func Tune(p *Protocol, folds map[string][]Lineage, heldOut, book string, policies []string, base Config, workers int) (map[string]AParams, map[string]float64, error) {
 	var train []string
 	for _, f := range p.FoldNames() {
 		if f != heldOut {
@@ -351,6 +353,8 @@ func Tune(p *Protocol, folds map[string][]Lineage, heldOut string, policies []st
 	}
 	scen := Scenarios()
 	use := []Scenario{scen[0], scen[1]}
+	base.Prices = p.Books[book]
+	bk := map[string]PriceBook{book: p.Books[book]}
 	seeds := p.Seeds[:2]
 	score := func(name string, a AParams) (float64, error) {
 		var jobs []Job
@@ -359,7 +363,7 @@ func Tune(p *Protocol, folds map[string][]Lineage, heldOut string, policies []st
 			for _, sc := range use {
 				for _, sd := range seeds {
 					jobs = append(jobs, Job{Fold: f, Scenario: sc, Seed: sd, Lins: folds[f], Prior: pr, Tuned: map[string]AParams{name: a},
-						Cfg: base, Books: p.Books, Policies: []string{"always-cdc", name}})
+						Cfg: base, Books: bk, Policies: []string{"always-cdc", name}})
 				}
 			}
 		}

@@ -76,6 +76,15 @@ func (r *runner) migrate(env *Env, a Action) {
 			return
 		}
 	}
+	// speculative staging (B2 'best-of-two' migrations): extra transient bytes above the final write
+	spec := int64(0)
+	if r.cfg.SpecFactor > 1 {
+		spec = int64(float64(marg) * (r.cfg.SpecFactor - 1))
+		if r.cfg.Capacity > 0 && r.st.Phys()+marg+spec > r.cfg.Capacity {
+			r.led.RejectedSpace++
+			return
+		}
+	}
 	// failure injection: deterministic per (seed, object, attempt)
 	r.migTry++
 	if r.cfg.FailMigrate > 0 && hash01(r.cfg.Seed, uint64(a.Obj), uint64(r.migTry), 77) < r.cfg.FailMigrate {
@@ -96,6 +105,9 @@ func (r *runner) migrate(env *Env, a Action) {
 		return
 	}
 	r.track()
+	if spec > 0 && r.st.Phys()+spec > r.led.Peak {
+		r.led.Peak = r.st.Phys() + spec
+	}
 	if a.Sidecar && target.Scheme != CDC {
 		if o.Side != nil {
 			_ = r.st.Detach(*o.Side)

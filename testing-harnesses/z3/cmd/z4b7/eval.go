@@ -47,46 +47,54 @@ func evalAll(lins []pl.Lineage) {
 	var all []pl.Row
 	t0 := time.Now()
 	tunedAll := map[string]map[string]pl.AParams{}
-	for _, held := range proto.FoldNames() {
-		tuned, scores, err := pl.Tune(proto, folds, held, adaptive, base, *workers)
-		die(err)
-		for _, ab := range pl.AblationNames {
-			if ab != "combined-no-defer" {
-				tuned[ab] = tuned["combined"]
-			}
-		}
-		// validated choice: the preset with the best TRAINING-fold score
-		chosen, bs := "", 1e18
-		for _, n := range autoSet {
-			if scores[n] < bs {
-				chosen, bs = n, scores[n]
-			}
-		}
-		tuned["__auto"] = pl.AParams{Name: chosen}
-		tunedAll[held] = tuned
-		prior := pl.Calibrate(pl.Others(folds, held))
-		fmt.Fprintf(os.Stderr, "fold %-8s lineages=%d auto=%s (train score %.3f) prior=%+v (%.0fs)\n", held, len(folds[held]), chosen, bs, prior, time.Since(t0).Seconds())
-		var jobs []pl.Job
-		for _, sc := range scenarioList() {
-			for i, sd := range seeds {
-				oracle := i == 0 && sc.Name == "S1-retain-all"
-				max := 120000
-				if i == 0 && strings.HasPrefix(sc.Name, "S2") {
-					oracle, max = true, 300
+	for _, book := range proto.BookNames() {
+		bcfg := base
+		bcfg.Prices = proto.Books[book]
+		bk := map[string]pl.PriceBook{book: proto.Books[book]}
+		for _, held := range proto.FoldNames() {
+			tuned, scores, err := pl.Tune(proto, folds, held, book, adaptive, base, *workers)
+			die(err)
+			for _, ab := range pl.AblationNames {
+				if ab != "combined-no-defer" {
+					tuned[ab] = tuned["combined"]
 				}
-				pols := full
-				if sc.Name[:2] > "S4" {
-					pols = core
-				}
-				pols = append(append([]string{}, pols...), chosen)
-				jobs = append(jobs, pl.Job{Fold: held, Scenario: sc, Seed: sd, Lins: folds[held], Prior: prior, Tuned: tuned, Cfg: base,
-					Books: proto.Books, Policies: dedupe(pols), Oracle: oracle, OracleMax: max, Auto: chosen})
 			}
-		}
-		res, err := pl.Parallel(jobs, *workers)
-		die(err)
-		for _, r := range res {
-			all = append(all, r...)
+			// validated choice: the preset with the best TRAINING-fold score under this book
+			chosen, bs := "", 1e18
+			for _, n := range autoSet {
+				if scores[n] < bs {
+					chosen, bs = n, scores[n]
+				}
+			}
+			tuned["__auto"] = pl.AParams{Name: chosen}
+			tunedAll[book+"/"+held] = tuned
+			prior := pl.Calibrate(pl.Others(folds, held))
+			fmt.Fprintf(os.Stderr, "book %s fold %-8s lineages=%d auto=%s (train score %.3f) (%.0fs)\n", book, held, len(folds[held]), chosen, bs, time.Since(t0).Seconds())
+			var jobs []pl.Job
+			for _, sc := range scenarioList() {
+				for i, sd := range seeds {
+					oracle := i == 0 && sc.Name == "S1-retain-all"
+					max := 120000
+					if i == 0 && strings.HasPrefix(sc.Name, "S2") {
+						oracle, max = true, 300
+					}
+					pols := full
+					switch {
+					case sc.Name[:2] > "S4":
+						pols = core
+					case sc.Name[:2] > "S2":
+						pols = append(append([]string{}, core...), "lineage-prior", "deferred", "combined-no-read", "late-bootstrap", "bandit")
+					}
+					pols = append(append([]string{}, pols...), chosen)
+					jobs = append(jobs, pl.Job{Fold: held, Scenario: sc, Seed: sd, Lins: folds[held], Prior: prior, Tuned: tuned, Cfg: bcfg,
+						Books: bk, Policies: dedupe(pols), Oracle: oracle, OracleMax: max, Auto: chosen})
+				}
+			}
+			res, err := pl.Parallel(jobs, *workers)
+			die(err)
+			for _, r := range res {
+				all = append(all, r...)
+			}
 		}
 	}
 	fh, err := os.Create(*out)
@@ -130,13 +138,13 @@ func summarize() {
 	books := []string{"A_storage", "B_io_heavy"}
 	// index always-cdc rows
 	type key struct {
-		fold, sc string
-		seed     int64
+		book, fold, sc string
+		seed           int64
 	}
 	cdc := map[key]pl.Row{}
 	for _, r := range rf.Rows {
 		if r.Policy == "always-cdc" {
-			cdc[key{r.Fold, r.Scenario, r.Seed}] = r
+			cdc[key{r.Book, r.Fold, r.Scenario, r.Seed}] = r
 		}
 	}
 	policies := map[string]bool{}
@@ -151,10 +159,10 @@ func summarize() {
 		var sum, sb float64
 		var n int
 		for _, r := range rf.Rows {
-			if r.Policy != p || (f != "" && r.Fold != f) || (sc != "" && r.Scenario != sc) {
+			if r.Policy != p || r.Book != b || (f != "" && r.Fold != f) || (sc != "" && r.Scenario != sc) {
 				continue
 			}
-			c := cdc[key{r.Fold, r.Scenario, r.Seed}]
+			c := cdc[key{r.Book, r.Fold, r.Scenario, r.Seed}]
 			sum += r.Cost[b] / c.Cost[b]
 			sb += float64(r.FinalPhys) / float64(c.FinalPhys)
 			n++

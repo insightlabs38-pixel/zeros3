@@ -253,6 +253,8 @@ for fam, (rawmb, n, cdcr) in RAWMB.items():
     else:
         cdc = [int(l * cdcr) for l in logical]
         src_c = "modeled(CDC total/raw x uniform state size)"
+        # exact-duplicate states (direct bytes ~0, e.g. an unsloth copy) are deduplicated by CDC as well
+        cdc = [min(c, max(d, 0) + 4096) if d < 0.01 * l else c for c, d, l in zip(cdc, std, logical)]
     sch = [dict(name="cdc", kind="cdc", dep="none", depth_cap=0, inc=cdc, std_src="modeled", inc_src=src_c, analysis_mibs=1e9,
                 decode_mibs=400.0, amp4k=23.0, amp64k=2.4, amp1m=1.1, amp_src="B5 ranges"),
            dict(name="b5-model", kind="rep", dep="chain", depth_cap=3, inc=inc, std=std, std_src="measured(b5 direct)",

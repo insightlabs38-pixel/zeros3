@@ -16,6 +16,7 @@ type expEnv struct {
 	base   pl.Config
 	tuned  map[string]map[string]pl.AParams
 	result map[string]interface{}
+	book   string // price book the policies plan under (A_storage unless an experiment says otherwise)
 }
 
 func newExp(lins []pl.Lineage) *expEnv {
@@ -23,7 +24,8 @@ func newExp(lins []pl.Lineage) *expEnv {
 	die(err)
 	folds, err := pl.SplitFolds(proto, lins)
 	die(err)
-	e := &expEnv{proto: proto, folds: folds, base: proto.BaseConfig(), result: map[string]interface{}{}}
+	e := &expEnv{proto: proto, folds: folds, base: proto.BaseConfig(), result: map[string]interface{}{}, book: "A_storage"}
+	e.base.Prices = proto.Books["A_storage"]
 	if _, err := os.Stat(*out); err == nil {
 		e.tuned = loadRows().Tuned
 	}
@@ -36,7 +38,7 @@ func (e *expEnv) tunedFor(fold, name string) *pl.AParams {
 	if e.tuned == nil {
 		return nil
 	}
-	if t, ok := e.tuned[fold][name]; ok {
+	if t, ok := e.tuned[e.book+"/"+fold][name]; ok {
 		return &t
 	}
 	return nil
@@ -57,6 +59,7 @@ func totalDollars(l *pl.Ledger, b pl.PriceBook) float64 { return l.Price(b).Tota
 
 // runOne evaluates a policy on a single lineage in a given spec with the held-out prior.
 func (e *expEnv) runWorld(w *pl.World, fold, name string, cfg pl.Config) *pl.Ledger {
+	cfg.Prices = e.proto.Books[e.book]
 	p, err := pl.PresetWith(name, e.prior(fold), e.tunedFor(fold, name))
 	die(err)
 	led, err := pl.Run(w, p, cfg)
@@ -67,6 +70,7 @@ func (e *expEnv) runWorld(w *pl.World, fold, name string, cfg pl.Config) *pl.Led
 func expAll(lins []pl.Lineage) {
 	e := newExp(lins)
 	e.expRepro()
+	e.expB2()
 	e.expGroup()
 	e.expCalib()
 	e.expSched()
@@ -132,7 +136,7 @@ func (e *expEnv) expRepro() {
 func (e *expEnv) expGroup() {
 	fmt.Println("\n=== F. Group cases: final bytes / always-cdc (S1 arrivals+ticks, retain-all); oracle = static clairvoyant")
 	names := []string{"sst-lz4-rocksdb", "b3-smollm2-forward", "b3-smollm2-reverse", "b4-llvm-o2", "b4-pdb", "b5-pythia70m", "b5-smollm2", "b1-rocksdb-sst", "parquet-lz4-chain", "b1-dex-fdroid", "b1-clr-newtonsoft"}
-	pols := []string{"greedy", "premium-cap", "expected-value", "lineage-prior", "deferred", "group-reopt", "combined", "ORACLE"}
+	pols := []string{"greedy", "premium-cap", "expected-value", "class-prior", "cons", "cons-group", "combined-no-defer", "combined", "ORACLE"}
 	fmt.Printf("%-22s", "case")
 	for _, p := range pols {
 		fmt.Printf(" %9.9s", p)
@@ -166,7 +170,7 @@ func (e *expEnv) expGroup() {
 				} else {
 					led := e.runWorld(w, f, p, cfg)
 					v = float64(led.FinalPhys) / float64(cdc.FinalPhys)
-					if p == "combined" {
+					if p == "cons-group" {
 						mig, peak = led.Migrations, float64(led.Peak)/float64(cdc.FinalPhys)
 					}
 				}
@@ -346,42 +350,62 @@ func (e *expEnv) expSched() {
 
 // ---------------------------------------------------------------- G: reads, tiers, Pareto
 func (e *expEnv) expReads() {
-	fmt.Println("\n=== G. Read/tier trade-off, S3 hot-reads and S4 cold-archive worlds pooled over folds (seed 11), book B (io heavy)")
-	bookB := e.proto.Books["B_io_heavy"]
-	bookA := e.proto.Books["A_storage"]
-	pols := []string{"always-cdc", "greedy", "expected-value", "lineage-prior", "read-ev", "deferred", "combined"}
+	fmt.Println("\n=== G. Read/tier trade-off: S3 hot-reads and S4 cold-archive worlds pooled over folds (seed 11); each book plans AND prices under itself")
+	pols := []string{"always-cdc", "greedy", "expected-value", "lineage-prior", "class-prior", "read-ev", "deferred", "combined", "cons-group"}
 	out := []map[string]interface{}{}
-	for _, scn := range []string{"S3", "S4"} {
-		fmt.Printf("%s: %-16s %10s %12s %12s %10s %8s %8s\n", scn, "policy", "bytes/cdc", "served/cdc", "storage$/cdc", "cost B/cdc", "hotViol", "maxBlast")
-		for _, p := range pols {
-			var b, bc, sv, svc, st, stc, cb, cbc float64
-			var viol, blast int
-			for _, f := range e.proto.FoldNames() {
-				for _, sc := range pl.Scenarios() {
-					if sc.Name[:2] != scn {
-						continue
-					}
-					w := pl.Build(sc.Spec(11), e.folds[f])
-					led := e.runWorld(w, f, p, e.base)
-					cdc := e.runWorld(w, f, "always-cdc", e.base)
-					b += float64(led.FinalPhys)
-					bc += float64(cdc.FinalPhys)
-					sv += float64(led.ServedBytes)
-					svc += float64(cdc.ServedBytes)
-					st += led.Price(bookA).Storage
-					stc += cdc.Price(bookA).Storage
-					cb += led.Price(bookB).Total
-					cbc += cdc.Price(bookB).Total
-					viol += led.HotViolations
-					if led.MaxBlast > blast {
-						blast = led.MaxBlast
+	for _, bn := range []string{"A_storage", "B_io_heavy"} {
+		e.book = bn
+		pb := e.proto.Books[bn]
+		for _, scn := range []string{"S3", "S4"} {
+			type pt struct {
+				b, sv float64
+				name  string
+			}
+			var pts []pt
+			fmt.Printf("%s %s: %-16s %10s %12s %10s %8s %8s\n", bn, scn, "policy", "bytes/cdc", "served/cdc", "cost/cdc", "hotViol", "maxBlast")
+			for _, p := range pols {
+				var b, bc, sv, svc, cb, cbc float64
+				var viol, blast int
+				for _, f := range e.proto.FoldNames() {
+					for _, sc := range pl.Scenarios() {
+						if sc.Name[:2] != scn {
+							continue
+						}
+						w := pl.Build(sc.Spec(11), e.folds[f])
+						led := e.runWorld(w, f, p, e.base)
+						cdc := e.runWorld(w, f, "always-cdc", e.base)
+						b += float64(led.FinalPhys)
+						bc += float64(cdc.FinalPhys)
+						sv += float64(led.ServedBytes)
+						svc += float64(cdc.ServedBytes)
+						cb += led.Price(pb).Total
+						cbc += cdc.Price(pb).Total
+						viol += led.HotViolations
+						if led.MaxBlast > blast {
+							blast = led.MaxBlast
+						}
 					}
 				}
+				pts = append(pts, pt{b / bc, sv / svc, p})
+				fmt.Printf("%s %s: %-16s %10.3f %12.3f %10.3f %8d %8d\n", bn, scn, p, b/bc, sv/svc, cb/cbc, viol, blast)
+				out = append(out, map[string]interface{}{"book": bn, "scenario": scn, "policy": p, "bytes": b / bc, "served": sv / svc, "cost": cb / cbc, "hot_violations": viol, "max_blast": blast})
 			}
-			fmt.Printf("%s: %-16s %10.3f %12.3f %12.3f %10.3f %8d %8d\n", scn, p, b/bc, sv/svc, st/stc, cb/cbc, viol, blast)
-			out = append(out, map[string]interface{}{"scenario": scn, "policy": p, "bytes": b / bc, "served": sv / svc, "storage": st / stc, "cost_b": cb / cbc, "hot_violations": viol, "max_blast": blast})
+			fmt.Printf("%s %s Pareto-optimal on (bytes, served read bytes):", bn, scn)
+			for i, p := range pts {
+				dom := false
+				for j, q := range pts {
+					if j != i && q.b <= p.b+1e-9 && q.sv <= p.sv+1e-9 && (q.b < p.b-1e-9 || q.sv < p.sv-1e-9) {
+						dom = true
+					}
+				}
+				if !dom {
+					fmt.Printf(" %s", p.name)
+				}
+			}
+			fmt.Println()
 		}
 	}
+	e.book = "A_storage"
 	e.result["G_reads"] = out
 }
 
@@ -408,6 +432,7 @@ func (e *expEnv) expSens() {
 		{"histories truncated to 3 stages", func(c *pl.Config) {}, func(s *pl.Spec) {}, 3},
 		{"depth cap 1", func(c *pl.Config) { c.DepthCap = 1 }, func(s *pl.Spec) {}, 0},
 		{"fanout cap 1", func(c *pl.Config) { c.FanoutCap = 1 }, func(s *pl.Spec) {}, 0},
+		{"speculative staging x3.6 (B2 peak)", func(c *pl.Config) { c.SpecFactor = 3.6 }, func(s *pl.Spec) {}, 0},
 		{"tiny maintenance windows", func(c *pl.Config) {}, func(s *pl.Spec) { s.Window = pl.Budget{CPUMS: 500, IOBytes: 1 << 20} }, 0},
 	}
 	out := []map[string]interface{}{}
@@ -450,4 +475,68 @@ func (e *expEnv) expSens() {
 	}
 	e.result["Sens"] = out
 	_ = sort.Strings
+}
+
+// ---------------------------------------------------------------- D: B2 isolated physical reference
+func (e *expEnv) expB2() {
+	fmt.Println("\n=== D. Model vs B2 measured physical store (draft #97 economics rows; different inputs than B1, so ratios are compared, not bytes)")
+	raw, err := os.ReadFile("../z4/b7/b2_reference.json")
+	die(err)
+	var ref struct {
+		Families map[string]map[string]map[string]float64 `json:"families"`
+	}
+	die(json.Unmarshal(raw, &ref))
+	pairs := [][2]string{{"b1-clr-newtonsoft", "clr-short"}, {"b1-dex-fdroid", "dex"}, {"b1-parquet-chain", "parquet"}, {"b1-source-archives", "src-tar-short"}, {"b1-git-history", "git"}}
+	fmt.Printf("%-20s | %-34s | %-34s | %-30s\n", "family", "additive sidecar (model | B2)", "archive all-rep (model | B2 best)", "hot-hybrid newest=CDC (model | B2)")
+	out := []map[string]interface{}{}
+	for _, f := range e.proto.FoldNames() {
+		for _, l := range e.folds[f] {
+			for _, pr := range pairs {
+				if l.Name() != pr[0] {
+					continue
+				}
+				b := ref.Families[pr[1]]
+				cdc := b["cdc"]["phys"]
+				n := l.Len()
+				w := pl.ArrivalsOnly(l)
+				cfg := e.base
+				cfg.ValidateEvery = 0
+				plan := func(last bool) float64 {
+					m := map[int]pl.PlanChoice{}
+					for t := 0; t < n; t++ {
+						m[t] = pl.PlanChoice{Scheme: "b1-delta"}
+						if last && t == n-1 {
+							m[t] = pl.PlanChoice{Scheme: pl.CDC}
+						}
+					}
+					led, err := pl.Run(w, &pl.PlanPolicy{Plan: m, Tag: "ref"}, cfg)
+					die(err)
+					return float64(led.FinalPhys)
+				}
+				cd, err := pl.Run(w, mustPolicy("always-cdc", e.prior(f)), cfg)
+				die(err)
+				base := float64(cd.FinalPhys)
+				arch := plan(false) / base
+				hyb := plan(true) / base
+				bestB := math.Inf(1)
+				for _, k := range []string{"auth-archive-oldest", "auth-archive-newest", "auth-archive-depth4"} {
+					if v, ok := b[k]["phys"]; ok && v < bestB {
+						bestB = v
+					}
+				}
+				best := bestB / cdc
+				fmt.Printf("%-20s | %6.2fx | %6.2fx (CDC+rep)      | %6.3fx | %6.3fx                    | %6.3fx | %6.3fx\n", pr[0], 1+arch, b["cdc+additive-rep"]["phys"]/cdc, arch, best, hyb, b["auth-hot-hybrid"]["phys"]/cdc)
+				out = append(out, map[string]interface{}{"family": pr[0], "b2": pr[1], "model_additive": 1 + arch, "b2_additive": b["cdc+additive-rep"]["phys"] / cdc,
+					"model_archive": arch, "b2_archive_best": best, "model_hybrid": hyb, "b2_hybrid": b["auth-hot-hybrid"]["phys"] / cdc,
+					"b2_peak_over_cdc": b["auth-hot-hybrid"]["peak_during_migration"] / cdc, "b2_mixed_greedy": b["auth-mixed-oldest"]["phys"] / cdc})
+			}
+		}
+	}
+	e.result["D_b2_reference"] = out
+}
+
+func mustPolicy(n string, p pl.Prior) pl.Policy {
+	x, err := pl.Preset(n, p)
+	die(err)
+	return x
 }
