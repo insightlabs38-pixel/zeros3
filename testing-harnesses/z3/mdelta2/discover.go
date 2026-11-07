@@ -29,6 +29,13 @@ type PT struct {
 	B1C  []uint64 // coarse numeric features
 }
 
+// NewPTLite builds the sketches and drops the payload (discovery over large pools).
+func NewPTLite(model, idx int, t *Tensor, data []byte) *PT {
+	p := NewPT(model, idx, t, data)
+	p.Data = nil
+	return p
+}
+
 func NewPT(model, idx int, t *Tensor, data []byte) *PT {
 	dt := t.DType
 	if dt == DF32 {

@@ -20,3 +20,5 @@ fam_qwenq="$D/qwen05/base.safetensors $D/qwen05/instruct.safetensors $G/gguf-qwe
 par_qwenq="-;-;0;1,2"
 fam_qwenqonly="$G/gguf-qwen05__qf-inst-Q4_K_M.gguf $G/gguf-qwen05__qf-base-Q4_K_M.gguf"
 par_qwenqonly="-;0"
+fam_qwenabl="$D/qwen05/instruct.safetensors $D/qwen05/abliterated.safetensors"
+fam_qwenpair="$D/qwen05/base.safetensors $D/qwen05/instruct.safetensors"

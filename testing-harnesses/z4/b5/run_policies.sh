@@ -9,7 +9,7 @@ pols=${*:-"direct first prev sel2 lin2 pool3"}
 [ -s "$OUT/$FAM/cdc.jsonl" ] || $BIN cdc $files > "$OUT/$FAM/cdc.jsonl"
 for p in $pols; do
   extra=""; q=$p
-  case $p in pool3seg) extra="-seg"; q=pool3;; prev-nonarrow) extra="-narrow=false"; q=prev;; direct-nonarrow) extra="-narrow=false"; q=direct;; esac
+  case $p in first-disc) extra="-disc"; q=first;; prev-disc) extra="-disc"; q=prev;; first-hyb) extra="-aff -low 1,4,16 -lin -seg"; q=first;; pool3-hyb) extra="-aff -low 1,4,16 -lin -seg"; q=pool3;; prev-hyb) extra="-aff -low 1,4,16 -lin -seg"; q=prev;; pool3seg) extra="-seg"; q=pool3;; prev-nonarrow) extra="-narrow=false"; q=prev;; direct-nonarrow) extra="-narrow=false"; q=direct;; esac
   [ -s "$OUT/$FAM/$p.verify.json" ] && continue   # resumable: finished policies are kept
   S="$OUT/$FAM/store_$p"; rm -rf "$S" "$OUT/$FAM/replay_$p"
   $BIN family -policy $q $extra -store "$S" -json "$OUT/$FAM/$p.json" $files > "$OUT/$FAM/$p.log"

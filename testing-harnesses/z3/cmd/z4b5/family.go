@@ -111,6 +111,7 @@ func cmdFamily(args []string) {
 	coders := fl.String("coders", "1,2", "coder ids")
 	parents := fl.String("parents", "", "explicit parents per state, e.g. '-;0;0,1;1' (oracle/re-rooting)")
 	jsonOut := fl.String("json", "", "write JSON result here")
+	disc := fl.Bool("disc", false, "content-based candidate discovery (ignore names): best same-size tensor per base by numerical sketch")
 	hfmap := fl.Bool("hfmap", false, "map GGUF tensor names to Safetensors names for float->quantized reproduction")
 	heads := fl.String("heads", "0,0", "llama q/k permutation heads (n_head,n_kv); 0 = none")
 	fl.Parse(args)
@@ -146,6 +147,24 @@ func cmdFamily(args []string) {
 		fb = nil
 		if *policy == "pool3" || *policy == "pool3lin" {
 			sks = append(sks, sketch(m))
+		}
+		dupOf := -1
+		for j := 0; j < i; j++ {
+			if shas[j] == shas[i] {
+				dupOf = j
+				break
+			}
+		}
+		if dupOf >= 0 { // byte-identical to an earlier state: content addressing stores nothing new
+			depths = append(depths, depths[dupOf])
+			gdepths = append(gdepths, gdepths[dupOf])
+			so := stateOut{File: filepath.Base(p), Raw: m.Size, Charged: 36, Bases: []int{dupOf}, ModeBytes: map[string]int{"identical-state": 0}, Exact: true}
+			outs = append(outs, so)
+			total += so.Charged
+			manifest = append(manifest, map[string]any{"path": p, "sha256": hex.EncodeToString(shas[i][:]), "size": m.Size})
+			b, _ := json.Marshal(so)
+			fmt.Println(string(b))
+			continue
 		}
 		var parentIdx []int
 		switch {
@@ -188,9 +207,62 @@ func cmdFamily(args []string) {
 		if *policy == "lin2" || *policy == "pool3lin" {
 			o.Lin = true
 		}
+		var discPick map[int][]mdelta2.Pick // target tensor -> content-matched pick per base slot
+		if *disc && len(bases) > 0 {
+			discPick = map[int][]mdelta2.Pick{}
+			var pools [][]*mdelta2.PT
+			for s, b := range bases {
+				var pl []*mdelta2.PT
+				for j := range b.M.Tensors {
+					if !b.M.Tensors[j].DType.IsFloat() {
+						continue
+					}
+					d, _ := b.M.Read(j)
+					pt := mdelta2.NewPTLite(s, j, &b.M.Tensors[j], d)
+					pl = append(pl, pt)
+				}
+				pools = append(pools, pl)
+			}
+			for ti := range m.Tensors {
+				if !m.Tensors[ti].DType.IsFloat() {
+					continue
+				}
+				d, _ := m.Read(ti)
+				tp := mdelta2.NewPTLite(-1, ti, &m.Tensors[ti], d)
+				for s := range bases {
+					bestS, bestJ := 0.0, -1
+					for _, c := range pools[s] {
+						if c.Elems != tp.Elems {
+							continue
+						}
+						sc := mdelta2.Score("sha", tp, c)*10 + mdelta2.Score("combined", tp, c)
+						if sc > bestS {
+							bestS, bestJ = sc, c.Idx
+						}
+					}
+					if bestJ >= 0 {
+						discPick[ti] = append(discPick[ti], mdelta2.Pick{Slot: s, TIdx: bestJ})
+					}
+				}
+			}
+		}
 		cands := func(ti int) [][]mdelta2.Pick {
 			var out [][]mdelta2.Pick
 			var singles []mdelta2.Pick
+			if discPick != nil {
+				singles = discPick[ti]
+				for _, pk := range singles {
+					out = append(out, []mdelta2.Pick{pk})
+				}
+				if o.Lin {
+					for a := 0; a < len(singles); a++ {
+						for b := a + 1; b < len(singles); b++ {
+							out = append(out, []mdelta2.Pick{singles[a], singles[b]})
+						}
+					}
+				}
+				return out
+			}
 			for s, b := range bases {
 				if j, ok := b.M.Index(m.Tensors[ti].Name); ok {
 					singles = append(singles, mdelta2.Pick{Slot: s, TIdx: j})
