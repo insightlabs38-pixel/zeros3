@@ -175,7 +175,7 @@ func (s *Store) PutObjectChecked(bucket, key string, body []byte, contentType st
 	if err := s.HeadBucket(bucket); err != nil {
 		return nil, err
 	}
-	ing, err := s.ingestStream(bytes.NewReader(body), true, ingestOptions{size: int64(len(body))})
+	ing, err := s.ingestStream(bytes.NewReader(body), true, ingestOptions{size: int64(len(body)), overlapFlush: true})
 	if err != nil {
 		return nil, err
 	}
@@ -37815,9 +37815,8 @@ func TestCASBatch_PublicationBarrier(t *testing.T) {
 		}
 		// Every rename is done and the chunk's final path exists, but the
 		// directory fsync has not run: the barrier must still be held.
-		if store.casPubMu.TryRLock() {
-			store.casPubMu.RUnlock()
-			t.Error("publication barrier not held between rename and directory fsync")
+		if store.pub.inFlight(sum) == nil {
+			t.Error("publication claim not held between rename and directory fsync")
 		}
 		if _, err := os.Stat(store.chunkPath(sum)); err != nil {
 			t.Errorf("final path should already exist: %v", err)
