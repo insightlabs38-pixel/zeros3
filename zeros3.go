@@ -1633,7 +1633,22 @@ var (
 	directPackTarget int64 = defaultPackTargetBytes
 )
 
+// directPackFlushKiB, when positive, replaces the final-remainder minimum
+// (target/packMinFraction) below which a request's new chunks go loose
+// instead of forming a small pack. Benchmark knob: ZEROS3_DIRECT_PACK_FLUSH_KIB.
+var directPackFlushKiB int64
+
+func directPackFlushMin() int64 {
+	if directPackFlushKiB > 0 {
+		return directPackFlushKiB << 10
+	}
+	return directPackTarget / packMinFraction
+}
+
 func init() {
+	if n, err := strconv.Atoi(os.Getenv("ZEROS3_DIRECT_PACK_FLUSH_KIB")); err == nil && n > 0 {
+		directPackFlushKiB = int64(n)
+	}
 	if n, err := strconv.Atoi(os.Getenv("ZEROS3_DIRECT_PACK_MIB")); err == nil && n >= 0 && n <= 1<<20 {
 		directPackMinBytes = int64(n) << 20
 		if n == 0 {
@@ -1815,7 +1830,7 @@ func (p *packSink) Flush() error {
 	if b == nil {
 		return p.waitJobs()
 	}
-	if b.LogicalBytes() >= directPackTarget/packMinFraction {
+	if b.LogicalBytes() >= directPackFlushMin() {
 		if err := p.publish(); err != nil {
 			p.waitJobs()
 			return err
