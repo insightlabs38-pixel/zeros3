@@ -1,0 +1,33 @@
+registered rule: PLANNER2_CAUSAL_PROMOTE iff the combined causal policy has lower mean operational cost than the best simple baseline (always-cdc, greedy, premium-cap-0.10, z3-expected-value) on >=4 of 5 held-out folds under BOTH price books, with mean relative improvement >=5% and no held-out fold more than 3% worse than always-cdc. SPECIALIZED iff it wins on >=2 folds but not the above. Otherwise NOT_JUSTIFIED.
+
+[combined] => NOT_JUSTIFIED
+   A_storage {"wins": 0, "mean_improvement": -0.5175751345173408, "worst_vs_cdc": 1.5797655163966133, "per_fold_imp": [-0.176, -0.023, -0.377, -1.494, -0.518]}
+   B_io_heavy {"wins": 0, "mean_improvement": -1.3517670113693947, "worst_vs_cdc": 4.126334085872579, "per_fold_imp": [-0.081, -0.39, -0.476, -4.132, -1.68]}
+
+[auto] => SPECIALIZED(>=2 folds in both books)
+   A_storage {"wins": 4, "mean_improvement": 0.06595420561046225, "worst_vs_cdc": 0.8421915686165673, "per_fold_imp": [0.06, 0.158, -0.007, 0.013, 0.106]}
+   B_io_heavy {"wins": 3, "mean_improvement": 0.00032419547952216335, "worst_vs_cdc": 1.08660807214525, "per_fold_imp": [0.011, -0.087, -0.019, 0.008, 0.089]}
+
+[class-prior] => SPECIALIZED(>=2 folds in both books)
+   A_storage {"wins": 4, "mean_improvement": 0.061899300476932775, "worst_vs_cdc": 0.8421915686165673, "per_fold_imp": [0.06, 0.158, -0.027, 0.013, 0.106]}
+   B_io_heavy {"wins": 3, "mean_improvement": -0.002576410133011059, "worst_vs_cdc": 1.08660807214525, "per_fold_imp": [0.011, -0.087, -0.033, 0.008, 0.089]}
+
+[lifetime] => SPECIALIZED(>=2 folds in both books)
+   A_storage {"wins": 5, "mean_improvement": 0.0711192631586755, "worst_vs_cdc": 0.8488394368897165, "per_fold_imp": [0.06, 0.151, 0.027, 0.012, 0.106]}
+   B_io_heavy {"wins": 4, "mean_improvement": 0.002907235525607476, "worst_vs_cdc": 1.094382166877055, "per_fold_imp": [0.009, -0.094, 0.009, 0.004, 0.087]}
+
+[combined-no-defer] => SPECIALIZED-in-one-book-only
+   A_storage {"wins": 4, "mean_improvement": 0.02717151959199118, "worst_vs_cdc": 0.848601230682044, "per_fold_imp": [0.052, 0.151, -0.172, 0.003, 0.101]}
+   B_io_heavy {"wins": 1, "mean_improvement": -0.10621459460203872, "worst_vs_cdc": 1.049800869248512, "per_fold_imp": [-0.008, -0.05, -0.281, -0.249, 0.057]}
+
+[cons-group] => NOT_JUSTIFIED
+   A_storage {"wins": 1, "mean_improvement": -0.0634306973822334, "worst_vs_cdc": 1.0089292848237381, "per_fold_imp": [-0.09, -0.009, 0.006, -0.034, -0.191]}
+   B_io_heavy {"wins": 0, "mean_improvement": -0.2430320713724582, "worst_vs_cdc": 1.2680193194659632, "per_fold_imp": [-0.121, -0.268, -0.092, -0.131, -0.603]}
+
+auto: mean per-fold improvement over best simple, dropping one fold
+A_storage {'archive': 0.06, 'managed': 0.158, 'model': -0.007, 'parquet': 0.013, 'sst': 0.106} all 0.066 drop: {'archive': 0.0674, 'managed': 0.043, 'model': 0.0841, 'parquet': 0.0793, 'sst': 0.0559}
+B_io_heavy {'archive': 0.011, 'managed': -0.087, 'model': -0.019, 'parquet': 0.008, 'sst': 0.089} all 0.0003 drop: {'archive': -0.0023, 'managed': 0.0221, 'model': 0.0051, 'parquet': -0.0015, 'sst': -0.0218}
+A_storage cluster-bootstrap (fold x scenario) mean improvement 95%CI: 0.0321 0.0993 point 0.066
+B_io_heavy cluster-bootstrap (fold x scenario) mean improvement 95%CI: -0.0363 0.0358 point 0.0003
+A_storage auto worlds worse than CDC: 4 of 160 worst 1.119
+B_io_heavy auto worlds worse than CDC: 44 of 160 worst 1.587

@@ -1,0 +1,8 @@
+ok  	zeros3-z3/planner2	16.442s
+ok  	zeros3-z3/semcas	0.247s
+ok  	zeros3-z3/graphnorm	18.475s
+ok  	zeros3-z3/mdelta2	17.215s
+ok  	zeros3-z3/lz4z3	3.130s
+ok  	zeros3-z3/simdelta	1.505s
+ok  	zeros3-z3/sqfsz3	20.258s
+exit=0

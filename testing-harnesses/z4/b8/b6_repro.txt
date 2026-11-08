@@ -1,0 +1,36 @@
+# B6 independent regeneration (pyarrow 26.0.1, rocksdict 0.3.29/RocksDB 9.8.4, lz4 4.4.5 in a fresh venv)
+## Parquet chain (z3parquet chain: cumulative retained, packed estimate)
+=== lz4
+| **total (live state only)** | **69.8M** | **76.0M** | **29.0M** |
+lock-in (cumulative retained): all CDC 68.9M | logical from first sight 29.0M | greedy per-file 29.0M (logical,logical,logical,logical,logical,logical,logical,logical) | hindsight 29.0M
+=== snappy
+| **total (live state only)** | **91.0M** | **76.0M** | **29.0M** |
+lock-in (cumulative retained): all CDC 90.9M | logical from first sight 29.0M | greedy per-file 29.0M (logical,logical,logical,logical,logical,logical,logical,logical) | hindsight 29.0M
+=== brotli
+| **total (live state only)** | **77.0M** | **69.7M** | **77.0M** |
+lock-in (cumulative retained): all CDC 76.9M | logical from first sight 76.9M | greedy per-file 76.9M (cdc,cdc,cdc,cdc,cdc,cdc,cdc,cdc) | hindsight 76.9M
+## RocksDB LZ4 chain: fresh-process pack/unpack + independent sha256sum
+sst: 59 files exact (fresh process, independent sha256sum)
+## RocksDB chain+variants regenerated (rocksdict 0.3.29 / RocksDB 9.8.4): fresh-process pack/unpack, independent sha256sum
+sst: 174 files exact (fresh process, independent sha256sum)
+## z3sst econ (packed bytes) LZ4 corpus
+### rocksdb chain totals (packed)
+| state | cdc | blocks | ukv |
+|---|---:|---:|---:|
+| cumulative retained | 123.6M | 159.5M | 38.2M |
+| rolling (live state only) | 123.6M | 159.5M | 38.3M |
+## Snappy twin
+### rocksdb chain totals (packed)
+| state | cdc | blocks | ukv |
+|---|---:|---:|---:|
+| cumulative retained | 123.0M | 162.3M | 37.9M |
+| rolling (live state only) | 123.0M | 162.3M | 38.0M |
+## Parquet-Brotli parity probe (python-brotli; 3 files x 24 pages)
+pages 72, compressed bytes 4036475
+quality=5 lgwin=22 mode=0: 51/72 pages exact
+quality=6 lgwin=22 mode=0: 51/72 pages exact
+quality=7 lgwin=22 mode=0: 66/72 pages exact
+quality=8 lgwin=22 mode=0: 72/72 pages exact
+quality=9 lgwin=22 mode=0: 59/72 pages exact
+quality=11 lgwin=22 mode=0: 6/67 pages exact
+pages reproduced by at least one config: 72/72; unreproduced compressed bytes 0

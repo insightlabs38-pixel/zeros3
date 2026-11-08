@@ -1,0 +1,8 @@
+family          CDC MB archive-best newest-order hot-hybrid B7 model hybrid  hybrid/archive saving decision same?
+clr-long          3.22        0.801        0.801      0.815                                   0.93              -
+clr-short         1.41        0.715        0.730      0.761            0.82                   0.84            yes
+dex              23.35        0.876        0.876      0.965            1.47                   0.28             NO
+git              15.92        0.819        0.906      1.000            1.55                  -0.00            yes
+parquet          19.55        0.897        0.915      1.001            1.70                  -0.01            yes
+sqlite           18.28        0.269        0.273      0.754                                   0.34              -
+src-tar-short    45.11        0.499          nan      0.731            0.93                   0.54            yes

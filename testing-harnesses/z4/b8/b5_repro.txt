@@ -1,0 +1,11 @@
+# B5 independent subset: Pythia-14M steps 1000/2000/3000 (q6 pinned F16), z4b5 cdc/family, fresh-process replay
+{"file":"step1000.safetensors","raw":28143920,"prod_inc":28187671,"prod_cum":28187671,"fine_inc":28565604,"fine_cum":28565604}
+{"file":"step2000.safetensors","raw":28143920,"prod_inc":28184563,"prod_cum":56372234,"fine_inc":28570926,"fine_cum":57136530}
+{"file":"step3000.safetensors","raw":28143920,"prod_inc":28188092,"prod_cum":84560326,"fine_inc":28572211,"fine_cum":85708741}
+direct store bytes 71530769 verify {"store": "store_direct", "states": 3, "exact": 3, "bad": 0}
+first store bytes 71383590 verify {"store": "store_first", "states": 3, "exact": 3, "bad": 0}
+prev store bytes 70251085 verify {"store": "store_prev", "states": 3, "exact": 3, "bad": 0}
+pool3 store bytes 70251121 verify {"store": "store_pool3", "states": 3, "exact": 3, "bad": 0}
+# step1000 Pythia-70M F32: pin sha256 matches pins.json; F16-representable check:
+F32 elements 70426624, exactly F16-representable 70426624 (100.00%)
+raw F32 281706496  zlib6(F32) 165461304 (0.587)  zlib6(F16 narrowed) 129898801 (0.461 of raw F32)

@@ -1,0 +1,38 @@
+Blended physical store bytes / CDC  (cons | central | opt), hot share of versioned data h
+HYPOTHETICAL mixes x measured/standalone per-class ratios (see CLS tags); not a field estimate
+
+--- hot share h=0.0
+artifact/CI registry             A: 1.000 | 1.000 | 1.000   B: 0.901 | 0.782 | 0.673   C: 0.888 | 0.741 | 0.649
+ML model hub                     A: 1.000 | 1.000 | 1.000   B: 0.910 | 0.826 | 0.750   C: 0.891 | 0.691 | 0.590
+general S3 (mostly unrelated)    A: 1.000 | 1.000 | 1.000   B: 0.987 | 0.971 | 0.955   C: 0.983 | 0.963 | 0.955
+--- hot share h=0.5
+artifact/CI registry             A: 1.000 | 1.000 | 1.000   B: 0.945 | 0.844 | 0.749   C: 0.939 | 0.824 | 0.737
+ML model hub                     A: 1.000 | 1.000 | 1.000   B: 0.955 | 0.891 | 0.827   C: 0.946 | 0.824 | 0.747
+general S3 (mostly unrelated)    A: 1.000 | 1.000 | 1.000   B: 0.993 | 0.979 | 0.965   C: 0.991 | 0.976 | 0.965
+--- hot share h=1.0
+artifact/CI registry             A: 1.000 | 1.000 | 1.000   B: 0.989 | 0.907 | 0.825   C: 0.989 | 0.907 | 0.825
+ML model hub                     A: 1.000 | 1.000 | 1.000   B: 1.000 | 0.957 | 0.905   C: 1.000 | 0.957 | 0.905
+general S3 (mostly unrelated)    A: 1.000 | 1.000 | 1.000   B: 0.999 | 0.988 | 0.976   C: 0.999 | 0.988 | 0.976
+
+Break-even: share of store that must be in versioned/reusable classes for a total saving >= 5% (option B central, archive-only):
+  mean central per-class ratio over reusable classes = 0.689 -> saving per reusable byte 0.31; share needed = 0.16
+
+Analysis-CPU break-even: a representation pays its encode CPU if saved_fraction*storage$ > CPU time*cpu$ (per GB, 12 months)
+  A_storage: storage $0.023/GB-mo, cpu $0.04/core-h
+    NRC/FPE model coder (B5, 10-24 MiB/s)          CPU $0.00108/GB  -> break-even saved fraction   0.4% of the encoded bytes
+    B6 SST/Parquet analyze (27 MiB/s)              CPU $0.00042/GB  -> break-even saved fraction   0.2% of the encoded bytes
+    B4 LLVM encode (7.1 MiB/s)                     CPU $0.00160/GB  -> break-even saved fraction   0.6% of the encoded bytes
+    B4 LLVM per-function proof (2.5 MiB/s)         CPU $0.00455/GB  -> break-even saved fraction   1.6% of the encoded bytes
+    B5 hybrid low-rank ladder (0.6-3.7 MiB/s)      CPU $0.00759/GB  -> break-even saved fraction   2.7% of the encoded bytes
+    B3 exact-DEFLATE git/tar analysis (1.1 MB/s)   CPU $0.01034/GB  -> break-even saved fraction   3.7% of the encoded bytes
+    B1 PXR (2.8 MiB/s)                             CPU $0.00406/GB  -> break-even saved fraction   1.5% of the encoded bytes
+    LZ4HC SST analyze (6-10 MiB/s)                 CPU $0.00142/GB  -> break-even saved fraction   0.5% of the encoded bytes
+  B_io_heavy: storage $0.0045/GB-mo, cpu $0.08/core-h
+    NRC/FPE model coder (B5, 10-24 MiB/s)          CPU $0.00217/GB  -> break-even saved fraction   4.0% of the encoded bytes
+    B6 SST/Parquet analyze (27 MiB/s)              CPU $0.00084/GB  -> break-even saved fraction   1.6% of the encoded bytes
+    B4 LLVM encode (7.1 MiB/s)                     CPU $0.00321/GB  -> break-even saved fraction   5.9% of the encoded bytes
+    B4 LLVM per-function proof (2.5 MiB/s)         CPU $0.00910/GB  -> break-even saved fraction  16.9% of the encoded bytes
+    B5 hybrid low-rank ladder (0.6-3.7 MiB/s)      CPU $0.01517/GB  -> break-even saved fraction  28.1% of the encoded bytes
+    B3 exact-DEFLATE git/tar analysis (1.1 MB/s)   CPU $0.02069/GB  -> break-even saved fraction  38.3% of the encoded bytes
+    B1 PXR (2.8 MiB/s)                             CPU $0.00813/GB  -> break-even saved fraction  15.0% of the encoded bytes
+    LZ4HC SST analyze (6-10 MiB/s)                 CPU $0.00284/GB  -> break-even saved fraction   5.3% of the encoded bytes
