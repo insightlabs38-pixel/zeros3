@@ -43,6 +43,8 @@ func main() {
 		cmdMkstore(args)
 	case "verifystore":
 		cmdVerifyStore(args)
+	case "readstore":
+		cmdReadStore(args)
 	case "startup":
 		cmdStartup(args)
 	default:

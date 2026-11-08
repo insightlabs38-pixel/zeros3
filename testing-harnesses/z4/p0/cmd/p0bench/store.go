@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -190,5 +191,84 @@ func cmdStartup(args []string) {
 		srv.Stop()
 		emit(c, map[string]any{"scenario": "startup", "rep": rep, "dir": *dir, "ready_s": ready, "ok": err == nil, "cache": c.cache,
 			"rss_mib": float64(p.HWMKB) / 1024, "rchar": p.RChar, "dev_read_bytes": (d1.SectorsR - d0.SectorsR) * 512, "cpu_s": p.UserS + p.SysS, "server_lifetime": rusageMap(srv)})
+	}
+}
+
+// readstore: fresh-process reads from a persistent store using its manifest (whole or ranges), byte-verified.
+func cmdReadStore(args []string) {
+	fs := flag.NewFlagSet("readstore", flag.ExitOnError)
+	c := addCommon(fs)
+	dir := fs.String("dir", "", "store")
+	man := fs.String("manifest", "", "manifest from mkstore")
+	mode := fs.String("mode", "whole", "whole | range")
+	rsize := fs.String("rsize", "64kib", "")
+	nreq := fs.Int("nreq", 200, "")
+	fs.Parse(args)
+	ents := loadManifest(*man)
+	var objs []*Obj
+	for _, e := range ents {
+		if !e.Deleted {
+			objs = append(objs, &Obj{Bucket: e.Bucket, Key: e.Key, C: e.C, SHA: e.SHA})
+		}
+	}
+	rs := parseSize(*rsize)
+	for rep := 0; rep < c.reps; rep++ {
+		if c.cache == "cold" {
+			dropCaches()
+		}
+		srv, err := StartServer(c.binary(), *dir, c.profDir(rep), c.srvArgs(), c.envList())
+		if err != nil {
+			die("%v", err)
+		}
+		cl := &S3{c: newClient(c.conc + 4), base: srv.URL}
+		if err := waitReady(cl.c, srv.URL); err != nil {
+			die("%v", err)
+		}
+		lats, ttfb := make([]float64, *nreq), make([]float64, *nreq)
+		var served int64
+		var mu sync.Mutex
+		bad := 0
+		rng := rand.New(rand.NewPCG(3, uint64(rep)))
+		type op struct {
+			o      *Obj
+			off, n int64
+		}
+		ops := make([]op, *nreq)
+		for i := range ops {
+			o := objs[rng.IntN(len(objs))]
+			if *mode == "whole" {
+				ops[i] = op{o, 0, -1}
+			} else {
+				k := min(rs, o.C.Size)
+				ops[i] = op{o, rng.Int64N(max(1, o.C.Size-k+1)), k}
+			}
+		}
+		w := startWin(srv.PID())
+		err = pool(*nreq, c.conc, func(i int) error {
+			r := cl.Get(ops[i].o, ops[i].off, ops[i].n)
+			if r.Err != nil {
+				return r.Err
+			}
+			mu.Lock()
+			if !r.OK {
+				bad++
+			}
+			served += r.N
+			mu.Unlock()
+			lats[i], ttfb[i] = r.Lat, r.TTFB
+			return nil
+		})
+		m := w.end()
+		if err != nil || bad > 0 {
+			die("readstore failed: %v bad=%d", err, bad)
+		}
+		m["scenario"], m["rep"] = "readstore", rep
+		m["params"] = map[string]any{"mode": *mode, "rsize": rs, "nreq": *nreq, "conc": c.conc, "cache": c.cache, "sargs": c.sargs}
+		m["mib_s"] = mib(served, m["wall_s"].(float64))
+		m["lat"], m["ttfb"] = latStats(lats), latStats(ttfb)
+		m["verified"] = true
+		srv.Stop()
+		m["server_lifetime"] = rusageMap(srv)
+		emit(c, m)
 	}
 }

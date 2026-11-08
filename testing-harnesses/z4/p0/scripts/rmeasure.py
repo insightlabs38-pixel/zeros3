@@ -53,7 +53,7 @@ def main():
         code = os.waitstatus_to_exitcode(status)
         row = dict(label=o.label, scenario='research', rep=rep, cmd=' '.join(cmd)[:400], exit=code, exit_ok=code == 0, wall_s=wall,
                    ru_user_s=ru.ru_utime, ru_sys_s=ru.ru_stime, ru_maxrss_mib=ru.ru_maxrss / 1024, sampled_peak_rss_mib=peak[0] / 1024,
-                   io_rchar=last.get('rchar'), io_wchar=last.get('wchar'), dev_read_bytes=r1 - r0, dev_write_bytes=w1 - w0, cache=o.cache,
+                   io_rchar=last.get('rchar'), io_wchar=last.get('wchar'), dev_read_bytes=r1 - r0, dev_write_bytes=w1 - w0, cache=o.cache, note=os.environ.get('P0_NOTE'),
                    ts=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))
         if o.stdout:
             so.close(); row['stdout_bytes'] = os.path.getsize(o.stdout)

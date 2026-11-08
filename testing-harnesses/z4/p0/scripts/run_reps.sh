@@ -7,7 +7,7 @@ LISTS=$P0_WORK/replists; mkdir -p $LISTS
 ls_() { ls -1 "$@" 2>/dev/null | sort; }
 declare -A K
 K[k01_tar]="$(ls_ $C/src/coreutils-9.{5,6,7}.tar)"
-K[k02_car]="$(ls_ $C/q6/car/* | head -3)"
+K[k02_car]="$(ls_ $C/q6/car/*.car.car)"
 K[k03_sqlite]="$(ls_ $C/sqlite/v*.db)"
 K[k04_git]="$(ls_ $C/git/h*.pack)"
 K[k05_merkle]="$(ls_ $C/merkle/*.snap)"

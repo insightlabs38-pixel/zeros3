@@ -1,0 +1,137 @@
+# profile dir: b3_pq-r0
+## CPU flat (top 28)
+Time: 2026-11-08 06:03:34 UTC
+Duration: 10.41s, Total samples = 9.41s (90.40%)
+Showing nodes accounting for 7.24s, 76.94% of 9.41s total
+Dropped 188 nodes (cum <= 0.05s)
+Showing top 28 nodes out of 191
+      flat  flat%   sum%        cum   cum%
+     1.34s 14.24% 14.24%      1.50s 15.94%  zeros3-z3/zstdz3.(*matchModel).advance
+     0.52s  5.53% 19.77%      0.52s  5.53%  runtime.memclrNoHeapPointers
+     0.51s  5.42% 25.19%      0.51s  5.42%  internal/runtime/maps.ctrlGroup.matchH2 (inline)
+     0.50s  5.31% 30.50%      0.50s  5.31%  zeros3-z3/zstdz3.(*fseTable).prev.func1 (inline)
+     0.49s  5.21% 35.71%      0.61s  6.48%  zeros3-z3/zstdz3.(*revWriter).write (inline)
+     0.47s  4.99% 40.70%      0.97s 10.31%  sort.Search (inline)
+     0.40s  4.25% 44.95%      0.40s  4.25%  runtime.memmove
+     0.35s  3.72% 48.67%      1.37s 14.56%  zeros3-z3/zstdz3.(*fseTable).prev
+     0.34s  3.61% 52.28%      1.09s 11.58%  runtime.mapaccess2_faststr
+     0.25s  2.66% 54.94%      0.25s  2.66%  crypto/internal/fips140/sha256.blockSHANI
+     0.24s  2.55% 57.49%      0.24s  2.55%  internal/runtime/maps.memHashAES
+     0.23s  2.44% 59.94%      0.24s  2.55%  runtime.tryDeferToSpanScan
+     0.22s  2.34% 62.27%      1.88s 19.98%  zeros3-z3/zstdz3.encodeSeqs
+     0.17s  1.81% 64.08%      0.17s  1.81%  runtime.madvise
+     0.14s  1.49% 65.57%      0.23s  2.44%  compress/flate.(*fastEncL6).encode
+     0.11s  1.17% 66.74%      0.27s  2.87%  zeros3-z3/parquetz3.(*recs).add
+     0.11s  1.17% 67.91%      0.14s  1.49%  zeros3-z3/zstdz3.(*matchModel).hash (inline)
+     0.10s  1.06% 68.97%      0.22s  2.34%  runtime.mapassign_faststr
+     0.10s  1.06% 70.03%      0.76s  8.08%  zeros3-z3/parquetz3.encodeValues
+     0.10s  1.06% 71.09%      0.17s  1.81%  zeros3-z3/zstdz3.(*revReader).get
+     0.09s  0.96% 72.05%      0.09s  0.96%  internal/runtime/syscall/linux.Syscall6
+     0.09s  0.96% 73.01%      0.58s  6.16%  zeros3-z3/zstdz3.(*huffTable).encodeStream
+     0.08s  0.85% 73.86%      0.08s  0.85%  zeros3-z3/zstdz3.lce (inline)
+     0.07s  0.74% 74.60%      0.96s 10.20%  zeros3-z3/zstdz3.(*matchModel).decodeOne
+     0.06s  0.64% 75.24%      0.06s  0.64%  encoding/binary.littleEndian.Uint64 (inline)
+     0.06s  0.64% 75.88%      0.07s  0.74%  zeros3-z3/parquetz3.unpack
+     0.05s  0.53% 76.41%      0.05s  0.53%  memeqbody
+     0.05s  0.53% 76.94%      0.16s  1.70%  runtime.mallocgcSmallScanNoHeaderSC5
+## CPU cumulative (top 45)
+Duration: 10.41s, Total samples = 9.41s (90.40%)
+Showing nodes accounting for 3.02s, 32.09% of 9.41s total
+Dropped 188 nodes (cum <= 0.05s)
+Showing top 45 nodes out of 191
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%         9s 95.64%  main.cmdFiles
+         0     0%     0%         9s 95.64%  main.main
+         0     0%     0%         9s 95.64%  runtime.main
+         0     0%     0%      8.67s 92.14%  zeros3-z3/semcas.(*FilePlanner).IngestParquetExact
+         0     0%     0%      6.58s 69.93%  zeros3-z3/parquetz3.Encode
+         0     0%     0%      6.51s 69.18%  zeros3-z3/parquetz3.(*Analyzer).Chunk
+         0     0%     0%      6.51s 69.18%  zeros3-z3/parquetz3.(*Analyzer).chunkPass
+         0     0%     0%      6.51s 69.18%  zeros3-z3/parquetz3.(*File).Pages
+         0     0%     0%      6.51s 69.18%  zeros3-z3/parquetz3.(*encoder).chunk
+         0     0%     0%      6.51s 69.18%  zeros3-z3/parquetz3.(*encoder).span
+         0     0%     0%      6.49s 68.97%  zeros3-z3/parquetz3.(*Analyzer).chunkPass.func1
+         0     0%     0%         5s 53.13%  zeros3-z3/parquetz3.(*Analyzer).readPage
+         0     0%     0%         5s 53.13%  zeros3-z3/parquetz3.(*Compressor).Analyze
+         0     0%     0%      3.05s 32.41%  zeros3-z3/zstdz3.Parse
+         0     0%     0%      2.96s 31.46%  zeros3-z3/zstdz3.(*parser).run
+         0     0%     0%      2.95s 31.35%  zeros3-z3/zstdz3.(*parser).frame
+         0     0%     0%      2.78s 29.54%  zeros3-z3/parquetz3.(*Compressor).replayZstd
+         0     0%     0%      2.78s 29.54%  zeros3-z3/zstdz3.Replay
+     0.01s  0.11%  0.11%      2.78s 29.54%  zeros3-z3/zstdz3.ReplaySkeleton
+     0.04s  0.43%  0.53%      2.58s 27.42%  zeros3-z3/zstdz3.buildCompressed
+         0     0%  0.53%      2.53s 26.89%  zeros3-z3/zstdz3.(*replayFrame).rebuildBlock
+         0     0%  0.53%      1.95s 20.72%  zeros3-z3/semcas.(*Store).PutDerived
+         0     0%  0.53%      1.94s 20.62%  zeros3-z3/semcas.(*Store).materialize
+     0.22s  2.34%  2.87%      1.88s 19.98%  zeros3-z3/zstdz3.encodeSeqs
+         0     0%  2.87%      1.87s 19.87%  zeros3-z3/semcas.(*Op).Apply
+         0     0%  2.87%      1.87s 19.87%  zeros3-z3/semcas.parquetReplay
+         0     0%  2.87%      1.82s 19.34%  zeros3-z3/parquetz3.Decode
+         0     0%  2.87%      1.82s 19.34%  zeros3-z3/parquetz3.decodeRange
+     0.01s  0.11%  2.98%      1.81s 19.23%  zeros3-z3/parquetz3.(*decoder).page
+         0     0%  2.98%      1.81s 19.23%  zeros3-z3/parquetz3.(*decoder).seg
+     0.01s  0.11%  3.08%      1.60s 17.00%  zeros3-z3/zstdz3.(*parser).compressed
+     1.34s 14.24% 17.32%      1.50s 15.94%  zeros3-z3/zstdz3.(*matchModel).advance
+     0.35s  3.72% 21.04%      1.37s 14.56%  zeros3-z3/zstdz3.(*fseTable).prev
+         0     0% 21.04%      1.20s 12.75%  zeros3-z3/zstdz3.(*parser).encodeUnit
+     0.34s  3.61% 24.65%      1.09s 11.58%  runtime.mapaccess2_faststr
+     0.01s  0.11% 24.76%      1.05s 11.16%  zeros3-z3/zstdz3.(*matchModel).encode
+     0.01s  0.11% 24.87%      1.03s 10.95%  runtime.mallocgc
+     0.47s  4.99% 29.86%      0.97s 10.31%  sort.Search (inline)
+     0.02s  0.21% 30.07%      0.97s 10.31%  zeros3-z3/zstdz3.(*matchModel).decode
+     0.07s  0.74% 30.82%      0.96s 10.20%  zeros3-z3/zstdz3.(*matchModel).decodeOne
+         0     0% 30.82%      0.83s  8.82%  zeros3-z3/parquetz3.(*Compressor).Replay
+     0.01s  0.11% 30.92%      0.79s  8.40%  zeros3-z3/zstdz3.(*matchModel).encodeOne
+     0.10s  1.06% 31.99%      0.76s  8.08%  zeros3-z3/parquetz3.encodeValues
+         0     0% 31.99%      0.71s  7.55%  runtime.systemstack
+     0.01s  0.11% 32.09%      0.68s  7.23%  zeros3-z3/parquetz3.(*decoder).dictOf
+## alloc_space (top 18)
+Showing nodes accounting for 4441.20MB, 92.80% of 4786MB total
+Dropped 79 nodes (cum <= 23.93MB)
+Showing top 18 nodes out of 80
+      flat  flat%   sum%        cum   cum%
+ 1223.92MB 25.57% 25.57%  1223.92MB 25.57%  zeros3-z3/zstdz3.newMatchModel
+  489.14MB 10.22% 35.79%   489.14MB 10.22%  zeros3-z3/parquetz3.(*recs).add (inline)
+  455.14MB  9.51% 45.30%   455.14MB  9.51%  bufio.NewReaderSize
+  414.10MB  8.65% 53.96%   414.10MB  8.65%  zeros3-z3/zstdz3.(*history).reserve
+  331.84MB  6.93% 60.89%   331.84MB  6.93%  zeros3-z3/zstdz3.(*revWriter).write (inline)
+     323MB  6.75% 67.64%      323MB  6.75%  bytes.growSlice
+  202.80MB  4.24% 71.88%   549.66MB 11.48%  zeros3-z3/zstdz3.buildCompressed
+  198.06MB  4.14% 76.01%   198.06MB  4.14%  zeros3-z3/parquetz3.(*streamWriter).add
+  159.02MB  3.32% 79.34%   159.02MB  3.32%  zeros3-z3/parquetz3.newDict
+  140.51MB  2.94% 82.27%   140.51MB  2.94%  bytes.NewReader
+   83.63MB  1.75% 84.02%    83.63MB  1.75%  zeros3-z3/parquetz3.(*bitWriter).put (inline)
+   77.78MB  1.63% 85.64%    78.78MB  1.65%  os.readFileContents
+   69.06MB  1.44% 87.09%    69.06MB  1.44%  zeros3-z3/zstdz3.fitBuf
+   61.25MB  1.28% 88.37%   211.58MB  4.42%  zeros3-z3/parquetz3.(*decoder).dictOf
+   57.82MB  1.21% 89.58%    57.82MB  1.21%  zeros3-z3/parquetz3.decodePlain
+   56.06MB  1.17% 90.75%    56.06MB  1.17%  zeros3-z3/zstdz3.(*matchModel).decode
+   49.57MB  1.04% 91.78%   133.21MB  2.78%  zeros3-z3/parquetz3.encodeValues
+   48.50MB  1.01% 92.80%    48.50MB  1.01%  zeros3-z3/parquetz3.defsToU32
+## alloc_objects (top 12)
+Showing nodes accounting for 6309870, 97.96% of 6441016 total
+Dropped 104 nodes (cum <= 32205)
+Showing top 12 nodes out of 55
+      flat  flat%   sum%        cum   cum%
+   3069407 47.65% 47.65%    3069407 47.65%  bytes.NewReader (inline)
+   2265566 35.17% 82.83%    2265566 35.17%  zeros3-z3/parquetz3.newDict
+    711859 11.05% 93.88%    1817362 28.22%  zeros3-z3/parquetz3.(*decoder).dictOf
+     58988  0.92% 94.80%      58988  0.92%  runtime/pprof.allFrames
+     58540  0.91% 95.70%      91308  1.42%  zeros3-z3/zstdz3.(*fseTable).initEnc
+     44898   0.7% 96.40%      44898   0.7%  zeros3-z3/zstdz3.(*revWriter).write (inline)
+     35063  0.54% 96.95%      37075  0.58%  runtime/pprof.(*profileBuilder).emitLocation
+     32768  0.51% 97.45%      32768  0.51%  internal/reflectlite.Swapper
+     21845  0.34% 97.79%      38642   0.6%  zeros3-z3/zstdz3.Unmarshal
+      5202 0.081% 97.87%    3074609 47.73%  zeros3-z3/zstdz3.(*matchModel).encode
+      4710 0.073% 97.95%     131083  2.04%  zeros3-z3/zstdz3.buildCompressed
+      1024 0.016% 97.96%    3126309 48.54%  zeros3-z3/zstdz3.Parse
+## mutex delay (top 12)
+Time: 2026-11-08 06:03:44 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## block delay (top 15)
+Time: 2026-11-08 06:03:44 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.350506706,"/cpu/classes/idle:cpu-seconds":0.004127792,"/cpu/classes/total:cpu-seconds":10.036840035,"/cpu/classes/user:cpu-seconds":9.579605983,"/gc/cycles/total:gc-cycles":162,"/gc/heap/allocs:bytes":5034804800,"/gc/heap/allocs:objects":6546364,"/gc/heap/live:bytes":61702968,"/memory/classes/total:bytes":169777448,"/sched/goroutines:goroutines":12,"final":false,"gomaxprocs":1,"mem.heap_inuse":120725504,"mem.mallocs":8587018,"mem.num_gc":162,"mem.pause_total_ns":7865850,"mem.sys":169777448,"mem.total_alloc":5035105072,"t":1794117824438178125}
