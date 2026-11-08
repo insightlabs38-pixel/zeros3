@@ -111,6 +111,7 @@ var (
 	nofsync   = flag.Bool("nofsync", false, "diagnostic: skip every fsync (syscall-cost ceiling; NOT durable)")
 	tmpshards = flag.Int("tmpshards", 1, "number of tmp subdirectories")
 	par       = flag.Bool("par", false, "run chunk chain and manifest chain in parallel")
+	layout    = flag.String("layout", "files", "files (loose chunk + manifest files) | segment (P1C prototype: records appended to a shared segment, group-committed)")
 )
 
 var (
@@ -260,6 +261,34 @@ func journalAppend(frame []byte) error {
 	}
 }
 
+// segment layout: chunk bytes, manifest and journal frame appended as one
+// record to a shared append-only segment file; one group-committed fsync makes
+// every record queued behind the previous fsync durable. No per-object file,
+// no directory operation. Index maintenance and GC are NOT modelled: this is
+// an upper bound for what a log-structured small-object store can reach.
+var (
+	segF   *os.File
+	segMu  sync.Mutex
+	segOff int64
+	segSyn *syncer
+)
+
+func segmentPut(data, man []byte) error {
+	rec := make([]byte, 0, len(data)+len(man)+250)
+	rec = append(rec, data...)
+	rec = append(rec, man...)
+	rec = append(rec, make([]byte, 250)...)
+	segMu.Lock()
+	off := segOff
+	segOff += int64(len(rec))
+	segMu.Unlock()
+	if _, err := segF.WriteAt(rec, off); err != nil {
+		return err
+	}
+	fsyncs.Add(1)
+	return segSyn.sync()
+}
+
 func main() {
 	flag.Parse()
 	root := *dir
@@ -275,6 +304,13 @@ func main() {
 		}
 	}
 	var err error
+	segF, _ = os.OpenFile(filepath.Join(root, "segment.log"), os.O_CREATE|os.O_RDWR, 0o644)
+	segSyn = &syncer{do: func() error {
+		if *nofsync {
+			return nil
+		}
+		return segF.Sync()
+	}}
 	jf, err = os.OpenFile(filepath.Join(root, "visibility.log"), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		panic(err)
@@ -303,6 +339,15 @@ func main() {
 				st := time.Now()
 				man := make([]byte, 700)
 				rng.Read(man)
+				if *layout == "segment" {
+					if err := segmentPut(data, man); err != nil {
+						failed.Add(1)
+						fmt.Fprintln(os.Stderr, err)
+						return
+					}
+					lat[w] = append(lat[w], time.Since(st).Seconds()*1000)
+					continue
+				}
 				chunkChain := func() error {
 					tmp, err := stage(filepath.Join(root, "tmp"), data)
 					if err == nil {
@@ -344,7 +389,7 @@ func main() {
 	}
 	sort.Float64s(all)
 	p := func(q float64) float64 { return all[int(q*float64(len(all)-1))] }
-	fmt.Printf("lock=%s dsync=%s journal=%s fsync=%s predirs=%v par=%v tmpshards=%d c=%d n=%d ops/s=%.0f p50=%.2f p99=%.2f fsync-calls/op=%.2f mkdir/op=%.2f failed=%d\n",
-		*lockMode, *dsync, *jmode, *fsyncM, *predir, *par, *tmpshards, *conc, len(all), float64(len(all))/el, p(.5), p(.99),
+	fmt.Printf("layout=%s lock=%s dsync=%s journal=%s fsync=%s predirs=%v par=%v tmpshards=%d c=%d n=%d ops/s=%.0f p50=%.2f p99=%.2f fsync-calls/op=%.2f mkdir/op=%.2f failed=%d\n",
+		*layout, *lockMode, *dsync, *jmode, *fsyncM, *predir, *par, *tmpshards, *conc, len(all), float64(len(all))/el, p(.5), p(.99),
 		float64(fsyncs.Load())/float64(len(all)), float64(mkdirs.Load())/float64(len(all)), failed.Load())
 }

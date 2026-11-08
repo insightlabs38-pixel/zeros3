@@ -4740,6 +4740,12 @@ type Store struct {
 	shardBB   [1024]atomic.Uint64
 	dsync     dirSyncMap
 	commits   commitQueue
+	// commitMu serializes every operation that appends to the journal and
+	// changes the namespace. Lock order: commitMu, then mu. The batch leader
+	// (runRootCommits) releases mu while the journal fsync runs, so readers
+	// (HeadBucket, GET, LIST) are never blocked behind a disk flush; no other
+	// mutator can start while it waits, because it holds commitMu.
+	commitMu sync.Mutex
 
 	// rep is the optional structured-representation state (section 16d):
 	// runtime mode, derived catalog and counters. Nothing in it is authoritative.
@@ -5135,6 +5141,8 @@ func (s *Store) CreateBucket(name string) error {
 	if name == "" {
 		return fmt.Errorf("invalid bucket name")
 	}
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.buckets[name]; exists {
@@ -5183,6 +5191,8 @@ func (s *Store) HeadBucket(name string) error {
 // file, since those may still (or may again, after a future PutObject)
 // be referenced by other roots.
 func (s *Store) DeleteBucket(name string) error {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b, ok := s.buckets[name]
@@ -5223,6 +5233,8 @@ func (s *Store) DeleteBucket(name string) error {
 // chunks the deleted root pointed at are left on disk, immutable, for a
 // later GC pass and for any other root that still references them.
 func (s *Store) DeleteObject(bucket, key string) error {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b, ok := s.buckets[bucket]
@@ -5418,90 +5430,111 @@ func (s *Store) submitRootCommit(r *rootCommitReq) {
 	s.runRootCommits(batch)
 }
 
-// runRootCommits commits batch under s.mu with one journal write and fsync.
+// runRootCommits commits batch with one journal write and one fsync. It holds
+// commitMu throughout (no other mutator can interleave) but holds mu only to
+// validate and to apply, not while the journal is written and flushed:
+// readers keep running during the fsync and see the namespace as it was
+// before this batch until every frame of it is durable.
 func (s *Store) runRootCommits(batch []*rootCommitReq) {
 	type viewKey struct{ bucket, key string }
 	type item struct {
 		r    *rootCommitReq
 		prev *journalArchivedVersionPayload
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	view := map[viewKey]*objectEntry{} // what earlier requests of this batch will have committed
 	var items []item
 	var recs []journalFrameIn
-	for _, r := range batch {
-		b, ok := s.buckets[r.bucket]
-		if !ok {
-			r.err = errNoSuchBucket
-			continue
-		}
-		cur, exists := b.objects[r.key]
-		if v, ok := view[viewKey{r.bucket, r.key}]; ok {
-			cur, exists = v, true
-		}
-		if r.check != nil {
-			if err := r.check(cur, exists); err != nil {
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, r := range batch {
+			b, ok := s.buckets[r.bucket]
+			if !ok {
+				r.err = errNoSuchBucket
+				continue
+			}
+			cur, exists := b.objects[r.key]
+			if v, ok := view[viewKey{r.bucket, r.key}]; ok {
+				cur, exists = v, true
+			}
+			if r.check != nil {
+				if err := r.check(cur, exists); err != nil {
+					r.err = err
+					continue
+				}
+			}
+			var prev *journalArchivedVersionPayload
+			if exists {
+				prev = archivedVersionPayload(cur, historyReasonOverwritten)
+			}
+			payload, err := json.Marshal(journalPutPayloadV2{
+				Bucket:         r.bucket,
+				Key:            r.key,
+				ManifestUUID:   r.manUUID,
+				ManifestSHA256: hex.EncodeToString(r.manSHA[:]),
+				Size:           r.man.TotalLength,
+				ETag:           r.man.ETag,
+				ContentType:    r.man.ContentType,
+				VersionID:      r.man.VersionID,
+				Previous:       prev,
+			})
+			if err != nil {
 				r.err = err
 				continue
 			}
-		}
-		var prev *journalArchivedVersionPayload
-		if exists {
-			prev = archivedVersionPayload(cur, historyReasonOverwritten)
-		}
-		payload, err := json.Marshal(journalPutPayloadV2{
-			Bucket:         r.bucket,
-			Key:            r.key,
-			ManifestUUID:   r.manUUID,
-			ManifestSHA256: hex.EncodeToString(r.manSHA[:]),
-			Size:           r.man.TotalLength,
-			ETag:           r.man.ETag,
-			ContentType:    r.man.ContentType,
-			VersionID:      r.man.VersionID,
-			Previous:       prev,
-		})
-		if err != nil {
-			r.err = err
-			continue
-		}
-		r.entry = &objectEntry{
-			manifestUUID:   r.manUUID,
-			manifestSHA256: r.manSHA,
-			size:           r.man.TotalLength,
-			etag:           r.man.ETag,
-			contentType:    r.man.ContentType,
-		}
-		view[viewKey{r.bucket, r.key}] = r.entry
-		items = append(items, item{r, prev})
-		recs = append(recs, journalFrameIn{recType: recordTypePutObjectRootV2, payload: payload})
-	}
-	if len(recs) > 0 {
-		first, err := s.journal.appendFrames(recs)
-		if err != nil {
-			for _, it := range items {
-				it.r.entry = nil
-				it.r.err = fmt.Errorf("journal append failed: %w", err)
+			r.entry = &objectEntry{
+				manifestUUID:   r.manUUID,
+				manifestSHA256: r.manSHA,
+				size:           r.man.TotalLength,
+				etag:           r.man.ETag,
+				contentType:    r.man.ContentType,
 			}
-		} else {
-			for i, it := range items {
-				r := it.r
-				r.entry.seq = first + uint64(i)
-				s.buckets[r.bucket].objects[r.key] = r.entry
-				if it.prev != nil {
-					if err := s.archiveVersionLocked(r.bucket, r.key, r.entry.seq, *it.prev); err != nil {
-						r.err = fmt.Errorf("commit: recording history: %w", err)
-					}
-				}
+			view[viewKey{r.bucket, r.key}] = r.entry
+			items = append(items, item{r, prev})
+			recs = append(recs, journalFrameIn{recType: recordTypePutObjectRootV2, payload: payload})
+		}
+	}()
+	defer func() {
+		for _, r := range batch {
+			select {
+			case <-r.done:
+			default:
+				close(r.done)
 			}
 		}
+	}()
+	if len(recs) == 0 {
+		return
 	}
-	for _, r := range batch {
-		close(r.done)
+	first, err := s.journal.appendFrames(recs) // mu is NOT held: readers proceed during the fsync
+	if err != nil {
+		for _, it := range items {
+			it.r.entry = nil
+			it.r.err = fmt.Errorf("journal append failed: %w", err)
+		}
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, it := range items {
+		r := it.r
+		r.entry.seq = first + uint64(i)
+		s.buckets[r.bucket].objects[r.key] = r.entry
+		if it.prev != nil {
+			if err := s.archiveVersionLocked(r.bucket, r.key, r.entry.seq, *it.prev); err != nil {
+				r.err = fmt.Errorf("commit: recording history: %w", err)
+			}
+		}
 	}
 }
 
+// commitObjectRootSerial is the pre-P1B commit: one journal fsync per request
+// under mu (ZEROS3_PUB_ABLATE=serialcommit, for A/B measurement).
 func (s *Store) commitObjectRootSerial(bucket, key, manUUID string, manSHA [32]byte, man manifestV1, check func(cur *objectEntry, exists bool) error) (*objectEntry, error) {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	// Re-check bucket existence here, at the actual commit point, not just
 	// at entry to the caller: the CDC/CAS/manifest work leading up to this
@@ -5944,13 +5977,16 @@ func (s *Store) applyHistoryPrune(res *HistoryPruneResult, frameTarget int) erro
 			return err
 		}
 		fireTestHook(hookPruneBeforeFrame)
+		s.commitMu.Lock()
 		s.mu.Lock()
 		if _, err := s.journal.appendFrame(recordTypePruneHistory, payload); err != nil {
 			s.mu.Unlock()
+			s.commitMu.Unlock()
 			return err
 		}
 		res.VersionsPruned += s.removeHistoryLocked(p)
 		s.mu.Unlock()
+		s.commitMu.Unlock()
 		res.JournalFrames++
 		fireTestHook(hookPruneAfterFrame)
 	}
@@ -8701,6 +8737,8 @@ type completedPart struct {
 // the journal append happens while still holding s.mu -- there is no heavy
 // CAS/chunking work to keep off the lock here.
 func (s *Store) CreateMultipartUpload(bucket, key, contentType string, metadata map[string]string) (string, error) {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.buckets[bucket]; !ok {
@@ -8767,6 +8805,8 @@ func (s *Store) commitPart(bucket, key, uploadID string, partNumber int, ing ing
 		return "", err
 	}
 
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	up, err := s.lookupUploadLocked(bucket, key, uploadID)
@@ -8861,6 +8901,8 @@ func (s *Store) ListPartsPage(bucket, key, uploadID string, partNumberMarker, ma
 // upload ID reports errNoSuchUpload, matching real S3 rather than treating
 // repeat-abort as an idempotent no-op.
 func (s *Store) AbortMultipartUpload(bucket, key, uploadID string) error {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := s.lookupUploadLocked(bucket, key, uploadID); err != nil {
@@ -9185,6 +9227,8 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 	fireTestHook(hookAfterManifestPublished)
 	s.maybeBuildRep(man)
 
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Re-validate at the actual commit point, exactly like
