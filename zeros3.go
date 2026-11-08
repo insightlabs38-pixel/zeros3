@@ -555,19 +555,48 @@ func findCDCBoundary(data []byte, eof bool) int {
 	for ; i < cdcMinChunkSize-1 && i < len(d); i++ {
 		hash = (hash << 1) + gearTable[d[i]]
 	}
-	for ; i < cdcTargetChunkSize-1 && i < len(d); i++ {
-		hash = (hash << 1) + gearTable[d[i]]
-		if hash&cdcMaskS == 0 {
-			return i + 1
-		}
+	pos, hash := cdcScan(d, i, min(cdcTargetChunkSize-1, len(d)), hash, cdcMaskS)
+	if pos >= 0 {
+		return pos + 1
 	}
-	for ; i < len(d); i++ {
-		hash = (hash << 1) + gearTable[d[i]]
-		if hash&cdcMaskL == 0 {
-			return i + 1
-		}
+	if pos, _ = cdcScan(d, -pos-1, len(d), hash, cdcMaskL); pos >= 0 {
+		return pos + 1
 	}
 	return len(d) // forced cut at the max, or the short final chunk.
+}
+
+// cdcScan rolls the gear hash over d[i:end] and returns the index of the
+// first byte after which hash&mask == 0. With no cut it returns -(end+1) and
+// the final hash. Four bytes per step keep the rare-hit test off the
+// dependency chain; a hit inside a step is located byte by byte.
+func cdcScan(d []byte, i, end int, hash uint64, mask uint64) (int, uint64) {
+	for ; i+4 <= end; i += 4 {
+		b := d[i : i+4 : i+4]
+		h0 := (hash << 1) + gearTable[b[0]]
+		h1 := (h0 << 1) + gearTable[b[1]]
+		h2 := (h1 << 1) + gearTable[b[2]]
+		h3 := (h2 << 1) + gearTable[b[3]]
+		if h0&mask == 0 {
+			return i, h0
+		}
+		if h1&mask == 0 {
+			return i + 1, h1
+		}
+		if h2&mask == 0 {
+			return i + 2, h2
+		}
+		if h3&mask == 0 {
+			return i + 3, h3
+		}
+		hash = h3
+	}
+	for ; i < end; i++ {
+		hash = (hash << 1) + gearTable[d[i]]
+		if hash&mask == 0 {
+			return i, hash
+		}
+	}
+	return -(end + 1), hash
 }
 
 // cdcMaskLookback is how many trailing bytes can influence the low bits the
@@ -1422,8 +1451,13 @@ func (p *packSink) Abort() {
 // opt only picks the physical sink (loose files or direct packs); chunking,
 // hashing and the result are identical either way.
 func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (ingestResult, error) {
-	if opt.size >= pipeMinBytes && !ingestAblate.noPipe && runtime.GOMAXPROCS(0) > 1 {
-		return s.ingestPipelined(r, withMD5, opt)
+	if (opt.size >= ingestAblate.pipeMin() || opt.directPack()) && !ingestAblate.noPipe && runtime.GOMAXPROCS(0) > 1 {
+		// Concurrent ingests already keep the cores busy, and a pipeline then
+		// only adds hand-off cost: beyond a few at once, run serially.
+		if release, ok := acquirePipeSlot(); ok {
+			defer release()
+			return s.ingestPipelined(r, withMD5, opt)
+		}
 	}
 	c := newCDCChunker(r)
 	res := ingestResult{chunks: []chunkRef{}}
@@ -1491,9 +1525,11 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (inge
 // =============================================================================
 
 const (
-	// pipeMinBytes is the known size from which ingest uses the pipeline;
-	// below it goroutine hand-offs cost more than they overlap.
-	pipeMinBytes   = 4 << 20
+	// pipeMinBytes is the known size from which ingest uses the pipeline
+	// (direct-pack sizes always do). Below it the work is bound by loose-file
+	// syscalls and the hand-offs cost about 13% more CPU for no wall-clock
+	// gain (P1A measurements).
+	pipeMinBytes   = 32 << 20
 	pipeBatchBytes = 512 << 10
 	pipeBufBytes   = pipeBatchBytes + cdcMaxChunkSize
 	pipeBuffers    = 6
@@ -1503,7 +1539,42 @@ const (
 
 // ingestAblate switches individual P1A mechanisms off for benchmarking
 // (ZEROS3_INGEST_ABLATE=nopipe,syncpublish,syncwrite,fullverify); production runs with none.
-var ingestAblate struct{ noPipe, syncPublish, syncWrite, fullVerify bool }
+type ingestAblation struct {
+	noPipe, syncPublish, syncWrite, fullVerify bool
+	pipeMinMiB, pipeSlots                      int
+}
+
+var ingestAblate ingestAblation
+
+func (a *ingestAblation) pipeMin() int64 {
+	if a.pipeMinMiB > 0 {
+		return int64(a.pipeMinMiB) << 20
+	}
+	return pipeMinBytes
+}
+
+var (
+	pipeSlotsOnce sync.Once
+	pipeSlots     chan struct{}
+)
+
+// acquirePipeSlot admits at most max(1, GOMAXPROCS/2) pipelined ingests at a
+// time; the rest take the serial path, which spends the least CPU per byte.
+func acquirePipeSlot() (release func(), ok bool) {
+	pipeSlotsOnce.Do(func() {
+		n := max(1, runtime.GOMAXPROCS(0)/2)
+		if ingestAblate.pipeSlots > 0 {
+			n = ingestAblate.pipeSlots
+		}
+		pipeSlots = make(chan struct{}, n)
+	})
+	select {
+	case pipeSlots <- struct{}{}:
+		return func() { <-pipeSlots }, true
+	default:
+		return nil, false
+	}
+}
 
 func init() {
 	for _, f := range strings.Split(os.Getenv("ZEROS3_INGEST_ABLATE"), ",") {
@@ -1516,6 +1587,12 @@ func init() {
 			ingestAblate.syncWrite = true
 		case "fullverify":
 			ingestAblate.fullVerify = true
+		default:
+			if v, ok := strings.CutPrefix(strings.TrimSpace(f), "pipemin="); ok {
+				ingestAblate.pipeMinMiB, _ = strconv.Atoi(v)
+			} else if v, ok := strings.CutPrefix(strings.TrimSpace(f), "pipeslots="); ok {
+				ingestAblate.pipeSlots, _ = strconv.Atoi(v)
+			}
 		}
 	}
 }
@@ -1646,17 +1723,21 @@ func (p *ingestPipe) close() {
 }
 
 func (s *Store) ingestPipelined(r io.Reader, withMD5 bool, opt ingestOptions) (ingestResult, error) {
-	res := ingestResult{chunks: make([]chunkRef, 0, opt.size/cdcTargetChunkSize+16)}
-	objSum := sha256.New()
-	var etagSum hash.Hash
-	if withMD5 {
-		etagSum = md5.New() //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5.
-	}
 	var sink chunkSink
 	if opt.directPack() {
 		sink = s.newPackSink()
 	} else {
 		sink = looseSink{s.newCASBatch()}
+	}
+	return s.ingestPipelinedTo(r, withMD5, opt, sink)
+}
+
+func (s *Store) ingestPipelinedTo(r io.Reader, withMD5 bool, opt ingestOptions, sink chunkSink) (ingestResult, error) {
+	res := ingestResult{chunks: make([]chunkRef, 0, min(opt.size/cdcTargetChunkSize+16, 1<<14))} // the size is only a hint: it is not trusted to allocate
+	objSum := sha256.New()
+	var etagSum hash.Hash
+	if withMD5 {
+		etagSum = md5.New() //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5.
 	}
 	defer sink.Abort()
 	p := newIngestPipe(objSum, etagSum)

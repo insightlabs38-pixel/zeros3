@@ -10,8 +10,13 @@ import (
 	"io"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
+	"time"
 )
 
 // refFindCDCBoundary is the original, branch-per-byte CDC v1 scan. The
@@ -172,7 +177,7 @@ func checkDigests(t *testing.T, name string, data []byte, res ingestResult, md5o
 
 func TestP1A_PipelinedIngestMatchesSerial(t *testing.T) {
 	s := newTestStore(t)
-	sizes := []int{0, 1, 4095, pipeMinBytes - 1, pipeMinBytes, pipeBatchBytes, pipeBufBytes - 1, pipeBufBytes, pipeBufBytes + 1,
+	sizes := []int{0, 1, 4095, 4<<20 - 1, 4 << 20, pipeBatchBytes, pipeBufBytes - 1, pipeBufBytes, pipeBufBytes + 1,
 		2*pipeBufBytes + 12345, 9<<20 + 77, 24<<20 + 3}
 	readers := map[string]func(io.Reader) io.Reader{
 		"plain":   func(r io.Reader) io.Reader { return r },
@@ -374,4 +379,274 @@ func TestP1A_PackWriterMatchesReferenceAndReportsErrors(t *testing.T) {
 		w2.close()
 		ingestAblate.syncWrite = old
 	}
+}
+
+// ---- failure injection around the pipeline and the background pack jobs ----
+
+type failSink struct {
+	inner   chunkSink
+	failAt  int
+	puts    int
+	aborted int
+}
+
+func (f *failSink) Put(sum [32]byte, c []byte) error {
+	f.puts++
+	if f.puts == f.failAt {
+		return errors.New("sink full")
+	}
+	return f.inner.Put(sum, c)
+}
+func (f *failSink) Flush() error { return f.inner.Flush() }
+func (f *failSink) Abort()       { f.aborted++; f.inner.Abort() }
+
+func p1aNoLeak(t *testing.T, before int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= before {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	buf := make([]byte, 1<<16)
+	t.Fatalf("goroutines %d > %d before\n%s", runtime.NumGoroutine(), before, buf[:runtime.Stack(buf, true)])
+}
+
+func TestP1A_PipelinedSinkFailureStopsEverything(t *testing.T) {
+	s := newTestStore(t)
+	data := p1aRand(7, 24<<20)
+	before := runtime.NumGoroutine()
+	for _, at := range []int{1, 2, 30, 200} {
+		fs := &failSink{inner: looseSink{s.newCASBatch()}, failAt: at}
+		_, err := s.ingestPipelinedTo(bytes.NewReader(data), true, ingestOptions{size: int64(len(data))}, fs)
+		if err == nil || !strings.Contains(err.Error(), "sink full") {
+			t.Fatalf("failAt %d: %v", at, err)
+		}
+		if fs.aborted == 0 {
+			t.Fatal("sink was not aborted")
+		}
+	}
+	p1aNoLeak(t, before)
+}
+
+func TestP1A_PipelinedPrematureEOFAndSlowReaders(t *testing.T) {
+	s := newTestStore(t)
+	data := p1aRand(8, 10<<20)
+	before := runtime.NumGoroutine()
+	// A source that ends early is just a shorter object; digests describe what was read.
+	short := data[:7<<20+123]
+	res, err := s.ingestPipelined(bytes.NewReader(short), true, ingestOptions{size: int64(len(data))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkDigests(t, "short", short, res, true)
+	// ErrUnexpectedEOF from the source is an error, not a short object.
+	_, err = s.ingestPipelined(&failingReader{r: bytes.NewReader(data), after: 6 << 20, err: io.ErrUnexpectedEOF}, true, ingestOptions{size: int64(len(data))})
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("got %v", err)
+	}
+	// A slow, trickling source still produces exact output.
+	slow := io.LimitReader(iotest.HalfReader(bytes.NewReader(data)), int64(len(data)))
+	res, err = s.ingestPipelined(slow, true, ingestOptions{size: int64(len(data))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkDigests(t, "slow", data, res, true)
+	p1aNoLeak(t, before)
+}
+
+// A blocked source that is then released with an error must not leave stages behind.
+func TestP1A_PipelinedCancellationMidChunk(t *testing.T) {
+	s := newTestStore(t)
+	data := p1aRand(9, 16<<20)
+	before := runtime.NumGoroutine()
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.ingestPipelined(pr, true, ingestOptions{size: int64(len(data))})
+		done <- err
+	}()
+	pw.Write(data[:3<<20+77]) // stops in the middle of a chunk
+	time.Sleep(50 * time.Millisecond)
+	cancelErr := errors.New("client went away")
+	pw.CloseWithError(cancelErr)
+	select {
+	case err := <-done:
+		if !errors.Is(err, cancelErr) {
+			t.Fatalf("got %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ingest did not stop after the source failed")
+	}
+	p1aNoLeak(t, before)
+}
+
+func p1aDirectPackStore(t *testing.T) (*Store, string) {
+	t.Helper()
+	setDirectPack(t, 1<<20, 1<<20, false)
+	return dpOpenStore(t)
+}
+
+func p1aTmpEmpty(t *testing.T, dir string) {
+	t.Helper()
+	if m, _ := filepath.Glob(filepath.Join(dir, "tmp", "*")); len(m) != 0 {
+		t.Fatalf("staging files left behind: %v", m)
+	}
+}
+
+// A pack that cannot be published fails the request, cleans its staging
+// files and does not hang the sink.
+func TestP1A_PackPublishFailureFailsRequestAndCleansUp(t *testing.T) {
+	s, dir := p1aDirectPackStore(t)
+	if err := os.MkdirAll(filepath.Join(dir, "packs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(dir, "packs"))
+	os.WriteFile(filepath.Join(dir, "packs"), []byte("not a directory"), 0o644)
+	before := runtime.NumGoroutine()
+	data := p1aRand(10, 9<<20)
+	_, err := s.ingestStream(bytes.NewReader(data), true, ingestOptions{size: int64(len(data))})
+	if err == nil {
+		t.Fatal("ingest into an unpublishable pack directory succeeded")
+	}
+	p1aTmpEmpty(t, dir)
+	p1aNoLeak(t, before)
+}
+
+// Corruption of the staged pack between its fsync and its verification must
+// fail the request: the exact verifier is the gate, run on a background job.
+func TestP1A_StagedPackCorruptionIsCaughtByBackgroundVerify(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		s, dir := p1aDirectPackStore(t)
+		old := ingestAblate.fullVerify
+		ingestAblate.fullVerify = full
+		var once sync.Once
+		testHook = func(point string) {
+			if point != hookPackAfterSync {
+				return
+			}
+			once.Do(func() {
+				m, _ := filepath.Glob(filepath.Join(dir, "tmp", "pack-*.tmp"))
+				// The pack being finished and, usually, the next one being staged.
+				if len(m) == 0 {
+					t.Errorf("no staging file at the hook")
+				}
+				for _, name := range m {
+					f, _ := os.OpenFile(name, os.O_RDWR, 0)
+					var b [1]byte
+					f.ReadAt(b[:], 5000)
+					b[0] ^= 0x10
+					f.WriteAt(b[:], 5000)
+					f.Close()
+				}
+			})
+		}
+		data := p1aRand(11, 9<<20)
+		_, err := s.ingestStream(bytes.NewReader(data), true, ingestOptions{size: int64(len(data))})
+		testHook = nil
+		ingestAblate.fullVerify = old
+		if err == nil {
+			t.Fatalf("full=%v: a corrupted staged pack was published", full)
+		}
+		p1aTmpEmpty(t, dir)
+	}
+}
+
+// A simulated crash raised on a background job surfaces on the request goroutine.
+func TestP1A_BackgroundJobCrashPropagatesToRequest(t *testing.T) {
+	s, dir := p1aDirectPackStore(t)
+	var once sync.Once
+	testHook = func(point string) {
+		if point == hookPackBeforeSync {
+			once.Do(func() { panic(simulatedCrash{point}) })
+		}
+	}
+	defer func() { testHook = nil }()
+	data := p1aRand(12, 9<<20)
+	func() {
+		defer func() {
+			r := recover()
+			if sc, ok := r.(simulatedCrash); !ok || sc.point != hookPackBeforeSync {
+				t.Fatalf("expected the simulated crash on the request goroutine, got %v", r)
+			}
+		}()
+		s.ingestStream(bytes.NewReader(data), true, ingestOptions{size: int64(len(data))})
+	}()
+	testHook = nil
+	// Reopen: nothing half-published is visible, and a retry succeeds byte-exactly.
+	s.Close()
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	res, err := s2.ingestStream(bytes.NewReader(data), true, ingestOptions{size: int64(len(data))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkDigests(t, "retry", data, res, true)
+}
+
+// Repeated chunks inside one request are written once even when the first
+// copy sits in a pack that is still being finished in the background.
+func TestP1A_RepeatedChunksAcrossInFlightPacksWrittenOnce(t *testing.T) {
+	s, dir := p1aDirectPackStore(t)
+	block := p1aRand(13, 3<<20)
+	data := append(append(append([]byte(nil), block...), p1aRand(14, 2<<20)...), block...)
+	if _, err := s.ingestStream(bytes.NewReader(data), true, ingestOptions{size: int64(len(data))}); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[[32]byte]int{}
+	for _, set := range dpPackSets(t, dir) {
+		for _, sum := range set {
+			seen[sum]++
+		}
+	}
+	for _, p := range casLooseChunksNoVerify(dir) {
+		name := filepath.Base(p)
+		if sum, err := decodeHexSHA256(name); err == nil {
+			seen[sum]++
+		}
+	}
+	for sum, n := range seen {
+		if n > 1 {
+			t.Fatalf("chunk %x stored %d times", sum[:4], n)
+		}
+	}
+}
+
+// Concurrent pipelined PUTs of overlapping content under the race detector.
+func TestP1A_ConcurrentPipelinedPutsRoundTrip(t *testing.T) {
+	s, dir := p1aDirectPackStore(t)
+	shared := p1aRand(20, 5<<20)
+	var wg sync.WaitGroup
+	bodies := make([][]byte, 8)
+	for i := range bodies {
+		bodies[i] = append(append([]byte(nil), p1aRand(uint64(30+i), 4<<20+i*997)...), shared...)
+	}
+	errs := make(chan error, len(bodies))
+	for i := range bodies {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := s.PutObject("b", fmt.Sprintf("k%d", i), bodies[i], "", nil)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	s = dpReopen(t, dir, s)
+	for i := range bodies {
+		if _, got, err := s.GetObject("b", fmt.Sprintf("k%d", i)); err != nil || !bytes.Equal(got, bodies[i]) {
+			t.Fatalf("k%d after restart: %v", i, err)
+		}
+	}
+	dpVerify(t, s, "concurrent-pipelined")
+	p1aTmpEmpty(t, dir)
 }
