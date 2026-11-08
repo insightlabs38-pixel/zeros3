@@ -1,0 +1,68 @@
+# B8 DIAGNOSTIC ONLY, never applied to the repo: scratch edit of the B2 draft (trial merge on main). It (1) prints planRepGroups decisions and (2) credits, for a rep group, the CDC chunks reclaimable when every referrer is in the group (replacing the per-object "unshared bytes" sum). Result in Z4_B8_CONVERGENCE.md section 4.
+--- /tmp/claude-0/-home-user-zeros3/4a4afcf2-3229-57fb-845f-04de885ca1de/scratchpad/b2clean/zeros3.go	2026-11-08 00:58:01.781108698 +0000
++++ /tmp/claude-0/-home-user-zeros3/4a4afcf2-3229-57fb-845f-04de885ca1de/scratchpad/b2merge/zeros3.go	2026-11-08 00:57:11.681105720 +0000
+@@ -40008,6 +40008,7 @@
+ 		ra := m.s.newManifestReaderAt(o.man)
+ 		kind, ok := repCandidate(ra, o.man.TotalLength)
+ 		ra.close()
++		fmt.Fprintf(os.Stderr, "B8DBG cand i=%d size=%d kind=%d ok=%v hasRec=%v\n", i, o.man.TotalLength, kind, ok, o.hasRec)
+ 		if !ok || kind == repKindGzip || kind == repKindZstd {
+ 			continue
+ 		}
+@@ -40022,10 +40023,12 @@
+ 		}
+ 		root, err := m.s.repConstruct(o.man)
+ 		if err != nil {
++			fmt.Fprintf(os.Stderr, "B8DBG construct i=%d err=%v\n", i, err)
+ 			continue
+ 		}
+ 		cl, err := m.s.repClosureOf(root)
+ 		if err != nil {
++			fmt.Fprintf(os.Stderr, "B8DBG closure i=%d err=%v\n", i, err)
+ 			continue
+ 		}
+ 		m.repC[i] = &authRepCand{kind: kind, root: root, chunks: cl.chunks}
+@@ -40034,6 +40037,31 @@
+ 	for _, idxs := range groups {
+ 		seen := map[[32]byte]bool{}
+ 		var union, cdc int64
++		// B8 DIAGNOSTIC PATCH: credit the CDC chunks reclaimable when the whole group converts.
++		inG := map[[32]byte]int{}
++		cdcSeen := map[[32]byte]bool{}
++		for _, i := range idxs {
++			seenO := map[[32]byte]bool{}
++			for _, c := range m.order[i].man.Chunks {
++				if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seenO[sum] {
++					seenO[sum] = true
++					inG[sum]++
++				}
++			}
++		}
++		var groupCDC int64
++		for _, i := range idxs {
++			for _, c := range m.order[i].man.Chunks {
++				sum, err := decodeHexSHA256(c.SHA256)
++				if err != nil || cdcSeen[sum] {
++					continue
++				}
++				cdcSeen[sum] = true
++				if m.refs[sum] == inG[sum] {
++					groupCDC += m.s.physChunk(sum, c.Length, m.phys)
++				}
++			}
++		}
+ 		for _, i := range idxs {
+ 			rc := m.repC[i]
+ 			for _, c := range rc.chunks {
+@@ -40047,8 +40075,10 @@
+ 				}
+ 			}
+ 			union += rc.marginal
+-			cdc += m.unsharedBytes(m.order[i])
++			cdc += 0
+ 		}
++		cdc = groupCDC
++		fmt.Fprintf(os.Stderr, "B8DBG group n=%d union=%d cdc=%d minSaving=%v minGroup=%d\n", len(idxs), union, cdc, m.pol.MinSaving, m.pol.MinRepGroup)
+ 		if cdc > 0 && float64(union+160*int64(len(idxs))) <= float64(cdc)*(1-m.pol.MinSaving) {
+ 			for _, i := range idxs {
+ 				m.repC[i].accepted = true

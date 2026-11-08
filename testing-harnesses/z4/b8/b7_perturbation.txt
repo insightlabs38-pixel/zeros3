@@ -1,0 +1,18 @@
+
+=== base: 500 rows (S1,S2; seed 11)
+A_storage: mean cost/CDC auto=0.701 class-prior=0.696 lifetime=0.699 expected-value=0.753 premium-cap=0.818 greedy=0.874 combined=1.053 combined-no-defer=0.722 cons-group=0.758
+   rank: class-prior < lifetime < auto < combined-no-defer < expected-value < cons-group; auto beats best-simple on 3/5 folds, mean imp +0.048; combined wins 0/5; worst auto fold 0.845
+B_io_heavy: mean cost/CDC auto=0.864 class-prior=0.861 lifetime=0.860 expected-value=0.892 premium-cap=0.947 greedy=0.992 combined=1.888 combined-no-defer=0.913 cons-group=1.029
+   rank: lifetime < class-prior < auto < expected-value < combined-no-defer < premium-cap; auto beats best-simple on 1/5 folds, mean imp -0.008; combined wins 0/5; worst auto fold 1.063
+
+=== noise: 500 rows (S1,S2; seed 11)
+A_storage: mean cost/CDC auto=0.680 class-prior=0.680 lifetime=0.680 expected-value=0.733 premium-cap=0.794 greedy=0.810 combined=1.041 combined-no-defer=0.733 cons-group=0.752
+   rank: class-prior < lifetime < auto < expected-value < combined-no-defer < cons-group; auto beats best-simple on 4/5 folds, mean imp +0.052; combined wins 0/5; worst auto fold 0.880
+B_io_heavy: mean cost/CDC auto=0.848 class-prior=0.848 lifetime=0.852 expected-value=0.877 premium-cap=0.928 greedy=0.939 combined=1.888 combined-no-defer=0.913 cons-group=0.942
+   rank: auto < class-prior < lifetime < expected-value < combined-no-defer < premium-cap; auto beats best-simple on 2/5 folds, mean imp +0.001; combined wins 0/5; worst auto fold 1.038
+
+=== invert: 500 rows (S1,S2; seed 11)
+A_storage: mean cost/CDC auto=0.956 class-prior=0.949 lifetime=0.927 expected-value=0.913 premium-cap=0.909 greedy=0.987 combined=1.064 combined-no-defer=0.889 cons-group=0.907
+   rank: combined-no-defer < cons-group < premium-cap < expected-value < lifetime < class-prior; auto beats best-simple on 0/5 folds, mean imp -0.080; combined wins 1/5; worst auto fold 1.060
+B_io_heavy: mean cost/CDC auto=1.062 class-prior=1.044 lifetime=1.032 expected-value=1.015 premium-cap=1.016 greedy=1.068 combined=1.917 combined-no-defer=0.979 cons-group=1.138
+   rank: combined-no-defer < expected-value < premium-cap < lifetime < class-prior < auto; auto beats best-simple on 0/5 folds, mean imp -0.114; combined wins 0/5; worst auto fold 1.174

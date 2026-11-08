@@ -1,0 +1,22 @@
+# B3 SmolLM2-135M-Instruct 5 pinned HF artifacts (sha256 == hf_pins.txt), z4b3 ingest -mode full, forward order
+f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57  f16.gguf
+1e790f1d6fac94097a6516ed1f07c29049097271d536d538562cd31ffc011a71  model.onnx
+5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c  model.safetensors
+e85e706ce14a3499e1f698c0d638b430df75b5f67131d1516bd0d46b844dfb2e  model_fp16.onnx
+5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83  q8_0.gguf
+model.safetensors size 269060552 cumulative store bytes 268385236 how {'new': 272}
+f16.gguf size 270885952 cumulative store bytes 269103272 how {'convert': 151, 'gather': 60, 'new': 61}
+q8_0.gguf size 144811360 cumulative store bytes 269164256 how {'convert': 151, 'gather': 60, 'identity': 61}
+model_fp16.onnx size 270267067 cumulative store bytes 270048650 how {'bytes-shared': 1, 'identity': 1, 'layout': 150, 'new': 64, 'transpose': 60}
+model.onnx size 540345794 cumulative store bytes 272221529 how {'convert': 1, 'identity': 63, 'new': 2, 'transpose': 210}
+{"measure": {"wall_s": 87.257, "max_rss_mib": 1948.5, "user_s": 83.0, "sys_s": 3.01, "rc": 0}}
+## CDC (lab model of production CDC):
+{"file":"model.safetensors","fine_cum":269841443,"fine_inc":269841443,"prod_cum":263722683,"prod_inc":263722683,"size":269060552}
+{"file":"f16.gguf","fine_cum":539605002,"fine_inc":269763559,"prod_cum":527007405,"prod_inc":263284722,"size":270885952}
+{"file":"q8_0.gguf","fine_cum":684843214,"fine_inc":145238212,"prod_cum":670358141,"prod_inc":143350736,"size":144811360}
+{"file":"model_fp16.onnx","fine_cum":898326022,"fine_inc":213482808,"prod_cum":878589177,"prod_inc":208231036,"size":270267067}
+{"file":"model.onnx","fine_cum":1173033951,"fine_inc":274707929,"prod_cum":1127458099,"prod_inc":248868922,"size":540345794}
+{"measure": {"wall_s": 26.345, "max_rss_mib": 1210.6, "user_s": 25.19, "sys_s": 0.87, "rc": 0}}
+## fresh-process replay + independent hashing:
+{"originals": 5, "exact": 5, "diff": 0, "missing": 0}
+## on-disk dirs (bytes): 274362232 blobs, 103878 comps, 87261 recipes

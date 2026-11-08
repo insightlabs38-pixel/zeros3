@@ -1,0 +1,34 @@
+# B4 independent rebuild: SQLite O2 x6 (sha256-checked amalgamations, local clang 18.1.3) + Newtonsoft PDB x5 (NuGet)
+revision                   prodCDC   fineCDC   B1whole   rawCols    strong
+12.0.3-netstandard2.0.pdb    113759    116157    116157    105895     91894
+13.0.1-netstandard2.0.pdb    119205    123049     51280     46149     36811
+13.0.2-netstandard2.0.pdb    121462    124111     66666     51772     37426
+13.0.3-netstandard2.0.pdb    121228    106914     66722     51349     37014
+13.0.4-netstandard2.0.pdb    122128    125040     73476     59242     44347
+CUMULATIVE                  597782    595271    374301    314407    247492
+held-out predictors (learned on first 2 revisions): cumulative=247492 (search per file=247492); column choices differing on held-out files: 0
+revision                        prodCDC    fineCDC     B1best     noNorm     strong     +delta  +deltaRcp  noN+delta
+sqlite-3450100-O2.bc            2107620    2239484    2239484    2313044    2524605    2567533    2561638    2367418 
+sqlite-3450200-O2.bc            2106879    2244897    1509338    2312023    1026535     470002     422303    1513631 
+sqlite-3450300-O2.bc            1876645    1086847     288752     752027     766347     239176     190659     251560 
+sqlite-3460000-O2.bc            2122201    2239801    1931149    2327631    1851404     906941     872539    1940713 
+sqlite-3460100-O2.bc            2117850    2232162    1407466    2297712     830792     433773     399431    1762321 
+sqlite-3490100-O2.bc            2143448    2281513    2047396    2345913    2367330    1779436    1773413    2265464 
+CUMULATIVE                     12474643   12324704    9423585   12348350    9367013    6396861    6219983   10101107
+objects: noNorm=7799 strong=3837 | hybrid objects=3630 of which B1 deltas=1992 (saved 3223552 B vs direct) | noNorm hybrid objects=7592 deltas=5282
+## fresh-process replay (z4b4 llvm-replay in cwd /, separate process) + independent sha256
+rev00 sqlite-3450100-O2.bc MATCH
+rev01 sqlite-3450200-O2.bc MATCH
+rev02 sqlite-3450300-O2.bc MATCH
+rev03 sqlite-3460000-O2.bc MATCH
+rev04 sqlite-3460100-O2.bc MATCH
+rev05 sqlite-3490100-O2.bc MATCH
+rev00 12.0.3-netstandard2.0.pdb MATCH
+rev01 13.0.1-netstandard2.0.pdb MATCH
+rev02 13.0.2-netstandard2.0.pdb MATCH
+rev03 13.0.3-netstandard2.0.pdb MATCH
+rev04 13.0.4-netstandard2.0.pdb MATCH
+## plain sha256sum originals vs replayed (LLVM)
+0e0b817f87d594af bece9bfe5c23c642 2d31712328a88bdd ceb8e6576f81e8b8 4f0dbc72d1971c81 1a7fe5eb998ac77a 
+0e0b817f87d594af bece9bfe5c23c642 2d31712328a88bdd ceb8e6576f81e8b8 4f0dbc72d1971c81 1a7fe5eb998ac77a 
+## on-disk bytes st_llvm objs+recipes: 5756274 + 299760; st_pdb objs 245104

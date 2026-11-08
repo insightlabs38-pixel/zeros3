@@ -1,0 +1,55 @@
+// B8 scratch audit (copy next to the B2 draft tree as zeros3_b8_physical_test.go; not part of production).
+// Measures real physical bytes of a file set under: production CDC, production additive reps, B2 authority.
+// Usage: B8_FILES=a:b:c B8_OUT=out.jsonl go test -count=1 -run TestB8Physical .
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestB8Physical(t *testing.T) {
+	files := strings.Split(os.Getenv("B8_FILES"), ":")
+	if len(files) == 0 || files[0] == "" {
+		t.Skip("set B8_FILES")
+	}
+	emit := func(m map[string]any) {
+		b, _ := json.Marshal(m)
+		t.Log(string(b))
+		if out := os.Getenv("B8_OUT"); out != "" {
+			f, _ := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			f.Write(append(b, '\n'))
+			f.Close()
+		}
+	}
+	base := t.TempDir()
+	cdc := filepath.Join(base, "cdc")
+	logical, putS, rss := econBuild(t, cdc, files, repModeOff)
+	econCompact(t, cdc)
+	cdcB := dirBytes(t, cdc)
+	emit(map[string]any{"scn": "cdc", "logical": logical, "phys": cdcB, "put_s": putS, "rss_mib": rss})
+	add := filepath.Join(base, "add")
+	_, aS, aR := econBuild(t, add, files, repModePrefer)
+	econCompact(t, add)
+	emit(map[string]any{"scn": "cdc+additive-rep", "phys": dirBytes(t, add), "ratio": float64(dirBytes(t, add)) / float64(cdcB), "put_s": aS, "rss_mib": aR})
+	for _, v := range []struct {
+		n string
+		p AuthPolicy
+	}{
+		{"auth-archive", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true}},
+		{"auth-delta-only", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true}},
+		{"auth-rep-only", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowRep: true}},
+	} {
+		d := filepath.Join(base, v.n)
+		if err := econCopyTree(cdc, d); err != nil {
+			t.Fatal(err)
+		}
+		rep, rssM, peak := econMigrate(t, d, v.p)
+		econReclaim(t, d)
+		pb := dirBytes(t, d)
+		emit(map[string]any{"scn": v.n, "phys": pb, "ratio": float64(pb) / float64(cdcB), "peak_ratio": float64(peak) / float64(cdcB), "migrate_rss_mib": rssM, "report": rep})
+	}
+}

@@ -1,0 +1,2 @@
+ok  	zeros3	508.391s
+exit=0

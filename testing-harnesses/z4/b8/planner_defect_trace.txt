@@ -1,0 +1,4 @@
+B8DBG cand i=0 size=34635493 kind=10 ok=true hasRec=false
+B8DBG cand i=1 size=35319397 kind=10 ok=true hasRec=false
+B8DBG cand i=2 size=35319397 kind=10 ok=true hasRec=false
+B8DBG group n=3 union=28295108 cdc=3815449 minSaving=0 minGroup=2
