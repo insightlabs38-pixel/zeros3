@@ -1,0 +1,149 @@
+# profile dir: mp_objs64k_startup-r0
+## CPU flat (top 28)
+Time: 2026-11-08 04:49:07 UTC
+Duration: 997.41ms, Total samples = 1.07s (107.28%)
+Showing nodes accounting for 0.84s, 78.50% of 1.07s total
+Showing top 28 nodes out of 158
+      flat  flat%   sum%        cum   cum%
+     0.19s 17.76% 17.76%      0.19s 17.76%  internal/runtime/syscall/linux.Syscall6
+     0.08s  7.48% 25.23%      0.08s  7.48%  runtime.memmove
+     0.06s  5.61% 30.84%      0.06s  5.61%  encoding/json/internal/jsonwire.ConsumeSimpleString (inline)
+     0.04s  3.74% 34.58%      0.04s  3.74%  internal/runtime/maps.ctrlGroup.matchH2 (inline)
+     0.04s  3.74% 38.32%      0.04s  3.74%  runtime.spanClass.sizeclass (inline)
+     0.04s  3.74% 42.06%      0.04s  3.74%  runtime.step
+     0.03s  2.80% 44.86%      0.03s  2.80%  encoding/json/internal/jsonwire.ConsumeWhitespace (inline)
+     0.03s  2.80% 47.66%      0.09s  8.41%  encoding/json/jsontext.(*decoderState).consumeValue
+     0.03s  2.80% 50.47%      0.11s 10.28%  main.(*Store).archiveVersionLocked
+     0.03s  2.80% 53.27%      0.09s  8.41%  runtime.mapassign_faststr
+     0.02s  1.87% 55.14%      0.10s  9.35%  encoding/json/jsontext.(*decoderState).ReadValue
+     0.02s  1.87% 57.01%      0.02s  1.87%  encoding/json/jsontext.Kind.normalize (inline)
+     0.02s  1.87% 58.88%      0.08s  7.48%  encoding/json/v2.makeString
+     0.02s  1.87% 60.75%      0.32s 29.91%  encoding/json/v2.makeStructArshaler.func3
+     0.02s  1.87% 62.62%      0.02s  1.87%  runtime.(*moduledata).textAddr
+     0.02s  1.87% 64.49%      0.02s  1.87%  runtime.(*spanInlineMarkBits).init
+     0.02s  1.87% 66.36%      0.02s  1.87%  runtime.findfunc
+     0.02s  1.87% 68.22%      0.08s  7.48%  runtime.pcvalue
+     0.02s  1.87% 70.09%      0.06s  5.61%  runtime.tryDeferToSpanScan
+     0.01s  0.93% 71.03%      0.01s  0.93%  encoding/json/jsontext.(*decodeBuffer).needMore (inline)
+     0.01s  0.93% 71.96%      0.04s  3.74%  encoding/json/jsontext.(*decoderState).PeekKind
+     0.01s  0.93% 72.90%      0.01s  0.93%  encoding/json/jsontext.(*decoderState).ReadToken
+     0.01s  0.93% 73.83%      0.01s  0.93%  encoding/json/jsontext.(*decoderState).reset
+     0.01s  0.93% 74.77%      0.01s  0.93%  encoding/json/jsontext.(*stateEntry).Increment (inline)
+     0.01s  0.93% 75.70%      0.01s  0.93%  encoding/json/v2.(*timeArshaler).unmarshal
+     0.01s  0.93% 76.64%      0.38s 35.51%  encoding/json/v2.Unmarshal
+     0.01s  0.93% 77.57%      0.01s  0.93%  hash/crc32.castagnoliSSE42
+     0.01s  0.93% 78.50%      0.01s  0.93%  internal/runtime/atomic.(*Uint32).Add (inline)
+## CPU cumulative (top 45)
+Duration: 997.41ms, Total samples = 1.07s (107.28%)
+Showing nodes accounting for 0.53s, 49.53% of 1.07s total
+Showing top 45 nodes out of 158
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      0.92s 85.98%  main.OpenStore
+         0     0%     0%      0.92s 85.98%  main.main
+         0     0%     0%      0.92s 85.98%  main.runServe
+         0     0%     0%      0.92s 85.98%  runtime.main
+         0     0%     0%      0.61s 57.01%  main.(*Store).applyRecord
+     0.01s  0.93%  0.93%      0.38s 35.51%  encoding/json/v2.Unmarshal
+         0     0%  0.93%      0.36s 33.64%  encoding/json.Unmarshal (inline)
+         0     0%  0.93%      0.36s 33.64%  encoding/json/v2.unmarshalDecode
+     0.02s  1.87%  2.80%      0.32s 29.91%  encoding/json/v2.makeStructArshaler.func3
+         0     0%  2.80%      0.31s 28.97%  main.openJournal
+         0     0%  2.80%      0.31s 28.97%  main.replayJournal
+         0     0%  2.80%      0.24s 22.43%  runtime.systemstack
+         0     0%  2.80%      0.19s 17.76%  internal/poll.(*FD).Pread
+         0     0%  2.80%      0.19s 17.76%  internal/poll.(*FD).Pread.func1 (inline)
+         0     0%  2.80%      0.19s 17.76%  internal/poll.ignoringEINTR2[go.shape.int] (inline)
+     0.19s 17.76% 20.56%      0.19s 17.76%  internal/runtime/syscall/linux.Syscall6
+         0     0% 20.56%      0.19s 17.76%  os.(*File).ReadAt
+         0     0% 20.56%      0.19s 17.76%  os.(*File).pread (inline)
+         0     0% 20.56%      0.19s 17.76%  runtime.mallocgc
+         0     0% 20.56%      0.19s 17.76%  syscall.Pread (inline)
+         0     0% 20.56%      0.19s 17.76%  syscall.RawSyscall6
+         0     0% 20.56%      0.19s 17.76%  syscall.Syscall6
+         0     0% 20.56%      0.19s 17.76%  syscall.pread
+         0     0% 20.56%      0.14s 13.08%  encoding/json/v2.makeStringArshaler.func2
+         0     0% 20.56%      0.13s 12.15%  runtime.mProf_Malloc
+         0     0% 20.56%      0.13s 12.15%  runtime.profilealloc
+         0     0% 20.56%      0.12s 11.21%  encoding/json/v2.makePointerArshaler.func3
+         0     0% 20.56%      0.12s 11.21%  runtime.callers
+         0     0% 20.56%      0.12s 11.21%  runtime.callers.func1
+     0.01s  0.93% 21.50%      0.12s 11.21%  runtime.tracebackPCs
+     0.03s  2.80% 24.30%      0.11s 10.28%  main.(*Store).archiveVersionLocked
+         0     0% 24.30%      0.11s 10.28%  runtime.gcBgMarkWorker
+         0     0% 24.30%      0.11s 10.28%  runtime.gcBgMarkWorker.func2
+         0     0% 24.30%      0.11s 10.28%  runtime.gcDrain
+     0.02s  1.87% 26.17%      0.10s  9.35%  encoding/json/jsontext.(*decoderState).ReadValue
+         0     0% 26.17%      0.10s  9.35%  runtime.makeslice
+     0.03s  2.80% 28.97%      0.09s  8.41%  encoding/json/jsontext.(*decoderState).consumeValue
+     0.03s  2.80% 31.78%      0.09s  8.41%  runtime.mapassign_faststr
+     0.02s  1.87% 33.64%      0.08s  7.48%  encoding/json/v2.makeString
+     0.01s  0.93% 34.58%      0.08s  7.48%  runtime.mallocgcSmallNoscan
+     0.08s  7.48% 42.06%      0.08s  7.48%  runtime.memmove
+     0.02s  1.87% 43.93%      0.08s  7.48%  runtime.pcvalue
+         0     0% 43.93%      0.07s  6.54%  runtime.gcDrainMarkWorkerIdle (inline)
+         0     0% 43.93%      0.07s  6.54%  runtime.scanObject
+     0.06s  5.61% 49.53%      0.06s  5.61%  encoding/json/internal/jsonwire.ConsumeSimpleString (inline)
+## alloc_space (top 18)
+Showing nodes accounting for 219070.40kB, 100% of 219165.83kB total
+Dropped 49 nodes (cum <= 1095.83kB)
+      flat  flat%   sum%        cum   cum%
+199713.61kB 91.12% 91.12% 199713.61kB 91.12%  main.replayJournal
+11451.77kB  5.23% 96.35% 18235.52kB  8.32%  main.(*Store).applyRecord
+ 5633.84kB  2.57% 98.92%  5633.84kB  2.57%  encoding/json/v2.makeString
+    1152kB  0.53% 99.45%     1152kB  0.53%  runtime/pprof.StartCPUProfile
+ 1112.33kB  0.51%   100%  1112.33kB  0.51%  encoding/hex.DecodeString
+    6.83kB 0.0031%   100%  5640.68kB  2.57%  encoding/json/v2.makeStringArshaler.func2
+         0     0%   100%  5675.58kB  2.59%  encoding/json.Unmarshal (inline)
+         0     0%   100%  5675.58kB  2.59%  encoding/json/v2.Unmarshal
+         0     0%   100%  5675.58kB  2.59%  encoding/json/v2.makeStructArshaler.func3
+         0     0%   100%  5675.58kB  2.59%  encoding/json/v2.unmarshalDecode
+         0     0%   100% 217953.30kB 99.45%  main.OpenStore
+         0     0%   100%  1112.33kB  0.51%  main.decodeHexSHA256
+         0     0%   100%     1152kB  0.53%  main.init.7.func2
+         0     0%   100% 217953.30kB 99.45%  main.main
+         0     0%   100% 199713.61kB 91.12%  main.openJournal
+         0     0%   100%     1152kB  0.53%  main.p0cpuCycle
+         0     0%   100% 217953.30kB 99.45%  main.runServe
+         0     0%   100% 217957.33kB 99.45%  runtime.main
+## alloc_objects (top 12)
+Showing nodes accounting for 539501, 99.92% of 539917 total
+Dropped 52 nodes (cum <= 2699)
+Showing top 12 nodes out of 15
+      flat  flat%   sum%        cum   cum%
+    296142 54.85% 54.85%     296142 54.85%  main.replayJournal
+    133306 24.69% 79.54%     133306 24.69%  encoding/json/v2.makeString
+     74458 13.79% 93.33%     243388 45.08%  main.(*Store).applyRecord
+     35594  6.59% 99.92%      35594  6.59%  encoding/hex.DecodeString
+         1 0.00019% 99.92%     133307 24.69%  encoding/json/v2.makeStringArshaler.func2
+         0     0% 99.92%     133348 24.70%  encoding/json.Unmarshal (inline)
+         0     0% 99.92%     133348 24.70%  encoding/json/v2.Unmarshal
+         0     0% 99.92%     133348 24.70%  encoding/json/v2.makeStructArshaler.func3
+         0     0% 99.92%     133348 24.70%  encoding/json/v2.unmarshalDecode
+         0     0% 99.92%     539542 99.93%  main.OpenStore
+         0     0% 99.92%      35594  6.59%  main.decodeHexSHA256
+         0     0% 99.92%     539542 99.93%  main.main
+## mutex delay (top 12)
+Time: 2026-11-08 04:49:08 UTC
+Showing nodes accounting for 4103.51us, 100% of 4103.51us total
+Showing top 12 nodes out of 30
+      flat  flat%   sum%        cum   cum%
+ 4103.51us   100%   100%  4103.51us   100%  runtime.unlock (inline)
+         0     0%   100%   178.41us  4.35%  runtime.(*mcache).prepareForSweep
+         0     0%   100%   178.41us  4.35%  runtime.(*mcache).releaseAll
+         0     0%   100%   178.41us  4.35%  runtime.(*mcentral).uncacheSpan
+         0     0%   100%    84.03us  2.05%  runtime.(*scavengerState).wake
+         0     0%   100%   178.41us  4.35%  runtime.(*spanSet).push
+         0     0%   100%   178.41us  4.35%  runtime.(*sweepLocked).sweep
+         0     0%   100%    83.41us  2.03%  runtime.acquirep
+         0     0%   100%    83.41us  2.03%  runtime.acquirepNoTrace
+         0     0%   100%  3820.19us 93.10%  runtime.findRunnable
+         0     0%   100%   199.29us  4.86%  runtime.forEachP
+## block delay (top 15)
+Time: 2026-11-08 04:49:08 UTC
+Showing nodes accounting for 997.46ms, 99.50% of 1002.43ms total
+Dropped 24 nodes (cum <= 5.01ms)
+      flat  flat%   sum%        cum   cum%
+  997.46ms 99.50% 99.50%   997.46ms 99.50%  runtime.selectgo
+         0     0% 99.50%  1001.69ms 99.93%  main.init.7.func2
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.092595894,"/cpu/classes/idle:cpu-seconds":2.653996074,"/cpu/classes/total:cpu-seconds":3.737929556,"/cpu/classes/user:cpu-seconds":0.991337016,"/gc/cycles/total:gc-cycles":13,"/gc/heap/allocs:bytes":347166496,"/gc/heap/allocs:objects":1972034,"/gc/heap/live:bytes":134244336,"/memory/classes/total:bytes":233924920,"/sched/goroutines:goroutines":16,"final":false,"gomaxprocs":4,"mem.heap_inuse":179994624,"mem.mallocs":2065670,"mem.num_gc":13,"mem.pause_total_ns":1371926,"mem.sys":234187064,"mem.total_alloc":347927872,"t":1794113348764264777}
