@@ -1649,6 +1649,9 @@ func init() {
 	if n, err := strconv.Atoi(os.Getenv("ZEROS3_DIRECT_PACK_FLUSH_KIB")); err == nil && n > 0 {
 		directPackFlushKiB = int64(n)
 	}
+	if n, err := strconv.Atoi(os.Getenv("ZEROS3_DIRECT_PACK_KIB")); err == nil && n > 0 {
+		directPackMinBytes = int64(n) << 10
+	}
 	if n, err := strconv.Atoi(os.Getenv("ZEROS3_DIRECT_PACK_MIB")); err == nil && n >= 0 && n <= 1<<20 {
 		directPackMinBytes = int64(n) << 20
 		if n == 0 {
@@ -1886,7 +1889,7 @@ func (p *packSink) Abort() {
 // opt only picks the physical sink (loose files or direct packs); chunking,
 // hashing and the result are identical either way.
 func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (ingestResult, error) {
-	if (opt.size >= ingestAblate.pipeMin() || opt.directPack()) && !ingestAblate.noPipe && runtime.GOMAXPROCS(0) > 1 {
+	if opt.size >= ingestAblate.pipeMin() && !ingestAblate.noPipe && runtime.GOMAXPROCS(0) > 1 {
 		// Concurrent ingests already keep the cores busy, and a pipeline then
 		// only adds hand-off cost: beyond a few at once, run serially.
 		if release, ok := acquirePipeSlot(); ok {
