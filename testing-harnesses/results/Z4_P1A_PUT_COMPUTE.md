@@ -97,7 +97,7 @@ Commits (4 production, plus tests/evidence) contain no AI attribution trailers; 
 | final-commit numbers | measured with a binary built from `zeros3.go` SHA-256 `35344677...833954ebd`, the file in the PR (re-checked) |
 One existing test (`TestDirectPackLife_CrashMatrixConverges`) used a non-atomic hook counter and raced once hooks could fire on two pack jobs; made atomic with the same line count (test-only).
 Ablation switch `ZEROS3_INGEST_ABLATE` (benchmark-only, unset in production) is kept so the measurements reproduce.
-PR_STATUS_PLACEHOLDER
+PR [#105](https://github.com/insightlabs38-pixel/zeros3/pull/105): non-draft, based on `ffceb09`, no AI attribution in commits or description (the platform-appended footer was removed and the posted body re-read). Merge method: merge commit; the merge SHA is recorded on the PR. B2 #97 and drafts #80/#81 untouched; representation authority not merged; P1B not started.
 
 ## 14. Final verdict
-VERDICT_PLACEHOLDER
+**P1A_PRODUCTION_READY**. Best verified speedups: 64 MiB direct pack 3.07x (140 -> 428 MiB/s), 1 GiB 3.85x (127 -> 488), 4 concurrent streams 1.47x, signed/chunked/similar-revision/text 2.6-3.2x; CPU per GiB -9% to -19% (SHA-256 -17..-19%, CDC -30%); peak RSS 34 MiB (64 MiB) / 44 MiB (1 GiB, above the 40 MiB initial target by bounded buffers; not size-proportional) / 60 MiB (4 streams). Remaining bottleneck: CPU per byte (MD5 1.3 + four SHA-256 passes 2.5 + page-cache write 1.0 CPU-s/GiB), about 3 of 4 cores busy including the load generator; est. at most 1.3x more for one stream. Strongest negative result: pipelining the loose path (objects < 32 MiB, multipart parts) gives no wall-clock gain and +13% CPU, so it is deliberately off; that path is P1B's (syscalls/fsync). Next: P1B (group commit, `casPubMu`, direct-pack multipart parts so completion reuses this pipeline).
