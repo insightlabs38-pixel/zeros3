@@ -1,0 +1,137 @@
+# profile dir: b3_targz-r0
+## CPU flat (top 28)
+Time: 2026-11-08 06:01:49 UTC
+Duration: 26.77s, Total samples = 23.92s (89.36%)
+Showing nodes accounting for 21.46s, 89.72% of 23.92s total
+Dropped 263 nodes (cum <= 0.12s)
+Showing top 28 nodes out of 103
+      flat  flat%   sum%        cum   cum%
+    11.38s 47.58% 47.58%     14.15s 59.16%  zeros3-z3/ir.(*window).search
+     1.63s  6.81% 54.39%      1.63s  6.81%  internal/runtime/syscall/linux.Syscall6
+     1.40s  5.85% 60.24%      1.46s  6.10%  zeros3-z3/ir.matchLen (inline)
+     1.04s  4.35% 64.59%      1.04s  4.35%  crypto/internal/fips140/sha256.blockSHANI
+     0.99s  4.14% 68.73%      0.99s  4.14%  zeros3-z3/ir.(*window).headGet (inline)
+     0.66s  2.76% 71.49%     16.07s 67.18%  zeros3-z3/ir.(*predictor).token
+     0.50s  2.09% 73.58%      0.50s  2.09%  runtime.memclrNoHeapPointers
+     0.44s  1.84% 75.42%      0.44s  1.84%  zeros3-z3/ir.hashAt (inline)
+     0.42s  1.76% 77.17%      0.42s  1.76%  runtime.memmove
+     0.39s  1.63% 78.80%      1.54s  6.44%  zeros3-z3/ir.(*window).insertTo
+     0.35s  1.46% 80.27%      0.65s  2.72%  compress/flate.(*fastEncL6).encode
+     0.34s  1.42% 81.69%      0.37s  1.55%  zeros3-z3/deflate.(*bitWriter).put
+     0.27s  1.13% 82.82%      0.27s  1.13%  zeros3-z3/ir.distCodeOf (inline)
+     0.24s  1.00% 83.82%      0.25s  1.05%  zeros3-z3/ir.cuts
+     0.21s  0.88% 84.70%      0.32s  1.34%  zeros3-z3/ir.lengthCode (inline)
+     0.17s  0.71% 85.41%      0.60s  2.51%  zeros3-z3/deflate.replayTokens
+     0.16s  0.67% 86.08%      0.27s  1.13%  zeros3-z3/ir.(*decoder).decode
+     0.16s  0.67% 86.75%      0.16s  0.67%  zeros3-z3/ir.(*runIter).next
+     0.13s  0.54% 87.29%      0.13s  0.54%  compress/flate.(*huffmanEncoder).bitCounts
+     0.11s  0.46% 87.75%     11.73s 49.04%  zeros3-z3/ir.Decode
+     0.09s  0.38% 88.13%      0.12s   0.5%  compress/flate.(*huffmanBitWriter).writeTokens
+     0.08s  0.33% 88.46%      0.12s   0.5%  zeros3-z3/deflate.(*decoder).decode
+     0.08s  0.33% 88.80%      5.60s 23.41%  zeros3-z3/ir.(*predictor).encode
+     0.07s  0.29% 89.09%      0.60s  2.51%  zeros3-z3/deflate.(*parser).huffBlock
+     0.06s  0.25% 89.34%      0.42s  1.76%  zeros3-z3/ir.(*rcio).bit
+     0.05s  0.21% 89.55%     11.35s 47.45%  zeros3-z3/ir.(*predictor).decodeUnit
+     0.02s 0.084% 89.63%      0.26s  1.09%  compress/flate.(*huffmanEncoder).generate
+     0.02s 0.084% 89.72%      1.65s  6.90%  syscall.RawSyscall6
+## CPU cumulative (top 45)
+Duration: 26.77s, Total samples = 23.92s (89.36%)
+Showing nodes accounting for 16.82s, 70.32% of 23.92s total
+Dropped 263 nodes (cum <= 0.12s)
+Showing top 45 nodes out of 103
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%     23.75s 99.29%  main.cmdFiles
+         0     0%     0%     23.75s 99.29%  main.main
+         0     0%     0%     23.75s 99.29%  runtime.main
+         0     0%     0%     22.44s 93.81%  zeros3-z3/semcas.(*FilePlanner).IngestTar
+         0     0%     0%     19.17s 80.14%  zeros3-z3/semcas.(*FilePlanner).deflated
+     0.66s  2.76%  2.76%     16.07s 67.18%  zeros3-z3/ir.(*predictor).token
+    11.38s 47.58% 50.33%     14.15s 59.16%  zeros3-z3/ir.(*window).search
+         0     0% 50.33%     12.90s 53.93%  zeros3-z3/semcas.encodeStream
+         0     0% 50.33%     12.17s 50.88%  zeros3-z3/ir.Reconstruct
+         0     0% 50.33%     12.17s 50.88%  zeros3-z3/semcas.inflateReplay
+     0.11s  0.46% 50.79%     11.73s 49.04%  zeros3-z3/ir.Decode
+     0.05s  0.21% 51.00%     11.35s 47.45%  zeros3-z3/ir.(*predictor).decodeUnit
+         0     0% 51.00%      7.34s 30.69%  zeros3-z3/semcas.(*Store).PutDerived
+         0     0% 51.00%      7.12s 29.77%  zeros3-z3/semcas.(*Store).materialize
+     0.02s 0.084% 51.09%      6.32s 26.42%  zeros3-z3/ir.Encode
+     0.08s  0.33% 51.42%      5.60s 23.41%  zeros3-z3/ir.(*predictor).encode
+         0     0% 51.42%      5.59s 23.37%  zeros3-z3/semcas.(*Op).Apply
+         0     0% 51.42%      5.45s 22.78%  zeros3-z3/ir.(*predictor).encodeUnit (inline)
+     0.01s 0.042% 51.46%      2.64s 11.04%  zeros3-z3/semcas.(*FilePlanner).tarComp
+         0     0% 51.46%      1.89s  7.90%  zeros3-z3/semcas.(*FilePlanner).content
+     0.02s 0.084% 51.55%      1.65s  6.90%  syscall.RawSyscall6
+     1.63s  6.81% 58.36%      1.63s  6.81%  internal/runtime/syscall/linux.Syscall6
+     0.39s  1.63% 59.99%      1.54s  6.44%  zeros3-z3/ir.(*window).insertTo
+     1.40s  5.85% 65.84%      1.46s  6.10%  zeros3-z3/ir.matchLen (inline)
+         0     0% 65.84%      1.34s  5.60%  zeros3-z3/semcas.(*Store).replayInto
+         0     0% 65.84%      1.31s  5.48%  zeros3-z3/semcas.(*Store).Cost
+         0     0% 65.84%      1.29s  5.39%  zeros3-z3/semcas.(*Store).PutRaw
+         0     0% 65.84%      1.20s  5.02%  os.ignoringEINTR (inline)
+         0     0% 65.84%      1.19s  4.97%  syscall.Syscall6
+         0     0% 65.84%      1.19s  4.97%  zeros3-z3/semcas.writeAtomic
+         0     0% 65.84%      1.13s  4.72%  zeros3-z3/lab.PackedLen (inline)
+         0     0% 65.84%      1.13s  4.72%  zeros3-z3/lab.packedLen
+     0.01s 0.042% 65.89%      1.07s  4.47%  os.OpenFile
+         0     0% 65.89%      1.06s  4.43%  compress/flate.(*Writer).Close (inline)
+         0     0% 65.89%      1.06s  4.43%  compress/flate.(*compressor).close
+         0     0% 65.89%      1.06s  4.43%  compress/flate.(*compressor).deflateFast
+         0     0% 65.89%      1.06s  4.43%  os.openFileNolog
+     0.01s 0.042% 65.93%      1.05s  4.39%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0% 65.93%      1.05s  4.39%  zeros3-z3/lab.packedLenRaw
+         0     0% 65.93%      1.04s  4.35%  crypto/internal/fips140/sha256.block
+     1.04s  4.35% 70.28%      1.04s  4.35%  crypto/internal/fips140/sha256.blockSHANI
+         0     0% 70.28%      1.04s  4.35%  os.WriteFile
+         0     0% 70.28%      1.04s  4.35%  zeros3-z3/semcas.(*Store).payloadCached
+     0.01s 0.042% 70.32%      1.01s  4.22%  os.openFileNolog.func1 (inline)
+         0     0% 70.32%         1s  4.18%  os.open
+## alloc_space (top 18)
+Showing nodes accounting for 2454.43MB, 95.99% of 2557.03MB total
+Dropped 85 nodes (cum <= 12.79MB)
+Showing top 18 nodes out of 76
+      flat  flat%   sum%        cum   cum%
+  875.69MB 34.25% 34.25%   875.69MB 34.25%  bytes.growSlice
+  371.85MB 14.54% 48.79%   371.85MB 14.54%  zeros3-z3/deflate.appendMatch (inline)
+  286.88MB 11.22% 60.01%   310.84MB 12.16%  zeros3-z3/ir.(*predictor).decodeUnit
+  231.79MB  9.06% 69.07%   232.80MB  9.10%  os.readFileContents
+  157.94MB  6.18% 75.25%   529.79MB 20.72%  zeros3-z3/deflate.(*parser).huffBlock
+  139.41MB  5.45% 80.70%   139.41MB  5.45%  zeros3-z3/ir.toRuns
+   66.50MB  2.60% 83.30%   396.42MB 15.50%  zeros3-z3/ir.Decode
+   64.94MB  2.54% 85.84%    64.94MB  2.54%  zeros3-z3/ir.flatten
+   56.59MB  2.21% 88.06%    56.59MB  2.21%  runtime/pprof.StartCPUProfile
+   53.12MB  2.08% 90.13%    53.12MB  2.08%  compress/flate.(*fastGen).addBlock
+   37.12MB  1.45% 91.58%    72.71MB  2.84%  compress/flate.NewWriter
+   24.60MB  0.96% 92.55%    24.60MB  0.96%  zeros3-z3/ir.newZTree (inline)
+   24.09MB  0.94% 93.49%    24.09MB  0.94%  zeros3-z3/ir.newE2
+   22.92MB   0.9% 94.38%    22.92MB   0.9%  compress/flate.newFastEnc (inline)
+   15.48MB  0.61% 94.99%    15.48MB  0.61%  zeros3-z3/semcas.(*Recipe).Marshal
+   11.17MB  0.44% 95.43%    35.59MB  1.39%  compress/flate.(*compressor).init
+    8.01MB  0.31% 95.74%    32.10MB  1.26%  zeros3-z3/ir.newPredModel
+    6.32MB  0.25% 95.99%  1223.21MB 47.84%  zeros3-z3/semcas.(*Store).materialize
+## alloc_objects (top 12)
+Showing nodes accounting for 787034, 77.64% of 1013715 total
+Dropped 61 nodes (cum <= 5068)
+Showing top 12 nodes out of 100
+      flat  flat%   sum%        cum   cum%
+    240299 23.70% 23.70%     240299 23.70%  os.newFile
+     70222  6.93% 30.63%      70222  6.93%  internal/bytealg.MakeNoZero
+     65535  6.46% 37.10%     106496 10.51%  zeros3-z3/semcas.ID.String (inline)
+     61175  6.03% 43.13%      61175  6.03%  runtime/pprof.allFrames
+     51493  5.08% 48.21%      51493  5.08%  syscall.ByteSliceFromString
+     50416  4.97% 53.18%      59778  5.90%  os.lstatNolog
+     49153  4.85% 58.03%     164233 16.20%  zeros3-z3/semcas.(*Store).blobPath
+     46027  4.54% 62.57%      54753  5.40%  zeros3-z3/ir.(*predictor).decodeUnit
+     43691  4.31% 66.88%      76460  7.54%  zeros3-z3/semcas.(*Record).Marshal
+     40961  4.04% 70.92%      40961  4.04%  fmt.Sprintf
+     35294  3.48% 74.41%      35294  3.48%  os.(*File).Stat
+     32768  3.23% 77.64%      32768  3.23%  zeros3-z3/semcas.(*Desc).Marshal
+## mutex delay (top 12)
+Time: 2026-11-08 06:02:16 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## block delay (top 15)
+Time: 2026-11-08 06:02:16 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.050797772,"/cpu/classes/idle:cpu-seconds":0.027109294,"/cpu/classes/total:cpu-seconds":26.98458458,"/cpu/classes/user:cpu-seconds":26.87185794,"/gc/cycles/total:gc-cycles":22,"/gc/heap/allocs:bytes":2680441560,"/gc/heap/allocs:objects":859497,"/gc/heap/live:bytes":13124248,"/memory/classes/total:bytes":815299016,"/sched/goroutines:goroutines":12,"final":false,"gomaxprocs":1,"mem.heap_inuse":27287552,"mem.mallocs":927913,"mem.num_gc":22,"mem.pause_total_ns":1237855,"mem.sys":815299016,"mem.total_alloc":2681345728,"t":1794117736591112718}

@@ -1,0 +1,137 @@
+# profile dir: b5_family-r0
+## CPU flat (top 28)
+Time: 2026-11-08 06:33:01 UTC
+Duration: 296.18s, Total samples = 250.52s (84.58%)
+Showing nodes accounting for 231.82s, 92.54% of 250.52s total
+Dropped 465 nodes (cum <= 1.25s)
+Showing top 28 nodes out of 95
+      flat  flat%   sum%        cum   cum%
+    75.96s 30.32% 30.32%     75.96s 30.32%  crypto/internal/fips140/sha256.blockSHANI
+    18.26s  7.29% 37.61%     20.31s  8.11%  zeros3-z3/mdelta2.le (inline)
+    17.85s  7.13% 44.73%     25.80s 10.30%  zeros3-z3/mdelta2.nrcEstimate
+    14.60s  5.83% 50.56%     29.38s 11.73%  zeros3-z3/mdelta2.nrcEncodeCfg
+    12.49s  4.99% 55.55%     25.83s 10.31%  compress/flate.(*fastEncL6).encode
+    11.07s  4.42% 59.97%     11.07s  4.42%  runtime.memclrNoHeapPointers
+    10.33s  4.12% 64.09%     11.15s  4.45%  zeros3-z3/mdelta2.(*ransEnc).put (inline)
+     9.18s  3.66% 67.76%     21.60s  8.62%  zeros3-z3/mdelta2.nrcProxy
+     8.36s  3.34% 71.09%     13.97s  5.58%  zeros3-z3/mdelta2.MakeResidual
+     6.35s  2.53% 73.63%     13.98s  5.58%  zeros3-z3/mdelta2.fpeEncode
+     6.34s  2.53% 76.16%      6.34s  2.53%  runtime.memmove
+     4.10s  1.64% 77.79%      4.52s  1.80%  zeros3-z3/mdelta2.Planes (inline)
+     3.94s  1.57% 79.37%      4.60s  1.84%  zeros3-z3/mdelta2.exps
+     3.81s  1.52% 80.89%      4.23s  1.69%  zeros3-z3/mdelta2.NRCDecode
+     3.48s  1.39% 82.28%      3.49s  1.39%  encoding/binary.littleEndian.Uint16 (inline)
+     3.48s  1.39% 83.67%      3.50s  1.40%  zeros3-z3/mdelta2.bitlen (inline)
+     2.81s  1.12% 84.79%      2.84s  1.13%  compress/flate.loadLE32[go.shape.int32] (inline)
+     2.65s  1.06% 85.85%      4.31s  1.72%  compress/flate.(*huffmanBitWriter).writeTokens
+     2.57s  1.03% 86.87%      2.58s  1.03%  compress/flate.loadLE64[go.shape.int32] (inline)
+        2s   0.8% 87.67%      2.74s  1.09%  compress/flate.matchLen
+     1.85s  0.74% 88.41%      1.86s  0.74%  zeros3-z3/mdelta2.expField (inline)
+     1.77s  0.71% 89.11%      1.77s  0.71%  internal/runtime/syscall/linux.Syscall6
+     1.62s  0.65% 89.76%      1.63s  0.65%  zeros3-z3/mdelta2.(*ransDec).get
+     1.57s  0.63% 90.39%      1.57s  0.63%  compress/flate.hashLen (inline)
+     1.48s  0.59% 90.98%      1.49s  0.59%  zeros3-z3/mdelta2.key2 (inline)
+     1.37s  0.55% 91.53%    115.31s 46.03%  zeros3-z3/mdelta2.EncodeResidual
+     1.33s  0.53% 92.06%      1.33s  0.53%  zeros3-z3/mdelta2.zigzag2 (inline)
+     1.20s  0.48% 92.54%      1.32s  0.53%  compress/flate.(*tokens).AddMatchLong
+## CPU cumulative (top 45)
+Duration: 296.18s, Total samples = 250.52s (84.58%)
+Showing nodes accounting for 207.28s, 82.74% of 250.52s total
+Dropped 465 nodes (cum <= 1.25s)
+Showing top 45 nodes out of 95
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%    226.69s 90.49%  zeros3-z3/mdelta2.EncodeModel.func2
+         0     0%     0%    226.68s 90.48%  zeros3-z3/mdelta2.(*planner).planTensor
+     0.03s 0.012% 0.012%    226.68s 90.48%  zeros3-z3/mdelta2.(*planner).planTensor0
+     0.03s 0.012% 0.024%    155.12s 61.92%  zeros3-z3/mdelta2.(*planner).planSeg
+     0.01s 0.004% 0.028%    115.35s 46.04%  zeros3-z3/mdelta2.(*planner).encodeCoded
+     1.37s  0.55%  0.57%    115.31s 46.03%  zeros3-z3/mdelta2.EncodeResidual
+         0     0%  0.57%     75.99s 30.33%  crypto/internal/fips140/sha256.(*Digest).Write
+     0.03s 0.012%  0.59%     75.99s 30.33%  crypto/internal/fips140/sha256.block
+    75.96s 30.32% 30.91%     75.96s 30.32%  crypto/internal/fips140/sha256.blockSHANI
+         0     0% 30.91%     74.73s 29.83%  crypto/sha256.Sum256
+         0     0% 30.91%     70.40s 28.10%  zeros3-z3/mdelta2.tag (inline)
+     0.01s 0.004% 30.91%     59.79s 23.87%  zeros3-z3/mdelta2.NRCEncode
+     0.01s 0.004% 30.92%     34.81s 13.90%  zeros3-z3/mdelta2.Deflate
+     0.02s 0.008% 30.92%     33.44s 13.35%  compress/flate.(*compressor).deflateFast
+         0     0% 30.92%     30.12s 12.02%  compress/flate.(*Writer).Write (inline)
+     0.01s 0.004% 30.93%     30.12s 12.02%  compress/flate.(*compressor).write
+    14.60s  5.83% 36.76%     29.38s 11.73%  zeros3-z3/mdelta2.nrcEncodeCfg
+    12.49s  4.99% 41.74%     25.83s 10.31%  compress/flate.(*fastEncL6).encode
+    17.85s  7.13% 48.87%     25.80s 10.30%  zeros3-z3/mdelta2.nrcEstimate
+     9.18s  3.66% 52.53%     21.60s  8.62%  zeros3-z3/mdelta2.nrcProxy
+         0     0% 52.53%     20.88s  8.33%  main.cmdFamily
+         0     0% 52.53%     20.88s  8.33%  main.main
+         0     0% 52.53%     20.88s  8.33%  runtime.main
+    18.26s  7.29% 59.82%     20.31s  8.11%  zeros3-z3/mdelta2.le (inline)
+     6.35s  2.53% 62.35%     13.98s  5.58%  zeros3-z3/mdelta2.fpeEncode
+     8.36s  3.34% 65.69%     13.97s  5.58%  zeros3-z3/mdelta2.MakeResidual
+         0     0% 65.69%     13.69s  5.46%  zeros3-z3/mdelta2.Decode
+     0.01s 0.004% 65.70%     12.67s  5.06%  zeros3-z3/mdelta2.(*Container).DecodeTo
+     0.08s 0.032% 65.73%     11.41s  4.55%  runtime.mallocgc
+         0     0% 65.73%     11.17s  4.46%  zeros3-z3/mdelta2.(*Container).DecodeTensor
+    10.33s  4.12% 69.85%     11.15s  4.45%  zeros3-z3/mdelta2.(*ransEnc).put (inline)
+    11.07s  4.42% 74.27%     11.07s  4.42%  runtime.memclrNoHeapPointers
+         0     0% 74.27%     10.77s  4.30%  zeros3-z3/mdelta2.(*Container).decodeSeg (inline)
+     0.01s 0.004% 74.27%     10.77s  4.30%  zeros3-z3/mdelta2.(*Container).decodeSegW
+     0.02s 0.008% 74.28%     10.18s  4.06%  runtime.mallocgcLarge
+     0.03s 0.012% 74.29%      8.58s  3.42%  runtime.makeslice
+     0.04s 0.016% 74.31%      8.25s  3.29%  runtime.memclrNoHeapPointersChunked
+     0.27s  0.11% 74.42%      7.55s  3.01%  zeros3-z3/mdelta2.DecodeResidual
+     6.34s  2.53% 76.95%      6.34s  2.53%  runtime.memmove
+     0.01s 0.004% 76.95%      5.76s  2.30%  compress/flate.(*huffmanBitWriter).writeBlockDynamic
+     3.94s  1.57% 78.52%      4.60s  1.84%  zeros3-z3/mdelta2.exps
+     4.10s  1.64% 80.16%      4.52s  1.80%  zeros3-z3/mdelta2.Planes (inline)
+     2.65s  1.06% 81.22%      4.31s  1.72%  compress/flate.(*huffmanBitWriter).writeTokens
+     3.81s  1.52% 82.74%      4.23s  1.69%  zeros3-z3/mdelta2.NRCDecode
+         0     0% 82.74%      3.94s  1.57%  compress/flate.(*Writer).Close (inline)
+## alloc_space (top 18)
+Showing nodes accounting for 95.38GB, 91.31% of 104.46GB total
+Dropped 110 nodes (cum <= 0.52GB)
+Showing top 18 nodes out of 74
+      flat  flat%   sum%        cum   cum%
+   11.77GB 11.26% 11.26%    11.77GB 11.26%  zeros3-z3/mdelta2.Predict
+   10.65GB 10.20% 21.46%    10.65GB 10.20%  zeros3-z3/mdelta2.MakeResidual
+    9.64GB  9.23% 30.69%    12.03GB 11.52%  zeros3-z3/mdelta2.nrcEncodeCfg
+       8GB  7.66% 38.35%        8GB  7.66%  bytes.growSlice
+    7.53GB  7.21% 45.56%     7.53GB  7.21%  compress/flate.newFastEnc (inline)
+    6.57GB  6.29% 51.84%     6.57GB  6.29%  zeros3-z3/mdelta2.(*Model).Read
+    6.56GB  6.28% 58.12%     6.56GB  6.28%  compress/flate.(*fastGen).addBlock
+    5.34GB  5.11% 63.23%    14.31GB 13.70%  compress/flate.NewWriter (inline)
+    4.67GB  4.47% 67.70%     7.73GB  7.40%  zeros3-z3/mdelta2.fpeEncode
+    4.04GB  3.87% 71.57%     4.04GB  3.87%  internal/bytealg.MakeNoZero
+    4.02GB  3.85% 75.42%     4.02GB  3.85%  zeros3-z3/mdelta2.Planes (inline)
+    3.16GB  3.02% 78.44%     3.16GB  3.02%  zeros3-z3/mdelta2.(*ransEnc).put (inline)
+    2.95GB  2.83% 81.27%     2.96GB  2.83%  zeros3-z3/mdelta2.(*Container).Marshal
+    2.50GB  2.39% 83.66%    83.61GB 80.04%  zeros3-z3/mdelta2.(*planner).planSeg
+    2.50GB  2.39% 86.05%    57.53GB 55.08%  zeros3-z3/mdelta2.EncodeResidual
+    2.03GB  1.94% 87.99%     2.03GB  1.94%  zeros3-z3/mdelta2.exps
+    1.96GB  1.88% 89.87%     1.96GB  1.88%  zeros3-z3/mdelta2.(*ransEnc).finish
+    1.50GB  1.44% 91.31%    14.87GB 14.24%  main.cmdFamily
+## alloc_objects (top 12)
+Showing nodes accounting for 4116693, 83.28% of 4943357 total
+Dropped 110 nodes (cum <= 24716)
+Showing top 12 nodes out of 74
+      flat  flat%   sum%        cum   cum%
+   1637551 33.13% 33.13%    1637551 33.13%  runtime/pprof.allFrames
+    858120 17.36% 50.49%     858120 17.36%  zeros3-z3/mdelta2.(*ransEnc).put (inline)
+    324182  6.56% 57.04%     339973  6.88%  runtime/pprof.(*profileBuilder).emitLocation
+    278542  5.63% 62.68%    2070005 41.87%  runtime/pprof.writeHeapProto
+    196756  3.98% 66.66%     196756  3.98%  zeros3-z3/mdelta2.newTab
+    169388  3.43% 70.08%     169388  3.43%  compress/flate.newHuffmanEncoder
+    165425  3.35% 73.43%     165425  3.35%  bytes.growSlice
+    126708  2.56% 75.99%     779230 15.76%  zeros3-z3/mdelta2.nrcEncodeCfg
+    120412  2.44% 78.43%     120412  2.44%  zeros3-z3/mdelta2.(*ransEnc).finish
+     91161  1.84% 80.27%      92997  1.88%  zeros3-z3/mdelta2.(*planner).options
+     74720  1.51% 81.79%      74720  1.51%  zeros3-z3/mdelta2.nrcEstimate
+     73728  1.49% 83.28%      73728  1.49%  encoding/binary.AppendUvarint (inline)
+## mutex delay (top 12)
+Time: 2026-11-08 06:38:01 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## block delay (top 15)
+Time: 2026-11-08 06:38:01 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.493448398,"/cpu/classes/idle:cpu-seconds":1.774477127,"/cpu/classes/total:cpu-seconds":298.36632776,"/cpu/classes/user:cpu-seconds":294.825372959,"/gc/cycles/total:gc-cycles":429,"/gc/heap/allocs:bytes":113256557432,"/gc/heap/allocs:objects":5201913,"/gc/heap/live:bytes":748992168,"/memory/classes/total:bytes":2779081688,"/sched/goroutines:goroutines":12,"final":false,"gomaxprocs":1,"mem.heap_inuse":1230258176,"mem.mallocs":5915985,"mem.num_gc":429,"mem.pause_total_ns":21109972,"mem.sys":2779081688,"mem.total_alloc":113257153016,"t":1794119881671595443}

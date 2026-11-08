@@ -1,0 +1,135 @@
+# profile dir: b6_sst-r0
+## CPU flat (top 28)
+Time: 2026-11-08 06:42:31 UTC
+Duration: 1.01s, Total samples = 700ms (69.20%)
+Showing nodes accounting for 700ms, 100% of 700ms total
+Showing top 28 nodes out of 53
+      flat  flat%   sum%        cum   cum%
+     460ms 65.71% 65.71%      460ms 65.71%  internal/runtime/syscall/linux.Syscall6
+      30ms  4.29% 70.00%       30ms  4.29%  runtime.memmove
+      30ms  4.29% 74.29%      130ms 18.57%  zeros3-z3/lz4z3.fastSeqs
+      20ms  2.86% 77.14%       20ms  2.86%  runtime.asyncPreempt
+      20ms  2.86% 80.00%       30ms  4.29%  zeros3-z3/lz4z3.DecodeH
+      20ms  2.86% 82.86%       20ms  2.86%  zeros3-z3/lz4z3.count (inline)
+      10ms  1.43% 84.29%       10ms  1.43%  internal/runtime/atomic.(*Uint32).Add
+      10ms  1.43% 85.71%       10ms  1.43%  runtime.(*spanSet).push
+      10ms  1.43% 87.14%       50ms  7.14%  runtime.growslice
+      10ms  1.43% 88.57%       10ms  1.43%  runtime.memclrNoHeapPointers
+      10ms  1.43% 90.00%       10ms  1.43%  sync.(*Pool).pin
+      10ms  1.43% 91.43%       20ms  2.86%  zeros3-z3/lz4z3.BuildH
+      10ms  1.43% 92.86%       70ms 10.00%  zeros3-z3/lz4z3.Recipe.Replay
+      10ms  1.43% 94.29%       10ms  1.43%  zeros3-z3/lz4z3.fastSeqs.func2 (inline)
+      10ms  1.43% 95.71%       10ms  1.43%  zeros3-z3/lz4z3.fastSeqs.func3 (inline)
+      10ms  1.43% 97.14%       10ms  1.43%  zeros3-z3/sstz3.(*HashCutter).Cut
+      10ms  1.43% 98.57%      690ms 98.57%  zeros3-z3/sstz3.Encode
+      10ms  1.43%   100%       10ms  1.43%  zeros3-z3/sstz3.WalkBlock
+         0     0%   100%       10ms  1.43%  encoding/binary.AppendUvarint (inline)
+         0     0%   100%      690ms 98.57%  main.main
+         0     0%   100%      690ms 98.57%  main.pack
+         0     0%   100%      460ms 65.71%  main.pack.func1
+         0     0%   100%      460ms 65.71%  main.pack.func2
+         0     0%   100%      460ms 65.71%  os.OpenFile
+         0     0%   100%      460ms 65.71%  os.WriteFile
+         0     0%   100%      460ms 65.71%  os.ignoringEINTR (inline)
+         0     0%   100%      460ms 65.71%  os.open
+         0     0%   100%      460ms 65.71%  os.openFileNolog
+## CPU cumulative (top 45)
+Duration: 1.01s, Total samples = 700ms (69.20%)
+Showing nodes accounting for 650ms, 92.86% of 700ms total
+Showing top 45 nodes out of 53
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      690ms 98.57%  main.main
+         0     0%     0%      690ms 98.57%  main.pack
+         0     0%     0%      690ms 98.57%  runtime.main
+      10ms  1.43%  1.43%      690ms 98.57%  zeros3-z3/sstz3.Encode
+     460ms 65.71% 67.14%      460ms 65.71%  internal/runtime/syscall/linux.Syscall6
+         0     0% 67.14%      460ms 65.71%  main.pack.func1
+         0     0% 67.14%      460ms 65.71%  main.pack.func2
+         0     0% 67.14%      460ms 65.71%  os.OpenFile
+         0     0% 67.14%      460ms 65.71%  os.WriteFile
+         0     0% 67.14%      460ms 65.71%  os.ignoringEINTR (inline)
+         0     0% 67.14%      460ms 65.71%  os.open
+         0     0% 67.14%      460ms 65.71%  os.openFileNolog
+         0     0% 67.14%      460ms 65.71%  os.openFileNolog.func1 (inline)
+         0     0% 67.14%      460ms 65.71%  syscall.Open (inline)
+         0     0% 67.14%      460ms 65.71%  syscall.RawSyscall6
+         0     0% 67.14%      460ms 65.71%  syscall.Syscall6
+         0     0% 67.14%      460ms 65.71%  syscall.openat
+         0     0% 67.14%      460ms 65.71%  zeros3-z3/sstz3.(*groupBuilder).close
+         0     0% 67.14%      200ms 28.57%  zeros3-z3/sstz3.analyzeLZ4Block
+      30ms  4.29% 71.43%      130ms 18.57%  zeros3-z3/lz4z3.fastSeqs
+         0     0% 71.43%      100ms 14.29%  zeros3-z3/lz4z3.Analyze
+         0     0% 71.43%       90ms 12.86%  zeros3-z3/lz4z3.predictPrefix
+      10ms  1.43% 72.86%       70ms 10.00%  zeros3-z3/lz4z3.Recipe.Replay
+      10ms  1.43% 74.29%       50ms  7.14%  runtime.growslice
+         0     0% 74.29%       40ms  5.71%  zeros3-z3/lz4z3.Predict
+      30ms  4.29% 78.57%       30ms  4.29%  runtime.memmove
+         0     0% 78.57%       30ms  4.29%  zeros3-z3/lz4z3.Decode (inline)
+      20ms  2.86% 81.43%       30ms  4.29%  zeros3-z3/lz4z3.DecodeH
+      20ms  2.86% 84.29%       20ms  2.86%  runtime.asyncPreempt
+      10ms  1.43% 85.71%       20ms  2.86%  zeros3-z3/lz4z3.BuildH
+      20ms  2.86% 88.57%       20ms  2.86%  zeros3-z3/lz4z3.count (inline)
+         0     0% 88.57%       10ms  1.43%  encoding/binary.AppendUvarint (inline)
+      10ms  1.43% 90.00%       10ms  1.43%  internal/runtime/atomic.(*Uint32).Add (inline)
+         0     0% 90.00%       10ms  1.43%  runtime.(*consistentHeapStats).release
+         0     0% 90.00%       10ms  1.43%  runtime.(*mcache).nextFree
+         0     0% 90.00%       10ms  1.43%  runtime.(*mcache).refill
+         0     0% 90.00%       10ms  1.43%  runtime.(*mcentral).uncacheSpan
+      10ms  1.43% 91.43%       10ms  1.43%  runtime.(*spanSet).push
+         0     0% 91.43%       10ms  1.43%  runtime.(*sweepLocked).sweep
+         0     0% 91.43%       10ms  1.43%  runtime.bgsweep
+         0     0% 91.43%       10ms  1.43%  runtime.mallocgc
+         0     0% 91.43%       10ms  1.43%  runtime.mallocgcSmallNoscan
+      10ms  1.43% 92.86%       10ms  1.43%  runtime.memclrNoHeapPointers
+         0     0% 92.86%       10ms  1.43%  runtime.sweepone
+         0     0% 92.86%       10ms  1.43%  sync.(*Pool).Put
+## alloc_space (top 18)
+Showing nodes accounting for 120.77MB, 99.17% of 121.78MB total
+Dropped 7 nodes (cum <= 0.61MB)
+Showing top 18 nodes out of 30
+      flat  flat%   sum%        cum   cum%
+   47.77MB 39.22% 39.22%    47.77MB 39.22%  zeros3-z3/lz4z3.fastSeqs
+   32.72MB 26.87% 66.09%    32.72MB 26.87%  zeros3-z3/lz4z3.DecodeH
+   10.49MB  8.62% 74.71%       11MB  9.04%  zeros3-z3/sstz3.(*groupBuilder).add
+    8.02MB  6.58% 81.29%     8.02MB  6.58%  zeros3-z3/lz4z3.BuildH
+       7MB  5.75% 87.04%        7MB  5.75%  zeros3-z3/sstz3.WalkBlock
+    3.53MB  2.90% 89.94%     3.53MB  2.90%  zeros3-z3/sstz3.ReadBlock
+    3.15MB  2.58% 92.53%     3.15MB  2.58%  os.readFileContents
+       3MB  2.46% 94.99%        3MB  2.46%  encoding/binary.AppendUvarint (inline)
+    2.31MB  1.90% 96.89%     2.31MB  1.90%  runtime/pprof.StartCPUProfile
+    1.04MB  0.85% 97.75%     1.54MB  1.27%  zeros3-z3/sstz3.(*groupBuilder).close
+    0.73MB   0.6% 98.34%   116.32MB 95.52%  zeros3-z3/sstz3.Encode
+    0.51MB  0.42% 98.76%     5.37MB  4.41%  zeros3-z3/sstz3.walkIndex
+    0.50MB  0.41% 99.17%     3.50MB  2.87%  zeros3-z3/lz4z3.Recipe.Marshal
+         0     0% 99.17%     2.31MB  1.90%  main.init.4.func2
+         0     0% 99.17%   119.47MB 98.10%  main.main
+         0     0% 99.17%     2.31MB  1.90%  main.p0cpuCycle
+         0     0% 99.17%   119.47MB 98.10%  main.pack
+         0     0% 99.17%     3.15MB  2.58%  os.ReadFile
+## alloc_objects (top 12)
+Showing nodes accounting for 445041, 99.53% of 447157 total
+Dropped 12 nodes (cum <= 2235)
+Showing top 12 nodes out of 25
+      flat  flat%   sum%        cum   cum%
+    239851 53.64% 53.64%     239851 53.64%  zeros3-z3/lz4z3.fastSeqs
+     84313 18.86% 72.49%      84313 18.86%  zeros3-z3/sstz3.WalkBlock
+     44034  9.85% 82.34%      44034  9.85%  encoding/binary.AppendUvarint (inline)
+     32768  7.33% 89.67%      76802 17.18%  zeros3-z3/lz4z3.Recipe.Marshal
+     19709  4.41% 94.08%      19709  4.41%  zeros3-z3/sstz3.ReadBlock
+     14858  3.32% 97.40%      14858  3.32%  zeros3-z3/lz4z3.DecodeH
+      5461  1.22% 98.62%       5461  1.22%  os.newFile
+      4018   0.9% 99.52%       4018   0.9%  zeros3-z3/lz4z3.BuildH
+        28 0.0063% 99.53%       5489  1.23%  zeros3-z3/sstz3.(*groupBuilder).close
+         1 0.00022% 99.53%     447154   100%  zeros3-z3/sstz3.Encode
+         0     0% 99.53%     447155   100%  main.main
+         0     0% 99.53%     447155   100%  main.pack
+## mutex delay (top 12)
+Time: 2026-11-08 06:42:32 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## block delay (top 15)
+Time: 2026-11-08 06:42:32 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.011992542,"/cpu/classes/idle:cpu-seconds":0.00385827,"/cpu/classes/total:cpu-seconds":1.017716261,"/cpu/classes/user:cpu-seconds":1.000106067,"/gc/cycles/total:gc-cycles":27,"/gc/heap/allocs:bytes":162112304,"/gc/heap/allocs:objects":553645,"/gc/heap/live:bytes":8414840,"/memory/classes/total:bytes":29980936,"/sched/goroutines:goroutines":12,"final":false,"gomaxprocs":1,"mem.heap_inuse":14360576,"mem.mallocs":573922,"mem.num_gc":27,"mem.pause_total_ns":1177625,"mem.sys":29980936,"mem.total_alloc":162261896,"t":1794120152367233680}

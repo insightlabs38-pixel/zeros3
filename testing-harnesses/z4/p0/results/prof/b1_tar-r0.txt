@@ -1,0 +1,137 @@
+# profile dir: b1_tar-r0
+## CPU flat (top 28)
+Time: 2026-11-08 06:51:47 UTC
+Duration: 89.31s, Total samples = 83.74s (93.76%)
+Showing nodes accounting for 74.41s, 88.86% of 83.74s total
+Dropped 441 nodes (cum <= 0.42s)
+Showing top 28 nodes out of 96
+      flat  flat%   sum%        cum   cum%
+    27.02s 32.27% 32.27%     37.60s 44.90%  zeros3-z3/simdelta.match
+    10.53s 12.57% 44.84%     19.85s 23.70%  compress/flate.(*fastEncL6).encode
+     6.03s  7.20% 52.04%      6.03s  7.20%  runtime.memclrNoHeapPointers
+     4.50s  5.37% 57.42%      4.50s  5.37%  crypto/internal/fips140/sha256.blockSHANI
+     4.34s  5.18% 62.60%      4.37s  5.22%  zeros3-z3/simdelta.anchorHash (inline)
+     3.09s  3.69% 66.29%      3.10s  3.70%  compress/flate.loadLE32[go.shape.int32] (inline)
+     2.42s  2.89% 69.18%      2.43s  2.90%  compress/flate.loadLE64[go.shape.int32] (inline)
+     2.32s  2.77% 71.95%      2.69s  3.21%  compress/flate.(*decompressor).huffSym
+     2.11s  2.52% 74.47%      3.37s  4.02%  compress/flate.(*huffmanBitWriter).writeTokens
+     1.98s  2.36% 76.83%      1.98s  2.36%  runtime.memmove
+     1.34s  1.60% 78.43%      5.51s  6.58%  compress/flate.(*decompressor).huffmanBlock
+     1.09s  1.30% 79.73%      1.09s  1.30%  compress/flate.hashLen (inline)
+     1.05s  1.25% 80.99%      1.05s  1.25%  compress/flate.(*huffmanEncoder).bitCounts
+     0.96s  1.15% 82.14%     64.40s 76.90%  zeros3-z3/simdelta.Encode
+     0.93s  1.11% 83.25%      1.18s  1.41%  compress/flate.matchLen
+     0.63s  0.75% 84.00%      0.63s  0.75%  zeros3-z3/simdelta.mix (inline)
+     0.58s  0.69% 84.69%      0.58s  0.69%  internal/runtime/maps.ctrlGroup.matchH2 (inline)
+     0.54s  0.64% 85.34%      1.18s  1.41%  zeros3-z3/simdelta.Features
+     0.53s  0.63% 85.97%      0.63s  0.75%  compress/flate.(*tokens).AddMatchLong
+     0.44s  0.53% 86.49%      0.44s  0.53%  runtime.madvise
+     0.36s  0.43% 86.92%      1.42s  1.70%  runtime.mapaccess2_fast64
+     0.34s  0.41% 87.33%      0.86s  1.03%  compress/flate.(*dictDecoder).tryWriteCopy (inline)
+     0.33s  0.39% 87.72%      0.47s  0.56%  slices.partitionCmpFunc[go.shape.struct { compress/flate.literal uint16; compress/flate.freq uint16 }]
+     0.28s  0.33% 88.06%      0.87s  1.04%  compress/flate.(*fastGen).matchLenLimited
+     0.26s  0.31% 88.37%      3.21s  3.83%  zeros3-z3/pdelta.Runs
+     0.24s  0.29% 88.66%      0.83s  0.99%  compress/flate.(*fastGen).matchLenLong (inline)
+     0.10s  0.12% 88.77%      2.82s  3.37%  zeros3-z3/tdelta.Encode
+     0.07s 0.084% 88.86%      2.20s  2.63%  compress/flate.(*huffmanEncoder).generate
+## CPU cumulative (top 45)
+Duration: 89.31s, Total samples = 83.74s (93.76%)
+Showing nodes accounting for 62.86s, 75.07% of 83.74s total
+Dropped 441 nodes (cum <= 0.42s)
+Showing top 45 nodes out of 96
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%     82.06s 97.99%  main.main
+     0.04s 0.048% 0.048%     82.06s 97.99%  main.run
+         0     0% 0.048%     82.06s 97.99%  runtime.main
+     0.96s  1.15%  1.19%     64.40s 76.90%  zeros3-z3/simdelta.Encode
+    27.02s 32.27% 33.46%     37.60s 44.90%  zeros3-z3/simdelta.match
+     0.01s 0.012% 33.47%     25.81s 30.82%  compress/flate.(*compressor).deflateFast
+    10.53s 12.57% 46.05%     19.85s 23.70%  compress/flate.(*fastEncL6).encode
+         0     0% 46.05%     18.90s 22.57%  zeros3-z3/simdelta.zip
+         0     0% 46.05%     14.13s 16.87%  compress/flate.(*Writer).Write (inline)
+         0     0% 46.05%     14.13s 16.87%  compress/flate.(*compressor).write
+         0     0% 46.05%     11.90s 14.21%  compress/flate.(*Writer).Close (inline)
+         0     0% 46.05%     11.90s 14.21%  compress/flate.(*compressor).close
+     0.03s 0.036% 46.08%      7.83s  9.35%  runtime.mallocgc
+     0.01s 0.012% 46.10%      6.48s  7.74%  zeros3-z3/simdelta.parse
+     0.05s  0.06% 46.15%      6.43s  7.68%  runtime.mallocgcLarge
+     0.01s 0.012% 46.17%      6.35s  7.58%  io.ReadAll
+     6.03s  7.20% 53.37%      6.03s  7.20%  runtime.memclrNoHeapPointers
+     0.01s 0.012% 53.38%      5.82s  6.95%  io.(*LimitedReader).Read
+     0.01s 0.012% 53.39%      5.81s  6.94%  compress/flate.(*decompressor).Read
+     0.01s 0.012% 53.40%      5.73s  6.84%  compress/flate.(*huffmanBitWriter).writeBlockDynamic
+     1.34s  1.60% 55.00%      5.51s  6.58%  compress/flate.(*decompressor).huffmanBlock
+     0.01s 0.012% 55.02%      5.37s  6.41%  runtime.makeslice
+     0.01s 0.012% 55.03%      5.32s  6.35%  runtime.memclrNoHeapPointersChunked
+         0     0% 55.03%      4.87s  5.82%  zeros3-z3/simdelta.Resolve
+         0     0% 55.03%      4.87s  5.82%  zeros3-z3/simdelta.Resolve.func1
+     0.01s 0.012% 55.04%      4.51s  5.39%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0% 55.04%      4.50s  5.37%  crypto/internal/fips140/sha256.block
+     4.50s  5.37% 60.41%      4.50s  5.37%  crypto/internal/fips140/sha256.blockSHANI
+         0     0% 60.41%      4.42s  5.28%  crypto/sha256.Sum256
+     4.34s  5.18% 65.60%      4.37s  5.22%  zeros3-z3/simdelta.anchorHash (inline)
+     0.02s 0.024% 65.62%      4.35s  5.19%  zeros3-z3/simdelta.Decode
+         0     0% 65.62%      4.31s  5.15%  zeros3-z3/simdelta.Inspect (inline)
+         0     0% 65.62%      4.11s  4.91%  zeros3-z3/lab.PackedLen (inline)
+         0     0% 65.62%      4.11s  4.91%  zeros3-z3/lab.packedLen
+         0     0% 65.62%      3.81s  4.55%  zeros3-z3/lab.packedLenRaw
+         0     0% 65.62%      3.47s  4.14%  zeros3-z3/simdelta.Resolve.func1.1
+     2.11s  2.52% 68.14%      3.37s  4.02%  compress/flate.(*huffmanBitWriter).writeTokens
+         0     0% 68.14%      3.21s  3.83%  zeros3-z3/pdelta.Cost (inline)
+     0.26s  0.31% 68.45%      3.21s  3.83%  zeros3-z3/pdelta.Runs
+     3.09s  3.69% 72.14%      3.10s  3.70%  compress/flate.loadLE32[go.shape.int32] (inline)
+     0.10s  0.12% 72.26%      2.82s  3.37%  zeros3-z3/tdelta.Encode
+     0.03s 0.036% 72.30%      2.81s  3.36%  runtime.growslice
+     2.32s  2.77% 75.07%      2.69s  3.21%  compress/flate.(*decompressor).huffSym
+         0     0% 75.07%      2.59s  3.09%  zeros3-z3/tdelta.deflateBytes
+         0     0% 75.07%      2.52s  3.01%  compress/flate.(*decompressor).nextBlock
+## alloc_space (top 18)
+Showing nodes accounting for 54675.66MB, 97.76% of 55928.86MB total
+Dropped 106 nodes (cum <= 279.64MB)
+Showing top 18 nodes out of 42
+      flat  flat%   sum%        cum   cum%
+40320.71MB 72.09% 72.09% 40320.71MB 72.09%  zeros3-z3/simdelta.match
+ 4186.59MB  7.49% 79.58% 48669.12MB 87.02%  zeros3-z3/simdelta.Encode
+ 2097.13MB  3.75% 83.33%  2155.65MB  3.85%  io.ReadAll
+ 1854.72MB  3.32% 86.64%  1854.72MB  3.32%  bytes.growSlice
+ 1305.73MB  2.33% 88.98%  1305.73MB  2.33%  compress/flate.newFastEnc (inline)
+ 1108.82MB  1.98% 90.96%  1108.82MB  1.98%  compress/flate.(*fastGen).addBlock
+  924.71MB  1.65% 92.61%  2509.86MB  4.49%  compress/flate.NewWriter (inline)
+  905.07MB  1.62% 94.23%  2561.51MB  4.58%  zeros3-z3/pdelta.Runs
+  468.85MB  0.84% 95.07%   468.85MB  0.84%  compress/flate.(*dictDecoder).init (inline)
+  421.26MB  0.75% 95.82%  2275.55MB  4.07%  zeros3-z3/simdelta.Decode
+  401.85MB  0.72% 96.54%   401.85MB  0.72%  encoding/binary.AppendUvarint (inline)
+  239.36MB  0.43% 96.97%  1585.15MB  2.83%  compress/flate.(*compressor).init
+  166.15MB   0.3% 97.27% 55153.21MB 98.61%  main.run
+  165.80MB   0.3% 97.56%  2247.31MB  4.02%  zeros3-z3/tdelta.Encode
+  106.41MB  0.19% 97.75%   575.26MB  1.03%  compress/flate.NewReader
+    1.50MB 0.0027% 97.76%  1512.66MB  2.70%  zeros3-z3/simdelta.zip
+       1MB 0.0018% 97.76%  1855.72MB  3.32%  bytes.(*Buffer).grow
+         0     0% 97.76%  1855.72MB  3.32%  bytes.(*Buffer).Write
+## alloc_objects (top 12)
+Showing nodes accounting for 2748323, 90.47% of 3037694 total
+Dropped 79 nodes (cum <= 15188)
+Showing top 12 nodes out of 69
+      flat  flat%   sum%        cum   cum%
+    796164 26.21% 26.21%    1163459 38.30%  zeros3-z3/simdelta.Encode
+    541842 17.84% 44.05%     541842 17.84%  runtime/pprof.allFrames
+    389730 12.83% 56.88%     389730 12.83%  compress/flate.(*huffmanDecoder).init
+    196518  6.47% 63.35%     586248 19.30%  io.ReadAll
+    190380  6.27% 69.61%     195963  6.45%  runtime/pprof.(*profileBuilder).emitLocation
+    135997  4.48% 74.09%     135997  4.48%  zeros3-z3/simdelta.match
+    135019  4.44% 78.53%     135019  4.44%  bytes.growSlice
+    133411  4.39% 82.93%     166601  5.48%  zeros3-z3/pdelta.Runs
+     65601  2.16% 85.09%      65601  2.16%  zeros3-z3/simdelta.(*Index).Add
+     63454  2.09% 87.18%      63454  2.09%  zeros3-z3/simdelta.(*Index).Query
+     57344  1.89% 89.06%      57344  1.89%  zeros3-z3/simdelta.Features
+     42863  1.41% 90.47%      42863  1.41%  encoding/binary.AppendUvarint (inline)
+## mutex delay (top 12)
+Time: 2026-11-08 06:53:17 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## block delay (top 15)
+Time: 2026-11-08 06:53:17 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.777577768,"/cpu/classes/idle:cpu-seconds":0.085745737,"/cpu/classes/total:cpu-seconds":89.872261961,"/cpu/classes/user:cpu-seconds":88.591699403,"/gc/cycles/total:gc-cycles":407,"/gc/heap/allocs:bytes":58965050232,"/gc/heap/allocs:objects":3267965,"/gc/heap/live:bytes":217428656,"/memory/classes/total:bytes":655538600,"/sched/goroutines:goroutines":13,"final":false,"gomaxprocs":1,"mem.heap_inuse":438845440,"mem.mallocs":4072566,"mem.num_gc":407,"mem.pause_total_ns":18850570,"mem.sys":655538600,"mem.total_alloc":58965332352,"t":1794120797155703187}

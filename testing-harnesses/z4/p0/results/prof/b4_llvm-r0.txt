@@ -1,0 +1,137 @@
+# profile dir: b4_llvm-r0
+## CPU flat (top 28)
+Time: 2026-11-08 06:10:47 UTC
+Duration: 23.13s, Total samples = 21.72s (93.91%)
+Showing nodes accounting for 16.52s, 76.06% of 21.72s total
+Dropped 306 nodes (cum <= 0.11s)
+Showing top 28 nodes out of 151
+      flat  flat%   sum%        cum   cum%
+     5.08s 23.39% 23.39%      7.67s 35.31%  zeros3-z3/simdelta.match
+     1.68s  7.73% 31.12%      2.94s 13.54%  compress/flate.(*fastEncL6).encode
+     1.63s  7.50% 38.63%      1.67s  7.69%  zeros3-z3/simdelta.anchorHash (inline)
+     0.85s  3.91% 42.54%      1.05s  4.83%  zeros3-z3/graphnorm.(*BitWriter).Bits (inline)
+     0.83s  3.82% 46.36%      0.83s  3.82%  compress/flate.(*huffmanEncoder).bitCounts
+     0.76s  3.50% 49.86%      0.76s  3.50%  runtime.memclrNoHeapPointers
+     0.61s  2.81% 52.67%      0.61s  2.81%  crypto/internal/fips140/sha256.blockSHANI
+     0.46s  2.12% 54.79%      0.47s  2.16%  compress/flate.loadLE32[go.shape.int32] (inline)
+     0.42s  1.93% 56.72%      0.57s  2.62%  compress/flate.(*huffmanBitWriter).writeTokens
+     0.39s  1.80% 58.52%      0.39s  1.80%  runtime.memmove
+     0.36s  1.66% 60.17%      0.60s  2.76%  runtime.tryDeferToSpanScan
+     0.36s  1.66% 61.83%      0.47s  2.16%  slices.partitionCmpFunc[go.shape.struct { compress/flate.literal uint16; compress/flate.freq uint16 }]
+     0.35s  1.61% 63.44%      0.35s  1.61%  compress/flate.loadLE64[go.shape.int32] (inline)
+     0.29s  1.34% 64.78%      0.32s  1.47%  slices.insertionSortCmpFunc[go.shape.struct { compress/flate.literal uint16; compress/flate.freq uint16 }]
+     0.23s  1.06% 65.84%      0.23s  1.06%  zeros3-z3/graphnorm.(*bitReader).bits
+     0.22s  1.01% 66.85%      0.22s  1.01%  runtime.madvise
+     0.22s  1.01% 67.86%      0.50s  2.30%  runtime.scanObject
+     0.20s  0.92% 68.78%      0.20s  0.92%  runtime.spanClass.sizeclass (inline)
+     0.20s  0.92% 69.71%      0.40s  1.84%  zeros3-z3/graphnorm.(*bitReader).vbr
+     0.19s  0.87% 70.58%      2.41s 11.10%  runtime.growslice
+     0.18s  0.83% 71.41%      0.18s  0.83%  compress/flate.hashLen (inline)
+     0.16s  0.74% 72.15%      1.37s  6.31%  zeros3-z3/graphnorm.WriteRecord
+     0.15s  0.69% 72.84%      0.15s  0.69%  runtime.(*mspan).moveInlineMarks
+     0.15s  0.69% 73.53%      0.98s  4.51%  zeros3-z3/graphnorm.(*BitWriter).VBR
+     0.15s  0.69% 74.22%      1.96s  9.02%  zeros3-z3/graphnorm.(*Machine).rec
+     0.14s  0.64% 74.86%      0.44s  2.03%  zeros3-z3/graphnorm.(*Machine).token
+     0.13s   0.6% 75.46%      0.13s   0.6%  internal/runtime/gc/scan.scanSpanPackedAVX512
+     0.13s   0.6% 76.06%      0.24s  1.10%  runtime.mallocgcTinySC2
+## CPU cumulative (top 45)
+Duration: 23.13s, Total samples = 21.72s (93.91%)
+Showing nodes accounting for 10.49s, 48.30% of 21.72s total
+Dropped 306 nodes (cum <= 0.11s)
+Showing top 45 nodes out of 151
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%     20.31s 93.51%  main.cmdLLVM
+         0     0%     0%     20.31s 93.51%  main.main
+         0     0%     0%     20.31s 93.51%  runtime.main
+     0.10s  0.46%  0.46%     12.15s 55.94%  zeros3-z3/simdelta.Encode
+         0     0%  0.46%      9.51s 43.78%  main.archiveCost
+     0.01s 0.046%  0.51%      9.44s 43.46%  zeros3-z3/graphnorm.(*Archive).Put
+     5.08s 23.39% 23.90%      7.67s 35.31%  zeros3-z3/simdelta.match
+         0     0% 23.90%      6.10s 28.08%  zeros3-z3/graphnorm.EncodeLLVM
+     0.01s 0.046% 23.94%      5.52s 25.41%  compress/flate.(*compressor).deflateFast
+         0     0% 23.94%      4.31s 19.84%  compress/flate.(*Writer).Close (inline)
+     0.01s 0.046% 23.99%      4.31s 19.84%  compress/flate.(*compressor).close
+         0     0% 23.99%      4.14s 19.06%  zeros3-z3/simdelta.zip
+     1.68s  7.73% 31.72%      2.94s 13.54%  compress/flate.(*fastEncL6).encode
+     0.04s  0.18% 31.91%      2.85s 13.12%  zeros3-z3/graphnorm.(*tmplBuilder).block
+     0.02s 0.092% 32.00%      2.76s 12.71%  zeros3-z3/graphnorm.EncodeLLVM.func1
+     0.06s  0.28% 32.27%      2.57s 11.83%  runtime.mallocgc
+     0.19s  0.87% 33.15%      2.41s 11.10%  runtime.growslice
+     0.02s 0.092% 33.24%      2.29s 10.54%  compress/flate.(*huffmanBitWriter).writeBlockDynamic
+         0     0% 33.24%      2.09s  9.62%  zeros3-z3/graphnorm.(*Machine).Exec
+     0.04s  0.18% 33.43%      2.09s  9.62%  zeros3-z3/graphnorm.(*Machine).exec
+     0.15s  0.69% 34.12%      1.96s  9.02%  zeros3-z3/graphnorm.(*Machine).rec
+         0     0% 34.12%      1.86s  8.56%  zeros3-z3/graphnorm.ParseBitstream
+     0.09s  0.41% 34.53%      1.81s  8.33%  compress/flate.(*huffmanEncoder).generate
+         0     0% 34.53%      1.78s  8.20%  runtime.systemstack
+     1.63s  7.50% 42.03%      1.67s  7.69%  zeros3-z3/simdelta.anchorHash (inline)
+         0     0% 42.03%      1.51s  6.95%  compress/flate.(*huffmanBitWriter).generate
+         0     0% 42.03%      1.47s  6.77%  zeros3-z3/graphnorm.(*LLVM).verifyFunc
+         0     0% 42.03%      1.45s  6.68%  zeros3-z3/lab.PackedLen (inline)
+         0     0% 42.03%      1.45s  6.68%  zeros3-z3/lab.packedLen
+     0.07s  0.32% 42.36%      1.44s  6.63%  zeros3-z3/graphnorm.(*bitReader).block
+         0     0% 42.36%      1.43s  6.58%  zeros3-z3/lab.packedLenRaw
+     0.16s  0.74% 43.09%      1.37s  6.31%  zeros3-z3/graphnorm.WriteRecord
+     0.01s 0.046% 43.14%      1.27s  5.85%  zeros3-z3/graphnorm.(*LLVM).BuildFuncTemplate
+         0     0% 43.14%      1.25s  5.76%  compress/flate.(*Writer).Write (inline)
+         0     0% 43.14%      1.25s  5.76%  compress/flate.(*compressor).write
+     0.85s  3.91% 47.05%      1.05s  4.83%  zeros3-z3/graphnorm.(*BitWriter).Bits (inline)
+     0.10s  0.46% 47.51%      1.05s  4.83%  zeros3-z3/graphnorm.(*bitReader).record
+     0.01s 0.046% 47.56%      1.02s  4.70%  zeros3-z3/graphnorm.(*LLVMEncoding).Decode
+     0.15s  0.69% 48.25%      0.98s  4.51%  zeros3-z3/graphnorm.(*BitWriter).VBR
+     0.01s 0.046% 48.30%      0.96s  4.42%  runtime.makeslice
+         0     0% 48.30%      0.90s  4.14%  runtime.gcBgMarkWorker
+         0     0% 48.30%      0.88s  4.05%  main.graphCost
+         0     0% 48.30%      0.87s  4.01%  zeros3-z3/graphnorm.(*CAS).Put
+         0     0% 48.30%      0.86s  3.96%  runtime.gcBgMarkWorker.func2
+         0     0% 48.30%      0.86s  3.96%  runtime.gcDrain
+## alloc_space (top 18)
+Showing nodes accounting for 7.53GB, 96.26% of 7.82GB total
+Dropped 96 nodes (cum <= 0.04GB)
+Showing top 18 nodes out of 73
+      flat  flat%   sum%        cum   cum%
+    3.83GB 49.01% 49.01%     3.83GB 49.01%  zeros3-z3/simdelta.match
+    0.60GB  7.61% 56.62%     1.05GB 13.40%  zeros3-z3/graphnorm.(*bitReader).block
+    0.51GB  6.53% 63.14%     0.51GB  6.53%  zeros3-z3/graphnorm.(*BitWriter).Bits (inline)
+    0.47GB  5.96% 69.10%     4.61GB 58.87%  zeros3-z3/simdelta.Encode
+    0.45GB  5.79% 74.90%     0.45GB  5.79%  zeros3-z3/graphnorm.(*bitReader).record
+    0.39GB  4.99% 79.89%     0.65GB  8.25%  zeros3-z3/graphnorm.(*Machine).rec
+    0.39GB  4.96% 84.85%     0.39GB  4.96%  bytes.growSlice
+    0.35GB  4.53% 89.38%     0.35GB  4.53%  zeros3-z3/graphnorm.(*cursor).take (inline)
+    0.13GB  1.67% 91.05%     0.14GB  1.83%  zeros3-z3/graphnorm.(*tmplBuilder).emitRec
+    0.13GB  1.63% 92.67%     0.13GB  1.63%  encoding/binary.AppendUvarint (inline)
+    0.05GB  0.68% 93.35%     0.61GB  7.76%  zeros3-z3/graphnorm.(*LLVM).BuildFuncTemplate
+    0.05GB  0.64% 93.99%     0.05GB  0.64%  runtime/pprof.StartCPUProfile
+    0.05GB  0.59% 94.58%     0.05GB  0.64%  zeros3-z3/graphnorm.(*Graph).nodeHash
+    0.04GB  0.51% 95.09%     0.04GB  0.56%  zeros3-z3/graphnorm.(*tmplBuilder).extTok
+    0.04GB  0.51% 95.60%     0.07GB  0.94%  compress/flate.NewWriter
+    0.02GB  0.26% 95.86%     0.16GB  2.02%  zeros3-z3/graphnorm.AnalyzeLLVM
+    0.02GB  0.21% 96.06%     0.13GB  1.69%  zeros3-z3/graphnorm.(*LLVM).buildGraph
+    0.02GB   0.2% 96.26%     0.66GB  8.48%  zeros3-z3/graphnorm.(*Machine).exec
+## alloc_objects (top 12)
+Showing nodes accounting for 40508293, 94.95% of 42663129 total
+Dropped 111 nodes (cum <= 213315)
+Showing top 12 nodes out of 58
+      flat  flat%   sum%        cum   cum%
+  12844573 30.11% 30.11%   12924459 30.29%  zeros3-z3/graphnorm.(*Machine).rec
+  11024026 25.84% 55.95%   11024026 25.84%  zeros3-z3/graphnorm.(*cursor).take (inline)
+  10606761 24.86% 80.81%   10606761 24.86%  zeros3-z3/graphnorm.(*bitReader).record
+   3140148  7.36% 88.17%    3140148  7.36%  encoding/binary.AppendUvarint (inline)
+    663186  1.55% 89.72%     881641  2.07%  zeros3-z3/graphnorm.(*Graph).nodeHash
+    555586  1.30% 91.03%    1182958  2.77%  zeros3-z3/simdelta.Encode
+    471705  1.11% 92.13%   11078466 25.97%  zeros3-z3/graphnorm.(*bitReader).block
+    332581  0.78% 92.91%     332581  0.78%  zeros3-z3/simdelta.match
+    272732  0.64% 93.55%     272732  0.64%  zeros3-z3/graphnorm.(*BitWriter).Bits (inline)
+    220350  0.52% 94.07%   13631301 31.95%  zeros3-z3/graphnorm.(*LLVM).BuildFuncTemplate
+    204689  0.48% 94.55%     466833  1.09%  zeros3-z3/graphnorm.(*tmplBuilder).extTok
+    171956   0.4% 94.95%    1753492  4.11%  zeros3-z3/graphnorm.(*LLVM).buildGraph
+## mutex delay (top 12)
+Time: 2026-11-08 06:11:10 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## block delay (top 15)
+Time: 2026-11-08 06:11:10 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.947437398,"/cpu/classes/idle:cpu-seconds":0.000764099,"/cpu/classes/total:cpu-seconds":22.958709723,"/cpu/classes/user:cpu-seconds":21.82681742,"/gc/cycles/total:gc-cycles":153,"/gc/heap/allocs:bytes":8482850192,"/gc/heap/allocs:objects":43163277,"/gc/heap/live:bytes":65708584,"/memory/classes/total:bytes":331098456,"/sched/goroutines:goroutines":12,"final":false,"gomaxprocs":1,"mem.heap_inuse":138248192,"mem.mallocs":51392481,"mem.num_gc":153,"mem.pause_total_ns":7676725,"mem.sys":331098456,"mem.total_alloc":8483518784,"t":1794118270290308964}

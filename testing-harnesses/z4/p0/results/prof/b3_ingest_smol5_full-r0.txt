@@ -1,0 +1,137 @@
+# profile dir: b3_ingest_smol5_full-r0
+## CPU flat (top 28)
+Time: 2026-11-08 05:57:42 UTC
+Duration: 107.38s, Total samples = 95.33s (88.78%)
+Showing nodes accounting for 90.59s, 95.03% of 95.33s total
+Dropped 341 nodes (cum <= 0.48s)
+Showing top 28 nodes out of 59
+      flat  flat%   sum%        cum   cum%
+    27.77s 29.13% 29.13%     27.91s 29.28%  hash/fnv.(*sum64a).Write (inline)
+    13.62s 14.29% 43.42%     16.15s 16.94%  zeros3-z3/semcas.DiffPatches
+    10.88s 11.41% 54.83%     10.88s 11.41%  crypto/internal/fips140/sha256.blockSHANI
+     9.08s  9.52% 64.36%     10.35s 10.86%  zeros3-z3/semcas.permute
+     5.36s  5.62% 69.98%     15.49s 16.25%  zeros3-z3/semcas.convert
+     3.99s  4.19% 74.16%      6.64s  6.97%  zeros3-z3/semcas.quantQ8
+     3.40s  3.57% 77.73%      3.40s  3.57%  runtime.memclrNoHeapPointers
+     3.23s  3.39% 81.12%      5.37s  5.63%  zeros3-z3/semcas.toF32bits
+     2.33s  2.44% 83.56%      2.33s  2.44%  runtime.memmove
+     2.10s  2.20% 85.77%      2.12s  2.22%  zeros3-z3/semcas.f32to16
+     1.89s  1.98% 87.75%      1.91s  2.00%  encoding/binary.littleEndian.Uint16 (inline)
+     1.49s  1.56% 89.31%      1.50s  1.57%  zeros3-z3/semcas.IsFloat (inline)
+     1.46s  1.53% 90.84%      1.46s  1.53%  internal/runtime/syscall/linux.Syscall6
+     1.03s  1.08% 91.92%      3.06s  3.21%  zeros3-z3/semcas.SigOf
+     0.95s     1% 92.92%      1.20s  1.26%  math.Round (inline)
+     0.55s  0.58% 93.50%      0.55s  0.58%  runtime.asyncPreempt
+     0.52s  0.55% 94.04%      0.53s  0.56%  math.Float64bits (inline)
+     0.35s  0.37% 94.41%      1.18s  1.24%  zeros3-z3/semcas.SigOf.func1 (inline)
+     0.29s   0.3% 94.71%      0.81s  0.85%  math.Abs (inline)
+     0.19s   0.2% 94.91%     27.34s 28.68%  zeros3-z3/semcas.rowGatherIndex
+     0.04s 0.042% 94.95%     83.34s 87.42%  zeros3-z3/semcas.(*Planner).tryRelation
+     0.02s 0.021% 94.98%      4.05s  4.25%  runtime.mallocgc
+     0.02s 0.021% 95.00%      3.38s  3.55%  runtime.memclrNoHeapPointersChunked
+     0.01s  0.01% 95.01%     10.90s 11.43%  crypto/internal/fips140/sha256.(*Digest).Write
+     0.01s  0.01% 95.02%     10.89s 11.42%  crypto/internal/fips140/sha256.block
+     0.01s  0.01% 95.03%      3.83s  4.02%  runtime.mallocgcLarge
+         0     0% 95.03%      0.49s  0.51%  compress/flate.(*compressor).deflateFast
+         0     0% 95.03%     10.90s 11.43%  crypto/sha256.Sum256
+## CPU cumulative (top 45)
+Duration: 107.38s, Total samples = 95.33s (88.78%)
+Showing nodes accounting for 88.88s, 93.23% of 95.33s total
+Dropped 341 nodes (cum <= 0.48s)
+Showing top 45 nodes out of 59
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%     94.73s 99.37%  main.cmdIngest
+         0     0%     0%     94.73s 99.37%  main.main
+         0     0%     0%     94.73s 99.37%  runtime.main
+         0     0%     0%     92.23s 96.75%  zeros3-z3/semcas.(*Planner).Ingest
+         0     0%     0%     90.76s 95.21%  zeros3-z3/semcas.(*Planner).Place
+     0.04s 0.042% 0.042%     83.34s 87.42%  zeros3-z3/semcas.(*Planner).tryRelation
+         0     0% 0.042%     32.48s 34.07%  zeros3-z3/semcas.(*Op).Apply
+    27.77s 29.13% 29.17%     27.91s 29.28%  hash/fnv.(*sum64a).Write (inline)
+         0     0% 29.17%     27.91s 29.28%  zeros3-z3/semcas.rowHash
+     0.19s   0.2% 29.37%     27.34s 28.68%  zeros3-z3/semcas.rowGatherIndex
+    13.62s 14.29% 43.66%     16.15s 16.94%  zeros3-z3/semcas.DiffPatches
+     5.36s  5.62% 49.28%     15.49s 16.25%  zeros3-z3/semcas.convert
+         0     0% 49.28%     15.07s 15.81%  zeros3-z3/semcas.applyOps
+         0     0% 49.28%     12.55s 13.16%  zeros3-z3/semcas.(*Store).materialize
+     0.01s  0.01% 49.29%     10.90s 11.43%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0% 49.29%     10.90s 11.43%  crypto/sha256.Sum256
+     0.01s  0.01% 49.30%     10.89s 11.42%  crypto/internal/fips140/sha256.block
+    10.88s 11.41% 60.72%     10.88s 11.41%  crypto/internal/fips140/sha256.blockSHANI
+     9.08s  9.52% 70.24%     10.35s 10.86%  zeros3-z3/semcas.permute
+         0     0% 70.24%      7.83s  8.21%  zeros3-z3/semcas.(*Planner).put
+         0     0% 70.24%      7.83s  8.21%  zeros3-z3/semcas.(*Store).PutDerived
+         0     0% 70.24%      7.16s  7.51%  zeros3-z3/semcas.(*Store).PutDerivedProbe
+     3.99s  4.19% 74.43%      6.64s  6.97%  zeros3-z3/semcas.quantQ8
+         0     0% 74.43%      6.43s  6.74%  zeros3-z3/semcas.PayloadSHA (inline)
+     3.23s  3.39% 77.81%      5.37s  5.63%  zeros3-z3/semcas.toF32bits
+         0     0% 77.81%      4.88s  5.12%  zeros3-z3/semcas.(*Planner).tryLayout
+     0.02s 0.021% 77.83%      4.05s  4.25%  runtime.mallocgc
+     0.01s  0.01% 77.85%      3.83s  4.02%  runtime.mallocgcLarge
+         0     0% 77.85%      3.57s  3.74%  runtime.makeslice
+     3.40s  3.57% 81.41%      3.40s  3.57%  runtime.memclrNoHeapPointers
+     0.02s 0.021% 81.43%      3.38s  3.55%  runtime.memclrNoHeapPointersChunked
+     1.03s  1.08% 82.51%      3.06s  3.21%  zeros3-z3/semcas.SigOf
+         0     0% 82.51%      2.66s  2.79%  zeros3-z3/semcas.(*Store).payloadCached
+     2.33s  2.44% 84.96%      2.33s  2.44%  runtime.memmove
+         0     0% 84.96%      2.23s  2.34%  zeros3-z3/semcas.(*Store).Cost
+     2.10s  2.20% 87.16%      2.12s  2.22%  zeros3-z3/semcas.f32to16
+     1.89s  1.98% 89.14%      1.91s  2.00%  encoding/binary.littleEndian.Uint16 (inline)
+         0     0% 89.14%      1.90s  1.99%  os.ReadFile
+         0     0% 89.14%      1.79s  1.88%  os.readFileContents
+         0     0% 89.14%      1.63s  1.71%  zeros3-z3/lab.PackedLen (inline)
+         0     0% 89.14%      1.63s  1.71%  zeros3-z3/lab.packedLen
+     1.49s  1.56% 90.71%      1.50s  1.57%  zeros3-z3/semcas.IsFloat (inline)
+     1.46s  1.53% 92.24%      1.46s  1.53%  internal/runtime/syscall/linux.Syscall6
+         0     0% 92.24%      1.46s  1.53%  syscall.RawSyscall6
+     0.95s     1% 93.23%      1.20s  1.26%  math.Round (inline)
+## alloc_space (top 18)
+Showing nodes accounting for 30012.45MB, 99.17% of 30265.13MB total
+Dropped 103 nodes (cum <= 151.33MB)
+Showing top 18 nodes out of 45
+      flat  flat%   sum%        cum   cum%
+ 8489.39MB 28.05% 28.05%  8489.39MB 28.05%  zeros3-z3/semcas.convert
+ 8449.53MB 27.92% 55.97%  8449.53MB 27.92%  zeros3-z3/semcas.DiffPatches
+ 6602.40MB 21.82% 77.78%  6602.40MB 21.82%  zeros3-z3/semcas.permute
+ 4469.55MB 14.77% 92.55%  4479.08MB 14.80%  os.readFileContents
+  919.43MB  3.04% 95.59%   919.43MB  3.04%  zeros3-z3/semcas.quantQ8
+  426.46MB  1.41% 97.00%   426.46MB  1.41%  zeros3-z3/semcas.rowGatherIndex
+  227.20MB  0.75% 97.75%   227.20MB  0.75%  runtime/pprof.StartCPUProfile
+  195.67MB  0.65% 98.40%   195.67MB  0.65%  compress/flate.(*fastGen).addBlock
+  166.38MB  0.55% 98.95%   294.94MB  0.97%  compress/flate.NewWriter (inline)
+   56.30MB  0.19% 99.13% 25230.42MB 83.36%  zeros3-z3/semcas.(*Planner).tryRelation
+    6.13MB  0.02% 99.15%   223.04MB  0.74%  runtime/pprof.writeHeapInternal
+       2MB 0.0066% 99.16%   170.88MB  0.56%  runtime/pprof.printCountCycleProfile
+       1MB 0.0033% 99.16%  3154.91MB 10.42%  zeros3-z3/semcas.(*Store).PutDerived
+    0.50MB 0.0017% 99.16%   171.38MB  0.57%  runtime/pprof.writeProfileInternal
+    0.50MB 0.0017% 99.17%   395.92MB  1.31%  main.p0snapshot
+         0     0% 99.17%   195.67MB  0.65%  compress/flate.(*Writer).Close (inline)
+         0     0% 99.17%   195.67MB  0.65%  compress/flate.(*compressor).close
+         0     0% 99.17%   195.67MB  0.65%  compress/flate.(*compressor).deflateFast
+## alloc_objects (top 12)
+Showing nodes accounting for 4038462, 96.53% of 4183506 total
+Dropped 115 nodes (cum <= 20917)
+Showing top 12 nodes out of 33
+      flat  flat%   sum%        cum   cum%
+   3177226 75.95% 75.95%    3177226 75.95%  zeros3-z3/semcas.rowGatherIndex
+    309706  7.40% 83.35%    3643403 87.09%  zeros3-z3/semcas.(*Planner).tryRelation
+    194455  4.65% 88.00%     194455  4.65%  runtime/pprof.allFrames
+     98305  2.35% 90.35%      98307  2.35%  zeros3-z3/ggufz3.(*reader).skipString
+     87162  2.08% 92.43%      93349  2.23%  runtime/pprof.(*profileBuilder).emitLocation
+     83981  2.01% 94.44%      83981  2.01%  zeros3-z3/semcas.convOps
+     32768  0.78% 95.22%     131077  3.13%  zeros3-z3/ggufz3.Parse
+     27307  0.65% 95.87%      52907  1.26%  runtime/pprof.parseProcSelfMaps
+     18905  0.45% 96.33%      55625  1.33%  zeros3-z3/semcas.(*Store).PutDerived
+      6144  0.15% 96.47%      22528  0.54%  runtime/pprof.elfBuildID
+      2048 0.049% 96.52%     292024  6.98%  runtime/pprof.(*profileBuilder).appendLocsForStack
+       455 0.011% 96.53%     309851  7.41%  main.p0snapshot
+## mutex delay (top 12)
+Time: 2026-11-08 05:59:30 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## block delay (top 15)
+Time: 2026-11-08 05:59:30 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.075015818,"/cpu/classes/idle:cpu-seconds":3.62845276,"/cpu/classes/total:cpu-seconds":106.283252195,"/cpu/classes/user:cpu-seconds":102.475267336,"/gc/cycles/total:gc-cycles":60,"/gc/heap/allocs:bytes":32983775784,"/gc/heap/allocs:objects":4338284,"/gc/heap/live:bytes":821752296,"/memory/classes/total:bytes":2134874888,"/sched/goroutines:goroutines":12,"final":false,"gomaxprocs":1,"mem.heap_inuse":1316298752,"mem.mallocs":7953047,"mem.num_gc":60,"mem.pause_total_ns":6114371,"mem.sys":2134874888,"mem.total_alloc":32984364176,"t":1794117570729754053}

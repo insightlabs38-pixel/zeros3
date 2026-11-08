@@ -1,0 +1,165 @@
+# profile dir: rp_model-r0
+## CPU flat (top 28)
+Time: 2026-11-08 06:19:18 UTC
+Duration: 3s, Total samples = 2.80s (93.22%)
+Showing nodes accounting for 2.59s, 92.50% of 2.80s total
+Dropped 103 nodes (cum <= 0.01s)
+Showing top 28 nodes out of 217
+      flat  flat%   sum%        cum   cum%
+     1.21s 43.21% 43.21%      1.21s 43.21%  internal/runtime/syscall/linux.Syscall6
+     0.55s 19.64% 62.86%      0.55s 19.64%  crypto/internal/fips140/sha256.blockSHANI
+     0.13s  4.64% 67.50%      0.13s  4.64%  main.findCDCBoundary
+     0.10s  3.57% 71.07%      0.13s  4.64%  main.repMDPlaneChunks
+     0.08s  2.86% 73.93%      0.08s  2.86%  runtime.memmove
+     0.06s  2.14% 76.07%      0.06s  2.14%  crypto/md5.block
+     0.05s  1.79% 77.86%      0.05s  1.79%  runtime.futex
+     0.05s  1.79% 79.64%      0.05s  1.79%  runtime.memclrNoHeapPointers
+     0.04s  1.43% 81.07%      0.05s  1.79%  main.repMDunplane (inline)
+     0.04s  1.43% 82.50%      0.05s  1.79%  runtime.unlock2
+     0.03s  1.07% 83.57%      0.05s  1.79%  runtime.pcvalue
+     0.03s  1.07% 84.64%      0.03s  1.07%  runtime.tgkill
+     0.02s  0.71% 85.36%      0.02s  0.71%  internal/runtime/atomic.(*UnsafePointer).StoreNoWB
+     0.02s  0.71% 86.07%      0.12s  4.29%  main.repMDreadOp
+     0.02s  0.71% 86.79%      0.02s  0.71%  runtime.findfunc
+     0.02s  0.71% 87.50%      0.04s  1.43%  runtime.lock2
+     0.02s  0.71% 88.21%      0.02s  0.71%  runtime.madvise
+     0.02s  0.71% 88.93%      0.02s  0.71%  runtime.osyield
+     0.02s  0.71% 89.64%      0.02s  0.71%  runtime.step
+     0.01s  0.36% 90.00%      0.45s 16.07%  main.(*repModelPlaneReader).Read
+     0.01s  0.36% 90.36%      0.42s 15.00%  main.repMDapplyResidual
+     0.01s  0.36% 90.71%      0.02s  0.71%  runtime.(*unwinder).resolveInternal
+     0.01s  0.36% 91.07%      0.09s  3.21%  runtime.goschedImpl
+     0.01s  0.36% 91.43%      0.02s  0.71%  runtime.mProf_FlushLocked
+     0.01s  0.36% 91.79%      0.02s  0.71%  runtime.pidlegetSpinning
+     0.01s  0.36% 92.14%      0.07s  2.50%  runtime.tracebackPCs
+     0.01s  0.36% 92.50%      0.02s  0.71%  runtime/pprof.(*profileBuilder).appendLocsForStack
+         0     0% 92.50%      0.55s 19.64%  crypto/internal/fips140/sha256.(*Digest).Write
+## CPU cumulative (top 45)
+Duration: 3s, Total samples = 2.80s (93.22%)
+Showing nodes accounting for 1.78s, 63.57% of 2.80s total
+Dropped 103 nodes (cum <= 0.01s)
+Showing top 45 nodes out of 217
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      1.97s 70.36%  main.(*Server).ServeHTTP
+         0     0%     0%      1.97s 70.36%  main.(*Server).handlePutObject
+         0     0%     0%      1.97s 70.36%  net/http.(*conn).serve
+         0     0%     0%      1.97s 70.36%  net/http.serverHandler.ServeHTTP
+         0     0%     0%      1.33s 47.50%  main.(*Store).commitIngested
+         0     0%     0%      1.33s 47.50%  main.(*Store).maybeBuildRep
+         0     0%     0%      1.33s 47.50%  main.(*Store).repBuild
+         0     0%     0%      1.33s 47.50%  main.(*Store).tryBuildRep
+     1.21s 43.21% 43.21%      1.21s 43.21%  internal/runtime/syscall/linux.Syscall6
+         0     0% 43.21%      1.20s 42.86%  syscall.RawSyscall6
+         0     0% 43.21%      1.01s 36.07%  main.(*Store).repBuild.func1
+         0     0% 43.21%      1.01s 36.07%  main.(*repBuilder).encodeKind
+         0     0% 43.21%      1.01s 36.07%  main.(*repBuilder).encodeModel
+         0     0% 43.21%      0.96s 34.29%  main.(*repBuilder).putStream
+         0     0% 43.21%      0.93s 33.21%  os.ignoringEINTR (inline)
+         0     0% 43.21%      0.84s 30.00%  os.OpenFile
+         0     0% 43.21%      0.84s 30.00%  os.openFileNolog
+         0     0% 43.21%      0.83s 29.64%  os.open
+         0     0% 43.21%      0.83s 29.64%  os.openFileNolog.func1 (inline)
+         0     0% 43.21%      0.83s 29.64%  syscall.Open (inline)
+         0     0% 43.21%      0.83s 29.64%  syscall.Syscall6
+         0     0% 43.21%      0.83s 29.64%  syscall.openat
+         0     0% 43.21%      0.82s 29.29%  main.(*casBatch).add
+         0     0% 43.21%      0.82s 29.29%  main.looseSink.Put
+         0     0% 43.21%      0.81s 28.93%  main.(*Store).casStage
+         0     0% 43.21%      0.78s 27.86%  os.CreateTemp
+         0     0% 43.21%      0.64s 22.86%  main.(*Server).ingestRequestBody
+         0     0% 43.21%      0.64s 22.86%  main.(*Store).ingestStream
+         0     0% 43.21%      0.56s 20.00%  main.(*cdcChunker).nextView
+         0     0% 43.21%      0.55s 19.64%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0% 43.21%      0.55s 19.64%  crypto/internal/fips140/sha256.block
+     0.55s 19.64% 62.86%      0.55s 19.64%  crypto/internal/fips140/sha256.blockSHANI
+     0.01s  0.36% 63.21%      0.45s 16.07%  main.(*repModelPlaneReader).Read
+         0     0% 63.21%      0.43s 15.36%  main.(*cdcChunker).fill
+         0     0% 63.21%      0.43s 15.36%  main.(*repCall).streamDerived
+         0     0% 63.21%      0.43s 15.36%  main.(*repCall).writeMember
+         0     0% 63.21%      0.43s 15.36%  main.(*repCall).writeMemberAt
+         0     0% 63.21%      0.42s 15.00%  main.(*repEnv).runWork
+     0.01s  0.36% 63.57%      0.42s 15.00%  main.repMDapplyResidual
+         0     0% 63.57%      0.42s 15.00%  main.repMDmodelDecoder.Decode
+         0     0% 63.57%      0.41s 14.64%  io.(*LimitedReader).Read
+         0     0% 63.57%      0.37s 13.21%  syscall.Syscall
+         0     0% 63.57%      0.33s 11.79%  main.(*Store).casRead (inline)
+         0     0% 63.57%      0.33s 11.79%  main.(*Store).casReadExcluding
+         0     0% 63.57%      0.33s 11.79%  main.(*Store).casReadExcluding.func1
+## alloc_space (top 18)
+Showing nodes accounting for 470.22MB, 96.43% of 487.62MB total
+Dropped 312 nodes (cum <= 2.44MB)
+Showing top 18 nodes out of 84
+      flat  flat%   sum%        cum   cum%
+  187.69MB 38.49% 38.49%   188.03MB 38.56%  os.readFileContents
+   53.68MB 11.01% 49.50%   301.79MB 61.89%  main.(*repModelPlaneReader).Read
+   53.65MB 11.00% 60.50%   110.70MB 22.70%  main.repMDreadOp
+   53.65MB 11.00% 71.50%    53.65MB 11.00%  main.repMDPlaneChunks
+   26.84MB  5.50% 77.01%    57.05MB 11.70%  main.repMDreadMemberRange
+   26.83MB  5.50% 82.51%   137.57MB 28.21%  main.repMDReadModelRange
+   24.91MB  5.11% 87.62%   134.06MB 27.49%  main.repMDapplyResidual
+    7.88MB  1.62% 89.23%     7.88MB  1.62%  runtime/pprof.StartCPUProfile
+    7.12MB  1.46% 90.69%   140.72MB 28.86%  main.(*storeRepSource).ReadAt
+    5.31MB  1.09% 91.78%     5.31MB  1.09%  compress/flate.(*fastGen).addBlock
+       5MB  1.03% 92.81%        5MB  1.03%  main.newCDCChunker (inline)
+    4.60MB  0.94% 93.75%   309.40MB 63.45%  main.(*repBuilder).putStream
+    4.38MB   0.9% 94.65%     7.87MB  1.61%  compress/flate.NewWriter (inline)
+    2.95MB   0.6% 95.25%     2.95MB   0.6%  runtime/pprof.allFrames
+    2.49MB  0.51% 95.76%     2.49MB  0.51%  syscall.ByteSliceFromString
+    1.83MB  0.38% 96.14%     6.76MB  1.39%  runtime/pprof.(*profileBuilder).emitLocation
+    1.06MB  0.22% 96.36%     3.49MB  0.72%  compress/flate.(*compressor).init
+    0.35MB 0.073% 96.43%     3.22MB  0.66%  main.(*repEnv).load
+## alloc_objects (top 12)
+Showing nodes accounting for 167986, 78.93% of 212828 total
+Dropped 240 nodes (cum <= 1064)
+Showing top 12 nodes out of 156
+      flat  flat%   sum%        cum   cum%
+     28287 13.29% 13.29%      28287 13.29%  encoding/hex.EncodeToString (inline)
+     28064 13.19% 26.48%      28064 13.19%  syscall.ByteSliceFromString
+     20992  9.86% 36.34%      20992  9.86%  os.newFile
+     19633  9.22% 45.57%      50177 23.58%  main.(*storeRepSource).ReadAt
+     19170  9.01% 54.57%      19170  9.01%  runtime/pprof.allFrames
+     16012  7.52% 62.10%      16012  7.52%  internal/bytealg.MakeNoZero
+     10247  4.81% 66.91%      16182  7.60%  os.statNolog
+      8404  3.95% 70.86%       8745  4.11%  runtime/pprof.(*profileBuilder).emitLocation
+      4554  2.14% 73.00%       4554  2.14%  os.(*File).Stat
+      4538  2.13% 75.13%       7099  3.34%  main.unmarshalRep
+      4121  1.94% 77.07%       4121  1.94%  main.repMDparseModelRecipe
+      3964  1.86% 78.93%       4045  1.90%  os.readFileContents
+## mutex delay (top 12)
+Time: 2026-11-08 06:19:21 UTC
+Showing nodes accounting for 699.80ms, 100% of 699.80ms total
+Dropped 77 nodes (cum <= 3.50ms)
+Showing top 12 nodes out of 35
+      flat  flat%   sum%        cum   cum%
+  660.29ms 94.35% 94.35%   660.29ms 94.35%  sync.(*RWMutex).Unlock
+   21.19ms  3.03% 97.38%    21.19ms  3.03%  runtime.unlock (inline)
+   18.32ms  2.62%   100%    18.32ms  2.62%  sync.(*Mutex).Unlock
+         0     0%   100%     4.39ms  0.63%  internal/poll.(*FD).Fsync
+         0     0%   100%     4.39ms  0.63%  internal/poll.(*FD).Fsync.func1 (inline)
+         0     0%   100%     4.39ms  0.63%  internal/poll.ignoringEINTR (inline)
+         0     0%   100%    18.32ms  2.62%  io.ReadAtLeast
+         0     0%   100%    18.32ms  2.62%  io.ReadFull
+         0     0%   100%   660.29ms 94.35%  main.(*Store).casFlushFiles
+         0     0%   100%   660.29ms 94.35%  main.(*Store).casPublish
+## block delay (top 15)
+Time: 2026-11-08 06:19:21 UTC
+Showing nodes accounting for 4.54s, 99.68% of 4.56s total
+Dropped 30 nodes (cum <= 0.02s)
+Showing top 15 nodes out of 50
+      flat  flat%   sum%        cum   cum%
+     3.04s 66.61% 66.61%      3.04s 66.61%  runtime.selectgo
+     0.71s 15.54% 82.14%      0.71s 15.54%  sync.(*WaitGroup).Wait
+     0.41s  8.92% 91.06%      0.41s  8.92%  sync.(*RWMutex).RLock (inline)
+     0.39s  8.61% 99.68%      0.39s  8.61%  runtime.chanrecv1
+         0     0% 99.68%      0.09s  1.89%  io.(*PipeWriter).Write
+         0     0% 99.68%      0.09s  1.89%  io.(*multiWriter).Write
+         0     0% 99.68%      0.09s  1.89%  io.(*pipe).write
+         0     0% 99.68%      0.03s   0.6%  io.ReadAtLeast
+         0     0% 99.68%      0.03s   0.6%  io.ReadFull (inline)
+         0     0% 99.68%      0.82s 17.89%  main.(*Server).ServeHTTP
+         0     0% 99.68%      0.82s 17.89%  main.(*Server).handlePutObject
+         0     0% 99.68%      0.46s 10.10%  main.(*Server).ingestRequestBody
+         0     0% 99.68%      0.71s 15.54%  main.(*Store).casFlushFiles
+         0     0% 99.68%      0.19s  4.17%  main.(*Store).casPublish
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.202841109,"/cpu/classes/idle:cpu-seconds":6.560391844,"/cpu/classes/total:cpu-seconds":12.191006936,"/cpu/classes/user:cpu-seconds":5.368469249,"/gc/cycles/total:gc-cycles":178,"/gc/heap/allocs:bytes":520044976,"/gc/heap/allocs:objects":228592,"/gc/heap/live:bytes":2754200,"/memory/classes/total:bytes":27191576,"/sched/goroutines:goroutines":18,"final":false,"gomaxprocs":4,"mem.heap_inuse":4227072,"mem.mallocs":244388,"mem.num_gc":179,"mem.pause_total_ns":23980077,"mem.sys":27191576,"mem.total_alloc":520331632,"t":1794118761807872336}

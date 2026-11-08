@@ -1,0 +1,165 @@
+# profile dir: rp_zstd-r0
+## CPU flat (top 28)
+Time: 2026-11-08 06:19:03 UTC
+Duration: 12.43s, Total samples = 11.52s (92.70%)
+Showing nodes accounting for 10.11s, 87.76% of 11.52s total
+Dropped 283 nodes (cum <= 0.06s)
+Showing top 28 nodes out of 197
+      flat  flat%   sum%        cum   cum%
+     2.97s 25.78% 25.78%      2.97s 25.78%  internal/runtime/syscall/linux.Syscall6
+     1.58s 13.72% 39.50%      2.94s 25.52%  main.(*repZSmatchModel).walk
+     1.40s 12.15% 51.65%      1.49s 12.93%  main.(*repZSmatchModel).advance
+        1s  8.68% 60.33%      1.02s  8.85%  main.repZSlce (inline)
+     0.46s  3.99% 64.32%      1.22s 10.59%  main.(*repZSfseTable).prev
+     0.40s  3.47% 67.80%      0.40s  3.47%  main.(*repZSfseTable).prev.func1 (inline)
+     0.34s  2.95% 70.75%      0.74s  6.42%  sort.Search (inline)
+     0.30s  2.60% 73.35%      0.30s  2.60%  crypto/internal/fips140/sha256.blockSHANI
+     0.22s  1.91% 75.26%      0.22s  1.91%  main.(*repZSmatchModel).decodeOne.func1
+     0.16s  1.39% 76.65%      0.16s  1.39%  main.(*repZSmatchModel).encodeOne.func1
+     0.14s  1.22% 77.86%      0.14s  1.22%  runtime.memmove
+     0.13s  1.13% 78.99%      0.13s  1.13%  runtime.futex
+     0.11s  0.95% 79.95%      2.39s 20.75%  main.(*repZSmatchModel).decodeOne
+     0.11s  0.95% 80.90%      0.14s  1.22%  runtime.step
+     0.10s  0.87% 81.77%      0.16s  1.39%  main.(*repZSrevWriter).write (inline)
+     0.09s  0.78% 82.55%      1.63s 14.15%  main.repZSencodeSeqs
+     0.09s  0.78% 83.33%      0.15s  1.30%  main.repZSencodeSeqs.func2
+     0.06s  0.52% 83.85%      0.09s  0.78%  main.(*repZSmatchModel).hash (inline)
+     0.06s  0.52% 84.38%      0.13s  1.13%  runtime.(*unwinder).resolveInternal
+     0.06s  0.52% 84.90%      0.23s  2.00%  runtime.mallocgcSmallScanNoHeaderSC5
+     0.06s  0.52% 85.42%      0.24s  2.08%  runtime.pcvalue
+     0.05s  0.43% 85.85%      0.06s  0.52%  main.(*repZSrevReader).get
+     0.04s  0.35% 86.20%      0.12s  1.04%  main.(*repZSfseTable).initEnc
+     0.04s  0.35% 86.55%      0.11s  0.95%  main.(*repZShistory).exec
+     0.04s  0.35% 86.89%      2.40s 20.83%  main.(*repZSmatchModel).encodeOne
+     0.04s  0.35% 87.24%      0.15s  1.30%  main.repZSreadMinimalUvarint
+     0.03s  0.26% 87.50%      0.09s  0.78%  bufio.(*Reader).ReadByte
+     0.03s  0.26% 87.76%      0.07s  0.61%  main.(*repZSrevReader).read
+## CPU cumulative (top 45)
+Duration: 12.43s, Total samples = 11.52s (92.70%)
+Showing nodes accounting for 4.84s, 42.01% of 11.52s total
+Dropped 283 nodes (cum <= 0.06s)
+Showing top 45 nodes out of 197
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      9.37s 81.34%  main.(*Server).ServeHTTP
+         0     0%     0%      9.37s 81.34%  main.(*Server).handlePutObject
+         0     0%     0%      9.37s 81.34%  net/http.(*conn).serve
+         0     0%     0%      9.37s 81.34%  net/http.serverHandler.ServeHTTP
+     0.01s 0.087% 0.087%      9.27s 80.47%  main.(*Store).commitIngested
+         0     0% 0.087%      9.26s 80.38%  main.(*Store).maybeBuildRep
+         0     0% 0.087%      9.26s 80.38%  main.(*Store).repBuild
+         0     0% 0.087%      9.26s 80.38%  main.(*Store).tryBuildRep
+         0     0% 0.087%      6.28s 54.51%  main.(*Store).repBuild.func1
+         0     0% 0.087%      6.28s 54.51%  main.(*repBuilder).encodeKind
+         0     0% 0.087%      6.28s 54.51%  main.(*repBuilder).encodeZstd
+         0     0% 0.087%      4.45s 38.63%  main.(*repZSparser).frame
+         0     0% 0.087%      4.45s 38.63%  main.(*repZSparser).run
+         0     0% 0.087%      4.45s 38.63%  main.repZSParse
+         0     0% 0.087%      3.36s 29.17%  main.(*repEnv).runWork
+     0.01s 0.087%  0.17%      3.17s 27.52%  main.(*repZSmatchModel).encode
+         0     0%  0.17%      3.17s 27.52%  main.(*repZSparser).encodeUnit
+     2.97s 25.78% 25.95%      2.97s 25.78%  internal/runtime/syscall/linux.Syscall6
+         0     0% 25.95%      2.97s 25.78%  main.(*repBuilder).proof
+         0     0% 25.95%      2.97s 25.78%  main.(*repEnv).reconstruct
+         0     0% 25.95%      2.97s 25.78%  main.(*repEnv).run
+         0     0% 25.95%      2.97s 25.78%  main.repZSReplay
+         0     0% 25.95%      2.97s 25.78%  main.zstdDecoder.Decode
+         0     0% 25.95%      2.95s 25.61%  main.repZSReplaySkeleton
+         0     0% 25.95%      2.95s 25.61%  syscall.RawSyscall6
+     1.58s 13.72% 39.67%      2.94s 25.52%  main.(*repZSmatchModel).walk
+         0     0% 39.67%      2.92s 25.35%  main.(*repZSreplayFrame).rebuildBlock
+     0.04s  0.35% 40.02%      2.40s 20.83%  main.(*repZSmatchModel).encodeOne
+     0.11s  0.95% 40.97%      2.39s 20.75%  main.(*repZSmatchModel).decodeOne
+         0     0% 40.97%      2.13s 18.49%  os.ignoringEINTR (inline)
+     0.01s 0.087% 41.06%      1.92s 16.67%  main.(*repZSmatchModel).decode
+         0     0% 41.06%      1.81s 15.71%  syscall.Syscall6
+     0.01s 0.087% 41.15%      1.79s 15.54%  os.OpenFile
+         0     0% 41.15%      1.78s 15.45%  os.openFileNolog
+     0.01s 0.087% 41.23%      1.76s 15.28%  main.repZSbuildCompressed
+         0     0% 41.23%      1.71s 14.84%  main.(*casBatch).add
+         0     0% 41.23%      1.71s 14.84%  main.looseSink.Put
+         0     0% 41.23%      1.68s 14.58%  os.open
+         0     0% 41.23%      1.68s 14.58%  os.openFileNolog.func1 (inline)
+         0     0% 41.23%      1.68s 14.58%  syscall.Open (inline)
+         0     0% 41.23%      1.68s 14.58%  syscall.openat
+         0     0% 41.23%      1.67s 14.50%  main.(*repBuilder).encodeCodecPlain
+         0     0% 41.23%      1.67s 14.50%  main.(*repBuilder).encodeTar
+         0     0% 41.23%      1.65s 14.32%  main.(*Store).casStage
+     0.09s  0.78% 42.01%      1.63s 14.15%  main.repZSencodeSeqs
+## alloc_space (top 18)
+Showing nodes accounting for 756.70MB, 86.84% of 871.38MB total
+Dropped 285 nodes (cum <= 4.36MB)
+Showing top 18 nodes out of 150
+      flat  flat%   sum%        cum   cum%
+  152.24MB 17.47% 17.47%   152.24MB 17.47%  bytes.NewReader (inline)
+  125.23MB 14.37% 31.84%   126.73MB 14.54%  os.readFileContents
+   86.90MB  9.97% 41.82%    86.90MB  9.97%  main.(*repZSrevWriter).write (inline)
+      48MB  5.51% 47.32%       48MB  5.51%  main.repZSnewMatchModel
+      41MB  4.71% 52.03%       41MB  4.71%  main.newCDCChunker (inline)
+   39.96MB  4.59% 56.61%    56.86MB  6.52%  main.(*repZSmatchModel).decode
+   39.92MB  4.58% 61.20%    45.74MB  5.25%  main.repZSdecodeSeqs
+   33.68MB  3.87% 65.06%   143.28MB 16.44%  main.repZSbuildCompressed
+   33.63MB  3.86% 68.92%   185.88MB 21.33%  main.(*repZSmatchModel).encode
+   28.14MB  3.23% 72.15%    28.14MB  3.23%  runtime/pprof.StartCPUProfile
+   22.50MB  2.58% 74.73%    22.50MB  2.58%  compress/flate.(*fastGen).addBlock
+   20.59MB  2.36% 77.10%    65.05MB  7.47%  main.(*repBuilder).putStream
+   18.56MB  2.13% 79.23%    33.33MB  3.83%  compress/flate.NewWriter
+   16.97MB  1.95% 81.17%    16.97MB  1.95%  main.repZSbuildFSE
+   16.83MB  1.93% 83.10%    16.83MB  1.93%  runtime/pprof.allFrames
+   13.68MB  1.57% 84.67%    17.15MB  1.97%  main.(*repZSfseTable).initEnc
+    9.56MB  1.10% 85.77%     9.56MB  1.10%  compress/flate.newFastEnc (inline)
+    9.31MB  1.07% 86.84%     9.31MB  1.07%  syscall.ByteSliceFromString
+## alloc_objects (top 12)
+Showing nodes accounting for 4249501, 95.10% of 4468491 total
+Dropped 317 nodes (cum <= 22342)
+Showing top 12 nodes out of 118
+      flat  flat%   sum%        cum   cum%
+   3325821 74.43% 74.43%    3325821 74.43%  bytes.NewReader
+    195741  4.38% 78.81%     309462  6.93%  main.(*repZSfseTable).initEnc
+    113940  2.55% 81.36%     113940  2.55%  runtime/pprof.allFrames
+    113721  2.54% 83.90%     113721  2.54%  internal/reflectlite.Swapper
+    105105  2.35% 86.26%     105105  2.35%  syscall.ByteSliceFromString
+    101647  2.27% 88.53%     101647  2.27%  encoding/hex.EncodeToString
+     81471  1.82% 90.35%      81471  1.82%  os.newFile
+     59031  1.32% 91.67%      59031  1.32%  internal/bytealg.MakeNoZero
+     46549  1.04% 92.72%      75890  1.70%  os.statNolog
+     38898  0.87% 93.59%      74238  1.66%  main.repZSreadFSEDesc
+     35340  0.79% 94.38%      35340  0.79%  main.repZSbuildFSE
+     32237  0.72% 95.10%      34395  0.77%  runtime/pprof.(*profileBuilder).emitLocation
+## mutex delay (top 12)
+Time: 2026-11-08 06:19:15 UTC
+Showing nodes accounting for 1241.90ms, 99.53% of 1247.75ms total
+Dropped 96 nodes (cum <= 6.24ms)
+Showing top 12 nodes out of 24
+      flat  flat%   sum%        cum   cum%
+ 1229.03ms 98.50% 98.50%  1229.03ms 98.50%  sync.(*RWMutex).Unlock
+   12.87ms  1.03% 99.53%    12.87ms  1.03%  sync.(*RWMutex).RUnlock
+         0     0% 99.53%    12.92ms  1.04%  main.(*Server).ServeHTTP
+         0     0% 99.53%    12.92ms  1.04%  main.(*Server).handlePutObject
+         0     0% 99.53%  1229.03ms 98.50%  main.(*Store).casFlushFiles
+         0     0% 99.53%  1229.03ms 98.50%  main.(*Store).casPublish
+         0     0% 99.53%  1229.03ms 98.50%  main.(*Store).casPublish.deferwrap1
+         0     0% 99.53%    12.87ms  1.03%  main.(*Store).casStat
+         0     0% 99.53%    12.92ms  1.04%  main.(*Store).commitIngested
+         0     0% 99.53%    12.92ms  1.04%  main.(*Store).maybeBuildRep
+## block delay (top 15)
+Time: 2026-11-08 06:19:15 UTC
+Showing nodes accounting for 19.19s, 100% of 19.20s total
+Dropped 32 nodes (cum <= 0.10s)
+Showing top 15 nodes out of 56
+      flat  flat%   sum%        cum   cum%
+    14.92s 77.70% 77.70%     14.92s 77.70%  runtime.selectgo
+     2.02s 10.53% 88.23%      2.02s 10.53%  sync.(*WaitGroup).Wait
+     1.32s  6.88% 95.11%      1.32s  6.88%  sync.(*RWMutex).RLock (inline)
+     0.93s  4.85%   100%      0.93s  4.85%  runtime.chanrecv1
+         0     0%   100%      0.22s  1.13%  io.(*PipeReader).Read
+         0     0%   100%      2.86s 14.92%  io.(*PipeWriter).Write
+         0     0%   100%      2.86s 14.92%  io.(*multiWriter).Write
+         0     0%   100%      0.22s  1.13%  io.(*pipe).read
+         0     0%   100%      2.86s 14.92%  io.(*pipe).write
+         0     0%   100%      0.22s  1.13%  io.ReadAtLeast
+         0     0%   100%      0.22s  1.13%  io.ReadFull (inline)
+         0     0%   100%      2.42s 12.61%  main.(*Server).ServeHTTP
+         0     0%   100%      2.42s 12.61%  main.(*Server).handlePutObject
+         0     0%   100%      0.13s  0.67%  main.(*Server).ingestRequestBody
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.069928309,"/cpu/classes/idle:cpu-seconds":31.230886218,"/cpu/classes/total:cpu-seconds":49.043729164,"/cpu/classes/user:cpu-seconds":17.727354244,"/gc/cycles/total:gc-cycles":42,"/gc/heap/allocs:bytes":926864360,"/gc/heap/allocs:objects":4477511,"/gc/heap/live:bytes":2445712,"/memory/classes/total:bytes":87812376,"/sched/goroutines:goroutines":18,"final":false,"gomaxprocs":4,"mem.heap_inuse":3850240,"mem.mallocs":4532389,"mem.num_gc":42,"mem.pause_total_ns":7486171,"mem.sys":87812376,"mem.total_alloc":926866256,"t":1794118755454297147}

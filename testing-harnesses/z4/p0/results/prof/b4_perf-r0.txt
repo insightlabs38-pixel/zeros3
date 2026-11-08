@@ -1,0 +1,137 @@
+# profile dir: b4_perf-r0
+## CPU flat (top 28)
+Time: 2026-11-08 06:12:02 UTC
+Duration: 16.81s, Total samples = 15.49s (92.16%)
+Showing nodes accounting for 11.78s, 76.05% of 15.49s total
+Dropped 241 nodes (cum <= 0.08s)
+Showing top 28 nodes out of 128
+      flat  flat%   sum%        cum   cum%
+     1.90s 12.27% 12.27%      1.90s 12.27%  runtime.memmove
+     1.69s 10.91% 23.18%      4.81s 31.05%  zeros3-z3/graphnorm.Match
+        1s  6.46% 29.63%         1s  6.46%  internal/runtime/maps.ctrlGroup.matchH2 (inline)
+     0.72s  4.65% 34.28%      0.72s  4.65%  crypto/internal/fips140/sha256.blockSHANI
+     0.65s  4.20% 38.48%      0.93s  6.00%  runtime.tryDeferToSpanScan
+     0.62s  4.00% 42.48%      0.62s  4.00%  memeqbody
+     0.61s  3.94% 46.42%      1.36s  8.78%  zeros3-z3/graphnorm.(*Graph).tarjan
+     0.45s  2.91% 49.32%      0.90s  5.81%  zeros3-z3/graphnorm.(*Graph).poison
+     0.39s  2.52% 51.84%      2.93s 18.92%  zeros3-z3/graphnorm.(*Graph).nodeHash
+     0.36s  2.32% 54.16%      0.36s  2.32%  runtime.memclrNoHeapPointers
+     0.35s  2.26% 56.42%      1.26s  8.13%  runtime.scanObject
+     0.30s  1.94% 58.36%      1.63s 10.52%  crypto/internal/fips140/sha256.(*Digest).Write
+     0.27s  1.74% 60.10%      0.54s  3.49%  zeros3-z3/graphnorm.(*Graph).reverse (inline)
+     0.25s  1.61% 61.72%     14.19s 91.61%  main.cmdPerf
+     0.23s  1.48% 63.20%      0.25s  1.61%  runtime.gcmarknewobject
+     0.22s  1.42% 64.62%      0.22s  1.42%  runtime.spanClass.sizeclass (inline)
+     0.20s  1.29% 65.91%      2.24s 14.46%  runtime.growslice
+     0.19s  1.23% 67.14%      2.04s 13.17%  zeros3-z3/graphnorm.hash2
+     0.18s  1.16% 68.30%      0.18s  1.16%  zeros3-z3/graphnorm.(*Graph).dangling (inline)
+     0.17s  1.10% 69.40%      0.91s  5.87%  zeros3-z3/graphnorm.(*Graph).classify (inline)
+     0.15s  0.97% 70.37%      0.15s  0.97%  zeros3-z3/graphnorm.(*BitWriter).Bits (inline)
+     0.14s   0.9% 71.27%      0.14s   0.9%  cmpbody
+     0.14s   0.9% 72.18%      0.14s   0.9%  internal/runtime/maps.(*ctrlGroup).setEmpty (inline)
+     0.14s   0.9% 73.08%      0.32s  2.07%  zeros3-z3/graphnorm.(*Graph).tarjan.func1 (inline)
+     0.13s  0.84% 73.92%      0.15s  0.97%  runtime.typePointers.next
+     0.12s  0.77% 74.69%      0.12s  0.77%  zeros3-z3/graphnorm.contextScore
+     0.11s  0.71% 75.40%      0.59s  3.81%  crypto/internal/fips140/sha256.(*Digest).checkSum
+     0.10s  0.65% 76.05%      0.15s  0.97%  runtime.bulkBarrierPreWrite
+## CPU cumulative (top 45)
+Duration: 16.81s, Total samples = 15.49s (92.16%)
+Showing nodes accounting for 10.56s, 68.17% of 15.49s total
+Dropped 241 nodes (cum <= 0.08s)
+Showing top 45 nodes out of 128
+      flat  flat%   sum%        cum   cum%
+     0.25s  1.61%  1.61%     14.19s 91.61%  main.cmdPerf
+         0     0%  1.61%     14.19s 91.61%  main.main
+         0     0%  1.61%     14.19s 91.61%  runtime.main
+     0.07s  0.45%  2.07%      7.62s 49.19%  zeros3-z3/graphnorm.(*Graph).SCCIdentities
+     1.69s 10.91% 12.98%      4.81s 31.05%  zeros3-z3/graphnorm.Match
+     0.39s  2.52% 15.49%      2.93s 18.92%  zeros3-z3/graphnorm.(*Graph).nodeHash
+     0.20s  1.29% 16.79%      2.24s 14.46%  runtime.growslice
+     0.19s  1.23% 18.01%      2.04s 13.17%  zeros3-z3/graphnorm.hash2
+     1.90s 12.27% 30.28%      1.90s 12.27%  runtime.memmove
+     0.10s  0.65% 30.92%      1.80s 11.62%  runtime.mallocgc
+     0.01s 0.065% 30.99%      1.77s 11.43%  runtime.systemstack
+     0.30s  1.94% 32.92%      1.63s 10.52%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0% 32.92%      1.44s  9.30%  zeros3-z3/graphnorm.(*Graph).canonSCC
+     0.06s  0.39% 33.31%      1.41s  9.10%  zeros3-z3/graphnorm.(*Graph).canonSCC.func2
+         0     0% 33.31%      1.41s  9.10%  zeros3-z3/graphnorm.(*Graph).canonSCC.func3
+     0.61s  3.94% 37.25%      1.36s  8.78%  zeros3-z3/graphnorm.(*Graph).tarjan
+     0.02s  0.13% 37.38%      1.30s  8.39%  runtime.mapaccess1
+     0.09s  0.58% 37.96%      1.30s  8.39%  runtime.mapaccess2
+     0.35s  2.26% 40.22%      1.26s  8.13%  runtime.scanObject
+     0.09s  0.58% 40.80%      1.18s  7.62%  runtime.mapassign
+         0     0% 40.80%      1.11s  7.17%  runtime.gcBgMarkWorker
+         0     0% 40.80%      1.09s  7.04%  runtime.gcBgMarkWorker.func2
+         0     0% 40.80%      1.09s  7.04%  runtime.gcDrain
+     0.06s  0.39% 41.19%      1.09s  7.04%  zeros3-z3/graphnorm.LocalID
+         0     0% 41.19%      1.04s  6.71%  runtime.gcDrainMarkWorkerFractional (inline)
+        1s  6.46% 47.64%         1s  6.46%  internal/runtime/maps.ctrlGroup.matchH2 (inline)
+     0.65s  4.20% 51.84%      0.93s  6.00%  runtime.tryDeferToSpanScan
+     0.17s  1.10% 52.94%      0.91s  5.87%  zeros3-z3/graphnorm.(*Graph).classify (inline)
+     0.45s  2.91% 55.84%      0.90s  5.81%  zeros3-z3/graphnorm.(*Graph).poison
+     0.03s  0.19% 56.04%      0.75s  4.84%  crypto/internal/fips140/sha256.block
+     0.72s  4.65% 60.68%      0.72s  4.65%  crypto/internal/fips140/sha256.blockSHANI
+     0.08s  0.52% 61.20%      0.68s  4.39%  crypto/internal/fips140/sha256.(*Digest).Sum
+     0.62s  4.00% 65.20%      0.62s  4.00%  memeqbody
+     0.11s  0.71% 65.91%      0.59s  3.81%  crypto/internal/fips140/sha256.(*Digest).checkSum
+         0     0% 65.91%      0.59s  3.81%  internal/runtime/maps.(*table).rehash
+     0.01s 0.065% 65.98%      0.59s  3.81%  internal/runtime/maps.(*table).split
+         0     0% 65.98%      0.56s  3.62%  sort.Slice
+     0.27s  1.74% 67.72%      0.54s  3.49%  zeros3-z3/graphnorm.(*Graph).reverse (inline)
+         0     0% 67.72%      0.52s  3.36%  zeros3-z3/graphnorm.EncodeLLVM
+     0.02s  0.13% 67.85%      0.47s  3.03%  runtime.(*mcache).nextFree
+     0.03s  0.19% 68.04%      0.46s  2.97%  sort.pdqsort_func
+         0     0% 68.04%      0.42s  2.71%  internal/runtime/maps.newTable
+         0     0% 68.04%      0.42s  2.71%  runtime.(*mcache).refill
+     0.02s  0.13% 68.17%      0.41s  2.65%  internal/runtime/maps.(*table).reset
+         0     0% 68.17%      0.39s  2.52%  zeros3-z3/graphnorm.ParseBitstream
+## alloc_space (top 18)
+Showing nodes accounting for 3.90GB, 94.33% of 4.14GB total
+Dropped 66 nodes (cum <= 0.02GB)
+Showing top 18 nodes out of 61
+      flat  flat%   sum%        cum   cum%
+    0.60GB 14.56% 14.56%     0.66GB 15.95%  zeros3-z3/graphnorm.(*Graph).nodeHash
+    0.60GB 14.38% 28.94%     0.76GB 18.35%  zeros3-z3/graphnorm.(*Graph).canonSCC.func2
+    0.59GB 14.35% 43.29%     0.76GB 18.28%  zeros3-z3/graphnorm.Match
+    0.43GB 10.48% 53.78%     0.43GB 10.48%  zeros3-z3/graphnorm.(*Graph).Add (inline)
+    0.37GB  8.86% 62.64%     0.38GB  9.26%  zeros3-z3/graphnorm.(*Graph).tarjan
+    0.29GB  7.06% 69.70%     0.29GB  7.06%  zeros3-z3/graphnorm.(*Graph).classify (inline)
+    0.16GB  3.97% 73.67%     0.16GB  3.97%  zeros3-z3/graphnorm.countClasses (inline)
+    0.14GB  3.28% 76.95%        4GB 96.75%  main.cmdPerf
+    0.13GB  3.08% 80.03%     0.13GB  3.08%  zeros3-z3/graphnorm.(*Graph).reverse (inline)
+    0.11GB  2.58% 82.61%     0.19GB  4.56%  zeros3-z3/graphnorm.(*bitReader).block
+    0.10GB  2.40% 85.01%     0.10GB  2.40%  zeros3-z3/graphnorm.(*Graph).poison
+    0.08GB  1.97% 86.98%     0.08GB  1.97%  zeros3-z3/graphnorm.(*bitReader).record
+    0.07GB  1.75% 88.73%     0.07GB  1.75%  zeros3-z3/graphnorm.(*BitWriter).Bits (inline)
+    0.07GB  1.67% 90.40%     2.28GB 55.01%  zeros3-z3/graphnorm.(*Graph).SCCIdentities
+    0.05GB  1.10% 91.51%     0.08GB  2.05%  zeros3-z3/graphnorm.(*Machine).rec
+    0.04GB  1.03% 92.53%     0.04GB  1.03%  zeros3-z3/graphnorm.sortedEdgeIDs
+    0.04GB  0.95% 93.48%     0.04GB  0.95%  runtime/pprof.StartCPUProfile
+    0.03GB  0.84% 94.33%     0.03GB  0.84%  zeros3-z3/graphnorm.assignTies
+## alloc_objects (top 12)
+Showing nodes accounting for 40216284, 94.96% of 42350461 total
+Dropped 90 nodes (cum <= 211752)
+Showing top 12 nodes out of 37
+      flat  flat%   sum%        cum   cum%
+  11562289 27.30% 27.30%   11566599 27.31%  zeros3-z3/graphnorm.(*Graph).canonSCC.func2
+   8394480 19.82% 47.12%   11310888 26.71%  zeros3-z3/graphnorm.(*Graph).nodeHash
+   3080246  7.27% 54.40%   42236492 99.73%  main.cmdPerf
+   2870011  6.78% 61.17%    2870011  6.78%  zeros3-z3/graphnorm.(*Graph).reverse (inline)
+   2840513  6.71% 67.88%    3954639  9.34%  zeros3-z3/graphnorm.(*Graph).tarjan
+   2477082  5.85% 73.73%    2477082  5.85%  zeros3-z3/graphnorm.(*Graph).poison
+   2010678  4.75% 78.48%    2010678  4.75%  zeros3-z3/graphnorm.(*bitReader).record
+   1900586  4.49% 82.96%    1900586  4.49%  zeros3-z3/graphnorm.sortedEdgeIDs
+   1549066  3.66% 86.62%    4561598 10.77%  zeros3-z3/graphnorm.Match
+   1401385  3.31% 89.93%    1413242  3.34%  zeros3-z3/graphnorm.(*Machine).rec
+   1114126  2.63% 92.56%    1114126  2.63%  zeros3-z3/graphnorm.(*Graph).tarjan.func1 (inline)
+   1015822  2.40% 94.96%    1015822  2.40%  zeros3-z3/graphnorm.u32 (inline)
+## mutex delay (top 12)
+Time: 2026-11-08 06:12:19 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## block delay (top 15)
+Time: 2026-11-08 06:12:19 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":1.557574785,"/cpu/classes/idle:cpu-seconds":0,"/cpu/classes/total:cpu-seconds":17.047696967,"/cpu/classes/user:cpu-seconds":15.3979096,"/gc/cycles/total:gc-cycles":108,"/gc/heap/allocs:bytes":4447968272,"/gc/heap/allocs:objects":42922364,"/gc/heap/live:bytes":13390424,"/memory/classes/total:bytes":1131221512,"/sched/goroutines:goroutines":12,"final":false,"gomaxprocs":1,"mem.heap_inuse":24051712,"mem.mallocs":56949542,"mem.num_gc":108,"mem.pause_total_ns":4220543,"mem.sys":1131221512,"mem.total_alloc":4448004128,"t":1794118339833054981}

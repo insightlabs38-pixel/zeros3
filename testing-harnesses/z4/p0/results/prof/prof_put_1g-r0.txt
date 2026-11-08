@@ -1,0 +1,152 @@
+# profile dir: prof_put_1g-r0
+## CPU flat (top 28)
+Time: 2026-11-08 04:05:26 UTC
+Duration: 11.64s, Total samples = 7.73s (66.41%)
+Showing nodes accounting for 7.52s, 97.28% of 7.73s total
+Dropped 97 nodes (cum <= 0.04s)
+Showing top 28 nodes out of 80
+      flat  flat%   sum%        cum   cum%
+     3.48s 45.02% 45.02%      3.48s 45.02%  crypto/internal/fips140/sha256.blockSHANI
+     1.67s 21.60% 66.62%      1.67s 21.60%  crypto/md5.block
+     1.14s 14.75% 81.37%      1.14s 14.75%  internal/runtime/syscall/linux.Syscall6
+     0.92s 11.90% 93.27%      0.93s 12.03%  main.findCDCBoundary
+     0.20s  2.59% 95.86%      0.20s  2.59%  runtime.memmove
+     0.01s  0.13% 95.99%      1.39s 17.98%  crypto/sha256.Sum256
+     0.01s  0.13% 96.12%      0.43s  5.56%  io.(*LimitedReader).Read
+     0.01s  0.13% 96.25%      7.46s 96.51%  main.(*Store).ingestStream
+     0.01s  0.13% 96.38%      0.32s  4.14%  main.(*cdcChunker).fill
+     0.01s  0.13% 96.51%      1.29s 16.69%  main.(*packBuilder).Add
+     0.01s  0.13% 96.64%      2.96s 38.29%  main.(*packSink).Put
+     0.01s  0.13% 96.77%      0.29s  3.75%  net/http.(*connReader).Read
+     0.01s  0.13% 96.90%      0.07s  0.91%  runtime.findRunnable
+     0.01s  0.13% 97.02%      0.05s  0.65%  runtime.mallocgc
+     0.01s  0.13% 97.15%      0.04s  0.52%  runtime.pcvalue
+     0.01s  0.13% 97.28%      0.04s  0.52%  runtime/pprof.(*profileBuilder).appendLocsForStack
+         0     0% 97.28%      1.17s 15.14%  bufio.(*Reader).Read
+         0     0% 97.28%      1.20s 15.52%  bufio.(*Writer).Flush
+         0     0% 97.28%      1.29s 16.69%  bufio.(*Writer).Write
+         0     0% 97.28%      3.48s 45.02%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0% 97.28%      3.48s 45.02%  crypto/internal/fips140/sha256.block
+         0     0% 97.28%      1.67s 21.60%  crypto/md5.(*digest).Write
+         0     0% 97.28%      0.05s  0.65%  internal/poll.(*FD).Fsync
+         0     0% 97.28%      0.39s  5.05%  internal/poll.(*FD).Read
+         0     0% 97.28%      0.58s  7.50%  internal/poll.(*FD).Write
+         0     0% 97.28%      0.04s  0.52%  internal/runtime/syscall/linux.EpollWait
+         0     0% 97.28%      1.20s 15.52%  io.(*multiWriter).Write
+         0     0% 97.28%      0.81s 10.48%  io.(*teeReader).Read
+## CPU cumulative (top 45)
+Duration: 11.64s, Total samples = 7.73s (66.41%)
+Showing nodes accounting for 7.48s, 96.77% of 7.73s total
+Dropped 97 nodes (cum <= 0.04s)
+Showing top 45 nodes out of 80
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      7.47s 96.64%  main.(*Server).ServeHTTP
+         0     0%     0%      7.47s 96.64%  main.(*Server).handlePutObject
+         0     0%     0%      7.47s 96.64%  net/http.(*conn).serve
+         0     0%     0%      7.47s 96.64%  net/http.serverHandler.ServeHTTP
+         0     0%     0%      7.46s 96.51%  main.(*Server).ingestRequestBody
+     0.01s  0.13%  0.13%      7.46s 96.51%  main.(*Store).ingestStream
+         0     0%  0.13%      3.48s 45.02%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0%  0.13%      3.48s 45.02%  crypto/internal/fips140/sha256.block
+     3.48s 45.02% 45.15%      3.48s 45.02%  crypto/internal/fips140/sha256.blockSHANI
+     0.01s  0.13% 45.28%      2.96s 38.29%  main.(*packSink).Put
+         0     0% 45.28%      1.73s 22.38%  main.(*packSink).publish
+         0     0% 45.28%      1.67s 21.60%  crypto/md5.(*digest).Write
+     1.67s 21.60% 66.88%      1.67s 21.60%  crypto/md5.block
+         0     0% 66.88%      1.67s 21.60%  main.(*Store).publishPack
+         0     0% 66.88%      1.64s 21.22%  main.verifyPackFile
+     0.01s  0.13% 67.01%      1.39s 17.98%  crypto/sha256.Sum256
+         0     0% 67.01%      1.29s 16.69%  bufio.(*Writer).Write
+     0.01s  0.13% 67.14%      1.29s 16.69%  main.(*packBuilder).Add
+         0     0% 67.14%      1.25s 16.17%  main.(*cdcChunker).nextView
+         0     0% 67.14%      1.20s 15.52%  bufio.(*Writer).Flush
+         0     0% 67.14%      1.20s 15.52%  io.(*multiWriter).Write
+         0     0% 67.14%      1.17s 15.14%  bufio.(*Reader).Read
+     1.14s 14.75% 81.89%      1.14s 14.75%  internal/runtime/syscall/linux.Syscall6
+         0     0% 81.89%      1.10s 14.23%  syscall.RawSyscall6
+         0     0% 81.89%      1.02s 13.20%  syscall.Syscall
+     0.92s 11.90% 93.79%      0.93s 12.03%  main.findCDCBoundary
+         0     0% 93.79%      0.86s 11.13%  io.ReadAtLeast
+         0     0% 93.79%      0.81s 10.48%  io.(*teeReader).Read
+         0     0% 93.79%      0.74s  9.57%  main.decodePackPayload
+         0     0% 93.79%      0.58s  7.50%  internal/poll.(*FD).Write
+         0     0% 93.79%      0.58s  7.50%  os.(*File).Write
+         0     0% 93.79%      0.58s  7.50%  syscall.write
+     0.01s  0.13% 93.92%      0.43s  5.56%  io.(*LimitedReader).Read
+         0     0% 93.92%      0.39s  5.05%  internal/poll.(*FD).Read
+         0     0% 93.92%      0.39s  5.05%  syscall.read
+     0.01s  0.13% 94.05%      0.32s  4.14%  main.(*cdcChunker).fill
+         0     0% 94.05%      0.29s  3.75%  main.bodyReader.Read
+         0     0% 94.05%      0.29s  3.75%  net/http.(*body).Read
+         0     0% 94.05%      0.29s  3.75%  net/http.(*body).readLocked
+     0.01s  0.13% 94.18%      0.29s  3.75%  net/http.(*connReader).Read
+         0     0% 94.18%      0.29s  3.75%  net/http.(*maxBytesReader).Read
+         0     0% 94.18%      0.28s  3.62%  net.(*conn).Read
+         0     0% 94.18%      0.28s  3.62%  net.(*netFD).Read
+     0.20s  2.59% 96.77%      0.20s  2.59%  runtime.memmove
+         0     0% 96.77%      0.13s  1.68%  main.(*packSink).Flush
+## alloc_space (top 18)
+Showing nodes accounting for 156.85MB, 92.93% of 168.78MB total
+Dropped 207 nodes (cum <= 0.84MB)
+Showing top 18 nodes out of 89
+      flat  flat%   sum%        cum   cum%
+   25.88MB 15.34% 15.34%    25.88MB 15.34%  runtime/pprof.StartCPUProfile
+      24MB 14.22% 29.56%       24MB 14.22%  bufio.NewReaderSize (inline)
+   20.62MB 12.22% 41.78%    20.62MB 12.22%  compress/flate.(*fastGen).addBlock
+   17.02MB 10.08% 51.86%    30.66MB 18.16%  compress/flate.NewWriter (inline)
+   16.01MB  9.48% 61.34%    16.01MB  9.48%  bufio.NewWriterSize
+    8.77MB  5.19% 66.54%     8.77MB  5.19%  compress/flate.newFastEnc (inline)
+    7.15MB  4.24% 70.77%     7.15MB  4.24%  runtime/pprof.allFrames
+    4.31MB  2.55% 73.33%     4.48MB  2.66%  main.buildLocIndex
+    4.27MB  2.53% 75.86%    12.28MB  7.27%  main.readPackLayout
+    4.12MB  2.44% 78.30%    13.64MB  8.08%  compress/flate.(*compressor).init
+       4MB  2.37% 80.67%    26.36MB 15.62%  main.verifyPackFile
+    3.88MB  2.30% 82.98%    11.55MB  6.84%  runtime/pprof.(*profileBuilder).emitLocation
+    3.80MB  2.25% 85.23%     5.67MB  3.36%  os.statNolog
+    3.79MB  2.25% 87.47%     3.79MB  2.25%  encoding/hex.EncodeToString
+    2.67MB  1.58% 89.05%     2.67MB  1.58%  slices.Grow[go.shape.[]uint8,go.shape.uint8]
+    2.62MB  1.56% 90.61%     6.06MB  3.59%  main.mergeLocIndex
+    2.02MB  1.19% 91.80%     2.02MB  1.19%  internal/bytealg.MakeNoZero
+    1.91MB  1.13% 92.93%     1.91MB  1.13%  syscall.ByteSliceFromString
+## alloc_objects (top 12)
+Showing nodes accounting for 294116, 96.46% of 304910 total
+Dropped 236 nodes (cum <= 1524)
+Showing top 12 nodes out of 60
+      flat  flat%   sum%        cum   cum%
+     68985 22.62% 22.62%      69039 22.64%  main.buildLocIndex
+     62110 20.37% 42.99%      62110 20.37%  encoding/hex.EncodeToString
+     51001 16.73% 59.72%      51001 16.73%  runtime/pprof.allFrames
+     32747 10.74% 70.46%      48088 15.77%  os.statNolog
+     17953  5.89% 76.35%      19654  6.45%  runtime/pprof.(*profileBuilder).emitLocation
+     16638  5.46% 81.81%      16638  5.46%  internal/bytealg.MakeNoZero
+     16226  5.32% 87.13%      16226  5.32%  syscall.ByteSliceFromString
+     15279  5.01% 92.14%      15279  5.01%  main.(*packBuilder).Add
+      8097  2.66% 94.79%      70753 23.20%  runtime/pprof.writeHeapProto
+      4100  1.34% 96.14%       4100  1.34%  main.bodyReader.Read
+       596   0.2% 96.33%       2882  0.95%  runtime/pprof.parseProcSelfMaps
+       384  0.13% 96.46%       1977  0.65%  runtime/pprof.elfBuildID
+## mutex delay (top 12)
+Time: 2026-11-08 04:05:37 UTC
+Showing nodes accounting for 2546.24us, 100% of 2546.24us total
+Dropped 2 nodes (cum <= 12.73us)
+Showing top 12 nodes out of 55
+      flat  flat%   sum%        cum   cum%
+ 2546.24us   100%   100%  2546.24us   100%  runtime.unlock (partial-inline)
+         0     0%   100%   257.34us 10.11%  compress/flate.(*compressor).init
+         0     0%   100%   257.34us 10.11%  compress/flate.NewWriter (inline)
+         0     0%   100%   257.34us 10.11%  compress/flate.newFastEnc (inline)
+         0     0%   100%   257.34us 10.11%  compress/gzip.(*Writer).Write
+         0     0%   100%   300.02us 11.78%  main.init.7.func2
+         0     0%   100%   257.34us 10.11%  main.p0atomic
+         0     0%   100%   300.02us 11.78%  main.p0snapshot
+         0     0%   100%   257.34us 10.11%  main.p0snapshot.func1
+         0     0%   100%   257.34us 10.11%  runtime.(*mcache).allocLarge
+## block delay (top 15)
+Time: 2026-11-08 04:05:37 UTC
+Showing nodes accounting for 11.08s, 99.77% of 11.11s total
+Dropped 23 nodes (cum <= 0.06s)
+      flat  flat%   sum%        cum   cum%
+    11.08s 99.77% 99.77%     11.08s 99.77%  runtime.selectgo
+         0     0% 99.77%     11.11s   100%  main.init.7.func2
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.069756787,"/cpu/classes/idle:cpu-seconds":37.418428087,"/cpu/classes/total:cpu-seconds":45.680583028,"/cpu/classes/user:cpu-seconds":8.170613624,"/gc/cycles/total:gc-cycles":51,"/gc/heap/allocs:bytes":193192912,"/gc/heap/allocs:objects":317260,"/gc/heap/live:bytes":2893328,"/memory/classes/total:bytes":30791944,"/sched/goroutines:goroutines":18,"final":false,"gomaxprocs":4,"mem.heap_inuse":5464064,"mem.mallocs":336463,"mem.num_gc":51,"mem.pause_total_ns":7526038,"mem.sys":30791944,"mem.total_alloc":193259032,"t":1794110737827705730}
