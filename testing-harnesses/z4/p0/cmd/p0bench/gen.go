@@ -12,7 +12,9 @@ import (
 	"encoding/hex"
 	"io"
 	"math/rand/v2"
+	"os"
 	"sort"
+	"sync"
 )
 
 const blk = 4096
@@ -24,9 +26,35 @@ type seg struct {
 }
 
 type Content struct {
-	Kind string `json:"kind"` // random | text | runs
+	Kind string `json:"kind"` // random | text | runs | file
 	Segs []seg  `json:"segs"`
 	Size int64  `json:"size"`
+	Path string `json:"path,omitempty"` // Kind=="file": corpus file (read-only, never modified)
+}
+
+var fileMu sync.Mutex
+var fileHandles = map[string]*os.File{}
+
+func openShared(p string) *os.File {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	if f, ok := fileHandles[p]; ok {
+		return f
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		panic(err)
+	}
+	fileHandles[p] = f
+	return f
+}
+
+func NewFileContent(p string) Content {
+	fi, err := os.Stat(p)
+	if err != nil {
+		panic(err)
+	}
+	return Content{Kind: "file", Path: p, Size: fi.Size()}
 }
 
 var words = []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey", "xray", "yankee", "zulu", "object", "store", "chunk", "manifest", "journal", "content", "address", "digest", "pack", "record", "index", "level", "tier", "hot", "warm", "cold"}
@@ -122,6 +150,13 @@ func Revise(base Content, rev int, editFrac float64) Content {
 func (c *Content) ReadAt(p []byte, off int64) (int, error) {
 	if off >= c.Size {
 		return 0, io.EOF
+	}
+	if c.Kind == "file" {
+		n, err := openShared(c.Path).ReadAt(p, off)
+		if err == io.EOF && n == len(p) {
+			err = nil
+		}
+		return n, err
 	}
 	n := 0
 	var buf [blk]byte

@@ -39,6 +39,12 @@ func main() {
 		cmdMixed(args)
 	case "cli":
 		cmdCLI(args)
+	case "mkstore":
+		cmdMkstore(args)
+	case "verifystore":
+		cmdVerifyStore(args)
+	case "startup":
+		cmdStartup(args)
 	default:
 		die("unknown subcommand %q", os.Args[1])
 	}
@@ -47,9 +53,9 @@ func main() {
 // ---- shared flags ----
 
 type common struct {
-	bin, profBin, work, out, label, envs, prof, cache string
-	reps, conc                                        int
-	noVerify                                          bool
+	bin, profBin, work, out, label, envs, prof, cache, sargs string
+	reps, conc                                               int
+	noVerify                                                 bool
 }
 
 func addCommon(fs *flag.FlagSet) *common {
@@ -60,6 +66,7 @@ func addCommon(fs *flag.FlagSet) *common {
 	fs.StringVar(&c.out, "out", "", "JSONL result file (append); empty = stdout only")
 	fs.StringVar(&c.label, "label", "run", "scenario label")
 	fs.StringVar(&c.envs, "env", "", "comma separated KEY=VAL for the server process")
+	fs.StringVar(&c.sargs, "sargs", "", "extra `zeros3 serve` args, e.g. '-representations shadow'")
 	fs.StringVar(&c.prof, "prof", "", "'' | cpu | full (cpu+mutex+block+alloc) | trace")
 	fs.StringVar(&c.cache, "cache", "warm", "warm | cold (drop_caches before measured window, server restarted)")
 	fs.IntVar(&c.reps, "reps", 3, "independent repetitions (fresh store + fresh process)")
@@ -91,6 +98,7 @@ func (c *common) envList() []string {
 	}
 	return e
 }
+func (c *common) srvArgs() []string { return strings.Fields(c.sargs) }
 func (c *common) profDir(rep int) string {
 	if c.prof == "" {
 		return ""

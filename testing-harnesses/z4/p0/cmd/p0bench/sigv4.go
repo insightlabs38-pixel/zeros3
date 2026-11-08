@@ -26,6 +26,17 @@ func hm(k []byte, s string) []byte {
 // sign adds SigV4 header auth. payload is the x-amz-content-sha256 value
 // (hex digest, UNSIGNED-PAYLOAD or a STREAMING-* sentinel).
 func sign(req *http.Request, payload string, signedExtra ...string) {
+	signFull(req, payload, signedExtra...)
+}
+
+type sigInfo struct {
+	seed  string
+	key   []byte
+	scope string
+	amz   string
+}
+
+func signFull(req *http.Request, payload string, signedExtra ...string) sigInfo {
 	now := time.Now().UTC()
 	amz := now.Format("20060102T150405Z")
 	day := now.Format("20060102")
@@ -64,4 +75,5 @@ func sign(req *http.Request, payload string, signedExtra ...string) {
 	k := hm(hm(hm(hm([]byte("AWS4"+secretKey), day), region), "s3"), "aws4_request")
 	sig := hex.EncodeToString(hm(k, sts))
 	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+accessKey+"/"+scope+", SignedHeaders="+signed+", Signature="+sig)
+	return sigInfo{seed: sig, key: k, scope: scope, amz: amz}
 }

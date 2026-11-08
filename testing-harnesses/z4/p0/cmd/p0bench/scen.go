@@ -85,6 +85,8 @@ type setSpec struct {
 	bucket, keyPrefix string
 	seed              uint64
 	sizeStr           string
+	files             string
+	filemode          string
 }
 
 func addSet(fs *flag.FlagSet) *setSpec {
@@ -100,11 +102,34 @@ func addSet(fs *flag.FlagSet) *setSpec {
 	fs.StringVar(&s.bucket, "bucket", "bench", "bucket")
 	fs.StringVar(&s.keyPrefix, "prefix", "k/", "key prefix")
 	fs.Uint64Var(&s.seed, "seed", 1, "content seed")
+	fs.StringVar(&s.files, "files", "", "comma separated corpus files (or @listfile); replaces generated content")
+	fs.StringVar(&s.filemode, "filemode", "objs", "objs: each file is an object | revs: files are successive revisions of one key")
 	return s
+}
+
+func (s *setSpec) fileList() []string {
+	if s.files == "" {
+		return nil
+	}
+	if strings.HasPrefix(s.files, "@") {
+		b, err := os.ReadFile(s.files[1:])
+		if err != nil {
+			die("%v", err)
+		}
+		return strings.Fields(string(b))
+	}
+	return strings.Split(s.files, ",")
 }
 
 func (s *setSpec) resolve(_ string) {
 	s.size = parseSize(s.sizeStr)
+	if fl := s.fileList(); fl != nil {
+		if s.filemode == "revs" {
+			s.objs, s.revs, s.revkeys = 1, len(fl), "same"
+		} else {
+			s.objs = len(fl)
+		}
+	}
 }
 
 func (s *setSpec) sizeOf(i int) int64 {
@@ -152,10 +177,19 @@ func (s *setSpec) base(i int) Content {
 func (s *setSpec) gen(rev int, pregenLimit int64) []*Obj {
 	objs := make([]*Obj, s.objs)
 	var total int64
+	fl := s.fileList()
 	for i := range objs {
-		c := s.base(i)
-		for r := 1; r <= rev; r++ {
-			c = Revise(c, r, s.editfrac)
+		var c Content
+		switch {
+		case fl != nil && s.filemode == "revs":
+			c = NewFileContent(fl[rev])
+		case fl != nil:
+			c = NewFileContent(fl[i])
+		default:
+			c = s.base(i)
+			for r := 1; r <= rev; r++ {
+				c = Revise(c, r, s.editfrac)
+			}
 		}
 		key := fmt.Sprintf("%s%06d", s.keyPrefix, i)
 		if s.revkeys == "distinct" && rev > 0 {
@@ -200,7 +234,7 @@ func (c *common) newStore(rep int) string {
 }
 
 func (c *common) start(store string, rep int) (*Server, *S3) {
-	srv, err := StartServer(c.binary(), store, c.profDir(rep), nil, c.envList())
+	srv, err := StartServer(c.binary(), store, c.profDir(rep), c.srvArgs(), c.envList())
 	if err != nil {
 		die("%v", err)
 	}
@@ -340,7 +374,7 @@ func emitPut(c *common, srv *Server, cl *S3, store string, m map[string]any, all
 }
 
 func (c *common) startPlain(store string) (*Server, *S3) {
-	srv, err := StartServer(c.bin, store, "", nil, nil)
+	srv, err := StartServer(c.bin, store, "", c.srvArgs(), nil)
 	if err != nil {
 		die("%v", err)
 	}
@@ -484,7 +518,7 @@ func (c *common) startPlain2(store string, cc *common, rep int, measured bool) (
 			}
 		}
 	}
-	srv, err := StartServer(bin, store, prof, nil, env)
+	srv, err := StartServer(bin, store, prof, c.srvArgs(), env)
 	if err != nil {
 		die("%v", err)
 	}
@@ -620,6 +654,7 @@ func cmdCLI(args []string) {
 	c := addCommon(fs)
 	store := fs.String("store", "", "store directory (command runs against it in place)")
 	strace := fs.Bool("strace", false, "run under strace -f -c (separate from timing runs)")
+	serve := fs.Bool("serve", false, "start a server on -store and substitute {EP} in the command; server cost is reported as srv_*")
 	fs.Parse(args)
 	rest := fs.Args()
 	if len(rest) == 0 {
@@ -635,6 +670,31 @@ func cmdCLI(args []string) {
 		os.MkdirAll(pd, 0o755)
 		env = append(env, "ZEROS3_P0_PROF_DIR="+pd)
 	}
+	var srv *Server
+	var sw *win
+	if *serve {
+		var err error
+		srv, err = StartServer(c.binary(), *store, pd, c.srvArgs(), c.envList())
+		if err != nil {
+			die("%v", err)
+		}
+		cl := newClient(4)
+		if err := waitReady(cl, srv.URL); err != nil {
+			die("%v", err)
+		}
+		for i := range rest {
+			rest[i] = strings.ReplaceAll(rest[i], "{EP}", srv.URL)
+		}
+		sw = startWin(srv.PID())
+		bin = c.bin // the client side is always the plain binary
+	}
+	var cenv []string
+	for _, e := range env {
+		if !strings.HasPrefix(e, "AWS_ACCESS_KEY_ID=") && !strings.HasPrefix(e, "AWS_SECRET_ACCESS_KEY=") {
+			cenv = append(cenv, e)
+		}
+	}
+	env = append(cenv, "AWS_ACCESS_KEY_ID="+accessKey, "AWS_SECRET_ACCESS_KEY="+secretKey)
 	argv := append([]string{bin}, rest...)
 	if *strace {
 		sf := fmt.Sprintf("%s/strace-%s.txt", c.work, c.label)
@@ -693,6 +753,16 @@ func cmdCLI(args []string) {
 			m["ru_sys_s"] = float64(ru.Stime.Sec) + float64(ru.Stime.Usec)/1e6
 			m["ru_majflt"], m["ru_minflt"] = ru.Majflt, ru.Minflt
 		}
+	}
+	if srv != nil {
+		for k, v := range sw.end() {
+			m["srv_"+k] = v
+		}
+		if pd != "" {
+			srv.Snapshot()
+		}
+		srv.Stop()
+		m["srv_lifetime"] = rusageMap(srv)
 	}
 	if pd != "" {
 		m["go_metrics"] = readMetrics(pd)

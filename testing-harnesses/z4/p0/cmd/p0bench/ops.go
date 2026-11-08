@@ -85,12 +85,25 @@ func (s *S3) finish(req *http.Request) error {
 	return nil
 }
 
-// aws-chunked with STREAMING-UNSIGNED-PAYLOAD-TRAILER (no per-chunk signatures).
+// aws-chunked with STREAMING-AWS4-HMAC-SHA256-PAYLOAD (per-chunk signatures), the SDK streaming mode.
 type chunkedReader struct {
-	src  io.Reader
-	buf  []byte
-	cur  []byte
-	done bool
+	src      io.Reader
+	buf      []byte
+	cur      []byte
+	done     bool
+	si       sigInfo
+	prev     string
+	emptySHA string
+}
+
+func (c *chunkedReader) frame(data []byte) []byte {
+	ds := sha256.Sum256(data)
+	sts := "AWS4-HMAC-SHA256-PAYLOAD\n" + c.si.amz + "\n" + c.si.scope + "\n" + c.prev + "\n" + c.emptySHA + "\n" + hex.EncodeToString(ds[:])
+	sig := hex.EncodeToString(hm(c.si.key, sts))
+	c.prev = sig
+	out := []byte(fmt.Sprintf("%x;chunk-signature=%s\r\n", len(data), sig))
+	out = append(out, data...)
+	return append(out, '\r', '\n')
 }
 
 func (c *chunkedReader) Read(p []byte) (int, error) {
@@ -100,13 +113,11 @@ func (c *chunkedReader) Read(p []byte) (int, error) {
 		}
 		n, err := io.ReadFull(c.src, c.buf)
 		if n > 0 {
-			c.cur = []byte(fmt.Sprintf("%x\r\n", n))
-			c.cur = append(c.cur, c.buf[:n]...)
-			c.cur = append(c.cur, '\r', '\n')
+			c.cur = c.frame(c.buf[:n])
 		}
 		if err != nil {
 			c.done = true
-			c.cur = append(c.cur, []byte("0\r\n\r\n")...)
+			c.cur = append(c.cur, c.frame(nil)...)
 		}
 	}
 	n := copy(p, c.cur)
@@ -114,15 +125,28 @@ func (c *chunkedReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+const chunkData = 64 << 10
+
+func encodedLen(size int64) int64 {
+	hdr := func(n int64) int64 {
+		return int64(len(fmt.Sprintf("%x", n))) + int64(len(";chunk-signature=")) + 64 + 2 + n + 2
+	}
+	full, rem := size/chunkData, size%chunkData
+	t := full * hdr(chunkData)
+	if rem > 0 {
+		t += hdr(rem)
+	}
+	return t + hdr(0)
+}
+
 func (s *S3) putChunked(o *Obj) error {
-	// Transfer-Encoding: chunked on the HTTP layer is not used by S3 clients; the
-	// SDK pattern is aws-chunked with decoded length. Unknown framed length =>
-	// ContentLength -1 (Go sends HTTP chunked), which the server must accept.
-	req, _ := http.NewRequest("PUT", s.base+"/"+o.Bucket+"/"+o.Key, &chunkedReader{src: o.body(), buf: make([]byte, 64<<10)})
-	req.ContentLength = -1
+	req, _ := http.NewRequest("PUT", s.base+"/"+o.Bucket+"/"+o.Key, nil)
 	req.Header.Set("Content-Encoding", "aws-chunked")
 	req.Header.Set("x-amz-decoded-content-length", fmt.Sprint(o.C.Size))
-	sign(req, "STREAMING-UNSIGNED-PAYLOAD-TRAILER", "content-encoding", "x-amz-decoded-content-length")
+	si := signFull(req, "STREAMING-AWS4-HMAC-SHA256-PAYLOAD", "content-encoding", "x-amz-decoded-content-length")
+	e := sha256.Sum256(nil)
+	req.Body = io.NopCloser(&chunkedReader{src: o.body(), buf: make([]byte, chunkData), si: si, prev: si.seed, emptySHA: hex.EncodeToString(e[:])})
+	req.ContentLength = encodedLen(o.C.Size)
 	return s.finish(req)
 }
 
