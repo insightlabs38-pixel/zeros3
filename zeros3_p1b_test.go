@@ -199,6 +199,12 @@ func TestP1B_ConcurrentOverlappingBatches(t *testing.T) {
 		fwd[i], rev[i] = i, n-1-i
 	}
 	for round := 0; round < 20; round++ {
+		if round%2 == 1 { // remove everything so this round races real publication
+			for i := range pieces {
+				sum := sha256.Sum256(pieces[i])
+				os.Remove(store.chunkPath(sum))
+			}
+		}
 		errs := make(chan error, 4)
 		for _, o := range [][]int{fwd, rev, fwd, rev} {
 			go func() { errs <- run(o) }()
@@ -210,13 +216,6 @@ func TestP1B_ConcurrentOverlappingBatches(t *testing.T) {
 				}
 			}
 		})
-		// Delete everything and go again so each round races real publication.
-		if round%2 == 1 {
-			for i := range pieces {
-				sum := sha256.Sum256(pieces[i])
-				os.Remove(store.chunkPath(sum))
-			}
-		}
 	}
 	for i := range pieces {
 		sum := sha256.Sum256(pieces[i])
@@ -484,6 +483,29 @@ func TestP1B_GroupCommit_ConditionalCreateRace(t *testing.T) {
 	}
 }
 
+// arrivalBarrier returns a hook fragment that blocks the first n callers of
+// point until all n have arrived, so n requests reach the commit queue together.
+func arrivalBarrier(n int, point string) func(p string) {
+	var mu sync.Mutex
+	arrived := 0
+	release := make(chan struct{})
+	return func(p string) {
+		if p != point {
+			return
+		}
+		mu.Lock()
+		arrived++
+		mine := arrived
+		if mine == n {
+			close(release)
+		}
+		mu.Unlock()
+		if mine <= n {
+			<-release
+		}
+	}
+}
+
 // A journal failure fails every request of the batch, publishes none of them,
 // and leaves the store unable to acknowledge anything until it is reopened.
 func TestP1B_GroupCommit_JournalFailureFailsWholeBatch(t *testing.T) {
@@ -498,44 +520,9 @@ func TestP1B_GroupCommit_JournalFailureFailsWholeBatch(t *testing.T) {
 	if _, err := store.PutObject("b", "durable", []byte("x"), "", nil); err != nil {
 		t.Fatal(err)
 	}
-	gate, entered := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	withTestHook(t, func(p string) {
-		if p == hookAfterJournalWriteBeforeSync {
-			once.Do(func() { close(entered); <-gate })
-		}
-	})
-	// First commit becomes leader and parks inside the journal write; the
-	// rest queue behind it as one batch, then the journal file is pulled away.
-	errs := make(chan error, 9)
-	go func() { _, err := store.PutObject("b", "k0", genRandomBytes(1, 2000), "", nil); errs <- err }()
-	<-entered
-	for i := 1; i < 9; i++ {
-		go func() {
-			_, err := store.PutObject("b", fmt.Sprintf("k%d", i), genRandomBytes(int64(i+1), 2000), "", nil)
-			errs <- err
-		}()
-	}
-	// wait until the others have staged their publication and queued
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
-		store.commits.mu.Lock()
-		q := len(store.commits.q)
-		store.commits.mu.Unlock()
-		if q >= 8 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	close(gate)
-	withTimeout(t, 30*time.Second, "batch", func() {
-		for i := 0; i < 9; i++ {
-			<-errs // first batch (size 1) succeeds, then the file is closed below
-		}
-	})
-	// Now fail the journal for a whole batch.
-	store.journal.f.Close()
-	testHook = nil
 	const m = 6
+	withTestHook(t, arrivalBarrier(m, hookAfterManifestPublished))
+	store.journal.f.Close() // every journal write now fails
 	fail := make(chan error, m)
 	for i := 0; i < m; i++ {
 		go func() {
@@ -558,6 +545,9 @@ func TestP1B_GroupCommit_JournalFailureFailsWholeBatch(t *testing.T) {
 	if _, err := store.PutObject("b", "after", []byte("y"), "", nil); err == nil {
 		t.Error("poisoned journal accepted another commit")
 	}
+	if _, _, err := store.GetObject("b", "durable"); err != nil {
+		t.Errorf("earlier acknowledged object lost: %v", err)
+	}
 	store.queueDrained(t)
 }
 
@@ -571,27 +561,35 @@ func (s *Store) queueDrained(t *testing.T) {
 }
 
 // A crash hook that panics inside the leader must fail the batch members
-// instead of stranding them, and must hand the queue on.
+// instead of stranding them, and must hand the queue on: here the follower
+// is already queued when the leader panics.
 func TestP1B_GroupCommit_LeaderPanicDoesNotStrandFollowers(t *testing.T) {
 	store, _ := newBucketStore(t)
+	barrier := arrivalBarrier(2, hookAfterManifestPublished)
 	var armed atomic.Bool
 	armed.Store(true)
 	entered, gate := make(chan struct{}), make(chan struct{})
 	withTestHook(t, func(p string) {
+		barrier(p)
 		if p == hookAfterJournalWriteBeforeSync && armed.CompareAndSwap(true, false) {
 			close(entered)
 			<-gate
 			panic("simulated crash")
 		}
 	})
-	leader := make(chan any, 1)
-	go func() {
-		defer func() { leader <- recover() }()
-		store.PutObject("b", "lead", genRandomBytes(1, 2000), "", nil)
-	}()
+	type res struct {
+		pan any
+		err error
+	}
+	out := make(chan res, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			var r res
+			defer func() { r.pan = recover(); out <- r }()
+			_, r.err = store.PutObject("b", fmt.Sprintf("k%d", i), genRandomBytes(int64(i+1), 2000), "", nil)
+		}()
+	}
 	<-entered
-	follower := make(chan error, 1)
-	go func() { _, err := store.PutObject("b", "follow", genRandomBytes(2, 2000), "", nil); follower <- err }()
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 		store.commits.mu.Lock()
 		q := len(store.commits.q)
@@ -599,16 +597,25 @@ func TestP1B_GroupCommit_LeaderPanicDoesNotStrandFollowers(t *testing.T) {
 		if q >= 1 {
 			break
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(2 * time.Millisecond)
 	}
 	close(gate)
+	var panics, ok int
 	withTimeout(t, 20*time.Second, "leader panic", func() {
-		if p := <-leader; p == nil {
-			t.Error("leader panic swallowed")
-		}
-		if err := <-follower; err != nil {
-			t.Errorf("follower after a crashed leader: %v", err) // handed leadership, committed itself
+		for i := 0; i < 2; i++ {
+			r := <-out
+			switch {
+			case r.pan != nil:
+				panics++
+			case r.err == nil:
+				ok++ // the queued follower took over leadership and committed
+			default:
+				t.Errorf("follower failed: %v", r.err)
+			}
 		}
 	})
+	if panics != 1 || ok != 1 {
+		t.Fatalf("panics=%d committed=%d, want 1 and 1", panics, ok)
+	}
 	store.queueDrained(t)
 }
