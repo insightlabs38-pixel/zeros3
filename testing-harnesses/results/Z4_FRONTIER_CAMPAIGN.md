@@ -13,12 +13,12 @@ Hourly automation remains disabled; no new autonomous routine was created.
 | A4 | MANAGED11_12_PRODUCTION_READY; streaming analysis, bounded decode | #95 qualified for normal merge |
 | B1 | SIMILARITY_LAYER_READY_FOR_PROTOTYPE; generic similarity delta CAS research | #96 merged |
 | B2 | REP_AUTHORITY_VIABLE_FOR_SELECTED_KINDS; floor-10 prototype | #97 draft, unmerged, DRAFT_ONLY |
-| B3 | CROSS_FORMAT_CAS_NICHE; typed semantic components, tensor/Git-tar-OCI/columnar lanes | research-only branch `z4/cross-format-semantic-cas` |
+| B3 | CROSS_FORMAT_CAS_NICHE; typed semantic components, tensor/Git-tar-OCI/columnar lanes | #98 merged (research-only) |
 | B4 | GRAPH_NORMALIZATION_PARTIAL; exact graph identity + reversible VM + synthesis; LLVM/PDB win, DEX/Wasm do not | #99 (research-only) |
-| B5 | Model delta 2.0 | MODEL_DELTA2_PARTIAL (research only; PR on branch z4/model-delta-2) |
-| B6 | consumer-ranked hard codecs | not started |
-| B7 | causal planner under new economics | not started |
-| B8 | convergence decision | not started |
+| B5 | MODEL_DELTA2_PARTIAL; exact predictive model coding | #100 merged (research-only) |
+| B6 | HARD_CODEC_FRONTIER_SPECIALIZED; exact LZ4 replay (SST, Parquet LZ4_RAW, SquashFS) | #101 merged (research-only) |
+| B7 | PLANNER2_SPECIALIZED as published; registered protocol rule gives NOT_JUSTIFIED for `combined` (see B8) | #102 merged (research-only) |
+| B8 | Z4_CONVERGE_NARROWLY; narrow opt-in representation authority first, everything else research | research-only review, see [Z4_B8_CONVERGENCE.md](Z4_B8_CONVERGENCE.md) |
 | Expansion | only after the main queue | not started |
 
 A4 adds kinds 11 DEX /12 CLR with cumulative store floor 9. Earlier kinds 1–10
@@ -66,3 +66,6 @@ PDB (Newtonsoft 5 releases: 0.41x CDC, 0.66x B1) with fresh-process byte-exact r
 bespoke DEX remains better (0.49 vs 0.70 of CDC), Wasm is a negative control. Research only; production
 source, B2 authority and the capability floor are unchanged. Open: module-skeleton ID normalization,
 DWARF/ELF adapters, sequence-point line op, piece-indexed range reads. Stop after B4. B5 completed separately (MODEL_DELTA2_PARTIAL); B6 not started.
+
+B8 convergence review: [report](Z4_B8_CONVERGENCE.md), verdict `Z4_CONVERGE_NARROWLY`. Recommended next batch `Z4-C1` (B2 authority-core
+qualification, default off, gates G1-G8); B2 #97 and drafts #80/#81 remain open and unmerged. Stop after B8.

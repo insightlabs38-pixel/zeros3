@@ -11,6 +11,7 @@ Report: `../../results/Z4_B8_CONVERGENCE.md`. All reruns used pinned inputs (sha
 | `b2_authority_tests.txt`, `b2_econ_rerun_*.jsonl` | `TestXDelta|TestAuthority` on a trial merge of #97 into main; physical economics reruns (CLR x5, DEX x3 `classes.dex`, Parquet x8) |
 | `b3_smol_repro.txt`, `b4_repro.txt`, `b5_repro.txt`, `b6_repro.txt` | Independent reruns of B3 (SmolLM2 5 files), B4 (SQLite O2 x6, PDB x5), B5 (Pythia-14M subset, F16 check), B6 (Parquet/RocksDB chains, Brotli parity) |
 | `b5_narrowing_check.py`, `parquet_brotli_parity.py` | Small independent probes (outputs inside `b5_repro.txt`, `b6_repro.txt`) |
+| `b2_root_suite_on_merge.txt`, `physical_*.jsonl`, `planner_defect_trace.txt`, `b2_planner_group_accounting.diff.txt`, `reverse_base.py/.txt` | Full root suite on the trial merge (PASS 508 s); physical SmolLM2/Parquet/Git runs (patched = diagnostic accounting fix, never applied); planner trace; B7 hybrid vs B2 measured rows |
 | `z3_tests.txt` | `go test` of the Z3 research modules on main |
 
 Trial merge: `git worktree add W origin/main && cd W && git merge --no-commit origin/z4/representation-authority` (clean), then

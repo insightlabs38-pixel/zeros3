@@ -14,7 +14,7 @@ CLS = {
  "LLVM/PDB build histories":      dict(B=(0.90, 0.80, 0.65), Bhot=(1.0, 0.9, 0.8), C=(0.69, 0.51, 0.41), tag="B:X delta only (B1 LLVM .66-.78 generic); C:S B4 .51/.41 x REAL"),
  "source tar / Git histories":    dict(B=(0.82, 0.65, 0.50), Bhot=(1.0, 0.85, 0.73), C=(0.82, 0.60, 0.50), tag="B:P tar .499 Git .819; C:S B3 packagings only when multi-packaging"),
  "DB SST histories":              dict(B=(0.70, 0.50, 0.31), Bhot=(0.9, 0.7, 0.5), C=(0.40, 0.31, 0.31), tag="B:S/M (kind 9 .66-.74, ukv chain .31); C:S B6 LZ4 .31"),
- "columnar (Parquet)":            dict(B=(0.90, 0.65, 0.40), Bhot=(1.0, 0.9, 0.7), C=(0.60, 0.42, 0.40), tag="B:P .897 synthetic / S .40; C:S B6 LZ4_RAW .42"),
+ "columnar (Parquet)":            dict(B=(0.92, 0.55, 0.33), Bhot=(1.0, 0.94, 0.7), C=(0.60, 0.42, 0.33), tag="B:P .916 shipped planner, .326 with accounting fix [IC what-if]; C:S B6 LZ4_RAW .42"),
  "model checkpoints (natural)":   dict(B=(0.89, 0.78, 0.67), Bhot=(1.0, 0.95, 0.9), C=(0.84, 0.70, 0.57), tag="B:M lab Model8 .67-.89; C:S B5 .57-.73 (narrowing is Pythia-F32 specific)"),
  "model multi-format/quantized":  dict(B=(0.85, 0.78, 0.74), Bhot=(1.0, 0.95, 0.9), C=(0.60, 0.30, 0.24), tag="B:M GGUF-only .74-.78; C:S B3 .24, B5 .28-.41"),
  "unrelated / one-off":           dict(B=(1.0, 1.0, 1.0), Bhot=(1.0, 1.0, 1.0), C=(1.0, 1.0, 1.0), tag="P: nothing admitted = 1.00x"),

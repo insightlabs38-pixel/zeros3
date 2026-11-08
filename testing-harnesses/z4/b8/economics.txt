@@ -2,20 +2,20 @@ Blended physical store bytes / CDC  (cons | central | opt), hot share of version
 HYPOTHETICAL mixes x measured/standalone per-class ratios (see CLS tags); not a field estimate
 
 --- hot share h=0.0
-artifact/CI registry             A: 1.000 | 1.000 | 1.000   B: 0.901 | 0.782 | 0.673   C: 0.888 | 0.741 | 0.649
-ML model hub                     A: 1.000 | 1.000 | 1.000   B: 0.910 | 0.826 | 0.750   C: 0.891 | 0.691 | 0.590
-general S3 (mostly unrelated)    A: 1.000 | 1.000 | 1.000   B: 0.987 | 0.971 | 0.955   C: 0.983 | 0.963 | 0.955
+artifact/CI registry             A: 1.000 | 1.000 | 1.000   B: 0.902 | 0.777 | 0.670   C: 0.888 | 0.741 | 0.646
+ML model hub                     A: 1.000 | 1.000 | 1.000   B: 0.912 | 0.816 | 0.742   C: 0.891 | 0.691 | 0.583
+general S3 (mostly unrelated)    A: 1.000 | 1.000 | 1.000   B: 0.988 | 0.968 | 0.953   C: 0.983 | 0.963 | 0.953
 --- hot share h=0.5
-artifact/CI registry             A: 1.000 | 1.000 | 1.000   B: 0.945 | 0.844 | 0.749   C: 0.939 | 0.824 | 0.737
-ML model hub                     A: 1.000 | 1.000 | 1.000   B: 0.955 | 0.891 | 0.827   C: 0.946 | 0.824 | 0.747
-general S3 (mostly unrelated)    A: 1.000 | 1.000 | 1.000   B: 0.993 | 0.979 | 0.965   C: 0.991 | 0.976 | 0.965
+artifact/CI registry             A: 1.000 | 1.000 | 1.000   B: 0.946 | 0.843 | 0.747   C: 0.939 | 0.825 | 0.735
+ML model hub                     A: 1.000 | 1.000 | 1.000   B: 0.956 | 0.889 | 0.824   C: 0.946 | 0.826 | 0.744
+general S3 (mostly unrelated)    A: 1.000 | 1.000 | 1.000   B: 0.993 | 0.979 | 0.964   C: 0.991 | 0.976 | 0.964
 --- hot share h=1.0
-artifact/CI registry             A: 1.000 | 1.000 | 1.000   B: 0.989 | 0.907 | 0.825   C: 0.989 | 0.907 | 0.825
-ML model hub                     A: 1.000 | 1.000 | 1.000   B: 1.000 | 0.957 | 0.905   C: 1.000 | 0.957 | 0.905
-general S3 (mostly unrelated)    A: 1.000 | 1.000 | 1.000   B: 0.999 | 0.988 | 0.976   C: 0.999 | 0.988 | 0.976
+artifact/CI registry             A: 1.000 | 1.000 | 1.000   B: 0.989 | 0.909 | 0.825   C: 0.989 | 0.909 | 0.825
+ML model hub                     A: 1.000 | 1.000 | 1.000   B: 1.000 | 0.961 | 0.905   C: 1.000 | 0.961 | 0.905
+general S3 (mostly unrelated)    A: 1.000 | 1.000 | 1.000   B: 0.999 | 0.989 | 0.976   C: 0.999 | 0.989 | 0.976
 
 Break-even: share of store that must be in versioned/reusable classes for a total saving >= 5% (option B central, archive-only):
-  mean central per-class ratio over reusable classes = 0.689 -> saving per reusable byte 0.31; share needed = 0.16
+  mean central per-class ratio over reusable classes = 0.674 -> saving per reusable byte 0.33; share needed = 0.15
 
 Analysis-CPU break-even: a representation pays its encode CPU if saved_fraction*storage$ > CPU time*cpu$ (per GB, 12 months)
   A_storage: storage $0.023/GB-mo, cpu $0.04/core-h
