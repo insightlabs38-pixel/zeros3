@@ -76,6 +76,8 @@ func expAll(lins []pl.Lineage) {
 	e.expSched()
 	e.expReads()
 	e.expSens()
+	e.expOneOff()
+	e.expReopt()
 	e.save()
 }
 
@@ -186,7 +188,7 @@ func (e *expEnv) expGroup() {
 
 // ---------------------------------------------------------------- E: calibration
 func (e *expEnv) expCalib() {
-	fmt.Println("\n=== E. Calibration of the combined policy (predicted vs realized), held-out priors, S1 worlds, seeds 11,23")
+	fmt.Println("\n=== E. Calibration of the lifetime-weighted EV policy (best simple adaptive) (predicted vs realized), held-out priors, S1 worlds, seeds 11,23")
 	type bin struct {
 		n          int
 		pred, real float64
@@ -199,7 +201,7 @@ func (e *expEnv) expCalib() {
 			sp := pl.DefaultSpec("c")
 			sp.Seed = sd
 			w := pl.Build(sp, e.folds[f])
-			pol, err := pl.PresetWith("combined", e.prior(f), e.tunedFor(f, "combined"))
+			pol, err := pl.PresetWith("lifetime", e.prior(f), e.tunedFor(f, "lifetime"))
 			die(err)
 			ad := pol.(*pl.Adaptive)
 			led, err := pl.Run(w, ad, e.base)
@@ -411,7 +413,7 @@ func (e *expEnv) expReads() {
 
 // ---------------------------------------------------------------- sensitivity / worst case
 func (e *expEnv) expSens() {
-	fmt.Println("\n=== Sensitivity: combined vs best simple baseline (cost/cdc, book A), S1+S2 pooled, seed 11")
+	fmt.Println("\n=== Sensitivity: adaptive policies vs best simple baseline (cost/cdc, book A), S1+S2 pooled, seed 11")
 	book := e.proto.Books["A_storage"]
 	simple := []string{"greedy", "premium-cap", "expected-value", "late-bootstrap"}
 	type mod struct {
@@ -436,7 +438,7 @@ func (e *expEnv) expSens() {
 		{"tiny maintenance windows", func(c *pl.Config) {}, func(s *pl.Spec) { s.Window = pl.Budget{CPUMS: 500, IOBytes: 1 << 20} }, 0},
 	}
 	out := []map[string]interface{}{}
-	fmt.Printf("%-34s %9s %9s %12s %s\n", "condition", "combined", "bestSimple", "alwaysCDC=1", "best simple")
+	fmt.Printf("%-34s %9s %9s %9s %9s %s\n", "condition", "combined", "lifetime", "classprior", "bestSimple", "best simple")
 	for _, m := range mods {
 		sum := map[string]float64{}
 		var cdcSum float64
@@ -459,7 +461,7 @@ func (e *expEnv) expSens() {
 				cfg := e.base
 				m.cfg(&cfg)
 				cdcSum += e.runWorld(w, f, "always-cdc", cfg).Price(book).Total
-				for _, p := range append([]string{"combined"}, simple...) {
+				for _, p := range append([]string{"combined", "lifetime", "class-prior"}, simple...) {
 					sum[p] += e.runWorld(w, f, p, cfg).Price(book).Total
 				}
 			}
@@ -470,8 +472,8 @@ func (e *expEnv) expSens() {
 				best, bn = sum[p], p
 			}
 		}
-		fmt.Printf("%-34s %9.3f %9.3f %12.3f %s\n", m.name, sum["combined"]/cdcSum, best/cdcSum, 1.0, bn)
-		out = append(out, map[string]interface{}{"condition": m.name, "combined": sum["combined"] / cdcSum, "best_simple": best / cdcSum, "best_simple_name": bn})
+		fmt.Printf("%-34s %9.3f %9.3f %9.3f %9.3f %s\n", m.name, sum["combined"]/cdcSum, sum["lifetime"]/cdcSum, sum["class-prior"]/cdcSum, best/cdcSum, bn)
+		out = append(out, map[string]interface{}{"condition": m.name, "combined": sum["combined"] / cdcSum, "lifetime": sum["lifetime"] / cdcSum, "class_prior": sum["class-prior"] / cdcSum, "best_simple": best / cdcSum, "best_simple_name": bn})
 	}
 	e.result["Sens"] = out
 	_ = sort.Strings
@@ -539,4 +541,73 @@ func mustPolicy(n string, p pl.Prior) pl.Policy {
 	x, err := pl.Preset(n, p)
 	die(err)
 	return x
+}
+
+// ---------------------------------------------------------------- one-off / unrelated objects
+func (e *expEnv) expOneOff() {
+	fmt.Println("\n=== One-off and unrelated objects: bytes / always-cdc (arrival only, held-out priors)")
+	pols := []string{"greedy", "premium-cap", "expected-value", "late-bootstrap", "class-prior", "lifetime", "cons-group", "combined"}
+	type acc struct {
+		b, c float64
+		n    int
+	}
+	res := map[string]*acc{}
+	for _, f := range e.proto.FoldNames() {
+		_, zl, err := pl.LoadFrontier(*frontier)
+		die(err)
+		var singles []pl.Lineage
+		for _, l := range e.folds[f] {
+			if l.Len() == 1 {
+				singles = append(singles, l)
+			}
+		}
+		if f != "" {
+			for _, z := range zl {
+				n := z.Name()
+				if len(n) > 8 && n[:8] == "one-off/" && e.foldOf(&oneOffName{z}) == f {
+					singles = append(singles, z)
+				}
+			}
+		}
+		for _, l := range singles {
+			w := pl.ArrivalsOnly(l)
+			cdc := e.runWorld(w, f, "always-cdc", e.base)
+			for _, p := range pols {
+				led := e.runWorld(w, f, p, e.base)
+				a := res[p]
+				if a == nil {
+					a = &acc{}
+					res[p] = a
+				}
+				a.b += float64(led.FinalPhys)
+				a.c += float64(cdc.FinalPhys)
+				a.n++
+			}
+		}
+	}
+	out := map[string]interface{}{}
+	for _, p := range pols {
+		a := res[p]
+		fmt.Printf("  %-16s n=%2d bytes/cdc %.4f (one-off penalty %+.2f%%)\n", p, a.n, a.b/a.c, 100*(a.b/a.c-1))
+		out[p] = map[string]float64{"n": float64(a.n), "bytes_over_cdc": a.b / a.c}
+	}
+	e.result["OneOff"] = out
+}
+
+// oneOffName lets FoldOf see the base name of a "one-off/<case>" Z3 lineage.
+type oneOffName struct{ pl.Lineage }
+
+func (o *oneOffName) Name() string { return o.Lineage.Name()[len("one-off/"):] }
+
+// ---------------------------------------------------------------- B3 optimize economics + executor
+func (e *expEnv) expReopt() {
+	fmt.Println("\n=== B3 group reoptimisation (measured: 438.0 MB -> 283.1 MB, 48.5 s CPU, ~1.0 GiB RSS): break-even horizon")
+	book := e.proto.Books["A_storage"]
+	freed := 437985558.0 - 283123663.0
+	io := 2 * 1495370725.0 * book.MigrateIOUSDGB / 1e9 // read every file, write rebased components
+	cpu := 48.5 / 3600 * book.CPUUSDCoreHour
+	perMonth := freed * book.StorageUSDGBMonth / 1e9
+	be := (io + cpu) / perMonth
+	fmt.Printf("  freed %.0f MB; migration IO $%.4f + CPU $%.5f; saves $%.5f/month => break-even %.1f months (book A horizon %.0f)\n", freed/1e6, io, cpu, perMonth, be, book.HorizonMonths)
+	e.result["B3_reopt_breakeven_months"] = be
 }

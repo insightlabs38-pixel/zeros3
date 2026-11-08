@@ -526,3 +526,73 @@ func TestCandidateClosureIsAcyclicAndCausal(t *testing.T) {
 		}
 	}
 }
+
+type reoptOnce struct {
+	Z3Policy
+	done bool
+}
+
+func (p *reoptOnce) Arrive(env *Env, a Arrival) Decision {
+	env.Analyze(a.Obj, "b3-semcas")
+	return Decision{Scheme: "b3-semcas"}
+}
+func (p *reoptOnce) Event(env *Env, ev Event) []Action {
+	if ev.Kind == Tick && !p.done && len(env.Objects()) >= 5 {
+		p.done = true
+		return []Action{{Kind: ActReopt, Obj: 0, Reason: "test"}}
+	}
+	return nil
+}
+
+// The B3 group reoptimiser must shrink the group to its measured ratio, write the
+// new components before releasing the old (peak = before + after), keep all objects
+// readable, and respect a tight capacity (rejecting instead of overrunning).
+func TestGroupReoptExecutor(t *testing.T) {
+	var l Lineage
+	for _, x := range loadSeriesT(t) {
+		if x.Name() == "b3-smollm2-reverse" {
+			l = x
+		}
+	}
+	sp := DefaultSpec("r")
+	sp.Retention, sp.Reads, sp.TickEvery = "all", "none", 3
+	w := Build(sp, []Lineage{l})
+	cfg := DefaultConfig()
+	x := NewRunner(w, &reoptOnce{Z3Policy: *NewZ3("x")}, cfg)
+	var before int64
+	for _, e := range w.Events {
+		if err := x.Step(e); err != nil {
+			t.Fatal(err)
+		}
+		if e.Kind == Tick && x.Ledger().Reopts == 0 {
+			before = x.Store().Live()
+		}
+	}
+	led := x.Finish()
+	if led.Reopts != 1 {
+		t.Fatalf("reopt not executed: %+v", led.Reopts)
+	}
+	ratio := float64(led.FinalLive) / float64(before)
+	if ratio > 0.70 || ratio < 0.55 {
+		t.Fatalf("group shrank to %.3f of before, want ~0.646", ratio)
+	}
+	if led.Peak < before+led.FinalLive/2 {
+		t.Fatalf("migration peak %d does not include both generations (before %d)", led.Peak, before)
+	}
+	if _, ok := x.Store().ReadableAll(); !ok {
+		t.Fatal("object unreadable after reoptimisation")
+	}
+	// tight capacity: the same action is rejected, nothing is changed
+	c2 := cfg
+	c2.Capacity = before + before/20
+	y := NewRunner(w, &reoptOnce{Z3Policy: *NewZ3("x")}, c2)
+	for _, e := range w.Events {
+		if err := y.Step(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l2 := y.Finish()
+	if l2.Reopts != 0 || l2.RejectedSpace == 0 {
+		t.Fatalf("reopt not rejected under tight capacity: %+v", l2.RejectedSpace)
+	}
+}

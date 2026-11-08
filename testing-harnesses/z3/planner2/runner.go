@@ -763,7 +763,7 @@ func (r *runner) read(env *Env, ev Event) error {
 	if rd == 0 || rd > o.Size {
 		logical = o.Size
 	}
-	if o.Tier == "hot" && r.cfg.HotAmp64Cap > 0 && rd > 0 && amp > r.cfg.HotAmp64Cap && o.Primary.Scheme != CDC {
+	if o.Tier == "hot" && r.cfg.HotAmp64Cap > 0 && rd > 8<<10 && rd <= 256<<10 && amp > r.cfg.HotAmp64Cap && o.Primary.Scheme != CDC {
 		r.led.HotViolations++
 	}
 	served := int64(float64(logical) * amp)

@@ -269,7 +269,7 @@ func (a *Adaptive) Arrive(env *Env, ar Arrival) Decision {
 		}
 		if a.P.Defer && est > a.P.PUTAnalyzeMS {
 			// expensive: store CDC now, schedule background analysis if the prior expects a net win
-			gain := a.expectedNet(env, cl, ls, n, q, rhoC, stdC, a.Prior.Ratio, s, cfg, gap, life)
+			gain := a.expectedNet(env, cl, ls, n, q, rhoC, stdC, a.Prior.Ratio, s, cfg, gap, life, ar.Size)
 			if gain > 0 {
 				out.Defer = append(out.Defer, Action{Kind: ActEnqueue, Obj: ar.Obj, Scheme: s.Name, Priority: gain / math.Max(est, 1), Reason: "defer-expensive"})
 			}
@@ -405,7 +405,7 @@ func (a *Adaptive) readPenalty(cl *clsStat, rep, cdcF Cand, cfg Config) float64 
 }
 
 // expectedNet is the prior-only estimate used before expensive analysis exists.
-func (a *Adaptive) expectedNet(env *Env, cl *clsStat, ls *linStat, n int, q, rhoC float64, stdC int64, ratio float64, s SchemeInfo, cfg Config, gap, life float64) float64 {
+func (a *Adaptive) expectedNet(env *Env, cl *clsStat, ls *linStat, n int, q, rhoC float64, stdC int64, ratio float64, s SchemeInfo, cfg Config, gap, life float64, size int64) float64 {
 	r := ratio
 	if a.P.Class && cl.Ratio.N > 0 {
 		r = cl.Ratio.est(ratio, a.P.K)
@@ -425,7 +425,14 @@ func (a *Adaptive) expectedNet(env *Env, cl *clsStat, ls *linStat, n int, q, rho
 		}
 		g += w * delta
 	}
-	return g - math.Max(prem, 0)
+	// deferred work reads the object back from disk, then reads/writes it again to migrate
+	cost := 0.0
+	if bv := cfg.Prices.ByteValue(); bv > 0 {
+		io := (2*float64(size) + stdS) * cfg.Prices.MigrateIOUSDGB / 1e9
+		cpu := float64(size) / (1 << 20) / math.Max(s.AnalysisMiBs, 0.1) * 2 / 3600 * cfg.Prices.CPUUSDCoreHour
+		cost = (io + cpu) / bv
+	}
+	return g - math.Max(prem, 0) - cost
 }
 
 // groupHints notices lock-in: bytes reuse collapsed while a format probe still sees

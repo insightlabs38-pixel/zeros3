@@ -1,2 +1,143 @@
 
 === A. Z3-36 policies under old vs new candidate architecture (arrivals only, storage bytes, exact oracle)
+A:Z3-36 frontier (additive-era reps)
+policy                n  total/cdc total/orcl   regret    bad missed
+always-cdc           12     1.0000     1.1595   15.95%      0      8
+greedy               12     0.9781     1.1342   13.42%      0      5
+premium-cap          12     0.9636     1.1174   11.74%      0      4
+late-bootstrap       12     0.9962     1.1551   15.51%      1      5
+expected-value       12     0.9557     1.1082   10.82%      2      3
+lineage-prior        12     0.8643     1.0022    0.22%      0      2
+combined             12     0.9653     1.1193   11.93%      0      4
+B:Z4 captured series (B1-B6)
+policy                n  total/cdc total/orcl   regret    bad missed
+always-cdc           33     1.0000     1.6677   66.77%      0     25
+greedy               33     0.7429     1.2389   23.89%      0     14
+premium-cap          33     0.6669     1.1122   11.22%      6      8
+late-bootstrap       33     0.7429     1.2389   23.89%      0     14
+expected-value       33     0.6739     1.1239   12.39%      6     11
+lineage-prior        33     0.6525     1.0882    8.82%      6      4
+combined             33     0.9999     1.6675   66.75%      2     22
+
+=== D. Model vs B2 measured physical store (draft #97 economics rows; different inputs than B1, so ratios are compared, not bytes)
+family               | additive sidecar (model | B2)      | archive all-rep (model | B2 best)  | hot-hybrid newest=CDC (model | B2)
+b1-git-history       |   2.12x |   1.49x (CDC+rep)      |  1.121x |  0.819x                    |  1.552x |  1.000x
+b1-source-archives   |   1.73x |   1.66x (CDC+rep)      |  0.729x |  0.499x                    |  0.933x |  0.731x
+b1-clr-newtonsoft    |   1.84x |   1.89x (CDC+rep)      |  0.845x |  0.715x                    |  0.820x |  0.761x
+b1-dex-fdroid        |   1.86x |   1.88x (CDC+rep)      |  0.860x |  0.876x                    |  1.466x |  0.965x
+b1-parquet-chain     |   1.92x |   1.92x (CDC+rep)      |  0.918x |  0.897x                    |  1.699x |  1.001x
+
+=== F. Group cases: final bytes / always-cdc (S1 arrivals+ticks, retain-all); oracle = static clairvoyant
+case                      greedy premium-c expected- class-pri      cons cons-grou combined-  combined    ORACLE      mig peak/cdc
+b1-clr-newtonsoft          1.000     1.000     1.000     1.000     1.000     1.000     1.000     1.000     0.771        0     1.00
+b1-dex-fdroid              1.000     1.000     1.000     0.860     1.000     1.000     0.860     1.000     0.860        0     1.00
+b4-llvm-o2                 1.000     0.849     0.849     0.849     1.000     0.653     0.854     0.981     0.649        2     0.65
+b4-pdb                     0.585     0.585     0.585     0.585     0.585     0.585     0.745     0.828     0.531        0     0.58
+b3-smollm2-forward         0.853     0.648     0.648     0.648     0.853     0.242     0.242     0.491     0.242        3     0.70
+b3-smollm2-reverse         0.492     0.492     0.492     0.492     0.492     0.492     0.492     0.492     0.384        0     0.49
+b5-pythia70m               0.725     0.725     0.725     0.725     0.725     0.725     0.837     0.837     0.723        0     0.73
+b5-smollm2                 0.626     0.626     0.626     0.626     0.626     0.626     0.626     0.626     0.597        0     0.63
+parquet-lz4-chain          0.422     0.422     0.422     0.422     0.422     0.422     0.422     0.422     0.422        0     0.42
+sst-lz4-rocksdb            1.000     0.309     0.438     0.309     1.000     0.309     0.309     0.438     0.309        5     0.80
+b1-rocksdb-sst             1.000     1.171     1.171     1.171     1.000     0.614     1.171     1.248     0.614        2     1.06
+
+=== E. Calibration of the lifetime-weighted EV policy (best simple adaptive) (predicted vs realized), held-out priors, S1 worlds, seeds 11,23
+reuse prediction (rep scheme, next arrival): bin  n  mean-pred  mean-realized
+  [0.0,0.2)    48    0.125    0.351
+  [0.2,0.4)    70    0.296    0.408
+  [0.4,0.6)   216    0.527    0.594
+  [0.6,0.8)   120    0.682    0.569
+  [0.8,1.0)    42    0.853    0.912
+continuation q: bin n mean-pred realized-rate
+  [0.6,0.8)   221    0.758    0.882
+  [0.8,1.0)   403    0.859    0.747
+first-sight investments 76, paid off (>=0.5% saving) 58 => precision 0.76; lineages saving>=5% total: 56
+
+=== H. Analysis scheduling: S2-style world (last3snap, mixed reads), all folds pooled, seed 11; cost ratio vs always-cdc (book A)
+variant                                cost/cdc    syncMS      bgMS     migr  expired  missed     bad
+analyze-on-PUT (unbounded)                0.850   1200521    211826       19        0      26      11
+PUT<=1000ms else defer                    0.974     77087    859947       46        0      28       6
+PUT<=200ms else defer                     0.981      8805    900427       62        0      29       3
+PUT<=20ms else defer                      0.982        84    925185       74        0      30       1
+never analyze on PUT (all deferred)       0.982         0    911431       70        0      32       1
+deferred, window CPU 10s                  1.009         0    127167       52        0      36       1
+no probe (conf off)                       0.999      9453   1055503       66        0      28       3
+probe recall .5/fpr .2                    0.948      7421    828851       44        0      29       3
+probe recall .75/fpr .1                   0.976      8141    874658       59        0      29       3
+probe perfect                             0.972      9447    785754       59        0      30       4
+PUT budget 50ms hard (no defer)           0.935       926    637392       51        0      29       1
+
+=== G. Read/tier trade-off: S3 hot-reads and S4 cold-archive worlds pooled over folds (seed 11); each book plans AND prices under itself
+A_storage S3: policy            bytes/cdc   served/cdc   cost/cdc  hotViol maxBlast
+A_storage S3: always-cdc            1.000        1.000      1.000        0        2
+A_storage S3: greedy                0.764        1.013      0.820      155        2
+A_storage S3: expected-value        0.783        1.014      0.829      171        3
+A_storage S3: lineage-prior         0.678        1.016      0.755      172        3
+A_storage S3: class-prior           0.628        1.014      0.715      158        3
+A_storage S3: read-ev               0.834        1.000      0.873        0        3
+A_storage S3: deferred              0.914        1.005      1.031       34        2
+A_storage S3: combined              0.855        1.003      1.043        0        2
+A_storage S3: cons-group            0.624        1.016      0.751      172        2
+A_storage S3 Pareto-optimal on (bytes, served read bytes): greedy class-prior read-ev cons-group
+A_storage S4: policy            bytes/cdc   served/cdc   cost/cdc  hotViol maxBlast
+A_storage S4: always-cdc            1.000        1.000      1.000        0        4
+A_storage S4: greedy                0.745        1.005      0.752        1        7
+A_storage S4: expected-value        0.657        1.006      0.666        1        7
+A_storage S4: lineage-prior         0.683        1.006      0.690        1        7
+A_storage S4: class-prior           0.665        1.006      0.674        1        7
+A_storage S4: read-ev               0.855        1.001      0.860        0        7
+A_storage S4: deferred              0.897        1.001      0.964        0        7
+A_storage S4: combined              0.786        1.002      0.925        0        7
+A_storage S4: cons-group            0.631        1.006      0.666        1        7
+A_storage S4 Pareto-optimal on (bytes, served read bytes): always-cdc greedy class-prior read-ev combined cons-group
+B_io_heavy S3: policy            bytes/cdc   served/cdc   cost/cdc  hotViol maxBlast
+B_io_heavy S3: always-cdc            1.000        1.000      1.000        0        2
+B_io_heavy S3: greedy                0.764        1.013      0.990      155        2
+B_io_heavy S3: expected-value        0.783        1.014      0.994      171        3
+B_io_heavy S3: lineage-prior         0.678        1.016      0.983      172        3
+B_io_heavy S3: class-prior           0.628        1.014      0.973      158        3
+B_io_heavy S3: read-ev               0.836        0.999      0.987        0        3
+B_io_heavy S3: deferred              1.000        1.003      1.006       16        2
+B_io_heavy S3: combined              1.000        1.000      1.079        0        2
+B_io_heavy S3: cons-group            0.764        1.012      1.010      152        2
+B_io_heavy S3 Pareto-optimal on (bytes, served read bytes): class-prior read-ev cons-group
+B_io_heavy S4: policy            bytes/cdc   served/cdc   cost/cdc  hotViol maxBlast
+B_io_heavy S4: always-cdc            1.000        1.000      1.000        0        4
+B_io_heavy S4: greedy                0.745        1.005      0.818        1        7
+B_io_heavy S4: expected-value        0.657        1.006      0.742        1        7
+B_io_heavy S4: lineage-prior         0.683        1.006      0.765        1        7
+B_io_heavy S4: class-prior           0.665        1.006      0.749        1        7
+B_io_heavy S4: read-ev               0.855        1.001      0.913        0        7
+B_io_heavy S4: deferred              1.000        1.001      1.013        0        7
+B_io_heavy S4: combined              1.000        1.001      1.213        0        7
+B_io_heavy S4: cons-group            0.746        1.005      0.832        1        7
+B_io_heavy S4 Pareto-optimal on (bytes, served read bytes): always-cdc greedy expected-value class-prior read-ev
+
+=== Sensitivity: adaptive policies vs best simple baseline (cost/cdc, book A), S1+S2 pooled, seed 11
+condition                           combined  lifetime classprior bestSimple best simple
+baseline                               0.950     0.698     0.689     0.704 expected-value
+overhead 0 B/object                    0.950     0.698     0.689     0.704 expected-value
+overhead 256 B/object                  0.950     0.699     0.689     0.705 expected-value
+GC reclaims 70%/collection             0.993     0.709     0.705     0.700 expected-value
+20% migration failures                 0.977     0.698     0.689     0.704 expected-value
+no key hints                           1.040     0.674     0.702     0.720 premium-cap
+misleading key hints                   1.043     0.746     0.688     0.704 expected-value
+histories truncated to 2 stages        1.057     0.841     0.899     0.848 expected-value
+histories truncated to 3 stages        1.037     0.744     0.810     0.794 expected-value
+depth cap 1                            0.970     0.737     0.783     0.713 expected-value
+fanout cap 1                           0.955     0.699     0.689     0.705 expected-value
+speculative staging x3.6 (B2 peak)     0.950     0.698     0.689     0.704 expected-value
+tiny maintenance windows               1.003     0.698     0.689     0.704 expected-value
+
+=== One-off and unrelated objects: bytes / always-cdc (arrival only, held-out priors)
+  greedy           n=16 bytes/cdc 0.9995 (one-off penalty -0.05%)
+  premium-cap      n=16 bytes/cdc 1.0253 (one-off penalty +2.53%)
+  expected-value   n=16 bytes/cdc 1.0253 (one-off penalty +2.53%)
+  late-bootstrap   n=16 bytes/cdc 0.9995 (one-off penalty -0.05%)
+  class-prior      n=16 bytes/cdc 1.0449 (one-off penalty +4.49%)
+  lifetime         n=16 bytes/cdc 1.0449 (one-off penalty +4.49%)
+  cons-group       n=16 bytes/cdc 0.9995 (one-off penalty -0.05%)
+  combined         n=16 bytes/cdc 1.0001 (one-off penalty +0.01%)
+
+=== B3 group reoptimisation (measured: 438.0 MB -> 283.1 MB, 48.5 s CPU, ~1.0 GiB RSS): break-even horizon
+  freed 155 MB; migration IO $0.0598 + CPU $0.00054; saves $0.00356/month => break-even 16.9 months (book A horizon 12)
