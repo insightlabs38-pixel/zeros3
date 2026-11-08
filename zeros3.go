@@ -1540,8 +1540,8 @@ const (
 // ingestAblate switches individual P1A mechanisms off for benchmarking
 // (ZEROS3_INGEST_ABLATE=nopipe,syncpublish,syncwrite,fullverify); production runs with none.
 type ingestAblation struct {
-	noPipe, syncPublish, syncWrite, fullVerify bool
-	pipeMinMiB, pipeSlots                      int
+	noPipe, syncPublish, syncWrite, fullVerify, noEarlySync bool
+	pipeMinMiB, pipeSlots                                   int
 }
 
 var ingestAblate ingestAblation
@@ -1587,6 +1587,8 @@ func init() {
 			ingestAblate.syncWrite = true
 		case "fullverify":
 			ingestAblate.fullVerify = true
+		case "noearlysync":
+			ingestAblate.noEarlySync = true
 		default:
 			if v, ok := strings.CutPrefix(strings.TrimSpace(f), "pipemin="); ok {
 				ingestAblate.pipeMinMiB, _ = strconv.Atoi(v)
@@ -10524,6 +10526,11 @@ type packWriter struct {
 	wch, hch chan *packWBuf
 	wg       sync.WaitGroup // consumer goroutines
 	pend     sync.WaitGroup // buffers handed off and not yet done
+	syncCh   chan struct{}  // early fsync requests (see packEarlySyncBytes)
+	syncing  sync.WaitGroup // early fsyncs requested and not yet finished
+	syncExit sync.WaitGroup // the early-fsync goroutine
+	written  int64          // file bytes written; owned by the file goroutine
+	syncMark int64          // written at the last early fsync request
 	errMu    sync.Mutex
 	err      error
 	closed   bool
@@ -10531,7 +10538,12 @@ type packWriter struct {
 
 const (
 	packWriteBufBytes = 256 << 10
-	packWriteBufs     = 3
+	packWriteBufs     = 8
+	// packEarlySyncBytes starts an fsync of the staging file in the background
+	// each time this many bytes have been written, so the one Finish must wait
+	// for has little left to flush. An early fsync error is kept and fails the
+	// pack: a later fsync cannot be trusted to report it again.
+	packEarlySyncBytes = 16 << 20
 )
 
 type packWBuf struct {
@@ -10554,13 +10566,34 @@ func newPackWriter(f *os.File) *packWriter {
 	for range packWriteBufs - 1 {
 		w.free <- packWBufPool.Get().(*packWBuf)
 	}
+	w.syncCh = make(chan struct{}, 1)
 	w.wg.Add(2)
+	w.syncExit.Add(1)
+	go func() {
+		defer w.syncExit.Done()
+		for range w.syncCh {
+			if err := w.f.Sync(); err != nil {
+				w.setErr(err)
+			}
+			w.syncing.Done()
+		}
+	}()
 	go func() {
 		defer w.wg.Done()
 		for b := range w.wch {
 			if w.firstErr() == nil {
 				if _, err := w.f.Write(b.b[:b.n]); err != nil {
 					w.setErr(err)
+				}
+				w.written += int64(b.n)
+				if !ingestAblate.noEarlySync && w.written-w.syncMark >= packEarlySyncBytes {
+					w.syncing.Add(1)
+					select {
+					case w.syncCh <- struct{}{}:
+						w.syncMark = w.written
+					default:
+						w.syncing.Done()
+					}
 				}
 			}
 			w.release(b)
@@ -10637,6 +10670,7 @@ func (w *packWriter) Flush() error {
 	}
 	if w.async {
 		w.pend.Wait()
+		w.syncing.Wait()
 	}
 	return w.firstErr()
 }
@@ -10657,7 +10691,10 @@ func (w *packWriter) close() {
 	if w.async {
 		close(w.wch)
 		close(w.hch)
-		w.wg.Wait()
+		w.wg.Wait() // the file goroutine has stopped requesting syncs
+		close(w.syncCh)
+		w.syncing.Wait()
+		w.syncExit.Wait()
 		w.pend.Wait()
 		for len(w.free) > 0 {
 			packWBufPool.Put(<-w.free)

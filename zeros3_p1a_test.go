@@ -650,3 +650,28 @@ func TestP1A_ConcurrentPipelinedPutsRoundTrip(t *testing.T) {
 	dpVerify(t, s, "concurrent-pipelined")
 	p1aTmpEmpty(t, dir)
 }
+
+// An fsync that fails early must fail the pack: a later fsync could report
+// success after the kernel has already dropped the failed pages.
+func TestP1A_PackWriterEarlySyncErrorIsSticky(t *testing.T) {
+	f, err := os.OpenFile("/dev/null", os.O_WRONLY, 0)
+	if err != nil {
+		t.Skip("no /dev/null")
+	}
+	defer f.Close()
+	if f.Sync() == nil {
+		t.Skip("fsync on /dev/null succeeds here")
+	}
+	w := newPackWriter(f)
+	if !w.async {
+		t.Skip("single CPU: no early fsync")
+	}
+	defer w.close()
+	chunk := make([]byte, 1<<20)
+	for i := 0; i < 2*packEarlySyncBytes>>20+2; i++ {
+		w.Write(chunk)
+	}
+	if err := w.Flush(); err == nil {
+		t.Fatal("an early fsync failure was swallowed")
+	}
+}
