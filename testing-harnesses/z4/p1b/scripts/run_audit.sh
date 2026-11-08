@@ -18,7 +18,7 @@ esac
 # p0bench starts its own server; wrap the binary with strace instead.
 W=$OUT/wrap.$MODE; mkdir -p "$W"
 { echo '#!/bin/sh'; for kv in $ENV; do echo "export $kv"; done
-  echo "exec strace -f -ttt -s 8192 -e trace=openat,open,creat,close,write,pwrite64,fsync,fdatasync,rename,renameat,renameat2,mkdir,mkdirat -o $OUT/trace.$MODE \"$BIN\" \"\$@\""
+  echo "exec strace -A -f -ttt -s 8192 -e trace=openat,open,creat,close,write,pwrite64,fsync,fdatasync,rename,renameat,renameat2,mkdir,mkdirat -o $OUT/trace.$MODE \"$BIN\" \"\$@\""
 } > "$W/zeros3"; chmod +x "$W/zeros3"; cp "$W/zeros3" "$W/zeros3-prof"; cp "$BENCH" "$W/p0bench"
 rm -f "$OUT/trace.$MODE"
 for spec in "4kib 40" "64kib 24" "700kib 12" "3mib 6"; do
