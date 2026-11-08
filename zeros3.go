@@ -52,6 +52,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -538,34 +539,45 @@ func buildGearTable() [256]uint64 {
 // shorter than cdcMinChunkSize) is acceptable at the very end of an
 // object.
 func findCDCBoundary(data []byte, eof bool) int {
-	n := len(data)
-	limit := n
-	if limit > cdcMaxChunkSize {
-		limit = cdcMaxChunkSize
+	limit := min(len(data), cdcMaxChunkSize)
+	d := data[:limit]
+	// hash = (hash<<1)+gear[b] keeps byte j positions back only in bits >= j,
+	// so the masked low bits (cdcMaskS, cdcMaskL) depend on the last
+	// cdcMaskLookback bytes alone: nothing before min-cdcMaskLookback can
+	// change a cut decision, and no cut is possible below min. Skipping that
+	// prefix and splitting the scan by mask removes per-byte branches while
+	// returning exactly the frozen CDC v1 boundary.
+	i := cdcMinChunkSize - cdcMaskLookback
+	if i >= len(d) {
+		return len(d)
 	}
 	var hash uint64
-	for i := 0; i < limit; i++ {
-		hash = (hash << 1) + gearTable[data[i]]
-		size := i + 1
-		if size >= cdcMaxChunkSize {
-			return size // forced boundary: never emit a chunk above the max.
-		}
-		if size < cdcMinChunkSize {
-			continue // never cut below the min, except for a final short tail.
-		}
-		mask := uint64(cdcMaskL)
-		if size < cdcTargetChunkSize {
-			mask = cdcMaskS
-		}
-		if hash&mask == 0 {
-			return size
+	for ; i < cdcMinChunkSize-1 && i < len(d); i++ {
+		hash = (hash << 1) + gearTable[d[i]]
+	}
+	for ; i < cdcTargetChunkSize-1 && i < len(d); i++ {
+		hash = (hash << 1) + gearTable[d[i]]
+		if hash&cdcMaskS == 0 {
+			return i + 1
 		}
 	}
-	if eof {
-		return n // final chunk: whatever bytes remain, however few.
+	for ; i < len(d); i++ {
+		hash = (hash << 1) + gearTable[d[i]]
+		if hash&cdcMaskL == 0 {
+			return i + 1
+		}
 	}
-	return n // defensive fallback; fill() guarantees n==cdcMaxChunkSize here otherwise.
+	return len(d) // forced cut at the max, or the short final chunk.
 }
+
+// cdcMaskLookback is how many trailing bytes can influence the low bits the
+// cut masks test; both masks must fit in that many bits.
+const cdcMaskLookback = 16
+
+const (
+	_ = uint(1<<cdcMaskLookback - 1 - cdcMaskS)
+	_ = uint(1<<cdcMaskLookback - 1 - cdcMaskL)
+)
 
 // cdcChunker turns a byte stream into a sequence of content-defined
 // chunks. Its single 2*cdcMaxChunkSize read buffer bounds memory use
@@ -1225,10 +1237,27 @@ type packSink struct {
 	comp    *packCompressor
 	cur     *packBuilder
 	pending map[[32]byte]struct{} // digests in cur
+	jobs    []*packJob            // full packs being finished and published, oldest first
+	sync    bool                  // finish packs inline instead of in the background
 }
 
+// packJob is one full pack finishing in the background (fsync, validation,
+// rename, directory fsync, locator) while the request keeps ingesting. Its
+// digests stay visible to the repeat check until the job is reaped, so a
+// chunk is still written once per request.
+type packJob struct {
+	done    chan struct{}
+	err     error
+	panic   any // a recovered panic (test crash hooks), re-raised by the reaper
+	digests map[[32]byte]struct{}
+}
+
+// packInflightMax bounds the packs finishing behind the ingesting request:
+// at most this many extra staging files and verification readers exist.
+const packInflightMax = 2
+
 func (s *Store) newPackSink() *packSink {
-	p := &packSink{s: s, pending: map[[32]byte]struct{}{}}
+	p := &packSink{s: s, pending: map[[32]byte]struct{}{}, sync: ingestAblate.syncPublish}
 	if directPackCompress {
 		p.comp = newPackCompressor()
 	}
@@ -1238,6 +1267,11 @@ func (s *Store) newPackSink() *packSink {
 func (p *packSink) Put(sum [32]byte, chunk []byte) error {
 	if _, ok := p.pending[sum]; ok {
 		return nil
+	}
+	for _, j := range p.jobs {
+		if _, ok := j.digests[sum]; ok {
+			return nil
+		}
 	}
 	if _, err := p.s.casStat(sum); err == nil {
 		return nil
@@ -1259,28 +1293,85 @@ func (p *packSink) Put(sum [32]byte, chunk []byte) error {
 	return nil
 }
 
-// publish finishes the current pack and makes it durable CAS content through
-// publishPack (full verification, format upgrade, rename, directory fsync,
-// locator).
+// publish hands the current pack to a background job that makes it durable
+// CAS content through publishPack (full verification, format upgrade,
+// rename, directory fsync, locator). Flush waits for every job, so nothing
+// is acknowledged before it is published.
 func (p *packSink) publish() error {
-	b := p.cur
-	p.cur = nil
-	clear(p.pending)
+	b, digests := p.cur, p.pending
+	p.cur, p.pending = nil, map[[32]byte]struct{}{}
+	if p.sync {
+		return p.finishPack(b)
+	}
+	for len(p.jobs) >= packInflightMax {
+		if err := p.reap(); err != nil {
+			b.Abort()
+			return err
+		}
+	}
+	j := &packJob{done: make(chan struct{}), digests: digests}
+	p.jobs = append(p.jobs, j)
+	go func() {
+		defer close(j.done)
+		defer func() { j.panic = recover() }()
+		j.err = p.finishPack(b)
+	}()
+	return nil
+}
+
+func (p *packSink) finishPack(b *packBuilder) error {
 	path, entries, err := b.Finish()
 	if err != nil {
 		return err
 	}
-	_, err = p.s.publishPack(tierHot, path, entries)
+	_, err = p.s.publishPackExact(tierHot, path, entries, &b.sum)
+	return err
+}
+
+// reap waits for the oldest job. A panic raised inside it is re-raised here,
+// on the request goroutine.
+func (p *packSink) reap() error {
+	j := p.jobs[0]
+	p.jobs = p.jobs[1:]
+	<-j.done
+	if j.panic != nil {
+		panic(j.panic)
+	}
+	return j.err
+}
+
+// waitJobs reaps every job and returns the first error; a job that panicked
+// is drained like the others and its panic re-raised afterwards.
+func (p *packSink) waitJobs() (err error) {
+	var pan any
+	for len(p.jobs) > 0 {
+		j := p.jobs[0]
+		p.jobs = p.jobs[1:]
+		<-j.done
+		if j.err != nil && err == nil {
+			err = j.err
+		}
+		if j.panic != nil && pan == nil {
+			pan = j.panic
+		}
+	}
+	if pan != nil {
+		panic(pan)
+	}
 	return err
 }
 
 func (p *packSink) Flush() error {
 	b := p.cur
 	if b == nil {
-		return nil
+		return p.waitJobs()
 	}
 	if b.LogicalBytes() >= directPackTarget/packMinFraction {
-		return p.publish()
+		if err := p.publish(); err != nil {
+			p.waitJobs()
+			return err
+		}
+		return p.waitJobs()
 	}
 	// Too little new content for a pack of its own: store the staged
 	// records as loose chunks, re-reading and re-verifying each one.
@@ -1289,25 +1380,38 @@ func (p *packSink) Flush() error {
 	for i, e := range b.entries {
 		data, err := b.readRecord(i)
 		if err != nil {
+			p.waitJobs()
 			return err
 		}
 		if _, err := loose.add(e.sha, data); err != nil {
+			p.waitJobs()
 			return err
 		}
 	}
 	if err := loose.Flush(); err != nil {
+		p.waitJobs()
 		return err
 	}
-	p.Abort()
-	return nil
+	p.cur.Abort()
+	p.cur = nil
+	clear(p.pending)
+	return p.waitJobs()
 }
 
+// Abort discards the unfinished pack and waits for packs already handed to
+// background jobs, which complete or clean up their own staging files; such
+// a pack is ordinary unreachable CAS content, like one published before a
+// later failure.
 func (p *packSink) Abort() {
 	if p.cur != nil {
 		p.cur.Abort()
 		p.cur = nil
 	}
 	clear(p.pending)
+	for _, j := range p.jobs {
+		<-j.done
+	}
+	p.jobs = nil
 }
 
 // ingestStream streams r through CDC, durably publishing each chunk into
@@ -1318,6 +1422,9 @@ func (p *packSink) Abort() {
 // opt only picks the physical sink (loose files or direct packs); chunking,
 // hashing and the result are identical either way.
 func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (ingestResult, error) {
+	if opt.size >= pipeMinBytes && !ingestAblate.noPipe && runtime.GOMAXPROCS(0) > 1 {
+		return s.ingestPipelined(r, withMD5, opt)
+	}
 	c := newCDCChunker(r)
 	res := ingestResult{chunks: []chunkRef{}}
 	objSum := sha256.New()
@@ -1356,6 +1463,282 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (inge
 		return ingestResult{}, fmt.Errorf("cas write failed: %w", err)
 	}
 	fireTestHook(hookAfterChunksPublished)
+	objSum.Sum(res.objSHA256[:0])
+	if etagSum != nil {
+		etagSum.Sum(res.etagMD5[:0])
+	}
+	return res, nil
+}
+
+// =============================================================================
+// 4a. Pipelined ingest
+//
+// Large known-size bodies run the same CDC, chunk digests, whole-object
+// SHA-256 and single-part MD5 as ingestStream, but the three independent
+// digests run on their own goroutines while the request goroutine reads,
+// cuts and writes. The request goroutine alone calls the sink and the test
+// hooks, so a sink never sees concurrent use and a simulated crash unwinds
+// the request as before.
+//
+// The body is read into batch buffers of about pipeBatchBytes. A batch holds
+// whole chunks only: the bytes after the last certain cut carry into the next
+// buffer, so the cut sequence is exactly the serial chunker's. Three
+// consumers share each buffer read-only (object SHA-256, MD5, chunk digests)
+// and the request goroutine is the fourth, writing chunks in order once their
+// digests are ready; the last to finish returns the buffer. A fixed buffer
+// count bounds memory and provides backpressure; every channel can hold all
+// buffers, so no send blocks and no stage can deadlock another.
+// =============================================================================
+
+const (
+	// pipeMinBytes is the known size from which ingest uses the pipeline;
+	// below it goroutine hand-offs cost more than they overlap.
+	pipeMinBytes   = 4 << 20
+	pipeBatchBytes = 1 << 20
+	pipeBufBytes   = pipeBatchBytes + cdcMaxChunkSize
+	pipeBuffers    = 8
+	pipeWriteLag   = 1 // batches in flight between hashing and writing
+	pipeSumWorkers = 2
+)
+
+// ingestAblate switches individual P1A mechanisms off for benchmarking
+// (ZEROS3_INGEST_ABLATE=nopipe,syncpublish,syncwrite,fullverify); production runs with none.
+var ingestAblate struct{ noPipe, syncPublish, syncWrite, fullVerify bool }
+
+func init() {
+	for _, f := range strings.Split(os.Getenv("ZEROS3_INGEST_ABLATE"), ",") {
+		switch strings.TrimSpace(f) {
+		case "nopipe":
+			ingestAblate.noPipe = true
+		case "syncpublish":
+			ingestAblate.syncPublish = true
+		case "syncwrite":
+			ingestAblate.syncWrite = true
+		case "fullverify":
+			ingestAblate.fullVerify = true
+		}
+	}
+}
+
+var pipeBufPool = sync.Pool{New: func() any { b := make([]byte, pipeBufBytes); return &b }}
+
+type pipeBatch struct {
+	pb    *[]byte
+	buf   []byte
+	end   int // buf[:end] is covered by whole chunks
+	cuts  []int
+	sums  [][32]byte
+	refs  atomic.Int32
+	ready chan struct{} // receives once sums are filled
+}
+
+type ingestPipe struct {
+	free     chan *pipeBatch
+	objCh    chan *pipeBatch
+	md5Ch    chan *pipeBatch
+	sumCh    chan *pipeBatch
+	wg       sync.WaitGroup
+	stopped  atomic.Bool
+	failed   atomic.Pointer[any]
+	hashers  sync.WaitGroup
+	finished bool
+	consume  int32 // consumers per batch, writer included
+}
+
+func newIngestPipe(objSum, etagSum hash.Hash) *ingestPipe {
+	p := &ingestPipe{
+		free:    make(chan *pipeBatch, pipeBuffers),
+		objCh:   make(chan *pipeBatch, pipeBuffers),
+		sumCh:   make(chan *pipeBatch, pipeBuffers),
+		consume: 2,
+	}
+	for range pipeBuffers {
+		pb := pipeBufPool.Get().(*[]byte)
+		p.free <- &pipeBatch{pb: pb, buf: *pb, ready: make(chan struct{}, 1)}
+	}
+	p.hashers.Add(1)
+	go p.hashWorker(objSum, p.objCh)
+	if etagSum != nil {
+		p.md5Ch = make(chan *pipeBatch, pipeBuffers)
+		p.consume = 3
+		p.hashers.Add(1)
+		go p.hashWorker(etagSum, p.md5Ch)
+	}
+	for range pipeSumWorkers {
+		p.wg.Add(1)
+		go p.sumWorker()
+	}
+	return p
+}
+
+func (p *ingestPipe) release(b *pipeBatch) {
+	if b.refs.Add(-1) == 0 {
+		p.free <- b
+	}
+}
+
+// guard keeps a stage alive past a panic in its own work (so no waiter can
+// hang) and records it for the request goroutine to re-raise.
+func (p *ingestPipe) guard(f func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.failed.CompareAndSwap(nil, &r)
+			p.stopped.Store(true)
+		}
+	}()
+	f()
+}
+
+func (p *ingestPipe) hashWorker(h hash.Hash, ch <-chan *pipeBatch) {
+	defer p.hashers.Done()
+	for b := range ch {
+		p.guard(func() {
+			if !p.stopped.Load() {
+				h.Write(b.buf[:b.end])
+			}
+		})
+		p.release(b)
+	}
+}
+
+func (p *ingestPipe) sumWorker() {
+	defer p.wg.Done()
+	for b := range p.sumCh {
+		p.guard(func() {
+			if p.stopped.Load() {
+				return
+			}
+			start := 0
+			for i, c := range b.cuts {
+				b.sums[i] = sha256.Sum256(b.buf[start:c])
+				start = c
+			}
+		})
+		b.ready <- struct{}{}
+	}
+}
+
+// finish waits for the digest stages to consume everything dispatched.
+func (p *ingestPipe) finish() {
+	if !p.finished {
+		p.finished = true
+		close(p.objCh)
+		if p.md5Ch != nil {
+			close(p.md5Ch)
+		}
+	}
+	p.hashers.Wait()
+}
+
+// close stops every stage, waits for it and returns the buffers. It is safe
+// after finish and after an abort, and re-raises a worker panic.
+func (p *ingestPipe) close() {
+	p.stopped.Store(true)
+	p.finish()
+	close(p.sumCh)
+	p.wg.Wait()
+	for len(p.free) > 0 {
+		pipeBufPool.Put((<-p.free).pb)
+	}
+	if r := p.failed.Load(); r != nil {
+		panic(*r)
+	}
+}
+
+func (s *Store) ingestPipelined(r io.Reader, withMD5 bool, opt ingestOptions) (ingestResult, error) {
+	res := ingestResult{chunks: make([]chunkRef, 0, opt.size/cdcTargetChunkSize+16)}
+	objSum := sha256.New()
+	var etagSum hash.Hash
+	if withMD5 {
+		etagSum = md5.New() //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5.
+	}
+	var sink chunkSink
+	if opt.directPack() {
+		sink = s.newPackSink()
+	} else {
+		sink = looseSink{s.newCASBatch()}
+	}
+	defer sink.Abort()
+	p := newIngestPipe(objSum, etagSum)
+	defer p.close()
+
+	var queue []*pipeBatch
+	writeOne := func() error {
+		b := queue[0]
+		queue = queue[1:]
+		<-b.ready
+		if r := p.failed.Load(); r != nil {
+			panic(*r)
+		}
+		start := 0
+		for i, c := range b.cuts {
+			chunk := b.buf[start:c:c]
+			start = c
+			fireTestHook(hookBeforeChunkWrite)
+			sum := b.sums[i]
+			if err := sink.Put(sum, chunk); err != nil {
+				return fmt.Errorf("cas write failed: %w", err)
+			}
+			res.chunks = append(res.chunks, chunkRef{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(chunk))})
+			res.size += int64(len(chunk))
+		}
+		p.release(b)
+		return nil
+	}
+
+	var tail []byte // uncut bytes after the previous batch's last cut
+	eof := false
+	for !eof || len(tail) > 0 {
+		b := <-p.free
+		filled := copy(b.buf, tail)
+		for !eof && filled < len(b.buf) {
+			n, err := r.Read(b.buf[filled:])
+			filled += n
+			if err == io.EOF {
+				eof = true
+			} else if err != nil {
+				return ingestResult{}, fmt.Errorf("chunking failed: %w", err)
+			}
+		}
+		b.cuts = b.cuts[:0]
+		off := 0
+		for off < filled && (eof || filled-off >= cdcMaxChunkSize) {
+			off += findCDCBoundary(b.buf[off:min(filled, off+cdcMaxChunkSize)], eof)
+			b.cuts = append(b.cuts, off)
+		}
+		b.end = off
+		tail = b.buf[off:filled]
+		if len(b.cuts) == 0 {
+			p.free <- b
+			continue
+		}
+		b.sums = slices.Grow(b.sums[:0], len(b.cuts))[:len(b.cuts)]
+		b.refs.Store(p.consume)
+		p.objCh <- b
+		if p.md5Ch != nil {
+			p.md5Ch <- b
+		}
+		p.sumCh <- b
+		queue = append(queue, b)
+		if len(queue) > pipeWriteLag {
+			if err := writeOne(); err != nil {
+				return ingestResult{}, err
+			}
+		}
+	}
+	for len(queue) > 0 {
+		if err := writeOne(); err != nil {
+			return ingestResult{}, err
+		}
+	}
+	if err := sink.Flush(); err != nil {
+		return ingestResult{}, fmt.Errorf("cas write failed: %w", err)
+	}
+	fireTestHook(hookAfterChunksPublished)
+	p.finish()
+	if r := p.failed.Load(); r != nil {
+		panic(*r)
+	}
 	objSum.Sum(res.objSHA256[:0])
 	if etagSum != nil {
 		etagSum.Sum(res.etagMD5[:0])
@@ -1921,6 +2304,132 @@ func verifyPackFile(path string) (packInfo, []packEntry, error) {
 		return info, nil, errors.New("pack: body checksum mismatch")
 	}
 	return info, entries, nil
+}
+
+// verifyPackExact gates publication of a pack this process has just written
+// with only raw records. It proves the file is byte-for-byte the pack the
+// writer meant to emit, which is what verifyPackFile's body re-hash proves
+// for such a pack, while hashing each payload once instead of twice:
+//
+//   - header, index and footer are compared with encodings rebuilt from the
+//     in-memory entries and the writer's body digest;
+//   - every record header is compared with the encoding of its entry;
+//   - every payload is read back and must hash to the digest that names it.
+//
+// Every byte of the file is then covered by exactly one of those checks, so
+// the file equals what the writer produced, and the writer's body digest was
+// computed over exactly those bytes. A raw payload is not decoded, so unlike
+// a deflate record its stored bytes are fixed by its digest; packs with any
+// other codec must use verifyPackFile. Payload runs are checked on several
+// goroutines. Memory is one read buffer per goroutine.
+func verifyPackExact(path string, entries []packEntry, bodySHA [32]byte) (packInfo, error) {
+	info, got, err := statPackFile(path)
+	if err != nil {
+		return info, err
+	}
+	if len(got) != len(entries) || info.id != hex.EncodeToString(bodySHA[:]) {
+		return info, errors.New("pack: staged index disagrees with the records written")
+	}
+	for i := range got {
+		if got[i] != entries[i] || entries[i].codec != packCodecRaw {
+			return info, errors.New("pack: staged index disagrees with the records written")
+		}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return info, err
+	}
+	defer f.Close()
+
+	// Fixed regions.
+	indexOff := uint64(packHeaderSize)
+	if n := len(entries); n > 0 {
+		indexOff = entries[n-1].off + uint64(entries[n-1].stored)
+	}
+	index := make([]byte, len(entries)*packIndexEntrySize)
+	for i, e := range entries {
+		putPackIndexEntry(index[i*packIndexEntrySize:], e)
+	}
+	fixed := []struct {
+		name string
+		off  int64
+		want []byte
+	}{{"header", 0, make([]byte, packHeaderSize)}, {"index", int64(indexOff), index}, {"footer", int64(indexOff) + int64(len(index)), make([]byte, packFooterSize)}}
+	putPackHeader(fixed[0].want)
+	putPackFooter(fixed[2].want, uint64(len(entries)), indexOff, bodySHA, crc32.Checksum(index, packCRC))
+	if info.size != fixed[2].off+packFooterSize {
+		return info, errors.New("pack: staged file length is wrong")
+	}
+	for _, r := range fixed {
+		have := make([]byte, len(r.want))
+		if _, err := f.ReadAt(have, r.off); err != nil {
+			return info, fmt.Errorf("pack: re-reading staged %s: %w", r.name, err)
+		}
+		if !bytes.Equal(have, r.want) {
+			return info, fmt.Errorf("pack: staged %s differs from what was written", r.name)
+		}
+	}
+
+	// Record runs of about verifyRunBytes, claimed by a few goroutines.
+	const verifyRunBytes = 1 << 20
+	type run struct{ lo, hi int }
+	var runs []run
+	for lo := 0; lo < len(entries); {
+		hi, sz := lo, 0
+		for hi < len(entries) && sz < verifyRunBytes {
+			sz += packRecordHeaderSize + int(entries[hi].stored)
+			hi++
+		}
+		runs = append(runs, run{lo, hi})
+		lo = hi
+	}
+	var next atomic.Int64
+	var failed atomic.Bool
+	var firstErr error
+	var errOnce sync.Once
+	fail := func(err error) { errOnce.Do(func() { firstErr = err }); failed.Store(true) }
+	check := func() {
+		buf := make([]byte, verifyRunBytes+maxPackedChunkBytes+packRecordHeaderSize)
+		var want [packRecordHeaderSize]byte
+		for !failed.Load() {
+			ri := int(next.Add(1)) - 1
+			if ri >= len(runs) {
+				return
+			}
+			r := runs[ri]
+			start := int64(entries[r.lo].off) - packRecordHeaderSize
+			end := int64(entries[r.hi-1].off) + int64(entries[r.hi-1].stored)
+			data := buf[:end-start]
+			if _, err := f.ReadAt(data, start); err != nil {
+				fail(fmt.Errorf("pack: re-reading staged records %d-%d: %w", r.lo, r.hi-1, err))
+				return
+			}
+			for i := r.lo; i < r.hi; i++ {
+				e := entries[i]
+				rec := data[int64(e.off)-packRecordHeaderSize-start:]
+				putPackRecordHeader(want[:], e)
+				if [packRecordHeaderSize]byte(rec[:packRecordHeaderSize]) != want {
+					fail(fmt.Errorf("pack: staged record %d header differs from what was written", i))
+					return
+				}
+				if sha256.Sum256(rec[packRecordHeaderSize:packRecordHeaderSize+int(e.stored)]) != e.sha {
+					fail(fmt.Errorf("pack: staged record %d: chunk %x is corrupt (%w)", i, e.sha, errChunkCorrupt))
+					return
+				}
+			}
+		}
+	}
+	workers := min(runtime.GOMAXPROCS(0), 4, len(runs))
+	var wg sync.WaitGroup
+	for range max(workers-1, 0) {
+		wg.Add(1)
+		go func() { defer wg.Done(); check() }()
+	}
+	if workers > 0 {
+		check()
+	}
+	wg.Wait()
+	return info, firstErr
 }
 
 // checkPackRecords confirms every record header in a published pack still
@@ -9918,6 +10427,165 @@ func (s *Store) readLoose(sum [32]byte) ([]byte, error) {
 	return data, nil
 }
 
+// packWriter buffers a pack's bytes and hands each full buffer to two
+// consumers that run beside the request goroutine: one writes it to the file,
+// the other feeds the body SHA-256 (the pack's identity). Both see the buffers
+// in order and the buffer is reused when both are done, so the SHA-256 and the
+// write syscalls cost the producer nothing. Errors are sticky and reported by
+// Flush, exactly as bufio.Writer did. With one CPU, or when ablated, it
+// degrades to inline writes with the same bytes and the same hash.
+type packWriter struct {
+	f        *os.File
+	body     hash.Hash
+	cur      *packWBuf
+	async    bool
+	free     chan *packWBuf
+	wch, hch chan *packWBuf
+	wg       sync.WaitGroup // consumer goroutines
+	pend     sync.WaitGroup // buffers handed off and not yet done
+	errMu    sync.Mutex
+	err      error
+	closed   bool
+}
+
+const (
+	packWriteBufBytes = 512 << 10
+	packWriteBufs     = 3
+)
+
+type packWBuf struct {
+	b    []byte
+	n    int
+	refs atomic.Int32
+}
+
+var packWBufPool = sync.Pool{New: func() any { return &packWBuf{b: make([]byte, packWriteBufBytes)} }}
+
+func newPackWriter(f *os.File) *packWriter {
+	w := &packWriter{f: f, body: sha256.New(), async: runtime.GOMAXPROCS(0) > 1 && !ingestAblate.syncWrite}
+	w.cur = packWBufPool.Get().(*packWBuf)
+	if !w.async {
+		return w
+	}
+	w.free = make(chan *packWBuf, packWriteBufs)
+	w.wch = make(chan *packWBuf, packWriteBufs)
+	w.hch = make(chan *packWBuf, packWriteBufs)
+	for range packWriteBufs - 1 {
+		w.free <- packWBufPool.Get().(*packWBuf)
+	}
+	w.wg.Add(2)
+	go func() {
+		defer w.wg.Done()
+		for b := range w.wch {
+			if w.firstErr() == nil {
+				if _, err := w.f.Write(b.b[:b.n]); err != nil {
+					w.setErr(err)
+				}
+			}
+			w.release(b)
+		}
+	}()
+	go func() {
+		defer w.wg.Done()
+		for b := range w.hch {
+			w.body.Write(b.b[:b.n])
+			w.release(b)
+		}
+	}()
+	return w
+}
+
+func (w *packWriter) firstErr() error {
+	w.errMu.Lock()
+	defer w.errMu.Unlock()
+	return w.err
+}
+
+func (w *packWriter) setErr(err error) {
+	w.errMu.Lock()
+	if w.err == nil {
+		w.err = err
+	}
+	w.errMu.Unlock()
+}
+
+func (w *packWriter) release(b *packWBuf) {
+	if b.refs.Add(-1) == 0 {
+		b.n = 0
+		w.free <- b
+		w.pend.Done()
+	}
+}
+
+func (w *packWriter) submit() {
+	b := w.cur
+	if !w.async {
+		if w.firstErr() == nil {
+			if _, err := w.f.Write(b.b[:b.n]); err != nil {
+				w.setErr(err)
+			}
+		}
+		w.body.Write(b.b[:b.n])
+		b.n = 0
+		return
+	}
+	b.refs.Store(2)
+	w.pend.Add(1)
+	w.wch <- b
+	w.hch <- b
+	w.cur = <-w.free
+}
+
+func (w *packWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 {
+		c := copy(w.cur.b[w.cur.n:], p)
+		w.cur.n += c
+		p = p[c:]
+		if w.cur.n == len(w.cur.b) {
+			w.submit()
+		}
+	}
+	return n, nil
+}
+
+// Flush returns once every byte written so far is in the file and the hash.
+func (w *packWriter) Flush() error {
+	if w.cur.n > 0 {
+		w.submit()
+	}
+	if w.async {
+		w.pend.Wait()
+	}
+	return w.firstErr()
+}
+
+// Sum is the body SHA-256; call it after a successful Flush.
+func (w *packWriter) Sum() (sum [32]byte) {
+	w.body.Sum(sum[:0])
+	return sum
+}
+
+// close stops the consumers and recycles the buffers. Bytes not yet flushed
+// are dropped, which is only right for an abandoned or finished pack.
+func (w *packWriter) close() {
+	if w.closed {
+		return
+	}
+	w.closed = true
+	if w.async {
+		close(w.wch)
+		close(w.hch)
+		w.wg.Wait()
+		w.pend.Wait()
+		for len(w.free) > 0 {
+			packWBufPool.Put(<-w.free)
+		}
+	}
+	w.cur.n = 0
+	packWBufPool.Put(w.cur)
+}
+
 // packBuilder streams one pack-v1 file into a tier's staging directory:
 // header, then each record as it is added, then (Finish) the index and
 // footer, fsynced. It is the only code that emits pack bytes -- compaction,
@@ -9926,8 +10594,8 @@ func (s *Store) readLoose(sum [32]byte) ([]byte, error) {
 type packBuilder struct {
 	f       *os.File
 	path    string
-	body    hash.Hash
-	w       *bufio.Writer
+	w       *packWriter
+	sum     [32]byte // body SHA-256, set by Finish
 	comp    *packCompressor
 	entries []packEntry
 	off     uint64
@@ -9946,8 +10614,7 @@ func (s *Store) newPackBuilder(t tier, comp *packCompressor, capacity int) (*pac
 	if err != nil {
 		return nil, err
 	}
-	b := &packBuilder{f: f, path: f.Name(), body: sha256.New(), comp: comp, entries: make([]packEntry, 0, capacity), off: packHeaderSize}
-	b.w = bufio.NewWriterSize(io.MultiWriter(f, b.body), 1<<20)
+	b := &packBuilder{f: f, path: f.Name(), w: newPackWriter(f), comp: comp, entries: make([]packEntry, 0, capacity), off: packHeaderSize}
 	var hdr [packHeaderSize]byte
 	putPackHeader(hdr[:])
 	b.w.Write(hdr[:])
@@ -9991,8 +10658,9 @@ func (b *packBuilder) Finish() (string, []packEntry, error) {
 	if err := b.w.Flush(); err != nil {
 		return fail(err)
 	}
-	var bodySHA [32]byte
-	b.body.Sum(bodySHA[:0])
+	bodySHA := b.w.Sum()
+	b.w.close()
+	b.sum = bodySHA
 	var ft [packFooterSize]byte
 	putPackFooter(ft[:], uint64(len(b.entries)), b.off, bodySHA, crc32.Checksum(index, packCRC))
 	if _, err := b.f.Write(ft[:]); err != nil {
@@ -10018,6 +10686,7 @@ func (b *packBuilder) Abort() {
 		return
 	}
 	b.done = true
+	b.w.close()
 	b.f.Close()
 	os.Remove(b.path)
 }
@@ -10080,13 +10749,27 @@ func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) 
 // The staged file is removed on any failure before the rename; after it,
 // the published pack is left in place (a redundant pack is harmless).
 func (s *Store) publishPack(t tier, staged string, entries []packEntry) (packInfo, error) {
-	info, got, err := verifyPackFile(staged)
-	if err == nil && len(got) != len(entries) {
-		err = errors.New("pack: staged index disagrees with the records written")
-	}
-	for i := 0; err == nil && i < len(got); i++ {
-		if got[i] != entries[i] {
+	return s.publishPackExact(t, staged, entries, nil)
+}
+
+// publishPackExact is publishPack for a pack this process just wrote: given
+// the writer's body digest and all-raw entries it uses verifyPackExact, which
+// detects exactly what verifyPackFile does with one SHA-256 pass fewer.
+func (s *Store) publishPackExact(t tier, staged string, entries []packEntry, bodySHA *[32]byte) (packInfo, error) {
+	var info packInfo
+	var err error
+	if bodySHA != nil && !ingestAblate.fullVerify && allRawEntries(entries) {
+		info, err = verifyPackExact(staged, entries, *bodySHA)
+	} else {
+		var got []packEntry
+		info, got, err = verifyPackFile(staged)
+		if err == nil && len(got) != len(entries) {
 			err = errors.New("pack: staged index disagrees with the records written")
+		}
+		for i := 0; err == nil && i < len(got); i++ {
+			if got[i] != entries[i] {
+				err = errors.New("pack: staged index disagrees with the records written")
+			}
 		}
 	}
 	if err != nil {
@@ -10141,6 +10824,15 @@ func (s *Store) publishPack(t tier, staged string, entries []packEntry) (packInf
 	}
 	fireTestHook(hookPackPublished)
 	return pub, nil
+}
+
+func allRawEntries(entries []packEntry) bool {
+	for _, e := range entries {
+		if e.codec != packCodecRaw {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) compactBatch(t tier, batch []compactCandidate, res *CompactResult, comp *packCompressor) error {
