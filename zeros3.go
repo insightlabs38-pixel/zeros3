@@ -1616,6 +1616,22 @@ func (o ingestOptions) directPack() bool {
 	return o.size >= directPackMinBytes
 }
 
+// mediumPackMaxPacks bounds how many packs medium objects (smaller than
+// directPackFullBytes) may add to: once a store holds this many packs, new
+// medium objects use loose chunks again until `compact`/`repack` merge the
+// small packs. Opening a store reads every pack index (about 75 us each), so
+// this caps the startup cost that small packs can add.
+const mediumPackMaxPacks = 200_000
+
+// packFor reports whether an ingest with these options writes its new chunks
+// into packs on this store.
+func (s *Store) packFor(o ingestOptions) bool {
+	if !o.directPack() {
+		return false
+	}
+	return o.size >= directPackFullBytes || len(s.packSnap().packs) < mediumPackMaxPacks
+}
+
 // Direct pack ingest policy (section 4). directPackMinBytes is the object
 // size from which an upload writes its new chunks into packs: it equals
 // the ordinary pack target, so a qualifying object yields at least one
@@ -1626,8 +1642,17 @@ func (o ingestOptions) directPack() bool {
 // (auto|off) override them for benchmarking, not as a supported tuning
 // interface.
 var (
-	directPackMinBytes int64 = defaultPackTargetBytes
-	directPackCompress       = false
+	// P1B: medium objects (from 256 KiB) also stream into packs. A request's
+	// new chunks form one pack of their own (one file, one fsync, one
+	// directory sync) instead of one loose file, fsync and shard-directory
+	// operation per chunk; below directPackMediumFlushMin of new content they
+	// still go loose. Objects of directPackFullBytes or more behave exactly
+	// as before (full-size packs, remainder below target/packMinFraction loose).
+	// ZEROS3_DIRECT_PACK_MIB=0 restores loose-only ingest below the pipeline sizes.
+	directPackMinBytes       int64 = 256 << 10
+	directPackCompress             = false
+	directPackFullBytes      int64 = defaultPackTargetBytes
+	directPackMediumFlushMin int64 = 64 << 10
 	// directPackTarget is the pack fill size; the shortest final pack is
 	// directPackTarget/packMinFraction. Tests shrink it.
 	directPackTarget int64 = defaultPackTargetBytes
@@ -1638,9 +1663,14 @@ var (
 // instead of forming a small pack. Benchmark knob: ZEROS3_DIRECT_PACK_FLUSH_KIB.
 var directPackFlushKiB int64
 
-func directPackFlushMin() int64 {
+// directPackFlushMin is the least new content for which a request's final
+// partial pack is published as a pack rather than stored loose.
+func directPackFlushMin(size int64) int64 {
 	if directPackFlushKiB > 0 {
 		return directPackFlushKiB << 10
+	}
+	if size > 0 && size < directPackFullBytes {
+		return min(directPackMediumFlushMin, directPackTarget/packMinFraction)
 	}
 	return directPackTarget / packMinFraction
 }
@@ -1706,6 +1736,9 @@ type packSink struct {
 	pending map[[32]byte]struct{} // digests in cur
 	jobs    []*packJob            // full packs being finished and published, oldest first
 	sync    bool                  // finish packs inline instead of in the background
+	// flushMin is the least new content for which Flush publishes the last
+	// partial pack; below it the chunks go loose.
+	flushMin int64
 }
 
 // packJob is one full pack finishing in the background (fsync, validation,
@@ -1723,8 +1756,8 @@ type packJob struct {
 // at most this many extra staging files and verification readers exist.
 const packInflightMax = 2
 
-func (s *Store) newPackSink() *packSink {
-	p := &packSink{s: s, pending: map[[32]byte]struct{}{}, sync: ingestAblate.syncPublish}
+func (s *Store) newPackSink(size int64) *packSink {
+	p := &packSink{s: s, pending: map[[32]byte]struct{}{}, sync: ingestAblate.syncPublish, flushMin: directPackFlushMin(size)}
 	if directPackCompress {
 		p.comp = newPackCompressor()
 	}
@@ -1833,7 +1866,7 @@ func (p *packSink) Flush() error {
 	if b == nil {
 		return p.waitJobs()
 	}
-	if b.LogicalBytes() >= directPackFlushMin() {
+	if b.LogicalBytes() >= p.flushMin {
 		if err := p.publish(); err != nil {
 			p.waitJobs()
 			return err
@@ -1905,8 +1938,8 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (inge
 		etagSum = md5.New() //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5.
 	}
 	var sink chunkSink
-	if opt.directPack() {
-		sink = s.newPackSink()
+	if s.packFor(opt) {
+		sink = s.newPackSink(opt.size)
 	} else {
 		sink = looseSink{s.newCASBatch()}
 	}
@@ -2200,8 +2233,8 @@ func (p *ingestPipe) close() {
 
 func (s *Store) ingestPipelined(r io.Reader, withMD5 bool, opt ingestOptions) (ingestResult, error) {
 	var sink chunkSink
-	if opt.directPack() {
-		sink = s.newPackSink()
+	if s.packFor(opt) {
+		sink = s.newPackSink(opt.size)
 	} else {
 		sink = looseSink{s.newCASBatch()}
 	}
@@ -3195,6 +3228,12 @@ type packState struct {
 	levels []*locIndex
 	bad    []packProblem
 	clash  []string
+	// extended is set by the first withPack that appends to packs in place.
+	// Snapshots are immutable and readers never look beyond their own length,
+	// so the first successor may share spare capacity (amortized O(1) per
+	// publication instead of copying every pack); any other successor of the
+	// same snapshot copies.
+	extended atomic.Bool
 }
 
 // best returns a digest's primary record: the hottest copy, the oldest
@@ -3293,7 +3332,11 @@ func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, e
 	if len(st.packs) >= packIdxMask {
 		return nil, errors.New("pack locator is full: too many packs")
 	}
-	next := &packState{packs: append(slices.Clip(st.packs), info), levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash)}
+	packs := st.packs
+	if !st.extended.CompareAndSwap(false, true) {
+		packs = slices.Clip(packs)
+	}
+	next := &packState{packs: append(packs, info), levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash)}
 	onClash := func(prim, rep *locRec) {
 		next.clash = append(next.clash, clashMessage(prim.sum, prim, rep, next.packs))
 	}
@@ -27881,6 +27924,7 @@ func (bd *repBudget) entries(n int) error {
 type repBuilder struct {
 	s       *Store
 	big     bool // large object: components stream into immutable packs, not loose files
+	size    int64
 	sink    chunkSink
 	descs   map[[32]byte]*repDesc
 	written map[[32]byte]struct{}
@@ -27892,7 +27936,7 @@ type repBuilder struct {
 }
 
 func (s *Store) newRepBuilder(size int64, base func([32]byte) *repDesc, cat *repCatalog) *repBuilder {
-	b := &repBuilder{s: s, big: ingestOptions{size: size}.directPack(), descs: map[[32]byte]*repDesc{}, written: map[[32]byte]struct{}{}, cat: cat}
+	b := &repBuilder{s: s, big: s.packFor(ingestOptions{size: size}), size: size, descs: map[[32]byte]*repDesc{}, written: map[[32]byte]struct{}{}, cat: cat}
 	b.sink = b.newSink()
 	b.src = s.newRepSource(b.descs, base)
 	b.env = &repEnv{Src: b.src, Limits: repProdLimits}
@@ -27903,7 +27947,7 @@ func (s *Store) newRepBuilder(size int64, base func([32]byte) *repDesc, cat *rep
 // size would: loose CAS files, or immutable packs for large objects.
 func (b *repBuilder) newSink() chunkSink {
 	if b.big {
-		return b.s.newPackSink()
+		return b.s.newPackSink(b.size)
 	}
 	return looseSink{b.s.newCASBatch()}
 }

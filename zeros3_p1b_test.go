@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -618,4 +619,47 @@ func TestP1B_GroupCommit_LeaderPanicDoesNotStrandFollowers(t *testing.T) {
 		t.Fatalf("panics=%d committed=%d, want 1 and 1", panics, ok)
 	}
 	store.queueDrained(t)
+}
+
+// Publishing many small packs must not copy the whole pack list each time.
+func TestP1B_PackLocatorPublishDoesNotCopyAllPacks(t *testing.T) {
+	const n = 20000
+	st := &packState{}
+	var err error
+	mk := func(i int) (packInfo, []packEntry) {
+		var sum [32]byte
+		sum[0], sum[1], sum[2], sum[3] = byte(i), byte(i>>8), byte(i>>16), 0xaa
+		return packInfo{id: fmt.Sprintf("%064x", i), tier: tierHot, records: 1},
+			[]packEntry{{sha: sum, off: 64, stored: 10, logical: 10}}
+	}
+	for i := 0; i < n-100; i++ {
+		info, es := mk(i)
+		if st, err = st.withPack(info, es); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for i := n - 100; i < n; i++ {
+		info, es := mk(i)
+		if st, err = st.withPack(info, es); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime.ReadMemStats(&after)
+	perPublish := (after.TotalAlloc - before.TotalAlloc) / 100
+	if perPublish > 64<<10 {
+		t.Fatalf("%d bytes allocated per publication at %d packs: the pack list is being copied", perPublish, n)
+	}
+	// Forking an old snapshot must still be safe: the second successor copies.
+	base := st
+	a, _ := base.withPack(packInfo{id: fmt.Sprintf("%064x", n+1), tier: tierHot}, nil)
+	b, _ := base.withPack(packInfo{id: fmt.Sprintf("%064x", n+2), tier: tierHot}, nil)
+	if len(a.packs) != n+1 || len(b.packs) != n+1 || a.packs[n].id == b.packs[n].id {
+		t.Fatalf("forked successors share state: %d %d", len(a.packs), len(b.packs))
+	}
+	if len(base.packs) != n {
+		t.Fatal("base snapshot changed length")
+	}
 }

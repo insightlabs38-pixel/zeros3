@@ -42877,7 +42877,7 @@ func TestDirectPack_RecordOrderFollowsObjectAndRepeatsWriteOnce(t *testing.T) {
 
 func TestDirectPack_SinkRepeatedDigestWrittenOnce(t *testing.T) {
 	s, dir := dpOpenStore(t)
-	sink := s.newPackSink()
+	sink := s.newPackSink(0)
 	defer sink.Abort()
 	a, b, c := genRandomBytes(11, 9000), genRandomBytes(12, 9000), genRandomBytes(13, 9000)
 	for _, d := range [][]byte{a, b, c, a, b} {
