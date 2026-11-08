@@ -73,22 +73,15 @@ def pathof(args):
 def strace_str(s):
     return bytes(s, 'latin1').decode('unicode_escape', errors='replace') if '\\' in s else s
 
+fd_re = re.compile(r'^(\d+)<([^>]*)>')
+
+def fdp(args):
+    m = fd_re.match(args)
+    return m.group(2) if m else None
+
 for idx, (ts, pid, name, args, ret) in enumerate(events):
-    if name in ('openat', 'open', 'creat') and ret not in ('-1', '?') and not ret.startswith('-'):
-        p = pathof(args)
-        if p:
-            fdpath[int(ret)] = p if p.startswith('/') else p
-    elif name == 'close':
-        try:
-            fdpath.pop(int(args.split(',')[0]), None)
-        except ValueError:
-            pass
-    elif name in ('fsync', 'fdatasync'):
-        try:
-            fd = int(args.split(',')[0])
-        except ValueError:
-            continue
-        p = fdpath.get(fd)
+    if name in ('fsync', 'fdatasync'):
+        p = fdp(args)
         if p:
             fsync_idx[p].append(idx)
     elif name in ('rename', 'renameat', 'renameat2'):
@@ -100,15 +93,10 @@ for idx, (ts, pid, name, args, ret) in enumerate(events):
         if p and not ret.startswith('-'):
             mkdirs[p] = idx
     elif name in ('write', 'pwrite64'):
-        try:
-            fd = int(args.split(',')[0])
-        except ValueError:
-            continue
-        p = fdpath.get(fd, '')
+        p = fdp(args) or ''
         if p.endswith('visibility.log'):
             journal_writes.append((idx, args))
         elif '/manifests/' in p or '/tmp/' in p:
-            # remember chunk digests listed by a manifest being staged
             hexes = set(re.findall(r'[0-9a-f]{64}', args))
             if hexes and ('manifest_uuid' in args or 'chunks' in args):
                 manifest_chunks[p] = hexes
