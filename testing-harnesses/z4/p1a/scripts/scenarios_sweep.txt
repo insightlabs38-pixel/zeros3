@@ -1,0 +1,5 @@
+put_64m_dp_c1|-objs 4 -size 64mib -conc 1
+put_64m_dp_c4@3|-objs 8 -size 64mib -conc 4
+put_16m_c1@3|-objs 24 -size 16mib -conc 1
+put_1m_c4@3|-objs 300 -size 1mib -conc 4
+put_1g_c1@3|-objs 1 -size 1gib -conc 1

@@ -1,0 +1,19 @@
+# label[@maxrounds]|args
+put_64m_dp_c1|-objs 4 -size 64mib -conc 1
+put_1g_c1@3|-objs 1 -size 1gib -conc 1
+put_64m_dp_c4@3|-objs 8 -size 64mib -conc 4
+put_16m_c1|-objs 24 -size 16mib -conc 1
+put_1m_c4|-objs 300 -size 1mib -conc 4
+put_4k_c8@3|-objs 3000 -size 4kib -conc 8
+put_mp_64m_pc1@3|-objs 4 -size 64mib -conc 1 -mode multipart -part 8mib -partconc 1
+put_mp_64m_pc4@3|-objs 4 -size 64mib -conc 1 -mode multipart -part 8mib -partconc 4
+put_64m_text_off@3|-objs 4 -size 64mib -conc 1 -kind text
+put_64m_text_auto@3|-objs 4 -size 64mib -conc 1 -kind text -env ZEROS3_DIRECT_PACK_COMPRESS=auto
+put_chunked_16m_c4@3|-objs 24 -size 16mib -conc 4 -mode chunked
+put_signed_1m_c4@3|-objs 300 -size 1mib -conc 4 -payload signed
+put_64m_loose@3|-objs 4 -size 64mib -conc 1 -env ZEROS3_DIRECT_PACK_MIB=0
+put_64k_c8@3|-objs 1500 -size 64kib -conc 8
+put_1m_c1@3|-objs 300 -size 1mib -conc 1
+put_1m_dup50@3|-objs 300 -size 1mib -conc 4 -dupfrac 0.5
+put_rev_16m_e2@3|-objs 24 -size 16mib -conc 4 -revs 5 -editfrac 0.02
+put_64m_runs@3|-objs 4 -size 64mib -conc 1 -kind runs

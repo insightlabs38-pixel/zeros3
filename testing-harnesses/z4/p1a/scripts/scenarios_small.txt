@@ -1,0 +1,6 @@
+put_4k_c8|-objs 3000 -size 4kib -conc 8
+put_4k_c1|-objs 1000 -size 4kib -conc 1
+put_64k_c8|-objs 1500 -size 64kib -conc 8
+put_1m_c4|-objs 300 -size 1mib -conc 4
+put_1m_c1|-objs 300 -size 1mib -conc 1
+put_16m_c1|-objs 24 -size 16mib -conc 1
