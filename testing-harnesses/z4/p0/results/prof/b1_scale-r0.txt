@@ -1,0 +1,130 @@
+# profile dir: b1_scale-r0
+## CPU flat (top 28)
+Time: 2026-11-08 06:54:48 UTC
+Duration: 1.50s, Total samples = 1.37s (91.53%)
+Showing nodes accounting for 1.37s, 100% of 1.37s total
+Showing top 28 nodes out of 57
+      flat  flat%   sum%        cum   cum%
+     0.47s 34.31% 34.31%      1.03s 75.18%  sort.partition_func
+     0.27s 19.71% 54.01%      0.28s 20.44%  zeros3-z3/simdelta.Sort.func1
+     0.15s 10.95% 64.96%      0.15s 10.95%  runtime.memmove
+     0.11s  8.03% 72.99%      0.24s 17.52%  runtime.typedmemmove
+     0.10s  7.30% 80.29%      0.20s 14.60%  sort.insertionSort_func
+     0.09s  6.57% 86.86%      0.39s 28.47%  internal/reflectlite.Swapper.func9
+     0.06s  4.38% 91.24%      0.30s 21.90%  internal/reflectlite.typedmemmove
+     0.04s  2.92% 94.16%      0.04s  2.92%  internal/runtime/syscall/linux.Syscall6
+     0.03s  2.19% 96.35%      0.06s  4.38%  bufio.(*Writer).Write
+     0.01s  0.73% 97.08%      0.01s  0.73%  main.heapSampler.func1
+     0.01s  0.73% 97.81%      1.35s 98.54%  main.indexScale
+     0.01s  0.73% 98.54%      0.01s  0.73%  math/rand.(*rngSource).Uint64
+     0.01s  0.73% 99.27%      0.01s  0.73%  runtime.asyncPreempt
+     0.01s  0.73%   100%      1.25s 91.24%  sort.pdqsort_func
+         0     0%   100%      0.01s  0.73%  bufio.(*Writer).Flush
+         0     0%   100%      0.01s  0.73%  internal/poll.(*FD).Fsync
+         0     0%   100%      0.01s  0.73%  internal/poll.(*FD).Fsync.func1 (inline)
+         0     0%   100%      0.01s  0.73%  internal/poll.(*FD).Pread
+         0     0%   100%      0.01s  0.73%  internal/poll.(*FD).Pread.func1 (inline)
+         0     0%   100%      0.01s  0.73%  internal/poll.(*FD).Write
+         0     0%   100%      0.01s  0.73%  internal/poll.ignoringEINTR (inline)
+         0     0%   100%      0.01s  0.73%  internal/poll.ignoringEINTR2[go.shape.int] (inline)
+         0     0%   100%      0.01s  0.73%  internal/poll.ignoringEINTRIO (inline)
+         0     0%   100%      0.01s  0.73%  main.init.0.func2
+         0     0%   100%      1.35s 98.54%  main.main
+         0     0%   100%      0.01s  0.73%  main.p0atomic
+         0     0%   100%      0.01s  0.73%  main.p0snapshot
+         0     0%   100%      0.01s  0.73%  math/rand.(*Rand).Uint64
+## CPU cumulative (top 45)
+Duration: 1.50s, Total samples = 1.37s (91.53%)
+Showing nodes accounting for 1.37s, 100% of 1.37s total
+Showing top 45 nodes out of 57
+      flat  flat%   sum%        cum   cum%
+     0.01s  0.73%  0.73%      1.35s 98.54%  main.indexScale
+         0     0%  0.73%      1.35s 98.54%  main.main
+         0     0%  0.73%      1.35s 98.54%  runtime.main
+         0     0%  0.73%      1.25s 91.24%  sort.Slice
+     0.01s  0.73%  1.46%      1.25s 91.24%  sort.pdqsort_func
+         0     0%  1.46%      1.25s 91.24%  zeros3-z3/simdelta.Sort (inline)
+     0.47s 34.31% 35.77%      1.03s 75.18%  sort.partition_func
+     0.09s  6.57% 42.34%      0.39s 28.47%  internal/reflectlite.Swapper.func9
+     0.06s  4.38% 46.72%      0.30s 21.90%  internal/reflectlite.typedmemmove
+     0.27s 19.71% 66.42%      0.28s 20.44%  zeros3-z3/simdelta.Sort.func1
+         0     0% 66.42%      0.24s 17.52%  reflect.typedmemmove (inline)
+     0.11s  8.03% 74.45%      0.24s 17.52%  runtime.typedmemmove
+     0.10s  7.30% 81.75%      0.20s 14.60%  sort.insertionSort_func
+     0.15s 10.95% 92.70%      0.15s 10.95%  runtime.memmove
+     0.03s  2.19% 94.89%      0.06s  4.38%  bufio.(*Writer).Write
+         0     0% 94.89%      0.06s  4.38%  zeros3-z3/simdelta.WriteTable
+     0.04s  2.92% 97.81%      0.04s  2.92%  internal/runtime/syscall/linux.Syscall6
+         0     0% 97.81%      0.04s  2.92%  syscall.RawSyscall6
+         0     0% 97.81%      0.02s  1.46%  syscall.Syscall
+         0     0% 97.81%      0.02s  1.46%  syscall.Syscall6
+         0     0% 97.81%      0.01s  0.73%  bufio.(*Writer).Flush
+         0     0% 97.81%      0.01s  0.73%  internal/poll.(*FD).Fsync
+         0     0% 97.81%      0.01s  0.73%  internal/poll.(*FD).Fsync.func1 (inline)
+         0     0% 97.81%      0.01s  0.73%  internal/poll.(*FD).Pread
+         0     0% 97.81%      0.01s  0.73%  internal/poll.(*FD).Pread.func1 (inline)
+         0     0% 97.81%      0.01s  0.73%  internal/poll.(*FD).Write
+         0     0% 97.81%      0.01s  0.73%  internal/poll.ignoringEINTR (inline)
+         0     0% 97.81%      0.01s  0.73%  internal/poll.ignoringEINTR2[go.shape.int] (inline)
+         0     0% 97.81%      0.01s  0.73%  internal/poll.ignoringEINTRIO (inline)
+     0.01s  0.73% 98.54%      0.01s  0.73%  main.heapSampler.func1
+         0     0% 98.54%      0.01s  0.73%  main.init.0.func2
+         0     0% 98.54%      0.01s  0.73%  main.p0atomic
+         0     0% 98.54%      0.01s  0.73%  main.p0snapshot
+         0     0% 98.54%      0.01s  0.73%  math/rand.(*Rand).Uint64
+     0.01s  0.73% 99.27%      0.01s  0.73%  math/rand.(*rngSource).Uint64
+         0     0% 99.27%      0.01s  0.73%  os.(*File).ReadAt
+         0     0% 99.27%      0.01s  0.73%  os.(*File).Sync
+         0     0% 99.27%      0.01s  0.73%  os.(*File).Write
+         0     0% 99.27%      0.01s  0.73%  os.(*File).pread (inline)
+         0     0% 99.27%      0.01s  0.73%  os.(*File).write (inline)
+         0     0% 99.27%      0.01s  0.73%  os.Rename (inline)
+         0     0% 99.27%      0.01s  0.73%  os.ignoringEINTR (inline)
+         0     0% 99.27%      0.01s  0.73%  os.rename
+         0     0% 99.27%      0.01s  0.73%  os.rename.func1 (inline)
+     0.01s  0.73%   100%      0.01s  0.73%  runtime.asyncPreempt
+## alloc_space (top 18)
+Showing nodes accounting for 65.82MB, 100% of 65.82MB total
+      flat  flat%   sum%        cum   cum%
+   61.04MB 92.73% 92.73%    61.04MB 92.73%  main.indexScale
+    3.47MB  5.27% 98.01%     3.47MB  5.27%  runtime/pprof.StartCPUProfile
+    0.67MB  1.02% 99.03%     0.67MB  1.02%  compress/flate.(*fastGen).addBlock
+    0.64MB  0.97%   100%     0.64MB  0.97%  compress/flate.NewWriter (inline)
+         0     0%   100%     0.67MB  1.02%  compress/flate.(*Writer).Close (inline)
+         0     0%   100%     0.67MB  1.02%  compress/flate.(*compressor).close
+         0     0%   100%     0.67MB  1.02%  compress/flate.(*compressor).deflateFast
+         0     0%   100%     0.67MB  1.02%  compress/flate.(*fastEncL1).encode
+         0     0%   100%     0.67MB  1.02%  compress/gzip.(*Writer).Close
+         0     0%   100%     0.64MB  0.97%  compress/gzip.(*Writer).Write
+         0     0%   100%     3.47MB  5.27%  main.init.0.func2
+         0     0%   100%    61.04MB 92.73%  main.main
+         0     0%   100%     3.47MB  5.27%  main.p0cpuCycle
+         0     0%   100%    61.04MB 92.73%  runtime.main
+         0     0%   100%     1.31MB  1.99%  runtime/pprof.(*profileBuilder).build
+         0     0%   100%     1.31MB  1.99%  runtime/pprof.profileWriter
+## alloc_objects (top 12)
+Showing nodes accounting for 8, 100% of 8 total
+Showing top 12 nodes out of 16
+      flat  flat%   sum%        cum   cum%
+         3 37.50% 37.50%          3 37.50%  runtime/pprof.StartCPUProfile
+         2 25.00% 62.50%          2 25.00%  compress/flate.(*fastGen).addBlock
+         2 25.00% 87.50%          2 25.00%  compress/flate.NewWriter (inline)
+         1 12.50%   100%          1 12.50%  main.indexScale
+         0     0%   100%          2 25.00%  compress/flate.(*Writer).Close (inline)
+         0     0%   100%          2 25.00%  compress/flate.(*compressor).close
+         0     0%   100%          2 25.00%  compress/flate.(*compressor).deflateFast
+         0     0%   100%          2 25.00%  compress/flate.(*fastEncL1).encode
+         0     0%   100%          2 25.00%  compress/gzip.(*Writer).Close
+         0     0%   100%          2 25.00%  compress/gzip.(*Writer).Write
+         0     0%   100%          3 37.50%  main.init.0.func2
+         0     0%   100%          1 12.50%  main.main
+## mutex delay (top 12)
+Time: 2026-11-08 06:54:49 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## block delay (top 15)
+Time: 2026-11-08 06:54:49 UTC
+Showing nodes accounting for 0, 0% of 0 total
+      flat  flat%   sum%        cum   cum%
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.000268781,"/cpu/classes/idle:cpu-seconds":0,"/cpu/classes/total:cpu-seconds":0.016493923,"/cpu/classes/user:cpu-seconds":0.016224918,"/gc/cycles/total:gc-cycles":1,"/gc/heap/allocs:bytes":72841496,"/gc/heap/allocs:objects":2811,"/gc/heap/live:bytes":64177848,"/memory/classes/total:bytes":79522072,"/sched/goroutines:goroutines":13,"final":false,"gomaxprocs":1,"mem.heap_inuse":73441280,"mem.mallocs":4189,"mem.num_gc":1,"mem.pause_total_ns":12676,"mem.sys":79522072,"mem.total_alloc":73020848,"t":1794120889578194616}

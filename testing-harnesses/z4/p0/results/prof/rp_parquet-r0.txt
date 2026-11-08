@@ -1,0 +1,165 @@
+# profile dir: rp_parquet-r0
+## CPU flat (top 28)
+Time: 2026-11-08 06:19:24 UTC
+Duration: 13.40s, Total samples = 15.77s (117.68%)
+Showing nodes accounting for 11.49s, 72.86% of 15.77s total
+Dropped 358 nodes (cum <= 0.08s)
+Showing top 28 nodes out of 301
+      flat  flat%   sum%        cum   cum%
+     2.57s 16.30% 16.30%      2.57s 16.30%  internal/runtime/syscall/linux.Syscall6
+     1.43s  9.07% 25.36%      1.58s 10.02%  main.(*repZSmatchModel).advance
+     0.62s  3.93% 29.30%      0.62s  3.93%  internal/runtime/maps.ctrlGroup.matchH2 (inline)
+     0.59s  3.74% 33.04%      0.59s  3.74%  runtime.memclrNoHeapPointers
+     0.46s  2.92% 35.95%      0.46s  2.92%  runtime.spanClass.sizeclass (inline)
+     0.45s  2.85% 38.81%      0.58s  3.68%  runtime.unlock2
+     0.40s  2.54% 41.34%      0.40s  2.54%  runtime.madvise
+     0.38s  2.41% 43.75%      0.38s  2.41%  runtime.asyncPreempt
+     0.38s  2.41% 46.16%      0.87s  5.52%  runtime.tryDeferToSpanScan
+     0.38s  2.41% 48.57%      0.78s  4.95%  sort.Search (inline)
+     0.36s  2.28% 50.86%      0.39s  2.47%  main.(*repZSfseTable).prev.func1 (inline)
+     0.35s  2.22% 53.08%      0.59s  3.74%  main.(*repZSrevWriter).write (inline)
+     0.35s  2.22% 55.29%      1.25s  7.93%  runtime.mapaccess2_faststr
+     0.34s  2.16% 57.45%      0.34s  2.16%  runtime.memmove
+     0.31s  1.97% 59.42%      0.31s  1.97%  internal/runtime/maps.memHashAES
+     0.26s  1.65% 61.07%      0.26s  1.65%  crypto/internal/fips140/sha256.blockSHANI
+     0.26s  1.65% 62.71%      1.08s  6.85%  main.(*repZSfseTable).prev
+     0.24s  1.52% 64.24%      0.29s  1.84%  runtime.step
+     0.23s  1.46% 65.69%      0.26s  1.65%  runtime.lock2
+     0.17s  1.08% 66.77%      1.06s  6.72%  runtime.scanObject
+     0.15s  0.95% 67.72%      0.15s  0.95%  runtime.futex
+     0.15s  0.95% 68.67%      0.64s  4.06%  runtime.pcvalue
+     0.14s  0.89% 69.56%      1.52s  9.64%  main.repZSencodeSeqs
+     0.12s  0.76% 70.32%      0.35s  2.22%  main.(*repPQrecs).add
+     0.12s  0.76% 71.08%      0.12s  0.76%  runtime.(*moduledata).textAddr
+     0.10s  0.63% 71.72%      0.11s   0.7%  main.(*repZSmatchModel).hash (inline)
+     0.09s  0.57% 72.29%      0.59s  3.74%  main.(*repZShuffTable).encodeStream
+     0.09s  0.57% 72.86%      0.15s  0.95%  main.(*repZSrevReader).get
+## CPU cumulative (top 45)
+Duration: 13.40s, Total samples = 15.77s (117.68%)
+Showing nodes accounting for 2.66s, 16.87% of 15.77s total
+Dropped 358 nodes (cum <= 0.08s)
+Showing top 45 nodes out of 301
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%     11.34s 71.91%  main.(*Server).ServeHTTP
+         0     0%     0%     11.34s 71.91%  main.(*Server).handlePutObject
+         0     0%     0%     11.34s 71.91%  net/http.(*conn).serve
+         0     0%     0%     11.34s 71.91%  net/http.serverHandler.ServeHTTP
+         0     0%     0%     11.20s 71.02%  main.(*Store).commitIngested
+         0     0%     0%     11.19s 70.96%  main.(*Store).maybeBuildRep
+         0     0%     0%     11.19s 70.96%  main.(*Store).repBuild
+         0     0%     0%     11.19s 70.96%  main.(*Store).tryBuildRep
+         0     0%     0%      8.49s 53.84%  main.(*Store).repBuild.func1
+         0     0%     0%      8.49s 53.84%  main.(*repBuilder).encodeKind
+         0     0%     0%      8.49s 53.84%  main.(*repBuilder).encodeStructured
+         0     0%     0%      8.49s 53.84%  main.(*repPQAnalyzer).Chunk
+         0     0%     0%      8.49s 53.84%  main.(*repPQAnalyzer).chunkPass
+         0     0%     0%      8.49s 53.84%  main.(*repPQFile).Pages
+         0     0%     0%      8.49s 53.84%  main.(*repPQencoder).chunk
+         0     0%     0%      8.49s 53.84%  main.(*repPQencoder).span
+         0     0%     0%      8.49s 53.84%  main.repPQEncode
+     0.01s 0.063% 0.063%      8.48s 53.77%  main.(*repPQAnalyzer).chunkPass.func1
+         0     0% 0.063%      5.18s 32.85%  main.(*repPQAnalyzer).readPage
+         0     0% 0.063%      5.11s 32.40%  main.(*repPQCompressor).Analyze
+         0     0% 0.063%      3.19s 20.23%  main.repZSParse
+         0     0% 0.063%      3.11s 19.72%  main.(*repZSparser).run
+     0.01s 0.063%  0.13%      3.10s 19.66%  runtime.systemstack
+         0     0%  0.13%      3.08s 19.53%  main.(*repZSparser).frame
+         0     0%  0.13%      2.78s 17.63%  main.(*repPQCompressor).replayZstd
+         0     0%  0.13%      2.78s 17.63%  main.repZSReplay
+         0     0%  0.13%      2.73s 17.31%  main.repZSReplaySkeleton
+         0     0%  0.13%      2.69s 17.06%  main.(*repBuilder).proof
+         0     0%  0.13%      2.69s 17.06%  main.(*repEnv).reconstruct
+         0     0%  0.13%      2.69s 17.06%  main.(*repEnv).run
+         0     0%  0.13%      2.69s 17.06%  main.(*repEnv).runWork
+         0     0%  0.13%      2.69s 17.06%  main.repPQDecode
+         0     0%  0.13%      2.69s 17.06%  main.repSCparquetDecoder.Decode
+         0     0%  0.13%      2.68s 16.99%  main.repPQdecodeRange
+         0     0%  0.13%      2.66s 16.87%  main.(*repPQdecoder).page
+         0     0%  0.13%      2.66s 16.87%  main.(*repPQdecoder).seg
+     2.57s 16.30% 16.42%      2.57s 16.30%  internal/runtime/syscall/linux.Syscall6
+         0     0% 16.42%      2.57s 16.30%  syscall.RawSyscall6
+         0     0% 16.42%      2.46s 15.60%  main.(*repZSreplayFrame).rebuildBlock
+     0.03s  0.19% 16.61%      2.31s 14.65%  main.repZSbuildCompressed
+         0     0% 16.61%      2.14s 13.57%  os.ignoringEINTR (inline)
+     0.02s  0.13% 16.74%      1.91s 12.11%  main.repPQfeed
+     0.02s  0.13% 16.87%      1.88s 11.92%  main.(*repPQencoder).chunk.func1
+         0     0% 16.87%      1.86s 11.79%  main.(*repPQstreamWriter).add
+         0     0% 16.87%      1.81s 11.48%  syscall.Syscall6
+## alloc_space (top 18)
+Showing nodes accounting for 4.50GB, 90.90% of 4.95GB total
+Dropped 374 nodes (cum <= 0.02GB)
+Showing top 18 nodes out of 113
+      flat  flat%   sum%        cum   cum%
+    1.28GB 25.91% 25.91%     1.28GB 25.91%  main.repZSnewMatchModel
+    0.57GB 11.60% 37.51%     0.57GB 11.60%  main.(*repPQrecs).add (inline)
+    0.44GB  8.98% 46.49%     0.44GB  8.98%  bufio.NewReaderSize
+    0.42GB  8.42% 54.91%     0.42GB  8.42%  main.(*repZShistory).reserve
+    0.32GB  6.42% 61.33%     0.32GB  6.42%  main.(*repZSrevWriter).write (inline)
+    0.29GB  5.91% 67.24%     0.29GB  5.91%  bytes.growSlice
+    0.23GB  4.62% 71.86%     0.56GB 11.39%  main.repZSbuildCompressed
+    0.17GB  3.48% 75.34%     0.17GB  3.48%  main.repPQnewDict
+    0.15GB  2.93% 78.28%     0.15GB  2.93%  bytes.NewReader
+    0.11GB  2.23% 80.50%     0.11GB  2.26%  os.readFileContents
+    0.09GB  1.74% 82.24%     0.34GB  6.91%  main.(*repPQdecoder).dictOf
+    0.08GB  1.54% 83.78%     0.08GB  1.54%  main.(*repPQbitWriter).put (inline)
+    0.07GB  1.42% 85.20%     0.07GB  1.42%  main.repZSfitBuf
+    0.06GB  1.30% 86.51%     0.15GB  2.99%  main.repReadObject
+    0.06GB  1.20% 87.71%     0.14GB  2.74%  main.repPQencodeValues
+    0.06GB  1.14% 88.85%     0.06GB  1.14%  main.repPQdecodePlain
+    0.06GB  1.12% 89.97%     0.06GB  1.12%  main.(*repZSmatchModel).decode
+    0.05GB  0.93% 90.90%     0.05GB  0.93%  main.repPQhybridDecode
+## alloc_objects (top 12)
+Showing nodes accounting for 7636480, 95.47% of 7998571 total
+Dropped 373 nodes (cum <= 39992)
+Showing top 12 nodes out of 114
+      flat  flat%   sum%        cum   cum%
+   3244700 40.57% 40.57%    3244700 40.57%  bytes.NewReader
+   2385004 29.82% 70.38%    2385004 29.82%  main.repPQnewDict
+   1181121 14.77% 85.15%    2472045 30.91%  main.(*repPQdecoder).dictOf
+    194057  2.43% 87.58%     194057  2.43%  runtime/pprof.allFrames
+    146318  1.83% 89.41%     146318  1.83%  encoding/hex.EncodeToString (inline)
+    111408  1.39% 90.80%     111408  1.39%  syscall.ByteSliceFromString
+     79648     1% 91.79%      79648     1%  internal/bytealg.MakeNoZero
+     71894   0.9% 92.69%      71894   0.9%  os.newFile
+     68112  0.85% 93.54%     101517  1.27%  main.(*repZSfseTable).initEnc
+     62542  0.78% 94.33%     112457  1.41%  os.statNolog
+     45868  0.57% 94.90%      48040   0.6%  runtime/pprof.(*profileBuilder).emitLocation
+     45808  0.57% 95.47%      45808  0.57%  main.(*repZSrevWriter).write
+## mutex delay (top 12)
+Time: 2026-11-08 06:19:38 UTC
+Showing nodes accounting for 455.39ms, 100% of 455.48ms total
+Dropped 160 nodes (cum <= 2.28ms)
+Showing top 12 nodes out of 79
+      flat  flat%   sum%        cum   cum%
+  290.02ms 63.67% 63.67%   290.02ms 63.67%  sync.(*RWMutex).Unlock
+  165.37ms 36.31%   100%   165.37ms 36.31%  runtime.unlock (partial-inline)
+         0     0%   100%     2.30ms   0.5%  internal/runtime/maps.(*table).grow
+         0     0%   100%     2.30ms   0.5%  internal/runtime/maps.(*table).rehash
+         0     0%   100%     2.30ms   0.5%  internal/runtime/maps.(*table).reset
+         0     0%   100%     2.30ms   0.5%  internal/runtime/maps.newGroups (inline)
+         0     0%   100%     2.30ms   0.5%  internal/runtime/maps.newTable
+         0     0%   100%     2.30ms   0.5%  internal/runtime/maps.newarray
+         0     0%   100%   290.02ms 63.67%  main.(*Store).casFlushFiles
+         0     0%   100%    28.53ms  6.26%  main.(*Store).casFlushFiles.func1
+## block delay (top 15)
+Time: 2026-11-08 06:19:38 UTC
+Showing nodes accounting for 15.50s, 100% of 15.50s total
+Dropped 28 nodes (cum <= 0.08s)
+Showing top 15 nodes out of 55
+      flat  flat%   sum%        cum   cum%
+    12.68s 81.82% 81.82%     12.68s 81.82%  runtime.selectgo
+     1.54s  9.91% 91.73%      1.54s  9.91%  sync.(*WaitGroup).Wait
+     0.86s  5.56% 97.29%      0.86s  5.56%  sync.(*RWMutex).RLock (inline)
+     0.42s  2.71%   100%      0.42s  2.71%  runtime.chanrecv1
+         0     0%   100%      1.21s  7.84%  main.(*Server).ServeHTTP
+         0     0%   100%      1.21s  7.84%  main.(*Server).handlePutObject
+         0     0%   100%      0.11s  0.72%  main.(*Server).ingestRequestBody
+         0     0%   100%      1.54s  9.91%  main.(*Store).casFlushFiles
+         0     0%   100%      0.55s  3.56%  main.(*Store).casPublish
+         0     0%   100%      0.12s  0.81%  main.(*Store).casRead (inline)
+         0     0%   100%      0.12s  0.81%  main.(*Store).casReadExcluding
+         0     0%   100%      0.12s  0.81%  main.(*Store).casReadExcluding.func1
+         0     0%   100%      0.74s  4.76%  main.(*Store).casStat
+         0     0%   100%      1.10s  7.11%  main.(*Store).commitIngested
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":2.154637462,"/cpu/classes/idle:cpu-seconds":29.146870592,"/cpu/classes/total:cpu-seconds":53.506814748,"/cpu/classes/user:cpu-seconds":21.73743295,"/gc/cycles/total:gc-cycles":636,"/gc/heap/allocs:bytes":5326273968,"/gc/heap/allocs:objects":8021331,"/gc/heap/live:bytes":2341392,"/memory/classes/total:bytes":53598472,"/sched/goroutines:goroutines":18,"final":false,"gomaxprocs":4,"mem.heap_inuse":5079040,"mem.mallocs":10528244,"mem.num_gc":636,"mem.pause_total_ns":107430520,"mem.sys":53598472,"mem.total_alloc":5326385384,"t":1794118778214799604}

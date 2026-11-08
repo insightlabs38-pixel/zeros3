@@ -134,6 +134,9 @@ var outMu sync.Mutex
 
 func emit(c *common, r map[string]any) {
 	r["label"] = c.label
+	if n := os.Getenv("P0_NOTE"); n != "" {
+		r["note"] = n
+	}
 	r["ts"] = time.Now().UTC().Format(time.RFC3339)
 	b, _ := json.Marshal(r)
 	outMu.Lock()

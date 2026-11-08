@@ -1,0 +1,163 @@
+# profile dir: rp_gzip-r0
+## CPU flat (top 28)
+Time: 2026-11-08 06:18:35 UTC
+Duration: 23.38s, Total samples = 22.80s (97.51%)
+Showing nodes accounting for 18.99s, 83.29% of 22.80s total
+Dropped 421 nodes (cum <= 0.11s)
+Showing top 28 nodes out of 207
+      flat  flat%   sum%        cum   cum%
+     6.70s 29.39% 29.39%      8.72s 38.25%  main.(*repIRwindow).search
+     4.04s 17.72% 47.11%      4.04s 17.72%  internal/runtime/syscall/linux.Syscall6
+     1.64s  7.19% 54.30%      1.74s  7.63%  main.(*repIRwindow).headGet (inline)
+     0.89s  3.90% 58.20%      3.44s 15.09%  main.(*repIRwindow).insertTo
+     0.88s  3.86% 62.06%      0.94s  4.12%  main.repIRmatchLen (inline)
+     0.87s  3.82% 65.88%      0.88s  3.86%  main.repIRhashAt (inline)
+     0.39s  1.71% 67.59%      0.39s  1.71%  runtime.asyncPreempt
+     0.35s  1.54% 69.12%     10.18s 44.65%  main.(*repIRpredictor).token
+     0.30s  1.32% 70.44%      0.30s  1.32%  crypto/internal/fips140/sha256.blockSHANI
+     0.29s  1.27% 71.71%      0.29s  1.27%  main.(*repDFbitWriter).put
+     0.26s  1.14% 72.85%      0.26s  1.14%  runtime.futex
+     0.25s  1.10% 73.95%      0.32s  1.40%  main.repIRlengthCode (inline)
+     0.21s  0.92% 74.87%      0.25s  1.10%  main.repIRdistCodeOf (inline)
+     0.20s  0.88% 75.75%      0.28s  1.23%  main.(*repIRwindow).emuDecide
+     0.20s  0.88% 76.62%      0.21s  0.92%  main.(*repIRwindow).headSet (inline)
+     0.19s  0.83% 77.46%      0.26s  1.14%  runtime.step
+     0.16s   0.7% 78.16%      0.50s  2.19%  runtime.pcvalue
+     0.14s  0.61% 78.77%      1.45s  6.36%  main.(*repIRstreamEnc).Token
+     0.13s  0.57% 79.34%      0.23s  1.01%  main.(*repIRzbuilder).down
+     0.13s  0.57% 79.91%      0.15s  0.66%  runtime.lock2
+     0.13s  0.57% 80.48%      0.13s  0.57%  runtime.memmove
+     0.12s  0.53% 81.01%      0.23s  1.01%  main.(*repDFdecoder).decode
+     0.10s  0.44% 81.45%      0.12s  0.53%  main.(*repIRdecoder).decode
+     0.10s  0.44% 81.89%      0.21s  0.92%  main.(*repIRencoder).encode
+     0.08s  0.35% 82.24%      0.39s  1.71%  main.(*repDFStreamWriter).Token
+     0.08s  0.35% 82.59%      7.31s 32.06%  main.(*repIRpredictor).encode
+     0.08s  0.35% 82.94%      0.33s  1.45%  main.(*repIRzbuilder).build
+     0.08s  0.35% 83.29%      0.12s  0.53%  runtime.unlock2
+## CPU cumulative (top 45)
+Duration: 23.38s, Total samples = 22.80s (97.51%)
+Showing nodes accounting for 12.19s, 53.46% of 22.80s total
+Dropped 421 nodes (cum <= 0.11s)
+Showing top 45 nodes out of 207
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%     19.19s 84.17%  main.(*Server).ServeHTTP
+         0     0%     0%     19.19s 84.17%  main.(*Server).handlePutObject
+         0     0%     0%     19.19s 84.17%  net/http.(*conn).serve
+         0     0%     0%     19.19s 84.17%  net/http.serverHandler.ServeHTTP
+         0     0%     0%     19.03s 83.46%  main.(*Store).commitIngested
+         0     0%     0%     19.03s 83.46%  main.(*Store).maybeBuildRep
+         0     0%     0%     19.03s 83.46%  main.(*Store).repBuild
+         0     0%     0%     19.03s 83.46%  main.(*Store).tryBuildRep
+         0     0%     0%     11.24s 49.30%  main.(*Store).repBuild.func1
+         0     0%     0%     11.24s 49.30%  main.(*repBuilder).encodeGzip
+         0     0%     0%     11.24s 49.30%  main.(*repBuilder).encodeKind
+         0     0%     0%     10.32s 45.26%  main.repDFStreamParse
+         0     0%     0%     10.32s 45.26%  main.repIREncodeStream
+     0.35s  1.54%  1.54%     10.18s 44.65%  main.(*repIRpredictor).token
+     0.01s 0.044%  1.58%      8.73s 38.29%  main.(*repIRstreamEnc).flushUnit
+     6.70s 29.39% 30.96%      8.72s 38.25%  main.(*repIRwindow).search
+         0     0% 30.96%      8.15s 35.75%  main.(*repEnv).runWork
+         0     0% 30.96%      7.74s 33.95%  main.(*repBuilder).proof
+         0     0% 30.96%      7.74s 33.95%  main.(*repEnv).reconstruct
+         0     0% 30.96%      7.74s 33.95%  main.(*repEnv).run
+         0     0% 30.96%      7.74s 33.95%  main.gzipDecoder.Decode
+         0     0% 30.96%      7.73s 33.90%  main.(*repIRstreamEnc).BeginBlock
+     0.05s  0.22% 31.18%      7.72s 33.86%  main.repIRReconstructStream
+         0     0% 31.18%      7.71s 33.82%  main.repDFstreamStored
+     0.08s  0.35% 31.54%      7.31s 32.06%  main.(*repIRpredictor).encode
+     0.05s  0.22% 31.75%      6.93s 30.39%  main.repIRReconstructStream.func2
+         0     0% 31.75%      6.87s 30.13%  main.repIRReconstructStream.func1
+     0.02s 0.088% 31.84%      6.53s 28.64%  main.(*repIRpredictor).decodeUnit
+     4.04s 17.72% 49.56%      4.04s 17.72%  internal/runtime/syscall/linux.Syscall6
+         0     0% 49.56%      4.02s 17.63%  syscall.RawSyscall6
+     0.89s  3.90% 53.46%      3.44s 15.09%  main.(*repIRwindow).insertTo
+         0     0% 53.46%      3.41s 14.96%  main.(*repIRpredictor).newState
+         0     0% 53.46%      3.16s 13.86%  main.repIRnewWindow
+         0     0% 53.46%      2.87s 12.59%  os.ignoringEINTR (inline)
+         0     0% 53.46%      2.39s 10.48%  syscall.Syscall6
+         0     0% 53.46%      2.24s  9.82%  main.(*casBatch).add
+         0     0% 53.46%      2.24s  9.82%  main.looseSink.Put
+         0     0% 53.46%      2.21s  9.69%  os.OpenFile
+         0     0% 53.46%      2.21s  9.69%  os.openFileNolog
+         0     0% 53.46%      2.10s  9.21%  main.(*Store).casStage
+         0     0% 53.46%      2.08s  9.12%  os.open
+         0     0% 53.46%      2.08s  9.12%  os.openFileNolog.func1 (inline)
+         0     0% 53.46%      2.08s  9.12%  syscall.Open (inline)
+         0     0% 53.46%      2.08s  9.12%  syscall.openat
+         0     0% 53.46%      2.07s  9.08%  main.(*repBuilder).putBlob
+## alloc_space (top 18)
+Showing nodes accounting for 1196.36MB, 87.72% of 1363.84MB total
+Dropped 298 nodes (cum <= 6.82MB)
+Showing top 18 nodes out of 142
+      flat  flat%   sum%        cum   cum%
+  319.94MB 23.46% 23.46%   319.94MB 23.46%  main.repIRnewZTree (inline)
+  148.99MB 10.92% 34.38%   151.84MB 11.13%  os.readFileContents
+  106.34MB  7.80% 42.18%   219.39MB 16.09%  main.(*repIRpredictor).decodeUnit
+  100.74MB  7.39% 49.57%   100.74MB  7.39%  main.repIRnewE2
+   97.45MB  7.15% 56.71%    97.45MB  7.15%  main.init.func7
+   52.88MB  3.88% 60.59%    52.88MB  3.88%  runtime/pprof.StartCPUProfile
+   43.12MB  3.16% 63.75%    43.12MB  3.16%  compress/flate.(*fastGen).addBlock
+   42.16MB  3.09% 66.84%    42.16MB  3.09%  main.repIRParseSkeleton
+      41MB  3.01% 69.85%       41MB  3.01%  main.newCDCChunker (inline)
+   37.83MB  2.77% 72.62%   456.68MB 33.49%  main.repIRReconstructStream
+   35.58MB  2.61% 75.23%    64.04MB  4.70%  compress/flate.NewWriter (inline)
+   35.29MB  2.59% 77.82%    35.29MB  2.59%  runtime/pprof.allFrames
+   34.94MB  2.56% 80.38%    34.94MB  2.56%  main.repDFbuildDecoder
+   31.12MB  2.28% 82.66%   131.85MB  9.67%  main.repIRnewPredModel
+   19.43MB  1.42% 84.09%    63.66MB  4.67%  main.(*repBuilder).putStream
+   18.33MB  1.34% 85.43%    18.33MB  1.34%  compress/flate.newFastEnc (inline)
+   15.61MB  1.14% 86.58%    15.61MB  1.14%  main.repDFbuildEncoder
+   15.61MB  1.14% 87.72%    55.33MB  4.06%  runtime/pprof.(*profileBuilder).emitLocation
+## alloc_objects (top 12)
+Showing nodes accounting for 1400771, 74.82% of 1872114 total
+Dropped 296 nodes (cum <= 9360)
+Showing top 12 nodes out of 144
+      flat  flat%   sum%        cum   cum%
+    244959 13.08% 13.08%     244959 13.08%  runtime/pprof.allFrames
+    176741  9.44% 22.53%     176741  9.44%  main.repIRnewZTree
+    149035  7.96% 30.49%     149035  7.96%  syscall.ByteSliceFromString
+    135757  7.25% 37.74%     135757  7.25%  encoding/hex.EncodeToString
+    116913  6.24% 43.98%     116913  6.24%  main.repDFbuildEncoder
+    115990  6.20% 50.18%     115990  6.20%  main.repIRzSend
+    106167  5.67% 55.85%     106167  5.67%  os.newFile
+     82522  4.41% 60.26%      82522  4.41%  internal/bytealg.MakeNoZero
+     72305  3.86% 64.12%      97091  5.19%  main.(*repIRpredictor).decodeUnit
+     69027  3.69% 67.81%     125581  6.71%  main.(*repDFparser).dynamicHeader
+     66456  3.55% 71.36%      70363  3.76%  runtime/pprof.(*profileBuilder).emitLocation
+     64899  3.47% 74.82%     107049  5.72%  os.statNolog
+## mutex delay (top 12)
+Time: 2026-11-08 06:18:58 UTC
+Showing nodes accounting for 2654.69ms, 100% of 2654.83ms total
+Dropped 158 nodes (cum <= 13.27ms)
+      flat  flat%   sum%        cum   cum%
+ 2582.49ms 97.28% 97.28%  2582.49ms 97.28%  sync.(*RWMutex).Unlock
+   72.20ms  2.72%   100%    72.20ms  2.72%  runtime.unlock (partial-inline)
+         0     0%   100%  2582.49ms 97.28%  main.(*Store).casFlushFiles
+         0     0%   100%  2582.49ms 97.28%  main.(*Store).casPublish
+         0     0%   100%  2582.49ms 97.28%  main.(*Store).casPublish.deferwrap1
+         0     0%   100%  2582.49ms 97.28%  main.(*casBatch).startFlush.func1
+         0     0%   100%    53.42ms  2.01%  runtime.goschedImpl
+         0     0%   100%    49.11ms  1.85%  runtime.gosched_m
+         0     0%   100%    56.06ms  2.11%  runtime.mcall
+## block delay (top 15)
+Time: 2026-11-08 06:18:58 UTC
+Showing nodes accounting for 36.43s, 99.92% of 36.46s total
+Dropped 42 nodes (cum <= 0.18s)
+Showing top 15 nodes out of 49
+      flat  flat%   sum%        cum   cum%
+    30.15s 82.69% 82.69%     30.15s 82.69%  runtime.selectgo
+     2.83s  7.77% 90.47%      2.83s  7.77%  sync.(*WaitGroup).Wait
+     2.10s  5.77% 96.23%      2.10s  5.77%  runtime.chanrecv1
+     1.34s  3.69% 99.92%      1.34s  3.69%  sync.(*RWMutex).RLock (inline)
+         0     0% 99.92%      7.37s 20.21%  io.(*PipeWriter).Write
+         0     0% 99.92%      7.37s 20.21%  io.(*multiWriter).Write
+         0     0% 99.92%      7.37s 20.21%  io.(*pipe).write
+         0     0% 99.92%      3.53s  9.69%  main.(*Server).ServeHTTP
+         0     0% 99.92%      3.53s  9.69%  main.(*Server).handlePutObject
+         0     0% 99.92%      2.83s  7.77%  main.(*Store).casFlushFiles
+         0     0% 99.92%      1.03s  2.83%  main.(*Store).casPublish
+         0     0% 99.92%      1.34s  3.69%  main.(*Store).casStat
+         0     0% 99.92%      3.38s  9.27%  main.(*Store).commitIngested
+         0     0% 99.92%      3.38s  9.27%  main.(*Store).maybeBuildRep
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.492605069,"/cpu/classes/idle:cpu-seconds":60.095920879,"/cpu/classes/total:cpu-seconds":93.720920308,"/cpu/classes/user:cpu-seconds":33.031306112,"/gc/cycles/total:gc-cycles":281,"/gc/heap/allocs:bytes":1445333744,"/gc/heap/allocs:objects":1917875,"/gc/heap/live:bytes":2455704,"/memory/classes/total:bytes":40229128,"/sched/goroutines:goroutines":18,"final":false,"gomaxprocs":4,"mem.heap_inuse":3760128,"mem.mallocs":2045097,"mem.num_gc":281,"mem.pause_total_ns":46514538,"mem.sys":40229128,"mem.total_alloc":1445335192,"t":1794118738774082017}
