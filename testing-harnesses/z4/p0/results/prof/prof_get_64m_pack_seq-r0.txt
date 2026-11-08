@@ -1,0 +1,153 @@
+# profile dir: prof_get_64m_pack_seq-r0
+## CPU flat (top 28)
+Time: 2026-11-08 04:06:42 UTC
+Duration: 509.26ms, Total samples = 630ms (123.71%)
+Showing nodes accounting for 630ms, 100% of 630ms total
+Showing top 28 nodes out of 73
+      flat  flat%   sum%        cum   cum%
+     340ms 53.97% 53.97%      340ms 53.97%  crypto/internal/fips140/sha256.blockSHANI
+     260ms 41.27% 95.24%      260ms 41.27%  internal/runtime/syscall/linux.Syscall6
+      10ms  1.59% 96.83%       10ms  1.59%  runtime.scanblock
+      10ms  1.59% 98.41%       10ms  1.59%  runtime.tracebackPCs
+      10ms  1.59%   100%      190ms 30.16%  syscall.write
+         0     0%   100%      190ms 30.16%  bufio.(*Writer).Write
+         0     0%   100%      340ms 53.97%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0%   100%      340ms 53.97%  crypto/internal/fips140/sha256.block
+         0     0%   100%      340ms 53.97%  crypto/sha256.Sum256
+         0     0%   100%       10ms  1.59%  encoding/json.Unmarshal (inline)
+         0     0%   100%       10ms  1.59%  encoding/json/v2.Unmarshal
+         0     0%   100%       10ms  1.59%  encoding/json/v2.makeSliceArshaler.func3
+         0     0%   100%       10ms  1.59%  encoding/json/v2.makeString
+         0     0%   100%       10ms  1.59%  encoding/json/v2.makeStringArshaler.func2
+         0     0%   100%       10ms  1.59%  encoding/json/v2.makeStructArshaler.func3
+         0     0%   100%       10ms  1.59%  encoding/json/v2.unmarshalDecode
+         0     0%   100%       80ms 12.70%  internal/poll.(*FD).Pread
+         0     0%   100%       80ms 12.70%  internal/poll.(*FD).Pread.func1 (inline)
+         0     0%   100%       10ms  1.59%  internal/poll.(*FD).SetReadDeadline
+         0     0%   100%      190ms 30.16%  internal/poll.(*FD).Write
+         0     0%   100%       80ms 12.70%  internal/poll.ignoringEINTR2[go.shape.int] (inline)
+         0     0%   100%      190ms 30.16%  internal/poll.ignoringEINTRIO (inline)
+         0     0%   100%       10ms  1.59%  internal/poll.runtime_pollSetDeadline
+         0     0%   100%       10ms  1.59%  internal/poll.setDeadlineImpl
+         0     0%   100%      620ms 98.41%  main.(*Server).ServeHTTP
+         0     0%   100%      620ms 98.41%  main.(*Server).handleGetObject
+         0     0%   100%      610ms 96.83%  main.(*Server).streamObject
+         0     0%   100%       10ms  1.59%  main.(*Store).HeadObject
+## CPU cumulative (top 45)
+Duration: 509.26ms, Total samples = 630ms (123.71%)
+Showing nodes accounting for 610ms, 96.83% of 630ms total
+Showing top 45 nodes out of 73
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      630ms   100%  net/http.(*conn).serve
+         0     0%     0%      620ms 98.41%  main.(*Server).ServeHTTP
+         0     0%     0%      620ms 98.41%  main.(*Server).handleGetObject
+         0     0%     0%      620ms 98.41%  net/http.serverHandler.ServeHTTP
+         0     0%     0%      610ms 96.83%  main.(*Server).streamObject
+         0     0%     0%      420ms 66.67%  main.(*manifestReader).chunk
+         0     0%     0%      420ms 66.67%  main.(*manifestReader).fetchRun
+         0     0%     0%      420ms 66.67%  main.(*manifestReader).next
+         0     0%     0%      420ms 66.67%  main.(*packRunReader).read
+         0     0%     0%      340ms 53.97%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0%     0%      340ms 53.97%  crypto/internal/fips140/sha256.block
+     340ms 53.97% 53.97%      340ms 53.97%  crypto/internal/fips140/sha256.blockSHANI
+         0     0% 53.97%      340ms 53.97%  crypto/sha256.Sum256
+         0     0% 53.97%      340ms 53.97%  main.decodePackPayload
+     260ms 41.27% 95.24%      260ms 41.27%  internal/runtime/syscall/linux.Syscall6
+         0     0% 95.24%      260ms 41.27%  syscall.RawSyscall6
+         0     0% 95.24%      190ms 30.16%  bufio.(*Writer).Write
+         0     0% 95.24%      190ms 30.16%  internal/poll.(*FD).Write
+         0     0% 95.24%      190ms 30.16%  internal/poll.ignoringEINTRIO (inline)
+         0     0% 95.24%      190ms 30.16%  net.(*conn).Write
+         0     0% 95.24%      190ms 30.16%  net.(*netFD).Write
+         0     0% 95.24%      190ms 30.16%  net/http.(*chunkWriter).Write
+         0     0% 95.24%      190ms 30.16%  net/http.(*response).Write
+         0     0% 95.24%      190ms 30.16%  net/http.(*response).write
+         0     0% 95.24%      190ms 30.16%  net/http.checkConnErrorWriter.Write
+         0     0% 95.24%      190ms 30.16%  syscall.Write (inline)
+      10ms  1.59% 96.83%      190ms 30.16%  syscall.write
+         0     0% 96.83%      180ms 28.57%  syscall.Syscall
+         0     0% 96.83%       80ms 12.70%  internal/poll.(*FD).Pread
+         0     0% 96.83%       80ms 12.70%  internal/poll.(*FD).Pread.func1 (inline)
+         0     0% 96.83%       80ms 12.70%  internal/poll.ignoringEINTR2[go.shape.int] (inline)
+         0     0% 96.83%       80ms 12.70%  os.(*File).ReadAt
+         0     0% 96.83%       80ms 12.70%  os.(*File).pread (inline)
+         0     0% 96.83%       80ms 12.70%  syscall.Pread (inline)
+         0     0% 96.83%       80ms 12.70%  syscall.Syscall6
+         0     0% 96.83%       80ms 12.70%  syscall.pread
+         0     0% 96.83%       20ms  3.17%  runtime.mallocgc
+         0     0% 96.83%       20ms  3.17%  runtime.systemstack
+         0     0% 96.83%       10ms  1.59%  encoding/json.Unmarshal (inline)
+         0     0% 96.83%       10ms  1.59%  encoding/json/v2.Unmarshal
+         0     0% 96.83%       10ms  1.59%  encoding/json/v2.makeSliceArshaler.func3
+         0     0% 96.83%       10ms  1.59%  encoding/json/v2.makeString
+         0     0% 96.83%       10ms  1.59%  encoding/json/v2.makeStringArshaler.func2
+         0     0% 96.83%       10ms  1.59%  encoding/json/v2.makeStructArshaler.func3
+         0     0% 96.83%       10ms  1.59%  encoding/json/v2.unmarshalDecode
+## alloc_space (top 18)
+Showing nodes accounting for 16471.31kB, 98.07% of 16796.10kB total
+Dropped 130 nodes (cum <= 83.98kB)
+Showing top 18 nodes out of 42
+      flat  flat%   sum%        cum   cum%
+   12288kB 73.16% 73.16%    12288kB 73.16%  main.getRunBuf
+    1152kB  6.86% 80.02%     1152kB  6.86%  runtime/pprof.StartCPUProfile
+ 1049.31kB  6.25% 86.27%  1049.31kB  6.25%  bufio.NewReaderSize (inline)
+  544.01kB  3.24% 89.50%  1568.01kB  9.34%  main.readPackLayout
+  380.25kB  2.26% 91.77%   393.76kB  2.34%  os.readFileContents
+  293.06kB  1.74% 93.51%   299.89kB  1.79%  main.buildLocIndex
+  290.24kB  1.73% 95.24%   290.24kB  1.73%  encoding/json/v2.makeString
+  227.74kB  1.36% 96.60%   227.74kB  1.36%  reflect.growslice
+     208kB  1.24% 97.84%  2093.24kB 12.46%  main.loadPackState
+   34.17kB   0.2% 98.04%   324.41kB  1.93%  encoding/json/v2.makeStringArshaler.func2
+    4.52kB 0.027% 98.07% 12292.52kB 73.19%  main.(*packRunReader).read
+         0     0% 98.07%   596.65kB  3.55%  encoding/json.Unmarshal (inline)
+         0     0% 98.07%   596.65kB  3.55%  encoding/json/v2.Unmarshal
+         0     0% 98.07%   513.96kB  3.06%  encoding/json/v2.makeSliceArshaler.func3
+         0     0% 98.07%   592.61kB  3.53%  encoding/json/v2.makeStructArshaler.func3
+         0     0% 98.07%   596.65kB  3.55%  encoding/json/v2.unmarshalDecode
+         0     0% 98.07% 13272.55kB 79.02%  main.(*Server).ServeHTTP
+         0     0% 98.07% 13252.31kB 78.90%  main.(*Server).handleGetObject
+## alloc_objects (top 12)
+Showing nodes accounting for 10822, 96.11% of 11260 total
+Dropped 93 nodes (cum <= 56)
+Showing top 12 nodes out of 79
+      flat  flat%   sum%        cum   cum%
+      4707 41.80% 41.80%       4707 41.80%  encoding/json/v2.makeString
+      4580 40.67% 82.48%       4581 40.68%  main.buildLocIndex
+       385  3.42% 85.90%        385  3.42%  encoding/hex.DecodeString
+       366  3.25% 89.15%        366  3.25%  runtime.mallocgc
+       171  1.52% 90.67%        171  1.52%  net/textproto.canonicalMIMEHeaderKey
+       128  1.14% 91.80%        128  1.14%  syscall.anyToSockaddr
+        96  0.85% 92.66%         96  0.85%  crypto/internal/fips140/sha256.New
+        85  0.75% 93.41%         85  0.75%  flag.(*FlagSet).Var
+        85  0.75% 94.17%        340  3.02%  net/http.(*conn).readRequest
+        85  0.75% 94.92%         85  0.75%  strings.genSplit
+        70  0.62% 95.54%         70  0.62%  bufio.NewWriterSize (inline)
+        64  0.57% 96.11%         64  0.57%  encoding/hex.EncodeToString
+## mutex delay (top 12)
+Time: 2026-11-08 04:06:43 UTC
+Showing nodes accounting for 5509.57us, 100% of 5509.57us total
+Showing top 12 nodes out of 36
+      flat  flat%   sum%        cum   cum%
+ 5509.57us   100%   100%  5509.57us   100%  runtime.unlock (inline)
+         0     0%   100%   605.45us 10.99%  main.(*Server).ServeHTTP
+         0     0%   100%   605.45us 10.99%  main.(*Server).handleGetObject
+         0     0%   100%   605.45us 10.99%  main.(*Server).streamObject
+         0     0%   100%   605.45us 10.99%  main.(*manifestReader).chunk
+         0     0%   100%   605.45us 10.99%  main.(*manifestReader).fetchRun
+         0     0%   100%   605.45us 10.99%  main.(*manifestReader).next
+         0     0%   100%   605.45us 10.99%  main.(*packRunReader).read
+         0     0%   100%   605.45us 10.99%  main.getRunBuf
+         0     0%   100%   605.45us 10.99%  net/http.(*conn).serve
+         0     0%   100%   605.45us 10.99%  net/http.serverHandler.ServeHTTP
+## block delay (top 15)
+Time: 2026-11-08 04:06:43 UTC
+Showing nodes accounting for 512.92ms, 99.86% of 513.62ms total
+Dropped 35 nodes (cum <= 2.57ms)
+      flat  flat%   sum%        cum   cum%
+  508.96ms 99.09% 99.09%   508.96ms 99.09%  runtime.selectgo
+    3.97ms  0.77% 99.86%     3.97ms  0.77%  runtime.chanrecv1
+         0     0% 99.86%   512.89ms 99.86%  main.init.7.func2
+         0     0% 99.86%     3.93ms  0.77%  main.p0cpuCycle
+         0     0% 99.86%     3.93ms  0.77%  runtime/pprof.StopCPUProfile
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.005263683,"/cpu/classes/idle:cpu-seconds":1.245544496,"/cpu/classes/total:cpu-seconds":2.077966728,"/cpu/classes/user:cpu-seconds":0.827158272,"/gc/cycles/total:gc-cycles":4,"/gc/heap/allocs:bytes":31796376,"/gc/heap/allocs:objects":36514,"/gc/heap/live:bytes":18261032,"/memory/classes/total:bytes":38988056,"/sched/goroutines:goroutines":21,"final":false,"gomaxprocs":4,"mem.heap_inuse":25247744,"mem.mallocs":38352,"mem.num_gc":4,"mem.pause_total_ns":560355,"mem.sys":38988056,"mem.total_alloc":32239088,"t":1794110803340628598}

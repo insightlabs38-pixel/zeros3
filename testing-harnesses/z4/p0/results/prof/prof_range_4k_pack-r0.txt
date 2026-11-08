@@ -1,0 +1,152 @@
+# profile dir: prof_range_4k_pack-r0
+## CPU flat (top 28)
+Time: 2026-11-08 04:07:05 UTC
+Duration: 5.97s, Total samples = 5.52s (92.47%)
+Showing nodes accounting for 3.75s, 67.93% of 5.52s total
+Dropped 242 nodes (cum <= 0.03s)
+Showing top 28 nodes out of 267
+      flat  flat%   sum%        cum   cum%
+     0.66s 11.96% 11.96%      0.66s 11.96%  crypto/internal/fips140/sha256.blockSHANI
+     0.61s 11.05% 23.01%      0.61s 11.05%  internal/runtime/syscall/linux.Syscall6
+     0.47s  8.51% 31.52%      0.47s  8.51%  encoding/json/internal/jsonwire.ConsumeSimpleString (inline)
+     0.40s  7.25% 38.77%      0.40s  7.25%  runtime.futex
+     0.15s  2.72% 41.49%      0.19s  3.44%  runtime.step
+     0.14s  2.54% 44.02%      0.81s 14.67%  encoding/json/jsontext.(*decoderState).consumeValue
+     0.11s  1.99% 46.01%      0.11s  1.99%  encoding/json/internal/jsonwire.ConsumeWhitespace (inline)
+     0.11s  1.99% 48.01%      1.85s 33.51%  encoding/json/v2.makeStructArshaler.func3
+     0.11s  1.99% 50.00%      0.11s  1.99%  runtime.madvise
+     0.10s  1.81% 51.81%      0.53s  9.60%  encoding/json/jsontext.(*decoderState).ReadValue
+     0.08s  1.45% 53.26%      0.08s  1.45%  runtime.memmove
+     0.06s  1.09% 54.35%      0.06s  1.09%  encoding/json/jsontext.Kind.normalize (inline)
+     0.06s  1.09% 55.43%      0.06s  1.09%  runtime.(*moduledata).textAddr
+     0.06s  1.09% 56.52%      0.06s  1.09%  runtime.tgkill
+     0.05s  0.91% 57.43%      0.09s  1.63%  encoding/json/jsontext.(*decoderState).PeekKind
+     0.05s  0.91% 58.33%      0.45s  8.15%  encoding/json/jsontext.(*decoderState).consumeObject
+     0.05s  0.91% 59.24%      0.05s  0.91%  memeqbody
+     0.05s  0.91% 60.14%      0.19s  3.44%  runtime.(*unwinder).resolveInternal
+     0.05s  0.91% 61.05%      0.05s  0.91%  runtime.findfunc
+     0.05s  0.91% 61.96%      0.05s  0.91%  runtime.memclrNoHeapPointers
+     0.05s  0.91% 62.86%      0.31s  5.62%  runtime.pcvalue
+     0.04s  0.72% 63.59%      0.04s  0.72%  encoding/json/internal/jsonwire.ParseUint
+     0.04s  0.72% 64.31%      0.45s  8.15%  encoding/json/jsontext.(*decoderState).consumeArray
+     0.04s  0.72% 65.04%      1.81s 32.79%  encoding/json/v2.makeSliceArshaler.func3
+     0.04s  0.72% 65.76%      0.50s  9.06%  encoding/json/v2.makeString
+     0.04s  0.72% 66.49%      0.15s  2.72%  runtime.mapaccess1_faststr
+     0.04s  0.72% 67.21%      0.04s  0.72%  runtime.readvarint (inline)
+     0.04s  0.72% 67.93%      0.08s  1.45%  runtime.tryDeferToSpanScan
+## CPU cumulative (top 45)
+Duration: 5.97s, Total samples = 5.52s (92.47%)
+Showing nodes accounting for 2.81s, 50.91% of 5.52s total
+Dropped 242 nodes (cum <= 0.03s)
+Showing top 45 nodes out of 267
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      4.35s 78.80%  net/http.(*conn).serve
+     0.01s  0.18%  0.18%      3.98s 72.10%  main.(*Server).ServeHTTP
+         0     0%  0.18%      3.98s 72.10%  net/http.serverHandler.ServeHTTP
+         0     0%  0.18%      3.79s 68.66%  main.(*Server).handleGetObject
+     0.01s  0.18%  0.36%      2.77s 50.18%  main.(*Store).HeadObject
+         0     0%  0.36%      2.76s 50.00%  main.(*Store).readVerifiedManifest
+         0     0%  0.36%      2.55s 46.20%  main.(*Store).readManifest
+         0     0%  0.36%      2.31s 41.85%  encoding/json.Unmarshal (inline)
+         0     0%  0.36%      2.31s 41.85%  encoding/json/v2.Unmarshal
+         0     0%  0.36%      2.31s 41.85%  encoding/json/v2.unmarshalDecode
+     0.11s  1.99%  2.36%      1.85s 33.51%  encoding/json/v2.makeStructArshaler.func3
+     0.04s  0.72%  3.08%      1.81s 32.79%  encoding/json/v2.makeSliceArshaler.func3
+         0     0%  3.08%      1.31s 23.73%  runtime.systemstack
+     0.02s  0.36%  3.44%      1.02s 18.48%  main.(*Server).streamObject
+     0.02s  0.36%  3.80%      0.88s 15.94%  encoding/json/v2.makeStringArshaler.func2
+     0.14s  2.54%  6.34%      0.81s 14.67%  encoding/json/jsontext.(*decoderState).consumeValue
+     0.01s  0.18%  6.52%      0.79s 14.31%  runtime.mallocgc
+     0.01s  0.18%  6.70%      0.71s 12.86%  main.(*manifestReader).next
+     0.01s  0.18%  6.88%      0.69s 12.50%  main.(*manifestReader).chunk
+         0     0%  6.88%      0.67s 12.14%  crypto/internal/fips140/sha256.(*Digest).Write
+     0.01s  0.18%  7.07%      0.67s 12.14%  crypto/internal/fips140/sha256.block
+         0     0%  7.07%      0.67s 12.14%  crypto/sha256.Sum256
+         0     0%  7.07%      0.67s 12.14%  main.(*manifestReader).fetchRun
+         0     0%  7.07%      0.67s 12.14%  main.(*packRunReader).read
+     0.66s 11.96% 19.02%      0.66s 11.96%  crypto/internal/fips140/sha256.blockSHANI
+     0.61s 11.05% 30.07%      0.61s 11.05%  internal/runtime/syscall/linux.Syscall6
+         0     0% 30.07%      0.58s 10.51%  syscall.RawSyscall6
+     0.10s  1.81% 31.88%      0.53s  9.60%  encoding/json/jsontext.(*decoderState).ReadValue
+     0.04s  0.72% 32.61%      0.50s  9.06%  encoding/json/v2.makeString
+         0     0% 32.61%      0.48s  8.70%  runtime.mProf_Malloc
+         0     0% 32.61%      0.48s  8.70%  runtime.profilealloc
+     0.47s  8.51% 41.12%      0.47s  8.51%  encoding/json/internal/jsonwire.ConsumeSimpleString (inline)
+         0     0% 41.12%      0.45s  8.15%  encoding/json/jsontext.(*decoderState).CheckNextValue
+     0.04s  0.72% 41.85%      0.45s  8.15%  encoding/json/jsontext.(*decoderState).consumeArray
+     0.05s  0.91% 42.75%      0.45s  8.15%  encoding/json/jsontext.(*decoderState).consumeObject
+         0     0% 42.75%      0.45s  8.15%  main.decodePackPayload
+         0     0% 42.75%      0.45s  8.15%  runtime.gcBgMarkWorker
+         0     0% 42.75%      0.45s  8.15%  syscall.Syscall
+         0     0% 42.75%      0.44s  7.97%  runtime.callers
+         0     0% 42.75%      0.44s  7.97%  runtime.callers.func1
+     0.01s  0.18% 42.93%      0.44s  7.97%  runtime.slicebytetostring
+     0.02s  0.36% 43.30%      0.41s  7.43%  runtime.tracebackPCs
+         0     0% 43.30%      0.40s  7.25%  internal/poll.ignoringEINTRIO (inline)
+     0.40s  7.25% 50.54%      0.40s  7.25%  runtime.futex
+     0.02s  0.36% 50.91%      0.39s  7.07%  runtime.mallocgcSmallNoScanSC6
+## alloc_space (top 18)
+Showing nodes accounting for 1102.85MB, 96.19% of 1146.57MB total
+Dropped 297 nodes (cum <= 5.73MB)
+Showing top 18 nodes out of 61
+      flat  flat%   sum%        cum   cum%
+  370.49MB 32.31% 32.31%   371.20MB 32.37%  os.readFileContents
+  243.28MB 21.22% 53.53%   243.28MB 21.22%  encoding/json/v2.makeString
+  226.83MB 19.78% 73.31%   226.83MB 19.78%  reflect.growslice
+  203.62MB 17.76% 91.07%   203.83MB 17.78%  main.getRunBuf
+   14.62MB  1.28% 92.35%    14.62MB  1.28%  runtime/pprof.StartCPUProfile
+   10.62MB  0.93% 93.28%    10.62MB  0.93%  compress/flate.(*fastGen).addBlock
+    8.77MB  0.76% 94.04%    15.74MB  1.37%  compress/flate.NewWriter (inline)
+    6.06MB  0.53% 94.57%     6.06MB  0.53%  runtime/pprof.allFrames
+    4.33MB  0.38% 94.95%     9.18MB   0.8%  crypto/internal/fips140/hmac.New[go.shape.interface { BlockSize int; Reset; Size int; Sum []uint8; Write  }]
+    4.07MB  0.36% 95.30%    15.99MB  1.39%  runtime/pprof.(*profileBuilder).emitLocation
+    3.33MB  0.29% 95.59%   246.61MB 21.51%  encoding/json/v2.makeStringArshaler.func2
+    2.12MB  0.19% 95.78%     6.97MB  0.61%  compress/flate.(*compressor).init
+    1.08MB 0.094% 95.87%     8.29MB  0.72%  net/http.(*conn).readRequest
+    1.06MB 0.092% 95.96%   847.33MB 73.90%  main.(*Store).readManifest
+    0.85MB 0.074% 96.04%    16.81MB  1.47%  main.(*Server).sigv4VerifyCore
+    0.75MB 0.065% 96.10%    10.51MB  0.92%  main.hmacSHA256
+    0.56MB 0.049% 96.15%   205.38MB 17.91%  main.(*packRunReader).read
+    0.40MB 0.035% 96.19%    19.18MB  1.67%  runtime/pprof.writeHeapInternal
+## alloc_objects (top 12)
+Showing nodes accounting for 4345637, 92.42% of 4701823 total
+Dropped 303 nodes (cum <= 23509)
+Showing top 12 nodes out of 55
+      flat  flat%   sum%        cum   cum%
+   3995240 84.97% 84.97%    3995240 84.97%  encoding/json/v2.makeString
+     60789  1.29% 86.27%     100566  2.14%  crypto/internal/fips140/hmac.New[go.shape.interface { BlockSize int; Reset; Size int; Sum []uint8; Write  }]
+     45786  0.97% 87.24%      45786  0.97%  reflect.growslice
+     42394   0.9% 88.14%      42394   0.9%  runtime/pprof.allFrames
+     39777  0.85% 88.99%      39777  0.85%  crypto/internal/fips140/sha256.New (inline)
+     35028  0.74% 89.73%      35028  0.74%  net/textproto.MIMEHeader.Set
+     33222  0.71% 90.44%      47419  1.01%  net/textproto.readMIMEHeader
+     32157  0.68% 91.12%      32159  0.68%  net/textproto.canonicalMIMEHeaderKey
+     17075  0.36% 91.49%     136657  2.91%  main.hmacSHA256
+     15419  0.33% 91.81%      27474  0.58%  main.sigv4EncodeBytes
+     14838  0.32% 92.13%     269068  5.72%  main.(*Server).sigv4VerifyCore
+     13912   0.3% 92.42%      33181  0.71%  main.(*packRunReader).read
+## mutex delay (top 12)
+Time: 2026-11-08 04:07:11 UTC
+Showing nodes accounting for 70.29ms, 100% of 70.29ms total
+Dropped 83 nodes (cum <= 0.35ms)
+Showing top 12 nodes out of 94
+      flat  flat%   sum%        cum   cum%
+   69.49ms 98.86% 98.86%    69.49ms 98.86%  runtime.unlock (inline)
+    0.80ms  1.14%   100%     0.80ms  1.14%  runtime._LostContendedRuntimeLock
+         0     0%   100%     0.99ms  1.41%  bufio.(*Reader).Peek
+         0     0%   100%     0.99ms  1.41%  bufio.(*Reader).fill
+         0     0%   100%     0.37ms  0.53%  compress/flate.(*Writer).Close (inline)
+         0     0%   100%     0.37ms  0.53%  compress/flate.(*compressor).close
+         0     0%   100%     0.37ms  0.53%  compress/flate.(*compressor).deflateFast
+         0     0%   100%     0.37ms  0.53%  compress/flate.(*huffmanBitWriter).writeBlockDynamic
+         0     0%   100%     0.37ms  0.53%  compress/flate.(*huffmanBitWriter).writeTokens
+         0     0%   100%     0.37ms  0.53%  compress/gzip.(*Writer).Close
+## block delay (top 15)
+Time: 2026-11-08 04:07:11 UTC
+Showing nodes accounting for 5.85s, 99.33% of 5.89s total
+Dropped 49 nodes (cum <= 0.03s)
+      flat  flat%   sum%        cum   cum%
+     5.85s 99.33% 99.33%      5.85s 99.33%  runtime.selectgo
+         0     0% 99.33%      5.87s 99.70%  main.init.7.func2
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":0.567191141,"/cpu/classes/idle:cpu-seconds":16.576290446,"/cpu/classes/total:cpu-seconds":24.106209336,"/cpu/classes/user:cpu-seconds":6.845595312,"/gc/cycles/total:gc-cycles":495,"/gc/heap/allocs:bytes":1212969296,"/gc/heap/allocs:objects":4729469,"/gc/heap/live:bytes":2741256,"/memory/classes/total:bytes":56027416,"/sched/goroutines:goroutines":21,"final":false,"gomaxprocs":4,"mem.heap_inuse":4857856,"mem.mallocs":4787732,"mem.num_gc":495,"mem.pause_total_ns":72421438,"mem.sys":56027416,"mem.total_alloc":1213048344,"t":1794110831546093523}
