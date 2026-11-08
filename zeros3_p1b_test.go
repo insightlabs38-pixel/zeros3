@@ -14,6 +14,17 @@ import (
 	"time"
 )
 
+func init() {
+	// The production default packs medium objects from 256 KiB. Most of the
+	// suite inspects, corrupts or deletes loose chunk files of objects of that
+	// size, so test binaries keep the previous threshold unless
+	// ZEROS3_TEST_MEDIUM_PACK=1; the medium-pack tests below set the policy
+	// explicitly, and the layout-agnostic tests also pass under the default.
+	if os.Getenv("ZEROS3_TEST_MEDIUM_PACK") != "1" && os.Getenv("ZEROS3_DIRECT_PACK_KIB") == "" && os.Getenv("ZEROS3_DIRECT_PACK_MIB") == "" {
+		directPackMinBytes = defaultPackTargetBytes
+	}
+}
+
 // Z4-P1B: durable-publication tests. Hooks fire on request, flush and commit
 // goroutines, so every counter and shared variable here is concurrency-safe.
 
@@ -662,4 +673,244 @@ func TestP1B_PackLocatorPublishDoesNotCopyAllPacks(t *testing.T) {
 	if len(base.packs) != n {
 		t.Fatal("base snapshot changed length")
 	}
+}
+
+// --- medium-object packing (production default policy) ---
+
+func mediumPolicy(t *testing.T) {
+	t.Helper()
+	oldMin, oldFlush, oldKiB := directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB
+	directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB = 256<<10, 64<<10, 0
+	t.Cleanup(func() { directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB = oldMin, oldFlush, oldKiB })
+}
+
+func looseCount(t *testing.T, dir string) int { return len(casLooseChunks(t, dir)) }
+
+func verifyDeepOK(t *testing.T, s *Store) {
+	t.Helper()
+	res, err := s.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK() {
+		t.Fatalf("verify -deep: %+v", res)
+	}
+}
+
+// The policy changes only where new chunks are stored: the manifest of an
+// object (chunk list, sizes, digests, ETag) is byte-for-byte what the loose
+// policy produces, for sizes around the threshold.
+func TestP1B_MediumPack_SameManifestAsLoose(t *testing.T) {
+	for _, size := range []int{255 << 10, 256 << 10, 700 << 10, 3 << 20, 9<<20 + 12345} {
+		body := genRandomBytes(int64(size), size)
+		run := func(medium bool) (manifestV1, *Store, string) {
+			if medium {
+				mediumPolicy(t)
+			} else {
+				old := directPackMinBytes
+				directPackMinBytes = defaultPackTargetBytes
+				t.Cleanup(func() { directPackMinBytes = old })
+			}
+			store, dir := newBucketStore(t)
+			e, err := store.PutObject("b", "k", body, "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			man, err := store.readVerifiedManifest(e.manifestUUID, e.manifestSHA256)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return man, store, dir
+		}
+		a, _, _ := run(false)
+		b, sb, dirB := run(true)
+		a.ManifestUUID, b.ManifestUUID, a.CreatedAt, b.CreatedAt, a.VersionID, b.VersionID = "", "", time.Time{}, time.Time{}, "", ""
+		ja, jb := fmt.Sprint(a), fmt.Sprint(b)
+		if ja != jb {
+			t.Fatalf("size %d: manifests differ between policies", size)
+		}
+		_, got, err := sb.GetObject("b", "k")
+		if err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("size %d: read back differs: %v", size, err)
+		}
+		verifyDeepOK(t, sb)
+		packs, _, _ := sb.packTotals()
+		if size >= 256<<10 && (packs == 0 || looseCount(t, dirB) != 0) {
+			t.Fatalf("size %d: want packed chunks, got %d packs, %d loose", size, packs, looseCount(t, dirB))
+		}
+		if size < 256<<10 && packs != 0 {
+			t.Fatalf("size %d below the threshold was packed", size)
+		}
+	}
+}
+
+func TestP1B_MediumPack_DedupAndRevisions(t *testing.T) {
+	mediumPolicy(t)
+	store, dir := newBucketStore(t)
+	body := genRandomBytes(11, 2<<20)
+	if _, err := store.PutObject("b", "a", body, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	p1, _, _ := store.packTotals()
+	if _, err := store.PutObject("b", "dup", body, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if p2, _, _ := store.packTotals(); p2 != p1 {
+		t.Fatalf("an exact duplicate published %d new packs", p2-p1)
+	}
+	// A small edit: only the few changed chunks are new; they are below the
+	// 64 KiB minimum or form one small pack, and never rewrite shared chunks.
+	rev := append([]byte(nil), body...)
+	copy(rev[1<<20:], []byte("edited-in-the-middle"))
+	if _, err := store.PutObject("b", "rev", rev, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string][]byte{"a": body, "dup": body, "rev": rev} {
+		if _, got, err := store.GetObject("b", k); err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("%s: %v", k, err)
+		}
+	}
+	verifyDeepOK(t, store)
+	_ = dir
+}
+
+func TestP1B_MediumPack_RestartKeepsEverything(t *testing.T) {
+	mediumPolicy(t)
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.CreateBucket("b")
+	want := map[string][]byte{}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for i := 0; i < 24; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body := genRandomBytes(int64(900+i), 260<<10+i*97000)
+			key := fmt.Sprintf("o%d", i)
+			if _, err := store.PutObject("b", key, body, "", nil); err != nil {
+				t.Error(err)
+				return
+			}
+			mu.Lock()
+			want[key] = body
+			mu.Unlock()
+		}()
+	}
+	withTimeout(t, 60*time.Second, "concurrent medium puts", wg.Wait)
+	store.Close()
+	re, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer re.Close()
+	for k, body := range want {
+		if _, got, err := re.GetObject("b", k); err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("%s after restart: %v", k, err)
+		}
+	}
+	verifyDeepOK(t, re)
+	if np, _, _ := re.packTotals(); np == 0 {
+		t.Fatal("no packs were written")
+	}
+}
+
+// Past the pack budget medium objects fall back to loose chunks; large ones do not.
+func TestP1B_MediumPack_ValveFallsBackToLoose(t *testing.T) {
+	mediumPolicy(t)
+	old := mediumPackMaxPacks
+	mediumPackMaxPacks = 1
+	t.Cleanup(func() { mediumPackMaxPacks = old })
+	store, dir := newBucketStore(t)
+	a := genRandomBytes(21, 1<<20)
+	if _, err := store.PutObject("b", "first", a, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, _ := store.packTotals(); n != 1 {
+		t.Fatalf("first object: %d packs", n)
+	}
+	b := genRandomBytes(22, 1<<20)
+	if _, err := store.PutObject("b", "second", b, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, _ := store.packTotals(); n != 1 || looseCount(t, dir) == 0 {
+		t.Fatalf("valve not applied: %d packs, %d loose", n, looseCount(t, dir))
+	}
+	for k, want := range map[string][]byte{"first": a, "second": b} {
+		if _, got, err := store.GetObject("b", k); err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("%s: %v", k, err)
+		}
+	}
+	verifyDeepOK(t, store)
+}
+
+func TestP1B_MediumPack_MultipartPartsAndCompletion(t *testing.T) {
+	mediumPolicy(t)
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.CreateBucket("b")
+	uid, err := store.CreateMultipartUpload("b", "mp", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodies := [][]byte{
+		genRandomBytes(71, minMultipartPartSize+1234),
+		genRandomBytes(72, minMultipartPartSize+2468),
+		genRandomBytes(73, minMultipartPartSize+3702),
+		genRandomBytes(74, 300<<10),
+	}
+	parts := make([]completedPart, len(bodies))
+	for i, b := range bodies {
+		etag, err := store.UploadPart("b", "mp", uid, i+1, b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts[i] = completedPart{PartNumber: i + 1, ETag: etag}
+	}
+	// Replace part 2 (client retry): completion must use the new bytes.
+	bodies[1] = genRandomBytes(99, minMultipartPartSize+777)
+	if parts[1].ETag, err = store.UploadPart("b", "mp", uid, 2, bodies[1]); err != nil {
+		t.Fatal(err)
+	}
+	whole := bytes.Join(bodies, nil)
+	e, man, err := store.CompleteMultipartUpload("b", "mp", uid, parts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if man.TotalLength != int64(len(whole)) || e.size != int64(len(whole)) {
+		t.Fatalf("size %d, want %d", man.TotalLength, len(whole))
+	}
+	if _, got, err := store.GetObject("b", "mp"); err != nil || !bytes.Equal(got, whole) {
+		t.Fatalf("completed object differs: %v", err)
+	}
+	// The chunk list equals a fresh CDC pass over the logical object, which
+	// is what a single PUT of the same bytes records.
+	single, err := store.PutObject("b", "single", whole, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm, err := store.readVerifiedManifest(single.manifestUUID, single.manifestSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(sm.Chunks) != fmt.Sprint(man.Chunks) || sm.ObjectSHA256 != man.ObjectSHA256 {
+		t.Fatal("multipart completion chunked the object differently from a single PUT")
+	}
+	verifyDeepOK(t, store)
+	store.Close()
+	re, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer re.Close()
+	if _, got, err := re.GetObject("b", "mp"); err != nil || !bytes.Equal(got, whole) {
+		t.Fatalf("after restart: %v", err)
+	}
+	verifyDeepOK(t, re)
 }

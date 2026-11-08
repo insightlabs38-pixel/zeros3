@@ -1621,7 +1621,7 @@ func (o ingestOptions) directPack() bool {
 // medium objects use loose chunks again until `compact`/`repack` merge the
 // small packs. Opening a store reads every pack index (about 75 us each), so
 // this caps the startup cost that small packs can add.
-const mediumPackMaxPacks = 200_000
+var mediumPackMaxPacks = 200_000
 
 // packFor reports whether an ingest with these options writes its new chunks
 // into packs on this store.
