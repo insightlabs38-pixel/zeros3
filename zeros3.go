@@ -1494,9 +1494,9 @@ const (
 	// pipeMinBytes is the known size from which ingest uses the pipeline;
 	// below it goroutine hand-offs cost more than they overlap.
 	pipeMinBytes   = 4 << 20
-	pipeBatchBytes = 1 << 20
+	pipeBatchBytes = 512 << 10
 	pipeBufBytes   = pipeBatchBytes + cdcMaxChunkSize
-	pipeBuffers    = 8
+	pipeBuffers    = 6
 	pipeWriteLag   = 1 // batches in flight between hashing and writing
 	pipeSumWorkers = 2
 )
@@ -2371,7 +2371,7 @@ func verifyPackExact(path string, entries []packEntry, bodySHA [32]byte) (packIn
 	}
 
 	// Record runs of about verifyRunBytes, claimed by a few goroutines.
-	const verifyRunBytes = 1 << 20
+	const verifyRunBytes = 256 << 10
 	type run struct{ lo, hi int }
 	var runs []run
 	for lo := 0; lo < len(entries); {
@@ -10449,7 +10449,7 @@ type packWriter struct {
 }
 
 const (
-	packWriteBufBytes = 512 << 10
+	packWriteBufBytes = 256 << 10
 	packWriteBufs     = 3
 )
 
