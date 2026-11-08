@@ -43263,11 +43263,11 @@ func TestDirectPackLife_CrashMatrixConverges(t *testing.T) {
 				data = append([]byte(nil), base...)
 				copy(data[1<<20:], genRandomBytes(73, 100<<10))
 			}
-			calls := 0
+			var calls atomic.Int32 // hooks may fire on background pack jobs
 			withTestHook(t, func(point string) {
 				if point == c.point {
-					calls++
-					if calls == c.nth {
+					n := calls.Add(1)
+					if n == int32(c.nth) {
 						panic(simulatedCrash{point: point})
 					}
 				}

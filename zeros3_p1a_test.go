@@ -675,3 +675,44 @@ func TestP1A_PackWriterEarlySyncErrorIsSticky(t *testing.T) {
 		t.Fatal("an early fsync failure was swallowed")
 	}
 }
+
+// discardSink drops chunks, so a benchmark measures CDC and digests only.
+type discardSink struct{}
+
+func (discardSink) Put([32]byte, []byte) error { return nil }
+func (discardSink) Flush() error               { return nil }
+func (discardSink) Abort()                     {}
+
+// BenchmarkP1A_ComputeDesigns compares the compute-only ingest designs on
+// 256 MiB (CDC, chunk digest, object digest, MD5, nothing stored):
+// serial is the original fused single pass, in which every digest sees each
+// chunk while it is cache-resident; pipelined overlaps the digests on
+// separate goroutines. Run with -cpu 1,2,4.
+func BenchmarkP1A_ComputeDesigns(b *testing.B) {
+	data := p1aRand(77, 256<<20)
+	s := &Store{}
+	b.Run("serial_fused", func(b *testing.B) {
+		b.SetBytes(int64(len(data)))
+		for i := 0; i < b.N; i++ {
+			c := newCDCChunker(bytes.NewReader(data))
+			objSum, etag := sha256.New(), md5.New()
+			for {
+				chunk, err := c.nextView()
+				if err != nil {
+					break
+				}
+				_ = sha256.Sum256(chunk)
+				objSum.Write(chunk)
+				etag.Write(chunk)
+			}
+		}
+	})
+	b.Run("pipelined", func(b *testing.B) {
+		b.SetBytes(int64(len(data)))
+		for i := 0; i < b.N; i++ {
+			if _, err := s.ingestPipelinedTo(bytes.NewReader(data), true, ingestOptions{size: int64(len(data))}, discardSink{}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
