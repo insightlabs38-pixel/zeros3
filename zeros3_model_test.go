@@ -119,6 +119,7 @@ func TestModelEmptyMembersStillVerifyDependencies(t *testing.T) {
 }
 
 func TestModelNestedPublicationRaisesFloor(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	l := newRepLab(t, repModeOff)
 	data := repZ4ModelSafetensors(t, bytes.Repeat([]byte{1, 2, 3, 4}, 16384))
 	l.put("model", data)
@@ -161,6 +162,7 @@ func TestModelNestedPublicationRaisesFloor(t *testing.T) {
 }
 
 func TestModelOrdinaryPutCrashPublication(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	for _, point := range []string{hookRepRootBeforeFormat, hookRepRootAfterFormat, hookRepRootBeforeRename, hookRepRootAfterRename, hookRepBeforeNamespace} {
 		t.Run(point, func(t *testing.T) {
 			l := newRepLab(t, repModePrefer)

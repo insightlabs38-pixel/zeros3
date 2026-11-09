@@ -31,22 +31,29 @@ type ackedPut struct {
 // object is half-visible, that verify -deep passes and that gc keeps every
 // acknowledged object. The store accumulates across rounds.
 func TestP1B_RealKill_AckedObjectsSurviveConcurrentKill(t *testing.T) {
-	for _, mode := range []struct{ name, env string }{
-		{"default-policy", ""},
-		{"loose-only", "ZEROS3_DIRECT_PACK_MIB=0"},
+	mixed := []int{4 << 10, 20 << 10, 70 << 10, 300 << 10, 1<<20 + 7, 3 << 20}
+	small := []int{100, 1 << 10, 4 << 10, 20 << 10, 70 << 10, 200 << 10}
+	for _, mode := range []struct {
+		name  string
+		sizes []int
+		env   []string
+	}{
+		{"default-policy", mixed, nil},
+		// P1C: only small objects, 1 MiB segments so kills land in appends, rollovers and seals
+		{"segments-small-objects", small, []string{"ZEROS3_SEGMENT_TARGET_MIB=1"}},
+		{"loose-only", mixed, []string{"ZEROS3_DIRECT_PACK_MIB=0", "ZEROS3_SMALL_OBJECT_STORAGE=off"}},
 	} {
-		t.Run(mode.name, func(t *testing.T) { realKillRounds(t, mode.env) })
+		t.Run(mode.name, func(t *testing.T) { realKillRounds(t, mode.sizes, mode.env) })
 	}
 }
 
-func realKillRounds(t *testing.T, extraEnv string) {
+func realKillRounds(t *testing.T, sizes []int, extraEnv []string) {
 	if testing.Short() {
 		t.Skip("real-process kill rounds")
 	}
 	bin := buildZeros3Binary(t)
 	storeDir := t.TempDir()
 	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
-	sizes := []int{4 << 10, 20 << 10, 70 << 10, 300 << 10, 1<<20 + 7, 3 << 20}
 	acked := map[string]ackedPut{}         // unique keys: exact expectation
 	sharedAcked := map[string][]ackedPut{} // shared keys: any acked or in-flight version
 	sharedMaybe := map[string][]ackedPut{} // sent, outcome unknown
@@ -57,9 +64,7 @@ func realKillRounds(t *testing.T, extraEnv string) {
 		addr := freeTCPAddr(t)
 		srv := exec.Command(bin, "-store", storeDir, "-addr", addr)
 		srv.Env = os.Environ()
-		if extraEnv != "" {
-			srv.Env = append(srv.Env, extraEnv)
-		}
+		srv.Env = append(srv.Env, extraEnv...)
 		if err := srv.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -218,6 +223,7 @@ func claimsEmpty(r *pubRegistry) bool {
 // complete, verify -deep passes, gc keeps all acknowledged data, no claim or
 // queue entry leaked, and every unacknowledged PUT can be retried.
 func TestP1B_CrashMatrix_ConcurrentGroups(t *testing.T) {
+	useLooseLayout(t, "crash boundaries of the loose publication path (segment boundaries: TestP1C_Crash*)")
 	points := []string{
 		hookCASAfterStage, hookCASBeforeStageSync, hookCASAfterStageSync, hookCASBeforeRename,
 		hookCASAfterFirstRename, hookCASBeforeDirSync, hookCASAfterDirSync, hookCASAfterFlush,
@@ -255,9 +261,9 @@ func crashCase(t *testing.T, policy string, group int, point string, nth int) (r
 	if policy == "medium" {
 		mediumPolicy(t)
 	} else {
-		old := directPackMinBytes
-		directPackMinBytes = defaultPackTargetBytes
-		t.Cleanup(func() { directPackMinBytes = old })
+		old, oldSeg := directPackMinBytes, segMaxObjectBytes
+		directPackMinBytes, segMaxObjectBytes = defaultPackTargetBytes, 0
+		t.Cleanup(func() { directPackMinBytes, segMaxObjectBytes = old, oldSeg })
 	}
 	dir := t.TempDir()
 	s, err := OpenStore(dir)

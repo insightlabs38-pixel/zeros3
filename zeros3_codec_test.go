@@ -229,6 +229,7 @@ func TestRepCodecNestedProduction(t *testing.T) {
 }
 
 func TestRepCodecUnsupportedFallsBack(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	plain, zst := repCodecFixtureBytes(t)
 	gz := repCodecGzip(t, plain)
 	badCRC := append([]byte(nil), gz...)

@@ -24,12 +24,23 @@ type harness struct {
 	env  []string // extra environment for the harness and the servers it starts
 }
 
-// looseLayout restores the pre-P1B direct-pack threshold (64 MiB) for harnesses
-// whose assertions are about loose chunk files: counting chunk files, corrupting
-// or deleting one, `gc` of a failed write's chunks, compacting loose chunks into
-// packs. By default objects from 256 KiB are written into packs, where those
-// preconditions do not hold; every other harness runs with the default.
-var looseLayout = []string{"ZEROS3_DIRECT_PACK_KIB=65536"}
+// looseLayout is the explicit loose-layout storage policy for harnesses whose
+// assertions are about loose chunk files: counting chunk files, corrupting or
+// deleting one, `gc` of a failed write's chunks, compacting loose chunks into
+// packs. It turns the P1C small-object segments off and restores the pre-P1B
+// direct-pack threshold (64 MiB). Every other harness runs the production
+// default (which now writes small objects into segments). The runner prints the policy of every harness it starts
+// ("layout=loose" or "layout=production") so the coverage is visible.
+var looseLayout = []string{"ZEROS3_SMALL_OBJECT_STORAGE=off", "ZEROS3_DIRECT_PACK_KIB=65536"}
+
+func layoutOf(h harness) string {
+	for _, e := range h.env {
+		if e == looseLayout[0] {
+			return "loose"
+		}
+	}
+	return "production"
+}
 
 var groups = map[string][]harness{
 	"static": {
@@ -46,7 +57,7 @@ var groups = map[string][]harness{
 	},
 	"sync": {
 		{pkg: "./harness/m6/sync"}, {pkg: "./harness/m6c/dirsync"}, {pkg: "./harness/m8a/remote_delta"},
-		{pkg: "./harness/m8b/repair"}, {pkg: "./harness/m8c/namespace_replication"},
+		{pkg: "./harness/m8b/repair", env: looseLayout}, {pkg: "./harness/m8c/namespace_replication", env: looseLayout},
 		{pkg: "./harness/m8d/fork", env: looseLayout}, {pkg: "./harness/m8e/snapshot", env: looseLayout}, {pkg: "./harness/m8g/introspection"},
 	},
 	"clients": {
@@ -58,7 +69,8 @@ var groups = map[string][]harness{
 		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "invariance"}, env: looseLayout},
 	},
 	"apps": {
-		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "browser,artifact,rebalance"}},
+		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "browser"}, env: looseLayout}, // counts new loose chunk bytes
+		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "artifact,rebalance"}},
 	},
 	"bench": {
 		{pkg: "./harness/m8_baseline", args: []string{"-bin", "@bin"}},
@@ -74,6 +86,7 @@ func main() {
 	list := flag.Bool("list", false, "list groups and harnesses")
 	sel := flag.String("group", "s3", "comma-separated groups: static,s3,sync,clients,client,apps,bench,all")
 	bin := flag.String("bin", "", "prebuilt zeros3 binary (default: build ../zeros3.go)")
+	forceProd := flag.Bool("force-production", false, "ignore the explicit loose-layout declarations: run every harness on the production default (reports which loose-layout assertions then fail)")
 	flag.Parse()
 
 	if *list {
@@ -141,17 +154,25 @@ func main() {
 				args = append(args, strings.ReplaceAll(a, "@bin", absBin))
 			}
 			cmd := exec.Command("go", args...)
-			cmd.Env = append(append(cleanEnv(), "ZEROS3_BIN="+absBin), h.env...)
+			env := h.env
+			if *forceProd {
+				env = nil
+			}
+			cmd.Env = append(append(cleanEnv(), "ZEROS3_BIN="+absBin), env...)
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 			t := time.Now()
-			fmt.Printf("=== %s\n", h.pkg)
+			lay := layoutOf(h)
+			if *forceProd {
+				lay = "production(forced)"
+			}
+			fmt.Printf("=== %s (layout=%s)\n", h.pkg, lay)
 			status := "PASS"
 			if err := cmd.Run(); err != nil {
 				status = "FAIL"
 				failed++
 			}
 			ran++
-			fmt.Printf("%s %-45s %s\n", status, h.pkg, time.Since(t).Round(time.Millisecond))
+			fmt.Printf("%s %-45s layout=%-10s %s\n", status, h.pkg, lay, time.Since(t).Round(time.Millisecond))
 		}
 	}
 	fmt.Printf("\n%d run, %d failed, %d skipped in %s\n", ran, failed, skipped, time.Since(start).Round(time.Second))

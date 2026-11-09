@@ -165,6 +165,28 @@ Direct packs are raw by default because the online compression experiment
 showed a large throughput and read-speed cost for adaptive DEFLATE. Compression
 is therefore left to physical maintenance paths where appropriate.
 
+### Small-object segments
+
+A known-size PUT below 1 MiB (and every manifest of at most 64 KiB, whatever the
+object size) no longer creates files. Its new chunks and its manifest are records
+of one append-only **segment** (`segments/<seq>.seg`): the bytes of a pack-v1 file
+without index and footer. Concurrent requests share one `write` and one `fsync`
+(group commit, no timer); a record becomes visible to readers only after the
+`fsync` that covers it, and the journal frame, written afterwards, is still the
+commit point. A manifest record is named by the SHA-256 of its exact bytes, the
+digest the journal already records, so no new reference exists.
+
+A segment seals at 32 MiB (or when `gc`, `repack`, `compact`, a tier operation or
+a pack-locator rebuild needs a quiet store, and at a clean close from 8 MiB) by
+appending the pack-v1 index and footer and publishing the file under
+`packs/<body_sha256>.pack`: a sealed segment is an ordinary pack. Opening a store
+re-hashes every record of the unsealed segment, cuts a torn tail (copied to
+`tmp/seg-torn-*`) and continues appending. Format, protocol, recovery state
+machine and crash model: `testing-harnesses/z4/p1c/{FORMAT,DURABILITY_MODEL}.md`.
+`ZEROS3_SMALL_OBJECT_STORAGE=off` writes loose chunks and manifest files again;
+segments already present stay readable. The first segment raises the store format
+to level 11 (see `STATUS.md`).
+
 ## Failure behavior during writes
 
 Physical content can be published before the request's final namespace commit

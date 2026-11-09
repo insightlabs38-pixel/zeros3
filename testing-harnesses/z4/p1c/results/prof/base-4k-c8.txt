@@ -1,0 +1,165 @@
+# profile dir: prof-base-r0
+## CPU flat (top 28)
+Time: 2026-11-09 06:46:36 UTC
+Duration: 4.52s, Total samples = 7.87s (174.15%)
+Showing nodes accounting for 5.76s, 73.19% of 7.87s total
+Dropped 351 nodes (cum <= 0.04s)
+Showing top 28 nodes out of 303
+      flat  flat%   sum%        cum   cum%
+     3.43s 43.58% 43.58%      3.43s 43.58%  internal/runtime/syscall/linux.Syscall6
+     0.38s  4.83% 48.41%      0.38s  4.83%  runtime.memclrNoHeapPointers
+     0.35s  4.45% 52.86%      0.35s  4.45%  runtime.futex
+     0.27s  3.43% 56.29%      0.27s  3.43%  runtime.madvise
+     0.20s  2.54% 58.83%      0.36s  4.57%  runtime.tryDeferToSpanScan
+     0.14s  1.78% 60.61%      0.14s  1.78%  runtime.spanClass.sizeclass (inline)
+     0.10s  1.27% 61.88%      0.13s  1.65%  runtime.step
+     0.08s  1.02% 62.90%      0.08s  1.02%  runtime.procyieldAsm
+     0.06s  0.76% 63.66%      0.06s  0.76%  runtime.osyield
+     0.06s  0.76% 64.42%      0.21s  2.67%  runtime.scanObject
+     0.05s  0.64% 65.06%      0.06s  0.76%  runtime.findObject
+     0.05s  0.64% 65.69%      0.05s  0.64%  runtime.findfunc
+     0.05s  0.64% 66.33%      0.05s  0.64%  runtime.memmove
+     0.05s  0.64% 66.96%      0.05s  0.64%  runtime.tgkill
+     0.04s  0.51% 67.47%      0.04s  0.51%  crypto/internal/fips140/sha256.blockSHANI
+     0.04s  0.51% 67.98%      0.10s  1.27%  runtime.(*unwinder).resolveInternal
+     0.04s  0.51% 68.49%      0.04s  0.51%  runtime.nextFreeFast (inline)
+     0.04s  0.51% 69.00%      0.05s  0.64%  runtime.scanObjectSmall
+     0.04s  0.51% 69.50%      0.30s  3.81%  runtime.scanSpan
+     0.04s  0.51% 70.01%      0.13s  1.65%  runtime.scanblock
+     0.04s  0.51% 70.52%      0.05s  0.64%  runtime.typePointers.next
+     0.03s  0.38% 70.90%      4.26s 54.13%  net/http.(*conn).serve
+     0.03s  0.38% 71.28%      0.08s  1.02%  runtime.(*mcache).releaseAll
+     0.03s  0.38% 71.66%      0.04s  0.51%  runtime.(*mspan).markBitsForIndex (inline)
+     0.03s  0.38% 72.05%      0.05s  0.64%  runtime.(*spanSet).pop
+     0.03s  0.38% 72.43%      0.05s  0.64%  runtime.exitsyscall
+     0.03s  0.38% 72.81%      0.05s  0.64%  runtime.gcmarknewobject
+     0.03s  0.38% 73.19%      0.13s  1.65%  runtime.lock2
+## CPU cumulative (top 45)
+Duration: 4.52s, Total samples = 7.87s (174.15%)
+Showing nodes accounting for 3.52s, 44.73% of 7.87s total
+Dropped 351 nodes (cum <= 0.04s)
+Showing top 45 nodes out of 303
+      flat  flat%   sum%        cum   cum%
+     0.03s  0.38%  0.38%      4.26s 54.13%  net/http.(*conn).serve
+         0     0%  0.38%      3.80s 48.28%  main.(*Server).ServeHTTP
+         0     0%  0.38%      3.80s 48.28%  net/http.serverHandler.ServeHTTP
+         0     0%  0.38%      3.60s 45.74%  main.(*Server).handlePutObject
+     3.43s 43.58% 43.96%      3.43s 43.58%  internal/runtime/syscall/linux.Syscall6
+         0     0% 43.96%      3.38s 42.95%  syscall.RawSyscall6
+         0     0% 43.96%      1.93s 24.52%  main.(*Store).commitIngested
+     0.01s  0.13% 44.09%      1.90s 24.14%  runtime.systemstack
+     0.01s  0.13% 44.22%      1.88s 23.89%  syscall.Syscall
+         0     0% 44.22%      1.81s 23.00%  os.ignoringEINTR (inline)
+     0.01s  0.13% 44.35%      1.61s 20.46%  syscall.Syscall6
+         0     0% 44.35%      1.57s 19.95%  main.(*Store).publishManifestJoined
+         0     0% 44.35%      1.56s 19.82%  main.(*Server).ingestRequestBody
+         0     0% 44.35%      1.56s 19.82%  main.(*Store).ingestStream
+     0.01s  0.13% 44.47%      1.54s 19.57%  main.(*Store).publishManifest
+         0     0% 44.47%      1.29s 16.39%  runtime.mallocgc
+         0     0% 44.47%      1.27s 16.14%  os.OpenFile
+         0     0% 44.47%      1.27s 16.14%  os.openFileNolog
+     0.01s  0.13% 44.60%      1.24s 15.76%  main.writeFileDurable
+         0     0% 44.60%      1.17s 14.87%  internal/poll.(*FD).Fsync
+         0     0% 44.60%      1.17s 14.87%  os.(*File).Sync
+         0     0% 44.60%      1.15s 14.61%  internal/poll.(*FD).Fsync.func1 (inline)
+         0     0% 44.60%      1.15s 14.61%  internal/poll.ignoringEINTR (inline)
+         0     0% 44.60%      1.15s 14.61%  syscall.Fsync
+         0     0% 44.60%      1.08s 13.72%  os.open
+         0     0% 44.60%      1.08s 13.72%  os.openFileNolog.func1 (inline)
+         0     0% 44.60%      1.08s 13.72%  syscall.Open (inline)
+         0     0% 44.60%      1.08s 13.72%  syscall.openat
+     0.01s  0.13% 44.73%      1.05s 13.34%  os.CreateTemp
+         0     0% 44.73%      1.03s 13.09%  main.(*casBatch).startFlush.func1
+         0     0% 44.73%      1.02s 12.96%  main.(*Store).casFlushFiles
+         0     0% 44.73%      0.93s 11.82%  main.forEachBounded
+         0     0% 44.73%      0.89s 11.31%  runtime.gcBgMarkWorker
+         0     0% 44.73%      0.74s  9.40%  main.(*casBatch).add
+         0     0% 44.73%      0.74s  9.40%  main.looseSink.Put
+         0     0% 44.73%      0.74s  9.40%  runtime.makeslice
+         0     0% 44.73%      0.72s  9.15%  runtime.gcBgMarkWorker.func2
+         0     0% 44.73%      0.72s  9.15%  runtime.gcDrain
+         0     0% 44.73%      0.70s  8.89%  runtime.gcDrainMarkWorkerDedicated (inline)
+         0     0% 44.73%      0.69s  8.77%  main.(*Store).syncDirShared
+         0     0% 44.73%      0.69s  8.77%  main.(*dirSyncMap).sync
+         0     0% 44.73%      0.69s  8.77%  main.newCDCChunker (inline)
+         0     0% 44.73%      0.66s  8.39%  main.(*dirSyncEntry).sync
+         0     0% 44.73%      0.65s  8.26%  main.(*Store).casEnsureShardDirs
+         0     0% 44.73%      0.64s  8.13%  main.(*Store).casStage
+## alloc_space (top 18)
+Showing nodes accounting for 3079152.80kB, 95.46% of 3225504.79kB total
+Dropped 359 nodes (cum <= 16127.52kB)
+Showing top 18 nodes out of 19
+      flat  flat%   sum%        cum   cum%
+ 3070976kB 95.21% 95.21%  3070976kB 95.21%  main.newCDCChunker (inline)
+ 4009.99kB  0.12% 95.33% 16462.69kB  0.51%  runtime/pprof.(*profileBuilder).emitLocation
+ 1314.13kB 0.041% 95.37% 25734.94kB   0.8%  main.(*Server).sigv4VerifyCore
+ 1158.91kB 0.036% 95.41% 3081751.63kB 95.54%  main.(*Store).ingestStream
+ 1094.94kB 0.034% 95.44% 16215.12kB   0.5%  main.hmacSHA256
+  397.92kB 0.012% 95.46% 3115937.11kB 96.60%  main.(*Server).handlePutObject
+  112.22kB 0.0035% 95.46% 3082258.92kB 95.56%  main.(*Server).ingestRequestBody
+   68.13kB 0.0021% 95.46% 3158457.34kB 97.92%  net/http.(*conn).serve
+   16.28kB 0.0005% 95.46% 22443.25kB   0.7%  runtime/pprof.(*profileBuilder).appendLocsForStack
+    4.29kB 0.00013% 95.46% 23510.18kB  0.73%  main.p0snapshot
+         0     0% 95.46% 3143685.35kB 97.46%  main.(*Server).ServeHTTP
+         0     0% 95.46% 27499.60kB  0.85%  main.(*Server).authenticate
+         0     0% 95.46% 27499.60kB  0.85%  main.(*Server).authenticateHeader
+         0     0% 95.46% 28079.16kB  0.87%  main.(*Store).commitIngested
+         0     0% 95.46% 33890.29kB  1.05%  main.init.9.func2
+         0     0% 95.46% 23499.06kB  0.73%  main.p0atomic
+         0     0% 95.46% 23474.15kB  0.73%  main.p0snapshot.func1
+         0     0% 95.46% 3143685.35kB 97.46%  net/http.serverHandler.ServeHTTP
+## alloc_objects (top 12)
+Showing nodes accounting for 771875, 51.01% of 1513149 total
+Dropped 224 nodes (cum <= 7565)
+Showing top 12 nodes out of 154
+      flat  flat%   sum%        cum   cum%
+    127115  8.40%  8.40%     127115  8.40%  internal/bytealg.MakeNoZero
+     98971  6.54% 14.94%      98971  6.54%  encoding/hex.EncodeToString
+     93977  6.21% 21.15%     152052 10.05%  crypto/internal/fips140/hmac.New[go.shape.interface { BlockSize int; Reset; Size int; Sum []uint8; Write  }]
+     84653  5.59% 26.75%      84653  5.59%  syscall.ByteSliceFromString
+     73380  4.85% 31.60%      73380  4.85%  os.newFile
+     58075  3.84% 35.43%      58075  3.84%  crypto/internal/fips140/sha256.New (inline)
+     53566  3.54% 38.97%      67934  4.49%  net/textproto.readMIMEHeader
+     41322  2.73% 41.71%      41322  2.73%  runtime/pprof.allFrames
+     38870  2.57% 44.27%     117661  7.78%  main.(*Store).casEnsureShardDirs.func3
+     37547  2.48% 46.76%      37547  2.48%  net/textproto.canonicalMIMEHeaderKey
+     33408  2.21% 48.96%      33408  2.21%  crypto/internal/fips140/sha256.(*Digest).Sum
+     30991  2.05% 51.01%      84332  5.57%  main.(*dirSyncEntry).sync
+## mutex delay (top 12)
+Time: 2026-11-09 06:46:41 UTC
+Showing nodes accounting for 628.82ms, 99.70% of 630.69ms total
+Dropped 227 nodes (cum <= 3.15ms)
+Showing top 12 nodes out of 123
+      flat  flat%   sum%        cum   cum%
+  501.92ms 79.58% 79.58%   501.92ms 79.58%  runtime.unlock (partial-inline)
+  126.90ms 20.12% 99.70%   126.90ms 20.12%  sync.(*Mutex).Unlock
+         0     0% 99.70%    12.99ms  2.06%  _.goready.func1
+         0     0% 99.70%    10.76ms  1.71%  internal/poll.(*FD).Fsync
+         0     0% 99.70%    10.76ms  1.71%  internal/poll.(*FD).Fsync.func1 (inline)
+         0     0% 99.70%    10.76ms  1.71%  internal/poll.ignoringEINTR (inline)
+         0     0% 99.70%     3.82ms  0.61%  internal/poll.ignoringEINTRIO (inline)
+         0     0% 99.70%   122.36ms 19.40%  main.(*Server).ServeHTTP
+         0     0% 99.70%   122.15ms 19.37%  main.(*Server).handlePutObject
+         0     0% 99.70%    21.68ms  3.44%  main.(*Server).ingestRequestBody
+## block delay (top 15)
+Time: 2026-11-09 06:46:41 UTC
+Showing nodes accounting for 29727.45ms, 99.61% of 29845.24ms total
+Dropped 75 nodes (cum <= 149.23ms)
+Showing top 15 nodes out of 28
+      flat  flat%   sum%        cum   cum%
+21496.25ms 72.03% 72.03% 21496.25ms 72.03%  runtime.chanrecv1
+ 7821.44ms 26.21% 98.23%  7821.44ms 26.21%  runtime.selectgo
+  409.75ms  1.37% 99.61%   409.75ms  1.37%  sync.(*Cond).Wait
+         0     0% 99.61%  9530.86ms 31.93%  main.(*Server).ServeHTTP
+         0     0% 99.61%  9530.84ms 31.93%  main.(*Server).handlePutObject
+         0     0% 99.61%  1960.16ms  6.57%  main.(*Store).casFlushFiles
+         0     0% 99.61%  9493.06ms 31.81%  main.(*Store).commitIngested
+         0     0% 99.61%  3457.66ms 11.59%  main.(*Store).commitObjectRoot (inline)
+         0     0% 99.61%  3457.66ms 11.59%  main.(*Store).commitObjectRootChecked
+         0     0% 99.61% 13393.74ms 44.88%  main.(*Store).ingestStream.func2
+         0     0% 99.61%  3367.04ms 11.28%  main.(*Store).ingestStream.func3
+         0     0% 99.61%  2667.92ms  8.94%  main.(*Store).publishManifest
+         0     0% 99.61%  6034.96ms 20.22%  main.(*Store).publishManifestJoined
+         0     0% 99.61%  3457.66ms 11.59%  main.(*Store).submitRootCommit
+## runtime metrics
+{"/cpu/classes/gc/total:cpu-seconds":1.840538191,"/cpu/classes/idle:cpu-seconds":1.861706598,"/cpu/classes/total:cpu-seconds":18.773158628,"/cpu/classes/user:cpu-seconds":14.717736005,"/gc/cycles/total:gc-cycles":1070,"/gc/heap/allocs:bytes":3314923968,"/gc/heap/allocs:objects":1531559,"/gc/heap/live:bytes":4212256,"/memory/classes/total:bytes":26929432,"/sched/goroutines:goroutines":25,"final":false,"gomaxprocs":4,"mem.heap_inuse":5939200,"mem.mallocs":1632664,"mem.num_gc":1070,"mem.pause_total_ns":256341450,"mem.sys":26929432,"mem.total_alloc":3314925416,"t":1794206801573273135}

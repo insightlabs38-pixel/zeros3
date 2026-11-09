@@ -1,0 +1,14 @@
+# old binary = 524e08550a88 (origin/main 5b9bcdd), new binary = 34a70a3126df
+1. store written by the OLD binary: level 1; new binary verify:
+result           OK
+   level after the new binary only opened it: 1
+2. store written by the NEW binary, default policy: level 11; segments=1; old binary verify:
+2026/11/09 07:45:11 zeros3: failed to open store: store: unsupported store format version 11 (this build supports versions 1 through 9) [exit 1]
+3. store written by the NEW binary, ZEROS3_SMALL_OBJECT_STORAGE=off: level 1; segments dir: 0 entries; old binary verify:
+reclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes result           OK [exit 0]
+4. level-11 store (2) read by the new binary with the policy off:
+result           OK
+5. old binary on the level-11 store, stats / gc dry-run (must refuse, must not modify):
+2026/11/09 07:45:12 zeros3: failed to open store: store: unsupported store format version 11 (this build supports versions 1 through 9) [exit 1]
+zeros3: gc failed: store: unsupported store format version 11 (this build supports versions 1 through 9) [exit 1]
+   store tree hash before/after: 31ac02779bba / 31ac02779bba

@@ -15,17 +15,6 @@ import (
 	"time"
 )
 
-func init() {
-	// The production default packs medium objects from 256 KiB. Most of the
-	// suite inspects, corrupts or deletes loose chunk files of objects of that
-	// size, so test binaries keep the previous threshold unless
-	// ZEROS3_TEST_MEDIUM_PACK=1; the medium-pack tests below set the policy
-	// explicitly, and the layout-agnostic tests also pass under the default.
-	if os.Getenv("ZEROS3_TEST_MEDIUM_PACK") != "1" && os.Getenv("ZEROS3_DIRECT_PACK_KIB") == "" && os.Getenv("ZEROS3_DIRECT_PACK_MIB") == "" {
-		directPackMinBytes = defaultPackTargetBytes
-	}
-}
-
 // Z4-P1B: durable-publication tests. Hooks fire on request, flush and commit
 // goroutines, so every counter and shared variable here is concurrency-safe.
 
@@ -692,9 +681,11 @@ func TestP1B_PackLocatorPublishDoesNotCopyAllPacks(t *testing.T) {
 
 func mediumPolicy(t *testing.T) {
 	t.Helper()
-	oldMin, oldFlush, oldKiB := directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB
-	directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB = 256<<10, 64<<10, 0
-	t.Cleanup(func() { directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB = oldMin, oldFlush, oldKiB })
+	oldMin, oldFlush, oldKiB, oldSeg := directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB, segMaxObjectBytes
+	directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB, segMaxObjectBytes = 256<<10, 64<<10, 0, 0 // medium packs from 256 KiB: segments take no chunks here
+	t.Cleanup(func() {
+		directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB, segMaxObjectBytes = oldMin, oldFlush, oldKiB, oldSeg
+	})
 }
 
 func looseCount(t *testing.T, dir string) int { return len(casLooseChunks(t, dir)) }
@@ -720,9 +711,9 @@ func TestP1B_MediumPack_SameManifestAsLoose(t *testing.T) {
 			if medium {
 				mediumPolicy(t)
 			} else {
-				old := directPackMinBytes
-				directPackMinBytes = defaultPackTargetBytes
-				t.Cleanup(func() { directPackMinBytes = old })
+				old, oldSeg := directPackMinBytes, segMaxObjectBytes
+				directPackMinBytes, segMaxObjectBytes = defaultPackTargetBytes, 0
+				t.Cleanup(func() { directPackMinBytes, segMaxObjectBytes = old, oldSeg })
 			}
 			store, dir := newBucketStore(t)
 			e, err := store.PutObject("b", "k", body, "", nil)
@@ -931,6 +922,7 @@ func TestP1B_MediumPack_MultipartPartsAndCompletion(t *testing.T) {
 // Packs holding only dead records (a failed conditional PUT, an aborted
 // multipart upload, a replaced part) are removed by an ordinary gc; live packs stay.
 func TestP1B_MediumPack_DeadPacksCollectedByGC(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	mediumPolicy(t)
 	dir := t.TempDir()
 	store, err := OpenStore(dir)

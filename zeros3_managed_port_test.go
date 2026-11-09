@@ -214,6 +214,7 @@ func TestRepZ4ManagedEncoderFidelity(t *testing.T) {
 }
 
 func TestRepZ4ManagedLifecycleAndCapability(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	raw, e := repZ4ManagedFixtureJSON(t)
 	if e != nil {
 		t.Fatal(e)
@@ -276,6 +277,7 @@ func TestRepZ4ManagedLifecycleAndCapability(t *testing.T) {
 }
 
 func TestRepZ4ManagedDefaultAndMalformedFallback(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	raw, e := repZ4ManagedFixtureJSON(t)
 	if e != nil {
 		t.Fatal(e)
@@ -312,6 +314,7 @@ func TestRepZ4ManagedDefaultAndMalformedFallback(t *testing.T) {
 }
 
 func TestRepManagedOrdinaryPutCrashFloor(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	raw, err := repZ4ManagedFixtureJSON(t)
 	if err != nil {
 		t.Fatal(err)
@@ -451,6 +454,7 @@ func TestRepManagedDependencyAndWriterFailures(t *testing.T) {
 }
 
 func TestRepManagedCumulativeCompatibility(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	l := newRepLab(t, repModePrefer)
 	l.put("model", repZ4ModelSafetensors(t, bytes.Repeat([]byte{1, 2, 3, 4}, 16384)))
 	if l.s.format.StoreFormatVersion != 7 {
@@ -509,6 +513,7 @@ func TestRepManagedCumulativeCompatibility(t *testing.T) {
 }
 
 func TestRepManagedNestedPublicationFloor(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	raw, e := repZ4ManagedFixtureJSON(t)
 	if e != nil {
 		t.Fatal(e)

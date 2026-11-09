@@ -97,10 +97,11 @@ understand a required format must refuse the store instead of guessing.
 | CDC | 1 | deterministic Gear/FastCDC-style boundaries; 16 KiB min, 64 KiB target, 256 KiB max |
 | Manifest | 1 | immutable JSON logical object description |
 | Visibility journal | 1 framing | append-only, checksummed namespace authority; later record kinds remain versioned/fail-closed |
-| Store format | 1..6 | feature floor recorded in `FORMAT.json`; see below |
+| Store format | 1..9, 11 | feature floor recorded in `FORMAT.json`; level 10 is reserved for the unmerged representation-authority draft; see below |
 | Representation object | 1 | optional immutable structured-representation description, magic `ZS3R` |
 | Representation root | 1 | optional per-manifest sidecar naming a representation, magic `ZS3T` |
 | Pack | 1 | immutable packed CAS records and index |
+| Segment | 1 | open pack-v1 prefix (`segments/<seq>.seg`) holding small chunk and manifest records; sealed into an ordinary pack |
 | Snapshot descriptor | 1 | immutable namespace snapshot descriptor |
 | Full snapshot bundle | 1 | `.zs3b`, magic `ZS3BNDL1` |
 | Delta snapshot bundle | 1 | `.zs3d`, magic `ZS3DLTA1` |
@@ -120,12 +121,21 @@ understand a required format must refuse the store instead of guessing.
 | 7 | Model kind 8 (Safetensors/GGUF); older format-6 binaries refuse the store |
 | 8 | SST kind 9 / Parquet kind 10; Model-only format-7 binaries refuse the store |
 | 9 | DEX kind 11 / CLR kind 12; format-8 binaries refuse the store |
+| 10 | reserved (representation-authority draft, not merged) |
+| 11 | small-object segments and inline manifest records; every older binary refuses the store |
 
 Level 6 is raised (together with the level-5 tier roots, if the store has none
 yet) immediately before the first representation root is published, and only
 then. Opening a store with a newer binary, or running with
 `-representations` off, shadow or prefer without publishing a root, does not
 change the level. Binaries that predate level 6 refuse a level-6 store at open.
+
+Level 11 is raised (together with the level-5 tier roots, if the store has none
+yet) immediately before the first segment file is created, which the default
+small-object policy does on the first known-size PUT below 1 MiB or the first
+small manifest. `ZEROS3_SMALL_OBJECT_STORAGE=off` keeps new writes loose and
+never raises it; a store already at level 11 stays there. Binaries without
+level 11 refuse such a store at open.
 
 Model publication raises level 7 only after its exact proof and before publishing
 the root, including a Model nested below another kind. A crash may leave level 7

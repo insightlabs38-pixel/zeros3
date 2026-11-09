@@ -35,6 +35,7 @@ func BenchmarkRepReachabilitySQLite(b *testing.B) {
 
 // A corrupt live root must be rejected before its oversized payload is read.
 func TestRepOversizedRootReadBounded(t *testing.T) {
+	useLooseLayout(t, "inspects manifest files and chunk files by path")
 	l := newRepLab(t, repModeShadow)
 	l.put("db", repTestSQLite(12, 4096, 1402))
 	_, man := l.manifest("db")
@@ -64,6 +65,7 @@ func TestRepOversizedRootReadBounded(t *testing.T) {
 }
 
 func TestRepTransferBackfill(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	for _, native := range []bool{false, true} {
 		for _, mode := range []repMode{repModeOff, repModeShadow, repModePrefer} {
 			for _, fail := range []bool{false, true} {
