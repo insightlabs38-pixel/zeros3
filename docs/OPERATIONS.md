@@ -320,6 +320,14 @@ Apply:
 GC removes unreachable loose chunks and fully dead packs. If authoritative
 liveness cannot be established safely, destructive GC refuses to proceed.
 
+Small objects live in segments that seal into ordinary packs (see
+`docs/ARCHITECTURE.md`). `gc`, `repack`, `compact` and tier operations seal the
+open segment first, so a pack that mixes live and dead small objects is reclaimed
+by `repack`, not by `gc` (which removes a pack only when every record is dead).
+A record that a failed or conflicting write left behind is dead data of that
+kind. The torn bytes a crash cut from a segment are kept in `tmp/seg-torn-*` and
+removed with the other staging leftovers.
+
 ### Repack
 
 Partly-live packs are immutable. Repack creates verified replacements
