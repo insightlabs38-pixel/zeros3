@@ -86,6 +86,7 @@ func main() {
 	list := flag.Bool("list", false, "list groups and harnesses")
 	sel := flag.String("group", "s3", "comma-separated groups: static,s3,sync,clients,client,apps,bench,all")
 	bin := flag.String("bin", "", "prebuilt zeros3 binary (default: build ../zeros3.go)")
+	forceProd := flag.Bool("force-production", false, "ignore the explicit loose-layout declarations: run every harness on the production default (reports which loose-layout assertions then fail)")
 	flag.Parse()
 
 	if *list {
@@ -153,17 +154,25 @@ func main() {
 				args = append(args, strings.ReplaceAll(a, "@bin", absBin))
 			}
 			cmd := exec.Command("go", args...)
-			cmd.Env = append(append(cleanEnv(), "ZEROS3_BIN="+absBin), h.env...)
+			env := h.env
+			if *forceProd {
+				env = nil
+			}
+			cmd.Env = append(append(cleanEnv(), "ZEROS3_BIN="+absBin), env...)
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 			t := time.Now()
-			fmt.Printf("=== %s (layout=%s)\n", h.pkg, layoutOf(h))
+			lay := layoutOf(h)
+			if *forceProd {
+				lay = "production(forced)"
+			}
+			fmt.Printf("=== %s (layout=%s)\n", h.pkg, lay)
 			status := "PASS"
 			if err := cmd.Run(); err != nil {
 				status = "FAIL"
 				failed++
 			}
 			ran++
-			fmt.Printf("%s %-45s layout=%-10s %s\n", status, h.pkg, layoutOf(h), time.Since(t).Round(time.Millisecond))
+			fmt.Printf("%s %-45s layout=%-10s %s\n", status, h.pkg, lay, time.Since(t).Round(time.Millisecond))
 		}
 	}
 	fmt.Printf("\n%d run, %d failed, %d skipped in %s\n", ran, failed, skipped, time.Since(start).Round(time.Second))
