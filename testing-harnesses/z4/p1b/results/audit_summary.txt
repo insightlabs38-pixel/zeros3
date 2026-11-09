@@ -1,0 +1,20 @@
+## strace-order audit of real runs (strace -A -y -f -ttt; 4 sizes x PUTs per mode)
+## baseline seq-loose (control)
+{"events": 6265, "renames_into_store": 500, "journal_writes": 86, "journal_fsyncs": 86, "mkdirs": 630, "fsyncs_total": 1753, "violations": 0}
+## final seq-loose
+{"events": 6157, "renames_into_store": 500, "journal_writes": 86, "journal_fsyncs": 86, "mkdirs": 630, "fsyncs_total": 1753, "violations": 0}
+## final seq-medium
+{"events": 2144, "renames_into_store": 178, "journal_writes": 86, "journal_fsyncs": 86, "mkdirs": 149, "fsyncs_total": 591, "violations": 0}
+## final conc-loose
+{"events": 6029, "renames_into_store": 500, "journal_writes": 68, "journal_fsyncs": 68, "mkdirs": 630, "fsyncs_total": 1703, "violations": 0}
+## final conc-medium
+{"events": 2023, "renames_into_store": 178, "journal_writes": 68, "journal_fsyncs": 68, "mkdirs": 149, "fsyncs_total": 536, "violations": 0}
+AUDITDONE
+
+## negative controls (real trace with one barrier removed; the auditor must object)
+drop manifests/ dir fsyncs      -> R2 violations (3583)
+drop staged chunk-file fsyncs    -> R1 violations (483)
+drop staged manifest-file fsyncs -> R1 violations (82)
+drop chunks/aa bb parent fsyncs  -> R3 violations (18)
+drop chunk bb dir fsyncs         -> R2 violations (5324)
+drop journal fsyncs              -> R4 violations (70)

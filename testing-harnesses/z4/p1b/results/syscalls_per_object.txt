@@ -1,0 +1,40 @@
+### base size=4kib objs=1000 conc=8
+per-object syscall counts (1000 objects; whole server lifetime incl. startup and bucket creation)
+  fsync          6.25
+  openat         6.26
+  mkdirat        2.00
+  renameat       2.00
+  pwrite64       1.00
+  write          3.41
+  newfstatat     4.77
+  close          6.26
+### final2 size=4kib objs=1000 conc=8
+per-object syscall counts (1000 objects; whole server lifetime incl. startup and bucket creation)
+  fsync          5.70
+  openat         5.96
+  mkdirat        1.25
+  renameat       2.00
+  pwrite64       0.74
+  write          3.02
+  newfstatat     4.01
+  close          5.96
+### base size=1mib objs=150 conc=4
+per-object syscall counts (150 objects; whole server lifetime incl. startup and bucket creation)
+  fsync         51.35
+  openat        66.71
+  mkdirat       32.03
+  renameat      17.27
+  pwrite64       1.01
+  write         18.94
+  newfstatat    64.22
+  close         66.69
+### final2 size=1mib objs=150 conc=4
+per-object syscall counts (150 objects; whole server lifetime incl. startup and bucket creation)
+  fsync          5.01
+  openat         7.10
+  mkdirat        0.06
+  renameat       2.01
+  pwrite64       1.01
+  write          8.29
+  newfstatat    19.44
+  close          7.08

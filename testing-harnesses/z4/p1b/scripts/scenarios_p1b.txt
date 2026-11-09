@@ -1,0 +1,25 @@
+# label[@maxrounds]|args   (Z4-P0 driver; every PUT replayed byte-for-byte in a fresh process)
+put_4k_c1|-objs 800 -size 4kib -conc 1
+put_4k_c4|-objs 2400 -size 4kib -conc 4
+put_4k_c8|-objs 3000 -size 4kib -conc 8
+put_4k_c16|-objs 4000 -size 4kib -conc 16
+put_4k_c32|-objs 4000 -size 4kib -conc 32
+put_16k_c1@3|-objs 800 -size 16kib -conc 1
+put_16k_c8@3|-objs 2400 -size 16kib -conc 8
+put_16k_c32@3|-objs 3200 -size 16kib -conc 32
+put_64k_c1@3|-objs 600 -size 64kib -conc 1
+put_64k_c8|-objs 1500 -size 64kib -conc 8
+put_64k_c32@3|-objs 2400 -size 64kib -conc 32
+put_1m_c1@3|-objs 200 -size 1mib -conc 1
+put_1m_c4|-objs 300 -size 1mib -conc 4
+put_1m_c8@3|-objs 400 -size 1mib -conc 8
+put_1m_c16|-objs 480 -size 1mib -conc 16
+put_4m_c4@3|-objs 80 -size 4mib -conc 4
+put_16m_c4@3|-objs 24 -size 16mib -conc 4
+put_64m_dp_c1|-objs 4 -size 64mib -conc 1
+put_mp_64m_pc1@3|-objs 4 -size 64mib -conc 1 -mode multipart -part 8mib -partconc 1
+put_mp_64m_pc4@3|-objs 4 -size 64mib -conc 1 -mode multipart -part 8mib -partconc 4
+put_1m_dup50@3|-objs 300 -size 1mib -conc 4 -dupfrac 0.5
+put_rev_16m_e2@3|-objs 24 -size 16mib -conc 4 -revs 5 -editfrac 0.02
+put_64m_dp_c4@3|-objs 8 -size 64mib -conc 4
+put_1g_c1@2|-objs 1 -size 1gib -conc 1

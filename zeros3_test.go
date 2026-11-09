@@ -175,7 +175,7 @@ func (s *Store) PutObjectChecked(bucket, key string, body []byte, contentType st
 	if err := s.HeadBucket(bucket); err != nil {
 		return nil, err
 	}
-	ing, err := s.ingestStream(bytes.NewReader(body), true, ingestOptions{size: int64(len(body))})
+	ing, err := s.ingestStream(bytes.NewReader(body), true, ingestOptions{size: int64(len(body)), overlapFlush: true})
 	if err != nil {
 		return nil, err
 	}
@@ -37815,9 +37815,8 @@ func TestCASBatch_PublicationBarrier(t *testing.T) {
 		}
 		// Every rename is done and the chunk's final path exists, but the
 		// directory fsync has not run: the barrier must still be held.
-		if store.casPubMu.TryRLock() {
-			store.casPubMu.RUnlock()
-			t.Error("publication barrier not held between rename and directory fsync")
+		if store.pub.inFlight(sum) == nil {
+			t.Error("publication claim not held between rename and directory fsync")
 		}
 		if _, err := os.Stat(store.chunkPath(sum)); err != nil {
 			t.Errorf("final path should already exist: %v", err)
@@ -42623,9 +42622,14 @@ func TestBundleDeltaScale_MergeOneMillionChunks(t *testing.T) {
 // (the final pack must reach target/packMinFraction).
 func setDirectPack(t *testing.T, min, target int64, compress bool) {
 	t.Helper()
-	om, ot, oc := directPackMinBytes, directPackTarget, directPackCompress
+	om, ot, oc, of := directPackMinBytes, directPackTarget, directPackCompress, directPackMediumFlushMin
 	directPackMinBytes, directPackTarget, directPackCompress = min, target, compress
-	t.Cleanup(func() { directPackMinBytes, directPackTarget, directPackCompress = om, ot, oc })
+	// These tests exercise the large-object tail policy (remainder below
+	// target/packMinFraction stays loose); the medium-object policy has its own tests.
+	directPackMediumFlushMin = target / packMinFraction
+	t.Cleanup(func() {
+		directPackMinBytes, directPackTarget, directPackCompress, directPackMediumFlushMin = om, ot, oc, of
+	})
 }
 
 func dpOpenStore(t *testing.T) (*Store, string) {
@@ -42878,7 +42882,7 @@ func TestDirectPack_RecordOrderFollowsObjectAndRepeatsWriteOnce(t *testing.T) {
 
 func TestDirectPack_SinkRepeatedDigestWrittenOnce(t *testing.T) {
 	s, dir := dpOpenStore(t)
-	sink := s.newPackSink()
+	sink := s.newPackSink(0)
 	defer sink.Abort()
 	a, b, c := genRandomBytes(11, 9000), genRandomBytes(12, 9000), genRandomBytes(13, 9000)
 	for _, d := range [][]byte{a, b, c, a, b} {

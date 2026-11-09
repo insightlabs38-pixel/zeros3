@@ -457,8 +457,11 @@ Deleting a snapshot removes the snapshot root, not payload immediately. If you
 want the resulting unused data reclaimed, follow snapshot deletion with the
 appropriate history/GC/repack workflow.
 
-Aborted large multipart uploads can leave dead direct packs. Ordinary GC
-reclaims them.
+Aborted multipart uploads (and replaced parts) can leave dead direct packs.
+Ordinary GC removes a pack when none of its records is live; a pack that is
+only partly live is reclaimed by `repack`. Medium-object packs (objects from
+256 KiB) make this more visible than before: many small packs add about 75 us
+each to server start-up, and `compact` or `repack` merges them.
 
 ## Monitoring
 

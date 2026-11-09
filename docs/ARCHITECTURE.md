@@ -133,10 +133,28 @@ required directory fsyncs.
 Chunks can therefore become reusable before the final object commit while the
 object itself remains invisible.
 
+Publication is guarded per digest, not globally: a publisher claims each digest
+before its first rename and releases the claim only after the directory entry
+is durable, and a lookup that finds a file whose digest is claimed waits for
+the claim. Directory fsyncs of the same directory are shared by concurrent
+publishers (a caller returns only after an fsync that began after its own
+rename), and shard directories are created once and trusted only after their
+parent's fsync. Object-root journal frames of concurrent requests are written
+and fsynced together (group commit); each request is acknowledged only after
+the fsync covering its frame, in journal order. See
+`testing-harnesses/z4/p1b/DURABILITY_MODEL.md`.
+
 ### Direct pack ingest
 
 Known-size PutObject, UploadPart, and final multipart completion of at least
-64 MiB can write new chunks directly into immutable hot packs.
+256 KiB can write new chunks directly into immutable hot packs (one pack per
+request for objects below 64 MiB; full 64 MiB packs above). A request whose
+new content is below 64 KiB (below about 8 MiB for objects of 64 MiB or more)
+keeps using loose chunks, and once a store holds 200,000 packs smaller objects
+use loose chunks again until `compact`/`repack` merge the small packs.
+`ZEROS3_DIRECT_PACK_MIB=0` disables direct packs entirely.
+Publishing the first pack raises the store format to level 2, as a 64 MiB PUT
+always did.
 
 New chunks are appended in first logical occurrence order. Full packs are
 finalized, verified, durably published, and then added to the in-memory

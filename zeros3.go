@@ -694,15 +694,22 @@ func (s *Store) chunkPath(sum [32]byte) string {
 
 // CAS publication barrier. A loose chunk becomes visible to casStat, casRead
 // and therefore to negotiation and to commits that reference it, the moment
-// its final path exists, so the final path must never exist before the
-// chunk's directory entry is crash-durable. Chunks are staged as hidden
+// its final path exists, so the final path must never be depended on before
+// the chunk's directory entry is crash-durable. Chunks are staged as hidden
 // tmp/cas-*.tmp files (data fsynced, invisible to every CAS lookup) and
-// published in groups by casPublish, which holds casPubMu exclusively from
-// the first final rename until every touched directory has been fsynced.
-// Observers (casStat, loose casRead) take it shared, so none can see or
-// depend on a chunk whose publication is not yet durable; a failed
-// publication removes what it created before releasing the barrier.
-// Interrupted staging leaves only tmp/ files, which GC clears.
+// published in groups by casPublish.
+//
+// The barrier is per digest, not global: a publisher claims each digest in
+// the publication registry (pubRegistry) before the first rename and keeps
+// the claim until the touched directories have been fsynced. A lookup that
+// finds a final path whose digest is still claimed waits for the claim and
+// looks again, so none can see or depend on a chunk whose publication is not
+// yet durable, while publications of unrelated digests overlap freely and
+// share directory fsyncs (dirSync). Claiming happens before the rename and
+// the lookup checks the registry after it has seen the file, so a lookup that
+// sees a renamed file always sees its claim. A failed publication removes
+// what it created before releasing its claims. Interrupted staging leaves
+// only tmp/ files, which GC clears.
 // casBatchMaxBytes and casBatchMaxRecords bound one batch's staged files;
 // casSyncWorkers bounds concurrent fsyncs per flush. ZEROS3_CAS_BATCH_MIB
 // and ZEROS3_CAS_SYNC_WORKERS override them for benchmarking, not as a
@@ -739,6 +746,14 @@ func fsyncPath(path string) error {
 // the first error; once one fails no new index is started.
 func forEachBounded(n, workers int, fn func(i int) error) error {
 	workers = min(workers, n)
+	if workers <= 1 {
+		for i := 0; i < n; i++ {
+			if err := fn(i); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	var (
 		wg     sync.WaitGroup
 		next   atomic.Int64
@@ -768,6 +783,174 @@ func forEachBounded(n, workers int, fn func(i int) error) error {
 	}
 	wg.Wait()
 	return first
+}
+
+// pubRegistry tracks digests (or directory keys) whose publication is in
+// flight. It is sharded so that claiming, probing and releasing never share
+// a lock between unrelated digests, and it holds only entries for work that
+// is running right now, so it cannot grow beyond the number of concurrent
+// publications.
+const pubShardCount = 64
+
+type pubClaim struct{ done chan struct{} }
+
+type pubShard struct {
+	mu sync.Mutex
+	m  map[[32]byte]*pubClaim
+	_  [40]byte // keep shards on separate cache lines
+}
+
+type pubRegistry struct{ sh [pubShardCount]pubShard }
+
+func (r *pubRegistry) shard(k [32]byte) *pubShard {
+	return &r.sh[(uint32(k[0])^uint32(k[1])<<3)&(pubShardCount-1)]
+}
+
+// tryClaim makes the caller the owner of k's publication (second result
+// true), or returns the current owner's claim.
+func (r *pubRegistry) tryClaim(k [32]byte) (*pubClaim, bool) {
+	sh := r.shard(k)
+	sh.mu.Lock()
+	if c, ok := sh.m[k]; ok {
+		sh.mu.Unlock()
+		return c, false
+	}
+	if sh.m == nil {
+		sh.m = map[[32]byte]*pubClaim{}
+	}
+	c := &pubClaim{done: make(chan struct{})}
+	sh.m[k] = c
+	sh.mu.Unlock()
+	return c, true
+}
+
+// release ends the owner's claim and wakes everything waiting on it.
+func (r *pubRegistry) release(k [32]byte, c *pubClaim) {
+	sh := r.shard(k)
+	sh.mu.Lock()
+	if sh.m[k] == c {
+		delete(sh.m, k)
+	}
+	sh.mu.Unlock()
+	close(c.done)
+}
+
+// inFlight returns the claim currently held on k, or nil.
+func (r *pubRegistry) inFlight(k [32]byte) *pubClaim {
+	sh := r.shard(k)
+	sh.mu.Lock()
+	c := sh.m[k]
+	sh.mu.Unlock()
+	return c
+}
+
+// dirSync coalesces directory fsyncs. A caller that has finished a directory
+// mutation (create, rename) calls sync; it returns once an fsync that began
+// after the mutation has completed. Callers arriving while an fsync of the
+// same directory is running join the next one, so the batch size adapts to
+// the device latency with no artificial delay: a lone caller pays exactly one
+// fsync, concurrent callers share. Every member of a round receives that
+// round's error, because a failed fsync cannot be assumed to be repeated.
+type dirSyncRound struct {
+	done chan struct{}
+	err  error
+}
+
+type dirSyncEntry struct {
+	mu   sync.Mutex
+	cur  *dirSyncRound // accepts joiners; its fsync has not started
+	last *dirSyncRound // most recently started round
+	refs int
+}
+
+type dirSyncMap struct {
+	mu sync.Mutex
+	m  map[string]*dirSyncEntry
+}
+
+// dirSyncStats counts requested and executed fsyncs (benchmark evidence).
+var dirSyncRequested, dirSyncExecuted atomic.Int64
+
+func (d *dirSyncMap) sync(dir string, do func(string) error) error {
+	dirSyncRequested.Add(1)
+	d.mu.Lock()
+	if d.m == nil {
+		d.m = map[string]*dirSyncEntry{}
+	}
+	e := d.m[dir]
+	if e == nil {
+		e = &dirSyncEntry{}
+		d.m[dir] = e
+	}
+	e.refs++
+	d.mu.Unlock()
+	err := e.sync(func() error { dirSyncExecuted.Add(1); return do(dir) })
+	d.mu.Lock()
+	if e.refs--; e.refs == 0 {
+		delete(d.m, dir)
+	}
+	d.mu.Unlock()
+	return err
+}
+
+func (e *dirSyncEntry) sync(do func() error) error {
+	e.mu.Lock()
+	if r := e.cur; r != nil {
+		e.mu.Unlock()
+		<-r.done
+		return r.err
+	}
+	r := &dirSyncRound{done: make(chan struct{})}
+	e.cur = r
+	prev := e.last
+	e.last = r
+	e.mu.Unlock()
+	if prev != nil {
+		<-prev.done // at most one fsync of a directory in flight
+	}
+	e.mu.Lock()
+	e.cur = nil // close the join window: later callers form the next round
+	e.mu.Unlock()
+	defer func() {
+		if p := recover(); p != nil { // a crash hook: never strand the joiners
+			r.err = fmt.Errorf("directory sync interrupted: %v", p)
+			close(r.done)
+			panic(p)
+		}
+	}()
+	r.err = do()
+	close(r.done)
+	return r.err
+}
+
+// syncDirShared makes dir's entries durable, sharing the fsync with every
+// concurrent caller of the same directory.
+func (s *Store) syncDirShared(dir string) error {
+	if pubAblate.noCoalesce {
+		return syncDir(dir)
+	}
+	return s.dsync.sync(dir, syncDir)
+}
+
+// pubAblation switches single P1B mechanisms off for benchmarking only
+// (ZEROS3_PUB_ABLATE=nocoalesce,nodircache,serialcommit); production runs with none.
+type pubAblation struct{ noCoalesce, noDirCache, serialCommit, noOverlap bool }
+
+var pubAblate pubAblation
+
+func init() {
+	for _, f := range strings.Split(os.Getenv("ZEROS3_PUB_ABLATE"), ",") {
+		switch strings.TrimSpace(f) {
+		case "nocoalesce":
+			pubAblate.noCoalesce = true
+		case "nodircache":
+			pubAblate.noDirCache = true
+		case "serialcommit":
+			pubAblate.serialCommit = true
+		case "nooverlap":
+			pubAblate.noOverlap = true
+		}
+	}
 }
 
 type casStaged struct {
@@ -805,93 +988,248 @@ func (s *Store) fireDirEvent(op, dir string) {
 	}
 }
 
-// casEnsureShardDirs creates any missing chunks/aa and chunks/aa/bb
-// directories the files need and makes each new directory entry durable in
-// its parent before any chunk is renamed into it: create aa, fsync chunks/,
-// create bb, fsync chunks/aa/. Only parents of directories created here are
-// synced (the final bb directory is synced by casPublish after the renames).
-// It runs inside casPubMu, so exactly one writer decides creation and no
-// observer can see a chunk below a directory whose entry is not yet durable.
-// It returns the directories it created so a failed publication can remove
-// them again.
+// Shard directories known to exist with a durable directory entry in their
+// parent. The sets are bounded by the layout (256 + 65,536 bits) and are only
+// a fast path: a stale bit (the directory was removed by an administrative
+// operation) is detected by the failing rename, which clears it and creates
+// the directory again.
+func (s *Store) aaReady(aa byte) bool { return s.shardAA[aa].Load() }
+func (s *Store) bbReady(aa, bb byte) bool {
+	i := int(aa)<<8 | int(bb)
+	return s.shardBB[i>>6].Load()&(1<<(i&63)) != 0
+}
+func (s *Store) setBBReady(aa, bb byte, on bool) {
+	i := int(aa)<<8 | int(bb)
+	if on {
+		s.shardBB[i>>6].Or(1 << (i & 63))
+	} else {
+		s.shardBB[i>>6].And(^(uint64(1) << (i & 63)))
+	}
+}
+
+// casEnsureShardDirs makes sure every chunks/aa and chunks/aa/bb directory
+// the files need exists and that its entry is durable in its parent before
+// any chunk is renamed into it: create aa, fsync chunks/, create bb, fsync
+// chunks/aa/. Only parents of directories created here are synced (the final
+// bb directory is synced by casPublish after the renames). Each directory is
+// created by exactly one caller (a claim in dirClaims); concurrent callers
+// needing it wait for that caller instead of trusting a directory whose
+// entry may not be durable yet. It returns the directories it created so a
+// failed publication can remove them again.
 func (s *Store) casEnsureShardDirs(files []casStaged) (created []string, err error) {
 	chunks := filepath.Join(s.root, "chunks")
-	mk := func(dir string) (bool, error) {
-		if err := os.Mkdir(dir, 0o755); err != nil {
-			if os.IsExist(err) {
-				if fi, serr := os.Stat(dir); serr == nil && fi.IsDir() {
-					return false, nil
+	aaDir := func(a byte) string { return filepath.Join(chunks, fmt.Sprintf("%02x", a)) }
+	bbDir := func(a, b byte) string { return filepath.Join(aaDir(a), fmt.Sprintf("%02x", b)) }
+	var needAA []byte
+	var needBB [][2]byte
+	seenAA := map[byte]bool{}
+	seenBB := map[[2]byte]bool{}
+	for _, f := range files {
+		a, b := f.sum[0], f.sum[1]
+		if !seenAA[a] {
+			seenAA[a] = true
+			needAA = append(needAA, a)
+		}
+		k := [2]byte{a, b}
+		if !seenBB[k] {
+			seenBB[k] = true
+			needBB = append(needBB, k)
+		}
+	}
+	// ensure runs one level: claim what is missing, create it, fsync the
+	// parents once each, publish readiness, then wait for directories other
+	// callers were creating and re-check.
+	ensure := func(keys [][]byte, ready func([]byte) bool, path func([]byte) string, parent func([]byte) string, markReady func([]byte, bool)) error {
+		for {
+			var mine []int
+			var mineClaims []*pubClaim
+			var waits []*pubClaim
+			for i, k := range keys {
+				if !pubAblate.noDirCache && ready(k) {
+					continue
+				}
+				var key [32]byte
+				copy(key[1:], k)
+				key[0] = byte(len(k))
+				c, ok := s.dirClaims.tryClaim(key)
+				if !ok {
+					waits = append(waits, c)
+					continue
+				}
+				mine = append(mine, i)
+				mineClaims = append(mineClaims, c)
+			}
+			var ferr error
+			madeParents := map[string]struct{}{}
+			var madeKeys []int
+			for _, i := range mine {
+				if ferr != nil {
+					break
+				}
+				dir := path(keys[i])
+				if merr := os.Mkdir(dir, 0o755); merr != nil {
+					if fi, serr := os.Stat(dir); os.IsExist(merr) && serr == nil && fi.IsDir() {
+						continue // pre-existing: durable as before this process
+					}
+					ferr = merr
+					break
+				}
+				s.fireDirEvent("mkdir", dir)
+				created = append(created, dir)
+				madeKeys = append(madeKeys, i)
+				madeParents[parent(keys[i])] = struct{}{}
+			}
+			if ferr == nil {
+				list := make([]string, 0, len(madeParents))
+				for p := range madeParents {
+					list = append(list, p)
+				}
+				sort.Strings(list)
+				ferr = forEachBounded(len(list), casSyncWorkers, func(i int) error {
+					s.fireDirEvent("sync", list[i])
+					return s.syncDirShared(list[i])
+				})
+			}
+			if ferr == nil {
+				for _, i := range mine {
+					markReady(keys[i], true)
 				}
 			}
-			return false, err
-		}
-		s.fireDirEvent("mkdir", dir)
-		created = append(created, dir)
-		return true, nil
-	}
-	aas, bbs := map[string]struct{}{}, map[string]struct{}{}
-	for _, f := range files {
-		bb := filepath.Dir(s.chunkPath(f.sum))
-		bbs[bb] = struct{}{}
-		aas[filepath.Dir(bb)] = struct{}{}
-	}
-	var newAA bool
-	for aa := range aas {
-		made, merr := mk(aa)
-		if merr != nil {
-			return created, merr
-		}
-		newAA = newAA || made
-	}
-	if newAA {
-		s.fireDirEvent("sync", chunks)
-		if err := syncDir(chunks); err != nil {
-			return created, err
+			for j, i := range mine {
+				var key [32]byte
+				copy(key[1:], keys[i])
+				key[0] = byte(len(keys[i]))
+				s.dirClaims.release(key, mineClaims[j])
+			}
+			if ferr != nil {
+				return ferr
+			}
+			if len(waits) == 0 {
+				return nil
+			}
+			for _, c := range waits {
+				<-c.done
+			}
 		}
 	}
-	parents := map[string]struct{}{}
-	for bb := range bbs {
-		made, merr := mk(bb)
-		if merr != nil {
-			return created, merr
-		}
-		if made {
-			parents[filepath.Dir(bb)] = struct{}{}
+	aaKeys := make([][]byte, len(needAA))
+	for i, a := range needAA {
+		aaKeys[i] = []byte{a}
+	}
+	if err := ensure(aaKeys,
+		func(k []byte) bool { return s.aaReady(k[0]) },
+		func(k []byte) string { return aaDir(k[0]) },
+		func(k []byte) string { return chunks },
+		func(k []byte, on bool) { s.shardAA[k[0]].Store(on) }); err != nil {
+		return created, err
+	}
+	bbKeys := make([][]byte, len(needBB))
+	for i, k := range needBB {
+		bbKeys[i] = []byte{k[0], k[1]}
+	}
+	err = ensure(bbKeys,
+		func(k []byte) bool { return s.bbReady(k[0], k[1]) },
+		func(k []byte) string { return bbDir(k[0], k[1]) },
+		func(k []byte) string { return aaDir(k[0]) },
+		func(k []byte, on bool) { s.setBBReady(k[0], k[1], on) })
+	return created, err
+}
+
+// casRemoveDirs removes directories this process created for a publication
+// that did not happen; they go only while still empty.
+func (s *Store) casRemoveDirs(dirs []string) {
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if os.Remove(dirs[i]) == nil {
+			s.casForgetDirs([]string{dirs[i]})
 		}
 	}
-	for aa := range parents {
-		s.fireDirEvent("sync", aa)
-		if err := syncDir(aa); err != nil {
-			return created, err
+}
+
+// casForgetDirs drops removed shard directories from the readiness sets.
+func (s *Store) casForgetDirs(dirs []string) {
+	for _, d := range dirs {
+		var a, b byte
+		base := filepath.Base(d)
+		if n, _ := fmt.Sscanf(base, "%02x", &b); n != 1 {
+			continue
+		}
+		parent := filepath.Base(filepath.Dir(d))
+		if parent == "chunks" {
+			s.shardAA[b].Store(false)
+			continue
+		}
+		if n, _ := fmt.Sscanf(parent, "%02x", &a); n == 1 {
+			s.setBBReady(a, b, false)
 		}
 	}
-	return created, nil
 }
 
 // casPublish renames synced staged files into their final paths and fsyncs
-// the touched directories, all inside the publication barrier. Unless
-// replace is set, a digest that became durable since staging (loose or
-// packed) is left alone and its staged copy discarded.
+// the touched directories, holding a claim on every digest it publishes
+// until the directories are durable. Unless replace is set, a digest that
+// became durable since staging (loose or packed) is left alone and its
+// staged copy discarded. Digests another publisher is publishing right now
+// are published after that publisher finishes (or skipped if it succeeded);
+// a publisher never waits for another while holding claims, so concurrent
+// batches cannot deadlock.
 func (s *Store) casPublish(files []casStaged, replace bool) (err error) {
-	s.casPubMu.Lock()
-	defer s.casPubMu.Unlock()
-	var created, newDirs []string
+	return s.casPublishWith(files, replace, nil)
+}
+
+// casPublishWith is casPublish for a caller that already created the shard
+// directories pre; a failure removes them again (while still empty).
+func (s *Store) casPublishWith(files []casStaged, replace bool, pre []string) (err error) {
+	var mine, blocked []casStaged
+	var claims []*pubClaim
+	var waits []*pubClaim
+	for _, f := range files {
+		c, ok := s.pub.tryClaim(f.sum)
+		if ok {
+			mine = append(mine, f)
+			claims = append(claims, c)
+		} else {
+			blocked = append(blocked, f)
+			waits = append(waits, c)
+		}
+	}
+	err = s.casPublishClaimed(mine, claims, replace, pre)
+	if len(blocked) > 0 {
+		for _, c := range waits {
+			<-c.done
+		}
+		if berr := s.casPublish(blocked, replace); err == nil {
+			err = berr
+		}
+	}
+	return err
+}
+
+func (s *Store) casPublishClaimed(files []casStaged, claims []*pubClaim, replace bool, pre []string) (err error) {
+	if len(files) == 0 {
+		s.casRemoveDirs(pre)
+		return nil
+	}
+	var created []string
+	newDirs := append([]string(nil), pre...)
+	done := false
 	defer func() {
-		if err != nil {
+		if err != nil || !done {
 			for _, p := range created {
 				os.Remove(p)
 			}
-			for i := len(newDirs) - 1; i >= 0; i-- {
-				os.Remove(newDirs[i]) // only succeeds while still empty
+			s.casRemoveDirs(newDirs)
+			for _, f := range files {
+				if f.tmp != "" {
+					os.Remove(f.tmp)
+				}
 			}
 		}
-		for _, f := range files {
-			if f.tmp != "" && err != nil {
-				os.Remove(f.tmp)
-			}
+		for i, f := range files {
+			s.pub.release(f.sum, claims[i])
 		}
 	}()
-	newDirs, err = s.casEnsureShardDirs(files)
+	more, err := s.casEnsureShardDirs(files)
+	newDirs = append(newDirs, more...)
 	if err != nil {
 		return err
 	}
@@ -910,7 +1248,19 @@ func (s *Store) casPublish(files []casStaged, replace bool) (err error) {
 			}
 		}
 		if err := os.Rename(f.tmp, final); err != nil {
-			return err
+			if !os.IsNotExist(err) || !fileExists(f.tmp) {
+				return err
+			}
+			// The shard directory vanished under a stale readiness bit.
+			s.casForgetDirs([]string{filepath.Dir(final), filepath.Dir(filepath.Dir(final))})
+			extra, eerr := s.casEnsureShardDirs([]casStaged{*f})
+			newDirs = append(newDirs, extra...)
+			if eerr != nil {
+				return eerr
+			}
+			if err := os.Rename(f.tmp, final); err != nil {
+				return err
+			}
 		}
 		f.tmp = ""
 		if !replace {
@@ -926,11 +1276,18 @@ func (s *Store) casPublish(files []casStaged, replace bool) (err error) {
 	for d := range dirs {
 		list = append(list, d)
 	}
-	if err := forEachBounded(len(list), casSyncWorkers, func(i int) error { return syncDir(list[i]) }); err != nil {
+	sort.Strings(list)
+	if err := forEachBounded(len(list), casSyncWorkers, func(i int) error { return s.syncDirShared(list[i]) }); err != nil {
 		return err
 	}
 	fireTestHook(hookCASAfterDirSync)
+	done = true
 	return nil
+}
+
+func fileExists(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
 }
 
 // casBatch groups the loose-CAS publication of one synchronous operation's
@@ -1049,16 +1406,39 @@ func (b *casBatch) Abort() {
 // publishes them under the barrier.
 func (s *Store) casFlushFiles(files []casStaged) error {
 	fireTestHook(hookCASBeforeStageSync)
-	if err := forEachBounded(len(files), casSyncWorkers, func(i int) error {
+	// Shard directories are independent of the file data: create them and
+	// make their entries durable while the staged files are fsynced, so the
+	// two barriers overlap instead of adding up.
+	type dirResult struct {
+		made []string
+		err  error
+	}
+	dirs := make(chan dirResult, 1)
+	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				dirs <- dirResult{err: fmt.Errorf("shard directory setup interrupted: %v", p)}
+			}
+		}()
+		made, err := s.casEnsureShardDirs(files)
+		dirs <- dirResult{made, err}
+	}()
+	err := forEachBounded(len(files), casSyncWorkers, func(i int) error {
 		return fsyncPath(files[i].tmp)
-	}); err != nil {
+	})
+	dr := <-dirs
+	if err == nil {
+		err = dr.err
+	}
+	if err != nil {
 		for _, f := range files {
 			os.Remove(f.tmp)
 		}
+		s.casRemoveDirs(dr.made)
 		return err
 	}
 	fireTestHook(hookCASAfterStageSync)
-	if err := s.casPublish(files, false); err != nil {
+	if err := s.casPublishWith(files, false, dr.made); err != nil {
 		return err
 	}
 	fireTestHook(hookCASAfterFlush)
@@ -1085,9 +1465,19 @@ func (s *Store) casWrite(data []byte) ([32]byte, error) {
 // presence and recorded length only; content is verified by casRead. It
 // waits out any in-flight publication (see the barrier above).
 func (s *Store) casStat(sum [32]byte) (int64, error) {
-	s.casPubMu.RLock()
-	defer s.casPubMu.RUnlock()
-	return s.casStatLocked(sum)
+	for {
+		n, err := s.casStatLocked(sum)
+		if err != nil {
+			return n, err
+		}
+		// Present. The claim is checked after the file was seen: a publisher
+		// claims before its first rename, so a renamed file always has one.
+		c := s.pub.inFlight(sum)
+		if c == nil {
+			return n, nil
+		}
+		<-c.done
+	}
 }
 
 func (s *Store) casStatLocked(sum [32]byte) (int64, error) {
@@ -1129,9 +1519,19 @@ func (s *Store) casReadExcluding(sum [32]byte, skip map[int32]bool) ([]byte, err
 			return false
 		}
 		looseDone = true
-		s.casPubMu.RLock()
-		data, err := os.ReadFile(s.chunkPath(sum))
-		s.casPubMu.RUnlock()
+		var data []byte
+		var err error
+		for {
+			data, err = os.ReadFile(s.chunkPath(sum))
+			if err != nil {
+				break
+			}
+			c := s.pub.inFlight(sum)
+			if c == nil {
+				break
+			}
+			<-c.done // not durable yet: wait, then read what was left
+		}
 		if err == nil {
 			if got := sha256.Sum256(data); got != sum {
 				err = fmt.Errorf("cas: chunk %x is corrupt (%w)", sum, errChunkCorrupt)
@@ -1179,11 +1579,31 @@ type ingestResult struct {
 	size      int64
 	objSHA256 [32]byte
 	etagMD5   [md5.Size]byte // set only when ingestStream is asked for it
+	// finish, when non-nil, completes the chunk publication ingestStream left
+	// running (ingestOptions.overlapFlush): the chunks are NOT durable CAS
+	// content until it returns nil, and every caller must call it exactly
+	// once, whether or not it goes on to commit the object.
+	finish func() error
+}
+
+// finishIngest completes any deferred chunk publication of ing.
+func (ing *ingestResult) finishIngest() error {
+	f := ing.finish
+	if f == nil {
+		return nil
+	}
+	ing.finish = nil
+	return f()
 }
 
 // ingestOptions are the only hints the ingest path takes from its caller.
 type ingestOptions struct {
 	size int64 // known logical size of the stream; <= 0 when unknown
+	// overlapFlush lets ingestStream return before the final loose-chunk
+	// publication is durable (see ingestResult.finish), so a caller can
+	// publish the manifest while the chunks' fsyncs run. Only the loose
+	// serial path honours it.
+	overlapFlush bool
 }
 
 // directPack reports whether new chunks should stream straight into
@@ -1196,6 +1616,22 @@ func (o ingestOptions) directPack() bool {
 	return o.size >= directPackMinBytes
 }
 
+// mediumPackMaxPacks bounds how many packs medium objects (smaller than
+// directPackTarget) may add to: once a store holds this many packs, new
+// medium objects use loose chunks again until `compact`/`repack` merge the
+// small packs. Opening a store reads every pack index (about 75 us each), so
+// this caps the startup cost that small packs can add.
+var mediumPackMaxPacks = 200_000
+
+// packFor reports whether an ingest with these options writes its new chunks
+// into packs on this store.
+func (s *Store) packFor(o ingestOptions) bool {
+	if !o.directPack() {
+		return false
+	}
+	return o.size >= directPackTarget || len(s.packSnap().packs) < mediumPackMaxPacks
+}
+
 // Direct pack ingest policy (section 4). directPackMinBytes is the object
 // size from which an upload writes its new chunks into packs: it equals
 // the ordinary pack target, so a qualifying object yields at least one
@@ -1206,14 +1642,45 @@ func (o ingestOptions) directPack() bool {
 // (auto|off) override them for benchmarking, not as a supported tuning
 // interface.
 var (
-	directPackMinBytes int64 = defaultPackTargetBytes
-	directPackCompress       = false
+	// P1B: medium objects (from 256 KiB) also stream into packs. A request's
+	// new chunks form one pack of their own (one file, one fsync, one
+	// directory sync) instead of one loose file, fsync and shard-directory
+	// operation per chunk; below directPackMediumFlushMin of new content they
+	// still go loose. Objects of directPackTarget or more behave exactly
+	// as before (full-size packs, remainder below target/packMinFraction loose).
+	// ZEROS3_DIRECT_PACK_MIB=0 restores loose-only ingest below the pipeline sizes.
+	directPackMinBytes       int64 = 256 << 10
+	directPackCompress             = false
+	directPackMediumFlushMin int64 = 64 << 10
 	// directPackTarget is the pack fill size; the shortest final pack is
 	// directPackTarget/packMinFraction. Tests shrink it.
 	directPackTarget int64 = defaultPackTargetBytes
 )
 
+// directPackFlushKiB, when positive, replaces the final-remainder minimum
+// (target/packMinFraction) below which a request's new chunks go loose
+// instead of forming a small pack. Benchmark knob: ZEROS3_DIRECT_PACK_FLUSH_KIB.
+var directPackFlushKiB int64
+
+// directPackFlushMin is the least new content for which a request's final
+// partial pack is published as a pack rather than stored loose.
+func directPackFlushMin(size int64) int64 {
+	if directPackFlushKiB > 0 {
+		return directPackFlushKiB << 10
+	}
+	if size > 0 && size < directPackTarget {
+		return min(directPackMediumFlushMin, directPackTarget/packMinFraction)
+	}
+	return directPackTarget / packMinFraction
+}
+
 func init() {
+	if n, err := strconv.Atoi(os.Getenv("ZEROS3_DIRECT_PACK_FLUSH_KIB")); err == nil && n > 0 {
+		directPackFlushKiB = int64(n)
+	}
+	if n, err := strconv.Atoi(os.Getenv("ZEROS3_DIRECT_PACK_KIB")); err == nil && n > 0 {
+		directPackMinBytes = int64(n) << 10
+	}
 	if n, err := strconv.Atoi(os.Getenv("ZEROS3_DIRECT_PACK_MIB")); err == nil && n >= 0 && n <= 1<<20 {
 		directPackMinBytes = int64(n) << 20
 		if n == 0 {
@@ -1268,6 +1735,9 @@ type packSink struct {
 	pending map[[32]byte]struct{} // digests in cur
 	jobs    []*packJob            // full packs being finished and published, oldest first
 	sync    bool                  // finish packs inline instead of in the background
+	// flushMin is the least new content for which Flush publishes the last
+	// partial pack; below it the chunks go loose.
+	flushMin int64
 }
 
 // packJob is one full pack finishing in the background (fsync, validation,
@@ -1285,8 +1755,8 @@ type packJob struct {
 // at most this many extra staging files and verification readers exist.
 const packInflightMax = 2
 
-func (s *Store) newPackSink() *packSink {
-	p := &packSink{s: s, pending: map[[32]byte]struct{}{}, sync: ingestAblate.syncPublish}
+func (s *Store) newPackSink(size int64) *packSink {
+	p := &packSink{s: s, pending: map[[32]byte]struct{}{}, sync: ingestAblate.syncPublish, flushMin: directPackFlushMin(size)}
 	if directPackCompress {
 		p.comp = newPackCompressor()
 	}
@@ -1395,7 +1865,7 @@ func (p *packSink) Flush() error {
 	if b == nil {
 		return p.waitJobs()
 	}
-	if b.LogicalBytes() >= directPackTarget/packMinFraction {
+	if b.LogicalBytes() >= p.flushMin {
 		if err := p.publish(); err != nil {
 			p.waitJobs()
 			return err
@@ -1451,7 +1921,7 @@ func (p *packSink) Abort() {
 // opt only picks the physical sink (loose files or direct packs); chunking,
 // hashing and the result are identical either way.
 func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (ingestResult, error) {
-	if (opt.size >= ingestAblate.pipeMin() || opt.directPack()) && !ingestAblate.noPipe && runtime.GOMAXPROCS(0) > 1 {
+	if opt.size >= ingestAblate.pipeMin() && !ingestAblate.noPipe && runtime.GOMAXPROCS(0) > 1 {
 		// Concurrent ingests already keep the cores busy, and a pipeline then
 		// only adds hand-off cost: beyond a few at once, run serially.
 		if release, ok := acquirePipeSlot(); ok {
@@ -1467,12 +1937,17 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (inge
 		etagSum = md5.New() //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5.
 	}
 	var sink chunkSink
-	if opt.directPack() {
-		sink = s.newPackSink()
+	if s.packFor(opt) {
+		sink = s.newPackSink(opt.size)
 	} else {
 		sink = looseSink{s.newCASBatch()}
 	}
-	defer sink.Abort()
+	overlapped := false
+	defer func() {
+		if !overlapped {
+			sink.Abort()
+		}
+	}()
 	for {
 		chunk, err := c.nextView()
 		if err == io.EOF {
@@ -1493,14 +1968,45 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (inge
 			etagSum.Write(chunk)
 		}
 	}
-	if err := sink.Flush(); err != nil {
-		return ingestResult{}, fmt.Errorf("cas write failed: %w", err)
-	}
-	fireTestHook(hookAfterChunksPublished)
 	objSum.Sum(res.objSHA256[:0])
 	if etagSum != nil {
 		etagSum.Sum(res.etagMD5[:0])
 	}
+	if ls, ok := sink.(looseSink); ok && opt.overlapFlush && !pubAblate.noOverlap {
+		overlapped = true
+		type flushResult struct {
+			err error
+			pan any
+		}
+		done := make(chan flushResult, 1)
+		go func() {
+			var fr flushResult
+			defer func() {
+				if p := recover(); p != nil {
+					fr.pan = p
+				}
+				done <- fr
+			}()
+			if err := ls.Flush(); err != nil {
+				ls.Abort()
+				fr.err = fmt.Errorf("cas write failed: %w", err)
+				return
+			}
+			fireTestHook(hookAfterChunksPublished)
+		}()
+		res.finish = func() error {
+			fr := <-done
+			if fr.pan != nil {
+				panic(fr.pan)
+			}
+			return fr.err
+		}
+		return res, nil
+	}
+	if err := sink.Flush(); err != nil {
+		return ingestResult{}, fmt.Errorf("cas write failed: %w", err)
+	}
+	fireTestHook(hookAfterChunksPublished)
 	return res, nil
 }
 
@@ -1726,8 +2232,8 @@ func (p *ingestPipe) close() {
 
 func (s *Store) ingestPipelined(r io.Reader, withMD5 bool, opt ingestOptions) (ingestResult, error) {
 	var sink chunkSink
-	if opt.directPack() {
-		sink = s.newPackSink()
+	if s.packFor(opt) {
+		sink = s.newPackSink(opt.size)
 	} else {
 		sink = looseSink{s.newCASBatch()}
 	}
@@ -2721,6 +3227,12 @@ type packState struct {
 	levels []*locIndex
 	bad    []packProblem
 	clash  []string
+	// extended is set by the first withPack that appends to packs in place.
+	// Snapshots are immutable and readers never look beyond their own length,
+	// so the first successor may share spare capacity (amortized O(1) per
+	// publication instead of copying every pack); any other successor of the
+	// same snapshot copies.
+	extended atomic.Bool
 }
 
 // best returns a digest's primary record: the hottest copy, the oldest
@@ -2819,7 +3331,11 @@ func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, e
 	if len(st.packs) >= packIdxMask {
 		return nil, errors.New("pack locator is full: too many packs")
 	}
-	next := &packState{packs: append(slices.Clip(st.packs), info), levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash)}
+	packs := st.packs
+	if !st.extended.CompareAndSwap(false, true) {
+		packs = slices.Clip(packs)
+	}
+	next := &packState{packs: append(packs, info), levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash)}
 	onClash := func(prim, rep *locRec) {
 		next.clash = append(next.clash, clashMessage(prim.sum, prim, rep, next.packs))
 	}
@@ -3586,10 +4102,38 @@ func (s *Store) publishManifest(m manifestV1) (id string, sum [32]byte, err erro
 	if err := writeFileDurable(filepath.Join(s.root, "tmp"), path, data); err != nil {
 		return "", sum, err
 	}
-	if err := syncDir(filepath.Join(s.root, "manifests")); err != nil {
+	if err := s.syncDirShared(filepath.Join(s.root, "manifests")); err != nil {
 		return "", sum, err
 	}
 	return m.ManifestUUID, sha256.Sum256(data), nil
+}
+
+// publishManifestJoined publishes man and completes ing's deferred chunk
+// publication, in parallel when there is one. It returns only when both are
+// done (the chunk publication is always joined, even if the manifest fails).
+func (s *Store) publishManifestJoined(man manifestV1, ing *ingestResult) (id string, sum [32]byte, err error) {
+	if ing.finish == nil {
+		id, sum, err = s.publishManifest(man)
+		if err != nil {
+			err = fmt.Errorf("manifest publish failed: %w", err)
+		}
+		return
+	}
+	defer func() {
+		// A crash hook inside publishManifest unwinds past here: still join.
+		if p := recover(); p != nil {
+			func() { defer func() { recover() }(); ing.finishIngest() }()
+			panic(p)
+		}
+	}()
+	id, sum, err = s.publishManifest(man)
+	if ferr := ing.finishIngest(); ferr != nil {
+		return "", sum, ferr
+	}
+	if err != nil {
+		err = fmt.Errorf("manifest publish failed: %w", err)
+	}
+	return
 }
 
 // readManifest reads and parses a manifest by UUID. Callers that need
@@ -3891,8 +4435,27 @@ type Journal struct {
 // which replays whatever is truly durable) before mutations can resume;
 // reads are unaffected, since they never touch the journal.
 func (j *Journal) appendFrame(recType byte, payload []byte) (uint64, error) {
-	if len(payload) > maxJournalPayload {
-		return 0, fmt.Errorf("journal: payload of %d bytes exceeds max %d", len(payload), maxJournalPayload)
+	return j.appendFrames([]journalFrameIn{{recType: recType, payload: payload}})
+}
+
+// journalFrameIn is one record for appendFrames.
+type journalFrameIn struct {
+	recType byte
+	payload []byte
+}
+
+// appendFrames durably appends frames as consecutive records with a single
+// write and a single fsync (group commit) and returns the first sequence
+// number; frame i has sequence first+i. All-or-poison: a write or sync
+// failure poisons the journal exactly as for a single frame, and none of the
+// frames may be considered committed by the caller.
+func (j *Journal) appendFrames(recs []journalFrameIn) (uint64, error) {
+	total := 0
+	for _, r := range recs {
+		if len(r.payload) > maxJournalPayload {
+			return 0, fmt.Errorf("journal: payload of %d bytes exceeds max %d", len(r.payload), maxJournalPayload)
+		}
+		total += journalHeaderSize + len(r.payload) + 4
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -3901,24 +4464,24 @@ func (j *Journal) appendFrame(recType byte, payload []byte) (uint64, error) {
 		return 0, fmt.Errorf("journal: poisoned by a prior durability failure, refusing further mutations until the store is reopened: %w", j.poisoned)
 	}
 
-	seq := j.nextSeq
-	header := make([]byte, journalHeaderSize)
-	copy(header[0:4], journalMagic)
-	binary.BigEndian.PutUint16(header[4:6], journalFrameVersion)
-	header[6] = recType
-	header[7] = 0
-	binary.BigEndian.PutUint64(header[8:16], seq)
-	binary.BigEndian.PutUint32(header[16:20], uint32(len(payload)))
+	first := j.nextSeq
+	frames := make([]byte, 0, total)
+	for i, r := range recs {
+		start := len(frames)
+		var header [journalHeaderSize]byte
+		copy(header[0:4], journalMagic)
+		binary.BigEndian.PutUint16(header[4:6], journalFrameVersion)
+		header[6] = r.recType
+		header[7] = 0
+		binary.BigEndian.PutUint64(header[8:16], first+uint64(i))
+		binary.BigEndian.PutUint32(header[16:20], uint32(len(r.payload)))
+		frames = append(frames, header[:]...)
+		frames = append(frames, r.payload...)
+		crc := crc32.Checksum(frames[start:], castagnoliTable)
+		frames = binary.BigEndian.AppendUint32(frames, crc)
+	}
 
-	frame := make([]byte, 0, journalHeaderSize+len(payload)+4)
-	frame = append(frame, header...)
-	frame = append(frame, payload...)
-	crc := crc32.Checksum(frame, castagnoliTable)
-	crcBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(crcBytes, crc)
-	frame = append(frame, crcBytes...)
-
-	if _, err := j.f.WriteAt(frame, j.writeOffset); err != nil {
+	if _, err := j.f.WriteAt(frames, j.writeOffset); err != nil {
 		wrapped := fmt.Errorf("journal: write failed: %w", err)
 		j.poisoned = wrapped
 		return 0, wrapped
@@ -3929,11 +4492,25 @@ func (j *Journal) appendFrame(recType byte, payload []byte) (uint64, error) {
 		j.poisoned = wrapped
 		return 0, wrapped
 	}
+	// The frames are durable: advance the cursor before anything else can run
+	// (a panic in the hook below must not leave the cursor behind durable
+	// bytes, or the next append would overwrite them).
+	j.writeOffset += int64(len(frames))
+	j.nextSeq = first + uint64(len(recs))
 	fireTestHook(hookAfterJournalSync)
+	return first, nil
+}
 
-	j.writeOffset += int64(len(frame))
-	j.nextSeq = seq + 1
-	return seq, nil
+// poison makes every further append fail until the store is reopened. It is
+// used when a commit was interrupted by a panic: whether its frames reached
+// the disk is then unknown to the in-memory namespace, exactly as after a
+// failed write or sync.
+func (j *Journal) poison(err error) {
+	j.mu.Lock()
+	if j.poisoned == nil {
+		j.poisoned = err
+	}
+	j.mu.Unlock()
 }
 
 // replayJournal reads every complete, valid frame from f starting at
@@ -4166,8 +4743,22 @@ type Store struct {
 	// packed-read activity. Nil in production: no counters, no atomics.
 	packTrace *packTrace
 
-	// casPubMu is the loose-CAS publication barrier (section 4).
-	casPubMu sync.RWMutex
+	// pub is the loose-CAS publication barrier (section 4): digests whose
+	// publication is in flight. dirClaims serializes creation of shard
+	// directories, shardAA/shardBB cache the ones known durable, and dsync
+	// coalesces directory fsyncs.
+	pub       pubRegistry
+	dirClaims pubRegistry
+	shardAA   [256]atomic.Bool
+	shardBB   [1024]atomic.Uint64
+	dsync     dirSyncMap
+	commits   commitQueue
+	// commitMu serializes every operation that appends to the journal and
+	// changes the namespace. Lock order: commitMu, then mu. The batch leader
+	// (runRootCommits) releases mu while the journal fsync runs, so readers
+	// (HeadBucket, GET, LIST) are never blocked behind a disk flush; no other
+	// mutator can start while it waits, because it holds commitMu.
+	commitMu sync.Mutex
 
 	// rep is the optional structured-representation state (section 16d):
 	// runtime mode, derived catalog and counters. Nothing in it is authoritative.
@@ -4563,6 +5154,8 @@ func (s *Store) CreateBucket(name string) error {
 	if name == "" {
 		return fmt.Errorf("invalid bucket name")
 	}
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.buckets[name]; exists {
@@ -4611,6 +5204,8 @@ func (s *Store) HeadBucket(name string) error {
 // file, since those may still (or may again, after a future PutObject)
 // be referenced by other roots.
 func (s *Store) DeleteBucket(name string) error {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b, ok := s.buckets[name]
@@ -4651,6 +5246,8 @@ func (s *Store) DeleteBucket(name string) error {
 // chunks the deleted root pointed at are left on disk, immutable, for a
 // later GC pass and for any other root that still references them.
 func (s *Store) DeleteObject(bucket, key string) error {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b, ok := s.buckets[bucket]
@@ -4690,9 +5287,12 @@ func (s *Store) DeleteObject(bucket, key string) error {
 // on disk orphaned: unreachable, immutable, and ordinary GC garbage.
 func (s *Store) commitIngested(bucket, key string, ing ingestResult, contentType string, metadata map[string]string, cond putCondition) (*objectEntry, error) {
 	man := buildManifestV1FromRefs(ing.chunks, ing.size, ing.objSHA256, hex.EncodeToString(ing.etagMD5[:]), contentType, metadata)
-	manUUID, manSHA, err := s.publishManifest(man)
+	// The manifest does not depend on the chunks being durable yet, only the
+	// journal record does: when the chunk publication is still running, the
+	// two barriers overlap and the journal commit waits for both.
+	manUUID, manSHA, err := s.publishManifestJoined(man, &ing)
 	if err != nil {
-		return nil, fmt.Errorf("manifest publish failed: %w", err)
+		return nil, err
 	}
 	fireTestHook(hookAfterManifestPublished)
 	s.maybeBuildRep(man)
@@ -4754,6 +5354,203 @@ func (s *Store) commitObjectRoot(bucket, key, manUUID string, manSHA [32]byte, m
 // writer racing in between. A non-nil error from check aborts the commit
 // without writing anything.
 func (s *Store) commitObjectRootChecked(bucket, key, manUUID string, manSHA [32]byte, man manifestV1, check func(cur *objectEntry, exists bool) error) (*objectEntry, error) {
+	if pubAblate.serialCommit {
+		return s.commitObjectRootSerial(bucket, key, manUUID, manSHA, man, check)
+	}
+	r := &rootCommitReq{bucket: bucket, key: key, manUUID: manUUID, manSHA: manSHA, man: man, check: check}
+	s.submitRootCommit(r)
+	if r.err != nil {
+		return nil, r.err
+	}
+	fireTestHook(hookAfterApplyBeforeResponse)
+	return r.entry, nil
+}
+
+// rootCommitReq is one object-root commit waiting for the journal.
+type rootCommitReq struct {
+	bucket, key, manUUID string
+	manSHA               [32]byte
+	man                  manifestV1
+	check                func(cur *objectEntry, exists bool) error
+	entry                *objectEntry
+	err                  error
+	done                 chan struct{}
+	lead                 chan struct{}
+}
+
+// commitQueue is the combining queue behind the visibility journal (group
+// commit). Object-root commits queue up; the first caller to find no leader
+// serves the batch queued at that moment -- one critical section, one journal
+// write, one fsync for all of it -- and then hands leadership to the oldest
+// request that queued meanwhile. There is no timer and no added delay: the
+// batch is whatever arrived while the previous fsync ran, so a lone request
+// costs exactly what it did before and N concurrent requests share one fsync.
+// Each request is committed, applied to the in-memory namespace and released
+// only after the fsync that covers its frame succeeded, strictly in journal
+// order; a request that fails validation (bucket gone, precondition) gets its
+// own error and no frame. Every leader serves one batch containing its own
+// request, so no request's latency is bounded by other requests' queues.
+type commitQueue struct {
+	mu      sync.Mutex
+	q       []*rootCommitReq
+	leading bool
+}
+
+func (s *Store) submitRootCommit(r *rootCommitReq) {
+	q := &s.commits
+	r.done = make(chan struct{})
+	r.lead = make(chan struct{}, 1)
+	q.mu.Lock()
+	q.q = append(q.q, r)
+	if q.leading {
+		q.mu.Unlock()
+		select {
+		case <-r.done:
+			return
+		case <-r.lead:
+		}
+	} else {
+		q.leading = true
+		q.mu.Unlock()
+	}
+	q.mu.Lock()
+	batch := q.q
+	q.q = nil
+	q.mu.Unlock()
+	defer func() {
+		p := recover()
+		if p != nil { // a crash hook: fail the batch instead of stranding it
+			// Whether the batch's frames are durable is now unknown to the
+			// in-memory namespace: fail-stop, like a failed journal write.
+			s.journal.poison(fmt.Errorf("commit interrupted by panic: %v", p))
+			for _, m := range batch {
+				select {
+				case <-m.done:
+				default:
+					m.err = fmt.Errorf("commit interrupted: %v", p)
+					close(m.done)
+				}
+			}
+		}
+		q.mu.Lock()
+		if len(q.q) > 0 {
+			q.q[0].lead <- struct{}{}
+		} else {
+			q.leading = false
+		}
+		q.mu.Unlock()
+		if p != nil {
+			panic(p)
+		}
+	}()
+	s.runRootCommits(batch)
+}
+
+// runRootCommits commits batch with one journal write and one fsync. It holds
+// commitMu throughout (no other mutator can interleave) but holds mu only to
+// validate and to apply, not while the journal is written and flushed:
+// readers keep running during the fsync and see the namespace as it was
+// before this batch until every frame of it is durable.
+func (s *Store) runRootCommits(batch []*rootCommitReq) {
+	type viewKey struct{ bucket, key string }
+	type item struct {
+		r    *rootCommitReq
+		prev *journalArchivedVersionPayload
+	}
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+	view := map[viewKey]*objectEntry{} // what earlier requests of this batch will have committed
+	var items []item
+	var recs []journalFrameIn
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, r := range batch {
+			b, ok := s.buckets[r.bucket]
+			if !ok {
+				r.err = errNoSuchBucket
+				continue
+			}
+			cur, exists := b.objects[r.key]
+			if v, ok := view[viewKey{r.bucket, r.key}]; ok {
+				cur, exists = v, true
+			}
+			if r.check != nil {
+				if err := r.check(cur, exists); err != nil {
+					r.err = err
+					continue
+				}
+			}
+			var prev *journalArchivedVersionPayload
+			if exists {
+				prev = archivedVersionPayload(cur, historyReasonOverwritten)
+			}
+			payload, err := json.Marshal(journalPutPayloadV2{
+				Bucket:         r.bucket,
+				Key:            r.key,
+				ManifestUUID:   r.manUUID,
+				ManifestSHA256: hex.EncodeToString(r.manSHA[:]),
+				Size:           r.man.TotalLength,
+				ETag:           r.man.ETag,
+				ContentType:    r.man.ContentType,
+				VersionID:      r.man.VersionID,
+				Previous:       prev,
+			})
+			if err != nil {
+				r.err = err
+				continue
+			}
+			r.entry = &objectEntry{
+				manifestUUID:   r.manUUID,
+				manifestSHA256: r.manSHA,
+				size:           r.man.TotalLength,
+				etag:           r.man.ETag,
+				contentType:    r.man.ContentType,
+			}
+			view[viewKey{r.bucket, r.key}] = r.entry
+			items = append(items, item{r, prev})
+			recs = append(recs, journalFrameIn{recType: recordTypePutObjectRootV2, payload: payload})
+		}
+	}()
+	defer func() {
+		for _, r := range batch {
+			select {
+			case <-r.done:
+			default:
+				close(r.done)
+			}
+		}
+	}()
+	if len(recs) == 0 {
+		return
+	}
+	first, err := s.journal.appendFrames(recs) // mu is NOT held: readers proceed during the fsync
+	if err != nil {
+		for _, it := range items {
+			it.r.entry = nil
+			it.r.err = fmt.Errorf("journal append failed: %w", err)
+		}
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, it := range items {
+		r := it.r
+		r.entry.seq = first + uint64(i)
+		s.buckets[r.bucket].objects[r.key] = r.entry
+		if it.prev != nil {
+			if err := s.archiveVersionLocked(r.bucket, r.key, r.entry.seq, *it.prev); err != nil {
+				r.err = fmt.Errorf("commit: recording history: %w", err)
+			}
+		}
+	}
+}
+
+// commitObjectRootSerial is the pre-P1B commit: one journal fsync per request
+// under mu (ZEROS3_PUB_ABLATE=serialcommit, for A/B measurement).
+func (s *Store) commitObjectRootSerial(bucket, key, manUUID string, manSHA [32]byte, man manifestV1, check func(cur *objectEntry, exists bool) error) (*objectEntry, error) {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	// Re-check bucket existence here, at the actual commit point, not just
 	// at entry to the caller: the CDC/CAS/manifest work leading up to this
@@ -5196,13 +5993,16 @@ func (s *Store) applyHistoryPrune(res *HistoryPruneResult, frameTarget int) erro
 			return err
 		}
 		fireTestHook(hookPruneBeforeFrame)
+		s.commitMu.Lock()
 		s.mu.Lock()
 		if _, err := s.journal.appendFrame(recordTypePruneHistory, payload); err != nil {
 			s.mu.Unlock()
+			s.commitMu.Unlock()
 			return err
 		}
 		res.VersionsPruned += s.removeHistoryLocked(p)
 		s.mu.Unlock()
+		s.commitMu.Unlock()
 		res.JournalFrames++
 		fireTestHook(hookPruneAfterFrame)
 	}
@@ -6684,7 +7484,7 @@ func (b bodyReader) Read(p []byte) (int, error) {
 // request's declared checksums against the digests accumulated during
 // that same pass. Verification precedes any manifest or journal write, so
 // a payload that fails it is never visible; its chunks are unreachable.
-func (srv *Server) ingestRequestBody(w http.ResponseWriter, r *http.Request, check payloadCheck) (ingestResult, error) {
+func (srv *Server) ingestRequestBody(w http.ResponseWriter, r *http.Request, check payloadCheck, overlap bool) (ingestResult, error) {
 	if r.ContentLength > maxStreamedBodySize {
 		return ingestResult{}, &http.MaxBytesError{Limit: maxStreamedBodySize}
 	}
@@ -6694,7 +7494,7 @@ func (srv *Server) ingestRequestBody(w http.ResponseWriter, r *http.Request, che
 		crc = crc32.NewIEEE()
 		body = io.TeeReader(body, crc)
 	}
-	ing, err := srv.store.ingestStream(body, true, ingestOptions{size: r.ContentLength})
+	ing, err := srv.store.ingestStream(body, true, ingestOptions{size: r.ContentLength, overlapFlush: overlap})
 	if err != nil {
 		return ingestResult{}, err
 	}
@@ -6703,6 +7503,7 @@ func (srv *Server) ingestRequestBody(w http.ResponseWriter, r *http.Request, che
 		sum = crc.Sum32()
 	}
 	if err := check.verify(ing.objSHA256, ing.etagMD5, sum); err != nil {
+		ing.finishIngest() // join the running publication; its chunks stay unreachable
 		return ingestResult{}, err
 	}
 	return ing, nil
@@ -7098,7 +7899,7 @@ func (srv *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucke
 		writeBucketOrInternalError(w, err, resource)
 		return
 	}
-	ing, err := srv.ingestRequestBody(w, r, check)
+	ing, err := srv.ingestRequestBody(w, r, check, true)
 	if err != nil {
 		writeRequestError(w, err, resource)
 		return
@@ -7952,6 +8753,8 @@ type completedPart struct {
 // the journal append happens while still holding s.mu -- there is no heavy
 // CAS/chunking work to keep off the lock here.
 func (s *Store) CreateMultipartUpload(bucket, key, contentType string, metadata map[string]string) (string, error) {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.buckets[bucket]; !ok {
@@ -8018,6 +8821,8 @@ func (s *Store) commitPart(bucket, key, uploadID string, partNumber int, ing ing
 		return "", err
 	}
 
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	up, err := s.lookupUploadLocked(bucket, key, uploadID)
@@ -8112,6 +8917,8 @@ func (s *Store) ListPartsPage(bucket, key, uploadID string, partNumberMarker, ma
 // upload ID reports errNoSuchUpload, matching real S3 rather than treating
 // repeat-abort as an idempotent no-op.
 func (s *Store) AbortMultipartUpload(bucket, key, uploadID string) error {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := s.lookupUploadLocked(bucket, key, uploadID); err != nil {
@@ -8436,6 +9243,8 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 	fireTestHook(hookAfterManifestPublished)
 	s.maybeBuildRep(man)
 
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Re-validate at the actual commit point, exactly like
@@ -8632,7 +9441,7 @@ func (srv *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, buck
 		return
 	}
 
-	ing, err := srv.ingestRequestBody(w, r, check)
+	ing, err := srv.ingestRequestBody(w, r, check, false)
 	if err != nil {
 		writeRequestError(w, err, "/"+bucket+"/"+key)
 		return
@@ -10928,7 +11737,7 @@ func (s *Store) publishPackExact(t tier, staged string, entries []packEntry, bod
 		return info, fmt.Errorf("publishing pack: %w", err)
 	}
 	fireTestHook(hookPackAfterRename)
-	if err := syncDir(packDir); err != nil {
+	if err := s.syncDirShared(packDir); err != nil {
 		return info, fmt.Errorf("syncing packs dir: %w", err)
 	}
 	fireTestHook(hookPackAfterDirSync)
@@ -27175,6 +27984,7 @@ func (bd *repBudget) entries(n int) error {
 type repBuilder struct {
 	s       *Store
 	big     bool // large object: components stream into immutable packs, not loose files
+	size    int64
 	sink    chunkSink
 	descs   map[[32]byte]*repDesc
 	written map[[32]byte]struct{}
@@ -27186,7 +27996,7 @@ type repBuilder struct {
 }
 
 func (s *Store) newRepBuilder(size int64, base func([32]byte) *repDesc, cat *repCatalog) *repBuilder {
-	b := &repBuilder{s: s, big: ingestOptions{size: size}.directPack(), descs: map[[32]byte]*repDesc{}, written: map[[32]byte]struct{}{}, cat: cat}
+	b := &repBuilder{s: s, big: s.packFor(ingestOptions{size: size}), size: size, descs: map[[32]byte]*repDesc{}, written: map[[32]byte]struct{}{}, cat: cat}
 	b.sink = b.newSink()
 	b.src = s.newRepSource(b.descs, base)
 	b.env = &repEnv{Src: b.src, Limits: repProdLimits}
@@ -27197,7 +28007,7 @@ func (s *Store) newRepBuilder(size int64, base func([32]byte) *repDesc, cat *rep
 // size would: loose CAS files, or immutable packs for large objects.
 func (b *repBuilder) newSink() chunkSink {
 	if b.big {
-		return b.s.newPackSink()
+		return b.s.newPackSink(b.size)
 	}
 	return looseSink{b.s.newCASBatch()}
 }

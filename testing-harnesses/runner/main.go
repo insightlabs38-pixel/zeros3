@@ -20,8 +20,16 @@ import (
 type harness struct {
 	pkg  string
 	args []string
-	need string // env var that must be set for the harness to run
+	need string   // env var that must be set for the harness to run
+	env  []string // extra environment for the harness and the servers it starts
 }
+
+// looseLayout restores the pre-P1B direct-pack threshold (64 MiB) for harnesses
+// whose assertions are about loose chunk files: counting chunk files, corrupting
+// or deleting one, `gc` of a failed write's chunks, compacting loose chunks into
+// packs. By default objects from 256 KiB are written into packs, where those
+// preconditions do not hold; every other harness runs with the default.
+var looseLayout = []string{"ZEROS3_DIRECT_PACK_KIB=65536"}
 
 var groups = map[string][]harness{
 	"static": {
@@ -30,16 +38,16 @@ var groups = map[string][]harness{
 	},
 	"s3": {
 		{pkg: "./harness/m2"}, {pkg: "./harness/m3/copy"}, {pkg: "./harness/m3/range"},
-		{pkg: "./harness/m3/dedup"}, {pkg: "./harness/m5a/presign"}, {pkg: "./harness/m5b/multipart"},
+		{pkg: "./harness/m3/dedup", env: looseLayout}, {pkg: "./harness/m5a/presign"}, {pkg: "./harness/m5b/multipart"},
 		{pkg: "./harness/m5d/pagination"}, {pkg: "./harness/p1/env_and_shutdown"},
-		{pkg: "./harness/p2/list_multipart_uploads"}, {pkg: "./harness/m8f/conditional"},
-		{pkg: "./harness/z2_streaming_put"}, {pkg: "./harness/z2_aws_chunked"}, {pkg: "./harness/z2_packed_cas"},
-		{pkg: "./harness/z2_pack_compression"},
+		{pkg: "./harness/p2/list_multipart_uploads"}, {pkg: "./harness/m8f/conditional", env: looseLayout},
+		{pkg: "./harness/z2_streaming_put"}, {pkg: "./harness/z2_aws_chunked"}, {pkg: "./harness/z2_packed_cas", env: looseLayout},
+		{pkg: "./harness/z2_pack_compression", env: looseLayout},
 	},
 	"sync": {
 		{pkg: "./harness/m6/sync"}, {pkg: "./harness/m6c/dirsync"}, {pkg: "./harness/m8a/remote_delta"},
 		{pkg: "./harness/m8b/repair"}, {pkg: "./harness/m8c/namespace_replication"},
-		{pkg: "./harness/m8d/fork"}, {pkg: "./harness/m8e/snapshot"}, {pkg: "./harness/m8g/introspection"},
+		{pkg: "./harness/m8d/fork", env: looseLayout}, {pkg: "./harness/m8e/snapshot", env: looseLayout}, {pkg: "./harness/m8g/introspection"},
 	},
 	"clients": {
 		{pkg: "./harness/rclone", need: "RCLONE_BIN"},
@@ -47,7 +55,7 @@ var groups = map[string][]harness{
 	},
 	"client": {
 		{pkg: "./profile/conformance", args: []string{"-managed", "-bin", "@bin"}},
-		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "invariance"}},
+		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "invariance"}, env: looseLayout},
 	},
 	"apps": {
 		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "browser,artifact,rebalance"}},
@@ -133,7 +141,7 @@ func main() {
 				args = append(args, strings.ReplaceAll(a, "@bin", absBin))
 			}
 			cmd := exec.Command("go", args...)
-			cmd.Env = append(cleanEnv(), "ZEROS3_BIN="+absBin)
+			cmd.Env = append(append(cleanEnv(), "ZEROS3_BIN="+absBin), h.env...)
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 			t := time.Now()
 			fmt.Printf("=== %s\n", h.pkg)
