@@ -393,6 +393,7 @@ func cmdGet(args []string) {
 	set := addSet(fs)
 	mode := fs.String("mode", "whole", "whole | range | hot")
 	rsize := fs.String("rsize", "64kib", "range request size")
+	roff := fs.String("roff", "random", "range offset policy for -mode range: random | hot (one fixed offset per object) | eof (the last rsize bytes) | seq (consecutive ranges) | spread (8 fixed offsets per object)")
 	nreq := fs.Int("nreq", 0, "requests (0 = objs for whole, 2000 for range)")
 	zipf := fs.Float64("zipf", 1.2, "zipf s for -mode hot")
 	prep := fs.String("prep", "", "'' (loose) | compact | compact-off | repack-auto")
@@ -462,7 +463,19 @@ func cmdGet(args []string) {
 			default:
 				o := objs[rng.IntN(len(objs))]
 				k := min(rs, o.C.Size)
-				ops[i] = op{o, rng.Int64N(max(1, o.C.Size-k+1)), k}
+				off := rng.Int64N(max(1, o.C.Size-k+1))
+				switch *roff {
+				case "hot":
+					off = (o.C.Size / 3) % max(1, o.C.Size-k+1)
+				case "eof":
+					off = o.C.Size - k
+				case "seq":
+					o = objs[(int64(i)*k/max(1, o.C.Size))%int64(len(objs))]
+					off = (int64(i) * k) % max(1, o.C.Size-k+1)
+				case "spread":
+					off = (int64(rng.IntN(8)) * (o.C.Size / 8)) % max(1, o.C.Size-k+1)
+				}
+				ops[i] = op{o, off, k}
 			}
 		}
 		lats, ttfbs := make([]float64, n), make([]float64, n)
@@ -486,7 +499,7 @@ func cmdGet(args []string) {
 			die("get failed (result invalid): err=%v mismatches=%d", err, badc.Load())
 		}
 		m["scenario"], m["rep"] = "get-"+*mode, rep
-		m["params"] = map[string]any{"objs": set.objs, "size": set.size, "sizes": set.sizes, "kind": set.kind, "mode": *mode, "rsize": rs, "conc": c.conc, "cache": c.cache, "prep": *prep, "nreq": n, "load": *loadMode, "env": c.envs, "prof": c.prof, "revs": set.revs}
+		m["params"] = map[string]any{"objs": set.objs, "size": set.size, "sizes": set.sizes, "kind": set.kind, "mode": *mode, "rsize": rs, "conc": c.conc, "cache": c.cache, "prep": *prep, "nreq": n, "roff": *roff, "load": *loadMode, "env": c.envs, "prof": c.prof, "revs": set.revs}
 		m["served_bytes"] = served.Load()
 		m["mib_s"] = mib(served.Load(), m["wall_s"].(float64))
 		m["ops_s"] = float64(n) / m["wall_s"].(float64)

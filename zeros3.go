@@ -5868,11 +5868,92 @@ func (s *Store) servedManifest(id string, wantSHA [32]byte) (*servedManifest, er
 	return s.mcache.get(wantSHA, id, func() (*servedManifest, error) { return s.loadServedManifest(id, wantSHA) })
 }
 
+// clockShard is one lock domain of a bounded CLOCK cache: a map for lookup and
+// a ring the hand sweeps. A lookup under the read lock only sets a reference
+// bit; insertion (write lock) evicts entries whose bit is clear until the new
+// one fits. New entries start unreferenced, so a scan of one-touch keys evicts
+// itself before it evicts anything that is being re-read.
+type clockShard[V any] struct {
+	mu    sync.RWMutex
+	m     map[[32]byte]*clockEntry[V]
+	ring  []*clockEntry[V]
+	hand  int
+	bytes int64
+	cap   int64
+	gen   uint64 // bumped by purge: inserts prepared before it are refused
+}
+
+type clockEntry[V any] struct {
+	key  [32]byte
+	val  V
+	cost int64
+	ref  atomic.Bool
+	slot int
+}
+
+func (sh *clockShard[V]) init(cap int64) {
+	sh.m, sh.cap = map[[32]byte]*clockEntry[V]{}, cap
+}
+
+// getLocked returns the entry for key, marking it used; the caller holds mu (read or write).
+func (sh *clockShard[V]) getLocked(key [32]byte) *clockEntry[V] {
+	e := sh.m[key]
+	if e != nil && !e.ref.Load() {
+		e.ref.Store(true)
+	}
+	return e
+}
+
+// insertLocked adds val unless gen is stale (a purge intervened) or cost is
+// larger than the shard; it reports evictions and whether val was stored.
+func (sh *clockShard[V]) insertLocked(key [32]byte, val V, cost int64, gen uint64) (evicted int64, stored, stale, oversize bool) {
+	switch {
+	case gen != sh.gen:
+		return 0, false, true, false
+	case cost > sh.cap:
+		return 0, false, false, true
+	}
+	if old := sh.m[key]; old != nil {
+		sh.removeLocked(old)
+	}
+	for sh.bytes+cost > sh.cap && len(sh.ring) > 0 {
+		if sh.hand >= len(sh.ring) {
+			sh.hand = 0
+		}
+		e := sh.ring[sh.hand]
+		if e.ref.Swap(false) {
+			sh.hand++
+			continue
+		}
+		sh.removeLocked(e)
+		evicted++
+	}
+	e := &clockEntry[V]{key: key, val: val, cost: cost, slot: len(sh.ring)}
+	sh.ring = append(sh.ring, e)
+	sh.m[key] = e
+	sh.bytes += cost
+	return evicted, true, false, false
+}
+
+func (sh *clockShard[V]) removeLocked(e *clockEntry[V]) {
+	last := len(sh.ring) - 1
+	sh.ring[e.slot] = sh.ring[last]
+	sh.ring[e.slot].slot = e.slot
+	sh.ring[last] = nil
+	sh.ring = sh.ring[:last]
+	delete(sh.m, e.key)
+	sh.bytes -= e.cost
+}
+
+func (sh *clockShard[V]) purgeLocked() {
+	sh.m, sh.ring, sh.hand, sh.bytes = map[[32]byte]*clockEntry[V]{}, nil, 0, 0
+	sh.gen++
+}
+
 // manifestCache is a bounded, sharded CLOCK cache of servedManifests keyed by
-// manifest SHA-256. Lookups take a shard read lock and set a reference bit; a
-// miss loads once per digest (single flight) and inserts only a fully verified
-// entry. Entries are immutable, so eviction needs no coordination with
-// readers: a reader keeps the entry it holds.
+// manifest SHA-256. A miss loads once per digest (single flight) and inserts
+// only a fully verified entry. Entries are immutable, so eviction needs no
+// coordination with readers: a reader keeps the entry it holds.
 const manifestCacheShards = 8
 
 // manifestCacheDefaultBytes is the default budget for all shards together.
@@ -5884,23 +5965,11 @@ type manifestCache struct {
 }
 
 type manifestCacheShard struct {
-	mu      sync.RWMutex
-	m       map[[32]byte]*mcEntry
-	ring    []*mcEntry
-	hand    int
-	bytes   int64
-	cap     int64
-	gen     uint64 // bumped by purge: loads that started before it are not inserted
+	clockShard[*servedManifest]
 	flights map[[32]byte]*mcFlight
 
 	hits, misses, loads, loadErrs, evictions, oversize, rejects atomic.Int64
 	_                                                           [64]byte
-}
-
-type mcEntry struct {
-	sm   *servedManifest
-	ref  atomic.Bool
-	slot int
 }
 
 type mcFlight struct {
@@ -5912,9 +5981,8 @@ type mcFlight struct {
 func newManifestCache(budget int64) *manifestCache {
 	c := &manifestCache{budget: budget}
 	for i := range c.shards {
-		c.shards[i].m = map[[32]byte]*mcEntry{}
+		c.shards[i].init(budget / manifestCacheShards)
 		c.shards[i].flights = map[[32]byte]*mcFlight{}
-		c.shards[i].cap = budget / manifestCacheShards
 	}
 	return c
 }
@@ -5931,22 +5999,18 @@ func (c *manifestCache) get(sha [32]byte, id string, load func() (*servedManifes
 	}
 	sh := c.shard(sha)
 	sh.mu.RLock()
-	if e := sh.m[sha]; e != nil && e.sm.man.ManifestUUID == id {
-		if !e.ref.Load() {
-			e.ref.Store(true)
-		}
+	if e := sh.getLocked(sha); e != nil && e.val.man.ManifestUUID == id {
 		sh.mu.RUnlock()
 		sh.hits.Add(1)
-		return e.sm, nil
+		return e.val, nil
 	}
 	sh.mu.RUnlock()
 	sh.misses.Add(1)
 
 	sh.mu.Lock()
-	if e := sh.m[sha]; e != nil && e.sm.man.ManifestUUID == id {
-		e.ref.Store(true)
+	if e := sh.getLocked(sha); e != nil && e.val.man.ManifestUUID == id {
 		sh.mu.Unlock()
-		return e.sm, nil
+		return e.val, nil
 	}
 	if f := sh.flights[sha]; f != nil {
 		sh.mu.Unlock()
@@ -5974,7 +6038,14 @@ func (c *manifestCache) get(sha [32]byte, id string, load func() (*servedManifes
 			sh.mu.Lock()
 			delete(sh.flights, sha)
 			if err == nil && sm != nil {
-				sh.insertLocked(sha, sm, gen)
+				ev, _, stale, over := sh.insertLocked(sha, sm, sm.cost, gen)
+				sh.evictions.Add(ev)
+				if stale {
+					sh.rejects.Add(1)
+				}
+				if over {
+					sh.oversize.Add(1)
+				}
 			}
 			sh.mu.Unlock()
 			f.sm, f.err = sm, err
@@ -5989,46 +6060,10 @@ func (c *manifestCache) get(sha [32]byte, id string, load func() (*servedManifes
 	return sm, err
 }
 
-// insertLocked adds sm (already verified) unless a purge intervened or it is
-// larger than the shard's budget, evicting by the clock hand until it fits.
-func (sh *manifestCacheShard) insertLocked(sha [32]byte, sm *servedManifest, gen uint64) {
-	if gen != sh.gen {
-		sh.rejects.Add(1)
-		return
-	}
-	if sm.cost > sh.cap {
-		sh.oversize.Add(1)
-		return
-	}
-	if old := sh.m[sha]; old != nil {
-		sh.removeLocked(old)
-	}
-	for sh.bytes+sm.cost > sh.cap && len(sh.ring) > 0 {
-		if sh.hand >= len(sh.ring) {
-			sh.hand = 0
-		}
-		e := sh.ring[sh.hand]
-		if e.ref.Swap(false) {
-			sh.hand++
-			continue
-		}
-		sh.removeLocked(e)
-		sh.evictions.Add(1)
-	}
-	e := &mcEntry{sm: sm, slot: len(sh.ring)}
-	sh.ring = append(sh.ring, e)
-	sh.m[sha] = e
-	sh.bytes += sm.cost
-}
-
-func (sh *manifestCacheShard) removeLocked(e *mcEntry) {
-	last := len(sh.ring) - 1
-	sh.ring[e.slot] = sh.ring[last]
-	sh.ring[e.slot].slot = e.slot
-	sh.ring[last] = nil
-	sh.ring = sh.ring[:last]
-	delete(sh.m, e.sm.sha)
-	sh.bytes -= e.sm.cost
+// purgeReadCaches drops the manifest and chunk caches (see sections 5b and 14a).
+func (s *Store) purgeReadCaches() {
+	s.mcache.purge()
+	s.ccache.purge()
 }
 
 // peek returns a cached entry without loading, inserting or marking it used.
@@ -6039,8 +6074,8 @@ func (c *manifestCache) peek(sha [32]byte, id string) *servedManifest {
 	sh := c.shard(sha)
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
-	if e := sh.m[sha]; e != nil && e.sm.man.ManifestUUID == id {
-		return e.sm
+	if e := sh.m[sha]; e != nil && e.val.man.ManifestUUID == id {
+		return e.val
 	}
 	return nil
 }
@@ -6055,8 +6090,7 @@ func (c *manifestCache) purge() {
 	for i := range c.shards {
 		sh := &c.shards[i]
 		sh.mu.Lock()
-		sh.m, sh.ring, sh.hand, sh.bytes = map[[32]byte]*mcEntry{}, nil, 0, 0
-		sh.gen++
+		sh.purgeLocked()
 		sh.mu.Unlock()
 	}
 }
@@ -6719,6 +6753,8 @@ type Store struct {
 	// mcache holds verified, immutable served manifests for the read path
 	// (section 5b). It is per Store, bounded, and never authoritative.
 	mcache *manifestCache
+	// ccache holds recently re-read, digest-verified chunks (section 14a).
+	ccache *chunkCache
 }
 
 // OpenStore opens the store rooted at root, initializing it (writing
@@ -6761,6 +6797,7 @@ func openStore(root string, ownSegments bool) (*Store, error) {
 		uploads: map[string]*multipartUpload{},
 		history: map[string]map[string][]*historyVersionEntry{},
 		mcache:  newManifestCache(manifestCacheBytes()),
+		ccache:  newChunkCache(chunkCacheBytes()),
 	}
 	for _, rec := range records {
 		if err := s.applyRecord(rec); err != nil {
@@ -7981,7 +8018,7 @@ func (s *Store) ApplyHistoryPrune(res *HistoryPruneResult) error {
 }
 
 func (s *Store) applyHistoryPrune(res *HistoryPruneResult, frameTarget int) error {
-	defer s.mcache.purge()
+	defer s.purgeReadCaches()
 	if len(res.Versions) == 0 {
 		res.Applied = true
 		return nil
@@ -12619,8 +12656,8 @@ func (r VerifyResult) OK() bool {
 func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	// Verify reads the real bytes (it never uses served manifests); dropping the
 	// cache around it makes the next read after a finding load from storage too.
-	s.mcache.purge()
-	defer s.mcache.purge()
+	s.purgeReadCaches()
+	defer s.purgeReadCaches()
 	res := VerifyResult{Deep: deep}
 
 	fm := s.formatSnapshot()
@@ -13256,7 +13293,7 @@ func compactStore(storeDir string, opt compactOptions) (CompactResult, error) {
 }
 
 func (s *Store) compact(referenced map[string]bool, opt compactOptions) (CompactResult, error) {
-	defer s.mcache.purge()
+	defer s.purgeReadCaches()
 	s.sealSegments() // pack maintenance sees sealed packs only (section 4d)
 	res := CompactResult{DryRun: opt.DryRun, Tier: opt.Tier.String()}
 	if opt.TargetBytes <= 0 {
@@ -14288,7 +14325,7 @@ func repackStore(storeDir string, opt repackOptions) (RepackResult, error) {
 }
 
 func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, error) {
-	defer s.mcache.purge()
+	defer s.purgeReadCaches()
 	s.sealSegments() // pack maintenance sees sealed packs only (section 4d)
 	res := RepackResult{DryRun: opt.DryRun, LiveSetOK: rr.OK(), Issues: rr.Issues}
 	if opt.TargetBytes <= 0 || opt.MaxLivePercent < 0 || opt.MaxLivePercent > 100 {
@@ -16067,6 +16104,173 @@ func parseRangeSpec(header string, size int64) (rng byteRange, ok, satisfiable b
 	return byteRange{start: start, end: end}, true, true
 }
 
+// =============================================================================
+// 14a. Verified chunk cache
+//
+// A range read pays for a whole chunk: the record is read and its SHA-256 is
+// computed over every byte, because the chunk digest is the only thing that
+// authenticates any part of it. When the same chunks are read again and again
+// (file footers, headers, hot objects) that is repeated work. The chunk cache
+// keeps recently re-read chunks in memory so a repeat costs a map lookup.
+//
+// What an entry is. The key is the chunk's SHA-256 and the value is a private
+// copy of bytes that had just passed the full digest check (including DEFLATE
+// decoding for compressed records). The copy is never modified and is never a
+// slice of a pooled buffer, so it needs no coordination with anything that
+// recycles buffers. The key is content, not location: pack replacement, tier
+// moves and segment sealing cannot make an entry stale or wrong.
+//
+// What is and is not trusted. A hit serves bytes that were verified when they
+// were cached; damage that reaches the file afterwards is not noticed by a read
+// until the entry is evicted, but it can never put wrong bytes on the wire.
+// Nothing that inspects storage uses this cache: Verify, stats, reachability,
+// GC, repair, bundle export and casRead all read and hash the real records, and
+// Verify, repair, compaction, repack and history pruning purge the cache.
+//
+// Admission. A key is copied in only on its second request within the door's
+// memory, and never for requests longer than chunkCacheAdmitMaxRange, so a
+// one-pass scan of a large object neither pays the copy nor evicts the hot set.
+// =============================================================================
+
+const (
+	chunkCacheShards        = 16
+	chunkDoorSlots          = 2048
+	chunkCacheAdmitMaxRange = 4 << 20
+)
+
+// chunkCacheDefaultBytes is the default budget for all shards together.
+var chunkCacheDefaultBytes int64 = 64 << 20
+
+type chunkCache struct {
+	budget int64
+	epoch  atomic.Uint64 // bumped by purge before the shards are cleared
+	shards [chunkCacheShards]chunkCacheShard
+}
+
+type chunkCacheShard struct {
+	clockShard[[]byte]
+	door                                   [chunkDoorSlots]atomic.Uint64
+	hits, misses, admits, evictions, stale atomic.Int64
+	_                                      [64]byte
+}
+
+func newChunkCache(budget int64) *chunkCache {
+	c := &chunkCache{budget: budget}
+	for i := range c.shards {
+		c.shards[i].init(budget / chunkCacheShards)
+	}
+	return c
+}
+
+func (c *chunkCache) enabled() bool { return c != nil && c.budget > 0 }
+
+func (c *chunkCache) shard(sum *[32]byte) *chunkCacheShard {
+	return &c.shards[sum[0]&(chunkCacheShards-1)]
+}
+
+// get returns the cached, verified bytes of the chunk with digest sum. The
+// slice is shared and must not be modified.
+func (c *chunkCache) get(sum *[32]byte) ([]byte, bool) {
+	if !c.enabled() {
+		return nil, false
+	}
+	sh := c.shard(sum)
+	sh.mu.RLock()
+	e := sh.getLocked(*sum)
+	sh.mu.RUnlock()
+	if e == nil {
+		sh.misses.Add(1)
+		return nil, false
+	}
+	sh.hits.Add(1)
+	return e.val, true
+}
+
+// offer considers caching data, whose SHA-256 was just verified to be sum, for
+// a reader that began at epoch. The first sighting only records the key.
+func (c *chunkCache) offer(sum *[32]byte, data []byte, epoch uint64) {
+	if !c.enabled() || len(data) == 0 {
+		return
+	}
+	sh := c.shard(sum)
+	fp := binary.LittleEndian.Uint64(sum[8:16]) | 1
+	slot := &sh.door[(fp>>5)%chunkDoorSlots]
+	if slot.Load() != fp {
+		slot.Store(fp)
+		return
+	}
+	cp := bytes.Clone(data)
+	sh.mu.Lock()
+	if epoch != c.epoch.Load() {
+		sh.mu.Unlock()
+		sh.stale.Add(1)
+		return
+	}
+	if old := sh.m[*sum]; old != nil { // raced with another reader of the same chunk
+		sh.mu.Unlock()
+		return
+	}
+	ev, stored, _, _ := sh.insertLocked(*sum, cp, int64(len(cp))+128, sh.gen)
+	sh.mu.Unlock()
+	sh.evictions.Add(ev)
+	if stored {
+		sh.admits.Add(1)
+	}
+}
+
+func (c *chunkCache) purge() {
+	if c == nil {
+		return
+	}
+	c.epoch.Add(1)
+	for i := range c.shards {
+		sh := &c.shards[i]
+		sh.mu.Lock()
+		sh.purgeLocked()
+		for j := range sh.door {
+			sh.door[j].Store(0)
+		}
+		sh.mu.Unlock()
+	}
+}
+
+type chunkCacheStats struct {
+	Entries, Bytes, Budget                     int64
+	Hits, Misses, Admits, Evictions, StaleDrop int64
+}
+
+func (c *chunkCache) stats() (st chunkCacheStats) {
+	if c == nil {
+		return
+	}
+	st.Budget = c.budget
+	for i := range c.shards {
+		sh := &c.shards[i]
+		sh.mu.RLock()
+		st.Entries += int64(len(sh.m))
+		st.Bytes += sh.bytes
+		sh.mu.RUnlock()
+		st.Hits += sh.hits.Load()
+		st.Misses += sh.misses.Load()
+		st.Admits += sh.admits.Load()
+		st.Evictions += sh.evictions.Load()
+		st.StaleDrop += sh.stale.Load()
+	}
+	return st
+}
+
+// chunkCacheBytes is the configured budget: ZEROS3_CHUNK_CACHE_MIB (0
+// disables the cache) overrides the default. A benchmarking and test switch,
+// not a supported tuning interface.
+func chunkCacheBytes() int64 {
+	if v := os.Getenv("ZEROS3_CHUNK_CACHE_MIB"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 && n <= 1<<20 {
+			return n << 20
+		}
+	}
+	return chunkCacheDefaultBytes
+}
+
 // manifestReader yields the bytes of one inclusive logical range of the
 // object a manifest describes, one verified CAS chunk at a time. It is the one
 // layer that sees upcoming chunk order, so it coalesces adjacent packed
@@ -16079,6 +16283,10 @@ type manifestReader struct {
 	idx    int
 	offset int64
 	rng    byteRange
+
+	cc    *chunkCache // nil, or the store's verified chunk cache
+	epoch uint64      // chunk cache epoch when this reader began
+	admit bool        // this request may add chunks to the cache
 
 	pr  *packRunReader // created on first packed read; holds <= 1 pack file
 	bad map[int32]bool // packs whose run had a failing record: no more runs from them
@@ -16111,7 +16319,12 @@ func (s *Store) newManifestReader(man manifestV1, rng byteRange) *manifestReader
 // search, so the cost of a range does not depend on where it lies in the object.
 func (s *Store) newServedReader(sm *servedManifest, rng byteRange) *manifestReader {
 	i := sm.locate(rng.start)
-	return &manifestReader{s: s, m: sm, idx: i, offset: sm.start(i), rng: rng}
+	r := &manifestReader{s: s, m: sm, idx: i, offset: sm.start(i), rng: rng}
+	if cc := s.ccache; cc.enabled() {
+		r.cc, r.epoch = cc, cc.epoch.Load()
+		r.admit = rng.end-rng.start < chunkCacheAdmitMaxRange
+	}
+	return r
 }
 
 func (m *manifestReader) close() {
@@ -16167,18 +16380,30 @@ func (m *manifestReader) chunk(i int, sum [32]byte, chunkStart int64) ([]byte, e
 	if m.qh < len(m.q) && m.q[m.qh].idx != i {
 		m.q, m.qh = m.q[:0], 0 // defensive: a run never outlives its consumer
 	}
-	if m.qh >= len(m.q) && m.planRun(i, sum, chunkStart) {
-		m.fetchRun(i)
+	if m.qh >= len(m.q) {
+		if data, ok := m.cc.get(&sum); ok && int64(len(data)) == m.m.length(i) {
+			return data, nil
+		}
+		if m.planRun(i, sum, chunkStart) {
+			m.fetchRun(i)
+		}
 	}
 	if m.qh < len(m.q) {
 		e := m.q[m.qh]
 		m.qh++
 		if e.err == nil {
+			if m.admit {
+				m.cc.offer(&sum, e.data, m.epoch)
+			}
 			return e.data, nil
 		}
 		// This record failed inside its run; the other copies decide.
 	}
-	return m.s.casRead(sum)
+	data, err := m.s.casRead(sum)
+	if err == nil && m.admit {
+		m.cc.offer(&sum, data, m.epoch)
+	}
+	return data, err
 }
 
 // primary is the packed record casRead would serve for sum if it verifies:
@@ -20506,8 +20731,8 @@ type repairStats struct {
 // every other digest is still attempted, and the ones that failed are
 // reported honestly in Failures, never silently dropped or claimed fixed.
 func (s *Store) repairFromPeer(cfg repairConfig) (repairStats, error) {
-	s.mcache.purge()
-	defer s.mcache.purge()
+	s.purgeReadCaches()
+	defer s.purgeReadCaches()
 	findings, err := s.repairFindings()
 	if err != nil {
 		return repairStats{}, fmt.Errorf("repair: %w", err)

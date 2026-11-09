@@ -263,10 +263,10 @@ func TestP2_CacheIsBoundedAndEvictsWithClock(t *testing.T) {
 		}
 		var sum int64
 		for slot, e := range sh.ring {
-			if e.slot != slot || sh.m[e.sm.sha] != e {
+			if e.slot != slot || sh.m[e.val.sha] != e {
 				t.Fatalf("shard %d slot %d inconsistent", i, slot)
 			}
-			sum += e.sm.cost
+			sum += e.val.cost
 		}
 		if sum != sh.bytes {
 			t.Fatalf("shard %d: bytes %d recomputed %d", i, sh.bytes, sum)
