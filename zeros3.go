@@ -6060,7 +6060,7 @@ func (c *manifestCache) get(sha [32]byte, id string, load func() (*servedManifes
 			}
 			sh.mu.Lock()
 			delete(sh.flights, sha)
-			if err == nil && sm != nil {
+			if err == nil && sm != nil && sm.man.ManifestUUID == id { // a mismatched name is served but never kept
 				ev, _, stale, over := sh.insertLocked(sha, sm, sm.cost, gen)
 				sh.evictions.Add(ev)
 				if stale {
