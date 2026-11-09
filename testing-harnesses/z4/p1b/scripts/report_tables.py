@@ -26,7 +26,8 @@ def table(f, a, b, title):
             med(x, lambda r: r['srv_cpu_cores']), med(y, lambda r: r['srv_cpu_cores']),
             max(r['srv_hwm_mib'] for r in x), max(r['srv_hwm_mib'] for r in y),
             all(r.get('verified') in (True, None) for r in x + y)))
-table('matrix_base_vs_final.jsonl', 'base', 'final', 'Main matrix, baseline vs first full cut (3 interleaved rounds)')
+table('final_matrix.jsonl', 'base', 'final', 'Main matrix, baseline vs release-candidate binary (3 interleaved rounds)')
+table('matrix_base_vs_final.jsonl', 'base', 'final', 'Earlier cut (before the commit mutex), baseline vs first full cut')
 table('mixed_sizes_put.jsonl', 'base', 'final2', 'Mixed object sizes 4k:50 64k:30 1m:15 16m:5')
 for f in ('big_order_ab.jsonl', 'big_order_ba.jsonl'):
     table(f, 'base', 'final2', 'Large-object regression check, order ' + ('base,final' if 'ab' in f else 'final,base'))
