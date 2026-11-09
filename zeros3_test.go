@@ -42622,9 +42622,14 @@ func TestBundleDeltaScale_MergeOneMillionChunks(t *testing.T) {
 // (the final pack must reach target/packMinFraction).
 func setDirectPack(t *testing.T, min, target int64, compress bool) {
 	t.Helper()
-	om, ot, oc := directPackMinBytes, directPackTarget, directPackCompress
+	om, ot, oc, of := directPackMinBytes, directPackTarget, directPackCompress, directPackMediumFlushMin
 	directPackMinBytes, directPackTarget, directPackCompress = min, target, compress
-	t.Cleanup(func() { directPackMinBytes, directPackTarget, directPackCompress = om, ot, oc })
+	// These tests exercise the large-object tail policy (remainder below
+	// target/packMinFraction stays loose); the medium-object policy has its own tests.
+	directPackMediumFlushMin = target / packMinFraction
+	t.Cleanup(func() {
+		directPackMinBytes, directPackTarget, directPackCompress, directPackMediumFlushMin = om, ot, oc, of
+	})
 }
 
 func dpOpenStore(t *testing.T) (*Store, string) {

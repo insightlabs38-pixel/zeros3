@@ -1617,7 +1617,7 @@ func (o ingestOptions) directPack() bool {
 }
 
 // mediumPackMaxPacks bounds how many packs medium objects (smaller than
-// directPackFullBytes) may add to: once a store holds this many packs, new
+// directPackTarget) may add to: once a store holds this many packs, new
 // medium objects use loose chunks again until `compact`/`repack` merge the
 // small packs. Opening a store reads every pack index (about 75 us each), so
 // this caps the startup cost that small packs can add.
@@ -1629,7 +1629,7 @@ func (s *Store) packFor(o ingestOptions) bool {
 	if !o.directPack() {
 		return false
 	}
-	return o.size >= directPackFullBytes || len(s.packSnap().packs) < mediumPackMaxPacks
+	return o.size >= directPackTarget || len(s.packSnap().packs) < mediumPackMaxPacks
 }
 
 // Direct pack ingest policy (section 4). directPackMinBytes is the object
@@ -1646,12 +1646,11 @@ var (
 	// new chunks form one pack of their own (one file, one fsync, one
 	// directory sync) instead of one loose file, fsync and shard-directory
 	// operation per chunk; below directPackMediumFlushMin of new content they
-	// still go loose. Objects of directPackFullBytes or more behave exactly
+	// still go loose. Objects of directPackTarget or more behave exactly
 	// as before (full-size packs, remainder below target/packMinFraction loose).
 	// ZEROS3_DIRECT_PACK_MIB=0 restores loose-only ingest below the pipeline sizes.
 	directPackMinBytes       int64 = 256 << 10
 	directPackCompress             = false
-	directPackFullBytes      int64 = defaultPackTargetBytes
 	directPackMediumFlushMin int64 = 64 << 10
 	// directPackTarget is the pack fill size; the shortest final pack is
 	// directPackTarget/packMinFraction. Tests shrink it.
@@ -1669,7 +1668,7 @@ func directPackFlushMin(size int64) int64 {
 	if directPackFlushKiB > 0 {
 		return directPackFlushKiB << 10
 	}
-	if size > 0 && size < directPackFullBytes {
+	if size > 0 && size < directPackTarget {
 		return min(directPackMediumFlushMin, directPackTarget/packMinFraction)
 	}
 	return directPackTarget / packMinFraction

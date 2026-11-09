@@ -914,3 +914,57 @@ func TestP1B_MediumPack_MultipartPartsAndCompletion(t *testing.T) {
 	}
 	verifyDeepOK(t, re)
 }
+
+// Packs holding only dead records (a failed conditional PUT, an aborted
+// multipart upload, a replaced part) are removed by an ordinary gc; live packs stay.
+func TestP1B_MediumPack_DeadPacksCollectedByGC(t *testing.T) {
+	mediumPolicy(t)
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.CreateBucket("b")
+	live := genRandomBytes(31, 1<<20)
+	if _, err := store.PutObject("b", "live", live, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	// a failed conditional PUT: its chunks are published, the object is not
+	dead := genRandomBytes(32, 1<<20)
+	if _, err := store.PutObjectChecked("b", "live", dead, "", nil, putCondition{ifNoneMatchStar: true}); !errors.Is(err, errPreconditionFailed) {
+		t.Fatalf("conditional PUT: %v", err)
+	}
+	// an aborted multipart upload with a replaced part
+	uid, err := store.CreateMultipartUpload("b", "mp", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := store.UploadPart("b", "mp", uid, 1, genRandomBytes(int64(40+i), minMultipartPartSize+99)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.AbortMultipartUpload("b", "mp", uid); err != nil {
+		t.Fatal(err)
+	}
+	before, _, _ := store.packTotals()
+	store.Close()
+	res, err := gcCollect(dir, true)
+	if err != nil || !res.LiveSetOK {
+		t.Fatalf("gc: %v %+v", err, res)
+	}
+	re, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer re.Close()
+	after, _, _ := re.packTotals()
+	t.Logf("packs before gc %d, after %d (%+v)", before, after, res)
+	if after != 1 {
+		t.Fatalf("want exactly the live object's pack to remain, have %d (before gc %d)", after, before)
+	}
+	if _, got, err := re.GetObject("b", "live"); err != nil || !bytes.Equal(got, live) {
+		t.Fatalf("live object damaged by gc: %v", err)
+	}
+	verifyDeepOK(t, re)
+}
