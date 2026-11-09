@@ -218,6 +218,7 @@ func claimsEmpty(r *pubRegistry) bool {
 // complete, verify -deep passes, gc keeps all acknowledged data, no claim or
 // queue entry leaked, and every unacknowledged PUT can be retried.
 func TestP1B_CrashMatrix_ConcurrentGroups(t *testing.T) {
+	useLooseLayout(t, "crash boundaries of the loose publication path (segment boundaries: TestP1C_Crash*)")
 	points := []string{
 		hookCASAfterStage, hookCASBeforeStageSync, hookCASAfterStageSync, hookCASBeforeRename,
 		hookCASAfterFirstRename, hookCASBeforeDirSync, hookCASAfterDirSync, hookCASAfterFlush,

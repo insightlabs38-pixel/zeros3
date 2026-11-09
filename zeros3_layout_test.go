@@ -78,7 +78,7 @@ func declareLayout(t *testing.T, policy, reason string) {
 	}
 }
 
-func observeLayoutForTests(kind, root string) {
+func observeLayoutForTests(kind, root string, n int) {
 	tmp := os.TempDir()
 	rel, err := filepath.Rel(tmp, root)
 	if err != nil || strings.HasPrefix(rel, "..") {
@@ -92,7 +92,7 @@ func observeLayoutForTests(kind, root string) {
 		m = map[string]int{}
 		layoutObservedBy[key] = m
 	}
-	m[kind]++
+	m[kind] += n
 	layoutMu.Unlock()
 }
 
@@ -107,6 +107,9 @@ func useLooseLayout(t *testing.T, reason string) {
 	directPackMinBytes = math.MaxInt64
 	t.Cleanup(func() { directPackMinBytes = old })
 	setSmallObjectPolicyForTest(t, false)
+	// subprocess servers and CLIs started by the test follow the same policy
+	t.Setenv("ZEROS3_SMALL_OBJECT_STORAGE", "off")
+	t.Setenv("ZEROS3_DIRECT_PACK_KIB", "65536")
 }
 
 // useProductionLayout documents that the test deliberately runs on the
@@ -180,6 +183,7 @@ func packsHolding(s *Store, sum [32]byte) []int32 {
 // representations held it.
 func removeChunkAnyLayout(t *testing.T, s *Store, sum [32]byte) (wasLoose bool, packsRewritten int) {
 	t.Helper()
+	s.sealSegments() // an open segment cannot be rewritten: make it an ordinary pack first
 	if err := os.Remove(s.chunkPath(sum)); err == nil {
 		wasLoose = true
 	} else if !os.IsNotExist(err) {
@@ -247,6 +251,7 @@ func removeChunkAnyLayout(t *testing.T, s *Store, sum [32]byte) (wasLoose bool, 
 // record) without changing any length.
 func corruptChunkAnyLayout(t *testing.T, s *Store, sum [32]byte) {
 	t.Helper()
+	s.sealSegments()
 	n := 0
 	if info, err := os.Stat(s.chunkPath(sum)); err == nil {
 		garbage := bytes.Repeat([]byte{0x99}, int(info.Size()))
@@ -286,4 +291,74 @@ func chunkSumHex(t *testing.T, h string) [32]byte {
 // by the segment layer) for the calling test and restores it afterwards.
 func setSmallObjectPolicyForTest(t *testing.T, on bool) {
 	t.Helper()
+	old := smallObjectSegments
+	smallObjectSegments = on
+	t.Cleanup(func() { smallObjectSegments = old })
+}
+
+// manifestSHAForTest finds the journal-recorded SHA-256 of a manifest among the
+// store's current and historical roots (test-only: production callers always
+// hold the SHA from the root that names the manifest).
+func (s *Store) manifestSHAForTest(id string) ([32]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, b := range s.buckets {
+		for _, o := range b.objects {
+			if o.manifestUUID == id {
+				return o.manifestSHA256, true
+			}
+		}
+	}
+	for _, keys := range s.history {
+		for _, vs := range keys {
+			for _, v := range vs {
+				if v.manifestUUID == id {
+					return v.manifestSHA256, true
+				}
+			}
+		}
+	}
+	return [32]byte{}, false
+}
+
+// readManifestAny reads a manifest by UUID from wherever it is stored: a
+// manifest file or an inline segment/pack record.
+func (s *Store) readManifestAny(id string) (manifestV1, []byte, error) {
+	if sha, ok := s.manifestSHAForTest(id); ok {
+		return s.readManifestSHA(id, sha)
+	}
+	return s.readManifest(id)
+}
+
+// tamperManifest makes the stored manifest id unusable: a manifest file is
+// replaced by data, an inline record is overwritten in place with same-length
+// garbage (a record's length is fixed by its header, so data cannot be used).
+func tamperManifest(t *testing.T, s *Store, id string, data []byte) {
+	t.Helper()
+	path := filepath.Join(s.root, "manifests", id+".json")
+	if _, err := os.Stat(path); err == nil {
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	sha, ok := s.manifestSHAForTest(id)
+	if !ok {
+		t.Fatalf("manifest %s is neither a file nor a known inline record", id)
+	}
+	corruptChunkAnyLayout(t, s, sha)
+}
+
+// deleteManifest removes manifest id from wherever it is stored.
+func deleteManifest(t *testing.T, s *Store, id string) {
+	t.Helper()
+	path := filepath.Join(s.root, "manifests", id+".json")
+	if err := os.Remove(path); err == nil {
+		return
+	}
+	sha, ok := s.manifestSHAForTest(id)
+	if !ok {
+		t.Fatalf("manifest %s is neither a file nor a known inline record", id)
+	}
+	removeChunkAnyLayout(t, s, sha)
 }

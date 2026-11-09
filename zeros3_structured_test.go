@@ -287,6 +287,7 @@ func TestRepStructuredZstdWindowBeforeAllocation(t *testing.T) {
 }
 
 func TestRepStructuredOrdinaryPutCrashFloor(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	raw, err := os.ReadFile("testing-harnesses/z4/testdata/a3-structured/lab-structured.json")
 	if err != nil {
 		t.Fatal(err)
@@ -350,6 +351,7 @@ func TestRepStructuredOrdinaryPutCrashFloor(t *testing.T) {
 }
 
 func TestRepStructuredCumulativeModelCompatibility(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	l := newRepLab(t, repModePrefer)
 	l.put("model", repZ4ModelSafetensors(t, bytes.Repeat([]byte{1, 2, 3, 4}, 16384)))
 	if l.s.format.StoreFormatVersion != 7 {

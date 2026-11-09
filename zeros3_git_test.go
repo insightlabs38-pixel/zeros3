@@ -100,6 +100,7 @@ func TestRepGitLabWireAndReaderAt(t *testing.T) {
 }
 
 func TestRepGitProductionPackAndIdx(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	for _, f := range repGitFixtures(t) {
 		t.Run(f.Name, func(t *testing.T) {
 			l := newRepLab(t, repModePrefer)

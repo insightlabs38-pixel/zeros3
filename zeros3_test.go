@@ -802,7 +802,7 @@ func TestUUID_SuitableAsManifestAndVersionID(t *testing.T) {
 	if !isCanonicalUUIDString(entry.manifestUUID) {
 		t.Fatalf("manifest UUID %q is not in canonical form", entry.manifestUUID)
 	}
-	man, _, err := s.readManifest(entry.manifestUUID)
+	man, _, err := s.readManifestAny(entry.manifestUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -856,7 +856,7 @@ func TestManifest_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, raw, err := s.readManifest(id)
+	got, raw, err := s.readManifestSHA(id, sum)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -901,7 +901,7 @@ func TestManifest_ByteSHA256MatchesJournalReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, raw, err := s.readManifest(entry.manifestUUID)
+	_, raw, err := s.readManifestAny(entry.manifestUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -930,10 +930,7 @@ func TestManifest_CorruptOrMissingDetected(t *testing.T) {
 	}
 
 	obj := s.buckets["b"].objects["k"]
-	manPath := filepath.Join(dir, "manifests", obj.manifestUUID+".json")
-	if err := os.WriteFile(manPath, []byte("{not valid json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	tamperManifest(t, s, obj.manifestUUID, []byte("{not valid json"))
 	if _, _, err := s.GetObject("b", "k"); err == nil {
 		t.Fatalf("expected error reading a corrupt manifest")
 	}
@@ -2449,6 +2446,7 @@ func TestCrash_DuringChunkStaging(t *testing.T) {
 }
 
 func TestCrash_AfterChunksBeforeManifest(t *testing.T) {
+	useLooseLayout(t, "crash boundaries of the loose publication path (segment boundaries: TestP1C_Crash*)")
 	dir := t.TempDir()
 	store, err := OpenStore(dir)
 	if err != nil {
@@ -4463,6 +4461,7 @@ func TestStats_ExactSharingArrangement(t *testing.T) {
 }
 
 func TestStats_ReclaimableAfterDelete(t *testing.T) {
+	useLooseLayout(t, "inspects manifest files and chunk files by path")
 	dir := t.TempDir()
 	s, err := OpenStore(dir)
 	if err != nil {
@@ -4705,16 +4704,13 @@ func TestVerify_DetectsCorruptManifestHashMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manPath := filepath.Join(dir, "manifests", entry.manifestUUID+".json")
-	orig, err := os.ReadFile(manPath)
+	_, orig, err := s.readManifestAny(entry.manifestUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tampered := append([]byte{}, orig...)
-	tampered[0] ^= 0xFF // flip a byte inside the JSON: breaks the recorded manifest-file SHA256
-	if err := os.WriteFile(manPath, tampered, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	tampered[0] ^= 0xFF // flip a byte inside the JSON: breaks the recorded manifest SHA256
+	tamperManifest(t, s, entry.manifestUUID, tampered)
 
 	res, err := s.Verify(false)
 	if err != nil {
@@ -5035,6 +5031,7 @@ func TestVerify_DeepWholeObjectDigest_MalformedReportedInvalid(t *testing.T) {
 // avoid re-reading the file never lets a second root silently inherit a
 // "verified" status it hasn't earned.
 func TestVerify_PerRootManifestHashCheckedEvenWhenUUIDCached(t *testing.T) {
+	useLooseLayout(t, "inspects manifest files and chunk files by path")
 	for _, badRootFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("badRootAppendedFirst=%v", badRootFirst), func(t *testing.T) {
 			dir := t.TempDir()
@@ -5212,6 +5209,7 @@ func TestConcurrency_VerifyDuringWrites(t *testing.T) {
 // =============================================================================
 
 func TestCopyObject_SameBucketZeroNewCASChunkBytes(t *testing.T) {
+	useLooseLayout(t, "inspects manifest files and chunk files by path")
 	srv, signer := newTestServerAndSigner(t)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
@@ -5484,7 +5482,7 @@ func TestCopyObject_DestinationGetsNewManifestIdentityAndTimestamp(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, srcBytesBefore, err := s.readManifest(srcEntry.manifestUUID)
+			_, srcBytesBefore, err := s.readManifestAny(srcEntry.manifestUUID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -5539,7 +5537,7 @@ func TestCopyObject_DestinationGetsNewManifestIdentityAndTimestamp(t *testing.T)
 			if _, err := s.readVerifiedManifest(srcEntry.manifestUUID, srcEntry.manifestSHA256); err != nil {
 				t.Fatalf("source manifest must remain readable/unchanged after copy: %v", err)
 			}
-			_, srcBytesAfter, err := s.readManifest(srcEntry.manifestUUID)
+			_, srcBytesAfter, err := s.readManifestAny(srcEntry.manifestUUID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -8744,10 +8742,7 @@ func TestRestore_CorruptedHistoricalManifest_NoPartialMutation(t *testing.T) {
 	}
 
 	// Corrupt v1's manifest file on disk.
-	manPath := filepath.Join(dir, "manifests", v1.manifestUUID+".json")
-	if err := os.WriteFile(manPath, []byte("{not valid json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	tamperManifest(t, s, v1.manifestUUID, []byte("{not valid json"))
 
 	if _, _, err := s.RestoreObjectVersion("b", "k", hist[0].versionID); err == nil {
 		t.Fatalf("expected restore to fail against a corrupted historical manifest")
@@ -8838,7 +8833,7 @@ func TestReachability_DetectsCorruptionAmongLiveRoots(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		man, _, err := s.readManifest(entry.manifestUUID)
+		man, _, err := s.readManifestAny(entry.manifestUUID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -8873,7 +8868,7 @@ func TestReachability_DetectsCorruptionAmongLiveRoots(t *testing.T) {
 		if _, err := s.PutObject("b", "k", []byte("v2"), "text/plain", nil); err != nil {
 			t.Fatal(err)
 		}
-		man, _, err := s.readManifest(v1.manifestUUID)
+		man, _, err := s.readManifestAny(v1.manifestUUID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -9100,7 +9095,7 @@ func TestGC_RefusesOnCorruptLiveRoot_K7(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	man, _, err := s.readManifest(entry.manifestUUID)
+	man, _, err := s.readManifestAny(entry.manifestUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -9468,7 +9463,7 @@ func TestRestore_MissingHistoricalChunk_NoPartialMutation(t *testing.T) {
 	if len(hist) != 1 {
 		t.Fatalf("setup: expected 1 archived version")
 	}
-	man, _, err := s.readManifest(hist[0].manifestUUID)
+	man, _, err := s.readManifestAny(hist[0].manifestUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -9923,6 +9918,7 @@ func TestPrune_DeletedBucketHistoryIsPruneable(t *testing.T) {
 }
 
 func TestPrune_DryRunMakesNoChange(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	dir, s := pruneFixture(t, []string{"k"}, 3)
 	s.Close()
 	journal, format := journalBytes(t, dir), formatVersionOf(t, dir)
@@ -9939,6 +9935,7 @@ func TestPrune_DryRunMakesNoChange(t *testing.T) {
 }
 
 func TestPrune_ApplyBatchedFramesMatchReplay(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	dir, s := pruneFixture(t, []string{"a", "b", "c"}, 5)
 	plan := mustPrunePlan(t, s, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(2)})
 	framesBefore := s.journal.nextSeq
@@ -10068,6 +10065,7 @@ func TestPrune_ParseRetentionAge(t *testing.T) {
 // -----------------------------------------------------------------------
 
 func TestPrune_CrashBoundaries(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	const last = -1
 	type tc struct {
 		name       string
@@ -10391,6 +10389,7 @@ func TestPrune_PackedHistoryReclaimedByRepack(t *testing.T) {
 }
 
 func TestPrune_StoreFormatVersions(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	dir, s := pruneFixture(t, []string{"k"}, 2)
 	s.Close()
 	if res, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(5)}, true); err != nil || res.HistoricalSelected != 0 {
@@ -16758,7 +16757,9 @@ func corruptChunkOnDisk(t *testing.T, store *Store, hexDigest string) {
 		corruptChunkAnyLayout(t, store, sum) // packed (or segment) copy: same-length garbage in place
 		return
 	}
-	corruptChunkAnyLayout(t, store, sum)
+	if err := os.WriteFile(store.chunkPath(sum), []byte("deliberately corrupted bytes that do not match this digest"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func truncateChunkOnDisk(t *testing.T, store *Store, hexDigest string, newLen int) {
@@ -17034,6 +17035,7 @@ func TestFetchRepairChunk_AuthFailureRejected(t *testing.T) {
 }
 
 func TestRepairFromPeer_IncompatiblePeerFailsClearly(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	_, store := mustCreateLocalStore(t)
 	store.CreateBucket("b")
 	entry := mustPutObject(t, store, "b", "k", genRandomBytes(20013, 100_000), "application/octet-stream", nil)
@@ -17785,6 +17787,7 @@ func TestCLI_Repair_EndToEndSmoke(t *testing.T) {
 }
 
 func TestCLI_Repair_ExitCodeNonzeroWhenUnresolved(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	bin := buildZeros3Binary(t)
 	localDir := t.TempDir()
 	localStore, err := OpenStore(localDir)
@@ -18946,6 +18949,7 @@ func TestCLI_Replicate_RecursiveWholeBucket(t *testing.T) {
 }
 
 func TestCLI_Replicate_RecursiveExitCodeNonzeroOnPartialFailure(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	bin := buildZeros3Binary(t)
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
@@ -28490,7 +28494,7 @@ func TestIngest_Matrix(t *testing.T) {
 	if err != nil || !res.OK() {
 		t.Fatalf("verify after matrix: %v %+v", err, res)
 	}
-	man, _, err := store.readManifest(mustManifestUUID(t, store, "b", "random/0/whole"))
+	man, _, err := store.readManifestAny(mustManifestUUID(t, store, "b", "random/0/whole"))
 	if err != nil || man.Chunks == nil {
 		t.Fatalf("an empty object's manifest must keep an empty (non-null) chunk list: %v", err)
 	}
@@ -29032,7 +29036,7 @@ func TestStreamingPut_RestartCompatibility(t *testing.T) {
 	if err != nil || !bytes.Equal(got, body) {
 		t.Fatalf("readback after restart: %v", err)
 	}
-	man, _, err := s2.readManifest(entry.manifestUUID)
+	man, _, err := s2.readManifestAny(entry.manifestUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30408,6 +30412,7 @@ func TestPack_PlanBatchesBoundaries(t *testing.T) {
 }
 
 func TestPack_CompactIsDeterministicAndRepeatedHashesPackOnce(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	data := packTestDataset()
 	var ids [2][]string
 	for i := range ids {
@@ -30536,6 +30541,7 @@ func refreshPackChecksums(b []byte) {
 }
 
 func TestPack_MalformedPacksRejectedSafely(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	_, packPath, _ := singlePackFixture(t)
 	orig, err := os.ReadFile(packPath)
 	if err != nil {
@@ -30630,6 +30636,7 @@ func TestPack_MalformedPacksRejectedSafely(t *testing.T) {
 }
 
 func TestPack_UnpublishedArtifactsIgnored(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	dir, packPath, data := singlePackFixture(t)
 	orig, _ := os.ReadFile(packPath)
 	stray := []string{
@@ -30656,6 +30663,7 @@ func TestPack_UnpublishedArtifactsIgnored(t *testing.T) {
 }
 
 func TestPack_PayloadAndRecordHeaderDamageFailSafely(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	for _, damage := range []string{"payload", "record-header"} {
 		t.Run(damage, func(t *testing.T) {
 			dir, packPath, data := singlePackFixture(t)
@@ -30721,6 +30729,7 @@ func flipPackedByte(t *testing.T, s *Store, sum [32]byte) {
 }
 
 func TestPack_DuplicateCopiesCorruptionPreference(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	dir, _, data := singlePackFixture(t)
 	s, err := OpenStore(dir)
 	if err != nil {
@@ -30977,6 +30986,7 @@ func TestPack_CompactCrashPoints(t *testing.T) {
 // ---- logical features over a packed store ---------------------------------
 
 func TestPack_LogicalFeaturesOverPackedStore(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	dir, srv, creds, region := newSyncTestServer(t)
 	body := genRandomBytes(77, 900_000)
 	if err := srv.store.CreateBucket("b"); err != nil {
@@ -31225,6 +31235,7 @@ func requireLiveIntact(t *testing.T, dir string, fx deadPackStore, stage string)
 }
 
 func TestRepack_UtilizationProfiles(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	cases := []struct {
 		name       string
 		live, dead int
@@ -31302,6 +31313,7 @@ func abs(n int) int {
 }
 
 func TestRepack_DefaultPolicyLeavesHealthyPacksAlone(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	fx := buildDeadPackStore(t, 3_000_000, 3_000_000, 21)
 	_, us := reclaimState(t, fx.dir)
 	hashes := map[string][32]byte{}
@@ -31691,6 +31703,7 @@ func TestRepack_LooseCopyCountsAsSurvivingCopy(t *testing.T) {
 // ---- gc reporting and whole-pack removal ----------------------------------
 
 func TestRepack_GCReportsAndRemovesDeadPacks(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	dir := t.TempDir()
 	liveBody := genRandomBytes(41, 1_000_000)
 	s, _ := OpenStore(dir)
@@ -31789,6 +31802,7 @@ func TestRepack_StatsExposePackLiveness(t *testing.T) {
 // ---- every live root type protects its packed chunks ----------------------
 
 func TestRepack_RespectsEveryLiveRootType(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	dir := t.TempDir()
 	s, err := OpenStore(dir)
 	if err != nil {
@@ -31976,6 +31990,7 @@ func TestRepack_CrashPoints(t *testing.T) {
 }
 
 func TestRepack_GCCrashDuringDeadPackRemoval(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	dir := t.TempDir()
 	liveBody := genRandomBytes(71, 600_000)
 	s, _ := OpenStore(dir)
@@ -33252,6 +33267,7 @@ func TestPackCompression_CrashPoints(t *testing.T) {
 }
 
 func TestPackCompression_CLI(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	bin := buildZeros3Binary(t)
 	dir := t.TempDir()
 	putPackTestObjects(t, dir, map[string][]byte{"text": corpusEnglish(151, 700_000), "random": genRandomBytes(152, 300_000)}, "text", "random")
@@ -34158,6 +34174,7 @@ func corruptPackedChunk(t *testing.T, s *Store, hexDigest string) {
 // -----------------------------------------------------------------------
 
 func TestBulkDiscovery_AdvertisedAdditivelyAndWithdrawable(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	fx := newBulkTestFixture(t)
 	n := fx.node(t)
 	d, err := discoverZeroS3Sync(n.cfg)
@@ -34229,6 +34246,7 @@ func rawBulkPost(t *testing.T, cfg syncClientConfig, path string, frame []byte) 
 // -----------------------------------------------------------------------
 
 func TestBulkNegotiate_MatchesV1ForEveryPhysicalState(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	fx := newBulkTestFixture(t)
 	n := fx.node(t)
 	d2, err := discoverZeroS3Sync(n.cfg)
@@ -34314,6 +34332,7 @@ func TestBulkNegotiate_MatchesV1ForEveryPhysicalState(t *testing.T) {
 }
 
 func TestBulkNegotiate_SplitsLargeSetsAndStaysReadOnly(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	fx := newBulkTestFixture(t)
 	n := fx.node(t)
 	d, _ := discoverZeroS3Sync(n.cfg)
@@ -34339,6 +34358,7 @@ func TestBulkNegotiate_SplitsLargeSetsAndStaysReadOnly(t *testing.T) {
 // -----------------------------------------------------------------------
 
 func TestBulkFetch_SendsOnlyLogicalBytesFromAnyRepresentation(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	fx := newBulkTestFixture(t)
 	n := fx.node(t)
 	var want []syncChunkDescriptor
@@ -34379,6 +34399,7 @@ func TestBulkFetch_SendsOnlyLogicalBytesFromAnyRepresentation(t *testing.T) {
 }
 
 func TestBulkFetch_ServerSideFailures(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	type tc struct {
 		name   string
 		setup  func(t *testing.T, fx *bulkTestFixture) (req []syncChunkDescriptor)
@@ -34465,6 +34486,7 @@ func TestBulkFetch_ServerSideFailures(t *testing.T) {
 }
 
 func TestBulkFetch_ClientRejectsDishonestResponses(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	fx := newBulkTestFixture(t)
 	n := fx.node(t)
 	want := fx.classes["loose"][:4]
@@ -34596,6 +34618,7 @@ func TestBulkUpload_NearByteLimit(t *testing.T) {
 }
 
 func TestBulkUpload_PresentAndPackedChunksAreNoOps(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	fx := newBulkTestFixture(t)
 	n := fx.node(t)
 	var chunks [][]byte
@@ -34948,6 +34971,7 @@ func TestBulkReplicate_FallsBackToV1WhenEitherEndLacksBulk(t *testing.T) {
 }
 
 func TestBulkReplicate_PhysicalSourceRepresentationDoesNotChangeWireBytes(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	fx := newBulkTestFixture(t)
 	for _, name := range []string{"packed-deflate", "packed-raw", "loose"} {
 		t.Run(name, func(t *testing.T) {
@@ -35125,6 +35149,7 @@ func TestBulkRestore_UsesBulkAcrossServers(t *testing.T) {
 // -----------------------------------------------------------------------
 
 func TestBulkRepair_PartialSuccessSurvivesBatchFailure(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	body := genRandomBytes(7800, 3_000_000)
 	for _, c := range []struct {
 		name      string
@@ -35295,6 +35320,7 @@ func tierTestMove(t *testing.T, dir string, from, to tier, apply bool, ids ...st
 }
 
 func TestTier_LifecycleCompactMoveReads(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	data := tierTestDataset()
 	dir := t.TempDir()
 	put := func(keys ...string) { putPackTestObjects(t, dir, data, keys...) }
@@ -35454,6 +35480,7 @@ func TestTier_MoveExistingTarget(t *testing.T) {
 }
 
 func TestTier_MoveCrashPoints(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	data := tierSubset(packTestDataset(), "random", "repeat")
 	cases := []struct {
 		point     string
@@ -35516,6 +35543,7 @@ func TestTier_MoveCrashPoints(t *testing.T) {
 // TestTier_CompactIntoTierCrashPoints and the format-ordering invariant:
 // a non-hot pack is never published while FORMAT is below 5.
 func TestTier_CompactIntoColdCrashPoints(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	keys := []string{"random", "repeat", "dup-a", "shifted"}
 	data := tierSubset(packTestDataset(), keys...)
 	cases := []struct {
@@ -35643,6 +35671,7 @@ func TestTier_RootSafety(t *testing.T) {
 // first; a damaged hot copy falls back to the colder one and verify still
 // reports the damage.
 func TestTier_FallbackAcrossTiers(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	data := tierSubset(packTestDataset(), "random", "repeat")
 	dir := t.TempDir()
 	putPackTestObjects(t, dir, data, "random", "repeat")
@@ -36800,7 +36829,7 @@ func tierRootSets(t *testing.T, s *Store) tierSets {
 		sets[i] = map[string]bool{}
 	}
 	add := func(sc rootScope, uuid string) {
-		man, _, err := s.readManifest(uuid)
+		man, _, err := s.readManifestAny(uuid)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -37202,7 +37231,7 @@ func tierMisplaced(t *testing.T, dir string) (misplaced, live int) {
 
 func tierManifestBytes(t *testing.T, s *Store, uuid string) []byte {
 	t.Helper()
-	man, _, err := s.readManifest(uuid)
+	man, _, err := s.readManifestAny(uuid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38965,7 +38994,7 @@ func TestBundle_RoundTripPreservesIdentityAndDeduplicates(t *testing.T) {
 	s, _ := OpenStore(src)
 	d, _ := s.readSnapshot(snap)
 	for _, e := range d.Entries {
-		m, _, err := s.readManifest(e.ManifestUUID)
+		m, _, err := s.readManifestAny(e.ManifestUUID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -39096,7 +39125,7 @@ func TestBundle_ExportIndependentOfPhysicalRepresentation(t *testing.T) {
 			}
 			defer s.Close()
 			d, _ := s.readSnapshot(snap)
-			m, _, _ := s.readManifest(d.Entries[0].ManifestUUID)
+			m, _, _ := s.readManifestAny(d.Entries[0].ManifestUUID)
 			for _, c := range m.Chunks[:min(2, len(m.Chunks))] { // loose duplicates of packed chunks
 				sum, _ := decodeHexSHA256(c.SHA256)
 				data, err := s.casRead(sum)
@@ -39346,7 +39375,7 @@ func TestBundle_PartialOverlapImportsOnlyMissingContent(t *testing.T) {
 		d, _ := s.readSnapshot(snap)
 		for _, e := range d.Entries {
 			if e.Key == "b/"+key || e.Key == key {
-				m, _, _ := s.readManifest(e.ManifestUUID)
+				m, _, _ := s.readManifestAny(e.ManifestUUID)
 				return int64(len(m.Chunks))
 			}
 		}
@@ -40090,7 +40119,7 @@ func newLocalityRoots(t *testing.T, putOrder []string) localityRoots {
 	r.cur1, r.cur2 = manifestSums(t, s, "b", "cur-a"), manifestSums(t, s, "b", "cur-b")
 	hs, _, _ := s.ListVersions("b", "cur-a")
 	for _, h := range hs {
-		hman, _, err := s.readManifest(h.manifestUUID)
+		hman, _, err := s.readManifestAny(h.manifestUUID)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -920,6 +920,7 @@ func TestP1B_MediumPack_MultipartPartsAndCompletion(t *testing.T) {
 // Packs holding only dead records (a failed conditional PUT, an aborted
 // multipart upload, a replaced part) are removed by an ordinary gc; live packs stay.
 func TestP1B_MediumPack_DeadPacksCollectedByGC(t *testing.T) {
+	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	mediumPolicy(t)
 	dir := t.TempDir()
 	store, err := OpenStore(dir)

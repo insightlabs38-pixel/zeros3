@@ -301,6 +301,7 @@ func repVerifyOK(t testing.TB, s *Store, deep bool) VerifyResult {
 // ---- smoke ---------------------------------------------------------------------
 
 func TestRepSmokeSQLiteRoundTrip(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	s := repOpenStore(t, repModePrefer)
 	db := repTestSQLite(300, 4096, 1)
 	if _, err := s.PutObject("b", "db", db, "application/x-sqlite3", nil); err != nil {
@@ -2681,6 +2682,7 @@ func TestRepConcurrentPutsAndReads(t *testing.T) {
 // ---- hostile and look-alike objects --------------------------------------------------------------
 
 func TestRepNegativeFormatControls(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	l := newRepLab(t, repModePrefer)
 	rnd := make([]byte, 50000)
 	rand.New(rand.NewSource(251)).Read(rnd)
@@ -2909,6 +2911,7 @@ func TestRepLateCreationAndRetirementLeaveNamespaceUntouched(t *testing.T) {
 }
 
 func TestRepCrashAfterFormatRaiseBeforeFirstRoot(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	l := newRepLab(t, repModePrefer)
 	db := repTestSQLite(150, 4096, 281)
 	withTestHook(t, func(p string) {
@@ -3751,6 +3754,7 @@ func repHandPublish(t *testing.T, s *Store, bucket, key string, data []byte) (uu
 }
 
 func TestRepSubstrateStoreRoundTrip(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	l := newRepLab(t, repModeOff)
 	data := make([]byte, 5000+300<<10+4000)
 	rand.New(rand.NewSource(801)).Read(data)
@@ -3821,6 +3825,7 @@ func TestRepSubstrateStoreRoundTrip(t *testing.T) {
 // Portable bundles stay CDC-authoritative: no representation state travels, the
 // restored logical content is complete, and representations can be rebuilt later.
 func TestRepBundlesCarryOnlyAuthoritativeState(t *testing.T) {
+	useLooseLayout(t, "inspects manifest files and chunk files by path")
 	l := newRepLab(t, repModePrefer)
 	fx := repFixtures(t)[:4]
 	for _, f := range fx {
@@ -3837,7 +3842,7 @@ func TestRepBundlesCarryOnlyAuthoritativeState(t *testing.T) {
 	}
 	distinct := map[string]bool{}
 	for _, e := range entries {
-		m, _, err := l.s.readManifest(e.ManifestUUID)
+		m, _, err := l.s.readManifestAny(e.ManifestUUID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3869,7 +3874,7 @@ func TestRepBundlesCarryOnlyAuthoritativeState(t *testing.T) {
 		t.Fatalf("import raised the destination to level %d", d.format.StoreFormatVersion)
 	}
 	for i, e := range entries {
-		man, _, err := d.readManifest(e.ManifestUUID)
+		man, _, err := d.readManifestAny(e.ManifestUUID)
 		if err != nil {
 			t.Fatal(err)
 		}

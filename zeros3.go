@@ -420,11 +420,11 @@ var testHook func(point string)
 // replace to inject crashes): it is told which physical representation each
 // publication produced and under which store root, so the test suite can
 // report the storage layout every test actually exercised.
-var layoutObserver func(kind, root string)
+var layoutObserver func(kind, root string, n int)
 
-func observeLayout(kind, root string) {
+func observeLayout(kind, root string, n int) {
 	if layoutObserver != nil {
-		layoutObserver(kind, root)
+		layoutObserver(kind, root, n)
 	}
 }
 
@@ -1275,7 +1275,7 @@ func (s *Store) casPublishClaimed(files []casStaged, claims []*pubClaim, replace
 			}
 		}
 		f.tmp = ""
-		observeLayout("loose-chunk", s.root)
+		observeLayout("loose-chunk", s.root, 1)
 		if !replace {
 			created = append(created, final)
 		}
@@ -1558,20 +1558,35 @@ func (s *Store) casReadExcluding(sum [32]byte, skip map[int32]bool) ([]byte, err
 	}
 	st := s.packSnap()
 	var locs [4]packLoc
-	for _, loc := range st.appendLocs(locs[:0], sum) {
-		if skip[loc.pack] {
-			continue
+	for retried := false; ; {
+		stale := false
+		for _, loc := range st.appendLocs(locs[:0], sum) {
+			if skip[loc.pack] {
+				continue
+			}
+			if loc.tier != tierHot && loose() {
+				return looseData, nil
+			}
+			data, err := st.readPacked(sum, loc)
+			if err == nil {
+				return data, nil
+			}
+			if errors.Is(err, fs.ErrNotExist) && !retried {
+				// A segment sealed (renamed to packs/) after this snapshot was
+				// taken: read again through the current locator.
+				if cur := s.packSnap(); cur != st {
+					st, stale, packErr = cur, true, nil
+					break
+				}
+			}
+			if packErr == nil {
+				packErr = err
+			}
 		}
-		if loc.tier != tierHot && loose() {
-			return looseData, nil
+		if !stale {
+			break
 		}
-		data, err := st.readPacked(sum, loc)
-		if err == nil {
-			return data, nil
-		}
-		if packErr == nil {
-			packErr = err
-		}
+		retried = true
 	}
 	if loose() {
 		return looseData, nil
@@ -1597,6 +1612,11 @@ type ingestResult struct {
 	// content until it returns nil, and every caller must call it exactly
 	// once, whether or not it goes on to commit the object.
 	finish func() error
+	// seg, when non-nil, holds the new chunks of a small request that are NOT yet
+	// written: the manifest commit adds its record to the same segment commit
+	// group (publishManifestJoined) so chunks and manifest share one fsync.
+	// finish still works on its own and commits the chunks alone.
+	seg *segSink
 }
 
 // finishIngest completes any deferred chunk publication of ing.
@@ -1605,7 +1625,7 @@ func (ing *ingestResult) finishIngest() error {
 	if f == nil {
 		return nil
 	}
-	ing.finish = nil
+	ing.finish, ing.seg = nil, nil
 	return f()
 }
 
@@ -1950,9 +1970,12 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (inge
 		etagSum = md5.New() //nolint:gosec // S3-compatible single-part ETag, not a security use of MD5.
 	}
 	var sink chunkSink
-	if s.packFor(opt) {
+	switch {
+	case s.packFor(opt):
 		sink = s.newPackSink(opt.size)
-	} else {
+	case s.segFor(opt):
+		sink = s.newSegSink()
+	default:
 		sink = looseSink{s.newCASBatch()}
 	}
 	overlapped := false
@@ -1984,6 +2007,14 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (inge
 	objSum.Sum(res.objSHA256[:0])
 	if etagSum != nil {
 		etagSum.Sum(res.etagMD5[:0])
+	}
+	if ss, ok := sink.(*segSink); ok && opt.overlapFlush && !pubAblate.noOverlap {
+		// Nothing has been written yet: the manifest commit adds its record to
+		// the same segment commit (one fsync for chunks and manifest).
+		overlapped = true
+		res.seg = ss
+		res.finish = ss.Flush
+		return res, nil
 	}
 	if ls, ok := sink.(looseSink); ok && opt.overlapFlush && !pubAblate.noOverlap {
 		overlapped = true
@@ -2618,6 +2649,10 @@ type packInfo struct {
 	deflated int   // records with a non-raw codec
 	logical  int64 // sum of record logical lengths
 	stored   int64 // sum of record stored (payload) lengths
+	// open marks a small-object segment still being appended to (section 4d):
+	// not yet a pack-v1 file, so size/records are not tracked here and no pack
+	// maintenance may treat it as one.
+	open bool
 }
 
 func newPackInfo(id, path string, size int64, entries []packEntry) packInfo {
@@ -3349,10 +3384,24 @@ func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, e
 		packs = slices.Clip(packs)
 	}
 	next := &packState{packs: append(packs, info), levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash)}
+	return st.addRecords(next, uint32(len(st.packs)), info.tier, entries)
+}
+
+// withRecords returns a snapshot that also indexes more records of the already
+// registered pack idx (an open segment growing). Pack descriptors are shared, so
+// a growing segment costs one new locator level per commit group and nothing
+// proportional to the number of packs.
+func (st *packState) withRecords(idx uint32, t tier, entries []packEntry) (*packState, error) {
+	next := &packState{packs: st.packs, levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash)}
+	return st.addRecords(next, idx, t, entries)
+}
+
+// addRecords indexes entries as records of pack idx into next, which was cloned
+// from st.
+func (st *packState) addRecords(next *packState, idx uint32, t tier, entries []packEntry) (*packState, error) {
 	onClash := func(prim, rep *locRec) {
 		next.clash = append(next.clash, clashMessage(prim.sum, prim, rep, next.packs))
 	}
-	idx := uint32(len(st.packs))
 	recs := make([]locRec, 0, len(entries))
 	total := len(entries)
 	for _, ix := range st.levels {
@@ -3362,7 +3411,7 @@ func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, e
 		return nil, errors.New("pack locator is full: too many packed records")
 	}
 	for i := range entries {
-		r := mkLocRec(&entries[i], idx, info.tier)
+		r := mkLocRec(&entries[i], idx, t)
 		if prev := st.best(&r.sum); prev != nil && prev.logical() != r.logical() {
 			onClash(prev, &r)
 			continue
@@ -3511,6 +3560,11 @@ func (s *Store) addPack(info packInfo, entries []packEntry) error {
 // reloadPacks rebuilds the pack state from disk, as a fresh open would, and
 // swaps it in whole; a failed rebuild leaves the previous state serving.
 func (s *Store) reloadPacks() error {
+	if m := s.segs; m != nil {
+		// A rebuild from disk only sees sealed packs: quiesce the segment
+		// writers and seal first, or open segments would drop out of the locator.
+		defer m.pause()()
+	}
 	s.packMu.Lock()
 	defer s.packMu.Unlock()
 	st, err := loadPackState(s.root, s.format.StoreFormatVersion)
@@ -3534,6 +3588,9 @@ func (s *Store) packLookup(sum [32]byte) (packLoc, bool) {
 // file bytes for stats.
 func (s *Store) packTotals() (packs, records int, bytes int64) {
 	for _, p := range s.packSnap().packs {
+		if p.open {
+			continue // an open segment: counted by segmentStats
+		}
 		packs++
 		records += p.records
 		bytes += p.size
@@ -3600,6 +3657,9 @@ func (s *Store) packUsages(referenced map[string]bool) []packUsage {
 	}
 	var hx [64]byte
 	for sum, loc := range st.primaries() {
+		if st.packs[loc.pack].open {
+			continue
+		}
 		hex.Encode(hx[:], sum[:])
 		if referenced[string(hx[:])] {
 			us[loc.pack].LiveRecords++
@@ -3609,6 +3669,9 @@ func (s *Store) packUsages(referenced map[string]bool) []packUsage {
 	}
 	for i := range us {
 		u := &us[i]
+		if st.packs[i].open {
+			continue // never a candidate: maintenance seals open segments first
+		}
 		u.DeadRecords = u.Records - u.LiveRecords
 		u.DeadBytes = u.Size - packFixedBytes - int64(u.Records)*packRecordBytes - u.LiveBytes
 		if u.Size > 0 {
@@ -4038,7 +4101,9 @@ func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
 	for _, p := range st.packs {
 		res.PacksChecked++
 		var err error
-		if deep {
+		if p.open {
+			err = checkOpenSegment(p.path, deep)
+		} else if deep {
 			err = checkPackRecords(p.path)
 		} else {
 			_, _, err = loadPackFile(p.path)
@@ -4047,6 +4112,993 @@ func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
 			res.addIssue("corrupt", "pack "+p.label(), err.Error())
 		}
 	}
+}
+
+// =============================================================================
+// 4d. Small-object segments (Z4-P1C)
+//
+// Small objects used to cost two durable files each (a chunk and a manifest),
+// two renames, two directory entries and a share of the journal fsync. A
+// segment is one append-only file that holds the chunk records AND the small
+// manifest of many independent requests: a whole commit group is serialised
+// into one buffer, written with one WriteAt and made durable by one fsync.
+// Specification: testing-harnesses/z4/p1c/FORMAT.md; durability protocol and
+// failure semantics: testing-harnesses/z4/p1c/DURABILITY_MODEL.md.
+//
+//	segments/<seq:016x>.seg  = pack-v1 header (16 B) + pack-v1 records (raw codec)
+//
+// A segment is a pack in progress: it has exactly the bytes of a pack-v1 file
+// without index and footer. Sealing appends the pack-v1 index and footer and
+// renames the file to packs/<body_sha256>.pack, so a sealed segment is an
+// ordinary pack that every pack reader, `verify -deep`, `compact`, `repack`,
+// tiering and bundles already handle. A manifest record is a pack record whose
+// digest is the SHA-256 of the manifest's exact bytes, which is the digest the
+// journal already records (manifest_sha256), so no new reference is needed.
+//
+// Records enter the in-memory locator only after the fsync that covers them
+// (visible <=> durable). The journal frame, written afterwards by the request
+// that waited for that fsync, is the commit point. Torn tails are detected by
+// re-hashing every record (content addressing, stronger than a CRC); recovery
+// truncates the invalid tail and re-adopts the newest unsealed segment.
+// Maintenance (gc, repack, compact, tier moves, reloadPacks) first quiesces the
+// writers and seals the active segment, so the pack machinery never sees an
+// open segment.
+// =============================================================================
+
+const (
+	segDirName                 = "segments"
+	segFileSuffix              = ".seg"
+	storeFormatVersionSegments = 11 // level 10 is reserved by the unmerged representation-authority draft
+	segMaxBatchBytes           = 8 << 20
+	segMaxBatchReqs            = 256
+	segMaxQueue                = 4096
+	segMaxSealing              = 2
+	segInlineManifestMax       = 64 << 10 // larger manifests stay files
+	segSinkMaxBytes            = 4 << 20  // request-local buffering bound
+)
+
+var (
+	// segTargetBytes is the soft size at which the active segment rolls; the
+	// hard cap is twice that. Variables so tests shrink them.
+	segTargetBytes int64 = 32 << 20
+	// segMinSealBytes: a clean close seals the active segment only from this
+	// size, so an idle restart does not produce a tiny pack.
+	segMinSealBytes int64 = 8 << 20
+	// smallObjectSegments is the small-object storage policy (default on);
+	// ZEROS3_SMALL_OBJECT_STORAGE=off|loose turns writing to segments off. Reading
+	// segments and inline manifests is always supported.
+	smallObjectSegments = true
+
+	// Test seams for deterministic fault injection of the two data barriers.
+	segWriteAt = func(f *os.File, b []byte, off int64) (int, error) { return f.WriteAt(b, off) }
+	segSync    = func(f *os.File) error { return f.Sync() }
+)
+
+func init() {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZEROS3_SMALL_OBJECT_STORAGE"))) {
+	case "off", "loose", "0", "false":
+		smallObjectSegments = false
+	}
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_SEGMENT_TARGET_MIB")); err == nil && v > 0 {
+		segTargetBytes = int64(v) << 20
+	}
+}
+
+func segHardMax() int64 { return 2 * segTargetBytes }
+
+const (
+	hookSegCreated      = "seg-created"
+	hookSegDirSynced    = "seg-dir-synced"
+	hookSegBeforeWrite  = "seg-before-write"
+	hookSegAfterWrite   = "seg-after-write"
+	hookSegBeforeSync   = "seg-before-sync"
+	hookSegAfterSync    = "seg-after-sync"
+	hookSegPublished    = "seg-published"
+	hookSegSealWritten  = "seg-seal-written"
+	hookSegSealSynced   = "seg-seal-synced"
+	hookSegBeforeRename = "seg-before-rename"
+	hookSegAfterRename  = "seg-after-rename"
+	hookSegSealed       = "seg-sealed"
+	hookSegRecovered    = "seg-recovered"
+)
+
+var errSegClosed = errors.New("segments: store is closed")
+
+// segRecord is one record to append: a chunk or a manifest, named by the
+// SHA-256 of data.
+type segRecord struct {
+	sum  [32]byte
+	data []byte
+}
+
+type segReq struct {
+	recs []segRecord
+	done chan error
+	lead chan struct{}
+}
+
+// segment is the writer-side state of one segment file. Only the batch leader
+// (and, with the writers quiesced, recovery and sealing) touches it.
+type segment struct {
+	seq     uint64
+	id      string // pack id used in the locator while open: seg-<seq>
+	path    string
+	f       *os.File
+	size    int64 // bytes covered by a successful fsync: header + durable records
+	entries []packEntry
+	h       hash.Hash // SHA-256 over bytes [0,size)
+	noSeal  bool      // the tail could not be cut back: only recovery may seal it
+}
+
+func segID(seq uint64) string { return fmt.Sprintf("seg-%016x", seq) }
+
+func segPath(root string, seq uint64) string {
+	return filepath.Join(root, segDirName, fmt.Sprintf("%016x%s", seq, segFileSuffix))
+}
+
+type segMgr struct {
+	s       *Store
+	mu      sync.Mutex
+	cond    *sync.Cond
+	queue   []*segReq
+	leading bool
+	paused  bool
+	closed  bool
+	active  *segment
+	retired []*segment // unsealed segments no longer appended to (failed, or seal failed)
+	sealing int
+	nextSeq uint64
+
+	// counters (read by stats/tests without the lock)
+	nBatches, nMembers, nRecords, nBytes, nRolls, nSeals, nFails atomic.Int64
+	activeBytes, activeRecords                                   atomic.Int64
+	bufs                                                         sync.Pool
+}
+
+func newSegMgr(s *Store) *segMgr {
+	m := &segMgr{s: s, nextSeq: 1}
+	m.cond = sync.NewCond(&m.mu)
+	return m
+}
+
+// segmentsEnabled reports whether new small objects and manifests are written
+// to segments on this store.
+func (s *Store) segmentsEnabled() bool {
+	return smallObjectSegments && s.segs != nil
+}
+
+// segFor reports whether an ingest with these options buffers its chunks for a
+// segment commit: a known size below the direct-pack threshold.
+func (s *Store) segFor(o ingestOptions) bool {
+	return s.segmentsEnabled() && o.size > 0 && o.size < directPackMinBytes && o.size <= segSinkMaxBytes
+}
+
+// commit appends recs to the active segment, returning once they are durable and
+// visible in the locator. Concurrent callers share one write and one fsync.
+func (m *segMgr) commit(recs []segRecord) error {
+	if len(recs) == 0 {
+		return nil
+	}
+	r := &segReq{recs: recs, done: make(chan error, 1), lead: make(chan struct{}, 1)}
+	m.mu.Lock()
+	for (m.paused || len(m.queue) >= segMaxQueue) && !m.closed {
+		m.cond.Wait()
+	}
+	if m.closed {
+		m.mu.Unlock()
+		return errSegClosed
+	}
+	m.queue = append(m.queue, r)
+	if m.leading {
+		m.mu.Unlock()
+		select {
+		case err := <-r.done:
+			return err
+		case <-r.lead:
+		}
+	} else {
+		m.leading = true
+		m.mu.Unlock()
+	}
+	return m.lead(r)
+}
+
+// lead runs one batch (a bounded prefix of the queue that starts with self),
+// releases its members and hands leadership to the oldest remaining request.
+func (m *segMgr) lead(self *segReq) (err error) {
+	m.mu.Lock()
+	n, bytes := 0, 0
+	for n < len(m.queue) && n < segMaxBatchReqs {
+		b := 0
+		for _, rec := range m.queue[n].recs {
+			b += packRecordHeaderSize + len(rec.data)
+		}
+		if n > 0 && bytes+b > segMaxBatchBytes {
+			break
+		}
+		bytes += b
+		n++
+	}
+	batch := append([]*segReq(nil), m.queue[:n]...)
+	m.queue = append(m.queue[:0:0], m.queue[n:]...)
+	m.cond.Broadcast()
+	m.mu.Unlock()
+	defer func() {
+		p := recover()
+		if p != nil {
+			err = fmt.Errorf("segments: commit interrupted: %v", p)
+			m.abandonActive()
+		}
+		for _, b := range batch {
+			if b != self {
+				b.done <- err
+			}
+		}
+		m.mu.Lock()
+		if len(m.queue) > 0 {
+			next := m.queue[0]
+			m.mu.Unlock()
+			next.lead <- struct{}{}
+		} else {
+			m.leading = false
+			m.cond.Broadcast()
+			m.mu.Unlock()
+		}
+		if p != nil {
+			panic(p)
+		}
+	}()
+	return m.runBatch(batch)
+}
+
+// abandonActive retires the active segment after a failure of unknown extent.
+func (m *segMgr) abandonActive() {
+	m.mu.Lock()
+	seg := m.active
+	m.active = nil
+	if seg != nil {
+		seg.noSeal = true // state after an interrupted write is unknown: recovery decides
+		m.retired = append(m.retired, seg)
+	}
+	m.mu.Unlock()
+	m.nFails.Add(1)
+}
+
+func (m *segMgr) getBuf(n int) []byte {
+	if v := m.bufs.Get(); v != nil {
+		if b := *(v.(*[]byte)); cap(b) >= n {
+			return b[:0]
+		}
+	}
+	return make([]byte, 0, max(n, 64<<10))
+}
+
+func (m *segMgr) putBuf(b []byte) {
+	if cap(b) <= 2*segMaxBatchBytes {
+		m.bufs.Put(&b)
+	}
+}
+
+func (m *segMgr) ensureActive() (*segment, error) {
+	m.mu.Lock()
+	seg := m.active
+	m.mu.Unlock()
+	if seg != nil {
+		return seg, nil
+	}
+	seg, err := m.newSegment()
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	m.active = seg
+	m.mu.Unlock()
+	return seg, nil
+}
+
+func (m *segMgr) runBatch(batch []*segReq) error {
+	seg, err := m.ensureActive()
+	if err != nil {
+		return err
+	}
+	est := int64(0)
+	for _, r := range batch {
+		for _, rec := range r.recs {
+			est += packRecordHeaderSize + int64(len(rec.data))
+		}
+	}
+	if seg.size+est > segHardMax() && len(seg.entries) > 0 {
+		if err := m.roll(seg); err != nil {
+			return err
+		}
+		if seg, err = m.ensureActive(); err != nil {
+			return err
+		}
+	}
+	buf := m.getBuf(int(est))
+	defer func() { m.putBuf(buf) }()
+	var placed []packEntry
+	var pend map[[32]byte]struct{}
+	if len(batch) > 1 || len(batch[0].recs) > 1 {
+		pend = make(map[[32]byte]struct{}, 8)
+	}
+	off := uint64(seg.size)
+	for _, r := range batch {
+		for _, rec := range r.recs {
+			if pend != nil {
+				if _, dup := pend[rec.sum]; dup {
+					continue
+				}
+			}
+			if _, ok := m.s.packLookup(rec.sum); ok {
+				continue // already durable somewhere readable
+			}
+			if len(rec.data) > maxPackedChunkBytes {
+				return fmt.Errorf("segments: record of %d bytes exceeds the pack record limit", len(rec.data))
+			}
+			e := packEntry{sha: rec.sum, off: off + packRecordHeaderSize, stored: uint32(len(rec.data)), logical: uint32(len(rec.data)), codec: packCodecRaw}
+			var hdr [packRecordHeaderSize]byte
+			putPackRecordHeader(hdr[:], e)
+			buf = append(append(buf, hdr[:]...), rec.data...)
+			off = e.off + uint64(e.stored)
+			placed = append(placed, e)
+			if pend != nil {
+				pend[rec.sum] = struct{}{}
+			}
+		}
+	}
+	m.nBatches.Add(1)
+	m.nMembers.Add(int64(len(batch)))
+	if len(buf) == 0 {
+		return nil
+	}
+	fireTestHook(hookSegBeforeWrite)
+	if _, err := segWriteAt(seg.f, buf, seg.size); err != nil {
+		return m.failActive(seg, fmt.Errorf("segments: write: %w", err))
+	}
+	fireTestHook(hookSegAfterWrite)
+	fireTestHook(hookSegBeforeSync)
+	if err := segSync(seg.f); err != nil {
+		return m.failActive(seg, fmt.Errorf("segments: fsync: %w", err))
+	}
+	fireTestHook(hookSegAfterSync)
+	seg.h.Write(buf)
+	seg.size += int64(len(buf))
+	seg.entries = append(seg.entries, placed...)
+	if err := m.s.segPublish(seg, placed); err != nil {
+		return m.failActive(seg, err)
+	}
+	fireTestHook(hookSegPublished)
+	m.nRecords.Add(int64(len(placed)))
+	m.nBytes.Add(int64(len(buf)))
+	m.activeBytes.Store(seg.size)
+	m.activeRecords.Store(int64(len(seg.entries)))
+	observeLayout("segment-records", m.s.root, len(placed))
+	if seg.size >= segTargetBytes {
+		m.roll(seg) // best effort: the data is durable; the next batch retries and the hard cap bounds growth
+	}
+	return nil
+}
+
+// failActive handles a failed write or fsync: the batch fails, the segment is
+// cut back to its last durable size, retired and sealed in the background. It is
+// never fsynced again to claim the failed batch.
+func (m *segMgr) failActive(seg *segment, cause error) error {
+	if terr := seg.f.Truncate(seg.size); terr != nil {
+		seg.noSeal = true
+	}
+	m.mu.Lock()
+	if m.active == seg {
+		m.active = nil
+	}
+	m.retired = append(m.retired, seg)
+	m.mu.Unlock()
+	m.nFails.Add(1)
+	m.activeBytes.Store(0)
+	m.activeRecords.Store(0)
+	return cause
+}
+
+// roll replaces the active segment by a fresh one and seals the old one in the
+// background. If the new segment cannot be created the old one stays active.
+func (m *segMgr) roll(old *segment) error {
+	m.mu.Lock()
+	for m.sealing >= segMaxSealing && !m.closed {
+		m.cond.Wait()
+	}
+	m.mu.Unlock()
+	next, err := m.newSegment()
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.active == old {
+		m.active = next
+	} else {
+		// the old segment was retired meanwhile; keep whichever is active
+		if m.active == nil {
+			m.active = next
+		}
+	}
+	m.sealing++
+	m.mu.Unlock()
+	m.nRolls.Add(1)
+	m.activeBytes.Store(next.size)
+	m.activeRecords.Store(0)
+	go func() {
+		defer func() {
+			recover()
+			m.mu.Lock()
+			m.sealing--
+			m.cond.Broadcast()
+			m.mu.Unlock()
+		}()
+		if err := m.seal(old); err != nil {
+			log.Printf("zeros3: sealing segment %s failed (it stays readable and is sealed by the next maintenance or restart): %v", old.id, err)
+			m.mu.Lock()
+			m.retired = append(m.retired, old)
+			m.mu.Unlock()
+		}
+	}()
+	return nil
+}
+
+// ensureSegFormat raises the store to the segment level. A level above 5 implies
+// the warm and cold tier roots, so a store still below 5 gets them first, exactly
+// as `tier init` and the representation levels do; they are harmless to older
+// builds and a crash between the two steps leaves a valid lower-level store.
+func (s *Store) ensureSegFormat() error {
+	s.formatMu.Lock()
+	level := s.format.StoreFormatVersion
+	s.formatMu.Unlock()
+	if level >= storeFormatVersionSegments {
+		return nil
+	}
+	if level < storeFormatVersionTiers {
+		if err := s.initTierRoots(); err != nil {
+			return err
+		}
+	}
+	return s.ensureStoreFormat(storeFormatVersionSegments)
+}
+
+// newSegment creates, headers and durably publishes a fresh segment. The store
+// format is raised first; the file's directory entry is durable before the
+// segment can be used.
+func (m *segMgr) newSegment() (*segment, error) {
+	s := m.s
+	if err := s.ensureSegFormat(); err != nil {
+		return nil, fmt.Errorf("segments: upgrading store format: %w", err)
+	}
+	dir := filepath.Join(s.root, segDirName)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+		if err := syncDir(s.root); err != nil {
+			return nil, err
+		}
+	}
+	m.mu.Lock()
+	seq := m.nextSeq
+	m.nextSeq++
+	m.mu.Unlock()
+	path := segPath(s.root, seq)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	fail := func(err error) (*segment, error) {
+		f.Close()
+		os.Remove(path)
+		return nil, err
+	}
+	hdr := make([]byte, packHeaderSize)
+	putPackHeader(hdr)
+	if _, err := f.WriteAt(hdr, 0); err != nil {
+		return fail(err)
+	}
+	fireTestHook(hookSegCreated)
+	if err := segSync(f); err != nil {
+		return fail(err)
+	}
+	if err := syncDir(dir); err != nil {
+		return fail(err)
+	}
+	fireTestHook(hookSegDirSynced)
+	seg := &segment{seq: seq, id: segID(seq), path: path, f: f, size: packHeaderSize, h: sha256.New()}
+	seg.h.Write(hdr)
+	if err := s.addPack(packInfo{id: seg.id, tier: tierHot, path: path, open: true}, nil); err != nil {
+		return fail(err)
+	}
+	return seg, nil
+}
+
+// segPublish makes the records of a durable batch visible in the locator.
+func (s *Store) segPublish(seg *segment, entries []packEntry) error {
+	s.packMu.Lock()
+	defer s.packMu.Unlock()
+	st := s.packSnap()
+	idx := slices.IndexFunc(st.packs, func(p packInfo) bool { return p.tier == tierHot && p.id == seg.id })
+	if idx < 0 {
+		return fmt.Errorf("segments: segment %s is not registered in the locator", seg.id)
+	}
+	next, err := st.withRecords(uint32(idx), tierHot, entries)
+	if err != nil {
+		return err
+	}
+	s.packSt.Store(next)
+	return nil
+}
+
+// segReplaceInfo swaps the descriptor of a segment pack (at seal) without
+// touching its records: offsets and lengths are unchanged by the seal.
+func (s *Store) segReplaceInfo(oldID string, info packInfo) error {
+	s.packMu.Lock()
+	defer s.packMu.Unlock()
+	st := s.packSnap()
+	idx := slices.IndexFunc(st.packs, func(p packInfo) bool { return p.tier == tierHot && p.id == oldID })
+	if idx < 0 {
+		return fmt.Errorf("segments: segment %s is not registered in the locator", oldID)
+	}
+	packs := slices.Clone(st.packs)
+	packs[idx] = info
+	s.packSt.Store(&packState{packs: packs, levels: st.levels, bad: st.bad, clash: st.clash})
+	return nil
+}
+
+// seal turns a segment that nobody appends to into an ordinary pack-v1 file:
+// append index and footer, fsync, prove the file byte for byte, rename into
+// packs/, fsync both directories, swap the locator descriptor. A segment with
+// no records is removed. The only copy of a record is never removed: the
+// rename moves the very file the locator already reads.
+func (m *segMgr) seal(seg *segment) error {
+	s := m.s
+	if seg.noSeal {
+		return errors.New("segment tail could not be cut back; left for recovery")
+	}
+	dir := filepath.Join(s.root, segDirName)
+	if len(seg.entries) == 0 {
+		seg.f.Close()
+		if err := os.Remove(seg.path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return syncDir(dir)
+	}
+	index := make([]byte, len(seg.entries)*packIndexEntrySize)
+	for i, e := range seg.entries {
+		putPackIndexEntry(index[i*packIndexEntrySize:], e)
+	}
+	h := seg.h
+	h.Write(index)
+	var bodySHA [32]byte
+	h.Sum(bodySHA[:0])
+	var ft [packFooterSize]byte
+	putPackFooter(ft[:], uint64(len(seg.entries)), uint64(seg.size), bodySHA, crc32.Checksum(index, packCRC))
+	tail := append(index, ft[:]...)
+	if _, err := segWriteAt(seg.f, tail, seg.size); err != nil {
+		return err
+	}
+	fireTestHook(hookSegSealWritten)
+	if err := segSync(seg.f); err != nil {
+		return err
+	}
+	fireTestHook(hookSegSealSynced)
+	if _, err := verifyPackExact(seg.path, seg.entries, bodySHA); err != nil {
+		return fmt.Errorf("sealed segment failed validation: %w", err)
+	}
+	packDir := tierPackDir(s.root, tierHot)
+	if _, err := os.Stat(packDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(packDir, 0o755); err != nil {
+			return err
+		}
+		if err := syncDir(s.root); err != nil {
+			return err
+		}
+	}
+	id := hex.EncodeToString(bodySHA[:])
+	final := filepath.Join(packDir, id+packFileSuffix)
+	fireTestHook(hookSegBeforeRename)
+	if err := os.Rename(seg.path, final); err != nil {
+		return err
+	}
+	fireTestHook(hookSegAfterRename)
+	if err := s.syncDirShared(packDir); err != nil {
+		return err
+	}
+	if err := syncDir(dir); err != nil {
+		return err
+	}
+	fireTestHook(hookSegSealed)
+	if err := s.segReplaceInfo(seg.id, newPackInfo(id, final, seg.size+int64(len(tail)), seg.entries)); err != nil {
+		return err
+	}
+	seg.f.Close()
+	m.nSeals.Add(1)
+	observeLayout("pack", s.root, 1)
+	return nil
+}
+
+// pause quiesces the writers (waits for the current batch, blocks new commits),
+// seals the active and every retired segment, and returns the function that lets
+// writers continue. Maintenance and reloadPacks call it so the pack machinery only
+// ever sees sealed packs.
+func (m *segMgr) pause() (resume func()) {
+	m.mu.Lock()
+	for m.paused && !m.closed { // another maintenance operation holds the gate
+		m.cond.Wait()
+	}
+	if m.closed {
+		m.mu.Unlock()
+		return func() {}
+	}
+	m.paused = true
+	for m.leading || m.sealing > 0 {
+		m.cond.Wait()
+	}
+	segs := m.retired
+	if m.active != nil {
+		segs = append(segs, m.active)
+	}
+	m.retired, m.active = nil, nil
+	m.mu.Unlock()
+	m.activeBytes.Store(0)
+	m.activeRecords.Store(0)
+	for _, seg := range segs {
+		if err := m.seal(seg); err != nil {
+			log.Printf("zeros3: sealing segment %s failed: %v", seg.id, err)
+			m.mu.Lock()
+			m.retired = append(m.retired, seg)
+			m.mu.Unlock()
+		}
+	}
+	return func() {
+		m.mu.Lock()
+		m.paused = false
+		m.cond.Broadcast()
+		m.mu.Unlock()
+	}
+}
+
+// sealSegments seals every open segment of the store (a no-op without any).
+func (s *Store) sealSegments() {
+	if m := s.segs; m != nil {
+		m.pause()()
+	}
+}
+
+// closeSegments stops the writers. The active segment is sealed only from
+// segMinSealBytes; a smaller one stays open and is re-adopted by the next open.
+func (m *segMgr) close() {
+	m.mu.Lock()
+	for m.paused && !m.closed {
+		m.cond.Wait()
+	}
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.paused = true
+	for m.leading || m.sealing > 0 {
+		m.cond.Wait()
+	}
+	act, ret := m.active, m.retired
+	m.active, m.retired = nil, nil
+	m.closed = true
+	m.paused = false
+	m.cond.Broadcast()
+	m.mu.Unlock()
+	if act != nil {
+		if act.size >= segMinSealBytes {
+			if err := m.seal(act); err != nil {
+				log.Printf("zeros3: sealing segment %s failed: %v", act.id, err)
+			}
+		} else {
+			act.f.Close()
+		}
+	}
+	for _, seg := range ret {
+		if err := m.seal(seg); err != nil {
+			seg.f.Close()
+		}
+	}
+}
+
+// ---- recovery -----------------------------------------------------------------
+
+type segScan struct {
+	size    int64 // file size
+	valid   int64 // end of the valid prefix
+	entries []packEntry
+	h       hash.Hash // SHA-256 over the valid prefix
+	sealed  bool      // the file is a complete, verified pack-v1
+	badHdr  bool
+}
+
+// scanSegmentFile validates a segment from the start. Every length is checked
+// before use and every payload is re-hashed; the first invalid record ends the
+// valid prefix. Work is bounded by the file size.
+func scanSegmentFile(path string) (segScan, error) {
+	var sc segScan
+	f, err := os.Open(path)
+	if err != nil {
+		return sc, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return sc, err
+	}
+	sc.size = st.Size()
+	if _, _, perr := verifyPackFile(path); perr == nil {
+		sc.sealed = true
+		return sc, nil
+	}
+	var hdr [packHeaderSize]byte
+	if sc.size < packHeaderSize {
+		sc.badHdr = true
+		return sc, nil
+	}
+	if _, err := f.ReadAt(hdr[:], 0); err != nil {
+		return sc, err
+	}
+	var want [packHeaderSize]byte
+	putPackHeader(want[:])
+	if hdr != want {
+		sc.badHdr = true
+		return sc, nil
+	}
+	sc.h = sha256.New()
+	sc.h.Write(hdr[:])
+	sc.valid = packHeaderSize
+	r := bufio.NewReaderSize(io.NewSectionReader(f, packHeaderSize, sc.size-packHeaderSize), 1<<20)
+	payload := make([]byte, maxPackedChunkBytes)
+	seen := map[[32]byte]struct{}{}
+	for {
+		var rh [packRecordHeaderSize]byte
+		if _, err := io.ReadFull(r, rh[:]); err != nil {
+			break
+		}
+		var e packEntry
+		copy(e.sha[:], rh[0:32])
+		e.logical = binary.LittleEndian.Uint32(rh[32:36])
+		e.stored = binary.LittleEndian.Uint32(rh[36:40])
+		e.codec = rh[40]
+		if e.codec != packCodecRaw || e.logical != e.stored || e.logical > maxPackedChunkBytes || !allZero(rh[41:44]) {
+			break
+		}
+		if int64(e.stored) > sc.size-sc.valid-packRecordHeaderSize {
+			break
+		}
+		buf := payload[:e.stored]
+		if _, err := io.ReadFull(r, buf); err != nil {
+			break
+		}
+		if sha256.Sum256(buf) != e.sha {
+			break
+		}
+		if _, dup := seen[e.sha]; dup {
+			break // a pack index cannot repeat a digest; the writer never emits one
+		}
+		seen[e.sha] = struct{}{}
+		e.off = uint64(sc.valid) + packRecordHeaderSize
+		sc.h.Write(rh[:])
+		sc.h.Write(buf)
+		sc.entries = append(sc.entries, e)
+		sc.valid += packRecordHeaderSize + int64(e.stored)
+	}
+	return sc, nil
+}
+
+// recoverSegments runs at open, before serving: it validates every segment,
+// cuts torn tails, finishes interrupted seals, re-adopts the newest small segment
+// as the active one and seals the others.
+func (s *Store) recoverSegments() error {
+	m := s.segs
+	dir := filepath.Join(s.root, segDirName)
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	type cand struct {
+		seq uint64
+		seg *segment
+	}
+	var cands []cand
+	for _, de := range ents {
+		name, ok := strings.CutSuffix(de.Name(), segFileSuffix)
+		if !ok || de.IsDir() || len(name) != 16 {
+			continue
+		}
+		seq, err := strconv.ParseUint(name, 16, 64)
+		if err != nil {
+			continue
+		}
+		if seq >= m.nextSeq {
+			m.nextSeq = seq + 1
+		}
+		path := filepath.Join(dir, de.Name())
+		sc, err := scanSegmentFile(path)
+		if err != nil {
+			return fmt.Errorf("segments: scanning %s: %w", de.Name(), err)
+		}
+		fireTestHook(hookSegRecovered)
+		switch {
+		case sc.sealed:
+			// crash between the seal fsync and the rename (or before the directory fsync)
+			sinfo, _, serr := statPackFile(path)
+			if serr != nil {
+				return serr
+			}
+			final := filepath.Join(tierPackDir(s.root, tierHot), sinfo.id+packFileSuffix)
+			if _, ferr := os.Stat(final); ferr == nil {
+				if err := os.Remove(path); err != nil {
+					return err
+				}
+			} else if err := os.Rename(path, final); err != nil {
+				return err
+			} else if err := s.addPackFromFile(final); err != nil {
+				return err
+			}
+			if err := syncDir(tierPackDir(s.root, tierHot)); err != nil {
+				return err
+			}
+			if err := syncDir(dir); err != nil {
+				return err
+			}
+			continue
+		case sc.badHdr || len(sc.entries) == 0:
+			// never used by an acknowledged operation (creation interrupted, or nothing durable)
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			if err := syncDir(dir); err != nil {
+				return err
+			}
+			continue
+		}
+		f, err := os.OpenFile(path, os.O_RDWR, 0)
+		if err != nil {
+			return err
+		}
+		if tail := sc.size - sc.valid; tail > 0 {
+			// quarantine the dropped bytes (collectable tmp file), then cut
+			q := filepath.Join(s.root, "tmp", fmt.Sprintf("seg-torn-%016x-%d", seq, sc.valid))
+			if data, rerr := readRange(f, sc.valid, tail); rerr == nil {
+				os.WriteFile(q, data, 0o644)
+			}
+			if err := f.Truncate(sc.valid); err != nil {
+				f.Close()
+				return err
+			}
+			if err := f.Sync(); err != nil {
+				f.Close()
+				return err
+			}
+		}
+		seg := &segment{seq: seq, id: segID(seq), path: path, f: f, size: sc.valid, entries: sc.entries, h: sc.h}
+		if err := s.addPack(packInfo{id: seg.id, tier: tierHot, path: path, open: true}, nil); err != nil {
+			f.Close()
+			return err
+		}
+		if err := s.segPublish(seg, seg.entries); err != nil {
+			f.Close()
+			return err
+		}
+		cands = append(cands, cand{seq, seg})
+	}
+	// newest candidate below the target is re-adopted; the rest are sealed
+	adopt := -1
+	for i := len(cands) - 1; i >= 0; i-- {
+		if cands[i].seg.size < segTargetBytes {
+			adopt = i
+			break
+		}
+	}
+	for i, c := range cands {
+		if i == adopt {
+			m.active = c.seg
+			m.activeBytes.Store(c.seg.size)
+			m.activeRecords.Store(int64(len(c.seg.entries)))
+			continue
+		}
+		if err := m.seal(c.seg); err != nil {
+			return fmt.Errorf("segments: sealing recovered segment %s: %w", c.seg.id, err)
+		}
+	}
+	return nil
+}
+
+func readRange(f *os.File, off, n int64) ([]byte, error) {
+	if n > 2*segHardMax() {
+		n = 2 * segHardMax()
+	}
+	b := make([]byte, n)
+	m, err := f.ReadAt(b, off)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return b[:m], nil
+}
+
+// addPackFromFile folds an already-validated pack file into the locator.
+func (s *Store) addPackFromFile(path string) error {
+	info, entries, err := loadPackFile(path)
+	if err != nil {
+		return err
+	}
+	return s.addPack(info, entries)
+}
+
+// checkOpenSegment validates an open segment for verify: its header. Records
+// are verified one by one by the deep reachability scan (casRead re-hashes
+// each); an unsynced tail is legitimate on a running store and cut by recovery.
+func checkOpenSegment(path string, deep bool) error {
+	sc, err := scanSegmentFile(path)
+	if err != nil {
+		return err
+	}
+	switch {
+	case sc.sealed:
+		return nil
+	case sc.badHdr:
+		return errors.New("segment: bad header")
+	}
+	return nil
+}
+
+// ---- request side -------------------------------------------------------------
+
+// segSink collects the new chunks of one small request. Nothing is written
+// until the request commits: the chunks and the manifest then go to the segment
+// in one group commit (commitWith). A body larger than segSinkMaxBytes is an
+// error (the declared size was a lie).
+type segSink struct {
+	s     *Store
+	recs  []segRecord
+	seen  map[[32]byte]struct{}
+	bytes int
+}
+
+func (s *Store) newSegSink() *segSink {
+	return &segSink{s: s, seen: map[[32]byte]struct{}{}}
+}
+
+func (k *segSink) Put(sum [32]byte, chunk []byte) error {
+	if _, ok := k.seen[sum]; ok {
+		return nil
+	}
+	if _, ok := k.s.packLookup(sum); ok {
+		return nil
+	}
+	if k.bytes+len(chunk) > segSinkMaxBytes {
+		return fmt.Errorf("request body exceeds its declared size by more than %d bytes", segSinkMaxBytes)
+	}
+	k.seen[sum] = struct{}{}
+	k.recs = append(k.recs, segRecord{sum: sum, data: append([]byte(nil), chunk...)})
+	k.bytes += len(chunk)
+	return nil
+}
+
+// Flush makes the chunks durable by themselves (callers without a manifest to
+// add, and the non-overlapped ingest path).
+func (k *segSink) Flush() error {
+	recs := k.recs
+	k.recs, k.bytes = nil, 0
+	return k.s.segs.commit(recs)
+}
+
+func (k *segSink) Abort() { k.recs, k.bytes = nil, 0 }
+
+// commitWith writes the pending chunks together with extra records (the
+// manifest) in one group commit.
+func (k *segSink) commitWith(extra ...segRecord) error {
+	recs := append(k.recs, extra...)
+	k.recs, k.bytes = nil, 0
+	return k.s.segs.commit(recs)
 }
 
 // =============================================================================
@@ -4111,11 +5163,18 @@ func (s *Store) publishManifest(m manifestV1) (id string, sum [32]byte, err erro
 	if err != nil {
 		return "", sum, err
 	}
+	if s.segmentsEnabled() && len(data) <= segInlineManifestMax {
+		sum = sha256.Sum256(data)
+		if err := s.segs.commit([]segRecord{{sum: sum, data: data}}); err != nil {
+			return "", sum, err
+		}
+		return m.ManifestUUID, sum, nil
+	}
 	path := filepath.Join(s.root, "manifests", m.ManifestUUID+".json")
 	if err := writeFileDurable(filepath.Join(s.root, "tmp"), path, data); err != nil {
 		return "", sum, err
 	}
-	observeLayout("manifest-file", s.root)
+	observeLayout("manifest-file", s.root, 1)
 	if err := s.syncDirShared(filepath.Join(s.root, "manifests")); err != nil {
 		return "", sum, err
 	}
@@ -4126,6 +5185,29 @@ func (s *Store) publishManifest(m manifestV1) (id string, sum [32]byte, err erro
 // publication, in parallel when there is one. It returns only when both are
 // done (the chunk publication is always joined, even if the manifest fails).
 func (s *Store) publishManifestJoined(man manifestV1, ing *ingestResult) (id string, sum [32]byte, err error) {
+	if ss := ing.seg; ss != nil {
+		// Small request: chunks and manifest go to the segment in one group commit.
+		ing.seg, ing.finish = nil, nil
+		data, merr := json.Marshal(man)
+		if merr != nil {
+			return "", sum, merr
+		}
+		sum = sha256.Sum256(data)
+		if len(data) > segInlineManifestMax {
+			if cerr := ss.Flush(); cerr != nil {
+				return "", sum, cerr
+			}
+			id, sum, err = s.publishManifest(man)
+			if err != nil {
+				err = fmt.Errorf("manifest publish failed: %w", err)
+			}
+			return
+		}
+		if cerr := ss.commitWith(segRecord{sum: sum, data: data}); cerr != nil {
+			return "", sum, fmt.Errorf("manifest publish failed: %w", cerr)
+		}
+		return man.ManifestUUID, sum, nil
+	}
 	if ing.finish == nil {
 		id, sum, err = s.publishManifest(man)
 		if err != nil {
@@ -4148,6 +5230,40 @@ func (s *Store) publishManifestJoined(man manifestV1, ing *ingestResult) (id str
 		err = fmt.Errorf("manifest publish failed: %w", err)
 	}
 	return
+}
+
+// loadManifestBytes returns the exact bytes of manifest id, whose SHA-256 the
+// journal recorded as sha. A small manifest written by the segment layer is a
+// pack record named by that SHA-256 (content-verified by casRead); otherwise,
+// and as a fallback when the record is unreadable, it is manifests/<id>.json.
+func (s *Store) loadManifestBytes(id string, sha [32]byte) ([]byte, error) {
+	var recErr error
+	if _, ok := s.packLookup(sha); ok {
+		data, err := s.casRead(sha)
+		if err == nil {
+			return data, nil
+		}
+		recErr = err
+	}
+	data, err := os.ReadFile(filepath.Join(s.root, "manifests", id+".json"))
+	if err != nil && recErr != nil {
+		return nil, recErr
+	}
+	return data, err
+}
+
+// readManifestSHA is readManifest for callers that know the journal-recorded
+// SHA-256 of the manifest, which also finds inline manifest records.
+func (s *Store) readManifestSHA(id string, sha [32]byte) (manifestV1, []byte, error) {
+	data, err := s.loadManifestBytes(id, sha)
+	if err != nil {
+		return manifestV1{}, nil, err
+	}
+	var m manifestV1
+	if err := json.Unmarshal(data, &m); err != nil {
+		return manifestV1{}, nil, fmt.Errorf("manifest %s is corrupt: %w", id, err)
+	}
+	return m, data, nil
 }
 
 // readManifest reads and parses a manifest by UUID. Callers that need
@@ -4767,6 +5883,9 @@ type Store struct {
 	shardBB   [1024]atomic.Uint64
 	dsync     dirSyncMap
 	commits   commitQueue
+	// segs is the small-object segment writer (section 4d); nil only for a Store
+	// that was not opened with OpenStore.
+	segs *segMgr
 	// commitMu serializes every operation that appends to the journal and
 	// changes the namespace. Lock order: commitMu, then mu. The batch leader
 	// (runRootCommits) releases mu while the journal fsync runs, so readers
@@ -4825,6 +5944,11 @@ func OpenStore(root string) (*Store, error) {
 		j.f.Close()
 		return nil, fmt.Errorf("store: loading packs: %w", err)
 	}
+	s.segs = newSegMgr(s)
+	if err := s.recoverSegments(); err != nil {
+		j.f.Close()
+		return nil, fmt.Errorf("store: recovering segments: %w", err)
+	}
 	if _, err := os.Lstat(s.repDir()); err == nil || !os.IsNotExist(err) {
 		s.rep.mayHaveRoots.Store(true) // present, or unreadable: let reachability report it
 	}
@@ -4832,7 +5956,7 @@ func OpenStore(root string) (*Store, error) {
 }
 
 func supportedStoreFormat(v int) bool {
-	return v >= storeFormatVersion && v <= storeFormatVersionSupported
+	return v >= storeFormatVersion && v <= storeFormatVersionSupported || v == storeFormatVersionSegments
 }
 
 func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
@@ -5158,6 +6282,9 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 
 // Close releases the store's open file handles.
 func (s *Store) Close() error {
+	if s.segs != nil {
+		s.segs.close()
+	}
 	return s.journal.f.Close()
 }
 
@@ -5654,7 +6781,7 @@ func (s *Store) lookupObject(bucket, key string) (*objectEntry, error) {
 // root was committed), so a corrupted or substituted manifest file is
 // detected here rather than trusted blindly.
 func (s *Store) readVerifiedManifest(id string, wantSHA [32]byte) (manifestV1, error) {
-	man, manBytes, err := s.readManifest(id)
+	man, manBytes, err := s.readManifestSHA(id, wantSHA)
 	if err != nil {
 		return manifestV1{}, fmt.Errorf("%w: %v", errManifestUnavailable, err)
 	}
@@ -9942,6 +11069,7 @@ type reachabilityResult struct {
 
 	// Chunk maps are read-only after the scan; healthy scans share their sets.
 	ReferencedManifests map[string]bool  // manifest UUID -> true; every manifest any live root points to
+	ManifestSHA         map[string][32]byte // manifest UUID -> the SHA-256 its roots record (names an inline manifest record)
 	ReferencedChunks    map[string]bool  // hex sha256 -> true; every chunk any live, readable manifest/part points to
 	ChunkLength         map[string]int64 // hex sha256 -> best-known length, from the reference (not disk)
 	ValidChunks         map[string]bool  // read-only subset; aliases ReferencedChunks when all chunks pass
@@ -9969,6 +11097,23 @@ type reachabilityResult struct {
 // only broken *live* data and journal replay do.
 func (r reachabilityResult) OK() bool {
 	return r.issueTracker.ok() && r.JournalOK
+}
+
+// live is the set of digests pack maintenance must keep: the referenced chunks
+// plus the SHA-256 of every live manifest, which names the record when the
+// manifest is stored inline in a segment/pack. Manifest files are unaffected.
+func (rr *reachabilityResult) live() map[string]bool {
+	if len(rr.ManifestSHA) == 0 {
+		return rr.ReferencedChunks
+	}
+	m := make(map[string]bool, len(rr.ReferencedChunks)+len(rr.ManifestSHA))
+	for k := range rr.ReferencedChunks {
+		m[k] = true
+	}
+	for _, sha := range rr.ManifestSHA {
+		m[hex.EncodeToString(sha[:])] = true
+	}
+	return m
 }
 
 // computeReachability is the one authoritative CAS/manifest liveness scan
@@ -10004,6 +11149,7 @@ type rootObserver func(scope rootScope, bucket, key string, chunks []chunkRef)
 func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reachabilityResult, error) {
 	res := reachabilityResult{
 		ReferencedManifests: map[string]bool{},
+		ManifestSHA:         map[string][32]byte{},
 		ReferencedChunks:    map[string]bool{},
 		ChunkLength:         map[string]int64{},
 	}
@@ -10040,11 +11186,12 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 	checkRoot := func(subject, manifestUUID string, manifestSHA [32]byte) (manifestV1, bool) {
 		cached, ok := manifestCache[manifestUUID]
 		if !ok {
-			path := filepath.Join(s.root, "manifests", manifestUUID+".json")
-			data, rerr := os.ReadFile(path)
+			data, rerr := s.loadManifestBytes(manifestUUID, manifestSHA)
 			if rerr != nil {
 				if os.IsNotExist(rerr) {
 					res.addIssue("missing", subject, "manifest file "+manifestUUID+".json does not exist")
+				} else if errors.Is(rerr, errChunkCorrupt) {
+					res.addIssue("corrupt", subject, "manifest record is corrupt: "+rerr.Error())
 				} else {
 					res.addIssue("invalid", subject, rerr.Error())
 				}
@@ -10093,6 +11240,7 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 			return manifestV1{}, false
 		}
 		res.ReferencedManifests[manifestUUID] = true
+		res.ManifestSHA[manifestUUID] = manifestSHA
 		return cached.man, true
 	}
 
@@ -10469,7 +11617,7 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 		return StatsResult{}, fmt.Errorf("stats: scanning FORMAT.json: %w", err)
 	}
 
-	res.PackSummary = summarizePacks(s.packUsages(rr.ReferencedChunks))
+	res.PackSummary = summarizePacks(s.packUsages(rr.live()))
 	res.LooseChunkCount = chunkScan.totalCount
 	res.LooseChunkFileBytes = chunkScan.totalBytes
 	res.ChunkStoreFileBytes = chunkScan.totalBytes + res.PackFileBytes
@@ -10619,7 +11767,7 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	// a confusing, redundant issue.
 	if deep {
 		for uuid := range rr.ReferencedManifests {
-			man, _, rerr := s.readManifest(uuid)
+			man, _, rerr := s.readManifestSHA(uuid, rr.ManifestSHA[uuid])
 			if rerr != nil {
 				// Already reported by computeReachability if genuinely
 				// broken; a transient re-read failure here is reported
@@ -10823,6 +11971,7 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 	}
 	defer store.Close()
 
+	store.sealSegments() // maintenance sees sealed packs only (section 4d)
 	rr, err := store.computeReachability(false)
 	if err != nil {
 		return GCResult{}, err
@@ -10899,7 +12048,7 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 	orphanRootBytes := store.repOrphanRootBytes(rr.RepOrphanRoots)
 	res.ReclaimablePayloadBytes += orphanRootBytes
 
-	usages := store.packUsages(rr.ReferencedChunks)
+	usages := store.packUsages(rr.live())
 	res.PackSummary = summarizePacks(usages)
 
 	tmpBytes, err := store.tmpBytes()
@@ -10966,7 +12115,7 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 		}
 	}
 	var packRes RepackResult
-	err = store.replacePacks(deadPacks, rr.ReferencedChunks, defaultPackTargetBytes, true, &packRes)
+	err = store.replacePacks(deadPacks, rr.live(), defaultPackTargetBytes, true, &packRes)
 	res.PacksDeleted = packRes.PacksDeleted
 	res.BytesDeleted += packRes.BytesDeleted
 	if err != nil {
@@ -11193,11 +12342,12 @@ func compactStore(storeDir string, opt compactOptions) (CompactResult, error) {
 	}
 	defer store.Close()
 
+	store.sealSegments() // maintenance sees sealed packs only (section 4d)
 	rr, err := store.computeReachability(false)
 	if err != nil {
 		return CompactResult{}, err
 	}
-	return store.compact(rr.ReferencedChunks, opt)
+	return store.compact(rr.live(), opt)
 }
 
 func (s *Store) compact(referenced map[string]bool, opt compactOptions) (CompactResult, error) {
@@ -11751,7 +12901,7 @@ func (s *Store) publishPackExact(t tier, staged string, entries []packEntry, bod
 		return info, fmt.Errorf("publishing pack: %w", err)
 	}
 	fireTestHook(hookPackAfterRename)
-	observeLayout("pack", s.root)
+	observeLayout("pack", s.root, 1)
 	if err := s.syncDirShared(packDir); err != nil {
 		return info, fmt.Errorf("syncing packs dir: %w", err)
 	}
@@ -12213,6 +13363,7 @@ func repackStore(storeDir string, opt repackOptions) (RepackResult, error) {
 	}
 	defer store.Close()
 
+	store.sealSegments() // maintenance sees sealed packs only (section 4d)
 	rr, err := store.computeReachability(false)
 	if err != nil {
 		return RepackResult{}, err
@@ -12225,7 +13376,7 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 	if opt.TargetBytes <= 0 || opt.MaxLivePercent < 0 || opt.MaxLivePercent > 100 {
 		return res, errors.New("repack: pack size must be positive and the live threshold between 0 and 100")
 	}
-	us := s.packUsages(rr.ReferencedChunks)
+	us := s.packUsages(rr.live())
 	sum := summarizePacks(us)
 	res.PackCount, res.PackedChunkCount, res.PackFileBytes = sum.PackCount, sum.PackedChunkCount, sum.PackFileBytes
 	sel := selectRepackPacks(us, opt.MaxLivePercent)
@@ -12266,7 +13417,7 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 		return res, fmt.Errorf("repack: refusing to run: %s", clash[0])
 	}
 	s.removeStalePackStaging()
-	if err := s.replacePacks(sel, rr.ReferencedChunks, opt.TargetBytes, opt.Compress, &res); err != nil {
+	if err := s.replacePacks(sel, rr.live(), opt.TargetBytes, opt.Compress, &res); err != nil {
 		return res, fmt.Errorf("repack: %w", err)
 	}
 	res.BytesReclaimed = res.BytesDeleted - res.BytesWritten
@@ -12384,7 +13535,7 @@ func (s *Store) tierStatus(rr reachabilityResult) (TierStatusResult, error) {
 		return res, err
 	}
 	res.LooseChunks, res.LooseBytes = scan.totalCount, scan.totalBytes
-	usages := s.packUsages(rr.ReferencedChunks)
+	usages := s.packUsages(rr.live())
 	held := map[string]int{}
 	for _, u := range usages {
 		held[u.ID]++
@@ -13578,7 +14729,7 @@ func (s *Store) rebalance(rr reachabilityResult, tg *tierTargets, opt rebalanceO
 			}
 		}
 		var rep RepackResult
-		if err := s.replacePacksTo(doomed, rr.ReferencedChunks, dest, opt.TargetBytes, opt.Compress, &rep); err != nil {
+		if err := s.replacePacksTo(doomed, rr.live(), dest, opt.TargetBytes, opt.Compress, &rep); err != nil {
 			return err
 		}
 		res.PacksWritten += rep.PacksWritten
@@ -13880,6 +15031,7 @@ func runTier(args []string) {
 			log.Fatalf("zeros3: failed to open store: %v", err)
 		}
 		defer store.Close()
+		store.sealSegments() // maintenance sees sealed packs only (section 4d)
 		rr, err := store.computeReachability(false)
 		if err == nil {
 			var res TierStatusResult
@@ -21612,6 +22764,7 @@ func runDoctor(args []string) {
 	defer store.Close()
 
 	if *retire {
+		store.sealSegments() // maintenance sees sealed packs only (section 4d)
 		rr, err := store.computeReachability(false)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "zeros3: doctor: %v\n", err)
@@ -21879,7 +23032,7 @@ func (b *bundleHashWriter) Write(p []byte) (int, error) {
 // readBundleManifest reads one manifest the snapshot references and fully
 // validates it (identity, schema, chunk bounds, length sum).
 func (s *Store) readBundleManifest(r bundleManifestRef) ([]byte, manifestV1, error) {
-	m, data, err := s.readManifest(r.uuid)
+	m, data, err := s.readManifestSHA(r.uuid, r.sha)
 	if err != nil {
 		return nil, m, fmt.Errorf("%w: %v", errManifestUnavailable, err)
 	}
