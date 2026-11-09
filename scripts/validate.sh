@@ -104,6 +104,9 @@ stage_bulk() {
 stage_history() {
 	cd "$root" && go test -count=1 -run 'TestPrune_|TestJournal_|TestVersions_|TestRestore_|TestCrash_JournalReplay|TestPack_StoreFormatVersionGate' .
 }
+# history-life and tier-life assert exact store-format level transitions (and that builds predating
+# a level refuse the store), so they run with the explicit loose policy: the default small-object
+# policy raises the level to 11 on the first small write (segment level: TestP1C_Format_*).
 stage_history-life() {
 	build_bin || return 1
 	base="${HISTORY_BASELINE_BIN:-}"
@@ -115,7 +118,7 @@ stage_history-life() {
 		rm -rf "$tmp"
 	fi
 	cd "$root/testing-harnesses" &&
-		ZEROS3_BIN="$bin" go run ./harness/z2_history_prune -seg-mib "${HISTORY_SEG_MIB:-4}" -baseline-bin "$base"
+		ZEROS3_SMALL_OBJECT_STORAGE=off ZEROS3_DIRECT_PACK_KIB=65536 ZEROS3_BIN="$bin" go run ./harness/z2_history_prune -seg-mib "${HISTORY_SEG_MIB:-4}" -baseline-bin "$base"
 }
 stage_bulk-bench() {
 	build_bin || return 1
@@ -194,7 +197,7 @@ stage_tier-life() {
 		rm -rf "$tmp"
 	fi
 	cd "$root/testing-harnesses" &&
-		ZEROS3_BIN="$bin" go run ./harness/z2_storage_tiers -seg-mib "${TIER_SEG_MIB:-4}" -baseline-bin "$base"
+		ZEROS3_SMALL_OBJECT_STORAGE=off ZEROS3_DIRECT_PACK_KIB=65536 ZEROS3_BIN="$bin" go run ./harness/z2_storage_tiers -seg-mib "${TIER_SEG_MIB:-4}" -baseline-bin "$base"
 }
 stage_tier-policy() { cd "$root" && go test -count=1 -run 'TestTierPolicy_' .; }
 stage_tier-rebalance() {

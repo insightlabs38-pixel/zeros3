@@ -13910,7 +13910,7 @@ func (s *Store) planTierMove(opt tierMoveOptions) ([]TierMoveItem, error) {
 	if opt.All {
 		ids = nil
 		for _, p := range st.packs {
-			if p.tier == opt.From {
+			if p.tier == opt.From && !p.open {
 				ids = append(ids, p.id)
 			}
 		}
@@ -14092,6 +14092,7 @@ func tierMove(storeDir string, opt tierMoveOptions) (TierMoveResult, error) {
 		return TierMoveResult{}, err
 	}
 	defer s.Close()
+	s.sealSegments() // a tier move sees sealed packs only (section 4d)
 	res := TierMoveResult{DryRun: !opt.Apply, From: opt.From.String(), To: opt.To.String()}
 	items, err := s.planTierMove(opt)
 	if err != nil {

@@ -1011,3 +1011,29 @@ func TestP1C_MaintenanceRefusesCorruptLiveRecord(t *testing.T) {
 		})
 	}
 }
+
+// `tier move -all` on a store with an open segment seals it first and never
+// mistakes the segment for a pack.
+func TestP1C_TierMoveAllSealsAndSkipsOpenSegments(t *testing.T) {
+	useProductionLayout(t)
+	s, dir := p1cOpen(t)
+	acked := p1cPutN(t, s, "t", 12, 7000)
+	s.Close()
+	// the segment is below the clean-close seal size: it is open on disk
+	if len(segFiles(t, dir)) != 1 {
+		t.Fatalf("setup: want one open segment, got %v", segFiles(t, dir))
+	}
+	dry, err := tierMove(dir, tierMoveOptions{From: tierHot, To: tierCold, All: true})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if len(dry.Packs) == 0 {
+		t.Fatalf("the sealed segment is not planned: %+v", dry)
+	}
+	if res, err := tierMove(dir, tierMoveOptions{From: tierHot, To: tierCold, All: true, Apply: true}); err != nil || res.PacksMoved == 0 {
+		t.Fatalf("move: %v %+v", err, res)
+	}
+	s2 := p1cReopen(t, dir)
+	p1cCheck(t, s2, acked)
+	p1cVerify(t, s2)
+}

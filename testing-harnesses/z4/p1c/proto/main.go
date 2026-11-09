@@ -28,6 +28,8 @@ import (
 	"time"
 )
 
+var batchDelay time.Duration
+
 var (
 	nFsync, nCreate, nRename, nDirSync atomic.Int64
 	nBytes                             atomic.Int64
@@ -97,6 +99,7 @@ type rec struct {
 	file string
 }
 type group struct {
+	delay   time.Duration // optional fixed batching window (timer-based batching), 0 = natural batching
 	mu      sync.Mutex
 	queue   []*req
 	leading bool
@@ -120,6 +123,9 @@ func (g *group) submit(r *req) error {
 	} else {
 		g.leading = true
 		g.mu.Unlock()
+	}
+	if g.delay > 0 {
+		time.Sleep(g.delay)
 	}
 	g.mu.Lock()
 	batch := g.queue
@@ -223,7 +229,7 @@ type entry struct {
 
 func (e *env) newSegment(id int) (*segment, error) {
 	s := &segment{e: e, id: id}
-	s.g = &group{work: s.work}
+	s.g = &group{work: s.work, delay: batchDelay}
 	return s, s.open()
 }
 
@@ -629,7 +635,9 @@ func main() {
 	segs := flag.Int("segs", 1, "active segments")
 	segmib := flag.Int("segmib", 32, "segment seal size MiB")
 	note := flag.String("note", "", "")
+	delay := flag.Duration("delay", 0, "fixed batching window before a segment leader takes its batch (0 = natural batching)")
 	flag.Parse()
+	batchDelay = *delay
 	os.RemoveAll(*dir)
 	for _, d := range []string{"chunks", "manifests", "packs", "tmp", "segments"} {
 		os.MkdirAll(filepath.Join(*dir, d), 0o755)
