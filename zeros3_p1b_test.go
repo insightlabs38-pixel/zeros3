@@ -15,17 +15,6 @@ import (
 	"time"
 )
 
-func init() {
-	// The production default packs medium objects from 256 KiB. Most of the
-	// suite inspects, corrupts or deletes loose chunk files of objects of that
-	// size, so test binaries keep the previous threshold unless
-	// ZEROS3_TEST_MEDIUM_PACK=1; the medium-pack tests below set the policy
-	// explicitly, and the layout-agnostic tests also pass under the default.
-	if os.Getenv("ZEROS3_TEST_MEDIUM_PACK") != "1" && os.Getenv("ZEROS3_DIRECT_PACK_KIB") == "" && os.Getenv("ZEROS3_DIRECT_PACK_MIB") == "" {
-		directPackMinBytes = defaultPackTargetBytes
-	}
-}
-
 // Z4-P1B: durable-publication tests. Hooks fire on request, flush and commit
 // goroutines, so every counter and shared variable here is concurrency-safe.
 

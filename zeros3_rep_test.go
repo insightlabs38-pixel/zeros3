@@ -1424,6 +1424,7 @@ func repRootFilesOf(t *testing.T, l *repLab) []string {
 }
 
 func TestRepCrashMatrix(t *testing.T) {
+	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	base := repTestSQLite(900, 4096, 81)
 	crashDB := repTestSQLiteUpdate(base, 4096, []int{1, 2, 3, 400, 800}, 82)
 	cases := []struct {
@@ -1525,6 +1526,7 @@ func repNewestManifest(t testing.TB, dir string) manifestV1 {
 
 // C6: building or publishing the optional root fails; the namespace commit still succeeds.
 func TestRepOptionalFailureNeverFailsPut(t *testing.T) {
+	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	db := repTestSQLite(300, 4096, 91)
 	t.Run("root directory blocked: fail closed until cleared", func(t *testing.T) {
 		l := newRepLab(t, repModePrefer)
@@ -1648,6 +1650,7 @@ func repCorruptFile(t testing.TB, path string, f func([]byte) []byte) {
 }
 
 func TestRepLiveRootFaultsFailClosed(t *testing.T) {
+	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	db := repTestSQLite(300, 4096, 101)
 	faults := map[string]func(t *testing.T, l *repLab, uuid string){
 		"bit flip": func(t *testing.T, l *repLab, uuid string) {
@@ -1781,6 +1784,7 @@ func TestRepLiveRootFaultsFailClosed(t *testing.T) {
 }
 
 func TestRepFailureAfterOutputStartsDoesNotPanic(t *testing.T) {
+	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	l := newRepLab(t, repModePrefer)
 	db := repTestSQLite(600, 4096, 111)
 	l.put("db", db)
@@ -2020,6 +2024,7 @@ func TestRepSharedChildAcrossFormatsAndRootLifecycle(t *testing.T) {
 }
 
 func TestRepVirtualComponentDescriptor(t *testing.T) {
+	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	l := newRepLab(t, repModePrefer)
 	big := make([]byte, 900<<10) // a tar member far above one pack record
 	rand.New(rand.NewSource(161)).Read(big)
@@ -2347,6 +2352,7 @@ func TestRepCopyObjectAndMultipart(t *testing.T) {
 // ---- Source corruption, copy fallback, concurrency ----------------------------------------------
 
 func TestRepSourceCorruptionClassified(t *testing.T) {
+	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	l := newRepLab(t, repModePrefer)
 	big := make([]byte, 600<<10)
 	rand.New(rand.NewSource(211)).Read(big)
@@ -2925,6 +2931,7 @@ func TestRepCrashAfterFormatRaiseBeforeFirstRoot(t *testing.T) {
 }
 
 func TestRepUpgradeLevelsDoNotMoveUntilFirstRoot(t *testing.T) {
+	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	version := func(dir string) int {
 		b, err := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
 		if err != nil {

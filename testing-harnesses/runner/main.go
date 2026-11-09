@@ -24,12 +24,23 @@ type harness struct {
 	env  []string // extra environment for the harness and the servers it starts
 }
 
-// looseLayout restores the pre-P1B direct-pack threshold (64 MiB) for harnesses
-// whose assertions are about loose chunk files: counting chunk files, corrupting
-// or deleting one, `gc` of a failed write's chunks, compacting loose chunks into
-// packs. By default objects from 256 KiB are written into packs, where those
-// preconditions do not hold; every other harness runs with the default.
-var looseLayout = []string{"ZEROS3_DIRECT_PACK_KIB=65536"}
+// looseLayout is the explicit loose-layout storage policy for harnesses whose
+// assertions are about loose chunk files: counting chunk files, corrupting or
+// deleting one, `gc` of a failed write's chunks, compacting loose chunks into
+// packs. It turns the P1C small-object segments off and restores the pre-P1B
+// direct-pack threshold (64 MiB). Every other harness runs the production
+// default. The runner prints the policy of every harness it starts
+// ("layout=loose" or "layout=production") so the coverage is visible.
+var looseLayout = []string{"ZEROS3_SMALL_OBJECT_STORAGE=off", "ZEROS3_DIRECT_PACK_KIB=65536"}
+
+func layoutOf(h harness) string {
+	for _, e := range h.env {
+		if e == looseLayout[0] {
+			return "loose"
+		}
+	}
+	return "production"
+}
 
 var groups = map[string][]harness{
 	"static": {
@@ -144,14 +155,14 @@ func main() {
 			cmd.Env = append(append(cleanEnv(), "ZEROS3_BIN="+absBin), h.env...)
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 			t := time.Now()
-			fmt.Printf("=== %s\n", h.pkg)
+			fmt.Printf("=== %s (layout=%s)\n", h.pkg, layoutOf(h))
 			status := "PASS"
 			if err := cmd.Run(); err != nil {
 				status = "FAIL"
 				failed++
 			}
 			ran++
-			fmt.Printf("%s %-45s %s\n", status, h.pkg, time.Since(t).Round(time.Millisecond))
+			fmt.Printf("%s %-45s layout=%-10s %s\n", status, h.pkg, layoutOf(h), time.Since(t).Round(time.Millisecond))
 		}
 	}
 	fmt.Printf("\n%d run, %d failed, %d skipped in %s\n", ran, failed, skipped, time.Since(start).Round(time.Second))

@@ -416,6 +416,18 @@ func writeFileDurable(tmpDir, finalPath string, data []byte) error {
 
 var testHook func(point string)
 
+// layoutObserver is a test-only seam, separate from testHook (which tests
+// replace to inject crashes): it is told which physical representation each
+// publication produced and under which store root, so the test suite can
+// report the storage layout every test actually exercised.
+var layoutObserver func(kind, root string)
+
+func observeLayout(kind, root string) {
+	if layoutObserver != nil {
+		layoutObserver(kind, root)
+	}
+}
+
 func fireTestHook(point string) {
 	if testHook != nil {
 		testHook(point)
@@ -1263,6 +1275,7 @@ func (s *Store) casPublishClaimed(files []casStaged, claims []*pubClaim, replace
 			}
 		}
 		f.tmp = ""
+		observeLayout("loose-chunk", s.root)
 		if !replace {
 			created = append(created, final)
 		}
@@ -4102,6 +4115,7 @@ func (s *Store) publishManifest(m manifestV1) (id string, sum [32]byte, err erro
 	if err := writeFileDurable(filepath.Join(s.root, "tmp"), path, data); err != nil {
 		return "", sum, err
 	}
+	observeLayout("manifest-file", s.root)
 	if err := s.syncDirShared(filepath.Join(s.root, "manifests")); err != nil {
 		return "", sum, err
 	}
@@ -11737,6 +11751,7 @@ func (s *Store) publishPackExact(t tier, staged string, entries []packEntry, bod
 		return info, fmt.Errorf("publishing pack: %w", err)
 	}
 	fireTestHook(hookPackAfterRename)
+	observeLayout("pack", s.root)
 	if err := s.syncDirShared(packDir); err != nil {
 		return info, fmt.Errorf("syncing packs dir: %w", err)
 	}
