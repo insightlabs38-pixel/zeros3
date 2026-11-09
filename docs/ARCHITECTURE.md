@@ -167,7 +167,7 @@ is therefore left to physical maintenance paths where appropriate.
 
 ### Small-object segments
 
-A known-size PUT below 256 KiB (and every manifest of at most 64 KiB, whatever the
+A known-size PUT below 1 MiB (and every manifest of at most 64 KiB, whatever the
 object size) no longer creates files. Its new chunks and its manifest are records
 of one append-only **segment** (`segments/<seq>.seg`): the bytes of a pack-v1 file
 without index and footer. Concurrent requests share one `write` and one `fsync`

@@ -785,3 +785,77 @@ func TestP1C_TierMoveCarriesInlineManifests(t *testing.T) {
 	p1cCheck(t, s2, more)
 	p1cVerify(t, s2)
 }
+
+// A read-only opener must never take ownership of, truncate, adopt or seal the
+// segments a live writer is appending to.
+func TestP1C_SharedOpenerNeverDisturbsALiveWriter(t *testing.T) {
+	useProductionLayout(t)
+	s, dir := p1cOpen(t)
+	acked := p1cPutN(t, s, "a", 10, 6000)
+	before, _ := os.ReadDir(filepath.Join(dir, segDirName))
+	infoBefore := map[string]int64{}
+	for _, e := range before {
+		fi, _ := e.Info()
+		infoBefore[e.Name()] = fi.Size()
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var writes atomic.Int64
+	wg.Add(1)
+	go func() { // the live writer keeps appending while read-only openers come and go
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := s.PutObject("b", fmt.Sprintf("live%05d", i), p1cBody(i, 5000), "", nil); err != nil {
+				t.Error(err)
+				return
+			}
+			writes.Add(1)
+		}
+	}()
+	for i := 0; i < 15; i++ {
+		ro, err := OpenStoreShared(dir)
+		if err != nil {
+			t.Fatalf("shared open: %v", err)
+		}
+		if ro.segmentsEnabled() {
+			t.Fatal("a shared opener must not write segments")
+		}
+		for k, body := range acked {
+			if _, got, err := ro.GetObject("b", k); err != nil || !bytes.Equal(got, body) {
+				t.Fatalf("shared reader: %s: %v", k, err)
+			}
+		}
+		if v, err := ro.Verify(true); err != nil || !v.OK() {
+			t.Fatalf("verify on a live store: %v %+v", err, v)
+		}
+		ro.Close()
+	}
+	close(stop)
+	wg.Wait()
+	if q, _ := filepath.Glob(filepath.Join(dir, "tmp", "seg-torn-*")); len(q) != 0 {
+		t.Fatalf("a read-only opener cut a live writer's tail: %v", q)
+	}
+	after, _ := os.ReadDir(filepath.Join(dir, segDirName))
+	for _, e := range after {
+		if sz, ok := infoBefore[e.Name()]; ok {
+			if fi, _ := e.Info(); fi.Size() < sz {
+				t.Fatalf("segment %s shrank under a read-only opener", e.Name())
+			}
+		}
+	}
+	for n := range infoBefore {
+		if _, err := os.Stat(filepath.Join(dir, segDirName, n)); err != nil && len(packFiles(t, dir)) == 0 {
+			t.Fatalf("segment %s vanished without being sealed: %v", n, err)
+		}
+	}
+	if writes.Load() == 0 {
+		t.Fatal("the writer made no progress")
+	}
+	p1cCheck(t, s, acked)
+	p1cVerify(t, s)
+}

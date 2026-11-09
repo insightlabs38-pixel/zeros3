@@ -12,10 +12,10 @@ import (
 // (loose files, and the production default: segments / packs). Together with
 // the layout-agnostic fault helpers these replace the coverage the old global
 // "restore the loose threshold" override hid. Object sizes cover a small
-// single-chunk object, a small multi-chunk object and a medium (direct pack)
-// object.
+// single-chunk object, a small multi-chunk object, a 700 KiB object (segment
+// under the production default) and a 2 MiB object (direct pack).
 
-var lmSizes = []int{8 << 10, 120 << 10, 700 << 10}
+var lmSizes = []int{8 << 10, 120 << 10, 700 << 10, 2 << 20}
 
 func lmStore(t *testing.T) (*Store, string) {
 	t.Helper()

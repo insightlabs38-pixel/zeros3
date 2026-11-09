@@ -14,7 +14,7 @@ Names are those of `zeros3.go` (section "4d. Small-object segments"). Background
 
 Visibility levels of a record: **appended** (in the page cache, in no index) < **durable** (segment fsync returned, then and only then inserted into the locator, so `casStat`/`casRead`/`readManifest` can see it) < **referenced** (a journal frame naming it is fsynced) < **acknowledged** (HTTP 2xx, after the apply).
 
-## 2. Ordering of one small PUT (new default for known sizes < 256 KiB, and every small manifest)
+## 2. Ordering of one small PUT (new default for known sizes < 1 MiB, and every small manifest)
 
 | # | step | barrier |
 |---|---|---|

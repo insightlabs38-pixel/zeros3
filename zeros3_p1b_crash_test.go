@@ -261,9 +261,9 @@ func crashCase(t *testing.T, policy string, group int, point string, nth int) (r
 	if policy == "medium" {
 		mediumPolicy(t)
 	} else {
-		old := directPackMinBytes
-		directPackMinBytes = defaultPackTargetBytes
-		t.Cleanup(func() { directPackMinBytes = old })
+		old, oldSeg := directPackMinBytes, segMaxObjectBytes
+		directPackMinBytes, segMaxObjectBytes = defaultPackTargetBytes, 0
+		t.Cleanup(func() { directPackMinBytes, segMaxObjectBytes = old, oldSeg })
 	}
 	dir := t.TempDir()
 	s, err := OpenStore(dir)

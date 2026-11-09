@@ -3625,9 +3625,9 @@ func TestRepKindLifecycleMatrix(t *testing.T) {
 // Large objects stream their components into immutable packs, like an ordinary
 // large ingest, instead of creating one loose file per component.
 func TestRepLargeObjectComponentsGoToPacks(t *testing.T) {
-	oldMin, oldTarget := directPackMinBytes, directPackTarget
-	directPackMinBytes, directPackTarget = 1<<20, 1<<20
-	t.Cleanup(func() { directPackMinBytes, directPackTarget = oldMin, oldTarget })
+	oldMin, oldTarget, oldSeg := directPackMinBytes, directPackTarget, segMaxObjectBytes
+	directPackMinBytes, directPackTarget, segMaxObjectBytes = 1<<20, 1<<20, 0
+	t.Cleanup(func() { directPackMinBytes, directPackTarget, segMaxObjectBytes = oldMin, oldTarget, oldSeg })
 	l := newRepLab(t, repModePrefer)
 	db := repTestSQLite(3000, 4096, 501)
 	l.put("db", db)

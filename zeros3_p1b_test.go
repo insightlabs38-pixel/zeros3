@@ -681,9 +681,9 @@ func TestP1B_PackLocatorPublishDoesNotCopyAllPacks(t *testing.T) {
 
 func mediumPolicy(t *testing.T) {
 	t.Helper()
-	oldMin, oldFlush, oldKiB := directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB
-	directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB = 256<<10, 64<<10, 0
-	t.Cleanup(func() { directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB = oldMin, oldFlush, oldKiB })
+	oldMin, oldFlush, oldKiB, oldSeg := directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB, segMaxObjectBytes
+	directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB, segMaxObjectBytes = 256<<10, 64<<10, 0, 0 // medium packs from 256 KiB: segments take no chunks here
+	t.Cleanup(func() { directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB, segMaxObjectBytes = oldMin, oldFlush, oldKiB, oldSeg })
 }
 
 func looseCount(t *testing.T, dir string) int { return len(casLooseChunks(t, dir)) }
@@ -709,9 +709,9 @@ func TestP1B_MediumPack_SameManifestAsLoose(t *testing.T) {
 			if medium {
 				mediumPolicy(t)
 			} else {
-				old := directPackMinBytes
-				directPackMinBytes = defaultPackTargetBytes
-				t.Cleanup(func() { directPackMinBytes = old })
+				old, oldSeg := directPackMinBytes, segMaxObjectBytes
+				directPackMinBytes, segMaxObjectBytes = defaultPackTargetBytes, 0
+				t.Cleanup(func() { directPackMinBytes, segMaxObjectBytes = old, oldSeg })
 			}
 			store, dir := newBucketStore(t)
 			e, err := store.PutObject("b", "k", body, "", nil)

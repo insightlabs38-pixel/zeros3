@@ -132,7 +132,7 @@ change the level. Binaries that predate level 6 refuse a level-6 store at open.
 
 Level 11 is raised (together with the level-5 tier roots, if the store has none
 yet) immediately before the first segment file is created, which the default
-small-object policy does on the first known-size PUT below 256 KiB or the first
+small-object policy does on the first known-size PUT below 1 MiB or the first
 small manifest. `ZEROS3_SMALL_OBJECT_STORAGE=off` keeps new writes loose and
 never raises it; a store already at level 11 stays there. Binaries without
 level 11 refuse such a store at open.

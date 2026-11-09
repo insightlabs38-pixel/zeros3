@@ -42696,13 +42696,14 @@ func TestBundleDeltaScale_MergeOneMillionChunks(t *testing.T) {
 // (the final pack must reach target/packMinFraction).
 func setDirectPack(t *testing.T, min, target int64, compress bool) {
 	t.Helper()
-	om, ot, oc, of := directPackMinBytes, directPackTarget, directPackCompress, directPackMediumFlushMin
+	om, ot, oc, of, osm := directPackMinBytes, directPackTarget, directPackCompress, directPackMediumFlushMin, segMaxObjectBytes
 	directPackMinBytes, directPackTarget, directPackCompress = min, target, compress
+	segMaxObjectBytes = 0 // these tests are about direct-pack routing: no chunk goes to a segment (manifests still may)
 	// These tests exercise the large-object tail policy (remainder below
 	// target/packMinFraction stays loose); the medium-object policy has its own tests.
 	directPackMediumFlushMin = target / packMinFraction
 	t.Cleanup(func() {
-		directPackMinBytes, directPackTarget, directPackCompress, directPackMediumFlushMin = om, ot, oc, of
+		directPackMinBytes, directPackTarget, directPackCompress, directPackMediumFlushMin, segMaxObjectBytes = om, ot, oc, of, osm
 	})
 }
 

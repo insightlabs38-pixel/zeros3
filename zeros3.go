@@ -1993,10 +1993,10 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (inge
 	}
 	var sink chunkSink
 	switch {
-	case s.packFor(opt):
-		sink = s.newPackSink(opt.size)
 	case s.segFor(opt):
 		sink = s.newSegSink()
+	case s.packFor(opt):
+		sink = s.newPackSink(opt.size)
 	default:
 		sink = looseSink{s.newCASBatch()}
 	}
@@ -3717,6 +3717,12 @@ type PackSummary struct {
 	PackCount              int     `json:"pack_count"`
 	PackedChunkCount       int     `json:"packed_chunk_count"`
 	PackFileBytes          int64   `json:"pack_file_bytes"`
+	// Open small-object segments (section 4d) are not packs yet: their durable
+	// bytes and records are reported separately and counted in
+	// chunk_store_file_bytes. Zero when no segment is open.
+	OpenSegments       int   `json:"open_segments,omitempty"`
+	OpenSegmentBytes   int64 `json:"open_segment_bytes,omitempty"`
+	OpenSegmentRecords int   `json:"open_segment_records,omitempty"`
 	PackedRawRecords       int     `json:"packed_raw_records"`
 	PackedCompressedRecs   int     `json:"packed_compressed_records"`
 	PackedLogicalBytes     int64   `json:"packed_logical_bytes"`
@@ -4198,6 +4204,11 @@ var (
 	// segMinSealBytes: a clean close seals the active segment only from this
 	// size, so an idle restart does not produce a tiny pack.
 	segMinSealBytes int64 = 8 << 20
+	// segMaxObjectBytes: known-size objects below this write their chunks into the
+	// segment (the request buffers them, bounded by segSinkMaxBytes). It takes
+	// precedence over the direct-pack threshold below it. 1 MiB, from measurement:
+	// 256-768 KiB objects gain 16-30% over one pack per request and use no file.
+	segMaxObjectBytes int64 = 1 << 20
 	// smallObjectSegments is the small-object storage policy (default on);
 	// ZEROS3_SMALL_OBJECT_STORAGE=off|loose turns writing to segments off. Reading
 	// segments and inline manifests is always supported.
@@ -4215,6 +4226,9 @@ func init() {
 	}
 	if v, err := strconv.Atoi(os.Getenv("ZEROS3_SEGMENT_TARGET_MIB")); err == nil && v > 0 {
 		segTargetBytes = int64(v) << 20
+	}
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_SEGMENT_MAX_KIB")); err == nil && v > 0 {
+		segMaxObjectBytes = int64(v) << 10
 	}
 }
 
@@ -4282,6 +4296,11 @@ type segMgr struct {
 	retired []*segment // unsealed segments no longer appended to (failed, or seal failed)
 	sealing int
 	nextSeq uint64
+	// readOnly: another process owns the segment writer lock (a live server), so
+	// this opener only reads: it indexes the durable prefix of every segment and
+	// never truncates, adopts, seals or creates one.
+	readOnly bool
+	unlock   func() // releases the segment writer lock
 
 	// counters (read by stats/tests without the lock)
 	nBatches, nMembers, nRecords, nBytes, nRolls, nSeals, nFails atomic.Int64
@@ -4298,13 +4317,73 @@ func newSegMgr(s *Store) *segMgr {
 // segmentsEnabled reports whether new small objects and manifests are written
 // to segments on this store.
 func (s *Store) segmentsEnabled() bool {
-	return smallObjectSegments && s.segs != nil
+	return smallObjectSegments && s.segs != nil && !s.segs.readOnly
+}
+
+// ---- segment writer ownership ---------------------------------------------------
+//
+// Exactly one process appends to, truncates and seals the segments of a store.
+// `stats`, `verify` and `doctor` open a store without the store lock while a
+// server may be running, so ownership is a separate non-blocking exclusive flock
+// on segments.lock, held for the lifetime of the opener that won it. A second
+// opener in the same process (tests, tools) shares the winner's ownership; an
+// opener in another process becomes a reader.
+
+type segLockEntry struct {
+	f    *os.File
+	refs int
+}
+
+var (
+	segLocksMu sync.Mutex
+	segLocks   = map[string]*segLockEntry{}
+)
+
+func acquireSegWriter(root string) (release func(), ok bool, err error) {
+	abs, aerr := filepath.Abs(root)
+	if aerr != nil {
+		abs = root
+	}
+	segLocksMu.Lock()
+	defer segLocksMu.Unlock()
+	if e := segLocks[abs]; e != nil {
+		e.refs++
+		return func() { releaseSegWriter(abs) }, true, nil
+	}
+	f, err := os.OpenFile(filepath.Join(root, "segments.lock"), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	segLocks[abs] = &segLockEntry{f: f, refs: 1}
+	return func() { releaseSegWriter(abs) }, true, nil
+}
+
+func releaseSegWriter(abs string) {
+	segLocksMu.Lock()
+	defer segLocksMu.Unlock()
+	e := segLocks[abs]
+	if e == nil {
+		return
+	}
+	if e.refs--; e.refs > 0 {
+		return
+	}
+	syscall.Flock(int(e.f.Fd()), syscall.LOCK_UN)
+	e.f.Close()
+	delete(segLocks, abs)
 }
 
 // segFor reports whether an ingest with these options buffers its chunks for a
 // segment commit: a known size below the direct-pack threshold.
 func (s *Store) segFor(o ingestOptions) bool {
-	return s.segmentsEnabled() && o.size > 0 && o.size < directPackMinBytes && o.size <= segSinkMaxBytes
+	return s.segmentsEnabled() && o.size > 0 && o.size < segMaxObjectBytes && o.size <= segSinkMaxBytes
 }
 
 // commit appends recs to the active segment, returning once they are durable and
@@ -4762,6 +4841,20 @@ func (m *segMgr) seal(seg *segment) error {
 	return nil
 }
 
+// fillSegmentSummary adds the open segments' durable size to a pack summary.
+func (s *Store) fillSegmentSummary(sum *PackSummary) {
+	if s.segs == nil {
+		return
+	}
+	for _, p := range s.packSnap().packs {
+		if p.open {
+			sum.OpenSegments++
+		}
+	}
+	sum.OpenSegmentBytes = s.segs.activeBytes.Load()
+	sum.OpenSegmentRecords = int(s.segs.activeRecords.Load())
+}
+
 // ensurePackDir returns the hot pack directory, creating it durably if needed.
 func (s *Store) ensurePackDir() (string, error) {
 	packDir := tierPackDir(s.root, tierHot)
@@ -4781,6 +4874,9 @@ func (s *Store) ensurePackDir() (string, error) {
 // writers continue. Maintenance and reloadPacks call it so the pack machinery only
 // ever sees sealed packs.
 func (m *segMgr) pause() (resume func()) {
+	if m.readOnly {
+		return func() {}
+	}
 	m.mu.Lock()
 	for m.paused && !m.closed { // another maintenance operation holds the gate
 		m.cond.Wait()
@@ -4827,6 +4923,16 @@ func (s *Store) sealSegments() {
 // closeSegments stops the writers. The active segment is sealed only from
 // segMinSealBytes; a smaller one stays open and is re-adopted by the next open.
 func (m *segMgr) close() {
+	if m.readOnly {
+		m.mu.Lock()
+		first := !m.closed
+		m.closed = true
+		m.mu.Unlock()
+		if first && m.unlock != nil {
+			m.unlock()
+		}
+		return
+	}
 	m.mu.Lock()
 	for m.paused && !m.closed {
 		m.cond.Wait()
@@ -4858,6 +4964,9 @@ func (m *segMgr) close() {
 		if err := m.seal(seg); err != nil {
 			seg.f.Close()
 		}
+	}
+	if m.unlock != nil {
+		m.unlock()
 	}
 }
 
@@ -5067,6 +5176,83 @@ func (s *Store) recoverSegments() error {
 		}
 	}
 	return nil
+}
+
+// openSegments takes segment ownership and recovers, or - when a live process
+// owns them - indexes the durable prefixes read-only.
+func (s *Store) openSegments() error {
+	m := s.segs
+	if _, err := os.Stat(filepath.Join(s.root, segDirName)); os.IsNotExist(err) && !smallObjectSegments {
+		return nil // never used and not going to be: take no lock, create no file
+	}
+	release, owner, err := acquireSegWriter(s.root)
+	if err != nil {
+		return err
+	}
+	if owner {
+		m.unlock = release
+		if err := s.recoverSegments(); err != nil {
+			release()
+			m.unlock = nil
+			return err
+		}
+		return nil
+	}
+	m.readOnly = true
+	return s.loadSegmentsReadOnly()
+}
+
+// loadSegmentsReadOnly indexes every segment's valid prefix without modifying
+// anything. A segment that vanishes meanwhile was sealed by its owner: the sealed
+// packs are reloaded and the scan repeated.
+func (s *Store) loadSegmentsReadOnly() error {
+	for attempt := 0; ; attempt++ {
+		dir := filepath.Join(s.root, segDirName)
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		vanished := false
+		var segs []*segment
+		for _, de := range ents {
+			name, ok := strings.CutSuffix(de.Name(), segFileSuffix)
+			if !ok || de.IsDir() || len(name) != 16 {
+				continue
+			}
+			seq, perr := strconv.ParseUint(name, 16, 64)
+			if perr != nil {
+				continue
+			}
+			path := filepath.Join(dir, de.Name())
+			sc, serr := scanSegmentFile(path)
+			if serr != nil {
+				if os.IsNotExist(serr) {
+					vanished = true
+					continue
+				}
+				return serr
+			}
+			if sc.sealed || sc.badHdr || len(sc.entries) == 0 {
+				continue // awaiting its owner's rename, or unusable: nothing durable to index
+			}
+			segs = append(segs, &segment{seq: seq, id: segID(seq), path: path, entries: sc.entries})
+		}
+		if vanished && attempt < 3 {
+			if err := s.reloadPacks(); err != nil {
+				return err
+			}
+			continue
+		}
+		for _, seg := range segs {
+			if err := s.segPublish(seg, seg.entries); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 }
 
 func readRange(f *os.File, off, n int64) ([]byte, error) {
@@ -5960,7 +6146,15 @@ type Store struct {
 // exist, then replays the journal to rebuild the in-memory namespace.
 // Opening a store with an unsupported format version fails clearly rather
 // than attempting to read it.
-func OpenStore(root string) (*Store, error) {
+func OpenStore(root string) (*Store, error) { return openStore(root, true) }
+
+// OpenStoreShared opens a store for reading while a server may be running: it
+// never takes ownership of the small-object segments (no recovery, truncation,
+// adoption or sealing), so `stats`, `verify` and `doctor` cannot disturb a live
+// writer and a later server still gets ownership.
+func OpenStoreShared(root string) (*Store, error) { return openStore(root, false) }
+
+func openStore(root string, ownSegments bool) (*Store, error) {
 	for _, sub := range []string{"", "journal", "chunks", "manifests", "tmp", "snapshots"} {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			return nil, fmt.Errorf("store: failed to create %s: %w", sub, err)
@@ -6002,10 +6196,22 @@ func OpenStore(root string) (*Store, error) {
 		return nil, fmt.Errorf("store: loading packs: %w", err)
 	}
 	s.segs = newSegMgr(s)
-	if err := s.recoverSegments(); err != nil {
+	if !ownSegments {
+		s.segs.readOnly = true
+		if err := s.loadSegmentsReadOnly(); err != nil {
+			j.f.Close()
+			return nil, fmt.Errorf("store: indexing segments: %w", err)
+		}
+		return s.finishOpen()
+	}
+	if err := s.openSegments(); err != nil {
 		j.f.Close()
 		return nil, fmt.Errorf("store: recovering segments: %w", err)
 	}
+	return s.finishOpen()
+}
+
+func (s *Store) finishOpen() (*Store, error) {
 	if _, err := os.Lstat(s.repDir()); err == nil || !os.IsNotExist(err) {
 		s.rep.mayHaveRoots.Store(true) // present, or unreadable: let reachability report it
 	}
@@ -11675,9 +11881,10 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 	}
 
 	res.PackSummary = summarizePacks(s.packUsages(rr.live()))
+	s.fillSegmentSummary(&res.PackSummary)
 	res.LooseChunkCount = chunkScan.totalCount
 	res.LooseChunkFileBytes = chunkScan.totalBytes
-	res.ChunkStoreFileBytes = chunkScan.totalBytes + res.PackFileBytes
+	res.ChunkStoreFileBytes = chunkScan.totalBytes + res.PackFileBytes + res.OpenSegmentBytes
 	res.ManifestFileBytes = manifestScan.totalBytes
 	res.JournalFileBytes = journalBytes
 	res.TemporaryFileBytes = tmpBytes
@@ -12107,6 +12314,7 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 
 	usages := store.packUsages(rr.live())
 	res.PackSummary = summarizePacks(usages)
+	store.fillSegmentSummary(&res.PackSummary)
 
 	tmpBytes, err := store.tmpBytes()
 	if err != nil {
@@ -15086,12 +15294,11 @@ func runTier(args []string) {
 		return
 	}
 	if args[0] == "status" {
-		store, err := OpenStore(*storeDir)
+		store, err := OpenStoreShared(*storeDir)
 		if err != nil {
 			log.Fatalf("zeros3: failed to open store: %v", err)
 		}
 		defer store.Close()
-		store.sealSegments() // maintenance sees sealed packs only (section 4d)
 		rr, err := store.computeReachability(false)
 		if err == nil {
 			var res TierStatusResult
@@ -19825,7 +20032,7 @@ func runRepair(args []string) {
 	}
 	defer lock.release()
 
-	store, err := OpenStore(*storeDir)
+	store, err := OpenStoreShared(*storeDir)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
@@ -22351,7 +22558,7 @@ func runStats(args []string) {
 		os.Exit(2)
 	}
 
-	store, err := OpenStore(*storeDir)
+	store, err := OpenStoreShared(*storeDir)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
@@ -22398,7 +22605,7 @@ func runVerify(args []string) {
 		}
 		defer lock.release()
 
-		store, err := OpenStore(*storeDir)
+		store, err := OpenStoreShared(*storeDir)
 		if err != nil {
 			log.Fatalf("zeros3: failed to open store: %v", err)
 		}
@@ -22430,7 +22637,7 @@ func runVerify(args []string) {
 		return
 	}
 
-	store, err := OpenStore(*storeDir)
+	store, err := OpenStoreShared(*storeDir)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
@@ -22542,7 +22749,7 @@ func runVersions(args []string) {
 		os.Exit(2)
 	}
 
-	store, err := OpenStore(*storeDir)
+	store, err := OpenStoreShared(*storeDir)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
@@ -22817,7 +23024,7 @@ func runDoctor(args []string) {
 		}
 		defer lock.release()
 	}
-	store, err := OpenStore(*storeDir)
+	store, err := OpenStoreShared(*storeDir)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
@@ -23254,7 +23461,7 @@ func exportBundleFile(storeDir, snapshotID, out string, compress bool) (BundleSt
 		return BundleStats{}, err
 	}
 	defer lock.release()
-	store, err := OpenStore(storeDir)
+	store, err := OpenStoreShared(storeDir)
 	if err != nil {
 		return BundleStats{}, err
 	}
@@ -24357,7 +24564,7 @@ func exportDeltaFile(storeDir, baseID, targetID, out string, compress bool) (Bun
 		return BundleStats{}, err
 	}
 	defer lock.release()
-	store, err := OpenStore(storeDir)
+	store, err := OpenStoreShared(storeDir)
 	if err != nil {
 		return BundleStats{}, err
 	}
@@ -24621,7 +24828,7 @@ func verifyDeltaFile(path, baseStoreDir string) (BundleStats, error) {
 		return BundleStats{}, err
 	}
 	defer lock.release()
-	store, err := OpenStore(baseStoreDir)
+	store, err := OpenStoreShared(baseStoreDir)
 	if err != nil {
 		return BundleStats{}, err
 	}
