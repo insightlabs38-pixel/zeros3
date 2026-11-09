@@ -3757,11 +3757,13 @@ func summarizePacks(us []packUsage) PackSummary {
 	var live int64
 	for _, u := range us {
 		sum.PackCount++
-		sum.PackedChunkCount += u.Records
+		// Live inline manifests are manifest records, not chunks: they leave the chunk
+		// counts and byte totals (raw records, so logical == stored for them).
+		sum.PackedChunkCount += u.Records - u.LiveManifestRecords
 		sum.PackFileBytes += u.Size
 		sum.PackedCompressedRecs += u.CompressedRecs
-		sum.PackedLogicalBytes += u.LogicalBytes
-		sum.PackedStoredBytes += u.Size - packFixedBytes - int64(u.Records)*packRecordBytes
+		sum.PackedLogicalBytes += u.LogicalBytes - u.LiveManifestLogicalBytes
+		sum.PackedStoredBytes += u.Size - packFixedBytes - int64(u.Records)*packRecordBytes - u.LiveManifestLogicalBytes
 		sum.PackedLiveChunkCount += u.LiveRecords - u.LiveManifestRecords
 		sum.PackedLiveBytes += u.LiveBytes
 		sum.PackedLiveLogicalBytes += u.LiveLogicalBytes - u.LiveManifestLogicalBytes

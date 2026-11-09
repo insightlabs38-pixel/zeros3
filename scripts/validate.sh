@@ -222,12 +222,12 @@ stage_repack() {
 }
 stage_compact() {
 	build_bin && cd "$root/testing-harnesses" &&
-		ZEROS3_BIN="$bin" go run ./harness/z2_packed_cas -size-mib "${COMPACT_SIZE_MIB:-1024}" -pack-size-mib "${PACK_SIZE_MIB:-32}"
+		ZEROS3_SMALL_OBJECT_STORAGE=off ZEROS3_DIRECT_PACK_KIB=65536 ZEROS3_BIN="$bin" go run ./harness/z2_packed_cas -size-mib "${COMPACT_SIZE_MIB:-1024}" -pack-size-mib "${PACK_SIZE_MIB:-32}"
 }
 
 stage_compression() {
 	build_bin && cd "$root/testing-harnesses" &&
-		ZEROS3_BIN="$bin" go run ./harness/z2_pack_compression -class-mib "${COMPRESS_CLASS_MIB:-64}" -combined-mib "${COMPRESS_SIZE_MIB:-512}" -pack-size-mib "${PACK_SIZE_MIB:-32}"
+		ZEROS3_SMALL_OBJECT_STORAGE=off ZEROS3_DIRECT_PACK_KIB=65536 ZEROS3_BIN="$bin" go run ./harness/z2_pack_compression -class-mib "${COMPRESS_CLASS_MIB:-64}" -combined-mib "${COMPRESS_SIZE_MIB:-512}" -pack-size-mib "${PACK_SIZE_MIB:-32}"
 }
 
 normal="format modules test static s3 sync repro"
