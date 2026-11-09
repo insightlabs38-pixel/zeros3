@@ -4492,11 +4492,25 @@ func (j *Journal) appendFrames(recs []journalFrameIn) (uint64, error) {
 		j.poisoned = wrapped
 		return 0, wrapped
 	}
-	fireTestHook(hookAfterJournalSync)
-
+	// The frames are durable: advance the cursor before anything else can run
+	// (a panic in the hook below must not leave the cursor behind durable
+	// bytes, or the next append would overwrite them).
 	j.writeOffset += int64(len(frames))
 	j.nextSeq = first + uint64(len(recs))
+	fireTestHook(hookAfterJournalSync)
 	return first, nil
+}
+
+// poison makes every further append fail until the store is reopened. It is
+// used when a commit was interrupted by a panic: whether its frames reached
+// the disk is then unknown to the in-memory namespace, exactly as after a
+// failed write or sync.
+func (j *Journal) poison(err error) {
+	j.mu.Lock()
+	if j.poisoned == nil {
+		j.poisoned = err
+	}
+	j.mu.Unlock()
 }
 
 // replayJournal reads every complete, valid frame from f starting at
@@ -5406,6 +5420,9 @@ func (s *Store) submitRootCommit(r *rootCommitReq) {
 	defer func() {
 		p := recover()
 		if p != nil { // a crash hook: fail the batch instead of stranding it
+			// Whether the batch's frames are durable is now unknown to the
+			// in-memory namespace: fail-stop, like a failed journal write.
+			s.journal.poison(fmt.Errorf("commit interrupted by panic: %v", p))
 			for _, m := range batch {
 				select {
 				case <-m.done:

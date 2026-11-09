@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -573,10 +574,11 @@ func (s *Store) queueDrained(t *testing.T) {
 }
 
 // A crash hook that panics inside the leader must fail the batch members
-// instead of stranding them, and must hand the queue on: here the follower
-// is already queued when the leader panics.
+// instead of stranding them. The journal is then fail-stopped (poisoned): the
+// queued follower is released with an error and nothing is committed on top of
+// a commit whose outcome the namespace does not know.
 func TestP1B_GroupCommit_LeaderPanicDoesNotStrandFollowers(t *testing.T) {
-	store, _ := newBucketStore(t)
+	store, dir := newBucketStore(t)
 	barrier := arrivalBarrier(2, hookAfterManifestPublished)
 	var armed atomic.Bool
 	armed.Store(true)
@@ -619,17 +621,28 @@ func TestP1B_GroupCommit_LeaderPanicDoesNotStrandFollowers(t *testing.T) {
 			switch {
 			case r.pan != nil:
 				panics++
-			case r.err == nil:
-				ok++ // the queued follower took over leadership and committed
+			case r.err != nil && strings.Contains(r.err.Error(), "poisoned"):
+				ok++ // released with an error, not stranded; the journal is fail-stopped
 			default:
-				t.Errorf("follower failed: %v", r.err)
+				t.Errorf("follower: err=%v, want a poisoned-journal error", r.err)
 			}
 		}
 	})
 	if panics != 1 || ok != 1 {
-		t.Fatalf("panics=%d committed=%d, want 1 and 1", panics, ok)
+		t.Fatalf("panics=%d released-with-error=%d, want 1 and 1", panics, ok)
+	}
+	// Fail-stop: nothing more is acknowledged until the store is reopened,
+	// and the journal on disk is intact.
+	if _, err := store.PutObject("b", "after", []byte("x"), "", nil); err == nil {
+		t.Fatal("a commit was acknowledged after the leader panicked mid-commit")
 	}
 	store.queueDrained(t)
+	store.Close()
+	re, err := OpenStore(dir)
+	if err != nil {
+		t.Fatalf("journal unreadable after the interrupted commit: %v", err)
+	}
+	re.Close()
 }
 
 // Publishing many small packs must not copy the whole pack list each time.
