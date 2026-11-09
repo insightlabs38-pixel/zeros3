@@ -1037,3 +1037,25 @@ func TestP1C_TierMoveAllSealsAndSkipsOpenSegments(t *testing.T) {
 	p1cCheck(t, s2, acked)
 	p1cVerify(t, s2)
 }
+
+// A read-only opener that indexed an open segment keeps working when the owning
+// process seals it (the segment name moves into packs/).
+func TestP1C_SharedReaderSurvivesSealByOwner(t *testing.T) {
+	useProductionLayout(t)
+	s, dir := p1cOpen(t)
+	acked := p1cPutN(t, s, "a", 12, 6000)
+	ro, err := OpenStoreShared(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ro.Close() })
+	p1cCheck(t, ro, acked) // served from the owner's open segment
+	s.sealSegments()       // the owner seals it: the file moves to packs/<id>.pack
+	if len(segFiles(t, dir)) != 0 || len(packFiles(t, dir)) == 0 {
+		t.Fatalf("setup: segment not sealed: %v %v", segFiles(t, dir), packFiles(t, dir))
+	}
+	p1cCheck(t, ro, acked) // the reader re-resolves instead of failing on the vanished file
+	if v, err := ro.Verify(true); err != nil || !v.OK() {
+		t.Fatalf("verify after the owner sealed: %v %+v", err, v)
+	}
+}

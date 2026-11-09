@@ -1592,10 +1592,10 @@ func (s *Store) casReadExcluding(sum [32]byte, skip map[int32]bool) ([]byte, err
 			if err == nil {
 				return data, nil
 			}
-			if errors.Is(err, fs.ErrNotExist) && !retried {
-				// A segment sealed (renamed to packs/) after this snapshot was
-				// taken: read again through the current locator.
-				if cur := s.packSnap(); cur != st {
+			if errors.Is(err, fs.ErrNotExist) && !retried && int(loc.pack) < len(st.packs) && st.packs[loc.pack].open {
+				// A segment was sealed (its name moved to packs/) after this snapshot
+				// was taken: read again through the current locator.
+				if cur := s.refreshAfterSeal(st); cur != st {
 					st, stale, packErr = cur, true, nil
 					break
 				}
@@ -4142,7 +4142,7 @@ func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
 	for _, c := range st.clash {
 		res.addIssue("corrupt", "packs", c)
 	}
-	for i, p := range st.packs {
+	for _, p := range st.packs {
 		res.PacksChecked++
 		check := func(p packInfo) (err error) {
 			if p.open {
@@ -4156,10 +4156,10 @@ func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
 		}
 		err := check(p)
 		if err != nil && p.open && errors.Is(err, fs.ErrNotExist) {
-			// the segment was sealed (renamed to packs/) since this snapshot: check its pack
-			if cur := s.packSnap(); i < len(cur.packs) {
-				p = cur.packs[i]
-				err = check(p)
+			// the segment was sealed (its name moved to packs/) since this snapshot: its
+			// records are checked through the sealed pack; nothing is missing
+			if cur := s.refreshAfterSeal(st); cur != st && !slices.ContainsFunc(cur.packs, func(q packInfo) bool { return q.open && q.id == p.id }) {
+				err = nil
 			}
 		}
 		if err != nil {
@@ -4313,8 +4313,10 @@ type segMgr struct {
 	// readOnly: another process owns the segment writer lock (a live server), so
 	// this opener only reads: it indexes the durable prefix of every segment and
 	// never truncates, adopts, seals or creates one.
-	readOnly bool
-	unlock   func() // releases the segment writer lock
+	readOnly    bool
+	unlock      func() // releases the segment writer lock
+	refreshMu   sync.Mutex
+	lastRefresh time.Time
 
 	// counters (read by stats/tests without the lock)
 	nBatches, nMembers, nRecords, nBytes, nRolls, nSeals, nFails atomic.Int64
@@ -4830,9 +4832,15 @@ func (m *segMgr) seal(seg *segment) error {
 	// finds the file at the old path, so no read ever hits a missing file. After a
 	// crash with both names present, recovery keeps the pack and removes the segment.
 	fireTestHook(hookSegBeforeRename)
+	renamed := false
 	if err := os.Link(seg.path, final); err != nil {
 		if !os.IsExist(err) {
-			return err
+			// no hard links on this filesystem: rename instead. A reader holding the previous
+			// snapshot then retries once the locator is swapped (refreshAfterSeal).
+			if rerr := os.Rename(seg.path, final); rerr != nil {
+				return err
+			}
+			renamed = true
 		}
 	}
 	fireTestHook(hookSegAfterRename)
@@ -4842,8 +4850,10 @@ func (m *segMgr) seal(seg *segment) error {
 	if err := s.segReplaceInfo(seg.id, newPackInfo(id, final, seg.size+int64(len(tail)), seg.entries)); err != nil {
 		return err
 	}
-	if err := os.Remove(seg.path); err != nil {
-		return err
+	if !renamed {
+		if err := os.Remove(seg.path); err != nil {
+			return err
+		}
 	}
 	if err := syncDir(dir); err != nil {
 		return err
@@ -4867,6 +4877,33 @@ func (s *Store) fillSegmentSummary(sum *PackSummary) {
 	}
 	sum.OpenSegmentBytes = s.segs.activeBytes.Load()
 	sum.OpenSegmentRecords = int(s.segs.activeRecords.Load())
+}
+
+// refreshAfterSeal returns a locator newer than st after a read found the file of
+// an open segment missing. In the owning process the swap that follows the seal is
+// imminent; a read-only opener rebuilds its view because another process sealed it.
+func (s *Store) refreshAfterSeal(st *packState) *packState {
+	if m := s.segs; m != nil && m.readOnly {
+		m.refreshReadOnly()
+	}
+	for i := 0; i < 20 && s.packSnap() == st; i++ {
+		time.Sleep(time.Millisecond)
+	}
+	return s.packSnap()
+}
+
+// refreshReadOnly rebuilds a read-only opener's pack and segment view from disk
+// (at most every 20 ms, one at a time).
+func (m *segMgr) refreshReadOnly() {
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
+	if time.Since(m.lastRefresh) < 20*time.Millisecond {
+		return
+	}
+	m.lastRefresh = time.Now()
+	if err := m.s.reloadPacks(); err == nil {
+		m.s.loadSegmentsReadOnly()
+	}
 }
 
 // ensurePackDir returns the hot pack directory, creating it durably if needed.
@@ -5151,6 +5188,7 @@ func (s *Store) recoverSegments() error {
 		if tail := sc.size - sc.valid; tail > 0 {
 			// quarantine the dropped bytes (collectable tmp file), then cut
 			q := filepath.Join(s.root, "tmp", fmt.Sprintf("seg-torn-%016x-%d", seq, sc.valid))
+			trimQuarantine(filepath.Join(s.root, "tmp"), 15)
 			if data, rerr := readRange(f, sc.valid, tail); rerr == nil {
 				os.WriteFile(q, data, 0o644)
 			}
@@ -5266,6 +5304,17 @@ func (s *Store) loadSegmentsReadOnly() error {
 			}
 		}
 		return nil
+	}
+}
+
+// trimQuarantine keeps the newest keep-1 quarantine files so repeated crashes cannot
+// accumulate torn tails without bound (gc removes them all).
+func trimQuarantine(tmp string, keep int) {
+	m, _ := filepath.Glob(filepath.Join(tmp, "seg-torn-*"))
+	sort.Strings(m)
+	for len(m) > keep {
+		os.Remove(m[0])
+		m = m[1:]
 	}
 }
 
