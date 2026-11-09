@@ -3634,19 +3634,24 @@ func (s *Store) packTotals() (packs, records int, bytes int64) {
 type packUsage struct {
 	idx              int32
 	tier             tier
-	Tier             string  `json:"tier"`
-	ID               string  `json:"id"`
-	Size             int64   `json:"size"`
-	Records          int     `json:"records"`
-	CompressedRecs   int     `json:"compressed_records"`
-	LogicalBytes     int64   `json:"logical_bytes"`
-	LiveRecords      int     `json:"live_records"`
-	LiveBytes        int64   `json:"live_bytes"`
-	LiveLogicalBytes int64   `json:"live_logical_bytes"`
-	DeadRecords      int     `json:"dead_records"`
-	DeadBytes        int64   `json:"dead_bytes"`
-	Utilization      float64 `json:"utilization"`
-	Reclaimable      int64   `json:"reclaimable_bytes"`
+	Tier             string `json:"tier"`
+	ID               string `json:"id"`
+	Size             int64  `json:"size"`
+	Records          int    `json:"records"`
+	CompressedRecs   int    `json:"compressed_records"`
+	LogicalBytes     int64  `json:"logical_bytes"`
+	LiveRecords      int    `json:"live_records"`
+	LiveBytes        int64  `json:"live_bytes"`
+	LiveLogicalBytes int64  `json:"live_logical_bytes"`
+	// Live records that are inline manifests (section 4d); they are included in the
+	// Live* fields above because pack liveness needs them, and excluded from the
+	// chunk statistics derived from them.
+	LiveManifestRecords      int     `json:"live_manifest_records,omitempty"`
+	LiveManifestLogicalBytes int64   `json:"live_manifest_logical_bytes,omitempty"`
+	DeadRecords              int     `json:"dead_records"`
+	DeadBytes                int64   `json:"dead_bytes"`
+	Utilization              float64 `json:"utilization"`
+	Reclaimable              int64   `json:"reclaimable_bytes"`
 }
 
 const (
@@ -3680,6 +3685,7 @@ func (s *Store) packUsages(referenced map[string]bool) []packUsage {
 		us[i] = packUsage{idx: int32(i), tier: p.tier, Tier: p.tier.String(), ID: p.id, Size: p.size, Records: p.records, CompressedRecs: p.deflated, LogicalBytes: p.logical}
 	}
 	var hx [64]byte
+	hasManifests := referenced[liveManifestMarker]
 	for sum, loc := range st.primaries() {
 		if st.packs[loc.pack].open {
 			continue
@@ -3689,6 +3695,10 @@ func (s *Store) packUsages(referenced map[string]bool) []packUsage {
 			us[loc.pack].LiveRecords++
 			us[loc.pack].LiveBytes += int64(loc.stored)
 			us[loc.pack].LiveLogicalBytes += int64(loc.logical)
+			if hasManifests && referenced[liveManifestMarker+string(hx[:])] {
+				us[loc.pack].LiveManifestRecords++
+				us[loc.pack].LiveManifestLogicalBytes += int64(loc.logical)
+			}
 		}
 	}
 	for i := range us {
@@ -3720,25 +3730,26 @@ type PackSummary struct {
 	// Open small-object segments (section 4d) are not packs yet: their durable
 	// bytes and records are reported separately and counted in
 	// chunk_store_file_bytes. Zero when no segment is open.
-	OpenSegments           int     `json:"open_segments,omitempty"`
-	OpenSegmentBytes       int64   `json:"open_segment_bytes,omitempty"`
-	OpenSegmentRecords     int     `json:"open_segment_records,omitempty"`
-	PackedRawRecords       int     `json:"packed_raw_records"`
-	PackedCompressedRecs   int     `json:"packed_compressed_records"`
-	PackedLogicalBytes     int64   `json:"packed_logical_bytes"`
-	PackedStoredBytes      int64   `json:"packed_stored_bytes"`
-	PackCompressionSaved   int64   `json:"pack_compression_saved_bytes"`
-	PackCompressionRatio   float64 `json:"pack_compression_ratio"`
-	PackedLiveChunkCount   int     `json:"packed_live_chunk_count"`
-	PackedLiveBytes        int64   `json:"packed_live_bytes"`
-	PackedLiveLogicalBytes int64   `json:"packed_live_logical_bytes"`
-	PackedDeadChunkCount   int     `json:"packed_dead_chunk_count"`
-	PackedDeadBytes        int64   `json:"packed_dead_bytes"`
-	PacksFullyDead         int     `json:"packs_fully_dead"`
-	PacksPartiallyDead     int     `json:"packs_partially_dead"`
-	PackUtilization        float64 `json:"pack_utilization"`
-	PackWholeReclaimBytes  int64   `json:"pack_whole_reclaimable_bytes"`
-	PackRepackReclaimBytes int64   `json:"pack_repack_reclaimable_bytes"`
+	PackedLiveManifestRecords int     `json:"packed_live_manifest_records,omitempty"`
+	OpenSegments              int     `json:"open_segments,omitempty"`
+	OpenSegmentBytes          int64   `json:"open_segment_bytes,omitempty"`
+	OpenSegmentRecords        int     `json:"open_segment_records,omitempty"`
+	PackedRawRecords          int     `json:"packed_raw_records"`
+	PackedCompressedRecs      int     `json:"packed_compressed_records"`
+	PackedLogicalBytes        int64   `json:"packed_logical_bytes"`
+	PackedStoredBytes         int64   `json:"packed_stored_bytes"`
+	PackCompressionSaved      int64   `json:"pack_compression_saved_bytes"`
+	PackCompressionRatio      float64 `json:"pack_compression_ratio"`
+	PackedLiveChunkCount      int     `json:"packed_live_chunk_count"`
+	PackedLiveBytes           int64   `json:"packed_live_bytes"`
+	PackedLiveLogicalBytes    int64   `json:"packed_live_logical_bytes"`
+	PackedDeadChunkCount      int     `json:"packed_dead_chunk_count"`
+	PackedDeadBytes           int64   `json:"packed_dead_bytes"`
+	PacksFullyDead            int     `json:"packs_fully_dead"`
+	PacksPartiallyDead        int     `json:"packs_partially_dead"`
+	PackUtilization           float64 `json:"pack_utilization"`
+	PackWholeReclaimBytes     int64   `json:"pack_whole_reclaimable_bytes"`
+	PackRepackReclaimBytes    int64   `json:"pack_repack_reclaimable_bytes"`
 }
 
 func summarizePacks(us []packUsage) PackSummary {
@@ -3751,9 +3762,10 @@ func summarizePacks(us []packUsage) PackSummary {
 		sum.PackedCompressedRecs += u.CompressedRecs
 		sum.PackedLogicalBytes += u.LogicalBytes
 		sum.PackedStoredBytes += u.Size - packFixedBytes - int64(u.Records)*packRecordBytes
-		sum.PackedLiveChunkCount += u.LiveRecords
+		sum.PackedLiveChunkCount += u.LiveRecords - u.LiveManifestRecords
 		sum.PackedLiveBytes += u.LiveBytes
-		sum.PackedLiveLogicalBytes += u.LiveLogicalBytes
+		sum.PackedLiveLogicalBytes += u.LiveLogicalBytes - u.LiveManifestLogicalBytes
+		sum.PackedLiveManifestRecords += u.LiveManifestRecords
 		sum.PackedDeadChunkCount += u.DeadRecords
 		sum.PackedDeadBytes += u.DeadBytes
 		live += u.livePhysical()
@@ -11365,19 +11377,29 @@ func (r reachabilityResult) OK() bool {
 // live is the set of digests pack maintenance must keep: the referenced chunks
 // plus the SHA-256 of every live manifest, which names the record when the
 // manifest is stored inline in a segment/pack. Manifest files are unaffected.
+//
+// The returned set also carries a marker key for each manifest digest
+// (liveManifestMarker+hex) and the bare marker, so usage statistics can tell
+// manifest records from chunk records without a second structure.
 func (rr *reachabilityResult) live() map[string]bool {
 	if len(rr.ManifestSHA) == 0 {
 		return rr.ReferencedChunks
 	}
-	m := make(map[string]bool, len(rr.ReferencedChunks)+len(rr.ManifestSHA))
+	m := make(map[string]bool, len(rr.ReferencedChunks)+2*len(rr.ManifestSHA)+1)
 	for k := range rr.ReferencedChunks {
 		m[k] = true
 	}
+	m[liveManifestMarker] = true
 	for _, sha := range rr.ManifestSHA {
-		m[hex.EncodeToString(sha[:])] = true
+		h := hex.EncodeToString(sha[:])
+		m[h] = true
+		m[liveManifestMarker+h] = true
 	}
 	return m
 }
+
+// liveManifestMarker prefixes the keys that flag a live digest as an inline manifest.
+const liveManifestMarker = "manifest:"
 
 // computeReachability is the one authoritative CAS/manifest liveness scan
 // -- see the section 12a doc comment. It never mutates the store; it only

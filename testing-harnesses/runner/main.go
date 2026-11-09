@@ -29,7 +29,7 @@ type harness struct {
 // deleting one, `gc` of a failed write's chunks, compacting loose chunks into
 // packs. It turns the P1C small-object segments off and restores the pre-P1B
 // direct-pack threshold (64 MiB). Every other harness runs the production
-// default. The runner prints the policy of every harness it starts
+// default (which now writes small objects into segments). The runner prints the policy of every harness it starts
 // ("layout=loose" or "layout=production") so the coverage is visible.
 var looseLayout = []string{"ZEROS3_SMALL_OBJECT_STORAGE=off", "ZEROS3_DIRECT_PACK_KIB=65536"}
 
@@ -57,7 +57,7 @@ var groups = map[string][]harness{
 	},
 	"sync": {
 		{pkg: "./harness/m6/sync"}, {pkg: "./harness/m6c/dirsync"}, {pkg: "./harness/m8a/remote_delta"},
-		{pkg: "./harness/m8b/repair"}, {pkg: "./harness/m8c/namespace_replication"},
+		{pkg: "./harness/m8b/repair", env: looseLayout}, {pkg: "./harness/m8c/namespace_replication", env: looseLayout},
 		{pkg: "./harness/m8d/fork", env: looseLayout}, {pkg: "./harness/m8e/snapshot", env: looseLayout}, {pkg: "./harness/m8g/introspection"},
 	},
 	"clients": {
@@ -69,7 +69,8 @@ var groups = map[string][]harness{
 		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "invariance"}, env: looseLayout},
 	},
 	"apps": {
-		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "browser,artifact,rebalance"}},
+		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "browser"}, env: looseLayout}, // counts new loose chunk bytes
+		{pkg: "./harness/z2_consumer", args: []string{"-scenario", "artifact,rebalance"}},
 	},
 	"bench": {
 		{pkg: "./harness/m8_baseline", args: []string{"-bin", "@bin"}},
