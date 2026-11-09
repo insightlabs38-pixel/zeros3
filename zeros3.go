@@ -5887,8 +5887,26 @@ type clockEntry[V any] struct {
 	key  [32]byte
 	val  V
 	cost int64
+	born int64 // cacheNow() at insertion: when this entry was last verified against storage
 	ref  atomic.Bool
 	slot int
+}
+
+// cacheRevalidateAfter bounds how long a cached manifest or chunk is served
+// without being read back from storage: an entry older than this is treated as a
+// miss, so the read that replaces it re-reads and re-verifies the real bytes
+// (and a failure evicts it). Damage to a hot manifest or chunk therefore becomes
+// visible to GET/HEAD/range reads within this interval even if nothing else
+// (verify, restart, eviction) has looked at it. Zero or negative disables
+// expiry. A var for tests.
+var cacheRevalidateAfter = 30 * time.Second
+
+var cacheClockStart = time.Now()
+
+func cacheNow() int64 { return int64(time.Since(cacheClockStart)) }
+
+func (e *clockEntry[V]) expired() bool {
+	return cacheRevalidateAfter > 0 && cacheNow()-e.born > int64(cacheRevalidateAfter)
 }
 
 func (sh *clockShard[V]) init(cap int64) {
@@ -5928,7 +5946,7 @@ func (sh *clockShard[V]) insertLocked(key [32]byte, val V, cost int64, gen uint6
 		sh.removeLocked(e)
 		evicted++
 	}
-	e := &clockEntry[V]{key: key, val: val, cost: cost, slot: len(sh.ring)}
+	e := &clockEntry[V]{key: key, val: val, cost: cost, born: cacheNow(), slot: len(sh.ring)}
 	sh.ring = append(sh.ring, e)
 	sh.m[key] = e
 	sh.bytes += cost
@@ -5968,8 +5986,8 @@ type manifestCacheShard struct {
 	clockShard[*servedManifest]
 	flights map[[32]byte]*mcFlight
 
-	hits, misses, loads, loadErrs, evictions, oversize, rejects atomic.Int64
-	_                                                           [64]byte
+	hits, misses, loads, loadErrs, evictions, oversize, rejects, revalidations atomic.Int64
+	_                                                                          [64]byte
 }
 
 type mcFlight struct {
@@ -5999,7 +6017,7 @@ func (c *manifestCache) get(sha [32]byte, id string, load func() (*servedManifes
 	}
 	sh := c.shard(sha)
 	sh.mu.RLock()
-	if e := sh.getLocked(sha); e != nil && e.val.man.ManifestUUID == id {
+	if e := sh.getLocked(sha); e != nil && e.val.man.ManifestUUID == id && !e.expired() {
 		sh.mu.RUnlock()
 		sh.hits.Add(1)
 		return e.val, nil
@@ -6009,8 +6027,13 @@ func (c *manifestCache) get(sha [32]byte, id string, load func() (*servedManifes
 
 	sh.mu.Lock()
 	if e := sh.getLocked(sha); e != nil && e.val.man.ManifestUUID == id {
-		sh.mu.Unlock()
-		return e.val, nil
+		if !e.expired() {
+			sh.mu.Unlock()
+			return e.val, nil
+		}
+		// Due for re-verification: drop it now, so a failed reload leaves nothing behind.
+		sh.removeLocked(e)
+		sh.revalidations.Add(1)
 	}
 	if f := sh.flights[sha]; f != nil {
 		sh.mu.Unlock()
@@ -6074,7 +6097,7 @@ func (c *manifestCache) peek(sha [32]byte, id string) *servedManifest {
 	sh := c.shard(sha)
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
-	if e := sh.m[sha]; e != nil && e.val.man.ManifestUUID == id {
+	if e := sh.m[sha]; e != nil && e.val.man.ManifestUUID == id && !e.expired() {
 		return e.val
 	}
 	return nil
@@ -6097,8 +6120,8 @@ func (c *manifestCache) purge() {
 
 // manifestCacheStats is a point-in-time summary for tests and benchmarks.
 type manifestCacheStats struct {
-	Entries, Bytes, Budget                                        int64
-	Hits, Misses, Loads, LoadErrors, Evictions, Oversize, Rejects int64
+	Entries, Bytes, Budget                                                       int64
+	Hits, Misses, Loads, LoadErrors, Evictions, Oversize, Rejects, Revalidations int64
 }
 
 func (c *manifestCache) stats() (st manifestCacheStats) {
@@ -6119,8 +6142,30 @@ func (c *manifestCache) stats() (st manifestCacheStats) {
 		st.Evictions += sh.evictions.Load()
 		st.Oversize += sh.oversize.Load()
 		st.Rejects += sh.rejects.Load()
+		st.Revalidations += sh.revalidations.Load()
 	}
 	return st
+}
+
+// dumpReadCacheStats appends the read caches' counters as one JSON line to the
+// file named by ZEROS3_READ_CACHE_STATS, if set. A benchmarking aid: it is how
+// an external load generator learns hit rates, entry counts and bytes.
+func (s *Store) dumpReadCacheStats() {
+	path := os.Getenv("ZEROS3_READ_CACHE_STATS")
+	if path == "" {
+		return
+	}
+	line, err := json.Marshal(struct {
+		Manifest manifestCacheStats `json:"manifest"`
+		Chunk    chunkCacheStats    `json:"chunk"`
+	}{s.mcache.stats(), s.ccache.stats()})
+	if err != nil {
+		return
+	}
+	if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		f.Write(append(line, '\n'))
+		f.Close()
+	}
 }
 
 // manifestCacheBytes is the configured budget: ZEROS3_MANIFEST_CACHE_MIB
@@ -7165,6 +7210,7 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 
 // Close releases the store's open file handles.
 func (s *Store) Close() error {
+	s.dumpReadCacheStats()
 	if s.segs != nil {
 		s.segs.close()
 	}
@@ -16173,9 +16219,9 @@ type chunkCache struct {
 
 type chunkCacheShard struct {
 	clockShard[[]byte]
-	door                                   [chunkDoorSlots]atomic.Uint64
-	hits, misses, admits, evictions, stale atomic.Int64
-	_                                      [64]byte
+	door                                                  [chunkDoorSlots]atomic.Uint64
+	hits, misses, admits, evictions, stale, revalidations atomic.Int64
+	_                                                     [64]byte
 }
 
 func newChunkCache(budget int64) *chunkCache {
@@ -16202,6 +16248,15 @@ func (c *chunkCache) get(sum *[32]byte) ([]byte, bool) {
 	sh.mu.RLock()
 	e := sh.getLocked(*sum)
 	sh.mu.RUnlock()
+	if e != nil && e.expired() {
+		sh.mu.Lock() // due for re-verification: the read that follows replaces it
+		if cur := sh.m[*sum]; cur == e {
+			sh.removeLocked(e)
+		}
+		sh.mu.Unlock()
+		sh.revalidations.Add(1)
+		e = nil
+	}
 	if e == nil {
 		sh.misses.Add(1)
 		return nil, false
@@ -16259,8 +16314,8 @@ func (c *chunkCache) purge() {
 }
 
 type chunkCacheStats struct {
-	Entries, Bytes, Budget                     int64
-	Hits, Misses, Admits, Evictions, StaleDrop int64
+	Entries, Bytes, Budget                                    int64
+	Hits, Misses, Admits, Evictions, StaleDrop, Revalidations int64
 }
 
 func (c *chunkCache) stats() (st chunkCacheStats) {
@@ -16279,6 +16334,7 @@ func (c *chunkCache) stats() (st chunkCacheStats) {
 		st.Admits += sh.admits.Load()
 		st.Evictions += sh.evictions.Load()
 		st.StaleDrop += sh.stale.Load()
+		st.Revalidations += sh.revalidations.Load()
 	}
 	return st
 }

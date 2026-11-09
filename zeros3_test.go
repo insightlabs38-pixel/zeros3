@@ -29491,6 +29491,11 @@ func TestStreamingGet_Corruption(t *testing.T) {
 				os.Chmod(path, 0o644)
 				damage(path, orig)
 				defer os.WriteFile(path, orig, 0o644)
+				// A chunk that earlier subtests read is served from the verified chunk
+				// cache until it is re-verified (cacheRevalidateAfter, or a purge by
+				// verify/repair); this test is about what a read does when it reaches
+				// the damaged storage, so it starts from a cold cache.
+				f.srv.store.purgeReadCaches()
 
 				size := int64(len(data))
 				damagedLo, damagedHi := offsets[idx], offsets[idx+1]-1

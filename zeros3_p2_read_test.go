@@ -784,3 +784,53 @@ func TestP2_ListingUsesCachedManifestsWithoutFillingTheCache(t *testing.T) {
 		t.Fatalf("a listing filled the manifest cache: %+v", st)
 	}
 }
+
+// Damage to a hot manifest or chunk becomes visible to reads without any
+// diagnostic running once the cached copy is due for re-verification.
+func TestP2_CachedEntriesAreRevalidatedAgainstStorage(t *testing.T) {
+	useProductionLayout(t)
+	old := cacheRevalidateAfter
+	cacheRevalidateAfter = 150 * time.Millisecond
+	t.Cleanup(func() { cacheRevalidateAfter = old })
+	e := p2New(t)
+	body := genRandomBytes(91, 500_000)
+	e.s.PutObject("b", "k", body, "", nil)
+	_, man, _ := e.s.HeadObject("b", "k")
+	if len(man.Chunks) < 3 {
+		t.Fatalf("%d chunks", len(man.Chunks))
+	}
+	a, b := int64(100), int64(4195) // inside the first chunk
+	for pass := 0; pass < 4; pass++ {
+		if st, _, got := e.rangeGet("k", a, b); st != 206 || !bytes.Equal(got, body[a:b+1]) {
+			t.Fatalf("warm: %d", st)
+		}
+	}
+	corruptChunkAnyLayout(t, e.s, chunkSumHex(t, man.Chunks[0].SHA256))
+	if st, _, got := e.rangeGet("k", a, b); st != 206 || !bytes.Equal(got, body[a:b+1]) {
+		t.Fatalf("within the interval the verified copy still serves: %d", st)
+	}
+	time.Sleep(cacheRevalidateAfter + 100*time.Millisecond)
+	if st, _, _ := e.rangeGet("k", a, b); st == 206 {
+		t.Fatal("damaged chunk still served after the revalidation interval")
+	}
+	if cs := e.s.ccache.stats(); cs.Revalidations == 0 || cs.Entries != 0 {
+		t.Fatalf("expected an expiry and no cached damaged chunk: %+v", cs)
+	}
+
+	// the manifest, likewise
+	entry, _ := e.s.lookupObject("b", "k")
+	if st, _, _ := e.do(http.MethodHead, "k", nil); st != 200 {
+		t.Fatalf("HEAD: %d", st)
+	}
+	tamperManifest(t, e.s, entry.manifestUUID, []byte("{garbage"))
+	if st, _, _ := e.do(http.MethodHead, "k", nil); st != 200 {
+		t.Fatalf("within the interval the verified manifest serves: %d", st)
+	}
+	time.Sleep(cacheRevalidateAfter + 100*time.Millisecond)
+	if st, _, _ := e.do(http.MethodHead, "k", nil); st != 500 {
+		t.Fatalf("damaged manifest still served after the revalidation interval: %d", st)
+	}
+	if ms := e.s.mcache.stats(); ms.Revalidations == 0 || ms.Entries != 0 {
+		t.Fatalf("expected an expiry and no cached damaged manifest: %+v", ms)
+	}
+}
