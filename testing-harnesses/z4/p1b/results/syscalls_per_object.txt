@@ -1,0 +1,5 @@
+### base size=4kib objs=1000 conc=8
+           per-object syscall counts (1000 objects)
+### final2 size=4kib objs=1000 conc=8
+           per-object syscall counts (1000 objects)
+### base size=1mib objs=150 conc=4
