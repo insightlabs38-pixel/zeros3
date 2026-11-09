@@ -2113,7 +2113,7 @@ const (
 // (ZEROS3_INGEST_ABLATE=nopipe,syncpublish,syncwrite,fullverify); production runs with none.
 type ingestAblation struct {
 	noPipe, syncPublish, syncWrite, fullVerify, noEarlySync, noChunkPool bool
-	pipeMinMiB, pipeSlots                                   int
+	pipeMinMiB, pipeSlots                                                int
 }
 
 var ingestAblate ingestAblation
@@ -3714,15 +3714,15 @@ func (s *Store) packUsages(referenced map[string]bool) []packUsage {
 // chunk bytes. pack_compression_ratio is logical/stored over all records
 // (1 for raw-only packs).
 type PackSummary struct {
-	PackCount              int     `json:"pack_count"`
-	PackedChunkCount       int     `json:"packed_chunk_count"`
-	PackFileBytes          int64   `json:"pack_file_bytes"`
+	PackCount        int   `json:"pack_count"`
+	PackedChunkCount int   `json:"packed_chunk_count"`
+	PackFileBytes    int64 `json:"pack_file_bytes"`
 	// Open small-object segments (section 4d) are not packs yet: their durable
 	// bytes and records are reported separately and counted in
 	// chunk_store_file_bytes. Zero when no segment is open.
-	OpenSegments       int   `json:"open_segments,omitempty"`
-	OpenSegmentBytes   int64 `json:"open_segment_bytes,omitempty"`
-	OpenSegmentRecords int   `json:"open_segment_records,omitempty"`
+	OpenSegments           int     `json:"open_segments,omitempty"`
+	OpenSegmentBytes       int64   `json:"open_segment_bytes,omitempty"`
+	OpenSegmentRecords     int     `json:"open_segment_records,omitempty"`
 	PackedRawRecords       int     `json:"packed_raw_records"`
 	PackedCompressedRecs   int     `json:"packed_compressed_records"`
 	PackedLogicalBytes     int64   `json:"packed_logical_bytes"`

@@ -683,7 +683,9 @@ func mediumPolicy(t *testing.T) {
 	t.Helper()
 	oldMin, oldFlush, oldKiB, oldSeg := directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB, segMaxObjectBytes
 	directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB, segMaxObjectBytes = 256<<10, 64<<10, 0, 0 // medium packs from 256 KiB: segments take no chunks here
-	t.Cleanup(func() { directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB, segMaxObjectBytes = oldMin, oldFlush, oldKiB, oldSeg })
+	t.Cleanup(func() {
+		directPackMinBytes, directPackMediumFlushMin, directPackFlushKiB, segMaxObjectBytes = oldMin, oldFlush, oldKiB, oldSeg
+	})
 }
 
 func looseCount(t *testing.T, dir string) int { return len(casLooseChunks(t, dir)) }
