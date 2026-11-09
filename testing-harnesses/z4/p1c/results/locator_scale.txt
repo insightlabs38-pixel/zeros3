@@ -1,0 +1,5 @@
+    zeros3_test.go:33780: n=100000 build=22ms heap=5.2MiB (54.6 B/digest) lookup hit=123ns miss=96ns fallback=309ns iterate=83µs
+    zeros3_test.go:33780: n=1000000 build=324ms heap=51.7MiB (54.2 B/digest) lookup hit=335ns miss=303ns fallback=603ns iterate=882µs
+    zeros3_test.go:33780: n=10000000 build=3.958s heap=522.4MiB (54.8 B/digest) lookup hit=531ns miss=463ns fallback=1001ns iterate=7.23ms
+--- PASS: TestLocatorScale (6.31s)
+ok  	zeros3	6.354s

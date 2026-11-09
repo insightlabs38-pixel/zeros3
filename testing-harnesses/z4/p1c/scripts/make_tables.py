@@ -58,7 +58,7 @@ def ab(f, a, b, title):
             med(x, lambda r: r['reads_s']), med(y, lambda r: r['reads_s']), med(y, lambda r: r['reads_s']) / med(x, lambda r: r['reads_s']),
             med(x, lambda r: r['writes_s']), med(y, lambda r: r['writes_s']), med(y, lambda r: r['writes_s']) / med(x, lambda r: r['writes_s']),
             med(x, lambda r: r['read_lat']['p99_ms']), med(y, lambda r: r['read_lat']['p99_ms']), med(x, lambda r: r['write_lat']['p99_ms']), med(y, lambda r: r['write_lat']['p99_ms'])))
-ab('final_matrix.jsonl', 'base', 'p1c', 'Main matrix: P1B (5b9bcdd) vs P1C, 3 interleaved rounds')
+ab('final_matrix.jsonl', 'base', 'p1c', 'Main matrix: P1B (5b9bcdd) vs P1C, 5 interleaved rounds')
 ab('big_order.jsonl', 'base', 'p1c', 'Large objects, 5 rounds with alternating order')
 
 # ---- ablation ----

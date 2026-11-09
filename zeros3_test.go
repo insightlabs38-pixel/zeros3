@@ -68,22 +68,22 @@ import (
 //   Lines    Area
 //   -----    ----
 //      112    Test helpers, fixtures, and TestMain
-//     264    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//     269    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
 //    1280    SigV4 authentication (header and payload-mode)
 //    1676    Checksums: CRC32 and Content-MD5
 //    2179    End-to-end HTTP and crash/recovery tests
-//    2853    M2: bucket/object/listing/journal protocol compatibility
-//    4077    M3: CDC/dedup evidence, stats, verify
-//    5213    M3: CopyObject
-//    5760    M3: single-range GET
-//    5961    M5-B: multipart upload
-//    7239    Presigned URLs and virtual-hosted-style addressing
-//    8268    M5-C: version history, restore, GC, storage-efficiency proof
-//    9735    Z2-08: history retention (prune)
-//   10827    M5-D/P2: ListParts and ListMultipartUploads pagination
-//   12546    M6: delta sync (`zeros3 sync`)
-//   14288    M6C: recursive directory sync
-//   15348    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    2854    M2: bucket/object/listing/journal protocol compatibility
+//    4078    M3: CDC/dedup evidence, stats, verify
+//    5208    M3: CopyObject
+//    5756    M3: single-range GET
+//    5957    M5-B: multipart upload
+//    7235    Presigned URLs and virtual-hosted-style addressing
+//    8264    M5-C: version history, restore, GC, storage-efficiency proof
+//    9722    Z2-08: history retention (prune)
+//   10820    M5-D/P2: ListParts and ListMultipartUploads pagination
+//   12539    M6: delta sync (`zeros3 sync`)
+//   14281    M6C: recursive directory sync
+//   15341    M8A: remote-to-remote delta replication (`zeros3 replicate`)
 //   16677    M8B: peer-assisted corruption repair (`zeros3 repair`)
 //   18002    M8C: namespace (prefix/bucket) replication
 //   19041    M8D: copy-on-write namespace fork (`zeros3 fork`)
