@@ -1,0 +1,38 @@
+== st_compat: packs=310 loose=591 format="store_format_version": 2
+-- baseline binary verify -deep
+integrity        0 missing | 0 corrupt | 0 invalid
+reclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes
+result           OK
+-- baseline binary byte-exact reads
+== st_compat_mp: packs=36 loose=0 format="store_format_version": 2
+-- baseline binary verify -deep
+integrity        0 missing | 0 corrupt | 0 invalid
+reclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes
+result           OK
+-- baseline binary byte-exact reads
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+    r=json.loads(sys.stdin.read())
+  File "/usr/local/lib/python3.13/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/usr/local/lib/python3.13/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/json/decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+    r=json.loads(sys.stdin.read())
+  File "/usr/local/lib/python3.13/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/usr/local/lib/python3.13/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/json/decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+st_compat {'scenario': 'readstore', 'verified': True}
+st_compat_mp {'scenario': 'readstore', 'verified': True}
