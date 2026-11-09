@@ -8545,7 +8545,29 @@ func hmacSHA256(key []byte, data string) []byte {
 	return h.Sum(nil)
 }
 
+// sigv4KeyCache holds the most recently derived signing key. The derivation is a
+// pure function of (secret, date, region, service) and takes four HMACs, so a
+// server answering requests all day recomputes the same bytes thousands of
+// times; the key is valid for the whole UTC day named in its scope. A single
+// entry is enough (every request of a day carries the same scope) and a
+// different scope or secret simply replaces it.
+type sigv4KeyEntry struct {
+	secret, date, region, service string
+	key                           []byte
+}
+
+var sigv4KeyCache atomic.Pointer[sigv4KeyEntry]
+
 func sigv4SigningKey(secret, date, region, service string) []byte {
+	if e := sigv4KeyCache.Load(); e != nil && e.date == date && e.region == region && e.service == service && e.secret == secret {
+		return e.key
+	}
+	key := sigv4DeriveKey(secret, date, region, service)
+	sigv4KeyCache.Store(&sigv4KeyEntry{secret: secret, date: date, region: region, service: service, key: key})
+	return key
+}
+
+func sigv4DeriveKey(secret, date, region, service string) []byte {
 	kDate := hmacSHA256([]byte("AWS4"+secret), date)
 	kRegion := hmacSHA256(kDate, region)
 	kService := hmacSHA256(kRegion, service)

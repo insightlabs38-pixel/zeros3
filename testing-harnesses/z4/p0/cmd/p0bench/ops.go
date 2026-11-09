@@ -328,6 +328,23 @@ func (s *S3) Get(o *Obj, off, n int64) GetRes {
 	return res
 }
 
+// Head issues HEAD for o and checks Content-Length against the generator.
+func (s *S3) Head(o *Obj) GetRes {
+	req, _ := http.NewRequest("HEAD", s.base+"/"+o.Bucket+"/"+o.Key, nil)
+	sign(req, "UNSIGNED-PAYLOAD")
+	t0 := time.Now()
+	r, err := s.do(req)
+	if err != nil {
+		return GetRes{Err: err}
+	}
+	defer r.Body.Close()
+	lat := time.Since(t0).Seconds()
+	if r.StatusCode != 200 {
+		return GetRes{Err: fmt.Errorf("HEAD %s: %s", o.Key, r.Status)}
+	}
+	return GetRes{Lat: lat, TTFB: lat, OK: r.Header.Get("Content-Length") == strconv.FormatInt(o.C.Size, 10) && r.Header.Get("ETag") != ""}
+}
+
 // pool runs fn(i) for i in [0,n) over conc goroutines; first error aborts.
 func pool(n, conc int, fn func(i int) error) error {
 	var wg sync.WaitGroup

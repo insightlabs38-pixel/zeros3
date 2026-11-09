@@ -393,3 +393,45 @@ func TestP2_CacheDisabledAndNilAreTransparent(t *testing.T) {
 		_ = c.stats()
 	}
 }
+
+func BenchmarkP2_ManifestParse(b *testing.B) {
+	for _, n := range []int{16, 1024, 16384, 262144} { // 1 MiB .. 16 GiB at 64 KiB chunks
+		rng := rand.New(rand.NewPCG(1, uint64(n)))
+		m := p2Manifest(rng, n, func(int) int64 { return 40000 + int64(rng.IntN(50000)) })
+		data, _ := json.Marshal(m)
+		sha := sha256.Sum256(data)
+		b.Run(fmt.Sprintf("chunks=%d/stdlib", n), func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				var man manifestV1
+				if err := json.Unmarshal(data, &man); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("chunks=%d/served", n), func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := parseServedManifest(data, m.ManifestUUID, sha); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("chunks=%d/sha256", n), func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			for i := 0; i < b.N; i++ {
+				_ = sha256.Sum256(data)
+			}
+		})
+		sm, _ := parseServedManifest(data, m.ManifestUUID, sha)
+		b.Run(fmt.Sprintf("chunks=%d/locate", n), func(b *testing.B) {
+			var off int64
+			for i := 0; i < b.N; i++ {
+				off = (off + 7919_000_003) % sm.man.TotalLength
+				_ = sm.locate(off)
+			}
+		})
+	}
+}

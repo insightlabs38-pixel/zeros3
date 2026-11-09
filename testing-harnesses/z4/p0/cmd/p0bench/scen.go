@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -399,9 +400,11 @@ func cmdGet(args []string) {
 	prep := fs.String("prep", "", "'' (loose) | compact | compact-off | repack-auto")
 	loadMode := fs.String("load", "single", "single | multipart (populate path)")
 	pregen := fs.String("pregen", "1gib", "")
+	phasesF := fs.String("phases", "", "several measured phases on one populated store: name|mode|rsize|roff|conc|nreq|warm-or-cold ; ... (overrides -mode/-rsize/-roff/-conc/-nreq)")
 	fs.Parse(args)
 	set.resolve(fs.Lookup("size").Value.String())
 	rs := parseSize(*rsize)
+	phases := parsePhases(*phasesF, getPhase{name: "run", mode: *mode, rsizeStr: *rsize, rs: rs, roff: *roff, conc: c.conc, nreq: *nreq, zipf: *zipf, cacheName: c.cache, cold: c.cache == "cold"})
 	for rep := 0; rep < c.reps; rep++ {
 		store := c.newStore(rep)
 		srv, cl := c.startPlain2(store, c, rep, false)
@@ -427,95 +430,115 @@ func cmdGet(args []string) {
 		}
 		_ = prepOut
 		sz := DuStore(store)
-		if c.cache == "cold" {
+		if phases[0].cold {
 			dropCaches()
 		}
 		srv, cl = c.startPlain2(store, c, rep, true)
-		if c.cache == "warm" { // warm pass, untimed
+		if !phases[0].cold { // warm pass, untimed
 			pool(len(objs), 4, func(i int) error { r := cl.Get(objs[i], 0, -1); return r.Err })
 		}
-		n := *nreq
-		if n == 0 {
-			if *mode == "whole" {
-				n = len(objs)
-			} else {
-				n = 2000
-			}
-		}
-		type op struct {
-			o      *Obj
-			off, n int64
-		}
-		ops := make([]op, n)
-		rng := rand.New(rand.NewPCG(set.seed, 99))
-		zf := rand.NewZipf(rng, *zipf, 1, uint64(len(objs)-1))
-		for i := range ops {
-			switch *mode {
-			case "whole":
-				ops[i] = op{objs[i%len(objs)], 0, -1}
-			case "hot":
-				ops[i] = op{objs[zf.Uint64()], 0, -1}
-				if *rsize != "" && fs.Lookup("rsize").Value.String() != "64kib" {
-					o := ops[i].o
-					ops[i].n = min(rs, o.C.Size)
-					ops[i].off = rng.Int64N(max(1, o.C.Size-ops[i].n))
+		measure := func(ph getPhase) map[string]any {
+			n := ph.nreq
+			if n == 0 {
+				if ph.mode == "whole" {
+					n = len(objs)
+				} else {
+					n = 2000
 				}
-			default:
-				o := objs[rng.IntN(len(objs))]
-				k := min(rs, o.C.Size)
-				off := rng.Int64N(max(1, o.C.Size-k+1))
-				switch *roff {
+			}
+			type op struct {
+				o      *Obj
+				off, n int64
+			}
+			ops := make([]op, n)
+			rng := rand.New(rand.NewPCG(set.seed, 99))
+			zf := rand.NewZipf(rng, ph.zipf, 1, uint64(len(objs)-1))
+			for i := range ops {
+				switch ph.mode {
+				case "whole":
+					ops[i] = op{objs[i%len(objs)], 0, -1}
 				case "hot":
-					off = (o.C.Size / 3) % max(1, o.C.Size-k+1)
-				case "eof":
-					off = o.C.Size - k
-				case "seq":
-					o = objs[(int64(i)*k/max(1, o.C.Size))%int64(len(objs))]
-					off = (int64(i) * k) % max(1, o.C.Size-k+1)
-				case "spread":
-					off = (int64(rng.IntN(8)) * (o.C.Size / 8)) % max(1, o.C.Size-k+1)
+					ops[i] = op{objs[zf.Uint64()], 0, -1}
+					if ph.rsizeStr != "" && ph.rsizeStr != "64kib" {
+						o := ops[i].o
+						ops[i].n = min(ph.rs, o.C.Size)
+						ops[i].off = rng.Int64N(max(1, o.C.Size-ops[i].n))
+					}
+				default:
+					o := objs[rng.IntN(len(objs))]
+					k := min(ph.rs, o.C.Size)
+					off := rng.Int64N(max(1, o.C.Size-k+1))
+					switch ph.roff {
+					case "hot":
+						off = (o.C.Size / 3) % max(1, o.C.Size-k+1)
+					case "eof":
+						off = o.C.Size - k
+					case "seq":
+						o = objs[(int64(i)*k/max(1, o.C.Size))%int64(len(objs))]
+						off = (int64(i) * k) % max(1, o.C.Size-k+1)
+					case "spread":
+						off = (int64(rng.IntN(8)) * (o.C.Size / 8)) % max(1, o.C.Size-k+1)
+					}
+					ops[i] = op{o, off, k}
 				}
-				ops[i] = op{o, off, k}
 			}
+			lats, ttfbs := make([]float64, n), make([]float64, n)
+			var served atomic.Int64
+			var badc atomic.Int64
+			w := startWin(srv.PID())
+			err := pool(n, ph.conc, func(i int) error {
+				r := cl.Get(ops[i].o, ops[i].off, ops[i].n)
+				if r.Err != nil {
+					return r.Err
+				}
+				if !r.OK {
+					badc.Add(1)
+				}
+				lats[i], ttfbs[i] = r.Lat, r.TTFB
+				served.Add(r.N)
+				return nil
+			})
+			m := w.end()
+			if err != nil || badc.Load() > 0 {
+				die("get failed (result invalid): err=%v mismatches=%d", err, badc.Load())
+			}
+			m["scenario"], m["rep"] = "get-"+ph.mode, rep
+			m["params"] = map[string]any{"objs": set.objs, "size": set.size, "sizes": set.sizes, "kind": set.kind, "mode": ph.mode, "rsize": ph.rs, "conc": ph.conc, "cache": ph.cacheName, "phase": ph.name, "prep": *prep, "nreq": n, "roff": ph.roff, "load": *loadMode, "env": c.envs, "prof": c.prof, "revs": set.revs}
+			m["served_bytes"] = served.Load()
+			m["mib_s"] = mib(served.Load(), m["wall_s"].(float64))
+			m["ops_s"] = float64(n) / m["wall_s"].(float64)
+			m["lat"], m["ttfb"] = latStats(lats), latStats(ttfbs)
+			m["read_amp_rchar"] = float64(m["srv_rchar"].(int64)) / float64(max(1, served.Load()))
+			m["read_amp_dev"] = float64(m["dev_read_bytes"].(int64)) / float64(max(1, served.Load()))
+			m["store"] = sz
+			m["verified"] = true // every response byte-compared inside the window (or the sampled subset: see verify_mode)
+			m["verify_mode"] = os.Getenv("P0_VERIFY")
+			if c.prof != "" {
+				srv.Snapshot()
+				m["go_metrics"] = readMetrics(srv.ProfDir)
+			}
+			return m
 		}
-		lats, ttfbs := make([]float64, n), make([]float64, n)
-		var served atomic.Int64
-		var badc atomic.Int64
-		w := startWin(srv.PID())
-		err := pool(n, c.conc, func(i int) error {
-			r := cl.Get(ops[i].o, ops[i].off, ops[i].n)
-			if r.Err != nil {
-				return r.Err
+		var m map[string]any
+		for pi, ph := range phases {
+			if pi > 0 && ph.cold { // fresh process, empty page cache
+				srv.Stop()
+				dropCaches()
+				srv, cl = c.startPlain2(store, c, rep, true)
 			}
-			if !r.OK {
-				badc.Add(1)
+			m = measure(ph)
+			if len(phases) > 1 {
+				saved := c.label
+				c.label = saved + "/" + ph.name
+				emit(c, m)
+				c.label = saved
 			}
-			lats[i], ttfbs[i] = r.Lat, r.TTFB
-			served.Add(r.N)
-			return nil
-		})
-		m := w.end()
-		if err != nil || badc.Load() > 0 {
-			die("get failed (result invalid): err=%v mismatches=%d", err, badc.Load())
-		}
-		m["scenario"], m["rep"] = "get-"+*mode, rep
-		m["params"] = map[string]any{"objs": set.objs, "size": set.size, "sizes": set.sizes, "kind": set.kind, "mode": *mode, "rsize": rs, "conc": c.conc, "cache": c.cache, "prep": *prep, "nreq": n, "roff": *roff, "load": *loadMode, "env": c.envs, "prof": c.prof, "revs": set.revs}
-		m["served_bytes"] = served.Load()
-		m["mib_s"] = mib(served.Load(), m["wall_s"].(float64))
-		m["ops_s"] = float64(n) / m["wall_s"].(float64)
-		m["lat"], m["ttfb"] = latStats(lats), latStats(ttfbs)
-		m["read_amp_rchar"] = float64(m["srv_rchar"].(int64)) / float64(max(1, served.Load()))
-		m["read_amp_dev"] = float64(m["dev_read_bytes"].(int64)) / float64(max(1, served.Load()))
-		m["store"] = sz
-		m["verified"] = true // every response byte-compared inside the window (or the sampled subset: see verify_mode)
-		m["verify_mode"] = os.Getenv("P0_VERIFY")
-		if c.prof != "" {
-			srv.Snapshot()
-			m["go_metrics"] = readMetrics(srv.ProfDir)
 		}
 		srv.Stop()
-		m["server_lifetime"] = rusageMap(srv)
-		emit(c, m)
+		if len(phases) == 1 {
+			m["server_lifetime"] = rusageMap(srv)
+			emit(c, m)
+		}
 		os.RemoveAll(store)
 	}
 }
@@ -794,4 +817,33 @@ func cmdCLI(args []string) {
 		os.Exit(1)
 	}
 	_ = filepath.Base
+}
+
+// getPhase is one measured read pattern against an already populated store.
+type getPhase struct {
+	name, mode, rsizeStr, roff, cacheName string
+	rs                                    int64
+	conc, nreq                            int
+	zipf                                  float64
+	cold                                  bool
+}
+
+// parsePhases reads "name|mode|rsize|roff|conc|nreq|warm|cold;..." (see -phases).
+// A cold phase restarts the server on a dropped page cache before it runs.
+func parsePhases(spec string, def getPhase) []getPhase {
+	if strings.TrimSpace(spec) == "" {
+		return []getPhase{def}
+	}
+	var out []getPhase
+	for _, p := range strings.Split(spec, ";") {
+		f := strings.Split(strings.TrimSpace(p), "|")
+		if len(f) != 7 {
+			die("bad phase %q: want name|mode|rsize|roff|conc|nreq|warm-or-cold", p)
+		}
+		conc, _ := strconv.Atoi(f[4])
+		nreq, _ := strconv.Atoi(f[5])
+		out = append(out, getPhase{name: f[0], mode: f[1], rsizeStr: f[2], rs: parseSize(f[2]), roff: f[3], conc: conc, nreq: nreq,
+			zipf: def.zipf, cacheName: f[6], cold: f[6] == "cold"})
+	}
+	return out
 }
