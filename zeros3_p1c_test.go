@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -858,4 +861,108 @@ func TestP1C_SharedOpenerNeverDisturbsALiveWriter(t *testing.T) {
 	}
 	p1cCheck(t, s, acked)
 	p1cVerify(t, s)
+}
+
+// The documented read-only commands run against a live server's store. They must
+// succeed and must not take segment ownership, cut or seal anything, or make the
+// running server stop writing segments.
+func TestP1C_CLIReadersAgainstALiveServer(t *testing.T) {
+	useProductionLayout(t)
+	if testing.Short() {
+		t.Skip("spawns a server")
+	}
+	bin := buildZeros3Binary(t)
+	dir := t.TempDir()
+	addr := freeTCPAddr(t)
+	srv := exec.Command(bin, "-store", dir, "-addr", addr)
+	srv.Env = os.Environ()
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Process.Kill(); srv.Wait() })
+	waitForZeros3Serve(t, addr)
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp := doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, "/b", nil, nil)
+	resp.Body.Close()
+	put := func(i int) {
+		body := p1cBody(i, 4000+i%500)
+		r := doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, fmt.Sprintf("/b/k%05d", i), body, nil)
+		r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("PUT %d: %d", i, r.StatusCode)
+		}
+	}
+	for i := 0; i < 40; i++ {
+		put(i)
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var n atomic.Int64
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 40; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			put(i)
+			n.Store(int64(i))
+		}
+	}()
+	for _, args := range [][]string{{"stats", "-store", dir}, {"verify", "-store", dir}, {"verify", "-store", dir, "-deep"}, {"doctor", "-store", dir}, {"versions", "-store", dir, "-bucket", "b", "-key", "k00000"}} {
+		out, errOut, code := runZeros3CLI(t, bin, args...)
+		if code != 0 {
+			t.Fatalf("%v against a live server: exit %d\n%s\n%s", args, code, out, errOut)
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if q, _ := filepath.Glob(filepath.Join(dir, "tmp", "seg-torn-*")); len(q) != 0 {
+		t.Fatalf("a read-only command cut the live writer's tail: %v", q)
+	}
+	if len(segFiles(t, dir)) == 0 && len(packFiles(t, dir)) == 0 {
+		t.Fatal("no segment data at all")
+	}
+	if n.Load() < 41 {
+		t.Fatal("the server stopped making progress while the commands ran")
+	}
+	srv.Process.Signal(syscall.SIGTERM)
+	srv.Wait()
+	s := p1cReopen(t, dir)
+	for i := 0; i < 40; i++ {
+		_, got, err := s.GetObject("b", fmt.Sprintf("k%05d", i))
+		if err != nil || !bytes.Equal(got, p1cBody(i, 4000+i%500)) {
+			t.Fatalf("k%05d after the run: %v", i, err)
+		}
+	}
+	p1cVerify(t, s)
+}
+
+func TestP1C_BundleExportRefusesCorruptChunk(t *testing.T) {
+	useProductionLayout(t)
+	bodies := map[string][]byte{"only": genRandomBytes(311, 150_000)}
+	src, snap := bundleFixture(t, bodies)
+	s := p1cReopen(t, src)
+	_, man, err := s.HeadObject("b", "only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	corruptChunkAnyLayout(t, s, chunkSumHex(t, man.Chunks[0].SHA256))
+	s.Close()
+	out := filepath.Join(t.TempDir(), "x.zs3b")
+	if _, err := exportBundleFile(src, snap, out, true); err == nil {
+		t.Fatal("export of a store with a corrupt chunk succeeded")
+	}
+	if _, err := os.Stat(out); err == nil {
+		t.Fatal("a failed export left a bundle behind")
+	}
+	// the bundle round trip of an intact store works through segments (manifests inline)
+	src2, snap2 := bundleFixture(t, bodies)
+	path, _ := bundleExportT(t, src2, snap2, true)
+	dst := t.TempDir()
+	bundleImportT(t, dst, path)
+	bundleRestoreCheck(t, dst, snap2, bodies)
 }

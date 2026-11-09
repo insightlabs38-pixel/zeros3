@@ -35870,6 +35870,7 @@ func TestTier_RepackGCPreserveTiersAndPaths(t *testing.T) {
 // TestTier_GCRemovesDeadPackFromItsTier: a fully dead cold pack is deleted
 // from the cold directory by gc, never touching hot.
 func TestTier_GCRemovesDeadPackFromItsTier(t *testing.T) {
+	useLooseLayout(t, "tier fixtures start from loose chunks and assert exact pack placement")
 	data := tierTestDataset()
 	dir := t.TempDir()
 	putPackTestObjects(t, dir, data, "random", "cold")
@@ -37663,6 +37664,7 @@ func TestTierRebalance_CrashPointsConverge(t *testing.T) {
 }
 
 func TestTierRebalance_WholeMoveCrashConverges(t *testing.T) {
+	useLooseLayout(t, "tier fixtures start from loose chunks and assert exact pack placement")
 	for _, hook := range []string{hookMoveValidated, hookMoveAfterRename, hookMoveBeforeDelete, hookMoveAfterDelete} {
 		t.Run(hook, func(t *testing.T) {
 			dir := t.TempDir()
@@ -39057,6 +39059,7 @@ func TestBundle_RoundTripPreservesIdentityAndDeduplicates(t *testing.T) {
 }
 
 func TestBundle_ExportIsDeterministicAndAtomic(t *testing.T) {
+	useLooseLayout(t, "rots a loose chunk file by path (corrupt-chunk export refusal on segments: TestP1C_BundleExportRefusesCorruptChunk)")
 	src, snap := bundleFixture(t, bundleFixtureBodies())
 	before := bundleTreeHash(t, src)
 	p1, s1 := bundleExportT(t, src, snap, false)

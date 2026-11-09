@@ -11882,13 +11882,23 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 
 	res.PackSummary = summarizePacks(s.packUsages(rr.live()))
 	s.fillSegmentSummary(&res.PackSummary)
+	// Inline manifests are records of segments and packs: their bytes are manifest
+	// bytes, not chunk payload. Only manifests a live root names can be told apart
+	// from chunks; an unreferenced inline manifest counts as a dead record.
+	// The 16-byte header of an open segment is attributed to them as well.
+	inlineManifestBytes := int64(res.OpenSegments) * packHeaderSize
+	for _, sha := range rr.ManifestSHA {
+		if loc, ok := s.packLookup(sha); ok {
+			inlineManifestBytes += int64(loc.stored) + packRecordHeaderSize
+		}
+	}
 	res.LooseChunkCount = chunkScan.totalCount
 	res.LooseChunkFileBytes = chunkScan.totalBytes
-	res.ChunkStoreFileBytes = chunkScan.totalBytes + res.PackFileBytes + res.OpenSegmentBytes
-	res.ManifestFileBytes = manifestScan.totalBytes
+	res.ChunkStoreFileBytes = chunkScan.totalBytes + res.PackFileBytes + res.OpenSegmentBytes - inlineManifestBytes
+	res.ManifestFileBytes = manifestScan.totalBytes + inlineManifestBytes
 	res.JournalFileBytes = journalBytes
 	res.TemporaryFileBytes = tmpBytes
-	res.ActualStoreFileBytes = res.ChunkStoreFileBytes + manifestScan.totalBytes + journalBytes + tmpBytes + formatBytes
+	res.ActualStoreFileBytes = res.ChunkStoreFileBytes + res.ManifestFileBytes + journalBytes + tmpBytes + formatBytes
 	// Every extra chunk/manifest byte here is exactly classified: it
 	// belongs to a file whose digest/UUID is not in the reachable set
 	// computed above, not a naive "store bytes minus unique bytes"
