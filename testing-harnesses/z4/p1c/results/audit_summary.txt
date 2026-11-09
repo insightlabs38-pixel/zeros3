@@ -1,0 +1,46 @@
+=== mode seq (real server under strace -f -y, 1 MiB segments; 4 KiB/64 KiB/700 KiB PUTs)
+events=3183 segments=16 sealed=23 control=None sequential=True
+OK: rules S1-S5 hold on this trace
+# negative control drop-dirsync (must report violations)
+  S3: first record appended to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg at 1794201777.729506 before its header fsync and the segments/ directory fsync
+  S3: first record appended to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg at 1794201777.731501 before its header fsync and the segments/ directory fsync
+  S3: first record appended to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg at 1794201777.733381 before its header fsync and the segments/ directory fsync
+# negative control drop-seg-fsync (must report violations)
+  S3: first record appended to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg at 1794201777.729506 before its header fsync and the segments/ directory fsync
+  S3: first record appended to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg at 1794201777.731501 before its header fsync and the segments/ directory fsync
+  S3: first record appended to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg at 1794201777.733381 before its header fsync and the segments/ directory fsync
+# negative control drop-pack-dirsync (must report violations)
+events=3182 segments=16 sealed=23 control=drop-pack-dirsync sequential=True
+VIOLATIONS (1):
+  S4: segment /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg unlinked at 1794201778.105433 before packs/ was fsynced after the link
+# negative control drop-format-sync (must report violations)
+events=3181 segments=16 sealed=23 control=drop-format-sync sequential=True
+VIOLATIONS (1):
+  S5: first segment file created at 1794201777.673768 before FORMAT.json was replaced and the store root fsynced
+# negative control drop-seal-fsync (must report violations)
+events=3182 segments=16 sealed=23 control=drop-seal-fsync sequential=True
+VIOLATIONS (1):
+  S1: pwrite to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000002.seg at 1794201778.105224 while the previous one is not fsynced
+=== mode conc (real server under strace -f -y, 1 MiB segments; 4 KiB/64 KiB/700 KiB PUTs)
+events=1948 segments=9 sealed=16 control=None sequential=False
+OK: rules S1-S5 hold on this trace
+# negative control drop-dirsync (must report violations)
+  S3: first record appended to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg at 1794201960.617925 before its header fsync and the segments/ directory fsync
+  S3: first record appended to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg at 1794201960.618591 before its header fsync and the segments/ directory fsync
+  S3: first record appended to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg at 1794201960.619943 before its header fsync and the segments/ directory fsync
+# negative control drop-seg-fsync (must report violations)
+  S3: first record appended to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg at 1794201960.617925 before its header fsync and the segments/ directory fsync
+  S3: first record appended to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg at 1794201960.618591 before its header fsync and the segments/ directory fsync
+  S3: first record appended to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg at 1794201960.619943 before its header fsync and the segments/ directory fsync
+# negative control drop-pack-dirsync (must report violations)
+events=1947 segments=9 sealed=16 control=drop-pack-dirsync sequential=False
+VIOLATIONS (1):
+  S4: segment /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000001.seg unlinked at 1794201960.705537 before packs/ was fsynced after the link
+# negative control drop-format-sync (must report violations)
+events=1946 segments=9 sealed=16 control=drop-format-sync sequential=False
+VIOLATIONS (1):
+  S5: first segment file created at 1794201960.578745 before FORMAT.json was replaced and the store root fsynced
+# negative control drop-seal-fsync (must report violations)
+events=1947 segments=9 sealed=16 control=drop-seal-fsync sequential=False
+VIOLATIONS (1):
+  S1: pwrite to /tmp/claude-0/p1c/audit/work/stores/audit-r0/segments/0000000000000002.seg at 1794201960.705184 while the previous one is not fsynced

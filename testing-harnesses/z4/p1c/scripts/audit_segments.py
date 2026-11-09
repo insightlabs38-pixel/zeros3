@@ -36,7 +36,7 @@ pos = [a for i, a in enumerate(argv) if not a.startswith('--') and not (i > 0 an
 trace, store = pos[0], pos[1].rstrip('/')
 
 line_re = re.compile(r'^(\d+)\s+(\d+\.\d+)\s+(.*)$')
-call_re = re.compile(r'^(\w+)\((.*)\)\s+=\s+(-?\d+|\?)(?:\s.*)?$', re.S)
+call_re = re.compile(r'^(\w+)\((.*)\)\s+=\s+(-?\d+|\?)(?:[\s<].*)?$', re.S)
 unfinished, events = {}, []
 for raw in open(trace, errors='replace'):
     m = line_re.match(raw.rstrip('\n'))
@@ -69,10 +69,18 @@ if control:
         if name == 'fsync' and not done:
             if control == 'drop-dirsync' and p == store + '/segments': done = True; continue
             if control == 'drop-pack-dirsync' and p == store + '/packs': done = True; continue
-            if control == 'drop-format-sync' and p == store: done = True; continue
             if control == 'drop-seg-fsync' and is_seg(p) and not seen_seal: done = True; continue
             if control == 'drop-seal-fsync' and is_seg(p) and seen_seal is False and False: pass
         out.append(e)
+    if control == 'drop-format-sync':
+        # drop the store-root fsyncs after the last FORMAT.json replacement preceding the first segment creation
+        first_seg = next((i for i, e in enumerate(out) if e[2] in ('openat', 'open') and '/segments/' in e[3] and 'O_CREAT' in e[3]), None)
+        fmt = None
+        for i, e in enumerate(out[:first_seg]):
+            if e[2] in ('rename', 'renameat', 'renameat2') and quoted(e[3]) and quoted(e[3])[-1].endswith('/FORMAT.json'): fmt = i
+        if fmt is not None:
+            # every root fsync in the window (the one after the segments/ mkdir covers the rename too)
+            out = [e for i, e in enumerate(out) if not (fmt < i < first_seg and e[2] == 'fsync' and fdpath(e[3]) == store)]
     if control == 'drop-seal-fsync':
         # remove the last fsync of a segment before its first link (the sealed-tail fsync)
         idx_link = next((i for i, e in enumerate(out) if e[2] in ('link', 'linkat')), None)

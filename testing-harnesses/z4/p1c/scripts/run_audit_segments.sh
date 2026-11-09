@@ -18,7 +18,7 @@ for spec in "4kib 300" "64kib 120" "700kib 30"; do
      -objs "$2" -size "$1" -conc $CONC -noverify >/dev/null 2>&1 || true
 done
 sleep 1
-STORE=$(ls -d "$OUT"/work/*/ 2>/dev/null | head -1); STORE=${STORE%/}
+STORE="$OUT/work/stores/audit-r0"
 echo "# store: $STORE"
 python3 "$HERE/audit_segments.py" "$OUT/trace.$MODE" "$STORE" $([ "$MODE" = seq ] && echo --sequential) || true
 for c in drop-dirsync drop-seg-fsync drop-pack-dirsync drop-format-sync drop-seal-fsync; do
