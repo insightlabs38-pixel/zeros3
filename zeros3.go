@@ -4098,15 +4098,25 @@ func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
 	for _, c := range st.clash {
 		res.addIssue("corrupt", "packs", c)
 	}
-	for _, p := range st.packs {
+	for i, p := range st.packs {
 		res.PacksChecked++
-		var err error
-		if p.open {
-			err = checkOpenSegment(p.path, deep)
-		} else if deep {
-			err = checkPackRecords(p.path)
-		} else {
+		check := func(p packInfo) (err error) {
+			if p.open {
+				return checkOpenSegment(p.path, deep)
+			}
+			if deep {
+				return checkPackRecords(p.path)
+			}
 			_, _, err = loadPackFile(p.path)
+			return err
+		}
+		err := check(p)
+		if err != nil && p.open && errors.Is(err, fs.ErrNotExist) {
+			// the segment was sealed (renamed to packs/) since this snapshot: check its pack
+			if cur := s.packSnap(); i < len(cur.packs) {
+				p = cur.packs[i]
+				err = check(p)
+			}
 		}
 		if err != nil {
 			res.addIssue("corrupt", "pack "+p.label(), err.Error())
@@ -4393,6 +4403,8 @@ func (m *segMgr) ensureActive() (*segment, error) {
 	m.mu.Lock()
 	m.active = seg
 	m.mu.Unlock()
+	m.activeBytes.Store(seg.size)
+	m.activeRecords.Store(0)
 	return seg, nil
 }
 
@@ -4608,9 +4620,6 @@ func (m *segMgr) newSegment() (*segment, error) {
 	fireTestHook(hookSegDirSynced)
 	seg := &segment{seq: seq, id: segID(seq), path: path, f: f, size: packHeaderSize, h: sha256.New()}
 	seg.h.Write(hdr)
-	if err := s.addPack(packInfo{id: seg.id, tier: tierHot, path: path, open: true}, nil); err != nil {
-		return fail(err)
-	}
 	return seg, nil
 }
 
@@ -4621,7 +4630,13 @@ func (s *Store) segPublish(seg *segment, entries []packEntry) error {
 	st := s.packSnap()
 	idx := slices.IndexFunc(st.packs, func(p packInfo) bool { return p.tier == tierHot && p.id == seg.id })
 	if idx < 0 {
-		return fmt.Errorf("segments: segment %s is not registered in the locator", seg.id)
+		// First durable records of this segment: it joins the locator now, so a
+		// segment that never held a record never appears in it.
+		var err error
+		if st, err = st.withPack(packInfo{id: seg.id, tier: tierHot, path: seg.path, open: true}, nil); err != nil {
+			return err
+		}
+		idx = len(st.packs) - 1
 	}
 	next, err := st.withRecords(uint32(idx), tierHot, entries)
 	if err != nil {
@@ -4650,8 +4665,8 @@ func (s *Store) segReplaceInfo(oldID string, info packInfo) error {
 // seal turns a segment that nobody appends to into an ordinary pack-v1 file:
 // append index and footer, fsync, prove the file byte for byte, rename into
 // packs/, fsync both directories, swap the locator descriptor. A segment with
-// no records is removed. The only copy of a record is never removed: the
-// rename moves the very file the locator already reads.
+// no records is removed. The only copy of a record is never removed: the pack
+// name is a hard link to the very file the locator already reads.
 func (m *segMgr) seal(seg *segment) error {
 	s := m.s
 	if seg.noSeal {
@@ -4687,36 +4702,54 @@ func (m *segMgr) seal(seg *segment) error {
 	if _, err := verifyPackExact(seg.path, seg.entries, bodySHA); err != nil {
 		return fmt.Errorf("sealed segment failed validation: %w", err)
 	}
-	packDir := tierPackDir(s.root, tierHot)
-	if _, err := os.Stat(packDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(packDir, 0o755); err != nil {
-			return err
-		}
-		if err := syncDir(s.root); err != nil {
-			return err
-		}
+	packDir, err := s.ensurePackDir()
+	if err != nil {
+		return err
 	}
 	id := hex.EncodeToString(bodySHA[:])
 	final := filepath.Join(packDir, id+packFileSuffix)
+	// Publish under the pack name with a hard link, switch the locator to it, and
+	// only then drop the segment name: a reader holding the previous snapshot still
+	// finds the file at the old path, so no read ever hits a missing file. After a
+	// crash with both names present, recovery keeps the pack and removes the segment.
 	fireTestHook(hookSegBeforeRename)
-	if err := os.Rename(seg.path, final); err != nil {
-		return err
+	if err := os.Link(seg.path, final); err != nil {
+		if !os.IsExist(err) {
+			return err
+		}
 	}
 	fireTestHook(hookSegAfterRename)
 	if err := s.syncDirShared(packDir); err != nil {
+		return err
+	}
+	if err := s.segReplaceInfo(seg.id, newPackInfo(id, final, seg.size+int64(len(tail)), seg.entries)); err != nil {
+		return err
+	}
+	if err := os.Remove(seg.path); err != nil {
 		return err
 	}
 	if err := syncDir(dir); err != nil {
 		return err
 	}
 	fireTestHook(hookSegSealed)
-	if err := s.segReplaceInfo(seg.id, newPackInfo(id, final, seg.size+int64(len(tail)), seg.entries)); err != nil {
-		return err
-	}
 	seg.f.Close()
 	m.nSeals.Add(1)
 	observeLayout("pack", s.root, 1)
 	return nil
+}
+
+// ensurePackDir returns the hot pack directory, creating it durably if needed.
+func (s *Store) ensurePackDir() (string, error) {
+	packDir := tierPackDir(s.root, tierHot)
+	if _, err := os.Stat(packDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(packDir, 0o755); err != nil {
+			return "", err
+		}
+		if err := syncDir(s.root); err != nil {
+			return "", err
+		}
+	}
+	return packDir, nil
 }
 
 // pause quiesces the writers (waits for the current batch, blocks new commits),
@@ -4933,7 +4966,11 @@ func (s *Store) recoverSegments() error {
 			if serr != nil {
 				return serr
 			}
-			final := filepath.Join(tierPackDir(s.root, tierHot), sinfo.id+packFileSuffix)
+			packDir, perr := s.ensurePackDir()
+			if perr != nil {
+				return perr
+			}
+			final := filepath.Join(packDir, sinfo.id+packFileSuffix)
 			if _, ferr := os.Stat(final); ferr == nil {
 				if err := os.Remove(path); err != nil {
 					return err
@@ -4943,7 +4980,7 @@ func (s *Store) recoverSegments() error {
 			} else if err := s.addPackFromFile(final); err != nil {
 				return err
 			}
-			if err := syncDir(tierPackDir(s.root, tierHot)); err != nil {
+			if err := syncDir(packDir); err != nil {
 				return err
 			}
 			if err := syncDir(dir); err != nil {
@@ -4980,10 +5017,6 @@ func (s *Store) recoverSegments() error {
 			}
 		}
 		seg := &segment{seq: seq, id: segID(seq), path: path, f: f, size: sc.valid, entries: sc.entries, h: sc.h}
-		if err := s.addPack(packInfo{id: seg.id, tier: tierHot, path: path, open: true}, nil); err != nil {
-			f.Close()
-			return err
-		}
 		if err := s.segPublish(seg, seg.entries); err != nil {
 			f.Close()
 			return err
@@ -11068,11 +11101,11 @@ type reachabilityResult struct {
 	ChunksChecked    int
 
 	// Chunk maps are read-only after the scan; healthy scans share their sets.
-	ReferencedManifests map[string]bool  // manifest UUID -> true; every manifest any live root points to
+	ReferencedManifests map[string]bool     // manifest UUID -> true; every manifest any live root points to
 	ManifestSHA         map[string][32]byte // manifest UUID -> the SHA-256 its roots record (names an inline manifest record)
-	ReferencedChunks    map[string]bool  // hex sha256 -> true; every chunk any live, readable manifest/part points to
-	ChunkLength         map[string]int64 // hex sha256 -> best-known length, from the reference (not disk)
-	ValidChunks         map[string]bool  // read-only subset; aliases ReferencedChunks when all chunks pass
+	ReferencedChunks    map[string]bool     // hex sha256 -> true; every chunk any live, readable manifest/part points to
+	ChunkLength         map[string]int64    // hex sha256 -> best-known length, from the reference (not disk)
+	ValidChunks         map[string]bool     // read-only subset; aliases ReferencedChunks when all chunks pass
 
 	// Optional structured representations (section 16d). Their physical chunks
 	// are part of ReferencedChunks/ChunkLength; a root that cannot be trusted
