@@ -45,6 +45,7 @@ import (
 	"maps"
 	"math"
 	"math/bits"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -4763,6 +4764,9 @@ type Store struct {
 	// rep is the optional structured-representation state (section 16d):
 	// runtime mode, derived catalog and counters. Nothing in it is authoritative.
 	rep repState
+
+	// auth is the representation-authoritative body state (section 16e).
+	auth authState
 }
 
 // OpenStore opens the store rooted at root, initializing it (writing
@@ -4813,6 +4817,9 @@ func OpenStore(root string) (*Store, error) {
 	}
 	if _, err := os.Lstat(s.repDir()); err == nil || !os.IsNotExist(err) {
 		s.rep.mayHaveRoots.Store(true) // present, or unreadable: let reachability report it
+	}
+	if _, err := os.Lstat(s.authDir()); err == nil || !os.IsNotExist(err) {
+		s.auth.mayHave.Store(true)
 	}
 	return s, nil
 }
@@ -5768,13 +5775,17 @@ func (s *Store) RestoreObjectVersion(bucket, key, versionID string) (*objectEntr
 	// pre-commit chunk-availability check -- so a corrupted/missing
 	// historical chunk fails restore cleanly with no visible mutation,
 	// rather than committing a root GetObject can't reconstruct.
-	for _, c := range man.Chunks {
-		sum, herr := decodeHexSHA256(c.SHA256)
-		if herr != nil {
-			return nil, manifestV1{}, fmt.Errorf("restore: historical manifest has a malformed chunk reference: %w", herr)
-		}
-		if _, serr := s.casStat(sum); serr != nil {
-			return nil, manifestV1{}, fmt.Errorf("restore: historical chunk %s is not available: %w", c.SHA256, serr)
+	if handled, aerr := s.authAvailable(man); aerr != nil {
+		return nil, manifestV1{}, fmt.Errorf("restore: historical authoritative body is not available: %w", aerr)
+	} else if !handled {
+		for _, c := range man.Chunks {
+			sum, herr := decodeHexSHA256(c.SHA256)
+			if herr != nil {
+				return nil, manifestV1{}, fmt.Errorf("restore: historical manifest has a malformed chunk reference: %w", herr)
+			}
+			if _, serr := s.casStat(sum); serr != nil {
+				return nil, manifestV1{}, fmt.Errorf("restore: historical chunk %s is not available: %w", c.SHA256, serr)
+			}
 		}
 	}
 
@@ -8490,13 +8501,17 @@ func (s *Store) CopyObject(req CopyObjectRequest) (*objectEntry, manifestV1, err
 	if err != nil {
 		return nil, manifestV1{}, err
 	}
-	for _, c := range srcMan.Chunks {
-		sum, herr := decodeHexSHA256(c.SHA256)
-		if herr != nil {
-			return nil, manifestV1{}, fmt.Errorf("copy: source manifest has a malformed chunk reference: %w", herr)
-		}
-		if _, serr := s.casStat(sum); serr != nil {
-			return nil, manifestV1{}, fmt.Errorf("copy: source chunk %s is not available: %w", c.SHA256, serr)
+	if handled, aerr := s.authAvailable(srcMan); aerr != nil {
+		return nil, manifestV1{}, fmt.Errorf("copy: source authoritative body is not available: %w", aerr)
+	} else if !handled {
+		for _, c := range srcMan.Chunks {
+			sum, herr := decodeHexSHA256(c.SHA256)
+			if herr != nil {
+				return nil, manifestV1{}, fmt.Errorf("copy: source manifest has a malformed chunk reference: %w", herr)
+			}
+			if _, serr := s.casStat(sum); serr != nil {
+				return nil, manifestV1{}, fmt.Errorf("copy: source chunk %s is not available: %w", c.SHA256, serr)
+			}
 		}
 	}
 
@@ -9459,7 +9474,7 @@ func (srv *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, buck
 // copyPartReader adapts the existing verified chunk iterator without buffering
 // an entire object or adding a second source-read implementation.
 type copyPartReader struct {
-	source  *manifestReader
+	source  objectReader
 	pending []byte
 }
 
@@ -9531,7 +9546,7 @@ func (srv *Server) handleUploadPartCopy(w http.ResponseWriter, r *http.Request, 
 		writeS3Error(w, "EntityTooLarge", "copy part exceeds 5 GiB", resource)
 		return
 	}
-	rd := srv.store.newManifestReader(man, rng)
+	rd := srv.store.openObjectReader(man, rng)
 	defer rd.close()
 	ing, err := srv.store.ingestStream(&copyPartReader{source: rd}, true, ingestOptions{})
 	if err != nil {
@@ -9944,6 +9959,17 @@ type reachabilityResult struct {
 	RepChunkBytes   int64
 	RepRootFiles    int      // published root files
 	RepOrphanRoots  []string // root files whose manifest no live root names
+
+	// Representation-authoritative bodies (section 16e): live manifests served by
+	// a body record, the records reached, and body files nothing reaches.
+	AuthManifests    int
+	AuthPins         int
+	AuthReps         int
+	AuthDeltas       int
+	AuthLogicalBytes int64
+	AuthFiles        int
+	AuthOrphans      []string // hex content hashes
+	AuthLive         []string
 }
 
 // OK reports whether the authoritative live root set is fully valid: every
@@ -10096,6 +10122,15 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 	// The optional representation of a live manifest is part of the same root:
 	// its chunks are wanted (and observed) beside the manifest's own.
 	rctx := s.newRepReachCtx(&res)
+	actx := s.newAuthReachCtx(&res)
+	// A manifest whose content has a valid authoritative body is rooted through
+	// that body; its CDC chunk list is then only a virtual index. Any doubt keeps the list.
+	wantMan := func(scope rootScope, bucket, key string, man manifestV1) {
+		if actx.observe(man, func(chunks []chunkRef) { want(scope, bucket, key, chunks) }) {
+			return
+		}
+		want(scope, bucket, key, man.Chunks)
+	}
 	wantRep := func(scope rootScope, bucket, key, uuid string, man manifestV1) {
 		rctx.observe(uuid, man, func(chunks []chunkRef) { want(scope, bucket, key, chunks) })
 	}
@@ -10114,7 +10149,7 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 	for _, o := range curObjs {
 		res.CurrentRootCount++
 		if man, ok := checkRoot(o.bucket+"/"+o.key, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
-			want(scopeCurrent, o.bucket, o.key, man.Chunks)
+			wantMan(scopeCurrent, o.bucket, o.key, man)
 			wantRep(scopeCurrent, o.bucket, o.key, o.entry.manifestUUID, man)
 		}
 	}
@@ -10171,7 +10206,7 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 				continue
 			}
 			if man, ok := checkRoot(subject, se.ManifestUUID, sum); ok {
-				want(scopeSnapshot, snap.SourceBucket, se.Key, man.Chunks)
+				wantMan(scopeSnapshot, snap.SourceBucket, se.Key, man)
 				wantRep(scopeSnapshot, snap.SourceBucket, se.Key, se.ManifestUUID, man)
 			}
 		}
@@ -10189,11 +10224,12 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 		res.HistoricalRootCount++
 		subject := fmt.Sprintf("history:%s/%s@%s", o.bucket, o.key, o.entry.versionID)
 		if man, ok := checkRoot(subject, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
-			want(scopeHistory, o.bucket, o.key, man.Chunks)
+			wantMan(scopeHistory, o.bucket, o.key, man)
 			wantRep(scopeHistory, o.bucket, o.key, o.entry.manifestUUID, man)
 		}
 	}
 	rctx.finish()
+	actx.finish()
 	// One unified chunk existence/integrity pass over every referenced
 	// digest, regardless of which root category claimed it. Healthy scans share
 	// the two read-only sets; only a faulty scan needs a separate valid subset.
@@ -10532,6 +10568,12 @@ type VerifyResult struct {
 	RepresentationsVerified   int `json:"representations_verified"`
 	RepresentationOrphanRoots int `json:"representation_orphan_roots"`
 
+	// Authoritative bodies (section 16e): live body records and those deep
+	// verification reconstructed exactly from the physical store.
+	AuthorityBodies     int `json:"authority_bodies"`
+	AuthoritiesVerified int `json:"authorities_verified"`
+	AuthorityOrphans    int `json:"authority_orphan_bodies"`
+
 	UnreachableManifests int   `json:"unreachable_manifests"`
 	UnreachableChunks    int   `json:"unreachable_chunks"`
 	ReclaimableBytes     int64 `json:"reclaimable_bytes"`
@@ -10582,6 +10624,8 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res.Issues = append(res.Issues, rr.Issues...)
 	res.RepresentationRoots = rr.RepRoots
 	res.RepresentationOrphanRoots = len(rr.RepOrphanRoots)
+	res.AuthorityBodies = len(rr.AuthLive)
+	res.AuthorityOrphans = len(rr.AuthOrphans)
 	// Verification consumes only membership from here on. Drop the scan's
 	// component-length table before pack and whole-object decoding allocate.
 	rr.ChunkLength = nil
@@ -10658,6 +10702,7 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 
 	if deep {
 		s.verifyRepresentationsDeep(rr, &res)
+		s.verifyBodiesDeep(rr, &res)
 	}
 
 	// --- Unreachable/reclaimable accounting (informational, not a failure) ---
@@ -10776,6 +10821,8 @@ type GCResult struct {
 	// representation-only chunks they alone kept alive.
 	RepresentationOrphanRoots  int `json:"representation_orphan_roots"`
 	RepresentationRootsDeleted int `json:"representation_roots_deleted"`
+	AuthorityOrphanBodies      int `json:"authority_orphan_bodies"`
+	AuthorityBodiesDeleted     int `json:"authority_bodies_deleted"`
 
 	ReachablePayloadBytes   int64 `json:"reachable_payload_bytes"`
 	ReclaimablePayloadBytes int64 `json:"reclaimable_payload_bytes"`
@@ -10882,6 +10929,7 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 	}
 
 	res.RepresentationOrphanRoots = len(rr.RepOrphanRoots)
+	res.AuthorityOrphanBodies = len(rr.AuthOrphans)
 	orphanRootBytes := store.repOrphanRootBytes(rr.RepOrphanRoots)
 	res.ReclaimablePayloadBytes += orphanRootBytes
 
@@ -10918,6 +10966,20 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 	if len(rr.RepOrphanRoots) > 0 {
 		if err := syncDir(store.repRootsDir()); err != nil {
 			return res, fmt.Errorf("gc: syncing representation roots: %w", err)
+		}
+	}
+	// Orphan body records go before the chunks they alone kept alive.
+	for _, hx := range rr.AuthOrphans {
+		sha, _ := decodeHexSHA256(hx)
+		fireTestHook(hookBeforeGCDelete)
+		if err := os.Remove(store.authPath(sha)); err != nil && !os.IsNotExist(err) {
+			return res, fmt.Errorf("gc: removing authority body %s: %w", hx, err)
+		}
+		res.AuthorityBodiesDeleted++
+	}
+	if len(rr.AuthOrphans) > 0 {
+		if err := syncDir(store.authDir()); err != nil {
+			return res, fmt.Errorf("gc: syncing authority bodies: %w", err)
 		}
 	}
 	for _, p := range unreachableChunkPaths {
@@ -14713,7 +14775,7 @@ func (srv *Server) handleSyncChunkDownload(w http.ResponseWriter, hexDigest stri
 		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "invalid chunk digest")
 		return
 	}
-	data, err := srv.store.casRead(sum)
+	data, _, err := srv.store.casReadOrVirtual(sum)
 	if err != nil {
 		writeSyncError(w, http.StatusNotFound, "NoSuchChunk", fmt.Sprintf("chunk %s is not available or corrupt: %v", hexDigest, err))
 		return
@@ -14784,7 +14846,7 @@ func (srv *Server) handleSyncNegotiate(w http.ResponseWriter, body []byte) {
 			continue
 		}
 		seen[norm] = true
-		if _, err := srv.store.casStat(sum); err != nil {
+		if _, err := srv.store.casStat(sum); err != nil && !srv.store.authHasVirtualChunk(sum) {
 			missing = append(missing, norm)
 		}
 	}
@@ -14865,7 +14927,10 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 			writeSyncError(w, http.StatusBadRequest, "InvalidArgument", err.Error())
 			return
 		}
-		data, err := srv.store.casRead(sum)
+		data, virtual, err := srv.store.casReadOrVirtual(sum)
+		if err == nil && virtual { // a chunk served from an authoritative body becomes a physical one
+			_, err = srv.store.casWrite(data)
+		}
 		if err != nil {
 			writeSyncError(w, http.StatusConflict, "MissingChunk", fmt.Sprintf("chunk %s is not available or corrupt: %v", norm, err))
 			return
@@ -16479,7 +16544,7 @@ func (srv *Server) handleBulkNegotiate(w http.ResponseWriter, r *http.Request, r
 		if rec.dup {
 			continue
 		}
-		if _, err := srv.store.casStat(rec.sum); err != nil {
+		if _, err := srv.store.casStatOrVirtual(rec.sum); err != nil {
 			missing = append(missing, rec)
 			total += int64(rec.length)
 		}
@@ -16506,7 +16571,7 @@ func (srv *Server) handleBulkFetch(w http.ResponseWriter, r *http.Request, rawPa
 	}
 	var total int64
 	for _, rec := range recs {
-		n, err := srv.store.casStat(rec.sum)
+		n, err := srv.store.casStatOrVirtual(rec.sum)
 		if err != nil {
 			writeSyncError(w, http.StatusNotFound, "NoSuchChunk", fmt.Sprintf("chunk %x is not available: %v", rec.sum, err))
 			return
@@ -16517,7 +16582,7 @@ func (srv *Server) handleBulkFetch(w http.ResponseWriter, r *http.Request, rawPa
 		}
 		total += n
 	}
-	data, err := srv.store.casRead(recs[0].sum)
+	data, _, err := srv.store.casReadOrVirtual(recs[0].sum)
 	if err != nil {
 		writeSyncError(w, http.StatusNotFound, "NoSuchChunk", fmt.Sprintf("chunk %x is not available or corrupt: %v", recs[0].sum, err))
 		return
@@ -16531,7 +16596,7 @@ func (srv *Server) handleBulkFetch(w http.ResponseWriter, r *http.Request, rawPa
 	}
 	for i, rec := range recs {
 		if i > 0 {
-			if data, err = srv.store.casRead(rec.sum); err != nil || len(data) != rec.length {
+			if data, _, err = srv.store.casReadOrVirtual(rec.sum); err != nil || len(data) != rec.length {
 				log.Printf("zeros3: bulk fetch aborted mid-stream at chunk %x: %v", rec.sum, err)
 				return
 			}
@@ -20899,6 +20964,9 @@ func printVerifyHuman(w io.Writer, r VerifyResult) {
 	if r.PacksChecked > 0 {
 		fmt.Fprintf(w, "packs            %d checked\n", r.PacksChecked)
 	}
+	if r.AuthorityBodies > 0 || r.AuthorityOrphans > 0 {
+		fmt.Fprintf(w, "authority        %d live bodies | %d verified exact | %d orphan bodies\n", r.AuthorityBodies, r.AuthoritiesVerified, r.AuthorityOrphans)
+	}
 	if r.RepresentationRoots > 0 || r.RepresentationOrphanRoots > 0 {
 		fmt.Fprintf(w, "representations  %d live roots | %d verified exact | %d orphan roots\n", r.RepresentationRoots, r.RepresentationsVerified, r.RepresentationOrphanRoots)
 	}
@@ -21517,6 +21585,9 @@ func printGCHuman(w io.Writer, r GCResult) {
 	fmt.Fprintf(w, "live set         ok=%v\n", r.LiveSetOK)
 	fmt.Fprintf(w, "chunks           %d scanned | %d reachable | %d unreachable\n", r.ChunksScanned, r.ChunksReachable, r.ChunksUnreachable)
 	fmt.Fprintf(w, "manifests        %d scanned | %d unreachable\n", r.ManifestsScanned, r.ManifestsUnreachable)
+	if r.AuthorityOrphanBodies > 0 {
+		fmt.Fprintf(w, "authority        %d orphan bodies | %d deleted\n", r.AuthorityOrphanBodies, r.AuthorityBodiesDeleted)
+	}
 	if r.RepresentationOrphanRoots > 0 {
 		fmt.Fprintf(w, "representations  %d orphan roots | %d deleted\n", r.RepresentationOrphanRoots, r.RepresentationRootsDeleted)
 	}
@@ -21975,7 +22046,7 @@ func (s *Store) exportBundle(id string, w io.Writer, compress bool) (BundleStats
 	}
 	comp := newCompressor(compress)
 	for _, c := range plan {
-		data, err := s.casRead(c.sha)
+		data, _, err := s.casReadOrVirtual(c.sha)
 		if err != nil {
 			return BundleStats{}, fmt.Errorf("bundle export: chunk %x: %w", c.sha, err)
 		}
@@ -23008,7 +23079,7 @@ func (s *Store) resolveDeltaBase(h deltaHeader) ([]bundleChunkDesc, error) {
 // verifies the digest of whichever copy it serves, so a locator entry whose
 // every physical copy is missing or corrupt fails here.
 func (s *Store) checkBaseRef(sum [32]byte, length uint32) error {
-	data, err := s.casRead(sum)
+	data, _, err := s.casReadOrVirtual(sum)
 	if err != nil {
 		return fmt.Errorf("base chunk %x is declared by the base snapshot but unreadable (a delta carries no payload to repair it): %w", sum, err)
 	}
@@ -23077,7 +23148,7 @@ func (s *Store) exportDelta(baseID, targetID string, w io.Writer, compress bool)
 			_, err := hw.Write(rec)
 			return err
 		}
-		data, err := s.casRead(c.sha)
+		data, _, err := s.casReadOrVirtual(c.sha)
 		if err != nil {
 			return fmt.Errorf("delta export: chunk %x: %w", c.sha, err)
 		}
@@ -25172,7 +25243,8 @@ const (
 	storeFormatVersionModel           = 7
 	storeFormatVersionStructured      = 8
 	storeFormatVersionManaged         = 9
-	storeFormatVersionSupported       = storeFormatVersionManaged
+	storeFormatVersionAuthority       = 10
+	storeFormatVersionSupported       = storeFormatVersionAuthority
 	hookRepRootBeforeFormat           = "rep-root-before-format"
 
 	hookRepComponentsStaged  = "rep-components-staged"
@@ -28988,7 +29060,7 @@ type manifestReaderAt struct {
 	s         *Store
 	man       manifestV1
 	size      int64
-	rd        *manifestReader
+	rd        objectReader
 	streamEnd int64
 	cur       []byte
 	curOff    int64
@@ -29020,7 +29092,7 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 		}
 		if m.rd == nil || m.streamEnd != off {
 			m.close()
-			m.rd = m.s.newManifestReader(m.man, byteRange{start: off, end: m.size - 1})
+			m.rd = m.s.openObjectReader(m.man, byteRange{start: off, end: m.size - 1})
 			m.streamEnd = off
 		}
 		data, err := m.rd.next()
@@ -29047,21 +29119,35 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 // structural kind applies; every other error means the optional work failed.
 // Nothing here changes what is visible: the namespace commit is separate.
 func (s *Store) repBuild(man manifestV1) error {
-	if man.TotalLength < 1 {
-		return errRepUnsupported
-	}
-	objSHA, err := decodeHexSHA256(man.ObjectSHA256)
+	root, err := s.repConstruct(man)
 	if err != nil {
 		return err
 	}
+	if err := s.publishRepRoot(root); err != nil {
+		return err
+	}
+	s.repAdopt(root)
+	return nil
+}
+
+// repConstruct builds, durably stages and proves the representation of a
+// manifest's object without publishing a root for it.
+func (s *Store) repConstruct(man manifestV1) (*repRoot, error) {
+	if man.TotalLength < 1 {
+		return nil, errRepUnsupported
+	}
+	objSHA, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		return nil, err
+	}
 	if man.TotalLength > repMaxInspect {
-		return fmt.Errorf("%w: object of %d bytes is above the analysis budget", errRepUnsupported, man.TotalLength)
+		return nil, fmt.Errorf("%w: object of %d bytes is above the analysis budget", errRepUnsupported, man.TotalLength)
 	}
 	ra := s.newManifestReaderAt(man)
 	defer ra.close()
 	kind, ok := repCandidate(ra, man.TotalLength)
 	if !ok {
-		return errRepUnsupported
+		return nil, errRepUnsupported
 	}
 	s.repEnsure()
 	fireTestHook(hookRepAnalysisStarted)
@@ -29075,25 +29161,25 @@ func (s *Store) repBuild(man manifestV1) error {
 		rep, err = b.encodeKind(kind, ra, man.TotalLength)
 		return err
 	}(); err != nil {
-		return err
+		return nil, err
 	}
 	id, err := b.finishRep(rep)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	fireTestHook(hookRepComponentsStaged)
 	if err := b.flush(); err != nil {
-		return err
+		return nil, err
 	}
 	fireTestHook(hookRepComponentsFlushed)
 	// The proof runs the production decoder over the production Source: the exact
 	// length and SHA-256 of the authoritative object, never a buffered copy.
 	if err := b.proof(id, man.TotalLength, objSHA); err != nil {
-		return fmt.Errorf("representation proof failed: %w", err)
+		return nil, fmt.Errorf("representation proof failed: %w", err)
 	}
 	reach, err := b.env.reachable(id)
 	if err != nil {
-		return fmt.Errorf("representation reachability failed: %w", err)
+		return nil, fmt.Errorf("representation reachability failed: %w", err)
 	}
 	root := &repRoot{ManifestUUID: man.ManifestUUID, ObjSHA: objSHA, ObjSize: man.TotalLength, Rep: id, Descs: map[[32]byte]*repDesc{}}
 	for _, oid := range reach.Order {
@@ -29102,11 +29188,7 @@ func (s *Store) repBuild(man manifestV1) error {
 		}
 	}
 	fireTestHook(hookRepObjectPublished)
-	if err := s.publishRepRoot(root); err != nil {
-		return err
-	}
-	s.repAdopt(root)
-	return nil
+	return root, nil
 }
 
 // tryBuildRep adds only optional state: ingest calls it before namespace
@@ -29580,7 +29662,12 @@ func (s *Store) repOpenReader(man manifestV1, rng byteRange) (objectReader, erro
 	if hex.EncodeToString(root.ObjSHA[:]) != man.ObjectSHA256 || root.ObjSize != man.TotalLength {
 		return nil, fmt.Errorf("%w: root names a different object", errRepMismatch)
 	}
-	whole := rng.start == 0 && rng.end == man.TotalLength-1
+	return s.repOpenRootReader(root, rng)
+}
+
+// repOpenRootReader serves a range (or the whole object) from a trusted root.
+func (s *Store) repOpenRootReader(root *repRoot, rng byteRange) (objectReader, error) {
+	whole := rng.start == 0 && rng.end == root.ObjSize-1
 	src := s.newRepSource(root.Descs, nil)
 	env := &repEnv{Src: src, Limits: repProdLimits}
 	var produce func(w io.Writer) error
@@ -29643,6 +29730,16 @@ func (s *Store) repOpenReader(man manifestV1, rng byteRange) (objectReader, erro
 // mode allows it and it applies, otherwise (or on any failure before the first
 // byte) the ordinary CDC manifest reader. CDC stays the authority.
 func (s *Store) openObjectReader(man manifestV1, rng byteRange) objectReader {
+	if s.auth.mayHave.Load() {
+		rd, err := s.authOpenReader(man, rng)
+		if rd != nil {
+			return rd
+		}
+		if err != nil {
+			s.auth.fallbacks.Add(1)
+			log.Printf("zeros3: authoritative body of manifest %s unreadable, trying its CDC chunk list: %v", man.ManifestUUID, err)
+		}
+	}
 	// Whole structured reconstruction is slower than authoritative CDC for
 	// every measured kind. Keep structural decoding for ranges and verification.
 	whole := rng.start == 0 && rng.end == man.TotalLength-1
@@ -39494,6 +39591,3045 @@ func (gitDecoder) Expand(c *repCall, emit func([32]byte)) error {
 }
 
 // =============================================================================
+// 16e. Representation-authoritative bodies (Z4-B2 prototype, DRAFT_ONLY)
+//
+// A body record is the physical locator of one logical object *content*
+// (keyed by its SHA-256), independent of any manifest, key or version. When a
+// committed record exists for a manifest's object SHA-256, the record -- not
+// the manifest's CDC chunk list -- is the liveness root and the read source
+// for that content; the manifest (immutable, journal-hashed) keeps its chunk
+// list only as a *virtual* chunk index. Three forms:
+//
+//	CDC pin   an explicit chunk list (physical closure of a base kept alive
+//	          without any namespace entry)
+//	REP       an existing structural representation root (kinds 1-12)
+//	DELTA     a generic exact COPY/ADD envelope against up to four bases that
+//	          are themselves bodies (delta depth <= 2 by policy, hard 4)
+//
+// Records are immutable files `bodies/<sha256>.body`, replaced only by an
+// atomic rename that raises a generation counter. FORMAT.json is raised to
+// storeFormatVersionAuthority before the first record exists, so binaries
+// that predate this section refuse the store. CDC chunks become garbage only
+// when no root marks them; gc reclaims them under the exclusive store lock.
+// =============================================================================
+
+const (
+	xdMagic     = "ZS3D"
+	xdVersion   = 1
+	xdMaxObject = int64(256) << 20
+	xdMaxBases  = 4
+	xdMaxOps    = 1 << 22
+	xdMaxFrames = 1 << 18
+	// xdMaxProgram bounds one frame's inflated program: a hostile envelope cannot
+	// expand into more than this regardless of the span it claims.
+	xdMaxProgram = 64 << 20
+	xdLitSplit   = 4 << 20
+	xdMinCopy    = 12
+	xdWindow     = 16
+	xdPieceSize  = 32 << 10
+)
+
+var errDelta = errors.New("delta: invalid or unsupported envelope")
+
+type xdBaseRef struct {
+	SHA  [32]byte
+	Size int64
+}
+
+// xdOp is one COPY (base >= 0) or ADD (base < 0, lit set) step.
+type xdOp struct {
+	tpos, n int64
+	base    int
+	off     int64
+	lit     []byte
+}
+
+type xdFrame struct {
+	tpos, span int64
+	mode       byte
+	plen       int64
+	poff       int64
+}
+
+type xdHeader struct {
+	size   int64
+	sha    [32]byte
+	bases  []xdBaseRef
+	frames []xdFrame
+	hdrLen int64
+	total  int64 // serialized blob length implied by the header
+}
+
+type xdSrc struct {
+	sha  [32]byte
+	data []byte
+}
+
+func xdMix(x uint64) uint64 {
+	x ^= x >> 30
+	x *= 0xbf58476d1ce4e5b9
+	x ^= x >> 27
+	x *= 0x94d049bb133111eb
+	return x ^ (x >> 31)
+}
+
+const xdP = 0x9e3779b97f4a7c15
+
+var xdPow = func() uint64 {
+	p := uint64(1)
+	for i := 0; i < xdWindow-1; i++ {
+		p *= xdP
+	}
+	return p
+}()
+
+func xdWindowHash(b []byte) uint64 {
+	var h uint64
+	for _, v := range b[:xdWindow] {
+		h = h*xdP + uint64(v) + 1
+	}
+	return h
+}
+
+type xdBucket struct {
+	h   uint64
+	pos [4]uint32
+	n   uint8
+}
+
+// xdMatch finds COPY/ADD ops with a content-sampled anchor index over the
+// bases: base and target share one sampling rule, so shifted content aligns.
+// Anchors only propose candidates; every COPY is verified byte-for-byte.
+func xdMatch(bases [][]byte, t []byte) []xdOp {
+	total := 0
+	for _, b := range bases {
+		total += len(b)
+	}
+	k := 4
+	for k < total>>18 {
+		k <<= 1
+	}
+	mask := uint64(k - 1)
+	capacity := 1
+	for capacity < 4*(total/k+64) {
+		capacity <<= 1
+	}
+	table := make([]xdBucket, capacity)
+	tmask := uint64(capacity - 1)
+	for bi, b := range bases {
+		if len(b) < xdWindow {
+			continue
+		}
+		h := xdWindowHash(b)
+		for i := 0; ; i++ {
+			if xdMix(h)&mask == 0 {
+				slot := h & tmask
+				for probe := 0; probe < 16; probe++ {
+					v := &table[slot]
+					if v.n == 0 {
+						v.h = h
+					}
+					if v.h == h {
+						if v.n < 4 {
+							v.pos[v.n] = uint32(bi)<<30 | uint32(i)
+							v.n++
+						}
+						break
+					}
+					slot = (slot + 1) & tmask
+				}
+			}
+			if i+xdWindow >= len(b) {
+				break
+			}
+			h = (h-(uint64(b[i])+1)*xdPow)*xdP + uint64(b[i+xdWindow]) + 1
+		}
+	}
+	var ops []xdOp
+	start := 0
+	emit := func(end int) {
+		if end > start {
+			ops = append(ops, xdOp{base: -1, lit: t[start:end], n: int64(end - start)})
+		}
+	}
+	i := 0
+	var h uint64
+	if len(t) >= xdWindow {
+		h = xdWindowHash(t)
+	}
+	for i+xdWindow <= len(t) {
+		if xdMix(h)&mask == 0 {
+			slot := h & tmask
+			bestN, bestBack, bestBase, bestOff := 0, 0, 0, 0
+			for probe := 0; probe < 16; probe++ {
+				v := &table[slot]
+				if v.n == 0 {
+					break
+				}
+				if v.h == h {
+					for _, p := range v.pos[:v.n] {
+						bi, off := int(p>>30), int(p&(1<<30-1))
+						b := bases[bi]
+						f := 0
+						for off+f < len(b) && i+f < len(t) && b[off+f] == t[i+f] {
+							f++
+						}
+						bk := 0
+						for bk < i-start && bk < off && b[off-bk-1] == t[i-bk-1] {
+							bk++
+						}
+						if f >= xdWindow && f+bk > bestN {
+							bestN, bestBack, bestBase, bestOff = f+bk, bk, bi, off-bk
+						}
+					}
+					break
+				}
+				slot = (slot + 1) & tmask
+			}
+			if bestN >= xdMinCopy {
+				emit(i - bestBack)
+				if n := len(ops); n > 0 && ops[n-1].base == bestBase && ops[n-1].off+ops[n-1].n == int64(bestOff) && start == i-bestBack {
+					ops[n-1].n += int64(bestN)
+				} else {
+					ops = append(ops, xdOp{base: bestBase, off: int64(bestOff), n: int64(bestN)})
+				}
+				i = i - bestBack + bestN
+				start = i
+				if i+xdWindow <= len(t) {
+					h = xdWindowHash(t[i:])
+				}
+				continue
+			}
+		}
+		if i+xdWindow >= len(t) {
+			break
+		}
+		h = (h-(uint64(t[i])+1)*xdPow)*xdP + uint64(t[i+xdWindow]) + 1
+		i++
+	}
+	emit(len(t))
+	var pos int64
+	for j := range ops {
+		ops[j].tpos = pos
+		pos += ops[j].n
+	}
+	return ops
+}
+
+func xdDeflate(b []byte, level int) []byte {
+	var out bytes.Buffer
+	w, _ := flate.NewWriter(&out, level)
+	_, _ = w.Write(b)
+	_ = w.Close()
+	return out.Bytes()
+}
+
+func xdInflate(b []byte, limit int64) ([]byte, error) {
+	br := bytes.NewReader(b)
+	f := flate.NewReader(br)
+	out, err := io.ReadAll(io.LimitReader(f, limit+1))
+	cerr := f.Close()
+	if err != nil || cerr != nil || int64(len(out)) > limit || br.Len() != 0 {
+		return nil, errDelta
+	}
+	return out, nil
+}
+
+// xdEncode emits a self-authenticating envelope. Only bases that a COPY
+// uses appear in its dependency list. frameSpan bounds the target bytes whose
+// program one independently compressed frame covers (range-read granularity).
+func xdEncode(bases []xdSrc, target []byte, frameSpan int64) ([]byte, []xdBaseRef, error) {
+	if int64(len(target)) > xdMaxObject || len(bases) > xdMaxBases || len(target) == 0 {
+		return nil, nil, errDelta
+	}
+	raw := make([][]byte, len(bases))
+	for i, b := range bases {
+		if int64(len(b.data)) > xdMaxObject {
+			return nil, nil, errDelta
+		}
+		raw[i] = b.data
+	}
+	ops := xdMatch(raw, target)
+	if len(ops) > xdMaxOps {
+		ops = []xdOp{{base: -1, lit: target, n: int64(len(target))}}
+	}
+	used := make([]int, len(bases))
+	for i := range used {
+		used[i] = -1
+	}
+	var refs []xdBaseRef
+	for _, o := range ops {
+		if o.base >= 0 && used[o.base] < 0 {
+			used[o.base] = len(refs)
+			refs = append(refs, xdBaseRef{bases[o.base].sha, int64(len(bases[o.base].data))})
+		}
+	}
+	// Renumber in first-use order; rebuild the base list accordingly.
+	var frames []xdFrame
+	var payload []byte
+	var prog []byte
+	var span int64
+	closeFrame := func() {
+		if span == 0 {
+			return
+		}
+		mode, p := byte(0), prog
+		if z := xdDeflate(prog, 6); len(z) < len(prog) {
+			mode, p = 1, z
+		}
+		frames = append(frames, xdFrame{span: span, mode: mode, plen: int64(len(p))})
+		payload = append(payload, p...)
+		prog, span = nil, 0
+	}
+	for _, o := range ops {
+		if o.base < 0 {
+			for lit := o.lit; len(lit) > 0; {
+				n := min(len(lit), xdLitSplit)
+				prog = append(prog, 0)
+				prog = binary.AppendUvarint(prog, uint64(n))
+				prog = append(prog, lit[:n]...)
+				span += int64(n)
+				lit = lit[n:]
+				if span >= frameSpan || len(prog) >= xdLitSplit {
+					closeFrame()
+				}
+			}
+			continue
+		} else {
+			prog = append(prog, 1)
+			prog = binary.AppendUvarint(prog, uint64(used[o.base]))
+			prog = binary.AppendUvarint(prog, uint64(o.off))
+			prog = binary.AppendUvarint(prog, uint64(o.n))
+		}
+		span += o.n
+		if span >= frameSpan {
+			closeFrame()
+		}
+	}
+	closeFrame()
+	if len(frames) > xdMaxFrames {
+		return nil, nil, errDelta
+	}
+	h := append([]byte(xdMagic), xdVersion)
+	h = binary.AppendUvarint(h, uint64(len(target)))
+	sum := sha256.Sum256(target)
+	h = append(h, sum[:]...)
+	h = append(h, byte(len(refs)))
+	for _, r := range refs {
+		h = append(h, r.SHA[:]...)
+		h = binary.AppendUvarint(h, uint64(r.Size))
+	}
+	h = binary.AppendUvarint(h, uint64(len(frames)))
+	for _, f := range frames {
+		h = binary.AppendUvarint(h, uint64(f.span))
+		h = append(h, f.mode)
+		h = binary.AppendUvarint(h, uint64(f.plen))
+	}
+	return append(h, payload...), refs, nil
+}
+
+// xdParseHeader reads the envelope header from the front of a blob. more
+// reports a truncated header that a longer prefix may complete.
+func xdParseHeader(b []byte) (h xdHeader, more bool, err error) {
+	pos := 0
+	need := func(n int) bool {
+		if n < 0 || pos+n > len(b) {
+			more = true
+			return false
+		}
+		return true
+	}
+	uv := func() (uint64, bool) {
+		v, n := binary.Uvarint(b[pos:])
+		if n == 0 {
+			more = true
+			return 0, false
+		}
+		if n < 0 {
+			return 0, false
+		}
+		pos += n
+		return v, true
+	}
+	if !need(len(xdMagic)+1) || string(b[:4]) != xdMagic || b[4] != xdVersion {
+		if !more {
+			err = errDelta
+		}
+		return
+	}
+	pos = 5
+	sz, ok := uv()
+	if !ok || int64(sz) > xdMaxObject || sz == 0 {
+		if !more {
+			err = errDelta
+		}
+		return
+	}
+	h.size = int64(sz)
+	if !need(33) {
+		return
+	}
+	copy(h.sha[:], b[pos:])
+	pos += 32
+	nb := int(b[pos])
+	pos++
+	if nb > xdMaxBases {
+		err = errDelta
+		return
+	}
+	for i := 0; i < nb; i++ {
+		if !need(32) {
+			return
+		}
+		var r xdBaseRef
+		copy(r.SHA[:], b[pos:])
+		pos += 32
+		s, ok := uv()
+		if !ok || int64(s) > xdMaxObject {
+			if !more {
+				err = errDelta
+			}
+			return
+		}
+		r.Size = int64(s)
+		h.bases = append(h.bases, r)
+	}
+	nf, ok := uv()
+	if !ok || nf == 0 || nf > xdMaxFrames {
+		if !more {
+			err = errDelta
+		}
+		return
+	}
+	var tpos, poff int64
+	for i := uint64(0); i < nf; i++ {
+		sp, ok := uv()
+		if !ok || sp == 0 || int64(sp) > xdMaxObject {
+			if !more {
+				err = errDelta
+			}
+			return
+		}
+		if !need(1) {
+			return
+		}
+		mode := b[pos]
+		pos++
+		pl, ok := uv()
+		if !ok || mode > 1 || int64(pl) > xdMaxObject*9 {
+			if !more {
+				err = errDelta
+			}
+			return
+		}
+		h.frames = append(h.frames, xdFrame{tpos: tpos, span: int64(sp), mode: mode, plen: int64(pl), poff: poff})
+		tpos += int64(sp)
+		poff += int64(pl)
+	}
+	if tpos != h.size {
+		err = errDelta
+		return
+	}
+	h.hdrLen = int64(pos)
+	for i := range h.frames {
+		h.frames[i].poff += h.hdrLen
+	}
+	h.total = h.hdrLen + poff
+	return
+}
+
+// xdDecodeFrame inflates and parses one frame into absolute-position ops.
+// Literals alias the returned program buffer.
+func xdDecodeFrame(h *xdHeader, i int, payload []byte) ([]xdOp, error) {
+	f := h.frames[i]
+	if int64(len(payload)) != f.plen {
+		return nil, errDelta
+	}
+	prog := payload
+	if f.mode == 1 {
+		var err error
+		if prog, err = xdInflate(payload, min(8*f.span+(64<<10), xdMaxProgram)); err != nil {
+			return nil, err
+		}
+	}
+	var ops []xdOp
+	pos := 0
+	tpos := f.tpos
+	for pos < len(prog) {
+		tag := prog[pos]
+		pos++
+		n, w := binary.Uvarint(prog[pos:])
+		if w <= 0 {
+			return nil, errDelta
+		}
+		pos += w
+		if tag == 0 {
+			if n == 0 || n > uint64(len(prog)-pos) {
+				return nil, errDelta
+			}
+			ops = append(ops, xdOp{tpos: tpos, n: int64(n), base: -1, lit: prog[pos : pos+int(n)]})
+			pos += int(n)
+			tpos += int64(n)
+		} else if tag == 1 {
+			bi := n
+			off, w := binary.Uvarint(prog[pos:])
+			if w <= 0 {
+				return nil, errDelta
+			}
+			pos += w
+			ln, w := binary.Uvarint(prog[pos:])
+			if w <= 0 || ln == 0 || ln > uint64(xdMaxObject) || bi >= uint64(len(h.bases)) {
+				return nil, errDelta
+			}
+			pos += w
+			if off > uint64(h.bases[bi].Size) || ln > uint64(h.bases[bi].Size)-off {
+				return nil, errDelta
+			}
+			ops = append(ops, xdOp{tpos: tpos, n: int64(ln), base: int(bi), off: int64(off)})
+			tpos += int64(ln)
+		} else {
+			return nil, errDelta
+		}
+		if len(ops) > xdMaxOps {
+			return nil, errDelta
+		}
+	}
+	if tpos != f.tpos+f.span {
+		return nil, errDelta
+	}
+	return ops, nil
+}
+
+// ---- body records ---------------------------------------------------------
+
+const (
+	authMagic         = "ZS3B"
+	authRecVersion    = 1
+	authFormPin       = 1
+	authFormRep       = 2
+	authFormDelta     = 3
+	authHardDepth     = 4
+	authMaxRecord     = 128 << 20
+	authMaxPieces     = 1 << 21
+	authMaxOpen       = 64
+	authDefaultBudget = int64(512) << 20
+
+	hookAuthComponentsFlushed = "auth-components-flushed"
+	hookAuthProofDone         = "auth-proof-done"
+	hookAuthBeforeFormat      = "auth-before-format"
+	hookAuthAfterFormat       = "auth-after-format"
+	hookAuthBeforeWrite       = "auth-before-write"
+	hookAuthRecordWritten     = "auth-record-written"
+	hookAuthBeforeRename      = "auth-before-rename"
+	hookAuthAfterRename       = "auth-after-rename"
+	hookAuthPublished         = "auth-published"
+	hookAuthBeforeRetire      = "auth-before-retire"
+	hookAuthAfterRetire       = "auth-after-retire"
+	hookAuthRevertMaterial    = "auth-revert-materialized"
+)
+
+// authFault is a test-only I/O failure seam (nil in production): it can fail
+// component writes and make the record write short, like a full disk would.
+var authFault func(point string) error
+
+func authFaultAt(point string) error {
+	if authFault != nil {
+		return authFault(point)
+	}
+	return nil
+}
+
+var (
+	errAuthCorrupt  = errors.New("authority: corrupt body record")
+	errAuthMissing  = errors.New("authority: body record missing")
+	errAuthLimit    = errors.New("authority: dependency limit exceeded")
+	errAuthStale    = errors.New("authority: stale generation")
+	errAuthMismatch = errors.New("authority: reconstruction does not equal the object")
+)
+
+type authPiece struct {
+	SHA [32]byte
+	Len int64
+}
+
+type authRecord struct {
+	SHA    [32]byte
+	Size   int64
+	Gen    uint64
+	Form   byte
+	Depth  byte
+	Sketch []uint64
+	Bases  []xdBaseRef
+	Pieces []authPiece // pin: the chunk list; delta: the envelope blob pieces
+	Root   *repRoot    // rep form
+}
+
+func (r *authRecord) marshal() ([]byte, error) {
+	if r.Size < 1 || len(r.Sketch) > 16 || len(r.Bases) > xdMaxBases || len(r.Pieces) > authMaxPieces || r.Depth > authHardDepth {
+		return nil, errAuthLimit
+	}
+	b := append([]byte(authMagic), authRecVersion, r.Form, r.Depth)
+	b = append(b, r.SHA[:]...)
+	b = binary.AppendUvarint(b, uint64(r.Size))
+	b = binary.AppendUvarint(b, r.Gen)
+	b = append(b, byte(len(r.Sketch)))
+	for _, f := range r.Sketch {
+		b = binary.LittleEndian.AppendUint64(b, f)
+	}
+	b = append(b, byte(len(r.Bases)))
+	for _, x := range r.Bases {
+		b = append(b, x.SHA[:]...)
+		b = binary.AppendUvarint(b, uint64(x.Size))
+	}
+	b = binary.AppendUvarint(b, uint64(len(r.Pieces)))
+	for _, p := range r.Pieces {
+		b = append(b, p.SHA[:]...)
+		b = binary.AppendUvarint(b, uint64(p.Len))
+	}
+	if r.Form == authFormRep {
+		if r.Root == nil {
+			return nil, errAuthCorrupt
+		}
+		rb, err := r.Root.marshal()
+		if err != nil {
+			return nil, err
+		}
+		b = binary.AppendUvarint(b, uint64(len(rb)))
+		b = append(b, rb...)
+	}
+	return binary.LittleEndian.AppendUint32(b, crc32.Checksum(b, castagnoliTable)), nil
+}
+
+func unmarshalAuthRecord(b []byte) (*authRecord, error) {
+	if len(b) < 8+32+4 || len(b) > authMaxRecord {
+		return nil, errAuthCorrupt
+	}
+	body, tail := b[:len(b)-4], b[len(b)-4:]
+	if crc32.Checksum(body, castagnoliTable) != binary.LittleEndian.Uint32(tail) {
+		return nil, fmt.Errorf("%w: checksum", errAuthCorrupt)
+	}
+	if string(body[:4]) != authMagic || body[4] != authRecVersion {
+		return nil, fmt.Errorf("%w: magic or version", errAuthCorrupt)
+	}
+	r := &authRecord{Form: body[5], Depth: body[6]}
+	if r.Form < authFormPin || r.Form > authFormDelta || r.Depth > authHardDepth {
+		return nil, fmt.Errorf("%w: form or depth", errAuthCorrupt)
+	}
+	pos := 7
+	if len(body)-pos < 32 {
+		return nil, errAuthCorrupt
+	}
+	copy(r.SHA[:], body[pos:])
+	pos += 32
+	uv := func() (uint64, bool) {
+		v, n := binary.Uvarint(body[pos:])
+		if n <= 0 {
+			return 0, false
+		}
+		pos += n
+		return v, true
+	}
+	sz, ok1 := uv()
+	gen, ok2 := uv()
+	if !ok1 || !ok2 || sz == 0 || int64(sz) < 0 {
+		return nil, errAuthCorrupt
+	}
+	r.Size, r.Gen = int64(sz), gen
+	if pos >= len(body) {
+		return nil, errAuthCorrupt
+	}
+	ns := int(body[pos])
+	pos++
+	if ns > 16 || len(body)-pos < ns*8 {
+		return nil, errAuthCorrupt
+	}
+	for i := 0; i < ns; i++ {
+		r.Sketch = append(r.Sketch, binary.LittleEndian.Uint64(body[pos:]))
+		pos += 8
+	}
+	if pos >= len(body) {
+		return nil, errAuthCorrupt
+	}
+	nb := int(body[pos])
+	pos++
+	if nb > xdMaxBases {
+		return nil, errAuthLimit
+	}
+	for i := 0; i < nb; i++ {
+		if len(body)-pos < 32 {
+			return nil, errAuthCorrupt
+		}
+		var x xdBaseRef
+		copy(x.SHA[:], body[pos:])
+		pos += 32
+		s, ok := uv()
+		if !ok || int64(s) < 1 || int64(s) > xdMaxObject {
+			return nil, errAuthCorrupt
+		}
+		x.Size = int64(s)
+		r.Bases = append(r.Bases, x)
+	}
+	np, ok := uv()
+	if !ok || np > authMaxPieces || np > uint64(len(body)-pos)/33 {
+		return nil, errAuthCorrupt
+	}
+	var psum int64
+	for i := uint64(0); i < np; i++ {
+		var p authPiece
+		copy(p.SHA[:], body[pos:])
+		pos += 32
+		l, ok := uv()
+		if !ok || l < 1 || l > maxPackedChunkBytes {
+			return nil, errAuthCorrupt
+		}
+		p.Len = int64(l)
+		psum += p.Len
+		r.Pieces = append(r.Pieces, p)
+	}
+	switch r.Form {
+	case authFormPin:
+		if psum != r.Size || len(r.Bases) != 0 || r.Depth != 0 {
+			return nil, fmt.Errorf("%w: pin lengths", errAuthCorrupt)
+		}
+	case authFormDelta:
+		if len(r.Pieces) == 0 || len(r.Bases) == 0 || r.Depth == 0 {
+			return nil, fmt.Errorf("%w: delta shape", errAuthCorrupt)
+		}
+	case authFormRep:
+		if len(r.Pieces) != 0 || len(r.Bases) != 0 || r.Depth != 0 {
+			return nil, fmt.Errorf("%w: rep shape", errAuthCorrupt)
+		}
+		rl, ok := uv()
+		if !ok || rl > uint64(len(body)-pos) {
+			return nil, errAuthCorrupt
+		}
+		root, err := unmarshalRepRoot(body[pos : pos+int(rl)])
+		if err != nil {
+			return nil, err
+		}
+		pos += int(rl)
+		if root.ObjSHA != r.SHA || root.ObjSize != r.Size {
+			return nil, fmt.Errorf("%w: rep root names another object", errAuthCorrupt)
+		}
+		r.Root = root
+	}
+	if pos != len(body) {
+		return nil, fmt.Errorf("%w: %d trailing bytes", errAuthCorrupt, len(body)-pos)
+	}
+	return r, nil
+}
+
+// ---- store-level state ----------------------------------------------------
+
+type authState struct {
+	mayHave atomic.Bool
+	pubMu   sync.Mutex
+	fmtMu   sync.Mutex
+
+	cacheMu     sync.Mutex
+	cacheBudget int64 // decoded-object cache bytes; 0 disables (never required for correctness)
+	cacheBytes  int64
+	cacheOrder  []string
+	cache       map[string][]byte
+
+	reads, rangeReads, fallbacks, cacheHits, cacheMisses atomic.Int64
+
+	vmu   sync.Mutex
+	vidx  map[[32]byte]authVLoc
+	vtime time.Time
+}
+
+func (s *Store) authDir() string { return filepath.Join(s.root, "bodies") }
+func (s *Store) authPath(sha [32]byte) string {
+	return filepath.Join(s.authDir(), hex.EncodeToString(sha[:])+".body")
+}
+
+// SetAuthorityCache bounds the disposable decoded-object cache (0 disables it).
+func (s *Store) SetAuthorityCache(bytes int64) {
+	s.auth.cacheMu.Lock()
+	s.auth.cacheBudget = bytes
+	s.auth.cache, s.auth.cacheOrder, s.auth.cacheBytes = nil, nil, 0
+	s.auth.cacheMu.Unlock()
+}
+
+func (s *Store) authCacheGet(key string) []byte {
+	s.auth.cacheMu.Lock()
+	defer s.auth.cacheMu.Unlock()
+	if v, ok := s.auth.cache[key]; ok {
+		s.auth.cacheHits.Add(1)
+		return v
+	}
+	s.auth.cacheMisses.Add(1)
+	return nil
+}
+
+func (s *Store) authCachePut(key string, v []byte) {
+	s.auth.cacheMu.Lock()
+	defer s.auth.cacheMu.Unlock()
+	if s.auth.cacheBudget <= 0 || int64(len(v)) > s.auth.cacheBudget/2 {
+		return
+	}
+	if s.auth.cache == nil {
+		s.auth.cache = map[string][]byte{}
+	}
+	if _, ok := s.auth.cache[key]; ok {
+		return
+	}
+	for s.auth.cacheBytes+int64(len(v)) > s.auth.cacheBudget && len(s.auth.cacheOrder) > 0 {
+		old := s.auth.cacheOrder[0]
+		s.auth.cacheOrder = s.auth.cacheOrder[1:]
+		s.auth.cacheBytes -= int64(len(s.auth.cache[old]))
+		delete(s.auth.cache, old)
+	}
+	s.auth.cache[key] = v
+	s.auth.cacheOrder = append(s.auth.cacheOrder, key)
+	s.auth.cacheBytes += int64(len(v))
+}
+
+// authLoad returns the committed record for a content SHA-256, nil when none.
+func (s *Store) authLoad(sha [32]byte) (*authRecord, error) {
+	if !s.auth.mayHave.Load() {
+		return nil, nil
+	}
+	data, err := os.ReadFile(s.authPath(sha))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	r, err := unmarshalAuthRecord(data)
+	if err != nil {
+		return nil, fmt.Errorf("body %x: %w", sha[:6], err)
+	}
+	if r.SHA != sha {
+		return nil, fmt.Errorf("body %x: %w: filed under another content hash", sha[:6], errAuthCorrupt)
+	}
+	return r, nil
+}
+
+func (s *Store) authFiles() ([][32]byte, error) {
+	ents, err := os.ReadDir(s.authDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out [][32]byte
+	for _, e := range ents {
+		name, ok := strings.CutSuffix(e.Name(), ".body")
+		if !ok || e.IsDir() {
+			continue
+		}
+		if sum, err := decodeHexSHA256(name); err == nil {
+			out = append(out, sum)
+		}
+	}
+	slices.SortFunc(out, func(a, b [32]byte) int { return bytes.Compare(a[:], b[:]) })
+	return out, nil
+}
+
+// ensureAuthFormat raises FORMAT.json to the authority floor (after the lower
+// representation floors) strictly before the first record can exist.
+func (s *Store) ensureAuthFormat() error {
+	s.auth.fmtMu.Lock()
+	defer s.auth.fmtMu.Unlock()
+	s.formatMu.Lock()
+	level := s.format.StoreFormatVersion
+	s.formatMu.Unlock()
+	if level >= storeFormatVersionAuthority {
+		return nil
+	}
+	if err := s.ensureRepFormat(); err != nil {
+		return err
+	}
+	return s.ensureStoreFormat(storeFormatVersionAuthority)
+}
+
+// authPublish atomically commits rec as the authoritative body of rec.SHA.
+// It is the only commit point of a transition: the caller has already made
+// every referenced component durable and proven the reconstruction. A record
+// replaces an existing one only with the next generation.
+func (s *Store) authPublish(rec *authRecord) error {
+	data, err := rec.marshal()
+	if err != nil {
+		return err
+	}
+	if err := s.authCheckClosure(rec); err != nil {
+		return err
+	}
+	fireTestHook(hookAuthBeforeFormat)
+	if err := s.ensureAuthFormat(); err != nil {
+		return err
+	}
+	fireTestHook(hookAuthAfterFormat)
+	s.auth.pubMu.Lock()
+	defer s.auth.pubMu.Unlock()
+	cur, err := s.authLoad(rec.SHA)
+	if err != nil {
+		return err
+	}
+	switch {
+	case cur == nil && rec.Gen != 1, cur != nil && rec.Gen != cur.Gen+1:
+		return errAuthStale
+	}
+	dir := s.authDir()
+	created := false
+	if _, serr := os.Stat(dir); os.IsNotExist(serr) {
+		created = true
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if created {
+		if err := syncDir(s.root); err != nil {
+			return err
+		}
+	}
+	s.auth.mayHave.Store(true)
+	fireTestHook(hookAuthBeforeWrite)
+	tmp, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "auth-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	fail := func(err error) error { tmp.Close(); os.Remove(name); return err }
+	if ferr := authFaultAt("record-write"); ferr != nil {
+		tmp.Write(data[:len(data)/2])
+		return fail(ferr)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fail(err)
+	}
+	fireTestHook(hookAuthRecordWritten)
+	if err := tmp.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return err
+	}
+	fireTestHook(hookAuthBeforeRename)
+	if err := os.Rename(name, s.authPath(rec.SHA)); err != nil {
+		os.Remove(name)
+		return err
+	}
+	fireTestHook(hookAuthAfterRename)
+	if err := syncDir(dir); err != nil {
+		return err
+	}
+	s.authInvalidate()
+	fireTestHook(hookAuthPublished)
+	return nil
+}
+
+// authCheckClosure refuses to commit a record whose required closure is not
+// already durable: every base needs its own committed record of the declared
+// size and a lower depth, and every component chunk must exist at its length.
+func (s *Store) authCheckClosure(rec *authRecord) error {
+	for _, b := range rec.Bases {
+		br, err := s.authLoad(b.SHA)
+		if err != nil {
+			return err
+		}
+		if br == nil {
+			return fmt.Errorf("%w: base %x has no committed record", errAuthMissing, b.SHA[:6])
+		}
+		if br.Size != b.Size || br.Depth >= rec.Depth {
+			return fmt.Errorf("%w: base %x size or depth inconsistent", errAuthCorrupt, b.SHA[:6])
+		}
+	}
+	chunks, err := s.authRecordChunks(rec)
+	if err != nil {
+		return err
+	}
+	for _, c := range chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		if n, err := s.casStat(sum); err != nil || n != c.Length {
+			return fmt.Errorf("%w: component %s is not durable", errAuthMissing, c.SHA256[:12])
+		}
+	}
+	return nil
+}
+
+func (s *Store) authInvalidate() {
+	s.auth.vmu.Lock()
+	s.auth.vidx = nil
+	s.auth.vmu.Unlock()
+}
+
+// authRetire removes a record. Callers must have proven no live manifest
+// depends on it being the only source (revert) or that nothing references it (gc).
+func (s *Store) authRetire(sha [32]byte) error {
+	fireTestHook(hookAuthBeforeRetire)
+	s.auth.pubMu.Lock()
+	defer s.auth.pubMu.Unlock()
+	if err := os.Remove(s.authPath(sha)); err != nil {
+		return err
+	}
+	if err := syncDir(s.authDir()); err != nil {
+		return err
+	}
+	s.authInvalidate()
+	fireTestHook(hookAuthAfterRetire)
+	return nil
+}
+
+// ---- resolution -------------------------------------------------------------
+
+type authBody interface {
+	Size() int64
+	ReadAt(p []byte, off int64) (int, error)
+}
+
+// authCtx is one request's resolution state: bodies opened once, cycle/depth/
+// fanout accounting and a materialization budget. Nothing in it persists.
+type authCtx struct {
+	s      *Store
+	open   map[[32]byte]authBody
+	path   map[[32]byte]bool
+	budget int64
+	// overlay resolves a not-yet-published candidate record (proof, probes).
+	overlay map[[32]byte]*authRecord
+	// fetched counts logical CAS bytes read, the unit of read amplification.
+	fetched int64
+	// pieces is a request-local FIFO of verified chunks shared by every body of
+	// the closure (a base chunk is often read through several dependents).
+	pieces     map[[32]byte][]byte
+	pieceOrder [][32]byte
+	pieceBytes int64
+}
+
+const authPieceCacheBytes = 48 << 20
+
+func (s *Store) newAuthCtx() *authCtx {
+	return &authCtx{s: s, open: map[[32]byte]authBody{}, path: map[[32]byte]bool{}, budget: authDefaultBudget}
+}
+
+func (c *authCtx) close() {}
+
+func (c *authCtx) charge(n int64) error {
+	c.budget -= n
+	if c.budget < 0 {
+		return fmt.Errorf("%w: materialization budget", errAuthLimit)
+	}
+	return nil
+}
+
+// body resolves sha to a readable body. want is the size the referencing
+// record declared (0 = unconstrained, for the top level).
+func (c *authCtx) body(sha [32]byte, want int64, depth int) (authBody, *authRecord, error) {
+	if depth > authHardDepth+1 {
+		return nil, nil, fmt.Errorf("%w: depth", errAuthLimit)
+	}
+	if c.path[sha] {
+		return nil, nil, fmt.Errorf("%w: dependency cycle", errAuthCorrupt)
+	}
+	rec := c.overlay[sha]
+	var err error
+	if rec == nil {
+		if rec, err = c.s.authLoad(sha); err != nil {
+			return nil, nil, err
+		}
+	}
+	if rec == nil {
+		return nil, nil, fmt.Errorf("%w: %x", errAuthMissing, sha[:6])
+	}
+	if want > 0 && rec.Size != want {
+		return nil, nil, fmt.Errorf("%w: base %x is %d bytes, referenced as %d", errAuthMismatch, sha[:6], rec.Size, want)
+	}
+	if b, ok := c.open[sha]; ok {
+		return b, rec, nil
+	}
+	if len(c.open) >= authMaxOpen {
+		return nil, nil, fmt.Errorf("%w: open bodies", errAuthLimit)
+	}
+	c.path[sha] = true
+	defer delete(c.path, sha)
+	var b authBody
+	switch rec.Form {
+	case authFormPin:
+		b = &authPinBody{c: c, rec: rec}
+	case authFormRep:
+		b = &authRepBody{c: c, rec: rec}
+	case authFormDelta:
+		b, err = c.newDelta(rec, depth)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	c.open[sha] = b
+	return b, rec, nil
+}
+
+func (c *authCtx) readPiece(p authPiece) ([]byte, error) {
+	if d, ok := c.pieces[p.SHA]; ok {
+		return d, nil
+	}
+	data, err := c.s.casRead(p.SHA)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) != p.Len {
+		return nil, fmt.Errorf("%w: chunk %x is %d bytes, record says %d", errAuthCorrupt, p.SHA[:6], len(data), p.Len)
+	}
+	c.fetched += p.Len
+	if c.pieces == nil {
+		c.pieces = map[[32]byte][]byte{}
+	}
+	for c.pieceBytes+p.Len > authPieceCacheBytes && len(c.pieceOrder) > 0 {
+		old := c.pieceOrder[0]
+		c.pieceOrder = c.pieceOrder[1:]
+		c.pieceBytes -= int64(len(c.pieces[old]))
+		delete(c.pieces, old)
+	}
+	c.pieces[p.SHA] = data
+	c.pieceOrder = append(c.pieceOrder, p.SHA)
+	c.pieceBytes += p.Len
+	return data, nil
+}
+
+// pieceSeq reads a byte range of a sequence of verified chunks, holding the
+// last one decoded.
+type pieceSeq struct {
+	c      *authCtx
+	pieces []authPiece
+	offs   []int64
+	size   int64
+	lastI  int
+	last   []byte
+}
+
+func newPieceSeq(c *authCtx, pieces []authPiece) *pieceSeq {
+	q := &pieceSeq{c: c, pieces: pieces, offs: make([]int64, len(pieces)), lastI: -1}
+	for i, p := range pieces {
+		q.offs[i] = q.size
+		q.size += p.Len
+	}
+	return q
+}
+
+func (q *pieceSeq) ReadAt(p []byte, off int64) (int, error) {
+	n := 0
+	for n < len(p) && off < q.size {
+		i := sort.Search(len(q.offs), func(i int) bool { return q.offs[i] > off }) - 1
+		if i != q.lastI {
+			data, err := q.c.readPiece(q.pieces[i])
+			if err != nil {
+				return n, err
+			}
+			q.lastI, q.last = i, data
+		}
+		c := copy(p[n:], q.last[off-q.offs[i]:])
+		n += c
+		off += int64(c)
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+type authPinBody struct {
+	c   *authCtx
+	rec *authRecord
+	q   *pieceSeq
+}
+
+func (b *authPinBody) Size() int64 { return b.rec.Size }
+func (b *authPinBody) ReadAt(p []byte, off int64) (int, error) {
+	if b.q == nil {
+		b.q = newPieceSeq(b.c, b.rec.Pieces)
+	}
+	return b.q.ReadAt(p, off)
+}
+
+// authRepBody materializes a structural representation (bounded, disposable).
+type authRepBody struct {
+	c    *authCtx
+	rec  *authRecord
+	data []byte
+}
+
+func (b *authRepBody) Size() int64 { return b.rec.Size }
+func (b *authRepBody) ReadAt(p []byte, off int64) (int, error) {
+	if b.data == nil {
+		key := "obj:" + hex.EncodeToString(b.rec.SHA[:])
+		if d := b.c.s.authCacheGet(key); d != nil {
+			b.data = d
+		} else {
+			if b.rec.Size > repMaxInspect {
+				return 0, fmt.Errorf("%w: representation of %d bytes exceeds the materialization cap", errAuthLimit, b.rec.Size)
+			}
+			if err := b.c.charge(b.rec.Size); err != nil {
+				return 0, err
+			}
+			src := b.c.s.newRepSource(b.rec.Root.Descs, nil)
+			env := &repEnv{Src: src, Limits: repProdLimits}
+			var buf bytes.Buffer
+			buf.Grow(int(b.rec.Size))
+			n, sum, err := env.reconstruct(b.rec.Root.Rep, &buf)
+			src.close()
+			if err != nil {
+				return 0, err
+			}
+			if n != b.rec.Size || sum != b.rec.SHA {
+				return 0, errAuthMismatch
+			}
+			b.data = buf.Bytes()
+			b.c.fetched += b.rec.Size
+			b.c.s.authCachePut(key, b.data)
+		}
+	}
+	if off >= int64(len(b.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+type authDeltaBody struct {
+	c      *authCtx
+	rec    *authRecord
+	hdr    xdHeader
+	blob   *pieceSeq
+	bases  []authBody
+	frames map[int][]xdOp // small FIFO of decoded frames (range reads revisit neighbours)
+	order  []int
+}
+
+func (c *authCtx) newDelta(rec *authRecord, depth int) (authBody, error) {
+	blob := newPieceSeq(c, rec.Pieces)
+	var hdr xdHeader
+	for want := 4096; ; want *= 4 {
+		n := int(min(int64(want), blob.size))
+		buf := make([]byte, n)
+		if _, err := blob.ReadAt(buf, 0); err != nil && err != io.EOF {
+			return nil, err
+		}
+		h, more, err := xdParseHeader(buf)
+		if err != nil {
+			return nil, err
+		}
+		if !more {
+			hdr = h
+			break
+		}
+		if int64(n) == blob.size {
+			return nil, errDelta
+		}
+	}
+	if hdr.total != blob.size || hdr.size != rec.Size || hdr.sha != rec.SHA || len(hdr.bases) != len(rec.Bases) || len(hdr.bases) == 0 {
+		return nil, fmt.Errorf("%w: envelope does not match its record", errAuthCorrupt)
+	}
+	d := &authDeltaBody{c: c, rec: rec, hdr: hdr, blob: blob, frames: map[int][]xdOp{}}
+	maxDepth := 0
+	for i, br := range hdr.bases {
+		if br != rec.Bases[i] {
+			return nil, fmt.Errorf("%w: base list", errAuthCorrupt)
+		}
+		b, brec, err := c.body(br.SHA, br.Size, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		maxDepth = max(maxDepth, int(brec.Depth))
+		d.bases = append(d.bases, b)
+	}
+	if int(rec.Depth) < maxDepth+1 {
+		return nil, fmt.Errorf("%w: recorded depth %d below the bases' %d", errAuthCorrupt, rec.Depth, maxDepth+1)
+	}
+	return d, nil
+}
+
+func (d *authDeltaBody) Size() int64 { return d.rec.Size }
+
+func (d *authDeltaBody) loadFrame(i int) ([]xdOp, error) {
+	if ops, ok := d.frames[i]; ok {
+		return ops, nil
+	}
+	f := d.hdr.frames[i]
+	buf := make([]byte, f.plen)
+	if _, err := d.blob.ReadAt(buf, f.poff); err != nil && !(err == io.EOF && int64(len(buf)) == f.plen) {
+		return nil, err
+	}
+	ops, err := xdDecodeFrame(&d.hdr, i, buf)
+	if err != nil {
+		return nil, err
+	}
+	if len(d.order) >= 16 {
+		delete(d.frames, d.order[0])
+		d.order = d.order[1:]
+	}
+	d.frames[i] = ops
+	d.order = append(d.order, i)
+	return ops, nil
+}
+
+func (d *authDeltaBody) ReadAt(p []byte, off int64) (int, error) {
+	n := 0
+	for n < len(p) && off < d.hdr.size {
+		fi := sort.Search(len(d.hdr.frames), func(i int) bool { return d.hdr.frames[i].tpos > off }) - 1
+		ops, err := d.loadFrame(fi)
+		if err != nil {
+			return n, err
+		}
+		oi := sort.Search(len(ops), func(i int) bool { return ops[i].tpos > off }) - 1
+		for ; oi < len(ops) && n < len(p); oi++ {
+			o := ops[oi]
+			skip := off - o.tpos
+			take := int(min(o.n-skip, int64(len(p)-n)))
+			if o.base < 0 {
+				copy(p[n:n+take], o.lit[skip:])
+			} else if k, err := d.bases[o.base].ReadAt(p[n:n+take], o.off+skip); k != take {
+				if err == nil || err == io.EOF {
+					err = fmt.Errorf("%w: short base read", errAuthMismatch)
+				}
+				return n + k, err
+			}
+			n += take
+			off += int64(take)
+		}
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// ---- streaming reader for the S3 read path --------------------------------
+
+const authReadPiece = 256 << 10
+
+type authObjReader struct {
+	ctx   *authCtx
+	body  authBody
+	off   int64
+	end   int64
+	whole bool
+	h     hash.Hash
+	want  [32]byte
+	buf   []byte
+	done  bool
+}
+
+func (r *authObjReader) next() ([]byte, error) {
+	if r.done {
+		return nil, io.EOF
+	}
+	if r.off > r.end {
+		r.done = true
+		if r.whole {
+			var got [32]byte
+			copy(got[:], r.h.Sum(nil))
+			if got != r.want {
+				return nil, errAuthMismatch
+			}
+		}
+		return nil, io.EOF
+	}
+	n := int(min(int64(authReadPiece), r.end-r.off+1))
+	if cap(r.buf) < n {
+		r.buf = make([]byte, authReadPiece)
+	}
+	buf := r.buf[:n]
+	if k, err := r.body.ReadAt(buf, r.off); k != n {
+		if err == nil || err == io.EOF {
+			err = fmt.Errorf("%w: short read", errAuthMismatch)
+		}
+		return nil, err
+	}
+	r.off += int64(n)
+	if r.whole {
+		r.h.Write(buf)
+	}
+	return buf, nil
+}
+
+func (r *authObjReader) close() { r.ctx.close() }
+
+// authOpenReader serves a manifest's bytes from its committed body record.
+// (nil, nil) means the content has no record. Errors before the first byte let
+// the caller fall back to the CDC chunk list while it still exists.
+func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, error) {
+	if !s.auth.mayHave.Load() || man.TotalLength < 1 {
+		return nil, nil
+	}
+	sha, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		return nil, nil
+	}
+	rec, err := s.authLoad(sha)
+	if err != nil || rec == nil {
+		return nil, err
+	}
+	if rec.Size != man.TotalLength {
+		return nil, fmt.Errorf("%w: record is %d bytes, manifest says %d", errAuthMismatch, rec.Size, man.TotalLength)
+	}
+	whole := rng.start == 0 && rng.end == man.TotalLength-1
+	if rec.Form == authFormRep {
+		// Whole reads stream; ranges use the kind's native range decoder when it has one.
+		if rd, err := s.repOpenRootReader(rec.Root, rng); rd != nil || err != nil {
+			if whole {
+				s.auth.reads.Add(1)
+			} else {
+				s.auth.rangeReads.Add(1)
+			}
+			return rd, err
+		}
+	}
+	ctx := s.newAuthCtx()
+	body, _, err := ctx.body(sha, 0, 1)
+	if err != nil {
+		return nil, err
+	}
+	rd := &authObjReader{ctx: ctx, body: body, off: rng.start, end: rng.end, whole: whole, h: sha256.New(), want: sha}
+	first, err := rd.next()
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	if whole {
+		s.auth.reads.Add(1)
+	} else {
+		s.auth.rangeReads.Add(1)
+	}
+	if err == io.EOF {
+		return &primedReader{rd: rd}, nil
+	}
+	first = append([]byte(nil), first...)
+	return &primedReader{first: first, have: true, rd: rd}, nil
+}
+
+// ---- reachability -----------------------------------------------------------
+
+type authReachCtx struct {
+	s       *Store
+	res     *reachabilityResult
+	visited map[[32]byte]bool
+	faulty  map[[32]byte]bool
+	live    map[[32]byte]bool
+	depth   map[[32]byte]int
+}
+
+func (s *Store) newAuthReachCtx(res *reachabilityResult) *authReachCtx {
+	return &authReachCtx{s: s, res: res, visited: map[[32]byte]bool{}, faulty: map[[32]byte]bool{}, live: map[[32]byte]bool{}, depth: map[[32]byte]int{}}
+}
+
+func (a *authReachCtx) fault(sha [32]byte, err error) {
+	kind := "corrupt"
+	if errors.Is(err, errAuthMissing) || os.IsNotExist(err) {
+		kind = "missing"
+	}
+	a.res.addIssue(kind, fmt.Sprintf("authority %x", sha[:6]), err.Error())
+	a.faulty[sha] = true
+}
+
+// mark adds a body's own chunks to want and walks its bases. It returns the
+// recorded depth; a fault anywhere in the closure marks the root faulty.
+func (a *authReachCtx) mark(sha [32]byte, want func([]chunkRef), path map[[32]byte]bool, depth int) (int, error) {
+	if a.faulty[sha] {
+		return 0, fmt.Errorf("%w: %x", errAuthCorrupt, sha[:6])
+	}
+	if a.visited[sha] {
+		return a.depth[sha], nil
+	}
+	if path[sha] {
+		err := fmt.Errorf("%w: dependency cycle at %x", errAuthCorrupt, sha[:6])
+		a.fault(sha, err)
+		return 0, err
+	}
+	if depth > authHardDepth+1 {
+		err := fmt.Errorf("%w: depth at %x", errAuthLimit, sha[:6])
+		a.fault(sha, err)
+		return 0, err
+	}
+	rec, err := a.s.authLoad(sha)
+	if err == nil && rec == nil {
+		err = fmt.Errorf("%w: %x", errAuthMissing, sha[:6])
+	}
+	if err != nil {
+		a.fault(sha, err)
+		return 0, err
+	}
+	path[sha] = true
+	defer delete(path, sha)
+	var own []chunkRef
+	switch rec.Form {
+	case authFormPin, authFormDelta:
+		for _, p := range rec.Pieces {
+			own = append(own, chunkRef{SHA256: hex.EncodeToString(p.SHA[:]), Length: p.Len})
+		}
+	case authFormRep:
+		cl, cerr := a.s.repClosureOf(rec.Root)
+		if cerr != nil {
+			a.fault(sha, cerr)
+			return 0, cerr
+		}
+		own = cl.chunks
+	}
+	maxD := 0
+	if rec.Form == authFormDelta && len(rec.Bases) == 0 {
+		err := fmt.Errorf("%w: delta without bases", errAuthCorrupt)
+		a.fault(sha, err)
+		return 0, err
+	}
+	for _, b := range rec.Bases {
+		d, err := a.mark(b.SHA, want, path, depth+1)
+		if err != nil {
+			a.fault(sha, fmt.Errorf("dependency %x: %w", b.SHA[:6], err))
+			return 0, err
+		}
+		if brec, _ := a.s.authLoad(b.SHA); brec != nil && brec.Size != b.Size {
+			err := fmt.Errorf("%w: base %x size", errAuthMismatch, b.SHA[:6])
+			a.fault(sha, err)
+			return 0, err
+		}
+		maxD = max(maxD, d)
+	}
+	if rec.Form == authFormDelta && int(rec.Depth) < maxD+1 || rec.Form != authFormDelta && rec.Depth != 0 {
+		err := fmt.Errorf("%w: recorded depth %d inconsistent with its bases", errAuthCorrupt, rec.Depth)
+		a.fault(sha, err)
+		return 0, err
+	}
+	a.visited[sha] = true
+	a.live[sha] = true
+	a.depth[sha] = int(rec.Depth)
+	if len(own) > 0 {
+		want(own)
+	}
+	switch rec.Form {
+	case authFormPin:
+		a.res.AuthPins++
+	case authFormRep:
+		a.res.AuthReps++
+	default:
+		a.res.AuthDeltas++
+	}
+	a.res.AuthLogicalBytes += rec.Size
+	return int(rec.Depth), nil
+}
+
+// observe reports whether the manifest's content is served by an authoritative
+// body; only a fully validated closure replaces the manifest's CDC chunk list.
+func (a *authReachCtx) observe(man manifestV1, want func([]chunkRef)) (handled bool) {
+	if !a.s.auth.mayHave.Load() {
+		return false
+	}
+	sha, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		return false
+	}
+	if _, err := os.Stat(a.s.authPath(sha)); err != nil {
+		if !os.IsNotExist(err) {
+			a.fault(sha, err)
+		}
+		return false
+	}
+	rec, err := a.s.authLoad(sha)
+	if err == nil && rec.Size != man.TotalLength {
+		err = fmt.Errorf("%w: record is %d bytes, manifest says %d", errAuthMismatch, rec.Size, man.TotalLength)
+	}
+	if err != nil {
+		a.fault(sha, err)
+		return false
+	}
+	a.res.AuthManifests++
+	if _, err := a.mark(sha, want, map[[32]byte]bool{}, 1); err != nil {
+		return false
+	}
+	return true
+}
+
+// finish records body files no live manifest or dependent reaches.
+func (a *authReachCtx) finish() {
+	files, _ := a.s.authFiles()
+	a.res.AuthFiles = len(files)
+	for _, f := range files {
+		switch {
+		case a.live[f]:
+			a.res.AuthLive = append(a.res.AuthLive, hex.EncodeToString(f[:]))
+		case !a.faulty[f]:
+			a.res.AuthOrphans = append(a.res.AuthOrphans, hex.EncodeToString(f[:]))
+		}
+	}
+}
+
+// verifyBodiesDeep reconstructs every live body through the production
+// resolver (no cache) and compares length and SHA-256.
+func (s *Store) verifyBodiesDeep(rr reachabilityResult, res *VerifyResult) {
+	for _, hx := range rr.AuthLive {
+		sha, _ := decodeHexSHA256(hx)
+		ctx := s.newAuthCtx()
+		body, _, err := ctx.body(sha, 0, 1)
+		if err == nil {
+			h := sha256.New()
+			var n int64
+			buf := make([]byte, authReadPiece)
+			for off := int64(0); off < body.Size() && err == nil; {
+				k := int(min(int64(len(buf)), body.Size()-off))
+				var rk int
+				rk, err = body.ReadAt(buf[:k], off)
+				if rk == k {
+					err = nil
+				}
+				h.Write(buf[:rk])
+				n += int64(rk)
+				off += int64(rk)
+			}
+			if err == nil {
+				var got [32]byte
+				copy(got[:], h.Sum(nil))
+				if n != body.Size() || got != sha {
+					err = errAuthMismatch
+				}
+			}
+		}
+		ctx.close()
+		subject := "authority " + hx[:12]
+		switch {
+		case err == nil:
+			res.AuthoritiesVerified++
+		case errors.Is(err, errAuthMissing) || errors.Is(err, errRepMissing) || os.IsNotExist(err):
+			res.addIssue("missing", subject, "reconstruction failed: "+err.Error())
+		default:
+			res.addIssue("corrupt", subject, "reconstruction failed: "+err.Error())
+		}
+	}
+}
+
+// ---- admission, migration and reversion ---------------------------------------
+
+// AuthPolicy controls which exact physical form may become authoritative.
+type AuthPolicy struct {
+	Order       string  `json:"order"`        // "oldest": earlier versions are bases; "newest": newer versions are bases
+	MaxDepth    int     `json:"max_depth"`    // delta nesting bound (default 2, hard 4)
+	MaxBases    int     `json:"max_bases"`    // bases per delta (default 2, hard 4)
+	Candidates  int     `json:"candidates"`   // trial base objects per target (default 4, max 8)
+	MinSaving   float64 `json:"min_saving"`   // fraction of the object's unshared CDC bytes that must be freed net
+	MaxReadAmp  float64 `json:"max_read_amp"` // measured 4 KiB cold-read amplification allowed relative to CDC (0 = archive, unlimited)
+	Strategy    string  `json:"strategy"`     // "" or "best": plan delta-only and rep-only, apply the cheaper; "mixed": per-object choice
+	AllowRep    bool    `json:"allow_rep"`
+	AllowDelta  bool    `json:"allow_delta"`
+	MinObject   int64   `json:"min_object"`
+	MinRepGroup int     `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
+	FrameSpan   int64   `json:"frame_span"`
+	Apply       bool    `json:"apply"`
+}
+
+func (p AuthPolicy) norm() AuthPolicy {
+	if p.Order == "" {
+		p.Order = "oldest"
+	}
+	if p.MaxDepth <= 0 {
+		p.MaxDepth = 2
+	}
+	p.MaxDepth = min(p.MaxDepth, authHardDepth)
+	if p.MaxBases <= 0 {
+		p.MaxBases = 2
+	}
+	p.MaxBases = min(p.MaxBases, xdMaxBases)
+	if p.Candidates <= 0 {
+		p.Candidates = 4
+	}
+	p.Candidates = min(p.Candidates, 8)
+	if p.MinObject <= 0 {
+		p.MinObject = 4096
+	}
+	if p.MinRepGroup <= 0 {
+		p.MinRepGroup = 2
+	}
+	if p.FrameSpan <= 0 {
+		p.FrameSpan = 128 << 10
+	}
+	return p
+}
+
+// AuthPlan is the admission decision for one distinct object content.
+type AuthPlan struct {
+	SHA        string   `json:"sha256"`
+	Size       int64    `json:"size"`
+	Form       string   `json:"form"` // cdc | pin | rep | delta
+	Bases      []string `json:"bases,omitempty"`
+	Depth      int      `json:"depth"`
+	CDCBytes   int64    `json:"cdc_unshared_bytes"`
+	AddedBytes int64    `json:"added_bytes"`
+	Saving     float64  `json:"saving"`
+	ReadAmp    float64  `json:"read_amp_4k,omitempty"`
+	CDCAmp     float64  `json:"cdc_amp_4k,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+}
+
+type AuthReport struct {
+	Objects, Admitted, Pinned, KeptCDC int
+	CDCBytes, AddedBytes               int64
+	Plans                              []AuthPlan
+	Seconds                            float64
+}
+
+type authObj struct {
+	sha    [32]byte
+	man    manifestV1
+	bucket string
+	key    string
+	t      time.Time
+	hasRec bool
+}
+
+type liveMan struct {
+	bucket, key string
+	man         manifestV1
+}
+
+// liveManifests returns every manifest some live root (current, history,
+// snapshot) names, with unreadable ones skipped (reachability reports those).
+func (s *Store) liveManifests() []liveMan {
+	var out []liveMan
+	seen := map[string]bool{}
+	add := func(bucket, key, uuid string, sha [32]byte) {
+		if seen[uuid] {
+			return
+		}
+		man, err := s.readVerifiedManifest(uuid, sha)
+		if err != nil {
+			return
+		}
+		seen[uuid] = true
+		out = append(out, liveMan{bucket, key, man})
+	}
+	for _, o := range s.snapshotNamespace() {
+		add(o.bucket, o.key, o.entry.manifestUUID, o.entry.manifestSHA256)
+	}
+	for _, o := range s.snapshotHistory() {
+		add(o.bucket, o.key, o.entry.manifestUUID, o.entry.manifestSHA256)
+	}
+	snaps, _ := s.scanSnapshots()
+	for _, sn := range snaps {
+		for _, e := range sn.Entries {
+			if sum, err := decodeHexSHA256(e.ManifestSHA256); err == nil {
+				add(sn.SourceBucket, e.Key, e.ManifestUUID, sum)
+			}
+		}
+	}
+	return out
+}
+
+// physChunk is the stored size of a chunk: its pack record when packed, else a
+// fast-deflate estimate of the loose bytes (loose files are not yet compacted).
+func (s *Store) physChunk(sum [32]byte, logical int64, memo map[[32]byte]int64) int64 {
+	if v, ok := memo[sum]; ok {
+		return v
+	}
+	var n int64
+	if loc, ok := s.packLookup(sum); ok {
+		n = int64(loc.stored)
+	} else if data, err := s.casRead(sum); err == nil {
+		n = int64(len(xdDeflate(data, 1)))
+	} else {
+		n = logical
+	}
+	memo[sum] = n
+	return n
+}
+
+func authFeatures(b []byte, k int) []uint64 {
+	var out []uint64
+	if len(b) < xdWindow {
+		return nil
+	}
+	h := xdWindowHash(b)
+	for i := 0; ; i++ {
+		v := xdMix(h)
+		if !(len(out) == k && v >= out[len(out)-1]) {
+			j := sort.Search(len(out), func(x int) bool { return out[x] >= v })
+			if j == len(out) || out[j] != v {
+				out = append(out, 0)
+				copy(out[j+1:], out[j:])
+				out[j] = v
+				if len(out) > k {
+					out = out[:k]
+				}
+			}
+		}
+		if i+xdWindow >= len(b) {
+			break
+		}
+		h = (h-(uint64(b[i])+1)*xdPow)*xdP + uint64(b[i+xdWindow]) + 1
+	}
+	return out
+}
+
+func (s *Store) manifestBytes(man manifestV1) ([]byte, error) {
+	if man.TotalLength > xdMaxObject {
+		return nil, errAuthLimit
+	}
+	out := make([]byte, 0, man.TotalLength)
+	rd := s.openObjectReader(man, byteRange{0, man.TotalLength - 1})
+	defer rd.close()
+	for {
+		b, err := rd.next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b...)
+	}
+	if int64(len(out)) != man.TotalLength {
+		return nil, errAuthMismatch
+	}
+	return out, nil
+}
+
+// authWritePieces durably stores a blob as fixed-size CAS chunks.
+func (s *Store) authWritePieces(blob []byte) ([]authPiece, error) {
+	if err := authFaultAt("pieces-write"); err != nil {
+		return nil, err
+	}
+	b := s.newCASBatch()
+	defer b.Abort()
+	var ps []authPiece
+	for off := 0; off < len(blob); off += xdPieceSize {
+		end := min(off+xdPieceSize, len(blob))
+		sum, err := b.Add(blob[off:end])
+		if err != nil {
+			return nil, err
+		}
+		ps = append(ps, authPiece{sum, int64(end - off)})
+	}
+	if err := b.Flush(); err != nil {
+		return nil, err
+	}
+	return ps, nil
+}
+
+func chunkPieces(man manifestV1) ([]authPiece, error) {
+	ps := make([]authPiece, 0, len(man.Chunks))
+	for _, c := range man.Chunks {
+		sum, err := decodeHexSHA256(c.SHA256)
+		if err != nil || c.Length < 1 {
+			return nil, errAuthCorrupt
+		}
+		ps = append(ps, authPiece{sum, c.Length})
+	}
+	return ps, nil
+}
+
+// authProve is the independent verifier: it serializes and re-parses the
+// candidate record, resolves it (and its published bases) through the normal
+// read path from the durable CAS, and checks exact length and SHA-256. The
+// overlay lets an unpublished candidate be resolved; returns bytes fetched.
+func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetched float64, err error) {
+	data, err := rec.marshal()
+	if err != nil {
+		return 0, 0, err
+	}
+	cand, err := unmarshalAuthRecord(data)
+	if err != nil {
+		return 0, 0, err
+	}
+	ctx := s.newAuthCtx()
+	ctx.overlay = map[[32]byte]*authRecord{cand.SHA: cand}
+	body, _, err := ctx.body(cand.SHA, 0, 1)
+	if err != nil {
+		return 0, 0, err
+	}
+	h := sha256.New()
+	buf := make([]byte, authReadPiece)
+	for off := int64(0); off < body.Size(); {
+		k := int(min(int64(len(buf)), body.Size()-off))
+		if n, err := body.ReadAt(buf[:k], off); n != k {
+			if err == nil || err == io.EOF {
+				err = errAuthMismatch
+			}
+			return 0, 0, err
+		}
+		h.Write(buf[:k])
+		off += int64(k)
+	}
+	var got [32]byte
+	copy(got[:], h.Sum(nil))
+	if got != cand.SHA {
+		return 0, 0, errAuthMismatch
+	}
+	fetched = ctx.fetched
+	if probes > 0 {
+		// Cold probes: fresh context so decoded state is not shared.
+		var tot int64
+		rng := rand.New(rand.NewPCG(binary.LittleEndian.Uint64(cand.SHA[:8]), 7))
+		for i := 0; i < probes; i++ {
+			pc := s.newAuthCtx()
+			pc.overlay = ctx.overlay
+			pb, _, perr := pc.body(cand.SHA, 0, 1)
+			if perr != nil {
+				return 0, 0, perr
+			}
+			off := rng.Int64N(max(1, cand.Size-4096))
+			p4 := make([]byte, min(4096, cand.Size-off))
+			if n, perr := pb.ReadAt(p4, off); n != len(p4) {
+				return 0, 0, fmt.Errorf("probe read: %v", perr)
+			}
+			tot += pc.fetched
+		}
+		probeFetched = float64(tot) / float64(probes)
+	}
+	return fetched, probeFetched, nil
+}
+
+// cdcAmp4K is the expected logical bytes of CAS chunks touched by a random
+// 4 KiB read of the CDC chunk list (size-weighted chunk length).
+func cdcAmp4K(man manifestV1) float64 {
+	var s2, s1 float64
+	for _, c := range man.Chunks {
+		s2 += float64(c.Length) * float64(c.Length)
+		s1 += float64(c.Length)
+	}
+	if s1 == 0 {
+		return 0
+	}
+	return s2 / s1
+}
+
+type authMigrator struct {
+	s      *Store
+	pol    AuthPolicy
+	objs   map[[32]byte]*authObj
+	order  []*authObj
+	refs   map[[32]byte]int // chunk -> distinct CDC-authoritative objects/closures using it
+	phys   map[[32]byte]int64
+	index  map[uint64][]int // feature -> order indexes (newest 64)
+	sketch map[int][]uint64
+	done   []int // order indexes of objects eligible as bases (processed or bodied)
+	repC   map[int]*authRepCand
+	byKey  map[string][]int // bucket/key -> admitted-or-eligible base indexes
+	depth  map[int]int
+	rep    AuthReport
+}
+
+// AuthorityMigrate admits cost-justified exact representations as the
+// authoritative physical body of live objects. With Apply false it only plans
+// (components for rep candidates may be staged and are collectible garbage).
+func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
+	pol = pol.norm()
+	if (pol.Strategy == "" || pol.Strategy == "best") && pol.AllowRep && pol.AllowDelta {
+		total := func(r AuthReport) (n int64) {
+			for _, p := range r.Plans {
+				if strings.HasSuffix(p.Form, "?") {
+					n += p.AddedBytes
+				} else {
+					n += p.CDCBytes
+				}
+			}
+			return n
+		}
+		dp, rp := pol, pol
+		dp.AllowRep, dp.Apply, dp.Strategy = false, false, "forced"
+		rp.AllowDelta, rp.Apply, rp.Strategy = false, false, "forced"
+		dr, err := s.AuthorityMigrate(dp)
+		if err != nil {
+			return dr, err
+		}
+		rr, err := s.AuthorityMigrate(rp)
+		if err != nil {
+			return rr, err
+		}
+		pol.Strategy = "forced"
+		if total(rr) < total(dr) {
+			pol.AllowDelta = false
+		} else {
+			pol.AllowRep = false
+		}
+	}
+	t0 := time.Now()
+	m := &authMigrator{s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
+		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, byKey: map[string][]int{}}
+	lms := s.liveManifests()
+	for _, lm := range lms {
+		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
+		if err != nil || lm.man.TotalLength < 1 {
+			continue
+		}
+		o := m.objs[sha]
+		if o == nil {
+			rec, rerr := s.authLoad(sha)
+			if rerr != nil {
+				return m.rep, rerr
+			}
+			o = &authObj{sha: sha, man: lm.man, bucket: lm.bucket, key: lm.key, t: lm.man.CreatedAt, hasRec: rec != nil}
+			m.objs[sha] = o
+			m.order = append(m.order, o)
+		}
+		if lm.man.CreatedAt.Before(o.t) {
+			o.t = lm.man.CreatedAt
+		}
+	}
+	sort.Slice(m.order, func(i, j int) bool {
+		a, b := m.order[i], m.order[j]
+		c := cmp.Or(a.t.Compare(b.t), bytes.Compare(a.sha[:], b.sha[:]))
+		if pol.Order == "newest" {
+			return c > 0
+		}
+		return c < 0
+	})
+	// Chunk sharing among CDC-authoritative contents (bodied contents hold their own closures).
+	for _, o := range m.order {
+		if o.hasRec {
+			continue
+		}
+		seen := map[[32]byte]bool{}
+		for _, c := range o.man.Chunks {
+			if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
+				seen[sum] = true
+				m.refs[sum]++
+			}
+		}
+	}
+	if pol.AllowRep {
+		m.planRepGroups()
+	}
+	for i, o := range m.order {
+		m.rep.Objects++
+		if o.hasRec {
+			m.depth[i] = m.recDepth(o.sha)
+			m.addBase(i)
+			continue
+		}
+		if err := m.process(i, o); err != nil {
+			return m.rep, err
+		}
+	}
+	m.rep.Seconds = time.Since(t0).Seconds()
+	return m.rep, nil
+}
+
+type authRepCand struct {
+	kind     repKind
+	root     *repRoot
+	chunks   []chunkRef
+	marginal int64
+	accepted bool
+}
+
+// planRepGroups builds the structural representation of every candidate object
+// and admits a kind's group only when the union of its components (shared
+// across versions) beats the group's unshared CDC bytes: a lone first-sight
+// representation is usually larger than CDC, its value is the reuse.
+func (m *authMigrator) planRepGroups() {
+	// A lone first-sight object cannot amortize its components: kinds seen once are not even built.
+	kinds := map[int]repKind{}
+	count := map[repKind]int{}
+	for i, o := range m.order {
+		if o.hasRec || o.man.TotalLength < m.pol.MinObject || o.man.TotalLength > repMaxInspect {
+			continue
+		}
+		ra := m.s.newManifestReaderAt(o.man)
+		kind, ok := repCandidate(ra, o.man.TotalLength)
+		ra.close()
+		if !ok || kind == repKindGzip || kind == repKindZstd {
+			continue
+		}
+		kinds[i] = kind
+		count[kind]++
+	}
+	groups := map[repKind][]int{}
+	for i, o := range m.order {
+		kind, ok := kinds[i]
+		if !ok || count[kind] < m.pol.MinRepGroup {
+			continue
+		}
+		root, err := m.s.repConstruct(o.man)
+		if err != nil {
+			continue
+		}
+		cl, err := m.s.repClosureOf(root)
+		if err != nil {
+			continue
+		}
+		m.repC[i] = &authRepCand{kind: kind, root: root, chunks: cl.chunks}
+		groups[kind] = append(groups[kind], i)
+	}
+	for _, idxs := range groups {
+		seen := map[[32]byte]bool{}
+		var union, cdc int64
+		for _, i := range idxs {
+			rc := m.repC[i]
+			for _, c := range rc.chunks {
+				sum, _ := decodeHexSHA256(c.SHA256)
+				if seen[sum] {
+					continue
+				}
+				seen[sum] = true
+				if m.refs[sum] == 0 { // a component equal to a CDC chunk some other object keeps costs nothing extra
+					rc.marginal += m.s.physChunk(sum, c.Length, m.phys)
+				}
+			}
+			union += rc.marginal
+			cdc += m.unsharedBytes(m.order[i])
+		}
+		if cdc > 0 && float64(union+160*int64(len(idxs))) <= float64(cdc)*(1-m.pol.MinSaving) {
+			for _, i := range idxs {
+				m.repC[i].accepted = true
+			}
+		}
+	}
+}
+
+func (m *authMigrator) recDepth(sha [32]byte) int {
+	if r, _ := m.s.authLoad(sha); r != nil {
+		return int(r.Depth)
+	}
+	return 0
+}
+
+func (m *authMigrator) addBase(i int) {
+	m.done = append(m.done, i)
+	k := m.order[i].bucket + "\x00" + m.order[i].key
+	m.byKey[k] = append(m.byKey[k], i)
+	if sk := m.sketch[i]; sk != nil {
+		for _, f := range sk {
+			p := m.index[f]
+			if len(p) == 64 {
+				copy(p, p[1:])
+				p = p[:63]
+			}
+			m.index[f] = append(p, i)
+		}
+	}
+}
+
+func (m *authMigrator) candidates(i int, sk []uint64) []int {
+	score := map[int]int{}
+	for _, f := range sk {
+		for _, j := range m.index[f] {
+			score[j]++
+		}
+	}
+	// Same-key neighbours are always worth a trial: version histories are the common case.
+	for _, j := range m.byKey[m.order[i].bucket+"\x00"+m.order[i].key] {
+		score[j] += 1
+	}
+	type cs struct{ j, n int }
+	var all []cs
+	for j, n := range score {
+		if m.depth[j] >= m.pol.MaxDepth || m.order[j].man.TotalLength > xdMaxObject {
+			continue
+		}
+		all = append(all, cs{j, n})
+	}
+	sort.Slice(all, func(a, b int) bool {
+		return cmp.Or(cmp.Compare(all[b].n, all[a].n), cmp.Compare(all[b].j, all[a].j)) < 0
+	})
+	var out []int
+	for _, c := range all {
+		if len(out) == m.pol.Candidates {
+			break
+		}
+		out = append(out, c.j)
+	}
+	return out
+}
+
+func (m *authMigrator) unsharedBytes(o *authObj) int64 {
+	var n int64
+	seen := map[[32]byte]bool{}
+	for _, c := range o.man.Chunks {
+		sum, err := decodeHexSHA256(c.SHA256)
+		if err != nil || seen[sum] {
+			continue
+		}
+		seen[sum] = true
+		if m.refs[sum] == 1 {
+			n += m.s.physChunk(sum, c.Length, m.phys)
+		}
+	}
+	return n
+}
+
+func (m *authMigrator) release(o *authObj) {
+	seen := map[[32]byte]bool{}
+	for _, c := range o.man.Chunks {
+		if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
+			seen[sum] = true
+			m.refs[sum]--
+		}
+	}
+}
+
+func (m *authMigrator) process(i int, o *authObj) error {
+	pol := m.pol
+	plan := AuthPlan{SHA: hex.EncodeToString(o.sha[:]), Size: o.man.TotalLength, Form: "cdc"}
+	plan.CDCBytes = m.unsharedBytes(o)
+	finish := func(p AuthPlan) {
+		m.rep.Plans = append(m.rep.Plans, p)
+		m.rep.CDCBytes += p.CDCBytes
+		if p.Form == "cdc" {
+			m.rep.KeptCDC++
+		} else {
+			m.rep.Admitted++
+			m.rep.AddedBytes += p.AddedBytes
+		}
+	}
+	if o.man.TotalLength < pol.MinObject || o.man.TotalLength > xdMaxObject {
+		plan.Reason = "size outside admission window"
+		finish(plan)
+		m.addBase(i)
+		return nil
+	}
+	target, err := m.s.manifestBytes(o.man)
+	if err != nil {
+		plan.Reason = "unreadable: " + err.Error()
+		finish(plan)
+		return nil
+	}
+	sk := authFeatures(target, 16)
+	m.sketch[i] = sk
+	type cand struct {
+		rec   *authRecord
+		blob  []byte
+		added int64
+		pins  []int
+		plan  AuthPlan
+	}
+	var best *cand
+	// --- delta candidates
+	if pol.AllowDelta {
+		cands := m.candidates(i, sk)
+		var srcs []xdSrc
+		var idxs []int
+		for _, j := range cands {
+			bo := m.order[j]
+			b, err := m.s.manifestBytes(bo.man)
+			if err != nil {
+				continue
+			}
+			srcs = append(srcs, xdSrc{bo.sha, b})
+			idxs = append(idxs, j)
+		}
+		try := func(sel []int) {
+			var ss []xdSrc
+			for _, k := range sel {
+				ss = append(ss, srcs[k])
+			}
+			blob, refs, err := xdEncode(ss, target, pol.FrameSpan)
+			if err != nil || len(refs) == 0 || len(refs) > pol.MaxBases {
+				return
+			}
+			depth := 0
+			var bj []int
+			for _, r := range refs {
+				for k, s2 := range srcs {
+					if s2.sha == r.SHA {
+						depth = max(depth, m.depth[idxs[k]]+1)
+						bj = append(bj, idxs[k])
+					}
+				}
+			}
+			if depth > pol.MaxDepth {
+				return
+			}
+			phys := int64(min(len(blob), len(xdDeflate(blob, 1)))) + 96
+			// pins for bases that have no record yet cost one list entry per chunk
+			var pinCost int64
+			for _, j := range bj {
+				if !m.order[j].hasRec {
+					pinCost += int64(len(m.order[j].man.Chunks)) * 36
+				}
+			}
+			added := phys + pinCost + 160
+			if best == nil || added < best.added {
+				rec := &authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormDelta, Depth: byte(depth), Sketch: sk, Bases: refs}
+				best = &cand{rec: rec, blob: blob, added: added, pins: bj, plan: AuthPlan{Form: "delta", Depth: depth}}
+				for _, r := range refs {
+					best.plan.Bases = append(best.plan.Bases, hex.EncodeToString(r.SHA[:6]))
+				}
+			}
+		}
+		if len(srcs) > 0 {
+			for k := range srcs {
+				try([]int{k})
+			}
+			if len(srcs) >= 2 && pol.MaxBases >= 2 {
+				try([]int{0, 1})
+			}
+			if len(srcs) >= 3 && pol.MaxBases >= 3 {
+				try([]int{0, 1, 2})
+			}
+		}
+	}
+	// --- structural representation candidate (group-amortized, see planRepGroups)
+	var repRootCand *repRoot
+	var repAdded int64
+	repGroup := false
+	if rc := m.repC[i]; rc != nil && rc.accepted {
+		repRootCand, repAdded, repGroup = rc.root, rc.marginal+160, true
+	}
+	// --- choose
+	choice := ""
+	var chosenAdded int64
+	switch {
+	case best != nil && (repRootCand == nil || best.added <= repAdded):
+		choice, chosenAdded = "delta", best.added
+	case repRootCand != nil:
+		choice, chosenAdded = "rep", repAdded
+	}
+	if choice == "" {
+		plan.Reason = "no admissible exact representation"
+		finish(plan)
+		m.addBase(i)
+		return nil
+	}
+	saving := 0.0
+	if plan.CDCBytes > 0 {
+		saving = float64(plan.CDCBytes-chosenAdded) / float64(plan.CDCBytes)
+	}
+	plan.AddedBytes, plan.Saving = chosenAdded, saving
+	if saving < pol.MinSaving && !(choice == "rep" && repGroup) {
+		plan.Reason = fmt.Sprintf("saving %.3f below policy %.3f (%s)", saving, pol.MinSaving, choice)
+		finish(plan)
+		m.addBase(i)
+		return nil
+	}
+	if !pol.Apply {
+		plan.Form, plan.Reason = choice+"?", "plan only"
+		if best != nil && choice == "delta" {
+			plan.Depth, plan.Bases = best.plan.Depth, best.plan.Bases
+		}
+		m.depth[i] = plan.Depth
+		m.release(o)
+		finish(plan)
+		m.addBase(i)
+		return nil
+	}
+	// --- build durable components, publish bases' pins, prove, commit
+	var rec *authRecord
+	var pins []int
+	if choice == "delta" {
+		rec, pins = best.rec, best.pins
+		ps, err := m.s.authWritePieces(best.blob)
+		if err != nil {
+			return err
+		}
+		rec.Pieces = ps
+		plan.Depth, plan.Bases = best.plan.Depth, best.plan.Bases
+	} else {
+		rec = &authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormRep, Sketch: sk, Root: repRootCand}
+	}
+	fireTestHook(hookAuthComponentsFlushed)
+	for _, j := range pins {
+		if err := m.s.authEnsurePin(m.order[j]); err != nil {
+			return err
+		}
+		m.order[j].hasRec = true
+	}
+	_, probe, err := m.s.authProve(rec, 8)
+	if err != nil {
+		plan.Reason = "proof failed: " + err.Error()
+		plan.Form = "cdc"
+		finish(plan)
+		m.addBase(i)
+		return nil
+	}
+	plan.CDCAmp = cdcAmp4K(o.man)
+	plan.ReadAmp = probe
+	if pol.MaxReadAmp > 0 && plan.CDCAmp > 0 && probe > pol.MaxReadAmp*plan.CDCAmp {
+		plan.Reason = fmt.Sprintf("modeled read amplification %.0f > %.1fx CDC %.0f", probe, pol.MaxReadAmp, plan.CDCAmp)
+		plan.Form = "cdc"
+		finish(plan)
+		m.addBase(i)
+		return nil
+	}
+	fireTestHook(hookAuthProofDone)
+	if err := m.s.authPublish(rec); err != nil {
+		return err
+	}
+	plan.Form = choice
+	o.hasRec = true
+	m.depth[i] = int(rec.Depth)
+	m.release(o)
+	finish(plan)
+	m.addBase(i)
+	return nil
+}
+
+// authChunkKnown reports whether a chunk is already referenced by a CDC object
+// (so a representation component equal to it adds no bytes).
+func (s *Store) authChunkKnown(sum [32]byte, refs map[[32]byte]int) bool { return refs[sum] > 0 }
+
+// authEnsurePin gives a still-CDC object a pin record so it can serve as a base
+// without any namespace entry. The pin lists the manifest's own chunks.
+func (s *Store) authEnsurePin(o *authObj) error {
+	if rec, err := s.authLoad(o.sha); err != nil || rec != nil {
+		return err
+	}
+	if err := authFaultAt("pin"); err != nil {
+		return err
+	}
+	ps, err := chunkPieces(o.man)
+	if err != nil {
+		return err
+	}
+	for _, p := range ps {
+		if n, err := s.casStat(p.SHA); err != nil || n != p.Len {
+			return fmt.Errorf("pin %x: chunk %x unavailable", o.sha[:6], p.SHA[:6])
+		}
+	}
+	return s.authPublish(&authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormPin, Pieces: ps})
+}
+
+// AuthorityRevert returns a content's physical authority to ordinary CDC:
+// the manifest chunk lists are re-materialized durably first, then the record
+// is retired (or replaced by a pin when other bodies still depend on it).
+func (s *Store) AuthorityRevert(sha [32]byte) error {
+	rec, err := s.authLoad(sha)
+	if err != nil || rec == nil {
+		return err
+	}
+	var mans []manifestV1
+	for _, lm := range s.liveManifests() {
+		if lm.man.ObjectSHA256 == hex.EncodeToString(sha[:]) {
+			mans = append(mans, lm.man)
+		}
+	}
+	for _, man := range mans {
+		if err := s.materializeCDC(man); err != nil {
+			return err
+		}
+	}
+	fireTestHook(hookAuthRevertMaterial)
+	dependents := false
+	files, _ := s.authFiles()
+	for _, f := range files {
+		r, err := s.authLoad(f)
+		if err != nil {
+			return err
+		}
+		if r != nil {
+			for _, b := range r.Bases {
+				if b.SHA == sha {
+					dependents = true
+				}
+			}
+		}
+	}
+	if dependents {
+		var ps []authPiece
+		if len(mans) > 0 {
+			if ps, err = chunkPieces(mans[0]); err != nil {
+				return err
+			}
+		} else {
+			return fmt.Errorf("revert %x: has dependents and no live manifest to supply a chunk list", sha[:6])
+		}
+		return s.authPublish(&authRecord{SHA: sha, Size: rec.Size, Gen: rec.Gen + 1, Form: authFormPin, Pieces: ps})
+	}
+	if len(mans) == 0 {
+		return fmt.Errorf("revert %x: no live manifest names this content; gc will retire it", sha[:6])
+	}
+	return s.authRetire(sha)
+}
+
+// materializeCDC durably re-creates the CDC chunks listed by a body-backed
+// manifest from its authoritative body, verifying each against its own hash.
+// The chunks are a disposable materialization: nothing marks them live.
+func (s *Store) materializeCDC(man manifestV1) error {
+	sha, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		return err
+	}
+	rec, err := s.authLoad(sha)
+	if err != nil || rec == nil {
+		return err
+	}
+	missing := false
+	for _, c := range man.Chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		if n, err := s.casStat(sum); err != nil || n != c.Length {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return nil
+	}
+	ctx := s.newAuthCtx()
+	body, _, err := ctx.body(sha, 0, 1)
+	if err != nil {
+		return err
+	}
+	b := s.newCASBatch()
+	defer b.Abort()
+	var off int64
+	h := sha256.New()
+	for _, c := range man.Chunks {
+		buf := make([]byte, c.Length)
+		if n, err := body.ReadAt(buf, off); n != len(buf) {
+			if err == nil || err == io.EOF {
+				err = errAuthMismatch
+			}
+			return err
+		}
+		want, _ := decodeHexSHA256(c.SHA256)
+		if sha256.Sum256(buf) != want {
+			return fmt.Errorf("%w: chunk at %d does not match its manifest hash", errAuthMismatch, off)
+		}
+		h.Write(buf)
+		if _, err := b.add(want, buf); err != nil {
+			return err
+		}
+		off += c.Length
+	}
+	var got [32]byte
+	copy(got[:], h.Sum(nil))
+	if got != sha {
+		return errAuthMismatch
+	}
+	return b.Flush()
+}
+
+// AuthorityStatus summarizes the committed bodies.
+type AuthStatus struct {
+	Records            int            `json:"records"`
+	Pins, Reps, Deltas int            `json:"-"`
+	ByForm             map[string]int `json:"by_form"`
+	RecordBytes        int64          `json:"record_bytes"`
+	MaxDepth           int            `json:"max_depth"`
+	FormatVersion      int            `json:"format_version"`
+}
+
+func (s *Store) AuthorityStatus() (AuthStatus, error) {
+	st := AuthStatus{ByForm: map[string]int{}}
+	s.formatMu.Lock()
+	st.FormatVersion = s.format.StoreFormatVersion
+	s.formatMu.Unlock()
+	files, err := s.authFiles()
+	if err != nil {
+		return st, err
+	}
+	for _, f := range files {
+		fi, _ := os.Stat(s.authPath(f))
+		if fi != nil {
+			st.RecordBytes += fi.Size()
+		}
+		r, err := s.authLoad(f)
+		if err != nil {
+			return st, err
+		}
+		st.Records++
+		st.ByForm[[...]string{"", "pin", "rep", "delta"}[r.Form]]++
+		st.MaxDepth = max(st.MaxDepth, int(r.Depth))
+	}
+	return st, nil
+}
+
+// ---- capability negotiation and native closure transfer -----------------------
+
+// AuthCaps is what a store/binary can hold as authoritative state.
+type AuthCaps struct {
+	StoreFormat int      `json:"store_format"`
+	Forms       []string `json:"forms"`
+	MaxDepth    int      `json:"max_depth"`
+}
+
+func (s *Store) AuthorityCaps() AuthCaps {
+	return AuthCaps{StoreFormat: storeFormatVersionSupported, Forms: []string{"pin", "rep", "delta"}, MaxDepth: authHardDepth}
+}
+
+// AuthTransferMode picks native closure transfer only when the destination
+// declares the authority floor; everything else receives exact ordinary bytes.
+func AuthTransferMode(src, dst AuthCaps) string {
+	if dst.StoreFormat >= storeFormatVersionAuthority && src.StoreFormat >= storeFormatVersionAuthority && dst.MaxDepth >= src.MaxDepth {
+		return "native"
+	}
+	return "materialize"
+}
+
+const authXferMagic = "ZS3C\x01"
+
+// authClosureOrder returns the content hashes of sha's closure, bases first.
+func (s *Store) authClosureOrder(sha [32]byte, destHas func([32]byte) bool) ([]*authRecord, error) {
+	var out []*authRecord
+	seen := map[[32]byte]bool{}
+	var walk func(h [32]byte, depth int) error
+	walk = func(h [32]byte, depth int) error {
+		if seen[h] || (depth > 1 && destHas != nil && destHas(h)) {
+			return nil
+		}
+		if depth > authHardDepth+1 {
+			return errAuthLimit
+		}
+		rec, err := s.authLoad(h)
+		if err != nil {
+			return err
+		}
+		if rec == nil {
+			return fmt.Errorf("%w: %x", errAuthMissing, h[:6])
+		}
+		for _, b := range rec.Bases {
+			if err := walk(b.SHA, depth+1); err != nil {
+				return err
+			}
+		}
+		seen[h] = true
+		out = append(out, rec)
+		return nil
+	}
+	return out, walk(sha, 1)
+}
+
+// authRecordChunks lists the record's own components (not its bases').
+func (s *Store) authRecordChunks(rec *authRecord) ([]chunkRef, error) {
+	switch rec.Form {
+	case authFormRep:
+		cl, err := s.repClosureOf(rec.Root)
+		if err != nil {
+			return nil, err
+		}
+		return cl.chunks, nil
+	}
+	cs := make([]chunkRef, 0, len(rec.Pieces))
+	for _, p := range rec.Pieces {
+		cs = append(cs, chunkRef{SHA256: hex.EncodeToString(p.SHA[:]), Length: p.Len})
+	}
+	return cs, nil
+}
+
+// ExportAuthorityClosure streams the complete authoritative closure of one
+// content (every record, base and component chunk) in a self-verifying frame.
+func (s *Store) ExportAuthorityClosure(sha [32]byte, w io.Writer) error {
+	return s.ExportAuthorityClosureThin(sha, nil, w)
+}
+
+// ExportAuthorityClosureThin omits every base (and its own closure) the
+// destination already holds. The importer refuses a thin stream whose omitted
+// base is absent, and the sender then falls back to the full closure.
+func (s *Store) ExportAuthorityClosureThin(sha [32]byte, destHas func([32]byte) bool, w io.Writer) error {
+	recs, err := s.authClosureOrder(sha, destHas)
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	mw := io.MultiWriter(w, h)
+	put := func(b []byte) error { _, err := mw.Write(b); return err }
+	if err := put([]byte(authXferMagic)); err != nil {
+		return err
+	}
+	hdr := binary.AppendUvarint(nil, uint64(len(recs)))
+	seen := map[[32]byte]bool{}
+	var chunks []chunkRef
+	for _, r := range recs {
+		rb, err := r.marshal()
+		if err != nil {
+			return err
+		}
+		hdr = binary.AppendUvarint(hdr, uint64(len(rb)))
+		hdr = append(hdr, rb...)
+		cs, err := s.authRecordChunks(r)
+		if err != nil {
+			return err
+		}
+		for _, c := range cs {
+			if sum, _ := decodeHexSHA256(c.SHA256); !seen[sum] {
+				seen[sum] = true
+				chunks = append(chunks, c)
+			}
+		}
+	}
+	hdr = binary.AppendUvarint(hdr, uint64(len(chunks)))
+	if err := put(hdr); err != nil {
+		return err
+	}
+	for _, c := range chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		data, err := s.casRead(sum)
+		if err != nil {
+			return fmt.Errorf("export closure: component %s: %w", c.SHA256[:12], err)
+		}
+		if err := put(sum[:]); err != nil {
+			return err
+		}
+		if err := put(binary.AppendUvarint(nil, uint64(len(data)))); err != nil {
+			return err
+		}
+		if err := put(data); err != nil {
+			return err
+		}
+	}
+	_, err = w.Write(h.Sum(nil))
+	return err
+}
+
+const hookAuthImportChunks = "auth-import-chunks"
+const hookAuthImportRecord = "auth-import-record"
+
+// ImportAuthorityClosure verifies and installs an exported closure: every
+// component hash and the trailing digest are checked, components are made
+// durable, then each record is proven by full reconstruction and published
+// bases-first. Records the destination already holds are kept.
+func (s *Store) ImportAuthorityClosure(r io.Reader) error {
+	br := bufio.NewReaderSize(r, 1<<20)
+	h := sha256.New()
+	tr := io.TeeReader(br, h)
+	magic := make([]byte, len(authXferMagic))
+	if _, err := io.ReadFull(tr, magic); err != nil || string(magic) != authXferMagic {
+		return fmt.Errorf("import closure: bad header")
+	}
+	rb := &countingByteReader{r: tr}
+	nrec, err := binary.ReadUvarint(rb)
+	if err != nil || nrec == 0 || nrec > 1<<16 {
+		return fmt.Errorf("import closure: record count")
+	}
+	var recs []*authRecord
+	for i := uint64(0); i < nrec; i++ {
+		l, err := binary.ReadUvarint(rb)
+		if err != nil || l > authMaxRecord {
+			return fmt.Errorf("import closure: record length")
+		}
+		buf := make([]byte, l)
+		if _, err := io.ReadFull(tr, buf); err != nil {
+			return err
+		}
+		rec, err := unmarshalAuthRecord(buf)
+		if err != nil {
+			return err
+		}
+		recs = append(recs, rec)
+	}
+	nch, err := binary.ReadUvarint(rb)
+	if err != nil || nch > authMaxPieces*8 {
+		return fmt.Errorf("import closure: chunk count")
+	}
+	b := s.newCASBatch()
+	defer b.Abort()
+	var pending int
+	for i := uint64(0); i < nch; i++ {
+		var sum [32]byte
+		if _, err := io.ReadFull(tr, sum[:]); err != nil {
+			return err
+		}
+		l, err := binary.ReadUvarint(rb)
+		if err != nil || l < 1 || l > maxPackedChunkBytes {
+			return fmt.Errorf("import closure: chunk length")
+		}
+		data := make([]byte, l)
+		if _, err := io.ReadFull(tr, data); err != nil {
+			return err
+		}
+		if sha256.Sum256(data) != sum {
+			return fmt.Errorf("import closure: component %x does not match its hash", sum[:6])
+		}
+		if _, err := b.add(sum, data); err != nil {
+			return err
+		}
+		if pending += int(l); pending >= 16<<20 {
+			if err := b.Flush(); err != nil {
+				return err
+			}
+			b, pending = s.newCASBatch(), 0
+		}
+	}
+	want := h.Sum(nil)
+	got := make([]byte, 32)
+	if _, err := io.ReadFull(br, got); err != nil || !bytes.Equal(got, want) {
+		return fmt.Errorf("import closure: trailing digest mismatch")
+	}
+	if err := b.Flush(); err != nil {
+		return err
+	}
+	fireTestHook(hookAuthImportChunks)
+	inStream := map[[32]byte]bool{}
+	for _, rec := range recs {
+		inStream[rec.SHA] = true
+	}
+	for _, rec := range recs {
+		for _, b := range rec.Bases {
+			if inStream[b.SHA] {
+				continue
+			}
+			if held, err := s.authLoad(b.SHA); err != nil || held == nil || held.Size != b.Size {
+				return fmt.Errorf("import closure: %w: thin stream needs base %x the destination does not hold", errAuthMissing, b.SHA[:6])
+			}
+		}
+	}
+	for _, rec := range recs {
+		if cur, err := s.authLoad(rec.SHA); err != nil {
+			return err
+		} else if cur != nil {
+			continue
+		}
+		rec.Gen = 1
+		if _, _, err := s.authProve(rec, 0); err != nil {
+			return fmt.Errorf("import closure: proof of %x failed: %w", rec.SHA[:6], err)
+		}
+		fireTestHook(hookAuthImportRecord)
+		if err := s.authPublish(rec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type countingByteReader struct{ r io.Reader }
+
+func (c *countingByteReader) ReadByte() (byte, error) {
+	var b [1]byte
+	_, err := io.ReadFull(c.r, b[:])
+	return b[0], err
+}
+
+// AuthorityRepairObject replaces an unreadable authoritative body with exact
+// bytes obtained from a valid peer: the bytes are verified against the
+// content hash, the manifest chunk lists are rewritten durably, and a pin
+// record takes over at the next generation. Without such bytes the object is
+// reported unrecoverable; nothing is regenerated from unavailable sources.
+func (s *Store) AuthorityRepairObject(sha [32]byte, exact []byte) error {
+	if sha256.Sum256(exact) != sha {
+		return fmt.Errorf("repair %x: supplied bytes do not match the content hash", sha[:6])
+	}
+	cur, err := s.authLoad(sha)
+	if err != nil {
+		cur = nil
+	}
+	var mans []manifestV1
+	for _, lm := range s.liveManifests() {
+		if lm.man.ObjectSHA256 == hex.EncodeToString(sha[:]) {
+			mans = append(mans, lm.man)
+		}
+	}
+	if len(mans) == 0 {
+		return fmt.Errorf("repair %x: no live manifest names this content", sha[:6])
+	}
+	b := s.newCASBatch()
+	defer b.Abort()
+	for _, man := range mans {
+		var off int64
+		for _, c := range man.Chunks {
+			if _, err := b.Add(exact[off : off+c.Length]); err != nil {
+				return err
+			}
+			off += c.Length
+		}
+	}
+	if err := b.Flush(); err != nil {
+		return err
+	}
+	ps, err := chunkPieces(mans[0])
+	if err != nil {
+		return err
+	}
+	rec := &authRecord{SHA: sha, Size: int64(len(exact)), Gen: 1, Form: authFormPin, Pieces: ps}
+	if cur != nil {
+		rec.Gen = cur.Gen + 1
+	} else if f, _ := os.Stat(s.authPath(sha)); f != nil { // unreadable record: supersede by file replacement
+		if err := os.Remove(s.authPath(sha)); err != nil {
+			return err
+		}
+	}
+	return s.authPublish(rec)
+}
+
+// AuthorityReadCost reports the logical CAS bytes one cold range read of an
+// authoritative body fetches (0, false when the content has no body).
+func (s *Store) AuthorityReadCost(man manifestV1, off, n int64) (fetched int64, ok bool, err error) {
+	sha, derr := decodeHexSHA256(man.ObjectSHA256)
+	if derr != nil {
+		return 0, false, derr
+	}
+	if rec, lerr := s.authLoad(sha); lerr != nil || rec == nil {
+		return 0, false, lerr
+	}
+	ctx := s.newAuthCtx()
+	body, _, err := ctx.body(sha, 0, 1)
+	if err != nil {
+		return 0, true, err
+	}
+	buf := make([]byte, min(n, body.Size()-off))
+	if k, rerr := body.ReadAt(buf, off); k != len(buf) {
+		return ctx.fetched, true, rerr
+	}
+	return ctx.fetched, true, nil
+}
+
+// authAvailable reports whether the manifest's content has an authoritative
+// body and, if so, that its whole closure is physically present.
+func (s *Store) authAvailable(man manifestV1) (handled bool, err error) {
+	if !s.auth.mayHave.Load() {
+		return false, nil
+	}
+	sha, derr := decodeHexSHA256(man.ObjectSHA256)
+	if derr != nil {
+		return false, nil
+	}
+	if _, serr := os.Stat(s.authPath(sha)); serr != nil {
+		return false, nil
+	}
+	var res reachabilityResult
+	a := s.newAuthReachCtx(&res)
+	var chunks []chunkRef
+	rec, lerr := s.authLoad(sha)
+	if lerr != nil {
+		return true, lerr
+	}
+	if rec.Size != man.TotalLength {
+		return true, errAuthMismatch
+	}
+	if _, merr := a.mark(sha, func(c []chunkRef) { chunks = append(chunks, c...) }, map[[32]byte]bool{}, 1); merr != nil {
+		return true, merr
+	}
+	for _, c := range chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		if n, serr := s.casStat(sum); serr != nil || n != c.Length {
+			return true, fmt.Errorf("component %s unavailable", c.SHA256[:12])
+		}
+	}
+	return true, nil
+}
+
+type authVLoc struct {
+	sha     [32]byte
+	off, ln int64
+}
+
+// authVirtualIndex maps the CDC chunks listed by live body-backed manifests to
+// their position in the authoritative object. It is rebuilt on demand, never
+// persisted, and only consulted when a chunk has no physical copy.
+func (s *Store) authVirtualIndex() map[[32]byte]authVLoc {
+	s.auth.vmu.Lock()
+	defer s.auth.vmu.Unlock()
+	if s.auth.vidx != nil && time.Since(s.auth.vtime) < 100*time.Millisecond {
+		return s.auth.vidx
+	}
+	idx := map[[32]byte]authVLoc{}
+	for _, lm := range s.liveManifests() {
+		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat(s.authPath(sha)); err != nil {
+			continue
+		}
+		var off int64
+		for _, c := range lm.man.Chunks {
+			if cs, err := decodeHexSHA256(c.SHA256); err == nil {
+				if _, dup := idx[cs]; !dup {
+					idx[cs] = authVLoc{sha, off, c.Length}
+				}
+			}
+			off += c.Length
+		}
+	}
+	s.auth.vidx, s.auth.vtime = idx, time.Now()
+	return idx
+}
+
+func (s *Store) authHasVirtualChunk(sum [32]byte) bool {
+	if !s.auth.mayHave.Load() {
+		return false
+	}
+	_, ok := s.authVirtualIndex()[sum]
+	return ok
+}
+
+// casStatOrVirtual is casStat that also accepts a chunk only an authoritative body holds.
+func (s *Store) casStatOrVirtual(sum [32]byte) (int64, error) {
+	n, err := s.casStat(sum)
+	if err == nil || !s.auth.mayHave.Load() {
+		return n, err
+	}
+	if loc, ok := s.authVirtualIndex()[sum]; ok {
+		return loc.ln, nil
+	}
+	return n, err
+}
+
+// casReadOrVirtual is casRead that falls back to slicing the chunk out of the
+// authoritative body of a live object that lists it. virtual reports the fallback.
+func (s *Store) casReadOrVirtual(sum [32]byte) (data []byte, virtual bool, err error) {
+	data, err = s.casRead(sum)
+	if err == nil || !s.auth.mayHave.Load() {
+		return data, false, err
+	}
+	loc, ok := s.authVirtualIndex()[sum]
+	if !ok {
+		return nil, false, err
+	}
+	ctx := s.newAuthCtx()
+	body, _, berr := ctx.body(loc.sha, 0, 1)
+	if berr != nil {
+		return nil, false, err
+	}
+	buf := make([]byte, loc.ln)
+	if n, rerr := body.ReadAt(buf, loc.off); n != len(buf) {
+		return nil, false, fmt.Errorf("%w; virtual read: %v", err, rerr)
+	}
+	if sha256.Sum256(buf) != sum {
+		return nil, false, fmt.Errorf("%w; virtual chunk does not match its hash", err)
+	}
+	return buf, true, nil
+}
+
+// runAuthority implements "zeros3 authority migrate|status|revert".
+func runAuthority(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status or revert")
+		os.Exit(2)
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("authority "+sub, flag.ExitOnError)
+	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
+	apply := fs.Bool("apply", false, "commit the plan (default: plan only)")
+	order := fs.String("order", "oldest", "oldest|newest: which versions serve as delta bases")
+	depth := fs.Int("max-depth", 2, "delta nesting bound (hard maximum 4)")
+	bases := fs.Int("max-bases", 2, "bases per delta (hard maximum 4)")
+	saving := fs.Float64("min-saving", 0.10, "minimum net fraction of unshared CDC bytes freed")
+	amp := fs.Float64("max-read-amp", 2.0, "max measured 4 KiB read amplification relative to CDC (0 = archive)")
+	noRep := fs.Bool("no-rep", false, "do not consider structural representations")
+	noDelta := fs.Bool("no-delta", false, "do not consider generic deltas")
+	sha := fs.String("sha256", "", "revert: content SHA-256 (hex)")
+	fs.Parse(args[1:])
+	lock, err := acquireStoreLock(*storeDir, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: authority: needs exclusive access to the store: %v\n", err)
+		os.Exit(1)
+	}
+	defer lock.release()
+	store, err := OpenStore(*storeDir)
+	if err != nil {
+		log.Fatalf("zeros3: failed to open store: %v", err)
+	}
+	defer store.Close()
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	switch sub {
+	case "migrate":
+		rep, err := store.AuthorityMigrate(AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, AllowRep: !*noRep, AllowDelta: !*noDelta, Apply: *apply})
+		if err != nil {
+			log.Fatalf("zeros3: authority migrate: %v", err)
+		}
+		enc.Encode(rep)
+	case "status":
+		st, err := store.AuthorityStatus()
+		if err != nil {
+			log.Fatalf("zeros3: authority status: %v", err)
+		}
+		enc.Encode(st)
+	case "revert":
+		sum, err := decodeHexSHA256(*sha)
+		if err != nil {
+			log.Fatalf("zeros3: authority revert: %v", err)
+		}
+		if err := store.AuthorityRevert(sum); err != nil {
+			log.Fatalf("zeros3: authority revert: %v", err)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "zeros3: authority: unknown subcommand %q\n", sub)
+		os.Exit(2)
+	}
+}
+
+// =============================================================================
 // 17. Lifecycle / main
 // =============================================================================
 
@@ -39545,8 +42681,10 @@ func main() {
 		runInspect(args)
 	case "bundle":
 		runBundle(args)
+	case "authority":
+		runAuthority(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, repack, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, or inspect)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, repack, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
 		os.Exit(2)
 	}
 }
