@@ -6755,6 +6755,8 @@ type Store struct {
 	mcache *manifestCache
 	// ccache holds recently re-read, digest-verified chunks (section 14a).
 	ccache *chunkCache
+	// pipeStreams counts the large responses currently using pipelined reads (section 14b).
+	pipeStreams atomic.Int64
 }
 
 // OpenStore opens the store rooted at root, initializing it (writing
@@ -16270,6 +16272,252 @@ func chunkCacheBytes() int64 {
 	}
 	return chunkCacheDefaultBytes
 }
+
+// =============================================================================
+// 14b. Pipelined streaming of large ranges
+//
+// A serial manifestReader reads, decodes and hashes a run, then the handler
+// writes it to the socket, then the next run is read: the single goroutine does
+// all of it one after another, and SHA-256 over every chunk is most of the
+// work. For a large range the pipeReader plans the same runs the serial reader
+// would (planOnly), executes up to pipeWorkers of them concurrently, and hands
+// the verified chunks to the consumer strictly in order.
+//
+// What does not change: every record is validated against its locator entry
+// and hashed by the same packRunReader.read (or casRead for a chunk that is not
+// in a pack), a record that fails in a run is retried through casRead's other
+// copies, and the same bytes reach the consumer in the same order. What is
+// bounded: runs in flight (pipeMaxTasks and pipeInflightBytes of verified
+// data), worker goroutines per stream (pipeWorkers) and pipelined streams per
+// store (pipeStreamLimit); a request beyond the stream limit, or a short one,
+// takes the serial reader. Closing the reader cancels pending work, waits for
+// running workers, and returns every buffer; nothing outlives close.
+// =============================================================================
+
+var (
+	// pipeMinRange is the smallest range that is pipelined: below it the work is
+	// one or two runs and goroutine hand-offs cost more than they overlap.
+	pipeMinRange = int64(4 << 20)
+	// pipeWorkers bounds concurrent run reads per stream.
+	pipeWorkers = max(1, min(4, runtime.GOMAXPROCS(0)-1))
+	// pipeStreamLimit bounds pipelined streams per store, so concurrent clients
+	// (which already keep the cores busy) do not each fan out further.
+	pipeStreamLimit = int64(max(1, runtime.GOMAXPROCS(0)/2))
+	pipeMaxTasks    = 12
+	// pipeInflightBytes bounds the logical bytes planned but not yet consumed.
+	pipeInflightBytes = int64(16 << 20)
+)
+
+type pipeTask struct {
+	first, n int        // chunks [first, first+n)
+	sums     [][32]byte // run records; nil for a single chunk read through casRead
+	locs     []packLoc  // parallel to sums
+	bytes    int64      // logical bytes
+	done     chan struct{}
+	pr       *packRunReader // owns data's backing buffers until released
+	data     [][]byte
+	errs     []error
+}
+
+type pipeReader struct {
+	s        *Store
+	m        *servedManifest
+	rng      byteRange
+	plan     *manifestReader // planner state: next chunk, offset, failed packs
+	queue    []*pipeTask
+	cur      *pipeTask
+	curK     int
+	inflight int64
+	sem      chan struct{}
+	cancel   chan struct{}
+	wg       sync.WaitGroup
+	err      error
+	closed   bool
+	counted  bool
+}
+
+// newStreamReader chooses the reader for a response: pipelined for a large
+// range on a store with spare stream slots, otherwise the serial reader.
+func (s *Store) newStreamReader(sm *servedManifest, rng byteRange) objectReader {
+	if rng.end-rng.start+1 >= pipeMinRange && pipeWorkers > 1 && s.pipeStreams.Add(1) <= pipeStreamLimit {
+		return s.newPipeReader(sm, rng)
+	} else if rng.end-rng.start+1 >= pipeMinRange && pipeWorkers > 1 {
+		s.pipeStreams.Add(-1)
+	}
+	return s.newServedReader(sm, rng)
+}
+
+// newPipeReader's caller has already taken a pipelined-stream slot, which close returns.
+func (s *Store) newPipeReader(sm *servedManifest, rng byteRange) *pipeReader {
+	pl := s.newServedReader(sm, rng)
+	pl.cc = nil // large streams neither read nor fill the chunk cache
+	pl.pr = newPackRunReader(s.packSnap(), s.packTrace)
+	return &pipeReader{s: s, m: sm, rng: rng, plan: pl, sem: make(chan struct{}, pipeWorkers), cancel: make(chan struct{}), counted: true}
+}
+
+// planOnly is planRun without the I/O: it returns copies of the digests and
+// locators of the run that starts at chunk i, or ok=false when chunk i is not
+// served from a pack.
+func (m *manifestReader) planOnly(i int, sum [32]byte, chunkStart int64) (sums [][32]byte, locs []packLoc, ok bool) {
+	if !m.planRun(i, sum, chunkStart) {
+		return nil, nil, false
+	}
+	return append([][32]byte(nil), m.sums...), append([]packLoc(nil), m.locs...), true
+}
+
+// fill plans and launches runs until a bound is reached or the range is covered.
+func (p *pipeReader) fill() {
+	pl := p.plan
+	for len(p.queue) < pipeMaxTasks && p.inflight < pipeInflightBytes && pl.idx < p.m.chunkCount() && pl.offset <= p.rng.end {
+		i, start := pl.idx, pl.offset
+		t := &pipeTask{first: i, n: 1, done: make(chan struct{})}
+		if sums, locs, ok := pl.planOnly(i, p.m.sum(i), start); ok {
+			t.sums, t.locs, t.n = sums, locs, len(sums)
+		} else {
+			t.sums = [][32]byte{p.m.sum(i)}
+		}
+		for k := 0; k < t.n; k++ {
+			t.bytes += p.m.length(i + k)
+		}
+		pl.idx += t.n
+		pl.offset = p.m.start(pl.idx)
+		p.inflight += t.bytes
+		p.queue = append(p.queue, t)
+		p.wg.Add(1)
+		go p.run(t)
+	}
+}
+
+func (p *pipeReader) run(t *pipeTask) {
+	defer p.wg.Done()
+	defer close(t.done)
+	select {
+	case p.sem <- struct{}{}:
+		defer func() { <-p.sem }()
+	case <-p.cancel:
+		return
+	}
+	select {
+	case <-p.cancel:
+		return
+	default:
+	}
+	if t.locs == nil {
+		data, err := p.s.casRead(t.sums[0])
+		t.data, t.errs = [][]byte{data}, []error{err}
+		return
+	}
+	pr := newPackRunReader(p.plan.pr.st, p.s.packTrace)
+	t.pr = pr
+	t.data, t.errs = pr.read(t.sums, t.locs)
+	if tr := p.s.packTrace; tr != nil {
+		tr.Runs.Add(1)
+		tr.Chunks.Add(int64(len(t.data)))
+		for _, err := range t.errs {
+			if err != nil {
+				tr.Failures.Add(1)
+			}
+		}
+	}
+}
+
+func (p *pipeReader) release(t *pipeTask) {
+	if t.pr != nil {
+		t.pr.close()
+		t.pr = nil
+	}
+	p.inflight -= t.bytes
+}
+
+func (p *pipeReader) next() ([]byte, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	for {
+		if p.cur == nil {
+			p.fill()
+			if len(p.queue) == 0 {
+				p.finish()
+				if p.plan.offset <= p.rng.end {
+					p.err = fmt.Errorf("manifest chunks end before requested range")
+					return nil, p.err
+				}
+				return nil, io.EOF
+			}
+			p.cur, p.queue, p.curK = p.queue[0], p.queue[1:], 0
+			<-p.cur.done
+		}
+		if p.curK >= p.cur.n {
+			p.release(p.cur)
+			p.cur = nil
+			continue
+		}
+		k := p.curK
+		p.curK++
+		idx := p.cur.first + k
+		sum := p.cur.sums[k]
+		var data []byte
+		var err error
+		if k < len(p.cur.data) {
+			data, err = p.cur.data[k], p.cur.errs[k]
+		} else {
+			err = errors.New("read canceled")
+		}
+		if err != nil && p.cur.locs != nil {
+			// This record failed inside its run; the other copies decide.
+			if p.plan.bad == nil {
+				p.plan.bad = map[int32]bool{}
+			}
+			p.plan.bad[p.cur.locs[0].pack] = true
+			data, err = p.s.casRead(sum)
+		}
+		if err != nil {
+			p.finish()
+			p.err = fmt.Errorf("chunk read failed: %w", err)
+			return nil, p.err
+		}
+		length, chunkStart := p.m.length(idx), p.m.start(idx)
+		if int64(len(data)) != length {
+			p.finish()
+			p.err = fmt.Errorf("chunk %x: length mismatch", sum)
+			return nil, p.err
+		}
+		lo, hi := int64(0), length
+		if p.rng.start > chunkStart {
+			lo = p.rng.start - chunkStart
+		}
+		if p.rng.end < chunkStart+length-1 {
+			hi = p.rng.end - chunkStart + 1
+		}
+		return data[lo:hi], nil
+	}
+}
+
+// finish stops the reader's background work; the verified bytes already handed
+// out are no longer referenced by it.
+func (p *pipeReader) finish() {
+	if p.closed {
+		return
+	}
+	p.closed = true
+	close(p.cancel)
+	p.wg.Wait()
+	if p.cur != nil {
+		p.release(p.cur)
+		p.cur = nil
+	}
+	for _, t := range p.queue {
+		p.release(t)
+	}
+	p.queue = nil
+	p.plan.close()
+	if p.counted {
+		p.counted = false
+		p.s.pipeStreams.Add(-1)
+	}
+}
+
+func (p *pipeReader) close() { p.finish() }
 
 // manifestReader yields the bytes of one inclusive logical range of the
 // object a manifest describes, one verified CAS chunk at a time. It is the one
@@ -31998,7 +32246,7 @@ func (s *Store) openServedReader(sm *servedManifest, rng byteRange) objectReader
 			log.Printf("zeros3: representation read of manifest %s fell back to CDC: %v", man.ManifestUUID, err)
 		}
 	}
-	return s.newServedReader(sm, rng)
+	return s.newStreamReader(sm, rng)
 }
 
 // Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.

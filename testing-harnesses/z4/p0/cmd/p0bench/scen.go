@@ -507,7 +507,8 @@ func cmdGet(args []string) {
 		m["read_amp_rchar"] = float64(m["srv_rchar"].(int64)) / float64(max(1, served.Load()))
 		m["read_amp_dev"] = float64(m["dev_read_bytes"].(int64)) / float64(max(1, served.Load()))
 		m["store"] = sz
-		m["verified"] = true // every response byte-compared inside the window
+		m["verified"] = true // every response byte-compared inside the window (or the sampled subset: see verify_mode)
+		m["verify_mode"] = os.Getenv("P0_VERIFY")
 		if c.prof != "" {
 			srv.Snapshot()
 			m["go_metrics"] = readMetrics(srv.ProfDir)
