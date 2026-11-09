@@ -457,6 +457,8 @@ func cmdGet(args []string) {
 				switch ph.mode {
 				case "whole":
 					ops[i] = op{objs[i%len(objs)], 0, -1}
+				case "head":
+					ops[i] = op{objs[rng.IntN(len(objs))], 0, -1}
 				case "hot":
 					ops[i] = op{objs[zf.Uint64()], 0, -1}
 					if ph.rsizeStr != "" && ph.rsizeStr != "64kib" {
@@ -469,6 +471,10 @@ func cmdGet(args []string) {
 					k := min(ph.rs, o.C.Size)
 					off := rng.Int64N(max(1, o.C.Size-k+1))
 					switch ph.roff {
+					case "each": // request i goes to object i: the first read of every object
+						o = objs[i%len(objs)]
+						k = min(ph.rs, o.C.Size)
+						off = rng.Int64N(max(1, o.C.Size-k+1))
 					case "hot":
 						off = (o.C.Size / 3) % max(1, o.C.Size-k+1)
 					case "eof":
@@ -487,7 +493,12 @@ func cmdGet(args []string) {
 			var badc atomic.Int64
 			w := startWin(srv.PID())
 			err := pool(n, ph.conc, func(i int) error {
-				r := cl.Get(ops[i].o, ops[i].off, ops[i].n)
+				var r GetRes
+				if ph.mode == "head" {
+					r = cl.Head(ops[i].o)
+				} else {
+					r = cl.Get(ops[i].o, ops[i].off, ops[i].n)
+				}
 				if r.Err != nil {
 					return r.Err
 				}
@@ -511,7 +522,7 @@ func cmdGet(args []string) {
 			m["read_amp_rchar"] = float64(m["srv_rchar"].(int64)) / float64(max(1, served.Load()))
 			m["read_amp_dev"] = float64(m["dev_read_bytes"].(int64)) / float64(max(1, served.Load()))
 			m["store"] = sz
-			m["verified"] = true // every response byte-compared inside the window (or the sampled subset: see verify_mode)
+			m["verified"] = true // every response byte-compared inside the window (HEAD: Content-Length and ETag; or the sampled subset: see verify_mode)
 			m["verify_mode"] = os.Getenv("P0_VERIFY")
 			if c.prof != "" {
 				srv.Snapshot()
