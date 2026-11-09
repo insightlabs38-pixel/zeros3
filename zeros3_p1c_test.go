@@ -966,3 +966,48 @@ func TestP1C_BundleExportRefusesCorruptChunk(t *testing.T) {
 	bundleImportT(t, dst, path)
 	bundleRestoreCheck(t, dst, snap2, bodies)
 }
+
+// A corrupt live record (chunk or inline manifest) in a sealed segment must make
+// destructive maintenance refuse, and must keep the pack.
+func TestP1C_MaintenanceRefusesCorruptLiveRecord(t *testing.T) {
+	useProductionLayout(t)
+	for _, what := range []string{"chunk", "inline-manifest"} {
+		t.Run(what, func(t *testing.T) {
+			setSegTarget(t, 64<<10, 16<<10)
+			s, dir := p1cOpen(t)
+			acked := p1cPutN(t, s, "m", 20, 8000)
+			ent, _ := s.lookupObject("b", "m0003")
+			var victim [32]byte
+			if what == "chunk" {
+				man, _ := s.readVerifiedManifest(ent.manifestUUID, ent.manifestSHA256)
+				victim = chunkSumHex(t, man.Chunks[0].SHA256)
+			} else {
+				victim = ent.manifestSHA256
+			}
+			corruptChunkAnyLayout(t, s, victim) // seals first, then damages the record in its pack
+			s.Close()
+			before := packFiles(t, dir)
+			// gc may run (a fully live pack is never deleted) but must delete nothing
+			if res, err := gcCollect(dir, true); err == nil && (res.PacksDeleted != 0 || res.ChunksDeleted != 0) {
+				t.Fatalf("gc -apply deleted data over a corrupt live %s: %+v", what, res)
+			}
+			// repack must not launder the damage into a new, valid-looking pack
+			if rr, err := repackStore(dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100}); err == nil && rr.PacksRewritten != 0 {
+				t.Fatalf("repack rewrote packs over a corrupt live %s: %+v", what, rr)
+			}
+			after := packFiles(t, dir)
+			if len(after) != len(before) {
+				t.Fatalf("packs changed under refused maintenance: %d -> %d", len(before), len(after))
+			}
+			s2 := p1cReopen(t, dir)
+			delete(acked, "m0003")
+			p1cCheck(t, s2, acked) // everything else stays readable
+			if _, _, err := s2.GetObject("b", "m0003"); err == nil {
+				t.Fatal("a corrupt live record was served")
+			}
+			if v, err := s2.Verify(true); err != nil || v.OK() {
+				t.Fatalf("the damage must stay visible to verify -deep: %v %+v", err, v)
+			}
+		})
+	}
+}

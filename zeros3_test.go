@@ -37552,6 +37552,7 @@ func TestTierRebalance_HistoryPruneChangesTargets(t *testing.T) {
 }
 
 func TestTierRebalance_RefusesUnsafeStates(t *testing.T) {
+	useLooseLayout(t, "picks the first pack by content hash and corrupts a fixed offset: with segments that pack may hold only dead records (live-record corruption on segment packs: TestP1C_MaintenanceRefusesCorruptLiveRecord)")
 	t.Run("invalid live set blocks apply, dry-run reports it", func(t *testing.T) {
 		dir := tierMixedStore(t)
 		s, _ := OpenStore(dir)
