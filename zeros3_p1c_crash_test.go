@@ -389,12 +389,17 @@ func TestP1C_CrashStateModel(t *testing.T) {
 						mu.Unlock()
 						cs := &crashSnapshot{dir: t.TempDir(), acked: a}
 						s.segs.mu.Lock()
-						act := s.segs.active
+						before := s.segs.active
 						s.segs.mu.Unlock()
-						if act != nil {
-							cs.active, cs.durable = act.path, s.segs.activeBytes.Load()
-						}
 						copyStoreLive(t, dir, cs.dir)
+						// Volatile bytes are only those beyond the durable size read AFTER the copy:
+						// durability only grows, so bytes past it were certainly not durable during the copy.
+						s.segs.mu.Lock()
+						after := s.segs.active
+						s.segs.mu.Unlock()
+						if before != nil && before == after {
+							cs.active, cs.durable = after.path, s.segs.activeBytes.Load()
+						}
 						snap = cs
 					})
 					var wg sync.WaitGroup

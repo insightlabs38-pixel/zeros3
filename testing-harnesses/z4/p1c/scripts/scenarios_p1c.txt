@@ -1,0 +1,34 @@
+# label[@maxrounds]|subcommand args   (Z4-P0 driver; every PUT replayed byte-for-byte in a fresh process)
+put_0b_c8|put -objs 2000 -size 0 -conc 8
+put_1b_c8|put -objs 2000 -size 1 -conc 8
+put_1k_c8|put -objs 3000 -size 1kib -conc 8
+put_4k_c1|put -objs 800 -size 4kib -conc 1
+put_4k_c4|put -objs 2400 -size 4kib -conc 4
+put_4k_c8|put -objs 3000 -size 4kib -conc 8
+put_4k_c16|put -objs 4000 -size 4kib -conc 16
+put_4k_c32|put -objs 4000 -size 4kib -conc 32
+put_16k_c1@3|put -objs 800 -size 16kib -conc 1
+put_16k_c8|put -objs 2400 -size 16kib -conc 8
+put_16k_c32@3|put -objs 3200 -size 16kib -conc 32
+put_64k_c1@3|put -objs 600 -size 64kib -conc 1
+put_64k_c8|put -objs 1500 -size 64kib -conc 8
+put_64k_c32@3|put -objs 2400 -size 64kib -conc 32
+put_128k_c8@3|put -objs 1200 -size 128kib -conc 8
+put_255k_c8@3|put -objs 1000 -size 255kib -conc 8
+put_256k_c8@3|put -objs 1000 -size 256kib -conc 8
+put_512k_c8@3|put -objs 800 -size 512kib -conc 8
+put_1m_c1@3|put -objs 200 -size 1mib -conc 1
+put_1m_c4|put -objs 300 -size 1mib -conc 4
+put_1m_c16@3|put -objs 480 -size 1mib -conc 16
+put_4m_c4@3|put -objs 80 -size 4mib -conc 4
+put_64m_dp_c1@3|put -objs 4 -size 64mib -conc 1
+put_64m_dp_c4@3|put -objs 8 -size 64mib -conc 4
+put_1g_c1@2|put -objs 1 -size 1gib -conc 1
+put_mp_64m_pc4@3|put -objs 4 -size 64mib -conc 1 -mode multipart -part 8mib -partconc 4
+put_4k_dup50_c8@3|put -objs 3000 -size 4kib -conc 8 -dupfrac 0.5
+put_64k_text_c8@3|put -objs 1500 -size 64kib -conc 8 -kind text
+put_64k_rev_c4@3|put -objs 40 -size 64kib -conc 4 -revs 8 -editfrac 0.05
+put_mixsizes_c4@3|put -objs 600 -conc 4 -sizes 4kib:50,64kib:30,1mib:15,16mib:5
+mixed_4k_r4w2@3|mixed -objs 1000 -size 4kib -readers 4 -writers 2 -wsize 4kib -rsize 0 -dur 8s
+get_4k_whole@3|get -objs 2000 -size 4kib -mode whole -conc 8
+get_1m_range64k@3|get -objs 100 -size 1mib -mode range -rsize 64kib -conc 8

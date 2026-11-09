@@ -749,3 +749,39 @@ func TestP1C_MultipartCopyAndBundleRoundTripThroughSegments(t *testing.T) {
 	p1cCheck(t, s2, map[string][]byte{"mp": want, "copy": src["src0000"]})
 	p1cVerify(t, s2)
 }
+
+func TestP1C_TierMoveCarriesInlineManifests(t *testing.T) {
+	useProductionLayout(t)
+	setSegTarget(t, 64<<10, 16<<10)
+	s, dir := p1cOpen(t)
+	acked := p1cPutN(t, s, "t", 40, 8000)
+	s.sealSegments()
+	moved := 0
+	for _, p := range s.packSnap().packs {
+		if p.open || p.tier != tierHot {
+			continue
+		}
+		if err := s.movePack(p.id, tierHot, tierCold); err != nil {
+			t.Fatalf("move %s: %v", p.id, err)
+		}
+		moved++
+	}
+	if moved == 0 {
+		t.Fatal("no sealed pack to move")
+	}
+	if err := s.reloadPacks(); err != nil { // a move leaves the source entry until the locator is rebuilt, as rebalance does
+		t.Fatal(err)
+	}
+	if len(packFiles(t, dir)) != 0 {
+		t.Fatalf("hot packs left after moving everything: %v", packFiles(t, dir))
+	}
+	p1cCheck(t, s, acked) // chunks AND inline manifests are served from the cold tier
+	more := p1cPutN(t, s, "after", 5, 8000)
+	p1cCheck(t, s, more)
+	p1cVerify(t, s)
+	s.Close()
+	s2 := p1cReopen(t, dir)
+	p1cCheck(t, s2, acked)
+	p1cCheck(t, s2, more)
+	p1cVerify(t, s2)
+}

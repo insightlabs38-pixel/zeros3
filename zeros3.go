@@ -12384,6 +12384,7 @@ func compactStore(storeDir string, opt compactOptions) (CompactResult, error) {
 }
 
 func (s *Store) compact(referenced map[string]bool, opt compactOptions) (CompactResult, error) {
+	s.sealSegments() // pack maintenance sees sealed packs only (section 4d)
 	res := CompactResult{DryRun: opt.DryRun, Tier: opt.Tier.String()}
 	if opt.TargetBytes <= 0 {
 		return res, errors.New("compact: pack size must be positive")
@@ -13405,6 +13406,7 @@ func repackStore(storeDir string, opt repackOptions) (RepackResult, error) {
 }
 
 func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, error) {
+	s.sealSegments() // pack maintenance sees sealed packs only (section 4d)
 	res := RepackResult{DryRun: opt.DryRun, LiveSetOK: rr.OK(), Issues: rr.Issues}
 	if opt.TargetBytes <= 0 || opt.MaxLivePercent < 0 || opt.MaxLivePercent > 100 {
 		return res, errors.New("repack: pack size must be positive and the live threshold between 0 and 100")
@@ -14592,6 +14594,7 @@ func (s *Store) summarizeTargets(rr reachabilityResult, tg *tierTargets, res *Re
 // pack is removed only by replacePacksTo/movePack, after every live record
 // has a verified surviving copy.
 func (s *Store) rebalance(rr reachabilityResult, tg *tierTargets, opt rebalanceOptions) (RebalanceResult, error) {
+	s.sealSegments() // pack maintenance sees sealed packs only (section 4d)
 	res := RebalanceResult{DryRun: !opt.Apply, Estimated: !opt.Apply, LiveSetOK: rr.OK(), Issues: rr.Issues}
 	if opt.TargetBytes <= 0 {
 		return res, errors.New("tier rebalance: pack size must be positive")

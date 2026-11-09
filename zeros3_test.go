@@ -35783,6 +35783,7 @@ func TestTier_LocatorPreferenceDifferential(t *testing.T) {
 }
 
 func TestTier_RepackGCPreserveTiersAndPaths(t *testing.T) {
+	useLooseLayout(t, "tier fixtures start from loose chunks")
 	data := tierTestDataset()
 	data["h2"], data["w2"], data["c2"] = genRandomBytes(201, 600_000), genRandomBytes(202, 600_000), genRandomBytes(203, 600_000)
 	dir := t.TempDir()
@@ -35900,6 +35901,7 @@ func TestTier_GCRemovesDeadPackFromItsTier(t *testing.T) {
 // logical bytes, so a cold-resident source behaves like a hot one; replication
 // writes loose (hot) chunks at the destination.
 func TestTier_TransferFromColdSource(t *testing.T) {
+	useLooseLayout(t, "tier fixtures start from loose chunks")
 	dir, srv, creds, region := newSyncTestServer(t)
 	body := genRandomBytes(77, 900_000)
 	if err := srv.store.CreateBucket("b"); err != nil {
@@ -35937,6 +35939,7 @@ func TestTier_TransferFromColdSource(t *testing.T) {
 }
 
 func TestTier_CLI(t *testing.T) {
+	useLooseLayout(t, "tier fixtures start from loose chunks")
 	bin := buildZeros3Binary(t)
 	dir := t.TempDir()
 	putPackTestObjects(t, dir, packTestDataset(), "random", "repeat")
@@ -35985,6 +35988,7 @@ func TestTier_CLI(t *testing.T) {
 // A store that only ever used cold has no store/packs; moving back to hot
 // must create it.
 func TestTier_ColdOnlyStoreMovesToHot(t *testing.T) {
+	useLooseLayout(t, "tier fixtures start from loose chunks")
 	data := tierSubset(packTestDataset(), "random", "repeat")
 	dir := t.TempDir()
 	putPackTestObjects(t, dir, data, "random", "repeat")
@@ -36173,6 +36177,7 @@ func TestDeleteObjects_BucketVersionAndBounds(t *testing.T) {
 // other objects/history/snapshots, survive restart, and are reclaimed only
 // by history prune + GC.
 func TestDeleteObjects_HistoryPruneGC(t *testing.T) {
+	useLooseLayout(t, "expects per-chunk loose gc granularity (pack-level reclamation: TestP1C_GCAndRepack*)")
 	dir := t.TempDir()
 	store, err := OpenStore(dir)
 	if err != nil {
@@ -36223,6 +36228,7 @@ func TestDeleteObjects_HistoryPruneGC(t *testing.T) {
 }
 
 func TestTier_InitSafety(t *testing.T) {
+	useLooseLayout(t, "tier fixtures start from loose chunks")
 	data := tierSubset(packTestDataset(), "random", "repeat")
 	build := func() string {
 		dir := t.TempDir()
@@ -37302,6 +37308,7 @@ func tierAssertConverged(t *testing.T, dir string) {
 }
 
 func TestTierRebalance_DryRunThenApplyOnLooseChunks(t *testing.T) {
+	useLooseLayout(t, "rebalance of loose chunks")
 	dir := tierFixture(t, true)
 	before := tierTreeHash(t, dir)
 	res := tierRebalanceTest(t, dir, false)
@@ -37353,6 +37360,7 @@ func TestTierRebalance_DryRunThenApplyOnLooseChunks(t *testing.T) {
 func tierPackedStore(t *testing.T, dir string) { t.Helper(); compactTestDir(t, dir) }
 
 func TestTierRebalance_WholePackMoveKeepsBytes(t *testing.T) {
+	useLooseLayout(t, "asserts exact tier plan counts over chunk records; sealed segments add inline manifest records to every plan (tier moves of segment packs: TestP1C_TierMoveCarriesInlineManifests)")
 	dir := t.TempDir()
 	s, _ := OpenStore(dir)
 	s.CreateBucket("site")
@@ -37421,6 +37429,7 @@ func tierMixedStore(t *testing.T) string {
 }
 
 func TestTierRebalance_MixedPacksAreRewritten(t *testing.T) {
+	useLooseLayout(t, "asserts exact tier plan counts over chunk records; sealed segments add inline manifest records to every plan (tier moves of segment packs: TestP1C_TierMoveCarriesInlineManifests)")
 	dir := tierMixedStore(t)
 	s0, _ := OpenStore(dir)
 	deadBefore := packTestStats(t, s0).PackedDeadChunkCount
@@ -37601,6 +37610,7 @@ func TestTierRebalance_RefusesUnsafeStates(t *testing.T) {
 }
 
 func TestTierRebalance_CrashPointsConverge(t *testing.T) {
+	useLooseLayout(t, "crash boundaries of loose-to-tier moves")
 	points := []struct {
 		hook  string
 		nth   int
@@ -37748,6 +37758,7 @@ func TestTierRebalance_SharedCheckpointBlocksStayHot(t *testing.T) {
 }
 
 func TestTierRebalance_CLI(t *testing.T) {
+	useLooseLayout(t, "asserts exact tier plan counts over chunk records; sealed segments add inline manifest records to every plan (tier moves of segment packs: TestP1C_TierMoveCarriesInlineManifests)")
 	bin := buildZeros3Binary(t)
 	dir := tierFixture(t, false)
 	if out, _, code := runZeros3CLI(t, bin, "tier", "policy", "list", "-store", dir, "-json"); code != 0 || !strings.Contains(out, `"history": "cold"`) {
@@ -38068,6 +38079,7 @@ func TestCASBatch_ExistingChunksInAnyTierStageNothing(t *testing.T) {
 }
 
 func TestCASBatch_IngestDuplicateAndLocalizedEdit(t *testing.T) {
+	useLooseLayout(t, "asserts on staged loose files of the casBatch path")
 	store, _ := newBucketStore(t)
 	data := genRandomBytes(300, 6<<20)
 	if _, err := store.PutObject("b", "k", data, "application/octet-stream", nil); err != nil {
@@ -38091,6 +38103,7 @@ func TestCASBatch_IngestDuplicateAndLocalizedEdit(t *testing.T) {
 }
 
 func TestCASBatch_IngestIsBoundedAndHandlesTinyObjects(t *testing.T) {
+	useLooseLayout(t, "asserts on staged loose files of the casBatch path")
 	store, dir := newBucketStore(t)
 	for _, n := range []int{0, 1, 4 << 20} {
 		d := genRandomBytes(int64(400+n), n)
@@ -38124,6 +38137,7 @@ func TestCASBatch_IngestIsBoundedAndHandlesTinyObjects(t *testing.T) {
 }
 
 func TestCASBatch_InterruptionMatrix(t *testing.T) {
+	useLooseLayout(t, "crash boundaries of the loose casBatch publication (segment boundaries: TestP1C_Crash*)")
 	points := []struct {
 		point string
 		nth   int
@@ -39027,9 +39041,14 @@ func TestBundle_RoundTripPreservesIdentityAndDeduplicates(t *testing.T) {
 	if err != nil || !bytes.Equal(a, b) {
 		t.Fatalf("snapshot descriptor changed in transit: %v", err)
 	}
+	srcStore, dstStore := p1cReopen(t, src), p1cReopen(t, dst)
 	for _, e := range d.Entries {
-		ma, _ := os.ReadFile(filepath.Join(src, "manifests", e.ManifestUUID+".json"))
-		mb, err := os.ReadFile(filepath.Join(dst, "manifests", e.ManifestUUID+".json"))
+		sha := chunkSumHex(t, e.ManifestSHA256)
+		_, ma, err := srcStore.readManifestSHA(e.ManifestUUID, sha)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, mb, err := dstStore.readManifestSHA(e.ManifestUUID, sha)
 		if err != nil || !bytes.Equal(ma, mb) {
 			t.Fatalf("manifest %s changed in transit: %v", e.ManifestUUID, err)
 		}
@@ -39084,6 +39103,7 @@ func TestBundle_ExportIsDeterministicAndAtomic(t *testing.T) {
 }
 
 func TestBundle_ExportIndependentOfPhysicalRepresentation(t *testing.T) {
+	useLooseLayout(t, "builds loose/packed/tiered variants from a loose start")
 	src, snap := bundleFixture(t, bundleFixtureBodies())
 	ref, _ := bundleExportT(t, src, snap, false)
 	want, _ := os.ReadFile(ref)
@@ -39403,6 +39423,7 @@ func TestBundle_PartialOverlapImportsOnlyMissingContent(t *testing.T) {
 }
 
 func TestBundle_CorruptExistingChunkIsRepairedFromVerifiedPayload(t *testing.T) {
+	useLooseLayout(t, "rots an existing loose chunk file by path")
 	bodies := map[string][]byte{"only": genRandomBytes(310, 200_000)}
 	src, snap := bundleFixture(t, bodies)
 	path, _ := bundleExportT(t, src, snap, true)
@@ -40187,6 +40208,7 @@ func TestLocality_RootObservationOrder(t *testing.T) {
 }
 
 func TestLocality_CompactLayoutsEndToEnd(t *testing.T) {
+	useLooseLayout(t, "asserts the exact record set / order / read coalescing of packs built by compact or direct ingest; sealed segments add manifest records to every pack (inline manifests in packs: TestP1C_*, TestLayoutMatrix_*)")
 	for _, compress := range []bool{false, true} {
 		t.Run(fmt.Sprintf("compress=%v", compress), func(t *testing.T) {
 			r := newLocalityRoots(t, []string{"cur-b", "cur-a"})
@@ -40257,6 +40279,7 @@ func copyTree(t *testing.T, src, dst string) {
 // Two stores with the same logical roots, built in different orders, must
 // compact to byte-identical packs: no map or filesystem order may leak in.
 func TestLocality_DeterministicAcrossBuildOrder(t *testing.T) {
+	useLooseLayout(t, "asserts the exact record set / order / read coalescing of packs built by compact or direct ingest; sealed segments add manifest records to every pack (inline manifests in packs: TestP1C_*, TestLayoutMatrix_*)")
 	ids := func(dir string) []string {
 		ents, _ := os.ReadDir(filepath.Join(dir, "packs"))
 		var out []string
@@ -40280,6 +40303,7 @@ func TestLocality_DeterministicAcrossBuildOrder(t *testing.T) {
 }
 
 func TestLocality_PackBoundariesAndTailFolding(t *testing.T) {
+	useLooseLayout(t, "asserts the exact record set / order / read coalescing of packs built by compact or direct ingest; sealed segments add manifest records to every pack (inline manifests in packs: TestP1C_*, TestLayoutMatrix_*)")
 	dir := t.TempDir()
 	s, _ := OpenStore(dir)
 	s.CreateBucket("b")
@@ -40308,6 +40332,7 @@ func TestLocality_PackBoundariesAndTailFolding(t *testing.T) {
 }
 
 func TestLocality_SingleChunkEmptyAndSharedObjects(t *testing.T) {
+	useLooseLayout(t, "asserts the exact record set / order / read coalescing of packs built by compact or direct ingest; sealed segments add manifest records to every pack (inline manifests in packs: TestP1C_*, TestLayoutMatrix_*)")
 	dir := t.TempDir()
 	s, _ := OpenStore(dir)
 	s.CreateBucket("b")
@@ -40602,6 +40627,7 @@ func (f *packRunFixture) reset() {
 }
 
 func TestPackRun_RangesMatchOrdinaryReads(t *testing.T) {
+	useLooseLayout(t, "asserts the exact record set / order / read coalescing of packs built by compact or direct ingest; sealed segments add manifest records to every pack (inline manifests in packs: TestP1C_*, TestLayoutMatrix_*)")
 	for _, layout := range []packLayout{layoutDigest, layoutLocality} {
 		for _, compress := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/compress=%v", layout, compress), func(t *testing.T) {
@@ -40646,6 +40672,7 @@ func TestPackRun_RangesMatchOrdinaryReads(t *testing.T) {
 }
 
 func TestPackRun_LocalityCoalescesDigestDoesNot(t *testing.T) {
+	useLooseLayout(t, "asserts the exact record set / order / read coalescing of packs built by compact or direct ingest; sealed segments add manifest records to every pack (inline manifests in packs: TestP1C_*, TestLayoutMatrix_*)")
 	loc := newPackRunFixture(t, layoutLocality, false)
 	dig := newPackRunFixture(t, layoutDigest, false)
 	chunks := int64(len(manifestSums(t, loc.s, "b", "rand")))
@@ -40817,6 +40844,7 @@ func damagePrimary(t *testing.T, s *Store, sum [32]byte, kind string) {
 }
 
 func TestPackRun_CorruptionFallsBackOrFailsWithoutLeakingBytes(t *testing.T) {
+	useLooseLayout(t, "asserts the exact record set / order / read coalescing of packs built by compact or direct ingest; sealed segments add manifest records to every pack (inline manifests in packs: TestP1C_*, TestLayoutMatrix_*)")
 	for _, kind := range []string{"header", "payload", "deflate", "truncate"} {
 		for _, fallback := range []string{"packed-copy", "loose-copy", "none"} {
 			t.Run(kind+"/"+fallback, func(t *testing.T) {
@@ -40972,6 +41000,7 @@ func mustLoc(t *testing.T, s *Store, sum [32]byte) packLoc {
 }
 
 func TestPackRun_NoncontiguousAndSingleChunk(t *testing.T) {
+	useLooseLayout(t, "asserts the exact record set / order / read coalescing of packs built by compact or direct ingest; sealed segments add manifest records to every pack (inline manifests in packs: TestP1C_*, TestLayoutMatrix_*)")
 	f := newPackRunFixture(t, layoutDigest, false)
 	// Digest layout: neighbors are not physically adjacent, so every run is 1 record.
 	var sizes []int
@@ -41963,6 +41992,7 @@ func TestBundleDelta_CorruptBaseReferenceFailsThenConverges(t *testing.T) {
 }
 
 func TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting(t *testing.T) {
+	useLooseLayout(t, "rots a destination loose chunk copy by path")
 	v1, v2 := deltaV1V2()
 	src, snaps := deltaChain(t, v1, v2)
 	path, ex := deltaExportT(t, src, snaps[0], snaps[1], true)
@@ -43272,6 +43302,7 @@ func TestDirectPack_ManyPublishedPacksKeepLocatorBounded(t *testing.T) {
 }
 
 func TestDirectPackLife_CrashMatrixConverges(t *testing.T) {
+	useLooseLayout(t, "asserts the exact record set / order / read coalescing of packs built by compact or direct ingest; sealed segments add manifest records to every pack (inline manifests in packs: TestP1C_*, TestLayoutMatrix_*)")
 	cases := []struct {
 		name      string
 		point     string
@@ -43642,6 +43673,7 @@ func TestDirectPackLife_TierRebalanceBundlesAndLogicalHistoryUnchanged(t *testin
 }
 
 func TestDirectPackLife_RepackCompressesRawDirectPacksPreservingOrder(t *testing.T) {
+	useLooseLayout(t, "asserts the exact record set / order / read coalescing of packs built by compact or direct ingest; sealed segments add manifest records to every pack (inline manifests in packs: TestP1C_*, TestLayoutMatrix_*)")
 	setDirectPack(t, 1<<20, 1<<20, false)
 	s, dir := dpOpenStore(t)
 	words := strings.Fields("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau")
@@ -43704,6 +43736,7 @@ func TestDirectPackLife_RepackCompressesRawDirectPacksPreservingOrder(t *testing
 }
 
 func TestDirectPack_AdaptiveCompressionOptionStillValidPackV1(t *testing.T) {
+	useLooseLayout(t, "asserts exact store-format level (3) after compressed direct packs")
 	setDirectPack(t, 1<<20, 1<<20, true)
 	s, dir := dpOpenStore(t)
 	data := bytes.Repeat([]byte("compressible direct pack record "), 100_000)
