@@ -628,10 +628,31 @@ type cdcChunker struct {
 	buf        []byte
 	start, end int
 	eof        bool
+	pooled     *[]byte
 }
 
+// cdcBufPool recycles the chunker read buffers. A request used to allocate (and
+// the runtime to zero and later collect) 512 KiB per PUT whatever its size, which
+// dominated the allocation volume and about 13% of server CPU for 4 KiB objects.
+// A buffer holds no state between uses: only [start,end) is ever read.
+var cdcBufPool = sync.Pool{New: func() any { b := make([]byte, 2*cdcMaxChunkSize); return &b }}
+
 func newCDCChunker(r io.Reader) *cdcChunker {
-	return &cdcChunker{r: r, buf: make([]byte, 2*cdcMaxChunkSize)}
+	if ingestAblate.noChunkPool {
+		return &cdcChunker{r: r, buf: make([]byte, 2*cdcMaxChunkSize)}
+	}
+	bp := cdcBufPool.Get().(*[]byte)
+	return &cdcChunker{r: r, buf: *bp, pooled: bp}
+}
+
+// release hands the buffer back; views returned by next/nextView are invalid
+// afterwards. Chunker users call it once they no longer touch any view.
+func (c *cdcChunker) release() {
+	if c.pooled != nil {
+		bp := c.pooled
+		c.pooled, c.buf = nil, nil
+		cdcBufPool.Put(bp)
+	}
 }
 
 // fill reads until at least cdcMaxChunkSize unconsumed bytes are buffered
@@ -1963,6 +1984,7 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (inge
 		}
 	}
 	c := newCDCChunker(r)
+	defer c.release()
 	res := ingestResult{chunks: []chunkRef{}}
 	objSum := sha256.New()
 	var etagSum hash.Hash
@@ -2090,7 +2112,7 @@ const (
 // ingestAblate switches individual P1A mechanisms off for benchmarking
 // (ZEROS3_INGEST_ABLATE=nopipe,syncpublish,syncwrite,fullverify); production runs with none.
 type ingestAblation struct {
-	noPipe, syncPublish, syncWrite, fullVerify, noEarlySync bool
+	noPipe, syncPublish, syncWrite, fullVerify, noEarlySync, noChunkPool bool
 	pipeMinMiB, pipeSlots                                   int
 }
 
@@ -2139,6 +2161,8 @@ func init() {
 			ingestAblate.fullVerify = true
 		case "noearlysync":
 			ingestAblate.noEarlySync = true
+		case "nochunkpool":
+			ingestAblate.noChunkPool = true
 		default:
 			if v, ok := strings.CutPrefix(strings.TrimSpace(f), "pipemin="); ok {
 				ingestAblate.pipeMinMiB, _ = strconv.Atoi(v)

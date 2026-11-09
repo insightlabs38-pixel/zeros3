@@ -7,7 +7,7 @@ set -u
 OUT=$1; ROUNDS=$2; SC=$3; shift 3
 WORK=${P1C_WORK:-/tmp/claude-0/p1c/work}; mkdir -p "$WORK"
 VARS=("$@")
-DRV=$(echo "${VARS[0]}" | cut -d= -f2)/p0bench
+DRV=$(echo "${VARS[0]}" | cut -d= -f2 | cut -d: -f1)/p0bench
 for r in $(seq 1 "$ROUNDS"); do
   while IFS='|' read -r label args; do
     [ -z "$label" ] && continue; case "$label" in \#*) continue;; esac
@@ -16,9 +16,10 @@ for r in $(seq 1 "$ROUNDS"); do
     vs=("${VARS[@]}"); if [ $((r % 2)) -eq 0 ]; then vs=(); for ((i=${#VARS[@]}-1; i>=0; i--)); do vs+=("${VARS[$i]}"); done; fi
     read -ra A <<< "$args"; sub=${A[0]}; rest=("${A[@]:1}")
     for v in "${vs[@]}"; do
-      name=${v%%=*}; dir=${v#*=}
+      name=${v%%=*}; dir=${v#*=}; envs=""
+      case "$dir" in *:*) envs=${dir#*:}; dir=${dir%%:*};; esac   # name=BINDIR[:KEY=VAL,KEY=VAL] (server environment)
       P0_NOTE="variant=$name round=$r" "$DRV" "$sub" -label "$label" -out "$OUT" -work "$WORK" \
-        -bin "$dir/zeros3" -profbin "$dir/zeros3-prof" -reps 1 "${rest[@]}" >/dev/null 2>>"$OUT.err" || echo "FAILED $label $name" >&2
+        -bin "$dir/zeros3" -profbin "$dir/zeros3-prof" -reps 1 ${envs:+-env "$envs"} "${rest[@]}" >/dev/null 2>>"$OUT.err" || echo "FAILED $label $name" >&2
     done
   done < "$SC"
 done
