@@ -1,0 +1,10 @@
+    zeros3_p1c_bench_test.go:84: P1C_STORE size=0 conc=8 loose=4284 ops/s segments=7798 ops/s x1.82  p99 3.41 -> 2.59 ms (medians of 3 interleaved rounds)
+    zeros3_p1c_bench_test.go:84: P1C_STORE size=1 conc=8 loose=3813 ops/s segments=7743 ops/s x2.03  p99 7.93 -> 2.93 ms (medians of 3 interleaved rounds)
+    zeros3_p1c_bench_test.go:84: P1C_STORE size=1024 conc=8 loose=2321 ops/s segments=6814 ops/s x2.94  p99 8.88 -> 3.35 ms (medians of 3 interleaved rounds)
+    zeros3_p1c_bench_test.go:84: P1C_STORE size=4096 conc=1 loose=767 ops/s segments=2083 ops/s x2.72  p99 2.62 -> 1.24 ms (medians of 3 interleaved rounds)
+    zeros3_p1c_bench_test.go:84: P1C_STORE size=4096 conc=8 loose=2238 ops/s segments=5669 ops/s x2.53  p99 7.15 -> 3.88 ms (medians of 3 interleaved rounds)
+    zeros3_p1c_bench_test.go:84: P1C_STORE size=4096 conc=32 loose=2539 ops/s segments=13325 ops/s x5.25  p99 37.42 -> 5.65 ms (medians of 3 interleaved rounds)
+    zeros3_p1c_bench_test.go:84: P1C_STORE size=65536 conc=8 loose=1206 ops/s segments=2534 ops/s x2.10  p99 17.86 -> 7.91 ms (medians of 3 interleaved rounds)
+    zeros3_p1c_bench_test.go:84: P1C_STORE size=262143 conc=8 loose=637 ops/s segments=877 ops/s x1.38  p99 27.84 -> 18.03 ms (medians of 3 interleaved rounds)
+--- PASS: TestP1C_StoreLayerPutThroughput (63.13s)
+ok  	zeros3	63.138s
