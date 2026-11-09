@@ -1,0 +1,5 @@
+    zeros3_p1c_bench_test.go:130: P1C_RECOVERY unsealed segment 4 MiB (894 objects, 1788 records): open+recover best of 3 = 8.2 ms
+    zeros3_p1c_bench_test.go:130: P1C_RECOVERY unsealed segment 16 MiB (3574 objects, 7148 records): open+recover best of 3 = 35.0 ms
+    zeros3_p1c_bench_test.go:130: P1C_RECOVERY unsealed segment 31 MiB (6924 objects, 13848 records): open+recover best of 3 = 60.7 ms
+--- PASS: TestP1C_RecoveryLatency (7.31s)
+ok  	zeros3	7.326s

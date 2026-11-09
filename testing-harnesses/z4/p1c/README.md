@@ -18,7 +18,9 @@ Method = the Z4-P0 driver (`../p0/cmd/p0bench`) unchanged: real server over HTTP
 | `results/main_matrix.jsonl` | first full A/B (segment threshold 256 KiB), before the 1 MiB threshold and the final optimisations (kept for the record) |
 | `results/final_matrix.jsonl` | the reported A/B: P1B (`5b9bcdd`) vs the final P1C binary |
 | `results/*.jsonl` | ablations, GOMAXPROCS 1/2/4, order-swapped large-object checks, scale, strace counts, profiles |
-| `results/layout_matrix.jsonl.gz` | per-test layout record of the root suite |
+| `results/layout_matrix.jsonl.gz`, `layout_summary.txt`, `p1b_layout_audit.md` | per-test layout record of the root suite; the audit of the 76 P1B tests |
+| `results/final_matrix_run1_overlapped.jsonl` | first run of the final matrix, overlapped with developer test runs (kept for the record; the reported matrix is the quiet rerun) |
+| `results/compat_old_binary.txt`, `recovery_latency.txt`, `locator_scale.txt`, `store_layer_bench.txt`, `syscalls_per_object.txt`, `churn.jsonl`, `scale.jsonl`, `proto_delay.jsonl`, `audit_summary.txt`, `validate_stages.txt`, `harness_forced_production_summary.txt`, `P1C_TABLES.md` | the remaining raw evidence and the generated tables |
 
 Test code (repository root): `zeros3_layout_test.go` (policy declaration, layout-independent fault injection, coverage record), `zeros3_layout_matrix_test.go` (behaviours qualified on every layout), `zeros3_p1c_test.go`, `zeros3_p1c_crash_test.go` (crash matrix, power-loss state model), `zeros3_p1b_crash_test.go` (real `kill -9` rounds, now with a small-object/1 MiB-segment mode).
 

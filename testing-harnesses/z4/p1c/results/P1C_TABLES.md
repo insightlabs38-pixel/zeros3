@@ -53,12 +53,12 @@
 
 ## Ablation (ablation.jsonl): ops/s, median of 3 interleaved rounds
 
-| variant | put_1m_c4 | put_4k_c8 | put_4k_c32 | put_4k_c1 | put_64k_c8 | put_255k_c8 |
+| variant | put_1m_c4 | put_4k_c32 | put_4k_c1 | put_4k_c8 | put_64k_c8 | put_255k_c8 |
 |---|---:|---:|---:|---:|---:|---:|
-| P1B | 235 | 954 | 1180 | 379 | 638 | 333 |
-| P1C code, segments off (loose, pool on) | 244 | 1023 | 1396 | 399 | 731 | 365 |
-| P1C, chunker pool off | 270 | 2320 | 3584 | 829 | 1442 | 876 |
-| P1C (all) | 266 | 4686 | 10717 | 973 | 2282 | 906 |
+| P1B | 235 | 1180 | 379 | 954 | 638 | 333 |
+| P1C code, segments off (loose, pool on) | 244 | 1396 | 399 | 1023 | 731 | 365 |
+| P1C, chunker pool off | 270 | 3584 | 829 | 2320 | 1442 | 876 |
+| P1C (all) | 266 | 10717 | 973 | 4686 | 2282 | 906 |
 
 ## GOMAXPROCS 1 / 2 / 4 (gomaxprocs.jsonl): base -> P1C
 

@@ -1,24 +1,25 @@
-  PASS  141s  s3
-  PASS  65s  sync
+  PASS  0s  format
+  PASS  2s  modules
+  PASS  4s  repro
+  PASS  140s  s3
+  PASS  59s  sync
   PASS  18s  client
   PASS  4s  apps
-  PASS  11s  vectors
-  PASS  27s  cas-batch
+  PASS  3s  vectors
+  PASS  24s  cas-batch
   PASS  5s  direct-pack
-  PASS  6s  direct-pack-life
+  PASS  5s  direct-pack-life
   PASS  4s  bundle
   PASS  9s  bundle-life
-  FAIL  0s  history-life
-  PASS  7s  tier
-  FAIL  0s  tier-life
-  PASS  7s  tier-rebalance
-  PASS  4s  locality
-  PASS  27s  bulk
-  PASS  20s  index
+  PASS  2s  history
   PASS  3s  history-life
-  PASS  5s  tier-life
-  PASS  103s  crash
-  FAIL  7s  compact
-  FAIL  108s  compression
-  PASS  5s  compact
-  PASS  124s  compression
+  PASS  9s  tier
+  PASS  4s  tier-life
+  PASS  8s  tier-rebalance
+  PASS  5s  locality
+  PASS  26s  bulk
+  PASS  3s  index
+  PASS  84s  crash
+  PASS  8s  repack
+  PASS  4s  compact
+  PASS  122s  compression
