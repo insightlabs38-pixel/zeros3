@@ -1059,3 +1059,38 @@ func TestP1C_SharedReaderSurvivesSealByOwner(t *testing.T) {
 		t.Fatalf("verify after the owner sealed: %v %+v", err, v)
 	}
 }
+
+// The first small write raises the store level while other goroutines read the
+// format (verify, tier status, pack loading); `go test -race` must stay quiet.
+func TestP1C_FormatRaiseIsRaceFreeAgainstReaders(t *testing.T) {
+	useProductionLayout(t)
+	s, _ := p1cOpen(t)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					s.Verify(false)
+					s.checkTierRoots()
+					s.formatSnapshot()
+				}
+			}
+		}()
+	}
+	for i := 0; i < 20; i++ {
+		if _, err := s.PutObject("b", fmt.Sprintf("k%d", i), p1cBody(i, 3000), "", nil); err != nil {
+			t.Error(err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if s.formatSnapshot().StoreFormatVersion != storeFormatVersionSegments {
+		t.Fatal("level not raised")
+	}
+}

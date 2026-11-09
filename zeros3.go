@@ -2576,11 +2576,11 @@ func checkTierMarker(dir string, storeID string, t tier) error {
 
 // checkTierRoots validates every non-hot root of a tiered (format 5) store.
 func (s *Store) checkTierRoots() error {
-	if s.format.StoreFormatVersion < storeFormatVersionTiers {
+	if s.formatSnapshot().StoreFormatVersion < storeFormatVersionTiers {
 		return nil
 	}
 	for t := tierWarm; t < numTiers; t++ {
-		if err := checkTierRoot(s.root, s.format.StoreID, t); err != nil {
+		if err := checkTierRoot(s.root, s.formatSnapshot().StoreID, t); err != nil {
 			return err
 		}
 	}
@@ -2630,11 +2630,11 @@ func (s *Store) prepareTier(t tier) error {
 	if t == tierHot {
 		return nil
 	}
-	if s.format.StoreFormatVersion < storeFormatVersionTiers {
+	if s.formatSnapshot().StoreFormatVersion < storeFormatVersionTiers {
 		if err := s.initTierRoots(); err != nil {
 			return err
 		}
-	} else if err := checkTierRoot(s.root, s.format.StoreID, t); err != nil {
+	} else if err := checkTierRoot(s.root, s.formatSnapshot().StoreID, t); err != nil {
 		return err
 	}
 	return os.MkdirAll(tierTmpDir(s.root, t), 0o755)
@@ -3591,7 +3591,7 @@ func (s *Store) reloadPacks() error {
 	}
 	s.packMu.Lock()
 	defer s.packMu.Unlock()
-	st, err := loadPackState(s.root, s.format.StoreFormatVersion)
+	st, err := loadPackState(s.root, s.formatSnapshot().StoreFormatVersion)
 	if err != nil {
 		return err
 	}
@@ -12067,9 +12067,10 @@ func (r VerifyResult) OK() bool {
 func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res := VerifyResult{Deep: deep}
 
-	if !supportedStoreFormat(s.format.StoreFormatVersion) ||
-		s.format.CDCFormatVersion != cdcFormatVersion ||
-		s.format.HashAlgorithm != "sha256" {
+	fm := s.formatSnapshot()
+	if !supportedStoreFormat(fm.StoreFormatVersion) ||
+		fm.CDCFormatVersion != cdcFormatVersion ||
+		fm.HashAlgorithm != "sha256" {
 		res.addIssue("invalid", "FORMAT.json", "unsupported store/CDC format version or hash algorithm")
 	}
 
@@ -12797,6 +12798,15 @@ func (s *Store) compact(referenced map[string]bool, opt compactOptions) (Compact
 }
 
 // ensureStoreFormat durably raises FORMAT.json to at least version v.
+// formatSnapshot returns a copy of the store format record. The level is raised
+// while the store is serving (first pack, first segment, first representation),
+// so concurrent readers must not read s.format directly.
+func (s *Store) formatSnapshot() storeFormat {
+	s.formatMu.Lock()
+	defer s.formatMu.Unlock()
+	return s.format
+}
+
 func (s *Store) ensureStoreFormat(v int) error {
 	s.formatMu.Lock()
 	defer s.formatMu.Unlock()
@@ -13879,7 +13889,7 @@ type TierStatusResult struct {
 }
 
 func (s *Store) tierStatus(rr reachabilityResult) (TierStatusResult, error) {
-	res := TierStatusResult{StoreFormatVersion: s.format.StoreFormatVersion, LiveSetOK: rr.OK()}
+	res := TierStatusResult{StoreFormatVersion: s.formatSnapshot().StoreFormatVersion, LiveSetOK: rr.OK()}
 	scan, err := s.scanChunkFiles(rr.ReferencedChunks)
 	if err != nil {
 		return res, err
@@ -13903,9 +13913,9 @@ func (s *Store) tierStatus(rr reachabilityResult) (TierStatusResult, error) {
 		}
 		st := TierStatus{Tier: t.String(), Root: tierRoot(s.root, t), Marker: "n/a", DuplicatePacks: dups, PackSummary: summarizePacks(in)}
 		if t != tierHot {
-			if err := checkTierRoot(s.root, s.format.StoreID, t); err != nil {
+			if err := checkTierRoot(s.root, s.formatSnapshot().StoreID, t); err != nil {
 				st.Marker = "absent"
-				if s.format.StoreFormatVersion >= storeFormatVersionTiers {
+				if s.formatSnapshot().StoreFormatVersion >= storeFormatVersionTiers {
 					st.Marker = err.Error()
 				}
 			} else {

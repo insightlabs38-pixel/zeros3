@@ -16,9 +16,25 @@ P1B moved the production default (objects >= 256 KiB write packs) and hid the co
 ## 3. Candidates compared (executable prototype, `p1cproto`, same machine and dataset)
 Each PUT does the real work of the layout: SHA-256, manifest JSON, physical writes with every barrier, sharded-map index insertion, journal group commit, then read-back with re-verification of 2,000 objects and an index rebuild from disk. Omitted: HTTP/SigV4, CDC, multipart, GC/repack/history. Median of 3 interleaved rounds (`results/proto_matrix.jsonl`):
 
-@@PROTO@@
+| cell | P1B files | A pack/group, manifest file | A+ pack/group, inline manifest | B segment, manifest file | C segment, inline manifest |
+|---|---:|---:|---:|---:|---:|
+| 4096 B c1 | 477 (1.0x) | 519 (1.1x) | 812 (1.7x) | 752 (1.6x) | 1724 (3.6x) |
+| 4096 B c4 | 1029 (1.0x) | 1400 (1.4x) | 1833 (1.8x) | 1714 (1.7x) | 4308 (4.2x) |
+| 4096 B c8 | 1279 (1.0x) | 1965 (1.5x) | 3820 (3.0x) | 2026 (1.6x) | 7266 (5.7x) |
+| 4096 B c32 | 1569 (1.0x) | 2465 (1.6x) | 14838 (9.5x) | 2324 (1.5x) | 16987 (10.8x) |
+| 16384 B c8 | 1122 (1.0x) | 1759 (1.6x) | 3076 (2.7x) | 1860 (1.7x) | 5769 (5.1x) |
+| 65536 B c8 | 1019 (1.0x) | 1312 (1.3x) | 1898 (1.9x) | 1560 (1.5x) | 2860 (2.8x) |
+| 262144 B c8 | 377 (1.0x) | 420 (1.1x) | 511 (1.4x) | 528 (1.4x) | 589 (1.6x) |
 
-* A (shared sealed pack, manifests still files) and B (segment, manifests still files) reach only **1.1-1.7x**: the manifest file keeps one create + fsync + rename + directory entry per object. **Inline manifests are what makes the gain compelling** (A+/C: 2.8-10.8x). C beats A+ everywhere below c32 and needs no new file per commit group: A+ writes one pack per group (751 packs per 3,000 objects at c8, one per object at c1), which re-creates the many-small-packs scaling problem and the 200k-pack cliff; C has 1 segment per 32 MiB.
+| 4 KiB c8 | fsync/obj | file creates/obj | inodes (3,000 objects) | packs | open+scan ms |
+|---|---:|---:|---:|---:|---:|
+| P1B files | 6.11 | 2.00 | 9194 | 0 | 0.0 |
+| A pack/group, manifest file | 2.75 | 1.26 | 3786 | 779 | 4.5 |
+| A+ pack/group, inline manifest | 0.92 | 0.25 | 758 | 751 | 6.0 |
+| B segment, manifest file | 2.64 | 1.00 | 3008 | 0 | 14.9 |
+| C segment, inline manifest | 0.78 | 0.00 | 8 | 0 | 16.8 |
+
+* A (shared sealed pack, manifests still files) and B (segment, manifests still files) reach only **1.1-1.7x**: the manifest file keeps one create + fsync + rename + directory entry per object. **Inline manifests are what makes the gain compelling** (A+/C: 2.8-10.8x). C is ahead of A+ in every cell (1.1x at c32, 1.9-2.4x at c1-c8) and needs no new file per commit group: A+ writes one pack per group (751 packs per 3,000 objects at c8, one per object at c1), which re-creates the many-small-packs scaling problem and the 200k-pack cliff; C has 1 segment per 32 MiB.
 * **Sharded active segments do not help**: 2 segments 7.2k ops/s (1: 7.2k, 4 segments 5.9k) at c8; c32 18.9k vs 18.2k, 4 segments 11.3k (`proto_shards.jsonl`). One active segment, no global lock beyond the leader hand-off. Seal cost is negligible (2 MiB vs 32 MiB segments: 7.26k vs 7.28k ops/s); GOMAXPROCS 1/2/4: 932/1161/1158 -> 5410/6917/7452 ops/s.
 * **Natural batching is enough**: a fixed batching window only adds latency (table in the generated tables, `proto_delay.jsonl`).
 * The P1B proposal's CRC32C was not adopted: content addressing already gives the torn-tail check and the same bytes make a sealed segment a byte-valid pack-v1 file.
@@ -32,10 +48,53 @@ Each PUT does the real work of the layout: SHA-256, manifest JSON, physical writ
 * **Policy/knobs**: `ZEROS3_SMALL_OBJECT_STORAGE=off` writes loose again; `ZEROS3_SEGMENT_TARGET_MIB`, `ZEROS3_SEGMENT_MAX_KIB` (default 1024: 256-768 KiB objects gain 16-30% over one pack per request, `results/seg_threshold.jsonl`). Unknown-size streams still use loose chunks; objects >= 1 MiB keep P1B's direct packs (their manifest is inline).
 * **Also fixed (found while profiling)**: every PUT allocated and zeroed a 512 KiB CDC buffer (559 KB/op, 13% of server CPU at 4 KiB); it is now pooled (25 KB/op). Reported separately in the ablation so the storage-layer gain is not conflated with it.
 
-@@PERF@@
+## 5. Before/after (P1B `5b9bcdd` vs P1C, real server, 5 quiet interleaved rounds; full table `results/P1C_TABLES.md`)
+| cell | P1B | P1C | x | p50 ms | p99 ms | server CPU ms/obj | files/obj |
+|---|---:|---:|---:|---|---|---|---|
+| 1 B c8 (ops/s) | 1,241 | 4,322 | **3.5** | 6.0->1.7 | 15.8->3.8 | 1.88->0.27 | 1.13->0.00 |
+| 1 KiB c8 | 936 | 4,362 | **4.7** | 8.2->1.7 | 16.9->3.5 | 2.45->0.27 | 2->0.00 |
+| 4 KiB c1 / c4 / c8 | 358 / 791 / 929 | 913 / 2,607 / 4,071 | **2.6 / 3.3 / 4.4** | 2.6->1.0 / 4.8->1.4 / 8.1->1.9 | 5.2->2.3 / 10.1->3.1 / 17.8->4.2 | 3.06->0.70 / 2.64->0.40 / 2.49->0.29 | 2->0.01 |
+| 4 KiB c16 / c32 | 1,099 / 1,154 | 6,461 / 8,883 | **5.9 / 7.7** | 13.5->2.3 / 25.5->3.3 | 34.3->5.3 / 69.7->8.5 | 2.17->0.21 / 2.08->0.17 | 2->0.00 |
+| 16 KiB c1 / c8 / c32 | 373 / 839 / 1,023 | 770 / 3,477 / 6,642 | **2.1 / 4.1 / 6.5** | 2.5->1.2 / 9.0->2.1 / 29.1->4.5 | 4.7->2.5 / 18.5->5.7 / 73.6->14.8 | 2.89->0.84 / 2.75->0.38 / 2.42->0.23 | 2->0.00 |
+| 64 KiB c1 / c8 / c32 | 277 / 651 / 776 | 602 / 2,096 / 2,843 | **2.2 / 3.2 / 3.7** | 3.3->1.5 / 11.8->3.5 / 37.9->9.9 | 7.3->4.2 / 29.1->12.4 / 91.8->25.5 | 3.95->1.20 / 3.60->0.75 / 3.16->0.58 | 2.6->0.01 |
+| 128 / 255 / 256 / 512 KiB c8 | 480 / 352 / 522 / 390 | 1,385 / 931 / 950 / 556 | **2.9 / 2.6 / 1.8 / 1.4** | 15.3->5.3 / 21.7->8.2 / 14.7->8.0 / 19.5->13.4 | 39.2->16.2 / 43.7->20.3 / 26.2->18.3 / 35.0->29.7 | 4.56->1.18 / 6.47->1.97 / 4.49->1.99 / 6.24->3.65 | 3.6/5.6/2/2 -> 0.01-0.02 |
+| 1 MiB c1 / c4 / c16 (MiB/s) | 97 / 219 / 273 | 105 / 257 / 314 | 1.08 / 1.17 / 1.15 | 10.0->9.1 / 17.4->14.6 / 56.7->50.0 | 15.5->16.7 / 29.1->31.5 / 116->98 | 10.7->9.6 / 10.3->8.6 / 9.5->8.0 | 2->1 |
+| 4 MiB c4 / 16 MiB c4 | 353 / 407 | 360 / 411 | 1.02 / 1.01 | 44.8->41.8 / 155.8->153.1 | 59.0->65.4 / 177->178 | 26.8->25.8 / 92.5->93.3 | |
+| 4 KiB 50% duplicates c8 / 64 KiB compressible c8 / 64 KiB x8 revisions c4 | 1,131 / 759 / 484 | 4,393 / 2,015 / 1,332 | **3.9 / 2.7 / 2.8** | 6.9->1.7 / 10.2->3.7 / 7.9->2.7 | 13.9->4.3 / 20.8->11.4 / 12.3->4.3 | 2.02->0.28 / 3.07->0.76 / 4.38->1.00 | |
+| mixed sizes 4k:50 64k:30 1m:15 16m:5, c4 (MiB/s) | 238 | 334 | 1.40 | 9.5->3.4 | 141.7->137.4 | 10.8->7.9 | 2.2->0.24 |
+| mixed 4 readers + 2 writers, 4 KiB | reads 4,910 / writes 455 | 7,091 / 928 | 1.44 / 2.04 | | read p99 3.3->2.4, write p99 8.7->5.5 | | |
+| GET 4 KiB whole c8 (ops/s) / 64 KiB range of 1 MiB (MiB/s) | 9,223 / 399 | 10,397 / 406 | 1.13 / 1.02 | 0.6->0.5 / 1.0->0.9 | 3.4->3.2 / 3.9->4.1 | | |
+Targets: **3-5x on 4-64 KiB PUTs is met from c4 (4 KiB 3.3x at c4, 4.4x at c8, up to 7.7x at c32; 64 KiB 3.2-3.7x at c8-c32)**; the single-client cases gain 2.1-2.6x and halve p50/p99. The prototype's 7-20x was an upper bound and is not reached: HTTP, SigV4 (~10% of server CPU), the journal fsync that must follow the segment fsync, and JSON are now the floor.
+**Large objects**: no measurable regression. 64 MiB c1 1.02x and 1 GiB 1.02x in the main run, 0.96x / 0.96x in the dedicated 5-round alternating-order run (`big_order.jsonl`), 64 MiB c4 0.94x / 1.03x, multipart 1.02x / 1.03x, 16 MiB 1.01x: the sign flips between independent runs, i.e. +-4% noise (as P1B's order-swap check found); 4 MiB and 1 MiB-16 MiB improve 1.02-1.17x because their manifest is inline.
+**Attribution (4 KiB c8 ops/s, `ablation.jsonl`)**: P1B 954; P1C code with segments off 1,023; segments without the chunker pool 2,320 (**2.4x from the storage layer alone**); everything 4,686. The pool (512 KiB zeroed per PUT -> 25 KB/op, 1,070 -> 33 GC cycles per 6,000 PUTs) is invisible while file operations dominate and worth 2.0x once they are gone. Store layer alone, no HTTP (`store_layer_bench.txt`): 0 B 4,284 -> 7,798 ops/s (1.8x), 1 B 2.0x, 1 KiB 2.9x, 4 KiB c1/c8/c32 2.7x / 2.5x / 5.3x (p99 37.4 -> 5.7 ms at c32), 64 KiB c8 2.1x, 255 KiB c8 1.4x.
+**GOMAXPROCS 1 / 2 / 4** (`gomaxprocs.jsonl`): 4 KiB c8 625 -> 3,371 (5.4x) / 884 -> 4,401 (5.0x) / 987 -> 4,627 (4.7x); 64 KiB c8 2.3x / 3.5x / 3.5x; 1 MiB c4 1.05x / 1.18x / 1.28x. The small-object gain survives a single core.
+**Syscalls per object** (`strace -c -f`, whole server lifetime): 4 KiB: fsync 5.66 -> **0.88**, openat 5.95 -> 0.03, mkdir 1.25 -> 0.01, rename 2.00 -> 0.00; 64 KiB: fsync 7.67 -> 0.97, openat 8.57 -> 0.07, rename 2.63 -> 0.01; 1 MiB (direct pack, unchanged path): fsync 4.99 -> 4.11, rename 2.02 -> 1.05. Batching is natural: a fixed 100 us / 500 us / 2 ms window cost 74% / 77% / 85% of the throughput at c1 and 21% / 55% / 69% at c8 in the prototype (`proto_delay.jsonl`); no timer is used.
+
+## 6. Latency distributions
+p50 / p90 / p99 ms, P1B -> P1C (the driver records p90, not p95): 4 KiB c8 8.1/12.4/17.8 -> 1.9/2.6/4.2; 4 KiB c32 25.5/45.4/69.7 -> 3.3/4.9/8.5; 4 KiB c1 2.6/3.7/5.2 -> 1.0/1.4/2.3; 64 KiB c32 37.9/63.4/91.8 -> 9.9/15.0/25.5. **No tail regression anywhere in the small-object range** (P1B's c32 tail growth is gone); mixed-size p99 (dominated by 16 MiB PUTs) 141.7 -> 137.4; 1 MiB c4 p99 29.1 -> 31.5 ms is within the run-to-run spread.
+
+## 7. Memory, inodes and physical space
+* PUT peak RSS: 4 KiB 17-28 -> 18-28 MiB; 64 KiB c32 29 -> 40, 255 KiB c8 23 -> 36 (request-local copies of up to 1 MiB per in-flight request, bounded by the 4 MiB cap and the concurrency), 1 MiB c16 70 -> 86 MiB. Allocation per 4 KiB PUT 552 KB -> 25.5 KB (255 -> 181 allocations).
+* **Inodes**: 2.0 files per object -> 0.00x; 1M objects: **2,000,003 files and 65,798 directories -> 147 files and 15 directories**.
+* **Physical space** (1M x 4 KiB): 8,473 -> **4,931 MiB** (-42%); 100k: 1,023 -> 493 MiB. Physical/logical 1.22 -> 1.24 at 4 KiB (the 44-byte record header, the 52-byte index entry and the manifest record are counted; the saved 4 KiB block per file is not).
+
+## 8. Startup, recovery, GC and repack (`scale.jsonl`, `churn.jsonl`, `locator_scale.txt`)
+| objects | open warm s | open RSS peak MiB | `verify -deep` s | `gc` s | `repack -apply` s | populate s |
+|---|---|---|---|---|---|---|
+| 1k | 0.02 -> 0.02 | 12 -> 15 | 0.17 -> 0.06 | 0.03 -> 0.03 | 0.02 -> 0.03 | 1 -> 0 |
+| 10k | 0.06 -> 0.06 | 21 -> 25 | 1.32 -> 0.71 | 0.25 -> 0.18 | 0.20 -> 0.18 | 6 -> 2 |
+| 100k | 0.35 -> 0.43 | 103 -> 142 | 14.95 -> 8.01 | 2.86 -> 1.99 | 1.95 -> 2.00 | 53 -> 17 |
+| 1M | 3.33 -> 4.45 | 954 -> 1,309 | 203.5 -> 95.0 | 43.0 -> 25.1 | 29.9 -> 25.7 | 569 -> 173 |
+* **Open time and RSS grow (+34% / +37% at 1M)**: every small object is now two locator records (chunk + manifest, 54.6 B each steady state; synthetic locator: 10M records = 522 MiB heap, 4.0 s build, 531 ns hit lookup) instead of two files the kernel keeps; RSS is the process high-water mark while opening (journal replay and locator build). This is the price of the layout, it is **not** unbounded (linear in records, no per-segment growth), and a persistent locator checkpoint is the recommended follow-up if tens of millions of objects matter. Pack count stays tiny: 147 files for 1M objects, so the P1B 200,000-pack cliff is gone (a pack is created per 32 MiB, not per request; a segment holds ~7,000 small objects).
+* **Unclean-shutdown recovery** is the scan of one unsealed segment: @@RECOVERY@@.
+* **Reclamation under churn** (100k x 4 KiB, 50% / 90% deleted, history pruned): P1B `gc` reclaims per chunk file (1,043 -> 656 MiB in 14.0 s; 1,060 -> 364 MiB in 21.9 s). P1C `gc` frees nothing (it only drops fully dead packs; 1.6 s), `repack -apply` reclaims (518 -> **413 MiB** in 3.3 s at 50%; 538 -> **121 MiB** in 2.3 s at 90%): **smaller than P1B at every stage, but reclamation needs `repack`** (documented in `docs/OPERATIONS.md`).
+
+## 9. Interaction with P1A / P1B
+Pack publication, `dirSync`, the journal `commitQueue` and the per-digest claims are reused unchanged; the segment writer takes no `Store.mu` and no claim; lock order `commitMu` -> `Store.mu` -> `Journal.mu` unchanged, `segMgr.mu` and `packMu` are leaf locks held for microseconds. Medium objects keep P1B's direct packs from 1 MiB. P1B's pack-count valve (200,000) is untouched and no longer reachable for small objects.
+
 
 ## 12. Compatibility and the format floor
-[`COMPAT.md`](../z4/p1c/COMPAT.md) lists 19 situations with the test or evidence for each. Level **11**, raised immediately before the first segment file (after the tier roots any level above 5 implies; never lowered; never raised if no segment is created; `supportedStoreFormat` = 1..9 and 11 so a level-10 store of draft #97 is still refused). **Older binaries refuse a level-11 store** (@@OLDBIN@@). Stores that never write a small object, or run with `ZEROS3_SMALL_OBJECT_STORAGE=off`, keep their level. Policy off after segments exist: still readable, recoverable, maintainable. A sealed segment is a byte-valid pack-v1.
+[`COMPAT.md`](../z4/p1c/COMPAT.md) lists 19 situations with the test or evidence for each. Level **11**, raised immediately before the first segment file (after the tier roots any level above 5 implies; never lowered; never raised if no segment is created; `supportedStoreFormat` = 1..9 and 11 so a level-10 store of draft #97 is still refused). **Older binaries refuse a level-11 store** (verified with the real P1B binary: `unsupported store format version 11 (this build supports versions 1 through 9)`, store tree unchanged, `results/compat_old_binary.txt`; the same binary reads a store written with the policy off and a store the new binary only opened). Stores that never write a small object, or run with `ZEROS3_SMALL_OBJECT_STORAGE=off`, keep their level. Policy off after segments exist: still readable, recoverable, maintainable. A sealed segment is a byte-valid pack-v1.
 
 ## 13. Crash and fault qualification
 * **Deterministic crash matrix** (`TestP1C_CrashMatrix_Segments`): 144 cases = {1, 6, 16 concurrent PUTs + 8 sequential} x 16 boundaries (segment create, dir sync, before/after write, before/after fsync, locator publish, seal write/sync/link/dir-fsync/unlink, manifest, journal write/sync, apply) x Nth firing; 99 injected a crash. After the crash every goroutine dies at its next hook, the crashed files are copied and recovered; checks: every acknowledged object byte-identical, nothing half-visible, `verify -deep`, `gc`, no stuck leader/queue/seal goroutine, every unacknowledged PUT retryable.
@@ -46,10 +105,32 @@ Each PUT does the real work of the layout: SHA-256, manifest JSON, physical writ
 * `go test -race ./...` @@RACE@@.
 
 ## 14. Production-default coverage (what is actually exercised)
-@@COVERAGE@@
+* **Root suite**: 1,170 top-level tests pass on the production default. Layout actually exercised (`layout_summary.txt`): of 1,155 default-layout test names, 727 produced segment records, 507 packs, 632 loose chunks (explicit CAS/loose API tests, imports, repair) and 330 manifest files; 142 test and subtest names are explicit-loose (46 of the original 76, plus tests whose assertions are exact format levels, pack counts, loose paths or content-hash pack ordering), 30 explicit-production.
+* **Per behaviour** (integrity, missing/corrupt data, repair, GC, repack/compaction, recovery, history, concurrency): `TestLayoutMatrix_*` x {loose, production} x {8 KiB, 120 KiB, 700 KiB, 2 MiB}; segment-specific: `TestP1C_*` (format/policy, group commit, dedup, failure isolation, torn tails, rollover, readers across seal, hard cap, gc/repack/history, mixed old/new layouts, multipart/copy/bundle, tier move, maintenance refusal, shared openers, CLI against a live server); crash: matrix, state model, real kill; the 30 layout-independent P1B tests.
+* **Harnesses on the default**: s3 (14), sync (m6, m6c, m8a, m8g), client SDKs (AWS SDK + minio-go), apps, vectors, cas-batch, direct-pack(-life), bundle(-life), tier, tier-rebalance, locality, bulk, index. Their loose-layout counterparts for the 9 loose-asserting harnesses are the root tests named above.
 
 ## 15. Rejected alternatives
 Shared sealed packs per commit group (many small packs, 1.1-1.7x without inline manifests); sharded/multiple active segments (no gain at c8, worse at c32); unified journal+segment log (changes the commit authority, not needed for the gain); a new CRC32C record (redundant); fixed batching windows (latency only); manifests in the journal frame (memory); a persistent locator checkpoint (not needed at the measured scales, recommended next if 10M+ objects matter); `O_TMPFILE`; raising the segment threshold above 1 MiB (no gain from 1 MiB, `seg_threshold.jsonl`).
 
-@@TAIL@@
+## 16. Regressions and costs
+* **Older binaries refuse a level-11 store**; the default policy makes the first small PUT raise a fresh store to level 11 (tier roots are created at the same time). `ZEROS3_SMALL_OBJECT_STORAGE=off` avoids both. Level 10 stays free for draft #97.
+* Open-time RSS/time +37% / +34% at 1M objects (section 8); `gc` alone no longer reclaims partly dead small-object data (`repack` does); a restart below 8 MiB keeps an open segment that the next open re-hashes (bounded by the segment size).
+* Memory per in-flight small request: a copy of its chunks (up to 1 MiB) until the group commit returns.
+* ~1.7 kLOC of production code and four new knobs. Defects found and fixed during qualification (by the new tests or by tracing every `OpenStore` caller): a concurrent `verify`/`stats` could have truncated or sealed a live writer's segment (now ownership-gated), `tier move -all` mistook a segment for a pack, a read could meet a vanished file during a seal (hard link first, retry), the first segment broke the reopen of stores below level 5 (tier roots now created first), a hard-cap/empty segment appeared as a missing pack in `verify`.
+* Not tested: real block-device power loss; filesystems without hard links (fallback to rename is implemented, not exercised on such a filesystem); fsync latency of slow devices.
+
+## 17. Remaining bottlenecks and recommendation
+At 4 KiB c8 the server now spends ~27-35% of its CPU in syscalls (two sequential fsyncs per group: segment, then journal), ~10% in SigV4 HMAC, ~10% in journal group commit and JSON; allocation is 25 KB/op. Folding the journal frame into the segment commit (one fsync) would change the commit authority and is not recommended without a new durability review. Recommended next steps, in order: **P2** (manifest cache, GET/range behaviour, allocation, read concurrency; small GETs already gain 13%), a **persistent locator checkpoint** if the 10M+ object regime matters, and a **block-device fault harness** to turn the crash-state model into power-loss evidence.
+
+## 18. Gates and merge status
+| gate | result |
+|---|---|
+| `gofmt`, `go vet`, modules/deps (stdlib only, `go.mod` unchanged), reproducible build | PASS |
+| root suite under the production default | **PASS, 1,170 top-level tests** (`layout_summary.txt`) |
+| `go test -race ./...` | @@RACE@@ |
+| `scripts/validate.sh`: s3, sync, client, apps, vectors, cas-batch, direct-pack, direct-pack-life, bundle, bundle-life, history, history-life, tier, tier-life, tier-rebalance, locality, bulk, index, crash, repack, compact, compression | PASS (`results/validate_stages.txt`; history-life, tier-life, compact, compression run the explicit loose policy; 9 harnesses assert loose files and fail when forced onto the default, `harness_forced_production_summary.txt`) |
+| P1C: crash matrix, power-loss state model, real kill (3 modes), 24 `TestP1C_*`, 6 `TestLayoutMatrix_*`, ordering audit with 5 negative controls | PASS |
+| `validate.sh static` | **FAIL, pre-existing and unchanged** (source map 34 entries, test map 23 entries disagree on `origin/main` and here; the P1C test-file edits were compensated in the TOC) |
+PR: @@PR@@. B2 #97 and drafts #80/#81 untouched; representation authority not enabled; no scheduled routines; P2 not started.
+
 

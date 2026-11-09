@@ -84,3 +84,49 @@ func TestP1C_StoreLayerPutThroughput(t *testing.T) {
 		t.Logf("P1C_STORE size=%d conc=%d loose=%.0f ops/s segments=%.0f ops/s x%.2f  p99 %.2f -> %.2f ms (medians of 3 interleaved rounds)", c.size, c.conc, l[1], sgm[1], sgm[1]/l[1], pl[1], ps[1])
 	}
 }
+
+// TestP1C_RecoveryLatency measures opening a store whose active segment was left
+// unsealed by a crash (ZEROS3_P1C_BENCH=1): the open re-hashes every record of the
+// segment, so the latency is bounded by the segment size.
+func TestP1C_RecoveryLatency(t *testing.T) {
+	if os.Getenv("ZEROS3_P1C_BENCH") != "1" {
+		t.Skip("set ZEROS3_P1C_BENCH=1")
+	}
+	for _, mib := range []int{4, 16, 31} {
+		dir := t.TempDir()
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.CreateBucket("b")
+		n := 0
+		for {
+			if _, err := s.PutObject("b", fmt.Sprintf("k%d", n), genRandomBytes(int64(n)+1, 4096), "", nil); err != nil {
+				t.Fatal(err)
+			}
+			n++
+			if s.segs.activeBytes.Load() >= int64(mib)<<20 {
+				break
+			}
+		}
+		snap := t.TempDir()
+		copyTree(t, dir, snap) // the files as a crash leaves them (no close, no seal)
+		s.Close()
+		var best time.Duration
+		for i := 0; i < 3; i++ {
+			c := t.TempDir()
+			copyTree(t, snap, c)
+			start := time.Now()
+			r, err := OpenStore(c)
+			d := time.Since(start)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.Close()
+			if best == 0 || d < best {
+				best = d
+			}
+		}
+		t.Logf("P1C_RECOVERY unsealed segment %d MiB (%d objects, %d records): open+recover best of 3 = %.1f ms", mib, n, 2*n, float64(best.Microseconds())/1000)
+	}
+}

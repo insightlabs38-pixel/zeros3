@@ -1,0 +1,8 @@
+root suite: 1170 top-level tests passed; 1327 test/subtest names recorded
+
+| declared policy | names | produced segment records | produced packs | produced loose chunks | produced manifest files | nothing observed |
+|---|---:|---:|---:|---:|---:|---:|
+| default (production) | 1155 | 727 | 507 | 632 | 330 | 0 |
+| explicit production | 30 | 21 | 13 | 2 | 2 | 9 |
+| loose+production matrix | 0 | 0 | 0 | 0 | 0 | 0 |
+| explicit loose | 142 | 0 | 49 | 93 | 95 | 46 |
