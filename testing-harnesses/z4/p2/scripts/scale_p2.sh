@@ -15,7 +15,7 @@ for cfg in "0:0" "0:32" "1:32" "8:32" "32:32" "256:32"; do
   mm=${cfg%%:*}; cm=${cfg##*:}
   ST=$W/stats-$mm-$cm.json; rm -f $ST
   P0_NOTE="$note mcache=$mm ccache=$cm" $D readstore -label scale_${N}_${SIZE}_${MODE} -out $OUT -work $W -bin $BIN/zeros3 -profbin $BIN/zeros3-prof \
-    -dir $S -mode $MODE -rsize 4kib -nreq ${NREQ:-20000} -conc 8 -reps 2 -cache warm \
+    -dir $S -manifest $S.manifest.jsonl -mode $MODE -rsize 4kib -nreq ${NREQ:-20000} -conc 8 -reps 2 -cache warm \
     -env ZEROS3_MANIFEST_CACHE_MIB=$mm,ZEROS3_CHUNK_CACHE_MIB=$cm,ZEROS3_READ_CACHE_STATS=$ST >/dev/null
   [ -f $ST ] && echo "{\"scenario\":\"cache_stats\",\"note\":\"$note mcache=$mm ccache=$cm\",\"stats\":$(cat $ST | paste -sd, | sed 's/^/[/;s/$/]/')}" >> $OUT
 done
