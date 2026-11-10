@@ -1,0 +1,4 @@
+../zeros3.go: 34 failing entries
+/tmp/claude-0/zeros3_base.go: 34 failing entries
+../zeros3_test.go: 23 failing entries
+/tmp/claude-0/zeros3_test_base.go: 23 failing entries
