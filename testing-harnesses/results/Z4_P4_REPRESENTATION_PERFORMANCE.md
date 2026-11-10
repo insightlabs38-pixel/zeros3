@@ -177,7 +177,7 @@ P5 as planned (B1/B2 delta, similarity, authority planning) can now treat repres
 
 ## 22. Final PR and merge state
 
-PR #110 (non-draft) from `z4/p4-representation-performance` into `main`, merged with the GitHub `merge` method only (no squash, no rebase); the 8 development commits are preserved on main. The merge SHA, the two parents, the merge-tree equality check and the post-merge description re-read (no attribution footer) are recorded in the PR and in the hand-off message, not in this file, because the merge commit does not exist yet when this file is committed.
+PR #110 (non-draft) from `z4/p4-representation-performance` into `main`, merged with the GitHub `merge` method only (no squash, no rebase); the 9 development commits are preserved on main. The merge SHA, the two parents, the merge-tree equality check and the post-merge description re-read (no attribution footer) are recorded in the PR and in the hand-off message, not in this file, because the merge commit does not exist yet when this file is committed.
 
 ---
 
