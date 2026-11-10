@@ -6983,6 +6983,7 @@ type Store struct {
 	// rep is the optional structured-representation state (section 16d):
 	// runtime mode, derived catalog and counters. Nothing in it is authoritative.
 	rep repState
+	fg  fgGate // requests in flight; deferred construction yields to them
 
 	// mcache holds verified, immutable served manifests for the read path
 	// (section 5b). It is per Store, bounded, and never authoritative.
@@ -7702,6 +7703,7 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 
 // Close releases the store's open file handles.
 func (s *Store) Close() error {
+	s.repQueueStop(10 * time.Second)
 	s.dumpReadCacheStats()
 	if s.segs != nil {
 		s.segs.close()
@@ -7859,10 +7861,16 @@ func (s *Store) commitIngested(bucket, key string, ing ingestResult, contentType
 	fireTestHook(hookAfterManifestPublished)
 	s.maybeBuildRep(man)
 
+	var entry *objectEntry
 	if cond.isZero() {
-		return s.commitObjectRoot(bucket, key, manUUID, manSHA, man)
+		entry, err = s.commitObjectRoot(bucket, key, manUUID, manSHA, man)
+	} else {
+		entry, err = s.commitObjectRootChecked(bucket, key, manUUID, manSHA, man, cond.check)
 	}
-	return s.commitObjectRootChecked(bucket, key, manUUID, manSHA, man, cond.check)
+	if err == nil {
+		s.repAfterCommit(bucket, key, man)
+	}
+	return entry, err
 }
 
 // archivedVersionPayload builds the journal record of cur being archived
@@ -10137,6 +10145,8 @@ func writeRequestError(w http.ResponseWriter, err error, resource string) {
 }
 
 func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	srv.store.fg.enter()
+	defer srv.store.fg.exit()
 	rawPath, rawQuery := splitRawRequestURI(r.RequestURI)
 
 	payload, err := srv.authenticate(r, rawPath, rawQuery)
@@ -11147,10 +11157,14 @@ func (s *Store) CopyObject(req CopyObjectRequest) (*objectEntry, manifestV1, err
 		return nil, manifestV1{}, fmt.Errorf("copy: manifest publish failed: %w", err)
 	}
 	fireTestHook(hookAfterManifestPublished)
+	deferred := s.rep.q.Load() != nil
 	if s.repMode() != repModeOff && !s.repCloneRoot(srcMan.ManifestUUID, dstMan) {
 		s.maybeBuildRep(dstMan)
 	}
 	entry, err := s.commitObjectRoot(req.DstBucket, req.DstKey, manUUID, manSHA, dstMan)
+	if err == nil && deferred && !repHasRootFile(s, dstMan.ManifestUUID) {
+		s.repAfterCommit(req.DstBucket, req.DstKey, dstMan)
+	}
 	return entry, dstMan, err
 }
 
@@ -11908,6 +11922,7 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 		}
 	}
 	fireTestHook(hookAfterApplyBeforeResponse)
+	s.repAfterCommit(bucket, key, man)
 	return entry, man, nil
 }
 
@@ -18884,7 +18899,11 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 		}
 		return
 	}
-	srv.store.tryBuildRep(man)
+	if srv.store.rep.q.Load() != nil {
+		srv.store.repAfterCommit(s3Bucket, s3Key, man)
+	} else {
+		srv.store.tryBuildRep(man)
+	}
 	fireTestHook(hookAfterAck)
 	writeSyncJSON(w, http.StatusOK, syncCommitResponse{
 		Bucket: s3Bucket, Key: s3Key, VersionID: entry.manifestUUID, ETag: entry.etag, Size: entry.size,
@@ -24935,10 +24954,17 @@ func runServe(args []string) {
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (PEM); requires -tls-key. Neither flag: plain HTTP (default). Both: HTTPS via Go's standard-library TLS server. Exactly one without the other is a startup error.")
 	tlsKey := fs.String("tls-key", "", "TLS private key file (PEM); requires -tls-cert. See -tls-cert.")
 	repFlag := fs.String("representations", "off", "experimental optional structured representations: off (default), shadow (create and persist them, read through CDC) or prefer (also read through them when supported); raises the store format to 6 on first use")
+	repBuild := fs.String("representation-build", "inline", "when representations are built: inline (default; one exists when the PUT is acknowledged) or deferred (built by bounded background workers after the authoritative commit; the object is read through CDC until then, and unfinished work is abandoned at shutdown)")
+	repWorkers := fs.Int("representation-workers", 1, "deferred builds: concurrent background workers")
+	repQueueMax := fs.Int("representation-queue", repDeferMaxJobs, "deferred builds: maximum pending plus running builds; further requests are skipped, never blocked")
 	fs.Parse(args)
 	repSel, err := parseRepMode(*repFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: serve: -representations: %v\n", err)
+		os.Exit(2)
+	}
+	if *repBuild != "inline" && *repBuild != "deferred" {
+		fmt.Fprintf(os.Stderr, "zeros3: serve: -representation-build: unknown policy %q (want inline or deferred)\n", *repBuild)
 		os.Exit(2)
 	}
 	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
@@ -24959,6 +24985,9 @@ func runServe(args []string) {
 	store.setRepMode(repSel)
 	if repSel != repModeOff {
 		store.repEnsure()
+		if *repBuild == "deferred" {
+			store.enableRepDeferred(*repWorkers, *repQueueMax)
+		}
 	}
 
 	// A running server holds a SHARED advisory lock on the store for its
@@ -29148,6 +29177,8 @@ const (
 	hookRepAnalysisStarted   = "rep-analysis-started"
 	hookRepRootBeforeRetire  = "rep-root-before-retire"
 	hookRepRootAfterRetire   = "rep-root-after-retire"
+	hookRepDeferredEnqueued  = "rep-deferred-enqueued"
+	hookRepDeferredStarted   = "rep-deferred-started"
 )
 
 func (s *Store) repDir() string      { return filepath.Join(s.root, "representations") }
@@ -32837,7 +32868,23 @@ type repState struct {
 	// nothing). It is set when a root is published or the roots directory exists.
 	mayHaveRoots atomic.Bool
 
+	// stopping is raised when the store closes: a construction in flight
+	// abandons itself at its next read or phase boundary.
+	stopping atomic.Bool
+	q        atomic.Pointer[repQueue] // deferred construction; nil while builds are inline
+
 	reads, rangeReads, fallbacks, optionalFailures atomic.Int64
+
+	// bt accumulates where construction time goes (nanoseconds), for
+	// measurement; never consulted for correctness.
+	bt repBuildTimes
+}
+
+// repBuildTimes is the cumulative cost of representation construction by phase.
+type repBuildTimes struct {
+	built, rejected                            atomic.Int64
+	analyzeNS, publishNS, proofNS, rootNS, rch atomic.Int64
+	components, componentBytes                 atomic.Int64
 }
 
 func (s *Store) setRepMode(m repMode) { s.rep.mode.Store(int32(m)) }
@@ -32971,6 +33018,9 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, errors.New("negative offset")
 	}
+	if m.s.rep.stopping.Load() {
+		return 0, errRepBuildStopped
+	}
 	n := 0
 	for n < len(p) && off < m.size {
 		if m.cur != nil && off >= m.curOff && off < m.curOff+int64(len(m.cur)) {
@@ -33014,7 +33064,12 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 // representation and publishes the root. It returns errRepUnsupported when no
 // structural kind applies; every other error means the optional work failed.
 // Nothing here changes what is visible: the namespace commit is separate.
-func (s *Store) repBuild(man manifestV1) error {
+func (s *Store) repBuild(man manifestV1) error { return s.repBuildFor(man, nil) }
+
+// repBuildFor is repBuild with an optional liveness check, consulted at the
+// last moment before the root is published: a deferred build whose manifest
+// has meanwhile left the namespace and its retained history publishes nothing.
+func (s *Store) repBuildFor(man manifestV1, live func() bool) error {
 	if man.TotalLength < 1 {
 		return errRepUnsupported
 	}
@@ -33033,6 +33088,7 @@ func (s *Store) repBuild(man manifestV1) error {
 	}
 	s.repEnsure()
 	fireTestHook(hookRepAnalysisStarted)
+	t0 := time.Now()
 	b := s.newRepBuilder(man.TotalLength, s.repDescLookup, nil)
 	defer b.close()
 	var rep *repObject
@@ -33043,21 +33099,35 @@ func (s *Store) repBuild(man manifestV1) error {
 		rep, err = b.encodeKind(kind, ra, man.TotalLength)
 		return err
 	}(); err != nil {
+		s.rep.bt.rejected.Add(1)
+		s.rep.bt.analyzeNS.Add(int64(time.Since(t0)))
 		return err
 	}
 	id, err := b.finishRep(rep)
 	if err != nil {
 		return err
 	}
+	t1 := time.Now()
+	s.rep.bt.analyzeNS.Add(int64(t1.Sub(t0)))
 	fireTestHook(hookRepComponentsStaged)
+	if s.rep.stopping.Load() {
+		return errRepBuildStopped
+	}
 	if err := b.flush(); err != nil {
 		return err
 	}
+	t2 := time.Now()
+	s.rep.bt.publishNS.Add(int64(t2.Sub(t1)))
 	fireTestHook(hookRepComponentsFlushed)
 	// The proof runs the production decoder over the production Source: the exact
 	// length and SHA-256 of the authoritative object, never a buffered copy.
 	if err := b.proof(id, man.TotalLength, objSHA); err != nil {
 		return fmt.Errorf("representation proof failed: %w", err)
+	}
+	t3 := time.Now()
+	s.rep.bt.proofNS.Add(int64(t3.Sub(t2)))
+	if s.rep.stopping.Load() {
+		return errRepBuildStopped
 	}
 	reach, err := b.env.reachable(id)
 	if err != nil {
@@ -33069,10 +33139,18 @@ func (s *Store) repBuild(man manifestV1) error {
 			root.Descs[oid] = d
 		}
 	}
+	t4 := time.Now()
+	s.rep.bt.rch.Add(int64(t4.Sub(t3)))
+	s.rep.bt.components.Add(int64(len(reach.Order)))
 	fireTestHook(hookRepObjectPublished)
+	if live != nil && !live() {
+		return errRepBuildSuperseded
+	}
 	if err := s.publishRepRoot(root); err != nil {
 		return err
 	}
+	s.rep.bt.rootNS.Add(int64(time.Since(t4)))
+	s.rep.bt.built.Add(1)
 	s.repAdopt(root)
 	return nil
 }
@@ -33091,15 +33169,374 @@ func (s *Store) tryBuildRep(man manifestV1) {
 }
 
 func (s *Store) maybeBuildRep(man manifestV1) {
+	if s.rep.q.Load() != nil {
+		return // deferred: scheduled after the authoritative commit (repAfterCommit)
+	}
 	s.tryBuildRep(man)
 	if s.repMode() != repModeOff {
 		fireTestHook(hookRepBeforeNamespace)
 	}
 }
 
+// ---- deferred construction ---------------------------------------------------------
+//
+// Policy "deferred" (serve -representation-build deferred; the default stays
+// "inline", where a representation exists when the PUT is acknowledged). A
+// deferred PUT is acknowledged after the authoritative CDC commit; its
+// representation is built afterwards by a small, bounded pool of workers and
+// published exactly like an inline one (components durable, proof, atomic root).
+// Until the root appears the object is read through CDC, which is always
+// correct. The queue is memory only: work still queued when the process stops
+// is abandoned (the object simply stays CDC-only), and staged components of a
+// build interrupted before its root are ordinary unreachable CAS content that
+// gc reclaims. Destructive maintenance needs the exclusive store lock, so no
+// build overlaps it; within the process the immutable manifest and its chunks
+// cannot disappear while a build reads them.
+
+var (
+	errRepBuildStopped    = errors.New("representation build abandoned: store closing")
+	errRepBuildSuperseded = errors.New("representation build abandoned: manifest no longer live")
+)
+
+const (
+	repDeferMaxJobs  = 256     // pending + running builds
+	repDeferMaxBytes = 8 << 30 // sum of the object sizes pending + running
+
+	repDeferDoneMax = 4096 // content digests remembered for root cloning
+)
+
+// repDeferStarvation is how long a worker waits for foreground idleness before
+// it runs anyway (a variable so tests can shorten it).
+var repDeferStarvation = 5 * time.Second
+
+// fgGate counts requests in flight so deferred work can yield to them.
+type fgGate struct {
+	n       atomic.Int64
+	mu      sync.Mutex
+	cond    *sync.Cond
+	waiters int
+}
+
+func (g *fgGate) enter() { g.n.Add(1) }
+func (g *fgGate) exit() {
+	if g.n.Add(-1) == 0 {
+		g.mu.Lock()
+		if g.waiters > 0 {
+			g.cond.Broadcast()
+		}
+		g.mu.Unlock()
+	}
+}
+
+// waitIdle blocks until no foreground request is in flight, stop is raised, or
+// max has elapsed (a busy store must still make progress). It reports whether
+// it returned because the store was idle.
+func (g *fgGate) waitIdle(stop *atomic.Bool, max time.Duration) bool {
+	if g.n.Load() == 0 {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.cond == nil {
+		g.cond = sync.NewCond(&g.mu)
+	}
+	expired := false
+	t := time.AfterFunc(max, func() { g.mu.Lock(); expired = true; g.cond.Broadcast(); g.mu.Unlock() })
+	defer t.Stop()
+	g.waiters++
+	defer func() { g.waiters-- }()
+	for g.n.Load() != 0 && !expired && !stop.Load() {
+		g.cond.Wait()
+	}
+	return g.n.Load() == 0
+}
+
+type repJob struct {
+	sha         string // object SHA-256 (hex): the coalescing key
+	size        int64
+	man         manifestV1
+	bucket, key string
+	cloneFrom   string      // a manifest already carrying this content's root
+	more        []repWaiter // identical content requested while this job was queued or running
+}
+
+type repWaiter struct {
+	man         manifestV1
+	bucket, key string
+}
+
+type repQueue struct {
+	s       *Store
+	mu      sync.Mutex
+	cond    *sync.Cond
+	pending []*repJob
+	byKey   map[string]*repJob // pending and running
+	done    map[string]string  // object sha -> manifest uuid whose root was published (bounded)
+	doneOrd []string
+	bytes   int64
+	running int
+	closed  bool
+	maxJobs int
+	maxByte int64
+	wg      sync.WaitGroup
+
+	enqueued, coalesced, dropped, built, cloned, abandoned, yielded atomic.Int64
+}
+
+// RepDeferredStats is a point-in-time view of the deferred queue, for tests and measurement.
+type RepDeferredStats struct {
+	Pending, Running                                              int
+	QueuedBytes                                                   int64
+	Enqueued, Coalesced, Dropped, Built, Cloned, Abandoned, Yield int64
+}
+
+// enableRepDeferred starts n workers building representations after commit.
+// It is a runtime policy, never persisted.
+func (s *Store) enableRepDeferred(workers, maxJobs int) {
+	if workers < 1 {
+		workers = 1
+	}
+	if maxJobs < 1 {
+		maxJobs = repDeferMaxJobs
+	}
+	q := &repQueue{s: s, byKey: map[string]*repJob{}, done: map[string]string{}, maxJobs: maxJobs, maxByte: repDeferMaxBytes}
+	q.cond = sync.NewCond(&q.mu)
+	if !s.rep.q.CompareAndSwap(nil, q) {
+		return
+	}
+	for i := 0; i < workers; i++ {
+		q.wg.Add(1)
+		go q.worker()
+	}
+}
+
+func (s *Store) repDeferredStats() RepDeferredStats {
+	q := s.rep.q.Load()
+	if q == nil {
+		return RepDeferredStats{}
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return RepDeferredStats{Pending: len(q.pending), Running: q.running, QueuedBytes: q.bytes, Enqueued: q.enqueued.Load(),
+		Coalesced: q.coalesced.Load(), Dropped: q.dropped.Load(), Built: q.built.Load(), Cloned: q.cloned.Load(), Abandoned: q.abandoned.Load(), Yield: q.yielded.Load()}
+}
+
+// repQuiesce waits until every queued and running build has finished (or the
+// queue is closed). For tests and measurement.
+func (s *Store) repQuiesce() {
+	q := s.rep.q.Load()
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	for (len(q.pending) > 0 || q.running > 0) && !q.closed {
+		q.cond.Wait()
+	}
+	q.mu.Unlock()
+}
+
+// repQueueStop abandons queued work, tells running builds to stop at their next
+// boundary and waits up to grace for the workers. It reports whether they ended.
+func (s *Store) repQueueStop(grace time.Duration) bool {
+	s.rep.stopping.Store(true)
+	q := s.rep.q.Load()
+	if q == nil {
+		return true
+	}
+	q.mu.Lock()
+	if !q.closed {
+		q.closed = true
+		for _, j := range q.pending {
+			q.abandoned.Add(1 + int64(len(j.more)))
+			delete(q.byKey, j.sha)
+		}
+		q.pending, q.bytes = nil, 0
+	}
+	q.cond.Broadcast()
+	q.mu.Unlock()
+	s.fg.mu.Lock()
+	if s.fg.cond != nil {
+		s.fg.cond.Broadcast()
+	}
+	s.fg.mu.Unlock()
+	ended := make(chan struct{})
+	go func() { q.wg.Wait(); close(ended) }()
+	select {
+	case <-ended:
+		return true
+	case <-time.After(grace):
+		return false
+	}
+}
+
+// repManifestLive reports whether bucket/key still names the manifest, as its
+// current version or in its retained history.
+func (s *Store) repManifestLive(bucket, key, uuid string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b := s.buckets[bucket]; b != nil {
+		if e := b.objects[key]; e != nil && e.manifestUUID == uuid {
+			return true
+		}
+	}
+	for _, h := range s.history[bucket][key] {
+		if h.manifestUUID == uuid {
+			return true
+		}
+	}
+	return false
+}
+
+// repAfterCommit schedules the representation of a manifest the namespace now
+// names. It never blocks the caller and never fails the request: a full queue
+// drops the build (the object stays CDC-only).
+func (s *Store) repAfterCommit(bucket, key string, man manifestV1) {
+	q := s.rep.q.Load()
+	if q == nil || s.repMode() == repModeOff {
+		return
+	}
+	q.enqueue(bucket, key, man)
+}
+
+func (q *repQueue) enqueue(bucket, key string, man manifestV1) {
+	if man.TotalLength < 1 || man.TotalLength > repMaxInspect {
+		return // never representable; do not occupy the queue
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return
+	}
+	if j := q.byKey[man.ObjectSHA256]; j != nil {
+		j.more = append(j.more, repWaiter{man: man, bucket: bucket, key: key})
+		q.coalesced.Add(1)
+		return
+	}
+	if len(q.pending)+q.running >= q.maxJobs || q.bytes+man.TotalLength > q.maxByte {
+		if q.dropped.Add(1)%1000 == 1 {
+			log.Printf("zeros3: deferred representation queue full (%d jobs, %d bytes): build skipped, object stays CDC-only", len(q.pending)+q.running, q.bytes)
+		}
+		return
+	}
+	j := &repJob{sha: man.ObjectSHA256, size: man.TotalLength, man: man, bucket: bucket, key: key, cloneFrom: q.done[man.ObjectSHA256]}
+	q.pending = append(q.pending, j)
+	q.byKey[j.sha] = j
+	q.bytes += j.size
+	q.enqueued.Add(1)
+	q.cond.Signal()
+	fireTestHook(hookRepDeferredEnqueued)
+}
+
+func (q *repQueue) worker() {
+	defer q.wg.Done()
+	for {
+		q.mu.Lock()
+		for len(q.pending) == 0 && !q.closed {
+			q.cond.Wait()
+		}
+		if q.closed {
+			q.mu.Unlock()
+			return
+		}
+		j := q.pending[0]
+		q.pending[0] = nil
+		q.pending = q.pending[1:]
+		q.running++
+		q.mu.Unlock()
+
+		if !q.s.fg.waitIdle(&q.s.rep.stopping, repDeferStarvation) {
+			q.yielded.Add(1)
+		}
+		fireTestHook(hookRepDeferredStarted)
+		q.run(j)
+
+		q.mu.Lock()
+		delete(q.byKey, j.sha)
+		q.bytes -= j.size
+		q.running--
+		q.cond.Broadcast()
+		q.mu.Unlock()
+	}
+}
+
+func (q *repQueue) run(j *repJob) {
+	s := q.s
+	defer func() {
+		if r := recover(); r != nil { // a build defect must not kill the worker or the process
+			s.rep.optionalFailures.Add(1)
+			log.Printf("zeros3: optional representation for manifest %s panicked: %v", j.man.ManifestUUID, r)
+		}
+	}()
+	if s.rep.stopping.Load() || s.repMode() == repModeOff {
+		q.abandoned.Add(1)
+		return
+	}
+	live := func() bool { return s.repManifestLive(j.bucket, j.key, j.man.ManifestUUID) }
+	if !live() {
+		q.abandoned.Add(1)
+		return
+	}
+	primary := j.man.ManifestUUID
+	var err error
+	cloned := false
+	if j.cloneFrom != "" && s.repCloneRoot(j.cloneFrom, j.man) {
+		cloned = true
+		q.cloned.Add(1)
+	} else {
+		err = s.repBuildFor(j.man, live)
+	}
+	switch {
+	case err == nil:
+		if !cloned {
+			q.built.Add(1)
+		}
+		q.remember(j.sha, primary)
+	case errors.Is(err, errRepUnsupported):
+		return
+	case errors.Is(err, errRepBuildStopped), errors.Is(err, errRepBuildSuperseded):
+		q.abandoned.Add(1)
+		return
+	default:
+		s.rep.optionalFailures.Add(1)
+		log.Printf("zeros3: optional representation for manifest %s skipped: %v", primary, err)
+		return
+	}
+	q.mu.Lock()
+	waiters := j.more
+	j.more = nil
+	q.mu.Unlock()
+	for _, w := range waiters {
+		if s.rep.stopping.Load() {
+			q.abandoned.Add(1)
+			continue
+		}
+		if s.repManifestLive(w.bucket, w.key, w.man.ManifestUUID) && s.repCloneRoot(primary, w.man) {
+			q.cloned.Add(1)
+		}
+	}
+}
+
+func (q *repQueue) remember(sha, uuid string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if _, ok := q.done[sha]; !ok {
+		q.doneOrd = append(q.doneOrd, sha)
+		if len(q.doneOrd) > repDeferDoneMax {
+			delete(q.done, q.doneOrd[0])
+			q.doneOrd = q.doneOrd[1:]
+		}
+	}
+	q.done[sha] = uuid
+}
+
 // repCloneRoot attaches the representation of an already proven manifest to a
 // new manifest of byte-identical content (CopyObject, restore): a small root
 // sidecar pointing at the same representation and descriptors.
+func repHasRootFile(s *Store, uuid string) bool {
+	_, err := os.Stat(s.repRootPath(uuid))
+	return err == nil
+}
+
 func (s *Store) repCloneRoot(srcUUID string, dst manifestV1) bool {
 	r, err := s.loadRepRoot(srcUUID)
 	if err != nil {
