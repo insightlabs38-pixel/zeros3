@@ -1,0 +1,5 @@
+# server-limited whole-object throughput: the client byte-verifies 1 response in 16 (run with P0_VERIFY=sample:16)
+sw_64m|get -objs 8 -size 64mib -phases c1|whole|4kib|random|1|16|warm;c2|whole|4kib|random|2|24|warm;c4|whole|4kib|random|4|32|warm;c8|whole|4kib|random|8|48|warm
+sw_256m|get -objs 2 -size 256mib -phases c1|whole|4kib|random|1|8|warm;c2|whole|4kib|random|2|12|warm
+sw_1g|get -objs 1 -size 1gib -phases c1|whole|4kib|random|1|6|warm;c2|whole|4kib|random|2|8|warm;cold_c1|whole|4kib|random|1|3|cold
+sw_1m|get -objs 64 -size 1mib -phases c1|whole|4kib|random|1|600|warm;c8|whole|4kib|random|8|2400|warm;c32|whole|4kib|random|32|3200|warm
