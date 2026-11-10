@@ -29432,6 +29432,12 @@ func (s *Store) publishRepRoot(r *repRoot) error {
 	if err != nil {
 		return err
 	}
+	return s.publishRepRootAt(r, floor)
+}
+
+// publishRepRootAt is publishRepRoot for a caller that already knows the capability floor.
+func (s *Store) publishRepRootAt(r *repRoot, floor int) error {
+	var err error
 	fireTestHook(hookRepRootBeforeFormat)
 	data, err := r.marshal()
 	if err != nil {
@@ -33403,7 +33409,11 @@ func (s *Store) repBuildFor(man manifestV1, live func() bool) error {
 	if live != nil && !live() {
 		return errRepBuildSuperseded
 	}
-	if err := s.publishRepRoot(root); err != nil {
+	floor, err := repFloorOf(b.env, reach)
+	if err != nil {
+		return err
+	}
+	if err := s.publishRepRootAt(root, floor); err != nil {
 		return err
 	}
 	s.rep.bt.rootNS.Add(int64(time.Since(t4)))
@@ -46105,6 +46115,13 @@ func (s *Store) repPublicationFloor(r *repRoot) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return repFloorOf(env, reach)
+}
+
+// repFloorOf is the store-format level the representation closure reach describes
+// requires. A builder that has just walked the closure passes its own result in
+// rather than walking it a second time.
+func repFloorOf(env *repEnv, reach *repReach) (int, error) {
 	floor := storeFormatVersionRepresentations
 	for id, role := range reach.Role {
 		if role != repDepRep {
