@@ -16306,6 +16306,12 @@ func (c *chunkCache) offer(sum *[32]byte, data []byte, epoch uint64) {
 		slot.Store(fp)
 		return
 	}
+	sh.mu.RLock()
+	_, present := sh.m[*sum]
+	sh.mu.RUnlock()
+	if present { // a run re-read a chunk that is already cached: nothing to copy
+		return
+	}
 	if k := sh.throttle.Load(); k > 0 && sh.sightings.Add(1)&(1<<k-1) != 0 {
 		return // admission is throttled: this repeat sighting is not the one that is copied
 	}

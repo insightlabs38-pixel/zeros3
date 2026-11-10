@@ -1,0 +1,72 @@
+== cand whole1m: cpu (cum)
+Time: 2026-11-10 01:39:37 UTC
+Duration: 1.97s, Total samples = 2150ms (109.29%)
+Showing nodes accounting for 1840ms, 85.58% of 2150ms total
+Dropped 110 nodes (cum <= 10.75ms)
+Showing top 45 nodes out of 78
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%     2060ms 95.81%  net/http.(*conn).serve
+         0     0%     0%     2010ms 93.49%  main.(*Server).ServeHTTP
+         0     0%     0%     2010ms 93.49%  net/http.serverHandler.ServeHTTP
+         0     0%     0%     1990ms 92.56%  main.(*Server).handleGetObject
+         0     0%     0%     1990ms 92.56%  main.(*Server).streamObject
+         0     0%     0%     1510ms 70.23%  main.(*manifestReader).next
+         0     0%     0%     1490ms 69.30%  main.(*manifestReader).chunk
+         0     0%     0%     1320ms 61.40%  main.(*manifestReader).fetchRun
+         0     0%     0%     1310ms 60.93%  main.(*packRunReader).read
+         0     0%     0%     1010ms 46.98%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0%     0%     1010ms 46.98%  crypto/internal/fips140/sha256.block
+    1010ms 46.98% 46.98%     1010ms 46.98%  crypto/internal/fips140/sha256.blockSHANI
+         0     0% 46.98%     1010ms 46.98%  crypto/sha256.Sum256
+         0     0% 46.98%     1010ms 46.98%  main.decodePackPayload
+     710ms 33.02% 80.00%      710ms 33.02%  internal/runtime/syscall/linux.Syscall6
+         0     0% 80.00%      710ms 33.02%  syscall.RawSyscall6
+         0     0% 80.00%      460ms 21.40%  syscall.Syscall
+         0     0% 80.00%      450ms 20.93%  bufio.(*Writer).Write
+         0     0% 80.00%      450ms 20.93%  internal/poll.ignoringEINTRIO (inline)
+         0     0% 80.00%      450ms 20.93%  net/http.(*chunkWriter).Write
+         0     0% 80.00%      450ms 20.93%  net/http.(*response).Write
+         0     0% 80.00%      450ms 20.93%  net/http.(*response).write
+         0     0% 80.00%      440ms 20.47%  internal/poll.(*FD).Write
+         0     0% 80.00%      440ms 20.47%  net.(*conn).Write
+         0     0% 80.00%      440ms 20.47%  net.(*netFD).Write
+         0     0% 80.00%      440ms 20.47%  net/http.checkConnErrorWriter.Write
+         0     0% 80.00%      440ms 20.47%  syscall.Write (inline)
+         0     0% 80.00%      440ms 20.47%  syscall.write
+         0     0% 80.00%      260ms 12.09%  syscall.Syscall6
+         0     0% 80.00%      250ms 11.63%  internal/poll.(*FD).Pread
+         0     0% 80.00%      250ms 11.63%  internal/poll.(*FD).Pread.func1 (inline)
+         0     0% 80.00%      250ms 11.63%  internal/poll.ignoringEINTR2[go.shape.int] (inline)
+         0     0% 80.00%      250ms 11.63%  os.(*File).ReadAt
+         0     0% 80.00%      250ms 11.63%  os.(*File).pread (inline)
+         0     0% 80.00%      250ms 11.63%  syscall.Pread (inline)
+         0     0% 80.00%      250ms 11.63%  syscall.pread
+         0     0% 80.00%      150ms  6.98%  bytes.Clone (inline)
+         0     0% 80.00%      150ms  6.98%  main.(*chunkCache).offer
+     120ms  5.58% 85.58%      120ms  5.58%  runtime.memmove
+         0     0% 85.58%       80ms  3.72%  runtime.mallocgc
+         0     0% 85.58%       80ms  3.72%  runtime.systemstack
+         0     0% 85.58%       50ms  2.33%  bufio.(*Writer).Flush
+         0     0% 85.58%       50ms  2.33%  runtime.growslice
+         0     0% 85.58%       50ms  2.33%  runtime.mallocgcLarge
+         0     0% 85.58%       40ms  1.86%  runtime.mcall
+== alloc_space
+Showing nodes accounting for 322.24MB, 96.78% of 332.95MB total
+Dropped 276 nodes (cum <= 1.66MB)
+Showing top 15 nodes out of 53
+      flat  flat%   sum%        cum   cum%
+  272.89MB 81.96% 81.96%   272.89MB 81.96%  bytes.Clone
+   17.50MB  5.26% 87.22%    17.51MB  5.26%  main.getRunBuf
+   17.02MB  5.11% 92.33%    17.02MB  5.11%  bufio.NewReaderSize (inline)
+    3.38MB  1.01% 93.34%     3.38MB  1.01%  runtime/pprof.StartCPUProfile
+       3MB   0.9% 94.24%     3.09MB  0.93%  main.(*manifestReader).planRun
+    2.34MB   0.7% 94.95%    21.04MB  6.32%  main.(*manifestReader).fetchRun
+    1.88MB  0.56% 95.51%     1.88MB  0.56%  compress/flate.(*fastGen).addBlock
+    1.55MB  0.46% 95.97%     2.80MB  0.84%  compress/flate.NewWriter (inline)
+    0.77MB  0.23% 96.20%    18.71MB  5.62%  main.(*packRunReader).read
+    0.60MB  0.18% 96.38%     1.72MB  0.52%  runtime/pprof.(*profileBuilder).emitLocation
+    0.42MB  0.13% 96.51%     1.68MB  0.51%  net/http.readRequestLimit
+    0.39MB  0.12% 96.63%     2.25MB  0.68%  net/http.(*conn).readRequest
+    0.29MB 0.088% 96.72%     2.86MB  0.86%  main.(*Server).sigv4VerifyCore
+    0.15MB 0.045% 96.76%    16.16MB  4.85%  main.readPackLayout
+    0.06MB 0.019% 96.78%    16.35MB  4.91%  main.loadPackState
