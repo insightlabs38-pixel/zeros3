@@ -435,3 +435,47 @@ func BenchmarkP2_ManifestParse(b *testing.B) {
 		})
 	}
 }
+
+// A working set far beyond the budget makes copy-ins pointless; the cache must
+// notice and stop paying for them, and must keep admitting when the set fits.
+func TestP2_ChunkCacheAdmissionAdaptsToTheWorkingSet(t *testing.T) {
+	run := func(keys, ops int) (admits, hits int64, c *chunkCache) {
+		c = newChunkCache(16 * (64 << 10)) // 1 MiB: 64 chunks of 16 KiB
+		rng := rand.New(rand.NewPCG(5, uint64(keys)))
+		data := bytes.Repeat([]byte{9}, 16<<10)
+		for i := 0; i < ops; i++ {
+			var k [32]byte
+			n := rng.IntN(keys)
+			k[0], k[1], k[2] = byte(n), byte(n>>8), byte(n>>16)
+			if _, ok := c.get(&k); !ok {
+				c.offer(&k, data, 0)
+			}
+		}
+		st := c.stats()
+		return st.Admits, st.Hits, c
+	}
+	// working set 8x the budget: admissions must collapse well below the miss count
+	admits, hits, c := run(512, 400_000)
+	if st := c.stats(); st.MaxThrottle == 0 || admits > 120_000 {
+		t.Fatalf("thrash: %d admissions for 400k lookups (%d hits), throttle %d", admits, hits, st.MaxThrottle)
+	}
+	// working set that fits: nearly everything hits and nothing is throttled
+	admits2, hits2, c2 := run(40, 400_000)
+	if st := c2.stats(); st.MaxThrottle != 0 || hits2 < 390_000 {
+		t.Fatalf("hot set: %d hits, %d admissions, throttle %d", hits2, admits2, st.MaxThrottle)
+	}
+	// once the workload turns friendly the throttle relaxes and admissions resume
+	rng := rand.New(rand.NewPCG(8, 8))
+	data := bytes.Repeat([]byte{9}, 16<<10)
+	for i := 0; i < 1_000_000; i++ {
+		var k [32]byte
+		n := rng.IntN(30)
+		k[0], k[1], k[2] = byte(n), byte(n>>8), 0x77
+		if _, ok := c.get(&k); !ok {
+			c.offer(&k, data, 0)
+		}
+	}
+	if st := c.stats(); st.MaxThrottle != 0 {
+		t.Fatalf("throttle did not relax for a hot set: %d", st.MaxThrottle)
+	}
+}

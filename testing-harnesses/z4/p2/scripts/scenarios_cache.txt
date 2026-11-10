@@ -1,0 +1,5 @@
+# chunk-cache sizing / churn: same stores read with ZEROS3_CHUNK_CACHE_MIB = 0 / 16 / 32 / 64 / 128
+cc_medium_512k|get -objs 200 -size 512kib -phases r4k_rand|range|4kib|random|1|3000|warm;whole_c1|whole|4kib|random|1|400|warm;whole_c8|whole|4kib|random|8|800|warm
+cc_zipf_1m|get -objs 300 -size 1mib -phases zipf_c4|hot|64kib|random|4|3000|warm
+cc_64m_hot|get -objs 4 -size 64mib -phases r4k_hot|range|4kib|hot|4|4000|warm;r4k_spread|range|4kib|spread|4|4000|warm;r4k_rand|range|4kib|random|4|4000|warm;r64k_rand|range|64kib|random|4|3000|warm
+cc_seg_128k|get -objs 800 -size 128kib -phases r4k_rand|range|4kib|random|4|4000|warm;whole_c8|whole|4kib|random|8|3200|warm

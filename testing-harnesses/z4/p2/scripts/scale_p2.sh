@@ -10,8 +10,8 @@ W=${P2_WORK:-/tmp/claude-0/p2/work}/scale-$N-$SIZE; rm -rf "$W"; mkdir -p "$W"
 D=$BIN/p0bench; S=$W/store
 note="objs=$N size=$SIZE mode=$MODE"
 $D mkstore -label mk_${N}_$SIZE -out $OUT -work $W -bin $BIN/zeros3 -profbin $BIN/zeros3-prof -dir $S -objs $N -size $SIZE -conc 16 >/dev/null
-# manifest MiB : chunk MiB
-for cfg in "0:0" "1:1" "8:8" "32:64" "256:256"; do
+# manifest MiB : chunk MiB (default 32:32)
+for cfg in "0:0" "0:32" "1:32" "8:32" "32:32" "256:32"; do
   mm=${cfg%%:*}; cm=${cfg##*:}
   ST=$W/stats-$mm-$cm.json; rm -f $ST
   P0_NOTE="$note mcache=$mm ccache=$cm" $D readstore -label scale_${N}_${SIZE}_${MODE} -out $OUT -work $W -bin $BIN/zeros3 -profbin $BIN/zeros3-prof \

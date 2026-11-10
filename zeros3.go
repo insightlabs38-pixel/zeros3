@@ -16204,12 +16204,11 @@ func parseRangeSpec(header string, size int64) (rng byteRange, ok, satisfiable b
 
 const (
 	chunkCacheShards        = 16
-	chunkDoorSlots          = 2048
 	chunkCacheAdmitMaxRange = 4 << 20
 )
 
 // chunkCacheDefaultBytes is the default budget for all shards together.
-var chunkCacheDefaultBytes int64 = 64 << 20
+var chunkCacheDefaultBytes int64 = 32 << 20
 
 type chunkCache struct {
 	budget int64
@@ -16219,15 +16218,40 @@ type chunkCache struct {
 
 type chunkCacheShard struct {
 	clockShard[[]byte]
-	door                                                  [chunkDoorSlots]atomic.Uint64
+	door                                                  []atomic.Uint64 // fingerprints of recently seen keys, direct-mapped
 	hits, misses, admits, evictions, stale, revalidations atomic.Int64
-	_                                                     [64]byte
+
+	// Admission feedback. A copy-in costs a sizeable fraction of the read and hash it
+	// saves once allocation and GC are counted (measured at 2-3 reads), so it only pays
+	// if the entry is hit again and again. Every chunkAdaptEvery lookups or
+	// chunkAdaptAdmits admissions the shard compares the window's hits and admissions:
+	// fewer than two hits per admission (a working set far larger than the budget:
+	// entries are evicted before they are reused) doubles the sighting count required
+	// to admit, up to 1<<chunkAdaptMax, and four or more hits per admission halves it.
+	throttle                        atomic.Uint32 // admit one in 1<<throttle repeat sightings
+	sightings                       atomic.Uint64
+	snapHits, snapAdmits, snapLooks atomic.Int64
+	_                               [64]byte
 }
+
+const (
+	chunkAdaptEvery  = 4096 // lookups, or
+	chunkAdaptAdmits = 32   // admissions, whichever closes the window first
+	chunkAdaptMax    = 6
+)
 
 func newChunkCache(budget int64) *chunkCache {
 	c := &chunkCache{budget: budget}
+	// The door remembers about as many keys as the shard can hold (assuming typical
+	// 64 KiB chunks) times four: a repeat that comes later than that could not have
+	// hit anyway, so it is not worth a copy.
+	slots := 64
+	for slots < 4*int(budget/chunkCacheShards/(64<<10)) && slots < 4096 {
+		slots <<= 1
+	}
 	for i := range c.shards {
 		c.shards[i].init(budget / chunkCacheShards)
+		c.shards[i].door = make([]atomic.Uint64, slots)
 	}
 	return c
 }
@@ -16258,10 +16282,14 @@ func (c *chunkCache) get(sum *[32]byte) ([]byte, bool) {
 		e = nil
 	}
 	if e == nil {
-		sh.misses.Add(1)
+		if sh.misses.Add(1)+sh.hits.Load() >= sh.snapLooks.Load()+chunkAdaptEvery {
+			sh.adapt()
+		}
 		return nil, false
 	}
-	sh.hits.Add(1)
+	if sh.hits.Add(1)+sh.misses.Load() >= sh.snapLooks.Load()+chunkAdaptEvery {
+		sh.adapt()
+	}
 	return e.val, true
 }
 
@@ -16273,10 +16301,13 @@ func (c *chunkCache) offer(sum *[32]byte, data []byte, epoch uint64) {
 	}
 	sh := c.shard(sum)
 	fp := binary.LittleEndian.Uint64(sum[8:16]) | 1
-	slot := &sh.door[(fp>>5)%chunkDoorSlots]
+	slot := &sh.door[(fp>>5)%uint64(len(sh.door))]
 	if slot.Load() != fp {
 		slot.Store(fp)
 		return
+	}
+	if k := sh.throttle.Load(); k > 0 && sh.sightings.Add(1)&(1<<k-1) != 0 {
+		return // admission is throttled: this repeat sighting is not the one that is copied
 	}
 	cp := bytes.Clone(data)
 	sh.mu.Lock()
@@ -16292,8 +16323,23 @@ func (c *chunkCache) offer(sum *[32]byte, data []byte, epoch uint64) {
 	ev, stored, _, _ := sh.insertLocked(*sum, cp, int64(len(cp))+128, sh.gen)
 	sh.mu.Unlock()
 	sh.evictions.Add(ev)
-	if stored {
-		sh.admits.Add(1)
+	if stored && sh.admits.Add(1)-sh.snapAdmits.Load() >= chunkAdaptAdmits {
+		sh.adapt()
+	}
+}
+
+// adapt closes one feedback window (see chunkCacheShard.throttle).
+func (sh *chunkCacheShard) adapt() {
+	hits, admits, looks := sh.hits.Load(), sh.admits.Load(), sh.hits.Load()+sh.misses.Load()
+	if !sh.snapLooks.CompareAndSwap(sh.snapLooks.Load(), looks) {
+		return // another reader is closing this window
+	}
+	dh, da := hits-sh.snapHits.Swap(hits), admits-sh.snapAdmits.Swap(admits)
+	switch k := sh.throttle.Load(); {
+	case da >= 16 && dh < 2*da && k < chunkAdaptMax:
+		sh.throttle.Store(k + 1)
+	case k > 0 && dh >= 4*da+16:
+		sh.throttle.Store(k - 1)
 	}
 }
 
@@ -16309,6 +16355,7 @@ func (c *chunkCache) purge() {
 		for j := range sh.door {
 			sh.door[j].Store(0)
 		}
+		sh.throttle.Store(0)
 		sh.mu.Unlock()
 	}
 }
@@ -16316,6 +16363,7 @@ func (c *chunkCache) purge() {
 type chunkCacheStats struct {
 	Entries, Bytes, Budget                                    int64
 	Hits, Misses, Admits, Evictions, StaleDrop, Revalidations int64
+	MaxThrottle                                               uint32 // largest admission throttle exponent of any shard
 }
 
 func (c *chunkCache) stats() (st chunkCacheStats) {
@@ -16335,6 +16383,7 @@ func (c *chunkCache) stats() (st chunkCacheStats) {
 		st.Evictions += sh.evictions.Load()
 		st.StaleDrop += sh.stale.Load()
 		st.Revalidations += sh.revalidations.Load()
+		st.MaxThrottle = max(st.MaxThrottle, sh.throttle.Load())
 	}
 	return st
 }
