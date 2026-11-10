@@ -962,7 +962,7 @@ func buildTestFrame(recType byte, seq uint64, payload []byte) []byte {
 func TestJournal_FrameEncodeDecodeRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")
-	j, records, err := openJournal(path)
+	j, records, err := openJournalCollect(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1064,7 +1064,7 @@ func TestJournal_SequenceEnforcement(t *testing.T) {
 func TestJournal_PayloadLengthBound(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")
-	j, _, err := openJournal(path)
+	j, _, err := openJournalCollect(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1168,7 +1168,7 @@ func mustOK(t *testing.T, err error) {
 func TestJournal_IncompleteFinalFrameIsTornTail(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "j.log")
-	j, _, err := openJournal(path)
+	j, _, err := openJournalCollect(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1186,7 +1186,7 @@ func TestJournal_IncompleteFinalFrameIsTornTail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	j2, records, err := openJournal(path)
+	j2, records, err := openJournalCollect(path)
 	if err != nil {
 		t.Fatalf("expected an incomplete final frame to be tolerated as a torn tail, got: %v", err)
 	}
