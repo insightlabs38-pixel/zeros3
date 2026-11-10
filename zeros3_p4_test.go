@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -931,4 +933,120 @@ func TestP4FSEInverseEqualsBinarySearch(t *testing.T) {
 		})
 	}
 	check("rle", func() *repZSfseTable { return repZSrleTable(7) })
+}
+
+// ---- compatibility with the pre-P4 binary --------------------------------------------------
+
+func p4BuildBase(t *testing.T) string {
+	t.Helper()
+	ref := os.Getenv("ZEROS3_P4_BASE_REF")
+	if ref == "" {
+		ref = "68b259377512a8e9e27e323f5dbdd8aa1e85aeb3"
+	}
+	src, err := exec.Command("git", "show", ref+":zeros3.go").Output()
+	if err != nil {
+		t.Skipf("pre-P4 source %s unavailable: %v", ref, err)
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "zeros3.go"), src, 0o644)
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module zeros3\n\ngo 1.27.0\n"), 0o644)
+	bin := filepath.Join(dir, "zeros3-base")
+	if out, err := exec.Command("go", "build", "-C", dir, "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("building the pre-P4 binary: %v\n%s", err, out)
+	}
+	return bin
+}
+
+// A store written by the new server (deferred representations; small objects whose
+// components share the segment, larger ones in packs) is read, verified deeply and
+// collected by the pre-P4 binary, and keeps working when the new binary resumes it.
+func TestP4_PreP4BinaryUnderstandsDeferredStore(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds two binaries")
+	}
+	newBin, oldBin := buildZeros3Binary(t), p4BuildBase(t)
+	storeDir := t.TempDir()
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	objs := map[string][]byte{
+		"small-sqlite": repTestSQLite(40, 4096, 1), "small-car": repTestCAR(repTestBlocks(40, 2500, 2)),
+		"big-sqlite": repTestSQLite(900, 4096, 3), "big-car": repTestCAR(repTestBlocks(600, 3000, 4)),
+		"merkle": repTestMerkleSnapshot(3, repTestKeys(3000, 5), nil),
+		"tar":    repTestTar(t, map[string][]byte{"a": repTestSQLite(60, 4096, 6), "b": make([]byte, 120<<10)}, []string{"a", "b"}),
+		"plain":  genRandomBytes(7, 300<<10),
+	}
+	put := func(bin string, extra ...string) {
+		addr := freeTCPAddr(t)
+		srv := exec.Command(bin, append([]string{"serve", "-store", storeDir, "-addr", addr}, extra...)...)
+		if err := srv.Start(); err != nil {
+			t.Fatal(err)
+		}
+		waitForZeros3Serve(t, addr)
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp := doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, "/b", nil, nil)
+		resp.Body.Close()
+		for k, v := range objs {
+			resp := doSignedRequest(t, client, "http://"+addr, signer, http.MethodPut, "/b/"+k, v, nil)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("put %s: %d", k, resp.StatusCode)
+			}
+		}
+		srv.Process.Signal(syscall.SIGTERM) // graceful: deferred work in flight is abandoned or finished
+		srv.Wait()
+	}
+	get := func(bin string, extra ...string) {
+		addr := freeTCPAddr(t)
+		srv := exec.Command(bin, append([]string{"serve", "-store", storeDir, "-addr", addr}, extra...)...)
+		if err := srv.Start(); err != nil {
+			t.Fatal(err)
+		}
+		waitForZeros3Serve(t, addr)
+		client := &http.Client{Timeout: 30 * time.Second}
+		for k, v := range objs {
+			resp := doSignedRequest(t, client, "http://"+addr, signer, http.MethodGet, "/b/"+k, nil, nil)
+			got, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK || !bytes.Equal(got, v) {
+				t.Fatalf("get %s through %s: status %d, %d bytes", k, filepath.Base(bin), resp.StatusCode, len(got))
+			}
+			rg := doSignedRequest(t, client, "http://"+addr, signer, http.MethodGet, "/b/"+k, nil, map[string]string{"Range": "bytes=1000-9999"})
+			gotR, _ := io.ReadAll(rg.Body)
+			rg.Body.Close()
+			if !bytes.Equal(gotR, v[1000:min(10000, len(v))]) {
+				t.Fatalf("range %s through %s differs", k, filepath.Base(bin))
+			}
+		}
+		srv.Process.Signal(syscall.SIGTERM)
+		srv.Wait()
+	}
+	put(newBin, "-representations", "shadow", "-representation-build", "deferred")
+	// the deferred queue is drained at graceful shutdown only up to its grace period; make sure roots exist
+	s, err := OpenStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.setRepMode(repModeShadow)
+	for k := range objs {
+		_, man := repManifestOf(t, s, "b", k)
+		if err := s.repBuild(man); err != nil && !errors.Is(err, errRepUnsupported) {
+			t.Fatalf("%s: %v", k, err)
+		}
+	}
+	roots := repVerifyOK(t, s, true).RepresentationRoots
+	s.Close()
+	if roots < 5 {
+		t.Fatalf("only %d roots in the store", roots)
+	}
+	for _, args := range [][]string{{"verify", "-deep", "-store", storeDir}, {"doctor", "-store", storeDir}, {"gc", "-store", storeDir}} {
+		out, errOut, code := runZeros3CLI(t, oldBin, args...)
+		if code != 0 {
+			t.Fatalf("pre-P4 binary: %v exit %d\n%s\n%s", args, code, out, errOut)
+		}
+	}
+	get(oldBin, "-representations", "prefer")
+	get(newBin, "-representations", "prefer", "-representation-build", "deferred")
+	// and back: a store the pre-P4 binary wrote to is understood by the new one
+	if out, errOut, code := runZeros3CLI(t, newBin, "verify", "-deep", "-store", storeDir); code != 0 {
+		t.Fatalf("new binary verify: exit %d\n%s\n%s", code, out, errOut)
+	}
 }

@@ -14,3 +14,5 @@ K[k10_parquet_snappy]="$C/parquet/snappy/c0.parquet"
 K[k10_parquet_zstd]="$C/parquet/zstd/c0.parquet,$C/parquet/zstd/c1.parquet"
 K[k11_dex]="$C/q6/fdroid-apk/2.0.0.dex,$C/q6/fdroid-apk/2.0.1.dex"
 K[k12_clr]="$C/q6/clr/13.0.1.dll,$C/q6/clr/13.0.2.dll,$C/q6/clr/13.0.3.dll,$C/q6/clr/13.0.4.dll"
+# a representative mix of every kind in one run (use with CONC=4)
+K[k99_mix]="$C/src/coreutils-9.7.tar,gen:car:6000,$C/sqlite/v0.db,$C/git/h0.pack,gen:merkle:60000,$C/gz/coreutils-9.7.l6.tar.gz,$C/zstd/coreutils-9.7.l3.tar.zst,$C/models/pythia14m/step1000.safetensors,$C/sst/snappy/c0.sst,$C/parquet/zstd/c0.parquet,$C/q6/fdroid-apk/2.0.0.dex,$C/q6/clr/13.0.4.dll"

@@ -1,0 +1,5 @@
+server: -representations prefer -representation-build deferred -representation-workers 2
+profile zeros3-core-client-v1 passed 262 failed 0 skipped 2
+  aws-sdk-go-v2 passed 133 failed 0
+  minio-go passed 129 failed 0
+  aws-cli passed 0 failed 0
