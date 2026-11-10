@@ -1,0 +1,7 @@
+put_4k_c8|put -objs 3000 -size 4kib -conc 8
+put_64k_c8|put -objs 1500 -size 64kib -conc 8
+put_1m_c4|put -objs 200 -size 1mib -conc 4
+put_64m_c1|put -objs 6 -size 64mib -conc 1
+get_tiny_c8|get -objs 600 -sizes 0:5,1:5,4kib:60,64kib:30 -phases whole_c8|whole|4kib|random|8|2400|warm;head_c8|head|4kib|random|8|2400|warm
+get_64m|get -objs 4 -size 64mib -phases r4k_rand|range|4kib|random|1|3000|warm;r64k_rand|range|64kib|random|1|2000|warm;whole_c1|whole|4kib|random|1|8|warm
+get_whole_1m|get -objs 64 -size 1mib -phases c1|whole|4kib|random|1|256|warm;c8|whole|4kib|random|8|768|warm

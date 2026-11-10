@@ -1,0 +1,3 @@
+go test -count=1 .            : ok  	zeros3	376.284s
+go test -race -count=1 -timeout 90m . : ok  	zeros3	1319.022s
+go vet ./..., gofmt -l .      : clean (checked before every commit)

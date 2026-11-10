@@ -345,6 +345,22 @@ Apply:
 ./zeros3 repack -store /srv/zeros3 -apply
 ```
 
+By default repack rewrites only packs that are less than 50% live, so it writes
+at most as many bytes as it frees. `-max-live-percent 80` also rewrites packs
+that are up to 80% live: it frees more, but writes up to four bytes per byte
+freed (a pack that is a fraction L live costs L/(1-L); measured on 4 KiB objects
+with random deletions: 2.0 at 30% dead, 5.9 at 10% dead with a 100% threshold), so
+use it when space matters more than the I/O.
+
+### Maintenance parallelism
+
+`stats`, `verify` (including `-deep`), `doctor`, `gc`, `repack` and `compact`
+read and check manifests and chunks on a bounded worker pool, one worker per CPU
+up to 8. Set `ZEROS3_MAINT_WORKERS=1` (any number from 1 to 64) to limit them,
+for instance when running `verify` beside a live server. The read-only commands
+open the store without taking ownership: they never modify the journal, a
+segment or a pack of a running server.
+
 ## Compaction and compression
 
 Compaction moves live loose chunks into immutable packs:

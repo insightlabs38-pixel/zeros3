@@ -1,0 +1,27 @@
+Time: 2026-11-10 04:59:50 UTC
+Duration: 854.83ms, Total samples = 1.03s (120.49%)
+Showing nodes accounting for 0.29s, 28.16% of 1.03s total
+Showing top 22 nodes out of 153
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      0.80s 77.67%  testing.(*B).runN
+         0     0%     0%      0.80s 77.67%  zeros3.BenchmarkP3Open
+         0     0%     0%      0.80s 77.67%  zeros3.OpenStoreShared (inline)
+         0     0%     0%      0.80s 77.67%  zeros3.openStore
+         0     0%     0%      0.68s 66.02%  zeros3.openJournal
+     0.05s  4.85%  4.85%      0.68s 66.02%  zeros3.replayJournalFn
+         0     0%  4.85%      0.61s 59.22%  testing.(*B).launch
+         0     0%  4.85%      0.58s 56.31%  zeros3.(*Store).applyRecord
+     0.03s  2.91%  7.77%      0.40s 38.83%  zeros3.jsonMembers
+         0     0%  7.77%      0.25s 24.27%  zeros3.decodePutV2Fast
+     0.16s 15.53% 23.30%      0.22s 21.36%  zeros3.jsonPlainString
+     0.02s  1.94% 25.24%      0.19s 18.45%  runtime.mallocgc
+         0     0% 25.24%      0.19s 18.45%  testing.(*B).run1.func1
+         0     0% 25.24%      0.18s 17.48%  zeros3.parallelFor.func1
+         0     0% 25.24%      0.15s 14.56%  zeros3.decodeDeleteV2Fast
+         0     0% 25.24%      0.13s 12.62%  zeros3.loadPackFile
+         0     0% 25.24%      0.13s 12.62%  zeros3.loadPackState.func1
+     0.02s  1.94% 27.18%      0.13s 12.62%  zeros3.readPackLayout
+         0     0% 27.18%      0.13s 12.62%  zeros3.statPackFile
+         0     0% 27.18%      0.12s 11.65%  zeros3.(*Store).reloadPacks
+         0     0% 27.18%      0.12s 11.65%  zeros3.loadPackState
+     0.01s  0.97% 28.16%      0.11s 10.68%  runtime.slicebytetostring

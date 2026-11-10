@@ -1,0 +1,32 @@
+== s100k workers=1
+BenchmarkP3Reachability-4 849.951 ms 288.049 MB/op
+BenchmarkP3Verify-4 799.988 ms 306.39 MB/op
+BenchmarkP3VerifyDeep-4 1622.25 ms 863.069 MB/op
+== s100k workers=2
+BenchmarkP3Reachability-4 567 ms 288.079 MB/op
+BenchmarkP3Verify-4 511.321 ms 306.327 MB/op
+BenchmarkP3VerifyDeep-4 992.474 ms 863.56 MB/op
+== s100k workers=4
+BenchmarkP3Reachability-4 390.283 ms 288.088 MB/op
+BenchmarkP3Verify-4 394.19 ms 306.557 MB/op
+BenchmarkP3VerifyDeep-4 807.898 ms 863.065 MB/op
+== s100k workers=8
+BenchmarkP3Reachability-4 420.284 ms 288.1 MB/op
+BenchmarkP3Verify-4 382.372 ms 306.223 MB/op
+BenchmarkP3VerifyDeep-4 820.148 ms 862.937 MB/op
+== hist workers=1
+BenchmarkP3Reachability-4 78.8971 ms 42.0701 MB/op
+BenchmarkP3Verify-4 178.145 ms 709.849 MB/op
+BenchmarkP3VerifyDeep-4 13139.8 ms 11032.7 MB/op
+== hist workers=2
+BenchmarkP3Reachability-4 52.4928 ms 42.0851 MB/op
+BenchmarkP3Verify-4 156.041 ms 709.857 MB/op
+BenchmarkP3VerifyDeep-4 6768.85 ms 11032.9 MB/op
+== hist workers=4
+BenchmarkP3Reachability-4 36.2159 ms 42.092 MB/op
+BenchmarkP3Verify-4 124.404 ms 709.861 MB/op
+BenchmarkP3VerifyDeep-4 4331.72 ms 11032.9 MB/op
+== hist workers=8
+BenchmarkP3Reachability-4 38.6486 ms 42.1074 MB/op
+BenchmarkP3Verify-4 151.114 ms 709.896 MB/op
+BenchmarkP3VerifyDeep-4 3922.26 ms 11032.9 MB/op

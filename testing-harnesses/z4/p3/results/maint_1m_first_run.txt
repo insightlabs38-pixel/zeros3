@@ -1,0 +1,4 @@
+First 1,000,000-object run (same procedure as maint_1m.jsonl, binary built before the block-wise merge and the DEFLATE-encoder pool;
+transcribed from the console, the raw file was overwritten by the final run). wall s base -> new, peak RSS MiB base -> new:
+stats 36.57 -> 9.48 (1800 -> 2587 before the block-wise merge, 1691 after); verify 19.40 -> 8.88; gc dry-run 21.71 -> 9.12; repack dry-run 22.34 -> 9.15;
+verify -deep 49.50 -> 15.63; versions prune 7.34 -> 4.01; gc -apply 35.95 -> 6.44; repack -apply 16.96 -> 6.15; verify -deep after maintenance 36.97 -> 9.82.

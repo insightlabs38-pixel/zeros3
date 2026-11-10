@@ -1,0 +1,28 @@
+Time: 2026-11-10 04:59:56 UTC
+Duration: 4.75s, Total samples = 9.48s (199.57%)
+Showing nodes accounting for 1.87s, 19.73% of 9.48s total
+Dropped 244 nodes (cum <= 0.05s)
+Showing top 22 nodes out of 200
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      5.16s 54.43%  zeros3.parallelForState[go.shape.*uint8].func1
+         0     0%     0%      3.03s 31.96%  zeros3.(*Store).casReadH
+         0     0%     0%      3.03s 31.96%  zeros3.(*packState).readPackedH
+     0.04s  0.42%  0.42%      2.55s 26.90%  zeros3.(*Store).checkChunksParallel.func3
+         0     0%  0.42%      2.50s 26.37%  zeros3.(*Store).checkChunk
+     0.15s  1.58%  2.00%      2.39s 25.21%  zeros3.(*Store).reachabilityScanOpts.func4.func3
+     0.03s  0.32%  2.32%      2.24s 23.63%  zeros3.(*Store).analyzeManifest
+         0     0%  2.32%      2.11s 22.26%  runtime.systemstack
+         0     0%  2.32%      2.11s 22.26%  testing.(*B).runN
+         0     0%  2.32%      2.10s 22.15%  zeros3.BenchmarkP3VerifyDeep
+     0.01s  0.11%  2.43%      1.76s 18.57%  os.(*File).ReadAt
+         0     0%  2.43%      1.75s 18.46%  internal/poll.(*FD).Pread
+         0     0%  2.43%      1.75s 18.46%  os.(*File).pread (inline)
+     0.01s  0.11%  2.53%      1.69s 17.83%  syscall.Syscall6
+         0     0%  2.53%      1.68s 17.72%  zeros3.(*Store).Verify
+     1.63s 17.19% 19.73%      1.63s 17.19%  internal/runtime/syscall/linux.Syscall6
+         0     0% 19.73%      1.63s 17.19%  syscall.RawSyscall6
+         0     0% 19.73%      1.56s 16.46%  internal/poll.(*FD).Pread.func1 (inline)
+         0     0% 19.73%      1.56s 16.46%  internal/poll.ignoringEINTR2[go.shape.int] (inline)
+         0     0% 19.73%      1.56s 16.46%  syscall.Pread (inline)
+         0     0% 19.73%      1.56s 16.46%  syscall.pread
+         0     0% 19.73%      1.53s 16.14%  testing.(*B).launch

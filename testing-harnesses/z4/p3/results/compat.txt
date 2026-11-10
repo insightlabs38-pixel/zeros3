@@ -1,0 +1,15 @@
+written by new server: ok
+base binary replays every object of the new-written store byte-for-byte: ok
+base verify -deep on new-written store: ok
+new: versions prune -store /tmp/claude-0/p3/work/compat_new_maint -bucket bench -keep-last 0 -apply: ok
+new: gc -apply -store /tmp/claude-0/p3/work/compat_new_maint: ok
+new: compact -store /tmp/claude-0/p3/work/compat_new_maint: ok
+new: repack -apply -max-live-percent 100 -store /tmp/claude-0/p3/work/compat_new_maint: ok
+new: gc -apply -store /tmp/claude-0/p3/work/compat_new_maint: ok
+base verify -deep after new maintenance: missing=0 corrupt=0 invalid=0 journal_ok=True
+base replays the live objects of the new-maintained store: ok
+base: versions prune -store /tmp/claude-0/p3/work/compat_new_maint.2 -bucket bench -keep-last 0 -apply: ok
+base: gc -apply -store /tmp/claude-0/p3/work/compat_new_maint.2: ok
+base: repack -apply -store /tmp/claude-0/p3/work/compat_new_maint.2: ok
+new verify -deep after base maintenance: missing=0 corrupt=0 invalid=0 journal_ok=True
+written journal sha256 prefix: 302bc3652bb1c7f2

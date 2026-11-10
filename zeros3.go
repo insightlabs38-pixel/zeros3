@@ -53,6 +53,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
@@ -477,6 +478,9 @@ const (
 	hookBeforePackDelete = "before-pack-delete"
 	hookPackDeleted      = "pack-deleted"
 	hookRepackDone       = "repack-done"
+	hookJournalReplayed  = "journal-replayed"    // openJournal: after the replay, before any truncation
+	hookReachChunkCheck  = "reach-chunk-check"   // reachability scan: before each distinct chunk is checked (runs on the scan's workers)
+	hookVerifyWholeObj   = "verify-whole-object" // deep verify: before a manifest's chunks are re-read for the whole-object digest
 
 	// Tier rebalance boundaries (section 13f), beyond the pack and move hooks.
 	hookRebalanceBeforeStage = "rebalance-before-stage"
@@ -1543,6 +1547,12 @@ func (s *Store) casRead(sum [32]byte) ([]byte, error) {
 // skip (pack numbers in the current snapshot). Replacing packs uses it to prove a chunk
 // survives their removal.
 func (s *Store) casReadExcluding(sum [32]byte, skip map[int32]bool) ([]byte, error) {
+	return s.casReadH(sum, skip, nil)
+}
+
+// casReadH is casReadExcluding reading packed copies through h (nil: a fresh
+// open per record), for maintenance scans that visit records in pack order.
+func (s *Store) casReadH(sum [32]byte, skip map[int32]bool, h *packHandles) ([]byte, error) {
 	var packErr, looseErr error
 	var looseData []byte
 	looseDone := false
@@ -1588,7 +1598,7 @@ func (s *Store) casReadExcluding(sum [32]byte, skip map[int32]bool) ([]byte, err
 			if loc.tier != tierHot && loose() {
 				return looseData, nil
 			}
-			data, err := st.readPacked(sum, loc)
+			data, err := st.readPackedH(sum, loc, h)
 			if err == nil {
 				return data, nil
 			}
@@ -3107,17 +3117,59 @@ func checkPackRecords(path string) error {
 		return err
 	}
 	defer f.Close()
+	// Visit the records in file order, reading neighbouring headers from one
+	// window instead of one pread per record. The error reported is the one for
+	// the lowest index position, as when the records were checked in index order.
+	order := make([]int32, len(entries))
+	for i := range order {
+		order[i] = int32(i)
+	}
+	slices.SortFunc(order, func(a, b int32) int { return cmp.Compare(entries[a].off, entries[b].off) })
+	const window = 256 << 10
+	var win []byte
+	var wlo, whi int64
 	var want, got [packRecordHeaderSize]byte
-	for i, e := range entries {
-		putPackRecordHeader(want[:], e)
-		if _, err := f.ReadAt(got[:], int64(e.off)-packRecordHeaderSize); err != nil {
-			return fmt.Errorf("pack: reading record %d header: %w", i, err)
-		}
-		if got != want {
-			return fmt.Errorf("pack: record %d header disagrees with its index entry", i)
+	firstBad, firstErr := int32(-1), error(nil)
+	fail := func(i int32, err error) {
+		if firstBad < 0 || i < firstBad {
+			firstBad, firstErr = i, err
 		}
 	}
-	return nil
+	for k, oi := range order {
+		e := entries[oi]
+		putPackRecordHeader(want[:], e)
+		hdr := int64(e.off) - packRecordHeaderSize
+		if hdr < wlo || hdr+packRecordHeaderSize > whi {
+			next := int64(-1)
+			if k+1 < len(order) {
+				next = int64(entries[order[k+1]].off) - packRecordHeaderSize
+			}
+			if next >= 0 && next-hdr < window/2 { // neighbours are close: read them together
+				if win == nil {
+					win = make([]byte, window)
+				}
+				n, rerr := f.ReadAt(win, hdr)
+				if rerr != nil && rerr != io.EOF || n < packRecordHeaderSize {
+					fail(oi, fmt.Errorf("pack: reading record %d header: %w", oi, cmp.Or(rerr, io.ErrUnexpectedEOF)))
+					continue
+				}
+				wlo, whi = hdr, hdr+int64(n)
+			} else {
+				if _, rerr := f.ReadAt(got[:], hdr); rerr != nil {
+					fail(oi, fmt.Errorf("pack: reading record %d header: %w", oi, rerr))
+					continue
+				}
+				if got != want {
+					fail(oi, fmt.Errorf("pack: record %d header disagrees with its index entry", oi))
+				}
+				continue
+			}
+		}
+		if [packRecordHeaderSize]byte(win[hdr-wlo:hdr-wlo+packRecordHeaderSize]) != want {
+			fail(oi, fmt.Errorf("pack: record %d header disagrees with its index entry", oi))
+		}
+	}
+	return firstErr
 }
 
 // locRec is one locator record. The 52-byte layout has no padding: the
@@ -3245,10 +3297,21 @@ func groupLocRecs(recs []locRec, nb int) {
 				next[b]++
 			}
 		}
+	}
+	// Every bucket now holds exactly its records: order each (a total order, so
+	// the result does not depend on which goroutine sorts which bucket).
+	sortGroup := func(b int) {
 		if g := recs[end[b]:end[b+1]]; len(g) > 1 {
 			slices.SortFunc(g, func(a, b locRec) int { return cmpLocRec(&a, &b) })
 		}
 	}
+	if len(recs) < 1<<16 {
+		for b := range 1 << nb {
+			sortGroup(b)
+		}
+		return
+	}
+	parallelFor(1<<nb, maintWorkers(), 256, sortGroup)
 }
 
 func mergeLocIndex(a, b *locIndex, onClash func(prim, rep *locRec)) *locIndex {
@@ -3512,8 +3575,20 @@ func loadPackState(root string, format int) (*packState, error) {
 	}
 	st := &packState{}
 	recs := make([]locRec, 0, hint)
-	for _, f := range files {
-		info, entries, err := loadPackFile(filepath.Join(f.dir, f.name))
+	// Each pack's footer and index are read concurrently; they are folded in below
+	// in directory order, so the locator is the one a serial load would build.
+	type loadedPack struct {
+		info    packInfo
+		entries []packEntry
+		err     error
+	}
+	loaded := make([]loadedPack, len(files))
+	parallelFor(len(files), maintWorkers(), 4, func(i int) {
+		l := &loaded[i]
+		l.info, l.entries, l.err = loadPackFile(filepath.Join(files[i].dir, files[i].name))
+	})
+	for fi, f := range files {
+		info, entries, err := loaded[fi].info, loaded[fi].entries, loaded[fi].err
 		if err != nil {
 			name := f.name
 			if f.t != tierHot {
@@ -3679,23 +3754,26 @@ func (u packUsage) partiallyDead() bool {
 // referenced set, in pack order. It reads no pack file; destructive
 // callers re-derive their working set from the packs themselves.
 func (s *Store) packUsages(referenced map[string]bool) []packUsage {
+	return s.packUsagesLive(liveSetFromMap(referenced))
+}
+
+// packUsagesLive is packUsages against a binary live set.
+func (s *Store) packUsagesLive(live *liveSet) []packUsage {
 	st := s.packSnap()
 	us := make([]packUsage, len(st.packs))
 	for i, p := range st.packs {
 		us[i] = packUsage{idx: int32(i), tier: p.tier, Tier: p.tier.String(), ID: p.id, Size: p.size, Records: p.records, CompressedRecs: p.deflated, LogicalBytes: p.logical}
 	}
-	var hx [64]byte
-	hasManifests := referenced[liveManifestMarker]
+	hasManifests := live.anyManifests()
 	for sum, loc := range st.primaries() {
 		if st.packs[loc.pack].open {
 			continue
 		}
-		hex.Encode(hx[:], sum[:])
-		if referenced[string(hx[:])] {
+		if live.has(*sum) {
 			us[loc.pack].LiveRecords++
 			us[loc.pack].LiveBytes += int64(loc.stored)
 			us[loc.pack].LiveLogicalBytes += int64(loc.logical)
-			if hasManifests && referenced[liveManifestMarker+string(hx[:])] {
+			if hasManifests && live.hasManifest(*sum) {
 				us[loc.pack].LiveManifestRecords++
 				us[loc.pack].LiveManifestLogicalBytes += int64(loc.logical)
 			}
@@ -3800,16 +3878,58 @@ func (s *Store) readPacked(sum [32]byte, loc packLoc) ([]byte, error) {
 }
 
 func (st *packState) readPacked(sum [32]byte, loc packLoc) ([]byte, error) {
+	return st.readPackedH(sum, loc, nil)
+}
+
+// packHandles keeps the last pack file a maintenance worker read open, so a
+// scan that visits records in physical order opens each pack once instead of
+// once per record. It belongs to one goroutine. The handle is only a way to
+// read bytes: every record is still checked against its header and digest, and
+// the cache drops the handle whenever the pack snapshot or the pack changes.
+type packHandles struct {
+	st   *packState
+	pack int32
+	f    *os.File
+}
+
+func (h *packHandles) close() {
+	if h != nil && h.f != nil {
+		h.f.Close()
+		h.f, h.st = nil, nil
+	}
+}
+
+func (h *packHandles) open(st *packState, pack int32) (*os.File, error) {
+	if h.f != nil && h.st == st && h.pack == pack {
+		return h.f, nil
+	}
+	h.close()
+	f, err := os.Open(st.packs[pack].path)
+	if err != nil {
+		return nil, err
+	}
+	h.st, h.pack, h.f = st, pack, f
+	return f, nil
+}
+
+// readPackedH is readPacked reading through h (nil: open and close per record).
+func (st *packState) readPackedH(sum [32]byte, loc packLoc, h *packHandles) ([]byte, error) {
 	if int(loc.pack) >= len(st.packs) {
 		return nil, fmt.Errorf("pack: locator for chunk %x is from a replaced pack set", sum)
 	}
-	f, err := os.Open(st.packs[loc.pack].path)
+	var f *os.File
+	var err error
+	if h != nil {
+		f, err = h.open(st, loc.pack)
+	} else if f, err = os.Open(st.packs[loc.pack].path); err == nil {
+		defer f.Close()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("pack: %w", err)
 	}
-	defer f.Close()
 	buf := make([]byte, packRecordHeaderSize+int(loc.stored))
 	if _, err := f.ReadAt(buf, int64(loc.off)-packRecordHeaderSize); err != nil {
+		h.close()
 		return nil, fmt.Errorf("pack: reading chunk %x: %w", sum, err)
 	}
 	var want [packRecordHeaderSize]byte
@@ -4142,8 +4262,11 @@ func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
 	for _, c := range st.clash {
 		res.addIssue("corrupt", "packs", c)
 	}
-	for _, p := range st.packs {
-		res.PacksChecked++
+	// Packs are independent files: each is judged by a worker and the verdicts
+	// are reported in pack order.
+	errs := make([]error, len(st.packs))
+	parallelFor(len(st.packs), min(maintWorkers(), 4), 1, func(i int) {
+		p := st.packs[i]
 		check := func(p packInfo) (err error) {
 			if p.open {
 				return checkOpenSegment(p.path, deep)
@@ -4162,8 +4285,12 @@ func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
 				err = nil
 			}
 		}
-		if err != nil {
-			res.addIssue("corrupt", "pack "+p.label(), err.Error())
+		errs[i] = err
+	})
+	for i, p := range st.packs {
+		res.PacksChecked++
+		if errs[i] != nil {
+			res.addIssue("corrupt", "pack "+p.label(), errs[i].Error())
 		}
 	}
 }
@@ -5543,9 +5670,14 @@ func (s *Store) publishManifestJoined(man manifestV1, ing *ingestResult) (id str
 // pack record named by that SHA-256 (content-verified by casRead); otherwise,
 // and as a fallback when the record is unreadable, it is manifests/<id>.json.
 func (s *Store) loadManifestBytes(id string, sha [32]byte) ([]byte, error) {
+	return s.loadManifestBytesH(id, sha, nil)
+}
+
+// loadManifestBytesH is loadManifestBytes reading a packed record through h.
+func (s *Store) loadManifestBytesH(id string, sha [32]byte, h *packHandles) ([]byte, error) {
 	var recErr error
 	if _, ok := s.packLookup(sha); ok {
-		data, err := s.casRead(sha)
+		data, err := s.casReadH(sha, nil, h)
 		if err == nil {
 			return data, nil
 		}
@@ -5723,7 +5855,10 @@ func (m *servedManifest) check() error {
 	return nil
 }
 
-var servedChunksKey = []byte(`,"chunks":[`)
+var (
+	servedChunksKey  = []byte(`,"chunks":[`)
+	servedChunksName = []byte(`"chunks"`)
+)
 
 var (
 	servedRecHead = []byte(`{"sha256":"`)
@@ -5753,6 +5888,10 @@ var servedHexVal = func() (t [256]byte) {
 func scanCanonicalChunks(data []byte) (pre, post, sums []byte, ends []int64, ok bool) {
 	k := bytes.Index(data, servedChunksKey)
 	if k < 0 {
+		return
+	}
+	// A second "chunks" member (any shape) would override this list in encoding/json.
+	if bytes.Count(data, servedChunksName) != 1 {
 		return
 	}
 	pre = data[:k+len(servedChunksKey)-1] // ... "chunks":
@@ -6554,27 +6693,52 @@ func (j *Journal) poison(err error) {
 // bad magic, an unknown version/type, a sequence gap/duplicate, or a CRC
 // mismatch is store corruption and replay fails loudly.
 func replayJournal(f *os.File) (validEnd int64, lastSeq uint64, records []journalRecord, err error) {
+	validEnd, lastSeq, _, _, err = replayJournalFn(f, true, func(rec journalRecord) error {
+		records = append(records, rec)
+		return nil
+	})
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	return validEnd, lastSeq, records, nil
+}
+
+// journalReadBuffer is the sequential read size of a journal scan.
+const journalReadBuffer = 1 << 20
+
+// replayJournalFn is replayJournal as a streaming scan: it validates every
+// frame exactly as replayJournal documents, in one sequential pass over
+// large reads, and hands each valid record to apply (nil validates only).
+//
+// apply sees records in order. With keep false the record's payload aliases a
+// buffer that the next frame overwrites, so apply must not retain it; with
+// keep true every payload is a private copy. An error from apply does not stop
+// the scan: the remaining frames are still validated, and a journal error takes
+// precedence over the first apply error, so the error a caller sees is the one
+// the collecting replay would have produced. n is the number of valid frames.
+func replayJournalFn(f *os.File, keep bool, apply func(journalRecord) error) (validEnd int64, lastSeq uint64, n int, applyErr, err error) {
+	st, serr := f.Stat()
+	if serr != nil {
+		return 0, 0, 0, nil, fmt.Errorf("journal: stat failed: %w", serr)
+	}
+	r := bufio.NewReaderSize(io.NewSectionReader(f, 0, st.Size()), journalReadBuffer)
 	var offset int64
+	var hdr [journalHeaderSize]byte
+	var scratch []byte
 	for {
-		header := make([]byte, journalHeaderSize)
-		n, rerr := f.ReadAt(header, offset)
-		if rerr == io.EOF {
-			if n == 0 {
-				return offset, lastSeq, records, nil // clean end, right at a frame boundary
+		if _, rerr := io.ReadFull(r, hdr[:]); rerr != nil {
+			if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
+				return offset, lastSeq, n, applyErr, nil // clean end at a frame boundary, or a torn header
 			}
-			return offset, lastSeq, records, nil // torn tail: incomplete header
+			return 0, 0, 0, nil, fmt.Errorf("journal: read failed at offset %d: %w", offset, rerr)
 		}
-		if rerr != nil {
-			return 0, 0, nil, fmt.Errorf("journal: read failed at offset %d: %w", offset, rerr)
+		if string(hdr[0:4]) != journalMagic {
+			return 0, 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: bad magic", offset)
 		}
-		if string(header[0:4]) != journalMagic {
-			return 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: bad magic", offset)
+		if ver := binary.BigEndian.Uint16(hdr[4:6]); ver != journalFrameVersion {
+			return 0, 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: unsupported frame version %d", offset, ver)
 		}
-		ver := binary.BigEndian.Uint16(header[4:6])
-		if ver != journalFrameVersion {
-			return 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: unsupported frame version %d", offset, ver)
-		}
-		recType := header[6]
+		recType := hdr[6]
 		switch recType {
 		case recordTypeCreateBucket, recordTypePutObjectRoot, recordTypeDeleteObjectRoot, recordTypeDeleteBucket,
 			recordTypeCreateMultipartUpload, recordTypeUploadPart, recordTypeAbortMultipartUpload, recordTypeCompleteMultipartUpload,
@@ -6582,59 +6746,83 @@ func replayJournal(f *os.File) (validEnd int64, lastSeq uint64, records []journa
 			recordTypePruneHistory:
 			// known record type
 		default:
-			return 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: unknown record type %d", offset, recType)
+			return 0, 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: unknown record type %d", offset, recType)
 		}
-		seq := binary.BigEndian.Uint64(header[8:16])
-		plen := binary.BigEndian.Uint32(header[16:20])
+		seq := binary.BigEndian.Uint64(hdr[8:16])
+		plen := binary.BigEndian.Uint32(hdr[16:20])
 		if plen > maxJournalPayload {
-			return 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: payload length %d exceeds max", offset, plen)
+			return 0, 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: payload length %d exceeds max", offset, plen)
 		}
-
-		rest := make([]byte, int(plen)+4)
-		_, rerr2 := f.ReadAt(rest, offset+journalHeaderSize)
-		if rerr2 == io.EOF {
-			return offset, lastSeq, records, nil // torn tail: header present, payload/crc incomplete
+		var rest []byte
+		if keep {
+			rest = make([]byte, int(plen)+4)
+		} else {
+			if cap(scratch) < int(plen)+4 {
+				scratch = make([]byte, max(int(plen)+4, 2*cap(scratch)))
+			}
+			rest = scratch[:int(plen)+4]
 		}
-		if rerr2 != nil {
-			return 0, 0, nil, fmt.Errorf("journal: read failed at offset %d: %w", offset+journalHeaderSize, rerr2)
+		if _, rerr := io.ReadFull(r, rest); rerr != nil {
+			if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
+				return offset, lastSeq, n, applyErr, nil // torn tail: header present, payload/crc incomplete
+			}
+			return 0, 0, 0, nil, fmt.Errorf("journal: read failed at offset %d: %w", offset+journalHeaderSize, rerr)
 		}
 		payload := rest[:plen]
-		storedCRC := binary.BigEndian.Uint32(rest[plen:])
-
-		full := make([]byte, 0, journalHeaderSize+len(payload))
-		full = append(full, header...)
-		full = append(full, payload...)
-		if gotCRC := crc32.Checksum(full, castagnoliTable); gotCRC != storedCRC {
-			return 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: crc mismatch (seq=%d)", offset, seq)
+		crc := crc32.Update(crc32.Checksum(hdr[:], castagnoliTable), castagnoliTable, payload)
+		if crc != binary.BigEndian.Uint32(rest[plen:]) {
+			return 0, 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: crc mismatch (seq=%d)", offset, seq)
 		}
 		if seq != lastSeq+1 {
-			return 0, 0, nil, fmt.Errorf("journal: corrupt: expected sequence %d, got %d", lastSeq+1, seq)
+			return 0, 0, 0, nil, fmt.Errorf("journal: corrupt: expected sequence %d, got %d", lastSeq+1, seq)
 		}
-
-		records = append(records, journalRecord{seq: seq, recType: recType, payload: payload})
+		if apply != nil && applyErr == nil {
+			applyErr = apply(journalRecord{seq: seq, recType: recType, payload: payload})
+		}
+		n++
 		lastSeq = seq
 		offset += int64(journalHeaderSize) + int64(plen) + 4
 	}
 }
 
-// openJournal opens (creating if absent) the journal file at path,
-// replays it to recover valid records, and truncates away any torn tail
-// so future appends start from a clean offset.
-func openJournal(path string) (*Journal, []journalRecord, error) {
+// errJournalReadOnly poisons the journal of a shared (read-only) opener: only
+// the store's owner may append to or cut the journal.
+var errJournalReadOnly = errors.New("journal: opened read-only by a shared opener")
+
+// openJournal opens (creating if absent) the journal file at path, replays it
+// and feeds every valid record to apply (nil discards them). The owner then
+// truncates away any torn tail so future appends start from a clean offset.
+// A read-only (shared) opener never truncates and can never append: a live
+// writer may have added frames after this replay, and cutting the file back to
+// the replayed end would destroy committed ones.
+//
+// An error from apply is returned as applyErr, after the whole file has been
+// validated, and only if the journal itself is sound.
+func openJournal(path string, readOnly bool, apply func(journalRecord) error) (j *Journal, applyErr, err error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return nil, nil, err
 	}
-	validEnd, lastSeq, records, err := replayJournal(f)
+	validEnd, lastSeq, _, applyErr, err := replayJournalFn(f, false, apply)
 	if err != nil {
 		f.Close()
 		return nil, nil, err
+	}
+	if applyErr != nil {
+		f.Close()
+		return nil, applyErr, nil
+	}
+	fireTestHook(hookJournalReplayed)
+	j = &Journal{f: f, writeOffset: validEnd, nextSeq: lastSeq + 1}
+	if readOnly {
+		j.poisoned = errJournalReadOnly
+		return j, nil, nil
 	}
 	if err := f.Truncate(validEnd); err != nil {
 		f.Close()
 		return nil, nil, err
 	}
-	return &Journal{f: f, writeOffset: validEnd, nextSeq: lastSeq + 1}, records, nil
+	return j, nil, nil
 }
 
 // =============================================================================
@@ -6717,8 +6905,9 @@ type multipartUpload struct {
 }
 
 type Store struct {
-	root   string
-	format storeFormat
+	replayIn *strIntern // journal replay only: shared bucket/content-type strings
+	root     string
+	format   storeFormat
 	// formatMu serializes ensureStoreFormat: concurrent direct-pack ingests
 	// may each need to raise FORMAT.json.
 	formatMu sync.Mutex
@@ -6817,6 +7006,9 @@ func OpenStore(root string) (*Store, error) { return openStore(root, true) }
 // writer and a later server still gets ownership.
 func OpenStoreShared(root string) (*Store, error) { return openStore(root, false) }
 
+// openGCPercent is the collector's GOGC while a store is opened.
+const openGCPercent = 400
+
 func openStore(root string, ownSegments bool) (*Store, error) {
 	for _, sub := range []string{"", "journal", "chunks", "manifests", "tmp", "snapshots"} {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
@@ -6831,27 +7023,30 @@ func openStore(root string, ownSegments bool) (*Store, error) {
 	}
 
 	journalPath := filepath.Join(root, "journal", "visibility.log")
-	j, records, err := openJournal(journalPath)
-	if err != nil {
-		return nil, fmt.Errorf("store: failed to open journal: %w", err)
-	}
-
 	s := &Store{
 		root:    root,
 		format:  format,
-		journal: j,
 		buckets: map[string]*bucketEntry{},
 		uploads: map[string]*multipartUpload{},
 		history: map[string]map[string][]*historyVersionEntry{},
 		mcache:  newManifestCache(manifestCacheBytes()),
 		ccache:  newChunkCache(chunkCacheBytes()),
 	}
-	for _, rec := range records {
-		if err := s.applyRecord(rec); err != nil {
-			j.f.Close()
-			return nil, fmt.Errorf("store: journal replay failed: %w", err)
-		}
+	// Replay builds the namespace: nearly everything it allocates stays live, so
+	// collecting often only rescans a growing heap. Collect less often while the
+	// namespace is built; the heap cannot outgrow what replay allocates in total.
+	defer debug.SetGCPercent(debug.SetGCPercent(openGCPercent))
+	// The namespace is folded in while the journal is read: no record list is kept.
+	s.replayIn = &strIntern{m: map[string]string{}}
+	j, applyErr, err := openJournal(journalPath, !ownSegments, s.applyRecord)
+	s.replayIn = nil
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to open journal: %w", err)
 	}
+	if applyErr != nil {
+		return nil, fmt.Errorf("store: journal replay failed: %w", applyErr)
+	}
+	s.journal = j
 	if err := s.checkTierRoots(); err != nil {
 		j.f.Close()
 		return nil, err
@@ -6926,6 +7121,297 @@ func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
 		return storeFormat{}, err
 	}
 	return format, nil
+}
+
+// =============================================================================
+// Strict fast decoding of the dominant journal frames (Z4-P3)
+//
+// Replaying a million-object journal spent three quarters of its time in
+// encoding/json. The put and delete frames are written by json.Marshal from
+// flat structs: no whitespace, fields in declaration order, strings without
+// escapes in all but exotic keys. The decoders below read exactly that shape
+// and give up (ok == false) on anything else -- an escape, a control or
+// non-UTF-8 byte, whitespace, an unknown, repeated or differently-cased key, a
+// value of another kind -- in which case the caller runs encoding/json on the
+// same bytes, which defines the meaning. A frame the fast path accepts decodes
+// to exactly what encoding/json would have produced (compared in
+// TestP3_FastJournalDecodeMatchesJSON).
+// =============================================================================
+
+// jsonMembers walks the members of a flat JSON object. fn gets each key and its
+// raw value; kind is '"' for a string (val excludes the quotes), 'n' for an
+// integer, 'z' for null and '{' for an object (val includes the braces).
+func jsonMembers(b []byte, fn func(key []byte, kind byte, val []byte) bool) bool {
+	if len(b) < 2 || b[0] != '{' || b[len(b)-1] != '}' {
+		return false
+	}
+	i, end := 1, len(b)-1
+	if i == end {
+		return true
+	}
+	for {
+		k, n, ok := jsonPlainString(b[i:end])
+		if !ok || i+n >= end || b[i+n] != ':' {
+			return false
+		}
+		i += n + 1
+		if i >= end {
+			return false
+		}
+		var kind byte
+		var val []byte
+		switch c := b[i]; {
+		case c == '"':
+			v, n, ok := jsonPlainString(b[i:end])
+			if !ok {
+				return false
+			}
+			kind, val = '"', v
+			i += n
+		case c == '-' || c >= '0' && c <= '9':
+			j := i
+			if c == '-' {
+				j++
+			}
+			start := j
+			for j < end && b[j] >= '0' && b[j] <= '9' {
+				j++
+			}
+			if j == start || b[start] == '0' && j-start > 1 || j-start > 18 {
+				return false
+			}
+			kind, val = 'n', b[i:j]
+			i = j
+		case c == 'n' && i+4 <= end && string(b[i:i+4]) == "null":
+			kind, val = 'z', nil
+			i += 4
+		case c == '{':
+			depth, j := 0, i
+			for ; j < end; j++ {
+				switch b[j] {
+				case '"':
+					_, n, ok := jsonPlainString(b[j:end])
+					if !ok {
+						return false
+					}
+					j += n - 1
+				case '{':
+					depth++
+				case '}':
+					depth--
+				}
+				if depth == 0 {
+					break
+				}
+			}
+			if depth != 0 {
+				return false
+			}
+			kind, val = '{', b[i:j+1]
+			i = j + 1
+		default:
+			return false
+		}
+		if !fn(k, kind, val) {
+			return false
+		}
+		if i == end {
+			return true
+		}
+		if b[i] != ',' {
+			return false
+		}
+		i++
+	}
+}
+
+// jsonPlainString reads a string literal at the start of b that needs no
+// unescaping and is valid UTF-8, returning its text and the bytes consumed.
+func jsonPlainString(b []byte) ([]byte, int, bool) {
+	if len(b) < 2 || b[0] != '"' {
+		return nil, 0, false
+	}
+	for i := 1; i < len(b); i++ {
+		switch c := b[i]; {
+		case c == '"':
+			if !utf8.Valid(b[1:i]) {
+				return nil, 0, false
+			}
+			return b[1:i], i + 1, true
+		case c == '\\' || c < 0x20:
+			return nil, 0, false
+		}
+	}
+	return nil, 0, false
+}
+
+func jsonInt(val []byte) (int64, bool) {
+	n, err := strconv.ParseInt(string(val), 10, 64)
+	return n, err == nil
+}
+
+// strIntern shares the backing array of the few strings a journal repeats in
+// every frame (bucket, content type, reason); a nil intern just copies.
+type strIntern struct{ m map[string]string }
+
+func (in *strIntern) get(v []byte) string {
+	if in == nil || len(v) == 0 || len(v) > 128 {
+		return string(v)
+	}
+	if s, ok := in.m[string(v)]; ok {
+		return s
+	}
+	s := string(v)
+	if len(in.m) < 1024 {
+		in.m[s] = s
+	}
+	return s
+}
+
+func decodeArchivedFast(b []byte, p *journalArchivedVersionPayload, in *strIntern) bool {
+	var seen [8]bool
+	return jsonMembers(b, func(key []byte, kind byte, val []byte) bool {
+		var slot int
+		var dst *string
+		switch string(key) {
+		case "version_id":
+			slot, dst = 0, &p.VersionID
+		case "manifest_uuid":
+			slot, dst = 1, &p.ManifestUUID
+		case "manifest_sha256":
+			slot, dst = 2, &p.ManifestSHA256
+		case "etag":
+			slot, dst = 4, &p.ETag
+		case "content_type":
+			if seen[5] || kind != '"' {
+				return false
+			}
+			seen[5] = true
+			p.ContentType = in.get(val)
+			return true
+		case "reason":
+			if seen[7] || kind != '"' {
+				return false
+			}
+			seen[7] = true
+			p.Reason = in.get(val)
+			return true
+		case "size":
+			if seen[3] || kind != 'n' {
+				return false
+			}
+			seen[3] = true
+			n, ok := jsonInt(val)
+			p.Size = n
+			return ok
+		case "archived_at":
+			if seen[6] || kind != '"' {
+				return false
+			}
+			seen[6] = true
+			return p.ArchivedAt.UnmarshalJSON(append(append([]byte{'"'}, val...), '"')) == nil
+		default:
+			return false
+		}
+		if seen[slot] || kind != '"' {
+			return false
+		}
+		seen[slot] = true
+		*dst = string(val)
+		return true
+	})
+}
+
+func decodePutV2Fast(b []byte, p *journalPutPayloadV2, in *strIntern) bool {
+	var seen [9]bool
+	return jsonMembers(b, func(key []byte, kind byte, val []byte) bool {
+		var slot int
+		var dst *string
+		switch string(key) {
+		case "bucket":
+			if seen[0] || kind != '"' {
+				return false
+			}
+			seen[0] = true
+			p.Bucket = in.get(val)
+			return true
+		case "key":
+			slot, dst = 1, &p.Key
+		case "manifest_uuid":
+			slot, dst = 2, &p.ManifestUUID
+		case "manifest_sha256":
+			slot, dst = 3, &p.ManifestSHA256
+		case "etag":
+			slot, dst = 5, &p.ETag
+		case "content_type":
+			if seen[6] || kind != '"' {
+				return false
+			}
+			seen[6] = true
+			p.ContentType = in.get(val)
+			return true
+		case "version_id":
+			slot, dst = 7, &p.VersionID
+		case "size":
+			if seen[4] || kind != 'n' {
+				return false
+			}
+			seen[4] = true
+			n, ok := jsonInt(val)
+			p.Size = n
+			return ok
+		case "previous":
+			if seen[8] {
+				return false
+			}
+			seen[8] = true
+			switch kind {
+			case 'z':
+				return true
+			case '{':
+				p.Previous = new(journalArchivedVersionPayload)
+				return decodeArchivedFast(val, p.Previous, in)
+			}
+			return false
+		default:
+			return false
+		}
+		if seen[slot] || kind != '"' {
+			return false
+		}
+		seen[slot] = true
+		*dst = string(val)
+		return true
+	})
+}
+
+func decodeDeleteV2Fast(b []byte, p *journalDeleteObjectPayloadV2, in *strIntern) bool {
+	var seen [3]bool
+	return jsonMembers(b, func(key []byte, kind byte, val []byte) bool {
+		switch string(key) {
+		case "bucket":
+			if seen[0] || kind != '"' {
+				return false
+			}
+			seen[0] = true
+			p.Bucket = in.get(val)
+			return true
+		case "key":
+			if seen[1] || kind != '"' {
+				return false
+			}
+			seen[1] = true
+			p.Key = string(val)
+			return true
+		case "archived":
+			if seen[2] || kind != '{' {
+				return false
+			}
+			seen[2] = true
+			return decodeArchivedFast(val, &p.Archived, in)
+		}
+		return false
+	})
 }
 
 // applyRecord folds one already-validated journal record into the
@@ -7042,8 +7528,11 @@ func (s *Store) applyRecord(rec journalRecord) error {
 		delete(s.uploads, p.UploadID)
 	case recordTypePutObjectRootV2:
 		var p journalPutPayloadV2
-		if err := json.Unmarshal(rec.payload, &p); err != nil {
-			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		if !decodePutV2Fast(rec.payload, &p, s.replayIn) {
+			p = journalPutPayloadV2{}
+			if err := json.Unmarshal(rec.payload, &p); err != nil {
+				return fmt.Errorf("seq %d: %w", rec.seq, err)
+			}
 		}
 		b, ok := s.buckets[p.Bucket]
 		if !ok {
@@ -7098,8 +7587,11 @@ func (s *Store) applyRecord(rec journalRecord) error {
 		delete(s.uploads, p.UploadID)
 	case recordTypeDeleteObjectRootV2:
 		var p journalDeleteObjectPayloadV2
-		if err := json.Unmarshal(rec.payload, &p); err != nil {
-			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		if !decodeDeleteV2Fast(rec.payload, &p, s.replayIn) {
+			p = journalDeleteObjectPayloadV2{}
+			if err := json.Unmarshal(rec.payload, &p); err != nil {
+				return fmt.Errorf("seq %d: %w", rec.seq, err)
+			}
 		}
 		b, ok := s.buckets[p.Bucket]
 		if !ok {
@@ -11927,6 +12419,14 @@ func (s *Store) scanChunkFiles(reachable map[string]bool) (fileScanTotals, error
 	return walkFileBytes(filepath.Join(s.root, "chunks"), func(name string) bool { return !reachable[name] })
 }
 
+// scanChunkFilesTbl is scanChunkFiles against the scan's binary live set.
+func (s *Store) scanChunkFilesTbl(live *digestTable) (fileScanTotals, error) {
+	return walkFileBytes(filepath.Join(s.root, "chunks"), func(name string) bool {
+		sum, ok := hexDigest(name)
+		return !ok || !live.has(sum)
+	})
+}
+
 // scanManifestFiles walks store/manifests and classifies every published
 // manifest file's bytes as reachable or not, by its UUID filename.
 func (s *Store) scanManifestFiles(reachable map[string]bool) (fileScanTotals, error) {
@@ -12022,18 +12522,6 @@ type VerifyIssue struct {
 	Detail  string `json:"detail"`
 }
 
-// verifiedManifestCacheEntry caches one manifest UUID's parsed content and
-// the SHA-256 of its own file bytes, so a manifest file is read/parsed at
-// most once per scan even when several roots (current and historical
-// alike) reference the same UUID. Caching the *content* this way is safe
-// and cheap; caching a verdict is not -- see checkRoot below, which still
-// independently checks every root's own journal-recorded hash claim.
-type verifiedManifestCacheEntry struct {
-	man            manifestV1
-	sha            [32]byte
-	structurallyOK bool
-}
-
 // reachabilityResult is computeReachability's output: the authoritative
 // live-root/live-chunk sets plus every integrity issue found while
 // resolving them. See the section 12a doc comment above for what each set
@@ -12058,6 +12546,11 @@ type reachabilityResult struct {
 	ReferencedChunks    map[string]bool     // hex sha256 -> true; every chunk any live, readable manifest/part points to
 	ChunkLength         map[string]int64    // hex sha256 -> best-known length, from the reference (not disk)
 	ValidChunks         map[string]bool     // read-only subset; aliases ReferencedChunks when all chunks pass
+
+	invalidChunks []uint32                  // positions in tbl of the chunks that failed their check
+	manifests     map[string]*reachManifest // live manifest UUID -> decoded manifest (reachOpts.keepManifests)
+	tbl           *digestTable              // every live chunk digest with its claimed length (set by reachabilityScan)
+	manTbl        *digestTable              // the digest of every live manifest, which names an inline manifest record
 
 	// Optional structured representations (section 16d). Their physical chunks
 	// are part of ReferencedChunks/ChunkLength; a root that cannot be trusted
@@ -12141,143 +12634,227 @@ type rootObserver func(scope rootScope, bucket, key string, chunks []chunkRef)
 
 // computeReachabilityObserved is computeReachability that also reports every
 // live root to obs (nil observes nothing).
+//
+// Z4-P3: the scan runs in three stages that keep the original semantics.
+//
+//  1. Enumeration (sequential, deterministic): every live root of every
+//     category is listed in the order the original scan visited them.
+//  2. Manifest analysis (parallel, bounded): each distinct manifest UUID is read
+//     from storage -- never from a serving cache -- exactly once, hashed,
+//     decoded and structurally validated by a worker. A worker only produces
+//     a verdict; it changes no shared state.
+//  3. Merge (sequential, in enumeration order): verdicts are applied root by
+//     root, so every per-root journal-hash check, issue and counter comes out
+//     exactly as the serial scan produced it, and the live digests are folded
+//     into one binary table (no hex strings until a consumer asks for them).
+//
+// The unified chunk pass then checks each distinct digest once, in parallel,
+// grouped by physical location when bytes must be read.
 func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reachabilityResult, error) {
+	res, err := s.reachabilityScan(deep, obs)
+	if err != nil {
+		return res, err
+	}
+	res.materializeChunkMaps()
+	return res, nil
+}
+
+// reachManifest is a worker's verdict on one manifest UUID.
+type reachManifest struct {
+	loaded bool // the bytes were read; false: issues explains why not
+	issues []VerifyIssue
+	sha    [32]byte // SHA-256 of the bytes actually read
+	ok     bool     // structurally valid: its chunk list may be used
+	total  int64
+	objSHA string
+	sums   []byte  // 32 bytes per chunk, in manifest order
+	ends   []int64 // cumulative logical end of each chunk
+}
+
+func (m *reachManifest) chunkCount() int { return len(m.ends) }
+
+func (m *reachManifest) chunkRefs() []chunkRef {
+	refs := make([]chunkRef, len(m.ends))
+	var prev int64
+	for i := range refs {
+		refs[i] = chunkRef{SHA256: hex.EncodeToString(m.sums[i*32 : i*32+32]), Length: m.ends[i] - prev}
+		prev = m.ends[i]
+	}
+	return refs
+}
+
+// analyzeManifest reads manifest uuid (whose journal-recorded digest is sha) from
+// storage and judges it. The subject of each issue is supplied by the merge.
+func (s *Store) analyzeManifest(uuid string, sha [32]byte, h *packHandles) *reachManifest {
+	m := &reachManifest{}
+	data, rerr := s.loadManifestBytesH(uuid, sha, h)
+	if rerr != nil {
+		kind, detail := "invalid", rerr.Error()
+		if os.IsNotExist(rerr) {
+			kind, detail = "missing", "manifest file "+uuid+".json does not exist"
+		} else if errors.Is(rerr, errChunkCorrupt) {
+			kind, detail = "corrupt", "manifest record is corrupt: "+rerr.Error()
+		}
+		m.issues = append(m.issues, VerifyIssue{Kind: kind, Detail: detail})
+		return m
+	}
+	m.loaded = true
+	m.sha = sha256.Sum256(data)
+	bad := func(detail string) { m.issues = append(m.issues, VerifyIssue{Kind: "invalid", Detail: detail}) }
+
+	var man manifestV1
+	fast := false
+	if pre, post, sums, ends, ok := scanCanonicalChunks(data); ok {
+		// Canonical chunk list (what json.Marshal writes): decode the chunk records
+		// into binary and everything around them with encoding/json.
+		spliced := make([]byte, 0, len(pre)+2+len(post))
+		spliced = append(append(append(spliced, pre...), '[', ']'), post...)
+		if json.Unmarshal(spliced, &man) == nil && len(man.Chunks) == 0 { // a second "chunks" member would refill it
+			m.sums, m.ends, fast = sums, ends, true
+		} else {
+			man = manifestV1{}
+		}
+	}
+	if !fast {
+		if uerr := json.Unmarshal(data, &man); uerr != nil {
+			bad("manifest json does not parse: " + uerr.Error())
+			return m
+		}
+	}
+	m.total, m.objSHA = man.TotalLength, man.ObjectSHA256
+	if man.ManifestFormatVersion != manifestFormatVersion || man.CDCFormatVersion != cdcFormatVersion || man.HashAlgorithm != "sha256" {
+		bad("manifest declares an unsupported format/CDC/hash version")
+		m.sums, m.ends = nil, nil
+		return m
+	}
+	var sum int64
+	if fast {
+		if n := len(m.ends); n > 0 {
+			sum = m.ends[n-1]
+		}
+	} else {
+		valid := true
+		m.sums, m.ends = make([]byte, 0, 32*len(man.Chunks)), make([]int64, 0, len(man.Chunks))
+		for _, c := range man.Chunks {
+			d, herr := decodeHexSHA256(c.SHA256)
+			if herr != nil {
+				bad("manifest chunk reference has malformed sha256: " + c.SHA256)
+				valid = false
+				continue
+			}
+			if c.Length < 0 {
+				bad("manifest chunk reference has a negative length")
+				valid = false
+				continue
+			}
+			sum += c.Length
+			m.sums, m.ends = append(m.sums, d[:]...), append(m.ends, sum)
+		}
+		if !valid {
+			m.sums, m.ends = nil, nil
+			return m
+		}
+	}
+	if sum != man.TotalLength {
+		bad(fmt.Sprintf("manifest chunk lengths sum to %d, want total_length %d", sum, man.TotalLength))
+		m.sums, m.ends = nil, nil
+		return m
+	}
+	m.ok = true
+	return m
+}
+
+// reachBlock is the number of distinct manifests analysed before their verdicts are merged.
+var reachBlock = 32768 // a variable so tests can shrink it
+
+// reachStep is one live root, in the order the scan visits roots.
+type reachStep struct {
+	kind  uint8 // stepManifest, stepMultipart or stepIssue
+	scope rootScope
+	aux   int32 // manifest roots: position among the distinct manifests; others: index into the side lists
+	uuid  string
+	sha   [32]byte
+	size  int64 // current roots: the size the namespace records
+	// bucket and key name the root; for history and snapshot roots, key2 is the
+	// version id or the snapshot id (it shares the strings the namespace holds)
+	bucket, key, key2 string
+}
+
+const (
+	stepManifest uint8 = iota
+	stepMultipart
+	stepIssue
+)
+
+func (st *reachStep) subject() string {
+	switch st.scope {
+	case scopeHistory:
+		return fmt.Sprintf("history:%s/%s@%s", st.bucket, st.key, st.key2)
+	case scopeSnapshot:
+		return "snapshot:" + st.key2 + ":" + st.key
+	}
+	return st.bucket + "/" + st.key
+}
+
+// reachabilityScan is the scan itself. It returns the result without the hex
+// chunk maps plus the binary table of every live digest and its length.
+func (s *Store) reachabilityScan(deep bool, obs rootObserver) (reachabilityResult, error) {
+	return s.reachabilityScanOpts(reachOpts{deep: deep, obs: obs})
+}
+
+// reachOpts selects what a scan reports beyond the live sets.
+type reachOpts struct {
+	deep bool
+	obs  rootObserver
+	// cur, when set, hears about every current root once, after its manifest was
+	// judged: m is the decoded manifest when the root is sound, nil with a reason
+	// when its manifest could not be read, did not match the recorded digest or
+	// is structurally invalid.
+	cur func(bucket, key string, size int64, m *reachManifest, why string)
+	// keepManifests retains the decoded manifest of every live root in the result
+	// (deep verification checks whole objects from them).
+	keepManifests bool
+}
+
+func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
+	deep, obs := o.deep, o.obs
 	res := reachabilityResult{
 		ReferencedManifests: map[string]bool{},
 		ManifestSHA:         map[string][32]byte{},
-		ReferencedChunks:    map[string]bool{},
-		ChunkLength:         map[string]int64{},
 	}
 
 	jf, err := os.Open(filepath.Join(s.root, "journal", "visibility.log"))
 	if err != nil {
 		return res, fmt.Errorf("reachability: opening journal: %w", err)
 	}
-	_, _, records, jerr := replayJournal(jf)
+	_, _, nFrames, _, jerr := replayJournalFn(jf, false, nil) // validation only: nothing is retained
 	jf.Close()
-	res.JournalFramesChecked = len(records)
+	res.JournalFramesChecked = nFrames
 	if jerr != nil {
 		res.addIssue("corrupt", "journal/visibility.log", jerr.Error())
 	} else {
 		res.JournalOK = true
 	}
 
-	manifestCache := map[string]verifiedManifestCacheEntry{}
-
-	// checkRoot validates one root's claimed (manifestUUID, manifestSHA256)
-	// pair, reading/parsing/structurally-checking the manifest at most once
-	// per UUID via manifestCache, but independently re-checking THIS root's
-	// own journal-recorded hash claim against it every time -- two roots
-	// (current and historical alike) can legally share one manifest UUID,
-	// and each must independently prove journal-recorded SHA256 == actual
-	// manifest-file SHA256, exactly like Verify always did for current-only
-	// roots. On success, marks the manifest referenced (protected from GC)
-	// and returns its parsed content; on failure, records the issue and
-	// returns ok=false without marking it referenced -- a manifest that
-	// cannot be trusted enough to extract a chunk list from cannot protect
-	// any chunk either, which is safe only because that failure also flips
-	// OK() to false, refusing all destructive action store-wide (section
-	// 16b), not just around this one broken root.
-	checkRoot := func(subject, manifestUUID string, manifestSHA [32]byte) (manifestV1, bool) {
-		cached, ok := manifestCache[manifestUUID]
-		if !ok {
-			data, rerr := s.loadManifestBytes(manifestUUID, manifestSHA)
-			if rerr != nil {
-				if os.IsNotExist(rerr) {
-					res.addIssue("missing", subject, "manifest file "+manifestUUID+".json does not exist")
-				} else if errors.Is(rerr, errChunkCorrupt) {
-					res.addIssue("corrupt", subject, "manifest record is corrupt: "+rerr.Error())
-				} else {
-					res.addIssue("invalid", subject, rerr.Error())
-				}
-				manifestCache[manifestUUID] = verifiedManifestCacheEntry{}
-				return manifestV1{}, false
-			}
-			cached.sha = sha256.Sum256(data)
-			cached.structurallyOK = true
-			if uerr := json.Unmarshal(data, &cached.man); uerr != nil {
-				res.addIssue("invalid", subject, "manifest json does not parse: "+uerr.Error())
-				cached.structurallyOK = false
-			} else if cached.man.ManifestFormatVersion != manifestFormatVersion || cached.man.CDCFormatVersion != cdcFormatVersion || cached.man.HashAlgorithm != "sha256" {
-				res.addIssue("invalid", subject, "manifest declares an unsupported format/CDC/hash version")
-				cached.structurallyOK = false
-			} else {
-				var sum int64
-				validRefs := true
-				for _, c := range cached.man.Chunks {
-					if _, herr := decodeHexSHA256(c.SHA256); herr != nil {
-						res.addIssue("invalid", subject, "manifest chunk reference has malformed sha256: "+c.SHA256)
-						validRefs = false
-						continue
-					}
-					if c.Length < 0 {
-						res.addIssue("invalid", subject, "manifest chunk reference has a negative length")
-						validRefs = false
-						continue
-					}
-					sum += c.Length
-				}
-				if !validRefs {
-					cached.structurallyOK = false
-				} else if sum != cached.man.TotalLength {
-					res.addIssue("invalid", subject, fmt.Sprintf("manifest chunk lengths sum to %d, want total_length %d", sum, cached.man.TotalLength))
-					cached.structurallyOK = false
-				}
-			}
-			manifestCache[manifestUUID] = cached
-			res.ManifestsChecked++
-		}
-		if cached.sha != manifestSHA {
-			res.addIssue("corrupt", subject, "manifest file sha256 does not match this root's recorded reference")
-			return manifestV1{}, false
-		}
-		if !cached.structurallyOK {
-			return manifestV1{}, false
-		}
-		res.ReferencedManifests[manifestUUID] = true
-		res.ManifestSHA[manifestUUID] = manifestSHA
-		return cached.man, true
-	}
-
-	// Build the final length map directly; retaining a second copy costs one
-	// hash-table entry per representation component during maintenance.
-	wantChunks := res.ChunkLength
-	want := func(scope rootScope, bucket, key string, chunks []chunkRef) {
-		for _, c := range chunks {
-			wantChunks[c.SHA256] = c.Length
-		}
-		if obs != nil {
-			obs(scope, bucket, key, chunks)
-		}
-	}
-	// The optional representation of a live manifest is part of the same root:
-	// its chunks are wanted (and observed) beside the manifest's own.
-	rctx := s.newRepReachCtx(&res)
-	wantRep := func(scope rootScope, bucket, key, uuid string, man manifestV1) {
-		rctx.observe(uuid, man, func(chunks []chunkRef) { want(scope, bucket, key, chunks) })
-	}
-
-	// Observation order is locality priority (compaction ranks chunks by first
-	// reference): current objects, active multipart, snapshots, then retained
-	// history. Within a category the order is deterministic when an observer
-	// is attached. GC and verify only take the union, so order is otherwise moot.
-	// Root category 1: current visible objects.
+	// Stage 1: enumerate the roots. Observation order is locality priority
+	// (compaction ranks chunks by first reference): current objects, active
+	// multipart, snapshots, then retained history. Within a category the order
+	// is deterministic when an observer is attached; GC and verify only take
+	// the union, so order is otherwise moot.
+	var steps []reachStep
+	var ups []*multipartUpload // multipart steps point here
+	var issues []VerifyIssue   // so do issue steps
 	curObjs := s.snapshotNamespace()
 	if obs != nil {
 		sort.Slice(curObjs, func(i, j int) bool {
 			return cmp.Or(cmp.Compare(curObjs[i].bucket, curObjs[j].bucket), cmp.Compare(curObjs[i].key, curObjs[j].key)) < 0
 		})
 	}
+	steps = make([]reachStep, 0, len(curObjs))
 	for _, o := range curObjs {
-		res.CurrentRootCount++
-		if man, ok := checkRoot(o.bucket+"/"+o.key, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
-			want(scopeCurrent, o.bucket, o.key, man.Chunks)
-			wantRep(scopeCurrent, o.bucket, o.key, o.entry.manifestUUID, man)
-		}
+		steps = append(steps, reachStep{kind: stepManifest, scope: scopeCurrent, bucket: o.bucket, key: o.key, uuid: o.entry.manifestUUID, sha: o.entry.manifestSHA256, size: o.entry.size})
 	}
-	// Root category 3: active multipart uploads. These do not go through
-	// the manifest mechanism before completion -- each already-published
-	// part's own chunk list is a live root directly.
+	curObjs = nil
 	uploads := s.snapshotUploads()
 	if obs != nil {
 		sort.Slice(uploads, func(i, j int) bool {
@@ -12286,37 +12863,17 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 		})
 	}
 	for _, up := range uploads {
-		for _, pn := range slices.Sorted(maps.Keys(up.parts)) {
-			p := up.parts[pn]
-			res.MultipartRootCount++
-			subject := fmt.Sprintf("multipart:%s/part%d", up.uploadID, p.partNumber)
-			valid := p.chunks[:0:0]
-			for i, c := range p.chunks {
-				if _, herr := decodeHexSHA256(c.SHA256); herr != nil {
-					res.addIssue("invalid", subject, fmt.Sprintf("part chunk %d has a malformed sha256: %s", i, c.SHA256))
-					continue
-				}
-				valid = append(valid, c)
-			}
-			want(scopeMultipart, up.bucket, up.key, valid)
-		}
+		ups = append(ups, up)
+		steps = append(steps, reachStep{kind: stepMultipart, scope: scopeMultipart, aux: int32(len(ups) - 1)})
 	}
-	// Root category 4 (section 15h): durable namespace snapshots.
-	// scanSnapshots reads store/snapshots/ fresh off disk (never cached --
-	// see Store.snapshotMu's doc comment) and reports every parse/
-	// integrity issue it finds via the exact same issueTracker every
-	// other root category already feeds; a corrupt/malformed snapshot
-	// descriptor therefore flips res.OK() to false exactly like a corrupt
-	// manifest would, which is what makes destructive GC's existing
-	// fail-closed gate (section 13b's errGCUnsafe) refuse to sweep
-	// without any new gating logic -- see this section's own "Root
-	// category 4" doc comment in section 15h for the full rationale. A
-	// snapshot's entries reference manifests by (UUID, SHA256) exactly
-	// like a current or historical root does, so they run through the
-	// same checkRoot closure, unmodified.
+	// Root category 4 (section 15h): durable namespace snapshots, read fresh off
+	// disk (never cached -- see Store.snapshotMu's doc comment). A corrupt or
+	// malformed snapshot flips OK() to false exactly like a corrupt manifest,
+	// which is what makes destructive GC's fail-closed gate refuse to sweep.
 	validSnaps, snapIssues := s.scanSnapshots()
 	for _, iss := range snapIssues {
-		res.addIssue(iss.Kind, iss.Subject, iss.Detail)
+		issues = append(issues, iss)
+		steps = append(steps, reachStep{kind: stepIssue, aux: int32(len(issues) - 1)})
 	}
 	for _, snap := range validSnaps {
 		for _, se := range snap.Entries {
@@ -12324,17 +12881,13 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 			subject := "snapshot:" + snap.SnapshotID + ":" + se.Key
 			sum, herr := decodeHexSHA256(se.ManifestSHA256)
 			if herr != nil {
-				res.addIssue("invalid", subject, "snapshot entry has a malformed manifest sha256: "+herr.Error())
+				issues = append(issues, VerifyIssue{Kind: "invalid", Subject: subject, Detail: "snapshot entry has a malformed manifest sha256: " + herr.Error()})
+				steps = append(steps, reachStep{kind: stepIssue, aux: int32(len(issues) - 1)})
 				continue
 			}
-			if man, ok := checkRoot(subject, se.ManifestUUID, sum); ok {
-				want(scopeSnapshot, snap.SourceBucket, se.Key, man.Chunks)
-				wantRep(scopeSnapshot, snap.SourceBucket, se.Key, se.ManifestUUID, man)
-			}
+			steps = append(steps, reachStep{kind: stepManifest, scope: scopeSnapshot, bucket: snap.SourceBucket, key: se.Key, key2: snap.SnapshotID, uuid: se.ManifestUUID, sha: sum})
 		}
 	}
-
-	// Root category 2: retained historical versions.
 	histObjs := s.snapshotHistory()
 	if obs != nil { // newest retained version first
 		sort.Slice(histObjs, func(i, j int) bool {
@@ -12343,65 +12896,576 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 		})
 	}
 	for _, o := range histObjs {
-		res.HistoricalRootCount++
-		subject := fmt.Sprintf("history:%s/%s@%s", o.bucket, o.key, o.entry.versionID)
-		if man, ok := checkRoot(subject, o.entry.manifestUUID, o.entry.manifestSHA256); ok {
-			want(scopeHistory, o.bucket, o.key, man.Chunks)
-			wantRep(scopeHistory, o.bucket, o.key, o.entry.manifestUUID, man)
+		steps = append(steps, reachStep{kind: stepManifest, scope: scopeHistory, bucket: o.bucket, key: o.key, key2: o.entry.versionID, uuid: o.entry.manifestUUID, sha: o.entry.manifestSHA256})
+	}
+	histObjs = nil
+
+	// Stage 2: analyse each distinct manifest UUID once, a block at a time. The
+	// digest the journal recorded for the first root that names a UUID is the one
+	// used to find it (two roots may legally share a UUID; each root's own claim is
+	// still checked against what was read, in the merge). A verdict is dropped as
+	// soon as the last root naming its manifest has been merged, so memory holds one
+	// block of verdicts (plus those of manifests that several roots share), not one
+	// per manifest in the store.
+	var uniq []int32 // step index of the first root naming each UUID
+	var refs []int32 // how many roots name it
+	{
+		first := make(map[string]int32, len(steps))
+		for i := range steps {
+			if steps[i].kind != stepManifest {
+				continue
+			}
+			ui, dup := first[steps[i].uuid]
+			if !dup {
+				ui = int32(len(uniq))
+				first[steps[i].uuid] = ui
+				uniq = append(uniq, int32(i))
+				refs = append(refs, 0)
+			}
+			steps[i].aux = ui
+			refs[ui]++
 		}
 	}
-	rctx.finish()
-	// One unified chunk existence/integrity pass over every referenced
-	// digest, regardless of which root category claimed it. Healthy scans share
-	// the two read-only sets; only a faulty scan needs a separate valid subset.
-	var invalidChunks []string
-	for sha, length := range wantChunks {
-		res.ReferencedChunks[sha] = true
-		invalidChunks = append(invalidChunks, sha)
-		sum, herr := decodeHexSHA256(sha) // already validated above when added to wantChunks
-		if herr != nil {
-			continue
+	verdicts := make([]*reachManifest, len(uniq))
+	analyzeBlock := func(ub, ue int) {
+		// Inline manifests are records of packs: visit them in physical order so a
+		// worker's run of consecutive manifests lives in one pack.
+		visit := make([]int32, ue-ub)
+		for i := range visit {
+			visit[i] = int32(ub + i)
 		}
-		res.ChunksChecked++
-		if loc, ok := s.packLookup(sum); !ok || int64(loc.logical) != length {
-			info, serr := os.Stat(s.chunkPath(sum))
-			if serr != nil {
-				if os.IsNotExist(serr) {
-					res.addIssue("missing", "chunk "+sha, "chunk file does not exist")
+		if ps := s.packSnap(); len(ps.packs) > 0 {
+			type pos struct {
+				pack int32
+				off  uint64
+			}
+			where := make([]pos, ue-ub)
+			for i := range where {
+				if loc, ok := ps.lookup(steps[uniq[ub+i]].sha); ok {
+					where[i] = pos{loc.pack, loc.off}
 				} else {
-					res.addIssue("invalid", "chunk "+sha, serr.Error())
+					where[i] = pos{-1, 0} // a manifest file
 				}
-				continue
 			}
-			if info.Size() != length {
-				res.addIssue("corrupt", "chunk "+sha, fmt.Sprintf("file length %d does not match reference length %d", info.Size(), length))
-				continue
-			}
+			slices.SortFunc(visit, func(a, b int32) int {
+				return cmp.Or(cmp.Compare(where[int(a)-ub].pack, where[int(b)-ub].pack), cmp.Compare(where[int(a)-ub].off, where[int(b)-ub].off), cmp.Compare(a, b))
+			})
 		}
-		if deep {
-			if _, rerr := s.casRead(sum); rerr != nil {
-				switch {
-				case os.IsNotExist(rerr):
-					res.addIssue("missing", "chunk "+sha, rerr.Error())
-				case errors.Is(rerr, errChunkCorrupt):
-					res.addIssue("corrupt", "chunk "+sha, "content hash does not match its content-addressed name")
-				default:
-					res.addIssue("corrupt", "chunk "+sha, rerr.Error())
-				}
-				continue
-			}
-		}
-		invalidChunks = invalidChunks[:len(invalidChunks)-1]
-	}
-	res.ValidChunks = res.ReferencedChunks
-	if len(invalidChunks) != 0 {
-		res.ValidChunks = maps.Clone(res.ReferencedChunks)
-		for _, sha := range invalidChunks {
-			delete(res.ValidChunks, sha)
-		}
+		parallelForState(len(visit), maintWorkers(), 64, func() *packHandles { return &packHandles{} }, (*packHandles).close,
+			func(h *packHandles, k int) {
+				i := visit[k]
+				st := &steps[uniq[i]]
+				verdicts[i] = s.analyzeManifest(st.uuid, st.sha, h)
+			})
 	}
 
+	// Stage 3: merge in enumeration order.
+	tbl := newDigestTable(len(uniq))
+	seenManifest := make([]bool, len(uniq))
+	rctx := s.newRepReachCtx(&res)
+	want := func(scope rootScope, bucket, key string, m *reachManifest, refs []chunkRef) {
+		if m != nil {
+			for i := range m.ends {
+				prev := int64(0)
+				if i > 0 {
+					prev = m.ends[i-1]
+				}
+				tbl.put([32]byte(m.sums[i*32:i*32+32]), m.ends[i]-prev)
+			}
+			if obs != nil {
+				obs(scope, bucket, key, m.chunkRefs())
+			}
+			return
+		}
+		for _, c := range refs {
+			if d, herr := decodeHexSHA256(c.SHA256); herr == nil {
+				tbl.put(d, c.Length)
+			}
+		}
+		if obs != nil {
+			obs(scope, bucket, key, refs)
+		}
+	}
+	mergeSteps := func(lo, hi int) {
+		for si := lo; si < hi; si++ {
+			st := &steps[si]
+			switch st.kind {
+			case stepIssue:
+				iss := issues[st.aux]
+				res.addIssue(iss.Kind, iss.Subject, iss.Detail)
+			case stepMultipart:
+				up := ups[st.aux]
+				for _, pn := range slices.Sorted(maps.Keys(up.parts)) {
+					p := up.parts[pn]
+					res.MultipartRootCount++
+					subject := fmt.Sprintf("multipart:%s/part%d", up.uploadID, p.partNumber)
+					valid := p.chunks[:0:0]
+					for i, c := range p.chunks {
+						if _, herr := decodeHexSHA256(c.SHA256); herr != nil {
+							res.addIssue("invalid", subject, fmt.Sprintf("part chunk %d has a malformed sha256: %s", i, c.SHA256))
+							continue
+						}
+						valid = append(valid, c)
+					}
+					want(scopeMultipart, up.bucket, up.key, nil, valid)
+				}
+			case stepManifest:
+				switch st.scope {
+				case scopeCurrent:
+					res.CurrentRootCount++
+				case scopeHistory:
+					res.HistoricalRootCount++
+				}
+				// A snapshot entry counts as a root where it was enumerated (above).
+				ui := st.aux
+				v := verdicts[ui]
+				subject := st.subject()
+				var cachedSHA [32]byte // a manifest that could not be read has no digest to match
+				why := func() string {
+					if len(v.issues) > 0 {
+						return v.issues[0].Detail
+					}
+					return "manifest " + st.uuid + " hash mismatch"
+				}
+				if !seenManifest[ui] {
+					seenManifest[ui] = true
+					for _, iss := range v.issues {
+						res.addIssue(iss.Kind, subject, iss.Detail)
+					}
+					if !v.loaded {
+						if o.cur != nil && st.scope == scopeCurrent {
+							o.cur(st.bucket, st.key, st.size, nil, why())
+						}
+						break // unreadable: the issue above is all there is to say about this root
+					}
+					res.ManifestsChecked++
+				}
+				if v.loaded {
+					cachedSHA = v.sha
+				}
+				if cachedSHA != st.sha {
+					res.addIssue("corrupt", subject, "manifest file sha256 does not match this root's recorded reference")
+					if o.cur != nil && st.scope == scopeCurrent {
+						o.cur(st.bucket, st.key, st.size, nil, "manifest "+st.uuid+" hash mismatch")
+					}
+					break
+				}
+				if !v.ok {
+					if o.cur != nil && st.scope == scopeCurrent {
+						o.cur(st.bucket, st.key, st.size, nil, why())
+					}
+					break
+				}
+				if o.cur != nil && st.scope == scopeCurrent {
+					o.cur(st.bucket, st.key, st.size, v, "")
+				}
+				res.ReferencedManifests[st.uuid] = true
+				res.ManifestSHA[st.uuid] = st.sha
+				want(st.scope, st.bucket, st.key, v, nil)
+				// The optional representation of a live manifest is part of the same root:
+				// its chunks are wanted (and observed) beside the manifest's own.
+				rctx.observe(st.uuid, manifestV1{ObjectSHA256: v.objSHA, TotalLength: v.total}, func(chunks []chunkRef) {
+					want(st.scope, st.bucket, st.key, nil, chunks)
+				})
+			}
+			if st.kind == stepManifest {
+				if refs[st.aux]--; refs[st.aux] == 0 && !o.keepManifests {
+					verdicts[st.aux] = nil // the last root naming this manifest has been merged
+				}
+			}
+		}
+	}
+	si := 0
+	for ub := 0; ub < len(uniq); ub += reachBlock {
+		ue := min(ub+reachBlock, len(uniq))
+		analyzeBlock(ub, ue)
+		end := len(steps)
+		if ue < len(uniq) {
+			end = int(uniq[ue]) // everything before the next block's first manifest names only manifests analysed so far
+		}
+		mergeSteps(si, end)
+		si = end
+	}
+	mergeSteps(si, len(steps))
+	rctx.finish()
+	if o.keepManifests {
+		res.manifests = make(map[string]*reachManifest, len(res.ReferencedManifests))
+		for i := range steps {
+			if st := &steps[i]; st.kind == stepManifest && res.ReferencedManifests[st.uuid] {
+				res.manifests[st.uuid] = verdicts[st.aux]
+			}
+		}
+	}
+	verdicts = nil
+
+	// One unified chunk existence/integrity pass over every distinct referenced
+	// digest, regardless of which root category claimed it.
+	res.ChunksChecked = tbl.len()
+	bad := s.checkChunksParallel(tbl, deep)
+	res.invalidChunks = make([]uint32, 0, len(bad))
+	for _, b := range bad {
+		res.addIssue(b.kind, "chunk "+hex.EncodeToString(tbl.keys[b.idx][:]), b.detail)
+		res.invalidChunks = append(res.invalidChunks, b.idx)
+	}
+	res.tbl = tbl
+	res.manTbl = newDigestTable(len(res.ManifestSHA))
+	for _, sha := range res.ManifestSHA {
+		res.manTbl.put(sha, 0)
+	}
 	return res, nil
+}
+
+// chunkFailure is one referenced digest that failed its existence or integrity check.
+type chunkFailure struct {
+	idx    uint32
+	kind   string
+	detail string
+}
+
+// checkChunk judges one referenced digest: it must exist with the length its
+// references claim and, for a deep scan, hash to its own name.
+func (s *Store) checkChunk(sum [32]byte, length int64, deep bool, h *packHandles) (kind, detail string) {
+	if testHook != nil {
+		fireTestHook(hookReachChunkCheck)
+	}
+	if loc, ok := s.packLookup(sum); !ok || int64(loc.logical) != length {
+		info, serr := os.Stat(s.chunkPath(sum))
+		if serr != nil {
+			if os.IsNotExist(serr) {
+				return "missing", "chunk file does not exist"
+			}
+			return "invalid", serr.Error()
+		}
+		if info.Size() != length {
+			return "corrupt", fmt.Sprintf("file length %d does not match reference length %d", info.Size(), length)
+		}
+	}
+	if deep {
+		if _, rerr := s.casReadH(sum, nil, h); rerr != nil {
+			switch {
+			case os.IsNotExist(rerr):
+				return "missing", rerr.Error()
+			case errors.Is(rerr, errChunkCorrupt):
+				return "corrupt", "content hash does not match its content-addressed name"
+			default:
+				return "corrupt", rerr.Error()
+			}
+		}
+	}
+	return "", ""
+}
+
+// checkChunksParallel runs checkChunk over every digest of tbl and returns the
+// failures ordered by table position. A scan that must read bytes visits the
+// digests in physical order (pack, then offset) so each worker streams
+// through neighbouring records instead of seeking.
+func (s *Store) checkChunksParallel(tbl *digestTable, deep bool) []chunkFailure {
+	n := tbl.len()
+	order := make([]uint32, n)
+	for i := range order {
+		order[i] = uint32(i)
+	}
+	if deep && n > 1 {
+		type pos struct {
+			pack uint32
+			off  uint64
+		}
+		where := make([]pos, n)
+		st := s.packSnap()
+		for i := range where {
+			if loc, ok := st.lookup(tbl.keys[i]); ok {
+				where[i] = pos{uint32(loc.pack) + 1, loc.off}
+			}
+		}
+		slices.SortFunc(order, func(a, b uint32) int {
+			return cmp.Or(cmp.Compare(where[a].pack, where[b].pack), cmp.Compare(where[a].off, where[b].off), cmp.Compare(a, b))
+		})
+	}
+	var mu sync.Mutex
+	var bad []chunkFailure
+	block := 256
+	if deep {
+		block = 16
+	}
+	parallelForState(n, maintWorkers(), block, func() *packHandles { return &packHandles{} }, (*packHandles).close,
+		func(h *packHandles, k int) {
+			i := order[k]
+			if kind, detail := s.checkChunk(tbl.keys[i], tbl.lens[i], deep, h); kind != "" {
+				mu.Lock()
+				bad = append(bad, chunkFailure{i, kind, detail})
+				mu.Unlock()
+			}
+		})
+	slices.SortFunc(bad, func(a, b chunkFailure) int { return cmp.Compare(a.idx, b.idx) })
+	return bad
+}
+
+// materializeChunkMaps fills the hex-keyed sets that most consumers use from the
+// binary table (one string per distinct digest, not one per reference).
+func (r *reachabilityResult) materializeChunkMaps() {
+	tbl := r.tbl
+	n := tbl.len()
+	r.ReferencedChunks = make(map[string]bool, n)
+	r.ChunkLength = make(map[string]int64, n)
+	var hx [64]byte
+	for i := 0; i < n; i++ {
+		hex.Encode(hx[:], tbl.keys[i][:])
+		h := string(hx[:])
+		r.ReferencedChunks[h] = true
+		r.ChunkLength[h] = tbl.lens[i]
+	}
+	r.ValidChunks = r.ReferencedChunks
+	if len(r.invalidChunks) != 0 {
+		r.ValidChunks = maps.Clone(r.ReferencedChunks)
+		for _, i := range r.invalidChunks {
+			delete(r.ValidChunks, hex.EncodeToString(tbl.keys[i][:]))
+		}
+	}
+}
+
+// =============================================================================
+// 12b. Maintenance scan primitives (Z4-P3)
+//
+// digestTable is the compact live-set representation: every distinct 32-byte
+// digest once, with its claimed length, in first-seen order, indexed by an
+// open-addressing table of uint32 positions. It holds no pointers (nothing for
+// the garbage collector to trace) and costs 44 bytes per digest at half load,
+// against about 130 for a map keyed by a 64-character hex string.
+//
+// parallelFor is the one bounded fan-out maintenance uses: a fixed number of
+// workers claim blocks of consecutive indices from a shared counter, so uneven
+// items balance themselves and there is no queue, no goroutine per item and no
+// result channel to bound.
+// =============================================================================
+
+type digestTable struct {
+	keys  [][32]byte
+	lens  []int64
+	slots []uint32 // position+1 of the digest hashed here, 0 when free
+	mask  uint64
+	seed  uint64
+}
+
+// digestSeed varies per process; it is a probe-order salt, not a secret.
+var digestSeed = uint64(time.Now().UnixNano())*0x9e3779b97f4a7c15 ^ uint64(os.Getpid())<<32
+
+func newDigestTable(hint int) *digestTable {
+	t := &digestTable{seed: digestSeed}
+	n := 16
+	for n < 2*hint {
+		n <<= 1
+	}
+	t.slots, t.mask = make([]uint32, n), uint64(n-1)
+	t.keys, t.lens = make([][32]byte, 0, hint), make([]int64, 0, hint)
+	return t
+}
+
+func (t *digestTable) len() int { return len(t.keys) }
+
+func (t *digestTable) hash(sum *[32]byte) uint64 {
+	// A SHA-256 digest is already uniform; the seed only keeps the probe order
+	// of one process from being predicted from digests chosen in advance.
+	return (binary.LittleEndian.Uint64(sum[:8]) ^ t.seed) * 0x9e3779b97f4a7c15 >> 7
+}
+
+// find returns the position of sum, or -1.
+func (t *digestTable) find(sum [32]byte) int {
+	for h := t.hash(&sum) & t.mask; ; h = (h + 1) & t.mask {
+		p := t.slots[h]
+		if p == 0 {
+			return -1
+		}
+		if t.keys[p-1] == sum {
+			return int(p - 1)
+		}
+	}
+}
+
+func (t *digestTable) has(sum [32]byte) bool { return t.find(sum) >= 0 }
+
+// put records sum with length; a repeated digest takes the latest length, the
+// way assignment to the map it replaces did.
+func (t *digestTable) put(sum [32]byte, length int64) {
+	if 2*(len(t.keys)+1) > len(t.slots) {
+		t.grow()
+	}
+	for h := t.hash(&sum) & t.mask; ; h = (h + 1) & t.mask {
+		p := t.slots[h]
+		if p == 0 {
+			t.keys, t.lens = append(t.keys, sum), append(t.lens, length)
+			t.slots[h] = uint32(len(t.keys))
+			return
+		}
+		if t.keys[p-1] == sum {
+			t.lens[p-1] = length
+			return
+		}
+	}
+}
+
+// add records sum with length unless it is present, and returns its position
+// and whether it was new.
+func (t *digestTable) add(sum [32]byte, length int64) (int, bool) {
+	if 2*(len(t.keys)+1) > len(t.slots) {
+		t.grow()
+	}
+	for h := t.hash(&sum) & t.mask; ; h = (h + 1) & t.mask {
+		p := t.slots[h]
+		if p == 0 {
+			t.keys, t.lens = append(t.keys, sum), append(t.lens, length)
+			t.slots[h] = uint32(len(t.keys))
+			return len(t.keys) - 1, true
+		}
+		if t.keys[p-1] == sum {
+			return int(p - 1), false
+		}
+	}
+}
+
+func (t *digestTable) grow() {
+	n := 2 * len(t.slots)
+	t.slots, t.mask = make([]uint32, n), uint64(n-1)
+	for i := range t.keys {
+		h := t.hash(&t.keys[i]) & t.mask
+		for t.slots[h] != 0 {
+			h = (h + 1) & t.mask
+		}
+		t.slots[h] = uint32(i + 1)
+	}
+}
+
+// liveSet answers "must this digest be kept?" for pack maintenance: a live
+// chunk, or the record of a live inline manifest. It replaces the string-keyed
+// map (a hex key per chunk, plus two more per manifest) with two digest tables.
+type liveSet struct {
+	chunks    *digestTable
+	manifests *digestTable
+}
+
+func (l *liveSet) has(sum [32]byte) bool {
+	return l.chunks.has(sum) || l.manifests.has(sum)
+}
+func (l *liveSet) hasManifest(sum [32]byte) bool { return l.manifests.has(sum) }
+func (l *liveSet) anyManifests() bool            { return l.manifests.len() > 0 }
+
+// liveSet is the scan's live set. A result assembled by hand (tests, repair)
+// carries only the hex maps, from which the tables are built.
+func (r *reachabilityResult) liveSet() *liveSet {
+	if r.tbl != nil && r.manTbl != nil {
+		return &liveSet{r.tbl, r.manTbl}
+	}
+	return liveSetFromMap(r.live())
+}
+
+// liveSetFromMap builds a liveSet from the string-keyed form reachabilityResult.live
+// produces: bare hex digests are live, "manifest:"+hex marks a live manifest record.
+func liveSetFromMap(m map[string]bool) *liveSet {
+	l := &liveSet{chunks: newDigestTable(len(m)), manifests: newDigestTable(0)}
+	for k, v := range m {
+		if !v {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(k, liveManifestMarker); ok {
+			if d, err := decodeHexSHA256(rest); err == nil {
+				l.manifests.put(d, 0)
+			}
+			continue
+		}
+		if d, err := decodeHexSHA256(k); err == nil {
+			l.chunks.put(d, 0)
+		}
+	}
+	return l
+}
+
+// hexDigest decodes a 64-character lower-case hex file name.
+func hexDigest(name string) (sum [32]byte, ok bool) {
+	if len(name) != 64 {
+		return sum, false
+	}
+	for i := 0; i < 32; i++ {
+		hi, lo := servedHexVal[name[2*i]], servedHexVal[name[2*i+1]]
+		if hi|lo > 15 {
+			return sum, false
+		}
+		sum[i] = hi<<4 | lo
+	}
+	return sum, true
+}
+
+// maintWorkers is the number of goroutines a maintenance fan-out uses: one per
+// CPU up to 8, or ZEROS3_MAINT_WORKERS when set (1 gives the serial scan).
+func maintWorkers() int {
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_MAINT_WORKERS")); err == nil && v >= 1 {
+		return min(v, 64)
+	}
+	return max(1, min(runtime.GOMAXPROCS(0), 8))
+}
+
+// parallelForState is parallelFor with per-worker state: newState is called once
+// on each goroutine that runs (including the caller when the input is small),
+// fn receives that worker's state, and done releases it.
+func parallelForState[T any](n, workers, block int, newState func() T, done func(T), fn func(st T, i int)) {
+	if workers <= 1 || n <= 2*block {
+		st := newState()
+		for i := 0; i < n; i++ {
+			fn(st, i)
+		}
+		done(st)
+		return
+	}
+	workers = min(workers, (n+block-1)/block)
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			st := newState()
+			defer done(st)
+			for {
+				lo := int(next.Add(int64(block))) - block
+				if lo >= n {
+					return
+				}
+				for i := lo; i < min(lo+block, n); i++ {
+					fn(st, i)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// parallelFor calls fn(i) for every i in [0, n) on at most workers goroutines,
+// handing out blocks of block consecutive indices. It returns when all calls
+// have returned. Small inputs run on the calling goroutine.
+func parallelFor(n, workers, block int, fn func(i int)) {
+	if workers <= 1 || n <= 2*block {
+		for i := 0; i < n; i++ {
+			fn(i)
+		}
+		return
+	}
+	workers = min(workers, (n+block-1)/block)
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for {
+				lo := int(next.Add(int64(block))) - block
+				if lo >= n {
+					return
+				}
+				for i := lo; i < min(lo+block, n); i++ {
+					fn(i)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // StatsResult is the exact set of fields STATS_SPEC.md defines for one
@@ -12507,44 +13571,48 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 		res.BucketCount = 1
 	}
 
-	manifestCache := map[string]manifestV1{}
-	loadManifest := func(o namespaceObject) (manifestV1, error) {
-		if m, ok := manifestCache[o.entry.manifestUUID]; ok {
-			return m, nil
+	// One scan serves both halves of stats: the live sets and, through the current
+	// root callback, the per-object chunk accounting. Every current manifest is
+	// read once (the serial version read each twice), from storage.
+	type scopeFlags = uint8
+	const flagIn, flagOut scopeFlags = 1, 2
+	obsTbl := newDigestTable(1024)
+	var obsFlags []scopeFlags
+	var scanErr error
+	rr, err := s.reachabilityScanOpts(reachOpts{cur: func(bucket, key string, size int64, m *reachManifest, why string) {
+		if m == nil {
+			if scanErr == nil {
+				scanErr = fmt.Errorf("stats: reading manifest for %s/%s: %w: %s", bucket, key, errManifestUnavailable, why)
+			}
+			return
 		}
-		m, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256)
-		if err != nil {
-			return manifestV1{}, err
-		}
-		manifestCache[o.entry.manifestUUID] = m
-		return m, nil
-	}
-
-	chunkObs := map[string]*chunkObservation{} // hex sha256 -> observation, current-objects-only (scope accounting)
-	for _, o := range all {
-		inScope := sel.matches(o.bucket, o.key)
+		inScope := sel.matches(bucket, key)
 		if inScope {
 			res.CurrentObjectCount++
-			res.LogicalCurrentBytes += o.entry.size
+			res.LogicalCurrentBytes += size
 		}
-		man, err := loadManifest(o)
-		if err != nil {
-			return StatsResult{}, fmt.Errorf("stats: reading manifest for %s/%s: %w", o.bucket, o.key, err)
-		}
-		for _, c := range man.Chunks {
-			ob, ok := chunkObs[c.SHA256]
-			if !ok {
-				ob = &chunkObservation{length: c.Length}
-				chunkObs[c.SHA256] = ob
+		var prev int64
+		for i := range m.ends {
+			length := m.ends[i] - prev
+			prev = m.ends[i]
+			idx, isNew := obsTbl.add([32]byte(m.sums[i*32:i*32+32]), length)
+			if isNew {
+				obsFlags = append(obsFlags, 0)
 			}
 			if inScope {
-				ob.inScope = true
-				res.LogicalChunkReferenceBytes += c.Length
+				obsFlags[idx] |= flagIn
+				res.LogicalChunkReferenceBytes += length
 				res.LogicalChunkReferenceCount++
 			} else {
-				ob.outOfScope = true
+				obsFlags[idx] |= flagOut
 			}
 		}
+	}})
+	if err != nil {
+		return StatsResult{}, fmt.Errorf("stats: %w", err)
+	}
+	if scanErr != nil {
+		return StatsResult{}, scanErr
 	}
 
 	for _, o := range s.snapshotHistory() {
@@ -12565,14 +13633,15 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 	res.VersionCount = res.CurrentObjectCount + int(res.HistoricalVersionCount)
 	res.LogicalVersionBytes = res.LogicalCurrentBytes + res.HistoricalVersionLogicalBytes
 
-	for _, ob := range chunkObs {
-		if ob.inScope {
-			res.ScopeUniqueChunkBytes += ob.length
+	for i, fl := range obsFlags {
+		if fl&flagIn != 0 {
+			length := obsTbl.lens[i]
+			res.ScopeUniqueChunkBytes += length
 			res.ScopeUniqueChunkCount++
-			if ob.outOfScope {
-				res.ScopeSharedChunkBytes += ob.length
+			if fl&flagOut != 0 {
+				res.ScopeSharedChunkBytes += length
 			} else {
-				res.ScopeExclusiveChunkBytes += ob.length
+				res.ScopeExclusiveChunkBytes += length
 			}
 		}
 	}
@@ -12583,15 +13652,11 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 		res.UniqueToLogicalRatio = float64(res.ScopeUniqueChunkBytes) / float64(res.LogicalChunkReferenceBytes)
 	}
 
-	rr, err := s.computeReachability(false)
-	if err != nil {
-		return StatsResult{}, fmt.Errorf("stats: %w", err)
-	}
-	for _, length := range rr.ChunkLength {
+	for _, length := range rr.tbl.lens {
 		res.UniqueReachableChunkBytes += length
 	}
 
-	chunkScan, err := s.scanChunkFiles(rr.ReferencedChunks)
+	chunkScan, err := s.scanChunkFilesTbl(rr.tbl)
 	if err != nil {
 		return StatsResult{}, fmt.Errorf("stats: scanning chunks: %w", err)
 	}
@@ -12612,7 +13677,7 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 		return StatsResult{}, fmt.Errorf("stats: scanning FORMAT.json: %w", err)
 	}
 
-	res.PackSummary = summarizePacks(s.packUsages(rr.live()))
+	res.PackSummary = summarizePacks(s.packUsagesLive(rr.liveSet()))
 	s.fillSegmentSummary(&res.PackSummary)
 	// Inline manifests are records of segments and packs: their bytes are manifest
 	// bytes, not chunk payload. Only manifests a live root names can be told apart
@@ -12737,7 +13802,7 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 		res.addIssue("invalid", "FORMAT.json", "unsupported store/CDC format version or hash algorithm")
 	}
 
-	rr, err := s.computeReachability(deep)
+	rr, err := s.reachabilityScanOpts(reachOpts{deep: deep, keepManifests: deep})
 	if err != nil {
 		return res, fmt.Errorf("verify: %w", err)
 	}
@@ -12755,86 +13820,22 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res.Issues = append(res.Issues, rr.Issues...)
 	res.RepresentationRoots = rr.RepRoots
 	res.RepresentationOrphanRoots = len(rr.RepOrphanRoots)
-	// Verification consumes only membership from here on. Drop the scan's
-	// component-length table before pack and whole-object decoding allocate.
-	rr.ChunkLength = nil
 	s.verifyPacks(deep, &res)
 
 	// --- Deep only: whole-object digest ---
 	//
-	// Per-chunk hashing above (inside computeReachability) proves every
-	// individual chunk's bytes match its own content-addressed name, but
-	// it cannot catch a manifest that simply names the wrong
-	// object_sha256, or lists otherwise-intact chunks in a corrupted order
-	// -- GetObject doesn't check object_sha256 either, so nothing else in
-	// ZeroS3 would ever notice. This closes that gap by feeding every
-	// referenced-and-valid manifest's chunks (current and historical
-	// roots alike), in the manifest's own logical order, into one
-	// streaming SHA-256 hasher per manifest -- never buffering the
-	// reconstructed object -- and comparing the result (and the streamed
-	// byte count, against total_length) to what the manifest claims.
-	// Skipped for a manifest with any chunk that already failed
-	// computeReachability's check: hashing known-bad bytes would only add
-	// a confusing, redundant issue.
+	// Per-chunk hashing above (inside the scan) proves every individual chunk's
+	// bytes match its own content-addressed name, but it cannot catch a manifest
+	// that simply names the wrong object_sha256, or lists otherwise-intact chunks
+	// in a corrupted order -- GetObject doesn't check object_sha256 either, so
+	// nothing else in ZeroS3 would ever notice. This closes that gap.
 	if deep {
-		for uuid := range rr.ReferencedManifests {
-			man, _, rerr := s.readManifestSHA(uuid, rr.ManifestSHA[uuid])
-			if rerr != nil {
-				// Already reported by computeReachability if genuinely
-				// broken; a transient re-read failure here is reported
-				// rather than silently skipped.
-				res.addIssue("invalid", "manifest "+uuid, "could not be re-read for whole-object verification: "+rerr.Error())
-				continue
-			}
-			subject := "manifest " + uuid
-			wantSum, herr := decodeHexSHA256(man.ObjectSHA256)
-			if herr != nil {
-				res.addIssue("invalid", subject, "object_sha256 is malformed: "+herr.Error())
-				continue
-			}
-			chunksOK := true
-			for _, c := range man.Chunks {
-				if !rr.ValidChunks[c.SHA256] {
-					chunksOK = false
-					break
-				}
-			}
-			if !chunksOK {
-				continue
-			}
-			h := sha256.New()
-			var streamed int64
-			readFailed := false
-			for _, c := range man.Chunks {
-				sum, _ := decodeHexSHA256(c.SHA256) // already validated above
-				data, rerr := s.casRead(sum)
-				if rerr != nil {
-					res.addIssue("corrupt", subject, "chunk "+c.SHA256+" could not be re-read for whole-object verification: "+rerr.Error())
-					readFailed = true
-					break
-				}
-				h.Write(data)
-				streamed += int64(len(data))
-			}
-			if readFailed {
-				continue
-			}
-			if streamed != man.TotalLength {
-				res.addIssue("corrupt", subject, fmt.Sprintf("streamed %d chunk bytes, want total_length %d", streamed, man.TotalLength))
-				continue
-			}
-			if gotSum := [32]byte(h.Sum(nil)); gotSum != wantSum {
-				res.addIssue("corrupt", subject, "whole-object sha256 does not match manifest object_sha256")
-			}
-		}
-	}
-
-	if deep {
+		s.verifyWholeObjects(&rr, &res)
 		s.verifyRepresentationsDeep(rr, &res)
 	}
 
 	// --- Unreachable/reclaimable accounting (informational, not a failure) ---
-	chunkScan, serr := s.scanChunkFiles(rr.ReferencedChunks)
+	chunkScan, serr := s.scanChunkFilesTbl(rr.tbl)
 	if serr != nil {
 		return res, fmt.Errorf("verify: scanning chunks: %w", serr)
 	}
@@ -12851,6 +13852,78 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res.ReclaimableBytes = chunkScan.unreachableBytes + manifestScan.unreachableBytes + tmpBytes + s.repOrphanRootBytes(rr.RepOrphanRoots)
 
 	return res, nil
+}
+
+// verifyWholeObjects feeds every live manifest's chunks, in the manifest's own
+// logical order, into one streaming SHA-256 per manifest -- never buffering the
+// reconstructed object -- and compares the result (and the streamed byte count,
+// against total_length) with what the manifest claims. Manifests are checked
+// concurrently; findings are reported in manifest UUID order.
+//
+// A manifest with any chunk that already failed the scan is skipped: hashing
+// known-bad bytes would only add a redundant issue. A manifest of exactly one
+// chunk whose object_sha256 is that chunk's digest needs no second read: the
+// scan just proved, from the stored bytes, that they hash to that digest.
+// Every other chunk is read again and checked against its own digest as well as
+// folded into the object hash, so a copy that rots after the scan read it is
+// still found.
+func (s *Store) verifyWholeObjects(rr *reachabilityResult, res *VerifyResult) {
+	uuids := slices.Sorted(maps.Keys(rr.manifests))
+	bad := make([]bool, rr.tbl.len())
+	for _, i := range rr.invalidChunks {
+		bad[i] = true
+	}
+	found := make([][]VerifyIssue, len(uuids))
+	parallelForState(len(uuids), maintWorkers(), 4, func() *packHandles { return &packHandles{} }, (*packHandles).close,
+		func(h *packHandles, k int) {
+			id := uuids[k]
+			m := rr.manifests[id]
+			subject := "manifest " + id
+			add := func(kind, detail string) {
+				found[k] = append(found[k], VerifyIssue{Kind: kind, Subject: subject, Detail: detail})
+			}
+			if testHook != nil {
+				fireTestHook(hookVerifyWholeObj)
+			}
+			wantSum, herr := decodeHexSHA256(m.objSHA)
+			if herr != nil {
+				add("invalid", "object_sha256 is malformed: "+herr.Error())
+				return
+			}
+			n := len(m.ends)
+			for i := 0; i < n; i++ {
+				if idx := rr.tbl.find([32]byte(m.sums[i*32 : i*32+32])); idx < 0 || bad[idx] {
+					return
+				}
+			}
+			if n == 1 && [32]byte(m.sums[:32]) == wantSum {
+				return
+			}
+			hs := sha256.New()
+			var streamed int64
+			for i := 0; i < n; i++ {
+				sum := [32]byte(m.sums[i*32 : i*32+32])
+				data, rerr := s.casReadH(sum, nil, h)
+				if rerr != nil {
+					add("corrupt", "chunk "+hex.EncodeToString(sum[:])+" could not be re-read for whole-object verification: "+rerr.Error())
+					return
+				}
+				hs.Write(data)
+				streamed += int64(len(data))
+			}
+			if streamed != m.total {
+				add("corrupt", fmt.Sprintf("streamed %d chunk bytes, want total_length %d", streamed, m.total))
+				return
+			}
+			if got := [32]byte(hs.Sum(nil)); got != wantSum {
+				add("corrupt", "whole-object sha256 does not match manifest object_sha256")
+			}
+		})
+	for _, fs := range found {
+		for _, iss := range fs {
+			res.addIssue(iss.Kind, iss.Subject, iss.Detail)
+		}
+	}
 }
 
 // =============================================================================
@@ -12983,10 +14056,11 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 	defer store.Close()
 
 	store.sealSegments() // maintenance sees sealed packs only (section 4d)
-	rr, err := store.computeReachability(false)
+	rr, err := store.reachabilityScan(false, nil)
 	if err != nil {
 		return GCResult{}, err
 	}
+	live := rr.liveSet()
 
 	res := GCResult{
 		CurrentRootCount:    rr.CurrentRootCount,
@@ -13013,7 +14087,7 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 			return err
 		}
 		res.ChunksScanned++
-		if rr.ReferencedChunks[d.Name()] {
+		if sum, ok := hexDigest(d.Name()); ok && rr.tbl.has(sum) {
 			res.ChunksReachable++
 			res.ReachablePayloadBytes += info.Size()
 			return nil
@@ -13059,7 +14133,7 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 	orphanRootBytes := store.repOrphanRootBytes(rr.RepOrphanRoots)
 	res.ReclaimablePayloadBytes += orphanRootBytes
 
-	usages := store.packUsages(rr.live())
+	usages := store.packUsagesLive(live)
 	res.PackSummary = summarizePacks(usages)
 	store.fillSegmentSummary(&res.PackSummary)
 
@@ -13127,7 +14201,7 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 		}
 	}
 	var packRes RepackResult
-	err = store.replacePacks(deadPacks, rr.live(), defaultPackTargetBytes, true, &packRes)
+	err = store.replacePacksLive(deadPacks, live, defaultPackTargetBytes, true, &packRes)
 	res.PacksDeleted = packRes.PacksDeleted
 	res.BytesDeleted += packRes.BytesDeleted
 	if err != nil {
@@ -13355,14 +14429,19 @@ func compactStore(storeDir string, opt compactOptions) (CompactResult, error) {
 	defer store.Close()
 
 	store.sealSegments() // maintenance sees sealed packs only (section 4d)
-	rr, err := store.computeReachability(false)
+	rr, err := store.reachabilityScan(false, nil)
 	if err != nil {
 		return CompactResult{}, err
 	}
-	return store.compact(rr.live(), opt)
+	return store.compactLive(rr.liveSet(), opt)
 }
 
 func (s *Store) compact(referenced map[string]bool, opt compactOptions) (CompactResult, error) {
+	return s.compactLive(liveSetFromMap(referenced), opt)
+}
+
+// compactLive is compact against a binary live set.
+func (s *Store) compactLive(live *liveSet, opt compactOptions) (CompactResult, error) {
 	defer s.purgeReadCaches()
 	s.sealSegments() // pack maintenance sees sealed packs only (section 4d)
 	res := CompactResult{DryRun: opt.DryRun, Tier: opt.Tier.String()}
@@ -13390,7 +14469,7 @@ func (s *Store) compact(referenced map[string]bool, opt compactOptions) (Compact
 			return err
 		}
 		res.LooseChunks++
-		if !referenced[d.Name()] {
+		if !live.has(sum) {
 			res.UnreachableLoose++
 			return nil
 		}
@@ -13739,14 +14818,20 @@ func (s *Store) newPackBuilder(t tier, comp *packCompressor, capacity int) (*pac
 // (SHA-256 sum); it is not retained.
 func (b *packBuilder) Add(sum [32]byte, data []byte) {
 	payload, codec := b.comp.encode(data)
-	e := packEntry{sha: sum, off: b.off + packRecordHeaderSize, stored: uint32(len(payload)), logical: uint32(len(data)), codec: codec}
+	b.addEncoded(sum, len(data), payload, codec)
+}
+
+// addEncoded appends a record whose payload is already encoded (data of
+// logical bytes, stored as payload under codec).
+func (b *packBuilder) addEncoded(sum [32]byte, logical int, payload []byte, codec byte) {
+	e := packEntry{sha: sum, off: b.off + packRecordHeaderSize, stored: uint32(len(payload)), logical: uint32(logical), codec: codec}
 	var rec [packRecordHeaderSize]byte
 	putPackRecordHeader(rec[:], e)
 	b.w.Write(rec[:])
 	b.w.Write(payload)
 	b.entries = append(b.entries, e)
 	b.off = e.off + uint64(e.stored)
-	b.logical += int64(len(data))
+	b.logical += int64(logical)
 	fireTestHook(hookPackRecordWritten)
 }
 
@@ -13837,22 +14922,125 @@ func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) 
 	if err != nil {
 		return "", nil, err
 	}
-	for _, c := range batch {
-		data, err := read(c.sum)
-		if err != nil {
-			if serr := skip(c, err); serr != nil {
-				b.Abort()
-				return "", nil, serr
-			}
-			continue
+	if workers := maintWorkers(); workers > 1 && len(batch) >= 2*stageWindowRecords {
+		if err := s.stageRecordsParallel(b, batch, read, skip, comp != nil, workers); err != nil {
+			b.Abort()
+			return "", nil, err
 		}
-		b.Add(c.sum, data)
+	} else {
+		for _, c := range batch {
+			data, err := read(c.sum)
+			if err != nil {
+				if serr := skip(c, err); serr != nil {
+					b.Abort()
+					return "", nil, serr
+				}
+				continue
+			}
+			b.Add(c.sum, data)
+		}
 	}
 	if b.Records() == 0 {
 		b.Abort()
 		return "", nil, nil
 	}
 	return b.Finish()
+}
+
+// stageCompressors recycles DEFLATE encoders (about a megabyte of state each)
+// across stager windows and repack runs.
+var stageCompressors sync.Pool
+
+const (
+	stageWindowRecords = 64      // most records read and encoded ahead of the writer, per window
+	stageWindowBytes   = 8 << 20 // ... and the most logical bytes
+)
+
+// stagedRecord is one record a worker has read, verified and encoded.
+type stagedRecord struct {
+	data, payload []byte
+	codec         byte
+	err           error
+}
+
+// stageRecordsParallel fills b with the records of batch in batch order, as the
+// serial loop does, but reads, verifies and compresses them on a bounded worker
+// pool: windows of consecutive records are prepared concurrently while the
+// previous window is appended. The appended bytes (and so the pack's digest)
+// are identical to the serial result; at most two windows are in flight, each
+// bounded by stageWindowRecords / stageWindowBytes.
+func (s *Store) stageRecordsParallel(b *packBuilder, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, compress bool, workers int) error {
+	windowEnd := func(lo int) int {
+		hi, bytes := lo, int64(0)
+		for hi < len(batch) && hi-lo < stageWindowRecords && (hi == lo || bytes+batch[hi].size <= stageWindowBytes) {
+			bytes += batch[hi].size
+			hi++
+		}
+		return hi
+	}
+	prepare := func(lo, hi int) []stagedRecord {
+		out := make([]stagedRecord, hi-lo)
+		parallelForState(hi-lo, workers, 1, func() *packCompressor {
+			if !compress {
+				return nil
+			}
+			if c, ok := stageCompressors.Get().(*packCompressor); ok {
+				return c
+			}
+			return newPackCompressor()
+		}, func(c *packCompressor) {
+			if c != nil {
+				stageCompressors.Put(c)
+			}
+		}, func(comp *packCompressor, k int) {
+			r := &out[k]
+			r.data, r.err = read(batch[lo+k].sum)
+			if r.err != nil {
+				return
+			}
+			payload, codec := comp.encode(r.data)
+			if codec != packCodecRaw {
+				payload = bytes.Clone(payload) // the encoder reuses its buffer
+			}
+			r.payload, r.codec = payload, codec
+		})
+		return out
+	}
+	type window struct {
+		lo   int
+		recs []stagedRecord
+	}
+	start := func(lo int) <-chan window {
+		ch := make(chan window, 1)
+		hi := windowEnd(lo)
+		go func() { ch <- window{lo, prepare(lo, hi)} }()
+		return ch
+	}
+	var pending <-chan window
+	if len(batch) > 0 {
+		pending = start(0)
+	}
+	for pending != nil {
+		w := <-pending
+		pending = nil
+		if next := w.lo + len(w.recs); next < len(batch) {
+			pending = start(next)
+		}
+		for k, r := range w.recs {
+			c := batch[w.lo+k]
+			if r.err != nil {
+				if serr := skip(c, r.err); serr != nil {
+					if pending != nil {
+						<-pending // let the prepared window finish before the caller removes the staging file
+					}
+					return serr
+				}
+				continue
+			}
+			b.addEncoded(c.sum, len(r.data), r.payload, r.codec)
+		}
+	}
+	return nil
 }
 
 // publishPack verifies a staged pack end to end, raises the store format if
@@ -14177,6 +15365,11 @@ func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, tar
 	return s.replacePacksTo(doomed, referenced, nil, target, compress, res)
 }
 
+// replacePacksLive is replacePacks against a binary live set.
+func (s *Store) replacePacksLive(doomed []packUsage, live *liveSet, target int64, compress bool, res *RepackResult) error {
+	return s.replacePacksToLive(doomed, live, nil, target, compress, res)
+}
+
 // tieredChunk is a live chunk a replacement must hold in tier t.
 type tieredChunk struct {
 	compactCandidate
@@ -14221,6 +15414,14 @@ func (s *Store) replacePacksTo(doomed []packUsage, referenced map[string]bool, d
 	if len(doomed) == 0 {
 		return nil
 	}
+	return s.replacePacksToLive(doomed, liveSetFromMap(referenced), dest, target, compress, res)
+}
+
+// replacePacksToLive is replacePacksTo against a binary live set.
+func (s *Store) replacePacksToLive(doomed []packUsage, live *liveSet, dest func([32]byte) tier, target int64, compress bool, res *RepackResult) error {
+	if len(doomed) == 0 {
+		return nil
+	}
 	doomed = append([]packUsage(nil), doomed...)
 	// Carried records keep their source physical order -- source tier, then
 	// pack order, then record order -- so a locality layout survives repack
@@ -14241,7 +15442,7 @@ func (s *Store) replacePacksTo(doomed []packUsage, referenced map[string]bool, d
 		skip[u.idx] = true
 		paths[u.idx] = path
 		for _, e := range entries {
-			if referenced[hex.EncodeToString(e.sha[:])] && !seen[e.sha] {
+			if live.has(e.sha) && !seen[e.sha] {
 				seen[e.sha] = true
 				to := u.tier
 				if dest != nil {
@@ -14261,14 +15462,21 @@ func (s *Store) replacePacksTo(doomed []packUsage, referenced map[string]bool, d
 	for t := range numTiers {
 		req := required[t]
 		var tneed []compactCandidate
-		for _, c := range req {
-			var err error
-			if dest == nil {
-				_, err = s.casReadExcluding(c.sum, skip)
-			} else {
-				err = s.copyAtTier(c.sum, t, skip)
-			}
-			if err != nil {
+		// Is there already a verified copy outside the doomed packs? Independent
+		// reads, so asked concurrently; the answers are applied in record order.
+		haveCopy := make([]bool, len(req))
+		parallelForState(len(req), maintWorkers(), 32, func() *packHandles { return &packHandles{} }, (*packHandles).close,
+			func(h *packHandles, i int) {
+				var err error
+				if dest == nil {
+					_, err = s.casReadH(req[i].sum, skip, h)
+				} else {
+					err = s.copyAtTier(req[i].sum, t, skip)
+				}
+				haveCopy[i] = err == nil
+			})
+		for i, c := range req {
+			if !haveCopy[i] {
 				tneed = append(tneed, c)
 				need = append(need, tieredChunk{c, t})
 			}
@@ -14334,15 +15542,21 @@ func (s *Store) replacePacksTo(doomed []packUsage, referenced map[string]bool, d
 	if dest != nil {
 		fireTestHook(hookRebalancePublished)
 	}
-	for _, c := range need {
-		var err error
-		if dest == nil {
-			_, err = s.casReadExcluding(c.sum, skip)
-		} else {
-			err = s.copyAtTier(c.sum, c.t, skip)
-		}
-		if err != nil {
-			return fmt.Errorf("chunk %x is not readable from the replacement packs: %w; nothing was removed", c.sum, err)
+	// The last gate before anything is removed: every carried chunk must be
+	// readable (and hash to its name) from outside the doomed packs.
+	needErr := make([]error, len(need))
+	parallelForState(len(need), maintWorkers(), 32, func() *packHandles { return &packHandles{} }, (*packHandles).close,
+		func(h *packHandles, i int) {
+			c := need[i]
+			if dest == nil {
+				_, needErr[i] = s.casReadH(c.sum, skip, h)
+			} else {
+				needErr[i] = s.copyAtTier(c.sum, c.t, skip)
+			}
+		})
+	for i, c := range need {
+		if needErr[i] != nil {
+			return fmt.Errorf("chunk %x is not readable from the replacement packs: %w; nothing was removed", c.sum, needErr[i])
 		}
 	}
 
@@ -14387,7 +15601,7 @@ func repackStore(storeDir string, opt repackOptions) (RepackResult, error) {
 	defer store.Close()
 
 	store.sealSegments() // maintenance sees sealed packs only (section 4d)
-	rr, err := store.computeReachability(false)
+	rr, err := store.reachabilityScan(false, nil)
 	if err != nil {
 		return RepackResult{}, err
 	}
@@ -14401,7 +15615,8 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 	if opt.TargetBytes <= 0 || opt.MaxLivePercent < 0 || opt.MaxLivePercent > 100 {
 		return res, errors.New("repack: pack size must be positive and the live threshold between 0 and 100")
 	}
-	us := s.packUsages(rr.live())
+	live := rr.liveSet()
+	us := s.packUsagesLive(live)
 	sum := summarizePacks(us)
 	res.PackCount, res.PackedChunkCount, res.PackFileBytes = sum.PackCount, sum.PackedChunkCount, sum.PackFileBytes
 	sel := selectRepackPacks(us, opt.MaxLivePercent)
@@ -14442,7 +15657,7 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 		return res, fmt.Errorf("repack: refusing to run: %s", clash[0])
 	}
 	s.removeStalePackStaging()
-	if err := s.replacePacks(sel, rr.live(), opt.TargetBytes, opt.Compress, &res); err != nil {
+	if err := s.replacePacksLive(sel, live, opt.TargetBytes, opt.Compress, &res); err != nil {
 		return res, fmt.Errorf("repack: %w", err)
 	}
 	res.BytesReclaimed = res.BytesDeleted - res.BytesWritten

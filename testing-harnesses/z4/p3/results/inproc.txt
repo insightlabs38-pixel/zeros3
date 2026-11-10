@@ -1,0 +1,48 @@
+== 1 s100k zeros3.base.test
+BenchmarkP3Open-4           	       2	 429963064 ns/op	250527664 B/op	 1436494 allocs/op
+BenchmarkP3Reachability-4   	       2	1038545820 ns/op	354360108 B/op	 1656790 allocs/op
+BenchmarkP3Stats-4          	       2	2161021752 ns/op	538554680 B/op	 2932799 allocs/op
+BenchmarkP3Verify-4         	       2	1233273900 ns/op	386412184 B/op	 1657955 allocs/op
+== 1 s100k zeros3.test
+BenchmarkP3Open-4           	       2	 225548785 ns/op	132999796 B/op	 1301240 allocs/op
+BenchmarkP3Reachability-4   	       2	 489500928 ns/op	288095492 B/op	 1196884 allocs/op
+BenchmarkP3Stats-4          	       2	 521251189 ns/op	311602840 B/op	 1096546 allocs/op
+BenchmarkP3Verify-4         	       2	 453700378 ns/op	306928216 B/op	 1097557 allocs/op
+== 1 s1m zeros3.base.test
+BenchmarkP3Open-4           	       2	4261261886 ns/op	2519923368 B/op	14363438 allocs/op
+BenchmarkP3Reachability-4   	       2	15108955554 ns/op	3864069052 B/op	16582928 allocs/op
+BenchmarkP3Stats-4          	       2	24752604600 ns/op	5685161904 B/op	29338092 allocs/op
+BenchmarkP3Verify-4         	       2	13860193106 ns/op	4179362464 B/op	16593361 allocs/op
+== 1 s1m zeros3.test
+BenchmarkP3Open-4           	       2	2650670222 ns/op	1345672564 B/op	13011419 allocs/op
+BenchmarkP3Reachability-4   	       2	6286355670 ns/op	3140675700 B/op	12020757 allocs/op
+BenchmarkP3Stats-4          	       2	6842968475 ns/op	3393568244 B/op	11012791 allocs/op
+BenchmarkP3Verify-4         	       2	6290153718 ns/op	3280030424 B/op	11022467 allocs/op
+== 2 s100k zeros3.base.test
+BenchmarkP3Open-4           	       2	 431021368 ns/op	249723656 B/op	 1436456 allocs/op
+BenchmarkP3Reachability-4   	       2	1200954822 ns/op	354346840 B/op	 1656764 allocs/op
+BenchmarkP3Stats-4          	       2	2084845618 ns/op	538589416 B/op	 2932821 allocs/op
+BenchmarkP3Verify-4         	       2	1281802867 ns/op	385936200 B/op	 1657967 allocs/op
+== 2 s100k zeros3.test
+BenchmarkP3Open-4           	       2	 206219922 ns/op	132817468 B/op	 1301229 allocs/op
+BenchmarkP3Reachability-4   	       2	 431769082 ns/op	288094808 B/op	 1196884 allocs/op
+BenchmarkP3Stats-4          	       2	 456259698 ns/op	311598220 B/op	 1096526 allocs/op
+BenchmarkP3Verify-4         	       2	 374762711 ns/op	306702056 B/op	 1097586 allocs/op
+== 2 s1m zeros3.base.test
+BenchmarkP3Open-4           	       2	4548053622 ns/op	2520291680 B/op	14363453 allocs/op
+BenchmarkP3Reachability-4   	       2	14894766970 ns/op	3863980932 B/op	16582881 allocs/op
+BenchmarkP3Stats-4          	       2	25681804859 ns/op	5685404896 B/op	29338150 allocs/op
+BenchmarkP3Verify-4         	       2	14513892116 ns/op	4179137068 B/op	16593351 allocs/op
+== 2 s1m zeros3.test
+BenchmarkP3Open-4           	       2	2290383838 ns/op	1346194992 B/op	13011449 allocs/op
+BenchmarkP3Reachability-4   	       2	5781648747 ns/op	3140910664 B/op	12020109 allocs/op
+BenchmarkP3Stats-4          	       2	7060483415 ns/op	3393042088 B/op	11012793 allocs/op
+BenchmarkP3Verify-4         	       2	5471827324 ns/op	3281207224 B/op	11022616 allocs/op
+== loc 1000000 zeros3.base.test
+BenchmarkP3LocatorBuild-4   	       3	 214725508 ns/op	65091664 B/op	 1000004 allocs/op
+== loc 1000000 zeros3.test
+BenchmarkP3LocatorBuild-4   	       3	 133689840 ns/op	65093002 B/op	 1000014 allocs/op
+== loc 10000000 zeros3.base.test
+BenchmarkP3LocatorBuild-4   	       3	2930896708 ns/op	656820309 B/op	10000004 allocs/op
+== loc 10000000 zeros3.test
+BenchmarkP3LocatorBuild-4   	       3	1567426789 ns/op	656821680 B/op	10000015 allocs/op

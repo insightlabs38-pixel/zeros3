@@ -1,0 +1,47 @@
+== format: PASS (1s)
+== modules: PASS (27s)
+== static: FAIL rc=1 (7s) -- last lines of /tmp/claude-0/p3/validate/static.log:
+exit status 1
+exit status 1
+exit status 1
+== s3: PASS (137s)
+== sync: PASS (59s)
+== repro: PASS (7s)
+== vectors: PASS (3s)
+== client: PASS (19s)
+== apps: PASS (3s)
+== cas-batch: PASS (24s)
+== direct-pack: PASS (4s)
+== bundle: PASS (4s)
+== history: PASS (2s)
+== tier: PASS (9s)
+== tier-rebalance: PASS (7s)
+== locality: PASS (4s)
+== index: PASS (18s)
+== FAILED stages: static
+exit=1
+== crash: PASS (77s)
+== index-scale: PASS (10s)
+== repack: PASS (30s)
+== compact: FAIL rc=1 (7s) -- last lines of /tmp/claude-0/p3/validate/compact.log:
+exit status 1
+== compression: FAIL rc=1 (340s) -- last lines of /tmp/claude-0/p3/validate/compression.log:
+exit status 1
+== history-life: FAIL rc=1 (0s) -- last lines of /tmp/claude-0/p3/validate/history-life.log:
+== tier-life: FAIL rc=1 (0s) -- last lines of /tmp/claude-0/p3/validate/tier-life.log:
+== direct-pack-life: PASS (5s)
+== bundle-life: PASS (7s)
+== bundle-delta: PASS (4s)
+== bundle-delta-life: PASS (17s)
+== bundle-scale: PASS (1s)
+== bundle-delta-scale: PASS (1s)
+== FAILED stages: compact compression history-life tier-life
+exit=1
+== bulk: PASS (19s)
+== tier-policy: PASS (1s)
+== compact: PASS (6s)
+== compression: PASS (187s)
+== history-life: PASS (3s)   [after `git fetch --depth=1 origin 24ec2a6783e2... 33478ce7f7f8...`, the baseline commits the stage builds]
+== tier-life: PASS (5s)
+== (base da88b4d, default sizes) compact: FAIL (13s); compression: FAIL (352s)  -- identical harness assertion failures, see the report
+== (base da88b4d, clone without the baseline commits) history-life, tier-life: FAIL: fatal: not a valid object name
