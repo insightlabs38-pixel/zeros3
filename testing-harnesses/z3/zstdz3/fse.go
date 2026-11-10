@@ -271,7 +271,18 @@ func (t *fseTable) prev(sym int, next int) (state int, bits uint32, nb int, ok b
 		return 0, 0, 0, false
 	}
 	seg := t.byBase[t.symOff[sym]:t.symOff[sym+1]]
-	i := sort.Search(len(seg), func(i int) bool { return int(t.dec[seg[i]].base) > next }) - 1
+	// first index whose baseline exceeds next (an open-coded sort.Search: this is
+	// called once per sequence field and the closure dominated its cost)
+	lo, hi := 0, len(seg)
+	for lo < hi {
+		h := int(uint(lo+hi) >> 1)
+		if int(t.dec[seg[h]].base) > next {
+			hi = h
+		} else {
+			lo = h + 1
+		}
+	}
+	i := lo - 1
 	if i < 0 {
 		return 0, 0, 0, false
 	}

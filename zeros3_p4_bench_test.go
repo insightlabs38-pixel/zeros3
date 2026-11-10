@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -383,3 +384,130 @@ func p4Configure(s *Store) {
 }
 
 func p4Quiesce(s *Store) { s.repQuiesce() }
+
+// TestP4Interference measures foreground latency while one heavy representation
+// is built. A fixed-rate foreground (PUT 64 KiB + GET of a 1 MiB range of a
+// pre-loaded object) runs for the whole test; at t=1s the heavy object is PUT.
+// ZEROS3_P4_INTERFERE = off | inline | deferred; ZEROS3_P4_HEAVY = file;
+// ZEROS3_P4_RATE = foreground operations per second (default 200).
+func TestP4Interference(t *testing.T) {
+	mode := os.Getenv("ZEROS3_P4_INTERFERE")
+	if mode == "" {
+		t.Skip("ZEROS3_P4_INTERFERE not set")
+	}
+	heavy, err := os.ReadFile(os.Getenv("ZEROS3_P4_HEAVY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rate, _ := strconv.Atoi(os.Getenv("ZEROS3_P4_RATE"))
+	if rate < 1 {
+		rate = 200
+	}
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.CreateBucket("b")
+	if mode != "off" {
+		s.setRepMode(repModeShadow)
+	}
+	if mode == "deferred" {
+		s.enableRepDeferred(1, 0)
+	}
+	base := genRandomBytes(1, 8<<20)
+	if _, err := s.PutObject("b", "base", base, "x", nil); err != nil {
+		t.Fatal(err)
+	}
+	type sample struct {
+		at  time.Duration
+		dur time.Duration
+		get bool
+	}
+	var mu sync.Mutex
+	var samples []sample
+	t0 := time.Now()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	tick := time.NewTicker(time.Second / time.Duration(rate))
+	go func() {
+		i := 0
+		for {
+			select {
+			case <-stop:
+				tick.Stop()
+				return
+			case <-tick.C:
+			}
+			i++
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				s.fg.enter() // what ServeHTTP does for a real request
+				defer s.fg.exit()
+				st := time.Now()
+				get := i%2 == 0
+				if get {
+					_, man, err := s.HeadObject("b", "base")
+					if err != nil {
+						return
+					}
+					off := int64(i%7) << 20
+					rd := s.openObjectReader(man, byteRange{start: off, end: off + (1 << 20) - 1})
+					for {
+						if _, err := rd.next(); err != nil {
+							break
+						}
+					}
+					rd.close()
+				} else {
+					s.PutObject("b", fmt.Sprint("fg", i), genRandomBytes(int64(i), 64<<10), "x", nil)
+				}
+				mu.Lock()
+				samples = append(samples, sample{time.Since(t0), time.Since(st), get})
+				mu.Unlock()
+			}(i)
+		}
+	}()
+	time.Sleep(time.Second)
+	cpu0 := p4CPU()
+	hs := time.Now()
+	if _, err := s.PutObject("b", "heavy", heavy, "x", nil); err != nil {
+		t.Fatal(err)
+	}
+	ack := time.Since(hs)
+	s.repQuiesce()
+	done := time.Since(hs)
+	cpu := p4CPU() - cpu0
+	time.Sleep(500 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+	pct := func(xs []time.Duration, p float64) float64 {
+		if len(xs) == 0 {
+			return 0
+		}
+		sort.Slice(xs, func(i, j int) bool { return xs[i] < xs[j] })
+		return float64(xs[min(len(xs)-1, int(float64(len(xs))*p))].Microseconds()) / 1000
+	}
+	var before, during []time.Duration
+	for _, sm := range samples {
+		if sm.at < time.Second {
+			before = append(before, sm.dur)
+		} else if sm.at < time.Second+done {
+			during = append(during, sm.dur)
+		}
+	}
+	row := map[string]any{"mode": mode, "heavy_mb": float64(len(heavy)) / 1e6, "ack_ms": float64(ack.Microseconds()) / 1000, "avail_ms": float64(done.Microseconds()) / 1000,
+		"cpu_ms": cpu, "fg_ops_before": len(before), "fg_ops_during": len(during),
+		"before_p50_ms": pct(before, .5), "before_p99_ms": pct(before, .99),
+		"during_p50_ms": pct(during, .5), "during_p95_ms": pct(during, .95), "during_p99_ms": pct(during, .99), "during_max_ms": pct(during, 1)}
+	b, _ := json.Marshal(row)
+	if out := os.Getenv("ZEROS3_P4_OUT"); out != "" {
+		if f, err := os.OpenFile(out, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+			f.Write(append(b, '\n'))
+			f.Close()
+		}
+	}
+	fmt.Println(string(b))
+}
