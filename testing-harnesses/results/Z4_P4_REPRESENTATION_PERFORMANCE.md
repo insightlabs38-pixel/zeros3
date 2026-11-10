@@ -1,6 +1,6 @@
 # Z4-P4: production representation performance and asynchronous construction
 
-Verdict: **P4_PRODUCTION_READY**. State: PR opened non-draft against main; merge method `merge` only (see section 22).
+Verdict: **P4_PRODUCTION_READY**. State: PR #110 merged with the `merge` method (section 22).
 
 Environment: 4 vCPU Firecracker VM, 15 GiB, ext4 on virtio, Go 1.27.0, `GOMAXPROCS=4`. Corpus: the P0 corpora (coreutils 9.5-9.7 tar/gz/zst, hiredis git packs, F-Droid DEX, Newtonsoft CLR, pyarrow Parquet snappy/zstd, rocksdict SST, SQLite 31 MiB, Pythia-14m safetensors; Merkle and CAR synthesised with the production fixtures). Every object of every run is read back whole and by ranges and compared with the input bytes, and `verify -deep` must pass, or the run fails. "Before" is the starting main `68b2593` plus phase timers (no behaviour change); "after" is this branch. Raw rows: `testing-harnesses/z4/p4/results/*.jsonl`; reproduction: `testing-harnesses/z4/p4/README.md`.
 
@@ -177,7 +177,7 @@ P5 as planned (B1/B2 delta, similarity, authority planning) can now treat repres
 
 ## 22. Final PR and merge state
 
-__PRTEXT__
+PR #110 (non-draft) from `z4/p4-representation-performance` into `main`, merged with the GitHub `merge` method only (no squash, no rebase); the 8 development commits are preserved on main. The merge SHA, the two parents, the merge-tree equality check and the post-merge description re-read (no attribution footer) are recorded in the PR and in the hand-off message, not in this file, because the merge commit does not exist yet when this file is committed.
 
 ---
 
