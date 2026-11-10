@@ -14947,6 +14947,10 @@ func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) 
 	return b.Finish()
 }
 
+// stageCompressors recycles DEFLATE encoders (about a megabyte of state each)
+// across stager windows and repack runs.
+var stageCompressors sync.Pool
+
 const (
 	stageWindowRecords = 64      // most records read and encoded ahead of the writer, per window
 	stageWindowBytes   = 8 << 20 // ... and the most logical bytes
@@ -14977,11 +14981,18 @@ func (s *Store) stageRecordsParallel(b *packBuilder, batch []compactCandidate, r
 	prepare := func(lo, hi int) []stagedRecord {
 		out := make([]stagedRecord, hi-lo)
 		parallelForState(hi-lo, workers, 1, func() *packCompressor {
-			if compress {
-				return newPackCompressor()
+			if !compress {
+				return nil
 			}
-			return nil
-		}, func(*packCompressor) {}, func(comp *packCompressor, k int) {
+			if c, ok := stageCompressors.Get().(*packCompressor); ok {
+				return c
+			}
+			return newPackCompressor()
+		}, func(c *packCompressor) {
+			if c != nil {
+				stageCompressors.Put(c)
+			}
+		}, func(comp *packCompressor, k int) {
 			r := &out[k]
 			r.data, r.err = read(batch[lo+k].sum)
 			if r.err != nil {

@@ -911,6 +911,10 @@ func TestP3_FastJournalDecodeMatchesJSON(t *testing.T) {
 // mostly dead. It returns the directory and the objects that must survive.
 func p3ChurnedStore(t *testing.T, n int) (string, map[string][]byte) {
 	t.Helper()
+	// small segments, so the data lands in several packs
+	oldTarget, oldMin := segTargetBytes, segMinSealBytes
+	segTargetBytes, segMinSealBytes = 384<<10, 1
+	defer func() { segTargetBytes, segMinSealBytes = oldTarget, oldMin }()
 	dir := t.TempDir()
 	s, err := OpenStore(dir)
 	if err != nil {
@@ -1036,11 +1040,7 @@ func TestP3_RealKillDuringMaintenance(t *testing.T) {
 	base, live := p3ChurnedStore(t, 1200)
 	for _, op := range []string{"repack", "gc"} {
 		t.Run(op, func(t *testing.T) {
-			killed := 0
-			dir := t.TempDir()
-			copyTree(t, base, dir)
-			rng := mrand.New(mrand.NewPCG(99, uint64(len(op))))
-			for round := 0; round < 10; round++ {
+			spawn := func(dir string) (*exec.Cmd, chan error) {
 				cmd := exec.Command(os.Args[0], "-test.run=^TestP3_MaintHelper$")
 				cmd.Env = append(os.Environ(), "ZEROS3_P3_HELPER="+op+":"+dir)
 				if err := cmd.Start(); err != nil {
@@ -1048,29 +1048,47 @@ func TestP3_RealKillDuringMaintenance(t *testing.T) {
 				}
 				done := make(chan error, 1)
 				go func() { done <- cmd.Wait() }()
-				select {
-				case <-done: // finished before the kill: converged
-				case <-time.After(time.Duration(10+rng.IntN(250)) * time.Millisecond):
-					cmd.Process.Kill()
-					<-done
-					killed++
+				return cmd, done
+			}
+			// how long does an uninterrupted run take, process start included?
+			cal := t.TempDir()
+			copyTree(t, base, cal)
+			t0 := time.Now()
+			_, done := spawn(cal)
+			<-done
+			full := time.Since(t0)
+			rng := mrand.New(mrand.NewPCG(99, uint64(len(op))))
+			killed := 0
+			for round := 0; round < 8; round++ {
+				dir := t.TempDir()
+				copyTree(t, base, dir)
+				// kill, look, restart and kill again: repeated interruption of one store
+				for attempt := 0; attempt < 3; attempt++ {
+					cmd, done := spawn(dir)
+					select {
+					case <-done:
+					case <-time.After(time.Duration(float64(full) * (0.15 + 1.0*rng.Float64()))):
+						cmd.Process.Kill()
+						<-done
+						killed++
+					}
+					requireP3Live(t, dir, live, fmt.Sprintf("round %d attempt %d", round, attempt))
 				}
-				requireP3Live(t, dir, live, fmt.Sprintf("round %d", round))
+				// left alone, the store converges
+				var err error
+				if op == "repack" {
+					_, err = repackStore(dir, repackOptions{Tier: "all", TargetBytes: 256 << 10, MaxLivePercent: 100, Compress: true})
+				} else {
+					_, err = gcCollect(dir, true)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireP3Live(t, dir, live, fmt.Sprintf("round %d final", round))
 			}
-			// whatever was interrupted, the store converges when left alone
-			var err error
-			if op == "repack" {
-				_, err = repackStore(dir, repackOptions{Tier: "all", TargetBytes: 256 << 10, MaxLivePercent: 100, Compress: true})
-			} else {
-				_, err = gcCollect(dir, true)
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			requireP3Live(t, dir, live, "final")
-			t.Logf("%s: %d of 10 runs were killed", op, killed)
-			if killed == 0 {
-				t.Log("note: no run was killed in flight on this machine (all finished first)")
+			t.Logf("%s: uninterrupted run %v; %d of 24 child runs were killed in flight", op, full.Round(time.Millisecond), killed)
+			if killed < 4 {
+				t.Fatalf("only %d of 24 runs were killed in flight: the test is not exercising interruption", killed)
 			}
 		})
 	}
