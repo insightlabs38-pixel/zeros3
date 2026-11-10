@@ -1093,3 +1093,62 @@ func TestP3_RealKillDuringMaintenance(t *testing.T) {
 		})
 	}
 }
+
+// Read-only tools running in a loop against a live writer never cost it a frame:
+// after the writer stops, every acknowledged object is there and the store
+// reopens (the deterministic version of this race is the test at the top).
+func TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames(t *testing.T) {
+	useProductionLayout(t)
+	s, dir := p1cOpen(t)
+	stop := make(chan struct{})
+	acked := make(chan string, 1<<16)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			k := fmt.Sprintf("live%05d", i)
+			if _, err := s.PutObject("b", k, p1cBody(i, 3000), "", nil); err != nil {
+				t.Error(err)
+				return
+			}
+			acked <- k
+		}
+	}()
+	for i := 0; i < 25; i++ {
+		ro, err := OpenStoreShared(dir)
+		if err != nil {
+			t.Fatalf("shared open: %v", err)
+		}
+		if _, err := ro.computeStats(statsScope{}); err != nil {
+			t.Fatalf("stats: %v", err)
+		}
+		if v, err := ro.Verify(false); err != nil || !v.JournalOK {
+			t.Fatalf("verify: %v %+v", err, v.Issues)
+		}
+		ro.Close()
+	}
+	close(stop)
+	<-done
+	close(acked)
+	var keys []string
+	for k := range acked {
+		keys = append(keys, k)
+	}
+	s.Close()
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatalf("reopen after read-only tools ran against a writer: %v", err)
+	}
+	defer s2.Close()
+	for _, k := range keys {
+		if _, _, err := s2.GetObject("b", k); err != nil {
+			t.Fatalf("acknowledged object %s lost: %v", k, err)
+		}
+	}
+	t.Logf("%d acknowledged objects intact after 25 concurrent read-only opens", len(keys))
+}
