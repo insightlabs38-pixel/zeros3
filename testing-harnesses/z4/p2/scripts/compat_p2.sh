@@ -4,7 +4,7 @@
 set -u
 B=$1; C=$2; OUT=$3; W=${P2_WORK:-/tmp/claude-0/p2/work}/compat; rm -rf $W; mkdir -p $W; : > $OUT
 run() { # writer reader label
-  local w=$1 r=$2 lab=$3 S=$W/$lab/store; mkdir -p $W/$lab
+  local w=$1 r=$2 lab=$3; local S=$W/$lab/store; mkdir -p $W/$lab
   for spec in "4kib 300" "1mib 40" "64mib 3"; do set -- $spec
     rm -rf $S; $w/p0bench mkstore -label c -out $W/$lab/mk.jsonl -work $W/$lab -bin $w/zeros3 -profbin $w/zeros3 -dir $S -objs $2 -size $1 -conc 4 >/dev/null 2>&1 || { echo "$lab $1: mkstore FAILED" >> $OUT; continue; }
     v=$($r/zeros3 verify -deep -store $S 2>&1 | tail -1)
