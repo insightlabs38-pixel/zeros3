@@ -27,6 +27,10 @@ type fseTable struct {
 	symOff  []int32
 	symList []uint16
 	byBase  []uint16
+	// Dense inverse of prev, built once the table has served enough lookups to repay
+	// it: inv[sym*len(dec)+next] is the state prev would find, plus one (0: none).
+	inv   []uint16
+	calls int32
 }
 
 const (
@@ -263,6 +267,29 @@ func (t *fseTable) stateAt(sym int, rank uint32) (int, bool) {
 	return int(seg[rank]), true
 }
 
+// initInv builds the dense inverse of the binary search prev does: for each symbol,
+// the state whose baseline is the greatest not above next, if its range contains next.
+func (t *fseTable) initInv() {
+	size := len(t.dec)
+	t.inv = make([]uint16, len(t.counts)*size)
+	for s := range t.counts {
+		seg := t.byBase[t.symOff[s]:t.symOff[s+1]]
+		row := t.inv[s*size : (s+1)*size]
+		for i, u := range seg {
+			d := t.dec[u]
+			lo, hi := int(d.base), size
+			if i+1 < len(seg) {
+				hi = min(hi, int(t.dec[seg[i+1]].base))
+			}
+			for x := lo; x < hi; x++ {
+				if x-lo < 1<<d.nb {
+					row[x] = u + 1
+				}
+			}
+		}
+	}
+}
+
 // prev finds the state that carries sym and whose baseline range contains next; the
 // bits the decoder must read to get from it to next are next-base (nb bits).
 func (t *fseTable) prev(sym int, next int) (state int, bits uint32, nb int, ok bool) {
@@ -270,8 +297,33 @@ func (t *fseTable) prev(sym int, next int) (state int, bits uint32, nb int, ok b
 	if sym >= len(t.counts) {
 		return 0, 0, 0, false
 	}
+	if t.inv == nil && t.calls < 128 {
+		t.calls++
+		if t.calls == 128 {
+			t.initInv()
+		}
+	}
+	if t.inv != nil && uint(next) < uint(len(t.dec)) {
+		u := t.inv[sym*len(t.dec)+next]
+		if u == 0 {
+			return 0, 0, 0, false
+		}
+		d := t.dec[u-1]
+		return int(u - 1), uint32(next - int(d.base)), int(d.nb), true
+	}
 	seg := t.byBase[t.symOff[sym]:t.symOff[sym+1]]
-	i := sort.Search(len(seg), func(i int) bool { return int(t.dec[seg[i]].base) > next }) - 1
+	// first index whose baseline exceeds next (an open-coded sort.Search: this is
+	// called once per sequence field and the closure dominated its cost)
+	lo, hi := 0, len(seg)
+	for lo < hi {
+		h := int(uint(lo+hi) >> 1)
+		if int(t.dec[seg[h]].base) > next {
+			hi = h
+		} else {
+			lo = h + 1
+		}
+	}
+	i := lo - 1
 	if i < 0 {
 		return 0, 0, 0, false
 	}

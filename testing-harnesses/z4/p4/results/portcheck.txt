@@ -1,0 +1,6 @@
+[codec] extract: extracted 397 of 469 declarations (7918 lines)
+[codec] 483 extracted declarations: 483 identical in production, 0 differ, 0 absent
+[managed] extract: extracted 364 of 685 declarations (8354 lines)
+[managed] 586 extracted declarations: 586 identical in production, 0 differ, 0 absent
+[git] extract: extracted 84 of 260 declarations (1333 lines)
+[git] 96 extracted declarations: 96 identical in production, 0 differ, 0 absent

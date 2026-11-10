@@ -1,0 +1,21 @@
+# syscalls of one TestP4Probe run (strace -f -c): fsync+fdatasync, openat, rename*, mkdir*, write+pwrite64; store dir removed before the run
+gen:merkle:1200    base    off    fsync 18 openat 77 rename 4 mkdir 14 write 12
+gen:merkle:1200    base    shadow fsync 969 openat 5486 rename 357 mkdir 560 write 369
+gen:merkle:1200    after   off    fsync 18 openat 77 rename 4 mkdir 14 write 11
+gen:merkle:1200    after   shadow fsync 23 openat 98 rename 5 mkdir 16 write 17
+gen:car:30         base    off    fsync 18 openat 79 rename 4 mkdir 14 write 11
+gen:car:30         base    shadow fsync 117 openat 508 rename 37 mkdir 78 write 45
+gen:car:30         after   off    fsync 18 openat 79 rename 4 mkdir 14 write 11
+gen:car:30         after   shadow fsync 23 openat 100 rename 5 mkdir 16 write 14
+gen:tar:4          base    off    fsync 18 openat 80 rename 4 mkdir 14 write 13
+gen:tar:4          base    shadow fsync 52 openat 223 rename 15 mkdir 35 write 22
+gen:tar:4          after   off    fsync 18 openat 80 rename 4 mkdir 14 write 12
+gen:tar:4          after   shadow fsync 23 openat 100 rename 5 mkdir 16 write 15
+sst-snappy c0,c1   base    off    fsync 27 openat 137 rename 7 mkdir 15 write 42
+sst-snappy c0,c1   base    shadow fsync 38 openat 170 rename 11 mkdir 17 write 190
+sst-snappy c0,c1   after   off    fsync 27 openat 137 rename 7 mkdir 15 write 43
+sst-snappy c0,c1   after   shadow fsync 38 openat 174 rename 11 mkdir 17 write 180
+gen:merkle:60000   base    off    fsync 23 openat 214 rename 6 mkdir 15 write 37
+gen:merkle:60000   base    shadow fsync 29 openat 213 rename 8 mkdir 17 write 112
+gen:merkle:60000   after   off    fsync 23 openat 214 rename 6 mkdir 15 write 34
+gen:merkle:60000   after   shadow fsync 29 openat 239 rename 8 mkdir 17 write 87

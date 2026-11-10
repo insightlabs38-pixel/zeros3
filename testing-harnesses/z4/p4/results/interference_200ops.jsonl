@@ -1,0 +1,3 @@
+{"ack_ms":81.2,"avail_ms":81.2,"before_p50_ms":1.421,"before_p99_ms":2.811,"cpu_ms":110,"during_max_ms":11.59,"during_p50_ms":1.333,"during_p95_ms":11.59,"during_p99_ms":11.59,"fg_ops_before":199,"fg_ops_during":16,"heavy_mb":14.864605,"mode":"off"}
+{"ack_ms":14187.482,"avail_ms":14187.482,"before_p50_ms":1.499,"before_p99_ms":2.6,"cpu_ms":16636,"during_max_ms":90.311,"during_p50_ms":1.256,"during_p95_ms":2.07,"during_p99_ms":3.633,"fg_ops_before":199,"fg_ops_during":2834,"heavy_mb":14.864605,"mode":"inline"}
+{"ack_ms":84.158,"avail_ms":14752.69,"before_p50_ms":1.36,"before_p99_ms":2.842,"cpu_ms":17144,"during_max_ms":90.159,"during_p50_ms":1.239,"during_p95_ms":1.996,"during_p99_ms":3.915,"fg_ops_before":199,"fg_ops_during":2944,"heavy_mb":14.864605,"mode":"deferred"}

@@ -356,10 +356,26 @@ bucket/key -> journal -> immutable manifest -> ordinary CDC chunks      (authori
   representation is reconstructed through the production decoder and compared with
   the object's SHA-256 and size, and only then is the root published. Any failure
   falls back to the plain CDC object; a PUT never fails because of it.
-- **Reads** (`prefer`): a whole GET, and ranges for SQLite pages, CAR sections and
-  stored tar members, may be served from the representation; everything is
-  verified per component, and any failure before the first byte falls back to CDC
-  in the same request. `shadow` keeps reads on CDC.
+- **Build policy** (`-representation-build inline|deferred`, default `inline`).
+  Inline is the behaviour above: the representation exists when the PUT is
+  acknowledged. `deferred` acknowledges after the authoritative commit and builds
+  on a bounded pool of background workers (`-representation-workers`,
+  `-representation-queue`): identical publication rules, but the object is read
+  through CDC until its root appears, identical content is built once and its root
+  cloned, a full queue skips the build rather than blocking, workers yield to
+  requests in flight (never longer than 5 s), and unfinished work is abandoned at
+  shutdown (the queue is memory only; staged components are ordinary unreferenced
+  content for `gc`). Components of a small object share the active segment's
+  group commit; larger ones go to packs, exactly like the object's own chunks.
+  See `testing-harnesses/z4/p4/DEFERRED_CONSTRUCTION.md`.
+- **Reads** (`prefer`): ranges of SQLite pages, CAR sections and stored tar members
+  may be served from the representation; a whole GET always uses CDC (whole
+  structural reconstruction was slower than CDC for every measured kind). Everything
+  is verified per component, and any failure before the first byte falls back to CDC
+  in the same request. `shadow` keeps reads on CDC. Parsed roots and representation
+  objects are cached across requests (immutable, content-addressed; a root is
+  re-read when its file changes); every data chunk a read touches is still read and
+  SHA-256 verified, and deep verification never uses the cache.
 - **Store format 6** is raised just before the first root is published. Portable
   bundles (`ZS3BNDL1`/`ZS3DLTA1`) and the ZeroS3-native protocol are unchanged and
   carry only the authoritative CDC state; representations are local and can be

@@ -8,10 +8,12 @@ package idxref
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 )
 
@@ -69,7 +71,7 @@ func NewPrefixIndex(ids []Identity, k0 int) *PrefixIndex {
 	for i := range p.order {
 		p.order[i] = uint32(i)
 	}
-	sort.Slice(p.order, func(i, j int) bool { return bytes.Compare(ids[p.order[i]][:], ids[p.order[j]][:]) < 0 })
+	slices.SortFunc(p.order, func(a, b uint32) int { return bytes.Compare(ids[a][:], ids[b][:]) })
 	common := func(a, b uint32) int {
 		n := 0
 		for n < 32 && ids[a][n] == ids[b][n] {
@@ -124,10 +126,26 @@ func (p *PrefixIndex) Get(b []byte) (uint32, []byte, error) {
 		if n > len(b) {
 			return 0, nil, bad("reference stream truncated")
 		}
-		base := lo
-		l := sort.Search(hi-base, func(j int) bool { return bytes.Compare(p.ids[p.order[base+j]][:n], b[:n]) >= 0 }) + base
-		h := sort.Search(hi-l, func(j int) bool { return bytes.Compare(p.ids[p.order[l+j]][:n], b[:n]) > 0 }) + l
-		lo, hi = l, h
+		// the range [lo,hi) shares the first n-1 bytes with b: narrow it to the entries whose n-byte prefix equals b[:n]
+		l, h := lo, hi
+		for l < h { // first entry with prefix >= b[:n]
+			m := int(uint(l+h) >> 1)
+			if bytes.Compare(p.ids[p.order[m]][:n], b[:n]) >= 0 {
+				h = m
+			} else {
+				l = m + 1
+			}
+		}
+		u, v := l, hi
+		for u < v { // first entry with prefix > b[:n]
+			m := int(uint(u+v) >> 1)
+			if bytes.Compare(p.ids[p.order[m]][:n], b[:n]) > 0 {
+				v = m
+			} else {
+				u = m + 1
+			}
+		}
+		lo, hi = l, u
 		if hi-lo == 1 {
 			return p.order[lo], b[n:], nil
 		}
@@ -241,10 +259,11 @@ func NewClassIndex(handles []int, ids []Identity, k0 int) *ClassIndex {
 	for i := range order {
 		order[i] = uint32(i)
 	}
-	sort.Slice(order, func(i, j int) bool {
-		a, b := order[i], order[j]
-		n := bytes.Compare(ids[a][:], ids[b][:])
-		return n < 0 || n == 0 && a < b
+	slices.SortFunc(order, func(a, b uint32) int {
+		if n := bytes.Compare(ids[a][:], ids[b][:]); n != 0 {
+			return n
+		}
+		return cmp.Compare(a, b)
 	})
 	type group struct{ lo, hi uint32 }
 	unique := 0
@@ -256,7 +275,7 @@ func NewClassIndex(handles []int, ids []Identity, k0 int) *ClassIndex {
 	// The common one-identity/one-handle case needs no CSR boundaries or
 	// 16-byte lookup records. Keep only handles plus a sorted permutation.
 	if unique == len(ids) {
-		sort.Slice(order, func(i, j int) bool { return handles[order[i]] < handles[order[j]] })
+		slices.SortFunc(order, func(a, b uint32) int { return cmp.Compare(handles[a], handles[b]) })
 		distinct := true
 		for i := 1; i < len(order); i++ {
 			if handles[order[i-1]] == handles[order[i]] {
@@ -272,10 +291,11 @@ func NewClassIndex(handles []int, ids []Identity, k0 int) *ClassIndex {
 			return c
 		}
 		// Repeated handles retain the general legacy last-class/first-occurrence rule.
-		sort.Slice(order, func(i, j int) bool {
-			a, b := order[i], order[j]
-			n := bytes.Compare(ids[a][:], ids[b][:])
-			return n < 0 || n == 0 && a < b
+		slices.SortFunc(order, func(a, b uint32) int {
+			if n := bytes.Compare(ids[a][:], ids[b][:]); n != 0 {
+				return n
+			}
+			return cmp.Compare(a, b)
 		})
 	}
 	groups := make([]group, 0, unique)
@@ -287,7 +307,7 @@ func NewClassIndex(handles []int, ids []Identity, k0 int) *ClassIndex {
 		groups = append(groups, group{uint32(lo), uint32(hi)})
 		lo = hi
 	}
-	sort.Slice(groups, func(i, j int) bool { return order[groups[i].lo] < order[groups[j].lo] })
+	slices.SortFunc(groups, func(a, b group) int { return cmp.Compare(order[a.lo], order[b.lo]) })
 	cls := make([]Identity, len(groups))
 	c.starts = make([]uint32, len(groups)+1)
 	c.members = make([]int, 0, len(ids))

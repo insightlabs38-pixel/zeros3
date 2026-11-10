@@ -6983,6 +6983,7 @@ type Store struct {
 	// rep is the optional structured-representation state (section 16d):
 	// runtime mode, derived catalog and counters. Nothing in it is authoritative.
 	rep repState
+	fg  fgGate // requests in flight; deferred construction yields to them
 
 	// mcache holds verified, immutable served manifests for the read path
 	// (section 5b). It is per Store, bounded, and never authoritative.
@@ -7702,6 +7703,7 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 
 // Close releases the store's open file handles.
 func (s *Store) Close() error {
+	s.repQueueStop(10 * time.Second)
 	s.dumpReadCacheStats()
 	if s.segs != nil {
 		s.segs.close()
@@ -7859,10 +7861,16 @@ func (s *Store) commitIngested(bucket, key string, ing ingestResult, contentType
 	fireTestHook(hookAfterManifestPublished)
 	s.maybeBuildRep(man)
 
+	var entry *objectEntry
 	if cond.isZero() {
-		return s.commitObjectRoot(bucket, key, manUUID, manSHA, man)
+		entry, err = s.commitObjectRoot(bucket, key, manUUID, manSHA, man)
+	} else {
+		entry, err = s.commitObjectRootChecked(bucket, key, manUUID, manSHA, man, cond.check)
 	}
-	return s.commitObjectRootChecked(bucket, key, manUUID, manSHA, man, cond.check)
+	if err == nil {
+		s.repAfterCommit(bucket, key, man)
+	}
+	return entry, err
 }
 
 // archivedVersionPayload builds the journal record of cur being archived
@@ -10137,6 +10145,8 @@ func writeRequestError(w http.ResponseWriter, err error, resource string) {
 }
 
 func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	srv.store.fg.enter()
+	defer srv.store.fg.exit()
 	rawPath, rawQuery := splitRawRequestURI(r.RequestURI)
 
 	payload, err := srv.authenticate(r, rawPath, rawQuery)
@@ -11147,10 +11157,14 @@ func (s *Store) CopyObject(req CopyObjectRequest) (*objectEntry, manifestV1, err
 		return nil, manifestV1{}, fmt.Errorf("copy: manifest publish failed: %w", err)
 	}
 	fireTestHook(hookAfterManifestPublished)
+	deferred := s.rep.q.Load() != nil
 	if s.repMode() != repModeOff && !s.repCloneRoot(srcMan.ManifestUUID, dstMan) {
 		s.maybeBuildRep(dstMan)
 	}
 	entry, err := s.commitObjectRoot(req.DstBucket, req.DstKey, manUUID, manSHA, dstMan)
+	if err == nil && deferred && !repHasRootFile(s, dstMan.ManifestUUID) {
+		s.repAfterCommit(req.DstBucket, req.DstKey, dstMan)
+	}
 	return entry, dstMan, err
 }
 
@@ -11908,6 +11922,7 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 		}
 	}
 	fireTestHook(hookAfterApplyBeforeResponse)
+	s.repAfterCommit(bucket, key, man)
 	return entry, man, nil
 }
 
@@ -18884,7 +18899,11 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 		}
 		return
 	}
-	srv.store.tryBuildRep(man)
+	if srv.store.rep.q.Load() != nil {
+		srv.store.repAfterCommit(s3Bucket, s3Key, man)
+	} else {
+		srv.store.tryBuildRep(man)
+	}
 	fireTestHook(hookAfterAck)
 	writeSyncJSON(w, http.StatusOK, syncCommitResponse{
 		Bucket: s3Bucket, Key: s3Key, VersionID: entry.manifestUUID, ETag: entry.etag, Size: entry.size,
@@ -24935,10 +24954,17 @@ func runServe(args []string) {
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (PEM); requires -tls-key. Neither flag: plain HTTP (default). Both: HTTPS via Go's standard-library TLS server. Exactly one without the other is a startup error.")
 	tlsKey := fs.String("tls-key", "", "TLS private key file (PEM); requires -tls-cert. See -tls-cert.")
 	repFlag := fs.String("representations", "off", "experimental optional structured representations: off (default), shadow (create and persist them, read through CDC) or prefer (also read through them when supported); raises the store format to 6 on first use")
+	repBuild := fs.String("representation-build", "inline", "when representations are built: inline (default; one exists when the PUT is acknowledged) or deferred (built by bounded background workers after the authoritative commit; the object is read through CDC until then, and unfinished work is abandoned at shutdown)")
+	repWorkers := fs.Int("representation-workers", 1, "deferred builds: concurrent background workers")
+	repQueueMax := fs.Int("representation-queue", repDeferMaxJobs, "deferred builds: maximum pending plus running builds; further requests are skipped, never blocked")
 	fs.Parse(args)
 	repSel, err := parseRepMode(*repFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: serve: -representations: %v\n", err)
+		os.Exit(2)
+	}
+	if *repBuild != "inline" && *repBuild != "deferred" {
+		fmt.Fprintf(os.Stderr, "zeros3: serve: -representation-build: unknown policy %q (want inline or deferred)\n", *repBuild)
 		os.Exit(2)
 	}
 	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
@@ -24959,6 +24985,9 @@ func runServe(args []string) {
 	store.setRepMode(repSel)
 	if repSel != repModeOff {
 		store.repEnsure()
+		if *repBuild == "deferred" {
+			store.enableRepDeferred(*repWorkers, *repQueueMax)
+		}
 	}
 
 	// A running server holds a SHARED advisory lock on the store for its
@@ -28032,6 +28061,11 @@ type repEnv struct {
 	Limits repLimits
 
 	noVerify bool // tests only: skip the representation digest check (a hash cycle cannot be built honestly)
+
+	// Cache, when set, holds verified, parsed representation objects across
+	// requests. Only the read path sets it: construction, proof and verification
+	// always re-read and re-hash, so a damaged object is found by them.
+	Cache *repReadCache
 }
 
 // repCall is one decoder invocation.
@@ -28062,6 +28096,11 @@ func (e *repEnv) load(id [32]byte, depth int, path [][32]byte) (*repObject, erro
 			return nil, fmt.Errorf("%w: %x", errRepCycle, id[:6])
 		}
 	}
+	if e.Cache != nil {
+		if rep := e.Cache.getRep(id); rep != nil {
+			return rep, nil
+		}
+	}
 	size, err := e.Src.Size(id)
 	if err != nil {
 		return nil, err
@@ -28076,7 +28115,200 @@ func (e *repEnv) load(id [32]byte, depth int, path [][32]byte) (*repObject, erro
 	if !e.noVerify && sha256.Sum256(b) != id {
 		return nil, fmt.Errorf("%w: representation %x does not hash to its address", errRepMismatch, id[:6])
 	}
-	return unmarshalRep(b, lim)
+	rep, err := unmarshalRep(b, lim)
+	if err == nil && e.Cache != nil {
+		e.Cache.putRep(id, rep, size)
+	}
+	return rep, err
+}
+
+// repReadCache keeps what a representation read would otherwise re-read, re-hash
+// and re-parse for every request: the parsed root of a manifest and the parsed
+// representation objects it names. Both are immutable once published (objects are
+// content-addressed; a root is replaced atomically and its entry dropped when it
+// is), so an entry never goes stale; it is only evicted for space. A hit skips
+// work whose result cannot differ; every data chunk a read then touches is still
+// read and SHA-256 verified, and deep verification never consults the cache.
+type repReadCache struct {
+	mu      sync.Mutex
+	max     int64
+	cost    int64
+	reps    map[[32]byte]repCacheRep
+	derived map[[32]byte]repCacheDerived
+	roots   map[string]repCacheRoot
+	order   []repCacheKey // insertion order: oldest first
+	hits    atomic.Int64
+	misses  atomic.Int64
+}
+
+type repCacheKey struct {
+	id      [32]byte
+	uuid    string
+	derived bool
+}
+
+type repCacheDerived struct {
+	v    any
+	cost int64
+}
+
+type repCacheRep struct {
+	rep  *repObject
+	cost int64
+}
+
+type repCacheRoot struct {
+	root *repRoot
+	cost int64
+	sig  repFileSignature
+}
+
+const repReadCacheBytes = 96 << 20
+
+func newRepReadCache(max int64) *repReadCache {
+	return &repReadCache{max: max, reps: map[[32]byte]repCacheRep{}, derived: map[[32]byte]repCacheDerived{}, roots: map[string]repCacheRoot{}}
+}
+
+func (c *repReadCache) getRep(id [32]byte) *repObject {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.reps[id]; ok {
+		c.hits.Add(1)
+		return e.rep
+	}
+	c.misses.Add(1)
+	return nil
+}
+
+func (c *repReadCache) putRep(id [32]byte, rep *repObject, size int64) {
+	cost := 4*size + 256 // parsed members are several times their wire size
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cost > c.max/4 {
+		return
+	}
+	if _, ok := c.reps[id]; ok {
+		return
+	}
+	c.reps[id] = repCacheRep{rep, cost}
+	c.cost += cost
+	c.order = append(c.order, repCacheKey{id: id})
+	c.evictLocked()
+}
+
+// derived caches an immutable structure parsed from a representation (keyed by
+// the representation's digest), such as a CAR block table.
+func (c *repReadCache) getDerived(id [32]byte) any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.derived[id]; ok {
+		c.hits.Add(1)
+		return e.v
+	}
+	return nil
+}
+
+func (c *repReadCache) putDerived(id [32]byte, v any, cost int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cost > c.max/4 {
+		return
+	}
+	if _, ok := c.derived[id]; ok {
+		return
+	}
+	c.derived[id] = repCacheDerived{v, cost}
+	c.cost += cost
+	c.order = append(c.order, repCacheKey{id: id, derived: true})
+	c.evictLocked()
+}
+
+// repFileSig identifies one incarnation of a root file: replacement (rename) changes
+// the inode, rewriting changes the size or modification time.
+type repFileSignature struct {
+	size  int64
+	mtime int64
+	ino   uint64
+}
+
+func repFileSig(fi os.FileInfo) repFileSignature {
+	sg := repFileSignature{size: fi.Size(), mtime: fi.ModTime().UnixNano()}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		sg.ino = st.Ino
+	}
+	return sg
+}
+
+func (c *repReadCache) getRoot(uuid string, sig repFileSignature) *repRoot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.roots[uuid]; ok && e.sig == sig {
+		c.hits.Add(1)
+		return e.root
+	}
+	return nil
+}
+
+func (c *repReadCache) putRoot(r *repRoot, fileSize int64, sig repFileSignature) {
+	cost := 6*fileSize + 512
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cost > c.max/4 {
+		return
+	}
+	if old, ok := c.roots[r.ManifestUUID]; ok {
+		c.cost -= old.cost
+		delete(c.roots, r.ManifestUUID)
+	}
+	c.roots[r.ManifestUUID] = repCacheRoot{r, cost, sig}
+	c.cost += cost
+	c.order = append(c.order, repCacheKey{uuid: r.ManifestUUID, id: [32]byte{1}})
+	c.evictLocked()
+}
+
+func (c *repReadCache) dropRoot(uuid string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.roots[uuid]; ok {
+		c.cost -= e.cost
+		delete(c.roots, uuid)
+	}
+}
+
+func (c *repReadCache) purge() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reps, c.derived, c.roots, c.order, c.cost = map[[32]byte]repCacheRep{}, map[[32]byte]repCacheDerived{}, map[string]repCacheRoot{}, nil, 0
+}
+
+func (c *repReadCache) evictLocked() {
+	for c.cost > c.max && len(c.order) > 0 {
+		k := c.order[0]
+		c.order = c.order[1:]
+		if k.uuid != "" {
+			if e, ok := c.roots[k.uuid]; ok {
+				c.cost -= e.cost
+				delete(c.roots, k.uuid)
+			}
+		} else if k.derived {
+			if e, ok := c.derived[k.id]; ok {
+				c.cost -= e.cost
+				delete(c.derived, k.id)
+			}
+		} else if e, ok := c.reps[k.id]; ok {
+			c.cost -= e.cost
+			delete(c.reps, k.id)
+		}
+	}
+}
+
+// repCache returns the store's read cache, creating it on first use.
+func (s *Store) repCache() *repReadCache {
+	if c := s.rep.rc.Load(); c != nil {
+		return c
+	}
+	s.rep.rc.CompareAndSwap(nil, newRepReadCache(repReadCacheBytes))
+	return s.rep.rc.Load()
 }
 
 func (e *repEnv) decoder(k repKind) (repDecoder, error) {
@@ -29148,6 +29380,8 @@ const (
 	hookRepAnalysisStarted   = "rep-analysis-started"
 	hookRepRootBeforeRetire  = "rep-root-before-retire"
 	hookRepRootAfterRetire   = "rep-root-after-retire"
+	hookRepDeferredEnqueued  = "rep-deferred-enqueued"
+	hookRepDeferredStarted   = "rep-deferred-started"
 )
 
 func (s *Store) repDir() string      { return filepath.Join(s.root, "representations") }
@@ -29198,6 +29432,12 @@ func (s *Store) publishRepRoot(r *repRoot) error {
 	if err != nil {
 		return err
 	}
+	return s.publishRepRootAt(r, floor)
+}
+
+// publishRepRootAt is publishRepRoot for a caller that already knows the capability floor.
+func (s *Store) publishRepRootAt(r *repRoot, floor int) error {
+	var err error
 	fireTestHook(hookRepRootBeforeFormat)
 	data, err := r.marshal()
 	if err != nil {
@@ -29258,6 +29498,9 @@ func (s *Store) publishRepRoot(r *repRoot) error {
 	if err := syncDir(dir); err != nil {
 		return err
 	}
+	if c := s.rep.rc.Load(); c != nil {
+		c.dropRoot(r.ManifestUUID)
+	}
 	fireTestHook(hookRepRootPublished)
 	return nil
 }
@@ -29305,6 +29548,9 @@ func (s *Store) retireRepRoot(manifestUUID string) error {
 		return err
 	}
 	s.repInvalidate()
+	if c := s.rep.rc.Load(); c != nil {
+		c.dropRoot(manifestUUID)
+	}
 	fireTestHook(hookRepRootAfterRetire)
 	return nil
 }
@@ -30746,6 +30992,9 @@ type carRep struct {
 	indexMode  int
 	indexCodec uint64
 	indexBytes []byte
+
+	idxOnce sync.Once // derived index, rebuilt at most once per cached table
+	idxMemo []byte
 }
 
 func (rep *carRep) cidOf(r *carRef) []byte {
@@ -30889,6 +31138,14 @@ func (rep *carRep) indexBytesOrRebuilt() []byte {
 	case carIndexExact:
 		return rep.indexBytes
 	case carIndexDerived:
+		rep.idxOnce.Do(func() { rep.idxMemo = rep.buildDerivedIndex() })
+		return rep.idxMemo
+	}
+	return nil
+}
+
+func (rep *carRep) buildDerivedIndex() []byte {
+	{
 		off := int64(len(binary.AppendUvarint(nil, uint64(len(rep.header))))) + int64(len(rep.header))
 		recs := make([]carIndexRec, 0, len(rep.refs))
 		for i := range rep.refs {
@@ -30905,7 +31162,6 @@ func (rep *carRep) indexBytesOrRebuilt() []byte {
 		}
 		return buildCARIndex(rep.indexCodec, recs)
 	}
-	return nil
 }
 
 // marshalParts serialises the recipe as head (header, wrapper, index, CID
@@ -31135,6 +31391,20 @@ type repCARDecoder struct{}
 
 // carOf assembles head || table (the STORED members) || tail and parses it.
 func carOf(c *repCall) (*carRep, error) {
+	if cache := c.env.Cache; cache != nil {
+		if v, ok := cache.getDerived(c.ID).(*carRep); ok {
+			return v, nil
+		}
+		rep, err := carOfParse(c)
+		if err == nil {
+			cache.putDerived(c.ID, rep, int64(len(rep.refs))*96+int64(len(rep.header))+int64(len(rep.indexBytes))+1024)
+		}
+		return rep, err
+	}
+	return carOfParse(c)
+}
+
+func carOfParse(c *repCall) (*carRep, error) {
 	hl, n := binary.Uvarint(c.Rep.Recipe)
 	if n <= 0 || hl > uint64(len(c.Rep.Recipe)-n) {
 		return nil, repCorrupt("CAR recipe head")
@@ -31964,10 +32234,18 @@ func (s *Store) newRepBuilder(size int64, base func([32]byte) *repDesc, cat *rep
 }
 
 // newSink picks the physical sink exactly as an ordinary ingest of the same
-// size would: loose CAS files, or immutable packs for large objects.
+// size would: the active segment for small objects, immutable packs for large
+// ones, loose CAS files otherwise.
 func (b *repBuilder) newSink() chunkSink {
-	if b.big {
+	switch {
+	case b.big:
 		return b.s.newPackSink(b.size)
+	case b.s.segFor(ingestOptions{size: b.size}):
+		// A small object's components share the active segment's group commit (one
+		// write and one fsync for the whole representation) instead of one loose
+		// file, fsync and shard-directory operation each. Same durability and
+		// visibility as an ordinary small PUT: nothing is visible before Flush.
+		return b.s.newSegSink()
 	}
 	return looseSink{b.s.newCASBatch()}
 }
@@ -32837,7 +33115,24 @@ type repState struct {
 	// nothing). It is set when a root is published or the roots directory exists.
 	mayHaveRoots atomic.Bool
 
+	// stopping is raised when the store closes: a construction in flight
+	// abandons itself at its next read or phase boundary.
+	stopping atomic.Bool
+	rc       atomic.Pointer[repReadCache] // read-path cache of parsed roots and objects
+	q        atomic.Pointer[repQueue]     // deferred construction; nil while builds are inline
+
 	reads, rangeReads, fallbacks, optionalFailures atomic.Int64
+
+	// bt accumulates where construction time goes (nanoseconds), for
+	// measurement; never consulted for correctness.
+	bt repBuildTimes
+}
+
+// repBuildTimes is the cumulative cost of representation construction by phase.
+type repBuildTimes struct {
+	built, rejected                            atomic.Int64
+	analyzeNS, publishNS, proofNS, rootNS, rch atomic.Int64
+	components, componentBytes                 atomic.Int64
 }
 
 func (s *Store) setRepMode(m repMode) { s.rep.mode.Store(int32(m)) }
@@ -32951,12 +33246,14 @@ type manifestReaderAt struct {
 	size      int64
 	rd        *manifestReader
 	streamEnd int64
+	lastEnd   int64 // offset just past the previous ReadAt: a read starting there continues a scan
+	rdEnd     int64 // last offset rd was opened to cover
 	cur       []byte
 	curOff    int64
 }
 
 func (s *Store) newManifestReaderAt(man manifestV1) *manifestReaderAt {
-	return &manifestReaderAt{s: s, man: man, size: man.TotalLength}
+	return &manifestReaderAt{s: s, man: man, size: man.TotalLength, lastEnd: -1}
 }
 
 func (m *manifestReaderAt) close() {
@@ -32971,6 +33268,9 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, errors.New("negative offset")
 	}
+	if m.s.rep.stopping.Load() {
+		return 0, errRepBuildStopped
+	}
 	n := 0
 	for n < len(p) && off < m.size {
 		if m.cur != nil && off >= m.curOff && off < m.curOff+int64(len(m.cur)) {
@@ -32979,7 +33279,7 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 			off += int64(c)
 			continue
 		}
-		if m.rd == nil || m.streamEnd != off {
+		if m.rd == nil || m.streamEnd != off || off > m.rdEnd {
 			m.close()
 			if m.sm == nil {
 				sm, err := newServedManifest(m.man, [32]byte{})
@@ -32988,8 +33288,17 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 				}
 				m.sm = sm
 			}
-			m.rd = m.s.newServedReader(m.sm, byteRange{start: off, end: m.size - 1})
-			m.streamEnd = off
+			// A read that does not continue the previous one is a probe (a tar header, a
+			// table, a footer): fetch exactly the chunks it needs. An open-ended reader
+			// would plan a run of up to 64 contiguous chunks, decode and SHA-256 all of
+			// them, and drop all but the first at the next probe. The read that continues
+			// a probe (or any sequential scan) opens the open-ended, run-coalescing reader.
+			end := m.size - 1
+			if off != m.lastEnd && int64(len(p)-n) <= repProbeMax {
+				end = min(end, off+int64(len(p)-n)-1)
+			}
+			m.rd = m.s.newServedReader(m.sm, byteRange{start: off, end: end})
+			m.streamEnd, m.rdEnd = off, end
 		}
 		data, err := m.rd.next()
 		if err != nil {
@@ -33002,11 +33311,15 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 		m.cur, m.curOff = data, m.streamEnd
 		m.streamEnd += int64(len(data))
 	}
+	m.lastEnd = off
 	if n < len(p) {
 		return n, io.EOF
 	}
 	return n, nil
 }
+
+// repProbeMax is the largest read treated as a probe after a jump.
+const repProbeMax = 64 << 10
 
 // ---- building and publishing ---------------------------------------------------
 
@@ -33014,7 +33327,12 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 // representation and publishes the root. It returns errRepUnsupported when no
 // structural kind applies; every other error means the optional work failed.
 // Nothing here changes what is visible: the namespace commit is separate.
-func (s *Store) repBuild(man manifestV1) error {
+func (s *Store) repBuild(man manifestV1) error { return s.repBuildFor(man, nil) }
+
+// repBuildFor is repBuild with an optional liveness check, consulted at the
+// last moment before the root is published: a deferred build whose manifest
+// has meanwhile left the namespace and its retained history publishes nothing.
+func (s *Store) repBuildFor(man manifestV1, live func() bool) error {
 	if man.TotalLength < 1 {
 		return errRepUnsupported
 	}
@@ -33033,6 +33351,7 @@ func (s *Store) repBuild(man manifestV1) error {
 	}
 	s.repEnsure()
 	fireTestHook(hookRepAnalysisStarted)
+	t0 := time.Now()
 	b := s.newRepBuilder(man.TotalLength, s.repDescLookup, nil)
 	defer b.close()
 	var rep *repObject
@@ -33043,21 +33362,35 @@ func (s *Store) repBuild(man manifestV1) error {
 		rep, err = b.encodeKind(kind, ra, man.TotalLength)
 		return err
 	}(); err != nil {
+		s.rep.bt.rejected.Add(1)
+		s.rep.bt.analyzeNS.Add(int64(time.Since(t0)))
 		return err
 	}
 	id, err := b.finishRep(rep)
 	if err != nil {
 		return err
 	}
+	t1 := time.Now()
+	s.rep.bt.analyzeNS.Add(int64(t1.Sub(t0)))
 	fireTestHook(hookRepComponentsStaged)
+	if s.rep.stopping.Load() {
+		return errRepBuildStopped
+	}
 	if err := b.flush(); err != nil {
 		return err
 	}
+	t2 := time.Now()
+	s.rep.bt.publishNS.Add(int64(t2.Sub(t1)))
 	fireTestHook(hookRepComponentsFlushed)
 	// The proof runs the production decoder over the production Source: the exact
 	// length and SHA-256 of the authoritative object, never a buffered copy.
 	if err := b.proof(id, man.TotalLength, objSHA); err != nil {
 		return fmt.Errorf("representation proof failed: %w", err)
+	}
+	t3 := time.Now()
+	s.rep.bt.proofNS.Add(int64(t3.Sub(t2)))
+	if s.rep.stopping.Load() {
+		return errRepBuildStopped
 	}
 	reach, err := b.env.reachable(id)
 	if err != nil {
@@ -33069,10 +33402,22 @@ func (s *Store) repBuild(man manifestV1) error {
 			root.Descs[oid] = d
 		}
 	}
+	t4 := time.Now()
+	s.rep.bt.rch.Add(int64(t4.Sub(t3)))
+	s.rep.bt.components.Add(int64(len(reach.Order)))
 	fireTestHook(hookRepObjectPublished)
-	if err := s.publishRepRoot(root); err != nil {
+	if live != nil && !live() {
+		return errRepBuildSuperseded
+	}
+	floor, err := repFloorOf(b.env, reach)
+	if err != nil {
 		return err
 	}
+	if err := s.publishRepRootAt(root, floor); err != nil {
+		return err
+	}
+	s.rep.bt.rootNS.Add(int64(time.Since(t4)))
+	s.rep.bt.built.Add(1)
 	s.repAdopt(root)
 	return nil
 }
@@ -33091,15 +33436,374 @@ func (s *Store) tryBuildRep(man manifestV1) {
 }
 
 func (s *Store) maybeBuildRep(man manifestV1) {
+	if s.rep.q.Load() != nil {
+		return // deferred: scheduled after the authoritative commit (repAfterCommit)
+	}
 	s.tryBuildRep(man)
 	if s.repMode() != repModeOff {
 		fireTestHook(hookRepBeforeNamespace)
 	}
 }
 
+// ---- deferred construction ---------------------------------------------------------
+//
+// Policy "deferred" (serve -representation-build deferred; the default stays
+// "inline", where a representation exists when the PUT is acknowledged). A
+// deferred PUT is acknowledged after the authoritative CDC commit; its
+// representation is built afterwards by a small, bounded pool of workers and
+// published exactly like an inline one (components durable, proof, atomic root).
+// Until the root appears the object is read through CDC, which is always
+// correct. The queue is memory only: work still queued when the process stops
+// is abandoned (the object simply stays CDC-only), and staged components of a
+// build interrupted before its root are ordinary unreachable CAS content that
+// gc reclaims. Destructive maintenance needs the exclusive store lock, so no
+// build overlaps it; within the process the immutable manifest and its chunks
+// cannot disappear while a build reads them.
+
+var (
+	errRepBuildStopped    = errors.New("representation build abandoned: store closing")
+	errRepBuildSuperseded = errors.New("representation build abandoned: manifest no longer live")
+)
+
+const (
+	repDeferMaxJobs  = 256     // pending + running builds
+	repDeferMaxBytes = 8 << 30 // sum of the object sizes pending + running
+
+	repDeferDoneMax = 4096 // content digests remembered for root cloning
+)
+
+// repDeferStarvation is how long a worker waits for foreground idleness before
+// it runs anyway (a variable so tests can shorten it).
+var repDeferStarvation = 5 * time.Second
+
+// fgGate counts requests in flight so deferred work can yield to them.
+type fgGate struct {
+	n       atomic.Int64
+	mu      sync.Mutex
+	cond    *sync.Cond
+	waiters int
+}
+
+func (g *fgGate) enter() { g.n.Add(1) }
+func (g *fgGate) exit() {
+	if g.n.Add(-1) == 0 {
+		g.mu.Lock()
+		if g.waiters > 0 {
+			g.cond.Broadcast()
+		}
+		g.mu.Unlock()
+	}
+}
+
+// waitIdle blocks until no foreground request is in flight, stop is raised, or
+// max has elapsed (a busy store must still make progress). It reports whether
+// it returned because the store was idle.
+func (g *fgGate) waitIdle(stop *atomic.Bool, max time.Duration) bool {
+	if g.n.Load() == 0 {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.cond == nil {
+		g.cond = sync.NewCond(&g.mu)
+	}
+	expired := false
+	t := time.AfterFunc(max, func() { g.mu.Lock(); expired = true; g.cond.Broadcast(); g.mu.Unlock() })
+	defer t.Stop()
+	g.waiters++
+	defer func() { g.waiters-- }()
+	for g.n.Load() != 0 && !expired && !stop.Load() {
+		g.cond.Wait()
+	}
+	return g.n.Load() == 0
+}
+
+type repJob struct {
+	sha         string // object SHA-256 (hex): the coalescing key
+	size        int64
+	man         manifestV1
+	bucket, key string
+	cloneFrom   string      // a manifest already carrying this content's root
+	more        []repWaiter // identical content requested while this job was queued or running
+}
+
+type repWaiter struct {
+	man         manifestV1
+	bucket, key string
+}
+
+type repQueue struct {
+	s       *Store
+	mu      sync.Mutex
+	cond    *sync.Cond
+	pending []*repJob
+	byKey   map[string]*repJob // pending and running
+	done    map[string]string  // object sha -> manifest uuid whose root was published (bounded)
+	doneOrd []string
+	bytes   int64
+	running int
+	closed  bool
+	maxJobs int
+	maxByte int64
+	wg      sync.WaitGroup
+
+	enqueued, coalesced, dropped, built, cloned, abandoned, yielded atomic.Int64
+}
+
+// RepDeferredStats is a point-in-time view of the deferred queue, for tests and measurement.
+type RepDeferredStats struct {
+	Pending, Running                                              int
+	QueuedBytes                                                   int64
+	Enqueued, Coalesced, Dropped, Built, Cloned, Abandoned, Yield int64
+}
+
+// enableRepDeferred starts n workers building representations after commit.
+// It is a runtime policy, never persisted.
+func (s *Store) enableRepDeferred(workers, maxJobs int) {
+	if workers < 1 {
+		workers = 1
+	}
+	if maxJobs < 1 {
+		maxJobs = repDeferMaxJobs
+	}
+	q := &repQueue{s: s, byKey: map[string]*repJob{}, done: map[string]string{}, maxJobs: maxJobs, maxByte: repDeferMaxBytes}
+	q.cond = sync.NewCond(&q.mu)
+	if !s.rep.q.CompareAndSwap(nil, q) {
+		return
+	}
+	for i := 0; i < workers; i++ {
+		q.wg.Add(1)
+		go q.worker()
+	}
+}
+
+func (s *Store) repDeferredStats() RepDeferredStats {
+	q := s.rep.q.Load()
+	if q == nil {
+		return RepDeferredStats{}
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return RepDeferredStats{Pending: len(q.pending), Running: q.running, QueuedBytes: q.bytes, Enqueued: q.enqueued.Load(),
+		Coalesced: q.coalesced.Load(), Dropped: q.dropped.Load(), Built: q.built.Load(), Cloned: q.cloned.Load(), Abandoned: q.abandoned.Load(), Yield: q.yielded.Load()}
+}
+
+// repQuiesce waits until every queued and running build has finished (or the
+// queue is closed). For tests and measurement.
+func (s *Store) repQuiesce() {
+	q := s.rep.q.Load()
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	for (len(q.pending) > 0 || q.running > 0) && !q.closed {
+		q.cond.Wait()
+	}
+	q.mu.Unlock()
+}
+
+// repQueueStop abandons queued work, tells running builds to stop at their next
+// boundary and waits up to grace for the workers. It reports whether they ended.
+func (s *Store) repQueueStop(grace time.Duration) bool {
+	s.rep.stopping.Store(true)
+	q := s.rep.q.Load()
+	if q == nil {
+		return true
+	}
+	q.mu.Lock()
+	if !q.closed {
+		q.closed = true
+		for _, j := range q.pending {
+			q.abandoned.Add(1 + int64(len(j.more)))
+			delete(q.byKey, j.sha)
+		}
+		q.pending, q.bytes = nil, 0
+	}
+	q.cond.Broadcast()
+	q.mu.Unlock()
+	s.fg.mu.Lock()
+	if s.fg.cond != nil {
+		s.fg.cond.Broadcast()
+	}
+	s.fg.mu.Unlock()
+	ended := make(chan struct{})
+	go func() { q.wg.Wait(); close(ended) }()
+	select {
+	case <-ended:
+		return true
+	case <-time.After(grace):
+		return false
+	}
+}
+
+// repManifestLive reports whether bucket/key still names the manifest, as its
+// current version or in its retained history.
+func (s *Store) repManifestLive(bucket, key, uuid string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b := s.buckets[bucket]; b != nil {
+		if e := b.objects[key]; e != nil && e.manifestUUID == uuid {
+			return true
+		}
+	}
+	for _, h := range s.history[bucket][key] {
+		if h.manifestUUID == uuid {
+			return true
+		}
+	}
+	return false
+}
+
+// repAfterCommit schedules the representation of a manifest the namespace now
+// names. It never blocks the caller and never fails the request: a full queue
+// drops the build (the object stays CDC-only).
+func (s *Store) repAfterCommit(bucket, key string, man manifestV1) {
+	q := s.rep.q.Load()
+	if q == nil || s.repMode() == repModeOff {
+		return
+	}
+	q.enqueue(bucket, key, man)
+}
+
+func (q *repQueue) enqueue(bucket, key string, man manifestV1) {
+	if man.TotalLength < 1 || man.TotalLength > repMaxInspect {
+		return // never representable; do not occupy the queue
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return
+	}
+	if j := q.byKey[man.ObjectSHA256]; j != nil {
+		j.more = append(j.more, repWaiter{man: man, bucket: bucket, key: key})
+		q.coalesced.Add(1)
+		return
+	}
+	if len(q.pending)+q.running >= q.maxJobs || q.bytes+man.TotalLength > q.maxByte {
+		if q.dropped.Add(1)%1000 == 1 {
+			log.Printf("zeros3: deferred representation queue full (%d jobs, %d bytes): build skipped, object stays CDC-only", len(q.pending)+q.running, q.bytes)
+		}
+		return
+	}
+	j := &repJob{sha: man.ObjectSHA256, size: man.TotalLength, man: man, bucket: bucket, key: key, cloneFrom: q.done[man.ObjectSHA256]}
+	q.pending = append(q.pending, j)
+	q.byKey[j.sha] = j
+	q.bytes += j.size
+	q.enqueued.Add(1)
+	q.cond.Signal()
+	fireTestHook(hookRepDeferredEnqueued)
+}
+
+func (q *repQueue) worker() {
+	defer q.wg.Done()
+	for {
+		q.mu.Lock()
+		for len(q.pending) == 0 && !q.closed {
+			q.cond.Wait()
+		}
+		if q.closed {
+			q.mu.Unlock()
+			return
+		}
+		j := q.pending[0]
+		q.pending[0] = nil
+		q.pending = q.pending[1:]
+		q.running++
+		q.mu.Unlock()
+
+		if !q.s.fg.waitIdle(&q.s.rep.stopping, repDeferStarvation) {
+			q.yielded.Add(1)
+		}
+		fireTestHook(hookRepDeferredStarted)
+		q.run(j)
+
+		q.mu.Lock()
+		delete(q.byKey, j.sha)
+		q.bytes -= j.size
+		q.running--
+		q.cond.Broadcast()
+		q.mu.Unlock()
+	}
+}
+
+func (q *repQueue) run(j *repJob) {
+	s := q.s
+	defer func() {
+		if r := recover(); r != nil { // a build defect must not kill the worker or the process
+			s.rep.optionalFailures.Add(1)
+			log.Printf("zeros3: optional representation for manifest %s panicked: %v", j.man.ManifestUUID, r)
+		}
+	}()
+	if s.rep.stopping.Load() || s.repMode() == repModeOff {
+		q.abandoned.Add(1)
+		return
+	}
+	live := func() bool { return s.repManifestLive(j.bucket, j.key, j.man.ManifestUUID) }
+	if !live() {
+		q.abandoned.Add(1)
+		return
+	}
+	primary := j.man.ManifestUUID
+	var err error
+	cloned := false
+	if j.cloneFrom != "" && s.repCloneRoot(j.cloneFrom, j.man) {
+		cloned = true
+		q.cloned.Add(1)
+	} else {
+		err = s.repBuildFor(j.man, live)
+	}
+	switch {
+	case err == nil:
+		if !cloned {
+			q.built.Add(1)
+		}
+		q.remember(j.sha, primary)
+	case errors.Is(err, errRepUnsupported):
+		return
+	case errors.Is(err, errRepBuildStopped), errors.Is(err, errRepBuildSuperseded):
+		q.abandoned.Add(1)
+		return
+	default:
+		s.rep.optionalFailures.Add(1)
+		log.Printf("zeros3: optional representation for manifest %s skipped: %v", primary, err)
+		return
+	}
+	q.mu.Lock()
+	waiters := j.more
+	j.more = nil
+	q.mu.Unlock()
+	for _, w := range waiters {
+		if s.rep.stopping.Load() {
+			q.abandoned.Add(1)
+			continue
+		}
+		if s.repManifestLive(w.bucket, w.key, w.man.ManifestUUID) && s.repCloneRoot(primary, w.man) {
+			q.cloned.Add(1)
+		}
+	}
+}
+
+func (q *repQueue) remember(sha, uuid string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if _, ok := q.done[sha]; !ok {
+		q.doneOrd = append(q.doneOrd, sha)
+		if len(q.doneOrd) > repDeferDoneMax {
+			delete(q.done, q.doneOrd[0])
+			q.doneOrd = q.doneOrd[1:]
+		}
+	}
+	q.done[sha] = uuid
+}
+
 // repCloneRoot attaches the representation of an already proven manifest to a
 // new manifest of byte-identical content (CopyObject, restore): a small root
 // sidecar pointing at the same representation and descriptors.
+func repHasRootFile(s *Store, uuid string) bool {
+	_, err := os.Stat(s.repRootPath(uuid))
+	return err == nil
+}
+
 func (s *Store) repCloneRoot(srcUUID string, dst manifestV1) bool {
 	r, err := s.loadRepRoot(srcUUID)
 	if err != nil {
@@ -33309,28 +34013,47 @@ func (s *Store) repOrphanRootBytes(uuids []string) (n int64) {
 // length and SHA-256 with its root and the authoritative object. Roots that
 // reachability already reported are not reported twice.
 func (s *Store) verifyRepresentationsDeep(rr reachabilityResult, res *VerifyResult) {
-	for _, uuid := range slices.Sorted(maps.Keys(rr.ReferencedManifests)) {
+	uuids := slices.Sorted(maps.Keys(rr.ReferencedManifests))
+	type outcome struct {
+		kind, detail string // an issue, or both empty when exact
+		skipped      bool
+	}
+	out := make([]outcome, len(uuids))
+	// Roots are independent: each reconstructs through its own Source. They run
+	// on the P3 maintenance pool (ZEROS3_MAINT_WORKERS=1 gives the serial proof); results are
+	// folded in sorted order so the report does not depend on scheduling.
+	forEachBounded(len(uuids), maintWorkers(), func(i int) error {
+		uuid := uuids[i]
 		if _, bad := rr.RepFaults[uuid]; bad {
-			continue
+			out[i].skipped = true
+			return nil
 		}
 		root, err := s.loadRepRoot(uuid)
 		if err != nil {
-			continue
+			out[i].skipped = true
+			return nil
 		}
-		subject := "representation " + uuid
 		src := s.newRepSource(root.Descs, nil)
 		env := &repEnv{Src: src, Limits: repProdLimits}
 		n, sum, err := env.reconstruct(root.Rep, io.Discard)
 		src.close()
 		switch {
 		case err != nil:
-			kind := "corrupt"
+			out[i].kind = "corrupt"
 			if errors.Is(err, errRepMissing) {
-				kind = "missing"
+				out[i].kind = "missing"
 			}
-			res.addIssue(kind, subject, "reconstruction failed: "+err.Error())
+			out[i].detail = "reconstruction failed: " + err.Error()
 		case n != root.ObjSize || sum != root.ObjSHA:
-			res.addIssue("corrupt", subject, "reconstruction does not equal the authoritative object")
+			out[i].kind, out[i].detail = "corrupt", "reconstruction does not equal the authoritative object"
+		}
+		return nil
+	})
+	for i, o := range out {
+		switch {
+		case o.skipped:
+		case o.kind != "":
+			res.addIssue(o.kind, "representation "+uuids[i], o.detail)
 		default:
 			res.RepresentationsVerified++
 		}
@@ -33538,19 +34261,37 @@ func (s *Store) repOpenReader(man manifestV1, rng byteRange) (objectReader, erro
 	if man.TotalLength < 1 || !s.rep.mayHaveRoots.Load() {
 		return nil, nil
 	}
-	root, err := s.loadRepRoot(man.ManifestUUID)
-	if err != nil {
-		if os.IsNotExist(err) {
+	cache := s.repCache()
+	// One stat decides whether the parsed root is still the file on disk: a root
+	// that was replaced or rewritten is re-read (and a damaged one falls back below).
+	fi, serr := os.Stat(s.repRootPath(man.ManifestUUID))
+	if serr != nil {
+		cache.dropRoot(man.ManifestUUID)
+		if os.IsNotExist(serr) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, serr
+	}
+	sig := repFileSig(fi)
+	root := cache.getRoot(man.ManifestUUID, sig)
+	if root == nil {
+		var err error
+		root, err = s.loadRepRoot(man.ManifestUUID)
+		if err != nil {
+			cache.dropRoot(man.ManifestUUID)
+			if os.IsNotExist(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		cache.putRoot(root, fi.Size(), sig)
 	}
 	if hex.EncodeToString(root.ObjSHA[:]) != man.ObjectSHA256 || root.ObjSize != man.TotalLength {
 		return nil, fmt.Errorf("%w: root names a different object", errRepMismatch)
 	}
 	whole := rng.start == 0 && rng.end == man.TotalLength-1
 	src := s.newRepSource(root.Descs, nil)
-	env := &repEnv{Src: src, Limits: repProdLimits}
+	env := &repEnv{Src: src, Limits: repProdLimits, Cache: cache}
 	var produce func(w io.Writer) error
 	if whole {
 		produce = func(w io.Writer) error {
@@ -39150,6 +39891,10 @@ type repZSfseTable struct {
 	symOff  []int32
 	symList []uint16
 	byBase  []uint16
+	// Dense inverse of prev, built once the table has served enough lookups to repay
+	// it: inv[sym*len(dec)+next] is the state prev would find, plus one (0: none).
+	inv   []uint16
+	calls int32
 }
 
 // Port source: zeros3-z3/zstdz3/fse.go
@@ -39396,6 +40141,29 @@ func (t *repZSfseTable) stateAt(sym int, rank uint32) (int, bool) {
 	return int(seg[rank]), true
 }
 
+// initInv builds the dense inverse of the binary search prev does: for each symbol,
+// the state whose baseline is the greatest not above next, if its range contains next.
+func (t *repZSfseTable) initInv() {
+	size := len(t.dec)
+	t.inv = make([]uint16, len(t.counts)*size)
+	for s := range t.counts {
+		seg := t.byBase[t.symOff[s]:t.symOff[s+1]]
+		row := t.inv[s*size : (s+1)*size]
+		for i, u := range seg {
+			d := t.dec[u]
+			lo, hi := int(d.base), size
+			if i+1 < len(seg) {
+				hi = min(hi, int(t.dec[seg[i+1]].base))
+			}
+			for x := lo; x < hi; x++ {
+				if x-lo < 1<<d.nb {
+					row[x] = u + 1
+				}
+			}
+		}
+	}
+}
+
 // Port source: zeros3-z3/zstdz3/fse.go
 // prev finds the state that carries sym and whose baseline range contains next; the
 // bits the decoder must read to get from it to next are next-base (nb bits).
@@ -39404,8 +40172,33 @@ func (t *repZSfseTable) prev(sym int, next int) (state int, bits uint32, nb int,
 	if sym >= len(t.counts) {
 		return 0, 0, 0, false
 	}
+	if t.inv == nil && t.calls < 128 {
+		t.calls++
+		if t.calls == 128 {
+			t.initInv()
+		}
+	}
+	if t.inv != nil && uint(next) < uint(len(t.dec)) {
+		u := t.inv[sym*len(t.dec)+next]
+		if u == 0 {
+			return 0, 0, 0, false
+		}
+		d := t.dec[u-1]
+		return int(u - 1), uint32(next - int(d.base)), int(d.nb), true
+	}
 	seg := t.byBase[t.symOff[sym]:t.symOff[sym+1]]
-	i := sort.Search(len(seg), func(i int) bool { return int(t.dec[seg[i]].base) > next }) - 1
+	// first index whose baseline exceeds next (an open-coded sort.Search: this is
+	// called once per sequence field and the closure dominated its cost)
+	lo, hi := 0, len(seg)
+	for lo < hi {
+		h := int(uint(lo+hi) >> 1)
+		if int(t.dec[seg[h]].base) > next {
+			hi = h
+		} else {
+			lo = h + 1
+		}
+	}
+	i := lo - 1
 	if i < 0 {
 		return 0, 0, 0, false
 	}
@@ -45322,6 +46115,13 @@ func (s *Store) repPublicationFloor(r *repRoot) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return repFloorOf(env, reach)
+}
+
+// repFloorOf is the store-format level the representation closure reach describes
+// requires. A builder that has just walked the closure passes its own result in
+// rather than walking it a second time.
+func repFloorOf(env *repEnv, reach *repReach) (int, error) {
 	floor := storeFormatVersionRepresentations
 	for id, role := range reach.Role {
 		if role != repDepRep {
@@ -53169,7 +53969,7 @@ func repIXNewPrefixIndex(ids []repIXIdentity, k0 int) *repIXPrefixIndex {
 	for i := range p.order {
 		p.order[i] = uint32(i)
 	}
-	sort.Slice(p.order, func(i, j int) bool { return bytes.Compare(ids[p.order[i]][:], ids[p.order[j]][:]) < 0 })
+	slices.SortFunc(p.order, func(a, b uint32) int { return bytes.Compare(ids[a][:], ids[b][:]) })
 	common := func(a, b uint32) int {
 		n := 0
 		for n < 32 && ids[a][n] == ids[b][n] {
@@ -53229,10 +54029,26 @@ func (p *repIXPrefixIndex) Get(b []byte) (uint32, []byte, error) {
 		if n > len(b) {
 			return 0, nil, repIXbad("reference stream truncated")
 		}
-		base := lo
-		l := sort.Search(hi-base, func(j int) bool { return bytes.Compare(p.ids[p.order[base+j]][:n], b[:n]) >= 0 }) + base
-		h := sort.Search(hi-l, func(j int) bool { return bytes.Compare(p.ids[p.order[l+j]][:n], b[:n]) > 0 }) + l
-		lo, hi = l, h
+		// the range [lo,hi) shares the first n-1 bytes with b: narrow it to the entries whose n-byte prefix equals b[:n]
+		l, h := lo, hi
+		for l < h { // first entry with prefix >= b[:n]
+			m := int(uint(l+h) >> 1)
+			if bytes.Compare(p.ids[p.order[m]][:n], b[:n]) >= 0 {
+				h = m
+			} else {
+				l = m + 1
+			}
+		}
+		u, v := l, hi
+		for u < v { // first entry with prefix > b[:n]
+			m := int(uint(u+v) >> 1)
+			if bytes.Compare(p.ids[p.order[m]][:n], b[:n]) > 0 {
+				v = m
+			} else {
+				u = m + 1
+			}
+		}
+		lo, hi = l, u
 		if hi-lo == 1 {
 			return p.order[lo], b[n:], nil
 		}
@@ -53357,10 +54173,11 @@ func repIXNewClassIndex(handles []int, ids []repIXIdentity, k0 int) *repIXClassI
 	for i := range order {
 		order[i] = uint32(i)
 	}
-	sort.Slice(order, func(i, j int) bool {
-		a, b := order[i], order[j]
-		n := bytes.Compare(ids[a][:], ids[b][:])
-		return n < 0 || n == 0 && a < b
+	slices.SortFunc(order, func(a, b uint32) int {
+		if n := bytes.Compare(ids[a][:], ids[b][:]); n != 0 {
+			return n
+		}
+		return cmp.Compare(a, b)
 	})
 	type group struct{ lo, hi uint32 }
 	unique := 0
@@ -53372,7 +54189,7 @@ func repIXNewClassIndex(handles []int, ids []repIXIdentity, k0 int) *repIXClassI
 	// The common one-identity/one-handle case needs no CSR boundaries or
 	// 16-byte lookup records. Keep only handles plus a sorted permutation.
 	if unique == len(ids) {
-		sort.Slice(order, func(i, j int) bool { return handles[order[i]] < handles[order[j]] })
+		slices.SortFunc(order, func(a, b uint32) int { return cmp.Compare(handles[a], handles[b]) })
 		distinct := true
 		for i := 1; i < len(order); i++ {
 			if handles[order[i-1]] == handles[order[i]] {
@@ -53388,10 +54205,11 @@ func repIXNewClassIndex(handles []int, ids []repIXIdentity, k0 int) *repIXClassI
 			return c
 		}
 		// Repeated handles retain the general legacy last-class/first-occurrence rule.
-		sort.Slice(order, func(i, j int) bool {
-			a, b := order[i], order[j]
-			n := bytes.Compare(ids[a][:], ids[b][:])
-			return n < 0 || n == 0 && a < b
+		slices.SortFunc(order, func(a, b uint32) int {
+			if n := bytes.Compare(ids[a][:], ids[b][:]); n != 0 {
+				return n
+			}
+			return cmp.Compare(a, b)
 		})
 	}
 	groups := make([]group, 0, unique)
@@ -53403,7 +54221,7 @@ func repIXNewClassIndex(handles []int, ids []repIXIdentity, k0 int) *repIXClassI
 		groups = append(groups, group{uint32(lo), uint32(hi)})
 		lo = hi
 	}
-	sort.Slice(groups, func(i, j int) bool { return order[groups[i].lo] < order[groups[j].lo] })
+	slices.SortFunc(groups, func(a, b group) int { return cmp.Compare(order[a.lo], order[b.lo]) })
 	cls := make([]repIXIdentity, len(groups))
 	c.starts = make([]uint32, len(groups)+1)
 	c.members = make([]int, 0, len(ids))

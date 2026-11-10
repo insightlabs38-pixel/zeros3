@@ -243,6 +243,14 @@ understood by every maintenance command (verify, gc, compact, repack, tier,
 history prune), they are just not created or read. Binaries that predate format 6
 refuse such a store at open.
 
+`-representation-build deferred` (with `-representation-workers N`, default 1, and
+`-representation-queue M`, default 256) moves the construction work off the PUT: the
+PUT is acknowledged after the authoritative commit and its representation appears
+later, built by at most N background workers. It changes no format level and no
+wire behaviour. Work still queued when the server stops is abandoned (those objects
+stay CDC-only until the same content is written again); stop the server before
+`gc`, `repack`, `compact` or `versions prune` as usual.
+
 Model (Safetensors/GGUF) publication raises format **7**, including a Model child
 under another representation. Format-6 binaries refuse these stores even when
 creation is switched off. Retirement does not lower the floor. Old sync/replicate
