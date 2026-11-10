@@ -6800,7 +6800,7 @@ type Store struct {
 	mcache *manifestCache
 	// ccache holds recently re-read, digest-verified chunks (section 14a).
 	ccache *chunkCache
-	// pipeStreams counts the large responses currently using pipelined reads (section 14b).
+	// pipeStreams counts the large responses (pipelined or not) currently streaming (section 14b).
 	pipeStreams atomic.Int64
 }
 
@@ -16377,14 +16377,33 @@ var (
 	// one or two runs and goroutine hand-offs cost more than they overlap.
 	pipeMinRange = int64(4 << 20)
 	// pipeWorkers bounds concurrent run reads per stream.
-	pipeWorkers = max(1, min(4, runtime.GOMAXPROCS(0)-1))
-	// pipeStreamLimit bounds pipelined streams per store, so concurrent clients
-	// (which already keep the cores busy) do not each fan out further.
+	pipeWorkers = max(1, min(3, runtime.GOMAXPROCS(0)-1))
+	// pipeStreamLimit is the most large streams that may be active (in total, pipelined or
+	// not) when a new one starts and still be pipelined: with more, the cores are already
+	// busy hashing for other clients and fanning out only adds scheduling cost.
 	pipeStreamLimit = int64(max(1, runtime.GOMAXPROCS(0)/2))
-	pipeMaxTasks    = 12
+	pipeMaxTasks    = 16
 	// pipeInflightBytes bounds the logical bytes planned but not yet consumed.
-	pipeInflightBytes = int64(16 << 20)
+	pipeInflightBytes = int64(8 << 20)
+	// pipeRunMaxStored bounds the bytes one pipelined run fetches with a single ReadAt.
+	pipeRunMaxStored = 1 << 20
 )
+
+func init() {
+	// Benchmarking and test switches, not a tuning interface.
+	envInt := func(name string, set func(int64)) {
+		if v := os.Getenv(name); v != "" {
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+				set(n)
+			}
+		}
+	}
+	envInt("ZEROS3_PIPE_WORKERS", func(n int64) { pipeWorkers = int(n) })
+	envInt("ZEROS3_PIPE_STREAMS", func(n int64) { pipeStreamLimit = n })
+	envInt("ZEROS3_PIPE_INFLIGHT_MIB", func(n int64) { pipeInflightBytes = n << 20 })
+	envInt("ZEROS3_PIPE_RUN_KIB", func(n int64) { pipeRunMaxStored = int(n << 10) })
+	envInt("ZEROS3_PIPE_MIN_MIB", func(n int64) { pipeMinRange = n << 20 })
+}
 
 type pipeTask struct {
 	first, n int        // chunks [first, first+n)
@@ -16414,21 +16433,39 @@ type pipeReader struct {
 	counted  bool
 }
 
-// newStreamReader chooses the reader for a response: pipelined for a large
-// range on a store with spare stream slots, otherwise the serial reader.
+// newStreamReader chooses the reader for a response. A large range is counted
+// as an active stream until its reader is closed; it is pipelined only if few
+// other large streams are active, otherwise the serial reader serves it.
 func (s *Store) newStreamReader(sm *servedManifest, rng byteRange) objectReader {
-	if rng.end-rng.start+1 >= pipeMinRange && pipeWorkers > 1 && s.pipeStreams.Add(1) <= pipeStreamLimit {
-		return s.newPipeReader(sm, rng)
-	} else if rng.end-rng.start+1 >= pipeMinRange && pipeWorkers > 1 {
-		s.pipeStreams.Add(-1)
+	if rng.end-rng.start+1 < pipeMinRange || pipeWorkers < 2 {
+		return s.newServedReader(sm, rng)
 	}
-	return s.newServedReader(sm, rng)
+	if s.pipeStreams.Add(1) <= pipeStreamLimit {
+		return s.newPipeReader(sm, rng) // close returns the count
+	}
+	return &countedReader{objectReader: s.newServedReader(sm, rng), n: &s.pipeStreams}
 }
 
-// newPipeReader's caller has already taken a pipelined-stream slot, which close returns.
+// countedReader returns a large stream's count when it is closed (once).
+type countedReader struct {
+	objectReader
+	n    *atomic.Int64
+	done bool
+}
+
+func (c *countedReader) close() {
+	c.objectReader.close()
+	if !c.done {
+		c.done = true
+		c.n.Add(-1)
+	}
+}
+
+// newPipeReader's caller has already counted the stream, which close returns.
 func (s *Store) newPipeReader(sm *servedManifest, rng byteRange) *pipeReader {
 	pl := s.newServedReader(sm, rng)
 	pl.cc = nil // large streams neither read nor fill the chunk cache
+	pl.maxStored = pipeRunMaxStored
 	pl.pr = newPackRunReader(s.packSnap(), s.packTrace)
 	return &pipeReader{s: s, m: sm, rng: rng, plan: pl, sem: make(chan struct{}, pipeWorkers), cancel: make(chan struct{}), counted: true}
 }
@@ -16617,6 +16654,9 @@ type manifestReader struct {
 	pr  *packRunReader // created on first packed read; holds <= 1 pack file
 	bad map[int32]bool // packs whose run had a failing record: no more runs from them
 
+	// maxStored overrides packRunMaxStored for the runs this reader plans (0: the default).
+	maxStored int
+
 	// q holds the verified (or failed) chunks of the current run, in
 	// manifest order; qh is the next to hand out.
 	q    []runChunk
@@ -16763,7 +16803,7 @@ func (m *manifestReader) planRun(i int, sum [32]byte, chunkStart int64) bool {
 		l, ok := m.primary(sj, m.m.length(j))
 		prev := m.locs[len(m.locs)-1]
 		if !ok || l.pack != first.pack || int64(l.off)-packRecordHeaderSize != int64(prev.off)+int64(prev.stored) ||
-			stored+packRecordHeaderSize+int(l.stored) > packRunMaxStored || logical+int(l.logical) > packRunMaxLogical {
+			stored+packRecordHeaderSize+int(l.stored) > cmp.Or(m.maxStored, packRunMaxStored) || logical+int(l.logical) > packRunMaxLogical {
 			break
 		}
 		m.sums, m.locs = append(m.sums, sj), append(m.locs, l)

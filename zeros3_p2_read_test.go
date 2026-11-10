@@ -834,3 +834,58 @@ func TestP2_CachedEntriesAreRevalidatedAgainstStorage(t *testing.T) {
 		t.Fatalf("expected an expiry and no cached damaged manifest: %+v", ms)
 	}
 }
+
+// Large streams are counted whether or not they are pipelined; only the first
+// few are, so concurrent clients do not each fan out further.
+func TestP2_PipeliningIsAdaptiveToActiveStreams(t *testing.T) {
+	oldMin, oldLim, oldW := pipeMinRange, pipeStreamLimit, pipeWorkers
+	pipeMinRange, pipeStreamLimit, pipeWorkers = 1, 2, 3
+	t.Cleanup(func() { pipeMinRange, pipeStreamLimit, pipeWorkers = oldMin, oldLim, oldW })
+	useProductionLayout(t)
+	e := p2New(t)
+	body := genRandomBytes(95, 3_000_000)
+	e.s.PutObject("b", "k", body, "", nil)
+	entry, sm, err := e.s.headServed("b", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rds []objectReader
+	pipelined := 0
+	for i := 0; i < 6; i++ {
+		rd := e.s.newStreamReader(sm, byteRange{0, entry.size - 1})
+		if _, ok := rd.(*pipeReader); ok {
+			pipelined++
+		}
+		rds = append(rds, rd)
+	}
+	if pipelined != 2 || e.s.pipeStreams.Load() != 6 {
+		t.Fatalf("pipelined=%d counted=%d, want 2 and 6", pipelined, e.s.pipeStreams.Load())
+	}
+	for _, rd := range rds { // every reader, whichever kind, reads the same bytes
+		var got []byte
+		for {
+			d, err := rd.next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, d...)
+		}
+		if !bytes.Equal(got, body) {
+			t.Fatal("reader returned different bytes")
+		}
+		rd.close()
+		rd.close()
+	}
+	if n := e.s.pipeStreams.Load(); n != 0 {
+		t.Fatalf("%d streams still counted", n)
+	}
+	// once streams finish, the next one is pipelined again
+	rd := e.s.newStreamReader(sm, byteRange{0, entry.size - 1})
+	if _, ok := rd.(*pipeReader); !ok {
+		t.Fatal("not pipelined after the count dropped")
+	}
+	rd.close()
+}
