@@ -266,6 +266,11 @@ func TestP4Probe(t *testing.T) {
 	row.StoreFiles, row.StoreBytes, row.LooseFiles, row.Packs, row.SegFiles, row.TmpFiles, row.PackBytes, row.LooseB = p4Walk(dir)
 
 	// reads
+	var readProf *os.File
+	if pf := os.Getenv("ZEROS3_P4_READPROF"); pf != "" {
+		readProf, _ = os.Create(pf)
+		pprof.StartCPUProfile(readProf)
+	}
 	getOK, rangeOK := true, true
 	var getDur time.Duration
 	rr := rand.New(rand.NewSource(1))
@@ -329,6 +334,10 @@ func TestP4Probe(t *testing.T) {
 				}
 			}
 		}
+	}
+	if readProf != nil {
+		pprof.StopCPUProfile()
+		readProf.Close()
 	}
 	row.GetWholeMS, row.GetWholeOK, row.RangeOK = float64(getDur.Microseconds())/1000, getOK, rangeOK
 	if n4 > 0 {

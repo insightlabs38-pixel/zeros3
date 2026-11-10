@@ -28061,6 +28061,11 @@ type repEnv struct {
 	Limits repLimits
 
 	noVerify bool // tests only: skip the representation digest check (a hash cycle cannot be built honestly)
+
+	// Cache, when set, holds verified, parsed representation objects across
+	// requests. Only the read path sets it: construction, proof and verification
+	// always re-read and re-hash, so a damaged object is found by them.
+	Cache *repReadCache
 }
 
 // repCall is one decoder invocation.
@@ -28091,6 +28096,11 @@ func (e *repEnv) load(id [32]byte, depth int, path [][32]byte) (*repObject, erro
 			return nil, fmt.Errorf("%w: %x", errRepCycle, id[:6])
 		}
 	}
+	if e.Cache != nil {
+		if rep := e.Cache.getRep(id); rep != nil {
+			return rep, nil
+		}
+	}
 	size, err := e.Src.Size(id)
 	if err != nil {
 		return nil, err
@@ -28105,7 +28115,200 @@ func (e *repEnv) load(id [32]byte, depth int, path [][32]byte) (*repObject, erro
 	if !e.noVerify && sha256.Sum256(b) != id {
 		return nil, fmt.Errorf("%w: representation %x does not hash to its address", errRepMismatch, id[:6])
 	}
-	return unmarshalRep(b, lim)
+	rep, err := unmarshalRep(b, lim)
+	if err == nil && e.Cache != nil {
+		e.Cache.putRep(id, rep, size)
+	}
+	return rep, err
+}
+
+// repReadCache keeps what a representation read would otherwise re-read, re-hash
+// and re-parse for every request: the parsed root of a manifest and the parsed
+// representation objects it names. Both are immutable once published (objects are
+// content-addressed; a root is replaced atomically and its entry dropped when it
+// is), so an entry never goes stale; it is only evicted for space. A hit skips
+// work whose result cannot differ; every data chunk a read then touches is still
+// read and SHA-256 verified, and deep verification never consults the cache.
+type repReadCache struct {
+	mu      sync.Mutex
+	max     int64
+	cost    int64
+	reps    map[[32]byte]repCacheRep
+	derived map[[32]byte]repCacheDerived
+	roots   map[string]repCacheRoot
+	order   []repCacheKey // insertion order: oldest first
+	hits    atomic.Int64
+	misses  atomic.Int64
+}
+
+type repCacheKey struct {
+	id      [32]byte
+	uuid    string
+	derived bool
+}
+
+type repCacheDerived struct {
+	v    any
+	cost int64
+}
+
+type repCacheRep struct {
+	rep  *repObject
+	cost int64
+}
+
+type repCacheRoot struct {
+	root *repRoot
+	cost int64
+	sig  repFileSignature
+}
+
+const repReadCacheBytes = 96 << 20
+
+func newRepReadCache(max int64) *repReadCache {
+	return &repReadCache{max: max, reps: map[[32]byte]repCacheRep{}, derived: map[[32]byte]repCacheDerived{}, roots: map[string]repCacheRoot{}}
+}
+
+func (c *repReadCache) getRep(id [32]byte) *repObject {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.reps[id]; ok {
+		c.hits.Add(1)
+		return e.rep
+	}
+	c.misses.Add(1)
+	return nil
+}
+
+func (c *repReadCache) putRep(id [32]byte, rep *repObject, size int64) {
+	cost := 4*size + 256 // parsed members are several times their wire size
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cost > c.max/4 {
+		return
+	}
+	if _, ok := c.reps[id]; ok {
+		return
+	}
+	c.reps[id] = repCacheRep{rep, cost}
+	c.cost += cost
+	c.order = append(c.order, repCacheKey{id: id})
+	c.evictLocked()
+}
+
+// derived caches an immutable structure parsed from a representation (keyed by
+// the representation's digest), such as a CAR block table.
+func (c *repReadCache) getDerived(id [32]byte) any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.derived[id]; ok {
+		c.hits.Add(1)
+		return e.v
+	}
+	return nil
+}
+
+func (c *repReadCache) putDerived(id [32]byte, v any, cost int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cost > c.max/4 {
+		return
+	}
+	if _, ok := c.derived[id]; ok {
+		return
+	}
+	c.derived[id] = repCacheDerived{v, cost}
+	c.cost += cost
+	c.order = append(c.order, repCacheKey{id: id, derived: true})
+	c.evictLocked()
+}
+
+// repFileSig identifies one incarnation of a root file: replacement (rename) changes
+// the inode, rewriting changes the size or modification time.
+type repFileSignature struct {
+	size  int64
+	mtime int64
+	ino   uint64
+}
+
+func repFileSig(fi os.FileInfo) repFileSignature {
+	sg := repFileSignature{size: fi.Size(), mtime: fi.ModTime().UnixNano()}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		sg.ino = st.Ino
+	}
+	return sg
+}
+
+func (c *repReadCache) getRoot(uuid string, sig repFileSignature) *repRoot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.roots[uuid]; ok && e.sig == sig {
+		c.hits.Add(1)
+		return e.root
+	}
+	return nil
+}
+
+func (c *repReadCache) putRoot(r *repRoot, fileSize int64, sig repFileSignature) {
+	cost := 6*fileSize + 512
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cost > c.max/4 {
+		return
+	}
+	if old, ok := c.roots[r.ManifestUUID]; ok {
+		c.cost -= old.cost
+		delete(c.roots, r.ManifestUUID)
+	}
+	c.roots[r.ManifestUUID] = repCacheRoot{r, cost, sig}
+	c.cost += cost
+	c.order = append(c.order, repCacheKey{uuid: r.ManifestUUID, id: [32]byte{1}})
+	c.evictLocked()
+}
+
+func (c *repReadCache) dropRoot(uuid string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.roots[uuid]; ok {
+		c.cost -= e.cost
+		delete(c.roots, uuid)
+	}
+}
+
+func (c *repReadCache) purge() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reps, c.derived, c.roots, c.order, c.cost = map[[32]byte]repCacheRep{}, map[[32]byte]repCacheDerived{}, map[string]repCacheRoot{}, nil, 0
+}
+
+func (c *repReadCache) evictLocked() {
+	for c.cost > c.max && len(c.order) > 0 {
+		k := c.order[0]
+		c.order = c.order[1:]
+		if k.uuid != "" {
+			if e, ok := c.roots[k.uuid]; ok {
+				c.cost -= e.cost
+				delete(c.roots, k.uuid)
+			}
+		} else if k.derived {
+			if e, ok := c.derived[k.id]; ok {
+				c.cost -= e.cost
+				delete(c.derived, k.id)
+			}
+		} else if e, ok := c.reps[k.id]; ok {
+			c.cost -= e.cost
+			delete(c.reps, k.id)
+		}
+	}
+}
+
+// repCache returns the store's read cache, creating it on first use.
+func (s *Store) repCache() *repReadCache {
+	if c := s.rep.rc.Load(); c != nil {
+		return c
+	}
+	s.rep.rc.CompareAndSwap(nil, newRepReadCache(repReadCacheBytes))
+	return s.rep.rc.Load()
 }
 
 func (e *repEnv) decoder(k repKind) (repDecoder, error) {
@@ -29289,6 +29492,9 @@ func (s *Store) publishRepRoot(r *repRoot) error {
 	if err := syncDir(dir); err != nil {
 		return err
 	}
+	if c := s.rep.rc.Load(); c != nil {
+		c.dropRoot(r.ManifestUUID)
+	}
 	fireTestHook(hookRepRootPublished)
 	return nil
 }
@@ -29336,6 +29542,9 @@ func (s *Store) retireRepRoot(manifestUUID string) error {
 		return err
 	}
 	s.repInvalidate()
+	if c := s.rep.rc.Load(); c != nil {
+		c.dropRoot(manifestUUID)
+	}
 	fireTestHook(hookRepRootAfterRetire)
 	return nil
 }
@@ -30777,6 +30986,9 @@ type carRep struct {
 	indexMode  int
 	indexCodec uint64
 	indexBytes []byte
+
+	idxOnce sync.Once // derived index, rebuilt at most once per cached table
+	idxMemo []byte
 }
 
 func (rep *carRep) cidOf(r *carRef) []byte {
@@ -30920,6 +31132,14 @@ func (rep *carRep) indexBytesOrRebuilt() []byte {
 	case carIndexExact:
 		return rep.indexBytes
 	case carIndexDerived:
+		rep.idxOnce.Do(func() { rep.idxMemo = rep.buildDerivedIndex() })
+		return rep.idxMemo
+	}
+	return nil
+}
+
+func (rep *carRep) buildDerivedIndex() []byte {
+	{
 		off := int64(len(binary.AppendUvarint(nil, uint64(len(rep.header))))) + int64(len(rep.header))
 		recs := make([]carIndexRec, 0, len(rep.refs))
 		for i := range rep.refs {
@@ -30936,7 +31156,6 @@ func (rep *carRep) indexBytesOrRebuilt() []byte {
 		}
 		return buildCARIndex(rep.indexCodec, recs)
 	}
-	return nil
 }
 
 // marshalParts serialises the recipe as head (header, wrapper, index, CID
@@ -31166,6 +31385,20 @@ type repCARDecoder struct{}
 
 // carOf assembles head || table (the STORED members) || tail and parses it.
 func carOf(c *repCall) (*carRep, error) {
+	if cache := c.env.Cache; cache != nil {
+		if v, ok := cache.getDerived(c.ID).(*carRep); ok {
+			return v, nil
+		}
+		rep, err := carOfParse(c)
+		if err == nil {
+			cache.putDerived(c.ID, rep, int64(len(rep.refs))*96+int64(len(rep.header))+int64(len(rep.indexBytes))+1024)
+		}
+		return rep, err
+	}
+	return carOfParse(c)
+}
+
+func carOfParse(c *repCall) (*carRep, error) {
 	hl, n := binary.Uvarint(c.Rep.Recipe)
 	if n <= 0 || hl > uint64(len(c.Rep.Recipe)-n) {
 		return nil, repCorrupt("CAR recipe head")
@@ -31995,10 +32228,18 @@ func (s *Store) newRepBuilder(size int64, base func([32]byte) *repDesc, cat *rep
 }
 
 // newSink picks the physical sink exactly as an ordinary ingest of the same
-// size would: loose CAS files, or immutable packs for large objects.
+// size would: the active segment for small objects, immutable packs for large
+// ones, loose CAS files otherwise.
 func (b *repBuilder) newSink() chunkSink {
-	if b.big {
+	switch {
+	case b.big:
 		return b.s.newPackSink(b.size)
+	case b.s.segFor(ingestOptions{size: b.size}):
+		// A small object's components share the active segment's group commit (one
+		// write and one fsync for the whole representation) instead of one loose
+		// file, fsync and shard-directory operation each. Same durability and
+		// visibility as an ordinary small PUT: nothing is visible before Flush.
+		return b.s.newSegSink()
 	}
 	return looseSink{b.s.newCASBatch()}
 }
@@ -32871,7 +33112,8 @@ type repState struct {
 	// stopping is raised when the store closes: a construction in flight
 	// abandons itself at its next read or phase boundary.
 	stopping atomic.Bool
-	q        atomic.Pointer[repQueue] // deferred construction; nil while builds are inline
+	rc       atomic.Pointer[repReadCache] // read-path cache of parsed roots and objects
+	q        atomic.Pointer[repQueue]     // deferred construction; nil while builds are inline
 
 	reads, rangeReads, fallbacks, optionalFailures atomic.Int64
 
@@ -33746,28 +33988,47 @@ func (s *Store) repOrphanRootBytes(uuids []string) (n int64) {
 // length and SHA-256 with its root and the authoritative object. Roots that
 // reachability already reported are not reported twice.
 func (s *Store) verifyRepresentationsDeep(rr reachabilityResult, res *VerifyResult) {
-	for _, uuid := range slices.Sorted(maps.Keys(rr.ReferencedManifests)) {
+	uuids := slices.Sorted(maps.Keys(rr.ReferencedManifests))
+	type outcome struct {
+		kind, detail string // an issue, or both empty when exact
+		skipped      bool
+	}
+	out := make([]outcome, len(uuids))
+	// Roots are independent: each reconstructs through its own Source. They run
+	// on the P3 maintenance pool (ZEROS3_MAINT_WORKERS=1 gives the serial proof); results are
+	// folded in sorted order so the report does not depend on scheduling.
+	forEachBounded(len(uuids), maintWorkers(), func(i int) error {
+		uuid := uuids[i]
 		if _, bad := rr.RepFaults[uuid]; bad {
-			continue
+			out[i].skipped = true
+			return nil
 		}
 		root, err := s.loadRepRoot(uuid)
 		if err != nil {
-			continue
+			out[i].skipped = true
+			return nil
 		}
-		subject := "representation " + uuid
 		src := s.newRepSource(root.Descs, nil)
 		env := &repEnv{Src: src, Limits: repProdLimits}
 		n, sum, err := env.reconstruct(root.Rep, io.Discard)
 		src.close()
 		switch {
 		case err != nil:
-			kind := "corrupt"
+			out[i].kind = "corrupt"
 			if errors.Is(err, errRepMissing) {
-				kind = "missing"
+				out[i].kind = "missing"
 			}
-			res.addIssue(kind, subject, "reconstruction failed: "+err.Error())
+			out[i].detail = "reconstruction failed: " + err.Error()
 		case n != root.ObjSize || sum != root.ObjSHA:
-			res.addIssue("corrupt", subject, "reconstruction does not equal the authoritative object")
+			out[i].kind, out[i].detail = "corrupt", "reconstruction does not equal the authoritative object"
+		}
+		return nil
+	})
+	for i, o := range out {
+		switch {
+		case o.skipped:
+		case o.kind != "":
+			res.addIssue(o.kind, "representation "+uuids[i], o.detail)
 		default:
 			res.RepresentationsVerified++
 		}
@@ -33975,19 +34236,37 @@ func (s *Store) repOpenReader(man manifestV1, rng byteRange) (objectReader, erro
 	if man.TotalLength < 1 || !s.rep.mayHaveRoots.Load() {
 		return nil, nil
 	}
-	root, err := s.loadRepRoot(man.ManifestUUID)
-	if err != nil {
-		if os.IsNotExist(err) {
+	cache := s.repCache()
+	// One stat decides whether the parsed root is still the file on disk: a root
+	// that was replaced or rewritten is re-read (and a damaged one falls back below).
+	fi, serr := os.Stat(s.repRootPath(man.ManifestUUID))
+	if serr != nil {
+		cache.dropRoot(man.ManifestUUID)
+		if os.IsNotExist(serr) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, serr
+	}
+	sig := repFileSig(fi)
+	root := cache.getRoot(man.ManifestUUID, sig)
+	if root == nil {
+		var err error
+		root, err = s.loadRepRoot(man.ManifestUUID)
+		if err != nil {
+			cache.dropRoot(man.ManifestUUID)
+			if os.IsNotExist(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		cache.putRoot(root, fi.Size(), sig)
 	}
 	if hex.EncodeToString(root.ObjSHA[:]) != man.ObjectSHA256 || root.ObjSize != man.TotalLength {
 		return nil, fmt.Errorf("%w: root names a different object", errRepMismatch)
 	}
 	whole := rng.start == 0 && rng.end == man.TotalLength-1
 	src := s.newRepSource(root.Descs, nil)
-	env := &repEnv{Src: src, Limits: repProdLimits}
+	env := &repEnv{Src: src, Limits: repProdLimits, Cache: cache}
 	var produce func(w io.Writer) error
 	if whole {
 		produce = func(w io.Writer) error {
@@ -39842,7 +40121,18 @@ func (t *repZSfseTable) prev(sym int, next int) (state int, bits uint32, nb int,
 		return 0, 0, 0, false
 	}
 	seg := t.byBase[t.symOff[sym]:t.symOff[sym+1]]
-	i := sort.Search(len(seg), func(i int) bool { return int(t.dec[seg[i]].base) > next }) - 1
+	// first index whose baseline exceeds next (an open-coded sort.Search: this is
+	// called once per sequence field and the closure dominated its cost)
+	lo, hi := 0, len(seg)
+	for lo < hi {
+		h := int(uint(lo+hi) >> 1)
+		if int(t.dec[seg[h]].base) > next {
+			hi = h
+		} else {
+			lo = h + 1
+		}
+	}
+	i := lo - 1
 	if i < 0 {
 		return 0, 0, 0, false
 	}
@@ -53606,7 +53896,7 @@ func repIXNewPrefixIndex(ids []repIXIdentity, k0 int) *repIXPrefixIndex {
 	for i := range p.order {
 		p.order[i] = uint32(i)
 	}
-	sort.Slice(p.order, func(i, j int) bool { return bytes.Compare(ids[p.order[i]][:], ids[p.order[j]][:]) < 0 })
+	slices.SortFunc(p.order, func(a, b uint32) int { return bytes.Compare(ids[a][:], ids[b][:]) })
 	common := func(a, b uint32) int {
 		n := 0
 		for n < 32 && ids[a][n] == ids[b][n] {
@@ -53666,10 +53956,26 @@ func (p *repIXPrefixIndex) Get(b []byte) (uint32, []byte, error) {
 		if n > len(b) {
 			return 0, nil, repIXbad("reference stream truncated")
 		}
-		base := lo
-		l := sort.Search(hi-base, func(j int) bool { return bytes.Compare(p.ids[p.order[base+j]][:n], b[:n]) >= 0 }) + base
-		h := sort.Search(hi-l, func(j int) bool { return bytes.Compare(p.ids[p.order[l+j]][:n], b[:n]) > 0 }) + l
-		lo, hi = l, h
+		// the range [lo,hi) shares the first n-1 bytes with b: narrow it to the entries whose n-byte prefix equals b[:n]
+		l, h := lo, hi
+		for l < h { // first entry with prefix >= b[:n]
+			m := int(uint(l+h) >> 1)
+			if bytes.Compare(p.ids[p.order[m]][:n], b[:n]) >= 0 {
+				h = m
+			} else {
+				l = m + 1
+			}
+		}
+		u, v := l, hi
+		for u < v { // first entry with prefix > b[:n]
+			m := int(uint(u+v) >> 1)
+			if bytes.Compare(p.ids[p.order[m]][:n], b[:n]) > 0 {
+				v = m
+			} else {
+				u = m + 1
+			}
+		}
+		lo, hi = l, u
 		if hi-lo == 1 {
 			return p.order[lo], b[n:], nil
 		}
@@ -53794,10 +54100,11 @@ func repIXNewClassIndex(handles []int, ids []repIXIdentity, k0 int) *repIXClassI
 	for i := range order {
 		order[i] = uint32(i)
 	}
-	sort.Slice(order, func(i, j int) bool {
-		a, b := order[i], order[j]
-		n := bytes.Compare(ids[a][:], ids[b][:])
-		return n < 0 || n == 0 && a < b
+	slices.SortFunc(order, func(a, b uint32) int {
+		if n := bytes.Compare(ids[a][:], ids[b][:]); n != 0 {
+			return n
+		}
+		return cmp.Compare(a, b)
 	})
 	type group struct{ lo, hi uint32 }
 	unique := 0
@@ -53809,7 +54116,7 @@ func repIXNewClassIndex(handles []int, ids []repIXIdentity, k0 int) *repIXClassI
 	// The common one-identity/one-handle case needs no CSR boundaries or
 	// 16-byte lookup records. Keep only handles plus a sorted permutation.
 	if unique == len(ids) {
-		sort.Slice(order, func(i, j int) bool { return handles[order[i]] < handles[order[j]] })
+		slices.SortFunc(order, func(a, b uint32) int { return cmp.Compare(handles[a], handles[b]) })
 		distinct := true
 		for i := 1; i < len(order); i++ {
 			if handles[order[i-1]] == handles[order[i]] {
@@ -53825,10 +54132,11 @@ func repIXNewClassIndex(handles []int, ids []repIXIdentity, k0 int) *repIXClassI
 			return c
 		}
 		// Repeated handles retain the general legacy last-class/first-occurrence rule.
-		sort.Slice(order, func(i, j int) bool {
-			a, b := order[i], order[j]
-			n := bytes.Compare(ids[a][:], ids[b][:])
-			return n < 0 || n == 0 && a < b
+		slices.SortFunc(order, func(a, b uint32) int {
+			if n := bytes.Compare(ids[a][:], ids[b][:]); n != 0 {
+				return n
+			}
+			return cmp.Compare(a, b)
 		})
 	}
 	groups := make([]group, 0, unique)
@@ -53840,7 +54148,7 @@ func repIXNewClassIndex(handles []int, ids []repIXIdentity, k0 int) *repIXClassI
 		groups = append(groups, group{uint32(lo), uint32(hi)})
 		lo = hi
 	}
-	sort.Slice(groups, func(i, j int) bool { return order[groups[i].lo] < order[groups[j].lo] })
+	slices.SortFunc(groups, func(a, b group) int { return cmp.Compare(order[a.lo], order[b.lo]) })
 	cls := make([]repIXIdentity, len(groups))
 	c.starts = make([]uint32, len(groups)+1)
 	c.members = make([]int, 0, len(ids))
