@@ -12764,18 +12764,20 @@ func (s *Store) analyzeManifest(uuid string, sha [32]byte, h *packHandles) *reac
 	return m
 }
 
+// reachBlock is the number of distinct manifests analysed before their verdicts are merged.
+var reachBlock = 32768 // a variable so tests can shrink it
+
 // reachStep is one live root, in the order the scan visits roots.
 type reachStep struct {
-	kind   uint8 // stepManifest, stepMultipart or stepIssue
-	scope  rootScope
-	bucket string
-	key    string
-	extra  string // history: version id; snapshot: snapshot id
-	uuid   string
-	sha    [32]byte
-	up     *multipartUpload
-	issue  VerifyIssue
-	size   int64 // current roots: the size the namespace records
+	kind  uint8 // stepManifest, stepMultipart or stepIssue
+	scope rootScope
+	aux   int32 // manifest roots: position among the distinct manifests; others: index into the side lists
+	uuid  string
+	sha   [32]byte
+	size  int64 // current roots: the size the namespace records
+	// bucket and key name the root; for history and snapshot roots, key2 is the
+	// version id or the snapshot id (it shares the strings the namespace holds)
+	bucket, key, key2 string
 }
 
 const (
@@ -12787,9 +12789,9 @@ const (
 func (st *reachStep) subject() string {
 	switch st.scope {
 	case scopeHistory:
-		return fmt.Sprintf("history:%s/%s@%s", st.bucket, st.key, st.extra)
+		return fmt.Sprintf("history:%s/%s@%s", st.bucket, st.key, st.key2)
 	case scopeSnapshot:
-		return "snapshot:" + st.extra + ":" + st.key
+		return "snapshot:" + st.key2 + ":" + st.key
 	}
 	return st.bucket + "/" + st.key
 }
@@ -12840,6 +12842,8 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 	// is deterministic when an observer is attached; GC and verify only take
 	// the union, so order is otherwise moot.
 	var steps []reachStep
+	var ups []*multipartUpload // multipart steps point here
+	var issues []VerifyIssue   // so do issue steps
 	curObjs := s.snapshotNamespace()
 	if obs != nil {
 		sort.Slice(curObjs, func(i, j int) bool {
@@ -12859,7 +12863,8 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 		})
 	}
 	for _, up := range uploads {
-		steps = append(steps, reachStep{kind: stepMultipart, scope: scopeMultipart, up: up})
+		ups = append(ups, up)
+		steps = append(steps, reachStep{kind: stepMultipart, scope: scopeMultipart, aux: int32(len(ups) - 1)})
 	}
 	// Root category 4 (section 15h): durable namespace snapshots, read fresh off
 	// disk (never cached -- see Store.snapshotMu's doc comment). A corrupt or
@@ -12867,7 +12872,8 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 	// which is what makes destructive GC's fail-closed gate refuse to sweep.
 	validSnaps, snapIssues := s.scanSnapshots()
 	for _, iss := range snapIssues {
-		steps = append(steps, reachStep{kind: stepIssue, issue: iss})
+		issues = append(issues, iss)
+		steps = append(steps, reachStep{kind: stepIssue, aux: int32(len(issues) - 1)})
 	}
 	for _, snap := range validSnaps {
 		for _, se := range snap.Entries {
@@ -12875,10 +12881,11 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 			subject := "snapshot:" + snap.SnapshotID + ":" + se.Key
 			sum, herr := decodeHexSHA256(se.ManifestSHA256)
 			if herr != nil {
-				steps = append(steps, reachStep{kind: stepIssue, issue: VerifyIssue{Kind: "invalid", Subject: subject, Detail: "snapshot entry has a malformed manifest sha256: " + herr.Error()}})
+				issues = append(issues, VerifyIssue{Kind: "invalid", Subject: subject, Detail: "snapshot entry has a malformed manifest sha256: " + herr.Error()})
+				steps = append(steps, reachStep{kind: stepIssue, aux: int32(len(issues) - 1)})
 				continue
 			}
-			steps = append(steps, reachStep{kind: stepManifest, scope: scopeSnapshot, bucket: snap.SourceBucket, key: se.Key, extra: snap.SnapshotID, uuid: se.ManifestUUID, sha: sum})
+			steps = append(steps, reachStep{kind: stepManifest, scope: scopeSnapshot, bucket: snap.SourceBucket, key: se.Key, key2: snap.SnapshotID, uuid: se.ManifestUUID, sha: sum})
 		}
 	}
 	histObjs := s.snapshotHistory()
@@ -12889,55 +12896,68 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 		})
 	}
 	for _, o := range histObjs {
-		steps = append(steps, reachStep{kind: stepManifest, scope: scopeHistory, bucket: o.bucket, key: o.key, extra: o.entry.versionID, uuid: o.entry.manifestUUID, sha: o.entry.manifestSHA256})
+		steps = append(steps, reachStep{kind: stepManifest, scope: scopeHistory, bucket: o.bucket, key: o.key, key2: o.entry.versionID, uuid: o.entry.manifestUUID, sha: o.entry.manifestSHA256})
 	}
 	histObjs = nil
 
-	// Stage 2: analyse each distinct manifest UUID once. The digest the journal
-	// recorded for the first root that names a UUID is the one used to find it
-	// (two roots may legally share a UUID; each root's own claim is still
-	// checked against what was read, in the merge).
-	first := make(map[string]int32, len(steps))
+	// Stage 2: analyse each distinct manifest UUID once, a block at a time. The
+	// digest the journal recorded for the first root that names a UUID is the one
+	// used to find it (two roots may legally share a UUID; each root's own claim is
+	// still checked against what was read, in the merge). A verdict is dropped as
+	// soon as the last root naming its manifest has been merged, so memory holds one
+	// block of verdicts (plus those of manifests that several roots share), not one
+	// per manifest in the store.
 	var uniq []int32 // step index of the first root naming each UUID
-	for i := range steps {
-		if steps[i].kind != stepManifest {
-			continue
-		}
-		if _, dup := first[steps[i].uuid]; !dup {
-			first[steps[i].uuid] = int32(len(uniq))
-			uniq = append(uniq, int32(i))
+	var refs []int32 // how many roots name it
+	{
+		first := make(map[string]int32, len(steps))
+		for i := range steps {
+			if steps[i].kind != stepManifest {
+				continue
+			}
+			ui, dup := first[steps[i].uuid]
+			if !dup {
+				ui = int32(len(uniq))
+				first[steps[i].uuid] = ui
+				uniq = append(uniq, int32(i))
+				refs = append(refs, 0)
+			}
+			steps[i].aux = ui
+			refs[ui]++
 		}
 	}
 	verdicts := make([]*reachManifest, len(uniq))
-	// Inline manifests are records of packs: visit them in physical order so a
-	// worker's block of consecutive manifests lives in one pack.
-	visit := make([]int32, len(uniq))
-	for i := range visit {
-		visit[i] = int32(i)
-	}
-	if ps := s.packSnap(); len(ps.packs) > 0 {
-		type pos struct {
-			pack int32
-			off  uint64
+	analyzeBlock := func(ub, ue int) {
+		// Inline manifests are records of packs: visit them in physical order so a
+		// worker's run of consecutive manifests lives in one pack.
+		visit := make([]int32, ue-ub)
+		for i := range visit {
+			visit[i] = int32(ub + i)
 		}
-		where := make([]pos, len(uniq))
-		for i, si := range uniq {
-			if loc, ok := ps.lookup(steps[si].sha); ok {
-				where[i] = pos{loc.pack, loc.off}
-			} else {
-				where[i] = pos{-1, 0} // a manifest file
+		if ps := s.packSnap(); len(ps.packs) > 0 {
+			type pos struct {
+				pack int32
+				off  uint64
 			}
+			where := make([]pos, ue-ub)
+			for i := range where {
+				if loc, ok := ps.lookup(steps[uniq[ub+i]].sha); ok {
+					where[i] = pos{loc.pack, loc.off}
+				} else {
+					where[i] = pos{-1, 0} // a manifest file
+				}
+			}
+			slices.SortFunc(visit, func(a, b int32) int {
+				return cmp.Or(cmp.Compare(where[int(a)-ub].pack, where[int(b)-ub].pack), cmp.Compare(where[int(a)-ub].off, where[int(b)-ub].off), cmp.Compare(a, b))
+			})
 		}
-		slices.SortFunc(visit, func(a, b int32) int {
-			return cmp.Or(cmp.Compare(where[a].pack, where[b].pack), cmp.Compare(where[a].off, where[b].off), cmp.Compare(a, b))
-		})
+		parallelForState(len(visit), maintWorkers(), 64, func() *packHandles { return &packHandles{} }, (*packHandles).close,
+			func(h *packHandles, k int) {
+				i := visit[k]
+				st := &steps[uniq[i]]
+				verdicts[i] = s.analyzeManifest(st.uuid, st.sha, h)
+			})
 	}
-	parallelForState(len(visit), maintWorkers(), 64, func() *packHandles { return &packHandles{} }, (*packHandles).close,
-		func(h *packHandles, k int) {
-			i := visit[k]
-			st := &steps[uniq[i]]
-			verdicts[i] = s.analyzeManifest(st.uuid, st.sha, h)
-		})
 
 	// Stage 3: merge in enumeration order.
 	tbl := newDigestTable(len(uniq))
@@ -12966,92 +12986,114 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 			obs(scope, bucket, key, refs)
 		}
 	}
-	for si := range steps {
-		st := &steps[si]
-		switch st.kind {
-		case stepIssue:
-			res.addIssue(st.issue.Kind, st.issue.Subject, st.issue.Detail)
-		case stepMultipart:
-			up := st.up
-			for _, pn := range slices.Sorted(maps.Keys(up.parts)) {
-				p := up.parts[pn]
-				res.MultipartRootCount++
-				subject := fmt.Sprintf("multipart:%s/part%d", up.uploadID, p.partNumber)
-				valid := p.chunks[:0:0]
-				for i, c := range p.chunks {
-					if _, herr := decodeHexSHA256(c.SHA256); herr != nil {
-						res.addIssue("invalid", subject, fmt.Sprintf("part chunk %d has a malformed sha256: %s", i, c.SHA256))
-						continue
+	mergeSteps := func(lo, hi int) {
+		for si := lo; si < hi; si++ {
+			st := &steps[si]
+			switch st.kind {
+			case stepIssue:
+				iss := issues[st.aux]
+				res.addIssue(iss.Kind, iss.Subject, iss.Detail)
+			case stepMultipart:
+				up := ups[st.aux]
+				for _, pn := range slices.Sorted(maps.Keys(up.parts)) {
+					p := up.parts[pn]
+					res.MultipartRootCount++
+					subject := fmt.Sprintf("multipart:%s/part%d", up.uploadID, p.partNumber)
+					valid := p.chunks[:0:0]
+					for i, c := range p.chunks {
+						if _, herr := decodeHexSHA256(c.SHA256); herr != nil {
+							res.addIssue("invalid", subject, fmt.Sprintf("part chunk %d has a malformed sha256: %s", i, c.SHA256))
+							continue
+						}
+						valid = append(valid, c)
 					}
-					valid = append(valid, c)
+					want(scopeMultipart, up.bucket, up.key, nil, valid)
 				}
-				want(scopeMultipart, up.bucket, up.key, nil, valid)
-			}
-		case stepManifest:
-			switch st.scope {
-			case scopeCurrent:
-				res.CurrentRootCount++
-			case scopeHistory:
-				res.HistoricalRootCount++
-			}
-			// A snapshot entry counts as a root where it was enumerated (above).
-			ui := first[st.uuid]
-			v := verdicts[ui]
-			subject := st.subject()
-			var cachedSHA [32]byte // a manifest that could not be read has no digest to match
-			why := func() string {
-				if len(v.issues) > 0 {
-					return v.issues[0].Detail
+			case stepManifest:
+				switch st.scope {
+				case scopeCurrent:
+					res.CurrentRootCount++
+				case scopeHistory:
+					res.HistoricalRootCount++
 				}
-				return "manifest " + st.uuid + " hash mismatch"
-			}
-			if !seenManifest[ui] {
-				seenManifest[ui] = true
-				for _, iss := range v.issues {
-					res.addIssue(iss.Kind, subject, iss.Detail)
+				// A snapshot entry counts as a root where it was enumerated (above).
+				ui := st.aux
+				v := verdicts[ui]
+				subject := st.subject()
+				var cachedSHA [32]byte // a manifest that could not be read has no digest to match
+				why := func() string {
+					if len(v.issues) > 0 {
+						return v.issues[0].Detail
+					}
+					return "manifest " + st.uuid + " hash mismatch"
 				}
-				if !v.loaded {
+				if !seenManifest[ui] {
+					seenManifest[ui] = true
+					for _, iss := range v.issues {
+						res.addIssue(iss.Kind, subject, iss.Detail)
+					}
+					if !v.loaded {
+						if o.cur != nil && st.scope == scopeCurrent {
+							o.cur(st.bucket, st.key, st.size, nil, why())
+						}
+						break // unreadable: the issue above is all there is to say about this root
+					}
+					res.ManifestsChecked++
+				}
+				if v.loaded {
+					cachedSHA = v.sha
+				}
+				if cachedSHA != st.sha {
+					res.addIssue("corrupt", subject, "manifest file sha256 does not match this root's recorded reference")
+					if o.cur != nil && st.scope == scopeCurrent {
+						o.cur(st.bucket, st.key, st.size, nil, "manifest "+st.uuid+" hash mismatch")
+					}
+					break
+				}
+				if !v.ok {
 					if o.cur != nil && st.scope == scopeCurrent {
 						o.cur(st.bucket, st.key, st.size, nil, why())
 					}
-					continue // unreadable: the issue above is all there is to say about this root
+					break
 				}
-				res.ManifestsChecked++
-			}
-			if v.loaded {
-				cachedSHA = v.sha
-			}
-			if cachedSHA != st.sha {
-				res.addIssue("corrupt", subject, "manifest file sha256 does not match this root's recorded reference")
 				if o.cur != nil && st.scope == scopeCurrent {
-					o.cur(st.bucket, st.key, st.size, nil, "manifest "+st.uuid+" hash mismatch")
+					o.cur(st.bucket, st.key, st.size, v, "")
 				}
-				continue
+				res.ReferencedManifests[st.uuid] = true
+				res.ManifestSHA[st.uuid] = st.sha
+				want(st.scope, st.bucket, st.key, v, nil)
+				// The optional representation of a live manifest is part of the same root:
+				// its chunks are wanted (and observed) beside the manifest's own.
+				rctx.observe(st.uuid, manifestV1{ObjectSHA256: v.objSHA, TotalLength: v.total}, func(chunks []chunkRef) {
+					want(st.scope, st.bucket, st.key, nil, chunks)
+				})
 			}
-			if !v.ok {
-				if o.cur != nil && st.scope == scopeCurrent {
-					o.cur(st.bucket, st.key, st.size, nil, why())
+			if st.kind == stepManifest {
+				if refs[st.aux]--; refs[st.aux] == 0 && !o.keepManifests {
+					verdicts[st.aux] = nil // the last root naming this manifest has been merged
 				}
-				continue
 			}
-			if o.cur != nil && st.scope == scopeCurrent {
-				o.cur(st.bucket, st.key, st.size, v, "")
-			}
-			res.ReferencedManifests[st.uuid] = true
-			res.ManifestSHA[st.uuid] = st.sha
-			want(st.scope, st.bucket, st.key, v, nil)
-			// The optional representation of a live manifest is part of the same root:
-			// its chunks are wanted (and observed) beside the manifest's own.
-			rctx.observe(st.uuid, manifestV1{ObjectSHA256: v.objSHA, TotalLength: v.total}, func(chunks []chunkRef) {
-				want(st.scope, st.bucket, st.key, nil, chunks)
-			})
 		}
 	}
+	si := 0
+	for ub := 0; ub < len(uniq); ub += reachBlock {
+		ue := min(ub+reachBlock, len(uniq))
+		analyzeBlock(ub, ue)
+		end := len(steps)
+		if ue < len(uniq) {
+			end = int(uniq[ue]) // everything before the next block's first manifest names only manifests analysed so far
+		}
+		mergeSteps(si, end)
+		si = end
+	}
+	mergeSteps(si, len(steps))
 	rctx.finish()
 	if o.keepManifests {
 		res.manifests = make(map[string]*reachManifest, len(res.ReferencedManifests))
-		for uuid := range res.ReferencedManifests {
-			res.manifests[uuid] = verdicts[first[uuid]]
+		for i := range steps {
+			if st := &steps[i]; st.kind == stepManifest && res.ReferencedManifests[st.uuid] {
+				res.manifests[st.uuid] = verdicts[st.aux]
+			}
 		}
 	}
 	verdicts = nil

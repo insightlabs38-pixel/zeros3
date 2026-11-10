@@ -13,6 +13,7 @@ import (
 	"maps"
 	mrand "math/rand/v2"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -398,10 +399,14 @@ func compareReachability(t *testing.T, s *Store, deep bool, what string) {
 func TestP3_ReachabilityMatchesReference_Healthy(t *testing.T) {
 	forEachLayout(t, func(t *testing.T) {
 		s := p3Fixture(t)
-		for _, workers := range []string{"1", "3", "8"} {
-			t.Setenv("ZEROS3_MAINT_WORKERS", workers)
-			compareReachability(t, s, false, "healthy")
-			compareReachability(t, s, true, "healthy")
+		defer func(b int) { reachBlock = b }(reachBlock)
+		for _, block := range []int{1, 3, 7, 32768} { // block edges fall in every place the roots interleave
+			reachBlock = block
+			for _, workers := range []string{"1", "3", "8"} {
+				t.Setenv("ZEROS3_MAINT_WORKERS", workers)
+				compareReachability(t, s, false, "healthy")
+				compareReachability(t, s, true, "healthy")
+			}
 		}
 		rr, _ := s.computeReachability(true)
 		if !rr.OK() || rr.CurrentRootCount == 0 || rr.HistoricalRootCount == 0 || rr.SnapshotRootCount == 0 || rr.MultipartRootCount == 0 {
@@ -461,10 +466,14 @@ func TestP3_ReachabilityMatchesReference_Damage(t *testing.T) {
 			forEachLayout(t, func(t *testing.T) {
 				s := p3Fixture(t)
 				d.do(t, s)
-				for _, workers := range []string{"1", "4"} {
-					t.Setenv("ZEROS3_MAINT_WORKERS", workers)
-					compareReachability(t, s, false, d.name)
-					compareReachability(t, s, true, d.name)
+				defer func(b int) { reachBlock = b }(reachBlock)
+				for _, block := range []int{2, 32768} {
+					reachBlock = block
+					for _, workers := range []string{"1", "4"} {
+						t.Setenv("ZEROS3_MAINT_WORKERS", workers)
+						compareReachability(t, s, false, d.name)
+						compareReachability(t, s, true, d.name)
+					}
 				}
 				rr, _ := s.computeReachability(true)
 				if rr.OK() {
@@ -818,7 +827,7 @@ func p3RandArchived(rng *mrand.Rand) journalArchivedVersionPayload {
 	return journalArchivedVersionPayload{VersionID: newUUIDv7(), ManifestUUID: newUUIDv7(), ManifestSHA256: strings.Repeat("ab", 32), Size: rng.Int64N(1 << 40),
 		ETag: p3RandString(rng), ContentType: p3RandString(rng),
 		ArchivedAt: time.Unix(rng.Int64N(2e9), rng.Int64N(1e9)).In([]*time.Location{time.UTC, time.FixedZone("x", 3600*rng.IntN(12))}[rng.IntN(2)]),
-		Reason: []string{historyReasonOverwritten, historyReasonDeleted, p3RandString(rng)}[rng.IntN(3)]}
+		Reason:     []string{historyReasonOverwritten, historyReasonDeleted, p3RandString(rng)}[rng.IntN(3)]}
 }
 
 func TestP3_FastJournalDecodeMatchesJSON(t *testing.T) {
@@ -891,4 +900,178 @@ func TestP3_FastJournalDecodeMatchesJSON(t *testing.T) {
 		t.Fatalf("the generator no longer exercises both outcomes: accepted %d rejected %d", accepted, rejected)
 	}
 	t.Logf("accepted %d, fell back %d", accepted, rejected)
+}
+
+// ---------------------------------------------------------------------------
+// Repack under many small records: crash points and real kills.
+// ---------------------------------------------------------------------------
+
+// p3ChurnedStore writes n small objects, deletes about 60% of them (keeping the
+// rest), drops the retained history and closes the store, leaving packs that are
+// mostly dead. It returns the directory and the objects that must survive.
+func p3ChurnedStore(t *testing.T, n int) (string, map[string][]byte) {
+	t.Helper()
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.CreateBucket("b")
+	live := map[string][]byte{}
+	for i := 0; i < n; i++ {
+		body := genRandomBytes(int64(1000+i), 2000+i%1500)
+		if i%2 == 0 {
+			body = append(bytes.Repeat([]byte("compressible text "), 100), byte(i), byte(i>>8))
+		}
+		k := fmt.Sprintf("k%05d", i)
+		mustPutObject(t, s, "b", k, body, "application/octet-stream", nil)
+		if i%5 < 3 {
+			if err := s.DeleteObject("b", k); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			live[k] = body
+		}
+	}
+	s.Close()
+	keep := 0
+	if _, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: &keep}, true); err != nil {
+		t.Fatal(err)
+	}
+	return dir, live
+}
+
+func requireP3Live(t *testing.T, dir string, live map[string][]byte, stage string) {
+	t.Helper()
+	if v := mustVerify(t, dir); !v.OK() {
+		t.Fatalf("%s: verify -deep: %+v", stage, v.Issues)
+	}
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatalf("%s: reopen: %v", stage, err)
+	}
+	defer s.Close()
+	for k, want := range live {
+		if _, got, err := s.GetObject("b", k); err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("%s: acknowledged object %s lost or changed: %v", stage, k, err)
+		}
+	}
+}
+
+func TestP3_RepackCrashPointsWithPipelinedStaging(t *testing.T) {
+	base, live := p3ChurnedStore(t, 800)
+	opt := repackOptions{Tier: "all", TargetBytes: 256 << 10, MaxLivePercent: 100, Compress: true}
+	cases := []struct {
+		name  string
+		point string
+		nth   int
+	}{
+		{"first record appended", hookPackRecordWritten, 1},
+		{"inside the second window", hookPackRecordWritten, stageWindowRecords + 20},
+		{"before fsync", hookPackBeforeSync, 1},
+		{"validated", hookPackValidated, 1},
+		{"before rename", hookPackBeforePublish, 1},
+		{"after rename", hookPackAfterRename, 1},
+		{"first replacement published", hookPackPublished, 1},
+		{"second replacement mid-write", hookPackBeforeSync, 2},
+		{"before obsolete removal", hookBeforePackDelete, 1},
+		{"between removals", hookBeforePackDelete, 2},
+		{"removed, before dir fsync", hookPackDeleted, 1},
+		{"completed", hookRepackDone, 1},
+	}
+	for _, workers := range []string{"1", "4"} {
+		for _, c := range cases {
+			t.Run("workers="+workers+"/"+c.name, func(t *testing.T) {
+				t.Setenv("ZEROS3_MAINT_WORKERS", workers)
+				dir := t.TempDir()
+				copyTree(t, base, dir)
+				calls := 0
+				withTestHook(t, func(point string) {
+					if point == c.point {
+						calls++
+						if calls == c.nth {
+							panic(simulatedCrash{point: point})
+						}
+					}
+				})
+				runExpectingSimulatedCrash(t, func() { _, _ = repackStore(dir, opt) })
+				testHook = nil
+				requireP3Live(t, dir, live, "after the crash")
+				if _, err := repackStore(dir, opt); err != nil {
+					t.Fatalf("rerun: %v", err)
+				}
+				requireP3Live(t, dir, live, "after the rerun")
+				if stale, _ := filepath.Glob(filepath.Join(dir, "tmp", "pack-*.tmp")); len(stale) != 0 {
+					t.Fatalf("stale staging files remain: %v", stale)
+				}
+				if again, err := repackStore(dir, opt); err != nil || again.PacksSelected != 0 {
+					t.Fatalf("a converged store must select nothing: %+v %v", again, err)
+				}
+			})
+		}
+	}
+}
+
+// TestP3_MaintHelper is the child of the real-kill test: it runs one maintenance
+// command to completion unless it is killed first.
+func TestP3_MaintHelper(t *testing.T) {
+	spec := os.Getenv("ZEROS3_P3_HELPER")
+	if spec == "" {
+		t.Skip("child process of TestP3_RealKillDuringMaintenance")
+	}
+	op, dir, _ := strings.Cut(spec, ":")
+	var err error
+	switch op {
+	case "repack":
+		_, err = repackStore(dir, repackOptions{Tier: "all", TargetBytes: 256 << 10, MaxLivePercent: 100, Compress: true})
+	case "gc":
+		_, err = gcCollect(dir, true)
+	}
+	if err != nil {
+		os.Exit(3)
+	}
+}
+
+func TestP3_RealKillDuringMaintenance(t *testing.T) {
+	base, live := p3ChurnedStore(t, 1200)
+	for _, op := range []string{"repack", "gc"} {
+		t.Run(op, func(t *testing.T) {
+			killed := 0
+			dir := t.TempDir()
+			copyTree(t, base, dir)
+			rng := mrand.New(mrand.NewPCG(99, uint64(len(op))))
+			for round := 0; round < 10; round++ {
+				cmd := exec.Command(os.Args[0], "-test.run=^TestP3_MaintHelper$")
+				cmd.Env = append(os.Environ(), "ZEROS3_P3_HELPER="+op+":"+dir)
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan error, 1)
+				go func() { done <- cmd.Wait() }()
+				select {
+				case <-done: // finished before the kill: converged
+				case <-time.After(time.Duration(10+rng.IntN(250)) * time.Millisecond):
+					cmd.Process.Kill()
+					<-done
+					killed++
+				}
+				requireP3Live(t, dir, live, fmt.Sprintf("round %d", round))
+			}
+			// whatever was interrupted, the store converges when left alone
+			var err error
+			if op == "repack" {
+				_, err = repackStore(dir, repackOptions{Tier: "all", TargetBytes: 256 << 10, MaxLivePercent: 100, Compress: true})
+			} else {
+				_, err = gcCollect(dir, true)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireP3Live(t, dir, live, "final")
+			t.Logf("%s: %d of 10 runs were killed", op, killed)
+			if killed == 0 {
+				t.Log("note: no run was killed in flight on this machine (all finished first)")
+			}
+		})
+	}
 }
