@@ -14,6 +14,7 @@ import (
 	mrand "math/rand/v2"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -544,4 +545,350 @@ func TestP3_ManifestJudgementMatchesReference(t *testing.T) {
 			compareReachability(t, s, true, name)
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Repack: the pipelined stager must write exactly the packs the serial one did.
+// ---------------------------------------------------------------------------
+
+func packNames(t *testing.T, dir string) []string {
+	t.Helper()
+	ents, err := os.ReadDir(filepath.Join(dir, "packs"))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range ents {
+		out = append(out, e.Name())
+	}
+	slices.Sort(out)
+	return out
+}
+
+func TestP3_RepackPipelineWritesIdenticalPacks(t *testing.T) {
+	for _, compress := range []string{"off", "auto"} {
+		t.Run("compression="+compress, func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.CreateBucket("b")
+			text := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog. "), 80)
+			for i := 0; i < 900; i++ {
+				body := genRandomBytes(int64(i), 2500+i%700)
+				if i%3 == 0 {
+					body = append(bytes.Clone(text), byte(i), byte(i>>8)) // compressible
+				}
+				mustPutObject(t, s, "b", fmt.Sprintf("k%04d", i), body, "application/octet-stream", nil)
+			}
+			for i := 0; i < 900; i += 2 {
+				if err := s.DeleteObject("b", fmt.Sprintf("k%04d", i)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.Close()
+			keep := 0
+			if _, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "b", KeepLast: &keep}, true); err != nil {
+				t.Fatal(err)
+			}
+			compression, _ := parseCompressionFlag(compress)
+			var packSets [][]string
+			for _, workers := range []string{"1", "4"} {
+				clone := t.TempDir()
+				copyTree(t, dir, clone)
+				t.Setenv("ZEROS3_MAINT_WORKERS", workers)
+				res, err := repackStore(clone, repackOptions{Tier: "all", TargetBytes: 1 << 20, MaxLivePercent: 100, Compress: compression})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res.PacksWritten == 0 || res.RecordsCopied < stageWindowRecords*2 {
+					t.Fatalf("workers=%s: the pipelined path was not exercised: %+v", workers, res)
+				}
+				packSets = append(packSets, packNames(t, clone))
+				v := mustVerify(t, clone)
+				if !v.OK() {
+					t.Fatalf("workers=%s: verify after repack: %+v", workers, v.Issues)
+				}
+				s2, err := OpenStore(clone)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i := 1; i < 900; i += 2 {
+					want := genRandomBytes(int64(i), 2500+i%700)
+					if i%3 == 0 {
+						want = append(bytes.Clone(text), byte(i), byte(i>>8))
+					}
+					if _, got, err := s2.GetObject("b", fmt.Sprintf("k%04d", i)); err != nil || !bytes.Equal(got, want) {
+						t.Fatalf("workers=%s: object %d unreadable after repack: %v", workers, i, err)
+					}
+				}
+				s2.Close()
+			}
+			if !slices.Equal(packSets[0], packSets[1]) {
+				t.Fatalf("serial and pipelined repack wrote different packs:\n%v\n%v", packSets[0], packSets[1])
+			}
+		})
+	}
+}
+
+func mustVerify(t *testing.T, dir string) VerifyResult {
+	t.Helper()
+	s, err := OpenStoreShared(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	v, err := s.Verify(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// ---------------------------------------------------------------------------
+// Detection: corruption present before the scan, and corruption that appears
+// while it runs.
+// ---------------------------------------------------------------------------
+
+// chunkSumsOf lists the distinct chunk digests of the current objects.
+func chunkSumsOf(t *testing.T, s *Store) [][32]byte {
+	t.Helper()
+	rr, err := s.computeReachability(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out [][32]byte
+	for h := range rr.ReferencedChunks {
+		out = append(out, chunkSumHex(t, h))
+	}
+	return out
+}
+
+// Damage injected after a deep scan has started, to a chunk the scan has not yet
+// reached, is found by that same scan (one worker, so the order is fixed).
+func TestP3_DeepVerifyFindsCorruptionInjectedMidScan(t *testing.T) {
+	forEachLayout(t, func(t *testing.T) {
+		t.Setenv("ZEROS3_MAINT_WORKERS", "1")
+		s := p3Fixture(t)
+		sums := chunkSumsOf(t, s)
+		// A deep scan visits digests in physical order (pack, offset, table position):
+		// damage the one it reaches last.
+		rr, _ := s.reachabilityScan(false, nil)
+		type pos struct {
+			pack uint32
+			off  uint64
+			idx  int
+		}
+		last := pos{}
+		st := s.packSnap()
+		for i, k := range rr.tbl.keys {
+			p := pos{0, 0, i}
+			if loc, ok := st.lookup(k); ok {
+				p = pos{uint32(loc.pack) + 1, loc.off, i}
+			}
+			if i == 0 || p.pack > last.pack || p.pack == last.pack && (p.off > last.off || p.off == last.off && p.idx > last.idx) {
+				last = p
+			}
+		}
+		victim := rr.tbl.keys[last.idx]
+		calls := 0
+		testHook = func(point string) {
+			if point == hookReachChunkCheck {
+				calls++
+				if calls == 2 { // after the scan began, before it reaches the last chunk
+					corruptChunkAnyLayout(t, s, victim)
+				}
+			}
+		}
+		defer func() { testHook = nil }()
+		v, err := s.Verify(true)
+		testHook = nil
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.OK() || v.Corrupt+v.Missing == 0 {
+			t.Fatalf("corruption injected during the scan went unnoticed (%d chunks): %+v", len(sums), v.Issues)
+		}
+		found := false
+		for _, iss := range v.Issues {
+			if strings.Contains(iss.Subject, hex.EncodeToString(victim[:])) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("the damaged chunk %x is not named: %+v", victim, v.Issues)
+		}
+	})
+}
+
+// A chunk that rots between the chunk pass and the whole-object pass is still
+// found: multi-chunk objects are read (and hashed) again.
+func TestP3_DeepVerifyFindsCorruptionBetweenPasses(t *testing.T) {
+	forEachLayout(t, func(t *testing.T) {
+		t.Setenv("ZEROS3_MAINT_WORKERS", "1")
+		s := p3Fixture(t)
+		s.mu.Lock()
+		e := s.buckets["b"].objects["dup/a"]
+		s.mu.Unlock()
+		man, _, err := s.readManifestAny(e.manifestUUID)
+		if err != nil || len(man.Chunks) < 2 {
+			t.Fatalf("fixture needs a multi-chunk object: %v %d", err, len(man.Chunks))
+		}
+		victim := chunkSumHex(t, man.Chunks[1].SHA256)
+		done := false
+		testHook = func(point string) {
+			if point == hookVerifyWholeObj && !done {
+				done = true
+				corruptChunkAnyLayout(t, s, victim)
+			}
+		}
+		defer func() { testHook = nil }()
+		v, err := s.Verify(true)
+		testHook = nil
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.OK() {
+			t.Fatal("damage between the chunk pass and the whole-object pass went unnoticed")
+		}
+	})
+}
+
+// A corrupt reachable manifest makes destructive maintenance refuse, whatever
+// the worker count: nothing is deleted and gc says why.
+func TestP3_GCFailsClosedOnCorruptManifest(t *testing.T) {
+	for _, workers := range []string{"1", "4"} {
+		t.Run("workers="+workers, func(t *testing.T) {
+			forEachLayout(t, func(t *testing.T) {
+				t.Setenv("ZEROS3_MAINT_WORKERS", workers)
+				s := p3Fixture(t)
+				s.mu.Lock()
+				e := s.buckets["b"].objects["small/07"]
+				s.mu.Unlock()
+				tamperManifest(t, s, e.manifestUUID, []byte("{broken"))
+				dir := s.root
+				s.Close()
+				before := packNames(t, dir)
+				res, err := gcCollect(dir, true)
+				if !errors.Is(err, errGCUnsafe) {
+					t.Fatalf("gc -apply on a store with a corrupt live manifest: err=%v res=%+v", err, res)
+				}
+				if res.LiveSetOK {
+					t.Fatal("live set reported ok")
+				}
+				if !slices.Equal(before, packNames(t, dir)) {
+					t.Fatal("gc removed packs despite the refusal")
+				}
+				// everything else is still readable
+				s2, err := OpenStore(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s2.Close()
+				if _, _, err := s2.GetObject("b", "dup/b"); err != nil {
+					t.Fatalf("an unrelated object was lost: %v", err)
+				}
+			})
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Journal fast decoders: whatever they accept, encoding/json decodes the same.
+// ---------------------------------------------------------------------------
+
+func p3RandString(rng *mrand.Rand) string {
+	pool := []string{"", "a", "bench", "k/00000042", "dir/sub dir/file.txt", "ünïcödé/文件", "quote\"inside", "back\\slash", "tab\there", "nl\nx",
+		"</script>&amp;", "\u2028", "emoji😀", "ctl\x01", "\xff\xfe", "{\"x\":1}", "x,y:z", "null", "-1"}
+	if rng.IntN(5) < 3 { // mostly the shapes the writer produces
+		return []string{"", "bench", "k/00000042", "dir/sub dir/file.txt", "ünïcödé/文件", "application/octet-stream", "d41d8cd98f00b204e9800998ecf8427e"}[rng.IntN(7)]
+	}
+	if rng.IntN(3) == 0 {
+		b := make([]byte, rng.IntN(40))
+		for i := range b {
+			b[i] = byte(32 + rng.IntN(95))
+		}
+		return string(b)
+	}
+	return pool[rng.IntN(len(pool))]
+}
+
+func p3RandArchived(rng *mrand.Rand) journalArchivedVersionPayload {
+	return journalArchivedVersionPayload{VersionID: newUUIDv7(), ManifestUUID: newUUIDv7(), ManifestSHA256: strings.Repeat("ab", 32), Size: rng.Int64N(1 << 40),
+		ETag: p3RandString(rng), ContentType: p3RandString(rng),
+		ArchivedAt: time.Unix(rng.Int64N(2e9), rng.Int64N(1e9)).In([]*time.Location{time.UTC, time.FixedZone("x", 3600*rng.IntN(12))}[rng.IntN(2)]),
+		Reason: []string{historyReasonOverwritten, historyReasonDeleted, p3RandString(rng)}[rng.IntN(3)]}
+}
+
+func TestP3_FastJournalDecodeMatchesJSON(t *testing.T) {
+	rng := mrand.New(mrand.NewPCG(21, 22))
+	accepted, rejected := 0, 0
+	checkPut := func(b []byte) {
+		var fast, ref journalPutPayloadV2
+		okFast := decodePutV2Fast(b, &fast, &strIntern{m: map[string]string{}})
+		errRef := json.Unmarshal(b, &ref)
+		if okFast {
+			accepted++
+			if errRef != nil || !reflect.DeepEqual(fast, ref) {
+				t.Fatalf("fast path accepted %q but json says %v:\nfast=%+v\n ref=%+v", b, errRef, fast, ref)
+			}
+		} else {
+			rejected++
+		}
+	}
+	checkDel := func(b []byte) {
+		var fast, ref journalDeleteObjectPayloadV2
+		okFast := decodeDeleteV2Fast(b, &fast, nil)
+		errRef := json.Unmarshal(b, &ref)
+		if okFast {
+			accepted++
+			if errRef != nil || !reflect.DeepEqual(fast, ref) {
+				t.Fatalf("fast path accepted %q but json says %v:\nfast=%+v\n ref=%+v", b, errRef, fast, ref)
+			}
+		} else {
+			rejected++
+		}
+	}
+	mutate := func(b []byte) []byte {
+		b = bytes.Clone(b)
+		switch rng.IntN(7) {
+		case 0:
+			b[rng.IntN(len(b))] = byte(rng.IntN(256))
+		case 1:
+			i := rng.IntN(len(b))
+			b = append(b[:i], b[i+1:]...)
+		case 2:
+			i := rng.IntN(len(b))
+			b = append(b[:i], append([]byte{' '}, b[i:]...)...)
+		case 3:
+			b = b[:rng.IntN(len(b))]
+		case 4:
+			b = bytes.Replace(b, []byte(`"bucket"`), []byte(`"Bucket"`), 1)
+		case 5:
+			b = bytes.Replace(b, []byte(`"size"`), []byte(`"etag":"dup","size"`), 1)
+		case 6:
+			b = bytes.Replace(b, []byte(`"size":`), []byte(`"size":0`), 1)
+		}
+		return b
+	}
+	for i := 0; i < 6000; i++ {
+		p := journalPutPayloadV2{Bucket: p3RandString(rng), Key: p3RandString(rng), ManifestUUID: newUUIDv7(), ManifestSHA256: strings.Repeat("0f", 32),
+			Size: rng.Int64N(1<<40) - rng.Int64N(2), ETag: p3RandString(rng), ContentType: p3RandString(rng), VersionID: newUUIDv7()}
+		if rng.IntN(2) == 0 {
+			a := p3RandArchived(rng)
+			p.Previous = &a
+		}
+		b, _ := json.Marshal(p)
+		checkPut(b)
+		checkPut(mutate(b))
+		d := journalDeleteObjectPayloadV2{Bucket: p3RandString(rng), Key: p3RandString(rng), Archived: p3RandArchived(rng)}
+		b, _ = json.Marshal(d)
+		checkDel(b)
+		checkDel(mutate(b))
+	}
+	if accepted < 5000 || rejected == 0 {
+		t.Fatalf("the generator no longer exercises both outcomes: accepted %d rejected %d", accepted, rejected)
+	}
+	t.Logf("accepted %d, fell back %d", accepted, rejected)
 }

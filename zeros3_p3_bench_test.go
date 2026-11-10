@@ -5,7 +5,10 @@ package main
 //
 //	ZEROS3_P3_STORE=/tmp/fix/s100k go test -run xxx -bench P3 -benchtime 3x -cpuprofile cpu.out
 import (
+	mrand "math/rand/v2"
 	"os"
+	"sort"
+	"strconv"
 	"testing"
 )
 
@@ -91,5 +94,46 @@ func BenchmarkP3VerifyDeep(b *testing.B) {
 		if r, err := s.Verify(true); err != nil || !r.OK() {
 			b.Fatal(err, r.Issues)
 		}
+	}
+}
+
+// TestP3_ChurnFixture deletes a fraction of the current objects of the store at
+// ZEROS3_P3_CHURN_DIR (mode random or range) and drops all retained history, so
+// the data is truly dead. It is a fixture tool for the reclamation matrix, not a
+// test: it does nothing unless the variables are set.
+//
+//	ZEROS3_P3_CHURN_DIR=/x ZEROS3_P3_CHURN_FRAC=0.5 ZEROS3_P3_CHURN_MODE=range go test -run P3_ChurnFixture .
+func TestP3_ChurnFixture(t *testing.T) {
+	dir := os.Getenv("ZEROS3_P3_CHURN_DIR")
+	if dir == "" {
+		t.Skip("fixture tool")
+	}
+	frac, _ := strconv.ParseFloat(os.Getenv("ZEROS3_P3_CHURN_FRAC"), 64)
+	mode := os.Getenv("ZEROS3_P3_CHURN_MODE")
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objs := s.snapshotNamespace()
+	sort.Slice(objs, func(i, j int) bool { return objs[i].entry.seq < objs[j].entry.seq }) // insertion order
+	n := int(float64(len(objs)) * frac)
+	var victims []namespaceObject
+	if mode == "range" {
+		victims = objs[:n]
+	} else {
+		rng := mrand.New(mrand.NewPCG(5, 6))
+		for _, i := range rng.Perm(len(objs))[:n] {
+			victims = append(victims, objs[i])
+		}
+	}
+	for _, o := range victims {
+		if err := s.DeleteObject(o.bucket, o.key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	keep := 0
+	if _, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "bench", KeepLast: &keep}, true); err != nil {
+		t.Fatal(err)
 	}
 }

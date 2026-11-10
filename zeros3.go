@@ -53,6 +53,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
@@ -477,7 +478,9 @@ const (
 	hookBeforePackDelete = "before-pack-delete"
 	hookPackDeleted      = "pack-deleted"
 	hookRepackDone       = "repack-done"
-	hookJournalReplayed  = "journal-replayed" // openJournal: after the replay, before any truncation
+	hookJournalReplayed  = "journal-replayed"    // openJournal: after the replay, before any truncation
+	hookReachChunkCheck  = "reach-chunk-check"   // reachability scan: before each distinct chunk is checked (runs on the scan's workers)
+	hookVerifyWholeObj   = "verify-whole-object" // deep verify: before a manifest's chunks are re-read for the whole-object digest
 
 	// Tier rebalance boundaries (section 13f), beyond the pack and move hooks.
 	hookRebalanceBeforeStage = "rebalance-before-stage"
@@ -3294,10 +3297,21 @@ func groupLocRecs(recs []locRec, nb int) {
 				next[b]++
 			}
 		}
+	}
+	// Every bucket now holds exactly its records: order each (a total order, so
+	// the result does not depend on which goroutine sorts which bucket).
+	sortGroup := func(b int) {
 		if g := recs[end[b]:end[b+1]]; len(g) > 1 {
 			slices.SortFunc(g, func(a, b locRec) int { return cmpLocRec(&a, &b) })
 		}
 	}
+	if len(recs) < 1<<16 {
+		for b := range 1 << nb {
+			sortGroup(b)
+		}
+		return
+	}
+	parallelFor(1<<nb, maintWorkers(), 256, sortGroup)
 }
 
 func mergeLocIndex(a, b *locIndex, onClash func(prim, rep *locRec)) *locIndex {
@@ -3561,8 +3575,20 @@ func loadPackState(root string, format int) (*packState, error) {
 	}
 	st := &packState{}
 	recs := make([]locRec, 0, hint)
-	for _, f := range files {
-		info, entries, err := loadPackFile(filepath.Join(f.dir, f.name))
+	// Each pack's footer and index are read concurrently; they are folded in below
+	// in directory order, so the locator is the one a serial load would build.
+	type loadedPack struct {
+		info    packInfo
+		entries []packEntry
+		err     error
+	}
+	loaded := make([]loadedPack, len(files))
+	parallelFor(len(files), maintWorkers(), 4, func(i int) {
+		l := &loaded[i]
+		l.info, l.entries, l.err = loadPackFile(filepath.Join(files[i].dir, files[i].name))
+	})
+	for fi, f := range files {
+		info, entries, err := loaded[fi].info, loaded[fi].entries, loaded[fi].err
 		if err != nil {
 			name := f.name
 			if f.t != tierHot {
@@ -6879,8 +6905,9 @@ type multipartUpload struct {
 }
 
 type Store struct {
-	root   string
-	format storeFormat
+	replayIn *strIntern // journal replay only: shared bucket/content-type strings
+	root     string
+	format   storeFormat
 	// formatMu serializes ensureStoreFormat: concurrent direct-pack ingests
 	// may each need to raise FORMAT.json.
 	formatMu sync.Mutex
@@ -6979,6 +7006,9 @@ func OpenStore(root string) (*Store, error) { return openStore(root, true) }
 // writer and a later server still gets ownership.
 func OpenStoreShared(root string) (*Store, error) { return openStore(root, false) }
 
+// openGCPercent is the collector's GOGC while a store is opened.
+const openGCPercent = 400
+
 func openStore(root string, ownSegments bool) (*Store, error) {
 	for _, sub := range []string{"", "journal", "chunks", "manifests", "tmp", "snapshots"} {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
@@ -7002,8 +7032,14 @@ func openStore(root string, ownSegments bool) (*Store, error) {
 		mcache:  newManifestCache(manifestCacheBytes()),
 		ccache:  newChunkCache(chunkCacheBytes()),
 	}
+	// Replay builds the namespace: nearly everything it allocates stays live, so
+	// collecting often only rescans a growing heap. Collect less often while the
+	// namespace is built; the heap cannot outgrow what replay allocates in total.
+	defer debug.SetGCPercent(debug.SetGCPercent(openGCPercent))
 	// The namespace is folded in while the journal is read: no record list is kept.
+	s.replayIn = &strIntern{m: map[string]string{}}
 	j, applyErr, err := openJournal(journalPath, !ownSegments, s.applyRecord)
+	s.replayIn = nil
 	if err != nil {
 		return nil, fmt.Errorf("store: failed to open journal: %w", err)
 	}
@@ -7085,6 +7121,297 @@ func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
 		return storeFormat{}, err
 	}
 	return format, nil
+}
+
+// =============================================================================
+// Strict fast decoding of the dominant journal frames (Z4-P3)
+//
+// Replaying a million-object journal spent three quarters of its time in
+// encoding/json. The put and delete frames are written by json.Marshal from
+// flat structs: no whitespace, fields in declaration order, strings without
+// escapes in all but exotic keys. The decoders below read exactly that shape
+// and give up (ok == false) on anything else -- an escape, a control or
+// non-UTF-8 byte, whitespace, an unknown, repeated or differently-cased key, a
+// value of another kind -- in which case the caller runs encoding/json on the
+// same bytes, which defines the meaning. A frame the fast path accepts decodes
+// to exactly what encoding/json would have produced (compared in
+// TestP3_FastJournalDecodeMatchesJSON).
+// =============================================================================
+
+// jsonMembers walks the members of a flat JSON object. fn gets each key and its
+// raw value; kind is '"' for a string (val excludes the quotes), 'n' for an
+// integer, 'z' for null and '{' for an object (val includes the braces).
+func jsonMembers(b []byte, fn func(key []byte, kind byte, val []byte) bool) bool {
+	if len(b) < 2 || b[0] != '{' || b[len(b)-1] != '}' {
+		return false
+	}
+	i, end := 1, len(b)-1
+	if i == end {
+		return true
+	}
+	for {
+		k, n, ok := jsonPlainString(b[i:end])
+		if !ok || i+n >= end || b[i+n] != ':' {
+			return false
+		}
+		i += n + 1
+		if i >= end {
+			return false
+		}
+		var kind byte
+		var val []byte
+		switch c := b[i]; {
+		case c == '"':
+			v, n, ok := jsonPlainString(b[i:end])
+			if !ok {
+				return false
+			}
+			kind, val = '"', v
+			i += n
+		case c == '-' || c >= '0' && c <= '9':
+			j := i
+			if c == '-' {
+				j++
+			}
+			start := j
+			for j < end && b[j] >= '0' && b[j] <= '9' {
+				j++
+			}
+			if j == start || b[start] == '0' && j-start > 1 || j-start > 18 {
+				return false
+			}
+			kind, val = 'n', b[i:j]
+			i = j
+		case c == 'n' && i+4 <= end && string(b[i:i+4]) == "null":
+			kind, val = 'z', nil
+			i += 4
+		case c == '{':
+			depth, j := 0, i
+			for ; j < end; j++ {
+				switch b[j] {
+				case '"':
+					_, n, ok := jsonPlainString(b[j:end])
+					if !ok {
+						return false
+					}
+					j += n - 1
+				case '{':
+					depth++
+				case '}':
+					depth--
+				}
+				if depth == 0 {
+					break
+				}
+			}
+			if depth != 0 {
+				return false
+			}
+			kind, val = '{', b[i:j+1]
+			i = j + 1
+		default:
+			return false
+		}
+		if !fn(k, kind, val) {
+			return false
+		}
+		if i == end {
+			return true
+		}
+		if b[i] != ',' {
+			return false
+		}
+		i++
+	}
+}
+
+// jsonPlainString reads a string literal at the start of b that needs no
+// unescaping and is valid UTF-8, returning its text and the bytes consumed.
+func jsonPlainString(b []byte) ([]byte, int, bool) {
+	if len(b) < 2 || b[0] != '"' {
+		return nil, 0, false
+	}
+	for i := 1; i < len(b); i++ {
+		switch c := b[i]; {
+		case c == '"':
+			if !utf8.Valid(b[1:i]) {
+				return nil, 0, false
+			}
+			return b[1:i], i + 1, true
+		case c == '\\' || c < 0x20:
+			return nil, 0, false
+		}
+	}
+	return nil, 0, false
+}
+
+func jsonInt(val []byte) (int64, bool) {
+	n, err := strconv.ParseInt(string(val), 10, 64)
+	return n, err == nil
+}
+
+// strIntern shares the backing array of the few strings a journal repeats in
+// every frame (bucket, content type, reason); a nil intern just copies.
+type strIntern struct{ m map[string]string }
+
+func (in *strIntern) get(v []byte) string {
+	if in == nil || len(v) == 0 || len(v) > 128 {
+		return string(v)
+	}
+	if s, ok := in.m[string(v)]; ok {
+		return s
+	}
+	s := string(v)
+	if len(in.m) < 1024 {
+		in.m[s] = s
+	}
+	return s
+}
+
+func decodeArchivedFast(b []byte, p *journalArchivedVersionPayload, in *strIntern) bool {
+	var seen [8]bool
+	return jsonMembers(b, func(key []byte, kind byte, val []byte) bool {
+		var slot int
+		var dst *string
+		switch string(key) {
+		case "version_id":
+			slot, dst = 0, &p.VersionID
+		case "manifest_uuid":
+			slot, dst = 1, &p.ManifestUUID
+		case "manifest_sha256":
+			slot, dst = 2, &p.ManifestSHA256
+		case "etag":
+			slot, dst = 4, &p.ETag
+		case "content_type":
+			if seen[5] || kind != '"' {
+				return false
+			}
+			seen[5] = true
+			p.ContentType = in.get(val)
+			return true
+		case "reason":
+			if seen[7] || kind != '"' {
+				return false
+			}
+			seen[7] = true
+			p.Reason = in.get(val)
+			return true
+		case "size":
+			if seen[3] || kind != 'n' {
+				return false
+			}
+			seen[3] = true
+			n, ok := jsonInt(val)
+			p.Size = n
+			return ok
+		case "archived_at":
+			if seen[6] || kind != '"' {
+				return false
+			}
+			seen[6] = true
+			return p.ArchivedAt.UnmarshalJSON(append(append([]byte{'"'}, val...), '"')) == nil
+		default:
+			return false
+		}
+		if seen[slot] || kind != '"' {
+			return false
+		}
+		seen[slot] = true
+		*dst = string(val)
+		return true
+	})
+}
+
+func decodePutV2Fast(b []byte, p *journalPutPayloadV2, in *strIntern) bool {
+	var seen [9]bool
+	return jsonMembers(b, func(key []byte, kind byte, val []byte) bool {
+		var slot int
+		var dst *string
+		switch string(key) {
+		case "bucket":
+			if seen[0] || kind != '"' {
+				return false
+			}
+			seen[0] = true
+			p.Bucket = in.get(val)
+			return true
+		case "key":
+			slot, dst = 1, &p.Key
+		case "manifest_uuid":
+			slot, dst = 2, &p.ManifestUUID
+		case "manifest_sha256":
+			slot, dst = 3, &p.ManifestSHA256
+		case "etag":
+			slot, dst = 5, &p.ETag
+		case "content_type":
+			if seen[6] || kind != '"' {
+				return false
+			}
+			seen[6] = true
+			p.ContentType = in.get(val)
+			return true
+		case "version_id":
+			slot, dst = 7, &p.VersionID
+		case "size":
+			if seen[4] || kind != 'n' {
+				return false
+			}
+			seen[4] = true
+			n, ok := jsonInt(val)
+			p.Size = n
+			return ok
+		case "previous":
+			if seen[8] {
+				return false
+			}
+			seen[8] = true
+			switch kind {
+			case 'z':
+				return true
+			case '{':
+				p.Previous = new(journalArchivedVersionPayload)
+				return decodeArchivedFast(val, p.Previous, in)
+			}
+			return false
+		default:
+			return false
+		}
+		if seen[slot] || kind != '"' {
+			return false
+		}
+		seen[slot] = true
+		*dst = string(val)
+		return true
+	})
+}
+
+func decodeDeleteV2Fast(b []byte, p *journalDeleteObjectPayloadV2, in *strIntern) bool {
+	var seen [3]bool
+	return jsonMembers(b, func(key []byte, kind byte, val []byte) bool {
+		switch string(key) {
+		case "bucket":
+			if seen[0] || kind != '"' {
+				return false
+			}
+			seen[0] = true
+			p.Bucket = in.get(val)
+			return true
+		case "key":
+			if seen[1] || kind != '"' {
+				return false
+			}
+			seen[1] = true
+			p.Key = string(val)
+			return true
+		case "archived":
+			if seen[2] || kind != '{' {
+				return false
+			}
+			seen[2] = true
+			return decodeArchivedFast(val, &p.Archived, in)
+		}
+		return false
+	})
 }
 
 // applyRecord folds one already-validated journal record into the
@@ -7201,8 +7528,11 @@ func (s *Store) applyRecord(rec journalRecord) error {
 		delete(s.uploads, p.UploadID)
 	case recordTypePutObjectRootV2:
 		var p journalPutPayloadV2
-		if err := json.Unmarshal(rec.payload, &p); err != nil {
-			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		if !decodePutV2Fast(rec.payload, &p, s.replayIn) {
+			p = journalPutPayloadV2{}
+			if err := json.Unmarshal(rec.payload, &p); err != nil {
+				return fmt.Errorf("seq %d: %w", rec.seq, err)
+			}
 		}
 		b, ok := s.buckets[p.Bucket]
 		if !ok {
@@ -7257,8 +7587,11 @@ func (s *Store) applyRecord(rec journalRecord) error {
 		delete(s.uploads, p.UploadID)
 	case recordTypeDeleteObjectRootV2:
 		var p journalDeleteObjectPayloadV2
-		if err := json.Unmarshal(rec.payload, &p); err != nil {
-			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		if !decodeDeleteV2Fast(rec.payload, &p, s.replayIn) {
+			p = journalDeleteObjectPayloadV2{}
+			if err := json.Unmarshal(rec.payload, &p); err != nil {
+				return fmt.Errorf("seq %d: %w", rec.seq, err)
+			}
 		}
 		b, ok := s.buckets[p.Bucket]
 		if !ok {
@@ -12750,6 +13083,9 @@ type chunkFailure struct {
 // checkChunk judges one referenced digest: it must exist with the length its
 // references claim and, for a deep scan, hash to its own name.
 func (s *Store) checkChunk(sum [32]byte, length int64, deep bool, h *packHandles) (kind, detail string) {
+	if testHook != nil {
+		fireTestHook(hookReachChunkCheck)
+	}
 	if loc, ok := s.packLookup(sum); !ok || int64(loc.logical) != length {
 		info, serr := os.Stat(s.chunkPath(sum))
 		if serr != nil {
@@ -13503,6 +13839,9 @@ func (s *Store) verifyWholeObjects(rr *reachabilityResult, res *VerifyResult) {
 			subject := "manifest " + id
 			add := func(kind, detail string) {
 				found[k] = append(found[k], VerifyIssue{Kind: kind, Subject: subject, Detail: detail})
+			}
+			if testHook != nil {
+				fireTestHook(hookVerifyWholeObj)
 			}
 			wantSum, herr := decodeHexSHA256(m.objSHA)
 			if herr != nil {
@@ -14437,14 +14776,20 @@ func (s *Store) newPackBuilder(t tier, comp *packCompressor, capacity int) (*pac
 // (SHA-256 sum); it is not retained.
 func (b *packBuilder) Add(sum [32]byte, data []byte) {
 	payload, codec := b.comp.encode(data)
-	e := packEntry{sha: sum, off: b.off + packRecordHeaderSize, stored: uint32(len(payload)), logical: uint32(len(data)), codec: codec}
+	b.addEncoded(sum, len(data), payload, codec)
+}
+
+// addEncoded appends a record whose payload is already encoded (data of
+// logical bytes, stored as payload under codec).
+func (b *packBuilder) addEncoded(sum [32]byte, logical int, payload []byte, codec byte) {
+	e := packEntry{sha: sum, off: b.off + packRecordHeaderSize, stored: uint32(len(payload)), logical: uint32(logical), codec: codec}
 	var rec [packRecordHeaderSize]byte
 	putPackRecordHeader(rec[:], e)
 	b.w.Write(rec[:])
 	b.w.Write(payload)
 	b.entries = append(b.entries, e)
 	b.off = e.off + uint64(e.stored)
-	b.logical += int64(len(data))
+	b.logical += int64(logical)
 	fireTestHook(hookPackRecordWritten)
 }
 
@@ -14535,22 +14880,114 @@ func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) 
 	if err != nil {
 		return "", nil, err
 	}
-	for _, c := range batch {
-		data, err := read(c.sum)
-		if err != nil {
-			if serr := skip(c, err); serr != nil {
-				b.Abort()
-				return "", nil, serr
-			}
-			continue
+	if workers := maintWorkers(); workers > 1 && len(batch) >= 2*stageWindowRecords {
+		if err := s.stageRecordsParallel(b, batch, read, skip, comp != nil, workers); err != nil {
+			b.Abort()
+			return "", nil, err
 		}
-		b.Add(c.sum, data)
+	} else {
+		for _, c := range batch {
+			data, err := read(c.sum)
+			if err != nil {
+				if serr := skip(c, err); serr != nil {
+					b.Abort()
+					return "", nil, serr
+				}
+				continue
+			}
+			b.Add(c.sum, data)
+		}
 	}
 	if b.Records() == 0 {
 		b.Abort()
 		return "", nil, nil
 	}
 	return b.Finish()
+}
+
+const (
+	stageWindowRecords = 64      // most records read and encoded ahead of the writer, per window
+	stageWindowBytes   = 8 << 20 // ... and the most logical bytes
+)
+
+// stagedRecord is one record a worker has read, verified and encoded.
+type stagedRecord struct {
+	data, payload []byte
+	codec         byte
+	err           error
+}
+
+// stageRecordsParallel fills b with the records of batch in batch order, as the
+// serial loop does, but reads, verifies and compresses them on a bounded worker
+// pool: windows of consecutive records are prepared concurrently while the
+// previous window is appended. The appended bytes (and so the pack's digest)
+// are identical to the serial result; at most two windows are in flight, each
+// bounded by stageWindowRecords / stageWindowBytes.
+func (s *Store) stageRecordsParallel(b *packBuilder, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, compress bool, workers int) error {
+	windowEnd := func(lo int) int {
+		hi, bytes := lo, int64(0)
+		for hi < len(batch) && hi-lo < stageWindowRecords && (hi == lo || bytes+batch[hi].size <= stageWindowBytes) {
+			bytes += batch[hi].size
+			hi++
+		}
+		return hi
+	}
+	prepare := func(lo, hi int) []stagedRecord {
+		out := make([]stagedRecord, hi-lo)
+		parallelForState(hi-lo, workers, 1, func() *packCompressor {
+			if compress {
+				return newPackCompressor()
+			}
+			return nil
+		}, func(*packCompressor) {}, func(comp *packCompressor, k int) {
+			r := &out[k]
+			r.data, r.err = read(batch[lo+k].sum)
+			if r.err != nil {
+				return
+			}
+			payload, codec := comp.encode(r.data)
+			if codec != packCodecRaw {
+				payload = bytes.Clone(payload) // the encoder reuses its buffer
+			}
+			r.payload, r.codec = payload, codec
+		})
+		return out
+	}
+	type window struct {
+		lo   int
+		recs []stagedRecord
+	}
+	start := func(lo int) <-chan window {
+		ch := make(chan window, 1)
+		hi := windowEnd(lo)
+		go func() { ch <- window{lo, prepare(lo, hi)} }()
+		return ch
+	}
+	var pending <-chan window
+	if len(batch) > 0 {
+		pending = start(0)
+	}
+	for pending != nil {
+		w := <-pending
+		pending = nil
+		if next := w.lo + len(w.recs); next < len(batch) {
+			pending = start(next)
+		}
+		for k, r := range w.recs {
+			c := batch[w.lo+k]
+			if r.err != nil {
+				if serr := skip(c, r.err); serr != nil {
+					if pending != nil {
+						<-pending // let the prepared window finish before the caller removes the staging file
+					}
+					return serr
+				}
+				continue
+			}
+			b.addEncoded(c.sum, len(r.data), r.payload, r.codec)
+		}
+	}
+	return nil
 }
 
 // publishPack verifies a staged pack end to end, raises the store format if
@@ -14972,14 +15409,21 @@ func (s *Store) replacePacksToLive(doomed []packUsage, live *liveSet, dest func(
 	for t := range numTiers {
 		req := required[t]
 		var tneed []compactCandidate
-		for _, c := range req {
-			var err error
-			if dest == nil {
-				_, err = s.casReadExcluding(c.sum, skip)
-			} else {
-				err = s.copyAtTier(c.sum, t, skip)
-			}
-			if err != nil {
+		// Is there already a verified copy outside the doomed packs? Independent
+		// reads, so asked concurrently; the answers are applied in record order.
+		haveCopy := make([]bool, len(req))
+		parallelForState(len(req), maintWorkers(), 32, func() *packHandles { return &packHandles{} }, (*packHandles).close,
+			func(h *packHandles, i int) {
+				var err error
+				if dest == nil {
+					_, err = s.casReadH(req[i].sum, skip, h)
+				} else {
+					err = s.copyAtTier(req[i].sum, t, skip)
+				}
+				haveCopy[i] = err == nil
+			})
+		for i, c := range req {
+			if !haveCopy[i] {
 				tneed = append(tneed, c)
 				need = append(need, tieredChunk{c, t})
 			}
@@ -15045,15 +15489,21 @@ func (s *Store) replacePacksToLive(doomed []packUsage, live *liveSet, dest func(
 	if dest != nil {
 		fireTestHook(hookRebalancePublished)
 	}
-	for _, c := range need {
-		var err error
-		if dest == nil {
-			_, err = s.casReadExcluding(c.sum, skip)
-		} else {
-			err = s.copyAtTier(c.sum, c.t, skip)
-		}
-		if err != nil {
-			return fmt.Errorf("chunk %x is not readable from the replacement packs: %w; nothing was removed", c.sum, err)
+	// The last gate before anything is removed: every carried chunk must be
+	// readable (and hash to its name) from outside the doomed packs.
+	needErr := make([]error, len(need))
+	parallelForState(len(need), maintWorkers(), 32, func() *packHandles { return &packHandles{} }, (*packHandles).close,
+		func(h *packHandles, i int) {
+			c := need[i]
+			if dest == nil {
+				_, needErr[i] = s.casReadH(c.sum, skip, h)
+			} else {
+				needErr[i] = s.copyAtTier(c.sum, c.t, skip)
+			}
+		})
+	for i, c := range need {
+		if needErr[i] != nil {
+			return fmt.Errorf("chunk %x is not readable from the replacement packs: %w; nothing was removed", c.sum, needErr[i])
 		}
 	}
 
