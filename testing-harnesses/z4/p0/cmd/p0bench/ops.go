@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -244,9 +247,24 @@ type GetRes struct {
 }
 
 // Get fetches [off, off+n) (n<0 = whole object) and verifies against content.
+// verifyEvery > 1 (P0_VERIFY=sample:N) byte-verifies every Nth GET and checks only
+// the length of the others, so a single-core load generator does not cap what a
+// multi-core server can deliver. Reported results say which mode produced them.
+var (
+	verifyEvery = func() int64 {
+		var n int64
+		if v := os.Getenv("P0_VERIFY"); strings.HasPrefix(v, "sample:") {
+			n, _ = strconv.ParseInt(strings.TrimPrefix(v, "sample:"), 10, 64)
+		}
+		return n
+	}()
+	verifySeq atomic.Int64
+)
+
 func (s *S3) Get(o *Obj, off, n int64) GetRes {
 	req, _ := http.NewRequest("GET", s.base+"/"+o.Bucket+"/"+o.Key, nil)
 	whole := n < 0
+	check := verifyEvery <= 1 || verifySeq.Add(1)%verifyEvery == 1
 	if !whole {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, off+n-1))
 	}
@@ -277,10 +295,12 @@ func (s *S3) Get(o *Obj, off, n int64) GetRes {
 		}
 		if m > 0 {
 			res.N += int64(m)
-			if whole {
-				h.Write(buf[:m])
-			} else {
-				rangeBuf = append(rangeBuf, buf[:m]...)
+			if check {
+				if whole {
+					h.Write(buf[:m])
+				} else {
+					rangeBuf = append(rangeBuf, buf[:m]...)
+				}
 			}
 		}
 		if err == io.EOF {
@@ -292,7 +312,13 @@ func (s *S3) Get(o *Obj, off, n int64) GetRes {
 		}
 	}
 	res.Lat = time.Since(t0).Seconds()
-	if whole {
+	if !check {
+		if whole {
+			res.OK = res.N == o.C.Size
+		} else {
+			res.OK = res.N == n
+		}
+	} else if whole {
 		res.OK = res.N == o.C.Size && hex.EncodeToString(h.Sum(nil)) == o.SHA
 	} else {
 		want := make([]byte, n)
@@ -300,6 +326,23 @@ func (s *S3) Get(o *Obj, off, n int64) GetRes {
 		res.OK = bytes.Equal(want, rangeBuf)
 	}
 	return res
+}
+
+// Head issues HEAD for o and checks Content-Length against the generator.
+func (s *S3) Head(o *Obj) GetRes {
+	req, _ := http.NewRequest("HEAD", s.base+"/"+o.Bucket+"/"+o.Key, nil)
+	sign(req, "UNSIGNED-PAYLOAD")
+	t0 := time.Now()
+	r, err := s.do(req)
+	if err != nil {
+		return GetRes{Err: err}
+	}
+	defer r.Body.Close()
+	lat := time.Since(t0).Seconds()
+	if r.StatusCode != 200 {
+		return GetRes{Err: fmt.Errorf("HEAD %s: %s", o.Key, r.Status)}
+	}
+	return GetRes{Lat: lat, TTFB: lat, OK: r.Header.Get("Content-Length") == strconv.FormatInt(o.C.Size, 10) && r.Header.Get("ETag") != ""}
 }
 
 // pool runs fn(i) for i in [0,n) over conc goroutines; first error aborts.

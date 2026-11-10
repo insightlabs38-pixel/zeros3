@@ -1,0 +1,71 @@
+== cand r4k256: cpu (cum)
+Time: 2026-11-10 01:39:34 UTC
+Duration: 1.99s, Total samples = 1.97s (99.13%)
+Showing nodes accounting for 1.28s, 64.97% of 1.97s total
+Showing top 45 nodes out of 295
+      flat  flat%   sum%        cum   cum%
+     0.01s  0.51%  0.51%      1.30s 65.99%  net/http.(*conn).serve
+         0     0%  0.51%      1.13s 57.36%  main.(*Server).ServeHTTP
+         0     0%  0.51%      1.13s 57.36%  net/http.serverHandler.ServeHTTP
+     0.01s  0.51%  1.02%      1.05s 53.30%  main.(*packRunReader).read
+     0.01s  0.51%  1.52%      0.92s 46.70%  main.(*Server).handleGetObject
+     0.01s  0.51%  2.03%      0.89s 45.18%  main.(*Server).streamObject
+         0     0%  2.03%      0.83s 42.13%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0%  2.03%      0.83s 42.13%  crypto/internal/fips140/sha256.block
+     0.83s 42.13% 44.16%      0.83s 42.13%  crypto/internal/fips140/sha256.blockSHANI
+         0     0% 44.16%      0.83s 42.13%  crypto/sha256.Sum256
+         0     0% 44.16%      0.83s 42.13%  main.decodePackPayload
+     0.01s  0.51% 44.67%      0.65s 32.99%  main.(*manifestReader).next
+         0     0% 44.67%      0.62s 31.47%  main.(*manifestReader).chunk
+         0     0% 44.67%      0.56s 28.43%  main.(*manifestReader).fetchRun
+         0     0% 44.67%      0.49s 24.87%  main.(*pipeReader).run
+     0.40s 20.30% 64.97%      0.40s 20.30%  internal/runtime/syscall/linux.Syscall6
+         0     0% 64.97%      0.39s 19.80%  syscall.RawSyscall6
+         0     0% 64.97%      0.20s 10.15%  main.(*Server).authenticate
+         0     0% 64.97%      0.20s 10.15%  main.(*Server).authenticateHeader
+         0     0% 64.97%      0.20s 10.15%  syscall.Syscall6
+         0     0% 64.97%      0.19s  9.64%  syscall.Syscall
+         0     0% 64.97%      0.17s  8.63%  bufio.(*Writer).Write
+         0     0% 64.97%      0.17s  8.63%  internal/poll.ignoringEINTRIO (inline)
+         0     0% 64.97%      0.17s  8.63%  net/http.(*chunkWriter).Write
+         0     0% 64.97%      0.16s  8.12%  internal/poll.(*FD).Pread
+         0     0% 64.97%      0.16s  8.12%  internal/poll.(*FD).Pread.func1 (inline)
+         0     0% 64.97%      0.16s  8.12%  internal/poll.ignoringEINTR2[go.shape.int] (inline)
+         0     0% 64.97%      0.16s  8.12%  net/http.(*response).Write
+         0     0% 64.97%      0.16s  8.12%  net/http.(*response).write
+         0     0% 64.97%      0.16s  8.12%  os.(*File).ReadAt
+         0     0% 64.97%      0.16s  8.12%  os.(*File).pread (inline)
+         0     0% 64.97%      0.16s  8.12%  syscall.Pread (inline)
+         0     0% 64.97%      0.16s  8.12%  syscall.pread
+         0     0% 64.97%      0.15s  7.61%  main.(*Server).sigv4VerifyCore
+         0     0% 64.97%      0.14s  7.11%  internal/poll.(*FD).Write
+         0     0% 64.97%      0.14s  7.11%  net.(*conn).Write
+         0     0% 64.97%      0.14s  7.11%  net.(*netFD).Write
+         0     0% 64.97%      0.14s  7.11%  net/http.checkConnErrorWriter.Write
+         0     0% 64.97%      0.14s  7.11%  runtime.mcall
+         0     0% 64.97%      0.14s  7.11%  runtime.park_m
+         0     0% 64.97%      0.13s  6.60%  runtime.findRunnable
+         0     0% 64.97%      0.13s  6.60%  runtime.schedule
+         0     0% 64.97%      0.13s  6.60%  syscall.Write (inline)
+         0     0% 64.97%      0.13s  6.60%  syscall.write
+         0     0% 64.97%      0.12s  6.09%  runtime.mallocgc
+== alloc_space
+Showing nodes accounting for 138.53MB, 85.08% of 162.83MB total
+Dropped 212 nodes (cum <= 0.81MB)
+Showing top 15 nodes out of 105
+      flat  flat%   sum%        cum   cum%
+   81.61MB 50.12% 50.12%    81.61MB 50.12%  bytes.Clone
+   28.02MB 17.21% 67.32%    28.02MB 17.21%  main.getRunBuf
+    4.74MB  2.91% 70.24%     5.08MB  3.12%  net/textproto.readMIMEHeader
+    3.38MB  2.07% 72.31%     3.38MB  2.07%  runtime/pprof.StartCPUProfile
+    2.71MB  1.67% 73.98%     2.71MB  1.67%  net/textproto.MIMEHeader.Set
+    2.67MB  1.64% 75.62%     2.67MB  1.64%  net/http.Header.Clone
+    2.21MB  1.36% 76.97%     2.21MB  1.36%  internal/bytealg.MakeNoZero
+    2.03MB  1.25% 78.22%     2.03MB  1.25%  bufio.NewReaderSize
+    1.88MB  1.15% 79.37%     1.88MB  1.15%  compress/flate.(*fastGen).addBlock
+    1.68MB  1.03% 80.41%     9.93MB  6.10%  net/http.(*conn).readRequest
+    1.68MB  1.03% 81.44%     7.74MB  4.75%  net/http.readRequestLimit
+    1.55MB  0.95% 82.39%     2.79MB  1.72%  compress/flate.NewWriter
+    1.48MB  0.91% 83.29%     1.48MB  0.91%  crypto/internal/fips140/sha256.New
+    1.45MB  0.89% 84.18%     1.45MB  0.89%  encoding/hex.EncodeToString
+    1.45MB  0.89% 85.08%     1.45MB  0.89%  strings.genSplit

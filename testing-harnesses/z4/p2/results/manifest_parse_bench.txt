@@ -1,0 +1,16 @@
+BenchmarkP2_ManifestParse/chunks=16/stdlib-4         	   28586	      9663 ns/op	 207.19 MB/s	    1240 B/op	      10 allocs/op
+BenchmarkP2_ManifestParse/chunks=16/served-4         	   48073	      4363 ns/op	 458.83 MB/s	    1953 B/op	       7 allocs/op
+BenchmarkP2_ManifestParse/chunks=16/sha256-4         	  173600	      1380 ns/op	1450.21 MB/s
+BenchmarkP2_ManifestParse/chunks=16/locate-4         	35256693	         6.706 ns/op
+BenchmarkP2_ManifestParse/chunks=1024/stdlib-4       	     610	    449072 ns/op	 213.21 MB/s	  124291 B/op	    1024 allocs/op
+BenchmarkP2_ManifestParse/chunks=1024/served-4       	    2323	    107575 ns/op	 890.05 MB/s	   95614 B/op	       9 allocs/op
+BenchmarkP2_ManifestParse/chunks=1024/sha256-4       	    3655	     61937 ns/op	1545.87 MB/s
+BenchmarkP2_ManifestParse/chunks=1024/locate-4       	 4511138	        56.12 ns/op
+BenchmarkP2_ManifestParse/chunks=16384/stdlib-4      	      30	   6979980 ns/op	 218.37 MB/s	 2788475 B/op	   16414 allocs/op
+BenchmarkP2_ManifestParse/chunks=16384/served-4      	     164	   1436716 ns/op	1060.91 MB/s	 1387074 B/op	      12 allocs/op
+BenchmarkP2_ManifestParse/chunks=16384/sha256-4      	     238	   1067037 ns/op	1428.47 MB/s
+BenchmarkP2_ManifestParse/chunks=16384/locate-4      	 2631464	        92.05 ns/op
+BenchmarkP2_ManifestParse/chunks=262144/stdlib-4     	       2	 113120584 ns/op	 215.52 MB/s	49597812 B/op	  262188 allocs/op
+BenchmarkP2_ManifestParse/chunks=262144/served-4     	      10	  25122100 ns/op	 970.46 MB/s	21964745 B/op	      11 allocs/op
+BenchmarkP2_ManifestParse/chunks=262144/sha256-4     	      14	  16302914 ns/op	1495.43 MB/s
+BenchmarkP2_ManifestParse/chunks=262144/locate-4     	 1780149	       119.7 ns/op

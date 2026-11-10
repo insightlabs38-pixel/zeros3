@@ -177,6 +177,10 @@ func StartServer(bin, store, profDir string, extraArgs, extraEnv []string) (*Ser
 	s := &Server{Addr: fmt.Sprintf("127.0.0.1:%d", port), Store: store, ProfDir: profDir}
 	s.URL = "http://" + s.Addr
 	args := append([]string{"serve", "-store", store, "-addr", s.Addr, "-access-key", accessKey, "-secret-key", secretKey, "-region", region}, extraArgs...)
+	if cpus := os.Getenv("P0_SERVER_CPUS"); cpus != "" { // pin the server (taskset execs, so the PID is the server's)
+		args = append([]string{"-c", cpus, bin}, args...)
+		bin = "taskset"
+	}
 	s.cmd = exec.Command(bin, args...)
 	s.cmd.Env = append(os.Environ(), extraEnv...)
 	if profDir != "" {

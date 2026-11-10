@@ -5588,6 +5588,598 @@ func (s *Store) readManifest(id string) (manifestV1, []byte, error) {
 	return m, data, nil
 }
 
+// =============================================================================
+// 5b. Served manifests: the bounded manifest cache and the range index
+//
+// GET, HEAD and ranged reads need an object's chunk list on every request.
+// Re-reading and JSON-decoding it each time costs time proportional to the
+// object (about 9 ms for a 1 GiB object) even for a one-byte range. A
+// servedManifest is the same immutable manifest in the form the read path
+// wants: the chunk digests as 32 raw bytes each and the logical end offset of
+// every chunk, so a range is located by binary search (O(log chunks)) and no
+// per-request string or JSON work remains.
+//
+// Identity. A manifest is immutable and the journal names it by (UUID,
+// SHA-256 of its exact bytes). The cache key is that SHA-256: equal digests
+// mean equal bytes, so an entry can never describe another object or version,
+// and the key says nothing about where the bytes live. Segment sealing,
+// repack, tier moves and locator replacement therefore never invalidate an
+// entry -- the entry holds no pack, offset or file handle, and chunk bytes are
+// always re-resolved and re-verified through casRead/packRunReader at read
+// time. The namespace stays the only authority for which manifest an object
+// currently has: the cache is consulted only with the (UUID, SHA-256) the
+// namespace, history or snapshot supplied, so a pruned, deleted or replaced
+// version is simply never asked for.
+//
+// Integrity contract (the deliberate distinction). An entry is created only
+// from bytes that hash to the journal-recorded digest, parsed completely and
+// validated (digests are 32 bytes, lengths are non-negative, offsets do not
+// overflow, the lengths sum to total_length). Serving then trusts that
+// verified-in-memory copy instead of re-reading the file: later rot of the
+// manifest file is not noticed by GET/HEAD/range until the entry leaves the
+// cache, but every chunk byte served is still read from storage and verified
+// against its SHA-256 on every request, so a response is never wrong, only
+// possibly more available than the manifest file is. Everything that
+// diagnoses or repairs storage (Verify, stats, reachability, GC, repair,
+// restore, copy, bundle export) bypasses the cache and re-reads and re-hashes
+// the real bytes, and Verify, repair and GC purge the cache so a read after
+// them is loaded afresh.
+// =============================================================================
+
+type servedManifest struct {
+	man  manifestV1 // every field except Chunks, which is nil
+	sha  [32]byte   // journal-recorded SHA-256 of the manifest's exact bytes; zero when built from a parsed manifest
+	sums []byte     // 32 bytes per chunk, in manifest order
+	ends []int64    // ends[i] is the logical offset one past chunk i; ends[len-1] == man.TotalLength
+	cost int64      // bytes charged to the cache
+}
+
+func (m *servedManifest) chunkCount() int { return len(m.ends) }
+
+func (m *servedManifest) sum(i int) (out [32]byte) {
+	copy(out[:], m.sums[i*32:i*32+32])
+	return out
+}
+
+// start is the logical offset of chunk i's first byte (the total length for i == chunkCount).
+func (m *servedManifest) start(i int) int64 {
+	if i == 0 {
+		return 0
+	}
+	return m.ends[i-1]
+}
+
+func (m *servedManifest) length(i int) int64 { return m.ends[i] - m.start(i) }
+
+// locate returns the first chunk that contains a byte at or after logical
+// offset off (zero-length chunks never contain one), or chunkCount when off is
+// at or past the end.
+func (m *servedManifest) locate(off int64) int {
+	lo, hi := 0, len(m.ends)
+	for lo < hi {
+		mid := int(uint(lo+hi) >> 1)
+		if m.ends[mid] > off {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	return lo
+}
+
+// manifest materialises the full manifestV1, chunk list included. It is O(chunks);
+// the serving path does not use it.
+func (m *servedManifest) manifest() manifestV1 {
+	man := m.man
+	man.Chunks = make([]chunkRef, len(m.ends))
+	for i := range man.Chunks {
+		man.Chunks[i] = chunkRef{SHA256: hex.EncodeToString(m.sums[i*32 : i*32+32]), Length: m.length(i)}
+	}
+	return man
+}
+
+func (m *servedManifest) charge() {
+	n := int64(len(m.ends))
+	c := int64(768) + 40*n
+	c += int64(len(m.man.ManifestUUID) + len(m.man.HashAlgorithm) + len(m.man.ObjectSHA256) + len(m.man.ETag) + len(m.man.ContentType) + len(m.man.VersionID))
+	for _, kv := range m.man.Metadata {
+		c += int64(len(kv.Key)+len(kv.Value)) + 48
+	}
+	m.cost = c
+}
+
+// newServedManifest builds the compact form of a parsed manifest and validates
+// it. sha is recorded as given and is not checked here.
+func newServedManifest(man manifestV1, sha [32]byte) (*servedManifest, error) {
+	n := len(man.Chunks)
+	sm := &servedManifest{sha: sha, sums: make([]byte, 0, 32*n), ends: make([]int64, 0, n)}
+	var total int64
+	for _, c := range man.Chunks {
+		d, err := decodeHexSHA256(c.SHA256)
+		if err != nil {
+			return nil, err
+		}
+		if c.Length < 0 || total > math.MaxInt64-c.Length {
+			return nil, fmt.Errorf("manifest %s: chunk length %d is out of range", man.ManifestUUID, c.Length)
+		}
+		total += c.Length
+		sm.sums, sm.ends = append(sm.sums, d[:]...), append(sm.ends, total)
+	}
+	man.Chunks = nil
+	sm.man = man
+	return sm, sm.check()
+}
+
+// check validates what every consumer of the index relies on.
+func (m *servedManifest) check() error {
+	var total int64
+	if n := len(m.ends); n > 0 {
+		total = m.ends[n-1]
+	}
+	if total != m.man.TotalLength {
+		return fmt.Errorf("manifest %s: chunk lengths sum to %d, want total_length %d", m.man.ManifestUUID, total, m.man.TotalLength)
+	}
+	m.charge()
+	return nil
+}
+
+var servedChunksKey = []byte(`,"chunks":[`)
+
+var (
+	servedRecHead = []byte(`{"sha256":"`)
+	servedRecMid  = []byte(`","length":`)
+)
+
+// servedHexVal maps a lowercase hex digit to its value and everything else to 0xff.
+var servedHexVal = func() (t [256]byte) {
+	for i := range t {
+		t[i] = 0xff
+	}
+	for i := 0; i < 10; i++ {
+		t['0'+i] = byte(i)
+	}
+	for i := 0; i < 6; i++ {
+		t['a'+i] = byte(10 + i)
+	}
+	return t
+}()
+
+// scanCanonicalChunks recognises the chunk list exactly as json.Marshal writes it
+// ({"sha256":"<64 lowercase hex>","length":<digits>} records, nothing else)
+// and returns the bytes before and after the array, the digests and the
+// cumulative end offsets. ok is false for anything else (escapes, whitespace,
+// other fields, uppercase hex, leading zeros, huge numbers): the caller then
+// decodes the whole document with encoding/json, which defines the meaning.
+func scanCanonicalChunks(data []byte) (pre, post, sums []byte, ends []int64, ok bool) {
+	k := bytes.Index(data, servedChunksKey)
+	if k < 0 {
+		return
+	}
+	pre = data[:k+len(servedChunksKey)-1] // ... "chunks":
+	p := k + len(servedChunksKey)
+	if p >= len(data) {
+		return
+	}
+	// Records are at least ~100 bytes; pre-size from the remaining length.
+	est := (len(data) - p) / 100
+	sums, ends = make([]byte, 0, 32*est), make([]int64, 0, est)
+	var total int64
+	if data[p] == ']' {
+		return pre, data[p+1:], sums, ends, true
+	}
+	for {
+		if !bytes.HasPrefix(data[p:], servedRecHead) {
+			return
+		}
+		p += len(servedRecHead)
+		if p+64 > len(data) {
+			return
+		}
+		var d [32]byte
+		for i := 0; i < 32; i++ {
+			hi, lo := servedHexVal[data[p+2*i]], servedHexVal[data[p+2*i+1]]
+			if hi|lo == 0xff || hi > 15 || lo > 15 {
+				return
+			}
+			d[i] = hi<<4 | lo
+		}
+		p += 64
+		if !bytes.HasPrefix(data[p:], servedRecMid) {
+			return
+		}
+		p += len(servedRecMid)
+		start := p
+		var n int64
+		for p < len(data) && data[p] >= '0' && data[p] <= '9' {
+			if p-start >= 18 {
+				return
+			}
+			n = n*10 + int64(data[p]-'0')
+			p++
+		}
+		if p == start || (data[start] == '0' && p-start > 1) || p >= len(data) || data[p] != '}' {
+			return
+		}
+		p++
+		if total > math.MaxInt64-n {
+			return
+		}
+		total += n
+		sums, ends = append(sums, d[:]...), append(ends, total)
+		if p >= len(data) {
+			return
+		}
+		switch data[p] {
+		case ',':
+			p++
+		case ']':
+			return pre, data[p+1:], sums, ends, true
+		default:
+			return
+		}
+	}
+}
+
+// parseServedManifest decodes manifest bytes (already matched to sha by the
+// caller) into their served form, with a streaming fast path for the chunk
+// list and encoding/json for everything else.
+func parseServedManifest(data []byte, id string, sha [32]byte) (*servedManifest, error) {
+	if pre, post, sums, ends, ok := scanCanonicalChunks(data); ok {
+		spliced := make([]byte, 0, len(pre)+2+len(post))
+		spliced = append(append(append(spliced, pre...), '[', ']'), post...)
+		var man manifestV1
+		if err := json.Unmarshal(spliced, &man); err != nil {
+			return nil, fmt.Errorf("manifest %s is corrupt: %w", id, err)
+		}
+		if len(man.Chunks) == 0 { // a second "chunks" member would have refilled it: decode the slow way
+			man.Chunks = nil
+			sm := &servedManifest{man: man, sha: sha, sums: sums, ends: ends}
+			return sm, sm.check()
+		}
+	}
+	var man manifestV1
+	if err := json.Unmarshal(data, &man); err != nil {
+		return nil, fmt.Errorf("manifest %s is corrupt: %w", id, err)
+	}
+	return newServedManifest(man, sha)
+}
+
+// loadServedManifest reads manifest id from storage, confirms its exact bytes
+// hash to wantSHA (the digest the journal recorded), and decodes it. It never
+// consults the cache and is what a cache miss runs.
+func (s *Store) loadServedManifest(id string, wantSHA [32]byte) (*servedManifest, error) {
+	data, err := s.loadManifestBytes(id, wantSHA)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errManifestUnavailable, err)
+	}
+	if sha256.Sum256(data) != wantSHA {
+		return nil, fmt.Errorf("%w: manifest %s hash mismatch", errManifestUnavailable, id)
+	}
+	sm, err := parseServedManifest(data, id, wantSHA)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errManifestUnavailable, err)
+	}
+	return sm, nil
+}
+
+// servedManifest returns the served form of manifest id for the serving path
+// (GET, HEAD, ranged reads), from the cache when it holds the verified entry.
+func (s *Store) servedManifest(id string, wantSHA [32]byte) (*servedManifest, error) {
+	return s.mcache.get(wantSHA, id, func() (*servedManifest, error) { return s.loadServedManifest(id, wantSHA) })
+}
+
+// clockShard is one lock domain of a bounded CLOCK cache: a map for lookup and
+// a ring the hand sweeps. A lookup under the read lock only sets a reference
+// bit; insertion (write lock) evicts entries whose bit is clear until the new
+// one fits. New entries start unreferenced, so a scan of one-touch keys evicts
+// itself before it evicts anything that is being re-read.
+type clockShard[V any] struct {
+	mu    sync.RWMutex
+	m     map[[32]byte]*clockEntry[V]
+	ring  []*clockEntry[V]
+	hand  int
+	bytes int64
+	cap   int64
+	gen   uint64 // bumped by purge: inserts prepared before it are refused
+}
+
+type clockEntry[V any] struct {
+	key  [32]byte
+	val  V
+	cost int64
+	born int64 // cacheNow() at insertion: when this entry was last verified against storage
+	ref  atomic.Bool
+	slot int
+}
+
+// cacheRevalidateAfter bounds how long a cached manifest or chunk is served
+// without being read back from storage: an entry older than this is treated as a
+// miss, so the read that replaces it re-reads and re-verifies the real bytes
+// (and a failure evicts it). Damage to a hot manifest or chunk therefore becomes
+// visible to GET/HEAD/range reads within this interval even if nothing else
+// (verify, restart, eviction) has looked at it. Zero or negative disables
+// expiry. A var for tests.
+var cacheRevalidateAfter = 30 * time.Second
+
+var cacheClockStart = time.Now()
+
+func cacheNow() int64 { return int64(time.Since(cacheClockStart)) }
+
+func (e *clockEntry[V]) expired() bool {
+	return cacheRevalidateAfter > 0 && cacheNow()-e.born > int64(cacheRevalidateAfter)
+}
+
+func (sh *clockShard[V]) init(cap int64) {
+	sh.m, sh.cap = map[[32]byte]*clockEntry[V]{}, cap
+}
+
+// getLocked returns the entry for key, marking it used; the caller holds mu (read or write).
+func (sh *clockShard[V]) getLocked(key [32]byte) *clockEntry[V] {
+	e := sh.m[key]
+	if e != nil && !e.ref.Load() {
+		e.ref.Store(true)
+	}
+	return e
+}
+
+// insertLocked adds val unless gen is stale (a purge intervened) or cost is
+// larger than the shard; it reports evictions and whether val was stored.
+func (sh *clockShard[V]) insertLocked(key [32]byte, val V, cost int64, gen uint64) (evicted int64, stored, stale, oversize bool) {
+	switch {
+	case gen != sh.gen:
+		return 0, false, true, false
+	case cost > sh.cap:
+		return 0, false, false, true
+	}
+	if old := sh.m[key]; old != nil {
+		sh.removeLocked(old)
+	}
+	for sh.bytes+cost > sh.cap && len(sh.ring) > 0 {
+		if sh.hand >= len(sh.ring) {
+			sh.hand = 0
+		}
+		e := sh.ring[sh.hand]
+		if e.ref.Swap(false) {
+			sh.hand++
+			continue
+		}
+		sh.removeLocked(e)
+		evicted++
+	}
+	e := &clockEntry[V]{key: key, val: val, cost: cost, born: cacheNow(), slot: len(sh.ring)}
+	sh.ring = append(sh.ring, e)
+	sh.m[key] = e
+	sh.bytes += cost
+	return evicted, true, false, false
+}
+
+func (sh *clockShard[V]) removeLocked(e *clockEntry[V]) {
+	last := len(sh.ring) - 1
+	sh.ring[e.slot] = sh.ring[last]
+	sh.ring[e.slot].slot = e.slot
+	sh.ring[last] = nil
+	sh.ring = sh.ring[:last]
+	delete(sh.m, e.key)
+	sh.bytes -= e.cost
+}
+
+func (sh *clockShard[V]) purgeLocked() {
+	sh.m, sh.ring, sh.hand, sh.bytes = map[[32]byte]*clockEntry[V]{}, nil, 0, 0
+	sh.gen++
+}
+
+// manifestCache is a bounded, sharded CLOCK cache of servedManifests keyed by
+// manifest SHA-256. A miss loads once per digest (single flight) and inserts
+// only a fully verified entry. Entries are immutable, so eviction needs no
+// coordination with readers: a reader keeps the entry it holds.
+const manifestCacheShards = 8
+
+// manifestCacheDefaultBytes is the default budget for all shards together.
+var manifestCacheDefaultBytes int64 = 32 << 20
+
+type manifestCache struct {
+	budget int64
+	shards [manifestCacheShards]manifestCacheShard
+}
+
+type manifestCacheShard struct {
+	clockShard[*servedManifest]
+	flights map[[32]byte]*mcFlight
+
+	hits, misses, loads, loadErrs, evictions, oversize, rejects, revalidations atomic.Int64
+	_                                                                          [64]byte
+}
+
+type mcFlight struct {
+	done chan struct{}
+	sm   *servedManifest
+	err  error
+}
+
+func newManifestCache(budget int64) *manifestCache {
+	c := &manifestCache{budget: budget}
+	for i := range c.shards {
+		c.shards[i].init(budget / manifestCacheShards)
+		c.shards[i].flights = map[[32]byte]*mcFlight{}
+	}
+	return c
+}
+
+func (c *manifestCache) shard(sha [32]byte) *manifestCacheShard {
+	return &c.shards[sha[0]&(manifestCacheShards-1)]
+}
+
+// get returns the entry for sha if cached and describing manifest id, else
+// runs load once for all concurrent callers and caches a successful result.
+func (c *manifestCache) get(sha [32]byte, id string, load func() (*servedManifest, error)) (*servedManifest, error) {
+	if c == nil || c.budget <= 0 {
+		return load()
+	}
+	sh := c.shard(sha)
+	sh.mu.RLock()
+	if e := sh.getLocked(sha); e != nil && e.val.man.ManifestUUID == id && !e.expired() {
+		sh.mu.RUnlock()
+		sh.hits.Add(1)
+		return e.val, nil
+	}
+	sh.mu.RUnlock()
+	sh.misses.Add(1)
+
+	sh.mu.Lock()
+	if e := sh.getLocked(sha); e != nil && e.val.man.ManifestUUID == id {
+		if !e.expired() {
+			sh.mu.Unlock()
+			return e.val, nil
+		}
+		// Due for re-verification: drop it now, so a failed reload leaves nothing behind.
+		sh.removeLocked(e)
+		sh.revalidations.Add(1)
+	}
+	if f := sh.flights[sha]; f != nil {
+		sh.mu.Unlock()
+		<-f.done
+		if f.err == nil && f.sm.man.ManifestUUID == id {
+			return f.sm, nil
+		}
+		if f.err != nil {
+			return nil, f.err
+		}
+		return load() // same digest, different name: the namespace is inconsistent; do not share
+	}
+	f := &mcFlight{done: make(chan struct{})}
+	sh.flights[sha] = f
+	gen := sh.gen
+	sh.mu.Unlock()
+
+	var sm *servedManifest
+	var err error
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("manifest load panicked: %v", p)
+			}
+			sh.mu.Lock()
+			delete(sh.flights, sha)
+			if err == nil && sm != nil && sm.man.ManifestUUID == id { // a mismatched name is served but never kept
+				ev, _, stale, over := sh.insertLocked(sha, sm, sm.cost, gen)
+				sh.evictions.Add(ev)
+				if stale {
+					sh.rejects.Add(1)
+				}
+				if over {
+					sh.oversize.Add(1)
+				}
+			}
+			sh.mu.Unlock()
+			f.sm, f.err = sm, err
+			close(f.done)
+		}()
+		sm, err = load()
+		sh.loads.Add(1)
+		if err != nil {
+			sh.loadErrs.Add(1)
+		}
+	}()
+	return sm, err
+}
+
+// purgeReadCaches drops the manifest and chunk caches (see sections 5b and 14a).
+func (s *Store) purgeReadCaches() {
+	s.mcache.purge()
+	s.ccache.purge()
+}
+
+// peek returns a cached entry without loading, inserting or marking it used.
+func (c *manifestCache) peek(sha [32]byte, id string) *servedManifest {
+	if c == nil || c.budget <= 0 {
+		return nil
+	}
+	sh := c.shard(sha)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	if e := sh.m[sha]; e != nil && e.val.man.ManifestUUID == id && !e.expired() {
+		return e.val
+	}
+	return nil
+}
+
+// purge drops every entry (and fences loads in flight) so the next read of
+// each manifest comes from storage. Maintenance and diagnostics call it; it
+// is never needed for correctness of the cached data itself.
+func (c *manifestCache) purge() {
+	if c == nil {
+		return
+	}
+	for i := range c.shards {
+		sh := &c.shards[i]
+		sh.mu.Lock()
+		sh.purgeLocked()
+		sh.mu.Unlock()
+	}
+}
+
+// manifestCacheStats is a point-in-time summary for tests and benchmarks.
+type manifestCacheStats struct {
+	Entries, Bytes, Budget                                                       int64
+	Hits, Misses, Loads, LoadErrors, Evictions, Oversize, Rejects, Revalidations int64
+}
+
+func (c *manifestCache) stats() (st manifestCacheStats) {
+	if c == nil {
+		return
+	}
+	st.Budget = c.budget
+	for i := range c.shards {
+		sh := &c.shards[i]
+		sh.mu.RLock()
+		st.Entries += int64(len(sh.m))
+		st.Bytes += sh.bytes
+		sh.mu.RUnlock()
+		st.Hits += sh.hits.Load()
+		st.Misses += sh.misses.Load()
+		st.Loads += sh.loads.Load()
+		st.LoadErrors += sh.loadErrs.Load()
+		st.Evictions += sh.evictions.Load()
+		st.Oversize += sh.oversize.Load()
+		st.Rejects += sh.rejects.Load()
+		st.Revalidations += sh.revalidations.Load()
+	}
+	return st
+}
+
+// dumpReadCacheStats appends the read caches' counters as one JSON line to the
+// file named by ZEROS3_READ_CACHE_STATS, if set. A benchmarking aid: it is how
+// an external load generator learns hit rates, entry counts and bytes.
+func (s *Store) dumpReadCacheStats() {
+	path := os.Getenv("ZEROS3_READ_CACHE_STATS")
+	if path == "" {
+		return
+	}
+	line, err := json.Marshal(struct {
+		Manifest manifestCacheStats `json:"manifest"`
+		Chunk    chunkCacheStats    `json:"chunk"`
+	}{s.mcache.stats(), s.ccache.stats()})
+	if err != nil {
+		return
+	}
+	if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		f.Write(append(line, '\n'))
+		f.Close()
+	}
+}
+
+// manifestCacheBytes is the configured budget: ZEROS3_MANIFEST_CACHE_MIB
+// (0 disables the cache) overrides the default. A benchmarking and test
+// switch, not a supported tuning interface.
+func manifestCacheBytes() int64 {
+	if v := os.Getenv("ZEROS3_MANIFEST_CACHE_MIB"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 && n <= 1<<20 {
+			return n << 20
+		}
+	}
+	return manifestCacheDefaultBytes
+}
+
 // newUUIDv7 returns a fresh, time-ordered UUID version 7 identifier in its
 // canonical 8-4-4-4-12 lowercase hex string form (e.g.
 // "018f4d2e-6b1a-7c3d-9e2f-1a2b3c4d5e6f"), used as both manifest UUIDs and
@@ -6202,6 +6794,14 @@ type Store struct {
 	// rep is the optional structured-representation state (section 16d):
 	// runtime mode, derived catalog and counters. Nothing in it is authoritative.
 	rep repState
+
+	// mcache holds verified, immutable served manifests for the read path
+	// (section 5b). It is per Store, bounded, and never authoritative.
+	mcache *manifestCache
+	// ccache holds recently re-read, digest-verified chunks (section 14a).
+	ccache *chunkCache
+	// pipeStreams counts the large responses (pipelined or not) currently streaming (section 14b).
+	pipeStreams atomic.Int64
 }
 
 // OpenStore opens the store rooted at root, initializing it (writing
@@ -6243,6 +6843,8 @@ func openStore(root string, ownSegments bool) (*Store, error) {
 		buckets: map[string]*bucketEntry{},
 		uploads: map[string]*multipartUpload{},
 		history: map[string]map[string][]*historyVersionEntry{},
+		mcache:  newManifestCache(manifestCacheBytes()),
+		ccache:  newChunkCache(chunkCacheBytes()),
 	}
 	for _, rec := range records {
 		if err := s.applyRecord(rec); err != nil {
@@ -6608,6 +7210,7 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 
 // Close releases the store's open file handles.
 func (s *Store) Close() error {
+	s.dumpReadCacheStats()
 	if s.segs != nil {
 		s.segs.close()
 	}
@@ -7117,20 +7720,42 @@ func (s *Store) readVerifiedManifest(id string, wantSHA [32]byte) (manifestV1, e
 	return man, nil
 }
 
+// manifestCreatedAt is an object's creation time, which only its manifest
+// records. A listing visits many manifests once, so it uses a cached entry when
+// there is one but never inserts: a scan must not evict the working set.
+func (s *Store) manifestCreatedAt(obj *objectEntry) (time.Time, error) {
+	if sm := s.mcache.peek(obj.manifestSHA256, obj.manifestUUID); sm != nil {
+		return sm.man.CreatedAt, nil
+	}
+	man, err := s.readVerifiedManifest(obj.manifestUUID, obj.manifestSHA256)
+	return man.CreatedAt, err
+}
+
 // HeadObject resolves bucket/key and returns its cached namespace entry
 // (size/ETag/Content-Type, all cheap to keep in memory) plus its manifest
 // (read once, for user metadata and the creation timestamp) -- but never
 // touches chunk data, since a HEAD response never has a body.
 func (s *Store) HeadObject(bucket, key string) (*objectEntry, manifestV1, error) {
+	obj, sm, err := s.headServed(bucket, key)
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+	return obj, sm.manifest(), nil
+}
+
+// headServed is HeadObject for the serving path: the manifest comes from the
+// bounded cache of verified manifests (section 5b) in its compact indexed form,
+// and no chunk list is materialised.
+func (s *Store) headServed(bucket, key string) (*objectEntry, *servedManifest, error) {
 	obj, err := s.lookupObject(bucket, key)
 	if err != nil {
-		return nil, manifestV1{}, err
+		return nil, nil, err
 	}
-	man, err := s.readVerifiedManifest(obj.manifestUUID, obj.manifestSHA256)
+	sm, err := s.servedManifest(obj.manifestUUID, obj.manifestSHA256)
 	if err != nil {
-		return nil, manifestV1{}, err
+		return nil, nil, err
 	}
-	return obj, man, nil
+	return obj, sm, nil
 }
 
 // =============================================================================
@@ -7441,6 +8066,7 @@ func (s *Store) ApplyHistoryPrune(res *HistoryPruneResult) error {
 }
 
 func (s *Store) applyHistoryPrune(res *HistoryPruneResult, frameTarget int) error {
+	defer s.purgeReadCaches()
 	if len(res.Versions) == 0 {
 		res.Applied = true
 		return nil
@@ -7965,7 +8591,29 @@ func hmacSHA256(key []byte, data string) []byte {
 	return h.Sum(nil)
 }
 
+// sigv4KeyCache holds the most recently derived signing key. The derivation is a
+// pure function of (secret, date, region, service) and takes four HMACs, so a
+// server answering requests all day recomputes the same bytes thousands of
+// times; the key is valid for the whole UTC day named in its scope. A single
+// entry is enough (every request of a day carries the same scope) and a
+// different scope or secret simply replaces it.
+type sigv4KeyEntry struct {
+	secret, date, region, service string
+	key                           []byte
+}
+
+var sigv4KeyCache atomic.Pointer[sigv4KeyEntry]
+
 func sigv4SigningKey(secret, date, region, service string) []byte {
+	if e := sigv4KeyCache.Load(); e != nil && e.date == date && e.region == region && e.service == service && e.secret == secret {
+		return e.key
+	}
+	key := sigv4DeriveKey(secret, date, region, service)
+	sigv4KeyCache.Store(&sigv4KeyEntry{secret: secret, date: date, region: region, service: service, key: key})
+	return key
+}
+
+func sigv4DeriveKey(secret, date, region, service string) []byte {
 	kDate := hmacSHA256([]byte("AWS4"+secret), date)
 	kRegion := hmacSHA256(kDate, region)
 	kService := hmacSHA256(kRegion, service)
@@ -9504,17 +10152,25 @@ func (srv *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucke
 		writeS3Error(w, "InvalidArgument", err.Error(), "/"+bucket+"/"+key)
 		return
 	}
-	entry, man, err := srv.store.HeadObject(bucket, key)
+	// The namespace entry alone decides a failed If-Match (412); only a 304 or
+	// a response with headers needs the manifest.
+	entry, err := srv.store.lookupObject(bucket, key)
 	if err != nil {
 		writeGetObjectError(w, bucket, key, err)
 		return
 	}
-	switch evaluateGetCondition(cond, entry.etag) {
-	case getConditionPreconditionFailed:
+	outcome := evaluateGetCondition(cond, entry.etag)
+	if outcome == getConditionPreconditionFailed {
 		writeS3Error(w, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold", "/"+bucket+"/"+key)
 		return
-	case getConditionNotModified:
-		writeObjectHeaders(w, entry, man)
+	}
+	man, err := srv.store.servedManifest(entry.manifestUUID, entry.manifestSHA256)
+	if err != nil {
+		writeGetObjectError(w, bucket, key, err)
+		return
+	}
+	if outcome == getConditionNotModified {
+		writeObjectHeaders(w, entry, man.man)
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -9539,15 +10195,15 @@ func (srv *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucke
 // that cannot be served at all gets an S3 error. A failure after that
 // aborts the response short of its Content-Length, which clients observe
 // as a truncated body rather than a complete one.
-func (srv *Server) streamObject(w http.ResponseWriter, bucket, key string, entry *objectEntry, man manifestV1, rng byteRange, partial bool) {
-	rd := srv.store.openObjectReader(man, rng)
+func (srv *Server) streamObject(w http.ResponseWriter, bucket, key string, entry *objectEntry, man *servedManifest, rng byteRange, partial bool) {
+	rd := srv.store.openServedReader(man, rng)
 	defer rd.close()
 	data, err := rd.next()
 	if err != nil && err != io.EOF {
 		writeGetObjectError(w, bucket, key, err)
 		return
 	}
-	writeObjectHeaders(w, entry, man)
+	writeObjectHeaders(w, entry, man.man)
 	status := http.StatusOK
 	if partial {
 		status = http.StatusPartialContent
@@ -9571,29 +10227,32 @@ func (srv *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, buck
 		writeS3ErrorStatusOnly(w, "InvalidArgument")
 		return
 	}
-	entry, man, err := srv.store.HeadObject(bucket, key)
-	if err != nil {
-		switch {
-		case errors.Is(err, errNoSuchBucket):
-			writeS3ErrorStatusOnly(w, "NoSuchBucket")
-		case errors.Is(err, errNoSuchKey):
-			writeS3ErrorStatusOnly(w, "NoSuchKey")
-		default:
-			writeS3ErrorStatusOnly(w, "InternalError")
+	entry, err := srv.store.lookupObject(bucket, key)
+	if err == nil {
+		outcome := evaluateGetCondition(cond, entry.etag)
+		if outcome == getConditionPreconditionFailed {
+			writeS3ErrorStatusOnly(w, "PreconditionFailed")
+			return
 		}
-		return
+		var man *servedManifest
+		if man, err = srv.store.servedManifest(entry.manifestUUID, entry.manifestSHA256); err == nil {
+			writeObjectHeaders(w, entry, man.man)
+			if outcome == getConditionNotModified {
+				w.WriteHeader(http.StatusNotModified)
+			} else {
+				w.WriteHeader(http.StatusOK)
+			}
+			return
+		}
 	}
-	switch evaluateGetCondition(cond, entry.etag) {
-	case getConditionPreconditionFailed:
-		writeS3ErrorStatusOnly(w, "PreconditionFailed")
-		return
-	case getConditionNotModified:
-		writeObjectHeaders(w, entry, man)
-		w.WriteHeader(http.StatusNotModified)
-		return
+	switch {
+	case errors.Is(err, errNoSuchBucket):
+		writeS3ErrorStatusOnly(w, "NoSuchBucket")
+	case errors.Is(err, errNoSuchKey):
+		writeS3ErrorStatusOnly(w, "NoSuchKey")
+	default:
+		writeS3ErrorStatusOnly(w, "InternalError")
 	}
-	writeObjectHeaders(w, entry, man)
-	w.WriteHeader(http.StatusOK)
 }
 
 func (srv *Server) handleDeleteObject(w http.ResponseWriter, bucket, key string) {
@@ -9860,14 +10519,14 @@ func (srv *Server) handleListObjectsV2(w http.ResponseWriter, bucket, rawQuery s
 		result.NextContinuationToken = encodeContinuationToken(page.lastConsumedKey)
 	}
 	for _, obj := range page.contents {
-		man, merr := srv.store.readVerifiedManifest(obj.entry.manifestUUID, obj.entry.manifestSHA256)
+		createdAt, merr := srv.store.manifestCreatedAt(obj.entry)
 		if merr != nil {
 			writeS3Error(w, "InternalError", merr.Error(), "/"+bucket)
 			return
 		}
 		result.Contents = append(result.Contents, xmlContent{
 			Key:          enc(obj.key),
-			LastModified: iso8601(man.CreatedAt),
+			LastModified: iso8601(createdAt),
 			ETag:         `"` + obj.entry.etag + `"`,
 			Size:         obj.entry.size,
 			StorageClass: "STANDARD",
@@ -10955,7 +11614,7 @@ func (srv *Server) handleUploadPartCopy(w http.ResponseWriter, r *http.Request, 
 		writeS3Error(w, "InvalidArgument", err.Error(), resource)
 		return
 	}
-	entry, man, err := srv.store.HeadObject(srcBucket, srcKey)
+	entry, man, err := srv.store.headServed(srcBucket, srcKey)
 	if err != nil {
 		writeGetObjectError(w, srcBucket, srcKey, err)
 		return
@@ -10998,7 +11657,7 @@ func (srv *Server) handleUploadPartCopy(w http.ResponseWriter, r *http.Request, 
 		writeS3Error(w, "EntityTooLarge", "copy part exceeds 5 GiB", resource)
 		return
 	}
-	rd := srv.store.newManifestReader(man, rng)
+	rd := srv.store.newServedReader(man, rng)
 	defer rd.close()
 	ing, err := srv.store.ingestStream(&copyPartReader{source: rd}, true, ingestOptions{})
 	if err != nil {
@@ -12065,6 +12724,10 @@ func (r VerifyResult) OK() bool {
 // integrity problems are reported as Issues in the result, which the
 // caller inspects via VerifyResult.OK().
 func (s *Store) Verify(deep bool) (VerifyResult, error) {
+	// Verify reads the real bytes (it never uses served manifests); dropping the
+	// cache around it makes the next read after a finding load from storage too.
+	s.purgeReadCaches()
+	defer s.purgeReadCaches()
 	res := VerifyResult{Deep: deep}
 
 	fm := s.formatSnapshot()
@@ -12700,6 +13363,7 @@ func compactStore(storeDir string, opt compactOptions) (CompactResult, error) {
 }
 
 func (s *Store) compact(referenced map[string]bool, opt compactOptions) (CompactResult, error) {
+	defer s.purgeReadCaches()
 	s.sealSegments() // pack maintenance sees sealed packs only (section 4d)
 	res := CompactResult{DryRun: opt.DryRun, Tier: opt.Tier.String()}
 	if opt.TargetBytes <= 0 {
@@ -13731,6 +14395,7 @@ func repackStore(storeDir string, opt repackOptions) (RepackResult, error) {
 }
 
 func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, error) {
+	defer s.purgeReadCaches()
 	s.sealSegments() // pack maintenance sees sealed packs only (section 4d)
 	res := RepackResult{DryRun: opt.DryRun, LiveSetOK: rr.OK(), Issues: rr.Issues}
 	if opt.TargetBytes <= 0 || opt.MaxLivePercent < 0 || opt.MaxLivePercent > 100 {
@@ -15509,6 +16174,521 @@ func parseRangeSpec(header string, size int64) (rng byteRange, ok, satisfiable b
 	return byteRange{start: start, end: end}, true, true
 }
 
+// =============================================================================
+// 14a. Verified chunk cache
+//
+// A range read pays for a whole chunk: the record is read and its SHA-256 is
+// computed over every byte, because the chunk digest is the only thing that
+// authenticates any part of it. When the same chunks are read again and again
+// (file footers, headers, hot objects) that is repeated work. The chunk cache
+// keeps recently re-read chunks in memory so a repeat costs a map lookup.
+//
+// What an entry is. The key is the chunk's SHA-256 and the value is a private
+// copy of bytes that had just passed the full digest check (including DEFLATE
+// decoding for compressed records). The copy is never modified and is never a
+// slice of a pooled buffer, so it needs no coordination with anything that
+// recycles buffers. The key is content, not location: pack replacement, tier
+// moves and segment sealing cannot make an entry stale or wrong.
+//
+// What is and is not trusted. A hit serves bytes that were verified when they
+// were cached; damage that reaches the file afterwards is not noticed by a read
+// until the entry is evicted, but it can never put wrong bytes on the wire.
+// Nothing that inspects storage uses this cache: Verify, stats, reachability,
+// GC, repair, bundle export and casRead all read and hash the real records, and
+// Verify, repair, compaction, repack and history pruning purge the cache.
+//
+// Admission. A key is copied in only on its second request within the door's
+// memory, and never for requests longer than chunkCacheAdmitMaxRange, so a
+// one-pass scan of a large object neither pays the copy nor evicts the hot set.
+// =============================================================================
+
+const (
+	chunkCacheShards        = 16
+	chunkCacheAdmitMaxRange = 4 << 20
+)
+
+// chunkCacheDefaultBytes is the default budget for all shards together.
+var chunkCacheDefaultBytes int64 = 32 << 20
+
+type chunkCache struct {
+	budget int64
+	epoch  atomic.Uint64 // bumped by purge before the shards are cleared
+	shards [chunkCacheShards]chunkCacheShard
+}
+
+type chunkCacheShard struct {
+	clockShard[[]byte]
+	door                                                  []atomic.Uint64 // fingerprints of recently seen keys, direct-mapped
+	hits, misses, admits, evictions, stale, revalidations atomic.Int64
+
+	// Admission feedback. A copy-in costs a sizeable fraction of the read and hash it
+	// saves once allocation and GC are counted (measured at 2-3 reads), so it only pays
+	// if the entry is hit again and again. Every chunkAdaptEvery lookups or
+	// chunkAdaptAdmits admissions the shard compares the window's hits and admissions:
+	// fewer than two hits per admission (a working set far larger than the budget:
+	// entries are evicted before they are reused) doubles the sighting count required
+	// to admit, up to 1<<chunkAdaptMax, and four or more hits per admission halves it.
+	throttle                        atomic.Uint32 // admit one in 1<<throttle repeat sightings
+	sightings                       atomic.Uint64
+	snapHits, snapAdmits, snapLooks atomic.Int64
+	_                               [64]byte
+}
+
+const (
+	chunkAdaptEvery  = 4096 // lookups, or
+	chunkAdaptAdmits = 32   // admissions, whichever closes the window first
+	chunkAdaptMax    = 6
+)
+
+func newChunkCache(budget int64) *chunkCache {
+	c := &chunkCache{budget: budget}
+	// The door remembers about as many keys as the shard can hold (assuming typical
+	// 64 KiB chunks) times four: a repeat that comes later than that could not have
+	// hit anyway, so it is not worth a copy.
+	slots := 64
+	for slots < 4*int(budget/chunkCacheShards/(64<<10)) && slots < 4096 {
+		slots <<= 1
+	}
+	for i := range c.shards {
+		c.shards[i].init(budget / chunkCacheShards)
+		c.shards[i].door = make([]atomic.Uint64, slots)
+	}
+	return c
+}
+
+func (c *chunkCache) enabled() bool { return c != nil && c.budget > 0 }
+
+func (c *chunkCache) shard(sum *[32]byte) *chunkCacheShard {
+	return &c.shards[sum[0]&(chunkCacheShards-1)]
+}
+
+// get returns the cached, verified bytes of the chunk with digest sum. The
+// slice is shared and must not be modified.
+func (c *chunkCache) get(sum *[32]byte) ([]byte, bool) {
+	if !c.enabled() {
+		return nil, false
+	}
+	sh := c.shard(sum)
+	sh.mu.RLock()
+	e := sh.getLocked(*sum)
+	sh.mu.RUnlock()
+	if e != nil && e.expired() {
+		sh.mu.Lock() // due for re-verification: the read that follows replaces it
+		if cur := sh.m[*sum]; cur == e {
+			sh.removeLocked(e)
+		}
+		sh.mu.Unlock()
+		sh.revalidations.Add(1)
+		e = nil
+	}
+	if e == nil {
+		if sh.misses.Add(1)+sh.hits.Load() >= sh.snapLooks.Load()+chunkAdaptEvery {
+			sh.adapt()
+		}
+		return nil, false
+	}
+	if sh.hits.Add(1)+sh.misses.Load() >= sh.snapLooks.Load()+chunkAdaptEvery {
+		sh.adapt()
+	}
+	return e.val, true
+}
+
+// offer considers caching data, whose SHA-256 was just verified to be sum, for
+// a reader that began at epoch. The first sighting only records the key.
+func (c *chunkCache) offer(sum *[32]byte, data []byte, epoch uint64) {
+	if !c.enabled() || len(data) == 0 {
+		return
+	}
+	sh := c.shard(sum)
+	fp := binary.LittleEndian.Uint64(sum[8:16]) | 1
+	slot := &sh.door[(fp>>5)%uint64(len(sh.door))]
+	if slot.Load() != fp {
+		slot.Store(fp)
+		return
+	}
+	sh.mu.RLock()
+	_, present := sh.m[*sum]
+	sh.mu.RUnlock()
+	if present { // a run re-read a chunk that is already cached: nothing to copy
+		return
+	}
+	if k := sh.throttle.Load(); k > 0 && sh.sightings.Add(1)&(1<<k-1) != 0 {
+		return // admission is throttled: this repeat sighting is not the one that is copied
+	}
+	cp := bytes.Clone(data)
+	sh.mu.Lock()
+	if epoch != c.epoch.Load() {
+		sh.mu.Unlock()
+		sh.stale.Add(1)
+		return
+	}
+	if old := sh.m[*sum]; old != nil { // raced with another reader of the same chunk
+		sh.mu.Unlock()
+		return
+	}
+	ev, stored, _, _ := sh.insertLocked(*sum, cp, int64(len(cp))+128, sh.gen)
+	sh.mu.Unlock()
+	sh.evictions.Add(ev)
+	if stored && sh.admits.Add(1)-sh.snapAdmits.Load() >= chunkAdaptAdmits {
+		sh.adapt()
+	}
+}
+
+// adapt closes one feedback window (see chunkCacheShard.throttle).
+func (sh *chunkCacheShard) adapt() {
+	hits, admits, looks := sh.hits.Load(), sh.admits.Load(), sh.hits.Load()+sh.misses.Load()
+	if !sh.snapLooks.CompareAndSwap(sh.snapLooks.Load(), looks) {
+		return // another reader is closing this window
+	}
+	dh, da := hits-sh.snapHits.Swap(hits), admits-sh.snapAdmits.Swap(admits)
+	switch k := sh.throttle.Load(); {
+	case da >= 16 && dh < 2*da && k < chunkAdaptMax:
+		sh.throttle.Store(k + 1)
+	case k > 0 && dh >= 4*da+16:
+		sh.throttle.Store(k - 1)
+	}
+}
+
+func (c *chunkCache) purge() {
+	if c == nil {
+		return
+	}
+	c.epoch.Add(1)
+	for i := range c.shards {
+		sh := &c.shards[i]
+		sh.mu.Lock()
+		sh.purgeLocked()
+		for j := range sh.door {
+			sh.door[j].Store(0)
+		}
+		sh.throttle.Store(0)
+		sh.mu.Unlock()
+	}
+}
+
+type chunkCacheStats struct {
+	Entries, Bytes, Budget                                    int64
+	Hits, Misses, Admits, Evictions, StaleDrop, Revalidations int64
+	MaxThrottle                                               uint32 // largest admission throttle exponent of any shard
+}
+
+func (c *chunkCache) stats() (st chunkCacheStats) {
+	if c == nil {
+		return
+	}
+	st.Budget = c.budget
+	for i := range c.shards {
+		sh := &c.shards[i]
+		sh.mu.RLock()
+		st.Entries += int64(len(sh.m))
+		st.Bytes += sh.bytes
+		sh.mu.RUnlock()
+		st.Hits += sh.hits.Load()
+		st.Misses += sh.misses.Load()
+		st.Admits += sh.admits.Load()
+		st.Evictions += sh.evictions.Load()
+		st.StaleDrop += sh.stale.Load()
+		st.Revalidations += sh.revalidations.Load()
+		st.MaxThrottle = max(st.MaxThrottle, sh.throttle.Load())
+	}
+	return st
+}
+
+// chunkCacheBytes is the configured budget: ZEROS3_CHUNK_CACHE_MIB (0
+// disables the cache) overrides the default. A benchmarking and test switch,
+// not a supported tuning interface.
+func chunkCacheBytes() int64 {
+	if v := os.Getenv("ZEROS3_CHUNK_CACHE_MIB"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 && n <= 1<<20 {
+			return n << 20
+		}
+	}
+	return chunkCacheDefaultBytes
+}
+
+// =============================================================================
+// 14b. Pipelined streaming of large ranges
+//
+// A serial manifestReader reads, decodes and hashes a run, then the handler
+// writes it to the socket, then the next run is read: the single goroutine does
+// all of it one after another, and SHA-256 over every chunk is most of the
+// work. For a large range the pipeReader plans the same runs the serial reader
+// would (planOnly), executes up to pipeWorkers of them concurrently, and hands
+// the verified chunks to the consumer strictly in order.
+//
+// What does not change: every record is validated against its locator entry
+// and hashed by the same packRunReader.read (or casRead for a chunk that is not
+// in a pack), a record that fails in a run is retried through casRead's other
+// copies, and the same bytes reach the consumer in the same order. What is
+// bounded: runs in flight (pipeMaxTasks and pipeInflightBytes of verified
+// data), worker goroutines per stream (pipeWorkers) and pipelined streams per
+// store (pipeStreamLimit); a request beyond the stream limit, or a short one,
+// takes the serial reader. Closing the reader cancels pending work, waits for
+// running workers, and returns every buffer; nothing outlives close.
+// =============================================================================
+
+var (
+	// pipeMinRange is the smallest range that is pipelined: below it the work is
+	// one or two runs and goroutine hand-offs cost more than they overlap.
+	pipeMinRange = int64(4 << 20)
+	// pipeWorkers bounds concurrent run reads per stream.
+	pipeWorkers = max(1, min(3, runtime.GOMAXPROCS(0)-1))
+	// pipeStreamLimit is the most large streams that may be active (in total, pipelined or
+	// not) when a new one starts and still be pipelined: with more, the cores are already
+	// busy hashing for other clients and fanning out only adds scheduling cost.
+	pipeStreamLimit = int64(max(1, runtime.GOMAXPROCS(0)/2))
+	pipeMaxTasks    = 16
+	// pipeInflightBytes bounds the logical bytes planned but not yet consumed.
+	pipeInflightBytes = int64(8 << 20)
+	// pipeRunMaxStored bounds the bytes one pipelined run fetches with a single ReadAt.
+	pipeRunMaxStored = 1 << 20
+)
+
+func init() {
+	// Benchmarking and test switches, not a tuning interface.
+	envInt := func(name string, set func(int64)) {
+		if v := os.Getenv(name); v != "" {
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+				set(n)
+			}
+		}
+	}
+	envInt("ZEROS3_PIPE_WORKERS", func(n int64) { pipeWorkers = int(n) })
+	envInt("ZEROS3_PIPE_STREAMS", func(n int64) { pipeStreamLimit = n })
+	envInt("ZEROS3_PIPE_INFLIGHT_MIB", func(n int64) { pipeInflightBytes = n << 20 })
+	envInt("ZEROS3_PIPE_RUN_KIB", func(n int64) { pipeRunMaxStored = int(n << 10) })
+	envInt("ZEROS3_PIPE_MIN_MIB", func(n int64) { pipeMinRange = n << 20 })
+}
+
+type pipeTask struct {
+	first, n int        // chunks [first, first+n)
+	sums     [][32]byte // run records; nil for a single chunk read through casRead
+	locs     []packLoc  // parallel to sums
+	bytes    int64      // logical bytes
+	done     chan struct{}
+	pr       *packRunReader // owns data's backing buffers until released
+	data     [][]byte
+	errs     []error
+}
+
+type pipeReader struct {
+	s        *Store
+	m        *servedManifest
+	rng      byteRange
+	plan     *manifestReader // planner state: next chunk, offset, failed packs
+	queue    []*pipeTask
+	cur      *pipeTask
+	curK     int
+	inflight int64
+	sem      chan struct{}
+	cancel   chan struct{}
+	wg       sync.WaitGroup
+	err      error
+	closed   bool
+	counted  bool
+}
+
+// newStreamReader chooses the reader for a response. A large range is counted
+// as an active stream until its reader is closed; it is pipelined only if few
+// other large streams are active, otherwise the serial reader serves it.
+func (s *Store) newStreamReader(sm *servedManifest, rng byteRange) objectReader {
+	if rng.end-rng.start+1 < pipeMinRange || pipeWorkers < 2 {
+		return s.newServedReader(sm, rng)
+	}
+	if s.pipeStreams.Add(1) <= pipeStreamLimit {
+		return s.newPipeReader(sm, rng) // close returns the count
+	}
+	return &countedReader{objectReader: s.newServedReader(sm, rng), n: &s.pipeStreams}
+}
+
+// countedReader returns a large stream's count when it is closed (once).
+type countedReader struct {
+	objectReader
+	n    *atomic.Int64
+	done bool
+}
+
+func (c *countedReader) close() {
+	c.objectReader.close()
+	if !c.done {
+		c.done = true
+		c.n.Add(-1)
+	}
+}
+
+// newPipeReader's caller has already counted the stream, which close returns.
+func (s *Store) newPipeReader(sm *servedManifest, rng byteRange) *pipeReader {
+	pl := s.newServedReader(sm, rng)
+	pl.cc = nil // large streams neither read nor fill the chunk cache
+	pl.maxStored = pipeRunMaxStored
+	pl.pr = newPackRunReader(s.packSnap(), s.packTrace)
+	return &pipeReader{s: s, m: sm, rng: rng, plan: pl, sem: make(chan struct{}, pipeWorkers), cancel: make(chan struct{}), counted: true}
+}
+
+// planOnly is planRun without the I/O: it returns copies of the digests and
+// locators of the run that starts at chunk i, or ok=false when chunk i is not
+// served from a pack.
+func (m *manifestReader) planOnly(i int, sum [32]byte, chunkStart int64) (sums [][32]byte, locs []packLoc, ok bool) {
+	if !m.planRun(i, sum, chunkStart) {
+		return nil, nil, false
+	}
+	return append([][32]byte(nil), m.sums...), append([]packLoc(nil), m.locs...), true
+}
+
+// fill plans and launches runs until a bound is reached or the range is covered.
+func (p *pipeReader) fill() {
+	pl := p.plan
+	for len(p.queue) < pipeMaxTasks && p.inflight < pipeInflightBytes && pl.idx < p.m.chunkCount() && pl.offset <= p.rng.end {
+		i, start := pl.idx, pl.offset
+		t := &pipeTask{first: i, n: 1, done: make(chan struct{})}
+		if sums, locs, ok := pl.planOnly(i, p.m.sum(i), start); ok {
+			t.sums, t.locs, t.n = sums, locs, len(sums)
+		} else {
+			t.sums = [][32]byte{p.m.sum(i)}
+		}
+		for k := 0; k < t.n; k++ {
+			t.bytes += p.m.length(i + k)
+		}
+		pl.idx += t.n
+		pl.offset = p.m.start(pl.idx)
+		p.inflight += t.bytes
+		p.queue = append(p.queue, t)
+		p.wg.Add(1)
+		go p.run(t)
+	}
+}
+
+func (p *pipeReader) run(t *pipeTask) {
+	defer p.wg.Done()
+	defer close(t.done)
+	select {
+	case p.sem <- struct{}{}:
+		defer func() { <-p.sem }()
+	case <-p.cancel:
+		return
+	}
+	select {
+	case <-p.cancel:
+		return
+	default:
+	}
+	if t.locs == nil {
+		data, err := p.s.casRead(t.sums[0])
+		t.data, t.errs = [][]byte{data}, []error{err}
+		return
+	}
+	pr := newPackRunReader(p.plan.pr.st, p.s.packTrace)
+	t.pr = pr
+	t.data, t.errs = pr.read(t.sums, t.locs)
+	if tr := p.s.packTrace; tr != nil {
+		tr.Runs.Add(1)
+		tr.Chunks.Add(int64(len(t.data)))
+		for _, err := range t.errs {
+			if err != nil {
+				tr.Failures.Add(1)
+			}
+		}
+	}
+}
+
+func (p *pipeReader) release(t *pipeTask) {
+	if t.pr != nil {
+		t.pr.close()
+		t.pr = nil
+	}
+	p.inflight -= t.bytes
+}
+
+func (p *pipeReader) next() ([]byte, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	for {
+		if p.cur == nil {
+			p.fill()
+			if len(p.queue) == 0 {
+				p.finish()
+				if p.plan.offset <= p.rng.end {
+					p.err = fmt.Errorf("manifest chunks end before requested range")
+					return nil, p.err
+				}
+				return nil, io.EOF
+			}
+			p.cur, p.queue, p.curK = p.queue[0], p.queue[1:], 0
+			<-p.cur.done
+		}
+		if p.curK >= p.cur.n {
+			p.release(p.cur)
+			p.cur = nil
+			continue
+		}
+		k := p.curK
+		p.curK++
+		idx := p.cur.first + k
+		sum := p.cur.sums[k]
+		var data []byte
+		var err error
+		if k < len(p.cur.data) {
+			data, err = p.cur.data[k], p.cur.errs[k]
+		} else {
+			err = errors.New("read canceled")
+		}
+		if err != nil && p.cur.locs != nil {
+			// This record failed inside its run; the other copies decide.
+			if p.plan.bad == nil {
+				p.plan.bad = map[int32]bool{}
+			}
+			p.plan.bad[p.cur.locs[0].pack] = true
+			data, err = p.s.casRead(sum)
+		}
+		if err != nil {
+			p.finish()
+			p.err = fmt.Errorf("chunk read failed: %w", err)
+			return nil, p.err
+		}
+		length, chunkStart := p.m.length(idx), p.m.start(idx)
+		if int64(len(data)) != length {
+			p.finish()
+			p.err = fmt.Errorf("chunk %x: length mismatch", sum)
+			return nil, p.err
+		}
+		lo, hi := int64(0), length
+		if p.rng.start > chunkStart {
+			lo = p.rng.start - chunkStart
+		}
+		if p.rng.end < chunkStart+length-1 {
+			hi = p.rng.end - chunkStart + 1
+		}
+		return data[lo:hi], nil
+	}
+}
+
+// finish stops the reader's background work; the verified bytes already handed
+// out are no longer referenced by it.
+func (p *pipeReader) finish() {
+	if p.closed {
+		return
+	}
+	p.closed = true
+	close(p.cancel)
+	p.wg.Wait()
+	if p.cur != nil {
+		p.release(p.cur)
+		p.cur = nil
+	}
+	for _, t := range p.queue {
+		p.release(t)
+	}
+	p.queue = nil
+	p.plan.close()
+	if p.counted {
+		p.counted = false
+		p.s.pipeStreams.Add(-1)
+	}
+}
+
+func (p *pipeReader) close() { p.finish() }
+
 // manifestReader yields the bytes of one inclusive logical range of the
 // object a manifest describes, one verified CAS chunk at a time. It is the one
 // layer that sees upcoming chunk order, so it coalesces adjacent packed
@@ -15516,13 +16696,21 @@ func parseRangeSpec(header string, size int64) (rng byteRange, ok, satisfiable b
 // what comes next. Call close when done with a reader that stopped early.
 type manifestReader struct {
 	s      *Store
-	chunks []chunkRef
+	m      *servedManifest
+	err    error // set when the reader could not even be built
 	idx    int
 	offset int64
 	rng    byteRange
 
+	cc    *chunkCache // nil, or the store's verified chunk cache
+	epoch uint64      // chunk cache epoch when this reader began
+	admit bool        // this request may add chunks to the cache
+
 	pr  *packRunReader // created on first packed read; holds <= 1 pack file
 	bad map[int32]bool // packs whose run had a failing record: no more runs from them
+
+	// maxStored overrides packRunMaxStored for the runs this reader plans (0: the default).
+	maxStored int
 
 	// q holds the verified (or failed) chunks of the current run, in
 	// manifest order; qh is the next to hand out.
@@ -15538,8 +16726,26 @@ type runChunk struct {
 	err  error
 }
 
+// newManifestReader reads rng of the object a parsed manifest describes. The
+// serving path uses newServedReader with a cached index instead.
 func (s *Store) newManifestReader(man manifestV1, rng byteRange) *manifestReader {
-	return &manifestReader{s: s, chunks: man.Chunks, rng: rng}
+	sm, err := newServedManifest(man, [32]byte{})
+	if err != nil {
+		return &manifestReader{s: s, err: err, rng: rng}
+	}
+	return s.newServedReader(sm, rng)
+}
+
+// newServedReader positions a reader at the chunk holding rng.start by binary
+// search, so the cost of a range does not depend on where it lies in the object.
+func (s *Store) newServedReader(sm *servedManifest, rng byteRange) *manifestReader {
+	i := sm.locate(rng.start)
+	r := &manifestReader{s: s, m: sm, idx: i, offset: sm.start(i), rng: rng}
+	if cc := s.ccache; cc.enabled() {
+		r.cc, r.epoch = cc, cc.epoch.Load()
+		r.admit = rng.end-rng.start < chunkCacheAdmitMaxRange
+	}
+	return r
 }
 
 func (m *manifestReader) close() {
@@ -15552,29 +16758,28 @@ func (m *manifestReader) close() {
 // verified against its SHA-256 and recorded length, or io.EOF once the
 // whole range has been produced. The slice is valid until the next call.
 func (m *manifestReader) next() ([]byte, error) {
-	for m.idx < len(m.chunks) && m.offset <= m.rng.end {
-		c := m.chunks[m.idx]
+	if m.err != nil {
+		return nil, m.err
+	}
+	for m.idx < m.m.chunkCount() && m.offset <= m.rng.end {
 		i, chunkStart := m.idx, m.offset
+		length := m.m.length(i)
 		m.idx++
-		m.offset += c.Length
+		m.offset += length
 		if m.offset <= m.rng.start {
 			continue
 		}
-		sum, err := decodeHexSHA256(c.SHA256)
-		if err != nil {
-			m.close()
-			return nil, err
-		}
+		sum := m.m.sum(i)
 		data, err := m.chunk(i, sum, chunkStart)
 		if err != nil {
 			m.close()
 			return nil, fmt.Errorf("chunk read failed: %w", err)
 		}
-		if int64(len(data)) != c.Length {
+		if int64(len(data)) != length {
 			m.close()
-			return nil, fmt.Errorf("chunk %s: length mismatch", c.SHA256)
+			return nil, fmt.Errorf("chunk %x: length mismatch", sum)
 		}
-		lo, hi := int64(0), c.Length
+		lo, hi := int64(0), length
 		if m.rng.start > chunkStart {
 			lo = m.rng.start - chunkStart
 		}
@@ -15596,18 +16801,30 @@ func (m *manifestReader) chunk(i int, sum [32]byte, chunkStart int64) ([]byte, e
 	if m.qh < len(m.q) && m.q[m.qh].idx != i {
 		m.q, m.qh = m.q[:0], 0 // defensive: a run never outlives its consumer
 	}
-	if m.qh >= len(m.q) && m.planRun(i, sum, chunkStart) {
-		m.fetchRun(i)
+	if m.qh >= len(m.q) {
+		if data, ok := m.cc.get(&sum); ok && int64(len(data)) == m.m.length(i) {
+			return data, nil
+		}
+		if m.planRun(i, sum, chunkStart) {
+			m.fetchRun(i)
+		}
 	}
 	if m.qh < len(m.q) {
 		e := m.q[m.qh]
 		m.qh++
 		if e.err == nil {
+			if m.admit {
+				m.cc.offer(&sum, e.data, m.epoch)
+			}
 			return e.data, nil
 		}
 		// This record failed inside its run; the other copies decide.
 	}
-	return m.s.casRead(sum)
+	data, err := m.s.casRead(sum)
+	if err == nil && m.admit {
+		m.cc.offer(&sum, data, m.epoch)
+	}
+	return data, err
 }
 
 // primary is the packed record casRead would serve for sum if it verifies:
@@ -15629,28 +16846,25 @@ func (m *manifestReader) planRun(i int, sum [32]byte, chunkStart int64) bool {
 		}
 		m.pr = newPackRunReader(st, m.s.packTrace)
 	}
-	first, ok := m.primary(sum, m.chunks[i].Length)
+	first, ok := m.primary(sum, m.m.length(i))
 	if !ok {
 		return false
 	}
 	m.sums, m.locs = append(m.sums[:0], sum), append(m.locs[:0], first)
 	stored, logical := packRecordHeaderSize+int(first.stored), int(first.logical)
-	next := chunkStart + m.chunks[i].Length // start offset of chunk j
-	for j := i + 1; j < len(m.chunks) && next <= m.rng.end && len(m.locs) < packRunMaxRecords; j++ {
-		sj, err := decodeHexSHA256(m.chunks[j].SHA256)
-		if err != nil {
-			break
-		}
-		l, ok := m.primary(sj, m.chunks[j].Length)
+	next := chunkStart + m.m.length(i) // start offset of chunk j
+	for j := i + 1; j < m.m.chunkCount() && next <= m.rng.end && len(m.locs) < packRunMaxRecords; j++ {
+		sj := m.m.sum(j)
+		l, ok := m.primary(sj, m.m.length(j))
 		prev := m.locs[len(m.locs)-1]
 		if !ok || l.pack != first.pack || int64(l.off)-packRecordHeaderSize != int64(prev.off)+int64(prev.stored) ||
-			stored+packRecordHeaderSize+int(l.stored) > packRunMaxStored || logical+int(l.logical) > packRunMaxLogical {
+			stored+packRecordHeaderSize+int(l.stored) > cmp.Or(m.maxStored, packRunMaxStored) || logical+int(l.logical) > packRunMaxLogical {
 			break
 		}
 		m.sums, m.locs = append(m.sums, sj), append(m.locs, l)
 		stored += packRecordHeaderSize + int(l.stored)
 		logical += int(l.logical)
-		next += m.chunks[j].Length
+		next += m.m.length(j)
 	}
 	return true
 }
@@ -19938,6 +21152,8 @@ type repairStats struct {
 // every other digest is still attempted, and the ones that failed are
 // reported honestly in Failures, never silently dropped or claimed fixed.
 func (s *Store) repairFromPeer(cfg repairConfig) (repairStats, error) {
+	s.purgeReadCaches()
+	defer s.purgeReadCaches()
 	findings, err := s.repairFindings()
 	if err != nil {
 		return repairStats{}, fmt.Errorf("repair: %w", err)
@@ -30516,6 +31732,7 @@ func (s *Store) repAdopt(r *repRoot) {
 type manifestReaderAt struct {
 	s         *Store
 	man       manifestV1
+	sm        *servedManifest // built on first use
 	size      int64
 	rd        *manifestReader
 	streamEnd int64
@@ -30549,7 +31766,14 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 		}
 		if m.rd == nil || m.streamEnd != off {
 			m.close()
-			m.rd = m.s.newManifestReader(m.man, byteRange{start: off, end: m.size - 1})
+			if m.sm == nil {
+				sm, err := newServedManifest(m.man, [32]byte{})
+				if err != nil {
+					return n, err
+				}
+				m.sm = sm
+			}
+			m.rd = m.s.newServedReader(m.sm, byteRange{start: off, end: m.size - 1})
 			m.streamEnd = off
 		}
 		data, err := m.rd.next()
@@ -31172,10 +32396,20 @@ func (s *Store) repOpenReader(man manifestV1, rng byteRange) (objectReader, erro
 // mode allows it and it applies, otherwise (or on any failure before the first
 // byte) the ordinary CDC manifest reader. CDC stays the authority.
 func (s *Store) openObjectReader(man manifestV1, rng byteRange) objectReader {
+	sm, err := newServedManifest(man, [32]byte{})
+	if err != nil {
+		return &manifestReader{s: s, err: err, rng: rng}
+	}
+	return s.openServedReader(sm, rng)
+}
+
+// openServedReader is openObjectReader for a manifest that is already in served form.
+func (s *Store) openServedReader(sm *servedManifest, rng byteRange) objectReader {
 	// Whole structured reconstruction is slower than authoritative CDC for
 	// every measured kind. Keep structural decoding for ranges and verification.
-	whole := rng.start == 0 && rng.end == man.TotalLength-1
+	whole := rng.start == 0 && rng.end == sm.man.TotalLength-1
 	if s.repMode() == repModePrefer && !whole {
+		man := sm.manifest() // the representation layer works on the parsed chunk list
 		rd, err := s.repOpenReader(man, rng)
 		if err == nil && rd != nil {
 			return rd
@@ -31185,7 +32419,7 @@ func (s *Store) openObjectReader(man manifestV1, rng byteRange) objectReader {
 			log.Printf("zeros3: representation read of manifest %s fell back to CDC: %v", man.ManifestUUID, err)
 		}
 	}
-	return s.newManifestReader(man, rng)
+	return s.newStreamReader(sm, rng)
 }
 
 // Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.

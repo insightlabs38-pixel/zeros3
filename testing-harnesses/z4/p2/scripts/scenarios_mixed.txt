@@ -1,0 +1,5 @@
+# GET during PUT (and segment seals): readers verify every byte, writers replace objects continuously
+mixed_r4w2_64k_1m|mixed -objs 300 -size 1mib -readers 4 -writers 2 -wsize 1mib -rsize 64kib -dur 15s -cache warm
+mixed_r4w2_4k_small|mixed -objs 600 -size 16kib -readers 4 -writers 2 -wsize 16kib -rsize 4kib -dur 15s -cache warm
+mixed_r2w4_whole_4m|mixed -objs 100 -size 1mib -readers 2 -writers 4 -wsize 4mib -rsize 0 -dur 15s -cache warm
+mixed_r8w1_whole_small|mixed -objs 600 -size 64kib -readers 8 -writers 1 -wsize 64kib -rsize 0 -dur 15s -cache warm

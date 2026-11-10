@@ -1,0 +1,12 @@
+base-writes_cand-reads size=4kib verify-deep[result           OK] read-whole=ok
+base-writes_cand-reads size=4kib verify-deep[result           OK] read-range=ok
+base-writes_cand-reads size=1mib verify-deep[result           OK] read-whole=ok
+base-writes_cand-reads size=1mib verify-deep[result           OK] read-range=ok
+base-writes_cand-reads size=64mib verify-deep[result           OK] read-whole=ok
+base-writes_cand-reads size=64mib verify-deep[result           OK] read-range=ok
+cand-writes_base-reads size=4kib verify-deep[result           OK] read-whole=ok
+cand-writes_base-reads size=4kib verify-deep[result           OK] read-range=ok
+cand-writes_base-reads size=1mib verify-deep[result           OK] read-whole=ok
+cand-writes_base-reads size=1mib verify-deep[result           OK] read-range=ok
+cand-writes_base-reads size=64mib verify-deep[result           OK] read-whole=ok
+cand-writes_base-reads size=64mib verify-deep[result           OK] read-range=ok

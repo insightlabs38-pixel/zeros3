@@ -1,0 +1,2 @@
+ok  	zeros3	491.761s
+FULL_DONE
