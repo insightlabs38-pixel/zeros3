@@ -46,17 +46,17 @@ def churn(f):
         note = r.get('note', '')
         kv = dict(x.split('=') for x in note.split())
         key = (int(kv['dead']), kv['mode'], kv['arm'], kv['bin'])
-        a = arms.setdefault(key, {'wall': 0, 'cpu': 0, 'before': r['store_before']['Total'], 'after': r['store_after']['Total']})
-        a['wall'] += r['wall_s']; a['cpu'] += r['ru_user_s'] + r['ru_sys_s']; a['after'] = r['store_after']['Total']
-    print("| dead | deletion | arm | store before MB | after MB | reclaimed MB | reclaimed % of dead bytes | base wall s | new wall s | base CPU s | new CPU s |")
-    print("|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+        a = arms.setdefault(key, {'wall': 0, 'cpu': 0, 'wr': 0, 'before': r['store_before']['Total'], 'after': r['store_after']['Total']})
+        a['wall'] += r['wall_s']; a['cpu'] += r['ru_user_s'] + r['ru_sys_s']; a['after'] = r['store_after']['Total']; a['wr'] += r.get('sampled_wchar', 0)
+    print("| dead | deletion | arm | store MB before | after | reclaimed MB | written MB | write amp. | base wall s | new wall s | base CPU s | new CPU s |")
+    print("|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for (dead, mode, arm, b), a in arms.items():
         if b != 'new': continue
         o = arms.get((dead, mode, arm, 'base'))
         rec = (a['before'] - a['after']) / 1e6
-        dead_bytes = a['before'] * dead / 100 / 1e6
-        pct = f"{100*rec/dead_bytes:.0f}%" if dead_bytes else "-"
-        print(f"| {dead}% | {mode} | {arm} | {a['before']/1e6:.0f} | {a['after']/1e6:.0f} | {rec:.0f} | {pct} | {o['wall']:.2f} | {a['wall']:.2f} | {o['cpu']:.1f} | {a['cpu']:.1f} |")
+        wr = a['wr'] / 1e6
+        wa = f"{wr/rec:.1f}" if rec > 1 else "-"
+        print(f"| {dead}% | {mode} | {arm} | {a['before']/1e6:.0f} | {a['after']/1e6:.0f} | {rec:.0f} | {wr:.0f} | {wa} | {o['wall']:.2f} | {a['wall']:.2f} | {o['cpu']:.1f} | {a['cpu']:.1f} |")
 
 if __name__ == '__main__':
     print("## small/mixed fixtures"); maint_table(['s1k', 's10k', 'loose10k', 'hist', 'mix', 's100k'])

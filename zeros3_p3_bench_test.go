@@ -5,6 +5,7 @@ package main
 //
 //	ZEROS3_P3_STORE=/tmp/fix/s100k go test -run xxx -bench P3 -benchtime 3x -cpuprofile cpu.out
 import (
+	"fmt"
 	mrand "math/rand/v2"
 	"os"
 	"sort"
@@ -135,5 +136,43 @@ func TestP3_ChurnFixture(t *testing.T) {
 	keep := 0
 	if _, err := pruneHistoryStore(dir, historyPruneOptions{Bucket: "bench", KeepLast: &keep}, true); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestP3_HistoryFixture writes ZEROS3_P3_HIST_VERSIONS versions of each of
+// ZEROS3_P3_HIST_KEYS keys of ZEROS3_P3_HIST_SIZE bytes into a fresh store at
+// ZEROS3_P3_HIST_DIR; each version edits 2% of the bytes of the previous one in
+// place (the size stays constant, most chunks are shared). A fixture tool: it
+// does nothing unless the directory is set.
+func TestP3_HistoryFixture(t *testing.T) {
+	dir := os.Getenv("ZEROS3_P3_HIST_DIR")
+	if dir == "" {
+		t.Skip("fixture tool")
+	}
+	keys, _ := strconv.Atoi(os.Getenv("ZEROS3_P3_HIST_KEYS"))
+	versions, _ := strconv.Atoi(os.Getenv("ZEROS3_P3_HIST_VERSIONS"))
+	size, _ := strconv.Atoi(os.Getenv("ZEROS3_P3_HIST_SIZE"))
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("bench"); err != nil {
+		t.Fatal(err)
+	}
+	rng := mrand.New(mrand.NewPCG(8, 9))
+	for k := 0; k < keys; k++ {
+		body := genRandomBytes(int64(500+k), size)
+		for v := 0; v < versions; v++ {
+			for e := 0; e < size/50/64; e++ { // ~2% of the bytes, in 64-byte runs
+				off := rng.IntN(size - 64)
+				for i := 0; i < 64; i++ {
+					body[off+i] = byte(rng.IntN(256))
+				}
+			}
+			if _, err := s.PutObject("bench", fmt.Sprintf("k/%06d", k), body, "application/octet-stream", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }

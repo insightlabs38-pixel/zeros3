@@ -11,3 +11,7 @@ mk mix   -objs 600 -sizes 4k:50,64k:30,1mib:15,16mib:5 -dupfrac 0.2 -revs 2 -edi
 mk s100k -objs 100000 -size 4kib -conc 16 -delfrac 0.3
 mk s100kc -objs 100000 -size 4kib -conc 16                 # clean: the churn matrix starts from this one
 mk s1m   -objs 1000000 -size 4kib -conc 16 -delfrac 0.3     # ~5 GB, ~3 minutes
+# version-history scaling (20 keys x N versions of 256 KiB, 2% of blocks edited per version; hist = 256 versions above)
+mk hist1    -objs 20 -size 256kib -revs 1    -editfrac 0.02 -conc 4
+mk hist16   -objs 20 -size 256kib -revs 16   -editfrac 0.02 -conc 4
+mk hist1024 -objs 5  -size 256kib -revs 1024 -editfrac 0.02 -conc 4
