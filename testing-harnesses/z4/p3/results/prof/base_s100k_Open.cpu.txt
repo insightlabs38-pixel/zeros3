@@ -1,0 +1,27 @@
+Time: 2026-11-10 04:58:59 UTC
+Duration: 1.81s, Total samples = 1960ms (108.23%)
+Showing nodes accounting for 80ms, 4.08% of 1960ms total
+Showing top 22 nodes out of 213
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%     1680ms 85.71%  testing.(*B).runN
+         0     0%     0%     1670ms 85.20%  zeros3.BenchmarkP3Open
+         0     0%     0%     1670ms 85.20%  zeros3.OpenStoreShared (inline)
+         0     0%     0%     1670ms 85.20%  zeros3.openStore
+         0     0%     0%     1220ms 62.24%  testing.(*B).launch
+         0     0%     0%      900ms 45.92%  zeros3.(*Store).applyRecord
+         0     0%     0%      660ms 33.67%  encoding/json.Unmarshal (inline)
+         0     0%     0%      660ms 33.67%  encoding/json/v2.Unmarshal
+         0     0%     0%      640ms 32.65%  encoding/json/v2.unmarshalDecode
+         0     0%     0%      460ms 23.47%  testing.(*B).run1.func1
+         0     0%     0%      460ms 23.47%  zeros3.openJournal
+         0     0%     0%      460ms 23.47%  zeros3.replayJournal
+      60ms  3.06%  3.06%      450ms 22.96%  encoding/json/v2.makeStructArshaler.func3
+         0     0%  3.06%      310ms 15.82%  runtime.systemstack
+         0     0%  3.06%      310ms 15.82%  zeros3.(*Store).reloadPacks
+      20ms  1.02%  4.08%      310ms 15.82%  zeros3.loadPackState
+         0     0%  4.08%      300ms 15.31%  os.(*File).ReadAt
+         0     0%  4.08%      290ms 14.80%  internal/poll.(*FD).Pread
+         0     0%  4.08%      290ms 14.80%  os.(*File).pread (inline)
+         0     0%  4.08%      270ms 13.78%  internal/poll.(*FD).Pread.func1 (inline)
+         0     0%  4.08%      270ms 13.78%  internal/poll.ignoringEINTR2[go.shape.int] (inline)
+         0     0%  4.08%      270ms 13.78%  syscall.Pread (inline)

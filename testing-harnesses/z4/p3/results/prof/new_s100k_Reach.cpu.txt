@@ -1,0 +1,28 @@
+Time: 2026-11-10 04:59:51 UTC
+Duration: 2.39s, Total samples = 4.33s (181.36%)
+Showing nodes accounting for 0.25s, 5.77% of 4.33s total
+Dropped 173 nodes (cum <= 0.02s)
+Showing top 22 nodes out of 180
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      2.24s 51.73%  zeros3.parallelForState[go.shape.*uint8].func1
+     0.07s  1.62%  1.62%      2.18s 50.35%  zeros3.(*Store).reachabilityScanOpts.func4.func3
+         0     0%  1.62%      2.10s 48.50%  zeros3.(*Store).analyzeManifest
+         0     0%  1.62%      1.31s 30.25%  testing.(*B).runN
+         0     0%  1.62%      1.31s 30.25%  zeros3.BenchmarkP3Reachability
+         0     0%  1.62%      0.96s 22.17%  zeros3.(*Store).computeReachability (inline)
+         0     0%  1.62%      0.96s 22.17%  zeros3.(*Store).computeReachabilityObserved
+         0     0%  1.62%      0.90s 20.79%  testing.(*B).launch
+         0     0%  1.62%      0.85s 19.63%  zeros3.(*Store).reachabilityScan (inline)
+     0.07s  1.62%  3.23%      0.85s 19.63%  zeros3.(*Store).reachabilityScanOpts
+         0     0%  3.23%      0.81s 18.71%  zeros3.(*Store).loadManifestBytesH
+         0     0%  3.23%      0.73s 16.86%  encoding/json.Unmarshal (inline)
+         0     0%  3.23%      0.73s 16.86%  encoding/json/v2.Unmarshal
+         0     0%  3.23%      0.73s 16.86%  runtime.systemstack
+         0     0%  3.23%      0.71s 16.40%  encoding/json/v2.unmarshalDecode
+         0     0%  3.23%      0.70s 16.17%  zeros3.(*Store).casReadH
+         0     0%  3.23%      0.69s 15.94%  zeros3.(*packState).readPackedH
+     0.09s  2.08%  5.31%      0.56s 12.93%  encoding/json/v2.makeStructArshaler.func3
+         0     0%  5.31%      0.55s 12.70%  runtime.gcBgMarkWorker
+         0     0%  5.31%      0.54s 12.47%  runtime.gcBgMarkWorker.func2
+         0     0%  5.31%      0.54s 12.47%  runtime.gcDrain
+     0.02s  0.46%  5.77%      0.54s 12.47%  runtime.mallocgc

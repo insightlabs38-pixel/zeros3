@@ -1,0 +1,28 @@
+Time: 2026-11-10 04:59:24 UTC
+Duration: 9.06s, Total samples = 10.64s (117.39%)
+Showing nodes accounting for 2.17s, 20.39% of 10.64s total
+Dropped 249 nodes (cum <= 0.05s)
+Showing top 22 nodes out of 184
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      8.71s 81.86%  testing.(*B).runN
+         0     0%     0%      8.71s 81.86%  zeros3.BenchmarkP3Stats
+     0.14s  1.32%  1.32%      7.90s 74.25%  zeros3.(*Store).computeStats
+         0     0%  1.32%      6.37s 59.87%  testing.(*B).launch
+         0     0%  1.32%      4.56s 42.86%  zeros3.(*Store).computeReachability (inline)
+     0.09s  0.85%  2.16%      4.56s 42.86%  zeros3.(*Store).computeReachabilityObserved
+     0.02s  0.19%  2.35%      3.29s 30.92%  zeros3.(*Store).computeReachabilityObserved.func1
+         0     0%  2.35%      2.85s 26.79%  zeros3.(*Store).loadManifestBytes
+         0     0%  2.35%      2.71s 25.47%  zeros3.(*Store).casRead (inline)
+     0.01s 0.094%  2.44%      2.71s 25.47%  zeros3.(*Store).casReadExcluding
+         0     0%  2.44%      2.67s 25.09%  zeros3.(*packState).readPacked
+         0     0%  2.44%      2.34s 21.99%  testing.(*B).run1.func1
+         0     0%  2.44%      2.13s 20.02%  zeros3.(*Store).computeStats.func1 (inline)
+         0     0%  2.44%      1.94s 18.23%  runtime.systemstack
+         0     0%  2.44%      1.91s 17.95%  zeros3.(*Store).readVerifiedManifest
+         0     0%  2.44%      1.88s 17.67%  encoding/json.Unmarshal (inline)
+         0     0%  2.44%      1.88s 17.67%  encoding/json/v2.Unmarshal
+     1.86s 17.48% 19.92%      1.86s 17.48%  internal/runtime/syscall/linux.Syscall6
+     0.03s  0.28% 20.21%      1.85s 17.39%  encoding/json/v2.unmarshalDecode
+     0.02s  0.19% 20.39%      1.78s 16.73%  syscall.RawSyscall6
+         0     0% 20.39%      1.77s 16.64%  zeros3.(*Store).readManifestSHA
+         0     0% 20.39%      1.59s 14.94%  runtime.gcBgMarkWorker

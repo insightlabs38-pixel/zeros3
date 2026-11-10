@@ -176,3 +176,36 @@ func TestP3_HistoryFixture(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkP3LocatorBuild builds the open-time locator index from ZEROS3_P3_LOC_N
+// (default 1,000,000) synthetic records: the index half of opening a store,
+// without the journal. Synthetic, not a store measurement.
+func BenchmarkP3LocatorBuild(b *testing.B) {
+	n := 1_000_000
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_P3_LOC_N")); err == nil && v > 0 {
+		n = v
+	}
+	rng := mrand.New(mrand.NewPCG(3, 4))
+	src := make([]locRec, n)
+	for i := range src {
+		for j := 0; j < 32; j += 8 {
+			v := rng.Uint64()
+			for k := 0; k < 8; k++ {
+				src[i].sum[j+k] = byte(v >> (8 * k))
+			}
+		}
+		src[i].pack, src[i].stored, src[i].lc, src[i].offLo = uint32(i%150), 4096, 4096, uint32(i)*4140
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		recs := append([]locRec(nil), src...)
+		b.StopTimer()
+		b.StartTimer()
+		ix := buildLocIndex(recs, func(prim, rep *locRec) {})
+		if ix.size() != n {
+			b.Fatalf("index holds %d of %d records", ix.size(), n)
+		}
+	}
+}
