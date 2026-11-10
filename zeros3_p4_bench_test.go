@@ -69,6 +69,13 @@ type p4Row struct {
 	RepsVerified        int
 	RepReads, Fallbacks int64
 	QuiesceMS           float64 // deferred mode: wait until queued builds finish
+	CompUnique          int     // distinct components over all roots
+	CompBytes           int64   // logical bytes of the distinct components
+	CompMedian          int64   // median component size
+	GCMS, RepackMS      float64 // offline gc -apply and repack on the finished store
+	GCBytes, RepackB    int64   // store bytes after each
+	ReopenDeepMS        float64 // verify -deep after gc + repack, reopened
+	ReopenOK            bool
 }
 
 func p4Gen(spec string) (string, []byte, error) {
@@ -360,7 +367,54 @@ func TestP4Probe(t *testing.T) {
 	row.DeepMS = float64(time.Since(v0).Microseconds()) / 1000
 	row.VerifyOK = row.VerifyOK && err == nil && vd.OK()
 	row.RepsVerified = vd.RepresentationsVerified
+	// component economics: distinct components over all roots and their logical sizes
+	uniq := map[[32]byte]int64{}
+	for _, u := range roots {
+		r, err := s.loadRepRoot(u)
+		if err != nil {
+			continue
+		}
+		src := s.newRepSource(r.Descs, nil)
+		reach, err := (&repEnv{Src: src, Limits: repProdLimits}).reachable(r.Rep)
+		if err == nil {
+			for _, id := range reach.Order {
+				if _, ok := uniq[id]; !ok {
+					n, _ := src.Size(id)
+					uniq[id] = n
+				}
+			}
+		}
+		src.close()
+	}
+	var sizes []int64
+	for _, n := range uniq {
+		sizes = append(sizes, n)
+		row.CompBytes += n
+	}
+	sort.Slice(sizes, func(i, j int) bool { return sizes[i] < sizes[j] })
+	row.CompUnique = len(sizes)
+	if len(sizes) > 0 {
+		row.CompMedian = sizes[len(sizes)/2]
+	}
 	s.Close()
+	if os.Getenv("ZEROS3_P4_MAINT") != "" {
+		g0 := time.Now()
+		_, gerr := gcCollect(dir, true)
+		row.GCMS = float64(time.Since(g0).Microseconds()) / 1000
+		_, row.GCBytes, _, _, _, _, _, _ = p4Walk(dir)
+		r0 := time.Now()
+		_, rerr := repackStore(dir, repackOptions{TargetBytes: 64 << 20, MaxLivePercent: 100})
+		row.RepackMS = float64(time.Since(r0).Microseconds()) / 1000
+		_, row.RepackB, _, _, _, _, _, _ = p4Walk(dir)
+		s2, oerr := OpenStore(dir)
+		if oerr == nil {
+			d0 := time.Now()
+			v2, verr := s2.Verify(true)
+			row.ReopenDeepMS = float64(time.Since(d0).Microseconds()) / 1000
+			row.ReopenOK = verr == nil && v2.OK() && gerr == nil && rerr == nil
+			s2.Close()
+		}
+	}
 	line, _ := json.Marshal(row)
 	if out := os.Getenv("ZEROS3_P4_OUT"); out != "" {
 		f, err := os.OpenFile(out, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)

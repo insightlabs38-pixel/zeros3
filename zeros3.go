@@ -33240,12 +33240,14 @@ type manifestReaderAt struct {
 	size      int64
 	rd        *manifestReader
 	streamEnd int64
+	lastEnd   int64 // offset just past the previous ReadAt: a read starting there continues a scan
+	rdEnd     int64 // last offset rd was opened to cover
 	cur       []byte
 	curOff    int64
 }
 
 func (s *Store) newManifestReaderAt(man manifestV1) *manifestReaderAt {
-	return &manifestReaderAt{s: s, man: man, size: man.TotalLength}
+	return &manifestReaderAt{s: s, man: man, size: man.TotalLength, lastEnd: -1}
 }
 
 func (m *manifestReaderAt) close() {
@@ -33271,7 +33273,7 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 			off += int64(c)
 			continue
 		}
-		if m.rd == nil || m.streamEnd != off {
+		if m.rd == nil || m.streamEnd != off || off > m.rdEnd {
 			m.close()
 			if m.sm == nil {
 				sm, err := newServedManifest(m.man, [32]byte{})
@@ -33280,8 +33282,17 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 				}
 				m.sm = sm
 			}
-			m.rd = m.s.newServedReader(m.sm, byteRange{start: off, end: m.size - 1})
-			m.streamEnd = off
+			// A read that does not continue the previous one is a probe (a tar header, a
+			// table, a footer): fetch exactly the chunks it needs. An open-ended reader
+			// would plan a run of up to 64 contiguous chunks, decode and SHA-256 all of
+			// them, and drop all but the first at the next probe. The read that continues
+			// a probe (or any sequential scan) opens the open-ended, run-coalescing reader.
+			end := m.size - 1
+			if off != m.lastEnd && int64(len(p)-n) <= repProbeMax {
+				end = min(end, off+int64(len(p)-n)-1)
+			}
+			m.rd = m.s.newServedReader(m.sm, byteRange{start: off, end: end})
+			m.streamEnd, m.rdEnd = off, end
 		}
 		data, err := m.rd.next()
 		if err != nil {
@@ -33294,11 +33305,15 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 		m.cur, m.curOff = data, m.streamEnd
 		m.streamEnd += int64(len(data))
 	}
+	m.lastEnd = off
 	if n < len(p) {
 		return n, io.EOF
 	}
 	return n, nil
 }
+
+// repProbeMax is the largest read treated as a probe after a jump.
+const repProbeMax = 64 << 10
 
 // ---- building and publishing ---------------------------------------------------
 
@@ -39866,6 +39881,10 @@ type repZSfseTable struct {
 	symOff  []int32
 	symList []uint16
 	byBase  []uint16
+	// Dense inverse of prev, built once the table has served enough lookups to repay
+	// it: inv[sym*len(dec)+next] is the state prev would find, plus one (0: none).
+	inv   []uint16
+	calls int32
 }
 
 // Port source: zeros3-z3/zstdz3/fse.go
@@ -40112,6 +40131,29 @@ func (t *repZSfseTable) stateAt(sym int, rank uint32) (int, bool) {
 	return int(seg[rank]), true
 }
 
+// initInv builds the dense inverse of the binary search prev does: for each symbol,
+// the state whose baseline is the greatest not above next, if its range contains next.
+func (t *repZSfseTable) initInv() {
+	size := len(t.dec)
+	t.inv = make([]uint16, len(t.counts)*size)
+	for s := range t.counts {
+		seg := t.byBase[t.symOff[s]:t.symOff[s+1]]
+		row := t.inv[s*size : (s+1)*size]
+		for i, u := range seg {
+			d := t.dec[u]
+			lo, hi := int(d.base), size
+			if i+1 < len(seg) {
+				hi = min(hi, int(t.dec[seg[i+1]].base))
+			}
+			for x := lo; x < hi; x++ {
+				if x-lo < 1<<d.nb {
+					row[x] = u + 1
+				}
+			}
+		}
+	}
+}
+
 // Port source: zeros3-z3/zstdz3/fse.go
 // prev finds the state that carries sym and whose baseline range contains next; the
 // bits the decoder must read to get from it to next are next-base (nb bits).
@@ -40119,6 +40161,20 @@ func (t *repZSfseTable) prev(sym int, next int) (state int, bits uint32, nb int,
 	t.initEnc()
 	if sym >= len(t.counts) {
 		return 0, 0, 0, false
+	}
+	if t.inv == nil && t.calls < 128 {
+		t.calls++
+		if t.calls == 128 {
+			t.initInv()
+		}
+	}
+	if t.inv != nil && uint(next) < uint(len(t.dec)) {
+		u := t.inv[sym*len(t.dec)+next]
+		if u == 0 {
+			return 0, 0, 0, false
+		}
+		d := t.dec[u-1]
+		return int(u - 1), uint32(next - int(d.base)), int(d.nb), true
 	}
 	seg := t.byBase[t.symOff[sym]:t.symOff[sym+1]]
 	// first index whose baseline exceeds next (an open-coded sort.Search: this is

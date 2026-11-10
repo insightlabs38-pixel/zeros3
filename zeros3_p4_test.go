@@ -875,3 +875,60 @@ func TestP4SmallObjectComponentsShareTheSegmentAndSurviveMaintenance(t *testing.
 		t.Fatalf("verified %d", res.RepresentationsVerified)
 	}
 }
+
+// The dense inverse must answer exactly what the binary search answers, for every
+// (symbol, state), on predefined tables, random valid distributions and RLE tables.
+func TestP4FSEInverseEqualsBinarySearch(t *testing.T) {
+	check := func(name string, mk func() *repZSfseTable) {
+		slow, fast := mk(), mk()
+		slow.calls = -1 << 30 // never builds the inverse
+		fast.calls = 127      // builds it on the first lookup
+		for sym := 0; sym <= len(slow.counts)+1; sym++ {
+			for next := -2; next < len(slow.dec)+3; next++ {
+				s1, b1, n1, ok1 := slow.prev(sym, next)
+				s2, b2, n2, ok2 := fast.prev(sym, next)
+				if s1 != s2 || b1 != b2 || n1 != n2 || ok1 != ok2 {
+					t.Fatalf("%s sym %d next %d: search=(%d,%d,%d,%v) inverse=(%d,%d,%d,%v)", name, sym, next, s1, b1, n1, ok1, s2, b2, n2, ok2)
+				}
+			}
+		}
+		if fast.inv == nil && len(fast.dec) > 1 {
+			t.Fatalf("%s: inverse never built", name)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		i := i
+		check(fmt.Sprint("predefined", i), func() *repZSfseTable {
+			p := repZSpredTables[i]
+			return &repZSfseTable{kind: p.kind, desc: p.desc, acc: p.acc, counts: p.counts, dec: p.dec}
+		})
+	}
+	r := rand.New(rand.NewSource(5))
+	for n := 0; n < 200; n++ {
+		acc := 5 + r.Intn(5)
+		size := 1 << acc
+		nsym := 2 + r.Intn(30)
+		counts := make([]int16, nsym)
+		left := size
+		for left > 0 {
+			counts[r.Intn(nsym)]++
+			left--
+		}
+		if r.Intn(5) == 0 { // "less than one" probabilities
+			for k := 0; k < nsym; k++ {
+				if counts[k] > 1 && r.Intn(3) == 0 {
+					counts[k]--
+					counts[(k+1)%nsym]++
+				}
+			}
+		}
+		tbl, err := repZSbuildFSE(append([]int16(nil), counts...), acc)
+		if err != nil {
+			continue
+		}
+		check(fmt.Sprint("random", n), func() *repZSfseTable {
+			return &repZSfseTable{kind: tbl.kind, desc: tbl.desc, acc: tbl.acc, counts: tbl.counts, dec: tbl.dec}
+		})
+	}
+	check("rle", func() *repZSfseTable { return repZSrleTable(7) })
+}
