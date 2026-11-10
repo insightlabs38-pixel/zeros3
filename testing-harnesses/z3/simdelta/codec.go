@@ -149,7 +149,7 @@ func Encode(algorithm string, bases [][]byte, target []byte) ([]byte, error) {
 		if algorithm == "adaptive" {
 			anchor, stride, slots = 8, 4, 4
 		}
-		ops := match(bases, target, anchor, stride, slots)
+		ops := matchOps(algorithm, bases, target, anchor, stride, slots)
 		for _, o := range ops {
 			if o.lit == nil {
 				used[o.base] = true
