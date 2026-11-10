@@ -1,0 +1,4 @@
+gen:tar:6000 inline size MB 185 put ms 1760 avail ms 1760 cpu 2929 rssMB 627 heapPeakMB 608 comps 12002 files 13 deep 1005 ok True True True
+gen:tar:6000 deferred size MB 185 put ms 404 avail ms 1787 cpu 2931 rssMB 635 heapPeakMB 608 comps 12002 files 13 deep 1046 ok True True True
+gen:merkle:400000 inline size MB 28 put ms 3469 avail ms 3469 cpu 3734 rssMB 319 heapPeakMB 252 comps 151549 files 9 deep 2577 ok True True True
+gen:merkle:400000 deferred size MB 28 put ms 144 avail ms 3352 cpu 3701 rssMB 321 heapPeakMB 251 comps 151549 files 9 deep 2538 ok True True True

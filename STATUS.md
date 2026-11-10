@@ -27,7 +27,9 @@ deployment shape, and persistent-format versions. For usage, start with
 - **Experimental, default off:** optional structured representations
   (`zeros3 serve -representations shadow|prefer`) for tar, SQLite, CAR,
   Merkle snapshots, Git, Gzip/Zstd Safetensors/GGUF models, supported RocksDB/Pebble SST and Parquet pages, DEX and CLR assemblies. The ordinary CDC object stays authoritative; see
-  [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
+  [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md). Representations are built
+  inline by default; `-representation-build deferred` builds them on bounded
+  background workers after the authoritative commit.
 - **Release status:** no stable 1.0 compatibility promise yet. Persistent formats
   are explicitly versioned and fail closed when a binary cannot understand
   them.
