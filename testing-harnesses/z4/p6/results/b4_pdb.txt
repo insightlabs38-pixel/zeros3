@@ -1,0 +1,33 @@
+revision                   prodCDC   fineCDC   B1whole   rawCols    strong
+12.0.3-netstandard2.0.pdb    113759    116157    116157    105895     91894
+13.0.1-netstandard2.0.pdb    119205    123049     48269     43884     34394
+13.0.2-netstandard2.0.pdb    121462    124111     63421     49461     35108
+13.0.3-netstandard2.0.pdb    121228    106914     63508     48938     34726
+13.0.4-netstandard2.0.pdb    122128    125040     70611     55804     41096
+CUMULATIVE                  597782    595271    361966    303982    237218
+held-out predictors (learned on first 2 revisions): cumulative=237218 (search per file=237218); column choices differing on held-out files: 0
+  Document                   Name             raw=491     delta=343     -> delta
+  Document                   HashAlg          raw=171     delta=171     -> raw
+  Document                   Hash             raw=491     delta=343     -> delta
+  Document                   Language         raw=171     delta=171     -> raw
+  MethodDebugInformation     Document         raw=4875    delta=4404    -> raw
+  MethodDebugInformation     SequencePoints   raw=10566   delta=5872    -> delta
+  LocalScope                 Method           raw=8777    delta=4452    -> delta
+  LocalScope                 ImportScope      raw=6839    delta=4589    -> raw
+  LocalScope                 VariableList     raw=8500    delta=4452    -> delta
+  LocalScope                 ConstantList     raw=4452    delta=4452    -> raw
+  LocalScope                 StartOffset      raw=4747    delta=4922    -> raw
+  LocalScope                 Length           raw=5143    delta=5454    -> raw
+  LocalVariable              Attributes       raw=2131    delta=2131    -> raw
+  LocalVariable              Index            raw=2131    delta=2131    -> raw
+  LocalVariable              Name             raw=4189    delta=4106    -> raw
+  LocalConstant              Name             raw=17      delta=17      -> raw
+  LocalConstant              Signature        raw=26      delta=21      -> delta
+  ImportScope                Parent           raw=763     delta=699     -> delta
+  ImportScope                Imports          raw=722     delta=962     -> raw
+  StateMachineMethod         MoveNext         raw=214     delta=110     -> delta
+  StateMachineMethod         Kickoff          raw=214     delta=119     -> delta
+  CustomDebugInformation     Parent           raw=379     delta=226     -> delta
+  CustomDebugInformation     Kind             raw=127     delta=127     -> raw
+  CustomDebugInformation     Value            raw=379     delta=216     -> delta
+{"measure": {"wall_s": 1.194, "max_rss_mib": 35.6, "user_s": 1.06, "sys_s": 0.33, "rc": 0}}

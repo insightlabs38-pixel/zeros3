@@ -1,0 +1,10 @@
+stored 6 revisions, 3630 objects, charged 5859146 bytes (+refs not included)
+rev05 2745928 bytes ok
+rev03 sqlite-3460000-O2.bc MATCH
+rev04 sqlite-3460100-O2.bc MATCH
+rev05 sqlite-3490100-O2.bc MATCH
+stored 6 revisions, 4458 objects, charged 5632048 bytes (+refs not included)
+rev05 2617208 bytes ok
+rev03 sqlite-3460000-O2.bc MATCH
+rev04 sqlite-3460100-O2.bc MATCH
+rev05 sqlite-3490100-O2.bc MATCH
