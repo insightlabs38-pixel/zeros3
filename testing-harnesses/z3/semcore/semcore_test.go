@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"reflect"
 	"testing"
 )
 
@@ -449,3 +450,54 @@ func FuzzParseRecipe(f *testing.F) {
 func newRand(seed int64) *rand.Rand { return rand.New(rand.NewSource(seed)) }
 
 func binaryPut16(b []byte, v uint16) { b[0], b[1] = byte(v), byte(v>>8) }
+
+func TestScatterExactAndBounded(t *testing.T) {
+	r := rand.New(rand.NewSource(4))
+	for it := 0; it < 300; it++ {
+		n := uint64(1 + r.Intn(200))
+		w := uint32(1 + r.Intn(8))
+		bm := make([]byte, (n+7)/8)
+		r.Read(bm)
+		valid := CountValid(bm, n)
+		dense := make([]byte, (valid+3)*uint64(w))
+		r.Read(dense)
+		off := uint64(r.Intn(3))
+		op := Op{Kind: OpScatter, Elem: w, Off: off, Len: n}
+		got, err := op.Apply([][]byte{dense, bm})
+		if err != nil {
+			t.Fatalf("it %d: %v", it, err)
+		}
+		k := off
+		for i := uint64(0); i < n; i++ {
+			slot := got[i*uint64(w) : (i+1)*uint64(w)]
+			if bm[i>>3]>>(i&7)&1 == 1 {
+				if !bytes.Equal(slot, dense[k*uint64(w):(k+1)*uint64(w)]) {
+					t.Fatalf("it %d slot %d: wrong value", it, i)
+				}
+				k++
+			} else if !bytes.Equal(slot, make([]byte, w)) {
+				t.Fatalf("it %d slot %d: null slot not zero", it, i)
+			}
+		}
+		// wire round trip
+		back, _, err := parseOp(op.marshal(nil))
+		if err != nil || !reflect.DeepEqual(back, op) {
+			t.Fatalf("scatter op does not round-trip: %v", err)
+		}
+		// short dense input is an error, never a silent zero fill
+		if valid > 0 {
+			if _, err := op.Apply([][]byte{dense[:(off+valid-1)*uint64(w)], bm}); err == nil {
+				t.Fatal("short dense input accepted")
+			}
+		}
+		// bitmap too short
+		if n > 8 {
+			if _, err := op.Apply([][]byte{dense, bm[:len(bm)-1]}); err == nil {
+				t.Fatal("short bitmap accepted")
+			}
+		}
+	}
+	if _, err := (&Op{Kind: OpScatter, Elem: 4, Len: 1 << 40}).Apply([][]byte{nil, nil}); err == nil {
+		t.Fatal("oversized scatter accepted")
+	}
+}

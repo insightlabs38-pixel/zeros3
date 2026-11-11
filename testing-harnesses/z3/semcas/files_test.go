@@ -178,3 +178,37 @@ func FuzzParseArrowFile(f *testing.F) {
 	f.Add(fixture(f, "tiny.arrow"))
 	f.Fuzz(func(t *testing.T, b []byte) { ParseArrowFile(b) })
 }
+
+// Nullable fixed-width Arrow columns and narrow-integer Parquet streams share canonical
+// components across formats; everything replays byte-exactly from a fresh open.
+func TestNullableAndNarrowColumnsShare(t *testing.T) {
+	s := newStore(t)
+	fp := NewFilePlanner(s)
+	files := map[string][]byte{}
+	for _, c := range []struct{ name, kind string }{{"nullable.arrow", "arrow"}, {"nullable_snappy.parquet", "pqx"}, {"nullable_plain.parquet", "pqx"}} {
+		files[c.name] = ingestFile(t, fp, c.kind, c.name)
+	}
+	// the dense non-null stream of x and the narrow i16/u8 streams are single shared components
+	byDesc := map[string]int{}
+	scatter, widen := 0, 0
+	for _, r := range s.All() {
+		if r.Desc.Kind == KindColumn && !r.Derived() {
+			byDesc[DTypeName(int(r.Desc.DType))]++
+		}
+		for _, o := range r.Ops {
+			if o.Kind == OpScatter {
+				scatter++
+			}
+			if o.Kind == OpConvert && o.To == DI32 {
+				widen++
+			}
+		}
+	}
+	if scatter == 0 || widen == 0 {
+		t.Fatalf("expected scatter (%d) and widening (%d) derivations", scatter, widen)
+	}
+	if byDesc["I16"] != 1 || byDesc["U8"] != 1 || byDesc["F64"] != 1 {
+		t.Fatalf("narrow and dense streams must each exist once across the three files: %v", byDesc)
+	}
+	replayAll(t, dirOfM.get(s), files)
+}

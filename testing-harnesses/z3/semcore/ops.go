@@ -26,6 +26,7 @@ const (
 	OpPlainOffsets = 12 // length-prefixed value stream -> Arrow int32 offsets (n+1)
 	OpPlainData    = 13 // length-prefixed value stream -> concatenated value bytes
 	OpParquet      = 14 // exact Parquet replay (kind-10 codec) of Aux recipe over the parent components
+	OpScatter      = 15 // inputs [dense values, validity bitmap]: Len slots of Elem bytes, valid slots take the next dense value from element Off, null slots are zero
 )
 
 // MaxOutput bounds any materialized derived payload (budget for hostile records).
@@ -45,6 +46,8 @@ type Op struct {
 
 func (o *Op) String() string {
 	switch o.Kind {
+	case OpScatter:
+		return fmt.Sprintf("scatter(%d slots x%dB from dense[%d:])", o.Len, o.Elem, o.Off)
 	case OpPerm:
 		return fmt.Sprintf("perm%v%v", o.Dims, o.Axes)
 	case OpBswap:
@@ -93,6 +96,10 @@ func (o *Op) marshal(b []byte) []byte {
 		b = binary.AppendUvarint(b, uint64(o.From))
 		b = binary.AppendUvarint(b, uint64(o.To))
 	case OpSlice:
+		b = binary.AppendUvarint(b, o.Off)
+		b = binary.AppendUvarint(b, o.Len)
+	case OpScatter:
+		b = binary.AppendUvarint(b, uint64(o.Elem))
 		b = binary.AppendUvarint(b, o.Off)
 		b = binary.AppendUvarint(b, o.Len)
 	case OpDeflate, OpRecipe, OpPrepend, OpParquet:
@@ -169,6 +176,17 @@ func parseOp(b []byte) (Op, int, error) {
 		}
 		if o.Len, err = u(); err != nil {
 			return o, 0, err
+		}
+	case OpScatter:
+		if v, err = u(); err != nil || v == 0 || v > 1<<20 {
+			return o, 0, errors.New("semcore: bad scatter element width")
+		}
+		o.Elem = uint32(v)
+		if o.Off, err = u(); err != nil {
+			return o, 0, err
+		}
+		if o.Len, err = u(); err != nil || o.Len > MaxOutput {
+			return o, 0, errors.New("semcore: bad scatter length")
 		}
 	case OpDeflate, OpRecipe, OpPrepend, OpParquet:
 		if v, err = u(); err != nil || v > uint64(len(b)-pos) {
@@ -251,6 +269,9 @@ func (o *Op) ApplyWith(x Ext, in [][]byte) ([]byte, error) {
 	}
 	if o.Kind == OpRecipe {
 		return nil, errors.New("semcore: recipe op is resolved by the store")
+	}
+	if o.Kind == OpScatter {
+		return scatter(in, o.Elem, o.Off, o.Len)
 	}
 	if o.Kind == OpParquet {
 		if x == nil {
@@ -847,4 +868,41 @@ func plainSplit(b []byte, offsets bool) ([]byte, error) {
 		}
 	}
 	return out, nil
+}
+
+// scatter expands dense values over a validity bitmap (LSB-first, bit i = slot i is valid):
+// valid slots take consecutive dense elements starting at element off, null slots are zero.
+// Every bound is checked: the bitmap must cover n slots and the dense input must hold exactly
+// the elements consumed (a short input is an error, never a silent zero fill).
+func scatter(in [][]byte, elem uint32, off, n uint64) ([]byte, error) {
+	if len(in) != 2 || elem == 0 {
+		return nil, errors.New("semcore: scatter needs [dense, validity]")
+	}
+	dense, bm := in[0], in[1]
+	w := uint64(elem)
+	if n > MaxOutput/w || (n+7)/8 > uint64(len(bm)) || uint64(len(dense))%w != 0 {
+		return nil, errors.New("semcore: scatter shape")
+	}
+	out := make([]byte, n*w)
+	k := off
+	for i := uint64(0); i < n; i++ {
+		if bm[i>>3]>>(i&7)&1 == 0 {
+			continue
+		}
+		if (k+1)*w > uint64(len(dense)) || k+1 < k {
+			return nil, errors.New("semcore: scatter dense input too short")
+		}
+		copy(out[i*w:(i+1)*w], dense[k*w:(k+1)*w])
+		k++
+	}
+	return out, nil
+}
+
+// CountValid returns the number of set bits among the first n bits of a validity bitmap.
+func CountValid(bm []byte, n uint64) uint64 {
+	var c uint64
+	for i := uint64(0); i < n; i++ {
+		c += uint64(bm[i>>3] >> (i & 7) & 1)
+	}
+	return c
 }
