@@ -178,6 +178,7 @@ func main() {
 	vecTest := flag.String("vecname", "TestP6Vectors", "name of the extracted vector test")
 	rehearsal := flag.String("rehearsal", "", "end-to-end rehearsal template run only against the extracted code inside the integration (needs production Store access)")
 	auditOnly := flag.Bool("audit-only", false, "report dependencies and portability class without compiling")
+	allow := flag.String("allow", "", "comma-separated module packages the closure may draw declarations from (others are PORTABILITY_BLOCKED research dependencies)")
 	flag.Parse()
 	if *work == "" {
 		var err error
@@ -413,6 +414,30 @@ func main() {
 		}
 	}
 	sort.Strings(adapters)
+	perPkg := map[string]int{}
+	for r := range selected {
+		perPkg[r.pkg.path]++
+	}
+	audit["declarations_by_package"] = perPkg
+	if *allow != "" {
+		ok := map[string]bool{}
+		for _, a := range strings.Split(*allow, ",") {
+			ok[*modpath+"/"+strings.TrimSpace(a)] = true
+		}
+		var bad []string
+		for pth, n := range perPkg {
+			if !ok[pth] {
+				bad = append(bad, fmt.Sprintf("%s: %d declaration(s) reachable from the roots", pth, n))
+			}
+		}
+		sort.Strings(bad)
+		if len(bad) > 0 {
+			audit["blocked"] = bad
+			out, _ := json.MarshalIndent(audit, "", " ")
+			fmt.Println(string(out))
+			die("PORTABILITY_BLOCKED", "%d research-only package(s) in the dependency closure", len(bad))
+		}
+	}
 	audit["roots"] = len(rootObjs)
 	audit["selected_declarations"] = len(selected)
 	audit["adapter_interfaces"] = adapters
