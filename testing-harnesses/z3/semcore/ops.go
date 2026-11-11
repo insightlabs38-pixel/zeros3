@@ -1,4 +1,4 @@
-package semcas
+package semcore
 
 import (
 	"encoding/binary"
@@ -127,11 +127,11 @@ func parseOp(b []byte) (Op, int, error) {
 	switch o.Kind {
 	case OpPerm:
 		if v, err = u(); err != nil || v == 0 || v > 1<<30 {
-			return o, 0, errors.New("semcas: bad perm element width")
+			return o, 0, errors.New("semcore: bad perm element width")
 		}
 		o.Elem = uint32(v)
 		if v, err = u(); err != nil || v == 0 || v > 16 {
-			return o, 0, errors.New("semcas: bad perm rank")
+			return o, 0, errors.New("semcore: bad perm rank")
 		}
 		for i := uint64(0); i < v; i++ {
 			d, err := u()
@@ -146,11 +146,11 @@ func parseOp(b []byte) (Op, int, error) {
 		o.Axes = append([]uint8(nil), b[pos:pos+len(o.Dims)]...)
 		pos += len(o.Dims)
 		if !validAxes(o.Axes) {
-			return o, 0, errors.New("semcas: axes are not a permutation")
+			return o, 0, errors.New("semcore: axes are not a permutation")
 		}
 	case OpBswap:
 		if v, err = u(); err != nil || v < 2 || v > 8 {
-			return o, 0, errors.New("semcas: bad bswap width")
+			return o, 0, errors.New("semcore: bad bswap width")
 		}
 		o.Elem = uint32(v)
 	case OpConvert:
@@ -171,17 +171,17 @@ func parseOp(b []byte) (Op, int, error) {
 		}
 	case OpDeflate, OpRecipe, OpPrepend, OpParquet:
 		if v, err = u(); err != nil || v > uint64(len(b)-pos) {
-			return o, 0, errors.New("semcas: bad aux length")
+			return o, 0, errors.New("semcore: bad aux length")
 		}
 		o.Aux = append([]byte(nil), b[pos:pos+int(v)]...)
 		pos += int(v)
 	case OpGather:
 		if v, err = u(); err != nil || v == 0 || v > 1<<30 {
-			return o, 0, errors.New("semcas: bad gather row width")
+			return o, 0, errors.New("semcore: bad gather row width")
 		}
 		o.Elem = uint32(v)
 		if v, err = u(); err != nil || v > uint64(len(b)-pos) {
-			return o, 0, errors.New("semcas: bad gather count")
+			return o, 0, errors.New("semcore: bad gather count")
 		}
 		for i := uint64(0); i < v; i++ {
 			x, err := u()
@@ -192,7 +192,7 @@ func parseOp(b []byte) (Op, int, error) {
 		}
 	case OpQ8_0, OpQ4_0, OpConcat, OpPlainOffsets, OpPlainData:
 	default:
-		return o, 0, fmt.Errorf("semcas: unknown op %d", o.Kind)
+		return o, 0, fmt.Errorf("semcore: unknown op %d", o.Kind)
 	}
 	return o, pos, nil
 }
@@ -219,8 +219,21 @@ func InvertPerm(p Op) Op {
 	return out
 }
 
-// Apply runs one op over its inputs and returns the produced bytes.
-func (o *Op) Apply(in [][]byte) ([]byte, error) {
+// Ext supplies the implementation of operation kinds that are format-specific and therefore
+// not part of the portable core (exact DEFLATE replay, exact Parquet replay). A store carries
+// its Ext explicitly; there is no global registry.
+type Ext interface {
+	ApplyExt(o *Op, in [][]byte) ([]byte, error)
+}
+
+// ErrNoExt is returned for an extension op when no Ext handles it.
+var ErrNoExt = errors.New("semcore: operation needs a format extension that is not installed")
+
+// Apply runs one core op over its inputs and returns the produced bytes.
+func (o *Op) Apply(in [][]byte) ([]byte, error) { return o.ApplyWith(nil, in) }
+
+// ApplyWith is Apply with an extension for format-specific kinds.
+func (o *Op) ApplyWith(x Ext, in [][]byte) ([]byte, error) {
 	if o.Kind == OpConcat {
 		var n int64
 		for _, b := range in {
@@ -236,13 +249,16 @@ func (o *Op) Apply(in [][]byte) ([]byte, error) {
 		return out, nil
 	}
 	if o.Kind == OpRecipe {
-		return nil, errors.New("semcas: recipe op is resolved by the store")
+		return nil, errors.New("semcore: recipe op is resolved by the store")
 	}
 	if o.Kind == OpParquet {
-		return parquetReplay(o.Aux, in)
+		if x == nil {
+			return nil, ErrNoExt
+		}
+		return x.ApplyExt(o, in)
 	}
 	if len(in) != 1 {
-		return nil, fmt.Errorf("semcas: op %s needs one input", o)
+		return nil, fmt.Errorf("semcore: op %s needs one input", o)
 	}
 	b := in[0]
 	switch o.Kind {
@@ -252,14 +268,17 @@ func (o *Op) Apply(in [][]byte) ([]byte, error) {
 		}
 		return append(append([]byte(nil), o.Aux...), b...), nil
 	case OpDeflate:
-		return inflateReplay(b, o.Aux)
+		if x == nil {
+			return nil, ErrNoExt
+		}
+		return x.ApplyExt(o, in)
 	case OpPlainOffsets, OpPlainData:
 		return plainSplit(b, o.Kind == OpPlainOffsets)
 	case OpPerm:
 		return permute(b, o.Elem, o.Dims, o.Axes)
 	case OpBswap:
 		if len(b)%int(o.Elem) != 0 {
-			return nil, errors.New("semcas: bswap length")
+			return nil, errors.New("semcore: bswap length")
 		}
 		out := make([]byte, len(b))
 		w := int(o.Elem)
@@ -278,27 +297,27 @@ func (o *Op) Apply(in [][]byte) ([]byte, error) {
 	case OpGather:
 		rb := int(o.Elem)
 		if rb == 0 || len(b)%rb != 0 || int64(len(o.Idx))*int64(rb) > MaxOutput {
-			return nil, errors.New("semcas: gather shape")
+			return nil, errors.New("semcore: gather shape")
 		}
 		rows := len(b) / rb
 		out := make([]byte, len(o.Idx)*rb)
 		for i, x := range o.Idx {
 			if int(x) >= rows {
-				return nil, errors.New("semcas: gather index out of range")
+				return nil, errors.New("semcore: gather index out of range")
 			}
 			copy(out[i*rb:], b[int(x)*rb:int(x)*rb+rb])
 		}
 		return out, nil
 	case OpSlice:
 		if o.Off > uint64(len(b)) || o.Len > uint64(len(b))-o.Off {
-			return nil, errors.New("semcas: slice out of range")
+			return nil, errors.New("semcore: slice out of range")
 		}
 		return append([]byte(nil), b[o.Off:o.Off+o.Len]...), nil
 	}
-	return nil, fmt.Errorf("semcas: unknown op %d", o.Kind)
+	return nil, fmt.Errorf("semcore: unknown op %d", o.Kind)
 }
 
-var errBudget = errors.New("semcas: materialization budget exceeded")
+var errBudget = errors.New("semcore: materialization budget exceeded")
 
 func permute(b []byte, elem uint32, dims []uint64, axes []uint8) ([]byte, error) {
 	n := uint64(1)
@@ -310,7 +329,7 @@ func permute(b []byte, elem uint32, dims []uint64, axes []uint8) ([]byte, error)
 		n = lo
 	}
 	if n*uint64(elem) != uint64(len(b)) {
-		return nil, fmt.Errorf("semcas: perm grid %v x%d != %d bytes", dims, elem, len(b))
+		return nil, fmt.Errorf("semcore: perm grid %v x%d != %d bytes", dims, elem, len(b))
 	}
 	r := len(dims)
 	// source strides in elements
@@ -454,7 +473,7 @@ func toF32bits(b []byte, dt int, i int) (uint32, bool) {
 func convert(b []byte, from, to int) ([]byte, error) {
 	fw, tw := ElemBytes(from), ElemBytes(to)
 	if fw == 0 || tw == 0 || len(b)%fw != 0 {
-		return nil, fmt.Errorf("semcas: convert %s>%s unsupported", DTypeName(from), DTypeName(to))
+		return nil, fmt.Errorf("semcore: convert %s>%s unsupported", DTypeName(from), DTypeName(to))
 	}
 	n := len(b) / fw
 	if int64(n)*int64(tw) > MaxOutput {
@@ -521,7 +540,7 @@ func convert(b []byte, from, to int) ([]byte, error) {
 			}
 		}
 	default:
-		return nil, fmt.Errorf("semcas: convert %s>%s unsupported", DTypeName(from), DTypeName(to))
+		return nil, fmt.Errorf("semcore: convert %s>%s unsupported", DTypeName(from), DTypeName(to))
 	}
 	return out, nil
 }
@@ -529,7 +548,7 @@ func convert(b []byte, from, to int) ([]byte, error) {
 // quantQ8 is GGML quantize_row_q8_0_ref over a little-endian F32 input.
 func quantQ8(b []byte) ([]byte, error) {
 	if len(b)%128 != 0 {
-		return nil, errors.New("semcas: q8_0 input must be whole 32-element f32 blocks")
+		return nil, errors.New("semcore: q8_0 input must be whole 32-element f32 blocks")
 	}
 	nb := len(b) / 128
 	if int64(nb)*34 > MaxOutput {
@@ -561,7 +580,7 @@ func quantQ8(b []byte) ([]byte, error) {
 // quantQ4 is GGML quantize_row_q4_0_ref.
 func quantQ4(b []byte) ([]byte, error) {
 	if len(b)%128 != 0 {
-		return nil, errors.New("semcas: q4_0 input must be whole 32-element f32 blocks")
+		return nil, errors.New("semcore: q4_0 input must be whole 32-element f32 blocks")
 	}
 	nb := len(b) / 128
 	if int64(nb)*18 > MaxOutput {
@@ -642,7 +661,7 @@ func ApplyPatches(out []byte, ps []Patch) error {
 	prev := uint64(0)
 	for _, p := range ps {
 		if p.Off < prev || p.Off > uint64(len(out)) || uint64(len(p.Data)) > uint64(len(out))-p.Off {
-			return errors.New("semcas: bad patch range")
+			return errors.New("semcore: bad patch range")
 		}
 		copy(out[p.Off:], p.Data)
 		prev = p.Off + uint64(len(p.Data))
@@ -674,7 +693,7 @@ func parsePatches(b []byte, outLen uint64) ([]Patch, int, error) {
 	}
 	cnt, err := u()
 	if err != nil || cnt > uint64(len(b)) {
-		return nil, 0, errors.New("semcas: bad patch count")
+		return nil, 0, errors.New("semcore: bad patch count")
 	}
 	var ps []Patch
 	prev := uint64(0)
@@ -685,14 +704,14 @@ func parsePatches(b []byte, outLen uint64) ([]Patch, int, error) {
 		}
 		l, err := u()
 		if err != nil || l > uint64(len(b)-pos) || gap > outLen || prev+gap > outLen || l > outLen-prev-gap {
-			return nil, 0, errors.New("semcas: bad patch")
+			return nil, 0, errors.New("semcore: bad patch")
 		}
 		ps = append(ps, Patch{prev + gap, append([]byte(nil), b[pos:pos+int(l)]...)})
 		pos += int(l)
 		prev = prev + gap + l
 	}
 	if !sort.SliceIsSorted(ps, func(i, j int) bool { return ps[i].Off < ps[j].Off }) {
-		return nil, 0, errors.New("semcas: unsorted patches")
+		return nil, 0, errors.New("semcore: unsorted patches")
 	}
 	return ps, pos, nil
 }
@@ -706,17 +725,17 @@ func plainSplit(b []byte, offsets bool) ([]byte, error) {
 	pos, total := 0, uint64(0)
 	for pos < len(b) {
 		if len(b)-pos < 4 {
-			return nil, errors.New("semcas: truncated byte-array stream")
+			return nil, errors.New("semcore: truncated byte-array stream")
 		}
 		n := int(binary.LittleEndian.Uint32(b[pos:]))
 		pos += 4
 		if n > len(b)-pos {
-			return nil, errors.New("semcas: byte-array value past stream end")
+			return nil, errors.New("semcore: byte-array value past stream end")
 		}
 		if offsets {
 			total += uint64(n)
 			if total > math.MaxInt32 {
-				return nil, errors.New("semcas: offsets exceed int32")
+				return nil, errors.New("semcore: offsets exceed int32")
 			}
 			out = binary.LittleEndian.AppendUint32(out, uint32(total))
 		} else {

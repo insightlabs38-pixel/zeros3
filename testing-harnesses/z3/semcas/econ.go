@@ -35,14 +35,14 @@ func (c Cost) Total() int64 {
 func (c Cost) WithIndex() int64 { return c.Total() + c.Index }
 
 // Cost measures the store as it exists on disk right now.
-func (s *Store) Cost() (Cost, error) {
+func CostOf(s *Store, dir string) (Cost, error) {
 	var c Cost
-	ents, err := os.ReadDir(filepath.Join(s.Dir, "blobs"))
+	ents, err := os.ReadDir(filepath.Join(dir, "blobs"))
 	if err != nil {
 		return c, err
 	}
 	for _, e := range ents {
-		b, err := os.ReadFile(filepath.Join(s.Dir, "blobs", e.Name()))
+		b, err := os.ReadFile(filepath.Join(dir, "blobs", e.Name()))
 		if err != nil {
 			return c, err
 		}
@@ -60,7 +60,7 @@ func (s *Store) Cost() (Cost, error) {
 		}
 	}
 	c.Index = int64(c.Comps) * IndexPerObj
-	rec, err := os.ReadDir(filepath.Join(s.Dir, "recipes"))
+	rec, err := os.ReadDir(filepath.Join(dir, "recipes"))
 	if err != nil {
 		return c, err
 	}

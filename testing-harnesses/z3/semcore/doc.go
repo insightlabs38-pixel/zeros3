@@ -1,9 +1,8 @@
-package semcas
+package semcore
 
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -43,12 +42,12 @@ func (d *Doc) Check() error {
 	pos := int64(0)
 	for _, s := range d.Segs {
 		if s.Off != pos || s.Len < 0 {
-			return fmt.Errorf("semcas: %s segments do not tile at %d", d.Format, pos)
+			return fmt.Errorf("semcore: %s segments do not tile at %d", d.Format, pos)
 		}
 		pos += s.Len
 	}
 	if pos != int64(len(d.Data)) {
-		return fmt.Errorf("semcas: %s segments cover %d of %d", d.Format, pos, len(d.Data))
+		return fmt.Errorf("semcore: %s segments cover %d of %d", d.Format, pos, len(d.Data))
 	}
 	return nil
 }
@@ -76,7 +75,6 @@ func tile(size int64, spans []Seg) []Seg {
 var stDType = map[string]int{"BOOL": DBool, "U8": DU8, "I8": DI8, "U16": DU16, "I16": DI16, "F16": DF16, "BF16": DBF16,
 	"U32": DU32, "I32": DI32, "F32": DF32, "U64": DU64, "I64": DI64, "F64": DF64}
 
-func readFile(path string) ([]byte, error) { return os.ReadFile(path) }
 
 // ParseSafetensors tiles a Safetensors file. Unsupported dtypes stay literal bytes.
 func ParseSafetensors(name string, data []byte) (*Doc, error) {
@@ -236,5 +234,5 @@ func Detect(name string, data []byte) (*Doc, error) {
 	case len(data) > 9 && data[8] == '{':
 		return ParseSafetensors(name, data)
 	}
-	return nil, fmt.Errorf("semcas: unrecognized format for %s", name)
+	return nil, fmt.Errorf("semcore: unrecognized format for %s", name)
 }

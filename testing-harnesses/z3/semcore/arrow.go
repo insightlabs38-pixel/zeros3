@@ -1,4 +1,4 @@
-package semcas
+package semcore
 
 import (
 	"encoding/binary"
@@ -13,7 +13,7 @@ type fb struct {
 	pos int
 }
 
-var errFB = errors.New("semcas: malformed flatbuffer")
+var errFB = errors.New("semcore: malformed flatbuffer")
 
 func (t fb) u32(off int) (uint32, bool) {
 	if off < 0 || off+4 > len(t.b) {
@@ -143,13 +143,13 @@ type ArrowCol struct {
 // u32 little-endian length followed by the value bytes, per value.
 const DPlainBytes = 200
 
-type arrowBuf struct{ off, len int64 }
+type ArrowBuf struct{ Off, Len int64 }
 
 // ArrowBatch is one RecordBatch: absolute body start and per-field buffers.
 type ArrowBatch struct {
 	Rows    int64
 	Bodystr int64 // absolute file offset of the body
-	Bufs    []arrowBuf
+	Bufs    []ArrowBuf
 	Nulls   []int64
 	MsgOff  int64 // absolute offset of the message prefix
 }
@@ -165,7 +165,7 @@ type ArrowFile struct {
 // keep the file tiled (their bytes simply stay literals).
 func ParseArrowFile(b []byte) (*ArrowFile, error) {
 	if len(b) < 24 || string(b[:6]) != "ARROW1" || string(b[len(b)-6:]) != "ARROW1" {
-		return nil, errors.New("semcas: not an Arrow IPC file")
+		return nil, errors.New("semcore: not an Arrow IPC file")
 	}
 	af := &ArrowFile{}
 	pos := 8
@@ -173,7 +173,7 @@ func ParseArrowFile(b []byte) (*ArrowFile, error) {
 	for pos+8 <= end {
 		start := pos
 		if binary.LittleEndian.Uint32(b[pos:]) != 0xffffffff {
-			return nil, errors.New("semcas: arrow continuation marker missing")
+			return nil, errors.New("semcore: arrow continuation marker missing")
 		}
 		ml := int(int32(binary.LittleEndian.Uint32(b[pos+4:])))
 		pos += 8
@@ -181,7 +181,7 @@ func ParseArrowFile(b []byte) (*ArrowFile, error) {
 			break // end of stream: footer follows
 		}
 		if ml < 0 || ml%8 != 0 || pos+ml > end {
-			return nil, errors.New("semcas: bad arrow message length")
+			return nil, errors.New("semcore: bad arrow message length")
 		}
 		root, err := fbRoot(b[pos : pos+ml])
 		if err != nil {
@@ -197,7 +197,7 @@ func ParseArrowFile(b []byte) (*ArrowFile, error) {
 		}
 		body := int64(pos + ml)
 		if bl < 0 || body+bl > int64(end) {
-			return nil, errors.New("semcas: bad arrow body length")
+			return nil, errors.New("semcore: bad arrow body length")
 		}
 		hdr, ok, err := root.table(2)
 		if err != nil || !ok {
@@ -222,14 +222,14 @@ func ParseArrowFile(b []byte) (*ArrowFile, error) {
 		pos = int(body + bl)
 	}
 	if len(af.Cols) == 0 {
-		return nil, errors.New("semcas: arrow file without schema")
+		return nil, errors.New("semcore: arrow file without schema")
 	}
 	return af, nil
 }
 
 func (af *ArrowFile) readSchema(s fb) error {
 	if end, ok, err := s.small(0, 2); err != nil || (ok && end != 0) {
-		return fmt.Errorf("semcas: big-endian arrow schema unsupported")
+		return fmt.Errorf("semcore: big-endian arrow schema unsupported")
 	}
 	base, n, ok, err := s.vector(1)
 	if err != nil || !ok {
@@ -305,7 +305,7 @@ func readBatch(h fb, body, bodyLen, msgOff int64) (ArrowBatch, error) {
 		return bt, errFB
 	}
 	if _, has, _ := h.table(3); has {
-		return bt, errors.New("semcas: compressed arrow batch")
+		return bt, errors.New("semcore: compressed arrow batch")
 	}
 	nb, nn, ok, err := h.vector(1)
 	if err != nil || !ok {
@@ -331,7 +331,7 @@ func readBatch(h fb, body, bodyLen, msgOff int64) (ArrowBatch, error) {
 		if off < 0 || ln < 0 || off > bodyLen || ln > bodyLen-off {
 			return bt, errFB
 		}
-		bt.Bufs = append(bt.Bufs, arrowBuf{body + off, ln})
+		bt.Bufs = append(bt.Bufs, ArrowBuf{Off: body + off, Len: ln})
 	}
 	bt.Bodystr, bt.MsgOff = body, msgOff
 	return bt, nil

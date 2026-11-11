@@ -1,4 +1,4 @@
-package semcas
+package semcore
 
 import (
 	"bytes"
@@ -6,8 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io"
 	"sort"
 	"sync"
 )
@@ -20,9 +19,9 @@ const (
 )
 
 var (
-	ErrMissing = errors.New("semcas: missing component")
-	ErrCorrupt = errors.New("semcas: corrupt record")
-	ErrDepth   = errors.New("semcas: dependency depth/fanout/cycle limit")
+	ErrMissing = errors.New("semcore: missing component")
+	ErrCorrupt = errors.New("semcore: corrupt record")
+	ErrDepth   = errors.New("semcore: dependency depth/fanout/cycle limit")
 )
 
 // Record is one typed component. A Raw record has its payload in a blob keyed by
@@ -133,11 +132,36 @@ func ParseRecord(b []byte) (*Record, error) {
 	return r, nil
 }
 
-// Store is a directory of blobs/ (payloads by byte digest) and comps/ (records by CID).
-// Indexes are in-memory caches rebuilt by scanning comps/; there is no authoritative
-// global namespace.
+// Backend is the persistent byte store beneath a Store: payload blobs keyed by the SHA-256
+// of the payload, serialized component records keyed by CID and serialized recipes keyed by
+// the SHA-256 of the original file. It is the only I/O boundary of the core. Implementations
+// must make Put* atomic and idempotent; the core never trusts what a Backend returns without
+// re-verifying lengths and digests.
+type Backend interface {
+	HasBlob(id ID) bool
+	PutBlob(id ID, b []byte) error
+	// OpenBlob returns a random-access reader and the blob length.
+	OpenBlob(id ID) (BlobReader, error)
+	DeleteBlob(id ID) error
+	PutRecord(cid ID, b []byte) error
+	// ListRecords calls fn for every stored record (name = CID) in unspecified order.
+	ListRecords(fn func(cid ID, b []byte) error) error
+	PutRecipe(sha ID, b []byte) error
+	GetRecipe(sha ID) ([]byte, error)
+	ListRecipes() ([]ID, error)
+}
+
+// BlobReader is a verified-by-the-caller random-access view of one blob.
+type BlobReader interface {
+	ReadAt(p []byte, off int64) (int, error)
+	Size() int64
+	Close() error
+}
+
+// Store holds the in-memory component index over a Backend. Indexes are caches rebuilt by
+// ListRecords; there is no authoritative global namespace.
 type Store struct {
-	Dir string
+	B   Backend
 	mu  sync.Mutex
 	rec map[ID]*Record
 	// derived indexes (rebuildable)
@@ -148,33 +172,26 @@ type Store struct {
 	Mat   int64 // bytes materialized through derivations
 	// Written counts blob bytes newly written (new physical payload).
 	Written int64
+	// Ext implements format-specific op kinds (nil: only the core ops are available).
+	Ext Ext
 }
 
-// Open creates dir if needed and rebuilds the in-memory indexes from records.
-func Open(dir string) (*Store, error) {
-	s := &Store{Dir: dir, rec: map[ID]*Record{}, byPayload: map[ID][]ID{}, byElems: map[uint64][]ID{}}
-	for _, sub := range []string{"blobs", "comps", "recipes"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
-			return nil, err
-		}
-	}
-	ents, err := os.ReadDir(filepath.Join(dir, "comps"))
-	if err != nil {
-		return nil, err
-	}
-	for _, e := range ents {
-		b, err := os.ReadFile(filepath.Join(dir, "comps", e.Name()))
+// NewStore rebuilds the in-memory indexes from the backend's records.
+func NewStore(b Backend) (*Store, error) {
+	s := &Store{B: b, rec: map[ID]*Record{}, byPayload: map[ID][]ID{}, byElems: map[uint64][]ID{}}
+	err := b.ListRecords(func(cid ID, raw []byte) error {
+		r, err := ParseRecord(raw)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("%s: %w", cid.String(), err)
 		}
-		r, err := ParseRecord(b)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", e.Name(), err)
-		}
-		if r.CID.String() != e.Name() {
-			return nil, fmt.Errorf("%s: record identity mismatch", e.Name())
+		if r.CID != cid {
+			return fmt.Errorf("%s: record identity mismatch", cid.String())
 		}
 		s.index(r)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return s, nil
 }
@@ -189,7 +206,6 @@ func (s *Store) index(r *Record) {
 	}
 }
 
-func (s *Store) blobPath(id ID) string { return filepath.Join(s.Dir, "blobs", id.String()) }
 
 // Has reports whether a record exists.
 func (s *Store) Has(c ID) bool { s.mu.Lock(); defer s.mu.Unlock(); return s.rec[c] != nil }
@@ -218,33 +234,25 @@ func (s *Store) All() []*Record {
 	return out
 }
 
-func writeAtomic(path string, b []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
 // PutRaw stores a typed payload. The blob is written once per byte digest.
 func (s *Store) PutRaw(d Desc, payload []byte) (*Record, error) {
 	if want := d.PayloadLen(); want >= 0 && want != int64(len(payload)) {
-		return nil, fmt.Errorf("semcas: descriptor implies %d bytes, got %d", want, len(payload))
+		return nil, fmt.Errorf("semcore: descriptor implies %d bytes, got %d", want, len(payload))
 	}
 	r := &Record{Desc: d, PayloadLen: int64(len(payload)), Payload: PayloadSHA(payload)}
 	r.CID = CID(&r.Desc, r.PayloadLen, r.Payload)
 	if old := s.Rec(r.CID); old != nil {
 		return old, nil
 	}
-	if _, err := os.Stat(s.blobPath(r.Payload)); err != nil {
-		if err := writeAtomic(s.blobPath(r.Payload), payload); err != nil {
+	if !s.B.HasBlob(r.Payload) {
+		if err := s.B.PutBlob(r.Payload, payload); err != nil {
 			return nil, err
 		}
 		s.mu.Lock()
 		s.Written += int64(len(payload))
 		s.mu.Unlock()
 	}
-	if err := writeAtomic(filepath.Join(s.Dir, "comps", r.CID.String()), r.Marshal()); err != nil {
+	if err := s.B.PutRecord(r.CID, r.Marshal()); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -262,7 +270,7 @@ func (s *Store) PutDerived(d Desc, parents []ID, ops []Op, patches []Patch, payl
 		return old, nil
 	}
 	if want := d.PayloadLen(); want >= 0 && want != r.PayloadLen {
-		return nil, fmt.Errorf("semcas: descriptor implies %d bytes, got %d", want, len(payload))
+		return nil, fmt.Errorf("semcore: descriptor implies %d bytes, got %d", want, len(payload))
 	}
 	ser := r.Marshal()
 	back, err := ParseRecord(ser)
@@ -271,12 +279,12 @@ func (s *Store) PutDerived(d Desc, parents []ID, ops []Op, patches []Patch, payl
 	}
 	got, err := s.materialize(back, &resolver{budget: MaxOutput * 4, active: map[ID]bool{}, cache: map[ID][]byte{}}, 0)
 	if err != nil {
-		return nil, fmt.Errorf("semcas: derivation proof failed: %w", err)
+		return nil, fmt.Errorf("semcore: derivation proof failed: %w", err)
 	}
 	if !bytes.Equal(got, payload) {
-		return nil, errors.New("semcas: derivation proof mismatch")
+		return nil, errors.New("semcore: derivation proof mismatch")
 	}
-	if err := writeAtomic(filepath.Join(s.Dir, "comps", r.CID.String()), ser); err != nil {
+	if err := s.B.PutRecord(r.CID, ser); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -324,7 +332,7 @@ func (s *Store) materialize(r *Record, rs *resolver, depth int) ([]byte, error) 
 	defer delete(rs.active, r.CID)
 	var out []byte
 	if !r.Derived() {
-		b, err := os.ReadFile(s.blobPath(r.Payload))
+		b, err := s.readBlob(r.Payload, r.PayloadLen)
 		if err != nil {
 			return nil, fmt.Errorf("%w: blob %s", ErrMissing, r.Payload.Short())
 		}
@@ -356,7 +364,7 @@ func (s *Store) materialize(r *Record, rs *resolver, depth int) ([]byte, error) 
 		}
 		cur := in
 		for i := range r.Ops {
-			o, err := r.Ops[i].Apply(cur)
+			o, err := r.Ops[i].ApplyWith(s.Ext, cur)
 			if err != nil {
 				return nil, err
 			}
@@ -459,7 +467,7 @@ func (s *Store) Rederive(r *Record) error {
 	}
 	got, err := s.materialize(back, &resolver{budget: MaxOutput * 4, active: map[ID]bool{}, cache: map[ID][]byte{}}, 0)
 	if err != nil || PayloadSHA(got) != r.Payload {
-		return fmt.Errorf("semcas: rederive proof failed: %v", err)
+		return fmt.Errorf("semcore: rederive proof failed: %v", err)
 	}
 	prev := old
 	s.mu.Lock()
@@ -474,7 +482,7 @@ func (s *Store) Rederive(r *Record) error {
 			return err
 		}
 	}
-	if err := writeAtomic(filepath.Join(s.Dir, "comps", r.CID.String()), back.Marshal()); err != nil {
+	if err := s.B.PutRecord(r.CID, back.Marshal()); err != nil {
 		return err
 	}
 	shared := false
@@ -484,7 +492,7 @@ func (s *Store) Rederive(r *Record) error {
 		}
 	}
 	if !shared {
-		os.Remove(s.blobPath(r.Payload))
+		s.B.DeleteBlob(r.Payload)
 	}
 	return nil
 }
@@ -515,11 +523,11 @@ func (s *Store) Materialize(c ID) error {
 	if err != nil {
 		return err
 	}
-	if err := writeAtomic(s.blobPath(r.Payload), b); err != nil {
+	if err := s.B.PutBlob(r.Payload, b); err != nil {
 		return err
 	}
 	raw := &Record{CID: r.CID, Desc: r.Desc, PayloadLen: r.PayloadLen, Payload: r.Payload}
-	if err := writeAtomic(filepath.Join(s.Dir, "comps", c.String()), raw.Marshal()); err != nil {
+	if err := s.B.PutRecord(c, raw.Marshal()); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -527,4 +535,24 @@ func (s *Store) Materialize(c ID) error {
 	s.Written += int64(len(b))
 	s.mu.Unlock()
 	return nil
+}
+
+// readBlob reads a whole blob through the backend, bounding the allocation by the length
+// the (parsed, bounded) record claims; a blob of another length is corrupt.
+func (s *Store) readBlob(id ID, want int64) ([]byte, error) {
+	br, err := s.B.OpenBlob(id)
+	if err != nil {
+		return nil, err
+	}
+	defer br.Close()
+	if br.Size() != want || want < 0 || want > MaxOutput {
+		return nil, ErrCorrupt
+	}
+	buf := make([]byte, want)
+	if _, err := br.ReadAt(buf, 0); err != nil && !(err == io.EOF && want == 0) {
+		if int64(len(buf)) > 0 {
+			return nil, err
+		}
+	}
+	return buf, nil
 }

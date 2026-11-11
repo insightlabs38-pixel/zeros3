@@ -1,4 +1,4 @@
-package semcas
+package semcore
 
 import (
 	"encoding/binary"
@@ -30,7 +30,7 @@ type pDict struct {
 	Vals []any
 }
 
-var errPickle = errors.New("semcas: unsupported pickle")
+var errPickle = errors.New("semcore: unsupported pickle")
 
 var torchStorageDType = map[string]int{
 	"FloatStorage": DF32, "HalfStorage": DF16, "BFloat16Storage": DBF16, "DoubleStorage": DF64,

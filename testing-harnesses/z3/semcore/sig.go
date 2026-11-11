@@ -1,4 +1,4 @@
-package semcas
+package semcore
 
 import (
 	"encoding/binary"

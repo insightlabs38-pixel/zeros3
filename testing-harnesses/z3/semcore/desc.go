@@ -3,7 +3,7 @@
 // float convert, Q8_0 quantize, slice, concat) each followed by an exact sparse residual,
 // and file recipes made only of literals and component references. Nothing here executes
 // foreign code; every derived byte is authenticated by SHA-256 before use.
-package semcas
+package semcore
 
 import (
 	"crypto/sha256"
@@ -92,7 +92,7 @@ func (d *Desc) Elems() (uint64, error) {
 	for _, s := range d.Shape {
 		hi, lo := bits.Mul64(n, s)
 		if hi != 0 || lo > 1<<62 {
-			return 0, errors.New("semcas: element count overflow")
+			return 0, errors.New("semcore: element count overflow")
 		}
 		n = lo
 	}
@@ -142,12 +142,12 @@ func ParseDesc(b []byte) (Desc, int, error) {
 	}
 	d.Ordered = b[pos] == 1
 	if b[pos] > 1 {
-		return d, 0, errors.New("semcas: bad ordered flag")
+		return d, 0, errors.New("semcore: bad ordered flag")
 	}
 	pos++
 	nd, err := u()
 	if err != nil || nd > 32 {
-		return d, 0, errors.New("semcas: bad rank")
+		return d, 0, errors.New("semcore: bad rank")
 	}
 	for i := uint64(0); i < nd; i++ {
 		s, err := u()
@@ -158,17 +158,17 @@ func ParseDesc(b []byte) (Desc, int, error) {
 	}
 	el, err := u()
 	if err != nil || el > 1<<20 || uint64(len(b)-pos) < el {
-		return d, 0, errors.New("semcas: bad extra")
+		return d, 0, errors.New("semcore: bad extra")
 	}
 	d.Extra = append([]byte(nil), b[pos:pos+int(el)]...)
 	pos += int(el)
 	if d.Version != 1 || d.Kind == 0 || d.Kind > KindLengths {
-		return d, 0, errors.New("semcas: unsupported descriptor kind or version")
+		return d, 0, errors.New("semcore: unsupported descriptor kind or version")
 	}
 	return d, pos, nil
 }
 
-var errShort = errors.New("semcas: truncated")
+var errShort = errors.New("semcore: truncated")
 
 // ID is a 32-byte SHA-256 (payload digest or component identity).
 type ID [32]byte

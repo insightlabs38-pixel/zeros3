@@ -1,4 +1,4 @@
-package semcas
+package semcore
 
 import (
 	"errors"
@@ -8,7 +8,7 @@ import (
 var onnxDType = map[uint64]int{1: DF32, 2: DU8, 3: DI8, 4: DU16, 5: DI16, 6: DI32, 7: DI64, 9: DBool,
 	10: DF16, 11: DF64, 12: DU32, 13: DU64, 16: DBF16}
 
-var errProto = errors.New("semcas: malformed protobuf")
+var errProto = errors.New("semcore: malformed protobuf")
 
 type pbField struct {
 	num, wire uint64

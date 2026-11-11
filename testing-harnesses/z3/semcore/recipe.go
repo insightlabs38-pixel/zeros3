@@ -1,4 +1,4 @@
-package semcas
+package semcore
 
 import (
 	"crypto/sha256"
@@ -134,7 +134,7 @@ func ParseRecipe(b []byte) (*Recipe, error) {
 	return r, nil
 }
 
-var ErrMismatch = errors.New("semcas: reconstructed length or SHA-256 mismatch")
+var ErrMismatch = errors.New("semcore: reconstructed length or SHA-256 mismatch")
 
 // Replay writes the exact original file to w using only the store and the recipe,
 // then proves length and SHA-256. cacheBytes bounds retained decoded components.
@@ -229,13 +229,11 @@ func (b *Builder) Span(c ID, off, n uint64, label string) {
 }
 
 // PutRecipe persists the serialized recipe under its original file digest.
-func (s *Store) PutRecipe(r *Recipe) error {
-	return writeAtomic(s.Dir+"/recipes/"+r.SHA.String(), r.Marshal())
-}
+func (s *Store) PutRecipe(r *Recipe) error { return s.B.PutRecipe(r.SHA, r.Marshal()) }
 
 // GetRecipe loads and parses a recipe by original file digest.
 func (s *Store) GetRecipe(sha ID) (*Recipe, error) {
-	b, err := readFile(s.Dir + "/recipes/" + sha.String())
+	b, err := s.B.GetRecipe(sha)
 	if err != nil {
 		return nil, err
 	}

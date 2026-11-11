@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"sort"
 	"strings"
 	"time"
@@ -63,7 +64,14 @@ func cmdIngest(args []string) {
 	fl := flag.NewFlagSet("ingest", flag.ExitOnError)
 	dir := fl.String("store", "", "store directory")
 	mode := fl.String("mode", "full", "identity|semantic|full")
+	prof := fl.String("cpuprofile", "", "write a CPU profile (P6 measurement)")
 	fl.Parse(args)
+	if *prof != "" {
+		pf, err := os.Create(*prof)
+		must(err)
+		must(pprof.StartCPUProfile(pf))
+		defer pprof.StopCPUProfile()
+	}
 	s, err := semcas.Open(*dir)
 	must(err)
 	opt := semcas.DefaultOptions()
@@ -83,7 +91,7 @@ func cmdIngest(args []string) {
 		rec, fs, err := p.Ingest(doc)
 		must(err)
 		must(s.PutRecipe(rec))
-		c, err := s.Cost()
+		c, err := semcas.CostOf(s, *dir)
 		must(err)
 		enc.Encode(struct {
 			*semcas.FileStats
@@ -151,13 +159,13 @@ func cmdOptimize(args []string) {
 	fl.Parse(args)
 	s, err := semcas.Open(*dir)
 	must(err)
-	before, err := s.Cost()
+	before, err := semcas.CostOf(s, *dir)
 	must(err)
 	p := semcas.NewPlanner(s, semcas.DefaultOptions())
 	t := time.Now()
 	st, err := p.Optimize(3)
 	must(err)
-	after, err := s.Cost()
+	after, err := semcas.CostOf(s, *dir)
 	must(err)
 	json.NewEncoder(os.Stdout).Encode(map[string]any{"optimize": st, "before": before.Total(), "after": after.Total(), "ms": time.Since(t).Milliseconds(), "derived_after": after.DerivedComps})
 }
@@ -206,7 +214,7 @@ func cmdFiles(args []string) {
 		}
 		must(err)
 		must(s.PutRecipe(rec))
-		c, err := s.Cost()
+		c, err := semcas.CostOf(s, *dir)
 		must(err)
 		enc.Encode(map[string]any{"file": filepath.Base(path), "kind": kind, "size": len(data), "new_blob_bytes": s.Written - w0,
 			"recipe_bytes": len(rec.Marshal()), "cum_total": c.Total(), "comps": c.Comps, "derived": c.DerivedComps, "ms": time.Since(t).Milliseconds(), "exact": fp.Exact})

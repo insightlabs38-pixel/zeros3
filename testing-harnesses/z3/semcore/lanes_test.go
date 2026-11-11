@@ -1,4 +1,4 @@
-package semcas
+package semcore
 
 import (
 	"bytes"
@@ -11,16 +11,16 @@ import (
 
 func fixture(t testing.TB, name string) []byte {
 	t.Helper()
-	b, err := os.ReadFile("testdata/" + name)
+	b, err := os.ReadFile("../semcas/testdata/" + name)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return b
 }
 
-func replayAll(t *testing.T, dir string, files map[string][]byte) {
+func replayAll(t *testing.T, s0 *Store, files map[string][]byte) {
 	t.Helper()
-	s2, err := Open(dir) // fresh open: only serialized records, blobs and recipes
+	s2, err := NewStore(s0.B) // fresh open: only serialized records, blobs and recipes
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestTinyFamilyAcrossFourFormats(t *testing.T) {
 	if st := stats["tiny.onnx"]; st.NewBlobBytes != 0 || st.How["layout"] != 1 {
 		t.Fatalf("onnx transposed weight not derived: %+v", st.How)
 	}
-	replayAll(t, s.Dir, files)
+	replayAll(t, s, files)
 }
 
 func TestTensorOrderShardAndHeaderIndependence(t *testing.T) {
@@ -108,7 +108,7 @@ func TestTensorOrderShardAndHeaderIndependence(t *testing.T) {
 	if newBytes[1] != 0 || newBytes[2] != 0 || newBytes[3] != 0 {
 		t.Fatalf("reordered/sharded repackaging stored new payload bytes: %v", newBytes)
 	}
-	replayAll(t, s.Dir, files)
+	replayAll(t, s, files)
 }
 
 // Same shape and dtype with a different payload must not share.

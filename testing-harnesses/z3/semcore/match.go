@@ -1,4 +1,4 @@
-package semcas
+package semcore
 
 import (
 	"bytes"
@@ -50,6 +50,8 @@ type Planner struct {
 	// exclude, when set, hides components from parent search (used while rebasing).
 	exclude func(ID) bool
 	rebase  bool
+	// Chunk is the adapter's content-defined chunker for literal regions (nil: no chunking).
+	Chunk func([]byte) [][]byte
 }
 
 func NewPlanner(s *Store, o Options) *Planner {

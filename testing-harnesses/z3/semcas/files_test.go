@@ -59,7 +59,7 @@ func TestContainersShareFileContent(t *testing.T) {
 	if n != 6 {
 		t.Fatalf("expected 6 shared file-content components, got %d", n)
 	}
-	replayAll(t, s.Dir, files)
+	replayAll(t, dirOfM.get(s), files)
 }
 
 func TestColumnarFormatsShareColumns(t *testing.T) {
@@ -78,7 +78,7 @@ func TestColumnarFormatsShareColumns(t *testing.T) {
 	if cols != 3 {
 		t.Fatalf("three canonical columns expected (int64, float64, string stream), got %d", cols)
 	}
-	replayAll(t, s.Dir, files)
+	replayAll(t, dirOfM.get(s), files)
 	// signedness: an unsigned view of the same bytes is a different semantic component
 	a := s.All()
 	var i64 *Record
@@ -118,14 +118,14 @@ func TestContainerResidualCorruptionFailsClosed(t *testing.T) {
 	if victim == nil {
 		t.Fatal("no deflate derivation")
 	}
-	path := filepath.Join(s.Dir, "comps", victim.CID.String())
+	path := filepath.Join(dirOfM.get(s), "comps", victim.CID.String())
 	orig, _ := os.ReadFile(path)
 	failed := 0
 	for i := 8; i < len(orig); i += 3 {
 		m := append([]byte(nil), orig...)
 		m[i] ^= 0x55
 		os.WriteFile(path, m, 0o644)
-		s2, err := Open(s.Dir)
+		s2, err := Open(dirOfM.get(s))
 		if err != nil {
 			failed++
 			continue
@@ -142,14 +142,14 @@ func TestContainerResidualCorruptionFailsClosed(t *testing.T) {
 		t.Fatal("no corruption was detected at all")
 	}
 	// missing parent component
-	s3, _ := Open(s.Dir)
+	s3, _ := Open(dirOfM.get(s))
 	for _, r := range s3.All() {
 		if r.Desc.Kind == KindFile {
-			os.Remove(filepath.Join(s.Dir, "blobs", r.Payload.String()))
+			os.Remove(filepath.Join(dirOfM.get(s), "blobs", r.Payload.String()))
 			break
 		}
 	}
-	s4, _ := Open(s.Dir)
+	s4, _ := Open(dirOfM.get(s))
 	if err := s4.Replay(rc, &bytes.Buffer{}, 1<<20); !errors.Is(err, ErrMissing) {
 		t.Fatalf("missing component: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestUnsupportedFallbacks(t *testing.T) {
 	if _, err := ParseArrowFile(garbage); err == nil {
 		t.Fatal("garbage parsed as arrow")
 	}
-	replayAll(t, s.Dir, map[string][]byte{"junk": garbage})
+	replayAll(t, dirOfM.get(s), map[string][]byte{"junk": garbage})
 }
 
 func FuzzParseArrowFile(f *testing.F) {

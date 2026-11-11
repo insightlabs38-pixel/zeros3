@@ -1,9 +1,6 @@
-package semcas
+package semcore
 
-import (
-	"errors"
-	"os"
-)
+import "errors"
 
 // IO counts the physical work of range reads: bytes read from blobs, distinct 4 KiB pages
 // touched and bytes materialized through full-payload fallbacks.
@@ -31,7 +28,7 @@ func (io *IO) Pages() int { return len(io.pages) }
 // needed cells only; everything else materializes the whole component.
 func (s *Store) ReadRange(r *Recipe, off, n int64, io *IO) ([]byte, error) {
 	if off < 0 || n < 0 || off+n > r.Size {
-		return nil, errors.New("semcas: range out of file")
+		return nil, errors.New("semcore: range out of file")
 	}
 	out := make([]byte, 0, n)
 	pos := int64(0)
@@ -87,7 +84,7 @@ func (s *Store) readComp(c ID, a, b int64, io *IO) ([]byte, error) {
 		return nil, ErrCorrupt
 	}
 	if !r.Derived() {
-		f, err := os.Open(s.blobPath(r.Payload))
+		f, err := s.B.OpenBlob(r.Payload)
 		if err != nil {
 			return nil, ErrMissing
 		}

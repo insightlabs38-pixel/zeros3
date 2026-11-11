@@ -140,15 +140,15 @@ func (f *FilePlanner) arrowColumn(data []byte, af *ArrowFile, ci, base int, span
 	}
 	if c.DType != DPlainBytes {
 		var dense []byte
-		var runs []arrowBuf
+		var runs []ArrowBuf
 		for _, bt := range af.Batches {
 			v := bt.Bufs[base+1]
 			need := bt.Rows * int64(c.Width)
-			if v.len < need { // longer buffers carry alignment padding that stays literal
+			if v.Len < need { // longer buffers carry alignment padding that stays literal
 				return false, nil
 			}
-			v.len = need
-			dense = append(dense, data[v.off:v.off+v.len]...)
+			v.Len = need
+			dense = append(dense, data[v.Off:v.Off+v.Len]...)
 			runs = append(runs, v)
 		}
 		r, err := f.S.PutRaw(colDesc(c.DType, len(dense)/c.Width), dense)
@@ -157,8 +157,8 @@ func (f *FilePlanner) arrowColumn(data []byte, af *ArrowFile, ci, base int, span
 		}
 		off := int64(0)
 		for _, v := range runs {
-			*spans = append(*spans, colSpan{v.off, v.len, Step{Kind: StepSpan, CID: r.CID, Off: uint64(off), Len: uint64(v.len), Label: c.Name}})
-			off += v.len
+			*spans = append(*spans, colSpan{v.Off, v.Len, Step{Kind: StepSpan, CID: r.CID, Off: uint64(off), Len: uint64(v.Len), Label: c.Name}})
+			off += v.Len
 		}
 		return true, nil
 	}
@@ -168,11 +168,11 @@ func (f *FilePlanner) arrowColumn(data []byte, af *ArrowFile, ci, base int, span
 	var bs []bspan
 	for _, bt := range af.Batches {
 		ob, db := bt.Bufs[base+1], bt.Bufs[base+2]
-		if ob.len < (bt.Rows+1)*4 {
+		if ob.Len < (bt.Rows+1)*4 {
 			return false, nil
 		}
-		ob.len = (bt.Rows + 1) * 4
-		offs := data[ob.off : ob.off+ob.len]
+		ob.Len = (bt.Rows + 1) * 4
+		offs := data[ob.Off : ob.Off+ob.Len]
 		if binary.LittleEndian.Uint32(offs) != 0 {
 			return false, nil
 		}
@@ -180,14 +180,14 @@ func (f *FilePlanner) arrowColumn(data []byte, af *ArrowFile, ci, base int, span
 		prev := uint32(0)
 		for i := int64(0); i < bt.Rows; i++ {
 			nx := binary.LittleEndian.Uint32(offs[4*(i+1):])
-			if nx < prev || int64(nx) > db.len {
+			if nx < prev || int64(nx) > db.Len {
 				return false, nil
 			}
 			stream = binary.LittleEndian.AppendUint32(stream, nx-prev)
-			stream = append(stream, data[db.off+int64(prev):db.off+int64(nx)]...)
+			stream = append(stream, data[db.Off+int64(prev):db.Off+int64(nx)]...)
 			prev = nx
 		}
-		if int64(prev) > db.len {
+		if int64(prev) > db.Len {
 			return false, nil
 		}
 		bs = append(bs, bspan{start, int64(len(stream)) - start, bt.Rows, int64(prev)})
@@ -202,20 +202,20 @@ func (f *FilePlanner) arrowColumn(data []byte, af *ArrowFile, ci, base int, span
 	}
 	for i, bt := range af.Batches {
 		ob, db := bt.Bufs[base+1], bt.Bufs[base+2]
-		ob.len = (bt.Rows + 1) * 4
-		db.len = bs[i].dl
+		ob.Len = (bt.Rows + 1) * 4
+		db.Len = bs[i].dl
 		slice := Op{Kind: OpSlice, Off: uint64(bs[i].so), Len: uint64(bs[i].sl)}
-		o, err := f.S.PutDerived(colDesc(DI32, int(bt.Rows)+1), []ID{sr.CID}, []Op{slice, {Kind: OpPlainOffsets}}, nil, data[ob.off:ob.off+ob.len])
+		o, err := f.S.PutDerived(colDesc(DI32, int(bt.Rows)+1), []ID{sr.CID}, []Op{slice, {Kind: OpPlainOffsets}}, nil, data[ob.Off:ob.Off+ob.Len])
 		if err != nil {
 			return false, err
 		}
-		d, err := f.S.PutDerived(colDesc(DU8, int(db.len)), []ID{sr.CID}, []Op{slice, {Kind: OpPlainData}}, nil, data[db.off:db.off+db.len])
+		d, err := f.S.PutDerived(colDesc(DU8, int(db.Len)), []ID{sr.CID}, []Op{slice, {Kind: OpPlainData}}, nil, data[db.Off:db.Off+db.Len])
 		if err != nil {
 			return false, err
 		}
 		*spans = append(*spans,
-			colSpan{ob.off, ob.len, Step{Kind: StepRef, CID: o.CID, Label: c.Name + ".offsets"}},
-			colSpan{db.off, db.len, Step{Kind: StepRef, CID: d.CID, Label: c.Name + ".data"}})
+			colSpan{ob.Off, ob.Len, Step{Kind: StepRef, CID: o.CID, Label: c.Name + ".offsets"}},
+			colSpan{db.Off, db.Len, Step{Kind: StepRef, CID: d.CID, Label: c.Name + ".data"}})
 	}
 	return true, nil
 }

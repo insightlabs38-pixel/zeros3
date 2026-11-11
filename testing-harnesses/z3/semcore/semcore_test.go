@@ -1,4 +1,4 @@
-package semcas
+package semcore
 
 import (
 	"bytes"
@@ -9,13 +9,12 @@ import (
 	"math"
 	"math/rand"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(t.TempDir())
+	s, err := NewStore(NewMemBackend())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,9 +46,8 @@ func TestTypedIdentityNeverAliases(t *testing.T) {
 	if a.Payload != b.Payload || len(s.ByPayload(a.Payload)) != 4 {
 		t.Fatal("byte-identical payloads must share one byte digest")
 	}
-	ents, _ := os.ReadDir(filepath.Join(s.Dir, "blobs"))
-	if len(ents) != 1 {
-		t.Fatalf("one physical blob expected, got %d", len(ents))
+	if n := len(s.B.(*MemBackend).blobs); n != 1 {
+		t.Fatalf("one physical blob expected, got %d", n)
 	}
 	// the descriptor determines the payload length: a wrong length is rejected
 	if _, err := s.PutRaw(tdesc(DF32, 2048), p); err == nil {
@@ -151,7 +149,7 @@ func TestFloatConversionBitExact(t *testing.T) {
 }
 
 func TestQuantizersMatchReference(t *testing.T) {
-	raw, err := os.ReadFile("testdata/quant_vectors.json")
+	raw, err := os.ReadFile("../semcas/testdata/quant_vectors.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,19 +270,19 @@ func TestStoreCorruptionAndLimits(t *testing.T) {
 	pl, _ := p.Place(&TInfo{DType: DU8, Shape: []uint64{8192}}, data[:8192])
 	r := s.Rec(pl.CID)
 	// corrupt blob
-	bp := s.blobPath(r.Payload)
-	orig, _ := os.ReadFile(bp)
-	os.WriteFile(bp, append([]byte{^orig[0]}, orig[1:]...), 0o644)
+	mb := s.B.(*MemBackend)
+	orig := append([]byte(nil), mb.blobs[r.Payload]...)
+	mb.Corrupt(r.Payload, 0)
 	if _, err := s.Payload(pl.CID); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("corrupt blob accepted: %v", err)
 	}
-	os.WriteFile(bp, orig, 0o644)
+	mb.blobs[r.Payload] = append([]byte(nil), orig...)
 	// missing blob
-	os.Remove(bp)
+	mb.DeleteBlob(r.Payload)
 	if _, err := s.Payload(pl.CID); !errors.Is(err, ErrMissing) {
 		t.Fatalf("missing blob: %v", err)
 	}
-	os.WriteFile(bp, orig, 0o644)
+	mb.blobs[r.Payload] = orig
 	// record bit flips are caught by parse or identity check
 	ser := r.Marshal()
 	for i := range ser {
@@ -301,7 +299,7 @@ func TestStoreCorruptionAndLimits(t *testing.T) {
 		}
 	}
 	// reopen rebuilds the index from records alone
-	s2, err := Open(s.Dir)
+	s2, err := NewStore(s.B)
 	if err != nil || s2.Count() != s.Count() {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -319,9 +317,9 @@ func TestDependencyCycleDepthAndFanout(t *testing.T) {
 	b.CID = CID(&b.Desc, 64, b.Payload)
 	a.Parents, b.Parents = []ID{b.CID}, []ID{a.CID}
 	for _, r := range []*Record{a, b} {
-		os.WriteFile(filepath.Join(s.Dir, "comps", r.CID.String()), r.Marshal(), 0o644)
+		s.B.PutRecord(r.CID, r.Marshal())
 	}
-	s2, err := Open(s.Dir)
+	s2, err := NewStore(s.B)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +349,7 @@ func TestDependencyCycleDepthAndFanout(t *testing.T) {
 		dd.Extra = []byte{byte(i)}
 		nr := &Record{Desc: Desc{Kind: KindTensor, Version: 1, DType: DU8, Shape: []uint64{64}, Ordered: true, Extra: []byte{byte(i)}}, PayloadLen: 64, Payload: PayloadSHA(payload), Parents: []ID{prev.CID}, Ops: []Op{{Kind: OpSlice, Off: 0, Len: 64}}}
 		nr.CID = CID(&nr.Desc, 64, nr.Payload)
-		os.WriteFile(filepath.Join(s3.Dir, "comps", nr.CID.String()), nr.Marshal(), 0o644)
+		s3.B.PutRecord(nr.CID, nr.Marshal())
 		s3.index(nr)
 		prev, last = nr, nr
 	}

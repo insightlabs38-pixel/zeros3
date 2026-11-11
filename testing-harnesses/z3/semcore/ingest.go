@@ -1,10 +1,8 @@
-package semcas
+package semcore
 
 import (
 	"fmt"
 	"time"
-
-	"zeros3-z3/lab"
 )
 
 // LitChunkMin: literal regions at least this long are split by content-defined chunking
@@ -42,7 +40,7 @@ func (p *Planner) Ingest(doc *Doc) (*Recipe, *FileStats, error) {
 				continue
 			}
 			w0 := p.S.Written
-			for _, ch := range lab.ChunkScaled(raw, 2<<10, 8<<10, 32<<10) {
+			for _, ch := range p.chunk(raw) {
 				d := Desc{Kind: KindBytes, Version: 1, DType: DU8, Shape: []uint64{uint64(len(ch))}, Ordered: true}
 				r, err := p.S.PutRaw(d, ch)
 				if err != nil {
@@ -73,4 +71,13 @@ func (p *Planner) Ingest(doc *Doc) (*Recipe, *FileStats, error) {
 	fs.RecipeBytes = int64(len(rec.Marshal()))
 	fs.Total = time.Since(start)
 	return &rec, fs, nil
+}
+
+// chunk splits a literal region into shared components; the chunker is an adapter hook
+// (production: the engine's CDC). Without one the region is a single component.
+func (p *Planner) chunk(raw []byte) [][]byte {
+	if p.Chunk == nil {
+		return [][]byte{raw}
+	}
+	return p.Chunk(raw)
 }
