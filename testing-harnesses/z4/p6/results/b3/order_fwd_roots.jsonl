@@ -1,0 +1,2 @@
+{"apply_ms":1071,"blob_bytes_freed":1269760,"derived_after":845,"evaluated":11674,"exact_groups":213,"greedy_regret_bytes":469829,"groups":213,"heuristic_groups":0,"plan_after":271146556,"plan_before":272194613,"plan_ms":116146,"singletons":0,"store_after":271484593,"store_before":272221529}
+{"measure": {"wall_s": 118.164, "max_rss_mib": 1093.5, "user_s": 116.06, "sys_s": 3.42, "rc": 0}}

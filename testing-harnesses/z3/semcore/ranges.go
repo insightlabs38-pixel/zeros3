@@ -236,7 +236,7 @@ func (s *Store) readPerm(parent ID, rest []Op, o *Op, a, b int64, io *IO) ([]byt
 		}
 		prev = src
 	}
-	if runs > maxPermRuns && len(rest) == 0 && s.BlockSize > 0 {
+	if num, den, ok := restRatio(rest); runs > maxPermRuns && ok && s.BlockSize > 0 {
 		// parent is a raw component with verified blocks: gather the needed cells through the
 		// request-local block cache instead of materializing the tensor. Cost is the number of
 		// distinct blocks touched; if that exceeds half the tensor the whole read is cheaper.
@@ -251,9 +251,9 @@ func (s *Store) readPerm(parent ID, rest []Op, o *Op, a, b int64, io *IO) ([]byt
 				src += (rem % odims[i]) * ostr[i]
 				rem /= odims[i]
 			}
-			seen[src*e/int64(s.BlockSize)] = struct{}{}
+			seen[src*e*num/den/int64(s.BlockSize)] = struct{}{}
 		}
-		if int64(len(seen))*int64(s.BlockSize) <= total/2 {
+		if int64(len(seen))*int64(s.BlockSize) <= total*num/den/2 {
 			out := make([]byte, 0, b-a)
 			base := a / e * e
 			for cell := a / e; cell*e < b; cell++ {
@@ -319,6 +319,27 @@ func (s *Store) readPerm(parent ID, rest []Op, o *Op, a, b int64, io *IO) ([]byt
 	}
 	base := a / e * e
 	return out[a-base : b-base], nil
+}
+
+// restRatio reports whether the ops below a permutation are elementwise width changes
+// (convert, byte swap) and the parent-bytes per permutation-input-byte ratio num/den, so the
+// distinct-block estimate can be made in the parent's coordinates.
+func restRatio(rest []Op) (num, den int64, ok bool) {
+	num, den = 1, 1
+	for i := range rest {
+		switch rest[i].Kind {
+		case OpConvert:
+			fw, tw := int64(ElemBytes(int(rest[i].From))), int64(ElemBytes(int(rest[i].To)))
+			if fw == 0 || tw == 0 {
+				return 0, 0, false
+			}
+			num, den = num*fw, den*tw
+		case OpBswap:
+		default:
+			return 0, 0, false
+		}
+	}
+	return num, den, true
 }
 
 // maxPermRuns bounds per-run reads for a permuted range before falling back to the whole tensor.
