@@ -252,145 +252,11 @@ const SCCBudget = 2000
 // SCCWork bounds total refinement work (node updates) per cyclic component.
 const SCCWork = 3_000_000
 
-type sccInfo struct {
-	comp   []int32 // node -> component
-	comps  [][]int32
-	cyclic []bool
-}
-
-func (g *Graph) tarjan() *sccInfo {
-	n := len(g.Nodes)
-	idx := make([]int32, n)
-	low := make([]int32, n)
-	on := make([]bool, n)
-	for i := range idx {
-		idx[i] = -1
-	}
-	comp := make([]int32, n)
-	var comps [][]int32
-	var stack []int32
-	type frame struct {
-		v    int32
-		next int
-		adj  []int32
-	}
-	adjOf := func(v int32) []int32 {
-		var a []int32
-		for _, e := range g.Nodes[v].Out {
-			if !g.dangling(e) {
-				a = append(a, e.To)
-			}
-		}
-		for _, e := range g.Nodes[v].Set {
-			if !g.dangling(e) {
-				a = append(a, e.To)
-			}
-		}
-		return a
-	}
-	counter := int32(0)
-	for s := 0; s < n; s++ {
-		if idx[s] >= 0 {
-			continue
-		}
-		fs := []frame{{v: int32(s), adj: adjOf(int32(s))}}
-		idx[s], low[s] = counter, counter
-		counter++
-		stack = append(stack, int32(s))
-		on[s] = true
-		for len(fs) > 0 {
-			f := &fs[len(fs)-1]
-			if f.next < len(f.adj) {
-				w := f.adj[f.next]
-				f.next++
-				if idx[w] < 0 {
-					idx[w], low[w] = counter, counter
-					counter++
-					stack = append(stack, w)
-					on[w] = true
-					fs = append(fs, frame{v: w, adj: adjOf(w)})
-				} else if on[w] && idx[w] < low[f.v] {
-					low[f.v] = idx[w]
-				}
-				continue
-			}
-			v := f.v
-			if low[v] == idx[v] {
-				var c []int32
-				for {
-					w := stack[len(stack)-1]
-					stack = stack[:len(stack)-1]
-					on[w] = false
-					comp[w] = int32(len(comps))
-					c = append(c, w)
-					if w == v {
-						break
-					}
-				}
-				comps = append(comps, c)
-			}
-			fs = fs[:len(fs)-1]
-			if len(fs) > 0 {
-				p := fs[len(fs)-1].v
-				if low[v] < low[p] {
-					low[p] = low[v]
-				}
-			}
-		}
-	}
-	cyc := make([]bool, len(comps))
-	for i, c := range comps {
-		if len(c) > 1 {
-			cyc[i] = true
-			continue
-		}
-		v := c[0]
-		for _, e := range append(append([]Edge(nil), g.Nodes[v].Out...), g.Nodes[v].Set...) {
-			if e.To == v {
-				cyc[i] = true
-			}
-		}
-	}
-	return &sccInfo{comp: comp, comps: comps, cyclic: cyc}
-}
-
-// SCCIdentities computes exact Merkle identities on the condensation: acyclic nodes hash their
-// children; each cyclic component is canonically labeled (color refinement + bounded
-// individualization-refinement) so identities are independent of node numbering. Components
-// with automorphisms keep one identity per orbit and are marked Symmetric; budget exhaustion
-// falls back to the order-independent refined multiset and is also Symmetric.
-func (g *Graph) SCCIdentities() *Idents {
-	n := len(g.Nodes)
-	s := g.tarjan()
-	ids := make([]ID, n)
-	amb := make([]uint8, n)
-	pz := g.poison()
-	res := &Idents{SCCs: len(s.comps)}
-	// Tarjan emits components in reverse topological order (callees first).
-	for ci, c := range s.comps {
-		if !s.cyclic[ci] {
-			v := int(c[0])
-			ids[v] = g.nodeHash(v, ids, 'S')
-			continue
-		}
-		res.Cyclic++
-		g.canonSCC(c, ids, amb, res)
-	}
-	for i := range ids {
-		if pz[i] {
-			amb[i] = AmbigPoisoned
-			ids[i] = hash2([]byte("poison"), u32(uint32(i)))
-		} else if g.Nodes[i].Flags&FlagOpaque != 0 && amb[i] == AmbigNone {
-			amb[i] = AmbigOpaque
-		}
-	}
-	out := g.classify(ids, amb)
-	out.SCCs, out.Cyclic, out.Search, out.Budget = res.SCCs, res.Cyclic, res.Search, res.Budget
-	return out
-}
-
 // canonSCC labels one cyclic component. External children (outside c) already have final IDs.
-func (g *Graph) canonSCC(c []int32, ids []ID, amb []uint8, res *Idents) {
+func canonSCC(g view, c []int32, ids []ID, amb []uint8, res *Idents) {
+	var tmp Node
+	nn := g.size()
+	dangling := func(e Edge) bool { return e.To < 0 || int(e.To) >= nn }
 	m := len(c)
 	pos := make(map[int32]int, m)
 	for i, v := range c {
@@ -399,14 +265,14 @@ func (g *Graph) canonSCC(c []int32, ids []ID, amb []uint8, res *Idents) {
 	// base color: node tag with external children folded in, internal edges excluded
 	base := make([]ID, m)
 	for i, v := range c {
-		nd := &g.Nodes[v]
+		nd := g.node(int(v), &tmp)
 		parts := [][]byte{[]byte("B")}
 		l := LocalID(nd)
 		parts = append(parts, l[:], u32(uint32(len(nd.Out))))
 		for _, e := range nd.Out {
 			var b [34]byte
 			binary.LittleEndian.PutUint16(b[:2], e.Kind)
-			if g.dangling(e) {
+			if dangling(e) {
 				b[2] = 0xFF
 			} else if _, in := pos[e.To]; in {
 				b[2] = 0x01 // internal: resolved by refinement
@@ -420,7 +286,7 @@ func (g *Graph) canonSCC(c []int32, ids []ID, amb []uint8, res *Idents) {
 		for _, e := range nd.Set {
 			var b [34]byte
 			binary.LittleEndian.PutUint16(b[:2], e.Kind)
-			if g.dangling(e) {
+			if dangling(e) {
 				b[2] = 0xFF
 			} else if _, in := pos[e.To]; in {
 				b[2] = 0x01
@@ -444,14 +310,14 @@ func (g *Graph) canonSCC(c []int32, ids []ID, amb []uint8, res *Idents) {
 	}
 	adj := make([]ladj, m)
 	for i, v := range c {
-		for _, e := range g.Nodes[v].Out {
-			if p, in := pos[e.To]; in && !g.dangling(e) {
+		for _, e := range g.node(int(v), &tmp).Out {
+			if p, in := pos[e.To]; in && !dangling(e) {
 				adj[i].out = append(adj[i].out, int32(p))
 				adj[i].ok = append(adj[i].ok, e.Kind)
 			}
 		}
-		for _, e := range g.Nodes[v].Set {
-			if p, in := pos[e.To]; in && !g.dangling(e) {
+		for _, e := range g.node(int(v), &tmp).Set {
+			if p, in := pos[e.To]; in && !dangling(e) {
 				adj[i].set = append(adj[i].set, int32(p))
 				adj[i].sk = append(adj[i].sk, e.Kind)
 			}

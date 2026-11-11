@@ -39,6 +39,12 @@ func main() {
 		cmdCost(os.Args[2:])
 	case "optimize":
 		cmdOptimize(os.Args[2:])
+	case "gen":
+		cmdGen(os.Args[2:])
+	case "roots":
+		cmdRoots(os.Args[2:])
+	case "graphbench":
+		cmdGraphBench(os.Args[2:])
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command", os.Args[1])
 		os.Exit(2)
@@ -198,4 +204,47 @@ func cmdOptimize(args []string) {
 	st, err := p.Optimize(3)
 	must(err)
 	json.NewEncoder(os.Stdout).Encode(map[string]any{"optimize": st, "ms": time.Since(t).Milliseconds()})
+}
+
+// cmdRoots plans (and optionally applies) group-aware canonical root selection.
+func cmdRoots(args []string) {
+	fl := flag.NewFlagSet("roots", flag.ExitOnError)
+	dir := fl.String("store", "", "store directory")
+	apply := fl.Bool("apply", false, "rewrite the store to the planned layout")
+	perGroup := fl.Bool("groups", false, "print one line per multi-member group")
+	fl.Parse(args)
+	s, err := semcas.Open(*dir)
+	must(err)
+	opt := semcas.DefaultOptions()
+	opt.CacheBytes = 256 << 20
+	p := semcas.NewPlanner(s, opt)
+	c0, err := semcas.CostOf(s, *dir)
+	must(err)
+	t := time.Now()
+	plan, err := p.PlanRoots()
+	must(err)
+	planMs := time.Since(t).Milliseconds()
+	enc := json.NewEncoder(os.Stdout)
+	if *perGroup {
+		for _, g := range plan.Groups {
+			if len(g.Nodes) > 1 {
+				enc.Encode(map[string]any{"n": len(g.Nodes), "edges": len(g.Edges), "roots": g.Roots, "cost": g.Cost, "current": g.Current, "exact": g.Exact, "greedy": g.Greedy})
+			}
+		}
+	}
+	res := map[string]any{"plan_ms": planMs, "groups": len(plan.Groups), "singletons": plan.Singletons, "evaluated": plan.Evaluated,
+		"exact_groups": plan.ExactGroups, "heuristic_groups": plan.HeuristicGroups, "greedy_regret_bytes": plan.Regret,
+		"plan_before": plan.Before, "plan_after": plan.After, "store_before": c0.Total()}
+	if *apply {
+		t = time.Now()
+		freed, err := p.ApplyRoots(plan)
+		must(err)
+		res["apply_ms"] = time.Since(t).Milliseconds()
+		res["blob_bytes_freed"] = freed
+		c1, err := semcas.CostOf(s, *dir)
+		must(err)
+		res["store_after"] = c1.Total()
+		res["derived_after"] = c1.DerivedComps
+	}
+	enc.Encode(res)
 }

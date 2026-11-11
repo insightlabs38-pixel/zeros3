@@ -20,9 +20,14 @@ func writeAtomic(path string, b []byte) error {
 	return os.Rename(tmp, path)
 }
 
-func (d DirBackend) p(sub string, id semcore.ID) string { return filepath.Join(d.Dir, sub, id.String()) }
+func (d DirBackend) p(sub string, id semcore.ID) string {
+	return filepath.Join(d.Dir, sub, id.String())
+}
 
-func (d DirBackend) HasBlob(id semcore.ID) bool { _, err := os.Stat(d.p("blobs", id)); return err == nil }
+func (d DirBackend) HasBlob(id semcore.ID) bool {
+	_, err := os.Stat(d.p("blobs", id))
+	return err == nil
+}
 func (d DirBackend) PutBlob(id semcore.ID, b []byte) error { return writeAtomic(d.p("blobs", id), b) }
 func (d DirBackend) DeleteBlob(id semcore.ID) error        { return os.Remove(d.p("blobs", id)) }
 
@@ -48,9 +53,15 @@ func (d DirBackend) OpenBlob(id semcore.ID) (semcore.BlobReader, error) {
 	return fileBlob{f, st.Size()}, nil
 }
 
-func (d DirBackend) PutRecord(cid semcore.ID, b []byte) error { return writeAtomic(d.p("comps", cid), b) }
-func (d DirBackend) PutRecipe(sha semcore.ID, b []byte) error { return writeAtomic(d.p("recipes", sha), b) }
-func (d DirBackend) GetRecipe(sha semcore.ID) ([]byte, error) { return os.ReadFile(d.p("recipes", sha)) }
+func (d DirBackend) PutRecord(cid semcore.ID, b []byte) error {
+	return writeAtomic(d.p("comps", cid), b)
+}
+func (d DirBackend) PutRecipe(sha semcore.ID, b []byte) error {
+	return writeAtomic(d.p("recipes", sha), b)
+}
+func (d DirBackend) GetRecipe(sha semcore.ID) ([]byte, error) {
+	return os.ReadFile(d.p("recipes", sha))
+}
 
 func parseName(n string) (semcore.ID, error) {
 	var id semcore.ID
