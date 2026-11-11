@@ -1,0 +1,2 @@
+production zeros3.go+go.mod digest before=c343679eccfd204a after=c343679eccfd204a
+go.mod unchanged in both integrations

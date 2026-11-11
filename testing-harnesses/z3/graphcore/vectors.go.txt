@@ -1,0 +1,224 @@
+package main
+
+//IMPORT
+import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+var _ testing.TB
+
+func vh(b []byte) string { s := sha256.Sum256(b); return fmt.Sprintf("%x", s[:8]) }
+func vec(name, v string)  { fmt.Printf("VEC %s %s\n", name, v) }
+
+func z3dir() string {
+	if d := os.Getenv("P6_Z3"); d != "" {
+		return d
+	}
+	return "testing-harnesses/z3"
+}
+
+func readFix(p ...string) []byte {
+	b, err := os.ReadFile(filepath.Join(append([]string{z3dir()}, p...)...))
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func vecLLVM() {
+	for _, name := range []string{"a.bc", "b.bc"} {
+		d := readFix("graphcore", "testdata", name)
+		for pi, pol := range []@graphcore.Policy@{@graphcore.PolicyNone@, @graphcore.PolicyAll@} {
+			e, err := @graphcore.EncodeLLVM@(d, pol)
+			if err != nil {
+				panic(err)
+			}
+			h := sha256.New()
+			for _, p := range e.Pieces {
+				h.Write([]byte{p.Kind})
+				h.Write(p.Data)
+			}
+			h.Write(e.IDTab)
+			h.Write(e.Tail)
+			vec(fmt.Sprintf("llvm:%s:%d", name, pi), fmt.Sprintf("%d pieces %x", len(e.Pieces), h.Sum(nil)[:8]))
+			out, err := e.Decode()
+			vec(fmt.Sprintf("llvm-decode:%s:%d", name, pi), fmt.Sprint(err == nil && bytes.Equal(out, d)))
+			// recipe over content-addressed pieces and exact replay through a resolver
+			objs := map[[32]byte][]byte{}
+			rc := &@graphcore.LLVMRecipe@{Size: uint64(len(d)), SHA: sha256.Sum256(d), Tail: e.Tail}
+			for _, p := range e.Pieces {
+				s := sha256.Sum256(p.Data)
+				objs[s] = p.Data
+				rc.Steps = append(rc.Steps, @graphcore.RecipeStep@{Kind: p.Kind, Ref: s})
+			}
+			it := sha256.Sum256(e.IDTab)
+			objs[it] = e.IDTab
+			rc.IDTab = it
+			get := func(r [32]byte) ([]byte, error) {
+				if b, ok := objs[r]; ok {
+					return b, nil
+				}
+				return nil, os.ErrNotExist
+			}
+			wire := rc.Marshal()
+			vec(fmt.Sprintf("recipe:%s:%d", name, pi), vh(wire))
+			rep, err := rc.Replay(get)
+			vec(fmt.Sprintf("replay:%s:%d", name, pi), fmt.Sprint(err == nil && bytes.Equal(rep, d)))
+			// corruption must fail closed: flip one byte of the first function object
+			bad := 0
+			for k, o := range objs {
+				cp := append([]byte(nil), o...)
+				cp[len(cp)/2] ^= 0x20
+				gb := func(r [32]byte) ([]byte, error) {
+					if r == k {
+						return cp, nil
+					}
+					return get(r)
+				}
+				if out, err := rc.Replay(gb); err != nil {
+					bad++
+				} else if !bytes.Equal(out, d) {
+					panic("WRONG BYTES")
+				}
+				if bad >= 24 {
+					break
+				}
+			}
+			vec(fmt.Sprintf("corrupt:%s:%d", name, pi), fmt.Sprint(bad))
+			n := 0
+			for i := 0; i < len(wire); i += 11 {
+				if _, err := @graphcore.ParseLLVMRecipe@(wire[:i]); err != nil {
+					n++
+				}
+			}
+			vec(fmt.Sprintf("trunc:%s:%d", name, pi), fmt.Sprint(n))
+		}
+	}
+}
+
+func vecPDBDEX() {
+	pdb := readFix("debugsym", "testdata", "portable-small.pdb")
+	for _, s := range []bool{false, true} {
+		e, err := @graphcore.EncodePDB@(pdb, s)
+		if err != nil {
+			panic(err)
+		}
+		out, err := e.Decode()
+		vec(fmt.Sprintf("pdb:%v", s), fmt.Sprint(err == nil && bytes.Equal(out, pdb)))
+	}
+	for _, f := range []string{"fixture-api24.dex", "fixture-api28.dex"} {
+		d := readFix("dexz3", "testdata", f)
+		e, err := @graphcore.EncodeDEX@(d, true)
+		if err != nil {
+			panic(err)
+		}
+		m := @graphcore.NewByteMachine@()
+		m.Blobs = e.Blobs
+		err = m.Exec(e.Program)
+		vec("dex:"+f, fmt.Sprint(err == nil && bytes.Equal(m.Output(), d))+" "+vh(e.Program))
+	}
+}
+
+func vrg(r *rand.Rand, n int, cyc bool) *@graphcore.Graph@ {
+	g := &@graphcore.Graph@{}
+	for i := 0; i < n; i++ {
+		nd := @graphcore.Node@{Class: uint32(r.IntN(4)), Lit: []byte{byte(r.IntN(3))}}
+		if r.IntN(40) == 0 {
+			nd.Flags |= @graphcore.FlagOpaque@
+		}
+		pick := func() int32 {
+			if cyc && r.IntN(5) == 0 {
+				return int32(r.IntN(n))
+			}
+			if i == 0 {
+				return 0
+			}
+			return int32(r.IntN(i))
+		}
+		for k := r.IntN(3); k > 0; k-- {
+			nd.Out = append(nd.Out, @graphcore.Edge@{Kind: uint16(r.IntN(3)), To: pick()})
+		}
+		for k := r.IntN(3); k > 0; k-- {
+			nd.Set = append(nd.Set, @graphcore.Edge@{Kind: uint16(r.IntN(2)), To: pick()})
+		}
+		if r.IntN(50) == 0 {
+			nd.Out = append(nd.Out, @graphcore.Edge@{Kind: 1, To: int32(n + 3)})
+		}
+		g.Nodes = append(g.Nodes, nd)
+	}
+	return g
+}
+
+func hid(ids *@graphcore.Idents@) string {
+	h := sha256.New()
+	for i := range ids.ID {
+		h.Write(ids.ID[i][:])
+		h.Write([]byte{ids.Ambig[i]})
+		h.Write([]byte{byte(ids.Occ[i]), byte(ids.Occ[i] >> 8)})
+	}
+	return fmt.Sprintf("%x c=%d s=%d y=%d q=%d", h.Sum(nil)[:8], ids.Classes, ids.SCCs, ids.Cyclic, ids.Search)
+}
+
+func vecGraph() {
+	r := rand.New(rand.NewPCG(5, 6))
+	for it := 0; it < 30; it++ {
+		g := vrg(r, 20+r.IntN(300), it%2 == 0)
+		a := g.SCCIdentities()
+		c, err := g.Compact()
+		if err != nil {
+			panic(err)
+		}
+		b := c.SCCIdentities()
+		vec(fmt.Sprintf("ids:%d", it), hid(a)+" "+fmt.Sprint(hid(a) == hid(b)))
+		// renumbered + perturbed copy, matched with both engines
+		h := vrg(rand.New(rand.NewPCG(uint64(it), 9)), 20+r.IntN(300), it%2 == 0)
+		ih := h.SCCIdentities()
+		m1 := @graphcore.Match@(g, h, a, ih, @graphcore.DefaultMatch@())
+		ch, _ := h.Compact()
+		m2 := @graphcore.MatchCompact@(c, ch, a, ih, @graphcore.DefaultMatch@())
+		hm := sha256.New()
+		for i, x := range m1.Map {
+			hm.Write([]byte{byte(x), byte(x >> 8), byte(x >> 16), byte(m1.Basis[i])})
+		}
+		hm2 := sha256.New()
+		for i, x := range m2.Map {
+			hm2.Write([]byte{byte(x), byte(x >> 8), byte(x >> 16), byte(m2.Basis[i])})
+		}
+		vec(fmt.Sprintf("match:%d", it), fmt.Sprintf("%x %v %v", hm.Sum(nil)[:8], m1.Count, fmt.Sprintf("%x", hm.Sum(nil)) == fmt.Sprintf("%x", hm2.Sum(nil))))
+	}
+}
+
+func vecVM() {
+	// literal, fixed-width, LEB and zero ops, then a malformed program that must be rejected
+	m := @graphcore.NewByteMachine@()
+	prog := []byte{@graphcore.OpLit@, 3, 'a', 'b', 'c', @graphcore.OpZero@, 5}
+	err := m.Exec(prog)
+	vec("vm-basic", fmt.Sprint(err == nil)+" "+vh(m.Output()))
+	bad := 0
+	r := rand.New(rand.NewPCG(1, 1))
+	for i := 0; i < 300; i++ {
+		p := make([]byte, 1+r.IntN(40))
+		for j := range p {
+			p[j] = byte(r.IntN(256))
+		}
+		mm := @graphcore.NewByteMachine@()
+		mm.Limit = 1 << 16
+		if err := mm.Exec(p); err != nil {
+			bad++
+		}
+	}
+	vec("vm-random-programs-rejected", fmt.Sprint(bad))
+}
+
+func main() {
+	vecVM()
+	vecLLVM()
+	vecPDBDEX()
+	vecGraph()
+}

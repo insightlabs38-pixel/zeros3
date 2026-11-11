@@ -360,7 +360,7 @@ func main() {
 		var objs []types.Object
 		switch d := r.node.(type) {
 		case *ast.FuncDecl:
-			if d.Recv == nil {
+			if d.Recv == nil && d.Name.Name != "init" { // init functions keep their name (Go allows several)
 				objs = append(objs, r.pkg.info.Defs[d.Name])
 			}
 		case *ast.GenDecl:

@@ -1,0 +1,56 @@
+{
+ "audit": {
+  "adapter_interfaces": [
+   "graphcore.view"
+  ],
+  "packages": [
+   {
+    "files": 18,
+    "module_deps": null,
+    "package": "zeros3-z3/graphcore",
+    "stdlib": [
+     "bytes",
+     "compress/flate",
+     "crypto/sha1",
+     "crypto/sha256",
+     "encoding/binary",
+     "errors",
+     "fmt",
+     "hash",
+     "hash/adler32",
+     "hash/crc32",
+     "hash/maphash",
+     "io",
+     "sort",
+     "strings",
+     "sync"
+    ]
+   }
+  ],
+  "roots": 21,
+  "selected_declarations": 241
+ },
+ "class": "PORTABLE_WITH_THIN_ADAPTER",
+ "compiled": true,
+ "declarations": {
+  "const": 17,
+  "func": 55,
+  "method": 105,
+  "type": 52,
+  "var": 12
+ },
+ "fidelity_failures": 0,
+ "imports_added_to_production": [
+  "hash/maphash"
+ ],
+ "integration_bytes": 2198643,
+ "integration_dir": "/tmp/p6w/ext_all/b4/integration",
+ "integration_sha256": "2f1497428070c624b8f45e33e5fa5974abadb2c1f948ea35d20e46473aaefe1d",
+ "modified_adapters": 0,
+ "package_level_names": 193,
+ "prefix": "gc",
+ "unresolved_dependencies": 0,
+ "vector_lines": 90,
+ "vector_mismatches": 0
+}
+PORTABLE_WITH_THIN_ADAPTER: extracted core compiles into the production source and matches the original byte-for-byte on 90 vectors

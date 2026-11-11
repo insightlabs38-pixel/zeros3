@@ -1,0 +1,103 @@
+{
+ "audit": {
+  "adapter_interfaces": [
+   "semcore.Backend",
+   "semcore.BlobReader",
+   "semcore.Ext"
+  ],
+  "packages": [
+   {
+    "files": 2,
+    "module_deps": null,
+    "package": "zeros3-z3/ggufz3",
+    "stdlib": [
+     "encoding/binary",
+     "errors",
+     "fmt",
+     "io",
+     "math",
+     "math/bits",
+     "sort"
+    ]
+   },
+   {
+    "files": 2,
+    "module_deps": null,
+    "package": "zeros3-z3/st",
+    "stdlib": [
+     "bytes",
+     "encoding/binary",
+     "encoding/json",
+     "errors",
+     "fmt",
+     "io",
+     "math/bits",
+     "sort",
+     "strconv"
+    ]
+   },
+   {
+    "files": 1,
+    "module_deps": null,
+    "package": "zeros3-z3/torchz3",
+    "stdlib": [
+     "encoding/binary",
+     "errors",
+     "fmt",
+     "io",
+     "sort",
+     "strings"
+    ]
+   },
+   {
+    "files": 15,
+    "module_deps": [
+     "zeros3-z3/ggufz3",
+     "zeros3-z3/st",
+     "zeros3-z3/torchz3"
+    ],
+    "package": "zeros3-z3/semcore",
+    "stdlib": [
+     "bytes",
+     "crypto/sha256",
+     "encoding/binary",
+     "errors",
+     "fmt",
+     "hash/maphash",
+     "io",
+     "math",
+     "math/bits",
+     "runtime",
+     "sort",
+     "strings",
+     "sync",
+     "time"
+    ]
+   }
+  ],
+  "roots": 19,
+  "selected_declarations": 280
+ },
+ "class": "PORTABLE_WITH_THIN_ADAPTER",
+ "compiled": true,
+ "declarations": {
+  "const": 16,
+  "func": 76,
+  "method": 111,
+  "type": 57,
+  "var": 20
+ },
+ "fidelity_failures": 0,
+ "imports_added_to_production": [
+  "hash/maphash"
+ ],
+ "integration_bytes": 2234979,
+ "integration_dir": "/tmp/p6w/ext_all/b3/integration",
+ "integration_sha256": "e77b83aa71371da4d0c02fb310d2d1993e77db2cf56a5d42025514d0b0c426bb",
+ "modified_adapters": 0,
+ "package_level_names": 232,
+ "prefix": "sc",
+ "unresolved_dependencies": 0,
+ "vector_lines": 31,
+ "vector_mismatches": 0
+}
