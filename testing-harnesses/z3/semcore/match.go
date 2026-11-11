@@ -95,6 +95,8 @@ type Planner struct {
 	exclude func(ID) bool
 	rebase  bool
 	mu      sync.Mutex // guards the caches below and Probe (candidate evaluation is concurrent)
+	// PlanFilter, when set, restricts PlanRoots to element counts it accepts (diagnostics).
+	PlanFilter func(elems uint64) bool
 	// Probe counts the work the cheap probes avoided or spent (measurement only).
 	Probe ProbeStats
 	rtabs map[rtKey]*rowTable
@@ -420,6 +422,7 @@ func (p *Planner) tryRelation(d *Desc, t *TInfo, payload []byte) (*Record, strin
 	}
 	rawCost := float64(len(payload)) + 96
 	rb := rowBytes(d)
+	tsha := PayloadSHA(payload)
 	limit := rawCost * p.Opt.AcceptFrac
 	type result struct {
 		r    *Record
@@ -436,7 +439,7 @@ func (p *Planner) tryRelation(d *Desc, t *TInfo, payload []byte) (*Record, strin
 		wg.Add(1)
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			r, cost, how := p.evalCandidate(d, cs[i].r, payload, rb, limit)
+			r, cost, how := p.evalCandidate(d, cs[i].r, payload, tsha, rb, limit)
 			res[i] = result{r, cost, how}
 		}()
 	}
@@ -687,7 +690,7 @@ func (p *Planner) workers(tensorBytes int) int {
 
 // evalCandidate searches the layouts and conversions of one stored base for the cheapest
 // exact derivation of payload below limit (bytes). It returns (nil, 0, "") when none is.
-func (p *Planner) evalCandidate(d *Desc, cr *Record, payload []byte, rb int, limit float64) (*Record, float64, string) {
+func (p *Planner) evalCandidate(d *Desc, cr *Record, payload []byte, tsha ID, rb int, limit float64) (*Record, float64, string) {
 	pdt := int(cr.Desc.DType)
 	pre, ok := convOps(pdt, int(d.DType))
 	if !ok {
@@ -731,8 +734,9 @@ func (p *Planner) evalCandidate(d *Desc, cr *Record, payload []byte, rb int, lim
 		if cost >= bestCost {
 			return
 		}
-		r, err := p.S.PutDerivedProbe(*d, []ID{cr.CID}, a.ops, patches, payload)
-		if err != nil {
+		r := &Record{Desc: *d, PayloadLen: int64(len(payload)), Payload: tsha, Parents: []ID{cr.CID}, Ops: a.ops, Patches: patches}
+		r.CID = CID(&r.Desc, r.PayloadLen, r.Payload)
+		if err := p.S.proveDerived(r, src); err != nil {
 			return
 		}
 		if rc := float64(len(r.Marshal())); rc < bestCost {

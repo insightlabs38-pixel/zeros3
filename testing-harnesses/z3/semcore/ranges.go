@@ -8,6 +8,12 @@ type IO struct {
 	Bytes, Materialized int64
 	pages               map[[2]uint64]struct{}
 	Reads               int
+	// Verified-block accounting (Store.BlockSize > 0): blocks fetched and hashed in this
+	// request, and the one-time whole-blob verification charged to the first touch.
+	BlocksRead      int
+	FirstTouches    int
+	FirstTouchBytes int64
+	blocks          map[blockKey][]byte
 }
 
 func (io *IO) page(blob ID, off, n int64) {
@@ -29,6 +35,9 @@ func (io *IO) Pages() int { return len(io.pages) }
 func (s *Store) ReadRange(r *Recipe, off, n int64, io *IO) ([]byte, error) {
 	if off < 0 || n < 0 || off+n > r.Size {
 		return nil, errors.New("semcore: range out of file")
+	}
+	if io == nil {
+		io = &IO{}
 	}
 	out := make([]byte, 0, n)
 	pos := int64(0)
@@ -82,6 +91,9 @@ func (s *Store) readComp(c ID, a, b int64, io *IO) ([]byte, error) {
 	}
 	if a < 0 || b > r.PayloadLen || a > b {
 		return nil, ErrCorrupt
+	}
+	if !r.Derived() && s.BlockSize > 0 {
+		return s.readVerified(r.Payload, r.PayloadLen, a, b, io)
 	}
 	if !r.Derived() {
 		f, err := s.B.OpenBlob(r.Payload)
@@ -223,6 +235,41 @@ func (s *Store) readPerm(parent ID, rest []Op, o *Op, a, b int64, io *IO) ([]byt
 			runs++
 		}
 		prev = src
+	}
+	if runs > maxPermRuns && len(rest) == 0 && s.BlockSize > 0 {
+		// parent is a raw component with verified blocks: gather the needed cells through the
+		// request-local block cache instead of materializing the tensor. Cost is the number of
+		// distinct blocks touched; if that exceeds half the tensor the whole read is cheaper.
+		total := e
+		for _, d := range o.Dims {
+			total *= int64(d)
+		}
+		seen := map[int64]struct{}{}
+		for cell := a / e; cell*e < b; cell++ {
+			src, rem := int64(0), cell
+			for i := r - 1; i >= 0; i-- {
+				src += (rem % odims[i]) * ostr[i]
+				rem /= odims[i]
+			}
+			seen[src*e/int64(s.BlockSize)] = struct{}{}
+		}
+		if int64(len(seen))*int64(s.BlockSize) <= total/2 {
+			out := make([]byte, 0, b-a)
+			base := a / e * e
+			for cell := a / e; cell*e < b; cell++ {
+				src, rem := int64(0), cell
+				for i := r - 1; i >= 0; i-- {
+					src += (rem % odims[i]) * ostr[i]
+					rem /= odims[i]
+				}
+				p, err := s.readOps(parent, rest, src*e, src*e+e, io)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, p...)
+			}
+			return out[a-base : b-base], nil
+		}
 	}
 	if runs > maxPermRuns {
 		total := e

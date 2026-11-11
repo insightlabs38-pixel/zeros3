@@ -45,6 +45,8 @@ func main() {
 		cmdRoots(os.Args[2:])
 	case "graphbench":
 		cmdGraphBench(os.Args[2:])
+	case "ranges":
+		cmdRanges(os.Args[2:])
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command", os.Args[1])
 		os.Exit(2)
@@ -212,12 +214,16 @@ func cmdRoots(args []string) {
 	dir := fl.String("store", "", "store directory")
 	apply := fl.Bool("apply", false, "rewrite the store to the planned layout")
 	perGroup := fl.Bool("groups", false, "print one line per multi-member group")
+	elems := fl.Uint64("elems", 0, "diagnostic: plan only tensors with this element count and print the groups")
 	fl.Parse(args)
 	s, err := semcas.Open(*dir)
 	must(err)
 	opt := semcas.DefaultOptions()
 	opt.CacheBytes = 256 << 20
 	p := semcas.NewPlanner(s, opt)
+	if *elems > 0 {
+		p.PlanFilter = func(n uint64) bool { return n == *elems }
+	}
 	c0, err := semcas.CostOf(s, *dir)
 	must(err)
 	t := time.Now()
@@ -225,6 +231,13 @@ func cmdRoots(args []string) {
 	must(err)
 	planMs := time.Since(t).Milliseconds()
 	enc := json.NewEncoder(os.Stdout)
+	if *elems > 0 {
+		for _, g := range plan.Groups {
+			if len(g.Nodes) > 1 {
+				fmt.Println(g.Describe(s))
+			}
+		}
+	}
 	if *perGroup {
 		for _, g := range plan.Groups {
 			if len(g.Nodes) > 1 {

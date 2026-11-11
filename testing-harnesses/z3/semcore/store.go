@@ -174,6 +174,10 @@ type Store struct {
 	Written int64
 	// Ext implements format-specific op kinds (nil: only the core ops are available).
 	Ext Ext
+	// BlockSize > 0 makes range reads of raw components verified (see blocks.go); 0 keeps the
+	// unverified B3 behavior for measurement. tables holds process-verified block tables.
+	BlockSize int
+	tables    map[ID]*BlockTable
 }
 
 // NewStore rebuilds the in-memory indexes from the backend's records.
@@ -554,4 +558,39 @@ func (s *Store) readBlob(id ID, want int64) ([]byte, error) {
 		}
 	}
 	return buf, nil
+}
+
+// proveDerived proves that r reproduces its payload exactly from the given parent payload
+// (which the caller obtained through an authenticated read): the record must survive a
+// serialize/parse round trip, the ops and patches must produce the claimed length, and the
+// SHA-256 of the result must equal the claimed digest. Unlike PutDerivedProbe it never
+// resolves the parent through the store, so it is independent of how the parent is currently
+// stored (a parent that is itself derived from the target is not a cycle at the value level).
+func (s *Store) proveDerived(r *Record, parent []byte) error {
+	back, err := ParseRecord(r.Marshal())
+	if err != nil {
+		return err
+	}
+	if len(back.Parents) != 1 || len(back.Ops) == 0 {
+		return ErrCorrupt
+	}
+	cur := [][]byte{parent}
+	for i := range back.Ops {
+		o, err := back.Ops[i].ApplyWith(s.Ext, cur)
+		if err != nil {
+			return err
+		}
+		cur = [][]byte{o}
+	}
+	out := cur[0]
+	if int64(len(out)) != back.PayloadLen {
+		return fmt.Errorf("%w: derived length %d != %d", ErrCorrupt, len(out), back.PayloadLen)
+	}
+	if err := ApplyPatches(out, back.Patches); err != nil {
+		return err
+	}
+	if sha256.Sum256(out) != back.Payload {
+		return fmt.Errorf("%w: payload digest mismatch", ErrCorrupt)
+	}
+	return nil
 }

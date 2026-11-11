@@ -107,7 +107,7 @@ func (p *Planner) PlanRoots() (*RootPlan, error) {
 	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 	for _, k := range keys {
 		mem := byElems[k]
-		if len(mem) < 2 {
+		if len(mem) < 2 || (p.PlanFilter != nil && !p.PlanFilter(k)) {
 			continue
 		}
 		for _, to := range mem {
@@ -153,7 +153,7 @@ func (p *Planner) PlanRoots() (*RootPlan, error) {
 				cs = cs[:12]
 			}
 			for _, c := range cs {
-				r, cost, how := p.evalCandidate(&d, tens[c.from], payload, rb, limit)
+				r, cost, how := p.evalCandidate(&d, tens[c.from], payload, tr.Payload, rb, limit)
 				plan.Evaluated++
 				if r == nil {
 					continue
@@ -413,15 +413,19 @@ func (p *Planner) ApplyRoots(plan *RootPlan) (freed int64, err error) {
 			changes = append(changes, change{old, pick.Rec})
 		}
 	}
-	// prove every new record against the current store (parents resolve through their current form)
+	// prove every new record from its parent's authenticated payload (value level: a parent that
+	// is currently derived from the target is not a cycle in the planned layout, whose
+	// parents are all physical roots)
 	for _, c := range changes {
-		back, err := ParseRecord(c.neu.Marshal())
+		if len(c.neu.Parents) != 1 {
+			return 0, errPlanStale
+		}
+		pp, err := p.parentPayload(c.neu.Parents[0])
 		if err != nil {
 			return 0, err
 		}
-		got, err := p.S.materialize(back, &resolver{budget: MaxOutput * 4, active: map[ID]bool{}, cache: map[ID][]byte{}}, 0)
-		if err != nil || PayloadSHA(got) != c.neu.Payload {
-			return 0, fmt.Errorf("semcore: planned derivation of %s failed its proof: %v", c.neu.CID.Short(), err)
+		if err := p.S.proveDerived(c.neu, pp); err != nil {
+			return 0, fmt.Errorf("semcore: planned derivation of %s failed its proof: %w", c.neu.CID.Short(), err)
 		}
 	}
 	// 1. new roots: write blobs (identity unchanged)
@@ -479,4 +483,19 @@ func (p *Planner) rollback(old []*Record, cause error) error {
 		p.S.B.PutRecord(r.CID, r.Marshal())
 	}
 	return fmt.Errorf("semcore: root rewrite rolled back: %w", cause)
+}
+
+// Describe renders a group for diagnostics: members (dtype, shape, payload bytes) and every
+// proven edge with its cost and derivation.
+func (g *RootGroup) Describe(s *Store) string {
+	var b []byte
+	for i, id := range g.Nodes {
+		r := s.Rec(id)
+		b = append(b, fmt.Sprintf("  n%d %s%v pay=%d derived=%v\n", i, DTypeName(int(r.Desc.DType)), r.Desc.Shape, r.PayloadLen, r.Derived())...)
+	}
+	for _, e := range g.Edges {
+		b = append(b, fmt.Sprintf("  e n%d->n%d cost=%d %s patches=%d\n", e.From, e.To, e.Cost, e.How, len(e.Rec.Patches))...)
+	}
+	b = append(b, fmt.Sprintf("  roots=%v cost=%d current=%d\n", g.Roots, g.Cost, g.Current)...)
+	return string(b)
 }
