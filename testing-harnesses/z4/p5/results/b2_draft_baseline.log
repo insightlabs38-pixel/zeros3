@@ -1,0 +1,20 @@
+--- PASS: TestB2Economics (400.29s)
+    --- PASS: TestB2Economics/src-tar-short (400.29s)
+PASS
+src-tar-short total_wall=400.315939206
+--- PASS: TestB2Economics (248.49s)
+    --- PASS: TestB2Economics/sqlite (248.48s)
+PASS
+sqlite total_wall=248.513247611
+--- PASS: TestB2Economics (86.47s)
+    --- PASS: TestB2Economics/clr-short (86.47s)
+PASS
+clr-short total_wall=86.485860253
+--- PASS: TestB2Economics (108.06s)
+    --- PASS: TestB2Economics/parquet (108.06s)
+PASS
+parquet total_wall=108.080927198
+--- PASS: TestB2Economics (31.22s)
+    --- PASS: TestB2Economics/git (31.22s)
+PASS
+git total_wall=31.235792585

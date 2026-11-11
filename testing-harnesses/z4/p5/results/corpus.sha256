@@ -1,0 +1,43 @@
+d71f1075012c8fd1fb30be24dac9b91b973dfff6bb6574d0a3b4f3f8de960355  src/coreutils-9.5.tar
+c4b9b4ca3fdc0e3baa7905ec41f6a465ab3f4188b47f195264eb48dde283bc21  src/coreutils-9.6.tar
+a24305fc8b2690fd6409df97b9c6d47c685a4b42731a3e8d0e22a66c1ce6b924  src/coreutils-9.7.tar
+99177a4cbe03625768d64a3d73392310372888f74c3eb271cf775e93057a38e6  q6/clr/12.0.3.dll
+72cf291d4bab0edd08a9b07c6173e1e7ad1abb7ab727fd7044bf6305d7515661  q6/clr/13.0.1.dll
+9e7ee62a4aecdb5cacbc648894c36d9d073748a7cd11f6a2d1bce83d368d652f  q6/clr/13.0.2.dll
+8c1dd5c184b4e2e7ead06971ff3ebcb46783be972292d1deb1061744369b4d80  q6/clr/13.0.3.dll
+12246aa5e14245cbd1a0b8794851defd46e6d782c60eb650ba5aa90ef8447eee  q6/clr/13.0.4.dll
+925ef387070e04b55075a38ee8b31a9fa6ce5b97715ed4a0bdd3ff808d898f44  econ/dex/1019000/classes.dex
+fdc6a9465b490f1081e7a17f1c8ef0a3f1cc5060b7caef59446ed1b98d64a817  econ/dex/1019000/classes2.dex
+f64be27c647b622167ceaa2862165a2e48a9dbb9da04eea501510eab363df4f1  econ/dex/1020050/classes.dex
+149c13b50c992946c650f0fe0c6855ec76c41f4ec812cb826aacd1c58992c201  econ/dex/1020050/classes2.dex
+830a970f45a62e35efc17fdcdef62ec41533a65db95a4f2824a693b8ca6a8cb4  econ/dex/1021000/classes.dex
+894ce172dc19fb0ef6f592a50ecaae0622eb9f8210a04adc27d5b00ef7b061e1  econ/dex/1021000/classes2.dex
+5cf193ace2ddc3d483fc8e36b764abe14ec36313c0d29bb723dcd34769f4fbd0  parquet/zstd/c0.parquet
+9f5c77d6eddaba8330d42b0053c2e86c6391ef44d92a035ea6e9d2e4baf890ae  parquet/zstd/c1.parquet
+dc5e153f108b4e33699e137dc30556ea6383a2717ea5abb98ecb0f89dedbedf1  parquet/zstd/c2.parquet
+61a100f2331f0b34c7e137b0420474079b5eac426b7ab0b3e00ecf7a67c15a56  parquet/zstd/c3.parquet
+38d2414e6b8c28e209bf2e4010cb852333217e5d4c85761c809e3871a99562b3  parquet/snappy/c0.parquet
+4ac4d339e5201ea531f2547d0d2a57daa0098b720424e3926e9406d5890117fe  parquet/snappy/c1.parquet
+f2cc6417b66264decff58024371717ba2342dadb4b9735ae96430cd9764eb602  parquet/snappy/c2.parquet
+76544fc2890c24f22ae04f71f165494dc039f85b4f91947057ec983ab0d1f293  parquet/snappy/c3.parquet
+8fe70361d66235ee0fa0a5f7023852a6687f8b87d39da6cd7d3f7bd1b5345c5c  sqlite/v0.db
+d8955b3c32c827bc20bedabc2a3d1adccd156b6d03db8c189286c3f2beb08c56  sqlite/v1.db
+07798d1b37bbe31c9f2e5e6914b290266f7ca6ac61b9599cf5f4f6674f0d39fe  sqlite/v2.db
+10b7bc53e30edfe1f9c2dd4a1f6f8150da3146060259dafb37a40372a297c0eb  sqlite/v3.db
+79c6b89446483ea7ffa5057eaeb62403a0d129787ed592cf3cdd432f658378b4  git/h0.pack
+0b1e9576c91c70ce8502ccf4b59f7a9895c6c8b6f6c898325fc7ef95f5bbca06  git/h1.pack
+b474d3c00c3e1b9a7507b6b12df2da5f332cee7430801d40429eb2451a369ac4  git/h2.pack
+acc2b8045b54b406bcec99962f91e60202d448a00231669ee3674cab234eb244  q6/pythia-14m/step1000.safetensors
+37b7abc5bc4c0a884c8fbf959e0278d549af2fcea8eb40f21e8f56a84ce05ac7  q6/pythia-14m/step2000.safetensors
+9ba55ad68bf42d96f696b70bfc38628f75a6dcbfc55d076023018edf252b66ec  q6/pythia-14m/step3000.safetensors
+841b3e14444518282c22991c62b274baf9166d721242db83cd8ca7f8f6827073  z331/parquet/pyarrow-chain/c0/db.parquet
+f77ac53a8f6ebaf93aad88af47d463593fef404b4e05b1a385705ec93b094daf  z331/parquet/pyarrow-chain/c1/db.parquet
+e70865278c6243484ebff9507d4f69d7c8c2c01d08bce72cebf07ee9fc71c250  z331/parquet/pyarrow-chain/c2/db.parquet
+48aafaf8b14b992348001271f7f516e2040451a4488c00fcd1a057f4c65317bd  z331/parquet/pyarrow-chain/c3/db.parquet
+3ae07b687baf0f191a03a26c52e28ecddb1c4503302159673df5377b12959802  z331/parquet/pyarrow-chain/c4/db.parquet
+0ff00c5119d8d4a6b21fd6673cde1517e4d667ba91287a9175c47dffdfa03d5f  z331/parquet/pyarrow-chain/c5/db.parquet
+731f6550e02f68769d4a700e7597e71e2ed20f2ff3ecfd3ef9d78c0016937fcc  z331/parquet/pyarrow-chain/c6/db.parquet
+4e6304c70048da334e618a7368b472a75f8cde45cadc7f1b5d4d85fe3edcb957  z331/parquet/pyarrow-chain/c7/db.parquet
+# sources: ftp.gnu.org/gnu/coreutils (9.5-9.7), nuget Newtonsoft.Json (12.0.3, 13.0.1-13.0.4), f-droid.org org.fdroid.fdroid_{1019000,1020050,1021000}.apk (classes*.dex),
+# p0/make_structured.py (sqlite, parquet snappy/zstd; deterministic seeds), z3/oracle/parquet/gen_pyarrow.py chain (pyarrow 18.1), hiredis pack-objects (pins in p0/fetch_corpus.sh),
+# EleutherAI/pythia-14m checkpoints (q6 fetch). Hashes above are of the files used in this session.

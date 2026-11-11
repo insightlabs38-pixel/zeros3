@@ -1,0 +1,206 @@
+package main
+
+//IMPORT
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"math/rand/v2"
+	"testing"
+)
+
+var _ testing.TB
+
+func dcvRand(seed uint64, n int) []byte {
+	r := rand.New(rand.NewPCG(seed, seed^0x55))
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = byte(r.Uint64())
+	}
+	return b
+}
+
+func dcvMutate(seed uint64, src []byte, edits int) []byte {
+	r := rand.New(rand.NewPCG(seed, 7))
+	out := append([]byte{}, src...)
+	for e := 0; e < edits && len(out) > 64; e++ {
+		at := r.IntN(len(out) - 32)
+		switch r.IntN(4) {
+		case 0:
+			ins := dcvRand(r.Uint64(), 1+r.IntN(200))
+			out = append(out[:at], append(ins, out[at:]...)...)
+		case 1:
+			out = append(out[:at], out[min(at+1+r.IntN(100), len(out)):]...)
+		case 2:
+			copy(out[at:], dcvRand(r.Uint64(), 1+r.IntN(30)))
+		case 3:
+			n := 16 + r.IntN(500)
+			if at+n < len(out) {
+				blk := append([]byte{}, out[at:at+n]...)
+				out = append(out[:at], out[at+n:]...)
+				to := r.IntN(len(out))
+				out = append(out[:to], append(blk, out[to:]...)...)
+			}
+		}
+	}
+	return out
+}
+
+func dcvOpsDigest(ops []@Op@) string {
+	h := sha256.New()
+	for _, o := range ops {
+		var b [32]byte
+		binary.LittleEndian.PutUint64(b[0:], uint64(o.TPos))
+		binary.LittleEndian.PutUint64(b[8:], uint64(o.N))
+		binary.LittleEndian.PutUint64(b[16:], uint64(int64(o.Base)))
+		binary.LittleEndian.PutUint64(b[24:], uint64(o.Off))
+		h.Write(b[:])
+		h.Write(o.Lit)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)[:12])
+}
+
+func dcvSum(b []byte) string { s := sha256.Sum256(b); return fmt.Sprintf("%x", s[:12]) }
+
+func main() {
+	vec := func(name string, v any) { fmt.Printf("VEC %s %v\n", name, v) }
+	// matcher + apply + envelope cost + estimator
+	for seed := uint64(1); seed <= 12; seed++ {
+		base := dcvRand(seed, 5000+int(seed)*7000)
+		tgt := dcvMutate(seed+50, base, 4+int(seed))
+		p := @DefaultParams@()
+		if seed%3 == 0 {
+			p.MaxAnchors = 128
+		}
+		ops, err := @Match@([][]byte{base}, tgt, p)
+		if err != nil {
+			vec(fmt.Sprintf("match%d", seed), "ERR")
+			continue
+		}
+		back, aerr := @Apply@([][]byte{base}, ops, int64(len(tgt)))
+		vec(fmt.Sprintf("match%d", seed), fmt.Sprintf("%s %v %s", dcvOpsDigest(ops), aerr == nil, dcvSum(back)))
+		vec(fmt.Sprintf("env%d", seed), @EnvelopeSize@(ops, 128<<10))
+		e := @EstimateProgram@(ops, @EstimateOpts@{})
+		vec(fmt.Sprintf("est%d", seed), fmt.Sprintf("%d %d %d %d", e.Est, e.Lower, e.Upper, e.Stats.Copies))
+		prog, used := @Program@(ops)
+		vec(fmt.Sprintf("prog%d", seed), fmt.Sprintf("%s %v", dcvSum(prog), used))
+	}
+	// selection
+	{
+		t := dcvRand(900, 80000)
+		tgt := dcvMutate(901, t, 20)
+		cands := []@Candidate@{{ID: 1, Bases: [][]byte{dcvRand(7, 80000)}}, {ID: 2, Bases: [][]byte{t}}, {ID: 3, Bases: [][]byte{t[:40000], dcvRand(8, 5000)}}}
+		for _, ex := range []bool{true, false} {
+			s, err := @Select@(tgt, cands, @SelectOpts@{Exhaustive: ex, Slack: 0.05})
+			vec(fmt.Sprintf("select-ex%v", ex), fmt.Sprintf("%d %d %d %v", s.Best, s.Size, s.ExactEncoded, err))
+		}
+	}
+	// windowed codec (single worker => deterministic bytes)
+	{
+		base := dcvRand(31, 300000)
+		tgt := dcvMutate(32, base, 25)
+		wp := @DefaultWParams@()
+		wp.Window, wp.PageSize, wp.CachePages, wp.Workers = 1<<12, 1<<10, 8, 1
+		wp.Anchor.MaxAnchors = 4096
+		idx, err := @BuildWIndex@(bytes.NewReader(base), int64(len(base)), wp.Anchor, 1)
+		if err != nil {
+			vec("window", "ERR")
+		} else {
+			var rec bytes.Buffer
+			st, err := @WEncode@(&rec, bytes.NewReader(tgt), int64(len(tgt)), bytes.NewReader(base), int64(len(base)), idx, wp)
+			vec("window-record", fmt.Sprintf("%s %d %d %v", dcvSum(rec.Bytes()), st.Frames, st.RecordBytes, err))
+			r, err := @OpenWRecord@(bytes.NewReader(rec.Bytes()), int64(rec.Len()))
+			var out bytes.Buffer
+			if err == nil {
+				_, err = r.Decode(&out, bytes.NewReader(base), wp)
+			}
+			vec("window-decode", fmt.Sprintf("%s %v", dcvSum(out.Bytes()), err))
+			rg, _, err := r.DecodeRange(bytes.NewReader(base), wp, 12345, 70000)
+			vec("window-range", fmt.Sprintf("%s %v", dcvSum(rg), err))
+			// authentication failure is part of the contract
+			bad := append([]byte{}, base...)
+			bad[100000] ^= 1
+			_, derr := r.Decode(io.Discard, bytes.NewReader(bad), wp)
+			vec("window-badbase", derr != nil)
+		}
+	}
+	// index: sorts, run bytes, lookups, tombstones
+	{
+		r := rand.New(rand.NewPCG(5, 5))
+		ps := make([]@Posting@, 20000)
+		for i := range ps {
+			ps[i] = @Posting@{Feature: r.Uint64() % 9000 << 44, ID: uint32(r.IntN(3000))}
+		}
+		a := append([]@Posting@{}, ps...)
+		b := append([]@Posting@{}, ps...)
+		@SortFunc@(a)
+		b = @SortBuckets@(b, 3)
+		same := true
+		for i := range a {
+			same = same && a[i] == b[i]
+		}
+		vec("sorts-agree", same)
+		u := a[:0]
+		for i, v := range a {
+			if i == 0 || v != a[i-1] {
+				u = append(u, v)
+			}
+		}
+		var buf bytes.Buffer
+		n, err := @WriteRun@(&buf, u, 3)
+		vec("run-bytes", fmt.Sprintf("%s %d %v", dcvSum(buf.Bytes()), n, err))
+		run, err := @OpenRun@(bytes.NewReader(buf.Bytes()), int64(buf.Len()), true)
+		if err == nil {
+			tot := 0
+			for _, p := range u[:200] {
+				ids, _ := run.Lookup(p.Feature, 8)
+				tot += len(ids)*1000 + int(ids[len(ids)-1])
+			}
+			vec("run-lookup", tot)
+		} else {
+			vec("run-lookup", err)
+		}
+		ids, err := @DecodeTombstones@(@EncodeTombstones@([]uint32{4, 8, 15}))
+		vec("tombstones", fmt.Sprintf("%v %v", ids, err))
+	}
+	// planners on a deterministic model
+	{
+		m := &@Model@{RecordOverhead: 96, MaxDepth: 3, MaxBases: 2}
+		r := rand.New(rand.NewPCG(11, 11))
+		var prev []int
+		for i := 0; i < 6; i++ {
+			var cs []int
+			for _, c := range prev {
+				if r.IntN(100) < 85 {
+					cs = append(cs, c)
+				}
+			}
+			for k := 0; k < 4; k++ {
+				m.Chunks = append(m.Chunks, @Chunk@{Phys: int64(3000 + r.IntN(40000)), Pack: r.IntN(4) - 1, Exists: true})
+				cs = append(cs, len(m.Chunks)-1)
+			}
+			prev = cs
+			c := @Content@{Refs: 1, Chunks: cs}
+			var tot int64
+			for _, ch := range cs {
+				tot += m.Chunks[ch].Phys
+			}
+			for b := 0; b < i; b++ {
+				c.Delta = append(c.Delta, @DeltaOpt@{Bases: []int{b}, Bytes: tot/int64(8+r.IntN(10)) + 400, ReadAmp: 1.5})
+			}
+			m.Contents = append(m.Contents, c)
+		}
+		o := @PlanOpts@{AllowDelta: true, TopK: 3}
+		cdc := @PlanCDC@(m, o)
+		bo2 := @PlanBestOfTwo@(m, o)
+		bm := @PlanBeam@(m, o, 6)
+		hc := @PlanHillClimb@(m, o, bo2.Assign)
+		ex, ok := @PlanExhaustive@(m, o, 1000000)
+		vec("plans", fmt.Sprintf("%d %d %d %d %d %v", cdc.Total, bo2.Total, bm.Total, hc.Total, ex.Total, ok))
+		t, err := m.Eval(bm.Assign, 1)
+		vec("eval", fmt.Sprintf("%d %d %d %d %d %v", t.Logical, t.AfterGC, t.AfterRepack, t.Peak, t.NewBytes, err))
+		vec("group", m.GroupReclaimable([]int{0, 1, 2, 3, 4, 5}))
+	}
+}

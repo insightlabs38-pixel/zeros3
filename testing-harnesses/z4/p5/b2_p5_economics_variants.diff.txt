@@ -1,0 +1,19 @@
+diff --git a/zeros3_b2_economics_test.go b/zeros3_b2_economics_test.go
+index c2bb5f8..affba28 100644
+--- a/zeros3_b2_economics_test.go
++++ b/zeros3_b2_economics_test.go
+@@ -389,10 +389,14 @@ func TestB2Economics(t *testing.T) {
+ 				{"auth-mixed-oldest", AuthPolicy{Strategy: "mixed", Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true}},
+ 				{"auth-archive-newest", AuthPolicy{Order: "newest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true}},
+ 				{"auth-archive-depth4", AuthPolicy{Order: "oldest", MaxDepth: 4, MaxBases: 4, Candidates: 8, AllowRep: true, AllowDelta: true}},
++				{"auth-archive-p5", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true, Planner: "p5"}},
++				{"auth-archive-p5skip", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true, Planner: "p5", RepSkipIfDeltaAtMost: 0.6}},
++				{"auth-hot-hybrid-p5", AuthPolicy{Order: "newest", MaxDepth: 2, MaxBases: 2, MinSaving: 0.10, MaxReadAmp: 2, AllowRep: true, AllowDelta: true, Planner: "p5"}},
+ 				{"auth-delta-only", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true}},
+ 				{"auth-delta-frame16k", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true, FrameSpan: 16 << 10}},
+ 				{"auth-delta-frame1m", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true, FrameSpan: 1 << 20}},
+ 				{"auth-rep-only", AuthPolicy{Order: "oldest", AllowRep: true}},
++				{"auth-rep-only-p5", AuthPolicy{Order: "oldest", AllowRep: true, Planner: "p5"}},
+ 				{"auth-hot-hybrid", AuthPolicy{Order: "newest", MaxDepth: 2, MaxBases: 2, MinSaving: 0.10, MaxReadAmp: 2, AllowRep: true, AllowDelta: true}},
+ 			} {
+ 				only := os.Getenv("ZEROS3_B2_VARIANTS")

@@ -1,0 +1,12 @@
+{"chunks":100000,"mode":"index-sort","postings":400000,"resident_mib":6.103515625,"sec":0.11412659,"variant":"b1-sort.Slice"}
+{"chunks":100000,"mode":"index-sort","postings":400000,"resident_mib":6.103515625,"sec":0.070335082,"variant":"slices.SortFunc"}
+{"chunks":100000,"mode":"index-sort","postings":400000,"resident_mib":6.103515625,"sec":0.018970144,"variant":"bucket1"}
+{"chunks":100000,"mode":"index-sort","postings":400000,"resident_mib":6.103515625,"sec":0.019606249,"variant":"bucket4"}
+{"chunks":100000,"flat_bytes":4800000,"flat_write_sec":0.143434978,"mode":"index-serialize","run_bytes":4262172,"run_write_sec":0.013690361}
+{"chunks":100000,"flat_us":5.934438905,"hits_flat":200000,"hits_run":200000,"mode":"index-lookup","queries":200000,"run_open_sec":0.000206484,"run_us":0.645390955,"run_verify_sec":0.001672895}
+{"chunks":1000000,"mode":"index-sort","postings":4000000,"resident_mib":61.03515625,"sec":1.191703325,"variant":"b1-sort.Slice"}
+{"chunks":1000000,"mode":"index-sort","postings":4000000,"resident_mib":61.03515625,"sec":0.698979179,"variant":"slices.SortFunc"}
+{"chunks":1000000,"mode":"index-sort","postings":4000000,"resident_mib":61.03515625,"sec":0.259383104,"variant":"bucket1"}
+{"chunks":1000000,"mode":"index-sort","postings":4000000,"resident_mib":61.03515625,"sec":0.180339672,"variant":"bucket4"}
+{"chunks":1000000,"flat_bytes":48000000,"flat_write_sec":1.463890443,"mode":"index-serialize","run_bytes":40262172,"run_write_sec":0.114083603}
+{"chunks":1000000,"flat_us":8.5808956,"hits_flat":200000,"hits_run":200000,"mode":"index-lookup","queries":200000,"run_open_sec":0.000347094,"run_us":1.7337030049999997,"run_verify_sec":0.008019506}

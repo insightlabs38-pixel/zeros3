@@ -1,0 +1,15 @@
+binary   level  stats    verify     tree-unchanged
+main     1      accept   accept     yes  
+draft    1      accept   accept     yes  
+main     9      refuse   refuse     yes  2026/11/10 22:23:56 zeros3: failed to open store: store: warm tier root /home/user/p5scrat
+draft    9      refuse   refuse     yes  2026/11/10 22:23:56 zeros3: failed to open store: store: warm tier root /home/user/p5scrat
+main     10     refuse   refuse     yes  2026/11/10 22:23:56 zeros3: failed to open store: store: unsupported store format version 
+draft    10     refuse   refuse     yes  2026/11/10 22:23:56 zeros3: failed to open store: store: warm tier root /home/user/p5scrat
+main     11     refuse   refuse     yes  2026/11/10 22:23:56 zeros3: failed to open store: store: warm tier root /home/user/p5scrat
+draft    11     refuse   refuse     yes  2026/11/10 22:23:56 zeros3: failed to open store: store: unsupported store format version 
+main     12     refuse   refuse     yes  2026/11/10 22:23:56 zeros3: failed to open store: store: unsupported store format version 
+draft    12     refuse   refuse     yes  2026/11/10 22:23:56 zeros3: failed to open store: store: unsupported store format version 
+main     13     refuse   refuse     yes  2026/11/10 22:23:56 zeros3: failed to open store: store: unsupported store format version 
+draft    13     refuse   refuse     yes  2026/11/10 22:23:56 zeros3: failed to open store: store: unsupported store format version 
+main     99     refuse   refuse     yes  2026/11/10 22:23:56 zeros3: failed to open store: store: unsupported store format version 
+draft    99     refuse   refuse     yes  2026/11/10 22:23:56 zeros3: failed to open store: store: unsupported store format version 

@@ -1,0 +1,60 @@
+package main
+
+import "testing"
+
+// P5 planner (scratch): the union-accounting / plan-reuse planner must produce
+// the same physical outcome as the draft planner on a delta-friendly history,
+// read back byte-exactly, deep-verify, and reuse the plan-only encodings.
+func TestP5PlannerMatchesLegacyAndReusesPlans(t *testing.T) {
+	bytesBy := map[string]int64{}
+	for _, planner := range []string{"", "p5"} {
+		l := newAuthLab(t)
+		hist := authHistory(21, 5, 3_000_000)
+		for i, v := range hist {
+			l.put("k/v"+string(rune('0'+i)), v)
+		}
+		l.put("other", genRandomBytes(77, 800_000))
+		l.put("dup", hist[2])
+		l.reclaim()
+		cdc := dirBytes(t, l.dir)
+		rep := l.migrate(AuthPolicy{MaxDepth: 2, MinSaving: 0.05, AllowRep: true, AllowDelta: true, Planner: planner})
+		l.exact("migrated/" + planner)
+		l.verifyOK("migrated/" + planner)
+		l.reclaim()
+		l.exact("reclaimed/" + planner)
+		l.verifyOK("reclaimed/" + planner)
+		bytesBy[planner] = dirBytes(t, l.dir)
+		t.Logf("planner=%q cdc=%d final=%d (%.3fx) admitted=%d/%d reuse=%d repNotBuilt=%d secs=%.2f", planner, cdc, bytesBy[planner], float64(bytesBy[planner])/float64(cdc), rep.Admitted, rep.Objects, rep.PlanReuse, rep.RepNotBuilt, rep.Seconds)
+		if planner == "p5" && rep.PlanReuse == 0 {
+			t.Fatal("p5 planner re-encoded every delta in the applying pass")
+		}
+		for k := range l.want {
+			sha, _ := decodeHexSHA256(l.man(k).ObjectSHA256)
+			if err := l.s.AuthorityRevert(sha); err != nil {
+				t.Fatalf("revert %s: %v", k, err)
+			}
+		}
+		l.exact("reverted/" + planner)
+		l.close()
+	}
+	if float64(bytesBy["p5"]) > float64(bytesBy[""])*1.02 {
+		t.Fatalf("p5 planner worse than the draft: %d vs %d", bytesBy["p5"], bytesBy[""])
+	}
+}
+
+// Rep-capable families: the p5 planner must read back exactly whichever form it picks.
+func TestP5PlannerRepGroupsExact(t *testing.T) {
+	l := newAuthLab(t)
+	for _, f := range repFixtures(t) {
+		l.put(f.name, f.data)
+	}
+	l.close()
+	l.open()
+	rep := l.migrate(AuthPolicy{MinRepGroup: 1, MinObject: 1, Planner: "p5", AllowRep: true, AllowDelta: true})
+	l.exact("p5-best")
+	l.verifyOK("p5-best")
+	l.reclaim()
+	l.exact("p5-reclaimed")
+	l.verifyOK("p5-reclaimed")
+	t.Logf("admitted %d/%d, reuse=%d repNotBuilt=%d", rep.Admitted, rep.Objects, rep.PlanReuse, rep.RepNotBuilt)
+}

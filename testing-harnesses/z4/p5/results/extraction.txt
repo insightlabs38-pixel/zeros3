@@ -1,0 +1,37 @@
+{
+ "declarations": {
+  "const": 7,
+  "func": 48,
+  "method": 48,
+  "type": 37,
+  "var": 8
+ },
+ "fidelity_failures": 0,
+ "imports": [
+  "bytes",
+  "compress/flate",
+  "crypto/sha256",
+  "encoding/binary",
+  "errors",
+  "fmt",
+  "hash/crc32",
+  "io",
+  "math",
+  "math/bits",
+  "slices",
+  "sort",
+  "sync",
+  "sync/atomic"
+ ],
+ "imports_added_to_production": null,
+ "integration_bytes": 2128903,
+ "integration_dir": "/home/user/p5scratch/dcwork2/integration",
+ "integration_sha256": "39aedc34b231cc12c4a1a719553828d9f2a8851af5ce3d093c50f18951697bca",
+ "modified_adapters": 0,
+ "package_level_names": 117,
+ "prefix": "dc",
+ "unresolved_dependencies": 0,
+ "vector_lines": 61,
+ "vector_mismatches": 0
+}
+PORTABLE: extracted core compiles into the production source and matches the original byte-for-byte on 61 vectors
