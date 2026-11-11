@@ -3,9 +3,11 @@ package semcore
 import (
 	"bytes"
 	"fmt"
-	"hash/fnv"
+	"hash/maphash"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,10 +24,49 @@ type Options struct {
 	AcceptFrac float64
 	// MinBytes: tensors below this size are stored raw without search.
 	MinBytes int
+	// MaxTensor: tensors larger than this are stored as fixed-size Bytes blocks (0: default).
+	MaxTensor int
+	// CacheBytes bounds the decoded parent-payload cache (0: 256 MiB).
+	CacheBytes int64
+	// WorkBytes bounds transient candidate buffers (0: 512 MiB); Parallel caps concurrent
+	// candidate evaluations (0: NumCPU, 1: sequential).
+	WorkBytes int64
+	Parallel  int
 }
 
 func DefaultOptions() Options {
 	return Options{Semantic: true, Convert: true, MaxCandidates: 6, AcceptFrac: 0.5, MinBytes: 4096}
+}
+
+// ProbeStats are counters for the staged candidate probes.
+type ProbeStats struct {
+	GatherSkipped, GatherTried, DiffAborted int
+}
+
+type rtKey struct {
+	cid   ID
+	dtype int
+	rb    int
+	base  int
+}
+
+// rowTableFor returns the (cached, bounded) row hash table of a candidate layout.
+func (p *Planner) rowTableFor(cid ID, dtype, rb, base int, layout []byte) *rowTable {
+	k := rtKey{cid, dtype, rb, base}
+	p.mu.Lock()
+	if t, ok := p.rtabs[k]; ok {
+		p.mu.Unlock()
+		return t
+	}
+	p.mu.Unlock()
+	t := newRowTable(layout, rb)
+	p.mu.Lock()
+	if p.rtabs == nil || len(p.rtabs) >= 64 {
+		p.rtabs = map[rtKey]*rowTable{}
+	}
+	p.rtabs[k] = t
+	p.mu.Unlock()
+	return t
 }
 
 // Placement reports how one tensor was stored.
@@ -46,10 +87,17 @@ type Planner struct {
 	Hist   map[string]int
 	sigs   map[ID]Sig
 	pcache map[ID][]byte
+	porder []ID // insertion order of pcache (oldest first): bounded FIFO eviction
 	pbytes int64
+	// PeakCache is the largest decoded-payload cache residency observed (bytes).
+	PeakCache int64
 	// exclude, when set, hides components from parent search (used while rebasing).
 	exclude func(ID) bool
 	rebase  bool
+	mu      sync.Mutex // guards the caches below and Probe (candidate evaluation is concurrent)
+	// Probe counts the work the cheap probes avoided or spent (measurement only).
+	Probe ProbeStats
+	rtabs map[rtKey]*rowTable
 	// Chunk is the adapter's content-defined chunker for literal regions (nil: no chunking).
 	Chunk func([]byte) [][]byte
 }
@@ -153,31 +201,59 @@ func (p *Planner) Place(t *TInfo, payload []byte) (Placement, error) {
 
 // parentPayload returns a stored payload through a bounded cache.
 func (p *Planner) parentPayload(id ID) ([]byte, error) {
+	p.mu.Lock()
 	if b, ok := p.pcache[id]; ok {
+		p.mu.Unlock()
 		return b, nil
 	}
+	p.mu.Unlock()
 	b, err := p.S.Payload(id)
 	if err != nil {
 		return nil, err
 	}
-	if p.pbytes+int64(len(b)) > 768<<20 {
-		p.pcache, p.pbytes = map[ID][]byte{}, 0
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if ob, ok := p.pcache[id]; ok {
+		return ob, nil
 	}
-	p.pcache[id], p.pbytes = b, p.pbytes+int64(len(b))
+	lim := p.Opt.CacheBytes
+	if lim <= 0 {
+		lim = 256 << 20
+	}
+	for p.pbytes+int64(len(b)) > lim && len(p.porder) > 0 {
+		old := p.porder[0]
+		p.porder = p.porder[1:]
+		if ob, ok := p.pcache[old]; ok {
+			p.pbytes -= int64(len(ob))
+			delete(p.pcache, old)
+		}
+	}
+	if int64(len(b)) <= lim {
+		p.pcache[id], p.pbytes = b, p.pbytes+int64(len(b))
+		p.porder = append(p.porder, id)
+	}
+	if p.pbytes > p.PeakCache {
+		p.PeakCache = p.pbytes
+	}
 	return b, nil
 }
 
 func (p *Planner) sigOf(r *Record) (Sig, bool) {
-	if s, ok := p.sigs[r.CID]; ok {
+	p.mu.Lock()
+	s, ok := p.sigs[r.CID]
+	p.mu.Unlock()
+	if ok {
 		return s, true
 	}
 	b, err := p.parentPayload(r.CID)
 	if err != nil {
 		return Sig{}, false
 	}
-	s, ok := SigOf(int(r.Desc.DType), b)
+	s, ok = SigOf(int(r.Desc.DType), b)
 	if ok {
+		p.mu.Lock()
 		p.sigs[r.CID] = s
+		p.mu.Unlock()
 	}
 	return s, ok
 }
@@ -250,11 +326,10 @@ func (p *Planner) tryLayout(d *Desc, payload []byte) (*Record, string, bool) {
 	return nil, "", false
 }
 
-func rowHash(b []byte) uint64 {
-	h := fnv.New64a()
-	h.Write(b)
-	return h.Sum64()
-}
+var rowSeed = maphash.MakeSeed()
+
+// rowHash buckets rows for candidate matching only; equality is always checked bytewise.
+func rowHash(b []byte) uint64 { return maphash.Bytes(rowSeed, b) }
 
 // convOps builds the pipeline converting parent dtype `from` payload into dtype `to`.
 func convOps(from, to int) ([]Op, bool) {
@@ -345,93 +420,35 @@ func (p *Planner) tryRelation(d *Desc, t *TInfo, payload []byte) (*Record, strin
 	}
 	rawCost := float64(len(payload)) + 96
 	rb := rowBytes(d)
-	var best *Record
-	bestCost := rawCost * p.Opt.AcceptFrac
-	bestHow := ""
-	var trows map[uint64][]int
-	if rb > 0 && len(payload)%rb == 0 {
-		trows = make(map[uint64][]int, len(payload)/rb)
-		for i := 0; i+rb <= len(payload); i += rb {
-			h := rowHash(payload[i : i+rb])
-			trows[h] = append(trows[h], i/rb)
-		}
+	limit := rawCost * p.Opt.AcceptFrac
+	type result struct {
+		r    *Record
+		cost float64
+		how  string
 	}
-	for _, c := range cs {
-		pdt := int(c.r.Desc.DType)
-		pre, ok := convOps(pdt, int(d.DType))
-		if !ok {
-			continue
-		}
-		src, err := p.parentPayload(c.r.CID)
-		if err != nil {
-			continue
-		}
-		pc, err := applyOps(src, pre)
-		if err != nil || len(pc) != len(payload) {
-			continue
-		}
-		type attempt struct {
-			ops []Op
-			out []byte
-			how string
-		}
-		var attempts []attempt
-		attempts = append(attempts, attempt{pre, pc, "convert"})
-		if p.Opt.Semantic && rb > 0 && len(pc)%rb == 0 && len(d.Shape) >= 2 {
-			bases := []struct {
-				b   []byte
-				ops []Op
-				tag string
-			}{{pc, pre, ""}}
-			if len(d.Shape) == 2 {
-				if w := ElemBytes(int(d.DType)); w > 0 {
-					tr := Op{Kind: OpPerm, Elem: uint32(w), Dims: []uint64{d.Shape[1], d.Shape[0]}, Axes: []uint8{1, 0}}
-					if g, err := tr.Apply([][]byte{pc}); err == nil {
-						ops := append(append([]Op(nil), pre...), tr)
-						attempts = append(attempts, attempt{ops, g, "transpose"})
-						bases = append(bases, struct {
-							b   []byte
-							ops []Op
-							tag string
-						}{g, ops, "transpose+"})
-					}
-				}
-			}
-			for _, bs := range bases {
-				if idx := rowGatherIndex(bs.b, payload, rb); idx != nil {
-					gop := structuredRows(idx, rb)
-					if gop == nil {
-						gop = &Op{Kind: OpGather, Elem: uint32(rb), Idx: idx}
-					}
-					if g, err := gop.Apply([][]byte{bs.b}); err == nil {
-						attempts = append(attempts, attempt{append(append([]Op(nil), bs.ops...), *gop), g, bs.tag + "gather"})
-					}
-				}
-			}
-		}
-		for _, a := range attempts {
-			patches := DiffPatches(a.out, payload, 8)
-			var pb int
-			for _, pt := range patches {
-				pb += len(pt.Data) + 6
-			}
-			cost := float64(pb) + 64 + float64(len(a.ops))*16
-			for i := range a.ops {
-				cost += float64(len(a.ops[i].Idx)) * 2
-			}
-			if cost >= bestCost {
-				continue
-			}
-			r, err := p.S.PutDerivedProbe(*d, []ID{c.r.CID}, a.ops, patches, payload)
-			if err != nil {
-				continue
-			}
-			rc := float64(len(r.Marshal()))
-			if rc < bestCost {
-				bestCost = rc
-				best = r
-				bestHow = a.how
-			}
+	res := make([]result, len(cs))
+	workers := p.workers(len(payload))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, workers)
+	for i := range cs {
+		i := i
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			r, cost, how := p.evalCandidate(d, cs[i].r, payload, rb, limit)
+			res[i] = result{r, cost, how}
+		}()
+	}
+	wg.Wait()
+	// deterministic reduction: the sequential planner kept the first candidate that was
+	// strictly cheaper than everything before it, i.e. the first minimum in candidate order.
+	var best *Record
+	bestCost := limit
+	bestHow := ""
+	for _, x := range res {
+		if x.r != nil && x.cost < bestCost {
+			best, bestCost, bestHow = x.r, x.cost, x.how
 		}
 	}
 	if best == nil {
@@ -564,15 +581,51 @@ func (p *Planner) Optimize(rounds int) (RebaseStats, error) {
 	return st, nil
 }
 
+// rowTable indexes the rows of one parent layout by hash (candidate bucketing only).
+type rowTable struct {
+	rb   int
+	rows int
+	by   map[uint64][]int
+}
+
+func newRowTable(parent []byte, rb int) *rowTable {
+	rows := len(parent) / rb
+	t := &rowTable{rb: rb, rows: rows, by: make(map[uint64][]int, rows)}
+	for i := 0; i < rows; i++ {
+		h := rowHash(parent[i*rb : (i+1)*rb])
+		t.by[h] = append(t.by[h], i)
+	}
+	return t
+}
+
+// sampleHits counts how many of up to 64 evenly spaced target rows occur in the table.
+// It only gates an expensive exact search; a gather needs at least half the rows to match,
+// so a sample with fewer than 8 hits out of 64 rejects a true half-match with probability
+// below 1e-9 (and a table with fewer rows is searched exhaustively).
+func (t *rowTable) sampleHits(target []byte) (hits, n int) {
+	rows := len(target) / t.rb
+	step := rows / 64
+	if step < 1 {
+		step = 1
+	}
+	for i := 0; i < rows; i += step {
+		n++
+		if _, ok := t.by[rowHash(target[i*t.rb:(i+1)*t.rb])]; ok {
+			hits++
+		}
+	}
+	return
+}
+
 // rowGatherIndex finds, for every row of target, an unused identical row of parent; it
 // returns nil when the rows are already in order or fewer than half match.
 func rowGatherIndex(parent, target []byte, rb int) []uint32 {
+	return rowGatherIndexT(parent, target, rb, newRowTable(parent, rb))
+}
+
+func rowGatherIndexT(parent, target []byte, rb int, tab *rowTable) []uint32 {
 	rows := len(parent) / rb
-	prh := make(map[uint64][]int, rows)
-	for i := 0; i < rows; i++ {
-		h := rowHash(parent[i*rb : (i+1)*rb])
-		prh[h] = append(prh[h], i)
-	}
+	prh := tab.by
 	idx := make([]uint32, rows)
 	used := make([]bool, rows)
 	matched := make([]bool, rows)
@@ -612,3 +665,124 @@ func rowGatherIndex(parent, target []byte, rb int) []uint32 {
 	}
 	return idx
 }
+
+// workers bounds concurrent candidate evaluations: each one holds a few tensor-sized
+// buffers, so the count shrinks as the tensor grows (Options.WorkBytes budget).
+func (p *Planner) workers(tensorBytes int) int {
+	lim := p.Opt.WorkBytes
+	if lim <= 0 {
+		lim = 512 << 20
+	}
+	w := int(lim / (int64(tensorBytes)*5 + 1))
+	if w < 1 {
+		w = 1
+	}
+	if m := p.Opt.Parallel; m > 0 && w > m {
+		w = m
+	} else if m == 0 && w > runtime.NumCPU() {
+		w = runtime.NumCPU()
+	}
+	return w
+}
+
+// evalCandidate searches the layouts and conversions of one stored base for the cheapest
+// exact derivation of payload below limit (bytes). It returns (nil, 0, "") when none is.
+func (p *Planner) evalCandidate(d *Desc, cr *Record, payload []byte, rb int, limit float64) (*Record, float64, string) {
+	pdt := int(cr.Desc.DType)
+	pre, ok := convOps(pdt, int(d.DType))
+	if !ok {
+		return nil, 0, ""
+	}
+	src, err := p.parentPayload(cr.CID)
+	if err != nil {
+		return nil, 0, ""
+	}
+	pc, err := applyOps(src, pre)
+	if err != nil || len(pc) != len(payload) {
+		return nil, 0, ""
+	}
+	type attempt struct {
+		ops []Op
+		out []byte
+		how string
+	}
+	var best *Record
+	bestCost := limit
+	bestHow := ""
+	try := func(a attempt) {
+		fixed := 64 + float64(len(a.ops))*16
+		for i := range a.ops {
+			fixed += float64(len(a.ops[i].Idx)) * 2
+		}
+		if fixed >= bestCost {
+			return
+		}
+		// exact early exit: a patch list this large would be rejected below anyway
+		patches, ok := DiffPatchesMax(a.out, payload, 8, int(bestCost-fixed)+1)
+		if !ok {
+			p.count(&p.Probe.DiffAborted)
+			return
+		}
+		var pb int
+		for _, pt := range patches {
+			pb += len(pt.Data) + 6
+		}
+		cost := float64(pb) + fixed
+		if cost >= bestCost {
+			return
+		}
+		r, err := p.S.PutDerivedProbe(*d, []ID{cr.CID}, a.ops, patches, payload)
+		if err != nil {
+			return
+		}
+		if rc := float64(len(r.Marshal())); rc < bestCost {
+			bestCost, best, bestHow = rc, r, a.how
+		}
+	}
+	try(attempt{pre, pc, "convert"})
+	// An exact conversion (no residual) costs less than any attempt that adds an operation.
+	if best != nil && len(best.Patches) == 0 {
+		return best, bestCost, bestHow
+	}
+	if p.Opt.Semantic && rb > 0 && len(pc)%rb == 0 && len(d.Shape) >= 2 {
+		type layout struct {
+			b   []byte
+			ops []Op
+			tag string
+		}
+		bases := []layout{{pc, pre, ""}}
+		if len(d.Shape) == 2 {
+			if w := ElemBytes(int(d.DType)); w > 0 {
+				tr := Op{Kind: OpPerm, Elem: uint32(w), Dims: []uint64{d.Shape[1], d.Shape[0]}, Axes: []uint8{1, 0}}
+				if g, err := tr.Apply([][]byte{pc}); err == nil {
+					ops := append(append([]Op(nil), pre...), tr)
+					try(attempt{ops, g, "transpose"})
+					bases = append(bases, layout{g, ops, "transpose+"})
+				}
+			}
+		}
+		for bi, bs := range bases {
+			tab := p.rowTableFor(cr.CID, int(d.DType), rb, bi, bs.b)
+			if h, n := tab.sampleHits(payload); n >= 16 && h*8 < n { // <12.5% sampled rows present
+				p.count(&p.Probe.GatherSkipped)
+				continue
+			}
+			p.count(&p.Probe.GatherTried)
+			if idx := rowGatherIndexT(bs.b, payload, rb, tab); idx != nil {
+				gop := structuredRows(idx, rb)
+				if gop == nil {
+					gop = &Op{Kind: OpGather, Elem: uint32(rb), Idx: idx}
+				}
+				if g, err := gop.Apply([][]byte{bs.b}); err == nil {
+					try(attempt{append(append([]Op(nil), bs.ops...), *gop), g, bs.tag + "gather"})
+				}
+			}
+		}
+	}
+	if best == nil {
+		return nil, 0, ""
+	}
+	return best, bestCost, bestHow
+}
+
+func (p *Planner) count(c *int) { p.mu.Lock(); *c++; p.mu.Unlock() }

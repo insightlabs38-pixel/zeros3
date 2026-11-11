@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"sort"
 	"sync"
 )
 
@@ -121,3 +122,15 @@ func (m *MemBackend) Corrupt(id ID, at int) bool {
 }
 
 var _ = io.EOF
+
+// BlobIDs lists stored blob ids in byte order (deterministic test hook).
+func (m *MemBackend) BlobIDs() []ID {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]ID, 0, len(m.blobs))
+	for k := range m.blobs {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i][:], out[j][:]) < 0 })
+	return out
+}

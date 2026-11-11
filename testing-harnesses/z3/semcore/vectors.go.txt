@@ -1,0 +1,295 @@
+package main
+
+//IMPORT
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"math"
+	"math/rand/v2"
+	"testing"
+)
+
+var _ testing.TB
+
+func vrand(seed uint64, n int) []byte {
+	r := rand.New(rand.NewPCG(seed, seed^0x77))
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = byte(r.Uint64())
+	}
+	return b
+}
+
+func vh(b []byte) string { s := sha256.Sum256(b); return fmt.Sprintf("%x", s[:8]) }
+
+func vec(name string, v string) { fmt.Printf("VEC %s %s\n", name, v) }
+
+// f32 weights in [-1,1) as raw little-endian bytes (deterministic).
+func f32w(seed uint64, n int) []byte {
+	r := rand.New(rand.NewPCG(seed, 3))
+	b := make([]byte, 4*n)
+	for i := 0; i < n; i++ {
+		f := float32(r.Float64()*2 - 1)
+		binary.LittleEndian.PutUint32(b[4*i:], math.Float32bits(f))
+	}
+	return b
+}
+
+
+type vsrc struct {
+	b       []byte
+	maxRead int
+	reads   int
+}
+
+func (s *vsrc) ReadAt(p []byte, off int64) (int, error) {
+	if off >= int64(len(s.b)) {
+		return 0, io.EOF
+	}
+	n := copy(p, s.b[off:])
+	s.reads++
+	if len(p) > s.maxRead {
+		s.maxRead = len(p)
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func pbv(b []byte, v uint64) []byte {
+	for v >= 128 {
+		b = append(b, byte(v)|128)
+		v >>= 7
+	}
+	return append(b, byte(v))
+}
+
+func pbld(b []byte, num uint64, p []byte) []byte {
+	b = pbv(b, num<<3|2)
+	b = pbv(b, uint64(len(p)))
+	return append(b, p...)
+}
+
+// minimal ONNX: ModelProto{ ir_version=8, graph{ initializer* } }
+func vonnx(ts []vtensor) []byte {
+	var g []byte
+	for _, t := range ts {
+		var it []byte
+		for _, d := range t.dims {
+			it = pbv(it, 1<<3)
+			it = pbv(it, d)
+		}
+		it = pbv(it, 2<<3)
+		it = pbv(it, t.dtype)
+		it = pbld(it, 8, []byte(t.name))
+		it = pbld(it, 9, t.raw)
+		g = pbld(g, 5, it)
+	}
+	m := pbv(nil, 1<<3)
+	m = pbv(m, 8)
+	return pbld(m, 7, g)
+}
+
+type vtensor struct {
+	name  string
+	dtype uint64
+	dims  []uint64
+	raw   []byte
+}
+
+func vecRunFamily() {
+	be := @semcore.NewMemBackend@()
+	s, err := @semcore.NewStore@(be)
+	if err != nil {
+		panic(err)
+	}
+	opt := @semcore.DefaultOptions@()
+	p := @semcore.NewPlanner@(s, opt)
+	p.Chunk = func(b []byte) [][]byte {
+		var out [][]byte
+		for len(b) > 0 {
+			n := min(len(b), 7000)
+			out = append(out, b[:n])
+			b = b[n:]
+		}
+		return out
+	}
+	// a small model: three tensors in BF16, the same values as F32 in another layout (ONNX)
+	base := vrand(11, 2*64*48)
+	base2 := vrand(12, 2*32*64)
+	st1 := @st.Build@([]@st.KV@{{K: "format", V: "pt"}}, []@st.BuildTensor@{
+		{Name: "a.weight", DType: "BF16", Shape: []int64{64, 48}, Data: base},
+		{Name: "b.weight", DType: "BF16", Shape: []int64{32, 64}, Data: base2},
+		{Name: "tiny", DType: "F32", Shape: []int64{4}, Data: f32w(1, 4)},
+	})
+	// reordered shard of the same tensors: identity reuse across file layout
+	st2 := @st.Build@(nil, []@st.BuildTensor@{
+		{Name: "b.weight", DType: "BF16", Shape: []int64{32, 64}, Data: base2},
+		{Name: "a.weight", DType: "BF16", Shape: []int64{64, 48}, Data: base},
+	})
+	// widened F32 copy inside an ONNX file (exactly derivable: BF16 -> F32 is a shift)
+	wide := make([]byte, 4*(64*48))
+	for i := 0; i < 64*48; i++ {
+		binary.LittleEndian.PutUint32(wide[4*i:], uint32(binary.LittleEndian.Uint16(base[2*i:]))<<16)
+	}
+	on := vonnx([]vtensor{{"a.weight", 1, []uint64{64, 48}, wide}, {"c.rand", 1, []uint64{16, 16}, vrand(13, 1024)}})
+	files := []struct {
+		name string
+		data []byte
+	}{{"m.safetensors", st1}, {"m2.safetensors", st2}, {"m.onnx", on}}
+	var recs []*@semcore.Recipe@
+	for _, f := range files {
+		src := &vsrc{b: f.data}
+		doc, err := @semcore.DetectAt@(f.name, src, int64(len(f.data)))
+		if err != nil {
+			panic(err)
+		}
+		rec, fs, err := p.Ingest(doc)
+		if err != nil {
+			panic(err)
+		}
+		if err := s.PutRecipe(rec); err != nil {
+			panic(err)
+		}
+		recs = append(recs, rec)
+		vec("recipe:"+f.name, vh(rec.Marshal()))
+		keys := []string{}
+		for k := range fs.How {
+			keys = append(keys, k)
+		}
+		hs := ""
+		for _, k := range sortedStr(keys) {
+			hs += fmt.Sprintf("%s=%d,", k, fs.How[k])
+		}
+		vec("how:"+f.name, hs)
+		vec("readmax:"+f.name, fmt.Sprint(src.maxRead <= int(fs.PeakBuf)+(1<<17)))
+	}
+	// fresh store over the same backend: only serialized records and recipes
+	s2, err := @semcore.NewStore@(be)
+	if err != nil {
+		panic(err)
+	}
+	for i, f := range files {
+		var out bytes.Buffer
+		if err := s2.Replay(recs[i], &out, 1<<20); err != nil {
+			panic(err)
+		}
+		vec("replay:"+f.name, vh(out.Bytes())+fmt.Sprint(bytes.Equal(out.Bytes(), f.data)))
+	}
+	vec("count", fmt.Sprint(s2.Count()))
+	// ranges across every recipe
+	for i, f := range files {
+		var all []byte
+		for off := int64(0); off < int64(len(f.data)); off += 4001 {
+			n := int64(min(4001, len(f.data)-int(off)))
+			var io2 @semcore.IO@
+			got, err := s2.ReadRange(recs[i], off, n, &io2)
+			if err != nil {
+				panic(err)
+			}
+			all = append(all, got...)
+		}
+		vec("ranges:"+f.name, fmt.Sprint(bytes.Equal(all, f.data)))
+	}
+	// fail-closed: corrupt a blob, truncated and bit-flipped recipes
+	ids := be.BlobIDs()
+	be.Corrupt(ids[0], 0)
+	failed := 0
+	s3, _ := @semcore.NewStore@(be)
+	for i := range files {
+		var out bytes.Buffer
+		if err := s3.Replay(recs[i], &out, 1<<20); err != nil {
+			failed++
+		} else if !bytes.Equal(out.Bytes(), files[i].data) {
+			panic("WRONG BYTES")
+		}
+	}
+	vec("corrupt-blob-failed-or-exact", fmt.Sprint(failed >= 1))
+	rb := recs[0].Marshal()
+	bad := 0
+	for i := 0; i < len(rb); i += 7 {
+		m := append([]byte(nil), rb[:i]...)
+		if _, err := @semcore.ParseRecipe@(m); err != nil {
+			bad++
+		}
+	}
+	vec("truncated-recipes-rejected", fmt.Sprint(bad))
+}
+
+func sortedStr(a []string) []string {
+	for i := range a {
+		for j := i + 1; j < len(a); j++ {
+			if a[j] < a[i] {
+				a[i], a[j] = a[j], a[i]
+			}
+		}
+	}
+	return a
+}
+
+func vecOps() {
+	// permute / gather / convert / quantize on deterministic data
+	d := vrand(5, 4*6*8*2)
+	op := @semcore.Op@{Kind: @semcore.OpPerm@, Elem: 2, Dims: []uint64{4, 6, 8}, Axes: []uint8{2, 0, 1}}
+	o, err := op.Apply([][]byte{d})
+	if err != nil {
+		panic(err)
+	}
+	vec("perm", vh(o))
+	inv := @semcore.InvertPerm@(op)
+	b, err := inv.Apply([][]byte{o})
+	vec("perm-inverse", fmt.Sprint(err == nil && bytes.Equal(b, d)))
+	for _, c := range [][2]int{{@semcore.DBF16@, @semcore.DF32@}, {@semcore.DF16@, @semcore.DF32@}, {@semcore.DF32@, @semcore.DBF16@}, {@semcore.DF32@, @semcore.DF16@}} {
+		cop := @semcore.Op@{Kind: @semcore.OpConvert@, From: uint16(c[0]), To: uint16(c[1])}
+		in := vrand(uint64(c[0]*100+c[1]), 4096)
+		out, err := cop.Apply([][]byte{in})
+		if err != nil {
+			panic(err)
+		}
+		vec(fmt.Sprintf("convert-%d-%d", c[0], c[1]), vh(out))
+	}
+	q := @semcore.Op@{Kind: @semcore.OpQ8_0@}
+	out, err := q.Apply([][]byte{f32w(9, 256)})
+	vec("q8_0", fmt.Sprint(err == nil)+vh(out))
+	q4 := @semcore.Op@{Kind: @semcore.OpQ4_0@}
+	out, err = q4.Apply([][]byte{f32w(9, 256)})
+	vec("q4_0", fmt.Sprint(err == nil)+vh(out))
+	ps := @semcore.DiffPatches@(vrand(1, 5000), vrand(2, 5000), 8)
+	vec("diffpatches", fmt.Sprint(len(ps)))
+	pm, ok := @semcore.DiffPatchesMax@(vrand(1, 5000), vrand(1, 5000), 8, 100)
+	vec("diffpatchesmax-equal", fmt.Sprint(len(pm), ok))
+	d1 := vrand(3, 9000)
+	d2 := append([]byte(nil), d1...)
+	d2[100] ^= 1
+	d2[7000] ^= 7
+	pm, ok = @semcore.DiffPatchesMax@(d1, d2, 8, 100)
+	vec("diffpatchesmax-sparse", fmt.Sprint(len(pm), ok))
+	// descriptor identity
+	dd := @semcore.Desc@{Kind: @semcore.KindTensor@, Version: 1, DType: @semcore.DF16@, Shape: []uint64{3, 5}, Ordered: true}
+	vec("cid", fmt.Sprintf("%x", @semcore.CID@(&dd, 30, @semcore.PayloadSHA@([]byte("x")))))
+}
+
+func vecParsers() {
+	// hostile inputs must fail closed, never panic
+	bad := 0
+	for _, seed := range []uint64{1, 2, 3, 4, 5, 6, 7, 8} {
+		b := vrand(seed, 200+int(seed)*13)
+		if _, err := @semcore.DetectAt@("x.onnx", bytes.NewReader(b), int64(len(b))); err != nil {
+			bad++
+		}
+		if _, err := @semcore.DetectAt@("x", bytes.NewReader(b), int64(len(b))); err != nil {
+			bad++
+		}
+	}
+	vec("hostile-detect-rejected", fmt.Sprint(bad))
+}
+
+func main() {
+	vecOps()
+	vecParsers()
+	vecRunFamily()
+}

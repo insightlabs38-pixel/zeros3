@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/bits"
 	"sort"
+	"sync"
 )
 
 // Derivation operation kinds.
@@ -470,6 +471,21 @@ func toF32bits(b []byte, dt int, i int) (uint32, bool) {
 	return 0, false
 }
 
+var (
+	f16Once sync.Once
+	f16Tab  [65536]uint32
+)
+
+// f16Table is the binary16 -> binary32 map (exact; built from f16to32 once).
+func f16Table() *[65536]uint32 {
+	f16Once.Do(func() {
+		for i := range f16Tab {
+			f16Tab[i] = f16to32(uint16(i))
+		}
+	})
+	return &f16Tab
+}
+
 func convert(b []byte, from, to int) ([]byte, error) {
 	fw, tw := ElemBytes(from), ElemBytes(to)
 	if fw == 0 || tw == 0 || len(b)%fw != 0 {
@@ -483,6 +499,23 @@ func convert(b []byte, from, to int) ([]byte, error) {
 	switch {
 	case from == to:
 		copy(out, b)
+	case from == DBF16 && to == DF32:
+		for i := 0; i < n; i++ {
+			binary.LittleEndian.PutUint32(out[4*i:], uint32(binary.LittleEndian.Uint16(b[2*i:]))<<16)
+		}
+	case from == DF16 && to == DF32:
+		tab := f16Table()
+		for i := 0; i < n; i++ {
+			binary.LittleEndian.PutUint32(out[4*i:], tab[binary.LittleEndian.Uint16(b[2*i:])])
+		}
+	case from == DF32 && to == DBF16:
+		for i := 0; i < n; i++ {
+			binary.LittleEndian.PutUint16(out[2*i:], f32toBF16(binary.LittleEndian.Uint32(b[4*i:])))
+		}
+	case from == DF32 && to == DF16:
+		for i := 0; i < n; i++ {
+			binary.LittleEndian.PutUint16(out[2*i:], f32to16(binary.LittleEndian.Uint32(b[4*i:])))
+		}
 	case IsFloat(from) && IsFloat(to) && from != DF64 && to != DF64:
 		for i := 0; i < n; i++ {
 			f, _ := toF32bits(b, from, i)
@@ -654,6 +687,73 @@ func DiffPatches(pred, want []byte, mergeGap int) []Patch {
 		ps = append(ps, Patch{uint64(start), append([]byte(nil), want[start:end]...)})
 	}
 	return ps
+}
+
+// DiffPatchesMax is DiffPatches with an exact early exit: it reports ok=false as soon as the
+// serialized patch size (bytes + 6 per patch, the planner's model) reaches limit, which is
+// the point where the planner would reject the derivation anyway. Equal inputs and limits
+// give the same patches as DiffPatches whenever ok is true.
+func DiffPatchesMax(pred, want []byte, mergeGap int, limit int) ([]Patch, bool) {
+	var ps []Patch
+	n := len(want)
+	// Exact quick reject: every differing byte lies in some patch, so the patch bytes alone
+	// are at least the number of differing bytes (plus 6 for the first patch).
+	if d := diffCount(pred, want, limit); d > 0 && d >= limit-6 {
+		return nil, false
+	}
+	pb := 0
+	i := 0
+	for i < n {
+		if pred[i] == want[i] {
+			for i+8 <= n && binary.LittleEndian.Uint64(pred[i:]) == binary.LittleEndian.Uint64(want[i:]) {
+				i += 8
+			}
+			for i < n && pred[i] == want[i] {
+				i++
+			}
+			continue
+		}
+		start := i
+		end := i + 1
+		for j := end; j < n && j-end <= mergeGap; j++ {
+			if pred[j] != want[j] {
+				end = j + 1
+			}
+		}
+		i = end
+		pb += end - start + 6
+		if pb >= limit {
+			return nil, false
+		}
+		ps = append(ps, Patch{uint64(start), append([]byte(nil), want[start:end]...)})
+	}
+	return ps, true
+}
+
+// diffCount counts differing bytes of equal-length slices, stopping once it exceeds stop.
+func diffCount(a, b []byte, stop int) int {
+	n, c := len(a), 0
+	i := 0
+	for ; i+8 <= n; i += 8 {
+		x := binary.LittleEndian.Uint64(a[i:]) ^ binary.LittleEndian.Uint64(b[i:])
+		if x == 0 {
+			continue
+		}
+		// bytes that are non-zero: fold each byte's bits into its low bit
+		x |= x >> 4
+		x |= x >> 2
+		x |= x >> 1
+		c += bits.OnesCount64(x & 0x0101010101010101)
+		if c > stop {
+			return c
+		}
+	}
+	for ; i < n; i++ {
+		if a[i] != b[i] {
+			c++
+		}
+	}
+	return c
 }
 
 // ApplyPatches mutates out in place; patches must be sorted and in range.

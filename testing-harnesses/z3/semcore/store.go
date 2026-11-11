@@ -206,7 +206,6 @@ func (s *Store) index(r *Record) {
 	}
 }
 
-
 // Has reports whether a record exists.
 func (s *Store) Has(c ID) bool { s.mu.Lock(); defer s.mu.Unlock(); return s.rec[c] != nil }
 
