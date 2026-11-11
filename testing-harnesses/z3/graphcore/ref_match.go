@@ -280,3 +280,8 @@ func refAssignTies(a, b *Graph, ia, ib *Idents, res *MatchResult, back []int32, 
 	}
 	return progress
 }
+
+// ReferenceMatch runs the pre-P6 matcher (maps keyed by 32-byte identities, per-pass rebuilds).
+func ReferenceMatch(a, b *Graph, ia, ib *Idents, opt MatchOptions) *MatchResult {
+	return refMatch(a, b, ia, ib, opt)
+}

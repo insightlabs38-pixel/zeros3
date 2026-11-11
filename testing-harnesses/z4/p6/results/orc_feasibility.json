@@ -1,0 +1,97 @@
+{
+ "req": {
+  "orc_bytes": 7029994,
+  "columns": {
+   "id": {
+    "type": "int64",
+    "dense_bytes": 1600000,
+    "verbatim": false
+   },
+   "k32": {
+    "type": "int32",
+    "dense_bytes": 800000,
+    "verbatim": false
+   },
+   "x": {
+    "type": "double",
+    "dense_bytes": 1600000,
+    "verbatim": true
+   },
+   "f": {
+    "type": "float",
+    "dense_bytes": 800000,
+    "verbatim": true
+   },
+   "name": {
+    "type": "string",
+    "dense_bytes": null,
+    "verbatim": null
+   },
+   "blob": {
+    "type": "binary",
+    "dense_bytes": null,
+    "verbatim": null
+   }
+  }
+ },
+ "opt": {
+  "orc_bytes": 7029994,
+  "columns": {
+   "id": {
+    "type": "int64",
+    "dense_bytes": 1600000,
+    "verbatim": false
+   },
+   "k32": {
+    "type": "int32",
+    "dense_bytes": 800000,
+    "verbatim": false
+   },
+   "x": {
+    "type": "double",
+    "dense_bytes": 1600000,
+    "verbatim": true
+   },
+   "f": {
+    "type": "float",
+    "dense_bytes": 800000,
+    "verbatim": true
+   },
+   "name": {
+    "type": "string",
+    "dense_bytes": null,
+    "verbatim": null
+   },
+   "blob": {
+    "type": "binary",
+    "dense_bytes": null,
+    "verbatim": null
+   }
+  }
+ },
+ "hard": {
+  "orc_bytes": 3593572,
+  "columns": {
+   "id": {
+    "type": "int64",
+    "dense_bytes": 1600000,
+    "verbatim": false
+   },
+   "x": {
+    "type": "double",
+    "dense_bytes": 1439408,
+    "verbatim": true
+   },
+   "name": {
+    "type": "string",
+    "dense_bytes": null,
+    "verbatim": null
+   },
+   "i16": {
+    "type": "int16",
+    "dense_bytes": 400000,
+    "verbatim": false
+   }
+  }
+ }
+}

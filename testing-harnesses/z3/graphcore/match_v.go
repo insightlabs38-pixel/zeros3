@@ -70,37 +70,71 @@ func MatchCompact(a, b *CGraph, ia, ib *Idents, opt MatchOptions) *MatchResult {
 	return matchView(a, b, ia, ib, opt)
 }
 
+// bucketIndex groups the usable b-nodes by local content (class, flags, literal). The 64-bit
+// hash only addresses a chain of buckets; membership is decided by exact comparison against
+// each bucket's representative once, at build time, so a hash collision can never put
+// differing nodes in one bucket and no pass has to re-compare.
 type bucketIndex struct {
-	key []uint64
-	ord []int32 // node indexes sorted by (key, index)
+	id    map[uint64]int32 // first bucket of the chain for a hash
+	rep   []int32          // representative b-node of each bucket
+	next  []int32          // chain link (-1 end)
+	lists [][]int32
+	g     view
 }
 
 func buildBuckets(g view, include func(i int) bool) *bucketIndex {
 	n := g.size()
-	var tmp Node
-	key := make([]uint64, n)
-	ord := make([]int32, 0, n)
+	var tmp, t2 Node
+	bi := &bucketIndex{id: map[uint64]int32{}, g: g}
 	for i := 0; i < n; i++ {
-		if include(i) {
-			key[i] = localKey(g.node(i, &tmp))
-			ord = append(ord, int32(i))
+		if !include(i) {
+			continue
 		}
+		nd := g.node(i, &tmp)
+		k := localKey(nd)
+		id := bi.find(k, nd, &t2)
+		if id < 0 {
+			id = int32(len(bi.lists))
+			head, ok := bi.id[k]
+			if !ok {
+				head = -1
+			}
+			bi.id[k] = id
+			bi.rep = append(bi.rep, int32(i))
+			bi.next = append(bi.next, head)
+			bi.lists = append(bi.lists, nil)
+		}
+		bi.lists[id] = append(bi.lists[id], int32(i))
 	}
-	sort.Slice(ord, func(x, y int) bool {
-		if key[ord[x]] != key[ord[y]] {
-			return key[ord[x]] < key[ord[y]]
-		}
-		return ord[x] < ord[y]
-	})
-	return &bucketIndex{key, ord}
+	return bi
 }
 
-// each calls f for every indexed node with the given key (ascending index).
-func (bi *bucketIndex) each(k uint64, f func(j int32)) {
-	lo := sort.Search(len(bi.ord), func(i int) bool { return bi.key[bi.ord[i]] >= k })
-	for i := lo; i < len(bi.ord) && bi.key[bi.ord[i]] == k; i++ {
-		f(bi.ord[i])
+// find returns the bucket whose representative has exactly the content of nd, or -1.
+func (bi *bucketIndex) find(k uint64, nd *Node, tmp *Node) int32 {
+	id, ok := bi.id[k]
+	if !ok {
+		return -1
 	}
+	for ; id >= 0; id = bi.next[id] {
+		if localEq(bi.g.node(int(bi.rep[id]), tmp), nd) {
+			return id
+		}
+	}
+	return -1
+}
+
+// live returns the still-unmatched members of bucket id, compacting the list.
+func (bi *bucketIndex) live(id int32, back []int32) []int32 {
+	l := bi.lists[id]
+	w := 0
+	for _, u := range l {
+		if back[u] < 0 {
+			l[w] = u
+			w++
+		}
+	}
+	bi.lists[id] = l[:w]
+	return l[:w]
 }
 
 func matchView(a, b view, ia, ib *Idents, opt MatchOptions) *MatchResult {
@@ -151,11 +185,15 @@ func matchView(a, b view, ia, ib *Idents, opt MatchOptions) *MatchResult {
 	revA, revB := buildRev(a), buildRev(b)
 	bi := buildBuckets(b, func(j int) bool { return usable(ib.Ambig[j]) })
 	var tmpA, tmpB Node
-	// unmatched usable a-nodes, shrinking as matches are made
+	// unmatched usable a-nodes, shrinking as matches are made; each carries its bucket once
 	pending := make([]int32, 0, na)
+	abucket := make([]int32, na)
 	for i := 0; i < na; i++ {
+		abucket[i] = -1
 		if res.Map[i] < 0 && usable(ia.Ambig[i]) {
 			pending = append(pending, int32(i))
+			an := a.node(i, &tmpA)
+			abucket[i] = bi.find(localKey(an), an, &tmpB)
 		}
 	}
 	for pass := 0; pass < opt.MaxPasses; pass++ {
@@ -172,20 +210,20 @@ func matchView(a, b view, ia, ib *Idents, opt MatchOptions) *MatchResult {
 				continue
 			}
 			keep = append(keep, i)
-			an := a.node(int(i), &tmpA)
+			if abucket[i] < 0 {
+				continue
+			}
 			var cs []cand
-			bi.each(localKey(an), func(u int32) {
-				if back[u] >= 0 || !localEq(an, b.node(int(u), &tmpB)) {
-					return
-				}
-				sc, bad := contextScoreV(a, b, i, u, res.Map, back, revA, revB)
+			an := a.node(int(i), &tmpA)
+			for _, u := range bi.live(abucket[i], back) {
+				sc, bad := contextScoreN(a, b, an, b.node(int(u), &tmpB), i, u, res.Map, back, revA, revB)
 				if bad > 0 {
-					return
+					continue
 				}
 				if sc > 0 {
 					cs = append(cs, cand{i, u, sc})
 				}
-			})
+			}
 			if len(cs) == 0 {
 				continue
 			}
@@ -264,14 +302,20 @@ func sortedByID(id *Idents, n int, usable func(uint8) bool) []int32 {
 // b-node u; identical to the reference except for the set-membership structure (a small
 // slice scan instead of a map for short sets).
 func contextScoreV(a, b view, i, u int32, m, back []int32, ra, rb *revCSR) (score, bad int) {
-	var ta, tb, tw Node
-	na, nb := a.node(int(i), &ta), b.node(int(u), &tb)
-	nna, nnb := a.size(), b.size()
+	var ta, tb Node
+	return contextScoreN(a, b, a.node(int(i), &ta), b.node(int(u), &tb), i, u, m, back, ra, rb)
+}
+
+// contextScoreN is contextScoreV with both nodes already loaded (the pass loop loads the
+// a-side node once per a-node, not once per candidate pair).
+func contextScoreN(a, b view, na, nb *Node, i, u int32, m, back []int32, ra, rb *revCSR) (score, bad int) {
+	var tw Node
+	nna, nnb := int32(a.size()), int32(b.size())
 	if len(na.Out) != len(nb.Out) {
 		return 0, 1
 	}
 	for p, e := range na.Out {
-		if vdangling(nna, e) || vdangling(nnb, nb.Out[p]) {
+		if e.To < 0 || e.To >= nna || nb.Out[p].To < 0 || nb.Out[p].To >= nnb {
 			return 0, 1
 		}
 		if e.Kind != nb.Out[p].Kind {
@@ -297,7 +341,7 @@ func contextScoreV(a, b view, i, u int32, m, back []int32, ra, rb *revCSR) (scor
 			}
 		}
 		for _, e := range na.Set {
-			if vdangling(nna, e) {
+			if e.To < 0 || e.To >= nna {
 				return 0, 1
 			}
 			if t := m[e.To]; t >= 0 {

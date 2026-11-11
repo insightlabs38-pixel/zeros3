@@ -120,6 +120,7 @@ var ParseLLVMRecipe = graphcore.ParseLLVMRecipe
 var ParseProgRecipe = graphcore.ParseProgRecipe
 var ParseWasm = graphcore.ParseWasm
 var PolicyFromBits = graphcore.PolicyFromBits
+var ReferenceMatch = graphcore.ReferenceMatch
 var WriteDefinition = graphcore.WriteDefinition
 var WriteRecord = graphcore.WriteRecord
 var Zig = graphcore.Zig

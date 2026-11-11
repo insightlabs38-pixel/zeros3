@@ -47,6 +47,8 @@ func main() {
 		cmdGraphBench(os.Args[2:])
 	case "ranges":
 		cmdRanges(os.Args[2:])
+	case "matchbench":
+		cmdMatchBench(os.Args[2:])
 	case "tiles":
 		cmdTiles(os.Args[2:])
 	default:
