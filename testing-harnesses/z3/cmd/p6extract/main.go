@@ -176,6 +176,7 @@ func main() {
 	prefix := flag.String("prefix", "sc", "identifier prefix")
 	vectors := flag.String("vectors", "", "differential vector template (@pkg.Name@ placeholders)")
 	vecTest := flag.String("vecname", "TestP6Vectors", "name of the extracted vector test")
+	rehearsal := flag.String("rehearsal", "", "end-to-end rehearsal template run only against the extracted code inside the integration (needs production Store access)")
 	auditOnly := flag.Bool("audit-only", false, "report dependencies and portability class without compiling")
 	flag.Parse()
 	if *work == "" {
@@ -626,6 +627,29 @@ func main() {
 		}
 		_ = os.WriteFile(filepath.Join(*work, "vectors_original.txt"), origOut, 0o644)
 		_ = os.WriteFile(filepath.Join(*work, "vectors_extracted.txt"), ex, 0o644)
+	}
+	if *rehearsal != "" {
+		tmpl, err := os.ReadFile(*rehearsal)
+		must(err)
+		extSrc, _, err := vectorSource(string(tmpl), *modpath, func(pkg, n string) (string, error) {
+			for o, nn := range rename {
+				if o.Name() == n && o.Pkg().Name() == pkg {
+					return nn, nil
+				}
+			}
+			return "", fmt.Errorf("rehearsal uses %s.%s which is not among the extracted declarations", pkg, n)
+		})
+		must(err)
+		must(os.WriteFile(filepath.Join(integ, "p6rehearsal_test.go"), []byte(strings.Replace(extSrc, "func main()", "func TestP6Rehearsal(t *testing.T)", 1)), 0o644))
+		rt := exec.Command("go", "test", "-count=1", "-run", "TestP6Rehearsal", "-v", ".")
+		rt.Dir = integ
+		ro, err := rt.CombinedOutput()
+		_ = os.WriteFile(filepath.Join(*work, "rehearsal.txt"), ro, 0o644)
+		rep["rehearsal_ok"] = err == nil && strings.Contains(string(ro), "REHEARSAL OK")
+		if err != nil {
+			fmt.Println(tail(ro))
+			die("REHEARSAL_FAILED", "%v", err)
+		}
 	}
 	rep["vector_lines"], rep["vector_mismatches"], rep["class"] = nvec, mism, class
 	bj, _ := json.MarshalIndent(rep, "", " ")

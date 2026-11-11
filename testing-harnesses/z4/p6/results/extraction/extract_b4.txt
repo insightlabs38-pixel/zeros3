@@ -49,6 +49,7 @@
  "modified_adapters": 0,
  "package_level_names": 193,
  "prefix": "gc",
+ "rehearsal_ok": true,
  "unresolved_dependencies": 0,
  "vector_lines": 90,
  "vector_mismatches": 0

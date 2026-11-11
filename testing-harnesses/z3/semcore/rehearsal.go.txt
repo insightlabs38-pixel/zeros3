@@ -1,0 +1,319 @@
+package main
+
+//IMPORT
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"math/rand/v2"
+	"runtime"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// ---- thin adapter: semcore.Backend over real ZeroS3 objects (nothing authoritative is published:
+// ---- a scratch store in a temp dir, ordinary S3-layer objects, the engine's own CDC/CAS path) ----
+
+type p6Obj struct {
+	ra *manifestReaderAt
+	n  int64
+}
+
+func (o p6Obj) ReadAt(p []byte, off int64) (int, error) { return o.ra.ReadAt(p, off) }
+func (o p6Obj) Size() int64                             { return o.n }
+func (o p6Obj) Close() error                            { o.ra.close(); return nil }
+
+type p6Backend struct {
+	s      *Store
+	bucket string
+	idx    map[string][]string // "c" records, "r" recipes -> hex names (persisted as an ordinary object)
+}
+
+func (b *p6Backend) put(key string, data []byte) error {
+	ing, err := b.s.ingestStream(bytes.NewReader(data), true, ingestOptions{size: int64(len(data))})
+	if err != nil {
+		return err
+	}
+	_, err = b.s.commitIngested(b.bucket, key, ing, "application/octet-stream", nil, putCondition{})
+	return err
+}
+
+func (b *p6Backend) get(key string) ([]byte, error) {
+	_, man, err := b.s.HeadObject(b.bucket, key)
+	if err != nil {
+		return nil, err
+	}
+	ra := b.s.newManifestReaderAt(man)
+	defer ra.close()
+	out := make([]byte, man.TotalLength)
+	if _, err := ra.ReadAt(out, 0); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return out, nil
+}
+
+func hexID(id @semcore.ID@) string { return fmt.Sprintf("%x", id[:]) }
+
+func (b *p6Backend) HasBlob(id @semcore.ID@) bool {
+	_, _, err := b.s.HeadObject(b.bucket, "b/"+hexID(id))
+	return err == nil
+}
+func (b *p6Backend) PutBlob(id @semcore.ID@, data []byte) error { return b.put("b/"+hexID(id), data) }
+func (b *p6Backend) OpenBlob(id @semcore.ID@) (@semcore.BlobReader@, error) {
+	_, man, err := b.s.HeadObject(b.bucket, "b/"+hexID(id))
+	if err != nil {
+		return nil, @semcore.ErrMissing@
+	}
+	return p6Obj{b.s.newManifestReaderAt(man), man.TotalLength}, nil
+}
+func (b *p6Backend) DeleteBlob(id @semcore.ID@) error { return b.s.DeleteObject(b.bucket, "b/"+hexID(id)) }
+func (b *p6Backend) PutRecord(c @semcore.ID@, data []byte) error {
+	if err := b.put("c/"+hexID(c), data); err != nil {
+		return err
+	}
+	b.idx["c"] = append(b.idx["c"], hexID(c))
+	return b.flush()
+}
+func (b *p6Backend) PutRecipe(s @semcore.ID@, data []byte) error {
+	if err := b.put("r/"+hexID(s), data); err != nil {
+		return err
+	}
+	b.idx["r"] = append(b.idx["r"], hexID(s))
+	return b.flush()
+}
+func (b *p6Backend) GetRecipe(s @semcore.ID@) ([]byte, error) { return b.get("r/" + hexID(s)) }
+func (b *p6Backend) flush() error {
+	var buf []byte
+	for _, k := range []string{"c", "r"} {
+		buf = binary.AppendUvarint(buf, uint64(len(b.idx[k])))
+		for _, h := range b.idx[k] {
+			buf = append(buf, h...)
+		}
+	}
+	return b.put("index", buf)
+}
+func (b *p6Backend) load() error {
+	data, err := b.get("index")
+	if err != nil {
+		return nil // empty store
+	}
+	pos := 0
+	for _, k := range []string{"c", "r"} {
+		n, w := binary.Uvarint(data[pos:])
+		pos += w
+		for i := uint64(0); i < n; i++ {
+			b.idx[k] = append(b.idx[k], string(data[pos:pos+64]))
+			pos += 64
+		}
+	}
+	return nil
+}
+func p6ID(h string) (id @semcore.ID@) {
+	for i := 0; i < 32; i++ {
+		fmt.Sscanf(h[2*i:2*i+2], "%02x", &id[i])
+	}
+	return
+}
+func (b *p6Backend) ListRecords(fn func(@semcore.ID@, []byte) error) error {
+	seen := map[string]bool{}
+	for _, h := range b.idx["c"] {
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		d, err := b.get("c/" + h)
+		if err != nil {
+			return err
+		}
+		if err := fn(p6ID(h), d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (b *p6Backend) ListRecipes() ([]@semcore.ID@, error) {
+	var out []@semcore.ID@
+	seen := map[string]bool{}
+	for _, h := range b.idx["r"] {
+		if !seen[h] {
+			seen[h] = true
+			out = append(out, p6ID(h))
+		}
+	}
+	return out, nil
+}
+
+type p6Heap struct {
+	stop chan struct{}
+	done chan struct{}
+	peak uint64
+}
+
+func p6StartHeap() *p6Heap {
+	h := &p6Heap{stop: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(h.done)
+		var m runtime.MemStats
+		for {
+			runtime.ReadMemStats(&m)
+			if m.HeapInuse > atomic.LoadUint64(&h.peak) {
+				atomic.StoreUint64(&h.peak, m.HeapInuse)
+			}
+			select {
+			case <-h.stop:
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}()
+	return h
+}
+func (h *p6Heap) Stop() uint64 { close(h.stop); <-h.done; return h.peak }
+
+type p6Sink struct {
+	h hashWriter
+	n int64
+}
+type hashWriter interface {
+	Write([]byte) (int, error)
+	Sum([]byte) []byte
+}
+
+func (s *p6Sink) Write(p []byte) (int, error) { s.n += int64(len(p)); return s.h.Write(p) }
+
+func main() {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("p6"); err != nil {
+		t.Fatal(err)
+	}
+	be := &p6Backend{s: s, bucket: "p6", idx: map[string][]string{}}
+	// a family: BF16 shard, its exact F32 widening, and a reordered shard (4 tensors of 1 MiB)
+	r := rand.New(rand.NewPCG(3, 4))
+	var tens []@st.BuildTensor@
+	var wide []@st.BuildTensor@
+	for i := 0; i < 4; i++ {
+		d := make([]byte, 1<<20)
+		for j := range d {
+			d[j] = byte(r.Uint64())
+		}
+		w := make([]byte, 2*len(d))
+		for j := 0; j < len(d)/2; j++ {
+			binary.LittleEndian.PutUint32(w[4*j:], uint32(binary.LittleEndian.Uint16(d[2*j:]))<<16)
+		}
+		nm := fmt.Sprintf("l%d.w", i)
+		tens = append(tens, @st.BuildTensor@{Name: nm, DType: "BF16", Shape: []int64{512, 1024}, Data: d})
+		wide = append(wide, @st.BuildTensor@{Name: nm, DType: "F32", Shape: []int64{512, 1024}, Data: w})
+	}
+	rev := []@st.BuildTensor@{tens[3], tens[2], tens[1], tens[0]}
+	srcs := map[string][]byte{
+		"m.safetensors":  @st.Build@(nil, tens),
+		"m32.safetensors": @st.Build@(nil, wide),
+		"mrev.safetensors": @st.Build@(nil, rev),
+	}
+	names := []string{"m.safetensors", "m32.safetensors", "mrev.safetensors"}
+	// sources live in ZeroS3 too: ingestion reads them through the engine's ReaderAt (no whole-file buffer)
+	for _, n := range names {
+		if err := be.put("src/"+n, srcs[n]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	core, err := @semcore.NewStore@(be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opt := @semcore.DefaultOptions@()
+	opt.CacheBytes = 16 << 20
+	opt.WorkBytes = 32 << 20
+	p := @semcore.NewPlanner@(core, opt)
+	heap := p6StartHeap()
+	sums := map[string][32]byte{}
+	for _, n := range names {
+		_, man, err := s.HeadObject("p6", "src/"+n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ra := s.newManifestReaderAt(man)
+		doc, err := @semcore.DetectAt@(n, ra, man.TotalLength)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec, fs, err := p.Ingest(doc)
+		ra.close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := core.PutRecipe(rec); err != nil {
+			t.Fatal(err)
+		}
+		sums[n] = sha256.Sum256(srcs[n])
+		fmt.Printf("REHEARSAL ingest %s tensors=%d how=%v source_bytes_read=%d peak_buf=%d\n", n, fs.Tensors, fs.How, fs.SourceBytes, fs.PeakBuf)
+	}
+	ingestPeak := heap.Stop()
+	// fresh handles: close the engine, reopen it from disk, rebuild the core index from stored records
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	be2 := &p6Backend{s: s2, bucket: "p6", idx: map[string][]string{}}
+	if err := be2.load(); err != nil {
+		t.Fatal(err)
+	}
+	core2, err := @semcore.NewStore@(be2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core2.BlockSize = 64 << 10
+	heap = p6StartHeap()
+	for _, n := range names {
+		rc, err := core2.GetRecipe(@semcore.ID@(sums[n]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sink := &p6Sink{h: sha256.New()}
+		if err := core2.Replay(rc, sink, 8<<20); err != nil {
+			t.Fatalf("replay %s: %v", n, err)
+		}
+		var got [32]byte
+		copy(got[:], sink.h.Sum(nil))
+		if got != sums[n] || sink.n != int64(len(srcs[n])) {
+			t.Fatalf("%s: replayed bytes differ", n)
+		}
+		// verified ranges straight from engine objects
+		for k := 0; k < 20; k++ {
+			off := int64(r.IntN(len(srcs[n]) - 9000))
+			var io @semcore.IO@
+			b, err := core2.ReadRange(rc, off, 8192, &io)
+			if err != nil || !bytes.Equal(b, srcs[n][off:off+8192]) {
+				t.Fatalf("%s: range %d: %v", n, off, err)
+			}
+		}
+		fmt.Printf("REHEARSAL replay %s exact sha256=%x bytes=%d\n", n, got[:6], sink.n)
+	}
+	replayPeak := heap.Stop()
+	derived := 0
+	for _, rec := range core2.All() {
+		if rec.Derived() {
+			derived++
+		}
+	}
+	fmt.Printf("REHEARSAL components=%d derived=%d ingest_peak_heap_mib=%.1f replay_peak_heap_mib=%.1f logical_mib=%.1f\n",
+		core2.Count(), derived, float64(ingestPeak)/(1<<20), float64(replayPeak)/(1<<20), float64(len(srcs["m.safetensors"])*4)/(1<<20))
+	if derived == 0 {
+		t.Fatal("no derived components: the semantic layer did nothing")
+	}
+	if ingestPeak > 160<<20 || replayPeak > 160<<20 {
+		t.Fatalf("bounded-memory expectation violated: ingest %d replay %d", ingestPeak, replayPeak)
+	}
+	fmt.Println("REHEARSAL OK")
+}

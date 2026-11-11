@@ -75,7 +75,7 @@
     ]
    }
   ],
-  "roots": 19,
+  "roots": 22,
   "selected_declarations": 280
  },
  "class": "PORTABLE_WITH_THIN_ADAPTER",
@@ -97,6 +97,7 @@
  "modified_adapters": 0,
  "package_level_names": 232,
  "prefix": "sc",
+ "rehearsal_ok": true,
  "unresolved_dependencies": 0,
  "vector_lines": 31,
  "vector_mismatches": 0
