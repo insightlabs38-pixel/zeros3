@@ -1,0 +1,6 @@
+revision                        prodCDC    fineCDC     B1best     noNorm     strong     +delta  +deltaRcp  noN+delta
+sqlite-3490100-O2.bc            2143448    2281513    2281513    2346606    2552879    2607777    2601754    2402345  strong: fn=2318153 skel=137510 idtab=42100 refs=55116 | +delta: fn=2381157 skel=129551 idtab=41845 refs=55224
+sqlite-3490100-O2.bc            1971360    2126771    1885697    2162961    2404756    1831774    1822969    1972185  strong: fn=2171425 skel=136011 idtab=42132 refs=55188 | +delta: fn=1696920 skel=73151 idtab=6407 refs=55296
+CUMULATIVE                      4114808    4408284    4167210    4509567    4957635    4439551    4424723    4374530
+objects: noNorm=3106 strong=3025 | hybrid objects=2940 of which B1 deltas=1395 (saved 618227 B vs direct) | noNorm hybrid objects=3021 deltas=1093
+{"measure": {"wall_s": 5.691, "max_rss_mib": 207.5, "user_s": 5.92, "sys_s": 0.53, "rc": 0}}

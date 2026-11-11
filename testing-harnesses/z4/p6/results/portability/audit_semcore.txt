@@ -1,0 +1,85 @@
+{
+ "adapter_interfaces": [
+  "semcore.Backend",
+  "semcore.BlobReader",
+  "semcore.Ext"
+ ],
+ "declarations_by_package": {
+  "zeros3-z3/ggufz3": 23,
+  "zeros3-z3/semcore": 244,
+  "zeros3-z3/st": 20,
+  "zeros3-z3/torchz3": 14
+ },
+ "packages": [
+  {
+   "files": 2,
+   "module_deps": null,
+   "package": "zeros3-z3/ggufz3",
+   "stdlib": [
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "math",
+    "math/bits",
+    "sort"
+   ]
+  },
+  {
+   "files": 2,
+   "module_deps": null,
+   "package": "zeros3-z3/st",
+   "stdlib": [
+    "bytes",
+    "encoding/binary",
+    "encoding/json",
+    "errors",
+    "fmt",
+    "io",
+    "math/bits",
+    "sort",
+    "strconv"
+   ]
+  },
+  {
+   "files": 1,
+   "module_deps": null,
+   "package": "zeros3-z3/torchz3",
+   "stdlib": [
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "sort",
+    "strings"
+   ]
+  },
+  {
+   "files": 15,
+   "module_deps": [
+    "zeros3-z3/ggufz3",
+    "zeros3-z3/st",
+    "zeros3-z3/torchz3"
+   ],
+   "package": "zeros3-z3/semcore",
+   "stdlib": [
+    "bytes",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash/maphash",
+    "io",
+    "math",
+    "math/bits",
+    "runtime",
+    "sort",
+    "strings",
+    "sync",
+    "time"
+   ]
+  }
+ ],
+ "roots": 115,
+ "selected_declarations": 301
+}

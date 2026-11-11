@@ -1,0 +1,9 @@
+=== RUN   TestP6Rehearsal
+REHEARSAL encode a.bc bytes=4328 pieces=5
+REHEARSAL encode b.bc bytes=4824 pieces=6
+REHEARSAL replay a.bc exact sha256=842f00db1514a38ba7fd532d50796ba0ba9b7627f5aec8c5b34bee8cfdd9b8a0
+REHEARSAL replay b.bc exact sha256=b3d34ee14782493c82fa5e787430ffd79ce53f358281ae23449d5c9e22f09646
+REHEARSAL OK
+--- PASS: TestP6Rehearsal (0.03s)
+PASS
+ok  	zeros3	0.037s

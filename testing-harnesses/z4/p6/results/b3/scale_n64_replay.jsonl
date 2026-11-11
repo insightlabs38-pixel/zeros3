@@ -1,0 +1,6 @@
+{"file": "a.safetensors", "sha256": "b86301460f6b4656d57f08fe39f15c37623cf0cbc086b8faa5d89149a3d976b1", "exact": true}
+{"file": "b.safetensors", "sha256": "894d361306a034c94d9b98f9749c7c5f36aec0a62205ceb8a6261069c06caf77", "exact": true}
+{"file": "c.safetensors", "sha256": "2bbf513200bbee6898fc4e95cab4373a08007f7ddc3b580cf29ad53df402abc3", "exact": true}
+{"file": "d.safetensors", "sha256": "b702c03d7e44c19dccc6e27fa24bb570546fe337fd1d055dcce58b8aa9b1a9c8", "exact": true}
+{"file": "e.safetensors", "sha256": "6d96fc1c5d757f957fe47b5180cc84acac3f4773394d7ebe52b7dd16ad634330", "exact": true}
+{"summary": {"files": 5, "mismatches": 0, "replay_wall_s": 1.37, "replay_max_rss_mib": 298.7}}

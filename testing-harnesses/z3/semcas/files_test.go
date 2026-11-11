@@ -59,7 +59,7 @@ func TestContainersShareFileContent(t *testing.T) {
 	if n != 6 {
 		t.Fatalf("expected 6 shared file-content components, got %d", n)
 	}
-	replayAll(t, s.Dir, files)
+	replayAll(t, dirOfM.get(s), files)
 }
 
 func TestColumnarFormatsShareColumns(t *testing.T) {
@@ -78,7 +78,7 @@ func TestColumnarFormatsShareColumns(t *testing.T) {
 	if cols != 3 {
 		t.Fatalf("three canonical columns expected (int64, float64, string stream), got %d", cols)
 	}
-	replayAll(t, s.Dir, files)
+	replayAll(t, dirOfM.get(s), files)
 	// signedness: an unsigned view of the same bytes is a different semantic component
 	a := s.All()
 	var i64 *Record
@@ -118,14 +118,14 @@ func TestContainerResidualCorruptionFailsClosed(t *testing.T) {
 	if victim == nil {
 		t.Fatal("no deflate derivation")
 	}
-	path := filepath.Join(s.Dir, "comps", victim.CID.String())
+	path := filepath.Join(dirOfM.get(s), "comps", victim.CID.String())
 	orig, _ := os.ReadFile(path)
 	failed := 0
 	for i := 8; i < len(orig); i += 3 {
 		m := append([]byte(nil), orig...)
 		m[i] ^= 0x55
 		os.WriteFile(path, m, 0o644)
-		s2, err := Open(s.Dir)
+		s2, err := Open(dirOfM.get(s))
 		if err != nil {
 			failed++
 			continue
@@ -142,14 +142,14 @@ func TestContainerResidualCorruptionFailsClosed(t *testing.T) {
 		t.Fatal("no corruption was detected at all")
 	}
 	// missing parent component
-	s3, _ := Open(s.Dir)
+	s3, _ := Open(dirOfM.get(s))
 	for _, r := range s3.All() {
 		if r.Desc.Kind == KindFile {
-			os.Remove(filepath.Join(s.Dir, "blobs", r.Payload.String()))
+			os.Remove(filepath.Join(dirOfM.get(s), "blobs", r.Payload.String()))
 			break
 		}
 	}
-	s4, _ := Open(s.Dir)
+	s4, _ := Open(dirOfM.get(s))
 	if err := s4.Replay(rc, &bytes.Buffer{}, 1<<20); !errors.Is(err, ErrMissing) {
 		t.Fatalf("missing component: %v", err)
 	}
@@ -171,10 +171,44 @@ func TestUnsupportedFallbacks(t *testing.T) {
 	if _, err := ParseArrowFile(garbage); err == nil {
 		t.Fatal("garbage parsed as arrow")
 	}
-	replayAll(t, s.Dir, map[string][]byte{"junk": garbage})
+	replayAll(t, dirOfM.get(s), map[string][]byte{"junk": garbage})
 }
 
 func FuzzParseArrowFile(f *testing.F) {
 	f.Add(fixture(f, "tiny.arrow"))
 	f.Fuzz(func(t *testing.T, b []byte) { ParseArrowFile(b) })
+}
+
+// Nullable fixed-width Arrow columns and narrow-integer Parquet streams share canonical
+// components across formats; everything replays byte-exactly from a fresh open.
+func TestNullableAndNarrowColumnsShare(t *testing.T) {
+	s := newStore(t)
+	fp := NewFilePlanner(s)
+	files := map[string][]byte{}
+	for _, c := range []struct{ name, kind string }{{"nullable.arrow", "arrow"}, {"nullable_snappy.parquet", "pqx"}, {"nullable_plain.parquet", "pqx"}} {
+		files[c.name] = ingestFile(t, fp, c.kind, c.name)
+	}
+	// the dense non-null stream of x and the narrow i16/u8 streams are single shared components
+	byDesc := map[string]int{}
+	scatter, widen := 0, 0
+	for _, r := range s.All() {
+		if r.Desc.Kind == KindColumn && !r.Derived() {
+			byDesc[DTypeName(int(r.Desc.DType))]++
+		}
+		for _, o := range r.Ops {
+			if o.Kind == OpScatter {
+				scatter++
+			}
+			if o.Kind == OpConvert && o.To == DI32 {
+				widen++
+			}
+		}
+	}
+	if scatter == 0 || widen == 0 {
+		t.Fatalf("expected scatter (%d) and widening (%d) derivations", scatter, widen)
+	}
+	if byDesc["I16"] != 1 || byDesc["U8"] != 1 || byDesc["F64"] != 1 {
+		t.Fatalf("narrow and dense streams must each exist once across the three files: %v", byDesc)
+	}
+	replayAll(t, dirOfM.get(s), files)
 }

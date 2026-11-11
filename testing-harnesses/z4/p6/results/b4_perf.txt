@@ -1,0 +1,5 @@
+b4/bc/sqlite-3490100-O2.bc: 2.62 MiB | parse+exactness proof 213 ms (12.3 MiB/s) | module analysis+SCC identities 17 ms (10779 nodes, 28493 edges, 1623 ns/node) | full encode incl. per-function proofs+self-replay 444 ms (5.9 MiB/s) | VM decode 84 ms (31.3 MiB/s) | VmHWM 169188 kB
+synthetic DAG n=100000: SCC identity 104 ms (1036 ns/node, +21 MiB heap) | match after random renumbering 118 ms, matched 99714 (exact 98807, dup-order 223, ctx 684)
+synthetic DAG n=1000000: SCC identity 1325 ms (1325 ns/node, +207 MiB heap) | match after random renumbering 2126 ms, matched 978965 (exact 902112, dup-order 18046, ctx 58807)
+hostile symmetric 20000-cycle: 1302 ms, budget exhausted=true, all symmetric=true
+{"measure": {"wall_s": 8.603, "max_rss_mib": 747.3, "user_s": 9.09, "sys_s": 0.92, "rc": 0}}

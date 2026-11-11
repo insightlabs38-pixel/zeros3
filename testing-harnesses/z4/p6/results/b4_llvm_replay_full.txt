@@ -1,0 +1,12 @@
+rev00 sqlite-3450100-O2.bc MATCH
+rev01 sqlite-3450200-O2.bc MATCH
+rev02 sqlite-3450300-O2.bc MATCH
+rev03 sqlite-3460000-O2.bc MATCH
+rev04 sqlite-3460100-O2.bc MATCH
+rev05 sqlite-3490100-O2.bc MATCH
+rev00 sqlite-3450100-O2.bc MATCH
+rev01 sqlite-3450200-O2.bc MATCH
+rev02 sqlite-3450300-O2.bc MATCH
+rev03 sqlite-3460000-O2.bc MATCH
+rev04 sqlite-3460100-O2.bc MATCH
+rev05 sqlite-3490100-O2.bc MATCH

@@ -1,0 +1,90 @@
+VEC vm-basic true ce3172860f253e5b
+VEC vm-random-programs-rejected 300
+VEC llvm:a.bc:0 5 pieces d86548233678dc1b
+VEC llvm-decode:a.bc:0 true
+VEC recipe:a.bc:0 f50ad718390dd111
+VEC replay:a.bc:0 true
+VEC corrupt:a.bc:0 5
+VEC trunc:a.bc:0 22
+VEC llvm:a.bc:1 5 pieces 451fff990a649767
+VEC llvm-decode:a.bc:1 true
+VEC recipe:a.bc:1 6650a757168db54c
+VEC replay:a.bc:1 true
+VEC corrupt:a.bc:1 5
+VEC trunc:a.bc:1 22
+VEC llvm:b.bc:0 6 pieces 842ad3be80ed0566
+VEC llvm-decode:b.bc:0 true
+VEC recipe:b.bc:0 225310d4c4d0c27f
+VEC replay:b.bc:0 true
+VEC corrupt:b.bc:0 7
+VEC trunc:b.bc:0 25
+VEC llvm:b.bc:1 6 pieces 5bb02200a0960fe0
+VEC llvm-decode:b.bc:1 true
+VEC recipe:b.bc:1 bea60bd09f3a757d
+VEC replay:b.bc:1 true
+VEC corrupt:b.bc:1 7
+VEC trunc:b.bc:1 25
+VEC pdb:false true
+VEC pdb:true true
+VEC dex:fixture-api24.dex true 0e2fb2c469818d91
+VEC dex:fixture-api28.dex true 7ed37d3b74da7bc1
+VEC ids:0 d5a3c9fcaa2cbaeb c=103 s=86 y=3 q=3 true
+VEC match:0 9cb199806484f05a [0 1 0 0 0] true
+VEC ids:1 8fb4ff5af66f3a2e c=65 s=67 y=1 q=1 true
+VEC match:1 14ec291ee93c8dcc [0 1 0 0 0] true
+VEC ids:2 87392584988ac4ae c=126 s=89 y=3 q=3 true
+VEC match:2 be6cceeb49546ea6 [0 0 0 0 0] true
+VEC ids:3 36786c6200f2221d c=197 s=210 y=1 q=1 true
+VEC match:3 afed248358878c1e [0 0 0 0 0] true
+VEC ids:4 efe2ad73d73982a3 c=192 s=125 y=2 q=2 true
+VEC match:4 ed3bbcaeadbc19bf [0 2 2 0 0] true
+VEC ids:5 f4885173de1afe3a c=162 s=168 y=1 q=1 true
+VEC match:5 cbc5e5b7256bd744 [0 2 0 0 0] true
+VEC ids:6 6dc92750f228a504 c=136 s=111 y=2 q=2 true
+VEC match:6 629f06602b8a5268 [0 1 2 0 0] true
+VEC ids:7 15baaaafa4be1d8f c=197 s=215 y=1 q=1 true
+VEC match:7 936e531db3d322ef [0 0 2 0 0] true
+VEC ids:8 f982e549483dc3ba c=238 s=161 y=5 q=5 true
+VEC match:8 07d065cc836217df [0 1 5 0 0] true
+VEC ids:9 3282218a3d25a1c0 c=49 s=49 y=1 q=1 true
+VEC match:9 740d164762762d3a [0 1 0 0 0] true
+VEC ids:10 5a350ccead59c8f4 c=44 s=31 y=1 q=1 true
+VEC match:10 ddd11e9d806e3f41 [0 0 2 0 0] true
+VEC ids:11 3dfca4526f516907 c=59 s=59 y=1 q=1 true
+VEC match:11 6730b4b634bbb160 [0 0 0 0 0] true
+VEC ids:12 f182bbf4d1768243 c=280 s=210 y=3 q=3 true
+VEC match:12 937f6068bf5611dd [0 5 3 0 0] true
+VEC ids:13 92e1515feed051e4 c=152 s=161 y=1 q=1 true
+VEC match:13 33261b763353e6f5 [0 0 0 0 0] true
+VEC ids:14 82301251e0f306c2 c=258 s=172 y=2 q=2 true
+VEC match:14 fe449c6534d9558b [0 1 5 0 0] true
+VEC ids:15 51a496f0a6fd39d7 c=180 s=189 y=1 q=1 true
+VEC match:15 b7312d71a5bc1902 [0 1 4 0 0] true
+VEC ids:16 455c068e7220323e c=26 s=10 y=2 q=2 true
+VEC match:16 56661972cc430ad5 [0 0 0 0 0] true
+VEC ids:17 c3b3116bbe574da4 c=267 s=282 y=1 q=1 true
+VEC match:17 bc0dde79f33d1050 [0 0 0 0 0] true
+VEC ids:18 12c7b16aebca3bf3 c=189 s=142 y=3 q=3 true
+VEC match:18 8d55e0c076e11cbc [0 2 5 0 0] true
+VEC ids:19 459553b903e31d8f c=216 s=234 y=1 q=1 true
+VEC match:19 6124e3556272de48 [0 0 2 0 0] true
+VEC ids:20 7625b02beb180f6e c=211 s=167 y=3 q=3 true
+VEC match:20 350419f57a14d5e7 [0 1 0 0 0] true
+VEC ids:21 1709ce9fe4a07a3f c=140 s=145 y=1 q=1 true
+VEC match:21 78dee04b8b655fd7 [0 1 2 0 0] true
+VEC ids:22 f6c29374e22eb0ca c=272 s=196 y=2 q=2 true
+VEC match:22 2880e6725747e954 [0 0 0 0 0] true
+VEC ids:23 4b963b4c68136d5f c=235 s=260 y=1 q=1 true
+VEC match:23 9b90ce6873d755ed [0 1 2 0 0] true
+VEC ids:24 2decc568e19284b3 c=62 s=52 y=2 q=2 true
+VEC match:24 11c5f49862a64872 [0 1 0 0 0] true
+VEC ids:25 143a0afeb43515af c=80 s=83 y=1 q=1 true
+VEC match:25 cda47193a47461ff [0 3 2 0 0] true
+VEC ids:26 4900eed286797a20 c=142 s=94 y=1 q=1 true
+VEC match:26 e0e92775f44b61f4 [0 1 0 0 0] true
+VEC ids:27 62d59d3bdac6f8f6 c=250 s=277 y=1 q=1 true
+VEC match:27 1bd832fd6a374a45 [0 1 9 0 0] true
+VEC ids:28 633fc4240a355807 c=302 s=214 y=4 q=4 true
+VEC match:28 f7478819e627e2d7 [0 1 2 0 0] true
+VEC ids:29 bb21b555cea4eb09 c=163 s=165 y=1 q=1 true
+VEC match:29 8d6ed2934c41fb40 [0 3 2 0 0] true

@@ -1,0 +1,395 @@
+{
+ "blocked": [
+  "zeros3-z3/corpus: 111 declaration(s) reachable from the roots",
+  "zeros3-z3/dcore: 21 declaration(s) reachable from the roots",
+  "zeros3-z3/deflate: 3 declaration(s) reachable from the roots",
+  "zeros3-z3/gitz3: 7 declaration(s) reachable from the roots",
+  "zeros3-z3/graphnorm: 133 declaration(s) reachable from the roots",
+  "zeros3-z3/ir: 32 declaration(s) reachable from the roots",
+  "zeros3-z3/lab: 13 declaration(s) reachable from the roots",
+  "zeros3-z3/simdelta: 25 declaration(s) reachable from the roots",
+  "zeros3-z3/tdelta: 26 declaration(s) reachable from the roots"
+ ],
+ "declarations_by_package": {
+  "zeros3-z3/corpus": 111,
+  "zeros3-z3/dcore": 21,
+  "zeros3-z3/deflate": 3,
+  "zeros3-z3/gitz3": 7,
+  "zeros3-z3/graphcore": 260,
+  "zeros3-z3/graphnorm": 133,
+  "zeros3-z3/ir": 32,
+  "zeros3-z3/lab": 13,
+  "zeros3-z3/simdelta": 25,
+  "zeros3-z3/tdelta": 26
+ },
+ "packages": [
+  {
+   "files": 18,
+   "module_deps": null,
+   "package": "zeros3-z3/graphcore",
+   "stdlib": [
+    "bytes",
+    "compress/flate",
+    "crypto/sha1",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash",
+    "hash/adler32",
+    "hash/crc32",
+    "hash/maphash",
+    "io",
+    "sort",
+    "strings",
+    "sync"
+   ]
+  },
+  {
+   "files": 6,
+   "module_deps": null,
+   "package": "zeros3-z3/carz3",
+   "stdlib": [
+    "bufio",
+    "bytes",
+    "crypto/sha256",
+    "crypto/sha3",
+    "crypto/sha512",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "math/rand/v2",
+    "sort"
+   ]
+  },
+  {
+   "files": 13,
+   "module_deps": null,
+   "package": "zeros3-z3/corpus",
+   "stdlib": [
+    "archive/tar",
+    "bytes",
+    "compress/flate",
+    "compress/gzip",
+    "crypto/sha256",
+    "encoding/binary",
+    "encoding/hex",
+    "encoding/json",
+    "errors",
+    "fmt",
+    "hash/crc32",
+    "io",
+    "os",
+    "os/exec",
+    "path",
+    "path/filepath",
+    "runtime",
+    "sort",
+    "strconv",
+    "strings",
+    "time"
+   ]
+  },
+  {
+   "files": 10,
+   "module_deps": null,
+   "package": "zeros3-z3/deflate",
+   "stdlib": [
+    "bytes",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash/adler32",
+    "hash/crc32",
+    "io",
+    "math/bits",
+    "sync"
+   ]
+  },
+  {
+   "files": 3,
+   "module_deps": null,
+   "package": "zeros3-z3/snappyz3",
+   "stdlib": [
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash/crc32",
+    "io"
+   ]
+  },
+  {
+   "files": 5,
+   "module_deps": [
+    "zeros3-z3/snappyz3"
+   ],
+   "package": "zeros3-z3/eraez3",
+   "stdlib": [
+    "bytes",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash/crc32",
+    "io",
+    "math/rand/v2",
+    "sort"
+   ]
+  },
+  {
+   "files": 13,
+   "module_deps": [
+    "zeros3-z3/deflate"
+   ],
+   "package": "zeros3-z3/ir",
+   "stdlib": [
+    "bytes",
+    "compress/flate",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash",
+    "hash/crc32",
+    "io",
+    "math",
+    "math/bits",
+    "reflect",
+    "sort",
+    "sync"
+   ]
+  },
+  {
+   "files": 1,
+   "module_deps": null,
+   "package": "zeros3-z3/tarz3",
+   "stdlib": [
+    "bytes",
+    "crypto/sha256",
+    "errors",
+    "fmt",
+    "io",
+    "strconv",
+    "strings"
+   ]
+  },
+  {
+   "files": 3,
+   "module_deps": null,
+   "package": "zeros3-z3/merklez3",
+   "stdlib": [
+    "bytes",
+    "crypto/sha256",
+    "crypto/sha3",
+    "crypto/sha512",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "os",
+    "path/filepath",
+    "sort"
+   ]
+  },
+  {
+   "files": 1,
+   "module_deps": null,
+   "package": "zeros3-z3/srev",
+   "stdlib": [
+    "io"
+   ]
+  },
+  {
+   "files": 2,
+   "module_deps": null,
+   "package": "zeros3-z3/st",
+   "stdlib": [
+    "bytes",
+    "encoding/binary",
+    "encoding/json",
+    "errors",
+    "fmt",
+    "io",
+    "math/bits",
+    "sort",
+    "strconv"
+   ]
+  },
+  {
+   "files": 5,
+   "module_deps": [
+    "zeros3-z3/ir",
+    "zeros3-z3/st"
+   ],
+   "package": "zeros3-z3/tdelta",
+   "stdlib": [
+    "bytes",
+    "compress/flate",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "math",
+    "math/bits"
+   ]
+  },
+  {
+   "files": 19,
+   "module_deps": [
+    "zeros3-z3/carz3",
+    "zeros3-z3/corpus",
+    "zeros3-z3/deflate",
+    "zeros3-z3/eraez3",
+    "zeros3-z3/ir",
+    "zeros3-z3/merklez3",
+    "zeros3-z3/srev",
+    "zeros3-z3/st",
+    "zeros3-z3/tarz3",
+    "zeros3-z3/tdelta"
+   ],
+   "package": "zeros3-z3/lab",
+   "stdlib": [
+    "archive/zip",
+    "bufio",
+    "bytes",
+    "compress/flate",
+    "compress/gzip",
+    "context",
+    "crypto/sha256",
+    "encoding/binary",
+    "encoding/hex",
+    "encoding/json",
+    "errors",
+    "fmt",
+    "hash",
+    "io",
+    "os",
+    "os/exec",
+    "path",
+    "path/filepath",
+    "runtime",
+    "sort",
+    "strconv",
+    "strings",
+    "sync",
+    "text/tabwriter",
+    "time"
+   ]
+  },
+  {
+   "files": 3,
+   "module_deps": [
+    "zeros3-z3/lab"
+   ],
+   "package": "zeros3-z3/fstate",
+   "stdlib": [
+    "bytes",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "sort",
+    "strings",
+    "time"
+   ]
+  },
+  {
+   "files": 22,
+   "module_deps": [
+    "zeros3-z3/deflate",
+    "zeros3-z3/fstate",
+    "zeros3-z3/ir",
+    "zeros3-z3/lab",
+    "zeros3-z3/srev"
+   ],
+   "package": "zeros3-z3/gitz3",
+   "stdlib": [
+    "bufio",
+    "bytes",
+    "cmp",
+    "compress/flate",
+    "crypto/sha1",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash",
+    "hash/adler32",
+    "hash/crc32",
+    "io",
+    "math/bits",
+    "math/rand",
+    "os",
+    "os/exec",
+    "path/filepath",
+    "runtime",
+    "sort",
+    "strconv",
+    "strings",
+    "sync",
+    "time"
+   ]
+  },
+  {
+   "files": 8,
+   "module_deps": null,
+   "package": "zeros3-z3/dcore",
+   "stdlib": [
+    "bytes",
+    "compress/flate",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash/crc32",
+    "io",
+    "math",
+    "math/bits",
+    "slices",
+    "sort",
+    "sync",
+    "sync/atomic"
+   ]
+  },
+  {
+   "files": 5,
+   "module_deps": [
+    "zeros3-z3/dcore",
+    "zeros3-z3/gitz3",
+    "zeros3-z3/tdelta"
+   ],
+   "package": "zeros3-z3/simdelta",
+   "stdlib": [
+    "bytes",
+    "compress/flate",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "sort",
+    "sync",
+    "sync/atomic"
+   ]
+  },
+  {
+   "files": 4,
+   "module_deps": [
+    "zeros3-z3/graphcore",
+    "zeros3-z3/lab",
+    "zeros3-z3/simdelta"
+   ],
+   "package": "zeros3-z3/graphnorm",
+   "stdlib": [
+    "crypto/sha256",
+    "encoding/hex",
+    "os",
+    "path/filepath"
+   ]
+  }
+ ]
+}
+PORTABILITY_BLOCKED: 9 research-only package(s) in the dependency closure

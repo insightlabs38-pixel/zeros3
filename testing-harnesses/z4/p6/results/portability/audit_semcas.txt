@@ -1,0 +1,434 @@
+{
+ "blocked": [
+  "meta.go: aliased import \"zeros3-z3/thriftcompactz3\""
+ ],
+ "packages": [
+  {
+   "files": 2,
+   "module_deps": null,
+   "package": "zeros3-z3/ggufz3",
+   "stdlib": [
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "math",
+    "math/bits",
+    "sort"
+   ]
+  },
+  {
+   "files": 2,
+   "module_deps": null,
+   "package": "zeros3-z3/st",
+   "stdlib": [
+    "bytes",
+    "encoding/binary",
+    "encoding/json",
+    "errors",
+    "fmt",
+    "io",
+    "math/bits",
+    "sort",
+    "strconv"
+   ]
+  },
+  {
+   "files": 1,
+   "module_deps": null,
+   "package": "zeros3-z3/torchz3",
+   "stdlib": [
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "sort",
+    "strings"
+   ]
+  },
+  {
+   "files": 15,
+   "module_deps": [
+    "zeros3-z3/ggufz3",
+    "zeros3-z3/st",
+    "zeros3-z3/torchz3"
+   ],
+   "package": "zeros3-z3/semcore",
+   "stdlib": [
+    "bytes",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash/maphash",
+    "io",
+    "math",
+    "math/bits",
+    "runtime",
+    "sort",
+    "strings",
+    "sync",
+    "time"
+   ]
+  },
+  {
+   "files": 7,
+   "module_deps": null,
+   "package": "zeros3-z3/lz4z3",
+   "stdlib": [
+    "bytes",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "math/bits",
+    "sync"
+   ]
+  },
+  {
+   "files": 3,
+   "module_deps": null,
+   "package": "zeros3-z3/snappyz3",
+   "stdlib": [
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash/crc32",
+    "io"
+   ]
+  },
+  {
+   "files": 15,
+   "module_deps": null,
+   "package": "zeros3-z3/zstdz3",
+   "stdlib": [
+    "bufio",
+    "bytes",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "math",
+    "math/bits",
+    "sort"
+   ]
+  },
+  {
+   "files": 1,
+   "module_deps": null,
+   "package": "zeros3-z3/thriftcompactz3",
+   "stdlib": [
+    "encoding/binary",
+    "errors",
+    "fmt"
+   ]
+  },
+  {
+   "files": 11,
+   "module_deps": [
+    "zeros3-z3/lz4z3",
+    "zeros3-z3/snappyz3",
+    "zeros3-z3/thriftcompactz3",
+    "zeros3-z3/zstdz3"
+   ],
+   "package": "zeros3-z3/parquetz3",
+   "stdlib": [
+    "bytes",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "math/bits",
+    "sort",
+    "strings"
+   ]
+  },
+  {
+   "files": 10,
+   "module_deps": null,
+   "package": "zeros3-z3/deflate",
+   "stdlib": [
+    "bytes",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash/adler32",
+    "hash/crc32",
+    "io",
+    "math/bits",
+    "sync"
+   ]
+  },
+  {
+   "files": 13,
+   "module_deps": [
+    "zeros3-z3/deflate"
+   ],
+   "package": "zeros3-z3/ir",
+   "stdlib": [
+    "bytes",
+    "compress/flate",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash",
+    "hash/crc32",
+    "io",
+    "math",
+    "math/bits",
+    "reflect",
+    "sort",
+    "sync"
+   ]
+  },
+  {
+   "files": 6,
+   "module_deps": null,
+   "package": "zeros3-z3/carz3",
+   "stdlib": [
+    "bufio",
+    "bytes",
+    "crypto/sha256",
+    "crypto/sha3",
+    "crypto/sha512",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "math/rand/v2",
+    "sort"
+   ]
+  },
+  {
+   "files": 13,
+   "module_deps": null,
+   "package": "zeros3-z3/corpus",
+   "stdlib": [
+    "archive/tar",
+    "bytes",
+    "compress/flate",
+    "compress/gzip",
+    "crypto/sha256",
+    "encoding/binary",
+    "encoding/hex",
+    "encoding/json",
+    "errors",
+    "fmt",
+    "hash/crc32",
+    "io",
+    "os",
+    "os/exec",
+    "path",
+    "path/filepath",
+    "runtime",
+    "sort",
+    "strconv",
+    "strings",
+    "time"
+   ]
+  },
+  {
+   "files": 5,
+   "module_deps": [
+    "zeros3-z3/snappyz3"
+   ],
+   "package": "zeros3-z3/eraez3",
+   "stdlib": [
+    "bytes",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash/crc32",
+    "io",
+    "math/rand/v2",
+    "sort"
+   ]
+  },
+  {
+   "files": 1,
+   "module_deps": null,
+   "package": "zeros3-z3/tarz3",
+   "stdlib": [
+    "bytes",
+    "crypto/sha256",
+    "errors",
+    "fmt",
+    "io",
+    "strconv",
+    "strings"
+   ]
+  },
+  {
+   "files": 3,
+   "module_deps": null,
+   "package": "zeros3-z3/merklez3",
+   "stdlib": [
+    "bytes",
+    "crypto/sha256",
+    "crypto/sha3",
+    "crypto/sha512",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "os",
+    "path/filepath",
+    "sort"
+   ]
+  },
+  {
+   "files": 1,
+   "module_deps": null,
+   "package": "zeros3-z3/srev",
+   "stdlib": [
+    "io"
+   ]
+  },
+  {
+   "files": 5,
+   "module_deps": [
+    "zeros3-z3/ir",
+    "zeros3-z3/st"
+   ],
+   "package": "zeros3-z3/tdelta",
+   "stdlib": [
+    "bytes",
+    "compress/flate",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "math",
+    "math/bits"
+   ]
+  },
+  {
+   "files": 19,
+   "module_deps": [
+    "zeros3-z3/carz3",
+    "zeros3-z3/corpus",
+    "zeros3-z3/deflate",
+    "zeros3-z3/eraez3",
+    "zeros3-z3/ir",
+    "zeros3-z3/merklez3",
+    "zeros3-z3/srev",
+    "zeros3-z3/st",
+    "zeros3-z3/tarz3",
+    "zeros3-z3/tdelta"
+   ],
+   "package": "zeros3-z3/lab",
+   "stdlib": [
+    "archive/zip",
+    "bufio",
+    "bytes",
+    "compress/flate",
+    "compress/gzip",
+    "context",
+    "crypto/sha256",
+    "encoding/binary",
+    "encoding/hex",
+    "encoding/json",
+    "errors",
+    "fmt",
+    "hash",
+    "io",
+    "os",
+    "os/exec",
+    "path",
+    "path/filepath",
+    "runtime",
+    "sort",
+    "strconv",
+    "strings",
+    "sync",
+    "text/tabwriter",
+    "time"
+   ]
+  },
+  {
+   "files": 3,
+   "module_deps": [
+    "zeros3-z3/lab"
+   ],
+   "package": "zeros3-z3/fstate",
+   "stdlib": [
+    "bytes",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "io",
+    "sort",
+    "strings",
+    "time"
+   ]
+  },
+  {
+   "files": 22,
+   "module_deps": [
+    "zeros3-z3/deflate",
+    "zeros3-z3/fstate",
+    "zeros3-z3/ir",
+    "zeros3-z3/lab",
+    "zeros3-z3/srev"
+   ],
+   "package": "zeros3-z3/gitz3",
+   "stdlib": [
+    "bufio",
+    "bytes",
+    "cmp",
+    "compress/flate",
+    "crypto/sha1",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash",
+    "hash/adler32",
+    "hash/crc32",
+    "io",
+    "math/bits",
+    "math/rand",
+    "os",
+    "os/exec",
+    "path/filepath",
+    "runtime",
+    "sort",
+    "strconv",
+    "strings",
+    "sync",
+    "time"
+   ]
+  },
+  {
+   "files": 7,
+   "module_deps": [
+    "zeros3-z3/deflate",
+    "zeros3-z3/gitz3",
+    "zeros3-z3/ir",
+    "zeros3-z3/lab",
+    "zeros3-z3/parquetz3",
+    "zeros3-z3/semcore",
+    "zeros3-z3/tarz3"
+   ],
+   "package": "zeros3-z3/semcas",
+   "stdlib": [
+    "bytes",
+    "crypto/sha256",
+    "encoding/binary",
+    "encoding/hex",
+    "errors",
+    "fmt",
+    "os",
+    "path/filepath",
+    "sort",
+    "strings"
+   ]
+  }
+ ]
+}
+PORTABILITY_BLOCKED: 1 blocking import(s)

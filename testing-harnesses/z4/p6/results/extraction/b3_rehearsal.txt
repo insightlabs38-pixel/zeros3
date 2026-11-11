@@ -1,0 +1,12 @@
+=== RUN   TestP6Rehearsal
+REHEARSAL ingest m.safetensors tensors=4 how=map[new:4] source_bytes_read=4194616 peak_buf=1048576
+REHEARSAL ingest m32.safetensors tensors=4 how=map[convert:4] source_bytes_read=8388912 peak_buf=2097152
+REHEARSAL ingest mrev.safetensors tensors=4 how=map[identity:4] source_bytes_read=4194616 peak_buf=1048576
+REHEARSAL replay m.safetensors exact sha256=aa3181becf6b bytes=4194616
+REHEARSAL replay m32.safetensors exact sha256=9382cfe93c23 bytes=8388912
+REHEARSAL replay mrev.safetensors exact sha256=fc9a324f5dc6 bytes=4194616
+REHEARSAL components=8 derived=4 ingest_peak_heap_mib=80.8 replay_peak_heap_mib=82.3 logical_mib=16.0
+REHEARSAL OK
+--- PASS: TestP6Rehearsal (0.57s)
+PASS
+ok  	zeros3	0.581s

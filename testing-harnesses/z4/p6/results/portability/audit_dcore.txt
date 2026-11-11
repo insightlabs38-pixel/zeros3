@@ -1,0 +1,33 @@
+{
+ "adapter_interfaces": [
+  "dcore.RunStore"
+ ],
+ "declarations_by_package": {
+  "zeros3-z3/dcore": 148
+ },
+ "packages": [
+  {
+   "files": 8,
+   "module_deps": null,
+   "package": "zeros3-z3/dcore",
+   "stdlib": [
+    "bytes",
+    "compress/flate",
+    "crypto/sha256",
+    "encoding/binary",
+    "errors",
+    "fmt",
+    "hash/crc32",
+    "io",
+    "math",
+    "math/bits",
+    "slices",
+    "sort",
+    "sync",
+    "sync/atomic"
+   ]
+  }
+ ],
+ "roots": 76,
+ "selected_declarations": 148
+}

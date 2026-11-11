@@ -1,0 +1,31 @@
+VEC perm ccbfbb34335f0572
+VEC perm-inverse true
+VEC convert-11-12 b7a294851c4bbb27
+VEC convert-10-12 e0a1954cd42c160a
+VEC convert-12-11 7f7f188f5ce74caf
+VEC convert-12-10 01f5d7b692e9c798
+VEC q8_0 true623ccfb4480ed733
+VEC q4_0 true881472b4e5a4e7a6
+VEC diffpatches 1
+VEC diffpatchesmax-equal 0 true
+VEC diffpatchesmax-sparse 2 true
+VEC cid 64326239663664346230303461643333303863303639396266363964616530663761613839386661316433373365313763346162376235396362346263616133
+VEC hostile-detect-rejected 16
+VEC recipe:m.safetensors bca4337b66dad3c3
+VEC how:m.safetensors new=3,
+VEC readmax:m.safetensors true
+VEC recipe:m2.safetensors 3edbd8ef3d419aca
+VEC how:m2.safetensors identity=2,
+VEC readmax:m2.safetensors true
+VEC recipe:m.onnx 8df4088d335594d9
+VEC how:m.onnx convert=1,new=1,
+VEC readmax:m.onnx true
+VEC replay:m.safetensors 181b750c5a759721true
+VEC replay:m2.safetensors 9ca1844fff2330b4true
+VEC replay:m.onnx a6bb8d4365333531true
+VEC count 5
+VEC ranges:m.safetensors true
+VEC ranges:m2.safetensors true
+VEC ranges:m.onnx true
+VEC corrupt-blob-failed-or-exact true
+VEC truncated-recipes-rejected 56

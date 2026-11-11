@@ -131,24 +131,28 @@ func (f *FilePlanner) IngestArrow(name string, data []byte) (*Recipe, *ColumnSta
 
 func (f *FilePlanner) arrowColumn(data []byte, af *ArrowFile, ci, base int, spans *[]colSpan) (bool, error) {
 	c := af.Cols[ci]
-	// require zero nulls in every batch; the validity buffer must be absent/empty
+	// batches with nulls take the dense + validity path (fixed-width columns); the all-valid
+	// path below needs zero nulls in every batch
 	for _, bt := range af.Batches {
 		nn := bt.Nulls
 		if ci < len(nn) && nn[ci] != 0 {
+			if c.DType != DPlainBytes {
+				return f.arrowNullable(data, af, c, base, spans)
+			}
 			return false, nil
 		}
 	}
 	if c.DType != DPlainBytes {
 		var dense []byte
-		var runs []arrowBuf
+		var runs []ArrowBuf
 		for _, bt := range af.Batches {
 			v := bt.Bufs[base+1]
 			need := bt.Rows * int64(c.Width)
-			if v.len < need { // longer buffers carry alignment padding that stays literal
+			if v.Len < need { // longer buffers carry alignment padding that stays literal
 				return false, nil
 			}
-			v.len = need
-			dense = append(dense, data[v.off:v.off+v.len]...)
+			v.Len = need
+			dense = append(dense, data[v.Off:v.Off+v.Len]...)
 			runs = append(runs, v)
 		}
 		r, err := f.S.PutRaw(colDesc(c.DType, len(dense)/c.Width), dense)
@@ -157,8 +161,8 @@ func (f *FilePlanner) arrowColumn(data []byte, af *ArrowFile, ci, base int, span
 		}
 		off := int64(0)
 		for _, v := range runs {
-			*spans = append(*spans, colSpan{v.off, v.len, Step{Kind: StepSpan, CID: r.CID, Off: uint64(off), Len: uint64(v.len), Label: c.Name}})
-			off += v.len
+			*spans = append(*spans, colSpan{v.Off, v.Len, Step{Kind: StepSpan, CID: r.CID, Off: uint64(off), Len: uint64(v.Len), Label: c.Name}})
+			off += v.Len
 		}
 		return true, nil
 	}
@@ -168,11 +172,11 @@ func (f *FilePlanner) arrowColumn(data []byte, af *ArrowFile, ci, base int, span
 	var bs []bspan
 	for _, bt := range af.Batches {
 		ob, db := bt.Bufs[base+1], bt.Bufs[base+2]
-		if ob.len < (bt.Rows+1)*4 {
+		if ob.Len < (bt.Rows+1)*4 {
 			return false, nil
 		}
-		ob.len = (bt.Rows + 1) * 4
-		offs := data[ob.off : ob.off+ob.len]
+		ob.Len = (bt.Rows + 1) * 4
+		offs := data[ob.Off : ob.Off+ob.Len]
 		if binary.LittleEndian.Uint32(offs) != 0 {
 			return false, nil
 		}
@@ -180,14 +184,14 @@ func (f *FilePlanner) arrowColumn(data []byte, af *ArrowFile, ci, base int, span
 		prev := uint32(0)
 		for i := int64(0); i < bt.Rows; i++ {
 			nx := binary.LittleEndian.Uint32(offs[4*(i+1):])
-			if nx < prev || int64(nx) > db.len {
+			if nx < prev || int64(nx) > db.Len {
 				return false, nil
 			}
 			stream = binary.LittleEndian.AppendUint32(stream, nx-prev)
-			stream = append(stream, data[db.off+int64(prev):db.off+int64(nx)]...)
+			stream = append(stream, data[db.Off+int64(prev):db.Off+int64(nx)]...)
 			prev = nx
 		}
-		if int64(prev) > db.len {
+		if int64(prev) > db.Len {
 			return false, nil
 		}
 		bs = append(bs, bspan{start, int64(len(stream)) - start, bt.Rows, int64(prev)})
@@ -202,20 +206,20 @@ func (f *FilePlanner) arrowColumn(data []byte, af *ArrowFile, ci, base int, span
 	}
 	for i, bt := range af.Batches {
 		ob, db := bt.Bufs[base+1], bt.Bufs[base+2]
-		ob.len = (bt.Rows + 1) * 4
-		db.len = bs[i].dl
+		ob.Len = (bt.Rows + 1) * 4
+		db.Len = bs[i].dl
 		slice := Op{Kind: OpSlice, Off: uint64(bs[i].so), Len: uint64(bs[i].sl)}
-		o, err := f.S.PutDerived(colDesc(DI32, int(bt.Rows)+1), []ID{sr.CID}, []Op{slice, {Kind: OpPlainOffsets}}, nil, data[ob.off:ob.off+ob.len])
+		o, err := f.S.PutDerived(colDesc(DI32, int(bt.Rows)+1), []ID{sr.CID}, []Op{slice, {Kind: OpPlainOffsets}}, nil, data[ob.Off:ob.Off+ob.Len])
 		if err != nil {
 			return false, err
 		}
-		d, err := f.S.PutDerived(colDesc(DU8, int(db.len)), []ID{sr.CID}, []Op{slice, {Kind: OpPlainData}}, nil, data[db.off:db.off+db.len])
+		d, err := f.S.PutDerived(colDesc(DU8, int(db.Len)), []ID{sr.CID}, []Op{slice, {Kind: OpPlainData}}, nil, data[db.Off:db.Off+db.Len])
 		if err != nil {
 			return false, err
 		}
 		*spans = append(*spans,
-			colSpan{ob.off, ob.len, Step{Kind: StepRef, CID: o.CID, Label: c.Name + ".offsets"}},
-			colSpan{db.off, db.len, Step{Kind: StepRef, CID: d.CID, Label: c.Name + ".data"}})
+			colSpan{ob.Off, ob.Len, Step{Kind: StepRef, CID: o.CID, Label: c.Name + ".offsets"}},
+			colSpan{db.Off, db.Len, Step{Kind: StepRef, CID: d.CID, Label: c.Name + ".data"}})
 	}
 	return true, nil
 }
@@ -335,6 +339,26 @@ func (f *FilePlanner) IngestParquet(name string, data []byte) (*Recipe, *ColumnS
 	return rc, st, err
 }
 
+// parquetNarrow reports INT32-physical columns whose logical type is a narrow integer
+// (INT_8/INT_16/UINT_8/UINT_16): the canonical stream is the narrow dtype, the 4-byte physical
+// stream is an exact widening of it.
+func parquetNarrow(c parquetz3.Column) (int, bool) {
+	if c.Phys != 1 {
+		return 0, false
+	}
+	switch c.Converted {
+	case 15:
+		return DI8, true
+	case 16:
+		return DI16, true
+	case 11:
+		return DU8, true
+	case 12:
+		return DU16, true
+	}
+	return 0, false
+}
+
 func parquetDType(c parquetz3.Column) (int, string) {
 	switch c.Phys {
 	case 1: // INT32
@@ -394,8 +418,13 @@ func (f *FilePlanner) IngestParquetExact(name string, data []byte) (*Recipe, *Co
 		return nil, nil, err
 	}
 	colType := map[string]int{}
+	narrow := map[string]int{}
 	for _, c := range pf.Columns {
 		dt, why := parquetDType(c)
+		if nd, ok := parquetNarrow(c); ok && c.MaxDef <= 1 && c.MaxRep == 0 {
+			colType[c.Name], narrow[c.Name] = DI32, nd
+			continue
+		}
 		if why == "" && c.MaxDef <= 1 && c.MaxRep == 0 {
 			colType[c.Name] = dt
 		}
@@ -438,7 +467,12 @@ func (f *FilePlanner) IngestParquetExact(name string, data []byte) (*Recipe, *Co
 		if d.PayloadLen() >= 0 && int(d.PayloadLen()) != len(c.data) {
 			d = bytesDesc(KindBytes, len(c.data)) // count/width disagree: stay opaque
 		}
-		r, err := f.S.PutRaw(d, c.data)
+		var r *Record
+		if nd, ok := narrow[strings.TrimPrefix(c.class, "val:")]; ok && strings.HasPrefix(c.class, "val:") && d.Kind == KindColumn {
+			r, err = f.narrowColumn(d, nd, c.data)
+		} else {
+			r, err = f.S.PutRaw(d, c.data)
+		}
 		if err != nil {
 			return nil, nil, err
 		}
@@ -474,4 +508,92 @@ func countValues(dt int, b []byte) int {
 		n++
 	}
 	return n
+}
+
+// narrowColumn stores the canonical narrow-integer stream of an INT32-physical column and
+// returns the 4-byte physical stream as an exact widening of it. A stream with any value that
+// does not fit the narrow type (or any mismatch in the proof) stays an ordinary raw column.
+func (f *FilePlanner) narrowColumn(wide Desc, nd int, phys []byte) (*Record, error) {
+	w := ElemBytes(nd)
+	if len(phys)%4 != 0 || w == 0 {
+		return f.S.PutRaw(wide, phys)
+	}
+	n := len(phys) / 4
+	nb := make([]byte, n*w)
+	signed := nd == DI8 || nd == DI16
+	for i := 0; i < n; i++ {
+		v := int64(int32(binary.LittleEndian.Uint32(phys[4*i:])))
+		if signed && (v < -(1<<(8*w-1)) || v >= 1<<(8*w-1)) || !signed && (v < 0 || v >= 1<<(8*w)) {
+			return f.S.PutRaw(wide, phys)
+		}
+		for k := 0; k < w; k++ {
+			nb[i*w+k] = byte(v >> (8 * k))
+		}
+	}
+	nr, err := f.S.PutRaw(colDesc(nd, n), nb)
+	if err != nil {
+		return nil, err
+	}
+	r, err := f.S.PutDerived(wide, []ID{nr.CID}, []Op{{Kind: OpConvert, From: uint16(nd), To: DI32}}, nil, phys)
+	if err != nil {
+		return f.S.PutRaw(wide, phys)
+	}
+	return r, nil
+}
+
+// arrowNullable represents a nullable fixed-width Arrow column: one dense component of the
+// non-null values (the same bytes a Parquet writer stores for the column, so both formats
+// share it), one validity component per batch, and each batch's value buffer derived by an
+// exact scatter of the dense values over its validity bitmap (null slots zero; any other
+// null-slot content is carried as an exact residual).
+func (f *FilePlanner) arrowNullable(data []byte, af *ArrowFile, c ArrowCol, base int, spans *[]colSpan) (bool, error) {
+	w := int64(c.Width)
+	type bat struct {
+		vb, vv      ArrowBuf
+		rows, start int64
+		bitmap      []byte
+	}
+	var dense []byte
+	var bs []bat
+	for _, bt := range af.Batches {
+		vb, vv := bt.Bufs[base], bt.Bufs[base+1]
+		nbm := (bt.Rows + 7) / 8
+		if vb.Len < nbm || vv.Len < bt.Rows*w {
+			return false, nil
+		}
+		bm := data[vb.Off : vb.Off+nbm]
+		b := bat{vb: ArrowBuf{Off: vb.Off, Len: nbm}, vv: ArrowBuf{Off: vv.Off, Len: bt.Rows * w}, rows: bt.Rows, start: int64(len(dense)) / w, bitmap: bm}
+		for i := int64(0); i < bt.Rows; i++ {
+			if bm[i>>3]>>(i&7)&1 == 1 {
+				dense = append(dense, data[vv.Off+i*w:vv.Off+(i+1)*w]...)
+			}
+		}
+		bs = append(bs, b)
+	}
+	dr, err := f.S.PutRaw(colDesc(c.DType, len(dense)/int(w)), dense)
+	if err != nil {
+		return false, err
+	}
+	for _, b := range bs {
+		vd := Desc{Kind: KindValid, Version: 1, DType: DU8, Shape: []uint64{uint64(len(b.bitmap))}, Ordered: true}
+		vr, err := f.S.PutRaw(vd, b.bitmap)
+		if err != nil {
+			return false, err
+		}
+		op := Op{Kind: OpScatter, Elem: uint32(w), Off: uint64(b.start), Len: uint64(b.rows)}
+		actual := data[b.vv.Off : b.vv.Off+b.vv.Len]
+		pred, err := op.Apply([][]byte{dense, b.bitmap})
+		if err != nil {
+			return false, nil
+		}
+		patches := DiffPatches(pred, actual, 8)
+		vr2, err := f.S.PutDerived(bytesDesc(KindBytes, len(actual)), []ID{dr.CID, vr.CID}, []Op{op}, patches, actual)
+		if err != nil {
+			return false, err
+		}
+		*spans = append(*spans,
+			colSpan{b.vb.Off, b.vb.Len, Step{Kind: StepRef, CID: vr.CID, Label: c.Name + ".validity"}},
+			colSpan{b.vv.Off, b.vv.Len, Step{Kind: StepRef, CID: vr2.CID, Label: c.Name + ".values"}})
+	}
+	return true, nil
 }

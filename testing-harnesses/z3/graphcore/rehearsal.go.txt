@@ -1,0 +1,121 @@
+package main
+
+//IMPORT
+import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+type p6Store struct {
+	s      *Store
+	bucket string
+}
+
+func (b *p6Store) put(key string, data []byte) error {
+	ing, err := b.s.ingestStream(bytes.NewReader(data), true, ingestOptions{size: int64(len(data))})
+	if err != nil {
+		return err
+	}
+	_, err = b.s.commitIngested(b.bucket, key, ing, "application/octet-stream", nil, putCondition{})
+	return err
+}
+
+func (b *p6Store) get(key string) ([]byte, error) {
+	_, man, err := b.s.HeadObject(b.bucket, key)
+	if err != nil {
+		return nil, err
+	}
+	ra := b.s.newManifestReaderAt(man)
+	defer ra.close()
+	out := make([]byte, man.TotalLength)
+	if _, err := ra.ReadAt(out, 0); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return out, nil
+}
+
+// resolver: the adapter owns storage and integrity of every referenced object (content-addressed:
+// the digest of what the engine returns must equal the reference, otherwise replay fails closed).
+func (b *p6Store) resolve(ref [32]byte) ([]byte, error) {
+	d, err := b.get(fmt.Sprintf("o/%x", ref[:]))
+	if err != nil {
+		return nil, err
+	}
+	if sha256.Sum256(d) != ref {
+		return nil, fmt.Errorf("object %x failed its digest", ref[:4])
+	}
+	return d, nil
+}
+
+func main() {
+	z3 := os.Getenv("P6_Z3")
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("p6"); err != nil {
+		t.Fatal(err)
+	}
+	st := &p6Store{s, "p6"}
+	var files [][]byte
+	var recs [][]byte
+	for _, name := range []string{"a.bc", "b.bc"} {
+		d, err := os.ReadFile(filepath.Join(z3, "graphcore", "testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, d)
+		e, err := @graphcore.EncodeLLVM@(d, @graphcore.PolicyAll@)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rc := &@graphcore.LLVMRecipe@{Size: uint64(len(d)), SHA: sha256.Sum256(d), Tail: e.Tail}
+		putObj := func(b []byte) [32]byte {
+			h := sha256.Sum256(b)
+			if err := st.put(fmt.Sprintf("o/%x", h[:]), b); err != nil {
+				t.Fatal(err)
+			}
+			return h
+		}
+		for _, p := range e.Pieces {
+			rc.Steps = append(rc.Steps, @graphcore.RecipeStep@{Kind: p.Kind, Ref: putObj(p.Data)})
+		}
+		rc.IDTab = putObj(e.IDTab)
+		recs = append(recs, rc.Marshal())
+		if err := st.put("recipe/"+name, rc.Marshal()); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Printf("REHEARSAL encode %s bytes=%d pieces=%d\n", name, len(d), len(e.Pieces))
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	st2 := &p6Store{s2, "p6"}
+	for i, name := range []string{"a.bc", "b.bc"} {
+		wire, err := st2.get("recipe/" + name)
+		if err != nil || !bytes.Equal(wire, recs[i]) {
+			t.Fatalf("recipe %s did not round-trip through the engine: %v", name, err)
+		}
+		rc, err := @graphcore.ParseLLVMRecipe@(wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := rc.Replay(st2.resolve)
+		if err != nil || !bytes.Equal(out, files[i]) {
+			t.Fatalf("replay %s: %v", name, err)
+		}
+		fmt.Printf("REHEARSAL replay %s exact sha256=%x\n", name, sha256.Sum256(out))
+	}
+	fmt.Println("REHEARSAL OK")
+}

@@ -1,0 +1,6 @@
+{"file": "model.safetensors", "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c", "exact": true}
+{"file": "f16.gguf", "sha256": "f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57", "exact": true}
+{"file": "q8_0.gguf", "sha256": "5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83", "exact": true}
+{"file": "model_fp16.onnx", "sha256": "e85e706ce14a3499e1f698c0d638b430df75b5f67131d1516bd0d46b844dfb2e", "exact": true}
+{"file": "model.onnx", "sha256": "1e790f1d6fac94097a6516ed1f07c29049097271d536d538562cd31ffc011a71", "exact": true}
+{"summary": {"files": 5, "mismatches": 0, "replay_wall_s": 7.61, "replay_max_rss_mib": 728.7}}
