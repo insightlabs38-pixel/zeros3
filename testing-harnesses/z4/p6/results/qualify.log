@@ -1,0 +1,92 @@
+### gofmt
+(empty = clean)
+### go -C testing-harnesses/z3 vet ./semcore ./semcas ./graphcore ./graphnorm ./dcore ./simdelta ./cmd/z4p6 ./cmd/z4b3 ./cmd/z4b4 ./cmd/p6extract ./cmd/p6alias
+exit=0
+
+### go -C testing-harnesses/z3 build ./...
+exit=0
+
+### go -C testing-harnesses/z3 test -count=1 ./semcore ./semcas ./graphcore ./graphnorm ./dcore ./simdelta
+ok  	zeros3-z3/semcore	0.160s
+ok  	zeros3-z3/semcas	0.112s
+ok  	zeros3-z3/graphcore	11.477s
+ok  	zeros3-z3/graphnorm	0.022s
+ok  	zeros3-z3/dcore	3.345s
+ok  	zeros3-z3/simdelta	3.447s
+exit=0
+
+### go -C testing-harnesses/z3 test -count=1 ./graphcore
+ok  	zeros3-z3/graphcore	18.358s
+exit=0
+
+### go -C testing-harnesses/z3 test -race -count=1 ./semcore ./graphcore ./dcore
+ok  	zeros3-z3/semcore	1.921s
+ok  	zeros3-z3/graphcore	131.666s
+ok  	zeros3-z3/dcore	31.419s
+exit=0
+
+### go -C testing-harnesses/z3 test ./semcore -run ^$ -fuzz ^FuzzParseRecord$ -fuzztime 15s
+fuzz: elapsed: 9s, execs: 854105 (113487/sec), new interesting: 85 (total: 87)
+fuzz: elapsed: 12s, execs: 854105 (0/sec), new interesting: 85 (total: 87)
+fuzz: elapsed: 15s, execs: 1214252 (120074/sec), new interesting: 87 (total: 89)
+fuzz: elapsed: 16s, execs: 1214252 (0/sec), new interesting: 87 (total: 89)
+PASS
+ok  	zeros3-z3/semcore	16.019s
+exit=0
+
+### go -C testing-harnesses/z3 test ./semcore -run ^$ -fuzz ^FuzzParseRecipe$ -fuzztime 15s
+fuzz: elapsed: 9s, execs: 879644 (95930/sec), new interesting: 37 (total: 38)
+fuzz: elapsed: 12s, execs: 1165003 (95180/sec), new interesting: 42 (total: 43)
+fuzz: elapsed: 15s, execs: 1423723 (86257/sec), new interesting: 47 (total: 48)
+fuzz: elapsed: 15s, execs: 1423723 (0/sec), new interesting: 47 (total: 48)
+PASS
+ok  	zeros3-z3/semcore	15.104s
+exit=0
+
+### go -C testing-harnesses/z3 test ./semcore -run ^$ -fuzz ^FuzzDetectAt$ -fuzztime 15s
+fuzz: elapsed: 9s, execs: 58 (0/sec), new interesting: 1 (total: 9)
+fuzz: elapsed: 12s, execs: 58 (0/sec), new interesting: 1 (total: 9)
+fuzz: elapsed: 15s, execs: 58 (0/sec), new interesting: 1 (total: 9)
+fuzz: elapsed: 16s, execs: 58 (0/sec), new interesting: 1 (total: 9)
+PASS
+ok  	zeros3-z3/semcore	16.025s
+exit=0
+
+### go -C testing-harnesses/z3 test ./graphcore -run ^$ -fuzz ^FuzzVM$ -fuzztime 15s
+fuzz: elapsed: 9s, execs: 723634 (66080/sec), new interesting: 197 (total: 201)
+fuzz: elapsed: 12s, execs: 936166 (70841/sec), new interesting: 261 (total: 265)
+fuzz: elapsed: 15s, execs: 1119040 (60966/sec), new interesting: 262 (total: 266)
+fuzz: elapsed: 16s, execs: 1119040 (0/sec), new interesting: 262 (total: 266)
+PASS
+ok  	zeros3-z3/graphcore	16.018s
+exit=0
+
+### go -C testing-harnesses/z3 test ./graphcore -run ^$ -fuzz ^FuzzBitstream$ -fuzztime 15s
+fuzz: elapsed: 9s, execs: 156 (0/sec), new interesting: 1 (total: 3)
+fuzz: elapsed: 12s, execs: 156 (0/sec), new interesting: 1 (total: 3)
+fuzz: elapsed: 15s, execs: 156 (0/sec), new interesting: 1 (total: 3)
+fuzz: elapsed: 16s, execs: 156 (0/sec), new interesting: 1 (total: 3)
+PASS
+ok  	zeros3-z3/graphcore	16.016s
+exit=0
+
+### go -C testing-harnesses/z3 test ./graphcore -run ^$ -fuzz ^FuzzRecipe$ -fuzztime 15s
+fuzz: elapsed: 9s, execs: 794111 (84479/sec), new interesting: 18 (total: 19)
+fuzz: elapsed: 12s, execs: 1054465 (86769/sec), new interesting: 18 (total: 19)
+fuzz: elapsed: 15s, execs: 1294826 (80129/sec), new interesting: 18 (total: 19)
+fuzz: elapsed: 16s, execs: 1294826 (0/sec), new interesting: 18 (total: 19)
+PASS
+ok  	zeros3-z3/graphcore	16.013s
+exit=0
+
+### go -C testing-harnesses/z3 test ./graphcore -run ^$ -fuzz ^FuzzPDBandDEX$ -fuzztime 15s
+fuzz: elapsed: 9s, execs: 65 (0/sec), new interesting: 1 (total: 3)
+fuzz: elapsed: 12s, execs: 65 (0/sec), new interesting: 1 (total: 3)
+fuzz: elapsed: 15s, execs: 65 (0/sec), new interesting: 1 (total: 3)
+fuzz: elapsed: 16s, execs: 65 (0/sec), new interesting: 1 (total: 3)
+PASS
+ok  	zeros3-z3/graphcore	16.023s
+exit=0
+
+### production source unchanged (git diff --stat ded8d04 -- zeros3.go go.mod zeros3*_test.go)
+(empty = unchanged; ded8d04 is the verified P5 merge commit on main)

@@ -107,6 +107,7 @@ func cmdIngest(args []string) {
 	maxT := fl.Int64("max-tensor-mib", 192, "tensors above this are stored as bounded blocks (MiB)")
 	work := fl.Int64("work-mib", 512, "transient candidate-buffer budget (MiB)")
 	par := fl.Int("parallel", 0, "concurrent candidate evaluations (0 = NumCPU)")
+	accept := fl.Float64("accept", 0, "override Options.AcceptFrac (diagnostic: measure residual sizes of weak relations)")
 	fl.Parse(args)
 	if *prof != "" {
 		pf, err := os.Create(*prof)
@@ -127,6 +128,9 @@ func cmdIngest(args []string) {
 	opt.MaxTensor = int(*maxT << 20)
 	opt.WorkBytes = *work << 20
 	opt.Parallel = *par
+	if *accept > 0 {
+		opt.AcceptFrac = *accept
+	}
 	p := semcas.NewPlanner(s, opt)
 	enc := json.NewEncoder(os.Stdout)
 	hs := startHeap()
