@@ -1,0 +1,483 @@
+[
+ {
+  "func": "Store.casPublishClaimed",
+  "line": 1244,
+  "calls": [
+   "casStatLocked"
+  ],
+  "operation": "CAS primitive",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "casBatch.add",
+  "line": 1358,
+  "calls": [
+   "casStat"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Store.casStat",
+  "line": 1505,
+  "calls": [
+   "casStatLocked"
+  ],
+  "operation": "stat",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Store.casRead",
+  "line": 1542,
+  "calls": [
+   "casReadExcluding"
+  ],
+  "operation": "read",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Store.casReadExcluding",
+  "line": 1549,
+  "calls": [
+   "casReadH"
+  ],
+  "operation": "read",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "packSink.Put",
+  "line": 1830,
+  "calls": [
+   "casStat"
+  ],
+  "operation": "PUT",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Store.loadManifestBytesH",
+  "line": 5677,
+  "calls": [
+   "casReadH"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "servedManifest.manifest",
+  "line": 5804,
+  "calls": null,
+  "operation": "other",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "newServedManifest",
+  "line": 5825,
+  "calls": null,
+  "operation": "GET/HEAD/range",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "Store.RestoreObjectVersion",
+  "line": 8335,
+  "calls": [
+   "casStat"
+  ],
+  "operation": "history/versions",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Store.CopyObject",
+  "line": 11106,
+  "calls": [
+   "casStat"
+  ],
+  "operation": "CopyObject",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "multipartReader.Read",
+  "line": 11747,
+  "calls": [
+   "casRead"
+  ],
+  "operation": "read",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Server.handleUploadPartCopy",
+  "line": 12117,
+  "calls": [
+   "newServedReader"
+  ],
+  "operation": "UploadPartCopy",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body references authority (openObjectReader)"
+ },
+ {
+  "func": "Store.analyzeManifest",
+  "line": 12703,
+  "calls": null,
+  "operation": "other",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "Store.checkChunk",
+  "line": 13142,
+  "calls": [
+   "casReadH"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "Store.verifyWholeObjects",
+  "line": 13885,
+  "calls": [
+   "casReadH"
+  ],
+  "operation": "verify",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "Store.replacePacksToLive",
+  "line": 15436,
+  "calls": [
+   "casReadExcluding",
+   "casReadH"
+  ],
+  "operation": "representation",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "Store.newStreamReader",
+  "line": 17724,
+  "calls": [
+   "newServedReader"
+  ],
+  "operation": "read",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "Store.newPipeReader",
+  "line": 17750,
+  "calls": [
+   "newServedReader"
+  ],
+  "operation": "read",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "pipeReader.run",
+  "line": 17791,
+  "calls": [
+   "casRead"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "pipeReader.next",
+  "line": 17832,
+  "calls": [
+   "casRead"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "Store.newManifestReader",
+  "line": 17961,
+  "calls": [
+   "newServedReader"
+  ],
+  "operation": "read",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "manifestReader.chunk",
+  "line": 18030,
+  "calls": [
+   "casRead"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Server.handleSyncDescribeObject",
+  "line": 18460,
+  "calls": null,
+  "operation": "sync",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Store.computeChunkRootMembership",
+  "line": 18525,
+  "calls": null,
+  "operation": "PUT",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Server.handleReachabilityQuery",
+  "line": 18621,
+  "calls": null,
+  "operation": "gc/reachability",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Server.handleSyncChunkDownload",
+  "line": 18682,
+  "calls": [
+   "casRead"
+  ],
+  "operation": "sync",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Server.handleSyncNegotiate",
+  "line": 18724,
+  "calls": [
+   "casStat"
+  ],
+  "operation": "sync",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Server.handleSyncCommit",
+  "line": 18815,
+  "calls": [
+   "casRead"
+  ],
+  "operation": "sync",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Server.handleSnapshotDescribeObject",
+  "line": 19046,
+  "calls": null,
+  "operation": "snapshot",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Server.handleBulkNegotiate",
+  "line": 20447,
+  "calls": [
+   "casStat"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Server.handleBulkFetch",
+  "line": 20478,
+  "calls": [
+   "casRead",
+   "casStat"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "planReplication",
+  "line": 21582,
+  "calls": null,
+  "operation": "replication",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Store.repairFindings",
+  "line": 22187,
+  "calls": [
+   "casStat"
+  ],
+  "operation": "repair",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Store.repairFromPeer",
+  "line": 22388,
+  "calls": [
+   "casRead"
+  ],
+  "operation": "repair",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "restoreObject",
+  "line": 24082,
+  "calls": null,
+  "operation": "restore",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "buildObjectDiff",
+  "line": 24371,
+  "calls": null,
+  "operation": "other",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "inspectObject",
+  "line": 24637,
+  "calls": null,
+  "operation": "other",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "parseBundleManifest",
+  "line": 25736,
+  "calls": null,
+  "operation": "bundle",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "appendManifestChunks",
+  "line": 25766,
+  "calls": null,
+  "operation": "other",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Store.exportBundle",
+  "line": 25938,
+  "calls": [
+   "casRead"
+  ],
+  "operation": "bundle",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "bundleImporter.chunk",
+  "line": 26493,
+  "calls": [
+   "casRead",
+   "casStat"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Store.checkBaseRef",
+  "line": 26999,
+  "calls": [
+   "casRead"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "Store.exportDelta",
+  "line": 27014,
+  "calls": [
+   "casRead"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "storeRepSource.Size",
+  "line": 29685,
+  "calls": [
+   "casStat"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "storeRepSource.chunk",
+  "line": 29775,
+  "calls": [
+   "casRead"
+  ],
+  "operation": "other",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "manifestReaderAt.ReadAt",
+  "line": 33267,
+  "calls": [
+   "newServedReader"
+  ],
+  "operation": "read",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "draft body references authority (openObjectReader)"
+ },
+ {
+  "func": "Store.repBuildFor",
+  "line": 33335,
+  "calls": [
+   "newManifestReaderAt"
+  ],
+  "operation": "representation",
+  "iterates_manifest_chunks": false,
+  "b2_draft": "function absent in draft (post-B2 code: P1-P4)"
+ },
+ {
+  "func": "repPQFile.validate",
+  "line": 50388,
+  "calls": null,
+  "operation": "other",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "repPQFile.Spans",
+  "line": 50456,
+  "calls": null,
+  "operation": "other",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ },
+ {
+  "func": "repBuilder.encodeStructured",
+  "line": 53688,
+  "calls": null,
+  "operation": "other",
+  "iterates_manifest_chunks": true,
+  "b2_draft": "draft body unchanged by authority hooks"
+ }
+]

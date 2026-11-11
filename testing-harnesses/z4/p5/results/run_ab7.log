@@ -1,0 +1,33 @@
+--- PASS: TestB2Economics (67.26s)
+    --- PASS: TestB2Economics/parquet (67.26s)
+PASS
+parquet total_wall=67.278788607
+--- PASS: TestB2Economics (13.68s)
+    --- PASS: TestB2Economics/clr-short (13.67s)
+PASS
+clr-short total_wall=13.690721328
+--- PASS: TestB2Economics (13.64s)
+    --- PASS: TestB2Economics/git (13.64s)
+PASS
+git total_wall=13.656712777
+--- PASS: TestB2Economics (131.96s)
+    --- PASS: TestB2Economics/src-tar-short (131.96s)
+PASS
+src-tar-short total_wall=131.999113679
+--- PASS: TestB2Economics (74.40s)
+    --- PASS: TestB2Economics/sqlite (74.40s)
+PASS
+sqlite total_wall=74.431193943
+--- PASS: TestB2Economics (1014.66s)
+    --- PASS: TestB2Economics/parquet (1014.66s)
+PASS
+parquet total_wall=1014.683987730
+--- PASS: TestB2Economics (67.88s)
+    --- PASS: TestB2Economics/parquet (67.85s)
+PASS
+parquet total_wall=67.907217376
+--- PASS: TestB2Economics (221.36s)
+    --- PASS: TestB2Economics/dex (221.36s)
+PASS
+dex total_wall=221.378224467
+AB_DONE

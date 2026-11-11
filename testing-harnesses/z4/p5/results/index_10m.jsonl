@@ -1,0 +1,6 @@
+{"chunks":10000000,"mode":"index-sort","postings":40000000,"resident_mib":610.3515625,"sec":13.965411105,"variant":"b1-sort.Slice"}
+{"chunks":10000000,"mode":"index-sort","postings":40000000,"resident_mib":610.3515625,"sec":7.594367217,"variant":"slices.SortFunc"}
+{"chunks":10000000,"mode":"index-sort","postings":40000000,"resident_mib":610.3515625,"sec":4.108338828,"variant":"bucket1"}
+{"chunks":10000000,"mode":"index-sort","postings":40000000,"resident_mib":610.3515625,"sec":1.882556563,"variant":"bucket4"}
+{"chunks":10000000,"flat_bytes":480000000,"flat_write_sec":15.042821509,"mode":"index-serialize","run_bytes":400262172,"run_write_sec":1.196181472}
+{"chunks":10000000,"flat_us":12.008191830000001,"hits_flat":200000,"hits_run":200000,"mode":"index-lookup","queries":200000,"run_open_sec":0.000320295,"run_us":10.240482425,"run_verify_sec":0.077247954}

@@ -24,6 +24,10 @@ func runExtra(mode string, args []string, root string) bool {
 		cmdRuns(args)
 	case "window":
 		cmdWindow(args)
+	case "wencode":
+		cmdWEncode(args)
+	case "wdecode":
+		cmdWDecode(args)
 	default:
 		return false
 	}
@@ -446,4 +450,49 @@ func cmdWindow(args []string) {
 		"inserted_literal_bytes": inserted, "literal_bytes": st.LiteralBytes, "copy_bytes": st.CopyBytes, "frames": st.Frames, "base_read_amp_encode": float64(st.BaseReadBytes) / float64(bst.Size()),
 		"decode_sec": decSec, "decode_mib_s": float64(tst.Size()) / decSec / (1 << 20), "decode_base_read": ds.BaseReadBytes,
 		"verified": ok, "rss_after_encode_mib": encRSS, "heap_mib": heapMiB(), "ranges": rng})
+}
+
+// cmdWEncode: base target record -> writes a ZW1 record file (process 1 of a replay pair).
+func cmdWEncode(args []string) {
+	if len(args) != 3 {
+		must(fmt.Errorf("usage: wencode BASE TARGET RECORD"))
+	}
+	bf, err := os.Open(args[0])
+	must(err)
+	tf, err := os.Open(args[1])
+	must(err)
+	bst, _ := bf.Stat()
+	tst, _ := tf.Stat()
+	wp := dcore.DefaultWParams()
+	wp.Workers = runtime.NumCPU()
+	idx, err := dcore.BuildWIndex(bf, bst.Size(), wp.Anchor, wp.Workers)
+	must(err)
+	out, err := os.Create(args[2])
+	must(err)
+	st, err := dcore.WEncode(out, tf, tst.Size(), bf, bst.Size(), idx, wp)
+	must(err)
+	must(out.Sync())
+	emit(map[string]any{"mode": "wencode", "record_bytes": st.RecordBytes, "frames": st.Frames})
+}
+
+// cmdWDecode: record base out -> fresh-process decode to a file; the caller compares
+// sha256sum of out with the independently hashed target.
+func cmdWDecode(args []string) {
+	if len(args) != 3 {
+		must(fmt.Errorf("usage: wdecode RECORD BASE OUT"))
+	}
+	rf, err := os.Open(args[0])
+	must(err)
+	rst, _ := rf.Stat()
+	bf, err := os.Open(args[1])
+	must(err)
+	rec, err := dcore.OpenWRecord(rf, rst.Size())
+	must(err)
+	out, err := os.Create(args[2])
+	must(err)
+	wp := dcore.DefaultWParams()
+	_, err = rec.Decode(out, bf, wp)
+	must(err)
+	must(out.Close())
+	emit(map[string]any{"mode": "wdecode", "object_sha256": fmt.Sprintf("%x", rec.SHA), "size": rec.Size})
 }

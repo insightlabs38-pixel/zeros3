@@ -1,0 +1,7 @@
+{"flushes":16,"heap_mib":81.1418685913086,"mode":"runs-append","objects":1000000,"per_obj_us":1.5903619820000001,"runs":16,"sec":1.5903619820000001}
+{"avg_candidates":3.2084,"label":"multi-run","mode":"runs-query","objects":1000000,"query_us":53.0943032,"runs":16}
+{"deleted":100000,"mode":"runs-delete","sec":0.006039611}
+{"heap_mib":48.49847412109375,"mode":"runs-compact","objects":1000000,"runs_after":1,"sec":1.3994444480000001}
+{"avg_candidates":3.04145,"label":"compacted","mode":"runs-query","objects":1000000,"query_us":7.58470735,"runs":1}
+{"mode":"runs-startup","runs":1,"sec":0.000274308,"verify":false}
+{"mode":"runs-startup","runs":1,"sec":0.008181211,"verify":true}
