@@ -1,4 +1,4 @@
-package mdelta2
+package numcore
 
 import (
 	"encoding/binary"
@@ -22,9 +22,9 @@ const (
 type Residual uint8
 
 const (
-	RKey Residual = iota // zigzag(key(target) - key(pred)), exact on all bit patterns
+	RKey Residual = iota // Zigzag(Key(target) - Key(pred)), exact on all bit patterns
 	RXor                 // target ^ pred bits
-	RSub                 // zigzag(target - pred) as raw integers
+	RSub                 // Zigzag(target - pred) as raw integers
 )
 
 // Gran is the affine/linear coefficient granularity.
@@ -115,7 +115,7 @@ func ParseParams(b []byte, nmax int) (*Params, int, error) {
 func roundCoef(x float64, prec uint8) float32 {
 	f := float32(x)
 	if prec == 2 {
-		return math.Float32frombits(uint32(f64ToBF16(float64(f))) << 16)
+		return math.Float32frombits(uint32(F64ToBF16(float64(f))) << 16)
 	}
 	return f
 }
@@ -136,26 +136,26 @@ func (b Base) at(i int) float64 {
 	case DBF16:
 		return float64(math.Float32frombits(uint32(binary.LittleEndian.Uint16(b.Data[2*i:])) << 16))
 	}
-	return f16ToF64(uint32(binary.LittleEndian.Uint16(b.Data[2*i:])))
+	return F16ToF64(uint32(binary.LittleEndian.Uint16(b.Data[2*i:])))
 }
 
 func (b Base) n() int { return len(b.Data) / b.DT.Width() }
 
 func idPred(tdt DType, b Base, i int) uint32 {
 	if b.DT == tdt {
-		return le(b.Data, tdt.Width(), i)
+		return LE(b.Data, tdt.Width(), i)
 	}
 	switch {
 	case b.DT == DF32 && tdt == DF16:
-		return f32ToF16(binary.LittleEndian.Uint32(b.Data[4*i:]))
+		return F32ToF16(binary.LittleEndian.Uint32(b.Data[4*i:]))
 	case b.DT == DF32 && tdt == DBF16:
-		return f32ToBF16(binary.LittleEndian.Uint32(b.Data[4*i:]))
+		return F32ToBF16(binary.LittleEndian.Uint32(b.Data[4*i:]))
 	case b.DT == DF16 && tdt == DF32:
-		return f16ToF32(uint32(binary.LittleEndian.Uint16(b.Data[2*i:])))
+		return F16ToF32(uint32(binary.LittleEndian.Uint16(b.Data[2*i:])))
 	case b.DT == DBF16 && tdt == DF32:
 		return uint32(binary.LittleEndian.Uint16(b.Data[2*i:])) << 16
 	}
-	return fromF64(tdt, b.at(i))
+	return FromF64(tdt, b.at(i))
 }
 
 // Predict computes the predicted bit patterns for an n-element target of dtype tdt.
@@ -190,7 +190,7 @@ func Predict(p *Params, tdt DType, shape []int64, bases []Base) ([]byte, error) 
 			break
 		}
 		for i := 0; i < n; i++ {
-			putLE(out, w, i, idPred(tdt, bases[0], i))
+			PutLE(out, w, i, idPred(tdt, bases[0], i))
 		}
 	case KAff:
 		blk := affBlock(p, rows, cols, n)
@@ -202,11 +202,11 @@ func Predict(p *Params, tdt DType, shape []int64, bases []Base) ([]byte, error) 
 			a, c := float64(p.Coef[k]), float64(p.Coef[k+1])
 			x := float64(a * bases[0].at(i))
 			pv := x + c
-			if !finite(pv) || !finite(bases[0].at(i)) {
-				putLE(out, w, i, idPred(tdt, bases[0], i))
+			if !Finite(pv) || !Finite(bases[0].at(i)) {
+				PutLE(out, w, i, idPred(tdt, bases[0], i))
 				continue
 			}
-			putLE(out, w, i, fromF64(tdt, pv))
+			PutLE(out, w, i, FromF64(tdt, pv))
 		}
 	case KLow:
 		r := int(p.Rank)
@@ -225,11 +225,11 @@ func Predict(p *Params, tdt DType, shape []int64, bases []Base) ([]byte, error) 
 				idx := i*cols + j
 				bv := bases[0].at(idx)
 				pv := bv + s
-				if !finite(pv) || !finite(bv) {
-					putLE(out, w, idx, idPred(tdt, bases[0], idx))
+				if !Finite(pv) || !Finite(bv) {
+					PutLE(out, w, idx, idPred(tdt, bases[0], idx))
 					continue
 				}
-				putLE(out, w, idx, fromF64(tdt, pv))
+				PutLE(out, w, idx, FromF64(tdt, pv))
 			}
 		}
 	case KLin:
@@ -251,17 +251,17 @@ func Predict(p *Params, tdt DType, shape []int64, bases []Base) ([]byte, error) 
 			ok := true
 			for k := 0; k < m; k++ {
 				x := bases[k].at(i)
-				if !finite(x) {
+				if !Finite(x) {
 					ok = false
 				}
 				s += float64(float64(co[k]) * x)
 			}
 			s += float64(co[m])
-			if !ok || !finite(s) {
-				putLE(out, w, i, idPred(tdt, bases[0], i))
+			if !ok || !Finite(s) {
+				PutLE(out, w, i, idPred(tdt, bases[0], i))
 				continue
 			}
-			putLE(out, w, i, fromF64(tdt, s))
+			PutLE(out, w, i, FromF64(tdt, s))
 		}
 	default:
 		return nil, ErrParams
@@ -317,11 +317,11 @@ func MakeResidual(res Residual, w int, target, pred []byte) []byte {
 			var r uint32
 			switch res {
 			case RKey:
-				r = zigzag((key(t, 1)-key(p, 1))&0xff, 1)
+				r = Zigzag((Key(t, 1)-Key(p, 1))&0xff, 1)
 			case RXor:
 				r = t ^ p
 			default:
-				r = zigzag((t-p)&0xff, 1)
+				r = Zigzag((t-p)&0xff, 1)
 			}
 			out[i] = byte(r)
 		}
@@ -367,11 +367,11 @@ func ApplyResidual(res Residual, w int, resid, pred []byte) []byte {
 			var t uint32
 			switch res {
 			case RKey:
-				t = unkey((key(p, 1)+unzigzag(r, 1))&0xff, 1)
+				t = Unkey((Key(p, 1)+Unzigzag(r, 1))&0xff, 1)
 			case RXor:
 				t = r ^ p
 			default:
-				t = (p + unzigzag(r, 1)) & 0xff
+				t = (p + Unzigzag(r, 1)) & 0xff
 			}
 			out[i] = byte(t)
 		}

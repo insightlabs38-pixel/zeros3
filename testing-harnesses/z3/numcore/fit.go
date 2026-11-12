@@ -1,4 +1,4 @@
-package mdelta2
+package numcore
 
 import (
 	"math"
@@ -9,7 +9,7 @@ import (
 type sums struct{ n, sb, st, sbb, sbt float64 }
 
 func (s *sums) add(b, t float64) {
-	if !finite(b) || !finite(t) {
+	if !Finite(b) || !Finite(t) {
 		return
 	}
 	s.n++
@@ -63,7 +63,7 @@ func FitAffine(tdt DType, shape []int64, g Gran, block int, mode int, prec uint8
 			hi = n
 		}
 		for i := k * blk; i < hi; i++ {
-			s.add(base.at(i), toF64(tdt, le(target, w, i)))
+			s.add(base.at(i), ToF64(tdt, LE(target, w, i)))
 		}
 		a, c := s.solve(mode)
 		p.Coef[2*k], p.Coef[2*k+1] = roundCoef(a, prec), roundCoef(c, prec)
@@ -97,11 +97,11 @@ func FitLin(tdt DType, shape []int64, g Gran, prec uint8, bases []Base, target [
 			ok := true
 			for k := 0; k < m; k++ {
 				x[k] = bases[k].at(i)
-				ok = ok && finite(x[k])
+				ok = ok && Finite(x[k])
 			}
 			x[m] = 1
-			t := toF64(tdt, le(target, w, i))
-			if !ok || !finite(t) {
+			t := ToF64(tdt, LE(target, w, i))
+			if !ok || !Finite(t) {
 				continue
 			}
 			for r := 0; r < d; r++ {
@@ -165,7 +165,7 @@ func solveSPD(A, y []float64, d int) []float64 {
 	}
 	// fall back to identity-like coefficients if the solve produced garbage
 	for _, v := range x {
-		if !finite(v) {
+		if !Finite(v) {
 			for i := range x {
 				x[i] = 0
 			}
@@ -185,9 +185,9 @@ func LowRankFit(tdt DType, shape []int64, r int, prec uint8, base Base, target [
 	rows := n / cols
 	D := make([]float32, n)
 	for i := 0; i < n; i++ {
-		b, t := base.at(i), toF64(tdt, le(target, w, i))
+		b, t := base.at(i), ToF64(tdt, LE(target, w, i))
 		d := t - b
-		if !finite(d) {
+		if !Finite(d) {
 			d = 0
 		}
 		D[i] = float32(d)
@@ -413,17 +413,17 @@ func groupCost(tdt DType, base Base, target []byte, lo, hi, stride int, a, c flo
 	for i := lo; i < hi; i += stride {
 		b := base.at(i)
 		var pv uint32
-		if x := b; finite(x) {
+		if x := b; Finite(x) {
 			y := float64(float64(a)*x) + float64(c)
-			if finite(y) {
-				pv = fromF64(tdt, y)
+			if Finite(y) {
+				pv = FromF64(tdt, y)
 			} else {
 				pv = idPred(tdt, base, i)
 			}
 		} else {
 			pv = idPred(tdt, base, i)
 		}
-		cost += bitlen(zigzag((key(le(target, w, i), w)-key(pv, w))&mask(w), w))
+		cost += Bitlen(Zigzag((Key(LE(target, w, i), w)-Key(pv, w))&Mask(w), w))
 	}
 	return cost
 }
@@ -454,7 +454,7 @@ func FitAffineRobust(tdt DType, shape []int64, g Gran, block int, prec uint8, ba
 		}
 		var s sums
 		for i := lo; i < hi; i += stride {
-			s.add(base.at(i), toF64(tdt, le(target, w, i)))
+			s.add(base.at(i), ToF64(tdt, LE(target, w, i)))
 		}
 		type cand struct{ a, c float32 }
 		a0, c0 := s.solve(0)

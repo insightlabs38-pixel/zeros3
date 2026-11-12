@@ -3,6 +3,8 @@ package mdelta2
 import (
 	"encoding/binary"
 	"math"
+
+	"zeros3-z3/qcore"
 )
 
 // ggml block layouts used by the quantized lane. Field order within a block is the on-disk order.
@@ -23,9 +25,6 @@ var qgeoms = map[DType]qgeom{
 	DQ5_K: {256, 176, []qfield{{0, 2}, {2, 2}, {4, 12}, {16, 32}, {48, 128}}},
 	DQ6_K: {256, 210, []qfield{{208, 2}, {192, 16}, {128, 64}, {0, 128}}},
 }
-
-// IsQuant reports a block-quantized dtype with a known geometry.
-func (d DType) IsQuant() bool { _, ok := qgeoms[d]; return ok }
 
 // SplitFields returns one stream per block field (field-major), the layout a typed coder sees.
 func SplitFields(d DType, data []byte) [][]byte {
@@ -79,125 +78,33 @@ func FloatsOf(dt DType, data []byte, viaF16 bool) []float32 {
 	return out
 }
 
-// Quantize reproduces ggml's reference row quantizer (quantize_row_*_ref) for the simple block types.
-// ok=false for types without a port.
-func Quantize(t DType, x []float32) ([]byte, bool) {
-	g, has := qgeoms[t]
-	if !has || len(x)%g.elems != 0 {
+var qcoreType = map[DType]qcore.Type{DQ8_0: qcore.Q8_0, DQ4_0: qcore.Q4_0, DQ4_1: qcore.Q4_1, DQ5_0: qcore.Q5_0, DQ5_1: qcore.Q5_1,
+	DQ4_K: qcore.Q4_K, DQ5_K: qcore.Q5_K, DQ6_K: qcore.Q6_K}
+
+// QuantizeAny reproduces ggml's reference (non-imatrix) quantizer through qcore; ok=false for
+// types without a port or a length that is not whole blocks.
+func QuantizeAny(t DType, x []float32) ([]byte, bool) {
+	qt, has := qcoreType[t]
+	if !has {
 		return nil, false
 	}
-	nb := len(x) / g.elems
-	out := make([]byte, nb*g.bytes)
-	for b := 0; b < nb; b++ {
-		blk := x[b*g.elems : (b+1)*g.elems]
-		y := out[b*g.bytes : (b+1)*g.bytes]
-		switch t {
-		case DQ8_0:
-			var amax float32
-			for _, v := range blk {
-				if a := float32(math.Abs(float64(v))); a > amax {
-					amax = a
-				}
-			}
-			d := amax / 127
-			var id float32
-			if d != 0 {
-				id = 1 / d
-			}
-			binary.LittleEndian.PutUint16(y, f16bits(d))
-			for j, v := range blk {
-				y[2+j] = byte(int8(roundAway(v * id)))
-			}
-		case DQ4_0, DQ5_0:
-			var amax, mx float32
-			for _, v := range blk {
-				if a := float32(math.Abs(float64(v))); a > amax {
-					amax, mx = a, v
-				}
-			}
-			div := float32(-8)
-			if t == DQ5_0 {
-				div = -16
-			}
-			d := mx / div
-			var id float32
-			if d != 0 {
-				id = 1 / d
-			}
-			binary.LittleEndian.PutUint16(y, f16bits(d))
-			if t == DQ4_0 {
-				for j := 0; j < 16; j++ {
-					x0, x1 := blk[j]*id, blk[16+j]*id
-					xi0, xi1 := minI(15, int(int8(x0+8.5))), minI(15, int(int8(x1+8.5)))
-					y[2+j] = byte(xi0 | xi1<<4)
-				}
-			} else {
-				var qh uint32
-				for j := 0; j < 16; j++ {
-					x0, x1 := blk[j]*id, blk[16+j]*id
-					xi0, xi1 := minI(31, int(int8(x0+16.5))), minI(31, int(int8(x1+16.5)))
-					y[6+j] = byte(xi0&0xf | (xi1&0xf)<<4)
-					qh |= uint32((xi0&0x10)>>4) << uint(j)
-					qh |= uint32((xi1&0x10)>>4) << uint(j+16)
-				}
-				binary.LittleEndian.PutUint32(y[2:], qh)
-			}
-		case DQ4_1, DQ5_1:
-			mn, mx := blk[0], blk[0]
-			for _, v := range blk {
-				if v < mn {
-					mn = v
-				}
-				if v > mx {
-					mx = v
-				}
-			}
-			levels := float32(15)
-			if t == DQ5_1 {
-				levels = 31
-			}
-			d := (mx - mn) / levels
-			var id float32
-			if d != 0 {
-				id = 1 / d
-			}
-			binary.LittleEndian.PutUint16(y, f16bits(d))
-			binary.LittleEndian.PutUint16(y[2:], f16bits(mn))
-			if t == DQ4_1 {
-				for j := 0; j < 16; j++ {
-					xi0, xi1 := minI(15, int((blk[j]-mn)*id+0.5)), minI(15, int((blk[16+j]-mn)*id+0.5))
-					y[4+j] = byte(xi0 | xi1<<4)
-				}
-			} else {
-				var qh uint32
-				for j := 0; j < 16; j++ {
-					xi0, xi1 := minI(31, int((blk[j]-mn)*id+0.5)), minI(31, int((blk[16+j]-mn)*id+0.5))
-					y[8+j] = byte(xi0&0xf | (xi1&0xf)<<4)
-					qh |= uint32((xi0&0x10)>>4) << uint(j)
-					qh |= uint32((xi1&0x10)>>4) << uint(j+16)
-				}
-				binary.LittleEndian.PutUint32(y[4:], qh)
-			}
-		default:
-			return nil, false
-		}
+	el, by := qcore.Block(qt)
+	if len(x)%el != 0 {
+		return nil, false
+	}
+	out := make([]byte, len(x)/el*by)
+	if qcore.Quantize(out, qt, x, el, nil, qcore.Strict) != nil {
+		return nil, false
 	}
 	return out, true
 }
 
-// QuantizeAny dispatches to the simple-type and K-quant ports.
-func QuantizeAny(t DType, x []float32) ([]byte, bool) {
-	switch t {
-	case DQ6_K:
-		if len(x)%256 == 0 {
-			return quantQ6K(x), true
-		}
-	case DQ4_K:
-		if len(x)%256 == 0 {
-			return quantQ4K(x), true
-		}
+// Quantize is QuantizeAny restricted to the simple (non-K) block types.
+func Quantize(t DType, x []float32) ([]byte, bool) {
+	if t == DQ4_K || t == DQ5_K || t == DQ6_K {
+		return nil, false
 	}
-	return Quantize(t, x)
+	return QuantizeAny(t, x)
 }
 
 func minI(a, b int) int {

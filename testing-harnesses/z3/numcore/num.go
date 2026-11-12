@@ -1,4 +1,4 @@
-package mdelta2
+package numcore
 
 import (
 	"encoding/binary"
@@ -10,7 +10,7 @@ import (
 // order-preserving integer keys, so any prediction (including NaN-derived ones) is exact.
 // Explicit float64() conversions forbid fused multiply-add on every architecture.
 
-func le(b []byte, w int, i int) uint32 {
+func LE(b []byte, w int, i int) uint32 {
 	switch w {
 	case 4:
 		return binary.LittleEndian.Uint32(b[4*i:])
@@ -20,7 +20,7 @@ func le(b []byte, w int, i int) uint32 {
 	return uint32(b[i])
 }
 
-func putLE(b []byte, w int, i int, v uint32) {
+func PutLE(b []byte, w int, i int, v uint32) {
 	switch w {
 	case 4:
 		binary.LittleEndian.PutUint32(b[4*i:], v)
@@ -31,7 +31,7 @@ func putLE(b []byte, w int, i int, v uint32) {
 	}
 }
 
-func mask(w int) uint32 {
+func Mask(w int) uint32 {
 	if w >= 4 {
 		return 0xFFFFFFFF
 	}
@@ -40,38 +40,38 @@ func mask(w int) uint32 {
 
 // key maps a bit pattern to an unsigned integer that is monotone in the float order (negative
 // values below positive ones); it is a bijection on w-byte patterns.
-func key(bits uint32, w int) uint32 {
+func Key(bits uint32, w int) uint32 {
 	s := uint32(1) << (8*uint(w) - 1)
 	if bits&s != 0 {
-		return (^bits) & mask(w)
+		return (^bits) & Mask(w)
 	}
 	return bits | s
 }
 
-func unkey(k uint32, w int) uint32 {
+func Unkey(k uint32, w int) uint32 {
 	s := uint32(1) << (8*uint(w) - 1)
 	if k&s != 0 {
 		return k &^ s
 	}
-	return (^k) & mask(w)
+	return (^k) & Mask(w)
 }
 
-func zigzag(d uint32, w int) uint32 { // d is a w-byte two's complement difference
+func Zigzag(d uint32, w int) uint32 { // d is a w-byte two's complement difference
 	if w >= 4 {
 		x := int32(d)
 		return uint32(x<<1) ^ uint32(x>>31)
 	}
 	x := int32(d<<(32-8*uint(w))) >> (32 - 8*uint(w)) // sign-extend
-	return (uint32(x<<1) ^ uint32(x>>31)) & mask(w)
+	return (uint32(x<<1) ^ uint32(x>>31)) & Mask(w)
 }
 
-func unzigzag(z uint32, w int) uint32 {
+func Unzigzag(z uint32, w int) uint32 {
 	x := int32(z>>1) ^ -int32(z&1)
-	return uint32(x) & mask(w)
+	return uint32(x) & Mask(w)
 }
 
 // f16ToF64 / bf16 conversions (exact).
-func f16ToF64(h uint32) float64 {
+func F16ToF64(h uint32) float64 {
 	s := (h >> 15) & 1
 	e := (h >> 10) & 0x1f
 	m := h & 0x3ff
@@ -95,7 +95,7 @@ func f16ToF64(h uint32) float64 {
 }
 
 // f64ToF16 rounds to nearest even; non-finite or overflowing values map to inf/NaN patterns.
-func f64ToF16(x float64) uint32 {
+func F64ToF16(x float64) uint32 {
 	if x != x {
 		return 0x7e00
 	}
@@ -127,7 +127,7 @@ func f64ToF16(x float64) uint32 {
 
 func roundEven(x float64) uint64 { return uint64(math.RoundToEven(x)) }
 
-func f64ToBF16(x float64) uint32 {
+func F64ToBF16(x float64) uint32 {
 	f := float32(x)
 	b := math.Float32bits(f)
 	if f != f {
@@ -138,28 +138,28 @@ func f64ToBF16(x float64) uint32 {
 }
 
 // toF64 decodes bits of dtype to float64 (exact).
-func toF64(d DType, bits uint32) float64 {
+func ToF64(d DType, bits uint32) float64 {
 	switch d {
 	case DF32:
 		return float64(math.Float32frombits(bits))
 	case DBF16:
 		return float64(math.Float32frombits(bits << 16))
 	}
-	return f16ToF64(bits)
+	return F16ToF64(bits)
 }
 
 // fromF64 rounds a float64 prediction to dtype bits.
-func fromF64(d DType, x float64) uint32 {
+func FromF64(d DType, x float64) uint32 {
 	switch d {
 	case DF32:
 		return math.Float32bits(float32(x))
 	case DBF16:
-		return f64ToBF16(x)
+		return F64ToBF16(x)
 	}
-	return f64ToF16(x)
+	return F64ToF16(x)
 }
 
-func finite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
+func Finite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
 
 // Narrow converts an F32 payload to F16 or BF16 words when every element round-trips bit
 // exactly (widen(narrow(x)) == x); ok=false otherwise. NaN payloads that do not survive make a
@@ -177,8 +177,8 @@ func Narrow(src []byte, to DType) (dst []byte, ok bool) {
 			h = b >> 16
 		} else {
 			x := math.Float32frombits(b)
-			h = f64ToF16(float64(x))
-			if math.Float32bits(float32(f16ToF64(h))) != b {
+			h = F64ToF16(float64(x))
+			if math.Float32bits(float32(F16ToF64(h))) != b {
 				return nil, false
 			}
 		}
@@ -197,7 +197,7 @@ func Widen(src []byte, from DType) []byte {
 		if from == DBF16 {
 			b = h << 16
 		} else {
-			b = math.Float32bits(float32(f16ToF64(h)))
+			b = math.Float32bits(float32(F16ToF64(h)))
 		}
 		binary.LittleEndian.PutUint32(dst[4*i:], b)
 	}
@@ -205,10 +205,10 @@ func Widen(src []byte, from DType) []byte {
 }
 
 // BF16Bits rounds a float64 to bfloat16 bits (round to nearest even via float32).
-func BF16Bits(x float64) uint32 { return f64ToBF16(x) }
+func BF16Bits(x float64) uint32 { return F64ToBF16(x) }
 
 // f32ToF16 rounds float32 bits to nearest-even half precision using integer arithmetic only.
-func f32ToF16(b uint32) uint32 {
+func F32ToF16(b uint32) uint32 {
 	sign := (b >> 16) & 0x8000
 	exp := int(b>>23) & 0xff
 	man := b & 0x7fffff
@@ -245,7 +245,7 @@ func f32ToF16(b uint32) uint32 {
 }
 
 // f16ToF32 widens half-precision bits exactly with integer arithmetic.
-func f16ToF32(h uint32) uint32 {
+func F16ToF32(h uint32) uint32 {
 	sign := (h & 0x8000) << 16
 	exp := (h >> 10) & 0x1f
 	man := h & 0x3ff
@@ -266,7 +266,7 @@ func f16ToF32(h uint32) uint32 {
 	return sign | (exp+127-15)<<23 | man<<13
 }
 
-func f32ToBF16(b uint32) uint32 {
+func F32ToBF16(b uint32) uint32 {
 	if b&0x7fffffff > 0x7f800000 {
 		return b>>16 | 0x40
 	}

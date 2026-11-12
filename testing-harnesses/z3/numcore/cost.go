@@ -1,4 +1,4 @@
-package mdelta2
+package numcore
 
 import (
 	"bytes"

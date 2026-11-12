@@ -1,4 +1,4 @@
-package mdelta2
+package numcore
 
 import "encoding/binary"
 
@@ -18,7 +18,7 @@ func fpeSplit(d DType) (sh uint, eb uint, ok bool) {
 	return 0, 0, false
 }
 
-func fpeEncode(d DType, words []byte) ([]byte, bool) {
+func FPEEncode(d DType, words []byte) ([]byte, bool) {
 	sh, eb, ok := fpeSplit(d)
 	if !ok {
 		return nil, false
@@ -33,7 +33,7 @@ func fpeEncode(d DType, words []byte) ([]byte, bool) {
 	var nacc uint
 	lowMask := uint32(1)<<sh - 1
 	for i := 0; i < n; i++ {
-		v := le(words, w, i)
+		v := LE(words, w, i)
 		e := (v >> sh) & (1<<eb - 1)
 		syms[i] = uint8(e)
 		cnt[e]++
@@ -65,7 +65,7 @@ func fpeEncode(d DType, words []byte) ([]byte, bool) {
 	return append(out, raw...), true
 }
 
-func fpeDecode(d DType, payload []byte, n int) ([]byte, error) {
+func FPEDecode(d DType, payload []byte, n int) ([]byte, error) {
 	sh, eb, ok := fpeSplit(d)
 	if !ok {
 		return nil, ErrCorrupt
@@ -115,7 +115,7 @@ func fpeDecode(d DType, payload []byte, n int) ([]byte, error) {
 		r := uint32(v>>uint(bp&7)) & (1<<rawN - 1)
 		bp += uint64(rawN)
 		word := r&lowMask | uint32(e)<<sh | (r>>sh)<<(sh+eb)
-		putLE(out, w, i, word)
+		PutLE(out, w, i, word)
 	}
 	return out, nil
 }

@@ -15,42 +15,6 @@ import (
 )
 
 // DType is the element encoding of a tensor payload.
-type DType uint8
-
-const (
-	DRaw DType = iota // opaque bytes (integers, buffers, anything not predicted numerically)
-	DF32
-	DF16
-	DBF16
-	DQ8_0 // GGUF block types are kept as opaque typed blocks; see quant.go
-	DQ4_0
-	DQ5_0
-	DQ4_1
-	DQ5_1
-	DQ4_K
-	DQ6_K
-	DQ5_K
-	DQOther
-)
-
-var dtNames = map[DType]string{DRaw: "RAW", DF32: "F32", DF16: "F16", DBF16: "BF16", DQ8_0: "Q8_0", DQ4_0: "Q4_0", DQ5_0: "Q5_0", DQ4_1: "Q4_1", DQ5_1: "Q5_1", DQ4_K: "Q4_K", DQ6_K: "Q6_K", DQ5_K: "Q5_K", DQOther: "QOTHER"}
-
-func (d DType) String() string { return dtNames[d] }
-
-// Width is the element byte width for float dtypes, 1 otherwise.
-func (d DType) Width() int {
-	switch d {
-	case DF32:
-		return 4
-	case DF16, DBF16:
-		return 2
-	}
-	return 1
-}
-
-// IsFloat reports whether numerical prediction applies.
-func (d DType) IsFloat() bool { return d == DF32 || d == DF16 || d == DBF16 }
-
 // Tensor is one named payload span of a model file.
 type Tensor struct {
 	Name       string

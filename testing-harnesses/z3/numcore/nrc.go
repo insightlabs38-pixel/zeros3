@@ -1,4 +1,4 @@
-package mdelta2
+package numcore
 
 import (
 	"encoding/binary"
@@ -11,7 +11,7 @@ import (
 // independent of the weight magnitude (one small table instead of many). A neighbour-magnitude
 // context was tried and removed: it gained <0.01% on every real residual (updates are noise).
 
-func expField(d DType, bits uint32) int {
+func ExpField(d DType, bits uint32) int {
 	switch d {
 	case DF32:
 		return int(bits>>23) & 0xff
@@ -58,10 +58,10 @@ func cfgFromByte(b byte) (nrcCfg, bool) {
 	return c, true
 }
 
-const nrcSyms = 96
+const NRCSyms = 96
 
 // exps computes per-element relative exponents (0..63) and the base used.
-func exps(d DType, pred []byte) ([]uint8, int) {
+func Exps(d DType, pred []byte) ([]uint8, int) {
 	w := d.Width()
 	n := len(pred) / w
 	sh, mk := expShiftMask(d)
@@ -113,14 +113,14 @@ func nrcSym(c nrcCfg, s int, er uint8) int {
 
 // nrcEstimate predicts the payload size of a configuration from histograms (no stream built).
 func nrcEstimate(c nrcCfg, w int, resid []byte, er []uint8, n int) float64 {
-	cnt := make([]int, c.nc*nrcSyms)
+	cnt := make([]int, c.nc*NRCSyms)
 	tot := make([]int, c.nc)
 	raw := 0
 	for i := 0; i < n; i++ {
-		r := le(resid, w, i)
-		s := bitlen(r)
+		r := LE(resid, w, i)
+		s := Bitlen(r)
 		x := nrcCtx(c, er[i])
-		cnt[x*nrcSyms+nrcSym(c, s, er[i])]++
+		cnt[x*NRCSyms+nrcSym(c, s, er[i])]++
 		tot[x]++
 		if s > 1 {
 			raw += s - 1
@@ -129,8 +129,8 @@ func nrcEstimate(c nrcCfg, w int, resid []byte, er []uint8, n int) float64 {
 	bitsTotal := float64(raw)
 	tab := 0
 	for x := 0; x < c.nc; x++ {
-		for s := 0; s < nrcSyms; s++ {
-			if v := cnt[x*nrcSyms+s]; v > 0 {
+		for s := 0; s < NRCSyms; s++ {
+			if v := cnt[x*NRCSyms+s]; v > 0 {
 				bitsTotal -= float64(v) * math.Log2(float64(v)/float64(tot[x]))
 				tab += 3
 			}
@@ -143,7 +143,7 @@ func nrcEstimate(c nrcCfg, w int, resid []byte, er []uint8, n int) float64 {
 func NRCEncode(d DType, resid, pred []byte) []byte {
 	w := d.Width()
 	n := len(resid) / w
-	er, eb := exps(d, pred)
+	er, eb := Exps(d, pred)
 	best, bestE := nrcCfg{true, 1}, math.Inf(1)
 	for _, c := range []nrcCfg{{true, 1}, {false, 1}, {true, 4}, {false, 4}} {
 		if e := nrcEstimate(c, w, resid, er, n); e < bestE {
@@ -156,14 +156,14 @@ func NRCEncode(d DType, resid, pred []byte) []byte {
 func nrcEncodeCfg(c nrcCfg, w int, resid []byte, er []uint8, eb, n int) []byte {
 	cnt := make([][]uint32, c.nc)
 	for i := range cnt {
-		cnt[i] = make([]uint32, nrcSyms)
+		cnt[i] = make([]uint32, NRCSyms)
 	}
 	var rawBits int
 	syms := make([]uint8, n)
 	ctxAt := make([]uint8, n)
 	for i := 0; i < n; i++ {
-		r := le(resid, w, i)
-		s := bitlen(r)
+		r := LE(resid, w, i)
+		s := Bitlen(r)
 		sy := nrcSym(c, s, er[i])
 		syms[i] = uint8(sy)
 		x := nrcCtx(c, er[i])
@@ -184,8 +184,8 @@ func nrcEncodeCfg(c nrcCfg, w int, resid []byte, er []uint8, eb, n int) []byte {
 	var acc uint64
 	var nacc uint
 	for i := 0; i < n; i++ {
-		r := le(resid, w, i)
-		if s := bitlen(r); s > 1 {
+		r := LE(resid, w, i)
+		if s := Bitlen(r); s > 1 {
 			nb := uint(s - 1)
 			acc |= (uint64(r) & (1<<nb - 1)) << nacc
 			nacc += nb
@@ -226,7 +226,7 @@ func NRCDecode(d DType, payload, pred []byte, n int) ([]byte, error) {
 	// flat decode tables: entry = freq<<19 | bias<<7 | sym  (bias = slot - start)
 	flat := make([][ransM]uint32, c.nc)
 	for i := 0; i < c.nc; i++ {
-		f, k, err := readFreqs(payload[pos:], nrcSyms)
+		f, k, err := readFreqs(payload[pos:], NRCSyms)
 		if err != nil {
 			return nil, err
 		}

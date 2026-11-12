@@ -1,4 +1,4 @@
-package mdelta2
+package numcore
 
 import (
 	"encoding/binary"
@@ -215,4 +215,4 @@ func (d *ransDec) get(lane int, t *ransTab) (int, error) {
 	return s, nil
 }
 
-func bitlen(v uint32) int { return bits.Len32(v) }
+func Bitlen(v uint32) int { return bits.Len32(v) }
