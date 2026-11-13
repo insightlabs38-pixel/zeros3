@@ -19,7 +19,8 @@ assert len(frozen) == 1688
 t = open(os.path.join(src, 'common/transform.c')).read()
 ps = ''.join(re.findall(r'"((?:[^"\\]|\\.)*)"', re.search(r'kPrefixSuffix\[217\]\s*=(.*?);', t, re.S).group(1)))
 ps = ps.encode().decode('unicode_escape').encode('latin1')
-assert len(ps) == 216 or len(ps) == 217, len(ps)
+ps = (ps + b'\0')[:217]  # the C array's terminating NUL is the empty affix
+assert len(ps) == 217, len(ps)
 psm = arr('common/transform.c', 'kPrefixSuffixMap')
 m = re.search(r'kTransformsData\[\]\s*=\s*\{(.*?)\};', t, re.S).group(1)
 enum = {n: i for i, n in enumerate(re.findall(r'BROTLI_TRANSFORM_[A-Z_0-9]+', re.search(r'enum BrotliWordTransformType \{(.*?)\}', open(os.path.join(src, 'common/transform.h')).read(), re.S).group(1)))}

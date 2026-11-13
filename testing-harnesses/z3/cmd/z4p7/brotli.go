@@ -12,7 +12,16 @@ import (
 	_ "zeros3-z3/brotliz3/brdict"
 )
 
-func init() { cmds["brenc"] = cmdBrEnc }
+func init() {
+	cmds["brenc"] = cmdBrEnc
+	cmds["brdec"] = func(args []string) { // brdec IN OUT
+		in, err := os.ReadFile(args[0])
+		must(err)
+		out, err := brotliz3.Decode(in, 1<<30)
+		must(err)
+		must(os.WriteFile(args[1], out, 0o644))
+	}
+}
 
 // brenc -q Q -w LGWIN IN OUT: reference-exact Brotli encoding of IN.
 // brenc -pages FILE: for a pqpages dump, re-encode each decoded page (decoded by the oracle into
