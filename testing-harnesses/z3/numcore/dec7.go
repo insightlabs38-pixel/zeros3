@@ -59,7 +59,7 @@ func (o *Object) DecodeTo(ctx context.Context, w io.Writer, rv Resolver, opt Dec
 		wg  sync.WaitGroup
 	}
 	jobs := make(chan *job, workers)
-	order := make(chan *job, 2*workers)
+	parent := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -108,7 +108,6 @@ func (o *Object) DecodeTo(ctx context.Context, w io.Writer, rv Resolver, opt Dec
 			items <- item{gap: gaps[gp : gp+g]}
 		}
 	}()
-	_ = order
 	var first error
 	for it := range items {
 		if first != nil {
@@ -128,6 +127,9 @@ func (o *Object) DecodeTo(ctx context.Context, w io.Writer, rv Resolver, opt Dec
 	}
 	wg.Wait()
 	st := s.stats(o)
+	if first == nil {
+		first = parent.Err()
+	}
 	if first != nil {
 		return st, first
 	}

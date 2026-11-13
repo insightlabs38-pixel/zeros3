@@ -95,7 +95,7 @@ func cmdFamily(args []string) {
 	storeDir := fl.String("store", "", "store directory")
 	policy := fl.String("policy", "pool:3", "direct|first|prev|pool:K")
 	parents := fl.String("parents", "", "explicit parent states per file, e.g. '-;0;0,1' (overrides policy)")
-	window := fl.Int64("window", 1<<20, "float elements per window")
+	window := fl.Int64("window", 1<<16, "float elements per window")
 	workers := fl.Int("workers", 4, "window coders")
 	structured := fl.Bool("structured", false, "probe for exact affine/low-rank structure")
 	exhaustive := fl.Bool("exhaustive", false, "oracle: code every candidate in full")

@@ -35,7 +35,7 @@ type AuxIn struct {
 
 // EncOpts configures the bounded-memory encoder.
 type EncOpts struct {
-	Window     int64 // float elements per window (default 1<<20)
+	Window     int64 // float elements per window (default 1<<16)
 	Workers    int   // parallel window coders (default 1)
 	NoNarrow   bool  // disable exact F32 -> F16/BF16 coding
 	Structured bool  // probe for exact affine / low-rank structure
@@ -782,7 +782,7 @@ func Encode(ctx context.Context, w io.Writer, target io.ReaderAt, lay *Layout, b
 		return nil, ErrLayout7
 	}
 	if o.Window <= 0 {
-		o.Window = 1 << 20
+		o.Window = 1 << 16
 	}
 	if o.Window > 1<<24 {
 		o.Window = 1 << 24
