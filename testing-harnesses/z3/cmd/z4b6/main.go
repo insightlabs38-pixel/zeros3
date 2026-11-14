@@ -4,6 +4,7 @@ package main
 import (
 	"fmt"
 	"os"
+	_ "zeros3-z3/brotliz3/brdict"
 )
 
 var cmds = map[string]func(args []string) error{}

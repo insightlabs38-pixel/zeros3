@@ -2,6 +2,7 @@ package lz4z3
 
 import (
 	"encoding/binary"
+	"math/bits"
 	"sync"
 )
 
@@ -205,6 +206,12 @@ func fastSeqs(src []byte, accel int, u16, h4 bool, target []Seq) ([]Seq, bool) {
 
 func count(src []byte, p, m, limit int) int {
 	c := 0
+	for p+c+8 <= limit { // m < p, so both loads stay inside src
+		if x := binary.LittleEndian.Uint64(src[p+c:]) ^ binary.LittleEndian.Uint64(src[m+c:]); x != 0 {
+			return c + bits.TrailingZeros64(x)>>3
+		}
+		c += 8
+	}
 	for p+c < limit && src[p+c] == src[m+c] {
 		c++
 	}

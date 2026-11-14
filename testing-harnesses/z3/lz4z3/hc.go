@@ -2,6 +2,7 @@ package lz4z3
 
 import (
 	"encoding/binary"
+	"math/bits"
 	"sync"
 )
 
@@ -106,8 +107,8 @@ func (h *hcState) wider(ip, lowLimit, highLimit, longest int) (best, matchPos, s
 				cp := int(cand - hcStart)
 				if binary.LittleEndian.Uint32(src[cp:]) == pattern {
 					fwd := countPattern(src, cp+4, highLimit, pattern) + 4
-					back := reverseCountPattern(src, cp, 0, pattern)
-					back = int(cand - max(cand-uint32(back), lowest))
+					// counting stops at the lowest admissible index: the reference clamps to it anyway
+					back := reverseCountPattern(src, cp, int(lowest-hcStart), pattern)
 					cur := back + fwd
 					if cur >= srcPatLen && fwd <= srcPatLen {
 						mi = cand + uint32(fwd) - uint32(srcPatLen)
@@ -289,7 +290,14 @@ func countPattern(src []byte, p, limit int, pattern uint32) int {
 	start := p
 	var pb [4]byte
 	binary.LittleEndian.PutUint32(pb[:], pattern)
-	for i := 0; p < limit; i++ {
+	p64 := uint64(pattern) | uint64(pattern)<<32
+	for p+8 <= limit { // the pattern phase is preserved by 8-byte steps
+		if x := binary.LittleEndian.Uint64(src[p:]) ^ p64; x != 0 {
+			return p - start + bits.TrailingZeros64(x)>>3
+		}
+		p += 8
+	}
+	for i := (p - start) & 3; p < limit; i++ {
 		if src[p] != pb[i&3] {
 			break
 		}
