@@ -1,0 +1,8 @@
+base.safetensors                   raw   988097824 object   656003168 (0.6639)    6.1s  153.7 MiB/s depth 0 modes raw/direct/pred/copy/quant [0 655833018 0 0 0] struct 0 qpatch 0/0
+instruct.safetensors               raw   988097824 object   465745684 (0.4714)   11.6s   81.4 MiB/s depth 1 modes raw/direct/pred/copy/quant [0 0 465577516 0 0] struct 0 qpatch 0/0
+coder.safetensors                  raw   988097824 object   656213811 (0.6641)    6.5s  145.4 MiB/s depth 2 modes raw/direct/pred/copy/quant [0 655978493 67852 0 0] struct 0 qpatch 0/0
+abliterated.safetensors            raw   988097824 object    84040775 (0.0851)    5.4s  176.1 MiB/s depth 2 modes raw/direct/pred/copy/quant [0 0 83884151 0 0] struct 0 qpatch 0/0
+unsloth_instruct.safetensors       raw   988097824 identical to instruct.safetensors charged 36
+TOTAL policy=pool:8 charged=1862004002
+{"rss":"family","maxrss_kib":27616,"heap_sys_mib":31,"total_alloc_mib":29636,"user_s":83.54,"sys_s":19.09}
+140.574 real 83.538 user 19.094 sys
