@@ -39,6 +39,9 @@ func Predict(id int, plain []byte, accel int) ([]Seq, bool) {
 	case PredHC:
 		s, ok := HCSeqs(plain, accel)
 		return s, ok
+	case PredPierrec:
+		s, _ := pierrecSeqs(plain, nil)
+		return s, true
 	default:
 		return nil, false
 	}
@@ -62,6 +65,12 @@ func predictPrefix(id int, plain []byte, accel int, target []Seq) (int, bool) {
 		if !ok {
 			return 0, false
 		}
+		if aborted {
+			return len(s), true
+		}
+		return commonPrefix(s, target), true
+	case PredPierrec:
+		s, aborted := pierrecSeqs(plain, target)
 		if aborted {
 			return len(s), true
 		}

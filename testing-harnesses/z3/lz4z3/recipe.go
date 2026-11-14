@@ -39,8 +39,11 @@ func Analyze(plain []byte, seqs []Seq, independent bool) Recipe {
 	}
 	bestLen := len(best.Marshal())
 	bestPrefix, bestP := 0, Recipe{}
-	for _, id := range []int{PredDefault, PredContinue, PredDefault5} {
+	for _, id := range []int{PredDefault, PredContinue, PredDefault5, PredPierrec} {
 		for _, ac := range accelSweep {
+			if id == PredPierrec && ac != 1 { // the Go producer has no acceleration parameter
+				break
+			}
 			k, ok := predictPrefix(id, plain, ac, seqs)
 			if !ok {
 				continue
@@ -215,4 +218,44 @@ func (r Recipe) Replay(hist, plain []byte, lim Limits) ([]byte, error) {
 		return nil, ErrLimit
 	}
 	return BuildH(hist, plain, seqs)
+}
+
+// Analyzer is Analyze with memory: producers use one encoder profile per file, so the profile
+// that reproduced the previous block is tried first (one encoder run instead of a sweep), and
+// after GiveUp consecutive blocks that no predictor reproduces the sweep is skipped: an
+// unsupported producer then costs one explicit recipe per block and no encoder runs.
+type Analyzer struct {
+	GiveUp   int // 0 = never give up
+	pred     int
+	accel    int
+	miss     int
+	Hits     int // blocks reproduced by the remembered profile
+	Sweeps   int // blocks that needed the full sweep
+	Rejected int // blocks handled without any predictor run
+}
+
+// Analyze returns the cheapest verified recipe for the block (see the package-level Analyze).
+func (a *Analyzer) Analyze(plain []byte, seqs []Seq, independent bool) Recipe {
+	if !independent {
+		return Recipe{Kind: KindExplicit, Seqs: seqs}
+	}
+	if a.pred != PredNone {
+		if k, ok := predictPrefix(a.pred, plain, a.accel, seqs); ok && k == len(seqs) {
+			a.Hits++
+			a.miss = 0
+			return Recipe{Kind: KindPredicted, Pred: a.pred, Accel: a.accel}
+		}
+	}
+	if a.GiveUp > 0 && a.miss >= a.GiveUp {
+		a.Rejected++
+		return Recipe{Kind: KindExplicit, Seqs: seqs}
+	}
+	a.Sweeps++
+	r := Analyze(plain, seqs, true)
+	if r.Kind == KindPredicted {
+		a.pred, a.accel, a.miss = r.Pred, r.Accel, 0
+	} else {
+		a.miss++
+	}
+	return r
 }

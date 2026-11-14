@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 
+	"zeros3-z3/lz4z3"
 	"zeros3-z3/snappyz3"
 )
 
@@ -243,6 +244,7 @@ func Encode(r io.ReaderAt, size int64, opt Options, emit Emit) ([]byte, Sizes, S
 		rec.RestartInterval = uint32(ri)
 		st.RestartInterval = ri
 	}
+	lz4an := &lz4z3.Analyzer{GiveUp: 16} // one producer profile per table
 	gb := &groupBuilder{form: opt.Form, emit: emit, rec: rec, st: &st}
 	var (
 		keys  []byte
@@ -260,7 +262,7 @@ func Encode(r io.ReaderAt, size int64, opt Options, emit Emit) ([]byte, Sizes, S
 		var cmds []snappyz3.Cmd
 		bl := BlockRec{CSize: h.Size, Trailer: rb.Trailer}
 		if rb.Comp() == CompLZ4 || rb.Comp() == CompLZ4HC { // decode and recipe in one pass
-			dec, bl.LZ4, err = analyzeLZ4Block(rb.Payload, lim)
+			dec, bl.LZ4, err = analyzeLZ4Block(rb.Payload, lim, lz4an)
 			if err == nil {
 				st.LZ4Kinds[lz4Kind(bl.LZ4)]++
 			}
