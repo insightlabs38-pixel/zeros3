@@ -231,3 +231,25 @@ func BenchmarkDecode(b *testing.B) {
 		brotliz3.Decode(enc, len(data))
 	}
 }
+
+// Real producer bytes: two Parquet data pages written by pyarrow 26.0.1 (Arrow's one-shot
+// BrotliEncoderCompress, level 8). The port must regenerate them from their decoded bodies.
+func TestRealArrowPages(t *testing.T) {
+	for _, name := range []string{"arrow_page_small", "arrow_page_mid"} {
+		pay, err := os.ReadFile("testdata/" + name + ".br")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := brotliz3.Decode(pay, 1<<20)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		got, err := brotliz3.Encode(body, 8, 22)
+		if err != nil || !bytes.Equal(got, pay) {
+			t.Fatalf("%s: re-encoding differs from the producer page (%v)", name, err)
+		}
+		if other, _ := brotliz3.Encode(body, 9, 22); bytes.Equal(other, pay) && len(body) > 100000 {
+			t.Fatalf("%s: quality is not identified by the bytes", name)
+		}
+	}
+}

@@ -1,0 +1,172 @@
+package main
+
+//IMPORT
+import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// Hard-codec rehearsal: decoded bodies and tiny replay recipes are stored as ordinary engine
+// objects; after the store is reopened the producer's compressed bytes are regenerated from them
+// with the extracted encoders and compared with the producer digests recorded at ingest.
+
+type p7Store struct {
+	s      *Store
+	bucket string
+}
+
+func (b *p7Store) put(key string, data []byte) error {
+	ing, err := b.s.ingestStream(bytes.NewReader(data), true, ingestOptions{size: int64(len(data))})
+	if err != nil {
+		return err
+	}
+	_, err = b.s.commitIngested(b.bucket, key, ing, "application/octet-stream", nil, putCondition{})
+	return err
+}
+
+func (b *p7Store) get(key string) ([]byte, error) {
+	_, man, err := b.s.HeadObject(b.bucket, key)
+	if err != nil {
+		return nil, err
+	}
+	ra := b.s.newManifestReaderAt(man)
+	defer ra.close()
+	out := make([]byte, man.TotalLength)
+	if _, err := ra.ReadAt(out, 0); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return out, nil
+}
+
+func main() {
+	z3 := os.Getenv("P6_Z3")
+	dict, err := os.ReadFile(filepath.Join(z3, "brotliz3", "brdict", "dictionary.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("p7"); err != nil {
+		t.Fatal(err)
+	}
+	st := &p7Store{s, "p7"}
+	// the static dictionary is itself an engine object (verified by digest when installed)
+	if err := st.put("aux/brotli-dictionary", dict); err != nil {
+		t.Fatal(err)
+	}
+	if err := @brotliz3.SetDictionary@(dict); err != nil {
+		t.Fatal(err)
+	}
+	type item struct {
+		name   string
+		digest [32]byte
+		size   int
+	}
+	var items []item
+	// real Arrow Brotli pages
+	for _, name := range []string{"arrow_page_small", "arrow_page_mid"} {
+		pay, err := os.ReadFile(filepath.Join(z3, "brotliz3", "testdata", name+".br"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := @brotliz3.Decode@(pay, 1<<22)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := 0
+		for _, c := range []int{8, 9, 5, 6, 7} {
+			if out, err := @brotliz3.Encode@(body, c, 22); err == nil && bytes.Equal(out, pay) {
+				q = c
+				break
+			}
+		}
+		if q == 0 {
+			t.Fatalf("%s: no ported quality reproduces the page", name)
+		}
+		if err := st.put("body/"+name, body); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.put("recipe/"+name, []byte{'B', byte(q), 22}); err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, item{name, sha256.Sum256(pay), len(pay)})
+		fmt.Printf("REHEARSAL ingest %s brotli payload=%d body=%d recipe=3 quality=%d\n", name, len(pay), len(body), q)
+	}
+	// real LZ4 producer blocks (python-lz4 fixtures of the B6 suite)
+	for _, name := range []string{"py_default_70000", "py_hc9_pattern_70000", "py_fast9_9000"} {
+		blk, err := os.ReadFile(filepath.Join(z3, "lz4z3", "testdata", name+".lz4"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		plain, seqs, err := @lz4z3.Decode@(blk, -1, @lz4z3.Limits@{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rc := @lz4z3.Analyze@(plain, seqs, true)
+		wire := append([]byte{'L'}, rc.Marshal()...)
+		if err := st.put("body/"+name, plain); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.put("recipe/"+name, wire); err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, item{name, sha256.Sum256(blk), len(blk)})
+		fmt.Printf("REHEARSAL ingest %s lz4 payload=%d body=%d recipe=%d kind=%d\n", name, len(blk), len(plain), len(wire), rc.Kind)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	st2 := &p7Store{s2, "p7"}
+	d2, err := st2.get("aux/brotli-dictionary")
+	if err != nil || @brotliz3.SetDictionary@(d2) != nil {
+		t.Fatalf("dictionary object: %v", err)
+	}
+	for _, it := range items {
+		body, err := st2.get("body/" + it.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec, err := st2.get("recipe/" + it.name)
+		if err != nil || len(rec) < 2 {
+			t.Fatal(err)
+		}
+		var out []byte
+		switch rec[0] {
+		case 'B':
+			out, err = @brotliz3.Encode@(body, int(rec[1]), int(rec[2]))
+		case 'L':
+			var rc @lz4z3.Recipe@
+			var used int
+			if rc, used, err = @lz4z3.Unmarshal@(rec[1:], @lz4z3.Limits@{}); err == nil && used == len(rec)-1 {
+				out, err = rc.Replay(nil, body, @lz4z3.Limits@{})
+			}
+		}
+		if err != nil || sha256.Sum256(out) != it.digest || len(out) != it.size {
+			t.Fatalf("replay %s: %v", it.name, err)
+		}
+		// a damaged body must not reproduce the producer bytes
+		body[len(body)/2] ^= 1
+		var bad []byte
+		if rec[0] == 'B' {
+			bad, _ = @brotliz3.Encode@(body, int(rec[1]), int(rec[2]))
+		}
+		if bad != nil && sha256.Sum256(bad) == it.digest {
+			t.Fatalf("%s: damaged body still matches", it.name)
+		}
+		fmt.Printf("REHEARSAL replay %s exact producer bytes=%d sha256=%x\n", it.name, len(out), it.digest[:8])
+	}
+	fmt.Println("REHEARSAL OK")
+}
