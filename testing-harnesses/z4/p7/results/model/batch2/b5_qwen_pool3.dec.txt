@@ -1,0 +1,10 @@
+{"sha256":"88c142557820ccad55bb59756bfcfcf891de9cc6202816bd346445188a0ed342","bytes":988097824,"ms":13138,"store_read":655451826,"loads":1}
+{"sha256":"fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe","bytes":988097824,"ms":26901,"store_read":1120757775,"loads":2}
+{"sha256":"aff8914ec707fcaf9e2d4dc97197cded50b1c63e1d3a7a82e56f54d83ea47f80","bytes":988097824,"ms":13942,"store_read":1776409902,"loads":3}
+{"sha256":"c41947ba68ab327a4d31495d7508b41c951e294a61c63d569f93931238e7c504","bytes":988097824,"ms":25578,"store_read":1204608016,"loads":3}
+{"sha256":"fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe","bytes":988097824,"ms":23278,"store_read":1120757775,"loads":2}
+{"rss":"replay","maxrss_kib":7810244,"heap_sys_mib":7727,"total_alloc_mib":44218}
+
+real	1m43.133s
+user	1m20.274s
+sys	0m22.767s

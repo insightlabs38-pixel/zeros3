@@ -176,26 +176,40 @@ func HCSeqs(src []byte, level int) ([]Seq, bool) {
 
 // hcSeqs optionally stops at the first sequence that disagrees with target.
 func hcSeqs(src []byte, level int, target []Seq) (seqs []Seq, aborted, ok bool) {
+	if HCAttempts(level) == 0 {
+		return nil, false, false
+	}
+	h := hcPool.Get().(*hcState)
+	defer hcPool.Put(h)
+	return hcRun(h, src, 0, level, target, false)
+}
+
+// hcRun parses src[start:]. With cont the state (hash chains, insertion cursor) continues from
+// the preceding blocks of the same stream, src[:start]: LZ4_compress_HC_continue on contiguous
+// blocks. Otherwise the state is reset and start must be 0.
+func hcRun(h *hcState, src []byte, start, level int, target []Seq, cont bool) (seqs []Seq, aborted, ok bool) {
 	att := HCAttempts(level)
 	if att == 0 {
 		return nil, false, false
 	}
 	n := len(src)
-	anchor := 0
-	if n >= mfLimit+1 {
-		h := hcPool.Get().(*hcState)
-		defer hcPool.Put(h)
+	anchor := start
+	if !cont {
 		h.gen++
 		if h.gen == 0 {
 			*h = hcState{gen: 1}
 		}
+		h.next = hcStart
+	}
+	h.src = src
+	if n-start >= mfLimit+1 {
 		if level >= 10 {
-			return hcOptSeqs(h, src, level, att, target)
+			return hcOptSeqs(h, src, start, level, att, target)
 		}
-		h.src, h.next, h.attempts, h.pa, h.swap = src, hcStart, att, att > hcMaxAttempt, false
+		h.attempts, h.pa, h.swap = att, att > hcMaxAttempt, false
 		mflimit := n - mfLimit
 		matchlimit := n - lastLiterals
-		ip := 0
+		ip := start
 		var ml, ml0, ml2, ml3, start0, ref0, ref, start2, ref2, start3, ref3 int
 		emit := func(mlen, r int) bool {
 			seqs = append(seqs, Seq{Lit: ip - anchor, Match: mlen, Off: ip - r})
@@ -357,16 +371,12 @@ var hcPool = sync.Pool{New: func() any { return new(hcState) }}
 
 // hcOptSeqs is LZ4HC_compress_optimal (levels 10..12 of lz4 1.9.x): price-based parsing over a
 // 4096-position window with the wider-match search in pattern-analysis + chain-swap mode.
-func hcOptSeqs(h *hcState, src []byte, level, attempts int, target []Seq) (seqs []Seq, aborted, ok bool) {
+func hcOptSeqs(h *hcState, src []byte, start, level, attempts int, target []Seq) (seqs []Seq, aborted, ok bool) {
 	const optNum, trailing = 1 << 12, 3
 	type optT struct{ price, off, mlen, litlen int }
 	sufficient := map[int]int{10: 64, 11: 128, 12: optNum - 1}[level]
 	full := level == 12
-	h.gen++
-	if h.gen == 0 {
-		*h = hcState{gen: 1}
-	}
-	h.src, h.next, h.attempts, h.pa, h.swap = src, hcStart, attempts, true, true
+	h.attempts, h.pa, h.swap = attempts, true, true
 	n := len(src)
 	mflimit, matchlimit := n-mfLimit, n-lastLiterals
 	litPrice := func(l int) int {
@@ -390,7 +400,7 @@ func hcOptSeqs(h *hcState, src []byte, level, attempts int, target []Seq) (seqs 
 		return ml, ip - mp
 	}
 	var opt [optNum + trailing]optT
-	ip, anchor := 0, 0
+	ip, anchor := start, start
 	emit := func(ml, off int) bool {
 		seqs = append(seqs, Seq{Lit: ip - anchor, Match: ml, Off: off})
 		ip += ml

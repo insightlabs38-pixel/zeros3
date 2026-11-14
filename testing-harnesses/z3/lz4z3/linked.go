@@ -8,7 +8,48 @@ import "encoding/binary"
 const (
 	PredLinkPrefix = 6 // blocks contiguous in memory (LZ4F_compressFrame, python lz4.frame.compress)
 	PredLinkExt    = 7 // previous block seen through the saved 64 KiB dictionary (one LZ4F_compressUpdate per block)
+	PredLinkHC     = 8 // LZ4_compress_HC_continue on contiguous blocks (LZ4F levels >= 3); Accel is the level
 )
+
+// linker is the carried compressor state of one frame: Next predicts content[pos:end].
+type linker interface {
+	Next(content []byte, end int) ([]Seq, bool)
+}
+
+// HCLinked carries the LZ4HC hash chains across the dependent blocks of one frame. The chains
+// depend only on the positions inserted, so stored (overflowed) blocks need no special case.
+type HCLinked struct {
+	Level int
+	h     *hcState
+	pos   int
+}
+
+func (l *HCLinked) Next(content []byte, end int) ([]Seq, bool) {
+	cont := l.h != nil
+	if !cont {
+		l.h = new(hcState)
+	}
+	start := l.pos
+	l.pos = end
+	s, _, ok := hcRun(l.h, content[:end], start, l.Level, nil, cont)
+	return s, ok
+}
+
+func newLinker(pred, accel int) (linker, error) {
+	switch pred {
+	case PredLinkPrefix, PredLinkExt:
+		if accel < 1 || accel > 65537 {
+			return nil, recipeErr("linked acceleration %d", accel)
+		}
+		return &Linked{Ext: pred == PredLinkExt, Accel: accel}, nil
+	case PredLinkHC:
+		if HCAttempts(accel) == 0 {
+			return nil, recipeErr("linked LZ4HC level %d", accel)
+		}
+		return &HCLinked{Level: accel}, nil
+	}
+	return nil, recipeErr("linked predictor %d", pred)
+}
 
 // Linked is the carried compressor state of one frame.
 type Linked struct {
@@ -132,19 +173,21 @@ func (l *Linked) Next(content []byte, end int) (seqs []Seq, ok bool) {
 // linkRun replays the linked predictor lazily: blocks are fed in order up to the one asked
 // for, so frames without linked recipes cost nothing. One profile per frame.
 type linkRun struct {
-	l    *Linked
-	pred int
-	ends []int // end offset of every block of the frame so far
-	done int
+	l     linker
+	pred  int
+	accel int
+	ends  []int // end offset of every block of the frame so far
+	done  int
 }
 
 func (lr *linkRun) seqs(content []byte, k int, rc Recipe) ([]Seq, error) {
-	if rc.Accel < 1 || rc.Accel > 65537 {
-		return nil, recipeErr("linked acceleration %d", rc.Accel)
-	}
 	if lr.l == nil {
-		lr.l, lr.pred = &Linked{Ext: rc.Pred == PredLinkExt, Accel: rc.Accel}, rc.Pred
-	} else if lr.pred != rc.Pred || lr.l.Accel != rc.Accel {
+		l, err := newLinker(rc.Pred, rc.Accel)
+		if err != nil {
+			return nil, err
+		}
+		lr.l, lr.pred, lr.accel = l, rc.Pred, rc.Accel
+	} else if lr.pred != rc.Pred || lr.accel != rc.Accel {
 		return nil, recipeErr("linked profile changes inside a frame")
 	}
 	if k < lr.done {
@@ -168,14 +211,17 @@ func (lr *linkRun) seqs(content []byte, k int, rc Recipe) ([]Seq, error) {
 }
 
 func isLinkPred(rc Recipe) bool {
-	return rc.Kind != KindExplicit && (rc.Pred == PredLinkPrefix || rc.Pred == PredLinkExt)
+	return rc.Kind != KindExplicit && rc.Pred >= PredLinkPrefix && rc.Pred <= PredLinkHC
 }
 
-// linkAnalysis runs both linked profiles over a dependent frame and emits the block recipes
-// of the profile that survives.
+// linkAnalysis runs the candidate linked profiles over a dependent frame and emits the block
+// recipes of the profile that survives. The first block is an ordinary fresh-stream block: it
+// shows whether the frame is fast mode (both table-carrying profiles compete) or LZ4HC.
 type linkAnalysis struct {
 	recs  []linkRec
-	l     [2]*Linked
+	l     [2]linker
+	ids   [2]int
+	acc   [2]int // acceleration (fast profiles) or level (LZ4HC) of each candidate
 	miss  [2]int
 	died  [2]int // block index at which the profile was dropped
 	score [2]int
@@ -196,8 +242,9 @@ const linkGiveUp = 8 // consecutive unpredicted blocks before a profile is dropp
 // block records one block; content ends with its n payload bytes, seqs is nil for stored blocks.
 func (la *linkAnalysis) block(content []byte, n int, seqs []Seq, tag byte, ext []byte) {
 	rec := linkRec{tag: tag, n: n, ext: ext}
-	if la.accel == 0 { // the first block is an ordinary fresh-stream block: its acceleration is visible
+	if la.accel == 0 {
 		la.accel = 1
+		var hc []int
 		for _, ac := range accelSweep {
 			if seqs == nil {
 				break
@@ -206,8 +253,27 @@ func (la *linkAnalysis) block(content []byte, n int, seqs []Seq, tag byte, ext [
 				la.accel = ac
 				break
 			}
+			if ac == 1 { // not the default fast profile: LZ4HC before the rarer accelerations
+				for lv := 3; lv <= 12; lv++ {
+					if k, _ := predictPrefix(PredHC, content, lv, seqs); k == len(seqs) {
+						hc = append(hc, lv)
+					}
+				}
+				if hc != nil {
+					break
+				}
+			}
 		}
-		la.l = [2]*Linked{{Accel: la.accel}, {Ext: true, Accel: la.accel}}
+		if hc != nil { // neighbouring levels often agree on one block: keep the lowest and the highest
+			lo, hi := hc[0], hc[len(hc)-1]
+			la.l, la.ids, la.acc = [2]linker{&HCLinked{Level: lo}, &HCLinked{Level: hi}}, [2]int{PredLinkHC, PredLinkHC}, [2]int{lo, hi}
+			if lo == hi {
+				la.l[1], la.died[1] = nil, 1
+			}
+		} else {
+			la.l = [2]linker{&Linked{Accel: la.accel}, &Linked{Ext: true, Accel: la.accel}}
+			la.ids, la.acc = [2]int{PredLinkPrefix, PredLinkExt}, [2]int{la.accel, la.accel}
+		}
 	}
 	keep := la.l[0] == nil && la.l[1] == nil
 	for m, l := range la.l {
@@ -258,9 +324,9 @@ func (la *linkAnalysis) emit(st *FrameStats) []byte {
 		if r.tag&1 == 0 {
 			rc := Recipe{Kind: KindExplicit, Seqs: r.seqs}
 			if r.exact[m] {
-				rc = Recipe{Kind: KindPredicted, Pred: PredLinkPrefix + m, Accel: la.accel}
+				rc = Recipe{Kind: KindPredicted, Pred: la.ids[m], Accel: la.acc[m]}
 			} else if r.k[m] > 0 {
-				h := Recipe{Kind: KindHybrid, Pred: PredLinkPrefix + m, Accel: la.accel, Prefix: r.k[m], Seqs: r.seqs[r.k[m]:]}
+				h := Recipe{Kind: KindHybrid, Pred: la.ids[m], Accel: la.acc[m], Prefix: r.k[m], Seqs: r.seqs[r.k[m]:]}
 				if len(h.Marshal()) < len(rc.Marshal()) {
 					rc = h
 				}

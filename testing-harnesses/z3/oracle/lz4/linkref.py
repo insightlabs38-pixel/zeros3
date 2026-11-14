@@ -48,3 +48,6 @@ for name, d in ins:
             open(f'{out}/{name}_l{level}_b{bn}_oneshot.lz4', 'wb').write(oneshot(d, level, bs))
             open(f'{out}/{name}_l{level}_b{bn}_stream.lz4', 'wb').write(stream(d, level, bs, bn))
     open(f'{out}/{name}_l0_b65536_stream40k.lz4', 'wb').write(stream(d, 0, F.BLOCKSIZE_MAX64KB, 40000))
+    for level in (3, 4, 6, 9, 10, 12):  # LZ4HC: LZ4_compress_HC_continue on contiguous blocks
+        for bs, bn in ((F.BLOCKSIZE_MAX64KB, 65536), (F.BLOCKSIZE_MAX256KB, 262144)):
+            open(f'{out}/{name}_hc{level}_b{bn}_oneshot.lz4', 'wb').write(oneshot(d, level, bs))

@@ -15,6 +15,8 @@ func TestLinkedFrames(t *testing.T) {
 		"link_oneshot_records.lz4":       {5, 0, PredLinkPrefix, 1}, // LZ4F_compressFrame; the saved-dictionary profile misses a block
 		"link_oneshot_records_fast4.lz4": {4, 0, PredLinkPrefix, 5}, // level -4
 		"link_stream40k_mixed.lz4":       {4, 1, PredLinkExt, 1},    // 40 kB flushes: small dictionaries, a stored block inside the chain
+		"link_hc9_mixed.lz4":             {3, 0, PredLinkHC, 9},     // LZ4_compress_HC_continue, hash chains carried
+		"link_hc12_records.lz4":          {3, 0, PredLinkHC, 12},    // optimal parser, carried
 	}
 	for name, w := range want {
 		data, err := os.ReadFile("testdata/" + name)
@@ -35,7 +37,11 @@ func TestLinkedFrames(t *testing.T) {
 		if err := ReplayFrames(&out, rec, bytes.NewReader(plain), Limits{}); err != nil || !bytes.Equal(out.Bytes(), data) {
 			t.Fatalf("%s: replay differs (%v)", name, err)
 		}
-		if n := bytes.Count(rec, []byte{KindPredicted, w.id, w.accel}); n != w.pred {
+		pat := []byte{KindPredicted, w.id, w.accel}
+		if w.id == PredLinkHC { // neighbouring LZ4HC levels can be indistinguishable on a frame
+			pat = pat[:2]
+		}
+		if n := bytes.Count(rec, pat); n != w.pred {
 			t.Errorf("%s: %d blocks carry profile %d/accel %d, want %d", name, n, w.id, w.accel, w.pred)
 		}
 		// corrupted recipes fail or produce other bytes, never the original and never a panic

@@ -126,10 +126,15 @@ func vecLZ4() {
 	vec("lz4-hostile", fmt.Sprint(err != nil))
 	// linked frames: a dependent-block frame built with each carried-table profile goes through
 	// the frame analyzer and replays from recipe + payload
-	for _, ext := range []bool{false, true} {
+	for mode := 0; mode < 4; mode++ {
 		for _, k := range []string{"text", "mix"} {
 			d := vdata(k, 150000, 5)
-			l := &@lz4z3.Linked@{Ext: ext, Accel: 1}
+			var l interface {
+				Next([]byte, int) ([]@lz4z3.Seq@, bool)
+			} = &@lz4z3.Linked@{Ext: mode == 1, Accel: 1}
+			if mode >= 2 {
+				l = &@lz4z3.HCLinked@{Level: 9*(3-mode) + 11*(mode-2)}
+			}
 			fr := []byte{0x04, 0x22, 0x4d, 0x18, 0x40, 0x40, 0}
 			fr[6] = byte(@lz4z3.XXH32@(fr[4:6], 0) >> 8)
 			for pos := 0; pos < len(d); {
@@ -147,7 +152,7 @@ func vecLZ4() {
 			plain, rec, st, err := @lz4z3.AnalyzeFrames@(fr, @lz4z3.Limits@{})
 			var out bytes.Buffer
 			rerr := @lz4z3.ReplayFrames@(&out, rec, bytes.NewReader(plain), @lz4z3.Limits@{})
-			vec(fmt.Sprintf("lz4-linked-%s-ext%v", k, ext), vh(fr)+fmt.Sprint(err == nil, st.Predicted, st.Stored, st.Explicit, len(rec), rerr == nil && bytes.Equal(out.Bytes(), fr)))
+			vec(fmt.Sprintf("lz4-linked-%s-mode%d", k, mode), vh(fr)+fmt.Sprint(err == nil, st.Predicted, st.Stored, st.Explicit, len(rec), rerr == nil && bytes.Equal(out.Bytes(), fr)))
 		}
 	}
 }
