@@ -115,6 +115,7 @@ func Encode(input []byte, quality, lgwin int) ([]byte, error) {
 	e.distCache = [16]int32{4, 11, 15, 16}
 	e.savedDist = [4]int32{4, 11, 15, 16}
 	e.h = newHasher(quality, lgwin, e.sizeHint, d)
+	defer e.h.release()
 	// EncodeWindowBits
 	if lgwin == 17 {
 		e.w.write(7, 1)

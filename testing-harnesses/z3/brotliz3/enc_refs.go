@@ -3,6 +3,7 @@ package brotliz3
 import (
 	"encoding/binary"
 	"math/bits"
+	"sync"
 )
 
 // Backward-reference search of the reference encoder for qualities 5..9 with lgwin >= 17:
@@ -151,6 +152,7 @@ type hasher struct {
 	dictLookups uint64
 	dictMatches uint64
 	dict        *encDict
+	t           *hashTables
 }
 
 func newHasher(quality, lgwin, sizeHint int, dict *encDict) *hasher {
@@ -172,9 +174,32 @@ func newHasher(quality, lgwin, sizeHint int, dict *encDict) *hasher {
 	default:
 		h.nLast = 16
 	}
-	h.num = make([]uint16, 1<<bucketBits)
-	h.buckets = make([]uint32, (1<<bucketBits)<<h.blockBits)
+	// Bucket contents are only read below their counters, so recycled tables need just the
+	// counters cleared (the reference does not initialise the buckets either).
+	if t, ok := hasherPool.Get().(*hashTables); ok && len(t.num) == 1<<bucketBits && len(t.buckets) == (1<<bucketBits)<<h.blockBits {
+		h.t = t
+		for i := range t.num {
+			t.num[i] = 0
+		}
+	} else {
+		h.t = &hashTables{num: make([]uint16, 1<<bucketBits), buckets: make([]uint32, (1<<bucketBits)<<h.blockBits)}
+	}
+	h.num, h.buckets = h.t.num, h.t.buckets
 	return h
+}
+
+type hashTables struct {
+	num     []uint16
+	buckets []uint32
+}
+
+var hasherPool sync.Pool
+
+func (h *hasher) release() {
+	if h.t != nil {
+		hasherPool.Put(h.t)
+		h.t, h.num, h.buckets = nil, nil, nil
+	}
 }
 
 func (h *hasher) typeLen() int {
@@ -270,6 +295,8 @@ func (h *hasher) findLongestMatch(data []byte, dc *[16]int32, cur int, maxLength
 		down = nk - h.blockSize
 	}
 	first4 := binary.LittleEndian.Uint32(data[cur:])
+	bl := int(bestLen)
+	tail := binary.LittleEndian.Uint32(data[cur+bl-3:]) // the four bytes ending at best_len
 	for i := nk; i > down; {
 		i--
 		prev := bucket[i&h.blockMask]
@@ -278,8 +305,7 @@ func (h *hasher) findLongestMatch(data []byte, dc *[16]int32, cur int, maxLength
 			break
 		}
 		p := int(prev)
-		bl := int(bestLen)
-		if binary.LittleEndian.Uint32(data[cur+bl-3:]) != binary.LittleEndian.Uint32(data[p+bl-3:]) {
+		if binary.LittleEndian.Uint32(data[p+bl-3:]) != tail {
 			continue
 		}
 		var l uint64
@@ -296,6 +322,8 @@ func (h *hasher) findLongestMatch(data []byte, dc *[16]int32, cur int, maxLength
 		if score := backwardScore(l, backward); bestScore < score {
 			bestScore, bestLen = score, l
 			out.len, out.distance, out.score = l, backward, score
+			bl = int(l)
+			tail = binary.LittleEndian.Uint32(data[cur+bl-3:])
 		}
 	}
 	bucket[uint32(h.num[key])&h.blockMask] = uint32(cur)
