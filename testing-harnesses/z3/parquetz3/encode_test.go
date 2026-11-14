@@ -38,7 +38,7 @@ func encodeFile(t testing.TB, b []byte, opt Options) ([]byte, store, Stats) {
 }
 
 var logicalFixtures = []string{"pa_delta.parquet", "pa_snappy_v1.parquet", "pa_snappy_v2.parquet", "pa_zstd_v1.parquet", "pa_none_plain.parquet", "pa_bss.parquet",
-	"pa_rg500.parquet", "pa_nested.parquet", "dd_snappy.parquet", "dd_zstd.parquet", "dd_none.parquet"}
+	"pa_rg500.parquet", "pa_nested.parquet", "dd_snappy.parquet", "dd_zstd.parquet", "dd_none.parquet", "pa_brotli.parquet", "pa_brotli_q6.parquet"}
 
 // The whole contract: serialized recipe + stored components + stdlib -> the original bytes.
 func TestEncodeDecodeExact(t *testing.T) {
@@ -226,4 +226,14 @@ func FuzzDecode(f *testing.F) {
 			}
 		}
 	})
+}
+
+// Z4-P7: a Brotli file written at a quality outside the ported encoder path is refused as a
+// logical representation (the caller keeps CDC); nothing is approximated.
+func TestBrotliUnsupportedQualityFallsBack(t *testing.T) {
+	b := load(t, "pa_brotli_q11.parquet")
+	_, _, _, err := Encode(bytes.NewReader(b), int64(len(b)), Options{}, func(string, ID, []byte) error { return nil })
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("quality 11 file: %v", err)
+	}
 }

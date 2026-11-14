@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
+	_ "zeros3-z3/brotliz3/brdict"
 )
 
 func pattern(kind string, n, bw int, r *rand.Rand) []uint32 {
@@ -176,6 +177,9 @@ func TestProducerPagesAreExactlyReplayable(t *testing.T) {
 		"pa_snappy_v2.parquet":  {comp: CompSnapCPP},
 		"pa_zstd_v1.parquet":    {comp: CompZstd},
 		"pa_lz4_raw.parquet":    {comp: CompLZ4Def},
+		"pa_brotli.parquet":     {comp: CompBrotli5 + 3}, // Arrow level 8
+		"pa_brotli_q6.parquet":  {comp: CompBrotli5 + 1},
+		"pa_brotli_q11.parquet": {opaque: "brotli"}, // not a ported quality: exact opaque fallback
 		"pa_none_plain.parquet": {comp: CompNone},
 		"pa_bss.parquet":        {comp: CompSnapCPP},
 		"pa_rg500.parquet":      {comp: CompSnapCPP},
@@ -219,7 +223,8 @@ func TestProducerPagesAreExactlyReplayable(t *testing.T) {
 						i++
 						l, v := pi.Lay.Explicit()
 						sawExplicit = sawExplicit || l || v
-						if pi.Comp.ID != CompNone && pi.Comp.ID != uint8(w.comp) && !(w.comp == CompSnapCPP && pi.Comp.ID == CompSnapCPP5) && !(w.comp == CompSnapCRC && pi.Comp.ID == CompSnapCPP5) {
+						if pi.Comp.ID != CompNone && pi.Comp.ID != uint8(w.comp) && !(w.comp == CompSnapCPP && pi.Comp.ID == CompSnapCPP5) && !(w.comp == CompSnapCRC && pi.Comp.ID == CompSnapCPP5) &&
+							!(w.comp >= CompBrotli5 && pi.Comp.ID >= CompBrotli5 && pi.Comp.ID <= CompBrotli9) { // small pages: several qualities give the same bytes
 							t.Errorf("chunk %d/%d page %d uses %s, want %s", gi, ci, i-1, CompName(int(pi.Comp.ID)), CompName(w.comp))
 						}
 						body, rec, err := an.PageBody(c, p)

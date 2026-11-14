@@ -24,6 +24,9 @@ w("pa_snappy_v1.parquet", compression="snappy", data_page_size=8 << 10)
 w("pa_snappy_v2.parquet", compression="snappy", data_page_version="2.0", data_page_size=8 << 10)
 w("pa_zstd_v1.parquet", compression="zstd", data_page_size=8 << 10)
 w("pa_lz4_raw.parquet", compression="lz4", data_page_size=8 << 10)  # Z4-B6: Parquet LZ4_RAW
+w("pa_brotli.parquet", compression="brotli", data_page_size=8 << 10)  # Z4-P7: Arrow Brotli level 8 (default), lgwin 22
+w("pa_brotli_q6.parquet", compression="brotli", compression_level=6, data_page_size=8 << 10)
+w("pa_brotli_q11.parquet", compression="brotli", compression_level=11, data_page_size=8 << 10)  # outside the ported qualities
 w("pa_none_plain.parquet", compression="none", use_dictionary=False)
 w("pa_bss.parquet", compression="snappy", use_dictionary=False, use_byte_stream_split=["value", "score"])
 pq.write_table(t, os.path.join(out, "pa_rg500.parquet"), row_group_size=500, compression="snappy")
