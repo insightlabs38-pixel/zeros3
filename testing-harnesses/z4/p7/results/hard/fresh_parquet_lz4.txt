@@ -1,0 +1,2 @@
+parquet: 8 files exact (fresh process, independent sha256sum)
+43.197 real 28.428 user 15.376 sys
