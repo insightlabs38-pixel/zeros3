@@ -158,3 +158,76 @@ func TestAnalyzerMemoAndGiveUp(t *testing.T) {
 		t.Fatalf("give-up not applied: sweeps %d rejected %d", b.Sweeps, b.Rejected)
 	}
 }
+
+// LZ4HC optimal-parser levels 10..12 against liblz4 1.9.4. testdata/hcopt_golden.txt holds the
+// SHA-256 of the library's block; LZ4Z3_HCREF=<oracle/lz4/hcref.py> compares bytes directly and,
+// with LZ4Z3_WRITE_GOLDEN=1, rewrites the file from the library.
+func TestHCOptimalLevels(t *testing.T) {
+	oracle := os.Getenv("LZ4Z3_HCREF")
+	write := os.Getenv("LZ4Z3_WRITE_GOLDEN") != ""
+	golden := map[string]string{}
+	if !write {
+		f, err := os.Open("testdata/hcopt_golden.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		for sc := bufio.NewScanner(f); sc.Scan(); {
+			if p := strings.Fields(sc.Text()); len(p) == 2 {
+				golden[p[0]] = p[1]
+			}
+		}
+	}
+	vs := pierrecVectors()
+	// repeated-pattern stress: the pattern-analysis and chain-swap paths
+	pat := bytes.Repeat([]byte("abcabcabcabd"), 3000)
+	pat = append(pat, make([]byte, 9000)...)
+	pat = append(pat, bytes.Repeat([]byte{7, 7, 7, 8}, 6000)...)
+	vs["pattern-69000"] = pat
+	var names []string
+	for k, v := range vs {
+		if len(v) >= 13 && len(v) <= 300000 {
+			names = append(names, k)
+		}
+	}
+	for i := 1; i < len(names); i++ {
+		for j := i; j > 0 && names[j] < names[j-1]; j-- {
+			names[j], names[j-1] = names[j-1], names[j]
+		}
+	}
+	var out bytes.Buffer
+	for _, name := range names {
+		data := vs[name]
+		for lvl := 10; lvl <= 12; lvl++ {
+			key := fmt.Sprintf("%s/hc%d", name, lvl)
+			got, ok := PredictBlock(PredHC, data, lvl)
+			if !ok {
+				t.Fatalf("%s: predictor failed", key)
+			}
+			if dec, _, err := Decode(got, len(data), Limits{}); err != nil || !bytes.Equal(dec, data) {
+				t.Fatalf("%s: predicted block does not decode: %v", key, err)
+			}
+			sum := sha256.Sum256(got)
+			if oracle != "" {
+				cmd := exec.Command("python3", oracle, fmt.Sprint(lvl))
+				cmd.Stdin = bytes.NewReader(data)
+				want, err := cmd.Output()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, want) {
+					t.Errorf("%s: differs from liblz4 (%d vs %d bytes)", key, len(got), len(want))
+				}
+				ws := sha256.Sum256(want)
+				fmt.Fprintf(&out, "%s %s\n", key, hex.EncodeToString(ws[:]))
+			} else if golden[key] != hex.EncodeToString(sum[:]) {
+				t.Errorf("%s: differs from the liblz4 golden hash", key)
+			}
+		}
+	}
+	if write && oracle != "" {
+		if err := os.WriteFile("testdata/hcopt_golden.txt", out.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

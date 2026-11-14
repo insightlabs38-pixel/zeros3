@@ -35,10 +35,11 @@ func TestRealImages(t *testing.T) {
 			t.Errorf("%s: %+v", n, st)
 		}
 	}
-	// LZ4HC image: still exact through explicit/hybrid recipes (more expensive, never wrong)
+	// LZ4HC image (mksquashfs -Xhc = level 12): Z4-P7 ported the optimal parser, so every
+	// compressed block is now a predictor recipe (B6 needed explicit/hybrid recipes here).
 	st, _, _ := roundTrip(t, load(t, "small_lz4hc.sqsh"))
-	if st.Explicit+st.Hybrid == 0 {
-		t.Errorf("hc image should need non-predictor recipes: %+v", st)
+	if st.Explicit+st.Hybrid != 0 || st.Predicted != st.Blocks-st.Stored {
+		t.Errorf("hc image should be fully predicted: %+v", st)
 	}
 	if _, _, _, err := Encode(load(t, "small_xz.sqsh"), Limits{}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("xz image: %v", err)

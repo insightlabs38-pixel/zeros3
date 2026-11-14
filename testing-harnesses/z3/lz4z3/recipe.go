@@ -60,7 +60,7 @@ func Analyze(plain []byte, seqs []Seq, independent bool) Recipe {
 			}
 		}
 	}
-	for lv := 3; lv <= 9; lv++ { // LZ4HC hash-chain levels
+	for lv := 3; lv <= 12; lv++ { // LZ4HC hash-chain levels 3..9 and optimal-parser levels 10..12
 		if k, ok := predictPrefix(PredHC, plain, lv, seqs); ok {
 			if k == len(seqs) {
 				r := Recipe{Kind: KindPredicted, Pred: PredHC, Accel: lv}
