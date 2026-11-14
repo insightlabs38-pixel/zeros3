@@ -16,7 +16,7 @@ func fastLog2(v uint64) float64 {
 	if v < 256 {
 		return log2Table[v]
 	}
-	return math.Log2(float64(v))
+	return log2Int(v)
 }
 
 // bitsEntropy is BrotliBitsEntropy. Products are rounded before they are accumulated (no FMA).
