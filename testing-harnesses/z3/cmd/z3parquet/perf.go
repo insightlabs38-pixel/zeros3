@@ -63,6 +63,7 @@ func cmdPerf(args []string) error {
 	phase := fs.String("phase", "parse", "parse|analyze|encode|decode|replay")
 	dir := fs.String("store", "/tmp/z3pq-store", "component directory")
 	target := fs.Int("target", 8<<10, "group target")
+	workers := fs.Int("workers", 1, "decode: parallel page codec replays")
 	fs.Parse(args)
 	f, err := os.Open(*path)
 	if err != nil {
@@ -130,7 +131,7 @@ func cmdPerf(args []string) error {
 		var n int64
 		w := countWriter{h, &n}
 		t0 = time.Now()
-		if err := parquetz3.Decode(w, rec, ds.get, parquetz3.Limits{}); err != nil {
+		if err := parquetz3.DecodeParallel(w, rec, ds.get, parquetz3.Limits{}, *workers); err != nil {
 			return err
 		}
 		want := sha256.New()

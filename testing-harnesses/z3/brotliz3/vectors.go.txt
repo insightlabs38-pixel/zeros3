@@ -91,7 +91,7 @@ func vecLZ4() {
 	for _, k := range []string{"text", "rand", "low", "mix"} {
 		for _, n := range []int{0, 13, 300, 5000, 70000, 200000} {
 			d := vdata(k, n, uint64(n)+99)
-			for _, p := range [][2]int{{@lz4z3.PredDefault@, 1}, {@lz4z3.PredDefault@, 7}, {@lz4z3.PredContinue@, 1}, {@lz4z3.PredDefault5@, 1}, {@lz4z3.PredHC@, 4}, {@lz4z3.PredHC@, 9}, {@lz4z3.PredPierrec@, 1}} {
+			for _, p := range [][2]int{{@lz4z3.PredDefault@, 1}, {@lz4z3.PredDefault@, 7}, {@lz4z3.PredContinue@, 1}, {@lz4z3.PredDefault5@, 1}, {@lz4z3.PredHC@, 4}, {@lz4z3.PredHC@, 9}, {@lz4z3.PredHC@, 11}, {@lz4z3.PredPierrec@, 1}} {
 				blk, ok := @lz4z3.PredictBlock@(p[0], d, p[1])
 				name := fmt.Sprintf("lz4-%s-%d-p%d-a%d", k, n, p[0], p[1])
 				if !ok {
@@ -124,6 +124,32 @@ func vecLZ4() {
 	vec("analyzer-memo", fmt.Sprint(hits, an.Hits, an.Sweeps))
 	_, _, err := @lz4z3.Decode@([]byte{0xf0, 0xff, 0xff, 0xff}, -1, @lz4z3.Limits@{})
 	vec("lz4-hostile", fmt.Sprint(err != nil))
+	// linked frames: a dependent-block frame built with each carried-table profile goes through
+	// the frame analyzer and replays from recipe + payload
+	for _, ext := range []bool{false, true} {
+		for _, k := range []string{"text", "mix"} {
+			d := vdata(k, 150000, 5)
+			l := &@lz4z3.Linked@{Ext: ext, Accel: 1}
+			fr := []byte{0x04, 0x22, 0x4d, 0x18, 0x40, 0x40, 0}
+			fr[6] = byte(@lz4z3.XXH32@(fr[4:6], 0) >> 8)
+			for pos := 0; pos < len(d); {
+				end := min(pos+40000, len(d))
+				seqs, ok := l.Next(d, end)
+				blk, sz := d[pos:end], uint32(end-pos)|0x80000000
+				if ok {
+					blk, _ = @lz4z3.BuildH@(d[max(0, pos-65535):pos], d[pos:end], seqs)
+					sz = uint32(len(blk))
+				}
+				fr = append(append(fr, byte(sz), byte(sz>>8), byte(sz>>16), byte(sz>>24)), blk...)
+				pos = end
+			}
+			fr = append(fr, 0, 0, 0, 0)
+			plain, rec, st, err := @lz4z3.AnalyzeFrames@(fr, @lz4z3.Limits@{})
+			var out bytes.Buffer
+			rerr := @lz4z3.ReplayFrames@(&out, rec, bytes.NewReader(plain), @lz4z3.Limits@{})
+			vec(fmt.Sprintf("lz4-linked-%s-ext%v", k, ext), vh(fr)+fmt.Sprint(err == nil, st.Predicted, st.Stored, st.Explicit, len(rec), rerr == nil && bytes.Equal(out.Bytes(), fr)))
+		}
+	}
 }
 
 func main() {
