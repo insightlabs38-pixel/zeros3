@@ -615,3 +615,53 @@ func FuzzPatches(f *testing.F) {
 		_ = applyPatches(dst, p, coder&1, 4) // must not panic or run away
 	})
 }
+
+// A producer profile that agrees with another one on the first sample must still be found:
+// strict and fused arithmetic differ on well under 1 % of Q4_0 blocks.
+func TestZN7QuantProfileTieBreak(t *testing.T) {
+	const cols, rows = 256, 1024
+	for seed := int64(1); seed < 200; seed++ {
+		r := rand.New(rand.NewSource(seed))
+		fl := bf16s(r, rows*cols)
+		x := floatsOf(Base{DT: DBF16, Data: fl}, false)
+		qw := make([]float32, cols)
+		for i := range qw {
+			qw[i] = float32(math.Exp(r.NormFloat64()))
+		}
+		n, _ := qcore.OutLen(qcore.Q4_0, len(x), cols)
+		strict, fma := make([]byte, n), make([]byte, n)
+		if qcore.Quantize(strict, qcore.Q4_0, x, cols, qw, qcore.Strict) != nil || qcore.Quantize(fma, qcore.Q4_0, x, cols, qw, qcore.GCCFMA) != nil {
+			t.Fatal("quantize")
+		}
+		head := 8192 / 32 * 18 // bytes of the first sample (8192 elements)
+		if !bytes.Equal(strict[:head], fma[:head]) || bytes.Equal(strict, fma) {
+			continue // need: tie on the first sample, different later
+		}
+		var im []byte
+		im = binary.LittleEndian.AppendUint32(im, 1)
+		im = binary.LittleEndian.AppendUint32(im, 1)
+		im = append(im, 'w')
+		im = binary.LittleEndian.AppendUint32(im, 1)
+		im = binary.LittleEndian.AppendUint32(im, cols)
+		for _, v := range qw {
+			im = binary.LittleEndian.AppendUint32(im, math.Float32bits(v))
+		}
+		aux := AuxIn{ID: sha256.Sum256(im), Data: im}
+		src := build([]byte("F"), []tspec{{"w", DBF16, cols, fl}}, nil)
+		for _, want := range [][]byte{fma, strict} {
+			tgt := build([]byte("Q"), []tspec{{"w", DQ4_0, cols, want}}, nil)
+			obj, st := encodeT(t, tgt, []*tfile{src}, EncOpts{}, aux)
+			if st.QuantPatch != 0 || st.QuantExact != int64(n/18) {
+				t.Fatalf("seed %d: %d blocks patched, %d exact", seed, st.QuantPatch, st.QuantExact)
+			}
+			store := newStore()
+			store.raw[src.id] = src
+			store.aux[aux.ID] = aux.Data
+			if got, err := decodeT(obj, store, DecOpts{}); err != nil || !bytes.Equal(got, tgt.data) {
+				t.Fatalf("replay: %v", err)
+			}
+		}
+		return
+	}
+	t.Fatal("no seed with a first-sample tie")
+}

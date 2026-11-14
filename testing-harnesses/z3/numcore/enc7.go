@@ -516,51 +516,62 @@ func (e *encoder) planQuant(ti int, t *Tensor) (*tplan, error) {
 	if srows > rows {
 		srows = rows
 	}
-	sb := srows * cols / int64(el) // sample blocks
-	want := make([]byte, sb*int64(by))
-	if err := readFull(e.tgt, want, t.Off); err != nil {
-		return nil, err
-	}
 	type variant struct {
 		q   QParams
 		qw  []float32
 		aux int
+		c   Cand
+		ci  int
 	}
-	bestExact, bestIdx := int64(-1), -1
-	var bestV variant
-	var bestC Cand
-	cs := e.cands(ti)
-	for ci, c := range cs {
+	var vs []variant
+	for ci, c := range e.cands(ti) {
 		if c.Slot < 0 || c.Slot >= len(e.bases) || e.baseDepth(c)+1 > MaxHops7 {
 			continue
 		}
-		src := e.bases[c.Slot].Src
-		dt, size, bcols, has := src.Info(c.TIdx)
+		dt, size, bcols, has := e.bases[c.Slot].Src.Info(c.TIdx)
 		if !has || !dt.IsFloat() || size/int64(dt.Width()) != n {
 			continue
 		}
 		if c.Perm.Kind != 0 && bcols != cols {
 			continue
 		}
-		b, err := readRef(e.ctx, src, &Ref{Slot: uint8(c.Slot), TIdx: uint32(c.TIdx), Perm: c.Perm}, 0, int(srows*cols), t.DT, true)
-		if err != nil {
-			return nil, err
-		}
-		vs := []variant{{q: QParams{Aux: -1}, aux: -1}}
+		vs = append(vs, variant{q: QParams{Aux: -1}, aux: -1, c: c, ci: ci})
 		if dt != DF16 {
-			vs = append(vs, variant{q: QParams{Aux: -1, ViaF16: true}, aux: -1})
+			vs = append(vs, variant{q: QParams{Aux: -1, ViaF16: true}, aux: -1, c: c, ci: ci})
 		}
 		for ai, im := range e.im {
 			if w := im.For(t.Name, int(cols)); w != nil {
 				for _, ar := range []qcore.Arith{qcore.Strict, qcore.GCCFMA} {
-					vs = append(vs, variant{q: QParams{Arith: uint8(ar), Name: t.Name}, qw: w, aux: ai})
+					vs = append(vs, variant{q: QParams{Arith: uint8(ar), Name: t.Name}, qw: w, aux: ai, c: c, ci: ci})
 					if dt != DF16 {
-						vs = append(vs, variant{q: QParams{Arith: uint8(ar), Name: t.Name, ViaF16: true}, qw: w, aux: ai})
+						vs = append(vs, variant{q: QParams{Arith: uint8(ar), Name: t.Name, ViaF16: true}, qw: w, aux: ai, c: c, ci: ci})
 					}
 				}
 			}
 		}
+	}
+	// Producer profiles agree on most blocks (strict vs fused arithmetic differ on ~0.1-5 %), so
+	// a small sample often cannot tell them apart: the sample grows until one profile is alone
+	// in front (or 64x the first sample is reached; ties then go to the first listed).
+	var bestExact, sb int64
+	for limit := srows * 64; len(vs) > 0; srows = min(srows*8, rows) {
+		sb = srows * cols / int64(el)
+		want := make([]byte, sb*int64(by))
+		if err := readFull(e.tgt, want, t.Off); err != nil {
+			return nil, err
+		}
+		bestExact = -1
+		var tied []variant
+		var b Base
+		bci := -1
 		for _, v := range vs {
+			if v.ci != bci {
+				var err error
+				if b, err = readRef(e.ctx, e.bases[v.c.Slot].Src, &Ref{Slot: uint8(v.c.Slot), TIdx: uint32(v.c.TIdx), Perm: v.c.Perm}, 0, int(srows*cols), t.DT, true); err != nil {
+					return nil, err
+				}
+				bci = v.ci
+			}
 			got := make([]byte, len(want))
 			if qcore.Quantize(got, q, floatsOf(b, v.q.ViaF16), int(cols), v.qw, qcore.Arith(v.q.Arith)) != nil {
 				continue
@@ -573,19 +584,27 @@ func (e *encoder) planQuant(ti int, t *Tensor) (*tplan, error) {
 			}
 			e.st.CandEvals++
 			if ex > bestExact {
-				bestExact, bestV, bestC, bestIdx = ex, v, c, ci
+				bestExact, tied = ex, tied[:0]
 			}
-			if ex == sb {
-				break
+			if ex == bestExact {
+				tied = append(tied, v)
 			}
 		}
-		if bestExact == sb {
+		// the F16 conversion step changes single values at most: a tie on it is not worth growing for
+		vs = vs[:0]
+		for _, v := range tied {
+			if k := len(vs) - 1; k < 0 || vs[k].ci != v.ci || vs[k].aux != v.aux || vs[k].q.Arith != v.q.Arith {
+				vs = append(vs, v)
+			}
+		}
+		if len(vs) <= 1 || srows >= rows || srows >= limit {
 			break
 		}
 	}
-	if bestIdx < 0 || bestExact*2 < sb {
+	if len(vs) == 0 || bestExact*2 < sb {
 		return nil, nil
 	}
+	bestV, bestC, bestIdx := vs[0], vs[0].c, vs[0].ci
 	pl := &tplan{src: e.bases[bestC.Slot].Src, depth: e.baseDepth(bestC) + 1}
 	pl.ref = &Ref{Slot: uint8(bestC.Slot), TIdx: uint32(bestC.TIdx), Perm: bestC.Perm}
 	qp := bestV.q
