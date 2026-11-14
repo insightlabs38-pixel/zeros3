@@ -126,14 +126,14 @@ func vecLZ4() {
 	vec("lz4-hostile", fmt.Sprint(err != nil))
 	// linked frames: a dependent-block frame built with each carried-table profile goes through
 	// the frame analyzer and replays from recipe + payload
-	for mode := 0; mode < 4; mode++ {
+	for mode := 0; mode < 5; mode++ {
 		for _, k := range []string{"text", "mix"} {
 			d := vdata(k, 150000, 5)
 			var l interface {
 				Next([]byte, int) ([]@lz4z3.Seq@, bool)
 			} = &@lz4z3.Linked@{Ext: mode == 1, Accel: 1}
-			if mode >= 2 {
-				l = &@lz4z3.HCLinked@{Level: 9*(3-mode) + 11*(mode-2)}
+			if mode >= 2 { // LZ4HC: level 9 contiguous, level 11 contiguous, level 9 saved dictionary
+				l = &@lz4z3.HCLinked@{Level: []int{9, 11, 9}[mode-2], Ext: mode == 4}
 			}
 			fr := []byte{0x04, 0x22, 0x4d, 0x18, 0x40, 0x40, 0}
 			fr[6] = byte(@lz4z3.XXH32@(fr[4:6], 0) >> 8)

@@ -6,17 +6,18 @@ import (
 	"sync"
 )
 
-// LZ4HC (hash-chain, levels 3..8) reference encoder re-implementation. Level 9 enables the
-// repeated-pattern shortcut of the reference; it is not modelled (see HCSeqs). Levels >= 10 use
-// the optimal parser and are out of scope. Verified against producer output, never trusted.
+// LZ4HC reference encoder re-implementation (lz4 1.9.x): hash-chain parser for levels 3..9 with
+// the repeated-pattern shortcut, optimal parser with chain swap for levels 10..12, and the
+// continued-stream forms used by linked frames (linked.go). Verified against producer output,
+// never trusted.
 const (
 	hcHashLog    = 15
 	hcStart      = 1 << 16 // the reference starts indices at 64 KiB so that 0 means "empty"
 	hcOptimalML  = 18
-	hcMaxAttempt = 128 // levels with more attempts enable pattern analysis (unsupported here)
+	hcMaxAttempt = 128 // levels with more attempts enable pattern analysis
 )
 
-// HCAttempts maps a compression level to the reference's search depth (levels 3..9).
+// HCAttempts maps a compression level (3..12) to the reference's search depth.
 func HCAttempts(level int) int {
 	switch {
 	case level >= 3 && level <= 9:
@@ -41,7 +42,14 @@ type hcState struct {
 	attempts int
 	pa       bool // pattern analysis (levels with more than 128 attempts)
 	swap     bool // chain swap (optimal parser, levels 10..12)
+	// Linked streams whose previous block is reached through a saved dictionary (hcExtDict):
+	// pfx is where the current prefix starts in src, dlow where the dictionary starts. Both are
+	// 0 for a single segment.
+	pfx, dlow int
 }
+
+// protect mirrors LZ4HC_protectDictEnd: false for the last 3 dictionary positions.
+func (h *hcState) protect(mi uint32) bool { return uint32(h.pfx)+hcStart-1-mi >= 3 }
 
 func (h *hcState) hashAt(p int) uint32 {
 	return (binary.LittleEndian.Uint32(h.src[p:]) * 2654435761) >> (32 - hcHashLog)
@@ -68,12 +76,12 @@ func (h *hcState) head(hh uint32) uint32 {
 	return h.hash[hh]
 }
 
-// wider mirrors LZ4HC_InsertAndGetWiderMatch (no dictionary, no chain swap, no pattern analysis).
+// wider mirrors LZ4HC_InsertAndGetWiderMatch (prefix and external-dictionary candidates).
 func (h *hcState) wider(ip, lowLimit, highLimit, longest int) (best, matchPos, startPos int) {
 	src := h.src
 	ipIndex := uint32(ip) + hcStart
-	lowest := uint32(hcStart)
-	if hcStart+maxOff+1 <= ipIndex {
+	lowest := uint32(h.dlow) + hcStart
+	if lowest+maxOff+1 <= ipIndex {
 		lowest = ipIndex - maxOff
 	}
 	lookBack := ip - lowLimit
@@ -88,11 +96,27 @@ func (h *hcState) wider(ip, lowLimit, highLimit, longest int) (best, matchPos, s
 		attempts--
 		mp := int(mi - hcStart)
 		ml := 0
-		if binary.LittleEndian.Uint16(src[lowLimit+longest-1:]) == binary.LittleEndian.Uint16(src[mp-lookBack+longest-1:]) &&
-			binary.LittleEndian.Uint32(src[mp:]) == pattern {
+		if mp >= h.pfx {
+			if binary.LittleEndian.Uint16(src[lowLimit+longest-1:]) == binary.LittleEndian.Uint16(src[mp-lookBack+longest-1:]) &&
+				binary.LittleEndian.Uint32(src[mp:]) == pattern {
+				back := 0
+				if lookBack != 0 {
+					lim := max(lowLimit-ip, h.pfx-mp)
+					for back > lim && src[ip+back-1] == src[mp+back-1] {
+						back--
+					}
+				}
+				ml = minMatch + count(src, ip+minMatch, mp+minMatch, highLimit) - back
+				if ml > longest {
+					longest, matchPos, startPos = ml, mp+back, ip+back
+				}
+			}
+		} else if mp <= h.pfx-4 && binary.LittleEndian.Uint32(src[mp:]) == pattern {
+			// dictionary candidate: no 2-byte pre-filter; the dictionary is the content right
+			// before the prefix, so counting across its end is a contiguous count
 			back := 0
 			if lookBack != 0 {
-				lim := max(lowLimit-ip, 0-mp)
+				lim := max(lowLimit-ip, h.dlow-mp)
 				for back > lim && src[ip+back-1] == src[mp+back-1] {
 					back--
 				}
@@ -133,7 +157,7 @@ func (h *hcState) wider(ip, lowLimit, highLimit, longest int) (best, matchPos, s
 					repeat = repNot
 				}
 			}
-			if repeat == repConfirmed && cand >= lowest {
+			if repeat == repConfirmed && cand >= lowest && h.protect(cand) {
 				cp := int(cand - hcStart)
 				if binary.LittleEndian.Uint32(src[cp:]) == pattern {
 					fwd := countPattern(src, cp+4, highLimit, pattern) + 4
@@ -141,23 +165,24 @@ func (h *hcState) wider(ip, lowLimit, highLimit, longest int) (best, matchPos, s
 					back := reverseCountPattern(src, cp, int(lowest-hcStart), pattern)
 					cur := back + fwd
 					if cur >= srcPatLen && fwd <= srcPatLen {
-						mi = cand + uint32(fwd) - uint32(srcPatLen)
-					} else {
-						mi = cand - uint32(back)
-						if lookBack == 0 {
-							maxML := min(cur, srcPatLen)
-							if longest < maxML {
-								if ip-int(mi-hcStart) > maxOff {
-									break
-								}
-								longest, matchPos, startPos = maxML, int(mi-hcStart), ip
-							}
-							d := uint32(h.chain[uint16(mi)])
-							if d > mi {
+						if mi = cand + uint32(fwd) - uint32(srcPatLen); !h.protect(mi) {
+							mi = uint32(h.pfx) + hcStart
+						}
+					} else if mi = cand - uint32(back); !h.protect(mi) {
+						mi = uint32(h.pfx) + hcStart
+					} else if lookBack == 0 {
+						maxML := min(cur, srcPatLen)
+						if longest < maxML {
+							if ip-int(mi-hcStart) > maxOff {
 								break
 							}
-							mi -= d
+							longest, matchPos, startPos = maxML, int(mi-hcStart), ip
 						}
+						d := uint32(h.chain[uint16(mi)])
+						if d > mi {
+							break
+						}
+						mi -= d
 					}
 					continue
 				}
@@ -199,7 +224,7 @@ func hcRun(h *hcState, src []byte, start, level int, target []Seq, cont bool) (s
 		if h.gen == 0 {
 			*h = hcState{gen: 1}
 		}
-		h.next = hcStart
+		h.next, h.pfx, h.dlow = hcStart, 0, 0
 	}
 	h.src = src
 	if n-start >= mfLimit+1 {
