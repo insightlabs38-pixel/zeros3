@@ -1,0 +1,266 @@
+package main
+
+//IMPORT
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"math"
+	"math/rand/v2"
+	"runtime"
+	"sync"
+	"testing"
+)
+
+// ---- thin adapter: numcore.Resolver over real ZeroS3 objects (scratch store in a temp dir,
+// ---- ordinary S3-layer objects, the engine's own CDC/CAS path; nothing authoritative changes) ----
+
+type p7Store struct {
+	s      *Store
+	bucket string
+	open   []*manifestReaderAt
+}
+
+func (b *p7Store) put(key string, data []byte) error {
+	ing, err := b.s.ingestStream(bytes.NewReader(data), true, ingestOptions{size: int64(len(data))})
+	if err != nil {
+		return err
+	}
+	_, err = b.s.commitIngested(b.bucket, key, ing, "application/octet-stream", nil, putCondition{})
+	return err
+}
+
+// The engine's manifestReaderAt keeps a chunk cursor and is not safe for concurrent ReadAt; the
+// core reads windows from several workers, so the adapter serialises access per reader.
+type p7RA struct {
+	mu *sync.Mutex
+	ra *manifestReaderAt
+}
+
+func (r p7RA) ReadAt(p []byte, off int64) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ra.ReadAt(p, off)
+}
+
+func (b *p7Store) reader(key string) (io.ReaderAt, int64, error) {
+	_, man, err := b.s.HeadObject(b.bucket, key)
+	if err != nil {
+		return nil, 0, err
+	}
+	ra := b.s.newManifestReaderAt(man)
+	b.open = append(b.open, ra)
+	return p7RA{&sync.Mutex{}, ra}, man.TotalLength, nil
+}
+
+func (b *p7Store) closeReaders() {
+	for _, r := range b.open {
+		r.close()
+	}
+	b.open = nil
+}
+
+// Resolver: every dependency is a ZN7 object stored in the engine; the core checks identity
+// (FileSHA) and authenticates every window it decodes.
+func (b *p7Store) Open(ctx context.Context, id @numcore.ID@) (@numcore.Stored@, error) {
+	r, n, err := b.reader(fmt.Sprintf("zn7/%x", id[:]))
+	if err != nil {
+		return @numcore.Stored@{}, @numcore.ErrMissing7@
+	}
+	o, err := @numcore.OpenObject@(r, n)
+	return @numcore.Stored@{Obj: o}, err
+}
+
+func (b *p7Store) Aux(ctx context.Context, id @numcore.ID@) ([]byte, error) {
+	r, n, err := b.reader(fmt.Sprintf("aux/%x", id[:]))
+	if err != nil {
+		return nil, @numcore.ErrMissing7@
+	}
+	out := make([]byte, n)
+	if _, err := r.ReadAt(out, 0); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return out, nil
+}
+
+type p7File struct {
+	name string
+	data []byte
+	lay  *@numcore.Layout@
+	id   @numcore.ID@
+}
+
+func p7Build(name, hdr string, ts []@numcore.Tensor@, payloads [][]byte) *p7File {
+	f := &p7File{name: name, lay: &@numcore.Layout@{}}
+	f.data = append(f.data, hdr...)
+	for i, t := range ts {
+		t.Off, t.Len = int64(len(f.data)), int64(len(payloads[i]))
+		f.lay.T = append(f.lay.T, t)
+		f.data = append(f.data, payloads[i]...)
+	}
+	f.lay.Size = int64(len(f.data))
+	f.id = sha256.Sum256(f.data)
+	return f
+}
+
+type hashSink struct {
+	h interface {
+		Write([]byte) (int, error)
+		Sum([]byte) []byte
+	}
+	n int64
+}
+
+func (s *hashSink) Write(p []byte) (int, error) { s.n += int64(len(p)); return s.h.Write(p) }
+
+func main() {
+	r := rand.New(rand.NewPCG(71, 72))
+	rows, cols := 4096, 512 // 2 Mi elements
+	bf := make([]byte, 2*rows*cols)
+	for i := 0; i < rows*cols; i++ {
+		binary.LittleEndian.PutUint16(bf[2*i:], uint16(math.Float32bits(float32(r.NormFloat64()*0.04))>>16))
+	}
+	ft := append([]byte(nil), bf...)
+	for i := 0; i < rows*cols; i++ {
+		if r.IntN(4) == 0 {
+			ft[2*i] += byte(r.IntN(7))
+		}
+	}
+	x := make([]float32, 64*cols)
+	for i := range x {
+		x[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(ft[2*i:])) << 16)
+	}
+	qn, _ := @qcore.OutLen@(@qcore.Q4_K@, len(x), cols)
+	q4k := make([]byte, qn)
+	if err := @qcore.Quantize@(q4k, @qcore.Q4_K@, x, cols, nil, @qcore.Strict@); err != nil {
+		t.Fatal(err)
+	}
+	hdr := bytes.Repeat([]byte("{\"meta\":\"header\"}"), 200)
+	fts := []@numcore.Tensor@{{Name: "w", DT: @numcore.DBF16@, Cols: int64(cols)}, {Name: "wq", DT: @numcore.DBF16@, Cols: int64(cols)}}
+	base := p7Build("base", string(hdr)+"A", fts, [][]byte{bf, bf[:2*64*cols]})
+	tune := p7Build("tune", string(hdr)+"B", fts, [][]byte{ft, ft[:2*64*cols]})
+	quant := p7Build("quant", "GGUF-like", []@numcore.Tensor@{{Name: "wq", DT: @numcore.DQ4_K@, Cols: int64(cols)}}, [][]byte{q4k})
+
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("p7"); err != nil {
+		t.Fatal(err)
+	}
+	st := &p7Store{s: s, bucket: "p7"}
+	// originals go through the engine first: the encoder reads them back through manifestReaderAt
+	for _, f := range []*p7File{base, tune, quant} {
+		if err := st.put("orig/"+f.name, f.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var ms0 runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&ms0)
+	enc := func(f *p7File, bases []*p7File) int {
+		tr, n, err := st.reader("orig/" + f.name)
+		if err != nil || n != f.lay.Size {
+			t.Fatalf("%s: %v", f.name, err)
+		}
+		var bi []@numcore.BaseIn@
+		for _, b := range bases {
+			br, _, err := st.reader("orig/" + b.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bi = append(bi, @numcore.BaseIn@{ID: b.id, Len: b.lay.Size, Src: @numcore.RawSource@{R: br, L: b.lay}})
+		}
+		var buf bytes.Buffer
+		es, err := @numcore.Encode@(context.Background(), &buf, tr, f.lay, bi, func(ti int) []@numcore.Cand@ {
+			var out []@numcore.Cand@
+			for s, b := range bases {
+				for k := range b.lay.T {
+					if b.lay.T[k].Name == f.lay.T[ti].Name {
+						out = append(out, @numcore.Cand@{Slot: s, TIdx: k})
+					}
+				}
+			}
+			return out
+		}, nil, @numcore.EncOpts@{Workers: 2})
+		if err != nil {
+			t.Fatalf("encode %s: %v", f.name, err)
+		}
+		if err := st.put(fmt.Sprintf("zn7/%x", f.id[:]), buf.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Printf("REHEARSAL encode %s logical=%d zn7=%d windows=%d modes(raw,direct,pred,copy,quant)=%v\n", f.name, f.lay.Size, es.Bytes, es.Windows, es.ModeBytes)
+		return int(es.Bytes)
+	}
+	enc(base, nil)
+	nt := enc(tune, []*p7File{base})
+	nq := enc(quant, []*p7File{tune})
+	if nt*2 > len(tune.data) || nq > 4096 {
+		t.Fatalf("derivations not effective: tune %d quant %d", nt, nq)
+	}
+	st.closeReaders()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	st2 := &p7Store{s: s2, bucket: "p7"}
+	defer st2.closeReaders()
+	var peak uint64
+	for _, f := range []*p7File{base, tune, quant} {
+		or, n, err := st2.reader(fmt.Sprintf("zn7/%x", f.id[:]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		obj, err := @numcore.OpenObject@(or, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sink := &hashSink{h: sha256.New()}
+		ds, err := obj.DecodeTo(context.Background(), sink, st2, @numcore.DecOpts@{Workers: 2, CacheBytes: 8 << 20})
+		if err != nil {
+			t.Fatalf("replay %s: %v", f.name, err)
+		}
+		var got @numcore.ID@
+		sink.h.Sum(got[:0])
+		if got != f.id || sink.n != f.lay.Size {
+			t.Fatalf("replay %s: digest mismatch", f.name)
+		}
+		for i := 0; i < 20; i++ {
+			off := r.Int64N(f.lay.Size - 5000)
+			b, _, err := obj.ReadRange(context.Background(), off, 4096, st2, @numcore.DecOpts@{CacheBytes: 8 << 20})
+			if err != nil || !bytes.Equal(b, f.data[off:off+4096]) {
+				t.Fatalf("range %s at %d: %v", f.name, off, err)
+			}
+		}
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		if ms.HeapAlloc > peak {
+			peak = ms.HeapAlloc
+		}
+		fmt.Printf("REHEARSAL replay %s exact sha256=%x windows=%d store_read=%d ranges=20\n", f.name, got[:8], ds.Windows, ds.PayloadBytes)
+	}
+	// a corrupted stored object must fail closed
+	bad := append([]byte(nil), tune.data[:100]...)
+	if err := st2.put(fmt.Sprintf("zn7/%x", base.id[:]), bad); err != nil {
+		t.Fatal(err)
+	}
+	or, n, _ := st2.reader(fmt.Sprintf("zn7/%x", tune.id[:]))
+	obj, err := @numcore.OpenObject@(or, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := obj.DecodeTo(context.Background(), io.Discard, st2, @numcore.DecOpts@{}); err == nil {
+		t.Fatal("replay over a corrupted base object succeeded")
+	}
+	fmt.Printf("REHEARSAL corrupted-base rejected; heap after originals=%d MiB peak during replay=%d MiB\n", ms0.HeapAlloc>>20, peak>>20)
+	fmt.Println("REHEARSAL OK")
+}

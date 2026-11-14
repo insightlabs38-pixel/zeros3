@@ -48,7 +48,7 @@ type Params struct {
 	Coef  []float32 // affine/linear coefficients; KLow: factors [U (rows*rank) | V (cols*rank)]
 }
 
-var ErrParams = errors.New("mdelta2: invalid predictor parameters")
+var ErrParams = errors.New("numcore: invalid predictor parameters")
 
 // MarshalParams serializes p compactly.
 func (p *Params) Marshal() []byte {

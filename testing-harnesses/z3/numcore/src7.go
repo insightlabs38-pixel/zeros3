@@ -210,15 +210,18 @@ func (s *session) source(ctx context.Context, id ID, depth int) (Source, error) 
 }
 
 type countingRaw struct {
-	RawSource
-	s *session
+	raw RawSource
+	s   *session
 }
+
+func (c countingRaw) Info(ti int) (DType, int64, int64, bool)  { return c.raw.Info(ti) }
+func (c countingRaw) Gaps(ctx context.Context) ([]byte, error) { return c.raw.Gaps(ctx) }
 
 func (c countingRaw) ReadTensor(ctx context.Context, ti int, off int64, dst []byte) error {
 	c.s.mu.Lock()
 	c.s.rawRead += int64(len(dst))
 	c.s.mu.Unlock()
-	return c.RawSource.ReadTensor(ctx, ti, off, dst)
+	return c.raw.ReadTensor(ctx, ti, off, dst)
 }
 
 func (s *session) imatrix(ctx context.Context, o *Object, idx int, name string, cols int) ([]float32, error) {

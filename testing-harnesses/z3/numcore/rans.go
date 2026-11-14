@@ -13,7 +13,7 @@ const (
 	ransL    = 1 << 23
 )
 
-var ErrCorrupt = errors.New("mdelta2: corrupt stream")
+var ErrCorrupt = errors.New("numcore: corrupt stream")
 
 type ransTab struct {
 	freq  []uint16 // per symbol

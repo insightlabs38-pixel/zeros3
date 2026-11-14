@@ -547,11 +547,11 @@ func TestZN7HostileLayoutsAndDirectories(t *testing.T) {
 	bad := []*Layout{
 		nil,
 		{Size: -1},
-		{Size: 10, T: []Tensor{{DT: DF32, Off: 4, Len: 8}}},                              // beyond the file
-		{Size: 100, T: []Tensor{{DT: DF32, Off: 0, Len: 6}}},                             // not whole elements
+		{Size: 10, T: []Tensor{{DT: DF32, Off: 4, Len: 8}}},                               // beyond the file
+		{Size: 100, T: []Tensor{{DT: DF32, Off: 0, Len: 6}}},                              // not whole elements
 		{Size: 100, T: []Tensor{{DT: DF32, Off: 8, Len: 8}, {DT: DF32, Off: 12, Len: 8}}}, // overlap
-		{Size: 100, T: []Tensor{{DT: DF32, Off: math.MaxInt64 - 2, Len: 8}}},             // overflow
-		{Size: 100, T: []Tensor{{DT: DQ4_K, Off: 0, Len: 100}}},                          // not whole blocks
+		{Size: 100, T: []Tensor{{DT: DF32, Off: math.MaxInt64 - 2, Len: 8}}},              // overflow
+		{Size: 100, T: []Tensor{{DT: DQ4_K, Off: 0, Len: 100}}},                           // not whole blocks
 		{Size: 100, T: []Tensor{{DT: DF32, Off: 0, Len: 8, Cols: -4}}},
 	}
 	for i, l := range bad {
