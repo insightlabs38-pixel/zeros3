@@ -16,7 +16,25 @@ echo "packages under test: $RDEPS" >> "$L"
 step gofmt fmtcheck
 step vet go -C $Z vet $RDEPS
 step build go -C $Z build -o /dev/null ./cmd/z4p7
-step test go -C $Z test -count=1 $RDEPS
+# Package tests. If any fail, the failing packages are re-run on a clean worktree of the base revision:
+# the step passes only when the set of failing tests is identical there (pre-existing, not a regression).
+tests_vs_base() {
+  go -C $Z test -count=1 $RDEPS > "$O/test.log" 2>&1; local rc=$?
+  grep -E '^(ok|FAIL|---|panic)' "$O/test.log"
+  [ $rc = 0 ] && return 0
+  local pk; pk=$(grep -E '^FAIL[[:space:]]+zeros3-z3/' "$O/test.log" | awk '{print $2}' | sed 's|^zeros3-z3|.|' | tr '\n' ' ')
+  [ -n "$pk" ] || return 1
+  local wt="$O/base-wt"; rm -rf "$wt"; git worktree prune; git worktree add --detach "$wt" $BASE > /dev/null 2>&1 || return 1
+  go -C "$wt/$Z" test -count=1 $pk > "$O/test_base.log" 2>&1
+  git worktree remove --force "$wt"
+  norm() { grep -E '^[[:space:]]*--- FAIL|^FAIL[[:space:]]' "$1" | sed -E 's/ \([0-9.]+s\)$//; s/[[:space:]]+[0-9.]+s$//' | sort; }
+  if diff <(norm "$O/test.log") <(norm "$O/test_base.log") > "$O/test_vs_base.diff"; then
+    echo "pre-existing failures, identical on base $BASE:"; norm "$O/test.log"
+    norm "$O/test.log" | sed 's/^/  pre-existing on base: /' >> "$O/summary.txt"; return 0
+  fi
+  cat "$O/test_vs_base.diff"; return 1
+}
+step test tests_vs_base
 step race go -C $Z test -count=1 -race ./numcore ./lz4z3 ./brotliz3
 for t in numcore:FuzzOpenObject numcore:FuzzPatches brotliz3:FuzzDecode brotliz3:FuzzEncodeDecode lz4z3:FuzzDecode lz4z3:FuzzRecipe lz4z3:FuzzFrames; do
   step "fuzz-$t" go -C $Z test ./${t%%:*} -run '^$' -fuzz "^${t##*:}\$" -fuzztime ${P7_FUZZTIME:-20s}
