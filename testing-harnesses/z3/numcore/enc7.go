@@ -88,6 +88,9 @@ type encoder struct {
 	auxUsed map[int]int
 	auxIDs  []ID
 	mu      sync.Mutex
+
+	priorOnce sync.Once
+	prior     map[[2]int]int64 // quantPrior
 }
 
 func (e *encoder) baseDepth(c Cand) int {
@@ -498,32 +501,31 @@ func probeScale(dt DType, b Base, tw []byte, n int) bool {
 	return hit >= s*8/10
 }
 
-// planQuant finds the producer profile that reproduces a quantized tensor from a float base.
-func (e *encoder) planQuant(ti int, t *Tensor) (*tplan, error) {
-	q := mustQ(t.DT)
-	el, by := qBlock(q)
-	nb := t.Len / int64(by)
-	n := nb * int64(el)
-	cols := t.Cols
+// qvariant is one way a quantized tensor may have been produced from a float candidate.
+type qvariant struct {
+	q   QParams
+	qw  []float32
+	aux int
+	c   Cand
+	ci  int
+}
+
+// qgeom returns the quantizer geometry of a tensor (ok=false when it is not derivable).
+func qgeom(t *Tensor) (q qcore.Type, el, by int, n, cols, rows int64, ok bool) {
+	q = mustQ(t.DT)
+	el, by = qBlock(q)
+	n = t.Len / int64(by) * int64(el)
+	cols = t.Cols
 	if cols <= 0 {
 		cols = n
 	}
-	if cols%int64(el) != 0 || n%cols != 0 || n == 0 {
-		return nil, nil
+	if cols%int64(el) != 0 || n == 0 || n%cols != 0 {
+		return q, el, by, n, cols, 0, false
 	}
-	rows := n / cols
-	srows := maxI64(1, int64(8192)/cols)
-	if srows > rows {
-		srows = rows
-	}
-	type variant struct {
-		q   QParams
-		qw  []float32
-		aux int
-		c   Cand
-		ci  int
-	}
-	var vs []variant
+	return q, el, by, n, cols, n / cols, true
+}
+
+func (e *encoder) quantVariants(ti int, t *Tensor, n, cols int64) (vs []qvariant) {
 	for ci, c := range e.cands(ti) {
 		if c.Slot < 0 || c.Slot >= len(e.bases) || e.baseDepth(c)+1 > MaxHops7 {
 			continue
@@ -535,68 +537,149 @@ func (e *encoder) planQuant(ti int, t *Tensor) (*tplan, error) {
 		if c.Perm.Kind != 0 && bcols != cols {
 			continue
 		}
-		vs = append(vs, variant{q: QParams{Aux: -1}, aux: -1, c: c, ci: ci})
+		vs = append(vs, qvariant{q: QParams{Aux: -1}, aux: -1, c: c, ci: ci})
 		if dt != DF16 {
-			vs = append(vs, variant{q: QParams{Aux: -1, ViaF16: true}, aux: -1, c: c, ci: ci})
+			vs = append(vs, qvariant{q: QParams{Aux: -1, ViaF16: true}, aux: -1, c: c, ci: ci})
 		}
 		for ai, im := range e.im {
 			if w := im.For(t.Name, int(cols)); w != nil {
 				for _, ar := range []qcore.Arith{qcore.Strict, qcore.GCCFMA} {
-					vs = append(vs, variant{q: QParams{Arith: uint8(ar), Name: t.Name}, qw: w, aux: ai, c: c, ci: ci})
+					vs = append(vs, qvariant{q: QParams{Arith: uint8(ar), Name: t.Name}, qw: w, aux: ai, c: c, ci: ci})
 					if dt != DF16 {
-						vs = append(vs, variant{q: QParams{Arith: uint8(ar), Name: t.Name, ViaF16: true}, qw: w, aux: ai, c: c, ci: ci})
+						vs = append(vs, qvariant{q: QParams{Arith: uint8(ar), Name: t.Name, ViaF16: true}, qw: w, aux: ai, c: c, ci: ci})
 					}
 				}
 			}
 		}
 	}
-	// Producer profiles agree on most blocks (strict vs fused arithmetic differ on ~0.1-5 %), so
-	// a small sample often cannot tell them apart: the sample grows until one profile is alone
-	// in front (or 64x the first sample is reached; ties then go to the first listed).
-	var bestExact, sb int64
-	for limit := srows * 64; len(vs) > 0; srows = min(srows*8, rows) {
-		sb = srows * cols / int64(el)
-		want := make([]byte, sb*int64(by))
-		if err := readFull(e.tgt, want, t.Off); err != nil {
-			return nil, err
-		}
-		bestExact = -1
-		var tied []variant
-		var b Base
-		bci := -1
-		for _, v := range vs {
-			if v.ci != bci {
-				var err error
-				if b, err = readRef(e.ctx, e.bases[v.c.Slot].Src, &Ref{Slot: uint8(v.c.Slot), TIdx: uint32(v.c.TIdx), Perm: v.c.Perm}, 0, int(srows*cols), t.DT, true); err != nil {
-					return nil, err
-				}
-				bci = v.ci
+	return vs
+}
+
+// quantEval requantizes the first srows rows with every variant and counts the blocks that
+// equal the target's (-1: the variant does not apply).
+func (e *encoder) quantEval(t *Tensor, vs []qvariant, srows int64) (ex []int64, sb int64, err error) {
+	q, el, by, _, cols, _, _ := qgeom(t)
+	sb = srows * cols / int64(el)
+	want := make([]byte, sb*int64(by))
+	if err := readFull(e.tgt, want, t.Off); err != nil {
+		return nil, 0, err
+	}
+	ex = make([]int64, len(vs))
+	got := make([]byte, len(want))
+	var b Base
+	bci := -1
+	for k, v := range vs {
+		if v.ci != bci {
+			if b, err = readRef(e.ctx, e.bases[v.c.Slot].Src, &Ref{Slot: uint8(v.c.Slot), TIdx: uint32(v.c.TIdx), Perm: v.c.Perm}, 0, int(srows*cols), t.DT, true); err != nil {
+				return nil, 0, err
 			}
-			got := make([]byte, len(want))
-			if qcore.Quantize(got, q, floatsOf(b, v.q.ViaF16), int(cols), v.qw, qcore.Arith(v.q.Arith)) != nil {
+			bci = v.ci
+		}
+		if qcore.Quantize(got, q, floatsOf(b, v.q.ViaF16), int(cols), v.qw, qcore.Arith(v.q.Arith)) != nil {
+			ex[k] = -1
+			continue
+		}
+		for i := int64(0); i < sb; i++ {
+			if bytes.Equal(got[i*int64(by):(i+1)*int64(by)], want[i*int64(by):(i+1)*int64(by)]) {
+				ex[k]++
+			}
+		}
+		e.mu.Lock()
+		e.st.CandEvals++
+		e.mu.Unlock()
+	}
+	return ex, sb, nil
+}
+
+// quantPrior ranks the producer profiles (imatrix, arithmetic) of this file. Profiles agree on
+// most blocks (strict vs fused arithmetic differ on 0.1-5 %), so one tensor's first sample often
+// cannot tell them apart, while the producer build is a property of the whole file: a larger
+// sample of the first few tensors with more than one candidate profile is scored once and
+// breaks later ties. The probe
+// depends only on the inputs, so the result does not depend on worker scheduling.
+func (e *encoder) quantPrior() map[[2]int]int64 {
+	e.priorOnce.Do(func() {
+		e.prior = map[[2]int]int64{}
+		for ti, probes := 0, 0; ti < len(e.lay.T) && probes < 6; ti++ {
+			t := &e.lay.T[ti]
+			if _, ok := t.DT.QType(); !ok {
 				continue
 			}
-			ex := int64(0)
-			for i := int64(0); i < sb; i++ {
-				if bytes.Equal(got[i*int64(by):(i+1)*int64(by)], want[i*int64(by):(i+1)*int64(by)]) {
-					ex++
+			_, _, _, n, cols, rows, ok := qgeom(t)
+			if !ok {
+				continue
+			}
+			var vs []qvariant
+			for _, v := range e.quantVariants(ti, t, n, cols) {
+				if !v.q.ViaF16 {
+					vs = append(vs, v)
 				}
 			}
-			e.st.CandEvals++
-			if ex > bestExact {
-				bestExact, tied = ex, tied[:0]
+			if len(vs) < 2 {
+				continue
 			}
-			if ex == bestExact {
+			ex, _, err := e.quantEval(t, vs, min(rows, maxI64(1, (1<<17)/cols)))
+			if err != nil {
+				return
+			}
+			probes++
+			for k, v := range vs {
+				if ex[k] > 0 {
+					e.prior[[2]int{v.aux, int(v.q.Arith)}] += ex[k]
+				}
+			}
+		}
+	})
+	return e.prior
+}
+
+// planQuant finds the producer profile that reproduces a quantized tensor from a float base.
+func (e *encoder) planQuant(ti int, t *Tensor) (*tplan, error) {
+	_, el, _, n, cols, rows, ok := qgeom(t)
+	if !ok {
+		return nil, nil
+	}
+	srows := min(rows, maxI64(1, int64(8192)/cols))
+	vs := e.quantVariants(ti, t, n, cols)
+	var bestExact, sb int64
+	for limit := srows * 64; len(vs) > 0; srows = min(srows*8, rows) {
+		ex, nb, err := e.quantEval(t, vs, srows)
+		if err != nil {
+			return nil, err
+		}
+		sb, bestExact = nb, -1
+		for _, x := range ex {
+			bestExact = max(bestExact, x)
+		}
+		// keep the leaders; the F16 conversion step changes single values at most, so a tie on
+		// it alone goes to the first listed
+		tied := vs[:0]
+		for k, v := range vs {
+			if j := len(tied) - 1; ex[k] >= 0 && ex[k] == bestExact && (j < 0 || tied[j].ci != v.ci || tied[j].aux != v.aux || tied[j].q.Arith != v.q.Arith) {
 				tied = append(tied, v)
 			}
 		}
-		// the F16 conversion step changes single values at most: a tie on it is not worth growing for
-		vs = vs[:0]
-		for _, v := range tied {
-			if k := len(vs) - 1; k < 0 || vs[k].ci != v.ci || vs[k].aux != v.aux || vs[k].q.Arith != v.q.Arith {
-				vs = append(vs, v)
+		vs = tied
+		if len(vs) > 1 { // the file-level prior decides between profiles that tie here
+			pr := e.quantPrior()
+			top, cnt := int64(-1), 0
+			for _, v := range vs {
+				if s := pr[[2]int{v.aux, int(v.q.Arith)}]; s > top {
+					top, cnt = s, 1
+				} else if s == top {
+					cnt++
+				}
+			}
+			if cnt == 1 {
+				for _, v := range vs {
+					if pr[[2]int{v.aux, int(v.q.Arith)}] == top {
+						vs = []qvariant{v}
+						break
+					}
+				}
 			}
 		}
+		// still undecided: grow the sample (up to 64x the first one), then take the first listed
 		if len(vs) <= 1 || srows >= rows || srows >= limit {
 			break
 		}
