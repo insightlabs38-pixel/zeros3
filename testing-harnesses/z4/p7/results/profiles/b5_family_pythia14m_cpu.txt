@@ -1,0 +1,34 @@
+File: z4b5-prof
+Build ID: 861226cbe7b91ec994692b5a1bf784d3900a3c80
+Type: cpu
+Time: 2026-11-14 20:08:19 UTC
+Duration: 30.01s, Total samples = 34.93s (116.41%)
+Showing nodes accounting for 31.75s, 90.90% of 34.93s total
+Dropped 219 nodes (cum <= 0.17s)
+Showing top 25 nodes out of 108
+      flat  flat%   sum%        cum   cum%
+     6.37s 18.24% 18.24%      6.37s 18.24%  crypto/internal/fips140/sha256.blockSHANI
+     4.28s 12.25% 30.49%      4.28s 12.25%  runtime.asyncPreempt
+     2.68s  7.67% 38.16%      6.35s 18.18%  zeros3-z3/mdelta2.nrcEncodeCfg
+     2.58s  7.39% 45.55%      4.78s 13.68%  zeros3-z3/mdelta2.nrcEstimate
+     2.12s  6.07% 51.62%      3.09s  8.85%  zeros3-z3/mdelta2.le (inline)
+     2.02s  5.78% 57.40%      2.02s  5.78%  runtime.memclrNoHeapPointers
+     1.97s  5.64% 63.04%      2.45s  7.01%  zeros3-z3/mdelta2.(*ransEnc).put (inline)
+     1.65s  4.72% 67.76%      3.54s 10.13%  compress/flate.(*fastEncL6).encode
+     1.47s  4.21% 71.97%      1.47s  4.21%  runtime.memmove
+     1.26s  3.61% 75.58%      3.29s  9.42%  zeros3-z3/mdelta2.fpeEncode
+     0.59s  1.69% 77.27%      1.18s  3.38%  zeros3-z3/mdelta2.MakeResidual
+     0.58s  1.66% 78.93%      0.85s  2.43%  zeros3-z3/mdelta2.Planes (inline)
+     0.50s  1.43% 80.36%      0.89s  2.55%  zeros3-z3/mdelta2.exps
+     0.47s  1.35% 81.71%      0.55s  1.57%  encoding/binary.littleEndian.Uint16 (inline)
+     0.44s  1.26% 82.97%      0.58s  1.66%  compress/flate.loadLE32[go.shape.int32] (inline)
+     0.35s  1.00% 83.97%      1.18s  3.38%  zeros3-z3/mdelta2.nrcProxy
+     0.34s  0.97% 84.94%      0.34s  0.97%  internal/runtime/syscall/linux.Syscall6
+     0.31s  0.89% 85.83%      0.61s  1.75%  compress/flate.(*huffmanBitWriter).writeTokens
+     0.30s  0.86% 86.69%      0.37s  1.06%  zeros3-z3/mdelta2.NRCDecode
+     0.30s  0.86% 87.55%      0.36s  1.03%  zeros3-z3/mdelta2.bitlen (inline)
+     0.29s  0.83% 88.38%      0.34s  0.97%  compress/flate.loadLE64[go.shape.int32] (inline)
+     0.27s  0.77% 89.15%      0.27s  0.77%  runtime.madvise
+     0.25s  0.72% 89.87%      0.25s  0.72%  runtime.procyieldAsm
+     0.21s   0.6% 90.47%     21.91s 62.73%  zeros3-z3/mdelta2.EncodeResidual
+     0.15s  0.43% 90.90%      0.21s   0.6%  compress/flate.hashLen (inline)

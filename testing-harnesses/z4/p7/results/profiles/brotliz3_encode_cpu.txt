@@ -1,0 +1,34 @@
+File: brotliz3.test
+Build ID: c5ad2e762c4826329f152f2a039686a9f3cdff4a
+Type: cpu
+Time: 2026-11-14 05:30:10 UTC
+Duration: 14.10s, Total samples = 14.17s (100.51%)
+Showing nodes accounting for 13.60s, 95.98% of 14.17s total
+Dropped 122 nodes (cum <= 0.07s)
+Showing top 25 nodes out of 37
+      flat  flat%   sum%        cum   cum%
+     8.81s 62.17% 62.17%      9.83s 69.37%  zeros3-z3/brotliz3.(*hasher).findLongestMatch
+     1.57s 11.08% 73.25%      1.57s 11.08%  runtime.memclrNoHeapPointers
+     0.61s  4.30% 77.56%      0.61s  4.30%  encoding/binary.littleEndian.Uint32 (inline)
+     0.47s  3.32% 80.88%     10.67s 75.30%  zeros3-z3/brotliz3.(*encoder).createBackwardReferences
+     0.41s  2.89% 83.77%      0.43s  3.03%  zeros3-z3/brotliz3.(*bitWriter).write
+     0.26s  1.83% 85.60%      0.32s  2.26%  zeros3-z3/brotliz3.(*splitter).add
+     0.21s  1.48% 87.09%      0.24s  1.69%  zeros3-z3/brotliz3.matchLen (inline)
+     0.18s  1.27% 88.36%      0.23s  1.62%  zeros3-z3/brotliz3.(*hasher).store (inline)
+     0.16s  1.13% 89.48%      1.12s  7.90%  zeros3-z3/brotliz3.(*bitWriter).storeMetaBlock
+     0.15s  1.06% 90.54%      0.55s  3.88%  zeros3-z3/brotliz3.buildMetaBlockGreedy
+     0.14s  0.99% 91.53%      0.14s  0.99%  runtime.memmove
+     0.14s  0.99% 92.52%      0.47s  3.32%  zeros3-z3/brotliz3.(*blockEncoder).symbol
+     0.11s  0.78% 93.30%      0.12s  0.85%  zeros3-z3/brotliz3.(*hasher).key (inline)
+     0.11s  0.78% 94.07%      0.20s  1.41%  zeros3-z3/brotliz3.sortHuff
+     0.09s  0.64% 94.71%      0.09s  0.64%  zeros3-z3/brotliz3.huffLess (inline)
+     0.08s  0.56% 95.27%      0.08s  0.56%  zeros3-z3/brotliz3.optimizeHuffmanCountsForRle
+     0.03s  0.21% 95.48%      0.08s  0.56%  zeros3-z3/brotliz3.(*blockEncoder).symbolCtx
+     0.03s  0.21% 95.70%      0.28s  1.98%  zeros3-z3/brotliz3.createHuffmanTree
+     0.02s  0.14% 95.84%      1.58s 11.15%  runtime.memclrNoHeapPointersChunked
+     0.02s  0.14% 95.98%      0.34s  2.40%  zeros3-z3/brotliz3.(*bitWriter).buildAndStoreHuffmanTree
+         0     0% 95.98%      0.09s  0.64%  runtime.gcBgMarkWorker
+         0     0% 95.98%      0.08s  0.56%  runtime.gcBgMarkWorker.func2
+         0     0% 95.98%      0.08s  0.56%  runtime.gcDrain
+         0     0% 95.98%      0.14s  0.99%  runtime.growslice
+         0     0% 95.98%      1.60s 11.29%  runtime.makeslice
