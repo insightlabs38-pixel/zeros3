@@ -94,6 +94,7 @@ func cmdQuantConf(args []string) {
 	imP := fl.String("imatrix", "", "llama.cpp imatrix file")
 	jsonP := fl.String("json", "", "append JSONL rows here")
 	workers := fl.Int("workers", 4, "parallel tensors")
+	only := fl.String("types", "", "comma-separated quant type names to check (default all)")
 	fl.Parse(args)
 	// srcFloats returns the float tensor for a GGUF tensor name; from a Safetensors source
 	// (names mapped llama-style) also the values after the usual F16 conversion step.
@@ -182,6 +183,9 @@ func cmdQuantConf(args []string) {
 				defer wg.Done()
 				defer func() { <-sem }()
 				qt := qcore.Type(t.Type)
+				if *only != "" && !strings.Contains(","+*only+",", ","+qt.String()+",") {
+					return
+				}
 				var x, x16 []float32
 				if qcore.Supported(qt) && len(t.Dims) != 0 {
 					x, x16 = srcFloats(t.Name)
@@ -203,13 +207,13 @@ func cmdQuantConf(args []string) {
 					qw   []float32
 					ar   qcore.Arith
 				}
-				variants := []variant{{"ref", x, nil, qcore.Strict}}
+				variants := []variant{{"ref", x, nil, qcore.Strict}, {"ref+fma", x, nil, qcore.GCCFMA}}
 				w := im.For(t.Name, npr)
 				if w != nil {
 					variants = append(variants, variant{"imatrix", x, w, qcore.Strict}, variant{"imatrix+fma", x, w, qcore.GCCFMA})
 				}
 				if x16 != nil {
-					variants = append(variants, variant{"f16:ref", x16, nil, qcore.Strict})
+					variants = append(variants, variant{"f16:ref", x16, nil, qcore.Strict}, variant{"f16:ref+fma", x16, nil, qcore.GCCFMA})
 					if w != nil {
 						variants = append(variants, variant{"f16:imatrix", x16, w, qcore.Strict}, variant{"f16:imatrix+fma", x16, w, qcore.GCCFMA})
 					}

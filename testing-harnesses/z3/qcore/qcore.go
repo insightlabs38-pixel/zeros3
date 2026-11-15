@@ -84,9 +84,18 @@ const (
 	Strict Arith = 0
 	// GCCFMA: GCC 13 -O3 with FMA and the default -ffp-contract=fast on x86-64 (generic tuning),
 	// derived site by site from the compiler's GIMPLE for ggml-quants.c at llama.cpp b3991.
-	// Only the importance-weighted paths are derived; the reference paths return ErrArith.
+	// The importance-weighted paths are derived for every type; of the reference paths only those
+	// that share their code with a weighted path (Q6_K, IQ4_NL, IQ4_XS). Others return ErrArith.
 	GCCFMA Arith = 1
 )
+
+// fusedPath reports whether the GCCFMA profile is derived for this quantizer path.
+func fusedPath(t Type, weighted bool) bool {
+	if t == Q8_0 {
+		return false
+	}
+	return weighted || t == Q6_K || t == IQ4_NL || t == IQ4_XS
+}
 
 var ErrArith = errors.New("qcore: arithmetic profile not available for this quantizer path")
 
@@ -97,7 +106,7 @@ func Quantize(dst []byte, t Type, x []float32, nPerRow int, qw []float32, ar Ari
 	if err != nil {
 		return err
 	}
-	if ar > GCCFMA || (ar == GCCFMA && (qw == nil || t == Q8_0)) {
+	if ar > GCCFMA || (ar == GCCFMA && !fusedPath(t, qw != nil)) {
 		return ErrArith
 	}
 	fm := ar == GCCFMA

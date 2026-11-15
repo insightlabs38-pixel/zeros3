@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
-	"slices"
 	"sync"
 
 	"zeros3-z3/qcore"
@@ -538,9 +537,12 @@ func (e *encoder) quantVariants(ti int, t *Tensor, n, cols int64) (vs []qvariant
 		if c.Perm.Kind != 0 && bcols != cols {
 			continue
 		}
-		vs = append(vs, qvariant{q: QParams{Aux: -1}, aux: -1, c: c, ci: ci})
-		if dt != DF16 {
-			vs = append(vs, qvariant{q: QParams{Aux: -1, ViaF16: true}, aux: -1, c: c, ci: ci})
+		// reference quantizer, strict and (where derived: quantEval drops the others) fused build
+		for _, ar := range []qcore.Arith{qcore.Strict, qcore.GCCFMA} {
+			vs = append(vs, qvariant{q: QParams{Aux: -1, Arith: uint8(ar)}, aux: -1, c: c, ci: ci})
+			if dt != DF16 {
+				vs = append(vs, qvariant{q: QParams{Aux: -1, Arith: uint8(ar), ViaF16: true}, aux: -1, c: c, ci: ci})
+			}
 		}
 		for ai, im := range e.im {
 			if w := im.For(t.Name, int(cols)); w != nil {
@@ -626,18 +628,32 @@ func (e *encoder) quantPrior() map[[2]int]int64 {
 			if err != nil {
 				return
 			}
-			if slices.Contains(ex, -1) {
+			// the weighted profiles must all apply (a type without a fused weighted path would
+			// score the strict build only)
+			weightedOK := true
+			for k, v := range vs {
+				weightedOK = weightedOK && (v.aux < 0 || ex[k] >= 0)
+			}
+			if !weightedOK {
 				continue
 			}
 			if ex, _, err = e.quantEval(t, vs, min(rows, maxI64(1, (1<<17)/cols))); err != nil {
 				return
 			}
-			if slices.Min(ex) == slices.Max(ex) {
+			lo, hi := int64(math.MaxInt64), int64(-1)
+			for _, x := range ex {
+				if x >= 0 {
+					lo, hi = min(lo, x), max(hi, x)
+				}
+			}
+			if lo == hi {
 				continue
 			}
 			probes++
 			for k, v := range vs {
-				e.prior[[2]int{v.aux, int(v.q.Arith)}] += ex[k]
+				if ex[k] > 0 {
+					e.prior[[2]int{v.aux, int(v.q.Arith)}] += ex[k]
+				}
 			}
 		}
 	})

@@ -196,10 +196,10 @@ func TestConformanceGolden(t *testing.T) {
 }
 
 // TestConformanceGoldenFMA: the GCCFMA profile against the oracle built with
-// `gcc -O3 -mavx2 -mfma -mf16c` (contraction on). Importance-weighted paths, finite inputs.
+// `gcc -O3 -mavx2 -mfma -mf16c` (contraction on). Every derived path (fusedPath), finite inputs.
 func TestConformanceGoldenFMA(t *testing.T) {
 	conformance(t, GCCFMA, "golden_fma.txt", os.Getenv("QCORE_ORACLE_FMA"), func(v vec) bool {
-		return v.qw != nil && !v.special
+		return fusedPath(v.t, v.qw != nil) && !v.special
 	})
 }
 
