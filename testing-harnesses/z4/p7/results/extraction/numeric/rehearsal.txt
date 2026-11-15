@@ -1,0 +1,13 @@
+=== RUN   TestP6Rehearsal
+REHEARSAL encode base logical=4263241 zn7=2810424 windows=33 modes(raw,direct,pred,copy,quant)=[0 2809571 0 0 0]
+REHEARSAL encode tune logical=4263241 zn7=428241 windows=33 modes(raw,direct,pred,copy,quant)=[0 0 427377 0 0]
+REHEARSAL encode quant logical=18441 zn7=171 windows=1 modes(raw,direct,pred,copy,quant)=[0 0 0 0 0]
+REHEARSAL physical logical=8544923 cdc_store=8568254 zn7_objects=3238836 modeled_charge=3239232 engine_physical_for_zn7=3250203
+REHEARSAL replay base exact sha256=d1c82695aa3610f1 windows=33 store_read=2809571 ranges=20
+REHEARSAL replay tune exact sha256=3d3ccf5d5f73d4f9 windows=66 store_read=3236948 ranges=20
+REHEARSAL replay quant exact sha256=8f03103d2f24a61d windows=3 store_read=49797 ranges=20
+REHEARSAL corrupted-base rejected; heap after originals=13 MiB peak during replay=55 MiB
+REHEARSAL OK
+--- PASS: TestP6Rehearsal (0.73s)
+PASS
+ok  	zeros3	0.736s

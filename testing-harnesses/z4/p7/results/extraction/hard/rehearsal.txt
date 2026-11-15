@@ -1,0 +1,15 @@
+=== RUN   TestP6Rehearsal
+REHEARSAL ingest arrow_page_small brotli payload=2512 body=2508 recipe=3 quality=8
+REHEARSAL ingest arrow_page_mid brotli payload=46635 body=170613 recipe=3 quality=8
+REHEARSAL ingest py_default_70000 lz4 payload=40578 body=70000 recipe=4 kind=1
+REHEARSAL ingest py_hc9_pattern_70000 lz4 payload=7072 body=70000 recipe=4 kind=1
+REHEARSAL ingest py_fast9_9000 lz4 payload=7533 body=9000 recipe=4 kind=1
+REHEARSAL replay arrow_page_small exact producer bytes=2512 sha256=abdca1c5528deb22
+REHEARSAL replay arrow_page_mid exact producer bytes=46635 sha256=b279a72913f1ba90
+REHEARSAL replay py_default_70000 exact producer bytes=40578 sha256=8c085fc45e9ef43d
+REHEARSAL replay py_hc9_pattern_70000 exact producer bytes=7072 sha256=813a3e00d7eb495d
+REHEARSAL replay py_fast9_9000 exact producer bytes=7533 sha256=b39fc3115f6f8d94
+REHEARSAL OK
+--- PASS: TestP6Rehearsal (0.16s)
+PASS
+ok  	zeros3	0.172s
