@@ -10,6 +10,8 @@ import (
 	"io"
 	"math"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"testing"
@@ -196,7 +198,7 @@ func main() {
 		fmt.Printf("REHEARSAL encode %s logical=%d zn7=%d windows=%d modes(raw,direct,pred,copy,quant)=%v\n", f.name, f.lay.Size, es.Bytes, es.Windows, es.ModeBytes)
 		return int(es.Bytes)
 	}
-	enc(base, nil)
+	nb := enc(base, nil)
 	nt := enc(tune, []*p7File{base})
 	nq := enc(quant, []*p7File{tune})
 	if nt*2 > len(tune.data) || nq > 4096 {
@@ -206,6 +208,39 @@ func main() {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// actual physical bytes: the same originals alone in a second store give the baseline, the
+	// difference is what the engine really keeps for the three ZN7 objects (packs + metadata)
+	dirSize := func(d string) (n int64) {
+		filepath.Walk(d, func(_ string, fi os.FileInfo, err error) error {
+			if err == nil && fi.Mode().IsRegular() {
+				n += fi.Size()
+			}
+			return nil
+		})
+		return n
+	}
+	odir := t.TempDir()
+	so, err := OpenStore(odir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := so.CreateBucket("p7"); err != nil {
+		t.Fatal(err)
+	}
+	xo := &p7Store{s: so, bucket: "p7"}
+	var logical int64
+	for _, f := range []*p7File{base, tune, quant} {
+		logical += f.lay.Size
+		if err := xo.put("orig/"+f.name, f.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := so.Close(); err != nil {
+		t.Fatal(err)
+	}
+	po, pt := dirSize(odir), dirSize(dir)
+	zb := int64(nb + nt + nq)
+	fmt.Printf("REHEARSAL physical logical=%d cdc_store=%d zn7_objects=%d modeled_charge=%d engine_physical_for_zn7=%d\n", logical, po, zb, zb+3*132, pt-po)
 
 	s2, err := OpenStore(dir)
 	if err != nil {

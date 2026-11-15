@@ -25,6 +25,10 @@ prod_unchanged() { local out; out=$(git diff --name-only $BASE HEAD | grep -v '^
 step production-unchanged prod_unchanged
 step production-build go build -o /dev/null .
 step extraction bash testing-harnesses/z4/p7/scripts/extract_all.sh "$O/extraction"
-grep -h "VERDICT\|vectors\|REHEARSAL\|unchanged" "$O"/extraction/*.txt >> "$O/summary.txt" 2>/dev/null
+for k in numeric hard; do
+  python3 -I -c "import json,sys; d=json.load(open(sys.argv[1])); print(sys.argv[2], d['class'], 'declarations', d['core']['selected_declarations'], 'names', d['package_level_names'], 'vectors', d['vector_lines'], 'mismatches', d['vector_mismatches'], 'fidelity_failures', d['fidelity_failures'], 'rehearsal_ok', d['rehearsal_ok'])" "$O/extraction/$k/extraction.json" $k >> "$O/summary.txt" 2>/dev/null
+  grep -h "REHEARSAL" "$O/extraction/$k/rehearsal.txt" >> "$O/summary.txt" 2>/dev/null
+done
+cat "$O/extraction/production_unchanged.txt" >> "$O/summary.txt" 2>/dev/null
 echo "qualification $([ $fail = 0 ] && echo PASSED || echo FAILED)" | tee -a "$O/summary.txt"
 exit $fail
