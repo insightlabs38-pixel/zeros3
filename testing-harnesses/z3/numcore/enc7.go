@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
+	"slices"
 	"sync"
 
 	"zeros3-z3/qcore"
@@ -600,7 +601,7 @@ func (e *encoder) quantEval(t *Tensor, vs []qvariant, srows int64) (ex []int64, 
 func (e *encoder) quantPrior() map[[2]int]int64 {
 	e.priorOnce.Do(func() {
 		e.prior = map[[2]int]int64{}
-		for ti, probes := 0, 0; ti < len(e.lay.T) && probes < 6; ti++ {
+		for ti, probes, tried := 0, 0, 0; ti < len(e.lay.T) && probes < 6 && tried < 48; ti++ {
 			t := &e.lay.T[ti]
 			if _, ok := t.DT.QType(); !ok {
 				continue
@@ -618,15 +619,25 @@ func (e *encoder) quantPrior() map[[2]int]int64 {
 			if len(vs) < 2 {
 				continue
 			}
-			ex, _, err := e.quantEval(t, vs, min(rows, maxI64(1, (1<<17)/cols)))
+			tried++
+			// a tensor votes only if every profile applies to its type and they do not all agree
+			// (Q8_0 has no fused variant and ignores the weights: it says nothing about the build)
+			ex, _, err := e.quantEval(t, vs, min(rows, maxI64(1, int64(8192)/cols)))
 			if err != nil {
 				return
 			}
+			if slices.Contains(ex, -1) {
+				continue
+			}
+			if ex, _, err = e.quantEval(t, vs, min(rows, maxI64(1, (1<<17)/cols))); err != nil {
+				return
+			}
+			if slices.Min(ex) == slices.Max(ex) {
+				continue
+			}
 			probes++
 			for k, v := range vs {
-				if ex[k] > 0 {
-					e.prior[[2]int{v.aux, int(v.q.Arith)}] += ex[k]
-				}
+				e.prior[[2]int{v.aux, int(v.q.Arith)}] += ex[k]
 			}
 		}
 	})

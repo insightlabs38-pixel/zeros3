@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"math/rand"
@@ -637,21 +638,37 @@ func TestZN7QuantProfileTieBreak(t *testing.T) {
 		if !bytes.Equal(strict[:head], fma[:head]) || bytes.Equal(strict, fma) {
 			continue // need: tie on the first sample, different later
 		}
+		// eight Q8_0 tensors come first: they carry imatrix entries but cannot tell the builds apart
+		names := []string{"w"}
+		fsp, qsp := []tspec{}, []tspec{}
+		q8n, _ := qcore.OutLen(qcore.Q8_0, 4*cols, cols)
+		q8 := make([]byte, q8n)
+		if qcore.Quantize(q8, qcore.Q8_0, x[:4*cols], cols, nil, qcore.Strict) != nil {
+			t.Fatal("q8")
+		}
+		for i := 0; i < 8; i++ {
+			nm := fmt.Sprintf("a%d", i)
+			names = append(names, nm)
+			fsp = append(fsp, tspec{nm, DBF16, cols, fl[:2*4*cols]})
+			qsp = append(qsp, tspec{nm, DQ8_0, cols, q8})
+		}
 		var im []byte
-		im = binary.LittleEndian.AppendUint32(im, 1)
-		im = binary.LittleEndian.AppendUint32(im, 1)
-		im = append(im, 'w')
-		im = binary.LittleEndian.AppendUint32(im, 1)
-		im = binary.LittleEndian.AppendUint32(im, cols)
-		for _, v := range qw {
-			im = binary.LittleEndian.AppendUint32(im, math.Float32bits(v))
+		im = binary.LittleEndian.AppendUint32(im, uint32(len(names)))
+		for _, nm := range names {
+			im = binary.LittleEndian.AppendUint32(im, uint32(len(nm)))
+			im = append(im, nm...)
+			im = binary.LittleEndian.AppendUint32(im, 1)
+			im = binary.LittleEndian.AppendUint32(im, cols)
+			for _, v := range qw {
+				im = binary.LittleEndian.AppendUint32(im, math.Float32bits(v))
+			}
 		}
 		aux := AuxIn{ID: sha256.Sum256(im), Data: im}
-		src := build([]byte("F"), []tspec{{"w", DBF16, cols, fl}}, nil)
+		src := build([]byte("F"), append(fsp, tspec{"w", DBF16, cols, fl}), nil)
 		for _, want := range [][]byte{fma, strict} {
-			tgt := build([]byte("Q"), []tspec{{"w", DQ4_0, cols, want}}, nil)
+			tgt := build([]byte("Q"), append(qsp[:len(qsp):len(qsp)], tspec{"w", DQ4_0, cols, want}), nil)
 			obj, st := encodeT(t, tgt, []*tfile{src}, EncOpts{}, aux)
-			if st.QuantPatch != 0 || st.QuantExact != int64(n/18) {
+			if st.QuantPatch != 0 || st.QuantExact != int64(n/18+8*q8n/34) {
 				t.Fatalf("seed %d: %d blocks patched, %d exact", seed, st.QuantPatch, st.QuantExact)
 			}
 			store := newStore()
