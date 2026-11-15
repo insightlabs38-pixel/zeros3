@@ -49,7 +49,14 @@ $B/z3parquet perf -phase encode|decode [-workers N] -file F.parquet -store DIR
 
 # qualification (format, vet, tests of all dependents, race, fuzz, extraction + rehearsal, production unchanged)
 bash testing-harnesses/z4/p7/scripts/qualify.sh OUT        # from the repository root
+bash testing-harnesses/z4/p7/scripts/extract_all.sh OUT    # mechanical extraction + engine rehearsal only
 ```
+
+Benchmark drivers (`scripts/`): `bench_model.sh` (interleaved B5 vs P7 on one family), `bench_model2.sh` (worker scaling,
+planner oracle, structured controls, Qwen, >1 GiB pair), `bench_quant_collection.sh` (30-file quantized collection: CDC,
+direct, derived, replay, ranges), `bench_hard.sh` (SST timing B6 vs P7, fresh-process proofs), `bench_final.sh` (headline
+numbers re-run with binaries of the final tree), `conf_matrix.py` (conformance table from `quantconf` JSONL).
+The B5 baseline binary is `cmd/z4b5` built from a worktree of the starting revision.
 
 Golden vectors are regenerated with `QCORE_ORACLE=... QCORE_WRITE_GOLDEN=1 go test ./qcore`,
 `oracle/brotli/refenc.py`, `oracle/lz4/hcref.py`, `oracle/lz4/linkref.py`, `oracle/lz4/pierrecgen`.
@@ -60,4 +67,6 @@ Golden vectors are regenerated with `QCORE_ORACLE=... QCORE_WRITE_GOLDEN=1 go te
 - `model/`: interleaved B5 vs P7 runs (`*.jsonl`), manifests, range reads; `model/batch2/`: worker scaling,
   sampled vs exhaustive planner, structured controls, Qwen, >1 GiB pair; `model/quant/`: quantized collection.
 - `hard/`: SST / Parquet timings, fresh-process exactness proofs, linked LZ4 frames, parallel Brotli replay.
+- `profiles/`: pprof summaries (B5 encoder CPU/heap, Brotli encoder, LZ4HC predictor).
+- `final/`: headline measurements repeated with the final tree (`bench_final.sh`).
 - `extraction/`, `qualify/`: mechanical extraction, rehearsal and qualification logs.

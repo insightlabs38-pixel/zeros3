@@ -125,7 +125,10 @@ exact narrowing (F32→F16/BF16) and a SHA-256/128 digest of its decoded bytes.
   repetition (57.0 s) likewise.
 
 Planner regret (Pythia-14M, pool:3): sampled planner 269,383,755 B in 11.9 s; exhaustive oracle 269,377,938 B in 31.1 s
-(4x the allocations): **regret 0.0022 %**. Content discovery (`-disc`) 269,382,821 B.
+(4x the allocations): **regret 0.0022 %**. Content discovery (`-disc`) 269,382,821 B. Selection is causal (`prev`, `first`,
+`pool:K` over earlier states, or explicit `-parents`); tensors are matched by name, by the llama GGUF↔Hugging Face name map
+(`-hfmap`, with the head permutation) or by content sketch (`-disc`). Non-causal interpolation between later states was not built:
+an online store never has the later state at ingest (B5's finding), and re-encoding history is an authority-layer decision.
 
 ## 8. Real model-family economics (charged = object bytes + 132 B per object, every dependency counted once)
 
@@ -145,6 +148,8 @@ Planner regret (Pythia-14M, pool:3): sampled planner 269,383,755 B in 11.9 s; ex
   LoRA 45.8 → 26.0 MB and scaling 15.7 → 0.78 MB. Probing costs 1.7x encode CPU on Qwen and 7x on the controls; off by default.
 * **Quantized collection**: SmolLM2 base and Instruct Safetensors, the bartowski F16 GGUF, 13 bartowski (imatrix) and 14
   QuantFactory quantizations. ⟦COLL_DETAIL⟧
+* Overheads are inside the P7 column: window directory 0.022-0.031 % of the object (digests, modes, references), gap stream
+  3-7 KB per family, 132 B record per object; predictor metadata is a few bytes per tensor.
 * Costs: additive (CDC kept) = CDC + P7; authoritative = P7 column; hot-hybrid (CDC for the newest state, P7 for history)
   ≈ P7 + one CDC state. Dependency closure: a dependent needs its parents' windows (depth ≤ 4) and, for imatrix files, the
   imatrix (606 KB, charged once). First-sight premium is negative (0.68-0.85 of CDC on the first state).
