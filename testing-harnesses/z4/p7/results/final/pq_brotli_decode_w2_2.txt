@@ -1,0 +1,2 @@
+decode db.parquet: 25.7 MiB in 3.45s = 7 MiB/s; peak RSS 210 MiB (now 199), heap in use 158 MiB, total allocated 1546 MiB; exact=true (26957894 bytes)
+3.460 real 5.126 user 0.253 sys

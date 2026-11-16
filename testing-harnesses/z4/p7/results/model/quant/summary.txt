@@ -1,0 +1,13 @@
+files 30 logical 3649.2 MB  CDC 1728.0 MB  direct(no bases) 3390.8 MB  derived 330.28 MB  ratio 0.191
+float roots: base 178.7 + instruct 127.3 + f16.gguf 0.59 MB
+bartowski 13 files: 22.37 MB (IQ3_S opaque part: 21.76 MB in 2 files; others 54.7 KB each), raw 1353 MB
+QuantFactory 14 files: 0.71 MB (50.5 KB each), raw 1487 MB
+patched blocks 0 of 98755200; encode seconds bw 351 qf 97
+encode ['"maxrss_kib":39440', '"user_s":1652.19'] ['real\t9m25.283s']
+replay ['real\t4m25.881s', 'user\t17m17.665s'] ['"maxrss_kib":178080'] ['verify states 30 missing 0']
+quant replay MiB/s min 3.4 median 9.9 max 40.9
+{"request":4096,"store_read_avg":357610,"amplification":87.3,"windows_avg":7.2,"us_avg":26418}
+{"request":65536,"store_read_avg":539732,"amplification":8.2,"windows_avg":12.6,"us_avg":52673}
+{"request":1048576,"store_read_avg":3434374,"amplification":3.3,"windows_avg":98.7,"us_avg":466714}
+330291620	store
+32 330291620

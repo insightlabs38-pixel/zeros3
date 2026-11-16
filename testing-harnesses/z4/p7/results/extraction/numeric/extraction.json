@@ -7,7 +7,7 @@
   "declarations_by_package": {
    "zeros3-z3/dcore": 46,
    "zeros3-z3/numcore": 215,
-   "zeros3-z3/qcore": 60
+   "zeros3-z3/qcore": 61
   },
   "packages": [
    {
@@ -66,13 +66,13 @@
    }
   ],
   "roots": 44,
-  "selected_declarations": 321
+  "selected_declarations": 322
  },
  "class": "PORTABLE_WITH_THIN_ADAPTER",
  "compiled": true,
  "declarations": {
   "const": 16,
-  "func": 147,
+  "func": 148,
   "method": 81,
   "type": 61,
   "var": 16
@@ -82,11 +82,11 @@
   "container/list",
   "math/rand"
  ],
- "integration_bytes": 2231887,
+ "integration_bytes": 2233237,
  "integration_dir": "(temporary)",
- "integration_sha256": "a5d58e517b5ed6cb5e7ec3894d2cf5d02226d24a4226ad0587559faff62f1da6",
+ "integration_sha256": "b2cc8445094b7b9dd2ffbeeed48966aaefe2f8795c8ad20e37e53b30843da44b",
  "modified_adapters": 0,
- "package_level_names": 318,
+ "package_level_names": 319,
  "prefix": "nc",
  "rehearsal_ok": true,
  "unresolved_dependencies": 0,

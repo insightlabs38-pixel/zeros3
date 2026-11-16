@@ -10,10 +10,10 @@ Nothing is enabled in production: CDC stays authoritative, `zeros3.go`/`go.mod` 
   type reproduces 100 % of blocks** on three models and two producers (Q4_0 Q4_1 Q5_0 Q5_1 Q8_0 Q2_K Q3_K Q4_K Q5_K Q6_K IQ4_NL IQ4_XS;
   135,966,848 real blocks in 31 files, 0 mismatches). Only IQ3_S is unported.
 * **Numeric engine** — the new windowed container (ZN7) matches B5's bytes within ±0.1 % and is **6-14x faster to encode, 1.4-1.6x
-  (single worker) / 4.5-5x (4 workers) faster to replay, with 17-170x less encode memory and 3-54x less replay memory** (Qwen2.5-0.5B: 4.6 GiB → 27 MiB encode,
-  7.6 GiB → 142 MiB replay). A 30-file quantized collection costs ⟦COLL_RATIO⟧x CDC.
+  (single worker) / 4.5-5x (4 workers) faster to replay, with 15-170x less encode memory and 3-54x less replay memory** (Qwen2.5-0.5B: 4.6 GiB → 27 MiB encode,
+  7.6 GiB → 142 MiB replay). A 30-file quantized collection costs 0.191x CDC with 0 patched blocks.
 * **LZ4** — pierrec/lz4 (Go), LZ4HC levels 10-12 and *linked* frames (library and `lz4 -BD`, fast and HC) are now predicted exactly
-  with 3-4 byte recipes (B6: explicit recipes at 55-131 % of the stream). SST analysis is 6x faster.
+  with 3-4 byte recipes (B6: explicit recipes at 55-131 % of the stream). SST analysis is 6x faster (4x less CPU end to end on LZ4HC histories).
 * **Brotli** — a byte-exact Go port of the google/brotli one-shot encoder (quality 5-9) reproduces every page of the pinned Arrow
   Parquet-Brotli corpus: the chain costs 29.0 MB instead of 77.0 MB CDC (B6: oracle only). **Promote to the research kind set; reject for hot tiers** (11.7 MB/s replay per core).
 
@@ -30,7 +30,7 @@ one B5 run costs 5-14 min; raw rows in `results/model/*.jsonl`).
 
 |Family (states, raw MB)|CDC MB|B5 policy|B5 MB|B5 encode s / RSS MiB|B5 replay s / RSS MiB|
 |---|---|---|---|---|---|
-|Pythia-14M (12, 338)|338|prev|269.63|42.7, 42.8, 57.0 / 454|7.5, 7.9, 8.0 / 407|
+|Pythia-14M (12, 338)|338|prev|269.63|41.0, 42.0, 54.5 / 440-510|7.3, 7.5, 7.6 / 407|
 |Pythia-70M (11, 3099)|1697|prev|1117.78|315.6 / 1665|48.1 / 2596|
 |SmolLM2-135M (8, 3229)|2916|pool3|1655.92|401.6 / 3263|65.8 / 4064|
 |Qwen2.5-0.5B (5, 4940)|3132|pool3|1860.19|838.6 / 4559|103.1 / 7627|
@@ -114,7 +114,7 @@ exact narrowing (F32→F16/BF16) and a SHA-256/128 digest of its decoded bytes.
 
 |Family|Bytes B5 → P7|Encode s B5 → P7|Encode RSS MiB|Replay s B5 → P7 (1 worker / 4)|Replay RSS MiB|
 |---|---|---|---|---|---|
-|Pythia-14M prev (3 reps)|269.63 → 269.54|42.7 → 3.7-3.9 (11x)|454 → 23-29|7.5-8.0 → 4.8-5.1 / 1.6-1.8|407 → 127-143|
+|Pythia-14M prev (3 reps, final tree)|269.63 → 269.54|41.0-54.5 → 3.4-3.6 (12x)|440-510 → 26-34|7.3-7.6 → 4.6-4.8 / 1.6-1.7|407 → 134-140|
 |Pythia-70M prev|1117.78 → 1117.09|315.6 → 25.7 (12x)|1665 → 27|48.1 → 29.9 / 9.7|2596 → 139-155|
 |SmolLM2 pool3 → pool:8|1655.92 → 1655.52|401.6 → 28.7 (14x)|3263 → 46|65.8 → 41.7 / 14.0|4064 → 149-179|
 |Qwen2.5-0.5B pool3 → pool:8|1860.19 → 1862.00|838.6 → 140.6 (6x; 83.5 s CPU vs 995)|4559 → 27|103.1 → 72.3 / —|7627 → 142|
@@ -125,8 +125,9 @@ exact narrowing (F32→F16/BF16) and a SHA-256/128 digest of its decoded bytes.
 * Heap allocated (Pythia-14M encode): 31.2 GB → 3.4 GB. Temporary disk: none (containers are streamed to the store file).
 * 1 M-element windows are 25 % faster to encode and 0.05 % smaller but raise RSS to 118 MiB and range amplification 15-40x
   (`model/pythia14m_w1m.jsonl`): 64 K is the default.
-* The Qwen encode wall time was measured while another job was running (CPU time is the reliable column); B5's first Pythia-14M
-  repetition (57.0 s) likewise.
+* The Qwen encode wall time was measured while another job was running (CPU time is the reliable column). The Pythia-14M row
+  is the final-tree rerun (`results/final/pythia14m.jsonl`; B5's first repetition is a cold-cache outlier); the larger families
+  were measured before the last quantizer-only changes, which do not touch float coding.
 
 Planner regret (Pythia-14M, pool:3): sampled planner 269,383,755 B in 11.9 s; exhaustive oracle 269,377,938 B in 31.1 s
 (4x the allocations): **regret 0.0022 %**. Content discovery (`-disc`) 269,382,821 B. Selection is causal (`prev`, `first`,
@@ -144,20 +145,25 @@ an online store never has the later state at ingest (B5's finding), and re-encod
 |Qwen2.5-0.5B pool:8|4940|3132|1862.0 (0.594)|B5 pool3 0.594|0.680|50 %|
 |Qwen2.5-0.5B pool:8 + structured|4940|3132|1785.8 (0.570)|B5 hybrid 0.568|0.680|50 %|
 |SmolLM2 + 4 synthetic controls, structured|1345|908|231.6 (0.255)|B5 hybrid 0.248|—|—|
-|Quantized collection (30 files, §below)|⟦COLL_LOGICAL⟧|1728.0|⟦COLL_MB⟧ (⟦COLL_RATIO⟧)|B5 0.283 on its 11-file subset|—|100 % (one float root)|
+|Quantized collection (30 files, below)|3649|1728.0|330.3 (0.191)|B5 0.283 on its 11-file subset|—|100 % (one float root)|
 
 * The compression frontier of natural fine-tunes did not move (B5's negative result stands: SGD/AdamW noise is incompressible
   beyond exponent-conditioned residuals). P7's gain on float families is CPU and memory, not bytes.
 * Structured probes are gated: on Qwen they find the abliterated rank-1 tensors (84.0 → 7.9 MB) and nothing else; on the controls
   LoRA 45.8 → 26.0 MB and scaling 15.7 → 0.78 MB. Probing costs 1.7x encode CPU on Qwen and 7x on the controls; off by default.
 * **Quantized collection**: SmolLM2 base and Instruct Safetensors, the bartowski F16 GGUF, 13 bartowski (imatrix) and 14
-  QuantFactory quantizations. ⟦COLL_DETAIL⟧
+  QuantFactory quantizations (`results/model/quant/`). CDC 1728.0 MB (it already dedups tensors shared by the two producers);
+  ZN7 without bases 3390.8 MB; derived **330.3 MB**: float roots 178.7 + 127.3 MB (Instruct predicted from base, 51.4 MB less than
+  coding it alone — the only *evolution* saving), F16 GGUF 0.59 MB instead of 229.6 MB, 25 quantized files 50.5-55 KB each
+  (header delta + window directory; **0 patched blocks of 98,755,200**), the two IQ3 files 21.8 MB (IQ3_S tensors opaque).
+  The 27 quantized files (2840 MB) cost 23.1 MB because they are functions of one retained float checkpoint and one imatrix: a
+  *packaging* saving that exists only while that checkpoint is retained.
 * Overheads are inside the P7 column: window directory 0.022-0.031 % of the object (digests, modes, references), gap stream
   3-7 KB per family, 132 B record per object; predictor metadata is a few bytes per tensor.
 * Costs: additive (CDC kept) = CDC + P7; authoritative = P7 column; hot-hybrid (CDC for the newest state, P7 for history)
   ≈ P7 + one CDC state. Dependency closure: a dependent needs its parents' windows (depth ≤ 4) and, for imatrix files, the
   imatrix (606 KB, charged once). First-sight premium is negative (0.68-0.85 of CDC on the first state).
-* Reconstruction CPU: float states 57-200 MiB/s; **quantized files re-run the quantizer: ⟦COLL_DEC⟧** — a cold-tier form.
+* Reconstruction CPU: float states 57-200 MiB/s; **quantized files re-run the quantizer: 3.4-41 MiB/s per file (median 9.9); the whole collection replays in 4.4 min wall / 17.3 min CPU with 4 workers and encodes in 9.4 min wall / 27.5 min CPU, 39 MiB RSS** — a cold-tier form.
 * Tiers: hot — none (CDC); warm — float families with 4 replay workers; cold/archive — quantized derivations, structured edits.
 
 ## 9. LZ4 algorithm and producer improvements (`lz4z3`)
@@ -186,14 +192,18 @@ pprof before optimizing (`results/profiles/lz4hc_predict_cpu.txt`): 76 % in the 
 count. Changes: predictor runs stop at the first sequence that differs from the producer's, the profile that matched the previous
 block is tried first (`Analyzer`), 8-byte match counting, bounded reverse pattern count, pooled tables.
 
-|RocksDB corpus (fresh process)|B6|P7|
-|---|---|---|
-|LZ4HC history (173 tables, 610 MiB): analysis|96.5 s, 6 MiB/s|16.7 s, 37 MiB/s|
-|LZ4 fast history (174 tables, 631 MiB): analysis|50.2 s, 13 MiB/s|7.7 s, 82 MiB/s|
-|Replay (unchanged algorithm)|51-53 / 127 MiB/s|52 / 135 MiB/s|
-|Peak RSS|33 MiB|32-34 MiB|
+|RocksDB corpus (fresh process)|B6|P7 (interleaved run)|P7 (final tree)|
+|---|---|---|---|
+|LZ4HC history (173 tables, 610 MiB): analysis|96.5 s, 6 MiB/s|16.7 s, 37 MiB/s|28.4 s wall (I/O wait)|
+|LZ4HC: CPU of the whole run (analysis + replay)|105.9-108.6 s|26.4-26.7 s|23.5 s|
+|LZ4 fast history (174 tables, 631 MiB): analysis|50.2 s, 13 MiB/s|7.7 s, 82 MiB/s|8.6 s, 74 MiB/s|
+|LZ4 fast: CPU of the whole run|29.7 s|12.1 s|10.6 s|
+|Replay|51-53 / 127 MiB/s|52 / 135 MiB/s|61 / 150 MiB/s|
+|Peak RSS|33 MiB|32-34 MiB|32-33 MiB|
 
-Fresh-process exactness with independent `sha256sum`: 174 LZ4 SSTs, 59 LZ4HC SSTs, 8 LZ4_RAW Parquet files. ⟦FINAL_RERUN⟧
+Fresh-process exactness with independent `sha256sum`: 174 LZ4 SSTs, 59 LZ4HC SSTs, 8 LZ4_RAW Parquet files, 8 Brotli Parquet
+files — repeated with binaries of the final tree (`results/final/`), all exact. The final run's wall times include I/O wait
+on the shared disk (CPU seconds are the comparable figure).
 
 ## 11. Parquet-Brotli reconstruction and economics (`brotliz3`)
 * Producer: Arrow (pyarrow) writes each page with one-shot `BrotliEncoderCompress(quality 8, lgwin 22)`. Decisions that must be
@@ -222,7 +232,9 @@ Fresh-process exactness with independent `sha256sum`: 174 LZ4 SSTs, 59 LZ4HC SST
 |**total**|**77.0**|**76.0**|**29.0 (0.377)**|
 
 CPU: Brotli replay 11.7 MB/s per core (pprof: 62 % in `findLongestMatch`), decode 77 MB/s; pack 12.7 s and unpack 6.3 s per
-27 MB file single-threaded. ⟦PQ_PAR⟧ Ranges are page-granular (`DecodeRange`).
+27 MB file single-threaded in the B6 driver. Final tree (`results/final/pq_brotli_*.txt`, c0, 320 pages): analysis 11.7 s
+(114 MiB RSS); replay 5.1-5.3 s with one page worker, **3.3-3.6 s with four (1.5x; RSS 136 → 258 MiB)** — value and level
+reconstruction is serial, only codec replays parallelize. Ranges are page-granular (`DecodeRange`).
 **Decision: promote** Brotli q5-9/lgwin 22 to the research codec set next to Snappy/Zstd/LZ4 (exact, 3 B/page, 2.65x smaller on
 rewrite-heavy histories); **reject for hot data** (replay CPU) and for producers at quality 10-11.
 
@@ -235,7 +247,8 @@ rewrite-heavy histories); **reject for hot data** (replay CPU) and for producers
   located — container work, not codec work; `mkfs.erofs` is available for a later batch. WOFF2, LZX, LZMA2 were not reopened.
 
 ## 13. Actual versus modeled physical bytes
-* ZN7 stores: charged (modeled) vs bytes on disk — ⟦COLL_ACTUAL⟧
+* ZN7 stores: quantized collection charged (modeled) 330,276,436 B; store directory 330,291,620 B in 32 files (30 objects,
+  imatrix, manifest): +0.005 %.
 * Through the production engine (rehearsal, three ZN7 objects ingested as ordinary objects): modeled 3,239,232 B, engine
   physical 3,250,203 B (+0.34 %: pack framing and manifests); the same originals as plain CDC objects 8,568,254 B.
 * Hard codecs: recipe sizes are measured, not modeled (LZ4 3-4 B/block, Brotli 3 B/page); the Parquet chain numbers are packed
@@ -250,7 +263,7 @@ rewrite-heavy histories); **reject for hot data** (replay CPU) and for producers
 |Pythia-70M / SmolLM2 pool:3|33x (135 KB, 1.4 ms)|2.4x|0.5x|
 |SmolLM2 pool:8|90x|6.9x|1.6x|
 |Qwen + structured (low-rank parents)|245x|16.2x|2.1x|
-|Quantized collection (Q4_K_M)|⟦COLL_RANGE⟧|||
+|Quantized collection (Q4_K_M; windows are re-quantized)|87x (358 KB, 26 ms)|8.2x|3.3x|
 |B5 (64 K segments), SmolLM2|144x, whole containers read|11.5x|2.8x|
 
 1 M-element windows: 1328x at 4 KiB. Only directory + needed windows are read (B5 read whole containers: 667 MB per request).
@@ -259,7 +272,7 @@ rewrite-heavy histories); **reject for hot data** (replay CPU) and for producers
 
 |Core|Packages|Class|Declarations|Vectors (mismatches)|Rehearsal through the engine|
 |---|---|---|---|---|---|
-|numeric|`numcore` + `qcore` (+ `dcore`)|PORTABLE_WITH_THIN_ADAPTER|321|70 (0)|base → fine-tune → quantized ZN7 objects stored and replayed via `ingestStream` / `manifestReaderAt`, ranges, corrupted base rejected; peak heap 55 MiB|
+|numeric|`numcore` + `qcore` (+ `dcore`)|PORTABLE_WITH_THIN_ADAPTER|322|70 (0)|base → fine-tune → quantized ZN7 objects stored and replayed via `ingestStream` / `manifestReaderAt`, ranges, corrupted base rejected; peak heap 55-71 MiB|
 |hard|`brotliz3` + `lz4z3`|PORTABLE_WITH_THIN_ADAPTER|225|306 (0)|real Arrow Brotli pages and python-lz4 blocks regenerated byte-exactly from engine objects|
 
 Both compile into a temporary copy of `zeros3.go` (2.2 MB), stdlib only, `go.mod` identical, 0 fidelity failures, 0 unresolved
@@ -288,7 +301,9 @@ concurrent `ReadAt`; the adapter serializes it (a production integration should 
 * Explicit LZ4 recipes with or without entropy coding are uneconomic; Brotli quality 10-11 and streaming producers are unsupported.
 * Structured probing is expensive where it triggers and finds nothing on natural histories.
 * 1 M-element windows: marginally better bytes, far worse ranges and memory.
-* A per-tensor sample cannot identify the producer arithmetic (first implementation patched 0.03-0.14 % of blocks).
+* A per-tensor sample cannot identify the producer arithmetic (first implementation patched 0.03-0.14 % of blocks; a per-tensor
+  growing sample doubled encode time; the file-level probe fixed both).
+* Parallel Parquet page replay gives only 1.5x on 4 cores.
 
 ## 18. Outstanding blockers
 * IQ3_S / IQ2 / IQ1 quantizers are not ported (grid-search tables); non-GCC or non-x86 producer builds need their own profile;

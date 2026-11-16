@@ -305,6 +305,6 @@ VEC lz4-linked-text-mode3 3d9f6370683d0346true 4 0 0 41 true
 VEC lz4-linked-mix-mode3 96fbb8a600b7f94ftrue 4 0 0 41 true
 VEC lz4-linked-text-mode4 bcd4b1474f28a642true 4 0 0 41 true
 VEC lz4-linked-mix-mode4 6b2ce25962deff24true 4 0 0 41 true
---- PASS: TestP6Vectors (5.03s)
+--- PASS: TestP6Vectors (4.45s)
 PASS
-ok  	zeros3	5.029s
+ok  	zeros3	4.459s

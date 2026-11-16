@@ -61,14 +61,14 @@ VEC range-q-65536 true
 VEC zn7-a-1024 56097b439246fb25
 VEC zn7-b-1024 5541e5352ddcfcad
 VEC zn7-q-1024 354:416262109f59d2e6
-VEC replay-b-1024 true
-VEC range-b-1024 true
 VEC replay-q-1024 true
 VEC range-q-1024 true
 VEC replay-a-1024 true
 VEC range-a-1024 true
+VEC replay-b-1024 true
+VEC range-b-1024 true
 VEC corruption-wrong-bytes 0
 VEC missing-base true
---- PASS: TestP6Vectors (0.58s)
+--- PASS: TestP6Vectors (0.35s)
 PASS
-ok  	zeros3	0.589s
+ok  	zeros3	0.354s
