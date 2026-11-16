@@ -26,3 +26,7 @@
 {"file":"qwen15/bw_Q2_K.gguf","type":"Q4_K","variant":"ref","tensors":28,"blocks":43008,"exact_blocks":0,"exact_tensors":0,"bytes":6193152}
 {"file":"qwen15/bw_Q2_K.gguf","type":"Q6_K","variant":"f16:ref","tensors":1,"blocks":911616,"exact_blocks":909461,"exact_tensors":0,"bytes":191439360}
 {"file":"qwen15/bw_Q2_K.gguf","type":"Q6_K","variant":"ref","tensors":1,"blocks":911616,"exact_blocks":909461,"exact_tensors":0,"bytes":191439360}
+{"file":"qwen15/bw_Q2_K.gguf","type":"Q6_K","variant":"f16:ref+fma","tensors":1,"blocks":911616,"exact_blocks":911616,"exact_tensors":1,"bytes":191439360}
+{"file":"qwen15/bw_Q2_K.gguf","type":"Q6_K","variant":"ref+fma","tensors":1,"blocks":911616,"exact_blocks":911616,"exact_tensors":1,"bytes":191439360}
+{"file":"qwen15/qf_Q2_K.gguf","type":"Q6_K","variant":"f16:ref+fma","tensors":1,"blocks":911616,"exact_blocks":909461,"exact_tensors":0,"bytes":191439360}
+{"file":"qwen15/qf_Q2_K.gguf","type":"Q6_K","variant":"ref+fma","tensors":1,"blocks":911616,"exact_blocks":909461,"exact_tensors":0,"bytes":191439360}
