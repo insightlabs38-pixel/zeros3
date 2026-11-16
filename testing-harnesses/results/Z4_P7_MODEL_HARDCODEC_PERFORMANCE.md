@@ -314,7 +314,10 @@ concurrent `ReadAt`; the adapter serializes it (a production integration should 
 * All economics are research-store numbers; authority (B2) is not enabled and GC closure pinning is not implemented.
 
 ## 19. Final PR / merge status
-⟦PR⟧
+Branch `z4/p7-model-hardcodec-performance` on base `d2029bf`, development commits preserved, to be merged with the normal
+GitHub merge method (no squash, no rebase, no attribution trailers). The PR number and the merge SHA are recorded in the PR and
+the hand-off message, not here (the merge commit does not exist when this file is committed). Drafts #97, #80 and #81 are
+untouched; the B2 authority draft is not merged; C1, P8 and P9 were not started.
 
 ## 20. Recommendations for C1 and P8
 * C1 (authority integration): take `numcore` + `qcore` and `lz4z3` + `brotliz3` through the extraction path as they are; admit
