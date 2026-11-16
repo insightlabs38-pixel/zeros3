@@ -288,8 +288,8 @@ concurrent `ReadAt`; the adapter serializes it (a production integration should 
 * Fuzz targets: `FuzzOpenObject`, `FuzzPatches`, brotliz3 `FuzzDecode`, `FuzzEncodeDecode`, lz4z3 `FuzzDecode`, `FuzzRecipe`,
   `FuzzFrames`. Race: `numcore`, `lz4z3`, `brotliz3` (and `parquetz3` during development).
 * `scripts/qualify.sh` on the final tree (`results/qualify/summary.txt`): gofmt, vet, build; tests of all 52 harness packages
-  whose dependency closure contains a changed package; race; 7 fuzz targets x 20 s; production-unchanged; production build;
-  extraction + rehearsal — **all PASS**. Four `prodshadow` tests fail, identically on a clean worktree of the starting revision
+  whose dependency closure contains a changed package; race; 7 fuzz targets x 20 s; clean-checkout build and test; production-unchanged;
+  production build; extraction + rehearsal — **all PASS**. Four `prodshadow` tests fail, identically on a clean worktree of the starting revision
   (pre-existing; the script compares the failing set with the base and records it). The root production suite was not run:
   no production file changed (checked by the script against `d2029bf`).
 

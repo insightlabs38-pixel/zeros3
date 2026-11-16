@@ -3,36 +3,36 @@ packages under test: ./admission ./bitcodez3 ./brotliz3 ./brotliz3/brdict ./cmd/
 ### vet: go -C testing-harnesses/z3 vet ./admission ./bitcodez3 ./brotliz3 ./brotliz3/brdict ./cmd/i1b-fixtures ./cmd/i1c-fixtures ./cmd/z3admission ./cmd/z3bitframe ./cmd/z3bitfrontier ./cmd/z3breadth ./cmd/z3clr ./cmd/z3conv ./cmd/z3convergence ./cmd/z3cramfrontier ./cmd/z3dag ./cmd/z3model ./cmd/z3onnxframe ./cmd/z3parquet ./cmd/z3scientific ./cmd/z3sendfrontier ./cmd/z3shadow ./cmd/z3sst ./cmd
 ### build: go -C testing-harnesses/z3 build -o /dev/null ./cmd/z4p7
 ### test: tests_vs_base
-ok  	zeros3-z3/admission	0.283s
-ok  	zeros3-z3/bitcodez3	0.097s
-ok  	zeros3-z3/brotliz3	11.043s
-ok  	zeros3-z3/cmd/z3clr	0.361s
-ok  	zeros3-z3/cmd/z3parquet	0.922s
-ok  	zeros3-z3/cmd/z3sst	0.011s
-ok  	zeros3-z3/cmd/z4b5	0.115s
-ok  	zeros3-z3/cmd/z4similarity	0.012s
-ok  	zeros3-z3/convergence	0.014s
-ok  	zeros3-z3/dagz3	6.932s
-ok  	zeros3-z3/lz4z3	10.271s
-ok  	zeros3-z3/mdelta2	13.412s
-ok  	zeros3-z3/modelz3	0.040s
-ok  	zeros3-z3/numcore	25.626s
-ok  	zeros3-z3/onnxz3	0.009s
-ok  	zeros3-z3/parquetz3	7.401s
-ok  	zeros3-z3/planner2	11.038s
---- FAIL: TestGCLifecycle (1.88s)
---- FAIL: TestLifecycle (5.53s)
---- FAIL: TestOversizedDirectChunkIsNeverPacked (0.06s)
---- FAIL: TestSourceAcrossStorageStates (3.74s)
+ok  	zeros3-z3/admission	0.141s
+ok  	zeros3-z3/bitcodez3	0.005s
+ok  	zeros3-z3/brotliz3	11.098s
+ok  	zeros3-z3/cmd/z3clr	0.167s
+ok  	zeros3-z3/cmd/z3parquet	0.676s
+ok  	zeros3-z3/cmd/z3sst	0.005s
+ok  	zeros3-z3/cmd/z4b5	0.100s
+ok  	zeros3-z3/cmd/z4similarity	0.016s
+ok  	zeros3-z3/convergence	0.015s
+ok  	zeros3-z3/dagz3	7.494s
+ok  	zeros3-z3/lz4z3	9.425s
+ok  	zeros3-z3/mdelta2	13.436s
+ok  	zeros3-z3/modelz3	0.044s
+ok  	zeros3-z3/numcore	25.458s
+ok  	zeros3-z3/onnxz3	0.025s
+ok  	zeros3-z3/parquetz3	7.770s
+ok  	zeros3-z3/planner2	11.272s
+--- FAIL: TestGCLifecycle (1.80s)
+--- FAIL: TestLifecycle (4.81s)
+--- FAIL: TestOversizedDirectChunkIsNeverPacked (0.07s)
+--- FAIL: TestSourceAcrossStorageStates (3.43s)
 FAIL
-FAIL	zeros3-z3/prodshadow	20.367s
-ok  	zeros3-z3/qcore	2.183s
-ok  	zeros3-z3/repz3/kinds	49.993s
-ok  	zeros3-z3/scientificz3	0.345s
-ok  	zeros3-z3/semcas	0.136s
-ok  	zeros3-z3/sendz3	0.010s
-ok  	zeros3-z3/sqfsz3	20.677s
-ok  	zeros3-z3/sstz3	9.094s
+FAIL	zeros3-z3/prodshadow	17.128s
+ok  	zeros3-z3/qcore	2.190s
+ok  	zeros3-z3/repz3/kinds	49.066s
+ok  	zeros3-z3/scientificz3	0.606s
+ok  	zeros3-z3/semcas	0.124s
+ok  	zeros3-z3/sendz3	0.005s
+ok  	zeros3-z3/sqfsz3	19.671s
+ok  	zeros3-z3/sstz3	9.106s
 FAIL
 --- FAIL: TestGCLifecycle
 --- FAIL: TestLifecycle
@@ -40,98 +40,105 @@ FAIL
 --- FAIL: TestSourceAcrossStorageStates
 FAIL	zeros3-z3/prodshadow
 ### race: go -C testing-harnesses/z3 test -count=1 -race ./numcore ./lz4z3 ./brotliz3
-ok  	zeros3-z3/numcore	113.109s
-ok  	zeros3-z3/lz4z3	126.068s
-ok  	zeros3-z3/brotliz3	143.704s
+ok  	zeros3-z3/numcore	114.478s
+ok  	zeros3-z3/lz4z3	125.908s
+ok  	zeros3-z3/brotliz3	145.097s
 ### fuzz-numcore:FuzzOpenObject: go -C testing-harnesses/z3 test ./numcore -run ^$ -fuzz ^FuzzOpenObject$ -fuzztime 20s
 fuzz: elapsed: 0s, gathering baseline coverage: 0/4 completed
 fuzz: elapsed: 0s, gathering baseline coverage: 4/4 completed, now fuzzing with 4 workers
-fuzz: elapsed: 3s, execs: 98392 (32790/sec), new interesting: 0 (total: 4)
-fuzz: elapsed: 6s, execs: 98392 (0/sec), new interesting: 0 (total: 4)
-fuzz: elapsed: 9s, execs: 98392 (0/sec), new interesting: 0 (total: 4)
-fuzz: elapsed: 12s, execs: 98392 (0/sec), new interesting: 0 (total: 4)
-fuzz: elapsed: 15s, execs: 98392 (0/sec), new interesting: 0 (total: 4)
-fuzz: elapsed: 18s, execs: 98392 (0/sec), new interesting: 0 (total: 4)
-fuzz: elapsed: 21s, execs: 98392 (0/sec), new interesting: 0 (total: 4)
-fuzz: elapsed: 21s, execs: 98392 (0/sec), new interesting: 0 (total: 4)
+fuzz: elapsed: 3s, execs: 109346 (36445/sec), new interesting: 0 (total: 4)
+fuzz: elapsed: 6s, execs: 109346 (0/sec), new interesting: 0 (total: 4)
+fuzz: elapsed: 9s, execs: 109346 (0/sec), new interesting: 0 (total: 4)
+fuzz: elapsed: 12s, execs: 109346 (0/sec), new interesting: 0 (total: 4)
+fuzz: elapsed: 15s, execs: 109346 (0/sec), new interesting: 0 (total: 4)
+fuzz: elapsed: 18s, execs: 109346 (0/sec), new interesting: 0 (total: 4)
+fuzz: elapsed: 21s, execs: 109346 (0/sec), new interesting: 0 (total: 4)
+fuzz: elapsed: 21s, execs: 109346 (0/sec), new interesting: 0 (total: 4)
 PASS
-ok  	zeros3-z3/numcore	21.040s
+ok  	zeros3-z3/numcore	21.041s
 ### fuzz-numcore:FuzzPatches: go -C testing-harnesses/z3 test ./numcore -run ^$ -fuzz ^FuzzPatches$ -fuzztime 20s
-fuzz: elapsed: 0s, gathering baseline coverage: 0/164 completed
-fuzz: elapsed: 0s, gathering baseline coverage: 164/164 completed, now fuzzing with 4 workers
-fuzz: elapsed: 3s, execs: 322961 (107648/sec), new interesting: 5 (total: 169)
-fuzz: elapsed: 6s, execs: 609509 (95495/sec), new interesting: 5 (total: 169)
-fuzz: elapsed: 9s, execs: 843347 (77965/sec), new interesting: 7 (total: 171)
-fuzz: elapsed: 12s, execs: 1112133 (89571/sec), new interesting: 8 (total: 172)
-fuzz: elapsed: 15s, execs: 1349802 (79243/sec), new interesting: 10 (total: 174)
-fuzz: elapsed: 18s, execs: 1597762 (82646/sec), new interesting: 13 (total: 177)
-fuzz: elapsed: 21s, execs: 1760634 (54296/sec), new interesting: 13 (total: 177)
-fuzz: elapsed: 21s, execs: 1760634 (0/sec), new interesting: 13 (total: 177)
+fuzz: elapsed: 0s, gathering baseline coverage: 0/177 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 177/177 completed, now fuzzing with 4 workers
+fuzz: elapsed: 3s, execs: 234460 (78067/sec), new interesting: 1 (total: 178)
+fuzz: elapsed: 6s, execs: 400507 (55390/sec), new interesting: 2 (total: 179)
+fuzz: elapsed: 9s, execs: 556108 (51876/sec), new interesting: 3 (total: 180)
+fuzz: elapsed: 12s, execs: 929250 (124385/sec), new interesting: 5 (total: 182)
+fuzz: elapsed: 15s, execs: 1126933 (65807/sec), new interesting: 7 (total: 184)
+fuzz: elapsed: 18s, execs: 1394708 (89381/sec), new interesting: 11 (total: 188)
+fuzz: elapsed: 21s, execs: 1553987 (53089/sec), new interesting: 11 (total: 188)
+fuzz: elapsed: 21s, execs: 1553987 (0/sec), new interesting: 11 (total: 188)
 PASS
-ok  	zeros3-z3/numcore	21.027s
+ok  	zeros3-z3/numcore	21.017s
 ### fuzz-brotliz3:FuzzDecode: go -C testing-harnesses/z3 test ./brotliz3 -run ^$ -fuzz ^FuzzDecode$ -fuzztime 20s
-fuzz: elapsed: 0s, gathering baseline coverage: 0/17 completed
-fuzz: elapsed: 0s, gathering baseline coverage: 17/17 completed, now fuzzing with 4 workers
-fuzz: elapsed: 3s, execs: 119408 (39800/sec), new interesting: 111 (total: 128)
-fuzz: elapsed: 6s, execs: 128963 (3184/sec), new interesting: 122 (total: 139)
-fuzz: elapsed: 9s, execs: 467524 (112887/sec), new interesting: 174 (total: 191)
-fuzz: elapsed: 12s, execs: 766906 (99810/sec), new interesting: 208 (total: 225)
-fuzz: elapsed: 15s, execs: 954402 (62490/sec), new interesting: 255 (total: 272)
-fuzz: elapsed: 18s, execs: 1104670 (50094/sec), new interesting: 281 (total: 298)
-fuzz: elapsed: 21s, execs: 1104670 (0/sec), new interesting: 281 (total: 298)
-fuzz: elapsed: 21s, execs: 1104670 (0/sec), new interesting: 281 (total: 298)
+fuzz: elapsed: 0s, gathering baseline coverage: 0/298 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 298/298 completed, now fuzzing with 4 workers
+fuzz: elapsed: 3s, execs: 300872 (100275/sec), new interesting: 17 (total: 315)
+fuzz: elapsed: 6s, execs: 520786 (73237/sec), new interesting: 32 (total: 330)
+fuzz: elapsed: 9s, execs: 531842 (3689/sec), new interesting: 33 (total: 331)
+fuzz: elapsed: 12s, execs: 531842 (0/sec), new interesting: 33 (total: 331)
+fuzz: elapsed: 15s, execs: 531842 (0/sec), new interesting: 33 (total: 331)
+fuzz: elapsed: 18s, execs: 531842 (0/sec), new interesting: 33 (total: 331)
+fuzz: elapsed: 21s, execs: 1092596 (186970/sec), new interesting: 36 (total: 334)
+fuzz: elapsed: 21s, execs: 1092596 (0/sec), new interesting: 36 (total: 334)
 PASS
-ok  	zeros3-z3/brotliz3	21.029s
+ok  	zeros3-z3/brotliz3	21.035s
 ### fuzz-brotliz3:FuzzEncodeDecode: go -C testing-harnesses/z3 test ./brotliz3 -run ^$ -fuzz ^FuzzEncodeDecode$ -fuzztime 20s
-fuzz: elapsed: 0s, gathering baseline coverage: 0/171 completed
-fuzz: elapsed: 1s, gathering baseline coverage: 171/171 completed, now fuzzing with 4 workers
-fuzz: elapsed: 3s, execs: 21924 (7307/sec), new interesting: 17 (total: 188)
-fuzz: elapsed: 6s, execs: 37982 (5353/sec), new interesting: 25 (total: 196)
-fuzz: elapsed: 9s, execs: 41027 (1015/sec), new interesting: 26 (total: 197)
-fuzz: elapsed: 12s, execs: 41027 (0/sec), new interesting: 26 (total: 197)
-fuzz: elapsed: 15s, execs: 121516 (26837/sec), new interesting: 30 (total: 201)
-fuzz: elapsed: 18s, execs: 122862 (448/sec), new interesting: 30 (total: 201)
-fuzz: elapsed: 21s, execs: 122862 (0/sec), new interesting: 30 (total: 201)
-fuzz: elapsed: 21s, execs: 122862 (0/sec), new interesting: 30 (total: 201)
+fuzz: elapsed: 0s, gathering baseline coverage: 0/201 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 201/201 completed, now fuzzing with 4 workers
+fuzz: elapsed: 3s, execs: 14766 (4920/sec), new interesting: 8 (total: 209)
+fuzz: elapsed: 6s, execs: 37798 (7678/sec), new interesting: 15 (total: 216)
+fuzz: elapsed: 9s, execs: 48294 (3499/sec), new interesting: 22 (total: 223)
+fuzz: elapsed: 12s, execs: 113209 (21641/sec), new interesting: 27 (total: 228)
+fuzz: elapsed: 15s, execs: 166377 (17721/sec), new interesting: 37 (total: 238)
+fuzz: elapsed: 18s, execs: 273710 (35781/sec), new interesting: 40 (total: 241)
+fuzz: elapsed: 21s, execs: 280880 (2389/sec), new interesting: 44 (total: 245)
+fuzz: elapsed: 21s, execs: 280880 (0/sec), new interesting: 44 (total: 245)
 PASS
-ok  	zeros3-z3/brotliz3	21.370s
+ok  	zeros3-z3/brotliz3	21.021s
 ### fuzz-lz4z3:FuzzDecode: go -C testing-harnesses/z3 test ./lz4z3 -run ^$ -fuzz ^FuzzDecode$ -fuzztime 20s
-fuzz: elapsed: 0s, gathering baseline coverage: 0/59 completed
-fuzz: elapsed: 0s, gathering baseline coverage: 59/59 completed, now fuzzing with 4 workers
-fuzz: elapsed: 3s, execs: 237915 (79272/sec), new interesting: 1 (total: 60)
-fuzz: elapsed: 6s, execs: 603737 (121982/sec), new interesting: 2 (total: 61)
-fuzz: elapsed: 9s, execs: 879904 (91877/sec), new interesting: 2 (total: 61)
-fuzz: elapsed: 12s, execs: 1147947 (89501/sec), new interesting: 2 (total: 61)
-fuzz: elapsed: 15s, execs: 1382616 (78228/sec), new interesting: 2 (total: 61)
-fuzz: elapsed: 18s, execs: 1742451 (119967/sec), new interesting: 3 (total: 62)
-fuzz: elapsed: 20s, execs: 1934442 (94011/sec), new interesting: 4 (total: 63)
+fuzz: elapsed: 0s, gathering baseline coverage: 0/63 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 63/63 completed, now fuzzing with 4 workers
+fuzz: elapsed: 3s, execs: 302365 (100778/sec), new interesting: 1 (total: 64)
+fuzz: elapsed: 6s, execs: 597048 (98207/sec), new interesting: 1 (total: 64)
+fuzz: elapsed: 9s, execs: 882857 (95278/sec), new interesting: 1 (total: 64)
+fuzz: elapsed: 12s, execs: 1177851 (98324/sec), new interesting: 1 (total: 64)
+fuzz: elapsed: 15s, execs: 1485302 (102483/sec), new interesting: 1 (total: 64)
+fuzz: elapsed: 18s, execs: 1785506 (100094/sec), new interesting: 1 (total: 64)
+fuzz: elapsed: 20s, execs: 1978754 (95150/sec), new interesting: 1 (total: 64)
 PASS
-ok  	zeros3-z3/lz4z3	20.053s
+ok  	zeros3-z3/lz4z3	20.037s
 ### fuzz-lz4z3:FuzzRecipe: go -C testing-harnesses/z3 test ./lz4z3 -run ^$ -fuzz ^FuzzRecipe$ -fuzztime 20s
-fuzz: elapsed: 0s, gathering baseline coverage: 0/72 completed
-fuzz: elapsed: 0s, gathering baseline coverage: 72/72 completed, now fuzzing with 4 workers
-fuzz: elapsed: 3s, execs: 277718 (92558/sec), new interesting: 6 (total: 78)
-fuzz: elapsed: 6s, execs: 581528 (101256/sec), new interesting: 7 (total: 79)
-fuzz: elapsed: 9s, execs: 899517 (106016/sec), new interesting: 8 (total: 80)
-fuzz: elapsed: 12s, execs: 1183106 (94532/sec), new interesting: 8 (total: 80)
-fuzz: elapsed: 15s, execs: 1458960 (91932/sec), new interesting: 8 (total: 80)
-fuzz: elapsed: 18s, execs: 1699556 (80217/sec), new interesting: 8 (total: 80)
-fuzz: elapsed: 20s, execs: 1949413 (120417/sec), new interesting: 9 (total: 81)
+fuzz: elapsed: 0s, gathering baseline coverage: 0/81 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 81/81 completed, now fuzzing with 4 workers
+fuzz: elapsed: 3s, execs: 280380 (93459/sec), new interesting: 0 (total: 81)
+fuzz: elapsed: 6s, execs: 572581 (97392/sec), new interesting: 0 (total: 81)
+fuzz: elapsed: 9s, execs: 874137 (100496/sec), new interesting: 0 (total: 81)
+fuzz: elapsed: 12s, execs: 1204534 (110161/sec), new interesting: 0 (total: 81)
+fuzz: elapsed: 15s, execs: 1499029 (98152/sec), new interesting: 0 (total: 81)
+fuzz: elapsed: 18s, execs: 1803799 (101576/sec), new interesting: 0 (total: 81)
+fuzz: elapsed: 20s, execs: 2001112 (94694/sec), new interesting: 0 (total: 81)
 PASS
-ok  	zeros3-z3/lz4z3	20.088s
+ok  	zeros3-z3/lz4z3	20.095s
 ### fuzz-lz4z3:FuzzFrames: go -C testing-harnesses/z3 test ./lz4z3 -run ^$ -fuzz ^FuzzFrames$ -fuzztime 20s
 fuzz: elapsed: 0s, gathering baseline coverage: 0/3 completed
 fuzz: elapsed: 0s, gathering baseline coverage: 3/3 completed, now fuzzing with 4 workers
-fuzz: elapsed: 3s, execs: 16 (5/sec), new interesting: 0 (total: 3)
-fuzz: elapsed: 6s, execs: 16 (0/sec), new interesting: 0 (total: 3)
-fuzz: elapsed: 9s, execs: 16 (0/sec), new interesting: 0 (total: 3)
-fuzz: elapsed: 12s, execs: 16 (0/sec), new interesting: 0 (total: 3)
-fuzz: elapsed: 15s, execs: 16 (0/sec), new interesting: 0 (total: 3)
-fuzz: elapsed: 18s, execs: 16 (0/sec), new interesting: 0 (total: 3)
-fuzz: elapsed: 21s, execs: 16 (0/sec), new interesting: 0 (total: 3)
-fuzz: elapsed: 21s, execs: 16 (0/sec), new interesting: 0 (total: 3)
+fuzz: elapsed: 3s, execs: 12 (4/sec), new interesting: 0 (total: 3)
+fuzz: elapsed: 6s, execs: 12 (0/sec), new interesting: 0 (total: 3)
+fuzz: elapsed: 9s, execs: 12 (0/sec), new interesting: 0 (total: 3)
+fuzz: elapsed: 12s, execs: 12 (0/sec), new interesting: 0 (total: 3)
+fuzz: elapsed: 15s, execs: 12 (0/sec), new interesting: 0 (total: 3)
+fuzz: elapsed: 18s, execs: 12 (0/sec), new interesting: 0 (total: 3)
+fuzz: elapsed: 21s, execs: 12 (0/sec), new interesting: 0 (total: 3)
+fuzz: elapsed: 21s, execs: 12 (0/sec), new interesting: 0 (total: 3)
 PASS
-ok  	zeros3-z3/lz4z3	21.038s
+ok  	zeros3-z3/lz4z3	21.026s
+### clean-checkout: clean_checkout
+ok  	zeros3-z3/qcore	2.020s
+ok  	zeros3-z3/numcore	21.412s
+ok  	zeros3-z3/brotliz3	10.479s
+ok  	zeros3-z3/lz4z3	9.234s
+ok  	zeros3-z3/parquetz3	7.867s
+ok  	zeros3-z3/sstz3	7.758s
 ### production-unchanged: prod_unchanged
 ### production-build: go build -o /dev/null .
 ### extraction: bash testing-harnesses/z4/p7/scripts/extract_all.sh /root/p7/out/qualify/extraction

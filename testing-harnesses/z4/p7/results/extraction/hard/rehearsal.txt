@@ -10,6 +10,6 @@ REHEARSAL replay py_default_70000 exact producer bytes=40578 sha256=8c085fc45e9e
 REHEARSAL replay py_hc9_pattern_70000 exact producer bytes=7072 sha256=813a3e00d7eb495d
 REHEARSAL replay py_fast9_9000 exact producer bytes=7533 sha256=b39fc3115f6f8d94
 REHEARSAL OK
---- PASS: TestP6Rehearsal (0.08s)
+--- PASS: TestP6Rehearsal (0.11s)
 PASS
-ok  	zeros3	0.091s
+ok  	zeros3	0.114s

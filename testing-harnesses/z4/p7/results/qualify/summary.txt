@@ -1,6 +1,6 @@
 PASS gofmt (0s)
-PASS vet (5s)
-PASS build (0s)
+PASS vet (0s)
+PASS build (1s)
   pre-existing on base:     --- FAIL: TestSourceAcrossStorageStates/packed-deflate
   pre-existing on base:     --- FAIL: TestSourceAcrossStorageStates/packed-raw
   pre-existing on base: --- FAIL: TestGCLifecycle
@@ -8,27 +8,28 @@ PASS build (0s)
   pre-existing on base: --- FAIL: TestOversizedDirectChunkIsNeverPacked
   pre-existing on base: --- FAIL: TestSourceAcrossStorageStates
   pre-existing on base: FAIL	zeros3-z3/prodshadow
-PASS test (93s)
-PASS race (147s)
-PASS fuzz-numcore:FuzzOpenObject (25s)
+PASS test (89s)
+PASS race (145s)
+PASS fuzz-numcore:FuzzOpenObject (22s)
 PASS fuzz-numcore:FuzzPatches (21s)
-PASS fuzz-brotliz3:FuzzDecode (22s)
+PASS fuzz-brotliz3:FuzzDecode (21s)
 PASS fuzz-brotliz3:FuzzEncodeDecode (21s)
 PASS fuzz-lz4z3:FuzzDecode (21s)
 PASS fuzz-lz4z3:FuzzRecipe (20s)
 PASS fuzz-lz4z3:FuzzFrames (21s)
-PASS production-unchanged (1s)
-PASS production-build (5s)
-PASS extraction (30s)
+PASS clean-checkout (35s)
+PASS production-unchanged (0s)
+PASS production-build (4s)
+PASS extraction (24s)
 numeric PORTABLE_WITH_THIN_ADAPTER declarations 322 names 319 vectors 70 mismatches 0 fidelity_failures 0 rehearsal_ok True
 REHEARSAL encode base logical=4263241 zn7=2810424 windows=33 modes(raw,direct,pred,copy,quant)=[0 2809571 0 0 0]
 REHEARSAL encode tune logical=4263241 zn7=428241 windows=33 modes(raw,direct,pred,copy,quant)=[0 0 427377 0 0]
 REHEARSAL encode quant logical=18441 zn7=171 windows=1 modes(raw,direct,pred,copy,quant)=[0 0 0 0 0]
-REHEARSAL physical logical=8544923 cdc_store=8568253 zn7_objects=3238836 modeled_charge=3239232 engine_physical_for_zn7=3250204
+REHEARSAL physical logical=8544923 cdc_store=8568253 zn7_objects=3238836 modeled_charge=3239232 engine_physical_for_zn7=3250202
 REHEARSAL replay base exact sha256=d1c82695aa3610f1 windows=33 store_read=2809571 ranges=20
 REHEARSAL replay tune exact sha256=3d3ccf5d5f73d4f9 windows=66 store_read=3236948 ranges=20
 REHEARSAL replay quant exact sha256=8f03103d2f24a61d windows=3 store_read=49797 ranges=20
-REHEARSAL corrupted-base rejected; heap after originals=13 MiB peak during replay=71 MiB
+REHEARSAL corrupted-base rejected; heap after originals=13 MiB peak during replay=70 MiB
 REHEARSAL OK
 hard PORTABLE_WITH_THIN_ADAPTER declarations 225 names 200 vectors 306 mismatches 0 fidelity_failures 0 rehearsal_ok True
 REHEARSAL ingest arrow_page_small brotli payload=2512 body=2508 recipe=3 quality=8
