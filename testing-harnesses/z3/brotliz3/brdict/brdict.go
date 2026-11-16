@@ -7,7 +7,7 @@ import (
 	"zeros3-z3/brotliz3"
 )
 
-//go:embed dictionary.bin
+//go:embed dictionary.rfc7932
 var data []byte
 
 func init() {

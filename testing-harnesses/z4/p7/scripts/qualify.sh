@@ -39,6 +39,13 @@ step race go -C $Z test -count=1 -race ./numcore ./lz4z3 ./brotliz3
 for t in numcore:FuzzOpenObject numcore:FuzzPatches brotliz3:FuzzDecode brotliz3:FuzzEncodeDecode lz4z3:FuzzDecode lz4z3:FuzzRecipe lz4z3:FuzzFrames; do
   step "fuzz-$t" go -C $Z test ./${t%%:*} -run '^$' -fuzz "^${t##*:}\$" -fuzztime ${P7_FUZZTIME:-20s}
 done
+# A clean checkout of HEAD must build and pass the core packages (catches files that exist only locally).
+clean_checkout() {
+  local wt="$O/head-wt"; rm -rf "$wt"; git worktree prune; git worktree add --detach "$wt" HEAD > /dev/null 2>&1 || return 1
+  ( go -C "$wt/$Z" build ./... && go -C "$wt/$Z" test -count=1 ./qcore ./numcore ./brotliz3/... ./lz4z3 ./parquetz3 ./sstz3 ); local rc=$?
+  git worktree remove --force "$wt"; return $rc
+}
+step clean-checkout clean_checkout
 prod_unchanged() { local out; out=$(git diff --name-only $BASE HEAD | grep -v '^testing-harnesses/'); [ -z "$out" ] || { echo "$out"; return 1; }; git diff --quiet HEAD -- zeros3.go go.mod; }
 step production-unchanged prod_unchanged
 step production-build go build -o /dev/null .

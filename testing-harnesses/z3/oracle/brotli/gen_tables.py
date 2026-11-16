@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Extracts the constant tables of the Brotli format/reference encoder from a google/brotli source
-tree (v1.2.0) into brotliz3/tables_gen.go and brotliz3/brdict/dictionary.bin (the RFC 7932 static
+tree (v1.2.0) into brotliz3/tables_gen.go and brotliz3/brdict/dictionary.rfc7932 (the RFC 7932 static
 dictionary). usage: gen_tables.py BROTLI_SRC/c Z3_DIR"""
 import hashlib, re, sys, os
 src, z3 = sys.argv[1], sys.argv[2]
@@ -11,7 +11,7 @@ def arr(path, name):
     return [int(x, 0) for x in re.findall(r'-?(?:0x[0-9a-fA-F]+|\d+)', body)]
 d = bytes(arr('common/dictionary_inc.h', 'kBrotliDictionaryData'))
 assert len(d) == 122784
-open(os.path.join(z3, 'brotliz3/brdict/dictionary.bin'), 'wb').write(d)
+open(os.path.join(z3, 'brotliz3/brdict/dictionary.rfc7932'), 'wb').write(d)
 ctx = bytes(arr('common/context.c', '_kBrotliContextLookupTable'))
 assert len(ctx) == 2048
 frozen = bytes(arr('enc/dictionary_hash.c', 'frozen_idx'))

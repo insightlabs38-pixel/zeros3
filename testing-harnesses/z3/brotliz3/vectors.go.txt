@@ -42,7 +42,7 @@ func vdata(kind string, n int, seed uint64) []byte {
 
 func vecBrotli() {
 	z3 := os.Getenv("P6_Z3")
-	dict, err := os.ReadFile(filepath.Join(z3, "brotliz3", "brdict", "dictionary.bin"))
+	dict, err := os.ReadFile(filepath.Join(z3, "brotliz3", "brdict", "dictionary.rfc7932"))
 	if err != nil {
 		panic(err)
 	}
