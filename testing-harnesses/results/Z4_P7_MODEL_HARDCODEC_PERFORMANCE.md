@@ -8,7 +8,7 @@ Nothing is enabled in production: CDC stays authoritative, `zeros3.go`/`go.mod` 
 * **Quantization** — the B5 Q4_0 mismatch was not a quantizer bug: the pinned bartowski files are *importance-weighted* (imatrix)
   and built with GCC FP contraction (FMA). With the producer's imatrix and an exact model of GCC's fused arithmetic, **every ported
   type reproduces 100 % of blocks** on three models and two producers (Q4_0 Q4_1 Q5_0 Q5_1 Q8_0 Q2_K Q3_K Q4_K Q5_K Q6_K IQ4_NL IQ4_XS;
-  66.6 M real blocks, 0 mismatches). Only IQ3_S is unported.
+  135,966,848 real blocks in 31 files, 0 mismatches). Only IQ3_S is unported.
 * **Numeric engine** — the new windowed container (ZN7) matches B5's bytes within ±0.1 % and is **6-14x faster to encode, 1.4-1.6x
   (single worker) / 4.5-5x (4 workers) faster to replay, with 17-170x less encode memory and 3-54x less replay memory** (Qwen2.5-0.5B: 4.6 GiB → 27 MiB encode,
   7.6 GiB → 142 MiB replay). A 30-file quantized collection costs ⟦COLL_RATIO⟧x CDC.
@@ -77,9 +77,13 @@ best variant per producer (full matrix with the losing variants: `scripts/conf_m
 |QuantFactory Qwen2.5-0.5B-Instruct Q2_K file|IQ4_NL Q3_K Q5_0 Q8_0|12,576,256|ref, from the BF16 Safetensors|
 |bartowski Qwen2.5-0.5B-Instruct Q2_K file|IQ4_NL Q3_K Q5_0 Q8_0|12,576,256|F16 step + imatrix + GCCFMA|
 |QuantFactory Qwen2.5-1.5B-Instruct Q2_K file|**Q2_K** Q3_K Q4_K Q6_K|3,311,616 Q2_K + 2,717,952|F16 step + ref|
-|bartowski Qwen2.5-1.5B-Instruct Q2_K file|⟦Q15BW_TYPES⟧|⟦Q15BW_BLOCKS⟧|⟦Q15BW_VARIANT⟧|
+|bartowski Qwen2.5-1.5B-Instruct Q2_K file|**Q2_K** Q3_K Q4_K; Q6_K (embedding, no imatrix entry)|3,311,616 Q2_K + 1,806,336; 911,616|F16 step + imatrix + GCCFMA; Q6_K ref + GCCFMA|
 
 * Strict-imatrix (no FMA) reaches only 94.6-99.9 % on bartowski files; the reference path ≤ 2 %: the producer profile matters.
+* Tensors without an imatrix entry (embeddings) go through the *reference* quantizer of the same FMA build: the 1.5B embedding
+  (Q6_K) is 99.76 % under strict arithmetic and 911,616 / 911,616 with the fused reference path. That path is derived only where
+  it shares code with a weighted path (Q6_K, IQ4_NL, IQ4_XS; oracle golden vectors); the fused reference forms of Q2_K / Q4_K /
+  Q5_K (`make_qkx2_quants`) are not derived — no such tensor exists in the corpus; they would be patched block by block.
 * "F16 step": llama.cpp pipelines quantize from an F16 GGUF; BF16 → F16 changes a few values. Direct BF16 input misses
   14 / 3,311,616 Q2_K blocks (Qwen2.5-1.5B) and 1 / 7,827,456 IQ4_NL blocks (Qwen2.5-0.5B bartowski); with the F16 step both are 0.
 * Real Q2_K blocks exist only where the column count is a multiple of 256: SmolLM2-135M (576) and Qwen2.5-0.5B (896) "Q2_K"
@@ -287,7 +291,8 @@ concurrent `ReadAt`; the adapter serializes it (a production integration should 
 * A per-tensor sample cannot identify the producer arithmetic (first implementation patched 0.03-0.14 % of blocks).
 
 ## 18. Outstanding blockers
-* IQ3_S / IQ2 / IQ1 quantizers are not ported (grid-search tables); non-GCC or non-x86 producer builds need their own profile.
+* IQ3_S / IQ2 / IQ1 quantizers are not ported (grid-search tables); non-GCC or non-x86 producer builds need their own profile;
+  fused reference Q2_K/Q4_K/Q5_K (embeddings of untied models quantized by an FMA build without imatrix entry) not derived.
 * Quant derivations need the float source *and* the producer's imatrix retained; neither is discoverable from the GGUF alone.
 * EROFS needs a parser; LZ4 linked frames from liblz4 ≥ 1.10 multithreaded CLI are unverified.
 * Brotli q10-11; Parquet writers other than Arrow C++ (parquet-mr, Rust) unverified.
