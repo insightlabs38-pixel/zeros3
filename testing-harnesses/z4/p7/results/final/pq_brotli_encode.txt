@@ -1,0 +1,2 @@
+encode db.parquet: 25.7 MiB in 11.70s = 2 MiB/s; peak RSS 114 MiB (now 74), heap in use 34 MiB, total allocated 2964 MiB; 4927 components (38.4 MiB stored), recipe 31145 B (83 members), val groups 4820, lvl groups 31, nodes 90, pages 320
+11.709 real 10.059 user 2.205 sys

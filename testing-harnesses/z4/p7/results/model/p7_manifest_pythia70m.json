@@ -1,0 +1,374 @@
+[
+ {
+  "file": "step0.safetensors",
+  "sha256": "17a077abfddb6c589091e292adfcc2ee82d39bfd839f5dd80aaaea42861aaf8e",
+  "size": 281715176,
+  "object": 119236216,
+  "charged": 119236348,
+  "bases": null,
+  "enc_secs": 2.076325283,
+  "max_depth": 0,
+  "mode_bytes": [
+   0,
+   119210503,
+   0,
+   0,
+   0
+  ],
+  "mode_count": [
+   0,
+   1124,
+   0,
+   0,
+   0
+  ],
+  "gap_bytes": 1077,
+  "dir_bytes": 24636,
+  "narrowed_windows": 1124,
+  "structured_tensors": 0,
+  "quant_exact_blocks": 0,
+  "quant_patched_blocks": 0,
+  "cand_evals": 0,
+  "full_evals": 0
+ },
+ {
+  "file": "step1000.safetensors",
+  "sha256": "09883f904c4a50de85c682cdfa0434aaf34e62392fe883e58410d12d39b1ee88",
+  "size": 281715176,
+  "object": 118238701,
+  "charged": 118238833,
+  "bases": [
+   "17a077abfddb6c589091e292adfcc2ee82d39bfd839f5dd80aaaea42861aaf8e"
+  ],
+  "enc_secs": 2.198129042,
+  "max_depth": 1,
+  "mode_bytes": [
+   0,
+   110404608,
+   7809203,
+   0,
+   0
+  ],
+  "mode_count": [
+   0,
+   1031,
+   93,
+   0,
+   0
+  ],
+  "gap_bytes": 145,
+  "dir_bytes": 24745,
+  "narrowed_windows": 1124,
+  "structured_tensors": 0,
+  "quant_exact_blocks": 0,
+  "quant_patched_blocks": 0,
+  "cand_evals": 76,
+  "full_evals": 0
+ },
+ {
+  "file": "step4000.safetensors",
+  "sha256": "b10ada55ab1e229e1d05dab06e9bb965da1c74d161b52843c73e4acba7945f67",
+  "size": 281715176,
+  "object": 119417518,
+  "charged": 119417650,
+  "bases": [
+   "09883f904c4a50de85c682cdfa0434aaf34e62392fe883e58410d12d39b1ee88"
+  ],
+  "enc_secs": 2.394931394,
+  "max_depth": 2,
+  "mode_bytes": [
+   0,
+   119385418,
+   7230,
+   0,
+   0
+  ],
+  "mode_count": [
+   0,
+   1111,
+   13,
+   0,
+   0
+  ],
+  "gap_bytes": 145,
+  "dir_bytes": 24725,
+  "narrowed_windows": 1124,
+  "structured_tensors": 0,
+  "quant_exact_blocks": 0,
+  "quant_patched_blocks": 0,
+  "cand_evals": 76,
+  "full_evals": 0
+ },
+ {
+  "file": "step16000.safetensors",
+  "sha256": "4a4ac1f3df9a08c7a62aaf054d2695a60c433f6237e0fdc18058c119fb61f689",
+  "size": 281715176,
+  "object": 119484535,
+  "charged": 119484667,
+  "bases": [
+   "b10ada55ab1e229e1d05dab06e9bb965da1c74d161b52843c73e4acba7945f67"
+  ],
+  "enc_secs": 2.0593203,
+  "max_depth": 3,
+  "mode_bytes": [
+   0,
+   119450784,
+   8877,
+   0,
+   0
+  ],
+  "mode_count": [
+   0,
+   1110,
+   14,
+   0,
+   0
+  ],
+  "gap_bytes": 145,
+  "dir_bytes": 24729,
+  "narrowed_windows": 1124,
+  "structured_tensors": 0,
+  "quant_exact_blocks": 0,
+  "quant_patched_blocks": 0,
+  "cand_evals": 76,
+  "full_evals": 0
+ },
+ {
+  "file": "step64000.safetensors",
+  "sha256": "1f949b05258933218e36155e2e4460e2b1c668caf76b97eac36bac45bffd7bce",
+  "size": 281715176,
+  "object": 119666814,
+  "charged": 119666946,
+  "bases": [
+   "4a4ac1f3df9a08c7a62aaf054d2695a60c433f6237e0fdc18058c119fb61f689"
+  ],
+  "enc_secs": 2.055113119,
+  "max_depth": 1,
+  "mode_bytes": [
+   0,
+   119640197,
+   863,
+   0,
+   0
+  ],
+  "mode_count": [
+   0,
+   1123,
+   1,
+   0,
+   0
+  ],
+  "gap_bytes": 1077,
+  "dir_bytes": 24677,
+  "narrowed_windows": 1124,
+  "structured_tensors": 0,
+  "quant_exact_blocks": 0,
+  "quant_patched_blocks": 0,
+  "cand_evals": 63,
+  "full_evals": 0
+ },
+ {
+  "file": "step100000.safetensors",
+  "sha256": "2464013f1194b7d86d28753ec7fa0e194ead2ff5c3060c43406970c9024f221c",
+  "size": 281715176,
+  "object": 118409595,
+  "charged": 118409727,
+  "bases": [
+   "1f949b05258933218e36155e2e4460e2b1c668caf76b97eac36bac45bffd7bce"
+  ],
+  "enc_secs": 2.101523129,
+  "max_depth": 2,
+  "mode_bytes": [
+   0,
+   118335634,
+   48995,
+   0,
+   0
+  ],
+  "mode_count": [
+   0,
+   1087,
+   37,
+   0,
+   0
+  ],
+  "gap_bytes": 145,
+  "dir_bytes": 24821,
+  "narrowed_windows": 1124,
+  "structured_tensors": 0,
+  "quant_exact_blocks": 0,
+  "quant_patched_blocks": 0,
+  "cand_evals": 76,
+  "full_evals": 0
+ },
+ {
+  "file": "step101000.safetensors",
+  "sha256": "7d08168bd1b04f4abb8209bbbfd6865783e49e5cee5a0976bad42dcb8a725305",
+  "size": 281715176,
+  "object": 85983584,
+  "charged": 85983716,
+  "bases": [
+   "2464013f1194b7d86d28753ec7fa0e194ead2ff5c3060c43406970c9024f221c"
+  ],
+  "enc_secs": 2.7188587440000003,
+  "max_depth": 3,
+  "mode_bytes": [
+   0,
+   0,
+   85958462,
+   0,
+   0
+  ],
+  "mode_count": [
+   0,
+   0,
+   1124,
+   0,
+   0
+  ],
+  "gap_bytes": 145,
+  "dir_bytes": 24977,
+  "narrowed_windows": 1124,
+  "structured_tensors": 0,
+  "quant_exact_blocks": 0,
+  "quant_patched_blocks": 0,
+  "cand_evals": 76,
+  "full_evals": 0
+ },
+ {
+  "file": "step102000.safetensors",
+  "sha256": "6622de8afb9645b237b01cf004f3b11b394009b3e6906f4a21492fc72873ae7e",
+  "size": 281715176,
+  "object": 86546546,
+  "charged": 86546678,
+  "bases": [
+   "7d08168bd1b04f4abb8209bbbfd6865783e49e5cee5a0976bad42dcb8a725305"
+  ],
+  "enc_secs": 2.765806527,
+  "max_depth": 3,
+  "mode_bytes": [
+   0,
+   937,
+   86520491,
+   0,
+   0
+  ],
+  "mode_count": [
+   0,
+   1,
+   1123,
+   0,
+   0
+  ],
+  "gap_bytes": 145,
+  "dir_bytes": 24973,
+  "narrowed_windows": 1124,
+  "structured_tensors": 0,
+  "quant_exact_blocks": 0,
+  "quant_patched_blocks": 0,
+  "cand_evals": 75,
+  "full_evals": 0
+ },
+ {
+  "file": "step143000.safetensors",
+  "sha256": "737de0ce1e32a9559925b452921cdea0b12d3932133b6b0b70b61a351b9f6272",
+  "size": 281715176,
+  "object": 112830293,
+  "charged": 112830425,
+  "bases": [
+   "6622de8afb9645b237b01cf004f3b11b394009b3e6906f4a21492fc72873ae7e"
+  ],
+  "enc_secs": 2.172287068,
+  "max_depth": 3,
+  "mode_bytes": [
+   0,
+   84171282,
+   28633117,
+   0,
+   0
+  ],
+  "mode_count": [
+   0,
+   824,
+   300,
+   0,
+   0
+  ],
+  "gap_bytes": 1077,
+  "dir_bytes": 24817,
+  "narrowed_windows": 1124,
+  "structured_tensors": 0,
+  "quant_exact_blocks": 0,
+  "quant_patched_blocks": 0,
+  "cand_evals": 40,
+  "full_evals": 0
+ },
+ {
+  "file": "dedup_step0.safetensors",
+  "sha256": "17a077abfddb6c589091e292adfcc2ee82d39bfd839f5dd80aaaea42861aaf8e",
+  "size": 281715176,
+  "object": 0,
+  "charged": 36,
+  "bases": [
+   "17a077abfddb6c589091e292adfcc2ee82d39bfd839f5dd80aaaea42861aaf8e"
+  ],
+  "enc_secs": 0,
+  "max_depth": 0,
+  "mode_bytes": [
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "mode_count": [
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "gap_bytes": 0,
+  "dir_bytes": 0,
+  "narrowed_windows": 0,
+  "structured_tensors": 0,
+  "quant_exact_blocks": 0,
+  "quant_patched_blocks": 0,
+  "cand_evals": 0,
+  "full_evals": 0
+ },
+ {
+  "file": "dedup_step100000.safetensors",
+  "sha256": "113049da5e133c61dfb6c92daa7227099bff177109a28f3f2c95dda109e1ada0",
+  "size": 281715176,
+  "object": 117272677,
+  "charged": 117272809,
+  "bases": [
+   "17a077abfddb6c589091e292adfcc2ee82d39bfd839f5dd80aaaea42861aaf8e"
+  ],
+  "enc_secs": 1.979114483,
+  "max_depth": 1,
+  "mode_bytes": [
+   0,
+   117242551,
+   5276,
+   0,
+   0
+  ],
+  "mode_count": [
+   0,
+   1116,
+   8,
+   0,
+   0
+  ],
+  "gap_bytes": 145,
+  "dir_bytes": 24705,
+  "narrowed_windows": 1124,
+  "structured_tensors": 0,
+  "quant_exact_blocks": 0,
+  "quant_patched_blocks": 0,
+  "cand_evals": 76,
+  "full_evals": 0
+ }
+]

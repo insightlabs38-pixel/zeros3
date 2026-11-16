@@ -2,6 +2,7 @@ package lz4z3
 
 import (
 	"encoding/binary"
+	"math/bits"
 	"sync"
 )
 
@@ -39,6 +40,9 @@ func Predict(id int, plain []byte, accel int) ([]Seq, bool) {
 	case PredHC:
 		s, ok := HCSeqs(plain, accel)
 		return s, ok
+	case PredPierrec:
+		s, _ := pierrecSeqs(plain, nil)
+		return s, true
 	default:
 		return nil, false
 	}
@@ -62,6 +66,12 @@ func predictPrefix(id int, plain []byte, accel int, target []Seq) (int, bool) {
 		if !ok {
 			return 0, false
 		}
+		if aborted {
+			return len(s), true
+		}
+		return commonPrefix(s, target), true
+	case PredPierrec:
+		s, aborted := pierrecSeqs(plain, target)
 		if aborted {
 			return len(s), true
 		}
@@ -196,6 +206,12 @@ func fastSeqs(src []byte, accel int, u16, h4 bool, target []Seq) ([]Seq, bool) {
 
 func count(src []byte, p, m, limit int) int {
 	c := 0
+	for p+c+8 <= limit { // m < p, so both loads stay inside src
+		if x := binary.LittleEndian.Uint64(src[p+c:]) ^ binary.LittleEndian.Uint64(src[m+c:]); x != 0 {
+			return c + bits.TrailingZeros64(x)>>3
+		}
+		c += 8
+	}
 	for p+c < limit && src[p+c] == src[m+c] {
 		c++
 	}

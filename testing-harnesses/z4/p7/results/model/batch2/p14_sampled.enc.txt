@@ -1,0 +1,15 @@
+step1000.safetensors               raw    28143920 object    23832785 (0.8468)    0.2s  131.3 MiB/s depth 0 modes raw/direct/pred/copy/quant [0 23825024 0 0 0] struct 0 qpatch 0/0
+step2000.safetensors               raw    28143920 object    23768031 (0.8445)    0.2s  115.1 MiB/s depth 1 modes raw/direct/pred/copy/quant [0 22608084 1152923 0 0] struct 0 qpatch 0/0
+step3000.safetensors               raw    28143920 object    22698142 (0.8065)    0.4s   61.1 MiB/s depth 2 modes raw/direct/pred/copy/quant [0 86059 22604898 0 0] struct 0 qpatch 0/0
+step4000.safetensors               raw    28143920 object    21670088 (0.7700)    0.4s   63.1 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 0 21662823 0 0] struct 0 qpatch 0/0
+step8000.safetensors               raw    28143920 object    23859268 (0.8478)    0.2s  117.8 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 23391021 461115 0 0] struct 0 qpatch 0/0
+step16000.safetensors              raw    28143920 object    23892749 (0.8489)    0.2s  119.8 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 23744250 141427 0 0] struct 0 qpatch 0/0
+step32000.safetensors              raw    28143920 object    23901768 (0.8493)    0.2s  127.5 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 23723393 170394 0 0] struct 0 qpatch 0/0
+step64000.safetensors              raw    28143920 object    23915201 (0.8497)    0.2s  122.0 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 23623102 284975 0 0] struct 0 qpatch 0/0
+step100000.safetensors             raw    28143920 object    23830620 (0.8467)    0.2s  122.9 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 22175398 1648006 0 0] struct 0 qpatch 0/0
+step101000.safetensors             raw    28143920 object    17756363 (0.6309)    0.4s   68.6 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 0 17749113 0 0] struct 0 qpatch 0/0
+step102000.safetensors             raw    28143920 object    17687643 (0.6285)    0.4s   67.7 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 0 17680393 0 0] struct 0 qpatch 0/0
+step143000.safetensors             raw    28143920 object    22569513 (0.8019)    0.5s   59.1 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 147709 22414604 0 0] struct 0 qpatch 0/0
+TOTAL policy=pool:3 charged=269383755
+{"rss":"family","maxrss_kib":31112,"heap_sys_mib":31,"total_alloc_mib":3525,"user_s":9.37,"sys_s":2.26}
+11.885 real 9.371 user 2.264 sys

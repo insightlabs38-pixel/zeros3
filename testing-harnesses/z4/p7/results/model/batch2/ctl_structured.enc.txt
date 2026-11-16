@@ -1,0 +1,8 @@
+base.safetensors                   raw   269060552 object   178713093 (0.6642)    1.8s  146.4 MiB/s depth 0 modes raw/direct/pred/copy/quant [0 178659484 0 0 0] struct 0 qpatch 0/0
+lora.safetensors                   raw   269060520 object    26045227 (0.0968)   56.0s    4.6 MiB/s depth 1 modes raw/direct/pred/copy/quant [0 0 19837963 0 0] struct 92 qpatch 0/0
+rows.safetensors                   raw   269060520 object     4435405 (0.0165)   21.5s   11.9 MiB/s depth 2 modes raw/direct/pred/copy/quant [0 0 4386232 0 0] struct 0 qpatch 0/0
+scale.safetensors                  raw   269060520 object      778684 (0.0029)    3.0s   86.7 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 0 729232 0 0] struct 70 qpatch 0/0
+dense-tiny.safetensors             raw   269060520 object    21630037 (0.0804)    3.9s   66.3 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 0 21580536 0 0] struct 0 qpatch 0/0
+TOTAL policy=pool:8 charged=231603106
+{"rss":"family","maxrss_kib":41824,"heap_sys_mib":39,"total_alloc_mib":22296,"user_s":107.28,"sys_s":12.73}
+87.236 real 107.281 user 12.733 sys

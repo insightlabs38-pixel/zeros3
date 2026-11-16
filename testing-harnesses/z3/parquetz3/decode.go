@@ -237,6 +237,16 @@ func (d *decoder) compRec(s *Seg) (CompRec, error) {
 
 // page rebuilds the bytes of a logical page segment (raw header + payload).
 func (d *decoder) page(si int) ([]byte, error) {
+	fin, err := d.pagePrep(si)
+	if err != nil {
+		return nil, err
+	}
+	return fin()
+}
+
+// pagePrep does the stateful part of a page (stream positions, value and level encoding) and
+// returns the stateless remainder (codec replay), which may run on another goroutine.
+func (d *decoder) pagePrep(si int) (func() ([]byte, error), error) {
 	s := &d.rec.Segs[si]
 	cs := &d.cols[s.Col]
 	pg := s.Page
@@ -298,26 +308,30 @@ func (d *decoder) page(si int) ([]byte, error) {
 		}
 		d.stats.Pages++
 	}
-	var payload []byte
-	if pg.Type == PageDataV2 {
-		v, err := d.cp.Replay(rec, values)
-		if err != nil {
-			return nil, err
+	cp := d.cp
+	return func() ([]byte, error) {
+		var payload []byte
+		var err error
+		if pg.Type == PageDataV2 {
+			v, err := cp.Replay(rec, values)
+			if err != nil {
+				return nil, err
+			}
+			payload = append(append(make([]byte, 0, len(levels)+len(v)), levels...), v...)
+		} else {
+			body := values
+			if len(levels) > 0 {
+				body = append(append(make([]byte, 0, len(levels)+len(values)), levels...), values...)
+			}
+			if payload, err = cp.Replay(rec, body); err != nil {
+				return nil, err
+			}
 		}
-		payload = append(append(make([]byte, 0, len(levels)+len(v)), levels...), v...)
-	} else {
-		body := values
-		if len(levels) > 0 {
-			body = append(append(make([]byte, 0, len(levels)+len(values)), levels...), values...)
+		if int64(len(payload)) != int64(pg.Comp) {
+			return nil, recipeErr("page payload is %d bytes, its header says %d", len(payload), pg.Comp)
 		}
-		if payload, err = d.cp.Replay(rec, body); err != nil {
-			return nil, err
-		}
-	}
-	if int64(len(payload)) != int64(pg.Comp) {
-		return nil, recipeErr("page payload is %d bytes, its header says %d", len(payload), pg.Comp)
-	}
-	return append(append(make([]byte, 0, len(s.Hdr)+len(payload)), s.Hdr...), payload...), nil
+		return append(append(make([]byte, 0, len(s.Hdr)+len(payload)), s.Hdr...), payload...), nil
+	}, nil
 }
 
 // seg rebuilds the bytes of one segment.
@@ -347,6 +361,79 @@ func Decode(w io.Writer, recipe []byte, get Getter, lim Limits) error {
 	}
 	_, err = decodeRange(w, rec, get, 0, rec.Size, lim)
 	return err
+}
+
+// DecodeParallel is Decode with the page codec replays (the dominant cost for Brotli and
+// LZ4HC pages) spread over workers goroutines; output order and bytes are identical. At most
+// 2*workers rebuilt segments are held at a time.
+func DecodeParallel(w io.Writer, recipe []byte, get Getter, lim Limits, workers int) error {
+	rec, err := ParseRecipe(recipe, lim)
+	if err != nil {
+		return err
+	}
+	if workers <= 1 {
+		_, err = decodeRange(w, rec, get, 0, rec.Size, lim)
+		return err
+	}
+	type job struct {
+		total int64
+		b     []byte
+		err   error
+		done  chan struct{}
+	}
+	d := newDecoder(rec, get, lim)
+	sem := make(chan struct{}, workers)
+	var q []*job
+	flush := func(n int) error { // write the oldest jobs until at most n remain
+		for len(q) > n {
+			j := q[0]
+			q = q[1:]
+			<-j.done
+			if j.err != nil {
+				return j.err
+			}
+			if int64(len(j.b)) != j.total {
+				return recipeErr("segment rebuilt as %d bytes, expected %d", len(j.b), j.total)
+			}
+			if _, err := w.Write(j.b); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	drain := func(err error) error { // let running workers finish before returning
+		for _, j := range q {
+			<-j.done
+		}
+		return err
+	}
+	for si := range rec.Segs {
+		s := &rec.Segs[si]
+		if s.Total == 0 {
+			continue
+		}
+		j := &job{total: s.Total, done: make(chan struct{})}
+		if s.Kind == SegDict || s.Kind == SegData {
+			fin, err := d.pagePrep(si)
+			if err != nil {
+				return drain(err)
+			}
+			sem <- struct{}{}
+			go func() {
+				j.b, j.err = fin()
+				<-sem
+				close(j.done)
+			}()
+		} else {
+			j.b, j.err = d.seg(si)
+			close(j.done)
+		}
+		q = append(q, j)
+		if err := flush(2 * workers); err != nil {
+			return drain(err)
+		}
+	}
+	return drain(flush(0))
 }
 
 // DecodeRange writes bytes [off, off+n) of the file, reconstructing only the segments

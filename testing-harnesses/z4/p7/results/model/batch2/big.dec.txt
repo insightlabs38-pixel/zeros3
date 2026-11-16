@@ -1,0 +1,5 @@
+{"sha256":"cff476c29abb057ea6520c78073758999974aebd4530857c0ff41809f4ef887b","bytes":1342179136,"ms":7955,"mib_s":160.9,"windows":5120,"store_read":442695662,"cache_hits":0}
+{"sha256":"08b9a8ee3437a23b3d31974ccbb78542ba93315dfeb7d6f30eb063e07488286d","bytes":1342179136,"ms":17374,"mib_s":73.7,"windows":10240,"store_read":494087287,"cache_hits":0}
+{"rss":"replay","maxrss_kib":141588,"heap_sys_mib":135,"total_alloc_mib":13308,"user_s":28.01,"sys_s":3.27}
+25.345 real 28.010 user 3.282 sys
+verify states 2 bad 0

@@ -1,0 +1,257 @@
+package main
+
+//IMPORT
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"math"
+	"math/rand/v2"
+	"testing"
+)
+
+var _ testing.TB
+
+func vh(b []byte) string { s := sha256.Sum256(b); return fmt.Sprintf("%x", s[:8]) }
+
+func vec(name string, v string) { fmt.Printf("VEC %s %s\n", name, v) }
+
+func vfloats(seed uint64, n int, scale float64) []float32 {
+	r := rand.New(rand.NewPCG(seed, 9))
+	x := make([]float32, n)
+	for i := range x {
+		x[i] = float32(r.NormFloat64() * scale)
+	}
+	return x
+}
+
+func vbf16(seed uint64, n int) []byte {
+	x := vfloats(seed, n, 0.05)
+	b := make([]byte, 2*n)
+	for i, v := range x {
+		binary.LittleEndian.PutUint16(b[2*i:], uint16(math.Float32bits(v)>>16))
+	}
+	return b
+}
+
+func vf32(seed uint64, n int) []byte {
+	x := vfloats(seed, n, 0.05)
+	b := make([]byte, 4*n)
+	for i, v := range x {
+		binary.LittleEndian.PutUint32(b[4*i:], math.Float32bits(v))
+	}
+	return b
+}
+
+// vperturb moves a fraction of float words by a few steps (a fine-tune).
+func vperturb(seed uint64, src []byte, w int) []byte {
+	r := rand.New(rand.NewPCG(seed, 5))
+	out := append([]byte(nil), src...)
+	for i := 0; i+w <= len(out); i += w {
+		if r.IntN(3) == 0 {
+			out[i] += byte(r.IntN(5))
+		}
+	}
+	return out
+}
+
+type vfile struct {
+	data []byte
+	lay  *@numcore.Layout@
+	id   @numcore.ID@
+}
+
+func vbuild(hdr string, ts []@numcore.Tensor@, payloads [][]byte) *vfile {
+	f := &vfile{lay: &@numcore.Layout@{}}
+	f.data = append(f.data, hdr...)
+	for i, t := range ts {
+		t.Off, t.Len = int64(len(f.data)), int64(len(payloads[i]))
+		f.lay.T = append(f.lay.T, t)
+		f.data = append(f.data, payloads[i]...)
+		f.data = append(f.data, 0, 0)
+	}
+	f.lay.Size = int64(len(f.data))
+	f.id = sha256.Sum256(f.data)
+	return f
+}
+
+type vstore struct {
+	obj map[@numcore.ID@][]byte
+	raw map[@numcore.ID@]*vfile
+	aux map[@numcore.ID@][]byte
+}
+
+func (s *vstore) Open(ctx context.Context, id @numcore.ID@) (@numcore.Stored@, error) {
+	if b, ok := s.obj[id]; ok {
+		o, err := @numcore.OpenObject@(bytes.NewReader(b), int64(len(b)))
+		return @numcore.Stored@{Obj: o}, err
+	}
+	if f, ok := s.raw[id]; ok {
+		return @numcore.Stored@{Raw: bytes.NewReader(f.data), Lay: f.lay}, nil
+	}
+	return @numcore.Stored@{}, @numcore.ErrMissing7@
+}
+
+func (s *vstore) Aux(ctx context.Context, id @numcore.ID@) ([]byte, error) {
+	if b, ok := s.aux[id]; ok {
+		return b, nil
+	}
+	return nil, @numcore.ErrMissing7@
+}
+
+func venc(f *vfile, bases []*vfile, aux []@numcore.AuxIn@, o @numcore.EncOpts@) []byte {
+	var bi []@numcore.BaseIn@
+	for _, b := range bases {
+		bi = append(bi, @numcore.BaseIn@{ID: b.id, Len: b.lay.Size, Src: @numcore.RawSource@{R: bytes.NewReader(b.data), L: b.lay}})
+	}
+	cands := func(ti int) []@numcore.Cand@ {
+		var out []@numcore.Cand@
+		for s, b := range bases {
+			for k := range b.lay.T {
+				if b.lay.T[k].Name == f.lay.T[ti].Name {
+					out = append(out, @numcore.Cand@{Slot: s, TIdx: k})
+				}
+			}
+		}
+		return out
+	}
+	var buf bytes.Buffer
+	if _, err := @numcore.Encode@(context.Background(), &buf, bytes.NewReader(f.data), f.lay, bi, cands, aux, o); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+func vecQuant() {
+	types := []@qcore.Type@{@qcore.Q4_0@, @qcore.Q4_1@, @qcore.Q5_0@, @qcore.Q5_1@, @qcore.Q8_0@, @qcore.Q2_K@, @qcore.Q3_K@, @qcore.Q4_K@, @qcore.Q5_K@, @qcore.Q6_K@, @qcore.IQ4_NL@, @qcore.IQ4_XS@}
+	x := vfloats(1, 768*6, 0.03)
+	x[5], x[900] = 0, float32(math.Copysign(0, -1))
+	qw := vfloats(2, 768, 1)
+	for i := range qw {
+		qw[i] = qw[i] * qw[i]
+	}
+	for _, t := range types {
+		n, err := @qcore.OutLen@(t, len(x), 768)
+		if err != nil {
+			panic(err)
+		}
+		for vi, v := range []struct {
+			qw []float32
+			ar @qcore.Arith@
+		}{{nil, @qcore.Strict@}, {qw, @qcore.Strict@}, {qw, @qcore.GCCFMA@}} {
+			out := make([]byte, n)
+			if err := @qcore.Quantize@(out, t, x, 768, v.qw, v.ar); err != nil {
+				vec(fmt.Sprintf("quant-%s-%d", t, vi), "err:"+err.Error())
+				continue
+			}
+			vec(fmt.Sprintf("quant-%s-%d", t, vi), vh(out))
+		}
+	}
+	for _, f := range []float32{0, 1, -1, 65504, 65520, 1e-8, 3.0517578e-05, float32(math.Inf(1)), float32(math.NaN())} {
+		vec(fmt.Sprintf("f16-%g", f), fmt.Sprintf("%04x", @qcore.F16@(f)))
+	}
+}
+
+func vecCoders() {
+	base, tgt := vbf16(3, 5000), vperturb(4, vbf16(3, 5000), 2)
+	resid := @numcore.MakeResidual@(@numcore.RKey@, 2, tgt, base)
+	nrc := @numcore.NRCEncode@(@numcore.DBF16@, resid, base)
+	vec("nrc", vh(nrc))
+	back, err := @numcore.NRCDecode@(@numcore.DBF16@, nrc, base, 5000)
+	vec("nrc-roundtrip", fmt.Sprint(err == nil && bytes.Equal(@numcore.ApplyResidual@(@numcore.RKey@, 2, back, base), tgt)))
+	f32 := vf32(5, 3000)
+	fpe, ok := @numcore.FPEEncode@(@numcore.DF32@, f32)
+	vec("fpe", fmt.Sprint(ok)+vh(fpe))
+	d, err := @numcore.FPEDecode@(@numcore.DF32@, fpe, 3000)
+	vec("fpe-roundtrip", fmt.Sprint(err == nil && bytes.Equal(d, f32)))
+	_, err = @numcore.NRCDecode@(@numcore.DBF16@, nrc[:len(nrc)/2], base, 5000)
+	vec("nrc-truncated", fmt.Sprint(err != nil))
+}
+
+func vecFamily() {
+	rows, cols := 16, 256
+	fl := vbf16(7, rows*cols)
+	x := make([]float32, rows*cols)
+	for i := range x {
+		x[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(fl[2*i:])) << 16)
+	}
+	qw := vfloats(8, cols, 1)
+	for i := range qw {
+		qw[i] = qw[i]*qw[i] + 0.01
+	}
+	var im []byte
+	im = binary.LittleEndian.AppendUint32(im, 1)
+	im = binary.LittleEndian.AppendUint32(im, 2)
+	im = append(im, "qk"...)
+	im = binary.LittleEndian.AppendUint32(im, 1)
+	im = binary.LittleEndian.AppendUint32(im, uint32(cols))
+	for _, v := range qw {
+		im = binary.LittleEndian.AppendUint32(im, math.Float32bits(v))
+	}
+	n, _ := @qcore.OutLen@(@qcore.Q4_K@, len(x), cols)
+	q4k := make([]byte, n)
+	if err := @qcore.Quantize@(q4k, @qcore.Q4_K@, x, cols, qw, @qcore.GCCFMA@); err != nil {
+		panic(err)
+	}
+	n8, _ := @qcore.OutLen@(@qcore.Q8_0@, len(x), cols)
+	q8 := make([]byte, n8)
+	@qcore.Quantize@(q8, @qcore.Q8_0@, x, cols, nil, @qcore.Strict@)
+	a := vbuild("HDR-A-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", []@numcore.Tensor@{
+		{Name: "w", DT: @numcore.DF32@, Cols: 100}, {Name: "qk", DT: @numcore.DBF16@, Cols: int64(cols)}, {Name: "q8", DT: @numcore.DBF16@, Cols: int64(cols)}, {Name: "ids", DT: @numcore.DRaw@}},
+		[][]byte{vf32(9, 6000), fl, fl, bytes.Repeat([]byte("ids!"), 700)})
+	b := vbuild("HDR-B-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", []@numcore.Tensor@{
+		{Name: "w", DT: @numcore.DF32@, Cols: 100}, {Name: "qk", DT: @numcore.DBF16@, Cols: int64(cols)}, {Name: "q8", DT: @numcore.DBF16@, Cols: int64(cols)}, {Name: "ids", DT: @numcore.DRaw@}},
+		[][]byte{vperturb(10, a.data[a.lay.T[0].Off:a.lay.T[0].Off+a.lay.T[0].Len], 4), vperturb(11, fl, 2), fl, bytes.Repeat([]byte("ids!"), 700)})
+	q := vbuild("GGUF-ish", []@numcore.Tensor@{{Name: "qk", DT: @numcore.DQ4_K@, Cols: int64(cols)}, {Name: "q8", DT: @numcore.DQ8_0@, Cols: int64(cols)}}, [][]byte{q4k, q8})
+	aux := @numcore.AuxIn@{ID: sha256.Sum256(im), Data: im}
+	st := &vstore{obj: map[@numcore.ID@][]byte{}, raw: map[@numcore.ID@]*vfile{}, aux: map[@numcore.ID@][]byte{aux.ID: im}}
+	for _, win := range []int64{1 << 16, 1024} {
+		o := @numcore.EncOpts@{Window: win, Workers: 2}
+		oa := venc(a, nil, nil, o)
+		ob := venc(b, []*vfile{a}, nil, o)
+		oq := venc(q, []*vfile{a}, []@numcore.AuxIn@{aux}, o)
+		st.obj[a.id], st.obj[b.id], st.obj[q.id] = oa, ob, oq
+		vec(fmt.Sprintf("zn7-a-%d", win), vh(oa))
+		vec(fmt.Sprintf("zn7-b-%d", win), vh(ob))
+		vec(fmt.Sprintf("zn7-q-%d", win), fmt.Sprint(len(oq))+":"+vh(oq))
+		for name, f := range map[string]*vfile{"a": a, "b": b, "q": q} {
+			obj, err := @numcore.OpenObject@(bytes.NewReader(st.obj[f.id]), int64(len(st.obj[f.id])))
+			if err != nil {
+				panic(err)
+			}
+			var out bytes.Buffer
+			_, err = obj.DecodeTo(context.Background(), &out, st, @numcore.DecOpts@{Workers: 2})
+			vec(fmt.Sprintf("replay-%s-%d", name, win), fmt.Sprint(err == nil && bytes.Equal(out.Bytes(), f.data)))
+			r, _, err := obj.ReadRange(context.Background(), f.lay.Size/3, 777, st, @numcore.DecOpts@{})
+			vec(fmt.Sprintf("range-%s-%d", name, win), fmt.Sprint(err == nil && bytes.Equal(r, f.data[f.lay.Size/3:f.lay.Size/3+777])))
+		}
+	}
+	// corruption: every 7th byte flipped must fail or decode exactly
+	ob := st.obj[b.id]
+	wrong := 0
+	for i := 0; i < len(ob); i += 7 {
+		m := append([]byte(nil), ob...)
+		m[i] ^= 0x20
+		obj, err := @numcore.OpenObject@(bytes.NewReader(m), int64(len(m)))
+		if err != nil {
+			continue
+		}
+		var out bytes.Buffer
+		if _, err := obj.DecodeTo(context.Background(), &out, st, @numcore.DecOpts@{}); err == nil && !bytes.Equal(out.Bytes(), b.data) {
+			wrong++
+		}
+	}
+	vec("corruption-wrong-bytes", fmt.Sprint(wrong))
+	delete(st.obj, a.id)
+	obj, _ := @numcore.OpenObject@(bytes.NewReader(ob), int64(len(ob)))
+	_, err := obj.DecodeTo(context.Background(), &bytes.Buffer{}, st, @numcore.DecOpts@{})
+	vec("missing-base", fmt.Sprint(err == @numcore.ErrMissing7@))
+}
+
+func main() {
+	vecQuant()
+	vecCoders()
+	vecFamily()
+}

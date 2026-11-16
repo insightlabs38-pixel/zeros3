@@ -1,0 +1,5 @@
+base.safetensors                   raw   269060552 object   178713093 (0.6642)    2.3s  109.4 MiB/s depth 0 modes raw/direct/pred/copy/quant [0 178659484 0 0 0] struct 0 qpatch 0/0
+instruct.safetensors               raw   269060552 object   127291188 (0.4731)    5.5s   47.1 MiB/s depth 1 modes raw/direct/pred/copy/quant [0 148589 127090637 0 0] struct 0 qpatch 0/0
+TOTAL policy=prev charged=306004545
+{"rss":"family","maxrss_kib":18388,"heap_sys_mib":19,"total_alloc_mib":4761,"user_s":15.48,"sys_s":3.58}
+8.271 real 15.476 user 3.580 sys

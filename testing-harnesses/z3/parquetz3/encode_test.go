@@ -38,7 +38,7 @@ func encodeFile(t testing.TB, b []byte, opt Options) ([]byte, store, Stats) {
 }
 
 var logicalFixtures = []string{"pa_delta.parquet", "pa_snappy_v1.parquet", "pa_snappy_v2.parquet", "pa_zstd_v1.parquet", "pa_none_plain.parquet", "pa_bss.parquet",
-	"pa_rg500.parquet", "pa_nested.parquet", "dd_snappy.parquet", "dd_zstd.parquet", "dd_none.parquet"}
+	"pa_rg500.parquet", "pa_nested.parquet", "dd_snappy.parquet", "dd_zstd.parquet", "dd_none.parquet", "pa_brotli.parquet", "pa_brotli_q6.parquet"}
 
 // The whole contract: serialized recipe + stored components + stdlib -> the original bytes.
 func TestEncodeDecodeExact(t *testing.T) {
@@ -226,4 +226,52 @@ func FuzzDecode(f *testing.F) {
 			}
 		}
 	})
+}
+
+// Z4-P7: a Brotli file written at a quality outside the ported encoder path is refused as a
+// logical representation (the caller keeps CDC); nothing is approximated.
+func TestBrotliUnsupportedQualityFallsBack(t *testing.T) {
+	b := load(t, "pa_brotli_q11.parquet")
+	_, _, _, err := Encode(bytes.NewReader(b), int64(len(b)), Options{}, func(string, ID, []byte) error { return nil })
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("quality 11 file: %v", err)
+	}
+}
+
+// DecodeParallel: same bytes as Decode for every fixture; a failing component fetch or a short
+// writer ends the call with an error and no goroutine left behind writing.
+func TestDecodeParallel(t *testing.T) {
+	for _, name := range append([]string{"pa_nested.parquet"}, logicalFixtures...) {
+		b := load(t, name)
+		rec, st, _ := encodeFile(t, b, Options{})
+		for _, w := range []int{2, 5} {
+			var out bytes.Buffer
+			if err := DecodeParallel(&out, rec, st.get, Limits{}, w); err != nil || !bytes.Equal(out.Bytes(), b) {
+				t.Fatalf("%s workers %d: %v", name, w, err)
+			}
+		}
+		n := 0
+		failing := func(id ID) ([]byte, error) {
+			if n++; n > 2 {
+				return nil, errors.New("gone")
+			}
+			return st.get(id)
+		}
+		var out bytes.Buffer
+		if err := DecodeParallel(&out, rec, failing, Limits{}, 4); err == nil && n > 2 {
+			t.Fatalf("%s: missing component not reported", name)
+		}
+		if err := DecodeParallel(&shortWriter{len(b) / 2}, rec, st.get, Limits{}, 4); err == nil {
+			t.Fatalf("%s: short writer not reported", name)
+		}
+	}
+}
+
+type shortWriter struct{ n int }
+
+func (s *shortWriter) Write(p []byte) (int, error) {
+	if s.n -= len(p); s.n < 0 {
+		return 0, errors.New("short")
+	}
+	return len(p), nil
 }

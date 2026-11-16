@@ -1,0 +1,15 @@
+{"sha256":"acc2b8045b54b406bcec99962f91e60202d448a00231669ee3674cab234eb244","bytes":28143920,"ms":213,"mib_s":126.0,"windows":272,"store_read":23831735,"cache_hits":0}
+{"sha256":"37b7abc5bc4c0a884c8fbf959e0278d549af2fcea8eb40f21e8f56a84ce05ac7","bytes":28143920,"ms":244,"mib_s":110.0,"windows":305,"store_read":25021209,"cache_hits":0}
+{"sha256":"9ba55ad68bf42d96f696b70bfc38628f75a6dcbfc55d076023018edf252b66ec","bytes":28143920,"ms":514,"mib_s":52.2,"windows":563,"store_read":47625630,"cache_hits":0}
+{"sha256":"80cafd66efcd3c44d192677725b8b0eadd33403a3b3799acc152a43bcdf3e91b","bytes":28143920,"ms":843,"mib_s":31.8,"windows":835,"store_read":69288533,"cache_hits":0}
+{"sha256":"69635c20add8f9482b8f3778fef6b1c299b2ed93a5461b462b062a155f84756d","bytes":28143920,"ms":254,"mib_s":105.7,"windows":390,"store_read":25174361,"cache_hits":0}
+{"sha256":"9a6b6e44eb4bfcd4eeb838ebd6787d29f5d32c7007cdce49c9431355d6a18875","bytes":28143920,"ms":246,"mib_s":109.1,"windows":337,"store_read":24227079,"cache_hits":0}
+{"sha256":"1623e76922e57ca6a069dd63421d6e5d551f0b3560efab6dfaacdb1e98a8f567","bytes":28143920,"ms":247,"mib_s":108.7,"windows":313,"store_read":24107061,"cache_hits":0}
+{"sha256":"b0a3043c5439763023203afb86a4c1edc1ed2cca3a4b32f165361baaaf9c9880","bytes":28143920,"ms":213,"mib_s":126.0,"windows":341,"store_read":24406580,"cache_hits":0}
+{"sha256":"d42411e70b4110bb69bc4301af75f25efbdf4b2278b2235bfe1d3d567b33bb59","bytes":28143920,"ms":242,"mib_s":110.9,"windows":386,"store_read":25977955,"cache_hits":0}
+{"sha256":"ffa0ce742b321ae28485d73d6471a5e6c96b8aa205000acc4536b4bd185cb1a2","bytes":28143920,"ms":505,"mib_s":53.1,"windows":641,"store_read":43593491,"cache_hits":0}
+{"sha256":"2d08d671493b4397dfc6bee89afd1f55fc154aba406f56d39b1dc53eb8475cc2","bytes":28143920,"ms":793,"mib_s":33.8,"windows":879,"store_read":61068670,"cache_hits":0}
+{"sha256":"116a02532db461f91386a5b20f942ff2c8d4de7341e21b55caafc3d7b25f49a1","bytes":28143920,"ms":1007,"mib_s":26.7,"windows":1034,"store_read":82053143,"cache_hits":0}
+{"rss":"replay","maxrss_kib":139148,"heap_sys_mib":135,"total_alloc_mib":2493,"user_s":5.58,"sys_s":0.67}
+5.339 real 5.583 user 0.677 sys
+verify states 12 bad 0

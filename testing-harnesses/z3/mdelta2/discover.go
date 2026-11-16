@@ -66,14 +66,14 @@ func (p *PT) sketch() {
 			end = len(p.Data)
 		}
 		p.FP[i] = h64(p.Data[pos*w : end])
-		p.Num[i] = base.at(pos)
+		p.Num[i] = base.At(pos)
 	}
 	blk := n / 16
 	p.Blk = make([]float64, 32)
 	for b := 0; b < 16; b++ {
 		var ma, ms float64
 		for i := b * blk; i < (b+1)*blk; i++ {
-			x := base.at(i)
+			x := base.At(i)
 			if !finite(x) {
 				continue
 			}
@@ -95,10 +95,10 @@ func (p *PT) sketch() {
 			var sig uint64
 			var l1 float64
 			for c := 0; c < cols; c++ {
-				l1 += math.Abs(base.at(r*cols + c))
+				l1 += math.Abs(base.At(r*cols + c))
 			}
 			for k := 0; k < 32; k++ {
-				if base.at(r*cols+k*(cols-1)/31) > 0 {
+				if base.At(r*cols+k*(cols-1)/31) > 0 {
 					sig |= 1 << uint(k)
 				}
 			}

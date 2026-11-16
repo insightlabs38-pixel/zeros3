@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	_ "zeros3-z3/brotliz3/brdict"
 )
 
 func main() {

@@ -1,0 +1,23 @@
+File: z4b5-prof
+Build ID: 861226cbe7b91ec994692b5a1bf784d3900a3c80
+Type: inuse_space
+Time: 2026-11-14 20:08:49 UTC
+Showing nodes accounting for 117.46MB, 97.86% of 120.03MB total
+Dropped 35 nodes (cum <= 0.60MB)
+Showing top 15 nodes out of 40
+      flat  flat%   sum%        cum   cum%
+   49.12MB 40.93% 40.93%    49.12MB 40.93%  zeros3-z3/mdelta2.(*Model).Read
+   13.41MB 11.17% 52.10%    13.41MB 11.17%  zeros3-z3/mdelta2.Predict
+   13.18MB 10.98% 63.08%    13.68MB 11.40%  zeros3-z3/mdelta2.fpeEncode
+   12.28MB 10.23% 73.31%    12.28MB 10.23%  internal/bytealg.MakeNoZero
+   12.28MB 10.23% 83.54%    12.28MB 10.23%  zeros3-z3/mdelta2.MakeResidual
+    3.96MB  3.30% 86.84%     3.96MB  3.30%  bytes.growSlice
+    3.31MB  2.76% 89.60%     3.31MB  2.76%  zeros3-z3/mdelta2.nrcEncodeCfg
+    2.86MB  2.38% 91.98%     2.86MB  2.38%  compress/flate.newFastEnc (inline)
+    2.02MB  1.68% 93.66%     2.02MB  1.68%  compress/flate.(*fastGen).addBlock
+    1.50MB  1.25% 94.92%     1.50MB  1.25%  runtime.mallocgc
+    1.28MB  1.07% 95.98%     4.67MB  3.89%  compress/flate.NewWriter (inline)
+    1.16MB  0.96% 96.95%     1.16MB  0.96%  runtime/pprof.StartCPUProfile
+    0.57MB  0.47% 97.42%    92.31MB 76.91%  zeros3-z3/mdelta2.(*planner).planSeg
+    0.53MB  0.44% 97.86%     3.39MB  2.83%  compress/flate.(*compressor).init
+         0     0% 97.86%     3.96MB  3.30%  bytes.(*Buffer).Write

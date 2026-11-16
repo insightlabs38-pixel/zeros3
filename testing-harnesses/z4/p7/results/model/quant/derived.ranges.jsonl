@@ -1,0 +1,3 @@
+{"request":4096,"store_read_avg":357610,"amplification":87.3,"windows_avg":7.2,"us_avg":26418}
+{"request":65536,"store_read_avg":539732,"amplification":8.2,"windows_avg":12.6,"us_avg":52673}
+{"request":1048576,"store_read_avg":3434374,"amplification":3.3,"windows_avg":98.7,"us_avg":466714}

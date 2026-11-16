@@ -1,0 +1,36 @@
+base.safetensors                   raw   269060552 object   178713093 (0.6642)    1.9s  137.4 MiB/s depth 0 modes raw/direct/pred/copy/quant [0 178659484 0 0 0] struct 0 qpatch 0/0
+instruct.safetensors               raw   269060552 object   178688271 (0.6641)    1.8s  144.9 MiB/s depth 0 modes raw/direct/pred/copy/quant [0 178634662 0 0 0] struct 0 qpatch 0/0
+f16.gguf                           raw   270885952 object   229615979 (0.8476)    1.8s  144.8 MiB/s depth 0 modes raw/direct/pred/copy/quant [0 229024136 0 0 0] struct 0 qpatch 0/0
+Q2_K.gguf                          raw    88202080 object    86859976 (0.9848)    0.3s  242.0 MiB/s depth 0 modes raw/direct/pred/copy/quant [86267690 41099 0 0 0] struct 0 qpatch 0/0
+Q3_K_M.gguf                        raw    93510496 object    92168417 (0.9856)    0.3s  262.8 MiB/s depth 0 modes raw/direct/pred/copy/quant [91576106 41099 0 0 0] struct 0 qpatch 0/0
+Q3_K_L.gguf                        raw    97533280 object    96191183 (0.9862)    0.3s  276.7 MiB/s depth 0 modes raw/direct/pred/copy/quant [95598890 41099 0 0 0] struct 0 qpatch 0/0
+Q4_0.gguf                          raw    91893088 object    90544960 (0.9853)    0.3s  286.8 MiB/s depth 0 modes raw/direct/pred/copy/quant [89952670 41099 0 0 0] struct 0 qpatch 0/0
+Q4_K_S.gguf                        raw   102039904 object   100697812 (0.9868)    0.4s  251.1 MiB/s depth 0 modes raw/direct/pred/copy/quant [100105514 41099 0 0 0] struct 0 qpatch 0/0
+Q4_K_M.gguf                        raw   105454432 object   104112407 (0.9873)    0.3s  307.6 MiB/s depth 0 modes raw/direct/pred/copy/quant [103520042 41099 0 0 0] struct 0 qpatch 0/0
+Q5_K_S.gguf                        raw   109974880 object   108632787 (0.9878)    0.4s  294.1 MiB/s depth 0 modes raw/direct/pred/copy/quant [108040490 41099 0 0 0] struct 0 qpatch 0/0
+Q5_K_M.gguf                        raw   112103776 object   110761725 (0.9880)    0.4s  291.4 MiB/s depth 0 modes raw/direct/pred/copy/quant [110169386 41099 0 0 0] struct 0 qpatch 0/0
+Q6_K.gguf                          raw   138383200 object   137041109 (0.9903)    0.5s  258.1 MiB/s depth 0 modes raw/direct/pred/copy/quant [136448810 41099 0 0 0] struct 0 qpatch 0/0
+Q8_0.gguf                          raw   144811360 object   143466311 (0.9907)    0.4s  326.8 MiB/s depth 0 modes raw/direct/pred/copy/quant [142874019 41099 0 0 0] struct 0 qpatch 0/0
+IQ4_XS.gguf                        raw    90897760 object    89555655 (0.9852)    0.3s  274.6 MiB/s depth 0 modes raw/direct/pred/copy/quant [88963370 41099 0 0 0] struct 0 qpatch 0/0
+IQ3_XS.gguf                        raw    88202080 object    86859974 (0.9848)    0.3s  297.9 MiB/s depth 0 modes raw/direct/pred/copy/quant [86267690 41099 0 0 0] struct 0 qpatch 0/0
+IQ3_M.gguf                         raw    90213472 object    88871381 (0.9851)    0.3s  261.2 MiB/s depth 0 modes raw/direct/pred/copy/quant [88279082 41099 0 0 0] struct 0 qpatch 0/0
+Q2_K.gguf                          raw    88201792 object    86858458 (0.9848)    0.3s  286.5 MiB/s depth 0 modes raw/direct/pred/copy/quant [86266306 41099 0 0 0] struct 0 qpatch 0/0
+Q3_K_S.gguf                        raw    88201792 object    86858457 (0.9848)    0.3s  303.9 MiB/s depth 0 modes raw/direct/pred/copy/quant [86266306 41099 0 0 0] struct 0 qpatch 0/0
+Q3_K_M.gguf                        raw    93510208 object    92165273 (0.9856)    0.3s  318.2 MiB/s depth 0 modes raw/direct/pred/copy/quant [91573102 41099 0 0 0] struct 0 qpatch 0/0
+Q3_K_L.gguf                        raw    97532992 object    96187680 (0.9862)    0.3s  285.7 MiB/s depth 0 modes raw/direct/pred/copy/quant [95595525 41099 0 0 0] struct 0 qpatch 0/0
+Q4_0.gguf                          raw    91726912 object    90371427 (0.9852)    0.3s  299.8 MiB/s depth 0 modes raw/direct/pred/copy/quant [89779277 41099 0 0 0] struct 0 qpatch 0/0
+Q4_1.gguf                          raw    98362432 object    96914500 (0.9853)    0.4s  265.6 MiB/s depth 0 modes raw/direct/pred/copy/quant [96322354 41099 0 0 0] struct 0 qpatch 0/0
+Q4_K_S.gguf                        raw   102039616 object   100696053 (0.9868)    0.4s  270.2 MiB/s depth 0 modes raw/direct/pred/copy/quant [100103894 41099 0 0 0] struct 0 qpatch 0/0
+Q4_K_M.gguf                        raw   105454144 object   104111468 (0.9873)    0.3s  305.9 MiB/s depth 0 modes raw/direct/pred/copy/quant [103519239 41099 0 0 0] struct 0 qpatch 0/0
+Q5_0.gguf                          raw   104997952 object   103656005 (0.9872)    0.4s  284.1 MiB/s depth 0 modes raw/direct/pred/copy/quant [103063850 41099 0 0 0] struct 0 qpatch 0/0
+Q5_1.gguf                          raw   111633472 object   110281307 (0.9879)    0.4s  241.1 MiB/s depth 0 modes raw/direct/pred/copy/quant [109689149 41099 0 0 0] struct 0 qpatch 0/0
+Q5_K_S.gguf                        raw   109974592 object   108624486 (0.9877)    0.4s  270.9 MiB/s depth 0 modes raw/direct/pred/copy/quant [108032326 41099 0 0 0] struct 0 qpatch 0/0
+Q5_K_M.gguf                        raw   112103488 object   110754233 (0.9880)    0.4s  274.3 MiB/s depth 0 modes raw/direct/pred/copy/quant [110162039 41099 0 0 0] struct 0 qpatch 0/0
+Q6_K.gguf                          raw   138382912 object   137040979 (0.9903)    0.4s  328.3 MiB/s depth 0 modes raw/direct/pred/copy/quant [136448810 41099 0 0 0] struct 0 qpatch 0/0
+Q8_0.gguf                          raw   144811072 object   143466181 (0.9907)    0.4s  325.6 MiB/s depth 0 modes raw/direct/pred/copy/quant [142874019 41099 0 0 0] struct 0 qpatch 0/0
+TOTAL policy=direct charged=3390771507
+{"rss":"family","maxrss_kib":133232,"heap_sys_mib":131,"total_alloc_mib":23653,"user_s":28.23,"sys_s":15.55}
+
+real	0m18.079s
+user	0m28.237s
+sys	0m15.550s

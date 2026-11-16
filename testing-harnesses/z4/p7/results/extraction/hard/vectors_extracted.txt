@@ -1,0 +1,310 @@
+=== RUN   TestP6Vectors
+VEC dict-wrong true
+VEC br-text-1-q8-w22 6f01e9c259ffd78etrue
+VEC br-text-1-q9-w22 6f01e9c259ffd78etrue
+VEC br-text-1-q5-w18 cef6eb9ac608dc8etrue
+VEC br-text-1-q7-w24 f83a2947a04aaf05true
+VEC br-text-64-q8-w22 9a8085943f564c1ftrue
+VEC br-text-64-q9-w22 9a8085943f564c1ftrue
+VEC br-text-64-q5-w18 ce3a0b445d4ba865true
+VEC br-text-64-q7-w24 3237405d7c3d46a6true
+VEC br-text-3000-q8-w22 366016bb857def8btrue
+VEC br-text-3000-q9-w22 8b2bff34bf8cd7f9true
+VEC br-text-3000-q5-w18 a81f172d7de84ce2true
+VEC br-text-3000-q7-w24 07e44a2e3b0e6082true
+VEC br-text-65536-q8-w22 903884bf93ab241etrue
+VEC br-text-65536-q9-w22 a4aff318ffead758true
+VEC br-text-65536-q5-w18 e1a5d4a7bc179cdftrue
+VEC br-text-65536-q7-w24 d2cadcfe497370ddtrue
+VEC br-text-70000-q8-w22 bf3df257f7aff588true
+VEC br-text-70000-q9-w22 332f087a2afc9a0atrue
+VEC br-text-70000-q5-w18 01e8b21e2b59557ftrue
+VEC br-text-70000-q7-w24 acbb5a62f58459eftrue
+VEC br-text-300000-q8-w22 dbf11b608f678f6etrue
+VEC br-text-300000-q9-w22 edae2923c4ce0f67true
+VEC br-text-300000-q5-w18 5815a1ae39a8a498true
+VEC br-text-300000-q7-w24 51f9f7025abea3e3true
+VEC br-rand-1-q8-w22 2ae46d15931ae9fftrue
+VEC br-rand-1-q9-w22 2ae46d15931ae9fftrue
+VEC br-rand-1-q5-w18 187a1868e991dc74true
+VEC br-rand-1-q7-w24 d08c96e61f2a9adftrue
+VEC br-rand-64-q8-w22 e2c2e5a695a15170true
+VEC br-rand-64-q9-w22 e2c2e5a695a15170true
+VEC br-rand-64-q5-w18 2735798ad8872351true
+VEC br-rand-64-q7-w24 723b5d32a94969a4true
+VEC br-rand-3000-q8-w22 5317c0817468bc04true
+VEC br-rand-3000-q9-w22 5317c0817468bc04true
+VEC br-rand-3000-q5-w18 6d65da0bafef7a6etrue
+VEC br-rand-3000-q7-w24 aef7eb93ceecd87ftrue
+VEC br-rand-65536-q8-w22 48af87bc2a5434a7true
+VEC br-rand-65536-q9-w22 48af87bc2a5434a7true
+VEC br-rand-65536-q5-w18 ba8034a992bae7d7true
+VEC br-rand-65536-q7-w24 7406ad269d22fb13true
+VEC br-rand-70000-q8-w22 f569e04a27855f78true
+VEC br-rand-70000-q9-w22 f569e04a27855f78true
+VEC br-rand-70000-q5-w18 cd208a0f21b421fdtrue
+VEC br-rand-70000-q7-w24 7976235d73878834true
+VEC br-rand-300000-q8-w22 eb26a4a8567af3dbtrue
+VEC br-rand-300000-q9-w22 eb26a4a8567af3dbtrue
+VEC br-rand-300000-q5-w18 fa30731002d1e274true
+VEC br-rand-300000-q7-w24 7436d6f7f70e370ftrue
+VEC br-low-1-q8-w22 511ccd8240101b0dtrue
+VEC br-low-1-q9-w22 511ccd8240101b0dtrue
+VEC br-low-1-q5-w18 396572d41899430ftrue
+VEC br-low-1-q7-w24 3a9cd30285f1d929true
+VEC br-low-64-q8-w22 6cb21ba60b2c14b7true
+VEC br-low-64-q9-w22 6cb21ba60b2c14b7true
+VEC br-low-64-q5-w18 cbb24a8e39850f2ctrue
+VEC br-low-64-q7-w24 711825531abbcf58true
+VEC br-low-3000-q8-w22 607f74ae4507eca2true
+VEC br-low-3000-q9-w22 7822d4e9cc48bdf1true
+VEC br-low-3000-q5-w18 f586928719702100true
+VEC br-low-3000-q7-w24 9ac4dd0134481121true
+VEC br-low-65536-q8-w22 b1a8fe7dbde70768true
+VEC br-low-65536-q9-w22 78da771369e04e99true
+VEC br-low-65536-q5-w18 3ebe90f304d58933true
+VEC br-low-65536-q7-w24 972e906fbdbdbef5true
+VEC br-low-70000-q8-w22 552cb3c3772166cctrue
+VEC br-low-70000-q9-w22 4f7c3dc384c55d43true
+VEC br-low-70000-q5-w18 18209e667eb29edctrue
+VEC br-low-70000-q7-w24 c7f07d01dff4baa2true
+VEC br-low-300000-q8-w22 3e296252cafa0f30true
+VEC br-low-300000-q9-w22 d23a5ab0f7f9dbfdtrue
+VEC br-low-300000-q5-w18 7942a92d91de93a7true
+VEC br-low-300000-q7-w24 ab5c186e0c49a066true
+VEC br-mix-1-q8-w22 2b1b81cc2205072atrue
+VEC br-mix-1-q9-w22 2b1b81cc2205072atrue
+VEC br-mix-1-q5-w18 224106ebd0a12bd4true
+VEC br-mix-1-q7-w24 0b29f2c053bb242ftrue
+VEC br-mix-64-q8-w22 4893f8746d741b65true
+VEC br-mix-64-q9-w22 4893f8746d741b65true
+VEC br-mix-64-q5-w18 8ad066a3786bc923true
+VEC br-mix-64-q7-w24 63775206d2d89bdftrue
+VEC br-mix-3000-q8-w22 0074db48712fcb63true
+VEC br-mix-3000-q9-w22 06e9fc5ce3b0dd5atrue
+VEC br-mix-3000-q5-w18 ce8dd3ea751c7f3ctrue
+VEC br-mix-3000-q7-w24 d94475d66d211180true
+VEC br-mix-65536-q8-w22 fdce2e4a8c45a38ctrue
+VEC br-mix-65536-q9-w22 dcf2e9d17c3cbdcbtrue
+VEC br-mix-65536-q5-w18 944e686d80537fdetrue
+VEC br-mix-65536-q7-w24 e80038dfcedc8c10true
+VEC br-mix-70000-q8-w22 dfa24bbabe5d4f2ftrue
+VEC br-mix-70000-q9-w22 66ad188c34216446true
+VEC br-mix-70000-q5-w18 fb8208f11daa8757true
+VEC br-mix-70000-q7-w24 5f9db0129590f6a1true
+VEC br-mix-300000-q8-w22 b916e6cdeb1b064ftrue
+VEC br-mix-300000-q9-w22 bdfa39e329f36494true
+VEC br-mix-300000-q5-w18 21e052263e5a461etrue
+VEC br-mix-300000-q7-w24 b7f388647c2409b9true
+VEC real-arrow_page_small true true07993278f921c9b5
+VEC hostile-arrow_page_small 0 true
+VEC real-arrow_page_mid true true5388f632c6e21dfa
+VEC hostile-arrow_page_mid 0 true
+VEC unsupported true
+VEC lz4-text-0-p1-a1 6e340b9cffb37a980 3 true true
+VEC lz4-text-0-p1-a7 6e340b9cffb37a980 3 true true
+VEC lz4-text-0-p2-a1 6e340b9cffb37a980 3 true true
+VEC lz4-text-0-p3-a1 6e340b9cffb37a980 3 true true
+VEC lz4-text-0-p4-a4 6e340b9cffb37a980 3 true true
+VEC lz4-text-0-p4-a9 6e340b9cffb37a980 3 true true
+VEC lz4-text-0-p4-a11 6e340b9cffb37a980 3 true true
+VEC lz4-text-0-p5-a1 6e340b9cffb37a980 3 true true
+VEC lz4-text-13-p1-a1 38887c004e9c97b90 3 true true
+VEC lz4-text-13-p1-a7 38887c004e9c97b90 3 true true
+VEC lz4-text-13-p2-a1 38887c004e9c97b90 3 true true
+VEC lz4-text-13-p3-a1 38887c004e9c97b90 3 true true
+VEC lz4-text-13-p4-a4 38887c004e9c97b90 3 true true
+VEC lz4-text-13-p4-a9 38887c004e9c97b90 3 true true
+VEC lz4-text-13-p4-a11 38887c004e9c97b90 3 true true
+VEC lz4-text-13-p5-a1 38887c004e9c97b90 3 true true
+VEC lz4-text-300-p1-a1 cae716565d769dbf1 3 true true
+VEC lz4-text-300-p1-a7 1f84332dbef466d01 3 true true
+VEC lz4-text-300-p2-a1 0d1f15e8268638ed1 3 true true
+VEC lz4-text-300-p3-a1 0d1f15e8268638ed1 3 true true
+VEC lz4-text-300-p4-a4 2ec4882457d933891 3 true true
+VEC lz4-text-300-p4-a9 2ec4882457d933891 3 true true
+VEC lz4-text-300-p4-a11 35c6491169b486371 3 true true
+VEC lz4-text-300-p5-a1 dd523b7ff49d45f11 3 true true
+VEC lz4-text-5000-p1-a1 8e8a3de0b3505cc41 3 true true
+VEC lz4-text-5000-p1-a7 7ba42be3544b96c51 3 true true
+VEC lz4-text-5000-p2-a1 c64609f31db47a2f1 3 true true
+VEC lz4-text-5000-p3-a1 c64609f31db47a2f1 3 true true
+VEC lz4-text-5000-p4-a4 eca30cac2b35f2731 3 true true
+VEC lz4-text-5000-p4-a9 0f263ed20363cc941 3 true true
+VEC lz4-text-5000-p4-a11 df8bb0059780d3051 3 true true
+VEC lz4-text-5000-p5-a1 38eeb5170e049e0a1 3 true true
+VEC lz4-text-70000-p1-a1 5c2ba455003db8731 3 true true
+VEC lz4-text-70000-p1-a7 62a0eac4d3eacbbb1 3 true true
+VEC lz4-text-70000-p2-a1 5c2ba455003db8731 3 true true
+VEC lz4-text-70000-p3-a1 5c2ba455003db8731 3 true true
+VEC lz4-text-70000-p4-a4 cb8cc6dc750efcee1 3 true true
+VEC lz4-text-70000-p4-a9 2868db72fbf143cb1 3 true true
+VEC lz4-text-70000-p4-a11 bbdbfa6e1f029c721 3 true true
+VEC lz4-text-70000-p5-a1 54ad8c3faa25018a1 3 true true
+VEC lz4-text-200000-p1-a1 03fdab1f93175f111 3 true true
+VEC lz4-text-200000-p1-a7 23de9c015237086d1 3 true true
+VEC lz4-text-200000-p2-a1 03fdab1f93175f111 3 true true
+VEC lz4-text-200000-p3-a1 03fdab1f93175f111 3 true true
+VEC lz4-text-200000-p4-a4 69db21048b7f888f1 3 true true
+VEC lz4-text-200000-p4-a9 0731834d3d41ddb71 3 true true
+VEC lz4-text-200000-p4-a11 52282dfe838963a81 3 true true
+VEC lz4-text-200000-p5-a1 2d9270fa54ca74511 3 true true
+VEC lz4-rand-0-p1-a1 6e340b9cffb37a980 3 true true
+VEC lz4-rand-0-p1-a7 6e340b9cffb37a980 3 true true
+VEC lz4-rand-0-p2-a1 6e340b9cffb37a980 3 true true
+VEC lz4-rand-0-p3-a1 6e340b9cffb37a980 3 true true
+VEC lz4-rand-0-p4-a4 6e340b9cffb37a980 3 true true
+VEC lz4-rand-0-p4-a9 6e340b9cffb37a980 3 true true
+VEC lz4-rand-0-p4-a11 6e340b9cffb37a980 3 true true
+VEC lz4-rand-0-p5-a1 6e340b9cffb37a980 3 true true
+VEC lz4-rand-13-p1-a1 959c7168cfb4da320 3 true true
+VEC lz4-rand-13-p1-a7 959c7168cfb4da320 3 true true
+VEC lz4-rand-13-p2-a1 959c7168cfb4da320 3 true true
+VEC lz4-rand-13-p3-a1 959c7168cfb4da320 3 true true
+VEC lz4-rand-13-p4-a4 959c7168cfb4da320 3 true true
+VEC lz4-rand-13-p4-a9 959c7168cfb4da320 3 true true
+VEC lz4-rand-13-p4-a11 959c7168cfb4da320 3 true true
+VEC lz4-rand-13-p5-a1 959c7168cfb4da320 3 true true
+VEC lz4-rand-300-p1-a1 fe804bd99e5e95531 3 true true
+VEC lz4-rand-300-p1-a7 fe804bd99e5e95531 3 true true
+VEC lz4-rand-300-p2-a1 fe804bd99e5e95531 3 true true
+VEC lz4-rand-300-p3-a1 fe804bd99e5e95531 3 true true
+VEC lz4-rand-300-p4-a4 fe804bd99e5e95531 3 true true
+VEC lz4-rand-300-p4-a9 fe804bd99e5e95531 3 true true
+VEC lz4-rand-300-p4-a11 fe804bd99e5e95531 3 true true
+VEC lz4-rand-300-p5-a1 fe804bd99e5e95531 3 true true
+VEC lz4-rand-5000-p1-a1 252687f341325f4e1 3 true true
+VEC lz4-rand-5000-p1-a7 252687f341325f4e1 3 true true
+VEC lz4-rand-5000-p2-a1 252687f341325f4e1 3 true true
+VEC lz4-rand-5000-p3-a1 252687f341325f4e1 3 true true
+VEC lz4-rand-5000-p4-a4 252687f341325f4e1 3 true true
+VEC lz4-rand-5000-p4-a9 252687f341325f4e1 3 true true
+VEC lz4-rand-5000-p4-a11 252687f341325f4e1 3 true true
+VEC lz4-rand-5000-p5-a1 252687f341325f4e1 3 true true
+VEC lz4-rand-70000-p1-a1 b90689096c4802311 3 true true
+VEC lz4-rand-70000-p1-a7 b90689096c4802311 3 true true
+VEC lz4-rand-70000-p2-a1 b90689096c4802311 3 true true
+VEC lz4-rand-70000-p3-a1 b90689096c4802311 3 true true
+VEC lz4-rand-70000-p4-a4 b90689096c4802311 3 true true
+VEC lz4-rand-70000-p4-a9 b90689096c4802311 3 true true
+VEC lz4-rand-70000-p4-a11 b90689096c4802311 3 true true
+VEC lz4-rand-70000-p5-a1 b90689096c4802311 3 true true
+VEC lz4-rand-200000-p1-a1 3efa3273282ac2b21 3 true true
+VEC lz4-rand-200000-p1-a7 3efa3273282ac2b21 3 true true
+VEC lz4-rand-200000-p2-a1 3efa3273282ac2b21 3 true true
+VEC lz4-rand-200000-p3-a1 3efa3273282ac2b21 3 true true
+VEC lz4-rand-200000-p4-a4 bbd8b0da85a950811 3 true true
+VEC lz4-rand-200000-p4-a9 bbd8b0da85a950811 3 true true
+VEC lz4-rand-200000-p4-a11 bbd8b0da85a950811 3 true true
+VEC lz4-rand-200000-p5-a1 3efa3273282ac2b21 3 true true
+VEC lz4-low-0-p1-a1 6e340b9cffb37a980 3 true true
+VEC lz4-low-0-p1-a7 6e340b9cffb37a980 3 true true
+VEC lz4-low-0-p2-a1 6e340b9cffb37a980 3 true true
+VEC lz4-low-0-p3-a1 6e340b9cffb37a980 3 true true
+VEC lz4-low-0-p4-a4 6e340b9cffb37a980 3 true true
+VEC lz4-low-0-p4-a9 6e340b9cffb37a980 3 true true
+VEC lz4-low-0-p4-a11 6e340b9cffb37a980 3 true true
+VEC lz4-low-0-p5-a1 6e340b9cffb37a980 3 true true
+VEC lz4-low-13-p1-a1 72c9f95f797744ac0 3 true true
+VEC lz4-low-13-p1-a7 72c9f95f797744ac0 3 true true
+VEC lz4-low-13-p2-a1 72c9f95f797744ac0 3 true true
+VEC lz4-low-13-p3-a1 72c9f95f797744ac0 3 true true
+VEC lz4-low-13-p4-a4 72c9f95f797744ac0 3 true true
+VEC lz4-low-13-p4-a9 72c9f95f797744ac0 3 true true
+VEC lz4-low-13-p4-a11 72c9f95f797744ac0 3 true true
+VEC lz4-low-13-p5-a1 72c9f95f797744ac0 3 true true
+VEC lz4-low-300-p1-a1 62dc04736f789f751 3 true true
+VEC lz4-low-300-p1-a7 0fdfe09ab8135f3c1 3 true true
+VEC lz4-low-300-p2-a1 d4aaf59b729e526b1 3 true true
+VEC lz4-low-300-p3-a1 d4aaf59b729e526b1 3 true true
+VEC lz4-low-300-p4-a4 204c3f960dab1f241 3 true true
+VEC lz4-low-300-p4-a9 dbfae147d3e871a91 3 true true
+VEC lz4-low-300-p4-a11 31bb1286142121571 3 true true
+VEC lz4-low-300-p5-a1 562bd865726364071 3 true true
+VEC lz4-low-5000-p1-a1 0fdfa41f5e44612b1 3 true true
+VEC lz4-low-5000-p1-a7 6996705ad79e19181 3 true true
+VEC lz4-low-5000-p2-a1 efc8f25f115029a31 3 true true
+VEC lz4-low-5000-p3-a1 efc8f25f115029a31 3 true true
+VEC lz4-low-5000-p4-a4 060dc05b1b1056961 3 true true
+VEC lz4-low-5000-p4-a9 b5b9e7969d009ad51 3 true true
+VEC lz4-low-5000-p4-a11 c6145331cac19d8f1 3 true true
+VEC lz4-low-5000-p5-a1 3e750fae410434611 3 true true
+VEC lz4-low-70000-p1-a1 5c1cfa9d757fd0781 3 true true
+VEC lz4-low-70000-p1-a7 688bede569c303741 3 true true
+VEC lz4-low-70000-p2-a1 5c1cfa9d757fd0781 3 true true
+VEC lz4-low-70000-p3-a1 5c1cfa9d757fd0781 3 true true
+VEC lz4-low-70000-p4-a4 5f7c96dcd33c3d361 3 true true
+VEC lz4-low-70000-p4-a9 901132ee28a45b4e1 3 true true
+VEC lz4-low-70000-p4-a11 effb1fcaa339b9401 3 true true
+VEC lz4-low-70000-p5-a1 64d921de9563613c1 3 true true
+VEC lz4-low-200000-p1-a1 a3b0c543f78fff0f1 3 true true
+VEC lz4-low-200000-p1-a7 1f40a417c0f37a5a1 3 true true
+VEC lz4-low-200000-p2-a1 a3b0c543f78fff0f1 3 true true
+VEC lz4-low-200000-p3-a1 a3b0c543f78fff0f1 3 true true
+VEC lz4-low-200000-p4-a4 901a139333cbd6d11 3 true true
+VEC lz4-low-200000-p4-a9 824310878e2515831 3 true true
+VEC lz4-low-200000-p4-a11 74e40292d1d44c271 3 true true
+VEC lz4-low-200000-p5-a1 f59499e9b200b80f1 3 true true
+VEC lz4-mix-0-p1-a1 6e340b9cffb37a980 3 true true
+VEC lz4-mix-0-p1-a7 6e340b9cffb37a980 3 true true
+VEC lz4-mix-0-p2-a1 6e340b9cffb37a980 3 true true
+VEC lz4-mix-0-p3-a1 6e340b9cffb37a980 3 true true
+VEC lz4-mix-0-p4-a4 6e340b9cffb37a980 3 true true
+VEC lz4-mix-0-p4-a9 6e340b9cffb37a980 3 true true
+VEC lz4-mix-0-p4-a11 6e340b9cffb37a980 3 true true
+VEC lz4-mix-0-p5-a1 6e340b9cffb37a980 3 true true
+VEC lz4-mix-13-p1-a1 297e1020132a33610 3 true true
+VEC lz4-mix-13-p1-a7 297e1020132a33610 3 true true
+VEC lz4-mix-13-p2-a1 297e1020132a33610 3 true true
+VEC lz4-mix-13-p3-a1 297e1020132a33610 3 true true
+VEC lz4-mix-13-p4-a4 297e1020132a33610 3 true true
+VEC lz4-mix-13-p4-a9 297e1020132a33610 3 true true
+VEC lz4-mix-13-p4-a11 297e1020132a33610 3 true true
+VEC lz4-mix-13-p5-a1 297e1020132a33610 3 true true
+VEC lz4-mix-300-p1-a1 d51148a1528841361 3 true true
+VEC lz4-mix-300-p1-a7 d710933a26f0e0f11 3 true true
+VEC lz4-mix-300-p2-a1 c23e62a5e3684bda1 3 true true
+VEC lz4-mix-300-p3-a1 c23e62a5e3684bda1 3 true true
+VEC lz4-mix-300-p4-a4 48d75e2abdc6141d1 3 true true
+VEC lz4-mix-300-p4-a9 48d75e2abdc6141d1 3 true true
+VEC lz4-mix-300-p4-a11 48d75e2abdc6141d1 3 true true
+VEC lz4-mix-300-p5-a1 d7c0065eb77686961 3 true true
+VEC lz4-mix-5000-p1-a1 c5007b5372bb6acb1 3 true true
+VEC lz4-mix-5000-p1-a7 e690a48e00cc52fc1 3 true true
+VEC lz4-mix-5000-p2-a1 5ee57d3c519c2c321 3 true true
+VEC lz4-mix-5000-p3-a1 5ee57d3c519c2c321 3 true true
+VEC lz4-mix-5000-p4-a4 8ecfde094058443d1 3 true true
+VEC lz4-mix-5000-p4-a9 375104a9dca9fa7b1 3 true true
+VEC lz4-mix-5000-p4-a11 7b68341c3ed484c81 3 true true
+VEC lz4-mix-5000-p5-a1 50077d8c5715fd8e1 3 true true
+VEC lz4-mix-70000-p1-a1 1899999c259627d51 3 true true
+VEC lz4-mix-70000-p1-a7 2dace367b46e03821 3 true true
+VEC lz4-mix-70000-p2-a1 1899999c259627d51 3 true true
+VEC lz4-mix-70000-p3-a1 1899999c259627d51 3 true true
+VEC lz4-mix-70000-p4-a4 5526e53cda606e1e1 3 true true
+VEC lz4-mix-70000-p4-a9 3efad4a570cfdc891 3 true true
+VEC lz4-mix-70000-p4-a11 39236c69f369547f1 3 true true
+VEC lz4-mix-70000-p5-a1 455d4f850b312b861 3 true true
+VEC lz4-mix-200000-p1-a1 12492bad185c521b1 3 true true
+VEC lz4-mix-200000-p1-a7 f3efa93bc38bc04f1 3 true true
+VEC lz4-mix-200000-p2-a1 12492bad185c521b1 3 true true
+VEC lz4-mix-200000-p3-a1 12492bad185c521b1 3 true true
+VEC lz4-mix-200000-p4-a4 b0b1860e64bd40ba1 3 true true
+VEC lz4-mix-200000-p4-a9 75df8b08847bd0a11 3 true true
+VEC lz4-mix-200000-p4-a11 eafffd25505db2fe1 3 true true
+VEC lz4-mix-200000-p5-a1 4eae948632c3f8791 3 true true
+VEC analyzer-memo 6 5 1
+VEC lz4-hostile true
+VEC lz4-linked-text-mode0 aee45c58ca4875a9true 4 0 0 41 true
+VEC lz4-linked-mix-mode0 9df8d15a839e3c0btrue 4 0 0 41 true
+VEC lz4-linked-text-mode1 306b10b3eab264ebtrue 4 0 0 41 true
+VEC lz4-linked-mix-mode1 f9f7ec851604f0datrue 4 0 0 41 true
+VEC lz4-linked-text-mode2 4d5105b6c3aaae5ctrue 4 0 0 41 true
+VEC lz4-linked-mix-mode2 06acec11502c2fe2true 4 0 0 41 true
+VEC lz4-linked-text-mode3 3d9f6370683d0346true 4 0 0 41 true
+VEC lz4-linked-mix-mode3 96fbb8a600b7f94ftrue 4 0 0 41 true
+VEC lz4-linked-text-mode4 bcd4b1474f28a642true 4 0 0 41 true
+VEC lz4-linked-mix-mode4 6b2ce25962deff24true 4 0 0 41 true
+--- PASS: TestP6Vectors (4.58s)
+PASS
+ok  	zeros3	4.587s

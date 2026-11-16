@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"zeros3-z3/brotliz3"
 	"zeros3-z3/lz4z3"
 	"zeros3-z3/snappyz3"
 	"zeros3-z3/zstdz3"
@@ -28,12 +29,14 @@ const (
 	CompLZ4Def   = 8  // lz4z3.PredDefault, acceleration 1
 	CompLZ4Cont  = 9  // lz4z3.PredContinue, acceleration 1
 	CompLZ4Def5  = 10 // lz4z3.PredDefault5, acceleration 1
-	compMax      = 10
+	CompBrotli5  = 11 // Z4-P7: brotliz3.Encode(body, quality 5..9, lgwin 22) = google/brotli one-shot (Arrow)
+	CompBrotli9  = 15
+	compMax      = 15
 )
 
 // CompName is the audit name of a compression id.
 func CompName(id int) string {
-	return [...]string{"none", "snappy-explicit", "snappy-go", "snappy-cpp14", "snappy-cpp15", "zstd-explicit", "snappy-cpp-crc15", "lz4-recipe", "lz4-default", "lz4-continue", "lz4-default5"}[id]
+	return [...]string{"none", "snappy-explicit", "snappy-go", "snappy-cpp14", "snappy-cpp15", "zstd-explicit", "snappy-cpp-crc15", "lz4-recipe", "lz4-default", "lz4-continue", "lz4-default5", "brotli-q5", "brotli-q6", "brotli-q7", "brotli-q8", "brotli-q9"}[id]
 }
 
 // CompRec describes how to rebuild a page's compressed payload from its body.
@@ -61,7 +64,7 @@ func snapEncoder(id uint8) func([]byte) []byte {
 
 // Codecs reports whether the representation can replay a Parquet codec.
 func Codecs(codec int) bool {
-	return codec == CodecNone || codec == CodecSnappy || codec == CodecZstd || codec == CodecLZ4Raw
+	return codec == CodecNone || codec == CodecSnappy || codec == CodecZstd || codec == CodecLZ4Raw || codec == CodecBrotli
 }
 
 // CodecName names a Parquet codec for audits.
@@ -81,7 +84,13 @@ type Compressor struct {
 	NoPredict bool
 	lim       Limits
 	last      uint8
+	brLast    int // Brotli quality that reproduced the previous page (0 = none yet)
+	brMiss    int // consecutive Brotli pages no ported quality reproduced
 }
+
+// brGiveUp: after this many consecutive unreproduced pages the producer is treated as
+// unsupported and later pages are rejected without decoding or re-encoding.
+const brGiveUp = 3
 
 // NewCompressor returns a compressor for a supported codec.
 func NewCompressor(codec int, lim Limits) *Compressor {
@@ -156,6 +165,33 @@ func (c *Compressor) Analyze(payload []byte, want int64) (body []byte, rec CompR
 			return nil, rec, fmt.Errorf("%w: lz4 recipe differs from the page (%v)", ErrUnsupported, e)
 		}
 		return body, CompRec{ID: CompLZ4Rec, LZ4: rc.Marshal()}, nil
+	case CodecBrotli:
+		// Only streams with the 22-bit window header can come from the ported encoder path.
+		if c.brMiss >= brGiveUp || len(payload) == 0 || payload[0]&0xF != 0xB {
+			return nil, rec, unsupported("brotli page outside the reproduced encoder profile")
+		}
+		body, err := brotliz3.Decode(payload, int(want))
+		if err != nil {
+			if err == brotliz3.ErrCorrupt || err == brotliz3.ErrLimit {
+				return nil, rec, corrupt("brotli page: %v", err)
+			}
+			return nil, rec, unsupported("brotli: %v", err)
+		}
+		if int64(len(body)) != want {
+			return nil, rec, corrupt("brotli page decodes to %d bytes, header says %d", len(body), want)
+		}
+		order := [6]int{c.brLast, 8, 9, 5, 6, 7}
+		for i, q := range order {
+			if q == 0 || (i > 0 && q == c.brLast) {
+				continue
+			}
+			if out, e := brotliz3.Encode(body, q, 22); e == nil && bytes.Equal(out, payload) {
+				c.brLast, c.brMiss = q, 0
+				return body, CompRec{ID: uint8(CompBrotli5 + q - 5)}, nil
+			}
+		}
+		c.brMiss++
+		return nil, rec, unsupported("brotli page not reproduced by qualities 5-9")
 	}
 	return nil, rec, unsupported("codec %s", CodecName(c.Codec))
 }
@@ -216,6 +252,13 @@ func (c *Compressor) Replay(rec CompRec, body []byte) ([]byte, error) {
 		return out.Bytes(), nil
 	case CompLZ4Rec, CompLZ4Def, CompLZ4Cont, CompLZ4Def5:
 		return c.replayLZ4(rec, body)
+	}
+	if rec.ID >= CompBrotli5 && rec.ID <= CompBrotli9 {
+		out, err := brotliz3.Encode(body, int(rec.ID)-CompBrotli5+5, 22)
+		if err != nil {
+			return nil, recipeErr("brotli replay: %v", err)
+		}
+		return out, nil
 	}
 	return nil, recipeErr("compression id %d", rec.ID)
 }

@@ -1,0 +1,163 @@
+package main
+
+//IMPORT
+import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+var _ testing.TB
+
+func vh(b []byte) string { s := sha256.Sum256(b); return fmt.Sprintf("%x", s[:8]) }
+
+func vec(name string, v string) { fmt.Printf("VEC %s %s\n", name, v) }
+
+func vdata(kind string, n int, seed uint64) []byte {
+	r := rand.New(rand.NewPCG(seed, 17))
+	out := make([]byte, 0, n+32)
+	words := []string{"alpha", "bravo", "charlie", "delta ", "the ", "<td>", "</td>", "\n", "http://", "0123456789"}
+	for len(out) < n {
+		switch kind {
+		case "text":
+			out = append(out, words[r.IntN(len(words))]...)
+		case "rand":
+			out = append(out, byte(r.Uint32()))
+		case "low":
+			out = append(out, "ab"[r.IntN(2)])
+		default:
+			if r.IntN(2) == 0 {
+				out = append(out, words[r.IntN(len(words))]...)
+			} else {
+				out = append(out, byte(r.Uint32()), byte(r.Uint32()), 0, 0)
+			}
+		}
+	}
+	return out[:n]
+}
+
+func vecBrotli() {
+	z3 := os.Getenv("P6_Z3")
+	dict, err := os.ReadFile(filepath.Join(z3, "brotliz3", "brdict", "dictionary.rfc7932"))
+	if err != nil {
+		panic(err)
+	}
+	vec("dict-wrong", fmt.Sprint(@brotliz3.SetDictionary@(dict[:1000]) != nil))
+	if err := @brotliz3.SetDictionary@(dict); err != nil {
+		panic(err)
+	}
+	for _, k := range []string{"text", "rand", "low", "mix"} {
+		for _, n := range []int{1, 64, 3000, 65536, 70000, 300000} {
+			d := vdata(k, n, uint64(n))
+			for _, p := range [][2]int{{8, 22}, {9, 22}, {5, 18}, {7, 24}} {
+				out, err := @brotliz3.Encode@(d, p[0], p[1])
+				if err != nil {
+					vec(fmt.Sprintf("br-%s-%d-q%d-w%d", k, n, p[0], p[1]), "err")
+					continue
+				}
+				back, derr := @brotliz3.Decode@(out, n)
+				vec(fmt.Sprintf("br-%s-%d-q%d-w%d", k, n, p[0], p[1]), vh(out)+fmt.Sprint(derr == nil && bytes.Equal(back, d)))
+			}
+		}
+	}
+	for _, name := range []string{"arrow_page_small", "arrow_page_mid"} {
+		pay, err := os.ReadFile(filepath.Join(z3, "brotliz3", "testdata", name+".br"))
+		if err != nil {
+			panic(err)
+		}
+		body, err := @brotliz3.Decode@(pay, 1<<20)
+		got, _ := @brotliz3.Encode@(body, 8, 22)
+		vec("real-"+name, fmt.Sprint(err == nil, bytes.Equal(got, pay), vh(body)))
+		bad := 0
+		for i := 0; i < len(pay); i += 1 + len(pay)/400 {
+			m := append([]byte(nil), pay...)
+			m[i] ^= 4
+			if o, err := @brotliz3.Decode@(m, 1<<20); err == nil && len(o) > 1<<20 {
+				bad++
+			}
+		}
+		_, lerr := @brotliz3.Decode@(pay, len(body)-1)
+		vec("hostile-"+name, fmt.Sprint(bad, lerr == @brotliz3.ErrLimit@))
+	}
+	_, uerr := @brotliz3.Encode@([]byte("x"), 11, 22)
+	vec("unsupported", fmt.Sprint(uerr == @brotliz3.ErrUnsupported@))
+}
+
+func vecLZ4() {
+	for _, k := range []string{"text", "rand", "low", "mix"} {
+		for _, n := range []int{0, 13, 300, 5000, 70000, 200000} {
+			d := vdata(k, n, uint64(n)+99)
+			for _, p := range [][2]int{{@lz4z3.PredDefault@, 1}, {@lz4z3.PredDefault@, 7}, {@lz4z3.PredContinue@, 1}, {@lz4z3.PredDefault5@, 1}, {@lz4z3.PredHC@, 4}, {@lz4z3.PredHC@, 9}, {@lz4z3.PredHC@, 11}, {@lz4z3.PredPierrec@, 1}} {
+				blk, ok := @lz4z3.PredictBlock@(p[0], d, p[1])
+				name := fmt.Sprintf("lz4-%s-%d-p%d-a%d", k, n, p[0], p[1])
+				if !ok {
+					vec(name, "none")
+					continue
+				}
+				plain, seqs, err := @lz4z3.Decode@(blk, n, @lz4z3.Limits@{})
+				if err != nil || !bytes.Equal(plain, d) {
+					vec(name, "decode-failed")
+					continue
+				}
+				rc := @lz4z3.Analyze@(plain, seqs, true)
+				wire := rc.Marshal()
+				rc2, used, err := @lz4z3.Unmarshal@(wire, @lz4z3.Limits@{})
+				rep, rerr := rc2.Replay(nil, plain, @lz4z3.Limits@{})
+				vec(name, vh(blk)+fmt.Sprint(rc.Kind, len(wire), err == nil && used == len(wire), rerr == nil && bytes.Equal(rep, blk)))
+			}
+		}
+	}
+	an := &@lz4z3.Analyzer@{GiveUp: 2}
+	hits := 0
+	for i := 0; i < 6; i++ {
+		d := vdata("text", 9000, uint64(i))
+		blk, _ := @lz4z3.PredictBlock@(@lz4z3.PredHC@, d, 6)
+		plain, seqs, _ := @lz4z3.Decode@(blk, len(d), @lz4z3.Limits@{})
+		if rc := an.Analyze(plain, seqs, true); rc.Kind == @lz4z3.KindPredicted@ {
+			hits++
+		}
+	}
+	vec("analyzer-memo", fmt.Sprint(hits, an.Hits, an.Sweeps))
+	_, _, err := @lz4z3.Decode@([]byte{0xf0, 0xff, 0xff, 0xff}, -1, @lz4z3.Limits@{})
+	vec("lz4-hostile", fmt.Sprint(err != nil))
+	// linked frames: a dependent-block frame built with each carried-table profile goes through
+	// the frame analyzer and replays from recipe + payload
+	for mode := 0; mode < 5; mode++ {
+		for _, k := range []string{"text", "mix"} {
+			d := vdata(k, 150000, 5)
+			var l interface {
+				Next([]byte, int) ([]@lz4z3.Seq@, bool)
+			} = &@lz4z3.Linked@{Ext: mode == 1, Accel: 1}
+			if mode >= 2 { // LZ4HC: level 9 contiguous, level 11 contiguous, level 9 saved dictionary
+				l = &@lz4z3.HCLinked@{Level: []int{9, 11, 9}[mode-2], Ext: mode == 4}
+			}
+			fr := []byte{0x04, 0x22, 0x4d, 0x18, 0x40, 0x40, 0}
+			fr[6] = byte(@lz4z3.XXH32@(fr[4:6], 0) >> 8)
+			for pos := 0; pos < len(d); {
+				end := min(pos+40000, len(d))
+				seqs, ok := l.Next(d, end)
+				blk, sz := d[pos:end], uint32(end-pos)|0x80000000
+				if ok {
+					blk, _ = @lz4z3.BuildH@(d[max(0, pos-65535):pos], d[pos:end], seqs)
+					sz = uint32(len(blk))
+				}
+				fr = append(append(fr, byte(sz), byte(sz>>8), byte(sz>>16), byte(sz>>24)), blk...)
+				pos = end
+			}
+			fr = append(fr, 0, 0, 0, 0)
+			plain, rec, st, err := @lz4z3.AnalyzeFrames@(fr, @lz4z3.Limits@{})
+			var out bytes.Buffer
+			rerr := @lz4z3.ReplayFrames@(&out, rec, bytes.NewReader(plain), @lz4z3.Limits@{})
+			vec(fmt.Sprintf("lz4-linked-%s-mode%d", k, mode), vh(fr)+fmt.Sprint(err == nil, st.Predicted, st.Stored, st.Explicit, len(rec), rerr == nil && bytes.Equal(out.Bytes(), fr)))
+		}
+	}
+}
+
+func main() {
+	vecBrotli()
+	vecLZ4()
+}

@@ -15,9 +15,21 @@ const (
 type FrameStats struct {
 	Frames, Skippable, Blocks, Stored int
 	Predicted, Hybrid, Explicit       int
-	Linked                            int // frames with dependent blocks (explicit recipes only)
+	Linked                            int // frames with dependent blocks (linked.go predictors)
 	RecipeBytes, ExplicitSeqs         int
 	HeaderBytes, TailBytes            int
+}
+
+func (st *FrameStats) count(rc Recipe, nseq int) {
+	switch rc.Kind {
+	case KindPredicted:
+		st.Predicted++
+	case KindHybrid:
+		st.Hybrid++
+	default:
+		st.Explicit++
+		st.ExplicitSeqs += nseq
+	}
 }
 
 var blockMax = [8]int{0, 0, 0, 0, 64 << 10, 256 << 10, 1 << 20, 4 << 20}
@@ -116,6 +128,7 @@ func analyzeFrame(data []byte, pos int, pb *bytes.Buffer, lim Limits, st *FrameS
 	}
 	var content []byte // this frame's payload so far
 	var blocks []byte
+	var la linkAnalysis
 	nblocks := 0
 	for {
 		if pos+4 > len(data) {
@@ -155,6 +168,7 @@ func analyzeFrame(data []byte, pos int, pb *bytes.Buffer, lim Limits, st *FrameS
 			tag |= 2
 		}
 		var payload []byte
+		var lseqs []Seq
 		blocks = append(blocks, tag)
 		if raw {
 			payload = blk
@@ -175,30 +189,37 @@ func analyzeFrame(data []byte, pos int, pb *bytes.Buffer, lim Limits, st *FrameS
 			if len(p) > d.bmax {
 				return nil, 0, corrupt("block decodes to %d > %d", len(p), d.bmax)
 			}
-			rc := Analyze(p, seqs, d.indep)
-			switch rc.Kind {
-			case KindPredicted:
-				st.Predicted++
-			case KindHybrid:
-				st.Hybrid++
-			default:
-				st.Explicit++
-				st.ExplicitSeqs += len(seqs)
-			}
-			if rep, e := rc.Replay(hist, p, lim); e != nil || !bytes.Equal(rep, blk) {
-				return nil, 0, recipeErr("recipe does not reproduce the block (%v)", e)
-			}
-			blocks = binary.AppendUvarint(blocks, uint64(len(p)))
-			blocks = append(blocks, rc.Marshal()...)
 			payload = p
+			if !d.indep {
+				if rep, e := BuildH(hist, p, seqs); e != nil || !bytes.Equal(rep, blk) {
+					return nil, 0, recipeErr("sequences do not reproduce the block (%v)", e)
+				}
+				lseqs = seqs
+			} else {
+				rc := Analyze(p, seqs, true)
+				st.count(rc, len(seqs))
+				if rep, e := rc.Replay(nil, p, lim); e != nil || !bytes.Equal(rep, blk) {
+					return nil, 0, recipeErr("recipe does not reproduce the block (%v)", e)
+				}
+				blocks = binary.AppendUvarint(blocks, uint64(len(p)))
+				blocks = append(blocks, rc.Marshal()...)
+			}
 		}
-		blocks = append(blocks, ext...)
 		st.Blocks++
 		if len(content)+len(payload) > lim.MaxDecoded {
 			return nil, 0, ErrLimit
 		}
 		content = append(content, payload...)
+		if d.indep {
+			blocks = append(blocks, ext...)
+		} else { // linked frames are emitted once the profile is chosen
+			blocks = blocks[:0]
+			la.block(content, len(payload), lseqs, tag, ext)
+		}
 		pb.Write(payload)
+	}
+	if !d.indep {
+		blocks = la.emit(st)
 	}
 	fr = binary.AppendUvarint(fr, uint64(nblocks))
 	fr = append(fr, blocks...)
@@ -323,6 +344,7 @@ func replayFrame(w io.Writer, r *rd, plain io.Reader, lim Limits, total *int64) 
 		return err
 	}
 	var content []byte
+	var lr linkRun
 	for i := uint64(0); i < nb; i++ {
 		tag, err := r.take(1)
 		if err != nil {
@@ -352,17 +374,29 @@ func replayFrame(w io.Writer, r *rd, plain io.Reader, lim Limits, total *int64) 
 		}
 		var blk []byte
 		sz := uint32(n)
+		start := len(content)
+		content = append(content, p...)
+		lr.ends = append(lr.ends, len(content))
 		if tag[0]&1 != 0 {
 			blk, sz = p, uint32(n)|0x80000000
 		} else {
 			var hist []byte
 			if !d.indep {
-				hist = content
-				if len(hist) > maxOff {
-					hist = hist[len(hist)-maxOff:]
-				}
+				hist = content[max(0, start-maxOff):start]
 			}
-			if blk, err = rc.Replay(hist, p, lim); err != nil {
+			if !d.indep && isLinkPred(rc) {
+				var sq []Seq
+				if sq, err = lr.seqs(content, int(i), rc); err != nil {
+					return err
+				}
+				if len(sq) > lim.MaxSeqs {
+					return ErrLimit
+				}
+				blk, err = BuildH(hist, p, sq)
+			} else {
+				blk, err = rc.Replay(hist, p, lim)
+			}
+			if err != nil {
 				return err
 			}
 			sz = uint32(len(blk))
@@ -392,7 +426,6 @@ func replayFrame(w io.Writer, r *rd, plain io.Reader, lim Limits, total *int64) 
 				return err
 			}
 		}
-		content = append(content, p...)
 		*total += int64(n)
 	}
 	if err := put(w, []byte{0, 0, 0, 0}); err != nil {

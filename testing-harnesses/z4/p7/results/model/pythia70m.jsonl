@@ -1,0 +1,7 @@
+{"family":"pythia70m","tool":"b5","phase":"encode","label":"b5_enc_pythia70m_1","real_s":315.619,"user_s":389.256,"sys_s":39.300,"maxrss_kib":1705688,"total_alloc_mib":114032,"charged":1117775553,"store_bytes":1117776054}
+{"family":"pythia70m","tool":"b5","phase":"replay","label":"b5_dec_pythia70m_1","real_s":48.060,"user_s":41.015,"sys_s":9.650,"maxrss_kib":2658316,"total_alloc_mib":25842,"charged":0,"store_bytes":1117776054}
+{"verify":"b5_1","states":10,"bad":0}
+{"family":"pythia70m","tool":"p7","phase":"encode","label":"p7_enc_pythia70m_1","real_s":25.652,"user_s":66.463,"sys_s":10.987,"maxrss_kib":28304,"total_alloc_mib":19189,"charged":1117087835,"store_bytes":1117093325}
+{"family":"pythia70m","tool":"p7","phase":"replay","label":"p7_dec_pythia70m_1","real_s":29.930,"user_s":31.941,"sys_s":4.682,"maxrss_kib":142424,"total_alloc_mib":13925,"charged":0,"store_bytes":1117093325}
+{"verify":"p7_1","states":10,"bad":0}
+{"family":"pythia70m","tool":"p7","phase":"replay-4w","label":"p7_dec4_pythia70m_1","real_s":9.722,"user_s":31.377,"sys_s":3.814,"maxrss_kib":159652,"total_alloc_mib":13925,"charged":0,"store_bytes":1117093325}

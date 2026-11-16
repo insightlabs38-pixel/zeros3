@@ -96,7 +96,7 @@ func DecodeBlock(b *RawBlock, lim Limits) (decoded []byte, cmds []snappyz3.Cmd, 
 		d, _, e := analyzeZstdBlock(b.Payload, lim)
 		return d, nil, e
 	case CompLZ4, CompLZ4HC:
-		d, _, e := analyzeLZ4Block(b.Payload, lim)
+		d, e := decodeLZ4Block(b.Payload, lim)
 		return d, nil, e
 	case CompSnappy:
 		d, c, err := snappyz3.Parse(b.Payload, snappyz3.Limits{MaxDecoded: lim.MaxDecoded})

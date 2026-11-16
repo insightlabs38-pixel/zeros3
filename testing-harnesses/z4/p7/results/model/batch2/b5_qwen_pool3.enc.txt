@@ -1,0 +1,11 @@
+{"file":"base.safetensors","raw":988097824,"container":655451826,"charged":655446607,"bases":null,"mode_bytes":{"direct":655422209},"enc_secs":46.279270485,"exact":true,"dec_ms":14610,"n_copy":0,"n_direct":290,"n_pred":0,"max_depth":0}
+{"file":"instruct.safetensors","raw":988097824,"container":465305949,"charged":465306081,"bases":[0],"mode_bytes":{"pred:1":465248033},"enc_secs":576.889445753,"exact":true,"dec_ms":13201,"n_copy":0,"n_direct":0,"n_pred":290,"max_depth":1}
+{"file":"coder.safetensors","raw":988097824,"container":655652127,"charged":655591310,"bases":[1,0],"mode_bytes":{"direct":655560135,"pred:1":65463},"enc_secs":65.266519065,"exact":true,"dec_ms":9191,"n_copy":0,"n_direct":193,"n_pred":97,"max_depth":2}
+{"file":"abliterated.safetensors","raw":988097824,"container":83850241,"charged":83850373,"bases":[1,0,2],"mode_bytes":{"copy":3416,"pred:1":83831283},"enc_secs":28.896637739,"exact":true,"dec_ms":10378,"n_copy":244,"n_direct":0,"n_pred":46,"max_depth":2}
+{"file":"unsloth_instruct.safetensors","raw":988097824,"container":0,"charged":36,"bases":[1],"mode_bytes":{"identical-state":0},"enc_secs":0,"exact":true,"dec_ms":0,"n_copy":0,"n_direct":0,"n_pred":0,"max_depth":0}
+TOTAL policy=pool3 charged=1860194407
+{"rss":"family","maxrss_kib":4668636,"heap_sys_mib":6691,"total_alloc_mib":222383}
+
+real	13m58.635s
+user	16m34.963s
+sys	1m11.657s

@@ -1,0 +1,33 @@
+File: lz4z3.test
+Build ID: 0452bde709689456ffae5c61ab642213f040ea66
+Type: cpu
+Time: 2026-11-14 05:19:30 UTC
+Duration: 799.81ms, Total samples = 840ms (105.02%)
+Showing nodes accounting for 840ms, 100% of 840ms total
+Showing top 25 nodes out of 63
+      flat  flat%   sum%        cum   cum%
+     400ms 47.62% 47.62%      640ms 76.19%  zeros3-z3/lz4z3.(*hcState).wider
+     140ms 16.67% 64.29%      150ms 17.86%  zeros3-z3/lz4z3.reverseCountPattern (inline)
+      80ms  9.52% 73.81%       80ms  9.52%  runtime.memmove
+      50ms  5.95% 79.76%       50ms  5.95%  zeros3-z3/lz4z3.count (inline)
+      30ms  3.57% 83.33%       30ms  3.57%  memeqbody
+      30ms  3.57% 86.90%       30ms  3.57%  runtime.procyieldAsm
+      20ms  2.38% 89.29%       20ms  2.38%  runtime.asyncPreempt
+      10ms  1.19% 90.48%       10ms  1.19%  encoding/binary.littleEndian.Uint16 (inline)
+      10ms  1.19% 91.67%       10ms  1.19%  encoding/binary.littleEndian.Uint32 (inline)
+      10ms  1.19% 92.86%       20ms  2.38%  math/rand.(*Rand).Intn
+      10ms  1.19% 94.05%       10ms  1.19%  math/rand.(*rngSource).Uint64 (inline)
+      10ms  1.19% 95.24%       10ms  1.19%  runtime.nanotime
+      10ms  1.19% 96.43%       20ms  2.38%  runtime.scanblock
+      10ms  1.19% 97.62%       10ms  1.19%  runtime.spanOf (inline)
+      10ms  1.19% 98.81%       10ms  1.19%  runtime.sysMmap
+      10ms  1.19%   100%       10ms  1.19%  zeros3-z3/lz4z3.(*hcState).head (inline)
+         0     0%   100%       30ms  3.57%  bytes.Equal
+         0     0%   100%       10ms  1.19%  math/rand.(*Rand).Int31 (inline)
+         0     0%   100%       10ms  1.19%  math/rand.(*Rand).Int31n
+         0     0%   100%       10ms  1.19%  math/rand.(*Rand).Int63 (inline)
+         0     0%   100%       10ms  1.19%  math/rand.(*rngSource).Int63
+         0     0%   100%       10ms  1.19%  runtime.(*mcache).allocLarge
+         0     0%   100%       10ms  1.19%  runtime.(*mheap).alloc
+         0     0%   100%       10ms  1.19%  runtime.(*mheap).alloc.func1
+         0     0%   100%       10ms  1.19%  runtime.(*mheap).allocSpan

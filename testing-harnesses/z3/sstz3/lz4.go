@@ -16,7 +16,8 @@ func lz4Limits(lim Limits) lz4z3.Limits {
 
 // analyzeLZ4Block returns the decoded block and the serialized recipe
 // (uvarint prefix length | prefix bytes | lz4z3 recipe).
-func analyzeLZ4Block(payload []byte, lim Limits) ([]byte, []byte, error) {
+// an carries the producer profile across the blocks of one table (nil = stateless sweep).
+func analyzeLZ4Block(payload []byte, lim Limits, an *lz4z3.Analyzer) ([]byte, []byte, error) {
 	lim = lim.norm()
 	n, k := binary.Uvarint(payload)
 	if k <= 0 || n == 0 || n > uint64(lim.MaxDecoded) {
@@ -27,8 +28,20 @@ func analyzeLZ4Block(payload []byte, lim Limits) ([]byte, []byte, error) {
 	if err != nil {
 		return nil, nil, corrupt("lz4 block: %v", err)
 	}
-	rc := lz4z3.Analyze(plain, seqs, true)
-	rep, err := rc.Replay(nil, plain, ll)
+	var rc lz4z3.Recipe
+	if an != nil {
+		rc = an.Analyze(plain, seqs, true)
+	} else {
+		rc = lz4z3.Analyze(plain, seqs, true)
+	}
+	// A predicted recipe was accepted because the predictor's sequences equal the decoded ones, so
+	// rebuilding the block from those sequences proves the recipe without a second encoder run.
+	var rep []byte
+	if rc.Kind == lz4z3.KindPredicted {
+		rep, err = lz4z3.Build(plain, seqs)
+	} else {
+		rep, err = rc.Replay(nil, plain, ll)
+	}
 	if err != nil || string(rep) != string(payload[k:]) {
 		return nil, nil, unsupported("lz4 recipe does not reproduce the block (%v)", err)
 	}
@@ -36,6 +49,20 @@ func analyzeLZ4Block(payload []byte, lim Limits) ([]byte, []byte, error) {
 	recipe = append(recipe, payload[:k]...)
 	recipe = append(recipe, rc.Marshal()...)
 	return plain, recipe, nil
+}
+
+// decodeLZ4Block decodes a block without building a recipe (read paths).
+func decodeLZ4Block(payload []byte, lim Limits) ([]byte, error) {
+	lim = lim.norm()
+	n, k := binary.Uvarint(payload)
+	if k <= 0 || n == 0 || n > uint64(lim.MaxDecoded) {
+		return nil, unsupported("lz4 block decoded-size prefix")
+	}
+	plain, _, err := lz4z3.Decode(payload[k:], int(n), lz4Limits(lim))
+	if err != nil {
+		return nil, corrupt("lz4 block: %v", err)
+	}
+	return plain, nil
 }
 
 func replayLZ4Block(w io.Writer, recipe, plain []byte, lim Limits) error {

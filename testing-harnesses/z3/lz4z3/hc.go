@@ -2,25 +2,34 @@ package lz4z3
 
 import (
 	"encoding/binary"
+	"math/bits"
 	"sync"
 )
 
-// LZ4HC (hash-chain, levels 3..8) reference encoder re-implementation. Level 9 enables the
-// repeated-pattern shortcut of the reference; it is not modelled (see HCSeqs). Levels >= 10 use
-// the optimal parser and are out of scope. Verified against producer output, never trusted.
+// LZ4HC reference encoder re-implementation (lz4 1.9.x): hash-chain parser for levels 3..9 with
+// the repeated-pattern shortcut, optimal parser with chain swap for levels 10..12, and the
+// continued-stream forms used by linked frames (linked.go). Verified against producer output,
+// never trusted.
 const (
 	hcHashLog    = 15
 	hcStart      = 1 << 16 // the reference starts indices at 64 KiB so that 0 means "empty"
 	hcOptimalML  = 18
-	hcMaxAttempt = 128 // levels with more attempts enable pattern analysis (unsupported here)
+	hcMaxAttempt = 128 // levels with more attempts enable pattern analysis
 )
 
-// HCAttempts maps a compression level to the reference's search depth (levels 3..9).
+// HCAttempts maps a compression level (3..12) to the reference's search depth.
 func HCAttempts(level int) int {
-	if level < 3 || level > 9 {
-		return 0
+	switch {
+	case level >= 3 && level <= 9:
+		return 1 << (level - 1)
+	case level == 10:
+		return 96
+	case level == 11:
+		return 512
+	case level == 12:
+		return 16384
 	}
-	return 1 << (level - 1)
+	return 0
 }
 
 type hcState struct {
@@ -32,7 +41,15 @@ type hcState struct {
 	next     uint32
 	attempts int
 	pa       bool // pattern analysis (levels with more than 128 attempts)
+	swap     bool // chain swap (optimal parser, levels 10..12)
+	// Linked streams whose previous block is reached through a saved dictionary (hcExtDict):
+	// pfx is where the current prefix starts in src, dlow where the dictionary starts. Both are
+	// 0 for a single segment.
+	pfx, dlow int
 }
+
+// protect mirrors LZ4HC_protectDictEnd: false for the last 3 dictionary positions.
+func (h *hcState) protect(mi uint32) bool { return uint32(h.pfx)+hcStart-1-mi >= 3 }
 
 func (h *hcState) hashAt(p int) uint32 {
 	return (binary.LittleEndian.Uint32(h.src[p:]) * 2654435761) >> (32 - hcHashLog)
@@ -59,12 +76,12 @@ func (h *hcState) head(hh uint32) uint32 {
 	return h.hash[hh]
 }
 
-// wider mirrors LZ4HC_InsertAndGetWiderMatch (no dictionary, no chain swap, no pattern analysis).
+// wider mirrors LZ4HC_InsertAndGetWiderMatch (prefix and external-dictionary candidates).
 func (h *hcState) wider(ip, lowLimit, highLimit, longest int) (best, matchPos, startPos int) {
 	src := h.src
 	ipIndex := uint32(ip) + hcStart
-	lowest := uint32(hcStart)
-	if hcStart+maxOff+1 <= ipIndex {
+	lowest := uint32(h.dlow) + hcStart
+	if lowest+maxOff+1 <= ipIndex {
 		lowest = ipIndex - maxOff
 	}
 	lookBack := ip - lowLimit
@@ -74,25 +91,63 @@ func (h *hcState) wider(ip, lowLimit, highLimit, longest int) (best, matchPos, s
 	h.insert(ip)
 	mi := h.head(h.hashAt(ip))
 	matchPos, startPos = -1, -1
+	chainPos := uint32(0)
 	for mi >= lowest && attempts > 0 {
 		attempts--
 		mp := int(mi - hcStart)
-		if binary.LittleEndian.Uint16(src[lowLimit+longest-1:]) == binary.LittleEndian.Uint16(src[mp-lookBack+longest-1:]) &&
-			binary.LittleEndian.Uint32(src[mp:]) == pattern {
+		ml := 0
+		if mp >= h.pfx {
+			if binary.LittleEndian.Uint16(src[lowLimit+longest-1:]) == binary.LittleEndian.Uint16(src[mp-lookBack+longest-1:]) &&
+				binary.LittleEndian.Uint32(src[mp:]) == pattern {
+				back := 0
+				if lookBack != 0 {
+					lim := max(lowLimit-ip, h.pfx-mp)
+					for back > lim && src[ip+back-1] == src[mp+back-1] {
+						back--
+					}
+				}
+				ml = minMatch + count(src, ip+minMatch, mp+minMatch, highLimit) - back
+				if ml > longest {
+					longest, matchPos, startPos = ml, mp+back, ip+back
+				}
+			}
+		} else if mp <= h.pfx-4 && binary.LittleEndian.Uint32(src[mp:]) == pattern {
+			// dictionary candidate: no 2-byte pre-filter; the dictionary is the content right
+			// before the prefix, so counting across its end is a contiguous count
 			back := 0
 			if lookBack != 0 {
-				lim := max(lowLimit-ip, 0-mp)
+				lim := max(lowLimit-ip, h.dlow-mp)
 				for back > lim && src[ip+back-1] == src[mp+back-1] {
 					back--
 				}
 			}
-			ml := minMatch + count(src, ip+minMatch, mp+minMatch, highLimit) - back
+			ml = minMatch + count(src, ip+minMatch, mp+minMatch, highLimit) - back
 			if ml > longest {
 				longest, matchPos, startPos = ml, mp+back, ip+back
 			}
 		}
-		// repeated-pattern shortcut of the reference (matchChainPos is always 0 here)
-		if h.pa && h.chain[uint16(mi)] == 1 {
+		if h.swap && ml == longest && mi+uint32(longest) <= ipIndex { // better match: select a better chain
+			distNext := uint32(1)
+			end := longest - minMatch + 1
+			step, accel := 1, 1<<4
+			for pos := 0; pos < end; pos += step {
+				cd := uint32(h.chain[uint16(mi+uint32(pos))])
+				step = accel >> 4
+				accel++
+				if cd > distNext {
+					distNext, chainPos, accel = cd, uint32(pos), 1<<4
+				}
+			}
+			if distNext > 1 {
+				if distNext > mi {
+					break
+				}
+				mi -= distNext
+				continue
+			}
+		}
+		// repeated-pattern shortcut of the reference
+		if h.pa && chainPos == 0 && h.chain[uint16(mi)] == 1 {
 			cand := mi - 1
 			if repeat == repUntested {
 				if pattern&0xFFFF == pattern>>16 && pattern&0xFF == pattern>>24 {
@@ -102,37 +157,38 @@ func (h *hcState) wider(ip, lowLimit, highLimit, longest int) (best, matchPos, s
 					repeat = repNot
 				}
 			}
-			if repeat == repConfirmed && cand >= lowest {
+			if repeat == repConfirmed && cand >= lowest && h.protect(cand) {
 				cp := int(cand - hcStart)
 				if binary.LittleEndian.Uint32(src[cp:]) == pattern {
 					fwd := countPattern(src, cp+4, highLimit, pattern) + 4
-					back := reverseCountPattern(src, cp, 0, pattern)
-					back = int(cand - max(cand-uint32(back), lowest))
+					// counting stops at the lowest admissible index: the reference clamps to it anyway
+					back := reverseCountPattern(src, cp, int(lowest-hcStart), pattern)
 					cur := back + fwd
 					if cur >= srcPatLen && fwd <= srcPatLen {
-						mi = cand + uint32(fwd) - uint32(srcPatLen)
-					} else {
-						mi = cand - uint32(back)
-						if lookBack == 0 {
-							maxML := min(cur, srcPatLen)
-							if longest < maxML {
-								if ip-int(mi-hcStart) > maxOff {
-									break
-								}
-								longest, matchPos, startPos = maxML, int(mi-hcStart), ip
-							}
-							d := uint32(h.chain[uint16(mi)])
-							if d > mi {
+						if mi = cand + uint32(fwd) - uint32(srcPatLen); !h.protect(mi) {
+							mi = uint32(h.pfx) + hcStart
+						}
+					} else if mi = cand - uint32(back); !h.protect(mi) {
+						mi = uint32(h.pfx) + hcStart
+					} else if lookBack == 0 {
+						maxML := min(cur, srcPatLen)
+						if longest < maxML {
+							if ip-int(mi-hcStart) > maxOff {
 								break
 							}
-							mi -= d
+							longest, matchPos, startPos = maxML, int(mi-hcStart), ip
 						}
+						d := uint32(h.chain[uint16(mi)])
+						if d > mi {
+							break
+						}
+						mi -= d
 					}
 					continue
 				}
 			}
 		}
-		mi -= uint32(h.chain[uint16(mi)])
+		mi -= uint32(h.chain[uint16(mi+chainPos)])
 	}
 	return longest, matchPos, startPos
 }
@@ -145,23 +201,40 @@ func HCSeqs(src []byte, level int) ([]Seq, bool) {
 
 // hcSeqs optionally stops at the first sequence that disagrees with target.
 func hcSeqs(src []byte, level int, target []Seq) (seqs []Seq, aborted, ok bool) {
+	if HCAttempts(level) == 0 {
+		return nil, false, false
+	}
+	h := hcPool.Get().(*hcState)
+	defer hcPool.Put(h)
+	return hcRun(h, src, 0, level, target, false)
+}
+
+// hcRun parses src[start:]. With cont the state (hash chains, insertion cursor) continues from
+// the preceding blocks of the same stream, src[:start]: LZ4_compress_HC_continue on contiguous
+// blocks. Otherwise the state is reset and start must be 0.
+func hcRun(h *hcState, src []byte, start, level int, target []Seq, cont bool) (seqs []Seq, aborted, ok bool) {
 	att := HCAttempts(level)
 	if att == 0 {
 		return nil, false, false
 	}
 	n := len(src)
-	anchor := 0
-	if n >= mfLimit+1 {
-		h := hcPool.Get().(*hcState)
-		defer hcPool.Put(h)
+	anchor := start
+	if !cont {
 		h.gen++
 		if h.gen == 0 {
 			*h = hcState{gen: 1}
 		}
-		h.src, h.next, h.attempts, h.pa = src, hcStart, att, att > hcMaxAttempt
+		h.next, h.pfx, h.dlow = hcStart, 0, 0
+	}
+	h.src = src
+	if n-start >= mfLimit+1 {
+		if level >= 10 {
+			return hcOptSeqs(h, src, start, level, att, target)
+		}
+		h.attempts, h.pa, h.swap = att, att > hcMaxAttempt, false
 		mflimit := n - mfLimit
 		matchlimit := n - lastLiterals
-		ip := 0
+		ip := start
 		var ml, ml0, ml2, ml3, start0, ref0, ref, start2, ref2, start3, ref3 int
 		emit := func(mlen, r int) bool {
 			seqs = append(seqs, Seq{Lit: ip - anchor, Match: mlen, Off: ip - r})
@@ -289,7 +362,14 @@ func countPattern(src []byte, p, limit int, pattern uint32) int {
 	start := p
 	var pb [4]byte
 	binary.LittleEndian.PutUint32(pb[:], pattern)
-	for i := 0; p < limit; i++ {
+	p64 := uint64(pattern) | uint64(pattern)<<32
+	for p+8 <= limit { // the pattern phase is preserved by 8-byte steps
+		if x := binary.LittleEndian.Uint64(src[p:]) ^ p64; x != 0 {
+			return p - start + bits.TrailingZeros64(x)>>3
+		}
+		p += 8
+	}
+	for i := (p - start) & 3; p < limit; i++ {
 		if src[p] != pb[i&3] {
 			break
 		}
@@ -313,3 +393,152 @@ func reverseCountPattern(src []byte, p, lowest int, pattern uint32) int {
 }
 
 var hcPool = sync.Pool{New: func() any { return new(hcState) }}
+
+// hcOptSeqs is LZ4HC_compress_optimal (levels 10..12 of lz4 1.9.x): price-based parsing over a
+// 4096-position window with the wider-match search in pattern-analysis + chain-swap mode.
+func hcOptSeqs(h *hcState, src []byte, start, level, attempts int, target []Seq) (seqs []Seq, aborted, ok bool) {
+	const optNum, trailing = 1 << 12, 3
+	type optT struct{ price, off, mlen, litlen int }
+	sufficient := map[int]int{10: 64, 11: 128, 12: optNum - 1}[level]
+	full := level == 12
+	h.attempts, h.pa, h.swap = attempts, true, true
+	n := len(src)
+	mflimit, matchlimit := n-mfLimit, n-lastLiterals
+	litPrice := func(l int) int {
+		if l >= 15 {
+			return l + 1 + (l-15)/255
+		}
+		return l
+	}
+	seqPrice := func(l, m int) int {
+		p := 3 + litPrice(l)
+		if m >= 19 {
+			p += 1 + (m-19)/255
+		}
+		return p
+	}
+	find := func(ip, minLen int) (length, off int) {
+		ml, mp, _ := h.wider(ip, ip, matchlimit, minLen)
+		if ml <= minLen {
+			return 0, 0
+		}
+		return ml, ip - mp
+	}
+	var opt [optNum + trailing]optT
+	ip, anchor := start, start
+	emit := func(ml, off int) bool {
+		seqs = append(seqs, Seq{Lit: ip - anchor, Match: ml, Off: off})
+		ip += ml
+		anchor = ip
+		return target != nil && (len(seqs) > len(target) || seqs[len(seqs)-1] != target[len(seqs)-1])
+	}
+	for ip <= mflimit {
+		llen := ip - anchor
+		fl, foff := find(ip, minMatch-1)
+		if fl == 0 {
+			ip++
+			continue
+		}
+		if fl > sufficient {
+			if emit(fl, foff) {
+				return seqs[:len(seqs)-1], true, true
+			}
+			continue
+		}
+		for r := 0; r < minMatch; r++ {
+			opt[r] = optT{price: litPrice(llen + r), mlen: 1, litlen: llen + r}
+		}
+		for m := minMatch; m <= fl; m++ {
+			opt[m] = optT{price: seqPrice(llen, m), off: foff, mlen: m, litlen: llen}
+		}
+		last := fl
+		for a := 1; a <= trailing; a++ {
+			opt[last+a] = optT{price: opt[last].price + litPrice(a), mlen: 1, litlen: a}
+		}
+		var bestM, bestOff, cur int
+		direct := false
+		for cur = 1; cur < last; cur++ {
+			cp := ip + cur
+			if cp > mflimit {
+				break
+			}
+			if full {
+				if opt[cur+1].price <= opt[cur].price && opt[cur+minMatch].price < opt[cur].price+3 {
+					continue
+				}
+			} else if opt[cur+1].price <= opt[cur].price {
+				continue
+			}
+			var nl, noff int
+			if full {
+				nl, noff = find(cp, minMatch-1)
+			} else {
+				nl, noff = find(cp, last-cur)
+			}
+			if nl == 0 {
+				continue
+			}
+			if nl > sufficient || nl+cur >= optNum {
+				bestM, bestOff, last, direct = nl, noff, cur+1, true
+				break
+			}
+			base := opt[cur].litlen
+			for l := 1; l < minMatch; l++ {
+				price := opt[cur].price - litPrice(base) + litPrice(base+l)
+				if pos := cur + l; price < opt[pos].price {
+					opt[pos] = optT{price: price, mlen: 1, litlen: base + l}
+				}
+			}
+			for ml := minMatch; ml <= nl; ml++ {
+				pos := cur + ml
+				var price, ll int
+				if opt[cur].mlen == 1 {
+					ll = opt[cur].litlen
+					if cur > ll {
+						price = opt[cur-ll].price
+					}
+					price += seqPrice(ll, ml)
+				} else {
+					price = opt[cur].price + seqPrice(0, ml)
+				}
+				if pos > last+trailing || price <= opt[pos].price {
+					if ml == nl && last < pos {
+						last = pos
+					}
+					opt[pos] = optT{price: price, off: noff, mlen: ml, litlen: ll}
+				}
+			}
+			for a := 1; a <= trailing; a++ {
+				opt[last+a] = optT{price: opt[last].price + litPrice(a), mlen: 1, litlen: a}
+			}
+		}
+		if !direct {
+			bestM, bestOff = opt[last].mlen, opt[last].off
+			cur = last - bestM
+		}
+		// reverse traversal: record the chosen path forwards
+		cand, selM, selOff := cur, bestM, bestOff
+		for {
+			nm, no := opt[cand].mlen, opt[cand].off
+			opt[cand].mlen, opt[cand].off = selM, selOff
+			selM, selOff = nm, no
+			if nm > cand {
+				break
+			}
+			cand -= nm
+		}
+		for r := 0; r < last; {
+			ml, off := opt[r].mlen, opt[r].off
+			if ml == 1 {
+				ip++
+				r++
+				continue
+			}
+			r += ml
+			if emit(ml, off) {
+				return seqs[:len(seqs)-1], true, true
+			}
+		}
+	}
+	return append(seqs, Seq{Lit: n - anchor}), false, true
+}

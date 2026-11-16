@@ -1,0 +1,23 @@
+File: z4b5-prof
+Build ID: 861226cbe7b91ec994692b5a1bf784d3900a3c80
+Type: alloc_space
+Time: 2026-11-14 20:08:49 UTC
+Showing nodes accounting for 12788.23MB, 87.94% of 14542.67MB total
+Dropped 62 nodes (cum <= 72.71MB)
+Showing top 15 nodes out of 60
+      flat  flat%   sum%        cum   cum%
+ 1879.18MB 12.92% 12.92%  1879.18MB 12.92%  bytes.growSlice
+ 1697.93MB 11.68% 24.60%  2340.72MB 16.10%  zeros3-z3/mdelta2.nrcEncodeCfg
+ 1167.85MB  8.03% 32.63%  1167.85MB  8.03%  compress/flate.newFastEnc (inline)
+  988.47MB  6.80% 39.42%     1514MB 10.41%  zeros3-z3/mdelta2.fpeEncode
+  945.42MB  6.50% 45.93%   945.42MB  6.50%  compress/flate.(*fastGen).addBlock
+  831.07MB  5.71% 51.64%   831.07MB  5.71%  zeros3-z3/mdelta2.Predict
+  785.84MB  5.40% 57.04%  2202.88MB 15.15%  compress/flate.NewWriter (inline)
+  708.46MB  4.87% 61.92%   708.46MB  4.87%  zeros3-z3/mdelta2.(*ransEnc).put (inline)
+  692.44MB  4.76% 66.68%   692.44MB  4.76%  zeros3-z3/mdelta2.MakeResidual
+  602.98MB  4.15% 70.82%   609.55MB  4.19%  zeros3-z3/mdelta2.(*Container).Marshal
+  593.22MB  4.08% 74.90%   593.22MB  4.08%  zeros3-z3/mdelta2.Planes (inline)
+  591.21MB  4.07% 78.97%   591.21MB  4.07%  internal/bytealg.MakeNoZero
+  455.34MB  3.13% 82.10%   455.34MB  3.13%  zeros3-z3/mdelta2.(*Model).Read
+  438.33MB  3.01% 85.11% 10318.68MB 70.95%  zeros3-z3/mdelta2.EncodeResidual
+  410.50MB  2.82% 87.94%   410.50MB  2.82%  zeros3-z3/mdelta2.(*ransEnc).finish

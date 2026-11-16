@@ -1,0 +1,65 @@
+{
+ "audit": {
+  "adapter_interfaces": [
+   "lz4z3.linker"
+  ],
+  "declarations_by_package": {
+   "zeros3-z3/brotliz3": 135,
+   "zeros3-z3/lz4z3": 90
+  },
+  "packages": [
+   {
+    "files": 8,
+    "module_deps": null,
+    "package": "zeros3-z3/brotliz3",
+    "stdlib": [
+     "crypto/sha256",
+     "encoding/binary",
+     "encoding/hex",
+     "errors",
+     "math",
+     "math/bits",
+     "sync",
+     "sync/atomic"
+    ]
+   },
+   {
+    "files": 9,
+    "module_deps": null,
+    "package": "zeros3-z3/lz4z3",
+    "stdlib": [
+     "bytes",
+     "encoding/binary",
+     "errors",
+     "fmt",
+     "io",
+     "math/bits",
+     "sync"
+    ]
+   }
+  ],
+  "roots": 25,
+  "selected_declarations": 225
+ },
+ "class": "PORTABLE_WITH_THIN_ADAPTER",
+ "compiled": true,
+ "declarations": {
+  "const": 17,
+  "func": 82,
+  "method": 70,
+  "type": 36,
+  "var": 20
+ },
+ "fidelity_failures": 0,
+ "imports_added_to_production": null,
+ "integration_bytes": 2204365,
+ "integration_dir": "(temporary)",
+ "integration_sha256": "cbced315b44e84e7b52a5e4daaeefa8119293a80a52db10eb5ee3afc023cc815",
+ "modified_adapters": 0,
+ "package_level_names": 200,
+ "prefix": "hc",
+ "rehearsal_ok": true,
+ "unresolved_dependencies": 0,
+ "vector_lines": 306,
+ "vector_mismatches": 0
+}

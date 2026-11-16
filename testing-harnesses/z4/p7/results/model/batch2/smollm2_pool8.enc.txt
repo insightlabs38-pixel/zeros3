@@ -1,0 +1,11 @@
+base.safetensors                   raw   269060552 object   178713093 (0.6642)    1.7s  154.7 MiB/s depth 0 modes raw/direct/pred/copy/quant [0 178659484 0 0 0] struct 0 qpatch 0/0
+sft_only.safetensors               raw   269060552 object   127291290 (0.4731)    3.1s   83.1 MiB/s depth 1 modes raw/direct/pred/copy/quant [0 148595 127090733 0 0] struct 0 qpatch 0/0
+instruct.safetensors               raw   269060552 object     7407913 (0.0275)    2.7s   96.1 MiB/s depth 2 modes raw/direct/pred/copy/quant [0 0 7358082 0 0] struct 0 qpatch 0/0
+shakespeare.safetensors            raw   269060552 object    65236482 (0.2425)    3.2s   80.6 MiB/s depth 1 modes raw/direct/pred/copy/quant [0 0 65184610 0 0] struct 0 qpatch 0/0
+capybara.safetensors               raw   538090408 object   380505152 (0.7071)    4.3s  118.1 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 0 380449875 0 0] struct 0 qpatch 0/0
+bnc_cpt.safetensors                raw   538090408 object   360280053 (0.6696)    4.2s  122.8 MiB/s depth 2 modes raw/direct/pred/copy/quant [0 0 360227678 0 0] struct 0 qpatch 0/0
+kd_alpaca.safetensors              raw   538090408 object   357841823 (0.6650)    4.3s  120.7 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 0 357789411 0 0] struct 0 qpatch 0/0
+smollm_v1.safetensors              raw   538090408 object   178247962 (0.3313)    2.5s  206.7 MiB/s depth 3 modes raw/direct/pred/copy/quant [0 178179678 16929 0 0] struct 0 qpatch 0/0
+TOTAL policy=pool:8 charged=1655524824
+{"rss":"family","maxrss_kib":46652,"heap_sys_mib":47,"total_alloc_mib":32222,"user_s":74.56,"sys_s":13.59}
+28.699 real 74.560 user 13.592 sys

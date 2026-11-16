@@ -1,0 +1,8 @@
+{"sha256":"88c142557820ccad55bb59756bfcfcf891de9cc6202816bd346445188a0ed342","bytes":988097824,"ms":7774,"mib_s":121.2,"windows":7743,"store_read":655999768,"cache_hits":0}
+{"sha256":"fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe","bytes":988097824,"ms":17394,"mib_s":54.2,"windows":15486,"store_read":1121578553,"cache_hits":0}
+{"sha256":"aff8914ec707fcaf9e2d4dc97197cded50b1c63e1d3a7a82e56f54d83ea47f80","bytes":988097824,"ms":8668,"mib_s":108.7,"windows":7926,"store_read":656323276,"cache_hits":0}
+{"sha256":"c41947ba68ab327a4d31495d7508b41c951e294a61c63d569f93931238e7c504","bytes":988097824,"ms":23377,"mib_s":40.3,"windows":23229,"store_read":1129281351,"cache_hits":0}
+{"sha256":"fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe","bytes":988097824,"ms":17638,"mib_s":53.4,"windows":15486,"store_read":1121578553,"cache_hits":0}
+{"rss":"replay","maxrss_kib":149648,"heap_sys_mib":147,"total_alloc_mib":32590,"user_s":79.60,"sys_s":8.06}
+75.303 real 79.598 user 8.073 sys
+verify states 4 bad 0
