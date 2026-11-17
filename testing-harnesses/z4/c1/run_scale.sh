@@ -8,7 +8,8 @@ go build -o "$W/zeros3" . && go test -c -o "$W/zeros3.test" .
 rm -rf "$W/store"; mkdir -p "$W/store"
 "$W/zeros3.test" -test.run TestAuthorityScaleFixture -test.v -test.timeout 3h 2>&1 | grep -E 'written|pin records|PASS|FAIL' | tee "$W/fixture.txt"
 du -sb "$W/store" | tee "$W/store_bytes.txt"
-run() { n=$1; shift; /usr/bin/time -f "$n wall=%es rss=%MKB" -o "$W/t_$n.txt" "$W/zeros3" "$@" > "$W/o_$n.txt" 2>&1 || true; cat "$W/t_$n.txt"; }
+R=$(dirname "$0")/rss.py
+run() { n=$1; shift; python3 "$R" "$n" "$W/o_$n.txt" "$W/zeros3" "$@" | tee -a "$W/rss.txt"; }
 run stats stats -store "$W/store"
 run verify verify -store "$W/store"
 run verify_deep verify -store "$W/store" -deep

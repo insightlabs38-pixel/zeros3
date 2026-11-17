@@ -45787,9 +45787,12 @@ var (
 	authWindowSize int64 = 1 << 20  // target bytes per independently authenticated frame
 )
 
-func authWParams(workers int) dwDcoreWParams {
+// authWParams bounds the working set: the anchor table follows the base size (one anchor
+// per KiB, 256 Ki to 4 Mi anchors) and each worker caches 4 MiB of base pages.
+func authWParams(workers int, baseSize int64) dwDcoreWParams {
 	p := dwDcoreDefaultWParams()
-	p.Window, p.Workers = authWindowSize, workers
+	p.Window, p.Workers, p.CachePages = authWindowSize, workers, 64
+	p.Anchor.MaxAnchors = int(min(max(baseSize>>10, 256<<10), 4<<20))
 	return p
 }
 
@@ -45819,7 +45822,7 @@ func (c *authCtx) newWindowed(rec *authRecord, blob *pieceSeq, depth int) (authB
 	if int(rec.Depth) < int(brec.Depth)+1 {
 		return nil, fmt.Errorf("%w: recorded depth %d below the base's %d", errAuthCorrupt, rec.Depth, int(brec.Depth)+1)
 	}
-	return &authWinBody{c: c, rec: rec, wr: wr, base: b, wp: authWParams(1), off: -1}, nil
+	return &authWinBody{c: c, rec: rec, wr: wr, base: b, wp: authWParams(1, wr.BaseSize), off: -1}, nil
 }
 
 func (b *authWinBody) Size() int64 { return b.rec.Size }
@@ -47424,7 +47427,8 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	}
 	base := m.s.newAuthObjAt(bo.man)
 	defer base.close()
-	wp := authWParams(min(max(runtime.GOMAXPROCS(0), 1), 4))
+	wp := authWParams(min(max(runtime.GOMAXPROCS(0), 1), 4), bo.man.TotalLength)
+	defer debug.FreeOSMemory() // the anchor table and page caches are dead once this object is done
 	idx, err := dwDcoreBuildWIndex(base, bo.man.TotalLength, wp.Anchor, wp.Workers)
 	if err != nil {
 		return keep("base unreadable: " + err.Error())
@@ -48223,8 +48227,17 @@ func runAuthority(args []string) {
 	sha := fs.String("sha256", "", "revert: content SHA-256 (hex)")
 	bucket := fs.String("bucket", "", "migrate: only contents named in this bucket")
 	prefix := fs.String("prefix", "", "migrate: only contents whose key starts with this prefix")
+	memMiB := fs.Int64("max-memory-mib", 256, "soft heap limit of this process in MiB (0 = Go default)")
 	all := fs.Bool("all", false, "revert: every content, then lower the store format to its pre-authority level")
 	fs.Parse(args[1:])
+	// An offline maintenance process needs no serving cache and keeps its heap near the
+	// bound: windowed deltas hold an anchor table and per-worker page caches, nothing else.
+	if os.Getenv("ZEROS3_CHUNK_CACHE_MIB") == "" {
+		os.Setenv("ZEROS3_CHUNK_CACHE_MIB", "0")
+	}
+	if os.Getenv("GOMEMLIMIT") == "" && *memMiB > 0 {
+		debug.SetMemoryLimit(*memMiB << 20)
+	}
 	lock, err := acquireStoreLock(*storeDir, true)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: authority: needs exclusive access to the store: %v\n", err)

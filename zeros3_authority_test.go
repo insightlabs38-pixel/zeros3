@@ -2116,9 +2116,27 @@ func g1Retire(s *Store, st *g1Store, man manifestV1) error {
 	if s.fg.n.Load() > 1 {
 		return nil // another request is in flight: it may have skipped writing a shared chunk
 	}
+	// A chunk that a manifest without a body still lists is live in CDC and is never retired.
+	lms := s.liveManifests()
+	if len(lms) > 400 {
+		return nil
+	}
+	keep := map[[32]byte]bool{}
+	for _, lm := range lms {
+		if sha, err := decodeHexSHA256(lm.man.ObjectSHA256); err == nil {
+			if rec, _ := s.authLoad(sha); rec != nil {
+				continue
+			}
+		}
+		for _, c := range lm.man.Chunks {
+			if sum, err := decodeHexSHA256(c.SHA256); err == nil {
+				keep[sum] = true
+			}
+		}
+	}
 	r := retiredChunks.Load()
 	for _, c := range man.Chunks {
-		if sum, err := decodeHexSHA256(c.SHA256); err == nil && !st.comps[sum] {
+		if sum, err := decodeHexSHA256(c.SHA256); err == nil && !st.comps[sum] && !keep[sum] {
 			r.Store(retiredKey{s.root, sum}, struct{}{})
 		}
 	}

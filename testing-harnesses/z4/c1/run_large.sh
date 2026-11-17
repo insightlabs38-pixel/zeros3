@@ -9,14 +9,13 @@ go test -c -o "$W/zeros3.test" .
 rm -rf "$W/store"; mkdir -p "$W/store"
 "$W/zeros3.test" -test.run TestAuthorityLargeFixture -test.v 2>&1 | grep -E 'put|PASS|FAIL' | tee "$W/fixture.txt"
 du -sb "$W/store" | tee "$W/cdc_bytes.txt"
+R=$(dirname "$0")/rss.py
 for step in "migrate -apply -max-depth 2 -archive" "status"; do
-  /usr/bin/time -v -o "$W/time_${step%% *}.txt" "$W/zeros3" authority $step -store "$W/store" > "$W/out_${step%% *}.json"
-  grep -E 'Maximum resident|Elapsed' "$W/time_${step%% *}.txt"
+  python3 "$R" "${step%% *}" "$W/out_${step%% *}.json" "$W/zeros3" authority $step -store "$W/store" | tee -a "$W/rss.txt"
 done
 for c in "gc -apply" "repack -apply" "compact" "gc -apply"; do
-  /usr/bin/time -v -o "$W/time_${c%% *}.txt" "$W/zeros3" $c -store "$W/store" > /dev/null
-  grep -E 'Maximum resident|Elapsed' "$W/time_${c%% *}.txt"
+  python3 "$R" "${c%% *}" "$W/out_${c%% *}.txt" "$W/zeros3" $c -store "$W/store" | tee -a "$W/rss.txt"
 done
 du -sb "$W/store" | tee "$W/final_bytes.txt"
-"$W/zeros3.test" -test.run TestAuthorityLargeCheck -test.v 2>&1 | grep -E 'exact|ranges|PASS|FAIL' | tee "$W/check.txt" ; ZEROS3_C1_LARGE_CHECK=1 "$W/zeros3.test" -test.run TestAuthorityLargeCheck -test.v 2>&1 | grep -E 'exact|ranges|PASS|FAIL' | tee "$W/check.txt"
-/usr/bin/time -v -o "$W/time_verify.txt" "$W/zeros3" verify -store "$W/store" -deep > "$W/verify.txt"; grep -E 'Maximum resident|Elapsed' "$W/time_verify.txt"; tail -3 "$W/verify.txt"
+ZEROS3_C1_LARGE_CHECK=1 "$W/zeros3.test" -test.run TestAuthorityLargeCheck -test.v 2>&1 | grep -E 'exact|ranges|PASS|FAIL' | tee "$W/check.txt"
+python3 "$R" verify "$W/verify.txt" "$W/zeros3" verify -store "$W/store" -deep | tee -a "$W/rss.txt"; tail -3 "$W/verify.txt"
