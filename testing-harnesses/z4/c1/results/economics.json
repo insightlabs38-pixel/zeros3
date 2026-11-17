@@ -1,0 +1,594 @@
+{
+ "clr-short": {
+  "auth-archive-oldest": {
+   "forms": {
+    "cdc": 1,
+    "delta": 4
+   },
+   "peak_x": 1.71,
+   "x_cdc": 0.323
+  },
+  "auth-delta-only": {
+   "forms": {
+    "cdc": 1,
+    "delta": 4
+   },
+   "peak_x": 1.24,
+   "x_cdc": 0.323
+  },
+  "auth-hot-hybrid": {
+   "forms": {
+    "cdc": 5
+   },
+   "peak_x": 1.69,
+   "x_cdc": 1.0
+  },
+  "auth-rep-only": {
+   "forms": {
+    "cdc": 5
+   },
+   "peak_x": 1.47,
+   "x_cdc": 1.0
+  },
+  "cdc+additive-rep": {
+   "forms": null,
+   "peak_x": null,
+   "x_cdc": 1.966
+  },
+  "cdc_bytes": 3531779,
+  "logical": 3517344,
+  "reads": {
+   "auth-archive-oldest": {
+    "amp4k": 59.6,
+    "whole_MBps": 39
+   },
+   "auth-delta-only": {
+    "amp4k": 59.6,
+    "whole_MBps": 39
+   },
+   "auth-hot-hybrid": {
+    "amp4k": 30.6,
+    "whole_MBps": 267
+   },
+   "auth-rep-only": {
+    "amp4k": 30.6,
+    "whole_MBps": 404
+   },
+   "cdc": {
+    "amp4k": 30.6,
+    "whole_MBps": 384
+   }
+  }
+ },
+ "dex": {
+  "auth-archive-oldest": {
+   "forms": {
+    "rep": 3
+   },
+   "peak_x": 1.54,
+   "x_cdc": 0.543
+  },
+  "auth-delta-only": {
+   "forms": {
+    "cdc": 1,
+    "delta": 2
+   },
+   "peak_x": 1.22,
+   "x_cdc": 0.585
+  },
+  "auth-hot-hybrid": {
+   "forms": {
+    "cdc": 3
+   },
+   "peak_x": 1.76,
+   "x_cdc": 1.0
+  },
+  "auth-rep-only": {
+   "forms": {
+    "rep": 3
+   },
+   "peak_x": 1.54,
+   "x_cdc": 0.543
+  },
+  "cdc+additive-rep": {
+   "forms": null,
+   "peak_x": null,
+   "x_cdc": 1.542
+  },
+  "cdc_bytes": 25663928,
+  "logical": 27892392,
+  "reads": {
+   "auth-archive-oldest": {
+    "amp4k": 2269.9,
+    "whole_MBps": 12
+   },
+   "auth-delta-only": {
+    "amp4k": 60.2,
+    "whole_MBps": 84
+   },
+   "auth-hot-hybrid": {
+    "amp4k": 31.1,
+    "whole_MBps": 336
+   },
+   "auth-rep-only": {
+    "amp4k": 2269.9,
+    "whole_MBps": 12
+   },
+   "cdc": {
+    "amp4k": 31.1,
+    "whole_MBps": 621
+   }
+  }
+ },
+ "git": {
+  "auth-archive-oldest": {
+   "forms": {
+    "cdc": 1,
+    "delta": 2
+   },
+   "peak_x": 2.07,
+   "x_cdc": 0.58
+  },
+  "auth-delta-only": {
+   "forms": {
+    "cdc": 1,
+    "delta": 2
+   },
+   "peak_x": 1.18,
+   "x_cdc": 0.58
+  },
+  "auth-hot-hybrid": {
+   "forms": {
+    "cdc": 3
+   },
+   "peak_x": 1.97,
+   "x_cdc": 1.0
+  },
+  "auth-rep-only": {
+   "forms": {
+    "cdc": 3
+   },
+   "peak_x": 1.88,
+   "x_cdc": 1.0
+  },
+  "cdc+additive-rep": {
+   "forms": null,
+   "peak_x": null,
+   "x_cdc": 2.051
+  },
+  "cdc_bytes": 2778316,
+  "logical": 4126929,
+  "reads": {
+   "auth-archive-oldest": {
+    "amp4k": 35.5,
+    "whole_MBps": 230
+   },
+   "auth-delta-only": {
+    "amp4k": 35.5,
+    "whole_MBps": 241
+   },
+   "auth-hot-hybrid": {
+    "amp4k": 17.3,
+    "whole_MBps": 372
+   },
+   "auth-rep-only": {
+    "amp4k": 17.3,
+    "whole_MBps": 474
+   },
+   "cdc": {
+    "amp4k": 17.3,
+    "whole_MBps": 431
+   }
+  }
+ },
+ "parquet-z331-8": {
+  "auth-archive-oldest": {
+   "forms": {
+    "rep": 8
+   },
+   "peak_x": 1.45,
+   "x_cdc": 0.453
+  },
+  "auth-delta-only": {
+   "forms": {
+    "cdc": 5,
+    "delta": 3
+   },
+   "peak_x": 1.01,
+   "x_cdc": 0.922
+  },
+  "auth-rep-only": {
+   "forms": {
+    "rep": 8
+   },
+   "peak_x": 1.45,
+   "x_cdc": 0.453
+  },
+  "cdc+additive-rep": {
+   "forms": null,
+   "peak_x": null,
+   "x_cdc": 1.449
+  },
+  "cdc_bytes": 104675958,
+  "logical": 282261425,
+  "reads": {
+   "auth-archive-oldest": {
+    "amp4k": 8595.0,
+    "whole_MBps": 21
+   },
+   "auth-delta-only": {
+    "amp4k": 103.4,
+    "whole_MBps": 326
+   },
+   "auth-rep-only": {
+    "amp4k": 8595.0,
+    "whole_MBps": 22
+   }
+  }
+ },
+ "parquet-z331-8p": {
+  "auth-archive-oldest": {
+   "forms": {
+    "rep": 8
+   },
+   "peak_x": 1.45,
+   "x_cdc": 0.458
+  },
+  "auth-delta-only": {
+   "forms": {
+    "cdc": 5,
+    "delta": 3
+   },
+   "peak_x": 1.01,
+   "x_cdc": 0.928
+  },
+  "auth-hot-hybrid": {
+   "forms": {
+    "cdc": 8
+   },
+   "peak_x": 1.45,
+   "x_cdc": 1.0
+  },
+  "auth-rep-only": {
+   "forms": {
+    "rep": 8
+   },
+   "peak_x": 1.45,
+   "x_cdc": 0.458
+  },
+  "cdc+additive-rep": {
+   "forms": null,
+   "peak_x": null,
+   "x_cdc": 1.454
+  },
+  "cdc_bytes": 103478839,
+  "logical": 283879039,
+  "reads": {
+   "auth-archive-oldest": {
+    "amp4k": 8644.1,
+    "whole_MBps": 21
+   },
+   "auth-delta-only": {
+    "amp4k": 98.1,
+    "whole_MBps": 330
+   },
+   "auth-hot-hybrid": {
+    "amp4k": 24.0,
+    "whole_MBps": 1087
+   },
+   "auth-rep-only": {
+    "amp4k": 8644.1,
+    "whole_MBps": 23
+   },
+   "cdc": {
+    "amp4k": 24.0,
+    "whole_MBps": 1084
+   }
+  }
+ },
+ "parquet-zstd": {
+  "auth-archive-oldest": {
+   "forms": {
+    "cdc": 1,
+    "delta": 3
+   },
+   "peak_x": 2.76,
+   "x_cdc": 0.936
+  },
+  "auth-delta-only": {
+   "forms": {
+    "cdc": 1,
+    "delta": 3
+   },
+   "peak_x": 1.49,
+   "x_cdc": 0.936
+  },
+  "auth-hot-hybrid": {
+   "forms": {
+    "cdc": 3,
+    "delta": 1
+   },
+   "peak_x": 2.77,
+   "x_cdc": 0.958
+  },
+  "auth-rep-only": {
+   "forms": {
+    "cdc": 4
+   },
+   "peak_x": 2.27,
+   "x_cdc": 1.0
+  },
+  "cdc+additive-rep": {
+   "forms": null,
+   "peak_x": null,
+   "x_cdc": 2.631
+  },
+  "cdc_bytes": 19657355,
+  "logical": 34959339,
+  "reads": {
+   "auth-archive-oldest": {
+    "amp4k": 68.9,
+    "whole_MBps": 257
+   },
+   "auth-delta-only": {
+    "amp4k": 68.9,
+    "whole_MBps": 259
+   },
+   "auth-hot-hybrid": {
+    "amp4k": 38.2,
+    "whole_MBps": 308
+   },
+   "auth-rep-only": {
+    "amp4k": 26.4,
+    "whole_MBps": 657
+   },
+   "cdc": {
+    "amp4k": 26.4,
+    "whole_MBps": 693
+   }
+  }
+ },
+ "sqlite": {
+  "auth-archive-oldest": {
+   "forms": {
+    "cdc": 1,
+    "delta": 3
+   },
+   "peak_x": 1.34,
+   "x_cdc": 0.297
+  },
+  "auth-delta-only": {
+   "forms": {
+    "cdc": 1,
+    "delta": 3
+   },
+   "peak_x": 1.01,
+   "x_cdc": 0.297
+  },
+  "auth-hot-hybrid": {
+   "forms": {
+    "cdc": 1,
+    "delta": 3
+   },
+   "peak_x": 1.33,
+   "x_cdc": 0.282
+  },
+  "auth-rep-only": {
+   "forms": {
+    "rep": 4
+   },
+   "peak_x": 1.39,
+   "x_cdc": 0.393
+  },
+  "cdc+additive-rep": {
+   "forms": null,
+   "peak_x": null,
+   "x_cdc": 1.392
+  },
+  "cdc_bytes": 112351675,
+  "logical": 128053248,
+  "reads": {
+   "auth-archive-oldest": {
+    "amp4k": 41.4,
+    "whole_MBps": 304
+   },
+   "auth-delta-only": {
+    "amp4k": 41.4,
+    "whole_MBps": 306
+   },
+   "auth-hot-hybrid": {
+    "amp4k": 42.1,
+    "whole_MBps": 222
+   },
+   "auth-rep-only": {
+    "amp4k": 7813.7,
+    "whole_MBps": 244
+   },
+   "cdc": {
+    "amp4k": 23.3,
+    "whole_MBps": 828
+   }
+  }
+ },
+ "src-tar-short": {
+  "auth-archive-oldest": {
+   "forms": {
+    "cdc": 1,
+    "delta": 2
+   },
+   "peak_x": 1.57,
+   "x_cdc": 0.373
+  },
+  "auth-delta-only": {
+   "forms": {
+    "cdc": 1,
+    "delta": 2
+   },
+   "peak_x": 1.04,
+   "x_cdc": 0.374
+  },
+  "auth-hot-hybrid": {
+   "forms": {
+    "cdc": 3
+   },
+   "peak_x": 1.57,
+   "x_cdc": 1.0
+  },
+  "auth-rep-only": {
+   "forms": {
+    "rep": 3
+   },
+   "peak_x": 1.53,
+   "x_cdc": 0.634
+  },
+  "cdc+additive-rep": {
+   "forms": null,
+   "peak_x": null,
+   "x_cdc": 1.533
+  },
+  "cdc_bytes": 179375282,
+  "logical": 187023360,
+  "reads": {
+   "auth-archive-oldest": {
+    "amp4k": 2495.8,
+    "whole_MBps": 17
+   },
+   "auth-delta-only": {
+    "amp4k": 2518.5,
+    "whole_MBps": 14
+   },
+   "auth-hot-hybrid": {
+    "amp4k": 37.4,
+    "whole_MBps": 436
+   },
+   "auth-rep-only": {
+    "amp4k": 15198.2,
+    "whole_MBps": 135
+   },
+   "cdc": {
+    "amp4k": 37.4,
+    "whole_MBps": 796
+   }
+  }
+ },
+ "sst-snappy": {
+  "auth-archive-oldest": {
+   "forms": {
+    "cdc": 1,
+    "delta": 3
+   },
+   "peak_x": 3.6,
+   "x_cdc": 0.32
+  },
+  "auth-delta-only": {
+   "forms": {
+    "cdc": 1,
+    "delta": 3
+   },
+   "peak_x": 1.07,
+   "x_cdc": 0.32
+  },
+  "auth-hot-hybrid": {
+   "forms": {
+    "cdc": 4
+   },
+   "peak_x": 3.6,
+   "x_cdc": 1.0
+  },
+  "auth-rep-only": {
+   "forms": {
+    "cdc": 4
+   },
+   "peak_x": 3.53,
+   "x_cdc": 1.0
+  },
+  "cdc+additive-rep": {
+   "forms": null,
+   "peak_x": null,
+   "x_cdc": 5.73
+  },
+  "cdc_bytes": 13163808,
+  "logical": 13146312,
+  "reads": {
+   "auth-archive-oldest": {
+    "amp4k": 225.5,
+    "whole_MBps": 87
+   },
+   "auth-delta-only": {
+    "amp4k": 225.5,
+    "whole_MBps": 88
+   },
+   "auth-hot-hybrid": {
+    "amp4k": 59.5,
+    "whole_MBps": 377
+   },
+   "auth-rep-only": {
+    "amp4k": 59.5,
+    "whole_MBps": 440
+   },
+   "cdc": {
+    "amp4k": 59.5,
+    "whole_MBps": 446
+   }
+  }
+ },
+ "unrelated": {
+  "auth-archive-oldest": {
+   "forms": {
+    "cdc": 6
+   },
+   "peak_x": 1.0,
+   "x_cdc": 1.0
+  },
+  "auth-delta-only": {
+   "forms": {
+    "cdc": 6
+   },
+   "peak_x": 1.0,
+   "x_cdc": 1.0
+  },
+  "auth-hot-hybrid": {
+   "forms": {
+    "cdc": 6
+   },
+   "peak_x": 1.0,
+   "x_cdc": 1.0
+  },
+  "auth-rep-only": {
+   "forms": {
+    "cdc": 6
+   },
+   "peak_x": 1.0,
+   "x_cdc": 1.0
+  },
+  "cdc+additive-rep": {
+   "forms": null,
+   "peak_x": null,
+   "x_cdc": 1.745
+  },
+  "cdc_bytes": 44967826,
+  "logical": 44839848,
+  "reads": {
+   "auth-archive-oldest": {
+    "amp4k": 21.4,
+    "whole_MBps": 634
+   },
+   "auth-delta-only": {
+    "amp4k": 21.4,
+    "whole_MBps": 763
+   },
+   "auth-hot-hybrid": {
+    "amp4k": 21.4,
+    "whole_MBps": 558
+   },
+   "auth-rep-only": {
+    "amp4k": 21.4,
+    "whole_MBps": 755
+   },
+   "cdc": {
+    "amp4k": 21.4,
+    "whole_MBps": 585
+   }
+  }
+ }
+}
