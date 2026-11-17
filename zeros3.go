@@ -99,24 +99,24 @@ import (
 //    14042    Store locking and safe offline GC
 //    14345    Offline compaction (`zeros3 compact`)
 //    15411    Pack reclamation and repacking (`zeros3 repack`)
-//    15888    Physical tiers: status and pack movement (`zeros3 tier`)
-//    16401    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    17466    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18270    Delta sync client, credentials, and parallel transfer
-//    20264    Bulk logical-chunk transport (v2)
-//    21175    Recursive directory sync
-//    21480    Remote replication (`zeros3 replicate`)
-//    22239    Peer-assisted corruption repair (`zeros3 repair`)
-//    22753    Namespace (prefix/bucket) replication
-//    23060    Copy-on-write namespace fork (`zeros3 fork`)
-//    23268    Snapshots and restore
-//    24429    Structural diff and inspect (introspection)
-//    25768    Portable snapshot bundles (`zeros3 bundle`)
-//    26965    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    27600    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    44454    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    48329    Windowed and estimated similarity deltas (extracted dcore)
-//    49799    CLI dispatch, HTTP server/startup, and main
+//    15896    Physical tiers: status and pack movement (`zeros3 tier`)
+//    16409    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    17474    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18278    Delta sync client, credentials, and parallel transfer
+//    20272    Bulk logical-chunk transport (v2)
+//    21183    Recursive directory sync
+//    21488    Remote replication (`zeros3 replicate`)
+//    22247    Peer-assisted corruption repair (`zeros3 repair`)
+//    22815    Namespace (prefix/bucket) replication
+//    23122    Copy-on-write namespace fork (`zeros3 fork`)
+//    23330    Snapshots and restore
+//    24491    Structural diff and inspect (introspection)
+//    25830    Portable snapshot bundles (`zeros3 bundle`)
+//    27027    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    27662    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    44555    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    48528    Windowed and estimated similarity deltas (extracted dcore)
+//    50030    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -46556,6 +46556,15 @@ func (s *Store) physChunk(sum [32]byte, logical int64, memo map[[32]byte]int64) 
 	var n int64
 	if loc, ok := s.packLookup(sum); ok {
 		n = int64(loc.stored)
+		// Physical END-state bytes: a raw record is priced as the cold-tier repack would store it, so a
+		// compressed CDC chunk and a freshly staged raw component are compared on the same footing.
+		if loc.codec == packCodecRaw && n >= 512 {
+			if data, err := s.casRead(sum); err == nil {
+				if d := int64(len(xdDeflate(data, 1))); d < n-n/16 {
+					n = d
+				}
+			}
+		}
 	} else if data, err := s.casRead(sum); err == nil {
 		n = int64(len(xdDeflate(data, 1)))
 	} else {

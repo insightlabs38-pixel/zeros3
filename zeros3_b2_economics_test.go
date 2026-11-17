@@ -415,6 +415,7 @@ func TestB2Economics(t *testing.T) {
 				{"auth-delta-frame16k", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true, FrameSpan: 16 << 10}},
 				{"auth-delta-frame1m", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true, FrameSpan: 1 << 20}},
 				{"auth-rep-only", AuthPolicy{Order: "oldest", AllowRep: true}},
+				{"auth-rep-forced", AuthPolicy{Order: "oldest", AllowRep: true, MinSaving: -100}}, // diagnostic: admit every representation the builder can make
 				{"auth-archive-skip", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true, RepSkipIfDeltaAtMost: 0.6}},
 				{"auth-hot-hybrid", AuthPolicy{Order: "newest", MaxDepth: 2, MaxBases: 2, MinSaving: 0.10, MaxReadAmp: 4, MinReadRatio: 0.5, AllowRep: true, AllowDelta: true}},
 			} {
@@ -443,8 +444,12 @@ func TestB2Economics(t *testing.T) {
 						reasons[p.Reason]++
 					}
 				}
+				plans := []econRow{}
+				for _, p := range rep.Plans {
+					plans = append(plans, econRow{"sha": p.SHA[:8], "size": p.Size, "form": p.Form, "cdc_unshared": p.CDCBytes, "added": p.AddedBytes, "reason": p.Reason})
+				}
 				gcSec, repackSec := econReclaim(t, dir)
-				row(v.name, dir, logical, econRow{"migrate_s": migSec, "migrate_rss_mib": rss, "peak_during_migration": peak, "forms": forms, "reasons": reasons, "gc_s": gcSec, "repack_s": repackSec,
+				row(v.name, dir, logical, econRow{"plans": plans, "migrate_s": migSec, "migrate_rss_mib": rss, "peak_during_migration": peak, "forms": forms, "reasons": reasons, "gc_s": gcSec, "repack_s": repackSec,
 					"admitted": rep.Admitted, "objects": rep.Objects})
 				// Recovery/rebuild: fresh process-equivalent reopen, reachability + deep verify.
 				s, _ := OpenStore(dir)
@@ -502,4 +507,111 @@ func econCopyTree(src, dst string) error {
 		_, err = io.Copy(out, in)
 		return err
 	})
+}
+
+// TestB2RepBreakdown is the component-by-component physical account of a representation-authority
+// run (ZEROS3_B2_CORPUS, family ZEROS3_B2_FAMILY, default parquet-z331-8): per body the components it
+// owns, how many are new to the store, what the packs hold for them (raw/deflate, stored vs logical,
+// duplicated copies) and what the CDC side still keeps. One JSON object on stdout/ZEROS3_B2_OUT.
+func TestB2RepBreakdown(t *testing.T) {
+	root := os.Getenv("ZEROS3_B2_CORPUS")
+	if root == "" {
+		t.Skip("research harness: set ZEROS3_B2_CORPUS")
+	}
+	famName := os.Getenv("ZEROS3_B2_FAMILY")
+	if famName == "" {
+		famName = "parquet-z331-8"
+	}
+	var fam econFamily
+	for _, f := range econFamilies(root) {
+		if f.name == famName {
+			fam = f
+		}
+	}
+	if len(fam.files) == 0 {
+		t.Skip("no inputs")
+	}
+	dir := t.TempDir()
+	logical, _, _ := econBuild(t, dir, fam.files, repModeOff)
+	econCompact(t, dir)
+	cdcPhys := dirBytes(t, dir)
+	econMigrate(t, dir, AuthPolicy{Order: "oldest", AllowRep: true})
+	econReclaim(t, dir)
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	type bodyRow struct {
+		Key                           string
+		Form                          string
+		Components                    int
+		LogicalBytes, NewLogicalBytes int64
+		NewStoredBytes                int64
+		RecordFileBytes               int64
+		Reused                        int
+	}
+	var rows []bodyRow
+	seen := map[[32]byte]bool{}
+	var sumLogical, unionLogical, unionStored, dupRecords, rawRecs, deflRecs, framing int64
+	mans := s.liveManifests()
+	sort.Slice(mans, func(i, j int) bool { return mans[i].key < mans[j].key })
+	for _, lm := range mans {
+		sha, _ := decodeHexSHA256(lm.man.ObjectSHA256)
+		rec, _ := s.authLoad(sha)
+		if rec == nil {
+			rows = append(rows, bodyRow{Key: lm.key, Form: "cdc"})
+			continue
+		}
+		cs, err := s.authRecordChunks(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := bodyRow{Key: lm.key, Form: map[byte]string{authFormPin: "pin", authFormRep: "rep", authFormDelta: "delta"}[rec.Form], Components: len(cs)}
+		if fi, err := os.Stat(s.authPath(sha)); err == nil {
+			r.RecordFileBytes = fi.Size()
+		}
+		for _, c := range cs {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			r.LogicalBytes += c.Length
+			sumLogical += c.Length
+			if seen[sum] {
+				r.Reused++
+				continue
+			}
+			seen[sum] = true
+			r.NewLogicalBytes += c.Length
+			unionLogical += c.Length
+			locs := s.packLocs(sum)
+			if len(locs) > 1 {
+				dupRecords += int64(len(locs) - 1)
+			}
+			if len(locs) > 0 {
+				r.NewStoredBytes += int64(locs[0].stored)
+				unionStored += int64(locs[0].stored)
+				framing += packRecordBytes
+				if locs[0].codec == packCodecRaw {
+					rawRecs++
+				} else {
+					deflRecs++
+				}
+			}
+		}
+		rows = append(rows, r)
+	}
+	// CDC chunks still on disk that no body owns as a component: retained CDC chunks of the group.
+	var stillCDC int64
+	for _, lm := range mans {
+		for _, c := range lm.man.Chunks {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			if !seen[sum] && len(s.packLocs(sum)) > 0 {
+				stillCDC += c.Length
+				seen[sum] = true
+			}
+		}
+	}
+	econEmit(t, econRow{"family": fam.name, "breakdown_of": "rep-only", "logical": logical, "cdc_phys": cdcPhys, "final_phys": dirBytes(t, dir),
+		"bodies": rows, "sum_component_logical": sumLogical, "union_component_logical": unionLogical, "reuse_factor": float64(sumLogical) / float64(max(unionLogical, 1)),
+		"union_stored": unionStored, "stored_over_logical": float64(unionStored) / float64(max(unionLogical, 1)), "duplicate_records": dupRecords,
+		"raw_records": rawRecs, "deflate_records": deflRecs, "record_framing_bytes": framing, "retained_cdc_logical": stillCDC, "pack_breakdown": econBreakdown(t, dir)})
 }

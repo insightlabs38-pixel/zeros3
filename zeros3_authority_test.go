@@ -2795,6 +2795,13 @@ func plRun(t *testing.T, bin, fixture string, cli ...string) (pre *plNode, evs [
 // plProbe opens an image and demands exact reads of every acknowledged object, a
 // completable operation and a passing deep verify after a gc.
 func plProbe(img string, want map[string][]byte, complete func(*Store) error) (err error) {
+	return plProbeTol(img, want, complete, false)
+}
+
+// plProbeTol is plProbe for operations that start from a damaged store (repair): a crash image may
+// still fail to read an affected object, but never returns wrong bytes, and completing the
+// operation must make everything exact.
+func plProbeTol(img string, want map[string][]byte, complete func(*Store) error, tolerant bool) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
@@ -2817,7 +2824,16 @@ func plProbe(img string, want map[string][]byte, complete func(*Store) error) (e
 		}
 		return nil
 	}
-	if err := read(s, "crash image"); err != nil {
+	if tolerant {
+		for key, w := range want {
+			if _, man, herr := s.HeadObject("b", key); herr == nil {
+				if got, rerr := s.readManifestRange(man, byteRange{0, int64(len(w)) - 1}); rerr == nil && !bytes.Equal(got, w) {
+					s.Close()
+					return fmt.Errorf("crash image: %s read back with WRONG bytes", key)
+				}
+			}
+		}
+	} else if err := read(s, "crash image"); err != nil {
 		s.Close()
 		return err
 	}
@@ -2865,22 +2881,69 @@ func TestAuthorityPersistenceLossModel(t *testing.T) {
 		name, stage string
 		cli         []string
 		complete    func(*Store) error
+		// prep damages the staged fixture and returns the CLI and completion of a repair operation.
+		prep func(t *testing.T, fx *crashFixture) ([]string, func(*Store) error)
+	}
+	repairPrep := func(plain bool) func(t *testing.T, fx *crashFixture) ([]string, func(*Store) error) {
+		return func(t *testing.T, fx *crashFixture) ([]string, func(*Store) error) {
+			creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+			s := OpenStoreT(t, fx.dir)
+			peer := newAuthLab(t)
+			var victims [][32]byte
+			for k, w := range fx.want {
+				sha, _ := decodeHexSHA256(repManifestOfT(t, s, k).ObjectSHA256)
+				rec, _ := s.authLoad(sha)
+				if plain {
+					peer.put(k, w)
+				} else if rec != nil {
+					var buf bytes.Buffer
+					if err := s.ExportAuthorityClosure(sha, &buf); err != nil {
+						t.Fatal(err)
+					}
+					if err := peer.s.ImportAuthorityClosure(&buf); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if rec != nil && rec.Form == authFormDelta && len(rec.Pieces) > 0 && len(victims) < 2 {
+					victims = append(victims, rec.Pieces[0].SHA)
+				}
+			}
+			for _, v := range victims {
+				removeChunkAnyLayout(t, s, v)
+			}
+			s.Close()
+			ts := httptest.NewServer(NewServer(peer.s, creds, defaultRegion))
+			t.Cleanup(ts.Close)
+			return []string{"repair", "-from", ts.URL}, func(s *Store) error {
+				st, err := s.repairFromPeer(repairConfig{Peer: syncClientConfig{Endpoint: ts.URL, Creds: creds, Region: defaultRegion}})
+				if err == nil && (st.Unresolved != 0 || !st.PostRepairOK) {
+					err = fmt.Errorf("repair left %d unresolved: %+v", st.Unresolved, st.Failures)
+				}
+				return err
+			}
+		}
 	}
 	ops := []op{
 		{"migrate", "cdc", []string{"authority", "migrate", "-apply", "-min-saving", "0.05"}, func(s *Store) error {
 			_, err := s.AuthorityMigrate(AuthPolicy{MinSaving: 0.05, Apply: true, AllowRep: true, AllowDelta: true})
 			return err
-		}},
-		{"gc", "migrated", []string{"gc", "-apply"}, nil},
-		{"repack", "migrated", []string{"repack", "-apply"}, nil},
+		}, nil},
+		{"gc", "migrated", []string{"gc", "-apply"}, nil, nil},
+		{"repack", "migrated", []string{"repack", "-apply"}, nil, nil},
 		{"revert-all", "retired", []string{"authority", "revert", "-all"}, func(s *Store) error {
 			_, err := s.AuthorityRevertAll()
 			return err
-		}},
+		}, nil},
+		{name: "repair-components", stage: "retired", prep: repairPrep(false)},
+		{name: "repair-object-fallback", stage: "retired", prep: repairPrep(true)},
 	}
 	for _, o := range ops {
 		t.Run(o.name, func(t *testing.T) {
 			fx := newCrashFixture(t, o.stage)
+			tolerant := o.prep != nil
+			if tolerant {
+				o.cli, o.complete = o.prep(t, fx)
+			}
 			pre, evs, actual := plRun(t, bin, fx.dir, o.cli...)
 			m := &plModel{top: pre, fds: map[int]*plFile{}, dirfd: map[int]string{}, byNode: map[*plNode]*plFile{}}
 			// the model root is the store path the CLI was given; the trace names it
@@ -2922,7 +2985,7 @@ func TestAuthorityPersistenceLossModel(t *testing.T) {
 					plWrite(t, m.top, img, v.durEnts, v.durData)
 					os.MkdirAll(filepath.Join(img, "tmp"), 0o755)
 					t.Run(fmt.Sprintf("cut%d/%s", i, v.name), func(t *testing.T) {
-						if err := plProbe(img, fx.want, o.complete); err != nil {
+						if err := plProbeTol(img, fx.want, o.complete, tolerant); err != nil {
 							for k := max(0, i-14); k <= i; k++ {
 								t.Logf("trace %d: %s %v = %d", k, evs[k].name, evs[k].args[:min(len(evs[k].args), 3)], evs[k].ret)
 							}

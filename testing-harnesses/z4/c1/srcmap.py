@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Regenerate the 'Source map' line numbers of zeros3.go from its section headers.
-usage: srcmap.py zeros3.go   (then: go run ./harness/toc_check -file ../zeros3.go from testing-harnesses)"""
+"""Regenerate the 'Source map' (zeros3.go) or 'Test map' (zeros3_test.go) line numbers from the section headers.
+usage: srcmap.py zeros3.go | zeros3_test.go
+check: from testing-harnesses: go run ./harness/toc_check -file ../zeros3.go ; go run ./harness/toc_check -file ../zeros3_test.go"""
 import re, sys
 p = sys.argv[1]
 L = open(p).read().split("\n")
@@ -54,6 +55,28 @@ ents = [
  ("Windowed and estimated similarity deltas (extracted dcore)", "// 16f. Windowed and estimated"),
  ("CLI dispatch, HTTP server/startup, and main", "// 17. Lifecycle / main"),
 ]
+TESTS = [  # (header prefix) in the order of the Test map rows
+ "// Shared test helpers", "// Store / format tests", "// SigV4 tests", "// CRC32 tests", "// End-to-end HTTP tests",
+ "// M2: Bucket tests", "// M3: CDC/dedup evidence", "// M3: CopyObject", "// M3: single-range GET", "// M5-B: Multipart upload tests",
+ "// Presigned URL (SigV4 query-string", "// M5-C: internal object version history", "// History retention (prune)", "// M5-D: ListParts",
+ "// M6 -- Optional ZeroS3 Delta Sync", "// M6C -- recursive directory sync", "// M8A: remote-to-remote", "// M8B: peer-assisted corruption repair",
+ "// M8C: prefix/bucket namespace replication", "// M8D: copy-on-write namespace fork", "// M8E-A: durable namespace snapshots",
+ "// M8F-A: atomic conditional PutObject", "// M8G-A:", "// M8H-B1/B2", "// P1-A: Environment-variable credentials",
+ "// Streaming ingest: ordinary PutObject", "// Streaming reads and aws-chunked SigV4", "// Z2-03: packed CAS", "// Z2-04: pack-aware gc",
+ "// Z2-05: adaptive pack compression", "// Z2-06: scalable packed-chunk locator", "// Z2-07: bulk logical-chunk transport",
+ "// Hot/warm/cold physical pack tiers", "// Z2-09: GetBucketLocation", "// Content-aware tier policy and rebalance",
+ "// Z2-11: grouped loose-CAS publication", "// Portable snapshot bundles (section 16b)", "// Z2-13: locality-aware pack layout",
+ "// Z2-14: delta (thin) snapshot bundles", "// Z2-15: stream-native direct pack ingest",
+]
+if p.endswith("_test.go"):
+    start = next(i for i, l in enumerate(L) if l == "// Test map")
+    rows = [i for i in range(start, start + 120) if re.match(r"^//\s+\d+\s+\S", L[i])]
+    assert len(rows) == len(TESTS), (len(rows), len(TESTS))
+    for r, pre in zip(rows, TESTS):
+        d = re.match(r"^//\s+\d+\s+(\S.*)$", L[r]).group(1)
+        L[r] = "//   %6d    %s" % (find(pre), d)
+    open(p, "w").write("\n".join(L))
+    sys.exit(0)
 start = next(i for i, l in enumerate(L) if l == "// Source map")
 rows = [i for i in range(start, start + 120) if re.match(r"^//\s+\d+\s+\S", L[i])]
 first, last = rows[0], rows[-1]
