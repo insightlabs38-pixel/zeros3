@@ -899,7 +899,7 @@ func buildBinaryAt(t *testing.T, commit string) string {
 		}
 		os.WriteFile(filepath.Join(dir, f), out, 0o644)
 	}
-	bin := filepath.Join(dir, "zeros3-"+commit[:7])
+	bin := filepath.Join(dir, "zeros3-"+commit[:min(7, len(commit))])
 	if out, err := exec.Command("go", "build", "-C", dir, "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("building %s: %v\n%s", commit, err, out)
 	}
