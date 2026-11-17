@@ -15447,6 +15447,12 @@ type repackOptions struct {
 	MaxLivePercent int
 	DryRun         bool
 	Compress       bool
+	// Recompress also selects fully live packs that still hold raw records, so
+	// `repack -compression auto` can compress direct-ingest packs that never
+	// became partly dead. It only has an effect together with Compress, and a
+	// pack whose raw records are incompressible is selected (and rewritten
+	// identically) by every run: opt-in for cold-tier maintenance.
+	Recompress bool
 }
 
 // RepackResult reports one repack pass. In a dry run the write figures are
@@ -15494,10 +15500,11 @@ func (s *Store) removeStalePackStaging() {
 
 // selectRepackPacks picks packs with no live record, plus partly dead packs
 // whose live share is below maxLivePercent, in pack order.
-func selectRepackPacks(us []packUsage, maxLivePercent int) []packUsage {
+func selectRepackPacks(us []packUsage, maxLivePercent int, recompress bool) []packUsage {
 	var sel []packUsage
 	for _, u := range us {
-		if u.fullyDead() || u.partiallyDead() && u.Utilization*100 < float64(maxLivePercent) {
+		if u.fullyDead() || u.partiallyDead() && u.Utilization*100 < float64(maxLivePercent) ||
+			recompress && u.LiveRecords > 0 && u.CompressedRecs < u.Records {
 			sel = append(sel, u)
 		}
 	}
@@ -15765,7 +15772,7 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 	us := s.packUsagesLive(live)
 	sum := summarizePacks(us)
 	res.PackCount, res.PackedChunkCount, res.PackFileBytes = sum.PackCount, sum.PackedChunkCount, sum.PackFileBytes
-	sel := selectRepackPacks(us, opt.MaxLivePercent)
+	sel := selectRepackPacks(us, opt.MaxLivePercent, opt.Compress && opt.Recompress)
 	if opt.Tier != "" && opt.Tier != "all" {
 		sel = slices.DeleteFunc(sel, func(u packUsage) bool { return u.Tier != opt.Tier })
 	}
@@ -15851,6 +15858,7 @@ func runRepack(args []string) {
 	compression := fs.String("compression", "auto", "record compression for rewritten packs: auto (DEFLATE when it saves space) or off (raw records)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	tierName := fs.String("tier", "all", "only repack packs in this tier: hot, warm, cold, or all (replacements always stay in their tier)")
+	recompress := fs.Bool("recompress", false, "also rewrite fully live packs that hold raw records (compresses direct-ingest packs; needs -compression auto)")
 	fs.Parse(args)
 
 	compress, err := parseCompressionFlag(*compression)
@@ -15861,7 +15869,7 @@ func runRepack(args []string) {
 		fmt.Fprintf(os.Stderr, "zeros3: repack: %v\n", err)
 		os.Exit(2)
 	}
-	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, DryRun: !*apply, Compress: compress})
+	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, DryRun: !*apply, Compress: compress, Recompress: *recompress})
 	if err != nil {
 		switch {
 		case errors.Is(err, errGCStoreInUse):
@@ -22376,12 +22384,12 @@ func (s *Store) annotateAffectedObjects(findings []RepairFinding) {
 	}
 	for _, o := range s.snapshotNamespace() {
 		if man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256); err == nil {
-			note(o.bucket+"/"+o.key, man.Chunks)
+			note(o.bucket+"/"+o.key, s.rootDependencyChunks(man))
 		}
 	}
 	for _, o := range s.snapshotHistory() {
 		if man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256); err == nil {
-			note(fmt.Sprintf("history:%s/%s@%s", o.bucket, o.key, o.entry.versionID), man.Chunks)
+			note(fmt.Sprintf("history:%s/%s@%s", o.bucket, o.key, o.entry.versionID), s.rootDependencyChunks(man))
 		}
 	}
 	for _, up := range s.snapshotUploads() {
@@ -22389,6 +22397,33 @@ func (s *Store) annotateAffectedObjects(findings []RepairFinding) {
 			note(fmt.Sprintf("multipart:%s/part%d", up.uploadID, p.partNumber), p.chunks)
 		}
 	}
+}
+
+// rootDependencyChunks lists the stored chunks one root's content depends on:
+// the components of every record in its authoritative closure (bases included)
+// when a body owns the content, otherwise the manifest's CDC chunk list.
+func (s *Store) rootDependencyChunks(man manifestV1) []chunkRef {
+	if !s.auth.mayHave.Load() {
+		return man.Chunks
+	}
+	sha, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		return man.Chunks
+	}
+	if rec, _ := s.authLoad(sha); rec == nil {
+		return man.Chunks
+	}
+	recs, err := s.authClosureOrder(sha, nil)
+	if err != nil {
+		return man.Chunks
+	}
+	var cs []chunkRef
+	for _, r := range recs {
+		if c, cerr := s.authRecordChunks(r); cerr == nil {
+			cs = append(cs, c...)
+		}
+	}
+	return cs
 }
 
 // casRepairPublish durably (over)writes a chunk's content-addressed file

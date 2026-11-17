@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -3389,5 +3390,592 @@ func FuzzAuthWindowRecord(f *testing.F) {
 		if err == nil && int64(len(out)) > wr.Size {
 			t.Fatalf("decoded %d bytes of a %d byte object", len(out), wr.Size)
 		}
+	})
+}
+
+// ---- G1, physical: real-process retire-everything differential ---------------
+//
+// The in-process hook above hides chunks virtually. This test retires them for
+// real (authority migrate, then gc/repack/compact through the CLI), checks that
+// every chunk of a body-backed version is gone from disk, and then drives the
+// production binary as separate processes: S3 reads, copy, sync, replicate,
+// snapshot, bundle export/import, restore, version pruning, maintenance, damage
+// of a component and peer repair. Each result is compared with the exact bytes
+// that were stored, and with the same operation on an untouched CDC store.
+
+type g1Hist struct {
+	key  string
+	vers [][]byte // oldest first
+}
+
+func g1Fixture(t *testing.T, dir string) []g1Hist {
+	t.Helper()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	hs := []g1Hist{
+		{"hist", authHistory(701, 4, 1_200_000)},
+		{"doc", authHistory(702, 3, 700_000)},
+		{"uniq", [][]byte{genRandomBytes(703, 400_000)}},
+		{"tiny", [][]byte{[]byte("small object stays CDC")}},
+	}
+	hs = append(hs, g1Hist{"dup", [][]byte{hs[0].vers[1]}}) // same content as a historical version of "hist"
+	for _, h := range hs {
+		for _, v := range h.vers {
+			if _, err := s.PutObject("b", h.key, v, "application/octet-stream", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return hs
+}
+
+type g1Server struct {
+	base string
+	stop func()
+}
+
+func g1Serve(t *testing.T, bin, dir string) g1Server {
+	t.Helper()
+	addr := freeTCPAddr(t)
+	cmd := exec.Command(bin, "-store", dir, "-addr", addr)
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForZeros3Serve(t, addr)
+	done := false
+	return g1Server{"http://" + addr, func() {
+		if !done {
+			done = true
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	}}
+}
+
+func g1Get(t *testing.T, base, key string, hdr map[string]string) (int, []byte, http.Header) {
+	t.Helper()
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	r := doSignedRequest(t, &http.Client{}, base, signer, http.MethodGet, "/b/"+key, nil, hdr)
+	defer r.Body.Close()
+	b, _ := io.ReadAll(r.Body)
+	return r.StatusCode, b, r.Header
+}
+
+func g1MustCLI(t *testing.T, bin string, args ...string) string {
+	t.Helper()
+	out, errOut, code := runZeros3CLI(t, bin, args...)
+	if code != 0 {
+		t.Fatalf("%v: exit %d\n%s\n%s", args, code, out, errOut)
+	}
+	return out
+}
+
+// g1ExactAll reads every current key whole, ranged, HEAD and conditionally through the server.
+func g1ExactAll(t *testing.T, base, stage string, want map[string][]byte) {
+	t.Helper()
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	for key, w := range want {
+		code, got, h := g1Get(t, base, key, nil)
+		if code != 200 || !bytes.Equal(got, w) {
+			t.Fatalf("%s: GET %s: status %d exact=%v", stage, key, code, bytes.Equal(got, w))
+		}
+		sum := md5.Sum(w)
+		if strings.Trim(h.Get("ETag"), `"`) != hex.EncodeToString(sum[:]) {
+			t.Fatalf("%s: GET %s etag %q", stage, key, h.Get("ETag"))
+		}
+		if len(w) > 70000 {
+			lo := int64(len(w)) / 3
+			code, got, _ = g1Get(t, base, key, map[string]string{"Range": fmt.Sprintf("bytes=%d-%d", lo, lo+65535)})
+			if code != 206 || !bytes.Equal(got, w[lo:lo+65536]) {
+				t.Fatalf("%s: ranged GET %s: %d", stage, key, code)
+			}
+		}
+		r := doSignedRequest(t, &http.Client{}, base, signer, http.MethodGet, "/b/"+key, nil, map[string]string{"If-None-Match": h.Get("ETag")})
+		r.Body.Close()
+		if r.StatusCode != http.StatusNotModified {
+			t.Fatalf("%s: conditional GET %s: %d", stage, key, r.StatusCode)
+		}
+	}
+}
+
+type g1Version struct {
+	VersionID string `json:"version_id"`
+	Status    string `json:"status"`
+	Size      int64  `json:"size"`
+}
+
+func g1Versions(t *testing.T, bin, dir, key string) []g1Version {
+	t.Helper()
+	var vs []g1Version
+	if err := json.Unmarshal([]byte(g1MustCLI(t, bin, "versions", "-store", dir, "-bucket", "b", "-key", key, "-json")), &vs); err != nil {
+		t.Fatal(err)
+	}
+	return vs
+}
+
+func TestAuthorityRetireEverythingSubprocess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("physical retire-everything differential (builds the binary, runs ~15 processes)")
+	}
+	bin := buildZeros3Binary(t)
+	root := t.TempDir()
+	refDir, autDir := filepath.Join(root, "ref"), filepath.Join(root, "aut")
+	hs := g1Fixture(t, refDir)
+	g1Fixture(t, autDir)
+	cur := map[string][]byte{}
+	for _, h := range hs {
+		cur[h.key] = h.vers[len(h.vers)-1]
+	}
+
+	// 1. Retire for real, in separate processes.
+	g1MustCLI(t, bin, "authority", "migrate", "-store", autDir, "-apply", "-archive", "-min-saving", "0.05")
+	for _, args := range [][]string{{"gc", "-apply"}, {"repack", "-apply", "-max-live-percent", "100"}, {"compact"}, {"gc", "-apply"}} {
+		g1MustCLI(t, bin, append([]string{args[0], "-store", autDir}, args[1:]...)...)
+	}
+	physRef, physAut := dirBytes(t, refDir), dirBytes(t, autDir)
+	s, err := OpenStoreShared(autDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retired, total int
+	for _, lm := range s.liveManifests() {
+		sha, _ := decodeHexSHA256(lm.man.ObjectSHA256)
+		if rec, _ := s.authLoad(sha); rec == nil {
+			continue
+		}
+		for _, c := range lm.man.Chunks {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			total++
+			if _, err := s.casStat(sum); err != nil {
+				retired++
+			}
+		}
+	}
+	s.Close()
+	t.Logf("physical %d -> %d bytes; %d of %d chunks of body-backed versions are physically gone", physRef, physAut, retired, total)
+	if total == 0 || retired < total/2 || physAut >= physRef {
+		t.Fatalf("not retired for real: %d/%d chunks gone, %d -> %d bytes", retired, total, physRef, physAut)
+	}
+	g1MustCLI(t, bin, "verify", "-store", autDir, "-deep")
+
+	// 2. S3 reads, conditional reads, copy, multipart-free PUT of retired content.
+	srv := g1Serve(t, bin, autDir)
+	g1ExactAll(t, srv.base, "retired", cur)
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	r := doSignedRequest(t, &http.Client{}, srv.base, signer, http.MethodPut, "/b/copied", nil, map[string]string{"x-amz-copy-source": "/b/hist"})
+	r.Body.Close()
+	if r.StatusCode != 200 {
+		t.Fatalf("copy of a retired object: %d", r.StatusCode)
+	}
+	r = doSignedRequest(t, &http.Client{}, srv.base, signer, http.MethodPut, "/b/reput", hs[0].vers[1], nil) // re-PUT of retired historical content
+	r.Body.Close()
+	if r.StatusCode != 200 {
+		t.Fatalf("PUT of retired content: %d", r.StatusCode)
+	}
+	cur["copied"], cur["reput"] = cur["hist"], hs[0].vers[1]
+	g1ExactAll(t, srv.base, "copy+reput", map[string][]byte{"copied": cur["copied"], "reput": cur["reput"]})
+
+	// 3. sync: an edit of retired content, and retired content itself, from a real client process.
+	edited := authVersion(hs[0].vers[2], 4242)
+	files := map[string][]byte{"edited": edited, "same": hs[0].vers[0]}
+	for k, v := range files {
+		p := filepath.Join(root, "sync-"+k)
+		os.WriteFile(p, v, 0o644)
+		g1MustCLI(t, bin, "sync", "-endpoint", srv.base, p, "s3://b/synced-"+k)
+		cur["synced-"+k] = v
+	}
+	g1ExactAll(t, srv.base, "sync", map[string][]byte{"synced-edited": edited, "synced-same": files["same"]})
+
+	// 3b. same-store fork, diff and inspect of retired content.
+	forkCreate := doSignedRequest(t, &http.Client{}, srv.base, signer, http.MethodPut, "/b2", nil, nil)
+	forkCreate.Body.Close()
+	g1MustCLI(t, bin, "fork", "-endpoint", srv.base, "s3://b/", "s3://b2/forked/")
+	for k, w := range map[string][]byte{"hist": cur["hist"], "doc": cur["doc"]} {
+		r := doSignedRequest(t, &http.Client{}, srv.base, signer, http.MethodGet, "/b2/forked/"+k, nil, nil)
+		got, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if r.StatusCode != 200 || !bytes.Equal(got, w) {
+			t.Fatalf("fork of retired %s: status %d exact=%v", k, r.StatusCode, bytes.Equal(got, w))
+		}
+	}
+	g1MustCLI(t, bin, "diff", "-from", srv.base, "s3://b/hist", "s3://b/copied")
+	g1MustCLI(t, bin, "inspect", "-endpoint", srv.base, "-chunks", "s3://b/hist")
+
+	// 4. replicate the whole namespace to a fresh store served by another process.
+	dstDir := filepath.Join(root, "dst")
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dst := g1Serve(t, bin, dstDir)
+	signerD := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	if err := doCreateBucket(t, &http.Client{}, dst.base, signerD, "b"); err != nil {
+		t.Fatal(err)
+	}
+	g1MustCLI(t, bin, "replicate", "-recursive", "-from", srv.base, "-to", dst.base, "s3://b/", "s3://b/")
+	g1ExactAll(t, dst.base, "replicated", cur)
+	dst.stop()
+	g1MustCLI(t, bin, "verify", "-store", dstDir, "-deep")
+
+	// 5. snapshot, bundle export/import into a fresh store, restore of a historical version.
+	var snap struct {
+		SnapshotID string `json:"snapshot_id"`
+	}
+	out := g1MustCLI(t, bin, "snapshot", "create", "-endpoint", srv.base, "-json", "s3://b/")
+	if err := json.Unmarshal([]byte(out), &snap); err != nil || snap.SnapshotID == "" {
+		var m map[string]any
+		json.Unmarshal([]byte(out), &m)
+		for k, v := range m {
+			if strings.EqualFold(strings.ReplaceAll(k, "_", ""), "snapshotid") || strings.EqualFold(k, "id") {
+				snap.SnapshotID, _ = v.(string)
+			}
+		}
+		if snap.SnapshotID == "" {
+			t.Fatalf("snapshot create output %s", out)
+		}
+	}
+	srv.stop()
+	bundle := filepath.Join(root, "b.zs3b")
+	g1MustCLI(t, bin, "bundle", "export", "-store", autDir, "-snapshot", snap.SnapshotID, "-out", bundle)
+	g1MustCLI(t, bin, "bundle", "inspect", "-in", bundle, "-verify")
+	impDir := filepath.Join(root, "imp")
+	g1MustCLI(t, bin, "bundle", "import", "-store", impDir, "-in", bundle)
+	g1MustCLI(t, bin, "verify", "-store", impDir, "-deep")
+	imp := g1Serve(t, bin, impDir)
+	if err := doCreateBucket(t, &http.Client{}, imp.base, signerD, "b"); err != nil {
+		t.Fatal(err)
+	}
+	g1MustCLI(t, bin, "snapshot", "restore", "-endpoint", imp.base, snap.SnapshotID, "s3://b/")
+	g1ExactAll(t, imp.base, "bundle-imported", cur)
+	imp.stop()
+
+	vs := g1Versions(t, bin, autDir, "hist")
+	var old string
+	for _, v := range vs {
+		if v.Status == "historical" && v.Size == int64(len(hs[0].vers[0])) {
+			old = v.VersionID
+		}
+	}
+	if old == "" {
+		t.Fatalf("no historical version of the oldest content: %+v", vs)
+	}
+	g1MustCLI(t, bin, "restore", "-store", autDir, "-bucket", "b", "-key", "hist", "-version", old)
+	cur["hist"] = hs[0].vers[0]
+	g1MustCLI(t, bin, "verify", "-store", autDir, "-deep")
+
+	// 6. Retention and reclaim after pruning: surviving contents stay exact.
+	g1MustCLI(t, bin, "versions", "prune", "-store", autDir, "-bucket", "b", "-keep-last", "1", "-apply")
+	for _, args := range [][]string{{"gc", "-apply"}, {"repack", "-apply", "-max-live-percent", "100"}, {"compact"}, {"gc", "-apply"}} {
+		g1MustCLI(t, bin, append([]string{args[0], "-store", autDir}, args[1:]...)...)
+	}
+	g1MustCLI(t, bin, "verify", "-store", autDir, "-deep")
+	for _, c := range []string{"stats", "doctor"} {
+		g1MustCLI(t, bin, c, "-store", autDir)
+	}
+	srv = g1Serve(t, bin, autDir)
+	g1ExactAll(t, srv.base, "pruned+reclaimed", cur)
+	srv.stop()
+
+	// 7. A damaged authoritative component: detected by an independent process, repaired from a peer, exact again.
+	peerDir := filepath.Join(root, "peer")
+	if err := econCopyTree(autDir, peerDir); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenStore(autDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var victim [32]byte
+	files2, _ := s.authFiles()
+	for _, f := range files2 {
+		if rec, _ := s.authLoad(f); rec != nil && rec.Form == authFormDelta && len(rec.Pieces) > 0 {
+			victim = rec.Pieces[0].SHA
+		}
+	}
+	if victim == ([32]byte{}) {
+		t.Fatal("no delta record to damage")
+	}
+	removeChunkAnyLayout(t, s, victim)
+	s.Close()
+	if _, _, code := runZeros3CLI(t, bin, "verify", "-store", autDir, "-deep"); code == 0 {
+		t.Fatal("verify -deep passed with a missing authoritative component")
+	}
+	peer := g1Serve(t, bin, peerDir)
+	g1MustCLI(t, bin, "repair", "-store", autDir, "-from", peer.base)
+	peer.stop()
+	g1MustCLI(t, bin, "verify", "-store", autDir, "-deep")
+	srv = g1Serve(t, bin, autDir)
+	g1ExactAll(t, srv.base, "repaired", cur)
+	srv.stop()
+}
+
+// ---- G1 equivalents: the logical guarantees of the CDC-layout tests, after real retirement ----
+//
+// The root tests that corrupt, delete or read a CDC chunk of an object assert the CDC
+// physical contract and stay unchanged. Once a body owns an object its CDC chunks are gone
+// (physically, after gc), so the same guarantees are proved here against the chunks that
+// remain: the components of the authoritative closure.
+
+type eqFix struct {
+	l      *authLab
+	key    string
+	rec    *authRecord
+	victim authPiece
+	srv    *httptest.Server
+	signer testSigner
+	creds  Credentials
+}
+
+func eqFixture(t *testing.T) *eqFix {
+	t.Helper()
+	l := authHistoryLab(t, 211, 4, 900_000)
+	l.migrate(AuthPolicy{MinSaving: 0.05})
+	l.reclaim()
+	f := &eqFix{l: l, creds: Credentials{AccessKeyID: "AKIAEQUIVALENTS00001", SecretAccessKey: "EquivalentsSecretKeyForZeroS3Tests0123"}}
+	f.signer = testSigner{accessKey: f.creds.AccessKeyID, secretKey: f.creds.SecretAccessKey, region: "us-east-1"}
+	for k := range l.want {
+		sha, _ := decodeHexSHA256(l.man(k).ObjectSHA256)
+		if rec, _ := l.s.authLoad(sha); rec != nil && rec.Form == authFormDelta && len(rec.Pieces) > 0 && (f.rec == nil || k > f.key) {
+			f.key, f.rec, f.victim = k, rec, rec.Pieces[0]
+		}
+	}
+	if f.rec == nil {
+		t.Fatal("no delta record")
+	}
+	// The CDC copies of body-backed contents must be gone, not hidden.
+	for k := range l.want {
+		man := l.man(k)
+		sha, _ := decodeHexSHA256(man.ObjectSHA256)
+		if rec, _ := l.s.authLoad(sha); rec == nil || rec.Form != authFormDelta {
+			continue
+		}
+		sum, _ := decodeHexSHA256(man.Chunks[len(man.Chunks)/2].SHA256)
+		if _, err := l.s.casStat(sum); err == nil {
+			t.Fatalf("%s: a CDC chunk of a delta-backed object is still stored", k)
+		}
+	}
+	f.srv = httptest.NewServer(NewServer(l.s, f.creds, "us-east-1"))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *eqFix) get(t *testing.T, hdr map[string]string) (code int, body []byte, readErr error) {
+	t.Helper()
+	r := doSignedRequest(t, f.srv.Client(), f.srv.URL, f.signer, http.MethodGet, "/b/"+f.key, nil, hdr)
+	defer r.Body.Close()
+	body, readErr = io.ReadAll(r.Body)
+	return r.StatusCode, body, readErr
+}
+
+// peer returns a server holding the native closure of every delta-backed content (a peer that can supply components).
+func (f *eqFix) peer(t *testing.T) *httptest.Server {
+	t.Helper()
+	p := newAuthLab(t)
+	for k := range f.l.want {
+		sha, _ := decodeHexSHA256(f.l.man(k).ObjectSHA256)
+		if rec, _ := f.l.s.authLoad(sha); rec == nil {
+			continue
+		}
+		var buf bytes.Buffer
+		if err := f.l.s.ExportAuthorityClosure(sha, &buf); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.s.ImportAuthorityClosure(&buf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ts := httptest.NewServer(NewServer(p.s, f.creds, "us-east-1"))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestAuthorityRetiredEquivalents(t *testing.T) {
+	t.Run("missing component: verify, reachability, findings, maintenance and mutations refuse", func(t *testing.T) {
+		f := eqFixture(t)
+		s := f.l.s
+		removeChunkAnyLayout(t, s, f.victim.SHA)
+		s.purgeReadCaches()
+		if res, err := s.Verify(false); err != nil || res.OK() {
+			t.Fatalf("shallow verify must see a missing component: %v %v", err, res.Issues)
+		}
+		if rr, err := s.computeReachability(false); err != nil || rr.OK() {
+			t.Fatalf("reachability must flag the missing component: %v", err)
+		}
+		fs, err := s.repairFindings()
+		if err != nil || len(fs) != 1 || fs[0].Kind != "missing" || fs[0].Length != f.victim.Len || !slices.Contains(fs[0].AffectedObjects, "b/"+f.key) {
+			t.Fatalf("findings %+v err=%v", fs, err)
+		}
+		before := f.l.man(f.key).ManifestUUID
+		if _, _, err := s.CopyObject(CopyObjectRequest{SrcBucket: "b", SrcKey: f.key, DstBucket: "b", DstKey: "copy"}); err == nil {
+			t.Fatal("copy of an object with a missing component succeeded")
+		}
+		if _, err := s.lookupObject("b", "copy"); err == nil || f.l.man(f.key).ManifestUUID != before {
+			t.Fatal("a refused copy mutated the namespace")
+		}
+		f.l.close()
+		if _, err := gcCollect(f.l.dir, true); err == nil {
+			t.Fatal("gc must refuse while a live component is missing")
+		}
+		if _, err := repackStore(f.l.dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true}); err == nil {
+			t.Fatal("repack must refuse while a live component is missing")
+		}
+	})
+
+	t.Run("corrupt component: deep verify, reads never deliver wrong bytes", func(t *testing.T) {
+		f := eqFixture(t)
+		s := f.l.s
+		corruptChunkAnyLayout(t, s, f.victim.SHA)
+		s.purgeReadCaches()
+		if res, err := s.Verify(true); err != nil || res.OK() {
+			t.Fatalf("deep verify must see a corrupt component: %v %v", err, res.Issues)
+		}
+		fs, err := s.repairFindings()
+		if err != nil || len(fs) != 1 || fs[0].Kind != "corrupt" {
+			t.Fatalf("findings %+v err=%v", fs, err)
+		}
+		want := f.l.want[f.key]
+		for _, hdr := range []map[string]string{nil, {"Range": "bytes=0-4095"}, {"Range": fmt.Sprintf("bytes=%d-%d", len(want)/2, len(want)/2+200000)}} {
+			code, body, rerr := f.get(t, hdr)
+			ok := (code == 200 || code == 206) && rerr == nil
+			if ok && !bytes.Equal(body, want[:len(body)]) && hdr == nil {
+				t.Fatalf("200 with wrong bytes")
+			}
+			if hdr == nil && ok && bytes.Equal(body, want) {
+				t.Fatal("a fully damaged-closure object was served as if intact")
+			}
+			if hdr != nil && ok {
+				var lo int
+				fmt.Sscanf(hdr["Range"], "bytes=%d-", &lo)
+				if !bytes.Equal(body, want[lo:lo+len(body)]) {
+					t.Fatalf("range %v delivered wrong bytes", hdr)
+				}
+			}
+		}
+	})
+
+	t.Run("peer repair: exact stats at every worker count, affected objects, resume, unrecoverable", func(t *testing.T) {
+		var first repairStats
+		for i, workers := range []int{1, 4, 16} {
+			f := eqFixture(t)
+			peer := f.peer(t)
+			s := f.l.s
+			var all []authPiece
+			files, _ := s.authFiles()
+			for _, sh := range files {
+				if rec, _ := s.authLoad(sh); rec != nil && rec.Form == authFormDelta {
+					all = append(all, rec.Pieces[0])
+				}
+			}
+			for j, p := range all {
+				if j%2 == 0 {
+					removeChunkAnyLayout(t, s, p.SHA)
+				} else {
+					corruptChunkAnyLayout(t, s, p.SHA)
+				}
+			}
+			s.purgeReadCaches()
+			stats, err := s.repairFromPeer(repairConfig{Peer: mustPeerConfig(peer, f.creds, "us-east-1"), Workers: workers})
+			if err != nil || stats.BadChunks != len(all) || stats.Repaired != len(all) || stats.Unresolved != 0 || !stats.PostRepairOK || stats.AffectedObjects == 0 {
+				t.Fatalf("workers=%d: %+v err=%v", workers, stats, err)
+			}
+			stats.Source, stats.PostRepairResult = "", VerifyResult{}
+			if i == 0 {
+				first = stats
+			} else if fmt.Sprint(stats) != fmt.Sprint(first) {
+				t.Fatalf("stats differ with workers=%d: %+v vs %+v", workers, stats, first)
+			}
+			f.l.exact("repaired")
+		}
+		f := eqFixture(t)
+		s := f.l.s
+		complete := f.peer(t)
+		removeChunkAnyLayout(t, s, f.victim.SHA)
+		s.purgeReadCaches()
+		empty := newAuthLab(t)
+		emptyTS := httptest.NewServer(NewServer(empty.s, f.creds, "us-east-1"))
+		defer emptyTS.Close()
+		stats, err := s.repairFromPeer(repairConfig{Peer: mustPeerConfig(emptyTS, f.creds, "us-east-1")})
+		if err == nil && (stats.Unresolved != 1 || stats.PostRepairOK || len(stats.Failures) != 1) {
+			t.Fatalf("a peer without the component must leave it explicitly unresolved: %+v", stats)
+		}
+		if res, _ := s.Verify(true); res.OK() {
+			t.Fatal("verify passes with an unrecoverable component")
+		}
+		stats, err = s.repairFromPeer(repairConfig{Peer: mustPeerConfig(complete, f.creds, "us-east-1")})
+		if err != nil || stats.Repaired != 1 || !stats.PostRepairOK {
+			t.Fatalf("resume against a complete peer: %+v err=%v", stats, err)
+		}
+		f.l.exact("resumed")
+	})
+
+	t.Run("shared base: one deduplicated finding names every affected object", func(t *testing.T) {
+		f := eqFixture(t)
+		s := f.l.s
+		var base authPiece
+		have := map[[32]byte]int{}
+		files, _ := s.authFiles()
+		for _, sh := range files {
+			rec, _ := s.authLoad(sh)
+			if rec == nil || rec.Form != authFormPin {
+				continue
+			}
+			for _, p := range rec.Pieces {
+				have[p.SHA]++
+				base = p
+			}
+		}
+		if len(have) == 0 {
+			t.Fatal("no pinned base")
+		}
+		removeChunkAnyLayout(t, s, base.SHA)
+		s.purgeReadCaches()
+		fs, err := s.repairFindings()
+		if err != nil || len(fs) != 1 || len(fs[0].AffectedObjects) < 2 {
+			t.Fatalf("a shared base chunk must be one finding naming at least two objects: %+v err=%v", fs, err)
+		}
+	})
+
+	t.Run("snapshots pin retired content through delete, prune, gc and repack", func(t *testing.T) {
+		f := eqFixture(t)
+		s := f.l.s
+		entries, err := s.captureSnapshotEntries("b", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		snap := newUUIDv7()
+		if err := s.publishSnapshot(snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: snap, CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: entries}); err != nil {
+			t.Fatal(err)
+		}
+		for k := range f.l.want {
+			if err := s.DeleteObject("b", k); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f.srv.Close()
+		f.l.close()
+		if _, err := pruneHistoryStore(f.l.dir, historyPruneOptions{Bucket: "b", KeepLast: pruneKeep(0)}, true); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if _, err := gcCollect(f.l.dir, true); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repackStore(f.l.dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		bundleRestoreCheck(t, f.l.dir, snap, f.l.want)
+		// And the same snapshot exports as a bundle that imports into a fresh store, exactly.
+		out, _ := bundleExportT(t, f.l.dir, snap, true)
+		dst := t.TempDir()
+		bundleImportT(t, dst, out)
+		bundleRestoreCheck(t, dst, snap, f.l.want)
 	})
 }

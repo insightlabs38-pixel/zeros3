@@ -56,7 +56,8 @@ func econFamilies(root string) []econFamily {
 		{"src-tar-short", g("src/coreutils-*.tar"), "3 real coreutils releases (tar)"},
 		{"clr-short", clr("12.0.3", "13.0.1", "13.0.2", "13.0.3", "13.0.4"), "5 real Newtonsoft.Json releases"},
 		{"clr-long", clr("10.0.1", "10.0.2", "10.0.3", "11.0.1", "11.0.2", "12.0.1", "12.0.2", "12.0.3", "13.0.1", "13.0.2", "13.0.3", "13.0.4"), "12 real Newtonsoft.Json releases"},
-		{"dex", append(g("dex/*/classes.dex"), g("dex/*/classes2.dex")...), "3 real F-Droid client releases x 2 dex files"},
+		{"dex-b8", g("dex-b8/*/classes.dex"), "B1/B8 cohort: F-Droid 2.0.0/2.0.1/2.0.2 classes.dex (versionCodes 2000050-52), 3 files"},
+		{"dex", append(g("dex/*/classes.dex"), g("dex/*/classes2.dex")...), "expanded cohort: 3 real F-Droid client releases (1019000/1020050/1021000) x 2 dex files"},
 		{"parquet", g("parquet/snappy/c*.parquet"), "4 pyarrow Snappy producer states (synthetic workload)"},
 		{"parquet-zstd", g("parquet/zstd/c*.parquet"), "4 pyarrow Zstd producer states"},
 		{"sqlite", g("sqlite/v*.db"), "4 states of one SQLite database (synthetic edits)"},
@@ -129,10 +130,20 @@ func econBuild(t *testing.T, dir string, files []string, mode repMode) (logical 
 	return logical, time.Since(t0).Seconds(), rssPeakMiB()
 }
 
+// econRecompress reports whether the reclamation pipeline also compresses fully live raw
+// packs (repack -recompress), the cold-tier end state B8 measured for CDC and authority
+// alike. ZEROS3_ECON_RAW=1 keeps direct-ingest packs raw (the as-ingested physical state).
+func econRecompress() bool { return os.Getenv("ZEROS3_ECON_RAW") != "1" }
+
 func econCompact(t *testing.T, dir string) {
 	t.Helper()
 	if _, err := compactStore(dir, authCompactOpts()); err != nil {
 		t.Fatal(err)
+	}
+	if econRecompress() {
+		if _, err := repackStore(dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true, Recompress: true}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -144,7 +155,7 @@ func econReclaim(t *testing.T, dir string) (gcSec, repackSec float64) {
 	}
 	gcSec = time.Since(t0).Seconds()
 	t0 = time.Now()
-	if _, err := repackStore(dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true}); err != nil {
+	if _, err := repackStore(dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true, Recompress: econRecompress()}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := compactStore(dir, authCompactOpts()); err != nil {
