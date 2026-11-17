@@ -1538,13 +1538,13 @@ func (s *Store) chunkRetired(sum [32]byte) bool {
 	}
 	_, ok := r.Load(retiredKey{s.root, sum})
 	if ok && retiredNote != nil {
-		retiredNote()
+		retiredNote(s.root)
 	}
 	return ok
 }
 
 // retiredNote is a qualification seam: called whenever a reader touches a retired chunk.
-var retiredNote func()
+var retiredNote func(root string)
 
 func (s *Store) chunkRevive(sum [32]byte) {
 	if r := retiredChunks.Load(); r != nil {
@@ -47404,8 +47404,16 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 		m.addBase(i)
 		return nil
 	}
+	var repRoot *repRoot // an accepted group-priced representation competes with the windowed delta
+	var repAdded int64
+	if rc := m.repC[i]; rc != nil && rc.accepted {
+		repRoot, repAdded = rc.root, rc.marginal+160
+	}
 	if !pol.AllowDelta {
-		return keep("objects above the in-memory window take a delta only")
+		if repRoot == nil {
+			return keep("no representation applies and deltas are not allowed")
+		}
+		return m.commitRep(i, o, repRoot, repAdded, plan, finish)
 	}
 	tgt := m.s.newAuthObjAt(o.man)
 	defer tgt.close()
@@ -47450,6 +47458,9 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 			c.winAdded[o.sha] = added
 		}
 	}
+	if repRoot != nil && repAdded <= added {
+		return m.commitRep(i, o, repRoot, repAdded, plan, finish)
+	}
 	plan.AddedBytes = added
 	if plan.CDCBytes > 0 {
 		plan.Saving = float64(plan.CDCBytes-added) / float64(plan.CDCBytes)
@@ -47481,6 +47492,26 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 		pins = []int{j}
 	}
 	return m.commit(i, o, rec, pins, plan, "delta", finish)
+}
+
+// commitRep applies an accepted structural representation of an object the windowed
+// path was asked to plan; the same saving rule as for in-memory objects applies, and a
+// group-admitted representation (priced by the union of its components) bypasses it.
+func (m *authMigrator) commitRep(i int, o *authObj, root *repRoot, added int64, plan AuthPlan, finish func(AuthPlan)) error {
+	pol := m.pol
+	plan.AddedBytes = added
+	if plan.CDCBytes > 0 {
+		plan.Saving = float64(plan.CDCBytes-added) / float64(plan.CDCBytes)
+	}
+	if !pol.Apply {
+		plan.Form, plan.Reason = "rep?", "plan only"
+		m.depth[i] = 0
+		finish(plan)
+		m.addBase(i)
+		return nil
+	}
+	rec := &authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormRep, Sketch: m.sketch[i], Root: root}
+	return m.commit(i, o, rec, nil, plan, "rep", finish)
 }
 
 // authChunkKnown reports whether a chunk is already referenced by a CDC object

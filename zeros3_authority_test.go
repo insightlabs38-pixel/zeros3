@@ -1973,7 +1973,7 @@ var (
 )
 
 // g1NoteStack records the production call chain (and the test that drove it) of a retired-chunk read.
-func g1NoteStack() {
+func g1NoteStack(root string) {
 	pcs := make([]uintptr, 40)
 	n := runtime.Callers(3, pcs)
 	frames := runtime.CallersFrames(pcs[:n])
@@ -1990,6 +1990,14 @@ func g1NoteStack() {
 		}
 		if !more {
 			break
+		}
+	}
+	if test == "" { // server goroutines carry no test frame: the store directory names the test
+		if i := strings.Index(root, "/Test"); i >= 0 {
+			test = root[i+1:]
+			if j := strings.IndexAny(test, "0123456789/"); j > 0 {
+				test = test[:j]
+			}
 		}
 	}
 	k := strings.Join(chain, " < ")

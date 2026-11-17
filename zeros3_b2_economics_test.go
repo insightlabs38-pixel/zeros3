@@ -415,11 +415,15 @@ func TestB2Economics(t *testing.T) {
 				rep, rss, peak := econMigrate(t, dir, v.pol)
 				migSec := time.Since(t0).Seconds()
 				forms := map[string]int{}
+				reasons := map[string]int{}
 				for _, p := range rep.Plans {
 					forms[strings.TrimSuffix(p.Form, "?")]++
+					if p.Reason != "" && p.Reason != "plan only" {
+						reasons[p.Reason]++
+					}
 				}
 				gcSec, repackSec := econReclaim(t, dir)
-				row(v.name, dir, logical, econRow{"migrate_s": migSec, "migrate_rss_mib": rss, "peak_during_migration": peak, "forms": forms, "gc_s": gcSec, "repack_s": repackSec,
+				row(v.name, dir, logical, econRow{"migrate_s": migSec, "migrate_rss_mib": rss, "peak_during_migration": peak, "forms": forms, "reasons": reasons, "gc_s": gcSec, "repack_s": repackSec,
 					"admitted": rep.Admitted, "objects": rep.Objects})
 				// Recovery/rebuild: fresh process-equivalent reopen, reachability + deep verify.
 				s, _ := OpenStore(dir)
