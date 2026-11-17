@@ -3148,7 +3148,7 @@ func TestAuthorityRepeatedCrashLoops(t *testing.T) {
 	}
 	loops := []loop{
 		{"gc", "migrated", []string{hookBeforeGCDelete, hookBeforePackDelete, hookPackDeleted}},
-		{"repack", "retired", []string{hookBeforePackDelete, hookPackDeleted}},
+		{"repack", "migrated", []string{hookBeforePackDelete, hookPackDeleted}},
 		{"revertall", "retired", []string{hookAuthRevertMaterial, hookCASBeforeRename, hookAuthBeforeRetire, hookAuthAfterRetire}},
 		{"migrate", "cdc", []string{hookAuthComponentsFlushed, hookAuthBeforeRename, hookAuthAfterRename, hookAuthPublished}},
 	}
