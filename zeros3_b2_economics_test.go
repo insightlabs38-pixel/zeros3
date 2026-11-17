@@ -401,6 +401,9 @@ func TestB2Economics(t *testing.T) {
 				{"auth-hot-hybrid", AuthPolicy{Order: "newest", MaxDepth: 2, MaxBases: 2, MinSaving: 0.10, MaxReadAmp: 4, MinReadRatio: 0.5, AllowRep: true, AllowDelta: true}},
 			} {
 				only := os.Getenv("ZEROS3_B2_VARIANTS")
+				if only != "" && !strings.Contains(","+only+",", ","+v.name+",") {
+					continue
+				}
 				if strings.Contains(v.name, "frame") && !strings.Contains(","+only+",", ","+v.name+",") {
 					continue // optional range-granularity experiments run only when named
 				}
