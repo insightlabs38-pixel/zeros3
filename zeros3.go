@@ -1537,8 +1537,14 @@ func (s *Store) chunkRetired(sum [32]byte) bool {
 		return false
 	}
 	_, ok := r.Load(retiredKey{s.root, sum})
+	if ok && retiredNote != nil {
+		retiredNote()
+	}
 	return ok
 }
+
+// retiredNote is a qualification seam: called whenever a reader touches a retired chunk.
+var retiredNote func()
 
 func (s *Store) chunkRevive(sum [32]byte) {
 	if r := retiredChunks.Load(); r != nil {
@@ -45186,9 +45192,10 @@ type authState struct {
 
 	reads, rangeReads, fallbacks, cacheHits, cacheMisses atomic.Int64
 
-	vmu   sync.Mutex
-	vidx  map[[32]byte]authVLoc
-	vtime time.Time
+	vmu  sync.Mutex
+	vidx map[[32]byte]authVLoc
+	vkey [2]uint64 // journal sequence and authority generation the index was built at
+	gen  atomic.Uint64
 }
 
 func (s *Store) authDir() string { return filepath.Join(s.root, "bodies") }
@@ -45417,9 +45424,7 @@ func (s *Store) authCheckClosure(rec *authRecord) error {
 }
 
 func (s *Store) authInvalidate() {
-	s.auth.vmu.Lock()
-	s.auth.vidx = nil
-	s.auth.vmu.Unlock()
+	s.auth.gen.Add(1)
 }
 
 // authRetire removes a record. Callers must have proven no live manifest
@@ -46257,19 +46262,22 @@ func (s *Store) verifyBodiesDeep(rr reachabilityResult, res *VerifyResult) {
 
 // AuthPolicy controls which exact physical form may become authoritative.
 type AuthPolicy struct {
-	Order       string  `json:"order"`        // "oldest": earlier versions are bases; "newest": newer versions are bases
-	MaxDepth    int     `json:"max_depth"`    // delta nesting bound (default 2, hard 4)
-	MaxBases    int     `json:"max_bases"`    // bases per delta (default 2, hard 4)
-	Candidates  int     `json:"candidates"`   // trial base objects per target (default 4, max 8)
-	MinSaving   float64 `json:"min_saving"`   // fraction of the object's unshared CDC bytes that must be freed net
-	MaxReadAmp  float64 `json:"max_read_amp"` // measured 4 KiB cold-read amplification allowed relative to CDC (0 = archive, unlimited)
-	Strategy    string  `json:"strategy"`     // "" or "best": plan delta-only and rep-only, apply the cheaper; "mixed": per-object choice
-	AllowRep    bool    `json:"allow_rep"`
-	AllowDelta  bool    `json:"allow_delta"`
-	MinObject   int64   `json:"min_object"`
-	MinRepGroup int     `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
-	FrameSpan   int64   `json:"frame_span"`
-	Apply       bool    `json:"apply"`
+	Order      string  `json:"order"`        // "oldest": earlier versions are bases; "newest": newer versions are bases
+	MaxDepth   int     `json:"max_depth"`    // delta nesting bound (default 2, hard 4)
+	MaxBases   int     `json:"max_bases"`    // bases per delta (default 2, hard 4)
+	Candidates int     `json:"candidates"`   // trial base objects per target (default 4, max 8)
+	MinSaving  float64 `json:"min_saving"`   // fraction of the object's unshared CDC bytes that must be freed net
+	MaxReadAmp float64 `json:"max_read_amp"` // measured 4 KiB cold-read amplification allowed relative to CDC (0 = archive, unlimited)
+	// MinReadRatio refuses a hybrid admission (MaxReadAmp > 0) whose measured whole-object read
+	// throughput is below this fraction of the CDC read of the same object (0 = not measured).
+	MinReadRatio float64 `json:"min_read_ratio"`
+	Strategy     string  `json:"strategy"` // "" or "best": plan delta-only and rep-only, apply the cheaper; "mixed": per-object choice
+	AllowRep     bool    `json:"allow_rep"`
+	AllowDelta   bool    `json:"allow_delta"`
+	MinObject    int64   `json:"min_object"`
+	MinRepGroup  int     `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
+	FrameSpan    int64   `json:"frame_span"`
+	Apply        bool    `json:"apply"`
 	// RepSkipIfDeltaAtMost (0 = off): do not construct any
 	// representation for a kind group whose delta plan already costs at most this
 	// fraction of the group's reclaimable CDC bytes. A policy heuristic, not a
@@ -46308,7 +46316,7 @@ func newAuthPlanCache() *authPlanCache {
 
 func (p AuthPolicy) norm() AuthPolicy {
 	if p.Order == "" {
-		p.Order = "oldest"
+		p.Order = "newest" // the newest version of a history stays CDC unless the operator asks for archive order
 	}
 	if p.MaxDepth <= 0 {
 		p.MaxDepth = 2
@@ -46346,6 +46354,7 @@ type AuthPlan struct {
 	Saving     float64  `json:"saving"`
 	ReadAmp    float64  `json:"read_amp_4k,omitempty"`
 	CDCAmp     float64  `json:"cdc_amp_4k,omitempty"`
+	ReadRatio  float64  `json:"read_ratio,omitempty"` // whole-object read throughput relative to CDC (hybrid admissions)
 	Reason     string   `json:"reason,omitempty"`
 }
 
@@ -46607,6 +46616,65 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 		probeFetched = float64(tot) / float64(probes)
 	}
 	return fetched, probeFetched, nil
+}
+
+// authReadRatio is the whole-object read throughput of a candidate body relative to
+// the CDC read of the same object (best of two warm passes each; above 1 is faster).
+func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) {
+	timed := func(read func() error) (time.Duration, error) {
+		best := time.Duration(math.MaxInt64)
+		for i := 0; i < 2; i++ {
+			t0 := time.Now()
+			if err := read(); err != nil {
+				return 0, err
+			}
+			best = min(best, time.Since(t0))
+		}
+		return best, nil
+	}
+	data, err := rec.marshal()
+	if err != nil {
+		return 0, err
+	}
+	cand, err := unmarshalAuthRecord(data)
+	if err != nil {
+		return 0, err
+	}
+	dAuth, err := timed(func() error {
+		ctx := s.newAuthCtx()
+		ctx.overlay = map[[32]byte]*authRecord{cand.SHA: cand}
+		body, _, err := ctx.body(cand.SHA, 0, 1)
+		if err != nil {
+			return err
+		}
+		buf := make([]byte, authReadPiece)
+		for off := int64(0); off < body.Size(); {
+			k := int(min(int64(len(buf)), body.Size()-off))
+			if n, err := body.ReadAt(buf[:k], off); n != k {
+				return fmt.Errorf("read ratio: %v", err)
+			}
+			off += int64(k)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	dCDC, err := timed(func() error {
+		rd := s.newManifestReader(man, byteRange{0, man.TotalLength - 1})
+		defer rd.close()
+		for {
+			if _, err := rd.next(); err == io.EOF {
+				return nil
+			} else if err != nil {
+				return err
+			}
+		}
+	})
+	if err != nil || dAuth <= 0 {
+		return 0, err
+	}
+	return float64(dCDC) / float64(dAuth), nil
 }
 
 // cdcAmp4K is the expected logical bytes of CAS chunks touched by a random
@@ -47250,6 +47318,23 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		finish(plan)
 		m.addBase(i)
 		return nil
+	}
+	if pol.MaxReadAmp > 0 && pol.MinReadRatio > 0 {
+		ratio, err := m.s.authReadRatio(rec, o.man)
+		if err != nil {
+			return err
+		}
+		plan.ReadRatio = ratio
+		if ratio < pol.MinReadRatio {
+			plan.Reason = fmt.Sprintf("measured whole-object read %.2fx CDC throughput is below %.2fx", ratio, pol.MinReadRatio)
+			plan.Form = "cdc"
+			if pol.cache != nil {
+				pol.cache.stale = true
+			}
+			finish(plan)
+			m.addBase(i)
+			return nil
+		}
 	}
 	fireTestHook(hookAuthProofDone)
 	if err := m.s.authPublish(rec); err != nil {
@@ -48001,16 +48086,21 @@ type authVLoc struct {
 func (s *Store) authVirtualIndex() map[[32]byte]authVLoc {
 	s.auth.vmu.Lock()
 	defer s.auth.vmu.Unlock()
-	if s.auth.vidx != nil && time.Since(s.auth.vtime) < 100*time.Millisecond {
+	s.journal.mu.Lock()
+	key := [2]uint64{s.journal.nextSeq, s.auth.gen.Load()}
+	s.journal.mu.Unlock()
+	if s.auth.vidx != nil && s.auth.vkey == key {
 		return s.auth.vidx
+	}
+	have := map[[32]byte]bool{}
+	files, _ := s.authFiles()
+	for _, f := range files {
+		have[f] = true
 	}
 	idx := map[[32]byte]authVLoc{}
 	for _, lm := range s.liveManifests() {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
-		if err != nil {
-			continue
-		}
-		if _, err := os.Stat(s.authPath(sha)); err != nil {
+		if err != nil || !have[sha] {
 			continue
 		}
 		var off int64
@@ -48023,7 +48113,7 @@ func (s *Store) authVirtualIndex() map[[32]byte]authVLoc {
 			off += c.Length
 		}
 	}
-	s.auth.vidx, s.auth.vtime = idx, time.Now()
+	s.auth.vidx, s.auth.vkey = idx, key
 	return idx
 }
 
@@ -48083,11 +48173,13 @@ func runAuthority(args []string) {
 	fs := flag.NewFlagSet("authority "+sub, flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	apply := fs.Bool("apply", false, "commit the plan (default: plan only)")
-	order := fs.String("order", "oldest", "oldest|newest: which versions serve as delta bases")
+	order := fs.String("order", "newest", "newest|oldest: which versions serve as delta bases (newest keeps the latest version in CDC)")
+	archive := fs.Bool("archive", false, "archive-only: oldest versions are bases, no read-cost gates (explicitly slower reads)")
 	depth := fs.Int("max-depth", 2, "delta nesting bound (hard maximum 4)")
 	bases := fs.Int("max-bases", 2, "bases per delta (hard maximum 4)")
 	saving := fs.Float64("min-saving", 0.10, "minimum net fraction of unshared CDC bytes freed")
-	amp := fs.Float64("max-read-amp", 2.0, "max measured 4 KiB read amplification relative to CDC (0 = archive)")
+	amp := fs.Float64("max-read-amp", 4.0, "max measured 4 KiB read amplification relative to CDC (0 = archive)")
+	ratio := fs.Float64("min-read-ratio", 0.5, "min whole-object read throughput relative to CDC for hybrid admissions (0 = unmeasured)")
 	noRep := fs.Bool("no-rep", false, "do not consider structural representations")
 	noDelta := fs.Bool("no-delta", false, "do not consider generic deltas")
 	sha := fs.String("sha256", "", "revert: content SHA-256 (hex)")
@@ -48108,7 +48200,11 @@ func runAuthority(args []string) {
 	enc.SetIndent("", "  ")
 	switch sub {
 	case "migrate":
-		rep, err := store.AuthorityMigrate(AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, AllowRep: !*noRep, AllowDelta: !*noDelta, Apply: *apply})
+		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, AllowRep: !*noRep, AllowDelta: !*noDelta, Apply: *apply}
+		if *archive {
+			pol.Order, pol.MaxReadAmp, pol.MinReadRatio = "oldest", 0, 0
+		}
+		rep, err := store.AuthorityMigrate(pol)
 		if err != nil {
 			log.Fatalf("zeros3: authority migrate: %v", err)
 		}

@@ -467,6 +467,23 @@ func main() {
 	var out bytes.Buffer
 	declCount := map[string]int{}
 	stdUsed := map[string]bool{}
+	// A standard-library import whose package name is already bound to another path in the
+	// production file (math/rand against math/rand/v2) is merged under an alias.
+	prodNames := map[string]string{}
+	if pf, perr := parser.ParseFile(token.NewFileSet(), *prod, nil, parser.ImportsOnly); perr == nil {
+		for _, im := range pf.Imports {
+			p := strings.Trim(im.Path.Value, "\"")
+			nm := p[strings.LastIndex(p, "/")+1:]
+			if im.Name != nil {
+				nm = im.Name.Name
+			} else if len(nm) > 1 && nm[0] == 'v' && nm[1] >= '0' && nm[1] <= '9' {
+				q := p[:strings.LastIndex(p, "/")]
+				nm = q[strings.LastIndex(q, "/")+1:]
+			}
+			prodNames[nm] = p
+		}
+	}
+	importAlias := map[string]string{}
 	type declSrc struct {
 		orig, extracted string
 		pkg             *pkgInfo
@@ -499,6 +516,15 @@ func main() {
 						} else if isStd(pn.Imported().Path()) {
 							stdUsed[pn.Imported().Path()] = true
 							consumed[x] = true
+							ip := pn.Imported().Path()
+							if _, ok := importAlias[ip]; !ok {
+								if other, clash := prodNames[pn.Imported().Name()]; clash && other != ip {
+									importAlias[ip] = pn.Imported().Name() + "X"
+								}
+							}
+							if al, ok := importAlias[ip]; ok {
+								edits = append(edits, edit{int(x.Pos()) - base, int(x.End()) - base, al})
+							}
 						}
 					}
 				}
@@ -557,7 +583,7 @@ func main() {
 	sort.Strings(ipaths)
 	for _, p := range ipaths {
 		if !strings.Contains(block, "\""+p+"\"") {
-			block += "\n\t\"" + p + "\""
+			block += "\n\t" + importAlias[p] + " \"" + p + "\""
 			added = append(added, p)
 		}
 	}
@@ -577,6 +603,10 @@ func main() {
 	rev := map[string]string{}
 	for o, nn := range rename {
 		rev[nn] = o.Pkg().Path() + "|" + o.Name()
+	}
+	for ip, al := range importAlias {
+		aliasRev[al] = strings.TrimSuffix(al, "X")
+		_ = ip
 	}
 	fidelityFail := 0
 	for _, d := range decls {
@@ -745,6 +775,9 @@ func vecLines(s string) map[string]string {
 	return m
 }
 
+// aliasRev maps an alias given to a clashing standard-library import back to its package name.
+var aliasRev = map[string]string{}
+
 // tokenString normalizes a declaration to a comparable token string. For extracted source,
 // renamed identifiers are reversed to the original spelling: pkg.Name for a cross-package
 // reference, Name for a reference inside the declaration's own package.
@@ -760,7 +793,9 @@ func tokenString(src string, rev map[string]string, ownPkg string) string {
 			break
 		}
 		if tok == token.IDENT && rev != nil {
-			if o, ok := rev[lit]; ok {
+			if orig, ok := aliasRev[lit]; ok {
+				lit = orig
+			} else if o, ok := rev[lit]; ok {
 				pk, nm := o[:strings.Index(o, "|")], o[strings.Index(o, "|")+1:]
 				if pk == ownPkg {
 					lit = nm

@@ -9,7 +9,7 @@ go test -c -o "$W/zeros3.test" .
 rm -rf "$W/store"; mkdir -p "$W/store"
 "$W/zeros3.test" -test.run TestAuthorityLargeFixture -test.v 2>&1 | grep -E 'put|PASS|FAIL' | tee "$W/fixture.txt"
 du -sb "$W/store" | tee "$W/cdc_bytes.txt"
-for step in "migrate -apply -max-depth 2 -max-read-amp 0" "status"; do
+for step in "migrate -apply -max-depth 2 -archive" "status"; do
   /usr/bin/time -v -o "$W/time_${step%% *}.txt" "$W/zeros3" authority $step -store "$W/store" > "$W/out_${step%% *}.json"
   grep -E 'Maximum resident|Elapsed' "$W/time_${step%% *}.txt"
 done

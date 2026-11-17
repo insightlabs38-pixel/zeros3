@@ -133,6 +133,7 @@ func TestMain(m *testing.M) {
 		g1Install()
 	}
 	code := m.Run()
+	g1DumpStacks()
 	if out := os.Getenv("ZEROS3_LAYOUT_MATRIX_OUT"); out != "" {
 		writeLayoutMatrix(out)
 	}

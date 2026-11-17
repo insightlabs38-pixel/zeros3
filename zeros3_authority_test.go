@@ -19,9 +19,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -445,6 +448,24 @@ func TestAuthHelperProcess(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.Close()
+	case "revertall":
+		lock, err := acquireStoreLock(dir, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.release()
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if _, err := s.AuthorityRevertAll(); err != nil {
+			t.Fatal(err)
+		}
+	case "repack":
+		if _, err := repackStore(dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true}); err != nil {
+			t.Fatal(err)
+		}
 	case "gc":
 		if _, err := gcCollect(dir, true); err != nil {
 			t.Fatal(err)
@@ -854,38 +875,41 @@ func TestAuthorityStaleGenerationRejected(t *testing.T) {
 // ---- compatibility, bundles, replication, repair -------------------------------
 
 var (
-	oldBinOnce sync.Once
-	oldBinPath string
-	oldBinErr  error
+	oldBinMu    sync.Mutex
+	oldBinPaths = map[string]string{}
 )
 
-// buildOldBinary compiles the pre-B2 production source (main at dfbbc8b, P7 merge),
-// the binary generation that must refuse authority stores.
-func buildOldBinary(t *testing.T) string {
+// buildBinaryAt compiles the production source of a historical commit once per test
+// process; each is a binary generation that must refuse or serve authority stores.
+func buildBinaryAt(t *testing.T, commit string) string {
 	t.Helper()
-	oldBinOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "zs3old")
-		if err != nil {
-			oldBinErr = err
-			return
-		}
-		for _, f := range []string{"zeros3.go", "go.mod"} {
-			out, err := exec.Command("git", "show", "dfbbc8b95a25814840a124df0b88be3d1ad44008:"+f).Output()
-			if err != nil {
-				oldBinErr = fmt.Errorf("git show %s: %w", f, err)
-				return
-			}
-			os.WriteFile(filepath.Join(dir, f), out, 0o644)
-		}
-		oldBinPath = filepath.Join(dir, "zeros3-old")
-		if out, err := exec.Command("go", "build", "-C", dir, "-o", oldBinPath, ".").CombinedOutput(); err != nil {
-			oldBinErr = fmt.Errorf("%v\n%s", err, out)
-		}
-	})
-	if oldBinErr != nil {
-		t.Fatalf("building the old binary: %v", oldBinErr)
+	oldBinMu.Lock()
+	defer oldBinMu.Unlock()
+	if p, ok := oldBinPaths[commit]; ok {
+		return p
 	}
-	return oldBinPath
+	dir, err := os.MkdirTemp("", "zs3gen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"zeros3.go", "go.mod"} {
+		out, err := exec.Command("git", "show", commit+":"+f).Output()
+		if err != nil {
+			t.Fatalf("git show %s:%s: %v", commit, f, err)
+		}
+		os.WriteFile(filepath.Join(dir, f), out, 0o644)
+	}
+	bin := filepath.Join(dir, "zeros3-"+commit[:7])
+	if out, err := exec.Command("go", "build", "-C", dir, "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("building %s: %v\n%s", commit, err, out)
+	}
+	oldBinPaths[commit] = bin
+	return bin
+}
+
+// buildOldBinary is the generation just before authority (main at the P7 merge).
+func buildOldBinary(t *testing.T) string {
+	return buildBinaryAt(t, "dfbbc8b95a25814840a124df0b88be3d1ad44008")
 }
 
 // treeDigest hashes every file name and content of a store (excluding the lock).
@@ -1936,6 +1960,63 @@ func g1For(s *Store) *g1Store {
 func g1Install() {
 	retiredChunks.Store(&sync.Map{})
 	authCommitHook = g1Hook
+	if os.Getenv("ZEROS3_G1_STACKS") != "" {
+		retiredNote = g1NoteStack
+	}
+}
+
+var (
+	g1StackMu sync.Mutex
+	g1Stacks  = map[string]int{}
+	g1Tests   = map[string]map[string]bool{}
+)
+
+// g1NoteStack records the production call chain (and the test that drove it) of a retired-chunk read.
+func g1NoteStack() {
+	pcs := make([]uintptr, 40)
+	n := runtime.Callers(3, pcs)
+	frames := runtime.CallersFrames(pcs[:n])
+	var chain []string
+	test := ""
+	for {
+		f, more := frames.Next()
+		if strings.HasSuffix(f.File, "_test.go") {
+			if strings.Contains(f.Function, ".Test") && test == "" {
+				test = f.Function[strings.LastIndex(f.Function, ".")+1:]
+			}
+		} else if strings.HasSuffix(f.File, "zeros3.go") && len(chain) < 5 {
+			chain = append(chain, f.Function[strings.Index(f.Function, ".")+1:])
+		}
+		if !more {
+			break
+		}
+	}
+	k := strings.Join(chain, " < ")
+	g1StackMu.Lock()
+	g1Stacks[k]++
+	if g1Tests[k] == nil {
+		g1Tests[k] = map[string]bool{}
+	}
+	g1Tests[k][test] = true
+	g1StackMu.Unlock()
+}
+
+func g1DumpStacks() {
+	if out := os.Getenv("ZEROS3_G1_STACKS"); out != "" {
+		var b strings.Builder
+		for k, n := range g1Stacks {
+			var ts []string
+			for t := range g1Tests[k] {
+				ts = append(ts, t)
+			}
+			sort.Strings(ts)
+			if len(ts) > 4 {
+				ts = append(ts[:4], fmt.Sprintf("+%d more", len(ts)-4))
+			}
+			fmt.Fprintf(&b, "%6d  %s  [%s]\n", n, k, strings.Join(ts, ","))
+		}
+		os.WriteFile(out, []byte(b.String()), 0o644)
+	}
 }
 
 func g1Components(s *Store, st *g1Store, sha [32]byte) error {
@@ -2807,6 +2888,274 @@ func TestAuthorityPersistenceLossModel(t *testing.T) {
 				t.Logf("control: %d crash images of the fsync-less trace fail, as they must", failed)
 			}
 			t.Logf("%s: %d traced syscalls, %d barriers, %d cuts x 4 images", o.name, len(evs), len(barriers), cuts)
+		})
+	}
+}
+
+// G4: five binary generations against an authority store, a non-adopting store, a
+// portable bundle and replication. Needs five historical builds: ZEROS3_C1_MATRIX=1.
+func TestAuthorityFiveGenerationMatrix(t *testing.T) {
+	if os.Getenv("ZEROS3_C1_MATRIX") == "" {
+		t.Skip("set ZEROS3_C1_MATRIX=1 (builds five historical binaries)")
+	}
+	gens := []struct{ name, commit string }{
+		{"v0.1.1-pre-representation", "v0.1.1"},
+		{"post-I1C", "b5d1762"},
+		{"post-A4-floor9", "036ac2c"},
+		{"post-P1C-segments", "4059cd9"},
+		{"pre-authority-main", "dfbbc8b"},
+	}
+	l := authMigratedLab(t)
+	l.reclaim()
+	entries, _ := l.s.captureSnapshotEntries("b", "")
+	desc := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(), CreatedAt: time.Now().UTC(), SourceBucket: "b", Entries: entries}
+	if err := l.s.publishSnapshot(desc); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := l.s.exportBundle(desc.SnapshotID, &buf, true); err != nil {
+		t.Fatal(err)
+	}
+	bundle := filepath.Join(t.TempDir(), "snap.zs3b")
+	os.WriteFile(bundle, buf.Bytes(), 0o644)
+	creds := Credentials{AccessKeyID: "AKIASYNCTESTACCESSKEY1", SecretAccessKey: "SyncTestSecretKeyForZeroS3M6Tests0123456"}
+	l.close()
+	plain := newAuthLab(t)
+	plain.put("x", genRandomBytes(5, 100_000))
+	plain.close()
+	for _, g := range gens {
+		t.Run(g.name, func(t *testing.T) {
+			bin := buildBinaryAt(t, g.commit)
+			before := treeDigest(t, l.dir)
+			for _, args := range [][]string{{"stats", "-store", l.dir}, {"verify", "-store", l.dir, "-deep"}, {"gc", "-store", l.dir, "-apply"}, {"compact", "-store", l.dir}, {"repack", "-store", l.dir, "-apply"}, {"serve", "-store", l.dir, "-addr", "127.0.0.1:0"}} {
+				out, errOut, code := runZeros3CLI(t, bin, args...)
+				if code == 0 || !regexp.MustCompile(`unsupported store format version (10|12)`).MatchString(out+errOut) {
+					t.Fatalf("%v: code=%d out=%q err=%q", args, code, out, errOut)
+				}
+			}
+			if treeDigest(t, l.dir) != before {
+				t.Fatal("a refusing binary mutated the authority store")
+			}
+			if out, errOut, code := runZeros3CLI(t, bin, "stats", "-store", plain.dir); code != 0 {
+				t.Fatalf("non-adopting store refused: %s %s", out, errOut)
+			}
+			dir := t.TempDir()
+			if out, errOut, code := runZeros3CLI(t, bin, "bundle", "import", "-store", dir, "-in", bundle); code != 0 {
+				t.Logf("bundle import unsupported by this generation: %s %s", out, errOut)
+			} else if out, errOut, code := runZeros3CLI(t, bin, "verify", "-store", dir, "-deep"); code != 0 {
+				t.Fatalf("deep verify after bundle import: %s %s", out, errOut)
+			}
+			// replication of retired-CDC objects into this generation's server
+			l.open()
+			defer l.close()
+			srcTS := httptest.NewServer(NewServer(l.s, creds, "us-east-1"))
+			defer srcTS.Close()
+			addr := freeTCPAddr(t)
+			cmd := exec.Command(bin, "-store", t.TempDir(), "-addr", addr)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { cmd.Process.Kill(); cmd.Wait() }()
+			waitForZeros3Serve(t, addr)
+			oc := &http.Client{}
+			oc2 := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+			r := doSignedRequest(t, oc, "http://"+addr, testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}, http.MethodPut, "/dst", nil, nil)
+			r.Body.Close()
+			for key, want := range l.want {
+				cfg := replicateConfig{
+					Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "b", Key: key, Creds: creds, Region: "us-east-1", HTTPClient: srcTS.Client()},
+					Dest:   syncClientConfig{Endpoint: "http://" + addr, Bucket: "dst", Key: key, Creds: oc2, Region: "us-east-1", HTTPClient: oc},
+				}
+				if _, err := replicateObject(cfg); err != nil {
+					t.Fatalf("replicate %s: %v", key, err)
+				}
+				r := doSignedRequest(t, oc, "http://"+addr, testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}, http.MethodGet, "/dst/"+key, nil, nil)
+				got, _ := io.ReadAll(r.Body)
+				r.Body.Close()
+				if r.StatusCode != 200 || !bytes.Equal(got, want) {
+					t.Fatalf("%s differs after replication (status %d)", key, r.StatusCode)
+				}
+			}
+		})
+	}
+}
+
+// Difficult mixed lifecycle: content shared across buckets and versions, repeated
+// migrate/revert cycles, a corrupted middle link of a depth-2 chain (fail closed, never
+// wrong bytes, other objects unaffected), and concurrent range reads with early
+// cancellation while bodies are published and retired.
+func TestAuthorityMixedLifecycle(t *testing.T) {
+	l := newAuthLab(t)
+	if err := l.s.CreateBucket("c"); err != nil {
+		t.Fatal(err)
+	}
+	hist := authHistory(231, 5, 900_000)
+	for i, v := range hist {
+		l.put(fmt.Sprintf("k%d", i), v)
+		if _, err := l.s.PutObject("c", fmt.Sprintf("other/%d", i), v, "application/octet-stream", nil); err != nil { // same SHA, second bucket
+			t.Fatal(err)
+		}
+	}
+	l.put("dup", hist[2]) // same SHA again under another key
+	l.put("solo", genRandomBytes(232, 200_000))
+	check := func(stage string) {
+		l.exact(stage)
+		for i, v := range hist {
+			_, man, err := l.s.HeadObject("c", fmt.Sprintf("other/%d", i))
+			if err != nil {
+				t.Fatalf("%s: %v", stage, err)
+			}
+			if got, err := l.s.readManifestRange(man, byteRange{0, int64(len(v)) - 1}); err != nil || !bytes.Equal(got, v) {
+				t.Fatalf("%s: bucket c object %d differs: %v", stage, i, err)
+			}
+		}
+	}
+	for cycle := 0; cycle < 4; cycle++ {
+		l.migrate(AuthPolicy{MinSaving: 0.05, MaxDepth: 2})
+		check(fmt.Sprintf("migrated#%d", cycle))
+		l.reclaim()
+		check(fmt.Sprintf("reclaimed#%d", cycle))
+		l.verifyOK(fmt.Sprintf("reclaimed#%d", cycle))
+		if cycle%2 == 0 {
+			if _, err := l.s.AuthorityRevertAll(); err != nil {
+				t.Fatal(err)
+			}
+			check(fmt.Sprintf("reverted#%d", cycle))
+		}
+	}
+	// A body shared by both buckets and three keys is one record.
+	st, _ := l.s.AuthorityStatus()
+	if st.Records >= 2*len(hist)+2 {
+		t.Fatalf("%d records for %d distinct contents", st.Records, len(hist)+1)
+	}
+	// Concurrent range reads (some cancelled early) while the store changes authority.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var bad atomic.Int64
+	for w := 0; w < 6; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			rng := mrand.New(mrand.NewPCG(uint64(w), 3))
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				i := rng.IntN(len(hist))
+				_, man, err := l.s.HeadObject("b", fmt.Sprintf("k%d", i))
+				if err != nil {
+					bad.Add(1)
+					continue
+				}
+				off := rng.Int64N(int64(len(hist[i])) - 70_000)
+				end := off + 1 + rng.Int64N(60_000)
+				rd := l.s.openObjectReader(man, byteRange{off, end})
+				var got []byte
+				for {
+					b, err := rd.next()
+					if err != nil {
+						break
+					}
+					got = append(got, b...)
+					if w%3 == 0 { // cancel after the first slice
+						break
+					}
+				}
+				rd.close()
+				if w%3 != 0 && !bytes.Equal(got, hist[i][off:end+1]) {
+					bad.Add(1)
+				}
+			}
+		}(w)
+	}
+	for r := 0; r < 3; r++ {
+		l.migrate(AuthPolicy{MinSaving: 0.05, MaxDepth: 2})
+		if _, err := l.s.AuthorityRevertAll(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if bad.Load() != 0 {
+		t.Fatalf("%d reads returned wrong bytes or failed during transitions", bad.Load())
+	}
+	// Corrupt the middle of a chain: dependents fail closed, unrelated objects still read.
+	l.migrate(AuthPolicy{MinSaving: 0.05, MaxDepth: 2})
+	l.reclaim()
+	var victim [32]byte
+	files, _ := l.s.authFiles()
+	for _, f := range files {
+		if r, _ := l.s.authLoad(f); r != nil && r.Form == authFormDelta && r.Depth == 2 {
+			victim = r.Bases[0].SHA // a depth-1 delta that something depends on
+			break
+		}
+	}
+	if victim == ([32]byte{}) {
+		t.Skip("planner built no depth-2 chain for this history")
+	}
+	vr, _ := l.s.authLoad(victim)
+	l.s.purgeReadCaches()
+	corruptChunkOnDisk(t, l.s, hex.EncodeToString(vr.Pieces[0].SHA[:]))
+	wrong, failed := 0, 0
+	for k, want := range l.want {
+		_, man, err := l.s.HeadObject("b", k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := l.s.readManifestRange(man, byteRange{0, int64(len(want)) - 1})
+		switch {
+		case err != nil:
+			failed++
+		case !bytes.Equal(got, want):
+			wrong++
+		}
+	}
+	if wrong != 0 || failed == 0 {
+		t.Fatalf("corrupt middle link: %d wrong reads, %d failed reads (want 0 wrong, >0 failed)", wrong, failed)
+	}
+	if res, err := l.s.Verify(true); err != nil || res.OK() {
+		t.Fatalf("deep verify passed with a corrupt nested dependency: %v", err)
+	}
+}
+
+// G8: repeated crash/recovery loops. Each round kills the operation at a successive
+// boundary; after every kill a fresh process reads every acknowledged object exactly and
+// deep-verifies; the loop ends when the operation finally completes.
+func TestAuthorityRepeatedCrashLoops(t *testing.T) {
+	type loop struct {
+		scenario, stage string
+		points          []string
+	}
+	loops := []loop{
+		{"gc", "migrated", []string{hookBeforeGCDelete, hookBeforePackDelete, hookPackDeleted}},
+		{"repack", "retired", []string{hookBeforePackDelete, hookPackDeleted}},
+		{"revertall", "retired", []string{hookAuthRevertMaterial, hookCASBeforeRename, hookAuthBeforeRetire, hookAuthAfterRetire}},
+		{"migrate", "cdc", []string{hookAuthComponentsFlushed, hookAuthBeforeRename, hookAuthAfterRename, hookAuthPublished}},
+	}
+	for _, lp := range loops {
+		t.Run(lp.scenario, func(t *testing.T) {
+			f := newCrashFixture(t, lp.stage)
+			kills := 0
+			for round := 0; round < 40; round++ {
+				point := lp.points[round%len(lp.points)]
+				occ := 1 + round/len(lp.points)
+				if !runKilled(t, lp.scenario, f.dir, point, occ) {
+					// not reached at this occurrence: the operation ran to completion
+					s := f.assertAcknowledgedExact(t, "completed")
+					s.Close()
+					t.Logf("%s: completed after %d kills", lp.scenario, kills)
+					if kills == 0 {
+						t.Fatal("no kill point was ever reached")
+					}
+					return
+				}
+				kills++
+				s := f.assertAcknowledgedExact(t, fmt.Sprintf("round %d at %s#%d", round, point, occ))
+				s.Close()
+			}
+			t.Fatalf("%s did not complete within 40 rounds", lp.scenario)
 		})
 	}
 }
