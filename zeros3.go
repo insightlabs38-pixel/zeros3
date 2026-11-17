@@ -46409,6 +46409,7 @@ func (s *Store) verifyBodiesDeep(rr reachabilityResult, res *VerifyResult) {
 // AuthPolicy controls which exact physical form may become authoritative.
 type AuthPolicy struct {
 	NoZN7      bool    `json:"no_zn7"`       // do not offer ZN7 containers for float and quantized model files
+	Workers    int     `json:"workers"`      // parallel window workers of the large-object and ZN7 encoders (default 2: about 30 MiB of resident working set each)
 	Order      string  `json:"order"`        // "oldest": earlier versions are bases; "newest": newer versions are bases
 	MaxDepth   int     `json:"max_depth"`    // delta nesting bound (default 2, hard 4)
 	MaxBases   int     `json:"max_bases"`    // bases per delta (default 2, hard 4)
@@ -46464,6 +46465,15 @@ type authDeltaPlan struct {
 
 func newAuthPlanCache() *authPlanCache {
 	return &authPlanCache{delta: map[[32]byte]*authDeltaPlan{}, deltaAdd: map[[32]byte]int64{}, repC: map[[32]byte]*authRepCand{}, repAbort: map[repKind]bool{}, winAdded: map[[32]byte]int64{}, znAdded: map[[32]byte]int64{}}
+}
+
+// workers bounds the parallel window workers: resident memory grows by roughly 30 MiB per worker on a 1 GiB base.
+func (p AuthPolicy) workers() int {
+	w := p.Workers
+	if w <= 0 {
+		w = 2
+	}
+	return min(w, runtime.GOMAXPROCS(0), 8)
 }
 
 func (p AuthPolicy) norm() AuthPolicy {
@@ -47593,7 +47603,7 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	}
 	base := m.s.newAuthObjAt(bo.man)
 	defer base.close()
-	wp := authWParams(min(max(runtime.GOMAXPROCS(0), 1), 4), bo.man.TotalLength)
+	wp := authWParams(m.pol.workers(), bo.man.TotalLength)
 	defer debug.FreeOSMemory() // the anchor table and page caches are dead once this object is done
 	idx, err := dwDcoreBuildWIndex(base, bo.man.TotalLength, wp.Anchor, wp.Workers)
 	if err != nil {
@@ -48479,6 +48489,7 @@ func runAuthority(args []string) {
 	noRep := fs.Bool("no-rep", false, "do not consider structural representations")
 	noDelta := fs.Bool("no-delta", false, "do not consider generic deltas")
 	noZN7 := fs.Bool("no-zn7", false, "do not consider ZN7 containers for model files")
+	workers := fs.Int("workers", 2, "migrate: parallel window workers for large objects and ZN7, and the process's CPU parallelism (resident memory grows by about 30 MiB per worker)")
 	sha := fs.String("sha256", "", "revert: content SHA-256 (hex)")
 	bucket := fs.String("bucket", "", "migrate: only contents named in this bucket")
 	prefix := fs.String("prefix", "", "migrate: only contents whose key starts with this prefix")
@@ -48492,6 +48503,14 @@ func runAuthority(args []string) {
 	}
 	if os.Getenv("GOMEMLIMIT") == "" && *memMiB > 0 {
 		debug.SetMemoryLimit(*memMiB << 20)
+	}
+	// The resident working set grows with every parallel reader, window and prefetch of the
+	// process: -workers also bounds GOMAXPROCS (measured: 1 GiB x3 history, 4 CPUs, 179 MiB at
+	// 4 workers' parallelism vs 94 MiB at 2 for +6% wall time). GOMAXPROCS in the environment wins.
+	if os.Getenv("GOMAXPROCS") == "" && *workers > 0 && sub == "migrate" {
+		procs := min(runtime.NumCPU(), *workers)
+		runtime.GOMAXPROCS(procs)
+		pipeWorkers, pipeStreamLimit = max(1, min(3, procs-1)), int64(max(1, procs/2)) // read-ahead sized at init from the CPU count
 	}
 	// Offline maintenance has no latency to protect: collect at 25% growth so garbage
 	// (window buffers, page and chunk copies) does not double the resident set.
@@ -48513,7 +48532,7 @@ func runAuthority(args []string) {
 	enc.SetIndent("", "  ")
 	switch sub {
 	case "migrate":
-		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, Apply: *apply}
+		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, Workers: *workers, Apply: *apply}
 		if *archive {
 			pol.Order, pol.MaxReadAmp, pol.MinReadRatio = "oldest", 0, 0
 		}
@@ -57075,7 +57094,7 @@ func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(Auth
 			}
 		}
 	}
-	opts := ncNumcoreEncOpts{Workers: min(max(runtime.GOMAXPROCS(0), 1), 4)}
+	opts := ncNumcoreEncOpts{Workers: pol.workers()}
 	var added int64
 	if c := pol.cache; c != nil && c.znAdded[o.sha] != 0 {
 		added = c.znAdded[o.sha]
