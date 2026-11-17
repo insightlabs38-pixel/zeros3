@@ -1857,3 +1857,56 @@ func TestAuthorityCopyAndRestoreOfBodyOnlyContent(t *testing.T) {
 		}
 	}
 }
+
+// The union-accounting planner reuses plan-only encodings, reads back exactly,
+// deep-verifies, and every object reverts to ordinary CDC.
+func TestAuthorityPlannerReusesPlansAndReverts(t *testing.T) {
+	l := newAuthLab(t)
+	hist := authHistory(21, 5, 3_000_000)
+	for i, v := range hist {
+		l.put("k/v"+string(rune('0'+i)), v)
+	}
+	l.put("other", genRandomBytes(77, 800_000))
+	l.put("dup", hist[2])
+	l.reclaim()
+	cdc := dirBytes(t, l.dir)
+	rep := l.migrate(AuthPolicy{MaxDepth: 2, MinSaving: 0.05, AllowRep: true, AllowDelta: true})
+	l.exact("migrated")
+	l.verifyOK("migrated")
+	l.reclaim()
+	l.exact("reclaimed")
+	l.verifyOK("reclaimed")
+	final := dirBytes(t, l.dir)
+	t.Logf("cdc=%d final=%d (%.3fx) admitted=%d/%d reuse=%d repNotBuilt=%d secs=%.2f", cdc, final, float64(final)/float64(cdc), rep.Admitted, rep.Objects, rep.PlanReuse, rep.RepNotBuilt, rep.Seconds)
+	if rep.PlanReuse == 0 {
+		t.Fatal("the applying pass re-encoded every delta")
+	}
+	if final >= cdc {
+		t.Fatalf("no physical saving: %d vs %d", final, cdc)
+	}
+	for k := range l.want {
+		sha, _ := decodeHexSHA256(l.man(k).ObjectSHA256)
+		if err := l.s.AuthorityRevert(sha); err != nil {
+			t.Fatalf("revert %s: %v", k, err)
+		}
+	}
+	l.exact("reverted")
+	l.close()
+}
+
+// Rep-capable families read back exactly whichever form the planner picks.
+func TestAuthorityPlannerRepGroupsExact(t *testing.T) {
+	l := newAuthLab(t)
+	for _, f := range repFixtures(t) {
+		l.put(f.name, f.data)
+	}
+	l.close()
+	l.open()
+	rep := l.migrate(AuthPolicy{MinRepGroup: 1, MinObject: 1, AllowRep: true, AllowDelta: true})
+	l.exact("best")
+	l.verifyOK("best")
+	l.reclaim()
+	l.exact("best-reclaimed")
+	l.verifyOK("best-reclaimed")
+	t.Logf("admitted %d/%d, reuse=%d repNotBuilt=%d", rep.Admitted, rep.Objects, rep.PlanReuse, rep.RepNotBuilt)
+}

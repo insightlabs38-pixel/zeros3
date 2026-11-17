@@ -46019,6 +46019,39 @@ type AuthPolicy struct {
 	MinRepGroup int     `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
 	FrameSpan   int64   `json:"frame_span"`
 	Apply       bool    `json:"apply"`
+	// RepSkipIfDeltaAtMost (0 = off): do not construct any
+	// representation for a kind group whose delta plan already costs at most this
+	// fraction of the group's reclaimable CDC bytes. A policy heuristic, not a
+	// bound: it can skip a representation that would have won.
+	RepSkipIfDeltaAtMost float64 `json:"rep_skip_if_delta_at_most"`
+	cache                *authPlanCache
+}
+
+// authPlanCache carries the expensive results of a plan-only pass into the
+// pass that applies the winner, so no delta or representation is built twice.
+type authPlanCache struct {
+	delta     map[[32]byte]*authDeltaPlan
+	deltaAdd  map[[32]byte]int64 // plan-only added bytes of the best delta per object
+	repC      map[[32]byte]*authRepCand
+	repAbort  map[repKind]bool
+	rejected  int // rep objects never constructed because the group was abandoned
+	reuseHits int
+	// stale is set when apply-time gating (proof failure, read-amplification
+	// refusal) rejected an object the plan-only pass had admitted: later cached
+	// plans assumed that admission (base depth), so reuse stops.
+	stale bool
+}
+
+type authDeltaPlan struct {
+	rec  *authRecord
+	blob []byte
+	phys int64
+	pins []int
+	plan AuthPlan
+}
+
+func newAuthPlanCache() *authPlanCache {
+	return &authPlanCache{delta: map[[32]byte]*authDeltaPlan{}, deltaAdd: map[[32]byte]int64{}, repC: map[[32]byte]*authRepCand{}, repAbort: map[repKind]bool{}}
 }
 
 func (p AuthPolicy) norm() AuthPolicy {
@@ -46069,6 +46102,10 @@ type AuthReport struct {
 	CDCBytes, AddedBytes               int64
 	Plans                              []AuthPlan
 	Seconds                            float64
+	// PlanReuse counts delta encodings reused from the plan-only pass and
+	// RepNotBuilt the representation objects never constructed because their
+	// group was abandoned.
+	PlanReuse, RepNotBuilt int
 }
 
 type authObj struct {
@@ -46317,12 +46354,25 @@ type authMigrator struct {
 func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	pol = pol.norm()
 	if (pol.Strategy == "" || pol.Strategy == "best") && pol.AllowRep && pol.AllowDelta {
+		// The comparator uses the union rule of the planner: a kept object retains
+		// ALL its chunks (shared ones included), an admitted one costs its added bytes.
+		bySHA := map[string]manifestV1{}
+		for _, lm := range s.liveManifests() {
+			bySHA[lm.man.ObjectSHA256] = lm.man
+		}
+		phys := map[[32]byte]int64{}
 		total := func(r AuthReport) (n int64) {
+			seen := map[[32]byte]bool{}
 			for _, p := range r.Plans {
 				if strings.HasSuffix(p.Form, "?") {
 					n += p.AddedBytes
-				} else {
-					n += p.CDCBytes
+					continue
+				}
+				for _, c := range bySHA[p.SHA].Chunks {
+					if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
+						seen[sum] = true
+						n += s.physChunk(sum, c.Length, phys)
+					}
 				}
 			}
 			return n
@@ -46330,6 +46380,8 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		dp, rp := pol, pol
 		dp.AllowRep, dp.Apply, dp.Strategy = false, false, "forced"
 		rp.AllowDelta, rp.Apply, rp.Strategy = false, false, "forced"
+		pol.cache = newAuthPlanCache()
+		dp.cache, rp.cache = pol.cache, pol.cache
 		dr, err := s.AuthorityMigrate(dp)
 		if err != nil {
 			return dr, err
@@ -46339,7 +46391,9 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 			return rr, err
 		}
 		pol.Strategy = "forced"
-		if total(rr) < total(dr) {
+		// The union estimate of a representation carries model error (component
+		// sizes before pack compression), so it must win by a margin, not a tie.
+		if float64(total(rr)) < float64(total(dr))*0.95 {
 			pol.AllowDelta = false
 		} else {
 			pol.AllowRep = false
@@ -46404,6 +46458,9 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		}
 	}
 	m.rep.Seconds = time.Since(t0).Seconds()
+	if pol.cache != nil {
+		m.rep.PlanReuse, m.rep.RepNotBuilt = pol.cache.reuseHits, pol.cache.rejected
+	}
 	return m.rep, nil
 }
 
@@ -46436,43 +46493,165 @@ func (m *authMigrator) planRepGroups() {
 		kinds[i] = kind
 		count[kind]++
 	}
-	groups := map[repKind][]int{}
-	for i, o := range m.order {
-		kind, ok := kinds[i]
-		if !ok || count[kind] < m.pol.MinRepGroup {
-			continue
-		}
-		root, err := m.s.repConstruct(o.man)
-		if err != nil {
-			continue
-		}
-		cl, err := m.s.repClosureOf(root)
-		if err != nil {
-			continue
-		}
-		m.repC[i] = &authRepCand{kind: kind, root: root, chunks: cl.chunks}
-		groups[kind] = append(groups[kind], i)
-	}
-	for _, idxs := range groups {
+	m.planRepGroupsUnion(kinds, count)
+}
+
+// groupReclaimable is the exact CDC volume a group frees: the physical bytes
+// of chunks whose every CDC reference lies inside the group (union rule).
+// m.refs counts distinct CDC-authoritative contents per chunk.
+func (m *authMigrator) groupReclaimable(idxs []int) int64 {
+	inG := map[[32]byte]int{}
+	for _, i := range idxs {
 		seen := map[[32]byte]bool{}
-		var union, cdc int64
-		for _, i := range idxs {
-			rc := m.repC[i]
+		for _, c := range m.order[i].man.Chunks {
+			if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
+				seen[sum] = true
+				inG[sum]++
+			}
+		}
+	}
+	var n int64
+	done := map[[32]byte]bool{}
+	for _, i := range idxs {
+		for _, c := range m.order[i].man.Chunks {
+			sum, err := decodeHexSHA256(c.SHA256)
+			if err != nil || done[sum] {
+				continue
+			}
+			done[sum] = true
+			if m.refs[sum] == inG[sum] {
+				n += m.s.physChunk(sum, c.Length, m.phys)
+			}
+		}
+	}
+	return n
+}
+
+// groupChunkBytes is the physical volume of the distinct CDC chunks the members list.
+func (m *authMigrator) groupChunkBytes(idxs []int) int64 {
+	var n int64
+	done := map[[32]byte]bool{}
+	for _, i := range idxs {
+		for _, c := range m.order[i].man.Chunks {
+			if sum, err := decodeHexSHA256(c.SHA256); err == nil && !done[sum] {
+				done[sum] = true
+				n += m.s.physChunk(sum, c.Length, m.phys)
+			}
+		}
+	}
+	return n
+}
+
+// planRepGroupsUnion admits a kind's group by union accounting, constructing
+// members progressively and abandoning the group as soon as its projected
+// cost cannot beat the delta plan (or CDC) for the same members.
+func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKind]int) {
+	groups := map[repKind][]int{}
+	for i := range m.order {
+		if kind, ok := kinds[i]; ok && count[kind] >= m.pol.MinRepGroup {
+			groups[kind] = append(groups[kind], i)
+		}
+	}
+	cache := m.pol.cache
+	for kind, members := range groups {
+		if cache != nil && cache.repAbort[kind] {
+			continue
+		}
+		cdc := m.groupReclaimable(members)
+		// reference to beat: CDC reclaimable, or the delta plan's cost when known
+		bound := cdc
+		// The delta plan's cost for this group: each member with a delta pays its
+		// added bytes; a member without one stays CDC and keeps its chunks.
+		var deltaCost, deltaRatio int64
+		deltaRatio = -1
+		if cache != nil && len(cache.deltaAdd) > 0 {
+			var keep []int
+			for _, i := range members {
+				if a, ok := cache.deltaAdd[m.order[i].sha]; ok {
+					deltaCost += a
+				} else {
+					keep = append(keep, i)
+				}
+			}
+			deltaCost += m.groupChunkBytes(keep)
+			if deltaCost < bound {
+				bound = deltaCost
+			}
+			deltaRatio = deltaCost
+		}
+		if all := m.groupChunkBytes(members); m.pol.RepSkipIfDeltaAtMost > 0 && deltaRatio >= 0 && all > 0 && float64(deltaRatio) <= m.pol.RepSkipIfDeltaAtMost*float64(all) {
+			if cache != nil {
+				cache.repAbort[kind] = true
+				cache.rejected += len(members)
+			}
+			continue
+		}
+		bound = int64(float64(bound) * (1 - m.pol.MinSaving))
+		seen := map[[32]byte]bool{}
+		var union int64
+		built := 0
+		abandoned := false
+		for k, i := range members {
+			var rc *authRepCand
+			if cache != nil {
+				rc = cache.repC[m.order[i].sha]
+			}
+			if rc == nil {
+				root, err := m.s.repConstruct(m.order[i].man)
+				if err != nil {
+					continue
+				}
+				cl, err := m.s.repClosureOf(root)
+				if err != nil {
+					continue
+				}
+				rc = &authRepCand{kind: kind, root: root, chunks: cl.chunks}
+				rc2 := *rc
+				if cache != nil {
+					cache.repC[m.order[i].sha] = &rc2
+				}
+			} else {
+				c2 := *rc
+				rc = &c2
+				rc.marginal, rc.accepted = 0, false
+			}
 			for _, c := range rc.chunks {
 				sum, _ := decodeHexSHA256(c.SHA256)
 				if seen[sum] {
 					continue
 				}
 				seen[sum] = true
-				if m.refs[sum] == 0 { // a component equal to a CDC chunk some other object keeps costs nothing extra
+				if m.refs[sum] == 0 {
 					rc.marginal += m.s.physChunk(sum, c.Length, m.phys)
 				}
 			}
 			union += rc.marginal
-			cdc += m.unsharedBytes(m.order[i])
+			m.repC[i] = rc
+			built++
+			if built >= m.pol.MinRepGroup && k+1 < len(members) {
+				rest := int64(len(members) - k - 1)
+				proj := union + rest*rc.marginal + 160*int64(len(members))
+				if proj > bound {
+					abandoned = true
+					if cache != nil {
+						cache.repAbort[kind] = true
+						cache.rejected += len(members) - built
+					}
+					break
+				}
+			}
 		}
-		if cdc > 0 && float64(union+160*int64(len(idxs))) <= float64(cdc)*(1-m.pol.MinSaving) {
-			for _, i := range idxs {
+		if abandoned || union+160*int64(len(members)) > bound {
+			for _, i := range members {
+				delete(m.repC, i)
+			}
+			if cache != nil {
+				cache.repAbort[kind] = true
+			}
+			continue
+		}
+		for _, i := range members {
+			if m.repC[i] != nil {
 				m.repC[i].accepted = true
 			}
 		}
@@ -46594,6 +46773,7 @@ func (m *authMigrator) process(i int, o *authObj) error {
 		added int64
 		pins  []int
 		plan  AuthPlan
+		phys  int64
 	}
 	var best *cand
 	// --- delta candidates
@@ -46609,6 +46789,23 @@ func (m *authMigrator) process(i int, o *authObj) error {
 			}
 			srcs = append(srcs, xdSrc{bo.sha, b})
 			idxs = append(idxs, j)
+		}
+		var cached *authDeltaPlan
+		if pol.cache != nil && !pol.cache.stale {
+			cached = pol.cache.delta[o.sha]
+		}
+		if cached != nil {
+			// Reuse the plan-only encoding; only the pin charge depends on the
+			// state reached in this pass (bases may have been pinned since).
+			var pinCost int64
+			for _, j := range cached.pins {
+				if !m.order[j].hasRec {
+					pinCost += int64(len(m.order[j].man.Chunks)) * 36
+				}
+			}
+			rc := *cached.rec
+			best = &cand{rec: &rc, blob: cached.blob, added: cached.phys + pinCost + 160, pins: cached.pins, plan: cached.plan}
+			pol.cache.reuseHits++
 		}
 		try := func(sel []int) {
 			var ss []xdSrc
@@ -46643,13 +46840,13 @@ func (m *authMigrator) process(i int, o *authObj) error {
 			added := phys + pinCost + 160
 			if best == nil || added < best.added {
 				rec := &authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormDelta, Depth: byte(depth), Sketch: sk, Bases: refs}
-				best = &cand{rec: rec, blob: blob, added: added, pins: bj, plan: AuthPlan{Form: "delta", Depth: depth}}
+				best = &cand{rec: rec, blob: blob, added: added, pins: bj, plan: AuthPlan{Form: "delta", Depth: depth}, phys: phys}
 				for _, r := range refs {
 					best.plan.Bases = append(best.plan.Bases, hex.EncodeToString(r.SHA[:6]))
 				}
 			}
 		}
-		if len(srcs) > 0 {
+		if len(srcs) > 0 && cached == nil {
 			for k := range srcs {
 				try([]int{k})
 			}
@@ -46659,6 +46856,10 @@ func (m *authMigrator) process(i int, o *authObj) error {
 			if len(srcs) >= 3 && pol.MaxBases >= 3 {
 				try([]int{0, 1, 2})
 			}
+		}
+		if pol.cache != nil && best != nil && cached == nil && !pol.Apply {
+			pol.cache.delta[o.sha] = &authDeltaPlan{rec: best.rec, blob: best.blob, phys: best.phys, pins: best.pins, plan: best.plan}
+			pol.cache.deltaAdd[o.sha] = best.added
 		}
 	}
 	// --- structural representation candidate (group-amortized, see planRepGroups)
@@ -46730,6 +46931,9 @@ func (m *authMigrator) process(i int, o *authObj) error {
 	if err != nil {
 		plan.Reason = "proof failed: " + err.Error()
 		plan.Form = "cdc"
+		if pol.cache != nil {
+			pol.cache.stale = true
+		}
 		finish(plan)
 		m.addBase(i)
 		return nil
@@ -46739,6 +46943,9 @@ func (m *authMigrator) process(i int, o *authObj) error {
 	if pol.MaxReadAmp > 0 && plan.CDCAmp > 0 && probe > pol.MaxReadAmp*plan.CDCAmp {
 		plan.Reason = fmt.Sprintf("modeled read amplification %.0f > %.1fx CDC %.0f", probe, pol.MaxReadAmp, plan.CDCAmp)
 		plan.Form = "cdc"
+		if pol.cache != nil {
+			pol.cache.stale = true
+		}
 		finish(plan)
 		m.addBase(i)
 		return nil
