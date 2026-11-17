@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math/rand/v2"
+	mrand "math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2082,4 +2084,729 @@ func TestAuthorityRevertAllLowersFloorAndOldBinaryReopens(t *testing.T) {
 		t.Fatalf("floor lowered with records present: %d %v", lowered, err)
 	}
 	l.close()
+}
+
+// Objects above the in-memory window take the windowed single-base delta: exact
+// whole and range reads, deep verify, physical reclaim and revert.
+func TestAuthorityWindowedDelta(t *testing.T) {
+	defer func(a, b int64) { authWindowMin, authWindowSize = a, b }(authWindowMin, authWindowSize)
+	authWindowMin, authWindowSize = 1<<20, 64<<10
+	l := authHistoryLab(t, 141, 4, 3_000_000)
+	l.put("other", genRandomBytes(5, 400_000))
+	l.reclaim()
+	cdc := dirBytes(t, l.dir)
+	rep := l.migrate(AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: -1})
+	windowed := 0
+	for _, p := range rep.Plans {
+		if p.Form == "delta" && p.Size > authWindowMin {
+			windowed++
+		}
+	}
+	if windowed == 0 {
+		t.Fatalf("no windowed delta admitted: %+v", rep.Plans)
+	}
+	l.exact("migrated")
+	l.verifyOK("migrated")
+	l.reclaim()
+	l.exact("reclaimed")
+	l.verifyOK("reclaimed")
+	final := dirBytes(t, l.dir)
+	t.Logf("windowed=%d cdc=%d final=%d (%.3fx)", windowed, cdc, final, float64(final)/float64(cdc))
+	if final >= cdc {
+		t.Fatalf("no saving: %d >= %d", final, cdc)
+	}
+	// Range reads through the production path across frame edges.
+	for k, want := range l.want {
+		if len(want) < 2_000_000 {
+			continue
+		}
+		for _, r := range [][2]int64{{0, 4095}, {65535, 65540}, {1 << 20, 1<<20 + 100_000}, {int64(len(want)) - 5000, int64(len(want)) - 1}} {
+			_, _, got, err := l.s.GetObjectRange("b", k, byteRange{r[0], r[1]})
+			if err != nil || !bytes.Equal(got, want[r[0]:r[1]+1]) {
+				t.Fatalf("%s range %v: err=%v", k, r, err)
+			}
+		}
+	}
+	if _, err := l.s.AuthorityRevertAll(); err != nil {
+		t.Fatal(err)
+	}
+	l.exact("reverted")
+	l.close()
+}
+
+// ---- G5: 1 GiB windowed history (env-gated; see testing-harnesses/z4/c1/run_large.sh) ----
+
+// c1LargeVersion streams revision v of a deterministic multi-GiB object: random
+// bytes with a 4 KiB patch every 16 MiB and, from v1 on, a 100 KB insertion that
+// shifts everything after 300 MiB.
+type c1LargeVersion struct {
+	size, off int64
+	v         int
+	base      *mrand.ChaCha8
+	patch     *mrand.ChaCha8
+	pending   []byte
+}
+
+func newC1Large(size int64, v int) *c1LargeVersion {
+	var seed [32]byte
+	copy(seed[:], "c1-large-base-seed-0123456789abc")
+	r := &c1LargeVersion{size: size, v: v, base: mrand.NewChaCha8(seed)}
+	return r
+}
+
+func (r *c1LargeVersion) Read(p []byte) (int, error) {
+	if r.off >= r.size {
+		return 0, io.EOF
+	}
+	n := int(min(int64(len(p)), r.size-r.off))
+	p = p[:n]
+	r.base.Read(p)
+	// patches are keyed by absolute position so every revision regenerates the same stream
+	for pos := r.off - r.off%(16<<20); pos < r.off+int64(n); pos += 16 << 20 {
+		for k := 0; k < 4096; k++ {
+			at := pos + 1<<20 + int64(k)
+			if at >= r.off && at < r.off+int64(n) && r.v > 0 {
+				p[at-r.off] ^= byte(0x5a + r.v*17 + k*7)
+			}
+		}
+	}
+	r.off += int64(n)
+	return n, nil
+}
+
+func TestAuthorityLargeFixture(t *testing.T) {
+	dir := os.Getenv("ZEROS3_C1_LARGE_DIR")
+	if dir == "" {
+		t.Skip("fixture tool")
+	}
+	size := int64(1) << 30
+	if v := os.Getenv("ZEROS3_C1_LARGE_SIZE"); v != "" {
+		size, _ = strconv.ParseInt(v, 10, 64)
+	}
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil && !strings.Contains(err.Error(), "exists") {
+		t.Fatal(err)
+	}
+	for v := 0; v < 3; v++ {
+		t0 := time.Now()
+		ing, err := s.ingestStream(newC1Large(size, v), true, ingestOptions{size: size})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.commitIngested("b", fmt.Sprintf("big/v%d", v), ing, "application/octet-stream", nil, putCondition{}); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("v%d put %s", v, time.Since(t0))
+	}
+}
+
+func vmHWM() int64 {
+	b, _ := os.ReadFile("/proc/self/status")
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "VmHWM:") {
+			var kb int64
+			fmt.Sscanf(strings.TrimPrefix(l, "VmHWM:"), "%d", &kb)
+			return kb << 10
+		}
+	}
+	return 0
+}
+
+// TestAuthorityLargeCheck streams every revision through the production reader
+// and compares with the regenerated stream; it reports its own peak RSS.
+func TestAuthorityLargeCheck(t *testing.T) {
+	dir := os.Getenv("ZEROS3_C1_LARGE_DIR")
+	if dir == "" || os.Getenv("ZEROS3_C1_LARGE_CHECK") == "" {
+		t.Skip("fixture tool")
+	}
+	size := int64(1) << 30
+	if v := os.Getenv("ZEROS3_C1_LARGE_SIZE"); v != "" {
+		size, _ = strconv.ParseInt(v, 10, 64)
+	}
+	s, err := OpenStoreShared(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for v := 0; v < 3; v++ {
+		_, man, err := s.HeadObject("b", fmt.Sprintf("big/v%d", v))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := sha256.New()
+		if _, err := io.Copy(want, newC1Large(size, v)); err != nil {
+			t.Fatal(err)
+		}
+		got := sha256.New()
+		t0 := time.Now()
+		rd := s.openObjectReader(man, byteRange{0, man.TotalLength - 1})
+		for {
+			b, err := rd.next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("v%d: %v", v, err)
+			}
+			got.Write(b)
+		}
+		rd.close()
+		if !bytes.Equal(got.Sum(nil), want.Sum(nil)) {
+			t.Fatalf("v%d: SHA-256 differs", v)
+		}
+		t.Logf("v%d exact %d bytes at %.0f MiB/s, peak RSS so far %d MiB", v, man.TotalLength, float64(man.TotalLength)/(1<<20)/time.Since(t0).Seconds(), vmHWM()>>20)
+	}
+	s2 := s
+	_, man, _ := s2.HeadObject("b", "big/v1")
+	t0 := time.Now()
+	var buf [4096]byte
+	for k := int64(0); k < 64; k++ {
+		off := (k*7919 + 13) % (size - 4096)
+		if _, err := s.readManifestRange(man, byteRange{off, off + 4095}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = buf
+	t.Logf("64 random 4 KiB ranges of v1: %s each", time.Since(t0)/64)
+}
+
+// ---- G2: persistence-loss simulation from real syscall traces -------------------
+//
+// The CLI runs under strace; the trace is replayed through a POSIX-style
+// persistence model (file data is durable only after fsync of that file,
+// directory entries only after fsync of the directory) and crash images are
+// materialized at every barrier. This is a model of what a power cut may leave
+// behind, not a block-device fault test (none is available in this environment).
+
+type plNode struct {
+	dir     bool
+	data    []byte
+	durData []byte
+	ents    map[string]*plNode
+	durEnts map[string]*plNode
+}
+
+type plFile struct {
+	n   *plNode
+	off int64
+}
+
+type plModel struct {
+	root  string
+	top   *plNode
+	fds   map[int]*plFile
+	dirfd map[int]string
+}
+
+func plNewDir() *plNode {
+	return &plNode{dir: true, ents: map[string]*plNode{}, durEnts: map[string]*plNode{}}
+}
+
+func plLoad(t *testing.T, dir string) *plNode {
+	n := plNewDir()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		p := filepath.Join(dir, e.Name())
+		if e.IsDir() {
+			c := plLoad(t, p)
+			n.ents[e.Name()], n.durEnts[e.Name()] = c, c
+		} else if e.Type().IsRegular() {
+			b, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := &plNode{data: b, durData: b}
+			n.ents[e.Name()], n.durEnts[e.Name()] = c, c
+		}
+	}
+	return n
+}
+
+func (m *plModel) walk(path string) (parent *plNode, name string, n *plNode, ok bool) {
+	rel, err := filepath.Rel(m.root, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return nil, "", nil, false
+	}
+	if rel == "." {
+		return nil, "", m.top, true
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	cur := m.top
+	for i, p := range parts {
+		next := cur.ents[p]
+		if i == len(parts)-1 {
+			return cur, p, next, true
+		}
+		if next == nil || !next.dir {
+			return nil, "", nil, false
+		}
+		cur = next
+	}
+	return nil, "", nil, false
+}
+
+func (m *plModel) at(dirfd, path string) string {
+	if strings.HasPrefix(path, "/") {
+		return path
+	}
+	if dirfd == "AT_FDCWD" {
+		return filepath.Join(m.root, path)
+	}
+	fd, _ := strconv.Atoi(dirfd)
+	return filepath.Join(m.dirfd[fd], path)
+}
+
+func plUnquote(s string) (string, []byte) { // returns the rest after the closing quote and the bytes
+	var out []byte
+	i := 1
+	for i < len(s) {
+		c := s[i]
+		switch {
+		case c == '"':
+			return s[i+1:], out
+		case c == '\\' && i+1 < len(s):
+			i++
+			e := s[i]
+			switch {
+			case e == 'n':
+				out = append(out, '\n')
+			case e == 't':
+				out = append(out, '\t')
+			case e == 'r':
+				out = append(out, '\r')
+			case e == 'v':
+				out = append(out, '\v')
+			case e == 'f':
+				out = append(out, '\f')
+			case e == 'a':
+				out = append(out, 7)
+			case e == 'b':
+				out = append(out, 8)
+			case e == 'x' && i+2 < len(s):
+				v, _ := strconv.ParseUint(s[i+1:i+3], 16, 8)
+				out = append(out, byte(v))
+				i += 2
+			case e >= '0' && e <= '7':
+				j := i
+				for j < len(s) && j < i+3 && s[j] >= '0' && s[j] <= '7' {
+					j++
+				}
+				v, _ := strconv.ParseUint(s[i:j], 8, 16)
+				out = append(out, byte(v))
+				i = j - 1
+			default:
+				out = append(out, e)
+			}
+		default:
+			out = append(out, c)
+		}
+		i++
+	}
+	return "", out
+}
+
+// plArgs splits "a, "b", c" at top level; quoted args come back unquoted with their bytes.
+func plArgs(s string) (args []string, blobs map[int][]byte) {
+	blobs = map[int][]byte{}
+	for len(s) > 0 {
+		s = strings.TrimLeft(s, " ")
+		var arg string
+		if s[0] == '"' {
+			rest, b := plUnquote(s)
+			blobs[len(args)] = b
+			arg = string(b)
+			s = strings.TrimPrefix(strings.TrimPrefix(rest, "..."), ",")
+		} else {
+			depth, j := 0, 0
+			for ; j < len(s); j++ {
+				if s[j] == '{' || s[j] == '[' || s[j] == '(' {
+					depth++
+				} else if s[j] == '}' || s[j] == ']' || s[j] == ')' {
+					depth--
+				} else if s[j] == ',' && depth == 0 {
+					break
+				}
+			}
+			arg, s = s[:j], strings.TrimPrefix(s[min(j, len(s)):], ",")
+		}
+		args = append(args, arg)
+	}
+	return args, blobs
+}
+
+// apply replays one traced syscall; it reports whether it was a barrier worth cutting at.
+func (m *plModel) apply(name string, args []string, blobs map[int][]byte, ret int64) (barrier bool) {
+	if ret < 0 && name != "lseek" {
+		return false
+	}
+	fdArg := func(i int) *plFile {
+		fd, _ := strconv.Atoi(args[i])
+		return m.fds[fd]
+	}
+	switch name {
+	case "openat":
+		path := m.at(args[0], args[1])
+		par, nm, n, ok := m.walk(path)
+		if !ok {
+			return false
+		}
+		if n == nil && strings.Contains(args[2], "O_CREAT") && par != nil {
+			n = &plNode{}
+			par.ents[nm] = n
+			barrier = true
+		}
+		if n == nil {
+			return false
+		}
+		if strings.Contains(args[2], "O_TRUNC") && !n.dir {
+			n.data = nil
+		}
+		f := &plFile{n: n}
+		if strings.Contains(args[2], "O_APPEND") {
+			f.off = int64(len(n.data))
+		}
+		m.fds[int(ret)] = f
+		if n.dir {
+			m.dirfd[int(ret)] = path
+		}
+		return barrier
+	case "close":
+		fd, _ := strconv.Atoi(args[0])
+		delete(m.fds, fd)
+		delete(m.dirfd, fd)
+	case "write", "pwrite64":
+		f := fdArg(0)
+		if f == nil || f.n.dir {
+			return false
+		}
+		data := blobs[1]
+		if int64(len(data)) > ret {
+			data = data[:ret]
+		}
+		off := f.off
+		if name == "pwrite64" {
+			off, _ = strconv.ParseInt(args[3], 10, 64)
+		}
+		if end := off + int64(len(data)); end > int64(len(f.n.data)) {
+			f.n.data = append(f.n.data, make([]byte, end-int64(len(f.n.data)))...)
+		}
+		copy(f.n.data[off:], data)
+		if name == "write" {
+			f.off += int64(len(data))
+		}
+	case "lseek":
+		if f := fdArg(0); f != nil && ret >= 0 {
+			f.off = ret
+		}
+	case "ftruncate":
+		if f := fdArg(0); f != nil {
+			sz, _ := strconv.ParseInt(args[1], 10, 64)
+			if sz < int64(len(f.n.data)) {
+				f.n.data = f.n.data[:sz]
+			} else {
+				f.n.data = append(f.n.data, make([]byte, sz-int64(len(f.n.data)))...)
+			}
+		}
+	case "fsync", "fdatasync":
+		if f := fdArg(0); f != nil {
+			if f.n.dir {
+				f.n.durEnts = maps.Clone(f.n.ents)
+			} else {
+				f.n.durData = bytes.Clone(f.n.data)
+			}
+		}
+		return true
+	case "rename", "renameat", "renameat2":
+		var op, np string
+		if name == "rename" {
+			op, np = m.at("AT_FDCWD", args[0]), m.at("AT_FDCWD", args[1])
+		} else {
+			op, np = m.at(args[0], args[1]), m.at(args[2], args[3])
+		}
+		sp, sn, n, ok := m.walk(op)
+		dp, dn, _, ok2 := m.walk(np)
+		if ok && ok2 && n != nil && sp != nil && dp != nil {
+			delete(sp.ents, sn)
+			dp.ents[dn] = n
+			return true
+		}
+	case "unlink", "unlinkat", "rmdir":
+		var p string
+		if name == "unlinkat" {
+			p = m.at(args[0], args[1])
+		} else {
+			p = m.at("AT_FDCWD", args[0])
+		}
+		if par, nm, n, ok := m.walk(p); ok && n != nil && par != nil {
+			delete(par.ents, nm)
+			return true
+		}
+	case "mkdir", "mkdirat":
+		var p string
+		if name == "mkdirat" {
+			p = m.at(args[0], args[1])
+		} else {
+			p = m.at("AT_FDCWD", args[0])
+		}
+		if par, nm, n, ok := m.walk(p); ok && n == nil && par != nil {
+			par.ents[nm] = plNewDir()
+			return true
+		}
+	}
+	return false
+}
+
+// plWrite materializes a crash image: entries from the live or durable view, data likewise.
+func plWrite(t *testing.T, n *plNode, path string, durEnts, durData bool) {
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ents := n.ents
+	if durEnts {
+		ents = n.durEnts
+	}
+	for name, c := range ents {
+		if c.dir {
+			plWrite(t, c, filepath.Join(path, name), durEnts, durData)
+			continue
+		}
+		d := c.data
+		if durData {
+			d = c.durData
+		}
+		if err := os.WriteFile(filepath.Join(path, name), d, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+type plEvent struct {
+	name  string
+	args  []string
+	blobs map[int][]byte
+	ret   int64
+}
+
+var plSysRe = regexp.MustCompile(`^(\d+)\s+(\w+)\((.*)\)\s+=\s+(-?\d+)`)
+
+func plParse(t *testing.T, file string) []plEvent {
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := map[string]string{}
+	var evs []plEvent
+	for _, line := range strings.Split(string(raw), "\n") {
+		if i := strings.Index(line, " <unfinished ...>"); i >= 0 {
+			if sp := strings.IndexByte(line, ' '); sp > 0 {
+				pending[line[:sp]] = line[sp+1 : i]
+			}
+			continue
+		}
+		if i := strings.Index(line, " resumed>"); i >= 0 {
+			if sp := strings.IndexByte(line, ' '); sp > 0 {
+				line = line[:sp] + " " + pending[line[:sp]] + line[i+len(" resumed>"):]
+				delete(pending, line[:sp])
+			}
+		}
+		m := plSysRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		args, blobs := plArgs(m[3])
+		ret, _ := strconv.ParseInt(m[4], 10, 64)
+		evs = append(evs, plEvent{m[2], args, blobs, ret})
+	}
+	return evs
+}
+
+// plRun traces one CLI operation on a copy of the fixture and returns the images' cut points.
+func plRun(t *testing.T, bin, fixture string, cli ...string) (pre *plNode, evs []plEvent, root string) {
+	root = filepath.Join(t.TempDir(), "store")
+	if out, err := exec.Command("cp", "-a", fixture, root).CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	pre = plLoad(t, root)
+	trace := filepath.Join(t.TempDir(), "trace")
+	args := append([]string{"-f", "-o", trace, "-s", "100000000", "-e", "trace=openat,close,write,pwrite64,lseek,ftruncate,fsync,fdatasync,rename,renameat,renameat2,unlink,unlinkat,rmdir,mkdir,mkdirat", bin}, cli...)
+	args = append(args, "-store", root)
+	if out, err := exec.Command("strace", args...).CombinedOutput(); err != nil {
+		t.Fatalf("strace %v: %v\n%s", cli, err, out)
+	}
+	return pre, plParse(t, trace), root
+}
+
+// plProbe opens an image and demands exact reads of every acknowledged object, a
+// completable operation and a passing deep verify after a gc.
+func plProbe(img string, want map[string][]byte, complete func(*Store) error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	s, err := OpenStore(img)
+	if err != nil {
+		return fmt.Errorf("image does not open: %w", err)
+	}
+	read := func(s *Store, stage string) error {
+		for key, w := range want {
+			_, man, err := s.HeadObject("b", key)
+			if err != nil {
+				return err
+			}
+			got, err := s.readManifestRange(man, byteRange{0, int64(len(w)) - 1})
+			if err != nil || !bytes.Equal(got, w) {
+				return fmt.Errorf("%s: %s: err=%v exact=%v", stage, key, err, err == nil && bytes.Equal(got, w))
+			}
+		}
+		return nil
+	}
+	if err := read(s, "crash image"); err != nil {
+		s.Close()
+		return err
+	}
+	if complete != nil {
+		if err := complete(s); err != nil {
+			s.Close()
+			return fmt.Errorf("completing the interrupted operation: %w", err)
+		}
+	}
+	s.Close()
+	if _, err := gcCollect(img, true); err != nil {
+		return fmt.Errorf("gc of a recovered image: %w", err)
+	}
+	s, err = OpenStore(img)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if res, err := s.Verify(true); err != nil || !res.OK() {
+		return fmt.Errorf("deep verify of a recovered image: %v %v", err, res.Issues)
+	}
+	return read(s, "recovered")
+}
+
+func plCheck(t *testing.T, img string, want map[string][]byte, complete func(*Store) error) {
+	t.Helper()
+	if err := plProbe(img, want, complete); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAuthorityPersistenceLossModel(t *testing.T) {
+	if _, err := exec.LookPath("strace"); err != nil {
+		t.Skip("strace not available")
+	}
+	bin := filepath.Join(t.TempDir(), "zeros3")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	maxCuts := 6
+	if v := os.Getenv("ZEROS3_PL_CUTS"); v != "" {
+		maxCuts, _ = strconv.Atoi(v)
+	}
+	type op struct {
+		name, stage string
+		cli         []string
+		complete    func(*Store) error
+	}
+	ops := []op{
+		{"migrate", "cdc", []string{"authority", "migrate", "-apply", "-min-saving", "0.05"}, func(s *Store) error {
+			_, err := s.AuthorityMigrate(AuthPolicy{MinSaving: 0.05, Apply: true, AllowRep: true, AllowDelta: true})
+			return err
+		}},
+		{"gc", "migrated", []string{"gc", "-apply"}, nil},
+		{"repack", "migrated", []string{"repack", "-apply"}, nil},
+		{"revert-all", "retired", []string{"authority", "revert", "-all"}, func(s *Store) error {
+			_, err := s.AuthorityRevertAll()
+			return err
+		}},
+	}
+	for _, o := range ops {
+		t.Run(o.name, func(t *testing.T) {
+			fx := newCrashFixture(t, o.stage)
+			pre, evs, actual := plRun(t, bin, fx.dir, o.cli...)
+			m := &plModel{top: pre, fds: map[int]*plFile{}, dirfd: map[int]string{}}
+			// the model root is the store path the CLI was given; the trace names it
+			m.root = ""
+			for _, e := range evs {
+				if e.name == "openat" && strings.HasSuffix(strings.Trim(e.args[1], `"`), "FORMAT.json") {
+					m.root = filepath.Dir(e.args[1])
+					break
+				}
+			}
+			if m.root == "" {
+				t.Fatal("trace never touched FORMAT.json")
+			}
+			var barriers []int
+			probe := &plModel{root: m.root, top: plLoad(t, fx.dir), fds: map[int]*plFile{}, dirfd: map[int]string{}}
+			for i, e := range evs {
+				if probe.apply(e.name, e.args, e.blobs, e.ret) {
+					barriers = append(barriers, i)
+				}
+			}
+			stride := max(1, len(barriers)/maxCuts)
+			cuts := 0
+			next := map[int]bool{}
+			for k := 0; k < len(barriers); k += stride {
+				next[barriers[k]] = true
+			}
+			next[barriers[len(barriers)-1]] = true
+			for i, e := range evs {
+				barrier := m.apply(e.name, e.args, e.blobs, e.ret)
+				if !barrier || !next[i] {
+					continue
+				}
+				cuts++
+				for _, v := range []struct {
+					name             string
+					durEnts, durData bool
+				}{{"all-persisted", false, false}, {"nothing-unsynced", true, true}, {"entries-persisted-data-lost", false, true}, {"data-persisted-entries-lost", true, false}} {
+					img := filepath.Join(t.TempDir(), "img")
+					plWrite(t, m.top, img, v.durEnts, v.durData)
+					os.MkdirAll(filepath.Join(img, "tmp"), 0o755)
+					t.Run(fmt.Sprintf("cut%d/%s", i, v.name), func(t *testing.T) { plCheck(t, img, fx.want, o.complete) })
+				}
+			}
+			// Fidelity: replaying the whole trace must reproduce the real post-operation tree.
+			full := filepath.Join(t.TempDir(), "full")
+			plWrite(t, m.top, full, false, false)
+			skip := func(dir string) string {
+				os.RemoveAll(filepath.Join(dir, "tmp"))
+				return treeDigest(t, dir)
+			}
+			if a, b := skip(actual), skip(full); a != b {
+				t.Fatalf("the replayed trace does not reproduce the traced store (%s != %s)", a[:12], b[:12])
+			}
+			if o.name == "migrate" { // control: without its fsyncs the same trace must produce a failing image
+				ctl := &plModel{root: m.root, top: plLoad(t, fx.dir), fds: map[int]*plFile{}, dirfd: map[int]string{}}
+				failed := 0
+				for i, e := range evs {
+					if e.name == "fsync" || e.name == "fdatasync" {
+						continue
+					}
+					if ctl.apply(e.name, e.args, e.blobs, e.ret) && i%7 == 0 {
+						img := filepath.Join(t.TempDir(), "img")
+						plWrite(t, ctl.top, img, false, true)
+						os.MkdirAll(filepath.Join(img, "tmp"), 0o755)
+						if plProbe(img, fx.want, o.complete) != nil {
+							failed++
+						}
+					}
+				}
+				if failed == 0 {
+					t.Fatal("control: a store without any fsync survived every crash image; the simulator cannot detect ordering bugs")
+				}
+				t.Logf("control: %d crash images of the fsync-less trace fail, as they must", failed)
+			}
+			t.Logf("%s: %d traced syscalls, %d barriers, %d cuts x 4 images", o.name, len(evs), len(barriers), cuts)
+		})
+	}
 }
