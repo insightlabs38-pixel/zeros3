@@ -1948,12 +1948,13 @@ func TestAuthorityPlannerRepGroupsExact(t *testing.T) {
 type g1Store struct {
 	mu    sync.Mutex
 	comps map[[32]byte]bool // chunks that are components of a body: never retired
+	keep  map[[32]byte]bool // chunks of objects the hook skipped or could not retire: live in CDC
 }
 
 var g1Stores sync.Map
 
 func g1For(s *Store) *g1Store {
-	v, _ := g1Stores.LoadOrStore(s, &g1Store{comps: map[[32]byte]bool{}})
+	v, _ := g1Stores.LoadOrStore(s, &g1Store{comps: map[[32]byte]bool{}, keep: map[[32]byte]bool{}})
 	return v.(*g1Store)
 }
 
@@ -2038,13 +2039,22 @@ func g1Components(s *Store, st *g1Store, sha [32]byte) error {
 }
 
 func g1Hook(s *Store, man manifestV1) {
-	if man.TotalLength < 64 || man.TotalLength > 32<<20 {
-		return
-	}
 	st := g1For(s)
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	keepCDC := func() {
+		for _, c := range man.Chunks {
+			if sum, err := decodeHexSHA256(c.SHA256); err == nil {
+				st.keep[sum] = true
+			}
+		}
+	}
+	if man.TotalLength < 64 || man.TotalLength > 32<<20 {
+		keepCDC()
+		return
+	}
 	if err := g1Retire(s, st, man); err != nil {
+		keepCDC()
 		log.Printf("g1: manifest %s stays CDC: %v", man.ManifestUUID, err)
 	}
 }
@@ -2116,27 +2126,9 @@ func g1Retire(s *Store, st *g1Store, man manifestV1) error {
 	if s.fg.n.Load() > 1 {
 		return nil // another request is in flight: it may have skipped writing a shared chunk
 	}
-	// A chunk that a manifest without a body still lists is live in CDC and is never retired.
-	lms := s.liveManifests()
-	if len(lms) > 400 {
-		return nil
-	}
-	keep := map[[32]byte]bool{}
-	for _, lm := range lms {
-		if sha, err := decodeHexSHA256(lm.man.ObjectSHA256); err == nil {
-			if rec, _ := s.authLoad(sha); rec != nil {
-				continue
-			}
-		}
-		for _, c := range lm.man.Chunks {
-			if sum, err := decodeHexSHA256(c.SHA256); err == nil {
-				keep[sum] = true
-			}
-		}
-	}
 	r := retiredChunks.Load()
 	for _, c := range man.Chunks {
-		if sum, err := decodeHexSHA256(c.SHA256); err == nil && !st.comps[sum] && !keep[sum] {
+		if sum, err := decodeHexSHA256(c.SHA256); err == nil && !st.comps[sum] && !st.keep[sum] {
 			r.Store(retiredKey{s.root, sum}, struct{}{})
 		}
 	}
