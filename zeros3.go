@@ -82,44 +82,44 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      533    Content-defined chunking (CDC)
-//      720    Content-addressed chunk storage (CAS)
-//     2463    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//     4345    Small-object segments (inline manifests, store level 11)
-//     5585    Manifests (immutable, JSON)
-//     6381    Visibility journal (append-only, checksummed)
-//     6876    Store: format, namespace, and object CRUD
-//     8331    Version history/restore, history pruning, ListObjectsV2
-//     8812    SigV4 authentication (header and presigned-URL)
-//     9789    Request payload checksums and S3-shaped XML error/response types
-//    10006    HTTP routing and S3 operation handlers
-//    10422    Conditional operations (PUT/GET/HEAD preconditions)
-//    11117    CopyObject
-//    11422    Multipart upload
-//    12362    Stats and reachability scanning
-//    13837    Verify
-//    14050    Store locking and safe offline GC
-//    14353    Offline compaction (`zeros3 compact`)
-//    15419    Pack reclamation and repacking (`zeros3 repack`)
-//    15904    Physical tiers: status and pack movement (`zeros3 tier`)
-//    16417    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    17482    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18286    Delta sync client, credentials, and parallel transfer
-//    20280    Bulk logical-chunk transport (v2)
-//    21191    Recursive directory sync
-//    21496    Remote replication (`zeros3 replicate`)
-//    22255    Peer-assisted corruption repair (`zeros3 repair`)
-//    22823    Namespace (prefix/bucket) replication
-//    23130    Copy-on-write namespace fork (`zeros3 fork`)
-//    23338    Snapshots and restore
-//    24499    Structural diff and inspect (introspection)
-//    25838    Portable snapshot bundles (`zeros3 bundle`)
-//    27035    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    27670    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    44563    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    48553    Windowed and estimated similarity deltas (extracted dcore)
-//    50055    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    57200    CLI dispatch, HTTP server/startup, and main
+//      534    Content-defined chunking (CDC)
+//      721    Content-addressed chunk storage (CAS)
+//     2464    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
+//     4346    Small-object segments (inline manifests, store level 11)
+//     5586    Manifests (immutable, JSON)
+//     6382    Visibility journal (append-only, checksummed)
+//     6877    Store: format, namespace, and object CRUD
+//     8332    Version history/restore, history pruning, ListObjectsV2
+//     8813    SigV4 authentication (header and presigned-URL)
+//     9790    Request payload checksums and S3-shaped XML error/response types
+//    10007    HTTP routing and S3 operation handlers
+//    10423    Conditional operations (PUT/GET/HEAD preconditions)
+//    11118    CopyObject
+//    11423    Multipart upload
+//    12363    Stats and reachability scanning
+//    13838    Verify
+//    14051    Store locking and safe offline GC
+//    14354    Offline compaction (`zeros3 compact`)
+//    15420    Pack reclamation and repacking (`zeros3 repack`)
+//    15905    Physical tiers: status and pack movement (`zeros3 tier`)
+//    16418    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    17483    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18287    Delta sync client, credentials, and parallel transfer
+//    20281    Bulk logical-chunk transport (v2)
+//    21192    Recursive directory sync
+//    21497    Remote replication (`zeros3 replicate`)
+//    22256    Peer-assisted corruption repair (`zeros3 repair`)
+//    22824    Namespace (prefix/bucket) replication
+//    23131    Copy-on-write namespace fork (`zeros3 fork`)
+//    23339    Snapshots and restore
+//    24500    Structural diff and inspect (introspection)
+//    25839    Portable snapshot bundles (`zeros3 bundle`)
+//    27036    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    27671    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    44564    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    48554    Windowed and estimated similarity deltas (extracted dcore)
+//    50056    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    57201    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
