@@ -57,9 +57,13 @@ func econFamilies(root string) []econFamily {
 		{"clr-short", clr("12.0.3", "13.0.1", "13.0.2", "13.0.3", "13.0.4"), "5 real Newtonsoft.Json releases"},
 		{"clr-long", clr("10.0.1", "10.0.2", "10.0.3", "11.0.1", "11.0.2", "12.0.1", "12.0.2", "12.0.3", "13.0.1", "13.0.2", "13.0.3", "13.0.4"), "12 real Newtonsoft.Json releases"},
 		{"dex", append(g("dex/*/classes.dex"), g("dex/*/classes2.dex")...), "3 real F-Droid client releases x 2 dex files"},
-		{"parquet", g("parquet/c*.parquet"), "4 pyarrow producer states (synthetic workload)"},
+		{"parquet", g("parquet/snappy/c*.parquet"), "4 pyarrow Snappy producer states (synthetic workload)"},
+		{"parquet-zstd", g("parquet/zstd/c*.parquet"), "4 pyarrow Zstd producer states"},
 		{"sqlite", g("sqlite/v*.db"), "4 states of one SQLite database (synthetic edits)"},
 		{"git", g("git/h*.pack"), "3 git pack exports of this repository's history"},
+		{"parquet-z331-8", g("parquet-z331/c*.parquet"), "Z3-31 pyarrow 8-revision Snappy chain"},
+		{"sst-snappy", g("sst/snappy/c*.sst"), "4 RocksDB SST states (Snappy)"},
+		{"sst-lz4", g("sst/lz4/c*.sst"), "4 RocksDB SST states (LZ4, replayed as opaque bytes)"},
 		{"unrelated", unrelated, "one-off unrelated inputs (random, dex, dll, sqlite)"},
 	}
 }
@@ -393,7 +397,8 @@ func TestB2Economics(t *testing.T) {
 				{"auth-delta-frame16k", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true, FrameSpan: 16 << 10}},
 				{"auth-delta-frame1m", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true, FrameSpan: 1 << 20}},
 				{"auth-rep-only", AuthPolicy{Order: "oldest", AllowRep: true}},
-				{"auth-hot-hybrid", AuthPolicy{Order: "newest", MaxDepth: 2, MaxBases: 2, MinSaving: 0.10, MaxReadAmp: 2, AllowRep: true, AllowDelta: true}},
+				{"auth-archive-skip", AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true, RepSkipIfDeltaAtMost: 0.6}},
+				{"auth-hot-hybrid", AuthPolicy{Order: "newest", MaxDepth: 2, MaxBases: 2, MinSaving: 0.10, MaxReadAmp: 4, MinReadRatio: 0.5, AllowRep: true, AllowDelta: true}},
 			} {
 				only := os.Getenv("ZEROS3_B2_VARIANTS")
 				if strings.Contains(v.name, "frame") && !strings.Contains(","+only+",", ","+v.name+",") {

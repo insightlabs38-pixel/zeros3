@@ -40,8 +40,8 @@ func RepoRoot() (string, error) {
 	return filepath.Abs(root)
 }
 
-const renameFrom = "func (s *Store) computeReachabilityObserved("
-const renameTo = "func (s *Store) computeReachabilityObservedOrig("
+const renameFrom = "func (s *Store) reachabilityScanOpts("
+const renameTo = "func (s *Store) reachabilityScanOptsOrig("
 
 // Build compiles both binaries into a content-keyed cache directory under
 // os.TempDir (reused while zeros3.go and the bridge are unchanged).

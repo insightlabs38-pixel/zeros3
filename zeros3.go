@@ -46271,13 +46271,17 @@ type AuthPolicy struct {
 	// MinReadRatio refuses a hybrid admission (MaxReadAmp > 0) whose measured whole-object read
 	// throughput is below this fraction of the CDC read of the same object (0 = not measured).
 	MinReadRatio float64 `json:"min_read_ratio"`
-	Strategy     string  `json:"strategy"` // "" or "best": plan delta-only and rep-only, apply the cheaper; "mixed": per-object choice
-	AllowRep     bool    `json:"allow_rep"`
-	AllowDelta   bool    `json:"allow_delta"`
-	MinObject    int64   `json:"min_object"`
-	MinRepGroup  int     `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
-	FrameSpan    int64   `json:"frame_span"`
-	Apply        bool    `json:"apply"`
+	// Bucket and Prefix scope the migration ("" = everything). Contents outside the scope
+	// are neither migrated nor bases, but their chunks still count as CDC-owned.
+	Bucket      string `json:"bucket,omitempty"`
+	Prefix      string `json:"prefix,omitempty"`
+	Strategy    string `json:"strategy"` // "" or "best": plan delta-only and rep-only, apply the cheaper; "mixed": per-object choice
+	AllowRep    bool   `json:"allow_rep"`
+	AllowDelta  bool   `json:"allow_delta"`
+	MinObject   int64  `json:"min_object"`
+	MinRepGroup int    `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
+	FrameSpan   int64  `json:"frame_span"`
+	Apply       bool   `json:"apply"`
 	// RepSkipIfDeltaAtMost (0 = off): do not construct any
 	// representation for a kind group whose delta plan already costs at most this
 	// fraction of the group's reclaimable CDC bytes. A policy heuristic, not a
@@ -46762,9 +46766,25 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	m := &authMigrator{s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
 		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, byKey: map[string][]int{}}
 	lms := s.liveManifests()
+	var outside []liveMan
+	inScope := func(lm liveMan) bool {
+		return (pol.Bucket == "" || lm.bucket == pol.Bucket) && strings.HasPrefix(lm.key, pol.Prefix)
+	}
+	scoped := map[[32]byte]bool{}
+	if pol.Bucket != "" || pol.Prefix != "" {
+		for _, lm := range lms {
+			if sha, err := decodeHexSHA256(lm.man.ObjectSHA256); err == nil && inScope(lm) {
+				scoped[sha] = true
+			}
+		}
+	}
 	for _, lm := range lms {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
 		if err != nil || lm.man.TotalLength < 1 {
+			continue
+		}
+		if (pol.Bucket != "" || pol.Prefix != "") && !scoped[sha] {
+			outside = append(outside, lm)
 			continue
 		}
 		o := m.objs[sha]
@@ -46790,6 +46810,24 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		return c < 0
 	})
 	// Chunk sharing among CDC-authoritative contents (bodied contents hold their own closures).
+	outSeen := map[[32]byte]bool{}
+	for _, lm := range outside {
+		sha, _ := decodeHexSHA256(lm.man.ObjectSHA256)
+		if outSeen[sha] {
+			continue
+		}
+		outSeen[sha] = true
+		if rec, err := s.authLoad(sha); err != nil || rec != nil {
+			continue
+		}
+		seen := map[[32]byte]bool{}
+		for _, c := range lm.man.Chunks {
+			if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
+				seen[sum] = true
+				m.refs[sum]++
+			}
+		}
+	}
 	for _, o := range m.order {
 		if o.hasRec {
 			continue
@@ -48183,6 +48221,8 @@ func runAuthority(args []string) {
 	noRep := fs.Bool("no-rep", false, "do not consider structural representations")
 	noDelta := fs.Bool("no-delta", false, "do not consider generic deltas")
 	sha := fs.String("sha256", "", "revert: content SHA-256 (hex)")
+	bucket := fs.String("bucket", "", "migrate: only contents named in this bucket")
+	prefix := fs.String("prefix", "", "migrate: only contents whose key starts with this prefix")
 	all := fs.Bool("all", false, "revert: every content, then lower the store format to its pre-authority level")
 	fs.Parse(args[1:])
 	lock, err := acquireStoreLock(*storeDir, true)
@@ -48200,7 +48240,7 @@ func runAuthority(args []string) {
 	enc.SetIndent("", "  ")
 	switch sub {
 	case "migrate":
-		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, AllowRep: !*noRep, AllowDelta: !*noDelta, Apply: *apply}
+		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, Apply: *apply}
 		if *archive {
 			pol.Order, pol.MaxReadAmp, pol.MinReadRatio = "oldest", 0, 0
 		}

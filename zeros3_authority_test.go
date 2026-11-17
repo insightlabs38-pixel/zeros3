@@ -3159,3 +3159,114 @@ func TestAuthorityRepeatedCrashLoops(t *testing.T) {
 		})
 	}
 }
+
+// A scoped migration leaves other contents untouched and still counts their chunks as CDC-owned.
+func TestAuthorityScopedMigration(t *testing.T) {
+	l := newAuthLab(t)
+	hist := authHistory(251, 4, 700_000)
+	for i, v := range hist {
+		l.put(fmt.Sprintf("in/k%d", i), v)
+		l.put(fmt.Sprintf("out/k%d", i), v) // identical content outside the scope
+	}
+	l.put("out/other", genRandomBytes(252, 300_000))
+	rep := l.migrate(AuthPolicy{MinSaving: 0.05, Prefix: "in/"})
+	if rep.Objects != len(hist) {
+		t.Fatalf("scope covered %d contents, want %d", rep.Objects, len(hist))
+	}
+	l.exact("scoped")
+	if st, _ := l.s.AuthorityStatus(); st.Records == 0 {
+		t.Fatal("nothing migrated")
+	}
+	l.migrate(AuthPolicy{MinSaving: 0.05, Prefix: "never/"})
+	l.exact("empty scope")
+	l.reclaim()
+	l.exact("reclaimed")
+	l.verifyOK("reclaimed")
+}
+
+// ---- G3: scale fixture (env-gated; see testing-harnesses/z4/c1/run_scale.sh) ----
+
+// TestAuthorityScaleFixture builds ZEROS3_C1_SCALE_OBJECTS objects: 50% unique small
+// objects (each held by a pin record, so the store carries a body per object) and 50% version
+// histories whose bases come from a shared pool, so chunks are shared across histories.
+func TestAuthorityScaleFixture(t *testing.T) {
+	dir := os.Getenv("ZEROS3_C1_SCALE_DIR")
+	if dir == "" {
+		t.Skip("fixture tool")
+	}
+	n, _ := strconv.Atoi(os.Getenv("ZEROS3_C1_SCALE_OBJECTS"))
+	if n == 0 {
+		n = 100000
+	}
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.CreateBucket("b")
+	const histSize, pool, versions = 1_250_000, 100, 8
+	bases := make([][]byte, pool)
+	for i := range bases {
+		bases[i] = genRandomBytes(int64(9000+i), histSize)
+	}
+	nHist, nSmall := n/2, n-n/2
+	jobs := make(chan func() error, 64)
+	var wg sync.WaitGroup
+	var firstErr atomic.Value
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				if err := j(); err != nil {
+					firstErr.CompareAndSwap(nil, err)
+				}
+			}
+		}()
+	}
+	t0 := time.Now()
+	for g := 0; g < nHist/versions; g++ {
+		g := g
+		jobs <- func() error {
+			cur := append([]byte(nil), bases[g%pool]...)
+			rng := mrand.New(mrand.NewPCG(uint64(g), 77))
+			for v := 0; v < versions; v++ {
+				at := rng.IntN(histSize - 8192)
+				for k := 0; k < 4096; k++ {
+					cur[at+k] = byte(rng.Uint32())
+				}
+				if _, err := s.PutObject("b", fmt.Sprintf("h/%05d/v%d", g, v), cur, "application/octet-stream", nil); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+	for i := 0; i < nSmall; i++ {
+		i := i
+		jobs <- func() error {
+			_, err := s.PutObject("b", fmt.Sprintf("s/%06d", i), genRandomBytes(int64(100000+i), 8192+i%32768), "application/octet-stream", nil)
+			return err
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	if e := firstErr.Load(); e != nil {
+		t.Fatal(e)
+	}
+	t.Logf("%d objects written in %s", n, time.Since(t0))
+	if os.Getenv("ZEROS3_C1_SCALE_PINS") != "" {
+		t0 = time.Now()
+		pins := 0
+		for _, lm := range s.liveManifests() {
+			if strings.HasPrefix(lm.key, "s/") {
+				sha, _ := decodeHexSHA256(lm.man.ObjectSHA256)
+				if err := s.authEnsurePin(&authObj{sha: sha, man: lm.man}); err != nil {
+					t.Fatal(err)
+				}
+				pins++
+			}
+		}
+		t.Logf("%d pin records in %s", pins, time.Since(t0))
+	}
+}
