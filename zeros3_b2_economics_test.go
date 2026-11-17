@@ -369,6 +369,12 @@ func TestB2Economics(t *testing.T) {
 			base := t.TempDir()
 			row := func(scn string, dir string, logical int64, extra econRow) {
 				r := econRow{"family": fam.name, "scenario": scn, "logical": logical, "phys": dirBytes(t, dir), "breakdown": econBreakdown(t, dir)}
+				if st, err := OpenStoreShared(dir); err == nil {
+					if sr, err := st.computeStats(statsScope{}); err == nil {
+						r["packs"] = map[string]int64{"raw_recs": int64(sr.PackedRawRecords), "deflate_recs": int64(sr.PackedCompressedRecs), "logical": sr.PackedLogicalBytes, "stored": sr.PackedStoredBytes, "loose": int64(sr.LooseChunkCount)}
+					}
+					st.Close()
+				}
 				for k, v := range extra {
 					r[k] = v
 				}
