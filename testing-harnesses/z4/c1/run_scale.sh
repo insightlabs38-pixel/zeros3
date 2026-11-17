@@ -3,7 +3,7 @@
 # usage: run_scale.sh WORKDIR [OBJECTS]   (from the repository root)
 set -euo pipefail
 W=$(realpath -m "$1"); N=${2:-100000}; mkdir -p "$W"
-export ZEROS3_C1_SCALE_DIR=$W/store ZEROS3_C1_SCALE_OBJECTS=$N ZEROS3_C1_SCALE_PINS=1
+export ZEROS3_C1_SCALE_DIR=$W/store ZEROS3_C1_SCALE_OBJECTS=$N ZEROS3_C1_SCALE_PINS=1 ZEROS3_C1_SCALE_TINY=${TINY:-900000}
 go build -o "$W/zeros3" . && go test -c -o "$W/zeros3.test" .
 rm -rf "$W/store"; mkdir -p "$W/store"
 "$W/zeros3.test" -test.run TestAuthorityScaleFixture -test.v -test.timeout 3h 2>&1 | grep -E 'written|pin records|PASS|FAIL' | tee "$W/fixture.txt"

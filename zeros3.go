@@ -46158,6 +46158,7 @@ func (a *authReachCtx) mark(sha [32]byte, want func([]chunkRef), path map[[32]by
 	a.visited[sha] = true
 	a.live[sha] = true
 	a.depth[sha] = int(rec.Depth)
+	a.recs[sha] = &authRecord{SHA: rec.SHA, Size: rec.Size, Depth: rec.Depth, Form: rec.Form} // later lookups need only the summary
 	if len(own) > 0 {
 		want(own)
 	}

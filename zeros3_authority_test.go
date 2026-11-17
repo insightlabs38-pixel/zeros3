@@ -3267,12 +3267,20 @@ func TestAuthorityScaleFixture(t *testing.T) {
 			return err
 		}
 	}
+	tiny, _ := strconv.Atoi(os.Getenv("ZEROS3_C1_SCALE_TINY")) // one distinct chunk each: 1M chunks need 900k of them
+	for i := 0; i < tiny; i++ {
+		i := i
+		jobs <- func() error {
+			_, err := s.PutObject("b", fmt.Sprintf("t/%07d", i), genRandomBytes(int64(5_000_000+i), 4096), "application/octet-stream", nil)
+			return err
+		}
+	}
 	close(jobs)
 	wg.Wait()
 	if e := firstErr.Load(); e != nil {
 		t.Fatal(e)
 	}
-	t.Logf("%d objects written in %s", n, time.Since(t0))
+	t.Logf("%d objects written in %s", n+tiny, time.Since(t0))
 	if os.Getenv("ZEROS3_C1_SCALE_PINS") != "" {
 		t0 = time.Now()
 		pins := 0
