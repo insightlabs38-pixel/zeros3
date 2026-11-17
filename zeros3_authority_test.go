@@ -2938,9 +2938,11 @@ func TestAuthorityFiveGenerationMatrix(t *testing.T) {
 	os.WriteFile(bundle, buf.Bytes(), 0o644)
 	creds := Credentials{AccessKeyID: "AKIASYNCTESTACCESSKEY1", SecretAccessKey: "SyncTestSecretKeyForZeroS3M6Tests0123456"}
 	l.close()
+	smallObjectSegments = false // the non-adopting store keeps its original level, so every generation can open it
 	plain := newAuthLab(t)
 	plain.put("x", genRandomBytes(5, 100_000))
 	plain.close()
+	smallObjectSegments = true
 	for _, g := range gens {
 		t.Run(g.name, func(t *testing.T) {
 			bin := buildBinaryAt(t, g.commit)
