@@ -22542,6 +22542,7 @@ type repairStats struct {
 	Unresolved       int             `json:"unresolved"`
 	PayloadFetched   int64           `json:"payload_fetched_bytes"`
 	AffectedObjects  int             `json:"affected_objects"`
+	ObjectsRepaired  int             `json:"objects_repaired,omitempty"` // contents rebuilt by the object-level fallback
 	Failures         []repairFailure `json:"failures,omitempty"`
 	PostRepairOK     bool            `json:"post_repair_ok"`
 	PostRepairResult VerifyResult    `json:"post_repair_result"`
@@ -22673,6 +22674,32 @@ func (s *Store) repairFromPeer(cfg repairConfig) (repairStats, error) {
 		}
 	}
 	stats.Unresolved = len(findings) - stats.Repaired
+	if stats.Unresolved > 0 && s.auth.mayHave.Load() {
+		// Components of authoritative bodies the peer cannot supply by digest: rebuild those contents from the
+		// CDC chunks their manifests list, then recount what is still broken.
+		bad := map[string]bool{}
+		for _, f := range stats.Failures {
+			bad[f.SHA256] = true
+		}
+		if fixed := s.repairObjectsFromPeer(context.Background(), cfg, bad); fixed > 0 {
+			stats.ObjectsRepaired = fixed
+			if again, aerr := s.repairFindings(); aerr == nil {
+				still := map[string]bool{}
+				for _, f := range again {
+					still[f.SHA256] = true
+				}
+				kept := stats.Failures[:0]
+				for _, f := range stats.Failures {
+					if still[f.SHA256] {
+						kept = append(kept, f)
+					}
+				}
+				stats.Failures = kept
+				stats.Repaired += stats.Unresolved - len(again)
+				stats.Unresolved = len(again)
+			}
+		}
+	}
 
 	post, verr := s.Verify(true)
 	if verr != nil {
@@ -33433,6 +33460,12 @@ type manifestReaderAt struct {
 	rdEnd     int64 // last offset rd was opened to cover
 	cur       []byte
 	curOff    int64
+	// A content owned by a pin or delta body is read through one body kept for the life of the
+	// reader (its record, decoded window and chunk cache survive between probes) instead of
+	// re-resolving the record and decoding a window for every jump.
+	abody authBody
+	aInit bool
+	aNone bool
 }
 
 func (s *Store) newManifestReaderAt(man manifestV1) *manifestReaderAt {
@@ -33453,6 +33486,21 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	}
 	if m.s.rep.stopping.Load() {
 		return 0, errRepBuildStopped
+	}
+	if !m.aNone && m.s.auth.mayHave.Load() {
+		if !m.aInit {
+			m.aInit = true
+			m.initAuthBody()
+		}
+		if m.abody != nil {
+			k, err := m.abody.ReadAt(p, off)
+			if err == nil || (err == io.EOF && k == len(p)) || (err == io.EOF && off+int64(k) >= m.size) {
+				m.lastEnd = off + int64(k)
+				return k, err
+			}
+			// The body failed: serve this reader from the CDC chunk list while one exists.
+			m.abody, m.aNone = nil, true
+		}
 	}
 	n := 0
 	for n < len(p) && off < m.size {
@@ -33499,6 +33547,24 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 		return n, io.EOF
 	}
 	return n, nil
+}
+
+// initAuthBody opens the pin or delta body that owns the object, if any. Structural
+// representations keep their native readers.
+func (m *manifestReaderAt) initAuthBody() {
+	sha, err := decodeHexSHA256(m.man.ObjectSHA256)
+	if err != nil {
+		return
+	}
+	rec, err := m.s.authLoad(sha)
+	if err != nil || rec == nil || rec.Form == authFormRep || rec.Size != m.man.TotalLength {
+		return
+	}
+	ctx := m.s.newAuthCtx()
+	ctx.pieceCap = authReaderAtPieceBytes
+	if b, _, err := ctx.body(sha, 0, 1); err == nil {
+		m.abody = b
+	}
 }
 
 // repProbeMax is the largest read treated as a probe after a jump.
@@ -45505,12 +45571,25 @@ type authCtx struct {
 	pieces     map[[32]byte][]byte
 	pieceOrder [][32]byte
 	pieceBytes int64
+	pieceCap   int64
 }
 
-const authPieceCacheBytes = 48 << 20
+const (
+	authPieceCacheBytes    = 8 << 20 // verified chunks one served request keeps (a base chunk is read through several dependents)
+	authScanPieceBytes     = 2 << 20 // sequential proof / verify / materialize passes
+	authReaderAtPieceBytes = 1 << 20 // the same for a long-lived random-access reader (analysis, migration)
+)
 
 func (s *Store) newAuthCtx() *authCtx {
-	return &authCtx{s: s, open: map[[32]byte]authBody{}, path: map[[32]byte]bool{}, budget: authDefaultBudget}
+	return &authCtx{s: s, open: map[[32]byte]authBody{}, path: map[[32]byte]bool{}, budget: authDefaultBudget, pieceCap: authPieceCacheBytes}
+}
+
+// newAuthScanCtx is a context for one sequential pass over a body (proof, deep verify,
+// measurement, materialization): a chunk is rarely read twice, so its cache stays small.
+func (s *Store) newAuthScanCtx() *authCtx {
+	c := s.newAuthCtx()
+	c.pieceCap = authScanPieceBytes
+	return c
 }
 
 func (c *authCtx) close() {}
@@ -45584,7 +45663,7 @@ func (c *authCtx) readPiece(p authPiece) ([]byte, error) {
 	if c.pieces == nil {
 		c.pieces = map[[32]byte][]byte{}
 	}
-	for c.pieceBytes+p.Len > authPieceCacheBytes && len(c.pieceOrder) > 0 {
+	for c.pieceBytes+p.Len > c.pieceCap && len(c.pieceOrder) > 0 {
 		old := c.pieceOrder[0]
 		c.pieceOrder = c.pieceOrder[1:]
 		c.pieceBytes -= int64(len(c.pieces[old]))
@@ -45826,23 +45905,25 @@ var (
 )
 
 // authWParams bounds the working set: the anchor table follows the base size (one anchor
-// per KiB, 256 Ki to 4 Mi anchors) and each worker caches 4 MiB of base pages.
+// per KiB, 256 Ki to 4 Mi anchors) and each worker caches 2 MiB of base pages.
 func authWParams(workers int, baseSize int64) dwDcoreWParams {
 	p := dwDcoreDefaultWParams()
-	p.Window, p.Workers, p.CachePages = authWindowSize, workers, 64
+	p.Window, p.Workers, p.CachePages = authWindowSize, workers, 32
 	p.Anchor.MaxAnchors = int(min(max(baseSize>>10, 256<<10), 4<<20))
 	return p
 }
 
 // authWinBody serves a ZW1 record: one base, frames decoded a window at a time.
 type authWinBody struct {
-	c    *authCtx
-	rec  *authRecord
-	wr   *dwDcoreWRecord
-	base authBody
-	wp   dwDcoreWParams
-	win  []byte
-	off  int64
+	c       *authCtx
+	rec     *authRecord
+	wr      *dwDcoreWRecord
+	base    authBody
+	wp      dwDcoreWParams
+	win     []byte
+	off     int64
+	pv      *dwDcore_pageView // base pages kept between windows
+	scratch []byte
 }
 
 func (c *authCtx) newWindowed(rec *authRecord, blob *pieceSeq, depth int) (authBody, error) {
@@ -45870,8 +45951,12 @@ func (b *authWinBody) ReadAt(p []byte, off int64) (int, error) {
 	for n < len(p) && off < b.rec.Size {
 		ws := off / b.wr.maxWindow * b.wr.maxWindow
 		if b.off != ws {
-			data, _, err := b.wr.DecodeRange(b.base, b.wp, ws, min(b.wr.maxWindow, b.rec.Size-ws))
+			if b.pv == nil {
+				b.pv = dwDcore_newPageView(b.base, b.wr.BaseSize, b.wp.PageSize, b.wp.CachePages)
+			}
+			data, err := b.wr.DecodeRangeInto(b.win, &b.scratch, b.pv, ws, min(b.wr.maxWindow, b.rec.Size-ws))
 			if err != nil {
+				b.off, b.pv = -1, nil
 				return n, fmt.Errorf("%w: %v", errAuthMismatch, err)
 			}
 			b.win, b.off = data, ws
@@ -46262,7 +46347,7 @@ func (a *authReachCtx) finish() {
 func (s *Store) verifyBodiesDeep(rr reachabilityResult, res *VerifyResult) {
 	for _, hx := range rr.AuthLive {
 		sha, _ := decodeHexSHA256(hx)
-		ctx := s.newAuthCtx()
+		ctx := s.newAuthScanCtx()
 		body, _, err := ctx.body(sha, 0, 1)
 		if err == nil {
 			h := sha256.New()
@@ -46616,7 +46701,7 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 	if err != nil {
 		return 0, 0, err
 	}
-	ctx := s.newAuthCtx()
+	ctx := s.newAuthScanCtx()
 	ctx.overlay = map[[32]byte]*authRecord{cand.SHA: cand}
 	body, _, err := ctx.body(cand.SHA, 0, 1)
 	if err != nil {
@@ -46646,7 +46731,7 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 		var tot int64
 		rng := rand.New(rand.NewPCG(binary.LittleEndian.Uint64(cand.SHA[:8]), 7))
 		for i := 0; i < probes; i++ {
-			pc := s.newAuthCtx()
+			pc := s.newAuthScanCtx()
 			pc.overlay = ctx.overlay
 			pb, _, perr := pc.body(cand.SHA, 0, 1)
 			if perr != nil {
@@ -46687,7 +46772,7 @@ func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) 
 		return 0, err
 	}
 	dAuth, err := timed(func() error {
-		ctx := s.newAuthCtx()
+		ctx := s.newAuthScanCtx()
 		ctx.overlay = map[[32]byte]*authRecord{cand.SHA: cand}
 		body, _, err := ctx.body(cand.SHA, 0, 1)
 		if err != nil {
@@ -47754,7 +47839,7 @@ func (s *Store) materializeCDC(man manifestV1) error {
 	if !missing {
 		return nil
 	}
-	ctx := s.newAuthCtx()
+	ctx := s.newAuthScanCtx()
 	body, _, err := ctx.body(sha, 0, 1)
 	if err != nil {
 		return err
@@ -48088,38 +48173,64 @@ func (s *Store) AuthorityRepairObject(sha [32]byte, exact []byte) error {
 	if sha256.Sum256(exact) != sha {
 		return fmt.Errorf("repair %x: supplied bytes do not match the content hash", sha[:6])
 	}
+	var off int64
+	return s.AuthorityRepairObjectFrom(sha, func(sum [32]byte, length int64) ([]byte, error) {
+		if off+length > int64(len(exact)) {
+			return nil, io.ErrUnexpectedEOF
+		}
+		b := exact[off : off+length]
+		off += length
+		return b, nil
+	})
+}
+
+// AuthorityRepairObjectFrom is AuthorityRepairObject streaming: fetch returns the bytes of each CDC chunk of
+// the content in manifest order (a peer holds them as chunks, whatever its own form of the object). Every
+// chunk is verified against its digest and the whole against the content hash before any chunk is stored
+// as part of a record; the pin that takes over supersedes the damaged body at the next generation.
+func (s *Store) AuthorityRepairObjectFrom(sha [32]byte, fetch func(sum [32]byte, length int64) ([]byte, error)) error {
 	cur, err := s.authLoad(sha)
 	if err != nil {
 		cur = nil
 	}
-	var mans []manifestV1
+	var man *manifestV1
 	for _, lm := range s.liveManifests() {
 		if lm.man.ObjectSHA256 == hex.EncodeToString(sha[:]) {
-			mans = append(mans, lm.man)
+			m := lm.man
+			man = &m
+			break
 		}
 	}
-	if len(mans) == 0 {
+	if man == nil {
 		return fmt.Errorf("repair %x: no live manifest names this content", sha[:6])
+	}
+	ps, err := chunkPieces(*man)
+	if err != nil {
+		return err
 	}
 	b := s.newCASBatch()
 	defer b.Abort()
-	for _, man := range mans {
-		var off int64
-		for _, c := range man.Chunks {
-			if _, err := b.Add(exact[off : off+c.Length]); err != nil {
-				return err
-			}
-			off += c.Length
+	whole := sha256.New()
+	for _, p := range ps {
+		data, err := fetch(p.SHA, p.Len)
+		if err != nil {
+			return fmt.Errorf("repair %x: %w", sha[:6], err)
 		}
+		if int64(len(data)) != p.Len || sha256.Sum256(data) != p.SHA {
+			return fmt.Errorf("repair %x: chunk %x is not the content the manifest lists", sha[:6], p.SHA[:6])
+		}
+		whole.Write(data)
+		if _, err := b.Add(data); err != nil {
+			return err
+		}
+	}
+	if !bytes.Equal(whole.Sum(nil), sha[:]) {
+		return fmt.Errorf("repair %x: the fetched chunks do not hash to the content", sha[:6])
 	}
 	if err := b.Flush(); err != nil {
 		return err
 	}
-	ps, err := chunkPieces(mans[0])
-	if err != nil {
-		return err
-	}
-	rec := &authRecord{SHA: sha, Size: int64(len(exact)), Gen: 1, Form: authFormPin, Pieces: ps}
+	rec := &authRecord{SHA: sha, Size: man.TotalLength, Gen: 1, Form: authFormPin, Pieces: ps}
 	if cur != nil {
 		rec.Gen = cur.Gen + 1
 	} else if f, _ := os.Stat(s.authPath(sha)); f != nil { // unreadable record: supersede by file replacement
@@ -48128,6 +48239,45 @@ func (s *Store) AuthorityRepairObject(sha [32]byte, exact []byte) error {
 		}
 	}
 	return s.authPublish(rec)
+}
+
+// repairObjectsFromPeer is the object-level fallback of peer repair: for every authoritative record that owns a
+// component the peer could not supply by digest, rebuild the content from the CDC chunks the manifest lists
+// (any peer holding the object, in whatever form, serves them) and let a pin take over. It returns the number
+// of contents repaired.
+func (s *Store) repairObjectsFromPeer(ctx context.Context, cfg repairConfig, unresolved map[string]bool) int {
+	files, err := s.authFiles()
+	if err != nil {
+		return 0
+	}
+	owners := map[[32]byte]bool{}
+	for _, f := range files {
+		rec, err := s.authLoad(f)
+		if err != nil || rec == nil {
+			continue
+		}
+		cs, err := s.authRecordChunks(rec)
+		if err != nil {
+			continue
+		}
+		for _, c := range cs {
+			if unresolved[c.SHA256] {
+				owners[f] = true
+			}
+		}
+	}
+	n := 0
+	for sha := range owners {
+		err := s.AuthorityRepairObjectFrom(sha, func(sum [32]byte, length int64) ([]byte, error) {
+			return fetchRepairChunk(ctx, cfg.Peer, hex.EncodeToString(sum[:]))
+		})
+		if err != nil {
+			log.Printf("zeros3: repair: object-level fallback for %x failed: %v", sha[:6], err)
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // AuthorityReadCost reports the logical CAS bytes one cold range read of an
@@ -48297,7 +48447,7 @@ func runAuthority(args []string) {
 	sha := fs.String("sha256", "", "revert: content SHA-256 (hex)")
 	bucket := fs.String("bucket", "", "migrate: only contents named in this bucket")
 	prefix := fs.String("prefix", "", "migrate: only contents whose key starts with this prefix")
-	memMiB := fs.Int64("max-memory-mib", 256, "soft heap limit of this process in MiB (0 = Go default)")
+	memMiB := fs.Int64("max-memory-mib", 192, "soft heap limit of this process in MiB (0 = Go default)")
 	all := fs.Bool("all", false, "revert: every content, then lower the store format to its pre-authority level")
 	fs.Parse(args[1:])
 	// An offline maintenance process needs no serving cache and keeps its heap near the
@@ -48307,6 +48457,11 @@ func runAuthority(args []string) {
 	}
 	if os.Getenv("GOMEMLIMIT") == "" && *memMiB > 0 {
 		debug.SetMemoryLimit(*memMiB << 20)
+	}
+	// Offline maintenance has no latency to protect: collect at 25% growth so garbage
+	// (window buffers, page and chunk copies) does not double the resident set.
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(25)
 	}
 	lock, err := acquireStoreLock(*storeDir, true)
 	if err != nil {
@@ -49100,14 +49255,14 @@ func dwDcoreBuildWIndex(base io.ReaderAt, size int64, p dwDcoreParams, workers i
 	x.pow = pow
 	est := int(size>>x.nbits) + 64
 	tbits := uint(4)
-	for 1<<tbits < 2*est {
+	for 1<<tbits < est*3/2 { // load factor up to 2/3: a 1 GiB base needs a 16 MiB table, not 32
 		tbits++
 	}
 	x.table = make([]uint64, 1<<tbits)
 	x.tmask = 1<<tbits - 1
 	x.tshift = 64 - tbits
 
-	const chunk = 4 << 20
+	const chunk = 1 << 20 // per-worker scan buffer: workers*(1 MiB+window) rather than workers*4 MiB
 	var wg sync.WaitGroup
 	var firstErr atomic.Value
 	var reads atomic.Int64
@@ -49828,6 +49983,38 @@ func (w *dwDcoreWRecord) DecodeRange(base io.ReaderAt, wp dwDcoreWParams, off, n
 	}
 	st.BaseReadBytes = v.Reads
 	return out, st, nil
+}
+
+// DecodeRangeInto is DecodeRange with caller-owned state: out[:0] receives target[off:off+n)
+// (reusing its capacity), scratch holds one decoded frame, and v is a page view over the base
+// that a long-lived reader keeps between calls so base pages are not fetched again.
+func (w *dwDcoreWRecord) DecodeRangeInto(out []byte, scratch *[]byte, v *dwDcore_pageView, off, n int64) ([]byte, error) {
+	if off < 0 || n < 0 || off > w.Size || n > w.Size-off {
+		return nil, dwDcoreErrParams
+	}
+	out = out[:0]
+	lo, hi := 0, len(w.frames)
+	for lo < hi {
+		m := (lo + hi) / 2
+		if w.tstart[m]+w.frames[m].tlen <= off {
+			lo = m + 1
+		} else {
+			hi = m
+		}
+	}
+	if int64(cap(*scratch)) < w.maxWindow {
+		*scratch = make([]byte, w.maxWindow)
+	}
+	for i := lo; i < len(w.frames) && int64(len(out)) < n; i++ {
+		fb := (*scratch)[:w.frames[i].tlen]
+		if err := w.decodeFrame(i, v, fb); err != nil {
+			return nil, err
+		}
+		from := max(off-w.tstart[i], 0)
+		to := min(int64(len(fb)), off+n-w.tstart[i])
+		out = append(out, fb[from:to]...)
+	}
+	return out, nil
 }
 
 // =============================================================================

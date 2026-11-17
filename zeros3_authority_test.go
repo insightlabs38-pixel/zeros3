@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
+	"runtime/pprof"
 	"slices"
 	"sort"
 	"strconv"
@@ -405,9 +407,15 @@ func TestAuthHelperProcess(t *testing.T) {
 	dir, point := os.Getenv("ZS3_AUTH_DIR"), os.Getenv("ZS3_AUTH_POINT")
 	occ, _ := strconv.Atoi(os.Getenv("ZS3_AUTH_OCC"))
 	n := 0
+	pause, _ := strconv.Atoi(os.Getenv("ZS3_AUTH_PAUSE_MS"))
 	testHook = func(p string) {
 		if p == point {
 			if n++; n == occ {
+				if pause > 0 { // hold the operation here (and its store lock) while the parent acts
+					os.WriteFile(os.Getenv("ZS3_AUTH_MARK"), nil, 0o644)
+					time.Sleep(time.Duration(pause) * time.Millisecond)
+					return
+				}
 				syscall.Kill(os.Getpid(), syscall.SIGKILL)
 			}
 		}
@@ -466,6 +474,8 @@ func TestAuthHelperProcess(t *testing.T) {
 		if _, err := s.AuthorityRevertAll(); err != nil {
 			t.Fatal(err)
 		}
+	case "repair", "repairobject", "audit", "maint":
+		authRepairHelper(t, scenario, dir)
 	case "repack":
 		if _, err := repackStore(dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true}); err != nil {
 			t.Fatal(err)
@@ -484,19 +494,29 @@ func TestAuthHelperProcess(t *testing.T) {
 // runKilled runs a helper scenario and reports whether the kill point was hit.
 func runKilled(t *testing.T, scenario, dir, point string, occ int) (killed bool) {
 	t.Helper()
+	killed, _ = runHelper(t, scenario, dir, point, occ)
+	return killed
+}
+
+// runHelper runs a helper scenario in a fresh process with extra KEY=VALUE environment and returns
+// whether it was SIGKILLed at the point and what it wrote to stdout.
+func runHelper(t *testing.T, scenario, dir, point string, occ int, extra ...string) (killed bool, stdout string) {
+	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestAuthHelperProcess$", "-test.timeout=300s")
-	cmd.Env = append(os.Environ(), "ZS3_AUTH_HELPER="+scenario, "ZS3_AUTH_DIR="+dir, "ZS3_AUTH_POINT="+point, "ZS3_AUTH_OCC="+strconv.Itoa(occ))
-	out, err := cmd.CombinedOutput()
+	cmd.Env = append(append(os.Environ(), "ZS3_AUTH_HELPER="+scenario, "ZS3_AUTH_DIR="+dir, "ZS3_AUTH_POINT="+point, "ZS3_AUTH_OCC="+strconv.Itoa(occ)), extra...)
+	var so, se bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &so, &se
+	err := cmd.Run()
 	if err == nil {
-		return false
+		return false, so.String()
 	}
 	if ee, ok := err.(*exec.ExitError); ok {
 		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL {
-			return true
+			return true, so.String()
 		}
 	}
-	t.Fatalf("%s helper at %s#%d failed unexpectedly: %v\n%s", scenario, point, occ, err, out)
-	return false
+	t.Fatalf("%s helper at %s#%d failed unexpectedly: %v\n%s\n%s", scenario, point, occ, err, so.String(), se.String())
+	return false, ""
 }
 
 type crashFixture struct {
@@ -3777,6 +3797,12 @@ func (f *eqFix) get(t *testing.T, hdr map[string]string) (code int, body []byte,
 // peer returns a server holding the native closure of every delta-backed content (a peer that can supply components).
 func (f *eqFix) peer(t *testing.T) *httptest.Server {
 	t.Helper()
+	_, ts := f.peerLab(t)
+	return ts
+}
+
+func (f *eqFix) peerLab(t *testing.T) (*authLab, *httptest.Server) {
+	t.Helper()
 	p := newAuthLab(t)
 	for k := range f.l.want {
 		sha, _ := decodeHexSHA256(f.l.man(k).ObjectSHA256)
@@ -3793,7 +3819,7 @@ func (f *eqFix) peer(t *testing.T) *httptest.Server {
 	}
 	ts := httptest.NewServer(NewServer(p.s, f.creds, "us-east-1"))
 	t.Cleanup(ts.Close)
-	return ts
+	return p, ts
 }
 
 func TestAuthorityRetiredEquivalents(t *testing.T) {
@@ -3977,5 +4003,521 @@ func TestAuthorityRetiredEquivalents(t *testing.T) {
 		dst := t.TempDir()
 		bundleImportT(t, dst, out)
 		bundleRestoreCheck(t, dst, snap, f.l.want)
+	})
+}
+
+// TestAuthorityLargeProfile migrates the G5 fixture in-process while sampling runtime memory: it
+// separates live heap, heap in use, runtime overhead and RSS, and writes the in-use heap profile
+// at the peak (ZEROS3_C1_PROF_OUT/{peak_inuse.pprof,allocs.pprof,samples.txt}). Env-gated tool.
+func TestAuthorityLargeProfile(t *testing.T) {
+	dir, out := os.Getenv("ZEROS3_C1_LARGE_DIR"), os.Getenv("ZEROS3_C1_PROF_OUT")
+	if dir == "" || out == "" {
+		t.Skip("profiling tool")
+	}
+	os.MkdirAll(out, 0o755)
+	if v := os.Getenv("ZEROS3_PROF_LIMIT_MIB"); v != "" {
+		n, _ := strconv.ParseInt(v, 10, 64)
+		debug.SetMemoryLimit(n << 20)
+	}
+	if v := os.Getenv("ZEROS3_PROF_GOGC"); v != "" {
+		n, _ := strconv.Atoi(v)
+		debug.SetGCPercent(n)
+	}
+	os.Setenv("ZEROS3_CHUNK_CACHE_MIB", "0")
+	lock, err := acquireStoreLock(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.release()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var peakInuse uint64
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	samples, _ := os.Create(filepath.Join(out, "samples.txt"))
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(40 * time.Millisecond)
+		defer tick.Stop()
+		t0 := time.Now()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				var ms runtime.MemStats
+				runtime.ReadMemStats(&ms)
+				fmt.Fprintf(samples, "%.2f alloc=%d inuse=%d idle=%d released=%d stack=%d sys=%d gcs=%d rss=%d\n", time.Since(t0).Seconds(), ms.HeapAlloc>>20, ms.HeapInuse>>20, ms.HeapIdle>>20, ms.HeapReleased>>20, ms.StackInuse>>20, ms.Sys>>20, ms.NumGC, vmRSS()>>20)
+				if ms.HeapInuse > peakInuse {
+					peakInuse = ms.HeapInuse
+					if f, err := os.Create(filepath.Join(out, "peak_inuse.pprof")); err == nil {
+						pprof.Lookup("heap").WriteTo(f, 0)
+						f.Close()
+					}
+				}
+			}
+		}
+	}()
+	pol := AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true, Apply: true}
+	t0 := time.Now()
+	rep, err := s.AuthorityMigrate(pol)
+	close(stop)
+	<-done
+	samples.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f, err := os.Create(filepath.Join(out, "allocs.pprof")); err == nil {
+		pprof.Lookup("allocs").WriteTo(f, 0)
+		f.Close()
+	}
+	t.Logf("migrate %s admitted=%d/%d peak heap-in-use %d MiB, VmHWM %d MiB", time.Since(t0).Round(time.Millisecond), rep.Admitted, rep.Objects, peakInuse>>20, vmHWM()>>20)
+}
+
+func vmRSS() int64 {
+	b, _ := os.ReadFile("/proc/self/status")
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "VmRSS:") {
+			var kb int64
+			fmt.Sscanf(strings.TrimPrefix(l, "VmRSS:"), "%d", &kb)
+			return kb << 10
+		}
+	}
+	return 0
+}
+
+// ---- G8: interrupted repair, repeated restarts, fresh-process audit after every kill ----------------
+
+var authHelperCreds = Credentials{AccessKeyID: "AKIAEQUIVALENTS00001", SecretAccessKey: "EquivalentsSecretKeyForZeroS3Tests0123"}
+
+type authAudit struct {
+	Exact, Errs, Wrong int
+	VerifyOK           bool
+}
+
+type authRepairOut struct {
+	BadChunks, Repaired, Unresolved, ObjectsRepaired int
+	PostRepairOK                                     bool
+	Err                                              string
+}
+
+// authRepairHelper runs in the child process: peer repair, object-level repair, the audit of every
+// acknowledged key, or destructive maintenance, as the real CLI would (shared / exclusive store lock).
+func authRepairHelper(t *testing.T, scenario, dir string) {
+	emit := func(v any) {
+		b, _ := json.Marshal(v)
+		fmt.Println(string(b))
+	}
+	switch scenario {
+	case "repair":
+		lock, err := acquireStoreLock(dir, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.release()
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		stats, err := s.repairFromPeer(repairConfig{Peer: syncClientConfig{Endpoint: os.Getenv("ZS3_AUTH_PEER"), Creds: authHelperCreds, Region: "us-east-1"}, Workers: 1})
+		o := authRepairOut{BadChunks: stats.BadChunks, Repaired: stats.Repaired, Unresolved: stats.Unresolved, ObjectsRepaired: stats.ObjectsRepaired, PostRepairOK: stats.PostRepairOK}
+		if err != nil {
+			o.Err = err.Error()
+		}
+		emit(o)
+	case "repairobject":
+		lock, err := acquireStoreLock(dir, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.release()
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		exact, err := os.ReadFile(os.Getenv("ZS3_AUTH_FILE"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sha, _ := decodeHexSHA256(os.Getenv("ZS3_AUTH_SHA"))
+		o := authRepairOut{}
+		if err := s.AuthorityRepairObject(sha, exact); err != nil {
+			o.Err = err.Error()
+		}
+		emit(o)
+	case "audit":
+		var want map[string]string // key -> hex SHA-256
+		raw, _ := os.ReadFile(os.Getenv("ZS3_AUTH_WANT"))
+		json.Unmarshal(raw, &want)
+		lock, err := acquireStoreLock(dir, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.release()
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		var a authAudit
+		for k, w := range want {
+			_, body, err := s.GetObject("b", k)
+			switch sum := sha256.Sum256(body); {
+			case err != nil:
+				a.Errs++
+			case hex.EncodeToString(sum[:]) != w:
+				a.Wrong++
+			default:
+				a.Exact++
+			}
+		}
+		if res, err := s.Verify(true); err == nil && res.OK() {
+			a.VerifyOK = true
+		}
+		emit(a)
+	case "maint":
+		o := map[string]string{}
+		if _, err := gcCollect(dir, true); err != nil {
+			o["gc"] = err.Error()
+		}
+		if _, err := repackStore(dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true}); err != nil {
+			o["repack"] = err.Error()
+		}
+		emit(o)
+	}
+	os.Exit(0)
+}
+
+func authWantFile(t *testing.T, want map[string][]byte) string {
+	m := map[string]string{}
+	for k, v := range want {
+		sum := sha256.Sum256(v)
+		m[k] = hex.EncodeToString(sum[:])
+	}
+	b, _ := json.Marshal(m)
+	p := filepath.Join(t.TempDir(), "want.json")
+	os.WriteFile(p, b, 0o644)
+	return p
+}
+
+func authAuditDir(t *testing.T, dir, wantFile string) authAudit {
+	t.Helper()
+	killed, out := runHelper(t, "audit", dir, "", 0, "ZS3_AUTH_WANT="+wantFile)
+	var a authAudit
+	if killed || json.Unmarshal([]byte(strings.TrimSpace(out)), &a) != nil {
+		t.Fatalf("audit did not report: killed=%v %q", killed, out)
+	}
+	if a.Wrong != 0 {
+		t.Fatalf("SILENT CORRUPTION: %d objects read back with wrong bytes (%+v)", a.Wrong, a)
+	}
+	return a
+}
+
+func authRunRepair(t *testing.T, dir, peerURL, point string, occ int, extra ...string) (killed bool, out authRepairOut) {
+	t.Helper()
+	killed, so := runHelper(t, "repair", dir, point, occ, append([]string{"ZS3_AUTH_PEER=" + peerURL}, extra...)...)
+	if !killed {
+		if err := json.Unmarshal([]byte(strings.TrimSpace(so)), &out); err != nil {
+			t.Fatalf("repair output %q: %v", so, err)
+		}
+	}
+	return killed, out
+}
+
+// eqDamage damages up to n distinct components of delta records (alternately missing and corrupt) and
+// closes the store; it returns the damaged digests.
+func eqDamage(t *testing.T, f *eqFix, n int) [][32]byte {
+	t.Helper()
+	s := f.l.s
+	var victims [][32]byte
+	files, _ := s.authFiles()
+	for _, sh := range files {
+		if rec, _ := s.authLoad(sh); rec != nil && rec.Form == authFormDelta && len(rec.Pieces) > 0 && len(victims) < n {
+			victims = append(victims, rec.Pieces[0].SHA)
+		}
+	}
+	for i, v := range victims {
+		if i%2 == 0 {
+			removeChunkAnyLayout(t, s, v)
+		} else {
+			corruptChunkAnyLayout(t, s, v)
+		}
+	}
+	f.srv.Close()
+	f.l.close()
+	return victims
+}
+
+func TestAuthorityRepairCrashQualification(t *testing.T) {
+	t.Run("peer component repair: repeated SIGKILL at every durable boundary, restart converges", func(t *testing.T) {
+		f := eqFixture(t)
+		peer := f.peer(t)
+		want := authWantFile(t, f.l.want)
+		victims := eqDamage(t, f, 4)
+		if len(victims) < 2 {
+			t.Fatal("fixture has too few delta components")
+		}
+		if a := authAuditDir(t, f.l.dir, want); a.VerifyOK {
+			t.Fatalf("damaged store audits clean: %+v", a)
+		}
+		// Each restart is killed at the next boundary of the previous run's progress.
+		for i, c := range []struct {
+			point string
+			occ   int
+		}{{hookCASBeforeRename, 1}, {hookCASAfterFirstRename, 1}, {hookCASBeforeDirSync, 1}, {hookCASAfterDirSync, 1}, {hookCASBeforeRename, 2}, {hookCASAfterDirSync, 2}} {
+			killed, out := authRunRepair(t, f.l.dir, peer.URL, c.point, c.occ)
+			if !killed && (out.Unresolved != 0 || !out.PostRepairOK) {
+				t.Fatalf("restart %d finished without repairing: %+v", i, out)
+			}
+			a := authAuditDir(t, f.l.dir, want) // wrong == 0 is enforced inside
+			t.Logf("restart %d killed=%v at %s#%d: %+v", i, killed, c.point, c.occ, a)
+			if !killed {
+				break
+			}
+		}
+		killed, out := authRunRepair(t, f.l.dir, peer.URL, "", 0)
+		if killed || out.Unresolved != 0 || !out.PostRepairOK {
+			t.Fatalf("final repair: %+v", out)
+		}
+		if a := authAuditDir(t, f.l.dir, want); a.Exact != len(f.l.want) || !a.VerifyOK {
+			t.Fatalf("not exact after repair: %+v", a)
+		}
+	})
+
+	t.Run("object-level repair: killed around the pin record, restart completes", func(t *testing.T) {
+		for _, c := range []struct {
+			point string
+			occ   int
+		}{{hookCASBeforeRename, 1}, {hookCASAfterStageSync, 1}, {hookCASAfterDirSync, 1}, {hookAuthBeforeWrite, 1}, {hookAuthRecordWritten, 1}, {hookAuthBeforeRename, 1}, {hookAuthAfterRename, 1}, {hookAuthPublished, 1}} {
+			f := eqFixture(t)
+			want := authWantFile(t, f.l.want)
+			exact := f.l.want[f.key]
+			sha, _ := decodeHexSHA256(f.l.man(f.key).ObjectSHA256)
+			exactFile := filepath.Join(t.TempDir(), "exact.bin")
+			os.WriteFile(exactFile, exact, 0o644)
+			gen := mustLoad(t, f.l.s, sha).Gen
+			eqDamage(t, f, 3)
+			env := []string{"ZS3_AUTH_FILE=" + exactFile, "ZS3_AUTH_SHA=" + hex.EncodeToString(sha[:])}
+			killed, _ := runHelper(t, "repairobject", f.l.dir, c.point, c.occ, env...)
+			if !killed {
+				t.Fatalf("%s#%d never reached", c.point, c.occ)
+			}
+			a := authAuditDir(t, f.l.dir, want)
+			t.Logf("%s#%d: after kill %+v", c.point, c.occ, a)
+			if k, so := runHelper(t, "repairobject", f.l.dir, "", 0, env...); k || strings.Contains(so, `"Err":"`) && !strings.Contains(so, `"Err":""`) {
+				t.Fatalf("restart: killed=%v %s", k, so)
+			}
+			s := OpenStoreT(t, f.l.dir)
+			rec := mustLoad(t, s, sha)
+			s.Close()
+			if rec.Gen < gen+1 || rec.Form != authFormPin {
+				t.Fatalf("record after restart: gen %d (was %d) form %d", rec.Gen, gen, rec.Form)
+			}
+			// The other damaged contents still need the peer: only the repaired object is claimed exact.
+			if a := authAuditDir(t, f.l.dir, want); a.Wrong != 0 {
+				t.Fatalf("%+v", a)
+			}
+		}
+	})
+
+	t.Run("object-level fallback inside peer repair (plain peer): killed at every boundary, restart converges", func(t *testing.T) {
+		for _, c := range []struct {
+			point string
+			occ   int
+		}{{hookCASBeforeRename, 1}, {hookCASAfterStageSync, 1}, {hookCASAfterDirSync, 1}, {hookAuthBeforeWrite, 1}, {hookAuthRecordWritten, 1}, {hookAuthBeforeRename, 1}, {hookAuthAfterRename, 1}, {hookAuthPublished, 1}, {hookAuthBeforeWrite, 2}} {
+			f := eqFixture(t)
+			want := authWantFile(t, f.l.want)
+			plain := newAuthLab(t) // holds every object as ordinary CDC content, no authority
+			for k, v := range f.l.want {
+				plain.put(k, v)
+			}
+			peer := httptest.NewServer(NewServer(plain.s, f.creds, "us-east-1"))
+			defer peer.Close()
+			eqDamage(t, f, 3)
+			killed, out := authRunRepair(t, f.l.dir, peer.URL, c.point, c.occ)
+			if !killed {
+				t.Fatalf("%s#%d never reached: %+v", c.point, c.occ, out)
+			}
+			a := authAuditDir(t, f.l.dir, want)
+			killed2, out2 := authRunRepair(t, f.l.dir, peer.URL, "", 0)
+			if killed2 || out2.Unresolved != 0 || !out2.PostRepairOK || out2.ObjectsRepaired == 0 && out.ObjectsRepaired == 0 && !a.VerifyOK {
+				t.Fatalf("%s#%d: restart %+v", c.point, c.occ, out2)
+			}
+			if a := authAuditDir(t, f.l.dir, want); a.Exact != len(f.l.want) || !a.VerifyOK {
+				t.Fatalf("%s#%d: not exact after restart: %+v", c.point, c.occ, a)
+			}
+		}
+	})
+
+	t.Run("corrupt base chunk plus interrupted peer repair", func(t *testing.T) {
+		f := eqFixture(t)
+		peer := f.peer(t)
+		want := authWantFile(t, f.l.want)
+		s := f.l.s
+		var base authPiece
+		files, _ := s.authFiles()
+		for _, sh := range files {
+			if rec, _ := s.authLoad(sh); rec != nil && rec.Form == authFormPin && len(rec.Pieces) > 0 {
+				base = rec.Pieces[len(rec.Pieces)/2]
+			}
+		}
+		if base.Len == 0 {
+			t.Fatal("no pinned base")
+		}
+		corruptChunkAnyLayout(t, s, base.SHA)
+		f.srv.Close()
+		f.l.close()
+		if a := authAuditDir(t, f.l.dir, want); a.VerifyOK || a.Errs == 0 {
+			t.Fatalf("a corrupt base must surface as read errors, not silent success: %+v", a)
+		}
+		for _, occ := range []int{1, 1} {
+			if killed, _ := authRunRepair(t, f.l.dir, peer.URL, hookCASBeforeRename, occ); !killed {
+				break
+			}
+			authAuditDir(t, f.l.dir, want)
+		}
+		if killed, out := authRunRepair(t, f.l.dir, peer.URL, "", 0); killed || out.Unresolved != 0 || !out.PostRepairOK {
+			t.Fatalf("final: %+v", out)
+		}
+		if a := authAuditDir(t, f.l.dir, want); a.Exact != len(f.l.want) || !a.VerifyOK {
+			t.Fatalf("not exact: %+v", a)
+		}
+	})
+
+	t.Run("source peer missing a dependency: honest partial repair, resumable", func(t *testing.T) {
+		f := eqFixture(t)
+		want := authWantFile(t, f.l.want)
+		pl, peer := f.peerLab(t)
+		var victims []authPiece
+		files, _ := f.l.s.authFiles()
+		for _, sh := range files {
+			if rec, _ := f.l.s.authLoad(sh); rec != nil && rec.Form == authFormDelta && len(rec.Pieces) > 0 && len(victims) < 3 {
+				victims = append(victims, rec.Pieces[0])
+			}
+		}
+		if len(victims) < 3 {
+			t.Fatal("fixture has too few delta components")
+		}
+		lost := victims[2]
+		lostBytes, err := f.l.s.casRead(lost.SHA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range victims {
+			removeChunkAnyLayout(t, f.l.s, v.SHA)
+		}
+		removeChunkAnyLayout(t, pl.s, lost.SHA) // the peer lacks one dependency
+		f.srv.Close()
+		f.l.close()
+		if killed, out := authRunRepair(t, f.l.dir, peer.URL, hookCASBeforeRename, 1); !killed {
+			t.Fatalf("repair finished without reaching the kill point: %+v", out)
+		}
+		authAuditDir(t, f.l.dir, want)
+		killed, out := authRunRepair(t, f.l.dir, peer.URL, "", 0)
+		if killed || out.Repaired != 2 || out.Unresolved != 1 || out.PostRepairOK {
+			t.Fatalf("a peer without a dependency must repair the rest and report the loss: %+v", out)
+		}
+		if a := authAuditDir(t, f.l.dir, want); a.VerifyOK || a.Exact == len(f.l.want) {
+			t.Fatalf("an unrecoverable component was reported as repaired: %+v", a)
+		}
+		// Idempotent while the peer is still incomplete; then the peer regains the chunk and the same command finishes.
+		if _, again := authRunRepair(t, f.l.dir, peer.URL, "", 0); again.Repaired != 0 || again.Unresolved != 1 {
+			t.Fatalf("second run against the same incomplete peer: %+v", again)
+		}
+		if err := pl.s.casRepairPublish(lost.SHA, lostBytes); err != nil {
+			t.Fatal(err)
+		}
+		if _, done := authRunRepair(t, f.l.dir, peer.URL, "", 0); done.Unresolved != 0 || !done.PostRepairOK {
+			t.Fatalf("resume: %+v", done)
+		}
+		if a := authAuditDir(t, f.l.dir, want); a.Exact != len(f.l.want) || !a.VerifyOK {
+			t.Fatalf("not exact after resume: %+v", a)
+		}
+	})
+
+	t.Run("interrupted dependency-closure reconstruction: repeated kills on one destination, retry converges", func(t *testing.T) {
+		src := eqFixture(t)
+		sha, _ := decodeHexSHA256(src.l.man(src.key).ObjectSHA256)
+		var buf bytes.Buffer
+		if err := src.l.s.ExportAuthorityClosure(sha, &buf); err != nil {
+			t.Fatal(err)
+		}
+		file := filepath.Join(t.TempDir(), "closure.bin")
+		os.WriteFile(file, buf.Bytes(), 0o644)
+		dst := t.TempDir()
+		for _, c := range []struct {
+			point string
+			occ   int
+		}{{hookAuthImportChunks, 1}, {hookAuthImportRecord, 1}, {hookAuthImportRecord, 2}, {hookAuthBeforeRename, 1}, {hookAuthBeforeRename, 2}, {hookAuthAfterRename, 2}} {
+			killed, _ := runHelper(t, "import", dst, c.point, c.occ, "ZS3_AUTH_FILE="+file)
+			if !killed {
+				break // the point lies beyond what earlier restarts left to do
+			}
+			s := OpenStoreT(t, dst)
+			recs, _ := s.authFiles()
+			for _, h := range recs { // closure-checked publication: nothing committed may be incomplete
+				if _, _, err := s.authProve(mustLoad(t, s, h), 0); err != nil {
+					t.Fatalf("after kill at %s#%d a committed record %x is not exact: %v", c.point, c.occ, h[:4], err)
+				}
+			}
+			s.Close()
+		}
+		s := OpenStoreT(t, dst)
+		defer s.Close()
+		if err := s.ImportAuthorityClosure(bytes.NewReader(buf.Bytes())); err != nil {
+			t.Fatalf("final retry: %v", err)
+		}
+		if res, err := s.Verify(true); err != nil || !res.OK() {
+			t.Fatalf("destination after retry: %v %v", err, res.Issues)
+		}
+		if err := s.ImportAuthorityClosure(bytes.NewReader(buf.Bytes()[:buf.Len()/2])); err == nil {
+			t.Fatal("a closure stream cut in the middle must be rejected even when records already exist")
+		}
+	})
+
+	t.Run("recovery running while destructive maintenance is attempted", func(t *testing.T) {
+		f := eqFixture(t)
+		peer := f.peer(t)
+		want := authWantFile(t, f.l.want)
+		eqDamage(t, f, 3)
+		mark := filepath.Join(t.TempDir(), "paused")
+		done := make(chan struct{})
+		var out authRepairOut
+		go func() { // repair holds its shared store lock while paused before its first publication
+			defer close(done)
+			_, out = authRunRepair(t, f.l.dir, peer.URL, hookCASBeforeRename, 1, "ZS3_AUTH_PAUSE_MS=3000", "ZS3_AUTH_MARK="+mark)
+		}()
+		for i := 0; i < 200; i++ {
+			if _, err := os.Stat(mark); err == nil {
+				break
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		if _, err := os.Stat(mark); err != nil {
+			t.Fatal("the repair never reached its pause point")
+		}
+		_, so := runHelper(t, "maint", f.l.dir, "", 0)
+		var m map[string]string
+		if err := json.Unmarshal([]byte(strings.TrimSpace(so)), &m); err != nil || m["gc"] == "" || m["repack"] == "" {
+			t.Fatalf("destructive maintenance ran against a store under repair: %q", so)
+		}
+		<-done
+		if out.Unresolved != 0 || !out.PostRepairOK {
+			t.Fatalf("repair that was held: %+v", out)
+		}
+		if a := authAuditDir(t, f.l.dir, want); a.Exact != len(f.l.want) || !a.VerifyOK {
+			t.Fatalf("after repair: %+v", a)
+		}
+		if _, so = runHelper(t, "maint", f.l.dir, "", 0); strings.TrimSpace(so) != "{}" {
+			t.Fatalf("maintenance after recovery: %s", so)
+		}
+		if a := authAuditDir(t, f.l.dir, want); a.Exact != len(f.l.want) || !a.VerifyOK {
+			t.Fatalf("after maintenance: %+v", a)
+		}
 	})
 }
