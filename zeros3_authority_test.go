@@ -113,6 +113,9 @@ func (l *authLab) exact(stage string) {
 func (l *authLab) migrate(p AuthPolicy) AuthReport {
 	l.t.Helper()
 	p.Apply = true
+	if p.Order == "" {
+		p.Order = "oldest" // archive order unless a test asks for the production default
+	}
 	if !p.AllowRep && !p.AllowDelta {
 		p.AllowRep, p.AllowDelta = true, true
 	}
@@ -780,7 +783,7 @@ func rawPublish(t *testing.T, s *Store, rec *authRecord) {
 	if err := s.ensureAuthFormat(); err != nil {
 		t.Fatal(err)
 	}
-	os.MkdirAll(s.authDir(), 0o755)
+	os.MkdirAll(s.authShardDir(rec.SHA), 0o755)
 	s.auth.mayHave.Store(true)
 	if err := os.WriteFile(s.authPath(rec.SHA), data, 0o644); err != nil {
 		t.Fatal(err)
@@ -2871,7 +2874,14 @@ func TestAuthorityPersistenceLossModel(t *testing.T) {
 					img := filepath.Join(t.TempDir(), "img")
 					plWrite(t, m.top, img, v.durEnts, v.durData)
 					os.MkdirAll(filepath.Join(img, "tmp"), 0o755)
-					t.Run(fmt.Sprintf("cut%d/%s", i, v.name), func(t *testing.T) { plCheck(t, img, fx.want, o.complete) })
+					t.Run(fmt.Sprintf("cut%d/%s", i, v.name), func(t *testing.T) {
+						if err := plProbe(img, fx.want, o.complete); err != nil {
+							for k := max(0, i-14); k <= i; k++ {
+								t.Logf("trace %d: %s %v = %d", k, evs[k].name, evs[k].args[:min(len(evs[k].args), 3)], evs[k].ret)
+							}
+							t.Fatal(err)
+						}
+					})
 				}
 			}
 			// Fidelity: replaying the whole trace must reproduce the real post-operation tree.
@@ -3296,5 +3306,33 @@ func TestAuthorityScaleFixture(t *testing.T) {
 			}
 		}
 		t.Logf("%d pin records in %s", pins, time.Since(t0))
+	}
+}
+
+// The production default keeps the newest version of a history in CDC and moves older ones.
+func TestAuthorityDefaultOrderKeepsNewestInCDC(t *testing.T) {
+	l := authHistoryLab(t, 261, 4, 1_000_000)
+	pol := AuthPolicy{MinSaving: 0.05, Order: "newest", AllowDelta: true, Apply: true}.norm()
+	if pol.Order != "newest" || (AuthPolicy{}).norm().Order != "newest" {
+		t.Fatal("default order must keep the newest version in CDC")
+	}
+	if _, err := l.s.AuthorityMigrate(AuthPolicy{MinSaving: 0.05, AllowDelta: true, Apply: true}); err != nil {
+		t.Fatal(err)
+	}
+	newest := l.man("k3")
+	sha, _ := decodeHexSHA256(newest.ObjectSHA256)
+	if rec, _ := l.s.authLoad(sha); rec != nil && rec.Form != authFormPin {
+		t.Fatalf("newest version was retired into a %d body", rec.Form)
+	}
+	if st, _ := l.s.AuthorityStatus(); st.ByForm["delta"] == 0 {
+		t.Fatal("older versions were not migrated")
+	}
+	l.reclaim()
+	l.exact("default order")
+	for _, c := range newest.Chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		if _, err := l.s.casStat(sum); err != nil {
+			t.Fatalf("the newest version lost a CDC chunk: %v", err)
+		}
 	}
 }
