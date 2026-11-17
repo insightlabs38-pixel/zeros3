@@ -3362,3 +3362,32 @@ func TestAuthorityDefaultOrderKeepsNewestInCDC(t *testing.T) {
 		}
 	}
 }
+
+// A hostile windowed record is rejected or decoded without panics and never exceeds its bounds.
+func FuzzAuthWindowRecord(f *testing.F) {
+	base := genRandomBytes(1, 300_000)
+	target := append(append([]byte(nil), base[:100_000]...), genRandomBytes(2, 50_000)...)
+	target = append(target, base[120_000:]...)
+	var rec bytes.Buffer
+	wp := authWParams(1, int64(len(base)))
+	wp.Window = 64 << 10
+	idx, err := dwDcoreBuildWIndex(bytes.NewReader(base), int64(len(base)), wp.Anchor, 1)
+	if err != nil {
+		f.Fatal(err)
+	}
+	if _, err := dwDcoreWEncode(&rec, bytes.NewReader(target), int64(len(target)), bytes.NewReader(base), int64(len(base)), idx, wp); err != nil {
+		f.Fatal(err)
+	}
+	f.Add(rec.Bytes())
+	f.Add([]byte("ZW1\x00"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		wr, err := dwDcoreOpenWRecord(bytes.NewReader(data), int64(len(data)))
+		if err != nil || wr.Size > 1<<30 || wr.maxWindow > authWinMaxWindow {
+			return
+		}
+		out, _, err := wr.DecodeRange(bytes.NewReader(base), wp, 0, min(wr.Size, 1<<20))
+		if err == nil && int64(len(out)) > wr.Size {
+			t.Fatalf("decoded %d bytes of a %d byte object", len(out), wr.Size)
+		}
+	})
+}
