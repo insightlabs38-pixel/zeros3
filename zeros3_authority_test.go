@@ -2398,10 +2398,11 @@ type plFile struct {
 }
 
 type plModel struct {
-	root  string
-	top   *plNode
-	fds   map[int]*plFile
-	dirfd map[int]string
+	root   string
+	top    *plNode
+	fds    map[int]*plFile
+	dirfd  map[int]string
+	byNode map[*plNode]*plFile // write position per file when descriptors are named by path
 }
 
 func plNewDir() *plNode {
@@ -2454,12 +2455,24 @@ func (m *plModel) walk(path string) (parent *plNode, name string, n *plNode, ok 
 	return nil, "", nil, false
 }
 
+// plFdPath extracts the path strace -y prints after a descriptor ("12</a/b>").
+func plFdPath(arg string) (string, bool) {
+	i, j := strings.IndexByte(arg, '<'), strings.LastIndexByte(arg, '>')
+	if i < 0 || j < i {
+		return "", false
+	}
+	return strings.TrimSuffix(arg[i+1:j], " (deleted)"), true
+}
+
 func (m *plModel) at(dirfd, path string) string {
 	if strings.HasPrefix(path, "/") {
 		return path
 	}
-	if dirfd == "AT_FDCWD" {
+	if strings.HasPrefix(dirfd, "AT_FDCWD") {
 		return filepath.Join(m.root, path)
+	}
+	if p, ok := plFdPath(dirfd); ok {
+		return filepath.Join(p, path)
 	}
 	fd, _ := strconv.Atoi(dirfd)
 	return filepath.Join(m.dirfd[fd], path)
@@ -2548,7 +2561,19 @@ func (m *plModel) apply(name string, args []string, blobs map[int][]byte, ret in
 	if ret < 0 && name != "lseek" {
 		return false
 	}
+	// With strace -y a descriptor argument names its file, so concurrent threads that reuse
+	// descriptor numbers cannot be confused; the descriptor table is only the fallback.
 	fdArg := func(i int) *plFile {
+		if p, ok := plFdPath(args[i]); ok {
+			if _, _, n, ok := m.walk(p); ok && n != nil {
+				f := m.byNode[n]
+				if f == nil {
+					f = &plFile{n: n}
+					m.byNode[n] = f
+				}
+				return f
+			}
+		}
 		fd, _ := strconv.Atoi(args[i])
 		return m.fds[fd]
 	}
@@ -2578,6 +2603,7 @@ func (m *plModel) apply(name string, args []string, blobs map[int][]byte, ret in
 		if n.dir {
 			m.dirfd[int(ret)] = path
 		}
+		m.byNode[n] = f
 		return barrier
 	case "close":
 		fd, _ := strconv.Atoi(args[0])
@@ -2737,7 +2763,7 @@ func plRun(t *testing.T, bin, fixture string, cli ...string) (pre *plNode, evs [
 	}
 	pre = plLoad(t, root)
 	trace := filepath.Join(t.TempDir(), "trace")
-	args := append([]string{"-f", "-o", trace, "-s", "100000000", "-e", "trace=openat,close,write,pwrite64,lseek,ftruncate,fsync,fdatasync,rename,renameat,renameat2,unlink,unlinkat,rmdir,mkdir,mkdirat", bin}, cli...)
+	args := append([]string{"-f", "-y", "-o", trace, "-s", "100000000", "-e", "trace=openat,close,write,pwrite64,lseek,ftruncate,fsync,fdatasync,rename,renameat,renameat2,unlink,unlinkat,rmdir,mkdir,mkdirat", bin}, cli...)
 	args = append(args, "-store", root)
 	if out, err := exec.Command("strace", args...).CombinedOutput(); err != nil {
 		t.Fatalf("strace %v: %v\n%s", cli, err, out)
@@ -2835,7 +2861,7 @@ func TestAuthorityPersistenceLossModel(t *testing.T) {
 		t.Run(o.name, func(t *testing.T) {
 			fx := newCrashFixture(t, o.stage)
 			pre, evs, actual := plRun(t, bin, fx.dir, o.cli...)
-			m := &plModel{top: pre, fds: map[int]*plFile{}, dirfd: map[int]string{}}
+			m := &plModel{top: pre, fds: map[int]*plFile{}, dirfd: map[int]string{}, byNode: map[*plNode]*plFile{}}
 			// the model root is the store path the CLI was given; the trace names it
 			m.root = ""
 			for _, e := range evs {
@@ -2848,7 +2874,7 @@ func TestAuthorityPersistenceLossModel(t *testing.T) {
 				t.Fatal("trace never touched FORMAT.json")
 			}
 			var barriers []int
-			probe := &plModel{root: m.root, top: plLoad(t, fx.dir), fds: map[int]*plFile{}, dirfd: map[int]string{}}
+			probe := &plModel{root: m.root, top: plLoad(t, fx.dir), fds: map[int]*plFile{}, dirfd: map[int]string{}, byNode: map[*plNode]*plFile{}}
 			for i, e := range evs {
 				if probe.apply(e.name, e.args, e.blobs, e.ret) {
 					barriers = append(barriers, i)
@@ -2895,7 +2921,7 @@ func TestAuthorityPersistenceLossModel(t *testing.T) {
 				t.Fatalf("the replayed trace does not reproduce the traced store (%s != %s)", a[:12], b[:12])
 			}
 			if o.name == "migrate" { // control: without its fsyncs the same trace must produce a failing image
-				ctl := &plModel{root: m.root, top: plLoad(t, fx.dir), fds: map[int]*plFile{}, dirfd: map[int]string{}}
+				ctl := &plModel{root: m.root, top: plLoad(t, fx.dir), fds: map[int]*plFile{}, dirfd: map[int]string{}, byNode: map[*plNode]*plFile{}}
 				failed := 0
 				for i, e := range evs {
 					if e.name == "fsync" || e.name == "fdatasync" {
