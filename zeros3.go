@@ -19,6 +19,7 @@ import (
 	"cmp"
 	"compress/flate"
 	"container/heap"
+	"container/list"
 	"context"
 	"crypto/hmac"
 	"crypto/md5"
@@ -45,6 +46,7 @@ import (
 	"maps"
 	"math"
 	"math/bits"
+	randX "math/rand"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -80,43 +82,44 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      531    Content-defined chunking (CDC)
-//      718    Content-addressed chunk storage (CAS)
-//     2461    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//     4343    Small-object segments (inline manifests, store level 11)
-//     5583    Manifests (immutable, JSON)
-//     6379    Visibility journal (append-only, checksummed)
-//     6874    Store: format, namespace, and object CRUD
-//     8323    Version history/restore, history pruning, ListObjectsV2
-//     8804    SigV4 authentication (header and presigned-URL)
-//     9781    Request payload checksums and S3-shaped XML error/response types
-//     9998    HTTP routing and S3 operation handlers
-//    10414    Conditional operations (PUT/GET/HEAD preconditions)
-//    11109    CopyObject
-//    11414    Multipart upload
-//    12354    Stats and reachability scanning
-//    13829    Verify
-//    14042    Store locking and safe offline GC
-//    14345    Offline compaction (`zeros3 compact`)
-//    15411    Pack reclamation and repacking (`zeros3 repack`)
-//    15896    Physical tiers: status and pack movement (`zeros3 tier`)
-//    16409    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    17474    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18278    Delta sync client, credentials, and parallel transfer
-//    20272    Bulk logical-chunk transport (v2)
-//    21183    Recursive directory sync
-//    21488    Remote replication (`zeros3 replicate`)
-//    22247    Peer-assisted corruption repair (`zeros3 repair`)
-//    22815    Namespace (prefix/bucket) replication
-//    23122    Copy-on-write namespace fork (`zeros3 fork`)
-//    23330    Snapshots and restore
-//    24491    Structural diff and inspect (introspection)
-//    25830    Portable snapshot bundles (`zeros3 bundle`)
-//    27027    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    27662    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    44555    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    48528    Windowed and estimated similarity deltas (extracted dcore)
-//    50030    CLI dispatch, HTTP server/startup, and main
+//      533    Content-defined chunking (CDC)
+//      720    Content-addressed chunk storage (CAS)
+//     2463    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
+//     4345    Small-object segments (inline manifests, store level 11)
+//     5585    Manifests (immutable, JSON)
+//     6381    Visibility journal (append-only, checksummed)
+//     6876    Store: format, namespace, and object CRUD
+//     8331    Version history/restore, history pruning, ListObjectsV2
+//     8812    SigV4 authentication (header and presigned-URL)
+//     9789    Request payload checksums and S3-shaped XML error/response types
+//    10006    HTTP routing and S3 operation handlers
+//    10422    Conditional operations (PUT/GET/HEAD preconditions)
+//    11117    CopyObject
+//    11422    Multipart upload
+//    12362    Stats and reachability scanning
+//    13837    Verify
+//    14050    Store locking and safe offline GC
+//    14353    Offline compaction (`zeros3 compact`)
+//    15419    Pack reclamation and repacking (`zeros3 repack`)
+//    15904    Physical tiers: status and pack movement (`zeros3 tier`)
+//    16417    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    17482    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18286    Delta sync client, credentials, and parallel transfer
+//    20280    Bulk logical-chunk transport (v2)
+//    21191    Recursive directory sync
+//    21496    Remote replication (`zeros3 replicate`)
+//    22255    Peer-assisted corruption repair (`zeros3 repair`)
+//    22823    Namespace (prefix/bucket) replication
+//    23130    Copy-on-write namespace fork (`zeros3 fork`)
+//    23338    Snapshots and restore
+//    24499    Structural diff and inspect (introspection)
+//    25838    Portable snapshot bundles (`zeros3 bundle`)
+//    27035    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    27670    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    44563    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    48553    Windowed and estimated similarity deltas (extracted dcore)
+//    50055    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    57200    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -6888,6 +6891,9 @@ type storeFormat struct {
 	// RequiredLevel is the level the store needs without authority records. It is
 	// set only while authority is adopted, and a full revert lowers the store to it.
 	RequiredLevel int `json:"required_level,omitempty"`
+	// Features names record forms newer than the level numbers can express ("zn7"); a build that
+	// does not know one refuses the store instead of misreading its records.
+	Features []string `json:"features,omitempty"`
 }
 
 type objectEntry struct {
@@ -7153,6 +7159,9 @@ func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
 		}
 		if !supportedStoreFormat(format.StoreFormatVersion) {
 			return storeFormat{}, fmt.Errorf("store: unsupported store format version %d (this build supports versions %d through %d)", format.StoreFormatVersion, storeFormatVersion, storeFormatVersionSupported)
+		}
+		if f := format.unknownFeature(); f != "" {
+			return storeFormat{}, fmt.Errorf("store: the store requires the %q feature, which this build does not support", f)
 		}
 		if format.CDCFormatVersion != cdcFormatVersion {
 			return storeFormat{}, fmt.Errorf("store: unsupported CDC format version %d (this build supports version %d)", format.CDCFormatVersion, cdcFormatVersion)
@@ -45439,6 +45448,13 @@ func (s *Store) authPublish(rec *authRecord) error {
 	if err := s.ensureAuthFormat(); err != nil {
 		return err
 	}
+	if rec.Form == authFormDelta && len(rec.Pieces) > 0 {
+		if first, err := s.casRead(rec.Pieces[0].SHA); err == nil && len(first) >= 4 && string(first[:4]) == ncNumcore_zMagic {
+			if err := s.ensureFeature(authZN7Feature); err != nil {
+				return err
+			}
+		}
+	}
 	fireTestHook(hookAuthAfterFormat)
 	s.auth.pubMu.Lock()
 	defer s.auth.pubMu.Unlock()
@@ -45793,6 +45809,9 @@ func (c *authCtx) newDelta(rec *authRecord, depth int) (authBody, error) {
 		var magic [4]byte
 		if _, err := blob.ReadAt(magic[:], 0); err == nil && string(magic[:]) == wMagicZW1 {
 			return c.newWindowed(rec, blob, depth)
+		}
+		if string(magic[:]) == ncNumcore_zMagic {
+			return c.newZN7(rec, blob, depth)
 		}
 	}
 	var hdr xdHeader
@@ -46389,6 +46408,7 @@ func (s *Store) verifyBodiesDeep(rr reachabilityResult, res *VerifyResult) {
 
 // AuthPolicy controls which exact physical form may become authoritative.
 type AuthPolicy struct {
+	NoZN7      bool    `json:"no_zn7"`       // do not offer ZN7 containers for float and quantized model files
 	Order      string  `json:"order"`        // "oldest": earlier versions are bases; "newest": newer versions are bases
 	MaxDepth   int     `json:"max_depth"`    // delta nesting bound (default 2, hard 4)
 	MaxBases   int     `json:"max_bases"`    // bases per delta (default 2, hard 4)
@@ -46426,6 +46446,7 @@ type authPlanCache struct {
 	repAbort  map[repKind]bool
 	rejected  int                // rep objects never constructed because the group was abandoned
 	winAdded  map[[32]byte]int64 // plan-only added bytes of windowed deltas
+	znAdded   map[[32]byte]int64 // plan-only added bytes of ZN7 containers
 	reuseHits int
 	// stale is set when apply-time gating (proof failure, read-amplification
 	// refusal) rejected an object the plan-only pass had admitted: later cached
@@ -46442,7 +46463,7 @@ type authDeltaPlan struct {
 }
 
 func newAuthPlanCache() *authPlanCache {
-	return &authPlanCache{delta: map[[32]byte]*authDeltaPlan{}, deltaAdd: map[[32]byte]int64{}, repC: map[[32]byte]*authRepCand{}, repAbort: map[repKind]bool{}, winAdded: map[[32]byte]int64{}}
+	return &authPlanCache{delta: map[[32]byte]*authDeltaPlan{}, deltaAdd: map[[32]byte]int64{}, repC: map[[32]byte]*authRepCand{}, repAbort: map[repKind]bool{}, winAdded: map[[32]byte]int64{}, znAdded: map[[32]byte]int64{}}
 }
 
 func (p AuthPolicy) norm() AuthPolicy {
@@ -46844,6 +46865,7 @@ type authMigrator struct {
 	repC   map[int]*authRepCand
 	byKey  map[string][]int // bucket/key -> admitted-or-eligible base indexes
 	depth  map[int]int
+	zl     map[int]*authZN7Info // tensor layouts of model-shaped contents (nil entry: not a model)
 	rep    AuthReport
 }
 
@@ -47291,6 +47313,9 @@ func (m *authMigrator) process(i int, o *authObj) error {
 		finish(plan)
 		m.addBase(i)
 		return nil
+	}
+	if handled, err := m.tryZN7(i, o, plan, finish); handled || err != nil {
+		return err
 	}
 	if o.man.TotalLength > authWindowMin {
 		return m.processWindowed(i, o, plan, finish)
@@ -47809,7 +47834,7 @@ func (s *Store) authLowerFloor() (int, error) {
 	}
 	s.auth.mayHave.Store(false)
 	f := s.format
-	f.StoreFormatVersion, f.RequiredLevel = max(f.RequiredLevel, storeFormatVersion), 0
+	f.StoreFormatVersion, f.RequiredLevel, f.Features = max(f.RequiredLevel, storeFormatVersion), 0, nil
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return 0, err
@@ -48453,6 +48478,7 @@ func runAuthority(args []string) {
 	ratio := fs.Float64("min-read-ratio", 0.5, "min whole-object read throughput relative to CDC for hybrid admissions (0 = unmeasured)")
 	noRep := fs.Bool("no-rep", false, "do not consider structural representations")
 	noDelta := fs.Bool("no-delta", false, "do not consider generic deltas")
+	noZN7 := fs.Bool("no-zn7", false, "do not consider ZN7 containers for model files")
 	sha := fs.String("sha256", "", "revert: content SHA-256 (hex)")
 	bucket := fs.String("bucket", "", "migrate: only contents named in this bucket")
 	prefix := fs.String("prefix", "", "migrate: only contents whose key starts with this prefix")
@@ -48487,7 +48513,7 @@ func runAuthority(args []string) {
 	enc.SetIndent("", "  ")
 	switch sub {
 	case "migrate":
-		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, Apply: *apply}
+		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, Apply: *apply}
 		if *archive {
 			pol.Order, pol.MaxReadAmp, pol.MinReadRatio = "oldest", 0, 0
 		}
@@ -50024,6 +50050,7151 @@ func (w *dwDcoreWRecord) DecodeRangeInto(out []byte, scratch *[]byte, v *dwDcore
 		out = append(out, fb[from:to]...)
 	}
 	return out, nil
+}
+
+// =============================================================================
+// 16g. ZN7 windowed model container and ggml quantizers (Z4-P7; mechanically
+// extracted from testing-harnesses/z3 numcore, qcore and the dcore header
+// codec by p6extract: identifiers keep the nc prefix)
+// =============================================================================
+
+// IMatrix is llama.cpp's legacy importance-matrix file (llama-imatrix output), as
+// llama-quantize loads it: per tensor name, the activation sums divided by the call count.
+type ncQcoreIMatrix struct {
+	W map[string][]float32
+}
+
+var ncQcoreErrIMatrix = errors.New("qcore: malformed imatrix")
+
+const (
+	ncQcore_maxIMEntries = 1 << 20
+	ncQcore_maxIMName    = 1 << 12
+)
+
+// ParseIMatrix decodes the binary format (n, then len/name/ncall/nval/f32[nval] per entry; an
+// optional trailer is ignored). Non-finite weights are rejected as llama-quantize does.
+func ncQcoreParseIMatrix(b []byte) (*ncQcoreIMatrix, error) {
+	p := 0
+	i32 := func() (int, bool) {
+		if len(b)-p < 4 {
+			return 0, false
+		}
+		v := int32(binary.LittleEndian.Uint32(b[p:]))
+		p += 4
+		return int(v), true
+	}
+	n, ok := i32()
+	if !ok || n < 1 || n > ncQcore_maxIMEntries {
+		return nil, ncQcoreErrIMatrix
+	}
+	im := &ncQcoreIMatrix{W: make(map[string][]float32, n)}
+	for i := 0; i < n; i++ {
+		l, ok := i32()
+		if !ok || l < 0 || l > ncQcore_maxIMName || len(b)-p < l {
+			return nil, ncQcoreErrIMatrix
+		}
+		name := string(b[p : p+l])
+		p += l
+		ncall, ok1 := i32()
+		nval, ok2 := i32()
+		if !ok1 || !ok2 || nval < 1 || (len(b)-p)/4 < nval {
+			return nil, ncQcoreErrIMatrix
+		}
+		w := make([]float32, nval)
+		for j := range w {
+			v := math.Float32frombits(binary.LittleEndian.Uint32(b[p+4*j:]))
+			if ncall > 0 {
+				v /= float32(ncall)
+			}
+			if v != v || v > math.MaxFloat32 || v < -math.MaxFloat32 {
+				return nil, ncQcoreErrIMatrix
+			}
+			w[j] = v
+		}
+		p += 4 * nval
+		im.W[name] = w
+	}
+	return im, nil
+}
+
+// For returns the importance vector llama-quantize uses for a 2-D tensor with nPerRow columns
+// (nil when the tensor has no entry or the size differs: the reference quantizer applies).
+func (im *ncQcoreIMatrix) For(name string, nPerRow int) []float32 {
+	if im == nil {
+		return nil
+	}
+	if w := im.W[name]; len(w) == nPerRow {
+		return w
+	}
+	return nil
+}
+
+var ncQcore_kvaluesIQ4NL = [16]int8{-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113}
+
+func ncQcore_bestIndexInt8(val *[16]int8, x float32) int {
+	if x <= float32(val[0]) {
+		return 0
+	}
+	if x >= float32(val[15]) {
+		return 15
+	}
+	ml, mu := 0, 15
+	for mu-ml > 1 {
+		mav := (ml + mu) / 2
+		if x < float32(val[mav]) {
+			mu = mav
+		} else {
+			ml = mav
+		}
+	}
+	if x-float32(val[mu-1]) < float32(val[mu])-x {
+		return mu - 1
+	}
+	return mu
+}
+
+// quantize_iq4_nl (sbs 32; block: d qs[16]) and quantize_iq4_xs (sbs 256; block: d scales_h
+// scales_l[4] qs[128]); ntry = 7 as in ggml_quantize_chunk. L persists across blocks as in C.
+func ncQcore_rowIQ4(fm bool, x []float32, y []byte, qw []float32, sbs int) {
+	bs := 18
+	if sbs == 256 {
+		bs = 136
+	}
+	const ntry = 7
+	v := &ncQcore_kvaluesIQ4NL
+	var L [256]uint8
+	var weight [32]float32
+	var scales [8]float32
+	nb := sbs / 32
+	for b := 0; b*sbs < len(x); b++ {
+		xs, yb := x[b*sbs:(b+1)*sbs], y[b*bs:(b+1)*bs]
+		var q4 []byte
+		if sbs == 256 {
+			q4 = yb[8:]
+		} else {
+			q4 = yb[2:]
+		}
+		var sigma2 float32
+		for j := 0; j < sbs; j++ {
+			sigma2 += ncQcore_mul(xs[j], xs[j])
+		}
+		sigma2 = ncQcore_mul(sigma2, 2/float32(sbs))
+		var dh uint16
+		var maxScale, amaxScale float32
+		for ib := 0; ib < nb; ib++ {
+			xb, Lb := xs[ib*32:ib*32+32], L[ib*32:ib*32+32]
+			if qw != nil {
+				q := qw[b*sbs+ib*32:]
+				for j := 0; j < 32; j++ {
+					weight[j] = ncQcore_mul(q[j], ncQcore_sqrt(ncQcore_madd(fm, xb[j], xb[j], sigma2)))
+				}
+			} else {
+				for j := 0; j < 32; j++ {
+					weight[j] = ncQcore_mul(xb[j], xb[j])
+				}
+			}
+			var amax, max float32
+			for j := 0; j < 32; j++ {
+				if ax := ncQcore_fabs(xb[j]); ax > amax {
+					amax, max = ax, xb[j]
+				}
+			}
+			if amax < ncQcore_groupMaxEps {
+				scales[ib] = 0
+				continue
+			}
+			d := -max / float32(v[0])
+			id := 1 / d
+			var sumqx, sumq2 float32
+			for j := 0; j < 32; j++ {
+				l := ncQcore_bestIndexInt8(v, ncQcore_mul(id, xb[j]))
+				Lb[j] = uint8(l)
+				q, w := float32(v[l]), weight[j]
+				sumqx = ncQcore_madd(fm, ncQcore_mul(w, q), xb[j], sumqx)
+				sumq2 = ncQcore_madd(fm, ncQcore_mul(w, q), q, sumq2)
+			}
+			d = sumqx / sumq2
+			best := ncQcore_mul(d, sumqx)
+			for itry := -ntry; itry <= ntry; itry++ {
+				id = float32(itry+int(v[0])) / max
+				sumqx, sumq2 = 0, 0
+				for j := 0; j < 32; j++ {
+					q, w := float32(v[ncQcore_bestIndexInt8(v, ncQcore_mul(id, xb[j]))]), weight[j]
+					sumqx = ncQcore_madd(fm, ncQcore_mul(w, q), xb[j], sumqx)
+					sumq2 = ncQcore_madd(fm, ncQcore_mul(w, q), q, sumq2)
+				}
+				if sumq2 > 0 && ncQcore_mul(sumqx, sumqx) > ncQcore_mul(best, sumq2) {
+					d = sumqx / sumq2
+					best = ncQcore_mul(d, sumqx)
+				}
+			}
+			scales[ib] = d
+			if a := ncQcore_fabs(d); a > amaxScale {
+				amaxScale, maxScale = a, d
+			}
+		}
+		if nb > 1 {
+			var sh uint16
+			sl := yb[4:8]
+			d := -maxScale / 32
+			dh = ncQcoreF16(d)
+			var id float32
+			if d != 0 {
+				id = 1 / d
+			}
+			for ib := 0; ib < nb; ib++ {
+				l := ncQcore_clamp(ncQcore_ni(fm, id, scales[ib]), -32, 31)
+				dl := ncQcore_mul(d, ncQcore_b2f(l))
+				var idl float32
+				if dl != 0 {
+					idl = 1 / dl
+				}
+				xb, Lb := xs[ib*32:ib*32+32], L[ib*32:ib*32+32]
+				for j := 0; j < 32; j++ {
+					Lb[j] = uint8(ncQcore_bestIndexInt8(v, ncQcore_mul(idl, xb[j])))
+				}
+				l += 32
+				ll, lh := uint8(l&0xf), uint16(l>>4)
+				if ib%2 == 0 {
+					sl[ib/2] = ll
+				} else {
+					sl[ib/2] |= ll << 4
+				}
+				sh |= lh << (2 * uint(ib%8))
+			}
+			ncQcore_put16(yb[2:], sh)
+		} else {
+			dh = ncQcoreF16(scales[0])
+			var id float32
+			if scales[0] != 0 {
+				id = 1 / scales[0]
+			}
+			for j := 0; j < sbs; j++ {
+				L[j] = uint8(ncQcore_bestIndexInt8(v, ncQcore_mul(id, xs[j])))
+			}
+		}
+		ncQcore_put16(yb, dh)
+		for i := 0; i < sbs/32; i++ {
+			for j := 0; j < 16; j++ {
+				q4[16*i+j] = L[32*i+j] | L[32*i+16+j]<<4
+			}
+		}
+	}
+}
+
+const ncQcore_groupMaxEps = 1e-15
+
+func ncQcore_b2f(l int32) float32 { return float32(l) }
+
+// make_qx_quants. rmse_type as in ggml (negative = return early); qw may be nil.
+func ncQcore_makeQxQuants(fm bool, n, nmax int, x []float32, L []int8, rmse int, qw []float32) float32 {
+	var max, amax float32
+	for i := 0; i < n; i++ {
+		if ax := ncQcore_fabs(x[i]); ax > amax {
+			amax, max = ax, x[i]
+		}
+	}
+	if amax < ncQcore_groupMaxEps {
+		for i := 0; i < n; i++ {
+			L[i] = 0
+		}
+		return 0
+	}
+	nm := int32(nmax)
+	iscale := float32(-nmax) / max
+	if rmse == 0 {
+		for i := 0; i < n; i++ {
+			L[i] = int8(nm + ncQcore_clamp(ncQcore_ni(fm, iscale, x[i]), -nm, nm-1))
+		}
+		return 1 / iscale
+	}
+	early := false
+	if rmse < 0 {
+		rmse, early = -rmse, true
+	}
+	wt := func(i int) float32 {
+		switch {
+		case qw != nil:
+			return qw[i]
+		case rmse == 1:
+			return ncQcore_mul(x[i], x[i])
+		case rmse == 2:
+			return 1
+		case rmse == 3:
+			return ncQcore_fabs(x[i])
+		}
+		return ncQcore_sqrt(ncQcore_fabs(x[i]))
+	}
+	var sumlx, suml2 float32
+	for i := 0; i < n; i++ {
+		l := ncQcore_clamp(ncQcore_ni(fm, iscale, x[i]), -nm, nm-1)
+		L[i] = int8(l + nm)
+		w := wt(i)
+		sumlx = ncQcore_madd(fm, ncQcore_mul(w, x[i]), ncQcore_b2f(l), sumlx)
+		suml2 = ncQcore_madd(fm, ncQcore_mul(w, ncQcore_b2f(l)), ncQcore_b2f(l), suml2)
+	}
+	var scale float32
+	if suml2 != 0 {
+		scale = sumlx / suml2
+	}
+	if early {
+		if suml2 > 0 {
+			return ncQcore_mul(0.5, scale+1/iscale)
+		}
+		return 1 / iscale
+	}
+	best := ncQcore_mul(scale, sumlx)
+	for is := -9; is <= 9; is++ {
+		if is == 0 {
+			continue
+		}
+		iscale = -ncQcore_madd(fm, 0.1, float32(is), float32(nmax)) / max
+		sumlx, suml2 = 0, 0
+		for i := 0; i < n; i++ { // vectorized in-order reduction: never fused
+			l := ncQcore_clamp(ncQcore_ni(fm, iscale, x[i]), -nm, nm-1)
+			w := wt(i)
+			sumlx += ncQcore_mul(ncQcore_mul(w, x[i]), ncQcore_b2f(l))
+			suml2 += ncQcore_mul(ncQcore_mul(w, ncQcore_b2f(l)), ncQcore_b2f(l))
+		}
+		if suml2 > 0 && ncQcore_mul(sumlx, sumlx) > ncQcore_mul(best, suml2) {
+			for i := 0; i < n; i++ {
+				L[i] = int8(nm + ncQcore_clamp(ncQcore_ni(fm, iscale, x[i]), -nm, nm-1))
+			}
+			scale = sumlx / suml2
+			best = ncQcore_mul(scale, sumlx)
+		}
+	}
+	return scale
+}
+
+// make_q3_quants with do_rmse = true (the only use).
+func ncQcore_makeQ3Quants(n, nmax int, x []float32, L []int8) float32 {
+	var max, amax float32
+	for i := 0; i < n; i++ {
+		if ax := ncQcore_fabs(x[i]); ax > amax {
+			amax, max = ax, x[i]
+		}
+	}
+	if amax < ncQcore_groupMaxEps {
+		for i := 0; i < n; i++ {
+			L[i] = 0
+		}
+		return 0
+	}
+	nm := int32(nmax)
+	iscale := float32(-nmax) / max
+	var sumlx, suml2 float32
+	for i := 0; i < n; i++ {
+		l := ncQcore_clamp(ncQcore_nearestInt(ncQcore_mul(iscale, x[i])), -nm, nm-1)
+		L[i] = int8(l)
+		w := ncQcore_mul(x[i], x[i])
+		sumlx += ncQcore_mul(ncQcore_mul(w, x[i]), ncQcore_b2f(l))
+		suml2 += ncQcore_mul(ncQcore_mul(w, ncQcore_b2f(l)), ncQcore_b2f(l))
+	}
+	for itry := 0; itry < 5; itry++ {
+		changed := 0
+		for i := 0; i < n; i++ {
+			w := ncQcore_mul(x[i], x[i])
+			li := float32(L[i])
+			slx := sumlx - ncQcore_mul(ncQcore_mul(w, x[i]), li)
+			if slx > 0 {
+				sl2 := suml2 - ncQcore_mul(ncQcore_mul(w, li), li)
+				nl := ncQcore_clamp(ncQcore_nearestInt(ncQcore_mul(x[i], sl2)/slx), -nm, nm-1)
+				if nl != int32(L[i]) {
+					slx += ncQcore_mul(ncQcore_mul(w, x[i]), ncQcore_b2f(nl))
+					sl2 += ncQcore_mul(ncQcore_mul(w, ncQcore_b2f(nl)), ncQcore_b2f(nl))
+					if sl2 > 0 && ncQcore_mul(ncQcore_mul(slx, slx), suml2) > ncQcore_mul(ncQcore_mul(sumlx, sumlx), sl2) {
+						L[i], sumlx, suml2 = int8(nl), slx, sl2
+						changed++
+					}
+				}
+			}
+		}
+		if changed == 0 {
+			break
+		}
+	}
+	for i := 0; i < n; i++ {
+		L[i] += int8(nmax)
+	}
+	return sumlx / suml2
+}
+
+// make_qkx2_quants. Returns (scale, the_min).
+func ncQcore_makeQkx2Quants(n, nmax int, x, weights []float32, L, Laux []uint8, rmin, rdelta float32, nstep int, useMad bool) (float32, float32) {
+	const fm = false
+	min, max := x[0], x[0]
+	sumW := weights[0]
+	sumX := ncQcore_mul(sumW, x[0])
+	for i := 1; i < n; i++ {
+		if x[i] < min {
+			min = x[i]
+		}
+		if x[i] > max {
+			max = x[i]
+		}
+		w := weights[i]
+		sumW += w
+		sumX += ncQcore_mul(w, x[i])
+	}
+	if min > 0 {
+		min = 0
+	}
+	if max == min {
+		for i := 0; i < n; i++ {
+			L[i] = 0
+		}
+		return 0, -min
+	}
+	return ncQcore_kxSearch(fm, n, nmax, x, weights, L, Laux, rmin, rdelta, nstep, useMad, min, max, sumW, sumX)
+}
+
+// make_qkx3_quants: as qkx2 with optional weights (nil = x^2) and `max <= min`.
+// fm selects the contracted build; sumXFused is its call-site dependent choice for `sum_x += w*x`
+// (fused where the function was inlined and unrolled, plain in the out-of-line clone).
+func ncQcore_makeQkx3Quants(fm, sumXFused bool, n, nmax int, x, weights []float32, L, Laux []uint8, rmin, rdelta float32, nstep int, useMad bool) (float32, float32) {
+	var wbuf [32]float32
+	if weights == nil {
+		for i := 0; i < n; i++ {
+			wbuf[i] = ncQcore_mul(x[i], x[i])
+		}
+		weights = wbuf[:n]
+	}
+	min, max := x[0], x[0]
+	sumW := weights[0]
+	sumX := ncQcore_mul(sumW, x[0])
+	for i := 1; i < n; i++ {
+		if x[i] < min {
+			min = x[i]
+		}
+		if x[i] > max {
+			max = x[i]
+		}
+		w := weights[i]
+		sumW += w
+		sumX = ncQcore_madd(fm && sumXFused, w, x[i], sumX)
+	}
+	if min > 0 {
+		min = 0
+	}
+	if max <= min {
+		for i := 0; i < n; i++ {
+			L[i] = 0
+		}
+		return 0, -min
+	}
+	return ncQcore_kxSearch(fm, n, nmax, x, weights, L, Laux, rmin, rdelta, nstep, useMad, min, max, sumW, sumX)
+}
+
+// kxSearch is the shared body of make_qkx2_quants / make_qkx3_quants after the degenerate checks.
+func ncQcore_kxSearch(fm bool, n, nmax int, x, weights []float32, L, Laux []uint8, rmin, rdelta float32, nstep int, useMad bool, min, max, sumW, sumX float32) (float32, float32) {
+	nm := int32(nmax)
+	iscale := float32(nmax) / (max - min)
+	scale := 1 / iscale
+	var bestMad float32
+	for i := 0; i < n; i++ {
+		L[i] = uint8(ncQcore_clamp(ncQcore_ni(fm, iscale, x[i]-min), 0, nm))
+		diff := ncQcore_madd(fm, scale, float32(L[i]), min) - x[i]
+		if useMad {
+			diff = ncQcore_fabs(diff)
+		} else {
+			diff = ncQcore_mul(diff, diff)
+		}
+		bestMad = ncQcore_madd(fm, weights[i], diff, bestMad)
+	}
+	if nstep < 1 {
+		return scale, -min
+	}
+	for is := 0; is <= nstep; is++ {
+		iscale = (ncQcore_madd(fm, rdelta, float32(is), rmin) + float32(nmax)) / (max - min)
+		var sumL, sumL2, sumXL float32
+		for i := 0; i < n; i++ {
+			l := ncQcore_clamp(ncQcore_ni(fm, iscale, x[i]-min), 0, nm)
+			Laux[i] = uint8(l)
+			wl := ncQcore_mul(weights[i], ncQcore_b2f(l)) // shared by three uses: never fused into sum_l
+			sumL += wl
+			sumL2 = ncQcore_madd(fm, wl, ncQcore_b2f(l), sumL2)
+			sumXL = ncQcore_madd(fm, wl, x[i], sumXL)
+		}
+		var D float32
+		if fm {
+			D = ncQcore_fma32(sumW, sumL2, -ncQcore_mul(sumL, sumL))
+		} else {
+			D = ncQcore_mul(sumW, sumL2) - ncQcore_mul(sumL, sumL)
+		}
+		if D > 0 {
+			var thisScale, thisMin float32
+			if fm {
+				thisScale = ncQcore_fma32(-sumX, sumL, ncQcore_mul(sumW, sumXL)) / D
+				thisMin = ncQcore_fma32(sumL2, sumX, -ncQcore_mul(sumL, sumXL)) / D
+			} else {
+				thisScale = (ncQcore_mul(sumW, sumXL) - ncQcore_mul(sumX, sumL)) / D
+				thisMin = (ncQcore_mul(sumL2, sumX) - ncQcore_mul(sumL, sumXL)) / D
+			}
+			if thisMin > 0 {
+				thisMin = 0
+				thisScale = sumXL / sumL2
+			}
+			var mad float32
+			for i := 0; i < n; i++ {
+				diff := ncQcore_madd(fm, thisScale, float32(Laux[i]), thisMin) - x[i]
+				if useMad {
+					diff = ncQcore_fabs(diff)
+				} else {
+					diff = ncQcore_mul(diff, diff)
+				}
+				mad = ncQcore_madd(fm, weights[i], diff, mad)
+			}
+			if mad < bestMad {
+				copy(L[:n], Laux[:n])
+				bestMad, scale, min = mad, thisScale, thisMin
+			}
+		}
+	}
+	return scale, -min
+}
+
+// make_qp_quants.
+func ncQcore_makeQpQuants(fm bool, n, nmax int, x []float32, L []uint8, qw []float32) float32 {
+	var max float32
+	for i := 0; i < n; i++ {
+		if !(max > x[i]) { // MAX(max, x[i]), NaN-faithful
+			max = x[i]
+		}
+	}
+	if max == 0 {
+		for i := 0; i < n; i++ {
+			L[i] = 0
+		}
+		return 0
+	}
+	nm := int32(nmax)
+	iscale := float32(nmax) / max
+	for i := 0; i < n; i++ {
+		L[i] = uint8(ncQcore_ni(fm, iscale, x[i]))
+	}
+	scale := 1 / iscale
+	var bestMse float32
+	for i := 0; i < n; i++ {
+		diff := ncQcore_madd(fm, -scale, float32(L[i]), x[i])
+		bestMse = ncQcore_madd(fm, ncQcore_mul(qw[i], diff), diff, bestMse)
+	}
+	for is := -4; is <= 4; is++ {
+		if is == 0 {
+			continue
+		}
+		iscaleIs := ncQcore_madd(fm, 0.1, float32(is), float32(nmax)) / max
+		scaleIs := 1 / iscaleIs
+		var mse float32
+		for i := 0; i < n; i++ {
+			l := ncQcore_ni(fm, iscaleIs, x[i])
+			if l > nm {
+				l = nm
+			}
+			diff := ncQcore_madd(fm, -scaleIs, ncQcore_b2f(l), x[i])
+			mse = ncQcore_madd(fm, ncQcore_mul(qw[i], diff), diff, mse)
+		}
+		if mse < bestMse {
+			bestMse, iscale = mse, iscaleIs
+		}
+	}
+	var sumlx, suml2 float32
+	for i := 0; i < n; i++ {
+		l := ncQcore_ni(fm, iscale, x[i])
+		if l > nm {
+			l = nm
+		}
+		L[i] = uint8(l)
+		w := qw[i]
+		sumlx = ncQcore_madd(fm, ncQcore_mul(w, x[i]), ncQcore_b2f(l), sumlx)
+		suml2 = ncQcore_madd(fm, ncQcore_mul(w, ncQcore_b2f(l)), ncQcore_b2f(l), suml2)
+	}
+	for itry := 0; itry < 5; itry++ {
+		changed := 0
+		for i := 0; i < n; i++ {
+			w := qw[i]
+			li := float32(L[i])
+			slx := ncQcore_madd(fm, -ncQcore_mul(w, x[i]), li, sumlx)
+			sl2 := ncQcore_madd(fm, -ncQcore_mul(w, li), li, suml2)
+			if slx > 0 && sl2 > 0 {
+				nl := ncQcore_nearestInt(ncQcore_mul(x[i], sl2) / slx)
+				if nl > nm {
+					nl = nm
+				}
+				if nl != int32(L[i]) {
+					slx = ncQcore_madd(fm, ncQcore_mul(w, x[i]), ncQcore_b2f(nl), slx)
+					sl2 = ncQcore_madd(fm, ncQcore_mul(w, ncQcore_b2f(nl)), ncQcore_b2f(nl), sl2)
+					if ncQcore_mul(ncQcore_mul(slx, slx), suml2) > ncQcore_mul(ncQcore_mul(sumlx, sumlx), sl2) {
+						L[i], sumlx, suml2 = uint8(nl), slx, sl2
+						changed++
+					}
+				}
+			}
+		}
+		if changed == 0 {
+			break
+		}
+	}
+	return sumlx / suml2
+}
+
+func ncQcore_getScaleMinK4(j int, q []byte) (sc, m byte) {
+	if j < 4 {
+		return q[j] & 63, q[j+4] & 63
+	}
+	return q[j+4]&0xF | q[j-4]>>6<<4, q[j+4]>>4 | q[j]>>6<<4
+}
+
+func ncQcore_pack2(L []uint8, qs []byte) { // 256 two-bit quants -> 64 bytes
+	for j := 0; j < 256; j += 128 {
+		for l := 0; l < 32; l++ {
+			qs[j/4+l] = L[j+l] | L[j+l+32]<<2 | L[j+l+64]<<4 | L[j+l+96]<<6
+		}
+	}
+}
+
+// quantize_row_q2_K_ref. block: scales[16] qs[64] d dmin.
+func ncQcore_rowQ2KRef(x []float32, y []byte) {
+	var L [256]uint8
+	var Laux [16]uint8
+	var weights, mins, scales [16]float32
+	for b := 0; b*256 < len(x); b++ {
+		xb, yb := x[b*256:(b+1)*256], y[b*84:(b+1)*84]
+		var maxScale, maxMin float32
+		for j := 0; j < 16; j++ {
+			for l := 0; l < 16; l++ {
+				weights[l] = ncQcore_fabs(xb[16*j+l])
+			}
+			scales[j], mins[j] = ncQcore_makeQkx2Quants(16, 3, xb[16*j:16*j+16], weights[:], L[16*j:16*j+16], Laux[:], -0.5, 0.1, 15, true)
+			if scales[j] > maxScale {
+				maxScale = scales[j]
+			}
+			if mins[j] > maxMin {
+				maxMin = mins[j]
+			}
+		}
+		sc := yb[0:16]
+		var dh, dmh uint16
+		if maxScale > 0 {
+			iscale := 15 / maxScale
+			for j := 0; j < 16; j++ {
+				sc[j] = byte(ncQcore_nearestInt(ncQcore_mul(iscale, scales[j])))
+			}
+			dh = ncQcoreF16(maxScale / 15)
+		} else {
+			for j := 0; j < 16; j++ {
+				sc[j] = 0
+			}
+		}
+		if maxMin > 0 {
+			iscale := 15 / maxMin
+			for j := 0; j < 16; j++ {
+				sc[j] |= byte(ncQcore_nearestInt(ncQcore_mul(iscale, mins[j])) << 4)
+			}
+			dmh = ncQcoreF16(maxMin / 15)
+		}
+		ncQcore_put16(yb[80:], dh)
+		ncQcore_put16(yb[82:], dmh)
+		ncQcore_q2Requant(false, xb, sc, ncQcoreF16to32(dh), ncQcoreF16to32(dmh), L[:])
+		ncQcore_pack2(L[:], yb[16:80])
+	}
+}
+
+// fm: the contracted q2_K_impl fuses `x + dmin*m` (the product is formed in the unrolled block).
+func ncQcore_q2Requant(fm bool, xb []float32, sc []byte, dd, dmin float32, L []uint8) {
+	for j := 0; j < 16; j++ {
+		d := ncQcore_mul(dd, float32(sc[j]&0xF))
+		if d == 0 {
+			continue
+		}
+		for ii := 0; ii < 16; ii++ {
+			L[16*j+ii] = uint8(ncQcore_clamp(ncQcore_nearestInt(ncQcore_madd(fm, dmin, float32(sc[j]>>4), xb[16*j+ii])/d), 0, 3))
+		}
+	}
+}
+
+// quantize_row_q2_K_impl (one row, importance weights qw).
+func ncQcore_rowQ2KImpl(fm bool, x []float32, y []byte, qw []float32) {
+	var L [256]uint8
+	var Laux, Ls, Lm [16]uint8
+	var mins, scales, sw, weight [16]float32
+	for b := 0; b*256 < len(x); b++ {
+		xb, yb := x[b*256:(b+1)*256], y[b*84:(b+1)*84]
+		sw = [16]float32{}
+		var sumx2 float32
+		for j := 0; j < 256; j++ {
+			sumx2 += ncQcore_mul(xb[j], xb[j])
+		}
+		sigma2 := sumx2 / 256
+		for j := 0; j < 16; j++ {
+			q := qw[256*b+16*j:]
+			for l := 0; l < 16; l++ {
+				weight[l] = ncQcore_mul(q[l], ncQcore_sqrt(ncQcore_madd(fm, xb[16*j+l], xb[16*j+l], sigma2)))
+			}
+			for l := 0; l < 16; l++ {
+				sw[j] += weight[l]
+			}
+			scales[j], mins[j] = ncQcore_makeQkx3Quants(fm, true, 16, 3, xb[16*j:16*j+16], weight[:], L[16*j:16*j+16], Laux[:], -0.9, 0.05, 36, false)
+		}
+		dh := ncQcoreF16(ncQcore_makeQpQuants(fm, 16, 15, scales[:], Ls[:], sw[:]))
+		dmh := ncQcoreF16(ncQcore_makeQpQuants(fm, 16, 15, mins[:], Lm[:], sw[:]))
+		ncQcore_put16(yb[80:], dh)
+		ncQcore_put16(yb[82:], dmh)
+		sc := yb[0:16]
+		for j := 0; j < 16; j++ {
+			sc[j] = Ls[j] | Lm[j]<<4
+		}
+		ncQcore_q2Requant(fm, xb, sc, ncQcoreF16to32(dh), ncQcoreF16to32(dmh), L[:])
+		ncQcore_pack2(L[:], yb[16:80])
+	}
+}
+
+// q3 tail shared by ref and impl: requantize with the stored 6-bit scales, split the high bit.
+// block: hmask[32] qs[64] scales[12] d.
+func ncQcore_q3Finish(xb []float32, yb []byte, L []int8) {
+	sc := yb[96:108]
+	dd := ncQcoreF16to32(uint16(yb[108]) | uint16(yb[109])<<8)
+	for j := 0; j < 16; j++ {
+		var s int8
+		if j < 8 {
+			s = int8(sc[j] & 0xF)
+		} else {
+			s = int8(sc[j-8] >> 4)
+		}
+		s = int8(int32(s)|int32(sc[8+j%4]>>(2*uint(j/4))&3)<<4) - 32
+		d := ncQcore_mul(dd, float32(s))
+		if d == 0 {
+			continue
+		}
+		for ii := 0; ii < 16; ii++ {
+			L[16*j+ii] = int8(ncQcore_clamp(ncQcore_nearestInt(xb[16*j+ii]/d), -4, 3) + 4)
+		}
+	}
+	hm := yb[0:32]
+	for i := range hm {
+		hm[i] = 0
+	}
+	m, bit := 0, byte(1)
+	var U [256]uint8
+	for j := 0; j < 256; j++ {
+		if L[j] > 3 {
+			hm[m] |= bit
+			L[j] -= 4
+		}
+		U[j] = uint8(L[j])
+		if m++; m == 32 {
+			m, bit = 0, bit<<1
+		}
+	}
+	ncQcore_pack2(U[:], yb[32:96])
+}
+
+func ncQcore_q3PutScale(sc []byte, j int, l int32) {
+	if j < 8 {
+		sc[j] = byte(l & 0xF)
+	} else {
+		sc[j-8] |= byte(l&0xF) << 4
+	}
+	l >>= 4
+	sc[j%4+8] |= byte(l << (2 * uint(j/4)))
+}
+
+// quantize_row_q3_K_ref.
+func ncQcore_rowQ3KRef(x []float32, y []byte) {
+	var L [256]int8
+	var scales [16]float32
+	for b := 0; b*256 < len(x); b++ {
+		xb, yb := x[b*256:(b+1)*256], y[b*110:(b+1)*110]
+		var maxScale, amax float32
+		for j := 0; j < 16; j++ {
+			scales[j] = ncQcore_makeQ3Quants(16, 4, xb[16*j:16*j+16], L[16*j:16*j+16])
+			if s := ncQcore_fabs(scales[j]); s > amax {
+				amax, maxScale = s, scales[j]
+			}
+		}
+		sc := yb[96:108]
+		for i := range sc {
+			sc[i] = 0
+		}
+		var dh uint16
+		if maxScale != 0 {
+			iscale := -32 / maxScale
+			for j := 0; j < 16; j++ {
+				l := int32(int8(ncQcore_nearestInt(ncQcore_mul(iscale, scales[j]))))
+				ncQcore_q3PutScale(sc, j, int32(int8(ncQcore_clamp(l, -32, 31)+32)))
+			}
+			dh = ncQcoreF16(1 / iscale)
+		}
+		ncQcore_put16(yb[108:], dh)
+		ncQcore_q3Finish(xb, yb, L[:])
+	}
+}
+
+// quantize_row_q3_K_impl.
+func ncQcore_rowQ3KImpl(fm bool, x []float32, y []byte, qw []float32) {
+	var L [256]int8
+	var Ls [16]int8
+	var scales, weight, sw [16]float32
+	for b := 0; b*256 < len(x); b++ {
+		xb, yb := x[b*256:(b+1)*256], y[b*110:(b+1)*110]
+		var sumx2 float32
+		for j := 0; j < 256; j++ {
+			sumx2 += ncQcore_mul(xb[j], xb[j])
+		}
+		sigma2 := ncQcore_mul(2, sumx2) / 256
+		for j := 0; j < 16; j++ {
+			q := qw[256*b+16*j:]
+			var sumw float32
+			for l := 0; l < 16; l++ {
+				weight[l] = ncQcore_mul(q[l], ncQcore_sqrt(ncQcore_madd(fm, xb[16*j+l], xb[16*j+l], sigma2)))
+			}
+			for l := 0; l < 16; l++ {
+				sumw += weight[l]
+			}
+			sw[j] = sumw
+			scales[j] = ncQcore_makeQxQuants(fm, 16, 4, xb[16*j:16*j+16], L[16*j:16*j+16], 1, weight[:])
+		}
+		sc := yb[96:108]
+		for i := range sc {
+			sc[i] = 0
+		}
+		dBlock := ncQcore_makeQxQuants(fm, 16, 32, scales[:], Ls[:], 1, sw[:])
+		for j := 0; j < 16; j++ {
+			ncQcore_q3PutScale(sc, j, int32(Ls[j]))
+		}
+		ncQcore_put16(yb[108:], ncQcoreF16(dBlock))
+		ncQcore_q3Finish(xb, yb, L[:])
+	}
+}
+
+// quantize_row_q4_K_{ref,impl} (nmax 15) and q5_K (nmax 31); qw == nil selects the ref path.
+// q4_K block: d dmin scales[12] qs[128]; q5_K: d dmin scales[12] qh[32] qs[128].
+func ncQcore_rowQ4Q5K(fm bool, x []float32, y []byte, qw []float32, nmax int) {
+	bs := 144
+	if nmax == 31 {
+		bs = 176
+	}
+	var L [256]uint8
+	var Laux [32]uint8
+	var Ls, Lm [8]uint8
+	var weights [32]float32
+	var mins, scales, sw [8]float32
+	for b := 0; b*256 < len(x); b++ {
+		xb, yb := x[b*256:(b+1)*256], y[b*bs:(b+1)*bs]
+		sc := yb[4:16]
+		for i := range sc {
+			sc[i] = 0
+		}
+		var dh, dmh uint16
+		if qw == nil {
+			var maxScale, maxMin float32
+			for j := 0; j < 8; j++ {
+				var sx2 float32
+				for l := 0; l < 32; l++ {
+					sx2 += ncQcore_mul(xb[32*j+l], xb[32*j+l])
+				}
+				avx := ncQcore_sqrt(sx2 / 32)
+				for l := 0; l < 32; l++ {
+					weights[l] = avx + ncQcore_fabs(xb[32*j+l])
+				}
+				if nmax == 15 {
+					scales[j], mins[j] = ncQcore_makeQkx2Quants(32, 15, xb[32*j:32*j+32], weights[:], L[32*j:32*j+32], Laux[:], -1, 0.1, 20, false)
+				} else {
+					scales[j], mins[j] = ncQcore_makeQkx2Quants(32, 31, xb[32*j:32*j+32], weights[:], L[32*j:32*j+32], Laux[:], -0.5, 0.1, 15, false)
+				}
+				if scales[j] > maxScale {
+					maxScale = scales[j]
+				}
+				if mins[j] > maxMin {
+					maxMin = mins[j]
+				}
+			}
+			var invScale, invMin float32
+			if maxScale > 0 {
+				invScale = 63 / maxScale
+			}
+			if maxMin > 0 {
+				invMin = 63 / maxMin
+			}
+			for j := 0; j < 8; j++ {
+				Ls[j] = ncQcore_minByte(63, byte(ncQcore_nearestInt(ncQcore_mul(invScale, scales[j]))))
+				Lm[j] = ncQcore_minByte(63, byte(ncQcore_nearestInt(ncQcore_mul(invMin, mins[j]))))
+			}
+			dh, dmh = ncQcoreF16(maxScale/63), ncQcoreF16(maxMin/63)
+		} else {
+			var sumx2 float32
+			for l := 0; l < 256; l++ {
+				sumx2 += ncQcore_mul(xb[l], xb[l])
+			}
+			sigma2 := ncQcore_mul(2, sumx2) / 256
+			for j := 0; j < 8; j++ {
+				q := qw[256*b+32*j:]
+				var sumw float32
+				for l := 0; l < 32; l++ {
+					weights[l] = ncQcore_mul(q[l], ncQcore_sqrt(ncQcore_madd(fm, xb[32*j+l], xb[32*j+l], sigma2)))
+				}
+				for l := 0; l < 32; l++ {
+					sumw += weights[l]
+				}
+				sw[j] = sumw
+				scales[j], mins[j] = ncQcore_makeQkx3Quants(fm, false, 32, nmax, xb[32*j:32*j+32], weights[:], L[32*j:32*j+32], Laux[:], -0.9, 0.05, 36, false)
+			}
+			dh = ncQcoreF16(ncQcore_makeQpQuants(fm, 8, 63, scales[:], Ls[:], sw[:]))
+			dmh = ncQcoreF16(ncQcore_makeQpQuants(fm, 8, 63, mins[:], Lm[:], sw[:]))
+			if nmax == 31 { // only q5_K_impl clamps again
+				for j := 0; j < 8; j++ {
+					Ls[j], Lm[j] = ncQcore_minByte(63, Ls[j]), ncQcore_minByte(63, Lm[j])
+				}
+			}
+		}
+		for j := 0; j < 8; j++ {
+			ls, lm := Ls[j], Lm[j]
+			if j < 4 {
+				sc[j], sc[j+4] = ls, lm
+			} else {
+				sc[j+4] = ls&0xF | lm&0xF<<4
+				sc[j-4] |= ls >> 4 << 6
+				sc[j] |= lm >> 4 << 6
+			}
+		}
+		ncQcore_put16(yb[0:], dh)
+		ncQcore_put16(yb[2:], dmh)
+		dd, dmin := ncQcoreF16to32(dh), ncQcoreF16to32(dmh)
+		for j := 0; j < 8; j++ {
+			s, m := ncQcore_getScaleMinK4(j, sc)
+			d := ncQcore_mul(dd, float32(s))
+			if d == 0 {
+				continue
+			}
+			dm := ncQcore_mul(dmin, float32(m))
+			for ii := 0; ii < 32; ii++ {
+				L[32*j+ii] = uint8(ncQcore_clamp(ncQcore_nearestInt((xb[32*j+ii]+dm)/d), 0, int32(nmax)))
+			}
+		}
+		if nmax == 15 {
+			q := yb[16:]
+			for j := 0; j < 256; j += 64 {
+				for l := 0; l < 32; l++ {
+					q[l] = L[j+l] | L[j+l+32]<<4
+				}
+				q = q[32:]
+			}
+			continue
+		}
+		qh, ql := yb[16:48], yb[48:]
+		for i := range qh {
+			qh[i] = 0
+		}
+		m1, m2 := byte(1), byte(2)
+		for n := 0; n < 256; n += 64 {
+			for j := 0; j < 32; j++ {
+				l1, l2 := L[n+j], L[n+j+32]
+				if l1 > 15 {
+					l1 -= 16
+					qh[j] |= m1
+				}
+				if l2 > 15 {
+					l2 -= 16
+					qh[j] |= m2
+				}
+				ql[j] = l1 | l2<<4
+			}
+			m1, m2 = m1<<2, m2<<2
+			ql = ql[32:]
+		}
+	}
+}
+
+func ncQcore_minByte(a, b byte) byte {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// quantize_row_q6_K_{ref,impl}; block: ql[128] qh[64] scales[16] d.
+func ncQcore_rowQ6K(fm bool, x []float32, y []byte, qw []float32) {
+	var L [256]int8
+	var scales [16]float32
+	for b := 0; b*256 < len(x); b++ {
+		xb, yb := x[b*256:(b+1)*256], y[b*210:(b+1)*210]
+		var maxScale, maxAbs float32
+		for ib := 0; ib < 16; ib++ {
+			var w []float32
+			if qw != nil {
+				w = qw[256*b+16*ib : 256*b+16*ib+16]
+			}
+			s := ncQcore_makeQxQuants(fm, 16, 32, xb[16*ib:16*ib+16], L[16*ib:16*ib+16], 1, w)
+			scales[ib] = s
+			if a := ncQcore_fabs(s); a > maxAbs {
+				maxAbs, maxScale = a, s
+			}
+		}
+		if maxAbs < ncQcore_groupMaxEps {
+			for i := range yb {
+				yb[i] = 0
+			}
+			continue
+		}
+		iscale := -128 / maxScale
+		dh := ncQcoreF16(1 / iscale)
+		ncQcore_put16(yb[208:], dh)
+		for ib := 0; ib < 16; ib++ {
+			l := ncQcore_ni(fm, iscale, scales[ib])
+			if l > 127 {
+				l = 127
+			}
+			yb[192+ib] = byte(int8(l))
+		}
+		dd := ncQcoreF16to32(dh)
+		for j := 0; j < 16; j++ {
+			d := ncQcore_mul(dd, float32(int8(yb[192+j])))
+			if d == 0 {
+				continue
+			}
+			for ii := 0; ii < 16; ii++ {
+				L[16*j+ii] = int8(ncQcore_clamp(ncQcore_nearestInt(xb[16*j+ii]/d), -32, 31) + 32)
+			}
+		}
+		ql, qh := yb[0:128], yb[128:192]
+		for j := 0; j < 256; j += 128 {
+			for l := 0; l < 32; l++ {
+				q1, q2, q3, q4 := byte(L[j+l])&0xF, byte(L[j+l+32])&0xF, byte(L[j+l+64])&0xF, byte(L[j+l+96])&0xF
+				ql[l] = q1 | q3<<4
+				ql[l+32] = q2 | q4<<4
+				qh[l] = byte(L[j+l])>>4 | byte(L[j+l+32])>>4<<2 | byte(L[j+l+64])>>4<<4 | byte(L[j+l+96])>>4<<6
+			}
+			ql, qh = ql[64:], qh[32:]
+		}
+	}
+}
+
+// quantize_row_q4_0_ref / q5_0_ref.
+func ncQcore_rowQ40Q50Ref(t ncQcoreType, x []float32, y []byte) {
+	bs, div, off := 18, float32(-8), float32(8.5)
+	if t == ncQcoreQ5_0 {
+		bs, div, off = 22, -16, 16.5
+	}
+	for b := 0; b*32 < len(x); b++ {
+		xb, yb := x[b*32:b*32+32], y[b*bs:(b+1)*bs]
+		var amax, max float32
+		for _, v := range xb {
+			if a := ncQcore_fabs(v); amax < a {
+				amax, max = a, v
+			}
+		}
+		d := max / div
+		var id float32
+		if d != 0 {
+			id = 1 / d
+		}
+		ncQcore_put16(yb, ncQcoreF16(d))
+		if t == ncQcoreQ4_0 {
+			for j := 0; j < 16; j++ {
+				xi0 := ncQcore_minU8(15, int8(ncQcore_cvt(ncQcore_mul(xb[j], id)+off)))
+				xi1 := ncQcore_minU8(15, int8(ncQcore_cvt(ncQcore_mul(xb[16+j], id)+off)))
+				yb[2+j] = xi0 | xi1<<4
+			}
+			continue
+		}
+		var qh uint32
+		for j := 0; j < 16; j++ {
+			xi0 := ncQcore_minU8(31, int8(ncQcore_cvt(ncQcore_mul(xb[j], id)+off)))
+			xi1 := ncQcore_minU8(31, int8(ncQcore_cvt(ncQcore_mul(xb[16+j], id)+off)))
+			yb[6+j] = xi0&0xf | (xi1&0xf)<<4
+			qh |= uint32(xi0&0x10) >> 4 << uint(j)
+			qh |= uint32(xi1&0x10) >> 4 << uint(j+16)
+		}
+		binary.LittleEndian.PutUint32(yb[2:], qh)
+	}
+}
+
+// minU8 is C's `uint8_t v = MIN(lim, (int8_t)expr)`: signed compare, then truncation to a byte.
+func ncQcore_minU8(lim int8, v int8) byte {
+	if v < lim {
+		return byte(v)
+	}
+	return byte(lim)
+}
+
+// quantize_row_q4_1_ref / q5_1_ref.
+func ncQcore_rowQ41Q51Ref(t ncQcoreType, x []float32, y []byte) {
+	bs, levels, lim := 20, float32(15), int8(15)
+	if t == ncQcoreQ5_1 {
+		bs, levels, lim = 24, 31, 31
+	}
+	for b := 0; b*32 < len(x); b++ {
+		xb, yb := x[b*32:b*32+32], y[b*bs:(b+1)*bs]
+		min, max := float32(3.4028234663852886e38), float32(-3.4028234663852886e38)
+		for _, v := range xb {
+			if v < min {
+				min = v
+			}
+			if v > max {
+				max = v
+			}
+		}
+		d := (max - min) / levels
+		var id float32
+		if d != 0 {
+			id = 1 / d
+		}
+		ncQcore_put16(yb, ncQcoreF16(d))
+		ncQcore_put16(yb[2:], ncQcoreF16(min))
+		if t == ncQcoreQ4_1 {
+			for j := 0; j < 16; j++ {
+				xi0 := ncQcore_minU8(lim, int8(ncQcore_cvt(ncQcore_mul(xb[j]-min, id)+0.5)))
+				xi1 := ncQcore_minU8(lim, int8(ncQcore_cvt(ncQcore_mul(xb[16+j]-min, id)+0.5)))
+				yb[4+j] = xi0 | xi1<<4
+			}
+			continue
+		}
+		var qh uint32
+		for j := 0; j < 16; j++ {
+			// q5_1_ref casts to uint8_t and does not clamp
+			xi0 := byte(ncQcore_cvt(ncQcore_mul(xb[j]-min, id) + 0.5))
+			xi1 := byte(ncQcore_cvt(ncQcore_mul(xb[16+j]-min, id) + 0.5))
+			yb[8+j] = xi0&0xf | (xi1&0xf)<<4
+			qh |= uint32(xi0&0x10) >> 4 << uint(j)
+			qh |= uint32(xi1&0x10) >> 4 << uint(j+16)
+		}
+		binary.LittleEndian.PutUint32(yb[4:], qh)
+	}
+}
+
+// quantize_row_q8_0_ref.
+func ncQcore_rowQ80(x []float32, y []byte) {
+	for b := 0; b*32 < len(x); b++ {
+		xb, yb := x[b*32:b*32+32], y[b*34:(b+1)*34]
+		var amax float32
+		for _, v := range xb {
+			if a := ncQcore_fabs(v); !(amax > a) { // amax = MAX(amax, fabsf(v)), NaN-faithful
+				amax = a
+			}
+		}
+		d := amax / 127
+		var id float32
+		if d != 0 {
+			id = 1 / d
+		}
+		ncQcore_put16(yb, ncQcoreF16(d))
+		for j, v := range xb {
+			yb[2+j] = byte(int8(ncQcore_cvt(ncQcore_roundf(ncQcore_mul(v, id)))))
+		}
+	}
+}
+
+func ncQcore_rowSigma2(x []float32) float32 {
+	var s float32
+	for _, v := range x {
+		s += ncQcore_mul(v, v)
+	}
+	return s / float32(len(x))
+}
+
+// quantize_row_q4_0_impl / q5_0_impl (importance-weighted).
+func ncQcore_rowQ40Q50Impl(fm bool, t ncQcoreType, x []float32, y []byte, qw []float32) {
+	bs, nmax := 18, 8
+	if t == ncQcoreQ5_0 {
+		bs, nmax = 22, 16
+	}
+	sigma2 := ncQcore_rowSigma2(x)
+	var weight [32]float32
+	var L [32]int8
+	for b := 0; b*32 < len(x); b++ {
+		xb, yb := x[b*32:b*32+32], y[b*bs:(b+1)*bs]
+		for j := range weight {
+			weight[j] = ncQcore_mul(qw[b*32+j], ncQcore_sqrt(ncQcore_madd(fm, xb[j], xb[j], sigma2)))
+		}
+		d := ncQcore_makeQxQuants(fm, 32, nmax, xb, L[:], 1, weight[:])
+		ncQcore_put16(yb, ncQcoreF16(d))
+		if t == ncQcoreQ4_0 {
+			for j := 0; j < 16; j++ {
+				yb[2+j] = byte(L[j]) | byte(L[j+16])<<4
+			}
+			continue
+		}
+		var qh uint32
+		for j := 0; j < 16; j++ {
+			xi0, xi1 := byte(L[j]), byte(L[j+16])
+			yb[6+j] = xi0&0xf | (xi1&0xf)<<4
+			qh |= uint32(xi0&0x10) >> 4 << uint(j)
+			qh |= uint32(xi1&0x10) >> 4 << uint(j+16)
+		}
+		binary.LittleEndian.PutUint32(yb[2:], qh)
+	}
+}
+
+// quantize_row_q4_1_impl / q5_1_impl.
+func ncQcore_rowQ41Q51Impl(fm bool, t ncQcoreType, x []float32, y []byte, qw []float32) {
+	bs, nmax := 20, 15
+	if t == ncQcoreQ5_1 {
+		bs, nmax = 24, 31
+	}
+	sigma2 := ncQcore_rowSigma2(x)
+	var weight [32]float32
+	var L, Laux [32]uint8
+	for b := 0; b*32 < len(x); b++ {
+		xb, yb := x[b*32:b*32+32], y[b*bs:(b+1)*bs]
+		for j := range weight {
+			weight[j] = ncQcore_mul(qw[b*32+j], ncQcore_sqrt(ncQcore_madd(fm, xb[j], xb[j], sigma2)))
+		}
+		d, min := ncQcore_makeQkx3Quants(fm, false, 32, nmax, xb, weight[:], L[:], Laux[:], -0.9, 0.05, 36, false)
+		ncQcore_put16(yb, ncQcoreF16(d))
+		ncQcore_put16(yb[2:], ncQcoreF16(-min))
+		if t == ncQcoreQ4_1 {
+			for j := 0; j < 16; j++ {
+				yb[4+j] = L[j] | L[j+16]<<4
+			}
+			continue
+		}
+		var qh uint32
+		for j := 0; j < 16; j++ {
+			xi0, xi1 := L[j], L[j+16]
+			yb[8+j] = xi0&0xf | (xi1&0xf)<<4
+			qh |= uint32(xi0&0x10) >> 4 << uint(j)
+			qh |= uint32(xi1&0x10) >> 4 << uint(j+16)
+		}
+		binary.LittleEndian.PutUint32(yb[4:], qh)
+	}
+}
+
+// Type is the ggml tensor type id.
+type ncQcoreType uint8
+
+const (
+	ncQcoreQ4_0   ncQcoreType = 2
+	ncQcoreQ4_1   ncQcoreType = 3
+	ncQcoreQ5_0   ncQcoreType = 6
+	ncQcoreQ5_1   ncQcoreType = 7
+	ncQcoreQ8_0   ncQcoreType = 8
+	ncQcoreQ2_K   ncQcoreType = 10
+	ncQcoreQ3_K   ncQcoreType = 11
+	ncQcoreQ4_K   ncQcoreType = 12
+	ncQcoreQ5_K   ncQcoreType = 13
+	ncQcoreQ6_K   ncQcoreType = 14
+	ncQcoreIQ4_NL ncQcoreType = 20
+	ncQcoreIQ4_XS ncQcoreType = 23
+)
+
+type ncQcore_geom struct {
+	elems, bytes int
+	name         string
+}
+
+var ncQcore_geoms = map[ncQcoreType]ncQcore_geom{
+	ncQcoreQ4_0: {32, 18, "Q4_0"}, ncQcoreQ4_1: {32, 20, "Q4_1"}, ncQcoreQ5_0: {32, 22, "Q5_0"}, ncQcoreQ5_1: {32, 24, "Q5_1"}, ncQcoreQ8_0: {32, 34, "Q8_0"},
+	ncQcoreQ2_K: {256, 84, "Q2_K"}, ncQcoreQ3_K: {256, 110, "Q3_K"}, ncQcoreQ4_K: {256, 144, "Q4_K"}, ncQcoreQ5_K: {256, 176, "Q5_K"}, ncQcoreQ6_K: {256, 210, "Q6_K"},
+	ncQcoreIQ4_NL: {32, 18, "IQ4_NL"}, ncQcoreIQ4_XS: {256, 136, "IQ4_XS"},
+}
+
+// Block returns the elements and bytes of one block of t (0, 0 if unsupported).
+func ncQcoreBlock(t ncQcoreType) (elems, bytes int) { g := ncQcore_geoms[t]; return g.elems, g.bytes }
+
+func (t ncQcoreType) String() string {
+	if g, ok := ncQcore_geoms[t]; ok {
+		return g.name
+	}
+	return "ggml?"
+}
+
+var (
+	ncQcoreErrType  = errors.New("qcore: unsupported quantization type")
+	ncQcoreErrShape = errors.New("qcore: row length is not a multiple of the block size")
+	ncQcoreErrSize  = errors.New("qcore: buffer size mismatch")
+)
+
+// OutLen is the encoded size of n elements in rows of nPerRow.
+func ncQcoreOutLen(t ncQcoreType, n, nPerRow int) (int, error) {
+	g, ok := ncQcore_geoms[t]
+	if !ok {
+		return 0, ncQcoreErrType
+	}
+	if nPerRow <= 0 || nPerRow%g.elems != 0 || n%nPerRow != 0 {
+		return 0, ncQcoreErrShape
+	}
+	if n/g.elems > math.MaxInt/g.bytes {
+		return 0, ncQcoreErrSize
+	}
+	return n / g.elems * g.bytes, nil
+}
+
+// Arith is the floating-point code generation of the producer build. The quantizers are float
+// programs whose results depend on which multiply-adds the producer's compiler fused.
+type ncQcoreArith uint8
+
+const (
+	// Strict: no contraction, every operation rounded (ISO C; matches non-FMA producer builds).
+	ncQcoreStrict ncQcoreArith = 0
+	// GCCFMA: GCC 13 -O3 with FMA and the default -ffp-contract=fast on x86-64 (generic tuning),
+	// derived site by site from the compiler's GIMPLE for ggml-quants.c at llama.cpp b3991.
+	// The importance-weighted paths are derived for every type; of the reference paths only those
+	// that share their code with a weighted path (Q6_K, IQ4_NL, IQ4_XS). Others return ErrArith.
+	ncQcoreGCCFMA ncQcoreArith = 1
+)
+
+// fusedPath reports whether the GCCFMA profile is derived for this quantizer path.
+func ncQcore_fusedPath(t ncQcoreType, weighted bool) bool {
+	if t == ncQcoreQ8_0 {
+		return false
+	}
+	return weighted || t == ncQcoreQ6_K || t == ncQcoreIQ4_NL || t == ncQcoreIQ4_XS
+}
+
+var ncQcoreErrArith = errors.New("qcore: arithmetic profile not available for this quantizer path")
+
+// Quantize writes ggml_quantize_chunk(t, x, rows of nPerRow, qw) into dst. qw is the per-column
+// importance vector (len nPerRow) or nil for the reference (non-imatrix) quantizer.
+func ncQcoreQuantize(dst []byte, t ncQcoreType, x []float32, nPerRow int, qw []float32, ar ncQcoreArith) error {
+	n, err := ncQcoreOutLen(t, len(x), nPerRow)
+	if err != nil {
+		return err
+	}
+	if ar > ncQcoreGCCFMA || (ar == ncQcoreGCCFMA && !ncQcore_fusedPath(t, qw != nil)) {
+		return ncQcoreErrArith
+	}
+	fm := ar == ncQcoreGCCFMA
+	if len(dst) != n || (qw != nil && len(qw) != nPerRow) {
+		return ncQcoreErrSize
+	}
+	g := ncQcore_geoms[t]
+	rowBytes := nPerRow / g.elems * g.bytes
+	for r := 0; r*nPerRow < len(x); r++ {
+		row, y := x[r*nPerRow:(r+1)*nPerRow], dst[r*rowBytes:(r+1)*rowBytes]
+		switch t {
+		case ncQcoreQ4_0, ncQcoreQ5_0:
+			if qw == nil {
+				ncQcore_rowQ40Q50Ref(t, row, y)
+			} else {
+				ncQcore_rowQ40Q50Impl(fm, t, row, y, qw)
+			}
+		case ncQcoreQ4_1, ncQcoreQ5_1:
+			if qw == nil {
+				ncQcore_rowQ41Q51Ref(t, row, y)
+			} else {
+				ncQcore_rowQ41Q51Impl(fm, t, row, y, qw)
+			}
+		case ncQcoreQ8_0:
+			ncQcore_rowQ80(row, y)
+		case ncQcoreQ2_K:
+			if qw == nil {
+				ncQcore_rowQ2KRef(row, y)
+			} else {
+				ncQcore_rowQ2KImpl(fm, row, y, qw)
+			}
+		case ncQcoreQ3_K:
+			if qw == nil {
+				ncQcore_rowQ3KRef(row, y)
+			} else {
+				ncQcore_rowQ3KImpl(fm, row, y, qw)
+			}
+		case ncQcoreQ4_K:
+			ncQcore_rowQ4Q5K(fm, row, y, qw, 15)
+		case ncQcoreQ5_K:
+			ncQcore_rowQ4Q5K(fm, row, y, qw, 31)
+		case ncQcoreQ6_K:
+			ncQcore_rowQ6K(fm, row, y, qw)
+		case ncQcoreIQ4_NL:
+			ncQcore_rowIQ4(fm, row, y, qw, 32)
+		case ncQcoreIQ4_XS:
+			ncQcore_rowIQ4(fm, row, y, qw, 256)
+		}
+	}
+	return nil
+}
+
+func ncQcore_mul(a, b float32) float32 { return float32(a * b) }
+
+// fma32 is the correctly rounded float32 a*b+c: the product is exact in float64; the sum is
+// rounded to odd in float64 (TwoSum error decides), which makes the final rounding to float32 exact.
+func ncQcore_fma32(a, b, c float32) float32 {
+	p, q := float64(a)*float64(b), float64(c)
+	s := p + q
+	if s-s != 0 { // Inf/NaN: nothing to correct
+		return float32(s)
+	}
+	bb := s - p
+	e := (p - (s - bb)) + (q - bb) // exact error of p+q
+	if e != 0 {
+		u := math.Float64bits(s)
+		if u&1 == 0 { // move to the odd neighbour on the side of the error
+			if (e > 0) == (s > 0) {
+				u++
+			} else {
+				u--
+			}
+			if s == 0 { // cannot happen (s == 0 implies e == 0); kept for safety
+				u = math.Float64bits(e)
+			}
+			s = math.Float64frombits(u)
+		}
+	}
+	return float32(s)
+}
+
+// madd is a*b+c: fused in the contracted build (fm), separately rounded otherwise.
+func ncQcore_madd(fm bool, a, b, c float32) float32 {
+	if fm {
+		return ncQcore_fma32(a, b, c)
+	}
+	return float32(a*b) + c
+}
+
+// ni is nearest_int(a*b); the contracted build fuses the product into the magic-constant add.
+func ncQcore_ni(fm bool, a, b float32) int32 {
+	if fm {
+		return int32(math.Float32bits(ncQcore_fma32(a, b, 12582912.0))&0x007fffff) - 0x00400000
+	}
+	return ncQcore_nearestInt(float32(a * b))
+}
+
+func ncQcore_fabs(x float32) float32 { return math.Float32frombits(math.Float32bits(x) &^ (1 << 31)) }
+
+func ncQcore_sqrt(x float32) float32 { return float32(math.Sqrt(float64(x))) }
+
+// nearestInt is ggml's nearest_int (round half to even through a float add).
+func ncQcore_nearestInt(f float32) int32 {
+	v := f + 12582912.0
+	return int32(math.Float32bits(v)&0x007fffff) - 0x00400000
+}
+
+// cvt is the x86 float->int32 truncation (cvttss2si): NaN and out-of-range give MinInt32.
+func ncQcore_cvt(v float32) int32 {
+	if v != v || v >= 2147483648.0 || v < -2147483648.0 {
+		return math.MinInt32
+	}
+	return int32(v)
+}
+
+func ncQcore_roundf(x float32) float32 { // C roundf: half away from zero
+	return float32(math.Round(float64(x)))
+}
+
+func ncQcore_clamp(l, lo, hi int32) int32 {
+	if l < lo {
+		return lo
+	}
+	if l > hi {
+		return hi
+	}
+	return l
+}
+
+func ncQcore_put16(b []byte, v uint16) { b[0], b[1] = byte(v), byte(v>>8) }
+
+// F16 is GGML_FP32_TO_FP16 (round to nearest even, IEEE semantics incl. NaN/Inf/subnormals).
+func ncQcoreF16(x float32) uint16 {
+	b := math.Float32bits(x)
+	sign := uint16(b>>16) & 0x8000
+	e := int(b>>23) & 0xff
+	m := b & 0x7fffff
+	switch {
+	case e == 0xff:
+		if m != 0 {
+			return sign | 0x7e00 | uint16(m>>13) // quiet NaN, payload kept as F16C does
+		}
+		return sign | 0x7c00
+	case e == 0 && m == 0:
+		return sign
+	}
+	m |= 1 << 23
+	if e == 0 { // float32 subnormal: below half of the smallest half subnormal
+		return sign
+	}
+	he := e - 127 + 15
+	var out uint32
+	var shift uint
+	if he >= 31 {
+		return sign | 0x7c00
+	} else if he <= 0 {
+		if he < -10 {
+			return sign
+		}
+		shift = uint(14 - he)
+		out = m >> shift
+	} else {
+		shift = 13
+		out = uint32(he)<<10 | (m>>13)&0x3ff
+	}
+	rem := m & (1<<shift - 1)
+	half := uint32(1) << (shift - 1)
+	if rem > half || (rem == half && out&1 == 1) {
+		out++ // may carry into the exponent, which is the correct rounding
+	}
+	return sign | uint16(out)
+}
+
+// F16to32 is GGML_FP16_TO_FP32.
+func ncQcoreF16to32(h uint16) float32 {
+	s := uint32(h>>15) << 31
+	e := uint32(h>>10) & 31
+	m := uint32(h) & 1023
+	switch {
+	case e == 0:
+		if m == 0 {
+			return math.Float32frombits(s)
+		}
+		e = 1
+		for m&1024 == 0 {
+			m <<= 1
+			e--
+		}
+		return math.Float32frombits(s | (e+112)<<23 | (m&1023)<<13)
+	case e == 31:
+		return math.Float32frombits(s | 0x7f800000 | m<<13)
+	}
+	return math.Float32frombits(s | (e+112)<<23 | m<<13)
+}
+
+const (
+	// LitSplit bounds one literal op, as the envelope does.
+	ncDcoreLitSplit = 4 << 20
+	// EnvelopeFixed approximates the fixed header: magic, version, size,
+	// SHA-256, base count, frame count (bases and frames are charged below).
+	ncDcoreEnvelopeFixed = 4 + 1 + 5 + 32 + 1 + 3
+	ncDcoreBaseRefBytes  = 32 + 4
+	// RecordBytes is the independent-record header + locator charge of B1.
+	ncDcoreRecordBytes = 96
+)
+
+var ncDcore_flatePool = sync.Pool{New: func() any { w, _ := flate.NewWriter(io.Discard, 6); return w }}
+
+// ErrTooLarge reports an input whose size cannot be represented by the
+// 40-bit virtual offsets of an Index. It is returned, never truncated.
+var ncDcoreErrTooLarge = errors.New("dcore: input exceeds addressable range")
+
+// ErrParams reports unusable matcher parameters.
+var ncDcoreErrParams = errors.New("dcore: invalid parameters")
+
+const (
+	ncDcore_posBits  = 40
+	ncDcore_posMask  = 1<<ncDcore_posBits - 1
+	ncDcore_maxTotal = int64(1)<<ncDcore_posBits - 2
+	ncDcore_maxBases = 1 << 16
+	ncDcore_hashP    = 0x9e3779b97f4a7c15
+	ncDcore_sampleK  = 0xd6e8feb86659fd93
+)
+
+// Op is one COPY (Base >= 0, source range Off..Off+N of base Base) or ADD
+// (Base < 0, Lit holds the N literal bytes). TPos is the target offset.
+// The field layout deliberately mirrors the production envelope's xdOp.
+type ncDcoreOp struct {
+	TPos, N int64
+	Base    int
+	Off     int64
+	Lit     []byte
+}
+
+// Params tunes the matcher. The zero value is not valid; use DefaultParams.
+type ncDcoreParams struct {
+	Window     int // bytes hashed per anchor (4..64)
+	MinCopy    int // shortest verified COPY that is emitted (>= Window is not required)
+	MaxAnchors int // upper bound on retained base anchors (memory bound)
+	Slots      int // positions retained per anchor hash (repetition bound)
+	MaxProbe   int // open-addressing probe bound (adversarial collision bound)
+	// MinSampleBits floors the content-sampling rate: anchors are kept with
+	// probability 2^-MinSampleBits even for small bases (0 = index every position).
+	MinSampleBits int
+}
+
+// DefaultParams matches the production envelope's window and minimum COPY
+// and raises the anchor budget (the old index kept 2^18 anchors).
+func ncDcoreDefaultParams() ncDcoreParams {
+	return ncDcoreParams{Window: 16, MinCopy: 12, MaxAnchors: 1 << 20, Slots: 4, MaxProbe: 16}
+}
+
+func (p ncDcoreParams) valid() bool {
+	return p.Window >= 4 && p.Window <= 64 && p.MinCopy >= 4 && p.MaxAnchors >= 16 && p.Slots >= 1 && p.Slots <= 16 && p.MaxProbe >= 1 && p.MaxProbe <= 64 && p.MinSampleBits >= 0 && p.MinSampleBits <= 16
+}
+
+func ncDcore_mix64(v uint64) uint64 {
+	v ^= v >> 30
+	v *= 0xbf58476d1ce4e5b9
+	v ^= v >> 27
+	v *= 0x94d049bb133111eb
+	return v ^ (v >> 31)
+}
+
+// commonPrefix returns the length of the common prefix of a and b.
+func ncDcore_commonPrefix(a, b []byte) int {
+	n := min(len(a), len(b))
+	i := 0
+	for i+8 <= n {
+		if d := binary.LittleEndian.Uint64(a[i:]) ^ binary.LittleEndian.Uint64(b[i:]); d != 0 {
+			return i + bits.TrailingZeros64(d)>>3
+		}
+		i += 8
+	}
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	return i
+}
+
+// commonSuffix returns the length of the common suffix of a and b.
+func ncDcore_commonSuffix(a, b []byte) int {
+	n := min(len(a), len(b))
+	i := 0
+	for i+8 <= n {
+		d := binary.LittleEndian.Uint64(a[len(a)-i-8:]) ^ binary.LittleEndian.Uint64(b[len(b)-i-8:])
+		if d != 0 {
+			return i + bits.LeadingZeros64(d)>>3
+		}
+		i += 8
+	}
+	for i < n && a[len(a)-1-i] == b[len(b)-1-i] {
+		i++
+	}
+	return i
+}
+
+var (
+	ncDcoreErrWindowFormat = errors.New("dcore: invalid windowed delta")
+	ncDcoreErrWindowAuth   = errors.New("dcore: windowed delta authentication failed")
+)
+
+const (
+	ncDcore_wMagic        = "ZW1\x00"
+	ncDcore_wTrailerMagic = "ZW1T"
+	ncDcore_wTrailerLen   = 4 + 8 + 8 + 4 + 8
+	// WMaxFrames bounds the frame table a hostile record can request.
+	ncDcoreWMaxFrames = 1 << 22
+)
+
+// WParams configures windowed encoding.
+type ncDcoreWParams struct {
+	Anchor     ncDcoreParams
+	Window     int64 // target bytes per independent frame
+	PageSize   int   // base read granularity (bytes)
+	CachePages int   // base pages cached per worker
+	Workers    int
+}
+
+// DefaultWParams: 4 MiB frames, 64 KiB pages x 256 (16 MiB) per worker, a 4 Mi
+// anchor budget (64 MiB table at load 0.5) and one worker per CPU is chosen
+// by the caller.
+func ncDcoreDefaultWParams() ncDcoreWParams {
+	a := ncDcoreDefaultParams()
+	a.MaxAnchors = 4 << 20
+	return ncDcoreWParams{Anchor: a, Window: 4 << 20, PageSize: 64 << 10, CachePages: 256, Workers: 1}
+}
+
+func (p ncDcoreWParams) valid() bool {
+	return p.Anchor.valid() && p.Window >= 1<<10 && p.Window <= 1<<30 && p.PageSize >= 512 && p.PageSize&(p.PageSize-1) == 0 && p.CachePages >= 2 && p.Workers >= 1 && p.Workers <= 256
+}
+
+// WIndex is the immutable anchor table over one ReaderAt base. Safe for
+// concurrent use; per-worker page caches are created by the encoder.
+type ncDcoreWIndex struct {
+	p      ncDcoreParams
+	size   int64
+	nbits  uint
+	pow    uint64
+	table  []uint64
+	tmask  uint64
+	tshift uint
+	// SHA is the base's SHA-256 computed during the build pass.
+	SHA [32]byte
+	// BuildReads counts bytes read from the base while indexing.
+	BuildReads int64
+	Anchors    int64
+}
+
+// BuildWIndex indexes base with `workers` parallel range scanners and hashes
+// it in one concurrent sequential pass. Peak memory: the table plus
+// workers*2*chunk bytes of read buffers.
+func ncDcoreBuildWIndex(base io.ReaderAt, size int64, p ncDcoreParams, workers int) (*ncDcoreWIndex, error) {
+	if !p.valid() || workers < 1 || workers > 256 {
+		return nil, ncDcoreErrParams
+	}
+	if size < 0 || size > ncDcore_maxTotal {
+		return nil, ncDcoreErrTooLarge
+	}
+	x := &ncDcoreWIndex{p: p, size: size}
+	for x.nbits = uint(p.MinSampleBits); size>>x.nbits > int64(p.MaxAnchors); x.nbits++ {
+	}
+	pow := uint64(1)
+	for i := 0; i < p.Window-1; i++ {
+		pow *= ncDcore_hashP
+	}
+	x.pow = pow
+	est := int(size>>x.nbits) + 64
+	tbits := uint(4)
+	for 1<<tbits < 2*est {
+		tbits++
+	}
+	x.table = make([]uint64, 1<<tbits)
+	x.tmask = 1<<tbits - 1
+	x.tshift = 64 - tbits
+
+	const chunk = 4 << 20
+	var wg sync.WaitGroup
+	var firstErr atomic.Value
+	var reads atomic.Int64
+	var anchors atomic.Int64
+	nchunks := (size + chunk - 1) / chunk
+	var next atomic.Int64
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, chunk+p.Window-1)
+			for {
+				c := next.Add(1) - 1
+				if c >= nchunks || firstErr.Load() != nil {
+					return
+				}
+				start := c * chunk
+				// Positions i in [start, min(start+chunk, size-Window+1)) own their window.
+				end := min(start+chunk+int64(p.Window)-1, size)
+				b := buf[:end-start]
+				if _, err := ncDcore_readFull(base, b, start); err != nil {
+					firstErr.CompareAndSwap(nil, err)
+					return
+				}
+				reads.Add(int64(len(b)))
+				if len(b) < p.Window {
+					continue
+				}
+				var h uint64
+				for _, v := range b[:p.Window] {
+					h = h*ncDcore_hashP + uint64(v) + 1
+				}
+				owned := min(int64(chunk), size-int64(p.Window)+1-start)
+				for i := int64(0); i < owned; i++ {
+					if x.sampled(h) && x.insertAtomic(h, start+i) {
+						anchors.Add(1)
+					}
+					if i+1 < owned {
+						h = (h-(uint64(b[i])+1)*x.pow)*ncDcore_hashP + uint64(b[i+int64(p.Window)]) + 1
+					}
+				}
+			}
+		}()
+	}
+	// Sequential hashing pass, concurrent with indexing.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		hh := sha256.New()
+		buf := make([]byte, 1<<20)
+		for off := int64(0); off < size; {
+			n := int64(len(buf))
+			if size-off < n {
+				n = size - off
+			}
+			if _, err := ncDcore_readFull(base, buf[:n], off); err != nil {
+				firstErr.CompareAndSwap(nil, err)
+				return
+			}
+			hh.Write(buf[:n])
+			off += n
+		}
+		copy(x.SHA[:], hh.Sum(nil))
+	}()
+	wg.Wait()
+	if e := firstErr.Load(); e != nil {
+		return nil, e.(error)
+	}
+	x.BuildReads = reads.Load()
+	x.Anchors = anchors.Load()
+	return x, nil
+}
+
+func ncDcore_readFull(r io.ReaderAt, b []byte, off int64) (int, error) {
+	n, err := r.ReadAt(b, off)
+	if n == len(b) {
+		return n, nil
+	}
+	if err == nil || err == io.EOF {
+		err = io.ErrUnexpectedEOF
+	}
+	return n, err
+}
+
+func (x *ncDcoreWIndex) sampled(h uint64) bool {
+	return x.nbits == 0 || (h*ncDcore_sampleK)>>(64-x.nbits) == 0
+}
+
+func (x *ncDcoreWIndex) insertAtomic(h uint64, off int64) bool {
+	m := ncDcore_mix64(h)
+	slot := m >> x.tshift
+	tag := (m >> 8) & 0xffffff
+	n := 0
+	for probe := 0; probe < x.p.MaxProbe; probe++ {
+		e := atomic.LoadUint64(&x.table[slot])
+		if e == 0 {
+			if n >= x.p.Slots {
+				return false
+			}
+			if atomic.CompareAndSwapUint64(&x.table[slot], 0, tag<<ncDcore_posBits|uint64(off+1)) {
+				return true
+			}
+			e = atomic.LoadUint64(&x.table[slot])
+		}
+		if e>>ncDcore_posBits == tag {
+			n++
+			if n >= x.p.Slots {
+				return false
+			}
+		}
+		slot = (slot + 1) & x.tmask
+	}
+	return false
+}
+
+// pageView is a per-worker bounded cache of base pages.
+type ncDcore_pageView struct {
+	r     io.ReaderAt
+	size  int64
+	psz   int64
+	pages map[int64][]byte
+	order []int64
+	cap   int
+	Reads int64 // bytes read from the base
+	err   error
+}
+
+func ncDcore_newPageView(r io.ReaderAt, size int64, psz, cap int) *ncDcore_pageView {
+	return &ncDcore_pageView{r: r, size: size, psz: int64(psz), pages: map[int64][]byte{}, cap: cap}
+}
+
+func (v *ncDcore_pageView) page(n int64) []byte {
+	if p, ok := v.pages[n]; ok {
+		return p
+	}
+	off := n * v.psz
+	if off >= v.size || v.err != nil {
+		return nil
+	}
+	var p []byte
+	if len(v.order) >= v.cap { // evict oldest, reuse its buffer
+		old := v.order[0]
+		v.order = v.order[1:]
+		p = v.pages[old]
+		delete(v.pages, old)
+	} else {
+		p = make([]byte, v.psz)
+	}
+	p = p[:min(v.psz, v.size-off)]
+	if _, err := ncDcore_readFull(v.r, p, off); err != nil {
+		v.err = err
+		return nil
+	}
+	v.Reads += int64(len(p))
+	v.pages[n] = p
+	v.order = append(v.order, n)
+	return p
+}
+
+// forward returns the longest common prefix of base[off:] and t.
+func (v *ncDcore_pageView) forward(off int64, t []byte) int {
+	f := 0
+	for f < len(t) && off+int64(f) < v.size {
+		o := off + int64(f)
+		p := v.page(o / v.psz)
+		if p == nil {
+			return f
+		}
+		s := p[o%v.psz:]
+		k := ncDcore_commonPrefix(s, t[f:])
+		f += k
+		if k < len(s) {
+			return f
+		}
+	}
+	return f
+}
+
+// backward returns the longest common suffix of base[:off] and t.
+func (v *ncDcore_pageView) backward(off int64, t []byte) int {
+	f := 0
+	for f < len(t) && off-int64(f) > 0 {
+		o := off - int64(f) // exclusive end
+		p := v.page((o - 1) / v.psz)
+		if p == nil {
+			return f
+		}
+		s := p[:(o-1)%v.psz+1]
+		k := ncDcore_commonSuffix(s, t[:len(t)-f])
+		f += k
+		if k < len(s) {
+			return f
+		}
+	}
+	return f
+}
+
+// matchWindow produces ops for one target window (offsets are absolute in the base).
+func (x *ncDcoreWIndex) matchWindow(v *ncDcore_pageView, t []byte) ([]ncDcoreOp, error) {
+	w := x.p.Window
+	var ops []ncDcoreOp
+	start := 0
+	emitLit := func(end int) {
+		if end > start {
+			ops = append(ops, ncDcoreOp{TPos: int64(start), N: int64(end - start), Base: -1, Lit: t[start:end]})
+		}
+	}
+	if len(t) >= w {
+		var h uint64
+		for _, c := range t[:w] {
+			h = h*ncDcore_hashP + uint64(c) + 1
+		}
+		for i := 0; i+w <= len(t); {
+			if x.sampled(h) {
+				n, back, off := x.best(v, t, i, start, h)
+				if v.err != nil {
+					return nil, v.err
+				}
+				if n >= x.p.MinCopy {
+					s := i - back
+					emitLit(s)
+					if k := len(ops); k > 0 && ops[k-1].Base == 0 && ops[k-1].Off+ops[k-1].N == off && start == s {
+						ops[k-1].N += int64(n)
+					} else {
+						ops = append(ops, ncDcoreOp{TPos: int64(s), N: int64(n), Base: 0, Off: off})
+					}
+					i = s + n
+					start = i
+					if i+w <= len(t) {
+						h = 0
+						for _, c := range t[i : i+w] {
+							h = h*ncDcore_hashP + uint64(c) + 1
+						}
+					}
+					continue
+				}
+			}
+			if i+w >= len(t) {
+				break
+			}
+			h = (h-(uint64(t[i])+1)*x.pow)*ncDcore_hashP + uint64(t[i+w]) + 1
+			i++
+		}
+	}
+	emitLit(len(t))
+	return ops, nil
+}
+
+func (x *ncDcoreWIndex) best(v *ncDcore_pageView, t []byte, i, lo int, h uint64) (n, back int, off int64) {
+	m := ncDcore_mix64(h)
+	slot := m >> x.tshift
+	tag := (m >> 8) & 0xffffff
+	for probe := 0; probe < x.p.MaxProbe; probe++ {
+		e := x.table[slot]
+		if e == 0 {
+			break
+		}
+		if e>>ncDcore_posBits == tag {
+			o := int64(e&ncDcore_posMask) - 1
+			f := v.forward(o, t[i:])
+			if f >= x.p.Window {
+				bk := min(int64(i-lo), o)
+				b := v.backward(o, t[i-int(bk):i])
+				if f+b > n {
+					n, back, off = f+b, b, o-int64(b)
+				}
+			}
+		}
+		slot = (slot + 1) & x.tmask
+	}
+	return
+}
+
+// WStats reports encoder resources.
+type ncDcoreWStats struct {
+	Frames        int
+	TargetBytes   int64
+	RecordBytes   int64
+	LiteralBytes  int64
+	CopyBytes     int64
+	BaseReadBytes int64 // index pass + verification reads
+	IndexAnchors  int64
+	PeakWindows   int
+}
+
+type ncDcore_frameRec struct {
+	tlen int64
+	mode byte
+	plen int64
+	sum  [32]byte
+}
+
+// WEncode writes a windowed delta of target against base to dst. idx may be
+// shared across several targets (it carries the base identity).
+func ncDcoreWEncode(dst io.Writer, target io.ReaderAt, tsize int64, base io.ReaderAt, bsize int64, idx *ncDcoreWIndex, wp ncDcoreWParams) (ncDcoreWStats, error) {
+	var st ncDcoreWStats
+	if !wp.valid() || idx == nil || idx.size != bsize || tsize < 0 {
+		return st, ncDcoreErrParams
+	}
+	if _, err := dst.Write([]byte(ncDcore_wMagic)); err != nil {
+		return st, err
+	}
+	offset := int64(len(ncDcore_wMagic))
+	type job struct {
+		n    int
+		buf  []byte
+		done chan struct{}
+		rec  ncDcore_frameRec
+		out  []byte
+		lit  int64
+		cp   int64
+		rd   int64
+		err  error
+	}
+	nwin := (tsize + wp.Window - 1) / wp.Window
+	if nwin > ncDcoreWMaxFrames {
+		return st, ncDcoreErrTooLarge
+	}
+	inflight := wp.Workers * 2
+	jobs := make(chan *job, inflight)
+	order := make(chan *job, inflight)
+	pool := sync.Pool{New: func() any { return make([]byte, wp.Window) }}
+	var wg sync.WaitGroup
+	for w := 0; w < wp.Workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			v := ncDcore_newPageView(base, bsize, wp.PageSize, wp.CachePages)
+			for j := range jobs {
+				before := v.Reads
+				ops, err := idx.matchWindow(v, j.buf[:j.n])
+				if err != nil {
+					j.err = err
+					close(j.done)
+					continue
+				}
+				prog := ncDcore_buildFrameProgram(ops)
+				for _, o := range ops {
+					if o.Base < 0 {
+						j.lit += o.N
+					} else {
+						j.cp += o.N
+					}
+				}
+				j.rec = ncDcore_frameRec{tlen: int64(j.n), sum: sha256.Sum256(j.buf[:j.n])}
+				j.rec.mode, j.out = 0, prog
+				if z := ncDcore_deflateBytes(prog); len(z) < len(prog) {
+					j.rec.mode, j.out = 1, z
+				}
+				j.rec.plen = int64(len(j.out))
+				j.rd = v.Reads - before
+				close(j.done)
+			}
+		}()
+	}
+	var wrErr error
+	var recs []ncDcore_frameRec
+	whole := sha256.New()
+	var wwg sync.WaitGroup
+	wwg.Add(1)
+	go func() { // ordered writer
+		defer wwg.Done()
+		for j := range order {
+			<-j.done
+			if wrErr == nil && j.err != nil {
+				wrErr = j.err
+			}
+			if wrErr == nil {
+				if _, err := dst.Write(j.out); err != nil {
+					wrErr = err
+				} else {
+					offset += int64(len(j.out))
+					recs = append(recs, j.rec)
+					st.LiteralBytes += j.lit
+					st.CopyBytes += j.cp
+					st.BaseReadBytes += j.rd
+				}
+			}
+			pool.Put(j.buf)
+		}
+	}()
+	var readErr error
+	for w := int64(0); w < nwin && readErr == nil; w++ {
+		j := &job{done: make(chan struct{})}
+		j.buf = pool.Get().([]byte)
+		j.n = int(min(wp.Window, tsize-w*wp.Window))
+		if _, err := ncDcore_readFull(target, j.buf[:j.n], w*wp.Window); err != nil {
+			readErr = err
+			pool.Put(j.buf)
+			break
+		}
+		whole.Write(j.buf[:j.n])
+		order <- j
+		jobs <- j
+	}
+	close(jobs)
+	close(order)
+	wg.Wait()
+	wwg.Wait()
+	if readErr != nil {
+		return st, readErr
+	}
+	if wrErr != nil {
+		return st, wrErr
+	}
+	// Table: base identity, target identity, frames.
+	var tbl []byte
+	tbl = append(tbl, idx.SHA[:]...)
+	tbl = binary.AppendUvarint(tbl, uint64(bsize))
+	tbl = binary.AppendUvarint(tbl, uint64(tsize))
+	tbl = append(tbl, whole.Sum(nil)...)
+	tbl = binary.AppendUvarint(tbl, uint64(len(recs)))
+	for _, r := range recs {
+		tbl = binary.AppendUvarint(tbl, uint64(r.tlen))
+		tbl = append(tbl, r.mode)
+		tbl = binary.AppendUvarint(tbl, uint64(r.plen))
+		tbl = append(tbl, r.sum[:]...)
+	}
+	var tr [ncDcore_wTrailerLen]byte
+	copy(tr[:], ncDcore_wTrailerMagic)
+	binary.LittleEndian.PutUint64(tr[4:], uint64(offset))
+	binary.LittleEndian.PutUint64(tr[12:], uint64(len(tbl)))
+	binary.LittleEndian.PutUint32(tr[20:], crc32.Checksum(tbl, ncDcore_crcTab))
+	binary.LittleEndian.PutUint64(tr[24:], uint64(len(recs)))
+	if _, err := dst.Write(tbl); err != nil {
+		return st, err
+	}
+	if _, err := dst.Write(tr[:]); err != nil {
+		return st, err
+	}
+	st.Frames = len(recs)
+	st.TargetBytes = tsize
+	st.RecordBytes = offset + int64(len(tbl)) + ncDcore_wTrailerLen
+	st.IndexAnchors = idx.Anchors
+	st.BaseReadBytes += idx.BuildReads
+	return st, nil
+}
+
+var ncDcore_crcTab = crc32.MakeTable(crc32.Castagnoli)
+
+func ncDcore_buildFrameProgram(ops []ncDcoreOp) []byte {
+	var p []byte
+	for _, o := range ops {
+		if o.Base < 0 {
+			for l := o.Lit; len(l) > 0; {
+				n := min(len(l), ncDcoreLitSplit)
+				p = append(p, 0)
+				p = binary.AppendUvarint(p, uint64(n))
+				p = append(p, l[:n]...)
+				l = l[n:]
+			}
+			continue
+		}
+		p = append(p, 1)
+		p = binary.AppendUvarint(p, uint64(o.Off))
+		p = binary.AppendUvarint(p, uint64(o.N))
+	}
+	return p
+}
+
+func ncDcore_deflateBytes(b []byte) []byte {
+	var out bytes.Buffer
+	w := ncDcore_flatePool.Get().(*flate.Writer)
+	w.Reset(&out)
+	_, _ = w.Write(b)
+	_ = w.Close()
+	w.Reset(io.Discard)
+	ncDcore_flatePool.Put(w)
+	return out.Bytes()
+}
+
+// WRecord is a parsed windowed record (trailer + table).
+type ncDcoreWRecord struct {
+	r         io.ReaderAt
+	BaseSHA   [32]byte
+	BaseSize  int64
+	Size      int64
+	SHA       [32]byte
+	frames    []ncDcore_frameRec
+	tstart    []int64 // target start per frame
+	pstart    []int64 // payload offset per frame
+	maxWindow int64
+}
+
+// OpenWRecord parses and validates the trailer and frame table.
+func ncDcoreOpenWRecord(r io.ReaderAt, size int64) (*ncDcoreWRecord, error) {
+	if size < int64(len(ncDcore_wMagic))+ncDcore_wTrailerLen {
+		return nil, ncDcoreErrWindowFormat
+	}
+	var head [4]byte
+	if _, err := ncDcore_readFull(r, head[:], 0); err != nil || string(head[:]) != ncDcore_wMagic {
+		return nil, ncDcoreErrWindowFormat
+	}
+	var tr [ncDcore_wTrailerLen]byte
+	if _, err := ncDcore_readFull(r, tr[:], size-ncDcore_wTrailerLen); err != nil || string(tr[:4]) != ncDcore_wTrailerMagic {
+		return nil, ncDcoreErrWindowFormat
+	}
+	toff := binary.LittleEndian.Uint64(tr[4:])
+	tlen := binary.LittleEndian.Uint64(tr[12:])
+	count := binary.LittleEndian.Uint64(tr[24:])
+	if count > ncDcoreWMaxFrames || toff < uint64(len(ncDcore_wMagic)) || toff > uint64(size) || tlen > uint64(size)-toff-ncDcore_wTrailerLen || toff+tlen+ncDcore_wTrailerLen != uint64(size) {
+		return nil, ncDcoreErrWindowFormat
+	}
+	tbl := make([]byte, tlen)
+	if _, err := ncDcore_readFull(r, tbl, int64(toff)); err != nil {
+		return nil, err
+	}
+	if crc32.Checksum(tbl, ncDcore_crcTab) != binary.LittleEndian.Uint32(tr[20:]) {
+		return nil, ncDcoreErrWindowFormat
+	}
+	rec := &ncDcoreWRecord{r: r}
+	c := ncDcore_cursor{b: tbl}
+	copy(rec.BaseSHA[:], c.take(32))
+	rec.BaseSize = int64(c.uv())
+	rec.Size = int64(c.uv())
+	copy(rec.SHA[:], c.take(32))
+	n := c.uv()
+	if c.err != nil || n != count || rec.BaseSize < 0 || rec.Size < 0 {
+		return nil, ncDcoreErrWindowFormat
+	}
+	var tpos int64
+	ppos := int64(len(ncDcore_wMagic))
+	for i := uint64(0); i < n; i++ {
+		var f ncDcore_frameRec
+		f.tlen = int64(c.uv())
+		mb := c.take(1)
+		f.plen = int64(c.uv())
+		copy(f.sum[:], c.take(32))
+		if c.err != nil || len(mb) != 1 || mb[0] > 1 || f.tlen <= 0 || f.tlen > 1<<30 || f.plen < 0 {
+			return nil, ncDcoreErrWindowFormat
+		}
+		f.mode = mb[0]
+		if tpos > rec.Size-f.tlen || ppos > int64(toff)-f.plen {
+			return nil, ncDcoreErrWindowFormat
+		}
+		rec.frames = append(rec.frames, f)
+		rec.tstart = append(rec.tstart, tpos)
+		rec.pstart = append(rec.pstart, ppos)
+		tpos += f.tlen
+		ppos += f.plen
+		rec.maxWindow = max(rec.maxWindow, f.tlen)
+	}
+	if len(c.b) != 0 || tpos != rec.Size || ppos != int64(toff) {
+		return nil, ncDcoreErrWindowFormat
+	}
+	return rec, nil
+}
+
+// Frames returns the frame count.
+func (w *ncDcoreWRecord) Frames() int { return len(w.frames) }
+
+type ncDcore_cursor struct {
+	b   []byte
+	err error
+}
+
+func (c *ncDcore_cursor) take(n int) []byte {
+	if c.err != nil || n < 0 || n > len(c.b) {
+		c.err = ncDcoreErrWindowFormat
+		return nil
+	}
+	v := c.b[:n]
+	c.b = c.b[n:]
+	return v
+}
+
+func (c *ncDcore_cursor) uv() uint64 {
+	v, n := binary.Uvarint(c.b)
+	if c.err != nil || n <= 0 {
+		c.err = ncDcoreErrWindowFormat
+		return 0
+	}
+	c.b = c.b[n:]
+	return v
+}
+
+// decodeFrame reconstructs one frame into out (len == frame target length)
+// and authenticates it against the frame SHA-256.
+func (w *ncDcoreWRecord) decodeFrame(i int, base *ncDcore_pageView, out []byte) error {
+	f := w.frames[i]
+	payload := make([]byte, f.plen)
+	if _, err := ncDcore_readFull(w.r, payload, w.pstart[i]); err != nil {
+		return err
+	}
+	prog := payload
+	if f.mode == 1 {
+		limit := 8*f.tlen + 64<<10
+		zr := flate.NewReader(bytes.NewReader(payload))
+		var err error
+		prog, err = io.ReadAll(io.LimitReader(zr, limit+1))
+		if cerr := zr.Close(); err != nil || cerr != nil || int64(len(prog)) > limit {
+			return ncDcoreErrWindowFormat
+		}
+	}
+	c := ncDcore_cursor{b: prog}
+	pos := int64(0)
+	for len(c.b) > 0 {
+		tag := c.take(1)
+		if c.err != nil {
+			return ncDcoreErrWindowFormat
+		}
+		switch tag[0] {
+		case 0:
+			n := c.uv()
+			if c.err != nil || n == 0 || n > uint64(f.tlen-pos) {
+				return ncDcoreErrWindowFormat
+			}
+			s := c.take(int(n))
+			if c.err != nil {
+				return ncDcoreErrWindowFormat
+			}
+			copy(out[pos:], s)
+			pos += int64(n)
+		case 1:
+			off, n := c.uv(), c.uv()
+			if c.err != nil || n == 0 || n > uint64(f.tlen-pos) || off > uint64(w.BaseSize) || n > uint64(w.BaseSize)-off {
+				return ncDcoreErrWindowFormat
+			}
+			if err := base.copyTo(int64(off), out[pos:pos+int64(n)]); err != nil {
+				return err
+			}
+			pos += int64(n)
+		default:
+			return ncDcoreErrWindowFormat
+		}
+	}
+	if pos != f.tlen || sha256.Sum256(out) != f.sum {
+		return ncDcoreErrWindowAuth
+	}
+	return nil
+}
+
+func (v *ncDcore_pageView) copyTo(off int64, dst []byte) error {
+	for len(dst) > 0 {
+		p := v.page(off / v.psz)
+		if p == nil {
+			if v.err != nil {
+				return v.err
+			}
+			return ncDcoreErrWindowFormat
+		}
+		k := copy(dst, p[off%v.psz:])
+		dst = dst[k:]
+		off += int64(k)
+	}
+	return nil
+}
+
+// WDecodeStats reports decoder resources.
+type ncDcoreWDecodeStats struct {
+	Frames        int
+	BaseReadBytes int64
+	PayloadBytes  int64
+}
+
+// Decode streams the whole target to dst, authenticating every frame and then
+// the whole object (length and SHA-256). base must return authenticated bytes
+// (or its identity must be verified by the caller); frames additionally catch
+// any wrong base byte they touch.
+func (w *ncDcoreWRecord) Decode(dst io.Writer, base io.ReaderAt, wp ncDcoreWParams) (ncDcoreWDecodeStats, error) {
+	var st ncDcoreWDecodeStats
+	if !wp.valid() {
+		return st, ncDcoreErrParams
+	}
+	v := ncDcore_newPageView(base, w.BaseSize, wp.PageSize, wp.CachePages)
+	whole := sha256.New()
+	buf := make([]byte, w.maxWindow)
+	for i := range w.frames {
+		out := buf[:w.frames[i].tlen]
+		if err := w.decodeFrame(i, v, out); err != nil {
+			return st, err
+		}
+		whole.Write(out)
+		if _, err := dst.Write(out); err != nil {
+			return st, err
+		}
+		st.Frames++
+		st.PayloadBytes += w.frames[i].plen
+	}
+	st.BaseReadBytes = v.Reads
+	var sum [32]byte
+	copy(sum[:], whole.Sum(nil))
+	if sum != w.SHA {
+		return st, ncDcoreErrWindowAuth
+	}
+	return st, nil
+}
+
+// DecodeRange returns target[off:off+n] by decoding only the covering frames.
+func (w *ncDcoreWRecord) DecodeRange(base io.ReaderAt, wp ncDcoreWParams, off, n int64) ([]byte, ncDcoreWDecodeStats, error) {
+	var st ncDcoreWDecodeStats
+	if !wp.valid() || off < 0 || n < 0 || off > w.Size || n > w.Size-off {
+		return nil, st, ncDcoreErrParams
+	}
+	v := ncDcore_newPageView(base, w.BaseSize, wp.PageSize, wp.CachePages)
+	out := make([]byte, 0, n)
+	// first frame containing off
+	lo, hi := 0, len(w.frames)
+	for lo < hi {
+		m := (lo + hi) / 2
+		if w.tstart[m]+w.frames[m].tlen <= off {
+			lo = m + 1
+		} else {
+			hi = m
+		}
+	}
+	buf := make([]byte, w.maxWindow)
+	for i := lo; i < len(w.frames) && int64(len(out)) < n; i++ {
+		fb := buf[:w.frames[i].tlen]
+		if err := w.decodeFrame(i, v, fb); err != nil {
+			return nil, st, err
+		}
+		from := max(off-w.tstart[i], 0)
+		to := min(int64(len(fb)), off+n-w.tstart[i])
+		out = append(out, fb[from:to]...)
+		st.Frames++
+		st.PayloadBytes += w.frames[i].plen
+	}
+	st.BaseReadBytes = v.Reads
+	return out, st, nil
+}
+
+// DecOpts bounds replay resources.
+type ncNumcoreDecOpts struct {
+	Workers    int   // parallel window decoders (default 1)
+	CacheBytes int64 // decoded base-window cache (default 64 MiB)
+}
+
+// DecStats reports what a decode touched.
+type ncNumcoreDecStats struct {
+	Windows      int64
+	PayloadBytes int64 // bytes read from ZN7 objects (this object and derived bases)
+	RawBaseBytes int64 // bytes read from raw (original) bases
+	DirBytes     int64
+	CacheHits    int64
+	CacheMiss    int64
+}
+
+func (s *ncNumcore_session) stats(o *ncNumcoreObject) ncNumcoreDecStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return ncNumcoreDecStats{Windows: s.windows, PayloadBytes: s.payloadRead, RawBaseBytes: s.rawRead, DirBytes: o.DirLen + ncNumcore_zTrailLen + 4,
+		CacheHits: s.cache.Hits, CacheMiss: s.cache.Miss}
+}
+
+// DecodeTo streams the original file to w. Every window and the gap section are authenticated
+// before their bytes are written; the whole-file SHA-256 is checked at the end (ErrDigest7).
+func (o *ncNumcoreObject) DecodeTo(ctx context.Context, w io.Writer, rv ncNumcoreResolver, opt ncNumcoreDecOpts) (ncNumcoreDecStats, error) {
+	s := ncNumcore_newSession(rv, opt.CacheBytes)
+	gaps, err := s.gapsOf(ctx, o, 0)
+	if err != nil {
+		return s.stats(o), err
+	}
+	h := sha256.New()
+	emit := func(b []byte) error {
+		h.Write(b)
+		n, err := w.Write(b)
+		if err == nil && n != len(b) {
+			err = io.ErrShortWrite
+		}
+		return err
+	}
+	workers := opt.Workers
+	if workers < 1 {
+		workers = 1
+	}
+	type job struct {
+		ti  int
+		k   int64
+		out []byte
+		err error
+		wg  sync.WaitGroup
+	}
+	jobs := make(chan *job, workers)
+	parent := ctx
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				t := &o.T[j.ti]
+				_, n := t.winBytes(j.k)
+				j.out = make([]byte, n)
+				j.err = s.decodeWindow(ctx, o, 0, j.ti, j.k, j.out)
+				j.wg.Done()
+			}
+		}()
+	}
+	// producer: file order; gaps are interleaved by the writer below
+	type item struct {
+		gap []byte
+		j   *job
+	}
+	items := make(chan item, 2*workers)
+	go func() {
+		defer close(items)
+		defer close(jobs)
+		gp, prev := int64(0), int64(0)
+		for ti := range o.T {
+			t := &o.T[ti]
+			if g := t.Off - prev; g > 0 {
+				items <- item{gap: gaps[gp : gp+g]}
+				gp += g
+			}
+			prev = t.Off + t.Len
+			for k := range t.W {
+				j := &job{ti: ti, k: int64(k)}
+				j.wg.Add(1)
+				select {
+				case jobs <- j:
+				case <-ctx.Done():
+					return
+				}
+				items <- item{j: j}
+			}
+		}
+		if g := o.FileLen - prev; g > 0 {
+			items <- item{gap: gaps[gp : gp+g]}
+		}
+	}()
+	var first error
+	for it := range items {
+		if first != nil {
+			continue
+		}
+		if it.j == nil {
+			first = emit(it.gap)
+		} else {
+			it.j.wg.Wait()
+			if first = it.j.err; first == nil {
+				first = emit(it.j.out)
+			}
+		}
+		if first != nil {
+			cancel()
+		}
+	}
+	wg.Wait()
+	st := s.stats(o)
+	if first == nil {
+		first = parent.Err()
+	}
+	if first != nil {
+		return st, first
+	}
+	var got ncNumcoreID
+	h.Sum(got[:0])
+	if got != o.FileSHA {
+		return st, ncNumcoreErrDigest7
+	}
+	return st, nil
+}
+
+// ReadRange returns file bytes [off, off+n) decoding only the covering windows (each verified).
+func (o *ncNumcoreObject) ReadRange(ctx context.Context, off, n int64, rv ncNumcoreResolver, opt ncNumcoreDecOpts) ([]byte, ncNumcoreDecStats, error) {
+	s := ncNumcore_newSession(rv, opt.CacheBytes)
+	if off < 0 || n < 0 || n > o.FileLen-off {
+		return nil, s.stats(o), ncNumcoreErrRange7
+	}
+	out := make([]byte, n)
+	end := off + n
+	var gaps []byte
+	gp, prev := int64(0), int64(0)
+	fill := func(lo, hi int64, src func(a, b int64) ([]byte, error)) error { // file span [lo,hi)
+		a, b := lo, hi
+		if a < off {
+			a = off
+		}
+		if b > end {
+			b = end
+		}
+		if a >= b {
+			return nil
+		}
+		d, err := src(a-lo, b-lo)
+		if err != nil {
+			return err
+		}
+		copy(out[a-off:], d)
+		return nil
+	}
+	gapSrc := func(base int64) func(a, b int64) ([]byte, error) {
+		return func(a, b int64) ([]byte, error) {
+			if gaps == nil {
+				var err error
+				if gaps, err = s.gapsOf(ctx, o, 0); err != nil {
+					return nil, err
+				}
+				s.mu.Lock()
+				s.payloadRead += o.GapPLen
+				s.mu.Unlock()
+			}
+			return gaps[base+a : base+b], nil
+		}
+	}
+	for ti := 0; ti <= len(o.T); ti++ {
+		tOff := o.FileLen
+		if ti < len(o.T) {
+			tOff = o.T[ti].Off
+		}
+		if tOff > prev {
+			if err := fill(prev, tOff, gapSrc(gp)); err != nil {
+				return nil, s.stats(o), err
+			}
+			gp += tOff - prev
+		}
+		if ti == len(o.T) || tOff >= end {
+			break
+		}
+		t := &o.T[ti]
+		prev = t.Off + t.Len
+		if prev <= off {
+			continue
+		}
+		wb := t.Win * int64(t.unit())
+		for k := range t.W {
+			lo := t.Off + int64(k)*wb
+			hi := lo + wb
+			if hi > prev {
+				hi = prev
+			}
+			if hi <= off || lo >= end {
+				continue
+			}
+			err := fill(lo, hi, func(a, b int64) ([]byte, error) {
+				win, err := s.window(ctx, o, 0, ti, int64(k))
+				if err != nil {
+					return nil, err
+				}
+				return win[a:b], nil
+			})
+			if err != nil {
+				return nil, s.stats(o), err
+			}
+		}
+	}
+	return out, s.stats(o), nil
+}
+
+// DType is the element type of a tensor payload.
+type ncNumcoreDType uint8
+
+const (
+	ncNumcoreDRaw ncNumcoreDType = iota // opaque bytes (integers, buffers, anything not predicted numerically)
+	ncNumcoreDF32
+	ncNumcoreDF16
+	ncNumcoreDBF16
+	ncNumcoreDQ8_0 // GGUF block types are kept as opaque typed blocks
+	ncNumcoreDQ4_0
+	ncNumcoreDQ5_0
+	ncNumcoreDQ4_1
+	ncNumcoreDQ5_1
+	ncNumcoreDQ4_K
+	ncNumcoreDQ6_K
+	ncNumcoreDQ5_K
+	ncNumcoreDQOther
+	ncNumcoreDQ2_K
+	ncNumcoreDQ3_K
+	ncNumcoreDIQ4_NL
+	ncNumcoreDIQ4_XS
+)
+
+var ncNumcore_dtNames = map[ncNumcoreDType]string{ncNumcoreDRaw: "RAW", ncNumcoreDF32: "F32", ncNumcoreDF16: "F16", ncNumcoreDBF16: "BF16", ncNumcoreDQ8_0: "Q8_0", ncNumcoreDQ4_0: "Q4_0", ncNumcoreDQ5_0: "Q5_0", ncNumcoreDQ4_1: "Q4_1", ncNumcoreDQ5_1: "Q5_1",
+	ncNumcoreDQ4_K: "Q4_K", ncNumcoreDQ6_K: "Q6_K", ncNumcoreDQ5_K: "Q5_K", ncNumcoreDQOther: "QOTHER", ncNumcoreDQ2_K: "Q2_K", ncNumcoreDQ3_K: "Q3_K", ncNumcoreDIQ4_NL: "IQ4_NL", ncNumcoreDIQ4_XS: "IQ4_XS"}
+
+func (d ncNumcoreDType) String() string { return ncNumcore_dtNames[d] }
+
+// Width is the element byte width for float dtypes, 1 otherwise.
+func (d ncNumcoreDType) Width() int {
+	switch d {
+	case ncNumcoreDF32:
+		return 4
+	case ncNumcoreDF16, ncNumcoreDBF16:
+		return 2
+	}
+	return 1
+}
+
+// IsFloat reports whether numerical prediction applies.
+func (d ncNumcoreDType) IsFloat() bool {
+	return d == ncNumcoreDF32 || d == ncNumcoreDF16 || d == ncNumcoreDBF16
+}
+
+var ncNumcore_qtypes = map[ncNumcoreDType]ncQcoreType{ncNumcoreDQ8_0: ncQcoreQ8_0, ncNumcoreDQ4_0: ncQcoreQ4_0, ncNumcoreDQ4_1: ncQcoreQ4_1, ncNumcoreDQ5_0: ncQcoreQ5_0, ncNumcoreDQ5_1: ncQcoreQ5_1, ncNumcoreDQ2_K: ncQcoreQ2_K, ncNumcoreDQ3_K: ncQcoreQ3_K,
+	ncNumcoreDQ4_K: ncQcoreQ4_K, ncNumcoreDQ5_K: ncQcoreQ5_K, ncNumcoreDQ6_K: ncQcoreQ6_K, ncNumcoreDIQ4_NL: ncQcoreIQ4_NL, ncNumcoreDIQ4_XS: ncQcoreIQ4_XS}
+
+// QType is the ggml quantization type of a block dtype.
+func (d ncNumcoreDType) QType() (ncQcoreType, bool) { t, ok := ncNumcore_qtypes[d]; return t, ok }
+
+// IsQuant reports a block-quantized dtype with a known geometry and quantizer.
+func (d ncNumcoreDType) IsQuant() bool { _, ok := ncNumcore_qtypes[d]; return ok }
+
+// Cand proposes a base tensor for a target tensor.
+type ncNumcoreCand struct {
+	Slot, TIdx int
+	Perm       ncNumcorePermHint
+}
+
+// BaseIn is one candidate base object at encode time.
+type ncNumcoreBaseIn struct {
+	ID       ncNumcoreID
+	Len      int64
+	Src      ncNumcoreSource
+	Depth    func(ti int) int // dependency depth of that tensor in the base's stored form (nil = 0)
+	GapDepth int
+}
+
+// AuxIn is an auxiliary object (importance matrix) the encoder may reference.
+type ncNumcoreAuxIn struct {
+	ID   ncNumcoreID
+	Data []byte
+}
+
+// EncOpts configures the bounded-memory encoder.
+type ncNumcoreEncOpts struct {
+	Window     int64 // float elements per window (default 1<<16)
+	Workers    int   // parallel window coders (default 1)
+	NoNarrow   bool  // disable exact F32 -> F16/BF16 coding
+	Structured bool  // probe for exact affine / low-rank structure
+	MaxStruct  int64 // largest tensor (bytes) loaded whole for a structured fit (default 32 MiB)
+	Exhaustive bool  // oracle: choose each tensor's base by coding every candidate in full
+	NoVerify   bool  // skip the decode-and-compare of every window
+	SampleEl   int   // elements sampled per tensor for candidate ranking (default 8192)
+}
+
+// EncStats reports the outcome.
+type ncNumcoreEncStats struct {
+	Bytes      int64 // object size
+	GapBytes   int64
+	DirBytes   int64
+	Windows    int64
+	ModeBytes  [5]int64
+	ModeCount  [5]int64
+	Narrowed   int64 // windows coded in a narrower dtype
+	Structured int   // tensors with an affine / low-rank predictor
+	QuantExact int64 // quant blocks reproduced
+	QuantPatch int64 // quant blocks patched
+	CandEvals  int64 // sampled candidate evaluations
+	FullEvals  int64 // full candidate evaluations (oracle / structured)
+	Depth      []int // per tensor dependency depth of the result
+	GapDepth   int
+	Picks      []int // per tensor chosen candidate index (-1 none)
+}
+
+type ncNumcore_tplan struct {
+	ref    *ncNumcoreRef
+	src    ncNumcoreSource
+	p      *ncNumcoreParams
+	q      *ncNumcoreQParams
+	qw     []float32
+	win    int64
+	depth  int
+	opaque bool
+}
+
+type ncNumcore_encoder struct {
+	ctx     context.Context
+	tgt     io.ReaderAt
+	lay     *ncNumcoreLayout
+	bases   []ncNumcoreBaseIn
+	cands   func(ti int) []ncNumcoreCand
+	aux     []ncNumcoreAuxIn
+	im      []*ncQcoreIMatrix
+	o       ncNumcoreEncOpts
+	st      *ncNumcoreEncStats
+	auxUsed map[int]int
+	auxIDs  []ncNumcoreID
+	mu      sync.Mutex
+
+	priorOnce sync.Once
+	prior     map[[2]int]int64 // quantPrior
+}
+
+func (e *ncNumcore_encoder) baseDepth(c ncNumcoreCand) int {
+	b := &e.bases[c.Slot]
+	if b.Depth == nil {
+		return 0
+	}
+	return b.Depth(c.TIdx)
+}
+
+// sampleSpans picks evenly spaced 64-element chunks covering about `want` of n elements.
+func ncNumcore_sampleSpans(n int64, want int) [][2]int64 {
+	const ch = 64
+	if n <= int64(want) {
+		return [][2]int64{{0, n}}
+	}
+	k := int64(want / ch)
+	out := make([][2]int64, 0, k)
+	for i := int64(0); i < k; i++ {
+		lo := i * (n - ch) / (k - 1)
+		out = append(out, [2]int64{lo, lo + ch})
+	}
+	return out
+}
+
+// fpeProxy estimates FPE payload bytes: exponent entropy plus raw sign/mantissa bits.
+func ncNumcore_fpeProxy(d ncNumcoreDType, words []byte) float64 {
+	sh, eb, ok := ncNumcore_fpeSplit(d)
+	if !ok {
+		return float64(len(words))
+	}
+	w := d.Width()
+	n := len(words) / w
+	var cnt [256]int
+	for i := 0; i < n; i++ {
+		cnt[(ncNumcoreLE(words, w, i)>>sh)&(1<<eb-1)]++
+	}
+	h := 0.0
+	for _, c := range cnt {
+		if c > 0 {
+			h -= float64(c) * math.Log2(float64(c)/float64(n))
+		}
+	}
+	return (h + float64(n)*float64(8*uint(w)-eb)) / 8
+}
+
+// nrcProxy estimates NRC payload bytes for a residual (shift mode, one context).
+func ncNumcore_nrcProxy(d ncNumcoreDType, resid, pred []byte) float64 {
+	w := d.Width()
+	n := len(resid) / w
+	er, _ := ncNumcoreExps(d, pred)
+	var cnt [ncNumcoreNRCSyms]int
+	raw := 0
+	for i := 0; i < n; i++ {
+		s := ncNumcoreBitlen(ncNumcoreLE(resid, w, i))
+		cnt[s+int(er[i])]++
+		if s > 1 {
+			raw += s - 1
+		}
+	}
+	h := 0.0
+	for _, c := range cnt {
+		if c > 0 {
+			h -= float64(c) * math.Log2(float64(c)/float64(n))
+		}
+	}
+	return (h + float64(raw)) / 8
+}
+
+func (e *ncNumcore_encoder) readTarget(t *ncNumcoreTensor, lo int64, n int) ([]byte, error) {
+	w := int64(ncNumcore_unitOf(t.DT, false))
+	buf := make([]byte, int64(n)*w)
+	return buf, ncNumcore_readFull(e.tgt, buf, t.Off+lo*w)
+}
+
+// planFloat ranks candidates on a sample and returns the plan (nil ref = direct coding).
+func (e *ncNumcore_encoder) planFloat(ti int, t *ncNumcoreTensor) (*ncNumcore_tplan, error) {
+	w := int64(t.DT.Width())
+	n := t.Len / w
+	pl := &ncNumcore_tplan{win: e.o.Window}
+	cs := e.cands(ti)
+	type cv struct {
+		c    ncNumcoreCand
+		src  ncNumcoreSource
+		dt   ncNumcoreDType
+		cost float64
+		idx  int
+	}
+	var ok []cv
+	for i, c := range cs {
+		if c.Slot < 0 || c.Slot >= len(e.bases) || e.baseDepth(c)+1 > ncNumcoreMaxHops7 {
+			continue
+		}
+		dt, size, cols, has := e.bases[c.Slot].Src.Info(c.TIdx)
+		if !has || !dt.IsFloat() || size/int64(dt.Width()) != n || size%int64(dt.Width()) != 0 {
+			continue
+		}
+		if c.Perm.Kind != 0 && (cols <= 0 || t.Cols != cols || n%cols != 0) {
+			continue
+		}
+		ok = append(ok, cv{c: c, src: e.bases[c.Slot].Src, dt: dt, idx: i})
+	}
+	e.st.Picks[ti] = -1
+	if len(ok) == 0 || n == 0 {
+		return pl, nil
+	}
+	needRows := false
+	for i := range ok {
+		needRows = needRows || ok[i].c.Perm.Kind != 0
+	}
+	evalSample := func(want int, list []cv) (float64, error) {
+		spans := ncNumcore_sampleSpans(n, want)
+		if needRows { // row aligned so permuted bases can be sampled
+			spans = ncNumcore_rowSpans(n, t.Cols, want)
+		}
+		var tw []byte
+		for _, sp := range spans {
+			b, err := e.readTarget(t, sp[0], int(sp[1]-sp[0]))
+			if err != nil {
+				return 0, err
+			}
+			tw = append(tw, b...)
+		}
+		direct := ncNumcore_fpeProxy(t.DT, tw)
+		for i := range list {
+			var pred []byte
+			for _, sp := range spans {
+				b, err := ncNumcore_readRef(e.ctx, list[i].src, &ncNumcoreRef{Slot: uint8(list[i].c.Slot), TIdx: uint32(list[i].c.TIdx), Perm: list[i].c.Perm}, sp[0], int(sp[1]-sp[0]), t.DT, false)
+				if err != nil {
+					return 0, err
+				}
+				p, err := ncNumcore_predWindow(nil, t.DT, b, sp[0], int(sp[1]-sp[0]), t.Cols)
+				if err != nil {
+					return 0, err
+				}
+				pred = append(pred, p...)
+			}
+			if bytes.Equal(pred, tw) {
+				list[i].cost = 0
+			} else {
+				list[i].cost = ncNumcore_nrcProxy(t.DT, ncNumcoreMakeResidual(ncNumcoreRKey, int(w), tw, pred), pred)
+			}
+			e.st.CandEvals++
+		}
+		return direct, nil
+	}
+	sortCV := func(l []cv) {
+		for i := 1; i < len(l); i++ {
+			for j := i; j > 0 && l[j].cost < l[j-1].cost; j-- {
+				l[j], l[j-1] = l[j-1], l[j]
+			}
+		}
+	}
+	var direct float64
+	var err error
+	if e.o.Exhaustive {
+		direct, err = e.fullCost(t, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		for i := range ok {
+			r := &ncNumcoreRef{Slot: uint8(ok[i].c.Slot), TIdx: uint32(ok[i].c.TIdx), Perm: ok[i].c.Perm}
+			if ok[i].cost, err = e.fullCost(t, r, ok[i].src); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		if len(ok) > 3 { // stage 1: small sample over all candidates, keep the best three
+			if _, err = evalSample(512, ok); err != nil {
+				return nil, err
+			}
+			sortCV(ok)
+			ok = ok[:3]
+		}
+		if direct, err = evalSample(e.o.SampleEl, ok); err != nil {
+			return nil, err
+		}
+	}
+	sortCV(ok)
+	best := ok[0]
+	if best.cost >= direct*0.98 {
+		return pl, nil
+	}
+	e.st.Picks[ti] = best.idx
+	pl.ref = &ncNumcoreRef{Slot: uint8(best.c.Slot), TIdx: uint32(best.c.TIdx), Perm: best.c.Perm}
+	pl.src = best.src
+	pl.depth = e.baseDepth(best.c) + 1
+	if best.c.Perm.Kind != 0 { // permuted rows: windows are whole rows
+		pl.win = (pl.win + t.Cols - 1) / t.Cols * t.Cols
+	}
+	if e.o.Structured && best.c.Perm.Kind == 0 && t.Cols > 1 && n/t.Cols > 1 && n%t.Cols == 0 && t.Len <= e.o.MaxStruct && best.cost > 0 {
+		if err := e.planStructured(t, pl, best.dt); err != nil {
+			return nil, err
+		}
+	}
+	return pl, nil
+}
+
+// rowSpans samples whole rows when a row length is known (cols > 0), else element chunks.
+func ncNumcore_rowSpans(n, cols int64, want int) [][2]int64 {
+	if cols <= 0 || n%cols != 0 || cols > int64(want) {
+		if cols > 0 && n%cols == 0 { // long rows: a few whole rows
+			rows := n / cols
+			k := int64(2)
+			if rows < k {
+				k = rows
+			}
+			out := make([][2]int64, 0, k)
+			for i := int64(0); i < k; i++ {
+				r := i * (rows - 1) / ncNumcore_maxI64(k-1, 1)
+				out = append(out, [2]int64{r * cols, (r + 1) * cols})
+			}
+			return out
+		}
+		return ncNumcore_sampleSpans(n, want)
+	}
+	rows := n / cols
+	k := int64(want) / cols
+	if k >= rows {
+		return [][2]int64{{0, n}}
+	}
+	out := make([][2]int64, 0, k)
+	for i := int64(0); i < k; i++ {
+		r := i * (rows - 1) / ncNumcore_maxI64(k-1, 1)
+		out = append(out, [2]int64{r * cols, (r + 1) * cols})
+	}
+	return out
+}
+
+func ncNumcore_maxI64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// fullCost codes the whole tensor against ref (nil = direct) and returns the payload bytes.
+func (e *ncNumcore_encoder) fullCost(t *ncNumcoreTensor, ref *ncNumcoreRef, src ncNumcoreSource) (float64, error) {
+	td := &ncNumcoreTDir{DT: t.DT, Off: t.Off, Len: t.Len, Cols: t.Cols, Win: e.o.Window, Ref: ref}
+	if ref != nil && ref.Perm.Kind != 0 {
+		td.Win = (td.Win + t.Cols - 1) / t.Cols * t.Cols
+	}
+	nw, _ := ncNumcore_numWindows(t.Len, td.Win, td.unit())
+	total := 0.0
+	pl := &ncNumcore_tplan{ref: ref, src: src, win: td.Win}
+	for k := int64(0); k < nw; k++ {
+		_, n := td.winBytes(k)
+		buf := make([]byte, n)
+		if err := ncNumcore_readFull(e.tgt, buf, t.Off+k*td.Win*int64(td.unit())); err != nil {
+			return 0, err
+		}
+		wd, payload, err := e.codeWindow(td, pl, k, buf, true)
+		if err != nil {
+			return 0, err
+		}
+		_ = wd
+		total += float64(len(payload))
+	}
+	e.st.FullEvals++
+	return total, nil
+}
+
+// planStructured loads one bounded tensor pair and tries exact affine / low-rank predictors when
+// cheap probes say the update is structured. It keeps the identity predictor otherwise.
+func (e *ncNumcore_encoder) planStructured(t *ncNumcoreTensor, pl *ncNumcore_tplan, bdt ncNumcoreDType) error {
+	w := t.DT.Width()
+	n := int(t.Len) / w
+	cols := int(t.Cols)
+	rows := n / cols
+	tw, err := e.readTarget(t, 0, n)
+	if err != nil {
+		return err
+	}
+	b, err := ncNumcore_readRef(e.ctx, pl.src, pl.ref, 0, n, t.DT, false)
+	if err != nil {
+		return err
+	}
+	lowOK, affOK := ncNumcore_probeLowRank(t.DT, b, tw, rows, cols), ncNumcore_probeScale(t.DT, b, tw, n)
+	if !lowOK && !affOK {
+		return nil
+	}
+	e.st.FullEvals++
+	shape := []int64{int64(rows), int64(cols)}
+	cost := func(p *ncNumcoreParams) float64 {
+		pred, err := ncNumcore_predWindow(p, t.DT, b, 0, n, t.Cols)
+		if err != nil {
+			return math.Inf(1)
+		}
+		c := ncNumcore_nrcProxy(t.DT, ncNumcoreMakeResidual(ncNumcoreRKey, w, tw, pred), pred)
+		if p != nil {
+			c += float64(len(p.Marshal()))
+		}
+		return c
+	}
+	best, bestP := cost(nil), (*ncNumcoreParams)(nil)
+	try := func(p *ncNumcoreParams) {
+		if p == nil {
+			return
+		}
+		if c := cost(p); c < best*0.97 {
+			best, bestP = c, p
+		}
+	}
+	if affOK {
+		try(ncNumcoreFitAffineRobust(t.DT, shape, ncNumcoreGTensor, 0, 4, b, tw))
+	}
+	if lowOK {
+		for _, r := range []int{1, 2, 4, 8, 16} {
+			if r >= rows || r >= cols {
+				break
+			}
+			try(ncNumcoreLowRankFit(t.DT, shape, r, 4, b, tw, 2, 1))
+		}
+	}
+	if bestP != nil {
+		pl.p = bestP
+		e.st.Structured++
+	}
+	return nil
+}
+
+// probeLowRank: a 48x48 sample of the float delta has most of its energy in a few directions.
+// Natural optimizer noise has a flat spectrum and fails the test without any full-tensor work.
+func ncNumcore_probeLowRank(dt ncNumcoreDType, b ncNumcoreBase, tw []byte, rows, cols int) bool {
+	const s = 48
+	if rows < s || cols < s {
+		return false
+	}
+	tb := ncNumcoreBase{DT: dt, Data: tw}
+	A := make([]float64, s*s)
+	var e2 float64
+	for i := 0; i < s; i++ {
+		r := i * (rows - 1) / (s - 1)
+		for j := 0; j < s; j++ {
+			c := j * (cols - 1) / (s - 1)
+			d := tb.at(r*cols+c) - b.at(r*cols+c)
+			if !ncNumcoreFinite(d) {
+				return false
+			}
+			A[i*s+j] = d
+			e2 += d * d
+		}
+	}
+	if e2 == 0 {
+		return false
+	}
+	// Gram matrix and its eigenvalues (squared singular values)
+	G := make([]float64, s*s)
+	for i := 0; i < s; i++ {
+		for j := i; j < s; j++ {
+			var v float64
+			for k := 0; k < s; k++ {
+				v += A[i*s+k] * A[j*s+k]
+			}
+			G[i*s+j], G[j*s+i] = v, v
+		}
+	}
+	ev, _ := ncNumcore_jacobiEig(G, s)
+	for i := 1; i < len(ev); i++ { // descending
+		for j := i; j > 0 && ev[j] > ev[j-1]; j-- {
+			ev[j], ev[j-1] = ev[j-1], ev[j]
+		}
+	}
+	top := 0.0
+	for i := 0; i < 16 && i < len(ev); i++ {
+		top += ev[i]
+	}
+	return top >= 0.9*e2
+}
+
+// probeScale: the target is a common multiple of the base on a sample (within two key steps).
+func ncNumcore_probeScale(dt ncNumcoreDType, b ncNumcoreBase, tw []byte, n int) bool {
+	tb := ncNumcoreBase{DT: dt, Data: tw}
+	const s = 512
+	if n < s {
+		return false
+	}
+	ratios := make([]float64, 0, s)
+	for i := 0; i < s; i++ {
+		k := i * (n - 1) / (s - 1)
+		bv, tv := b.at(k), tb.at(k)
+		if bv != 0 && ncNumcoreFinite(bv) && ncNumcoreFinite(tv) {
+			ratios = append(ratios, tv/bv)
+		}
+	}
+	if len(ratios) < s/2 {
+		return false
+	}
+	for i := 1; i < len(ratios); i++ {
+		for j := i; j > 0 && ratios[j] < ratios[j-1]; j-- {
+			ratios[j], ratios[j-1] = ratios[j-1], ratios[j]
+		}
+	}
+	med := ratios[len(ratios)/2]
+	if med == 1 || !ncNumcoreFinite(med) {
+		return false
+	}
+	w := dt.Width()
+	hit := 0
+	for i := 0; i < s; i++ {
+		k := i * (n - 1) / (s - 1)
+		pv := ncNumcoreFromF64(dt, med*b.at(k))
+		d := int64(ncNumcoreKey(pv, w)) - int64(ncNumcoreKey(ncNumcoreLE(tw, w, k), w))
+		if d >= -2 && d <= 2 {
+			hit++
+		}
+	}
+	return hit >= s*8/10
+}
+
+// qvariant is one way a quantized tensor may have been produced from a float candidate.
+type ncNumcore_qvariant struct {
+	q   ncNumcoreQParams
+	qw  []float32
+	aux int
+	c   ncNumcoreCand
+	ci  int
+}
+
+// qgeom returns the quantizer geometry of a tensor (ok=false when it is not derivable).
+func ncNumcore_qgeom(t *ncNumcoreTensor) (q ncQcoreType, el, by int, n, cols, rows int64, ok bool) {
+	q = ncNumcore_mustQ(t.DT)
+	el, by = ncNumcore_qBlock(q)
+	n = t.Len / int64(by) * int64(el)
+	cols = t.Cols
+	if cols <= 0 {
+		cols = n
+	}
+	if cols%int64(el) != 0 || n == 0 || n%cols != 0 {
+		return q, el, by, n, cols, 0, false
+	}
+	return q, el, by, n, cols, n / cols, true
+}
+
+func (e *ncNumcore_encoder) quantVariants(ti int, t *ncNumcoreTensor, n, cols int64) (vs []ncNumcore_qvariant) {
+	for ci, c := range e.cands(ti) {
+		if c.Slot < 0 || c.Slot >= len(e.bases) || e.baseDepth(c)+1 > ncNumcoreMaxHops7 {
+			continue
+		}
+		dt, size, bcols, has := e.bases[c.Slot].Src.Info(c.TIdx)
+		if !has || !dt.IsFloat() || size/int64(dt.Width()) != n {
+			continue
+		}
+		if c.Perm.Kind != 0 && bcols != cols {
+			continue
+		}
+		// reference quantizer, strict and (where derived: quantEval drops the others) fused build
+		for _, ar := range []ncQcoreArith{ncQcoreStrict, ncQcoreGCCFMA} {
+			vs = append(vs, ncNumcore_qvariant{q: ncNumcoreQParams{Aux: -1, Arith: uint8(ar)}, aux: -1, c: c, ci: ci})
+			if dt != ncNumcoreDF16 {
+				vs = append(vs, ncNumcore_qvariant{q: ncNumcoreQParams{Aux: -1, Arith: uint8(ar), ViaF16: true}, aux: -1, c: c, ci: ci})
+			}
+		}
+		for ai, im := range e.im {
+			if w := im.For(t.Name, int(cols)); w != nil {
+				for _, ar := range []ncQcoreArith{ncQcoreStrict, ncQcoreGCCFMA} {
+					vs = append(vs, ncNumcore_qvariant{q: ncNumcoreQParams{Arith: uint8(ar), Name: t.Name}, qw: w, aux: ai, c: c, ci: ci})
+					if dt != ncNumcoreDF16 {
+						vs = append(vs, ncNumcore_qvariant{q: ncNumcoreQParams{Arith: uint8(ar), Name: t.Name, ViaF16: true}, qw: w, aux: ai, c: c, ci: ci})
+					}
+				}
+			}
+		}
+	}
+	return vs
+}
+
+// quantEval requantizes the first srows rows with every variant and counts the blocks that
+// equal the target's (-1: the variant does not apply).
+func (e *ncNumcore_encoder) quantEval(t *ncNumcoreTensor, vs []ncNumcore_qvariant, srows int64) (ex []int64, sb int64, err error) {
+	q, el, by, _, cols, _, _ := ncNumcore_qgeom(t)
+	sb = srows * cols / int64(el)
+	want := make([]byte, sb*int64(by))
+	if err := ncNumcore_readFull(e.tgt, want, t.Off); err != nil {
+		return nil, 0, err
+	}
+	ex = make([]int64, len(vs))
+	got := make([]byte, len(want))
+	var b ncNumcoreBase
+	bci := -1
+	for k, v := range vs {
+		if v.ci != bci {
+			if b, err = ncNumcore_readRef(e.ctx, e.bases[v.c.Slot].Src, &ncNumcoreRef{Slot: uint8(v.c.Slot), TIdx: uint32(v.c.TIdx), Perm: v.c.Perm}, 0, int(srows*cols), t.DT, true); err != nil {
+				return nil, 0, err
+			}
+			bci = v.ci
+		}
+		if ncQcoreQuantize(got, q, ncNumcore_floatsOf(b, v.q.ViaF16), int(cols), v.qw, ncQcoreArith(v.q.Arith)) != nil {
+			ex[k] = -1
+			continue
+		}
+		for i := int64(0); i < sb; i++ {
+			if bytes.Equal(got[i*int64(by):(i+1)*int64(by)], want[i*int64(by):(i+1)*int64(by)]) {
+				ex[k]++
+			}
+		}
+		e.mu.Lock()
+		e.st.CandEvals++
+		e.mu.Unlock()
+	}
+	return ex, sb, nil
+}
+
+// quantPrior ranks the producer profiles (imatrix, arithmetic) of this file. Profiles agree on
+// most blocks (strict vs fused arithmetic differ on 0.1-5 %), so one tensor's first sample often
+// cannot tell them apart, while the producer build is a property of the whole file: a larger
+// sample of the first few tensors with more than one candidate profile is scored once and
+// breaks later ties. The probe
+// depends only on the inputs, so the result does not depend on worker scheduling.
+func (e *ncNumcore_encoder) quantPrior() map[[2]int]int64 {
+	e.priorOnce.Do(func() {
+		e.prior = map[[2]int]int64{}
+		for ti, probes, tried := 0, 0, 0; ti < len(e.lay.T) && probes < 6 && tried < 48; ti++ {
+			t := &e.lay.T[ti]
+			if _, ok := t.DT.QType(); !ok {
+				continue
+			}
+			_, _, _, n, cols, rows, ok := ncNumcore_qgeom(t)
+			if !ok {
+				continue
+			}
+			var vs []ncNumcore_qvariant
+			for _, v := range e.quantVariants(ti, t, n, cols) {
+				if !v.q.ViaF16 {
+					vs = append(vs, v)
+				}
+			}
+			if len(vs) < 2 {
+				continue
+			}
+			tried++
+			// a tensor votes only if every profile applies to its type and they do not all agree
+			// (Q8_0 has no fused variant and ignores the weights: it says nothing about the build)
+			ex, _, err := e.quantEval(t, vs, min(rows, ncNumcore_maxI64(1, int64(8192)/cols)))
+			if err != nil {
+				return
+			}
+			// the weighted profiles must all apply (a type without a fused weighted path would
+			// score the strict build only)
+			weightedOK := true
+			for k, v := range vs {
+				weightedOK = weightedOK && (v.aux < 0 || ex[k] >= 0)
+			}
+			if !weightedOK {
+				continue
+			}
+			if ex, _, err = e.quantEval(t, vs, min(rows, ncNumcore_maxI64(1, (1<<17)/cols))); err != nil {
+				return
+			}
+			lo, hi := int64(math.MaxInt64), int64(-1)
+			for _, x := range ex {
+				if x >= 0 {
+					lo, hi = min(lo, x), max(hi, x)
+				}
+			}
+			if lo == hi {
+				continue
+			}
+			probes++
+			for k, v := range vs {
+				if ex[k] > 0 {
+					e.prior[[2]int{v.aux, int(v.q.Arith)}] += ex[k]
+				}
+			}
+		}
+	})
+	return e.prior
+}
+
+// planQuant finds the producer profile that reproduces a quantized tensor from a float base.
+func (e *ncNumcore_encoder) planQuant(ti int, t *ncNumcoreTensor) (*ncNumcore_tplan, error) {
+	_, el, _, n, cols, rows, ok := ncNumcore_qgeom(t)
+	if !ok {
+		return nil, nil
+	}
+	srows := min(rows, ncNumcore_maxI64(1, int64(8192)/cols))
+	vs := e.quantVariants(ti, t, n, cols)
+	var bestExact, sb int64
+	for limit := srows * 64; len(vs) > 0; srows = min(srows*8, rows) {
+		ex, nb, err := e.quantEval(t, vs, srows)
+		if err != nil {
+			return nil, err
+		}
+		sb, bestExact = nb, -1
+		for _, x := range ex {
+			bestExact = max(bestExact, x)
+		}
+		// keep the leaders; the F16 conversion step changes single values at most, so a tie on
+		// it alone goes to the first listed
+		tied := vs[:0]
+		for k, v := range vs {
+			if j := len(tied) - 1; ex[k] >= 0 && ex[k] == bestExact && (j < 0 || tied[j].ci != v.ci || tied[j].aux != v.aux || tied[j].q.Arith != v.q.Arith) {
+				tied = append(tied, v)
+			}
+		}
+		vs = tied
+		if len(vs) > 1 { // the file-level prior decides between profiles that tie here
+			pr := e.quantPrior()
+			top, cnt := int64(-1), 0
+			for _, v := range vs {
+				if s := pr[[2]int{v.aux, int(v.q.Arith)}]; s > top {
+					top, cnt = s, 1
+				} else if s == top {
+					cnt++
+				}
+			}
+			if cnt == 1 {
+				for _, v := range vs {
+					if pr[[2]int{v.aux, int(v.q.Arith)}] == top {
+						vs = []ncNumcore_qvariant{v}
+						break
+					}
+				}
+			}
+		}
+		// still undecided: grow the sample (up to 64x the first one), then take the first listed
+		if len(vs) <= 1 || srows >= rows || srows >= limit {
+			break
+		}
+	}
+	if len(vs) == 0 || bestExact*2 < sb {
+		return nil, nil
+	}
+	bestV, bestC, bestIdx := vs[0], vs[0].c, vs[0].ci
+	pl := &ncNumcore_tplan{src: e.bases[bestC.Slot].Src, depth: e.baseDepth(bestC) + 1}
+	pl.ref = &ncNumcoreRef{Slot: uint8(bestC.Slot), TIdx: uint32(bestC.TIdx), Perm: bestC.Perm}
+	qp := bestV.q
+	if bestV.aux >= 0 {
+		qp.Aux = e.useAux(bestV.aux)
+		pl.qw = bestV.qw
+	}
+	pl.q = &qp
+	rpw := ncNumcore_maxI64(1, e.o.Window/cols) // rows per window
+	pl.win = rpw * cols / int64(el)
+	e.st.Picks[ti] = bestIdx
+	return pl, nil
+}
+
+func (e *ncNumcore_encoder) useAux(ai int) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if k, ok := e.auxUsed[ai]; ok {
+		return k
+	}
+	k := len(e.auxIDs)
+	e.auxUsed[ai] = k
+	e.auxIDs = append(e.auxIDs, e.aux[ai].ID)
+	return k
+}
+
+// planOpaque: identical bytes in a same-typed base tensor become copies; else stored/DEFLATE.
+func (e *ncNumcore_encoder) planOpaque(ti int, t *ncNumcoreTensor) (*ncNumcore_tplan, error) {
+	pl := &ncNumcore_tplan{win: 4 << 20, opaque: true}
+	e.st.Picks[ti] = -1
+	if t.Len == 0 {
+		return pl, nil
+	}
+	n := int64(4096)
+	if n > t.Len {
+		n = t.Len
+	}
+	want := make([]byte, n)
+	if err := ncNumcore_readFull(e.tgt, want, t.Off+(t.Len-n)/2); err != nil {
+		return nil, err
+	}
+	for ci, c := range e.cands(ti) {
+		if c.Slot < 0 || c.Slot >= len(e.bases) || c.Perm.Kind != 0 || e.baseDepth(c)+1 > ncNumcoreMaxHops7 {
+			continue
+		}
+		src := e.bases[c.Slot].Src
+		dt, size, _, has := src.Info(c.TIdx)
+		if !has || dt != t.DT || size != t.Len {
+			continue
+		}
+		got := make([]byte, n)
+		if err := src.ReadTensor(e.ctx, c.TIdx, (t.Len-n)/2, got); err != nil {
+			return nil, err
+		}
+		if bytes.Equal(got, want) {
+			pl.ref = &ncNumcoreRef{Slot: uint8(c.Slot), TIdx: uint32(c.TIdx)}
+			pl.src = src
+			pl.depth = e.baseDepth(c) + 1
+			e.st.Picks[ti] = ci
+			break
+		}
+	}
+	return pl, nil
+}
+
+// codeWindow chooses and builds the payload of one window. dry skips verification (cost probes).
+func (e *ncNumcore_encoder) codeWindow(t *ncNumcoreTDir, pl *ncNumcore_tplan, k int64, tw []byte, dry bool) (ncNumcoreWDir, []byte, error) {
+	wd := ncNumcoreWDir{Sum: ncNumcore_sum16(tw)}
+	var payload []byte
+	var baseData ncNumcoreBase
+	haveBase := false
+	base := func(ctx context.Context, lo int64, n int) (ncNumcoreBase, error) {
+		if haveBase {
+			return baseData, nil
+		}
+		b, err := ncNumcore_readRef(ctx, pl.src, t.Ref, lo, n, t.DT, t.Q != nil)
+		if err == nil {
+			baseData, haveBase = b, true
+		}
+		return b, err
+	}
+	switch {
+	case t.Q != nil:
+		_, by := ncNumcore_qBlock(ncNumcore_mustQ(t.DT))
+		got, err := ncNumcore_quantWindow(e.ctx, t, k, len(tw), base, pl.qw)
+		if err != nil {
+			return wd, nil, err
+		}
+		var np int
+		payload, wd.Coder, np = ncNumcore_encodePatches(tw, got, by)
+		wd.Mode = ncNumcoreMQuant
+		if !dry {
+			e.mu.Lock()
+			e.st.QuantPatch += int64(np)
+			e.st.QuantExact += int64(len(tw)/by - np)
+			e.mu.Unlock()
+		}
+	case !t.DT.IsFloat():
+		if t.Ref != nil {
+			b, err := base(e.ctx, k*t.Win, len(tw))
+			if err != nil {
+				return wd, nil, err
+			}
+			if bytes.Equal(b.Data, tw) {
+				wd.Mode = ncNumcoreMCopy
+				break
+			}
+		}
+		wd.Mode, wd.Coder, payload = ncNumcoreMRaw, ncNumcoreCStore, tw
+		if z := ncNumcore_deflateBytes(tw); len(z) < len(tw) {
+			wd.Coder, payload = ncNumcoreCFlate, z
+		}
+	default:
+		cd, data := t.DT, tw
+		if t.DT == ncNumcoreDF32 && !e.o.NoNarrow {
+			if d, ok := ncNumcoreNarrow(tw, ncNumcoreDBF16); ok {
+				cd, data, wd.Narrow = ncNumcoreDBF16, d, ncNumcoreDBF16
+			} else if d, ok := ncNumcoreNarrow(tw, ncNumcoreDF16); ok {
+				cd, data, wd.Narrow = ncNumcoreDF16, d, ncNumcoreDF16
+			}
+		}
+		w := cd.Width()
+		n := len(data) / w
+		direct := func() {
+			wd.Mode = ncNumcoreMDirect
+			if p, ok := ncNumcoreFPEEncode(cd, data); ok && len(p) < len(data) {
+				wd.Coder, payload = ncNumcoreCFPE, p
+			} else {
+				wd.Coder, payload = ncNumcoreCStore, data
+			}
+		}
+		if t.Ref == nil {
+			direct()
+			break
+		}
+		b, err := base(e.ctx, k*t.Win, n)
+		if err != nil {
+			return wd, nil, err
+		}
+		pred, err := ncNumcore_predWindow(t.P, cd, b, k*t.Win, n, t.Cols)
+		if err != nil {
+			return wd, nil, err
+		}
+		if bytes.Equal(pred, data) {
+			wd.Mode = ncNumcoreMCopy
+			wd.Narrow = 0
+			if cd != t.DT { // copy windows carry no narrow marker: re-predict in the tensor dtype
+				p2, err := ncNumcore_predWindow(t.P, t.DT, b, k*t.Win, n, t.Cols)
+				if err != nil {
+					return wd, nil, err
+				}
+				if !bytes.Equal(p2, tw) {
+					wd.Mode, wd.Narrow = ncNumcoreMPred, cd
+					payload, wd.Coder = ncNumcoreNRCEncode(cd, ncNumcoreMakeResidual(ncNumcoreRKey, w, data, pred), pred), ncNumcoreCNRC
+				}
+			}
+			break
+		}
+		resid := ncNumcoreMakeResidual(ncNumcoreRKey, w, data, pred)
+		wd.Mode, wd.Coder, payload = ncNumcoreMPred, ncNumcoreCNRC, ncNumcoreNRCEncode(cd, resid, pred)
+		if float64(len(payload)) > 0.9*ncNumcore_fpeProxy(cd, data) { // weak prediction: compare with first-sight coding
+			keepP, keepC := payload, wd.Coder
+			direct()
+			if len(keepP) <= len(payload) {
+				wd.Mode, wd.Coder, payload = ncNumcoreMPred, keepC, keepP
+			}
+		}
+	}
+	wd.PLen = int64(len(payload))
+	if !dry && !e.o.NoVerify {
+		out := make([]byte, len(tw))
+		aux := func(ctx context.Context, idx int, name string, cols int) ([]float32, error) { return pl.qw, nil }
+		if err := ncNumcore_rebuild(e.ctx, t, &wd, k, payload, out, base, aux); err != nil || !bytes.Equal(out, tw) {
+			return wd, nil, ncNumcoreErrVerify7
+		}
+	}
+	return wd, payload, nil
+}
+
+// ErrVerify7 means a freshly coded window did not decode to its input (encoder defect guard).
+var ncNumcoreErrVerify7 = ncNumcore_errVerify{}
+
+type ncNumcore_errVerify struct{}
+
+func (ncNumcore_errVerify) Error() string { return "numcore: encoder self-check failed" }
+
+// Encode writes the ZN7 object of target to w in one sequential pass over the target with
+// memory bounded by O(Workers x window) plus one structured-fit tensor (EncOpts.MaxStruct).
+func ncNumcoreEncode(ctx context.Context, w io.Writer, target io.ReaderAt, lay *ncNumcoreLayout, bases []ncNumcoreBaseIn, cands func(ti int) []ncNumcoreCand, aux []ncNumcoreAuxIn, o ncNumcoreEncOpts) (*ncNumcoreEncStats, error) {
+	if err := lay.Validate(); err != nil {
+		return nil, err
+	}
+	if len(bases) > ncNumcoreMaxBases7 || len(aux) > ncNumcoreMaxBases7 {
+		return nil, ncNumcoreErrLayout7
+	}
+	if o.Window <= 0 {
+		o.Window = 1 << 16
+	}
+	if o.Window > 1<<24 {
+		o.Window = 1 << 24
+	}
+	if o.Workers < 1 {
+		o.Workers = 1
+	}
+	if o.MaxStruct <= 0 {
+		o.MaxStruct = 32 << 20
+	}
+	if o.SampleEl <= 0 {
+		o.SampleEl = 8192
+	}
+	if cands == nil {
+		cands = func(int) []ncNumcoreCand { return nil }
+	}
+	st := &ncNumcoreEncStats{Depth: make([]int, len(lay.T)), Picks: make([]int, len(lay.T))}
+	e := &ncNumcore_encoder{ctx: ctx, tgt: target, lay: lay, bases: bases, cands: cands, aux: aux, o: o, st: st, auxUsed: map[int]int{}}
+	for _, a := range aux {
+		im, err := ncQcoreParseIMatrix(a.Data)
+		if err != nil {
+			return nil, err
+		}
+		e.im = append(e.im, im)
+	}
+	obj := &ncNumcoreObject{FileLen: lay.Size, T: make([]ncNumcoreTDir, len(lay.T))}
+	for _, b := range bases {
+		obj.Bases = append(obj.Bases, ncNumcoreBaseInfo{b.ID, b.Len})
+	}
+	cw := &ncNumcore_countW{w: w}
+	if _, err := cw.Write([]byte(ncNumcore_zMagic)); err != nil {
+		return nil, err
+	}
+	// gap section (header and padding bytes), hashed in file position below
+	gl := lay.GapLen()
+	if gl > ncNumcoreMaxGap7 {
+		return nil, ncNumcoreErrLayout7
+	}
+	gaps, err := ncNumcoreRawSource{target, lay}.Gaps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	gp := ncNumcore_deflateBytes(gaps)
+	for si, b := range bases {
+		if b.GapDepth+1 > ncNumcoreMaxHops7 || b.Src == nil {
+			continue
+		}
+		bg, err := b.Src.Gaps(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if d, ok := ncNumcore_gapDelta(gaps, bg); ok && len(d) < len(gp) {
+			gp, obj.GapMode, obj.GapSlot, st.GapDepth = d, 1, uint8(si), b.GapDepth+1
+		}
+	}
+	obj.GapLen, obj.GapPLen, obj.GapSum = gl, int64(len(gp)), ncNumcore_sum16(gaps)
+	if _, err := cw.Write(gp); err != nil {
+		return nil, err
+	}
+	st.GapBytes = int64(len(gp))
+
+	// window pipeline: the dispatcher reads the target sequentially (and hashes it in file order),
+	// workers code windows, the writer emits payloads in order.
+	type job struct {
+		td  *ncNumcoreTDir
+		pl  *ncNumcore_tplan
+		k   int64
+		buf []byte
+		wd  ncNumcoreWDir
+		pay []byte
+		err error
+		wg  sync.WaitGroup
+	}
+	jobs := make(chan *job, o.Workers)
+	done := make(chan *job, 2*o.Workers)
+	ctx2, cancel := context.WithCancel(ctx)
+	defer cancel()
+	e.ctx = ctx2
+	var wg sync.WaitGroup
+	for i := 0; i < o.Workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				if ctx2.Err() != nil {
+					j.err = ctx2.Err()
+				} else {
+					j.wd, j.pay, j.err = e.codeWindow(j.td, j.pl, j.k, j.buf, false)
+				}
+				j.buf = nil
+				j.wg.Done()
+			}
+		}()
+	}
+	h := sha256.New()
+	var dispErr error
+	go func() {
+		defer close(done)
+		defer close(jobs)
+		gpos, prev := int64(0), int64(0)
+		for ti := range lay.T {
+			t := &lay.T[ti]
+			h.Write(gaps[gpos : gpos+t.Off-prev])
+			gpos += t.Off - prev
+			prev = t.Off + t.Len
+			var pl *ncNumcore_tplan
+			var err error
+			switch {
+			case t.DT.IsFloat():
+				pl, err = e.planFloat(ti, t)
+			case t.DT.IsQuant():
+				if pl, err = e.planOpaque(ti, t); err == nil && pl.ref == nil {
+					var qp *ncNumcore_tplan
+					if qp, err = e.planQuant(ti, t); err == nil && qp != nil {
+						pl = qp
+					}
+				}
+			default:
+				pl, err = e.planOpaque(ti, t)
+			}
+			if err != nil {
+				dispErr = err
+				cancel()
+				return
+			}
+			td := &obj.T[ti]
+			*td = ncNumcoreTDir{DT: t.DT, Off: t.Off, Len: t.Len, Cols: t.Cols, Win: pl.win, Ref: pl.ref, P: pl.p, Q: pl.q}
+			if td.Q != nil && td.Cols <= 0 {
+				el, _ := ncNumcore_qBlock(ncNumcore_mustQ(t.DT))
+				td.Cols = t.Len / int64(td.unit()) * int64(el)
+			}
+			st.Depth[ti] = pl.depth
+			nw, ok := ncNumcore_numWindows(t.Len, td.Win, td.unit())
+			if !ok {
+				dispErr = ncNumcoreErrLayout7
+				cancel()
+				return
+			}
+			td.W = make([]ncNumcoreWDir, nw)
+			for k := int64(0); k < nw; k++ {
+				off, n := td.winBytes(k)
+				buf := make([]byte, n)
+				if err := ncNumcore_readFull(target, buf, t.Off+off); err != nil {
+					dispErr = err
+					cancel()
+					return
+				}
+				h.Write(buf)
+				j := &job{td: td, pl: pl, k: k, buf: buf}
+				j.wg.Add(1)
+				select {
+				case jobs <- j:
+				case <-ctx2.Done():
+					return
+				}
+				done <- j
+			}
+		}
+		h.Write(gaps[gpos:])
+	}()
+	var first error
+	for j := range done {
+		j.wg.Wait()
+		if first != nil {
+			continue
+		}
+		if first = j.err; first == nil {
+			j.td.W[j.k] = j.wd
+			_, first = cw.Write(j.pay)
+			st.Windows++
+			st.ModeBytes[j.wd.Mode] += j.wd.PLen
+			st.ModeCount[j.wd.Mode]++
+			if j.wd.Narrow != 0 {
+				st.Narrowed++
+			}
+		}
+		if first != nil {
+			cancel()
+		}
+	}
+	wg.Wait()
+	if first == nil {
+		first = dispErr
+	}
+	if first == nil {
+		first = ctx.Err()
+	}
+	if first != nil {
+		return nil, first
+	}
+	// a tensor whose windows all fell back to raw/direct keeps no reference
+	for ti := range obj.T {
+		td := &obj.T[ti]
+		if td.Ref == nil || td.Q != nil {
+			continue
+		}
+		used := false
+		for k := range td.W {
+			if m := td.W[k].Mode; m == ncNumcoreMPred || m == ncNumcoreMCopy {
+				used = true
+				break
+			}
+		}
+		if !used {
+			td.Ref, td.P = nil, nil
+			st.Depth[ti] = 0
+		}
+	}
+	h.Sum(obj.FileSHA[:0])
+	obj.Aux = e.auxIDs
+	dir := obj.marshalDir()
+	dirOff := cw.n
+	var tr [ncNumcore_zTrailLen]byte
+	binary.LittleEndian.PutUint64(tr[0:], uint64(dirOff))
+	binary.LittleEndian.PutUint64(tr[8:], uint64(len(dir)))
+	copy(tr[16:], ncNumcore_zTrailer)
+	if _, err := cw.Write(append(dir, tr[:]...)); err != nil {
+		return nil, err
+	}
+	st.DirBytes = int64(len(dir)) + ncNumcore_zTrailLen + 4
+	st.Bytes = cw.n
+	return st, nil
+}
+
+type ncNumcore_countW struct {
+	w io.Writer
+	n int64
+}
+
+func (c *ncNumcore_countW) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	return n, err
+}
+
+// sums accumulates least-squares moments over finite pairs.
+type ncNumcore_sums struct{ n, sb, st, sbb, sbt float64 }
+
+func (s *ncNumcore_sums) add(b, t float64) {
+	if !ncNumcoreFinite(b) || !ncNumcoreFinite(t) {
+		return
+	}
+	s.n++
+	s.sb += b
+	s.st += t
+	s.sbb += b * b
+	s.sbt += b * t
+}
+
+// solve returns (a, c) minimizing sum (t - a*b - c)^2 subject to the mode.
+func (s *ncNumcore_sums) solve(mode int) (a, c float64) {
+	if s.n == 0 {
+		return 1, 0
+	}
+	switch mode {
+	case 1: // scale only
+		if s.sbb == 0 {
+			return 1, 0
+		}
+		return s.sbt / s.sbb, 0
+	case 2: // offset only
+		return 1, (s.st - s.sb) / s.n
+	}
+	den := s.n*s.sbb - s.sb*s.sb
+	if den <= 1e-300 {
+		return 1, (s.st - s.sb) / s.n
+	}
+	a = (s.n*s.sbt - s.sb*s.st) / den
+	c = (s.st - a*s.sb) / s.n
+	return
+}
+
+// LowRankFit returns a rank-r approximation D ~ U V^T of the float delta (target - base) using
+// randomized subspace iteration; factors are rounded to prec. rows*cols must fit memory.
+func ncNumcoreLowRankFit(tdt ncNumcoreDType, shape []int64, r int, prec uint8, base ncNumcoreBase, target []byte, iters int, seed int64) *ncNumcoreParams {
+	w := tdt.Width()
+	n := len(target) / w
+	cols := int(shape[len(shape)-1])
+	rows := n / cols
+	D := make([]float32, n)
+	for i := 0; i < n; i++ {
+		b, t := base.at(i), ncNumcoreToF64(tdt, ncNumcoreLE(target, w, i))
+		d := t - b
+		if !ncNumcoreFinite(d) {
+			d = 0
+		}
+		D[i] = float32(d)
+	}
+	if r > rows {
+		r = rows
+	}
+	if r > cols {
+		r = cols
+	}
+	U, V := ncNumcore_svdTrunc(D, rows, cols, r, iters, seed)
+	p := &ncNumcoreParams{Kind: ncNumcoreKLow, Res: ncNumcoreRKey, NB: 1, Rank: uint16(r), Prec: prec, Coef: make([]float32, (rows+cols)*r)}
+	for i := 0; i < rows*r; i++ {
+		p.Coef[i] = ncNumcore_roundCoef(U[i], prec)
+	}
+	for i := 0; i < cols*r; i++ {
+		p.Coef[rows*r+i] = ncNumcore_roundCoef(V[i], prec)
+	}
+	return p
+}
+
+// svdTrunc: D (rows x cols) ~ U V^T with U (rows x r, includes sqrt singular values), V (cols x r).
+func ncNumcore_svdTrunc(D []float32, rows, cols, r, iters int, seed int64) (U, V []float64) {
+	rng := randX.New(randX.NewSource(seed))
+	k := r + 4
+	if k > cols {
+		k = cols
+	}
+	if k > rows {
+		k = rows
+	}
+	// Y = D * Omega (rows x k)
+	Q := make([]float64, rows*k)
+	om := make([]float64, cols*k)
+	for i := range om {
+		om[i] = rng.NormFloat64()
+	}
+	mulD := func(Xc []float64, kk int, out []float64) { // out(rows x kk) = D * Xc(cols x kk)
+		for i := range out {
+			out[i] = 0
+		}
+		for i := 0; i < rows; i++ {
+			row := D[i*cols : (i+1)*cols]
+			o := out[i*kk : (i+1)*kk]
+			for j, dv := range row {
+				if dv == 0 {
+					continue
+				}
+				d := float64(dv)
+				x := Xc[j*kk : (j+1)*kk]
+				for c := 0; c < kk; c++ {
+					o[c] += d * x[c]
+				}
+			}
+		}
+	}
+	mulDT := func(Xr []float64, kk int, out []float64) { // out(cols x kk) = D^T * Xr(rows x kk)
+		for i := range out {
+			out[i] = 0
+		}
+		for i := 0; i < rows; i++ {
+			row := D[i*cols : (i+1)*cols]
+			x := Xr[i*kk : (i+1)*kk]
+			for j, dv := range row {
+				if dv == 0 {
+					continue
+				}
+				d := float64(dv)
+				o := out[j*kk : (j+1)*kk]
+				for c := 0; c < kk; c++ {
+					o[c] += d * x[c]
+				}
+			}
+		}
+	}
+	mulD(om, k, Q)
+	ncNumcore_orth(Q, rows, k)
+	W := make([]float64, cols*k)
+	for it := 0; it < iters; it++ {
+		mulDT(Q, k, W)
+		ncNumcore_orth(W, cols, k)
+		mulD(W, k, Q)
+		ncNumcore_orth(Q, rows, k)
+	}
+	// B = Q^T D  (k x cols) = (D^T Q)^T ; Z = D^T Q (cols x k)
+	Z := make([]float64, cols*k)
+	mulDT(Q, k, Z)
+	// small SVD of B via eigen-decomposition of Z^T Z (k x k): B B^T = Z^T Z
+	G := make([]float64, k*k)
+	for j := 0; j < cols; j++ {
+		z := Z[j*k : (j+1)*k]
+		for a := 0; a < k; a++ {
+			for b := 0; b < k; b++ {
+				G[a*k+b] += z[a] * z[b]
+			}
+		}
+	}
+	ev, evec := ncNumcore_jacobiEig(G, k) // B B^T = Ub S^2 Ub^T
+	idx := make([]int, k)
+	for i := range idx {
+		idx[i] = i
+	}
+	for i := 0; i < k; i++ {
+		for j := i + 1; j < k; j++ {
+			if ev[idx[j]] > ev[idx[i]] {
+				idx[i], idx[j] = idx[j], idx[i]
+			}
+		}
+	}
+	U = make([]float64, rows*r)
+	V = make([]float64, cols*r)
+	for c := 0; c < r; c++ {
+		e := idx[c]
+		s := math.Sqrt(math.Max(ev[e], 0))
+		if s == 0 {
+			continue
+		}
+		sq := math.Sqrt(s)
+		// u = Q * Ub[:,e];  v = B^T Ub[:,e] / s = Z * Ub[:,e] / s
+		for i := 0; i < rows; i++ {
+			var acc float64
+			for a := 0; a < k; a++ {
+				acc += Q[i*k+a] * evec[a*k+e]
+			}
+			U[i*r+c] = acc * sq
+		}
+		for j := 0; j < cols; j++ {
+			var acc float64
+			for a := 0; a < k; a++ {
+				acc += Z[j*k+a] * evec[a*k+e]
+			}
+			V[j*r+c] = acc / s * sq
+		}
+	}
+	return
+}
+
+// orth orthonormalizes the k columns of X (m x k, row-major) by modified Gram-Schmidt.
+func ncNumcore_orth(X []float64, m, k int) {
+	for c := 0; c < k; c++ {
+		for p := 0; p < c; p++ {
+			var d float64
+			for i := 0; i < m; i++ {
+				d += X[i*k+c] * X[i*k+p]
+			}
+			for i := 0; i < m; i++ {
+				X[i*k+c] -= d * X[i*k+p]
+			}
+		}
+		var nn float64
+		for i := 0; i < m; i++ {
+			nn += X[i*k+c] * X[i*k+c]
+		}
+		nn = math.Sqrt(nn)
+		if nn < 1e-30 {
+			for i := 0; i < m; i++ {
+				X[i*k+c] = 0
+			}
+			continue
+		}
+		for i := 0; i < m; i++ {
+			X[i*k+c] /= nn
+		}
+	}
+}
+
+// jacobiEig diagonalizes the symmetric k x k matrix A; returns eigenvalues and column eigenvectors.
+func ncNumcore_jacobiEig(A []float64, k int) ([]float64, []float64) {
+	a := append([]float64(nil), A...)
+	v := make([]float64, k*k)
+	for i := 0; i < k; i++ {
+		v[i*k+i] = 1
+	}
+	for sweep := 0; sweep < 60; sweep++ {
+		off := 0.0
+		for i := 0; i < k; i++ {
+			for j := i + 1; j < k; j++ {
+				off += a[i*k+j] * a[i*k+j]
+			}
+		}
+		if off < 1e-24 {
+			break
+		}
+		for p := 0; p < k; p++ {
+			for q := p + 1; q < k; q++ {
+				if math.Abs(a[p*k+q]) < 1e-300 {
+					continue
+				}
+				th := (a[q*k+q] - a[p*k+p]) / (2 * a[p*k+q])
+				t := 1 / (math.Abs(th) + math.Sqrt(th*th+1))
+				if th < 0 {
+					t = -t
+				}
+				c := 1 / math.Sqrt(t*t+1)
+				s := t * c
+				for i := 0; i < k; i++ {
+					aip, aiq := a[i*k+p], a[i*k+q]
+					a[i*k+p], a[i*k+q] = c*aip-s*aiq, s*aip+c*aiq
+				}
+				for i := 0; i < k; i++ {
+					api, aqi := a[p*k+i], a[q*k+i]
+					a[p*k+i], a[q*k+i] = c*api-s*aqi, s*api+c*aqi
+				}
+				for i := 0; i < k; i++ {
+					vip, viq := v[i*k+p], v[i*k+q]
+					v[i*k+p], v[i*k+q] = c*vip-s*viq, s*vip+c*viq
+				}
+			}
+		}
+	}
+	ev := make([]float64, k)
+	for i := range ev {
+		ev[i] = a[i*k+i]
+	}
+	return ev, v
+}
+
+// groupCost is the sum of residual bit lengths of predicting target elements [lo,hi) (stride s)
+// with pred = a*base + c: a cheap monotone proxy for coded size.
+func ncNumcore_groupCost(tdt ncNumcoreDType, base ncNumcoreBase, target []byte, lo, hi, stride int, a, c float32) int {
+	w := tdt.Width()
+	cost := 0
+	for i := lo; i < hi; i += stride {
+		b := base.at(i)
+		var pv uint32
+		if x := b; ncNumcoreFinite(x) {
+			y := float64(float64(a)*x) + float64(c)
+			if ncNumcoreFinite(y) {
+				pv = ncNumcoreFromF64(tdt, y)
+			} else {
+				pv = ncNumcore_idPred(tdt, base, i)
+			}
+		} else {
+			pv = ncNumcore_idPred(tdt, base, i)
+		}
+		cost += ncNumcoreBitlen(ncNumcoreZigzag((ncNumcoreKey(ncNumcoreLE(target, w, i), w)-ncNumcoreKey(pv, w))&ncNumcoreMask(w), w))
+	}
+	return cost
+}
+
+// FitAffineRobust chooses per group among identity, least-squares, scale-only and offset-only
+// coefficients by the residual bit-length proxy instead of squared error (squared error is
+// dominated by the few large movers and loses to identity on the typical element).
+func ncNumcoreFitAffineRobust(tdt ncNumcoreDType, shape []int64, g ncNumcoreGran, block int, prec uint8, base ncNumcoreBase, target []byte) *ncNumcoreParams {
+	w := tdt.Width()
+	n := len(target) / w
+	rows, cols := 1, n
+	if len(shape) > 0 && shape[len(shape)-1] > 0 {
+		cols = int(shape[len(shape)-1])
+		rows = n / cols
+	}
+	p := &ncNumcoreParams{Kind: ncNumcoreKAff, Res: ncNumcoreRKey, Gran: g, Block: uint32(block), NB: 1, Prec: prec}
+	blk := ncNumcore_affBlock(p, rows, cols, n)
+	nb := (n + blk - 1) / blk
+	p.Coef = make([]float32, 2*nb)
+	for k := 0; k < nb; k++ {
+		lo, hi := k*blk, (k+1)*blk
+		if hi > n {
+			hi = n
+		}
+		stride := 1
+		if hi-lo > 1<<15 {
+			stride = (hi - lo) >> 15
+		}
+		var s ncNumcore_sums
+		for i := lo; i < hi; i += stride {
+			s.add(base.at(i), ncNumcoreToF64(tdt, ncNumcoreLE(target, w, i)))
+		}
+		type cand struct{ a, c float32 }
+		a0, c0 := s.solve(0)
+		as, _ := s.solve(1)
+		_, co := s.solve(2)
+		cands := []cand{{1, 0}, {ncNumcore_roundCoef(a0, prec), ncNumcore_roundCoef(c0, prec)}, {ncNumcore_roundCoef(as, prec), 0}, {1, ncNumcore_roundCoef(co, prec)}}
+		best, bc := cands[0], ncNumcore_groupCost(tdt, base, target, lo, hi, stride, 1, 0)
+		for _, c := range cands[1:] {
+			if cc := ncNumcore_groupCost(tdt, base, target, lo, hi, stride, c.a, c.c); cc < bc {
+				best, bc = c, cc
+			}
+		}
+		p.Coef[2*k], p.Coef[2*k+1] = best.a, best.c
+	}
+	return p
+}
+
+func ncNumcore_fpeSplit(d ncNumcoreDType) (sh uint, eb uint, ok bool) {
+	switch d {
+	case ncNumcoreDF32:
+		return 23, 8, true
+	case ncNumcoreDBF16:
+		return 7, 8, true
+	case ncNumcoreDF16:
+		return 10, 5, true
+	}
+	return 0, 0, false
+}
+
+func ncNumcoreFPEEncode(d ncNumcoreDType, words []byte) ([]byte, bool) {
+	sh, eb, ok := ncNumcore_fpeSplit(d)
+	if !ok {
+		return nil, false
+	}
+	w := d.Width()
+	n := len(words) / w
+	cnt := make([]uint32, 1<<eb)
+	syms := make([]uint8, n)
+	rawN := uint(8*w) - eb
+	raw := make([]byte, 0, n*int(rawN)/8+8)
+	var acc uint64
+	var nacc uint
+	lowMask := uint32(1)<<sh - 1
+	for i := 0; i < n; i++ {
+		v := ncNumcoreLE(words, w, i)
+		e := (v >> sh) & (1<<eb - 1)
+		syms[i] = uint8(e)
+		cnt[e]++
+		r := v&lowMask | (v>>(sh+eb))<<sh
+		acc |= uint64(r) << nacc
+		nacc += rawN
+		for nacc >= 8 {
+			raw = append(raw, byte(acc))
+			acc >>= 8
+			nacc -= 8
+		}
+	}
+	if nacc > 0 {
+		raw = append(raw, byte(acc))
+	}
+	f := ncNumcore_normFreqs(cnt)
+	tab, err := ncNumcore_newTab(f)
+	if err != nil {
+		return nil, false
+	}
+	out := ncNumcore_appendFreqs(nil, f)
+	out = binary.AppendUvarint(out, uint64(len(raw)))
+	enc := ncNumcore_newRansEnc()
+	for i := n - 1; i >= 0; i-- {
+		s := int(syms[i])
+		enc.put(i&1, uint32(tab.freq[s]), uint32(tab.start[s]))
+	}
+	out = append(out, enc.finish()...)
+	return append(out, raw...), true
+}
+
+func ncNumcoreFPEDecode(d ncNumcoreDType, payload []byte, n int) ([]byte, error) {
+	sh, eb, ok := ncNumcore_fpeSplit(d)
+	if !ok {
+		return nil, ncNumcoreErrCorrupt
+	}
+	w := d.Width()
+	f, k, err := ncNumcore_readFreqs(payload, 1<<eb)
+	if err != nil {
+		return nil, err
+	}
+	tab, err := ncNumcore_newTab(f)
+	if err != nil {
+		return nil, err
+	}
+	pos := k
+	rl, k2 := binary.Uvarint(payload[pos:])
+	rawN := uint(8*w) - eb
+	if k2 <= 0 || rl != (uint64(n)*uint64(rawN)+7)/8 {
+		return nil, ncNumcoreErrCorrupt
+	}
+	pos += k2
+	dec, k3, err := ncNumcore_newRansDec(payload[pos:])
+	if err != nil {
+		return nil, err
+	}
+	pos += k3
+	if uint64(len(payload)-pos) != rl {
+		return nil, ncNumcoreErrCorrupt
+	}
+	raw := payload[pos:]
+	out := make([]byte, n*w)
+	lowMask := uint32(1)<<sh - 1
+	var bp uint64
+	for i := 0; i < n; i++ {
+		e, err := dec.get(i&1, tab)
+		if err != nil {
+			return nil, err
+		}
+		byteIdx := int(bp >> 3)
+		var v uint64
+		if byteIdx+8 <= len(raw) {
+			v = binary.LittleEndian.Uint64(raw[byteIdx:])
+		} else {
+			for j := 0; byteIdx+j < len(raw) && j < 8; j++ {
+				v |= uint64(raw[byteIdx+j]) << (8 * uint(j))
+			}
+		}
+		r := uint32(v>>uint(bp&7)) & (1<<rawN - 1)
+		bp += uint64(rawN)
+		word := r&lowMask | uint32(e)<<sh | (r>>sh)<<(sh+eb)
+		ncNumcorePutLE(out, w, i, word)
+	}
+	return out, nil
+}
+
+func ncNumcore_expShiftMask(d ncNumcoreDType) (uint, int) {
+	switch d {
+	case ncNumcoreDF32:
+		return 23, 0xff
+	case ncNumcoreDBF16:
+		return 7, 0xff
+	}
+	return 10, 0x1f
+}
+
+type ncNumcore_nrcCfg struct {
+	shift bool
+	nc    int // exponent contexts: 1 or 4
+}
+
+func (c ncNumcore_nrcCfg) byte() byte {
+	b := byte(0)
+	if c.shift {
+		b = 1
+	}
+	if c.nc == 4 {
+		b |= 2
+	}
+	return b
+}
+
+func ncNumcore_cfgFromByte(b byte) (ncNumcore_nrcCfg, bool) {
+	if b&^3 != 0 {
+		return ncNumcore_nrcCfg{}, false
+	}
+	c := ncNumcore_nrcCfg{shift: b&1 != 0, nc: 1}
+	if b&2 != 0 {
+		c.nc = 4
+	}
+	return c, true
+}
+
+const ncNumcoreNRCSyms = 96
+
+// exps computes per-element relative exponents (0..63) and the base used.
+func ncNumcoreExps(d ncNumcoreDType, pred []byte) ([]uint8, int) {
+	w := d.Width()
+	n := len(pred) / w
+	sh, mk := ncNumcore_expShiftMask(d)
+	raw := make([]uint8, n)
+	emax := 0
+	for i := 0; i < n; i++ {
+		var v uint32
+		switch w {
+		case 4:
+			v = binary.LittleEndian.Uint32(pred[4*i:])
+		case 2:
+			v = uint32(binary.LittleEndian.Uint16(pred[2*i:]))
+		default:
+			v = uint32(pred[i])
+		}
+		x := int(v>>sh) & mk
+		raw[i] = uint8(x)
+		if x > emax {
+			emax = x
+		}
+	}
+	eb := emax - 63
+	if eb < 0 {
+		eb = 0
+	}
+	for i := range raw {
+		v := int(raw[i]) - eb
+		if v < 0 {
+			v = 0
+		}
+		raw[i] = uint8(v)
+	}
+	return raw, eb
+}
+
+func ncNumcore_nrcCtx(c ncNumcore_nrcCfg, er uint8) int {
+	if c.nc == 4 {
+		return int(er >> 4)
+	}
+	return 0
+}
+
+func ncNumcore_nrcSym(c ncNumcore_nrcCfg, s int, er uint8) int {
+	if c.shift {
+		return s + int(er)
+	}
+	return s
+}
+
+// nrcEstimate predicts the payload size of a configuration from histograms (no stream built).
+func ncNumcore_nrcEstimate(c ncNumcore_nrcCfg, w int, resid []byte, er []uint8, n int) float64 {
+	cnt := make([]int, c.nc*ncNumcoreNRCSyms)
+	tot := make([]int, c.nc)
+	raw := 0
+	for i := 0; i < n; i++ {
+		r := ncNumcoreLE(resid, w, i)
+		s := ncNumcoreBitlen(r)
+		x := ncNumcore_nrcCtx(c, er[i])
+		cnt[x*ncNumcoreNRCSyms+ncNumcore_nrcSym(c, s, er[i])]++
+		tot[x]++
+		if s > 1 {
+			raw += s - 1
+		}
+	}
+	bitsTotal := float64(raw)
+	tab := 0
+	for x := 0; x < c.nc; x++ {
+		for s := 0; s < ncNumcoreNRCSyms; s++ {
+			if v := cnt[x*ncNumcoreNRCSyms+s]; v > 0 {
+				bitsTotal -= float64(v) * math.Log2(float64(v)/float64(tot[x]))
+				tab += 3
+			}
+		}
+	}
+	return bitsTotal/8 + float64(tab)
+}
+
+// NRCEncode codes residual words against prediction exponents with the best configuration.
+func ncNumcoreNRCEncode(d ncNumcoreDType, resid, pred []byte) []byte {
+	w := d.Width()
+	n := len(resid) / w
+	er, eb := ncNumcoreExps(d, pred)
+	best, bestE := ncNumcore_nrcCfg{true, 1}, math.Inf(1)
+	for _, c := range []ncNumcore_nrcCfg{{true, 1}, {false, 1}, {true, 4}, {false, 4}} {
+		if e := ncNumcore_nrcEstimate(c, w, resid, er, n); e < bestE {
+			best, bestE = c, e
+		}
+	}
+	return ncNumcore_nrcEncodeCfg(best, w, resid, er, eb, n)
+}
+
+func ncNumcore_nrcEncodeCfg(c ncNumcore_nrcCfg, w int, resid []byte, er []uint8, eb, n int) []byte {
+	cnt := make([][]uint32, c.nc)
+	for i := range cnt {
+		cnt[i] = make([]uint32, ncNumcoreNRCSyms)
+	}
+	var rawBits int
+	syms := make([]uint8, n)
+	ctxAt := make([]uint8, n)
+	for i := 0; i < n; i++ {
+		r := ncNumcoreLE(resid, w, i)
+		s := ncNumcoreBitlen(r)
+		sy := ncNumcore_nrcSym(c, s, er[i])
+		syms[i] = uint8(sy)
+		x := ncNumcore_nrcCtx(c, er[i])
+		ctxAt[i] = uint8(x)
+		cnt[x][sy]++
+		if s > 1 {
+			rawBits += s - 1
+		}
+	}
+	tabs := make([]*ncNumcore_ransTab, c.nc)
+	hdr := []byte{c.byte(), byte(eb)}
+	for i := range cnt {
+		f := ncNumcore_normFreqs(cnt[i])
+		hdr = ncNumcore_appendFreqs(hdr, f)
+		tabs[i], _ = ncNumcore_newTab(f)
+	}
+	raw := make([]byte, 0, (rawBits+7)/8)
+	var acc uint64
+	var nacc uint
+	for i := 0; i < n; i++ {
+		r := ncNumcoreLE(resid, w, i)
+		if s := ncNumcoreBitlen(r); s > 1 {
+			nb := uint(s - 1)
+			acc |= (uint64(r) & (1<<nb - 1)) << nacc
+			nacc += nb
+			for nacc >= 8 {
+				raw = append(raw, byte(acc))
+				acc >>= 8
+				nacc -= 8
+			}
+		}
+	}
+	if nacc > 0 {
+		raw = append(raw, byte(acc))
+	}
+	enc := ncNumcore_newRansEnc()
+	for i := n - 1; i >= 0; i-- {
+		t := tabs[ctxAt[i]]
+		sy := int(syms[i])
+		enc.put(i&1, uint32(t.freq[sy]), uint32(t.start[sy]))
+	}
+	out := hdr
+	out = binary.AppendUvarint(out, uint64(len(raw)))
+	out = append(out, enc.finish()...)
+	return append(out, raw...)
+}
+
+// NRCDecode inverts NRCEncode given the same prediction; n elements of width w.
+func ncNumcoreNRCDecode(d ncNumcoreDType, payload, pred []byte, n int) ([]byte, error) {
+	w := d.Width()
+	if len(payload) < 2 || len(pred) != n*w {
+		return nil, ncNumcoreErrCorrupt
+	}
+	c, ok := ncNumcore_cfgFromByte(payload[0])
+	if !ok {
+		return nil, ncNumcoreErrCorrupt
+	}
+	eb := int(payload[1])
+	pos := 2
+	// flat decode tables: entry = freq<<19 | bias<<7 | sym  (bias = slot - start)
+	flat := make([][ncNumcore_ransM]uint32, c.nc)
+	for i := 0; i < c.nc; i++ {
+		f, k, err := ncNumcore_readFreqs(payload[pos:], ncNumcoreNRCSyms)
+		if err != nil {
+			return nil, err
+		}
+		pos += k
+		t, err := ncNumcore_newTab(f)
+		if err != nil {
+			return nil, err
+		}
+		for slot := 0; slot < ncNumcore_ransM; slot++ {
+			sy := uint32(t.dec[slot])
+			flat[i][slot] = uint32(t.freq[sy])<<19 | (uint32(slot)-uint32(t.start[sy]))<<7 | sy
+		}
+	}
+	rl, k := binary.Uvarint(payload[pos:])
+	if k <= 0 || rl > uint64(n)*uint64(8*w) {
+		return nil, ncNumcoreErrCorrupt
+	}
+	pos += k
+	dec, k2, err := ncNumcore_newRansDec(payload[pos:])
+	if err != nil {
+		return nil, err
+	}
+	pos += k2
+	if uint64(len(payload)-pos) != rl {
+		return nil, ncNumcoreErrCorrupt
+	}
+	raw := payload[pos:]
+	nbits := uint64(len(raw)) * 8
+	out := make([]byte, n*w)
+	sh, mk := ncNumcore_expShiftMask(d)
+	x0, x1 := dec.x[0], dec.x[1]
+	b0, b1 := dec.buf[0], dec.buf[1]
+	p0, p1 := dec.pos[0], dec.pos[1]
+	var bp uint64
+	for i := 0; i < n; i++ {
+		var pv uint32
+		switch w {
+		case 4:
+			pv = binary.LittleEndian.Uint32(pred[4*i:])
+		case 2:
+			pv = uint32(binary.LittleEndian.Uint16(pred[2*i:]))
+		default:
+			pv = uint32(pred[i])
+		}
+		er := int(pv>>sh)&mk - eb
+		if er < 0 {
+			er = 0
+		} else if er > 63 {
+			er = 63 // only reachable with a corrupt base-exponent byte
+		}
+		tab := &flat[0]
+		if c.nc == 4 {
+			tab = &flat[er>>4]
+		}
+		var e uint32
+		if i&1 == 0 {
+			e = tab[x0&(ncNumcore_ransM-1)]
+			x0 = (e>>19)*(x0>>ncNumcore_ransBits) + (e>>7)&0xfff
+			for x0 < ncNumcore_ransL {
+				if p0 >= len(b0) {
+					return nil, ncNumcoreErrCorrupt
+				}
+				x0 = x0<<8 | uint32(b0[p0])
+				p0++
+			}
+		} else {
+			e = tab[x1&(ncNumcore_ransM-1)]
+			x1 = (e>>19)*(x1>>ncNumcore_ransBits) + (e>>7)&0xfff
+			for x1 < ncNumcore_ransL {
+				if p1 >= len(b1) {
+					return nil, ncNumcoreErrCorrupt
+				}
+				x1 = x1<<8 | uint32(b1[p1])
+				p1++
+			}
+		}
+		s := int(e & 127)
+		if c.shift {
+			s -= er
+		}
+		if s < 0 || s > 8*w {
+			return nil, ncNumcoreErrCorrupt
+		}
+		var r uint32
+		if s == 1 {
+			r = 1
+		} else if s > 1 {
+			nb := uint(s - 1)
+			if bp+uint64(nb) > nbits {
+				return nil, ncNumcoreErrCorrupt
+			}
+			var v uint64
+			byteIdx := int(bp >> 3)
+			if byteIdx+8 <= len(raw) {
+				v = binary.LittleEndian.Uint64(raw[byteIdx:])
+			} else {
+				for j := 0; byteIdx+j < len(raw) && j < 8; j++ {
+					v |= uint64(raw[byteIdx+j]) << (8 * uint(j))
+				}
+			}
+			v >>= uint(bp & 7)
+			r = 1<<nb | uint32(v&(1<<nb-1))
+			bp += uint64(nb)
+		}
+		switch w {
+		case 4:
+			binary.LittleEndian.PutUint32(out[4*i:], r)
+		case 2:
+			binary.LittleEndian.PutUint16(out[2*i:], uint16(r))
+		default:
+			out[i] = byte(r)
+		}
+	}
+	return out, nil
+}
+
+func ncNumcoreLE(b []byte, w int, i int) uint32 {
+	switch w {
+	case 4:
+		return binary.LittleEndian.Uint32(b[4*i:])
+	case 2:
+		return uint32(binary.LittleEndian.Uint16(b[2*i:]))
+	}
+	return uint32(b[i])
+}
+
+func ncNumcorePutLE(b []byte, w int, i int, v uint32) {
+	switch w {
+	case 4:
+		binary.LittleEndian.PutUint32(b[4*i:], v)
+	case 2:
+		binary.LittleEndian.PutUint16(b[2*i:], uint16(v))
+	default:
+		b[i] = byte(v)
+	}
+}
+
+func ncNumcoreMask(w int) uint32 {
+	if w >= 4 {
+		return 0xFFFFFFFF
+	}
+	return 1<<(8*uint(w)) - 1
+}
+
+// key maps a bit pattern to an unsigned integer that is monotone in the float order (negative
+// values below positive ones); it is a bijection on w-byte patterns.
+func ncNumcoreKey(bits uint32, w int) uint32 {
+	s := uint32(1) << (8*uint(w) - 1)
+	if bits&s != 0 {
+		return (^bits) & ncNumcoreMask(w)
+	}
+	return bits | s
+}
+
+func ncNumcoreUnkey(k uint32, w int) uint32 {
+	s := uint32(1) << (8*uint(w) - 1)
+	if k&s != 0 {
+		return k &^ s
+	}
+	return (^k) & ncNumcoreMask(w)
+}
+
+func ncNumcoreZigzag(d uint32, w int) uint32 { // d is a w-byte two's complement difference
+	if w >= 4 {
+		x := int32(d)
+		return uint32(x<<1) ^ uint32(x>>31)
+	}
+	x := int32(d<<(32-8*uint(w))) >> (32 - 8*uint(w)) // sign-extend
+	return (uint32(x<<1) ^ uint32(x>>31)) & ncNumcoreMask(w)
+}
+
+func ncNumcoreUnzigzag(z uint32, w int) uint32 {
+	x := int32(z>>1) ^ -int32(z&1)
+	return uint32(x) & ncNumcoreMask(w)
+}
+
+// f16ToF64 / bf16 conversions (exact).
+func ncNumcoreF16ToF64(h uint32) float64 {
+	s := (h >> 15) & 1
+	e := (h >> 10) & 0x1f
+	m := h & 0x3ff
+	var v float64
+	switch {
+	case e == 0:
+		v = math.Ldexp(float64(m), -24)
+	case e == 31:
+		if m == 0 {
+			v = math.Inf(1)
+		} else {
+			v = math.NaN()
+		}
+	default:
+		v = math.Ldexp(float64(m|0x400), int(e)-25)
+	}
+	if s != 0 {
+		v = -v
+	}
+	return v
+}
+
+// f64ToF16 rounds to nearest even; non-finite or overflowing values map to inf/NaN patterns.
+func ncNumcoreF64ToF16(x float64) uint32 {
+	if x != x {
+		return 0x7e00
+	}
+	var s uint32
+	if math.Signbit(x) {
+		s, x = 0x8000, -x
+	}
+	if math.IsInf(x, 0) || x >= 65520 {
+		return s | 0x7c00
+	}
+	if x < math.Ldexp(1, -24)/2 || x == 0 {
+		return s
+	}
+	fr, ex := math.Frexp(x) // x = fr * 2^ex, fr in [0.5,1)
+	e := ex + 14            // biased exponent for a normal number
+	if e <= 0 {             // subnormal: scale to units of 2^-24
+		m := ncNumcore_roundEven(math.Ldexp(x, 24))
+		return s | uint32(m)
+	}
+	m := ncNumcore_roundEven(math.Ldexp(fr, 11)) // 1024..2048
+	if m == 2048 {
+		m, e = 1024, e+1
+	}
+	if e >= 31 {
+		return s | 0x7c00
+	}
+	return s | uint32(e)<<10 | uint32(m-1024)
+}
+
+func ncNumcore_roundEven(x float64) uint64 { return uint64(math.RoundToEven(x)) }
+
+func ncNumcoreF64ToBF16(x float64) uint32 {
+	f := float32(x)
+	b := math.Float32bits(f)
+	if f != f {
+		return 0x7fc0
+	}
+	r := b + 0x7fff + ((b >> 16) & 1)
+	return r >> 16
+}
+
+// toF64 decodes bits of dtype to float64 (exact).
+func ncNumcoreToF64(d ncNumcoreDType, bits uint32) float64 {
+	switch d {
+	case ncNumcoreDF32:
+		return float64(math.Float32frombits(bits))
+	case ncNumcoreDBF16:
+		return float64(math.Float32frombits(bits << 16))
+	}
+	return ncNumcoreF16ToF64(bits)
+}
+
+// fromF64 rounds a float64 prediction to dtype bits.
+func ncNumcoreFromF64(d ncNumcoreDType, x float64) uint32 {
+	switch d {
+	case ncNumcoreDF32:
+		return math.Float32bits(float32(x))
+	case ncNumcoreDBF16:
+		return ncNumcoreF64ToBF16(x)
+	}
+	return ncNumcoreF64ToF16(x)
+}
+
+func ncNumcoreFinite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
+
+// Narrow converts an F32 payload to F16 or BF16 words when every element round-trips bit
+// exactly (widen(narrow(x)) == x); ok=false otherwise. NaN payloads that do not survive make a
+// tensor non-narrowable rather than approximate.
+func ncNumcoreNarrow(src []byte, to ncNumcoreDType) (dst []byte, ok bool) {
+	n := len(src) / 4
+	dst = make([]byte, 2*n)
+	for i := 0; i < n; i++ {
+		b := binary.LittleEndian.Uint32(src[4*i:])
+		var h uint32
+		if to == ncNumcoreDBF16 {
+			if b&0xffff != 0 {
+				return nil, false
+			}
+			h = b >> 16
+		} else {
+			x := math.Float32frombits(b)
+			h = ncNumcoreF64ToF16(float64(x))
+			if math.Float32bits(float32(ncNumcoreF16ToF64(h))) != b {
+				return nil, false
+			}
+		}
+		binary.LittleEndian.PutUint16(dst[2*i:], uint16(h))
+	}
+	return dst, true
+}
+
+// Widen is the exact inverse of Narrow.
+func ncNumcoreWiden(src []byte, from ncNumcoreDType) []byte {
+	n := len(src) / 2
+	dst := make([]byte, 4*n)
+	for i := 0; i < n; i++ {
+		h := uint32(binary.LittleEndian.Uint16(src[2*i:]))
+		var b uint32
+		if from == ncNumcoreDBF16 {
+			b = h << 16
+		} else {
+			b = math.Float32bits(float32(ncNumcoreF16ToF64(h)))
+		}
+		binary.LittleEndian.PutUint32(dst[4*i:], b)
+	}
+	return dst
+}
+
+// f32ToF16 rounds float32 bits to nearest-even half precision using integer arithmetic only.
+func ncNumcoreF32ToF16(b uint32) uint32 {
+	sign := (b >> 16) & 0x8000
+	exp := int(b>>23) & 0xff
+	man := b & 0x7fffff
+	if exp == 255 {
+		if man == 0 {
+			return sign | 0x7c00
+		}
+		return sign | 0x7e00 | man>>13
+	}
+	e := exp - 127 + 15
+	if e >= 31 {
+		return sign | 0x7c00
+	}
+	if e <= 0 {
+		if e < -10 {
+			return sign
+		}
+		man |= 0x800000
+		shift := uint(14 - e)
+		half := man >> shift
+		rem := man & (1<<shift - 1)
+		mid := uint32(1) << (shift - 1)
+		if rem > mid || (rem == mid && half&1 == 1) {
+			half++
+		}
+		return sign | half
+	}
+	half := uint32(e)<<10 | man>>13
+	rem := man & 0x1fff
+	if rem > 0x1000 || (rem == 0x1000 && half&1 == 1) {
+		half++
+	}
+	return sign | half
+}
+
+// f16ToF32 widens half-precision bits exactly with integer arithmetic.
+func ncNumcoreF16ToF32(h uint32) uint32 {
+	sign := (h & 0x8000) << 16
+	exp := (h >> 10) & 0x1f
+	man := h & 0x3ff
+	switch {
+	case exp == 0:
+		if man == 0 {
+			return sign
+		}
+		e := uint32(127 - 15 + 1)
+		for man&0x400 == 0 {
+			man <<= 1
+			e--
+		}
+		return sign | e<<23 | (man&0x3ff)<<13
+	case exp == 31:
+		return sign | 0x7f800000 | man<<13
+	}
+	return sign | (exp+127-15)<<23 | man<<13
+}
+
+func ncNumcoreF32ToBF16(b uint32) uint32 {
+	if b&0x7fffffff > 0x7f800000 {
+		return b>>16 | 0x40
+	}
+	return (b + 0x7fff + (b >> 16 & 1)) >> 16
+}
+
+// Kind selects the predictor family.
+type ncNumcoreKind uint8
+
+const (
+	ncNumcoreKNone ncNumcoreKind = iota // no base: prediction is zero (the residual is the value, key-ordered)
+	ncNumcoreKID                        // prediction = base value (dtype-converted)
+	ncNumcoreKAff                       // per-tensor / per-block / per-row affine in the float domain
+	ncNumcoreKLow                       // base + sum of rank-1 terms (low-rank update), optional per-tensor scale
+	ncNumcoreKLin                       // linear combination of 2-3 bases (+ offset), per tensor or per row
+)
+
+// Residual selects how a prediction is turned into stored words.
+type ncNumcoreResidual uint8
+
+const (
+	ncNumcoreRKey ncNumcoreResidual = iota // Zigzag(Key(target) - Key(pred)), exact on all bit patterns
+	ncNumcoreRXor                          // target ^ pred bits
+	ncNumcoreRSub                          // Zigzag(target - pred) as raw integers
+)
+
+// Gran is the affine/linear coefficient granularity.
+type ncNumcoreGran uint8
+
+const (
+	ncNumcoreGTensor ncNumcoreGran = iota
+	ncNumcoreGBlock
+	ncNumcoreGRow
+)
+
+// Params is the serializable predictor description (everything the decoder needs besides bases).
+type ncNumcoreParams struct {
+	Kind  ncNumcoreKind
+	Res   ncNumcoreResidual
+	Gran  ncNumcoreGran
+	Block uint32    // GBlock: elements per block
+	NB    uint8     // number of bases used (KID 1, KAff 1, KLow 1, KLin 2-3)
+	Rank  uint16    // KLow
+	Prec  uint8     // 4 = float32 coefficients, 2 = bfloat16 coefficients
+	Coef  []float32 // affine/linear coefficients; KLow: factors [U (rows*rank) | V (cols*rank)]
+}
+
+var ncNumcoreErrParams = errors.New("numcore: invalid predictor parameters")
+
+// MarshalParams serializes p compactly.
+func (p *ncNumcoreParams) Marshal() []byte {
+	b := []byte{byte(p.Kind), byte(p.Res), byte(p.Gran), p.NB, p.Prec}
+	b = binary.AppendUvarint(b, uint64(p.Block))
+	b = binary.AppendUvarint(b, uint64(p.Rank))
+	b = binary.AppendUvarint(b, uint64(len(p.Coef)))
+	for _, c := range p.Coef {
+		bits := math.Float32bits(c)
+		if p.Prec == 2 {
+			b = append(b, byte(bits>>16), byte(bits>>24))
+		} else {
+			b = binary.LittleEndian.AppendUint32(b, bits)
+		}
+	}
+	return b
+}
+
+// ParseParams decodes Marshal output; nmax bounds the coefficient count.
+func ncNumcoreParseParams(b []byte, nmax int) (*ncNumcoreParams, int, error) {
+	if len(b) < 5 {
+		return nil, 0, ncNumcoreErrParams
+	}
+	p := &ncNumcoreParams{Kind: ncNumcoreKind(b[0]), Res: ncNumcoreResidual(b[1]), Gran: ncNumcoreGran(b[2]), NB: b[3], Prec: b[4]}
+	if p.Kind > ncNumcoreKLin || p.Res > ncNumcoreRSub || p.Gran > ncNumcoreGRow || (p.Prec != 4 && p.Prec != 2) || p.NB > 3 {
+		return nil, 0, ncNumcoreErrParams
+	}
+	pos := 5
+	rd := func() (uint64, bool) {
+		v, n := binary.Uvarint(b[pos:])
+		if n <= 0 {
+			return 0, false
+		}
+		pos += n
+		return v, true
+	}
+	blk, ok1 := rd()
+	rank, ok2 := rd()
+	cnt, ok3 := rd()
+	if !ok1 || !ok2 || !ok3 || blk > 1<<30 || rank > 4096 || cnt > uint64(nmax) {
+		return nil, 0, ncNumcoreErrParams
+	}
+	p.Block, p.Rank = uint32(blk), uint16(rank)
+	p.Coef = make([]float32, cnt)
+	for i := range p.Coef {
+		if p.Prec == 2 {
+			if pos+2 > len(b) {
+				return nil, 0, ncNumcoreErrParams
+			}
+			p.Coef[i] = math.Float32frombits(uint32(b[pos])<<16 | uint32(b[pos+1])<<24)
+			pos += 2
+		} else {
+			if pos+4 > len(b) {
+				return nil, 0, ncNumcoreErrParams
+			}
+			p.Coef[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[pos:]))
+			pos += 4
+		}
+	}
+	return p, pos, nil
+}
+
+// roundCoef quantizes a coefficient to the stored precision (what the decoder will see).
+func ncNumcore_roundCoef(x float64, prec uint8) float32 {
+	f := float32(x)
+	if prec == 2 {
+		return math.Float32frombits(uint32(ncNumcoreF64ToBF16(float64(f))) << 16)
+	}
+	return f
+}
+
+// Base is one decoded base tensor view.
+type ncNumcoreBase struct {
+	DT   ncNumcoreDType
+	Data []byte
+}
+
+// At is the float64 value of element i.
+func (b ncNumcoreBase) At(i int) float64 { return b.at(i) }
+
+func (b ncNumcoreBase) at(i int) float64 {
+	switch b.DT {
+	case ncNumcoreDF32:
+		return float64(math.Float32frombits(binary.LittleEndian.Uint32(b.Data[4*i:])))
+	case ncNumcoreDBF16:
+		return float64(math.Float32frombits(uint32(binary.LittleEndian.Uint16(b.Data[2*i:])) << 16))
+	}
+	return ncNumcoreF16ToF64(uint32(binary.LittleEndian.Uint16(b.Data[2*i:])))
+}
+
+func (b ncNumcoreBase) n() int { return len(b.Data) / b.DT.Width() }
+
+func ncNumcore_idPred(tdt ncNumcoreDType, b ncNumcoreBase, i int) uint32 {
+	if b.DT == tdt {
+		return ncNumcoreLE(b.Data, tdt.Width(), i)
+	}
+	switch {
+	case b.DT == ncNumcoreDF32 && tdt == ncNumcoreDF16:
+		return ncNumcoreF32ToF16(binary.LittleEndian.Uint32(b.Data[4*i:]))
+	case b.DT == ncNumcoreDF32 && tdt == ncNumcoreDBF16:
+		return ncNumcoreF32ToBF16(binary.LittleEndian.Uint32(b.Data[4*i:]))
+	case b.DT == ncNumcoreDF16 && tdt == ncNumcoreDF32:
+		return ncNumcoreF16ToF32(uint32(binary.LittleEndian.Uint16(b.Data[2*i:])))
+	case b.DT == ncNumcoreDBF16 && tdt == ncNumcoreDF32:
+		return uint32(binary.LittleEndian.Uint16(b.Data[2*i:])) << 16
+	}
+	return ncNumcoreFromF64(tdt, b.at(i))
+}
+
+func ncNumcore_affBlock(p *ncNumcoreParams, rows, cols, n int) int {
+	switch p.Gran {
+	case ncNumcoreGTensor:
+		return n
+	case ncNumcoreGRow:
+		return cols
+	}
+	return int(p.Block)
+}
+
+// MakeResidual converts (target, prediction) to residual words (same width as target).
+func ncNumcoreMakeResidual(res ncNumcoreResidual, w int, target, pred []byte) []byte {
+	out := make([]byte, len(target))
+	switch w {
+	case 4:
+		for i := 0; i+4 <= len(target); i += 4 {
+			t, p := binary.LittleEndian.Uint32(target[i:]), binary.LittleEndian.Uint32(pred[i:])
+			var r uint32
+			switch res {
+			case ncNumcoreRKey:
+				r = ncNumcore_zigzag4(ncNumcore_key4(t) - ncNumcore_key4(p))
+			case ncNumcoreRXor:
+				r = t ^ p
+			default:
+				r = ncNumcore_zigzag4(t - p)
+			}
+			binary.LittleEndian.PutUint32(out[i:], r)
+		}
+	case 2:
+		for i := 0; i+2 <= len(target); i += 2 {
+			t, p := binary.LittleEndian.Uint16(target[i:]), binary.LittleEndian.Uint16(pred[i:])
+			var r uint16
+			switch res {
+			case ncNumcoreRKey:
+				r = ncNumcore_zigzag2(ncNumcore_key2(t) - ncNumcore_key2(p))
+			case ncNumcoreRXor:
+				r = t ^ p
+			default:
+				r = ncNumcore_zigzag2(t - p)
+			}
+			binary.LittleEndian.PutUint16(out[i:], r)
+		}
+	default:
+		for i := range target {
+			t, p := uint32(target[i]), uint32(pred[i])
+			var r uint32
+			switch res {
+			case ncNumcoreRKey:
+				r = ncNumcoreZigzag((ncNumcoreKey(t, 1)-ncNumcoreKey(p, 1))&0xff, 1)
+			case ncNumcoreRXor:
+				r = t ^ p
+			default:
+				r = ncNumcoreZigzag((t-p)&0xff, 1)
+			}
+			out[i] = byte(r)
+		}
+	}
+	return out
+}
+
+// ApplyResidual inverts MakeResidual.
+func ncNumcoreApplyResidual(res ncNumcoreResidual, w int, resid, pred []byte) []byte {
+	out := make([]byte, len(resid))
+	switch w {
+	case 4:
+		for i := 0; i+4 <= len(resid); i += 4 {
+			r, p := binary.LittleEndian.Uint32(resid[i:]), binary.LittleEndian.Uint32(pred[i:])
+			var t uint32
+			switch res {
+			case ncNumcoreRKey:
+				t = ncNumcore_unkey4(ncNumcore_key4(p) + ncNumcore_unzigzag4(r))
+			case ncNumcoreRXor:
+				t = r ^ p
+			default:
+				t = p + ncNumcore_unzigzag4(r)
+			}
+			binary.LittleEndian.PutUint32(out[i:], t)
+		}
+	case 2:
+		for i := 0; i+2 <= len(resid); i += 2 {
+			r, p := binary.LittleEndian.Uint16(resid[i:]), binary.LittleEndian.Uint16(pred[i:])
+			var t uint16
+			switch res {
+			case ncNumcoreRKey:
+				t = ncNumcore_unkey2(ncNumcore_key2(p) + ncNumcore_unzigzag2(r))
+			case ncNumcoreRXor:
+				t = r ^ p
+			default:
+				t = p + ncNumcore_unzigzag2(r)
+			}
+			binary.LittleEndian.PutUint16(out[i:], t)
+		}
+	default:
+		for i := range resid {
+			r, p := uint32(resid[i]), uint32(pred[i])
+			var t uint32
+			switch res {
+			case ncNumcoreRKey:
+				t = ncNumcoreUnkey((ncNumcoreKey(p, 1)+ncNumcoreUnzigzag(r, 1))&0xff, 1)
+			case ncNumcoreRXor:
+				t = r ^ p
+			default:
+				t = (p + ncNumcoreUnzigzag(r, 1)) & 0xff
+			}
+			out[i] = byte(t)
+		}
+	}
+	return out
+}
+
+func ncNumcore_key4(b uint32) uint32 {
+	if b&0x80000000 != 0 {
+		return ^b
+	}
+	return b | 0x80000000
+}
+
+func ncNumcore_unkey4(k uint32) uint32 {
+	if k&0x80000000 != 0 {
+		return k &^ 0x80000000
+	}
+	return ^k
+}
+
+func ncNumcore_key2(b uint16) uint16 {
+	if b&0x8000 != 0 {
+		return ^b
+	}
+	return b | 0x8000
+}
+
+func ncNumcore_unkey2(k uint16) uint16 {
+	if k&0x8000 != 0 {
+		return k &^ 0x8000
+	}
+	return ^k
+}
+
+func ncNumcore_zigzag4(d uint32) uint32 { x := int32(d); return uint32(x<<1) ^ uint32(x>>31) }
+
+func ncNumcore_unzigzag4(z uint32) uint32 { return (z >> 1) ^ -(z & 1) }
+
+func ncNumcore_zigzag2(d uint16) uint16 { x := int16(d); return uint16(x<<1) ^ uint16(x>>15) }
+
+func ncNumcore_unzigzag2(z uint16) uint16 { return (z >> 1) ^ -(z & 1) }
+
+func ncNumcore_qBlock(q ncQcoreType) (elems, bytes int) { return ncQcoreBlock(q) }
+
+func ncNumcore_mustQ(d ncNumcoreDType) ncQcoreType { q, _ := d.QType(); return q }
+
+// floatsOf converts base element bytes to the float32 quantizer input (exact widening); viaF16
+// first rounds through float16, the value an F16 intermediate file would hold.
+func ncNumcore_floatsOf(b ncNumcoreBase, viaF16 bool) []float32 {
+	n := b.n()
+	out := make([]float32, n)
+	switch b.DT {
+	case ncNumcoreDF32:
+		for i := range out {
+			out[i] = math.Float32frombits(binary.LittleEndian.Uint32(b.Data[4*i:]))
+		}
+	case ncNumcoreDBF16:
+		for i := range out {
+			out[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(b.Data[2*i:])) << 16)
+		}
+	default:
+		for i := range out {
+			out[i] = ncQcoreF16to32(binary.LittleEndian.Uint16(b.Data[2*i:]))
+		}
+		return out
+	}
+	if viaF16 {
+		for i, v := range out {
+			out[i] = ncQcoreF16to32(ncQcoreF16(v))
+		}
+	}
+	return out
+}
+
+// quantWindow quantizes the base rows of a window with the recorded producer profile.
+func ncNumcore_quantWindow(ctx context.Context, t *ncNumcoreTDir, k int64, nbytes int, base ncNumcore_baseFn, qw []float32) ([]byte, error) {
+	q := ncNumcore_mustQ(t.DT)
+	el, by := ncNumcore_qBlock(q)
+	nb := nbytes / by
+	b, err := base(ctx, k*t.Win*int64(el), nb*el)
+	if err != nil {
+		return nil, err
+	}
+	if !b.DT.IsFloat() || b.n() != nb*el {
+		return nil, ncNumcoreErrFormat7
+	}
+	out := make([]byte, nbytes)
+	if err := ncQcoreQuantize(out, q, ncNumcore_floatsOf(b, t.Q.ViaF16), int(t.Cols), qw, ncQcoreArith(t.Q.Arith)); err != nil {
+		return nil, ncNumcoreErrFormat7
+	}
+	return out, nil
+}
+
+// Patch stream: uvarint count, then per patch a uvarint block gap and the raw block. The stream is
+// stored or DEFLATE-compressed (WDir.Coder).
+func ncNumcore_encodePatches(want, got []byte, by int) (payload []byte, coder uint8, n int) {
+	var p []byte
+	last := 0
+	for b := 0; b*by < len(want); b++ {
+		if !bytes.Equal(want[b*by:(b+1)*by], got[b*by:(b+1)*by]) {
+			p = binary.AppendUvarint(p, uint64(b-last))
+			p = append(p, want[b*by:(b+1)*by]...)
+			last = b
+			n++
+		}
+	}
+	if n == 0 {
+		return nil, ncNumcoreCStore, 0
+	}
+	p = append(binary.AppendUvarint(nil, uint64(n)), p...)
+	if z := ncNumcore_deflateBytes(p); len(z)+4 < len(p) {
+		return append(binary.AppendUvarint(nil, uint64(len(p))), z...), ncNumcoreCFlate, n
+	}
+	return p, ncNumcoreCStore, n
+}
+
+func ncNumcore_applyPatches(dst, payload []byte, coder uint8, by int) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	p := payload
+	if coder == ncNumcoreCFlate {
+		ln, k := binary.Uvarint(payload)
+		if k <= 0 || ln > uint64(len(dst))+uint64(len(dst)/by+1)*10+10 {
+			return ncNumcoreErrFormat7
+		}
+		var err error
+		if p, err = ncNumcore_inflateExact(payload[k:], int(ln)); err != nil {
+			return err
+		}
+	}
+	cnt, k := binary.Uvarint(p)
+	if k <= 0 || cnt == 0 || cnt > uint64(len(dst)/by) {
+		return ncNumcoreErrFormat7
+	}
+	p = p[k:]
+	blk := uint64(0)
+	for i := uint64(0); i < cnt; i++ {
+		gap, k := binary.Uvarint(p)
+		if k <= 0 || (i > 0 && gap == 0) || gap > uint64(len(dst)/by) {
+			return ncNumcoreErrFormat7
+		}
+		blk += gap
+		p = p[k:]
+		if blk >= uint64(len(dst)/by) || len(p) < by {
+			return ncNumcoreErrFormat7
+		}
+		copy(dst[int(blk)*by:], p[:by])
+		p = p[by:]
+	}
+	if len(p) != 0 {
+		return ncNumcoreErrFormat7
+	}
+	return nil
+}
+
+func ncNumcore_rebuildQuant(ctx context.Context, t *ncNumcoreTDir, wd *ncNumcoreWDir, k int64, payload, dst []byte, base ncNumcore_baseFn, aux ncNumcore_auxFn) error {
+	var qw []float32
+	if t.Q.Aux >= 0 {
+		var err error
+		if qw, err = aux(ctx, t.Q.Aux, t.Q.Name, int(t.Cols)); err != nil {
+			return err
+		}
+		if int64(len(qw)) != t.Cols {
+			return ncNumcoreErrMissing7
+		}
+	}
+	out, err := ncNumcore_quantWindow(ctx, t, k, len(dst), base, qw)
+	if err != nil {
+		return err
+	}
+	_, by := ncNumcore_qBlock(ncNumcore_mustQ(t.DT))
+	if err := ncNumcore_applyPatches(out, payload, wd.Coder, by); err != nil {
+		return err
+	}
+	copy(dst, out)
+	return nil
+}
+
+// Static-table byte-renormalized rANS with two interleaved states.
+const (
+	ncNumcore_ransBits = 12
+	ncNumcore_ransM    = 1 << ncNumcore_ransBits
+	ncNumcore_ransL    = 1 << 23
+)
+
+var ncNumcoreErrCorrupt = errors.New("numcore: corrupt stream")
+
+type ncNumcore_ransTab struct {
+	freq  []uint16 // per symbol
+	start []uint16
+	dec   []uint16 // slot -> symbol (ransM entries)
+}
+
+// normFreqs scales counts to total ransM keeping every present symbol >= 1.
+func ncNumcore_normFreqs(cnt []uint32) []uint16 {
+	var tot uint64
+	for _, c := range cnt {
+		tot += uint64(c)
+	}
+	f := make([]uint16, len(cnt))
+	if tot == 0 {
+		return f
+	}
+	sum := 0
+	big := 0
+	for i, c := range cnt {
+		if c == 0 {
+			continue
+		}
+		v := int(uint64(c) * ncNumcore_ransM / tot)
+		if v < 1 {
+			v = 1
+		}
+		f[i] = uint16(v)
+		sum += v
+		if cnt[i] > cnt[big] {
+			big = i
+		}
+	}
+	d := ncNumcore_ransM - sum
+	if d >= 0 {
+		f[big] += uint16(d)
+		return f
+	}
+	// over-allocated (many rare symbols): shave from the largest repeatedly
+	for d < 0 {
+		m := 0
+		for i := range f {
+			if f[i] > f[m] {
+				m = i
+			}
+		}
+		if f[m] <= 1 {
+			break
+		}
+		t := -d
+		if int(f[m])-1 < t {
+			t = int(f[m]) - 1
+		}
+		f[m] -= uint16(t)
+		d += t
+	}
+	return f
+}
+
+func ncNumcore_newTab(freq []uint16) (*ncNumcore_ransTab, error) {
+	t := &ncNumcore_ransTab{freq: freq, start: make([]uint16, len(freq)+1), dec: make([]uint16, ncNumcore_ransM)}
+	s := 0
+	for i, f := range freq {
+		t.start[i] = uint16(s)
+		for j := 0; j < int(f); j++ {
+			if s+j >= ncNumcore_ransM {
+				return nil, ncNumcoreErrCorrupt
+			}
+			t.dec[s+j] = uint16(i)
+		}
+		s += int(f)
+	}
+	if s != ncNumcore_ransM && s != 0 {
+		return nil, ncNumcoreErrCorrupt
+	}
+	t.start[len(freq)] = uint16(s)
+	return t, nil
+}
+
+func ncNumcore_appendFreqs(b []byte, f []uint16) []byte {
+	nz := 0
+	for _, v := range f {
+		if v > 0 {
+			nz++
+		}
+	}
+	b = binary.AppendUvarint(b, uint64(nz))
+	prev := 0
+	for i, v := range f {
+		if v > 0 {
+			b = binary.AppendUvarint(b, uint64(i-prev))
+			b = binary.AppendUvarint(b, uint64(v))
+			prev = i
+		}
+	}
+	return b
+}
+
+func ncNumcore_readFreqs(b []byte, nsym int) ([]uint16, int, error) {
+	f := make([]uint16, nsym)
+	pos := 0
+	nz, k := binary.Uvarint(b)
+	if k <= 0 || nz > uint64(nsym) {
+		return nil, 0, ncNumcoreErrCorrupt
+	}
+	pos += k
+	sym := 0
+	for i := uint64(0); i < nz; i++ {
+		d, k1 := binary.Uvarint(b[pos:])
+		if k1 <= 0 {
+			return nil, 0, ncNumcoreErrCorrupt
+		}
+		pos += k1
+		v, k2 := binary.Uvarint(b[pos:])
+		if k2 <= 0 || v == 0 || v > ncNumcore_ransM {
+			return nil, 0, ncNumcoreErrCorrupt
+		}
+		pos += k2
+		sym += int(d)
+		if sym >= nsym {
+			return nil, 0, ncNumcoreErrCorrupt
+		}
+		f[sym] = uint16(v)
+	}
+	return f, pos, nil
+}
+
+// ransEnc encodes (ctx,sym) pairs in order given reversed by the caller; two lanes by index parity.
+type ncNumcore_ransEnc struct {
+	out [2][]byte
+	x   [2]uint32
+}
+
+func ncNumcore_newRansEnc() *ncNumcore_ransEnc {
+	e := &ncNumcore_ransEnc{}
+	e.x = [2]uint32{ncNumcore_ransL, ncNumcore_ransL}
+	return e
+}
+
+func (e *ncNumcore_ransEnc) put(lane int, f, s uint32) {
+	x := e.x[lane]
+	xmax := ((ncNumcore_ransL >> ncNumcore_ransBits) << 8) * f
+	for x >= xmax {
+		e.out[lane] = append(e.out[lane], byte(x))
+		x >>= 8
+	}
+	e.x[lane] = (x/f)<<ncNumcore_ransBits + x%f + s
+}
+
+// finish returns lane streams concatenated: [len0 uvarint][bytes0 reversed][state0][bytes1 reversed][state1].
+func (e *ncNumcore_ransEnc) finish() []byte {
+	var b []byte
+	for l := 0; l < 2; l++ {
+		x := e.x[l]
+		s := append([]byte(nil), e.out[l]...)
+		s = append(s, byte(x), byte(x>>8), byte(x>>16), byte(x>>24))
+		for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
+			s[i], s[j] = s[j], s[i]
+		}
+		b = binary.AppendUvarint(b, uint64(len(s)))
+		b = append(b, s...)
+	}
+	return b
+}
+
+type ncNumcore_ransDec struct {
+	buf [2][]byte
+	pos [2]int
+	x   [2]uint32
+}
+
+func ncNumcore_newRansDec(b []byte) (*ncNumcore_ransDec, int, error) {
+	d := &ncNumcore_ransDec{}
+	p := 0
+	for l := 0; l < 2; l++ {
+		n, k := binary.Uvarint(b[p:])
+		if k <= 0 || n < 4 || uint64(len(b)-p-k) < n {
+			return nil, 0, ncNumcoreErrCorrupt
+		}
+		p += k
+		d.buf[l] = b[p : p+int(n)]
+		p += int(n)
+		s := d.buf[l]
+		d.x[l] = uint32(s[0])<<24 | uint32(s[1])<<16 | uint32(s[2])<<8 | uint32(s[3])
+		d.pos[l] = 4
+	}
+	return d, p, nil
+}
+
+func (d *ncNumcore_ransDec) get(lane int, t *ncNumcore_ransTab) (int, error) {
+	x := d.x[lane]
+	slot := x & (ncNumcore_ransM - 1)
+	s := int(t.dec[slot])
+	x = uint32(t.freq[s])*(x>>ncNumcore_ransBits) + slot - uint32(t.start[s])
+	for x < ncNumcore_ransL {
+		if d.pos[lane] >= len(d.buf[lane]) {
+			return 0, ncNumcoreErrCorrupt
+		}
+		x = x<<8 | uint32(d.buf[lane][d.pos[lane]])
+		d.pos[lane]++
+	}
+	d.x[lane] = x
+	return s, nil
+}
+
+func ncNumcoreBitlen(v uint32) int { return bits.Len32(v) }
+
+// auxFn returns the importance vector of one tensor from auxiliary object idx.
+type ncNumcore_auxFn func(ctx context.Context, idx int, name string, cols int) ([]float32, error)
+
+// Stored is how a dependency is available: the original bytes with their tensor table (Raw,
+// Lay) or a ZN7 object (Obj). Storage adapters return it; the core never touches a store.
+type ncNumcoreStored struct {
+	Raw io.ReaderAt
+	Lay *ncNumcoreLayout
+	Obj *ncNumcoreObject
+}
+
+// Resolver is the storage interface of the core.
+type ncNumcoreResolver interface {
+	Open(ctx context.Context, id ncNumcoreID) (ncNumcoreStored, error)
+	Aux(ctx context.Context, id ncNumcoreID) ([]byte, error)
+}
+
+// Source reads decoded tensor payload bytes and the header/padding bytes of one object.
+type ncNumcoreSource interface {
+	Info(ti int) (dt ncNumcoreDType, size, cols int64, ok bool)
+	ReadTensor(ctx context.Context, ti int, off int64, dst []byte) error
+	Gaps(ctx context.Context) ([]byte, error)
+}
+
+// RawSource serves an original file.
+type ncNumcoreRawSource struct {
+	R io.ReaderAt
+	L *ncNumcoreLayout
+}
+
+func (s ncNumcoreRawSource) Info(ti int) (ncNumcoreDType, int64, int64, bool) {
+	if ti < 0 || ti >= len(s.L.T) {
+		return 0, 0, 0, false
+	}
+	t := &s.L.T[ti]
+	return t.DT, t.Len, t.Cols, true
+}
+
+func (s ncNumcoreRawSource) ReadTensor(ctx context.Context, ti int, off int64, dst []byte) error {
+	if ti < 0 || ti >= len(s.L.T) {
+		return ncNumcoreErrRange7
+	}
+	t := &s.L.T[ti]
+	if off < 0 || int64(len(dst)) > t.Len-off {
+		return ncNumcoreErrRange7
+	}
+	return ncNumcore_readFull(s.R, dst, t.Off+off)
+}
+
+func (s ncNumcoreRawSource) Gaps(ctx context.Context) ([]byte, error) {
+	n := s.L.GapLen()
+	if n < 0 || n > ncNumcoreMaxGap7 {
+		return nil, ncNumcoreErrLayout7
+	}
+	out := make([]byte, n)
+	p, prev := int64(0), int64(0)
+	for i := 0; i <= len(s.L.T); i++ {
+		end := s.L.Size
+		if i < len(s.L.T) {
+			end = s.L.T[i].Off
+		}
+		if end > prev {
+			if err := ncNumcore_readFull(s.R, out[p:p+end-prev], prev); err != nil {
+				return nil, err
+			}
+			p += end - prev
+		}
+		if i < len(s.L.T) {
+			prev = s.L.T[i].Off + s.L.T[i].Len
+		}
+	}
+	return out, nil
+}
+
+// WinCache is a byte-bounded LRU of decoded base windows shared by chained decodes.
+type ncNumcoreWinCache struct {
+	mu    sync.Mutex
+	max   int64
+	used  int64
+	ll    *list.List
+	m     map[ncNumcore_winKey]*list.Element
+	Hits  int64
+	Miss  int64
+	Bytes int64 // decoded bytes produced on misses
+}
+
+type ncNumcore_winKey struct {
+	id ncNumcoreID
+	ti int
+	k  int64
+}
+
+type ncNumcore_winEnt struct {
+	key  ncNumcore_winKey
+	data []byte
+}
+
+func ncNumcoreNewWinCache(maxBytes int64) *ncNumcoreWinCache {
+	return &ncNumcoreWinCache{max: maxBytes, ll: list.New(), m: map[ncNumcore_winKey]*list.Element{}}
+}
+
+func (c *ncNumcoreWinCache) get(k ncNumcore_winKey) []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.m[k]; ok {
+		c.ll.MoveToFront(e)
+		c.Hits++
+		return e.Value.(*ncNumcore_winEnt).data
+	}
+	c.Miss++
+	return nil
+}
+
+func (c *ncNumcoreWinCache) put(k ncNumcore_winKey, data []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Bytes += int64(len(data))
+	if int64(len(data)) > c.max {
+		return
+	}
+	if _, ok := c.m[k]; ok {
+		return
+	}
+	c.m[k] = c.ll.PushFront(&ncNumcore_winEnt{k, data})
+	c.used += int64(len(data))
+	for c.used > c.max {
+		e := c.ll.Back()
+		en := e.Value.(*ncNumcore_winEnt)
+		c.ll.Remove(e)
+		delete(c.m, en.key)
+		c.used -= int64(len(en.data))
+	}
+}
+
+// session is one decode context: resolver, bounded window cache, opened dependencies.
+type ncNumcore_session struct {
+	rv    ncNumcoreResolver
+	cache *ncNumcoreWinCache
+	mu    sync.Mutex
+	open  map[ncNumcoreID]ncNumcoreStored
+	aux   map[ncNumcoreID]*ncQcoreIMatrix
+	gaps  map[ncNumcoreID][]byte
+	// accounting for range reads
+	payloadRead int64
+	rawRead     int64
+	windows     int64
+}
+
+func ncNumcore_newSession(rv ncNumcoreResolver, cacheBytes int64) *ncNumcore_session {
+	if cacheBytes <= 0 {
+		cacheBytes = 64 << 20
+	}
+	return &ncNumcore_session{rv: rv, cache: ncNumcoreNewWinCache(cacheBytes), open: map[ncNumcoreID]ncNumcoreStored{}, aux: map[ncNumcoreID]*ncQcoreIMatrix{}, gaps: map[ncNumcoreID][]byte{}}
+}
+
+func (s *ncNumcore_session) stored(ctx context.Context, id ncNumcoreID) (ncNumcoreStored, error) {
+	s.mu.Lock()
+	st, ok := s.open[id]
+	s.mu.Unlock()
+	if ok {
+		return st, nil
+	}
+	if s.rv == nil {
+		return ncNumcoreStored{}, ncNumcoreErrMissing7
+	}
+	st, err := s.rv.Open(ctx, id)
+	if err != nil {
+		return ncNumcoreStored{}, err
+	}
+	if st.Obj == nil {
+		if st.Raw == nil || st.Lay.Validate() != nil {
+			return ncNumcoreStored{}, ncNumcoreErrMissing7
+		}
+	} else if st.Obj.FileSHA != id {
+		return ncNumcoreStored{}, ncNumcoreErrMissing7
+	}
+	s.mu.Lock()
+	s.open[id] = st
+	s.mu.Unlock()
+	return st, nil
+}
+
+// source returns the tensor source of a dependency at chain depth `depth` (1 = direct base).
+func (s *ncNumcore_session) source(ctx context.Context, id ncNumcoreID, depth int) (ncNumcoreSource, error) {
+	if depth >= ncNumcoreMaxDepth7 {
+		return nil, ncNumcoreErrDepth7
+	}
+	st, err := s.stored(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if st.Obj != nil {
+		return &ncNumcore_objSource{s: s, o: st.Obj, depth: depth}, nil
+	}
+	return ncNumcore_countingRaw{ncNumcoreRawSource{st.Raw, st.Lay}, s}, nil
+}
+
+type ncNumcore_countingRaw struct {
+	raw ncNumcoreRawSource
+	s   *ncNumcore_session
+}
+
+func (c ncNumcore_countingRaw) Info(ti int) (ncNumcoreDType, int64, int64, bool) {
+	return c.raw.Info(ti)
+}
+
+func (c ncNumcore_countingRaw) Gaps(ctx context.Context) ([]byte, error) { return c.raw.Gaps(ctx) }
+
+func (c ncNumcore_countingRaw) ReadTensor(ctx context.Context, ti int, off int64, dst []byte) error {
+	c.s.mu.Lock()
+	c.s.rawRead += int64(len(dst))
+	c.s.mu.Unlock()
+	return c.raw.ReadTensor(ctx, ti, off, dst)
+}
+
+func (s *ncNumcore_session) imatrix(ctx context.Context, o *ncNumcoreObject, idx int, name string, cols int) ([]float32, error) {
+	if idx < 0 || idx >= len(o.Aux) {
+		return nil, ncNumcoreErrFormat7
+	}
+	id := o.Aux[idx]
+	s.mu.Lock()
+	im, ok := s.aux[id]
+	s.mu.Unlock()
+	if !ok {
+		if s.rv == nil {
+			return nil, ncNumcoreErrMissing7
+		}
+		b, err := s.rv.Aux(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if ncNumcoreID(sha256.Sum256(b)) != id {
+			return nil, ncNumcoreErrMissing7
+		}
+		if im, err = ncQcoreParseIMatrix(b); err != nil {
+			return nil, ncNumcoreErrMissing7
+		}
+		s.mu.Lock()
+		s.aux[id] = im
+		s.mu.Unlock()
+	}
+	w := im.For(name, cols)
+	if w == nil {
+		return nil, ncNumcoreErrMissing7
+	}
+	return w, nil
+}
+
+// objSource decodes tensor ranges of a ZN7 object on demand, window by window, through the cache.
+type ncNumcore_objSource struct {
+	s     *ncNumcore_session
+	o     *ncNumcoreObject
+	depth int
+}
+
+func (x *ncNumcore_objSource) Info(ti int) (ncNumcoreDType, int64, int64, bool) {
+	if ti < 0 || ti >= len(x.o.T) {
+		return 0, 0, 0, false
+	}
+	t := &x.o.T[ti]
+	return t.DT, t.Len, t.Cols, true
+}
+
+func (x *ncNumcore_objSource) ReadTensor(ctx context.Context, ti int, off int64, dst []byte) error {
+	if ti < 0 || ti >= len(x.o.T) {
+		return ncNumcoreErrRange7
+	}
+	t := &x.o.T[ti]
+	if off < 0 || int64(len(dst)) > t.Len-off {
+		return ncNumcoreErrRange7
+	}
+	wb := t.Win * int64(t.unit())
+	for len(dst) > 0 {
+		k := off / wb
+		win, err := x.s.window(ctx, x.o, x.depth, ti, k)
+		if err != nil {
+			return err
+		}
+		n := copy(dst, win[off-k*wb:])
+		dst, off = dst[n:], off+int64(n)
+	}
+	return nil
+}
+
+func (x *ncNumcore_objSource) Gaps(ctx context.Context) ([]byte, error) {
+	return x.s.gapsOf(ctx, x.o, x.depth)
+}
+
+// window returns the verified decoded bytes of one window of o (cached).
+func (s *ncNumcore_session) window(ctx context.Context, o *ncNumcoreObject, depth, ti int, k int64) ([]byte, error) {
+	key := ncNumcore_winKey{o.FileSHA, ti, k}
+	if b := s.cache.get(key); b != nil {
+		return b, nil
+	}
+	t := &o.T[ti]
+	_, n := t.winBytes(k)
+	out := make([]byte, n)
+	if err := s.decodeWindow(ctx, o, depth, ti, k, out); err != nil {
+		return nil, err
+	}
+	s.cache.put(key, out)
+	return out, nil
+}
+
+// decodeWindow reads, rebuilds and authenticates window k of tensor ti into dst.
+func (s *ncNumcore_session) decodeWindow(ctx context.Context, o *ncNumcoreObject, depth, ti int, k int64, dst []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	t := &o.T[ti]
+	wd := &t.W[k]
+	pos := t.pOff
+	for i := int64(0); i < k; i++ {
+		pos += t.W[i].PLen
+	}
+	payload := make([]byte, wd.PLen)
+	if err := ncNumcore_readFull(o.r, payload, pos); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.payloadRead += wd.PLen
+	s.windows++
+	s.mu.Unlock()
+	base := func(ctx context.Context, lo int64, n int) (ncNumcoreBase, error) {
+		src, err := s.source(ctx, o.Bases[t.Ref.Slot].ID, depth+1)
+		if err != nil {
+			return ncNumcoreBase{}, err
+		}
+		return ncNumcore_readRef(ctx, src, t.Ref, lo, n, t.DT, t.Q != nil)
+	}
+	aux := func(ctx context.Context, idx int, name string, cols int) ([]float32, error) {
+		return s.imatrix(ctx, o, idx, name, cols)
+	}
+	if err := ncNumcore_rebuild(ctx, t, wd, k, payload, dst, base, aux); err != nil {
+		return err
+	}
+	if ncNumcore_sum16(dst) != wd.Sum {
+		return ncNumcoreErrAuth7
+	}
+	return nil
+}
+
+// readRef reads base elements [lo, lo+n) of ref through src. For float targets the base must be
+// a float tensor with the same element count semantics; for opaque copies lo/n are bytes of an
+// identical-dtype tensor; for quant derivations the base is the float source.
+func ncNumcore_readRef(ctx context.Context, src ncNumcoreSource, ref *ncNumcoreRef, lo int64, n int, tdt ncNumcoreDType, quant bool) (ncNumcoreBase, error) {
+	dt, size, cols, ok := src.Info(int(ref.TIdx))
+	if !ok {
+		return ncNumcoreBase{}, ncNumcoreErrMissing7
+	}
+	w := int64(1)
+	switch {
+	case tdt.IsFloat() || quant:
+		if !dt.IsFloat() {
+			return ncNumcoreBase{}, ncNumcoreErrFormat7
+		}
+		w = int64(dt.Width())
+	case dt != tdt:
+		return ncNumcoreBase{}, ncNumcoreErrFormat7
+	}
+	if lo < 0 || n < 0 || int64(n) > (size/w)-lo {
+		return ncNumcoreBase{}, ncNumcoreErrFormat7
+	}
+	buf := make([]byte, int64(n)*w)
+	if ref.Perm.Kind == 0 {
+		if err := src.ReadTensor(ctx, int(ref.TIdx), lo*w, buf); err != nil {
+			return ncNumcoreBase{}, err
+		}
+		return ncNumcoreBase{DT: dt, Data: buf}, nil
+	}
+	if cols <= 0 || lo%cols != 0 || int64(n)%cols != 0 || (size/w)%cols != 0 {
+		return ncNumcoreBase{}, ncNumcoreErrFormat7
+	}
+	rows := size / w / cols
+	rb := cols * w
+	for r := int64(0); r < int64(n)/cols; r++ {
+		sr := ref.Perm.srcRow(lo/cols+r, rows)
+		if err := src.ReadTensor(ctx, int(ref.TIdx), sr*rb, buf[r*rb:(r+1)*rb]); err != nil {
+			return ncNumcoreBase{}, err
+		}
+	}
+	return ncNumcoreBase{DT: dt, Data: buf}, nil
+}
+
+// gapsOf decodes and authenticates the header/padding bytes of o.
+func (s *ncNumcore_session) gapsOf(ctx context.Context, o *ncNumcoreObject, depth int) ([]byte, error) {
+	s.mu.Lock()
+	g, ok := s.gaps[o.FileSHA]
+	s.mu.Unlock()
+	if ok {
+		return g, nil
+	}
+	payload := make([]byte, o.GapPLen)
+	if err := ncNumcore_readFull(o.r, payload, 4); err != nil {
+		return nil, err
+	}
+	var out []byte
+	var err error
+	if o.GapMode == 0 {
+		out, err = ncNumcore_inflateExact(payload, int(o.GapLen))
+	} else {
+		var src ncNumcoreSource
+		if src, err = s.source(ctx, o.Bases[o.GapSlot].ID, depth+1); err != nil {
+			return nil, err
+		}
+		var bg []byte
+		if bg, err = src.Gaps(ctx); err != nil {
+			return nil, err
+		}
+		out, err = ncNumcore_gapUndelta(payload, bg, o.GapLen)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(out)) != o.GapLen || ncNumcore_sum16(out) != o.GapSum {
+		return nil, ncNumcoreErrAuth7
+	}
+	s.mu.Lock()
+	s.gaps[o.FileSHA] = out
+	s.mu.Unlock()
+	return out, nil
+}
+
+// Gap deltas reuse the P5 windowed delta core (dcore) over in-memory readers.
+func ncNumcore_gapWParams() ncDcoreWParams {
+	wp := ncDcoreDefaultWParams()
+	wp.Anchor.MaxAnchors = 1 << 18
+	return wp
+}
+
+func ncNumcore_gapDelta(gaps, base []byte) ([]byte, bool) {
+	if len(base) == 0 || len(gaps) == 0 {
+		return nil, false
+	}
+	wp := ncNumcore_gapWParams()
+	idx, err := ncDcoreBuildWIndex(bytes.NewReader(base), int64(len(base)), wp.Anchor, 1)
+	if err != nil {
+		return nil, false
+	}
+	var buf bytes.Buffer
+	if _, err := ncDcoreWEncode(&buf, bytes.NewReader(gaps), int64(len(gaps)), bytes.NewReader(base), int64(len(base)), idx, wp); err != nil {
+		return nil, false
+	}
+	return buf.Bytes(), true
+}
+
+func ncNumcore_gapUndelta(rec, base []byte, n int64) ([]byte, error) {
+	w, err := ncDcoreOpenWRecord(bytes.NewReader(rec), int64(len(rec)))
+	if err != nil || w.Size != n || w.BaseSize != int64(len(base)) {
+		return nil, ncNumcoreErrFormat7
+	}
+	var buf bytes.Buffer
+	buf.Grow(int(n))
+	if _, err := w.Decode(&buf, bytes.NewReader(base), ncNumcore_gapWParams()); err != nil {
+		return nil, ncNumcoreErrFormat7
+	}
+	return buf.Bytes(), nil
+}
+
+const (
+	ncNumcore_zMagic     = "ZN7\x01"
+	ncNumcore_zTrailer   = "ZN7T"
+	ncNumcore_zTrailLen  = 8 + 8 + 4
+	ncNumcoreMaxDepth7   = 4 // objects on a dependency path, the decoded object included
+	ncNumcoreMaxHops7    = ncNumcoreMaxDepth7 - 1
+	ncNumcoreMaxBases7   = 16
+	ncNumcore_maxTensor7 = 1 << 20
+	ncNumcore_maxWindows = 1 << 24
+	ncNumcore_maxDir7    = 1 << 28
+	ncNumcoreMaxGap7     = 1 << 28
+	ncNumcore_maxWinByte = 1 << 28 // decoded bytes of one window
+	ncNumcore_maxName7   = 1 << 12
+)
+
+// Window modes.
+const (
+	ncNumcoreMRaw    = 0 // payload is the bytes (stored or DEFLATE)
+	ncNumcoreMDirect = 1 // float words without a base (FPE / byte planes)
+	ncNumcoreMPred   = 2 // residual against a prediction from the base tensor
+	ncNumcoreMCopy   = 3 // equals the (dtype-converted, permuted) base tensor range; no payload
+	ncNumcoreMQuant  = 4 // ggml quantization of the float base rows plus sparse block patches
+)
+
+// Payload coders.
+const (
+	ncNumcoreCStore  = 0
+	ncNumcoreCFlate  = 1
+	ncNumcoreCFPE    = 2
+	ncNumcoreCNRC    = 3
+	ncNumcoreCPlanes = 4
+)
+
+var (
+	ncNumcoreErrFormat7  = errors.New("numcore: malformed ZN7 object")
+	ncNumcoreErrDepth7   = errors.New("numcore: dependency depth exceeded")
+	ncNumcoreErrMissing7 = errors.New("numcore: missing dependency")
+	ncNumcoreErrAuth7    = errors.New("numcore: window digest mismatch")
+	ncNumcoreErrDigest7  = errors.New("numcore: object digest mismatch")
+	ncNumcoreErrLayout7  = errors.New("numcore: invalid tensor layout")
+	ncNumcoreErrRange7   = errors.New("numcore: range outside object")
+)
+
+// ID is the SHA-256 of an original file (object identity).
+type ncNumcoreID [32]byte
+
+// Tensor is one payload span of a model file. Cols is the row length in elements for
+// row-structured operations (0 = flat).
+type ncNumcoreTensor struct {
+	Name     string
+	DT       ncNumcoreDType
+	Off, Len int64
+	Cols     int64
+}
+
+// Layout is the tensor table of a file; everything outside the spans is header/padding ("gaps").
+type ncNumcoreLayout struct {
+	Size int64
+	T    []ncNumcoreTensor // ascending Off, disjoint
+}
+
+// Validate checks spans, ordering and block geometry with overflow-safe arithmetic.
+func (l *ncNumcoreLayout) Validate() error {
+	if l == nil || l.Size < 0 || len(l.T) > ncNumcore_maxTensor7 {
+		return ncNumcoreErrLayout7
+	}
+	prev := int64(0)
+	for i := range l.T {
+		t := &l.T[i]
+		if t.Off < prev || t.Len < 0 || t.Len > l.Size-t.Off || t.Cols < 0 || len(t.Name) > ncNumcore_maxName7 {
+			return ncNumcoreErrLayout7
+		}
+		if u := ncNumcore_unitOf(t.DT, true); t.Len%int64(u) != 0 {
+			return ncNumcoreErrLayout7
+		}
+		prev = t.Off + t.Len
+	}
+	return nil
+}
+
+// GapLen is the number of bytes outside tensor spans.
+func (l *ncNumcoreLayout) GapLen() int64 {
+	n := l.Size
+	for i := range l.T {
+		n -= l.T[i].Len
+	}
+	return n
+}
+
+// PermHint is a row permutation applied when a base tensor is read (the converter's layout
+// change). Kind 1: llama.cpp head interleave over rows with Heads attention heads.
+type ncNumcorePermHint struct {
+	Kind  uint8
+	Heads uint16
+}
+
+func (p ncNumcorePermHint) srcRow(r, rows int64) int64 {
+	if p.Kind != 1 || p.Heads == 0 {
+		return r
+	}
+	hd := rows / int64(p.Heads) / 2
+	if hd == 0 || rows != hd*2*int64(p.Heads) {
+		return r
+	}
+	h, in := r/(2*hd), r%(2*hd)
+	return h*2*hd + (in%2)*hd + in/2
+}
+
+// Ref names the base tensor of a derived tensor.
+type ncNumcoreRef struct {
+	Slot uint8
+	TIdx uint32
+	Perm ncNumcorePermHint
+}
+
+// QParams describes a quantization derivation: which quantizer path reproduced the producer.
+type ncNumcoreQParams struct {
+	Arith  uint8  // qcore.Arith
+	ViaF16 bool   // source values pass through float16 first (producer quantized an F16 file)
+	Aux    int    // index into Object.Aux of the importance matrix, -1 = reference quantizer
+	Name   string // imatrix entry name
+}
+
+// WDir is the directory entry of one window.
+type ncNumcoreWDir struct {
+	Mode, Coder uint8
+	Narrow      ncNumcoreDType // coding dtype when it differs from the tensor dtype (exact F32 narrowing)
+	PLen        int64
+	Sum         [16]byte // SHA-256/128 of the decoded window
+}
+
+// TDir is the directory entry of one tensor.
+type ncNumcoreTDir struct {
+	DT       ncNumcoreDType
+	Off, Len int64
+	Cols     int64
+	Win      int64 // units per window: elements (float), blocks (quant derivation), bytes (opaque)
+	Ref      *ncNumcoreRef
+	P        *ncNumcoreParams // structured predictor (nil = identity)
+	Q        *ncNumcoreQParams
+	W        []ncNumcoreWDir
+	pOff     int64 // payload offset of window 0
+}
+
+type ncNumcoreBaseInfo struct {
+	ID  ncNumcoreID
+	Len int64
+}
+
+// unitOf is the byte size of one window unit. derived selects the quant-block unit.
+func ncNumcore_unitOf(d ncNumcoreDType, derived bool) int {
+	if d.IsFloat() {
+		return d.Width()
+	}
+	if derived {
+		if q, ok := d.QType(); ok {
+			_, by := ncNumcore_qBlock(q)
+			return by
+		}
+	}
+	return 1
+}
+
+func (t *ncNumcoreTDir) unit() int { return ncNumcore_unitOf(t.DT, t.Q != nil) }
+
+// winBytes is the decoded byte span of window k relative to the tensor.
+func (t *ncNumcoreTDir) winBytes(k int64) (off, n int64) {
+	wb := t.Win * int64(t.unit())
+	off = k * wb
+	n = t.Len - off
+	if n > wb {
+		n = wb
+	}
+	return off, n
+}
+
+func ncNumcore_numWindows(length, win int64, unit int) (int64, bool) {
+	if win <= 0 || unit <= 0 || win > ncNumcore_maxWinByte/int64(unit) {
+		return 0, false
+	}
+	wb := win * int64(unit)
+	n := (length + wb - 1) / wb
+	if n > ncNumcore_maxWindows {
+		return 0, false
+	}
+	return n, true
+}
+
+// Object is a parsed ZN7 directory over a ReaderAt.
+type ncNumcoreObject struct {
+	r       io.ReaderAt
+	size    int64
+	FileLen int64
+	FileSHA ncNumcoreID
+	Bases   []ncNumcoreBaseInfo
+	Aux     []ncNumcoreID
+	T       []ncNumcoreTDir
+	GapMode uint8 // 0 DEFLATE, 1 dcore delta against Bases[GapSlot] gaps
+	GapSlot uint8
+	GapLen  int64
+	GapPLen int64
+	GapSum  [16]byte
+	DirLen  int64
+}
+
+func ncNumcore_sum16(b []byte) (s [16]byte) {
+	h := sha256.Sum256(b)
+	copy(s[:], h[:16])
+	return
+}
+
+func ncNumcore_readFull(r io.ReaderAt, p []byte, off int64) error {
+	n, err := r.ReadAt(p, off)
+	if n == len(p) {
+		return nil
+	}
+	if err == nil || err == io.EOF {
+		return io.ErrUnexpectedEOF
+	}
+	return err
+}
+
+type ncNumcore_dw struct{ b []byte }
+
+func (w *ncNumcore_dw) u(v uint64) { w.b = binary.AppendUvarint(w.b, v) }
+
+func (w *ncNumcore_dw) raw(p []byte) { w.b = append(w.b, p...) }
+
+type ncNumcore_dr struct {
+	b   []byte
+	p   int
+	bad bool
+}
+
+func (r *ncNumcore_dr) u() uint64 {
+	v, n := binary.Uvarint(r.b[r.p:])
+	if n <= 0 {
+		r.bad = true
+		return 0
+	}
+	r.p += n
+	return v
+}
+
+// i returns a non-negative int64 bounded by max.
+func (r *ncNumcore_dr) i(max int64) int64 {
+	v := r.u()
+	if v > uint64(max) {
+		r.bad = true
+		return 0
+	}
+	return int64(v)
+}
+
+func (r *ncNumcore_dr) raw(n int) []byte {
+	if r.bad || n < 0 || n > len(r.b)-r.p {
+		r.bad = true
+		return nil
+	}
+	out := r.b[r.p : r.p+n]
+	r.p += n
+	return out
+}
+
+func (o *ncNumcoreObject) marshalDir() []byte {
+	w := &ncNumcore_dw{}
+	w.u(uint64(o.FileLen))
+	w.raw(o.FileSHA[:])
+	w.u(uint64(len(o.Bases)))
+	for _, b := range o.Bases {
+		w.raw(b.ID[:])
+		w.u(uint64(b.Len))
+	}
+	w.u(uint64(len(o.Aux)))
+	for _, a := range o.Aux {
+		w.raw(a[:])
+	}
+	w.u(uint64(o.GapMode))
+	w.u(uint64(o.GapSlot))
+	w.u(uint64(o.GapLen))
+	w.u(uint64(o.GapPLen))
+	w.raw(o.GapSum[:])
+	w.u(uint64(len(o.T)))
+	for i := range o.T {
+		t := &o.T[i]
+		w.u(uint64(t.DT))
+		w.u(uint64(t.Off))
+		w.u(uint64(t.Len))
+		w.u(uint64(t.Cols))
+		w.u(uint64(t.Win))
+		fl := uint64(0)
+		if t.Ref != nil {
+			fl |= 1
+		}
+		if t.P != nil {
+			fl |= 2
+		}
+		if t.Q != nil {
+			fl |= 4
+		}
+		w.u(fl)
+		if t.Ref != nil {
+			w.u(uint64(t.Ref.Slot))
+			w.u(uint64(t.Ref.TIdx))
+			w.u(uint64(t.Ref.Perm.Kind))
+			w.u(uint64(t.Ref.Perm.Heads))
+		}
+		if t.P != nil {
+			pb := t.P.Marshal()
+			w.u(uint64(len(pb)))
+			w.raw(pb)
+		}
+		if t.Q != nil {
+			w.u(uint64(t.Q.Arith))
+			v := uint64(0)
+			if t.Q.ViaF16 {
+				v = 1
+			}
+			w.u(v)
+			w.u(uint64(t.Q.Aux + 1))
+			w.u(uint64(len(t.Q.Name)))
+			w.raw([]byte(t.Q.Name))
+		}
+		for k := range t.W {
+			wd := &t.W[k]
+			w.raw([]byte{wd.Mode | wd.Coder<<3, byte(wd.Narrow)})
+			w.u(uint64(wd.PLen))
+			w.raw(wd.Sum[:])
+		}
+	}
+	return w.b
+}
+
+// OpenObject parses and validates the directory of a ZN7 object. Every length, count and offset
+// is bounded by the object size before anything is allocated from it.
+func ncNumcoreOpenObject(r io.ReaderAt, size int64) (*ncNumcoreObject, error) {
+	if size < int64(len(ncNumcore_zMagic))+ncNumcore_zTrailLen {
+		return nil, ncNumcoreErrFormat7
+	}
+	var head [4]byte
+	var tr [ncNumcore_zTrailLen]byte
+	if err := ncNumcore_readFull(r, head[:], 0); err != nil {
+		return nil, err
+	}
+	if err := ncNumcore_readFull(r, tr[:], size-ncNumcore_zTrailLen); err != nil {
+		return nil, err
+	}
+	if string(head[:]) != ncNumcore_zMagic || string(tr[16:]) != ncNumcore_zTrailer {
+		return nil, ncNumcoreErrFormat7
+	}
+	dirOff, dirLen := binary.LittleEndian.Uint64(tr[0:]), binary.LittleEndian.Uint64(tr[8:])
+	body := uint64(size - ncNumcore_zTrailLen)
+	if dirLen > ncNumcore_maxDir7 || dirOff < 4 || dirOff > body || dirLen != body-dirOff {
+		return nil, ncNumcoreErrFormat7
+	}
+	db := make([]byte, dirLen)
+	if err := ncNumcore_readFull(r, db, int64(dirOff)); err != nil {
+		return nil, err
+	}
+	d := &ncNumcore_dr{b: db}
+	o := &ncNumcoreObject{r: r, size: size, DirLen: int64(dirLen)}
+	o.FileLen = d.i(math.MaxInt64 / 2)
+	copy(o.FileSHA[:], d.raw(32))
+	nb := d.i(ncNumcoreMaxBases7)
+	for i := int64(0); i < nb && !d.bad; i++ {
+		var b ncNumcoreBaseInfo
+		copy(b.ID[:], d.raw(32))
+		b.Len = d.i(math.MaxInt64 / 2)
+		o.Bases = append(o.Bases, b)
+	}
+	na := d.i(ncNumcoreMaxBases7)
+	for i := int64(0); i < na && !d.bad; i++ {
+		var a ncNumcoreID
+		copy(a[:], d.raw(32))
+		o.Aux = append(o.Aux, a)
+	}
+	o.GapMode = uint8(d.i(1))
+	o.GapSlot = uint8(d.i(ncNumcoreMaxBases7))
+	o.GapLen = d.i(ncNumcoreMaxGap7)
+	o.GapPLen = d.i(int64(dirOff))
+	copy(o.GapSum[:], d.raw(16))
+	nt := d.i(ncNumcore_maxTensor7)
+	if d.bad || (o.GapMode == 1 && int(o.GapSlot) >= len(o.Bases)) || nt > int64(len(db)) {
+		return nil, ncNumcoreErrFormat7
+	}
+	pos := int64(4) + o.GapPLen
+	prev, tensorBytes := int64(0), int64(0)
+	o.T = make([]ncNumcoreTDir, nt)
+	for i := range o.T {
+		t := &o.T[i]
+		t.DT = ncNumcoreDType(d.i(255))
+		t.Off = d.i(o.FileLen)
+		t.Len = d.i(o.FileLen)
+		t.Cols = d.i(math.MaxInt64 / 2)
+		t.Win = d.i(ncNumcore_maxWinByte)
+		fl := d.i(7)
+		if d.bad || ncNumcore_dtNames[t.DT] == "" || t.Off < prev || t.Len > o.FileLen-t.Off {
+			return nil, ncNumcoreErrFormat7
+		}
+		prev = t.Off + t.Len
+		tensorBytes += t.Len
+		if fl&1 != 0 {
+			t.Ref = &ncNumcoreRef{Slot: uint8(d.i(ncNumcoreMaxBases7)), TIdx: uint32(d.i(ncNumcore_maxTensor7))}
+			t.Ref.Perm = ncNumcorePermHint{Kind: uint8(d.i(1)), Heads: uint16(d.i(1 << 15))}
+			if int(t.Ref.Slot) >= len(o.Bases) {
+				return nil, ncNumcoreErrFormat7
+			}
+		}
+		if fl&2 != 0 {
+			pl := d.i(int64(len(db)))
+			pb := d.raw(int(pl))
+			if d.bad || !t.DT.IsFloat() || t.Ref == nil {
+				return nil, ncNumcoreErrFormat7
+			}
+			p, used, err := ncNumcoreParseParams(pb, len(pb))
+			if err != nil || used != len(pb) || (p.Kind != ncNumcoreKAff && p.Kind != ncNumcoreKLow) {
+				return nil, ncNumcoreErrFormat7
+			}
+			t.P = p
+		}
+		if fl&4 != 0 {
+			q := &ncNumcoreQParams{Arith: uint8(d.i(1))}
+			q.ViaF16 = d.i(1) == 1
+			q.Aux = int(d.i(int64(len(o.Aux)))) - 1
+			q.Name = string(d.raw(int(d.i(ncNumcore_maxName7))))
+			if _, ok := t.DT.QType(); !ok || t.Ref == nil || t.Cols <= 0 {
+				return nil, ncNumcoreErrFormat7
+			}
+			t.Q = q
+		}
+		u := t.unit()
+		nw, ok := ncNumcore_numWindows(t.Len, t.Win, u)
+		if d.bad || !ok || t.Len%int64(u) != 0 || nw > int64(len(db)-d.p)/19 {
+			return nil, ncNumcoreErrFormat7
+		}
+		if t.Q != nil { // windows are whole rows of whole blocks
+			el, _ := ncNumcore_qBlock(ncNumcore_mustQ(t.DT))
+			if t.Cols%int64(el) != 0 || t.Win%(t.Cols/int64(el)) != 0 {
+				return nil, ncNumcoreErrFormat7
+			}
+		}
+		t.pOff = pos
+		t.W = make([]ncNumcoreWDir, nw)
+		for k := range t.W {
+			wd := &t.W[k]
+			hb := d.raw(2)
+			if d.bad {
+				return nil, ncNumcoreErrFormat7
+			}
+			wd.Mode, wd.Coder, wd.Narrow = hb[0]&7, hb[0]>>3, ncNumcoreDType(hb[1])
+			wd.PLen = d.i(int64(dirOff))
+			copy(wd.Sum[:], d.raw(16))
+			if d.bad || wd.PLen > int64(dirOff)-pos || !wd.valid(t) {
+				return nil, ncNumcoreErrFormat7
+			}
+			pos += wd.PLen
+		}
+	}
+	if d.bad || d.p != len(db) || pos != int64(dirOff) || o.GapLen != o.FileLen-tensorBytes {
+		return nil, ncNumcoreErrFormat7
+	}
+	return o, nil
+}
+
+func (wd *ncNumcoreWDir) valid(t *ncNumcoreTDir) bool {
+	switch wd.Mode {
+	case ncNumcoreMRaw:
+		return wd.Coder <= ncNumcoreCFlate && wd.Narrow == 0
+	case ncNumcoreMDirect:
+		return t.DT.IsFloat() && (wd.Coder == ncNumcoreCFPE || wd.Coder == ncNumcoreCPlanes || wd.Coder == ncNumcoreCStore) && wd.narrowOK(t)
+	case ncNumcoreMPred:
+		return t.DT.IsFloat() && t.Ref != nil && (wd.Coder == ncNumcoreCNRC || wd.Coder == ncNumcoreCPlanes) && wd.narrowOK(t)
+	case ncNumcoreMCopy:
+		return t.Ref != nil && wd.PLen == 0 && wd.Narrow == 0 && t.Q == nil
+	case ncNumcoreMQuant:
+		return t.Q != nil && wd.Coder <= ncNumcoreCFlate && wd.Narrow == 0
+	}
+	return false
+}
+
+func (wd *ncNumcoreWDir) narrowOK(t *ncNumcoreTDir) bool {
+	return wd.Narrow == 0 || (t.DT == ncNumcoreDF32 && (wd.Narrow == ncNumcoreDF16 || wd.Narrow == ncNumcoreDBF16))
+}
+
+// Layout rebuilds the tensor table of the original file (names are not stored).
+func (o *ncNumcoreObject) Layout() *ncNumcoreLayout {
+	l := &ncNumcoreLayout{Size: o.FileLen, T: make([]ncNumcoreTensor, len(o.T))}
+	for i := range o.T {
+		l.T[i] = ncNumcoreTensor{DT: o.T[i].DT, Off: o.T[i].Off, Len: o.T[i].Len, Cols: o.T[i].Cols}
+	}
+	return l
+}
+
+func ncNumcore_deflateBytes(b []byte) []byte {
+	var buf bytes.Buffer
+	zw, _ := flate.NewWriter(&buf, flate.DefaultCompression)
+	zw.Write(b)
+	zw.Close()
+	return buf.Bytes()
+}
+
+// inflateExact inflates exactly n bytes (bounded: a longer stream is an error, not an allocation).
+func ncNumcore_inflateExact(b []byte, n int) ([]byte, error) {
+	out := make([]byte, n)
+	zr := flate.NewReader(bytes.NewReader(b))
+	if _, err := io.ReadFull(zr, out); err != nil {
+		return nil, ncNumcoreErrFormat7
+	}
+	var one [1]byte
+	if k, _ := zr.Read(one[:]); k != 0 {
+		return nil, ncNumcoreErrFormat7
+	}
+	return out, nil
+}
+
+func ncNumcore_planesUnpack(payload []byte, w, n int) ([]byte, error) {
+	pl, err := ncNumcore_inflateExact(payload, n*w)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, n*w)
+	for k := 0; k < w; k++ {
+		row := pl[k*n : (k+1)*n]
+		for i, v := range row {
+			out[i*w+(w-1-k)] = v
+		}
+	}
+	return out, nil
+}
+
+// predWindow turns base element bytes into predicted target words (dtype cd) for target elements
+// [lo, lo+n). p == nil is the identity (dtype conversion only).
+func ncNumcore_predWindow(p *ncNumcoreParams, cd ncNumcoreDType, b ncNumcoreBase, lo int64, n int, cols int64) ([]byte, error) {
+	w := cd.Width()
+	if b.n() != n {
+		return nil, ncNumcoreErrFormat7
+	}
+	out := make([]byte, n*w)
+	if p == nil {
+		if b.DT == cd {
+			copy(out, b.Data)
+			return out, nil
+		}
+		for i := 0; i < n; i++ {
+			ncNumcorePutLE(out, w, i, ncNumcore_idPred(cd, b, i))
+		}
+		return out, nil
+	}
+	switch p.Kind {
+	case ncNumcoreKAff:
+		if p.Gran != ncNumcoreGTensor || len(p.Coef) != 2 {
+			return nil, ncNumcoreErrParams
+		}
+		a, c := float64(p.Coef[0]), float64(p.Coef[1])
+		for i := 0; i < n; i++ {
+			bv := b.at(i)
+			pv := float64(a*bv) + c
+			if !ncNumcoreFinite(pv) || !ncNumcoreFinite(bv) {
+				ncNumcorePutLE(out, w, i, ncNumcore_idPred(cd, b, i))
+				continue
+			}
+			ncNumcorePutLE(out, w, i, ncNumcoreFromF64(cd, pv))
+		}
+	case ncNumcoreKLow:
+		r := int64(p.Rank)
+		if r <= 0 || cols <= 0 || int64(len(p.Coef))%r != 0 {
+			return nil, ncNumcoreErrParams
+		}
+		rows := int64(len(p.Coef))/r - cols
+		if rows <= 0 || lo < 0 || lo+int64(n) > rows*cols {
+			return nil, ncNumcoreErrParams
+		}
+		U, V := p.Coef[:rows*r], p.Coef[rows*r:]
+		for i := 0; i < n; i++ {
+			e := lo + int64(i)
+			ui, vj := U[(e/cols)*r:(e/cols+1)*r], V[(e%cols)*r:(e%cols+1)*r]
+			var s float64
+			for k := range ui {
+				s += float64(float64(ui[k]) * float64(vj[k]))
+			}
+			bv := b.at(i)
+			pv := bv + s
+			if !ncNumcoreFinite(pv) || !ncNumcoreFinite(bv) {
+				ncNumcorePutLE(out, w, i, ncNumcore_idPred(cd, b, i))
+				continue
+			}
+			ncNumcorePutLE(out, w, i, ncNumcoreFromF64(cd, pv))
+		}
+	default:
+		return nil, ncNumcoreErrParams
+	}
+	return out, nil
+}
+
+// baseFn supplies base tensor elements [lo, lo+n) of the window's reference (permutation applied).
+type ncNumcore_baseFn func(ctx context.Context, lo int64, n int) (ncNumcoreBase, error)
+
+// rebuild reconstructs one window from its payload. It is the single decode path used by replay,
+// range reads and the encoder's own verification. dst has the window's decoded size.
+func ncNumcore_rebuild(ctx context.Context, t *ncNumcoreTDir, wd *ncNumcoreWDir, k int64, payload []byte, dst []byte, base ncNumcore_baseFn, aux ncNumcore_auxFn) error {
+	if int64(len(payload)) != wd.PLen {
+		return ncNumcoreErrFormat7
+	}
+	u := t.unit()
+	n := len(dst) / u
+	switch wd.Mode {
+	case ncNumcoreMRaw:
+		if wd.Coder == ncNumcoreCStore {
+			if len(payload) != len(dst) {
+				return ncNumcoreErrFormat7
+			}
+			copy(dst, payload)
+			return nil
+		}
+		out, err := ncNumcore_inflateExact(payload, len(dst))
+		if err != nil {
+			return err
+		}
+		copy(dst, out)
+		return nil
+	case ncNumcoreMDirect, ncNumcoreMPred, ncNumcoreMCopy:
+		if !t.DT.IsFloat() {
+			if wd.Mode != ncNumcoreMCopy { // opaque copy: identical bytes of the base tensor
+				return ncNumcoreErrFormat7
+			}
+			b, err := base(ctx, k*t.Win, len(dst))
+			if err != nil {
+				return err
+			}
+			if len(b.Data) != len(dst) {
+				return ncNumcoreErrFormat7
+			}
+			copy(dst, b.Data)
+			return nil
+		}
+		cd := t.DT
+		if wd.Narrow != 0 {
+			cd = wd.Narrow
+		}
+		w := cd.Width()
+		var words []byte
+		var err error
+		if wd.Mode == ncNumcoreMDirect {
+			switch wd.Coder {
+			case ncNumcoreCFPE:
+				words, err = ncNumcoreFPEDecode(cd, payload, n)
+			case ncNumcoreCPlanes:
+				words, err = ncNumcore_planesUnpack(payload, w, n)
+			default:
+				if len(payload) != n*w {
+					return ncNumcoreErrFormat7
+				}
+				words = payload
+			}
+		} else {
+			b, e := base(ctx, k*t.Win, n)
+			if e != nil {
+				return e
+			}
+			pred, e := ncNumcore_predWindow(t.P, cd, b, k*t.Win, n, t.Cols)
+			if e != nil {
+				return e
+			}
+			if wd.Mode == ncNumcoreMCopy {
+				words = pred
+			} else {
+				var resid []byte
+				if wd.Coder == ncNumcoreCNRC {
+					resid, err = ncNumcoreNRCDecode(cd, payload, pred, n)
+				} else {
+					resid, err = ncNumcore_planesUnpack(payload, w, n)
+				}
+				if err == nil {
+					words = ncNumcoreApplyResidual(ncNumcoreRKey, w, resid, pred)
+				}
+			}
+		}
+		if err != nil {
+			return err
+		}
+		if len(words) != n*w {
+			return ncNumcoreErrFormat7
+		}
+		if wd.Narrow != 0 {
+			words = ncNumcoreWiden(words, cd)
+		}
+		copy(dst, words)
+		return nil
+	case ncNumcoreMQuant:
+		return ncNumcore_rebuildQuant(ctx, t, wd, k, payload, dst, base, aux)
+	}
+	return ncNumcoreErrFormat7
+}
+
+// =============================================================================
+// 16h. ZN7 authoritative bodies (Z4-C1 integration of the P7 numeric core)
+//
+// A float model history (safetensors / GGUF) is stored as one ZN7 container per
+// content: windowed, per-window authenticated, predicted from earlier versions
+// (bases) and, for quantized files, derived from the float source with the
+// importance matrix that produced them. The container is the body of a delta-form
+// record whose bases are the objects it was predicted from (float sources and the
+// imatrix included), so the dependency closure keeps every one of them alive.
+// Reads are exact whole-object or range reads through the container; the record
+// is proved against the content SHA-256 before it is published. A store holding
+// such a record carries the "zn7" feature marker: builds that do not know the
+// marker refuse to open it.
+// =============================================================================
+
+const (
+	authZN7Feature   = "zn7"
+	authZN7MaxAux    = 64 << 20
+	authZN7ReadChunk = 4 << 20 // decoded span a body keeps between ReadAt calls
+)
+
+func authZN7GGMLType(t uint32) ncNumcoreDType {
+	switch t {
+	case 0:
+		return ncNumcoreDF32
+	case 1:
+		return ncNumcoreDF16
+	case 30:
+		return ncNumcoreDBF16
+	case 2:
+		return ncNumcoreDQ4_0
+	case 3:
+		return ncNumcoreDQ4_1
+	case 6:
+		return ncNumcoreDQ5_0
+	case 7:
+		return ncNumcoreDQ5_1
+	case 8:
+		return ncNumcoreDQ8_0
+	case 10:
+		return ncNumcoreDQ2_K
+	case 11:
+		return ncNumcoreDQ3_K
+	case 12:
+		return ncNumcoreDQ4_K
+	case 13:
+		return ncNumcoreDQ5_K
+	case 14:
+		return ncNumcoreDQ6_K
+	case 20:
+		return ncNumcoreDIQ4_NL
+	case 23:
+		return ncNumcoreDIQ4_XS
+	}
+	return ncNumcoreDRaw
+}
+
+// authZN7Layout derives the tensor layout of a safetensors or GGUF file with the production parsers.
+func authZN7Layout(r io.ReaderAt, size int64) (*ncNumcoreLayout, error) {
+	var head [4]byte
+	if _, err := r.ReadAt(head[:], 0); err != nil {
+		return nil, err
+	}
+	lay := &ncNumcoreLayout{Size: size}
+	if string(head[:]) == "GGUF" {
+		g, err := repGGParse(r, size, repGGLimits{MaxMeta: 64 << 20, MaxTensors: 1 << 16, MaxKV: 1 << 18, MaxString: 1 << 20})
+		if err != nil {
+			return nil, err
+		}
+		for i := range g.Tensors {
+			t := &g.Tensors[i]
+			nt := ncNumcoreTensor{Name: t.Name, DT: authZN7GGMLType(t.Type), Off: t.Begin, Len: t.Size()}
+			if len(t.Dims) >= 2 {
+				nt.Cols = int64(t.Dims[0])
+			}
+			lay.T = append(lay.T, nt)
+		}
+	} else {
+		f, err := repSTParse(r, size, repSTOptions{AllowUnknownDType: true})
+		if err != nil {
+			return nil, err
+		}
+		dts := map[string]ncNumcoreDType{"F32": ncNumcoreDF32, "F16": ncNumcoreDF16, "BF16": ncNumcoreDBF16}
+		for i := range f.Tensors {
+			t := &f.Tensors[i]
+			nt := ncNumcoreTensor{Name: t.Name, DT: dts[t.DType], Off: f.DataStart + t.Begin, Len: t.Size()}
+			if len(t.Shape) >= 2 {
+				nt.Cols = t.Shape[len(t.Shape)-1]
+			}
+			lay.T = append(lay.T, nt)
+		}
+	}
+	sort.Slice(lay.T, func(a, b int) bool { return lay.T[a].Off < lay.T[b].Off })
+	if err := lay.Validate(); err != nil {
+		return nil, err
+	}
+	return lay, nil
+}
+
+// authZN7Locked serializes ReadAt on a reader that is not safe for concurrent use (the window workers share it).
+type authZN7Locked struct {
+	mu sync.Mutex
+	r  io.ReaderAt
+}
+
+func (l *authZN7Locked) ReadAt(p []byte, off int64) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.r.ReadAt(p, off)
+}
+
+// authZN7Res resolves the bases of one container to authoritative bodies.
+type authZN7Res struct {
+	c     *authCtx
+	depth int
+	mu    sync.Mutex
+	open  map[ncNumcoreID]ncNumcoreStored
+}
+
+func (r *authZN7Res) Open(ctx context.Context, id ncNumcoreID) (ncNumcoreStored, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st, ok := r.open[id]; ok {
+		return st, nil
+	}
+	if r.depth > authHardDepth+1 {
+		return ncNumcoreStored{}, errAuthLimit
+	}
+	sha := [32]byte(id)
+	rec, err := r.c.s.authLoad(sha)
+	if err != nil {
+		return ncNumcoreStored{}, err
+	}
+	if rec == nil {
+		return ncNumcoreStored{}, fmt.Errorf("%w: %x", errAuthMissing, sha[:6])
+	}
+	var st ncNumcoreStored
+	if rec.Form == authFormDelta && len(rec.Pieces) > 0 && authZN7IsContainer(r.c, rec) {
+		blob := &authZN7Locked{r: newPieceSeq(r.c, rec.Pieces)}
+		obj, err := ncNumcoreOpenObject(blob, pieceTotal(rec.Pieces))
+		if err != nil {
+			return ncNumcoreStored{}, fmt.Errorf("%w: %v", errAuthCorrupt, err)
+		}
+		st = ncNumcoreStored{Obj: obj}
+	} else {
+		body, _, err := r.c.body(sha, 0, r.depth)
+		if err != nil {
+			return ncNumcoreStored{}, err
+		}
+		lay, err := authZN7Layout(&authZN7Locked{r: body}, rec.Size)
+		if err != nil {
+			return ncNumcoreStored{}, fmt.Errorf("%w: base %x: %v", errAuthCorrupt, sha[:6], err)
+		}
+		st = ncNumcoreStored{Raw: &authZN7Locked{r: body}, Lay: lay}
+	}
+	if r.open == nil {
+		r.open = map[ncNumcoreID]ncNumcoreStored{}
+	}
+	r.open[id] = st
+	return st, nil
+}
+
+func (r *authZN7Res) Aux(ctx context.Context, id ncNumcoreID) ([]byte, error) {
+	rec, err := r.c.s.authLoad([32]byte(id))
+	if err != nil {
+		return nil, err
+	}
+	if rec == nil || rec.Size > authZN7MaxAux {
+		return nil, ncNumcoreErrMissing7
+	}
+	body, _, err := r.c.body([32]byte(id), 0, r.depth)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, rec.Size)
+	if n, err := body.ReadAt(out, 0); n != len(out) {
+		return nil, fmt.Errorf("%w: auxiliary object: %v", errAuthCorrupt, err)
+	}
+	return out, nil
+}
+
+// authZN7IsContainer reports whether a delta-form record's blob is a ZN7 container.
+func authZN7IsContainer(c *authCtx, rec *authRecord) bool {
+	var magic [4]byte
+	n, _ := newPieceSeq(c, rec.Pieces).ReadAt(magic[:], 0)
+	return n == 4 && string(magic[:]) == ncNumcore_zMagic
+}
+
+// authZN7Body serves a ZN7 record: windows are decoded on demand from the container and the bases.
+type authZN7Body struct {
+	c    *authCtx
+	rec  *authRecord
+	obj  *ncNumcoreObject
+	res  *authZN7Res
+	opt  ncNumcoreDecOpts
+	mu   sync.Mutex
+	buf  []byte
+	boff int64
+}
+
+func (c *authCtx) newZN7(rec *authRecord, blob *pieceSeq, depth int) (authBody, error) {
+	obj, err := ncNumcoreOpenObject(&authZN7Locked{r: blob}, blob.size)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errAuthCorrupt, err)
+	}
+	if obj.FileLen != rec.Size || [32]byte(obj.FileSHA) != rec.SHA {
+		return nil, fmt.Errorf("%w: container does not describe its record", errAuthCorrupt)
+	}
+	ids := map[[32]byte]bool{}
+	for _, b := range rec.Bases {
+		ids[b.SHA] = true
+	}
+	want := len(obj.Bases) + len(obj.Aux)
+	if len(rec.Bases) != want {
+		return nil, fmt.Errorf("%w: record lists %d bases, container needs %d", errAuthCorrupt, len(rec.Bases), want)
+	}
+	for _, b := range obj.Bases {
+		if !ids[[32]byte(b.ID)] {
+			return nil, fmt.Errorf("%w: container base missing from the record", errAuthCorrupt)
+		}
+	}
+	for _, a := range obj.Aux {
+		if !ids[[32]byte(a)] {
+			return nil, fmt.Errorf("%w: container auxiliary object missing from the record", errAuthCorrupt)
+		}
+	}
+	maxDepth := 0
+	for _, b := range rec.Bases { // every base resolves now: cycle, depth and open-body limits apply
+		_, brec, err := c.body(b.SHA, b.Size, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		maxDepth = max(maxDepth, int(brec.Depth))
+	}
+	if int(rec.Depth) < maxDepth+1 {
+		return nil, fmt.Errorf("%w: recorded depth %d below the bases' %d", errAuthCorrupt, rec.Depth, maxDepth+1)
+	}
+	return &authZN7Body{c: c, rec: rec, obj: obj, res: &authZN7Res{c: c, depth: depth + 1}, opt: ncNumcoreDecOpts{Workers: 1, CacheBytes: 16 << 20}, boff: -1}, nil
+}
+
+func (b *authZN7Body) Size() int64 { return b.rec.Size }
+
+func (b *authZN7Body) ReadAt(p []byte, off int64) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := 0
+	for n < len(p) && off < b.rec.Size {
+		if b.boff < 0 || off < b.boff || off >= b.boff+int64(len(b.buf)) {
+			lo := off / authZN7ReadChunk * authZN7ReadChunk
+			data, _, err := b.obj.ReadRange(context.Background(), lo, min(int64(authZN7ReadChunk), b.rec.Size-lo), b.res, b.opt)
+			if err != nil {
+				b.boff = -1
+				return n, fmt.Errorf("%w: %v", errAuthMismatch, err)
+			}
+			b.buf, b.boff = data, lo
+		}
+		k := copy(p[n:], b.buf[off-b.boff:])
+		n += k
+		off += int64(k)
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// ---- planning and encoding ------------------------------------------------------
+
+type authZN7Info struct {
+	lay  *ncNumcoreLayout
+	name map[string]int
+}
+
+func (m *authMigrator) zn7Info(j int) *authZN7Info {
+	if v, ok := m.zl[j]; ok {
+		return v
+	}
+	if m.zl == nil {
+		m.zl = map[int]*authZN7Info{}
+	}
+	var info *authZN7Info
+	if mt := m.order[j].man.TotalLength; mt >= 4096 {
+		ra := m.s.newAuthObjAt(m.order[j].man)
+		if lay, err := authZN7Layout(ra, mt); err == nil && len(lay.T) > 0 {
+			info = &authZN7Info{lay: lay, name: map[string]int{}}
+			for k := range lay.T {
+				info.name[lay.T[k].Name] = k
+			}
+		}
+		ra.close()
+	}
+	m.zl[j] = info
+	return info
+}
+
+// tryZN7 plans (and, when applying, commits) a ZN7 container for a model file whose earlier versions or float
+// source are present. handled is false when the object is not a model with a usable base or the container does
+// not pay: the generic paths then decide as before.
+func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(AuthPlan)) (handled bool, err error) {
+	pol := m.pol
+	if pol.NoZN7 || !pol.AllowDelta || o.man.TotalLength < 4096 {
+		return false, nil
+	}
+	tinfo := m.zn7Info(i)
+	if tinfo == nil {
+		return false, nil
+	}
+	// candidate bases: earlier contents sharing tensors with it; ranked by shared payload bytes
+	type bc struct {
+		j      int
+		shared int64
+	}
+	var cs []bc
+	for _, j := range m.done {
+		if j == i || m.depth[j] >= pol.MaxDepth {
+			continue
+		}
+		binfo := m.zn7Info(j)
+		if binfo == nil {
+			continue
+		}
+		var shared int64
+		for _, t := range tinfo.lay.T {
+			if k, ok := binfo.name[t.Name]; ok && t.DT != ncNumcoreDRaw && binfo.lay.T[k].DT != ncNumcoreDRaw {
+				shared += min(t.Len, binfo.lay.T[k].Len)
+			}
+		}
+		if shared >= o.man.TotalLength/4 {
+			cs = append(cs, bc{j, shared})
+		}
+	}
+	if len(cs) == 0 {
+		return false, nil
+	}
+	sort.Slice(cs, func(a, b int) bool {
+		return cmp.Or(cmp.Compare(cs[b].shared, cs[a].shared), cmp.Compare(cs[b].j, cs[a].j)) < 0
+	})
+	if len(cs) > min(pol.MaxBases, 3) {
+		cs = cs[:min(pol.MaxBases, 3)]
+	}
+	tgt := m.s.newAuthObjAt(o.man)
+	defer tgt.close()
+	var bases []ncNumcoreBaseIn
+	var closers []*authObjAt
+	defer func() {
+		for _, c := range closers {
+			c.close()
+		}
+	}()
+	var js []int
+	depth := 0
+	for _, c := range cs {
+		bo := m.order[c.j]
+		ra := m.s.newAuthObjAt(bo.man)
+		closers = append(closers, ra)
+		bases = append(bases, ncNumcoreBaseIn{ID: ncNumcoreID(bo.sha), Len: bo.man.TotalLength, Src: ncNumcoreRawSource{R: ra, L: m.zn7Info(c.j).lay}})
+		js = append(js, c.j)
+		depth = max(depth, m.depth[c.j]+1)
+	}
+	if depth > pol.MaxDepth {
+		return false, nil
+	}
+	cands := func(ti int) []ncNumcoreCand {
+		var out []ncNumcoreCand
+		for s, c := range cs {
+			if k, ok := m.zn7Info(c.j).name[tinfo.lay.T[ti].Name]; ok {
+				out = append(out, ncNumcoreCand{Slot: s, TIdx: k})
+			}
+		}
+		return out
+	}
+	// an importance matrix stored next to the model is offered to the encoder as auxiliary input
+	var aux []ncNumcoreAuxIn
+	var auxObjs []int
+	for _, j := range m.done {
+		ob := m.order[j]
+		if ob.man.TotalLength > 0 && ob.man.TotalLength <= authZN7MaxAux && strings.Contains(strings.ToLower(ob.key), "imatrix") {
+			if data, err := m.s.manifestBytes(ob.man); err == nil {
+				aux = append(aux, ncNumcoreAuxIn{ID: ncNumcoreID(ob.sha), Data: data})
+				auxObjs = append(auxObjs, j)
+			}
+		}
+	}
+	opts := ncNumcoreEncOpts{Workers: min(max(runtime.GOMAXPROCS(0), 1), 4)}
+	var added int64
+	if c := pol.cache; c != nil && c.znAdded[o.sha] != 0 {
+		added = c.znAdded[o.sha]
+	} else {
+		var cw authCountWriter
+		if _, err := ncNumcoreEncode(context.Background(), &cw, tgt, tinfo.lay, bases, cands, aux, opts); err != nil {
+			return false, nil // not codable as a container: the generic paths decide
+		}
+		added = cw.n + 96 + 160
+		if c != nil && !pol.Apply {
+			c.znAdded[o.sha] = added
+		}
+	}
+	var pinCost int64
+	for _, j := range js {
+		if !m.order[j].hasRec {
+			pinCost += int64(len(m.order[j].man.Chunks)) * 36
+		}
+	}
+	added += pinCost
+	if plan.CDCBytes > 0 {
+		plan.AddedBytes, plan.Saving = added, float64(plan.CDCBytes-added)/float64(plan.CDCBytes)
+	}
+	// A generic delta plan that is already known and cheaper wins; otherwise the container is the better model of float data.
+	if c := pol.cache; c != nil {
+		if g, ok := c.deltaAdd[o.sha]; ok && g <= added {
+			return false, nil
+		}
+	}
+	if plan.Saving < pol.MinSaving {
+		return false, nil
+	}
+	plan.Depth = depth
+	for _, j := range js {
+		plan.Bases = append(plan.Bases, hex.EncodeToString(m.order[j].sha[:6]))
+	}
+	if !pol.Apply {
+		plan.Form, plan.Reason = "delta?", "plan only (zn7)"
+		m.depth[i] = depth
+		m.release(o)
+		finish(plan)
+		m.addBase(i)
+		return true, nil
+	}
+	pw := m.s.newAuthPieceWriter()
+	defer pw.abort()
+	if _, err := ncNumcoreEncode(context.Background(), pw, tgt, tinfo.lay, bases, cands, aux, opts); err != nil {
+		return false, nil
+	}
+	ps, err := pw.finish()
+	if err != nil {
+		return false, err
+	}
+	obj, err := ncNumcoreOpenObject(&authZN7Locked{r: newPieceSeq(m.s.newAuthCtx(), ps)}, pieceTotal(ps))
+	if err != nil {
+		return false, nil
+	}
+	var refs []xdBaseRef
+	pins := append([]int(nil), js...)
+	for _, b := range obj.Bases {
+		refs = append(refs, xdBaseRef{[32]byte(b.ID), b.Len})
+	}
+	for _, a := range obj.Aux {
+		for k, j := range auxObjs {
+			if [32]byte(aux[k].ID) == [32]byte(a) {
+				refs = append(refs, xdBaseRef{[32]byte(a), m.order[j].man.TotalLength})
+				pins = append(pins, j)
+				depth = max(depth, m.depth[j]+1)
+			}
+		}
+	}
+	if len(refs) != len(obj.Bases)+len(obj.Aux) || len(refs) > authZN7MaxRefs {
+		return false, nil
+	}
+	rec := &authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormDelta, Depth: byte(depth), Bases: refs, Pieces: ps}
+	plan.Reason = "zn7"
+	return true, m.commit(i, o, rec, pins, plan, "delta", finish)
+}
+
+const authZN7MaxRefs = 8
+
+func pieceTotal(ps []authPiece) (n int64) {
+	for _, p := range ps {
+		n += p.Len
+	}
+	return n
+}
+
+// unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
+func (f storeFormat) unknownFeature() string {
+	for _, x := range f.Features {
+		if x != authZN7Feature {
+			return x
+		}
+	}
+	return ""
+}
+
+// ensureFeature durably records a store feature before the first record that needs it is published.
+func (s *Store) ensureFeature(name string) error {
+	s.formatMu.Lock()
+	defer s.formatMu.Unlock()
+	if slices.Contains(s.format.Features, name) {
+		return nil
+	}
+	f := s.format
+	f.Features = append(append([]string(nil), f.Features...), name)
+	data, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := writeFileDurable(filepath.Join(s.root, "tmp"), filepath.Join(s.root, "FORMAT.json"), data); err != nil {
+		return err
+	}
+	if err := syncDir(s.root); err != nil {
+		return err
+	}
+	s.format = f
+	return nil
 }
 
 // =============================================================================
