@@ -1,0 +1,6 @@
+    zeros3_authority_test.go:2363: v0 exact 1073741824 bytes at 355 MiB/s, peak RSS so far 130 MiB
+    zeros3_authority_test.go:2363: v1 exact 1073741824 bytes at 236 MiB/s, peak RSS so far 143 MiB
+    zeros3_authority_test.go:2363: v2 exact 1073741824 bytes at 176 MiB/s, peak RSS so far 157 MiB
+    zeros3_authority_test.go:2376: 64 random 4 KiB ranges of v1: 5.353814ms each
+--- PASS: TestAuthorityLargeCheck (18.48s)
+PASS

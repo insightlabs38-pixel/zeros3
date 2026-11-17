@@ -1,0 +1,4 @@
+    zeros3_authority_test.go:3283: 1000000 objects written in 6m23.765335623s
+    zeros3_authority_test.go:3296: 50000 pin records in 35.276116756s
+--- PASS: TestAuthorityScaleFixture (419.24s)
+PASS
