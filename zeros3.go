@@ -1369,6 +1369,7 @@ func (b *casBatch) add(sum [32]byte, data []byte) ([32]byte, error) {
 	} else if !os.IsNotExist(err) {
 		return sum, err
 	}
+	b.s.chunkRevive(sum)
 	tmp, err := b.s.casStage(data)
 	if err != nil {
 		return sum, err
@@ -1519,7 +1520,36 @@ func (s *Store) casStat(sum [32]byte) (int64, error) {
 	}
 }
 
+// retiredChunks is a qualification seam, nil in production. While set, its chunks
+// behave as physically reclaimed to every reader and presence check until a
+// writer stores them again, so a path that reaches around authority fails the
+// way it would after gc.
+var retiredChunks atomic.Pointer[sync.Map]
+
+type retiredKey struct {
+	root string
+	sum  [32]byte
+}
+
+func (s *Store) chunkRetired(sum [32]byte) bool {
+	r := retiredChunks.Load()
+	if r == nil {
+		return false
+	}
+	_, ok := r.Load(retiredKey{s.root, sum})
+	return ok
+}
+
+func (s *Store) chunkRevive(sum [32]byte) {
+	if r := retiredChunks.Load(); r != nil {
+		r.Delete(retiredKey{s.root, sum})
+	}
+}
+
 func (s *Store) casStatLocked(sum [32]byte) (int64, error) {
+	if s.chunkRetired(sum) {
+		return 0, &fs.PathError{Op: "stat", Path: s.chunkPath(sum), Err: fs.ErrNotExist}
+	}
 	info, err := os.Stat(s.chunkPath(sum))
 	if err == nil {
 		return info.Size(), nil
@@ -1554,6 +1584,9 @@ func (s *Store) casReadExcluding(sum [32]byte, skip map[int32]bool) ([]byte, err
 // casReadH is casReadExcluding reading packed copies through h (nil: a fresh
 // open per record), for maintenance scans that visit records in pack order.
 func (s *Store) casReadH(sum [32]byte, skip map[int32]bool, h *packHandles) ([]byte, error) {
+	if s.chunkRetired(sum) {
+		return nil, &fs.PathError{Op: "open", Path: s.chunkPath(sum), Err: fs.ErrNotExist}
+	}
 	var packErr, looseErr error
 	var looseData []byte
 	looseDone := false
@@ -1842,6 +1875,7 @@ func (p *packSink) Put(sum [32]byte, chunk []byte) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	p.s.chunkRevive(sum)
 	if p.cur == nil {
 		b, err := p.s.newPackBuilder(tierHot, p.comp, 1024)
 		if err != nil {
@@ -5505,9 +5539,10 @@ func (k *segSink) Put(sum [32]byte, chunk []byte) error {
 	if _, ok := k.seen[sum]; ok {
 		return nil
 	}
-	if _, ok := k.s.packLookup(sum); ok {
+	if _, ok := k.s.packLookup(sum); ok && !k.s.chunkRetired(sum) {
 		return nil
 	}
+	k.s.chunkRevive(sum)
 	if k.bytes+len(chunk) > segSinkMaxBytes {
 		return fmt.Errorf("request body exceeds its declared size by more than %d bytes", segSinkMaxBytes)
 	}
@@ -14241,16 +14276,18 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 		}
 	}
 	// Orphan body records go before the chunks they alone kept alive.
+	shards := map[string]bool{}
 	for _, hx := range rr.AuthOrphans {
 		sha, _ := decodeHexSHA256(hx)
 		fireTestHook(hookBeforeGCDelete)
 		if err := os.Remove(store.authPath(sha)); err != nil && !os.IsNotExist(err) {
 			return res, fmt.Errorf("gc: removing authority body %s: %w", hx, err)
 		}
+		shards[store.authShardDir(sha)] = true
 		res.AuthorityBodiesDeleted++
 	}
-	if len(rr.AuthOrphans) > 0 {
-		if err := syncDir(store.authDir()); err != nil {
+	for d := range shards {
+		if err := syncDir(d); err != nil {
 			return res, fmt.Errorf("gc: syncing authority bodies: %w", err)
 		}
 	}
@@ -18113,6 +18150,9 @@ func (m *manifestReader) next() ([]byte, error) {
 // chunk returns chunk i's verified bytes: from the current run, from a new
 // run starting at i, or through the ordinary copy selection.
 func (m *manifestReader) chunk(i int, sum [32]byte, chunkStart int64) ([]byte, error) {
+	if m.s.chunkRetired(sum) {
+		return nil, &fs.PathError{Op: "open", Path: m.s.chunkPath(sum), Err: fs.ErrNotExist}
+	}
 	if m.qh < len(m.q) && m.q[m.qh].idx != i {
 		m.q, m.qh = m.q[:0], 0 // defensive: a run never outlives its consumer
 	}
@@ -26654,6 +26694,9 @@ func (im *bundleImporter) publish() (BundleImportResult, error) {
 			continue
 		}
 		s.tryBuildRep(man)
+		if h := authCommitHook; h != nil {
+			h(s, man)
+		}
 	}
 	return *res, nil
 }
@@ -33767,10 +33810,16 @@ func (s *Store) repManifestLive(bucket, key, uuid string) bool {
 	return false
 }
 
+// authCommitHook is a qualification seam, nil in production: it runs after a manifest became visible.
+var authCommitHook func(*Store, manifestV1)
+
 // repAfterCommit schedules the representation of a manifest the namespace now
 // names. It never blocks the caller and never fails the request: a full queue
 // drops the build (the object stays CDC-only).
 func (s *Store) repAfterCommit(bucket, key string, man manifestV1) {
+	if h := authCommitHook; h != nil {
+		h(s, man)
+	}
 	q := s.rep.q.Load()
 	if q == nil || s.repMode() == repModeOff {
 		return
@@ -45142,8 +45191,12 @@ type authState struct {
 }
 
 func (s *Store) authDir() string { return filepath.Join(s.root, "bodies") }
+func (s *Store) authShardDir(sha [32]byte) string {
+	return filepath.Join(s.authDir(), hex.EncodeToString(sha[:1]))
+}
+
 func (s *Store) authPath(sha [32]byte) string {
-	return filepath.Join(s.authDir(), hex.EncodeToString(sha[:])+".body")
+	return filepath.Join(s.authShardDir(sha), hex.EncodeToString(sha[:])+".body")
 }
 
 // SetAuthorityCache bounds the disposable decoded-object cache (0 disables it).
@@ -45211,7 +45264,7 @@ func (s *Store) authLoad(sha [32]byte) (*authRecord, error) {
 }
 
 func (s *Store) authFiles() ([][32]byte, error) {
-	ents, err := os.ReadDir(s.authDir())
+	shards, err := os.ReadDir(s.authDir())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -45219,13 +45272,22 @@ func (s *Store) authFiles() ([][32]byte, error) {
 		return nil, err
 	}
 	var out [][32]byte
-	for _, e := range ents {
-		name, ok := strings.CutSuffix(e.Name(), ".body")
-		if !ok || e.IsDir() {
+	for _, sd := range shards {
+		if !sd.IsDir() || len(sd.Name()) != 2 {
 			continue
 		}
-		if sum, err := decodeHexSHA256(name); err == nil {
-			out = append(out, sum)
+		ents, err := os.ReadDir(filepath.Join(s.authDir(), sd.Name()))
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range ents {
+			name, ok := strings.CutSuffix(e.Name(), ".body")
+			if !ok || e.IsDir() {
+				continue
+			}
+			if sum, err := decodeHexSHA256(name); err == nil && hex.EncodeToString(sum[:1]) == sd.Name() {
+				out = append(out, sum)
+			}
 		}
 	}
 	slices.SortFunc(out, func(a, b [32]byte) int { return bytes.Compare(a[:], b[:]) })
@@ -45276,17 +45338,15 @@ func (s *Store) authPublish(rec *authRecord) error {
 	case cur == nil && rec.Gen != 1, cur != nil && rec.Gen != cur.Gen+1:
 		return errAuthStale
 	}
-	dir := s.authDir()
-	created := false
-	if _, serr := os.Stat(dir); os.IsNotExist(serr) {
-		created = true
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	if created {
-		if err := syncDir(s.root); err != nil {
-			return err
+	dir := s.authShardDir(rec.SHA)
+	for _, d := range [][2]string{{s.root, s.authDir()}, {s.authDir(), dir}} {
+		if _, serr := os.Stat(d[1]); os.IsNotExist(serr) {
+			if err := os.Mkdir(d[1], 0o755); err != nil && !os.IsExist(err) {
+				return err
+			}
+			if err := syncDir(d[0]); err != nil {
+				return err
+			}
 		}
 	}
 	s.auth.mayHave.Store(true)
@@ -45370,7 +45430,7 @@ func (s *Store) authRetire(sha [32]byte) error {
 	if err := os.Remove(s.authPath(sha)); err != nil {
 		return err
 	}
-	if err := syncDir(s.authDir()); err != nil {
+	if err := syncDir(s.authShardDir(sha)); err != nil {
 		return err
 	}
 	s.authInvalidate()
@@ -45810,6 +45870,8 @@ func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, err
 type authReachCtx struct {
 	s       *Store
 	res     *reachabilityResult
+	files   map[[32]byte]bool // body records present, listed once per scan
+	recs    map[[32]byte]*authRecord
 	visited map[[32]byte]bool
 	faulty  map[[32]byte]bool
 	live    map[[32]byte]bool
@@ -45817,7 +45879,29 @@ type authReachCtx struct {
 }
 
 func (s *Store) newAuthReachCtx(res *reachabilityResult) *authReachCtx {
-	return &authReachCtx{s: s, res: res, visited: map[[32]byte]bool{}, faulty: map[[32]byte]bool{}, live: map[[32]byte]bool{}, depth: map[[32]byte]int{}}
+	a := &authReachCtx{s: s, res: res, files: map[[32]byte]bool{}, recs: map[[32]byte]*authRecord{}, visited: map[[32]byte]bool{}, faulty: map[[32]byte]bool{}, live: map[[32]byte]bool{}, depth: map[[32]byte]int{}}
+	if s.auth.mayHave.Load() {
+		list, err := s.authFiles()
+		if err != nil {
+			res.addIssue("invalid", "bodies", err.Error())
+		}
+		for _, f := range list {
+			a.files[f] = true
+		}
+	}
+	return a
+}
+
+// load returns a record once per scan; a record is immutable while the scan holds the store.
+func (a *authReachCtx) load(sha [32]byte) (*authRecord, error) {
+	if r, ok := a.recs[sha]; ok {
+		return r, nil
+	}
+	r, err := a.s.authLoad(sha)
+	if err == nil {
+		a.recs[sha] = r
+	}
+	return r, err
 }
 
 func (a *authReachCtx) fault(sha [32]byte, err error) {
@@ -45848,7 +45932,7 @@ func (a *authReachCtx) mark(sha [32]byte, want func([]chunkRef), path map[[32]by
 		a.fault(sha, err)
 		return 0, err
 	}
-	rec, err := a.s.authLoad(sha)
+	rec, err := a.load(sha)
 	if err == nil && rec == nil {
 		err = fmt.Errorf("%w: %x", errAuthMissing, sha[:6])
 	}
@@ -45884,7 +45968,7 @@ func (a *authReachCtx) mark(sha [32]byte, want func([]chunkRef), path map[[32]by
 			a.fault(sha, fmt.Errorf("dependency %x: %w", b.SHA[:6], err))
 			return 0, err
 		}
-		if brec, _ := a.s.authLoad(b.SHA); brec != nil && brec.Size != b.Size {
+		if brec, _ := a.load(b.SHA); brec != nil && brec.Size != b.Size {
 			err := fmt.Errorf("%w: base %x size", errAuthMismatch, b.SHA[:6])
 			a.fault(sha, err)
 			return 0, err
@@ -45924,13 +46008,13 @@ func (a *authReachCtx) observe(man manifestV1, want func([]chunkRef)) (handled b
 	if err != nil {
 		return false
 	}
-	if _, err := os.Stat(a.s.authPath(sha)); err != nil {
-		if !os.IsNotExist(err) {
-			a.fault(sha, err)
-		}
+	if !a.files[sha] {
 		return false
 	}
-	rec, err := a.s.authLoad(sha)
+	rec, err := a.load(sha)
+	if err == nil && rec == nil {
+		return false // retired since the listing
+	}
 	if err == nil && rec.Size != man.TotalLength {
 		err = fmt.Errorf("%w: record is %d bytes, manifest says %d", errAuthMismatch, rec.Size, man.TotalLength)
 	}
@@ -45947,7 +46031,7 @@ func (a *authReachCtx) observe(man manifestV1, want func([]chunkRef)) (handled b
 
 // finish records body files no live manifest or dependent reaches.
 func (a *authReachCtx) finish() {
-	files, _ := a.s.authFiles()
+	files := slices.SortedFunc(maps.Keys(a.files), func(x, y [32]byte) int { return bytes.Compare(x[:], y[:]) })
 	a.res.AuthFiles = len(files)
 	for _, f := range files {
 		switch {
@@ -47040,6 +47124,108 @@ func (s *Store) AuthorityRevert(sha [32]byte) error {
 	return s.authRetire(sha)
 }
 
+// AuthRevertReport counts what AuthorityRevertAll did; LoweredTo is the store
+// format level after the floor was lowered (0 when it was not authority-adopted).
+type AuthRevertReport struct {
+	Records, Materialized, Retired, LoweredTo int
+}
+
+// AuthorityRevertAll returns every content to ordinary CDC: each live manifest's
+// chunks are re-created durably and verified present before any record goes,
+// records are retired dependents first (a crash leaves a store that verifies and
+// reruns to completion), and only when no record remains is the store lowered to
+// the level it needed without authority.
+func (s *Store) AuthorityRevertAll() (AuthRevertReport, error) {
+	var rep AuthRevertReport
+	files, err := s.authFiles()
+	if err != nil {
+		return rep, err
+	}
+	depth := make(map[[32]byte]byte, len(files))
+	for _, f := range files {
+		r, err := s.authLoad(f)
+		if err != nil {
+			return rep, err
+		}
+		if r != nil {
+			depth[f] = r.Depth
+		}
+	}
+	rep.Records = len(depth)
+	for _, lm := range s.liveManifests() {
+		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
+		if err != nil {
+			continue
+		}
+		if _, ok := depth[sha]; !ok {
+			continue
+		}
+		if err := s.materializeCDC(lm.man); err != nil {
+			return rep, fmt.Errorf("reverting %s/%s: %w", lm.bucket, lm.key, err)
+		}
+		for _, c := range lm.man.Chunks {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			if n, err := s.casStat(sum); err != nil || n != c.Length {
+				return rep, fmt.Errorf("reverting %s/%s: chunk %x is not present after materialization", lm.bucket, lm.key, sum[:6])
+			}
+		}
+		rep.Materialized++
+	}
+	fireTestHook(hookAuthRevertMaterial)
+	order := slices.Collect(maps.Keys(depth))
+	slices.SortFunc(order, func(a, b [32]byte) int { return cmp.Or(cmp.Compare(depth[b], depth[a]), bytes.Compare(a[:], b[:])) })
+	for _, sha := range order {
+		if err := s.authRetire(sha); err != nil {
+			return rep, err
+		}
+		rep.Retired++
+	}
+	lowered, err := s.authLowerFloor()
+	rep.LoweredTo = lowered
+	return rep, err
+}
+
+// authLowerFloor removes the empty bodies tree and lowers FORMAT.json to the level
+// the store needed before authority. It refuses while any record remains.
+func (s *Store) authLowerFloor() (int, error) {
+	s.auth.pubMu.Lock()
+	defer s.auth.pubMu.Unlock()
+	s.formatMu.Lock()
+	defer s.formatMu.Unlock()
+	if !levelHasAuthority(s.format.StoreFormatVersion) {
+		return 0, nil
+	}
+	files, err := s.authFiles()
+	if err != nil {
+		return 0, err
+	}
+	if len(files) > 0 {
+		return 0, fmt.Errorf("authority: %d records remain; the floor stays", len(files))
+	}
+	if err := os.RemoveAll(s.authDir()); err != nil {
+		return 0, err
+	}
+	if err := syncDir(s.root); err != nil {
+		return 0, err
+	}
+	s.auth.mayHave.Store(false)
+	f := s.format
+	f.StoreFormatVersion, f.RequiredLevel = max(f.RequiredLevel, storeFormatVersion), 0
+	data, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		return 0, err
+	}
+	if err := writeFileDurable(filepath.Join(s.root, "tmp"), filepath.Join(s.root, "FORMAT.json"), data); err != nil {
+		return 0, err
+	}
+	if err := syncDir(s.root); err != nil {
+		return 0, err
+	}
+	s.format = f
+	s.authInvalidate()
+	return f.StoreFormatVersion, nil
+}
+
 // materializeCDC durably re-creates the CDC chunks listed by a body-backed
 // manifest from its authoritative body, verifying each against its own hash.
 // The chunks are a disposable materialization: nothing marks them live.
@@ -47597,6 +47783,7 @@ func runAuthority(args []string) {
 	noRep := fs.Bool("no-rep", false, "do not consider structural representations")
 	noDelta := fs.Bool("no-delta", false, "do not consider generic deltas")
 	sha := fs.String("sha256", "", "revert: content SHA-256 (hex)")
+	all := fs.Bool("all", false, "revert: every content, then lower the store format to its pre-authority level")
 	fs.Parse(args[1:])
 	lock, err := acquireStoreLock(*storeDir, true)
 	if err != nil {
@@ -47625,6 +47812,14 @@ func runAuthority(args []string) {
 		}
 		enc.Encode(st)
 	case "revert":
+		if *all {
+			rep, err := store.AuthorityRevertAll()
+			if err != nil {
+				log.Fatalf("zeros3: authority revert -all: %v", err)
+			}
+			enc.Encode(rep)
+			return
+		}
 		sum, err := decodeHexSHA256(*sha)
 		if err != nil {
 			log.Fatalf("zeros3: authority revert: %v", err)

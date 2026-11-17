@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -1909,4 +1910,176 @@ func TestAuthorityPlannerRepGroupsExact(t *testing.T) {
 	l.exact("best-reclaimed")
 	l.verifyOK("best-reclaimed")
 	t.Logf("admitted %d/%d, reuse=%d repNotBuilt=%d", rep.Admitted, rep.Objects, rep.PlanReuse, rep.RepNotBuilt)
+}
+
+// ---- G1: retire-everything differential --------------------------------------
+//
+// With ZEROS3_G1_RETIRE_ALL=1 every committed manifest is given a delta body
+// against a hidden seed pin and its CDC chunks are retired (absent to every
+// raw reader until a writer stores them again), so the unchanged root suites
+// fail at any path that reads chunks around the authority.
+
+type g1Store struct {
+	mu    sync.Mutex
+	comps map[[32]byte]bool // chunks that are components of a body: never retired
+}
+
+var g1Stores sync.Map
+
+func g1For(s *Store) *g1Store {
+	v, _ := g1Stores.LoadOrStore(s, &g1Store{comps: map[[32]byte]bool{}})
+	return v.(*g1Store)
+}
+
+func g1Install() {
+	retiredChunks.Store(&sync.Map{})
+	authCommitHook = g1Hook
+}
+
+func g1Components(s *Store, st *g1Store, sha [32]byte) error {
+	recs, err := s.authClosureOrder(sha, func([32]byte) bool { return false })
+	if err != nil {
+		return err
+	}
+	for _, r := range recs {
+		cs, err := s.authRecordChunks(r)
+		if err != nil {
+			return err
+		}
+		for _, c := range cs {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			st.comps[sum] = true
+		}
+	}
+	return nil
+}
+
+func g1Hook(s *Store, man manifestV1) {
+	if man.TotalLength < 64 || man.TotalLength > 32<<20 {
+		return
+	}
+	st := g1For(s)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if err := g1Retire(s, st, man); err != nil {
+		log.Printf("g1: manifest %s stays CDC: %v", man.ManifestUUID, err)
+	}
+}
+
+// g1Pin publishes a pin for data held by fresh CAS chunks (a shifted window of the object).
+func g1Pin(s *Store, data []byte) ([32]byte, error) {
+	sha := sha256.Sum256(data)
+	if rec, err := s.authLoad(sha); err != nil || rec != nil {
+		return sha, err
+	}
+	pieces, err := chunkData(bytes.NewReader(data))
+	if err != nil {
+		return sha, err
+	}
+	b := s.newCASBatch()
+	defer b.Abort()
+	ps := make([]authPiece, len(pieces))
+	for i, p := range pieces {
+		if _, err := b.Add(p.data); err != nil {
+			return sha, err
+		}
+		ps[i] = authPiece{p.sha, int64(len(p.data))}
+	}
+	if err := b.Flush(); err != nil {
+		return sha, err
+	}
+	return sha, s.authPublish(&authRecord{SHA: sha, Size: int64(len(data)), Gen: 1, Form: authFormPin, Pieces: ps})
+}
+
+func g1Retire(s *Store, st *g1Store, man manifestV1) error {
+	sha, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		return err
+	}
+	rec, err := s.authLoad(sha)
+	if err != nil {
+		return err
+	}
+	if rec == nil {
+		target, err := s.manifestBytes(man)
+		if err != nil {
+			return err
+		}
+		// The base is the object shifted by one byte: it shares no CDC chunk with the
+		// object, so every chunk of the object itself becomes retirable.
+		base := append([]byte(nil), target[1:min(len(target), 4097)]...)
+		bsha, err := g1Pin(s, base)
+		if err != nil {
+			return err
+		}
+		blob, refs, err := xdEncode([]xdSrc{{bsha, base}}, target, 0)
+		if err != nil || len(refs) == 0 {
+			return fmt.Errorf("no copy against the shifted base (%v)", err)
+		}
+		rec = &authRecord{SHA: sha, Size: man.TotalLength, Gen: 1, Form: authFormDelta, Depth: 1, Bases: refs}
+		if rec.Pieces, err = s.authWritePieces(blob); err != nil {
+			return err
+		}
+		if _, _, err := s.authProve(rec, 2); err != nil {
+			return err
+		}
+		if err := s.authPublish(rec); err != nil {
+			return err
+		}
+	}
+	if err := g1Components(s, st, sha); err != nil {
+		return err
+	}
+	if s.fg.n.Load() > 1 {
+		return nil // another request is in flight: it may have skipped writing a shared chunk
+	}
+	r := retiredChunks.Load()
+	for _, c := range man.Chunks {
+		if sum, err := decodeHexSHA256(c.SHA256); err == nil && !st.comps[sum] {
+			r.Store(retiredKey{s.root, sum}, struct{}{})
+		}
+	}
+	return nil
+}
+
+// G7: revert everything, lower the floor, and let a pre-authority binary reopen and verify.
+func TestAuthorityRevertAllLowersFloorAndOldBinaryReopens(t *testing.T) {
+	old := buildOldBinary(t)
+	l := authHistoryLab(t, 131, 5, 1_000_000)
+	l.put("plain", genRandomBytes(9, 200_000))
+	l.close()
+	_, before := readFormatVersion(t, l.dir)
+	l.open()
+	l.migrate(AuthPolicy{MinSaving: 0.05})
+	l.reclaim()
+	if _, f := readFormatVersion(t, l.dir); !levelHasAuthority(f) {
+		t.Fatalf("authority not adopted: level %d", f)
+	}
+	rep, err := l.s.AuthorityRevertAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Records == 0 || rep.Retired != rep.Records || rep.LoweredTo != before {
+		t.Fatalf("revert report %+v, want level %d", rep, before)
+	}
+	l.exact("reverted")
+	l.verifyOK("reverted")
+	l.close()
+	f, level := readFormatVersion(t, l.dir)
+	if level != before || f.RequiredLevel != 0 {
+		t.Fatalf("level %d required %d after revert, want %d", level, f.RequiredLevel, before)
+	}
+	if _, err := os.Stat(filepath.Join(l.dir, "bodies")); err == nil {
+		t.Fatal("bodies tree remains after the floor was lowered")
+	}
+	if out, errOut, code := runZeros3CLI(t, old, "verify", "-store", l.dir, "-deep"); code != 0 {
+		t.Fatalf("pre-authority binary: %s %s", out, errOut)
+	}
+	// Revert refuses to lower the floor while a record remains.
+	l.open()
+	l.migrate(AuthPolicy{MinSaving: 0.05})
+	if lowered, err := l.s.authLowerFloor(); err == nil || lowered != 0 {
+		t.Fatalf("floor lowered with records present: %d %v", lowered, err)
+	}
+	l.close()
 }

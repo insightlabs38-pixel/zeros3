@@ -129,6 +129,9 @@ func TestMain(m *testing.M) {
 	os.Unsetenv(envAWSSecretAccessKey)
 	os.Unsetenv(envAWSRegion)
 	layoutObserver = observeLayoutForTests
+	if os.Getenv("ZEROS3_G1_RETIRE_ALL") == "1" {
+		g1Install()
+	}
 	code := m.Run()
 	if out := os.Getenv("ZEROS3_LAYOUT_MATRIX_OUT"); out != "" {
 		writeLayoutMatrix(out)
@@ -202,7 +205,8 @@ func (s *Store) UploadPart(bucket, key, uploadID string, partNumber int, body []
 // read path's output into memory for small test fixtures.
 func (s *Store) readManifestRange(man manifestV1, rng byteRange) ([]byte, error) {
 	var out []byte
-	rd := s.newManifestReader(man, rng)
+	rd := s.openObjectReader(man, rng)
+	defer rd.close()
 	for {
 		data, err := rd.next()
 		if err == io.EOF {
