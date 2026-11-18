@@ -10646,6 +10646,9 @@ func TestConcurrency_RestoreRacingCopyObject(t *testing.T) {
 // returns its path.
 func buildZeros3Binary(t *testing.T) string {
 	t.Helper()
+	if b := os.Getenv("ZEROS3_TEST_BIN"); b != "" { // prebuilt once per source revision by the test runner
+		return b
+	}
 	dir := t.TempDir()
 	binPath := filepath.Join(dir, "zeros3")
 	cmd := exec.Command("go", "build", "-o", binPath, ".")

@@ -943,18 +943,10 @@ func p4BuildBase(t *testing.T) string {
 	if ref == "" {
 		ref = "68b259377512a8e9e27e323f5dbdd8aa1e85aeb3"
 	}
-	src, err := exec.Command("git", "show", ref+":zeros3.go").Output()
-	if err != nil {
+	if err := exec.Command("git", "cat-file", "-e", ref+":zeros3.go").Run(); err != nil {
 		t.Skipf("pre-P4 source %s unavailable: %v", ref, err)
 	}
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "zeros3.go"), src, 0o644)
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module zeros3\n\ngo 1.27.0\n"), 0o644)
-	bin := filepath.Join(dir, "zeros3-base")
-	if out, err := exec.Command("go", "build", "-C", dir, "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("building the pre-P4 binary: %v\n%s", err, out)
-	}
-	return bin
+	return buildBinaryAt(t, ref)
 }
 
 // A store written by the new server (deferred representations; small objects whose

@@ -47,6 +47,9 @@
 #                                installed]) against a managed server, plus physical-state invariance
 #   scripts/validate.sh apps     browser-site and artifact/checkpoint application scenarios
 #   scripts/validate.sh all      both
+#   scripts/validate.sh fast     gofmt, vet, maps and the root tests recorded as cheap (T1 runner, tens of seconds)
+#   scripts/validate.sh qualify  one-command qualification: normal + race + authority + crash/compat via the T1 runner
+#                                (per-test results are reused only for the identical test binary; T1_JOBS, T1_FRESH=1)
 #   scripts/validate.sh STAGE... run named stages (see `list`)
 #
 # Every stage logs to $VALIDATE_LOG_DIR (default /tmp/zeros3-validate) and a
@@ -92,7 +95,17 @@ stage_modules() {
 	cd "$root" && ! grep -q '^require\|^\s*require\s' go.mod && echo "root go.mod: no require directives" &&
 		go vet ./... && (cd testing-harnesses && go vet ./...)
 }
-stage_test()    { cd "$root" && go test -count=1 ./...; }
+# Root tests run through the T1 runner: one test binary per source revision, isolated test processes under
+# CPU/memory budgets, per-test results keyed by binary hash. Other packages keep plain go test.
+t1() {
+	mode=$1; shift
+	(cd "$root/testing-harnesses" && go build -o "$logs/t1run" ./harness/t1run) || return 1
+	(cd "$root" && "$logs/t1run" -mode "$mode" ${T1_JOBS:+-jobs $T1_JOBS} ${T1_FRESH:+-fresh} -evidence "$logs/t1-$mode.json" "$@")
+}
+stage_test()    { t1 normal -v; }
+stage_fast()    { stage_format && (cd "$root" && go vet .) && t1 normal -fast 2; }
+stage_authority() { t1 authority -v; }
+stage_authority-race() { t1 authority-race -v; }
 stage_static() {
 	build_bin && cd "$root/testing-harnesses" && go run ./runner -group static -bin "$bin"
 }
@@ -212,7 +225,7 @@ stage_client() { build_bin && cd "$root/testing-harnesses" && go run ./runner -g
 stage_apps() { build_bin && cd "$root/testing-harnesses" && go run ./runner -group apps -bin "$bin"; }
 stage_repro() { cd "$root" && sh scripts/reproducible_build.sh; }
 
-stage_race()    { cd "$root" && go test -race -count=1 -timeout 60m ./...; }
+stage_race()    { t1 race -v; }
 stage_crash()   { cd "$root" && go test -race -count=1 -run 'TestRepack_|TestPack_|TestPackCompress|TestTier_|TestTierRebalance_' .; }
 stage_index() { cd "$root" && go test -count=1 -race -run 'TestLocator_' .; }
 stage_index-scale() { cd "$root" && ZEROS3_LOCATOR_SCALE="${LOCATOR_SCALE:-5000000}" go test -count=1 -run 'TestLocatorScale' -v .; }

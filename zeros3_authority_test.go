@@ -914,6 +914,14 @@ func buildBinaryAt(t *testing.T, commit string) string {
 	if p, ok := oldBinPaths[commit]; ok {
 		return p
 	}
+	cached := ""
+	if d := os.Getenv("ZEROS3_BINCACHE"); d != "" {
+		cached = filepath.Join(d, commit+"-"+runtime.Version())
+		if _, err := os.Stat(cached); err == nil {
+			oldBinPaths[commit] = cached
+			return cached
+		}
+	}
 	dir, err := os.MkdirTemp("", "zs3gen")
 	if err != nil {
 		t.Fatal(err)
@@ -928,6 +936,11 @@ func buildBinaryAt(t *testing.T, commit string) string {
 	bin := filepath.Join(dir, "zeros3-"+commit[:min(7, len(commit))])
 	if out, err := exec.Command("go", "build", "-C", dir, "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("building %s: %v\n%s", commit, err, out)
+	}
+	if cached != "" { // publish atomically: concurrent test processes may race to build the same commit
+		if tmp := cached + "." + strconv.Itoa(os.Getpid()); os.Rename(bin, tmp) == nil && os.Rename(tmp, cached) == nil {
+			bin = cached
+		}
 	}
 	oldBinPaths[commit] = bin
 	return bin
@@ -2871,10 +2884,7 @@ func TestAuthorityPersistenceLossModel(t *testing.T) {
 	if _, err := exec.LookPath("strace"); err != nil {
 		t.Skip("strace not available")
 	}
-	bin := filepath.Join(t.TempDir(), "zeros3")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("%v\n%s", err, out)
-	}
+	bin := buildZeros3Binary(t)
 	maxCuts := 6
 	if v := os.Getenv("ZEROS3_PL_CUTS"); v != "" {
 		maxCuts, _ = strconv.Atoi(v)
