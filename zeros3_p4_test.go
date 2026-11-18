@@ -710,12 +710,10 @@ func TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData(t *testing.T) {
 	bin := buildZeros3Binary(t)
 	storeDir := t.TempDir()
 	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
-	type acked struct {
-		seed int64
-		kind int
-	}
+	// the digest of each body is taken once when it is sent: re-deriving thousands of structured bodies
+	// (SQLite, CAR, block files) for every later comparison cost a quarter of the test
 	var mu sync.Mutex
-	ack := map[string]acked{}
+	ack := map[string][32]byte{}
 	rng := rand.New(rand.NewSource(3))
 	rootsSeen, objectsWithoutRoot := 0, 0
 	for round := 0; round < 6; round++ {
@@ -747,6 +745,7 @@ func TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData(t *testing.T) {
 					kind := (c + i) % 3
 					key := fmt.Sprintf("o/%d/%d/%d", round, c, i)
 					body := p4Body(seed, kind)
+					sum := sha256.Sum256(body)
 					req, _ := http.NewRequest(http.MethodPut, "http://"+addr+"/b/"+key, bytes.NewReader(body))
 					signTestRequest(t, req, signer, req.URL.Path, req.URL.RawQuery, body, time.Now(), nil)
 					resp, err := client.Do(req)
@@ -756,7 +755,7 @@ func TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData(t *testing.T) {
 					resp.Body.Close()
 					if resp.StatusCode == http.StatusOK {
 						mu.Lock()
-						ack[key] = acked{seed, kind}
+						ack[key] = sum
 						mu.Unlock()
 					}
 				}
@@ -773,9 +772,9 @@ func TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData(t *testing.T) {
 			t.Fatalf("round %d: open after kill: %v", round, err)
 		}
 		mu.Lock()
-		for key, a := range ack {
+		for key, want := range ack {
 			_, got, err := s.GetObject("b", key)
-			if err != nil || !bytes.Equal(got, p4Body(a.seed, a.kind)) {
+			if err != nil || sha256.Sum256(got) != want {
 				mu.Unlock()
 				t.Fatalf("round %d: ACKNOWLEDGED object %s lost or corrupt: %v", round, key, err)
 			}
@@ -796,8 +795,8 @@ func TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData(t *testing.T) {
 			t.Fatal(err)
 		}
 		mu.Lock()
-		for key, a := range ack {
-			if _, got, err := s.GetObject("b", key); err != nil || !bytes.Equal(got, p4Body(a.seed, a.kind)) {
+		for key, want := range ack {
+			if _, got, err := s.GetObject("b", key); err != nil || sha256.Sum256(got) != want {
 				mu.Unlock()
 				t.Fatalf("round %d: acknowledged object %s damaged by gc: %v", round, key, err)
 			}

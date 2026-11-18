@@ -1,4246 +1,5136 @@
 {
  "FuzzAuthRecord": {
-  "s": 0.01,
-  "rss_mib": 209
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 201
  },
  "FuzzAuthWindowRecord": {
-  "s": 0.02,
-  "rss_mib": 209
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 201
  },
  "FuzzModelMetadata": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "FuzzRepCodecAnalysis": {
-  "s": 0.26,
-  "rss_mib": 209
+  "s": 0.41,
+  "cpu": 0.3,
+  "rss_mib": 201
  },
  "FuzzRepCodecDecode": {
-  "s": 0.06,
-  "rss_mib": 209
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 201
  },
  "FuzzRepDecoders": {
-  "s": 0.32,
-  "rss_mib": 209
+  "s": 0.35,
+  "cpu": 0.25,
+  "rss_mib": 201
  },
  "FuzzRepGitDecode": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "FuzzRepGitReaderAt": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "FuzzRepRootUnmarshal": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "FuzzRepStructuredRecipes": {
   "s": 0.01,
-  "rss_mib": 209
+  "cpu": 0.01,
+  "rss_mib": 201
  },
  "FuzzRepUnmarshal": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "FuzzRepZ4ManagedDecode": {
   "s": 0.01,
-  "rss_mib": 209
+  "cpu": 0.01,
+  "rss_mib": 201
  },
  "FuzzRepZ4ModelDecode": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "FuzzServedManifestParse": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "FuzzXDeltaEnvelope": {
-  "s": 0.01,
-  "rss_mib": 209
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 201
  },
  "TestA4QualificationForkCommitRace": {
-  "s": 0.12,
-  "rss_mib": 209
+  "s": 0.15,
+  "cpu": 0.11,
+  "rss_mib": 201
  },
  "TestAWSChunkReader_Fragmentation": {
-  "s": 0.02,
-  "rss_mib": 209
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 201
  },
  "TestAWSChunked_AWSDocumentationVector": {
-  "s": 0.02,
-  "rss_mib": 209
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 201
  },
  "TestAWSChunked_ConditionalHistoryRestart": {
-  "s": 0.08,
-  "rss_mib": 209
+  "s": 0.11,
+  "cpu": 0.08,
+  "rss_mib": 201
  },
  "TestAWSChunked_FailureKeepsExistingObject": {
-  "s": 0.03,
-  "rss_mib": 209
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 201
  },
  "TestAWSChunked_LargeObjectBoundedMemory": {
-  "s": 1.17,
-  "rss_mib": 46
+  "s": 1.54,
+  "cpu": 1.69,
+  "rss_mib": 47
  },
  "TestAWSChunked_Matrix": {
-  "s": 0.62,
-  "rss_mib": 209
+  "s": 0.69,
+  "cpu": 0.5,
+  "rss_mib": 201
  },
  "TestAWSChunked_UploadPart": {
-  "s": 0.04,
-  "rss_mib": 209
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 201
  },
  "TestApplyCredentialEnvFallback_AllThreeFromEnv": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "TestApplyCredentialEnvFallback_ExplicitFlagsWinOverEnvForAllThree": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "TestApplyCredentialEnvFallback_MissingAccessKeyLeavesAccessAtDefault": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "TestApplyCredentialEnvFallback_PartialPairLeavesOtherFlagAtDefault": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "TestAuthHelperProcess": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "TestAuthorityBaseRetentionAfterNamespacePruning": {
-  "s": 0.71,
-  "rss_mib": 209
+  "s": 0.94,
+  "cpu": 0.68,
+  "rss_mib": 201
  },
  "TestAuthorityBundleExportToOldBinary": {
-  "s": 1.08,
-  "rss_mib": 209
+  "s": 0.87,
+  "cpu": 0.73,
+  "rss_mib": 139
  },
  "TestAuthorityCLIWorkflowAndHTTPReads": {
-  "s": 0.96,
-  "rss_mib": 56
+  "s": 1.6,
+  "cpu": 1.16,
+  "rss_mib": 201
  },
  "TestAuthorityConcurrentOperations": {
-  "s": 9.9,
-  "rss_mib": 300
+  "s": 9.99,
+  "cpu": 14.17,
+  "rss_mib": 316
  },
  "TestAuthorityCopyAndRestoreOfBodyOnlyContent": {
-  "s": 0.5,
-  "rss_mib": 209
+  "s": 0.64,
+  "cpu": 0.46,
+  "rss_mib": 201
  },
  "TestAuthorityCorruptComponentFailsClosedNeverWrongBytes": {
-  "s": 0.36,
-  "rss_mib": 209
+  "s": 0.39,
+  "cpu": 0.28,
+  "rss_mib": 201
  },
  "TestAuthorityCrashMatrix": {
-  "s": 29.85,
-  "rss_mib": 231
+  "s": 31.66,
+  "cpu": 25.99,
+  "rss_mib": 236
  },
  "TestAuthorityCycleRejected": {
-  "s": 0.04,
-  "rss_mib": 209
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 201
  },
  "TestAuthorityDefaultOrderKeepsNewestInCDC": {
-  "s": 0.43,
-  "rss_mib": 209
+  "s": 0.6,
+  "cpu": 0.43,
+  "rss_mib": 201
  },
  "TestAuthorityDeltaLifecycleAndReclaim": {
-  "s": 1.68,
-  "rss_mib": 185
+  "s": 1.83,
+  "cpu": 1.63,
+  "rss_mib": 161
+ },
+ "TestAuthorityEquivAccounting": {
+  "s": 0.87,
+  "cpu": 0.72,
+  "rss_mib": 137
+ },
+ "TestAuthorityEquivPhysicalLayouts": {
+  "s": 0.83,
+  "cpu": 0.76,
+  "rss_mib": 111
+ },
+ "TestAuthorityEquivStoreLevel": {
+  "s": 1.23,
+  "cpu": 1.1,
+  "rss_mib": 120
  },
  "TestAuthorityFiveGenerationMatrix": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "TestAuthorityGCFailsClosedOnMissingBase": {
-  "s": 0.35,
-  "rss_mib": 209
+  "s": 0.45,
+  "cpu": 0.33,
+  "rss_mib": 201
  },
  "TestAuthorityGraphLimits": {
   "s": 0.19,
-  "rss_mib": 209
+  "cpu": 0.14,
+  "rss_mib": 201
  },
  "TestAuthorityInjectedIOFailuresKeepLastValidState": {
-  "s": 1.89,
-  "rss_mib": 117
+  "s": 2.2,
+  "cpu": 1.94,
+  "rss_mib": 115
  },
  "TestAuthorityLargeCheck": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "TestAuthorityLargeFixture": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "TestAuthorityLargeProfile": {
   "s": 0,
-  "rss_mib": 209
+  "rss_mib": 201
  },
  "TestAuthorityMalformedRecordsAndEnvelopes": {
-  "s": 0.34,
-  "rss_mib": 164
+  "s": 0.46,
+  "cpu": 0.33,
+  "rss_mib": 201
  },
  "TestAuthorityMixedLifecycle": {
-  "s": 11.03,
-  "rss_mib": 281
+  "s": 11.1,
+  "cpu": 10.03,
+  "rss_mib": 294
  },
  "TestAuthorityNativeClosureTransferAndInterruption": {
-  "s": 0.98,
-  "rss_mib": 111
+  "s": 0.84,
+  "cpu": 0.69,
+  "rss_mib": 142
  },
  "TestAuthorityOldBinaryRefusesAndLeavesStoreUntouched": {
-  "s": 0.68,
-  "rss_mib": 120
+  "s": 0.62,
+  "cpu": 0.51,
+  "rss_mib": 142
  },
  "TestAuthorityPeerAssistedComponentRepair": {
-  "s": 0.58,
-  "rss_mib": 164
+  "s": 0.68,
+  "cpu": 0.56,
+  "rss_mib": 142
  },
  "TestAuthorityPersistenceLossModel": {
-  "s": 31.88,
-  "rss_mib": 252
+  "s": 35.53,
+  "cpu": 30.04,
+  "rss_mib": 244
  },
  "TestAuthorityPlannerRepGroupsExact": {
-  "s": 1.59,
-  "rss_mib": 153
+  "s": 1.86,
+  "cpu": 1.77,
+  "rss_mib": 156
  },
  "TestAuthorityPlannerReusesPlansAndReverts": {
-  "s": 1.76,
-  "rss_mib": 170
+  "s": 1.77,
+  "cpu": 1.51,
+  "rss_mib": 160
  },
  "TestAuthorityPublishRefusesIncompleteClosure": {
-  "s": 0.02,
-  "rss_mib": 164
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 142
  },
  "TestAuthorityRepFormAcrossStructuralKinds": {
-  "s": 2.1,
-  "rss_mib": 148
+  "s": 2.43,
+  "cpu": 2.07,
+  "rss_mib": 121
  },
  "TestAuthorityRepairCrashQualification": {
-  "s": 21.18,
-  "rss_mib": 200
+  "s": 22.53,
+  "cpu": 15.23,
+  "rss_mib": 203
  },
  "TestAuthorityRepairPaths": {
-  "s": 0.73,
-  "rss_mib": 164
+  "s": 0.75,
+  "cpu": 0.62,
+  "rss_mib": 142
  },
  "TestAuthorityRepeatedCrashLoops": {
-  "s": 5.8,
-  "rss_mib": 225
+  "s": 5.56,
+  "cpu": 5.11,
+  "rss_mib": 230
  },
  "TestAuthorityReplicationToNewAndOldDestinations": {
-  "s": 1.05,
-  "rss_mib": 164
+  "s": 0.97,
+  "cpu": 0.77,
+  "rss_mib": 139
  },
  "TestAuthorityRetireEverythingSubprocess": {
-  "s": 4.07,
-  "rss_mib": 149
+  "s": 5,
+  "cpu": 3.5,
+  "rss_mib": 150
  },
  "TestAuthorityRetiredEquivalents": {
-  "s": 4.76,
-  "rss_mib": 164
+  "s": 6.38,
+  "cpu": 5.12,
+  "rss_mib": 161
  },
  "TestAuthorityRevertAllLowersFloorAndOldBinaryReopens": {
-  "s": 1.61,
-  "rss_mib": 140
+  "s": 1.56,
+  "cpu": 1.4,
+  "rss_mib": 138
  },
  "TestAuthorityRevertRestoresCDC": {
-  "s": 0.55,
-  "rss_mib": 164
+  "s": 0.61,
+  "cpu": 0.5,
+  "rss_mib": 142
  },
  "TestAuthorityScaleFixture": {
   "s": 0,
-  "rss_mib": 164
+  "rss_mib": 142
  },
  "TestAuthorityScopedMigration": {
-  "s": 0.5,
-  "rss_mib": 164
+  "s": 0.49,
+  "cpu": 0.4,
+  "rss_mib": 142
  },
  "TestAuthorityStaleGenerationRejected": {
   "s": 0.11,
-  "rss_mib": 164
+  "cpu": 0.09,
+  "rss_mib": 142
  },
  "TestAuthoritySyncIntoBodyOnlyDestination": {
-  "s": 0.76,
-  "rss_mib": 164
+  "s": 0.68,
+  "cpu": 0.56,
+  "rss_mib": 142
  },
  "TestAuthorityThinClosureUsesDestinationBasesAndFallsBack": {
-  "s": 0.69,
-  "rss_mib": 164
+  "s": 0.66,
+  "cpu": 0.54,
+  "rss_mib": 142
  },
  "TestAuthorityWindowedDelta": {
-  "s": 1.46,
-  "rss_mib": 103
+  "s": 1.54,
+  "cpu": 1.36,
+  "rss_mib": 98
  },
  "TestAuthorityZN7BaseRetentionRevertAndFeature": {
-  "s": 2.33,
-  "rss_mib": 85
+  "s": 2.1,
+  "cpu": 2.71,
+  "rss_mib": 108
+ },
+ "TestAuthorityZN7DecodeScaling": {
+  "s": 0,
+  "rss_mib": 12
  },
  "TestAuthorityZN7ModelHistory": {
-  "s": 4.02,
-  "rss_mib": 95
+  "s": 3.45,
+  "cpu": 3.8,
+  "rss_mib": 108
  },
  "TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive": {
-  "s": 3.96,
-  "rss_mib": 36
+  "s": 3.12,
+  "cpu": 3.75,
+  "rss_mib": 33
  },
  "TestAuthorityZN7RealModels": {
   "s": 0,
-  "rss_mib": 164
+  "rss_mib": 142
  },
  "TestB2Economics": {
   "s": 0,
-  "rss_mib": 164
+  "rss_mib": 142
  },
  "TestB2RepBreakdown": {
   "s": 0,
-  "rss_mib": 164
+  "rss_mib": 142
  },
  "TestBulkBudget_BoundsConcurrentBytesRegardlessOfWorkers": {
   "s": 0.04,
-  "rss_mib": 164
+  "cpu": 0.03,
+  "rss_mib": 142
  },
  "TestBulkDiscovery_AdvertisedAdditivelyAndWithdrawable": {
-  "s": 0.12,
-  "rss_mib": 164
+  "s": 0.09,
+  "cpu": 0.07,
+  "rss_mib": 142
  },
  "TestBulkFetch_ClientRejectsDishonestResponses": {
-  "s": 0.11,
-  "rss_mib": 164
+  "s": 0.14,
+  "cpu": 0.11,
+  "rss_mib": 142
  },
  "TestBulkFetch_SendsOnlyLogicalBytesFromAnyRepresentation": {
-  "s": 0.13,
-  "rss_mib": 164
+  "s": 0.14,
+  "cpu": 0.11,
+  "rss_mib": 142
  },
  "TestBulkFetch_ServerSideFailures": {
-  "s": 0.71,
-  "rss_mib": 298
+  "s": 0.94,
+  "cpu": 0.58,
+  "rss_mib": 324
  },
  "TestBulkFraming_BoundaryBatchesParse": {
-  "s": 0.37,
-  "rss_mib": 298
+  "s": 0.45,
+  "cpu": 0.28,
+  "rss_mib": 324
  },
  "TestBulkFraming_RejectsMalformedFrames": {
-  "s": 0.01,
-  "rss_mib": 298
+  "s": 0,
+  "rss_mib": 324
  },
  "TestBulkNegotiate_MatchesV1ForEveryPhysicalState": {
-  "s": 0.16,
-  "rss_mib": 298
+  "s": 0.14,
+  "cpu": 0.09,
+  "rss_mib": 324
  },
  "TestBulkNegotiate_SplitsLargeSetsAndStaysReadOnly": {
-  "s": 0.17,
-  "rss_mib": 298
+  "s": 0.19,
+  "cpu": 0.12,
+  "rss_mib": 324
  },
  "TestBulkPlanner_BoundsBothAxesAndKeepsOrder": {
   "s": 0,
-  "rss_mib": 298
+  "rss_mib": 324
  },
  "TestBulkRepair_PartialSuccessSurvivesBatchFailure": {
-  "s": 0.82,
-  "rss_mib": 298
+  "s": 0.92,
+  "cpu": 0.57,
+  "rss_mib": 324
  },
  "TestBulkReplicate_AdvertisedBulkFailureIsReportedNotHidden": {
-  "s": 0.56,
-  "rss_mib": 298
+  "s": 0.57,
+  "cpu": 0.35,
+  "rss_mib": 324
  },
  "TestBulkReplicate_FallsBackToV1WhenEitherEndLacksBulk": {
-  "s": 0.4,
-  "rss_mib": 298
+  "s": 0.43,
+  "cpu": 0.26,
+  "rss_mib": 324
  },
  "TestBulkReplicate_InterruptedTransferResumesThroughNegotiation": {
-  "s": 0.63,
-  "rss_mib": 298
+  "s": 0.71,
+  "cpu": 0.44,
+  "rss_mib": 324
  },
  "TestBulkReplicate_NewToNewUsesBulkAndCollapsesRequests": {
-  "s": 0.54,
-  "rss_mib": 298
+  "s": 0.52,
+  "cpu": 0.32,
+  "rss_mib": 324
  },
  "TestBulkReplicate_PhysicalSourceRepresentationDoesNotChangeWireBytes": {
-  "s": 0.17,
-  "rss_mib": 298
+  "s": 0.22,
+  "cpu": 0.14,
+  "rss_mib": 324
  },
  "TestBulkReplicate_ThroughStandardReverseProxy": {
-  "s": 0.29,
-  "rss_mib": 298
+  "s": 0.28,
+  "cpu": 0.17,
+  "rss_mib": 324
  },
  "TestBulkRestore_UsesBulkAcrossServers": {
-  "s": 0.21,
-  "rss_mib": 298
+  "s": 0.17,
+  "cpu": 0.1,
+  "rss_mib": 324
  },
  "TestBulkSync_ChunkChangedAfterScanIsNeverSent": {
   "s": 0.03,
-  "rss_mib": 298
+  "cpu": 0.02,
+  "rss_mib": 324
  },
  "TestBulkSync_UsesBulkAndMatchesV1Stats": {
-  "s": 0.61,
-  "rss_mib": 111
+  "s": 0.51,
+  "cpu": 0.31,
+  "rss_mib": 324
  },
  "TestBulkUpload_FailuresPublishNoPartialBatchAndNeverCommit": {
-  "s": 0.08,
-  "rss_mib": 111
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 324
  },
  "TestBulkUpload_NearByteLimit": {
-  "s": 0.95,
-  "rss_mib": 345
+  "s": 1.1,
+  "cpu": 0.86,
+  "rss_mib": 378
  },
  "TestBulkUpload_PresentAndPackedChunksAreNoOps": {
-  "s": 0.11,
-  "rss_mib": 111
+  "s": 0.1,
+  "cpu": 0.08,
+  "rss_mib": 378
  },
  "TestBulkUpload_PublishesThroughCASAndIsIdempotent": {
-  "s": 3.94,
-  "rss_mib": 144
+  "s": 3.72,
+  "cpu": 2.73,
+  "rss_mib": 143
  },
  "TestBulkUpload_WaitsForTransportToReleaseFrame": {
   "s": 0.1,
-  "rss_mib": 111
+  "cpu": 0.08,
+  "rss_mib": 378
  },
  "TestBundleDeltaLife_BrowserSiteRevision": {
-  "s": 0.49,
-  "rss_mib": 111
+  "s": 0.52,
+  "cpu": 0.41,
+  "rss_mib": 378
  },
  "TestBundleDeltaLife_CDCShiftResynchronises": {
-  "s": 2.8,
-  "rss_mib": 344
+  "s": 2.87,
+  "cpu": 2.26,
+  "rss_mib": 373
  },
  "TestBundleDeltaLife_CheckpointChain": {
-  "s": 11.58,
-  "rss_mib": 1401
+  "s": 13.29,
+  "cpu": 11.99,
+  "rss_mib": 1227
  },
  "TestBundleDeltaLife_RealProcessKillDuringDeltaImport": {
-  "s": 6.66,
-  "rss_mib": 1111
+  "s": 6.88,
+  "cpu": 5.97,
+  "rss_mib": 851
  },
  "TestBundleDeltaScale_MergeOneMillionChunks": {
-  "s": 0.95,
-  "rss_mib": 111
+  "s": 0.98,
+  "cpu": 0.77,
+  "rss_mib": 378
  },
  "TestBundleDelta_BaseIdentityFailsClosed": {
-  "s": 0.39,
-  "rss_mib": 111
+  "s": 0.42,
+  "cpu": 0.33,
+  "rss_mib": 378
  },
  "TestBundleDelta_CLI": {
-  "s": 0.18,
-  "rss_mib": 111
+  "s": 0.21,
+  "cpu": 0.16,
+  "rss_mib": 378
  },
  "TestBundleDelta_ChainOfDeltasAndOutOfOrderFailure": {
-  "s": 0.29,
-  "rss_mib": 111
+  "s": 0.35,
+  "cpu": 0.27,
+  "rss_mib": 378
  },
  "TestBundleDelta_CorruptBaseReferenceFailsThenConverges": {
-  "s": 0.2,
-  "rss_mib": 111
+  "s": 0.25,
+  "cpu": 0.2,
+  "rss_mib": 378
  },
  "TestBundleDelta_ExportDeterministicAndIndependentOfPhysicalRepresentation": {
-  "s": 0.14,
-  "rss_mib": 111
+  "s": 0.16,
+  "cpu": 0.13,
+  "rss_mib": 378
  },
  "TestBundleDelta_ExportImportRestoresTargetOverBase": {
-  "s": 0.22,
-  "rss_mib": 111
+  "s": 0.31,
+  "cpu": 0.24,
+  "rss_mib": 378
  },
  "TestBundleDelta_FormatValidSyntheticDelta": {
   "s": 0,
-  "rss_mib": 111
+  "rss_mib": 378
  },
  "TestBundleDelta_ImportCrashMatrix": {
-  "s": 1.56,
+  "s": 1.48,
+  "cpu": 0.88,
   "rss_mib": 30
  },
  "TestBundleDelta_ImportIsIdempotentAndNeverTouchesNamespaceOrFormat": {
-  "s": 0.15,
-  "rss_mib": 111
+  "s": 0.19,
+  "cpu": 0.15,
+  "rss_mib": 378
  },
  "TestBundleDelta_ImportUsesGroupedCASPublication": {
-  "s": 0.54,
-  "rss_mib": 111
+  "s": 0.62,
+  "cpu": 0.48,
+  "rss_mib": 378
  },
  "TestBundleDelta_ParserMutationMatrix": {
-  "s": 0.07,
-  "rss_mib": 111
+  "s": 0.1,
+  "cpu": 0.08,
+  "rss_mib": 378
  },
  "TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting": {
-  "s": 0.17,
-  "rss_mib": 111
+  "s": 0.27,
+  "cpu": 0.21,
+  "rss_mib": 378
  },
  "TestBundleDelta_PlannerClassification": {
   "s": 0,
-  "rss_mib": 111
+  "rss_mib": 378
  },
  "TestBundleDelta_SemanticsMetadataNewObjectsDeletesAndSameSnapshot": {
-  "s": 0.23,
-  "rss_mib": 111
+  "s": 0.13,
+  "cpu": 0.1,
+  "rss_mib": 378
  },
  "TestBundleLife_BrowserSiteRoundTrip": {
-  "s": 0.43,
-  "rss_mib": 111
+  "s": 0.47,
+  "cpu": 0.37,
+  "rss_mib": 378
  },
  "TestBundleLife_BundleSurvivesSourceDeletionAndGC": {
-  "s": 0.14,
-  "rss_mib": 111
+  "s": 0.16,
+  "cpu": 0.13,
+  "rss_mib": 378
  },
  "TestBundleLife_CheckpointSharesChunksOnce": {
-  "s": 0.59,
-  "rss_mib": 330
+  "s": 0.54,
+  "cpu": 0.42,
+  "rss_mib": 316
  },
  "TestBundleLife_RealProcessKillDuringImport": {
-  "s": 6.84,
-  "rss_mib": 1089
+  "s": 6.71,
+  "cpu": 6.09,
+  "rss_mib": 909
  },
  "TestBundleScale_PlannerOneMillionChunks": {
-  "s": 0.86,
-  "rss_mib": 330
+  "s": 0.79,
+  "cpu": 0.61,
+  "rss_mib": 316
  },
  "TestBundle_CLI": {
-  "s": 0.11,
-  "rss_mib": 330
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 316
  },
  "TestBundle_CorruptBundleNeverPublishesSnapshot": {
-  "s": 0.34,
-  "rss_mib": 330
+  "s": 0.31,
+  "cpu": 0.24,
+  "rss_mib": 316
  },
  "TestBundle_CorruptExistingChunkIsRepairedFromVerifiedPayload": {
   "s": 0.05,
-  "rss_mib": 330
+  "cpu": 0.04,
+  "rss_mib": 316
  },
  "TestBundle_ExportIndependentOfPhysicalRepresentation": {
-  "s": 0.26,
-  "rss_mib": 330
+  "s": 0.25,
+  "cpu": 0.19,
+  "rss_mib": 316
  },
  "TestBundle_ExportIsDeterministicAndAtomic": {
-  "s": 0.12,
-  "rss_mib": 330
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 316
  },
  "TestBundle_FormatValidSyntheticBundle": {
-  "s": 0.01,
-  "rss_mib": 330
+  "s": 0,
+  "rss_mib": 316
  },
  "TestBundle_ImportCrashMatrix": {
-  "s": 0.9,
-  "rss_mib": 30
+  "s": 0.76,
+  "cpu": 0.59,
+  "rss_mib": 316
  },
  "TestBundle_ImportIsIdempotentAndCollisionsFail": {
-  "s": 0.1,
-  "rss_mib": 330
+  "s": 0.09,
+  "cpu": 0.07,
+  "rss_mib": 316
  },
  "TestBundle_ImportNeverTouchesNamespaceOrFormat": {
-  "s": 0.12,
-  "rss_mib": 330
+  "s": 0.11,
+  "cpu": 0.09,
+  "rss_mib": 316
  },
  "TestBundle_ImportRequiresExclusiveStore": {
-  "s": 0.05,
-  "rss_mib": 330
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 316
  },
  "TestBundle_ImportUsesGroupedCASPublication": {
-  "s": 0.35,
-  "rss_mib": 330
+  "s": 0.37,
+  "cpu": 0.29,
+  "rss_mib": 316
  },
  "TestBundle_InspectDistinguishesParsedFromVerified": {
-  "s": 0.05,
-  "rss_mib": 330
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 316
  },
  "TestBundle_ParserMutationMatrix": {
-  "s": 0.1,
-  "rss_mib": 330
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 316
  },
  "TestBundle_PartialOverlapImportsOnlyMissingContent": {
-  "s": 0.15,
-  "rss_mib": 330
+  "s": 0.16,
+  "cpu": 0.12,
+  "rss_mib": 316
  },
  "TestBundle_RoundTripPreservesIdentityAndDeduplicates": {
-  "s": 0.15,
-  "rss_mib": 330
+  "s": 0.14,
+  "cpu": 0.11,
+  "rss_mib": 316
  },
  "TestCASBatch_BatchLocalDuplicatesStageOnce": {
   "s": 0.01,
-  "rss_mib": 330
+  "cpu": 0.01,
+  "rss_mib": 316
  },
  "TestCASBatch_BulkUploadPublishesFullBatchesOnly": {
-  "s": 0.28,
-  "rss_mib": 330
+  "s": 0.36,
+  "cpu": 0.28,
+  "rss_mib": 316
  },
  "TestCASBatch_ConcurrentWritersOfOneDigest": {
-  "s": 0.04,
-  "rss_mib": 330
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 316
  },
  "TestCASBatch_ExistingChunksInAnyTierStageNothing": {
-  "s": 0.07,
-  "rss_mib": 330
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 316
  },
  "TestCASBatch_FlushFailureLeavesNothingPublished": {
   "s": 0.01,
-  "rss_mib": 330
+  "cpu": 0.01,
+  "rss_mib": 316
  },
  "TestCASBatch_IngestDuplicateAndLocalizedEdit": {
-  "s": 0.18,
-  "rss_mib": 330
+  "s": 0.2,
+  "cpu": 0.16,
+  "rss_mib": 316
  },
  "TestCASBatch_IngestIsBoundedAndHandlesTinyObjects": {
-  "s": 1.16,
-  "rss_mib": 97
+  "s": 1.49,
+  "cpu": 1.23,
+  "rss_mib": 96
  },
  "TestCASBatch_InterruptionMatrix": {
-  "s": 9.5,
-  "rss_mib": 190
+  "s": 10.11,
+  "cpu": 9.08,
+  "rss_mib": 201
  },
  "TestCASBatch_PublicationBarrier": {
   "s": 0.01,
-  "rss_mib": 330
+  "cpu": 0.01,
+  "rss_mib": 316
  },
  "TestCASBatch_RealProcessKillMidIngest": {
-  "s": 2.05,
-  "rss_mib": 710
+  "s": 2.43,
+  "cpu": 3.57,
+  "rss_mib": 634
  },
  "TestCASShardDirs_ConcurrentFirstUseOfOneShard": {
-  "s": 0.25,
-  "rss_mib": 330
+  "s": 0.21,
+  "cpu": 0.16,
+  "rss_mib": 316
  },
  "TestCASShardDirs_FailedPublishRemovesItsNewDirs": {
   "s": 0.01,
-  "rss_mib": 330
+  "cpu": 0.01,
+  "rss_mib": 316
  },
  "TestCASShardDirs_ParentDurabilityOrdering": {
-  "s": 0.03,
-  "rss_mib": 330
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 316
  },
  "TestCAS_ChunkPathMatchesSHA256": {
   "s": 0.01,
-  "rss_mib": 330
+  "cpu": 0.01,
+  "rss_mib": 316
  },
  "TestCAS_CorruptExistingChunkDetected": {
   "s": 0.01,
-  "rss_mib": 330
+  "cpu": 0.01,
+  "rss_mib": 316
  },
  "TestCAS_DedupNoDuplication": {
-  "s": 0,
-  "rss_mib": 330
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 316
  },
  "TestCAS_RoundTrip": {
-  "s": 0.01,
-  "rss_mib": 330
+  "s": 0,
+  "rss_mib": 316
  },
  "TestCDC_Deterministic": {
   "s": 0.02,
-  "rss_mib": 330
+  "cpu": 0.02,
+  "rss_mib": 316
  },
  "TestCDC_EditLocalityBeatsFixedSizeChunking": {
   "s": 0.03,
-  "rss_mib": 330
+  "cpu": 0.02,
+  "rss_mib": 316
  },
  "TestCDC_EmptyInput": {
   "s": 0,
-  "rss_mib": 330
+  "rss_mib": 316
  },
  "TestCDC_ExactBoundarySizeInputs": {
   "s": 0,
-  "rss_mib": 330
+  "rss_mib": 316
  },
  "TestCDC_ForcedMaximumOccurs": {
-  "s": 0.2,
-  "rss_mib": 330
+  "s": 0.21,
+  "cpu": 0.16,
+  "rss_mib": 316
  },
  "TestCDC_MeanChunkSizePlausible": {
   "s": 0.05,
-  "rss_mib": 330
+  "cpu": 0.04,
+  "rss_mib": 316
  },
  "TestCDC_MinMaxBounds": {
   "s": 0.03,
-  "rss_mib": 330
+  "cpu": 0.02,
+  "rss_mib": 316
  },
  "TestCDC_RepetitiveData": {
   "s": 0.02,
-  "rss_mib": 330
+  "cpu": 0.02,
+  "rss_mib": 316
  },
  "TestCDC_TinyInput": {
   "s": 0,
-  "rss_mib": 330
+  "rss_mib": 316
  },
  "TestCDC_V1GoldenBoundaries": {
-  "s": 0.3,
-  "rss_mib": 105
+  "s": 0.25,
+  "cpu": 0.19,
+  "rss_mib": 316
  },
  "TestCLI_Fork_DestinationConflictNonzeroExit": {
-  "s": 0.06,
-  "rss_mib": 105
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 316
  },
  "TestCLI_Fork_OverlapRejectedNonzeroExitNoObjectsTouched": {
   "s": 0.05,
-  "rss_mib": 105
+  "cpu": 0.04,
+  "rss_mib": 316
  },
  "TestCLI_Fork_RestartThenDeepVerifyGreen": {
-  "s": 0.09,
-  "rss_mib": 105
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 97
  },
  "TestCLI_Fork_ResumeAcrossRealProcessKill": {
-  "s": 0.61,
-  "rss_mib": 105
+  "s": 0.58,
+  "cpu": 0.34,
+  "rss_mib": 97
  },
  "TestCLI_Fork_WholeBucketToWholeBucket": {
-  "s": 0.07,
-  "rss_mib": 105
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 97
  },
  "TestCLI_Repair_EndToEndSmoke": {
-  "s": 0.16,
-  "rss_mib": 105
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 97
  },
  "TestCLI_Repair_ExitCodeNonzeroWhenUnresolved": {
-  "s": 0.06,
-  "rss_mib": 105
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 97
  },
  "TestCLI_Repair_RealProcessKillThenResume": {
-  "s": 1.39,
-  "rss_mib": 141
+  "s": 1.61,
+  "cpu": 1.27,
+  "rss_mib": 127
  },
  "TestCLI_Replicate_NonRecursiveSingleObjectUnaffectedByM8C": {
   "s": 0.11,
-  "rss_mib": 105
+  "cpu": 0.06,
+  "rss_mib": 97
  },
  "TestCLI_Replicate_RecursiveExitCodeNonzeroOnPartialFailure": {
-  "s": 0.11,
-  "rss_mib": 105
+  "s": 0.09,
+  "cpu": 0.05,
+  "rss_mib": 97
  },
  "TestCLI_Replicate_RecursiveWholeBucket": {
-  "s": 0.09,
-  "rss_mib": 105
+  "s": 0.11,
+  "cpu": 0.06,
+  "rss_mib": 97
  },
  "TestCLI_SnapshotRestore_EndToEnd": {
-  "s": 0.06,
-  "rss_mib": 105
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 97
  },
  "TestCLI_SnapshotRestore_ResumeAcrossRealProcessKill": {
   "s": 0.33,
-  "rss_mib": 105
+  "cpu": 0.19,
+  "rss_mib": 97
  },
  "TestCLI_Snapshot_CreateListShowDelete": {
-  "s": 0.07,
-  "rss_mib": 105
+  "s": 0.09,
+  "cpu": 0.05,
+  "rss_mib": 97
  },
  "TestCLI_Snapshot_GC_PinsAcrossRestart": {
-  "s": 0.09,
-  "rss_mib": 105
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 97
  },
  "TestCLI_Sync_DirectoryAndSingleFile_Smoke": {
-  "s": 0.09,
-  "rss_mib": 105
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 97
  },
  "TestCLI_VerifyRepairFrom_OneCommandDetectRepairReverify": {
-  "s": 0.08,
-  "rss_mib": 105
+  "s": 0.09,
+  "cpu": 0.05,
+  "rss_mib": 97
  },
  "TestCLI_VerifyRepairFrom_UnsetPreservesOrdinaryVerifyBehavior": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestCLI_VersionsRestoreGCDoctor_Smoke": {
-  "s": 0.05,
-  "rss_mib": 105
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 97
  },
  "TestCLI_WorkersFlagValidation": {
-  "s": 0.09,
-  "rss_mib": 105
+  "s": 0.15,
+  "cpu": 0.09,
+  "rss_mib": 97
  },
  "TestCRC32_FailedChecksumLeavesNoVisibleObject": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCRC32_InvalidRejected": {
   "s": 0,
-  "rss_mib": 105
+  "rss_mib": 97
  },
  "TestCRC32_ValidAccepted": {
   "s": 0,
-  "rss_mib": 105
+  "rss_mib": 97
  },
  "TestConcurrency_DeleteBucketVsPutObjectResolvesCoherently": {
-  "s": 0.29,
-  "rss_mib": 105
+  "s": 0.35,
+  "cpu": 0.2,
+  "rss_mib": 97
  },
  "TestConcurrency_GetDuringOverwriteSeesCompleteObject": {
-  "s": 0.05,
-  "rss_mib": 105
+  "s": 0.09,
+  "cpu": 0.05,
+  "rss_mib": 97
  },
  "TestConcurrency_RestoreRacingCopyObject": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConcurrency_RestoreRacingDelete": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConcurrency_RestoreRacingPut": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConcurrency_SameKeyPutPutSerializesToOneCompleteVersion": {
-  "s": 0.05,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestConcurrency_SameKeyPutVsDeleteNeverMixed": {
   "s": 0.04,
-  "rss_mib": 105
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestConcurrency_StatsDuringWrites": {
-  "s": 0.07,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestConcurrency_TwoOverwritesSameKey_HistoryDeterministic": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConcurrency_VerifyDuringWrites": {
-  "s": 0.17,
-  "rss_mib": 105
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 97
  },
  "TestConditionalGetHTTP_HistoricalETagIsNotCurrentForIfMatch": {
-  "s": 0.03,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalGetHTTP_IfMatch_MatchSucceeds": {
   "s": 0.01,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalGetHTTP_IfMatch_MismatchFailsWith412": {
   "s": 0.01,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalGetHTTP_IfNoneMatch_MatchReturns304": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalGetHTTP_IfNoneMatch_MismatchServesNormally": {
   "s": 0.01,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalGetHTTP_MissingObjectIgnoresCondition": {
   "s": 0.01,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalGetHTTP_MultipartCurrentETag": {
-  "s": 0.12,
-  "rss_mib": 105
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 97
  },
  "TestConditionalGetHTTP_QuotedUnquotedAndCaseInsensitive": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalGetHTTP_RangeInteraction": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestConditionalHeadHTTP_IfMatch_MatchAndMismatch": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalHeadHTTP_IfNoneMatch_MatchAndMismatch": {
   "s": 0.01,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPutHTTP_ConcurrentCreateOnly_ExactlyOneWinnerOverRealHTTP": {
-  "s": 0.03,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPutHTTP_IfMatch_CASUpdateThenStaleRejectWith412": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPutHTTP_IfMatch_MultipartCurrentETag": {
-  "s": 0.09,
-  "rss_mib": 105
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 97
  },
  "TestConditionalPutHTTP_IfMatch_QuotedUnquotedAndCaseInsensitive": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestConditionalPutHTTP_IfNoneMatchStar_CreateThenRejectWith412": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected": {
-  "s": 0,
-  "rss_mib": 105
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPutHTTP_UnconditionalPUTUnaffectedByM8F": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPutHTTP_WhitespaceAroundStarTolerated": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestConditionalPut_ConcurrentCreateOnly_ExactlyOneWinner": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPut_ConcurrentIfMatchSameOldETag_ExactlyOneWinner": {
-  "s": 0.03,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPut_IfMatch_ABASameETagAfterDeleteRecreateSucceeds": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestConditionalPut_IfMatch_AbsentKeyFails": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPut_IfMatch_HistoricalETagDoesNotMatchCurrent": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPut_IfMatch_MatchingETagSucceeds": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPut_IfMatch_MismatchingETagFails": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPut_IfMatch_SpeculativeCASBecomesGCCollectibleAfterFailure": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestConditionalPut_IfNoneMatchStar_AbsentKeySucceeds": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPut_IfNoneMatchStar_DeletedKeySucceeds": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPut_IfNoneMatchStar_ExistingKeyFails": {
-  "s": 0.03,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPut_IfNoneMatchStar_FailedWriteLeavesContentMetadataAndVersionsUnchanged": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPut_StaleIfMatchLosesAfterDeleteRecreate": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestConditionalPut_StaleIfMatchLosesAfterInterveningOrdinaryPut": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestContentMD5_CoexistsWithValidCRC32": {
   "s": 0,
-  "rss_mib": 105
+  "rss_mib": 97
  },
  "TestContentMD5_FailedDigestLeavesNoVisibleObjectOverRealHTTP": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestContentMD5_MalformedBase64RejectedAsInvalidDigest": {
   "s": 0,
-  "rss_mib": 105
+  "rss_mib": 97
  },
  "TestContentMD5_MismatchedRejectedAsBadDigest": {
   "s": 0,
-  "rss_mib": 105
+  "rss_mib": 97
  },
  "TestContentMD5_MissingHeaderUnchangedBehavior": {
   "s": 0,
-  "rss_mib": 105
+  "rss_mib": 97
  },
  "TestContentMD5_ValidAccepted": {
   "s": 0,
-  "rss_mib": 105
+  "rss_mib": 97
  },
  "TestContentMD5_ValidPUTOverRealHTTPSucceedsAndETagUnaffected": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestContentMD5_WrongLengthDecodedDigestRejectedAsInvalidDigest": {
   "s": 0,
-  "rss_mib": 105
+  "rss_mib": 97
  },
  "TestCopyObjectHTTP_SourceConditionMalformedRejected": {
   "s": 0.01,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCopyObjectHTTP_SourceIfMatch_MatchSucceeds": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCopyObjectHTTP_SourceIfMatch_MismatchFailsWith412": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCopyObjectHTTP_SourceIfMatch_SupersededHistoricalETagFails": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestCopyObjectHTTP_SourceIfMatch_WithMetadataReplaceDirective": {
-  "s": 0.03,
-  "rss_mib": 105
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCopyObjectHTTP_SourceIfNoneMatch_MatchFailsWith412": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCopyObjectHTTP_SourceIfNoneMatch_MismatchSucceeds": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestCopyObject_CrossBucket": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCopyObject_DestinationGetsNewManifestIdentityAndTimestamp": {
-  "s": 0.03,
-  "rss_mib": 105
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestCopyObject_MetadataDirectiveCopyPreservesSourceMetadata": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCopyObject_MetadataDirectiveReplaceUsesNewMetadataZeroNewChunkBytes": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCopyObject_MissingDestinationBucket": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCopyObject_MissingSource": {
   "s": 0.01,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCopyObject_OverwritesExistingDestination": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCopyObject_SameBucketZeroNewCASChunkBytes": {
-  "s": 0.13,
-  "rss_mib": 105
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 97
  },
  "TestCopyObject_SourceConditionUsesAtomicallyCapturedRevision": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCopyObject_TrickySourceKeys": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestCrash_AfterAck": {
-  "s": 0.05,
-  "rss_mib": 105
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestCrash_AfterChunksBeforeManifest": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCrash_AfterJournalSyncBeforeResponse": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCrash_AfterJournalWriteBeforeSync": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCrash_AfterManifestBeforeJournal": {
-  "s": 0.03,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCrash_CopyObjectAfterJournalSyncIsDurable": {
-  "s": 0.03,
-  "rss_mib": 105
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 97
  },
  "TestCrash_CopyObjectReplaceBeforeJournalLeavesOldState": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCrash_DuringChunkStaging": {
-  "s": 0,
-  "rss_mib": 105
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCrash_DuringPartialJournalFrame": {
-  "s": 0.03,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCrash_JournalReplay_HistoryRecordTypesDeterministic": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestCrash_Restart_MultipartOverwritePreviousVersionPreserved": {
-  "s": 0.07,
-  "rss_mib": 105
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 97
  },
  "TestCrash_SyncFailureRecoveryIsHonest": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDedup_EditedObjectReuseBeatsFixedSizeChunking": {
-  "s": 0.06,
-  "rss_mib": 105
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 97
  },
  "TestDedup_IdenticalObjectReuseAcrossBuckets": {
-  "s": 0.05,
-  "rss_mib": 105
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 97
  },
  "TestDedup_IdenticalObjectReuseAcrossKeys": {
-  "s": 0.09,
-  "rss_mib": 105
+  "s": 0.15,
+  "cpu": 0.09,
+  "rss_mib": 97
  },
  "TestDeleteBucket_EmptySucceeds": {
   "s": 0.01,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDeleteBucket_MissingIsNoSuchBucket": {
   "s": 0.01,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDeleteBucket_NonEmptyFails": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDeleteBucket_SurvivesRestartAndRecreate": {
-  "s": 0.01,
-  "rss_mib": 105
+  "s": 0,
+  "rss_mib": 97
  },
  "TestDeleteObject_ExistingThenMissingIdempotent": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDeleteObject_MissingBucketErrors": {
   "s": 0.01,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDeleteObject_SharedChunksRemainReadableThroughAnotherObject": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDeleteObject_SurvivesRestart": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDeleteObjects_BucketVersionAndBounds": {
   "s": 0.06,
-  "rss_mib": 105
+  "cpu": 0.04,
+  "rss_mib": 97
  },
  "TestDeleteObjects_HistoryPruneGC": {
-  "s": 0.04,
-  "rss_mib": 105
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 97
  },
  "TestDeleteObjects_Table": {
-  "s": 2.03,
+  "s": 2.3,
+  "cpu": 0.55,
   "rss_mib": 22
  },
  "TestDiff_CLI_SameServer_EndToEnd": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDirSync_AggregateStatsExactMatchSumOfPerFileStats": {
-  "s": 0.1,
-  "rss_mib": 105
+  "s": 0.11,
+  "cpu": 0.06,
+  "rss_mib": 97
  },
  "TestDirSync_DeterministicOrdering": {
   "s": 0,
-  "rss_mib": 105
+  "rss_mib": 97
  },
  "TestDirSync_DuplicateLookingPathsRemainDistinct": {
-  "s": 0.03,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDirSync_EmptyDirectory": {
   "s": 0.01,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDirSync_ExistingIdenticalRemoteFile": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDirSync_FileDisappearsBeforeBeingProcessed": {
   "s": 0.02,
-  "rss_mib": 105
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDirSync_HiddenDotPrefixedFiles": {
-  "s": 0.03,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDirSync_LocalDeletionDoesNotDeleteRemoteObject": {
-  "s": 0.02,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDirSync_NestedDirectories": {
-  "s": 0.04,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDirSync_NewlyAddedFileAfterInitialSync": {
-  "s": 0.03,
-  "rss_mib": 105
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDirSync_OneFile": {
-  "s": 0.04,
-  "rss_mib": 105
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDirSync_OneModifiedFileAmongMany": {
-  "s": 0.08,
-  "rss_mib": 161
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDirSync_PartialFailureMultipleFailureModesSuccessfulSiblingsRetained": {
-  "s": 0.04,
-  "rss_mib": 161
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDirSync_PrefixNormalization": {
-  "s": 0.02,
-  "rss_mib": 161
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDirSync_PrintSummaryFormat": {
   "s": 0,
-  "rss_mib": 161
+  "rss_mib": 97
  },
  "TestDirSync_RemoteConflictForOneFileOthersSucceed": {
   "s": 0.03,
-  "rss_mib": 161
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDirSync_ResultOKReflectsFailureCount": {
   "s": 0,
-  "rss_mib": 161
+  "rss_mib": 97
  },
  "TestDirSync_ResumeAfterPartialPriorUploadOfOneFile": {
-  "s": 0.05,
-  "rss_mib": 161
+  "s": 0.09,
+  "cpu": 0.05,
+  "rss_mib": 97
  },
  "TestDirSync_SameBasenameInDifferentDirectories": {
   "s": 0.04,
-  "rss_mib": 161
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDirSync_ServerRestart": {
-  "s": 0.05,
-  "rss_mib": 161
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDirSync_SourcePathTrailingSeparator": {
-  "s": 0.02,
-  "rss_mib": 161
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDirSync_SpacesInPaths": {
-  "s": 0.03,
-  "rss_mib": 161
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDirSync_SpecialFileSkipped": {
-  "s": 0.03,
-  "rss_mib": 161
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDirSync_SymlinkSkippedNotFollowed": {
   "s": 0.02,
-  "rss_mib": 161
+  "cpu": 0.01,
+  "rss_mib": 97
  },
  "TestDirSync_UnicodePaths": {
   "s": 0.03,
-  "rss_mib": 161
+  "cpu": 0.02,
+  "rss_mib": 97
  },
  "TestDirectPackLife_AbortedMultipartLeavesGCableDeadPacks": {
   "s": 0.11,
-  "rss_mib": 161
- },
- "TestDirectPackLife_BodyReadFailureCleansStagingKeepsPublishedPacks": {
-  "s": 0.07,
-  "rss_mib": 161
- },
- "TestDirectPackLife_CrashMatrixConverges": {
-  "s": 1.45,
+  "cpu": 0.06,
   "rss_mib": 97
  },
+ "TestDirectPackLife_BodyReadFailureCleansStagingKeepsPublishedPacks": {
+  "s": 0.09,
+  "cpu": 0.05,
+  "rss_mib": 97
+ },
+ "TestDirectPackLife_CrashMatrixConverges": {
+  "s": 1.52,
+  "cpu": 1.29,
+  "rss_mib": 88
+ },
  "TestDirectPackLife_RealProcessKillAfterFirstPackBeforeRoot": {
-  "s": 2.54,
-  "rss_mib": 661
+  "s": 2.64,
+  "cpu": 3.58,
+  "rss_mib": 759
  },
  "TestDirectPackLife_RepackCompressesRawDirectPacksPreservingOrder": {
-  "s": 0.11,
-  "rss_mib": 161
+  "s": 0.14,
+  "cpu": 0.08,
+  "rss_mib": 97
  },
  "TestDirectPackLife_RequestFailuresPublishNoObjectAndOrphansAreGCSafe": {
-  "s": 0.14,
-  "rss_mib": 161
+  "s": 0.22,
+  "cpu": 0.14,
+  "rss_mib": 180
  },
  "TestDirectPackLife_TierRebalanceBundlesAndLogicalHistoryUnchanged": {
-  "s": 0.35,
-  "rss_mib": 161
+  "s": 0.43,
+  "cpu": 0.28,
+  "rss_mib": 180
  },
  "TestDirectPack_AWSChunkedUsesDecodedSize": {
-  "s": 0.08,
-  "rss_mib": 161
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 180
  },
  "TestDirectPack_AdaptiveCompressionOptionStillValidPackV1": {
-  "s": 0.04,
-  "rss_mib": 161
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestDirectPack_BuilderAbortRemovesStaging": {
   "s": 0.01,
-  "rss_mib": 161
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestDirectPack_BuilderEmitsSpecPackBytes": {
-  "s": 0,
-  "rss_mib": 161
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestDirectPack_ConcurrentPutsAndIdenticalDuplicates": {
-  "s": 0.33,
-  "rss_mib": 161
+  "s": 0.44,
+  "cpu": 0.29,
+  "rss_mib": 180
  },
  "TestDirectPack_ExistingCopiesInAnyTierAreReused": {
-  "s": 0.6,
-  "rss_mib": 161
+  "s": 0.86,
+  "cpu": 0.57,
+  "rss_mib": 180
  },
  "TestDirectPack_IdenticalAndShiftedUploadsWriteNoPayload": {
-  "s": 0.14,
-  "rss_mib": 161
+  "s": 0.15,
+  "cpu": 0.1,
+  "rss_mib": 180
  },
  "TestDirectPack_ManyPublishedPacksKeepLocatorBounded": {
-  "s": 5.56,
-  "rss_mib": 49
+  "s": 5.74,
+  "cpu": 7.14,
+  "rss_mib": 46
  },
  "TestDirectPack_MultipartPartsAndCompleteAreCanonical": {
-  "s": 0.46,
-  "rss_mib": 161
+  "s": 0.74,
+  "cpu": 0.49,
+  "rss_mib": 180
  },
  "TestDirectPack_MultiplePacksAndPackSizes": {
-  "s": 0.1,
-  "rss_mib": 161
+  "s": 0.13,
+  "cpu": 0.09,
+  "rss_mib": 180
  },
  "TestDirectPack_RecordOrderFollowsObjectAndRepeatsWriteOnce": {
-  "s": 0.07,
-  "rss_mib": 161
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 180
  },
  "TestDirectPack_SelectionByKnownSize": {
-  "s": 0.47,
-  "rss_mib": 161
+  "s": 0.85,
+  "cpu": 0.56,
+  "rss_mib": 180
  },
  "TestDirectPack_SinkRepeatedDigestWrittenOnce": {
-  "s": 0.01,
-  "rss_mib": 161
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestDirectPack_TailBelowMinimumStaysLoose": {
-  "s": 0.13,
-  "rss_mib": 161
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 180
  },
  "TestDryRun_CLI_SingleObject_EndToEnd": {
-  "s": 0.02,
-  "rss_mib": 161
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestDryRun_PredictionMatchesActualExecution": {
-  "s": 0.21,
-  "rss_mib": 161
+  "s": 0.25,
+  "cpu": 0.16,
+  "rss_mib": 180
  },
  "TestDryRun_PredictionMatchesActualExecution_Recursive": {
-  "s": 0.05,
-  "rss_mib": 161
+  "s": 0.09,
+  "cpu": 0.06,
+  "rss_mib": 180
  },
  "TestDryRun_ReadOnly_FullStoreFingerprintUnchanged": {
-  "s": 0.03,
-  "rss_mib": 161
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestDryRun_Recursive_EmptyPrefix": {
   "s": 0.01,
-  "rss_mib": 161
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestDryRun_Recursive_PartialConflicts": {
-  "s": 0.04,
-  "rss_mib": 161
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestDryRun_Recursive_SeveralObjectsAndCrossObjectReuse": {
-  "s": 0.02,
-  "rss_mib": 161
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestDryRun_SingleObject_AllChunksMissing": {
-  "s": 0.04,
-  "rss_mib": 161
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 180
  },
  "TestDryRun_SingleObject_AllChunksPresent_AlreadyEquivalent": {
-  "s": 0.05,
-  "rss_mib": 161
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 180
  },
  "TestDryRun_SingleObject_DestinationConflict": {
-  "s": 0.05,
-  "rss_mib": 161
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 180
  },
  "TestDryRun_SingleObject_DuplicateChunkReferences": {
-  "s": 0.02,
-  "rss_mib": 161
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestDryRun_SingleObject_EmptyObject": {
   "s": 0.03,
-  "rss_mib": 161
+  "cpu": 0.02,
+  "rss_mib": 180
  },
  "TestDryRun_SingleObject_PartialOverlap_ExactAccounting": {
-  "s": 0.03,
-  "rss_mib": 161
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestDryRun_SingleObject_WeirdKeys": {
-  "s": 0.02,
-  "rss_mib": 161
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 180
  },
  "TestE2E_BinaryObject": {
-  "s": 0.08,
-  "rss_mib": 161
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 180
  },
  "TestE2E_FailedPutNeverVisible": {
   "s": 0,
-  "rss_mib": 161
+  "rss_mib": 180
  },
  "TestE2E_FullLifecycle": {
   "s": 0.02,
-  "rss_mib": 161
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestE2E_OverwriteThenRestart": {
   "s": 0.02,
-  "rss_mib": 161
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestE2E_ZeroByteObject": {
-  "s": 0.01,
-  "rss_mib": 161
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestEnvCredentials_Inspect_ExplicitFlagOverridesWrongEnv": {
-  "s": 0.02,
-  "rss_mib": 161
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 180
  },
  "TestEnvCredentials_Inspect_UsesEnvWhenFlagsOmitted": {
-  "s": 0.01,
-  "rss_mib": 161
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestEnvCredentials_Presign_UsesEnvWhenFlagsOmitted": {
-  "s": 0.05,
-  "rss_mib": 161
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 180
  },
  "TestEnvCredentials_Replicate_FromToFlagsNeverFallBackToEnv_RealProcess": {
-  "s": 0.09,
-  "rss_mib": 161
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 180
  },
  "TestEnvCredentials_Replicate_RegionFromEnvButFromToNeverFallBack": {
-  "s": 0.04,
-  "rss_mib": 161
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 180
  },
  "TestEnvCredentials_Serve_AuthenticatesFromEnv": {
   "s": 0.05,
-  "rss_mib": 106
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestEnvOverride_DefaultWhenBothAbsent": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestEnvOverride_EmptyEnvIsASetOverride": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestEnvOverride_EnvUsedWhenFlagAbsent": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestEnvOverride_FlagExplicitWinsOverEnv": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestEnvOverride_RegionDefaultWhenBothAbsent": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestEnvOverride_UnsetEnvNeverOverridesExplicitFlagEitherWay": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestEnvOverride_UsageStringNeverContainsEnvValue": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestFetchRepairChunk_AuthFailureRejected": {
-  "s": 0.01,
-  "rss_mib": 106
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestFetchRepairChunk_MalformedDigestRejected": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestFetchRepairChunk_OversizedResponseRejected": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestFetchRepairChunk_PeerHasChunkSucceeds": {
-  "s": 0.01,
-  "rss_mib": 106
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestFetchRepairChunk_PeerMissingChunkFailsClearly": {
-  "s": 0.01,
-  "rss_mib": 106
+  "s": 0,
+  "rss_mib": 180
  },
  "TestFetchRepairChunk_TruncatedBytesRejected": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestFetchRepairChunk_WrongBytesRejectedBeforePublication": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestFirstTransferError_FallsBackToCancellationWhenNoGenuineError": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestFirstTransferError_LowestIndexGenuineErrorWins": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestFirstTransferError_NoErrorsReturnsNil": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestForkNamespacesOverlap_BothWholeBucketOverlaps": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestForkNamespacesOverlap_DeeplyNestedSiblingsDoNotOverlap": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestForkNamespacesOverlap_DestNestedInsideSource": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestForkNamespacesOverlap_EqualPrefixesOverlap": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestForkNamespacesOverlap_SharedStringPrefixDifferentBoundaryDoesNotOverlap": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestForkNamespacesOverlap_SiblingPrefixesDoNotOverlap": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestForkNamespacesOverlap_SourceNestedInsideDest": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestForkNamespacesOverlap_WholeBucketDestAlwaysOverlaps": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestForkNamespacesOverlap_WholeBucketSourceAlwaysOverlaps": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 180
  },
  "TestFork_DeepVerifyGreenAfterFork": {
-  "s": 0.05,
-  "rss_mib": 106
+  "s": 0.09,
+  "cpu": 0.06,
+  "rss_mib": 180
  },
  "TestFork_DestinationConflictOneObjectFailsOthersSucceed": {
-  "s": 0.04,
-  "rss_mib": 106
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 180
  },
  "TestFork_DestinationDeletedAfterFork_SourceSurvives": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestFork_DestinationEditedAfterFork_SourceUnchanged_OnlyNewChunksAdded": {
-  "s": 0.05,
-  "rss_mib": 106
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 180
  },
  "TestFork_DestinationKeyCreatedConcurrentlyDuringOperationIsNotOverwritten": {
-  "s": 0.04,
-  "rss_mib": 106
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 180
  },
  "TestFork_DestinationOnlyObjectSurvives": {
-  "s": 0.04,
-  "rss_mib": 106
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 180
  },
  "TestFork_ETagContentEqualityAndIndependentLastModified": {
   "s": 0.03,
-  "rss_mib": 106
+  "cpu": 0.02,
+  "rss_mib": 180
  },
  "TestFork_EmptySourceNamespace": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestFork_GCPreservesBothNamespacesAfterDivergence": {
-  "s": 0.04,
-  "rss_mib": 106
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestFork_LargeMultiChunkObject_ZeroPayload": {
-  "s": 0.2,
-  "rss_mib": 106
+  "s": 0.17,
+  "cpu": 0.11,
+  "rss_mib": 180
  },
  "TestFork_MetadataAndContentTypePreserved": {
   "s": 0.03,
-  "rss_mib": 106
+  "cpu": 0.02,
+  "rss_mib": 180
  },
  "TestFork_OneObject_ZeroPayload": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestFork_PaginationBoundary_1500Objects": {
-  "s": 3.71,
-  "rss_mib": 26
+  "s": 4.88,
+  "cpu": 2.12,
+  "rss_mib": 27
  },
  "TestFork_PrefixToPrefix_SameBucketNonOverlapping": {
   "s": 0.03,
-  "rss_mib": 106
+  "cpu": 0.02,
+  "rss_mib": 180
  },
  "TestFork_RepairComposesAcrossSharedCorruptChunk": {
   "s": 0.11,
-  "rss_mib": 106
+  "cpu": 0.07,
+  "rss_mib": 180
  },
  "TestFork_SeveralObjectsSharingChunks_ZeroPayload": {
-  "s": 0.06,
-  "rss_mib": 106
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestFork_SourceDeletedAfterFork_DestinationSurvives": {
-  "s": 0.03,
-  "rss_mib": 106
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestFork_SourceEditedAfterFork_DestinationUnchanged": {
-  "s": 0.03,
-  "rss_mib": 106
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestFork_SourceObjectChangesAfterListingBeforeFetch_ForksOneCleanRevisionNotMixed": {
   "s": 0.04,
-  "rss_mib": 106
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestFork_SourceObjectDisappearsBetweenListingAndFetch_ReportsFailureContinues": {
-  "s": 0.06,
-  "rss_mib": 106
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestFork_UnrelatedObjects_ZeroPayload": {
-  "s": 0.06,
-  "rss_mib": 106
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 180
  },
  "TestFork_WeirdKeysUnicodePercentHashQuestionSpacesRepeatedSlashesPreserved": {
   "s": 0.04,
-  "rss_mib": 106
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestFork_WholeBucketToWholeBucket_DifferentBuckets": {
   "s": 0.03,
-  "rss_mib": 106
+  "cpu": 0.02,
+  "rss_mib": 180
  },
  "TestGC_AbortedMultipartBecomesCollectible": {
-  "s": 0.17,
-  "rss_mib": 106
+  "s": 0.22,
+  "cpu": 0.14,
+  "rss_mib": 180
  },
  "TestGC_AdversarialMatrix_K1toK5": {
-  "s": 0.24,
-  "rss_mib": 106
+  "s": 0.16,
+  "cpu": 0.11,
+  "rss_mib": 180
  },
  "TestGC_DryRunDeletesNothing": {
-  "s": 0.03,
-  "rss_mib": 106
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestGC_ExclusivityRefusesWhileStoreInUse": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestGC_InterruptedSweep_K6": {
   "s": 0.05,
-  "rss_mib": 106
+  "cpu": 0.03,
+  "rss_mib": 180
  },
  "TestGC_MultipartSurvivesGC_ThenCompletes": {
-  "s": 0.27,
-  "rss_mib": 106
+  "s": 0.25,
+  "cpu": 0.16,
+  "rss_mib": 180
  },
  "TestGC_RefusesOnCorruptLiveRoot_K7": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestGetBucketLocation": {
-  "s": 0.01,
-  "rss_mib": 106
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestGetObject_MetadataAndContentTypeRoundTrip": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestHeadBucket_PresentMissing": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestHeadObject_HeadersNoBody": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestHeadObject_Missing": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 180
  },
  "TestIngestCrash_Matrix": {
-  "s": 0.26,
-  "rss_mib": 106
+  "s": 0.16,
+  "cpu": 0.09,
+  "rss_mib": 70
  },
  "TestIngest_Matrix": {
-  "s": 0.91,
-  "rss_mib": 106
+  "s": 0.8,
+  "cpu": 0.44,
+  "rss_mib": 70
  },
  "TestIngest_StreamsLazily": {
-  "s": 0.15,
-  "rss_mib": 106
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 70
  },
  "TestInspect_CLI_EndToEnd": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_ChunksListing_OffsetsAndDigestsExact": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_ChunksListing_TruncatedByDefault": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 70
  },
  "TestInspect_CopyObjectSharing": {
-  "s": 0.03,
-  "rss_mib": 106
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_CurrentVersionSemantics": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_DeletionChangesReachabilityCorrectly": {
-  "s": 0.03,
-  "rss_mib": 106
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_EmptyObject": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_ForkSharing_BeforeAndAfter": {
-  "s": 0.03,
-  "rss_mib": 106
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_ForkThenLocalizedMutation_HistoricalRootStillShares": {
-  "s": 0.02,
-  "rss_mib": 106
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 70
  },
  "TestInspect_GCDoesNotChangeValidReportedSemantics": {
-  "s": 0.04,
-  "rss_mib": 106
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_ManyChunks_MinAvgMaxExact": {
   "s": 0.08,
-  "rss_mib": 106
+  "cpu": 0.04,
+  "rss_mib": 70
  },
  "TestInspect_ObjectUniqueInStore_SolelyReachable": {
-  "s": 0.04,
-  "rss_mib": 106
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 70
  },
  "TestInspect_OneChunk": {
-  "s": 0.02,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_PartialChunkSharing_ExactSplit": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_ReadOnly_NoStoreMutation": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_RepeatedChunkIDs_ExactDedup": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_RetainedVersionSharing": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_SnapshotPinnedSharing_SurvivesLiveDeletion": {
-  "s": 0.02,
-  "rss_mib": 106
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 70
  },
  "TestInspect_TwoKeysIdenticalContent_FullySharedElsewhere": {
-  "s": 0.04,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestInspect_WeirdKeys": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestJournal_CRC32C": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 70
  },
  "TestJournal_CorruptionInEarlierFrameFails": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 70
  },
  "TestJournal_CreateBucketReplay": {
-  "s": 0.01,
-  "rss_mib": 106
+  "s": 0,
+  "rss_mib": 70
  },
  "TestJournal_DeleteBucketReplay": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestJournal_DeleteObjectRootReplay": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestJournal_FrameEncodeDecodeRoundTrip": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 70
  },
  "TestJournal_GenuinelyUnknownRecordTypeStillFailsClosed": {
-  "s": 0.01,
-  "rss_mib": 106
+  "s": 0,
+  "rss_mib": 70
  },
  "TestJournal_IncompleteFinalFrameIsTornTail": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 70
  },
  "TestJournal_InvalidVersionAndTypeRejected": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestJournal_MixedCreatePutDeleteRecreateSequence": {
-  "s": 0.03,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestJournal_MultiFrameReplay": {
-  "s": 0.03,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestJournal_PayloadLengthBound": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestJournal_PoisonedAfterWriteFailure": {
-  "s": 0.01,
-  "rss_mib": 106
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestJournal_PutObjectRootReplay": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestJournal_SequenceEnforcement": {
   "s": 0,
-  "rss_mib": 106
+  "rss_mib": 70
  },
  "TestLayoutMatrix_ConcurrentPutGetSameAndDifferentKeys": {
-  "s": 3.26,
-  "rss_mib": 272
+  "s": 3.33,
+  "cpu": 3.64,
+  "rss_mib": 279
  },
  "TestLayoutMatrix_GCReclaimsUnreferencedDataKeepsLiveData": {
-  "s": 0.69,
-  "rss_mib": 35
+  "s": 0.74,
+  "cpu": 0.41,
+  "rss_mib": 70
  },
  "TestLayoutMatrix_HistoryRestoreAndDeleteSurviveMaintenance": {
-  "s": 0.84,
-  "rss_mib": 106
+  "s": 0.65,
+  "cpu": 0.36,
+  "rss_mib": 70
  },
  "TestLayoutMatrix_RepairFindingsClassifyMissingAndCorrupt": {
-  "s": 0.37,
-  "rss_mib": 106
+  "s": 0.34,
+  "cpu": 0.19,
+  "rss_mib": 70
  },
  "TestLayoutMatrix_RestartDurabilityAndUncleanReopen": {
-  "s": 0.34,
-  "rss_mib": 106
+  "s": 0.24,
+  "cpu": 0.13,
+  "rss_mib": 70
  },
  "TestLayoutMatrix_VerifyDetectsMissingAndCorruptChunks": {
-  "s": 0.53,
-  "rss_mib": 106
+  "s": 0.52,
+  "cpu": 0.29,
+  "rss_mib": 70
  },
  "TestListBuckets_EmptyNonEmptyOrder": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Delimiter_Dedup": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Delimiter_DeterministicOrdering": {
-  "s": 0.02,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Delimiter_DocumentedFixture": {
-  "s": 0.02,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Delimiter_EmptyPreservesFlatListing": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Delimiter_MultiCharacter": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Delimiter_NestedGrouping": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Delimiter_NoMatch": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Delimiter_UnicodeAndRepeatedSlashes": {
-  "s": 0.03,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Pagination_CommonPrefixBoundary": {
-  "s": 0.02,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Pagination_CompletedAndAbortedAreAbsent": {
-  "s": 0.04,
-  "rss_mib": 106
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Pagination_MarkerNearCommonPrefixBoundary": {
-  "s": 0.03,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Pagination_Matrix": {
   "s": 0.02,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Pagination_NoUploads": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Pagination_OneUpload": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Pagination_PrefixMarkerPositions": {
-  "s": 0.02,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Pagination_RestartStableOrdering": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Pagination_SameKeyBehindGroup": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Pagination_SameKeyMultipleUploadIDs_PageSplit": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Prefix_Basic": {
-  "s": 0.02,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Prefix_PartialKeyBoundary": {
   "s": 0.01,
-  "rss_mib": 106
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Prefix_UnusualCharacters": {
-  "s": 0.04,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Prefix_WithPagination": {
-  "s": 0.03,
-  "rss_mib": 106
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_ReadOnly_NoStorageMutation": {
-  "s": 0.01,
-  "rss_mib": 106
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_Scale_1200Traversal": {
-  "s": 0.59,
-  "rss_mib": 144
+  "s": 0.52,
+  "cpu": 0.29,
+  "rss_mib": 70
  },
  "TestListMultipartUploads_XMLSpecialCharactersAndLongKeys": {
-  "s": 0.02,
-  "rss_mib": 144
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListObjectsV2_DefaultAndLargeMaxKeysClamped": {
   "s": 0,
-  "rss_mib": 144
+  "rss_mib": 70
  },
  "TestListObjectsV2_Empty": {
   "s": 0.01,
-  "rss_mib": 144
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListObjectsV2_EncodingTypeURL": {
-  "s": 0.04,
-  "rss_mib": 144
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 70
  },
  "TestListObjectsV2_InvalidContinuationToken": {
   "s": 0.01,
-  "rss_mib": 144
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListObjectsV2_LexicalOrderingAndUnicode": {
   "s": 0.02,
-  "rss_mib": 144
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListObjectsV2_MaxKeysOnePagination": {
   "s": 0.02,
-  "rss_mib": 144
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListObjectsV2_MaxKeysZero": {
   "s": 0.02,
-  "rss_mib": 144
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListObjectsV2_PaginationNoDuplicateOrSkipWithDelimiter": {
-  "s": 0.02,
-  "rss_mib": 144
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 70
  },
  "TestListObjectsV2_PrefixDelimiterCommonPrefixes": {
   "s": 0.02,
-  "rss_mib": 144
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListObjectsV2_XMLEscaping": {
   "s": 0.02,
-  "rss_mib": 144
+  "cpu": 0.01,
+  "rss_mib": 70
  },
  "TestListParts_Pagination": {
-  "s": 0.03,
-  "rss_mib": 144
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 152
  },
  "TestListParts_Pagination_InvalidQueryValues": {
-  "s": 0,
-  "rss_mib": 144
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestListParts_Pagination_OverwrittenPartNoDuplicate": {
   "s": 0.04,
-  "rss_mib": 144
+  "cpu": 0.03,
+  "rss_mib": 152
  },
  "TestListParts_Pagination_RestartThenPaginate": {
-  "s": 0.03,
-  "rss_mib": 144
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestListSourceObjects_EmptyBucket": {
   "s": 0.01,
-  "rss_mib": 144
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestListSourceObjects_ExactlyPageLimit": {
-  "s": 0.75,
-  "rss_mib": 144
+  "s": 1.01,
+  "cpu": 0.69,
+  "rss_mib": 152
  },
  "TestListSourceObjects_MultiPageOver1000": {
-  "s": 1.21,
+  "s": 1.46,
+  "cpu": 0.34,
   "rss_mib": 22
  },
  "TestListSourceObjects_MultipleDeterministicOrder": {
   "s": 0.03,
-  "rss_mib": 144
+  "cpu": 0.02,
+  "rss_mib": 152
  },
  "TestListSourceObjects_OneObject": {
-  "s": 0.03,
-  "rss_mib": 144
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestListSourceObjects_PrefixFiltering": {
-  "s": 0.03,
-  "rss_mib": 144
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestListSourceObjects_WeirdKeys": {
   "s": 0.03,
-  "rss_mib": 144
+  "cpu": 0.02,
+  "rss_mib": 152
  },
  "TestLocalityBench_CompactOverhead": {
   "s": 0,
-  "rss_mib": 144
+  "rss_mib": 152
  },
  "TestLocalityBench_RunWindows": {
   "s": 0,
-  "rss_mib": 144
+  "rss_mib": 152
  },
  "TestLocalityScale_Planner": {
-  "s": 1.53,
-  "rss_mib": 125
+  "s": 1.76,
+  "cpu": 1.64,
+  "rss_mib": 126
  },
  "TestLocality_CompactLayoutsEndToEnd": {
-  "s": 0.47,
-  "rss_mib": 144
+  "s": 0.53,
+  "cpu": 0.36,
+  "rss_mib": 152
  },
  "TestLocality_DeterministicAcrossBuildOrder": {
-  "s": 0.29,
-  "rss_mib": 144
+  "s": 0.31,
+  "cpu": 0.21,
+  "rss_mib": 152
  },
  "TestLocality_FirstReferenceRanking": {
   "s": 0,
-  "rss_mib": 144
+  "rss_mib": 152
  },
  "TestLocality_PackBoundariesAndTailFolding": {
-  "s": 0.16,
-  "rss_mib": 144
+  "s": 0.13,
+  "cpu": 0.09,
+  "rss_mib": 152
  },
  "TestLocality_RebalanceSplitKeepsSourceOrderPerTier": {
   "s": 0.06,
-  "rss_mib": 144
+  "cpu": 0.04,
+  "rss_mib": 152
  },
  "TestLocality_RepackCombinesPacksInPackOrderAndDedups": {
-  "s": 0.06,
-  "rss_mib": 144
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 152
  },
  "TestLocality_RepackKeepsSurvivorsInSourceOrder": {
-  "s": 0.07,
-  "rss_mib": 144
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 152
  },
  "TestLocality_RootObservationOrder": {
-  "s": 0.06,
-  "rss_mib": 144
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 152
  },
  "TestLocality_SingleChunkEmptyAndSharedObjects": {
-  "s": 0.04,
-  "rss_mib": 144
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 152
  },
  "TestLocatorScale": {
   "s": 0,
-  "rss_mib": 144
+  "rss_mib": 152
  },
  "TestLocator_DifferentialAgainstReferenceMap": {
-  "s": 0.21,
-  "rss_mib": 144
+  "s": 0.12,
+  "cpu": 0.08,
+  "rss_mib": 152
  },
  "TestLocator_PackedOnlyChunksDeduplicateAfterRestart": {
-  "s": 0.1,
-  "rss_mib": 144
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 152
  },
  "TestLocator_PublishedLevelsStayBounded": {
   "s": 0.03,
-  "rss_mib": 144
+  "cpu": 0.02,
+  "rss_mib": 152
  },
  "TestLocator_ReloadNeverExposesPartialIndex": {
-  "s": 0.2,
-  "rss_mib": 144
+  "s": 0.21,
+  "cpu": 0.14,
+  "rss_mib": 152
  },
  "TestLocator_TableCases": {
   "s": 0,
-  "rss_mib": 144
+  "rss_mib": 152
  },
  "TestM8G_CredentialSeparation_Diff": {
-  "s": 0.04,
-  "rss_mib": 144
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestM8G_HostileAudit_CombinedFingerprint": {
   "s": 0.03,
-  "rss_mib": 144
+  "cpu": 0.02,
+  "rss_mib": 152
  },
  "TestM8G_HostileAudit_NoMutatingHTTPMethods": {
-  "s": 0.03,
-  "rss_mib": 144
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestM8G_HostileEndpoint_MalformedDescriptorDoesNotPanic": {
   "s": 0,
-  "rss_mib": 144
+  "rss_mib": 152
  },
  "TestM8G_HugeNamespace_1500Objects_RecursiveDryRun": {
-  "s": 1.84,
+  "s": 2.2,
+  "cpu": 1.22,
   "rss_mib": 25
  },
  "TestManifest_ByteSHA256MatchesJournalReference": {
-  "s": 0.02,
-  "rss_mib": 144
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestManifest_CorruptOrMissingDetected": {
   "s": 0.01,
-  "rss_mib": 144
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestManifest_MetadataDeterministicOrdering": {
   "s": 0,
-  "rss_mib": 144
+  "rss_mib": 152
  },
  "TestManifest_RoundTrip": {
   "s": 0.01,
-  "rss_mib": 144
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestModelAggregateByteReservationOverflow": {
   "s": 0,
-  "rss_mib": 144
+  "rss_mib": 152
  },
  "TestModelAggregateZeroReplayBound": {
-  "s": 0.4,
-  "rss_mib": 144
+  "s": 0.44,
+  "cpu": 0.3,
+  "rss_mib": 152
  },
  "TestModelEmptyMembersStillVerifyDependencies": {
   "s": 0,
-  "rss_mib": 144
+  "rss_mib": 152
  },
  "TestModelNestedPublicationRaisesFloor": {
-  "s": 0.03,
-  "rss_mib": 144
+  "s": 0.09,
+  "cpu": 0.06,
+  "rss_mib": 152
  },
  "TestModelOrdinaryPutCrashPublication": {
-  "s": 0.28,
-  "rss_mib": 144
+  "s": 0.32,
+  "cpu": 0.22,
+  "rss_mib": 152
  },
  "TestModelRangeWorkChargesWindowNotWholeTensor": {
   "s": 0.09,
-  "rss_mib": 144
+  "cpu": 0.06,
+  "rss_mib": 152
  },
  "TestMultipart_CompletedObjectDedupsAgainstOrdinaryPutOfSameBytes": {
   "s": 0.2,
-  "rss_mib": 144
+  "cpu": 0.14,
+  "rss_mib": 152
  },
  "TestMultipart_CompletionValidation": {
-  "s": 0.54,
-  "rss_mib": 144
+  "s": 0.7,
+  "cpu": 0.48,
+  "rss_mib": 152
  },
  "TestMultipart_Concurrency_AbortRacingUploadPartIsRaceFree": {
-  "s": 0.01,
-  "rss_mib": 144
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestMultipart_Concurrency_CompleteRacingUploadPartIsRaceFree": {
-  "s": 0.11,
-  "rss_mib": 144
+  "s": 0.12,
+  "cpu": 0.08,
+  "rss_mib": 152
  },
  "TestMultipart_Concurrency_DifferentPartNumbersAllSurvive": {
-  "s": 0.15,
-  "rss_mib": 144
+  "s": 0.2,
+  "cpu": 0.14,
+  "rss_mib": 152
  },
  "TestMultipart_Concurrency_SamePartNumberRaceIsDeterministicAndRaceFree": {
-  "s": 0.27,
-  "rss_mib": 281
+  "s": 0.26,
+  "cpu": 0.18,
+  "rss_mib": 152
  },
  "TestMultipart_Concurrency_TwoAbortCallsOnlyOneWins": {
   "s": 0.01,
-  "rss_mib": 281
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestMultipart_Concurrency_TwoCompleteCallsOnlyOneWins": {
   "s": 0.02,
-  "rss_mib": 281
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestMultipart_Crash_G1_RestartMidUploadThenResumeAndComplete": {
-  "s": 0.25,
-  "rss_mib": 281
+  "s": 0.33,
+  "cpu": 0.23,
+  "rss_mib": 152
  },
  "TestMultipart_Crash_G2_ReplacePartThenRestartThenComplete": {
   "s": 0.16,
-  "rss_mib": 281
+  "cpu": 0.11,
+  "rss_mib": 152
  },
  "TestMultipart_Crash_G3_AbortThenRestartUploadIDStaysInvalid": {
   "s": 0.02,
-  "rss_mib": 281
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestMultipart_Crash_G4_CompleteThenRestartObjectVisibleSessionGone": {
   "s": 0.02,
-  "rss_mib": 281
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestMultipart_Crash_G5_CrashAfterJournalCommitLeavesFullyCommittedObject": {
-  "s": 0.05,
-  "rss_mib": 281
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 152
  },
  "TestMultipart_Crash_G5_CrashBeforeJournalCommitLeavesOldStateResumable": {
-  "s": 0.07,
-  "rss_mib": 281
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 152
  },
  "TestMultipart_DeepVerifyAfterCompletion": {
-  "s": 0.15,
-  "rss_mib": 281
+  "s": 0.18,
+  "cpu": 0.12,
+  "rss_mib": 152
  },
  "TestMultipart_DeleteBucketRefusedWithActiveUpload": {
   "s": 0.01,
-  "rss_mib": 281
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestMultipart_ETag_DiffersFromOrdinarySinglePutETag": {
-  "s": 0.03,
-  "rss_mib": 281
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestMultipart_HappyPath_TwoParts_GetHeadRangeCopy": {
   "s": 0.22,
-  "rss_mib": 281
+  "cpu": 0.15,
+  "rss_mib": 152
  },
  "TestMultipart_IncompleteUploadInvisibleToOrdinaryOperations": {
-  "s": 0.03,
-  "rss_mib": 281
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestMultipart_InvalidPartNumberRejected": {
   "s": 0.01,
-  "rss_mib": 281
+  "cpu": 0.01,
+  "rss_mib": 152
  },
  "TestMultipart_LifecycleAfterAbortOrComplete": {
-  "s": 0.13,
-  "rss_mib": 281
+  "s": 0.1,
+  "cpu": 0.09,
+  "rss_mib": 308
  },
  "TestMultipart_ListMultipartUploads": {
   "s": 0.01,
-  "rss_mib": 281
+  "cpu": 0.01,
+  "rss_mib": 308
  },
  "TestMultipart_NonexistentUploadIDRejected": {
-  "s": 0.02,
-  "rss_mib": 281
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 308
  },
  "TestMultipart_ReplacedPartUsesLatestUpload": {
-  "s": 0.04,
-  "rss_mib": 281
+  "s": 0.03,
+  "cpu": 0.03,
+  "rss_mib": 308
  },
  "TestMultipart_SinglePart": {
-  "s": 0.02,
-  "rss_mib": 281
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 308
  },
  "TestMultipart_UploadIDForWrongBucketOrKeyRejected": {
   "s": 0.01,
-  "rss_mib": 281
+  "cpu": 0.01,
+  "rss_mib": 308
  },
  "TestNamespaceDestKey_KeyExactlyEqualsPrefixMapsToEmptyRelative": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestNamespaceDestKey_KeyNotCarryingPrefixRejected": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestNamespaceDestKey_NestedRelative": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestNamespaceDestKey_PrefixSourceWholeBucketDest": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestNamespaceDestKey_PrefixToPrefix": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestNamespaceDestKey_RepeatedSlashesInRelativeSuffixPreserved": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestNamespaceDestKey_SpacesAndUnicodePreserved": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestNamespaceDestKey_TwoDistinctSourceKeysNeverCollide": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestNamespaceDestKey_WeirdCharactersPassedThroughUnaltered": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestNamespaceDestKey_WholeBucket": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestNamespaceDestKey_WholeBucketSourcePrefixDest": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestNewHardenedHTTPServer_FieldsExact": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestNoInsecureSkipVerifyInSource": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestObjectDiff_AuthFailure": {
   "s": 0.02,
-  "rss_mib": 281
+  "cpu": 0.02,
+  "rss_mib": 308
  },
  "TestObjectDiff_CrossCheckAgainstIndependentComputation": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestObjectDiff_EmptyObjects": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestObjectDiff_IdenticalObjects_ExactMatch": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestObjectDiff_LocalizedDeletion": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestObjectDiff_LocalizedInsertion": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestObjectDiff_LocalizedMutation": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestObjectDiff_MetadataOnlyDifference": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestObjectDiff_MissingObjectA": {
   "s": 0.02,
-  "rss_mib": 281
+  "cpu": 0.02,
+  "rss_mib": 308
  },
  "TestObjectDiff_MissingObjectB": {
   "s": 0.02,
-  "rss_mib": 281
+  "cpu": 0.02,
+  "rss_mib": 308
  },
  "TestObjectDiff_PartialOverlap_ExactAccounting": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestObjectDiff_RepeatedIdenticalChunks_DuplicateHandling": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestObjectDiff_SameChunkSetDifferentOrder_NotExactMatch": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestObjectDiff_SameServer_TwoKeys": {
-  "s": 0.02,
-  "rss_mib": 281
+  "s": 0.03,
+  "cpu": 0.03,
+  "rss_mib": 308
  },
  "TestObjectDiff_TwoServers": {
-  "s": 0.05,
-  "rss_mib": 281
+  "s": 0.03,
+  "cpu": 0.03,
+  "rss_mib": 308
  },
  "TestObjectDiff_WeirdKeys": {
   "s": 0.02,
-  "rss_mib": 281
+  "cpu": 0.02,
+  "rss_mib": 308
  },
  "TestObjectDiff_WhollyUnrelatedObjects": {
   "s": 0,
-  "rss_mib": 281
+  "rss_mib": 308
  },
  "TestP1A_BackgroundJobCrashPropagatesToRequest": {
-  "s": 0.13,
-  "rss_mib": 281
+  "s": 0.14,
+  "cpu": 0.12,
+  "rss_mib": 308
  },
  "TestP1A_CDCBoundaryMatchesReference": {
-  "s": 0.56,
-  "rss_mib": 281
+  "s": 0.5,
+  "cpu": 0.43,
+  "rss_mib": 308
  },
  "TestP1A_ConcurrentPipelinedPutsRoundTrip": {
-  "s": 0.72,
-  "rss_mib": 281
+  "s": 0.77,
+  "cpu": 0.67,
+  "rss_mib": 308
  },
  "TestP1A_PackPublishFailureFailsRequestAndCleansUp": {
-  "s": 0.03,
-  "rss_mib": 281
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 308
  },
  "TestP1A_PackWriterEarlySyncErrorIsSticky": {
   "s": 0.04,
-  "rss_mib": 281
+  "cpu": 0.03,
+  "rss_mib": 308
  },
  "TestP1A_PackWriterMatchesReferenceAndReportsErrors": {
-  "s": 1.54,
-  "rss_mib": 364
+  "s": 1.23,
+  "cpu": 1.26,
+  "rss_mib": 355
  },
  "TestP1A_PipelinedCancellationMidChunk": {
   "s": 0.09,
-  "rss_mib": 281
+  "cpu": 0.08,
+  "rss_mib": 308
  },
  "TestP1A_PipelinedIngestMatchesSerial": {
-  "s": 1.51,
-  "rss_mib": 71
+  "s": 1.57,
+  "cpu": 1.57,
+  "rss_mib": 68
  },
  "TestP1A_PipelinedIngestReadErrorAndCleanup": {
-  "s": 0.12,
-  "rss_mib": 281
+  "s": 0.14,
+  "cpu": 0.12,
+  "rss_mib": 308
  },
  "TestP1A_PipelinedPrematureEOFAndSlowReaders": {
-  "s": 0.16,
-  "rss_mib": 281
+  "s": 0.14,
+  "cpu": 0.12,
+  "rss_mib": 308
  },
  "TestP1A_PipelinedSinkFailureStopsEverything": {
-  "s": 0.29,
-  "rss_mib": 281
+  "s": 0.34,
+  "cpu": 0.3,
+  "rss_mib": 308
  },
  "TestP1A_RepeatedChunksAcrossInFlightPacksWrittenOnce": {
-  "s": 0.06,
-  "rss_mib": 281
+  "s": 0.09,
+  "cpu": 0.08,
+  "rss_mib": 308
  },
  "TestP1A_StagedPackCorruptionIsCaughtByBackgroundVerify": {
-  "s": 0.07,
-  "rss_mib": 281
+  "s": 0.09,
+  "cpu": 0.08,
+  "rss_mib": 308
  },
  "TestP1A_VerifyPackExactEquivalentToFull": {
-  "s": 11.77,
-  "rss_mib": 30
+  "s": 11.92,
+  "cpu": 9.35,
+  "rss_mib": 27
  },
  "TestP1A_VerifyPackExactRejectsOtherValidPack": {
   "s": 0.01,
-  "rss_mib": 281
+  "cpu": 0.01,
+  "rss_mib": 308
  },
  "TestP1B_ConcurrentOverlappingBatches": {
-  "s": 0.36,
-  "rss_mib": 281
+  "s": 0.43,
+  "cpu": 0.37,
+  "rss_mib": 308
  },
  "TestP1B_CrashMatrix_ConcurrentGroups": {
-  "s": 21.26,
-  "rss_mib": 86
+  "s": 19.72,
+  "cpu": 14.42,
+  "rss_mib": 87
  },
  "TestP1B_DirSync_CoalescesAndOrders": {
-  "s": 0.05,
-  "rss_mib": 281
+  "s": 0.06,
+  "cpu": 0.05,
+  "rss_mib": 308
  },
  "TestP1B_DirSync_ErrorReachesEveryRoundMember": {
   "s": 0.05,
-  "rss_mib": 281
+  "cpu": 0.04,
+  "rss_mib": 308
  },
  "TestP1B_DirSync_PanicDoesNotStrandJoiners": {
   "s": 0.03,
-  "rss_mib": 281
+  "cpu": 0.03,
+  "rss_mib": 308
  },
  "TestP1B_DuplicateWriterTakesOverAfterFailure": {
-  "s": 0.06,
-  "rss_mib": 281
+  "s": 0.07,
+  "cpu": 0.06,
+  "rss_mib": 308
  },
  "TestP1B_GroupCommit_ConcurrentPutsReplayIdentically": {
   "s": 0.05,
-  "rss_mib": 281
+  "cpu": 0.04,
+  "rss_mib": 308
  },
  "TestP1B_GroupCommit_ConditionalCreateRace": {
-  "s": 0.02,
-  "rss_mib": 281
+  "s": 0.03,
+  "cpu": 0.03,
+  "rss_mib": 308
  },
  "TestP1B_GroupCommit_JournalFailureFailsWholeBatch": {
-  "s": 0.02,
-  "rss_mib": 281
+  "s": 0.03,
+  "cpu": 0.03,
+  "rss_mib": 308
  },
  "TestP1B_GroupCommit_LeaderPanicDoesNotStrandFollowers": {
-  "s": 0.02,
-  "rss_mib": 281
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 308
  },
  "TestP1B_MediumPack_DeadPacksCollectedByGC": {
-  "s": 0.14,
-  "rss_mib": 281
+  "s": 0.15,
+  "cpu": 0.13,
+  "rss_mib": 308
  },
  "TestP1B_MediumPack_DedupAndRevisions": {
   "s": 0.1,
-  "rss_mib": 281
+  "cpu": 0.09,
+  "rss_mib": 308
  },
  "TestP1B_MediumPack_MultipartPartsAndCompletion": {
-  "s": 0.6,
-  "rss_mib": 146
+  "s": 0.67,
+  "cpu": 0.58,
+  "rss_mib": 308
  },
  "TestP1B_MediumPack_RestartKeepsEverything": {
-  "s": 0.35,
-  "rss_mib": 146
+  "s": 0.38,
+  "cpu": 0.33,
+  "rss_mib": 308
  },
  "TestP1B_MediumPack_SameManifestAsLoose": {
-  "s": 0.67,
-  "rss_mib": 82
+  "s": 1,
+  "cpu": 0.87,
+  "rss_mib": 308
  },
  "TestP1B_MediumPack_ValveFallsBackToLoose": {
-  "s": 0.07,
-  "rss_mib": 146
+  "s": 0.1,
+  "cpu": 0.09,
+  "rss_mib": 308
  },
  "TestP1B_ObserverWaitsForDuplicateWriter": {
-  "s": 0.12,
-  "rss_mib": 146
+  "s": 0.11,
+  "cpu": 0.1,
+  "rss_mib": 308
  },
  "TestP1B_PackLocatorPublishDoesNotCopyAllPacks": {
-  "s": 1.39,
+  "s": 1.6,
+  "cpu": 1.49,
   "rss_mib": 25
  },
  "TestP1B_PopulatedStoreThroughput": {
   "s": 0,
-  "rss_mib": 146
+  "rss_mib": 308
  },
  "TestP1B_PubRegistry_ClaimWaitRelease": {
   "s": 0,
-  "rss_mib": 146
+  "rss_mib": 308
  },
  "TestP1B_RealKill_AckedObjectsSurviveConcurrentKill": {
-  "s": 40.11,
-  "rss_mib": 101
+  "s": 34.04,
+  "cpu": 40.48,
+  "rss_mib": 99
  },
  "TestP1B_ShardDirsCreatedOnceUnderConcurrency": {
-  "s": 0.31,
-  "rss_mib": 146
+  "s": 0.29,
+  "cpu": 0.25,
+  "rss_mib": 308
  },
  "TestP1B_StaleShardCacheRecovers": {
   "s": 0.01,
-  "rss_mib": 146
+  "cpu": 0.01,
+  "rss_mib": 308
  },
  "TestP1C_BatchFailureLeavesAcknowledgedDataAndNoPartialState": {
-  "s": 0.07,
-  "rss_mib": 146
+  "s": 0.13,
+  "cpu": 0.11,
+  "rss_mib": 308
  },
  "TestP1C_BundleExportRefusesCorruptChunk": {
-  "s": 0.09,
-  "rss_mib": 146
+  "s": 0.13,
+  "cpu": 0.11,
+  "rss_mib": 308
  },
  "TestP1C_CLIReadersAgainstALiveServer": {
-  "s": 0.21,
-  "rss_mib": 146
+  "s": 0.25,
+  "cpu": 0.16,
+  "rss_mib": 171
  },
  "TestP1C_CrashMatrix_Segments": {
-  "s": 12.99,
-  "rss_mib": 45
+  "s": 12.57,
+  "cpu": 6.49,
+  "rss_mib": 54
  },
  "TestP1C_CrashStateModel": {
-  "s": 8.28,
-  "rss_mib": 34
+  "s": 4.57,
+  "cpu": 3.03,
+  "rss_mib": 33
  },
  "TestP1C_DuplicateContentWrittenOnce": {
-  "s": 0.03,
-  "rss_mib": 146
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 171
  },
  "TestP1C_FailedBatchFailsEveryMemberAndOnlyThem": {
   "s": 0.03,
-  "rss_mib": 146
+  "cpu": 0.02,
+  "rss_mib": 171
  },
  "TestP1C_FormatRaiseIsRaceFreeAgainstReaders": {
-  "s": 0.11,
-  "rss_mib": 146
+  "s": 0.37,
+  "cpu": 0.24,
+  "rss_mib": 171
  },
  "TestP1C_Format_FirstSmallWriteRaisesLevelPolicyOffDoesNot": {
   "s": 0.04,
-  "rss_mib": 146
+  "cpu": 0.03,
+  "rss_mib": 171
  },
  "TestP1C_GCAndRepackReclaimDeadRecordsAndKeepLiveOnes": {
-  "s": 0.1,
-  "rss_mib": 146
+  "s": 0.27,
+  "cpu": 0.18,
+  "rss_mib": 171
  },
  "TestP1C_GroupCommitSharesOneWriteAndFsync": {
   "s": 0.03,
-  "rss_mib": 146
+  "cpu": 0.02,
+  "rss_mib": 171
  },
  "TestP1C_HardCapRollsBeforeWriting": {
-  "s": 0.05,
-  "rss_mib": 146
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 171
  },
  "TestP1C_LargeManifestStaysAFile": {
-  "s": 0.03,
-  "rss_mib": 146
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 171
  },
  "TestP1C_MaintenanceRefusesCorruptLiveRecord": {
-  "s": 0.11,
-  "rss_mib": 146
+  "s": 0.19,
+  "cpu": 0.12,
+  "rss_mib": 171
  },
  "TestP1C_MultipartCopyAndBundleRoundTripThroughSegments": {
-  "s": 0.04,
-  "rss_mib": 146
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 171
  },
  "TestP1C_OldStoreAndPolicyChangesCoexist": {
-  "s": 0.08,
-  "rss_mib": 146
+  "s": 0.14,
+  "cpu": 0.09,
+  "rss_mib": 171
  },
  "TestP1C_ReadersNeverSeeMissingOffsetsAcrossSeal": {
-  "s": 1.3,
-  "rss_mib": 55
+  "s": 1.05,
+  "cpu": 1.05,
+  "rss_mib": 137
  },
  "TestP1C_RecoveryCutsTornTailsAndKeepsAcknowledgedRecords": {
-  "s": 0.31,
-  "rss_mib": 146
+  "s": 0.3,
+  "cpu": 0.2,
+  "rss_mib": 171
  },
  "TestP1C_RecoveryDropsUnusedAndBadSegments": {
-  "s": 0.02,
-  "rss_mib": 146
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 171
  },
  "TestP1C_RecoveryLatency": {
   "s": 0,
-  "rss_mib": 146
+  "rss_mib": 171
  },
  "TestP1C_RolloverSealsIntoVerifiablePacks": {
-  "s": 0.16,
-  "rss_mib": 146
+  "s": 0.2,
+  "cpu": 0.13,
+  "rss_mib": 171
  },
  "TestP1C_SharedOpenerNeverDisturbsALiveWriter": {
   "s": 0.15,
-  "rss_mib": 146
+  "cpu": 0.1,
+  "rss_mib": 171
  },
  "TestP1C_SharedReaderSurvivesSealByOwner": {
-  "s": 0.02,
-  "rss_mib": 146
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 171
  },
  "TestP1C_SmallPutUsesSegmentAndSurvivesRestart": {
   "s": 0.03,
-  "rss_mib": 146
+  "cpu": 0.02,
+  "rss_mib": 171
  },
  "TestP1C_StoreLayerPutThroughput": {
   "s": 0,
-  "rss_mib": 146
+  "rss_mib": 171
  },
  "TestP1C_TierMoveAllSealsAndSkipsOpenSegments": {
-  "s": 0.05,
-  "rss_mib": 146
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 171
  },
  "TestP1C_TierMoveCarriesInlineManifests": {
-  "s": 0.1,
-  "rss_mib": 146
+  "s": 0.19,
+  "cpu": 0.12,
+  "rss_mib": 171
  },
  "TestP2_CacheClockKeepsReferencedEntries": {
   "s": 0,
-  "rss_mib": 146
+  "rss_mib": 171
  },
  "TestP2_CacheDisabledAndNilAreTransparent": {
   "s": 0,
-  "rss_mib": 146
+  "rss_mib": 171
  },
  "TestP2_CacheIsBoundedAndEvictsWithClock": {
-  "s": 0.01,
-  "rss_mib": 146
+  "s": 0,
+  "rss_mib": 171
  },
  "TestP2_CacheNameMismatchAndPurgeFence": {
   "s": 0,
-  "rss_mib": 146
+  "rss_mib": 171
  },
  "TestP2_CacheSingleFlightAndErrorsAreNotCached": {
   "s": 0.05,
-  "rss_mib": 146
+  "cpu": 0.03,
+  "rss_mib": 171
  },
  "TestP2_CachedEntriesAreRevalidatedAgainstStorage": {
   "s": 0.54,
-  "rss_mib": 146
+  "cpu": 0.35,
+  "rss_mib": 171
  },
  "TestP2_CachedManifestSurvivesSegmentSealAndRepack": {
-  "s": 0.12,
-  "rss_mib": 146
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 171
  },
  "TestP2_ChunkCacheAdmissionAdaptsToTheWorkingSet": {
-  "s": 0.3,
-  "rss_mib": 146
+  "s": 0.28,
+  "cpu": 0.18,
+  "rss_mib": 171
  },
  "TestP2_ChunkCacheBoundedAndScanResistant": {
   "s": 0,
-  "rss_mib": 146
+  "rss_mib": 171
  },
  "TestP2_ChunkCacheNeverMasksCorruptionFromDiagnostics": {
-  "s": 0.13,
-  "rss_mib": 146
+  "s": 0.16,
+  "cpu": 0.11,
+  "rss_mib": 171
  },
  "TestP2_ConcurrentFirstLoadsShareOneRead": {
   "s": 0.08,
-  "rss_mib": 146
+  "cpu": 0.05,
+  "rss_mib": 171
  },
  "TestP2_ConditionalAndVersionSemanticsWithWarmCache": {
-  "s": 0.05,
-  "rss_mib": 146
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 171
  },
  "TestP2_DamagedOrMissingManifestBeforeFirstLoad": {
   "s": 0.08,
-  "rss_mib": 146
+  "cpu": 0.05,
+  "rss_mib": 171
  },
  "TestP2_IndexHandlesOffsetsBeyond32Bits": {
   "s": 0.06,
-  "rss_mib": 146
+  "cpu": 0.04,
+  "rss_mib": 171
  },
  "TestP2_ListingUsesCachedManifestsWithoutFillingTheCache": {
   "s": 0.04,
-  "rss_mib": 146
+  "cpu": 0.03,
+  "rss_mib": 171
  },
  "TestP2_LocateMatchesLinearScan": {
   "s": 0,
-  "rss_mib": 146
+  "rss_mib": 171
  },
  "TestP2_ManifestCacheIntegrityContract": {
-  "s": 0.05,
-  "rss_mib": 146
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 171
  },
  "TestP2_ParseServedAgreesOnMutations": {
   "s": 0.04,
-  "rss_mib": 146
+  "cpu": 0.03,
+  "rss_mib": 171
  },
  "TestP2_ParseServedMatchesEncodingJSON": {
   "s": 0,
-  "rss_mib": 146
+  "rss_mib": 171
  },
  "TestP2_PipeReaderCloseSemantics": {
   "s": 0.11,
-  "rss_mib": 146
+  "cpu": 0.07,
+  "rss_mib": 171
  },
  "TestP2_PipelinedStreamsFailSafeAndLeakNothing": {
-  "s": 0.91,
-  "rss_mib": 149
+  "s": 1.16,
+  "cpu": 0.76,
+  "rss_mib": 171
  },
  "TestP2_PipeliningIsAdaptiveToActiveStreams": {
-  "s": 0.14,
-  "rss_mib": 146
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 171
  },
  "TestP2_RangeReadsMatchReferenceOnEveryLayout": {
-  "s": 29.49,
-  "rss_mib": 83
+  "s": 31.59,
+  "cpu": 28.76,
+  "rss_mib": 78
  },
  "TestP2_ReadsDuringWritesSealsAndOverwrites": {
-  "s": 1.18,
-  "rss_mib": 25
+  "s": 0.68,
+  "cpu": 0.91,
+  "rss_mib": 24
  },
  "TestP2_ServedManifestRejectsInvalid": {
   "s": 0,
-  "rss_mib": 146
+  "rss_mib": 171
  },
  "TestP3_ChurnFixture": {
   "s": 0,
-  "rss_mib": 146
+  "rss_mib": 171
  },
  "TestP3_DeepVerifyFindsCorruptionBetweenPasses": {
-  "s": 0.35,
-  "rss_mib": 72
+  "s": 0.57,
+  "cpu": 0.37,
+  "rss_mib": 171
  },
  "TestP3_DeepVerifyFindsCorruptionInjectedMidScan": {
-  "s": 0.35,
-  "rss_mib": 72
+  "s": 0.59,
+  "cpu": 0.39,
+  "rss_mib": 171
  },
  "TestP3_FastJournalDecodeMatchesJSON": {
-  "s": 0.15,
-  "rss_mib": 72
+  "s": 0.19,
+  "cpu": 0.12,
+  "rss_mib": 171
  },
  "TestP3_GCFailsClosedOnCorruptManifest": {
-  "s": 0.79,
-  "rss_mib": 37
+  "s": 0.94,
+  "cpu": 0.68,
+  "rss_mib": 69
  },
  "TestP3_HistoryFixture": {
   "s": 0,
-  "rss_mib": 72
+  "rss_mib": 69
  },
  "TestP3_JournalApplyErrorYieldsToJournalError": {
   "s": 0.02,
-  "rss_mib": 72
+  "cpu": 0.01,
+  "rss_mib": 69
  },
  "TestP3_JournalReplayMatchesReference": {
-  "s": 4.7,
-  "rss_mib": 62
+  "s": 4.72,
+  "cpu": 4.35,
+  "rss_mib": 66
  },
  "TestP3_MaintHelper": {
   "s": 0,
-  "rss_mib": 72
+  "rss_mib": 69
  },
  "TestP3_ManifestJudgementMatchesReference": {
-  "s": 0.2,
-  "rss_mib": 72
+  "s": 0.24,
+  "cpu": 0.17,
+  "rss_mib": 69
  },
  "TestP3_ReachabilityMatchesReference_Damage": {
-  "s": 2.76,
-  "rss_mib": 47
+  "s": 4.13,
+  "cpu": 2.24,
+  "rss_mib": 36
  },
  "TestP3_ReachabilityMatchesReference_Healthy": {
-  "s": 0.97,
-  "rss_mib": 29
+  "s": 0.95,
+  "cpu": 0.69,
+  "rss_mib": 69
  },
  "TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames": {
-  "s": 0.06,
-  "rss_mib": 72
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 69
  },
  "TestP3_RealKillDuringMaintenance": {
-  "s": 5.72,
-  "rss_mib": 41
- },
- "TestP3_RepackCrashPointsWithPipelinedStaging": {
-  "s": 4.3,
-  "rss_mib": 62
- },
- "TestP3_RepackPipelineWritesIdenticalPacks": {
-  "s": 3.48,
+  "s": 7.66,
+  "cpu": 5.78,
   "rss_mib": 44
  },
+ "TestP3_RepackCrashPointsWithPipelinedStaging": {
+  "s": 5.9,
+  "cpu": 3.97,
+  "rss_mib": 56
+ },
+ "TestP3_RepackPipelineWritesIdenticalPacks": {
+  "s": 3.31,
+  "cpu": 1.1,
+  "rss_mib": 37
+ },
  "TestP3_SharedOpenerNeverTruncatesALiveJournal": {
-  "s": 0.02,
-  "rss_mib": 72
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 69
  },
  "TestP4DeepVerifyParallelEqualsSerial": {
-  "s": 1.64,
-  "rss_mib": 29
+  "s": 2.07,
+  "cpu": 1.19,
+  "rss_mib": 28
  },
  "TestP4DeferredBuildsAfterAcknowledgement": {
-  "s": 1.49,
-  "rss_mib": 92
+  "s": 1.75,
+  "cpu": 1.36,
+  "rss_mib": 99
  },
  "TestP4DeferredCoalescesIdenticalContent": {
-  "s": 0.1,
-  "rss_mib": 72
+  "s": 0.11,
+  "cpu": 0.08,
+  "rss_mib": 69
  },
  "TestP4DeferredConcurrentWritersRace": {
-  "s": 0.43,
-  "rss_mib": 72
+  "s": 0.56,
+  "cpu": 0.41,
+  "rss_mib": 69
  },
  "TestP4DeferredCrashImagesAtEveryPhase": {
-  "s": 4.96,
-  "rss_mib": 67
+  "s": 6.72,
+  "cpu": 5.04,
+  "rss_mib": 70
  },
  "TestP4DeferredNeverPublishesForAnotherVersion": {
-  "s": 0.06,
-  "rss_mib": 72
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 69
  },
  "TestP4DeferredQueueIsBoundedAndNeverBlocksPuts": {
-  "s": 0.13,
-  "rss_mib": 72
+  "s": 0.25,
+  "cpu": 0.18,
+  "rss_mib": 69
  },
  "TestP4DeferredShutdownAbandonsWorkWithoutLeaks": {
-  "s": 0.1,
-  "rss_mib": 72
+  "s": 0.13,
+  "cpu": 0.09,
+  "rss_mib": 69
  },
  "TestP4DeferredSkipsManifestsThatLeftTheNamespace": {
-  "s": 0.02,
-  "rss_mib": 72
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 69
  },
  "TestP4DeferredYieldsToForegroundThenRuns": {
   "s": 0.62,
-  "rss_mib": 72
+  "cpu": 0.45,
+  "rss_mib": 69
  },
  "TestP4FSEInverseEqualsBinarySearch": {
   "s": 0.02,
-  "rss_mib": 72
+  "cpu": 0.01,
+  "rss_mib": 69
  },
  "TestP4Interference": {
   "s": 0,
-  "rss_mib": 72
+  "rss_mib": 69
  },
  "TestP4PrefixIndexMatchesReference": {
   "s": 0.01,
-  "rss_mib": 72
+  "cpu": 0.01,
+  "rss_mib": 69
  },
  "TestP4Probe": {
   "s": 0,
-  "rss_mib": 72
+  "rss_mib": 69
  },
  "TestP4ReadCacheServesExactBytesAndStillVerifiesData": {
-  "s": 1.23,
-  "rss_mib": 47
+  "s": 1.4,
+  "cpu": 0.93,
+  "rss_mib": 45
  },
  "TestP4SmallObjectComponentsShareTheSegmentAndSurviveMaintenance": {
-  "s": 0.34,
-  "rss_mib": 72
+  "s": 0.38,
+  "cpu": 0.28,
+  "rss_mib": 69
  },
  "TestP4_PreP4BinaryUnderstandsDeferredStore": {
-  "s": 0.76,
-  "rss_mib": 60
+  "s": 1.02,
+  "cpu": 0.74,
+  "rss_mib": 69
  },
  "TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData": {
-  "s": 59.44,
-  "rss_mib": 188
+  "s": 58.27,
+  "cpu": 71.97,
+  "rss_mib": 175
  },
  "TestPackCompression_AdaptivePolicyByDataClass": {
-  "s": 0.51,
-  "rss_mib": 72
+  "s": 0.85,
+  "cpu": 0.62,
+  "rss_mib": 69
  },
  "TestPackCompression_CLI": {
-  "s": 0.13,
-  "rss_mib": 72
+  "s": 0.14,
+  "cpu": 0.1,
+  "rss_mib": 69
  },
  "TestPackCompression_CompactOffWritesRawAndRerunIsStable": {
-  "s": 0.06,
-  "rss_mib": 72
+  "s": 0.11,
+  "cpu": 0.08,
+  "rss_mib": 69
  },
  "TestPackCompression_CorruptCompressedRecordsFailSafely": {
-  "s": 0.06,
-  "rss_mib": 72
+  "s": 0.13,
+  "cpu": 0.09,
+  "rss_mib": 69
  },
  "TestPackCompression_CrashPoints": {
-  "s": 1.98,
+  "s": 2.15,
+  "cpu": 1.66,
   "rss_mib": 41
  },
  "TestPackCompression_DeepVerifyDetectsCompressedPayloadCorruption": {
-  "s": 0.07,
-  "rss_mib": 72
+  "s": 0.15,
+  "cpu": 0.11,
+  "rss_mib": 69
  },
  "TestPackCompression_InvalidRecordLengthsRejectedAtOpen": {
-  "s": 0.05,
-  "rss_mib": 72
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 69
  },
  "TestPackCompression_MixedObjectReadsAndRanges": {
-  "s": 0.1,
-  "rss_mib": 72
+  "s": 0.15,
+  "cpu": 0.11,
+  "rss_mib": 69
  },
  "TestPackCompression_MixedRepresentationsOfOneChunk": {
-  "s": 0.04,
-  "rss_mib": 72
+  "s": 0.09,
+  "cpu": 0.07,
+  "rss_mib": 69
  },
  "TestPackCompression_PhysicalAccounting": {
-  "s": 0.06,
-  "rss_mib": 72
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 69
  },
  "TestPackCompression_RecordIndexCodecDisagreement": {
   "s": 0.02,
-  "rss_mib": 72
+  "cpu": 0.01,
+  "rss_mib": 69
  },
  "TestPackCompression_RepackAbortsOnDamagedCompressedData": {
-  "s": 0.58,
-  "rss_mib": 72
+  "s": 0.49,
+  "cpu": 0.29,
+  "rss_mib": 83
  },
  "TestPackCompression_RepackMatrix": {
-  "s": 1.36,
+  "s": 1.29,
+  "cpu": 0.83,
   "rss_mib": 38
  },
  "TestPackCompression_RepackSelectionUsesPhysicalBytes": {
-  "s": 0.06,
-  "rss_mib": 72
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 83
  },
  "TestPackCompression_StoreFormatBoundary": {
-  "s": 0.16,
-  "rss_mib": 77
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 83
  },
  "TestPackCompressor_EncodeRule": {
   "s": 0.01,
-  "rss_mib": 77
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPackRun_BadPackStopsFurtherRuns": {
-  "s": 0.06,
-  "rss_mib": 77
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestPackRun_BoundsAndFileReuse": {
-  "s": 0.35,
-  "rss_mib": 77
+  "s": 0.26,
+  "cpu": 0.16,
+  "rss_mib": 83
  },
  "TestPackRun_ConcurrentReadersAndHTTP": {
-  "s": 0.08,
-  "rss_mib": 77
+  "s": 0.09,
+  "cpu": 0.05,
+  "rss_mib": 83
  },
  "TestPackRun_CorruptionFallsBackOrFailsWithoutLeakingBytes": {
-  "s": 1.67,
-  "rss_mib": 35
+  "s": 1.75,
+  "cpu": 0.96,
+  "rss_mib": 36
  },
  "TestPackRun_HTTPCorruptionNeverReachesClient": {
   "s": 0.06,
-  "rss_mib": 77
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestPackRun_LocalityCoalescesDigestDoesNot": {
-  "s": 0.36,
-  "rss_mib": 77
+  "s": 0.21,
+  "cpu": 0.13,
+  "rss_mib": 83
  },
  "TestPackRun_NoncontiguousAndSingleChunk": {
-  "s": 0.13,
-  "rss_mib": 77
+  "s": 0.09,
+  "cpu": 0.05,
+  "rss_mib": 83
  },
  "TestPackRun_RangeFetchesOnlyNeededChunks": {
-  "s": 0.07,
-  "rss_mib": 77
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 83
  },
  "TestPackRun_RangesMatchOrdinaryReads": {
-  "s": 0.82,
-  "rss_mib": 77
+  "s": 0.47,
+  "cpu": 0.28,
+  "rss_mib": 83
  },
  "TestPackRun_TiersAndLooseCopyPreference": {
-  "s": 0.2,
-  "rss_mib": 77
+  "s": 0.14,
+  "cpu": 0.08,
+  "rss_mib": 83
  },
  "TestPack_CompactCLI": {
-  "s": 0.16,
-  "rss_mib": 77
+  "s": 0.13,
+  "cpu": 0.08,
+  "rss_mib": 83
  },
  "TestPack_CompactCrashPoints": {
-  "s": 1.56,
-  "rss_mib": 57
+  "s": 1.8,
+  "cpu": 1.32,
+  "rss_mib": 53
  },
  "TestPack_CompactIsDeterministicAndRepeatedHashesPackOnce": {
-  "s": 0.26,
-  "rss_mib": 77
+  "s": 0.27,
+  "cpu": 0.16,
+  "rss_mib": 83
  },
  "TestPack_CompactPreservesLogicalState": {
-  "s": 0.22,
-  "rss_mib": 77
+  "s": 0.17,
+  "cpu": 0.1,
+  "rss_mib": 83
  },
  "TestPack_CompactRefusesWhileStoreInUse": {
   "s": 0.04,
-  "rss_mib": 77
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestPack_DryRunAndZeroCandidatesWriteNothing": {
-  "s": 0.06,
-  "rss_mib": 77
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestPack_DuplicateCopiesCorruptionPreference": {
-  "s": 0.06,
-  "rss_mib": 77
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestPack_GCNeverTouchesPacks": {
-  "s": 0.19,
-  "rss_mib": 77
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 83
  },
  "TestPack_LogicalFeaturesOverPackedStore": {
-  "s": 0.2,
-  "rss_mib": 77
+  "s": 0.13,
+  "cpu": 0.08,
+  "rss_mib": 83
  },
  "TestPack_MalformedPacksRejectedSafely": {
-  "s": 0.19,
-  "rss_mib": 77
+  "s": 0.16,
+  "cpu": 0.1,
+  "rss_mib": 83
  },
  "TestPack_MixedManifestSpansLooseAndPacked": {
-  "s": 0.18,
-  "rss_mib": 77
+  "s": 0.13,
+  "cpu": 0.08,
+  "rss_mib": 83
  },
  "TestPack_PayloadAndRecordHeaderDamageFailSafely": {
-  "s": 0.11,
-  "rss_mib": 77
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestPack_PhysicalMatrix": {
-  "s": 0.57,
-  "rss_mib": 77
+  "s": 0.75,
+  "cpu": 0.45,
+  "rss_mib": 83
  },
  "TestPack_PlanBatchesBoundaries": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPack_RepairReplacesCorruptPackedChunkFromPeer": {
-  "s": 0.09,
-  "rss_mib": 77
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestPack_StatsAndVerifyReportPhysicalLayout": {
-  "s": 0.22,
-  "rss_mib": 77
+  "s": 0.14,
+  "cpu": 0.08,
+  "rss_mib": 83
  },
  "TestPack_StoreFormatVersionGate": {
   "s": 0.07,
-  "rss_mib": 77
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestPack_UnpublishedArtifactsIgnored": {
-  "s": 0.05,
-  "rss_mib": 77
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 83
  },
  "TestParseCopySource_TrickyKeys": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPayloadMode_ClassifySigV4Payload": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPayloadMode_ExcludedModesRejectCleanly": {
-  "s": 0,
-  "rss_mib": 77
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPayloadMode_FixedSHA256_CorrectDigestAndBodyAccepted": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPayloadMode_FixedSHA256_EmptyBodyCorrectDigestAccepted": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPayloadMode_FixedSHA256_EmptyBodyDigestWithNonEmptyBodyRejected": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPayloadMode_FixedSHA256_WrongDigestRejected": {
-  "s": 0,
-  "rss_mib": 77
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPayloadMode_LowercaseOrMisspelledSentinelsRejected": {
   "s": 0.01,
-  "rss_mib": 77
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPayloadMode_MalformedDigestVariantsRejected": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPayloadMode_PresignedBehaviorUnchanged": {
-  "s": 0.02,
-  "rss_mib": 77
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestPayloadMode_StreamingHMACTrailerRejected": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPayloadMode_UnsignedPayload_ModifiedBodyAloneDoesNotInvalidateSignature": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPayloadMode_UnsignedPayload_TamperedAuthorizationRejected": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPayloadMode_UnsignedPayload_ValidSigButWrongCRC32Fails": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPayloadMode_UnsignedPayload_ValidSigButWrongContentMD5Fails": {
   "s": 0.01,
-  "rss_mib": 77
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPayloadMode_UnsignedPayload_ValidSignedPUTAccepted": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPresignAuth_CaseChangedParamNameNotAuthenticated": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPresignAuth_DuplicateQueryParameterRejected": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPresignAuth_ExactExpiryBoundaryAccepted": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPresignAuth_ExpiresBoundsAccepted": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignAuth_ExpiresMalformedRejected": {
   "s": 0.03,
-  "rss_mib": 77
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestPresignAuth_ExtraUnsignedQueryParamAfterGenerationRejected": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPresignAuth_FutureDateBeyondSkewRejected": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPresignAuth_HostNotSignedRejected": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPresignAuth_ImmediatelyPastExpiryRejected": {
   "s": 0.01,
-  "rss_mib": 77
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignAuth_LongLivedButUnexpiredAccepted": {
   "s": 0.01,
-  "rss_mib": 77
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignAuth_MalformedCredentialScopeRejected": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPresignAuth_MalformedTimestampRejected": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPresignAuth_MissingRequiredParameterRejected": {
   "s": 0.02,
-  "rss_mib": 77
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignAuth_MissingSignatureFallsThroughToHeaderPathAndFails": {
-  "s": 0,
-  "rss_mib": 77
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignAuth_ModifiedBucketAfterGenerationRejected": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPresignAuth_ModifiedHostAfterGenerationRejected": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPresignAuth_ModifiedPathAfterGenerationRejected": {
   "s": 0.01,
-  "rss_mib": 77
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignAuth_ModifiedSignedQueryParameterRejected": {
   "s": 0.01,
-  "rss_mib": 77
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignAuth_SecurityTokenRejected": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPresignAuth_TamperedSignatureRejected": {
-  "s": 0,
-  "rss_mib": 77
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignAuth_TrickyPathsAccepted": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPresignAuth_UnsupportedAlgorithmRejected": {
   "s": 0.01,
-  "rss_mib": 77
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignAuth_ValidAccepted": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPresignAuth_ValidPUTAccepted": {
   "s": 0.01,
-  "rss_mib": 77
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignAuth_WrongAccessKeyRejected": {
-  "s": 0,
-  "rss_mib": 77
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignAuth_WrongRegionRejected": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPresignAuth_WrongServiceRejected": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPresign_BucketAndKeyRequired": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPresign_ExpiresOutOfRangeRejectedAtGenerationTime": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPresign_GeneratedURLPassesServerVerifier": {
-  "s": 0.02,
-  "rss_mib": 77
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestPresign_NeverLogsOrEmbedsSecretKey": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPresign_TrickyKeysRoundTripThroughServerVerifier": {
-  "s": 0.03,
-  "rss_mib": 77
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresign_UnsupportedMethodRejected": {
   "s": 0,
-  "rss_mib": 77
+  "rss_mib": 83
  },
  "TestPresignedGET_TamperedSignatureRejectedOverRealHTTP": {
-  "s": 0.02,
-  "rss_mib": 77
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignedPUT_ExpiredURLLeavesNoVisibleObject": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 83
  },
  "TestPresignedPUT_MissingDestinationBucketLeavesNoMutation": {
   "s": 0.01,
-  "rss_mib": 77
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestPresignedPUT_TamperedSignatureLeavesNoVisibleObject": {
   "s": 0.01,
-  "rss_mib": 77
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestProbe": {
-  "s": 0.01,
-  "rss_mib": 77
+  "s": 0,
+  "rss_mib": 184
  },
  "TestPrune_ApplyBatchedFramesMatchReplay": {
-  "s": 0.1,
-  "rss_mib": 77
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 184
  },
  "TestPrune_CrashBoundaries": {
-  "s": 0.58,
-  "rss_mib": 111
+  "s": 0.46,
+  "cpu": 0.33,
+  "rss_mib": 184
  },
  "TestPrune_DeletedBucketHistoryIsPruneable": {
-  "s": 0.02,
-  "rss_mib": 111
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 184
  },
  "TestPrune_DryRunMakesNoChange": {
   "s": 0.02,
-  "rss_mib": 111
+  "cpu": 0.01,
+  "rss_mib": 184
  },
  "TestPrune_ExclusiveStoreOwnership": {
-  "s": 0.02,
-  "rss_mib": 111
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 184
  },
  "TestPrune_PackedHistoryReclaimedByRepack": {
-  "s": 0.09,
-  "rss_mib": 111
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 184
  },
  "TestPrune_ParseRetentionAge": {
   "s": 0,
-  "rss_mib": 111
+  "rss_mib": 184
  },
  "TestPrune_PlanScopeAndValidation": {
   "s": 0.02,
-  "rss_mib": 111
+  "cpu": 0.01,
+  "rss_mib": 184
  },
  "TestPrune_ReplayRejectsMalformedAndToleratesAbsent": {
-  "s": 0.12,
-  "rss_mib": 111
+  "s": 0.17,
+  "cpu": 0.12,
+  "rss_mib": 184
  },
  "TestPrune_SelectTable": {
   "s": 0,
-  "rss_mib": 111
+  "rss_mib": 184
  },
  "TestPrune_SharedAndRestoredRootsStayPinned": {
-  "s": 0.08,
-  "rss_mib": 111
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 184
  },
  "TestPrune_SnapshotSurvivesPruneThenGC": {
-  "s": 0.06,
-  "rss_mib": 111
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 184
  },
  "TestPrune_StoreFormatVersions": {
-  "s": 0.06,
-  "rss_mib": 111
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 184
  },
  "TestRange_EmptyObjectUnsatisfiable": {
-  "s": 0.01,
-  "rss_mib": 111
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 184
  },
  "TestRange_MalformedHeaderIgnoredServesFullObject": {
-  "s": 0.01,
-  "rss_mib": 111
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 184
  },
  "TestRange_MultiRangeUnsupportedIgnoredServesFullObject": {
-  "s": 0.01,
-  "rss_mib": 111
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 184
  },
  "TestRange_ReadsOnlyOverlappingChunks": {
   "s": 0.02,
-  "rss_mib": 111
+  "cpu": 0.01,
+  "rss_mib": 184
  },
  "TestRange_Unsatisfiable": {
-  "s": 0.01,
-  "rss_mib": 111
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 184
  },
  "TestRange_VariousForms": {
-  "s": 0.02,
-  "rss_mib": 111
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 184
  },
  "TestReachability_CoversAllThreeRootCategories": {
-  "s": 0.05,
-  "rss_mib": 111
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 184
  },
  "TestReachability_DetectsCorruptionAmongLiveRoots": {
-  "s": 0.13,
-  "rss_mib": 111
+  "s": 0.15,
+  "cpu": 0.11,
+  "rss_mib": 184
  },
  "TestRepAnalysisBudgets": {
-  "s": 0.07,
-  "rss_mib": 111
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 184
  },
  "TestRepBundleBackfillFailureAndCLI": {
-  "s": 0.11,
-  "rss_mib": 111
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 184
  },
  "TestRepBundleBackfillFullDeltaAndReuse": {
-  "s": 0.2,
-  "rss_mib": 111
+  "s": 0.21,
+  "cpu": 0.15,
+  "rss_mib": 184
  },
  "TestRepBundlesCarryOnlyAuthoritativeState": {
-  "s": 1.28,
-  "rss_mib": 49
+  "s": 1.79,
+  "cpu": 1.03,
+  "rss_mib": 48
  },
  "TestRepCatalogAmbiguityAndOrderIndependence": {
   "s": 0,
-  "rss_mib": 111
+  "rss_mib": 184
  },
  "TestRepChildCausePreserved": {
   "s": 0,
-  "rss_mib": 111
+  "rss_mib": 184
  },
  "TestRepCodecAnalysisDepth": {
   "s": 0.04,
-  "rss_mib": 111
+  "cpu": 0.03,
+  "rss_mib": 184
  },
  "TestRepCodecConcurrentFirstUse": {
-  "s": 0.05,
-  "rss_mib": 111
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 184
  },
  "TestRepCodecCrashAndOptionalFailure": {
-  "s": 1.27,
-  "rss_mib": 101
+  "s": 1.37,
+  "cpu": 0.94,
+  "rss_mib": 95
  },
  "TestRepCodecEconomics": {
   "s": 0,
-  "rss_mib": 111
+  "rss_mib": 184
  },
  "TestRepCodecLabWireFidelity": {
-  "s": 0.07,
-  "rss_mib": 111
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 184
  },
  "TestRepCodecLargeStreaming": {
   "s": 0,
-  "rss_mib": 111
+  "rss_mib": 184
  },
  "TestRepCodecMetadataCountsBounded": {
   "s": 0,
-  "rss_mib": 111
+  "rss_mib": 184
  },
  "TestRepCodecMissingChildFailsClosed": {
-  "s": 0.24,
-  "rss_mib": 111
+  "s": 0.2,
+  "cpu": 0.14,
+  "rss_mib": 184
  },
  "TestRepCodecNestedProduction": {
-  "s": 0.52,
-  "rss_mib": 111
+  "s": 0.42,
+  "cpu": 0.3,
+  "rss_mib": 184
  },
  "TestRepCodecUnsupportedFallsBack": {
-  "s": 0.33,
-  "rss_mib": 111
+  "s": 0.26,
+  "cpu": 0.19,
+  "rss_mib": 184
  },
  "TestRepConcurrentPutsAndReads": {
-  "s": 0.06,
-  "rss_mib": 111
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 184
  },
  "TestRepConcurrentReadsMixedTiers": {
-  "s": 0.53,
-  "rss_mib": 111
+  "s": 0.66,
+  "cpu": 0.47,
+  "rss_mib": 184
  },
  "TestRepCopyObjectAndMultipart": {
-  "s": 0.35,
-  "rss_mib": 111
+  "s": 0.41,
+  "cpu": 0.29,
+  "rss_mib": 184
  },
  "TestRepCrashAfterFormatRaiseBeforeFirstRoot": {
-  "s": 0.33,
-  "rss_mib": 111
+  "s": 0.34,
+  "cpu": 0.24,
+  "rss_mib": 184
  },
  "TestRepCrashMatrix": {
-  "s": 10.35,
-  "rss_mib": 87
+  "s": 12.18,
+  "cpu": 7.85,
+  "rss_mib": 91
  },
  "TestRepCyclesTerminate": {
   "s": 0,
-  "rss_mib": 111
+  "rss_mib": 184
  },
  "TestRepDepthConsistentAcrossSubsystems": {
   "s": 0,
-  "rss_mib": 111
+  "rss_mib": 184
  },
  "TestRepFailureAfterOutputStartsDoesNotPanic": {
-  "s": 0.64,
-  "rss_mib": 31
+  "s": 0.61,
+  "cpu": 0.43,
+  "rss_mib": 184
  },
  "TestRepGitHostileFallback": {
-  "s": 0.16,
-  "rss_mib": 111
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 184
  },
  "TestRepGitLabWireAndReaderAt": {
   "s": 0,
-  "rss_mib": 111
+  "rss_mib": 184
  },
  "TestRepGitProductionPackAndIdx": {
-  "s": 0.84,
-  "rss_mib": 107
+  "s": 0.5,
+  "cpu": 0.36,
+  "rss_mib": 184
  },
  "TestRepGitRealReexports": {
   "s": 0,
-  "rss_mib": 107
+  "rss_mib": 184
  },
  "TestRepGitRecipeBoundaries": {
   "s": 0,
-  "rss_mib": 107
+  "rss_mib": 184
  },
  "TestRepHostileObjectsNeverFailPut": {
-  "s": 0.64,
-  "rss_mib": 107
+  "s": 0.6,
+  "cpu": 0.48,
+  "rss_mib": 83
  },
  "TestRepKindLifecycleMatrix": {
-  "s": 1.92,
-  "rss_mib": 105
+  "s": 2.16,
+  "cpu": 2.14,
+  "rss_mib": 115
  },
  "TestRepKindMatrixRoundTrip": {
-  "s": 1.18,
-  "rss_mib": 84
+  "s": 1.52,
+  "cpu": 1.16,
+  "rss_mib": 95
  },
  "TestRepLargeObjectComponentsGoToPacks": {
-  "s": 1.25,
-  "rss_mib": 181
+  "s": 1.43,
+  "cpu": 1.59,
+  "rss_mib": 173
  },
  "TestRepLateCreationAndRetirementLeaveNamespaceUntouched": {
-  "s": 0.3,
-  "rss_mib": 107
+  "s": 0.37,
+  "cpu": 0.29,
+  "rss_mib": 83
  },
  "TestRepLifecycleChain": {
-  "s": 0.92,
-  "rss_mib": 79
+  "s": 1.05,
+  "cpu": 0.83,
+  "rss_mib": 83
  },
  "TestRepLiveRootFaultsFailClosed": {
-  "s": 6.07,
-  "rss_mib": 51
+  "s": 7.11,
+  "cpu": 3.66,
+  "rss_mib": 49
  },
  "TestRepManagedComponentLengthOverflow": {
   "s": 0,
-  "rss_mib": 107
+  "rss_mib": 83
  },
  "TestRepManagedCumulativeCompatibility": {
-  "s": 0.46,
-  "rss_mib": 107
+  "s": 0.51,
+  "cpu": 0.41,
+  "rss_mib": 83
  },
  "TestRepManagedDependencyAndWriterFailures": {
   "s": 0.02,
-  "rss_mib": 107
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestRepManagedNestedGroupWorkBudget": {
-  "s": 1.01,
-  "rss_mib": 40
+  "s": 0.95,
+  "cpu": 1.21,
+  "rss_mib": 32
  },
  "TestRepManagedNestedPublicationFloor": {
-  "s": 0.42,
-  "rss_mib": 107
+  "s": 0.51,
+  "cpu": 0.41,
+  "rss_mib": 83
  },
  "TestRepManagedOrdinaryPutCrashFloor": {
-  "s": 0.92,
-  "rss_mib": 23
+  "s": 1.58,
+  "cpu": 1.26,
+  "rss_mib": 83
  },
  "TestRepMeasure": {
   "s": 0,
-  "rss_mib": 107
+  "rss_mib": 83
  },
  "TestRepMerkleRevisionChainSections": {
-  "s": 3.66,
-  "rss_mib": 45
+  "s": 4.4,
+  "cpu": 3.32,
+  "rss_mib": 42
  },
  "TestRepMerkleVirtualSectionReuse": {
-  "s": 0.86,
-  "rss_mib": 65
+  "s": 1.28,
+  "cpu": 1.02,
+  "rss_mib": 83
  },
  "TestRepModesAndFallbackCounters": {
-  "s": 0.11,
-  "rss_mib": 107
+  "s": 0.1,
+  "cpu": 0.08,
+  "rss_mib": 83
  },
  "TestRepNegativeFormatControls": {
-  "s": 0.08,
-  "rss_mib": 107
+  "s": 0.07,
+  "cpu": 0.06,
+  "rss_mib": 83
  },
  "TestRepOCIRealRegistryComposition": {
   "s": 0,
-  "rss_mib": 107
+  "rss_mib": 83
  },
  "TestRepOffModeMaintenanceKeepsRoots": {
-  "s": 0.39,
-  "rss_mib": 107
+  "s": 0.4,
+  "cpu": 0.32,
+  "rss_mib": 83
  },
  "TestRepOptionalFailureNeverFailsPut": {
-  "s": 1.45,
-  "rss_mib": 32
+  "s": 1.79,
+  "cpu": 1.08,
+  "rss_mib": 46
  },
  "TestRepOversizedRootReadBounded": {
-  "s": 0.04,
-  "rss_mib": 107
+  "s": 0.07,
+  "cpu": 0.06,
+  "rss_mib": 83
  },
  "TestRepPackedCopyFallback": {
   "s": 0.06,
-  "rss_mib": 107
+  "cpu": 0.05,
+  "rss_mib": 83
  },
  "TestRepReconstructFraming": {
   "s": 0,
-  "rss_mib": 107
+  "rss_mib": 83
  },
  "TestRepRootFormatAndCorruptionMatrix": {
   "s": 0,
-  "rss_mib": 107
+  "rss_mib": 83
  },
  "TestRepRootNamesAndTemp": {
   "s": 0,
-  "rss_mib": 107
+  "rss_mib": 83
  },
  "TestRepS3TranscriptIdenticalInEveryMode": {
-  "s": 0.99,
-  "rss_mib": 66
+  "s": 0.89,
+  "cpu": 0.66,
+  "rss_mib": 131
  },
  "TestRepSharedChildAcrossFormatsAndRootLifecycle": {
-  "s": 0.23,
-  "rss_mib": 107
+  "s": 0.2,
+  "cpu": 0.15,
+  "rss_mib": 131
  },
  "TestRepSharedChildHeightIndependentOfRootOrder": {
   "s": 0,
-  "rss_mib": 107
+  "rss_mib": 131
  },
  "TestRepSharedChildStoredOnceAndLiveness": {
   "s": 0,
-  "rss_mib": 107
+  "rss_mib": 131
  },
  "TestRepSharedVirtualComponentAcrossRoots": {
-  "s": 0.1,
-  "rss_mib": 107
+  "s": 0.11,
+  "cpu": 0.08,
+  "rss_mib": 131
  },
  "TestRepSmokeSQLiteRoundTrip": {
-  "s": 0.53,
-  "rss_mib": 107
+  "s": 0.48,
+  "cpu": 0.36,
+  "rss_mib": 131
  },
  "TestRepSnapshotRetainsRepresentation": {
-  "s": 0.11,
-  "rss_mib": 107
+  "s": 0.09,
+  "cpu": 0.07,
+  "rss_mib": 131
  },
  "TestRepSourceCorruptionClassified": {
-  "s": 0.15,
-  "rss_mib": 107
+  "s": 0.16,
+  "cpu": 0.12,
+  "rss_mib": 131
  },
  "TestRepStatsFields": {
-  "s": 0.07,
-  "rss_mib": 107
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 131
  },
  "TestRepStreamWriterBatching": {
-  "s": 0.03,
-  "rss_mib": 107
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 131
  },
  "TestRepStructuredCumulativeModelCompatibility": {
-  "s": 0.39,
-  "rss_mib": 107
+  "s": 0.35,
+  "cpu": 0.26,
+  "rss_mib": 131
  },
  "TestRepStructuredEncoderLabIdentity": {
-  "s": 0.6,
-  "rss_mib": 150
+  "s": 0.56,
+  "cpu": 0.42,
+  "rss_mib": 131
  },
  "TestRepStructuredFallbackAndLifecycle": {
-  "s": 0.95,
-  "rss_mib": 143
+  "s": 0.86,
+  "cpu": 0.64,
+  "rss_mib": 131
  },
  "TestRepStructuredLabWireFidelity": {
-  "s": 0.11,
-  "rss_mib": 150
+  "s": 0.09,
+  "cpu": 0.07,
+  "rss_mib": 131
  },
  "TestRepStructuredLayoutDetachesPageBacking": {
-  "s": 0,
-  "rss_mib": 150
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 131
  },
  "TestRepStructuredNodeItemTotalOverflow": {
   "s": 0,
-  "rss_mib": 150
+  "rss_mib": 131
  },
  "TestRepStructuredOrdinaryPutCrashFloor": {
-  "s": 1.34,
-  "rss_mib": 42
+  "s": 2.06,
+  "cpu": 1.3,
+  "rss_mib": 40
  },
  "TestRepStructuredPreallocationAndRecipeGuards": {
   "s": 0.01,
-  "rss_mib": 150
+  "cpu": 0.01,
+  "rss_mib": 131
  },
  "TestRepStructuredPrefixExpansionBudget": {
-  "s": 0.06,
-  "rss_mib": 150
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 131
  },
  "TestRepStructuredRetainedMetadataBudget": {
-  "s": 0.04,
-  "rss_mib": 150
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 131
  },
  "TestRepStructuredZstdAdmissionBounds": {
   "s": 0,
-  "rss_mib": 150
+  "rss_mib": 131
  },
  "TestRepStructuredZstdWindowBeforeAllocation": {
   "s": 0,
-  "rss_mib": 150
+  "rss_mib": 131
  },
  "TestRepSubstrateStoreRoundTrip": {
-  "s": 0.05,
-  "rss_mib": 150
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 131
  },
  "TestRepTempFilesAreNeverRootsOrLiveness": {
-  "s": 0.06,
-  "rss_mib": 150
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 131
  },
  "TestRepTransferBackfill": {
-  "s": 0.47,
-  "rss_mib": 150
+  "s": 0.52,
+  "cpu": 0.39,
+  "rss_mib": 131
  },
  "TestRepTransferCrashAfterAuthoritativeCommit": {
-  "s": 0.32,
-  "rss_mib": 150
+  "s": 0.47,
+  "cpu": 0.35,
+  "rss_mib": 131
  },
  "TestRepUpgradeLevelsDoNotMoveUntilFirstRoot": {
-  "s": 1.23,
-  "rss_mib": 47
+  "s": 2.55,
+  "cpu": 1.69,
+  "rss_mib": 42
  },
  "TestRepVirtualComponentDescriptor": {
   "s": 0.14,
-  "rss_mib": 150
+  "cpu": 0.1,
+  "rss_mib": 131
  },
  "TestRepWireCorruptionMatrix": {
   "s": 0,
-  "rss_mib": 150
+  "rss_mib": 131
  },
  "TestRepWireGoldenAndRoundTrip": {
   "s": 0,
-  "rss_mib": 150
+  "rss_mib": 131
  },
  "TestRepWireKindNumbers": {
   "s": 0,
-  "rss_mib": 150
+  "rss_mib": 131
  },
  "TestRepWriterFailureIsNotCorruption": {
   "s": 0,
-  "rss_mib": 150
+  "rss_mib": 131
  },
  "TestRepZ4ManagedDefaultAndMalformedFallback": {
   "s": 0.03,
-  "rss_mib": 150
+  "cpu": 0.02,
+  "rss_mib": 131
  },
  "TestRepZ4ManagedEncoderFidelity": {
-  "s": 0.17,
-  "rss_mib": 150
+  "s": 0.11,
+  "cpu": 0.08,
+  "rss_mib": 131
  },
  "TestRepZ4ManagedLabWireFidelity": {
   "s": 0.01,
-  "rss_mib": 150
+  "cpu": 0.01,
+  "rss_mib": 131
  },
  "TestRepZ4ManagedLifecycleAndCapability": {
-  "s": 0.33,
-  "rss_mib": 150
+  "s": 0.38,
+  "cpu": 0.28,
+  "rss_mib": 131
  },
  "TestRepZ4ModelBaseSurvivesRootRetirement": {
-  "s": 0.14,
-  "rss_mib": 150
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 52
  },
  "TestRepZ4ModelGGUFAndUnsupportedModel": {
-  "s": 0.02,
-  "rss_mib": 150
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 52
  },
  "TestRepZ4ModelLabWireFidelity": {
-  "s": 0,
-  "rss_mib": 150
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 52
  },
  "TestRepZ4ModelModelGiBBounded": {
-  "s": 11.78,
-  "rss_mib": 105
+  "s": 12.42,
+  "cpu": 11.76,
+  "rss_mib": 104
  },
  "TestRepZ4ModelShortWriterAndAmbiguousNames": {
   "s": 0,
-  "rss_mib": 150
+  "rss_mib": 52
  },
  "TestRepZ4ModelStreamingModelLifecycle": {
-  "s": 0.42,
-  "rss_mib": 150
+  "s": 0.35,
+  "cpu": 0.22,
+  "rss_mib": 52
  },
  "TestRepack_AbortsOnCorruptLiveSource": {
-  "s": 0.16,
-  "rss_mib": 150
+  "s": 0.29,
+  "cpu": 0.19,
+  "rss_mib": 52
  },
  "TestRepack_AbortsWhenASourcePackIsUnusable": {
-  "s": 0.32,
-  "rss_mib": 150
+  "s": 0.56,
+  "cpu": 0.36,
+  "rss_mib": 52
  },
  "TestRepack_AbortsWhenReplacementFailsValidation": {
-  "s": 0.3,
-  "rss_mib": 150
+  "s": 0.66,
+  "cpu": 0.42,
+  "rss_mib": 52
  },
  "TestRepack_CLI": {
-  "s": 0.14,
-  "rss_mib": 150
+  "s": 0.31,
+  "cpu": 0.2,
+  "rss_mib": 52
  },
  "TestRepack_ConflictingPackedCopiesBlockDestructiveWork": {
-  "s": 0.1,
-  "rss_mib": 150
+  "s": 0.14,
+  "cpu": 0.09,
+  "rss_mib": 52
  },
  "TestRepack_ControlledUtilizationMatrix": {
-  "s": 0.83,
-  "rss_mib": 23
+  "s": 1.07,
+  "cpu": 0.68,
+  "rss_mib": 52
  },
  "TestRepack_CorruptPrimaryFallsBackToDuplicate": {
-  "s": 0.16,
-  "rss_mib": 103
+  "s": 0.22,
+  "cpu": 0.14,
+  "rss_mib": 52
  },
  "TestRepack_CrashPoints": {
-  "s": 2.44,
-  "rss_mib": 50
+  "s": 2.84,
+  "cpu": 1.51,
+  "rss_mib": 51
  },
  "TestRepack_DefaultPolicyLeavesHealthyPacksAlone": {
-  "s": 0.56,
-  "rss_mib": 103
+  "s": 0.84,
+  "cpu": 0.54,
+  "rss_mib": 52
  },
  "TestRepack_DuplicatePackedLocations": {
-  "s": 0.31,
-  "rss_mib": 103
+  "s": 0.44,
+  "cpu": 0.28,
+  "rss_mib": 52
  },
  "TestRepack_FullyRedundantPackRemovedByGC": {
-  "s": 0.15,
-  "rss_mib": 103
+  "s": 0.23,
+  "cpu": 0.15,
+  "rss_mib": 52
  },
  "TestRepack_GCCrashDuringDeadPackRemoval": {
-  "s": 0.14,
-  "rss_mib": 103
+  "s": 0.2,
+  "cpu": 0.13,
+  "rss_mib": 52
  },
  "TestRepack_GCReportsAndRemovesDeadPacks": {
-  "s": 0.17,
-  "rss_mib": 103
+  "s": 0.22,
+  "cpu": 0.14,
+  "rss_mib": 52
  },
  "TestRepack_LiveDataSpanningPacksAndMultipleOutputs": {
-  "s": 0.25,
-  "rss_mib": 103
+  "s": 0.31,
+  "cpu": 0.2,
+  "rss_mib": 52
  },
  "TestRepack_LooseCopyCountsAsSurvivingCopy": {
-  "s": 0.29,
-  "rss_mib": 103
+  "s": 0.4,
+  "cpu": 0.26,
+  "rss_mib": 52
  },
  "TestRepack_NoPacksAndLooseOnlyStores": {
-  "s": 0.05,
-  "rss_mib": 103
+  "s": 0.09,
+  "cpu": 0.06,
+  "rss_mib": 52
  },
  "TestRepack_RefusesUnsafeLiveSet": {
-  "s": 0.1,
-  "rss_mib": 103
+  "s": 0.14,
+  "cpu": 0.09,
+  "rss_mib": 52
  },
  "TestRepack_RefusesWhileStoreInUse": {
-  "s": 0.1,
-  "rss_mib": 103
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 52
  },
  "TestRepack_RejectsBadOptions": {
   "s": 0,
-  "rss_mib": 103
- },
- "TestRepack_RespectsEveryLiveRootType": {
-  "s": 0.35,
-  "rss_mib": 103
- },
- "TestRepack_StatsExposePackLiveness": {
-  "s": 0.15,
-  "rss_mib": 103
- },
- "TestRepack_UtilizationProfiles": {
-  "s": 0.84,
   "rss_mib": 52
  },
+ "TestRepack_RespectsEveryLiveRootType": {
+  "s": 0.39,
+  "cpu": 0.25,
+  "rss_mib": 52
+ },
+ "TestRepack_StatsExposePackLiveness": {
+  "s": 0.18,
+  "cpu": 0.12,
+  "rss_mib": 52
+ },
+ "TestRepack_UtilizationProfiles": {
+  "s": 1.31,
+  "cpu": 0.79,
+  "rss_mib": 83
+ },
  "TestRepairFromPeer_IncompatiblePeerFailsClearly": {
-  "s": 0.03,
-  "rss_mib": 103
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestRepair_ConcurrentGetOnUnrelatedObjectDuringRepair": {
-  "s": 0.69,
-  "rss_mib": 103
+  "s": 0.55,
+  "cpu": 0.33,
+  "rss_mib": 83
  },
  "TestRepair_CorruptChunkContentMismatchDetected": {
-  "s": 0.03,
-  "rss_mib": 103
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestRepair_CorruptExistingChunkAtomicallyReplaced": {
-  "s": 0.07,
-  "rss_mib": 103
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestRepair_HealthyChunkNeverRewritten": {
   "s": 0.06,
-  "rss_mib": 103
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestRepair_HealthyStoreNoFindings": {
   "s": 0.02,
-  "rss_mib": 103
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestRepair_HighWorkerCount_RaceAndCorrectness": {
-  "s": 0.26,
-  "rss_mib": 103
+  "s": 0.25,
+  "cpu": 0.15,
+  "rss_mib": 83
  },
  "TestRepair_LocalRestartResumesNaturally": {
-  "s": 0.08,
-  "rss_mib": 103
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 83
  },
  "TestRepair_ManyCorruptChunks_WorkerCountsProduceIdenticalStats": {
-  "s": 1.29,
-  "rss_mib": 33
+  "s": 1.82,
+  "cpu": 0.96,
+  "rss_mib": 30
  },
  "TestRepair_ManyMissingChunks_Concurrent": {
-  "s": 0.47,
-  "rss_mib": 60
+  "s": 0.37,
+  "cpu": 0.22,
+  "rss_mib": 83
  },
  "TestRepair_MissingChunkDetected": {
   "s": 0.03,
-  "rss_mib": 60
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestRepair_MissingChunkRestoredEndToEnd": {
-  "s": 0.1,
-  "rss_mib": 60
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestRepair_MixedCorruptAndMissing_Concurrent": {
-  "s": 0.62,
-  "rss_mib": 60
+  "s": 0.34,
+  "cpu": 0.21,
+  "rss_mib": 83
  },
  "TestRepair_MultipartInProgressPartChunkRepaired": {
-  "s": 0.06,
-  "rss_mib": 60
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 83
  },
  "TestRepair_MultipleCorruptChunksDetected": {
   "s": 0.05,
-  "rss_mib": 60
+  "cpu": 0.03,
+  "rss_mib": 83
  },
  "TestRepair_OnePeerFailureAmongManySuccesses_Concurrent": {
-  "s": 0.36,
-  "rss_mib": 60
+  "s": 0.33,
+  "cpu": 0.2,
+  "rss_mib": 83
  },
  "TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly": {
-  "s": 0.05,
-  "rss_mib": 60
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestRepair_PeerRestartBetweenAttempts": {
-  "s": 0.06,
-  "rss_mib": 60
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 83
  },
  "TestRepair_RestartThenGetExact": {
   "s": 0.09,
-  "rss_mib": 60
+  "cpu": 0.05,
+  "rss_mib": 83
  },
  "TestRepair_ResumeAfterPartialRunOnlyFetchesRemaining": {
-  "s": 0.06,
-  "rss_mib": 60
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 83
  },
  "TestRepair_RetainedHistoricalVersionChunkRepaired": {
-  "s": 0.06,
-  "rss_mib": 60
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 83
  },
  "TestRepair_SharedCorruptDigestAffectsAllReferencingObjects": {
-  "s": 0.04,
-  "rss_mib": 60
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestRepair_SharedDigestSingleRepairJob_Concurrent": {
-  "s": 0.06,
-  "rss_mib": 60
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestRepair_StatsExactAccounting": {
   "s": 0.07,
-  "rss_mib": 60
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestRepair_UnreachableOrphanChunkNeverTriggersRepair": {
-  "s": 0.02,
-  "rss_mib": 60
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestRepair_VersionsMetadataAndETagUnchanged": {
-  "s": 0.06,
-  "rss_mib": 60
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 83
  },
  "TestRepair_WrongLengthChunkDetectedAsCorrupt": {
   "s": 0.03,
-  "rss_mib": 60
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestRepair_WrongPeerBytesAmongMany_Concurrent": {
-  "s": 0.22,
-  "rss_mib": 60
+  "s": 0.21,
+  "cpu": 0.13,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_DestinationConflictOneObjectFailsOthersSucceed": {
-  "s": 0.06,
-  "rss_mib": 60
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_DestinationOnlyObjectSurvives": {
   "s": 0.04,
-  "rss_mib": 60
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_DestinationPrepopulatedCASReuse": {
-  "s": 0.1,
-  "rss_mib": 60
+  "s": 0.13,
+  "cpu": 0.08,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_DestinationRestartThenRerunIsCleanAndDeepVerifies": {
-  "s": 0.06,
-  "rss_mib": 60
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_EmptyObject": {
-  "s": 0.05,
-  "rss_mib": 60
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_MetadataPreservedPerObject": {
-  "s": 0.04,
-  "rss_mib": 60
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_PrefixMappingEndToEnd": {
-  "s": 0.07,
-  "rss_mib": 60
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_ResumeAcrossRealProcessInterruption": {
-  "s": 1.03,
-  "rss_mib": 87
+  "s": 1.09,
+  "cpu": 0.92,
+  "rss_mib": 78
  },
  "TestReplicateNamespace_SharedChunksAcrossObjectsAccountingExact": {
-  "s": 0.09,
-  "rss_mib": 60
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_SourceChunkCorruptOneObjectFailsOthersSucceed": {
-  "s": 0.04,
-  "rss_mib": 60
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_SourceObjectDisappearsBetweenListingAndFetchReportsFailureContinues": {
   "s": 0.05,
-  "rss_mib": 60
+  "cpu": 0.03,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_SourceRemovalAfterReplicationDoesNotRemoveDestination": {
-  "s": 0.07,
-  "rss_mib": 60
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_StatsExactAccounting": {
-  "s": 0.07,
-  "rss_mib": 60
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 83
  },
  "TestReplicateNamespace_WholeBucketAllChunksMissing": {
-  "s": 0.06,
-  "rss_mib": 60
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 83
  },
  "TestReplicate_AuthFailureDestinationRejected": {
   "s": 0.02,
-  "rss_mib": 60
+  "cpu": 0.01,
+  "rss_mib": 83
  },
  "TestReplicate_AuthFailureSourceRejected": {
   "s": 0.03,
-  "rss_mib": 60
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestReplicate_CancellationStopsUnnecessaryWorkOnFailure": {
-  "s": 0.1,
-  "rss_mib": 60
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 83
  },
  "TestReplicate_ClientRehashDetectsSourceReturningWrongBytes": {
   "s": 0,
-  "rss_mib": 60
+  "rss_mib": 83
  },
  "TestReplicate_ConcurrentChunkFetchesActuallyOverlap": {
-  "s": 0.23,
-  "rss_mib": 60
+  "s": 0.26,
+  "cpu": 0.16,
+  "rss_mib": 83
  },
  "TestReplicate_ConnectionResetOnOneChunkIsHandledAsFailure": {
-  "s": 0.07,
-  "rss_mib": 60
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 83
  },
  "TestReplicate_DestinationConflict_AbsentBecomesPresentDuringReplication": {
   "s": 0.04,
-  "rss_mib": 60
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestReplicate_DestinationConflict_ConcurrentWriteDuringReplicationRejectedSafely": {
-  "s": 0.05,
-  "rss_mib": 60
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 83
  },
  "TestReplicate_DestinationServerRestartBetweenAttempts": {
-  "s": 0.2,
-  "rss_mib": 60
+  "s": 0.17,
+  "cpu": 0.11,
+  "rss_mib": 139
  },
  "TestReplicate_DestinationUploadRejectsAmongMany": {
-  "s": 0.12,
-  "rss_mib": 60
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 139
  },
  "TestReplicate_DuplicateDigestReferencesTransferOnce": {
-  "s": 0.08,
-  "rss_mib": 60
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 139
  },
  "TestReplicate_EndToEnd_NewDestinationOrdinaryObject": {
-  "s": 0.33,
-  "rss_mib": 60
+  "s": 0.22,
+  "cpu": 0.14,
+  "rss_mib": 139
  },
  "TestReplicate_FailureLeavesUploadedChunksReusable_RerunTransfersOnlyRemaining": {
-  "s": 0.24,
-  "rss_mib": 60
+  "s": 0.22,
+  "cpu": 0.14,
+  "rss_mib": 139
  },
  "TestReplicate_IncompatibleDestinationFailsClearly": {
-  "s": 0.03,
-  "rss_mib": 60
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_IncompatibleSourceFailsClearly": {
   "s": 0.01,
-  "rss_mib": 60
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_M8ADemonstrationFixture": {
-  "s": 0.47,
-  "rss_mib": 162
+  "s": 0.49,
+  "cpu": 0.32,
+  "rss_mib": 139
  },
  "TestReplicate_Negotiate_AllMissing": {
-  "s": 0.13,
-  "rss_mib": 162
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 139
  },
  "TestReplicate_Negotiate_MixedPartialReuseExactStats": {
-  "s": 0.12,
-  "rss_mib": 162
+  "s": 0.14,
+  "cpu": 0.09,
+  "rss_mib": 139
  },
  "TestReplicate_Negotiate_ZeroMissingFullReuse": {
   "s": 0.08,
-  "rss_mib": 162
+  "cpu": 0.05,
+  "rss_mib": 139
  },
  "TestReplicate_NewEndpointsRejectUnauthenticatedRequests": {
   "s": 0.01,
-  "rss_mib": 162
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_OrdinaryS3AndM6SyncUnaffected": {
-  "s": 0.06,
-  "rss_mib": 162
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 139
  },
  "TestReplicate_ParallelTransferFasterThanSequentialUnderLatency": {
-  "s": 0.31,
-  "rss_mib": 162
+  "s": 0.34,
+  "cpu": 0.22,
+  "rss_mib": 139
  },
  "TestReplicate_PartialAndZeroMissing_WithWorkers": {
-  "s": 0.14,
-  "rss_mib": 162
+  "s": 0.18,
+  "cpu": 0.12,
+  "rss_mib": 139
  },
  "TestReplicate_RepeatedTransfersDoNotLeakGoroutines": {
-  "s": 0.42,
-  "rss_mib": 162
+  "s": 0.48,
+  "cpu": 0.31,
+  "rss_mib": 139
  },
  "TestReplicate_ResumeAcrossRealProcessInterruption": {
-  "s": 0.77,
-  "rss_mib": 162
+  "s": 0.86,
+  "cpu": 0.56,
+  "rss_mib": 139
  },
  "TestReplicate_ResumeAfterPartialPriorUpload": {
   "s": 0.18,
-  "rss_mib": 162
+  "cpu": 0.12,
+  "rss_mib": 139
  },
  "TestReplicate_SourceChunkDownload_CorruptChunkOnDiskDetected": {
   "s": 0.01,
-  "rss_mib": 162
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_SourceChunkDownload_MalformedDigest": {
   "s": 0.01,
-  "rss_mib": 162
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_SourceChunkDownload_MissingChunk": {
   "s": 0,
-  "rss_mib": 162
+  "rss_mib": 139
  },
  "TestReplicate_SourceChunkDownload_Valid": {
   "s": 0.01,
-  "rss_mib": 162
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_SourceDescriptor_EmptyObjectEndToEnd": {
   "s": 0.02,
-  "rss_mib": 162
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_SourceDescriptor_MetadataAndContentTypePreserved": {
-  "s": 0.04,
-  "rss_mib": 162
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_SourceDescriptor_MissingBucket": {
-  "s": 0,
-  "rss_mib": 162
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_SourceDescriptor_MissingObject": {
   "s": 0.01,
-  "rss_mib": 162
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_SourceDescriptor_MissingQueryParamsRejected": {
   "s": 0.01,
-  "rss_mib": 162
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_SourceDescriptor_ObjectExists": {
-  "s": 0.01,
-  "rss_mib": 162
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_SourceDescriptor_WeirdKeyCharacters": {
-  "s": 0.06,
-  "rss_mib": 162
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 139
  },
  "TestReplicate_SourceMissingOneChunkAmongMany": {
   "s": 0.1,
-  "rss_mib": 162
+  "cpu": 0.07,
+  "rss_mib": 139
  },
  "TestReplicate_SourceOverwrittenDuringReplicationDoesNotProduceMixedRevision": {
-  "s": 0.08,
-  "rss_mib": 162
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 139
  },
  "TestReplicate_SourceReturnsWrongDigestAmongMany": {
-  "s": 0.08,
-  "rss_mib": 162
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 139
  },
  "TestReplicate_SourceServerRestartBetweenDescriptorAndChunkFetch": {
-  "s": 0.06,
-  "rss_mib": 162
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 139
  },
  "TestReplicate_StatsExactAccounting": {
-  "s": 0.04,
-  "rss_mib": 162
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 139
  },
  "TestReplicate_Stats_DuplicateChunkReferencesNotDoubleCounted": {
-  "s": 0.06,
-  "rss_mib": 162
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 139
  },
  "TestReplicate_SuccessfulTransferCommitsExactlyOnce": {
-  "s": 0.15,
-  "rss_mib": 162
+  "s": 0.13,
+  "cpu": 0.08,
+  "rss_mib": 139
  },
  "TestReplicate_UnknownExtensionPathStillNotBucketParsed": {
-  "s": 0,
-  "rss_mib": 162
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestReplicate_WorkerCountsProduceByteIdenticalStats": {
-  "s": 0.9,
-  "rss_mib": 162
+  "s": 0.89,
+  "cpu": 0.58,
+  "rss_mib": 139
  },
  "TestReplicate_WorkersGreaterThanChunkCount": {
-  "s": 0.08,
-  "rss_mib": 162
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 139
  },
  "TestResolveTransferWorkers_ZeroMeansDefault": {
   "s": 0,
-  "rss_mib": 162
+  "rss_mib": 139
  },
  "TestRestore_AfterCurrentObjectDeletion": {
-  "s": 0.01,
-  "rss_mib": 162
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestRestore_CorruptedHistoricalManifest_NoPartialMutation": {
-  "s": 0.01,
-  "rss_mib": 162
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestRestore_InvalidVersionID": {
   "s": 0.02,
-  "rss_mib": 162
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestRestore_MissingHistoricalChunk_NoPartialMutation": {
-  "s": 0.06,
-  "rss_mib": 85
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 139
  },
  "TestRestore_WrongBucketOrKey": {
-  "s": 0.03,
-  "rss_mib": 85
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 139
  },
  "TestRestore_ZeroCopy_OverExistingCurrent": {
-  "s": 0.06,
-  "rss_mib": 85
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 139
  },
  "TestRunTransferWorkers_BoundedConcurrency": {
-  "s": 0.14,
-  "rss_mib": 85
+  "s": 0.13,
+  "cpu": 0.08,
+  "rss_mib": 139
  },
  "TestRunTransferWorkers_CancelOnErrorStopsUnstartedWork": {
   "s": 0.2,
-  "rss_mib": 85
+  "cpu": 0.13,
+  "rss_mib": 139
  },
  "TestRunTransferWorkers_ExternalContextCancellationSkipsEveryItem": {
   "s": 0,
-  "rss_mib": 85
+  "rss_mib": 139
  },
  "TestRunTransferWorkers_NoCancelOnErrorRunsEveryItem": {
   "s": 0,
-  "rss_mib": 85
+  "rss_mib": 139
  },
  "TestRunTransferWorkers_ResultsPreserveInputOrderRegardlessOfCompletionOrder": {
   "s": 0.11,
+  "cpu": 0.04,
   "rss_mib": 85
  },
  "TestRunTransferWorkers_ZeroItems": {
@@ -4248,39 +5138,47 @@
   "rss_mib": 85
  },
  "TestServe_GracefulShutdown_ReplicateWorkersTerminateCleanly_RealProcess": {
-  "s": 0.43,
+  "s": 0.49,
+  "cpu": 0.19,
   "rss_mib": 85
  },
  "TestServe_SIGINT_IdleGracefulShutdown_RealProcess": {
   "s": 0.06,
+  "cpu": 0.02,
   "rss_mib": 85
  },
  "TestServe_SIGTERM_ActiveGET_CompletesWithinGrace_RealProcess": {
-  "s": 0.92,
+  "s": 0.93,
+  "cpu": 0.37,
   "rss_mib": 85
  },
  "TestServe_SIGTERM_ActivePUT_CompletesWithinGrace_RealProcess": {
-  "s": 8.42,
+  "s": 8.53,
+  "cpu": 0.04,
   "rss_mib": 15
  },
  "TestServe_SIGTERM_IdleGracefulShutdown_RealProcess": {
   "s": 0.06,
+  "cpu": 0.02,
   "rss_mib": 85
  },
  "TestServe_SIGTERM_SecondSignalForcesImmediateExit_RealProcess": {
   "s": 1.54,
+  "cpu": 0.02,
   "rss_mib": 14
  },
  "TestServe_SIGTERM_SlowRequestExceedsGrace_RealProcess": {
   "s": 32.07,
+  "cpu": 0.04,
   "rss_mib": 15
  },
  "TestServe_TLS_BadCertKeyFails_RealProcess": {
-  "s": 0.02,
+  "s": 0.01,
   "rss_mib": 85
  },
  "TestServe_TLS_HTTPS_SigV4_PresignAndGracefulShutdown_RealProcess": {
-  "s": 0.06,
+  "s": 0.07,
+  "cpu": 0.03,
   "rss_mib": 85
  },
  "TestServe_TLS_MissingCertOrKeyFails_RealProcess": {
@@ -4288,7 +5186,8 @@
   "rss_mib": 85
  },
  "TestServe_TLS_Replicate_RealProcess": {
-  "s": 0.39,
+  "s": 0.38,
+  "cpu": 0.15,
   "rss_mib": 85
  },
  "TestSigV4_AlteredPayloadRejected": {
@@ -4308,15 +5207,15 @@
   "rss_mib": 85
  },
  "TestSigV4_IncorrectSecretRejected": {
-  "s": 0.01,
+  "s": 0,
   "rss_mib": 85
  },
  "TestSigV4_MissingSignedHeaderRejected": {
-  "s": 0.01,
+  "s": 0,
   "rss_mib": 85
  },
  "TestSigV4_QueryEdgeCases": {
-  "s": 0.01,
+  "s": 0,
   "rss_mib": 85
  },
  "TestSigV4_RawPathIsNotCleaned": {
@@ -4328,79 +5227,92 @@
   "rss_mib": 85
  },
  "TestSigV4_WrongAccessKeyRejected": {
-  "s": 0.01,
+  "s": 0,
   "rss_mib": 85
  },
  "TestSigV4_WrongRegionServiceScopeRejected": {
-  "s": 0.01,
+  "s": 0,
   "rss_mib": 85
  },
  "TestSnapshotCreate_CapturedRootsMatchLiveManifest": {
   "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotCreate_ConcurrentPutsDuringCaptureYieldsCoherentSnapshot": {
-  "s": 0.04,
+  "s": 0.07,
+  "cpu": 0.03,
   "rss_mib": 85
  },
  "TestSnapshotCreate_DeletedAfterCaptureStillListedInSnapshot": {
-  "s": 0.01,
+  "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotCreate_EmptyBucketZeroObjects": {
-  "s": 0.02,
+  "s": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotCreate_EmptyPrefix_WholeBucket": {
   "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotCreate_IncompleteTempFileNeverObservedAsPublished": {
-  "s": 0,
+  "s": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotCreate_ManyObjects": {
-  "s": 0.25,
+  "s": 0.22,
+  "cpu": 0.09,
   "rss_mib": 85
  },
  "TestSnapshotCreate_MutationAfterCaptureNotReflected": {
   "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotCreate_NoStrayTempFilesLeftInSnapshotsDir": {
-  "s": 0.01,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotCreate_NoSuchBucket": {
-  "s": 0.01,
+  "s": 0,
   "rss_mib": 85
  },
  "TestSnapshotCreate_ObjectAddedAfterCaptureExcluded": {
-  "s": 0.01,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotCreate_OneObject": {
-  "s": 0.02,
+  "s": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotCreate_OverOneThousandObjects": {
-  "s": 1.09,
-  "rss_mib": 85
+  "s": 1.13,
+  "cpu": 0.26,
+  "rss_mib": 22
  },
  "TestSnapshotCreate_PrefixScoping": {
-  "s": 0.04,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotCreate_WeirdKeys": {
-  "s": 0.05,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotCreate_WritesZeroNewCASPayload": {
-  "s": 0.03,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotDelete_ConcurrentDeletesOneWinsOneGetsCleanError": {
-  "s": 0.01,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotDelete_InvalidID": {
@@ -4409,14 +5321,17 @@
  },
  "TestSnapshotDelete_RemovesDescriptorOnly": {
   "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotDelete_SurvivesRestart": {
-  "s": 0.01,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotDelete_UnknownID": {
-  "s": 0.01,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotFormat_BadCRC": {
@@ -4476,15 +5391,18 @@
   "rss_mib": 85
  },
  "TestSnapshotGC_CorruptDescriptorRefusesToSweep": {
-  "s": 0.03,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotGC_DeleteFinalSnapshotAllowsEventualCollection": {
   "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotGC_MultipleSnapshotsSharingChunks_DeleteOneKeepsOther": {
-  "s": 0.04,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotGC_NoSnapshotsUnchangedBehavior": {
@@ -4492,43 +5410,50 @@
   "rss_mib": 85
  },
  "TestSnapshotGC_PinsContentWithNoOtherRoot": {
-  "s": 0.02,
+  "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotGC_PinsOtherwiseUnreachableChunks": {
-  "s": 0.02,
+  "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotGC_UnexpectedFileNameInSnapshotsDirCausesRefusal": {
   "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotList_EmptyStore": {
-  "s": 0,
+  "s": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotList_MultipleSnapshotsOrderedByID": {
-  "s": 0.01,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_DeepVerifyGreenAfterRestore": {
   "s": 0.1,
+  "cpu": 0.04,
   "rss_mib": 85
  },
  "TestSnapshotRestore_DeleteOriginalNamespaceDoesNotAffectRestoredCopy": {
-  "s": 0.02,
+  "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_DestinationBucketMissingFailsClearly": {
   "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_EmptySnapshot": {
-  "s": 0,
+  "s": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_LaterObjectsContinueAfterOneConflict": {
-  "s": 0.03,
+  "s": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_MetadataAndContentTypePreserved": {
@@ -4536,95 +5461,113 @@
   "rss_mib": 85
  },
  "TestSnapshotRestore_NestedPrefix": {
-  "s": 0.02,
+  "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_OneObject": {
   "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_OverOneThousandObjects": {
-  "s": 7.56,
+  "s": 7.68,
+  "cpu": 5.41,
   "rss_mib": 25
  },
  "TestSnapshotRestore_PreexistingDifferentDestinationConflict": {
-  "s": 0.02,
+  "s": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_RestoredDeletionDoesNotAffectSnapshot": {
-  "s": 0.03,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_RestoredMutationDoesNotAffectSnapshot": {
   "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_ResumeMatchingPriorRestoreIsNoOp": {
   "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_SnapshotDeletionAfterRestoreDoesNotBreakRestoredNamespace": {
   "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_SourceDeletedThenGC_StillRestoresExactly": {
   "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_SourceMutatedAfterSnapshot_RestoresOldVersion": {
   "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_TwoRestoresFromSameSnapshotToDistinctDestinations": {
   "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotRestore_WeirdKeys": {
-  "s": 0.02,
+  "s": 0.04,
+  "cpu": 0.02,
   "rss_mib": 85
  },
  "TestSnapshotRestore_ZeroNewCASPayload": {
-  "s": 0.04,
+  "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotShow_EntriesOmittedByDefault": {
-  "s": 0.01,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotShow_InvalidID": {
-  "s": 0,
+  "s": 0.01,
   "rss_mib": 85
  },
  "TestSnapshotShow_UnknownID": {
-  "s": 0.01,
+  "s": 0,
   "rss_mib": 85
  },
  "TestSnapshot_SurvivesRestart": {
-  "s": 0.01,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestSnapshot_VerifyReportsCorruptSnapshot": {
   "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestStats_ExactSharingArrangement": {
-  "s": 0.03,
+  "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestStats_JSONFieldNamesMatchSpec": {
-  "s": 0,
+  "s": 0.01,
   "rss_mib": 85
  },
  "TestStats_ReclaimableAfterDelete": {
   "s": 0.02,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestStorageEfficiencyProof_VersionHistoryIsCheap": {
-  "s": 0.1,
+  "s": 0.08,
+  "cpu": 0.03,
   "rss_mib": 85
  },
  "TestStore_FormatJSONContents": {
-  "s": 0,
+  "s": 0.01,
   "rss_mib": 85
  },
  "TestStore_NewInitialization": {
@@ -4640,543 +5583,659 @@
   "rss_mib": 85
  },
  "TestStreamingGet_Corruption": {
-  "s": 0.31,
+  "s": 0.21,
+  "cpu": 0.08,
   "rss_mib": 85
  },
  "TestStreamingGet_HeadAndConditionalsSkipPayload": {
-  "s": 0.03,
+  "s": 0.01,
   "rss_mib": 85
  },
  "TestStreamingGet_Matrix": {
-  "s": 0.5,
+  "s": 0.43,
+  "cpu": 0.17,
   "rss_mib": 85
  },
  "TestStreamingMultipart_UploadPart": {
-  "s": 0.16,
+  "s": 0.14,
+  "cpu": 0.06,
   "rss_mib": 85
  },
  "TestStreamingPut_ConcurrentCreateOnly": {
-  "s": 0.04,
+  "s": 0.03,
+  "cpu": 0.01,
   "rss_mib": 85
  },
  "TestStreamingPut_ConditionalHistory": {
-  "s": 0.07,
+  "s": 0.05,
+  "cpu": 0.02,
   "rss_mib": 85
  },
  "TestStreamingPut_HTTPMatrix": {
-  "s": 0.69,
-  "rss_mib": 82
+  "s": 0.68,
+  "cpu": 0.27,
+  "rss_mib": 85
  },
  "TestStreamingPut_InterruptedBodies": {
-  "s": 0.04,
-  "rss_mib": 82
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 85
  },
  "TestStreamingPut_LargeObjectBoundedMemory": {
-  "s": 4.18,
-  "rss_mib": 147
+  "s": 4.65,
+  "cpu": 4.82,
+  "rss_mib": 158
  },
  "TestStreamingPut_RejectedBeforeIngest": {
-  "s": 0.52,
-  "rss_mib": 82
+  "s": 0.53,
+  "cpu": 0.21,
+  "rss_mib": 85
  },
  "TestStreamingPut_RestartCompatibility": {
-  "s": 0.07,
-  "rss_mib": 82
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 91
  },
  "TestSyncChunkUpload_DigestMismatchRejected": {
-  "s": 0.01,
-  "rss_mib": 82
+  "s": 0,
+  "rss_mib": 91
  },
  "TestSyncChunkUpload_IdempotentRetry": {
   "s": 0.02,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncChunkUpload_InvalidDigestInURLRejected": {
   "s": 0,
-  "rss_mib": 82
+  "rss_mib": 91
  },
  "TestSyncChunkUpload_OversizedBodyRejected": {
-  "s": 0,
-  "rss_mib": 82
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncChunkUpload_Success": {
   "s": 0.01,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncCommit_CorruptChunkRejected": {
-  "s": 0.02,
-  "rss_mib": 82
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncCommit_MalformedJSONRejected": {
   "s": 0.01,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncCommit_MissingBucketOrKeyRejected": {
   "s": 0.01,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncCommit_MissingChunkRejected": {
   "s": 0.01,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncCommit_UnknownBucketRejected": {
-  "s": 0.01,
-  "rss_mib": 82
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSyncCommit_UnsupportedProtocolCDCHash": {
   "s": 0.01,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncCommit_WrongLengthRejected": {
   "s": 0.02,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncNegotiate_AllMissing": {
   "s": 0.01,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncNegotiate_BatchSizeBoundary": {
-  "s": 0.07,
-  "rss_mib": 82
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 91
  },
  "TestSyncNegotiate_DuplicatedDigestsReportedOnce": {
   "s": 0.01,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncNegotiate_InvalidDigest": {
   "s": 0.01,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncNegotiate_InvalidLength": {
-  "s": 0,
-  "rss_mib": 82
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncNegotiate_MalformedJSONRejected": {
   "s": 0.01,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncNegotiate_MultiBatchViaClient": {
-  "s": 2.22,
+  "s": 2.97,
+  "cpu": 0.79,
   "rss_mib": 20
  },
  "TestSyncNegotiate_NeverMutatesStore": {
   "s": 0.01,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncNegotiate_OneMissingAmongMany": {
-  "s": 0.05,
-  "rss_mib": 82
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSyncNegotiate_OversizedRequestRejected": {
   "s": 0.01,
-  "rss_mib": 82
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncNegotiate_SomeMissing": {
   "s": 0.03,
-  "rss_mib": 82
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSyncNegotiate_UnsupportedProtocolCDCHash": {
-  "s": 0,
-  "rss_mib": 82
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSyncNegotiate_ZeroMissing": {
-  "s": 0.02,
-  "rss_mib": 82
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSyncStats_FirstSyncAllNew": {
-  "s": 0.05,
-  "rss_mib": 82
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 91
  },
  "TestSyncStats_ResyncIdenticalContentToNewKeyIsFullyReused": {
-  "s": 0.06,
-  "rss_mib": 82
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 91
  },
  "TestSync_AllEndpointsRejectUnauthenticatedRequests": {
-  "s": 0,
-  "rss_mib": 82
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSync_CDCEquivalenceWithOrdinaryPut": {
-  "s": 0.03,
-  "rss_mib": 82
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSync_ConcurrentNormalPutAndSyncDifferentKeys": {
-  "s": 0.04,
-  "rss_mib": 82
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 91
  },
  "TestSync_ConflictAbsentDestinationStaysAbsentUntilCommit": {
   "s": 0.03,
-  "rss_mib": 82
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSync_ConflictConcurrentPUTDuringSyncCausesCommitConflict": {
-  "s": 0.02,
-  "rss_mib": 82
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSync_ConflictRetryAfterConflictSucceeds": {
-  "s": 0.01,
-  "rss_mib": 82
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSync_ConflictTwoConcurrentSyncsToSameKeySecondFails": {
   "s": 0.03,
-  "rss_mib": 82
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSync_ConflictUnchangedDestinationCommitsCleanly": {
-  "s": 0.02,
-  "rss_mib": 82
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSync_CriticalAcceptanceProof": {
-  "s": 0.19,
-  "rss_mib": 82
+  "s": 0.21,
+  "cpu": 0.13,
+  "rss_mib": 91
  },
  "TestSync_Discovery_AuthFailureRejected": {
-  "s": 0.01,
-  "rss_mib": 82
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSync_Discovery_Supported": {
-  "s": 0.01,
-  "rss_mib": 82
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSync_Discovery_UnknownExtensionPathNotBucketParsed": {
-  "s": 0.01,
-  "rss_mib": 82
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSync_KeyWithHashCharacterDoesNotMisroute": {
   "s": 0,
-  "rss_mib": 82
+  "rss_mib": 91
  },
  "TestSync_KeyWithPercentCharacterFallsBackCorrectly": {
   "s": 0,
-  "rss_mib": 82
+  "rss_mib": 91
  },
  "TestSync_KeyWithQuestionMarkResyncsCleanly": {
   "s": 0.03,
-  "rss_mib": 82
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSync_LocalMutationDuringConcurrentUploadStillDetected": {
-  "s": 0.12,
-  "rss_mib": 82
+  "s": 0.16,
+  "cpu": 0.1,
+  "rss_mib": 91
  },
  "TestSync_LocalMutationDuringOperationAborts": {
-  "s": 0.01,
-  "rss_mib": 82
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestSync_M6ADemonstrationFixture": {
-  "s": 0.49,
-  "rss_mib": 82
+  "s": 0.4,
+  "cpu": 0.25,
+  "rss_mib": 91
  },
  "TestSync_NonZeroS3Endpoint_FallsBackToPlainPut": {
   "s": 0,
-  "rss_mib": 82
+  "rss_mib": 91
  },
  "TestSync_NormalS3RoutesUnaffectedByExtension": {
-  "s": 0.02,
-  "rss_mib": 82
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSync_ParallelChunkUploadWithWorkers": {
-  "s": 0.11,
-  "rss_mib": 82
+  "s": 0.15,
+  "cpu": 0.09,
+  "rss_mib": 91
  },
  "TestSync_RepeatedCommitFailsCleanlyRatherThanDuplicating": {
-  "s": 0.02,
-  "rss_mib": 82
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSync_RepeatedFullSyncOfIdenticalContentUploadsNothing": {
-  "s": 0.04,
-  "rss_mib": 82
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 91
  },
  "TestSync_ResumeAfterPartialPriorUpload": {
-  "s": 0.05,
-  "rss_mib": 82
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 91
  },
  "TestSync_ServerRestartAfterPartialUploadThenResume": {
   "s": 0.06,
-  "rss_mib": 82
+  "cpu": 0.04,
+  "rss_mib": 91
  },
  "TestSync_TwoConcurrentSyncsToDifferentKeysBothSucceed": {
-  "s": 0.02,
-  "rss_mib": 82
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 91
  },
  "TestSync_UnmodifiedFileCommitsNormally": {
   "s": 0.03,
-  "rss_mib": 82
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestSync_WorkersOneMatchesSequentialBaseline": {
-  "s": 0.03,
-  "rss_mib": 82
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 91
  },
  "TestTierPolicy_DeletedBucketHistoryKeepsPolicy": {
-  "s": 0.03,
-  "rss_mib": 82
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 91
  },
  "TestTierPolicy_HottestReferenceWins": {
-  "s": 0.15,
-  "rss_mib": 82
+  "s": 0.18,
+  "cpu": 0.11,
+  "rss_mib": 91
  },
  "TestTierPolicy_MalformedFileOnlyBlocksAdministration": {
-  "s": 0.27,
-  "rss_mib": 82
+  "s": 0.4,
+  "cpu": 0.25,
+  "rss_mib": 91
  },
  "TestTierPolicy_MutationNeedsExclusiveStore": {
-  "s": 0.04,
-  "rss_mib": 82
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 91
  },
  "TestTierPolicy_Persistence": {
-  "s": 0.03,
-  "rss_mib": 82
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 91
  },
  "TestTierPolicy_RuleResolution": {
   "s": 0,
-  "rss_mib": 82
+  "rss_mib": 91
  },
  "TestTierRebalance_CLI": {
-  "s": 0.14,
-  "rss_mib": 82
+  "s": 0.13,
+  "cpu": 0.08,
+  "rss_mib": 91
  },
  "TestTierRebalance_CrashPointsConverge": {
-  "s": 2.94,
-  "rss_mib": 57
+  "s": 3.84,
+  "cpu": 2.31,
+  "rss_mib": 55
  },
  "TestTierRebalance_DriftAndDuplicatesConverge": {
-  "s": 0.18,
-  "rss_mib": 82
+  "s": 0.3,
+  "cpu": 0.18,
+  "rss_mib": 91
  },
  "TestTierRebalance_DryRunThenApplyOnLooseChunks": {
   "s": 0.12,
-  "rss_mib": 82
+  "cpu": 0.07,
+  "rss_mib": 91
  },
  "TestTierRebalance_HistoryPruneChangesTargets": {
-  "s": 0.16,
-  "rss_mib": 82
+  "s": 0.13,
+  "cpu": 0.08,
+  "rss_mib": 91
  },
  "TestTierRebalance_MinMisplacedDefersCostlyRewrites": {
-  "s": 0.12,
-  "rss_mib": 82
+  "s": 0.18,
+  "cpu": 0.11,
+  "rss_mib": 91
  },
  "TestTierRebalance_MixedPacksAreRewritten": {
-  "s": 0.2,
-  "rss_mib": 82
+  "s": 0.22,
+  "cpu": 0.14,
+  "rss_mib": 91
  },
  "TestTierRebalance_MultipartRootsStaySafe": {
-  "s": 0.08,
-  "rss_mib": 82
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 91
  },
  "TestTierRebalance_RefusesUnsafeStates": {
-  "s": 0.37,
-  "rss_mib": 82
+  "s": 0.3,
+  "cpu": 0.18,
+  "rss_mib": 91
  },
  "TestTierRebalance_SharedCheckpointBlocksStayHot": {
   "s": 0.07,
-  "rss_mib": 82
+  "cpu": 0.04,
+  "rss_mib": 91
  },
  "TestTierRebalance_WholeMoveCrashConverges": {
-  "s": 0.39,
-  "rss_mib": 82
+  "s": 0.4,
+  "cpu": 0.25,
+  "rss_mib": 91
  },
  "TestTierRebalance_WholePackMoveKeepsBytes": {
-  "s": 0.14,
-  "rss_mib": 82
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 91
  },
  "TestTier_CLI": {
-  "s": 0.17,
-  "rss_mib": 82
+  "s": 0.24,
+  "cpu": 0.15,
+  "rss_mib": 91
  },
  "TestTier_ColdOnlyStoreMovesToHot": {
-  "s": 0.1,
-  "rss_mib": 82
+  "s": 0.18,
+  "cpu": 0.11,
+  "rss_mib": 91
  },
  "TestTier_CompactIntoColdCrashPoints": {
-  "s": 1.78,
-  "rss_mib": 58
+  "s": 1.63,
+  "cpu": 1.06,
+  "rss_mib": 56
  },
  "TestTier_FallbackAcrossTiers": {
-  "s": 0.12,
-  "rss_mib": 82
+  "s": 0.14,
+  "cpu": 0.09,
+  "rss_mib": 91
  },
  "TestTier_GCRemovesDeadPackFromItsTier": {
-  "s": 0.16,
-  "rss_mib": 82
+  "s": 0.19,
+  "cpu": 0.12,
+  "rss_mib": 91
  },
  "TestTier_InitSafety": {
-  "s": 1.59,
+  "s": 1.58,
+  "cpu": 0.89,
   "rss_mib": 30
  },
  "TestTier_LifecycleCompactMoveReads": {
-  "s": 0.68,
-  "rss_mib": 63
+  "s": 0.79,
+  "cpu": 0.49,
+  "rss_mib": 91
  },
  "TestTier_LocatorPreferenceDifferential": {
   "s": 0,
-  "rss_mib": 63
+  "rss_mib": 91
  },
  "TestTier_MoveCrashPoints": {
-  "s": 1.76,
-  "rss_mib": 39
+  "s": 1.92,
+  "cpu": 1.29,
+  "rss_mib": 47
  },
  "TestTier_MoveExistingTarget": {
-  "s": 0.12,
-  "rss_mib": 63
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 91
  },
  "TestTier_RepackGCPreserveTiersAndPaths": {
-  "s": 0.33,
-  "rss_mib": 63
+  "s": 0.41,
+  "cpu": 0.25,
+  "rss_mib": 56
  },
  "TestTier_RootSafety": {
-  "s": 0.4,
-  "rss_mib": 63
+  "s": 0.52,
+  "cpu": 0.32,
+  "rss_mib": 56
  },
  "TestTier_TransferFromColdSource": {
-  "s": 0.12,
-  "rss_mib": 63
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 56
  },
  "TestTransferHTTPTransport_PoolSizedForMaxWorkers": {
   "s": 0,
-  "rss_mib": 63
+  "rss_mib": 56
  },
  "TestUUID_CanonicalStringForm": {
   "s": 0,
-  "rss_mib": 63
+  "rss_mib": 56
  },
  "TestUUID_IsVersion7Variant10": {
   "s": 0,
-  "rss_mib": 63
+  "rss_mib": 56
  },
  "TestUUID_RoundTripsThroughStdlibParse": {
   "s": 0,
-  "rss_mib": 63
+  "rss_mib": 56
  },
  "TestUUID_SuitableAsManifestAndVersionID": {
-  "s": 0.02,
-  "rss_mib": 63
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestUUID_Unique": {
   "s": 0,
-  "rss_mib": 63
+  "rss_mib": 56
  },
  "TestUploadPartCopy_ProtocolAndFailures": {
-  "s": 0.02,
-  "rss_mib": 63
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestVHost_BucketFromHost": {
   "s": 0,
-  "rss_mib": 63
+  "rss_mib": 56
  },
  "TestVHost_DisabledByDefaultFallsBackToPathStyle": {
   "s": 0,
-  "rss_mib": 63
+  "rss_mib": 56
  },
  "TestVHost_EndToEndCreateBucketPutGetListDelete": {
-  "s": 0.03,
-  "rss_mib": 63
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestVHost_ListBucketsStillWorksOnBareHost": {
   "s": 0.01,
-  "rss_mib": 63
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestVHost_PathStyleStillWorksWhenVHostConfigured": {
   "s": 0.02,
-  "rss_mib": 63
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestVHost_PresignedURLWithVHostAddressing": {
   "s": 0.02,
-  "rss_mib": 63
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestValidSnapshotID": {
   "s": 0,
-  "rss_mib": 63
+  "rss_mib": 56
  },
  "TestValidateWorkers_Range": {
   "s": 0,
-  "rss_mib": 63
+  "rss_mib": 56
  },
  "TestVectors_Presign": {
   "s": 0,
-  "rss_mib": 63
+  "rss_mib": 56
  },
  "TestVectors_SigV4": {
   "s": 0,
-  "rss_mib": 63
+  "rss_mib": 56
  },
  "TestVectors_WireShapes": {
-  "s": 0.02,
-  "rss_mib": 63
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 56
  },
  "TestVerify_CleanStoreOK": {
-  "s": 0.02,
-  "rss_mib": 63
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 56
  },
  "TestVerify_DeepWholeObjectDigest_EmptyObject": {
-  "s": 0.01,
-  "rss_mib": 63
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 56
  },
  "TestVerify_DeepWholeObjectDigest_MalformedReportedInvalid": {
   "s": 0.02,
-  "rss_mib": 63
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestVerify_DeepWholeObjectDigest_MismatchDetected": {
   "s": 0.02,
-  "rss_mib": 63
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestVerify_DeepWholeObjectDigest_MultiChunkObject": {
-  "s": 0.02,
-  "rss_mib": 63
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 56
  },
  "TestVerify_DetectsChunkLengthMismatch": {
-  "s": 0.01,
-  "rss_mib": 63
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestVerify_DetectsCorruptChunkOnlyUnderDeep": {
-  "s": 0.03,
-  "rss_mib": 63
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 56
  },
  "TestVerify_DetectsCorruptManifestHashMismatch": {
   "s": 0.02,
-  "rss_mib": 63
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestVerify_DetectsManifestLengthSumMismatch": {
-  "s": 0.05,
-  "rss_mib": 63
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 56
  },
  "TestVerify_DetectsMissingChunk": {
-  "s": 0.03,
-  "rss_mib": 63
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 56
  },
  "TestVerify_DetectsUnparsableManifestJSON": {
-  "s": 0,
-  "rss_mib": 63
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestVerify_PerRootManifestHashCheckedEvenWhenUUIDCached": {
-  "s": 0.03,
-  "rss_mib": 63
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestVersionGC_Interaction": {
-  "s": 0.04,
-  "rss_mib": 63
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 56
  },
  "TestVersions_CopyObjectOverwriteCreatesHistory": {
-  "s": 0.04,
-  "rss_mib": 63
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestVersions_DeleteArchivesHistoryGetNotFound": {
-  "s": 0.01,
-  "rss_mib": 63
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 56
  },
  "TestVersions_FirstPutCreatesNoHistory": {
   "s": 0.02,
-  "rss_mib": 63
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestVersions_FullLifecycleAcrossRestart": {
-  "s": 0.01,
-  "rss_mib": 63
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 56
  },
  "TestVersions_MultipartOverwriteCreatesHistory": {
-  "s": 0.1,
-  "rss_mib": 63
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 56
  },
  "TestVersions_PutOverwriteCreatesHistory": {
   "s": 0.02,
-  "rss_mib": 63
+  "cpu": 0.01,
+  "rss_mib": 56
  },
  "TestXDeltaRoundTripAndRejection": {
-  "s": 0.09,
-  "rss_mib": 63
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 56
  }
 }
