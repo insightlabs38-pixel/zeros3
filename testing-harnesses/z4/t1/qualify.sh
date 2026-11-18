@@ -1,66 +1,57 @@
 #!/bin/bash
 # Final qualification of the checked-out tree. usage: qualify.sh OUTDIR [SCRATCH]   (from the repository root)
-# Every step runs to completion; summary.tsv has one row per attempt (status, exit code, seconds, note) and
-# summary.json carries the revision, the tree hash, whether the working tree was clean, the last attempt of
-# every step and the earlier failed attempts. A step that is not run is recorded SKIP with its reason; nothing
-# is reported PASS unless it ran on this tree. QUALIFY_ONLY=REGEXP reruns just the matching steps and appends.
+#
+# Steps come from $QUALIFY_STEPS (default z4/t1/steps.sh), which calls step/skip and lists the MANDATORY names.
+# summary.tsv gets one row per attempt, each stamped with the source fingerprint (qual_summary.py). The verdict
+# is computed from the LAST attempt of every mandatory step on the CURRENT fingerprint: a failed or interrupted
+# step, a skipped or missing mandatory step, or rows from another source never count as a pass, and the script
+# exits nonzero unless every mandatory step passed. Earlier failed attempts stay in the record.
+# QUALIFY_ONLY=REGEXP reruns just the matching steps (rows are appended); QUALIFY_FRESH=1 starts the record over.
 set -uo pipefail
+set -m
 O=$(realpath -m "$1"); S=$(realpath -m "${2:-$1/scratch}"); mkdir -p "$O" "$S"
 ROOT=$(pwd); T1=testing-harnesses/z4/t1; C1=testing-harnesses/z4/c1
-HEAD_SHA=$(git rev-parse HEAD); TREE=$(git rev-parse 'HEAD^{tree}'); DIRTY=$(git status --porcelain | wc -l)
-[ -s "$O/summary.tsv" ] && [ -n "${QUALIFY_ONLY:-}" ] || printf 'step\tstatus\trc\tseconds\tnote\n' > "$O/summary.tsv"
-step() { local name=$1; shift; [[ $name =~ ${QUALIFY_ONLY:-.} ]] || return 0; CURSTEP=$name; local t=$(date +%s); "$@" > "$O/$name.log" 2>&1; local rc=$?
-  local st=PASS; [ $rc -ne 0 ] && st=FAIL
-  printf '%s\t%s\t%s\t%s\t\n' "$name" "$st" "$rc" "$(( $(date +%s) - t ))" | tee -a "$O/summary.tsv"; }
-skip() { [[ $1 =~ ${QUALIFY_ONLY:-.} ]] || return 0; printf '%s\tSKIP\t-\t0\t%s\n' "$1" "$2" | tee -a "$O/summary.tsv"; }
+STEPS=${QUALIFY_STEPS:-$ROOT/$T1/steps.sh}
+SUM="python3 -I $ROOT/$T1/qual_summary.py"
+FP=$($SUM fingerprint) || exit 2
+[ -n "${QUALIFY_FRESH:-}" ] && rm -f "$O/summary.tsv"
+[ -s "$O/summary.tsv" ] || printf 'step\tstatus\trc\tseconds\tnote\tfingerprint\tfinished\tcommand\n' > "$O/summary.tsv"
 export VALIDATE_LOG_DIR="$S/validate"; mkdir -p "$VALIDATE_LOG_DIR"
-(cd testing-harnesses && go build -o "$S/t1run" ./harness/t1run) || exit 2
-# the real-model test has its own steps below: it must not ride along in the timed suites
-t1() { local mode=$1; shift; env -u ZEROS3_C1_MODELS "$S/t1run" -mode "$mode" -fresh -v -cache "$S/t1cache" -evidence "$O/t1-$CURSTEP.json" "$@"; }
-authskip='^(TestAuthority|FuzzAuth|FuzzXDelta|TestXDelta)'
+CURSTEP=; CHILD=
+row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$FP" "$(date -u +%FT%TZ)" "$6" >> "$O/summary.tsv"; echo "$1 $2 rc=$3 ${4}s $5"; }
 
-git rev-parse -q --verify v0.1.1 >/dev/null || git fetch -q origin refs/tags/v0.1.1:refs/tags/v0.1.1  # five_generations builds the v0.1.1 tag
-step gofmt test -z "$(gofmt -l . testing-harnesses)"
-step vet go vet ./...
-step vet_harness bash -c 'cd testing-harnesses && go vet ./...'
-step deps_stdlib_only bash -c '! grep -Eq "^\s*require|^\s*replace" go.mod && test -z "$(go list -deps -f "{{if not .Standard}}{{.ImportPath}}{{end}}" . | grep -v "^zeros3$")" && test ! -e vendor'
-step go_mod_unchanged git diff --exit-code origin/main -- go.mod go.sum
-step build_reproducible sh scripts/reproducible_build.sh
-step toc_source bash -c 'cd testing-harnesses && go run ./harness/toc_check -file ../zeros3.go'
-step toc_tests bash -c 'cd testing-harnesses && go run ./harness/toc_check -file ../zeros3_test.go'
-step g1_ledger_current bash -c "python3 -I $C1/g1_ledger.py $S/g1_ledger.json && diff -q $S/g1_ledger.json $C1/results/g1_ledger.json"
-step identity_check bash scripts/check_identity.sh origin/main
-step root_normal t1 normal
-step root_race t1 race
-step authority_hook t1 authority -skip "$authskip"
-step authority_native t1 normal -run "$authskip"
-for f in FuzzXDeltaEnvelope FuzzAuthRecord FuzzAuthWindowRecord; do step fuzz_$f go test -run '^$' -fuzz "^$f\$" -fuzztime 40s .; done
-step persistence_dense env ZEROS3_PL_CUTS=300 go test -count=1 -run TestAuthorityPersistenceLossModel -timeout 120m .
-step five_generations env ZEROS3_C1_MATRIX=1 go test -count=1 -run TestAuthorityFiveGenerationMatrix -timeout 60m .
-step prodshadow go -C testing-harnesses/z3 test ./prodshadow ./numcore ./qcore -count=1
-step scale_1m bash -c "set -o pipefail; TINY=900000 $C1/run_scale.sh $S/scale 100000 | tee $O/scale.txt"
-step large_3x256mib bash -c "set -o pipefail; $C1/run_large.sh $S/large256 268435456 | tee $O/large256.txt"
-step large_3x1gib bash -c "set -o pipefail; $C1/run_large.sh $S/large | tee $O/large.txt"
-step large_3x2gib bash -c "set -o pipefail; $C1/run_large.sh $S/large2g 2147483648 | tee $O/large2g.txt"
-if [ -n "${ZEROS3_C1_MODELS:-}" ]; then
-  step real_models env ZEROS3_C1_MODELS="$ZEROS3_C1_MODELS" go test -count=1 -run TestAuthorityZN7RealModels -v -timeout 90m .
-  for w in 1 2 4; do step zn7_decode_w$w env ZEROS3_ZN7_WORKERS=$w ZEROS3_C1_MODELS="$ZEROS3_C1_MODELS" ZEROS3_C1_DECODE_BENCH=1 go test -count=1 -run TestAuthorityZN7DecodeScaling -v -timeout 60m .; done
-else
-  skip real_models "ZEROS3_C1_MODELS not set (pinned model files not present)"
-  skip zn7_decode "ZEROS3_C1_MODELS not set"
-fi
-python3 - "$O" "$HEAD_SHA" "$TREE" "$DIRTY" <<'E'
-import csv, json, sys
-o, head, tree, dirty = sys.argv[1:5]
-rows = list(csv.DictReader(open(o + "/summary.tsv"), delimiter="\t"))
-last, hist = {}, {}
-for r in rows:
-    if r["step"] in last:
-        hist.setdefault(r["step"], []).append(last[r["step"]])
-    last[r["step"]] = r
-steps = list(last.values())
-json.dump({"head": head, "tree": tree, "dirty_files": int(dirty), "steps": steps,
-           "failed": [r["step"] for r in steps if r["status"] == "FAIL"], "skipped": [r["step"] for r in steps if r["status"] == "SKIP"],
-           "earlier_attempts": hist}, open(o + "/summary.json", "w"), indent=1)
-print("---- summary"); print(open(o + "/summary.tsv").read())
-E
+finish() { local rc=$?; trap - EXIT INT TERM; $SUM report "$O" "$O/mandatory.txt"; local prc=$?; [ $rc -ne 0 ] && exit $rc; exit $prc; }
+interrupted() {
+  trap - INT TERM
+  [ -n "$CHILD" ] && kill -TERM -- "-$CHILD" 2>/dev/null; sleep 1; [ -n "$CHILD" ] && kill -KILL -- "-$CHILD" 2>/dev/null
+  [ -n "$CURSTEP" ] && row "$CURSTEP" INTERRUPTED 130 0 "qualification interrupted" ""
+  exit 130
+}
+trap finish EXIT
+trap interrupted INT TERM
+
+# step NAME CMD...: run to completion, log to NAME.log, record the real exit status of CMD
+step() {
+  local name=$1; shift
+  [[ $name =~ ${QUALIFY_ONLY:-.} ]] || return 0
+  CURSTEP=$name; local t=$SECONDS
+  ( "$@" ) > "$O/$name.log" 2>&1 &
+  CHILD=$!; wait $CHILD; local rc=$?; CHILD=
+  local st=PASS note=
+  [ $rc -ne 0 ] && st=FAIL
+  # an out-of-space condition anywhere in the log is a failure even when a pipeline hid the exit code
+  if grep -q 'no space left on device' "$O/$name.log"; then st=FAIL; note="ENOSPC in the log"; [ $rc -eq 0 ] && rc=28; fi
+  row "$name" "$st" "$rc" "$((SECONDS - t))" "$note" "$*"
+  CURSTEP=
+}
+skip() { [[ $1 =~ ${QUALIFY_ONLY:-.} ]] || return 0; row "$1" SKIP - 0 "$2" ""; }
+# need PATH MIB: refuse to start an expensive step when the filesystem cannot hold it
+need() { "$S/t1run" -need-disk "$1=$2"; }
+
+MANDATORY=()
+(cd testing-harnesses && go build -o "$S/t1run" ./harness/t1run) || exit 2
+# shellcheck disable=SC1090
+. "$(realpath "$STEPS")"   # defines MANDATORY and run_steps
+printf '%s\n' "${MANDATORY[@]}" > "$O/mandatory.txt"
+run_steps
+exit 0   # the verdict is the exit status of finish, not of the last step

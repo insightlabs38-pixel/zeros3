@@ -7,15 +7,11 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -31,72 +27,97 @@ import (
 )
 
 type result struct {
-	Test    string  `json:"test"`
-	Status  string  `json:"status"` // pass | fail | skip
-	Seconds float64 `json:"seconds"`
-	MaxRSS  int64   `json:"max_rss_kib,omitempty"`
-	CPU     float64 `json:"cpu_seconds,omitempty"`
-	Start   float64 `json:"start,omitempty"` // seconds after the run began (timeline and utilization)
-	Cached  bool    `json:"cached,omitempty"`
-	Output  string  `json:"output,omitempty"` // failures only
+	Test     string  `json:"test"`
+	Status   string  `json:"status"` // pass | fail | skip
+	Seconds  float64 `json:"seconds"`
+	MaxRSS   int64   `json:"max_rss_kib,omitempty"`
+	CPU      float64 `json:"cpu_seconds,omitempty"`
+	DiskMiB  int64   `json:"disk_mib,omitempty"`
+	Start    float64 `json:"start,omitempty"` // seconds after the run began (timeline and utilization)
+	Cached   bool    `json:"cached,omitempty"`
+	Complete bool    `json:"complete,omitempty"` // set only on a pass that ended a cleanly exiting process
+	Identity string  `json:"identity,omitempty"`
+	Exit     string  `json:"process,omitempty"`
+	Output   string  `json:"output,omitempty"` // failures and skip reasons only
 }
 
 type costEntry struct {
 	Seconds float64 `json:"s"`
 	CPU     float64 `json:"cpu,omitempty"`
 	RSSMiB  int64   `json:"rss_mib,omitempty"`
+	DiskMiB int64   `json:"disk_mib,omitempty"`
 }
 
 type evidence struct {
-	Command    string   `json:"command"`
-	Mode       string   `json:"mode"`
-	GoVer      string   `json:"go_version"`
-	CPUs       int      `json:"cpus"`
-	Jobs       int      `json:"jobs"`
-	SrcHash    string   `json:"source_hash"`
-	BinHash    string   `json:"test_binary_sha256"`
-	EnvHash    string   `json:"identity"`
-	Selected   int      `json:"selected"`
-	Fresh      int      `json:"fresh"`
-	Reused     int      `json:"reused"`
-	Passed     int      `json:"passed"`
-	Failed     []string `json:"failed,omitempty"`
-	Skipped    int      `json:"skipped"`
-	BuildSec   float64  `json:"build_seconds"`
-	WallSec    float64  `json:"wall_seconds"`
-	CPUSec     float64  `json:"test_cpu_seconds"`
-	BusyCPUSec float64  `json:"process_cpu_seconds"` // user+system CPU of the test processes, children included
-	Exit       int      `json:"exit"`
-	Results    []result `json:"results,omitempty"`
-	Started    string   `json:"started"`
-	Notes      []string `json:"notes,omitempty"`
+	Command     string   `json:"command"`
+	Mode        string   `json:"mode"`
+	GoVer       string   `json:"go_version"`
+	CPUs        int      `json:"cpus"`
+	Jobs        int      `json:"jobs"`
+	GitHead     string   `json:"git_head,omitempty"`
+	GitTree     string   `json:"git_tree,omitempty"`
+	GitDirty    int      `json:"git_dirty_files"`
+	SrcHash     string   `json:"source_hash"`
+	Fixtures    string   `json:"fixture_hash"`
+	BinHash     string   `json:"test_binary_sha256"`
+	ProdBinHash string   `json:"production_binary_sha256"`
+	EnvHash     string   `json:"identity"`
+	Selected    int      `json:"selected"`
+	Fresh       int      `json:"fresh"`
+	Reused      int      `json:"reused"`
+	Passed      int      `json:"passed"`
+	Failed      []string `json:"failed,omitempty"`
+	Skipped     []string `json:"skipped,omitempty"`
+	NotRun      []string `json:"not_run,omitempty"`
+	Interrupted bool     `json:"interrupted,omitempty"`
+	BuildSec    float64  `json:"build_seconds"`
+	WallSec     float64  `json:"wall_seconds"`
+	CPUSec      float64  `json:"test_cpu_seconds"`
+	BusyCPUSec  float64  `json:"process_cpu_seconds"` // user+system CPU of the test processes, children included
+	Exit        int      `json:"exit"`
+	Results     []result `json:"results,omitempty"`
+	Started     string   `json:"started"`
+	Notes       []string `json:"notes,omitempty"`
 }
 
 var runStart time.Time
 
 var (
-	mode      = flag.String("mode", "normal", "normal | race | authority | authority-race")
-	jobs      = flag.Int("jobs", 0, "concurrent test processes (default: CPUs)")
-	memMiB    = flag.Int64("mem-mib", 0, "memory budget for concurrent tests (default: 70% of MemAvailable)")
-	runRe     = flag.String("run", "", "only top-level tests matching this regexp")
-	skipRe    = flag.String("skip", "", "skip top-level tests matching this regexp")
-	fast      = flag.Float64("fast", 0, "only tests whose recorded cost is at most this many seconds (unknown tests are included)")
-	fresh     = flag.Bool("fresh", false, "ignore cached results")
-	cacheDir  = flag.String("cache", "", "cache directory (default $VALIDATE_LOG_DIR/t1 or /tmp/zeros3-validate/t1)")
-	costsFile = flag.String("costs", "", "measured per-test cost database (default z4/t1/costs-{normal,race}.json under testing-harnesses)")
-	updCosts  = flag.Bool("update-costs", false, "rewrite the cost database from this run (only when every selected test ran fresh and passed)")
-	evOut     = flag.String("evidence", "", "write machine-readable evidence JSON here")
-	testTO    = flag.Duration("test-timeout", 0, "per-process timeout (default 30m, 90m race)")
-	verbose   = flag.Bool("v", false, "print each result")
-	batchSec  = flag.Float64("batch", 1.0, "tests costing less than this are batched")
-	batchMax  = flag.Float64("batch-max", 6.0, "maximum summed cost of a batch")
-	extraEnv  = flag.String("env", "", "extra KEY=VAL,KEY=VAL for the tests (part of the identity)")
+	mode        = flag.String("mode", "normal", "normal | race | authority | authority-race")
+	jobs        = flag.Int("jobs", 0, "concurrent test processes (default: CPUs)")
+	memMiB      = flag.Int64("mem-mib", 0, "memory budget for concurrent tests (default: 70% of MemAvailable)")
+	diskMiB     = flag.Int64("disk-mib", 0, "scratch-space budget for concurrent tests (default: free space minus a reserve)")
+	runRe       = flag.String("run", "", "only top-level tests matching this regexp")
+	skipRe      = flag.String("skip", "", "skip top-level tests matching this regexp")
+	fast        = flag.Float64("fast", 0, "only tests whose recorded cost is at most this many seconds (unknown tests are included)")
+	fresh       = flag.Bool("fresh", false, "ignore cached results")
+	cacheDir    = flag.String("cache", "", "cache directory (default $VALIDATE_LOG_DIR/t1 or /tmp/zeros3-validate/t1)")
+	costsFile   = flag.String("costs", "", "measured per-test cost database (default z4/t1/costs-{normal,race}.json under testing-harnesses)")
+	updCosts    = flag.Bool("update-costs", false, "rewrite the cost database from this run (only when every selected test ran fresh and passed)")
+	evOut       = flag.String("evidence", "", "write machine-readable evidence JSON here")
+	testTO      = flag.Duration("test-timeout", 0, "per-process timeout (default 30m, 90m race)")
+	verbose     = flag.Bool("v", false, "print each result")
+	batchSec    = flag.Float64("batch", 1.0, "tests costing less than this are batched")
+	batchMax    = flag.Float64("batch-max", 6.0, "maximum summed cost of a batch")
+	extraEnv    = flag.String("env", "", "extra KEY=VAL,KEY=VAL for the tests (part of the identity)")
+	rootFlag    = flag.String("root", "", "module directory holding zeros3.go and the tests (default: the enclosing repository)")
+	measureDisk = flag.Bool("measure-disk", false, "sample each test's scratch usage (implied by -update-costs)")
+	allowSkip   = flag.String("allow-skip", "", "regexp of tests that may skip; any other skipped test fails the run")
+	needDisk    = flag.String("need-disk", "", "PATH=MIB: check that the filesystem of PATH has that much free space, then exit")
 )
 
 func main() {
 	flag.Parse()
+	if *needDisk != "" {
+		checkNeed(*needDisk)
+		return
+	}
 	t0 := time.Now()
 	runStart = t0
+	if *rootFlag != "" {
+		rootPath, _ = filepath.Abs(*rootFlag)
+		rootOnce.Do(func() {})
+	}
 	root := rootDir()
 	if _, err := os.Stat(filepath.Join(root, "zeros3.go")); err != nil {
 		die("run from inside the repository")
@@ -117,35 +138,44 @@ func main() {
 		}
 		*cacheDir = filepath.Join(base, "t1")
 	}
+	*cacheDir, _ = filepath.Abs(*cacheDir)
 	if *testTO == 0 {
 		*testTO = 30 * time.Minute
 		if race {
 			*testTO = 90 * time.Minute
 		}
 	}
+	if *updCosts {
+		*measureDisk = true
+	}
 	must(os.MkdirAll(filepath.Join(*cacheDir, "bin"), 0o755))
+	cleanStale(filepath.Join(*cacheDir, "tmp"))
 	goVer := strings.TrimSpace(run(root, nil, "go", "version"))
 	src := sourceHash(root, goVer)
-	ev := &evidence{Mode: *mode, GoVer: goVer, CPUs: runtime.NumCPU(), Jobs: *jobs, SrcHash: src, Started: t0.UTC().Format(time.RFC3339),
+	ev := &evidence{Mode: *mode, GoVer: goVer, CPUs: runtime.NumCPU(), Jobs: *jobs, SrcHash: src, Fixtures: fixtureHash(root), Started: t0.UTC().Format(time.RFC3339),
 		Command: "t1run " + strings.Join(os.Args[1:], " ")}
+	ev.GitHead = strings.TrimSpace(runOpt(root, "git", "rev-parse", "HEAD"))
+	ev.GitTree = strings.TrimSpace(runOpt(root, "git", "rev-parse", "HEAD^{tree}"))
+	ev.GitDirty = len(strings.Fields(runOpt(root, "git", "status", "--porcelain")))
 
 	// One compile of the test executable and one of the production binary per source revision; every
 	// test process that needs the binary uses ZEROS3_TEST_BIN instead of invoking the compiler.
 	bt := time.Now()
 	tbin := filepath.Join(*cacheDir, "bin", fmt.Sprintf("%s-%s.test", strings.TrimSuffix(*mode, "-race")+raceTag(race), src[:16]))
 	pbin := filepath.Join(*cacheDir, "bin", "zeros3-"+src[:16])
-	if _, err := os.Stat(tbin); err != nil {
-		args := []string{"test", "-c", "-o", tbin}
+	must(buildOnce(tbin, func(tmp string) error {
+		args := []string{"test", "-c", "-o", tmp}
 		if race {
 			args = append(args, "-race")
 		}
-		run(root, nil, "go", append(args, ".")...)
-	}
-	if _, err := os.Stat(pbin); err != nil {
-		run(root, []string{"CGO_ENABLED=0"}, "go", "build", "-o", pbin, "zeros3.go")
-	}
+		return runErr(root, nil, "go", append(args, ".")...)
+	}))
+	must(buildOnce(pbin, func(tmp string) error {
+		return runErr(root, []string{"CGO_ENABLED=0"}, "go", "build", "-o", tmp, "zeros3.go")
+	}))
 	ev.BuildSec = time.Since(bt).Seconds()
 	ev.BinHash = fileHash(tbin)
+	ev.ProdBinHash = fileHash(pbin)
 
 	env := append(os.Environ(), "ZEROS3_TEST_BIN="+pbin, "ZEROS3_BINCACHE="+filepath.Join(*cacheDir, "oldbin"))
 	if auth {
@@ -155,14 +185,7 @@ func main() {
 		env = append(env, strings.Split(*extraEnv, ",")...)
 	}
 	must(os.MkdirAll(filepath.Join(*cacheDir, "oldbin"), 0o755))
-	idh := sha256.New()
-	fmt.Fprintf(idh, "%s\n%s\n%s\n%v\n", ev.BinHash, *mode, *extraEnv, goVer)
-	for _, e := range env {
-		if strings.HasPrefix(e, "ZEROS3_") && !strings.HasPrefix(e, "ZEROS3_TEST_BIN") && !strings.HasPrefix(e, "ZEROS3_BINCACHE") {
-			fmt.Fprintln(idh, e)
-		}
-	}
-	ev.EnvHash = hex.EncodeToString(idh.Sum(nil))[:24]
+	ev.EnvHash = identityOf(ev.BinHash, *mode, *extraEnv, goVer, ev.Fixtures, env, testTO.String())
 	resDir := filepath.Join(*cacheDir, "results", ev.EnvHash)
 	must(os.MkdirAll(resDir, 0o755))
 
@@ -172,15 +195,22 @@ func main() {
 			*costsFile = "z4/t1/costs-race.json"
 		}
 	}
-	costs := loadCosts(filepath.Join(thDir, *costsFile))
-	tests := listTests(tbin, env)
+	costsPath := *costsFile
+	if !filepath.IsAbs(costsPath) {
+		costsPath = filepath.Join(thDir, costsPath)
+	}
+	costs := loadCosts(costsPath)
+	tests := listTests(tbin, env, root)
 	var sel []string
-	var rr, sr *regexp.Regexp
+	var rr, sr, ar *regexp.Regexp
 	if *runRe != "" {
 		rr = regexp.MustCompile(*runRe)
 	}
 	if *skipRe != "" {
 		sr = regexp.MustCompile(*skipRe)
+	}
+	if *allowSkip != "" {
+		ar = regexp.MustCompile(*allowSkip)
 	}
 	for _, t := range tests {
 		if rr != nil && !rr.MatchString(t) || sr != nil && sr.MatchString(t) {
@@ -192,18 +222,17 @@ func main() {
 		sel = append(sel, t)
 	}
 	ev.Selected = len(sel)
+	if len(sel) == 0 {
+		die("the selection matches no test")
+	}
 
 	var todo []string
 	results := map[string]*result{}
 	for _, t := range sel {
 		if !*fresh {
-			if b, err := os.ReadFile(filepath.Join(resDir, t+".json")); err == nil {
-				var r result
-				if json.Unmarshal(b, &r) == nil && r.Status != "fail" {
-					r.Cached = true
-					results[t] = &r
-					continue
-				}
+			if r, ok := loadCached(resDir, t, ev.EnvHash); ok {
+				results[t] = r
+				continue
 			}
 		}
 		todo = append(todo, t)
@@ -211,13 +240,16 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	sched := &scheduler{ctx: ctx, env: env, tbin: tbin, resDir: resDir, costs: costs, results: results, race: race, memBudget: *memMiB}
+	sched := &scheduler{ctx: ctx, root: root, env: env, tbin: tbin, resDir: resDir, id: ev.EnvHash, costs: costs, results: results, race: race, memBudget: *memMiB}
+	sched.diskBudget = diskBudget(*cacheDir)
+	must(sched.preflight(todo))
 	sched.run(todo)
 
 	for _, t := range sel {
 		r := results[t]
 		if r == nil {
-			r = &result{Test: t, Status: "fail", Output: "not run (cancelled)"}
+			ev.NotRun = append(ev.NotRun, t)
+			r = &result{Test: t, Status: "fail", Output: "not run (the run was cancelled or ended first)"}
 			results[t] = r
 		}
 		ev.Results = append(ev.Results, *r)
@@ -225,7 +257,13 @@ func main() {
 		case r.Status == "fail":
 			ev.Failed = append(ev.Failed, t)
 		case r.Status == "skip":
-			ev.Skipped++
+			ev.Skipped = append(ev.Skipped, t)
+			if ar == nil || !ar.MatchString(t) {
+				if *allowSkip != "" {
+					ev.Failed = append(ev.Failed, t)
+					ev.Notes = append(ev.Notes, "skipped but not allowed: "+t)
+				}
+			}
 		default:
 			ev.Passed++
 		}
@@ -234,30 +272,31 @@ func main() {
 		} else {
 			ev.Fresh++
 			ev.CPUSec += r.Seconds
-		}
-	}
-	ev.WallSec = time.Since(t0).Seconds()
-	for _, r := range results {
-		if !r.Cached {
 			ev.BusyCPUSec += r.CPU
 		}
 	}
+	ev.Interrupted = ctx.Err() != nil
+	ev.Notes = append(ev.Notes, sched.notes...)
+	ev.WallSec = time.Since(t0).Seconds()
 	if len(ev.Failed) > 0 {
 		ev.Exit = 1
 	}
+	if ev.Interrupted {
+		ev.Exit = 130
+	}
 	if *updCosts && ev.Exit == 0 && ev.Reused == 0 && *runRe == "" && *skipRe == "" && *fast == 0 {
-		saveCosts(filepath.Join(thDir, *costsFile), costs, results)
+		saveCosts(costsPath, results)
 	}
 	if *evOut != "" {
 		b, _ := json.MarshalIndent(ev, "", " ")
-		must(os.WriteFile(*evOut, b, 0o644))
+		must(writeAtomic(*evOut, b))
 	}
 	for _, t := range ev.Failed {
 		r := results[t]
 		fmt.Printf("--- FAIL %s (%.1fs)\n%s\n", t, r.Seconds, tail(r.Output, 4000))
 	}
 	fmt.Printf("t1run %s: %d selected, %d fresh, %d reused, %d passed, %d skipped, %d failed; build %.1fs wall %.1fs (test wall %.0fs, cpu %.0fs = %.0f%% of %d jobs) bin=%s id=%s\n",
-		*mode, ev.Selected, ev.Fresh, ev.Reused, ev.Passed, ev.Skipped, len(ev.Failed), ev.BuildSec, ev.WallSec, ev.CPUSec, ev.BusyCPUSec, 100*ev.BusyCPUSec/max(1, (ev.WallSec-ev.BuildSec)*float64(*jobs)), *jobs, ev.BinHash[:12], ev.EnvHash[:8])
+		*mode, ev.Selected, ev.Fresh, ev.Reused, ev.Passed, len(ev.Skipped), len(ev.Failed), ev.BuildSec, ev.WallSec, ev.CPUSec, ev.BusyCPUSec, 100*ev.BusyCPUSec/max(1, (ev.WallSec-ev.BuildSec)*float64(*jobs)), *jobs, ev.BinHash[:12], ev.EnvHash[:8])
 	os.Exit(ev.Exit)
 }
 
@@ -266,264 +305,6 @@ func raceTag(r bool) string {
 		return "-race"
 	}
 	return ""
-}
-
-type scheduler struct {
-	ctx       context.Context
-	env       []string
-	tbin      string
-	resDir    string
-	costs     map[string]costEntry
-	results   map[string]*result
-	race      bool
-	memBudget int64
-	mu        sync.Mutex
-	cond      *sync.Cond
-	cpuUsed   float64
-	memUsed   int64
-	scratch   int
-}
-
-type unit struct {
-	tests []string
-	cost  float64
-	mem   int64
-	cpu   float64 // CPUs the unit keeps busy: mostly-sleeping tests (grace periods, kill timers) overlap others
-}
-
-func (s *scheduler) cost(t string) (float64, int64, float64) {
-	if c, ok := s.costs[t]; ok {
-		w := 1.0
-		if c.Seconds >= 2 && c.CPU > 0 {
-			w = min(1, max(0.25, c.CPU/c.Seconds))
-		}
-		return c.Seconds, max(c.RSSMiB, 64), w
-	}
-	return 4, 256, 1 // unknown tests are scheduled as moderately heavy until measured
-}
-
-func (s *scheduler) plan(todo []string) []unit {
-	var heavy []unit
-	var small []string
-	for _, t := range todo {
-		c, m, w := s.cost(t)
-		if c >= *batchSec {
-			heavy = append(heavy, unit{[]string{t}, c, m, w})
-		} else {
-			small = append(small, t)
-		}
-	}
-	sort.Strings(small)
-	cur := unit{}
-	for _, t := range small {
-		c, m, _ := s.cost(t)
-		if cur.cost+c > *batchMax && len(cur.tests) > 0 {
-			heavy = append(heavy, cur)
-			cur = unit{}
-		}
-		cur.tests = append(cur.tests, t)
-		cur.cost += c
-		cur.mem = max(cur.mem, m)
-		cur.cpu = 1
-	}
-	if len(cur.tests) > 0 {
-		heavy = append(heavy, cur)
-	}
-	sort.SliceStable(heavy, func(i, j int) bool { return heavy[i].cost > heavy[j].cost })
-	return heavy
-}
-
-func (s *scheduler) run(todo []string) {
-	units := s.plan(todo)
-	s.cond = sync.NewCond(&s.mu)
-	var wg sync.WaitGroup
-	var done int
-	total := len(todo)
-	for len(units) > 0 && s.ctx.Err() == nil {
-		s.mu.Lock()
-		// first unit that fits the remaining memory (the head always runs when nothing else does)
-		idx := -1
-		for s.ctx.Err() == nil {
-			if s.cpuUsed < float64(*jobs)-0.01 {
-				for i, u := range units {
-					if (s.cpuUsed == 0 || s.memUsed+u.mem <= s.memBudget) && s.cpuUsed+u.cpu <= float64(*jobs)+0.01+0.75 {
-						idx = i
-						break
-					}
-				}
-				if idx >= 0 {
-					break
-				}
-			}
-			s.cond.Wait()
-		}
-		if idx < 0 {
-			s.mu.Unlock()
-			break
-		}
-		u := units[idx]
-		units = append(units[:idx], units[idx+1:]...)
-		s.cpuUsed += u.cpu
-		s.memUsed += u.mem
-		s.scratch++
-		slot := s.scratch
-		s.mu.Unlock()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			n := s.exec(u, slot)
-			s.mu.Lock()
-			s.cpuUsed -= u.cpu
-			s.memUsed -= u.mem
-			done += n
-			if *verbose {
-				fmt.Fprintf(os.Stderr, "[%d/%d]\n", done, total)
-			}
-			s.cond.Broadcast()
-			s.mu.Unlock()
-		}()
-	}
-	wg.Wait()
-}
-
-var resLine = regexp.MustCompile(`^--- (PASS|FAIL|SKIP): (\S+) \(([0-9.]+)s\)`)
-
-// exec runs a unit; tests of a batch the process did not finish (crash, timeout) are rerun alone so
-// one failure never hides or fails its neighbours.
-func (s *scheduler) exec(u unit, slot int) int {
-	tmp := filepath.Join(*cacheDir, "tmp", strconv.Itoa(os.Getpid()), strconv.Itoa(slot))
-	os.MkdirAll(tmp, 0o755)
-	defer os.RemoveAll(tmp)
-	pending := u.tests
-	for len(pending) > 0 && s.ctx.Err() == nil {
-		start := time.Now()
-		got, out, rss, cpu, timedOut := s.once(pending, tmp)
-		var tot float64
-		for _, r := range got {
-			tot += r.Seconds
-		}
-		var next []string
-		for _, t := range pending {
-			r, ok := got[t]
-			if !ok {
-				next = append(next, t)
-				continue
-			}
-			r.MaxRSS = rss
-			r.Start = start.Sub(runStart).Seconds()
-			if tot > 0 {
-				r.CPU = cpu * r.Seconds / tot
-			}
-			s.record(r)
-		}
-		if len(next) == len(pending) { // no progress: a process that crashed before reporting anything
-			if len(pending) == 1 {
-				s.record(&result{Test: pending[0], Status: "fail", Output: out, MaxRSS: rss, Seconds: s.timeoutSecs(timedOut)})
-				return len(u.tests)
-			}
-			// isolate: run the first one alone
-			first := pending[0]
-			g2, o2, r2, _, to2 := s.once([]string{first}, tmp)
-			if r, ok := g2[first]; ok {
-				r.MaxRSS = r2
-				s.record(r)
-			} else {
-				s.record(&result{Test: first, Status: "fail", Output: o2, MaxRSS: r2, Seconds: s.timeoutSecs(to2)})
-			}
-			next = pending[1:]
-		}
-		pending = next
-	}
-	return len(u.tests)
-}
-
-func (s *scheduler) timeoutSecs(to bool) float64 {
-	if to {
-		return testTO.Seconds()
-	}
-	return 0
-}
-
-func (s *scheduler) record(r *result) {
-	s.mu.Lock()
-	s.results[r.Test] = r
-	s.mu.Unlock()
-	if r.Status != "fail" {
-		b, _ := json.Marshal(r)
-		os.WriteFile(filepath.Join(s.resDir, r.Test+".json"), b, 0o644)
-	}
-	if *verbose || r.Status == "fail" {
-		fmt.Fprintf(os.Stderr, "%-4s %7.2fs %s\n", strings.ToUpper(r.Status), r.Seconds, r.Test)
-	}
-}
-
-func (s *scheduler) once(tests []string, tmp string) (map[string]*result, string, int64, float64, bool) {
-	pat := "^(" + strings.Join(tests, "|") + ")$"
-	ctx, cancel := context.WithTimeout(s.ctx, *testTO)
-	defer cancel()
-	cmd := exec.Command(s.tbin, "-test.run", pat, "-test.v", "-test.count=1", "-test.timeout", testTO.String())
-	cmd.Dir = rootDir()
-	cmd.Env = append(append([]string{}, s.env...), "TMPDIR="+tmp)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var buf bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &buf, &buf
-	if err := cmd.Start(); err != nil {
-		return nil, err.Error(), 0, 0, false
-	}
-	pgid := cmd.Process.Pid
-	fin := make(chan struct{})
-	timedOut := false
-	go func() {
-		select {
-		case <-ctx.Done():
-			timedOut = ctx.Err() == context.DeadlineExceeded
-			syscall.Kill(-pgid, syscall.SIGKILL)
-		case <-fin:
-		}
-	}()
-	err := cmd.Wait()
-	close(fin)
-	syscall.Kill(-pgid, syscall.SIGKILL) // servers a test left behind
-	var rss int64
-	var cpu float64
-	if ru, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
-		rss = ru.Maxrss
-		cpu = float64(ru.Utime.Sec+ru.Stime.Sec) + float64(ru.Utime.Usec+ru.Stime.Usec)/1e6
-	}
-	out := buf.String()
-	got := map[string]*result{}
-	sc := bufio.NewScanner(strings.NewReader(out))
-	sc.Buffer(make([]byte, 1<<20), 64<<20)
-	cur := ""
-	var curOut strings.Builder
-	for sc.Scan() {
-		line := sc.Text()
-		if strings.HasPrefix(line, "=== RUN   ") && !strings.Contains(line[10:], "/") {
-			cur = strings.TrimSpace(line[10:])
-			curOut.Reset()
-		}
-		curOut.WriteString(line + "\n")
-		if m := resLine.FindStringSubmatch(line); m != nil && !strings.Contains(m[2], "/") {
-			sec, _ := strconv.ParseFloat(m[3], 64)
-			r := &result{Test: m[2], Seconds: sec, Status: strings.ToLower(m[1])}
-			if r.Status == "fail" {
-				r.Output = curOut.String()
-			}
-			got[m[2]] = r
-		}
-	}
-	_ = err
-	if len(got) < len(tests) {
-		// the test that was running when the process died is the failure; the remainder is rerun.
-		if cur != "" && got[cur] == nil {
-			for _, t := range tests {
-				if t == cur {
-					got[t] = &result{Test: t, Status: "fail", Output: tail(out, 20000), Seconds: s.timeoutSecs(timedOut)}
-				}
-			}
-		}
-	}
-	return got, tail(out, 20000), rss, cpu, timedOut
 }
 
 var rootOnce sync.Once
@@ -546,9 +327,9 @@ func rootDir() string {
 	return rootPath
 }
 
-func listTests(bin string, env []string) []string {
+func listTests(bin string, env []string, root string) []string {
 	cmd := exec.Command(bin, "-test.list", ".*")
-	cmd.Dir = rootDir()
+	cmd.Dir = root
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
@@ -572,53 +353,14 @@ func loadCosts(p string) map[string]costEntry {
 	return m
 }
 
-func saveCosts(p string, old map[string]costEntry, res map[string]*result) {
+func saveCosts(p string, res map[string]*result) {
 	m := map[string]costEntry{}
 	for t, r := range res {
-		m[t] = costEntry{Seconds: float64(int(r.Seconds*100+0.5)) / 100, CPU: float64(int(r.CPU*100+0.5)) / 100, RSSMiB: r.MaxRSS / 1024}
+		m[t] = costEntry{Seconds: float64(int(r.Seconds*100+0.5)) / 100, CPU: float64(int(r.CPU*100+0.5)) / 100, RSSMiB: r.MaxRSS / 1024, DiskMiB: r.DiskMiB}
 	}
 	os.MkdirAll(filepath.Dir(p), 0o755)
 	b, _ := json.MarshalIndent(m, "", " ")
 	os.WriteFile(p, b, 0o644)
-}
-
-func sourceHash(root, goVer string) string {
-	h := sha256.New()
-	fmt.Fprintln(h, goVer)
-	var files []string
-	ents, _ := os.ReadDir(root)
-	for _, e := range ents {
-		if n := e.Name(); strings.HasSuffix(n, ".go") || n == "go.mod" || n == "go.sum" {
-			files = append(files, n)
-		}
-	}
-	sort.Strings(files)
-	for _, f := range files {
-		b, _ := os.ReadFile(filepath.Join(root, f))
-		fmt.Fprintf(h, "%s %d\n", f, len(b))
-		h.Write(b)
-	}
-	// fixtures read by tests from testdata directories are part of the identity too
-	filepath.WalkDir(filepath.Join(root, "testdata"), func(p string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
-			fmt.Fprintf(h, "%s ", p)
-			if f, err := os.Open(p); err == nil {
-				io.Copy(h, f)
-				f.Close()
-			}
-		}
-		return nil
-	})
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-func fileHash(p string) string {
-	f, err := os.Open(p)
-	must(err)
-	defer f.Close()
-	h := sha256.New()
-	io.Copy(h, f)
-	return hex.EncodeToString(h.Sum(nil))
 }
 
 func memAvailMiB() int64 {
@@ -633,16 +375,33 @@ func memAvailMiB() int64 {
 	return 4096
 }
 
-func run(dir string, env []string, name string, args ...string) string {
+func runCmd(dir string, env []string, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
-		die(fmt.Sprintf("%s %v: %v\n%s", name, args, err, errb.String()))
+		return out.String(), fmt.Errorf("%s %v: %v\n%s", name, args, err, errb.String())
 	}
-	return out.String()
+	return out.String(), nil
+}
+
+func run(dir string, env []string, name string, args ...string) string {
+	out, err := runCmd(dir, env, name, args...)
+	must(err)
+	return out
+}
+
+func runErr(dir string, env []string, name string, args ...string) error {
+	_, err := runCmd(dir, env, name, args...)
+	return err
+}
+
+// runOpt is for identity metadata that may legitimately be unavailable (no git checkout).
+func runOpt(dir string, name string, args ...string) string {
+	out, _ := runCmd(dir, nil, name, args...)
+	return out
 }
 
 // tail keeps the head and the end of long output: the cause of a crash is at the start of its dump.
