@@ -117,9 +117,9 @@ import (
 //    27036    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27671    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44564    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    48554    Windowed and estimated similarity deltas (extracted dcore)
-//    50056    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    57201    CLI dispatch, HTTP server/startup, and main
+//    48580    Windowed and estimated similarity deltas (extracted dcore)
+//    50082    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    57227    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================

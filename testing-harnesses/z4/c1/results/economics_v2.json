@@ -1,0 +1,336 @@
+{
+ "note": "physical bytes after gc + repack(-recompress unless raw) + compact; ratio = rep / CDC of the same pipeline. Inputs verified by SHA-256.",
+ "inputs": {
+  "parquet_z331_pyarrow_26.0.1": {
+   "files": 8,
+   "logical": 282261425,
+   "sha256_match_z4/p5/results/corpus.sha256": true,
+   "note": "the B8/P5 report labels this chain pyarrow 18.1; the pinned hashes are the 26.0.1 output. The 18.1.0 chain (283879039 B) has different hashes."
+  },
+  "dex_b8_cohort": {
+   "files": [
+    "org.fdroid.fdroid_2000050/51/52.apk classes.dex"
+   ],
+   "logical": 27892392,
+   "source": "z3/realworld/sources.json fdroid-apk[-3:]"
+  },
+  "dex_expanded": {
+   "files": "1019000/1020050/1021000 classes.dex+classes2.dex (6)",
+   "logical": 54550680,
+   "sha256": "matches z4/p5/results/corpus.sha256"
+  }
+ },
+ "parquet_z331_8": {
+  "c1 recompressed (cold-tier, both sides)": {
+   "cdc": 95189615,
+   "cdc+additive-rep": {
+    "phys": 125881632,
+    "ratio": 1.3224,
+    "forms": null
+   },
+   "auth-archive-oldest": {
+    "phys": 30862898,
+    "ratio": 0.3242,
+    "forms": {
+     "rep": 8
+    }
+   },
+   "auth-delta-only": {
+    "phys": 87192019,
+    "ratio": 0.916,
+    "forms": {
+     "cdc": 5,
+     "delta": 3
+    }
+   },
+   "auth-rep-only": {
+    "phys": 30862898,
+    "ratio": 0.3242,
+    "forms": {
+     "rep": 8
+    }
+   }
+  },
+  "c1 raw direct packs (both sides)": {
+   "cdc": 104675957,
+   "cdc+additive-rep": {
+    "phys": 151704078,
+    "ratio": 1.4493,
+    "forms": null
+   },
+   "auth-rep-only": {
+    "phys": 47405234,
+    "ratio": 0.4529,
+    "forms": {
+     "rep": 8
+    }
+   }
+  },
+  "B8 reference (B2 draft #97 + P5 planner patch), loose ingest + compact": {
+   "cdc": 95394755,
+   "cdc+additive-rep": {
+    "phys": 126086903,
+    "ratio": 1.3217,
+    "forms": null
+   },
+   "auth-archive-oldest": {
+    "phys": 87384402,
+    "ratio": 0.916,
+    "forms": {
+     "cdc": 5,
+     "delta": 3
+    }
+   },
+   "auth-rep-only-p5": {
+    "phys": 31069167,
+    "ratio": 0.3257,
+    "forms": {
+     "rep": 8
+    }
+   }
+  }
+ },
+ "dex_b8_3files": {
+  "c1 raw direct packs": {
+   "cdc": 25663934,
+   "cdc+additive-rep": {
+    "phys": 39563009,
+    "ratio": 1.5416,
+    "forms": null
+   },
+   "auth-delta-only": {
+    "phys": 15020760,
+    "ratio": 0.5853,
+    "forms": {
+     "cdc": 1,
+     "delta": 2
+    }
+   },
+   "auth-rep-only": {
+    "phys": 13931412,
+    "ratio": 0.5428,
+    "forms": {
+     "rep": 3
+    }
+   }
+  },
+  "c1 recompressed, planner before the end-state pricing fix": {
+   "cdc": 11709128,
+   "cdc+additive-rep": {
+    "phys": 17405760,
+    "ratio": 1.4865,
+    "forms": null
+   },
+   "auth-delta-only": {
+    "phys": 9849980,
+    "ratio": 0.8412,
+    "forms": {
+     "cdc": 1,
+     "delta": 2
+    }
+   },
+   "auth-rep-only": {
+    "phys": 11709128,
+    "ratio": 1.0,
+    "forms": {
+     "cdc": 3
+    }
+   }
+  },
+  "c1 loose ingest": {
+   "cdc": 11725797,
+   "cdc+additive-rep": {
+    "phys": 17422429,
+    "ratio": 1.4858,
+    "forms": null
+   },
+   "auth-delta-only": {
+    "phys": 9866649,
+    "ratio": 0.8414,
+    "forms": {
+     "cdc": 1,
+     "delta": 2
+    }
+   },
+   "auth-rep-only": {
+    "phys": 5729049,
+    "ratio": 0.4886,
+    "forms": {
+     "rep": 3
+    }
+   }
+  },
+  "c1 recompressed (final planner)": {
+   "cdc": 11709129,
+   "cdc+additive-rep": {
+    "phys": 17405760,
+    "ratio": 1.4865,
+    "forms": null
+   },
+   "auth-delta-only": {
+    "phys": 9849981,
+    "ratio": 0.8412,
+    "forms": {
+     "cdc": 1,
+     "delta": 2
+    }
+   },
+   "auth-rep-only": {
+    "phys": 5712381,
+    "ratio": 0.4879,
+    "forms": {
+     "rep": 3
+    }
+   }
+  },
+  "B8 reference": {
+   "cdc": 11725220,
+   "cdc+additive-rep": {
+    "phys": 17422060,
+    "ratio": 1.4859,
+    "forms": null
+   },
+   "auth-archive-oldest": {
+    "phys": 5728657,
+    "ratio": 0.4886,
+    "forms": {
+     "rep": 3
+    }
+   },
+   "auth-rep-only": {
+    "phys": 5728657,
+    "ratio": 0.4886,
+    "forms": {
+     "rep": 3
+    }
+   },
+   "auth-rep-only-p5": {
+    "phys": 5728657,
+    "ratio": 0.4886,
+    "forms": {
+     "rep": 3
+    }
+   }
+  }
+ },
+ "dex_expanded_6files": {
+  "c1 recompressed (final)": {
+   "cdc": 23320489,
+   "cdc+additive-rep": {
+    "phys": 43899174,
+    "ratio": 1.8824,
+    "forms": null
+   },
+   "auth-archive-oldest": {
+    "phys": 21048956,
+    "ratio": 0.9026,
+    "forms": {
+     "cdc": 2,
+     "delta": 4
+    }
+   },
+   "auth-rep-only": {
+    "phys": 20608827,
+    "ratio": 0.8837,
+    "forms": {
+     "rep": 6
+    }
+   }
+  },
+  "c1 rep forced": {
+   "cdc": 23320489,
+   "cdc+additive-rep": {
+    "phys": 43899177,
+    "ratio": 1.8824,
+    "forms": null
+   },
+   "auth-rep-forced": {
+    "phys": 20608827,
+    "ratio": 0.8837,
+    "forms": {
+     "rep": 6
+    }
+   }
+  }
+ },
+ "component_breakdown": {
+  "bd_pq_rc": {
+   "breakdown_of": "rep-only",
+   "cdc_phys": 95189622,
+   "deflate_records": 7646,
+   "duplicate_records": 0,
+   "family": "parquet-z331-8",
+   "final_phys": 30862905,
+   "logical": 282261425,
+   "pack_breakdown": {
+    "FORMAT.json": 167,
+    "LOCK": 0,
+    "bodies": 1336,
+    "journal": 2980,
+    "packs": 30858214,
+    "segments.lock": 0,
+    "tiers": 208
+   },
+   "raw_records": 3491,
+   "record_framing_bytes": 1069152,
+   "retained_cdc_logical": 0,
+   "reuse_factor": 7.210702453609066,
+   "stored_over_logical": 0.6443430930624733,
+   "sum_component_logical": 331490954,
+   "union_component_logical": 45972075,
+   "union_stored": 29621789
+  },
+  "bd_pq_raw": {
+   "breakdown_of": "rep-only",
+   "cdc_phys": 104675957,
+   "deflate_records": 1,
+   "duplicate_records": 0,
+   "family": "parquet-z331-8",
+   "final_phys": 47405234,
+   "logical": 282261425,
+   "pack_breakdown": {
+    "FORMAT.json": 167,
+    "LOCK": 0,
+    "bodies": 1336,
+    "journal": 2980,
+    "packs": 47400543,
+    "segments.lock": 0,
+    "tiers": 208
+   },
+   "raw_records": 11136,
+   "record_framing_bytes": 1069152,
+   "retained_cdc_logical": 0,
+   "reuse_factor": 7.210702453609066,
+   "stored_over_logical": 0.9996809802472479,
+   "sum_component_logical": 331490954,
+   "union_component_logical": 45972075,
+   "union_stored": 45957409
+  },
+  "bd_dexb8_rc": {
+   "breakdown_of": "rep-only",
+   "cdc_phys": 11709130,
+   "deflate_records": 2210,
+   "duplicate_records": 0,
+   "family": "dex-b8",
+   "final_phys": 5712382,
+   "logical": 27892392,
+   "pack_breakdown": {
+    "FORMAT.json": 167,
+    "LOCK": 0,
+    "bodies": 885,
+    "journal": 1155,
+    "packs": 5709967,
+    "segments.lock": 0,
+    "tiers": 208
+   },
+   "raw_records": 101,
+   "record_framing_bytes": 221856,
+   "retained_cdc_logical": 0,
+   "reuse_factor": 2.669185634418527,
+   "stored_over_logical": 0.4002761936891782,
+   "sum_component_logical": 36505475,
+   "union_component_logical": 13676634,
+   "union_stored": 5474431
+  }
+ }
+}
