@@ -4,7 +4,7 @@ Production code: `zeros3.go` sections 16e (authority) and 16f (extracted `dcore`
 
 | Script | Gate |
 |---|---|
-| `ZEROS3_G1_RETIRE_ALL=1 ZEROS3_G1_STACKS=out.txt go test -skip TestAuthority -json . > run.json` then `g1_ledger.py run.json out.txt results/g1_ledger.json` | G1 hook run and its failure ledger (cause, chain, expected, observed, equivalent proof) |
+| `scripts/validate.sh authority` | G1: every non-authority root test under the retire-everything hook (`ZEROS3_G1_RETIRE_ALL=1`), the authority suite natively; tests of the CDC layout itself call `g1CDCSpecific(t, class)` and run with CDC authoritative, their authority-mode equivalents are `TestAuthorityEquiv*` and the C1 equivalents. `g1_ledger.py OUT.json` regenerates `results/g1_ledger.json` from the sources; `results/g1_ledger_c1_hook_run.json` is the failing hook run this replaced |
 | `go test -run 'TestAuthorityRetireEverythingSubprocess\|TestAuthorityRetiredEquivalents' .` | G1 physical retirement through the real binary, and the logical guarantees after it |
 | `go test -run TestAuthorityRepairCrashQualification .` | G8 repair under SIGKILL, restarts, concurrent maintenance |
 | `ZEROS3_C1_MODELS=DIR go test -run TestAuthorityZN7RealModels .` | ZN7 on Pythia-14M and SmolLM2 (f16, imatrix, Q4_0) in fresh processes |

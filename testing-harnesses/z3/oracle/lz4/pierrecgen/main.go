@@ -1,7 +1,8 @@
 // pierrecgen is a producer oracle outside the Z3 module: it compresses inputs with
 // github.com/pierrec/lz4/v4 (CompressBlock) so lz4z3.PredPierrec can be checked against a real,
 // independent Go implementation. usage: pierrecgen IN OUT  (OUT = raw LZ4 block)
-//        pierrecgen -split N IN OUTDIR  (one block per N-byte chunk: OUTDIR/<i>.raw + <i>.lz4)
+//
+//	pierrecgen -split N IN OUTDIR  (one block per N-byte chunk: OUTDIR/<i>.raw + <i>.lz4)
 package main
 
 import (

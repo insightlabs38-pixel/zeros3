@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -473,4 +474,52 @@ func TestRepStructuredLayoutDetachesPageBacking(t *testing.T) {
 	if cap(got.Delta) > 64 || cap(got.LvlHdrs) > 8 {
 		t.Fatal("short metadata retained whole-page capacity")
 	}
+}
+
+// FuzzRepHardRecipes mutates Parquet and SST recipes that carry Brotli / LZ4 compression ids (version 2):
+// parsing never panics, and whatever parses re-marshals to a recipe that parses to the same table.
+func FuzzRepHardRecipes(f *testing.F) {
+	for _, name := range []string{"pa_brotli.parquet", "pa_lz4_raw.parquet"} {
+		b, err := os.ReadFile(filepath.Join("testdata", "p7", name))
+		if err != nil {
+			f.Fatal(err)
+		}
+		lim := repStructuredParquetLimits()
+		lim.Hard = true
+		raw, _, _, err := repPQEncode(bytes.NewReader(b), int64(len(b)), repPQOptions{Limits: lim, Target: 64 << 10}, func(string, repPQID, []byte) error { return nil })
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(raw)
+	}
+	for _, name := range []string{"rocksdb_lz4_small.sst", "rocksdb_lz4hc_small.sst"} {
+		b, err := os.ReadFile(filepath.Join("testdata", "p7", name))
+		if err != nil {
+			f.Fatal(err)
+		}
+		lim := repStructuredSSTLimits()
+		lim.Hard = true
+		raw, _, _, err := repSSEncode(bytes.NewReader(b), int64(len(b)), repSSOptions{Form: repSSFormUKV, Cutter: &repSSHashCutter{Target: 64 << 10, Max: 64 << 10}, Limits: lim}, func(string, repSSID, []byte) error { return nil })
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(raw)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 1<<20 {
+			return
+		}
+		if r, err := repPQParseRecipe(data, repStructuredParquetLimits()); err == nil {
+			again, _ := r.Marshal()
+			if r2, err := repPQParseRecipe(again, repStructuredParquetLimits()); err != nil || len(r2.Segs) != len(r.Segs) {
+				t.Fatalf("parquet recipe does not survive a round trip: %v", err)
+			}
+		}
+		if r, err := repSSParseRecipe(data, repStructuredSSTLimits()); err == nil {
+			again, _ := r.Marshal()
+			if r2, err := repSSParseRecipe(again, repStructuredSSTLimits()); err != nil || len(r2.Blocks) != len(r.Blocks) {
+				t.Fatalf("sst recipe does not survive a round trip: %v", err)
+			}
+		}
+	})
 }
