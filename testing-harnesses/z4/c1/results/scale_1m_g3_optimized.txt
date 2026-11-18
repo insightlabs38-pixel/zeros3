@@ -1,0 +1,17 @@
+    zeros3_authority_test.go:3453: 1000000 objects written in 2m35.432401169s
+    zeros3_authority_test.go:3466: 50000 pin records in 53.62357457s
+--- PASS: TestAuthorityScaleFixture (209.23s)
+PASS
+stats rc=0 wall=14.19s rss=3570148KB
+verify rc=0 wall=11.38s rss=3527676KB
+verify_deep rc=0 wall=64.60s rss=3532168KB
+gc_dry rc=0 wall=13.19s rss=3529348KB
+migrate_sample rc=0 wall=322.19s rss=1394488KB
+status rc=0 wall=7.27s rss=538960KB
+verify_after rc=0 wall=14.66s rss=3547868KB
+gc_apply rc=0 wall=16.17s rss=3502424KB
+repack rc=0 wall=10.34s rss=3543324KB
+verify_final rc=0 wall=61.42s rss=3548844KB
+revert_all rc=0 wall=71.79s rss=1137444KB
+verify_reverted rc=0 wall=11.29s rss=3506112KB
+total_wall_s=846 (baseline 1266 from scale_1m_final.txt, mission baseline 1200)
