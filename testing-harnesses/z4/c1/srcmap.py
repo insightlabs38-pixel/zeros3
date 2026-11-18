@@ -54,6 +54,7 @@ ents = [
  ("Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)", "// 16e. Representation-authoritative bodies"),
  ("Windowed and estimated similarity deltas (extracted dcore)", "// 16f. Windowed and estimated"),
  ("ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies", "// 16g. ZN7 windowed model container"),
+ ("Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs", "// 16i. Exact Brotli and LZ4 replay"),
  ("CLI dispatch, HTTP server/startup, and main", "// 17. Lifecycle / main"),
 ]
 TESTS = [  # (header prefix) in the order of the Test map rows
