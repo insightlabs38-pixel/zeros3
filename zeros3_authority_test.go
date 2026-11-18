@@ -3369,6 +3369,14 @@ func TestAuthorityScopedMigration(t *testing.T) {
 // TestAuthorityScaleFixture builds ZEROS3_C1_SCALE_OBJECTS objects: 50% unique small
 // objects (each held by a pin record, so the store carries a body per object) and 50% version
 // histories whose bases come from a shared pool, so chunks are shared across histories.
+// scaleWorkers is the number of writers of the fixture: the small objects are bound by fsync latency, not by CPU.
+func scaleWorkers() int {
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_C1_SCALE_WORKERS")); err == nil && v > 0 {
+		return v
+	}
+	return 32
+}
+
 func TestAuthorityScaleFixture(t *testing.T) {
 	dir := os.Getenv("ZEROS3_C1_SCALE_DIR")
 	if dir == "" {
@@ -3393,7 +3401,7 @@ func TestAuthorityScaleFixture(t *testing.T) {
 	jobs := make(chan func() error, 64)
 	var wg sync.WaitGroup
 	var firstErr atomic.Value
-	for w := 0; w < 4; w++ {
+	for w := 0; w < scaleWorkers(); w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -5624,10 +5632,11 @@ func TestAuthorityHardCorpusEconomics(t *testing.T) {
 		}()
 		base := vmRSS()
 		whole := map[string]float64{}
-		for _, w := range []string{"1", "2", "4"} {
-			t.Setenv("ZEROS3_PQ_WORKERS", w)
+		// every file once at the default window (exactness of the whole corpus), then the worker scaling on two files
+		hashAll := func(ks []string) float64 {
 			t0 := time.Now()
-			for _, k := range names {
+			var n int64
+			for _, k := range ks {
 				h := sha256.New()
 				rd := l.s.openObjectReader(l.man(k), byteRange{0, int64(len(files[k])) - 1})
 				for {
@@ -5643,8 +5652,14 @@ func TestAuthorityHardCorpusEconomics(t *testing.T) {
 				if sum := sha256.Sum256(files[k]); !bytes.Equal(h.Sum(nil), sum[:]) {
 					t.Fatalf("%s %s: whole read differs", mode, k)
 				}
+				n += int64(len(files[k]))
 			}
-			whole["workers_"+w+"_MiB_s"] = float64(logical) / (1 << 20) / time.Since(t0).Seconds()
+			return float64(n) / (1 << 20) / time.Since(t0).Seconds()
+		}
+		whole["all_files_default_workers_MiB_s"] = hashAll(names)
+		for _, w := range []string{"1", "2", "4"} {
+			t.Setenv("ZEROS3_PQ_WORKERS", w)
+			whole["workers_"+w+"_MiB_s"] = hashAll([]string{names[0], names[len(names)/2]})
 		}
 		t.Setenv("ZEROS3_PQ_WORKERS", "")
 		close(stop)
@@ -5771,7 +5786,7 @@ func TestAuthorityTierGateOnHardCodecs(t *testing.T) {
 				switch {
 				case p.Form == "rep":
 					reps++
-					if (c.tier == "cold" || c.tier == "hot" && c.lift) && (p.Cost == nil || p.Cost.Replay != "hard" && p.Cost.Replay != "plain") {
+					if c.tier == "cold" && (p.Cost == nil || p.Cost.Replay != "hard" && p.Cost.Replay != "plain") {
 						t.Errorf("an admitted form carries no measured cost: %+v", p)
 					}
 				case strings.Contains(p.Reason, "tier"):

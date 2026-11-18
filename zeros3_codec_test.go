@@ -923,3 +923,36 @@ func TestHardBrotliStreamingProducers(t *testing.T) {
 		t.Logf("%-24s %8d bytes -> id %d, member %d bytes", m.File, len(pay), rec.ID, len(rec.LZ4))
 	}
 }
+
+// Parallel page replay runs encoders side by side: they share no mutable state (the entropy tables are built once and
+// read-only), so concurrent encodes of different inputs give exactly the serial bytes. Run with -race.
+func TestHardBrotliConcurrentEncodersAreIndependent(t *testing.T) {
+	if err := hcBrotliEnsureDict(); err != nil {
+		t.Fatal(err)
+	}
+	r := rand.New(rand.NewSource(21))
+	var inputs [][]byte
+	for _, k := range []string{"text", "mixed", "ints", "low", "floats"} {
+		inputs = append(inputs, hardBrotliInput(k, 150000+r.Intn(100000), r))
+	}
+	want := make([][]byte, len(inputs))
+	for i, in := range inputs {
+		want[i], _ = hcBrotliz3Encode(in, 5+i%5, 22)
+	}
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for it := 0; it < 6; it++ {
+				i := (g + it) % len(inputs)
+				got, err := hcBrotliz3Encode(inputs[i], 5+i%5, 22)
+				if err != nil || !bytes.Equal(got, want[i]) {
+					t.Errorf("goroutine %d input %d: concurrent encode differs from the serial one (%v)", g, i, err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}

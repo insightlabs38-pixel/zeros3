@@ -41,7 +41,7 @@ step g1_coverage_executed bash -c "python3 -I $C1/g1_ledger.py $S/g1_final.json 
 step conventional_root bash -c "go test -count=1 -json -timeout 120m ./... > $O/conventional_root.json"
 step conventional_race bash -c "go test -race -count=1 -json -timeout 240m ./... > $O/conventional_race.json"
 step t1_equivalence python3 -I $T1/equivalence.py $O/conventional_root.json $O/t1-root_normal.json $O/conventional_race.json $O/t1-root_race.json
-step scale_1m bash -c "set -o pipefail; $S/t1run -need-disk $S=26000 && TINY=900000 $C1/run_scale.sh $S/scale 100000 | tee $O/scale.txt"
+step scale_1m bash -c "set -o pipefail; $S/t1run -need-disk $S=13500 && TINY=900000 $C1/run_scale.sh $S/scale 100000 | tee $O/scale.txt"
 step large_3x256mib bash -c "set -o pipefail; $S/t1run -need-disk $S=3000 && $C1/run_large.sh $S/large256 268435456 | tee $O/large256.txt"
 step large_3x1gib bash -c "set -o pipefail; $S/t1run -need-disk $S=8000 && $C1/run_large.sh $S/large | tee $O/large.txt"
 step large_3x2gib bash -c "set -o pipefail; $S/t1run -need-disk $S=14000 && $C1/run_large.sh $S/large2g 2147483648 | tee $O/large2g.txt"

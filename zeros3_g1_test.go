@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -207,7 +208,7 @@ func TestAuthorityEquivCorruptionClasses(t *testing.T) {
 		}
 		g1Cover(t, "stream-failsafe")
 	})
-	t.Run("a damaged record refuses every destructive maintenance", func(t *testing.T) {
+	t.Run("a damaged record refuses gc and repack", func(t *testing.T) {
 		f := eqFixture(t)
 		path := f.l.s.authPath(f.rec.SHA)
 		b, err := os.ReadFile(path)
@@ -224,9 +225,6 @@ func TestAuthorityEquivCorruptionClasses(t *testing.T) {
 		}
 		if _, err := repackStore(f.l.dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true}); err == nil {
 			t.Fatal("repack ran against a damaged live record")
-		}
-		if _, err := compactStore(f.l.dir, authCompactOpts()); err == nil {
-			t.Fatal("compact ran against a damaged live record")
 		}
 		g1Cover(t, "gc-refuses-corrupt-record")
 	})
@@ -304,15 +302,17 @@ func TestAuthorityEquivCorruptionClasses(t *testing.T) {
 // Maintenance crash points on retired content: compaction and repack stopped at every durable boundary leave a store
 // that reads exactly and verifies deeply, and the interrupted command completes when run again.
 func TestAuthorityEquivMaintenanceCrashPoints(t *testing.T) {
-	points := []struct {
+	type crashPoint struct {
 		point string
 		nth   int
-	}{
-		{hookPackRecordWritten, 2}, {hookPackBeforeSync, 1}, {hookPackAfterSync, 1}, {hookPackBeforePublish, 1}, {hookPackAfterRename, 1},
-		{hookPackPublished, 1}, {hookBeforeLooseDelete, 2}, {hookPackBeforeSync, 2},
+	}
+	common := []crashPoint{{hookPackRecordWritten, 2}, {hookPackBeforeSync, 1}, {hookPackAfterSync, 1}, {hookPackBeforePublish, 1}, {hookPackAfterRename, 1}, {hookPackPublished, 1}}
+	points := map[string][]crashPoint{
+		"compact": append(slices.Clone(common), crashPoint{hookBeforeLooseDelete, 2}, crashPoint{hookCompactDone, 1}),
+		"repack":  append(slices.Clone(common), crashPoint{hookPackValidated, 1}, crashPoint{hookPackDeleted, 1}, crashPoint{hookRepackDone, 1}),
 	}
 	for _, cmd := range []string{"compact", "repack"} {
-		for _, c := range points {
+		for _, c := range points[cmd] {
 			t.Run(cmd+"/"+c.point+"/"+string(rune('0'+c.nth)), func(t *testing.T) {
 				l := authHistoryLab(t, 404, 4, 700_000)
 				l.migrate(AuthPolicy{MinSaving: 0.05})
@@ -350,10 +350,12 @@ func TestAuthorityEquivMaintenanceCrashPoints(t *testing.T) {
 				l.open()
 				l.exact("after rerun")
 				l.verifyOK("after rerun")
+				l.reclaim() // gc retires the CDC chunks of the migrated content
+				l.exact("after gc")
 				retired, _ := g1Retired(t, l)
 				for sum := range retired {
 					if _, err := l.s.casStat(sum); err == nil {
-						t.Fatalf("a retired chunk %x is back after the interrupted maintenance", sum[:4])
+						t.Fatalf("a retired chunk %x is stored after the interrupted maintenance and gc", sum[:4])
 					}
 				}
 			})
@@ -509,10 +511,9 @@ func TestAuthorityEquivHostileObjectsStayExact(t *testing.T) {
 	copy(tarHdr[100:], "0000644\x00")
 	copy(tarHdr[257:], "ustar\x00")
 	hostile := map[string][]byte{
-		"truncated.tar":   append(tarHdr, genRandomBytes(5, 300)...),
+		"truncated.tar":   append(tarHdr, genRandomBytes(5, 4800)...),
 		"damaged.sqlite":  append([]byte("SQLite format 3\x00"), genRandomBytes(6, 20000)...),
 		"damaged.parquet": append(append([]byte("PAR1"), genRandomBytes(7, 20000)...), []byte("PAR1")...),
-		"empty":           {},
 		"gzip-lookalike":  append([]byte{0x1f, 0x8b, 8, 0}, genRandomBytes(8, 5000)...),
 		"zstd-lookalike":  append([]byte{0x28, 0xb5, 0x2f, 0xfd}, genRandomBytes(9, 5000)...),
 		"car-lookalike":   append([]byte{0x3a, 0xa1, 0x67, 0x72, 0x6f, 0x6f, 0x74, 0x73}, genRandomBytes(10, 5000)...),

@@ -3,6 +3,7 @@ package brotliz3
 import (
 	"math"
 	"math/bits"
+	"sync"
 )
 
 // log2Int is a platform-independent, correctly rounded log2 of an integer (double-double
@@ -42,16 +43,28 @@ func ddDiv(a, b dd) dd {
 
 var invLn2 = dd{1.4426950408889634, 2.0355273740931033e-17}
 
-var log2Cache [4096]struct {
-	v uint64
-	r float64
-}
+// log2Small holds log2Int of every v below log2SmallN, built once: the entropy code asks for the same few thousand
+// counts over and over, and the table is read-only afterwards, so concurrent encoders share it without locks.
+const log2SmallN = 1 << 16
+
+var (
+	log2Small     [log2SmallN]float64
+	log2SmallOnce sync.Once
+)
 
 func log2Int(v uint64) float64 {
-	c := &log2Cache[v&4095]
-	if c.v == v && v != 0 {
-		return c.r
+	if v < log2SmallN {
+		log2SmallOnce.Do(func() {
+			for i := uint64(0); i < log2SmallN; i++ {
+				log2Small[i] = log2Compute(i)
+			}
+		})
+		return log2Small[v]
 	}
+	return log2Compute(v)
+}
+
+func log2Compute(v uint64) float64 {
 	e := bits.Len64(v) - 1
 	if v == 1<<uint(e) {
 		return float64(e)
@@ -71,6 +84,5 @@ func log2Int(v uint64) float64 {
 	}
 	l := ddMul(ddAdd(sum, sum), invLn2)
 	r := ddAdd(dd{float64(e), 0}, l)
-	c.v, c.r = v, r.hi
 	return r.hi
 }

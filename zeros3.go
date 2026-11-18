@@ -117,10 +117,10 @@ import (
 //    27037    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44565    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    48643    Windowed and estimated similarity deltas (extracted dcore)
-//    50151    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    57765    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    64011    CLI dispatch, HTTP server/startup, and main
+//    48780    Windowed and estimated similarity deltas (extracted dcore)
+//    50288    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    57902    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    64174    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -46688,9 +46688,16 @@ type liveMan struct {
 // snapshot) names, with unreadable ones skipped (reachability reports those).
 func (s *Store) liveManifests() []liveMan {
 	var out []liveMan
+	s.eachLiveManifest(nil, func(lm liveMan) { out = append(out, lm) })
+	return out
+}
+
+// eachLiveManifest is liveManifests without retaining the manifests: fn sees every manifest once (want, when set,
+// is asked first for the root's bucket and key and spares the read of the manifests it declines).
+func (s *Store) eachLiveManifest(want func(bucket, key string) bool, fn func(liveMan)) {
 	seen := map[string]bool{}
 	add := func(bucket, key, uuid string, sha [32]byte) {
-		if seen[uuid] {
+		if seen[uuid] || want != nil && !want(bucket, key) {
 			return
 		}
 		man, err := s.readVerifiedManifest(uuid, sha)
@@ -46698,7 +46705,7 @@ func (s *Store) liveManifests() []liveMan {
 			return
 		}
 		seen[uuid] = true
-		out = append(out, liveMan{bucket, key, man})
+		fn(liveMan{bucket, key, man})
 	}
 	for _, o := range s.snapshotNamespace() {
 		add(o.bucket, o.key, o.entry.manifestUUID, o.entry.manifestSHA256)
@@ -46714,7 +46721,6 @@ func (s *Store) liveManifests() []liveMan {
 			}
 		}
 	}
-	return out
 }
 
 // physChunk is the stored size of a chunk: its pack record when packed, else a
@@ -47081,33 +47087,49 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	t0 := time.Now()
 	m := &authMigrator{s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
 		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, byKey: map[string][]int{}}
-	lms := s.liveManifests()
-	var outside []liveMan
-	inScope := func(lm liveMan) bool {
-		return (pol.Bucket == "" || lm.bucket == pol.Bucket) && strings.HasPrefix(lm.key, pol.Prefix)
-	}
+	// Only the contents in scope are kept; the chunk sharing of everything else is counted as the manifests stream by
+	// (a store of a million objects must not be held in memory to migrate a prefix of it).
+	scopedRun := pol.Bucket != "" || pol.Prefix != ""
 	scoped := map[[32]byte]bool{}
-	if pol.Bucket != "" || pol.Prefix != "" {
-		for _, lm := range lms {
-			if sha, err := decodeHexSHA256(lm.man.ObjectSHA256); err == nil && inScope(lm) {
+	if scopedRun {
+		s.eachLiveManifest(func(bucket, key string) bool {
+			return (pol.Bucket == "" || bucket == pol.Bucket) && strings.HasPrefix(key, pol.Prefix)
+		}, func(lm liveMan) {
+			if sha, err := decodeHexSHA256(lm.man.ObjectSHA256); err == nil {
 				scoped[sha] = true
 			}
-		}
+		})
 	}
-	for _, lm := range lms {
+	outSeen := map[[32]byte]bool{}
+	var scanErr error
+	s.eachLiveManifest(nil, func(lm liveMan) {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
-		if err != nil || lm.man.TotalLength < 1 {
-			continue
+		if scanErr != nil || err != nil || lm.man.TotalLength < 1 {
+			return
 		}
-		if (pol.Bucket != "" || pol.Prefix != "") && !scoped[sha] {
-			outside = append(outside, lm)
-			continue
+		if scopedRun && !scoped[sha] { // chunk sharing among CDC-authoritative contents (bodied contents hold their own closures)
+			if outSeen[sha] {
+				return
+			}
+			outSeen[sha] = true
+			if rec, err := s.authLoad(sha); err != nil || rec != nil {
+				return
+			}
+			seen := map[[32]byte]bool{}
+			for _, c := range lm.man.Chunks {
+				if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
+					seen[sum] = true
+					m.refs[sum]++
+				}
+			}
+			return
 		}
 		o := m.objs[sha]
 		if o == nil {
 			rec, rerr := s.authLoad(sha)
 			if rerr != nil {
-				return m.rep, rerr
+				scanErr = rerr
+				return
 			}
 			o = &authObj{sha: sha, man: lm.man, bucket: lm.bucket, key: lm.key, t: lm.man.CreatedAt, hasRec: rec != nil}
 			m.objs[sha] = o
@@ -47116,6 +47138,9 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		if lm.man.CreatedAt.Before(o.t) {
 			o.t = lm.man.CreatedAt
 		}
+	})
+	if scanErr != nil {
+		return m.rep, scanErr
 	}
 	sort.Slice(m.order, func(i, j int) bool {
 		a, b := m.order[i], m.order[j]
@@ -47125,25 +47150,6 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		}
 		return c < 0
 	})
-	// Chunk sharing among CDC-authoritative contents (bodied contents hold their own closures).
-	outSeen := map[[32]byte]bool{}
-	for _, lm := range outside {
-		sha, _ := decodeHexSHA256(lm.man.ObjectSHA256)
-		if outSeen[sha] {
-			continue
-		}
-		outSeen[sha] = true
-		if rec, err := s.authLoad(sha); err != nil || rec != nil {
-			continue
-		}
-		seen := map[[32]byte]bool{}
-		for _, c := range lm.man.Chunks {
-			if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
-				seen[sum] = true
-				m.refs[sum]++
-			}
-		}
-	}
 	for _, o := range m.order {
 		if o.hasRec {
 			continue
@@ -61604,16 +61610,28 @@ func hcBrotliz3_ddDiv(a, b hcBrotliz3_dd) hcBrotliz3_dd {
 
 var hcBrotliz3_invLn2 = hcBrotliz3_dd{1.4426950408889634, 2.0355273740931033e-17}
 
-var hcBrotliz3_log2Cache [4096]struct {
-	v uint64
-	r float64
-}
+// log2Small holds log2Int of every v below log2SmallN, built once: the entropy code asks for the same few thousand
+// counts over and over, and the table is read-only afterwards, so concurrent encoders share it without locks.
+const hcBrotliz3_log2SmallN = 1 << 16
+
+var (
+	hcBrotliz3_log2Small     [hcBrotliz3_log2SmallN]float64
+	hcBrotliz3_log2SmallOnce sync.Once
+)
 
 func hcBrotliz3_log2Int(v uint64) float64 {
-	c := &hcBrotliz3_log2Cache[v&4095]
-	if c.v == v && v != 0 {
-		return c.r
+	if v < hcBrotliz3_log2SmallN {
+		hcBrotliz3_log2SmallOnce.Do(func() {
+			for i := uint64(0); i < hcBrotliz3_log2SmallN; i++ {
+				hcBrotliz3_log2Small[i] = hcBrotliz3_log2Compute(i)
+			}
+		})
+		return hcBrotliz3_log2Small[v]
 	}
+	return hcBrotliz3_log2Compute(v)
+}
+
+func hcBrotliz3_log2Compute(v uint64) float64 {
 	e := bits.Len64(v) - 1
 	if v == 1<<uint(e) {
 		return float64(e)
@@ -61633,7 +61651,6 @@ func hcBrotliz3_log2Int(v uint64) float64 {
 	}
 	l := hcBrotliz3_ddMul(hcBrotliz3_ddAdd(sum, sum), hcBrotliz3_invLn2)
 	r := hcBrotliz3_ddAdd(hcBrotliz3_dd{float64(e), 0}, l)
-	c.v, c.r = v, r.hi
 	return r.hi
 }
 
