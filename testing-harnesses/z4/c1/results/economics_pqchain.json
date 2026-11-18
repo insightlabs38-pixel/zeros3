@@ -1,0 +1,38 @@
+{
+ "cdc": {
+  "peak_rss_over_baseline_MiB": 21,
+  "physical_bytes": 83940850,
+  "range_4k_ms": 0.1776015625,
+  "range_4k_read_amplification": 23.328486442565918,
+  "replay_MiB_s": {
+   "all_files_default_workers_MiB_s": 527.2732163438657,
+   "workers_1_MiB_s": 567.0095788437064,
+   "workers_2_MiB_s": 560.9502630171729,
+   "workers_4_MiB_s": 553.7883536402
+  }
+ },
+ "closure_bytes": 45919011,
+ "closure_components": 11180,
+ "encode_MiB_s": 0.4845495528278997,
+ "encode_seconds": 433.288069121,
+ "files": 8,
+ "logical_bytes": 220148049,
+ "physical_ratio_rep_over_cdc": 0.5630770119673556,
+ "plan_forms": {
+  "rep": 8
+ },
+ "representation": {
+  "peak_rss_over_baseline_MiB": 439,
+  "physical_bytes": 47265163,
+  "range_4k_ms": 4209.84326171875,
+  "range_4k_read_amplification": 17931.294861793518,
+  "replay_MiB_s": {
+   "all_files_default_workers_MiB_s": 6.221868052980651,
+   "workers_1_MiB_s": 4.964130415798156,
+   "workers_2_MiB_s": 5.144062551607852,
+   "workers_4_MiB_s": 5.71768965203755
+  }
+ },
+ "reused_bytes": -14621447,
+ "sum_added_bytes_per_object": 31297564
+}
