@@ -119,8 +119,10 @@ func setSegTarget(t *testing.T, target, minSeal int64) {
 
 func TestP1C_Format_FirstSmallWriteRaisesLevelPolicyOffDoesNot(t *testing.T) {
 	useProductionLayout(t)
-	if !supportedStoreFormat(storeFormatVersionSegments) || supportedStoreFormat(10) || supportedStoreFormat(12) || !supportedStoreFormat(9) {
-		t.Fatal("supported levels must be 1..9 and 11 (10 is reserved)")
+	for v, want := range map[int]bool{0: false, 1: true, 9: true, 10: true, 11: true, 12: true, 13: false} {
+		if supportedStoreFormat(v) != want {
+			t.Fatalf("supportedStoreFormat(%d) = %v, want %v (10 authority, 11 segments, 12 both)", v, !want, want)
+		}
 	}
 	s, dir := p1cOpen(t)
 	if s.format.StoreFormatVersion != storeFormatVersion {

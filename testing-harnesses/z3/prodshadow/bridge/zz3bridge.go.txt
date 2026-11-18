@@ -1,11 +1,11 @@
 // Z3-22 same-package lab bridge. This file is NOT part of ZeroS3: the Z3
 // harness copies the current, unmodified zeros3.go into a temporary directory,
-// renames one method (computeReachabilityObserved -> ...Orig) and adds this
+// renames one method (reachabilityScanOpts -> ...Orig) and adds this
 // file. Nothing here is committed as Go source or built into the product.
 //
 // Two additions, both driven only by environment variables:
 //
-//	Z3_SHADOW_LIVE=<file>   computeReachabilityObserved also marks the listed
+//	Z3_SHADOW_LIVE=<file>   the reachability scan also marks the listed
 //	                        chunks live, so the real compact/gc/repack/tier/verify
 //	                        code sees "authoritative roots + shadow roots".
 //	Z3_BRIDGE_STORE=<dir>   serve a loopback lab API over the REAL Store: CAS
@@ -31,8 +31,8 @@ import (
 	"time"
 )
 
-func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reachabilityResult, error) {
-	res, err := s.computeReachabilityObservedOrig(deep, obs)
+func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
+	res, err := s.reachabilityScanOptsOrig(o)
 	if err != nil {
 		return res, err
 	}
@@ -62,9 +62,7 @@ func (s *Store) computeReachabilityObserved(deep bool, obs rootObserver) (reacha
 			res.addIssue("missing", "shadow:"+h, "shadow-live chunk is not in the CAS")
 			continue
 		}
-		res.ReferencedChunks[h] = true
-		res.ChunkLength[h] = n
-		res.ValidChunks[h] = true
+		res.tbl.put(sum, n) // the scan's binary live table feeds gc, compact, repack and verify
 	}
 	return res, nil
 }

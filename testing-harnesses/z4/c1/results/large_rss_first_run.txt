@@ -1,0 +1,7 @@
+migrate rc=0 wall=62.65s rss=273564KB
+status rc=0 wall=0.02s rss=19516KB
+gc rc=0 wall=0.07s rss=22756KB
+repack rc=0 wall=0.04s rss=22856KB
+compact rc=0 wall=0.08s rss=26272KB
+gc rc=0 wall=0.04s rss=22516KB
+verify rc=0 wall=13.03s rss=148040KB

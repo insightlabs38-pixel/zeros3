@@ -99,7 +99,10 @@ understand a required format must refuse the store instead of guessing.
 | CDC | 1 | deterministic Gear/FastCDC-style boundaries; 16 KiB min, 64 KiB target, 256 KiB max |
 | Manifest | 1 | immutable JSON logical object description |
 | Visibility journal | 1 framing | append-only, checksummed namespace authority; later record kinds remain versioned/fail-closed |
-| Store format | 1..9, 11 | feature floor recorded in `FORMAT.json`; level 10 is reserved for the unmerged representation-authority draft; see below |
+| Store format | 1..12 | feature floor recorded in `FORMAT.json`; 10 authority, 11 segments, 12 both; see below |
+| Authority body record | 1 | optional content-keyed body (`bodies/<hh>/<sha256>.body`, magic `ZS3B`): pin, representation or delta |
+| Authority delta envelope | 1 | `ZS3D` (in-memory, up to 256 MiB), `ZW1` (windowed single base, any size) and `ZN7\x01` (windowed model container: float histories, quantized derivations) |
+| Store features | 1 | `FORMAT.json` `features`: `zn7` is recorded before the first ZN7 container record; a build that does not know a recorded feature refuses the store; `authority revert -all` clears it with the last record |
 | Representation object | 1 | optional immutable structured-representation description, magic `ZS3R` |
 | Representation root | 1 | optional per-manifest sidecar naming a representation, magic `ZS3T` |
 | Pack | 1 | immutable packed CAS records and index |
@@ -123,8 +126,9 @@ understand a required format must refuse the store instead of guessing.
 | 7 | Model kind 8 (Safetensors/GGUF); older format-6 binaries refuse the store |
 | 8 | SST kind 9 / Parquet kind 10; Model-only format-7 binaries refuse the store |
 | 9 | DEX kind 11 / CLR kind 12; format-8 binaries refuse the store |
-| 10 | reserved (representation-authority draft, not merged) |
+| 10 | content-keyed authority bodies (store without segments); every binary without authority refuses the store |
 | 11 | small-object segments and inline manifest records; every older binary refuses the store |
+| 12 | authority bodies on a store that also has segments (10 and 11 are not cumulative) |
 
 Level 6 is raised (together with the level-5 tier roots, if the store has none
 yet) immediately before the first representation root is published, and only
@@ -154,7 +158,21 @@ below another kind. Creation uses bounded source windows and staged references, 
 a 32 MiB source limit; inputs outside supported structural/work limits retain ordinary
 CDC storage. Default mode remains off. All earlier decoders remain available.
 
-The version never decreases automatically.
+Authority (`zeros3 authority migrate -apply`) raises level 10, or 12 when the store
+already holds segments, durably before the first body record exists; a binary that
+predates authority never accepts 10 or 12. Stores that never run migration keep their
+level. `FORMAT.json` records `required_level`, the level the store needs without
+authority. `zeros3 authority revert -all` re-materializes and verifies every object's
+CDC chunks, retires the records dependents first, and only when none remains lowers the
+store to `required_level` and removes `bodies/`; it never lowers the level while a record
+exists. Default migration keeps the newest version of a history in CDC
+(`-order newest`); `-archive` makes the oldest versions bases and drops the read-cost
+gates (hybrid admissions are refused below 0.5x CDC whole-object throughput or above
+4x CDC 4 KiB amplification). `authority migrate` bounds its parallelism (`-workers`, default 2,
+also GOMAXPROCS): about 30 MiB of resident memory per worker on a 1 GiB base. Physical
+reclamation of the retired CDC copies is `gc -apply`, `repack -apply -recompress`, `compact`.
+
+Apart from `authority revert -all` the version never decreases automatically.
 
 A store may remain at an older level indefinitely if it never uses a feature
 that requires a newer one.

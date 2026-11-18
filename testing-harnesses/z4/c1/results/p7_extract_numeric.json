@@ -1,0 +1,96 @@
+{
+ "audit": {
+  "adapter_interfaces": [
+   "numcore.Resolver",
+   "numcore.Source"
+  ],
+  "declarations_by_package": {
+   "zeros3-z3/dcore": 46,
+   "zeros3-z3/numcore": 215,
+   "zeros3-z3/qcore": 61
+  },
+  "packages": [
+   {
+    "files": 5,
+    "module_deps": null,
+    "package": "zeros3-z3/qcore",
+    "stdlib": [
+     "encoding/binary",
+     "errors",
+     "math"
+    ]
+   },
+   {
+    "files": 8,
+    "module_deps": null,
+    "package": "zeros3-z3/dcore",
+    "stdlib": [
+     "bytes",
+     "compress/flate",
+     "crypto/sha256",
+     "encoding/binary",
+     "errors",
+     "fmt",
+     "hash/crc32",
+     "io",
+     "math",
+     "math/bits",
+     "slices",
+     "sort",
+     "sync",
+     "sync/atomic"
+    ]
+   },
+   {
+    "files": 13,
+    "module_deps": [
+     "zeros3-z3/dcore",
+     "zeros3-z3/qcore"
+    ],
+    "package": "zeros3-z3/numcore",
+    "stdlib": [
+     "bytes",
+     "compress/flate",
+     "container/list",
+     "context",
+     "crypto/sha256",
+     "encoding/binary",
+     "errors",
+     "fmt",
+     "io",
+     "math",
+     "math/bits",
+     "math/rand",
+     "sync"
+    ]
+   }
+  ],
+  "roots": 44,
+  "selected_declarations": 322
+ },
+ "class": "PORTABLE_WITH_THIN_ADAPTER",
+ "compiled": true,
+ "declarations": {
+  "const": 16,
+  "func": 148,
+  "method": 81,
+  "type": 61,
+  "var": 16
+ },
+ "fidelity_failures": 0,
+ "imports_added_to_production": [
+  "container/list",
+  "math/rand"
+ ],
+ "integration_bytes": 2387056,
+ "integration_dir": "/tmp/claude-0/c1/p7/numeric/integration",
+ "integration_sha256": "37fb6240dfcac3d629c9053e9ff7a4a2c8f8435bdeb060297b6fd51256fa8a2e",
+ "modified_adapters": 0,
+ "package_level_names": 319,
+ "prefix": "nc",
+ "rehearsal_ok": true,
+ "unresolved_dependencies": 0,
+ "vector_lines": 70,
+ "vector_mismatches": 0
+}
+PORTABLE_WITH_THIN_ADAPTER: extracted core compiles into the production source and matches the original byte-for-byte on 70 vectors
