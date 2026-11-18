@@ -100,9 +100,20 @@ func fusedPath(t Type, weighted bool) bool {
 
 var ErrArith = errors.New("qcore: arithmetic profile not available for this quantizer path")
 
+// ErrAbort: the producer's quantizer aborts on this input (non-finite data), so no producer file holds this tensor.
+var ErrAbort = errors.New("qcore: the producer's quantizer aborts on this input")
+
 // Quantize writes ggml_quantize_chunk(t, x, rows of nPerRow, qw) into dst. qw is the per-column
 // importance vector (len nPerRow) or nil for the reference (non-imatrix) quantizer.
-func Quantize(dst []byte, t Type, x []float32, nPerRow int, qw []float32, ar Arith) error {
+func Quantize(dst []byte, t Type, x []float32, nPerRow int, qw []float32, ar Arith) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(iq3Abort); !ok {
+				panic(r)
+			}
+			err = ErrAbort
+		}
+	}()
 	n, err := OutLen(t, len(x), nPerRow)
 	if err != nil {
 		return err

@@ -133,6 +133,9 @@ const (
 	fx3All     = 1<<iota - 1
 )
 
+// iq3Abort is the producer's GGML_ABORT / GGML_ASSERT: no file of that producer holds such a block.
+type iq3Abort struct{}
+
 type iq3Scratch struct { // the C arrays live across rows and blocks: stale L is observable
 	L [32]int8
 }
@@ -162,6 +165,9 @@ func iq3Find(t *iq3Tables, start int32, xval, waux []float32, scale float32, L [
 		if d2 < best {
 			best, gi = d2, int(nb[j])
 		}
+	}
+	if gi < 0 {
+		panic(iq3Abort{}) // GGML_ASSERT(grid_index >= 0): every distance was NaN or infinite
 	}
 	for i := 0; i < 4; i++ {
 		L[i] = (int8(t.grid[gi]>>(8*uint(i))) - 1) / 2
@@ -228,7 +234,7 @@ func rowIQ3S(st *iq3Scratch, fx uint32, x []float32, y []byte, qw []float32) {
 			}
 			max := xval[0]
 			for i := 1; i < bsz; i++ {
-				if xval[i] > max {
+				if !(max > xval[i]) { // C's MAX(max, x) = (max > x ? max : x): a NaN is not skipped
 					max = xval[i]
 				}
 			}
@@ -321,7 +327,7 @@ func rowIQ3S(st *iq3Scratch, fx uint32, x []float32, y []byte, qw []float32) {
 				}
 				gi := t.kmap[u]
 				if gi < 0 {
-					panic("qcore: IQ3_S point not on grid") // GGML_ABORT in the producer
+					panic(iq3Abort{}) // GGML_ABORT in the producer
 				}
 				qs[qo+k] = byte(gi)
 				qh[(ib*bs4+k)/8] |= byte(gi>>8) << uint((ib*bs4+k)%8)
@@ -330,7 +336,7 @@ func rowIQ3S(st *iq3Scratch, fx uint32, x []float32, y []byte, qw []float32) {
 			copy(signs[so:], blockSigns[:])
 			so += bs8
 			scales[ib] = scale
-			if scale > maxScale {
+			if !(maxScale > scale) {
 				maxScale = scale
 			}
 		}

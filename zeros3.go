@@ -119,8 +119,8 @@ import (
 //    44565    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
 //    48643    Windowed and estimated similarity deltas (extracted dcore)
 //    50151    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    57733    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    63979    CLI dispatch, HTTP server/startup, and main
+//    57765    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    64011    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -51393,6 +51393,7 @@ var ncQcore_kgrid512 = [512]uint16{
 }
 
 type ncQcore_iq3Tables struct {
+	gq    [512][4]float32 // grid points as floats
 	grid  [512]uint32
 	kmap  [4096]int32
 	neigh []uint16
@@ -51413,6 +51414,9 @@ func ncQcore_iq3Init() *ncQcore_iq3Tables {
 				g |= (2*l + 1) << (8 * uint(i))
 			}
 			t.grid[k] = g
+			for i := 0; i < 4; i++ {
+				t.gq[k][i] = float32(int8(g >> (8 * uint(i))))
+			}
 		}
 		for i := range t.kmap {
 			t.kmap[i] = -1
@@ -51478,6 +51482,9 @@ const (
 	ncQcore_fx3All     = 1<<iota - 1
 )
 
+// ncQcore_iq3Abort is the producer's GGML_ABORT / GGML_ASSERT: no file of that producer holds such a block.
+type ncQcore_iq3Abort struct{}
+
 type ncQcore_iq3Scratch struct { // the C arrays live across rows and blocks: stale L is observable
 	L [32]int8
 }
@@ -51489,8 +51496,9 @@ func ncQcore_iq3Find(t *ncQcore_iq3Tables, start int32, xval, waux []float32, sc
 	gi := -1
 	for j := 1; j <= n; j++ {
 		var d2 float32
+		g := &t.gq[nb[j]]
 		for i := 0; i < 4; i++ {
-			q := float32(int8(t.grid[nb[j]] >> (8 * uint(i))))
+			q := g[i]
 			var diff float32
 			if fx&ncQcore_fx3Dist != 0 {
 				diff = ncQcore_fma32(scale, q, -xval[i])
@@ -51506,6 +51514,9 @@ func ncQcore_iq3Find(t *ncQcore_iq3Tables, start int32, xval, waux []float32, sc
 		if d2 < best {
 			best, gi = d2, int(nb[j])
 		}
+	}
+	if gi < 0 {
+		panic(ncQcore_iq3Abort{}) // GGML_ASSERT(grid_index >= 0): every distance was NaN or infinite
 	}
 	for i := 0; i < 4; i++ {
 		L[i] = (int8(t.grid[gi]>>(8*uint(i))) - 1) / 2
@@ -51572,7 +51583,7 @@ func ncQcore_rowIQ3S(st *ncQcore_iq3Scratch, fx uint32, x []float32, y []byte, q
 			}
 			max := xval[0]
 			for i := 1; i < bsz; i++ {
-				if xval[i] > max {
+				if !(max > xval[i]) { // C's MAX(max, x) = (max > x ? max : x): a NaN is not skipped
 					max = xval[i]
 				}
 			}
@@ -51665,7 +51676,7 @@ func ncQcore_rowIQ3S(st *ncQcore_iq3Scratch, fx uint32, x []float32, y []byte, q
 				}
 				gi := t.kmap[u]
 				if gi < 0 {
-					panic("qcore: IQ3_S point not on grid") // GGML_ABORT in the producer
+					panic(ncQcore_iq3Abort{}) // GGML_ABORT in the producer
 				}
 				qs[qo+k] = byte(gi)
 				qh[(ib*bs4+k)/8] |= byte(gi>>8) << uint((ib*bs4+k)%8)
@@ -51674,7 +51685,7 @@ func ncQcore_rowIQ3S(st *ncQcore_iq3Scratch, fx uint32, x []float32, y []byte, q
 			copy(signs[so:], blockSigns[:])
 			so += bs8
 			scales[ib] = scale
-			if scale > maxScale {
+			if !(maxScale > scale) {
 				maxScale = scale
 			}
 		}
@@ -51787,9 +51798,20 @@ func ncQcore_fusedPath(t ncQcoreType, weighted bool) bool {
 
 var ncQcoreErrArith = errors.New("qcore: arithmetic profile not available for this quantizer path")
 
+// ErrAbort: the producer's quantizer aborts on this input (non-finite data), so no producer file holds this tensor.
+var ncQcoreErrAbort = errors.New("qcore: the producer's quantizer aborts on this input")
+
 // Quantize writes ggml_quantize_chunk(t, x, rows of nPerRow, qw) into dst. qw is the per-column
 // importance vector (len nPerRow) or nil for the reference (non-imatrix) quantizer.
-func ncQcoreQuantize(dst []byte, t ncQcoreType, x []float32, nPerRow int, qw []float32, ar ncQcoreArith) error {
+func ncQcoreQuantize(dst []byte, t ncQcoreType, x []float32, nPerRow int, qw []float32, ar ncQcoreArith) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(ncQcore_iq3Abort); !ok {
+				panic(r)
+			}
+			err = ncQcoreErrAbort
+		}
+	}()
 	n, err := ncQcoreOutLen(t, len(x), nPerRow)
 	if err != nil {
 		return err
@@ -51852,9 +51874,19 @@ func ncQcoreQuantize(dst []byte, t ncQcoreType, x []float32, nPerRow int, qw []f
 
 func ncQcore_mul(a, b float32) float32 { return float32(a * b) }
 
-// fma32 is the correctly rounded float32 a*b+c: the product is exact in float64; the sum is
-// rounded to odd in float64 (TwoSum error decides), which makes the final rounding to float32 exact.
+// fma32 is the correctly rounded float32 a*b+c. The product is exact in float64 and the hardware fused
+// multiply-add rounds the sum once; rounding that to float32 again is wrong only when the float64 result is
+// exactly a float32 midpoint (or the float32 result is subnormal), which takes the exact path below.
 func ncQcore_fma32(a, b, c float32) float32 {
+	r := math.FMA(float64(a), float64(b), float64(c))
+	if u := math.Float64bits(r); u&(1<<29-1) != 1<<28 && math.Abs(r) >= 0x1p-120 || r == 0 {
+		return float32(r)
+	}
+	return ncQcore_fma32Exact(a, b, c)
+}
+
+// fma32Exact rounds the float64 sum to odd (TwoSum error decides), which makes the final rounding to float32 exact.
+func ncQcore_fma32Exact(a, b, c float32) float32 {
 	p, q := float64(a)*float64(b), float64(c)
 	s := p + q
 	if s-s != 0 { // Inf/NaN: nothing to correct

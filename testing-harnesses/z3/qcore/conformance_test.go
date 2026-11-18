@@ -39,7 +39,7 @@ func f32bytes(x []float32) []byte {
 
 func vectors() []vec {
 	var out []vec
-	types := []Type{Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS}
+	types := []Type{Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS, IQ3_S}
 	gens := []struct {
 		name    string
 		special bool
@@ -168,6 +168,9 @@ func runOracle(t *testing.T, bin string, v vec) []byte {
 	cmd := exec.Command(bin, args...)
 	cmd.Stdin = bytes.NewReader(f32bytes(v.x))
 	out, err := cmd.Output()
+	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 3 {
+		return nil // the producer aborts (GGML_ABORT / GGML_ASSERT)
+	}
 	if err != nil {
 		t.Fatalf("oracle %v: %v", args, err)
 	}
@@ -219,13 +222,26 @@ func conformance(t *testing.T, ar Arith, file, bin string, use func(vec) bool) {
 			t.Fatal(err)
 		}
 		got := make([]byte, n)
-		if err := Quantize(got, v.t, v.x, v.npr, v.qw, ar); err != nil {
+		aborted := false
+		if err := Quantize(got, v.t, v.x, v.npr, v.qw, ar); err == ErrAbort {
+			aborted = true
+		} else if err != nil {
 			t.Fatal(err)
 		}
 		sum := sha256.Sum256(got)
 		h := hex.EncodeToString(sum[:])
+		if aborted {
+			h = "abort"
+		}
 		if bin != "" {
 			want := runOracle(t, bin, v)
+			if aborted || want == nil {
+				if aborted != (want == nil) {
+					t.Errorf("%s: abort differs (port %v, producer %v)", v.name, aborted, want == nil)
+				}
+				fmt.Fprintf(&w, "%s abort\n", v.name)
+				continue
+			}
 			if !bytes.Equal(got, want) {
 				bad, first := 0, -1
 				_, bs := Block(v.t)
