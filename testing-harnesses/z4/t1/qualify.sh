@@ -14,7 +14,8 @@ step() { local name=$1; shift; local t=$(date +%s); "$@" > "$O/$name.log" 2>&1; 
 skip() { printf '%s\tSKIP\t-\t0\t%s\n' "$1" "$2" | tee -a "$O/summary.tsv"; }
 export VALIDATE_LOG_DIR="$S/validate"; mkdir -p "$VALIDATE_LOG_DIR"
 (cd testing-harnesses && go build -o "$S/t1run" ./harness/t1run) || exit 2
-t1() { local mode=$1; shift; "$S/t1run" -mode "$mode" -fresh -v -cache "$S/t1cache" -evidence "$O/t1-$mode.json" "$@"; }
+# the real-model test has its own steps below: it must not ride along in the timed suites
+t1() { local mode=$1; shift; env -u ZEROS3_C1_MODELS "$S/t1run" -mode "$mode" -fresh -v -cache "$S/t1cache" -evidence "$O/t1-$mode.json" "$@"; }
 authskip='^(TestAuthority|FuzzAuth|FuzzXDelta|TestXDelta)'
 
 step gofmt test -z "$(gofmt -l . testing-harnesses)"

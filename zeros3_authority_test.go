@@ -917,6 +917,13 @@ func buildBinaryAt(t *testing.T, commit string) string {
 	cached := ""
 	if d := os.Getenv("ZEROS3_BINCACHE"); d != "" {
 		cached = filepath.Join(d, commit+"-"+runtime.Version())
+		// one process of the runner builds a historical binary while the others wait for it
+		if lk, err := os.OpenFile(cached+".lock", os.O_CREATE|os.O_RDWR, 0o644); err == nil {
+			defer lk.Close()
+			if syscall.Flock(int(lk.Fd()), syscall.LOCK_EX) == nil {
+				defer syscall.Flock(int(lk.Fd()), syscall.LOCK_UN)
+			}
+		}
 		if _, err := os.Stat(cached); err == nil {
 			oldBinPaths[commit] = cached
 			return cached
