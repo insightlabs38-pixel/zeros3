@@ -129,12 +129,25 @@ func (r *ringBuf) write(b []byte) {
 		return
 	}
 	if r.cur < r.total {
-		r.initBuffer(r.total)
-		r.buf[r.size-2], r.buf[r.size-1] = 0, 0
-		r.buf[r.size] = 241
+		// Inside the first lap nothing past the data is ever read (probes stop at the end of the block), so the
+		// buffer grows with the data instead of being allocated at the full window; the bytes beyond are zero
+		// either way.
+		want := r.total
+		if r.pos&(1<<31) == 0 && uint64(r.pos)+uint64(n) < uint64(r.size) {
+			want = min(r.total, (r.pos+n+1<<16-1)&^(1<<16-1)+1<<16)
+		}
+		if want > r.cur {
+			r.initBuffer(want)
+			if want == r.total {
+				r.buf[r.size-2], r.buf[r.size-1] = 0, 0
+				r.buf[r.size] = 241
+				// the tail mirrors the first block(s) written so far (a full-size ring keeps it current)
+				copy(r.buf[r.size:], r.buf[:min(r.tail, r.pos)])
+			}
+		}
 	}
 	masked := r.pos & r.mask
-	if masked < r.tail { // RingBufferWriteTail
+	if masked < r.tail && r.cur == r.total { // RingBufferWriteTail (a ring still growing has no tail yet)
 		copy(r.buf[r.size+masked:], b[:min(n, r.tail-masked)])
 	}
 	if masked+n <= r.size {
@@ -144,7 +157,9 @@ func (r *ringBuf) write(b []byte) {
 		copy(r.buf[0:], b[r.size-masked:])
 	}
 	notFirst := r.pos&(1<<31) != 0
-	r.data[0], r.data[1] = r.buf[r.size-2], r.buf[r.size-1]
+	if r.cur == r.total { // the two bytes before the ring mirror its last two; a ring still growing has zeros there
+		r.data[0], r.data[1] = r.buf[r.size-2], r.buf[r.size-1]
+	}
 	r.pos = r.pos&(1<<31-1) + n&(1<<31-1)
 	if notFirst {
 		r.pos |= 1 << 31

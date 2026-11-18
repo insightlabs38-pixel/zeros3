@@ -657,6 +657,7 @@ func TestAuthorityCrashMatrix(t *testing.T) {
 			})
 		}
 	}
+	g1Cover(t, "rep-crash-publication")
 }
 
 // ---- failure injection, malformed records and graph limits --------------------
@@ -1393,6 +1394,7 @@ func TestAuthorityConcurrentOperations(t *testing.T) {
 			t.Fatalf("live root %s/%s resolves to wrong bytes", lm.bucket, lm.key)
 		}
 	}
+	g1Cover(t, "writes-and-reads-stay-exact-under-migration")
 }
 
 func sumSlice(b []byte) []byte { h := sha256.Sum256(b); return h[:] }
@@ -1716,6 +1718,7 @@ func TestAuthorityRepFormAcrossStructuralKinds(t *testing.T) {
 		}
 	}
 	l.exact("rep-reverted")
+	g1Cover(t, "rep-lifecycle-exact", "rep-shared-components")
 }
 
 // A damaged delta component is repaired by digest from a peer that holds the native closure;
@@ -3952,6 +3955,7 @@ func TestAuthorityRetiredEquivalents(t *testing.T) {
 		if _, err := repackStore(f.l.dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true}); err == nil {
 			t.Fatal("repack must refuse while a live component is missing")
 		}
+		g1Cover(t, "missing-component-refused")
 	})
 
 	t.Run("corrupt component: deep verify, reads never deliver wrong bytes", func(t *testing.T) {
@@ -3984,6 +3988,7 @@ func TestAuthorityRetiredEquivalents(t *testing.T) {
 				}
 			}
 		}
+		g1Cover(t, "verify-deep-finds-corruption", "http-never-wrong-bytes")
 	})
 
 	t.Run("peer repair: exact stats at every worker count, affected objects, resume, unrecoverable", func(t *testing.T) {
@@ -4039,6 +4044,7 @@ func TestAuthorityRetiredEquivalents(t *testing.T) {
 			t.Fatalf("resume against a complete peer: %+v err=%v", stats, err)
 		}
 		f.l.exact("resumed")
+		g1Cover(t, "repair-peer-exact-stats", "repair-concurrent", "repair-resume")
 	})
 
 	t.Run("shared base: one deduplicated finding names every affected object", func(t *testing.T) {
@@ -4066,6 +4072,7 @@ func TestAuthorityRetiredEquivalents(t *testing.T) {
 		if err != nil || len(fs) != 1 || len(fs[0].AffectedObjects) < 2 {
 			t.Fatalf("a shared base chunk must be one finding naming at least two objects: %+v err=%v", fs, err)
 		}
+		g1Cover(t, "repair-shared-digest")
 	})
 
 	t.Run("snapshots pin retired content through delete, prune, gc and repack", func(t *testing.T) {
@@ -4103,6 +4110,7 @@ func TestAuthorityRetiredEquivalents(t *testing.T) {
 		dst := t.TempDir()
 		bundleImportT(t, dst, out)
 		bundleRestoreCheck(t, dst, snap, f.l.want)
+		g1Cover(t, "snapshot-pins-after-gc")
 	})
 }
 
@@ -4538,6 +4546,7 @@ func TestAuthorityRepairCrashQualification(t *testing.T) {
 		if a := authAuditDir(t, f.l.dir, want); a.Exact != len(f.l.want) || !a.VerifyOK {
 			t.Fatalf("not exact after resume: %+v", a)
 		}
+		g1Cover(t, "repair-partial-honest")
 	})
 
 	t.Run("interrupted dependency-closure reconstruction: repeated kills on one destination, retry converges", func(t *testing.T) {
@@ -4795,6 +4804,7 @@ func TestAuthorityZN7BaseRetentionRevertAndFeature(t *testing.T) {
 	if strings.Contains(string(raw), "zn7") || rep.Records == 0 {
 		t.Fatalf("feature marker or records remain after revert-all: %s %+v", raw, rep)
 	}
+	g1Cover(t, "rep-model-base-survives-retirement")
 }
 
 // zn7GGUF writes a version-3 GGUF with the given tensors (name, type, rows, cols, payload).
@@ -5134,6 +5144,7 @@ func TestAuthorityEquivPhysicalLayouts(t *testing.T) {
 		})
 		check(st.name)
 	}
+	g1Cover(t, "layout-compact-tier-repack-exact")
 }
 
 // Class storelevel: the store level moves with the first authority record only, never lowers while
@@ -5181,6 +5192,7 @@ func TestAuthorityEquivStoreLevel(t *testing.T) {
 	if _, last := readFormatVersion(t, l.dir); last != before {
 		t.Fatalf("level %d after revert -all, want %d", last, before)
 	}
+	g1Cover(t, "format-level-moves-with-records")
 }
 
 // Class accounting: gc and reachability count the authoritative components, never a retired CDC chunk.
@@ -5216,6 +5228,7 @@ func TestAuthorityEquivAccounting(t *testing.T) {
 	l.open()
 	l.exact("after-gc")
 	l.verifyOK("after-gc")
+	g1Cover(t, "gc-counts-components")
 }
 
 // TestAuthorityZN7DecodeScaling reads every migrated model version whole through the production
@@ -5531,6 +5544,248 @@ func TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds(t *testing.T) {
 			if out, errOut, code := runZeros3CLI(t, prev, "verify", "-store", l.dir, "-deep"); code != 0 {
 				t.Fatalf("the previous build cannot reopen the reverted store: %s %s", out, errOut)
 			}
+		})
+	}
+}
+
+// ---- 4A: production economics of the pinned real Parquet-Brotli corpus -----------------------------------------
+
+func procRchar() int64 {
+	b, _ := os.ReadFile("/proc/self/io")
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "rchar:") {
+			var n int64
+			fmt.Sscanf(strings.TrimPrefix(l, "rchar:"), "%d", &n)
+			return n
+		}
+	}
+	return 0
+}
+
+// TestAuthorityHardCorpusEconomics runs the pyarrow Brotli chain (testing-harnesses/z4/c1/gen_parquet_chain.py;
+// ZEROS3_C1_PQCHAIN=DIR) through the production authority twice with identical pipelines and source hashes: CDC only,
+// and with the exact Brotli replay admitted. Both stores go through gc, repack with recompression and compact. It
+// reports physical bytes, the closure, reuse across revisions, encode and replay throughput, memory, and the physical
+// bytes read for 4 KiB ranges. ZEROS3_C1_PQCHAIN_OUT=FILE receives the result as JSON.
+func TestAuthorityHardCorpusEconomics(t *testing.T) {
+	dir := os.Getenv("ZEROS3_C1_PQCHAIN")
+	if dir == "" {
+		t.Skip("economics: set ZEROS3_C1_PQCHAIN to the generated corpus")
+	}
+	var man struct {
+		Files []struct {
+			File, Sha256 string
+			Size         int
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "MANIFEST.json"))
+	if err != nil || json.Unmarshal(raw, &man) != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	var logical int64
+	files := map[string][]byte{}
+	for _, f := range man.Files {
+		b, err := os.ReadFile(filepath.Join(dir, f.File))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) != f.Sha256 {
+			t.Fatalf("%s: not the pinned file", f.File)
+		}
+		files[f.File] = b
+		logical += int64(len(b))
+	}
+	names := make([]string, 0, len(files))
+	for _, f := range man.Files {
+		names = append(names, f.File)
+	}
+	res := map[string]any{"files": len(names), "logical_bytes": logical}
+	measure := func(mode string, l *authLab) {
+		l.close()
+		l.open()
+		stored := dirBytes(t, l.dir)
+		runtime.GC()
+		debug.FreeOSMemory()
+		var peak atomic.Int64
+		stop := make(chan struct{})
+		sampled := make(chan struct{})
+		go func() {
+			defer close(sampled)
+			for {
+				select {
+				case <-stop:
+					return
+				case <-time.After(10 * time.Millisecond):
+					if r := vmRSS(); r > peak.Load() {
+						peak.Store(r)
+					}
+				}
+			}
+		}()
+		base := vmRSS()
+		whole := map[string]float64{}
+		for _, w := range []string{"1", "2", "4"} {
+			t.Setenv("ZEROS3_PQ_WORKERS", w)
+			t0 := time.Now()
+			for _, k := range names {
+				h := sha256.New()
+				rd := l.s.openObjectReader(l.man(k), byteRange{0, int64(len(files[k])) - 1})
+				for {
+					b, err := rd.next()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						t.Fatalf("%s %s: %v", mode, k, err)
+					}
+					h.Write(b)
+				}
+				if sum := sha256.Sum256(files[k]); !bytes.Equal(h.Sum(nil), sum[:]) {
+					t.Fatalf("%s %s: whole read differs", mode, k)
+				}
+			}
+			whole["workers_"+w+"_MiB_s"] = float64(logical) / (1 << 20) / time.Since(t0).Seconds()
+		}
+		t.Setenv("ZEROS3_PQ_WORKERS", "")
+		close(stop)
+		<-sampled
+		var rangeBytes, rangeN int64
+		t0 := time.Now()
+		r0 := procRchar()
+		for _, k := range names {
+			w := files[k]
+			for i := int64(0); i < 32; i++ {
+				off := (i*7919 + 13) * 104729 % int64(len(w)-4096)
+				if got := l.read(k, byteRange{off, off + 4095}); !bytes.Equal(got, w[off:off+4096]) {
+					t.Fatalf("%s %s: range at %d differs", mode, k, off)
+				}
+				rangeN++
+			}
+		}
+		rangeBytes = procRchar() - r0
+		res[mode] = map[string]any{"physical_bytes": stored, "replay_MiB_s": whole, "peak_rss_over_baseline_MiB": (peak.Load() - base) >> 20,
+			"range_4k_ms": float64(time.Since(t0).Microseconds()) / 1000 / float64(rangeN), "range_4k_read_amplification": float64(rangeBytes) / float64(rangeN*4096)}
+	}
+	cdc := newAuthLab(t)
+	for _, k := range names {
+		cdc.put(k, files[k])
+	}
+	cdc.reclaim()
+	measure("cdc", cdc)
+	cdc.close()
+
+	rep := newAuthLab(t)
+	for _, k := range names {
+		rep.put(k, files[k])
+	}
+	t0 := time.Now()
+	report := rep.migrate(AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, MinObject: 1, MinRepGroup: 1, HardCodecs: true})
+	encode := time.Since(t0)
+	rep.reclaim()
+	rep.verifyOK("economics")
+	comps := authComponentSet(t, rep.s)
+	var compBytes int64
+	for c := range comps {
+		if b, err := rep.s.casRead(c); err == nil {
+			compBytes += int64(len(b))
+		}
+	}
+	var added int64
+	forms := map[string]int{}
+	for _, p := range report.Plans {
+		added += p.AddedBytes
+		forms[p.Form]++
+	}
+	res["encode_seconds"] = encode.Seconds()
+	res["encode_MiB_s"] = float64(logical) / (1 << 20) / encode.Seconds()
+	res["plan_forms"] = forms
+	res["sum_added_bytes_per_object"] = added
+	res["closure_components"] = len(comps)
+	res["closure_bytes"] = compBytes
+	res["reused_bytes"] = added - compBytes
+	measure("representation", rep)
+	rep.close()
+	cdcB, repB := res["cdc"].(map[string]any)["physical_bytes"].(int64), res["representation"].(map[string]any)["physical_bytes"].(int64)
+	res["physical_ratio_rep_over_cdc"] = float64(repB) / float64(cdcB)
+	out, _ := json.MarshalIndent(res, "", " ")
+	t.Logf("%s", out)
+	if f := os.Getenv("ZEROS3_C1_PQCHAIN_OUT"); f != "" {
+		os.WriteFile(f, out, 0o644)
+	}
+}
+
+// ---- 4B: the read-cost gate of the planner ---------------------------------------------------------------------
+
+// The tier limits decide on measured cost: a form that re-runs a producer's encoder is refused by hot and warm, and
+// every numeric ceiling and floor refuses on its own.
+func TestAuthorityTierRefusalTable(t *testing.T) {
+	plain := &AuthCost{ReplayMiBs: 400, Amp4K: 1, Depth: 1, Replay: "plain", PeakMemMiB: 8}
+	hard := &AuthCost{ReplayMiBs: 30, Amp4K: 1, Depth: 1, Replay: "hard", PeakMemMiB: 96}
+	quant := &AuthCost{ReplayMiBs: 5, Amp4K: 1, Depth: 1, Replay: "zn7+quant", PeakMemMiB: 120}
+	zn7 := &AuthCost{ReplayMiBs: 60, Amp4K: 1, Depth: 2, Replay: "zn7", PeakMemMiB: 120}
+	for _, c := range []struct {
+		name, tier string
+		cost       *AuthCost
+		ampRel     float64
+		refused    string // substring of the reason; "" = admitted
+	}{
+		{"plain in hot", "hot", plain, 1, ""},
+		{"hard in hot", "hot", hard, 1, "re-runs a producer"},
+		{"hard in warm", "warm", hard, 1, "re-runs a producer"},
+		{"hard in cold", "cold", hard, 1, ""},
+		{"quantizer in warm", "warm", quant, 1, "re-runs a producer"},
+		{"quantizer in cold below the floor", "cold", &AuthCost{ReplayMiBs: 2, Replay: "zn7+quant", PeakMemMiB: 120, Depth: 1}, 1, "below the 4 MiB/s floor"},
+		{"slow replay in hot", "hot", &AuthCost{ReplayMiBs: 50, Replay: "plain", PeakMemMiB: 8, Depth: 1}, 1, "below the 100 MiB/s floor"},
+		{"amplification in hot", "hot", plain, 2, "amplification 2.0x"},
+		{"amplification in warm", "warm", plain, 2, ""},
+		{"depth in hot", "hot", &AuthCost{ReplayMiBs: 400, Replay: "plain", PeakMemMiB: 8, Depth: 2}, 1, "depth 2 exceeds 1"},
+		{"memory in hot", "hot", &AuthCost{ReplayMiBs: 400, Replay: "plain", PeakMemMiB: 200, Depth: 1}, 1, "needs about 200 MiB"},
+		{"zn7 in warm", "warm", zn7, 1, ""},
+		{"zn7 in hot", "hot", zn7, 1, "below the 100 MiB/s floor"},
+		{"archive takes everything", "archive", &AuthCost{Replay: "hard", PeakMemMiB: 1 << 20, Depth: 9}, 99, ""},
+		{"unknown tier is the archive", "", hard, 1, ""},
+	} {
+		got := authTierRefusal(c.tier, c.cost, c.ampRel)
+		if c.refused == "" && got != "" || c.refused != "" && !strings.Contains(got, c.refused) {
+			t.Errorf("%s: refusal %q, want %q", c.name, got, c.refused)
+		}
+	}
+}
+
+// End to end: the same hard-codec files under each tier. Hot and warm keep them in CDC and say why, cold and the
+// archive admit them with their measured cost recorded, and a gate lifted by NoReadCost admits them anywhere.
+func TestAuthorityTierGateOnHardCodecs(t *testing.T) {
+	policy := func(tier string, lift bool) AuthPolicy {
+		return AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, MinObject: 1, MinRepGroup: 1, HardCodecs: true, Tier: tier, NoReadCost: lift}
+	}
+	for _, c := range []struct {
+		tier   string
+		lift   bool
+		admits bool
+	}{{"hot", false, false}, {"warm", false, false}, {"cold", false, true}, {"archive", false, true}, {"hot", true, true}} {
+		t.Run(fmt.Sprintf("%s-lift-%v", c.tier, c.lift), func(t *testing.T) {
+			l := hardLab(t)
+			rep := l.migrate(policy(c.tier, c.lift))
+			reps, refused := 0, 0
+			for _, p := range rep.Plans {
+				switch {
+				case p.Form == "rep":
+					reps++
+					if (c.tier == "cold" || c.tier == "hot" && c.lift) && (p.Cost == nil || p.Cost.Replay != "hard" && p.Cost.Replay != "plain") {
+						t.Errorf("an admitted form carries no measured cost: %+v", p)
+					}
+				case strings.Contains(p.Reason, "tier"):
+					refused++
+					if p.Cost == nil || p.Cost.ReplayMiBs <= 0 {
+						t.Errorf("a refusal without the measured cost: %+v", p)
+					}
+				}
+			}
+			if c.admits && (reps == 0 || refused != 0) || !c.admits && (reps != 0 || refused == 0) {
+				t.Fatalf("tier %s lift=%v: %d admitted, %d refused: %+v", c.tier, c.lift, reps, refused, rep.Plans)
+			}
+			l.exact("tiered")
+			l.verifyOK("tiered")
 		})
 	}
 }

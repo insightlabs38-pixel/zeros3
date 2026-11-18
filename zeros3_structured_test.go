@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -522,4 +523,78 @@ func FuzzRepHardRecipes(f *testing.F) {
 			}
 		}
 	})
+}
+
+// Parallel page replay: a read with 1, 2, 4 or 8 workers produces the same bytes as the serial loop, a damaged
+// component ends the output exactly at the page that needs it (everything before it is already correct), and
+// ranges cut anywhere read the same bytes.
+func TestRepParquetParallelReplayIsExact(t *testing.T) {
+	for _, name := range []string{"pa_brotli.parquet", "pa_brotli_q6.parquet", "pa_lz4_raw.parquet"} {
+		b, err := os.ReadFile(filepath.Join("testdata", "p7", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lim := repStructuredParquetLimits()
+		lim.Hard = true
+		comps := map[repPQID][]byte{}
+		raw, _, st, err := repPQEncode(bytes.NewReader(b), int64(len(b)), repPQOptions{Limits: lim, Target: 64 << 10}, func(_ string, id repPQID, data []byte) error {
+			comps[id] = append([]byte(nil), data...)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		get := func(id repPQID) ([]byte, error) {
+			if c, ok := comps[id]; ok {
+				return c, nil
+			}
+			return nil, fmt.Errorf("component %x missing", id[:6])
+		}
+		for _, w := range []string{"1", "2", "4", "8"} {
+			t.Setenv("ZEROS3_PQ_WORKERS", w)
+			var out bytes.Buffer
+			if err := repPQDecode(&out, raw, get, lim); err != nil || !bytes.Equal(out.Bytes(), b) {
+				t.Fatalf("%s workers=%s: %v", name, w, err)
+			}
+			for _, r := range [][2]int64{{0, 1}, {17, 5000}, {int64(len(b)) / 3, int64(len(b)) / 2}, {int64(len(b)) - 100, 100}} {
+				var part bytes.Buffer
+				if _, err := repPQDecodeRange(&part, raw, get, r[0], r[1], lim); err != nil || !bytes.Equal(part.Bytes(), b[r[0]:r[0]+r[1]]) {
+					t.Fatalf("%s workers=%s range %v: %v", name, w, r, err)
+				}
+			}
+		}
+		// every component is damaged in turn: the output is an exact prefix and the error is reported, with any worker count
+		hard := st.CompPages["brotli-q8"] + st.CompPages["brotli-q6"] + st.CompPages["lz4-default"] + st.CompPages["lz4-recipe"] + st.CompPages["brotli-q5"]
+		if hard == 0 {
+			t.Fatalf("%s: no hard-codec page in the recipe (%v)", name, st.CompPages)
+		}
+		keys := make([]repPQID, 0, len(comps))
+		for id := range comps {
+			keys = append(keys, id)
+		}
+		sort.Slice(keys, func(i, j int) bool { return bytes.Compare(keys[i][:], keys[j][:]) < 0 })
+		for ki := 0; ki < len(keys); ki += max(1, len(keys)/12) {
+			bad := keys[ki]
+			badGet := func(id repPQID) ([]byte, error) { // the store verifies every component against its digest
+				if id == bad {
+					return nil, fmt.Errorf("component %x fails its digest", id[:6])
+				}
+				return get(id)
+			}
+			for _, w := range []string{"1", "4"} {
+				t.Setenv("ZEROS3_PQ_WORKERS", w)
+				var out bytes.Buffer
+				err := repPQDecode(&out, raw, badGet, lim)
+				if err == nil && !bytes.Equal(out.Bytes(), b) {
+					t.Fatalf("%s workers=%s: damaged component %x gave wrong bytes without an error", name, w, bad[:4])
+				}
+				if err == nil {
+					continue // the component is not needed by any page (a recipe-only member)
+				}
+				if !bytes.Equal(out.Bytes(), b[:out.Len()]) {
+					t.Fatalf("%s workers=%s: output before the error is not an exact prefix", name, w)
+				}
+			}
+		}
+	}
 }

@@ -46456,6 +46456,12 @@ type AuthPolicy struct {
 	// MinReadRatio refuses a hybrid admission (MaxReadAmp > 0) whose measured whole-object read
 	// throughput is below this fraction of the CDC read of the same object (0 = not measured).
 	MinReadRatio float64 `json:"min_read_ratio"`
+	// Tier prices the read of every admitted form against what its tier may spend: "hot", "warm", "cold", or
+	// "archive"/"" (no read-cost gate, the archive behaviour). The cost is measured on the candidate itself
+	// (whole-object replay throughput, 4 KiB amplification) and modeled for memory; see authTierLimits.
+	// NoReadCost lifts the gate so a form a tier would refuse can still be admitted for testing.
+	Tier       string `json:"tier,omitempty"`
+	NoReadCost bool   `json:"no_read_cost,omitempty"`
 	// Bucket and Prefix scope the migration ("" = everything). Contents outside the scope
 	// are neither migrated nor bases, but their chunks still count as CDC-owned.
 	Bucket     string `json:"bucket,omitempty"`
@@ -46548,18 +46554,109 @@ func (p AuthPolicy) norm() AuthPolicy {
 
 // AuthPlan is the admission decision for one distinct object content.
 type AuthPlan struct {
-	SHA        string   `json:"sha256"`
-	Size       int64    `json:"size"`
-	Form       string   `json:"form"` // cdc | pin | rep | delta
-	Bases      []string `json:"bases,omitempty"`
-	Depth      int      `json:"depth"`
-	CDCBytes   int64    `json:"cdc_unshared_bytes"`
-	AddedBytes int64    `json:"added_bytes"`
-	Saving     float64  `json:"saving"`
-	ReadAmp    float64  `json:"read_amp_4k,omitempty"`
-	CDCAmp     float64  `json:"cdc_amp_4k,omitempty"`
-	ReadRatio  float64  `json:"read_ratio,omitempty"` // whole-object read throughput relative to CDC (hybrid admissions)
-	Reason     string   `json:"reason,omitempty"`
+	SHA        string    `json:"sha256"`
+	Size       int64     `json:"size"`
+	Form       string    `json:"form"` // cdc | pin | rep | delta
+	Bases      []string  `json:"bases,omitempty"`
+	Depth      int       `json:"depth"`
+	CDCBytes   int64     `json:"cdc_unshared_bytes"`
+	AddedBytes int64     `json:"added_bytes"`
+	Saving     float64   `json:"saving"`
+	ReadAmp    float64   `json:"read_amp_4k,omitempty"`
+	CDCAmp     float64   `json:"cdc_amp_4k,omitempty"`
+	ReadRatio  float64   `json:"read_ratio,omitempty"` // whole-object read throughput relative to CDC (hybrid admissions)
+	Cost       *AuthCost `json:"read_cost,omitempty"`  // what reading the candidate costs (tiered migrations)
+	Reason     string    `json:"reason,omitempty"`
+}
+
+// AuthCost is the measured and modeled price of reading an admitted form.
+type AuthCost struct {
+	ReplayMiBs float64 `json:"replay_mib_s"` // measured whole-object read, warm, all workers
+	Ratio      float64 `json:"ratio_vs_cdc"`
+	Amp4K      float64 `json:"amp_4k"`
+	Depth      int     `json:"depth"`
+	PeakMemMiB int     `json:"peak_mem_mib"` // modeled: workers x per-worker working set of the form
+	Replay     string  `json:"replay"`       // "plain" | "zn7" | "hard" (exact Brotli/LZ4 re-encoding) | "zn7+quant"
+}
+
+// authTierLimits is what a read from each tier may cost. Replay is the floor on measured whole-object
+// throughput, Amp the ceiling on 4 KiB amplification relative to the CDC read, Depth the dependency nesting,
+// Mem the modeled resident working set of one read, Hard whether forms that re-run a producer's encoder may be
+// admitted at all (they price every read at encoder speed, so only tiers that are rarely read take them).
+var authTierLimits = map[string]struct {
+	Replay, Amp float64
+	Depth, Mem  int
+	Hard        bool
+}{
+	"hot":  {Replay: 100, Amp: 1.5, Depth: 1, Mem: 64},
+	"warm": {Replay: 20, Amp: 4, Depth: 2, Mem: 256},
+	"cold": {Replay: 4, Amp: 16, Depth: 4, Mem: 1024, Hard: true},
+}
+
+// authCostOf measures the candidate's read and classifies its replay path.
+func (s *Store) authCostOf(rec *authRecord, man manifestV1, amp float64, depth int) (*AuthCost, error) {
+	dAuth, dCDC, err := s.authReadTiming(rec, man)
+	if err != nil {
+		return nil, err
+	}
+	c := &AuthCost{Amp4K: amp, Depth: depth, Replay: "plain", PeakMemMiB: 8}
+	if dAuth > 0 {
+		c.ReplayMiBs = float64(man.TotalLength) / (1 << 20) / dAuth.Seconds()
+		c.Ratio = float64(dCDC) / float64(dAuth)
+	}
+	switch {
+	case rec.Form == authFormRep && rec.Root != nil:
+		hard, _, err := s.repRootHard(rec.Root)
+		if err != nil {
+			return nil, err
+		}
+		if hard {
+			c.Replay, c.PeakMemMiB = "hard", repPQreplayWorkers()*24
+		}
+	case rec.Form == authFormDelta && len(rec.Pieces) > 0:
+		if first, err := s.casRead(rec.Pieces[0].SHA); err == nil && len(first) >= 4 && string(first[:4]) == ncNumcore_zMagic {
+			c.Replay, c.PeakMemMiB = "zn7", authZN7DecodeWorkers()*30
+			if s.zn7DerivesQuant(rec.Pieces) {
+				c.Replay = "zn7+quant"
+			}
+		}
+	}
+	return c, nil
+}
+
+// zn7DerivesQuant reports whether the container derives any tensor by re-running a quantizer.
+func (s *Store) zn7DerivesQuant(ps []authPiece) bool {
+	obj, err := ncNumcoreOpenObject(&authZN7Locked{r: newPieceSeq(s.newAuthCtx(), ps)}, pieceTotal(ps))
+	if err != nil {
+		return false
+	}
+	for i := range obj.T {
+		if obj.T[i].Q != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// authTierRefusal is why the tier will not take the candidate ("" = admitted).
+func authTierRefusal(tier string, c *AuthCost, ampRel float64) string {
+	l, ok := authTierLimits[tier]
+	if !ok {
+		return ""
+	}
+	switch {
+	case (c.Replay == "hard" || c.Replay == "zn7+quant") && !l.Hard:
+		return fmt.Sprintf("%s tier: the form re-runs a producer's encoder on every read (%s)", tier, c.Replay)
+	case c.ReplayMiBs < l.Replay:
+		return fmt.Sprintf("%s tier: replay %.1f MiB/s is below the %.0f MiB/s floor", tier, c.ReplayMiBs, l.Replay)
+	case ampRel > l.Amp:
+		return fmt.Sprintf("%s tier: 4 KiB amplification %.1fx CDC exceeds %.1fx", tier, ampRel, l.Amp)
+	case c.Depth > l.Depth:
+		return fmt.Sprintf("%s tier: dependency depth %d exceeds %d", tier, c.Depth, l.Depth)
+	case c.PeakMemMiB > l.Mem:
+		return fmt.Sprintf("%s tier: a read needs about %d MiB, the tier allows %d", tier, c.PeakMemMiB, l.Mem)
+	}
+	return ""
 }
 
 type AuthReport struct {
@@ -46834,6 +46931,15 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 // authReadRatio is the whole-object read throughput of a candidate body relative to
 // the CDC read of the same object (best of two warm passes each; above 1 is faster).
 func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) {
+	dAuth, dCDC, err := s.authReadTiming(rec, man)
+	if err != nil || dAuth <= 0 {
+		return 0, err
+	}
+	return float64(dCDC) / float64(dAuth), nil
+}
+
+// authReadTiming is the best warm whole-object read of the candidate and of the CDC chunks of the same content.
+func (s *Store) authReadTiming(rec *authRecord, man manifestV1) (dAuth, dCDC time.Duration, err error) {
 	timed := func(read func() error) (time.Duration, error) {
 		best := time.Duration(math.MaxInt64)
 		for i := 0; i < 2; i++ {
@@ -46847,13 +46953,13 @@ func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) 
 	}
 	data, err := rec.marshal()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	cand, err := unmarshalAuthRecord(data)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	dAuth, err := timed(func() error {
+	dAuth, err = timed(func() error {
 		ctx := s.newAuthScanCtx()
 		ctx.overlay = map[[32]byte]*authRecord{cand.SHA: cand}
 		body, _, err := ctx.body(cand.SHA, 0, 1)
@@ -46871,9 +46977,9 @@ func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) 
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	dCDC, err := timed(func() error {
+	dCDC, err = timed(func() error {
 		rd := s.newManifestReader(man, byteRange{0, man.TotalLength - 1})
 		defer rd.close()
 		for {
@@ -46884,10 +46990,7 @@ func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) 
 			}
 		}
 	})
-	if err != nil || dAuth <= 0 {
-		return 0, err
-	}
-	return float64(dCDC) / float64(dAuth), nil
+	return dAuth, dCDC, err
 }
 
 // cdcAmp4K is the expected logical bytes of CAS chunks touched by a random
@@ -47579,6 +47682,26 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		finish(plan)
 		m.addBase(i)
 		return nil
+	}
+	if _, tiered := authTierLimits[pol.Tier]; tiered && !pol.NoReadCost {
+		cost, err := m.s.authCostOf(rec, o.man, probe, plan.Depth)
+		if err != nil {
+			return err
+		}
+		plan.Cost, plan.ReadRatio = cost, cost.Ratio
+		ampRel := 0.0
+		if plan.CDCAmp > 0 {
+			ampRel = probe / plan.CDCAmp
+		}
+		if why := authTierRefusal(pol.Tier, cost, ampRel); why != "" {
+			plan.Reason, plan.Form = why, "cdc"
+			if pol.cache != nil {
+				pol.cache.stale = true
+			}
+			finish(plan)
+			m.addBase(i)
+			return nil
+		}
 	}
 	if pol.MaxReadAmp > 0 && pol.MinReadRatio > 0 {
 		ratio, err := m.s.authReadRatio(rec, o.man)
@@ -48549,6 +48672,8 @@ func runAuthority(args []string) {
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	apply := fs.Bool("apply", false, "commit the plan (default: plan only)")
 	order := fs.String("order", "newest", "newest|oldest: which versions serve as delta bases (newest keeps the latest version in CDC)")
+	tier := fs.String("tier", "", "price reads against a tier: hot, warm, cold (archive or empty: no read-cost gate)")
+	noCost := fs.Bool("no-read-cost", false, "admit forms the tier's read-cost gate would refuse (testing)")
 	archive := fs.Bool("archive", false, "archive-only: oldest versions are bases, no read-cost gates (explicitly slower reads)")
 	depth := fs.Int("max-depth", 2, "delta nesting bound (hard maximum 4)")
 	bases := fs.Int("max-bases", 2, "bases per delta (hard maximum 4)")
@@ -48602,9 +48727,15 @@ func runAuthority(args []string) {
 	enc.SetIndent("", "  ")
 	switch sub {
 	case "migrate":
-		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply}
+		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost}
 		if *archive {
 			pol.Order, pol.MaxReadAmp, pol.MinReadRatio = "oldest", 0, 0
+		}
+		if *tier != "" { // the tier's measured read-cost gate replaces the legacy amplification and ratio gates
+			pol.MaxReadAmp, pol.MinReadRatio = 0, 0
+			if *tier == "cold" || *tier == "archive" {
+				pol.Order = "oldest"
+			}
 		}
 		rep, err := store.AuthorityMigrate(pol)
 		if err != nil {
@@ -59269,12 +59400,25 @@ func (r *hcBrotliz3_ringBuf) write(b []byte) {
 		return
 	}
 	if r.cur < r.total {
-		r.initBuffer(r.total)
-		r.buf[r.size-2], r.buf[r.size-1] = 0, 0
-		r.buf[r.size] = 241
+		// Inside the first lap nothing past the data is ever read (probes stop at the end of the block), so the
+		// buffer grows with the data instead of being allocated at the full window; the bytes beyond are zero
+		// either way.
+		want := r.total
+		if r.pos&(1<<31) == 0 && uint64(r.pos)+uint64(n) < uint64(r.size) {
+			want = min(r.total, (r.pos+n+1<<16-1)&^(1<<16-1)+1<<16)
+		}
+		if want > r.cur {
+			r.initBuffer(want)
+			if want == r.total {
+				r.buf[r.size-2], r.buf[r.size-1] = 0, 0
+				r.buf[r.size] = 241
+				// the tail mirrors the first block(s) written so far (a full-size ring keeps it current)
+				copy(r.buf[r.size:], r.buf[:min(r.tail, r.pos)])
+			}
+		}
 	}
 	masked := r.pos & r.mask
-	if masked < r.tail { // RingBufferWriteTail
+	if masked < r.tail && r.cur == r.total { // RingBufferWriteTail (a ring still growing has no tail yet)
 		copy(r.buf[r.size+masked:], b[:min(n, r.tail-masked)])
 	}
 	if masked+n <= r.size {
@@ -59284,7 +59428,9 @@ func (r *hcBrotliz3_ringBuf) write(b []byte) {
 		copy(r.buf[0:], b[r.size-masked:])
 	}
 	notFirst := r.pos&(1<<31) != 0
-	r.data[0], r.data[1] = r.buf[r.size-2], r.buf[r.size-1]
+	if r.cur == r.total { // the two bytes before the ring mirror its last two; a ring still growing has zeros there
+		r.data[0], r.data[1] = r.buf[r.size-2], r.buf[r.size-1]
+	}
 	r.pos = r.pos&(1<<31-1) + n&(1<<31-1)
 	if notFirst {
 		r.pos |= 1 << 31
@@ -69181,8 +69327,8 @@ func (d *repPQdecoder) compRec(s *repPQSeg) (repPQCompRec, error) {
 }
 
 // Port source: zeros3-z3/parquetz3/decode.go
-// page rebuilds the bytes of a logical page segment (raw header + payload).
-func (d *repPQdecoder) page(si int) ([]byte, error) {
+// pagePrep reconstructs a page up to its compression: the levels and values the compressor replays.
+func (d *repPQdecoder) pagePrep(si int) (*repPQpageJob, error) {
 	s := &d.rec.Segs[si]
 	if d.activeCol != s.Col {
 		if d.activeCol >= 0 {
@@ -69252,9 +69398,36 @@ func (d *repPQdecoder) page(si int) ([]byte, error) {
 		}
 		d.stats.Pages++
 	}
+	return &repPQpageJob{s: s, rec: rec, levels: levels, values: values}, nil
+}
+
+// repPQpageJob is a page whose values are known and whose compression is still to be replayed: the replay
+// is independent of every other page, so a read may run several at once.
+type repPQpageJob struct {
+	s      *repPQSeg
+	rec    repPQCompRec
+	levels []byte
+	values []byte
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+// page rebuilds the bytes of a logical page segment (raw header + payload).
+func (d *repPQdecoder) page(si int) ([]byte, error) {
+	j, err := d.pagePrep(si)
+	if err != nil {
+		return nil, err
+	}
+	return repPQpageFinish(d.cp, j)
+}
+
+// repPQpageFinish replays the page's compression and prepends its header.
+func repPQpageFinish(cp *repPQCompressor, j *repPQpageJob) ([]byte, error) {
+	s, rec, levels, values := j.s, j.rec, j.levels, j.values
+	pg := s.Page
+	var err error
 	var payload []byte
 	if pg.Type == repPQPageDataV2 {
-		v, err := d.cp.Replay(rec, values)
+		v, err := cp.Replay(rec, values)
 		if err != nil {
 			return nil, err
 		}
@@ -69264,7 +69437,7 @@ func (d *repPQdecoder) page(si int) ([]byte, error) {
 		if len(levels) > 0 {
 			body = append(append(make([]byte, 0, len(levels)+len(values)), levels...), values...)
 		}
-		if payload, err = d.cp.Replay(rec, body); err != nil {
+		if payload, err = cp.Replay(rec, body); err != nil {
 			return nil, err
 		}
 	}
@@ -69333,10 +69506,71 @@ func repPQdecodeRange(w io.Writer, rec *repPQRecipe, get repPQGetter, off, n int
 			hi = m
 		}
 	}
+	// Pages whose compression needs the exact Brotli or LZ4 replay are expensive and independent of one another:
+	// their replays run in a window of at most `workers` pages (the values of a page are still read in order), and
+	// the bytes leave in file order. A failing page ends the output exactly where the serial loop would have.
+	workers := repPQreplayWorkers()
+	type pending struct {
+		a, z int64
+		b    []byte
+		err  error
+		done chan struct{}
+	}
+	var q []*pending
+	emit := func(p *pending) error {
+		<-p.done
+		if p.err != nil {
+			return p.err
+		}
+		_, err := w.Write(p.b[p.a:p.z])
+		p.b = nil
+		return err
+	}
+	drain := func(keep int) error {
+		var first error
+		for len(q) > keep {
+			if first != nil {
+				<-q[0].done // nothing after the failing page is written; wait for the replays still running
+			} else if err := emit(q[0]); err != nil {
+				first, keep = err, 0
+			}
+			q = q[1:]
+		}
+		return first
+	}
 	for si := lo; si < len(rec.Segs) && rec.Segs[si].Off < end; si++ {
 		s := &rec.Segs[si]
 		if s.Total == 0 {
 			continue
+		}
+		a, z := max(off, s.Off)-s.Off, min(end, s.Off+s.Total)-s.Off
+		if workers > 1 && (s.Kind == repPQSegData || s.Kind == repPQSegDict) && s.Comp >= repPQcompHard {
+			if err := drain(workers - 1); err != nil {
+				return d.stats, err
+			}
+			j, err := d.pagePrep(si)
+			if err != nil {
+				drain(0)
+				return d.stats, err
+			}
+			j.values, j.levels = bytes.Clone(j.values), bytes.Clone(j.levels) // the stream cursors reuse their buffers for the next page
+			p := &pending{a: a, z: z, done: make(chan struct{})}
+			q = append(q, p)
+			total := s.Total
+			go func() {
+				defer close(p.done)
+				repPQreplayTokens <- struct{}{}
+				defer func() { <-repPQreplayTokens }()
+				b, err := repPQpageFinish(repPQNewCompressor(repPQCodecNone, d.lim), j)
+				if err == nil && int64(len(b)) != total {
+					err = repPQrecipeErr("segment rebuilt as %d bytes, expected %d", len(b), total)
+				}
+				p.b, p.err = b, err
+			}()
+			continue
+		}
+		if err := drain(0); err != nil {
+			return d.stats, err
 		}
 		b, err := d.seg(si)
 		if err != nil {
@@ -69345,12 +69579,25 @@ func repPQdecodeRange(w io.Writer, rec *repPQRecipe, get repPQGetter, off, n int
 		if int64(len(b)) != s.Total {
 			return d.stats, repPQrecipeErr("segment %d rebuilt as %d bytes, expected %d", si, len(b), s.Total)
 		}
-		a, z := max(off, s.Off)-s.Off, min(end, s.Off+s.Total)-s.Off
 		if _, err := w.Write(b[a:z]); err != nil {
 			return d.stats, err
 		}
 	}
+	if err := drain(0); err != nil {
+		return d.stats, err
+	}
 	return d.stats, nil
+}
+
+// repPQreplayTokens bounds the page replays running at once in the whole process, however many requests read.
+var repPQreplayTokens = make(chan struct{}, 8)
+
+// repPQreplayWorkers is the page-replay window of one read: ZEROS3_PQ_WORKERS, else up to four.
+func repPQreplayWorkers() int {
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_PQ_WORKERS")); err == nil && v >= 1 {
+		return min(v, cap(repPQreplayTokens))
+	}
+	return min(4, runtime.NumCPU())
 }
 
 // Port source: zeros3-z3/parquetz3/decode.go
