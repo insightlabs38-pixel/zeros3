@@ -1,43 +1,41 @@
-# Z4-C1 — Production representation authority
+# Z4-C1 — Production representation authority (qualification pass)
 
-Verdict: **C1_PARTIAL_NEEDS_QUALIFICATION**. Branch `z4/c1-production-authority` (mirrored to `claude/zeros3-z4-c1-authority-9uasio`) from `origin/main` `dfbbc8b`. Draft PR only; #97/#80/#81 untouched. Evidence: [`../z4/c1/`](../z4/c1/README.md).
+**Verdict: `C1_AUTHORITY_READY_FOR_RESTRICTED_FORMS`.** Branch `z4/c1-production-authority`, PR #114. Evidence: [`../z4/c1/`](../z4/c1/README.md), `results/qualification_summary.tsv` (every step's exit code and time). Default off; store levels 10/11/12 and `FORMAT.json` `features` (`zn7`).
+Excluded forms (not enabled, research code kept): Brotli Parquet and LZ4 SST/Parquet (blocking evidence in P7 below), IQ3_S, streaming Brotli producers.
 
-## What is production code now
-B2's body records (pin / existing rep kinds 1-12 / exact delta) keyed by content SHA, closure-checked atomic publication, fail-closed reachability/gc/repack, virtual chunk index for sync/bulk/bundle/replication, `authority migrate|status|revert [-all]`, repair; ported onto P1-P4 (P2 served readers, P3 scan, P4 deferred builds). Default off; creation is an offline exclusive-lock CLI. Newest version stays CDC by default (`-order newest`); `-archive` is explicit. Store levels: **10** authority, **11** segments, **12** both (not cumulative); `FORMAT.json` records `required_level`; `revert -all` lowers to it only when no record remains. Non-adopting stores are byte-unchanged. P5 union-accounting planner is the only planner; ZW1 windowed single-base delta (extracted `dcore`) removes the 256 MiB limit. No P7 form is enabled.
+## Fixed in this pass
+* **G9 "Parquet/DEX regression" was a baseline asymmetry, not component sharing.** Identical pinned inputs (z331 chain: SHA-256 equal to `z4/p5/results/corpus.sha256`; it is the pyarrow **26.0.1** output, the 18.1.0 chain has other hashes). Component account (`results/economics_v2.json`): union 45.97 MB over 8 bodies, reuse x7.21, 0 duplicate records, 0 retained CDC chunks, 1.07 MB framing, identical raw and compressed. Direct ingest writes raw packs and repack never rewrote fully live packs, so CDC 104.7 MB vs reps 47.4 MB (0.453); B8 compared compressed-vs-compressed (loose ingest + compact). Added `repack -recompress`; with it both sides: CDC 95.19 MB, rep-only 30.86 MB (**0.324**; B8 reference rebuilt and rerun 31.07 MB, 0.326). Stored/logical of the components 0.644.
+* Planner priced raw staged components above compressed CDC chunks (DEX rep-only admitted nothing under a compressed baseline); it now prices end-state bytes. Progressive group abandonment projected early marginals onto later revisions and rejected a winning group; now only for groups >16.
+* G1 bypass: repair findings of an authoritative component had no affected objects (annotation walked the virtual CDC list); fixed (`rootDependencyChunks`). Object-level repair fallback is now part of `zeros3 repair` (streaming, digest-verified, pin supersedes the damaged body).
+* G5 memory (below), random-access readers keep one body, windows reuse pages/buffers, chunk caches 48 -> 8/2/1 MiB, anchor table load 2/3, migrate bounds parallelism (`-workers`, default 2).
+* Hygiene: bytecode caches untracked and ignored, both source maps regenerated and checked, `STATUS.md`/`docs/OPERATIONS.md` updated. Six earlier commits of this pass are authored "Claude" (force-push to rewrite them was refused); later commits use the project identity; no trailers.
 
 ## Gates
 | Gate | Result |
 |---|---|
-| G1 retire-everything | Seam + hook retire every body-backed object's chunks. 167 of 1,270 root tests fail in that mode: 66 assert physical layout, 34 corrupt/delete a retired chunk and expect detection, 24 read CDC as a reference, 16 assert store level, 27 other (sampled: caches/counters/timing, rep sidecars). Recorded production chains that touch retired chunks: ingest dedup stats (revive-on-write), and the B2-rerouted bulk/sync/bundle/delta-export/base-check/replication paths. **No new distinct unguarded production path found (limit 5)**, but not "all pass" and the 27 were not each proven individually; subprocess-CLI suites are not covered by the in-process hook. Status: **partial** |
-| G2 power loss | Real `strace -y` traces of migrate (49 barriers), gc, repack, revert-all replayed with 4 crash-image classes per cut (6x300 dense revert-all cuts, 40 cuts others): 0 failures; fsync-less control fails as required. Model-based, not block-level; plus 18-point/26-kill SIGKILL matrix. **Pass (model)** |
-| G3 scale | 1.1M objects, 1,010,700 chunks, 50k pin records: verify 12.6 s, deep 65 s, gc 17.7 s, repack 10.3 s, revert-all 136 s; RSS 3.5-3.6 GB for scans (same as the reverted CDC store, +3%). Migration of an 80-object scope: 236 s, 2.0 GB. **Pass** |
-| G4 compat | v0.1.1, b5d1762, 036ac2c, 4059cd9, dfbbc8b: all refuse levels 10/12 with a byte-identical tree, open a non-adopting store, import a retired-CDC bundle, accept replication exactly. **Pass** |
-| G5 1 GiB | 3 x 1 GiB history, fresh processes, SHA-256 exact (independent regeneration), 4 KiB range 5.4 ms. Migrate peak RSS **274 MiB** (was 684 before the anchor-table/cache/GC bound), revert-all 154, deep verify 148. Target 128 MiB + window is **not strictly met** |
-| G6 reads | Hybrid admission is refused unless whole-object read >= 0.5x CDC and 4 KiB amplification <= 4x (measured per object). Only SQLite admitted (0.282x); CLR/DEX/tar/Git/SST/Parquet hybrids refused. Archive forms: whole 21-330 MB/s vs CDC 1,084; 4 KiB amplification 100x (delta) to 8,644x (rep). **Pass as a gate; archive-only classes are slow** |
-| G7 revert/floor | revert -all, verify, level restored, real pre-authority binary reopens and deep-verifies; floor refused while a record remains. **Pass** |
-| G8 crash loops | gc/repack/revert-all/migrate killed at 1-4 successive boundaries each, exact after every kill; B2 corrupt-base/peer-repair tests pass. Interrupted repair not tested. **Partial** |
-| G9 economics | below |
+| G1 retire-everything | Hook run (1,250 tests): 166 top-level failures, every one in `results/g1_ledger.json` with cause, stack chain, expected, observed, equivalent proof: corruption/missing targeting hidden chunks 51, CDC physical layout 46, CDC-as-reference reads 26, store level 22, hook side effects 10, gc accounting 9, revive-on-write 2, unexplained 0. These tests keep asserting the CDC contract in default mode. New: **physical** retire-everything in separate processes (`TestAuthorityRetireEverythingSubprocess`: migrate, gc, repack, compact through the CLI, then S3 GET/range/HEAD/304, copy, sync, fork, diff, inspect, replicate, snapshot, bundle export/import/restore, version restore/prune, maintenance, component damage + peer repair; 90/132 chunks of body-backed versions gone from disk, 6.9 -> 2.4 MB) and `TestAuthorityRetiredEquivalents` (missing/corrupt component: verify, reachability, findings, gc/repack refusal, copy no-mutation, reads never wrong bytes, repair stats at 1/4/16 workers, shared base, snapshots through delete/prune/gc). 33 retired-chunk call chains classified (virtual-aware, revive-on-write, hook ordering, ...). 1 new unguarded path (<= 5). Not "all root tests pass": classification is by rule and observed message, proof is the equivalents. **Pass** |
+| G2 | persistence-loss model incl. peer repair and object fallback, dense cuts (300): 0 failures; fsync-less control fails. Pass (model, no block-device test) |
+| G3 | 1.1M objects / 1.01M chunks: verify 12.9 s, deep 73.8 s, gc 17 s, repack 12 s, revert-all 160 s, RSS 3.5 GB (as CDC), migrate sample 327 s. Pass |
+| G4 | v0.1.1, post-I1C, floor 9, segments, pre-authority main: refuse 10/12 byte-identically, open non-adopting stores, import, replicate. Pass |
+| G5 | 3 x N history, fresh processes, SHA-256 exact, 4 KiB range 5-10 ms. Migrate peak RSS **69 MiB (256 MiB), 95.5 MiB (1 GiB), 132 MiB (2 GiB control)**, was 274 at 1 GiB; target 128 MiB + window met at 1 GiB, exceeded by ~4 MiB at 2 GiB (anchor table grows ~16 MiB/GiB). Cost: 1 GiB migrate 62.7 -> 83.7 s (+34%); `-workers 4` trades back (~180 MiB). Attempts: `results/diagnostics/attempts.txt` |
+| G6, G7 | unchanged, pass (hybrid refused below 0.5x read / above 4x amplification; revert -all + old binary reopen) |
+| G8 | real SIGKILL at CAS and record boundaries, repeated restarts, fresh-process audit after each kill (wrong bytes == 0 always): peer component repair, object-level repair (8 points, library and inside `repair`), corrupt base, source peer missing a dependency (honest partial, resumable), closure import (6 kills on one destination), repair vs `gc`/`repack` (refused while it holds the lock). Pass |
+| G9 | below |
 
-## G9 physical bytes / CDC bytes (gc + repack + compact; `results/economics.json`)
-| Family | additive rep | delta only | archive best | rep only | hybrid |
-|---|---:|---:|---:|---:|---:|
-| Parquet Z3-31 x8 Snappy | 1.45 | 0.92 | **0.453** | 0.453 | refused |
-| DEX 3 releases | 1.54 | 0.585 | **0.543** | 0.543 | refused |
-| tar x3 | 1.53 | 0.374 | 0.373 | 0.634 | refused |
-| CLR x5 | 1.97 | 0.323 | 0.323 | 1.0 | refused |
-| SQLite x4 | 1.39 | 0.297 | 0.297 | 0.393 | 0.282 |
-| SST Snappy x4 | 5.73 | 0.32 | 0.32 | 1.0 | refused |
-| Git packs x3 | 2.05 | 0.58 | 0.58 | 1.0 | refused |
-| Parquet Zstd x4 | 2.63 | 0.936 | 0.936 | 1.0 | 0.958 |
-| unrelated | 1.75 | 1.0 | 1.0 | 1.0 | 1.0 |
-Targets: Parquet rep-only <= 0.40 **not met** (0.453; the planner defect is fixed: 0.92 -> 0.453, but a 8-revision representation is 47 MB vs 31 MB in B8 for the same logical chain, pointing at component sharing in the P1-P4 rep builder, not investigated); DEX <= 0.50 **not met** (0.543 on this F-Droid set, not B8's). Pilot >= 15%: met (tar/CLR/SQLite/SST save 63-70%, 58% Git). Unrelated and uneconomic data stay CDC. Modeled vs additive vs realized: additive 1.4-5.7x, realized as above. Peak during migration 1.0-1.7x. Pythia/SmolLM2/quantized histories not run (their forms are not enabled).
+## G9 physical bytes / CDC (gc + repack -recompress + compact, same pipeline both sides)
+| Cohort | rep only | delta only | note |
+|---|---:|---:|---|
+| Parquet z331 x8 Snappy | **0.324** | 0.916 | raw packs both sides: 0.453; B8 reference 0.326 |
+| DEX, B8 cohort (F-Droid 2000050/51/52 `classes.dex`, 27,892,392 B) | **0.488** | 0.841 | B8 0.489; raw packs 0.543 (the earlier C1 row used exactly these files) |
+| DEX, expanded (1019000/1020050/1021000 `classes`+`classes2`, 6 files) | 0.884 | 0.903 | separate cohort; B2 0.884; `best` keeps delta (rep within the 5% margin) |
+Other families unchanged from the first C1 pass (tar .37, CLR .32, SQLite .30, SST .32, Git .58, unrelated 1.00). ZN7 below. Thresholds unchanged.
 
-## Other results
-`prodshadow`: the four baseline failures (also on untouched main) had one cause, the lab bridge hooking `computeReachabilityObserved` after P3 moved the scan; the bridge now wraps `reachabilityScanOpts`; all pass. Root suite 556 s PASS; Full root suite under `-race` 2,213 s PASS (no races). Fuzz 40 s each, no findings: `FuzzXDeltaEnvelope` 574k execs, `FuzzAuthRecord` 573k, `FuzzAuthWindowRecord` (new) 453k. Clean checkout builds and vets, `go.mod` unchanged and dependency-free, reproducible build identical. Source map of `zeros3.go` regenerated (`srcmap.py`, 38 entries pass `toc_check`); the older test map is stale on main as before. Fixed by tests: format level assertions (10 reserved -> 10/12), authority tests state archive order explicitly.
-P7: `extract_all.sh` onto this tree: numeric 70 and hard-codec 306 differential vectors byte-identical, rehearsals pass, production digest unchanged. Not landed (about 11.5k inert lines) and not enabled; no savings claimed; extractor now aliases clashing std imports.
+## P7 integration
+* **ZN7 integrated** (extracted numcore/qcore, section 16g, 6.6 kLOC): a delta-form body whose envelope is the ZN7 container; bases (earlier versions, float source, imatrix) are record bases, so closure, gc, prune, repair keep them; `zn7` feature refuses unknown builds; `revert -all` clears it. Real data in fresh processes (`TestAuthorityZN7RealModels`): Pythia-14M, 5 checkpoints 0.882x; SmolLM2 f16 + imatrix + Q4_0 0.751x, f16/imatrix keys deleted + prune + gc, Q4_0 still exact, revert exact. Synthetic BF16 history 0.371x. Decode uses one worker; encode uses per-worker `manifestReaderAt` via `authObjAt`.
+* **Not integrated: Brotli Parquet (+cold-tier policy), LZ4 SST/Parquet.** The production Parquet port predates P7's recipe ids 11-15 and needs the 3.8 kLOC Brotli encoder, a new compatibility floor for the recipe ids and a tier-policy rule (Brotli replay is 11.7 MB/s per core: cold only); landing it inert would add code with no readable form. Research implementations stay in `testing-harnesses/z3`.
 
-## Code
-`zeros3.go` +5,626/-93. Mechanically transferred ~4,800 (B2 3,048, `dcore` block 1,466, P5 planner ~270); materially modified ~250 (12 conflict regions, planner legacy removal); new ~830 (levels/revert-all/lowering, windowed adapters, streamed sketch, read-ratio gate, scope, virtual-index keying, CLI, seams). Tests +3,860 (B2 authority/economics ~2,330 transferred; the rest new).
+## Qualification of the final tree
+gofmt, vet, reproducible build, clean checkout, `go.mod` unchanged, source/test maps pass; root suite PASS 889 s; authority suites; fuzz 40 s x3 clean (`FuzzXDeltaEnvelope`, `FuzzAuthRecord`, `FuzzAuthWindowRecord`); prodshadow/numcore/qcore pass; five-generation matrix; scale; 256 MiB/1 GiB/2 GiB; real models. RACE: see `qualification_summary.tsv`.
 
-## Limitations and P8
-Offline exclusive-lock maintenance only; one record file per body (50k fine); native closure transfer is a library stream, `stats` not authority-aware; hybrid is rarely admitted (delta whole reads are 0.3x CDC), so authority is an archive tier; floor lock-in until revert -all. P8: investigate rep component sharing regression vs B8, leaf-hashed ZW1 frames for range amplification, record packing for millions of bodies, an online background worker, authority-aware stats.
+## Remaining limits
+Offline exclusive-lock maintenance; floor lock-in until `revert -all`; archive reads 21-390 MB/s vs CDC 1,084; ZN7 decode single-worker; Brotli/LZ4 forms; 2 GiB migrate 132 MiB.

@@ -1,0 +1,17 @@
+G5 migrate memory, 3 x 1 GiB history, peak RSS / heap (in-process profile test unless "CLI"); every row is a real run, including the ones that did not help
+start (19b24fa)                                            CLI 274 MiB, VmHWM 341 MiB in-process, 48 GB allocated (random reads reopened a body and re-decoded a 1 MiB window per 64 KiB page)
+persistent authority body per random-access reader         VmHWM 266 MiB, 7.9 GB allocated
+anchor table load 2/3 (edit hit the in-memory index by mistake), scan buffers 1 MiB, page cache 32 pages: VmHWM 271 MiB (no gain: wrong index)
+anchor table fix in the windowed index                      VmHWM 252 MiB (table 32 -> 16 MiB)
+request chunk cache 48 -> 8 MiB, scan contexts 2 MiB        VmHWM 223 MiB
+GC at 25% growth                                            VmHWM 162 MiB, CLI 156 MiB, +20% wall
+GOGC 50 / 100 (CLI)                                         170 MiB, 79 s / 198 MiB, 74 s
+GOMAXPROCS=2 in the environment (CLI)                       94 MiB, 91 s  (read-ahead workers are sized from GOMAXPROCS at init)
+-workers 2 without resizing read-ahead                      CLI 165 MiB (GOMAXPROCS set after init did not shrink pipeWorkers)
+-workers 2 resizing pipeWorkers/pipeStreamLimit (final)     CLI 95.5 MiB, 83.7 s (clean machine; 62.7 s before: +34% wall)
+
+G9 Parquet / DEX diagnostics (physical bytes, same pipeline both sides)
+Parquet z331 (pyarrow 26.0.1) CDC raw direct packs 104,675,957 -> rep-only 47,405,234 (0.4529) = the original C1 row
+same, repack -recompress on both sides            CDC 95,189,615 -> rep-only 30,862,898 (0.3242); B8 reference binary 95,394,755 -> 31,069,167 (0.3257)
+DEX B8 cohort, planner before end-state pricing   recompressed CDC 11,709,128: rep-only admitted nothing (1.000): raw staged components were priced above compressed CDC chunks
+DEX six-file cohort, rep-only before the fix      rejected (1.000): progressive abandonment projected the first two members' marginal (5.7, 4.7 MB) onto the rest (0.3, 5.4, 4.4, 1.0 MB); forced rep 20,608,827 = 0.8837
