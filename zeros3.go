@@ -47029,6 +47029,10 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	return m.rep, nil
 }
 
+// authRepAbandonMin is the group size above which a representation group may be abandoned before all its
+// members are built.
+const authRepAbandonMin = 16
+
 type authRepCand struct {
 	kind     repKind
 	root     *repRoot
@@ -47193,9 +47197,12 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 			union += rc.marginal
 			m.repC[i] = rc
 			built++
-			if built >= m.pol.MinRepGroup && k+1 < len(members) {
+			// Progressive abandonment only for large groups: in a history each later revision usually
+			// adds far less than the first ones (F-Droid classes2.dex: 5.7, 4.7, 0.3, 5.4, 4.4, 1.0 MB),
+			// so projecting the current marginal onto the rest rejected a group whose union wins.
+			if len(members) > authRepAbandonMin && built >= m.pol.MinRepGroup && k+1 < len(members) {
 				rest := int64(len(members) - k - 1)
-				proj := union + rest*rc.marginal + 160*int64(len(members))
+				proj := union + rest*rc.marginal/2 + 160*int64(len(members))
 				if proj > bound {
 					abandoned = true
 					if cache != nil {

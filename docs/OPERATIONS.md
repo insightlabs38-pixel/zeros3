@@ -360,6 +360,13 @@ freed (a pack that is a fraction L live costs L/(1-L); measured on 4 KiB objects
 with random deletions: 2.0 at 30% dead, 5.9 at 10% dead with a 100% threshold), so
 use it when space matters more than the I/O.
 
+Packs written by direct ingest hold raw records and stay raw while every record in
+them is live. `-recompress` (with `-compression auto`) also rewrites such fully live
+packs so their records are deflated when that saves space; use it on cold stores, and
+after `authority migrate` + `gc -apply`, so that the retired CDC copies and the new
+components are compared on the same compressed footing. A pack whose raw records are
+incompressible is rewritten identically by every run.
+
 ### Maintenance parallelism
 
 `stats`, `verify` (including `-deep`), `doctor`, `gc`, `repack` and `compact`

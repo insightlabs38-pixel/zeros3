@@ -101,7 +101,8 @@ understand a required format must refuse the store instead of guessing.
 | Visibility journal | 1 framing | append-only, checksummed namespace authority; later record kinds remain versioned/fail-closed |
 | Store format | 1..12 | feature floor recorded in `FORMAT.json`; 10 authority, 11 segments, 12 both; see below |
 | Authority body record | 1 | optional content-keyed body (`bodies/<hh>/<sha256>.body`, magic `ZS3B`): pin, representation or delta |
-| Authority delta envelope | 1 | `ZS3D` (in-memory, up to 256 MiB) and `ZW1` (windowed single base, any size) |
+| Authority delta envelope | 1 | `ZS3D` (in-memory, up to 256 MiB), `ZW1` (windowed single base, any size) and `ZN7\x01` (windowed model container: float histories, quantized derivations) |
+| Store features | 1 | `FORMAT.json` `features`: `zn7` is recorded before the first ZN7 container record; a build that does not know a recorded feature refuses the store; `authority revert -all` clears it with the last record |
 | Representation object | 1 | optional immutable structured-representation description, magic `ZS3R` |
 | Representation root | 1 | optional per-manifest sidecar naming a representation, magic `ZS3T` |
 | Pack | 1 | immutable packed CAS records and index |
@@ -167,7 +168,9 @@ store to `required_level` and removes `bodies/`; it never lowers the level while
 exists. Default migration keeps the newest version of a history in CDC
 (`-order newest`); `-archive` makes the oldest versions bases and drops the read-cost
 gates (hybrid admissions are refused below 0.5x CDC whole-object throughput or above
-4x CDC 4 KiB amplification).
+4x CDC 4 KiB amplification). `authority migrate` bounds its parallelism (`-workers`, default 2,
+also GOMAXPROCS): about 30 MiB of resident memory per worker on a 1 GiB base. Physical
+reclamation of the retired CDC copies is `gc -apply`, `repack -apply -recompress`, `compact`.
 
 Apart from `authority revert -all` the version never decreases automatically.
 

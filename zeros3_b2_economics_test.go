@@ -537,6 +537,25 @@ func TestB2RepBreakdown(t *testing.T) {
 	cdcPhys := dirBytes(t, dir)
 	econMigrate(t, dir, AuthPolicy{Order: "oldest", AllowRep: true})
 	econReclaim(t, dir)
+	// Independent fresh-process reconstruction: a separate server process serves every object and a
+	// separate verify process deep-checks the store; each served body is hashed against its source file.
+	{
+		bin := buildZeros3Binary(t)
+		g1MustCLI(t, bin, "verify", "-store", dir, "-deep")
+		srv := g1Serve(t, bin, dir)
+		for _, f := range fam.files {
+			key := strings.ReplaceAll(strings.TrimPrefix(f, filepath.Dir(filepath.Dir(f))+"/"), "/", "_")
+			want, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, got, _ := g1Get(t, srv.base, key, nil)
+			if code != 200 || sha256.Sum256(got) != sha256.Sum256(want) {
+				t.Fatalf("fresh process: %s status %d, exact=%v", key, code, sha256.Sum256(got) == sha256.Sum256(want))
+			}
+		}
+		srv.stop()
+	}
 	s, err := OpenStore(dir)
 	if err != nil {
 		t.Fatal(err)
