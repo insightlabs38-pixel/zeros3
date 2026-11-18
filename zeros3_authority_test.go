@@ -5272,3 +5272,153 @@ func TestAuthorityZN7DecodeScaling(t *testing.T) {
 			logical>>20, best.Round(time.Millisecond), float64(logical)/(1<<20)/best.Seconds(), ranges, (time.Since(t0) / time.Duration(ranges)).Round(time.Microsecond), peak.Load()>>20, base>>20)
 	}
 }
+
+// ---- Z4-P7 hard codecs: exact Brotli / LZ4 Parquet pages and LZ4 SST blocks -------------------------------------
+
+func hardFixtures(t *testing.T) map[string][]byte {
+	t.Helper()
+	out := map[string][]byte{}
+	for _, f := range []string{"pa_brotli.parquet", "pa_brotli_q6.parquet", "pa_lz4_raw.parquet", "rocksdb_lz4_small.sst", "rocksdb_lz4hc_small.sst"} {
+		b, err := os.ReadFile(filepath.Join("testdata", "p7", f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[f] = b
+	}
+	return out
+}
+
+func hardLab(t *testing.T) *authLab {
+	l := newAuthLab(t)
+	for k, v := range hardFixtures(t) {
+		l.put(k, v)
+	}
+	return l
+}
+
+func readFeatures(t *testing.T, dir string) []string {
+	f, _ := readFormatVersion(t, dir)
+	return f.Features
+}
+
+// The codec replay is admitted by archive migrations only: the same files stay CDC without it, with it
+// every page is rebuilt byte for byte from its body and the store gains the "hardcodec" feature.
+func TestAuthorityHardCodecsAdmissionAndExactness(t *testing.T) {
+	off := hardLab(t)
+	rep := off.migrate(AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, MinObject: 1, MinRepGroup: 1})
+	for _, p := range rep.Plans {
+		if p.Form == "rep" {
+			t.Fatalf("a hard-codec file was admitted without HardCodecs: %+v", p)
+		}
+	}
+	off.close()
+	if slices.Contains(readFeatures(t, off.dir), "hardcodec") {
+		t.Fatal("the feature marker was raised without a hard-codec record")
+	}
+
+	l := hardLab(t)
+	rep = l.migrate(AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, MinObject: 1, MinRepGroup: 1, HardCodecs: true})
+	admitted := map[string]AuthPlan{}
+	for _, p := range rep.Plans {
+		if p.Form == "rep" {
+			admitted[p.SHA] = p
+		}
+	}
+	for k, v := range l.want {
+		p, ok := admitted[l.man(k).ObjectSHA256]
+		if !ok {
+			t.Errorf("%s not admitted as a representation: %+v", k, rep.Plans)
+			continue
+		}
+		t.Logf("%-24s %8d bytes: components %8d bytes (%.2fx)", k, len(v), p.AddedBytes, float64(p.AddedBytes)/float64(len(v)))
+	}
+	l.exact("hard-codecs")
+	l.reclaim()
+	l.exact("hard-codecs-reclaimed")
+	l.verifyOK("hard-codecs-reclaimed")
+	l.close()
+	if f := readFeatures(t, l.dir); !slices.Contains(f, "hardcodec") {
+		t.Fatalf("features %v: hardcodec missing after hard-codec records were published", f)
+	}
+	want := authWantFile(t, l.want)
+	if a := authAuditDir(t, l.dir, want); a.Exact != len(l.want) || !a.VerifyOK {
+		t.Fatalf("fresh process: %+v", a)
+	}
+}
+
+// The hardcodec feature lifecycle: builds that predate the replay refuse the store, an imported closure
+// brings the feature along, and revert -all clears it so every older build opens the store again.
+func TestAuthorityHardCodecsFeatureLifecycle(t *testing.T) {
+	c1 := buildBinaryAt(t, "b1d5e555c03ade67671bc16e3e89c906cf25f1af") // Z4-C1: authority and zn7, no hardcodec
+	pre := buildOldBinary(t)                                           // before authority
+	l := hardLab(t)
+	l.close()
+	_, before := readFormatVersion(t, l.dir)
+	l.open()
+	l.migrate(AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, MinObject: 1, MinRepGroup: 1, HardCodecs: true})
+	l.reclaim()
+	l.close()
+	digest := treeDigest(t, l.dir)
+	for name, bin := range map[string]string{"C1": c1, "pre-authority": pre} {
+		for _, args := range [][]string{{"stats", "-store", l.dir}, {"verify", "-store", l.dir}, {"gc", "-store", l.dir, "-apply"}} {
+			out, errOut, code := runZeros3CLI(t, bin, args...)
+			if code == 0 {
+				t.Fatalf("%s binary %v opened a hard-codec store: %s", name, args, out)
+			}
+			if name == "C1" && !strings.Contains(out+errOut, "hardcodec") {
+				t.Fatalf("C1 binary %v refused without naming the feature: %q", args, out+errOut)
+			}
+		}
+	}
+	if treeDigest(t, l.dir) != digest {
+		t.Fatal("an older binary mutated the store while refusing it")
+	}
+
+	// the closure of every record moves to a fresh store: the destination gains the feature and serves exact bytes
+	l.open()
+	peer := newAuthLab(t)
+	files, _ := l.s.authFiles()
+	for _, sha := range files {
+		var buf bytes.Buffer
+		if err := l.s.ExportAuthorityClosure(sha, &buf); err != nil {
+			t.Fatal(err)
+		}
+		if err := peer.s.ImportAuthorityClosure(&buf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	peer.close()
+	if f := readFeatures(t, peer.dir); !slices.Contains(f, "hardcodec") {
+		t.Fatalf("imported closure did not raise the feature: %v", f)
+	}
+	peer.open()
+	for k, w := range l.want {
+		sha, _ := decodeHexSHA256(l.man(k).ObjectSHA256)
+		rec, err := peer.s.authLoad(sha)
+		if err != nil || rec == nil {
+			t.Fatalf("%s: imported record missing: %v", k, err)
+		}
+		body, _, err := peer.s.newAuthCtx().body(sha, 0, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make([]byte, len(w))
+		if n, err := body.ReadAt(got, 0); n != len(w) || !bytes.Equal(got, w) {
+			t.Fatalf("%s: imported closure reads wrong bytes (%d, %v)", k, n, err)
+		}
+	}
+
+	rr, err := l.s.AuthorityRevertAll()
+	if err != nil || rr.LoweredTo != before {
+		t.Fatalf("revert -all: %+v %v", rr, err)
+	}
+	l.exact("reverted")
+	l.verifyOK("reverted")
+	l.close()
+	if f := readFeatures(t, l.dir); len(f) != 0 {
+		t.Fatalf("features %v remain after revert -all", f)
+	}
+	if out, errOut, code := runZeros3CLI(t, pre, "verify", "-store", l.dir, "-deep"); code != 0 {
+		t.Fatalf("pre-authority binary cannot reopen the reverted store: %s %s", out, errOut)
+	}
+}

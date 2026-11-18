@@ -6,10 +6,12 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -672,5 +674,195 @@ func TestRepCodecMetadataCountsBounded(t *testing.T) {
 				t.Fatalf("unit count allocated %d bytes", allocated)
 			}
 		})
+	}
+}
+
+// ---- Z4-P7 exact replay: the production Brotli and LZ4 against pinned producer output ----------------------------
+//
+// The vectors are the research module's (testing-harnesses/z3/{brotliz3,lz4z3}/testdata): SHA-256 of
+// google/brotli 1.2.0 output for deterministic inputs, a pair of Arrow pages, and liblz4 1.9.4 / python-lz4
+// / lz4 CLI blocks and frames. Nothing here links the research packages.
+
+func hardBrotliInput(kind string, n int, r *rand.Rand) []byte {
+	out := make([]byte, 0, n+64)
+	words := []string{"alpha", "bravo", "charlie", "delta", "the ", "and ", "<div>", "</div>", "\n", " ", "http://", "value", "information", "available"}
+	switch kind {
+	case "text":
+		for len(out) < n {
+			out = append(out, words[r.Intn(len(words))]...)
+			if r.Intn(3) == 0 {
+				out = append(out, fmt.Sprintf("%04x", r.Intn(65536))...)
+			}
+		}
+	case "rand":
+		out = out[:n]
+		r.Read(out)
+	case "zeros":
+		out = out[:n]
+	case "ints":
+		for i := 0; len(out) < n; i++ {
+			out = binary.LittleEndian.AppendUint64(out, uint64(i*1000+r.Intn(3)))
+		}
+	case "floats":
+		for len(out) < n {
+			out = binary.LittleEndian.AppendUint64(out, math.Float64bits(r.NormFloat64()))
+		}
+	case "low":
+		for len(out) < n {
+			out = append(out, "abcd"[r.Intn(4)])
+		}
+	case "mixed":
+		kinds := []string{"text", "rand", "zeros", "ints", "low"}
+		for len(out) < n {
+			out = append(out, hardBrotliInput(kinds[r.Intn(len(kinds))], []int{100, 3000, 70000}[r.Intn(3)], r)...)
+		}
+	}
+	return out[:n]
+}
+
+func TestHardBrotliMatchesPinnedProducerOutput(t *testing.T) {
+	if err := hcBrotliEnsureDict(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile("testing-harnesses/z3/brotliz3/testdata/golden.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden := map[string]string{}
+	for _, l := range strings.Split(string(raw), "\n") {
+		if p := strings.Fields(l); len(p) == 2 {
+			golden[p[0]] = p[1]
+		}
+	}
+	params := [][2]int{{8, 22}, {9, 22}, {8, 18}, {8, 24}, {5, 22}, {6, 20}, {7, 17}}
+	r := rand.New(rand.NewSource(11))
+	checked := 0
+	for _, k := range []string{"text", "rand", "zeros", "ints", "floats", "low", "mixed"} {
+		for _, n := range []int{1, 2, 3, 10, 63, 64, 65, 300, 4096, 65535, 65536, 65537, 200000, 1048575, 1048576, 1300000} {
+			data := hardBrotliInput(k, n, r)
+			for _, p := range params {
+				if n > 300000 && p != params[0] && p != params[1] || p[1] != 22 && n%65536 == 0 || testing.Short() && n > 300000 {
+					continue
+				}
+				name := fmt.Sprintf("%s-%d/q%d/w%d", k, n, p[0], p[1])
+				got, err := hcBrotliz3Encode(data, p[0], p[1])
+				if err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+				if sum := sha256.Sum256(got); hex.EncodeToString(sum[:]) != golden[name] {
+					t.Errorf("%s differs from the pinned google/brotli output", name)
+				}
+				if dec, err := hcBrotliz3Decode(got, len(data)); err != nil || !bytes.Equal(dec, data) {
+					t.Fatalf("%s: own output does not decode: %v", name, err)
+				}
+				checked++
+			}
+		}
+	}
+	if checked < 300 {
+		t.Fatalf("only %d vectors compared", checked)
+	}
+	for _, name := range []string{"arrow_page_small", "arrow_page_mid"} {
+		pay, err := os.ReadFile("testing-harnesses/z3/brotliz3/testdata/" + name + ".br")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := hcBrotliz3Decode(pay, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := hcBrotliz3Encode(body, 8, 22); err != nil || !bytes.Equal(got, pay) {
+			t.Fatalf("%s: re-encoding differs from the Arrow page (%v)", name, err)
+		}
+	}
+	for _, p := range [][2]int{{4, 22}, {10, 22}, {11, 22}, {8, 16}, {8, 25}, {-1, 22}} {
+		if _, err := hcBrotliz3Encode([]byte("x"), p[0], p[1]); err == nil {
+			t.Fatalf("quality %d window %d accepted: outside the ported encoder path", p[0], p[1])
+		}
+	}
+}
+
+func TestHardLZ4MatchesPinnedProducerOutput(t *testing.T) {
+	raw, err := os.ReadFile("testing-harnesses/z3/lz4z3/testdata/MANIFEST.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixtures []struct {
+		File, SHA, Predictor string
+		Decoded, Accel       int
+	}
+	var m []map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range m {
+		f := struct {
+			File, SHA, Predictor string
+			Decoded, Accel       int
+		}{File: e["file"].(string), SHA: fmt.Sprint(e["sha256_decoded"]), Predictor: fmt.Sprint(e["predictor"])}
+		if v, ok := e["decoded"].(float64); ok {
+			f.Decoded = int(v)
+		}
+		if v, ok := e["accel"].(float64); ok {
+			f.Accel = int(v)
+		}
+		fixtures = append(fixtures, f)
+	}
+	pred := map[string]int{"default": hcLz4z3PredDefault, "default5": hcLz4z3PredDefault5, "continue": hcLz4z3PredContinue, "hc": hcLz4z3PredHC}
+	blocks, frames := 0, 0
+	for _, f := range fixtures {
+		data, err := os.ReadFile("testing-harnesses/z3/lz4z3/testdata/" + f.File)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(f.File, "py_") { // raw blocks from the C library: the registered predictor reproduces them
+			plain, seqs, err := hcLz4z3Decode(data, f.Decoded, hcLz4z3Limits{})
+			if err != nil {
+				t.Fatal(f.File, err)
+			}
+			if h := sha256.Sum256(plain); hex.EncodeToString(h[:]) != f.SHA {
+				t.Fatalf("%s: decoded SHA mismatch", f.File)
+			}
+			if got, ok := hcLz4z3PredictBlock(pred[f.Predictor], plain, f.Accel); !ok || !bytes.Equal(got, data) {
+				t.Fatalf("%s: predictor %s/%d does not reproduce the library block", f.File, f.Predictor, f.Accel)
+			}
+			if re, err := hcLz4z3Build(plain, seqs); err != nil || !bytes.Equal(re, data) {
+				t.Fatalf("%s: explicit rebuild differs: %v", f.File, err)
+			}
+			blocks++
+			continue
+		}
+	}
+	// frames (lz4 CLI 1.9.4, linked and independent, fast and HC): every block is predicted, hybrid or
+	// explicit, and the whole stream replays byte for byte
+	files, _ := filepath.Glob("testing-harnesses/z3/lz4z3/testdata/*.lz4")
+	for _, path := range files {
+		if strings.HasPrefix(filepath.Base(path), "py_") {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plain, rec, st, err := hcLz4z3AnalyzeFrames(data, hcLz4z3Limits{})
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		var out bytes.Buffer
+		if err := hcLz4z3ReplayFrames(&out, rec, bytes.NewReader(plain), hcLz4z3Limits{}); err != nil || !bytes.Equal(out.Bytes(), data) {
+			t.Fatalf("%s: frame replay differs (%v)", path, err)
+		}
+		for _, f := range fixtures {
+			if f.File == filepath.Base(path) && f.SHA != "" && f.SHA != "<nil>" {
+				if h := sha256.Sum256(plain); hex.EncodeToString(h[:]) != f.SHA {
+					t.Fatalf("%s: payload SHA mismatch", path)
+				}
+			}
+		}
+		t.Logf("%-28s blocks predicted/hybrid/explicit = %d/%d/%d", filepath.Base(path), st.Predicted, st.Hybrid, st.Explicit)
+		frames++
+	}
+	if blocks < 4 || frames < 8 {
+		t.Fatalf("fixtures covered: %d blocks, %d frames", blocks, frames)
 	}
 }
