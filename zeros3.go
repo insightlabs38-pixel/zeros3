@@ -45580,6 +45580,7 @@ type authCtx struct {
 	fetched int64
 	// pieces is a request-local FIFO of verified chunks shared by every body of
 	// the closure (a base chunk is often read through several dependents).
+	pmu        sync.Mutex // guards pieces, pieceOrder, pieceBytes and fetched
 	pieces     map[[32]byte][]byte
 	pieceOrder [][32]byte
 	pieceBytes int64
@@ -45660,8 +45661,13 @@ func (c *authCtx) body(sha [32]byte, want int64, depth int) (authBody, *authReco
 	return b, rec, nil
 }
 
+// readPiece may be called by concurrent bodies of one closure (ZN7 window workers): the chunk cache
+// is guarded, the chunk read itself is not.
 func (c *authCtx) readPiece(p authPiece) ([]byte, error) {
-	if d, ok := c.pieces[p.SHA]; ok {
+	c.pmu.Lock()
+	d, ok := c.pieces[p.SHA]
+	c.pmu.Unlock()
+	if ok {
 		return d, nil
 	}
 	data, err := c.s.casRead(p.SHA)
@@ -45670,6 +45676,11 @@ func (c *authCtx) readPiece(p authPiece) ([]byte, error) {
 	}
 	if int64(len(data)) != p.Len {
 		return nil, fmt.Errorf("%w: chunk %x is %d bytes, record says %d", errAuthCorrupt, p.SHA[:6], len(data), p.Len)
+	}
+	c.pmu.Lock()
+	defer c.pmu.Unlock()
+	if _, dup := c.pieces[p.SHA]; dup {
+		return data, nil
 	}
 	c.fetched += p.Len
 	if c.pieces == nil {
@@ -52644,6 +52655,7 @@ func (o *ncNumcoreObject) ReadRange(ctx context.Context, off, n int64, rv ncNumc
 	end := off + n
 	var gaps []byte
 	gp, prev := int64(0), int64(0)
+	var jobs []func() error
 	fill := func(lo, hi int64, src func(a, b int64) ([]byte, error)) error { // file span [lo,hi)
 		a, b := lo, hi
 		if a < off {
@@ -52705,19 +52717,73 @@ func (o *ncNumcoreObject) ReadRange(ctx context.Context, off, n int64, rv ncNumc
 			if hi <= off || lo >= end {
 				continue
 			}
-			err := fill(lo, hi, func(a, b int64) ([]byte, error) {
-				win, err := s.window(ctx, o, 0, ti, int64(k))
-				if err != nil {
-					return nil, err
-				}
-				return win[a:b], nil
+			ti, k := ti, k
+			jobs = append(jobs, func() error {
+				return fill(lo, hi, func(a, b int64) ([]byte, error) {
+					win, err := s.window(ctx, o, 0, ti, int64(k))
+					if err != nil {
+						return nil, err
+					}
+					return win[a:b], nil
+				})
 			})
-			if err != nil {
-				return nil, s.stats(o), err
-			}
 		}
 	}
+	// Windows are independent and authenticated one by one; each writes its own span of out, so they
+	// decode concurrently (bounded by opt.Workers and the process-wide token pool) and the result is
+	// the same bytes in the same order as the serial loop.
+	if err := ncNumcore_runJobs(ctx, jobs, opt.Workers); err != nil {
+		return nil, s.stats(o), err
+	}
 	return out, s.stats(o), nil
+}
+
+// ncNumcoreDecodeTokens bounds the window decoders running at once in the whole process, however many
+// requests are reading: each one holds at most one window (plus the bases it derives from) in memory.
+var ncNumcoreDecodeTokens = make(chan struct{}, ncNumcoreDecodeWorkersMax)
+
+const ncNumcoreDecodeWorkersMax = 8
+
+func ncNumcore_runJobs(ctx context.Context, jobs []func() error, workers int) error {
+	workers = min(workers, len(jobs), ncNumcoreDecodeWorkersMax)
+	if workers <= 1 {
+		for _, j := range jobs {
+			if err := j(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var next atomic.Int64
+	var first atomic.Value
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				i := int(next.Add(1) - 1)
+				if i >= len(jobs) {
+					return
+				}
+				ncNumcoreDecodeTokens <- struct{}{}
+				err := jobs[i]()
+				<-ncNumcoreDecodeTokens
+				if err != nil {
+					first.CompareAndSwap(nil, err)
+					cancel()
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if e := first.Load(); e != nil {
+		return e.(error)
+	}
+	return ctx.Err()
 }
 
 // DType is the element type of a tensor payload.
@@ -56905,6 +56971,8 @@ func (r *authZN7Res) Open(ctx context.Context, id ncNumcoreID) (ncNumcoreStored,
 }
 
 func (r *authZN7Res) Aux(ctx context.Context, id ncNumcoreID) ([]byte, error) {
+	r.mu.Lock() // the body behind an auxiliary object is not safe for concurrent readers
+	defer r.mu.Unlock()
 	rec, err := r.c.s.authLoad([32]byte(id))
 	if err != nil {
 		return nil, err
@@ -56979,7 +57047,15 @@ func (c *authCtx) newZN7(rec *authRecord, blob *pieceSeq, depth int) (authBody, 
 	if int(rec.Depth) < maxDepth+1 {
 		return nil, fmt.Errorf("%w: recorded depth %d below the bases' %d", errAuthCorrupt, rec.Depth, maxDepth+1)
 	}
-	return &authZN7Body{c: c, rec: rec, obj: obj, res: &authZN7Res{c: c, depth: depth + 1}, opt: ncNumcoreDecOpts{Workers: 1, CacheBytes: 16 << 20}, boff: -1}, nil
+	return &authZN7Body{c: c, rec: rec, obj: obj, res: &authZN7Res{c: c, depth: depth + 1}, opt: ncNumcoreDecOpts{Workers: authZN7DecodeWorkers(), CacheBytes: 16 << 20}, boff: -1}, nil
+}
+
+// authZN7DecodeWorkers is the window parallelism of one read: ZEROS3_ZN7_WORKERS, else up to four.
+func authZN7DecodeWorkers() int {
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_ZN7_WORKERS")); err == nil && v >= 1 {
+		return min(v, ncNumcoreDecodeWorkersMax)
+	}
+	return min(4, runtime.GOMAXPROCS(0))
 }
 
 func (b *authZN7Body) Size() int64 { return b.rec.Size }

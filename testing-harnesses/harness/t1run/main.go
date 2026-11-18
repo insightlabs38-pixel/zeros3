@@ -36,6 +36,7 @@ type result struct {
 	Seconds float64 `json:"seconds"`
 	MaxRSS  int64   `json:"max_rss_kib,omitempty"`
 	CPU     float64 `json:"cpu_seconds,omitempty"`
+	Start   float64 `json:"start,omitempty"` // seconds after the run began (timeline and utilization)
 	Cached  bool    `json:"cached,omitempty"`
 	Output  string  `json:"output,omitempty"` // failures only
 }
@@ -47,28 +48,31 @@ type costEntry struct {
 }
 
 type evidence struct {
-	Command  string   `json:"command"`
-	Mode     string   `json:"mode"`
-	GoVer    string   `json:"go_version"`
-	CPUs     int      `json:"cpus"`
-	Jobs     int      `json:"jobs"`
-	SrcHash  string   `json:"source_hash"`
-	BinHash  string   `json:"test_binary_sha256"`
-	EnvHash  string   `json:"identity"`
-	Selected int      `json:"selected"`
-	Fresh    int      `json:"fresh"`
-	Reused   int      `json:"reused"`
-	Passed   int      `json:"passed"`
-	Failed   []string `json:"failed,omitempty"`
-	Skipped  int      `json:"skipped"`
-	BuildSec float64  `json:"build_seconds"`
-	WallSec  float64  `json:"wall_seconds"`
-	CPUSec   float64  `json:"test_cpu_seconds"`
-	Exit     int      `json:"exit"`
-	Results  []result `json:"results,omitempty"`
-	Started  string   `json:"started"`
-	Notes    []string `json:"notes,omitempty"`
+	Command    string   `json:"command"`
+	Mode       string   `json:"mode"`
+	GoVer      string   `json:"go_version"`
+	CPUs       int      `json:"cpus"`
+	Jobs       int      `json:"jobs"`
+	SrcHash    string   `json:"source_hash"`
+	BinHash    string   `json:"test_binary_sha256"`
+	EnvHash    string   `json:"identity"`
+	Selected   int      `json:"selected"`
+	Fresh      int      `json:"fresh"`
+	Reused     int      `json:"reused"`
+	Passed     int      `json:"passed"`
+	Failed     []string `json:"failed,omitempty"`
+	Skipped    int      `json:"skipped"`
+	BuildSec   float64  `json:"build_seconds"`
+	WallSec    float64  `json:"wall_seconds"`
+	CPUSec     float64  `json:"test_cpu_seconds"`
+	BusyCPUSec float64  `json:"process_cpu_seconds"` // user+system CPU of the test processes, children included
+	Exit       int      `json:"exit"`
+	Results    []result `json:"results,omitempty"`
+	Started    string   `json:"started"`
+	Notes      []string `json:"notes,omitempty"`
 }
+
+var runStart time.Time
 
 var (
 	mode      = flag.String("mode", "normal", "normal | race | authority | authority-race")
@@ -92,6 +96,7 @@ var (
 func main() {
 	flag.Parse()
 	t0 := time.Now()
+	runStart = t0
 	root := rootDir()
 	if _, err := os.Stat(filepath.Join(root, "zeros3.go")); err != nil {
 		die("run from inside the repository")
@@ -232,6 +237,11 @@ func main() {
 		}
 	}
 	ev.WallSec = time.Since(t0).Seconds()
+	for _, r := range results {
+		if !r.Cached {
+			ev.BusyCPUSec += r.CPU
+		}
+	}
 	if len(ev.Failed) > 0 {
 		ev.Exit = 1
 	}
@@ -246,8 +256,8 @@ func main() {
 		r := results[t]
 		fmt.Printf("--- FAIL %s (%.1fs)\n%s\n", t, r.Seconds, tail(r.Output, 4000))
 	}
-	fmt.Printf("t1run %s: %d selected, %d fresh, %d reused, %d passed, %d skipped, %d failed; build %.1fs wall %.1fs (test cpu %.0fs, %d jobs) bin=%s id=%s\n",
-		*mode, ev.Selected, ev.Fresh, ev.Reused, ev.Passed, ev.Skipped, len(ev.Failed), ev.BuildSec, ev.WallSec, ev.CPUSec, *jobs, ev.BinHash[:12], ev.EnvHash[:8])
+	fmt.Printf("t1run %s: %d selected, %d fresh, %d reused, %d passed, %d skipped, %d failed; build %.1fs wall %.1fs (test wall %.0fs, cpu %.0fs = %.0f%% of %d jobs) bin=%s id=%s\n",
+		*mode, ev.Selected, ev.Fresh, ev.Reused, ev.Passed, ev.Skipped, len(ev.Failed), ev.BuildSec, ev.WallSec, ev.CPUSec, ev.BusyCPUSec, 100*ev.BusyCPUSec/max(1, (ev.WallSec-ev.BuildSec)*float64(*jobs)), *jobs, ev.BinHash[:12], ev.EnvHash[:8])
 	os.Exit(ev.Exit)
 }
 
@@ -386,6 +396,7 @@ func (s *scheduler) exec(u unit, slot int) int {
 	defer os.RemoveAll(tmp)
 	pending := u.tests
 	for len(pending) > 0 && s.ctx.Err() == nil {
+		start := time.Now()
 		got, out, rss, cpu, timedOut := s.once(pending, tmp)
 		var tot float64
 		for _, r := range got {
@@ -399,6 +410,7 @@ func (s *scheduler) exec(u unit, slot int) int {
 				continue
 			}
 			r.MaxRSS = rss
+			r.Start = start.Sub(runStart).Seconds()
 			if tot > 0 {
 				r.CPU = cpu * r.Seconds / tot
 			}

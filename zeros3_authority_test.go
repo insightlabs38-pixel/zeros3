@@ -5180,3 +5180,95 @@ func TestAuthorityEquivAccounting(t *testing.T) {
 	l.exact("after-gc")
 	l.verifyOK("after-gc")
 }
+
+// TestAuthorityZN7DecodeScaling reads every migrated model version whole through the production
+// reader and reports throughput and peak RSS; run it once per ZEROS3_ZN7_WORKERS value in a fresh process.
+func TestAuthorityZN7DecodeScaling(t *testing.T) {
+	dir := os.Getenv("ZEROS3_C1_MODELS")
+	if dir == "" || os.Getenv("ZEROS3_C1_DECODE_BENCH") == "" {
+		t.Skip("decode benchmark: set ZEROS3_C1_MODELS and ZEROS3_C1_DECODE_BENCH")
+	}
+	for _, set := range []struct {
+		name  string
+		files []string
+	}{
+		{"pythia14m", []string{"pythia14m/step1000.safetensors", "pythia14m/step4000.safetensors", "pythia14m/step16000.safetensors", "pythia14m/step64000.safetensors", "pythia14m/step143000.safetensors"}},
+		{"smollm2-q4_0", []string{"smol/f16.gguf", "smol/imatrix.dat", "smol/Q4_0.gguf"}},
+	} {
+		l := newAuthLab(t)
+		var logical int64
+		for _, f := range set.files {
+			b, err := os.ReadFile(filepath.Join(dir, f))
+			if err != nil {
+				t.Fatal(err)
+			}
+			logical += int64(len(b))
+			l.put(f, b)
+		}
+		l.migrate(AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxBases: 2, MaxReadAmp: -1})
+		l.reclaim()
+		runtime.GC()
+		debug.FreeOSMemory()
+		// whole reads stream through the production object reader into a hash: the memory measured is
+		// the decode path (windows, caches, base reads), not the object
+		sums := map[string][32]byte{}
+		for k, w := range l.want {
+			sums[k] = sha256.Sum256(w)
+		}
+		base := vmRSS()
+		var peak atomic.Int64
+		stop := make(chan struct{})
+		sampled := make(chan struct{})
+		go func() {
+			defer close(sampled)
+			for {
+				select {
+				case <-stop:
+					return
+				case <-time.After(10 * time.Millisecond):
+					if r := vmRSS(); r > peak.Load() {
+						peak.Store(r)
+					}
+				}
+			}
+		}()
+		best := time.Hour
+		for rep := 0; rep < 3; rep++ {
+			t0 := time.Now()
+			for k, w := range l.want {
+				h := sha256.New()
+				rd := l.s.openObjectReader(l.man(k), byteRange{0, int64(len(w)) - 1})
+				for {
+					b, err := rd.next()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						t.Fatalf("%s: %s: %v", set.name, k, err)
+					}
+					h.Write(b)
+				}
+				rd.close()
+				if [32]byte(h.Sum(nil)) != sums[k] {
+					t.Fatalf("%s: %s differs at %s workers", set.name, k, os.Getenv("ZEROS3_ZN7_WORKERS"))
+				}
+			}
+			best = min(best, time.Since(t0))
+		}
+		close(stop)
+		<-sampled
+		var ranges int
+		t0 := time.Now()
+		for k, w := range l.want { // 4 KiB reads at 64 positions through window and tensor edges
+			for i := int64(0); i < 64; i++ {
+				off := (i*7919 + 13) * 4099 % int64(len(w)-4096)
+				if got := l.read(k, byteRange{off, off + 4095}); !bytes.Equal(got, w[off:off+4096]) {
+					t.Fatalf("%s: %s range at %d differs", set.name, k, off)
+				}
+				ranges++
+			}
+		}
+		t.Logf("DECODE %s workers=%s: %d MiB in %s = %.0f MiB/s, %d ranges %s each, peak RSS while streaming %d MiB (baseline RSS before: %d MiB)", set.name, os.Getenv("ZEROS3_ZN7_WORKERS"),
+			logical>>20, best.Round(time.Millisecond), float64(logical)/(1<<20)/best.Seconds(), ranges, (time.Since(t0) / time.Duration(ranges)).Round(time.Microsecond), peak.Load()>>20, base>>20)
+	}
+}
