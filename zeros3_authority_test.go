@@ -3485,7 +3485,7 @@ func FuzzAuthWindowRecord(f *testing.F) {
 	var rec bytes.Buffer
 	wp := authWParams(1, int64(len(base)))
 	wp.Window = 64 << 10
-	idx, err := dwDcoreBuildWIndex(bytes.NewReader(base), int64(len(base)), wp.Anchor, 1)
+	idx, err := dwDcoreBuildWIndex(bytes.NewReader(base), int64(len(base)), wp.Anchor, 1, nil)
 	if err != nil {
 		f.Fatal(err)
 	}

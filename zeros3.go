@@ -33528,14 +33528,13 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 				}
 				m.sm = sm
 			}
-			// A read that does not continue the previous one is a probe (a tar header, a
-			// table, a footer): fetch exactly the chunks it needs. An open-ended reader
-			// would plan a run of up to 64 contiguous chunks, decode and SHA-256 all of
-			// them, and drop all but the first at the next probe. The read that continues
-			// a probe (or any sequential scan) opens the open-ended, run-coalescing reader.
+			// A read that does not continue the previous one (a tar header, a table, a footer, an
+			// index probe) fetches exactly the chunks it needs: an open-ended reader would decode and
+			// SHA-256 a run of up to 64 chunks, and a prefetch pipeline behind it, then drop them at
+			// the next jump. Only the read that continues one opens the run-coalescing reader.
 			end := m.size - 1
-			if off != m.lastEnd && int64(len(p)-n) <= repProbeMax {
-				end = min(end, off+int64(len(p)-n)-1)
+			if off != m.lastEnd {
+				end = min(end, off+int64(len(p)-n)-1) // a jump reads what it asked for, however large
 			}
 			m.rd = m.s.openServedReader(m.sm, byteRange{start: off, end: end})
 			m.streamEnd, m.rdEnd = off, end
@@ -33575,9 +33574,6 @@ func (m *manifestReaderAt) initAuthBody() {
 		m.abody = b
 	}
 }
-
-// repProbeMax is the largest read treated as a probe after a jump.
-const repProbeMax = 64 << 10
 
 // ---- building and publishing ---------------------------------------------------
 
@@ -45923,12 +45919,16 @@ var (
 	authWindowSize int64 = 1 << 20  // target bytes per independently authenticated frame
 )
 
+// authMaxAnchors caps the anchor table at 16 MiB however large the base is: past 1 GiB the content
+// sampling rate drops instead (long identical regions are still found from sparser anchors).
+const authMaxAnchors = 1 << 20
+
 // authWParams bounds the working set: the anchor table follows the base size (one anchor
-// per KiB, 256 Ki to 4 Mi anchors) and each worker caches 2 MiB of base pages.
+// per KiB, 256 Ki to 1 Mi anchors) and each worker caches 2 MiB of base pages.
 func authWParams(workers int, baseSize int64) dwDcoreWParams {
 	p := dwDcoreDefaultWParams()
 	p.Window, p.Workers, p.CachePages = authWindowSize, workers, 32
-	p.Anchor.MaxAnchors = int(min(max(baseSize>>10, 256<<10), 4<<20))
+	p.Anchor.MaxAnchors = int(min(max(baseSize>>10, 256<<10), authMaxAnchors))
 	return p
 }
 
@@ -46445,9 +46445,10 @@ type authPlanCache struct {
 	deltaAdd  map[[32]byte]int64 // plan-only added bytes of the best delta per object
 	repC      map[[32]byte]*authRepCand
 	repAbort  map[repKind]bool
-	rejected  int                // rep objects never constructed because the group was abandoned
-	winAdded  map[[32]byte]int64 // plan-only added bytes of windowed deltas
-	znAdded   map[[32]byte]int64 // plan-only added bytes of ZN7 containers
+	rejected  int                   // rep objects never constructed because the group was abandoned
+	winAdded  map[[32]byte]int64    // plan-only added bytes of windowed deltas
+	winSketch map[[32]byte][]uint64 // similarity sketch of a windowed object: the applying pass reuses the plan pass's full read
+	znAdded   map[[32]byte]int64    // plan-only added bytes of ZN7 containers
 	reuseHits int
 	// stale is set when apply-time gating (proof failure, read-amplification
 	// refusal) rejected an object the plan-only pass had admitted: later cached
@@ -46464,7 +46465,7 @@ type authDeltaPlan struct {
 }
 
 func newAuthPlanCache() *authPlanCache {
-	return &authPlanCache{delta: map[[32]byte]*authDeltaPlan{}, deltaAdd: map[[32]byte]int64{}, repC: map[[32]byte]*authRepCand{}, repAbort: map[repKind]bool{}, winAdded: map[[32]byte]int64{}, znAdded: map[[32]byte]int64{}}
+	return &authPlanCache{delta: map[[32]byte]*authDeltaPlan{}, deltaAdd: map[[32]byte]int64{}, repC: map[[32]byte]*authRepCand{}, repAbort: map[repKind]bool{}, winAdded: map[[32]byte]int64{}, winSketch: map[[32]byte][]uint64{}, znAdded: map[[32]byte]int64{}}
 }
 
 // workers bounds the parallel window workers: resident memory grows by roughly 30 MiB per worker on a 1 GiB base.
@@ -47570,6 +47571,19 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 // the index table, per-worker page caches and one window per worker resident.
 // Plan-only passes measure the record without storing it; the applying pass
 // streams it into CAS pieces, so no pass buffers the record.
+func (c *authPlanCache) sketchOf(sha [32]byte) []uint64 {
+	if c == nil {
+		return nil
+	}
+	return c.winSketch[sha]
+}
+
+func (c *authPlanCache) putSketch(sha [32]byte, sk []uint64) {
+	if c != nil {
+		c.winSketch[sha] = sk
+	}
+}
+
 func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish func(AuthPlan)) error {
 	pol := m.pol
 	keep := func(why string) error {
@@ -47591,11 +47605,15 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	}
 	tgt := m.s.newAuthObjAt(o.man)
 	defer tgt.close()
-	sk, err := authSketchAt(tgt, o.man.TotalLength, 16)
-	if err != nil {
-		plan.Reason = "unreadable: " + err.Error()
-		finish(plan)
-		return nil
+	sk := pol.cache.sketchOf(o.sha)
+	if sk == nil {
+		var err error
+		if sk, err = authSketchAt(tgt, o.man.TotalLength, 16); err != nil {
+			plan.Reason = "unreadable: " + err.Error()
+			finish(plan)
+			return nil
+		}
+		pol.cache.putSketch(o.sha, sk)
 	}
 	m.sketch[i] = sk
 	cands := m.candidates(i, sk, true)
@@ -47612,7 +47630,7 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	defer base.close()
 	wp := authWParams(m.pol.workers(), bo.man.TotalLength)
 	defer debug.FreeOSMemory() // the anchor table and page caches are dead once this object is done
-	idx, err := dwDcoreBuildWIndex(base, bo.man.TotalLength, wp.Anchor, wp.Workers)
+	idx, err := dwDcoreBuildWIndex(base, bo.man.TotalLength, wp.Anchor, wp.Workers, &bo.sha)
 	if err != nil {
 		return keep("base unreadable: " + err.Error())
 	}
@@ -49299,7 +49317,7 @@ type dwDcoreWIndex struct {
 // BuildWIndex indexes base with `workers` parallel range scanners and hashes
 // it in one concurrent sequential pass. Peak memory: the table plus
 // workers*2*chunk bytes of read buffers.
-func dwDcoreBuildWIndex(base io.ReaderAt, size int64, p dwDcoreParams, workers int) (*dwDcoreWIndex, error) {
+func dwDcoreBuildWIndex(base io.ReaderAt, size int64, p dwDcoreParams, workers int, known *[32]byte) (*dwDcoreWIndex, error) {
 	if !p.valid() || workers < 1 || workers > 256 {
 		return nil, dwDcoreErrParams
 	}
@@ -49368,26 +49386,32 @@ func dwDcoreBuildWIndex(base io.ReaderAt, size int64, p dwDcoreParams, workers i
 			}
 		}()
 	}
-	// Sequential hashing pass, concurrent with indexing.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		hh := sha256.New()
-		buf := make([]byte, 1<<20)
-		for off := int64(0); off < size; {
-			n := int64(len(buf))
-			if size-off < n {
-				n = size - off
+	// Sequential hashing pass, concurrent with indexing. A caller that already knows the base's
+	// SHA-256 (the manifest's object digest, over chunks that were each verified when read) skips
+	// the second full read; the proof decode of the finished record checks the target against it.
+	if known != nil {
+		x.SHA = *known
+	} else {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hh := sha256.New()
+			buf := make([]byte, 1<<20)
+			for off := int64(0); off < size; {
+				n := int64(len(buf))
+				if size-off < n {
+					n = size - off
+				}
+				if _, err := dwDcore_readFull(base, buf[:n], off); err != nil {
+					firstErr.CompareAndSwap(nil, err)
+					return
+				}
+				hh.Write(buf[:n])
+				off += n
 			}
-			if _, err := dwDcore_readFull(base, buf[:n], off); err != nil {
-				firstErr.CompareAndSwap(nil, err)
-				return
-			}
-			hh.Write(buf[:n])
-			off += n
-		}
-		copy(x.SHA[:], hh.Sum(nil))
-	}()
+			copy(x.SHA[:], hh.Sum(nil))
+		}()
+	}
 	wg.Wait()
 	if e := firstErr.Load(); e != nil {
 		return nil, e.(error)
