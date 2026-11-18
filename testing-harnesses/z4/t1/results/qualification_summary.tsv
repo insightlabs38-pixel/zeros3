@@ -1,0 +1,39 @@
+step	status	rc	seconds	note
+gofmt	PASS	0	0	
+vet	PASS	0	0	
+vet_harness	PASS	0	1	
+deps_stdlib_only	PASS	0	0	
+go_mod_unchanged	PASS	0	0	
+build_reproducible	PASS	0	1	
+toc_source	PASS	0	0	
+toc_tests	PASS	0	0	
+g1_ledger_current	PASS	0	1	
+identity_check	PASS	0	0	
+root_normal	PASS	0	187	
+root_race	PASS	0	650	
+authority_hook	PASS	0	352	
+authority_native	PASS	0	50	
+fuzz_FuzzXDeltaEnvelope	PASS	0	85	
+fuzz_FuzzAuthRecord	PASS	0	42	
+fuzz_FuzzAuthWindowRecord	PASS	0	42	
+persistence_dense	PASS	0	279	
+five_generations	FAIL	1	17	
+prodshadow	PASS	0	39	
+scale_1m	INVALID	0	1082	disk full during the run (ENOSPC); the pipe to tee masked the exit code; rerun below
+large_3x256mib	INVALID	0	0	disk full during the run (ENOSPC); the pipe to tee masked the exit code; rerun below
+large_3x1gib	INVALID	0	0	disk full during the run (ENOSPC); the pipe to tee masked the exit code; rerun below
+large_3x2gib	INVALID	0	0	disk full during the run (ENOSPC); the pipe to tee masked the exit code; rerun below
+real_models	FAIL	1	0	
+zn7_decode_w1	FAIL	1	0	
+zn7_decode_w2	FAIL	1	0	
+zn7_decode_w4	FAIL	1	0	
+five_generations	PASS	0	20	
+large_3x256mib	PASS	0	27	
+large_3x1gib	PASS	0	84	
+large_3x2gib	PASS	0	158	
+real_models	PASS	0	127	
+zn7_decode_w1	PASS	0	277	
+zn7_decode_w2	PASS	0	180	
+zn7_decode_w4	PASS	0	134	
+scale_1m	FAIL	1	1041	
+scale_1m	PASS	0	1200	

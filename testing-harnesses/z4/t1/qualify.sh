@@ -9,14 +9,14 @@ O=$(realpath -m "$1"); S=$(realpath -m "${2:-$1/scratch}"); mkdir -p "$O" "$S"
 ROOT=$(pwd); T1=testing-harnesses/z4/t1; C1=testing-harnesses/z4/c1
 HEAD_SHA=$(git rev-parse HEAD); TREE=$(git rev-parse 'HEAD^{tree}'); DIRTY=$(git status --porcelain | wc -l)
 [ -s "$O/summary.tsv" ] && [ -n "${QUALIFY_ONLY:-}" ] || printf 'step\tstatus\trc\tseconds\tnote\n' > "$O/summary.tsv"
-step() { local name=$1; shift; [[ $name =~ ${QUALIFY_ONLY:-.} ]] || return 0; local t=$(date +%s); "$@" > "$O/$name.log" 2>&1; local rc=$?
+step() { local name=$1; shift; [[ $name =~ ${QUALIFY_ONLY:-.} ]] || return 0; CURSTEP=$name; local t=$(date +%s); "$@" > "$O/$name.log" 2>&1; local rc=$?
   local st=PASS; [ $rc -ne 0 ] && st=FAIL
   printf '%s\t%s\t%s\t%s\t\n' "$name" "$st" "$rc" "$(( $(date +%s) - t ))" | tee -a "$O/summary.tsv"; }
 skip() { [[ $1 =~ ${QUALIFY_ONLY:-.} ]] || return 0; printf '%s\tSKIP\t-\t0\t%s\n' "$1" "$2" | tee -a "$O/summary.tsv"; }
 export VALIDATE_LOG_DIR="$S/validate"; mkdir -p "$VALIDATE_LOG_DIR"
 (cd testing-harnesses && go build -o "$S/t1run" ./harness/t1run) || exit 2
 # the real-model test has its own steps below: it must not ride along in the timed suites
-t1() { local mode=$1; shift; env -u ZEROS3_C1_MODELS "$S/t1run" -mode "$mode" -fresh -v -cache "$S/t1cache" -evidence "$O/t1-$mode.json" "$@"; }
+t1() { local mode=$1; shift; env -u ZEROS3_C1_MODELS "$S/t1run" -mode "$mode" -fresh -v -cache "$S/t1cache" -evidence "$O/t1-$CURSTEP.json" "$@"; }
 authskip='^(TestAuthority|FuzzAuth|FuzzXDelta|TestXDelta)'
 
 git rev-parse -q --verify v0.1.1 >/dev/null || git fetch -q origin refs/tags/v0.1.1:refs/tags/v0.1.1  # five_generations builds the v0.1.1 tag

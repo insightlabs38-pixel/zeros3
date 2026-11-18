@@ -1,0 +1,295 @@
+{
+ "head": "fc1617993e425f38138bfd55c0a651767db6d487",
+ "tree": "8ce61da9de1273656ac7529b55b1f56c626339ff",
+ "dirty_files": 0,
+ "steps": [
+  {
+   "step": "gofmt",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "0",
+   "note": ""
+  },
+  {
+   "step": "vet",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "0",
+   "note": ""
+  },
+  {
+   "step": "vet_harness",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "1",
+   "note": ""
+  },
+  {
+   "step": "deps_stdlib_only",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "0",
+   "note": ""
+  },
+  {
+   "step": "go_mod_unchanged",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "0",
+   "note": ""
+  },
+  {
+   "step": "build_reproducible",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "1",
+   "note": ""
+  },
+  {
+   "step": "toc_source",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "0",
+   "note": ""
+  },
+  {
+   "step": "toc_tests",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "0",
+   "note": ""
+  },
+  {
+   "step": "g1_ledger_current",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "1",
+   "note": ""
+  },
+  {
+   "step": "identity_check",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "0",
+   "note": ""
+  },
+  {
+   "step": "root_normal",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "187",
+   "note": ""
+  },
+  {
+   "step": "root_race",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "650",
+   "note": ""
+  },
+  {
+   "step": "authority_hook",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "352",
+   "note": ""
+  },
+  {
+   "step": "authority_native",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "50",
+   "note": ""
+  },
+  {
+   "step": "fuzz_FuzzXDeltaEnvelope",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "85",
+   "note": ""
+  },
+  {
+   "step": "fuzz_FuzzAuthRecord",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "42",
+   "note": ""
+  },
+  {
+   "step": "fuzz_FuzzAuthWindowRecord",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "42",
+   "note": ""
+  },
+  {
+   "step": "persistence_dense",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "279",
+   "note": ""
+  },
+  {
+   "step": "five_generations",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "20",
+   "note": ""
+  },
+  {
+   "step": "prodshadow",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "39",
+   "note": ""
+  },
+  {
+   "step": "scale_1m",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "1200",
+   "note": ""
+  },
+  {
+   "step": "large_3x256mib",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "27",
+   "note": ""
+  },
+  {
+   "step": "large_3x1gib",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "84",
+   "note": ""
+  },
+  {
+   "step": "large_3x2gib",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "158",
+   "note": ""
+  },
+  {
+   "step": "real_models",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "127",
+   "note": ""
+  },
+  {
+   "step": "zn7_decode_w1",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "277",
+   "note": ""
+  },
+  {
+   "step": "zn7_decode_w2",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "180",
+   "note": ""
+  },
+  {
+   "step": "zn7_decode_w4",
+   "status": "PASS",
+   "rc": "0",
+   "seconds": "134",
+   "note": ""
+  }
+ ],
+ "failed": [],
+ "skipped": [],
+ "earlier_attempts": {
+  "five_generations": [
+   {
+    "step": "five_generations",
+    "status": "FAIL",
+    "rc": "1",
+    "seconds": "17",
+    "note": ""
+   }
+  ],
+  "large_3x256mib": [
+   {
+    "step": "large_3x256mib",
+    "status": "INVALID",
+    "rc": "0",
+    "seconds": "0",
+    "note": "disk full during the run (ENOSPC); the pipe to tee masked the exit code; rerun below"
+   }
+  ],
+  "large_3x1gib": [
+   {
+    "step": "large_3x1gib",
+    "status": "INVALID",
+    "rc": "0",
+    "seconds": "0",
+    "note": "disk full during the run (ENOSPC); the pipe to tee masked the exit code; rerun below"
+   }
+  ],
+  "large_3x2gib": [
+   {
+    "step": "large_3x2gib",
+    "status": "INVALID",
+    "rc": "0",
+    "seconds": "0",
+    "note": "disk full during the run (ENOSPC); the pipe to tee masked the exit code; rerun below"
+   }
+  ],
+  "real_models": [
+   {
+    "step": "real_models",
+    "status": "FAIL",
+    "rc": "1",
+    "seconds": "0",
+    "note": ""
+   }
+  ],
+  "zn7_decode_w1": [
+   {
+    "step": "zn7_decode_w1",
+    "status": "FAIL",
+    "rc": "1",
+    "seconds": "0",
+    "note": ""
+   }
+  ],
+  "zn7_decode_w2": [
+   {
+    "step": "zn7_decode_w2",
+    "status": "FAIL",
+    "rc": "1",
+    "seconds": "0",
+    "note": ""
+   }
+  ],
+  "zn7_decode_w4": [
+   {
+    "step": "zn7_decode_w4",
+    "status": "FAIL",
+    "rc": "1",
+    "seconds": "0",
+    "note": ""
+   }
+  ],
+  "scale_1m": [
+   {
+    "step": "scale_1m",
+    "status": "INVALID",
+    "rc": "0",
+    "seconds": "1082",
+    "note": "disk full during the run (ENOSPC); the pipe to tee masked the exit code; rerun below"
+   },
+   {
+    "step": "scale_1m",
+    "status": "FAIL",
+    "rc": "1",
+    "seconds": "1041",
+    "note": ""
+   }
+  ]
+ }
+}
