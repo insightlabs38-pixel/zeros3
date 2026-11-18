@@ -117,10 +117,10 @@ import (
 //    27037    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44565    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    48633    Windowed and estimated similarity deltas (extracted dcore)
-//    50141    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    57352    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    62953    CLI dispatch, HTTP server/startup, and main
+//    48643    Windowed and estimated similarity deltas (extracted dcore)
+//    50151    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    57733    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    63979    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -45454,15 +45454,25 @@ func (s *Store) authPublish(rec *authRecord) error {
 			if err := s.ensureFeature(authZN7Feature); err != nil {
 				return err
 			}
+			if s.zn7DerivesIQ3(rec.Pieces) {
+				if err := s.ensureFeature(authIQ3Feature); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	if rec.Form == authFormRep && rec.Root != nil {
-		hard, err := s.repRootHard(rec.Root)
+		hard, stream, err := s.repRootHard(rec.Root)
 		if err != nil {
 			return err
 		}
 		if hard {
 			if err := s.ensureFeature(authHardFeature); err != nil {
+				return err
+			}
+		}
+		if stream {
+			if err := s.ensureFeature(authStreamFeature); err != nil {
 				return err
 			}
 		}
@@ -51344,6 +51354,354 @@ func ncQcore_rowQ41Q51Impl(fm bool, t ncQcoreType, x []float32, y []byte, qw []f
 	}
 }
 
+// IQ3_S (ggml quantize_iq3_s, block 32, D4 lattice grid of 512 points). The grid, the 12-bit index
+// map and the neighbour lists are rebuilt from the 512 grid seeds exactly as iq3xs_init_impl does.
+
+var ncQcore_kgrid512 = [512]uint16{
+	0, 1, 2, 5, 7, 8, 9, 10, 12, 14, 16, 17, 21, 27, 32, 34,
+	37, 39, 41, 43, 48, 50, 57, 60, 63, 64, 65, 66, 68, 72, 73, 77,
+	80, 83, 87, 89, 93, 100, 113, 117, 122, 128, 129, 133, 135, 136, 139, 142,
+	145, 149, 152, 156, 162, 165, 167, 169, 171, 184, 187, 195, 201, 205, 208, 210,
+	217, 219, 222, 228, 232, 234, 247, 249, 253, 256, 267, 271, 273, 276, 282, 288,
+	291, 297, 312, 322, 324, 336, 338, 342, 347, 353, 357, 359, 374, 379, 390, 393,
+	395, 409, 426, 441, 448, 450, 452, 464, 466, 470, 475, 488, 492, 512, 513, 514,
+	516, 520, 521, 523, 525, 527, 528, 530, 537, 540, 542, 556, 558, 561, 570, 576,
+	577, 579, 582, 584, 588, 593, 600, 603, 609, 616, 618, 632, 638, 640, 650, 653,
+	655, 656, 660, 666, 672, 675, 685, 688, 698, 705, 708, 711, 712, 715, 721, 727,
+	728, 732, 737, 754, 760, 771, 773, 778, 780, 793, 795, 802, 806, 808, 812, 833,
+	840, 843, 849, 856, 858, 873, 912, 916, 919, 932, 934, 961, 963, 968, 970, 977,
+	989, 993, 1010, 1016, 1024, 1025, 1027, 1029, 1031, 1032, 1034, 1036, 1038, 1041, 1043, 1047,
+	1048, 1050, 1057, 1059, 1061, 1064, 1066, 1079, 1080, 1083, 1085, 1088, 1090, 1096, 1099, 1103,
+	1106, 1109, 1113, 1116, 1122, 1129, 1153, 1156, 1159, 1169, 1171, 1176, 1183, 1185, 1195, 1199,
+	1209, 1212, 1216, 1218, 1221, 1225, 1234, 1236, 1241, 1243, 1250, 1256, 1270, 1281, 1287, 1296,
+	1299, 1306, 1309, 1313, 1338, 1341, 1348, 1353, 1362, 1375, 1376, 1387, 1400, 1408, 1410, 1415,
+	1425, 1453, 1457, 1477, 1481, 1494, 1496, 1507, 1512, 1538, 1545, 1547, 1549, 1551, 1554, 1561,
+	1563, 1565, 1570, 1572, 1575, 1577, 1587, 1593, 1601, 1603, 1605, 1612, 1617, 1619, 1632, 1648,
+	1658, 1662, 1664, 1674, 1680, 1690, 1692, 1704, 1729, 1736, 1740, 1745, 1747, 1751, 1752, 1761,
+	1763, 1767, 1773, 1787, 1795, 1801, 1806, 1810, 1817, 1834, 1840, 1844, 1857, 1864, 1866, 1877,
+	1882, 1892, 1902, 1915, 1934, 1953, 1985, 1987, 2000, 2002, 2013, 2048, 2052, 2058, 2064, 2068,
+	2071, 2074, 2081, 2088, 2104, 2114, 2119, 2121, 2123, 2130, 2136, 2141, 2147, 2153, 2157, 2177,
+	2179, 2184, 2189, 2193, 2203, 2208, 2223, 2226, 2232, 2244, 2249, 2251, 2256, 2258, 2265, 2269,
+	2304, 2306, 2324, 2335, 2336, 2361, 2373, 2375, 2385, 2418, 2443, 2460, 2480, 2504, 2509, 2520,
+	2531, 2537, 2562, 2568, 2572, 2578, 2592, 2596, 2599, 2602, 2614, 2620, 2625, 2627, 2629, 2634,
+	2641, 2650, 2682, 2688, 2697, 2707, 2712, 2718, 2731, 2754, 2759, 2760, 2775, 2788, 2793, 2805,
+	2811, 2817, 2820, 2832, 2842, 2854, 2890, 2902, 2921, 2923, 2978, 3010, 3012, 3026, 3081, 3083,
+	3085, 3097, 3099, 3120, 3136, 3152, 3159, 3188, 3210, 3228, 3234, 3245, 3250, 3256, 3264, 3276,
+	3281, 3296, 3349, 3363, 3378, 3392, 3395, 3420, 3440, 3461, 3488, 3529, 3531, 3584, 3588, 3591,
+	3600, 3602, 3614, 3616, 3628, 3634, 3650, 3657, 3668, 3683, 3685, 3713, 3716, 3720, 3726, 3729,
+	3736, 3753, 3778, 3802, 3805, 3819, 3841, 3845, 3851, 3856, 3880, 3922, 3938, 3970, 3993, 4032,
+}
+
+type ncQcore_iq3Tables struct {
+	grid  [512]uint32
+	kmap  [4096]int32
+	neigh []uint16
+}
+
+var (
+	ncQcore_iq3Once sync.Once
+	ncQcore_iq3Tab  ncQcore_iq3Tables
+)
+
+func ncQcore_iq3Init() *ncQcore_iq3Tables {
+	ncQcore_iq3Once.Do(func() {
+		t := &ncQcore_iq3Tab
+		for k := 0; k < 512; k++ {
+			var g uint32
+			for i := 0; i < 4; i++ {
+				l := uint32(ncQcore_kgrid512[k]>>(3*uint(i))) & 7
+				g |= (2*l + 1) << (8 * uint(i))
+			}
+			t.grid[k] = g
+		}
+		for i := range t.kmap {
+			t.kmap[i] = -1
+		}
+		for i := 0; i < 512; i++ {
+			t.kmap[ncQcore_kgrid512[i]] = int32(i)
+		}
+		type dj struct{ d, j int32 }
+		order := func(pos *[4]int32) []dj {
+			ds := make([]dj, 512)
+			for j := 0; j < 512; j++ {
+				var d2 int32
+				for k := 0; k < 4; k++ {
+					pg := int32(int8(t.grid[j] >> (8 * uint(k))))
+					d2 += (pg - pos[k]) * (pg - pos[k])
+				}
+				ds[j] = dj{d2, int32(j)}
+			}
+			sort.Slice(ds, func(a, b int) bool { return ds[a].d < ds[b].d || ds[a].d == ds[b].d && ds[a].j < ds[b].j })
+			return ds
+		}
+		const nwant = 3
+		for i := 0; i < 4096; i++ {
+			if t.kmap[i] >= 0 {
+				continue
+			}
+			var pos [4]int32
+			for k := 0; k < 4; k++ {
+				pos[k] = 2*int32(i>>(3*uint(k))&7) + 1
+			}
+			ds := order(&pos)
+			t.kmap[i] = -int32(len(t.neigh) + 1)
+			start := len(t.neigh)
+			t.neigh = append(t.neigh, 0)
+			d2, nhave, n := ds[0].d, 1, 0
+			for j := 0; j < 512; j++ {
+				if ds[j].d > d2 {
+					if nhave == nwant {
+						break
+					}
+					d2 = ds[j].d
+					nhave++
+				}
+				t.neigh = append(t.neigh, uint16(ds[j].j))
+				n++
+			}
+			t.neigh[start] = uint16(n)
+		}
+	})
+	return &ncQcore_iq3Tab
+}
+
+// Contraction sites of the IQ3_S quantizer (see ncQcore_rowIQ3S): a set bit means the site is a fused multiply-add.
+const (
+	ncQcore_fx3Sumx2   = 1 << iota // sumx2 += x*x
+	ncQcore_fx3Sigma               // sigma2 + x*x
+	ncQcore_fx3Scale               // 15 + is*0.2f
+	ncQcore_fx3Round               // id*x - 1 inside nearest_int(0.5f*(...))
+	ncQcore_fx3Dist                // scale*q - x in the neighbour search
+	ncQcore_fx3DistAcc             // d2 += (w*diff)*diff
+	ncQcore_fx3Qx                  // sumqx += (w*x)*q
+	ncQcore_fx3Q2                  // sumq2 += (w*q)*q
+	ncQcore_fx3All     = 1<<iota - 1
+)
+
+type ncQcore_iq3Scratch struct { // the C arrays live across rows and blocks: stale L is observable
+	L [32]int8
+}
+
+func ncQcore_iq3Find(t *ncQcore_iq3Tables, start int32, xval, waux []float32, scale float32, L []int8, fx uint32) int {
+	nb := t.neigh[start:]
+	n := int(nb[0])
+	best := float32(3.4028234663852886e+38)
+	gi := -1
+	for j := 1; j <= n; j++ {
+		var d2 float32
+		for i := 0; i < 4; i++ {
+			q := float32(int8(t.grid[nb[j]] >> (8 * uint(i))))
+			var diff float32
+			if fx&ncQcore_fx3Dist != 0 {
+				diff = ncQcore_fma32(scale, q, -xval[i])
+			} else {
+				diff = ncQcore_mul(scale, q) - xval[i]
+			}
+			if fx&ncQcore_fx3DistAcc != 0 {
+				d2 = ncQcore_fma32(ncQcore_mul(waux[i], diff), diff, d2)
+			} else {
+				d2 += ncQcore_mul(ncQcore_mul(waux[i], diff), diff)
+			}
+		}
+		if d2 < best {
+			best, gi = d2, int(nb[j])
+		}
+	}
+	for i := 0; i < 4; i++ {
+		L[i] = (int8(t.grid[gi]>>(8*uint(i))) - 1) / 2
+	}
+	return gi
+}
+
+// ncQcore_iq3Ni is nearest_int(0.5f*(id*x-1)).
+func ncQcore_iq3Ni(fx uint32, id, x float32) int32 {
+	var t float32
+	if fx&ncQcore_fx3Round != 0 {
+		t = ncQcore_fma32(id, x, -1)
+	} else {
+		t = ncQcore_mul(id, x) - 1
+	}
+	return ncQcore_nearestInt(ncQcore_mul(0.5, t))
+}
+
+func ncQcore_rowIQ3S(st *ncQcore_iq3Scratch, fx uint32, x []float32, y []byte, qw []float32) {
+	const bsz, bs4, bs8, kMaxQ = 32, 8, 4, 8
+	t := ncQcore_iq3Init()
+	L := &st.L
+	var scales [8]float32
+	var weight, xval, waux [32]float32
+	var Laux [32]int8
+	var onGrid, onGridAux [8]bool
+	var blockSigns [4]uint8
+	for ibl := 0; ibl*256 < len(x); ibl++ {
+		xbl, yb := x[ibl*256:(ibl+1)*256], y[ibl*110:(ibl+1)*110]
+		clear(yb)
+		qs, qh, signs, scl := yb[2:66], yb[66:74], yb[74:106], yb[106:110]
+		qo, so := 0, 0
+		var maxScale, sumx2 float32
+		for i := 0; i < 256; i++ {
+			sumx2 = ncQcore_madd(fx&ncQcore_fx3Sumx2 != 0, xbl[i], xbl[i], sumx2)
+		}
+		sigma2 := ncQcore_mul(2, sumx2) / 256
+		for ib := 0; ib < 8; ib++ {
+			xb := xbl[ib*bsz : (ib+1)*bsz]
+			if qw != nil {
+				q := qw[ibl*256+ib*bsz:]
+				for i := 0; i < bsz; i++ {
+					weight[i] = ncQcore_mul(q[i], ncQcore_sqrt(ncQcore_madd(fx&ncQcore_fx3Sigma != 0, xb[i], xb[i], sigma2)))
+				}
+			} else {
+				for i := 0; i < bsz; i++ {
+					weight[i] = ncQcore_mul(xb[i], xb[i])
+				}
+			}
+			for i := 0; i < bsz; i++ {
+				waux[i] = ncQcore_sqrt(weight[i])
+			}
+			for k := 0; k < bs8; k++ {
+				var s uint8
+				for i := 0; i < 8; i++ {
+					if xb[8*k+i] >= 0 {
+						xval[8*k+i] = xb[8*k+i]
+					} else {
+						xval[8*k+i] = -xb[8*k+i]
+						s |= 1 << uint(i)
+					}
+				}
+				blockSigns[k] = s
+			}
+			max := xval[0]
+			for i := 1; i < bsz; i++ {
+				if xval[i] > max {
+					max = xval[i]
+				}
+			}
+			if max == 0 {
+				scales[ib] = 0
+				continue // the C code skips the qs/signs advance here as well
+			}
+			var best float32
+			scale := max / (2*kMaxQ - 1)
+			for k := 0; k < bs4; k++ {
+				onGrid[k] = false
+			}
+			for is := -9; is <= 9; is++ {
+				id := ncQcore_madd(fx&ncQcore_fx3Scale != 0, float32(is), 0.2, 2*kMaxQ-1) / max
+				thisScale := 1 / id
+				for k := 0; k < bs4; k++ {
+					for i := 0; i < 4; i++ {
+						Laux[4*k+i] = int8(ncQcore_clamp(ncQcore_iq3Ni(fx, id, xval[4*k+i]), 0, kMaxQ-1))
+					}
+					var u uint16
+					for i := 0; i < 4; i++ {
+						u |= uint16(Laux[4*k+i]) << (3 * uint(i))
+					}
+					onGridAux[k] = true
+					if gi := t.kmap[u]; gi < 0 {
+						onGridAux[k] = false
+						ncQcore_iq3Find(t, -gi-1, xval[4*k:], waux[4*k:], thisScale, Laux[4*k:], fx)
+					}
+				}
+				var sumqx, sumq2 float32
+				for i := 0; i < bsz; i++ {
+					w := weight[i]
+					q := float32(2*int32(Laux[i]) + 1)
+					sumqx = ncQcore_madd(fx&ncQcore_fx3Qx != 0, ncQcore_mul(w, xval[i]), q, sumqx)
+					sumq2 = ncQcore_madd(fx&ncQcore_fx3Q2 != 0, ncQcore_mul(w, q), q, sumq2)
+				}
+				if sumq2 > 0 && ncQcore_mul(sumqx, sumqx) > ncQcore_mul(best, sumq2) {
+					scale = sumqx / sumq2
+					best = ncQcore_mul(scale, sumqx)
+					copy(L[:], Laux[:])
+					onGrid = onGridAux
+				}
+			}
+			notOn := 0
+			for k := 0; k < bs4; k++ {
+				if !onGrid[k] {
+					notOn++
+				}
+			}
+			if notOn > 0 && scale > 0 {
+				id := 1 / scale
+				for k := 0; k < bs4; k++ {
+					var u uint16
+					for i := 0; i < 4; i++ {
+						l := ncQcore_clamp(ncQcore_iq3Ni(fx, id, xval[4*k+i]), 0, kMaxQ-1)
+						u |= uint16(l) << (3 * uint(i))
+					}
+					gi := t.kmap[u]
+					var idx int
+					if gi < 0 {
+						idx = ncQcore_iq3Find(t, -gi-1, xval[4*k:], waux[4*k:], scale, L[4*k:], fx)
+					} else {
+						idx = int(gi)
+					}
+					for i := 0; i < 4; i++ {
+						L[4*k+i] = (int8(t.grid[idx]>>(8*uint(i))) - 1) / 2
+					}
+				}
+				var sumqx, sumq2 float32
+				for i := 0; i < bsz; i++ {
+					w := weight[i]
+					q := float32(2*int32(L[i]) + 1)
+					sumqx = ncQcore_madd(fx&ncQcore_fx3Qx != 0, ncQcore_mul(w, xval[i]), q, sumqx)
+					sumq2 = ncQcore_madd(fx&ncQcore_fx3Q2 != 0, ncQcore_mul(w, q), q, sumq2)
+				}
+				if sumq2 > 0 {
+					scale = sumqx / sumq2
+				}
+			}
+			if scale < 0 {
+				scale = -scale
+				for k := 0; k < bs8; k++ {
+					blockSigns[k] = ^blockSigns[k]
+				}
+			}
+			for k := 0; k < bs4; k++ {
+				var u uint16
+				for i := 0; i < 4; i++ {
+					u |= uint16(L[4*k+i]) << (3 * uint(i))
+				}
+				gi := t.kmap[u]
+				if gi < 0 {
+					panic("qcore: IQ3_S point not on grid") // GGML_ABORT in the producer
+				}
+				qs[qo+k] = byte(gi)
+				qh[(ib*bs4+k)/8] |= byte(gi>>8) << uint((ib*bs4+k)%8)
+			}
+			qo += bs4
+			copy(signs[so:], blockSigns[:])
+			so += bs8
+			scales[ib] = scale
+			if scale > maxScale {
+				maxScale = scale
+			}
+		}
+		if maxScale == 0 {
+			continue
+		}
+		d := maxScale / 31
+		ncQcore_put16(yb, ncQcoreF16(ncQcore_mul(d, 1.033)))
+		id := 1 / d
+		for ib := 0; ib < 8; ib += 2 {
+			l1 := ncQcore_clamp(ncQcore_iq3Ni(fx, id, scales[ib]), 0, 15)
+			l2 := ncQcore_clamp(ncQcore_iq3Ni(fx, id, scales[ib+1]), 0, 15)
+			scl[ib/2] = byte(l1 | l2<<4)
+		}
+	}
+}
+
+// ncQcore_iq3FMA is the set of contracted sites of the GCC -O3 -mfma build (derived against the compiled producer).
+var ncQcore_iq3FMA uint32 = ncQcore_fx3All &^ ncQcore_fx3Sumx2
+
+func ncQcore_iq3Mask(fm bool) uint32 {
+	if fm {
+		return ncQcore_iq3FMA
+	}
+	return 0
+}
+
 // Type is the ggml tensor type id.
 type ncQcoreType uint8
 
@@ -51359,6 +51717,7 @@ const (
 	ncQcoreQ5_K   ncQcoreType = 13
 	ncQcoreQ6_K   ncQcoreType = 14
 	ncQcoreIQ4_NL ncQcoreType = 20
+	ncQcoreIQ3_S  ncQcoreType = 21
 	ncQcoreIQ4_XS ncQcoreType = 23
 )
 
@@ -51370,7 +51729,7 @@ type ncQcore_geom struct {
 var ncQcore_geoms = map[ncQcoreType]ncQcore_geom{
 	ncQcoreQ4_0: {32, 18, "Q4_0"}, ncQcoreQ4_1: {32, 20, "Q4_1"}, ncQcoreQ5_0: {32, 22, "Q5_0"}, ncQcoreQ5_1: {32, 24, "Q5_1"}, ncQcoreQ8_0: {32, 34, "Q8_0"},
 	ncQcoreQ2_K: {256, 84, "Q2_K"}, ncQcoreQ3_K: {256, 110, "Q3_K"}, ncQcoreQ4_K: {256, 144, "Q4_K"}, ncQcoreQ5_K: {256, 176, "Q5_K"}, ncQcoreQ6_K: {256, 210, "Q6_K"},
-	ncQcoreIQ4_NL: {32, 18, "IQ4_NL"}, ncQcoreIQ4_XS: {256, 136, "IQ4_XS"},
+	ncQcoreIQ4_NL: {32, 18, "IQ4_NL"}, ncQcoreIQ4_XS: {256, 136, "IQ4_XS"}, ncQcoreIQ3_S: {256, 110, "IQ3_S"},
 }
 
 // Block returns the elements and bytes of one block of t (0, 0 if unsupported).
@@ -51423,7 +51782,7 @@ func ncQcore_fusedPath(t ncQcoreType, weighted bool) bool {
 	if t == ncQcoreQ8_0 {
 		return false
 	}
-	return weighted || t == ncQcoreQ6_K || t == ncQcoreIQ4_NL || t == ncQcoreIQ4_XS
+	return weighted || t == ncQcoreQ6_K || t == ncQcoreIQ4_NL || t == ncQcoreIQ4_XS || t == ncQcoreIQ3_S
 }
 
 var ncQcoreErrArith = errors.New("qcore: arithmetic profile not available for this quantizer path")
@@ -51443,6 +51802,7 @@ func ncQcoreQuantize(dst []byte, t ncQcoreType, x []float32, nPerRow int, qw []f
 		return ncQcoreErrSize
 	}
 	g := ncQcore_geoms[t]
+	var st ncQcore_iq3Scratch
 	rowBytes := nPerRow / g.elems * g.bytes
 	for r := 0; r*nPerRow < len(x); r++ {
 		row, y := x[r*nPerRow:(r+1)*nPerRow], dst[r*rowBytes:(r+1)*rowBytes]
@@ -51483,6 +51843,8 @@ func ncQcoreQuantize(dst []byte, t ncQcoreType, x []float32, nPerRow int, qw []f
 			ncQcore_rowIQ4(fm, row, y, qw, 32)
 		case ncQcoreIQ4_XS:
 			ncQcore_rowIQ4(fm, row, y, qw, 256)
+		case ncQcoreIQ3_S:
+			ncQcore_rowIQ3S(&st, ncQcore_iq3Mask(fm), row, y, qw)
 		}
 	}
 	return nil
@@ -52831,10 +53193,11 @@ const (
 	ncNumcoreDQ3_K
 	ncNumcoreDIQ4_NL
 	ncNumcoreDIQ4_XS
+	ncNumcoreDIQ3_S
 )
 
 var ncNumcore_dtNames = map[ncNumcoreDType]string{ncNumcoreDRaw: "RAW", ncNumcoreDF32: "F32", ncNumcoreDF16: "F16", ncNumcoreDBF16: "BF16", ncNumcoreDQ8_0: "Q8_0", ncNumcoreDQ4_0: "Q4_0", ncNumcoreDQ5_0: "Q5_0", ncNumcoreDQ4_1: "Q4_1", ncNumcoreDQ5_1: "Q5_1",
-	ncNumcoreDQ4_K: "Q4_K", ncNumcoreDQ6_K: "Q6_K", ncNumcoreDQ5_K: "Q5_K", ncNumcoreDQOther: "QOTHER", ncNumcoreDQ2_K: "Q2_K", ncNumcoreDQ3_K: "Q3_K", ncNumcoreDIQ4_NL: "IQ4_NL", ncNumcoreDIQ4_XS: "IQ4_XS"}
+	ncNumcoreDQ4_K: "Q4_K", ncNumcoreDQ6_K: "Q6_K", ncNumcoreDQ5_K: "Q5_K", ncNumcoreDQOther: "QOTHER", ncNumcoreDQ2_K: "Q2_K", ncNumcoreDQ3_K: "Q3_K", ncNumcoreDIQ4_NL: "IQ4_NL", ncNumcoreDIQ4_XS: "IQ4_XS", ncNumcoreDIQ3_S: "IQ3_S"}
 
 func (d ncNumcoreDType) String() string { return ncNumcore_dtNames[d] }
 
@@ -52855,7 +53218,7 @@ func (d ncNumcoreDType) IsFloat() bool {
 }
 
 var ncNumcore_qtypes = map[ncNumcoreDType]ncQcoreType{ncNumcoreDQ8_0: ncQcoreQ8_0, ncNumcoreDQ4_0: ncQcoreQ4_0, ncNumcoreDQ4_1: ncQcoreQ4_1, ncNumcoreDQ5_0: ncQcoreQ5_0, ncNumcoreDQ5_1: ncQcoreQ5_1, ncNumcoreDQ2_K: ncQcoreQ2_K, ncNumcoreDQ3_K: ncQcoreQ3_K,
-	ncNumcoreDQ4_K: ncQcoreQ4_K, ncNumcoreDQ5_K: ncQcoreQ5_K, ncNumcoreDQ6_K: ncQcoreQ6_K, ncNumcoreDIQ4_NL: ncQcoreIQ4_NL, ncNumcoreDIQ4_XS: ncQcoreIQ4_XS}
+	ncNumcoreDQ4_K: ncQcoreQ4_K, ncNumcoreDQ5_K: ncQcoreQ5_K, ncNumcoreDQ6_K: ncQcoreQ6_K, ncNumcoreDIQ4_NL: ncQcoreIQ4_NL, ncNumcoreDIQ4_XS: ncQcoreIQ4_XS, ncNumcoreDIQ3_S: ncQcoreIQ3_S}
 
 // QType is the ggml quantization type of a block dtype.
 func (d ncNumcoreDType) QType() (ncQcoreType, bool) { t, ok := ncNumcore_qtypes[d]; return t, ok }
@@ -56848,10 +57211,12 @@ func ncNumcore_rebuild(ctx context.Context, t *ncNumcoreTDir, wd *ncNumcoreWDir,
 // =============================================================================
 
 const (
-	authHardFeature  = "hardcodec"
-	authZN7Feature   = "zn7"
-	authZN7MaxAux    = 64 << 20
-	authZN7ReadChunk = 4 << 20 // decoded span a body keeps between ReadAt calls
+	authHardFeature   = "hardcodec"
+	authZN7Feature    = "zn7"
+	authStreamFeature = "hardstream" // Parquet recipes with streaming-Brotli pages (recipe version 3)
+	authIQ3Feature    = "zn7iq3s"    // containers that derive IQ3_S tensors: builds without the quantizer refuse the store
+	authZN7MaxAux     = 64 << 20
+	authZN7ReadChunk  = 4 << 20 // decoded span a body keeps between ReadAt calls
 )
 
 func authZN7GGMLType(t uint32) ncNumcoreDType {
@@ -56884,6 +57249,8 @@ func authZN7GGMLType(t uint32) ncNumcoreDType {
 		return ncNumcoreDQ6_K
 	case 20:
 		return ncNumcoreDIQ4_NL
+	case 21:
+		return ncNumcoreDIQ3_S
 	case 23:
 		return ncNumcoreDIQ4_XS
 	}
@@ -56933,6 +57300,20 @@ func authZN7Layout(r io.ReaderAt, size int64) (*ncNumcoreLayout, error) {
 }
 
 // authZN7Locked serializes ReadAt on a reader that is not safe for concurrent use (the window workers share it).
+// zn7DerivesIQ3 reports whether the container made of ps holds a tensor of a type only this quantizer set can derive.
+func (s *Store) zn7DerivesIQ3(ps []authPiece) bool {
+	obj, err := ncNumcoreOpenObject(&authZN7Locked{r: newPieceSeq(s.newAuthCtx(), ps)}, pieceTotal(ps))
+	if err != nil {
+		return false
+	}
+	for i := range obj.T {
+		if obj.T[i].DT == ncNumcoreDIQ3_S {
+			return true
+		}
+	}
+	return false
+}
+
 type authZN7Locked struct {
 	mu sync.Mutex
 	r  io.ReaderAt
@@ -57318,7 +57699,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature {
 			return x
 		}
 	}
@@ -58476,8 +58857,42 @@ func hcBrotliz3_transformWord(dst []byte, w []byte, t int) []byte {
 	return append(dst, ps(suf)...)
 }
 
+// Trace is the meta-block structure of a decoded stream: what a recipe has to explain.
+type hcBrotliz3Trace struct {
+	LgWin     int
+	Blocks    []hcBrotliz3TraceBlock // data meta-blocks in stream order
+	Markers   []int                  // decoded offsets of empty metadata blocks (the padding a flush leaves behind)
+	EmptyLast bool                   // the stream ends with an empty last meta-block
+	Cmds      []hcBrotliz3TraceCmd   // the first commands of the stream (insert length, copy length code): a cheap fingerprint of the encoder
+}
+
+// TraceCmd is a decoded command's lengths.
+type hcBrotliz3TraceCmd struct{ Ins, Copy int32 }
+
+// maxTraceCmds bounds the commands a trace keeps.
+const hcBrotliz3_maxTraceCmds = 1 << 17
+
+// TraceBlock is one data meta-block: the decoded range it produced.
+type hcBrotliz3TraceBlock struct {
+	Start, End   int
+	Uncompressed bool
+	Last         bool
+}
+
 // Decode decompresses a complete Brotli stream producing at most maxOut bytes.
 func hcBrotliz3Decode(src []byte, maxOut int) ([]byte, error) {
+	out, _, err := hcBrotliz3DecodeTrace(src, maxOut)
+	return out, err
+}
+
+// DecodeTrace is Decode that also reports the meta-block structure.
+func hcBrotliz3DecodeTrace(src []byte, maxOut int) ([]byte, *hcBrotliz3Trace, error) {
+	tr := &hcBrotliz3Trace{}
+	out, err := hcBrotliz3_decode(src, maxOut, tr)
+	return out, tr, err
+}
+
+func hcBrotliz3_decode(src []byte, maxOut int, tr *hcBrotliz3Trace) ([]byte, error) {
 	d := hcBrotliz3_theDict.Load()
 	if d == nil {
 		return nil, hcBrotliz3ErrDictionary
@@ -58496,12 +58911,14 @@ func hcBrotliz3Decode(src []byte, maxOut int) ([]byte, error) {
 		wbits = 8 + uint(m)
 	}
 	maxDist := 1<<wbits - 16
+	tr.LgWin = int(wbits)
 	var out []byte
 	ring := [4]int{16, 15, 11, 4}
 	ri := 0 // ring[(ri-1)&3] is the last distance
 	for !r.bad {
 		last := r.bits(1) == 1
 		if last && r.bits(1) == 1 {
+			tr.EmptyLast = true
 			break
 		}
 		nib := r.bits(2)
@@ -58522,6 +58939,7 @@ func hcBrotliz3Decode(src []byte, maxOut int) ([]byte, error) {
 			for ; n > 0 && !r.bad; n-- {
 				r.bits(8)
 			}
+			tr.Markers = append(tr.Markers, len(out))
 			if last {
 				break
 			}
@@ -58539,11 +58957,13 @@ func hcBrotliz3Decode(src []byte, maxOut int) ([]byte, error) {
 		if mlen > maxOut-len(out) {
 			return nil, hcBrotliz3ErrLimit
 		}
+		bstart := len(out)
 		if !last && r.bits(1) == 1 { // uncompressed
 			r.alignByte()
 			for i := 0; i < mlen && !r.bad; i++ {
 				out = append(out, byte(r.bits(8)))
 			}
+			tr.Blocks = append(tr.Blocks, hcBrotliz3TraceBlock{bstart, len(out), true, false})
 			continue
 		}
 		var bl, bi, bd hcBrotliz3_blockState
@@ -58602,6 +59022,9 @@ func hcBrotliz3Decode(src []byte, maxOut int) ([]byte, error) {
 			ic, cc := int(hcBrotliz3_cellInsBase[cell])+(c>>3)&7, int(hcBrotliz3_cellCopyBase[cell])+c&7
 			ins := int(hcBrotliz3_insBase[ic]) + int(r.bits(hcBrotliz3_insExtra[ic]))
 			cp := int(hcBrotliz3_copyBase[cc]) + int(r.bits(hcBrotliz3_copyExtra[cc]))
+			if tr != nil && len(tr.Cmds) < hcBrotliz3_maxTraceCmds {
+				tr.Cmds = append(tr.Cmds, hcBrotliz3TraceCmd{int32(ins), int32(cp)})
+			}
 			if ins > end-len(out) {
 				return nil, hcBrotliz3ErrCorrupt
 			}
@@ -58691,6 +59114,7 @@ func hcBrotliz3Decode(src []byte, maxOut int) ([]byte, error) {
 				return nil, hcBrotliz3ErrCorrupt
 			}
 		}
+		tr.Blocks = append(tr.Blocks, hcBrotliz3TraceBlock{bstart, len(out), false, last})
 		if last {
 			break
 		}
@@ -58761,10 +59185,85 @@ func hcBrotliz3SetDictionary(b []byte) error {
 	return nil
 }
 
+// maxStream is the longest stream the port models: positions stay below 2^30, where the reference
+// does not wrap them (WrapPosition is the identity).
+const hcBrotliz3_maxStream = 1 << 30
+
+// Params are the encoder parameters a streaming producer sets (BrotliEncoderSetParameter).
+type hcBrotliz3Params struct {
+	Quality  int    // 5..9
+	LgWin    int    // 17..24
+	LgBlock  int    // 0 = automatic, else 16..24
+	SizeHint uint32 // 0 = derived from the first encoded block as the reference does
+	Legacy   bool   // libbrotli <= 1.1.0; false: 1.2.0. They differ where a probe reaches the end of the ring
+}
+
+// Op is a BrotliEncoderOperation.
+type hcBrotliz3Op uint8
+
+const (
+	hcBrotliz3OpProcess hcBrotliz3Op = iota
+	hcBrotliz3OpFlush
+	hcBrotliz3OpFinish
+)
+
+// ringBuf is the reference RingBuffer: the last two bytes, 1<<window_bits data bytes, a copy of the
+// beginning as a tail, and seven bytes of slack. Positions are absolute, bytes live at pos&mask.
+type hcBrotliz3_ringBuf struct {
+	size, mask, tail, total, cur uint32
+	pos                          uint32
+	data                         []byte
+	buf                          []byte // data[2:]
+}
+
+func (r *hcBrotliz3_ringBuf) initBuffer(n uint32) {
+	nd := make([]byte, 2+int(n)+16)
+	if r.data != nil {
+		copy(nd, r.data[:min(len(r.data), 2+int(r.cur)+7)])
+	}
+	r.data, r.cur, r.buf = nd, n, nd[2:]
+	nd[0], nd[1] = 0, 0
+	for i := 0; i < 7; i++ {
+		r.buf[int(n)+i] = 0
+	}
+}
+
+func (r *hcBrotliz3_ringBuf) write(b []byte) {
+	n := uint32(len(b))
+	if r.pos == 0 && n < r.tail {
+		r.pos = n
+		r.initBuffer(n)
+		copy(r.buf, b)
+		return
+	}
+	if r.cur < r.total {
+		r.initBuffer(r.total)
+		r.buf[r.size-2], r.buf[r.size-1] = 0, 0
+		r.buf[r.size] = 241
+	}
+	masked := r.pos & r.mask
+	if masked < r.tail { // RingBufferWriteTail
+		copy(r.buf[r.size+masked:], b[:min(n, r.tail-masked)])
+	}
+	if masked+n <= r.size {
+		copy(r.buf[masked:], b)
+	} else {
+		copy(r.buf[masked:], b[:min(n, r.total-masked)])
+		copy(r.buf[0:], b[r.size-masked:])
+	}
+	notFirst := r.pos&(1<<31) != 0
+	r.data[0], r.data[1] = r.buf[r.size-2], r.buf[r.size-1]
+	r.pos = r.pos&(1<<31-1) + n&(1<<31-1)
+	if notFirst {
+		r.pos |= 1 << 31
+	}
+}
+
 type hcBrotliz3_encoder struct {
 	quality, lgwin, lgblock int
-	sizeHint                int
-	buf                     []byte
+	legacy                  bool
+	hint                    uint32
+	rb                      hcBrotliz3_ringBuf
 	h                       *hcBrotliz3_hasher
 	distCache               [16]int32
 	savedDist               [4]int32
@@ -58775,53 +59274,209 @@ type hcBrotliz3_encoder struct {
 	lastProcessed           int
 	prev1, prev2            byte
 	w                       hcBrotliz3_bitWriter
+	lin                     []byte // contiguous copy of the metablock: two bytes of left context, then the data
+	failed                  bool
+	stored                  bool // the last meta-block was written uncompressed: its commands are not in the stream
+	probe                   *hcBrotliz3_cmdProbe
 }
 
-// MaxInput is the largest input the port accepts for a window: beyond it the reference's ring
-// buffer wraps, which is not modelled.
-func hcBrotliz3MaxInput(lgwin int) int { return 1<<uint(lgwin+1) - 64 }
+func (p hcBrotliz3Params) valid() bool {
+	return p.Quality >= 5 && p.Quality <= 9 && p.LgWin >= 17 && p.LgWin <= 24 && (p.LgBlock == 0 || p.LgBlock >= 16 && p.LgBlock <= 24)
+}
+
+// lgBlock is ComputeLgBlock for qualities 5..9.
+func (p hcBrotliz3Params) lgBlock() int {
+	if p.LgBlock == 0 {
+		if p.Quality >= 9 && p.LgWin > 16 {
+			return min(18, p.LgWin)
+		}
+		return 16
+	}
+	return p.LgBlock
+}
+
+func hcBrotliz3_newEncoder(p hcBrotliz3Params) *hcBrotliz3_encoder {
+	e := &hcBrotliz3_encoder{quality: p.Quality, lgwin: p.LgWin, lgblock: p.lgBlock(), hint: p.SizeHint, legacy: p.Legacy}
+	bits := uint(1 + max(e.lgwin, e.lgblock))
+	e.rb.size, e.rb.mask, e.rb.tail = 1<<bits, 1<<bits-1, 1<<uint(e.lgblock)
+	e.rb.total = e.rb.size + e.rb.tail
+	e.distCache = [16]int32{4, 11, 15, 16}
+	e.savedDist = [4]int32{4, 11, 15, 16}
+	// EncodeWindowBits
+	if e.lgwin == 17 {
+		e.w.write(7, 1)
+	} else {
+		e.w.write(4, uint64((e.lgwin-17)<<1|1))
+	}
+	return e
+}
+
+func (e *hcBrotliz3_encoder) block() int { return 1 << uint(e.lgblock) }
+
+func (e *hcBrotliz3_encoder) unprocessed() int { return e.inputPos - e.lastProcessed }
+
+func (e *hcBrotliz3_encoder) remainingBlock() int {
+	if d := e.unprocessed(); d < e.block() {
+		return e.block() - d
+	}
+	return 0
+}
+
+func (e *hcBrotliz3_encoder) copyInput(b []byte) {
+	e.rb.write(b)
+	e.inputPos += len(b)
+	if int(e.rb.pos) <= int(e.rb.mask) { // first lap: the seven bytes after the data are defined zeros
+		for i := 0; i < 7; i++ {
+			e.rb.buf[int(e.rb.pos)+i] = 0
+		}
+	}
+}
+
+// updateSizeHint is UpdateSizeHint: a producer that set no hint gets the pending input as its hint.
+func (e *hcBrotliz3_encoder) updateSizeHint(availableIn int) {
+	if e.hint == 0 {
+		const limit = 1 << 30
+		d, t := e.unprocessed(), availableIn
+		if d >= limit || t >= limit || d+t >= limit {
+			e.hint = limit
+		} else {
+			e.hint = uint32(d + t)
+		}
+	}
+}
+
+// Stream is BrotliEncoderCompressStream: input is accepted in any chunking, output is written to the sink
+// as complete bytes. Memory is bounded by the window (ring buffer, hash tables and one meta-block).
+type hcBrotliz3Stream struct {
+	e    *hcBrotliz3_encoder
+	out  io.Writer
+	err  error
+	done bool
+	n    int64
+}
+
+// NewStream starts a stream; the sink receives the compressed bytes as they become complete.
+func hcBrotliz3NewStream(p hcBrotliz3Params, out io.Writer) (*hcBrotliz3Stream, error) {
+	if !p.valid() {
+		return nil, hcBrotliz3ErrUnsupported
+	}
+	if hcBrotliz3_theDict.Load() == nil {
+		return nil, hcBrotliz3ErrDictionary
+	}
+	return &hcBrotliz3Stream{e: hcBrotliz3_newEncoder(p), out: out}, nil
+}
+
+// Close releases the hash tables; the stream cannot be used afterwards.
+func (s *hcBrotliz3Stream) Close() {
+	if s.e.h != nil {
+		s.e.h.release()
+		s.e.h = nil
+	}
+}
+
+func (s *hcBrotliz3Stream) emit() {
+	if s.err != nil || len(s.e.w.buf) == 0 {
+		return
+	}
+	_, s.err = s.out.Write(s.e.w.buf)
+	s.e.w.buf = s.e.w.buf[:0]
+}
+
+// Process is OpProcess, Flush OpFlush, Finish OpFinish of the reference.
+func (s *hcBrotliz3Stream) Process(b []byte) error { return s.run(hcBrotliz3OpProcess, b) }
+
+func (s *hcBrotliz3Stream) Flush() error { return s.run(hcBrotliz3OpFlush, nil) }
+
+func (s *hcBrotliz3Stream) Finish() error { return s.run(hcBrotliz3OpFinish, nil) }
+
+// Write feeds a chunk with the given operation (the chunk is consumed as one BrotliEncoderCompressStream call).
+func (s *hcBrotliz3Stream) Write(op hcBrotliz3Op, b []byte) error { return s.run(op, b) }
+
+func (s *hcBrotliz3Stream) run(op hcBrotliz3Op, in []byte) error {
+	e := s.e
+	if s.err != nil {
+		return s.err
+	}
+	if s.done {
+		if len(in) != 0 || op != hcBrotliz3OpFinish {
+			return hcBrotliz3ErrUnsupported
+		}
+		return nil
+	}
+	if int64(e.inputPos)+int64(len(in)) >= hcBrotliz3_maxStream {
+		return hcBrotliz3ErrUnsupported
+	}
+	for {
+		rem := e.remainingBlock()
+		if rem != 0 && len(in) != 0 {
+			n := min(rem, len(in))
+			e.copyInput(in[:n])
+			in = in[n:]
+			continue
+		}
+		if rem == 0 || op != hcBrotliz3OpProcess {
+			isLast := len(in) == 0 && op == hcBrotliz3OpFinish
+			force := len(in) == 0 && op == hcBrotliz3OpFlush
+			e.updateSizeHint(len(in))
+			e.encodeData(isLast, force)
+			if e.failed {
+				s.err = hcBrotliz3_errMismatch
+				return s.err
+			}
+			s.emit()
+			if force && e.w.nacc != 0 { // InjectBytePaddingBlock: an empty metadata block pads to a byte boundary
+				e.w.write(6, 6)
+				e.w.align()
+				s.emit()
+			}
+			if isLast {
+				s.done = true
+				return s.err
+			}
+			if force {
+				return s.err
+			}
+			continue
+		}
+		return s.err
+	}
+}
 
 // Encode returns BrotliEncoderCompress(quality, lgwin, BROTLI_MODE_GENERIC, input) of the
 // reference implementation (v1.0.9 .. v1.2.0 produce the same bytes on this path).
 func hcBrotliz3Encode(input []byte, quality, lgwin int) ([]byte, error) {
-	if quality < 5 || quality > 9 || lgwin < 17 || lgwin > 24 || len(input) > hcBrotliz3MaxInput(lgwin) {
+	p := hcBrotliz3Params{Quality: quality, LgWin: lgwin, SizeHint: uint32(len(input))}
+	if !p.valid() || len(input) >= hcBrotliz3_maxStream {
 		return nil, hcBrotliz3ErrUnsupported
 	}
-	d := hcBrotliz3_theDict.Load()
-	if d == nil {
+	if hcBrotliz3_theDict.Load() == nil {
 		return nil, hcBrotliz3ErrDictionary
 	}
 	if len(input) == 0 {
 		return []byte{6}, nil
 	}
-	e := &hcBrotliz3_encoder{quality: quality, lgwin: lgwin, lgblock: 16, sizeHint: len(input)}
-	if quality >= 9 {
-		e.lgblock = min(18, lgwin)
+	var sink hcBrotliz3_sliceWriter
+	s, err := hcBrotliz3NewStream(p, &sink)
+	if err != nil {
+		return nil, err
 	}
-	e.buf = make([]byte, len(input)+16)
-	e.distCache = [16]int32{4, 11, 15, 16}
-	e.savedDist = [4]int32{4, 11, 15, 16}
-	e.h = hcBrotliz3_newHasher(quality, lgwin, e.sizeHint, d)
-	defer e.h.release()
-	// EncodeWindowBits
-	if lgwin == 17 {
-		e.w.write(7, 1)
-	} else {
-		e.w.write(4, uint64((lgwin-17)<<1|1))
+	defer s.Close()
+	if err := s.Write(hcBrotliz3OpFinish, input); err != nil {
+		return nil, err
 	}
-	block := 1 << uint(e.lgblock)
-	for off := 0; off < len(input); off += block {
-		end := min(off+block, len(input))
-		copy(e.buf[off:end], input[off:end])
-		e.inputPos = end
-		e.encodeData(end == len(input))
-	}
-	out := e.w.buf
+	out := sink.b
 	// BrotliEncoderCompress falls back to a stored stream when the result exceeds the bound
 	if n := len(input); len(out) > n+2+4*(n>>14)+3+1 {
 		return hcBrotliz3_uncompressedStream(input), nil
 	}
 	return out, nil
+}
+
+type hcBrotliz3_sliceWriter struct{ b []byte }
+
+func (w *hcBrotliz3_sliceWriter) Write(p []byte) (int, error) {
+	w.b = append(w.b, p...)
+	return len(p), nil
 }
 
 // uncompressedStream is MakeUncompressedStream.
@@ -58847,23 +59502,44 @@ func hcBrotliz3_uncompressedStream(in []byte) []byte {
 	return append(out, 3)
 }
 
-func (e *hcBrotliz3_encoder) encodeData(isLast bool) {
-	bytes := e.inputPos - e.lastProcessed
+// encodeData is EncodeData for qualities 5..9: it processes the unprocessed input as one block and writes a
+// meta-block when the reference would (always on flush or finish).
+func (e *hcBrotliz3_encoder) encodeData(isLast, forceFlush bool) {
+	bytes := e.unprocessed()
 	pos := e.lastProcessed
+	if bytes == 0 { // no new input; still might want to flush or finish
+		if e.rb.data == nil {
+			if isLast { // complete finalized stream
+				e.w.write(2, 3)
+				e.w.align()
+			}
+			return
+		}
+		if !isLast && !forceFlush {
+			return
+		}
+	}
+	if e.h == nil {
+		e.h = hcBrotliz3_newHasher(e.quality, e.lgwin, int(e.hint), int(e.rb.mask), e.legacy, hcBrotliz3_theDict.Load())
+	}
 	// InitOrStitchToPreviousBlock
 	if bytes >= e.h.typeLen()-1 && pos >= 3 {
-		e.h.store(e.buf, pos-3)
-		e.h.store(e.buf, pos-2)
-		e.h.store(e.buf, pos-1)
+		e.h.store(e.rb.buf, pos-3)
+		e.h.store(e.rb.buf, pos-2)
+		e.h.store(e.rb.buf, pos-1)
 	}
 	if len(e.cmds) > 0 && e.lastInsertLen == 0 {
 		e.extendLastCommand(&bytes, &pos)
 	}
 	e.createBackwardReferences(bytes, pos)
+	if e.probe != nil && !e.probe.check(e.cmds, e.lastFlush) {
+		e.failed = true
+		return
+	}
 	maxLength := 1 << uint(min(1+max(e.lgwin, e.lgblock), 24))
 	processed := e.inputPos - e.lastFlush
-	if !isLast && processed+1<<uint(e.lgblock) <= maxLength && e.numLiterals < maxLength/8 && len(e.cmds) < maxLength/8 {
-		e.lastProcessed = e.inputPos
+	if !isLast && !forceFlush && processed+e.block() <= maxLength && e.numLiterals < maxLength/8 && len(e.cmds) < maxLength/8 {
+		e.lastProcessed = e.inputPos // merge with the next input block
 		return
 	}
 	if e.lastInsertLen > 0 {
@@ -58872,13 +59548,23 @@ func (e *hcBrotliz3_encoder) encodeData(isLast bool) {
 		e.numLiterals += e.lastInsertLen
 		e.lastInsertLen = 0
 	}
+	if !isLast && e.inputPos == e.lastFlush {
+		return // nothing new and the stream continues
+	}
 	e.writeMetaBlock(e.inputPos-e.lastFlush, isLast)
+	if e.probe != nil {
+		if e.stored {
+			e.probe.advance(0)
+		} else {
+			e.probe.advance(len(e.cmds))
+		}
+	}
 	e.lastFlush, e.lastProcessed = e.inputPos, e.inputPos
 	if e.lastFlush > 0 {
-		e.prev1 = e.buf[e.lastFlush-1]
+		e.prev1 = e.rb.buf[(e.lastFlush-1)&int(e.rb.mask)]
 	}
 	if e.lastFlush > 1 {
-		e.prev2 = e.buf[e.lastFlush-2]
+		e.prev2 = e.rb.buf[(e.lastFlush-2)&int(e.rb.mask)]
 	}
 	e.cmds = e.cmds[:0]
 	e.numLiterals = 0
@@ -58895,7 +59581,8 @@ func (e *hcBrotliz3_encoder) extendLastCommand(bytes, pos *int) {
 	code := last.restoreDistanceCode()
 	if code < hcBrotliz3_numDistShort || uint64(code-(hcBrotliz3_numDistShort-1)) == cmdDist {
 		if cmdDist <= maxDistance {
-			for *bytes != 0 && e.buf[*pos] == e.buf[*pos-int(cmdDist)] {
+			m, b := int(e.rb.mask), e.rb.buf
+			for *bytes != 0 && b[*pos&m] == b[(*pos-int(cmdDist))&m] {
 				last.copyLen++
 				*bytes--
 				*pos++
@@ -58905,16 +59592,16 @@ func (e *hcBrotliz3_encoder) extendLastCommand(bytes, pos *int) {
 	}
 }
 
-func (e *hcBrotliz3_encoder) shouldCompress(bytes int) bool {
+func (e *hcBrotliz3_encoder) shouldCompress(bytes int, data []byte) bool {
 	if bytes <= 2 {
 		return false
 	}
 	if len(e.cmds) < bytes>>8+2 && float64(e.numLiterals) > float64(0.99*float64(bytes)) {
 		var histo [256]uint32
 		t := (bytes + 12) / 13
-		pos := e.lastFlush
+		pos := 0
 		for i := 0; i < t; i++ {
-			histo[e.buf[pos]]++
+			histo[data[pos]]++
 			pos += 13
 		}
 		if hcBrotliz3_bitsEntropy(histo[:]) > float64(float64(float64(bytes)*7.92)*(1.0/13.0)) {
@@ -58924,25 +59611,49 @@ func (e *hcBrotliz3_encoder) shouldCompress(bytes int) bool {
 	return true
 }
 
+// linearize copies the meta-block bytes out of the ring: two bytes of left context, then the data.
+func (e *hcBrotliz3_encoder) linearize(bytes int) []byte {
+	need := 2 + bytes + 16
+	if cap(e.lin) < need {
+		e.lin = make([]byte, need)
+	}
+	l := e.lin[:need]
+	l[0], l[1] = e.prev2, e.prev1
+	m := int(e.rb.mask)
+	start := e.lastFlush & m
+	if start+bytes <= int(e.rb.size) {
+		copy(l[2:], e.rb.buf[start:start+bytes])
+	} else {
+		n := int(e.rb.size) - start
+		copy(l[2:], e.rb.buf[start:start+n])
+		copy(l[2+n:], e.rb.buf[:bytes-n])
+	}
+	return l
+}
+
 // writeMetaBlock is WriteMetaBlockInternal for qualities 4..9.
 func (e *hcBrotliz3_encoder) writeMetaBlock(bytes int, isLast bool) {
 	w := &e.w
+	e.stored = true
 	if bytes == 0 {
 		w.write(2, 3)
 		w.align()
 		return
 	}
-	data := e.buf[e.lastFlush : e.lastFlush+bytes]
-	if !e.shouldCompress(bytes) {
+	lin := e.linearize(bytes)
+	data := lin[2 : 2+bytes]
+	if !e.shouldCompress(bytes, data) {
 		copy(e.distCache[:4], e.savedDist[:])
 		w.uncompressedMetaBlock(isLast, data)
 		return
 	}
 	m := w.mark()
-	nctx, ctxMap := hcBrotliz3_decideLiteralContexts(e.buf, e.lastFlush, bytes, e.quality, e.sizeHint)
-	mb := hcBrotliz3_buildMetaBlockGreedy(e.buf, e.lastFlush, e.prev1, e.prev2, nctx, ctxMap, e.cmds)
-	w.storeMetaBlock(e.buf, e.lastFlush, bytes, e.prev1, e.prev2, isLast, e.cmds, mb)
+	nctx, ctxMap := hcBrotliz3_decideLiteralContexts(lin, 2, bytes, e.quality, int(e.hint))
+	mb := hcBrotliz3_buildMetaBlockGreedy(lin, 2, e.prev1, e.prev2, nctx, ctxMap, e.cmds)
+	w.storeMetaBlock(lin, 2, bytes, e.prev1, e.prev2, isLast, e.cmds, mb)
+	e.stored = false
 	if bytes+4 < w.bitsSince(m)>>3 {
+		e.stored = true
 		copy(e.distCache[:4], e.savedDist[:])
 		w.reset(m)
 		w.uncompressedMetaBlock(isLast, data)
@@ -59798,10 +60509,12 @@ type hcBrotliz3_hasher struct {
 	dictMatches uint64
 	dict        *hcBrotliz3_encDict
 	t           *hcBrotliz3_hashTables
+	mask        int  // ring-buffer mask: positions are absolute, bytes are read at pos&mask
+	legacy      bool // libbrotli <= 1.1.0: a probe that would leave the ring skips the candidate instead of ending the search
 }
 
-func hcBrotliz3_newHasher(quality, lgwin, sizeHint int, dict *hcBrotliz3_encDict) *hcBrotliz3_hasher {
-	h := &hcBrotliz3_hasher{dict: dict, blockBits: uint(quality - 1)}
+func hcBrotliz3_newHasher(quality, lgwin, sizeHint, mask int, legacy bool, dict *hcBrotliz3_encDict) *hcBrotliz3_hasher {
+	h := &hcBrotliz3_hasher{dict: dict, blockBits: uint(quality - 1), mask: mask, legacy: legacy}
 	bucketBits := uint(15)
 	if sizeHint >= 1<<20 && lgwin >= 19 {
 		h.h6 = true
@@ -59855,6 +60568,7 @@ func (h *hcBrotliz3_hasher) typeLen() int {
 }
 
 func (h *hcBrotliz3_hasher) key(data []byte, p int) uint32 {
+	p &= h.mask
 	if h.h6 {
 		return uint32((binary.LittleEndian.Uint64(data[p:]) * hcBrotliz3_h6Mul) >> (64 - 15))
 	}
@@ -59898,10 +60612,11 @@ func hcBrotliz3_backwardScore(length, backward uint64) uint64 {
 	return hcBrotliz3_scoreBase + 135*length - 30*uint64(hcBrotliz3_log2Floor(uint32(backward)))
 }
 
-// findLongestMatch is FN(FindLongestMatch) of H5/H6 on a non-wrapping buffer.
+// findLongestMatch is FN(FindLongestMatch) of H5/H6; cur and the stored positions are absolute, bytes are read through the ring mask.
 func (h *hcBrotliz3_hasher) findLongestMatch(data []byte, dc *[16]int32, cur int, maxLength, maxBackward, dictDistance, maxDistance uint64, out *hcBrotliz3_searchResult) {
 	minScore, bestScore, bestLen := out.score, out.score, out.len
 	key := h.key(data, cur)
+	cm := cur & h.mask
 	bucket := h.buckets[key<<h.blockBits : (key+1)<<h.blockBits]
 	out.len, out.lenCodeDelta = 0, 0
 	for i := 0; i < h.nLast; i++ {
@@ -59913,11 +60628,17 @@ func (h *hcBrotliz3_hasher) findLongestMatch(data []byte, dc *[16]int32, cur int
 		if backward > maxBackward {
 			continue
 		}
-		p := int(prev)
-		if data[cur+int(bestLen)] != data[p+int(bestLen)] {
+		p := int(prev) & h.mask
+		if cm+int(bestLen) > h.mask { // where a probe would leave the ring: 1.2.0 ends the search, <= 1.1.0 skips the candidate
+			if h.legacy {
+				continue
+			}
+			break
+		}
+		if p+int(bestLen) > h.mask || data[cm+int(bestLen)] != data[p+int(bestLen)] {
 			continue
 		}
-		l := uint64(hcBrotliz3_matchLen(data, p, cur, int(maxLength)))
+		l := uint64(hcBrotliz3_matchLen(data, p, cm, int(maxLength)))
 		if l >= 3 || (l == 2 && i < 2) {
 			score := 135*l + hcBrotliz3_scoreBase + 15
 			if bestScore < score {
@@ -59931,7 +60652,7 @@ func (h *hcBrotliz3_hasher) findLongestMatch(data []byte, dc *[16]int32, cur int
 			}
 		}
 	}
-	if bestLen < 3 {
+	if bestLen < 3 && !h.legacy {
 		bestLen = 3
 	}
 	nk := uint32(h.num[key])
@@ -59939,9 +60660,12 @@ func (h *hcBrotliz3_hasher) findLongestMatch(data []byte, dc *[16]int32, cur int
 	if nk > h.blockSize {
 		down = nk - h.blockSize
 	}
-	first4 := binary.LittleEndian.Uint32(data[cur:])
+	first4 := binary.LittleEndian.Uint32(data[cm:])
 	bl := int(bestLen)
-	tail := binary.LittleEndian.Uint32(data[cur+bl-3:]) // the four bytes ending at best_len
+	var tail uint32
+	if !h.legacy {
+		tail = binary.LittleEndian.Uint32(data[cm+bl-3:]) // the four bytes ending at best_len
+	}
 	for i := nk; i > down; {
 		i--
 		prev := bucket[i&h.blockMask]
@@ -59949,18 +60673,27 @@ func (h *hcBrotliz3_hasher) findLongestMatch(data []byte, dc *[16]int32, cur int
 		if backward > maxBackward {
 			break
 		}
-		p := int(prev)
-		if binary.LittleEndian.Uint32(data[p+bl-3:]) != tail {
-			continue
+		p := int(prev) & h.mask
+		if h.legacy {
+			if cm+bl > h.mask || p+bl > h.mask || data[cm+bl] != data[p+bl] {
+				continue
+			}
+		} else {
+			if cm+bl > h.mask {
+				break
+			}
+			if p+bl > h.mask || binary.LittleEndian.Uint32(data[p+bl-3:]) != tail {
+				continue
+			}
 		}
 		var l uint64
 		if h.h6 {
 			if binary.LittleEndian.Uint32(data[p:]) != first4 {
 				continue
 			}
-			l = uint64(hcBrotliz3_matchLen(data, p+4, cur+4, int(maxLength)-4)) + 4
+			l = uint64(hcBrotliz3_matchLen(data, p+4, cm+4, int(maxLength)-4)) + 4
 		} else {
-			if l = uint64(hcBrotliz3_matchLen(data, p, cur, int(maxLength))); l < 4 {
+			if l = uint64(hcBrotliz3_matchLen(data, p, cm, int(maxLength))); l < 4 {
 				continue
 			}
 		}
@@ -59968,7 +60701,9 @@ func (h *hcBrotliz3_hasher) findLongestMatch(data []byte, dc *[16]int32, cur int
 			bestScore, bestLen = score, l
 			out.len, out.distance, out.score = l, backward, score
 			bl = int(l)
-			tail = binary.LittleEndian.Uint32(data[cur+bl-3:])
+			if !h.legacy {
+				tail = binary.LittleEndian.Uint32(data[cm+bl-3:])
+			}
 		}
 	}
 	bucket[uint32(h.num[key])&h.blockMask] = uint32(cur)
@@ -59984,6 +60719,7 @@ func (h *hcBrotliz3_hasher) searchStaticDictionary(data []byte, cur int, maxLeng
 		return
 	}
 	d := h.dict
+	cur &= h.mask
 	key := ((binary.LittleEndian.Uint32(data[cur:]) * hcBrotliz3_hashMul32) >> 18) << 1
 	for i := 0; i < 2; i, key = i+1, key+1 {
 		h.dictLookups++
@@ -60039,7 +60775,7 @@ func hcBrotliz3_computeDistanceCode(distance, maxDistance uint64, dc *[16]int32)
 
 // createBackwardReferences is BrotliCreateBackwardReferences for one input block.
 func (e *hcBrotliz3_encoder) createBackwardReferences(numBytes, position int) {
-	h, data, dc := e.h, e.buf, &e.distCache
+	h, data, dc := e.h, e.rb.buf, &e.distCache
 	maxBackwardLimit := uint64(1)<<uint(e.lgwin) - hcBrotliz3_windowGap
 	insertLength := e.lastInsertLen
 	posEnd := position + numBytes
@@ -60721,6 +61457,296 @@ func hcBrotliz3_log2Int(v uint64) float64 {
 	r := hcBrotliz3_ddAdd(hcBrotliz3_dd{float64(e), 0}, l)
 	c.v, c.r = v, r.hi
 	return r.hi
+}
+
+// Recipe is everything a streaming producer's output depends on besides the decoded bytes: the
+// encoder parameters, how the size hint came out, the library generation, where the producer
+// flushed, and whether it finished with an empty call after a full block. Replay re-runs the
+// encoder from the decoded bytes; the caller compares the result with the stored stream.
+type hcBrotliz3Recipe struct {
+	Quality, LgWin, LgBlock int // LgBlock 0 = the encoder's default
+	BigHint                 bool
+	Legacy                  bool
+	EmptyLast               bool
+	Flushes                 []uint64 // ascending offsets in the decoded bytes (0 and the length are allowed)
+}
+
+var hcBrotliz3ErrRecipe = errors.New("brotliz3: malformed recipe")
+
+// MaxFlushes bounds the flush list a recipe may carry.
+const hcBrotliz3MaxFlushes = 1 << 16
+
+func (r hcBrotliz3Recipe) params() hcBrotliz3Params {
+	h := uint32(1)
+	if r.BigHint {
+		h = 1 << 20
+	}
+	return hcBrotliz3Params{Quality: r.Quality, LgWin: r.LgWin, LgBlock: r.LgBlock, SizeHint: h, Legacy: r.Legacy}
+}
+
+// Marshal is byte0 = quality-5 | (lgwin-17)<<3, byte1 = flags | (lgblock-15)<<4 (lgblock 0 -> 0), then the
+// flush count and delta-coded offsets as uvarints.
+func (r hcBrotliz3Recipe) Marshal() []byte {
+	b := []byte{byte(r.Quality-5) | byte(r.LgWin-17)<<3, 0}
+	if r.BigHint {
+		b[1] |= 1
+	}
+	if r.Legacy {
+		b[1] |= 2
+	}
+	if r.EmptyLast {
+		b[1] |= 4
+	}
+	if r.LgBlock != 0 {
+		b[1] |= byte(r.LgBlock-15) << 4
+	}
+	b = binary.AppendUvarint(b, uint64(len(r.Flushes)))
+	prev := uint64(0)
+	for _, f := range r.Flushes {
+		b = binary.AppendUvarint(b, f-prev)
+		prev = f
+	}
+	return b
+}
+
+// UnmarshalRecipe parses a recipe from the front of b and returns the bytes consumed. Offsets are
+// checked against the decoded length n.
+func hcBrotliz3UnmarshalRecipe(b []byte, n int64) (hcBrotliz3Recipe, int, error) {
+	if len(b) < 3 {
+		return hcBrotliz3Recipe{}, 0, hcBrotliz3ErrRecipe
+	}
+	r := hcBrotliz3Recipe{Quality: int(b[0]&7) + 5, LgWin: int(b[0]>>3) + 17, BigHint: b[1]&1 != 0, Legacy: b[1]&2 != 0, EmptyLast: b[1]&4 != 0}
+	if b[1]&8 != 0 || b[0]>>6 != 0 {
+		return hcBrotliz3Recipe{}, 0, hcBrotliz3ErrRecipe
+	}
+	if lb := int(b[1] >> 4); lb != 0 {
+		r.LgBlock = lb + 15
+	}
+	if !(hcBrotliz3Params{Quality: r.Quality, LgWin: r.LgWin, LgBlock: r.LgBlock}).valid() {
+		return hcBrotliz3Recipe{}, 0, hcBrotliz3ErrRecipe
+	}
+	pos := 2
+	cnt, k := binary.Uvarint(b[pos:])
+	if k <= 0 || cnt > hcBrotliz3MaxFlushes || cnt > uint64(len(b)) {
+		return hcBrotliz3Recipe{}, 0, hcBrotliz3ErrRecipe
+	}
+	pos += k
+	var cur uint64
+	for i := uint64(0); i < cnt; i++ {
+		d, k := binary.Uvarint(b[pos:])
+		if k <= 0 || d > uint64(n) || cur+d > uint64(n) {
+			return hcBrotliz3Recipe{}, 0, hcBrotliz3ErrRecipe
+		}
+		pos += k
+		cur += d
+		r.Flushes = append(r.Flushes, cur)
+	}
+	return r, pos, nil
+}
+
+// cmdProbe compares the encoder's commands with the ones decoded from the producer's stream, block by block, so a
+// wrong parameter guess is rejected after one input block instead of after the whole stream.
+type hcBrotliz3_cmdProbe struct {
+	exp     []hcBrotliz3TraceCmd
+	stored  map[int]bool // start offsets of the stream's uncompressed meta-blocks (they carry no commands)
+	base    int          // commands of earlier meta-blocks
+	checked int          // commands of this meta-block already compared
+}
+
+func hcBrotliz3_newCmdProbe(tr *hcBrotliz3Trace) *hcBrotliz3_cmdProbe {
+	p := &hcBrotliz3_cmdProbe{exp: tr.Cmds, stored: map[int]bool{}}
+	for _, b := range tr.Blocks {
+		if b.Uncompressed {
+			p.stored[b.Start] = true
+		}
+	}
+	return p
+}
+
+// check compares the commands of the meta-block starting at start (decoded offset) that are final.
+func (p *hcBrotliz3_cmdProbe) check(cmds []hcBrotliz3_command, start int) bool {
+	if p.stored[start] {
+		return true
+	}
+	for ; p.checked < len(cmds)-1; p.checked++ { // the last command may still be extended by the next block
+		i := p.base + p.checked
+		if i >= len(p.exp) {
+			return true // beyond the recorded prefix
+		}
+		c := &cmds[p.checked]
+		if c.insertLen != uint32(p.exp[i].Ins) || c.copyLenCode() != uint32(p.exp[i].Copy) {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *hcBrotliz3_cmdProbe) advance(n int) { p.base += n; p.checked = 0 }
+
+// ReplayTo regenerates the producer's stream from body into w, holding at most the encoder window.
+func (r hcBrotliz3Recipe) ReplayTo(w io.Writer, body []byte) error { return r.replay(w, body, nil) }
+
+func (r hcBrotliz3Recipe) replay(w io.Writer, body []byte, probe *hcBrotliz3_cmdProbe) error {
+	st, err := hcBrotliz3NewStream(r.params(), w)
+	if err != nil {
+		return err
+	}
+	st.e.probe = probe
+	defer st.Close()
+	pos := uint64(0)
+	for _, f := range r.Flushes {
+		if f < pos || f > uint64(len(body)) {
+			return hcBrotliz3ErrRecipe
+		}
+		if f > pos {
+			if err := st.Process(body[pos:f]); err != nil {
+				return err
+			}
+		}
+		if err := st.Flush(); err != nil {
+			return err
+		}
+		pos = f
+	}
+	rest := body[pos:]
+	if r.EmptyLast {
+		if err := st.Process(rest); err != nil {
+			return err
+		}
+		rest = nil
+	}
+	return st.Write(hcBrotliz3OpFinish, rest)
+}
+
+// Replay returns the regenerated stream.
+func (r hcBrotliz3Recipe) Replay(body []byte) ([]byte, error) {
+	var w hcBrotliz3_sliceWriter
+	if err := r.ReplayTo(&w, body); err != nil {
+		return nil, err
+	}
+	return w.b, nil
+}
+
+// errMismatch ends a replay at the first byte that differs from the stored stream.
+var hcBrotliz3_errMismatch = errors.New("brotliz3: replay differs")
+
+// matchWriter compares everything written with the stored stream and fails at the first difference.
+type hcBrotliz3_matchWriter struct{ want []byte }
+
+func (m *hcBrotliz3_matchWriter) Write(p []byte) (int, error) {
+	if len(p) > len(m.want) || !bytes.Equal(p, m.want[:len(p)]) {
+		return 0, hcBrotliz3_errMismatch
+	}
+	m.want = m.want[len(p):]
+	return len(p), nil
+}
+
+// Matches reports whether the recipe reproduces payload from body (early exit on the first difference).
+func (r hcBrotliz3Recipe) Matches(payload, body []byte) bool { return r.matches(payload, body, nil) }
+
+func (r hcBrotliz3Recipe) matches(payload, body []byte, probe *hcBrotliz3_cmdProbe) bool {
+	m := &hcBrotliz3_matchWriter{want: payload}
+	return r.replay(m, body, probe) == nil && len(m.want) == 0
+}
+
+// Derive searches the recipes a streaming producer can leave behind for one that reproduces payload from its
+// decoding body (tr is DecodeTrace's structure). Qualities are tried from the caller's guess first. Every
+// candidate is checked by an early-exit replay, so a wrong guess costs one block of encoding.
+func hcBrotliz3Derive(payload, body []byte, tr *hcBrotliz3Trace, firstQuality int) (hcBrotliz3Recipe, bool) {
+	if tr == nil || tr.LgWin < 17 || tr.LgWin > 24 || len(body) >= hcBrotliz3_maxStream {
+		return hcBrotliz3Recipe{}, false
+	}
+	order := []int{8, 9, 5, 6, 7}
+	if firstQuality >= 5 && firstQuality <= 9 {
+		order = slices.DeleteFunc(order, func(q int) bool { return q == firstQuality })
+		order = append([]int{firstQuality}, order...)
+	}
+	bigFirst := len(body) >= 1<<20
+	for _, fl := range hcBrotliz3_flushCandidates(tr, body) {
+		// stage 1: the encoder's default block size; stage 2: an explicit one. Legacy ring handling only
+		// matters once the data reaches the end of the ring, an empty finish only after a full block.
+		for stage := 0; stage < 2; stage++ {
+			for _, q := range order {
+				for _, big := range []bool{bigFirst, !bigFirst} {
+					for _, legacy := range []bool{false, true} {
+						for _, lb := range hcBrotliz3_lgBlockCandidates(q, tr.LgWin, stage) {
+							ring := 1 << uint(1+max(tr.LgWin, hcBrotliz3Params{Quality: q, LgWin: tr.LgWin, LgBlock: lb}.lgBlock()))
+							if legacy && len(body) <= ring-1<<uint(hcBrotliz3Params{Quality: q, LgWin: tr.LgWin, LgBlock: lb}.lgBlock()) {
+								continue
+							}
+							for _, empty := range []bool{false, true} {
+								r := hcBrotliz3Recipe{Quality: q, LgWin: tr.LgWin, LgBlock: lb, BigHint: big, Legacy: legacy, EmptyLast: empty, Flushes: fl}
+								if empty && !hcBrotliz3_emptyPossible(r, len(body)) {
+									continue
+								}
+								if r.matches(payload, body, hcBrotliz3_newCmdProbe(tr)) {
+									return r, true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return hcBrotliz3Recipe{}, false
+}
+
+func hcBrotliz3_lgBlockCandidates(q, lgwin, stage int) []int {
+	if stage == 0 {
+		return []int{0}
+	}
+	auto := hcBrotliz3Params{Quality: q, LgWin: lgwin}.lgBlock()
+	var out []int
+	for lb := 16; lb <= 24; lb++ {
+		if lb != auto {
+			out = append(out, lb)
+		}
+	}
+	return out
+}
+
+// emptyPossible: a finish with no new bytes ends a stream only after a full, already encoded block.
+func hcBrotliz3_emptyPossible(r hcBrotliz3Recipe, n int) bool {
+	last := uint64(0)
+	if len(r.Flushes) > 0 {
+		last = r.Flushes[len(r.Flushes)-1]
+	}
+	block := uint64(1) << uint(hcBrotliz3Params{Quality: r.Quality, LgWin: r.LgWin, LgBlock: r.LgBlock}.lgBlock())
+	return uint64(n) > last && (uint64(n)-last)%block == 0
+}
+
+// flushCandidates lists the flush sets worth trying: the padding markers plus the meta-block ends no
+// natural block boundary explains; then the same with every remaining boundary forced.
+func hcBrotliz3_flushCandidates(tr *hcBrotliz3Trace, body []byte) [][]uint64 {
+	seen := map[int]bool{}
+	var base []uint64
+	for _, m := range tr.Markers {
+		if !seen[m] {
+			seen[m] = true
+			base = append(base, uint64(m))
+		}
+	}
+	var natural []uint64
+	for _, b := range tr.Blocks {
+		if b.Last || seen[b.End] || b.End >= len(body) {
+			continue
+		}
+		if b.End%65536 != 0 { // not a multiple of the smallest input block: only a flush ends a meta-block here
+			seen[b.End] = true
+			base = append(base, uint64(b.End))
+		} else {
+			natural = append(natural, uint64(b.End))
+		}
+	}
+	slices.Sort(base)
+	sets := [][]uint64{base}
+	if len(natural) > 0 && len(natural) <= 64 {
+		all := append(slices.Clone(base), natural...)
+		slices.Sort(all)
+		sets = append(sets, all)
+	}
+	return sets
 }
 
 // DictionarySHA256 identifies the RFC 7932 static dictionary (122784 bytes).
@@ -64807,13 +65833,13 @@ func (s *Store) repPublicationFloor(r *repRoot) (int, error) {
 
 // repRootHard reports whether a representation closure holds a Parquet or SST recipe that needs the
 // exact Brotli or LZ4 replay (the recipe's first byte is the hard version).
-func (s *Store) repRootHard(r *repRoot) (bool, error) {
+func (s *Store) repRootHard(r *repRoot) (hard, stream bool, err error) {
 	src := s.newRepSource(r.Descs, nil)
 	defer src.close()
 	env := &repEnv{Src: src, Limits: repProdLimits}
 	reach, err := env.reachable(r.Rep)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	for id, role := range reach.Role {
 		if role != repDepRep {
@@ -64821,13 +65847,14 @@ func (s *Store) repRootHard(r *repRoot) (bool, error) {
 		}
 		obj, err := env.loadRep(id)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
-		if len(obj.Recipe) > 0 && (obj.Kind == repKindParquet && obj.Recipe[0] == repPQrecipeVersionHard || obj.Kind == repKindSST && obj.Recipe[0] == repSSrecipeVersionHard) {
-			return true, nil
+		if len(obj.Recipe) > 0 && (obj.Kind == repKindParquet && obj.Recipe[0] >= repPQrecipeVersionHard || obj.Kind == repKindSST && obj.Recipe[0] == repSSrecipeVersionHard) {
+			hard = true
+			stream = stream || obj.Kind == repKindParquet && obj.Recipe[0] == repPQrecipeVersionStream
 		}
 	}
-	return false, nil
+	return hard, stream, nil
 }
 
 // repFloorOf is the store-format level the representation closure reach describes
@@ -67660,6 +68687,9 @@ type repPQCompressor struct {
 	brMiss    int // consecutive Brotli pages no ported quality reproduced
 }
 
+// repPQbrStreamOnly (tests) derives a streaming recipe even for pages the one-shot quality ids reproduce.
+var repPQbrStreamOnly bool
+
 // repPQbrGiveUp: after this many consecutive unreproduced pages the producer is treated as
 // unsupported and later pages are rejected without decoding or re-encoding.
 const repPQbrGiveUp = 3
@@ -67743,14 +68773,13 @@ func (c *repPQCompressor) Analyze(payload []byte, want int64) (body []byte, rec 
 		}
 		return body, repPQCompRec{ID: repPQCompLZ4Rec, LZ4: rc.Marshal()}, nil
 	case repPQCodecBrotli:
-		// Only streams with the 22-bit window header can come from the ported encoder path.
-		if c.brMiss >= repPQbrGiveUp || len(payload) == 0 || payload[0]&0xF != 0xB {
+		if c.brMiss >= repPQbrGiveUp || len(payload) == 0 {
 			return nil, rec, repPQunsupported("brotli page outside the reproduced encoder profile")
 		}
 		if err := hcBrotliEnsureDict(); err != nil {
 			return nil, rec, err
 		}
-		body, err := hcBrotliz3Decode(payload, int(want))
+		body, tr, err := hcBrotliz3DecodeTrace(payload, int(want))
 		if err != nil {
 			if err == hcBrotliz3ErrCorrupt || err == hcBrotliz3ErrLimit {
 				return nil, rec, repPQcorrupt("brotli page: %v", err)
@@ -67760,20 +68789,39 @@ func (c *repPQCompressor) Analyze(payload []byte, want int64) (body []byte, rec 
 		if int64(len(body)) != want {
 			return nil, rec, repPQcorrupt("brotli page decodes to %d bytes, header says %d", len(body), want)
 		}
-		order := [6]int{c.brLast, 8, 9, 5, 6, 7}
-		for i, q := range order {
-			if q == 0 || (i > 0 && q == c.brLast) {
-				continue
-			}
-			if out, e := hcBrotliz3Encode(body, q, 22); e == nil && bytes.Equal(out, payload) {
-				c.brLast, c.brMiss = q, 0
-				return body, repPQCompRec{ID: uint8(repPQCompBrotli5 + q - 5)}, nil
+		if payload[0]&0xF == 0xB && !repPQbrStreamOnly { // the 22-bit window of a one-shot producer: a quality id, no recipe member
+			order := [6]int{c.brLast, 8, 9, 5, 6, 7}
+			for i, q := range order {
+				if q == 0 || (i > 0 && q == c.brLast) {
+					continue
+				}
+				if out, e := hcBrotliz3Encode(body, q, 22); e == nil && bytes.Equal(out, payload) {
+					c.brLast, c.brMiss = q, 0
+					return body, repPQCompRec{ID: uint8(repPQCompBrotli5 + q - 5)}, nil
+				}
 			}
 		}
+		// a streaming producer (chunked input, flushes, another window or block size, a hint of its own)
+		if r, ok := hcBrotliz3Derive(payload, body, tr, c.brLast); ok {
+			c.brLast, c.brMiss = r.Quality, 0
+			return body, repPQCompRec{ID: repPQCompLZ4Rec, LZ4: append([]byte{repPQbrStreamTag}, r.Marshal()...)}, nil
+		}
 		c.brMiss++
-		return nil, rec, repPQunsupported("brotli page not reproduced by qualities 5-9")
+		return nil, rec, repPQunsupported("brotli page not reproduced by qualities 5-9 or a streaming recipe")
 	}
 	return nil, rec, repPQunsupported("codec %s", repPQCodecName(c.Codec))
+}
+
+// replayBrotliStream regenerates a page from a streaming-Brotli recipe member.
+func (c *repPQCompressor) replayBrotliStream(rec repPQCompRec, body []byte) ([]byte, error) {
+	if err := hcBrotliEnsureDict(); err != nil {
+		return nil, err
+	}
+	r, n, err := hcBrotliz3UnmarshalRecipe(rec.LZ4[1:], int64(len(body)))
+	if err != nil || n != len(rec.LZ4)-1 {
+		return nil, repPQrecipeErr("brotli stream recipe: %v", err)
+	}
+	return r.Replay(body)
 }
 
 // Port source: zeros3-z3/parquetz3/codec.go
@@ -67834,6 +68882,9 @@ func (c *repPQCompressor) Replay(rec repPQCompRec, body []byte) ([]byte, error) 
 		}
 		return out.Bytes(), nil
 	case repPQCompLZ4Rec, repPQCompLZ4Def, repPQCompLZ4Cont, repPQCompLZ4Def5:
+		if rec.ID == repPQCompLZ4Rec && len(rec.LZ4) > 0 && rec.LZ4[0] == repPQbrStreamTag {
+			return c.replayBrotliStream(rec, body)
+		}
 		return c.replayLZ4(rec, body)
 	}
 	if rec.ID >= repPQCompBrotli5 && rec.ID <= repPQCompBrotli9 {
@@ -68087,6 +69138,9 @@ func (d *repPQdecoder) compRec(s *repPQSeg) (repPQCompRec, error) {
 			rec.Cmds = b
 		case repPQCompLZ4Rec:
 			rec.LZ4 = b
+			if len(b) > 0 && b[0] == repPQbrStreamTag && d.rec.Ver != repPQrecipeVersionStream {
+				return rec, repPQrecipeErr("a streaming-Brotli recipe in a version %d recipe", d.rec.Ver)
+			}
 		default:
 			rec.Zstd = b
 		}
@@ -68684,6 +69738,7 @@ func (e *repPQencoder) chunk(c *repPQChunk) error {
 		value: func(rec []byte) error { return e.vs[ci].add(rec, 1) },
 		page: func(i int, pi *repPQPageInfo, values []byte, comp repPQCompRec, hdr []byte) error {
 			s := repPQSeg{Col: ci, Hdr: append([]byte(nil), hdr...), Comp: comp.ID, Lay: pi.Lay.retained(), Present: pi.Present}
+			s.Stream = comp.ID == repPQCompLZ4Rec && len(comp.LZ4) > 0 && comp.LZ4[0] == repPQbrStreamTag
 			var err error
 			if repPQcompNeedsMember(comp.ID) {
 				cb := comp.Cmds
@@ -68701,8 +69756,12 @@ func (e *repPQencoder) chunk(c *repPQChunk) error {
 			e.st.Pages++
 			e.st.LogicalPages++
 			e.st.PagePayload += int64(pi.Page.Comp)
-			e.st.CompPages[repPQCompName(int(comp.ID))]++
-			e.st.CompBytes[repPQCompName(int(comp.ID))] += int64(pi.Page.Comp)
+			cname := repPQCompName(int(comp.ID))
+			if s.Stream {
+				cname = "brotli-stream"
+			}
+			e.st.CompPages[cname]++
+			e.st.CompBytes[cname] += int64(pi.Page.Comp)
 			if pi.Mode == repPQModeDict {
 				s.Kind = repPQSegDict
 				if plan.DictMode == repPQDictExplicit {
@@ -70196,6 +71255,7 @@ type repPQSeg struct {
 	Lay          repPQlayout
 	Present      int  // non-null values of a SegData page
 	DictExplicit bool // SegDict: the dictionary body is a component
+	Stream       bool // the compression member is a streaming-Brotli recipe: the recipe is version 3 (set by the encoder only)
 
 	// derived by ParseRecipe (never serialized)
 	Page       *repPQPage
@@ -70227,6 +71287,7 @@ type repPQRecipe struct {
 	Cols    []repPQColRec
 	Segs    []repPQSeg
 	Digests []repPQID
+	Ver     byte // the version byte it was parsed from (never serialized)
 }
 
 // Port source: zeros3-z3/parquetz3/recipe.go
@@ -70251,9 +71312,13 @@ func (s repPQSizes) Total() int64 {
 // Version 2 is written only for a recipe with a compression id from repPQcompHard up (Brotli, LZ4_RAW):
 // a build that stops at version 1 refuses it by its first byte, and a version 1 recipe is unchanged.
 const (
-	repPQrecipeVersion     = 1
-	repPQrecipeVersionHard = 2
+	repPQrecipeVersion       = 1
+	repPQrecipeVersionHard   = 2
+	repPQrecipeVersionStream = 3 // a page whose Brotli stream came from a streaming producer (recipe member tagged repPQbrStreamTag)
 )
+
+// repPQbrStreamTag starts a compression-id-7 member that holds a streaming-Brotli recipe instead of an LZ4 recipe.
+const repPQbrStreamTag = 0xB5
 
 // Port source: zeros3-z3/parquetz3/recipe.go
 func repPQappendExplicit(b []byte, hdrs []uint64, pad []uint32, bw int) []byte {
@@ -70300,7 +71365,10 @@ func (r *repPQRecipe) Marshal() ([]byte, repPQSizes) {
 	ver := byte(repPQrecipeVersion)
 	for i := range r.Segs {
 		if r.Segs[i].Comp >= repPQcompHard && (r.Segs[i].Kind == repPQSegData || r.Segs[i].Kind == repPQSegDict) {
-			ver = repPQrecipeVersionHard
+			ver = max(ver, repPQrecipeVersionHard)
+		}
+		if r.Segs[i].Stream {
+			ver = repPQrecipeVersionStream
 		}
 	}
 	b := []byte{ver}
@@ -70488,11 +71556,11 @@ func repPQParseRecipe(b []byte, lim repPQLimits) (*repPQRecipe, error) {
 	lim = lim.norm()
 	r := &repPQrrd{b: b}
 	ver := r.byte()
-	if r.err == nil && ver != repPQrecipeVersion && ver != repPQrecipeVersionHard {
+	if r.err == nil && ver != repPQrecipeVersion && ver != repPQrecipeVersionHard && ver != repPQrecipeVersionStream {
 		return nil, repPQrecipeErr("version %d", ver)
 	}
 	sawHard := false
-	out := &repPQRecipe{Size: int64(r.uv(1 << 62))}
+	out := &repPQRecipe{Size: int64(r.uv(1 << 62)), Ver: ver}
 	ndig := r.uv(1 << 24)
 	ncols := r.uv(uint64(lim.MaxColumns))
 	if r.err != nil {
@@ -70729,7 +71797,7 @@ func repPQParseRecipe(b []byte, lim repPQLimits) (*repPQRecipe, error) {
 			}
 		}
 	}
-	if ver == repPQrecipeVersionHard && !sawHard {
+	if ver >= repPQrecipeVersionHard && !sawHard {
 		return nil, repPQrecipeErr("version %d without a Brotli or LZ4 page", ver)
 	}
 	return out, nil

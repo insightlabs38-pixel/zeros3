@@ -4851,12 +4851,25 @@ func zn7IMatrix(names []string, cols int, seed uint64) []byte {
 }
 
 func TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		qt   ncQcoreType
+		id   uint32
+		ar   ncQcoreArith
+	}{{"Q4_K", ncQcoreQ4_K, 12, ncQcoreStrict}, {"IQ3_S", ncQcoreIQ3_S, 21, ncQcoreGCCFMA}, {"IQ3_S-strict", ncQcoreIQ3_S, 21, ncQcoreStrict}, {"IQ4_XS", ncQcoreIQ4_XS, 23, ncQcoreGCCFMA}} {
+		t.Run(c.name, func(t *testing.T) { zn7QuantDerivation(t, c.qt, c.id, c.ar) })
+	}
+}
+
+// zn7QuantFixture is a float source, its importance matrix and a quantized file derived from both.
+func zn7QuantFixture(t *testing.T, qt ncQcoreType, typeID uint32, ar ncQcoreArith) (src, im, derived []byte) {
+	t.Helper()
 	const rows, cols = 256, 512
 	r := rand.New(rand.NewPCG(401, 3))
 	names := []string{"blk.0.attn_q.weight", "blk.0.ffn_up.weight"}
 	var f16 []zn7GGUFTensor
 	var q4 []zn7GGUFTensor
-	im := zn7IMatrix(names, cols, 9)
+	im = zn7IMatrix(names, cols, 9)
 	parsed, err := ncQcoreParseIMatrix(im)
 	if err != nil {
 		t.Fatal(err)
@@ -4876,20 +4889,25 @@ func TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive(t *testing.T)
 			binary.LittleEndian.PutUint32(raw[4*i:], math.Float32bits(v))
 		}
 		f16 = append(f16, zn7GGUFTensor{n, 0, rows, cols, raw})
-		qn, err := ncQcoreOutLen(ncQcoreQ4_K, len(x), cols)
+		qn, err := ncQcoreOutLen(qt, len(x), cols)
 		if err != nil {
 			t.Fatal(err)
 		}
 		qd := make([]byte, qn)
-		if err := ncQcoreQuantize(qd, ncQcoreQ4_K, x, cols, parsed.W[n], ncQcoreStrict); err != nil {
+		if err := ncQcoreQuantize(qd, qt, x, cols, parsed.W[n], ar); err != nil {
 			t.Fatal(err)
 		}
-		q4 = append(q4, zn7GGUFTensor{n, 12, rows, cols, qd})
+		q4 = append(q4, zn7GGUFTensor{n, typeID, rows, cols, qd})
 	}
-	src, derived := zn7GGUF(f16), zn7GGUF(q4)
+	src, derived = zn7GGUF(f16), zn7GGUF(q4)
 	if _, err := authZN7Layout(bytes.NewReader(derived), int64(len(derived))); err != nil {
 		t.Fatalf("fixture GGUF does not parse: %v", err)
 	}
+	return src, im, derived
+}
+
+func zn7QuantDerivation(t *testing.T, qt ncQcoreType, typeID uint32, ar ncQcoreArith) {
+	src, im, derived := zn7QuantFixture(t, qt, typeID, ar)
 	l := newAuthLab(t)
 	l.put("m/src-f32.gguf", src)
 	l.put("m/imatrix.dat", im)
@@ -4908,6 +4926,12 @@ func TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive(t *testing.T)
 	imSHA := sha256.Sum256(im)
 	if rec := mustLoad(t, l.s, qsha); len(rec.Bases) != 2 || rec.Bases[1].SHA != imSHA {
 		t.Fatalf("the record must name the float source and the imatrix as bases: %+v", rec.Bases)
+	}
+	if plan.AddedBytes*10 > int64(len(derived)) {
+		t.Fatalf("the derivation must replace the quantized payload: added %d of %d bytes", plan.AddedBytes, len(derived))
+	}
+	if raw, _ := os.ReadFile(filepath.Join(l.dir, "FORMAT.json")); strings.Contains(string(raw), authIQ3Feature) != (qt == ncQcoreIQ3_S) {
+		t.Fatalf("the %s store feature must be recorded exactly for IQ3_S containers: %s", authIQ3Feature, raw)
 	}
 	l.exact("derived")
 	l.verifyOK("derived")
@@ -4939,6 +4963,10 @@ func TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive(t *testing.T)
 		t.Fatal(err)
 	}
 	l.exact("reverted")
+	l.close()
+	if raw, _ := os.ReadFile(filepath.Join(l.dir, "FORMAT.json")); strings.Contains(string(raw), "zn7") {
+		t.Fatalf("a feature marker remains after revert-all: %s", raw)
+	}
 }
 
 // TestAuthorityZN7RealModels runs the production lifecycle on real checkpoints and real producer output
@@ -5016,6 +5044,8 @@ func TestAuthorityZN7RealModels(t *testing.T) {
 	run("pythia14m", []string{"pythia14m/step1000.safetensors", "pythia14m/step4000.safetensors", "pythia14m/step16000.safetensors", "pythia14m/step64000.safetensors", "pythia14m/step143000.safetensors"},
 		[]string{"p/s1000", "p/s4000", "p/s16000", "p/s64000", "p/s143000"}, nil, 1)
 	run("smollm2-q4_0", []string{"smol/f16.gguf", "smol/imatrix.dat", "smol/Q4_0.gguf"}, []string{"s/f16.gguf", "s/imatrix.dat", "s/q4_0.gguf"}, []string{"s/f16.gguf", "s/imatrix.dat"}, 1)
+	// IQ3_M and IQ3_XS are llama.cpp's mixed IQ3_S producers: every tensor is derived (IQ3_S included), none is stored opaque
+	run("smollm2-iq3", []string{"smol/f16.gguf", "smol/imatrix.dat", "smol/IQ3_M.gguf", "smol/IQ3_XS.gguf"}, []string{"s/f16.gguf", "s/imatrix.dat", "s/iq3_m.gguf", "s/iq3_xs.gguf"}, []string{"s/f16.gguf", "s/imatrix.dat"}, 2)
 }
 
 // ---- G1: authority-mode equivalents of the CDC-specific classes --------------------------------
@@ -5427,5 +5457,80 @@ func TestAuthorityHardCodecsFeatureLifecycle(t *testing.T) {
 	}
 	if out, errOut, code := runZeros3CLI(t, pre, "verify", "-store", l.dir, "-deep"); code != 0 {
 		t.Fatalf("pre-authority binary cannot reopen the reverted store: %s %s", out, errOut)
+	}
+}
+
+// The two store features of this campaign: "zn7iq3s" (a ZN7 container deriving IQ3_S tensors) and "hardstream"
+// (Parquet recipes with streaming-Brotli pages). A build that predates either refuses the store and names the
+// feature, nothing changes on disk, and revert -all clears the feature.
+func TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds(t *testing.T) {
+	prev := buildBinaryAt(t, "d0391eb203b939ceb26fd9009d859abaaa5ae045") // hardcodec and zn7, neither new feature
+	cases := []struct {
+		name, feature string
+		lab           func() *authLab
+		policy        AuthPolicy
+	}{
+		{"hardstream", authStreamFeature, func() *authLab {
+			repPQbrStreamOnly = true
+			t.Cleanup(func() { repPQbrStreamOnly = false })
+			l := newAuthLab(t)
+			for _, f := range []string{"pa_brotli.parquet", "pa_brotli_q6.parquet"} {
+				b, err := os.ReadFile(filepath.Join("testdata", "p7", f))
+				if err != nil {
+					t.Fatal(err)
+				}
+				l.put(f, b)
+			}
+			return l
+		}, AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, MinObject: 1, MinRepGroup: 1, HardCodecs: true}},
+		{"zn7iq3s", authIQ3Feature, func() *authLab {
+			src, im, derived := zn7QuantFixture(t, ncQcoreIQ3_S, 21, ncQcoreGCCFMA)
+			l := newAuthLab(t)
+			l.put("m/src-f32.gguf", src)
+			l.put("m/imatrix.dat", im)
+			l.put("m/iq3_s.gguf", derived)
+			return l
+		}, AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxBases: 2, MaxReadAmp: -1, AllowDelta: true}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			l := c.lab()
+			l.close()
+			_, before := readFormatVersion(t, l.dir)
+			l.open()
+			l.migrate(c.policy)
+			l.reclaim()
+			l.exact("migrated")
+			l.close()
+			if f := readFeatures(t, l.dir); !slices.Contains(f, c.feature) {
+				t.Fatalf("features %v: %s missing", f, c.feature)
+			}
+			digest := treeDigest(t, l.dir)
+			for _, args := range [][]string{{"stats", "-store", l.dir}, {"verify", "-store", l.dir}, {"gc", "-store", l.dir, "-apply"}} {
+				out, errOut, code := runZeros3CLI(t, prev, args...)
+				if code == 0 {
+					t.Fatalf("the previous build %v opened a %s store: %s", args, c.feature, out)
+				}
+				if !strings.Contains(out+errOut, c.feature) {
+					t.Fatalf("the previous build %v refused without naming %s: %q", args, c.feature, out+errOut)
+				}
+			}
+			if treeDigest(t, l.dir) != digest {
+				t.Fatal("the previous build mutated the store while refusing it")
+			}
+			l.open()
+			rr, err := l.s.AuthorityRevertAll()
+			if err != nil || rr.LoweredTo != before {
+				t.Fatalf("revert -all: %+v %v", rr, err)
+			}
+			l.exact("reverted")
+			l.close()
+			if f := readFeatures(t, l.dir); len(f) != 0 {
+				t.Fatalf("features %v remain after revert -all", f)
+			}
+			if out, errOut, code := runZeros3CLI(t, prev, "verify", "-store", l.dir, "-deep"); code != 0 {
+				t.Fatalf("the previous build cannot reopen the reverted store: %s %s", out, errOut)
+			}
+		})
 	}
 }

@@ -866,3 +866,60 @@ func TestHardLZ4MatchesPinnedProducerOutput(t *testing.T) {
 		t.Fatalf("fixtures covered: %d blocks, %d frames", blocks, frames)
 	}
 }
+
+// Streaming-API producers (Z4-C1/T1): python-brotli's Compressor and Arrow's streaming compressor with chunked
+// input, flushes, an explicit block size and a wrapping ring. The page analyzer must give each stream a recipe
+// member that regenerates it, and the recipe must survive its wire form.
+func TestHardBrotliStreamingProducers(t *testing.T) {
+	raw, err := os.ReadFile("testing-harnesses/z3/brotliz3/testdata/streams/MANIFEST.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man []struct {
+		File, Producer, Pattern string
+		Params                  map[string]int
+		Sha256                  string
+		Decoded_size            int
+		Decoded_sha256          string
+	}
+	if err := json.Unmarshal(raw, &man); err != nil {
+		t.Fatal(err)
+	}
+	lim := repStructuredParquetLimits()
+	lim.Hard = true
+	for _, m := range man {
+		pay, err := os.ReadFile("testing-harnesses/z3/brotliz3/testdata/streams/" + m.File)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sum := sha256.Sum256(pay); hex.EncodeToString(sum[:]) != m.Sha256 {
+			t.Fatalf("%s: fixture damaged", m.File)
+		}
+		c := repPQNewCompressor(repPQCodecBrotli, lim)
+		body, rec, err := c.Analyze(pay, int64(m.Decoded_size))
+		if err != nil {
+			t.Errorf("%s (%s, %s): %v", m.File, m.Producer, m.Pattern, err)
+			continue
+		}
+		if sum := sha256.Sum256(body); hex.EncodeToString(sum[:]) != m.Decoded_sha256 {
+			t.Fatalf("%s: the body is not the decoded stream", m.File)
+		}
+		if rec.ID != repPQCompBrotli5+uint8(m.Params["quality"])-5 && (rec.ID != repPQCompLZ4Rec || len(rec.LZ4) < 4 || rec.LZ4[0] != repPQbrStreamTag) {
+			t.Errorf("%s: unexpected compression record %+v", m.File, rec)
+			continue
+		}
+		again, err := repPQNewCompressor(repPQCodecBrotli, lim).Replay(rec, body)
+		if err != nil || !bytes.Equal(again, pay) {
+			t.Fatalf("%s: replay differs (%v)", m.File, err)
+		}
+		// a damaged member must be refused, never replayed into other bytes
+		if rec.ID == repPQCompLZ4Rec {
+			for _, bad := range [][]byte{rec.LZ4[:2], append(append([]byte(nil), rec.LZ4...), 7), append([]byte{repPQbrStreamTag, 0xff, 0xff}, rec.LZ4[3:]...)} {
+				if out, err := repPQNewCompressor(repPQCodecBrotli, lim).Replay(repPQCompRec{ID: repPQCompLZ4Rec, LZ4: bad}, body); err == nil && bytes.Equal(out, pay) {
+					t.Errorf("%s: a damaged recipe member replayed to the original", m.File)
+				}
+			}
+		}
+		t.Logf("%-24s %8d bytes -> id %d, member %d bytes", m.File, len(pay), rec.ID, len(rec.LZ4))
+	}
+}

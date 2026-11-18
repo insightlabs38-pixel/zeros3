@@ -1,9 +1,11 @@
 // Package brotliz3 is an exact Brotli substrate (standard library only): a bounded RFC 7932
-// decoder and a faithful port of the google/brotli reference encoder's one-shot path for
-// qualities 5-9 and windows of 2^17..2^24 bytes (BrotliEncoderCompress, generic mode). The port
-// reproduces the reference output bit for bit, which turns "re-encode and compare" into a
-// replay recipe: a consumer stores the decoded bytes plus (quality, lgwin) and regenerates the
-// producer's compressed bytes. Outputs are always verified by the caller against stored bytes.
+// decoder and a faithful port of the google/brotli reference encoder for qualities 5-9 and windows
+// of 2^17..2^24 bytes (generic mode): the one-shot BrotliEncoderCompress and the streaming
+// BrotliEncoderCompressStream (process, flush, finish) with its ring buffer, size hint and block
+// size. The port reproduces the reference output bit for bit, which turns "re-encode and compare"
+// into a replay recipe: a consumer stores the decoded bytes plus the producer's parameters and
+// regenerates the producer's compressed bytes. Outputs are always verified by the caller against
+// stored bytes.
 package brotliz3
 
 import (
@@ -11,6 +13,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"io"
 	"sync/atomic"
 )
 
@@ -74,10 +77,85 @@ func SetDictionary(b []byte) error {
 	return nil
 }
 
+// maxStream is the longest stream the port models: positions stay below 2^30, where the reference
+// does not wrap them (WrapPosition is the identity).
+const maxStream = 1 << 30
+
+// Params are the encoder parameters a streaming producer sets (BrotliEncoderSetParameter).
+type Params struct {
+	Quality  int    // 5..9
+	LgWin    int    // 17..24
+	LgBlock  int    // 0 = automatic, else 16..24
+	SizeHint uint32 // 0 = derived from the first encoded block as the reference does
+	Legacy   bool   // libbrotli <= 1.1.0; false: 1.2.0. They differ where a probe reaches the end of the ring
+}
+
+// Op is a BrotliEncoderOperation.
+type Op uint8
+
+const (
+	OpProcess Op = iota
+	OpFlush
+	OpFinish
+)
+
+// ringBuf is the reference RingBuffer: the last two bytes, 1<<window_bits data bytes, a copy of the
+// beginning as a tail, and seven bytes of slack. Positions are absolute, bytes live at pos&mask.
+type ringBuf struct {
+	size, mask, tail, total, cur uint32
+	pos                          uint32
+	data                         []byte
+	buf                          []byte // data[2:]
+}
+
+func (r *ringBuf) initBuffer(n uint32) {
+	nd := make([]byte, 2+int(n)+16)
+	if r.data != nil {
+		copy(nd, r.data[:min(len(r.data), 2+int(r.cur)+7)])
+	}
+	r.data, r.cur, r.buf = nd, n, nd[2:]
+	nd[0], nd[1] = 0, 0
+	for i := 0; i < 7; i++ {
+		r.buf[int(n)+i] = 0
+	}
+}
+
+func (r *ringBuf) write(b []byte) {
+	n := uint32(len(b))
+	if r.pos == 0 && n < r.tail {
+		r.pos = n
+		r.initBuffer(n)
+		copy(r.buf, b)
+		return
+	}
+	if r.cur < r.total {
+		r.initBuffer(r.total)
+		r.buf[r.size-2], r.buf[r.size-1] = 0, 0
+		r.buf[r.size] = 241
+	}
+	masked := r.pos & r.mask
+	if masked < r.tail { // RingBufferWriteTail
+		copy(r.buf[r.size+masked:], b[:min(n, r.tail-masked)])
+	}
+	if masked+n <= r.size {
+		copy(r.buf[masked:], b)
+	} else {
+		copy(r.buf[masked:], b[:min(n, r.total-masked)])
+		copy(r.buf[0:], b[r.size-masked:])
+	}
+	notFirst := r.pos&(1<<31) != 0
+	r.data[0], r.data[1] = r.buf[r.size-2], r.buf[r.size-1]
+	r.pos = r.pos&(1<<31-1) + n&(1<<31-1)
+	if notFirst {
+		r.pos |= 1 << 31
+	}
+}
+
 type encoder struct {
 	quality, lgwin, lgblock int
-	sizeHint                int
-	buf                     []byte
+	legacy                  bool
+	hint                    uint32
+	rb                      ringBuf
 	h                       *hasher
 	distCache               [16]int32
 	savedDist               [4]int32
@@ -88,54 +166,208 @@ type encoder struct {
 	lastProcessed           int
 	prev1, prev2            byte
 	w                       bitWriter
+	lin                     []byte // contiguous copy of the metablock: two bytes of left context, then the data
+	failed                  bool
+	stored                  bool // the last meta-block was written uncompressed: its commands are not in the stream
+	probe                   *cmdProbe
 }
 
-// MaxInput is the largest input the port accepts for a window: beyond it the reference's ring
-// buffer wraps, which is not modelled.
+// MaxInput is the largest one-shot input accepted (kept for callers that size buffers by window).
 func MaxInput(lgwin int) int { return 1<<uint(lgwin+1) - 64 }
+
+func (p Params) valid() bool {
+	return p.Quality >= 5 && p.Quality <= 9 && p.LgWin >= 17 && p.LgWin <= 24 && (p.LgBlock == 0 || p.LgBlock >= 16 && p.LgBlock <= 24)
+}
+
+// lgBlock is ComputeLgBlock for qualities 5..9.
+func (p Params) lgBlock() int {
+	if p.LgBlock == 0 {
+		if p.Quality >= 9 && p.LgWin > 16 {
+			return min(18, p.LgWin)
+		}
+		return 16
+	}
+	return p.LgBlock
+}
+
+func newEncoder(p Params) *encoder {
+	e := &encoder{quality: p.Quality, lgwin: p.LgWin, lgblock: p.lgBlock(), hint: p.SizeHint, legacy: p.Legacy}
+	bits := uint(1 + max(e.lgwin, e.lgblock))
+	e.rb.size, e.rb.mask, e.rb.tail = 1<<bits, 1<<bits-1, 1<<uint(e.lgblock)
+	e.rb.total = e.rb.size + e.rb.tail
+	e.distCache = [16]int32{4, 11, 15, 16}
+	e.savedDist = [4]int32{4, 11, 15, 16}
+	// EncodeWindowBits
+	if e.lgwin == 17 {
+		e.w.write(7, 1)
+	} else {
+		e.w.write(4, uint64((e.lgwin-17)<<1|1))
+	}
+	return e
+}
+
+func (e *encoder) block() int { return 1 << uint(e.lgblock) }
+
+func (e *encoder) unprocessed() int { return e.inputPos - e.lastProcessed }
+
+func (e *encoder) remainingBlock() int {
+	if d := e.unprocessed(); d < e.block() {
+		return e.block() - d
+	}
+	return 0
+}
+
+func (e *encoder) copyInput(b []byte) {
+	e.rb.write(b)
+	e.inputPos += len(b)
+	if int(e.rb.pos) <= int(e.rb.mask) { // first lap: the seven bytes after the data are defined zeros
+		for i := 0; i < 7; i++ {
+			e.rb.buf[int(e.rb.pos)+i] = 0
+		}
+	}
+}
+
+// updateSizeHint is UpdateSizeHint: a producer that set no hint gets the pending input as its hint.
+func (e *encoder) updateSizeHint(availableIn int) {
+	if e.hint == 0 {
+		const limit = 1 << 30
+		d, t := e.unprocessed(), availableIn
+		if d >= limit || t >= limit || d+t >= limit {
+			e.hint = limit
+		} else {
+			e.hint = uint32(d + t)
+		}
+	}
+}
+
+// Stream is BrotliEncoderCompressStream: input is accepted in any chunking, output is written to the sink
+// as complete bytes. Memory is bounded by the window (ring buffer, hash tables and one meta-block).
+type Stream struct {
+	e    *encoder
+	out  io.Writer
+	err  error
+	done bool
+	n    int64
+}
+
+// NewStream starts a stream; the sink receives the compressed bytes as they become complete.
+func NewStream(p Params, out io.Writer) (*Stream, error) {
+	if !p.valid() {
+		return nil, ErrUnsupported
+	}
+	if theDict.Load() == nil {
+		return nil, ErrDictionary
+	}
+	return &Stream{e: newEncoder(p), out: out}, nil
+}
+
+// Close releases the hash tables; the stream cannot be used afterwards.
+func (s *Stream) Close() {
+	if s.e.h != nil {
+		s.e.h.release()
+		s.e.h = nil
+	}
+}
+
+func (s *Stream) emit() {
+	if s.err != nil || len(s.e.w.buf) == 0 {
+		return
+	}
+	_, s.err = s.out.Write(s.e.w.buf)
+	s.e.w.buf = s.e.w.buf[:0]
+}
+
+// Process is OpProcess, Flush OpFlush, Finish OpFinish of the reference.
+func (s *Stream) Process(b []byte) error { return s.run(OpProcess, b) }
+func (s *Stream) Flush() error           { return s.run(OpFlush, nil) }
+func (s *Stream) Finish() error          { return s.run(OpFinish, nil) }
+
+// Write feeds a chunk with the given operation (the chunk is consumed as one BrotliEncoderCompressStream call).
+func (s *Stream) Write(op Op, b []byte) error { return s.run(op, b) }
+
+func (s *Stream) run(op Op, in []byte) error {
+	e := s.e
+	if s.err != nil {
+		return s.err
+	}
+	if s.done {
+		if len(in) != 0 || op != OpFinish {
+			return ErrUnsupported
+		}
+		return nil
+	}
+	if int64(e.inputPos)+int64(len(in)) >= maxStream {
+		return ErrUnsupported
+	}
+	for {
+		rem := e.remainingBlock()
+		if rem != 0 && len(in) != 0 {
+			n := min(rem, len(in))
+			e.copyInput(in[:n])
+			in = in[n:]
+			continue
+		}
+		if rem == 0 || op != OpProcess {
+			isLast := len(in) == 0 && op == OpFinish
+			force := len(in) == 0 && op == OpFlush
+			e.updateSizeHint(len(in))
+			e.encodeData(isLast, force)
+			if e.failed {
+				s.err = errMismatch
+				return s.err
+			}
+			s.emit()
+			if force && e.w.nacc != 0 { // InjectBytePaddingBlock: an empty metadata block pads to a byte boundary
+				e.w.write(6, 6)
+				e.w.align()
+				s.emit()
+			}
+			if isLast {
+				s.done = true
+				return s.err
+			}
+			if force {
+				return s.err
+			}
+			continue
+		}
+		return s.err
+	}
+}
 
 // Encode returns BrotliEncoderCompress(quality, lgwin, BROTLI_MODE_GENERIC, input) of the
 // reference implementation (v1.0.9 .. v1.2.0 produce the same bytes on this path).
 func Encode(input []byte, quality, lgwin int) ([]byte, error) {
-	if quality < 5 || quality > 9 || lgwin < 17 || lgwin > 24 || len(input) > MaxInput(lgwin) {
+	p := Params{Quality: quality, LgWin: lgwin, SizeHint: uint32(len(input))}
+	if !p.valid() || len(input) >= maxStream {
 		return nil, ErrUnsupported
 	}
-	d := theDict.Load()
-	if d == nil {
+	if theDict.Load() == nil {
 		return nil, ErrDictionary
 	}
 	if len(input) == 0 {
 		return []byte{6}, nil
 	}
-	e := &encoder{quality: quality, lgwin: lgwin, lgblock: 16, sizeHint: len(input)}
-	if quality >= 9 {
-		e.lgblock = min(18, lgwin)
+	var sink sliceWriter
+	s, err := NewStream(p, &sink)
+	if err != nil {
+		return nil, err
 	}
-	e.buf = make([]byte, len(input)+16)
-	e.distCache = [16]int32{4, 11, 15, 16}
-	e.savedDist = [4]int32{4, 11, 15, 16}
-	e.h = newHasher(quality, lgwin, e.sizeHint, d)
-	defer e.h.release()
-	// EncodeWindowBits
-	if lgwin == 17 {
-		e.w.write(7, 1)
-	} else {
-		e.w.write(4, uint64((lgwin-17)<<1|1))
+	defer s.Close()
+	if err := s.Write(OpFinish, input); err != nil {
+		return nil, err
 	}
-	block := 1 << uint(e.lgblock)
-	for off := 0; off < len(input); off += block {
-		end := min(off+block, len(input))
-		copy(e.buf[off:end], input[off:end])
-		e.inputPos = end
-		e.encodeData(end == len(input))
-	}
-	out := e.w.buf
+	out := sink.b
 	// BrotliEncoderCompress falls back to a stored stream when the result exceeds the bound
 	if n := len(input); len(out) > n+2+4*(n>>14)+3+1 {
 		return uncompressedStream(input), nil
 	}
 	return out, nil
 }
+
+type sliceWriter struct{ b []byte }
+
+func (w *sliceWriter) Write(p []byte) (int, error) { w.b = append(w.b, p...); return len(p), nil }
 
 // uncompressedStream is MakeUncompressedStream.
 func uncompressedStream(in []byte) []byte {
@@ -160,23 +392,44 @@ func uncompressedStream(in []byte) []byte {
 	return append(out, 3)
 }
 
-func (e *encoder) encodeData(isLast bool) {
-	bytes := e.inputPos - e.lastProcessed
+// encodeData is EncodeData for qualities 5..9: it processes the unprocessed input as one block and writes a
+// meta-block when the reference would (always on flush or finish).
+func (e *encoder) encodeData(isLast, forceFlush bool) {
+	bytes := e.unprocessed()
 	pos := e.lastProcessed
+	if bytes == 0 { // no new input; still might want to flush or finish
+		if e.rb.data == nil {
+			if isLast { // complete finalized stream
+				e.w.write(2, 3)
+				e.w.align()
+			}
+			return
+		}
+		if !isLast && !forceFlush {
+			return
+		}
+	}
+	if e.h == nil {
+		e.h = newHasher(e.quality, e.lgwin, int(e.hint), int(e.rb.mask), e.legacy, theDict.Load())
+	}
 	// InitOrStitchToPreviousBlock
 	if bytes >= e.h.typeLen()-1 && pos >= 3 {
-		e.h.store(e.buf, pos-3)
-		e.h.store(e.buf, pos-2)
-		e.h.store(e.buf, pos-1)
+		e.h.store(e.rb.buf, pos-3)
+		e.h.store(e.rb.buf, pos-2)
+		e.h.store(e.rb.buf, pos-1)
 	}
 	if len(e.cmds) > 0 && e.lastInsertLen == 0 {
 		e.extendLastCommand(&bytes, &pos)
 	}
 	e.createBackwardReferences(bytes, pos)
+	if e.probe != nil && !e.probe.check(e.cmds, e.lastFlush) {
+		e.failed = true
+		return
+	}
 	maxLength := 1 << uint(min(1+max(e.lgwin, e.lgblock), 24))
 	processed := e.inputPos - e.lastFlush
-	if !isLast && processed+1<<uint(e.lgblock) <= maxLength && e.numLiterals < maxLength/8 && len(e.cmds) < maxLength/8 {
-		e.lastProcessed = e.inputPos
+	if !isLast && !forceFlush && processed+e.block() <= maxLength && e.numLiterals < maxLength/8 && len(e.cmds) < maxLength/8 {
+		e.lastProcessed = e.inputPos // merge with the next input block
 		return
 	}
 	if e.lastInsertLen > 0 {
@@ -185,13 +438,23 @@ func (e *encoder) encodeData(isLast bool) {
 		e.numLiterals += e.lastInsertLen
 		e.lastInsertLen = 0
 	}
+	if !isLast && e.inputPos == e.lastFlush {
+		return // nothing new and the stream continues
+	}
 	e.writeMetaBlock(e.inputPos-e.lastFlush, isLast)
+	if e.probe != nil {
+		if e.stored {
+			e.probe.advance(0)
+		} else {
+			e.probe.advance(len(e.cmds))
+		}
+	}
 	e.lastFlush, e.lastProcessed = e.inputPos, e.inputPos
 	if e.lastFlush > 0 {
-		e.prev1 = e.buf[e.lastFlush-1]
+		e.prev1 = e.rb.buf[(e.lastFlush-1)&int(e.rb.mask)]
 	}
 	if e.lastFlush > 1 {
-		e.prev2 = e.buf[e.lastFlush-2]
+		e.prev2 = e.rb.buf[(e.lastFlush-2)&int(e.rb.mask)]
 	}
 	e.cmds = e.cmds[:0]
 	e.numLiterals = 0
@@ -208,7 +471,8 @@ func (e *encoder) extendLastCommand(bytes, pos *int) {
 	code := last.restoreDistanceCode()
 	if code < numDistShort || uint64(code-(numDistShort-1)) == cmdDist {
 		if cmdDist <= maxDistance {
-			for *bytes != 0 && e.buf[*pos] == e.buf[*pos-int(cmdDist)] {
+			m, b := int(e.rb.mask), e.rb.buf
+			for *bytes != 0 && b[*pos&m] == b[(*pos-int(cmdDist))&m] {
 				last.copyLen++
 				*bytes--
 				*pos++
@@ -218,16 +482,16 @@ func (e *encoder) extendLastCommand(bytes, pos *int) {
 	}
 }
 
-func (e *encoder) shouldCompress(bytes int) bool {
+func (e *encoder) shouldCompress(bytes int, data []byte) bool {
 	if bytes <= 2 {
 		return false
 	}
 	if len(e.cmds) < bytes>>8+2 && float64(e.numLiterals) > float64(0.99*float64(bytes)) {
 		var histo [256]uint32
 		t := (bytes + 12) / 13
-		pos := e.lastFlush
+		pos := 0
 		for i := 0; i < t; i++ {
-			histo[e.buf[pos]]++
+			histo[data[pos]]++
 			pos += 13
 		}
 		if bitsEntropy(histo[:]) > float64(float64(float64(bytes)*7.92)*(1.0/13.0)) {
@@ -237,25 +501,49 @@ func (e *encoder) shouldCompress(bytes int) bool {
 	return true
 }
 
+// linearize copies the meta-block bytes out of the ring: two bytes of left context, then the data.
+func (e *encoder) linearize(bytes int) []byte {
+	need := 2 + bytes + 16
+	if cap(e.lin) < need {
+		e.lin = make([]byte, need)
+	}
+	l := e.lin[:need]
+	l[0], l[1] = e.prev2, e.prev1
+	m := int(e.rb.mask)
+	start := e.lastFlush & m
+	if start+bytes <= int(e.rb.size) {
+		copy(l[2:], e.rb.buf[start:start+bytes])
+	} else {
+		n := int(e.rb.size) - start
+		copy(l[2:], e.rb.buf[start:start+n])
+		copy(l[2+n:], e.rb.buf[:bytes-n])
+	}
+	return l
+}
+
 // writeMetaBlock is WriteMetaBlockInternal for qualities 4..9.
 func (e *encoder) writeMetaBlock(bytes int, isLast bool) {
 	w := &e.w
+	e.stored = true
 	if bytes == 0 {
 		w.write(2, 3)
 		w.align()
 		return
 	}
-	data := e.buf[e.lastFlush : e.lastFlush+bytes]
-	if !e.shouldCompress(bytes) {
+	lin := e.linearize(bytes)
+	data := lin[2 : 2+bytes]
+	if !e.shouldCompress(bytes, data) {
 		copy(e.distCache[:4], e.savedDist[:])
 		w.uncompressedMetaBlock(isLast, data)
 		return
 	}
 	m := w.mark()
-	nctx, ctxMap := decideLiteralContexts(e.buf, e.lastFlush, bytes, e.quality, e.sizeHint)
-	mb := buildMetaBlockGreedy(e.buf, e.lastFlush, e.prev1, e.prev2, nctx, ctxMap, e.cmds)
-	w.storeMetaBlock(e.buf, e.lastFlush, bytes, e.prev1, e.prev2, isLast, e.cmds, mb)
+	nctx, ctxMap := decideLiteralContexts(lin, 2, bytes, e.quality, int(e.hint))
+	mb := buildMetaBlockGreedy(lin, 2, e.prev1, e.prev2, nctx, ctxMap, e.cmds)
+	w.storeMetaBlock(lin, 2, bytes, e.prev1, e.prev2, isLast, e.cmds, mb)
+	e.stored = false
 	if bytes+4 < w.bitsSince(m)>>3 {
+		e.stored = true
 		copy(e.distCache[:4], e.savedDist[:])
 		w.reset(m)
 		w.uncompressedMetaBlock(isLast, data)

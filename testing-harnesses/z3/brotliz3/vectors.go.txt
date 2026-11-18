@@ -85,6 +85,51 @@ func vecBrotli() {
 	}
 	_, uerr := @brotliz3.Encode@([]byte("x"), 11, 22)
 	vec("unsupported", fmt.Sprint(uerr == @brotliz3.ErrUnsupported@))
+	// streaming: producer parameters, flushes, an empty finish, ring wrap in both library generations, and
+	// the recipe a stream leaves behind (derive, marshal, replay)
+	for _, k := range []string{"text", "mix"} {
+		d := vdata(k, 700001, 5)
+		for i, sc := range []struct {
+			q, w, lb int
+			legacy   bool
+			hint     uint32
+			cuts     []int
+			empty    bool
+		}{
+			{8, 22, 0, false, 1, nil, false}, {9, 17, 0, false, 0, nil, false}, {8, 17, 0, true, 0, nil, false}, {5, 18, 16, false, 1 << 20, []int{70000, 300000}, false},
+			{7, 20, 18, false, 0, []int{131072}, true}, {6, 22, 0, false, 1 << 20, []int{1, 65536, 65537}, false},
+		} {
+			var out bytes.Buffer
+			st, err := @brotliz3.NewStream@(@brotliz3.Params@{Quality: sc.q, LgWin: sc.w, LgBlock: sc.lb, SizeHint: sc.hint, Legacy: sc.legacy}, &out)
+			if err != nil {
+				vec(fmt.Sprintf("stream-%s-%d", k, i), "err")
+				continue
+			}
+			pos := 0
+			for _, c := range sc.cuts {
+				st.Process(d[pos:c])
+				st.Flush()
+				pos = c
+			}
+			if sc.empty {
+				st.Process(d[pos:])
+				pos = len(d)
+			}
+			st.Write(@brotliz3.OpFinish@, d[pos:])
+			st.Close()
+			payload := out.Bytes()
+			body, tr, derr := @brotliz3.DecodeTrace@(payload, len(d))
+			line := vh(payload) + fmt.Sprint(derr == nil && bytes.Equal(body, d), len(tr.Blocks), len(tr.Markers), tr.EmptyLast)
+			if r, ok := @brotliz3.Derive@(payload, body, tr, 0); ok {
+				r2, n, err := @brotliz3.UnmarshalRecipe@(r.Marshal(), int64(len(body)))
+				rep, rerr := r2.Replay(body)
+				line += fmt.Sprint(r.Quality, r.LgWin, r.LgBlock, r.BigHint, r.Legacy, r.EmptyLast, len(r.Flushes), err == nil && n == len(r.Marshal()), rerr == nil && bytes.Equal(rep, payload))
+			} else {
+				line += "no-recipe"
+			}
+			vec(fmt.Sprintf("stream-%s-%d", k, i), line)
+		}
+	}
 }
 
 func vecLZ4() {

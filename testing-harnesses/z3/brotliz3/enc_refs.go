@@ -153,10 +153,12 @@ type hasher struct {
 	dictMatches uint64
 	dict        *encDict
 	t           *hashTables
+	mask        int  // ring-buffer mask: positions are absolute, bytes are read at pos&mask
+	legacy      bool // libbrotli <= 1.1.0: a probe that would leave the ring skips the candidate instead of ending the search
 }
 
-func newHasher(quality, lgwin, sizeHint int, dict *encDict) *hasher {
-	h := &hasher{dict: dict, blockBits: uint(quality - 1)}
+func newHasher(quality, lgwin, sizeHint, mask int, legacy bool, dict *encDict) *hasher {
+	h := &hasher{dict: dict, blockBits: uint(quality - 1), mask: mask, legacy: legacy}
 	bucketBits := uint(15)
 	if sizeHint >= 1<<20 && lgwin >= 19 {
 		h.h6 = true
@@ -210,6 +212,7 @@ func (h *hasher) typeLen() int {
 }
 
 func (h *hasher) key(data []byte, p int) uint32 {
+	p &= h.mask
 	if h.h6 {
 		return uint32((binary.LittleEndian.Uint64(data[p:]) * h6Mul) >> (64 - 15))
 	}
@@ -253,10 +256,11 @@ func backwardScore(length, backward uint64) uint64 {
 	return scoreBase + 135*length - 30*uint64(log2Floor(uint32(backward)))
 }
 
-// findLongestMatch is FN(FindLongestMatch) of H5/H6 on a non-wrapping buffer.
+// findLongestMatch is FN(FindLongestMatch) of H5/H6; cur and the stored positions are absolute, bytes are read through the ring mask.
 func (h *hasher) findLongestMatch(data []byte, dc *[16]int32, cur int, maxLength, maxBackward, dictDistance, maxDistance uint64, out *searchResult) {
 	minScore, bestScore, bestLen := out.score, out.score, out.len
 	key := h.key(data, cur)
+	cm := cur & h.mask
 	bucket := h.buckets[key<<h.blockBits : (key+1)<<h.blockBits]
 	out.len, out.lenCodeDelta = 0, 0
 	for i := 0; i < h.nLast; i++ {
@@ -268,11 +272,17 @@ func (h *hasher) findLongestMatch(data []byte, dc *[16]int32, cur int, maxLength
 		if backward > maxBackward {
 			continue
 		}
-		p := int(prev)
-		if data[cur+int(bestLen)] != data[p+int(bestLen)] {
+		p := int(prev) & h.mask
+		if cm+int(bestLen) > h.mask { // where a probe would leave the ring: 1.2.0 ends the search, <= 1.1.0 skips the candidate
+			if h.legacy {
+				continue
+			}
+			break
+		}
+		if p+int(bestLen) > h.mask || data[cm+int(bestLen)] != data[p+int(bestLen)] {
 			continue
 		}
-		l := uint64(matchLen(data, p, cur, int(maxLength)))
+		l := uint64(matchLen(data, p, cm, int(maxLength)))
 		if l >= 3 || (l == 2 && i < 2) {
 			score := 135*l + scoreBase + 15
 			if bestScore < score {
@@ -286,7 +296,7 @@ func (h *hasher) findLongestMatch(data []byte, dc *[16]int32, cur int, maxLength
 			}
 		}
 	}
-	if bestLen < 3 {
+	if bestLen < 3 && !h.legacy {
 		bestLen = 3
 	}
 	nk := uint32(h.num[key])
@@ -294,9 +304,12 @@ func (h *hasher) findLongestMatch(data []byte, dc *[16]int32, cur int, maxLength
 	if nk > h.blockSize {
 		down = nk - h.blockSize
 	}
-	first4 := binary.LittleEndian.Uint32(data[cur:])
+	first4 := binary.LittleEndian.Uint32(data[cm:])
 	bl := int(bestLen)
-	tail := binary.LittleEndian.Uint32(data[cur+bl-3:]) // the four bytes ending at best_len
+	var tail uint32
+	if !h.legacy {
+		tail = binary.LittleEndian.Uint32(data[cm+bl-3:]) // the four bytes ending at best_len
+	}
 	for i := nk; i > down; {
 		i--
 		prev := bucket[i&h.blockMask]
@@ -304,18 +317,27 @@ func (h *hasher) findLongestMatch(data []byte, dc *[16]int32, cur int, maxLength
 		if backward > maxBackward {
 			break
 		}
-		p := int(prev)
-		if binary.LittleEndian.Uint32(data[p+bl-3:]) != tail {
-			continue
+		p := int(prev) & h.mask
+		if h.legacy {
+			if cm+bl > h.mask || p+bl > h.mask || data[cm+bl] != data[p+bl] {
+				continue
+			}
+		} else {
+			if cm+bl > h.mask {
+				break
+			}
+			if p+bl > h.mask || binary.LittleEndian.Uint32(data[p+bl-3:]) != tail {
+				continue
+			}
 		}
 		var l uint64
 		if h.h6 {
 			if binary.LittleEndian.Uint32(data[p:]) != first4 {
 				continue
 			}
-			l = uint64(matchLen(data, p+4, cur+4, int(maxLength)-4)) + 4
+			l = uint64(matchLen(data, p+4, cm+4, int(maxLength)-4)) + 4
 		} else {
-			if l = uint64(matchLen(data, p, cur, int(maxLength))); l < 4 {
+			if l = uint64(matchLen(data, p, cm, int(maxLength))); l < 4 {
 				continue
 			}
 		}
@@ -323,7 +345,9 @@ func (h *hasher) findLongestMatch(data []byte, dc *[16]int32, cur int, maxLength
 			bestScore, bestLen = score, l
 			out.len, out.distance, out.score = l, backward, score
 			bl = int(l)
-			tail = binary.LittleEndian.Uint32(data[cur+bl-3:])
+			if !h.legacy {
+				tail = binary.LittleEndian.Uint32(data[cm+bl-3:])
+			}
 		}
 	}
 	bucket[uint32(h.num[key])&h.blockMask] = uint32(cur)
@@ -339,6 +363,7 @@ func (h *hasher) searchStaticDictionary(data []byte, cur int, maxLength, maxBack
 		return
 	}
 	d := h.dict
+	cur &= h.mask
 	key := ((binary.LittleEndian.Uint32(data[cur:]) * hashMul32) >> 18) << 1
 	for i := 0; i < 2; i, key = i+1, key+1 {
 		h.dictLookups++
@@ -394,7 +419,7 @@ func computeDistanceCode(distance, maxDistance uint64, dc *[16]int32) uint32 {
 
 // createBackwardReferences is BrotliCreateBackwardReferences for one input block.
 func (e *encoder) createBackwardReferences(numBytes, position int) {
-	h, data, dc := e.h, e.buf, &e.distCache
+	h, data, dc := e.h, e.rb.buf, &e.distCache
 	maxBackwardLimit := uint64(1)<<uint(e.lgwin) - windowGap
 	insertLength := e.lastInsertLen
 	posEnd := position + numBytes

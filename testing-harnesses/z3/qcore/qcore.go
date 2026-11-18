@@ -27,6 +27,7 @@ const (
 	Q5_K   Type = 13
 	Q6_K   Type = 14
 	IQ4_NL Type = 20
+	IQ3_S  Type = 21
 	IQ4_XS Type = 23
 )
 
@@ -38,7 +39,7 @@ type geom struct {
 var geoms = map[Type]geom{
 	Q4_0: {32, 18, "Q4_0"}, Q4_1: {32, 20, "Q4_1"}, Q5_0: {32, 22, "Q5_0"}, Q5_1: {32, 24, "Q5_1"}, Q8_0: {32, 34, "Q8_0"},
 	Q2_K: {256, 84, "Q2_K"}, Q3_K: {256, 110, "Q3_K"}, Q4_K: {256, 144, "Q4_K"}, Q5_K: {256, 176, "Q5_K"}, Q6_K: {256, 210, "Q6_K"},
-	IQ4_NL: {32, 18, "IQ4_NL"}, IQ4_XS: {256, 136, "IQ4_XS"},
+	IQ4_NL: {32, 18, "IQ4_NL"}, IQ4_XS: {256, 136, "IQ4_XS"}, IQ3_S: {256, 110, "IQ3_S"},
 }
 
 // Supported reports whether t has a quantizer here.
@@ -85,7 +86,7 @@ const (
 	// GCCFMA: GCC 13 -O3 with FMA and the default -ffp-contract=fast on x86-64 (generic tuning),
 	// derived site by site from the compiler's GIMPLE for ggml-quants.c at llama.cpp b3991.
 	// The importance-weighted paths are derived for every type; of the reference paths only those
-	// that share their code with a weighted path (Q6_K, IQ4_NL, IQ4_XS). Others return ErrArith.
+	// that share their code with a weighted path (Q6_K, IQ4_NL, IQ4_XS, IQ3_S). Others return ErrArith.
 	GCCFMA Arith = 1
 )
 
@@ -94,7 +95,7 @@ func fusedPath(t Type, weighted bool) bool {
 	if t == Q8_0 {
 		return false
 	}
-	return weighted || t == Q6_K || t == IQ4_NL || t == IQ4_XS
+	return weighted || t == Q6_K || t == IQ4_NL || t == IQ4_XS || t == IQ3_S
 }
 
 var ErrArith = errors.New("qcore: arithmetic profile not available for this quantizer path")
@@ -114,6 +115,7 @@ func Quantize(dst []byte, t Type, x []float32, nPerRow int, qw []float32, ar Ari
 		return ErrSize
 	}
 	g := geoms[t]
+	var st iq3Scratch
 	rowBytes := nPerRow / g.elems * g.bytes
 	for r := 0; r*nPerRow < len(x); r++ {
 		row, y := x[r*nPerRow:(r+1)*nPerRow], dst[r*rowBytes:(r+1)*rowBytes]
@@ -154,6 +156,8 @@ func Quantize(dst []byte, t Type, x []float32, nPerRow int, qw []float32, ar Ari
 			rowIQ4(fm, row, y, qw, 32)
 		case IQ4_XS:
 			rowIQ4(fm, row, y, qw, 256)
+		case IQ3_S:
+			rowIQ3S(&st, iq3Mask(fm), row, y, qw)
 		}
 	}
 	return nil
@@ -163,9 +167,19 @@ func Quantize(dst []byte, t Type, x []float32, nPerRow int, qw []float32, ar Ari
 
 func mul(a, b float32) float32 { return float32(a * b) }
 
-// fma32 is the correctly rounded float32 a*b+c: the product is exact in float64; the sum is
-// rounded to odd in float64 (TwoSum error decides), which makes the final rounding to float32 exact.
+// fma32 is the correctly rounded float32 a*b+c. The product is exact in float64 and the hardware fused
+// multiply-add rounds the sum once; rounding that to float32 again is wrong only when the float64 result is
+// exactly a float32 midpoint (or the float32 result is subnormal), which takes the exact path below.
 func fma32(a, b, c float32) float32 {
+	r := math.FMA(float64(a), float64(b), float64(c))
+	if u := math.Float64bits(r); u&(1<<29-1) != 1<<28 && math.Abs(r) >= 0x1p-120 || r == 0 {
+		return float32(r)
+	}
+	return fma32Exact(a, b, c)
+}
+
+// fma32Exact rounds the float64 sum to odd (TwoSum error decides), which makes the final rounding to float32 exact.
+func fma32Exact(a, b, c float32) float32 {
 	p, q := float64(a)*float64(b), float64(c)
 	s := p + q
 	if s-s != 0 { // Inf/NaN: nothing to correct
