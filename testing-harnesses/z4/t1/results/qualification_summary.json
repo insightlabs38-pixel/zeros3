@@ -1,6 +1,6 @@
 {
- "head": "fc1617993e425f38138bfd55c0a651767db6d487",
- "tree": "8ce61da9de1273656ac7529b55b1f56c626339ff",
+ "head": "ca4acd671d623b803d163c3ebc50327c9a1e77f5",
+ "tree": "a92dcd5bf4b2217a01f9b0dcb560758f4b85487b",
  "dirty_files": 0,
  "steps": [
   {
@@ -77,7 +77,7 @@
    "step": "root_normal",
    "status": "PASS",
    "rc": "0",
-   "seconds": "187",
+   "seconds": "182",
    "note": ""
   },
   {
@@ -98,7 +98,7 @@
    "step": "authority_native",
    "status": "PASS",
    "rc": "0",
-   "seconds": "50",
+   "seconds": "49",
    "note": ""
   },
   {
@@ -209,7 +209,7 @@
     "status": "FAIL",
     "rc": "1",
     "seconds": "17",
-    "note": ""
+    "note": "first attempt: tag v0.1.1 absent from the shallow clone; fetched, rerun below"
    }
   ],
   "large_3x256mib": [
@@ -245,7 +245,7 @@
     "status": "FAIL",
     "rc": "1",
     "seconds": "0",
-    "note": ""
+    "note": "first attempt: ENOSPC (disk full during scale_1m); rerun below"
    }
   ],
   "zn7_decode_w1": [
@@ -254,7 +254,7 @@
     "status": "FAIL",
     "rc": "1",
     "seconds": "0",
-    "note": ""
+    "note": "first attempt: ENOSPC; rerun below"
    }
   ],
   "zn7_decode_w2": [
@@ -263,7 +263,7 @@
     "status": "FAIL",
     "rc": "1",
     "seconds": "0",
-    "note": ""
+    "note": "first attempt: ENOSPC; rerun below"
    }
   ],
   "zn7_decode_w4": [
@@ -272,7 +272,7 @@
     "status": "FAIL",
     "rc": "1",
     "seconds": "0",
-    "note": ""
+    "note": "first attempt: ENOSPC; rerun below"
    }
   ],
   "scale_1m": [
@@ -288,8 +288,28 @@
     "status": "FAIL",
     "rc": "1",
     "seconds": "1041",
+    "note": "second attempt: ENOSPC (needs about 22 GB free; 21 GB were available); rerun with scratch cleared below"
+   }
+  ],
+  "root_normal": [
+   {
+    "step": "root_normal",
+    "status": "PASS",
+    "rc": "0",
+    "seconds": "187",
+    "note": ""
+   }
+  ],
+  "authority_native": [
+   {
+    "step": "authority_native",
+    "status": "PASS",
+    "rc": "0",
+    "seconds": "50",
     "note": ""
    }
   ]
- }
+ },
+ "qualified_revision": "b1072a9b5004d7ccac24a7397ea94184dc59301e",
+ "note": "root_normal/root_race/authority_hook/authority_native/fuzz/persistence_dense/prodshadow ran at the qualified revision; reruns were driven by later commits that changed only qualify.sh"
 }

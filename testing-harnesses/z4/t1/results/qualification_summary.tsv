@@ -17,16 +17,16 @@ fuzz_FuzzXDeltaEnvelope	PASS	0	85
 fuzz_FuzzAuthRecord	PASS	0	42	
 fuzz_FuzzAuthWindowRecord	PASS	0	42	
 persistence_dense	PASS	0	279	
-five_generations	FAIL	1	17	
+five_generations	FAIL	1	17	first attempt: tag v0.1.1 absent from the shallow clone; fetched, rerun below
 prodshadow	PASS	0	39	
 scale_1m	INVALID	0	1082	disk full during the run (ENOSPC); the pipe to tee masked the exit code; rerun below
 large_3x256mib	INVALID	0	0	disk full during the run (ENOSPC); the pipe to tee masked the exit code; rerun below
 large_3x1gib	INVALID	0	0	disk full during the run (ENOSPC); the pipe to tee masked the exit code; rerun below
 large_3x2gib	INVALID	0	0	disk full during the run (ENOSPC); the pipe to tee masked the exit code; rerun below
-real_models	FAIL	1	0	
-zn7_decode_w1	FAIL	1	0	
-zn7_decode_w2	FAIL	1	0	
-zn7_decode_w4	FAIL	1	0	
+real_models	FAIL	1	0	first attempt: ENOSPC (disk full during scale_1m); rerun below
+zn7_decode_w1	FAIL	1	0	first attempt: ENOSPC; rerun below
+zn7_decode_w2	FAIL	1	0	first attempt: ENOSPC; rerun below
+zn7_decode_w4	FAIL	1	0	first attempt: ENOSPC; rerun below
 five_generations	PASS	0	20	
 large_3x256mib	PASS	0	27	
 large_3x1gib	PASS	0	84	
@@ -35,5 +35,7 @@ real_models	PASS	0	127
 zn7_decode_w1	PASS	0	277	
 zn7_decode_w2	PASS	0	180	
 zn7_decode_w4	PASS	0	134	
-scale_1m	FAIL	1	1041	
+scale_1m	FAIL	1	1041	second attempt: ENOSPC (needs about 22 GB free; 21 GB were available); rerun with scratch cleared below
 scale_1m	PASS	0	1200	
+root_normal	PASS	0	182	
+authority_native	PASS	0	49	
