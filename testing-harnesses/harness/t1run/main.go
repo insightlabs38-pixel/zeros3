@@ -186,6 +186,8 @@ func main() {
 	}
 	must(os.MkdirAll(filepath.Join(*cacheDir, "oldbin"), 0o755))
 	ev.EnvHash = identityOf(ev.BinHash, *mode, *extraEnv, goVer, ev.Fixtures, env, testTO.String())
+	// immutable fixture images are valid for exactly this test binary and environment
+	env = append(env, "ZEROS3_FIXTURE_CACHE="+filepath.Join(*cacheDir, "fixtures", ev.EnvHash))
 	resDir := filepath.Join(*cacheDir, "results", ev.EnvHash)
 	must(os.MkdirAll(resDir, 0o755))
 

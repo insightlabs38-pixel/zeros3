@@ -30173,6 +30173,11 @@ func packTestDataset() map[string][]byte {
 
 func putPackTestObjects(t *testing.T, dir string, data map[string][]byte, keys ...string) {
 	t.Helper()
+	fixtureImage(t, dir, packFixtureKey(data, keys), func(d string) { putPackTestObjectsIn(t, d, data, keys...) })
+}
+
+func putPackTestObjectsIn(t *testing.T, dir string, data map[string][]byte, keys ...string) {
+	t.Helper()
 	s, err := OpenStore(dir)
 	if err != nil {
 		t.Fatal(err)

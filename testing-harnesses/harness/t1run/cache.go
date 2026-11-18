@@ -22,7 +22,7 @@ const runnerVersion = "t1run-v2"
 var identityEnv = regexp.MustCompile(`^(ZEROS3_|(GOARCH|GOOS|GOMAXPROCS|GODEBUG|GOGC|GOMEMLIMIT|GOFLAGS|TZ|LANG|LC_[A-Z]+)=)`)
 
 func isRuntimeOnlyEnv(e string) bool {
-	return strings.HasPrefix(e, "ZEROS3_TEST_BIN=") || strings.HasPrefix(e, "ZEROS3_BINCACHE=")
+	return strings.HasPrefix(e, "ZEROS3_TEST_BIN=") || strings.HasPrefix(e, "ZEROS3_BINCACHE=") || strings.HasPrefix(e, "ZEROS3_FIXTURE_CACHE=")
 }
 
 // identityOf hashes everything a cached pass must have in common with the run that reuses it: the test

@@ -5252,6 +5252,7 @@ func TestAuthorityZN7DecodeScaling(t *testing.T) {
 	}{
 		{"pythia14m", []string{"pythia14m/step1000.safetensors", "pythia14m/step4000.safetensors", "pythia14m/step16000.safetensors", "pythia14m/step64000.safetensors", "pythia14m/step143000.safetensors"}},
 		{"smollm2-q4_0", []string{"smol/f16.gguf", "smol/imatrix.dat", "smol/Q4_0.gguf"}},
+		{"smollm2-iq3", []string{"smol/f16.gguf", "smol/imatrix.dat", "smol/IQ3_M.gguf", "smol/IQ3_XS.gguf"}},
 	} {
 		l := newAuthLab(t)
 		var logical int64
@@ -5522,6 +5523,38 @@ func TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds(t *testing.T) {
 			l.migrate(c.policy)
 			l.reclaim()
 			l.exact("migrated")
+			// the closure of every record moves to a fresh store: the destination gains the feature and serves exact bytes
+			peer := newAuthLab(t)
+			files, _ := l.s.authFiles()
+			for _, sha := range files {
+				var buf bytes.Buffer
+				if err := l.s.ExportAuthorityClosure(sha, &buf); err != nil {
+					t.Fatal(err)
+				}
+				if err := peer.s.ImportAuthorityClosure(&buf); err != nil {
+					t.Fatal(err)
+				}
+			}
+			peer.close()
+			if f := readFeatures(t, peer.dir); !slices.Contains(f, c.feature) {
+				t.Fatalf("an imported closure did not raise %s: %v", c.feature, f)
+			}
+			peer.open()
+			for k, w := range l.want {
+				sha, _ := decodeHexSHA256(l.man(k).ObjectSHA256)
+				if rec, _ := peer.s.authLoad(sha); rec == nil {
+					continue // contents kept in CDC are not part of the closures
+				}
+				body, _, err := peer.s.newAuthCtx().body(sha, 0, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := make([]byte, len(w))
+				if n, err := body.ReadAt(got, 0); n != len(w) || !bytes.Equal(got, w) {
+					t.Fatalf("%s: the imported closure reads wrong bytes (%d, %v)", k, n, err)
+				}
+			}
+			peer.close()
 			l.close()
 			if f := readFeatures(t, l.dir); !slices.Contains(f, c.feature) {
 				t.Fatalf("features %v: %s missing", f, c.feature)

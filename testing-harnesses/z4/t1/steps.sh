@@ -38,8 +38,8 @@ step z3_producers go -C testing-harnesses/z3 test -count=1 -timeout 60m ./brotli
 # the exemptions of the retire-everything run are explained by invariants, each declared by an authority-mode test that passed in authority_native
 step g1_coverage_executed bash -c "python3 -I $C1/g1_ledger.py $S/g1_final.json --evidence $O/t1-authority_native.json && diff -q $S/g1_final.json $C1/results/g1_ledger.json"
 # the independent, conventional runs and the comparison with the optimized runner (outcomes per test)
-step conventional_root bash -c "go test -count=1 -json -timeout 120m ./... > $O/conventional_root.json"
-step conventional_race bash -c "go test -race -count=1 -json -timeout 240m ./... > $O/conventional_race.json"
+step conventional_root bash -c "env -u ZEROS3_C1_MODELS -u ZEROS3_C1_PQCHAIN go test -count=1 -json -timeout 120m ./... > $O/conventional_root.json"
+step conventional_race bash -c "env -u ZEROS3_C1_MODELS -u ZEROS3_C1_PQCHAIN go test -race -count=1 -json -timeout 240m ./... > $O/conventional_race.json"
 step t1_equivalence python3 -I $T1/equivalence.py $O/conventional_root.json $O/t1-root_normal.json $O/conventional_race.json $O/t1-root_race.json
 step scale_1m bash -c "set -o pipefail; $S/t1run -need-disk $S=13500 && TINY=900000 $C1/run_scale.sh $S/scale 100000 | tee $O/scale.txt"
 step large_3x256mib bash -c "set -o pipefail; $S/t1run -need-disk $S=3000 && $C1/run_large.sh $S/large256 268435456 | tee $O/large256.txt"
