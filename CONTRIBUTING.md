@@ -17,9 +17,16 @@ ZeroS3 currently targets Go 1.27.x on Linux.
 
 ```sh
 go build -o zeros3 zeros3.go
-go test ./...
+go test ./...                       # serial, about 10 minutes
+scripts/validate.sh fast            # gofmt, vet, maps, cheap tests: 30-60 s
+scripts/validate.sh test race       # full root suite, plain and -race, in parallel isolated processes
 scripts/validate.sh list
+sh scripts/check_identity.sh install  # commit identity and message hooks
 ```
+
+`scripts/validate.sh` runs the root tests through `testing-harnesses/harness/t1run`
+(see `testing-harnesses/z4/t1/README.md`): results are cached per test binary, so only
+what a change invalidates reruns.
 
 The production root module has no third-party dependencies. External SDKs and
 interop tools live in the separate `testing-harnesses/` module.

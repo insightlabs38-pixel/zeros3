@@ -47,7 +47,7 @@
 #                                installed]) against a managed server, plus physical-state invariance
 #   scripts/validate.sh apps     browser-site and artifact/checkpoint application scenarios
 #   scripts/validate.sh all      both
-#   scripts/validate.sh fast     gofmt, vet, maps and the root tests recorded as cheap (T1 runner, tens of seconds)
+#   scripts/validate.sh fast     gofmt, vet, source/test maps and the root tests recorded as costing at most 1 s (T1 runner, ~30-60 s)
 #   scripts/validate.sh qualify  one-command qualification: normal + race + authority + crash/compat via the T1 runner
 #                                (per-test results are reused only for the identical test binary; T1_JOBS, T1_FRESH=1)
 #   scripts/validate.sh STAGE... run named stages (see `list`)
@@ -103,7 +103,11 @@ t1() {
 	(cd "$root" && "$logs/t1run" -mode "$mode" ${T1_JOBS:+-jobs $T1_JOBS} ${T1_FRESH:+-fresh} -evidence "$logs/t1-$mode.json" "$@")
 }
 stage_test()    { t1 normal -v; }
-stage_fast()    { stage_format && (cd "$root" && go vet .) && t1 normal -fast 2; }
+stage_fast()    {
+	stage_format && (cd "$root" && go vet .) &&
+		(cd "$root/testing-harnesses" && go run ./harness/toc_check -file ../zeros3.go && go run ./harness/toc_check -file ../zeros3_test.go) &&
+		t1 normal -fast 1
+}
 # Authority qualification: every root test outside the authority suite runs with all committed
 # manifests retired onto delta bodies (ZEROS3_G1_RETIRE_ALL; tests of the CDC layout itself run with
 # CDC authoritative and are covered by TestAuthorityEquiv_*); the authority suite runs natively.
