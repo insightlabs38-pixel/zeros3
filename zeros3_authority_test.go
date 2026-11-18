@@ -1997,6 +1997,20 @@ func g1For(s *Store) *g1Store {
 	return v.(*g1Store)
 }
 
+// g1Exempt is set by tests whose assertions are about the CDC chunk layout itself (the damage they
+// inflict, the packs and tiers they inspect, the store level they observe). Under the retire-everything
+// hook they run with CDC authoritative, exactly as in the default mode; the authority-mode equivalents
+// of each class are the TestAuthorityEquiv_* tests, which the authority stage requires to pass.
+var g1Exempt atomic.Bool
+
+func g1CDCSpecific(t *testing.T, class string) {
+	if authCommitHook == nil {
+		return
+	}
+	g1Exempt.Store(true)
+	t.Cleanup(func() { g1Exempt.Store(false) })
+}
+
 func g1Install() {
 	retiredChunks.Store(&sync.Map{})
 	authCommitHook = g1Hook
@@ -2095,6 +2109,10 @@ func g1Hook(s *Store, man manifestV1) {
 				st.keep[sum] = true
 			}
 		}
+	}
+	if g1Exempt.Load() {
+		keepCDC()
+		return
 	}
 	if man.TotalLength < 64 || man.TotalLength > 32<<20 {
 		keepCDC()
@@ -4991,4 +5009,174 @@ func TestAuthorityZN7RealModels(t *testing.T) {
 	run("pythia14m", []string{"pythia14m/step1000.safetensors", "pythia14m/step4000.safetensors", "pythia14m/step16000.safetensors", "pythia14m/step64000.safetensors", "pythia14m/step143000.safetensors"},
 		[]string{"p/s1000", "p/s4000", "p/s16000", "p/s64000", "p/s143000"}, nil, 1)
 	run("smollm2-q4_0", []string{"smol/f16.gguf", "smol/imatrix.dat", "smol/Q4_0.gguf"}, []string{"s/f16.gguf", "s/imatrix.dat", "s/q4_0.gguf"}, []string{"s/f16.gguf", "s/imatrix.dat"}, 1)
+}
+
+// ---- G1: authority-mode equivalents of the CDC-specific classes --------------------------------
+//
+// Tests that assert on the CDC chunk layout run with CDC authoritative under the retire-everything
+// hook (g1CDCSpecific). These are their equivalents against the authoritative dependency graph:
+// the physical chunks are the components of the closure, whose layout, count and level are asserted.
+
+// authComponentSet is every chunk some authority record depends on.
+func authComponentSet(t *testing.T, s *Store) map[[32]byte]bool {
+	t.Helper()
+	files, err := s.authFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := map[[32]byte]bool{}
+	for _, f := range files {
+		rec, err := s.authLoad(f)
+		if err != nil || rec == nil {
+			t.Fatalf("record %x: %v", f[:4], err)
+		}
+		cs, err := s.authRecordChunks(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range cs {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			set[sum] = true
+		}
+	}
+	return set
+}
+
+// Class layout: packs, tiers, compression and locality apply to the components exactly as they did to
+// CDC chunks; reads, ranges, deep verify and gc stay exact after every physical transformation.
+func TestAuthorityEquivPhysicalLayouts(t *testing.T) {
+	l := authHistoryLab(t, 311, 4, 900_000)
+	l.migrate(AuthPolicy{MinSaving: 0.05})
+	l.reclaim()
+	comps := authComponentSet(t, l.s)
+	if len(comps) == 0 {
+		t.Fatal("no components after migration")
+	}
+	check := func(stage string) {
+		t.Helper()
+		l.exact(stage)
+		l.verifyOK(stage)
+		for sum := range comps {
+			if _, err := l.s.casStat(sum); err != nil {
+				t.Fatalf("%s: component %x not stored: %v", stage, sum[:4], err)
+			}
+		}
+	}
+	check("reclaimed")
+	steps := []struct {
+		name string
+		fn   func() error
+	}{
+		{"compact-cold-uncompressed", func() error {
+			o := authCompactOpts()
+			o.Tier, o.Compress = tierCold, false
+			_, err := compactStore(l.dir, o)
+			return err
+		}},
+		{"repack-compressed", func() error {
+			_, err := repackStore(l.dir, repackOptions{TargetBytes: 1 << 20, MaxLivePercent: 100, Compress: true})
+			return err
+		}},
+		{"tier-cold-to-hot", func() error {
+			_, err := tierMove(l.dir, tierMoveOptions{From: tierCold, To: tierHot, All: true, Apply: true})
+			return err
+		}},
+		{"compact-digest-order", func() error {
+			o := authCompactOpts()
+			o.Layout = layoutDigest
+			_, err := compactStore(l.dir, o)
+			return err
+		}},
+		{"gc", func() error { _, err := gcCollect(l.dir, true); return err }},
+	}
+	for _, st := range steps {
+		l.offline(func() {
+			if err := st.fn(); err != nil {
+				t.Fatalf("%s: %v", st.name, err)
+			}
+		})
+		check(st.name)
+	}
+}
+
+// Class storelevel: the store level moves with the first authority record only, never lowers while
+// records exist, and revert -all lowers it to the level before the first record.
+func TestAuthorityEquivStoreLevel(t *testing.T) {
+	l := authHistoryLab(t, 312, 4, 900_000)
+	l.close()
+	_, before := readFormatVersion(t, l.dir)
+	if levelHasAuthority(before) {
+		t.Fatalf("a store without records is at level %d", before)
+	}
+	l.open()
+	if rep := l.migrate(AuthPolicy{MinSaving: 0.999}); rep.Admitted != 0 {
+		t.Fatalf("an unprofitable policy published %d records", rep.Admitted)
+	}
+	l.close()
+	if _, same := readFormatVersion(t, l.dir); same != before {
+		t.Fatalf("level moved to %d without any record", same)
+	}
+	l.open()
+	rep := l.migrate(AuthPolicy{MinSaving: 0.05})
+	l.close()
+	f1, after1 := readFormatVersion(t, l.dir)
+	if rep.Admitted == 0 || !levelHasAuthority(after1) || f1.RequiredLevel == 0 {
+		t.Fatalf("records: %+v level %d required %d", rep, after1, f1.RequiredLevel)
+	}
+	l.open()
+	l.migrate(AuthPolicy{MinSaving: 0.05})
+	l.close()
+	if _, after2 := readFormatVersion(t, l.dir); after2 != after1 {
+		t.Fatalf("level moved from %d to %d with further records", after1, after2)
+	}
+	l.open()
+	l.reclaim()
+	l.close()
+	if _, after3 := readFormatVersion(t, l.dir); after3 != after1 {
+		t.Fatalf("level changed to %d by maintenance", after3)
+	}
+	l.open()
+	if _, err := l.s.AuthorityRevertAll(); err != nil {
+		t.Fatal(err)
+	}
+	l.exact("reverted")
+	l.close()
+	if _, last := readFormatVersion(t, l.dir); last != before {
+		t.Fatalf("level %d after revert -all, want %d", last, before)
+	}
+}
+
+// Class accounting: gc and reachability count the authoritative components, never a retired CDC chunk.
+func TestAuthorityEquivAccounting(t *testing.T) {
+	l := authHistoryLab(t, 313, 5, 900_000)
+	l.migrate(AuthPolicy{MinSaving: 0.05})
+	l.reclaim()
+	comps := authComponentSet(t, l.s)
+	stored := map[[32]byte]bool{}
+	for k := range l.want {
+		for _, c := range l.man(k).Chunks {
+			if sum, _ := decodeHexSHA256(c.SHA256); !comps[sum] {
+				if _, err := l.s.casStat(sum); err == nil {
+					stored[sum] = true
+				}
+			}
+		}
+	}
+	l.close()
+	dry, err := gcCollect(l.dir, false)
+	if err != nil || !dry.LiveSetOK {
+		t.Fatalf("gc dry run: %v %+v", err, dry.Issues)
+	}
+	live := dry.ChunksReachable + dry.PackedLiveChunkCount
+	if want := len(comps) + len(stored); live != want || dry.ChunksUnreachable != 0 || dry.PackedDeadChunkCount != 0 || dry.AuthorityOrphanBodies != 0 {
+		t.Fatalf("gc counts %d live (%d loose, %d packed), %d unreachable, %d dead packed, %d orphan bodies; want %d = %d components + %d live CDC chunks",
+			live, dry.ChunksReachable, dry.PackedLiveChunkCount, dry.ChunksUnreachable, dry.PackedDeadChunkCount, dry.AuthorityOrphanBodies, want, len(comps), len(stored))
+	}
+	applied, err := gcCollect(l.dir, true)
+	if err != nil || applied.ChunksReachable != dry.ChunksReachable || applied.PackedLiveChunkCount != dry.PackedLiveChunkCount || applied.ChunksUnreachable != 0 {
+		t.Fatalf("applied gc differs from its dry run: %+v vs %+v (%v)", applied, dry, err)
+	}
+	l.open()
+	l.exact("after-gc")
+	l.verifyOK("after-gc")
 }

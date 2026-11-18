@@ -68,6 +68,7 @@ func p4CopyDir(t testing.TB, src, dst string) {
 }
 
 func TestP4DeferredBuildsAfterAcknowledgement(t *testing.T) {
+	g1CDCSpecific(t, "hook")
 	for _, mode := range []repMode{repModeShadow, repModePrefer} {
 		t.Run(mode.String(), func(t *testing.T) {
 			s := p4Deferred(t, mode, 1, 16)
@@ -551,6 +552,7 @@ func TestP4PrefixIndexMatchesReference(t *testing.T) {
 }
 
 func TestP4ReadCacheServesExactBytesAndStillVerifiesData(t *testing.T) {
+	g1CDCSpecific(t, "hook")
 	useLooseLayout(t, "the fixture removes and damages individual component files")
 	s := repOpenStore(t, repModePrefer)
 	db := repTestSQLite(600, 4096, 41)
@@ -813,6 +815,7 @@ func TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData(t *testing.T) {
 }
 
 func TestP4SmallObjectComponentsShareTheSegmentAndSurviveMaintenance(t *testing.T) {
+	g1CDCSpecific(t, "layout")
 	l := newRepLab(t, repModePrefer)
 	dbA := repTestSQLite(40, 4096, 71)
 	dbB := repTestSQLiteUpdate(dbA, 4096, []int{3, 17, 30}, 72)

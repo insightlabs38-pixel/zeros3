@@ -397,6 +397,7 @@ func compareReachability(t *testing.T, s *Store, deep bool, what string) {
 }
 
 func TestP3_ReachabilityMatchesReference_Healthy(t *testing.T) {
+	g1CDCSpecific(t, "accounting")
 	forEachLayout(t, func(t *testing.T) {
 		s := p3Fixture(t)
 		defer func(b int) { reachBlock = b }(reachBlock)
@@ -418,6 +419,7 @@ func TestP3_ReachabilityMatchesReference_Healthy(t *testing.T) {
 // Every damage the scan can report, injected into a different copy of the same
 // fixture, must be reported identically by the reference and the parallel scan.
 func TestP3_ReachabilityMatchesReference_Damage(t *testing.T) {
+	g1CDCSpecific(t, "corruption")
 	type damage struct {
 		name string
 		do   func(t *testing.T, s *Store)
@@ -734,6 +736,7 @@ func TestP3_DeepVerifyFindsCorruptionInjectedMidScan(t *testing.T) {
 // A chunk that rots between the chunk pass and the whole-object pass is still
 // found: multi-chunk objects are read (and hashed) again.
 func TestP3_DeepVerifyFindsCorruptionBetweenPasses(t *testing.T) {
+	g1CDCSpecific(t, "corruption")
 	forEachLayout(t, func(t *testing.T) {
 		t.Setenv("ZEROS3_MAINT_WORKERS", "1")
 		s := p3Fixture(t)
@@ -963,6 +966,7 @@ func requireP3Live(t *testing.T, dir string, live map[string][]byte, stage strin
 }
 
 func TestP3_RepackCrashPointsWithPipelinedStaging(t *testing.T) {
+	g1CDCSpecific(t, "accounting")
 	base, live := p3ChurnedStore(t, 800)
 	opt := repackOptions{Tier: "all", TargetBytes: 256 << 10, MaxLivePercent: 100, Compress: true}
 	cases := []struct {

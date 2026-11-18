@@ -118,6 +118,7 @@ func setSegTarget(t *testing.T, target, minSeal int64) {
 // --- format and policy --------------------------------------------------------
 
 func TestP1C_Format_FirstSmallWriteRaisesLevelPolicyOffDoesNot(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useProductionLayout(t)
 	for v, want := range map[int]bool{0: false, 1: true, 9: true, 10: true, 11: true, 12: true, 13: false} {
 		if supportedStoreFormat(v) != want {
@@ -158,6 +159,7 @@ func TestP1C_Format_FirstSmallWriteRaisesLevelPolicyOffDoesNot(t *testing.T) {
 }
 
 func TestP1C_SmallPutUsesSegmentAndSurvivesRestart(t *testing.T) {
+	g1CDCSpecific(t, "layout")
 	useProductionLayout(t)
 	s, dir := p1cOpen(t)
 	body := p1cBody(1, 20_000)
@@ -674,6 +676,7 @@ func TestP1C_GCAndRepackReclaimDeadRecordsAndKeepLiveOnes(t *testing.T) {
 }
 
 func TestP1C_OldStoreAndPolicyChangesCoexist(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useProductionLayout(t)
 	dir := t.TempDir()
 	var looseBodies map[string][]byte
@@ -944,6 +947,7 @@ func TestP1C_CLIReadersAgainstALiveServer(t *testing.T) {
 }
 
 func TestP1C_BundleExportRefusesCorruptChunk(t *testing.T) {
+	g1CDCSpecific(t, "corruption")
 	useProductionLayout(t)
 	bodies := map[string][]byte{"only": genRandomBytes(311, 150_000)}
 	src, snap := bundleFixture(t, bodies)
@@ -972,6 +976,7 @@ func TestP1C_BundleExportRefusesCorruptChunk(t *testing.T) {
 // A corrupt live record (chunk or inline manifest) in a sealed segment must make
 // destructive maintenance refuse, and must keep the pack.
 func TestP1C_MaintenanceRefusesCorruptLiveRecord(t *testing.T) {
+	g1CDCSpecific(t, "corruption")
 	useProductionLayout(t)
 	for _, what := range []string{"chunk", "inline-manifest"} {
 		t.Run(what, func(t *testing.T) {
@@ -1065,6 +1070,7 @@ func TestP1C_SharedReaderSurvivesSealByOwner(t *testing.T) {
 // The first small write raises the store level while other goroutines read the
 // format (verify, tier status, pack loading); `go test -race` must stay quiet.
 func TestP1C_FormatRaiseIsRaceFreeAgainstReaders(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useProductionLayout(t)
 	s, _ := p1cOpen(t)
 	stop := make(chan struct{})

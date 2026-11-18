@@ -140,6 +140,7 @@ func TestRepTransferBackfill(t *testing.T) {
 }
 
 func TestRepBundleBackfillFullDeltaAndReuse(t *testing.T) {
+	g1CDCSpecific(t, "hook")
 	base := repTestSQLite(32, 4096, 1404)
 	newer := repTestSQLiteUpdate(base, 4096, []int{3, 17}, 1405)
 	src, snaps := deltaChain(t, map[string][]byte{"db": base}, map[string][]byte{"db": newer})

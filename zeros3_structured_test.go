@@ -114,6 +114,7 @@ func TestRepStructuredEncoderLabIdentity(t *testing.T) {
 
 // Unsupported producer features must preserve the authoritative CDC path.
 func TestRepStructuredFallbackAndLifecycle(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	for _, path := range []string{"testing-harnesses/z3/sstz3/testdata/pebble-v7.sst", "testing-harnesses/z3/parquetz3/testdata/pa_gzip.parquet", "testing-harnesses/z3/parquetz3/testdata/pa_nested.parquet"} {
 		t.Run(path, func(t *testing.T) {
 			data, err := os.ReadFile(path)
@@ -287,6 +288,7 @@ func TestRepStructuredZstdWindowBeforeAllocation(t *testing.T) {
 }
 
 func TestRepStructuredOrdinaryPutCrashFloor(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	raw, err := os.ReadFile("testing-harnesses/z4/testdata/a3-structured/lab-structured.json")
 	if err != nil {
@@ -351,6 +353,7 @@ func TestRepStructuredOrdinaryPutCrashFloor(t *testing.T) {
 }
 
 func TestRepStructuredCumulativeModelCompatibility(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	l := newRepLab(t, repModePrefer)
 	l.put("model", repZ4ModelSafetensors(t, bytes.Repeat([]byte{1, 2, 3, 4}, 16384)))

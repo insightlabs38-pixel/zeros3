@@ -43,6 +43,7 @@ func lmChunks(t *testing.T, s *Store, e *objectEntry) []chunkRef {
 }
 
 func TestLayoutMatrix_VerifyDetectsMissingAndCorruptChunks(t *testing.T) {
+	g1CDCSpecific(t, "corruption")
 	forEachLayout(t, func(t *testing.T) {
 		for _, size := range lmSizes {
 			t.Run(fmt.Sprint(size), func(t *testing.T) {
@@ -71,6 +72,7 @@ func TestLayoutMatrix_VerifyDetectsMissingAndCorruptChunks(t *testing.T) {
 }
 
 func TestLayoutMatrix_RepairFindingsClassifyMissingAndCorrupt(t *testing.T) {
+	g1CDCSpecific(t, "corruption")
 	forEachLayout(t, func(t *testing.T) {
 		for _, size := range lmSizes {
 			t.Run(fmt.Sprint(size), func(t *testing.T) {

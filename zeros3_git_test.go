@@ -100,6 +100,7 @@ func TestRepGitLabWireAndReaderAt(t *testing.T) {
 }
 
 func TestRepGitProductionPackAndIdx(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	for _, f := range repGitFixtures(t) {
 		t.Run(f.Name, func(t *testing.T) {
@@ -260,6 +261,7 @@ func repGitTestFixSum(a repGTAlgo, b []byte) {
 }
 
 func TestRepGitHostileFallback(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	a := repGTSHA1
 	delta := []byte{1, 1, 1, 'x'}
 	missing := bytes.Repeat([]byte{0xaa}, 20)

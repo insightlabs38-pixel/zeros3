@@ -112,6 +112,7 @@ func repCodecGzip(t testing.TB, plain []byte) []byte {
 }
 
 func TestRepCodecNestedProduction(t *testing.T) {
+	g1CDCSpecific(t, "hook")
 	plain, zst := repCodecFixtureBytes(t)
 	expected := map[string][]byte{}
 	tr := tar.NewReader(bytes.NewReader(plain))
@@ -229,6 +230,7 @@ func TestRepCodecNestedProduction(t *testing.T) {
 }
 
 func TestRepCodecUnsupportedFallsBack(t *testing.T) {
+	g1CDCSpecific(t, "hook")
 	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	plain, zst := repCodecFixtureBytes(t)
 	gz := repCodecGzip(t, plain)
@@ -368,6 +370,7 @@ func TestRepCodecCrashAndOptionalFailure(t *testing.T) {
 }
 
 func TestRepCodecAnalysisDepth(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	data := bytes.Repeat([]byte("a bounded nested codec workload"), 1000)
 	for i := 0; i < 5; i++ {
 		data = repCodecGzip(t, data)

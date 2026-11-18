@@ -441,6 +441,7 @@ func TestP2_ConcurrentFirstLoadsShareOneRead(t *testing.T) {
 }
 
 func TestP2_ChunkCacheNeverMasksCorruptionFromDiagnostics(t *testing.T) {
+	g1CDCSpecific(t, "corruption")
 	for _, lay := range p2Layouts()[:3] {
 		t.Run(lay.name, func(t *testing.T) {
 			fin := lay.setup(t)
@@ -533,6 +534,7 @@ func TestP2_ChunkCacheBoundedAndScanResistant(t *testing.T) {
 }
 
 func TestP2_PipelinedStreamsFailSafeAndLeakNothing(t *testing.T) {
+	g1CDCSpecific(t, "corruption")
 	oldMin, oldW := pipeMinRange, pipeWorkers
 	pipeMinRange, pipeWorkers = 64<<10, 3
 	t.Cleanup(func() { pipeMinRange, pipeWorkers = oldMin, oldW })
@@ -788,6 +790,7 @@ func TestP2_ListingUsesCachedManifestsWithoutFillingTheCache(t *testing.T) {
 // Damage to a hot manifest or chunk becomes visible to reads without any
 // diagnostic running once the cached copy is due for re-verification.
 func TestP2_CachedEntriesAreRevalidatedAgainstStorage(t *testing.T) {
+	g1CDCSpecific(t, "corruption")
 	useProductionLayout(t)
 	old := cacheRevalidateAfter
 	cacheRevalidateAfter = 150 * time.Millisecond
@@ -838,6 +841,7 @@ func TestP2_CachedEntriesAreRevalidatedAgainstStorage(t *testing.T) {
 // Large streams are counted whether or not they are pipelined; only the first
 // few are, so concurrent clients do not each fan out further.
 func TestP2_PipeliningIsAdaptiveToActiveStreams(t *testing.T) {
+	g1CDCSpecific(t, "layout")
 	oldMin, oldLim, oldW := pipeMinRange, pipeStreamLimit, pipeWorkers
 	pipeMinRange, pipeStreamLimit, pipeWorkers = 1, 2, 3
 	t.Cleanup(func() { pipeMinRange, pipeStreamLimit, pipeWorkers = oldMin, oldLim, oldW })

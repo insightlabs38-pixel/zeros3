@@ -214,6 +214,7 @@ func TestRepZ4ManagedEncoderFidelity(t *testing.T) {
 }
 
 func TestRepZ4ManagedLifecycleAndCapability(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	raw, e := repZ4ManagedFixtureJSON(t)
 	if e != nil {
@@ -277,6 +278,7 @@ func TestRepZ4ManagedLifecycleAndCapability(t *testing.T) {
 }
 
 func TestRepZ4ManagedDefaultAndMalformedFallback(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	raw, e := repZ4ManagedFixtureJSON(t)
 	if e != nil {
@@ -314,6 +316,7 @@ func TestRepZ4ManagedDefaultAndMalformedFallback(t *testing.T) {
 }
 
 func TestRepManagedOrdinaryPutCrashFloor(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	raw, err := repZ4ManagedFixtureJSON(t)
 	if err != nil {
@@ -454,6 +457,7 @@ func TestRepManagedDependencyAndWriterFailures(t *testing.T) {
 }
 
 func TestRepManagedCumulativeCompatibility(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	l := newRepLab(t, repModePrefer)
 	l.put("model", repZ4ModelSafetensors(t, bytes.Repeat([]byte{1, 2, 3, 4}, 16384)))
@@ -513,6 +517,7 @@ func TestRepManagedCumulativeCompatibility(t *testing.T) {
 }
 
 func TestRepManagedNestedPublicationFloor(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	raw, e := repZ4ManagedFixtureJSON(t)
 	if e != nil {

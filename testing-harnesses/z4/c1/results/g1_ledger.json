@@ -1,0 +1,235 @@
+{
+ "cdc_specific_tests": 167,
+ "classes": {
+  "accounting": {
+   "tests": [
+    "TestDeleteObjects_HistoryPruneGC",
+    "TestIngestCrash_Matrix",
+    "TestP3_ReachabilityMatchesReference_Healthy",
+    "TestP3_RepackCrashPointsWithPipelinedStaging",
+    "TestPrune_PackedHistoryReclaimedByRepack",
+    "TestPrune_SharedAndRestoredRootsStayPinned",
+    "TestPrune_SnapshotSurvivesPruneThenGC",
+    "TestRepack_GCCrashDuringDeadPackRemoval",
+    "TestSnapshotGC_PinsOtherwiseUnreachableChunks"
+   ],
+   "authority_equivalents": [
+    "TestAuthorityEquivAccounting",
+    "TestAuthorityBaseRetentionAfterNamespacePruning"
+   ]
+  },
+  "cdcref": {
+   "tests": [
+    "TestModelOrdinaryPutCrashPublication",
+    "TestRepAnalysisBudgets",
+    "TestRepCodecAnalysisDepth",
+    "TestRepConcurrentReadsMixedTiers",
+    "TestRepCopyObjectAndMultipart",
+    "TestRepCrashMatrix",
+    "TestRepGitHostileFallback",
+    "TestRepGitProductionPackAndIdx",
+    "TestRepHostileObjectsNeverFailPut",
+    "TestRepKindLifecycleMatrix",
+    "TestRepLateCreationAndRetirementLeaveNamespaceUntouched",
+    "TestRepLifecycleChain",
+    "TestRepLiveRootFaultsFailClosed",
+    "TestRepManagedOrdinaryPutCrashFloor",
+    "TestRepMerkleRevisionChainSections",
+    "TestRepMerkleVirtualSectionReuse",
+    "TestRepOffModeMaintenanceKeepsRoots",
+    "TestRepSharedChildAcrossFormatsAndRootLifecycle",
+    "TestRepSharedVirtualComponentAcrossRoots",
+    "TestRepSourceCorruptionClassified",
+    "TestRepStructuredFallbackAndLifecycle",
+    "TestRepStructuredOrdinaryPutCrashFloor",
+    "TestRepTempFilesAreNeverRootsOrLiveness",
+    "TestRepVirtualComponentDescriptor",
+    "TestRepZ4ModelBaseSurvivesRootRetirement",
+    "TestRepZ4ModelGGUFAndUnsupportedModel"
+   ],
+   "authority_equivalents": [
+    "TestAuthorityRepFormAcrossStructuralKinds",
+    "TestAuthorityPlannerRepGroupsExact",
+    "TestAuthorityZN7ModelHistory"
+   ]
+  },
+  "corruption": {
+   "tests": [
+    "TestBulkFetch_ServerSideFailures",
+    "TestBulkRepair_PartialSuccessSurvivesBatchFailure",
+    "TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting",
+    "TestBundle_CorruptExistingChunkIsRepairedFromVerifiedPayload",
+    "TestBundle_ExportIsDeterministicAndAtomic",
+    "TestCLI_Repair_EndToEndSmoke",
+    "TestCLI_Repair_ExitCodeNonzeroWhenUnresolved",
+    "TestCLI_VerifyRepairFrom_OneCommandDetectRepairReverify",
+    "TestFork_RepairComposesAcrossSharedCorruptChunk",
+    "TestGC_RefusesOnCorruptLiveRoot_K7",
+    "TestLayoutMatrix_RepairFindingsClassifyMissingAndCorrupt",
+    "TestLayoutMatrix_VerifyDetectsMissingAndCorruptChunks",
+    "TestP1C_BundleExportRefusesCorruptChunk",
+    "TestP1C_MaintenanceRefusesCorruptLiveRecord",
+    "TestP2_CachedEntriesAreRevalidatedAgainstStorage",
+    "TestP2_ChunkCacheNeverMasksCorruptionFromDiagnostics",
+    "TestP2_PipelinedStreamsFailSafeAndLeakNothing",
+    "TestP3_DeepVerifyFindsCorruptionBetweenPasses",
+    "TestP3_ReachabilityMatchesReference_Damage",
+    "TestPackCompression_DeepVerifyDetectsCompressedPayloadCorruption",
+    "TestPackCompression_RepackAbortsOnDamagedCompressedData",
+    "TestPackRun_CorruptionFallsBackOrFailsWithoutLeakingBytes",
+    "TestPackRun_HTTPCorruptionNeverReachesClient",
+    "TestPack_DuplicateCopiesCorruptionPreference",
+    "TestPack_PayloadAndRecordHeaderDamageFailSafely",
+    "TestPack_RepairReplacesCorruptPackedChunkFromPeer",
+    "TestReachability_DetectsCorruptionAmongLiveRoots",
+    "TestRepairFromPeer_IncompatiblePeerFailsClearly",
+    "TestRepair_CorruptChunkContentMismatchDetected",
+    "TestRepair_CorruptExistingChunkAtomicallyReplaced",
+    "TestRepair_HighWorkerCount_RaceAndCorrectness",
+    "TestRepair_LocalRestartResumesNaturally",
+    "TestRepair_ManyCorruptChunks_WorkerCountsProduceIdenticalStats",
+    "TestRepair_ManyMissingChunks_Concurrent",
+    "TestRepair_MissingChunkDetected",
+    "TestRepair_MissingChunkRestoredEndToEnd",
+    "TestRepair_MixedCorruptAndMissing_Concurrent",
+    "TestRepair_MultipleCorruptChunksDetected",
+    "TestRepair_OnePeerFailureAmongManySuccesses_Concurrent",
+    "TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly",
+    "TestRepair_PeerRestartBetweenAttempts",
+    "TestRepair_ResumeAfterPartialRunOnlyFetchesRemaining",
+    "TestRepair_RetainedHistoricalVersionChunkRepaired",
+    "TestRepair_SharedCorruptDigestAffectsAllReferencingObjects",
+    "TestRepair_StatsExactAccounting",
+    "TestRepair_WrongLengthChunkDetectedAsCorrupt",
+    "TestRepair_WrongPeerBytesAmongMany_Concurrent",
+    "TestReplicateNamespace_SourceChunkCorruptOneObjectFailsOthersSucceed",
+    "TestRestore_MissingHistoricalChunk_NoPartialMutation",
+    "TestStreamingGet_Corruption",
+    "TestVerify_DetectsCorruptChunkOnlyUnderDeep",
+    "TestVerify_DetectsMissingChunk"
+   ],
+   "authority_equivalents": [
+    "TestAuthorityRetiredEquivalents",
+    "TestAuthorityCorruptComponentFailsClosedNeverWrongBytes",
+    "TestAuthorityPeerAssistedComponentRepair",
+    "TestAuthorityRepairPaths",
+    "TestAuthorityRepairCrashQualification",
+    "TestAuthorityGCFailsClosedOnMissingBase"
+   ]
+  },
+  "hook": {
+   "tests": [
+    "TestAWSChunked_LargeObjectBoundedMemory",
+    "TestP4DeferredBuildsAfterAcknowledgement",
+    "TestP4ReadCacheServesExactBytesAndStillVerifiesData",
+    "TestRepBundleBackfillFullDeltaAndReuse",
+    "TestRepCodecNestedProduction",
+    "TestRepCodecUnsupportedFallsBack",
+    "TestRepKindMatrixRoundTrip",
+    "TestRepModesAndFallbackCounters",
+    "TestRepZ4ModelStreamingModelLifecycle",
+    "TestStreamingPut_LargeObjectBoundedMemory"
+   ],
+   "authority_equivalents": [
+    "TestAuthorityLargeCheck",
+    "TestAuthorityRepFormAcrossStructuralKinds"
+   ]
+  },
+  "layout": {
+   "tests": [
+    "TestBundle_ExportIndependentOfPhysicalRepresentation",
+    "TestDirectPackLife_CrashMatrixConverges",
+    "TestDirectPackLife_RepackCompressesRawDirectPacksPreservingOrder",
+    "TestDirectPackLife_TierRebalanceBundlesAndLogicalHistoryUnchanged",
+    "TestDirectPack_ExistingCopiesInAnyTierAreReused",
+    "TestDirectPack_IdenticalAndShiftedUploadsWriteNoPayload",
+    "TestDirectPack_MultiplePacksAndPackSizes",
+    "TestDirectPack_RecordOrderFollowsObjectAndRepeatsWriteOnce",
+    "TestDirectPack_TailBelowMinimumStaysLoose",
+    "TestLocality_CompactLayoutsEndToEnd",
+    "TestLocality_PackBoundariesAndTailFolding",
+    "TestLocality_RootObservationOrder",
+    "TestLocality_SingleChunkEmptyAndSharedObjects",
+    "TestP1B_CrashMatrix_ConcurrentGroups",
+    "TestP1B_MediumPack_DeadPacksCollectedByGC",
+    "TestP1B_MediumPack_SameManifestAsLoose",
+    "TestP1C_SmallPutUsesSegmentAndSurvivesRestart",
+    "TestP2_PipeliningIsAdaptiveToActiveStreams",
+    "TestP4SmallObjectComponentsShareTheSegmentAndSurviveMaintenance",
+    "TestPackCompression_AdaptivePolicyByDataClass",
+    "TestPackCompression_CrashPoints",
+    "TestPackCompression_MixedObjectReadsAndRanges",
+    "TestPackCompression_RepackSelectionUsesPhysicalBytes",
+    "TestPackRun_BadPackStopsFurtherRuns",
+    "TestPackRun_LocalityCoalescesDigestDoesNot",
+    "TestPackRun_NoncontiguousAndSingleChunk",
+    "TestPackRun_RangeFetchesOnlyNeededChunks",
+    "TestPackRun_RangesMatchOrdinaryReads",
+    "TestPackRun_TiersAndLooseCopyPreference",
+    "TestPack_CompactCLI",
+    "TestPack_CompactCrashPoints",
+    "TestPack_GCNeverTouchesPacks",
+    "TestPack_LogicalFeaturesOverPackedStore",
+    "TestPack_MixedManifestSpansLooseAndPacked",
+    "TestPack_PhysicalMatrix",
+    "TestPack_StoreFormatVersionGate",
+    "TestRepLargeObjectComponentsGoToPacks",
+    "TestTierPolicy_HottestReferenceWins",
+    "TestTierRebalance_CrashPointsConverge",
+    "TestTierRebalance_DriftAndDuplicatesConverge",
+    "TestTierRebalance_MinMisplacedDefersCostlyRewrites",
+    "TestTierRebalance_MixedPacksAreRewritten",
+    "TestTierRebalance_SharedCheckpointBlocksStayHot",
+    "TestTier_GCRemovesDeadPackFromItsTier",
+    "TestTier_InitSafety",
+    "TestTier_RepackGCPreserveTiersAndPaths"
+   ],
+   "authority_equivalents": [
+    "TestAuthorityEquivPhysicalLayouts",
+    "TestAuthorityMixedLifecycle",
+    "TestAuthorityDeltaLifecycleAndReclaim"
+   ]
+  },
+  "revive": {
+   "tests": [
+    "TestBundle_PartialOverlapImportsOnlyMissingContent",
+    "TestCASBatch_IngestDuplicateAndLocalizedEdit"
+   ],
+   "authority_equivalents": [
+    "TestAuthorityCopyAndRestoreOfBodyOnlyContent",
+    "TestAuthorityNativeClosureTransferAndInterruption"
+   ]
+  },
+  "storelevel": {
+   "tests": [
+    "TestDirectPack_AdaptiveCompressionOptionStillValidPackV1",
+    "TestModelNestedPublicationRaisesFloor",
+    "TestP1C_FormatRaiseIsRaceFreeAgainstReaders",
+    "TestP1C_Format_FirstSmallWriteRaisesLevelPolicyOffDoesNot",
+    "TestP1C_OldStoreAndPolicyChangesCoexist",
+    "TestPackCompression_StoreFormatBoundary",
+    "TestRepCrashAfterFormatRaiseBeforeFirstRoot",
+    "TestRepManagedCumulativeCompatibility",
+    "TestRepManagedNestedPublicationFloor",
+    "TestRepNegativeFormatControls",
+    "TestRepOptionalFailureNeverFailsPut",
+    "TestRepSmokeSQLiteRoundTrip",
+    "TestRepStructuredCumulativeModelCompatibility",
+    "TestRepSubstrateStoreRoundTrip",
+    "TestRepUpgradeLevelsDoNotMoveUntilFirstRoot",
+    "TestRepZ4ManagedDefaultAndMalformedFallback",
+    "TestRepZ4ManagedLifecycleAndCapability",
+    "TestTierRebalance_DryRunThenApplyOnLooseChunks",
+    "TestTier_CLI",
+    "TestTier_CompactIntoColdCrashPoints",
+    "TestTier_LifecycleCompactMoveReads",
+    "TestTier_MoveCrashPoints"
+   ],
+   "authority_equivalents": [
+    "TestAuthorityEquivStoreLevel",
+    "TestAuthorityOldBinaryRefusesAndLeavesStoreUntouched",
+    "TestAuthorityRevertAllLowersFloorAndOldBinaryReopens"
+   ]
+  }
+ }
+}
