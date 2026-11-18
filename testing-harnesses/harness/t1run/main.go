@@ -35,12 +35,14 @@ type result struct {
 	Status  string  `json:"status"` // pass | fail | skip
 	Seconds float64 `json:"seconds"`
 	MaxRSS  int64   `json:"max_rss_kib,omitempty"`
+	CPU     float64 `json:"cpu_seconds,omitempty"`
 	Cached  bool    `json:"cached,omitempty"`
 	Output  string  `json:"output,omitempty"` // failures only
 }
 
 type costEntry struct {
 	Seconds float64 `json:"s"`
+	CPU     float64 `json:"cpu,omitempty"`
 	RSSMiB  int64   `json:"rss_mib,omitempty"`
 }
 
@@ -267,7 +269,7 @@ type scheduler struct {
 	memBudget int64
 	mu        sync.Mutex
 	cond      *sync.Cond
-	cpuUsed   int
+	cpuUsed   float64
 	memUsed   int64
 	scratch   int
 }
@@ -276,22 +278,27 @@ type unit struct {
 	tests []string
 	cost  float64
 	mem   int64
+	cpu   float64 // CPUs the unit keeps busy: mostly-sleeping tests (grace periods, kill timers) overlap others
 }
 
-func (s *scheduler) cost(t string) (float64, int64) {
+func (s *scheduler) cost(t string) (float64, int64, float64) {
 	if c, ok := s.costs[t]; ok {
-		return c.Seconds, max(c.RSSMiB, 64)
+		w := 1.0
+		if c.Seconds >= 2 && c.CPU > 0 {
+			w = min(1, max(0.25, c.CPU/c.Seconds))
+		}
+		return c.Seconds, max(c.RSSMiB, 64), w
 	}
-	return 4, 256 // unknown tests are scheduled as moderately heavy until measured
+	return 4, 256, 1 // unknown tests are scheduled as moderately heavy until measured
 }
 
 func (s *scheduler) plan(todo []string) []unit {
 	var heavy []unit
 	var small []string
 	for _, t := range todo {
-		c, m := s.cost(t)
+		c, m, w := s.cost(t)
 		if c >= *batchSec {
-			heavy = append(heavy, unit{[]string{t}, c, m})
+			heavy = append(heavy, unit{[]string{t}, c, m, w})
 		} else {
 			small = append(small, t)
 		}
@@ -299,7 +306,7 @@ func (s *scheduler) plan(todo []string) []unit {
 	sort.Strings(small)
 	cur := unit{}
 	for _, t := range small {
-		c, m := s.cost(t)
+		c, m, _ := s.cost(t)
 		if cur.cost+c > *batchMax && len(cur.tests) > 0 {
 			heavy = append(heavy, cur)
 			cur = unit{}
@@ -307,6 +314,7 @@ func (s *scheduler) plan(todo []string) []unit {
 		cur.tests = append(cur.tests, t)
 		cur.cost += c
 		cur.mem = max(cur.mem, m)
+		cur.cpu = 1
 	}
 	if len(cur.tests) > 0 {
 		heavy = append(heavy, cur)
@@ -326,9 +334,9 @@ func (s *scheduler) run(todo []string) {
 		// first unit that fits the remaining memory (the head always runs when nothing else does)
 		idx := -1
 		for s.ctx.Err() == nil {
-			if s.cpuUsed < *jobs {
+			if s.cpuUsed < float64(*jobs)-0.01 {
 				for i, u := range units {
-					if s.cpuUsed == 0 || s.memUsed+u.mem <= s.memBudget {
+					if (s.cpuUsed == 0 || s.memUsed+u.mem <= s.memBudget) && s.cpuUsed+u.cpu <= float64(*jobs)+0.01+0.75 {
 						idx = i
 						break
 					}
@@ -345,7 +353,7 @@ func (s *scheduler) run(todo []string) {
 		}
 		u := units[idx]
 		units = append(units[:idx], units[idx+1:]...)
-		s.cpuUsed++
+		s.cpuUsed += u.cpu
 		s.memUsed += u.mem
 		s.scratch++
 		slot := s.scratch
@@ -355,7 +363,7 @@ func (s *scheduler) run(todo []string) {
 			defer wg.Done()
 			n := s.exec(u, slot)
 			s.mu.Lock()
-			s.cpuUsed--
+			s.cpuUsed -= u.cpu
 			s.memUsed -= u.mem
 			done += n
 			if *verbose {
@@ -378,7 +386,11 @@ func (s *scheduler) exec(u unit, slot int) int {
 	defer os.RemoveAll(tmp)
 	pending := u.tests
 	for len(pending) > 0 && s.ctx.Err() == nil {
-		got, out, rss, timedOut := s.once(pending, tmp)
+		got, out, rss, cpu, timedOut := s.once(pending, tmp)
+		var tot float64
+		for _, r := range got {
+			tot += r.Seconds
+		}
 		var next []string
 		for _, t := range pending {
 			r, ok := got[t]
@@ -387,6 +399,9 @@ func (s *scheduler) exec(u unit, slot int) int {
 				continue
 			}
 			r.MaxRSS = rss
+			if tot > 0 {
+				r.CPU = cpu * r.Seconds / tot
+			}
 			s.record(r)
 		}
 		if len(next) == len(pending) { // no progress: a process that crashed before reporting anything
@@ -396,7 +411,7 @@ func (s *scheduler) exec(u unit, slot int) int {
 			}
 			// isolate: run the first one alone
 			first := pending[0]
-			g2, o2, r2, to2 := s.once([]string{first}, tmp)
+			g2, o2, r2, _, to2 := s.once([]string{first}, tmp)
 			if r, ok := g2[first]; ok {
 				r.MaxRSS = r2
 				s.record(r)
@@ -430,7 +445,7 @@ func (s *scheduler) record(r *result) {
 	}
 }
 
-func (s *scheduler) once(tests []string, tmp string) (map[string]*result, string, int64, bool) {
+func (s *scheduler) once(tests []string, tmp string) (map[string]*result, string, int64, float64, bool) {
 	pat := "^(" + strings.Join(tests, "|") + ")$"
 	ctx, cancel := context.WithTimeout(s.ctx, *testTO)
 	defer cancel()
@@ -441,7 +456,7 @@ func (s *scheduler) once(tests []string, tmp string) (map[string]*result, string
 	var buf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	if err := cmd.Start(); err != nil {
-		return nil, err.Error(), 0, false
+		return nil, err.Error(), 0, 0, false
 	}
 	pgid := cmd.Process.Pid
 	fin := make(chan struct{})
@@ -458,8 +473,10 @@ func (s *scheduler) once(tests []string, tmp string) (map[string]*result, string
 	close(fin)
 	syscall.Kill(-pgid, syscall.SIGKILL) // servers a test left behind
 	var rss int64
+	var cpu float64
 	if ru, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
 		rss = ru.Maxrss
+		cpu = float64(ru.Utime.Sec+ru.Stime.Sec) + float64(ru.Utime.Usec+ru.Stime.Usec)/1e6
 	}
 	out := buf.String()
 	got := map[string]*result{}
@@ -494,7 +511,7 @@ func (s *scheduler) once(tests []string, tmp string) (map[string]*result, string
 			}
 		}
 	}
-	return got, tail(out, 20000), rss, timedOut
+	return got, tail(out, 20000), rss, cpu, timedOut
 }
 
 var rootOnce sync.Once
@@ -546,7 +563,7 @@ func loadCosts(p string) map[string]costEntry {
 func saveCosts(p string, old map[string]costEntry, res map[string]*result) {
 	m := map[string]costEntry{}
 	for t, r := range res {
-		m[t] = costEntry{Seconds: float64(int(r.Seconds*100+0.5)) / 100, RSSMiB: r.MaxRSS / 1024}
+		m[t] = costEntry{Seconds: float64(int(r.Seconds*100+0.5)) / 100, CPU: float64(int(r.CPU*100+0.5)) / 100, RSSMiB: r.MaxRSS / 1024}
 	}
 	os.MkdirAll(filepath.Dir(p), 0o755)
 	b, _ := json.MarshalIndent(m, "", " ")

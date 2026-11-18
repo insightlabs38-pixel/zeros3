@@ -104,8 +104,12 @@ t1() {
 }
 stage_test()    { t1 normal -v; }
 stage_fast()    { stage_format && (cd "$root" && go vet .) && t1 normal -fast 2; }
-stage_authority() { t1 authority -v; }
-stage_authority-race() { t1 authority-race -v; }
+# Authority qualification: every root test outside the authority suite runs with all committed
+# manifests retired onto delta bodies (ZEROS3_G1_RETIRE_ALL; tests of the CDC layout itself run with
+# CDC authoritative and are covered by TestAuthorityEquiv_*); the authority suite runs natively.
+authskip='^(TestAuthority|FuzzAuth|FuzzXDelta|TestXDelta)'
+stage_authority() { t1 authority -v -skip "$authskip" && t1 normal -v -run "$authskip"; }
+stage_authority-race() { t1 authority-race -v -skip "$authskip" && t1 race -v -run "$authskip"; }
 stage_static() {
 	build_bin && cd "$root/testing-harnesses" && go run ./runner -group static -bin "$bin"
 }
