@@ -21,3 +21,4 @@ large_3x256mib	rc=0	34s
 large_3x1gib	rc=0	118s
 large_3x2gib_control	rc=0	227s
 real_models	rc=0	273s
+race_suite	rc=1	3902s (only failure: real-model audit child timeout; fixed, rerun under -race ok 1607s)

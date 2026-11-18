@@ -35,7 +35,7 @@ Other families unchanged from the first C1 pass (tar .37, CLR .32, SQLite .30, S
 * **Not integrated: Brotli Parquet (+cold-tier policy), LZ4 SST/Parquet.** The production Parquet port predates P7's recipe ids 11-15 and needs the 3.8 kLOC Brotli encoder, a new compatibility floor for the recipe ids and a tier-policy rule (Brotli replay is 11.7 MB/s per core: cold only); landing it inert would add code with no readable form. Research implementations stay in `testing-harnesses/z3`.
 
 ## Qualification of the final tree
-gofmt, vet, reproducible build, clean checkout, `go.mod` unchanged, source/test maps pass; root suite PASS 889 s; authority suites; fuzz 40 s x3 clean (`FuzzXDeltaEnvelope`, `FuzzAuthRecord`, `FuzzAuthWindowRecord`); prodshadow/numcore/qcore pass; five-generation matrix; scale; 256 MiB/1 GiB/2 GiB; real models. RACE: see `qualification_summary.tsv`.
+gofmt, vet, reproducible build, clean checkout, `go.mod` unchanged, source/test maps pass; root suite PASS 889 s; authority suites; fuzz 40 s x3 clean (`FuzzXDeltaEnvelope`, `FuzzAuthRecord`, `FuzzAuthWindowRecord`); prodshadow/numcore/qcore pass; five-generation matrix; scale; 256 MiB/1 GiB/2 GiB; real models. `-race` root suite 3,861 s: 0 data races; one failure, the real-model audit child's fixed 300 s timeout (under race), raised to 1,800 s; `TestAuthorityZN7RealModels` rerun under `-race` passes (1,607 s).
 
 ## Remaining limits
 Offline exclusive-lock maintenance; floor lock-in until `revert -all`; archive reads 21-390 MB/s vs CDC 1,084; ZN7 decode single-worker; Brotli/LZ4 forms; 2 GiB migrate 132 MiB.

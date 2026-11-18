@@ -504,7 +504,7 @@ func runKilled(t *testing.T, scenario, dir, point string, occ int) (killed bool)
 // whether it was SIGKILLed at the point and what it wrote to stdout.
 func runHelper(t *testing.T, scenario, dir, point string, occ int, extra ...string) (killed bool, stdout string) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestAuthHelperProcess$", "-test.timeout=300s")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAuthHelperProcess$", "-test.timeout=1800s")
 	cmd.Env = append(append(os.Environ(), "ZS3_AUTH_HELPER="+scenario, "ZS3_AUTH_DIR="+dir, "ZS3_AUTH_POINT="+point, "ZS3_AUTH_OCC="+strconv.Itoa(occ)), extra...)
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
