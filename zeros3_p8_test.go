@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -458,5 +460,77 @@ func TestP8WinCache(t *testing.T) {
 	var nilc *authWinCache
 	if d, err := nilc.load(k(1), mk(3)); err != nil || len(d) != 3 {
 		t.Fatal("nil cache must call through")
+	}
+}
+
+// A decoded source or window cached while planning must never stand in for the physical check of a proof: a base
+// chunk that rots between planning and proof fails the proof closed and the object stays CDC.
+func TestP8PlanCacheNeverHidesPhysicalCorruption(t *testing.T) {
+	l := authHistoryLab(t, 91, 4, 700_000)
+	base := l.man("k1")
+	fires := 0
+	old := testHook
+	t.Cleanup(func() { testHook = old })
+	testHook = func(point string) {
+		if point == hookAuthComponentsFlushed {
+			fires++
+			if fires == 2 { // k2 is being committed; its base k1 was read (and cached) when it was planned
+				for _, c := range base.Chunks {
+					corruptChunkOnDisk(t, l.s, c.SHA256)
+				}
+				l.s.ccache.purge()
+			}
+		}
+	}
+	rep := l.migrate(AuthPolicy{MinSaving: 0.05, MaxDepth: 2, AllowDelta: true})
+	testHook = old
+	forms := map[string]string{}
+	for _, p := range rep.Plans {
+		forms[p.SHA[:12]] = p.Form + ":" + p.Reason
+	}
+	k2 := l.man("k2").ObjectSHA256[:12]
+	if f := forms[k2]; !strings.HasPrefix(f, "cdc:proof failed") {
+		t.Fatalf("object planned against a base that rotted before its proof was admitted: %v", forms)
+	}
+	// no byte served for any key is wrong (k1 itself may now be unreadable: that is the injected damage)
+	for key, want := range l.want {
+		man := l.man(key)
+		rd := l.s.openObjectReader(man, byteRange{0, man.TotalLength - 1})
+		var got []byte
+		var err error
+		for {
+			var b []byte
+			if b, err = rd.next(); err != nil {
+				break
+			}
+			got = append(got, b...)
+		}
+		rd.close()
+		if err == io.EOF && !bytes.Equal(got, want) {
+			t.Fatalf("%s: wrong bytes served", key)
+		}
+	}
+}
+
+// The similarity sketch is persisted in records: the sliced parallel computation must equal the sequential one.
+func TestP8SketchSlicedEqualsSequential(t *testing.T) {
+	for _, n := range []int{10, 16, 17, 1000, 4<<20 + 15, 4<<20 + 16, 9<<20 + 5} {
+		b := genRandomBytes(int64(n), n)
+		var want []uint64
+		if n >= xdWindow {
+			sk := authSketch{k: 16}
+			h := xdWindowHash(b)
+			for i := 0; ; i++ {
+				sk.add(xdMix(h))
+				if i+xdWindow >= len(b) {
+					break
+				}
+				h = (h-(uint64(b[i])+1)*xdPow)*xdP + uint64(b[i+xdWindow]) + 1
+			}
+			want = sk.out
+		}
+		if got := authFeatures(b, 16); !slices.Equal(got, want) {
+			t.Fatalf("n=%d: sketch differs", n)
+		}
 	}
 }

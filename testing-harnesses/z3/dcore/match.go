@@ -147,103 +147,17 @@ func BuildIndex(bases [][]byte, p Params) (*Index, error) {
 	x.table = make([]uint64, 1<<tbits)
 	x.tmask = 1<<tbits - 1
 	x.tshift = 64 - tbits
+	var found []anchor
 	for bi, b := range bases {
-		x.indexBase(bi, b)
+		found = x.collect(found, bi, b)
 	}
+	x.insertAll(found)
 	return x, nil
 }
 
-// Anchors is the sampled anchor list of one base. It does not depend on the other bases of an index, so a base
-// that is a candidate for many targets or sits in several candidate sets is hashed once.
-type Anchors struct {
-	level uint // anchors are kept when the top level bits of h*sampleK are zero
-	size  int
-	h     []uint64
-	off   []uint32
-}
-
-// Size is the byte length of the base the list describes.
-func (a *Anchors) Size() int { return a.size }
-
-// Bytes is the memory the list holds.
-func (a *Anchors) Bytes() int64 { return int64(len(a.h))*8 + int64(len(a.off))*4 }
-
-func sampleLevel(total int64, p Params) uint {
-	l := uint(p.MinSampleBits)
-	for total>>l > int64(p.MaxAnchors) {
-		l++
-	}
-	return l
-}
-
-// CollectAnchors lists the sampled anchors of b at the level a stand-alone index of b would use. A set of bases
-// never samples more densely than any one of them, so the list can be thinned to the set's level.
-func CollectAnchors(b []byte, p Params) (*Anchors, error) {
-	if !p.valid() {
-		return nil, ErrParams
-	}
-	if int64(len(b)) > maxTotal || len(b) > 1<<32-1 {
-		return nil, ErrTooLarge
-	}
-	a := &Anchors{level: sampleLevel(int64(len(b)), p), size: len(b)}
-	w := p.Window
-	if len(b) < w {
-		return a, nil
-	}
-	x := Index{nbits: a.level}
-	a.h = make([]uint64, 0, len(b)>>a.level+16)
-	a.off = make([]uint32, 0, cap(a.h))
-	h := rollInit(b[:w])
-	for i := 0; ; i++ {
-		if x.sampled(h) {
-			a.h = append(a.h, h)
-			a.off = append(a.off, uint32(i))
-		}
-		if i+w >= len(b) {
-			return a, nil
-		}
-		h = rollNext(h, b[i], b[i+w], w)
-	}
-}
-
-// BuildIndexAnchors is BuildIndex over precomputed anchor lists (one per base, from CollectAnchors with the same
-// Params). The resulting table is identical to BuildIndex's.
-func BuildIndexAnchors(bases [][]byte, as []*Anchors, p Params) (*Index, error) {
-	if !p.valid() || len(bases) > maxBases || len(as) != len(bases) {
-		return nil, ErrParams
-	}
-	sizes := make([]int64, len(bases))
-	for i, b := range bases {
-		sizes[i] = int64(len(b))
-		if as[i] == nil || as[i].size != len(b) {
-			return nil, ErrParams
-		}
-	}
-	starts, total, err := layout(sizes)
-	if err != nil {
-		return nil, err
-	}
-	x := &Index{p: p, bases: bases, starts: starts, total: total, nbits: sampleLevel(total, p)}
-	est := int(x.total>>x.nbits) + len(bases) + 64
-	tbits := uint(4)
-	for 1<<tbits < 2*est {
-		tbits++
-	}
-	x.table = make([]uint64, 1<<tbits)
-	x.tmask = 1<<tbits - 1
-	x.tshift = 64 - tbits
-	for bi, a := range as {
-		if a.level > x.nbits {
-			return nil, ErrParams
-		}
-		vs := starts[bi]
-		for k, h := range a.h {
-			if x.sampled(h) {
-				x.insert(h, vs+int64(a.off[k]))
-			}
-		}
-	}
-	return x, nil
+type anchor struct {
+	m uint64 // mix64 of the window hash: the table slot and tag derive from it
+	v int64
 }
 
 func (x *Index) sampled(h uint64) bool {
@@ -260,26 +174,57 @@ func mix64(v uint64) uint64 {
 
 func (x *Index) hash0(b []byte) uint64 { return rollInit(b[:x.p.Window]) }
 
-func (x *Index) indexBase(bi int, b []byte) {
+// collect appends the sampled anchors of base bi in position order.
+func (x *Index) collect(out []anchor, bi int, b []byte) []anchor {
 	w := x.p.Window
 	if len(b) < w {
-		return
+		return out
 	}
 	h := x.hash0(b)
 	vs := x.starts[bi]
 	for i := 0; ; i++ {
 		if x.sampled(h) {
-			x.insert(h, vs+int64(i))
+			out = append(out, anchor{mix64(h), vs + int64(i)})
 		}
 		if i+w >= len(b) {
-			return
+			return out
 		}
 		h = rollNext(h, b[i], b[i+w], w)
 	}
 }
 
-func (x *Index) insert(h uint64, voff int64) {
-	m := mix64(h)
+// insertAll fills the table region by region. Anchors land at random slots of a table far larger than the cache, so
+// inserting in position order costs a cache miss each; a stable counting sort on the top slot bits keeps one region
+// resident while it fills. Anchors of one hash keep their position order, so which of them hold a slot is unchanged.
+func (x *Index) insertAll(a []anchor) {
+	const regionBits = 8
+	if len(a) < 1<<14 || x.tshift > 64-regionBits-4 {
+		for _, e := range a {
+			x.insertM(e.m, e.v)
+		}
+		return
+	}
+	var count [1<<regionBits + 1]int
+	for _, e := range a {
+		count[e.m>>(64-regionBits)+1]++
+	}
+	for i := 1; i < len(count); i++ {
+		count[i] += count[i-1]
+	}
+	sorted := make([]anchor, len(a))
+	for _, e := range a {
+		r := e.m >> (64 - regionBits)
+		sorted[count[r]] = e
+		count[r]++
+	}
+	for _, e := range sorted {
+		x.insertM(e.m, e.v)
+	}
+}
+
+func (x *Index) insert(h uint64, voff int64) { x.insertM(mix64(h), voff) }
+
+func (x *Index) insertM(m uint64, voff int64) {
 	slot := m >> x.tshift
 	tag := (m >> 8) & 0xffffff
 	n := 0

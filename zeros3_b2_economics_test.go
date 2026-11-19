@@ -726,7 +726,7 @@ func TestP8Migration(t *testing.T) {
 					econEmit(t, econRow{"p8": "migrate", "family": fam.name, "variant": vn, "rep": r, "logical": logical, "cdc_phys": cdcPhys,
 						"wall_s": wall, "cpu_s": cpu1 - cpu0, "rss_mib": rss, "alloc_mib": float64(m1.TotalAlloc-m0.TotalAlloc) / (1 << 20),
 						"mallocs": m1.Mallocs - m0.Mallocs, "read_mib": float64(io1-io0) / (1 << 20), "src_reads": srcCalls1 - srcCalls0, "src_mib": float64(srcBytes1-srcBytes0) / (1 << 20),
-						"added": rep.AddedBytes, "admitted": rep.Admitted, "objects": rep.Objects, "forms": forms, "phys_after": phys, "gc_s": gcSec, "repack_s": repackSec, "exact": exact})
+						"mig_s": rep.Seconds, "cache_hits": rep.CacheHits, "cache_misses": rep.CacheMisses, "decoded_mib": float64(rep.DecodedBytes) / (1 << 20), "added": rep.AddedBytes, "admitted": rep.Admitted, "objects": rep.Objects, "forms": forms, "phys_after": phys, "gc_s": gcSec, "repack_s": repackSec, "exact": exact})
 					if !exact {
 						t.Fatalf("%s/%s: inexact read-back", fam.name, vn)
 					}
