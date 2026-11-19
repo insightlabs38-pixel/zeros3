@@ -95,18 +95,18 @@ import (
 //    28363    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
 //    29300    Streaming reads and aws-chunked SigV4
 //    30157    Packed CAS: pack format, mixed reads, compaction, crash points
-//    31159    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//    32319    Adaptive pack compression (codec 1, DEFLATE)
-//    33371    Scalable packed-chunk locator (sorted immutable levels)
-//    33857    Z2-07: bulk logical-chunk transport (v2)
-//    35299    Hot/warm/cold physical pack tiers
-//    36085    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//    36840    Z2-10: content-aware tier policy and rebalance
-//    37886    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
-//    38573    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
-//    40022    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
-//    41376    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
-//    42799    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
+//    31164    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//    32324    Adaptive pack compression (codec 1, DEFLATE)
+//    33376    Scalable packed-chunk locator (sorted immutable levels)
+//    33862    Z2-07: bulk logical-chunk transport (v2)
+//    35304    Hot/warm/cold physical pack tiers
+//    36090    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//    36845    Z2-10: content-aware tier policy and rebalance
+//    37891    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//    38578    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
+//    40027    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
+//    41381    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
+//    42804    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
