@@ -45724,7 +45724,8 @@ const (
 	authScanPieceBytes     = 2 << 20   // sequential proof / verify / materialize passes
 	authReaderAtPieceBytes = 1 << 20   // the same for a long-lived random-access reader (analysis, migration)
 	authPlanPieceBytes     = 8 << 20   // base chunks a planning reader keeps (its matcher revisits nearby base regions)
-	authPlanWinCacheBytes  = 96 << 20  // floor of the planning cache
+	authPlanWinCacheBytes  = 32 << 20  // planning cache of windowed objects (1 MiB windows)
+	authPlanSrcCacheMin    = 96 << 20  // floor once whole in-memory sources are in scope
 	authPlanWinCacheMax    = 160 << 20 // and what four of the largest in-memory objects may raise it to
 	authProofWinBytes      = 64 << 20  // decoded windows one proof of a windowed body keeps
 	authProofPieceBytes    = 32 << 20  // verified base chunks the same proof keeps
@@ -47522,7 +47523,9 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 			largest = max(largest, o.man.TotalLength)
 		}
 	}
-	m.wc.setBudget(min(max(4*largest, authPlanWinCacheBytes), authPlanWinCacheMax))
+	if largest > 0 {
+		m.wc.setBudget(min(max(4*largest, authPlanSrcCacheMin), authPlanWinCacheMax))
+	}
 	if pol.AllowRep {
 		m.planRepGroups()
 	}
@@ -47683,7 +47686,7 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 			}
 			if rc == nil {
 				var src io.ReaderAt
-				if man := m.order[i].man; man.TotalLength <= authPlanWinCacheBytes/2 {
+				if man := m.order[i].man; man.TotalLength <= authWindowMin {
 					if b, err := m.source(man); err == nil {
 						src = bytes.NewReader(b)
 					}
