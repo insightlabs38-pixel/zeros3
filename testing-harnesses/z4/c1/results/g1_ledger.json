@@ -1,5 +1,5 @@
 {
- "cdc_specific_tests": 167,
+ "cdc_specific_tests": 169,
  "classes": {
   "accounting": {
    "tests": [
@@ -73,6 +73,7 @@
     "TestBundle_ExportIsDeterministicAndAtomic",
     "TestCLI_Repair_EndToEndSmoke",
     "TestCLI_Repair_ExitCodeNonzeroWhenUnresolved",
+    "TestCLI_Repair_RealProcessKillThenResume",
     "TestCLI_VerifyRepairFrom_OneCommandDetectRepairReverify",
     "TestFork_RepairComposesAcrossSharedCorruptChunk",
     "TestGC_RefusesOnCorruptLiveRoot_K7",
@@ -236,6 +237,7 @@
     "TestP1C_FormatRaiseIsRaceFreeAgainstReaders",
     "TestP1C_Format_FirstSmallWriteRaisesLevelPolicyOffDoesNot",
     "TestP1C_OldStoreAndPolicyChangesCoexist",
+    "TestP1C_SharedOpenerNeverDisturbsALiveWriter",
     "TestPackCompression_StoreFormatBoundary",
     "TestRepCrashAfterFormatRaiseBeforeFirstRoot",
     "TestRepManagedCumulativeCompatibility",
@@ -335,6 +337,13 @@
    ]
   },
   "TestCLI_Repair_ExitCodeNonzeroWhenUnresolved": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestCLI_Repair_RealProcessKillThenResume": {
    "class": "corruption",
    "tags": [
     "repair-peer-exact-stats",
@@ -539,6 +548,13 @@
    ]
   },
   "TestP1C_OldStoreAndPolicyChangesCoexist": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP1C_SharedOpenerNeverDisturbsALiveWriter": {
    "class": "storelevel",
    "tags": [
     "format-level-moves-with-records",

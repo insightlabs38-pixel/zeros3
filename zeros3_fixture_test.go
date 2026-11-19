@@ -187,6 +187,14 @@ func TestFixtureImageEqualsBuildingInPlace(t *testing.T) {
 	t.Setenv("ZEROS3_FIXTURE_CACHE", root)
 	data := map[string][]byte{"a": genRandomBytes(1, 300_000), "b": genRandomBytes(2, 50_000)}
 	keys := []string{"a", "b"}
+	if authCommitHook != nil { // the retire-everything hook is per store instance: nothing may be cached or cloned
+		d := t.TempDir()
+		putPackTestObjects(t, d, data, keys...)
+		if ents, _ := os.ReadDir(root); len(ents) != 0 {
+			t.Fatalf("an image was cached under the retire-everything hook: %v", ents)
+		}
+		return
+	}
 	plain := t.TempDir()
 	t.Setenv("ZEROS3_FIXTURE_CACHE", "")
 	putPackTestObjects(t, plain, data, keys...)

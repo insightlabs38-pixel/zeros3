@@ -797,6 +797,7 @@ func TestP1C_TierMoveCarriesInlineManifests(t *testing.T) {
 // A read-only opener must never take ownership of, truncate, adopt or seal the
 // segments a live writer is appending to.
 func TestP1C_SharedOpenerNeverDisturbsALiveWriter(t *testing.T) {
+	g1CDCSpecific(t, "storelevel") // the hook retires a chunk between a live commit and a concurrent deep verify
 	useProductionLayout(t)
 	s, dir := p1cOpen(t)
 	acked := p1cPutN(t, s, "a", 10, 6000)

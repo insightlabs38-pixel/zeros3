@@ -85,28 +85,28 @@ import (
 //    14297    M6C: recursive directory sync
 //    15357    M8A: remote-to-remote delta replication (`zeros3 replicate`)
 //    16723    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    18063    M8C: namespace (prefix/bucket) replication
-//    19104    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    20199    M8E: durable namespace snapshots and restore
-//    22278    M8F: conditional operations (Put/Get/Copy preconditions)
-//    23684    M8G: introspection (dry-run planning, diff, inspect)
-//    25636    M8H: bounded parallel chunk transfer
-//    27047    P1: environment credentials, HTTP hardening/shutdown, TLS
-//    28363    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//    29300    Streaming reads and aws-chunked SigV4
-//    30157    Packed CAS: pack format, mixed reads, compaction, crash points
-//    31164    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//    32324    Adaptive pack compression (codec 1, DEFLATE)
-//    33376    Scalable packed-chunk locator (sorted immutable levels)
-//    33862    Z2-07: bulk logical-chunk transport (v2)
-//    35304    Hot/warm/cold physical pack tiers
-//    36090    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//    36845    Z2-10: content-aware tier policy and rebalance
-//    37891    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
-//    38578    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
-//    40027    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
-//    41381    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
-//    42804    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
+//    18082    M8C: namespace (prefix/bucket) replication
+//    19123    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    20218    M8E: durable namespace snapshots and restore
+//    22297    M8F: conditional operations (Put/Get/Copy preconditions)
+//    23703    M8G: introspection (dry-run planning, diff, inspect)
+//    25655    M8H: bounded parallel chunk transfer
+//    27066    P1: environment credentials, HTTP hardening/shutdown, TLS
+//    28382    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//    29319    Streaming reads and aws-chunked SigV4
+//    30176    Packed CAS: pack format, mixed reads, compaction, crash points
+//    31183    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//    32343    Adaptive pack compression (codec 1, DEFLATE)
+//    33395    Scalable packed-chunk locator (sorted immutable levels)
+//    33881    Z2-07: bulk logical-chunk transport (v2)
+//    35323    Hot/warm/cold physical pack tiers
+//    36109    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//    36864    Z2-10: content-aware tier policy and rebalance
+//    37910    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//    38597    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
+//    40046    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
+//    41400    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
+//    42823    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -17961,6 +17961,7 @@ func TestCLI_VerifyRepairFrom_UnsetPreservesOrdinaryVerifyBehavior(t *testing.T)
 }
 
 func TestCLI_Repair_RealProcessKillThenResume(t *testing.T) {
+	g1CDCSpecific(t, "corruption")
 	bin := buildZeros3Binary(t)
 
 	localDir := t.TempDir()
@@ -18015,25 +18016,43 @@ func TestCLI_Repair_RealProcessKillThenResume(t *testing.T) {
 
 	repairArgs := []string{"repair", "-store", localDir, "-from", "http://" + peerAddr}
 
-	firstAttempt := exec.Command(bin, repairArgs...)
-	if err := firstAttempt.Start(); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(150 * time.Millisecond)
-	firstAttempt.Process.Kill()
-	firstAttempt.Wait()
+	// The kill must land mid-repair. A loaded or fast machine can finish the repair first: kill earlier, damaging the
+	// chunks again, rather than skipping the property.
+	var midFindings []RepairFinding
+	for i, delay := range []time.Duration{150, 60, 25, 10, 3} {
+		if i > 0 {
+			again, err := OpenStore(localDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range man.Chunks {
+				corruptChunkOnDisk(t, again, c.SHA256)
+			}
+			again.Close()
+		}
+		firstAttempt := exec.Command(bin, repairArgs...)
+		if err := firstAttempt.Start(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(delay * time.Millisecond)
+		firstAttempt.Process.Kill()
+		firstAttempt.Wait()
 
-	midStore, err := OpenStore(localDir)
-	if err != nil {
-		t.Fatal(err)
+		midStore, err := OpenStore(localDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		midFindings, err = midStore.repairFindings()
+		if err != nil {
+			t.Fatal(err)
+		}
+		midStore.Close()
+		if len(midFindings) != 0 {
+			break
+		}
 	}
-	midFindings, err := midStore.repairFindings()
-	if err != nil {
-		t.Fatal(err)
-	}
-	midStore.Close()
 	if len(midFindings) == 0 {
-		t.Skip("the killed attempt happened to finish before the timer fired -- nothing left to resume")
+		t.Fatal("the repair finished before every kill timer, down to 3 ms: nothing was left to resume")
 	}
 
 	secondOut, secondErr, code := runZeros3CLI(t, bin, repairArgs...)
