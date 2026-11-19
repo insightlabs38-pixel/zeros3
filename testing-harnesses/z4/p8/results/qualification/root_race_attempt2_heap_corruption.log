@@ -1,0 +1,1761 @@
+PASS  121.87s TestAuthorityCrashMatrix
+[1/1327]
+PASS  164.05s TestAuthorityRepairCrashQualification
+[2/1327]
+PASS  171.67s TestAuthorityPersistenceLossModel
+[3/1327]
+PASS  208.21s TestHardBrotliMatchesPinnedProducerOutput
+[4/1327]
+PASS  243.26s TestP2_RangeReadsMatchReferenceOnEveryLayout
+[5/1327]
+PASS  128.52s TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds
+[6/1327]
+PASS   87.45s TestAuthorityTierGateOnHardCodecs
+[7/1327]
+PASS  296.90s TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive
+[8/1327]
+PASS   97.84s TestP3_RealKillDuringMaintenance
+[9/1327]
+PASS   85.97s TestP1B_CrashMatrix_ConcurrentGroups
+[10/1327]
+PASS   84.14s TestSnapshotRestore_OverOneThousandObjects
+[11/1327]
+PASS   86.30s TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData
+[12/1327]
+PASS   98.76s TestRepZ4ModelModelGiBBounded
+[13/1327]
+PASS   44.37s TestAuthorityEquivMaintenanceCrashPoints
+[14/1327]
+PASS   28.17s TestAuthorityRepeatedCrashLoops
+[15/1327]
+PASS   36.12s TestAuthorityMixedLifecycle
+[16/1327]
+PASS   31.62s TestAuthorityZN7ModelHistory
+[17/1327]
+PASS   14.60s TestAuthorityConcurrentOperations
+[18/1327]
+PASS   41.64s TestP3_RepackCrashPointsWithPipelinedStaging
+[19/1327]
+PASS   98.55s TestHardBrotliStreamingProducers
+[20/1327]
+PASS   48.53s TestBundleDeltaLife_CheckpointChain
+[21/1327]
+PASS   21.30s TestAuthorityRetiredEquivalents
+[22/1327]
+PASS   26.90s TestStreamingPut_LargeObjectBoundedMemory
+[23/1327]
+PASS   31.89s TestP1A_VerifyPackExactEquivalentToFull
+[24/1327]
+PASS   32.07s TestServe_SIGTERM_SlowRequestExceedsGrace_RealProcess
+[25/1327]
+PASS   30.57s TestP1B_RealKill_AckedObjectsSurviveConcurrentKill
+[26/1327]
+PASS   29.62s TestCASBatch_InterruptionMatrix
+[27/1327]
+PASS   20.61s TestAuthorityZN7BaseRetentionRevertAndFeature
+[28/1327]
+PASS   27.64s TestAuthorityHardCodecsAdmissionAndExactness
+[29/1327]
+PASS   15.11s TestAuthorityEquivCorruptionClasses
+[30/1327]
+PASS   27.00s TestBundleDeltaLife_RealProcessKillDuringDeltaImport
+[31/1327]
+PASS   31.67s TestP1C_CrashMatrix_Segments
+[32/1327]
+PASS   31.82s TestRepCrashMatrix
+[33/1327]
+PASS   23.81s TestBundleLife_RealProcessKillDuringImport
+[34/1327]
+PASS   23.43s TestRepMerkleRevisionChainSections
+[35/1327]
+FAIL    0.00s TestPackCompression_CrashPoints
+[36/1327]
+PASS   25.14s TestP3_JournalReplayMatchesReference
+[37/1327]
+PASS   20.26s TestP4DeferredCrashImagesAtEveryPhase
+[38/1327]
+PASS   17.42s TestLocalityScale_Planner
+[39/1327]
+PASS   18.90s TestLayoutMatrix_ConcurrentPutGetSameAndDifferentKeys
+[40/1327]
+PASS   12.97s TestAuthorityHardCodecsFeatureLifecycle
+[41/1327]
+PASS   13.32s TestAuthorityInjectedIOFailuresKeepLastValidState
+[42/1327]
+PASS   23.44s TestRepParquetParallelReplayIsExact
+[43/1327]
+PASS   10.40s TestAuthorityPlannerReusesPlansAndReverts
+[44/1327]
+PASS   11.89s TestAuthorityRepFormAcrossStructuralKinds
+[45/1327]
+PASS   12.59s TestCASBatch_RealProcessKillMidIngest
+[46/1327]
+PASS   13.37s TestDirectPackLife_RealProcessKillAfterFirstPackBeforeRoot
+[47/1327]
+PASS   13.32s TestBundleDeltaLife_CDCShiftResynchronises
+[48/1327]
+PASS   16.99s TestP1B_PackLocatorPublishDoesNotCopyAllPacks
+[49/1327]
+PASS    7.27s TestAuthorityRevertAllLowersFloorAndOldBinaryReopens
+[50/1327]
+PASS   11.42s TestP1A_CDCBoundaryMatchesReference
+[51/1327]
+PASS   14.96s TestTierRebalance_CrashPointsConverge
+[52/1327]
+PASS   11.66s TestAuthorityDeltaLifecycleAndReclaim
+[53/1327]
+PASS   15.40s TestFork_PaginationBoundary_1500Objects
+[54/1327]
+PASS   14.30s TestAuthorityPlannerRepGroupsExact
+[55/1327]
+PASS   18.76s TestRepLiveRootFaultsFailClosed
+[56/1327]
+PASS   15.47s TestP1C_CrashStateModel
+[57/1327]
+PASS   13.82s TestP3_ReachabilityMatchesReference_Damage
+[58/1327]
+PASS   13.84s TestP1A_PipelinedIngestMatchesSerial
+[59/1327]
+PASS   14.51s TestRepCodecCrashAndOptionalFailure
+[60/1327]
+PASS   15.05s TestHardBrotliConcurrentEncodersAreIndependent
+[61/1327]
+PASS    9.51s TestP3_RepackPipelineWritesIdenticalPacks
+[62/1327]
+PASS   17.55s TestRepKindLifecycleMatrix
+[63/1327]
+PASS    8.42s TestAuthorityWindowedDelta
+[64/1327]
+PASS    8.89s TestPackCompression_RepackMatrix
+[65/1327]
+PASS    9.16s TestRepManagedNestedGroupWorkBudget
+[66/1327]
+PASS   10.93s TestP4DeferredBuildsAfterAcknowledgement
+[67/1327]
+PASS   14.58s TestAuthorityEquivStreamingPutAndReadBoundedMemory
+[68/1327]
+PASS    7.96s TestM8G_HugeNamespace_1500Objects_RecursiveDryRun
+[69/1327]
+PASS    8.62s TestDirectPackLife_CrashMatrixConverges
+[70/1327]
+PASS    8.30s TestRepKindMatrixRoundTrip
+[71/1327]
+PASS    8.09s TestRepLargeObjectComponentsGoToPacks
+[72/1327]
+PASS    8.35s TestP1A_PackWriterMatchesReferenceAndReportsErrors
+[73/1327]
+FAIL    0.00s TestRepack_CrashPoints
+[74/1327]
+PASS    5.19s TestAuthorityRetireEverythingSubprocess
+[75/1327]
+PASS    7.87s TestAWSChunked_LargeObjectBoundedMemory
+[76/1327]
+PASS    8.54s TestServe_SIGTERM_ActivePUT_CompletesWithinGrace_RealProcess
+[77/1327]
+PASS    6.88s TestHardLZ4MatchesPinnedProducerOutput
+[78/1327]
+PASS    6.17s TestPackRun_CorruptionFallsBackOrFailsWithoutLeakingBytes
+[79/1327]
+PASS    5.90s TestP2_PipelinedStreamsFailSafeAndLeakNothing
+[80/1327]
+PASS    5.28s TestAuthorityEquivStoreLevel
+[81/1327]
+PASS    5.86s TestIngest_Matrix
+[82/1327]
+PASS    6.00s TestPackCompression_RepackAbortsOnDamagedCompressedData
+[83/1327]
+PASS    8.59s TestDirectPack_ManyPublishedPacksKeepLocatorBounded
+[84/1327]
+PASS    5.60s TestRepStructuredFallbackAndLifecycle
+[85/1327]
+PASS    5.13s TestBundleDeltaScale_MergeOneMillionChunks
+[86/1327]
+PASS    6.72s TestRepCodecNestedProduction
+[87/1327]
+PASS    6.40s TestPackCompression_AdaptivePolicyByDataClass
+[88/1327]
+PASS    5.55s TestBulkUpload_PublishesThroughCASAndIsIdempotent
+[89/1327]
+PASS    4.32s TestBulkFetch_ServerSideFailures
+[90/1327]
+PASS    4.50s TestRepMerkleVirtualSectionReuse
+[91/1327]
+PASS    3.23s TestAuthorityReplicationToNewAndOldDestinations
+[92/1327]
+PASS    0.93s TestBundleDelta_ChainOfDeltasAndOutOfOrderFailure
+PASS    0.61s TestBundleDelta_CorruptBaseReferenceFailsThenConverges
+PASS    0.59s TestBundleDelta_ExportDeterministicAndIndependentOfPhysicalRepresentation
+PASS    0.61s TestBundleDelta_ExportImportRestoresTargetOverBase
+PASS    0.03s TestBundleDelta_FormatValidSyntheticDelta
+PASS    0.34s TestBundleDelta_ImportIsIdempotentAndNeverTouchesNamespaceOrFormat
+PASS    0.80s TestBundleDelta_ParserMutationMatrix
+PASS    0.41s TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting
+PASS    0.00s TestBundleDelta_PlannerClassification
+PASS    0.31s TestBundleDelta_SemanticsMetadataNewObjectsDeletesAndSameSnapshot
+PASS    0.39s TestBundleLife_BundleSurvivesSourceDeletionAndGC
+PASS    0.22s TestBundle_CLI
+PASS    1.32s TestBundle_CorruptBundleNeverPublishesSnapshot
+PASS    0.17s TestBundle_CorruptExistingChunkIsRepairedFromVerifiedPayload
+PASS    0.64s TestBundle_ExportIndependentOfPhysicalRepresentation
+[107/1327]
+PASS    0.76s TestRepManagedNestedPublicationFloor
+SKIP    0.00s TestRepMeasure
+PASS    0.24s TestRepModesAndFallbackCounters
+PASS    0.17s TestRepNegativeFormatControls
+SKIP    0.00s TestRepOCIRealRegistryComposition
+PASS    0.05s TestRepOversizedRootReadBounded
+PASS    0.34s TestRepPackedCopyFallback
+PASS    0.00s TestRepReconstructFraming
+PASS    0.00s TestRepRootFormatAndCorruptionMatrix
+PASS    0.00s TestRepRootNamesAndTemp
+PASS    0.00s TestRepSharedChildHeightIndependentOfRootOrder
+PASS    0.00s TestRepSharedChildStoredOnceAndLiveness
+PASS    0.31s TestRepSharedVirtualComponentAcrossRoots
+PASS    0.79s TestRepSmokeSQLiteRoundTrip
+PASS    0.32s TestRepSnapshotRetainsRepresentation
+PASS    0.27s TestRepSourceCorruptionClassified
+PASS    0.22s TestRepStatsFields
+PASS    0.16s TestRepStreamWriterBatching
+PASS    0.77s TestRepStructuredCumulativeModelCompatibility
+PASS    0.74s TestRepStructuredLabWireFidelity
+PASS    0.01s TestRepStructuredLayoutDetachesPageBacking
+PASS    0.00s TestRepStructuredNodeItemTotalOverflow
+PASS    0.26s TestRepStructuredPreallocationAndRecipeGuards
+PASS    0.74s TestRepStructuredPrefixExpansionBudget
+PASS    0.36s TestRepStructuredRetainedMetadataBudget
+PASS    0.00s TestRepStructuredZstdAdmissionBounds
+PASS    0.00s TestRepStructuredZstdWindowBeforeAllocation
+PASS    0.11s TestRepSubstrateStoreRoundTrip
+[135/1327]
+PASS    3.20s TestAuthorityEquivPhysicalLayouts
+[136/1327]
+PASS    3.68s TestTier_MoveCrashPoints
+[137/1327]
+PASS    4.23s TestRepS3TranscriptIdenticalInEveryMode
+[138/1327]
+PASS    0.48s TestConditionalPutHTTP_IfMatch_MultipartCurrentETag
+PASS    0.02s TestConditionalPutHTTP_IfMatch_QuotedUnquotedAndCaseInsensitive
+PASS    0.03s TestConditionalPutHTTP_IfNoneMatchStar_CreateThenRejectWith412
+PASS    0.02s TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected
+PASS    0.03s TestConditionalPutHTTP_UnconditionalPUTUnaffectedByM8F
+PASS    0.02s TestConditionalPutHTTP_WhitespaceAroundStarTolerated
+PASS    0.02s TestConditionalPut_ConcurrentCreateOnly_ExactlyOneWinner
+PASS    0.03s TestConditionalPut_ConcurrentIfMatchSameOldETag_ExactlyOneWinner
+PASS    0.03s TestConditionalPut_IfMatch_ABASameETagAfterDeleteRecreateSucceeds
+PASS    0.03s TestConditionalPut_IfMatch_AbsentKeyFails
+PASS    0.02s TestConditionalPut_IfMatch_HistoricalETagDoesNotMatchCurrent
+PASS    0.03s TestConditionalPut_IfMatch_MatchingETagSucceeds
+PASS    0.02s TestConditionalPut_IfMatch_MismatchingETagFails
+PASS    0.06s TestConditionalPut_IfMatch_SpeculativeCASBecomesGCCollectibleAfterFailure
+PASS    0.03s TestConditionalPut_IfNoneMatchStar_AbsentKeySucceeds
+PASS    0.02s TestConditionalPut_IfNoneMatchStar_DeletedKeySucceeds
+PASS    0.02s TestConditionalPut_IfNoneMatchStar_ExistingKeyFails
+PASS    0.03s TestConditionalPut_IfNoneMatchStar_FailedWriteLeavesContentMetadataAndVersionsUnchanged
+PASS    0.02s TestConditionalPut_StaleIfMatchLosesAfterDeleteRecreate
+PASS    0.03s TestConditionalPut_StaleIfMatchLosesAfterInterveningOrdinaryPut
+PASS    0.00s TestContentMD5_CoexistsWithValidCRC32
+PASS    0.02s TestContentMD5_FailedDigestLeavesNoVisibleObjectOverRealHTTP
+PASS    0.00s TestContentMD5_MalformedBase64RejectedAsInvalidDigest
+PASS    0.00s TestContentMD5_MismatchedRejectedAsBadDigest
+PASS    0.00s TestContentMD5_MissingHeaderUnchangedBehavior
+PASS    0.00s TestContentMD5_ValidAccepted
+PASS    0.02s TestContentMD5_ValidPUTOverRealHTTPSucceedsAndETagUnaffected
+PASS    0.00s TestContentMD5_WrongLengthDecodedDigestRejectedAsInvalidDigest
+PASS    0.03s TestCopyObjectHTTP_SourceConditionMalformedRejected
+PASS    0.03s TestCopyObjectHTTP_SourceIfMatch_MatchSucceeds
+PASS    0.01s TestCopyObjectHTTP_SourceIfMatch_MismatchFailsWith412
+PASS    0.03s TestCopyObjectHTTP_SourceIfMatch_SupersededHistoricalETagFails
+PASS    0.04s TestCopyObjectHTTP_SourceIfMatch_WithMetadataReplaceDirective
+PASS    0.04s TestCopyObjectHTTP_SourceIfNoneMatch_MatchFailsWith412
+PASS    0.03s TestCopyObjectHTTP_SourceIfNoneMatch_MismatchSucceeds
+PASS    0.03s TestCopyObject_CrossBucket
+PASS    0.06s TestCopyObject_DestinationGetsNewManifestIdentityAndTimestamp
+PASS    0.03s TestCopyObject_MetadataDirectiveCopyPreservesSourceMetadata
+PASS    0.07s TestCopyObject_MetadataDirectiveReplaceUsesNewMetadataZeroNewChunkBytes
+PASS    0.02s TestCopyObject_MissingDestinationBucket
+PASS    0.01s TestCopyObject_MissingSource
+PASS    0.03s TestCopyObject_OverwritesExistingDestination
+PASS    0.31s TestCopyObject_SameBucketZeroNewCASChunkBytes
+PASS    0.04s TestCopyObject_SourceConditionUsesAtomicallyCapturedRevision
+PASS    0.08s TestCopyObject_TrickySourceKeys
+PASS    0.05s TestCrash_AfterAck
+PASS    0.02s TestCrash_AfterChunksBeforeManifest
+PASS    0.03s TestCrash_AfterJournalSyncBeforeResponse
+PASS    0.03s TestCrash_AfterJournalWriteBeforeSync
+PASS    0.03s TestCrash_AfterManifestBeforeJournal
+PASS    1.23s TestRepack_ControlledUtilizationMatrix
+PASS    0.12s TestCrash_CopyObjectAfterJournalSyncIsDurable
+PASS    0.06s TestCrash_CopyObjectReplaceBeforeJournalLeavesOldState
+PASS    0.30s TestRepack_CorruptPrimaryFallsBackToDuplicate
+PASS    0.01s TestCrash_DuringChunkStaging
+PASS    0.78s TestRepack_DuplicatePackedLocations
+PASS    0.49s TestRepack_FullyRedundantPackRemovedByGC
+PASS    0.04s TestCrash_DuringPartialJournalFrame
+PASS    0.38s TestRepack_GCCrashDuringDeadPackRemoval
+PASS    0.03s TestCrash_JournalReplay_HistoryRecordTypesDeterministic
+PASS    0.36s TestRepack_GCReportsAndRemovesDeadPacks
+PASS    0.56s TestCrash_Restart_MultipartOverwritePreviousVersionPreserved
+PASS    0.30s TestRepack_LiveDataSpanningPacksAndMultipleOutputs
+PASS    0.03s TestCrash_SyncFailureRecoveryIsHonest
+PASS    0.68s TestRepack_LooseCopyCountsAsSurvivingCopy
+PASS    0.13s TestRepack_NoPacksAndLooseOnlyStores
+PASS    0.25s TestDedup_EditedObjectReuseBeatsFixedSizeChunking
+PASS    0.26s TestRepack_RefusesUnsafeLiveSet
+PASS    0.11s TestRepack_RefusesWhileStoreInUse
+PASS    0.29s TestDedup_IdenticalObjectReuseAcrossBuckets
+PASS    0.02s TestRepack_RejectsBadOptions
+PASS    0.54s TestDedup_IdenticalObjectReuseAcrossKeys
+PASS    0.97s TestRepack_RespectsEveryLiveRootType
+PASS    0.34s TestRepack_StatsExposePackLiveness
+PASS    0.01s TestDeleteBucket_EmptySucceeds
+PASS    0.03s TestRepairFromPeer_IncompatiblePeerFailsClearly
+[153/1327]
+PASS    0.01s TestDeleteBucket_MissingIsNoSuchBucket
+PASS    0.03s TestDeleteBucket_NonEmptyFails
+PASS    0.01s TestDeleteBucket_SurvivesRestartAndRecreate
+PASS    0.04s TestDeleteObject_ExistingThenMissingIdempotent
+PASS    0.01s TestDeleteObject_MissingBucketErrors
+PASS    0.05s TestDeleteObject_SharedChunksRemainReadableThroughAnotherObject
+PASS    0.02s TestDeleteObject_SurvivesRestart
+PASS    0.23s TestDeleteObjects_BucketVersionAndBounds
+PASS    0.07s TestDeleteObjects_HistoryPruneGC
+PASS    0.03s TestDiff_CLI_SameServer_EndToEnd
+PASS    0.18s TestDirSync_AggregateStatsExactMatchSumOfPerFileStats
+PASS    0.00s TestDirSync_DeterministicOrdering
+PASS    0.04s TestDirSync_DuplicateLookingPathsRemainDistinct
+PASS    0.01s TestDirSync_EmptyDirectory
+PASS    0.03s TestDirSync_ExistingIdenticalRemoteFile
+PASS    0.05s TestDirSync_FileDisappearsBeforeBeingProcessed
+PASS    0.04s TestDirSync_HiddenDotPrefixedFiles
+PASS    0.04s TestDirSync_LocalDeletionDoesNotDeleteRemoteObject
+PASS    0.08s TestDirSync_NestedDirectories
+PASS    0.04s TestDirSync_NewlyAddedFileAfterInitialSync
+PASS    0.05s TestDirSync_OneFile
+PASS    0.07s TestDirSync_OneModifiedFileAmongMany
+PASS    0.10s TestDirSync_PartialFailureMultipleFailureModesSuccessfulSiblingsRetained
+PASS    0.05s TestDirSync_PrefixNormalization
+PASS    0.00s TestDirSync_PrintSummaryFormat
+PASS    0.11s TestDirSync_RemoteConflictForOneFileOthersSucceed
+PASS    0.00s TestDirSync_ResultOKReflectsFailureCount
+PASS    0.17s TestDirSync_ResumeAfterPartialPriorUploadOfOneFile
+PASS    0.08s TestDirSync_SameBasenameInDifferentDirectories
+PASS    0.09s TestDirSync_ServerRestart
+PASS    0.07s TestDirSync_SourcePathTrailingSeparator
+PASS    0.04s TestDirSync_SpacesInPaths
+PASS    0.03s TestDirSync_SpecialFileSkipped
+PASS    0.03s TestDirSync_SymlinkSkippedNotFollowed
+PASS    0.04s TestDirSync_UnicodePaths
+[249/1327]
+PASS    2.63s TestAuthorityBaseRetentionAfterNamespacePruning
+[250/1327]
+PASS    0.64s TestReplicate_FailureLeavesUploadedChunksReusable_RerunTransfersOnlyRemaining
+PASS    0.02s TestReplicate_IncompatibleDestinationFailsClearly
+PASS    0.02s TestReplicate_IncompatibleSourceFailsClearly
+PASS    0.30s TestReplicate_Negotiate_AllMissing
+PASS    0.68s TestReplicate_Negotiate_MixedPartialReuseExactStats
+PASS    0.35s TestReplicate_Negotiate_ZeroMissingFullReuse
+PASS    0.01s TestReplicate_NewEndpointsRejectUnauthenticatedRequests
+PASS    0.07s TestReplicate_OrdinaryS3AndM6SyncUnaffected
+PASS    0.54s TestReplicate_ParallelTransferFasterThanSequentialUnderLatency
+PASS    0.41s TestReplicate_PartialAndZeroMissing_WithWorkers
+PASS    0.40s TestReplicate_ResumeAfterPartialPriorUpload
+PASS    0.01s TestReplicate_SourceChunkDownload_CorruptChunkOnDiskDetected
+PASS    0.01s TestReplicate_SourceChunkDownload_MalformedDigest
+PASS    0.01s TestReplicate_SourceChunkDownload_MissingChunk
+PASS    0.01s TestReplicate_SourceChunkDownload_Valid
+PASS    0.04s TestReplicate_SourceDescriptor_EmptyObjectEndToEnd
+PASS    0.07s TestReplicate_SourceDescriptor_MetadataAndContentTypePreserved
+PASS    0.01s TestReplicate_SourceDescriptor_MissingBucket
+PASS    0.01s TestReplicate_SourceDescriptor_MissingObject
+PASS    0.01s TestReplicate_SourceDescriptor_MissingQueryParamsRejected
+PASS    0.03s TestReplicate_SourceDescriptor_ObjectExists
+PASS    0.13s TestReplicate_SourceDescriptor_WeirdKeyCharacters
+PASS    0.38s TestReplicate_SourceMissingOneChunkAmongMany
+PASS    0.12s TestReplicate_SourceOverwrittenDuringReplicationDoesNotProduceMixedRevision
+PASS    0.39s TestReplicate_SourceReturnsWrongDigestAmongMany
+PASS    0.16s TestReplicate_SourceServerRestartBetweenDescriptorAndChunkFetch
+PASS    0.14s TestReplicate_StatsExactAccounting
+PASS    0.08s TestReplicate_Stats_DuplicateChunkReferencesNotDoubleCounted
+PASS    0.28s TestReplicate_SuccessfulTransferCommitsExactlyOnce
+PASS    0.01s TestReplicate_UnknownExtensionPathStillNotBucketParsed
+PASS    0.05s TestReplicate_WorkersGreaterThanChunkCount
+PASS    0.00s TestResolveTransferWorkers_ZeroMeansDefault
+PASS    0.04s TestRestore_AfterCurrentObjectDeletion
+PASS    0.04s TestRestore_CorruptedHistoricalManifest_NoPartialMutation
+PASS    0.03s TestRestore_InvalidVersionID
+PASS    0.06s TestRestore_MissingHistoricalChunk_NoPartialMutation
+PASS    0.04s TestRestore_WrongBucketOrKey
+[287/1327]
+PASS    4.59s TestBundleScale_PlannerOneMillionChunks
+[288/1327]
+PASS    2.93s TestRepCodecUnsupportedFallsBack
+[289/1327]
+PASS    0.37s TestPack_CompactPreservesLogicalState
+PASS    0.10s TestPack_CompactRefusesWhileStoreInUse
+PASS    0.10s TestPack_DryRunAndZeroCandidatesWriteNothing
+PASS    0.06s TestPack_DuplicateCopiesCorruptionPreference
+PASS    0.24s TestPack_GCNeverTouchesPacks
+PASS    0.35s TestPack_LogicalFeaturesOverPackedStore
+PASS    0.36s TestPack_MalformedPacksRejectedSafely
+PASS    0.21s TestPack_MixedManifestSpansLooseAndPacked
+PASS    0.13s TestPack_PayloadAndRecordHeaderDamageFailSafely
+PASS    0.00s TestPack_PlanBatchesBoundaries
+PASS    0.17s TestPack_RepairReplacesCorruptPackedChunkFromPeer
+PASS    0.25s TestPack_StatsAndVerifyReportPhysicalLayout
+PASS    0.12s TestPack_StoreFormatVersionGate
+PASS    0.06s TestPack_UnpublishedArtifactsIgnored
+PASS    0.00s TestParseCopySource_TrickyKeys
+PASS    0.00s TestPayloadMode_ClassifySigV4Payload
+PASS    0.01s TestPayloadMode_ExcludedModesRejectCleanly
+PASS    0.01s TestPayloadMode_FixedSHA256_CorrectDigestAndBodyAccepted
+PASS    0.00s TestPayloadMode_FixedSHA256_EmptyBodyCorrectDigestAccepted
+PASS    0.01s TestPayloadMode_FixedSHA256_EmptyBodyDigestWithNonEmptyBodyRejected
+PASS    0.00s TestPayloadMode_FixedSHA256_WrongDigestRejected
+PASS    0.01s TestPayloadMode_LowercaseOrMisspelledSentinelsRejected
+PASS    0.01s TestPayloadMode_MalformedDigestVariantsRejected
+PASS    0.05s TestPayloadMode_PresignedBehaviorUnchanged
+PASS    0.01s TestPayloadMode_StreamingHMACTrailerRejected
+PASS    0.01s TestPayloadMode_UnsignedPayload_ModifiedBodyAloneDoesNotInvalidateSignature
+PASS    0.00s TestPayloadMode_UnsignedPayload_TamperedAuthorizationRejected
+PASS    0.01s TestPayloadMode_UnsignedPayload_ValidSigButWrongCRC32Fails
+PASS    0.02s TestPayloadMode_UnsignedPayload_ValidSigButWrongContentMD5Fails
+PASS    0.01s TestPayloadMode_UnsignedPayload_ValidSignedPUTAccepted
+PASS    0.01s TestPresignAuth_CaseChangedParamNameNotAuthenticated
+PASS    0.01s TestPresignAuth_DuplicateQueryParameterRejected
+PASS    0.01s TestPresignAuth_ExactExpiryBoundaryAccepted
+PASS    0.03s TestPresignAuth_ExpiresBoundsAccepted
+PASS    0.10s TestPresignAuth_ExpiresMalformedRejected
+PASS    0.01s TestPresignAuth_ExtraUnsignedQueryParamAfterGenerationRejected
+PASS    0.01s TestPresignAuth_FutureDateBeyondSkewRejected
+PASS    0.00s TestPresignAuth_HostNotSignedRejected
+PASS    0.01s TestPresignAuth_ImmediatelyPastExpiryRejected
+PASS    0.01s TestPresignAuth_LongLivedButUnexpiredAccepted
+PASS    0.01s TestPresignAuth_MalformedCredentialScopeRejected
+PASS    0.02s TestPresignAuth_MalformedTimestampRejected
+PASS    0.06s TestPresignAuth_MissingRequiredParameterRejected
+PASS    0.01s TestPresignAuth_MissingSignatureFallsThroughToHeaderPathAndFails
+PASS    0.02s TestPresignAuth_ModifiedBucketAfterGenerationRejected
+PASS    0.01s TestPresignAuth_ModifiedHostAfterGenerationRejected
+PASS    0.02s TestPresignAuth_ModifiedPathAfterGenerationRejected
+PASS    0.01s TestPresignAuth_ModifiedSignedQueryParameterRejected
+PASS    0.01s TestPresignAuth_SecurityTokenRejected
+PASS    0.02s TestPresignAuth_TamperedSignatureRejected
+PASS    0.02s TestPresignAuth_TrickyPathsAccepted
+PASS    0.01s TestPresignAuth_UnsupportedAlgorithmRejected
+PASS    0.02s TestPresignAuth_ValidAccepted
+PASS    0.01s TestPresignAuth_ValidPUTAccepted
+PASS    0.02s TestPresignAuth_WrongAccessKeyRejected
+PASS    0.01s TestPresignAuth_WrongRegionRejected
+PASS    0.02s TestPresignAuth_WrongServiceRejected
+PASS    0.00s TestPresign_BucketAndKeyRequired
+PASS    0.00s TestPresign_ExpiresOutOfRangeRejectedAtGenerationTime
+PASS    0.07s TestPresign_GeneratedURLPassesServerVerifier
+PASS    0.00s TestPresign_NeverLogsOrEmbedsSecretKey
+PASS    0.06s TestPresign_TrickyKeysRoundTripThroughServerVerifier
+PASS    0.00s TestPresign_UnsupportedMethodRejected
+PASS    0.03s TestPresignedGET_TamperedSignatureRejectedOverRealHTTP
+PASS    0.02s TestPresignedPUT_ExpiredURLLeavesNoVisibleObject
+PASS    0.02s TestPresignedPUT_MissingDestinationBucketLeavesNoMutation
+PASS    0.01s TestPresignedPUT_TamperedSignatureLeavesNoVisibleObject
+PASS    0.02s TestProbe
+PASS    0.18s TestPrune_ApplyBatchedFramesMatchReplay
+PASS    1.17s TestPrune_CrashBoundaries
+PASS    0.04s TestPrune_DeletedBucketHistoryIsPruneable
+PASS    0.06s TestPrune_DryRunMakesNoChange
+PASS    0.03s TestPrune_ExclusiveStoreOwnership
+PASS    0.42s TestPrune_PackedHistoryReclaimedByRepack
+PASS    0.00s TestPrune_ParseRetentionAge
+PASS    0.07s TestPrune_PlanScopeAndValidation
+PASS    0.34s TestPrune_ReplayRejectsMalformedAndToleratesAbsent
+PASS    0.01s TestPrune_SelectTable
+PASS    0.16s TestPrune_SharedAndRestoredRootsStayPinned
+[368/1327]
+PASS    0.88s TestRepair_ConcurrentGetOnUnrelatedObjectDuringRepair
+PASS    0.10s TestRepair_CorruptChunkContentMismatchDetected
+PASS    0.30s TestRepair_CorruptExistingChunkAtomicallyReplaced
+PASS    0.18s TestRepair_HealthyChunkNeverRewritten
+PASS    0.03s TestRepair_HealthyStoreNoFindings
+PASS    0.66s TestRepair_HighWorkerCount_RaceAndCorrectness
+PASS    0.20s TestRepair_LocalRestartResumesNaturally
+PASS    0.09s TestRepair_MissingChunkDetected
+PASS    0.22s TestRepair_MissingChunkRestoredEndToEnd
+PASS    1.14s TestRepair_MixedCorruptAndMissing_Concurrent
+PASS    0.11s TestRepair_MultipartInProgressPartChunkRepaired
+PASS    0.23s TestRepair_MultipleCorruptChunksDetected
+PASS    0.70s TestRepair_OnePeerFailureAmongManySuccesses_Concurrent
+PASS    0.21s TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly
+PASS    0.17s TestRepair_PeerRestartBetweenAttempts
+PASS    0.22s TestRepair_RestartThenGetExact
+PASS    0.24s TestRepair_ResumeAfterPartialRunOnlyFetchesRemaining
+PASS    0.13s TestRepair_RetainedHistoricalVersionChunkRepaired
+PASS    0.10s TestRepair_SharedCorruptDigestAffectsAllReferencingObjects
+PASS    0.05s TestRepair_SharedDigestSingleRepairJob_Concurrent
+PASS    0.21s TestRepair_StatsExactAccounting
+PASS    0.02s TestRepair_UnreachableOrphanChunkNeverTriggersRepair
+[390/1327]
+PASS    0.11s TestPrune_SnapshotSurvivesPruneThenGC
+PASS    0.04s TestPrune_StoreFormatVersions
+PASS    0.03s TestRange_EmptyObjectUnsatisfiable
+PASS    0.02s TestRange_MalformedHeaderIgnoredServesFullObject
+PASS    0.02s TestRange_MultiRangeUnsupportedIgnoredServesFullObject
+PASS    0.02s TestRange_ReadsOnlyOverlappingChunks
+PASS    0.02s TestRange_Unsatisfiable
+PASS    0.07s TestRange_VariousForms
+PASS    0.32s TestReachability_CoversAllThreeRootCategories
+PASS    0.64s TestReachability_DetectsCorruptionAmongLiveRoots
+PASS    0.30s TestRepAnalysisBudgets
+PASS    0.16s TestRepBundleBackfillFailureAndCLI
+PASS    0.44s TestRepBundleBackfillFullDeltaAndReuse
+PASS    0.00s TestRepCatalogAmbiguityAndOrderIndependence
+PASS    0.00s TestRepChildCausePreserved
+PASS    0.11s TestRepCodecAnalysisDepth
+PASS    0.28s TestRepCodecConcurrentFirstUse
+SKIP    0.00s TestRepCodecEconomics
+PASS    0.29s TestRepCodecLabWireFidelity
+SKIP    0.00s TestRepCodecLargeStreaming
+PASS    0.02s TestRepCodecMetadataCountsBounded
+PASS    0.41s TestRepConcurrentPutsAndReads
+PASS    0.46s TestRepCrashAfterFormatRaiseBeforeFirstRoot
+PASS    0.00s TestRepCyclesTerminate
+PASS    0.00s TestRepDepthConsistentAcrossSubsystems
+PASS    0.20s TestRepGitHostileFallback
+PASS    0.09s TestRepGitLabWireAndReaderAt
+SKIP    0.00s TestRepGitRealReexports
+PASS    0.01s TestRepGitRecipeBoundaries
+PASS    0.73s TestRepLateCreationAndRetirementLeaveNamespaceUntouched
+PASS    0.00s TestRepManagedComponentLengthOverflow
+PASS    1.10s TestRepManagedCumulativeCompatibility
+PASS    0.08s TestRepManagedDependencyAndWriterFailures
+[423/1327]
+PASS    0.35s TestInspect_ManyChunks_MinAvgMaxExact
+PASS    0.02s TestInspect_ObjectUniqueInStore_SolelyReachable
+PASS    0.03s TestInspect_OneChunk
+PASS    0.01s TestInspect_PartialChunkSharing_ExactSplit
+PASS    0.01s TestInspect_ReadOnly_NoStoreMutation
+PASS    0.01s TestInspect_RepeatedChunkIDs_ExactDedup
+PASS    0.02s TestInspect_RetainedVersionSharing
+PASS    0.02s TestInspect_SnapshotPinnedSharing_SurvivesLiveDeletion
+PASS    0.02s TestInspect_TwoKeysIdenticalContent_FullySharedElsewhere
+PASS    0.02s TestInspect_WeirdKeys
+PASS    0.01s TestJournal_CRC32C
+PASS    0.01s TestJournal_CorruptionInEarlierFrameFails
+PASS    0.01s TestJournal_CreateBucketReplay
+PASS    0.01s TestJournal_DeleteBucketReplay
+PASS    0.03s TestJournal_DeleteObjectRootReplay
+PASS    0.00s TestJournal_FrameEncodeDecodeRoundTrip
+PASS    0.01s TestJournal_GenuinelyUnknownRecordTypeStillFailsClosed
+PASS    0.00s TestJournal_IncompleteFinalFrameIsTornTail
+PASS    0.02s TestJournal_InvalidVersionAndTypeRejected
+PASS    0.04s TestJournal_MixedCreatePutDeleteRecreateSequence
+PASS    0.03s TestJournal_MultiFrameReplay
+PASS    0.01s TestJournal_PayloadLengthBound
+PASS    0.03s TestJournal_PoisonedAfterWriteFailure
+PASS    0.04s TestJournal_PutObjectRootReplay
+PASS    0.03s TestJournal_SequenceEnforcement
+PASS    1.55s TestLayoutMatrix_RepairFindingsClassifyMissingAndCorrupt
+PASS    1.01s TestLayoutMatrix_RestartDurabilityAndUncleanReopen
+PASS    0.01s TestListBuckets_EmptyNonEmptyOrder
+PASS    0.01s TestListMultipartUploads_Delimiter_Dedup
+PASS    0.02s TestListMultipartUploads_Delimiter_DeterministicOrdering
+PASS    0.01s TestListMultipartUploads_Delimiter_DocumentedFixture
+PASS    0.02s TestListMultipartUploads_Delimiter_EmptyPreservesFlatListing
+PASS    0.01s TestListMultipartUploads_Delimiter_MultiCharacter
+PASS    0.01s TestListMultipartUploads_Delimiter_NestedGrouping
+PASS    0.01s TestListMultipartUploads_Delimiter_NoMatch
+PASS    0.02s TestListMultipartUploads_Delimiter_UnicodeAndRepeatedSlashes
+PASS    0.02s TestListMultipartUploads_Pagination_CommonPrefixBoundary
+PASS    0.02s TestListMultipartUploads_Pagination_CompletedAndAbortedAreAbsent
+PASS    0.03s TestListMultipartUploads_Pagination_MarkerNearCommonPrefixBoundary
+PASS    0.07s TestListMultipartUploads_Pagination_Matrix
+PASS    0.01s TestListMultipartUploads_Pagination_NoUploads
+PASS    0.01s TestListMultipartUploads_Pagination_OneUpload
+PASS    0.03s TestListMultipartUploads_Pagination_PrefixMarkerPositions
+PASS    0.01s TestListMultipartUploads_Pagination_RestartStableOrdering
+PASS    0.01s TestListMultipartUploads_Pagination_SameKeyBehindGroup
+PASS    0.01s TestListMultipartUploads_Pagination_SameKeyMultipleUploadIDs_PageSplit
+PASS    0.02s TestListMultipartUploads_Prefix_Basic
+PASS    0.02s TestListMultipartUploads_Prefix_PartialKeyBoundary
+PASS    0.05s TestListMultipartUploads_Prefix_UnusualCharacters
+PASS    0.02s TestListMultipartUploads_Prefix_WithPagination
+PASS    0.02s TestListMultipartUploads_ReadOnly_NoStorageMutation
+PASS    0.60s TestListMultipartUploads_Scale_1200Traversal
+PASS    0.01s TestListMultipartUploads_XMLSpecialCharactersAndLongKeys
+PASS    0.02s TestListObjectsV2_DefaultAndLargeMaxKeysClamped
+PASS    0.01s TestListObjectsV2_Empty
+PASS    0.09s TestListObjectsV2_EncodingTypeURL
+PASS    0.02s TestListObjectsV2_InvalidContinuationToken
+PASS    0.05s TestListObjectsV2_LexicalOrderingAndUnicode
+PASS    0.05s TestListObjectsV2_MaxKeysOnePagination
+PASS    0.03s TestListObjectsV2_MaxKeysZero
+PASS    0.07s TestListObjectsV2_PaginationNoDuplicateOrSkipWithDelimiter
+PASS    0.03s TestListObjectsV2_PrefixDelimiterCommonPrefixes
+PASS    0.04s TestListObjectsV2_XMLEscaping
+PASS    0.06s TestListParts_Pagination
+PASS    0.01s TestListParts_Pagination_InvalidQueryValues
+PASS    0.04s TestListParts_Pagination_OverwrittenPartNoDuplicate
+PASS    0.04s TestListParts_Pagination_RestartThenPaginate
+PASS    0.01s TestListSourceObjects_EmptyBucket
+PASS    1.51s TestListSourceObjects_ExactlyPageLimit
+PASS    0.03s TestListSourceObjects_MultipleDeterministicOrder
+PASS    0.02s TestListSourceObjects_OneObject
+PASS    0.04s TestListSourceObjects_PrefixFiltering
+PASS    0.03s TestListSourceObjects_WeirdKeys
+SKIP    0.00s TestLocalityBench_CompactOverhead
+SKIP    0.00s TestLocalityBench_RunWindows
+[498/1327]
+PASS    0.74s TestDirectPackLife_AbortedMultipartLeavesGCableDeadPacks
+PASS    0.28s TestDirectPackLife_BodyReadFailureCleansStagingKeepsPublishedPacks
+PASS    0.68s TestDirectPackLife_RepackCompressesRawDirectPacksPreservingOrder
+PASS    0.40s TestDirectPack_AWSChunkedUsesDecodedSize
+PASS    0.21s TestDirectPack_AdaptiveCompressionOptionStillValidPackV1
+PASS    0.02s TestDirectPack_BuilderAbortRemovesStaging
+PASS    0.01s TestDirectPack_BuilderEmitsSpecPackBytes
+PASS    0.60s TestDirectPack_MultiplePacksAndPackSizes
+PASS    0.30s TestDirectPack_RecordOrderFollowsObjectAndRepeatsWriteOnce
+PASS    0.02s TestDirectPack_SinkRepeatedDigestWrittenOnce
+PASS    0.51s TestDirectPack_TailBelowMinimumStaysLoose
+PASS    0.04s TestDryRun_CLI_SingleObject_EndToEnd
+PASS    0.68s TestDryRun_PredictionMatchesActualExecution
+PASS    0.14s TestDryRun_PredictionMatchesActualExecution_Recursive
+PASS    0.07s TestDryRun_ReadOnly_FullStoreFingerprintUnchanged
+PASS    0.02s TestDryRun_Recursive_EmptyPrefix
+PASS    0.06s TestDryRun_Recursive_PartialConflicts
+PASS    0.10s TestDryRun_Recursive_SeveralObjectsAndCrossObjectReuse
+[516/1327]
+PASS    1.14s TestLocality_CompactLayoutsEndToEnd
+PASS    0.70s TestLocality_DeterministicAcrossBuildOrder
+PASS    0.00s TestLocality_FirstReferenceRanking
+PASS    0.32s TestLocality_PackBoundariesAndTailFolding
+PASS    0.10s TestLocality_RebalanceSplitKeepsSourceOrderPerTier
+PASS    0.07s TestLocality_RepackCombinesPacksInPackOrderAndDedups
+PASS    0.11s TestLocality_RepackKeepsSurvivorsInSourceOrder
+PASS    0.21s TestLocality_RootObservationOrder
+PASS    0.07s TestLocality_SingleChunkEmptyAndSharedObjects
+SKIP    0.00s TestLocatorScale
+PASS    0.84s TestLocator_DifferentialAgainstReferenceMap
+PASS    0.19s TestLocator_PackedOnlyChunksDeduplicateAfterRestart
+PASS    0.14s TestLocator_PublishedLevelsStayBounded
+PASS    0.48s TestLocator_ReloadNeverExposesPartialIndex
+PASS    0.02s TestLocator_TableCases
+PASS    0.05s TestM8G_CredentialSeparation_Diff
+PASS    0.07s TestM8G_HostileAudit_CombinedFingerprint
+PASS    0.09s TestM8G_HostileAudit_NoMutatingHTTPMethods
+PASS    0.00s TestM8G_HostileEndpoint_MalformedDescriptorDoesNotPanic
+PASS    0.02s TestManifest_ByteSHA256MatchesJournalReference
+PASS    0.01s TestManifest_CorruptOrMissingDetected
+PASS    0.00s TestManifest_MetadataDeterministicOrdering
+PASS    0.03s TestManifest_RoundTrip
+PASS    0.00s TestModelAggregateByteReservationOverflow
+PASS    0.00s TestModelEmptyMembersStillVerifyDependencies
+PASS    0.07s TestModelNestedPublicationRaisesFloor
+PASS    0.59s TestModelOrdinaryPutCrashPublication
+[543/1327]
+PASS    0.49s TestP1C_SharedOpenerNeverDisturbsALiveWriter
+PASS    0.08s TestP1C_SharedReaderSurvivesSealByOwner
+PASS    0.08s TestP1C_SmallPutUsesSegmentAndSurvivesRestart
+SKIP    0.00s TestP1C_StoreLayerPutThroughput
+PASS    0.07s TestP1C_TierMoveAllSealsAndSkipsOpenSegments
+PASS    0.27s TestP1C_TierMoveCarriesInlineManifests
+PASS    0.01s TestP2_CacheClockKeepsReferencedEntries
+PASS    0.00s TestP2_CacheDisabledAndNilAreTransparent
+PASS    0.04s TestP2_CacheIsBoundedAndEvictsWithClock
+PASS    0.00s TestP2_CacheNameMismatchAndPurgeFence
+PASS    0.05s TestP2_CacheSingleFlightAndErrorsAreNotCached
+PASS    0.60s TestP2_CachedEntriesAreRevalidatedAgainstStorage
+PASS    0.32s TestP2_CachedManifestSurvivesSegmentSealAndRepack
+PASS    0.05s TestP2_ChunkCacheBoundedAndScanResistant
+PASS    0.35s TestP2_ChunkCacheNeverMasksCorruptionFromDiagnostics
+PASS    0.33s TestP2_ConcurrentFirstLoadsShareOneRead
+PASS    0.11s TestP2_ConditionalAndVersionSemanticsWithWarmCache
+PASS    0.15s TestP2_DamagedOrMissingManifestBeforeFirstLoad
+PASS    0.42s TestP2_IndexHandlesOffsetsBeyond32Bits
+PASS    0.05s TestP2_ListingUsesCachedManifestsWithoutFillingTheCache
+PASS    0.02s TestP2_LocateMatchesLinearScan
+PASS    0.12s TestP2_ManifestCacheIntegrityContract
+PASS    0.75s TestP2_ParseServedAgreesOnMutations
+PASS    0.04s TestP2_ParseServedMatchesEncodingJSON
+PASS    0.49s TestP2_PipeReaderCloseSemantics
+PASS    0.59s TestP2_PipeliningIsAdaptiveToActiveStreams
+PASS    0.00s TestP2_ServedManifestRejectsInvalid
+SKIP    0.00s TestP3_ChurnFixture
+SKIP    0.00s TestP3_HistoryFixture
+PASS    0.04s TestP3_JournalApplyErrorYieldsToJournalError
+SKIP    0.00s TestP3_MaintHelper
+PASS    0.24s TestP3_ManifestJudgementMatchesReference
+[575/1327]
+PASS    0.18s TestDryRun_SingleObject_AllChunksMissing
+PASS    0.13s TestDryRun_SingleObject_AllChunksPresent_AlreadyEquivalent
+PASS    0.03s TestDryRun_SingleObject_DestinationConflict
+PASS    0.03s TestDryRun_SingleObject_DuplicateChunkReferences
+PASS    0.02s TestDryRun_SingleObject_EmptyObject
+PASS    0.04s TestDryRun_SingleObject_PartialOverlap_ExactAccounting
+PASS    0.03s TestDryRun_SingleObject_WeirdKeys
+PASS    0.36s TestE2E_BinaryObject
+PASS    0.01s TestE2E_FailedPutNeverVisible
+PASS    0.04s TestE2E_FullLifecycle
+PASS    0.02s TestE2E_OverwriteThenRestart
+PASS    0.03s TestE2E_ZeroByteObject
+PASS    0.02s TestEnvCredentials_Inspect_ExplicitFlagOverridesWrongEnv
+PASS    0.02s TestEnvCredentials_Inspect_UsesEnvWhenFlagsOmitted
+PASS    0.05s TestEnvCredentials_Presign_UsesEnvWhenFlagsOmitted
+PASS    0.08s TestEnvCredentials_Replicate_FromToFlagsNeverFallBackToEnv_RealProcess
+PASS    0.03s TestEnvCredentials_Replicate_RegionFromEnvButFromToNeverFallBack
+PASS    0.05s TestEnvCredentials_Serve_AuthenticatesFromEnv
+PASS    0.00s TestEnvOverride_DefaultWhenBothAbsent
+PASS    0.00s TestEnvOverride_EmptyEnvIsASetOverride
+PASS    0.00s TestEnvOverride_EnvUsedWhenFlagAbsent
+PASS    0.00s TestEnvOverride_FlagExplicitWinsOverEnv
+PASS    0.00s TestEnvOverride_RegionDefaultWhenBothAbsent
+PASS    0.00s TestEnvOverride_UnsetEnvNeverOverridesExplicitFlagEitherWay
+PASS    0.00s TestEnvOverride_UsageStringNeverContainsEnvValue
+PASS    0.02s TestFetchRepairChunk_AuthFailureRejected
+PASS    0.01s TestFetchRepairChunk_MalformedDigestRejected
+PASS    0.01s TestFetchRepairChunk_OversizedResponseRejected
+PASS    0.02s TestFetchRepairChunk_PeerHasChunkSucceeds
+PASS    0.01s TestFetchRepairChunk_PeerMissingChunkFailsClearly
+PASS    0.01s TestFetchRepairChunk_TruncatedBytesRejected
+PASS    0.00s TestFetchRepairChunk_WrongBytesRejectedBeforePublication
+PASS    0.00s TestFirstTransferError_FallsBackToCancellationWhenNoGenuineError
+PASS    0.00s TestFirstTransferError_LowestIndexGenuineErrorWins
+PASS    0.00s TestFirstTransferError_NoErrorsReturnsNil
+PASS    0.26s TestFixtureImageEqualsBuildingInPlace
+PASS    0.00s TestForkNamespacesOverlap_BothWholeBucketOverlaps
+PASS    0.00s TestForkNamespacesOverlap_DeeplyNestedSiblingsDoNotOverlap
+PASS    0.00s TestForkNamespacesOverlap_DestNestedInsideSource
+PASS    0.00s TestForkNamespacesOverlap_EqualPrefixesOverlap
+PASS    0.00s TestForkNamespacesOverlap_SharedStringPrefixDifferentBoundaryDoesNotOverlap
+PASS    0.00s TestForkNamespacesOverlap_SiblingPrefixesDoNotOverlap
+PASS    0.00s TestForkNamespacesOverlap_SourceNestedInsideDest
+PASS    0.00s TestForkNamespacesOverlap_WholeBucketDestAlwaysOverlaps
+PASS    0.00s TestForkNamespacesOverlap_WholeBucketSourceAlwaysOverlaps
+PASS    0.07s TestFork_DeepVerifyGreenAfterFork
+PASS    0.05s TestFork_DestinationConflictOneObjectFailsOthersSucceed
+PASS    0.04s TestFork_DestinationDeletedAfterFork_SourceSurvives
+PASS    0.15s TestFork_DestinationEditedAfterFork_SourceUnchanged_OnlyNewChunksAdded
+PASS    0.06s TestFork_DestinationKeyCreatedConcurrentlyDuringOperationIsNotOverwritten
+PASS    0.04s TestFork_DestinationOnlyObjectSurvives
+PASS    0.03s TestFork_ETagContentEqualityAndIndependentLastModified
+PASS    0.01s TestFork_EmptySourceNamespace
+PASS    0.11s TestFork_GCPreservesBothNamespacesAfterDivergence
+PASS    0.38s TestFork_LargeMultiChunkObject_ZeroPayload
+PASS    0.03s TestFork_MetadataAndContentTypePreserved
+PASS    0.03s TestFork_OneObject_ZeroPayload
+PASS    0.04s TestFork_PrefixToPrefix_SameBucketNonOverlapping
+PASS    0.21s TestFork_RepairComposesAcrossSharedCorruptChunk
+PASS    0.10s TestFork_SeveralObjectsSharingChunks_ZeroPayload
+PASS    0.04s TestFork_SourceDeletedAfterFork_DestinationSurvives
+PASS    0.03s TestFork_SourceEditedAfterFork_DestinationUnchanged
+PASS    0.05s TestFork_SourceObjectChangesAfterListingBeforeFetch_ForksOneCleanRevisionNotMixed
+PASS    0.04s TestFork_SourceObjectDisappearsBetweenListingAndFetch_ReportsFailureContinues
+PASS    0.12s TestFork_UnrelatedObjects_ZeroPayload
+PASS    0.06s TestFork_WeirdKeysUnicodePercentHashQuestionSpacesRepeatedSlashesPreserved
+PASS    0.04s TestFork_WholeBucketToWholeBucket_DifferentBuckets
+PASS    0.75s TestGC_AbortedMultipartBecomesCollectible
+PASS    0.78s TestGC_AdversarialMatrix_K1toK5
+PASS    0.04s TestGC_DryRunDeletesNothing
+PASS    0.01s TestGC_ExclusivityRefusesWhileStoreInUse
+PASS    0.06s TestGC_InterruptedSweep_K6
+PASS    0.05s TestGC_RefusesOnCorruptLiveRoot_K7
+PASS    0.05s TestGetBucketLocation
+PASS    0.03s TestGetObject_MetadataAndContentTypeRoundTrip
+PASS    0.01s TestHeadBucket_PresentMissing
+PASS    0.03s TestHeadObject_HeadersNoBody
+PASS    0.01s TestHeadObject_Missing
+PASS    0.43s TestIngestCrash_Matrix
+PASS    0.26s TestIngest_StreamsLazily
+PASS    0.03s TestInspect_CLI_EndToEnd
+PASS    0.02s TestInspect_ChunksListing_OffsetsAndDigestsExact
+PASS    0.00s TestInspect_ChunksListing_TruncatedByDefault
+PASS    0.02s TestInspect_CopyObjectSharing
+PASS    0.02s TestInspect_CurrentVersionSemantics
+PASS    0.02s TestInspect_DeletionChangesReachabilityCorrectly
+PASS    0.02s TestInspect_EmptyObject
+PASS    0.03s TestInspect_ForkSharing_BeforeAndAfter
+PASS    0.03s TestInspect_ForkThenLocalizedMutation_HistoricalRootStillShares
+PASS    0.03s TestInspect_GCDoesNotChangeValidReportedSemantics
+[665/1327]
+PASS    0.63s TestPackCompression_MixedObjectReadsAndRanges
+PASS    0.14s TestPackCompression_MixedRepresentationsOfOneChunk
+PASS    0.29s TestPackCompression_PhysicalAccounting
+PASS    0.03s TestPackCompression_RecordIndexCodecDisagreement
+PASS    0.32s TestPackCompression_RepackSelectionUsesPhysicalBytes
+PASS    0.56s TestPackCompression_StoreFormatBoundary
+PASS    0.12s TestPackCompressor_EncodeRule
+PASS    0.17s TestPackRun_BadPackStopsFurtherRuns
+PASS    0.85s TestPackRun_ConcurrentReadersAndHTTP
+PASS    0.18s TestPackRun_HTTPCorruptionNeverReachesClient
+PASS    0.57s TestPackRun_LocalityCoalescesDigestDoesNot
+PASS    0.25s TestPackRun_NoncontiguousAndSingleChunk
+PASS    0.20s TestPackRun_RangeFetchesOnlyNeededChunks
+PASS    0.50s TestPackRun_TiersAndLooseCopyPreference
+PASS    0.13s TestPack_CompactCLI
+PASS    0.33s TestPack_CompactIsDeterministicAndRepeatedHashesPackOnce
+[681/1327]
+PASS    0.37s TestModelRangeWorkChargesWindowNotWholeTensor
+PASS    0.01s TestMultipart_Concurrency_AbortRacingUploadPartIsRaceFree
+PASS    0.01s TestMultipart_Concurrency_TwoAbortCallsOnlyOneWins
+PASS    0.02s TestMultipart_Concurrency_TwoCompleteCallsOnlyOneWins
+PASS    0.02s TestMultipart_Crash_G3_AbortThenRestartUploadIDStaysInvalid
+PASS    0.02s TestMultipart_Crash_G4_CompleteThenRestartObjectVisibleSessionGone
+PASS    0.04s TestMultipart_Crash_G5_CrashAfterJournalCommitLeavesFullyCommittedObject
+PASS    0.06s TestMultipart_Crash_G5_CrashBeforeJournalCommitLeavesOldStateResumable
+PASS    0.01s TestMultipart_DeleteBucketRefusedWithActiveUpload
+PASS    0.03s TestMultipart_ETag_DiffersFromOrdinarySinglePutETag
+PASS    0.04s TestMultipart_IncompleteUploadInvisibleToOrdinaryOperations
+PASS    0.03s TestMultipart_InvalidPartNumberRejected
+PASS    0.20s TestMultipart_LifecycleAfterAbortOrComplete
+PASS    0.01s TestMultipart_ListMultipartUploads
+PASS    0.03s TestMultipart_NonexistentUploadIDRejected
+PASS    0.05s TestMultipart_ReplacedPartUsesLatestUpload
+PASS    0.03s TestMultipart_SinglePart
+PASS    0.02s TestMultipart_UploadIDForWrongBucketOrKeyRejected
+PASS    0.00s TestNamespaceDestKey_KeyExactlyEqualsPrefixMapsToEmptyRelative
+PASS    0.00s TestNamespaceDestKey_KeyNotCarryingPrefixRejected
+PASS    0.00s TestNamespaceDestKey_NestedRelative
+PASS    0.00s TestNamespaceDestKey_PrefixSourceWholeBucketDest
+PASS    0.00s TestNamespaceDestKey_PrefixToPrefix
+PASS    0.00s TestNamespaceDestKey_RepeatedSlashesInRelativeSuffixPreserved
+PASS    0.00s TestNamespaceDestKey_SpacesAndUnicodePreserved
+PASS    0.00s TestNamespaceDestKey_TwoDistinctSourceKeysNeverCollide
+PASS    0.00s TestNamespaceDestKey_WeirdCharactersPassedThroughUnaltered
+PASS    0.00s TestNamespaceDestKey_WholeBucket
+PASS    0.00s TestNamespaceDestKey_WholeBucketSourcePrefixDest
+PASS    0.00s TestNewHardenedHTTPServer_FieldsExact
+PASS    0.02s TestNoInsecureSkipVerifyInSource
+PASS    0.02s TestObjectDiff_AuthFailure
+PASS    0.00s TestObjectDiff_CrossCheckAgainstIndependentComputation
+PASS    0.00s TestObjectDiff_EmptyObjects
+PASS    0.00s TestObjectDiff_IdenticalObjects_ExactMatch
+PASS    0.00s TestObjectDiff_LocalizedDeletion
+PASS    0.00s TestObjectDiff_LocalizedInsertion
+PASS    0.00s TestObjectDiff_LocalizedMutation
+PASS    0.00s TestObjectDiff_MetadataOnlyDifference
+PASS    0.02s TestObjectDiff_MissingObjectA
+PASS    0.05s TestObjectDiff_MissingObjectB
+PASS    0.00s TestObjectDiff_PartialOverlap_ExactAccounting
+PASS    0.00s TestObjectDiff_RepeatedIdenticalChunks_DuplicateHandling
+PASS    0.00s TestObjectDiff_SameChunkSetDifferentOrder_NotExactMatch
+PASS    0.05s TestObjectDiff_SameServer_TwoKeys
+PASS    0.05s TestObjectDiff_TwoServers
+PASS    0.03s TestObjectDiff_WeirdKeys
+PASS    0.00s TestObjectDiff_WhollyUnrelatedObjects
+PASS    0.52s TestP1A_BackgroundJobCrashPropagatesToRequest
+PASS    0.24s TestP1A_PackPublishFailureFailsRequestAndCleansUp
+PASS    0.10s TestP1A_PackWriterEarlySyncErrorIsSticky
+PASS    0.37s TestP1A_PipelinedCancellationMidChunk
+PASS    0.70s TestP1A_PipelinedIngestReadErrorAndCleanup
+PASS    0.66s TestP1A_PipelinedPrematureEOFAndSlowReaders
+PASS    0.86s TestP1A_PipelinedSinkFailureStopsEverything
+PASS    0.44s TestP1A_RepeatedChunksAcrossInFlightPacksWrittenOnce
+[737/1327]
+PASS    0.63s TestBulkNegotiate_SplitsLargeSetsAndStaysReadOnly
+PASS    0.02s TestBulkPlanner_BoundsBothAxesAndKeepsOrder
+PASS    0.67s TestBulkReplicate_AdvertisedBulkFailureIsReportedNotHidden
+PASS    1.05s TestBulkReplicate_InterruptedTransferResumesThroughNegotiation
+PASS    0.81s TestBulkReplicate_ThroughStandardReverseProxy
+PASS    0.48s TestBulkRestore_UsesBulkAcrossServers
+PASS    0.14s TestBulkSync_ChunkChangedAfterScanIsNeverSent
+PASS    0.16s TestBulkUpload_FailuresPublishNoPartialBatchAndNeverCommit
+PASS    0.56s TestBulkUpload_PresentAndPackedChunksAreNoOps
+PASS    0.10s TestBulkUpload_WaitsForTransportToReleaseFrame
+PASS    0.67s TestBundleDelta_BaseIdentityFailsClosed
+PASS    0.30s TestBundleDelta_CLI
+[749/1327]
+PASS    0.14s TestRestore_ZeroCopy_OverExistingCurrent
+PASS    0.13s TestRunTransferWorkers_BoundedConcurrency
+PASS    0.20s TestRunTransferWorkers_CancelOnErrorStopsUnstartedWork
+PASS    0.00s TestRunTransferWorkers_ExternalContextCancellationSkipsEveryItem
+PASS    0.00s TestRunTransferWorkers_NoCancelOnErrorRunsEveryItem
+PASS    0.11s TestRunTransferWorkers_ResultsPreserveInputOrderRegardlessOfCompletionOrder
+PASS    0.00s TestRunTransferWorkers_ZeroItems
+PASS    0.06s TestServe_SIGINT_IdleGracefulShutdown_RealProcess
+PASS    0.08s TestServe_SIGTERM_IdleGracefulShutdown_RealProcess
+PASS    0.02s TestServe_TLS_BadCertKeyFails_RealProcess
+PASS    0.06s TestServe_TLS_HTTPS_SigV4_PresignAndGracefulShutdown_RealProcess
+PASS    0.01s TestServe_TLS_MissingCertOrKeyFails_RealProcess
+PASS    0.39s TestServe_TLS_Replicate_RealProcess
+PASS    0.01s TestSigV4_AlteredPayloadRejected
+PASS    0.00s TestSigV4_CanonicalQuery
+PASS    0.00s TestSigV4_CanonicalQueryExcludingSignature
+PASS    0.00s TestSigV4_CanonicalURI
+PASS    0.02s TestSigV4_IncorrectSecretRejected
+PASS    0.01s TestSigV4_MissingSignedHeaderRejected
+PASS    0.01s TestSigV4_QueryEdgeCases
+PASS    0.01s TestSigV4_RawPathIsNotCleaned
+PASS    0.02s TestSigV4_ValidSignedRequestsAcrossRawPathShapes
+PASS    0.02s TestSigV4_WrongAccessKeyRejected
+PASS    0.01s TestSigV4_WrongRegionServiceScopeRejected
+PASS    0.02s TestSnapshotCreate_CapturedRootsMatchLiveManifest
+PASS    0.07s TestSnapshotCreate_ConcurrentPutsDuringCaptureYieldsCoherentSnapshot
+PASS    0.03s TestSnapshotCreate_DeletedAfterCaptureStillListedInSnapshot
+PASS    0.01s TestSnapshotCreate_EmptyBucketZeroObjects
+PASS    0.02s TestSnapshotCreate_EmptyPrefix_WholeBucket
+PASS    0.01s TestSnapshotCreate_IncompleteTempFileNeverObservedAsPublished
+PASS    0.31s TestSnapshotCreate_ManyObjects
+PASS    0.02s TestSnapshotCreate_MutationAfterCaptureNotReflected
+PASS    0.02s TestSnapshotCreate_NoStrayTempFilesLeftInSnapshotsDir
+PASS    0.01s TestSnapshotCreate_NoSuchBucket
+PASS    0.03s TestSnapshotCreate_ObjectAddedAfterCaptureExcluded
+PASS    0.03s TestSnapshotCreate_OneObject
+PASS    0.03s TestSnapshotCreate_PrefixScoping
+PASS    0.03s TestSnapshotCreate_WeirdKeys
+PASS    0.05s TestSnapshotCreate_WritesZeroNewCASPayload
+PASS    0.02s TestSnapshotDelete_ConcurrentDeletesOneWinsOneGetsCleanError
+PASS    0.01s TestSnapshotDelete_InvalidID
+PASS    0.03s TestSnapshotDelete_RemovesDescriptorOnly
+PASS    0.02s TestSnapshotDelete_SurvivesRestart
+PASS    0.01s TestSnapshotDelete_UnknownID
+PASS    0.00s TestSnapshotFormat_BadCRC
+PASS    0.00s TestSnapshotFormat_BadMagic
+PASS    0.00s TestSnapshotFormat_DeterministicEncode
+PASS    0.00s TestSnapshotFormat_DuplicateEntryKey
+PASS    0.00s TestSnapshotFormat_EmptyEntriesValid
+PASS    0.00s TestSnapshotFormat_InvalidSnapshotID
+PASS    0.00s TestSnapshotFormat_MalformedLength
+PASS    0.00s TestSnapshotFormat_MalformedManifestSHA256
+PASS    0.00s TestSnapshotFormat_MalformedManifestUUID
+PASS    0.00s TestSnapshotFormat_OversizedDeclaredLength
+PASS    0.00s TestSnapshotFormat_Truncated
+PASS    0.00s TestSnapshotFormat_UnsortedEntries
+PASS    0.00s TestSnapshotFormat_UnsupportedVersion
+PASS    0.00s TestSnapshotFormat_ValidRoundTrip
+PASS    0.02s TestSnapshotGC_CorruptDescriptorRefusesToSweep
+PASS    0.03s TestSnapshotGC_DeleteFinalSnapshotAllowsEventualCollection
+PASS    0.07s TestSnapshotGC_MultipleSnapshotsSharingChunks_DeleteOneKeepsOther
+PASS    0.01s TestSnapshotGC_NoSnapshotsUnchangedBehavior
+PASS    0.04s TestSnapshotGC_PinsContentWithNoOtherRoot
+PASS    0.07s TestSnapshotGC_PinsOtherwiseUnreachableChunks
+PASS    0.02s TestSnapshotGC_UnexpectedFileNameInSnapshotsDirCausesRefusal
+PASS    0.02s TestSnapshotList_EmptyStore
+PASS    0.03s TestSnapshotList_MultipleSnapshotsOrderedByID
+PASS    0.30s TestSnapshotRestore_DeepVerifyGreenAfterRestore
+PASS    0.06s TestSnapshotRestore_DeleteOriginalNamespaceDoesNotAffectRestoredCopy
+PASS    0.05s TestSnapshotRestore_DestinationBucketMissingFailsClearly
+PASS    0.01s TestSnapshotRestore_EmptySnapshot
+PASS    0.07s TestSnapshotRestore_LaterObjectsContinueAfterOneConflict
+PASS    0.03s TestSnapshotRestore_MetadataAndContentTypePreserved
+PASS    0.04s TestSnapshotRestore_NestedPrefix
+PASS    0.02s TestSnapshotRestore_OneObject
+PASS    0.04s TestSnapshotRestore_PreexistingDifferentDestinationConflict
+PASS    0.05s TestSnapshotRestore_RestoredDeletionDoesNotAffectSnapshot
+PASS    0.04s TestSnapshotRestore_RestoredMutationDoesNotAffectSnapshot
+PASS    0.04s TestSnapshotRestore_ResumeMatchingPriorRestoreIsNoOp
+PASS    0.05s TestSnapshotRestore_SnapshotDeletionAfterRestoreDoesNotBreakRestoredNamespace
+PASS    0.06s TestSnapshotRestore_SourceDeletedThenGC_StillRestoresExactly
+PASS    0.03s TestSnapshotRestore_SourceMutatedAfterSnapshot_RestoresOldVersion
+PASS    0.04s TestSnapshotRestore_TwoRestoresFromSameSnapshotToDistinctDestinations
+PASS    0.05s TestSnapshotRestore_WeirdKeys
+PASS    0.09s TestSnapshotRestore_ZeroNewCASPayload
+PASS    0.03s TestSnapshotShow_EntriesOmittedByDefault
+PASS    0.01s TestSnapshotShow_InvalidID
+PASS    0.01s TestSnapshotShow_UnknownID
+PASS    0.02s TestSnapshot_SurvivesRestart
+PASS    0.03s TestSnapshot_VerifyReportsCorruptSnapshot
+PASS    0.05s TestStats_ExactSharingArrangement
+PASS    0.01s TestStats_JSONFieldNamesMatchSpec
+PASS    0.03s TestStats_ReclaimableAfterDelete
+PASS    0.31s TestStorageEfficiencyProof_VersionHistoryIsCheap
+PASS    0.01s TestStore_FormatJSONContents
+PASS    0.01s TestStore_NewInitialization
+PASS    0.00s TestStore_StableV1Constants
+PASS    0.02s TestStore_UnsupportedFormatRejected
+PASS    0.06s TestStreamingGet_HeadAndConditionalsSkipPayload
+PASS    0.20s TestStreamingPut_ConcurrentCreateOnly
+PASS    0.21s TestStreamingPut_ConditionalHistory
+PASS    1.14s TestStreamingPut_HTTPMatrix
+PASS    0.13s TestStreamingPut_InterruptedBodies
+[852/1327]
+PASS    0.13s TestRepair_VersionsMetadataAndETagUnchanged
+PASS    0.06s TestRepair_WrongLengthChunkDetectedAsCorrupt
+PASS    0.61s TestRepair_WrongPeerBytesAmongMany_Concurrent
+PASS    0.07s TestReplicateNamespace_DestinationConflictOneObjectFailsOthersSucceed
+PASS    0.07s TestReplicateNamespace_DestinationOnlyObjectSurvives
+PASS    0.31s TestReplicateNamespace_DestinationPrepopulatedCASReuse
+PASS    0.11s TestReplicateNamespace_DestinationRestartThenRerunIsCleanAndDeepVerifies
+PASS    0.07s TestReplicateNamespace_EmptyObject
+PASS    0.05s TestReplicateNamespace_MetadataPreservedPerObject
+PASS    0.09s TestReplicateNamespace_PrefixMappingEndToEnd
+PASS    0.14s TestReplicateNamespace_SharedChunksAcrossObjectsAccountingExact
+PASS    0.08s TestReplicateNamespace_SourceChunkCorruptOneObjectFailsOthersSucceed
+PASS    0.07s TestReplicateNamespace_SourceObjectDisappearsBetweenListingAndFetchReportsFailureContinues
+PASS    0.10s TestReplicateNamespace_SourceRemovalAfterReplicationDoesNotRemoveDestination
+PASS    0.13s TestReplicateNamespace_StatsExactAccounting
+PASS    0.10s TestReplicateNamespace_WholeBucketAllChunksMissing
+PASS    0.02s TestReplicate_AuthFailureDestinationRejected
+PASS    0.03s TestReplicate_AuthFailureSourceRejected
+PASS    0.36s TestReplicate_CancellationStopsUnnecessaryWorkOnFailure
+PASS    0.00s TestReplicate_ClientRehashDetectsSourceReturningWrongBytes
+PASS    0.61s TestReplicate_ConcurrentChunkFetchesActuallyOverlap
+PASS    0.21s TestReplicate_ConnectionResetOnOneChunkIsHandledAsFailure
+PASS    0.05s TestReplicate_DestinationConflict_AbsentBecomesPresentDuringReplication
+PASS    0.06s TestReplicate_DestinationConflict_ConcurrentWriteDuringReplicationRejectedSafely
+PASS    0.43s TestReplicate_DestinationServerRestartBetweenAttempts
+PASS    0.28s TestReplicate_DestinationUploadRejectsAmongMany
+PASS    0.08s TestReplicate_DuplicateDigestReferencesTransferOnce
+PASS    0.70s TestReplicate_EndToEnd_NewDestinationOrdinaryObject
+[880/1327]
+PASS    0.84s TestTierRebalance_DriftAndDuplicatesConverge
+PASS    0.40s TestTierRebalance_DryRunThenApplyOnLooseChunks
+PASS    0.49s TestTierRebalance_HistoryPruneChangesTargets
+PASS    0.66s TestTierRebalance_MinMisplacedDefersCostlyRewrites
+PASS    0.71s TestTierRebalance_MixedPacksAreRewritten
+PASS    0.26s TestTierRebalance_MultipartRootsStaySafe
+PASS    0.20s TestTierRebalance_SharedCheckpointBlocksStayHot
+PASS    0.25s TestTierRebalance_WholePackMoveKeepsBytes
+PASS    0.27s TestTier_CLI
+PASS    0.31s TestTier_ColdOnlyStoreMovesToHot
+PASS    0.24s TestTier_FallbackAcrossTiers
+PASS    0.32s TestTier_GCRemovesDeadPackFromItsTier
+PASS    0.01s TestTier_LocatorPreferenceDifferential
+[893/1327]
+PASS    1.28s TestCDC_V1GoldenBoundaries
+PASS    0.06s TestCLI_Fork_DestinationConflictNonzeroExit
+PASS    0.04s TestCLI_Fork_OverlapRejectedNonzeroExitNoObjectsTouched
+PASS    0.08s TestCLI_Fork_RestartThenDeepVerifyGreen
+PASS    0.05s TestCLI_Fork_WholeBucketToWholeBucket
+PASS    0.23s TestCLI_Repair_EndToEndSmoke
+PASS    0.08s TestCLI_Repair_ExitCodeNonzeroWhenUnresolved
+PASS    0.12s TestCLI_Replicate_NonRecursiveSingleObjectUnaffectedByM8C
+PASS    0.13s TestCLI_Replicate_RecursiveExitCodeNonzeroOnPartialFailure
+PASS    0.13s TestCLI_Replicate_RecursiveWholeBucket
+PASS    0.06s TestCLI_SnapshotRestore_EndToEnd
+PASS    0.29s TestCLI_SnapshotRestore_ResumeAcrossRealProcessKill
+PASS    0.08s TestCLI_Snapshot_CreateListShowDelete
+PASS    0.09s TestCLI_Snapshot_GC_PinsAcrossRestart
+PASS    0.12s TestCLI_Sync_DirectoryAndSingleFile_Smoke
+PASS    0.20s TestCLI_VerifyRepairFrom_OneCommandDetectRepairReverify
+PASS    0.05s TestCLI_VerifyRepairFrom_UnsetPreservesOrdinaryVerifyBehavior
+PASS    0.11s TestCLI_VersionsRestoreGCDoctor_Smoke
+PASS    0.15s TestCLI_WorkersFlagValidation
+PASS    0.04s TestCRC32_FailedChecksumLeavesNoVisibleObject
+PASS    0.00s TestCRC32_InvalidRejected
+PASS    0.00s TestCRC32_ValidAccepted
+PASS    0.38s TestConcurrency_DeleteBucketVsPutObjectResolvesCoherently
+PASS    0.25s TestConcurrency_GetDuringOverwriteSeesCompleteObject
+PASS    0.03s TestConcurrency_RestoreRacingCopyObject
+PASS    0.04s TestConcurrency_RestoreRacingDelete
+PASS    0.03s TestConcurrency_RestoreRacingPut
+PASS    0.09s TestConcurrency_SameKeyPutPutSerializesToOneCompleteVersion
+PASS    0.06s TestConcurrency_SameKeyPutVsDeleteNeverMixed
+PASS    0.41s TestConcurrency_StatsDuringWrites
+PASS    0.05s TestConcurrency_TwoOverwritesSameKey_HistoryDeterministic
+PASS    0.84s TestConcurrency_VerifyDuringWrites
+PASS    0.03s TestConditionalGetHTTP_HistoricalETagIsNotCurrentForIfMatch
+PASS    0.02s TestConditionalGetHTTP_IfMatch_MatchSucceeds
+PASS    0.03s TestConditionalGetHTTP_IfMatch_MismatchFailsWith412
+PASS    0.02s TestConditionalGetHTTP_IfNoneMatch_MatchReturns304
+PASS    0.02s TestConditionalGetHTTP_IfNoneMatch_MismatchServesNormally
+PASS    0.04s TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected
+PASS    0.01s TestConditionalGetHTTP_MissingObjectIgnoresCondition
+PASS    0.56s TestConditionalGetHTTP_MultipartCurrentETag
+PASS    0.04s TestConditionalGetHTTP_QuotedUnquotedAndCaseInsensitive
+PASS    0.02s TestConditionalGetHTTP_RangeInteraction
+PASS    0.02s TestConditionalHeadHTTP_IfMatch_MatchAndMismatch
+PASS    0.02s TestConditionalHeadHTTP_IfNoneMatch_MatchAndMismatch
+PASS    0.02s TestConditionalPutHTTP_ConcurrentCreateOnly_ExactlyOneWinnerOverRealHTTP
+PASS    0.02s TestConditionalPutHTTP_IfMatch_CASUpdateThenStaleRejectWith412
+[939/1327]
+PASS    0.57s TestP1A_StagedPackCorruptionIsCaughtByBackgroundVerify
+PASS    0.01s TestP1A_VerifyPackExactRejectsOtherValidPack
+PASS    0.56s TestP1B_ConcurrentOverlappingBatches
+PASS    0.06s TestP1B_DirSync_CoalescesAndOrders
+PASS    0.05s TestP1B_DirSync_ErrorReachesEveryRoundMember
+PASS    0.03s TestP1B_DirSync_PanicDoesNotStrandJoiners
+PASS    0.07s TestP1B_DuplicateWriterTakesOverAfterFailure
+PASS    0.15s TestP1B_GroupCommit_ConcurrentPutsReplayIdentically
+PASS    0.02s TestP1B_GroupCommit_ConditionalCreateRace
+PASS    0.05s TestP1B_GroupCommit_JournalFailureFailsWholeBatch
+PASS    0.04s TestP1B_GroupCommit_LeaderPanicDoesNotStrandFollowers
+PASS    0.64s TestP1B_MediumPack_DeadPacksCollectedByGC
+PASS    0.46s TestP1B_MediumPack_DedupAndRevisions
+PASS    0.20s TestP1B_MediumPack_ValveFallsBackToLoose
+PASS    0.13s TestP1B_ObserverWaitsForDuplicateWriter
+SKIP    0.00s TestP1B_PopulatedStoreThroughput
+PASS    0.00s TestP1B_PubRegistry_ClaimWaitRelease
+PASS    0.04s TestP1B_StaleShardCacheRecovers
+PASS    0.12s TestP1C_BatchFailureLeavesAcknowledgedDataAndNoPartialState
+PASS    0.19s TestP1C_BundleExportRefusesCorruptChunk
+PASS    0.28s TestP1C_CLIReadersAgainstALiveServer
+PASS    0.03s TestP1C_DuplicateContentWrittenOnce
+PASS    0.04s TestP1C_FailedBatchFailsEveryMemberAndOnlyThem
+PASS    0.17s TestP1C_FormatRaiseIsRaceFreeAgainstReaders
+PASS    0.03s TestP1C_Format_FirstSmallWriteRaisesLevelPolicyOffDoesNot
+PASS    0.21s TestP1C_GCAndRepackReclaimDeadRecordsAndKeepLiveOnes
+PASS    0.02s TestP1C_GroupCommitSharesOneWriteAndFsync
+PASS    0.10s TestP1C_HardCapRollsBeforeWriting
+PASS    0.03s TestP1C_LargeManifestStaysAFile
+PASS    0.18s TestP1C_MaintenanceRefusesCorruptLiveRecord
+PASS    0.07s TestP1C_MultipartCopyAndBundleRoundTripThroughSegments
+PASS    0.21s TestP1C_OldStoreAndPolicyChangesCoexist
+PASS    0.46s TestP1C_RecoveryCutsTornTailsAndKeepsAcknowledgedRecords
+PASS    0.07s TestP1C_RecoveryDropsUnusedAndBadSegments
+SKIP    0.00s TestP1C_RecoveryLatency
+PASS    0.42s TestP1C_RolloverSealsIntoVerifiablePacks
+[975/1327]
+PASS    0.17s TestRepTempFilesAreNeverRootsOrLiveness
+PASS    1.08s TestRepTransferBackfill
+PASS    0.57s TestRepTransferCrashAfterAuthoritativeCommit
+PASS    0.44s TestRepVirtualComponentDescriptor
+PASS    0.01s TestRepWireCorruptionMatrix
+PASS    0.00s TestRepWireGoldenAndRoundTrip
+PASS    0.00s TestRepWireKindNumbers
+PASS    0.01s TestRepWriterFailureIsNotCorruption
+PASS    0.12s TestRepZ4ManagedDefaultAndMalformedFallback
+PASS    0.27s TestRepZ4ManagedEncoderFidelity
+PASS    0.07s TestRepZ4ManagedLabWireFidelity
+PASS    0.38s TestRepZ4ModelBaseSurvivesRootRetirement
+PASS    0.09s TestRepZ4ModelGGUFAndUnsupportedModel
+PASS    0.11s TestRepZ4ModelLabWireFidelity
+PASS    0.00s TestRepZ4ModelShortWriterAndAmbiguousNames
+PASS    0.35s TestRepack_AbortsOnCorruptLiveSource
+PASS    0.79s TestRepack_AbortsWhenASourcePackIsUnusable
+PASS    0.90s TestRepack_AbortsWhenReplacementFailsValidation
+PASS    0.37s TestRepack_CLI
+PASS    0.21s TestRepack_ConflictingPackedCopiesBlockDestructiveWork
+[995/1327]
+PASS    0.02s FuzzAuthRecord
+PASS    0.12s FuzzAuthWindowRecord
+PASS    0.00s FuzzModelMetadata
+PASS    0.22s FuzzRepCodecDecode
+PASS    0.01s FuzzRepGitDecode
+PASS    0.02s FuzzRepGitReaderAt
+PASS    0.00s FuzzRepRootUnmarshal
+PASS    0.21s FuzzRepStructuredRecipes
+PASS    0.00s FuzzRepUnmarshal
+PASS    0.05s FuzzRepZ4ManagedDecode
+PASS    0.06s FuzzRepZ4ModelDecode
+PASS    0.00s FuzzServedManifestParse
+PASS    0.04s FuzzXDeltaEnvelope
+PASS    0.17s TestA4QualificationForkCommitRace
+PASS    0.19s TestAWSChunkReader_Fragmentation
+PASS    0.04s TestAWSChunked_AWSDocumentationVector
+PASS    0.34s TestAWSChunked_ConditionalHistoryRestart
+PASS    0.13s TestAWSChunked_FailureKeepsExistingObject
+PASS    0.09s TestAWSChunked_UploadPart
+PASS    0.00s TestApplyCredentialEnvFallback_AllThreeFromEnv
+PASS    0.00s TestApplyCredentialEnvFallback_ExplicitFlagsWinOverEnvForAllThree
+PASS    0.00s TestApplyCredentialEnvFallback_MissingAccessKeyLeavesAccessAtDefault
+PASS    0.00s TestApplyCredentialEnvFallback_PartialPairLeavesOtherFlagAtDefault
+PASS    0.00s TestAuthHelperProcess
+PASS    0.12s TestAuthorityCycleRejected
+PASS    0.12s TestAuthorityEquivHostileObjectsStayExact
+SKIP    0.00s TestAuthorityFiveGenerationMatrix
+PASS    0.93s TestAuthorityGraphLimits
+SKIP    0.00s TestAuthorityHardCorpusEconomics
+SKIP    0.00s TestAuthorityLargeCheck
+SKIP    0.00s TestAuthorityLargeFixture
+SKIP    0.00s TestAuthorityLargeProfile
+PASS    0.08s TestAuthorityPublishRefusesIncompleteClosure
+SKIP    0.00s TestAuthorityScaleFixture
+PASS    0.45s TestAuthorityStaleGenerationRejected
+PASS    0.00s TestAuthorityTierRefusalTable
+SKIP    0.00s TestAuthorityZN7DecodeScaling
+SKIP    0.00s TestAuthorityZN7RealModels
+SKIP    0.00s TestB2Economics
+SKIP    0.00s TestB2RepBreakdown
+PASS    0.04s TestBulkBudget_BoundsConcurrentBytesRegardlessOfWorkers
+PASS    0.55s TestBulkDiscovery_AdvertisedAdditivelyAndWithdrawable
+PASS    0.65s TestBulkFetch_ClientRejectsDishonestResponses
+PASS    0.57s TestBulkFetch_SendsOnlyLogicalBytesFromAnyRepresentation
+PASS    0.00s TestBulkFraming_RejectsMalformedFrames
+PASS    0.59s TestBulkNegotiate_MatchesV1ForEveryPhysicalState
+[1041/1327]
+PASS    0.55s TestStreamingPut_RejectedBeforeIngest
+PASS    0.31s TestStreamingPut_RestartCompatibility
+PASS    0.01s TestSyncChunkUpload_DigestMismatchRejected
+PASS    0.02s TestSyncChunkUpload_IdempotentRetry
+PASS    0.01s TestSyncChunkUpload_InvalidDigestInURLRejected
+PASS    0.02s TestSyncChunkUpload_OversizedBodyRejected
+PASS    0.03s TestSyncChunkUpload_Success
+PASS    0.02s TestSyncCommit_CorruptChunkRejected
+PASS    0.01s TestSyncCommit_MalformedJSONRejected
+PASS    0.01s TestSyncCommit_MissingBucketOrKeyRejected
+PASS    0.02s TestSyncCommit_MissingChunkRejected
+PASS    0.02s TestSyncCommit_UnknownBucketRejected
+PASS    0.01s TestSyncCommit_UnsupportedProtocolCDCHash
+PASS    0.03s TestSyncCommit_WrongLengthRejected
+PASS    0.01s TestSyncNegotiate_AllMissing
+PASS    0.20s TestSyncNegotiate_BatchSizeBoundary
+PASS    0.01s TestSyncNegotiate_DuplicatedDigestsReportedOnce
+PASS    0.02s TestSyncNegotiate_InvalidDigest
+PASS    0.01s TestSyncNegotiate_InvalidLength
+PASS    0.01s TestSyncNegotiate_MalformedJSONRejected
+PASS    0.02s TestSyncNegotiate_NeverMutatesStore
+PASS    0.04s TestSyncNegotiate_OneMissingAmongMany
+PASS    0.02s TestSyncNegotiate_OversizedRequestRejected
+PASS    0.04s TestSyncNegotiate_SomeMissing
+PASS    0.02s TestSyncNegotiate_UnsupportedProtocolCDCHash
+PASS    0.04s TestSyncNegotiate_ZeroMissing
+PASS    0.13s TestSyncStats_FirstSyncAllNew
+PASS    0.14s TestSyncStats_ResyncIdenticalContentToNewKeyIsFullyReused
+PASS    0.01s TestSync_AllEndpointsRejectUnauthenticatedRequests
+PASS    0.12s TestSync_CDCEquivalenceWithOrdinaryPut
+PASS    0.07s TestSync_ConcurrentNormalPutAndSyncDifferentKeys
+PASS    0.02s TestSync_ConflictAbsentDestinationStaysAbsentUntilCommit
+PASS    0.02s TestSync_ConflictConcurrentPUTDuringSyncCausesCommitConflict
+PASS    0.02s TestSync_ConflictRetryAfterConflictSucceeds
+PASS    0.03s TestSync_ConflictTwoConcurrentSyncsToSameKeySecondFails
+PASS    0.04s TestSync_ConflictUnchangedDestinationCommitsCleanly
+PASS    0.48s TestSync_CriticalAcceptanceProof
+PASS    0.02s TestSync_Discovery_AuthFailureRejected
+PASS    0.02s TestSync_Discovery_Supported
+PASS    0.03s TestSync_Discovery_UnknownExtensionPathNotBucketParsed
+PASS    0.00s TestSync_KeyWithHashCharacterDoesNotMisroute
+PASS    0.01s TestSync_KeyWithPercentCharacterFallsBackCorrectly
+PASS    0.04s TestSync_KeyWithQuestionMarkResyncsCleanly
+PASS    0.20s TestSync_LocalMutationDuringConcurrentUploadStillDetected
+PASS    0.02s TestSync_LocalMutationDuringOperationAborts
+PASS    0.00s TestSync_NonZeroS3Endpoint_FallsBackToPlainPut
+PASS    0.02s TestSync_NormalS3RoutesUnaffectedByExtension
+PASS    0.20s TestSync_ParallelChunkUploadWithWorkers
+PASS    0.02s TestSync_RepeatedCommitFailsCleanlyRatherThanDuplicating
+PASS    0.07s TestSync_RepeatedFullSyncOfIdenticalContentUploadsNothing
+PASS    0.12s TestSync_ResumeAfterPartialPriorUpload
+PASS    0.10s TestSync_ServerRestartAfterPartialUploadThenResume
+PASS    0.04s TestSync_TwoConcurrentSyncsToDifferentKeysBothSucceed
+PASS    0.02s TestSync_UnmodifiedFileCommitsNormally
+PASS    0.04s TestSync_WorkersOneMatchesSequentialBaseline
+PASS    0.08s TestTierPolicy_DeletedBucketHistoryKeepsPolicy
+PASS    0.11s TestTierPolicy_MutationNeedsExclusiveStore
+PASS    0.01s TestTierPolicy_Persistence
+PASS    0.00s TestTierPolicy_RuleResolution
+PASS    0.25s TestTierRebalance_CLI
+[1101/1327]
+PASS    0.79s TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames
+PASS    0.03s TestP3_SharedOpenerNeverTruncatesALiveJournal
+PASS    0.33s TestP4DeferredCoalescesIdenticalContent
+PASS    0.24s TestP4DeferredNeverPublishesForAnotherVersion
+PASS    0.62s TestP4DeferredQueueIsBoundedAndNeverBlocksPuts
+PASS    0.40s TestP4DeferredShutdownAbandonsWorkWithoutLeaks
+PASS    0.06s TestP4DeferredSkipsManifestsThatLeftTheNamespace
+PASS    0.73s TestP4DeferredYieldsToForegroundThenRuns
+PASS    0.25s TestP4FSEInverseEqualsBinarySearch
+SKIP    0.00s TestP4Interference
+PASS    0.11s TestP4PrefixIndexMatchesReference
+SKIP    0.00s TestP4Probe
+PASS    0.31s TestPackCompression_CLI
+PASS    0.29s TestPackCompression_CompactOffWritesRawAndRerunIsStable
+PASS    0.44s TestPackCompression_CorruptCompressedRecordsFailSafely
+PASS    0.53s TestPackCompression_DeepVerifyDetectsCompressedPayloadCorruption
+PASS    0.37s TestPackCompression_InvalidRecordLengthsRejectedAtOpen
+[1118/1327]
+PASS    4.23s TestP1A_ConcurrentPipelinedPutsRoundTrip
+[1119/1327]
+PASS    0.41s TestBundle_ExportIsDeterministicAndAtomic
+PASS    0.00s TestBundle_FormatValidSyntheticBundle
+PASS    0.31s TestBundle_ImportIsIdempotentAndCollisionsFail
+PASS    0.40s TestBundle_ImportNeverTouchesNamespaceOrFormat
+PASS    0.23s TestBundle_ImportRequiresExclusiveStore
+PASS    0.17s TestBundle_InspectDistinguishesParsedFromVerified
+PASS    0.61s TestBundle_ParserMutationMatrix
+PASS    0.49s TestBundle_PartialOverlapImportsOnlyMissingContent
+PASS    0.33s TestBundle_RoundTripPreservesIdentityAndDeduplicates
+PASS    0.03s TestCASBatch_BatchLocalDuplicatesStageOnce
+PASS    0.08s TestCASBatch_ConcurrentWritersOfOneDigest
+PASS    0.29s TestCASBatch_ExistingChunksInAnyTierStageNothing
+PASS    0.02s TestCASBatch_FlushFailureLeavesNothingPublished
+PASS    0.01s TestCASBatch_PublicationBarrier
+PASS    0.02s TestCASShardDirs_FailedPublishRemovesItsNewDirs
+PASS    0.17s TestCASShardDirs_ParentDurabilityOrdering
+PASS    0.01s TestCAS_ChunkPathMatchesSHA256
+PASS    0.01s TestCAS_CorruptExistingChunkDetected
+PASS    0.00s TestCAS_DedupNoDuplication
+PASS    0.02s TestCAS_RoundTrip
+PASS    0.10s TestCDC_Deterministic
+PASS    0.30s TestCDC_EditLocalityBeatsFixedSizeChunking
+PASS    0.00s TestCDC_EmptyInput
+PASS    0.03s TestCDC_ExactBoundarySizeInputs
+PASS    0.28s TestCDC_MinMaxBounds
+PASS    0.13s TestCDC_RepetitiveData
+PASS    0.00s TestCDC_TinyInput
+[1146/1327]
+PASS    3.84s TestRepConcurrentReadsMixedTiers
+[1147/1327]
+PASS    3.16s TestAuthorityBundleExportToOldBinary
+[1148/1327]
+PASS    3.76s TestRepLifecycleChain
+[1149/1327]
+PASS    2.22s TestAuthorityEquivAccounting
+[1150/1327]
+PASS    2.28s TestAuthorityEquivDifferential
+[1151/1327]
+PASS    3.28s TestAuthorityNativeClosureTransferAndInterruption
+[1152/1327]
+PASS    4.41s TestRepUpgradeLevelsDoNotMoveUntilFirstRoot
+[1153/1327]
+PASS    1.87s TestAuthorityEquivMaintenanceKeepsFormat
+[1154/1327]
+PASS    3.92s TestTier_CompactIntoColdCrashPoints
+[1155/1327]
+PASS    3.61s TestRepair_ManyCorruptChunks_WorkerCountsProduceIdenticalStats
+[1156/1327]
+SKIP    0.00s TestP8Matcher
+[1157/1327]
+SKIP    0.00s TestP8Migration
+[1158/1327]
+PASS    2.33s TestAuthorityEquivRangeReadsFetchOnlyWhatTheyNeed
+[1159/1327]
+PASS    1.26s TestAuthorityPlanCacheNeverHidesPhysicalCorruption
+[1160/1327]
+SKIP    0.00s TestP8Rep
+[1161/1327]
+PASS    1.90s TestAuthorityEquivRetirementIsPhysical
+[1162/1327]
+PASS    0.01s TestP8WinCache
+[1163/1327]
+PASS    1.16s TestP8SharedMatcherExactAndDeterministic
+[1164/1327]
+PASS    2.02s TestP8SketchSlicedEqualsSequential
+[1165/1327]
+PASS    3.67s TestRepStructuredOrdinaryPutCrashFloor
+[1166/1327]
+PASS    3.00s TestAuthoritySyncIntoBodyOnlyDestination
+[1167/1327]
+PASS    3.09s TestAuthorityRevertRestoresCDC
+[1168/1327]
+PASS    4.01s TestDeleteObjects_Table
+[1169/1327]
+PASS    2.29s TestAuthorityOldBinaryRefusesAndLeavesStoreUntouched
+[1170/1327]
+PASS    3.89s TestPack_CompactCrashPoints
+[1171/1327]
+PASS    2.32s TestAuthorityRepairPaths
+[1172/1327]
+PASS    3.51s TestCASBatch_IngestIsBoundedAndHandlesTinyObjects
+[1173/1327]
+PASS    2.29s TestAuthorityPeerAssistedComponentRepair
+[1174/1327]
+PASS    1.96s TestAuthorityThinClosureUsesDestinationBasesAndFallsBack
+[1175/1327]
+PASS    3.25s TestBulkUpload_NearByteLimit
+[1176/1327]
+PASS    0.36s TestTier_MoveExistingTarget
+PASS    0.29s TestTier_RootSafety
+PASS    0.20s TestTier_TransferFromColdSource
+PASS    0.00s TestTransferHTTPTransport_PoolSizedForMaxWorkers
+PASS    0.00s TestUUID_CanonicalStringForm
+PASS    0.00s TestUUID_IsVersion7Variant10
+PASS    0.00s TestUUID_RoundTripsThroughStdlibParse
+PASS    0.01s TestUUID_SuitableAsManifestAndVersionID
+PASS    0.00s TestUUID_Unique
+PASS    0.06s TestUploadPartCopy_ProtocolAndFailures
+PASS    0.00s TestVHost_BucketFromHost
+PASS    0.00s TestVHost_DisabledByDefaultFallsBackToPathStyle
+PASS    0.05s TestVHost_EndToEndCreateBucketPutGetListDelete
+PASS    0.02s TestVHost_ListBucketsStillWorksOnBareHost
+PASS    0.04s TestVHost_PathStyleStillWorksWhenVHostConfigured
+PASS    0.03s TestVHost_PresignedURLWithVHostAddressing
+PASS    0.00s TestValidSnapshotID
+PASS    0.00s TestValidateWorkers_Range
+PASS    0.00s TestVectors_Presign
+PASS    0.01s TestVectors_SigV4
+PASS    0.04s TestVectors_WireShapes
+PASS    0.05s TestVerify_CleanStoreOK
+PASS    0.01s TestVerify_DeepWholeObjectDigest_EmptyObject
+PASS    0.02s TestVerify_DeepWholeObjectDigest_MalformedReportedInvalid
+PASS    0.02s TestVerify_DeepWholeObjectDigest_MismatchDetected
+PASS    0.06s TestVerify_DeepWholeObjectDigest_MultiChunkObject
+PASS    0.02s TestVerify_DetectsChunkLengthMismatch
+PASS    0.04s TestVerify_DetectsCorruptChunkOnlyUnderDeep
+PASS    0.02s TestVerify_DetectsCorruptManifestHashMismatch
+PASS    0.02s TestVerify_DetectsManifestLengthSumMismatch
+PASS    0.04s TestVerify_DetectsMissingChunk
+PASS    0.00s TestVerify_DetectsUnparsableManifestJSON
+PASS    0.03s TestVerify_PerRootManifestHashCheckedEvenWhenUUIDCached
+PASS    0.08s TestVersionGC_Interaction
+PASS    0.03s TestVersions_CopyObjectOverwriteCreatesHistory
+PASS    0.03s TestVersions_DeleteArchivesHistoryGetNotFound
+PASS    0.02s TestVersions_FirstPutCreatesNoHistory
+PASS    0.06s TestVersions_FullLifecycleAcrossRestart
+PASS    0.61s TestVersions_MultipartOverwriteCreatesHistory
+PASS    0.03s TestVersions_PutOverwriteCreatesHistory
+PASS    0.52s TestXDeltaRoundTripAndRejection
+[1217/1327]
+PASS    2.52s TestAuthorityScopedMigration
+[1218/1327]
+PASS    3.80s TestP4DeepVerifyParallelEqualsSerial
+[1219/1327]
+PASS    2.20s TestRepOptionalFailureNeverFailsPut
+[1220/1327]
+PASS    3.35s TestStreamingGet_Matrix
+[1221/1327]
+PASS    3.01s TestSyncNegotiate_MultiBatchViaClient
+[1222/1327]
+PASS    1.67s TestAuthorityDefaultOrderKeepsNewestInCDC
+[1223/1327]
+PASS    3.03s TestCLI_Repair_RealProcessKillThenResume
+[1224/1327]
+PASS    1.73s TestTier_InitSafety
+[1225/1327]
+PASS    2.50s TestBundleDelta_ImportCrashMatrix
+[1226/1327]
+PASS    3.02s TestMultipart_CompletionValidation
+[1227/1327]
+PASS    2.43s TestRepStructuredEncoderLabIdentity
+[1228/1327]
+PASS    2.06s TestP1B_ShardDirsCreatedOnceUnderConcurrency
+[1229/1327]
+PASS    2.77s TestP1B_MediumPack_MultipartPartsAndCompletion
+[1230/1327]
+PASS    1.82s TestAuthorityCopyAndRestoreOfBodyOnlyContent
+[1231/1327]
+PASS    2.58s TestP3_ReachabilityMatchesReference_Healthy
+[1232/1327]
+PASS    2.13s TestRepZ4ModelStreamingModelLifecycle
+[1233/1327]
+PASS    2.25s TestRepack_UtilizationProfiles
+[1234/1327]
+PASS    1.85s TestRepBundlesCarryOnlyAuthoritativeState
+[1235/1327]
+PASS    2.28s TestCDC_ForcedMaximumOccurs
+[1236/1327]
+PASS    2.02s TestDirectPack_ConcurrentPutsAndIdenticalDuplicates
+[1237/1327]
+PASS    1.99s TestLayoutMatrix_GCReclaimsUnreferencedDataKeepsLiveData
+[1238/1327]
+PASS    2.40s TestBulkFraming_BoundaryBatchesParse
+[1239/1327]
+PASS    1.44s TestReplicate_WorkerCountsProduceByteIdenticalStats
+[1240/1327]
+PASS    2.46s TestP1B_MediumPack_RestartKeepsEverything
+[1241/1327]
+PASS    2.48s TestReplicate_M8ADemonstrationFixture
+[1242/1327]
+PASS    1.95s TestRepCodecMissingChildFailsClosed
+[1243/1327]
+PASS    1.95s TestBulkRepair_PartialSuccessSurvivesBatchFailure
+[1244/1327]
+PASS    2.42s TestP2_ChunkCacheAdmissionAdaptsToTheWorkingSet
+[1245/1327]
+PASS    1.37s FuzzRepHardRecipes
+[1246/1327]
+PASS    1.40s TestAuthorityGCFailsClosedOnMissingBase
+[1247/1327]
+PASS    2.09s TestP3_FastJournalDecodeMatchesJSON
+[1248/1327]
+PASS    1.85s TestRepCopyObjectAndMultipart
+[1249/1327]
+PASS    2.25s TestModelAggregateZeroReplayBound
+[1250/1327]
+PASS    1.88s TestP4DeferredConcurrentWritersRace
+[1251/1327]
+PASS    1.89s TestReplicateNamespace_ResumeAcrossRealProcessInterruption
+[1252/1327]
+PASS    1.55s TestDirectPack_ExistingCopiesInAnyTierAreReused
+[1253/1327]
+PASS    1.77s TestP1B_MediumPack_SameManifestAsLoose
+[1254/1327]
+PASS    1.80s TestTier_LifecycleCompactMoveReads
+[1255/1327]
+PASS    1.87s TestP3_GCFailsClosedOnCorruptManifest
+[1256/1327]
+PASS    1.92s TestP4_PreP4BinaryUnderstandsDeferredStore
+[1257/1327]
+PASS    1.75s TestMultipart_Concurrency_SamePartNumberRaceIsDeterministicAndRaceFree
+[1258/1327]
+PASS    1.34s TestListSourceObjects_MultiPageOver1000
+[1259/1327]
+PASS    0.87s TestMultipart_CompletedObjectDedupsAgainstOrdinaryPutOfSameBytes
+[1260/1327]
+PASS    1.27s TestAuthorityCorruptComponentFailsClosedNeverWrongBytes
+[1261/1327]
+PASS    1.31s TestAuthorityMalformedRecordsAndEnvelopes
+[1262/1327]
+PASS    1.12s TestDirectPackLife_TierRebalanceBundlesAndLogicalHistoryUnchanged
+[1263/1327]
+PASS    1.79s TestBundle_ImportCrashMatrix
+[1264/1327]
+PASS    1.88s TestLayoutMatrix_HistoryRestoreAndDeleteSurviveMaintenance
+[1265/1327]
+PASS    1.46s TestBulkSync_UsesBulkAndMatchesV1Stats
+[1266/1327]
+PASS    1.54s TestDirectPack_MultipartPartsAndCompleteAreCanonical
+[1267/1327]
+PASS    1.65s TestSnapshotCreate_OverOneThousandObjects
+[1268/1327]
+PASS    1.49s TestBulkReplicate_NewToNewUsesBulkAndCollapsesRequests
+[1269/1327]
+PASS    1.62s TestPackRun_RangesMatchOrdinaryReads
+[1270/1327]
+PASS    1.44s TestRepManagedOrdinaryPutCrashFloor
+[1271/1327]
+PASS    1.54s TestServe_SIGTERM_SecondSignalForcesImmediateExit_RealProcess
+[1272/1327]
+PASS    1.33s FuzzRepDecoders
+[1273/1327]
+PASS    1.50s TestBundleLife_CheckpointSharesChunksOnce
+[1274/1327]
+PASS    0.70s TestCASBatch_IngestDuplicateAndLocalizedEdit
+[1275/1327]
+PASS    1.53s TestMultipart_Concurrency_DifferentPartNumbersAllSurvive
+[1276/1327]
+PASS    1.97s TestReplicate_ResumeAcrossRealProcessInterruption
+[1277/1327]
+PASS    1.87s TestRepHostileObjectsNeverFailPut
+[1278/1327]
+PASS    1.62s TestP4ReadCacheServesExactBytesAndStillVerifiesData
+[1279/1327]
+PASS    1.43s TestCASShardDirs_ConcurrentFirstUseOfOneShard
+[1280/1327]
+PASS    1.31s TestTierPolicy_MalformedFileOnlyBlocksAdministration
+[1281/1327]
+PASS    1.50s TestRepack_DefaultPolicyLeavesHealthyPacksAlone
+[1282/1327]
+PASS    0.82s TestP1C_ReadersNeverSeeMissingOffsetsAcrossSeal
+[1283/1327]
+PASS    0.73s TestDirectPackLife_RequestFailuresPublishNoObjectAndOrphansAreGCSafe
+[1284/1327]
+PASS    0.93s TestTierRebalance_RefusesUnsafeStates
+[1285/1327]
+PASS    1.22s TestTierRebalance_WholeMoveCrashConverges
+[1286/1327]
+PASS    1.29s TestBundleDelta_ImportUsesGroupedCASPublication
+[1287/1327]
+PASS    0.53s TestCDC_MeanChunkSizePlausible
+[1288/1327]
+PASS    1.11s TestBundleLife_BrowserSiteRoundTrip
+[1289/1327]
+PASS    1.30s TestCLI_Fork_ResumeAcrossRealProcessKill
+[1290/1327]
+PASS    0.90s TestRepFailureAfterOutputStartsDoesNotPanic
+[1291/1327]
+PASS    1.13s TestRepGitProductionPackAndIdx
+[1292/1327]
+PASS    1.29s TestStreamingGet_Corruption
+[1293/1327]
+PASS    0.77s TestMultipart_Crash_G2_ReplacePartThenRestartThenComplete
+[1294/1327]
+PASS    0.84s TestAuthorityCLIWorkflowAndHTTPReads
+[1295/1327]
+PASS    0.86s TestTier_RepackGCPreserveTiersAndPaths
+[1296/1327]
+PASS    0.97s TestP3_DeepVerifyFindsCorruptionInjectedMidScan
+[1297/1327]
+PASS    1.41s TestDirectPack_SelectionByKnownSize
+[1298/1327]
+PASS    1.31s TestServe_SIGTERM_ActiveGET_CompletesWithinGrace_RealProcess
+[1299/1327]
+PASS    0.56s TestDirectPack_IdenticalAndShiftedUploadsWriteNoPayload
+[1300/1327]
+PASS    1.04s TestP2_ReadsDuringWritesSealsAndOverwrites
+[1301/1327]
+PASS    1.10s FuzzRepCodecAnalysis
+[1302/1327]
+PASS    1.34s TestLayoutMatrix_VerifyDetectsMissingAndCorruptChunks
+[1303/1327]
+PASS    0.93s TestMultipart_HappyPath_TwoParts_GetHeadRangeCopy
+[1304/1327]
+PASS    0.71s TestStreamingMultipart_UploadPart
+[1305/1327]
+PASS    1.07s TestMultipart_Crash_G1_RestartMidUploadThenResumeAndComplete
+[1306/1327]
+PASS    1.27s TestBulkReplicate_FallsBackToV1WhenEitherEndLacksBulk
+[1307/1327]
+PASS    0.57s TestMultipart_Concurrency_CompleteRacingUploadPartIsRaceFree
+[1308/1327]
+PASS    0.92s TestP4SmallObjectComponentsShareTheSegmentAndSurviveMaintenance
+[1309/1327]
+PASS    1.23s TestAWSChunked_Matrix
+[1310/1327]
+PASS    0.82s TestReplicate_RepeatedTransfersDoNotLeakGoroutines
+[1311/1327]
+PASS    0.89s TestRepZ4ManagedLifecycleAndCapability
+[1312/1327]
+PASS    0.88s TestCASBatch_BulkUploadPublishesFullBatchesOnly
+[1313/1327]
+PASS    1.01s TestPackRun_BoundsAndFileReuse
+[1314/1327]
+PASS    0.81s TestBulkReplicate_PhysicalSourceRepresentationDoesNotChangeWireBytes
+[1315/1327]
+PASS    1.10s TestBundle_ImportUsesGroupedCASPublication
+[1316/1327]
+PASS    0.90s TestRepair_ManyMissingChunks_Concurrent
+[1317/1327]
+PASS    1.14s TestSync_M6ADemonstrationFixture
+[1318/1327]
+PASS    0.90s TestBundleDeltaLife_BrowserSiteRevision
+[1319/1327]
+PASS    1.02s TestPack_PhysicalMatrix
+[1320/1327]
+PASS    0.85s TestRepOffModeMaintenanceKeepsRoots
+[1321/1327]
+PASS    0.95s TestGC_MultipartSurvivesGC_ThenCompletes
+[1322/1327]
+PASS    0.53s TestMultipart_DeepVerifyAfterCompletion
+[1323/1327]
+PASS    0.67s TestP3_DeepVerifyFindsCorruptionBetweenPasses
+[1324/1327]
+PASS    0.58s TestRepSharedChildAcrossFormatsAndRootLifecycle
+[1325/1327]
+PASS    0.51s TestTierPolicy_HottestReferenceWins
+[1326/1327]
+PASS    0.79s TestServe_GracefulShutdown_ReplicateWorkersTerminateCleanly_RealProcess
+[1327/1327]
+--- FAIL TestPackCompression_CrashPoints (0.0s)
+the test did not report a result
+[t1run] process: exit status 2
+=== RUN   TestPackCompression_CrashPoints
+=== RUN   TestPackCompression_CrashPoints/compact/mid_pack_creation
+=== RUN   TestPackCompression_CrashPoints/compact/after_fsync
+=== RUN   TestPackCompression_CrashPoints/compact/after_rename,_before_dir_fsync
+=== RUN   TestPackCompression_CrashPoints/compact/partway_through_loose_deletion
+=== RUN   TestPackCompression_CrashPoints/compact/second_pack_mid-creation
+=== RUN   TestPackCompression_CrashPoints/repack/partial_replacement_write
+=== RUN   TestPackCompression_CrashPoints/repack/after_replacement_published
+=== RUN   TestPackCompression_CrashPoints/repack/between_obsolete_pack_removals
+=== RUN   TestPackCompression_CrashPoints/repack/completed
+runtime: marked free object in span 0x7fa443d0f228, elemsize=32 freeindex=5 (bad use of unsafe.Pointer or having race conditions? try -d=checkptr or -race)
+0xc000144000 alloc unmarked
+0xc000144020 alloc unmarked
+0xc000144040 alloc unmarked
+0xc000144060 alloc unmarked
+0xc000144080 alloc unmarked
+0xc0001440a0 free  unmarked
+0xc0001440c0 free  unmarked
+0xc0001440e0 alloc unmarked
+0xc000144100 free  unmarked
+0xc000144120 free  unmarked
+0xc000144140 free  unmarked
+0xc000144160 alloc unmarked
+0xc000144180 alloc unmarked
+0xc0001441a0 free  unmarked
+0xc0001441c0 free  unmarked
+0xc0001441e0 free  unmarked
+0xc000144200 free  unmarked
+0xc000144220 free  unmarked
+0xc000144240 free  unmarked
+0xc000144260 free  unmarked
+0xc000144280 free  unmarked
+0xc0001442a0 free  unmarked
+0xc0001442c0 free  unmarked
+0xc0001442e0 free  unmarked
+0xc000144300 free  unmarked
+0xc000144320 free  unmarked
+0xc000144340 free  unmarked
+0xc000144360 free  unmarked
+0xc000144380 free  unmarked
+0xc0001443a0 free  unmarked
+0xc0001443c0 free  unmarked
+0xc0001443e0 free  unmarked
+0xc000144400 free  unmarked
+0xc000144420 free  unmarked
+0xc000144440 free  unmarked
+0xc000144460 free  unmarked
+0xc000144480 free  unmarked
+0xc0001444a0 free  unmarked
+0xc0001444c0 fre
+...[output truncated]...
+goroutine 244 gp=0xc000545860 m=nil [chan receive]:
+runtime.gopark(0xc0000c8438?, 0xc000240f58?, 0xfe?, 0x5e?, 0xc000240ef8?)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/proc.go:474 +0xca fp=0xc000240ec8 sp=0xc000240ea8 pc=0x4c670a
+runtime.chanrecv(0xc0000385b0, 0xc000240f80, 0x1)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/chan.go:667 +0x44f fp=0xc000240f40 sp=0xc000240ec8 pc=0x45352f
+runtime.chanrecv2(0x129f973?, 0x0?)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/chan.go:514 +0x12 fp=0xc000240f68 sp=0xc000240f40 pc=0x4530d2
+zeros3.newPackWriter.func1()
+	/home/user/zeros3/zeros3.go:14805 +0xc5 fp=0xc000240fe0 sp=0xc000240f68 pc=0x12b5865
+runtime.goexit({})
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0xc000240fe8 sp=0xc000240fe0 pc=0x4cdee1
+created by zeros3.newPackWriter in goroutine 166
+	/home/user/zeros3/zeros3.go:14803 +0x465
+
+goroutine 245 gp=0xc000545a40 m=nil [chan receive]:
+runtime.gopark(0xc000169ea0?, 0x4864d3?, 0xa0?, 0x9e?, 0x12b53b4?)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/proc.go:474 +0xca fp=0xc000169e70 sp=0xc000169e50 pc=0x4c670a
+runtime.chanrecv(0xc000410620, 0xc000169fb8, 0x1)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/chan.go:667 +0x44f fp=0xc000169ee8 sp=0xc000169e70 pc=0x45352f
+runtime.chanrecv2(0x0?, 0x0?)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/chan.go:514 +0x12 fp=0xc000169f10 sp=0xc000169ee8 pc=0x4530d2
+zeros3.newPackWriter.func2()
+	/home/user/zeros3/zeros3.go:14814 +0xf2 fp=0xc000169fe0 sp=0xc000169f10 pc=0x12b54d2
+runtime.goexit({})
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0xc000169fe8 sp=0xc000169fe0 pc=0x4cdee1
+created by zeros3.newPackWriter in goroutine 166
+	/home/user/zeros3/zeros3.go:14812 +0x4cb
+
+--- FAIL TestRepack_CrashPoints (0.0s)
+the test did not report a result
+[t1run] process: exit status 2
+=== RUN   TestRepack_CrashPoints
+=== RUN   TestRepack_CrashPoints/replacement_staging_just_created
+=== RUN   TestRepack_CrashPoints/partial_pack_write
+=== RUN   TestRepack_CrashPoints/write_complete,_before_fsync
+=== RUN   TestRepack_CrashPoints/after_replacement_fsync
+=== RUN   TestRepack_CrashPoints/after_replacement_validation
+=== RUN   TestRepack_CrashPoints/before_publish_rename
+=== RUN   TestRepack_CrashPoints/after_rename,_before_dir_fsync
+=== RUN   TestRepack_CrashPoints/first_replacement_published
+=== RUN   TestRepack_CrashPoints/second_replacement_mid-write
+=== RUN   TestRepack_CrashPoints/second_replacement_published
+runtime: marked free object in span 0x7f1b14c81920, elemsize=64 freeindex=74 (bad use of unsafe.Pointer or having race conditions? try -d=checkptr or -race)
+0xc000034000 alloc unmarked
+0xc000034040 alloc unmarked
+0xc000034080 alloc unmarked
+0xc0000340c0 alloc unmarked
+0xc000034100 alloc unmarked
+0xc000034140 alloc unmarked
+0xc000034180 alloc unmarked
+0xc0000341c0 alloc unmarked
+0xc000034200 alloc unmarked
+0xc000034240 alloc unmarked
+0xc000034280 alloc unmarked
+0xc0000342c0 alloc unmarked
+0xc000034300 alloc unmarked
+0xc000034340 alloc unmarked
+0xc000034380 alloc unmarked
+0xc0000343c0 alloc unmarked
+0xc000034400 alloc unmarked
+0xc000034440 alloc unmarked
+0xc000034480 alloc unmarked
+0xc0000344c0 alloc unmarked
+0xc000034500 alloc unmarked
+0xc000034540 alloc unmarked
+0xc000034580 alloc unmarked
+0xc0000345c0 alloc unmarked
+0xc000034600 alloc unmarked
+0xc000034640 alloc unmarked
+0xc000034680 alloc unmarked
+0xc0000346c0 alloc unmarked
+0xc000034700 alloc unmarked
+0xc000034740 alloc unmarked
+0xc000034780 alloc unmarked
+0xc0000347c0 alloc unmarked
+0xc000034800 alloc unmarked
+0xc000034840 alloc unmarked
+0xc000034880 alloc unmarked
+0xc0000348c0 alloc unmarked
+0xc000034900 alloc unmarked
+0xc000034940 alloc unmarked
+0xc000034980 alloc unmarked
+0xc0000349c0 alloc unmarked
+0xc000034a00 alloc unma
+...[output truncated]...
+b40 m=nil [chan receive]:
+runtime.gopark(0xc0000d2138?, 0xc000244f58?, 0xfe?, 0x5e?, 0xc000244ef8?)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/proc.go:474 +0xca fp=0xc000244ec8 sp=0xc000244ea8 pc=0x4c670a
+runtime.chanrecv(0xc000038930, 0xc000244f80, 0x1)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/chan.go:667 +0x44f fp=0xc000244f40 sp=0xc000244ec8 pc=0x45352f
+runtime.chanrecv2(0x129f973?, 0x0?)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/chan.go:514 +0x12 fp=0xc000244f68 sp=0xc000244f40 pc=0x4530d2
+zeros3.newPackWriter.func1()
+	/home/user/zeros3/zeros3.go:14805 +0xc5 fp=0xc000244fe0 sp=0xc000244f68 pc=0x12b5865
+runtime.goexit({})
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0xc000244fe8 sp=0xc000244fe0 pc=0x4cdee1
+created by zeros3.newPackWriter in goroutine 119
+	/home/user/zeros3/zeros3.go:14803 +0x465
+
+goroutine 157 gp=0xc0001ed860 m=nil [chan receive]:
+runtime.gopark(0xc0000d2100?, 0xc000276f28?, 0xfe?, 0x5e?, 0xc000276ec8?)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/proc.go:474 +0xca fp=0xc000276e98 sp=0xc000276e78 pc=0x4c670a
+runtime.chanrecv(0xc0006764d0, 0xc000276fa8, 0x1)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/chan.go:667 +0x44f fp=0xc000276f10 sp=0xc000276e98 pc=0x45352f
+runtime.chanrecv2(0xc0000d20c0?, 0xc00020c4b0?)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/chan.go:514 +0x12 fp=0xc000276f38 sp=0xc000276f10 pc=0x4530d2
+zeros3.newPackWriter.func3()
+	/home/user/zeros3/zeros3.go:14835 +0x12e fp=0xc000276fe0 sp=0xc000276f38 pc=0x12b52ee
+runtime.goexit({})
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0xc000276fe8 sp=0xc000276fe0 pc=0x4cdee1
+created by zeros3.newPackWriter in goroutine 119
+	/home/user/zeros3/zeros3.go:14833 +0x53a
+
+t1run race: 1327 selected, 1327 fresh, 0 reused, 1296 passed, 29 skipped, 2 failed; build 0.0s wall 700.6s (test wall 3614s, cpu 2578s = 92% of 4 jobs) bin=e47f2aac9dc5 id=20b986ce
