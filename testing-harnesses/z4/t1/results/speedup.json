@@ -86,5 +86,59 @@
    "c1_own_hardware": 1325,
    "new": 1200
   }
+ },
+ "final_qualification_same_session": {
+  "source_fingerprint": "aee6b5c60db5",
+  "git_head": "bf3e82b24b4ab0fafa3ef68c41ece06726abf4a2",
+  "note": "serial `go test ./...` and the optimized runner, same machine and tree, tests 1320 (1294 pass, 26 allowed skip, 0 fail), outcomes identical (t1_equivalence)",
+  "normal": {
+   "conventional_s": 596,
+   "t1run_s": 193,
+   "speedup": 3.09
+  },
+  "race": {
+   "conventional_s": 2837,
+   "t1run_s": 834,
+   "speedup": 3.4
+  },
+  "authority_hook_s": 315,
+  "authority_native_s": 61,
+  "g3_scale_1m_s": {
+   "baseline_total": 1266,
+   "optimized_qualification": 823,
+   "optimized_run_alone": 846,
+   "reduction_pct": 35.0,
+   "objects": 1000000,
+   "pin_records": 50000
+  },
+  "g5_migrate_cli": {
+   "1GiB": {
+    "wall_s": 52.7,
+    "rss_mib": 84.9,
+    "baseline": "54.5 s, 84-87 MiB"
+   },
+   "2GiB": {
+    "wall_s": 99.8,
+    "rss_mib": 100.2,
+    "baseline": "94.8 s, 98 MiB (5% slower, 2% higher RSS)"
+   }
+  },
+  "zn7_decode_MiBps_workers_1_2_4": {
+   "pythia14m": [
+    137,
+    209,
+    319
+   ],
+   "smollm2_q4_0": [
+    20,
+    37,
+    67
+   ],
+   "smollm2_iq3_derived": [
+    3,
+    5,
+    8
+   ]
+  }
  }
 }

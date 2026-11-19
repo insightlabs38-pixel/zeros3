@@ -1,0 +1,38 @@
+{
+ "cdc": {
+  "peak_rss_over_baseline_MiB": 21,
+  "physical_bytes": 83940850,
+  "range_4k_ms": 0.14656640625,
+  "range_4k_read_amplification": 23.32849407196045,
+  "replay_MiB_s": {
+   "all_files_default_workers_MiB_s": 534.7414190458761,
+   "workers_1_MiB_s": 585.1677529263761,
+   "workers_2_MiB_s": 593.5362999604683,
+   "workers_4_MiB_s": 594.6573007602848
+  }
+ },
+ "closure_bytes": 45919011,
+ "closure_components": 11180,
+ "encode_MiB_s": 0.5331546433168931,
+ "encode_seconds": 393.787323753,
+ "files": 8,
+ "logical_bytes": 220148049,
+ "physical_ratio_rep_over_cdc": 0.5630770119673556,
+ "plan_forms": {
+  "rep": 8
+ },
+ "representation": {
+  "peak_rss_over_baseline_MiB": 411,
+  "physical_bytes": 47265163,
+  "range_4k_ms": 3931.3025546875,
+  "range_4k_read_amplification": 17931.168795585632,
+  "replay_MiB_s": {
+   "all_files_default_workers_MiB_s": 6.887242786706562,
+   "workers_1_MiB_s": 5.635529104120527,
+   "workers_2_MiB_s": 5.813876206511164,
+   "workers_4_MiB_s": 6.370613442453719
+  }
+ },
+ "reused_bytes": -14621447,
+ "sum_added_bytes_per_object": 31297564
+}

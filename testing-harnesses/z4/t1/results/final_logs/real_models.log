@@ -1,0 +1,7 @@
+=== RUN   TestAuthorityZN7RealModels
+    zeros3_authority_test.go:5027: pythia14m: logical=140719600 cdc=141107890 final=124391735 (0.882x CDC) containers=4 migrate=7s
+    zeros3_authority_test.go:5027: smollm2-q4_0: logical=363385048 cdc=362800115 final=272593021 (0.751x CDC) containers=1 migrate=51s
+    zeros3_authority_test.go:5027: smollm2-iq3: logical=449907512 cdc=376259081 final=272731159 (0.725x CDC) containers=2 migrate=5m35s
+--- PASS: TestAuthorityZN7RealModels (666.81s)
+PASS
+ok  	zeros3	666.859s

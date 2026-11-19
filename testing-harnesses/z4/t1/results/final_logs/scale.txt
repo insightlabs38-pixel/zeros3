@@ -1,0 +1,17 @@
+    zeros3_authority_test.go:3453: 1000000 objects written in 2m34.625584051s
+    zeros3_authority_test.go:3466: 50000 pin records in 38.270669353s
+--- PASS: TestAuthorityScaleFixture (193.06s)
+PASS
+10904447929	/tmp/claude-0/qual-scratch/scale/store
+stats rc=0 wall=14.96s rss=3521164KB
+verify rc=0 wall=11.50s rss=3494756KB
+verify_deep rc=0 wall=60.72s rss=3578204KB
+gc_dry rc=0 wall=13.41s rss=3751288KB
+migrate_sample rc=0 wall=326.09s rss=1423104KB
+status rc=0 wall=7.65s rss=521240KB
+verify_after rc=0 wall=14.08s rss=3490268KB
+gc_apply rc=0 wall=16.86s rss=3520108KB
+repack rc=0 wall=12.40s rss=3611124KB
+verify_final rc=0 wall=60.41s rss=3637044KB
+revert_all rc=0 wall=64.53s rss=1138944KB
+verify_reverted rc=0 wall=12.19s rss=3679156KB
