@@ -187,3 +187,28 @@ func FuzzMatchExact(f *testing.F) {
 		checkExact(t, [][]byte{base}, tgt, ops)
 	})
 }
+
+// BenchmarkMatchUnrelated is the hash-bound case: nothing matches, so every target byte is hashed and tested.
+func BenchmarkMatchUnrelated(b *testing.B) {
+	base, tgt := rnd(1, 8<<20), rnd(2, 32<<20)
+	x, err := BuildIndex([][]byte{base}, DefaultParams())
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(tgt)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		x.Match(tgt)
+	}
+}
+
+// BenchmarkBuildIndex is the base-hashing and table-insert cost per base.
+func BenchmarkBuildIndex(b *testing.B) {
+	base := rnd(1, 32<<20)
+	b.SetBytes(int64(len(base)))
+	for i := 0; i < b.N; i++ {
+		if _, err := BuildIndex([][]byte{base}, DefaultParams()); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

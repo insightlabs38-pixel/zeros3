@@ -97,6 +97,17 @@ type PredStats struct {
 	Work            int64
 }
 
+func (a *PredStats) add(b PredStats) {
+	a.Tokens += b.Tokens
+	a.Matches += b.Matches
+	a.Escapes += b.Escapes
+	for i := range a.IdxHist {
+		a.IdxHist[i] += b.IdxHist[i]
+	}
+	a.LenExact += b.LenExact
+	a.Work += b.Work
+}
+
 type window struct {
 	plain     []byte
 	base, end int // window covers [base, end); candidates are searched at positions in [start, end)
@@ -251,40 +262,41 @@ func (w *window) search(pos, capLen int) ([]cand, int, bool) {
 	if capLen >= n && pos+n <= w.end {
 		h := hashAt(w.plain, pos, n)
 		q := int(w.headGet(h))
-		maxc := w.prof.MaxCand
-		for steps := 0; q != 0 && steps < w.prof.MaxChain; steps++ {
-			qa := w.base + q - 1
+		// The chain walk is the analysis hot loop: everything it needs is held in locals.
+		prof, plain, prev, base, work := w.prof, w.plain, &w.prev, w.base, w.work
+		maxc, maxChain, frontier, nice := prof.MaxCand, prof.MaxChain, prof.Frontier, prof.Nice
+		for steps := 0; q != 0 && steps < maxChain; steps++ {
+			qa := base + q - 1
 			d := pos - qa
 			if d <= 0 || d > 32768 {
 				break
 			}
-			var l int
-			if w.prof.Frontier && lmax >= n && lmax < capLen && w.plain[qa+lmax] != w.plain[pos+lmax] {
-				w.work++ // cannot beat the best so far (zlib's quick reject)
-				goto next
-			}
-			l = matchLen(w.plain, qa, pos, capLen)
-			w.work += int64(l) + 1
-			if l >= n {
-				if l > lmax {
-					lmax = l
-				}
-				if !w.prof.Frontier || l == lmax && (len(out) == 0 || out[len(out)-1].length < l) {
-					if len(out) < maxc {
-						out = append(out, cand{d, l})
+			if frontier && lmax >= n && lmax < capLen && plain[qa+lmax] != plain[pos+lmax] {
+				work++ // cannot beat the best so far (zlib's quick reject)
+			} else {
+				l := matchLen(plain, qa, pos, capLen)
+				work += int64(l) + 1
+				if l >= n {
+					if l > lmax {
+						lmax = l
+					}
+					if !frontier || l == lmax && (len(out) == 0 || out[len(out)-1].length < l) {
+						if len(out) < maxc {
+							out = append(out, cand{d, l})
+						}
+					}
+					if nice > 0 && l >= nice {
+						break
 					}
 				}
-				if nice := w.prof.Nice; nice > 0 && l >= nice {
-					break
-				}
 			}
-		next:
-			nq := int(w.prev[qa&32767])
+			nq := int(prev[qa&32767])
 			if nq >= q { // stale link
 				break
 			}
 			q = nq
 		}
+		w.work = work
 	}
 	if w.work > w.budget {
 		return nil, 0, false

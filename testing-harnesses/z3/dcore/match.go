@@ -18,6 +18,35 @@ import (
 	"math/bits"
 )
 
+// The anchor window is hashed with a cyclic-polynomial (buzhash) rolling hash: one rotate and two table xors
+// per byte, a dependency chain of two operations (the multiplicative hash it replaces had five). Anchors are
+// filters only, so the hash can change without changing what any stored delta decodes to.
+var bzT = func() (t [256]uint64) {
+	s := uint64(0x9e3779b97f4a7c15)
+	for i := range t {
+		s += 0x9e3779b97f4a7c15
+		z := s
+		z = (z ^ z>>30) * 0xbf58476d1ce4e5b9
+		z = (z ^ z>>27) * 0x94d049bb133111eb
+		t[i] = z ^ z>>31
+	}
+	return
+}()
+
+// rollInit hashes the window b (len(b) = w <= 64).
+func rollInit(b []byte) uint64 {
+	var h uint64
+	for _, v := range b {
+		h = bits.RotateLeft64(h, 1) ^ bzT[v]
+	}
+	return h
+}
+
+// rollNext slides a w-byte window one byte: out leaves, in enters.
+func rollNext(h uint64, out, in byte, w int) uint64 {
+	return bits.RotateLeft64(h, 1) ^ bits.RotateLeft64(bzT[out], w) ^ bzT[in]
+}
+
 // ErrTooLarge reports an input whose size cannot be represented by the
 // 40-bit virtual offsets of an Index. It is returned, never truncated.
 var ErrTooLarge = errors.New("dcore: input exceeds addressable range")
@@ -30,7 +59,6 @@ const (
 	posMask  = 1<<posBits - 1
 	maxTotal = int64(1)<<posBits - 2
 	maxBases = 1 << 16
-	hashP    = 0x9e3779b97f4a7c15
 	sampleK  = 0xd6e8feb86659fd93
 )
 
@@ -73,8 +101,7 @@ type Index struct {
 	bases  [][]byte
 	starts []int64 // virtual start of each base
 	total  int64
-	nbits  uint // sampling: an anchor is kept when the top nbits of h*sampleK are zero
-	pow    uint64
+	nbits  uint     // sampling: an anchor is kept when the top nbits of h*sampleK are zero
 	table  []uint64 // tag<<posBits | (virtual offset + 1); 0 = empty
 	tmask  uint64
 	tshift uint
@@ -112,11 +139,6 @@ func BuildIndex(bases [][]byte, p Params) (*Index, error) {
 	x := &Index{p: p, bases: bases, starts: starts, total: total}
 	for x.nbits = uint(p.MinSampleBits); x.total>>x.nbits > int64(p.MaxAnchors); x.nbits++ {
 	}
-	pow := uint64(1)
-	for i := 0; i < p.Window-1; i++ {
-		pow *= hashP
-	}
-	x.pow = pow
 	est := int(x.total>>x.nbits) + len(bases) + 64
 	tbits := uint(4)
 	for 1<<tbits < 2*est {
@@ -125,10 +147,17 @@ func BuildIndex(bases [][]byte, p Params) (*Index, error) {
 	x.table = make([]uint64, 1<<tbits)
 	x.tmask = 1<<tbits - 1
 	x.tshift = 64 - tbits
+	var found []anchor
 	for bi, b := range bases {
-		x.indexBase(bi, b)
+		found = x.collect(found, bi, b)
 	}
+	x.insertAll(found)
 	return x, nil
+}
+
+type anchor struct {
+	m uint64 // mix64 of the window hash: the table slot and tag derive from it
+	v int64
 }
 
 func (x *Index) sampled(h uint64) bool {
@@ -143,34 +172,59 @@ func mix64(v uint64) uint64 {
 	return v ^ (v >> 31)
 }
 
-func (x *Index) hash0(b []byte) uint64 {
-	var h uint64
-	for _, v := range b[:x.p.Window] {
-		h = h*hashP + uint64(v) + 1
-	}
-	return h
-}
+func (x *Index) hash0(b []byte) uint64 { return rollInit(b[:x.p.Window]) }
 
-func (x *Index) indexBase(bi int, b []byte) {
+// collect appends the sampled anchors of base bi in position order.
+func (x *Index) collect(out []anchor, bi int, b []byte) []anchor {
 	w := x.p.Window
 	if len(b) < w {
-		return
+		return out
 	}
 	h := x.hash0(b)
 	vs := x.starts[bi]
 	for i := 0; ; i++ {
 		if x.sampled(h) {
-			x.insert(h, vs+int64(i))
+			out = append(out, anchor{mix64(h), vs + int64(i)})
 		}
 		if i+w >= len(b) {
-			return
+			return out
 		}
-		h = (h-(uint64(b[i])+1)*x.pow)*hashP + uint64(b[i+w]) + 1
+		h = rollNext(h, b[i], b[i+w], w)
 	}
 }
 
-func (x *Index) insert(h uint64, voff int64) {
-	m := mix64(h)
+// insertAll fills the table region by region. Anchors land at random slots of a table far larger than the cache, so
+// inserting in position order costs a cache miss each; a stable counting sort on the top slot bits keeps one region
+// resident while it fills. Anchors of one hash keep their position order, so which of them hold a slot is unchanged.
+func (x *Index) insertAll(a []anchor) {
+	const regionBits = 8
+	if len(a) < 1<<14 || x.tshift > 64-regionBits-4 {
+		for _, e := range a {
+			x.insertM(e.m, e.v)
+		}
+		return
+	}
+	var count [1<<regionBits + 1]int
+	for _, e := range a {
+		count[e.m>>(64-regionBits)+1]++
+	}
+	for i := 1; i < len(count); i++ {
+		count[i] += count[i-1]
+	}
+	sorted := make([]anchor, len(a))
+	for _, e := range a {
+		r := e.m >> (64 - regionBits)
+		sorted[count[r]] = e
+		count[r]++
+	}
+	for _, e := range sorted {
+		x.insertM(e.m, e.v)
+	}
+}
+
+func (x *Index) insert(h uint64, voff int64) { x.insertM(mix64(h), voff) }
+
+func (x *Index) insertM(m uint64, voff int64) {
 	slot := m >> x.tshift
 	tag := (m >> 8) & 0xffffff
 	n := 0
@@ -276,7 +330,7 @@ func (x *Index) Match(t []byte) []Op {
 			if i+w >= len(t) {
 				break
 			}
-			h = (h-(uint64(t[i])+1)*x.pow)*hashP + uint64(t[i+w]) + 1
+			h = rollNext(h, t[i], t[i+w], w)
 			i++
 		}
 	}

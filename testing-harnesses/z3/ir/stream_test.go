@@ -202,3 +202,98 @@ func TestMaterializeRange(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkEncodeStreamGz measures streaming analysis of a real gzip file (P8_GZ=path, first P8_GZ_MIB MiB of
+// the compressed stream, Workers from P8_WORKERS): go test -bench EncodeStreamGz -run x ./ir
+func BenchmarkEncodeStreamGz(b *testing.B) {
+	path := os.Getenv("P8_GZ")
+	if path == "" {
+		b.Skip("set P8_GZ")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	mib := 4
+	fmt.Sscan(os.Getenv("P8_GZ_MIB"), &mib)
+	workers := 1
+	fmt.Sscan(os.Getenv("P8_WORKERS"), &workers)
+	hdr, err := deflate.GzipHeader(bytes.NewReader(raw))
+	if err != nil {
+		b.Fatal(err)
+	}
+	body := raw[len(hdr):]
+	if len(body) > mib<<20 {
+		body = body[:mib<<20] // a truncated stream: analysis stops at the cut, which is all the timing needs
+	}
+	b.SetBytes(int64(len(body)))
+	for i := 0; i < b.N; i++ {
+		var sink memSink
+		_, _, err := EncodeStream(bytes.NewReader(body), StreamConfig{Target: 16 << 10, Profile: AutoProfile, Workers: workers}, &sink)
+		if err != nil && len(body) == len(raw)-len(hdr) {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Unit workers never change the output: streaming encode, whole-stream encode and both decoders agree for one and
+// several workers, on every producer stream.
+func TestUnitWorkersAreByteIdentical(t *testing.T) {
+	for _, st := range testStreams(t) {
+		t.Run(st.name, func(t *testing.T) {
+			var ref memSink
+			rs, _, err := EncodeStream(bytes.NewReader(st.raw), StreamConfig{Target: 16 << 10, Profile: AutoProfile, Workers: 1}, &ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, w := range []int{2, 5} {
+				var got memSink
+				gs, _, err := EncodeStream(bytes.NewReader(st.raw), StreamConfig{Target: 16 << 10, Profile: AutoProfile, Workers: w}, &got)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(rs.Skeleton, gs.Skeleton) || rs.UnitBytes != gs.UnitBytes || rs.Pred != gs.Pred || len(ref.units) != len(got.units) || !bytes.Equal(ref.plain.Bytes(), got.plain.Bytes()) {
+					t.Fatalf("workers=%d: stream encode differs", w)
+				}
+				for i := range ref.units {
+					if !bytes.Equal(ref.units[i], got.units[i]) {
+						t.Fatalf("workers=%d: unit %d differs", w, i)
+					}
+				}
+				var out bytes.Buffer
+				err = ReconstructStream(&out, gs.Skeleton, func(i int) ([]byte, error) { return got.units[i], nil }, bytes.NewReader(got.plain.Bytes()), StreamDecodeOptions{Workers: w})
+				if err != nil || !bytes.Equal(out.Bytes(), st.raw) {
+					t.Fatalf("workers=%d: reconstruction differs (%v)", w, err)
+				}
+			}
+			s, err := deflate.Parse(st.raw, deflate.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p1, err := Encode(s, Config{Codec: Pred, Policy: Policy{Kind: PTokRun, Target: 16 << 10}, Profile: AutoProfile, Workers: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p4, err := Encode(s, Config{Codec: Pred, Policy: Policy{Kind: PTokRun, Target: 16 << 10}, Profile: AutoProfile, Workers: 4})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(p1.Skeleton, p4.Skeleton) || len(p1.Units) != len(p4.Units) || p1.Pred != p4.Pred {
+				t.Fatal("whole-stream encode differs across worker counts")
+			}
+			for i := range p1.Units {
+				if !bytes.Equal(p1.Units[i], p4.Units[i]) {
+					t.Fatalf("whole-stream unit %d differs", i)
+				}
+			}
+			var a, b bytes.Buffer
+			unit := func(i int) ([]byte, error) { return p1.Units[i], nil }
+			if err := Reconstruct(&a, p1.Skeleton, unit, s.Plain, DecodeOptions{Workers: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if err := Reconstruct(&b, p1.Skeleton, unit, s.Plain, DecodeOptions{Workers: 4}); err != nil || !bytes.Equal(a.Bytes(), b.Bytes()) {
+				t.Fatalf("whole-stream decode differs across worker counts: %v", err)
+			}
+		})
+	}
+}

@@ -116,11 +116,11 @@ import (
 //    25840    Portable snapshot bundles (`zeros3 bundle`)
 //    27037    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    44565    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    48780    Windowed and estimated similarity deltas (extracted dcore)
-//    50288    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    57902    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    64174    CLI dispatch, HTTP server/startup, and main
+//    44750    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    49259    Windowed and estimated similarity deltas (extracted dcore)
+//    50781    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    58421    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    64693    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -33480,6 +33480,7 @@ type manifestReaderAt struct {
 	abody authBody
 	aInit bool
 	aNone bool
+	wc    *authWinCache // decoded windows shared with the other readers of a planning pass
 }
 
 func (s *Store) newManifestReaderAt(man manifestV1) *manifestReaderAt {
@@ -33575,6 +33576,10 @@ func (m *manifestReaderAt) initAuthBody() {
 	}
 	ctx := m.s.newAuthCtx()
 	ctx.pieceCap = authReaderAtPieceBytes
+	ctx.wc = m.wc
+	if m.wc != nil {
+		ctx.pieceCap, ctx.frameCap = authPlanPieceBytes, authProofFrames
+	}
 	if b, _, err := ctx.body(sha, 0, 1); err == nil {
 		m.abody = b
 	}
@@ -33615,6 +33620,12 @@ func (s *Store) repConstruct(man manifestV1) (*repRoot, error) {
 // manifest's object without publishing a root for it; floor is the capability
 // level its closure needs.
 func (s *Store) repConstructFor(man manifestV1, live func() bool) (*repRoot, int, error) {
+	return s.repConstructAt(man, nil, live)
+}
+
+// repConstructAt is repConstructFor over src, the object's logical bytes when the caller already holds them
+// (nil: read them through the manifest). The caller must have read src from this manifest's verified chunks.
+func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool) (*repRoot, int, error) {
 	if man.TotalLength < 1 {
 		return nil, 0, errRepUnsupported
 	}
@@ -33625,8 +33636,12 @@ func (s *Store) repConstructFor(man manifestV1, live func() bool) (*repRoot, int
 	if man.TotalLength > repMaxInspect {
 		return nil, 0, fmt.Errorf("%w: object of %d bytes is above the analysis budget", errRepUnsupported, man.TotalLength)
 	}
-	ra := s.newManifestReaderAt(man)
-	defer ra.close()
+	ra := src
+	if ra == nil {
+		mra := s.newManifestReaderAt(man)
+		defer mra.close()
+		ra = mra
+	}
 	kind, ok := repCandidate(ra, man.TotalLength)
 	if !ok {
 		return nil, 0, errRepUnsupported
@@ -36402,6 +36417,18 @@ type repIRPredStats struct {
 }
 
 // Port source: zeros3-z3/ir/predict.go
+func (a *repIRPredStats) add(b repIRPredStats) {
+	a.Tokens += b.Tokens
+	a.Matches += b.Matches
+	a.Escapes += b.Escapes
+	for i := range a.IdxHist {
+		a.IdxHist[i] += b.IdxHist[i]
+	}
+	a.LenExact += b.LenExact
+	a.Work += b.Work
+}
+
+// Port source: zeros3-z3/ir/predict.go
 type repIRwindow struct {
 	plain     []byte
 	base, end int // window covers [base, end); candidates are searched at positions in [start, end)
@@ -36569,40 +36596,41 @@ func (w *repIRwindow) search(pos, capLen int) ([]repIRcand, int, bool) {
 	if capLen >= n && pos+n <= w.end {
 		h := repIRhashAt(w.plain, pos, n)
 		q := int(w.headGet(h))
-		maxc := w.prof.MaxCand
-		for steps := 0; q != 0 && steps < w.prof.MaxChain; steps++ {
-			qa := w.base + q - 1
+		// The chain walk is the analysis hot loop: everything it needs is held in locals.
+		prof, plain, prev, base, work := w.prof, w.plain, &w.prev, w.base, w.work
+		maxc, maxChain, frontier, nice := prof.MaxCand, prof.MaxChain, prof.Frontier, prof.Nice
+		for steps := 0; q != 0 && steps < maxChain; steps++ {
+			qa := base + q - 1
 			d := pos - qa
 			if d <= 0 || d > 32768 {
 				break
 			}
-			var l int
-			if w.prof.Frontier && lmax >= n && lmax < capLen && w.plain[qa+lmax] != w.plain[pos+lmax] {
-				w.work++ // cannot beat the best so far (zlib's quick reject)
-				goto next
-			}
-			l = repIRmatchLen(w.plain, qa, pos, capLen)
-			w.work += int64(l) + 1
-			if l >= n {
-				if l > lmax {
-					lmax = l
-				}
-				if !w.prof.Frontier || l == lmax && (len(out) == 0 || out[len(out)-1].length < l) {
-					if len(out) < maxc {
-						out = append(out, repIRcand{d, l})
+			if frontier && lmax >= n && lmax < capLen && plain[qa+lmax] != plain[pos+lmax] {
+				work++ // cannot beat the best so far (zlib's quick reject)
+			} else {
+				l := repIRmatchLen(plain, qa, pos, capLen)
+				work += int64(l) + 1
+				if l >= n {
+					if l > lmax {
+						lmax = l
+					}
+					if !frontier || l == lmax && (len(out) == 0 || out[len(out)-1].length < l) {
+						if len(out) < maxc {
+							out = append(out, repIRcand{d, l})
+						}
+					}
+					if nice > 0 && l >= nice {
+						break
 					}
 				}
-				if nice := w.prof.Nice; nice > 0 && l >= nice {
-					break
-				}
 			}
-		next:
-			nq := int(w.prev[qa&32767])
+			nq := int(prev[qa&32767])
 			if nq >= q { // stale link
 				break
 			}
 			q = nq
 		}
+		w.work = work
 	}
 	if w.work > w.budget {
 		return nil, 0, false
@@ -38138,6 +38166,9 @@ type repIRStreamConfig struct {
 	// Auto profile: units 0..ProbeFirst-1 and every ProbeEvery-th unit are
 	// encoded with every profile and the smallest wins until the next probe.
 	ProbeFirst, ProbeEvery int
+	// Workers is how many units are encoded concurrently (0: up to four, bounded by GOMAXPROCS; 1: on the parsing
+	// goroutine). A unit depends only on the plaintext and its own tokens, so the output is byte-identical for any value.
+	Workers int
 }
 
 // Port source: zeros3-z3/ir/stream.go
@@ -38233,6 +38264,22 @@ type repIRstreamEnc struct {
 	stored     []byte
 	stats      repIRStreamStats
 	pr         repIRpredictor
+	workers    int
+	sem        chan struct{}
+	pending    []*repIRunitJob // units encoding or encoded but not yet handed to the sink, in order
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// unitJob is one unit handed to the encoder pool: private copies of its plaintext window and token runs.
+type repIRunitJob struct {
+	k             int
+	plain         []byte
+	rel, plainLen int
+	runs          []repIRRun
+	data          []byte
+	pred          repIRPredStats
+	err           error
+	done          chan struct{}
 }
 
 // Port source: zeros3-z3/ir/stream.go
@@ -38253,6 +38300,13 @@ func repIREncodeStream(r io.Reader, cfg repIRStreamConfig, sink repIRStreamSink)
 	e := &repIRstreamEnc{cfg: cfg, sink: sink, lo: target / 4, hi: target * 4, mask: uint64(repIRpow2floor(target)) - 1}
 	e.win = repDFNewWindow(repIRringFor(e.hi))
 	e.w = repDFNewStreamWriter(&e.cc)
+	e.workers = cfg.Workers
+	if e.workers == 0 {
+		e.workers = min(runtime.GOMAXPROCS(0), 4)
+	}
+	if e.workers > 1 {
+		e.sem = make(chan struct{}, e.workers)
+	}
 	if cfg.Profile != repIRAutoProfile {
 		e.curProf = cfg.Profile
 	}
@@ -38261,6 +38315,9 @@ func repIREncodeStream(r io.Reader, cfg repIRStreamConfig, sink repIRStreamSink)
 		return nil, nil, err
 	}
 	if err := e.flushUnit(); err != nil {
+		return nil, nil, err
+	}
+	if err := e.drain(0); err != nil {
 		return nil, nil, err
 	}
 	if err := e.w.Finish(res.TailPadBits, res.TailPadLen); err != nil {
@@ -38432,39 +38489,92 @@ func (e *repIRstreamEnc) flushUnit() error {
 	rel := int(e.unitPos - wbase)
 	k := e.nunits
 	probe := e.cfg.Profile == repIRAutoProfile && (k < e.cfg.ProbeFirst || k%e.cfg.ProbeEvery == 0)
-	var data []byte
-	var err error
-	if probe {
-		bestSize := int(^uint(0) >> 1)
-		for _, id := range repIRModeProfiles(e.cfg.Mode) {
-			prof := &repIRProfiles[id]
-			p := repIRnewPredictor(plain, prof.ID)
-			d, err := p.encode(e.runs, rel, plainLen, nil)
-			if err != nil {
-				continue
+	job := &repIRunitJob{k: k, plain: plain, rel: rel, plainLen: plainLen, runs: e.runs, done: make(chan struct{})}
+	if e.workers > 1 { // the ring is overwritten as the parse continues
+		job.plain, job.runs = repIRcloneBuf(plain), slices.Clone(e.runs)
+	}
+	switch {
+	case probe:
+		// every profile on the same unit; the smallest wins (the first of equals) and rules the units up to the next probe
+		ids := repIRModeProfiles(e.cfg.Mode)
+		res := make([][]byte, len(ids))
+		var wg sync.WaitGroup
+		for n, id := range ids {
+			run := func() {
+				if d, err := repIRnewPredictor(job.plain, id).encode(job.runs, rel, plainLen, nil); err == nil {
+					res[n] = d
+				}
 			}
-			if len(d) < bestSize {
-				bestSize, data, e.curProf = len(d), d, prof.ID
+			if e.workers > 1 {
+				wg.Add(1)
+				go func() {
+					e.sem <- struct{}{}
+					defer func() { <-e.sem; wg.Done() }()
+					run()
+				}()
+			} else {
+				run()
 			}
 		}
-		if data == nil {
+		wg.Wait()
+		if e.workers > 1 {
+			repIRfreeBuf(job.plain)
+		}
+		bestSize := int(^uint(0) >> 1)
+		for n, d := range res {
+			if d != nil && len(d) < bestSize {
+				bestSize, job.data, e.curProf = len(d), d, ids[n]
+			}
+		}
+		if job.data == nil {
 			return fmt.Errorf("ir: no profile could encode unit %d", k)
 		}
-	} else {
+		close(job.done)
+	case e.workers > 1:
+		prof := e.curProf
+		go func() {
+			e.sem <- struct{}{}
+			defer func() { <-e.sem; close(job.done) }()
+			p := repIRpredictor{plain: job.plain, prof: &repIRProfiles[prof]}
+			if job.data, job.err = p.encode(job.runs, rel, plainLen, nil); job.err != nil {
+				job.err = fmt.Errorf("ir: predictive unit %d: %w", k, job.err)
+			}
+			job.pred = p.Stats
+			repIRfreeBuf(job.plain)
+		}()
+	default:
 		e.pr.plain = plain
 		e.pr.prof = &repIRProfiles[e.curProf]
-		if data, err = e.pr.encode(e.runs, rel, plainLen, nil); err != nil {
-			return fmt.Errorf("ir: predictive unit %d: %w", k, err)
+		job.data, job.err = e.pr.encode(e.runs, rel, plainLen, nil)
+		if job.err != nil {
+			return fmt.Errorf("ir: predictive unit %d: %w", k, job.err)
 		}
+		close(job.done)
 	}
-	if err := e.sink.Unit(k, data); err != nil {
-		return err
-	}
-	e.stats.UnitBytes += int64(len(data))
+	e.pending = append(e.pending, job)
 	e.unitB = repIRuvarint(e.unitB, uint64(plainLen))
 	e.unitB = repIRuvarint(e.unitB, uint64(e.unitTok))
 	e.nunits++
 	e.runs, e.lits, e.unitTok = e.runs[:0], 0, 0
+	return e.drain(2 * e.workers)
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// drain hands finished units to the sink in order until at most keep remain in flight.
+func (e *repIRstreamEnc) drain(keep int) error {
+	for len(e.pending) > keep {
+		j := e.pending[0]
+		<-j.done
+		e.pending = e.pending[1:]
+		if j.err != nil {
+			return j.err
+		}
+		if err := e.sink.Unit(j.k, j.data); err != nil {
+			return err
+		}
+		e.stats.UnitBytes += int64(len(j.data))
+		e.pr.Stats.add(j.pred)
+	}
 	return nil
 }
 
@@ -38472,7 +38582,36 @@ func (e *repIRstreamEnc) flushUnit() error {
 // StreamDecodeOptions bound the streaming reconstruction.
 type repIRStreamDecodeOptions struct {
 	MaxUnitPlain int // largest unit (plaintext bytes) accepted; default 1 MiB
+	// Workers is how many units are decoded ahead of the token writer (0: up to four, bounded by GOMAXPROCS; 1: on
+	// the writing goroutine). A unit decodes from the plaintext alone, so the output is identical for any value.
+	Workers int
 }
+
+// Port source: zeros3-z3/ir/stream.go
+// decodeAhead bounds the plaintext the prefetching decoder runs ahead of the writer.
+const repIRdecodeAhead = 1 << 20
+
+// Port source: zeros3-z3/ir/stream.go
+type repIRunitDecode struct {
+	runs []repIRRun
+	err  error
+	done chan struct{}
+}
+
+// Port source: zeros3-z3/ir/stream.go
+// unitBufs recycles the plaintext copies handed to unit workers (about 150 KiB per unit).
+var repIRunitBufs sync.Pool
+
+// Port source: zeros3-z3/ir/stream.go
+func repIRcloneBuf(b []byte) []byte {
+	if v, _ := repIRunitBufs.Get().(*[]byte); v != nil && cap(*v) >= len(b) {
+		return append((*v)[:0], b...)
+	}
+	return slices.Clone(b)
+}
+
+// Port source: zeros3-z3/ir/stream.go
+func repIRfreeBuf(b []byte) { repIRunitBufs.Put(&b) }
 
 // Port source: zeros3-z3/ir/stream.go
 // ReconstructStream rebuilds the DEFLATE stream from the skeleton, the units
@@ -38491,7 +38630,11 @@ func repIRReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, 
 	if sk.Codec != repIRPred {
 		return repIRcorrupt("streaming reconstruction supports the predictive codec only")
 	}
-	win := repDFNewWindow(opt.MaxUnitPlain + 2*repIRwarmMax + 4096)
+	workers := opt.Workers
+	if workers == 0 {
+		workers = min(runtime.GOMAXPROCS(0), 4)
+	}
+	win := repDFNewWindow(opt.MaxUnitPlain + 2*repIRwarmMax + 4096 + repIRdecodeAhead)
 	var cc repIRcountCRC
 	sw := repDFNewStreamWriter(io.MultiWriter(&cc, w))
 	rd := &repIRplainFeed{r: plain, win: win}
@@ -38535,6 +38678,51 @@ func repIRReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, 
 		lits     uint32
 		unitLeft int
 	)
+	// Units are decoded on a bounded pool ahead of the token writer: each needs only a private copy of its plaintext
+	// window, and the ring holds at most decodeAhead bytes beyond the unit being written.
+	var ahead []*repIRunitDecode
+	nextIssue := 0
+	sem := make(chan struct{}, workers)
+	issue := func() error {
+		for nextIssue < len(sk.Units) && len(ahead) < 2*workers {
+			u := sk.Units[nextIssue]
+			end := startPos[nextIssue] + int64(u.PlainLen)
+			if len(ahead) > 0 && end-pos > repIRdecodeAhead {
+				break
+			}
+			if err := rd.upto(end); err != nil {
+				return err
+			}
+			data, err := unit(nextIssue)
+			if err != nil {
+				return err
+			}
+			wbase := max(0, startPos[nextIssue]-repIRwarmMax)
+			pl := win.Read(wbase, end)
+			d := &repIRunitDecode{done: make(chan struct{})}
+			k, rel, plainLen := nextIssue, int(startPos[nextIssue]-wbase), u.PlainLen
+			job := func() {
+				defer close(d.done)
+				if d.runs, d.err = repIRnewPredictor(pl, 0).decodeUnit(data, rel, plainLen); d.err != nil {
+					d.err = fmt.Errorf("unit %d: %w", k, d.err)
+				}
+			}
+			if workers > 1 {
+				pl, data = repIRcloneBuf(pl), slices.Clone(data)
+				go func() {
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					job()
+					repIRfreeBuf(pl)
+				}()
+			} else {
+				job()
+			}
+			ahead = append(ahead, d)
+			nextIssue++
+		}
+		return nil
+	}
 	loadUnit := func() error {
 		if unitIdx >= len(sk.Units) {
 			return repIRcorrupt("token stream exhausted")
@@ -38543,19 +38731,16 @@ func repIRReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, 
 		if startPos[unitIdx] != pos {
 			return repIRcorrupt("unit %d starts at %d, expected %d", unitIdx, startPos[unitIdx], pos)
 		}
-		if err := rd.upto(pos + int64(u.PlainLen)); err != nil {
+		if err := issue(); err != nil {
 			return err
 		}
-		data, err := unit(unitIdx)
-		if err != nil {
-			return err
+		d := ahead[0]
+		ahead = ahead[1:]
+		<-d.done
+		if d.err != nil {
+			return d.err
 		}
-		wbase := max(0, pos-repIRwarmMax)
-		pl := win.Read(wbase, pos+int64(u.PlainLen))
-		p := repIRnewPredictor(pl, 0)
-		if runs, err = p.decodeUnit(data, int(pos-wbase), u.PlainLen); err != nil {
-			return fmt.Errorf("unit %d: %w", unitIdx, err)
-		}
+		runs = d.runs
 		n, pl2 := 0, 0
 		for _, r := range runs {
 			n += r.tokens()
@@ -44636,6 +44821,7 @@ type xdSrc struct {
 	data []byte
 }
 
+// The similarity sketch (authFeatures) is persisted in records: its hash must not change.
 func xdMix(x uint64) uint64 {
 	x ^= x >> 30
 	x *= 0xbf58476d1ce4e5b9
@@ -44662,137 +44848,39 @@ func xdWindowHash(b []byte) uint64 {
 	return h
 }
 
-type xdBucket struct {
-	h   uint64
-	pos [4]uint32
-	n   uint8
+var xdFlatePools [10]sync.Pool
+
+func xdFlateGet(level int, dst io.Writer) *flate.Writer {
+	if w, _ := xdFlatePools[level].Get().(*flate.Writer); w != nil {
+		w.Reset(dst)
+		return w
+	}
+	w, _ := flate.NewWriter(dst, level)
+	return w
 }
 
-// xdMatch finds COPY/ADD ops with a content-sampled anchor index over the
-// bases: base and target share one sampling rule, so shifted content aligns.
-// Anchors only propose candidates; every COPY is verified byte-for-byte.
-func xdMatch(bases [][]byte, t []byte) []xdOp {
-	total := 0
-	for _, b := range bases {
-		total += len(b)
-	}
-	k := 4
-	for k < total>>18 {
-		k <<= 1
-	}
-	mask := uint64(k - 1)
-	capacity := 1
-	for capacity < 4*(total/k+64) {
-		capacity <<= 1
-	}
-	table := make([]xdBucket, capacity)
-	tmask := uint64(capacity - 1)
-	for bi, b := range bases {
-		if len(b) < xdWindow {
-			continue
-		}
-		h := xdWindowHash(b)
-		for i := 0; ; i++ {
-			if xdMix(h)&mask == 0 {
-				slot := h & tmask
-				for probe := 0; probe < 16; probe++ {
-					v := &table[slot]
-					if v.n == 0 {
-						v.h = h
-					}
-					if v.h == h {
-						if v.n < 4 {
-							v.pos[v.n] = uint32(bi)<<30 | uint32(i)
-							v.n++
-						}
-						break
-					}
-					slot = (slot + 1) & tmask
-				}
-			}
-			if i+xdWindow >= len(b) {
-				break
-			}
-			h = (h-(uint64(b[i])+1)*xdPow)*xdP + uint64(b[i+xdWindow]) + 1
-		}
-	}
-	var ops []xdOp
-	start := 0
-	emit := func(end int) {
-		if end > start {
-			ops = append(ops, xdOp{base: -1, lit: t[start:end], n: int64(end - start)})
-		}
-	}
-	i := 0
-	var h uint64
-	if len(t) >= xdWindow {
-		h = xdWindowHash(t)
-	}
-	for i+xdWindow <= len(t) {
-		if xdMix(h)&mask == 0 {
-			slot := h & tmask
-			bestN, bestBack, bestBase, bestOff := 0, 0, 0, 0
-			for probe := 0; probe < 16; probe++ {
-				v := &table[slot]
-				if v.n == 0 {
-					break
-				}
-				if v.h == h {
-					for _, p := range v.pos[:v.n] {
-						bi, off := int(p>>30), int(p&(1<<30-1))
-						b := bases[bi]
-						f := 0
-						for off+f < len(b) && i+f < len(t) && b[off+f] == t[i+f] {
-							f++
-						}
-						bk := 0
-						for bk < i-start && bk < off && b[off-bk-1] == t[i-bk-1] {
-							bk++
-						}
-						if f >= xdWindow && f+bk > bestN {
-							bestN, bestBack, bestBase, bestOff = f+bk, bk, bi, off-bk
-						}
-					}
-					break
-				}
-				slot = (slot + 1) & tmask
-			}
-			if bestN >= xdMinCopy {
-				emit(i - bestBack)
-				if n := len(ops); n > 0 && ops[n-1].base == bestBase && ops[n-1].off+ops[n-1].n == int64(bestOff) && start == i-bestBack {
-					ops[n-1].n += int64(bestN)
-				} else {
-					ops = append(ops, xdOp{base: bestBase, off: int64(bestOff), n: int64(bestN)})
-				}
-				i = i - bestBack + bestN
-				start = i
-				if i+xdWindow <= len(t) {
-					h = xdWindowHash(t[i:])
-				}
-				continue
-			}
-		}
-		if i+xdWindow >= len(t) {
-			break
-		}
-		h = (h-(uint64(t[i])+1)*xdPow)*xdP + uint64(t[i+xdWindow]) + 1
-		i++
-	}
-	emit(len(t))
-	var pos int64
-	for j := range ops {
-		ops[j].tpos = pos
-		pos += ops[j].n
-	}
-	return ops
+func xdFlatePut(level int, w *flate.Writer) {
+	w.Reset(io.Discard)
+	xdFlatePools[level].Put(w)
 }
 
 func xdDeflate(b []byte, level int) []byte {
 	var out bytes.Buffer
-	w, _ := flate.NewWriter(&out, level)
+	w := xdFlateGet(level, &out)
 	_, _ = w.Write(b)
 	_ = w.Close()
+	xdFlatePut(level, w)
 	return out.Bytes()
+}
+
+// xdDeflateLen is len(xdDeflate(b, level)) without materializing the output.
+func xdDeflateLen(b []byte, level int) int {
+	var cw dwDcore_countWriter
+	w := xdFlateGet(level, &cw)
+	_, _ = w.Write(b)
+	_ = w.Close()
+	xdFlatePut(level, w)
+	return cw.n
 }
 
 func xdInflate(b []byte, limit int64) ([]byte, error) {
@@ -44820,7 +44908,21 @@ func xdEncode(bases []xdSrc, target []byte, frameSpan int64) ([]byte, []xdBaseRe
 		}
 		raw[i] = b.data
 	}
-	ops := xdMatch(raw, target)
+	x, err := dwDcoreBuildIndex(raw, dwDcoreDefaultParams())
+	if err != nil {
+		return nil, nil, errDelta
+	}
+	return xdEncodeOps(bases, xdFromDw(x.Match(target)), target, frameSpan)
+}
+
+// xdEncodeOps serializes a COPY/ADD program already matched against bases.
+func xdEncodeOps(bases []xdSrc, ops []xdOp, target []byte, frameSpan int64) ([]byte, []xdBaseRef, error) {
+	return xdEncodeOpsSum(bases, ops, target, sha256.Sum256(target), frameSpan)
+}
+
+// xdEncodeOpsSum is xdEncodeOps for a caller that knows the SHA-256 of target (the object's committed digest);
+// a wrong digest makes the envelope fail its own decode check, and the migration proof compares it again.
+func xdEncodeOpsSum(bases []xdSrc, ops []xdOp, target []byte, sum [32]byte, frameSpan int64) ([]byte, []xdBaseRef, error) {
 	if len(ops) > xdMaxOps {
 		ops = []xdOp{{base: -1, lit: target, n: int64(len(target))}}
 	}
@@ -44883,7 +44985,6 @@ func xdEncode(bases []xdSrc, target []byte, frameSpan int64) ([]byte, []xdBaseRe
 	}
 	h := append([]byte(xdMagic), xdVersion)
 	h = binary.AppendUvarint(h, uint64(len(target)))
-	sum := sha256.Sum256(target)
 	h = append(h, sum[:]...)
 	h = append(h, byte(len(refs)))
 	for _, r := range refs {
@@ -45611,12 +45712,24 @@ type authCtx struct {
 	pieceOrder [][32]byte
 	pieceBytes int64
 	pieceCap   int64
+	// wc, when set, shares decoded windows of delta bodies between the readers of one planning pass.
+	wc *authWinCache
+	// frameCap is how many decoded frames each in-memory delta body keeps (0: 16); a proof or a planning reader
+	// walking a chain of deltas revisits the frames of its bases.
+	frameCap int
 }
 
 const (
-	authPieceCacheBytes    = 8 << 20 // verified chunks one served request keeps (a base chunk is read through several dependents)
-	authScanPieceBytes     = 2 << 20 // sequential proof / verify / materialize passes
-	authReaderAtPieceBytes = 1 << 20 // the same for a long-lived random-access reader (analysis, migration)
+	authPieceCacheBytes    = 8 << 20   // verified chunks one served request keeps (a base chunk is read through several dependents)
+	authScanPieceBytes     = 2 << 20   // sequential proof / verify / materialize passes
+	authReaderAtPieceBytes = 1 << 20   // the same for a long-lived random-access reader (analysis, migration)
+	authPlanPieceBytes     = 8 << 20   // base chunks a planning reader keeps (its matcher revisits nearby base regions)
+	authPlanWinCacheBytes  = 32 << 20  // planning cache of windowed objects (1 MiB windows)
+	authPlanSrcCacheMin    = 96 << 20  // floor once whole in-memory sources are in scope
+	authPlanWinCacheMax    = 160 << 20 // and what four of the largest in-memory objects may raise it to
+	authProofWinBytes      = 64 << 20  // decoded windows one proof of a windowed body keeps
+	authProofPieceBytes    = 32 << 20  // verified base chunks the same proof keeps
+	authProofFrames        = 96        // decoded frames per delta body a proof keeps (128 KiB of target each)
 )
 
 func (s *Store) newAuthCtx() *authCtx {
@@ -45903,7 +46016,7 @@ func (d *authDeltaBody) loadFrame(i int) ([]xdOp, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(d.order) >= 16 {
+	if len(d.order) >= max(16, d.c.frameCap) {
 		delete(d.frames, d.order[0])
 		d.order = d.order[1:]
 	}
@@ -45969,6 +46082,124 @@ func authWParams(workers int, baseSize int64) dwDcoreWParams {
 	return p
 }
 
+// authWinCache is a byte-bounded LRU of immutable decoded windows (or whole decoded sources) shared by the
+// readers of one planning pass. An entry is keyed by the content SHA-256 of the body it was decoded from, its
+// record generation and its offset, and is built only from verified pieces, so it can be served only while
+// that exact body is the one being read. Proofs and verification never use it: they read physical storage.
+type authWinCache struct {
+	mu                           sync.Mutex
+	budget, used                 int64
+	m                            map[authWinKey]*authWinEnt
+	head, tail                   *authWinEnt // most/least recently used
+	flight                       map[authWinKey]*authWinFlight
+	hits, misses, evicted, bytes atomic.Int64
+}
+
+type authWinKey struct {
+	sha [32]byte
+	gen uint64
+	off int64 // window start; -1 for a whole object
+}
+
+type authWinEnt struct {
+	k          authWinKey
+	data       []byte
+	prev, next *authWinEnt
+}
+
+type authWinFlight struct {
+	done chan struct{}
+	data []byte
+	err  error
+}
+
+// setBudget raises the byte budget (never lowers it below what the cache already holds).
+func (c *authWinCache) setBudget(n int64) {
+	c.mu.Lock()
+	c.budget = max(c.budget, n)
+	c.mu.Unlock()
+}
+
+func newAuthWinCache(budget int64) *authWinCache {
+	return &authWinCache{budget: budget, m: map[authWinKey]*authWinEnt{}, flight: map[authWinKey]*authWinFlight{}}
+}
+
+func (c *authWinCache) unlink(e *authWinEnt) {
+	if e.prev != nil {
+		e.prev.next = e.next
+	} else {
+		c.head = e.next
+	}
+	if e.next != nil {
+		e.next.prev = e.prev
+	} else {
+		c.tail = e.prev
+	}
+	e.prev, e.next = nil, nil
+}
+
+func (c *authWinCache) pushFront(e *authWinEnt) {
+	e.next = c.head
+	if c.head != nil {
+		c.head.prev = e
+	}
+	c.head = e
+	if c.tail == nil {
+		c.tail = e
+	}
+}
+
+// load returns the cached bytes of k or builds them once with fn (concurrent callers wait for the one build).
+// The result is shared and must not be modified. A nil cache calls fn.
+func (c *authWinCache) load(k authWinKey, fn func() ([]byte, error)) ([]byte, error) {
+	if c == nil {
+		return fn()
+	}
+	c.mu.Lock()
+	if e := c.m[k]; e != nil {
+		c.unlink(e)
+		c.pushFront(e)
+		c.mu.Unlock()
+		c.hits.Add(1)
+		return e.data, nil
+	}
+	if f := c.flight[k]; f != nil {
+		c.mu.Unlock()
+		<-f.done
+		if f.err == nil {
+			c.hits.Add(1)
+		}
+		return f.data, f.err
+	}
+	f := &authWinFlight{done: make(chan struct{})}
+	c.flight[k] = f
+	c.mu.Unlock()
+	c.misses.Add(1)
+	data, err := fn()
+	c.mu.Lock()
+	delete(c.flight, k)
+	if err == nil {
+		c.bytes.Add(int64(len(data)))
+		if n := int64(len(data)); n <= c.budget/2 {
+			for c.used+n > c.budget && c.tail != nil {
+				old := c.tail
+				c.unlink(old)
+				delete(c.m, old.k)
+				c.used -= int64(len(old.data))
+				c.evicted.Add(1)
+			}
+			e := &authWinEnt{k: k, data: data}
+			c.m[k] = e
+			c.pushFront(e)
+			c.used += n
+		}
+	}
+	c.mu.Unlock()
+	f.data, f.err = data, err
+	close(f.done)
+	return data, err
+}
+
 // authWinBody serves a ZW1 record: one base, frames decoded a window at a time.
 type authWinBody struct {
 	c       *authCtx
@@ -46007,13 +46238,27 @@ func (b *authWinBody) ReadAt(p []byte, off int64) (int, error) {
 	for n < len(p) && off < b.rec.Size {
 		ws := off / b.wr.maxWindow * b.wr.maxWindow
 		if b.off != ws {
-			if b.pv == nil {
-				b.pv = dwDcore_newPageView(b.base, b.wr.BaseSize, b.wp.PageSize, b.wp.CachePages)
+			decode := func(reuse []byte) ([]byte, error) {
+				if b.pv == nil {
+					b.pv = dwDcore_newPageView(b.base, b.wr.BaseSize, b.wp.PageSize, b.wp.CachePages)
+				}
+				data, err := b.wr.DecodeRangeInto(reuse, &b.scratch, b.pv, ws, min(b.wr.maxWindow, b.rec.Size-ws))
+				if err != nil {
+					b.pv = nil
+					return nil, fmt.Errorf("%w: %v", errAuthMismatch, err)
+				}
+				return data, nil
 			}
-			data, err := b.wr.DecodeRangeInto(b.win, &b.scratch, b.pv, ws, min(b.wr.maxWindow, b.rec.Size-ws))
+			var data []byte
+			var err error
+			if wc := b.c.wc; wc != nil {
+				data, err = wc.load(authWinKey{b.rec.SHA, b.rec.Gen, ws}, func() ([]byte, error) { return decode(nil) })
+			} else {
+				data, err = decode(b.win)
+			}
 			if err != nil {
-				b.off, b.pv = -1, nil
-				return n, fmt.Errorf("%w: %v", errAuthMismatch, err)
+				b.off = -1
+				return n, err
 			}
 			b.win, b.off = data, ws
 		}
@@ -46032,12 +46277,18 @@ func (b *authWinBody) ReadAt(p []byte, off int64) (int, error) {
 type authObjAt struct {
 	s    *Store
 	man  manifestV1
+	wc   *authWinCache
 	mu   sync.Mutex
 	free []*manifestReaderAt
 	all  []*manifestReaderAt
 }
 
 func (s *Store) newAuthObjAt(man manifestV1) *authObjAt { return &authObjAt{s: s, man: man} }
+
+// newAuthObjAtC is newAuthObjAt whose delta bodies share decoded windows through wc.
+func (s *Store) newAuthObjAtC(man manifestV1, wc *authWinCache) *authObjAt {
+	return &authObjAt{s: s, man: man, wc: wc}
+}
 
 func (a *authObjAt) ReadAt(p []byte, off int64) (int, error) {
 	a.mu.Lock()
@@ -46046,6 +46297,7 @@ func (a *authObjAt) ReadAt(p []byte, off int64) (int, error) {
 		r, a.free = a.free[n-1], a.free[:n-1]
 	} else {
 		r = a.s.newManifestReaderAt(a.man)
+		r.wc = a.wc
 		a.all = append(a.all, r)
 	}
 	a.mu.Unlock()
@@ -46496,6 +46748,7 @@ type authPlanCache struct {
 	winAdded  map[[32]byte]int64    // plan-only added bytes of windowed deltas
 	winSketch map[[32]byte][]uint64 // similarity sketch of a windowed object: the applying pass reuses the plan pass's full read
 	znAdded   map[[32]byte]int64    // plan-only added bytes of ZN7 containers
+	wc        *authWinCache         // decoded sources shared by the plan-only and applying passes
 	reuseHits int
 	// stale is set when apply-time gating (proof failure, read-amplification
 	// refusal) rejected an object the plan-only pass had admitted: later cached
@@ -46668,6 +46921,9 @@ type AuthReport struct {
 	// RepNotBuilt the representation objects never constructed because their
 	// group was abandoned.
 	PlanReuse, RepNotBuilt int
+	// CacheHits/CacheMisses/DecodedBytes describe the shared decoded-source cache of the pass: a miss decodes
+	// DecodedBytes once, a hit avoids decoding that many bytes again.
+	CacheHits, CacheMisses, DecodedBytes int64
 }
 
 type authObj struct {
@@ -46736,13 +46992,13 @@ func (s *Store) physChunk(sum [32]byte, logical int64, memo map[[32]byte]int64) 
 		// compressed CDC chunk and a freshly staged raw component are compared on the same footing.
 		if loc.codec == packCodecRaw && n >= 512 {
 			if data, err := s.casRead(sum); err == nil {
-				if d := int64(len(xdDeflate(data, 1))); d < n-n/16 {
+				if d := int64(xdDeflateLen(data, 1)); d < n-n/16 {
 					n = d
 				}
 			}
 		}
 	} else if data, err := s.casRead(sum); err == nil {
-		n = int64(len(xdDeflate(data, 1)))
+		n = int64(xdDeflateLen(data, 1))
 	} else {
 		n = logical
 	}
@@ -46775,14 +47031,38 @@ func authFeatures(b []byte, k int) []uint64 {
 	if len(b) < xdWindow {
 		return nil
 	}
+	// Bottom-k is mergeable: each worker scans the window starts of one slice (reading xdWindow-1 bytes past it) and
+	// the slices' sketches are merged, which is exactly the sketch of the whole.
+	const slice = 4 << 20
+	n := len(b) - xdWindow + 1 // window starts
+	parts := (n + slice - 1) / slice
+	sks := make([]authSketch, parts)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, min(runtime.GOMAXPROCS(0), 4))
+	for p := range sks {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			a, e := p*slice, min((p+1)*slice, n)
+			sk := authSketch{k: k}
+			h := xdWindowHash(b[a:])
+			for i := a; ; i++ {
+				sk.add(xdMix(h))
+				if i+1 >= e {
+					break
+				}
+				h = (h-(uint64(b[i])+1)*xdPow)*xdP + uint64(b[i+xdWindow]) + 1
+			}
+			sks[p] = sk
+		}()
+	}
+	wg.Wait()
 	sk := authSketch{k: k}
-	h := xdWindowHash(b)
-	for i := 0; ; i++ {
-		sk.add(xdMix(h))
-		if i+xdWindow >= len(b) {
-			break
+	for _, p := range sks {
+		for _, v := range p.out {
+			sk.add(v)
 		}
-		h = (h-(uint64(b[i])+1)*xdPow)*xdP + uint64(b[i+xdWindow]) + 1
 	}
 	return sk.out
 }
@@ -46816,10 +47096,17 @@ func authSketchAt(r io.ReaderAt, size int64, k int) ([]uint64, error) {
 	return sk.out, nil
 }
 
+// authSrcCalls/authSrcBytes count whole-source materializations (a measure of redundant decoding).
+var authSrcCalls, authSrcBytes atomic.Int64
+
+func authSrcStats() (calls, bytes int64) { return authSrcCalls.Load(), authSrcBytes.Load() }
+
 func (s *Store) manifestBytes(man manifestV1) ([]byte, error) {
 	if man.TotalLength > xdMaxObject {
 		return nil, errAuthLimit
 	}
+	authSrcCalls.Add(1)
+	authSrcBytes.Add(man.TotalLength)
 	out := make([]byte, 0, man.TotalLength)
 	rd := s.openObjectReader(man, byteRange{0, man.TotalLength - 1})
 	defer rd.close()
@@ -46888,6 +47175,12 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 	}
 	ctx := s.newAuthScanCtx()
 	ctx.overlay = map[[32]byte]*authRecord{cand.SHA: cand}
+	if cand.Size > authWindowMin {
+		// A windowed body re-reads nearby base windows and chunks while it is checked: keep them for this one
+		// proof. Every chunk is still read from physical storage and verified once, by this context.
+		ctx.wc, ctx.pieceCap = newAuthWinCache(authProofWinBytes), authProofPieceBytes
+	}
+	ctx.frameCap = authProofFrames
 	body, _, err := ctx.body(cand.SHA, 0, 1)
 	if err != nil {
 		return 0, 0, err
@@ -47027,7 +47320,59 @@ type authMigrator struct {
 	byKey  map[string][]int // bucket/key -> admitted-or-eligible base indexes
 	depth  map[int]int
 	zl     map[int]*authZN7Info // tensor layouts of model-shaped contents (nil entry: not a model)
+	wc     *authWinCache        // decoded sources and windows shared by this pass's planning readers
+	idx    *authIdxCache        // anchor indexes of bases, built once however many targets use them
 	rep    AuthReport
+}
+
+// authIdxCache keeps the single-base anchor indexes of the most recently used bases within a byte budget: a base
+// is a candidate for several later targets and is indexed once, not once per target.
+type authIdxCache struct {
+	mu     sync.Mutex
+	budget int64
+	used   int64
+	m      map[[32]byte]*authIdxEnt
+	order  [][32]byte // oldest first
+}
+
+type authIdxEnt struct {
+	once sync.Once
+	x    *dwDcoreIndex
+	err  error
+}
+
+const authIdxCacheBytes = 48 << 20
+
+// get returns the index of the base b (identified by its content SHA-256), building it on first use.
+func (c *authIdxCache) get(sha [32]byte, b []byte, p dwDcoreParams) (*dwDcoreIndex, error) {
+	c.mu.Lock()
+	e := c.m[sha]
+	if e == nil {
+		e = &authIdxEnt{}
+		c.m[sha] = e
+		c.order = append(c.order, sha)
+	}
+	c.mu.Unlock()
+	e.once.Do(func() {
+		e.x, e.err = dwDcoreBuildIndex([][]byte{b}, p)
+		if e.err != nil {
+			return
+		}
+		c.mu.Lock()
+		c.used += int64(len(e.x.table)) * 8
+		for c.used > c.budget && len(c.order) > 1 {
+			old := c.order[0]
+			c.order = c.order[1:]
+			if o := c.m[old]; o != nil && o != e {
+				if o.x != nil {
+					c.used -= int64(len(o.x.table)) * 8
+				}
+				delete(c.m, old)
+			}
+		}
+		c.mu.Unlock()
+	})
+	return e.x, e.err
 }
 
 // AuthorityMigrate admits cost-justified exact representations as the
@@ -47087,6 +47432,15 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	t0 := time.Now()
 	m := &authMigrator{s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
 		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, byKey: map[string][]int{}}
+	if pol.cache != nil {
+		if pol.cache.wc == nil {
+			pol.cache.wc = newAuthWinCache(authPlanWinCacheBytes)
+		}
+		m.wc = pol.cache.wc
+	} else {
+		m.wc = newAuthWinCache(authPlanWinCacheBytes)
+	}
+	m.idx = &authIdxCache{budget: authIdxCacheBytes, m: map[[32]byte]*authIdxEnt{}}
 	// Only the contents in scope are kept; the chunk sharing of everything else is counted as the manifests stream by
 	// (a store of a million objects must not be held in memory to migrate a prefix of it).
 	scopedRun := pol.Bucket != "" || pol.Prefix != ""
@@ -47162,6 +47516,16 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 			}
 		}
 	}
+	// Hold the sources of a few in-memory objects at once (a history re-reads its recent revisions in every pass).
+	var largest int64
+	for _, o := range m.order {
+		if o.man.TotalLength <= authWindowMin {
+			largest = max(largest, o.man.TotalLength)
+		}
+	}
+	if largest > 0 {
+		m.wc.setBudget(min(max(4*largest, authPlanSrcCacheMin), authPlanWinCacheMax))
+	}
 	if pol.AllowRep {
 		m.planRepGroups()
 	}
@@ -47177,6 +47541,7 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		}
 	}
 	m.rep.Seconds = time.Since(t0).Seconds()
+	m.rep.CacheHits, m.rep.CacheMisses, m.rep.DecodedBytes = m.wc.hits.Load(), m.wc.misses.Load(), m.wc.bytes.Load()
 	if pol.cache != nil {
 		m.rep.PlanReuse, m.rep.RepNotBuilt = pol.cache.reuseHits, pol.cache.rejected
 	}
@@ -47320,7 +47685,13 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 				rc = cache.repC[m.order[i].sha]
 			}
 			if rc == nil {
-				root, err := m.s.repConstruct(m.order[i].man)
+				var src io.ReaderAt
+				if man := m.order[i].man; man.TotalLength <= authWindowMin {
+					if b, err := m.source(man); err == nil {
+						src = bytes.NewReader(b)
+					}
+				}
+				root, _, err := m.s.repConstructAt(m.order[i].man, src, nil)
 				if err != nil {
 					continue
 				}
@@ -47465,6 +47836,163 @@ func (m *authMigrator) release(o *authObj) {
 	}
 }
 
+// authCand is the best delta found for one object: its record, envelope and the bytes it would add.
+type authCand struct {
+	rec   *authRecord
+	blob  []byte
+	added int64
+	pins  []int
+	plan  AuthPlan
+	phys  int64
+}
+
+// authEstSlack is how far above the best exact envelope a candidate's optimistic estimate may sit and still be
+// compressed exactly (P5 measured zero regret on 23 real targets at 5%).
+const authEstSlack = 0.05
+
+func xdFromDw(ops []dwDcoreOp) []xdOp {
+	out := make([]xdOp, len(ops))
+	var pos int64
+	for i, o := range ops {
+		out[i] = xdOp{tpos: pos, n: o.N, base: o.Base, off: o.Off, lit: o.Lit}
+		pos += o.N
+	}
+	return out
+}
+
+// authRefine re-matches the literals of a program against another base (which joins the program as base number
+// newBase) and returns the program and the literal bytes it no longer carries.
+func authRefine(ops []dwDcoreOp, x *dwDcoreIndex, newBase int) ([]dwDcoreOp, int64) {
+	out := make([]dwDcoreOp, 0, len(ops))
+	var saved int64
+	for _, op := range ops {
+		if op.Base >= 0 || op.N < int64(x.p.Window+x.p.MinCopy) {
+			out = append(out, op)
+			continue
+		}
+		for _, r := range x.Match(op.Lit) {
+			if r.Base >= 0 {
+				out = append(out, dwDcoreOp{TPos: op.TPos + r.TPos, N: r.N, Base: newBase, Off: r.Off})
+				saved += r.N
+			} else {
+				out = append(out, dwDcoreOp{TPos: op.TPos + r.TPos, N: r.N, Base: -1, Lit: r.Lit})
+			}
+		}
+	}
+	return out, saved
+}
+
+// bestDelta matches the target against each candidate base (concurrently, bounded; every base is indexed once per
+// pass), then lets the best match borrow from the next-best bases for what it could not copy. Programs are ranked
+// by a cheap estimate and only those whose optimistic estimate can still beat the best exact envelope are
+// serialized (compressed), so candidates that cannot win are never compressed. The chosen envelope is always an
+// exact xdEncodeOps result.
+func (m *authMigrator) bestDelta(o *authObj, target []byte, sk []uint64, srcs []xdSrc, idxs []int) *authCand {
+	pol := m.pol
+	prm := dwDcoreDefaultParams()
+	type try struct {
+		ops []dwDcoreOp
+		sel []int // srcs used, in the program's base numbering
+		est dwDcoreEstimate
+	}
+	tries := make([]try, len(srcs), len(srcs)+1)
+	xs := make([]*dwDcoreIndex, len(srcs))
+	sem := make(chan struct{}, max(1, pol.workers()))
+	var wg sync.WaitGroup
+	for k := range srcs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			x, err := m.idx.get(srcs[k].sha, srcs[k].data, prm)
+			if err != nil {
+				return
+			}
+			xs[k] = x
+			ops := x.Match(target)
+			tries[k] = try{ops: ops, sel: []int{k}, est: dwDcoreEstimateProgram(ops, dwDcoreEstimateOpts{})}
+		}()
+	}
+	wg.Wait()
+	order := make([]int, 0, len(srcs))
+	for k := range srcs {
+		if tries[k].ops != nil {
+			order = append(order, k)
+		}
+	}
+	sort.SliceStable(order, func(a, b int) bool { return tries[order[a]].est.Est < tries[order[b]].est.Est })
+	if len(order) > 1 && pol.MaxBases >= 2 {
+		ops, sel := tries[order[0]].ops, []int{order[0]}
+		lit := tries[order[0]].est.Stats.LitBytes
+		for _, k := range order[1:] {
+			if len(sel) >= pol.MaxBases {
+				break
+			}
+			if r, saved := authRefine(ops, xs[k], len(sel)); saved*50 >= lit {
+				ops, sel, lit = r, append(sel, k), lit-saved
+			}
+		}
+		if len(sel) > 1 {
+			tries = append(tries, try{ops: ops, sel: sel, est: dwDcoreEstimateProgram(ops, dwDcoreEstimateOpts{})})
+			order = append(order, len(tries)-1)
+			sort.SliceStable(order, func(a, b int) bool { return tries[order[a]].est.Est < tries[order[b]].est.Est })
+		}
+	}
+	var best *authCand
+	for _, k := range order {
+		if best != nil && float64(tries[k].est.Lower) > float64(len(best.blob))*(1+authEstSlack) {
+			continue
+		}
+		ss := make([]xdSrc, len(tries[k].sel))
+		for n, j := range tries[k].sel {
+			ss[n] = srcs[j]
+		}
+		blob, refs, err := xdEncodeOpsSum(ss, xdFromDw(tries[k].ops), target, o.sha, pol.FrameSpan)
+		if err != nil || len(refs) == 0 || len(refs) > pol.MaxBases {
+			continue
+		}
+		depth := 0
+		var bj []int
+		for _, r := range refs {
+			for n, s2 := range srcs {
+				if s2.sha == r.SHA {
+					depth = max(depth, m.depth[idxs[n]]+1)
+					bj = append(bj, idxs[n])
+				}
+			}
+		}
+		if depth > pol.MaxDepth {
+			continue
+		}
+		phys := int64(min(len(blob), xdDeflateLen(blob, 1))) + 96
+		// pins for bases that have no record yet cost one list entry per chunk
+		var pinCost int64
+		for _, j := range bj {
+			if !m.order[j].hasRec {
+				pinCost += int64(len(m.order[j].man.Chunks)) * 36
+			}
+		}
+		added := phys + pinCost + 160
+		if best == nil || added < best.added {
+			rec := &authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormDelta, Depth: byte(depth), Sketch: sk, Bases: refs}
+			best = &authCand{rec: rec, blob: blob, added: added, pins: bj, plan: AuthPlan{Form: "delta", Depth: depth}, phys: phys}
+			for _, r := range refs {
+				best.plan.Bases = append(best.plan.Bases, hex.EncodeToString(r.SHA[:6]))
+			}
+		}
+	}
+	return best
+}
+
+// source returns the decoded bytes of an object through the pass's shared cache. The slice is shared and read-only.
+func (m *authMigrator) source(man manifestV1) ([]byte, error) {
+	sha, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		return nil, err
+	}
+	return m.wc.load(authWinKey{sha, 0, -1}, func() ([]byte, error) { return m.s.manifestBytes(man) })
+}
+
 func (m *authMigrator) process(i int, o *authObj) error {
 	pol := m.pol
 	plan := AuthPlan{SHA: hex.EncodeToString(o.sha[:]), Size: o.man.TotalLength, Form: "cdc"}
@@ -47491,7 +48019,7 @@ func (m *authMigrator) process(i int, o *authObj) error {
 	if o.man.TotalLength > authWindowMin {
 		return m.processWindowed(i, o, plan, finish)
 	}
-	target, err := m.s.manifestBytes(o.man)
+	target, err := m.source(o.man)
 	if err != nil {
 		plan.Reason = "unreadable: " + err.Error()
 		finish(plan)
@@ -47499,15 +48027,7 @@ func (m *authMigrator) process(i int, o *authObj) error {
 	}
 	sk := authFeatures(target, 16)
 	m.sketch[i] = sk
-	type cand struct {
-		rec   *authRecord
-		blob  []byte
-		added int64
-		pins  []int
-		plan  AuthPlan
-		phys  int64
-	}
-	var best *cand
+	var best *authCand
 	// --- delta candidates
 	if pol.AllowDelta {
 		cands := m.candidates(i, sk, false)
@@ -47515,7 +48035,7 @@ func (m *authMigrator) process(i int, o *authObj) error {
 		var idxs []int
 		for _, j := range cands {
 			bo := m.order[j]
-			b, err := m.s.manifestBytes(bo.man)
+			b, err := m.source(bo.man)
 			if err != nil {
 				continue
 			}
@@ -47536,58 +48056,11 @@ func (m *authMigrator) process(i int, o *authObj) error {
 				}
 			}
 			rc := *cached.rec
-			best = &cand{rec: &rc, blob: cached.blob, added: cached.phys + pinCost + 160, pins: cached.pins, plan: cached.plan}
+			best = &authCand{rec: &rc, blob: cached.blob, added: cached.phys + pinCost + 160, pins: cached.pins, plan: cached.plan}
 			pol.cache.reuseHits++
 		}
-		try := func(sel []int) {
-			var ss []xdSrc
-			for _, k := range sel {
-				ss = append(ss, srcs[k])
-			}
-			blob, refs, err := xdEncode(ss, target, pol.FrameSpan)
-			if err != nil || len(refs) == 0 || len(refs) > pol.MaxBases {
-				return
-			}
-			depth := 0
-			var bj []int
-			for _, r := range refs {
-				for k, s2 := range srcs {
-					if s2.sha == r.SHA {
-						depth = max(depth, m.depth[idxs[k]]+1)
-						bj = append(bj, idxs[k])
-					}
-				}
-			}
-			if depth > pol.MaxDepth {
-				return
-			}
-			phys := int64(min(len(blob), len(xdDeflate(blob, 1)))) + 96
-			// pins for bases that have no record yet cost one list entry per chunk
-			var pinCost int64
-			for _, j := range bj {
-				if !m.order[j].hasRec {
-					pinCost += int64(len(m.order[j].man.Chunks)) * 36
-				}
-			}
-			added := phys + pinCost + 160
-			if best == nil || added < best.added {
-				rec := &authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormDelta, Depth: byte(depth), Sketch: sk, Bases: refs}
-				best = &cand{rec: rec, blob: blob, added: added, pins: bj, plan: AuthPlan{Form: "delta", Depth: depth}, phys: phys}
-				for _, r := range refs {
-					best.plan.Bases = append(best.plan.Bases, hex.EncodeToString(r.SHA[:6]))
-				}
-			}
-		}
 		if len(srcs) > 0 && cached == nil {
-			for k := range srcs {
-				try([]int{k})
-			}
-			if len(srcs) >= 2 && pol.MaxBases >= 2 {
-				try([]int{0, 1})
-			}
-			if len(srcs) >= 3 && pol.MaxBases >= 3 {
-				try([]int{0, 1, 2})
-			}
+			best = m.bestDelta(o, target, sk, srcs, idxs)
 		}
 		if pol.cache != nil && best != nil && cached == nil && !pol.Apply {
 			pol.cache.delta[o.sha] = &authDeltaPlan{rec: best.rec, blob: best.blob, phys: best.phys, pins: best.pins, plan: best.plan}
@@ -47666,7 +48139,13 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		}
 		m.order[j].hasRec = true
 	}
-	_, probe, err := m.s.authProve(rec, 8)
+	// Cold read probes feed the read-amplification and tier gates; without a gate they only annotate the plan,
+	// and each one decodes whole windows through the dependency chain, so two suffice.
+	probes := 8
+	if _, tiered := authTierLimits[pol.Tier]; pol.MaxReadAmp <= 0 && !(tiered && !pol.NoReadCost) {
+		probes = 2
+	}
+	_, probe, err := m.s.authProve(rec, probes)
 	if err != nil {
 		plan.Reason = "proof failed: " + err.Error()
 		plan.Form = "cdc"
@@ -47776,7 +48255,7 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 		}
 		return m.commitRep(i, o, repRoot, repAdded, plan, finish)
 	}
-	tgt := m.s.newAuthObjAt(o.man)
+	tgt := m.s.newAuthObjAtC(o.man, m.wc)
 	defer tgt.close()
 	sk := pol.cache.sketchOf(o.sha)
 	if sk == nil {
@@ -47799,7 +48278,7 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	if depth > pol.MaxDepth {
 		return keep("delta depth exceeds the policy")
 	}
-	base := m.s.newAuthObjAt(bo.man)
+	base := m.s.newAuthObjAtC(bo.man, m.wc)
 	defer base.close()
 	wp := authWParams(m.pol.workers(), bo.man.TotalLength)
 	defer debug.FreeOSMemory() // the anchor table and page caches are dead once this object is done
@@ -49072,7 +49551,6 @@ const (
 	dwDcore_posMask  = 1<<dwDcore_posBits - 1
 	dwDcore_maxTotal = int64(1)<<dwDcore_posBits - 2
 	dwDcore_maxBases = 1 << 16
-	dwDcore_hashP    = 0x9e3779b97f4a7c15
 	dwDcore_sampleK  = 0xd6e8feb86659fd93
 )
 
@@ -49115,8 +49593,7 @@ type dwDcoreIndex struct {
 	bases  [][]byte
 	starts []int64 // virtual start of each base
 	total  int64
-	nbits  uint // sampling: an anchor is kept when the top nbits of h*sampleK are zero
-	pow    uint64
+	nbits  uint     // sampling: an anchor is kept when the top nbits of h*sampleK are zero
 	table  []uint64 // tag<<posBits | (virtual offset + 1); 0 = empty
 	tmask  uint64
 	tshift uint
@@ -49154,11 +49631,6 @@ func dwDcoreBuildIndex(bases [][]byte, p dwDcoreParams) (*dwDcoreIndex, error) {
 	x := &dwDcoreIndex{p: p, bases: bases, starts: starts, total: total}
 	for x.nbits = uint(p.MinSampleBits); x.total>>x.nbits > int64(p.MaxAnchors); x.nbits++ {
 	}
-	pow := uint64(1)
-	for i := 0; i < p.Window-1; i++ {
-		pow *= dwDcore_hashP
-	}
-	x.pow = pow
 	est := int(x.total>>x.nbits) + len(bases) + 64
 	tbits := uint(4)
 	for 1<<tbits < 2*est {
@@ -49177,6 +49649,35 @@ func (x *dwDcoreIndex) sampled(h uint64) bool {
 	return x.nbits == 0 || (h*dwDcore_sampleK)>>(64-x.nbits) == 0
 }
 
+// The anchor window is hashed with a cyclic-polynomial (buzhash) rolling hash: one rotate and two table xors
+// per byte, a dependency chain of two operations (the multiplicative hash it replaces had five). Anchors are
+// filters only, so the hash can change without changing what any stored delta decodes to.
+var dwDcore_bzT = func() (t [256]uint64) {
+	s := uint64(0x9e3779b97f4a7c15)
+	for i := range t {
+		s += 0x9e3779b97f4a7c15
+		z := s
+		z = (z ^ z>>30) * 0xbf58476d1ce4e5b9
+		z = (z ^ z>>27) * 0x94d049bb133111eb
+		t[i] = z ^ z>>31
+	}
+	return
+}()
+
+// rollInit hashes the window b (len(b) = w <= 64).
+func dwDcore_rollInit(b []byte) uint64 {
+	var h uint64
+	for _, v := range b {
+		h = bits.RotateLeft64(h, 1) ^ dwDcore_bzT[v]
+	}
+	return h
+}
+
+// rollNext slides a w-byte window one byte: out leaves, in enters.
+func dwDcore_rollNext(h uint64, out, in byte, w int) uint64 {
+	return bits.RotateLeft64(h, 1) ^ bits.RotateLeft64(dwDcore_bzT[out], w) ^ dwDcore_bzT[in]
+}
+
 func dwDcore_mix64(v uint64) uint64 {
 	v ^= v >> 30
 	v *= 0xbf58476d1ce4e5b9
@@ -49185,13 +49686,7 @@ func dwDcore_mix64(v uint64) uint64 {
 	return v ^ (v >> 31)
 }
 
-func (x *dwDcoreIndex) hash0(b []byte) uint64 {
-	var h uint64
-	for _, v := range b[:x.p.Window] {
-		h = h*dwDcore_hashP + uint64(v) + 1
-	}
-	return h
-}
+func (x *dwDcoreIndex) hash0(b []byte) uint64 { return dwDcore_rollInit(b[:x.p.Window]) }
 
 func (x *dwDcoreIndex) indexBase(bi int, b []byte) {
 	w := x.p.Window
@@ -49207,7 +49702,7 @@ func (x *dwDcoreIndex) indexBase(bi int, b []byte) {
 		if i+w >= len(b) {
 			return
 		}
-		h = (h-(uint64(b[i])+1)*x.pow)*dwDcore_hashP + uint64(b[i+w]) + 1
+		h = dwDcore_rollNext(h, b[i], b[i+w], w)
 	}
 }
 
@@ -49318,7 +49813,7 @@ func (x *dwDcoreIndex) Match(t []byte) []dwDcoreOp {
 			if i+w >= len(t) {
 				break
 			}
-			h = (h-(uint64(t[i])+1)*x.pow)*dwDcore_hashP + uint64(t[i+w]) + 1
+			h = dwDcore_rollNext(h, t[i], t[i+w], w)
 			i++
 		}
 	}
@@ -49485,7 +49980,6 @@ type dwDcoreWIndex struct {
 	p      dwDcoreParams
 	size   int64
 	nbits  uint
-	pow    uint64
 	table  []uint64
 	tmask  uint64
 	tshift uint
@@ -49509,11 +50003,6 @@ func dwDcoreBuildWIndex(base io.ReaderAt, size int64, p dwDcoreParams, workers i
 	x := &dwDcoreWIndex{p: p, size: size}
 	for x.nbits = uint(p.MinSampleBits); size>>x.nbits > int64(p.MaxAnchors); x.nbits++ {
 	}
-	pow := uint64(1)
-	for i := 0; i < p.Window-1; i++ {
-		pow *= dwDcore_hashP
-	}
-	x.pow = pow
 	est := int(size>>x.nbits) + 64
 	tbits := uint(4)
 	for 1<<tbits < est*3/2 { // load factor up to 2/3: a 1 GiB base needs a 16 MiB table, not 32
@@ -49527,9 +50016,11 @@ func dwDcoreBuildWIndex(base io.ReaderAt, size int64, p dwDcoreParams, workers i
 	var wg sync.WaitGroup
 	var firstErr atomic.Value
 	var reads atomic.Int64
-	var anchors atomic.Int64
 	nchunks := (size + chunk - 1) / chunk
 	var next atomic.Int64
+	// Workers hash chunks in any order but only collect the sampled anchors; one pass inserts them in chunk order,
+	// so the table (and every match made with it) is the same on every run whatever the scheduling.
+	found := make([]dwDcore_chunkAnchors, nchunks)
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
@@ -49552,17 +50043,15 @@ func dwDcoreBuildWIndex(base io.ReaderAt, size int64, p dwDcoreParams, workers i
 				if len(b) < p.Window {
 					continue
 				}
-				var h uint64
-				for _, v := range b[:p.Window] {
-					h = h*dwDcore_hashP + uint64(v) + 1
-				}
+				h := dwDcore_rollInit(b[:p.Window])
 				owned := min(int64(chunk), size-int64(p.Window)+1-start)
+				ca := &found[c]
 				for i := int64(0); i < owned; i++ {
-					if x.sampled(h) && x.insertAtomic(h, start+i) {
-						anchors.Add(1)
+					if x.sampled(h) {
+						ca.h, ca.off = append(ca.h, h), append(ca.off, start+i)
 					}
 					if i+1 < owned {
-						h = (h-(uint64(b[i])+1)*x.pow)*dwDcore_hashP + uint64(b[i+int64(p.Window)]) + 1
+						h = dwDcore_rollNext(h, b[i], b[i+int64(p.Window)], p.Window)
 					}
 				}
 			}
@@ -49599,8 +50088,20 @@ func dwDcoreBuildWIndex(base io.ReaderAt, size int64, p dwDcoreParams, workers i
 		return nil, e.(error)
 	}
 	x.BuildReads = reads.Load()
-	x.Anchors = anchors.Load()
+	for c := range found {
+		for k, h := range found[c].h {
+			if x.insertSeq(h, found[c].off[k]) {
+				x.Anchors++
+			}
+		}
+		found[c] = dwDcore_chunkAnchors{}
+	}
 	return x, nil
+}
+
+type dwDcore_chunkAnchors struct {
+	h   []uint64
+	off []int64
 }
 
 func dwDcore_readFull(r io.ReaderAt, b []byte, off int64) (int, error) {
@@ -49618,21 +50119,19 @@ func (x *dwDcoreWIndex) sampled(h uint64) bool {
 	return x.nbits == 0 || (h*dwDcore_sampleK)>>(64-x.nbits) == 0
 }
 
-func (x *dwDcoreWIndex) insertAtomic(h uint64, off int64) bool {
+func (x *dwDcoreWIndex) insertSeq(h uint64, off int64) bool {
 	m := dwDcore_mix64(h)
 	slot := m >> x.tshift
 	tag := (m >> 8) & 0xffffff
 	n := 0
 	for probe := 0; probe < x.p.MaxProbe; probe++ {
-		e := atomic.LoadUint64(&x.table[slot])
+		e := x.table[slot]
 		if e == 0 {
 			if n >= x.p.Slots {
 				return false
 			}
-			if atomic.CompareAndSwapUint64(&x.table[slot], 0, tag<<dwDcore_posBits|uint64(off+1)) {
-				return true
-			}
-			e = atomic.LoadUint64(&x.table[slot])
+			x.table[slot] = tag<<dwDcore_posBits | uint64(off+1)
+			return true
 		}
 		if e>>dwDcore_posBits == tag {
 			n++
@@ -49738,10 +50237,7 @@ func (x *dwDcoreWIndex) matchWindow(v *dwDcore_pageView, t []byte) ([]dwDcoreOp,
 		}
 	}
 	if len(t) >= w {
-		var h uint64
-		for _, c := range t[:w] {
-			h = h*dwDcore_hashP + uint64(c) + 1
-		}
+		h := dwDcore_rollInit(t[:w])
 		for i := 0; i+w <= len(t); {
 			if x.sampled(h) {
 				n, back, off := x.best(v, t, i, start, h)
@@ -49759,10 +50255,7 @@ func (x *dwDcoreWIndex) matchWindow(v *dwDcore_pageView, t []byte) ([]dwDcoreOp,
 					i = s + n
 					start = i
 					if i+w <= len(t) {
-						h = 0
-						for _, c := range t[i : i+w] {
-							h = h*dwDcore_hashP + uint64(c) + 1
-						}
+						h = dwDcore_rollInit(t[i : i+w])
 					}
 					continue
 				}
@@ -49770,7 +50263,7 @@ func (x *dwDcoreWIndex) matchWindow(v *dwDcore_pageView, t []byte) ([]dwDcoreOp,
 			if i+w >= len(t) {
 				break
 			}
-			h = (h-(uint64(t[i])+1)*x.pow)*dwDcore_hashP + uint64(t[i+w]) + 1
+			h = dwDcore_rollNext(h, t[i], t[i+w], w)
 			i++
 		}
 	}
@@ -52187,7 +52680,6 @@ const (
 	ncDcore_posMask  = 1<<ncDcore_posBits - 1
 	ncDcore_maxTotal = int64(1)<<ncDcore_posBits - 2
 	ncDcore_maxBases = 1 << 16
-	ncDcore_hashP    = 0x9e3779b97f4a7c15
 	ncDcore_sampleK  = 0xd6e8feb86659fd93
 )
 
@@ -52221,6 +52713,35 @@ func ncDcoreDefaultParams() ncDcoreParams {
 
 func (p ncDcoreParams) valid() bool {
 	return p.Window >= 4 && p.Window <= 64 && p.MinCopy >= 4 && p.MaxAnchors >= 16 && p.Slots >= 1 && p.Slots <= 16 && p.MaxProbe >= 1 && p.MaxProbe <= 64 && p.MinSampleBits >= 0 && p.MinSampleBits <= 16
+}
+
+// The anchor window is hashed with a cyclic-polynomial (buzhash) rolling hash: one rotate and two table xors
+// per byte, a dependency chain of two operations (the multiplicative hash it replaces had five). Anchors are
+// filters only, so the hash can change without changing what any stored delta decodes to.
+var ncDcore_bzT = func() (t [256]uint64) {
+	s := uint64(0x9e3779b97f4a7c15)
+	for i := range t {
+		s += 0x9e3779b97f4a7c15
+		z := s
+		z = (z ^ z>>30) * 0xbf58476d1ce4e5b9
+		z = (z ^ z>>27) * 0x94d049bb133111eb
+		t[i] = z ^ z>>31
+	}
+	return
+}()
+
+// rollInit hashes the window b (len(b) = w <= 64).
+func ncDcore_rollInit(b []byte) uint64 {
+	var h uint64
+	for _, v := range b {
+		h = bits.RotateLeft64(h, 1) ^ ncDcore_bzT[v]
+	}
+	return h
+}
+
+// rollNext slides a w-byte window one byte: out leaves, in enters.
+func ncDcore_rollNext(h uint64, out, in byte, w int) uint64 {
+	return bits.RotateLeft64(h, 1) ^ bits.RotateLeft64(ncDcore_bzT[out], w) ^ ncDcore_bzT[in]
 }
 
 func ncDcore_mix64(v uint64) uint64 {
@@ -52305,7 +52826,6 @@ type ncDcoreWIndex struct {
 	p      ncDcoreParams
 	size   int64
 	nbits  uint
-	pow    uint64
 	table  []uint64
 	tmask  uint64
 	tshift uint
@@ -52329,11 +52849,6 @@ func ncDcoreBuildWIndex(base io.ReaderAt, size int64, p ncDcoreParams, workers i
 	x := &ncDcoreWIndex{p: p, size: size}
 	for x.nbits = uint(p.MinSampleBits); size>>x.nbits > int64(p.MaxAnchors); x.nbits++ {
 	}
-	pow := uint64(1)
-	for i := 0; i < p.Window-1; i++ {
-		pow *= ncDcore_hashP
-	}
-	x.pow = pow
 	est := int(size>>x.nbits) + 64
 	tbits := uint(4)
 	for 1<<tbits < 2*est {
@@ -52347,9 +52862,11 @@ func ncDcoreBuildWIndex(base io.ReaderAt, size int64, p ncDcoreParams, workers i
 	var wg sync.WaitGroup
 	var firstErr atomic.Value
 	var reads atomic.Int64
-	var anchors atomic.Int64
 	nchunks := (size + chunk - 1) / chunk
 	var next atomic.Int64
+	// Workers collect the sampled anchors of their chunks; one pass inserts them in chunk order, so the table is
+	// the same on every run whatever the scheduling.
+	found := make([]ncDcore_chunkAnchors, nchunks)
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
@@ -52372,17 +52889,15 @@ func ncDcoreBuildWIndex(base io.ReaderAt, size int64, p ncDcoreParams, workers i
 				if len(b) < p.Window {
 					continue
 				}
-				var h uint64
-				for _, v := range b[:p.Window] {
-					h = h*ncDcore_hashP + uint64(v) + 1
-				}
+				h := ncDcore_rollInit(b[:p.Window])
 				owned := min(int64(chunk), size-int64(p.Window)+1-start)
+				ca := &found[c]
 				for i := int64(0); i < owned; i++ {
-					if x.sampled(h) && x.insertAtomic(h, start+i) {
-						anchors.Add(1)
+					if x.sampled(h) {
+						ca.h, ca.off = append(ca.h, h), append(ca.off, start+i)
 					}
 					if i+1 < owned {
-						h = (h-(uint64(b[i])+1)*x.pow)*ncDcore_hashP + uint64(b[i+int64(p.Window)]) + 1
+						h = ncDcore_rollNext(h, b[i], b[i+int64(p.Window)], p.Window)
 					}
 				}
 			}
@@ -52413,8 +52928,20 @@ func ncDcoreBuildWIndex(base io.ReaderAt, size int64, p ncDcoreParams, workers i
 		return nil, e.(error)
 	}
 	x.BuildReads = reads.Load()
-	x.Anchors = anchors.Load()
+	for c := range found {
+		for k, h := range found[c].h {
+			if x.insertSeq(h, found[c].off[k]) {
+				x.Anchors++
+			}
+		}
+		found[c] = ncDcore_chunkAnchors{}
+	}
 	return x, nil
+}
+
+type ncDcore_chunkAnchors struct {
+	h   []uint64
+	off []int64
 }
 
 func ncDcore_readFull(r io.ReaderAt, b []byte, off int64) (int, error) {
@@ -52432,21 +52959,19 @@ func (x *ncDcoreWIndex) sampled(h uint64) bool {
 	return x.nbits == 0 || (h*ncDcore_sampleK)>>(64-x.nbits) == 0
 }
 
-func (x *ncDcoreWIndex) insertAtomic(h uint64, off int64) bool {
+func (x *ncDcoreWIndex) insertSeq(h uint64, off int64) bool {
 	m := ncDcore_mix64(h)
 	slot := m >> x.tshift
 	tag := (m >> 8) & 0xffffff
 	n := 0
 	for probe := 0; probe < x.p.MaxProbe; probe++ {
-		e := atomic.LoadUint64(&x.table[slot])
+		e := x.table[slot]
 		if e == 0 {
 			if n >= x.p.Slots {
 				return false
 			}
-			if atomic.CompareAndSwapUint64(&x.table[slot], 0, tag<<ncDcore_posBits|uint64(off+1)) {
-				return true
-			}
-			e = atomic.LoadUint64(&x.table[slot])
+			x.table[slot] = tag<<ncDcore_posBits | uint64(off+1)
+			return true
 		}
 		if e>>ncDcore_posBits == tag {
 			n++
@@ -52552,10 +53077,7 @@ func (x *ncDcoreWIndex) matchWindow(v *ncDcore_pageView, t []byte) ([]ncDcoreOp,
 		}
 	}
 	if len(t) >= w {
-		var h uint64
-		for _, c := range t[:w] {
-			h = h*ncDcore_hashP + uint64(c) + 1
-		}
+		h := ncDcore_rollInit(t[:w])
 		for i := 0; i+w <= len(t); {
 			if x.sampled(h) {
 				n, back, off := x.best(v, t, i, start, h)
@@ -52573,10 +53095,7 @@ func (x *ncDcoreWIndex) matchWindow(v *ncDcore_pageView, t []byte) ([]ncDcoreOp,
 					i = s + n
 					start = i
 					if i+w <= len(t) {
-						h = 0
-						for _, c := range t[i : i+w] {
-							h = h*ncDcore_hashP + uint64(c) + 1
-						}
+						h = ncDcore_rollInit(t[i : i+w])
 					}
 					continue
 				}
@@ -52584,7 +53103,7 @@ func (x *ncDcoreWIndex) matchWindow(v *ncDcore_pageView, t []byte) ([]ncDcoreOp,
 			if i+w >= len(t) {
 				break
 			}
-			h = (h-(uint64(t[i])+1)*x.pow)*ncDcore_hashP + uint64(t[i+w]) + 1
+			h = ncDcore_rollNext(h, t[i], t[i+w], w)
 			i++
 		}
 	}

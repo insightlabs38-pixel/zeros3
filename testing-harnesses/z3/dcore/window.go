@@ -62,7 +62,6 @@ type WIndex struct {
 	p      Params
 	size   int64
 	nbits  uint
-	pow    uint64
 	table  []uint64
 	tmask  uint64
 	tshift uint
@@ -86,11 +85,6 @@ func BuildWIndex(base io.ReaderAt, size int64, p Params, workers int) (*WIndex, 
 	x := &WIndex{p: p, size: size}
 	for x.nbits = uint(p.MinSampleBits); size>>x.nbits > int64(p.MaxAnchors); x.nbits++ {
 	}
-	pow := uint64(1)
-	for i := 0; i < p.Window-1; i++ {
-		pow *= hashP
-	}
-	x.pow = pow
 	est := int(size>>x.nbits) + 64
 	tbits := uint(4)
 	for 1<<tbits < 2*est {
@@ -104,9 +98,11 @@ func BuildWIndex(base io.ReaderAt, size int64, p Params, workers int) (*WIndex, 
 	var wg sync.WaitGroup
 	var firstErr atomic.Value
 	var reads atomic.Int64
-	var anchors atomic.Int64
 	nchunks := (size + chunk - 1) / chunk
 	var next atomic.Int64
+	// Workers hash chunks in any order but only collect the sampled anchors; one pass inserts them in chunk order,
+	// so the table (and every match made with it) is the same on every run whatever the scheduling.
+	found := make([]chunkAnchors, nchunks)
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
@@ -129,17 +125,15 @@ func BuildWIndex(base io.ReaderAt, size int64, p Params, workers int) (*WIndex, 
 				if len(b) < p.Window {
 					continue
 				}
-				var h uint64
-				for _, v := range b[:p.Window] {
-					h = h*hashP + uint64(v) + 1
-				}
+				h := rollInit(b[:p.Window])
 				owned := min(int64(chunk), size-int64(p.Window)+1-start)
+				ca := &found[c]
 				for i := int64(0); i < owned; i++ {
-					if x.sampled(h) && x.insertAtomic(h, start+i) {
-						anchors.Add(1)
+					if x.sampled(h) {
+						ca.h, ca.off = append(ca.h, h), append(ca.off, start+i)
 					}
 					if i+1 < owned {
-						h = (h-(uint64(b[i])+1)*x.pow)*hashP + uint64(b[i+int64(p.Window)]) + 1
+						h = rollNext(h, b[i], b[i+int64(p.Window)], p.Window)
 					}
 				}
 			}
@@ -170,8 +164,20 @@ func BuildWIndex(base io.ReaderAt, size int64, p Params, workers int) (*WIndex, 
 		return nil, e.(error)
 	}
 	x.BuildReads = reads.Load()
-	x.Anchors = anchors.Load()
+	for c := range found {
+		for k, h := range found[c].h {
+			if x.insertSeq(h, found[c].off[k]) {
+				x.Anchors++
+			}
+		}
+		found[c] = chunkAnchors{}
+	}
 	return x, nil
+}
+
+type chunkAnchors struct {
+	h   []uint64
+	off []int64
 }
 
 func readFull(r io.ReaderAt, b []byte, off int64) (int, error) {
@@ -189,21 +195,19 @@ func (x *WIndex) sampled(h uint64) bool {
 	return x.nbits == 0 || (h*sampleK)>>(64-x.nbits) == 0
 }
 
-func (x *WIndex) insertAtomic(h uint64, off int64) bool {
+func (x *WIndex) insertSeq(h uint64, off int64) bool {
 	m := mix64(h)
 	slot := m >> x.tshift
 	tag := (m >> 8) & 0xffffff
 	n := 0
 	for probe := 0; probe < x.p.MaxProbe; probe++ {
-		e := atomic.LoadUint64(&x.table[slot])
+		e := x.table[slot]
 		if e == 0 {
 			if n >= x.p.Slots {
 				return false
 			}
-			if atomic.CompareAndSwapUint64(&x.table[slot], 0, tag<<posBits|uint64(off+1)) {
-				return true
-			}
-			e = atomic.LoadUint64(&x.table[slot])
+			x.table[slot] = tag<<posBits | uint64(off+1)
+			return true
 		}
 		if e>>posBits == tag {
 			n++
@@ -309,10 +313,7 @@ func (x *WIndex) matchWindow(v *pageView, t []byte) ([]Op, error) {
 		}
 	}
 	if len(t) >= w {
-		var h uint64
-		for _, c := range t[:w] {
-			h = h*hashP + uint64(c) + 1
-		}
+		h := rollInit(t[:w])
 		for i := 0; i+w <= len(t); {
 			if x.sampled(h) {
 				n, back, off := x.best(v, t, i, start, h)
@@ -330,10 +331,7 @@ func (x *WIndex) matchWindow(v *pageView, t []byte) ([]Op, error) {
 					i = s + n
 					start = i
 					if i+w <= len(t) {
-						h = 0
-						for _, c := range t[i : i+w] {
-							h = h*hashP + uint64(c) + 1
-						}
+						h = rollInit(t[i : i+w])
 					}
 					continue
 				}
@@ -341,7 +339,7 @@ func (x *WIndex) matchWindow(v *pageView, t []byte) ([]Op, error) {
 			if i+w >= len(t) {
 				break
 			}
-			h = (h-(uint64(t[i])+1)*x.pow)*hashP + uint64(t[i+w]) + 1
+			h = rollNext(h, t[i], t[i+w], w)
 			i++
 		}
 	}

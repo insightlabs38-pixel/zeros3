@@ -6,6 +6,9 @@ import (
 	"hash"
 	"hash/crc32"
 	"io"
+	"runtime"
+	"sync"
+	"sync/atomic"
 
 	"zeros3-z3/deflate"
 )
@@ -27,6 +30,9 @@ type Config struct {
 	// Cost, if non-nil, accumulates ideal code lengths (bits) per category for
 	// range-coded codecs.
 	Cost *[NumCats]float64
+	// Workers is how many units are encoded concurrently (0: up to four, bounded by GOMAXPROCS; 1: sequential).
+	// Units depend only on the plaintext, so the package is identical for any value. Cost forces one.
+	Workers int
 }
 
 // Package is the encoded reconstruction IR of one DEFLATE stream.
@@ -116,6 +122,31 @@ func Encode(s *deflate.Stream, cfg Config) (*Package, error) {
 		}
 		pred = newPredictor(s.Plain, sk.Profile)
 	}
+	var predData [][]byte // predictive units, encoded concurrently
+	if cfg.Codec == Pred && cfg.Cost == nil && len(f.toks) > 0 {
+		predData = make([][]byte, len(starts))
+		stats := make([]PredStats, len(starts))
+		err := eachUnit(len(starts), cfg.Workers, func(u int) error {
+			a, b := starts[u], ends[u]
+			if a >= b {
+				return nil
+			}
+			runs, plain := toRuns(f.toks[a:b])
+			p := &predictor{plain: s.Plain, prof: pred.prof}
+			data, err := p.encodeUnit(runs, posAt[u], plain, nil)
+			if err != nil {
+				return fmt.Errorf("ir: predictive unit %d: %w", u, err)
+			}
+			predData[u], stats[u] = data, p.Stats
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, st := range stats {
+			pred.Stats.add(st)
+		}
+	}
 	if len(f.toks) > 0 {
 		for u := range starts {
 			a, b := starts[u], ends[u]
@@ -132,6 +163,10 @@ func Encode(s *deflate.Stream, cfg Config) (*Package, error) {
 			case E2:
 				data = encodeE2(runs, cfg.Cost)
 			case Pred:
+				if predData != nil {
+					data = predData[u]
+					break
+				}
 				var err error
 				if data, err = pred.encodeUnit(runs, posAt[u], plain, cfg.Cost); err != nil {
 					return nil, fmt.Errorf("ir: predictive unit %d: %w", u, err)
@@ -174,6 +209,8 @@ func Encode(s *deflate.Stream, cfg Config) (*Package, error) {
 
 // DecodeOptions control decoding.
 type DecodeOptions struct {
+	// Workers is how many predictive units are decoded concurrently (0: up to four, bounded by GOMAXPROCS).
+	Workers int
 	// VerifyMatches additionally checks that every match copies equal bytes in
 	// the supplied plaintext (needs up to 32 KiB of plaintext before each unit).
 	VerifyMatches bool
@@ -221,28 +258,32 @@ func Decode(skel []byte, unit func(i int) ([]byte, error), plain []byte, opt Dec
 			ti += u.NTokens
 		}
 	}
-	pr := newPredictor(plain, 0)
 	units := make([][]Run, len(sk.Units))
-	for k, u := range sk.Units {
-		data, err := unit(k)
-		if err != nil {
+	blobs := make([][]byte, len(sk.Units))
+	for k := range sk.Units {
+		var err error
+		if blobs[k], err = unit(k); err != nil {
 			return nil, nil, err
 		}
+	}
+	err = eachUnit(len(sk.Units), opt.Workers, func(k int) error {
+		u := sk.Units[k]
 		var runs []Run
+		var err error
 		switch sk.Codec {
 		case E1:
-			runs, err = decodeE1(data, u.PlainLen)
+			runs, err = decodeE1(blobs[k], u.PlainLen)
 		case E1Flate:
-			runs, err = decodeE1Flate(data, u.PlainLen)
+			runs, err = decodeE1Flate(blobs[k], u.PlainLen)
 		case E2:
-			runs, err = decodeE2(data, u.PlainLen)
+			runs, err = decodeE2(blobs[k], u.PlainLen)
 		case Pred:
-			runs, err = pr.decodeUnit(data, startPos[k], u.PlainLen)
+			runs, err = newPredictor(plain, 0).decodeUnit(blobs[k], startPos[k], u.PlainLen)
 		default:
 			err = corrupt("unknown codec %d", sk.Codec)
 		}
 		if err != nil {
-			return nil, nil, fmt.Errorf("unit %d: %w", k, err)
+			return fmt.Errorf("unit %d: %w", k, err)
 		}
 		n, p := 0, 0
 		for _, r := range runs {
@@ -250,9 +291,13 @@ func Decode(skel []byte, unit func(i int) ([]byte, error), plain []byte, opt Dec
 			p += r.plainLen()
 		}
 		if n != u.NTokens || p != u.PlainLen {
-			return nil, nil, corrupt("unit %d decodes to %d tokens / %d bytes, index says %d / %d", k, n, p, u.NTokens, u.PlainLen)
+			return corrupt("unit %d decodes to %d tokens / %d bytes, index says %d / %d", k, n, p, u.NTokens, u.PlainLen)
 		}
 		units[k] = runs
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
 	}
 	// assemble blocks
 	st := &deflate.Stream{Plain: plain, TailPadBits: sk.TailPadBits, TailPadLen: sk.TailPadLen}
@@ -371,4 +416,44 @@ func ModeProfiles(mode string) []uint8 {
 		return ids
 	}
 	return Modes["ratio"]
+}
+
+// eachUnit runs fn(0..n-1) on at most workers goroutines (0: up to four, bounded by GOMAXPROCS) and returns the
+// error of the lowest failing index, so a failure does not depend on scheduling.
+func eachUnit(n, workers int, fn func(i int) error) error {
+	if workers == 0 {
+		workers = min(runtime.GOMAXPROCS(0), 4)
+	}
+	workers = min(workers, n)
+	if workers <= 1 {
+		for i := 0; i < n; i++ {
+			if err := fn(i); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	errs := make([]error, n)
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= n {
+					return
+				}
+				errs[i] = fn(i)
+			}
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -238,19 +238,20 @@ func TestWindowBoundsAndParams(t *testing.T) {
 }
 
 func TestWindowParallelDeterministic(t *testing.T) {
-	base := rnd(41, 300000)
-	tgt := mutate(42, base, 30)
-	a, _ := encodeW(t, base, tgt, wp(1))
-	b, _ := encodeW(t, base, tgt, wp(4))
-	// The anchor table can differ between runs only in insertion order of equal-hash slots;
-	// both records must decode exactly, sizes within 2%.
-	for _, rec := range [][]byte{a, b} {
+	// 9 MiB spans three index chunks; the record is byte-identical for every worker count and every run.
+	base := rnd(41, 9<<20)
+	tgt := mutate(42, base, 60)
+	var first []byte
+	for _, w := range []int{1, 3, 8, 8} {
+		rec, _ := encodeW(t, base, tgt, wp(w))
 		if !bytes.Equal(decodeAll(t, rec, base, wp(2)), tgt) {
 			t.Fatal("mismatch")
 		}
-	}
-	if d := len(a) - len(b); d > len(a)/50 || -d > len(a)/50 {
-		t.Fatalf("worker count changed size: %d vs %d", len(a), len(b))
+		if first == nil {
+			first = rec
+		} else if !bytes.Equal(first, rec) {
+			t.Fatalf("workers=%d: record differs from the single-worker record", w)
+		}
 	}
 }
 
