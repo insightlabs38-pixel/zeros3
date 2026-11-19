@@ -8,7 +8,7 @@ MANDATORY=(gofmt vet vet_harness t1run_negative_controls qualify_negative_contro
 # the real-model test has its own steps below: it must not ride along in the timed suites
 t1() { local mode=$1; shift; env -u ZEROS3_C1_MODELS "$S/t1run" -mode "$mode" -fresh -v -allow-skip "$allowskip" -cache "$S/t1cache" -evidence "$O/t1-$CURSTEP.json" "$@"; }
 # tests that skip unless an environment switch selects them; each one that matters has its own mandatory step below
-allowskip='^(TestAuthority(FiveGenerationMatrix|Large(Check|Fixture|Profile)|ScaleFixture|ZN7DecodeScaling|ZN7RealModels)|TestB2(Economics|RepBreakdown)|TestLocalityBench_(CompactOverhead|RunWindows)|TestLocatorScale|TestP1B_PopulatedStoreThroughput|TestP1C_(RecoveryLatency|StoreLayerPutThroughput)|TestP3_(ChurnFixture|HistoryFixture|MaintHelper)|TestP4(Interference|Probe)|TestRep(CodecEconomics|CodecLargeStreaming|GitRealReexports|Measure|OCIRealRegistryComposition))$'
+allowskip='^(TestAuthority(FiveGenerationMatrix|HardCorpusEconomics|Large(Check|Fixture|Profile)|ScaleFixture|ZN7DecodeScaling|ZN7RealModels)|TestB2(Economics|RepBreakdown)|TestLocalityBench_(CompactOverhead|RunWindows)|TestLocatorScale|TestP1B_PopulatedStoreThroughput|TestP1C_(RecoveryLatency|StoreLayerPutThroughput)|TestP3_(ChurnFixture|HistoryFixture|MaintHelper)|TestP4(Interference|Probe)|TestRep(CodecEconomics|CodecLargeStreaming|GitRealReexports|Measure|OCIRealRegistryComposition))$'
 authskip='^(TestAuthority|FuzzAuth|FuzzXDelta|TestXDelta)'
 
 run_steps() {

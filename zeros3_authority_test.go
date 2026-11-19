@@ -3047,11 +3047,11 @@ func TestAuthorityPersistenceLossModel(t *testing.T) {
 			if o.name == "migrate" { // control: without its fsyncs the same trace must produce a failing image
 				ctl := &plModel{root: m.root, top: plLoad(t, fx.dir), fds: map[int]*plFile{}, dirfd: map[int]string{}, byNode: map[*plNode]*plFile{}}
 				failed := 0
-				for i, e := range evs {
+				for _, e := range evs {
 					if e.name == "fsync" || e.name == "fdatasync" {
 						continue
 					}
-					if ctl.apply(e.name, e.args, e.blobs, e.ret) && i%7 == 0 {
+					if ctl.apply(e.name, e.args, e.blobs, e.ret) { // every barrier: the trace shifts between runs, a sparse sample can miss the unsafe ones
 						img := filepath.Join(t.TempDir(), "img")
 						plWrite(t, ctl.top, img, false, true)
 						os.MkdirAll(filepath.Join(img, "tmp"), 0o755)
