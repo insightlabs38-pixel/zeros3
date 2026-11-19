@@ -5803,6 +5803,12 @@ func TestAuthorityTierRefusalTable(t *testing.T) {
 // End to end: the same hard-codec files under each tier. Hot and warm keep them in CDC and say why, cold and the
 // archive admit them with their measured cost recorded, and a gate lifted by NoReadCost admits them anywhere.
 func TestAuthorityTierGateOnHardCodecs(t *testing.T) {
+	// The cold throughput floor is a property of the host (the race detector alone slows replay 20x); the production
+	// values are pinned by TestAuthorityTierRefusalTable, so this end-to-end test uses a floor every host clears.
+	cold := authTierLimits["cold"]
+	t.Cleanup(func() { authTierLimits["cold"] = cold })
+	cold.Replay = 0.01
+	authTierLimits["cold"] = cold
 	policy := func(tier string, lift bool) AuthPolicy {
 		return AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, MinObject: 1, MinRepGroup: 1, HardCodecs: true, Tier: tier, NoReadCost: lift}
 	}
