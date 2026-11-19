@@ -1,0 +1,290 @@
+diff --git a/testing-harnesses/z3/dcore/kernels_experiment_test.go b/testing-harnesses/z3/dcore/kernels_experiment_test.go
+new file mode 100644
+index 0000000..8d0b244
+--- /dev/null
++++ b/testing-harnesses/z3/dcore/kernels_experiment_test.go
+@@ -0,0 +1,255 @@
++package dcore
++
++import (
++	"crypto/sha256"
++	"encoding/json"
++	"math/rand"
++	"os"
++	"path/filepath"
++	"runtime"
++	"slices"
++	"sort"
++	"testing"
++	"time"
++)
++
++type lookupExperiment func(uint64, *[16]int64) int
++
++func experimentalIndex(bases [][]byte, p Params, design string) (*Index, lookupExperiment) {
++	sizes := make([]int64, len(bases))
++	for i, b := range bases {
++		sizes[i] = int64(len(b))
++	}
++	starts, total, _ := layout(sizes)
++	x := &Index{p: p, bases: bases, starts: starts, total: total}
++	for x.nbits = uint(p.MinSampleBits); x.total>>x.nbits > int64(p.MaxAnchors); x.nbits++ {
++	}
++	if design == "sorted" {
++		return x, buildSortedExperiment(x)
++	}
++	return x, buildBlockedExperiment(x)
++}
++
++func buildSortedExperiment(x *Index) lookupExperiment {
++	var anchors []anchor
++	for i, b := range x.bases {
++		anchors = x.collect(anchors, i, b)
++	}
++	slices.SortFunc(anchors, func(a, b anchor) int {
++		if a.m < b.m || a.m == b.m && a.v < b.v {
++			return -1
++		}
++		if a == b {
++			return 0
++		}
++		return 1
++	})
++	end, same := 0, 0
++	var prior uint64
++	var offsets [257]int
++	for _, a := range anchors {
++		if end == 0 || a.m != prior {
++			same = 0
++		}
++		prior = a.m
++		if same == x.p.Slots {
++			continue
++		}
++		anchors[end] = a
++		end++
++		same++
++		offsets[(a.m>>56)+1]++
++	}
++	anchors = anchors[:end]
++	for i := 1; i < len(offsets); i++ {
++		offsets[i] += offsets[i-1]
++	}
++	x.Anchors = len(anchors)
++	return func(m uint64, dst *[16]int64) int {
++		bucket := m >> 56
++		span := anchors[offsets[bucket]:offsets[bucket+1]]
++		i := sort.Search(len(span), func(i int) bool { return span[i].m >= m })
++		n := 0
++		for ; i < len(span) && span[i].m == m; i++ {
++			dst[n] = span[i].v
++			n++
++		}
++		return n
++	}
++}
++
++func buildBlockedExperiment(x *Index) lookupExperiment {
++	const slots = 8
++	blocks := 2
++	for blocks*slots < 2*(int(x.total>>x.nbits)+len(x.bases)+64) {
++		blocks *= 2
++	}
++	table := make([][slots]uint64, blocks)
++	buckets := func(m uint64) (*[slots]uint64, *[slots]uint64) {
++		mask := uint64(blocks - 1)
++		a := m >> 32 & mask
++		b := a ^ ((m>>11)&mask | 1)
++		return &table[a], &table[b]
++	}
++	window := x.p.Window
++	for bi, b := range x.bases {
++		if len(b) < window {
++			continue
++		}
++		h := x.hash0(b)
++		for i := 0; ; i++ {
++			if x.sampled(h) {
++				m := mix64(h)
++				tag := (m >> 8) & 0xffffff
++				a, b := buckets(m)
++				var free *uint64
++				matched := 0
++				for _, block := range [...]*[slots]uint64{a, b} {
++					for k, entry := range block {
++						if entry == 0 {
++							if free == nil {
++								free = &block[k]
++							}
++							break
++						}
++						if entry>>posBits == tag {
++							matched++
++						}
++					}
++				}
++				if free != nil && matched < x.p.Slots {
++					*free = tag<<posBits | uint64(x.starts[bi]+int64(i)+1)
++					x.Anchors++
++				}
++			}
++			if i+window == len(b) {
++				break
++			}
++			h = rollNext(h, b[i], b[i+window], window)
++		}
++	}
++	return func(m uint64, dst *[16]int64) int {
++		tag := (m >> 8) & 0xffffff
++		a, b := buckets(m)
++		n := 0
++		for _, block := range [...]*[slots]uint64{a, b} {
++			for _, entry := range block {
++				if entry == 0 {
++					break
++				}
++				if entry>>posBits == tag {
++					dst[n] = int64(entry&posMask) - 1
++					n++
++				}
++			}
++		}
++		return n
++	}
++}
++
++func experimentalBest(x *Index, lookup lookupExperiment) func([]byte, int, int, uint64) (int, int, int, int64) {
++	return func(t []byte, i, lo int, h uint64) (n, back, bi int, off int64) {
++		var positions [16]int64
++		count := lookup(mix64(h), &positions)
++		for _, v := range positions[:count] {
++			b, o := x.locate(v)
++			src := x.bases[b]
++			f := commonPrefix(src[o:], t[i:])
++			if f < x.p.Window {
++				continue
++			}
++			bk := min(i-lo, int(o))
++			bk = commonSuffix(src[int(o)-bk:o], t[i-bk:i])
++			if f+bk > n {
++				n, back, bi, off = f+bk, bk, b, o-int64(bk)
++			}
++		}
++		return
++	}
++}
++
++func TestMatcherKernelsExperiment(t *testing.T) {
++	root := os.Getenv("ZEROS3_KERNEL_CORPUS")
++	if root == "" {
++		t.Skip("set ZEROS3_KERNEL_CORPUS")
++	}
++	type pair struct {
++		label        string
++		base, target []byte
++	}
++	read := func(path string) []byte {
++		data, err := os.ReadFile(path)
++		if err != nil {
++			t.Fatal(err)
++		}
++		return data
++	}
++	var pairs []pair
++	for _, family := range []struct{ label, pattern string }{
++		{"tar", "corpus/src/coreutils-*.tar"}, {"clr", "q6/clr/*.dll"}, {"dex", "q6/fdroid-apk/*.dex"},
++	} {
++		files, err := filepath.Glob(filepath.Join(root, family.pattern))
++		if err != nil {
++			t.Fatal(err)
++		}
++		if len(files) < 2 {
++			t.Logf("unavailable: %s, %d inputs", family.label, len(files))
++			continue
++		}
++		pairs = append(pairs, pair{family.label, read(files[0]), read(files[1])})
++	}
++	rng := rand.New(rand.NewSource(57))
++	a, b := make([]byte, 2<<20), make([]byte, 2<<20)
++	rng.Read(a)
++	rng.Read(b)
++	pairs = append(pairs, pair{"unrelated", a, b})
++	out, err := os.OpenFile(os.Getenv("ZEROS3_KERNEL_RESULTS"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer out.Close()
++	p := DefaultParams()
++	encoder := json.NewEncoder(out)
++	for _, pair := range pairs {
++		want := sha256.Sum256(pair.target)
++		bases := [][]byte{pair.base}
++		for repeat := 0; repeat < 3; repeat++ {
++			for _, design := range []string{"p8", "sorted", "blocked"} {
++				runtime.GC()
++				var m0, m1 runtime.MemStats
++				runtime.ReadMemStats(&m0)
++				start := time.Now()
++				var built time.Time
++				var ops []Op
++				var x *Index
++				if design == "p8" {
++					x, err = BuildIndex(bases, p)
++					if err != nil {
++						t.Fatal(err)
++					}
++					built = time.Now()
++					ops = x.Match(pair.target)
++				} else {
++					var lookup lookupExperiment
++					x, lookup = experimentalIndex(bases, p, design)
++					built = time.Now()
++					ops = x.match(pair.target, x.Anchors != 0, experimentalBest(x, lookup))
++				}
++				matched := time.Now()
++				runtime.ReadMemStats(&m1)
++				got, e := Apply(bases, ops, int64(len(pair.target)))
++				if e != nil || sha256.Sum256(got) != want {
++					t.Fatalf("inexact %s %s: %v", pair.label, design, e)
++				}
++				if err := encoder.Encode(map[string]any{
++					"family": pair.label, "kernel": design, "rep": repeat, "target_sha256": want,
++					"target_bytes": len(pair.target), "build_s": built.Sub(start).Seconds(),
++					"match_s": matched.Sub(built).Seconds(), "alloc_bytes": m1.TotalAlloc - m0.TotalAlloc,
++					"envelope_bytes": EnvelopeSize(ops, 128<<10), "anchors": x.Anchors, "exact": true,
++				}); err != nil {
++					t.Fatal(err)
++				}
++			}
++		}
++	}
++}
+diff --git a/testing-harnesses/z3/dcore/match.go b/testing-harnesses/z3/dcore/match.go
+index 538e78e..59b9630 100644
+--- a/testing-harnesses/z3/dcore/match.go
++++ b/testing-harnesses/z3/dcore/match.go
+@@ -299,6 +299,10 @@ func commonSuffix(a, b []byte) int {
+ // Match encodes t as COPY/ADD ops against the indexed bases. The result
+ // always reconstructs t exactly when ops are applied to the same bases.
+ func (x *Index) Match(t []byte) []Op {
++	return x.match(t, len(x.table) != 0, x.best)
++}
++
++func (x *Index) match(t []byte, hasAnchors bool, best func([]byte, int, int, uint64) (int, int, int, int64)) []Op {
+ 	w := x.p.Window
+ 	var ops []Op
+ 	start := 0
+@@ -307,11 +311,11 @@ func (x *Index) Match(t []byte) []Op {
+ 			ops = append(ops, Op{TPos: int64(start), N: int64(end - start), Base: -1, Lit: t[start:end]})
+ 		}
+ 	}
+-	if len(t) >= w && len(x.table) > 0 {
++	if len(t) >= w && hasAnchors {
+ 		h := x.hash0(t)
+ 		for i := 0; i+w <= len(t); {
+ 			if x.sampled(h) {
+-				if n, back, bi, off := x.best(t, i, start, h); n >= x.p.MinCopy {
++				if n, back, bi, off := best(t, i, start, h); n >= x.p.MinCopy {
+ 					s := i - back
+ 					emitLit(s)
+ 					if k := len(ops); k > 0 && ops[k-1].Base == bi && ops[k-1].Off+ops[k-1].N == off && start == s {
