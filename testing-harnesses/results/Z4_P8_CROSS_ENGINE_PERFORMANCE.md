@@ -21,7 +21,7 @@ Evidence: [`../z4/p8/`](../z4/p8/README.md) (raw rows, `results/TABLES.md`, driv
 ## Results (medians; baseline → P8; `results/TABLES.md`)
 | Workload | Wall | CPU | Physical bytes after gc/repack | Exact |
 |---|---|---|---|---|
-| tar (3 coreutils, windowed delta) | 1152.6 s → 17.8 s (**65×**) | 2045 → 30 s | +0.50 % | yes |
+| tar (3 coreutils, windowed delta) | 1152.6 s → 30.7 s (**37×**; 17.8 s with 2× the cache memory) | 2045 → 54 s | +0.50 % | yes |
 | SQLite ×4 delta / default policy | 5.56 → 1.73 s (3.2×) / 10.5 → 3.3 s (3.2×) | 6.8 → 2.7 | −0.69 % | yes |
 | Parquet-Snappy delta / default | 2.22 → 0.78 s (2.8×) / 10.5 → 6.1 s (1.7×) | 2.7 → 1.2 | −1.05 % | yes |
 | Parquet-Zstd delta | 1.62 → 0.78 s (2.1×) | 1.8 → 1.0 | −0.06 % | yes |
@@ -29,13 +29,13 @@ Evidence: [`../z4/p8/`](../z4/p8/README.md) (raw rows, `results/TABLES.md`, driv
 | CLR delta / default | 0.89 → 0.42 s (2.1×) / 2.44 → 1.84 s (1.3×) | 0.9 → 0.5 | −0.75 % | yes |
 | gzip L6 / L9 exact-DEFLATE build (analysis + proof) | 9.9 → 3.1 s / 9.8 → 3.0 s (**3.2×**) | 10.1 → 10.6 (same work, spread over cores) | n/a | yes |
 | gzip replay | 4.7 → 1.5 s (3.2×) / 4.8 → 1.35 s (3.6×) | | | yes |
-Source bytes decoded per migration: SQLite 273 → 122 MiB, parquet 107 → 48, dex 106 → 52 (each source once). Allocation volume −60…−99 %. Peak RSS: −15…+0 % on clr/parquet-zstd, **+10…+50 %** on sqlite/dex/tar (caches: ≤160 MiB sources + 48 MiB indexes, bounded by budget, not by input size); tar 545 → 766 MiB.
+Source bytes decoded per migration: SQLite 273 → 122 MiB, parquet 107 → 48, dex 106 → 52 (each source once). Allocation volume −60…−99 %. Peak RSS: clr/parquet-zstd −15…−25 %, parquet +8 %, dex +59 %, sqlite +38 % (in-memory objects: ≤160 MiB of cached sources + 48 MiB of indexes, a budget independent of input size); windowed tar 545 → 532 MiB. C1 large checks (3 revisions): 256 MiB 12.6 s vs 21.5 s, 1 GiB 52.9 s vs 83.7 s, 2 GiB 96.1 s vs 159.2 s (this run, same machine class) — peak RSS 267/270/281 MiB (before the cache sizing change below) vs 69/96/133 MiB in C1.
 Matcher A/B (match only): program size −30 % tar, −11 % SQLite, −9 % Parquet-Snappy, −2…−6 % DEX, ≈0 Parquet-Zstd; **speed ≈ the old matcher** (0.7–1.4×; small CLR slower). The kernel was not made faster; end-to-end wins come from the passes above.
 
 ## Targets not met / unsuccessful approaches
 * Matcher kernel 2×: not met. A cyclic-polynomial rolling hash removed a 5-op dependency chain but changed neither index-build nor match time (inserts are cache-miss bound); region-ordered inserts gave 1.25× on index build only. Reusable per-base *anchor lists* were built, measured equivalent to single-base index reuse for sets of one and dropped (multi-base unions never won).
 * Exact-DEFLATE CPU: unchanged (search is latency-bound; hoisting gave 3 %); the 3.2× is wall time from parallel units. Profiles other than the 13 shipped (e.g. an exact zlib `deflate_slow` emulator) were not attempted.
-* First cache-only tar run: 229.6 s; proof caches + fewer probes: 43 s → 26.6 s → 17.8 s (`intermediate_*` rows).
+* First cache-only tar run: 229.6 s; proof caches + fewer probes: 43 s → 26.6 s → 17.8 s with 96/64/32 MiB caches (RSS 766 MiB), then 30.7 s with 32/32/16 MiB caches to keep RSS at the C1 level (`intermediate_*` rows).
 * tar physical bytes +0.5 % (added +1.7 %): different anchor sampling in the windowed matcher; not traded for speed deliberately, not recovered.
 * Cold random 4 KiB reads of nested windowed deltas still cost ~1 s each (format property, not changed).
 * B1/B4 already used dcore (P5); they gain the deterministic index and cheaper inserts only. Large-object (>256 MiB) windowed paths were exercised by tests and the C1 large steps, not re-benchmarked here.
