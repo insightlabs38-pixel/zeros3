@@ -202,3 +202,36 @@ func TestMaterializeRange(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkEncodeStreamGz measures streaming analysis of a real gzip file (P8_GZ=path, first P8_GZ_MIB MiB of
+// the compressed stream, Workers from P8_WORKERS): go test -bench EncodeStreamGz -run x ./ir
+func BenchmarkEncodeStreamGz(b *testing.B) {
+	path := os.Getenv("P8_GZ")
+	if path == "" {
+		b.Skip("set P8_GZ")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	mib := 4
+	fmt.Sscan(os.Getenv("P8_GZ_MIB"), &mib)
+	workers := 1
+	fmt.Sscan(os.Getenv("P8_WORKERS"), &workers)
+	hdr, err := deflate.GzipHeader(bytes.NewReader(raw))
+	if err != nil {
+		b.Fatal(err)
+	}
+	body := raw[len(hdr):]
+	if len(body) > mib<<20 {
+		body = body[:mib<<20] // a truncated stream: analysis stops at the cut, which is all the timing needs
+	}
+	b.SetBytes(int64(len(body)))
+	for i := 0; i < b.N; i++ {
+		var sink memSink
+		_, _, err := EncodeStream(bytes.NewReader(body), StreamConfig{Target: 16 << 10, Profile: AutoProfile, Workers: workers}, &sink)
+		if err != nil && len(body) == len(raw)-len(hdr) {
+			b.Fatal(err)
+		}
+	}
+}

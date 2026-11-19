@@ -187,3 +187,46 @@ func FuzzMatchExact(f *testing.F) {
 		checkExact(t, [][]byte{base}, tgt, ops)
 	})
 }
+
+// A table built from cached anchor lists is the table BuildIndex builds, for single and multi-base sets whose
+// union samples more sparsely than a member.
+func TestAnchorListsEqualDirectBuild(t *testing.T) {
+	p := DefaultParams()
+	p.MaxAnchors = 1 << 12
+	for seed := uint64(1); seed <= 6; seed++ {
+		b0 := rnd(seed, 300<<10)
+		b1 := mutate(seed, b0, 40)
+		b2 := rnd(seed+9, 70<<10)
+		tgt := mutate(seed+3, b1, 60)
+		for _, set := range [][][]byte{{b0}, {b1, b0}, {b0, b1, b2}, {b2}} {
+			as := make([]*Anchors, len(set))
+			for i, b := range set {
+				a, err := CollectAnchors(b, p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				as[i] = a
+			}
+			want, err := BuildIndex(set, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := BuildIndexAnchors(set, as, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.nbits != want.nbits || len(got.table) != len(want.table) || got.Anchors != want.Anchors || got.Dropped != want.Dropped {
+				t.Fatalf("seed %d: index shape differs", seed)
+			}
+			for i := range want.table {
+				if want.table[i] != got.table[i] {
+					t.Fatalf("seed %d: table slot %d differs", seed, i)
+				}
+			}
+			checkExact(t, set, tgt, got.Match(tgt))
+		}
+	}
+	if _, err := BuildIndexAnchors([][]byte{rnd(1, 100)}, nil, p); err == nil {
+		t.Fatal("mismatched anchor lists accepted")
+	}
+}

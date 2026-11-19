@@ -18,6 +18,35 @@ import (
 	"math/bits"
 )
 
+// The anchor window is hashed with a cyclic-polynomial (buzhash) rolling hash: one rotate and two table xors
+// per byte, a dependency chain of two operations (the multiplicative hash it replaces had five). Anchors are
+// filters only, so the hash can change without changing what any stored delta decodes to.
+var bzT = func() (t [256]uint64) {
+	s := uint64(0x9e3779b97f4a7c15)
+	for i := range t {
+		s += 0x9e3779b97f4a7c15
+		z := s
+		z = (z ^ z>>30) * 0xbf58476d1ce4e5b9
+		z = (z ^ z>>27) * 0x94d049bb133111eb
+		t[i] = z ^ z>>31
+	}
+	return
+}()
+
+// rollInit hashes the window b (len(b) = w <= 64).
+func rollInit(b []byte) uint64 {
+	var h uint64
+	for _, v := range b {
+		h = bits.RotateLeft64(h, 1) ^ bzT[v]
+	}
+	return h
+}
+
+// rollNext slides a w-byte window one byte: out leaves, in enters.
+func rollNext(h uint64, out, in byte, w int) uint64 {
+	return bits.RotateLeft64(h, 1) ^ bits.RotateLeft64(bzT[out], w) ^ bzT[in]
+}
+
 // ErrTooLarge reports an input whose size cannot be represented by the
 // 40-bit virtual offsets of an Index. It is returned, never truncated.
 var ErrTooLarge = errors.New("dcore: input exceeds addressable range")
@@ -30,7 +59,6 @@ const (
 	posMask  = 1<<posBits - 1
 	maxTotal = int64(1)<<posBits - 2
 	maxBases = 1 << 16
-	hashP    = 0x9e3779b97f4a7c15
 	sampleK  = 0xd6e8feb86659fd93
 )
 
@@ -73,8 +101,7 @@ type Index struct {
 	bases  [][]byte
 	starts []int64 // virtual start of each base
 	total  int64
-	nbits  uint // sampling: an anchor is kept when the top nbits of h*sampleK are zero
-	pow    uint64
+	nbits  uint     // sampling: an anchor is kept when the top nbits of h*sampleK are zero
 	table  []uint64 // tag<<posBits | (virtual offset + 1); 0 = empty
 	tmask  uint64
 	tshift uint
@@ -112,11 +139,6 @@ func BuildIndex(bases [][]byte, p Params) (*Index, error) {
 	x := &Index{p: p, bases: bases, starts: starts, total: total}
 	for x.nbits = uint(p.MinSampleBits); x.total>>x.nbits > int64(p.MaxAnchors); x.nbits++ {
 	}
-	pow := uint64(1)
-	for i := 0; i < p.Window-1; i++ {
-		pow *= hashP
-	}
-	x.pow = pow
 	est := int(x.total>>x.nbits) + len(bases) + 64
 	tbits := uint(4)
 	for 1<<tbits < 2*est {
@@ -127,6 +149,99 @@ func BuildIndex(bases [][]byte, p Params) (*Index, error) {
 	x.tshift = 64 - tbits
 	for bi, b := range bases {
 		x.indexBase(bi, b)
+	}
+	return x, nil
+}
+
+// Anchors is the sampled anchor list of one base. It does not depend on the other bases of an index, so a base
+// that is a candidate for many targets or sits in several candidate sets is hashed once.
+type Anchors struct {
+	level uint // anchors are kept when the top level bits of h*sampleK are zero
+	size  int
+	h     []uint64
+	off   []uint32
+}
+
+// Size is the byte length of the base the list describes.
+func (a *Anchors) Size() int { return a.size }
+
+// Bytes is the memory the list holds.
+func (a *Anchors) Bytes() int64 { return int64(len(a.h))*8 + int64(len(a.off))*4 }
+
+func sampleLevel(total int64, p Params) uint {
+	l := uint(p.MinSampleBits)
+	for total>>l > int64(p.MaxAnchors) {
+		l++
+	}
+	return l
+}
+
+// CollectAnchors lists the sampled anchors of b at the level a stand-alone index of b would use. A set of bases
+// never samples more densely than any one of them, so the list can be thinned to the set's level.
+func CollectAnchors(b []byte, p Params) (*Anchors, error) {
+	if !p.valid() {
+		return nil, ErrParams
+	}
+	if int64(len(b)) > maxTotal || len(b) > 1<<32-1 {
+		return nil, ErrTooLarge
+	}
+	a := &Anchors{level: sampleLevel(int64(len(b)), p), size: len(b)}
+	w := p.Window
+	if len(b) < w {
+		return a, nil
+	}
+	x := Index{nbits: a.level}
+	a.h = make([]uint64, 0, len(b)>>a.level+16)
+	a.off = make([]uint32, 0, cap(a.h))
+	h := rollInit(b[:w])
+	for i := 0; ; i++ {
+		if x.sampled(h) {
+			a.h = append(a.h, h)
+			a.off = append(a.off, uint32(i))
+		}
+		if i+w >= len(b) {
+			return a, nil
+		}
+		h = rollNext(h, b[i], b[i+w], w)
+	}
+}
+
+// BuildIndexAnchors is BuildIndex over precomputed anchor lists (one per base, from CollectAnchors with the same
+// Params). The resulting table is identical to BuildIndex's.
+func BuildIndexAnchors(bases [][]byte, as []*Anchors, p Params) (*Index, error) {
+	if !p.valid() || len(bases) > maxBases || len(as) != len(bases) {
+		return nil, ErrParams
+	}
+	sizes := make([]int64, len(bases))
+	for i, b := range bases {
+		sizes[i] = int64(len(b))
+		if as[i] == nil || as[i].size != len(b) {
+			return nil, ErrParams
+		}
+	}
+	starts, total, err := layout(sizes)
+	if err != nil {
+		return nil, err
+	}
+	x := &Index{p: p, bases: bases, starts: starts, total: total, nbits: sampleLevel(total, p)}
+	est := int(x.total>>x.nbits) + len(bases) + 64
+	tbits := uint(4)
+	for 1<<tbits < 2*est {
+		tbits++
+	}
+	x.table = make([]uint64, 1<<tbits)
+	x.tmask = 1<<tbits - 1
+	x.tshift = 64 - tbits
+	for bi, a := range as {
+		if a.level > x.nbits {
+			return nil, ErrParams
+		}
+		vs := starts[bi]
+		for k, h := range a.h {
+			if x.sampled(h) {
+				x.insert(h, vs+int64(a.off[k]))
+			}
+		}
 	}
 	return x, nil
 }
@@ -143,13 +258,7 @@ func mix64(v uint64) uint64 {
 	return v ^ (v >> 31)
 }
 
-func (x *Index) hash0(b []byte) uint64 {
-	var h uint64
-	for _, v := range b[:x.p.Window] {
-		h = h*hashP + uint64(v) + 1
-	}
-	return h
-}
+func (x *Index) hash0(b []byte) uint64 { return rollInit(b[:x.p.Window]) }
 
 func (x *Index) indexBase(bi int, b []byte) {
 	w := x.p.Window
@@ -165,7 +274,7 @@ func (x *Index) indexBase(bi int, b []byte) {
 		if i+w >= len(b) {
 			return
 		}
-		h = (h-(uint64(b[i])+1)*x.pow)*hashP + uint64(b[i+w]) + 1
+		h = rollNext(h, b[i], b[i+w], w)
 	}
 }
 
@@ -276,7 +385,7 @@ func (x *Index) Match(t []byte) []Op {
 			if i+w >= len(t) {
 				break
 			}
-			h = (h-(uint64(t[i])+1)*x.pow)*hashP + uint64(t[i+w]) + 1
+			h = rollNext(h, t[i], t[i+w], w)
 			i++
 		}
 	}

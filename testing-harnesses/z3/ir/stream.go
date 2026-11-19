@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"runtime"
+	"slices"
+	"sync"
 
 	"zeros3-z3/deflate"
 )
@@ -30,6 +33,9 @@ type StreamConfig struct {
 	// Auto profile: units 0..ProbeFirst-1 and every ProbeEvery-th unit are
 	// encoded with every profile and the smallest wins until the next probe.
 	ProbeFirst, ProbeEvery int
+	// Workers is how many units are encoded concurrently (0: up to four, bounded by GOMAXPROCS; 1: on the parsing
+	// goroutine). A unit depends only on the plaintext and its own tokens, so the output is byte-identical for any value.
+	Workers int
 }
 
 // StreamSink receives the encoder's outputs in order.
@@ -115,6 +121,21 @@ type streamEnc struct {
 	stored     []byte
 	stats      StreamStats
 	pr         predictor
+	workers    int
+	sem        chan struct{}
+	pending    []*unitJob // units encoding or encoded but not yet handed to the sink, in order
+}
+
+// unitJob is one unit handed to the encoder pool: private copies of its plaintext window and token runs.
+type unitJob struct {
+	k             int
+	plain         []byte
+	rel, plainLen int
+	runs          []Run
+	data          []byte
+	pred          PredStats
+	err           error
+	done          chan struct{}
 }
 
 // EncodeStream parses the raw DEFLATE stream at the start of r in bounded
@@ -134,6 +155,13 @@ func EncodeStream(r io.Reader, cfg StreamConfig, sink StreamSink) (st *StreamSta
 	e := &streamEnc{cfg: cfg, sink: sink, lo: target / 4, hi: target * 4, mask: uint64(pow2floor(target)) - 1}
 	e.win = deflate.NewWindow(ringFor(e.hi))
 	e.w = deflate.NewStreamWriter(&e.cc)
+	e.workers = cfg.Workers
+	if e.workers == 0 {
+		e.workers = min(runtime.GOMAXPROCS(0), 4)
+	}
+	if e.workers > 1 {
+		e.sem = make(chan struct{}, e.workers)
+	}
 	if cfg.Profile != AutoProfile {
 		e.curProf = cfg.Profile
 	}
@@ -142,6 +170,9 @@ func EncodeStream(r io.Reader, cfg StreamConfig, sink StreamSink) (st *StreamSta
 		return nil, nil, err
 	}
 	if err := e.flushUnit(); err != nil {
+		return nil, nil, err
+	}
+	if err := e.drain(0); err != nil {
 		return nil, nil, err
 	}
 	if err := e.w.Finish(res.TailPadBits, res.TailPadLen); err != nil {
@@ -306,39 +337,91 @@ func (e *streamEnc) flushUnit() error {
 	rel := int(e.unitPos - wbase)
 	k := e.nunits
 	probe := e.cfg.Profile == AutoProfile && (k < e.cfg.ProbeFirst || k%e.cfg.ProbeEvery == 0)
-	var data []byte
-	var err error
-	if probe {
-		bestSize := int(^uint(0) >> 1)
-		for _, id := range ModeProfiles(e.cfg.Mode) {
-			prof := &Profiles[id]
-			p := newPredictor(plain, prof.ID)
-			d, err := p.encode(e.runs, rel, plainLen, nil)
-			if err != nil {
-				continue
+	job := &unitJob{k: k, plain: plain, rel: rel, plainLen: plainLen, runs: e.runs, done: make(chan struct{})}
+	if e.workers > 1 { // the ring is overwritten as the parse continues
+		job.plain, job.runs = cloneBuf(plain), slices.Clone(e.runs)
+	}
+	switch {
+	case probe:
+		// every profile on the same unit; the smallest wins (the first of equals) and rules the units up to the next probe
+		ids := ModeProfiles(e.cfg.Mode)
+		res := make([][]byte, len(ids))
+		var wg sync.WaitGroup
+		for n, id := range ids {
+			run := func() {
+				if d, err := newPredictor(job.plain, id).encode(job.runs, rel, plainLen, nil); err == nil {
+					res[n] = d
+				}
 			}
-			if len(d) < bestSize {
-				bestSize, data, e.curProf = len(d), d, prof.ID
+			if e.workers > 1 {
+				wg.Add(1)
+				go func() {
+					e.sem <- struct{}{}
+					defer func() { <-e.sem; wg.Done() }()
+					run()
+				}()
+			} else {
+				run()
 			}
 		}
-		if data == nil {
+		wg.Wait()
+		if e.workers > 1 {
+			freeBuf(job.plain)
+		}
+		bestSize := int(^uint(0) >> 1)
+		for n, d := range res {
+			if d != nil && len(d) < bestSize {
+				bestSize, job.data, e.curProf = len(d), d, ids[n]
+			}
+		}
+		if job.data == nil {
 			return fmt.Errorf("ir: no profile could encode unit %d", k)
 		}
-	} else {
+		close(job.done)
+	case e.workers > 1:
+		prof := e.curProf
+		go func() {
+			e.sem <- struct{}{}
+			defer func() { <-e.sem; close(job.done) }()
+			p := predictor{plain: job.plain, prof: &Profiles[prof]}
+			if job.data, job.err = p.encode(job.runs, rel, plainLen, nil); job.err != nil {
+				job.err = fmt.Errorf("ir: predictive unit %d: %w", k, job.err)
+			}
+			job.pred = p.Stats
+			freeBuf(job.plain)
+		}()
+	default:
 		e.pr.plain = plain
 		e.pr.prof = &Profiles[e.curProf]
-		if data, err = e.pr.encode(e.runs, rel, plainLen, nil); err != nil {
-			return fmt.Errorf("ir: predictive unit %d: %w", k, err)
+		job.data, job.err = e.pr.encode(e.runs, rel, plainLen, nil)
+		if job.err != nil {
+			return fmt.Errorf("ir: predictive unit %d: %w", k, job.err)
 		}
+		close(job.done)
 	}
-	if err := e.sink.Unit(k, data); err != nil {
-		return err
-	}
-	e.stats.UnitBytes += int64(len(data))
+	e.pending = append(e.pending, job)
 	e.unitB = uvarint(e.unitB, uint64(plainLen))
 	e.unitB = uvarint(e.unitB, uint64(e.unitTok))
 	e.nunits++
 	e.runs, e.lits, e.unitTok = e.runs[:0], 0, 0
+	return e.drain(2 * e.workers)
+}
+
+// drain hands finished units to the sink in order until at most keep remain in flight.
+func (e *streamEnc) drain(keep int) error {
+	for len(e.pending) > keep {
+		j := e.pending[0]
+		<-j.done
+		e.pending = e.pending[1:]
+		if j.err != nil {
+			return j.err
+		}
+		if err := e.sink.Unit(j.k, j.data); err != nil {
+			return err
+		}
+		e.stats.UnitBytes += int64(len(j.data))
+		e.pr.Stats.add(j.pred)
+	}
 	return nil
 }
 
@@ -347,6 +430,30 @@ func (e *streamEnc) flushUnit() error {
 // StreamDecodeOptions bound the streaming reconstruction.
 type StreamDecodeOptions struct {
 	MaxUnitPlain int // largest unit (plaintext bytes) accepted; default 1 MiB
+	// Workers is how many units are decoded ahead of the token writer (0: up to four, bounded by GOMAXPROCS; 1: on
+	// the writing goroutine). A unit decodes from the plaintext alone, so the output is identical for any value.
+	Workers int
+}
+
+// unitBufs recycles the plaintext copies handed to unit workers (about 150 KiB per unit).
+var unitBufs sync.Pool
+
+func cloneBuf(b []byte) []byte {
+	if v, _ := unitBufs.Get().(*[]byte); v != nil && cap(*v) >= len(b) {
+		return append((*v)[:0], b...)
+	}
+	return slices.Clone(b)
+}
+
+func freeBuf(b []byte) { unitBufs.Put(&b) }
+
+// decodeAhead bounds the plaintext the prefetching decoder runs ahead of the writer.
+const decodeAhead = 1 << 20
+
+type unitDecode struct {
+	runs []Run
+	err  error
+	done chan struct{}
 }
 
 // ReconstructStream rebuilds the DEFLATE stream from the skeleton, the units
@@ -365,7 +472,11 @@ func ReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, error
 	if sk.Codec != Pred {
 		return corrupt("streaming reconstruction supports the predictive codec only")
 	}
-	win := deflate.NewWindow(opt.MaxUnitPlain + 2*warmMax + 4096)
+	workers := opt.Workers
+	if workers == 0 {
+		workers = min(runtime.GOMAXPROCS(0), 4)
+	}
+	win := deflate.NewWindow(opt.MaxUnitPlain + 2*warmMax + 4096 + decodeAhead)
 	var cc countCRC
 	sw := deflate.NewStreamWriter(io.MultiWriter(&cc, w))
 	rd := &plainFeed{r: plain, win: win}
@@ -409,6 +520,51 @@ func ReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, error
 		lits     uint32
 		unitLeft int
 	)
+	// Units are decoded on a bounded pool ahead of the token writer: each needs only a private copy of its plaintext
+	// window, and the ring holds at most decodeAhead bytes beyond the unit being written.
+	var ahead []*unitDecode
+	nextIssue := 0
+	sem := make(chan struct{}, workers)
+	issue := func() error {
+		for nextIssue < len(sk.Units) && len(ahead) < 2*workers {
+			u := sk.Units[nextIssue]
+			end := startPos[nextIssue] + int64(u.PlainLen)
+			if len(ahead) > 0 && end-pos > decodeAhead {
+				break
+			}
+			if err := rd.upto(end); err != nil {
+				return err
+			}
+			data, err := unit(nextIssue)
+			if err != nil {
+				return err
+			}
+			wbase := max(0, startPos[nextIssue]-warmMax)
+			pl := win.Read(wbase, end)
+			d := &unitDecode{done: make(chan struct{})}
+			k, rel, plainLen := nextIssue, int(startPos[nextIssue]-wbase), u.PlainLen
+			job := func() {
+				defer close(d.done)
+				if d.runs, d.err = newPredictor(pl, 0).decodeUnit(data, rel, plainLen); d.err != nil {
+					d.err = fmt.Errorf("unit %d: %w", k, d.err)
+				}
+			}
+			if workers > 1 {
+				pl, data = cloneBuf(pl), slices.Clone(data)
+				go func() {
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					job()
+					freeBuf(pl)
+				}()
+			} else {
+				job()
+			}
+			ahead = append(ahead, d)
+			nextIssue++
+		}
+		return nil
+	}
 	loadUnit := func() error {
 		if unitIdx >= len(sk.Units) {
 			return corrupt("token stream exhausted")
@@ -417,19 +573,16 @@ func ReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, error
 		if startPos[unitIdx] != pos {
 			return corrupt("unit %d starts at %d, expected %d", unitIdx, startPos[unitIdx], pos)
 		}
-		if err := rd.upto(pos + int64(u.PlainLen)); err != nil {
+		if err := issue(); err != nil {
 			return err
 		}
-		data, err := unit(unitIdx)
-		if err != nil {
-			return err
+		d := ahead[0]
+		ahead = ahead[1:]
+		<-d.done
+		if d.err != nil {
+			return d.err
 		}
-		wbase := max(0, pos-warmMax)
-		pl := win.Read(wbase, pos+int64(u.PlainLen))
-		p := newPredictor(pl, 0)
-		if runs, err = p.decodeUnit(data, int(pos-wbase), u.PlainLen); err != nil {
-			return fmt.Errorf("unit %d: %w", unitIdx, err)
-		}
+		runs = d.runs
 		n, pl2 := 0, 0
 		for _, r := range runs {
 			n += r.tokens()

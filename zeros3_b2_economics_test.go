@@ -15,9 +15,12 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -633,4 +636,120 @@ func TestB2RepBreakdown(t *testing.T) {
 		"bodies": rows, "sum_component_logical": sumLogical, "union_component_logical": unionLogical, "reuse_factor": float64(sumLogical) / float64(max(unionLogical, 1)),
 		"union_stored": unionStored, "stored_over_logical": float64(unionStored) / float64(max(unionLogical, 1)), "duplicate_records": dupRecords,
 		"raw_records": rawRecs, "deflate_records": deflRecs, "record_framing_bytes": framing, "retained_cdc_logical": stillCDC, "pack_breakdown": econBreakdown(t, dir)})
+}
+
+// TestP8Migration measures authority migration only (the store is built once per
+// family; each variant is migrated from a copy and read back by SHA-256).
+//
+//	ZEROS3_B2_CORPUS=DIR ZEROS3_P8_FAMILY=tar ZEROS3_P8_VARIANTS=auth-delta-only ZEROS3_P8_REPS=3 \
+//	  ZEROS3_B2_OUT=out.jsonl go test -run TestP8Migration -count=1 -cpuprofile cpu.pprof .
+func TestP8Migration(t *testing.T) {
+	root := os.Getenv("ZEROS3_B2_CORPUS")
+	if root == "" {
+		t.Skip("research harness: set ZEROS3_B2_CORPUS")
+	}
+	reps, _ := strconv.Atoi(os.Getenv("ZEROS3_P8_REPS"))
+	reps = max(reps, 1)
+	variants := map[string]AuthPolicy{
+		"delta":   {Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true},
+		"archive": {Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true},
+		"rep":     {Order: "oldest", AllowRep: true},
+	}
+	for _, fam := range econFamilies(root) {
+		if f := os.Getenv("ZEROS3_P8_FAMILY"); f != "" && !strings.Contains(","+f+",", ","+fam.name+",") {
+			continue
+		}
+		t.Run(fam.name, func(t *testing.T) {
+			base := t.TempDir()
+			cdcDir := filepath.Join(base, "cdc")
+			logical, _, _ := econBuild(t, cdcDir, fam.files, repModeOff)
+			econCompact(t, cdcDir)
+			cdcPhys := dirBytes(t, cdcDir)
+			for _, vn := range strings.Split(os.Getenv("ZEROS3_P8_VARIANTS"), ",") {
+				pol, ok := variants[vn]
+				if !ok {
+					continue
+				}
+				for r := 0; r < reps; r++ {
+					dir := filepath.Join(base, fmt.Sprintf("%s-%d", vn, r))
+					if err := econCopyTree(cdcDir, dir); err != nil {
+						t.Fatal(err)
+					}
+					runtime.GC()
+					var m0, m1 runtime.MemStats
+					runtime.ReadMemStats(&m0)
+					cpu0, io0 := procCPUSeconds(), procReadBytes()
+					srcCalls0, srcBytes0 := authSrcStats()
+					var pf *os.File
+					if pd := os.Getenv("ZEROS3_P8_PROF"); pd != "" && r == 0 {
+						pf, _ = os.Create(filepath.Join(pd, fmt.Sprintf("cpu-%s-%s.pprof", fam.name, vn)))
+						pprof.StartCPUProfile(pf)
+					}
+					t0 := time.Now()
+					rep, rss, _ := econMigrate(t, dir, pol)
+					wall := time.Since(t0).Seconds()
+					if pf != nil {
+						pprof.StopCPUProfile()
+						pf.Close()
+					}
+					cpu1, io1 := procCPUSeconds(), procReadBytes()
+					srcCalls1, srcBytes1 := authSrcStats()
+					runtime.ReadMemStats(&m1)
+					forms := map[string]int{}
+					for _, p := range rep.Plans {
+						forms[strings.TrimSuffix(p.Form, "?")]++
+					}
+					gcSec, repackSec := econReclaim(t, dir)
+					phys := dirBytes(t, dir)
+					// independent read-back of every live object by SHA-256 in a fresh store handle
+					s, err := OpenStore(dir)
+					if err != nil {
+						t.Fatal(err)
+					}
+					exact := true
+					for _, lm := range s.liveManifests() {
+						rd := s.openObjectReader(lm.man, byteRange{0, lm.man.TotalLength - 1})
+						h := sha256.New()
+						for {
+							b, err := rd.next()
+							if err != nil {
+								break
+							}
+							h.Write(b)
+						}
+						rd.close()
+						if fmt.Sprintf("%x", h.Sum(nil)) != lm.man.ObjectSHA256 {
+							exact = false
+						}
+					}
+					s.Close()
+					econEmit(t, econRow{"p8": "migrate", "family": fam.name, "variant": vn, "rep": r, "logical": logical, "cdc_phys": cdcPhys,
+						"wall_s": wall, "cpu_s": cpu1 - cpu0, "rss_mib": rss, "alloc_mib": float64(m1.TotalAlloc-m0.TotalAlloc) / (1 << 20),
+						"mallocs": m1.Mallocs - m0.Mallocs, "read_mib": float64(io1-io0) / (1 << 20), "src_reads": srcCalls1 - srcCalls0, "src_mib": float64(srcBytes1-srcBytes0) / (1 << 20),
+						"added": rep.AddedBytes, "admitted": rep.Admitted, "objects": rep.Objects, "forms": forms, "phys_after": phys, "gc_s": gcSec, "repack_s": repackSec, "exact": exact})
+					if !exact {
+						t.Fatalf("%s/%s: inexact read-back", fam.name, vn)
+					}
+					os.RemoveAll(dir)
+				}
+			}
+		})
+	}
+}
+
+func procCPUSeconds() float64 {
+	var ru syscall.Rusage
+	syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+	return float64(ru.Utime.Sec+ru.Stime.Sec) + float64(ru.Utime.Usec+ru.Stime.Usec)/1e6
+}
+
+func procReadBytes() int64 {
+	b, _ := os.ReadFile("/proc/self/io")
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "rchar:") {
+			n, _ := strconv.ParseInt(strings.TrimSpace(l[6:]), 10, 64)
+			return n
+		}
+	}
+	return 0
 }

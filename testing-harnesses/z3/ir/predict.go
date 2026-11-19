@@ -97,6 +97,17 @@ type PredStats struct {
 	Work            int64
 }
 
+func (a *PredStats) add(b PredStats) {
+	a.Tokens += b.Tokens
+	a.Matches += b.Matches
+	a.Escapes += b.Escapes
+	for i := range a.IdxHist {
+		a.IdxHist[i] += b.IdxHist[i]
+	}
+	a.LenExact += b.LenExact
+	a.Work += b.Work
+}
+
 type window struct {
 	plain     []byte
 	base, end int // window covers [base, end); candidates are searched at positions in [start, end)
