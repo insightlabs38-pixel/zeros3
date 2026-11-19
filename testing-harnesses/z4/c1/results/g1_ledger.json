@@ -13,9 +13,12 @@
     "TestRepack_GCCrashDuringDeadPackRemoval",
     "TestSnapshotGC_PinsOtherwiseUnreachableChunks"
    ],
-   "authority_equivalents": [
-    "TestAuthorityEquivAccounting",
-    "TestAuthorityBaseRetentionAfterNamespacePruning"
+   "tags": [
+    "gc-counts-components",
+    "maintenance-crash-converges",
+    "missing-component-refused",
+    "snapshot-pins-after-gc",
+    "verify-deep-finds-corruption"
    ]
   },
   "cdcref": {
@@ -47,10 +50,18 @@
     "TestRepZ4ModelBaseSurvivesRootRetirement",
     "TestRepZ4ModelGGUFAndUnsupportedModel"
    ],
-   "authority_equivalents": [
-    "TestAuthorityRepFormAcrossStructuralKinds",
-    "TestAuthorityPlannerRepGroupsExact",
-    "TestAuthorityZN7ModelHistory"
+   "tags": [
+    "damage-fails-closed",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "maintenance-crash-converges",
+    "missing-component-refused",
+    "rep-crash-publication",
+    "rep-hostile-fallback",
+    "rep-lifecycle-exact",
+    "rep-model-base-survives-retirement",
+    "rep-shared-components",
+    "writes-and-reads-stay-exact-under-migration"
    ]
   },
   "corruption": {
@@ -108,13 +119,25 @@
     "TestVerify_DetectsCorruptChunkOnlyUnderDeep",
     "TestVerify_DetectsMissingChunk"
    ],
-   "authority_equivalents": [
-    "TestAuthorityRetiredEquivalents",
-    "TestAuthorityCorruptComponentFailsClosedNeverWrongBytes",
-    "TestAuthorityPeerAssistedComponentRepair",
-    "TestAuthorityRepairPaths",
-    "TestAuthorityRepairCrashQualification",
-    "TestAuthorityGCFailsClosedOnMissingBase"
+   "tags": [
+    "cache-revalidated",
+    "damage-fails-closed",
+    "damage-is-isolated",
+    "export-refuses-corrupt",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "gc-counts-components",
+    "gc-refuses-corrupt-record",
+    "layout-compact-tier-repack-exact",
+    "missing-component-refused",
+    "repair-concurrent",
+    "repair-partial-honest",
+    "repair-peer-exact-stats",
+    "repair-resume",
+    "repair-shared-digest",
+    "restore-missing-no-mutation",
+    "stream-failsafe",
+    "verify-deep-finds-corruption"
    ]
   },
   "hook": {
@@ -130,9 +153,10 @@
     "TestRepZ4ModelStreamingModelLifecycle",
     "TestStreamingPut_LargeObjectBoundedMemory"
    ],
-   "authority_equivalents": [
-    "TestAuthorityLargeCheck",
-    "TestAuthorityRepFormAcrossStructuralKinds"
+   "tags": [
+    "large-streaming-put-bounded-memory",
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
    ]
   },
   "layout": {
@@ -184,10 +208,14 @@
     "TestTier_InitSafety",
     "TestTier_RepackGCPreserveTiersAndPaths"
    ],
-   "authority_equivalents": [
-    "TestAuthorityEquivPhysicalLayouts",
-    "TestAuthorityMixedLifecycle",
-    "TestAuthorityDeltaLifecycleAndReclaim"
+   "tags": [
+    "export-refuses-corrupt",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges",
+    "range-reads-bounded",
+    "repair-peer-exact-stats"
    ]
   },
   "revive": {
@@ -195,9 +223,10 @@
     "TestBundle_PartialOverlapImportsOnlyMissingContent",
     "TestCASBatch_IngestDuplicateAndLocalizedEdit"
    ],
-   "authority_equivalents": [
-    "TestAuthorityCopyAndRestoreOfBodyOnlyContent",
-    "TestAuthorityNativeClosureTransferAndInterruption"
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats",
+    "revive-on-write"
    ]
   },
   "storelevel": {
@@ -225,11 +254,1335 @@
     "TestTier_LifecycleCompactMoveReads",
     "TestTier_MoveCrashPoints"
    ],
-   "authority_equivalents": [
-    "TestAuthorityEquivStoreLevel",
-    "TestAuthorityOldBinaryRefusesAndLeavesStoreUntouched",
-    "TestAuthorityRevertAllLowersFloorAndOldBinaryReopens"
+   "tags": [
+    "damage-fails-closed",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges",
+    "rep-crash-publication",
+    "rep-hostile-fallback"
    ]
   }
+ },
+ "tests": {
+  "TestAWSChunked_LargeObjectBoundedMemory": {
+   "class": "hook",
+   "tags": [
+    "large-streaming-put-bounded-memory"
+   ]
+  },
+  "TestBulkFetch_ServerSideFailures": {
+   "class": "corruption",
+   "tags": [
+    "repair-partial-honest"
+   ]
+  },
+  "TestBulkRepair_PartialSuccessSurvivesBatchFailure": {
+   "class": "corruption",
+   "tags": [
+    "repair-partial-honest"
+   ]
+  },
+  "TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting": {
+   "class": "corruption",
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats"
+   ]
+  },
+  "TestBundle_CorruptExistingChunkIsRepairedFromVerifiedPayload": {
+   "class": "corruption",
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats"
+   ]
+  },
+  "TestBundle_ExportIndependentOfPhysicalRepresentation": {
+   "class": "layout",
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestBundle_ExportIsDeterministicAndAtomic": {
+   "class": "corruption",
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats"
+   ]
+  },
+  "TestBundle_PartialOverlapImportsOnlyMissingContent": {
+   "class": "revive",
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats",
+    "revive-on-write"
+   ]
+  },
+  "TestCASBatch_IngestDuplicateAndLocalizedEdit": {
+   "class": "revive",
+   "tags": [
+    "revive-on-write"
+   ]
+  },
+  "TestCLI_Repair_EndToEndSmoke": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestCLI_Repair_ExitCodeNonzeroWhenUnresolved": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestCLI_VerifyRepairFrom_OneCommandDetectRepairReverify": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestDeleteObjects_HistoryPruneGC": {
+   "class": "accounting",
+   "tags": [
+    "gc-counts-components",
+    "snapshot-pins-after-gc",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestDirectPackLife_CrashMatrixConverges": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestDirectPackLife_RepackCompressesRawDirectPacksPreservingOrder": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestDirectPackLife_TierRebalanceBundlesAndLogicalHistoryUnchanged": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestDirectPack_AdaptiveCompressionOptionStillValidPackV1": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestDirectPack_ExistingCopiesInAnyTierAreReused": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestDirectPack_IdenticalAndShiftedUploadsWriteNoPayload": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestDirectPack_MultiplePacksAndPackSizes": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestDirectPack_RecordOrderFollowsObjectAndRepeatsWriteOnce": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestDirectPack_TailBelowMinimumStaysLoose": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestFork_RepairComposesAcrossSharedCorruptChunk": {
+   "class": "corruption",
+   "tags": [
+    "repair-shared-digest"
+   ]
+  },
+  "TestGC_RefusesOnCorruptLiveRoot_K7": {
+   "class": "corruption",
+   "tags": [
+    "gc-refuses-corrupt-record"
+   ]
+  },
+  "TestIngestCrash_Matrix": {
+   "class": "accounting",
+   "tags": [
+    "maintenance-crash-converges",
+    "gc-counts-components",
+    "snapshot-pins-after-gc"
+   ]
+  },
+  "TestLayoutMatrix_RepairFindingsClassifyMissingAndCorrupt": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestLayoutMatrix_VerifyDetectsMissingAndCorruptChunks": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused"
+   ]
+  },
+  "TestLocality_CompactLayoutsEndToEnd": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestLocality_PackBoundariesAndTailFolding": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestLocality_RootObservationOrder": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestLocality_SingleChunkEmptyAndSharedObjects": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestModelNestedPublicationRaisesFloor": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestModelOrdinaryPutCrashPublication": {
+   "class": "cdcref",
+   "tags": [
+    "rep-crash-publication"
+   ]
+  },
+  "TestP1B_CrashMatrix_ConcurrentGroups": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestP1B_MediumPack_DeadPacksCollectedByGC": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestP1B_MediumPack_SameManifestAsLoose": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestP1C_BundleExportRefusesCorruptChunk": {
+   "class": "corruption",
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP1C_FormatRaiseIsRaceFreeAgainstReaders": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP1C_Format_FirstSmallWriteRaisesLevelPolicyOffDoesNot": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP1C_MaintenanceRefusesCorruptLiveRecord": {
+   "class": "corruption",
+   "tags": [
+    "gc-refuses-corrupt-record",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP1C_OldStoreAndPolicyChangesCoexist": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP1C_SmallPutUsesSegmentAndSurvivesRestart": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP2_CachedEntriesAreRevalidatedAgainstStorage": {
+   "class": "corruption",
+   "tags": [
+    "cache-revalidated"
+   ]
+  },
+  "TestP2_ChunkCacheNeverMasksCorruptionFromDiagnostics": {
+   "class": "corruption",
+   "tags": [
+    "cache-revalidated"
+   ]
+  },
+  "TestP2_PipelinedStreamsFailSafeAndLeakNothing": {
+   "class": "corruption",
+   "tags": [
+    "stream-failsafe",
+    "damage-fails-closed"
+   ]
+  },
+  "TestP2_PipeliningIsAdaptiveToActiveStreams": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestP3_DeepVerifyFindsCorruptionBetweenPasses": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused"
+   ]
+  },
+  "TestP3_ReachabilityMatchesReference_Damage": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused",
+    "gc-counts-components"
+   ]
+  },
+  "TestP3_ReachabilityMatchesReference_Healthy": {
+   "class": "accounting",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused",
+    "gc-counts-components"
+   ]
+  },
+  "TestP3_RepackCrashPointsWithPipelinedStaging": {
+   "class": "accounting",
+   "tags": [
+    "maintenance-crash-converges",
+    "gc-counts-components",
+    "snapshot-pins-after-gc"
+   ]
+  },
+  "TestP4DeferredBuildsAfterAcknowledgement": {
+   "class": "hook",
+   "tags": [
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestP4ReadCacheServesExactBytesAndStillVerifiesData": {
+   "class": "hook",
+   "tags": [
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestP4SmallObjectComponentsShareTheSegmentAndSurviveMaintenance": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackCompression_AdaptivePolicyByDataClass": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackCompression_CrashPoints": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestPackCompression_DeepVerifyDetectsCompressedPayloadCorruption": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackCompression_MixedObjectReadsAndRanges": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackCompression_RepackAbortsOnDamagedCompressedData": {
+   "class": "corruption",
+   "tags": [
+    "gc-refuses-corrupt-record",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackCompression_RepackSelectionUsesPhysicalBytes": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackCompression_StoreFormatBoundary": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestPackRun_BadPackStopsFurtherRuns": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackRun_CorruptionFallsBackOrFailsWithoutLeakingBytes": {
+   "class": "corruption",
+   "tags": [
+    "stream-failsafe",
+    "damage-fails-closed",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackRun_HTTPCorruptionNeverReachesClient": {
+   "class": "corruption",
+   "tags": [
+    "stream-failsafe",
+    "damage-fails-closed",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackRun_LocalityCoalescesDigestDoesNot": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestPackRun_NoncontiguousAndSingleChunk": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackRun_RangeFetchesOnlyNeededChunks": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestPackRun_RangesMatchOrdinaryReads": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestPackRun_TiersAndLooseCopyPreference": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_CompactCLI": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_CompactCrashPoints": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestPack_DuplicateCopiesCorruptionPreference": {
+   "class": "corruption",
+   "tags": [
+    "damage-fails-closed",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_GCNeverTouchesPacks": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_LogicalFeaturesOverPackedStore": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_MixedManifestSpansLooseAndPacked": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_PayloadAndRecordHeaderDamageFailSafely": {
+   "class": "corruption",
+   "tags": [
+    "damage-fails-closed",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_PhysicalMatrix": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_RepairReplacesCorruptPackedChunkFromPeer": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_StoreFormatVersionGate": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records"
+   ]
+  },
+  "TestPrune_PackedHistoryReclaimedByRepack": {
+   "class": "accounting",
+   "tags": [
+    "gc-counts-components",
+    "snapshot-pins-after-gc",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestPrune_SharedAndRestoredRootsStayPinned": {
+   "class": "accounting",
+   "tags": [
+    "gc-counts-components",
+    "snapshot-pins-after-gc",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestPrune_SnapshotSurvivesPruneThenGC": {
+   "class": "accounting",
+   "tags": [
+    "gc-counts-components",
+    "snapshot-pins-after-gc",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestReachability_DetectsCorruptionAmongLiveRoots": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepAnalysisBudgets": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed"
+   ]
+  },
+  "TestRepBundleBackfillFullDeltaAndReuse": {
+   "class": "hook",
+   "tags": [
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepCodecAnalysisDepth": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed",
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepCodecNestedProduction": {
+   "class": "hook",
+   "tags": [
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepCodecUnsupportedFallsBack": {
+   "class": "hook",
+   "tags": [
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepConcurrentReadsMixedTiers": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepCopyObjectAndMultipart": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepCrashAfterFormatRaiseBeforeFirstRoot": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "rep-crash-publication"
+   ]
+  },
+  "TestRepCrashMatrix": {
+   "class": "cdcref",
+   "tags": [
+    "maintenance-crash-converges",
+    "rep-crash-publication"
+   ]
+  },
+  "TestRepGitHostileFallback": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed"
+   ]
+  },
+  "TestRepGitProductionPackAndIdx": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed"
+   ]
+  },
+  "TestRepHostileObjectsNeverFailPut": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed"
+   ]
+  },
+  "TestRepKindLifecycleMatrix": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepKindMatrixRoundTrip": {
+   "class": "hook",
+   "tags": [
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepLargeObjectComponentsGoToPacks": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestRepLateCreationAndRetirementLeaveNamespaceUntouched": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepLifecycleChain": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepLiveRootFaultsFailClosed": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepManagedCumulativeCompatibility": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepManagedNestedPublicationFloor": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepManagedOrdinaryPutCrashFloor": {
+   "class": "cdcref",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "rep-crash-publication"
+   ]
+  },
+  "TestRepMerkleRevisionChainSections": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepMerkleVirtualSectionReuse": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepModesAndFallbackCounters": {
+   "class": "hook",
+   "tags": [
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepNegativeFormatControls": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepOffModeMaintenanceKeepsRoots": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepOptionalFailureNeverFailsPut": {
+   "class": "storelevel",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed"
+   ]
+  },
+  "TestRepSharedChildAcrossFormatsAndRootLifecycle": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepSharedVirtualComponentAcrossRoots": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepSmokeSQLiteRoundTrip": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepSourceCorruptionClassified": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepStructuredCumulativeModelCompatibility": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepStructuredFallbackAndLifecycle": {
+   "class": "cdcref",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepStructuredOrdinaryPutCrashFloor": {
+   "class": "cdcref",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "rep-lifecycle-exact",
+    "rep-shared-components",
+    "rep-crash-publication"
+   ]
+  },
+  "TestRepSubstrateStoreRoundTrip": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepTempFilesAreNeverRootsOrLiveness": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepUpgradeLevelsDoNotMoveUntilFirstRoot": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepVirtualComponentDescriptor": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepZ4ManagedDefaultAndMalformedFallback": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepZ4ManagedLifecycleAndCapability": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepZ4ModelBaseSurvivesRootRetirement": {
+   "class": "cdcref",
+   "tags": [
+    "rep-model-base-survives-retirement"
+   ]
+  },
+  "TestRepZ4ModelGGUFAndUnsupportedModel": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed"
+   ]
+  },
+  "TestRepZ4ModelStreamingModelLifecycle": {
+   "class": "hook",
+   "tags": [
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepack_GCCrashDuringDeadPackRemoval": {
+   "class": "accounting",
+   "tags": [
+    "gc-counts-components",
+    "snapshot-pins-after-gc",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestRepairFromPeer_IncompatiblePeerFailsClearly": {
+   "class": "corruption",
+   "tags": [
+    "repair-partial-honest"
+   ]
+  },
+  "TestRepair_CorruptChunkContentMismatchDetected": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_CorruptExistingChunkAtomicallyReplaced": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_HighWorkerCount_RaceAndCorrectness": {
+   "class": "corruption",
+   "tags": [
+    "repair-concurrent",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_LocalRestartResumesNaturally": {
+   "class": "corruption",
+   "tags": [
+    "repair-resume",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_ManyCorruptChunks_WorkerCountsProduceIdenticalStats": {
+   "class": "corruption",
+   "tags": [
+    "repair-concurrent",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_ManyMissingChunks_Concurrent": {
+   "class": "corruption",
+   "tags": [
+    "repair-concurrent",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_MissingChunkDetected": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_MissingChunkRestoredEndToEnd": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_MixedCorruptAndMissing_Concurrent": {
+   "class": "corruption",
+   "tags": [
+    "repair-concurrent",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_MultipleCorruptChunksDetected": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_OnePeerFailureAmongManySuccesses_Concurrent": {
+   "class": "corruption",
+   "tags": [
+    "repair-concurrent",
+    "repair-peer-exact-stats",
+    "repair-partial-honest",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly": {
+   "class": "corruption",
+   "tags": [
+    "repair-partial-honest",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_PeerRestartBetweenAttempts": {
+   "class": "corruption",
+   "tags": [
+    "repair-resume",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_ResumeAfterPartialRunOnlyFetchesRemaining": {
+   "class": "corruption",
+   "tags": [
+    "repair-resume",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_RetainedHistoricalVersionChunkRepaired": {
+   "class": "corruption",
+   "tags": [
+    "repair-shared-digest",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_SharedCorruptDigestAffectsAllReferencingObjects": {
+   "class": "corruption",
+   "tags": [
+    "repair-shared-digest",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_StatsExactAccounting": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_WrongLengthChunkDetectedAsCorrupt": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_WrongPeerBytesAmongMany_Concurrent": {
+   "class": "corruption",
+   "tags": [
+    "repair-concurrent",
+    "repair-peer-exact-stats",
+    "repair-partial-honest",
+    "missing-component-refused"
+   ]
+  },
+  "TestReplicateNamespace_SourceChunkCorruptOneObjectFailsOthersSucceed": {
+   "class": "corruption",
+   "tags": [
+    "damage-is-isolated"
+   ]
+  },
+  "TestRestore_MissingHistoricalChunk_NoPartialMutation": {
+   "class": "corruption",
+   "tags": [
+    "restore-missing-no-mutation"
+   ]
+  },
+  "TestSnapshotGC_PinsOtherwiseUnreachableChunks": {
+   "class": "accounting",
+   "tags": [
+    "gc-counts-components",
+    "snapshot-pins-after-gc",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestStreamingGet_Corruption": {
+   "class": "corruption",
+   "tags": [
+    "stream-failsafe",
+    "damage-fails-closed"
+   ]
+  },
+  "TestStreamingPut_LargeObjectBoundedMemory": {
+   "class": "hook",
+   "tags": [
+    "large-streaming-put-bounded-memory"
+   ]
+  },
+  "TestTierPolicy_HottestReferenceWins": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestTierRebalance_CrashPointsConverge": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestTierRebalance_DriftAndDuplicatesConverge": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestTierRebalance_DryRunThenApplyOnLooseChunks": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTierRebalance_MinMisplacedDefersCostlyRewrites": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestTierRebalance_MixedPacksAreRewritten": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestTierRebalance_SharedCheckpointBlocksStayHot": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestTier_CLI": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTier_CompactIntoColdCrashPoints": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTier_GCRemovesDeadPackFromItsTier": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTier_InitSafety": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTier_LifecycleCompactMoveReads": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTier_MoveCrashPoints": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTier_RepackGCPreserveTiersAndPaths": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestVerify_DetectsCorruptChunkOnlyUnderDeep": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused"
+   ]
+  },
+  "TestVerify_DetectsMissingChunk": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused"
+   ]
+  }
+ },
+ "required_tags": [
+  "cache-revalidated",
+  "damage-fails-closed",
+  "damage-is-isolated",
+  "differential-errors",
+  "differential-metadata",
+  "differential-reads",
+  "export-refuses-corrupt",
+  "format-level-moves-with-records",
+  "format-stable-under-maintenance",
+  "gc-counts-components",
+  "gc-refuses-corrupt-record",
+  "large-streaming-put-bounded-memory",
+  "layout-compact-tier-repack-exact",
+  "maintenance-crash-converges",
+  "missing-component-refused",
+  "range-reads-bounded",
+  "rep-crash-publication",
+  "rep-hostile-fallback",
+  "rep-lifecycle-exact",
+  "rep-model-base-survives-retirement",
+  "rep-shared-components",
+  "repair-concurrent",
+  "repair-partial-honest",
+  "repair-peer-exact-stats",
+  "repair-resume",
+  "repair-shared-digest",
+  "restore-missing-no-mutation",
+  "retirement-physical",
+  "revive-on-write",
+  "snapshot-pins-after-gc",
+  "stream-failsafe",
+  "verify-deep-finds-corruption",
+  "writes-and-reads-stay-exact-under-migration"
+ ],
+ "declared": {
+  "cache-revalidated": [
+   "TestAuthorityEquivCorruptionClasses"
+  ],
+  "damage-fails-closed": [
+   "TestAuthorityEquivDifferential"
+  ],
+  "damage-is-isolated": [
+   "TestAuthorityEquivCorruptionClasses"
+  ],
+  "differential-errors": [
+   "TestAuthorityEquivDifferential"
+  ],
+  "differential-metadata": [
+   "TestAuthorityEquivDifferential"
+  ],
+  "differential-reads": [
+   "TestAuthorityEquivDifferential"
+  ],
+  "export-refuses-corrupt": [
+   "TestAuthorityEquivCorruptionClasses"
+  ],
+  "format-level-moves-with-records": [
+   "TestAuthorityEquivStoreLevel"
+  ],
+  "format-stable-under-maintenance": [
+   "TestAuthorityEquivMaintenanceKeepsFormat"
+  ],
+  "gc-counts-components": [
+   "TestAuthorityEquivAccounting"
+  ],
+  "gc-refuses-corrupt-record": [
+   "TestAuthorityEquivCorruptionClasses"
+  ],
+  "large-streaming-put-bounded-memory": [
+   "TestAuthorityEquivStreamingPutAndReadBoundedMemory"
+  ],
+  "layout-compact-tier-repack-exact": [
+   "TestAuthorityEquivPhysicalLayouts"
+  ],
+  "maintenance-crash-converges": [
+   "TestAuthorityEquivMaintenanceCrashPoints"
+  ],
+  "missing-component-refused": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "range-reads-bounded": [
+   "TestAuthorityEquivRangeReadsFetchOnlyWhatTheyNeed"
+  ],
+  "rep-crash-publication": [
+   "TestAuthorityCrashMatrix"
+  ],
+  "rep-hostile-fallback": [
+   "TestAuthorityEquivHostileObjectsStayExact"
+  ],
+  "rep-lifecycle-exact": [
+   "TestAuthorityRepFormAcrossStructuralKinds"
+  ],
+  "rep-model-base-survives-retirement": [
+   "TestAuthorityZN7BaseRetentionRevertAndFeature"
+  ],
+  "rep-shared-components": [
+   "TestAuthorityRepFormAcrossStructuralKinds"
+  ],
+  "repair-concurrent": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "repair-partial-honest": [
+   "TestAuthorityRepairCrashQualification"
+  ],
+  "repair-peer-exact-stats": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "repair-resume": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "repair-shared-digest": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "restore-missing-no-mutation": [
+   "TestAuthorityEquivCorruptionClasses"
+  ],
+  "retirement-physical": [
+   "TestAuthorityEquivRetirementIsPhysical"
+  ],
+  "revive-on-write": [
+   "TestAuthorityEquivRetirementIsPhysical"
+  ],
+  "snapshot-pins-after-gc": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "stream-failsafe": [
+   "TestAuthorityEquivCorruptionClasses"
+  ],
+  "verify-deep-finds-corruption": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "writes-and-reads-stay-exact-under-migration": [
+   "TestAuthorityConcurrentOperations"
+  ]
  }
 }
