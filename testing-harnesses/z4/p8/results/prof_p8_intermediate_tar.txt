@@ -1,0 +1,28 @@
+Duration: 26.61s, Total samples = 43.27s (162.58%)
+Showing nodes accounting for 20.96s, 48.44% of 43.27s total
+Dropped 335 nodes (cum <= 0.22s)
+Showing top 25 nodes out of 83
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%     37.04s 85.60%  zeros3.decodePackPayload
+     0.01s 0.023% 0.023%     32.90s 76.03%  compress/flate.(*decompressor).Read
+     0.01s 0.023% 0.046%     32.38s 74.83%  io.ReadAtLeast
+         0     0% 0.046%     32.38s 74.83%  io.ReadFull (inline)
+     8.09s 18.70% 18.74%     31.31s 72.36%  compress/flate.(*decompressor).huffmanBlock
+     0.01s 0.023% 18.77%     25.20s 58.24%  zeros3.(*packRunReader).read
+         0     0% 18.77%     20.27s 46.85%  zeros3.dwDcore_readFull
+         0     0% 18.77%     19.44s 44.93%  zeros3.(*pipeReader).run
+         0     0% 18.77%     19.38s 44.79%  zeros3.(*dwDcore_pageView).page
+    12.79s 29.56% 48.32%     14.89s 34.41%  compress/flate.(*decompressor).huffSym
+         0     0% 48.32%     14.03s 32.42%  zeros3.(*authWinBody).ReadAt
+         0     0% 48.32%     13.87s 32.05%  zeros3.(*authWinBody).ReadAt.func1
+         0     0% 48.32%     13.87s 32.05%  zeros3.(*dwDcoreWRecord).DecodeRangeInto
+     0.01s 0.023% 48.35%     13.81s 31.92%  zeros3.(*dwDcoreWRecord).decodeFrame
+     0.01s 0.023% 48.37%     13.45s 31.08%  zeros3.(*dwDcore_pageView).copyTo
+     0.02s 0.046% 48.42%     12.70s 29.35%  zeros3.(*pieceSeq).ReadAt
+         0     0% 48.42%     12.67s 29.28%  zeros3.(*authPinBody).ReadAt
+         0     0% 48.42%     12.63s 29.19%  testing.tRunner
+         0     0% 48.42%     12.63s 29.19%  zeros3.TestP8Migration.func1
+         0     0% 48.42%     12.63s 29.19%  zeros3.econMigrate
+         0     0% 48.42%     12.62s 29.17%  zeros3.(*Store).AuthorityMigrate
+         0     0% 48.42%     12.61s 29.14%  zeros3.(*authMigrator).process
+         0     0% 48.42%     12.61s 29.14%  zeros3.(*authMigrator).processWindowed

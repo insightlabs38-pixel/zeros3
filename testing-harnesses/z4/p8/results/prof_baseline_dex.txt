@@ -1,0 +1,28 @@
+Duration: 5.20s, Total samples = 6.09s (117.18%)
+Showing nodes accounting for 1.65s, 27.09% of 6.09s total
+Dropped 153 nodes (cum <= 0.03s)
+Showing top 25 nodes out of 132
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      4.52s 74.22%  testing.tRunner
+         0     0%     0%      4.52s 74.22%  zeros3.(*Store).AuthorityMigrate
+         0     0%     0%      4.52s 74.22%  zeros3.(*authMigrator).process
+         0     0%     0%      4.52s 74.22%  zeros3.TestP8Migration.func1
+         0     0%     0%      4.52s 74.22%  zeros3.econMigrate
+         0     0%     0%      2.50s 41.05%  compress/flate.(*decompressor).Read
+         0     0%     0%      2.46s 40.39%  zeros3.(*authMigrator).process.func2
+     0.01s  0.16%  0.16%      2.40s 39.41%  zeros3.xdEncode
+     0.53s  8.70%  8.87%      2.36s 38.75%  compress/flate.(*decompressor).huffmanBlock
+         0     0%  8.87%      2.03s 33.33%  zeros3.decodePackPayload
+         0     0%  8.87%      1.91s 31.36%  io.ReadAtLeast
+         0     0%  8.87%      1.91s 31.36%  io.ReadFull (inline)
+     0.01s  0.16%  9.03%      1.49s 24.47%  zeros3.(*authDeltaBody).ReadAt
+         0     0%  9.03%      1.35s 22.17%  zeros3.xdDeflate
+         0     0%  9.03%      1.34s 22.00%  zeros3.xdEncode.func1 (inline)
+     1.10s 18.06% 27.09%      1.32s 21.67%  compress/flate.(*decompressor).huffSym
+         0     0% 27.09%      1.23s 20.20%  compress/flate.(*compressor).deflateFast
+         0     0% 27.09%      1.22s 20.03%  zeros3.(*packRunReader).read
+         0     0% 27.09%      1.22s 20.03%  zeros3.(*pipeReader).run
+         0     0% 27.09%      1.21s 19.87%  zeros3.(*authMigrator).commit
+         0     0% 27.09%      1.20s 19.70%  zeros3.(*Store).authProve
+         0     0% 27.09%      0.99s 16.26%  zeros3.(*pieceSeq).ReadAt
+         0     0% 27.09%      0.97s 15.93%  zeros3.(*authCtx).readPiece

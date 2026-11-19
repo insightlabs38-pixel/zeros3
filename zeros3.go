@@ -116,11 +116,11 @@ import (
 //    25840    Portable snapshot bundles (`zeros3 bundle`)
 //    27037    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    44565    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    48780    Windowed and estimated similarity deltas (extracted dcore)
-//    50288    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    57902    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    64174    CLI dispatch, HTTP server/startup, and main
+//    44750    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    49256    Windowed and estimated similarity deltas (extracted dcore)
+//    50778    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    58418    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    64690    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
