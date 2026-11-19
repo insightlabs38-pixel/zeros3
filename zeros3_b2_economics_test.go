@@ -655,11 +655,23 @@ func TestP8Migration(t *testing.T) {
 		"archive": {Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowRep: true, AllowDelta: true},
 		"rep":     {Order: "oldest", AllowRep: true},
 	}
+	matched := false
 	for _, fam := range econFamilies(root) {
 		if f := os.Getenv("ZEROS3_P8_FAMILY"); f != "" && !strings.Contains(","+f+",", ","+fam.name+",") {
 			continue
 		}
+		matched = true
 		t.Run(fam.name, func(t *testing.T) {
+			p8CheckFamily(t, fam)
+			for _, path := range fam.files {
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !info.Mode().IsRegular() || info.Size() == 0 {
+					t.Fatalf("expected a nonempty input file: %s", path)
+				}
+			}
 			base := t.TempDir()
 			cdcDir := filepath.Join(base, "cdc")
 			logical, _, _ := econBuild(t, cdcDir, fam.files, repModeOff)
@@ -723,7 +735,7 @@ func TestP8Migration(t *testing.T) {
 						}
 					}
 					s.Close()
-					econEmit(t, econRow{"p8": "migrate", "family": fam.name, "variant": vn, "rep": r, "logical": logical, "cdc_phys": cdcPhys,
+					p8Emit(t, map[string]any{"p8": "migrate", "family": fam.name, "variant": vn, "rep": r, "logical": logical, "cdc_phys": cdcPhys,
 						"wall_s": wall, "cpu_s": cpu1 - cpu0, "rss_mib": rss, "alloc_mib": float64(m1.TotalAlloc-m0.TotalAlloc) / (1 << 20),
 						"mallocs": m1.Mallocs - m0.Mallocs, "read_mib": float64(io1-io0) / (1 << 20), "src_reads": srcCalls1 - srcCalls0, "src_mib": float64(srcBytes1-srcBytes0) / (1 << 20),
 						"mig_s": rep.Seconds, "cache_hits": rep.CacheHits, "cache_misses": rep.CacheMisses, "decoded_mib": float64(rep.DecodedBytes) / (1 << 20), "added": rep.AddedBytes, "admitted": rep.Admitted, "objects": rep.Objects, "forms": forms, "phys_after": phys, "gc_s": gcSec, "repack_s": repackSec, "exact": exact})
@@ -734,6 +746,9 @@ func TestP8Migration(t *testing.T) {
 				}
 			}
 		})
+	}
+	if !matched {
+		t.Fatalf("unknown migration family %q", os.Getenv("ZEROS3_P8_FAMILY"))
 	}
 }
 

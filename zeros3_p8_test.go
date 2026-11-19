@@ -22,13 +22,16 @@ import (
 )
 
 // p8Pairs lists consecutive-revision (base, target) file pairs of the pinned families.
-func p8Pairs(root string) (names []string, pairs [][2]string) {
+func p8Pairs(t *testing.T, root string) (names []string, pairs [][2]string) {
 	for _, fam := range econFamilies(root) {
 		if f := os.Getenv("ZEROS3_P8_FAMILY"); f != "" && !strings.Contains(","+f+",", ","+fam.name+",") {
 			continue
 		}
 		if fam.name == "unrelated" {
 			continue
+		}
+		if os.Getenv("ZEROS3_P8_FAMILY") != "" {
+			p8CheckFamily(t, fam)
 		}
 		fs := fam.files
 		if fam.name == "dex" { // pair each dex file with its predecessor of the same name
@@ -56,6 +59,22 @@ func p8Pairs(root string) (names []string, pairs [][2]string) {
 	return
 }
 
+func p8CheckFamily(t *testing.T, fam econFamily) {
+	t.Helper()
+	required := 2
+	switch fam.name {
+	case "src-tar-short", "dex-b8":
+		required = 3
+	case "parquet", "parquet-zstd", "sqlite":
+		required = 4
+	case "dex":
+		required = 6
+	}
+	if len(fam.files) < required {
+		t.Fatalf("expected at least %d inputs for %s, found %d", required, fam.name, len(fam.files))
+	}
+}
+
 func p8Apply(bases [][]byte, ops []xdOp, want []byte) bool {
 	out := make([]byte, 0, len(want))
 	for _, o := range ops {
@@ -75,18 +94,21 @@ func TestP8Matcher(t *testing.T) {
 	if root == "" {
 		t.Skip("research harness: set ZEROS3_B2_CORPUS")
 	}
-	names, pairs := p8Pairs(root)
+	names, pairs := p8Pairs(t, root)
+	if len(pairs) == 0 {
+		t.Fatalf("no matcher pairs for family %q in %s", os.Getenv("ZEROS3_P8_FAMILY"), root)
+	}
 	for k, pr := range pairs {
 		b, err := os.ReadFile(pr[0])
 		if err != nil {
-			continue // the family is only partly present in this corpus
+			t.Fatal(err)
 		}
 		tg, err := os.ReadFile(pr[1])
 		if err != nil {
-			continue
+			t.Fatal(err)
 		}
-		if int64(len(tg)) > xdMaxObject || int64(len(b)) > xdMaxObject {
-			continue
+		if len(tg) == 0 || len(b) == 0 || int64(len(tg)) > xdMaxObject || int64(len(b)) > xdMaxObject {
+			t.Fatalf("unsupported matcher input size: %v (%d, %d bytes)", pr, len(b), len(tg))
 		}
 		src := []xdSrc{{sha256.Sum256(b), b}}
 		for _, m := range strings.Split(envOr("ZEROS3_P8_MATCHERS", "xd"), ",") {
@@ -101,17 +123,29 @@ func TestP8Matcher(t *testing.T) {
 			blob, _, err := xdEncodeOps(src, ops, tg, 128<<10)
 			row := map[string]any{"p8": "matcher", "family": names[k], "base": filepath.Base(filepath.Dir(pr[0])) + "/" + filepath.Base(pr[0]), "target": filepath.Base(pr[1]), "matcher": m,
 				"tgt_mib": float64(len(tg)) / (1 << 20), "match_ms": best.Milliseconds(), "mibps": float64(len(tg)) / (1 << 20) / best.Seconds(), "ops": len(ops), "envelope": len(blob), "exact": ok && err == nil}
-			bj, _ := json.Marshal(row)
-			t.Log(string(bj))
-			if out := os.Getenv("ZEROS3_B2_OUT"); out != "" {
-				if f, e := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); e == nil {
-					f.Write(append(bj, '\n'))
-					f.Close()
-				}
-			}
+			p8Emit(t, row)
 			if !ok || err != nil {
 				t.Fatalf("%s %v: matcher %s does not reconstruct the target (%v)", names[k], pr, m, err)
 			}
+		}
+	}
+}
+
+func p8Emit(t *testing.T, row map[string]any) {
+	t.Helper()
+	line, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(string(line))
+	if out := os.Getenv("ZEROS3_B2_OUT"); out != "" {
+		f, err := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = f.Write(append(line, '\n'))
+		if err := errors.Join(err, f.Close()); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
@@ -214,15 +248,11 @@ func TestP8Rep(t *testing.T) {
 				}
 				row["replay_s"], row["exact"] = time.Since(t1).Seconds(), ok && fmt.Sprintf("%x", h.Sum(nil)) == man.ObjectSHA256
 			}
-			bj, _ := json.Marshal(row)
-			t.Log(string(bj))
-			if out := os.Getenv("ZEROS3_B2_OUT"); out != "" {
-				if fo, e := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); e == nil {
-					fo.Write(append(bj, '\n'))
-					fo.Close()
-				}
-			}
+			p8Emit(t, row)
 			s.Close()
+			if row["exact"] != true {
+				t.Fatalf("could not build and replay %s exactly: %v", f, err)
+			}
 		}
 	}
 }
