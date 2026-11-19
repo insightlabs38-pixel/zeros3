@@ -98,3 +98,8 @@ The research precedents are the B1 discovery report, the P5 posting/run-set
 measurements and the B8 C2 acceptance section. Their uniform synthetic posting
 results set a baseline for investigation. Production qualification uses skewed
 inputs and measured lifecycle costs.
+
+The draft `zeros3 authority index-run-verify -run FILE` command checks an
+individual ZSR1 run, optionally against an expected SHA-256 or with one
+bounded feature lookup. The command does not open a store or publish index
+files. Generation publication and catalog validation are pending.
